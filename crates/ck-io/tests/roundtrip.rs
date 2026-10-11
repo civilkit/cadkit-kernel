@@ -57,7 +57,18 @@ fn dump_file() {
         let area = ck_topo::mass::face_integral::<1>(b, f, 1, &|_, n| [n.len()])[0];
         let vol = ck_topo::mass::signed_volume(b, &[f]);
         let loops: Vec<usize> = fa.loops.iter().map(|&l| b.lp(l).coedges.len()).collect();
-        println!("{} {} sense={} loops={:?} area={:.6} vol3={:.6}", b.face_id_str(f), fa.surface.kind(), fa.sense, loops, area, vol);
+        let uva: Vec<f64> = fa.loops.iter().map(|&l| ck_topo::orient::loop_uv_area(b, l)).collect();
+        println!("{} {} sense={} loops={:?} area={:.6} vol3={:.6} uvarea={:?}", b.face_id_str(f), fa.surface.kind(), fa.sense, loops, area, vol, uva);
+        if std::env::var("ALL").is_ok() {
+            for &l in &fa.loops {
+                for &c in &b.lp(l).coedges {
+                    let ce = b.coedge(c);
+                    let (t0, t1) = b.coedge_params(c);
+                    let uv = |t: f64| ce.pcurve.as_ref().map(|p| p.eval(t));
+                    println!("    co e{} rev={} uv {:?} -> {:?}", ce.edge.idx(), ce.rev, uv(t0), uv(t1));
+                }
+            }
+        }
     }
     for e in b.edge_ids() {
         let cs = b.edge_coedges(e);

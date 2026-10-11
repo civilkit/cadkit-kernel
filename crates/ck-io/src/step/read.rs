@@ -78,6 +78,7 @@ struct Rd<'a> {
     edges: HashMap<u32, Option<(EdgeId, bool)>>,
     warnings: Vec<ImportError>,
     nface: usize,
+    depth: std::cell::Cell<u32>,
 }
 
 const VTOL: f64 = 1e-7;
@@ -102,6 +103,7 @@ impl<'a> Rd<'a> {
             edges: HashMap::new(),
             warnings: vec![],
             nface: 0,
+            depth: std::cell::Cell::new(0),
         }
     }
 
@@ -232,7 +234,26 @@ impl<'a> Rd<'a> {
         v.and_then(Val::as_f64).ok_or_else(|| bad(id, format!("{what} is not a number")))
     }
 
+    /// Nesting guard: malformed files may reference an entity from itself.
+    fn nested<T>(&self, id: u32, f: impl FnOnce() -> R<T>) -> R<T> {
+        if self.depth.get() > 24 {
+            return Err(bad(id, "entity references nest too deeply (cycle?)"));
+        }
+        self.depth.set(self.depth.get() + 1);
+        let r = f();
+        self.depth.set(self.depth.get() - 1);
+        r
+    }
+
     fn curve(&self, id: u32) -> R<Curve> {
+        self.nested(id, || self.curve_inner(id))
+    }
+
+    fn surface(&self, id: u32) -> R<Surface> {
+        self.nested(id, || self.surface_inner(id))
+    }
+
+    fn curve_inner(&self, id: u32) -> R<Curve> {
         let e = self.ent(id)?;
         if e.has("B_SPLINE_CURVE") || e.has("B_SPLINE_CURVE_WITH_KNOTS") || e.has("BEZIER_CURVE") || e.has("QUASI_UNIFORM_CURVE") || e.has("UNIFORM_CURVE") {
             return self.bspline_curve(id, e);
@@ -332,7 +353,7 @@ impl<'a> Rd<'a> {
         r.map(Curve::BSpline).map_err(|m| bad(id, format!("invalid B-spline curve: {m}")))
     }
 
-    fn surface(&self, id: u32) -> R<Surface> {
+    fn surface_inner(&self, id: u32) -> R<Surface> {
         let e = self.ent(id)?;
         if e.has("B_SPLINE_SURFACE") || e.has("B_SPLINE_SURFACE_WITH_KNOTS") || e.has("BEZIER_SURFACE") || e.has("QUASI_UNIFORM_SURFACE") || e.has("UNIFORM_SURFACE") {
             return self.bspline_surface(id, e);
@@ -486,15 +507,21 @@ impl<'a> Rd<'a> {
         Ok((v, p))
     }
 
-    /// Curve parameter of a point known to lie on the curve.
-    fn param(c: &Curve, p: Vec3) -> f64 {
+    /// Curve parameter of a point known to lie on the curve. A B-spline may
+    /// pass through the point several times (closed curves, curves unrolled
+    /// over more than one period): the first pass at or after `after` wins.
+    fn param(c: &Curve, p: Vec3, after: Option<f64>) -> f64 {
         if let Curve::BSpline(bs) = c {
             let (d0, d1) = bs.domain();
             let tol = 1e-6 * (1.0 + p.len());
-            if c.eval(d0).dist(p) < tol {
+            let closed = c.eval(d0).dist(c.eval(d1)) < tol;
+            if closed {
+                if let Some(t) = first_pass(c, bs.domain(), bs.ctrl.len(), p, after) {
+                    return t;
+                }
+            } else if c.eval(d0).dist(p) < tol {
                 return d0;
-            }
-            if c.eval(d1).dist(p) < tol {
+            } else if c.eval(d1).dist(p) < tol {
                 return d1;
             }
         }
@@ -515,17 +542,15 @@ impl<'a> Rd<'a> {
         let mut lo_is_start = same;
         // degenerate edge (pole / apex): same vertex, no extent
         if lo == hi {
-            let (t0, t1) = (Self::param(&curve, plo), curve.period().map_or(f64::NAN, |p| p));
             let closed_curve = matches!(curve, Curve::Circle { .. } | Curve::Ellipse { .. })
                 || matches!(&curve, Curve::BSpline(bs) if curve.eval(bs.domain().0).dist(curve.eval(bs.domain().1)) < 1e-6 * (1.0 + plo.len()) && curve.length_between(bs.domain().0, bs.domain().1) > 1e-6);
-            let _ = (t0, t1);
             if !closed_curve {
                 self.edges.insert(id, None);
                 return Ok(None);
             }
         }
-        let mut t0 = Self::param(&curve, plo);
-        let mut t1 = Self::param(&curve, phi);
+        let mut t0 = Self::param(&curve, plo, None);
+        let mut t1 = Self::param(&curve, phi, Some(t0));
         if lo == hi {
             match (&curve, curve.period()) {
                 (_, Some(p)) => t1 = t0 + p,
@@ -549,8 +574,8 @@ impl<'a> Rd<'a> {
             std::mem::swap(&mut lo, &mut hi);
             std::mem::swap(&mut plo, &mut phi);
             lo_is_start = !lo_is_start;
-            t0 = Self::param(&curve, plo);
-            t1 = Self::param(&curve, phi);
+            t0 = Self::param(&curve, plo, None);
+            t1 = Self::param(&curve, phi, Some(t0));
             if t1 <= t0 {
                 return Err(bad(id, "edge has zero extent on its curve"));
             }
@@ -737,6 +762,59 @@ fn translate(pc: &Curve2, d: Vec2) -> Curve2 {
     }
 }
 
+/// First parameter at or after `after` (domain start if None) where the
+/// B-spline passes through `p`, by sampling + golden-section refinement.
+fn first_pass(c: &Curve, dom: (f64, f64), ncp: usize, p: Vec3, after: Option<f64>) -> Option<f64> {
+    let (d0, d1) = dom;
+    let tol = 1e-6 * (1.0 + p.len());
+    let skip = after.map(|t| t + 1e-9 * (d1 - d0).abs());
+    let from = after.unwrap_or(d0);
+    let n = (ncp * 8).clamp(128, 4096);
+    let h = (d1 - from) / n as f64;
+    if !(h > 0.0) {
+        return None;
+    }
+    let f = |t: f64| c.eval(t).dist(p);
+    let mut ds: Vec<f64> = Vec::with_capacity(n + 2);
+    ds.push(f(from));
+    for i in 0..=n {
+        let t = from + h * i as f64;
+        // lazily one sample ahead
+        if i < n {
+            ds.push(f(from + h * (i + 1) as f64));
+        }
+        if skip.is_some_and(|s| t <= s) {
+            continue;
+        }
+        let left = if i == 0 { f64::INFINITY } else { ds[i - 1] };
+        let right = if i == n { f64::INFINITY } else { ds[i + 1] };
+        if ds[i] <= left && ds[i] <= right && ds[i] < 0.5 * (1.0 + p.len()) {
+            let (mut lo, mut hi) = ((t - h).max(from), (t + h).min(d1));
+            for _ in 0..80 {
+                let (a, b) = (lo + (hi - lo) / 3.0, hi - (hi - lo) / 3.0);
+                if f(a) < f(b) {
+                    hi = b;
+                } else {
+                    lo = a;
+                }
+            }
+            let tm = 0.5 * (lo + hi);
+            // exact domain ends stay exact
+            let tm = if (tm - d0).abs() < 1e-9 * (d1 - d0) {
+                d0
+            } else if (tm - d1).abs() < 1e-9 * (d1 - d0) {
+                d1
+            } else {
+                tm
+            };
+            if f(tm) < tol * 10.0 {
+                return Some(tm);
+            }
+        }
+    }
+    None
+}
+
 fn same_surface(a: &Surface, b: &Surface) -> bool {
     let fr = |f: &Frame, g: &Frame| f.o.dist(g.o) < 1e-7 && f.z.dot(g.z) > 1.0 - 1e-12 && f.x.dot(g.x) > 1.0 - 1e-9;
     match (a, b) {
@@ -787,6 +865,7 @@ fn iso(surf: &Surface, d: usize, s: f64) -> Option<Iso> {
             let f = Frame { o: frame.o + frame.z * (minor * s.sin()), x: frame.x, y: frame.y, z: frame.z };
             Some(Iso { curve: Curve::Circle { frame: f, r }, k: 1.0 })
         }
+        (Surface::Extrusion { profile, dir }, 0) => Some(Iso { curve: Curve::Line { o: profile.eval(s), d: *dir }, k: 1.0 }),
         (Surface::Revolution { profile, axis_o, axis }, 0) => {
             let a = axis.normalize();
             let (sn, cs) = s.sin_cos();
@@ -881,8 +960,85 @@ fn exact_ext(surf: &Surface, c: &Curve, t0: f64, t1: f64) -> Option<Curve2> {
     }
 }
 
+/// Edge curve = the extrusion profile moved along the sweep direction (same
+/// parameter): the pcurve is the line v = const.
+fn exact_extrusion(surf: &Surface, c: &Curve, t0: f64, t1: f64) -> Option<Curve2> {
+    let Surface::Extrusion { profile, dir } = surf else { return None };
+    let (Curve::BSpline(a), Curve::BSpline(b)) = (&**profile, c) else { return None };
+    if a.degree != b.degree || a.knots != b.knots || a.ctrl.len() != b.ctrl.len() {
+        return None;
+    }
+    let off = c.eval(t0) - profile.eval(t0);
+    let v0 = off.dot(*dir);
+    let scale = 1.0 + off.len();
+    for k in 1..=8 {
+        let t = t0 + (t1 - t0) * k as f64 / 8.0;
+        let o = c.eval(t) - profile.eval(t);
+        if (o - *dir * v0).len() > 1e-7 * scale {
+            return None;
+        }
+    }
+    Some(Curve2::Line { o: Vec2::new(0.0, v0), d: Vec2::new(1.0, 0.0) })
+}
+
+/// Smallest period of a closed B-spline (ck-model unrolls closed splines over
+/// several laps so they can be cut anywhere), None if not closed.
+fn spline_period(c: &Curve, dom: (f64, f64)) -> Option<f64> {
+    let (d0, d1) = dom;
+    let l = d1 - d0;
+    let scale = 1.0 + c.eval(d0).len();
+    if c.eval(d0).dist(c.eval(d1)) > 1e-6 * scale {
+        return None;
+    }
+    for k in (2..=6).rev() {
+        let p = l / k as f64;
+        let ok = (0..16).all(|i| {
+            let t = d0 + (l - p) * (i as f64 + 0.37) / 16.0;
+            c.eval(t).dist(c.eval(t + p)) < 1e-6 * scale
+        });
+        if ok {
+            return Some(p);
+        }
+    }
+    Some(l)
+}
+
+/// `Surface::periods` plus extrusions of a closed B-spline profile (the
+/// profile parameter wraps at the end of its period).
+fn periods_of(surf: &Surface) -> (Option<f64>, Option<f64>) {
+    let (pu, pv) = surf.periods();
+    if let Surface::Extrusion { profile, .. } = surf {
+        if let (None, Curve::BSpline(bs)) = (pu, &**profile) {
+            if let Some(p) = spline_period(profile, bs.domain()) {
+                return (Some(p), pv);
+            }
+        }
+    }
+    (pu, pv)
+}
+
+/// A B-spline lying in a plane: the pcurve is its control net in plane
+/// coordinates (exact, same parameter).
+fn exact_plane_spline(surf: &Surface, c: &Curve) -> Option<Curve2> {
+    let (Surface::Plane { frame }, Curve::BSpline(bs)) = (surf, c) else { return None };
+    let scale = 1.0 + bs.ctrl.iter().map(|p| p.len()).fold(0.0, f64::max);
+    if bs.ctrl.iter().any(|p| (*p - frame.o).dot(frame.z).abs() > 1e-7 * scale) {
+        return None;
+    }
+    Some(Curve2::BSpline(bs.map(|p| {
+        let l = frame.to_local(p);
+        Vec2::new(l.x, l.y)
+    })))
+}
+
 fn edge_pcurve(b: &Body, e: EdgeId, surf: &Surface) -> Option<Curve2> {
     let ed = b.edge(e);
+    if let Some(p) = exact_plane_spline(surf, &ed.curve) {
+        return Some(p);
+    }
+    if let Some(p) = exact_extrusion(surf, &ed.curve, ed.t0, ed.t1) {
+        return Some(p);
+    }
     if let Some(p) = exact_ext(surf, &ed.curve, ed.t0, ed.t1) {
         return Some(p);
     }
@@ -1021,7 +1177,7 @@ impl Rd<'_> {
 
     fn finalize_face(&mut self, shell: ShellId, spec: FaceSpec, name: FaceName, rest: &mut [Option<(ShellId, FaceSpec)>]) -> R<()> {
         let FaceSpec { id, surface, sense, mut loops } = spec;
-        let (pu, pv) = surface.periods();
+        let (pu, pv) = periods_of(&surface);
         let periodic = pu.is_some() || pv.is_some();
         // pcurves
         for l in &mut loops {
@@ -1341,7 +1497,7 @@ impl Rd<'_> {
     /// Parameter of the iso curve at the free coordinate `o_val`.
     fn iso_t(&self, isoc: &Iso, surf: &Surface, d: usize, s: f64, o_val: f64) -> f64 {
         let p = if d == 0 { surf.eval(s, o_val) } else { surf.eval(o_val, s) };
-        let t = Self::param(&isoc.curve, p);
+        let t = Self::param(&isoc.curve, p, None);
         // periodic carriers (sphere meridian circle, torus circles): choose the
         // representative whose parameter equals the free coordinate / k
         match isoc.curve.period() {

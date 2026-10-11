@@ -150,7 +150,7 @@ impl<'a> Lexer<'a> {
             while self.i < self.b.len() && self.b[self.i].is_ascii_whitespace() {
                 self.i += 1;
             }
-            if self.b[self.i..].starts_with(b"/*") {
+            if self.b.get(self.i..).is_some_and(|s| s.starts_with(b"/*")) {
                 match find(&self.b[self.i + 2..], b"*/") {
                     Some(k) => self.i += k + 4,
                     None => self.i = self.b.len(),
@@ -257,6 +257,9 @@ impl<'a> Lexer<'a> {
                     self.i += 1;
                 }
                 let e = String::from_utf8_lossy(&self.b[s..self.i]).to_ascii_uppercase();
+                if self.i >= self.b.len() {
+                    return Err(perr(self, "unterminated enumeration"));
+                }
                 self.i += 1;
                 Ok(Val::Enum(e))
             }
