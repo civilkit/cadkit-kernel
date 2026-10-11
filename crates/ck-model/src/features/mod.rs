@@ -764,12 +764,12 @@ pub fn faces_json(b: &ck_topo::body::Body, renorm: &dyn Fn(ck_topo::body::FaceId
             }
             let Json::Obj(kv) = o else { continue };
             if let Some(slot) = kv.iter_mut().find(|(k, _)| k == "normal") {
-                let n = b.planar_normal(f);
-                let l = (n.z * n.z + (n.x * n.x + n.y * n.y)).sqrt();
-                if l > 1e-300 && l.is_finite() {
-                    let i = 1.0 / l;
-                    slot.1 = Json::Arr(vec![Json::Num(n.x * i), Json::Num(n.y * i), Json::Num(n.z * i)]);
-                }
+                // pinned: the kernel prints normalize(x × y) of the frame
+                let n = match &b.face(f).surface {
+                    ck_geom::surface::Surface::Plane { frame } => mate::plane_normal(frame, b.face(f).sense),
+                    _ => mate::knorm(b.planar_normal(f)),
+                };
+                slot.1 = Json::Arr(vec![Json::Num(n.x), Json::Num(n.y), Json::Num(n.z)]);
             }
         }
     }
@@ -795,12 +795,12 @@ pub fn renorm_edges(b: &ck_topo::body::Body, edges: &mut Json, pick: &dyn Fn(ck_
         if !pick(e) {
             continue;
         }
-        let Some(ck_geom::curve::Curve::Circle { .. }) = Some(&b.edge(e).curve) else { continue };
-        let Some((_, n, _)) = b.edge(e).curve.circle_info() else { continue };
+        let ck_geom::curve::Curve::Circle { frame, .. } = &b.edge(e).curve else { continue };
+        let n = mate::plane_normal(frame, true);
         if let Json::Obj(kv) = o {
             if let Some((_, Json::Obj(c))) = kv.iter_mut().find(|(k, _)| k == "circle") {
-                if let (Some(slot), Some(v)) = (c.iter_mut().find(|(k, _)| k == "n"), renorm(n)) {
-                    slot.1 = v;
+                if let Some(slot) = c.iter_mut().find(|(k, _)| k == "n") {
+                    slot.1 = Json::Arr(vec![Json::Num(n.x), Json::Num(n.y), Json::Num(n.z)]);
                 }
             }
         }
