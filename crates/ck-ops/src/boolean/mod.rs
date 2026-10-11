@@ -1,2 +1,6 @@
-//! TODO: compiles to kernel.wasm (ck-ops/src/boolean/mod.rs)
-#![allow(unused)]
+//! Solid booleans: union / cut / intersect.
+
+pub mod apply;
+pub mod assemble;
+pub mod classify;
+pub mod imprint;

@@ -18,10 +18,24 @@ everything below.
 ## Interface
 
 ck_request(ptr,len) -> dispatch by msg.type -> build result JSON + buffers
--> ck_reply(). All message type strings (96 known) and result shapes are
+-> ck_reply(). All 17 message type strings and result shapes are
 pinned by app.pretty.js + oracle goldens. Error paths produce
 `{"ok":false,"error":"..."}` with the EXACT strings from kernel.strings
 (e.g. "bad request: msg must be an object", "message without a type").
+
+## Status (pinned against kernel.wasm)
+
+- Exactly **17** request types exist (brute-forced: every identifier/substring
+  in kernel.strings + app.pretty.js was sent as `msg.type`): ping, regen,
+  matchEdges, drag, convert, sketchOffset, refCurve, measure, massProps,
+  interference, step, inspect, continuity, curvatureAt, curvatureMap, comb,
+  drawing. The "96" figure elsewhere counts feature types, not requests.
+- Envelope, `ms` clock arithmetic, debug trace/buffers fields, tag/state
+  semantics and every empty-state answer are byte-identical to the oracle
+  (`node tools/diff.mjs`, tests-golden/wire.json).
+- Geometry plugs in via `ck_server::set_hooks(Hooks{regen, query, ...})`;
+  without hooks, body-bearing paths return `TODO(rebuild): ...` errors.
+- Deps trimmed to ck-json only (hooks decouple it from ck-model).
 
 ## Rebuild notes
 

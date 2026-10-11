@@ -5,3 +5,7 @@ edition = "2021"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ck-json = { path = "../ck-json" }
+ck-server = { path = "../ck-server" }

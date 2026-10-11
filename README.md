@@ -39,11 +39,14 @@ plus binary buffers for bulk arrays.
 {"id": <n>, "msg": { ... }}
 ```
 
-`msg` is discriminated by its lowercase `type` field. Known types (96 total,
-from app.pretty.js): `regen`, `interference`, `drawing`, `massProps`,
-`inspect`, `curvatureAt`, `curvatureMap`, `comb`, `continuity`, `matchEdges`,
-`cutWithSurface`, `deleteFace`, `deleteBody`, `editCurve`, `drag`, `convert`,
-`freeform`, `dome`, ... plus every part-document feature type.
+`msg` is discriminated by its `type` field. Exactly **17** request types
+exist (brute-forced against kernel.wasm — every identifier in kernel.strings +
+app.pretty.js was sent as `msg.type`): `ping`, `regen`, `matchEdges`, `drag`,
+`convert`, `sketchOffset`, `refCurve`, `measure`, `massProps`, `interference`,
+`step`, `inspect`, `continuity`, `curvatureAt`, `curvatureMap`, `comb`,
+`drawing`. Feature operations (`cutWithSurface`, `deleteFace`, `editCurve`,
+`freeform`, `dome`, ...) are part-document feature types carried inside a
+`regen`, not requests.
 
 Example: `{type:"regen", tag:"main", part:<.ckpart object>, opts:{upTo:n}}`
 

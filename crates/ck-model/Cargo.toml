@@ -3,3 +3,10 @@ name = "ck-model"
 version = "0.1.0"
 edition = "2021"
 
+# NOTE: ck-geom / ck-topo / ck-ops are deliberately NOT dependencies yet: the
+# geometry crates are being rebuilt concurrently. Feature execution (extrude,
+# fillet, ...) goes through `regen::FeatureExec`, a hook the server wires to
+# the geometry layer later. Re-add the deps when that wiring happens.
+[dependencies]
+ck-core = { path = "../ck-core" }
+ck-json = { path = "../ck-json" }

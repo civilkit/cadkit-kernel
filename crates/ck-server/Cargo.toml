@@ -3,3 +3,8 @@ name = "ck-server"
 version = "0.1.0"
 edition = "2021"
 
+# The wire layer only needs the JSON DOM. Geometry crates are reached through
+# the hooks in `session.rs` (installed by whoever links ck-model), so this
+# crate keeps compiling while the lower layers are being rebuilt.
+[dependencies]
+ck-json = { path = "../ck-json" }

@@ -1,2 +1,259 @@
-//! TODO: compiles to kernel.wasm (ck-geom/src/pcurve.rs)
-#![allow(unused)]
+//! Curves on surfaces: a 2D parameter-space curve (`Curve2`) composed with
+//! a `Surface`, plus construction of pcurves from 3D curves (exact for the
+//! common analytic pairs, fitted otherwise).
+//!
+//! Evidence: kernel.strings curve-kind `pcurve`, analysis keys
+//! `deviationMax ofTolerance pcurves`; rs_paths.txt ck-geom/src/pcurve.rs.
+
+use crate::curve::Curve;
+use crate::curve2::Curve2;
+use crate::fit::{self, Param};
+use crate::surface::Surface;
+use crate::{Vec2, Vec3};
+use std::f64::consts::TAU;
+
+/// Borrowed curve-on-surface view: C(t) = S(uv(t)).
+#[derive(Debug, Clone, Copy)]
+pub struct CurveOnSurface<'a> {
+    pub uv: &'a Curve2,
+    pub surf: &'a Surface,
+}
+
+impl<'a> CurveOnSurface<'a> {
+    pub fn new(uv: &'a Curve2, surf: &'a Surface) -> Self {
+        CurveOnSurface { uv, surf }
+    }
+
+    pub fn uv_at(&self, t: f64) -> Vec2 {
+        self.uv.eval(t)
+    }
+
+    pub fn eval(&self, t: f64) -> Vec3 {
+        let p = self.uv.eval(t);
+        self.surf.eval(p.x, p.y)
+    }
+
+    /// `[C, C', C'']` by the chain rule:
+    /// C' = Su u' + Sv v'; C'' = Suu u'² + 2Suv u'v' + Svv v'² + Su u'' + Sv v''.
+    pub fn derivs(&self, t: f64) -> [Vec3; 3] {
+        let d = self.uv.derivs(t, 2);
+        let s = self.surf.derivs2(d[0].x, d[0].y);
+        let (u1, v1, u2, v2) = (d[1].x, d[1].y, d[2].x, d[2].y);
+        [
+            s.p,
+            s.du * u1 + s.dv * v1,
+            s.duu * (u1 * u1) + s.duv * (2.0 * u1 * v1) + s.dvv * (v1 * v1) + s.du * u2 + s.dv * v2,
+        ]
+    }
+
+    pub fn tangent(&self, t: f64) -> Vec3 {
+        self.derivs(t)[1].normalize()
+    }
+
+    /// Surface normal along the curve.
+    pub fn normal(&self, t: f64) -> Vec3 {
+        let p = self.uv.eval(t);
+        self.surf.normal(p.x, p.y)
+    }
+
+    pub fn length_between(&self, t0: f64, t1: f64) -> f64 {
+        let n = 32;
+        let mut s = 0.0;
+        for i in 0..n {
+            let a = t0 + (t1 - t0) * i as f64 / n as f64;
+            let b = t0 + (t1 - t0) * (i + 1) as f64 / n as f64;
+            let (m, h) = ((a + b) / 2.0, (b - a) / 2.0);
+            for &(x, w) in crate::nurbs::bspline::GL8.iter() {
+                s += w * h.abs() * self.derivs(m + h * x)[1].len();
+            }
+        }
+        s
+    }
+
+    pub fn sample(&self, t0: f64, t1: f64, n: usize) -> Vec<Vec3> {
+        (0..=n).map(|i| self.eval(t0 + (t1 - t0) * i as f64 / n as f64)).collect()
+    }
+
+    /// Max distance between this pcurve and a 3D curve sampled at matching
+    /// parameters mapped linearly [t0,t1] -> [s0,s1].
+    pub fn deviation(&self, t: (f64, f64), c: &Curve, s: (f64, f64), n: usize) -> f64 {
+        (0..=n)
+            .map(|i| {
+                let f = i as f64 / n as f64;
+                self.eval(t.0 + (t.1 - t.0) * f).dist(c.eval(s.0 + (s.1 - s.0) * f))
+            })
+            .fold(0.0, f64::max)
+    }
+}
+
+/// Project points to (u,v), unwrapping periodic parameters so the sequence
+/// is continuous across seams.
+pub fn project_points(surf: &Surface, pts: &[Vec3]) -> Vec<Vec2> {
+    let (pu, pv) = surf.periods();
+    let mut out: Vec<Vec2> = Vec::with_capacity(pts.len());
+    for &p in pts {
+        let (mut u, mut v) = surf.closest_param(p);
+        if let Some(prev) = out.last() {
+            if let Some(per) = pu {
+                u = unwrap_near(u, prev.x, per);
+            }
+            if let Some(per) = pv {
+                v = unwrap_near(v, prev.y, per);
+            }
+        }
+        out.push(Vec2::new(u, v));
+    }
+    out
+}
+
+/// Shift `x` by whole periods to be nearest `near`.
+pub fn unwrap_near(x: f64, near: f64, period: f64) -> f64 {
+    x + ((near - x) / period).round() * period
+}
+
+/// Exact pcurve for the analytic pairs (parameter of the result tracks the
+/// 3D curve parameter 1:1):
+/// - line or circle/ellipse on a plane,
+/// - axial line on cylinder/cone (u const), circle about the axis on a
+///   cylinder/cone/sphere/torus (v const, u = t + phase).
+/// Returns None when not an exact pair.
+pub fn exact_pcurve(surf: &Surface, c: &Curve, tol: f64) -> Option<Curve2> {
+    match (surf, c) {
+        (Surface::Plane { frame }, Curve::Line { o, d }) => {
+            if d.dot(frame.z).abs() > tol || (*o - frame.o).dot(frame.z).abs() > tol {
+                return None;
+            }
+            let l = frame.to_local(*o);
+            Some(Curve2::Line { o: Vec2::new(l.x, l.y), d: Vec2::new(d.dot(frame.x), d.dot(frame.y)) })
+        }
+        (Surface::Plane { frame }, Curve::Circle { frame: cf, r }) => {
+            plane_conic(frame, cf, *r, *r, tol).map(|(c, x, ccw)| Curve2::Circle { c, x, r: *r, ccw })
+        }
+        (Surface::Plane { frame }, Curve::Ellipse { frame: cf, a, b }) => {
+            plane_conic(frame, cf, *a, *b, tol).map(|(c, x, ccw)| Curve2::Ellipse { c, x, a: *a, b: *b, ccw })
+        }
+        (Surface::Cylinder { frame, .. } | Surface::Cone { frame, .. }, Curve::Line { o, d }) => {
+            // axial generator: direction = Sv / |Sv| at u
+            let (u, v) = surf.closest_param(*o);
+            if surf.eval(u, v).dist(*o) > tol {
+                return None;
+            }
+            let sv = surf.derivs2(u, v).dv;
+            let svl = sv.len();
+            let along = d.dot(sv / svl);
+            if (along.abs() - 1.0).abs() > tol {
+                return None;
+            }
+            let _ = frame;
+            // v(t) = v + t·along/|Sv|
+            Some(Curve2::Line { o: Vec2::new(u, v), d: Vec2::new(0.0, along.signum() / svl) })
+        }
+        (
+            Surface::Cylinder { frame, .. }
+            | Surface::Cone { frame, .. }
+            | Surface::Sphere { frame, .. }
+            | Surface::Torus { frame, .. },
+            Curve::Circle { frame: cf, .. },
+        ) => {
+            // circle coaxial with the surface frame
+            if cf.z.cross(frame.z).len() > tol || (cf.o - frame.o).cross(frame.z).len() > tol {
+                return None;
+            }
+            let p0 = cf.o + cf.x * c.circle_info().unwrap().2;
+            let (u0, v0) = surf.closest_param(p0);
+            if surf.eval(u0, v0).dist(p0) > tol {
+                return None;
+            }
+            let s = if cf.z.dot(frame.z) > 0.0 { 1.0 } else { -1.0 };
+            Some(Curve2::Line { o: Vec2::new(u0, v0), d: Vec2::new(s, 0.0) })
+        }
+        _ => None,
+    }
+}
+
+fn plane_conic(pf: &crate::Frame, cf: &crate::Frame, _a: f64, _b: f64, tol: f64) -> Option<(Vec2, Vec2, bool)> {
+    if cf.z.cross(pf.z).len() > tol || (cf.o - pf.o).dot(pf.z).abs() > tol {
+        return None;
+    }
+    let c = pf.to_local(cf.o);
+    let x = Vec2::new(cf.x.dot(pf.x), cf.x.dot(pf.y)).normalize();
+    Some((Vec2::new(c.x, c.y), x, cf.z.dot(pf.z) > 0.0))
+}
+
+/// Pcurve of a 3D curve on a surface over [t0,t1]: exact when possible
+/// (parameter preserved), otherwise a cubic interpolation of `n` projected
+/// samples, reparameterised to [t0,t1].
+pub fn pcurve_of(surf: &Surface, c: &Curve, t0: f64, t1: f64, tol: f64) -> Result<Curve2, String> {
+    if let Some(p) = exact_pcurve(surf, c, tol) {
+        return Ok(p);
+    }
+    let n = 32;
+    let pts: Vec<Vec3> = (0..=n).map(|i| c.eval(t0 + (t1 - t0) * i as f64 / n as f64)).collect();
+    let uv = project_points(surf, &pts);
+    let u: Vec<f64> = (0..=n).map(|i| i as f64 / n as f64).collect();
+    let knots = fit::averaged_knots(&u, 3);
+    let b = fit::interpolate_with(&uv, 3, &u, knots).or_else(|_| fit::interpolate(&uv, 3, Param::ChordLength))?;
+    Ok(Curve2::BSpline(b.reparam(t0, t1)))
+}
+
+/// Full-turn helper for callers building seam pcurves.
+pub const PERIOD: f64 = TAU;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testutil::*;
+    use crate::{frame_from, Frame};
+
+    #[test]
+    fn chain_rule_fd() {
+        let s = Surface::Torus { frame: Frame::identity(), major: 4.0, minor: 1.0 };
+        let uv = Curve2::ellipse(Vec2::new(1., 1.), Vec2::new(1., 0.3), 0.8, 0.4);
+        let cs = CurveOnSurface::new(&uv, &s);
+        let h = 1e-5;
+        for &t in &[0.2, 1.5, 4.0] {
+            let d = cs.derivs(t);
+            let fd1 = (cs.eval(t + h) - cs.eval(t - h)) / (2.0 * h);
+            let fd2 = (cs.eval(t + h) - d[0] * 2.0 + cs.eval(t - h)) / (h * h);
+            assert!(vclose(d[1], fd1, 1e-8));
+            assert!(vclose(d[2], fd2, 1e-4));
+        }
+    }
+
+    #[test]
+    fn exact_pairs() {
+        let f = frame_from(Vec3::new(1., 2., 3.), Vec3::new(0., 0., 1.), Vec3::new(1., 1., 0.));
+        let pl = Surface::Plane { frame: f };
+        let line = Curve::line(Vec3::new(2., 2., 3.), Vec3::new(1., -1., 0.));
+        let circ = Curve::circle_x(Vec3::new(0., 1., 3.), -Vec3::Z, Vec3::Y, 2.0);
+        let cyl = Surface::Cylinder { frame: f, r: 2.0 };
+        let gen = Curve::line(cyl.eval(1.0, 0.0), f.z);
+        let ring = Curve::circle_x(f.o + f.z * 1.5, f.z, Vec3::new(0., 1., 0.), 2.0);
+        let sph = Surface::Sphere { frame: f, r: 2.0 };
+        let lat = Curve::circle_x(f.o + f.z * 1.0, -f.z, Vec3::X, 3f64.sqrt());
+        for (s, c) in [(&pl, &line), (&pl, &circ), (&cyl, &gen), (&cyl, &ring), (&sph, &lat)] {
+            let p = exact_pcurve(s, c, 1e-9).unwrap_or_else(|| panic!("{} on {}", c.kind(), s.kind()));
+            let cs = CurveOnSurface::new(&p, s);
+            assert!(cs.deviation((0.3, 2.5), c, (0.3, 2.5), 20) < 1e-9, "{} on {}", c.kind(), s.kind());
+        }
+    }
+
+    #[test]
+    fn fitted_pcurve_across_seam() {
+        let cyl = Surface::Cylinder { frame: Frame::identity(), r: 1.0 };
+        // helix-ish spline crossing the u seam
+        let pts: Vec<Vec3> = (0..10)
+            .map(|i| {
+                let a = -1.0 + i as f64 * 0.2;
+                Vec3::new(a.cos(), a.sin(), i as f64 * 0.1)
+            })
+            .collect();
+        let c = Curve::BSpline(fit::interpolate(&pts, 3, Param::ChordLength).unwrap());
+        let p = pcurve_of(&cyl, &c, 0.0, 1.0, 1e-9).unwrap();
+        let cs = CurveOnSurface::new(&p, &cyl);
+        assert!(cs.deviation((0.0, 1.0), &c, (0.0, 1.0), 50) < 1e-4);
+        // continuous in u (no 2π jump)
+        let uvs = p.sample(0.0, 1.0, 50);
+        assert!(uvs.windows(2).all(|w| (w[1].x - w[0].x).abs() < 0.5));
+    }
+}

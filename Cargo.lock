@@ -9,10 +9,18 @@ version = "0.1.0"
 [[package]]
 name = "ck-geom"
 version = "0.1.0"
+dependencies = [
+ "ck-core",
+]
 
 [[package]]
 name = "ck-io"
 version = "0.1.0"
+dependencies = [
+ "ck-core",
+ "ck-geom",
+ "ck-topo",
+]
 
 [[package]]
 name = "ck-json"
@@ -21,23 +29,48 @@ version = "0.1.0"
 [[package]]
 name = "ck-model"
 version = "0.1.0"
+dependencies = [
+ "ck-core",
+ "ck-json",
+]
 
 [[package]]
 name = "ck-ops"
 version = "0.1.0"
+dependencies = [
+ "ck-core",
+ "ck-geom",
+ "ck-topo",
+]
 
 [[package]]
 name = "ck-server"
 version = "0.1.0"
+dependencies = [
+ "ck-json",
+]
 
 [[package]]
 name = "ck-tess"
 version = "0.1.0"
+dependencies = [
+ "ck-core",
+ "ck-geom",
+ "ck-topo",
+]
 
 [[package]]
 name = "ck-topo"
 version = "0.1.0"
+dependencies = [
+ "ck-core",
+ "ck-geom",
+]
 
 [[package]]
 name = "ck-wasm"
 version = "0.1.0"
+dependencies = [
+ "ck-json",
+ "ck-server",
+]

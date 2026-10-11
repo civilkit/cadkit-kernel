@@ -3,3 +3,7 @@ name = "ck-topo"
 version = "0.1.0"
 edition = "2021"
 
+
+[dependencies]
+ck-core = { path = "../ck-core" }
+ck-geom = { path = "../ck-geom" }
