@@ -427,6 +427,27 @@ fn regen_plane(state: &mut RegenState, exec: &mut dyn FeatureExec, f: &Feature) 
     Ok(())
 }
 
+/// Regen a sketch3d feature (kernel f1156): evaluate the constraint `expr`s,
+/// re-solve when a value changed (failure leaves the points unchanged, no
+/// error), and echo the solved sketch.
+fn regen_sketch3(state: &mut RegenState, f: &Feature, sk: &crate::sketch3::Sketch3) -> Result<(), FeatureError> {
+    let mut sk = sk.clone();
+    let mut changed = false;
+    for c in sk.constraints.iter_mut() {
+        let Some(e) = &c.expr else { continue };
+        let v = expr::eval(e, Some(&state.vars)).map_err(|_| FeatureError::new(codes::BAD_EXPRESSION))?;
+        if c.value.map_or(true, |old| (v - old).abs() > 1e-12) {
+            c.value = Some(v);
+            changed = true;
+        }
+    }
+    if changed {
+        let _ = crate::sketch3::solver::solve_sketch3(&mut sk, &crate::sketch::solver::SolveOpts::default());
+    }
+    state.result.put_sketch3(&f.id, sk.to_json());
+    Ok(())
+}
+
 /// Normalised echo of a sketch3d feature (missing arrays appended).
 fn sketch3d_echo(raw: &Json) -> Json {
     let mut o = if let Json::Obj(_) = raw { raw.clone() } else { Json::Obj(vec![]) };
@@ -446,6 +467,9 @@ fn run_feature(state: &mut RegenState, exec: &mut dyn FeatureExec, f: &Feature) 
         FeatureKind::Sketch(sk) => return regen_sketch(state, exec, f, sk),
         FeatureKind::RefPlane { .. } => return regen_plane(state, exec, f),
         _ => {}
+    }
+    if let FeatureKind::Sketch3(sk) = &f.kind {
+        return regen_sketch3(state, f, sk);
     }
     match f.type_name.as_str() {
         "sketch3d" => {

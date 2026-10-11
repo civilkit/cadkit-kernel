@@ -252,6 +252,10 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
             })
         }
         "curvatureAt" => Ok(ck_ops::curvature_at::reply(&snapshot(cx)?.body, &cx.msg)),
+        "drawing" => {
+            let s = snapshot(cx)?;
+            Ok(ck_ops::drawing::reply(&s.body, &cx.msg))
+        }
         "step" => {
             // Reply: the whole STEP file as one JSON string (oracle); `name`
             // defaults to "part". Void shells must be split out first.

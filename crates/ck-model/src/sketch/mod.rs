@@ -196,7 +196,7 @@ pub(crate) fn jnum(j: Option<&Json>) -> f64 {
     }
 }
 
-fn jnum_opt(j: Option<&Json>) -> Option<f64> {
+pub(crate) fn jnum_opt(j: Option<&Json>) -> Option<f64> {
     match j {
         Some(Json::Num(n)) => Some(*n),
         Some(Json::Str(s)) => s.trim().parse::<f64>().ok(),
@@ -204,7 +204,7 @@ fn jnum_opt(j: Option<&Json>) -> Option<f64> {
     }
 }
 
-fn jstr_list(j: Option<&Json>) -> Vec<String> {
+pub(crate) fn jstr_list(j: Option<&Json>) -> Vec<String> {
     j.and_then(|v| v.as_arr())
         .map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect())
         .unwrap_or_default()

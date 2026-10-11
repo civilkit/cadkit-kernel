@@ -6,6 +6,7 @@ pub mod continuity;
 pub mod convert_proj;
 pub mod curvature_at;
 pub mod curve_edit;
+pub mod drawing;
 pub mod draft;
 pub mod guide;
 pub mod helix;

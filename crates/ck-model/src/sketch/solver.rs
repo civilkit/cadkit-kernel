@@ -21,17 +21,18 @@
 //!   `dof = n - rank`, `redundant = rank < m`, and the set of fully
 //!   determined unknowns -> status `over` / `full` / `under`.
 //!
-//! Not yet ported (build fails with an error, i.e. the sketch is left
-//! unsolved): spline-continuity `g1`/`g2`/`g3`, `onCurve`, `tension`.
+//! Not yet ported: none. The spline-continuity `g1`/`g2`/`g3`, `onCurve`
+//! and `tension` constraints use the shared `smooth` helpers and the
+//! client-parity `spline::Bspline` evaluation (see `spline.rs`).
 
 use super::{Sketch, SketchEntity};
 use std::collections::HashMap;
 
 /// A solver quantity: unknown slot `i >= 0`, or the constant `c`.
 #[derive(Debug, Clone, Copy)]
-struct V {
-    i: isize,
-    c: f64,
+pub(crate) struct V {
+    pub(crate) i: isize,
+    pub(crate) c: f64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -50,7 +51,7 @@ enum Ent {
 }
 
 #[inline]
-fn val(x: &[f64], v: V) -> f64 {
+pub(crate) fn val(x: &[f64], v: V) -> f64 {
     if v.i >= 0 {
         x[v.i as usize]
     } else {
@@ -89,12 +90,16 @@ type Resid = Box<dyn Fn(&[f64]) -> f64>;
 pub struct Equation {
     pub cid: String,
     pub deps: Vec<usize>,
-    f: Resid,
+    pub(crate) f: Resid,
 }
 
 impl Equation {
     pub fn eval(&self, x: &[f64]) -> f64 {
         (self.f)(x)
+    }
+    /// Assemble an equation (used by the 3D solver).
+    pub(crate) fn new(cid: &str, deps: Vec<usize>, f: Resid) -> Equation {
+        Equation { cid: cid.to_string(), deps, f }
     }
 }
 
@@ -474,8 +479,10 @@ pub fn build(sk: &Sketch) -> Result<System, String> {
                     }),
                 );
             }
-            // TODO: spline continuity / onCurve / tension (client pd/kd/vo helpers).
-            "g1" | "g2" | "g3" | "onCurve" | "tension" => return Err(format!("unsupported constraint {}", k.kind)),
+            // spline continuity / onCurve / tension (client pd/kd/vo + $s arms)
+            "g1" | "g2" | "g3" => continuity(&mut b, k)?,
+            "onCurve" => on_curve(&mut b, k)?,
+            "tension" => tension(&mut b, k)?,
             other => return Err(format!("unknown constraint {other}")),
         }
     }
@@ -483,8 +490,7 @@ pub fn build(sk: &Sketch) -> Result<System, String> {
     Ok(System { x, keys, key_idx, eqs })
 }
 
-fn tangent(b: &mut Builder, k: &super::Constraint) -> Result<(), String> {
-    let cid = k.id.as_str();
+fn tangent(b: &mut Builder, k: &super::Constraint) -> Result<(), String> {    let cid = k.id.as_str();
     let e0 = refn(&k.refs, 0)?;
     let e1 = refn(&k.refs, 1)?;
     let c_raw = b.raw_entity(e0).ok_or("missing entity")?;
@@ -566,6 +572,723 @@ fn tangent(b: &mut Builder, k: &super::Constraint) -> Result<(), String> {
                 } else {
                     le - (re + ee)
                 }
+            }),
+        );
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Spline continuity / onCurve / tension (client `pd`/`md`/`vo`/`kd` + the
+// `$s()` arms, l.1687-1720). 2D points are padded to 3D (`z = 0`) where the
+// shared `smooth` helpers expect it.
+
+#[inline]
+fn v2s(x: &[f64], p: P2) -> [f64; 2] {
+    [val(x, p.x), val(x, p.y)]
+}
+/// Derivative provider of the "other" entity at the shared end (client `md`).
+#[derive(Clone)]
+enum Other {
+    Line { a: P2, b: P2 },
+    Circle { c: P2, r: V },
+    Arc { c: P2, p1: P2, p2: P2 },
+    Ellipse { c: P2, p: P2, r: V },
+    /// `end`: the shared end is control point 0 / the last one (`None` =
+    /// interior point or closed — closest-param search).
+    Spline { pts: Vec<P2>, closed: bool, end: Option<usize> },
+    CvSpline { pts: Vec<P2>, degree: f64, knots: Option<Vec<f64>>, closed: bool, end: Option<usize> },
+}
+
+impl Other {
+    fn vars(&self) -> Vec<V> {
+        match self {
+            Other::Line { a, b } => vec![a.x, a.y, b.x, b.y],
+            Other::Circle { c, r } => vec![c.x, c.y, *r],
+            Other::Arc { c, p1, p2 } => vec![c.x, c.y, p1.x, p1.y, p2.x, p2.y],
+            Other::Ellipse { c, p, r } => vec![c.x, c.y, *r, p.x, p.y],
+            Other::Spline { pts, .. } | Other::CvSpline { pts, .. } => {
+                pts.iter().flat_map(|p| [p.x, p.y]).collect()
+            }
+        }
+    }
+
+    /// `[P, d1, d2, d3]` of the other entity at the (current) shared point
+    /// `h` (client `md`'s `d` closures).
+    fn derivs(&self, x: &[f64], h: [f64; 2]) -> Option<[[f64; 2]; 4]> {
+        match self {
+            Other::Line { a, b } => {
+                let (pa, pb) = (v2s(x, *a), v2s(x, *b));
+                let o = ln_len(pb[0] - pa[0], pb[1] - pa[1]);
+                let d = ln_dir(pb[0] - pa[0], pb[1] - pa[1], o);
+                Some([h, d, [0.0, 0.0], [0.0, 0.0]])
+            }
+            Other::Circle { c, r } => {
+                let (cc, d) = (v2s(x, *c), val(x, *r));
+                let u = (h[1] - cc[1]).atan2(h[0] - cc[0]);
+                let (m, p) = (u.cos(), u.sin());
+                Some([
+                    [cc[0] + d * m, cc[1] + d * p],
+                    [-d * p, d * m],
+                    [-d * m, -d * p],
+                    [d * p, -d * m],
+                ])
+            }
+            Other::Arc { c, p1, p2 } => {
+                let (cc, pp, qq) = (v2s(x, *c), v2s(x, *p1), v2s(x, *p2));
+                let d = ln_len(pp[0] - cc[0], pp[1] - cc[1]);
+                let s0 = (pp[1] - cc[1]).atan2(pp[0] - cc[0]);
+                let mut g = (qq[1] - cc[1]).atan2(qq[0] - cc[0]) - s0;
+                while g <= 1e-12 {
+                    g += 2.0 * std::f64::consts::PI;
+                }
+                while g > 2.0 * std::f64::consts::PI + 1e-12 {
+                    g -= 2.0 * std::f64::consts::PI;
+                }
+                // the contact angle clamped into [t0, t1] (client `param`):
+                // outside the sweep it snaps to the closer end
+                let mut u = (h[1] - cc[1]).atan2(h[0] - cc[0]);
+                while u < s0 {
+                    u += 2.0 * std::f64::consts::PI;
+                }
+                while u > s0 + 2.0 * std::f64::consts::PI {
+                    u -= 2.0 * std::f64::consts::PI;
+                }
+                if u > s0 + g {
+                    let at = |t: f64| [cc[0] + d * t.cos(), cc[1] + d * t.sin()];
+                    let (ba, bl) = (at(s0), at(s0 + g));
+                    let da = ve(ba[0] - h[0], ba[1] - h[1]);
+                    let dl = ve(bl[0] - h[0], bl[1] - h[1]);
+                    u = if da <= dl { s0 } else { s0 + g };
+                }
+                let (m, p) = (u.cos(), u.sin());
+                Some([
+                    [cc[0] + d * m, cc[1] + d * p],
+                    [-d * p, d * m],
+                    [-d * m, -d * p],
+                    [d * p, -d * m],
+                ])
+            }
+            Other::Ellipse { c, p, r } => {
+                let (cc, dd) = (v2s(x, *c), v2s(x, *p));
+                let u = val(x, *r).abs();
+                let m = ve(dd[0] - cc[0], dd[1] - cc[1]);
+                let m = if m == 0.0 || m.is_nan() { 1e-12 } else { m };
+                let pv = ln_dir(dd[0] - cc[0], dd[1] - cc[1], m);
+                let g = [-pv[1], pv[0]];
+                let k = [h[0] - cc[0], h[1] - cc[1]];
+                let uu = if u == 0.0 || u.is_nan() { 1e-12 } else { u };
+                let b = ((k[0] * g[0] + k[1] * g[1]) / uu).atan2((k[0] * pv[0] + k[1] * pv[1]) / m);
+                let (w, y) = (b.cos(), b.sin());
+                let s = |a: f64, e: f64| [pv[0] * a + g[0] * e, pv[1] * a + g[1] * e];
+                let mm = s(m * w, u * y);
+                Some([
+                    [cc[0] + mm[0], cc[1] + mm[1]],
+                    s(-m * y, u * w),
+                    [-mm[0], -mm[1]],
+                    s(m * y, -u * w),
+                ])
+            }
+            Other::Spline { pts, closed, end } => {
+                let d: Vec<[f64; 2]> = pts.iter().map(|p| v2s(x, *p)).collect();
+                let u = super::spline::InterpSpline::new(&d, *closed)?;
+                let m = match *end {
+                    Some(0) => 0.0,
+                    Some(_) => u.length(),
+                    None => ar_closest(|t, k| u.at(t, k), h, 0.0, u.length(), *closed),
+                };
+                Some([u.at(m, 0), u.at(m, 1), u.at(m, 2), u.at(m, 3)])
+            }
+            Other::CvSpline { pts, degree, knots, closed, end } => {
+                let d: Vec<[f64; 2]> = pts.iter().map(|p| v2s(x, *p)).collect();
+                let u = super::spline::Bspline::from_curve(&d, Some(*degree), knots.as_deref(), *closed)?;
+                let m = match *end {
+                    Some(0) => 0.0,
+                    Some(_) => u.length(),
+                    None => ar_closest(|t, k| u.at(t, k as usize), h, 0.0, u.length(), *closed),
+                };
+                Some([u.at(m, 0), u.at(m, 1), u.at(m, 2), u.at(m, 3)])
+            }
+        }
+    }
+}
+
+/// Build the other-entity provider (client `md`). `end` = the shared end
+/// point id.
+fn md(b: &Builder, id: &str, end: &str) -> Result<Other, String> {
+    let raw = b.raw_entity(id).ok_or_else(|| format!("missing entity {id}"))?;
+    Ok(match raw {
+        SketchEntity::Line { p1, p2, .. } => Other::Line { a: b.point(p1)?, b: b.point(p2)? },
+        SketchEntity::Circle { c, r, .. } => Other::Circle { c: b.point(c)?, r: b.var(&format!("{id}.r"), *r) },
+        SketchEntity::Arc { c, p1, p2, .. } => {
+            Other::Arc { c: b.point(c)?, p1: b.point(p1)?, p2: b.point(p2)? }
+        }
+        SketchEntity::Ellipse { c, p, r, .. } => {
+            Other::Ellipse { c: b.point(c)?, p: b.point(p)?, r: b.var(&format!("{id}.r"), *r) }
+        }
+        SketchEntity::Spline { pts, closed, .. } => Other::Spline {
+            pts: pts.iter().map(|p| b.point(p)).collect::<Result<_, _>>()?,
+            closed: *closed,
+            end: if *closed { None } else { end_index(pts, end) },
+        },
+        SketchEntity::CvSpline { pts, degree, knots, closed, .. } => Other::CvSpline {
+            pts: pts.iter().map(|p| b.point(p)).collect::<Result<_, _>>()?,
+            degree: (*degree).max(1) as f64,
+            knots: knots.clone(),
+            closed: *closed,
+            end: if *closed { None } else { end_index(pts, end) },
+        },
+        other => return Err(format!("end relation to a {}", other.type_name())),
+    })
+}
+
+fn end_index(pts: &[String], end: &str) -> Option<usize> {
+    if pts.first().map(|p| p.as_str()) == Some(end) {
+        Some(0)
+    } else if pts.last().map(|p| p.as_str()) == Some(end) {
+        Some(1)
+    } else {
+        None
+    }
+}
+
+pub(crate) fn pad3(d: &[[f64; 2]; 4]) -> [[f64; 3]; 4] {
+    [
+        [d[0][0], d[0][1], 0.0],
+        [d[1][0], d[1][1], 0.0],
+        [d[2][0], d[2][1], 0.0],
+        [d[3][0], d[3][1], 0.0],
+    ]
+}
+
+/// Arc-length frame of the derivative triple `(d1, d2, d3)` — the kernel's
+/// `As` (WAT f1250). `None` when `|d1| <= 1e-150`.
+pub fn as_1250(e: [f64; 3], t: [f64; 3], n: [f64; 3]) -> Option<([[f64; 3]; 3], f64)> {
+    let s = (e[0] * e[0] + e[1] * e[1]) + e[2] * e[2];
+    let mut i = s.sqrt();
+    if i.is_nan() {
+        i = f64::from_bits(s.to_bits() | 0x7ff8_0000_0000_0000);
+    }
+    if !(1e-150 < i) {
+        return None;
+    }
+    let inv_i = 1.0 / i;
+    let a = [e[0] * inv_i, e[1] * inv_i, e[2] * inv_i];
+    let inv_s = 1.0 / s;
+    let o = (e[2] * t[2] + e[0] * t[0]) + e[1] * t[1];
+    let d14 = o / s;
+    let l = [
+        inv_s * (t[0] - e[0] * d14),
+        inv_s * (t[1] - e[1] * d14),
+        inv_s * (t[2] - e[2] * d14),
+    ];
+    let s16 = s * s;
+    let d15 = (o * 3.0) / s16;
+    let sum5 = ((((t[0] * t[0] + t[1] * t[1]) + t[2] * t[2]) + e[2] * n[2]) + e[0] * n[0]) + e[1] * n[1];
+    let d8 = ((o * o * 4.0) / (s * s16)) - sum5 / s16;
+    let c = [
+        ((n[0] * inv_s - t[0] * d15) + e[0] * d8) * inv_i,
+        ((n[1] * inv_s - t[1] * d15) + e[1] * d8) * inv_i,
+        ((n[2] * inv_s - t[2] * d15) + e[2] * d8) * inv_i,
+    ];
+    Some(([a, l, c], s))
+}
+
+/// Continuity residual (kernel f822, 2D mode): `level` residuals between
+/// the spline derivative tuple `e` and the other entity's `t`, with the
+/// build-time constants `(L, V)`.
+pub fn ls_kernel(level: usize, l: f64, v: f64, e: &[[f64; 3]; 4], t: &[[f64; 3]; 4], mode3d: bool, axis: [f64; 3]) -> Vec<f64> {
+    let (Some(o), Some(a)) = (
+        as_1250(e[1], e[2], e[3]),
+        as_1250(t[1], t[2], t[3]),
+    ) else {
+        return vec![1.0; if mode3d { 2 * level } else { level }];
+    };
+    let a0 = a.0[0];
+    // the normal frame of the spline tangent: 2D mode = (-ty, tx, 0);
+    // 3D mode = the normalised cross product with the build-time axis, and
+    // its cross with the tangent (client `ud`)
+    let f: Vec<[f64; 3]> = if mode3d {
+        let mut n = cross3(o.0[0], axis);
+        let s = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+        if 1e-150 < s {
+            let inv = 1.0 / s;
+            n = [n[0] * inv, n[1] * inv, n[2] * inv];
+        } else {
+            n = [0.0; 3];
+        }
+        vec![n, cross3(o.0[0], n)]
+    } else {
+        vec![[-o.0[0][1], o.0[0][0], 0.0]]
+    };
+    let mut u: Vec<f64> = f.iter().map(|s| a0[0] * s[0] + a0[1] * s[1] + a0[2] * s[2]).collect();
+    if level < 2 {
+        return u;
+    }
+    // kernel f822: the sign dot accumulates z, then y, then x
+    let d = if 0.0 <= (o.0[0][2] * a0[2] + o.0[0][1] * a0[1]) + o.0[0][0] * a0[0] { 1.0 } else { -1.0 };
+    let d1 = e[1];
+    let p = {
+        let mut s = (d1[0] * d1[0] + d1[1] * d1[1]) + d1[2] * d1[2];
+        if s.is_nan() {
+            s = f64::from_bits(s.to_bits() | 0x7ff8_0000_0000_0000);
+        }
+        s.sqrt()
+    };
+    let g = (d1[2] * e[2][2] + d1[0] * e[2][0]) + d1[1] * e[2][1];
+    let k = a.0[1];
+    let w = [
+        e[2][0] - k[0] * (p * p),
+        e[2][1] - k[1] * (p * p),
+        e[2][2] - k[2] * (p * p),
+    ];
+    for ff in &f {
+        u.push((l * (w[0] * ff[0] + w[1] * ff[1] + w[2] * ff[2])) / (v * v));
+    }
+    if level < 3 {
+        return u;
+    }
+    let gp = p * 3.0 * (g / p);
+    let p3 = p * (p * p);
+    let c = a.0[2];
+    let y = [
+        (e[3][0] - k[0] * gp) - c[0] * d * p3,
+        (e[3][1] - k[1] * gp) - c[1] * d * p3,
+        (e[3][2] - k[2] * gp) - c[2] * d * p3,
+    ];
+    for ff in &f {
+        u.push(((l * l) * (y[0] * ff[0] + y[1] * ff[1] + y[2] * ff[2])) / (v * (v * v)));
+    }
+    u
+}
+
+/// 3D cross/dot/sub/scale (used by the 3D continuity frame and sketch3).
+pub fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+/// `g1`/`g2`/`g3`: continuity between an open cvspline end and another
+/// entity (client `pd`).
+fn continuity(b: &mut Builder, k: &super::Constraint) -> Result<(), String> {
+    let cid = k.id.as_str();
+    let level = match k.kind.as_bytes().get(1) {
+        Some(b'1') => 1,
+        Some(b'2') => 2,
+        Some(b'3') => 3,
+        _ => return Err(format!("{}: bad level", k.kind)),
+    };
+    let e0 = refn(&k.refs, 0)?;
+    let e1 = refn(&k.refs, 1)?;
+    let s_raw = b.raw_entity(e0).ok_or_else(|| format!("missing entity {e0}"))?;
+    let m_raw = b.raw_entity(e1).ok_or_else(|| format!("missing entity {e1}"))?;
+    let (pts, degree, knots, closed) = match s_raw {
+        SketchEntity::CvSpline { pts, degree, knots, closed, .. } => {
+            if *closed {
+                return Err(format!("{}: not an open control point spline", k.kind));
+            }
+            (pts.clone(), (*degree).max(1) as f64, knots.clone(), *closed)
+        }
+        _ => return Err(format!("{}: not an open control point spline", k.kind)),
+    };
+    if e1 == e0 {
+        return Err(format!("{}: not an open control point spline", k.kind));
+    }
+    let ends = [pts.first().cloned().unwrap_or_default(), pts.last().cloned().unwrap_or_default()];
+    let end = match &k.at {
+        Some(at) => {
+            if at.is_empty() || !ends.contains(at) {
+                return Err(format!("{}: no end", k.kind));
+            }
+            at.clone()
+        }
+        None => {
+            let mut ids: Vec<&str> = m_raw.point_ids();
+            ids.push(m_raw.type_name());
+            ids.push(e1);
+            match ends.iter().find(|e| !e.is_empty() && ids.contains(&e.as_str())) {
+                Some(e) => e.clone(),
+                None => return Err(format!("{}: no end", k.kind)),
+            }
+        }
+    };
+    let at_start = end == pts[0];
+    let c_all: Vec<P2> = pts.iter().map(|p| b.point(p)).collect::<Result<_, _>>()?;
+    let t_vars: Vec<P2> = if at_start {
+        c_all[..level + 1].to_vec()
+    } else {
+        c_all[c_all.len() - level - 1..].to_vec()
+    };
+    let z = b.point(&end)?;
+    let other = md(b, e1, &end)?;
+    let mut vars: Vec<V> = t_vars.iter().flat_map(|p| [p.x, p.y]).collect();
+    vars.push(z.x);
+    vars.push(z.y);
+    vars.extend(other.vars());
+    // build-time constants (client `q`/`V`/`K`, 3D form)
+    let x0 = b.x.clone();
+    let (dx, dy) = (
+        val(&x0, t_vars[1].x) - val(&x0, t_vars[0].x),
+        val(&x0, t_vars[1].y) - val(&x0, t_vars[0].y),
+    );
+    let dq = (dx * dx + dy * dy).sqrt();
+    let q = if dq.is_nan() { f64::NAN } else { dq.max(1e-9) };
+    let v0 = eval_cvspline_derivs(
+        &x0,
+        &c_all,
+        degree,
+        &knots,
+        closed,
+        if at_start { 0.0 } else { f64::NAN },
+    );
+    let l0 = v0
+        .as_ref()
+        .map(|d| (d[1][0] * d[1][0] + d[1][1] * d[1][1]).sqrt())
+        .unwrap_or(0.0);
+    let kconst = (q, if l0 > 1e-9 { l0 } else { q });
+    for i in 0..level {
+        let c_all = c_all.clone();
+        let z = z;
+        let other = other.clone();
+        let kconst = kconst;
+        let (degree, knots, closed) = (degree, knots.clone(), closed);
+        let (i, level) = (i, level);
+        let at_start = at_start;
+        b.eq(
+            cid,
+            &vars,
+            Box::new(move |x: &[f64]| {
+                let Some(sder) = eval_cvspline_derivs(
+                    x,
+                    &c_all,
+                    degree,
+                    &knots,
+                    closed,
+                    if at_start { 0.0 } else { f64::NAN },
+                ) else {
+                    return 1.0;
+                };
+                let h = v2s(x, z);
+                let Some(od) = other.derivs(x, h) else { return 1.0 };
+                ls_kernel(level, kconst.0, kconst.1, &sder, &pad3(&od), false, [0.0; 3])[i]
+            }),
+        );
+    }
+    Ok(())
+}
+
+/// Cvspline derivative tuple at the start (`t = 0`) or end (`t = NaN`
+/// meaning the domain end) of the curve built from the current control
+/// point values (client `R` in the g-arms).
+fn eval_cvspline_derivs(
+    x: &[f64],
+    cps: &[P2],
+    degree: f64,
+    knots: &Option<Vec<f64>>,
+    closed: bool,
+    t: f64,
+) -> Option<[[f64; 3]; 4]> {
+    let d: Vec<[f64; 2]> = cps.iter().map(|p| v2s(x, *p)).collect();
+    let s = super::spline::Bspline::from_curve(&d, Some(degree), knots.as_deref(), closed)?;
+    let t = if t.is_nan() { s.length() } else { t };
+    let d = s.derivs(t, 3);
+    Some([
+        [d[0][0], d[0][1], 0.0],
+        [d[1][0], d[1][1], 0.0],
+        [d[2][0], d[2][1], 0.0],
+        [d[3][0], d[3][1], 0.0],
+    ])
+}
+
+/// Closest parameter of a curve (client `ar` / kernel f3735): 97 samples
+/// (plain-sqrt distances) then 30 Newton steps, clamped to `[t0, t1]` when
+/// open.
+pub(crate) fn ar_closest(
+    at: impl Fn(f64, u32) -> [f64; 2],
+    q: [f64; 2],
+    t0: f64,
+    t1: f64,
+    closed: bool,
+) -> f64 {
+    let mut i = t0;
+    let mut best = f64::INFINITY;
+    for a in 0..=96usize {
+        let l = t0 + ((t1 - t0) * a as f64) / 96.0;
+        let p = at(l, 0);
+        let c = ((p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1])).sqrt();
+        if c < best {
+            best = c;
+            i = l;
+        }
+    }
+    for _ in 0..30 {
+        let p0 = at(i, 0);
+        let p1 = at(i, 1);
+        let p2 = at(i, 2);
+        let dx = p0[0] - q[0];
+        let dy = p0[1] - q[1];
+        let d = p1[0] * p1[0] + p1[1] * p1[1] + dx * p2[0] + dy * p2[1];
+        if !(d.abs() > 1e-300) {
+            break;
+        }
+        let st = (dx * p1[0] + dy * p1[1]) / d;
+        i -= st;
+        if !closed {
+            i = i.max(t0.min(t1)).min(t0.max(t1));
+        }
+        if st.abs() < 1e-13 * (1.0 + (t1 - t0).abs()) {
+            break;
+        }
+    }
+    i
+}
+
+/// Length of a shared curve's primary radius/direction (plain `sqrt`,
+/// kernel f821/f1267 style — NOT the correctly-rounded `hypot`).
+pub(crate) fn ln_len(dx: f64, dy: f64) -> f64 {
+    (dx * dx + dy * dy).sqrt()
+}
+/// Unit direction via reciprocal multiply (kernel f819's line `at`).
+pub(crate) fn ln_dir(dx: f64, dy: f64, o: f64) -> [f64; 2] {
+    let inv = 1.0 / o;
+    [dx * inv, dy * inv]
+}
+
+/// Curve wrapper for `onCurve` (client `vo`): parameter range + `at`.
+#[derive(Clone)]
+enum Curve2 {
+    Line { a: P2, b: P2 },
+    Circle { c: P2, r: V },
+    Arc { c: P2, p1: P2, p2: P2 },
+    Ellipse { c: P2, p: P2, r: V },
+    Spline { pts: Vec<P2>, closed: bool },
+    CvSpline { pts: Vec<P2>, degree: f64, knots: Option<Vec<f64>>, closed: bool },
+}
+
+impl Curve2 {
+    fn vars(&self) -> Vec<V> {
+        match self {
+            Curve2::Line { a, b } => vec![a.x, a.y, b.x, b.y],
+            Curve2::Circle { c, r } => vec![c.x, c.y, *r],
+            Curve2::Arc { c, p1, p2 } => vec![c.x, c.y, p1.x, p1.y, p2.x, p2.y],
+            Curve2::Ellipse { c, p, r } => vec![c.x, c.y, *r, p.x, p.y],
+            Curve2::Spline { pts, .. } | Curve2::CvSpline { pts, .. } => {
+                pts.iter().flat_map(|p| [p.x, p.y]).collect()
+            }
+        }
+    }
+
+    /// `(t0, t1)` for the current values; `None` = the curve does not exist
+    /// (degenerate geometry) — the residual falls back to the constant 1.
+    fn span(&self, x: &[f64]) -> Option<(f64, f64)> {
+        match self {
+            Curve2::Line { a, b } => {
+                let (pa, pb) = (v2s(x, *a), v2s(x, *b));
+                let o = ln_len(pb[0] - pa[0], pb[1] - pa[1]);
+                if !(o > 1e-9) {
+                    return None;
+                }
+                Some((0.0, o))
+            }
+            Curve2::Circle { r, .. } => {
+                let u = val(x, *r).abs();
+                if !(u > 1e-9) {
+                    return None;
+                }
+                Some((0.0, 2.0 * std::f64::consts::PI))
+            }
+            Curve2::Arc { c, p1, p2 } => {
+                let (cc, a, bb) = (v2s(x, *c), v2s(x, *p1), v2s(x, *p2));
+                let u = ln_len(a[0] - cc[0], a[1] - cc[1]);
+                if !(u > 1e-9) {
+                    return None;
+                }
+                let s0 = (a[1] - cc[1]).atan2(a[0] - cc[0]);
+                let mut g = (bb[1] - cc[1]).atan2(bb[0] - cc[0]) - s0;
+                while g <= 1e-12 {
+                    g += 2.0 * std::f64::consts::PI;
+                }
+                while g > 2.0 * std::f64::consts::PI + 1e-12 {
+                    g -= 2.0 * std::f64::consts::PI;
+                }
+                Some((s0, s0 + g))
+            }
+            Curve2::Ellipse { c, p, r } => {
+                let (cc, dd) = (v2s(x, *c), v2s(x, *p));
+                let m = ln_len(dd[0] - cc[0], dd[1] - cc[1]);
+                let u = val(x, *r).abs();
+                if !(m > 1e-9 && u > 1e-9) {
+                    return None;
+                }
+                Some((0.0, 2.0 * std::f64::consts::PI))
+            }
+            Curve2::Spline { pts, closed } => {
+                let d: Vec<[f64; 2]> = pts.iter().map(|p| v2s(x, *p)).collect();
+                let u = super::spline::InterpSpline::new(&d, *closed)?;
+                Some((0.0, u.length()))
+            }
+            Curve2::CvSpline { pts, degree, knots, closed } => {
+                let d: Vec<[f64; 2]> = pts.iter().map(|p| v2s(x, *p)).collect();
+                let u = super::spline::Bspline::from_curve(&d, Some(*degree), knots.as_deref(), *closed)?;
+                Some((0.0, u.length()))
+            }
+        }
+    }
+
+    /// Point at parameter `t` (client `vo`'s `at`, deriv 0).
+    fn at(&self, x: &[f64], t: f64) -> Option<[f64; 2]> {
+        match self {
+            Curve2::Line { a, b } => {
+                let (pa, pb) = (v2s(x, *a), v2s(x, *b));
+                let o = ln_len(pb[0] - pa[0], pb[1] - pa[1]);
+                if !(o > 1e-9) {
+                    return None;
+                }
+                let d = ln_dir(pb[0] - pa[0], pb[1] - pa[1], o);
+                Some([pa[0] + d[0] * t, pa[1] + d[1] * t])
+            }
+            Curve2::Circle { c, r } => {
+                let (cc, u) = (v2s(x, *c), val(x, *r).abs());
+                let m = t.cos();
+                let p = t.sin();
+                Some([cc[0] + u * m, cc[1] + u * p])
+            }
+            Curve2::Arc { c, p1, p2: _ } => {
+                let (cc, a) = (v2s(x, *c), v2s(x, *p1));
+                let u = ln_len(a[0] - cc[0], a[1] - cc[1]);
+                let m = t.cos();
+                let p = t.sin();
+                Some([cc[0] + u * m, cc[1] + u * p])
+            }
+            Curve2::Ellipse { c, p, r } => {
+                let (cc, dd) = (v2s(x, *c), v2s(x, *p));
+                let m = ln_len(dd[0] - cc[0], dd[1] - cc[1]);
+                let u = val(x, *r).abs();
+                let g = [(dd[0] - cc[0]) / m, (dd[1] - cc[1]) / m];
+                let iv = [g[0] * m, g[1] * m];
+                let ov = [-g[1] * u, g[0] * u];
+                let w = t.cos();
+                let y = t.sin();
+                Some([cc[0] + iv[0] * w + ov[0] * y, cc[1] + iv[1] * w + ov[1] * y])
+            }
+            Curve2::Spline { pts, closed } => {
+                let d: Vec<[f64; 2]> = pts.iter().map(|p| v2s(x, *p)).collect();
+                let u = super::spline::InterpSpline::new(&d, *closed)?;
+                Some(u.at(t, 0))
+            }
+            Curve2::CvSpline { pts, degree, knots, closed } => {
+                let d: Vec<[f64; 2]> = pts.iter().map(|p| v2s(x, *p)).collect();
+                let u = super::spline::Bspline::from_curve(&d, Some(*degree), knots.as_deref(), *closed)?;
+                Some(u.at(t, 0))
+            }
+        }
+    }
+}
+
+/// Build the onCurve curve (client `vo`).
+fn vo(b: &Builder, id: &str) -> Result<Curve2, String> {
+    let raw = b.raw_entity(id).ok_or_else(|| format!("missing entity {id}"))?;
+    Ok(match raw {
+        SketchEntity::Line { p1, p2, .. } => Curve2::Line { a: b.point(p1)?, b: b.point(p2)? },
+        SketchEntity::Circle { c, r, .. } => Curve2::Circle { c: b.point(c)?, r: b.var(&format!("{id}.r"), *r) },
+        SketchEntity::Arc { c, p1, p2, .. } => {
+            Curve2::Arc { c: b.point(c)?, p1: b.point(p1)?, p2: b.point(p2)? }
+        }
+        SketchEntity::Ellipse { c, p, r, .. } => {
+            Curve2::Ellipse { c: b.point(c)?, p: b.point(p)?, r: b.var(&format!("{id}.r"), *r) }
+        }
+        SketchEntity::Spline { pts, closed, .. } => Curve2::Spline {
+            pts: pts.iter().map(|p| b.point(p)).collect::<Result<_, _>>()?,
+            closed: *closed,
+        },
+        SketchEntity::CvSpline { pts, degree, knots, closed, .. } => Curve2::CvSpline {
+            pts: pts.iter().map(|p| b.point(p)).collect::<Result<_, _>>()?,
+            degree: (*degree).max(1) as f64,
+            knots: knots.clone(),
+            closed: *closed,
+        },
+        _ => return Err("onCurve: not a curve".into()),
+    })
+}
+
+/// `onCurve`: a point pinned onto a curve at relative parameter `value`
+/// (client `$s` arm). Two equations (x, y).
+fn on_curve(b: &mut Builder, k: &super::Constraint) -> Result<(), String> {
+    let cid = k.id.as_str();
+    let c = b.pointish(refn(&k.refs, 0)?)?;
+    let id = refn(&k.refs, 1)?;
+    let raw = b.raw_entity(id).ok_or("onCurve: not a curve")?;
+    if matches!(raw, SketchEntity::Point { .. }) {
+        return Err("onCurve: not a curve".into());
+    }
+    let curve = vo(b, id)?;
+    let value = k.value.unwrap_or(f64::NAN);
+    let mut vars = vec![c.x, c.y];
+    vars.extend(curve.vars());
+    for q in 0..2usize {
+        let curve = curve.clone();
+        let c = c;
+        let value = value;
+        let q = q;
+        b.eq(
+            cid,
+            &vars,
+            Box::new(move |x: &[f64]| {
+                let Some((t0, t1)) = curve.span(x) else { return 1.0 };
+                let Some(p) = curve.at(x, t0 + value * (t1 - t0)) else { return 1.0 };
+                let pv = v2s(x, c);
+                pv[q] - p[q]
+            }),
+        );
+    }
+    Ok(())
+}
+
+/// `tension`: control-point spacing on an open cvspline end (client `kd`).
+fn tension(b: &mut Builder, k: &super::Constraint) -> Result<(), String> {
+    let cid = k.id.as_str();
+    let e0 = refn(&k.refs, 0)?;
+    let raw = b.raw_entity(e0).ok_or("tension: not an open control point spline")?;
+    let (pts, degree) = match raw {
+        SketchEntity::CvSpline { pts, degree, closed: false, .. } => (pts.clone(), (*degree).max(1) as f64),
+        _ => return Err("tension: not an open control point spline".into()),
+    };
+    let at = k.at.clone().ok_or("tension: at is no end of the spline")?;
+    if at.is_empty() {
+        return Err("tension: at is no end of the spline".into());
+    }
+    let at_start = at == pts[0];
+    if !at_start && pts.last().map(|p| p.as_str()) != Some(at.as_str()) {
+        return Err("tension: at is no end of the spline".into());
+    }
+    let m = 1usize.max(super::smooth::ji(b.sk, e0, &at) as usize);
+    let ordered: Vec<String> = if at_start { pts.clone() } else { pts.iter().rev().cloned().collect() };
+    if ordered.len() < m + 1 {
+        return Err("tension: too few control points".into());
+    }
+    let e_vars: Vec<P2> = ordered[..m + 1].iter().map(|p| b.point(p)).collect::<Result<_, _>>()?;
+    let d = b.point(ordered.last().unwrap())?;
+    let u = degree;
+    let value = k.value.unwrap_or(f64::NAN);
+    let mut vars: Vec<V> = e_vars.iter().flat_map(|p| [p.x, p.y]).collect();
+    vars.push(d.x);
+    vars.push(d.y);
+    for t in 0..m {
+        let e_vars = e_vars.clone();
+        let d = d;
+        let (value, u) = (value, u);
+        let t = t;
+        b.eq(
+            cid,
+            &vars,
+            Box::new(move |x: &[f64]| {
+                let g: Vec<[f64; 2]> = e_vars.iter().map(|p| v2s(x, *p)).collect();
+                let kk = v2s(x, d);
+                let b_ = value * ve(kk[0] - g[0][0], kk[1] - g[0][1]) / u;
+                super::smooth::ns(&g, m, b_)[t]
             }),
         );
     }
@@ -1087,6 +1810,40 @@ mod tests {
             SketchEntity::Circle { r, .. } => assert!((r - 5.0).abs() < 1e-7),
             _ => unreachable!(),
         }
+    }
+
+    #[test]
+    fn spline_constraints() {
+        // tension: the end spacing = value * |far end - the end| / degree
+        let src = r#"{"type":"sketch","id":"F1","points":[{"id":"O","x":0,"y":0,"fixed":true},{"id":"a","x":1,"y":1},{"id":"b","x":3,"y":2},{"id":"c","x":6,"y":2},{"id":"d","x":8,"y":5}],
+"entities":[{"type":"cvspline","id":"s1","pts":["a","b","c","d"],"degree":3}],
+"constraints":[{"type":"tension","id":"k1","refs":["s1"],"at":"a","value":2},{"type":"distance","id":"k2","refs":["O","d"],"value":9.1}]}"#;
+        let mut s = sk(src);
+        assert!(solve_sketch(&mut s, &SolveOpts::default()).unwrap().ok);
+        let a = s.point("a").unwrap();
+        assert_eq!((a.x, a.y), (0.1738969082785374, 0.69516546434418081));
+        // g1 to a line at the shared end (bit-exact vs the oracle)
+        let src = r#"{"type":"sketch","id":"F1","plane":{"kind":"std","id":"front"},
+"points":[{"id":"O","x":0,"y":0,"fixed":true},{"id":"a","x":2,"y":0},{"id":"b","x":4,"y":2},{"id":"c","x":7,"y":1},{"id":"d","x":9,"y":4}],
+"entities":[{"type":"line","id":"e1","p1":"O","p2":"a"},{"type":"cvspline","id":"s1","pts":["a","b","c","d"],"degree":3}],
+"constraints":[{"type":"horizontal","id":"k0","refs":["e1"]},{"type":"g1","id":"k1","refs":["s1","e1"],"at":"a"},{"type":"distance","id":"k2","refs":["O","d"],"value":11.3}]}"#;
+        let mut s = sk(src);
+        assert!(solve_sketch(&mut s, &SolveOpts::default()).unwrap().ok);
+        let a = s.point("a").unwrap();
+        assert_eq!((a.x, a.y), (0.573260777712855, 3.4740039892098423e-16));
+        // onCurve: the point pinned at relative parameter 0.25 on the circle
+        let src = r#"{"type":"sketch","id":"F1","points":[{"id":"O","x":0,"y":0,"fixed":true},{"id":"q","x":3,"y":1},{"id":"a","x":10,"y":0,"fixed":true}],
+"entities":[{"type":"circle","id":"e1","c":"O","r":4},{"type":"cvspline","id":"s1","pts":["q","a"],"degree":1}],
+"constraints":[{"type":"radius","id":"k0","refs":["e1"],"value":4.4},{"type":"onCurve","id":"k1","refs":["q","e1"],"value":0.25}]}"#;
+        let mut s = sk(src);
+        assert!(solve_sketch(&mut s, &SolveOpts::default()).unwrap().ok);
+        let q = s.point("q").unwrap();
+        assert_eq!((q.x, q.y), (-9.790372956786086e-10, 4.400000000349538));
+        // error paths: onCurve onto a point entity, unknown constraint
+        let s = sk(&src.replace(r#""type":"circle","id":"e1","c":"O","r":4}"#, r#""type":"point","id":"e1","p":"O"}"#));
+        assert!(build(&s).is_err());
+        let s = sk(&src.replace(r#""type":"onCurve""#, r#""type":"bogus""#));
+        assert!(build(&s).is_err());
     }
 
     #[test]

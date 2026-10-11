@@ -45,6 +45,7 @@ dependencies = [
  "ck-core",
  "ck-geom",
  "ck-json",
+ "ck-tess",
  "ck-topo",
 ]
 

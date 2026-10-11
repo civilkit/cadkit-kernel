@@ -74,6 +74,7 @@ pub type FeatureDef = crate::Feature;
 #[derive(Debug, Clone)]
 pub enum FeatureKind {
     Sketch(Sketch),
+    Sketch3(crate::sketch3::Sketch3),
     Extrude { op: Op, sketch: Option<Ref>, end: End, depth: Expr, flip: bool, draft: Option<Expr>, draft_out: bool },
     Revolve { op: Op, sketch: Option<Ref>, axis: Option<GeomRef>, end: End, angle: Expr, flip: bool },
     Sweep { op: Op, sketch: Option<Ref>, path: Option<GeomRef>, surface: bool },
@@ -331,6 +332,7 @@ impl FeatureKind {
     pub fn from_json(type_name: &str, j: &Json) -> FeatureKind {
         match type_name {
             "sketch" => FeatureKind::Sketch(Sketch::from_json(j)),
+            "sketch3d" => FeatureKind::Sketch3(crate::sketch3::Sketch3::from_json(j)),
             "extrude" => FeatureKind::Extrude {
                 op: op(j),
                 sketch: r_opt(j, "sketch"),
