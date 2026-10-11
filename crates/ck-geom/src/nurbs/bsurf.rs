@@ -238,10 +238,73 @@ impl BSplineSurface {
         let nu = ((basis::distinct_knots(&self.knots_u).len() - 1) * (self.deg_u + 1) * 3).max(12);
         let nv = ((basis::distinct_knots(&self.knots_v).len() - 1) * (self.deg_v + 1) * 3).max(12);
         let mut best = (f64::INFINITY, u0, v0);
-        for a in 0..=nu {
-            let u = u0 + (u1 - u0) * a as f64 / nu as f64;
-            for b in 0..=nv {
+        // The seed grid is the same as a brute-force scan, but samples in
+        // cells whose control-net box is farther from `q` than the best
+        // sample so far are skipped (convex hull property: exact pruning).
+        // Long multi-span surfaces (screw sweeps) made the plain scan
+        // O(spans) per call.
+        let (pu, pv) = (self.deg_u, self.deg_v);
+        let spans = |kn: &[f64], p: usize, n: usize| -> Vec<usize> {
+            let mut idx = vec![usize::MAX; kn.len()];
+            let mut k = 0;
+            for s in p..n {
+                if kn[s] < kn[s + 1] {
+                    idx[s] = k;
+                    k += 1;
+                }
+            }
+            idx
+        };
+        let (iu_of, iv_of) = (spans(&self.knots_u, pu, self.nu), spans(&self.knots_v, pv, self.nv));
+        let (cu, cv) = (iu_of.iter().filter(|&&i| i != usize::MAX).count(), iv_of.iter().filter(|&&i| i != usize::MAX).count());
+        let mut lb = vec![f64::INFINITY; cu * cv.max(1)];
+        for su in pu..self.nu {
+            let iu = iu_of[su];
+            if iu == usize::MAX {
+                continue;
+            }
+            for sv in pv..self.nv {
+                let iv = iv_of[sv];
+                if iv == usize::MAX {
+                    continue;
+                }
+                let (mut lo, mut hi) = (Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY), Vec3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY));
+                for i in su - pu..=su {
+                    for j in sv - pv..=sv {
+                        let c = self.cp(i, j);
+                        lo = lo.min(c);
+                        hi = hi.max(c);
+                    }
+                }
+                let d = Vec3::new((lo.x - q.x).max(q.x - hi.x).max(0.0), (lo.y - q.y).max(q.y - hi.y).max(0.0), (lo.z - q.z).max(q.z - hi.z).max(0.0));
+                lb[iu * cv + iv] = d.len();
+            }
+        }
+        let cell_u = |u: f64| iu_of[find_span(self.nu - 1, pu, u, &self.knots_u)];
+        let cell_v = |v: f64| iv_of[find_span(self.nv - 1, pv, v, &self.knots_v)];
+        let vs: Vec<(f64, usize)> = (0..=nv)
+            .map(|b| {
                 let v = v0 + (v1 - v0) * b as f64 / nv as f64;
+                (v, cell_v(v))
+            })
+            .collect();
+        let mut rows: Vec<(f64, usize, f64, usize)> = (0..=nu)
+            .map(|a| {
+                let u = u0 + (u1 - u0) * a as f64 / nu as f64;
+                let iu = cell_u(u);
+                let row_lb = vs.iter().map(|&(_, iv)| lb[iu * cv + iv]).fold(f64::INFINITY, f64::min);
+                (row_lb, a, u, iu)
+            })
+            .collect();
+        rows.sort_by(|x, y| x.0.total_cmp(&y.0).then(x.1.cmp(&y.1)));
+        for (row_lb, _a, u, iu) in rows {
+            if row_lb >= best.0 {
+                break;
+            }
+            for &(v, iv) in &vs {
+                if lb[iu * cv + iv] >= best.0 {
+                    continue;
+                }
                 let d = self.eval(u, v).dist(q);
                 if d < best.0 {
                     best = (d, u, v);

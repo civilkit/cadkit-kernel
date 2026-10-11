@@ -60,8 +60,9 @@ where noted):
 
 | `continuity` | `judge_edge(body, e, &Settings) -> EdgeReport`, `reply(body, msg) -> Json` (the `continuity` query, wired in ck-wasm `query_hook`) | **oracle**: G1-G3 fields, normals, curvature/rate, status/fails, max, worst for fillets (planar / cylinder), box / cylinder corners (`ck-model/tests/continuity_golden.rs`); gap = golden-section noise, bit-exact only when the blend edges use the oracle's line parameterisation |
 | `contain` | `Containment::{new, point_in_face, classify_point}` | unit; agrees with the winding classifier on grids (face test is a GUESS, see header) |
+| `sweep` | `sweep(feature, &Profile, &[PathSeg], twist) -> Body`; `PathSeg::{Line, Arc, Helix}`, `Motion`, `path_motion`, `sweep_motion` | **oracle**: rigid-motion paths only. Line -> ck-topo extrude, arc about an in-plane axis -> revolve (identical numbering), helix / twist / off-plane arc -> screw sweep (spline side faces, cylinders for lines parallel to the axis, caps listed after the sides, closed profile entities split `S.e1~1/~2`); the path end nearest the profile starts the sweep; `sweepProfileNotNormal` (`|\|t·n\|-1\| > 5e-5`). Volumes agree to ~1e-6 (the oracle's own spline fits), faces/edges/keys exact. Multi-piece paths (mitre unions), guides, general frame-march: not reconstructed |
 
-Everything else (sweep, loft/*, shell, offset, draft, pipecut,
+Everything else (loft/*, shell, offset, draft, pipecut,
 curve_edit, guide, simplify, other blend/* files,
 `surfacing::rebuild::edits`) is a stub whose header lists its
 kernel.strings codes.
