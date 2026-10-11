@@ -44,10 +44,10 @@ pub fn exec_chamfer(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Resul
         _ => return Err(FeatureError::new("unsupported").with("what", Json::Str(format!("chamfer {ty}")))),
     }
     let d = state.num(f, "distance", 0.0)?;
-    let sel = select_edges(br, edges)?;
     if !(d > 0.0) || !d.is_finite() {
         return Err(FeatureError::new("invalidValue"));
     }
+    let sel = select_edges(br, edges)?;
     br.spans.push(Span::leaf(chamfer_label(&f.id, d, sel.len())));
     let body = br.body.as_ref().ok_or_else(|| FeatureError::new("missingEdge"))?;
     let out = ck_ops::blend::build::chamfer(body, &sel, d, &f.id, super::TOL).map_err(blend_error)?;
@@ -66,27 +66,32 @@ fn select_edges(br: &Brep, edges: &[crate::EdgeRef]) -> Result<Vec<(String, Stri
             // GUESS: without a pick point the first edge between the faces
             None => first_edge_mid(body, a, b).ok_or_else(|| FeatureError::new("missingEdge"))?,
         };
+        if ck_ops::blend::build::find_edge(body, a, b, at).is_none() {
+            return Err(FeatureError::new("missingEdge"));
+        }
         sel.push(forward_first(body, a, b, at));
+    }
+    if sel.is_empty() {
+        return Err(FeatureError::new("missingEdge"));
     }
     Ok(sel)
 }
 
-/// `fillet`.
+/// `fillet`. Oracle (box probes): any `filletType` string (even
+/// `"circular"`) fails `unsupported {what:"fillet <type>"}` first; then
+/// `radius <= 0` -> `invalidValue`; then unresolved / no edges ->
+/// `missingEdge`; none of these open the `Fillet(..)` span.
 pub fn exec_fillet(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
     let FeatureKind::Fillet { edges, .. } = &f.kind else { unreachable!() };
-    let r = state.num(f, "radius", 0.0)?;
-    // GUESS: no body -> missingEdge (nothing can be selected).
-    let Some(body) = br.body.as_ref() else { return Err(FeatureError::new("missingEdge")) };
-    let mut sel = vec![];
-    for e in edges {
-        let (Some(a), Some(b)) = (e.faces.first(), e.faces.get(1)) else { return Err(FeatureError::new("missingEdge")) };
-        let at = match e.at {
-            Some(p) => Vec3::new(p[0], p[1], p[2]),
-            // GUESS: without a pick point the first edge between the faces
-            None => first_edge_mid(body, a, b).ok_or_else(|| FeatureError::new("missingEdge"))?,
-        };
-        sel.push(forward_first(body, a, b, at));
+    if let Some(t) = f.raw.get("filletType").and_then(|v| v.as_str()) {
+        return Err(FeatureError::new("unsupported").with("what", Json::Str(format!("fillet {t}"))));
     }
+    let r = state.num(f, "radius", 0.0)?;
+    if !(r > 0.0) || !r.is_finite() {
+        return Err(FeatureError::new("invalidValue"));
+    }
+    let sel = select_edges(br, edges)?;
+    let body = br.body.as_ref().ok_or_else(|| FeatureError::new("missingEdge"))?;
     br.spans.push(Span::leaf(fillet_label(&f.id, r, sel.len())));
     let out = ck_ops::blend::build::fillet(body, &sel, r, &f.id, super::TOL).map_err(blend_error)?;
     br.body = Some(out);

@@ -349,14 +349,6 @@ pub fn forward_first(b: &Body, fa: &str, fb: &str, at: Vec3) -> (String, String,
     let keep = (fa.to_string(), fb.to_string(), at);
     let Some(e) = find_edge(b, fa, fb, at) else { return keep };
     let fwd = b.edge_coedges(e).into_iter().find(|&c| !b.coedge(c).rev).map(|c| b.coedge_face(c));
-    if std::env::var_os("CK_BLEND_DEBUG").is_some() {
-        let ed = b.edge(e);
-        eprintln!(
-            "forward_first {fa} {fb}: edge {:?} v0={:?} v1={:?} t=({},{}) coedges {:?}",
-            e, b.vertex(ed.v0).p, b.vertex(ed.v1).p, ed.t0, ed.t1,
-            b.edge_coedges(e).iter().map(|&c| (b.face_id_str(b.coedge_face(c)), b.coedge(c).rev)).collect::<Vec<_>>()
-        );
-    }
     match (fwd, b.find_face(fb)) {
         (Some(f), Some(g)) if f == g => (fb.to_string(), fa.to_string(), at),
         _ => keep,
@@ -562,9 +554,6 @@ pub fn in_place_layout_opts(input: &Body, out: &Body, refs: &[BlendRef], tol: f6
             mine.push((rank, k, d0.min(d1)));
         }
         mine.sort_by(|a, b| a.0.cmp(&b.0).then(a.2.total_cmp(&b.2)));
-        if std::env::var_os("CK_BLEND_DEBUG").is_some() {
-            eprintln!("  layout blend {} faces {:?}: {:?}", r.name, r.faces, mine.iter().map(|&(rk, k, d)| (rk, names(out, out_chains[k][0]), d)).collect::<Vec<_>>());
-        }
         for (_, k, _) in mine {
             slot_of[k] = Some(next);
             next += 1;
