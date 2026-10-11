@@ -152,7 +152,26 @@ with exact nubs/nurbs, straight/ellipse curves; face/coedge/edge sense,
 single/double-sided (all-double = sheet), unit scale; ACIS seamless cylinder /
 cone faces get a seam inserted. Unsupported (structured `SatError` with the
 `$N` record): non-exact splines, periodic splines, elliptical cones,
-sphere/torus faces whose loops wrap an axis, non-identity body transform,
-mixed single/double faces. Wire request `importSat {tag?, name?, data}` ->
-regen-shaped result (+ `import` summary); fixtures in `tests/fixtures/sat`
-(`expected.json` = closed-form volumes, gated as `import.sat`).
+torus faces whose loops wrap an axis, reflecting / sheared body transforms,
+sphere bands whose loops share no azimuth vertex, mixed single/double faces.
+Wire request `importSat {tag?, name?, data}` -> regen-shaped result (+
+`import` summary); fixtures in `tests/fixtures/sat` (`expected.json` =
+closed-form volumes, gated as `import.sat`).
+
+Real-world dialects handled (checked on a 2002 ACIS 7.0 export and a
+SolidWorks 2015 / ACIS 22 export): CR-only / CRLF line endings, `-N` record
+index prefixes, the extra id integer of ACIS >= ~20 (dropped at parse time),
+`{ ref N }` shared spline definitions (N-th `{` block in file order),
+tolerant `tedge`/`tcoedge`/`tvertex`, the real `cone-surface` layout, control
+nets stored u-fastest (long-in-v nets are transposed so mass is fast), body
+`transform` (rotation rows, p' = (p.M)*s + t; uniform scale; translation),
+many bodies (one lump each). Sphere faces cut by circles around the pole
+axis get a meridian seam to an implicit pole (the `pole_jump` coedge keeps
+the loop's u-winding so mass integrates). Attributes, pcurves and other
+unread records are skipped and counted in `SatImport::summary.skipped`; a
+file with zero faces is a `sat.empty` error. The `importSat` reply carries
+`import.{bodies,lumps,shells,faces,records,version,skipped}`.
+
+Real files are NOT in the repo (licences/size): `tests/sat_real_files.rs`
+reads `$SAT_SAMPLES_DIR/{dice.sat,svalinn/ErrorBlocks.SAT}` and skips when
+absent.

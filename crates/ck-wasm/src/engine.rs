@@ -181,6 +181,8 @@ fn import_sat_hook(cx: &mut Cx) -> Result<(Json, Option<State>), String> {
         }
         Ok(imp) => {
             let body = imp.body;
+            let sm = &imp.summary;
+            let skipped = sm.skipped.iter().fold(Obj::new(), |o, (k, n)| o.put(k.as_str(), *n as f64)).build();
             let tess = ck_tess::mesh::tessellate(&body);
             let renorm = (vec![], vec![]);
             set_body(&mut out, body_json(&body, &tess, cx, &renorm));
@@ -193,6 +195,12 @@ fn import_sat_hook(cx: &mut Cx) -> Result<(Json, Option<State>), String> {
                         .put("units", imp.units)
                         .put("sheet", imp.sheet)
                         .put("faces", body.num_faces() as f64)
+                        .put("version", sm.version as f64)
+                        .put("records", sm.records as f64)
+                        .put("bodies", sm.bodies as f64)
+                        .put("lumps", sm.lumps as f64)
+                        .put("shells", sm.shells as f64)
+                        .put("skipped", skipped)
                         .build(),
                 ));
             }

@@ -48,3 +48,27 @@ fn import_sat_failure_is_structured_and_keeps_state() {
     let m = call(obj(vec![("type", "importSat".into()), ("tag", "u".into())]));
     assert_eq!(m.get("ok"), Some(&Json::Bool(false)));
 }
+
+/// Real files (outside the repo, `SAT_SAMPLES_DIR`): skipped when absent.
+#[test]
+fn import_real_files_over_the_wire() {
+    ck_wasm::engine::install();
+    let dir = std::env::var("SAT_SAMPLES_DIR")
+        .unwrap_or_else(|_| "/private/tmp/claude-501/-Volumes-second-disk-tmp-purr-rebuild/296fdc97-740a-4f73-841f-21dbda16b0ed/scratchpad/sat".into());
+    for (rel, tag, faces) in [("dice.sat", "dice", 47.0), ("svalinn/ErrorBlocks.SAT", "blocks", 53.0)] {
+        let Ok(bytes) = std::fs::read(format!("{dir}/{rel}")) else {
+            eprintln!("skip {rel}: absent");
+            continue;
+        };
+        let text = String::from_utf8_lossy(&bytes).to_string();
+        let r = call(obj(vec![("type", "importSat".into()), ("tag", tag.into()), ("data", text.as_str().into())]));
+        assert_eq!(r.get("ok"), Some(&Json::Bool(true)), "{rel}");
+        let res = r.get("result").unwrap();
+        assert!(res.get_arr("errors").unwrap().is_empty(), "{rel}: {}", ck_json::to_string(res.get_arr("errors").unwrap().first().unwrap()));
+        assert_eq!(res.get("import").unwrap().get_f64("faces"), Some(faces), "{rel}");
+        let v = call(obj(vec![("type", "validate".into()), ("tag", tag.into())]));
+        assert_eq!(v.get("result").unwrap().get_arr("issues").unwrap().len(), 0, "{rel}");
+        let m = call(obj(vec![("type", "massProps".into()), ("tag", tag.into())]));
+        assert!(m.get("result").unwrap().get_f64("volume").unwrap() > 0.0, "{rel}");
+    }
+}

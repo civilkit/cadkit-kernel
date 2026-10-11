@@ -480,7 +480,7 @@ impl<'a> B<'a> {
         res.map_err(|e| SatError::at("sat.geometry", r, format!("bad spline curve: {e}")))
     }
 
-    fn spline_surface(&self, r: &'a Rec) -> R<BSplineSurface> {
+    fn spline_surface(&self, r: &'a Rec) -> R<(BSplineSurface, bool)> {
         let mut c = self.spline_cursor(r)?;
         let rational = c.tok()? == "nurbs";
         let (du, dv) = (c.u()?, c.u()?);
@@ -517,7 +517,26 @@ impl<'a> B<'a> {
                 }
             }
         }
-        BSplineSurface::new(du, dv, ku, kv, ncu, ncv, ctrl, if rational { Some(w) } else { None })
+        // Long-in-v nets (thread / screw flanks): swap u and v so the long
+        // direction is u, the layout ck-topo's mass integrator and the
+        // sweep surfaces are optimised for (22 s -> ms per face). The swap
+        // reverses the natural normal; the caller flips the face sense.
+        let wopt = |w: Vec<f64>| if rational { Some(w) } else { None };
+        if nkv >= 32 && nku < 32 {
+            let mut t_ctrl = vec![Vec3::ZERO; ncu * ncv];
+            let mut t_w = vec![1.0; ncu * ncv];
+            for i in 0..ncu {
+                for j in 0..ncv {
+                    t_ctrl[j * ncu + i] = ctrl[i * ncv + j];
+                    t_w[j * ncu + i] = w[i * ncv + j];
+                }
+            }
+            return BSplineSurface::new(dv, du, kv, ku, ncv, ncu, t_ctrl, wopt(t_w))
+                .map(|s| (s, true))
+                .map_err(|e| SatError::at("sat.geometry", r, format!("bad spline surface: {e}")));
+        }
+        BSplineSurface::new(du, dv, ku, kv, ncu, ncv, ctrl, wopt(w))
+            .map(|s| (s, false))
             .map_err(|e| SatError::at("sat.geometry", r, format!("bad spline surface: {e}")))
     }
 
@@ -608,7 +627,8 @@ impl<'a> B<'a> {
                     "reversed" => true,
                     o => return Err(SatError::at("sat.parse", r, format!("bad spline-surface sense '{o}'"))),
                 };
-                Ok((Surface::BSpline(Box::new(self.spline_surface(r)?)), rev))
+                let (s, transposed) = self.spline_surface(r)?;
+                Ok((Surface::BSpline(Box::new(s)), rev ^ transposed))
             }
             other => Err(SatError::at("sat.unsupported", r, format!("surface type '{other}'"))),
         }

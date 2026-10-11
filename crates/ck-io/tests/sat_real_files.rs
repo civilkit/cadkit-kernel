@@ -14,10 +14,14 @@ fn run(rel: &str, min_faces: usize) {
         return;
     };
     let text = String::from_utf8_lossy(&bytes);
+    let t0 = std::time::Instant::now();
     let imp = import_sat(&text).unwrap_or_else(|e| panic!("{rel}: {e}"));
     let s = &imp.summary;
+    let t1 = t0.elapsed();
     let m = ck_topo::mass::lump_moments(&imp.body);
+    let t2 = t0.elapsed();
     let issues = ck_check::validate(&imp.body, 1e-6);
+    eprintln!("{rel}: import {t1:?}, +mass {:?}, +validate {:?}", t2 - t1, t0.elapsed() - t2);
     eprintln!("{rel}: bodies={} lumps={} faces={} issues={} vols={:?} skipped={:?}", s.bodies, s.lumps, s.faces, issues.len(), m.iter().map(|x| x.volume).collect::<Vec<_>>(), s.skipped);
     assert!(imp.body.num_faces() >= min_faces, "{rel}: faces {}", imp.body.num_faces());
     assert!(issues.is_empty(), "{rel}: {issues:?}");
