@@ -14,7 +14,7 @@
 
 /// Dense Gauss-Jordan with partial pivoting (client `fd()`); zero pivots
 /// yield 0 for that unknown.
-fn gauss_jordan(a: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
+pub(crate) fn gauss_jordan(a: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
     let t = b.len();
     let mut n: Vec<Vec<f64>> = a.iter().zip(b).map(|(r, &v)| {
         let mut r = r.clone();

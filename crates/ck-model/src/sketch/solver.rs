@@ -30,9 +30,9 @@ use std::collections::HashMap;
 
 /// A solver quantity: unknown slot `i >= 0`, or the constant `c`.
 #[derive(Debug, Clone, Copy)]
-struct V {
-    i: isize,
-    c: f64,
+pub(crate) struct V {
+    pub(crate) i: isize,
+    pub(crate) c: f64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -51,7 +51,7 @@ enum Ent {
 }
 
 #[inline]
-fn val(x: &[f64], v: V) -> f64 {
+pub(crate) fn val(x: &[f64], v: V) -> f64 {
     if v.i >= 0 {
         x[v.i as usize]
     } else {
@@ -90,12 +90,16 @@ type Resid = Box<dyn Fn(&[f64]) -> f64>;
 pub struct Equation {
     pub cid: String,
     pub deps: Vec<usize>,
-    f: Resid,
+    pub(crate) f: Resid,
 }
 
 impl Equation {
     pub fn eval(&self, x: &[f64]) -> f64 {
         (self.f)(x)
+    }
+    /// Assemble an equation (used by the 3D solver).
+    pub(crate) fn new(cid: &str, deps: Vec<usize>, f: Resid) -> Equation {
+        Equation { cid: cid.to_string(), deps, f }
     }
 }
 
@@ -748,7 +752,7 @@ fn end_index(pts: &[String], end: &str) -> Option<usize> {
     }
 }
 
-fn pad3(d: &[[f64; 2]; 4]) -> [[f64; 3]; 4] {
+pub(crate) fn pad3(d: &[[f64; 2]; 4]) -> [[f64; 3]; 4] {
     [
         [d[0][0], d[0][1], 0.0],
         [d[1][0], d[1][1], 0.0],
@@ -759,7 +763,7 @@ fn pad3(d: &[[f64; 2]; 4]) -> [[f64; 3]; 4] {
 
 /// Arc-length frame of the derivative triple `(d1, d2, d3)` — the kernel's
 /// `As` (WAT f1250). `None` when `|d1| <= 1e-150`.
-fn as_1250(e: [f64; 3], t: [f64; 3], n: [f64; 3]) -> Option<([[f64; 3]; 3], f64)> {
+pub fn as_1250(e: [f64; 3], t: [f64; 3], n: [f64; 3]) -> Option<([[f64; 3]; 3], f64)> {
     let s = (e[0] * e[0] + e[1] * e[1]) + e[2] * e[2];
     let mut i = s.sqrt();
     if i.is_nan() {
@@ -793,17 +797,31 @@ fn as_1250(e: [f64; 3], t: [f64; 3], n: [f64; 3]) -> Option<([[f64; 3]; 3], f64)
 /// Continuity residual (kernel f822, 2D mode): `level` residuals between
 /// the spline derivative tuple `e` and the other entity's `t`, with the
 /// build-time constants `(L, V)`.
-fn ls_kernel(level: usize, l: f64, v: f64, e: &[[f64; 3]; 4], t: &[[f64; 3]; 4]) -> Vec<f64> {
+pub fn ls_kernel(level: usize, l: f64, v: f64, e: &[[f64; 3]; 4], t: &[[f64; 3]; 4], mode3d: bool, axis: [f64; 3]) -> Vec<f64> {
     let (Some(o), Some(a)) = (
         as_1250(e[1], e[2], e[3]),
         as_1250(t[1], t[2], t[3]),
     ) else {
-        return vec![1.0; level];
+        return vec![1.0; if mode3d { 2 * level } else { level }];
     };
-    // 2D frame of the spline tangent: (-ty, tx, 0)
-    let f = [-o.0[0][1], o.0[0][0], 0.0];
     let a0 = a.0[0];
-    let mut u = vec![a0[0] * f[0] + a0[1] * f[1] + a0[2] * f[2]];
+    // the normal frame of the spline tangent: 2D mode = (-ty, tx, 0);
+    // 3D mode = the normalised cross product with the build-time axis, and
+    // its cross with the tangent (client `ud`)
+    let f: Vec<[f64; 3]> = if mode3d {
+        let mut n = cross3(o.0[0], axis);
+        let s = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+        if 1e-150 < s {
+            let inv = 1.0 / s;
+            n = [n[0] * inv, n[1] * inv, n[2] * inv];
+        } else {
+            n = [0.0; 3];
+        }
+        vec![n, cross3(o.0[0], n)]
+    } else {
+        vec![[-o.0[0][1], o.0[0][0], 0.0]]
+    };
+    let mut u: Vec<f64> = f.iter().map(|s| a0[0] * s[0] + a0[1] * s[1] + a0[2] * s[2]).collect();
     if level < 2 {
         return u;
     }
@@ -824,7 +842,9 @@ fn ls_kernel(level: usize, l: f64, v: f64, e: &[[f64; 3]; 4], t: &[[f64; 3]; 4])
         e[2][1] - k[1] * (p * p),
         e[2][2] - k[2] * (p * p),
     ];
-    u.push((l * (w[0] * f[0] + w[1] * f[1] + w[2] * f[2])) / (v * v));
+    for ff in &f {
+        u.push((l * (w[0] * ff[0] + w[1] * ff[1] + w[2] * ff[2])) / (v * v));
+    }
     if level < 3 {
         return u;
     }
@@ -836,8 +856,19 @@ fn ls_kernel(level: usize, l: f64, v: f64, e: &[[f64; 3]; 4], t: &[[f64; 3]; 4])
         (e[3][1] - k[1] * gp) - c[1] * d * p3,
         (e[3][2] - k[2] * gp) - c[2] * d * p3,
     ];
-    u.push(((l * l) * (y[0] * f[0] + y[1] * f[1] + y[2] * f[2])) / (v * (v * v)));
+    for ff in &f {
+        u.push(((l * l) * (y[0] * ff[0] + y[1] * ff[1] + y[2] * ff[2])) / (v * (v * v)));
+    }
     u
+}
+
+/// 3D cross/dot/sub/scale (used by the 3D continuity frame and sketch3).
+pub fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
 }
 
 /// `g1`/`g2`/`g3`: continuity between an open cvspline end and another
@@ -942,7 +973,7 @@ fn continuity(b: &mut Builder, k: &super::Constraint) -> Result<(), String> {
                 };
                 let h = v2s(x, z);
                 let Some(od) = other.derivs(x, h) else { return 1.0 };
-                ls_kernel(level, kconst.0, kconst.1, &sder, &pad3(&od))[i]
+                ls_kernel(level, kconst.0, kconst.1, &sder, &pad3(&od), false, [0.0; 3])[i]
             }),
         );
     }
@@ -975,7 +1006,7 @@ fn eval_cvspline_derivs(
 /// Closest parameter of a curve (client `ar` / kernel f3735): 97 samples
 /// (plain-sqrt distances) then 30 Newton steps, clamped to `[t0, t1]` when
 /// open.
-fn ar_closest(
+pub(crate) fn ar_closest(
     at: impl Fn(f64, u32) -> [f64; 2],
     q: [f64; 2],
     t0: f64,
@@ -1017,11 +1048,11 @@ fn ar_closest(
 
 /// Length of a shared curve's primary radius/direction (plain `sqrt`,
 /// kernel f821/f1267 style — NOT the correctly-rounded `hypot`).
-fn ln_len(dx: f64, dy: f64) -> f64 {
+pub(crate) fn ln_len(dx: f64, dy: f64) -> f64 {
     (dx * dx + dy * dy).sqrt()
 }
 /// Unit direction via reciprocal multiply (kernel f819's line `at`).
-fn ln_dir(dx: f64, dy: f64, o: f64) -> [f64; 2] {
+pub(crate) fn ln_dir(dx: f64, dy: f64, o: f64) -> [f64; 2] {
     let inv = 1.0 / o;
     [dx * inv, dy * inv]
 }
