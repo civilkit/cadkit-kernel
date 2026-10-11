@@ -242,7 +242,7 @@ pub type LoopCache = std::collections::HashMap<(usize, u32), Vec<Vec<Vec2>>>;
 pub fn point_in_face_cached(b: &Body, f: FaceId, p: Vec3, tol: f64, cache: &mut LoopCache) -> Where {
     for e in b.face_edges(f) {
         let ed = b.edge(e);
-        if super::imprint::dist_in_range(&ed.curve, (ed.t0, ed.t1), p).1 <= tol {
+        if super::imprint::near_in_range(&ed.curve, (ed.t0, ed.t1), p, tol) {
             return Where::On;
         }
     }
@@ -313,7 +313,7 @@ impl<'a> Solid<'a> {
         let b = self.body;
         for &e in &self.edges[i] {
             let ed = b.edge(e);
-            if super::imprint::dist_in_range(&ed.curve, (ed.t0, ed.t1), p).1 <= self.tol {
+            if super::imprint::near_in_range(&ed.curve, (ed.t0, ed.t1), p, self.tol) {
                 return Where::On;
             }
         }

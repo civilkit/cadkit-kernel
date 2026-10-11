@@ -201,6 +201,15 @@ impl Curve {
         }
     }
 
+    /// False only when `q` is certainly farther than `tol` from the curve
+    /// (cheap bound; true = unknown). Only B-splines are culled.
+    pub fn may_be_within(&self, q: Vec3, tol: f64) -> bool {
+        match self {
+            Curve::BSpline(b) => b.may_be_within(q, tol),
+            _ => true,
+        }
+    }
+
     /// Parameter of the closest point to `q` (periodic results in [0, 2π)).
     pub fn closest_param(&self, q: Vec3) -> f64 {
         match self {

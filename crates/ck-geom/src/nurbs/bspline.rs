@@ -518,6 +518,43 @@ impl<P: Pt> BSplineCurve<P> {
         newton_closest(|u| self.derivs(u, 2), q, best.1, a, b)
     }
 
+    /// Conservative proximity test: false only when `q` is farther than
+    /// `tol` from every knot span's control-point ball (so from the curve);
+    /// true means the curve may be within `tol`. Cost is a pass over the
+    /// control points, with no curve evaluation.
+    pub fn may_be_within(&self, q: P, tol: f64) -> bool {
+        let p = self.degree;
+        let ns = self.ctrl.len();
+        if ns <= p {
+            return true;
+        }
+        const BLK: usize = 8;
+        for s0 in (p..ns).step_by(BLK) {
+            let s1 = (s0 + BLK).min(ns) - 1;
+            let pts = &self.ctrl[s0 - p..=s1];
+            let c = (pts[0] + pts[pts.len() - 1]) * 0.5;
+            let r2 = pts.iter().map(|&x| (x - c).dot(x - c)).fold(0.0f64, f64::max);
+            if q.dist(c) - r2.sqrt() > tol {
+                continue;
+            }
+            for s in s0..=s1 {
+                if self.knots[s] < self.knots[s + 1] {
+                    let pts = &self.ctrl[s - p..=s];
+                    let mut c = pts[0];
+                    for &x in &pts[1..] {
+                        c = c + x;
+                    }
+                    let c = c / pts.len() as f64;
+                    let r = pts.iter().map(|&x| x.dist(c)).fold(0.0f64, f64::max);
+                    if q.dist(c) - r <= tol {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
     /// Closest point and its parameter.
     pub fn closest_point(&self, q: P) -> (f64, P) {
         let u = self.closest_param(q);

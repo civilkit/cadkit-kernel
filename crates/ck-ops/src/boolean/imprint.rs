@@ -100,7 +100,7 @@ impl Arrangement {
             // samples of the new piece on the existing one
             let on = [0.31, 0.5, 0.73].iter().all(|&f| {
                 let p = curve.eval(t0 + (t1 - t0) * f);
-                dist_in_range(&e.curve, (e.t0, e.t1), p).1 <= tol * 10.0
+                near_in_range(&e.curve, (e.t0, e.t1), p, tol * 10.0)
             });
             if !on {
                 continue;
@@ -137,6 +137,12 @@ pub fn dist_in_range(c: &Curve, r: (f64, f64), p: Vec3) -> (f64, f64) {
     } else {
         (r.1, d1)
     }
+}
+
+/// `dist_in_range(..).1 <= tol`, skipping the closest-point search when a
+/// control-polygon bound already puts `p` farther than `tol` from a spline.
+pub fn near_in_range(c: &Curve, r: (f64, f64), p: Vec3, tol: f64) -> bool {
+    c.may_be_within(p, tol) && dist_in_range(c, r, p).1 <= tol
 }
 
 /// Edge tolerance the original stores on every edge (face boxes grow by it:
@@ -216,7 +222,7 @@ pub fn imprint(a: &Body, b: &Body, tol: f64) -> Arrangement {
                             let on_edge = [(a, f), (b, g)].iter().any(|&(bd, fc)| {
                                 bd.face_edges(fc).into_iter().any(|e| {
                                     let ed = bd.edge(e);
-                                    dist_in_range(&ed.curve, (ed.t0, ed.t1), p).1 <= tol
+                                    near_in_range(&ed.curve, (ed.t0, ed.t1), p, tol)
                                 })
                             });
                             if on_edge && p.dist(start_pt) > tol {
@@ -234,7 +240,7 @@ pub fn imprint(a: &Body, b: &Body, tol: f64) -> Arrangement {
                                     let ed = bd.edge(e);
                                     [0.13, 0.41, 0.77].iter().all(|&k| {
                                         let q = curve.eval(t0 + (t1 - t0) * k);
-                                        dist_in_range(&ed.curve, (ed.t0, ed.t1), q).1 <= tol
+                                        near_in_range(&ed.curve, (ed.t0, ed.t1), q, tol)
                                     })
                                 })
                             });
@@ -245,7 +251,7 @@ pub fn imprint(a: &Body, b: &Body, tol: f64) -> Arrangement {
                             let on_edge = [(a, f), (b, g)].iter().any(|&(bd, fc)| {
                                 bd.face_edges(fc).into_iter().any(|e| {
                                     let ed = bd.edge(e);
-                                    dist_in_range(&ed.curve, (ed.t0, ed.t1), p).1 <= tol
+                                    near_in_range(&ed.curve, (ed.t0, ed.t1), p, tol)
                                 })
                             });
                             if on_edge {
