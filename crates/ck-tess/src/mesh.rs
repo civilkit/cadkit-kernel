@@ -293,18 +293,17 @@ fn assemble(body: &Body, faces: &[Option<FaceMesh>]) -> Mesh {
         let face = body.face(fids[wi]);
         let surf = &face.surface;
         let planar = matches!(surf, ck_geom::surface::Surface::Plane { .. });
-        let (pu, pv) = surf.periods();
         let cut = |uv: Vec2| -> Vec2 {
-            // evaluation parameter of a strip point (wrap the far copy back)
+            // the same wrap the vertex normals use: the far copy of a strip point evaluates at the near edge
             let mut e = uv;
-            if let Some(p) = pu {
-                if e.x.is_finite() {
-                    e.x = e.x.rem_euclid(p);
+            if let Some((c, p)) = fm.win[0] {
+                if e.x >= c + p {
+                    e.x -= p;
                 }
             }
-            if let Some(p) = pv {
-                if e.y.is_finite() {
-                    e.y = e.y.rem_euclid(p);
+            if let Some((c, p)) = fm.win[1] {
+                if e.y >= c + p {
+                    e.y -= p;
                 }
             }
             e

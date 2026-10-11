@@ -230,7 +230,7 @@ impl Cdt {
         if d.is_nan() || d <= 1e-9 {
             d = 1e-9;
         }
-        let r = d * 0.5 * std::env::var("CK_R").ok().and_then(|x| x.parse::<f64>().ok()).unwrap_or(64.0);
+        let r = d * 0.5 * 64.0;
         let lo = cy - r;
         let r2 = r + r;
         let pts = vec![[cx - r2, lo], [cx + r2, lo], [cx, cy + r2]];
@@ -435,13 +435,6 @@ impl Cdt {
         }
     }
 
-    /// Global Delaunay pass over every unconstrained edge (diagnostic).
-    pub fn legalize_all(&mut self) {
-        let mut st = vec![];
-        for t in 0..self.tris.len() { for k in 0..3 { st.push((t as u32, k)); } }
-        self.legalize(st);
-    }
-
     fn add_vertex(&mut self, p: Pt) -> u32 {
         let pi = self.pts.len() as u32;
         self.pts.push(p);
@@ -642,7 +635,7 @@ impl Cdt {
         self.mark_segment(a, b);
 
         // --- 4. swap the new edges to Delaunay, pass after pass
-        if !fresh.is_empty() && std::env::var("CK_NOP4").is_err() {
+        if !fresh.is_empty() {
             let mut pass = 0u32;
             loop {
                 let mut changed = false;
@@ -805,7 +798,6 @@ pub fn triangulate(pts: &[Pt], segs: &[(usize, usize)]) -> Result<Triangulation,
     for &(a, b) in segs {
         cdt.insert_segment(vmap[a], vmap[b]);
     }
-    if std::env::var("CK_GLOBAL").is_ok() { cdt.legalize_all(); }
     cdt.classify_parity();
     Ok(Triangulation { cdt, vmap })
 }
@@ -856,60 +848,5 @@ mod layer_tests {
         assert!(t.cdt.insert_interior([9.0, 1.5]).is_none());
         assert_eq!(t.cdt.inside_tris().len(), 4);
         assert!((area(&t.cdt) - 16.0).abs() < 1e-12);
-    }
-}
-
-#[cfg(test)]
-mod perm_probe {
-    use super::*;
-    #[test]
-    fn probe() {
-        let p = [[-20.0, -10.0], [-20.0, 10.0], [20.0, 10.0], [20.0, -10.0]];
-        let mut perms = vec![];
-        for a in 0..4 { for b in 0..4 { for c in 0..4 { for d in 0..4 {
-            let v = [a, b, c, d];
-            let mut s = v; s.sort();
-            if s == [0, 1, 2, 3] { perms.push(v); }
-        }}}}
-        for v in perms {
-            let pts: Vec<Pt> = v.iter().map(|&i| p[i]).collect();
-            let segs: Vec<(usize, usize)> = (0..4).map(|i| (i, (i + 1) % 4)).collect();
-            let t = triangulate(&pts, &segs).unwrap();
-            let lab = |cv: u32| -> usize { let q = t.cdt.pts[cv as usize]; (0..4).find(|&i| p[i] == q).unwrap_or(9) };
-            let r: Vec<[usize; 3]> = t.cdt.inside_tris().iter().map(|(_, vv)| [lab(vv[0]), lab(vv[1]), lab(vv[2])]).collect();
-            eprintln!("PERM {:?} -> {:?}", v, r);
-        }
-    }
-}
-
-#[cfg(test)]
-mod rect_probe {
-    use super::*;
-    fn perms(n: usize) -> Vec<Vec<usize>> {
-        if n == 1 { return vec![vec![0]]; }
-        let mut out = vec![];
-        for p in perms(n - 1) { for i in 0..n { let mut q = p.clone(); q.insert(i, n - 1); out.push(q); } }
-        out
-    }
-    #[test]
-    fn rect() {
-        let p = [[0.0, 0.0], [38.0, 0.0], [38.0, 18.0], [0.0, 18.0]]; // CCW labels 0..3
-        let rings: Vec<Vec<usize>> = vec![vec![0,1,2,3], vec![1,2,3,0], vec![2,3,0,1], vec![3,0,1,2], vec![3,2,1,0], vec![2,1,0,3], vec![1,0,3,2], vec![0,3,2,1]];
-        let targets: Vec<(&str, Vec<[usize; 3]>)> = vec![
-            ("P1", vec![[0,1,2],[0,2,3]]), ("P2", vec![[0,2,1],[0,3,2]]), ("M1", vec![[0,3,2],[0,2,1]]), ("M2", vec![[0,2,3],[0,1,2]]),
-        ];
-        for ins in perms(4) {
-            for ring in &rings {
-                let pts: Vec<Pt> = ins.iter().map(|&i| p[i]).collect();
-                let pos = |lab: usize| ins.iter().position(|&x| x == lab).unwrap();
-                let segs: Vec<(usize, usize)> = (0..4).map(|i| (pos(ring[i]), pos(ring[(i + 1) % 4]))).collect();
-                let t = triangulate(&pts, &segs).unwrap();
-                let lab = |cv: u32| -> usize { let q = t.cdt.pts[cv as usize]; (0..4).find(|&i| p[i] == q).unwrap_or(9) };
-                let r: Vec<[usize; 3]> = t.cdt.inside_tris().iter().map(|(_, vv)| [lab(vv[0]), lab(vv[1]), lab(vv[2])]).collect();
-                for (n, tg) in &targets { if &r == tg { eprintln!("RECT {n} ins={:?} ring={:?}", ins, ring); } }
-                if std::env::var("CK_TRACE").is_ok() { eprintln!("TR ---- ins={:?} ring={:?} result {:?} tris={:?}", ins, ring, r, t.cdt.tris.iter().map(|x| x.v).collect::<Vec<_>>()); }
-                if &ins == ring { eprintln!("HIT {:?} ins={:?} ring={:?}", r, ins, ring); }
-            }
-        }
     }
 }
