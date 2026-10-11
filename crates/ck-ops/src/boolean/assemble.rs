@@ -539,7 +539,108 @@ pub(crate) fn shift2(c: &Curve2, d: Vec2) -> Curve2 {
 
 /// Build the result body (one lump per connected shell; voids attach to
 /// their host via ck-topo `rebuild_lumps`).
+/// Join collinear line edges left meeting at a 2-valent vertex between the
+/// same two faces (a coplanar merge removed what separated them), the
+/// original's simplify pass: walking edges in numbering order, an edge
+/// absorbs the other edge at its END vertex (oracle mirrorBody: box with
+/// its mirror across x = 0 gives C0|S.e3 [40,0,-20]->[-40,0,-20] as ONE
+/// edge #6, while C0|S.e1 [0,0,0]->[40,0,0] and its mirror
+/// [0,0,0]->[-40,0,0], which only START there, stay two).
+fn join_collinear(arr: &Arrangement, faces: &[OutFace]) -> (Arrangement, Vec<OutFace>) {
+    let mut arr = arr.clone();
+    let mut faces = faces.to_vec();
+    let n = arr.edges.len();
+    let mut users: Vec<Vec<usize>> = vec![vec![]; n];
+    for (k, of) in faces.iter().enumerate() {
+        for &(e, _) in of.loops.iter().flatten() {
+            if !users[e].contains(&k) {
+                users[e].push(k);
+            }
+        }
+    }
+    let mut inc: std::collections::HashMap<usize, Vec<usize>> = Default::default();
+    for e in 0..n {
+        if users[e].is_empty() {
+            continue;
+        }
+        inc.entry(arr.edges[e].v0).or_default().push(e);
+        inc.entry(arr.edges[e].v1).or_default().push(e);
+    }
+    let mut items: Vec<&((usize, usize, usize), Vec<Vec<He>>)> = faces.iter().flat_map(|f| f.walk.iter()).collect();
+    items.sort_by_key(|x| x.0);
+    let mut order: Vec<usize> = vec![];
+    for (_, loops) in items {
+        for &(e, _) in loops.iter().flatten() {
+            if !users[e].is_empty() && !order.contains(&e) {
+                order.push(e);
+            }
+        }
+    }
+    let line = |c: &Curve| match c {
+        Curve::Line { o, d } => Some((*o, *d)),
+        _ => None,
+    };
+    let mut dead = vec![false; n];
+    let mut joined: Vec<(usize, usize)> = vec![];
+    for &e in &order {
+        if dead[e] {
+            continue;
+        }
+        loop {
+            let v = arr.edges[e].v1;
+            let at = &inc[&v];
+            if at.len() != 2 || arr.edges[e].v0 == v {
+                break;
+            }
+            let f = if at[0] == e { at[1] } else { at[0] };
+            if f == e || dead[f] {
+                break;
+            }
+            let (Some((o, d)), Some((_, d2))) = (line(&arr.edges[e].curve), line(&arr.edges[f].curve)) else { break };
+            let mut ue = users[e].clone();
+            let mut uf = users[f].clone();
+            ue.sort();
+            uf.sort();
+            if ue != uf || d.cross(d2).len() > 1e-12 || (arr.verts[arr.edges[f].v0] - o).cross(d).len() > arr.tol {
+                break;
+            }
+            let far = if arr.edges[f].v0 == v { arr.edges[f].v1 } else { arr.edges[f].v0 };
+            let t = (arr.verts[far] - o).dot(d);
+            if t <= arr.edges[e].t1 {
+                break;
+            }
+            arr.edges[e].t1 = t;
+            arr.edges[e].v1 = far;
+            dead[f] = true;
+            joined.push((e, f));
+            // the far vertex now meets e instead of f
+            let list = inc.get_mut(&far).unwrap();
+            for x in list.iter_mut() {
+                if *x == f {
+                    *x = e;
+                }
+            }
+        }
+    }
+    if joined.is_empty() {
+        return (arr, faces);
+    }
+    for of in &mut faces {
+        for l in of.loops.iter_mut() {
+            l.retain(|h| !dead[h.0]);
+        }
+        for (_, ls) in of.walk.iter_mut() {
+            for l in ls.iter_mut() {
+                l.retain(|h| !dead[h.0]);
+            }
+        }
+    }
+    (arr, faces)
+}
+
 pub fn build(arr: &Arrangement, faces: &[OutFace]) -> Body {
+    let (arr2, faces2) = join_collinear(arr, faces);
+    let (arr, faces) = (&arr2, &faces2[..]);
     let tol = arr.tol;
     let mut b = Body::new();
     let lump = b.add_lump();
