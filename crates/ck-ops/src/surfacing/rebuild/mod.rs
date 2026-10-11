@@ -26,7 +26,7 @@ pub mod edits;
 pub mod net;
 pub mod replace;
 
-use ck_geom::Vec2;
+
 use ck_topo::body::Body;
 
 #[derive(Debug, Clone)]
