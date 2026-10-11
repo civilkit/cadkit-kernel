@@ -39,7 +39,20 @@ let text: String = write_step(&body, name, &StepOpts { unix_ms: host_ck_unix_ms(
 - strings: `''`, `\\`, control chars dropped, non-ASCII → `\X2\hhhh\X0\`
   per char (UTF-16 units).
 - DIRECTION sharing keyed by exact bits (sign of zero matters);
-  CARTESIAN_POINT / VECTOR never shared.
+  CARTESIAN_POINT / VECTOR never shared. Decoded from kernel.wasm:
+  f414 (DIRECTION) first normalises `v·(1/√(x²+y²+z²))` (zero vector if
+  |v| ≤ 1e-300 or non-finite), then hashes the bits; f416
+  (AXIS2_PLACEMENT_3D) writes axis = unit z and ref = unit
+  (x − z(x·z)) (|·|² summed z²+(x²+y²); fallback unit z × e with e the
+  world axis of z's smallest |component|, f3907), both through f414;
+  f417 LINE = point o + t0·d, `VECTOR('',#dir,1.)` verbatim; CIRCLE and
+  f418 PLANE axis = x × y of the stored frame; cylinder / sphere / torus
+  axis = stored z; cone: negative semi-angle → negated axis.
+- the sign of zero of every oracle DIRECTION was recovered by
+  instrumenting f414 (log of the normalised components) —
+  tests/golden/signed_dirs.txt; `write_step_signed_zeros` (test support)
+  prints `-0.` so the test can compare them.
+- seam-split arcs (ck-topo `wire_chains`) are one EDGE_CURVE.
 - order: context #1..#14, world placement #15..#18, faces in shell order
   (surface, then per coedge: edge on first use [v0, v1, curve,
   EDGE_CURVE] + ORIENTED_EDGE, EDGE_LOOP, bound, ADVANCED_FACE),
@@ -55,11 +68,14 @@ let text: String = write_step(&body, name, &StepOpts { unix_ms: host_ck_unix_ms(
 
 `cargo test -p ck-io`:
 - `tests/step_oracle.rs`, 16 golden bodies (ck-topo make::* constructions):
-  BYTE-identical: box3 flip mid two dext sphere torus.
-  STRUCT-identical (only DIRECTION sharing differs — ck-topo's sign of
-  zero in frames/line directions): box cyl rev360 rev90 revax360 revax90
-  cone void. `draft`: one drafted side plane has ref dir (1,0,0) where the
-  oracle has (-1,0,0) (ck-topo frame choice).
+  BYTE-identical AND every DIRECTION's sign of zero equal to the
+  oracle's: box box3 cyl dext flip mid two rev360 rev90 revax360 revax90
+  sphere torus cone void (15). `draft` is the one known diff (the oracle
+  rebuilds drafted faces with a draft op: vertices ~2e-10 away, side
+  plane x = −edge direction; see ck-topo README). Plus: a seam-split
+  cylinder cap circle writes the unsplit cyl file.
+- Debug: `OUT=<dir> cargo test -p ck-io --test dump write_ours -- --ignored`
+  writes every golden body with signed zeros.
 - `tests/entities.rs`: rational B-spline surface/curve, B-spline curve,
   ellipse + SURFACE_OF_LINEAR_EXTRUSION, SURFACE_OF_REVOLUTION verbatim
   against oracle lines.

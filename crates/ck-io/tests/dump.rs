@@ -24,3 +24,13 @@ fn dump_lumps() {
     for (i, s) in b.shells.iter().enumerate() { println!("shell {i} {:?}", s); }
     for f in &b.faces { println!("{} sense {}", f.name.id(), f.sense); }
 }
+/// `OUT=<dir> cargo test -p ck-io --test dump write_ours -- --ignored`
+#[test]
+#[ignore]
+fn write_ours() {
+    let dir = std::env::var("OUT").unwrap();
+    for n in bodies::NAMES {
+        let s = ck_io::step::write_step_signed_zeros(&bodies::build(n), n, &ck_io::step::StepOpts { unix_ms: 0.0 });
+        std::fs::write(format!("{dir}/{n}.step"), s).unwrap();
+    }
+}

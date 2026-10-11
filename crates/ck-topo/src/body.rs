@@ -496,6 +496,84 @@ impl Body {
         (lo, hi)
     }
 
+    /// Box of a face from its boundary edges' control points: lines by
+    /// their ends, splines by the control net of the trimmed piece.
+    /// GUESS for conics (sampled arc). This is the key the oracle orders
+    /// `~k` pieces of one face name by (see [`Body::number_split_faces`]).
+    pub fn face_ctrl_box(&self, f: FaceId) -> (Vec3, Vec3) {
+        let mut lo = Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
+        let mut hi = -lo;
+        for e in self.face_edges(f) {
+            let ed = &self.edges[e.idx()];
+            let pts = match &ed.curve {
+                Curve::Line { .. } => vec![self.vertices[ed.v0.idx()].p, self.vertices[ed.v1.idx()].p],
+                Curve::BSpline(c) => clamped_net(c, ed.t0.min(ed.t1), ed.t0.max(ed.t1)),
+                c => c.sample(ed.t0, ed.t1, 64),
+            };
+            for p in pts {
+                lo = lo.min(p);
+                hi = hi.max(p);
+            }
+        }
+        (lo, hi)
+    }
+
+    /// Give `~k` suffixes to live faces that would otherwise share one id
+    /// (one sketch entity split into several side faces, e.g. a closed
+    /// spline profile cut at half length): k = rank of the face's
+    /// [`Body::face_ctrl_box`] centre, compared (x, y, z) lexicographically
+    /// in world axes. Oracle probes: closed-spline extrudes (60 random
+    /// shapes per plane + symmetric ones on front/top/right) name `S.e1~1`
+    /// the piece with the smaller control-box centre x (the curve's own
+    /// box or mid point get 2..9 of 60 wrong), ties broken by y then z;
+    /// near-ties of 4e-16 in y fall through to z, so the compare has a
+    /// tolerance; the loft probe (`~1..~4` around a circle→square loft)
+    /// fits the same rule. Faces that already carry a region keep it.
+    pub fn number_split_faces(&mut self) {
+        let mut groups: std::collections::BTreeMap<String, Vec<FaceId>> = Default::default();
+        for f in self.face_ids() {
+            if self.faces[f.idx()].name.region.is_none() {
+                groups.entry(self.face_id_str(f)).or_default().push(f);
+            }
+        }
+        for fs in groups.into_values().filter(|g| g.len() > 1) {
+            let mut keyed: Vec<(Vec3, FaceId)> = fs
+                .into_iter()
+                .map(|f| {
+                    let (lo, hi) = self.face_ctrl_box(f);
+                    ((lo + hi) * 0.5, f)
+                })
+                .collect();
+            // GUESS: tie tolerance 1e-9 (pinned only to lie in [4e-16, 0.05))
+            let cmp = |p: f64, q: f64| if (p - q).abs() <= 1e-9 { std::cmp::Ordering::Equal } else { p.total_cmp(&q) };
+            keyed.sort_by(|a, b| {
+                let (p, q) = (a.0, b.0);
+                cmp(p.x, q.x).then(cmp(p.y, q.y)).then(cmp(p.z, q.z))
+            });
+            for (k, (_, f)) in keyed.into_iter().enumerate() {
+                self.faces[f.idx()].name.region = Some(k as u32 + 1);
+            }
+        }
+    }
+
+    /// Edge between two pieces of one split face (same feature / role /
+    /// suffix, different `~k`) lying on the same surface: the oracle keeps
+    /// it in the topology (it takes a wire number and is written to STEP)
+    /// but leaves it out of `body.edges` (closed-spline extrude: rails #0,
+    /// #1 between `S.e1~2` and `S.e1~1` are missing from the reply).
+    pub fn is_split_rail(&self, e: EdgeId) -> bool {
+        let fs = self.edge_faces(e);
+        if fs.len() != 2 {
+            return false;
+        }
+        let (a, b) = (&self.faces[fs[0].idx()], &self.faces[fs[1].idx()]);
+        a.name.region != b.name.region
+            && a.name.feature == b.name.feature
+            && a.name.role == b.name.role
+            && a.name.suffix == b.name.suffix
+            && a.surface == b.surface
+    }
+
     // ---- whole-body ops
     /// Append all of `other` (ids are offset); returns the new lump ids.
     pub fn append(&mut self, other: &Body) -> Vec<LumpId> {
@@ -635,13 +713,198 @@ impl Body {
         self.edge_ids().filter(|&e| !self.is_seam(e) && !self.edge_faces(e).is_empty()).collect()
     }
 
+    /// Oracle edges as chains of wire edges.
+    ///
+    /// The original kernel's periodic faces have no seam edges (STEP
+    /// replies: cylinder faces bounded by bare circles, full spheres / tori
+    /// with no loop at all; ck-ops probe `boss`: the boss's bottom arc is
+    /// ONE edge `F2.C0|F4.S.e1` running through the point where our seam
+    /// lands). ck-topo keeps seams internally (uv-closed loops for the
+    /// mass integrator, mesher and booleans), so an arc that crosses a seam
+    /// is split at a seam vertex. Consecutive wire edges on the same carrier
+    /// curve with the same face pair, meeting head-to-tail at a vertex whose
+    /// only other edges are seams, form one chain = one oracle edge.
+    /// Chains come in wire order (position of their first member), each
+    /// ordered head to tail; unsplit edges are 1-chains.
+    pub fn wire_chains(&self) -> Vec<Vec<EdgeId>> {
+        let wire = self.wire_edges();
+        let mut is_wire = vec![false; self.edges.len()];
+        for &e in &wire {
+            is_wire[e.idx()] = true;
+        }
+        let mut inc: Vec<Vec<EdgeId>> = vec![vec![]; self.vertices.len()];
+        for e in self.edge_ids() {
+            let ed = &self.edges[e.idx()];
+            inc[ed.v0.idx()].push(e);
+            if ed.v1 != ed.v0 {
+                inc[ed.v1.idx()].push(e);
+            }
+        }
+        let pair = |e: EdgeId| {
+            let mut f = self.edge_faces(e);
+            f.sort();
+            f
+        };
+        let same_carrier = |a: EdgeId, c: EdgeId| {
+            let (x, y) = (&self.edges[a.idx()].curve, &self.edges[c.idx()].curve);
+            match (x, y) {
+                (Curve::Circle { frame: f, r }, Curve::Circle { frame: g, r: s }) => {
+                    (f.o - g.o).len() < 1e-9 && (r - s).abs() < 1e-9 && f.z.dot(g.z) > 1.0 - 1e-12
+                }
+                (Curve::Line { o, d }, Curve::Line { o: p, d: q }) => {
+                    d.cross(*q).len() < 1e-12 && d.dot(*q) > 0.0 && (*p - *o).cross(*d).len() < 1e-9
+                }
+                _ => x == y,
+            }
+        };
+        let mut used = vec![false; self.edges.len()];
+        let mut out = vec![];
+        for &e in &wire {
+            if used[e.idx()] {
+                continue;
+            }
+            used[e.idx()] = true;
+            let pe = pair(e);
+            let mut chain = vec![e];
+            for fwd in [true, false] {
+                loop {
+                    let end = if fwd { *chain.last().unwrap() } else { chain[0] };
+                    let v = if fwd { self.edges[end.idx()].v1 } else { self.edges[end.idx()].v0 };
+                    let joins = |n: EdgeId| {
+                        let ed = &self.edges[n.idx()];
+                        !used[n.idx()]
+                            && is_wire[n.idx()]
+                            && (if fwd { ed.v0 } else { ed.v1 }) == v
+                            && ed.v0 != ed.v1
+                            && same_carrier(n, end)
+                            && pair(n) == pe
+                    };
+                    let Some(n) = inc[v.idx()].iter().copied().find(|&n| joins(n)) else { break };
+                    if !inc[v.idx()].iter().all(|&o| o == n || o == end || self.is_seam(o)) {
+                        break;
+                    }
+                    used[n.idx()] = true;
+                    if fwd {
+                        chain.push(n)
+                    } else {
+                        chain.insert(0, n)
+                    }
+                }
+            }
+            // a closed ring of one conic starts where its parameter run
+            // starts: the piece whose t0 is no other piece's t1 (ck-ops
+            // imprint gives closed SSI circles the range [0.62·2π − 2π,
+            // 0.62·2π] and our seam splits it at 0; a ring split at t
+            // inside [0, 2π] keeps its original start)
+            let n = chain.len();
+            if n > 1 && self.edges[chain[0].idx()].v0 == self.edges[chain[n - 1].idx()].v1 {
+                let ends: Vec<f64> = chain.iter().map(|&c| self.edges[c.idx()].t1).collect();
+                let starts: Vec<usize> = (0..n).filter(|&k| !ends.contains(&self.edges[chain[k].idx()].t0)).collect();
+                if starts.len() == 1 {
+                    chain.rotate_left(starts[0]);
+                }
+            }
+            out.push(chain);
+        }
+        out
+    }
+
+    /// Arena index of `e` as the original kernel would number it: its arena
+    /// has no seam edges, so seams (alive or dead) take no slot. This is
+    /// the wire `#n` after an IN-PLACE op (blend/inplace.rs keeps surviving
+    /// edges' numbers, dead ones leave gaps). Oracle probe: cylinder (top
+    /// plane circle r10, blind 10) + fillet r2 of `F2.C1|F2.S.e7` gives
+    /// `F2.C0|F2.S.e7#0, F2.C1|F3.B0#2, F2.S.e7|F3.B0#3` — the dead C1
+    /// circle is #1 and there is no slot for the rail seam (our arena:
+    /// seam 0, C0 1, C1 2).
+    /// Wire chains with their oracle edge number `#n`: arena slots in order,
+    /// where every DEAD non-seam edge also takes a slot (an in-place op —
+    /// fillet — keeps its survivors' numbers and leaves gaps for dead
+    /// edges; ck-ops blend writes its result in that arena layout) and a
+    /// live chain takes the slot of its first arena member. Seams and the
+    /// further pieces of a chain take none. Without dead edges this is the
+    /// chain's position in [`Body::wire_chains`]. Also returns the slot
+    /// count (the next free number).
+    pub fn wire_numbered(&self) -> (Vec<(usize, Vec<EdgeId>)>, usize) {
+        let chains = self.wire_chains();
+        let mut head = vec![usize::MAX; self.edges.len()];
+        let mut member = vec![false; self.edges.len()];
+        for (k, ch) in chains.iter().enumerate() {
+            let first = ch.iter().map(|e| e.idx()).min().unwrap();
+            head[first] = k;
+            for e in ch {
+                member[e.idx()] = true;
+            }
+        }
+        let mut num = vec![0usize; chains.len()];
+        let mut slot = 0usize;
+        for i in 0..self.edges.len() {
+            let ed = &self.edges[i];
+            if ed.alive {
+                if head[i] != usize::MAX {
+                    num[head[i]] = slot;
+                    slot += 1;
+                }
+            } else if !member[i] && !self.edge_was_seam(EdgeId(i as u32)) {
+                slot += 1;
+            }
+        }
+        (num.into_iter().zip(chains).collect(), slot)
+    }
+
+    pub fn seamless_index(&self, e: EdgeId) -> usize {
+        (0..e.idx()).filter(|&i| !self.edge_was_seam(EdgeId(i as u32))).count()
+    }
+    /// Seam test that also works for dead edges (all coedges, alive or
+    /// not, on one face).
+    fn edge_was_seam(&self, e: EdgeId) -> bool {
+        let cs = &self.edges[e.idx()].coedges;
+        cs.len() >= 2 && cs.iter().all(|&c| self.coedge_face(c) == self.coedge_face(cs[0]))
+    }
+
+    /// Point at half the arc length of a chain (= the curve at
+    /// mid-parameter for one edge, and for a seam-split arc).
+    pub fn chain_mid(&self, chain: &[EdgeId]) -> Vec3 {
+        if chain.len() == 1 {
+            return self.edge_mid(chain[0]);
+        }
+        // pieces of one conic with contiguous parameters: the mid parameter
+        // of the whole run (what the oracle's single edge reports)
+        let (f, l) = (&self.edges[chain[0].idx()], &self.edges[chain[chain.len() - 1].idx()]);
+        if matches!(f.curve, Curve::Circle { .. } | Curve::Ellipse { .. })
+            && chain.windows(2).all(|w| {
+                let (a, b) = (&self.edges[w[0].idx()], &self.edges[w[1].idx()]);
+                a.curve == b.curve && a.t1 == b.t0
+            })
+        {
+            return f.curve.eval(0.5 * (f.t0 + l.t1));
+        }
+        let lens: Vec<f64> = chain.iter().map(|&e| self.edge_length(e)).collect();
+        let mut half = 0.5 * lens.iter().sum::<f64>();
+        for (&e, &l) in chain.iter().zip(&lens) {
+            if half <= l || e == *chain.last().unwrap() {
+                let ed = &self.edges[e.idx()];
+                // conics / lines: arc length is linear in the parameter
+                let f = if l > 0.0 { (half / l).clamp(0.0, 1.0) } else { 0.5 };
+                return ed.curve.eval(ed.t0 + (ed.t1 - ed.t0) * f);
+            }
+            half -= l;
+        }
+        unreachable!()
+    }
+
     /// `body.edges[]` in the oracle wire shape:
-    /// `{pts, faces, key, mid, circle:{c,n,r} | line:true}`. `pts` comes from
-    /// `pts(edge)` (the tessellator owns the discretisation; see
-    /// [`Body::sample_edge`] for a stand-alone default).
+    /// `{pts, faces, key, mid, circle:{c,n,r} | line:true}`, one entry per
+    /// [`Body::wire_chains`] chain. `pts` comes from `pts(edge)` (the
+    /// tessellator owns the discretisation; see [`Body::sample_edge`] for a
+    /// stand-alone default), concatenated along a chain.
     pub fn edges_json(&self, pts: &dyn Fn(&Body, EdgeId) -> Vec<Vec3>) -> Json {
         let mut out = vec![];
-        for (seq, e) in self.wire_edges().into_iter().enumerate() {
+        for (seq, chain) in self.wire_numbered().0 {
+            let e = chain[0];
+            if self.is_split_rail(e) {
+                continue; // numbered, not listed
+            }
             let mut names: Vec<String> = self.edge_faces(e).iter().map(|&f| self.face_id_str(f)).collect();
             names.sort();
             let key = if names.len() >= 2 {
@@ -650,12 +913,18 @@ impl Body {
                 // GUESS: open edge (one face) keys as `<id>#n`.
                 format!("{}#{}", names[0], seq)
             };
-            let p: Vec<Json> = pts(self, e).into_iter().map(v3).collect();
+            let mut pl: Vec<Vec3> = vec![];
+            for &c in &chain {
+                let q = pts(self, c);
+                let skip = usize::from(!pl.is_empty() && !q.is_empty());
+                pl.extend(q.into_iter().skip(skip));
+            }
+            let p: Vec<Json> = pl.into_iter().map(v3).collect();
             let mut o = Obj::new()
                 .put("pts", Json::Arr(p))
                 .put("faces", Json::Arr(names.iter().map(|s| Json::from(s.as_str())).collect()))
                 .put("key", key)
-                .put("mid", v3(self.edge_mid(e)));
+                .put("mid", v3(self.chain_mid(&chain)));
             let ed = &self.edges[e.idx()];
             match &ed.curve {
                 Curve::Circle { .. } => {
@@ -682,7 +951,7 @@ impl Body {
             Curve::Line { .. } => 1,
             Curve::Circle { r, .. } => arc_segments(*r, ed.t1 - ed.t0, tol),
             Curve::Ellipse { a, b, .. } => arc_segments(a.max(*b), ed.t1 - ed.t0, tol),
-            Curve::BSpline(_) => {
+            Curve::BSpline(_) | Curve::Conic { .. } | Curve::Sinusoid { .. } => {
                 let len = ed.curve.length_between(ed.t0, ed.t1);
                 ((len / (8.0 * tol).sqrt().max(1e-9)).ceil() as usize).clamp(2, 512)
             }
@@ -702,15 +971,30 @@ fn arc_segments(r: f64, sweep: f64, tol: f64) -> usize {
     ((sweep.abs() / step).ceil() as usize).clamp(1, 1024)
 }
 
-/// Wire face `kind`.
-/// GUESS: swept (extrusion/revolution) and offset surfaces are reported as
-/// `spline` — the frontend only knows plane/cylinder/cone/sphere/torus/spline
-/// (oracle-flange.json + probes); the kernel likely converts them to NURBS.
+/// Wire face `kind`: the kind table in kernel.strings is
+/// `plane cylinder cone sphere torus spline offset extrusion revolution`;
+/// oracle probes report `extrusion` (closed-spline / ellipse extrudes) and
+/// `revolution` (spline revolve). `offset` unprobed.
 pub fn wire_kind(s: &Surface) -> &'static str {
-    match s {
-        Surface::Extrusion { .. } | Surface::Revolution { .. } | Surface::Offset { .. } => "spline",
-        s => s.kind(),
+    s.kind()
+}
+
+/// Control net of the piece [u0,u1] of `c`, clamped at both ends (knots
+/// raised to multiplicity p there, also at an unclamped domain end of a
+/// periodic curve) — the oracle represents a closed cv-spline as a clamped
+/// curve and its halves by knot insertion (cvs.step: 8 CPs on (0..5),
+/// halves 6 CPs on (0,1,2,2.5) / (2.5,3,4,5)).
+fn clamped_net(c: &ck_geom::nurbs::bspline::BSplineCurve<Vec3>, u0: f64, u1: f64) -> Vec<Vec3> {
+    let p = c.degree;
+    let c = c.insert_knot(u0, p).insert_knot(u1, p);
+    let first_ge = |u: f64| c.knots.iter().position(|&k| k >= u).unwrap_or(c.knots.len());
+    let last_le = |u: f64| c.knots.iter().rposition(|&k| k <= u).unwrap_or(0);
+    let i0 = last_le(u0).saturating_sub(p);
+    let i1 = first_ge(u1).saturating_sub(1).min(c.ctrl.len() - 1);
+    if i0 > i1 {
+        return c.ctrl.clone();
     }
+    c.ctrl[i0..=i1].to_vec()
 }
 
 pub(crate) fn v3(p: Vec3) -> Json {
@@ -747,6 +1031,40 @@ pub fn transform_surface(s: &Surface, x: &Xform) -> Surface {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn seam_split_arcs_export_as_one_edge() {
+        use crate::make::{extrude, ExtrudeOpts, Profile, ProfileLoop, ProfileRegion, ProfileSeg};
+        let prof = Profile::new(
+            crate::make::tests::top_frame(),
+            vec![ProfileRegion {
+                outer: ProfileLoop::new(vec![ProfileSeg::circle("e7", Vec2::new(5.0, 3.0), 10.0)]),
+                holes: vec![],
+            }],
+        );
+        let mut b = extrude("F2", &prof, ExtrudeOpts::blind(10.0)).unwrap();
+        let before = ck_json::to_string(&b.edges_json(&|b, e| b.sample_edge(e, 0.01)));
+        // oracle arena numbering skips the seam rail: C0 circle #0, C1 #1
+        let w = b.wire_edges();
+        assert_eq!((w[0].idx(), w[1].idx()), (1, 2));
+        assert_eq!((b.seamless_index(w[0]), b.seamless_index(w[1])), (0, 1));
+        // split the C0 circle (seam vertex at t=0) at t=2: two arcs joined at
+        // the seam vertex and at the new vertex -> still one oracle edge
+        let c0 = b.wire_edges()[0];
+        crate::edit::split_edge(&mut b, c0, 2.0);
+        assert_eq!(b.wire_edges().len(), 3);
+        let ch = b.wire_chains();
+        assert_eq!(ch.len(), 2);
+        assert_eq!(ch[0].len(), 2);
+        let after = b.edges_json(&|b, e| b.sample_edge(e, 0.01));
+        let a = after.as_arr().unwrap();
+        assert_eq!(a.len(), 2);
+        let bj = ck_json::parse(&before).unwrap();
+        let b0 = &bj.as_arr().unwrap()[0];
+        assert_eq!(a[0].get_str("key"), b0.get_str("key"));
+        let (m0, m1) = (a[0].get("mid").unwrap().as_vec3().unwrap(), b0.get("mid").unwrap().as_vec3().unwrap());
+        assert!((0..3).all(|i| (m0[i] - m1[i]).abs() < 1e-9), "{m0:?} {m1:?}");
+    }
 
     #[test]
     fn face_name_roundtrip() {

@@ -167,6 +167,10 @@ pub struct StepWriter {
     dirs: HashMap<[u64; 3], usize>,
     verts: HashMap<VertexId, usize>,
     edges: HashMap<EdgeId, usize>,
+    /// print -0 DIRECTION components as `-0.` (test support)
+    signed_zero: bool,
+    /// member edge -> (head, tail) of its seam-split chain (len > 1 only)
+    chain: HashMap<EdgeId, (EdgeId, EdgeId)>,
 }
 
 impl Default for StepWriter {
@@ -177,7 +181,15 @@ impl Default for StepWriter {
 
 impl StepWriter {
     pub fn new() -> StepWriter {
-        StepWriter { out: String::new(), n: 0, dirs: HashMap::new(), verts: HashMap::new(), edges: HashMap::new() }
+        StepWriter {
+            out: String::new(),
+            n: 0,
+            dirs: HashMap::new(),
+            verts: HashMap::new(),
+            edges: HashMap::new(),
+            signed_zero: false,
+            chain: HashMap::new(),
+        }
     }
 
     /// Writer whose next entity is `#next` (entity-level tests).
@@ -207,11 +219,27 @@ impl StepWriter {
         self.ent(&format!("CARTESIAN_POINT('',{})", triple(p)))
     }
 
+    /// DIRECTION, normalised first exactly like the oracle's writer
+    /// (f414: `len = sqrt(x²+y²+z²)`; `len > 1e-300` and finite →
+    /// components × (1/len), otherwise (0,0,0)), then shared by bits.
     pub fn dir(&mut self, d: Vec3) -> usize {
+        let len = (d.x * d.x + d.y * d.y + d.z * d.z).sqrt();
+        let d = if len > 1e-300 && len.is_finite() {
+            let k = 1.0 / len;
+            Vec3::new(d.x * k, d.y * k, d.z * k)
+        } else {
+            Vec3::ZERO
+        };
         if let Some(&i) = self.dirs.get(&bits(d)) {
             return i;
         }
-        let i = self.ent(&format!("DIRECTION('',{})", triple(d)));
+        let t = if self.signed_zero {
+            let r = |x: f64| if x == 0.0 && x.is_sign_negative() { "-0.".to_string() } else { real(x) };
+            format!("({},{},{})", r(d.x), r(d.y), r(d.z))
+        } else {
+            triple(d)
+        };
+        let i = self.ent(&format!("DIRECTION('',{t})"));
         self.dirs.insert(bits(d), i);
         i
     }
@@ -222,10 +250,34 @@ impl StepWriter {
     }
 
     /// AXIS2_PLACEMENT_3D(location, axis, ref_direction).
+    /// AXIS2_PLACEMENT_3D as the oracle's f416 builds it: axis = unit z,
+    /// ref = unit (x − z(x·z)) (fallback: unit z × e, e = the world axis of
+    /// z's smallest |component|, f3907); both then go through `dir`
+    /// (normalised once more). Summation orders are the binary's.
     pub fn axis2(&mut self, o: Vec3, z: Vec3, x: Vec3) -> usize {
+        let unit = |v: Vec3, l2: f64| {
+            let l = l2.sqrt();
+            if l > 1e-300 && l.is_finite() {
+                let k = 1.0 / l;
+                Some(Vec3::new(v.x * k, v.y * k, v.z * k))
+            } else {
+                None
+            }
+        };
+        let zn = unit(z, z.x * z.x + z.y * z.y + z.z * z.z).unwrap_or(Vec3::ZERO);
+        let d = x.x * zn.x + x.y * zn.y + zn.z * x.z;
+        let xp = Vec3::new(x.x - zn.x * d, x.y - zn.y * d, x.z - zn.z * d);
+        let xr = unit(xp, xp.z * xp.z + (xp.x * xp.x + xp.y * xp.y)).unwrap_or_else(|| {
+            let (ax, ay, az) = (zn.x.abs(), zn.y.abs(), zn.z.abs());
+            let ex = ax <= ay && ax <= az;
+            let ey = !ex && ay <= az;
+            let e = Vec3::new(ex as u8 as f64, ey as u8 as f64, (!ex && !ey) as u8 as f64);
+            let c = Vec3::new(zn.y * e.z - zn.z * e.y, zn.z * e.x - zn.x * e.z, zn.x * e.y - zn.y * e.x);
+            unit(c, c.z * c.z + (c.y * c.y + c.x * c.x)).unwrap_or(Vec3::ZERO)
+        });
         let p = self.point(o);
-        let zi = self.dir(z);
-        let xi = self.dir(x);
+        let zi = self.dir(zn);
+        let xi = self.dir(xr);
         self.ent(&format!("AXIS2_PLACEMENT_3D('',#{p},#{zi},#{xi})"))
     }
 
@@ -233,18 +285,24 @@ impl StepWriter {
         self.axis2(f.o, f.z, f.x)
     }
 
+    /// Placement of a PLANE / CIRCLE: the oracle stores those as
+    /// (o, x, y) and writes axis = x × y (f417 / f418), whatever the
+    /// frame's own z holds (decides the sign of zero components).
+    fn frame_xy(&mut self, f: &Frame) -> usize {
+        self.axis2(f.o, f.x.cross(f.y), f.x)
+    }
+
     pub fn curve(&mut self, c: &Curve) -> usize {
         match c {
             Curve::Line { o, d } => {
                 let p = self.point(*o);
-                // GUESS: magnitude = |d| (always 1. in every oracle file;
-                // ck-geom lines are unit).
-                let len = d.len();
-                let v = self.vector(*d, len);
+                // f417: the LINE vector is `VECTOR('',#dir,1.)` verbatim.
+                let di = self.dir(*d);
+                let v = self.ent(&format!("VECTOR('',#{di},1.)"));
                 self.ent(&format!("LINE('',#{p},#{v})"))
             }
             Curve::Circle { frame, r } => {
-                let a = self.frame(frame);
+                let a = self.frame_xy(frame);
                 self.ent(&format!("CIRCLE('',#{a},{})", real(*r)))
             }
             Curve::Ellipse { frame, a, b } => {
@@ -278,13 +336,19 @@ impl StepWriter {
                     )),
                 }
             }
+            // GUESS: no oracle evidence of STEP CONIC entities; conic and
+            // sinusoid edges are written as their B-spline approximations.
+            Curve::Conic { .. } | Curve::Sinusoid { .. } => {
+                let bs = ck_geom::convert::curve_to_nurbs(c, c.range().0, c.range().1);
+                self.curve(&Curve::BSpline(bs))
+            }
         }
     }
 
     pub fn surface(&mut self, s: &Surface) -> usize {
         match s {
             Surface::Plane { frame } => {
-                let a = self.frame(frame);
+                let a = self.frame_xy(frame);
                 self.ent(&format!("PLANE('',#{a})"))
             }
             Surface::Cylinder { frame, r } => {
@@ -384,12 +448,15 @@ impl StepWriter {
     }
 
     fn edge(&mut self, body: &Body, e: EdgeId) -> usize {
+        // a seam-split arc (ck-topo `wire_chains`) is ONE oracle edge: the
+        // head's curve from the head's start to the tail's end vertex
+        let (e, tail) = self.chain.get(&e).copied().unwrap_or((e, e));
         if let Some(&i) = self.edges.get(&e) {
             return i;
         }
         let ed = body.edge(e);
         let a = self.vertex(body, ed.v0);
-        let b = self.vertex(body, ed.v1);
+        let b = self.vertex(body, body.edge(tail).v1);
         // Oracle LINE location = the edge start point (draft rails).
         // GUESS: lines are re-anchored at t0, other curves written as is.
         let c = match &ed.curve {
@@ -430,8 +497,23 @@ impl StepWriter {
         let outer = if matches!(face.surface, Surface::Plane { .. }) { outer_piece(body, f, &pieces) } else { None };
         let mut bounds = Vec::new();
         for (k, piece) in pieces.iter().enumerate() {
-            let mut oes = Vec::new();
+            // collapse runs of coedges on one chain (also across the loop
+            // start) into one ORIENTED_EDGE
+            let head = |c: CoedgeId| {
+                let e = body.coedge(c).edge;
+                self.chain.get(&e).map_or(e, |h| h.0)
+            };
+            let mut cs: Vec<CoedgeId> = Vec::new();
             for &c in piece {
+                if cs.last().map_or(true, |&p| head(p) != head(c)) {
+                    cs.push(c);
+                }
+            }
+            if cs.len() > 1 && head(cs[0]) == head(*cs.last().unwrap()) {
+                cs.pop();
+            }
+            let mut oes = Vec::new();
+            for c in cs {
                 let ce = body.coedge(c);
                 let e = self.edge(body, ce.edge);
                 oes.push(self.oriented(e, !ce.rev));
@@ -596,8 +678,26 @@ fn shell_closed(body: &Body, s: ShellId) -> bool {
 
 /// The full `step` reply text for one body.
 pub fn write_step(body: &Body, name: &str, opts: &StepOpts) -> String {
+    write_step_impl(body, name, opts, false)
+}
+
+/// Test support: [`write_step`] with negative-zero DIRECTION components
+/// printed as `-0.` (the oracle prints `0.`), so goldens can pin the sign of
+/// zero of every direction, not only the resulting sharing.
+#[doc(hidden)]
+pub fn write_step_signed_zeros(body: &Body, name: &str, opts: &StepOpts) -> String {
+    write_step_impl(body, name, opts, true)
+}
+
+fn write_step_impl(body: &Body, name: &str, opts: &StepOpts, signed_zero: bool) -> String {
     let nm = string(name);
     let mut w = StepWriter::new();
+    w.signed_zero = signed_zero;
+    for ch in body.wire_chains().into_iter().filter(|c| c.len() > 1) {
+        for &e in &ch {
+            w.chain.insert(e, (ch[0], *ch.last().unwrap()));
+        }
+    }
     w.ent("APPLICATION_CONTEXT('core data for automotive mechanical design processes')");
     w.ent("APPLICATION_PROTOCOL_DEFINITION('international standard','automotive_design',2000,#1)");
     w.ent("PRODUCT_CONTEXT('',#1,'mechanical')");

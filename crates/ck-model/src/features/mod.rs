@@ -571,6 +571,10 @@ pub struct Brep {
     pub tools: Vec<(String, extrude::Tool)>,
     /// Trace spans of the feature being executed (see [`Brep::flush_spans`]).
     pub spans: Vec<Span>,
+    /// Assembly components (insertPart / mate / component patterns).
+    pub asm: mate::Assembly,
+    /// Helix curves by feature id (sweep paths).
+    pub helices: Vec<(String, ck_ops::helix::Helix)>,
 }
 
 impl Brep {
@@ -745,10 +749,75 @@ pub fn body_box(b: &ck_topo::body::Body) -> (ck_core::linalg::Vec3, ck_core::lin
     (lo.min(r(lo)), hi.max(r(hi)))
 }
 
+/// `body.faces[]`: ck-topo's export with the planar `normal` re-normalised
+/// the kernel's way (`sqrt(z² + (x² + y²))`, times `1/len`). Pinned by a
+/// component pattern probe: a copy rotated 120° about x has frame z
+/// `(0, −0.4999999999999999, 0.8660254037844389)` (dumped) and wire normal
+/// `(0, 0.4999999999999998, −0.8660254037844387)` (sense flipped).
+/// GUESS: applied only to `renorm` faces (assembly components, whose frames
+/// went through the kernel's frame transform) — ck-topo's own frames already
+/// print like the oracle (revolved cone cap) and would change.
+pub fn faces_json(b: &ck_topo::body::Body, renorm: &dyn Fn(ck_topo::body::FaceId) -> bool) -> Json {
+    let mut j = b.faces_json();
+    if let Json::Arr(fs) = &mut j {
+        for (f, o) in b.face_ids().zip(fs.iter_mut()) {
+            if !renorm(f) {
+                continue;
+            }
+            let Json::Obj(kv) = o else { continue };
+            if let Some(slot) = kv.iter_mut().find(|(k, _)| k == "normal") {
+                // pinned: the kernel prints normalize(x × y) of the frame
+                let n = match &b.face(f).surface {
+                    ck_geom::surface::Surface::Plane { frame } => mate::plane_normal(frame, b.face(f).sense),
+                    _ => mate::knorm(b.planar_normal(f)),
+                };
+                slot.1 = Json::Arr(vec![Json::Num(n.x), Json::Num(n.y), Json::Num(n.z)]);
+            }
+        }
+    }
+    j
+}
+
+/// Kernel re-normalisation of a wire vector (see [`faces_json`]).
+pub fn renorm(n: ck_core::linalg::Vec3) -> Option<Json> {
+    let l = (n.z * n.z + (n.x * n.x + n.y * n.y)).sqrt();
+    if !(l > 1e-300 && l.is_finite()) {
+        return None;
+    }
+    let i = 1.0 / l;
+    Some(Json::Arr(vec![Json::Num(n.x * i), Json::Num(n.y * i), Json::Num(n.z * i)]))
+}
+
+/// Re-normalise `circle.n` of the wire edges selected by `pick` (same rule
+/// as the face normals: component pattern probe, circle normal
+/// `(0, −0.4999999999999998, 0.8660254037844387)` on the oracle wire).
+pub fn renorm_edges(b: &ck_topo::body::Body, edges: &mut Json, pick: &dyn Fn(ck_topo::body::EdgeId) -> bool) {
+    let Json::Arr(es) = edges else { return };
+    for (e, o) in b.wire_edges().into_iter().zip(es.iter_mut()) {
+        if !pick(e) {
+            continue;
+        }
+        let ck_geom::curve::Curve::Circle { frame, .. } = &b.edge(e).curve else { continue };
+        let n = mate::plane_normal(frame, true);
+        if let Json::Obj(kv) = o {
+            if let Some((_, Json::Obj(c))) = kv.iter_mut().find(|(k, _)| k == "circle") {
+                if let Some(slot) = c.iter_mut().find(|(k, _)| k == "n") {
+                    slot.1 = Json::Arr(vec![Json::Num(n.x), Json::Num(n.y), Json::Num(n.z)]);
+                }
+            }
+        }
+    }
+}
+
 /// The geometry part of the wire `body`: `box`, `faces`, `edges` (in that
 /// key order; the server appends `silhouette` and `mesh`). Edge `pts` use
 /// ck-topo's `sample_edge` stand-in until ck-tess provides its own.
 pub fn body_wire(b: &ck_topo::body::Body) -> Vec<(String, Json)> {
+    body_wire_with(b, &|_| false)
+}
+
+/// [`body_wire`] with the faces whose normals are re-normalised.
+pub fn body_wire_with(b: &ck_topo::body::Body, renorm: &dyn Fn(ck_topo::body::FaceId) -> bool) -> Vec<(String, Json)> {
     let (lo, hi) = body_box(b);
     let v = |p: ck_core::linalg::Vec3| Json::Arr(vec![Json::Num(p.x), Json::Num(p.y), Json::Num(p.z)]);
     // GUESS: the oracle box comes from the display mesh (curved bodies show
@@ -757,12 +826,15 @@ pub fn body_wire(b: &ck_topo::body::Body) -> Vec<(String, Json)> {
     let tol = EDGE_SAG * lo.dist(hi);
     vec![
         ("box".into(), bx),
-        ("faces".into(), b.faces_json()),
+        ("faces".into(), faces_json(b, renorm)),
         ("edges".into(), b.edges_json(&|b, e| b.sample_edge(e, tol))),
     ]
 }
 
 impl crate::regen::FeatureExec for Brep {
+    fn prepare(&mut self, state: &crate::regen::RegenState, features: &[&crate::Feature]) {
+        Brep::prepare(self, state, features)
+    }
     fn face_frame(&mut self, _state: &crate::regen::RegenState, face: &str) -> Option<ck_core::linalg::Frame> {
         crate::refs::face_frame(self.body.as_ref()?, face)
     }
@@ -778,8 +850,15 @@ impl crate::regen::FeatureExec for Brep {
             FeatureKind::Extrude { .. } => extrude::exec_extrude(state, f, self.body.as_ref())?,
             FeatureKind::Revolve { .. } => extrude::exec_revolve(state, f, self.body.is_some())?,
             FeatureKind::Mirror { .. } => return pattern::exec_mirror(self, state, f),
+            FeatureKind::CPattern { seeds, bodies, .. } if seeds.is_empty() && !bodies.is_empty() && !self.asm.components.is_empty() => {
+                return self.exec_component_pattern(state, f)
+            }
             FeatureKind::LPattern { .. } | FeatureKind::CPattern { .. } => return pattern::exec_pattern(self, state, f),
             FeatureKind::Fillet { .. } => return blends::exec_fillet(self, state, f),
+            FeatureKind::InsertPart { .. } => return self.exec_insert(state, f),
+            FeatureKind::Hole { .. } => return hole::exec_hole(self, state, f),
+            FeatureKind::Helix { .. } => return sweep::exec_helix(self, state, f),
+            FeatureKind::Mate { .. } => return mate::exec_mate(self, state, f),
             _ => return Err(crate::regen::FeatureError::new(&extrude::todo(&f.type_name))),
         };
         self.apply(&f.id, tool)

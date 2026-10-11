@@ -23,7 +23,7 @@
 //!   GUESS/known mismatch: the oracle numbers kept whole edges first, then
 //!   split pieces, then new intersection edges, per face group.
 
-use super::classify::{classify_point, in_loops, in_polygon, loop_polygon, outward, poly_area, Class};
+use super::classify::{in_loops, in_polygon, loop_polygon, outward, poly_area, Class, Solid};
 use super::imprint::{ArrFace, Arrangement};
 use super::Op;
 use crate::intersect::ss::{self, SsResult};
@@ -223,6 +223,12 @@ pub fn fragments(arr: &Arrangement, fi: usize) -> Vec<Fragment> {
             break;
         }
     }
+    if inner.is_empty() {
+        // only boundary edges split: still the whole face, at its own
+        // position in the edge walk (oracle bracket prefix 8: F2.C1, whose
+        // C1|S.e9 / C1|S.e8 edges a coplanar gusset splits, keeps #6..#11)
+        return vec![Fragment { af: fi, loops: af.bound.clone(), order: 0, whole: true, class: None }];
+    }
     for &e in &inner {
         hes.push((e, false));
         hes.push((e, true));
@@ -257,6 +263,15 @@ pub fn fragments(arr: &Arrangement, fi: usize) -> Vec<Fragment> {
 pub fn sample_point(arr: &Arrangement, f: &Fragment) -> Option<(Vec3, Vec3)> {
     let af = &arr.faces[f.af];
     let s = &af.surface;
+    let seam_only = |l: &Vec<He>| l.iter().all(|&(e, r)| l.contains(&(e, !r)));
+    if f.loops.iter().all(|l| l.is_empty() || seam_only(l)) {
+        // closed surface without boundary (full sphere / torus, or a
+        // revolve sphere bounded only by its meridian seam)
+        let ((u0, u1), (v0, v1)) = s.domain();
+        let (u, v) = (u0 + 0.37 * (u1 - u0), v0 + 0.41 * (v1 - v0));
+        let q = s.eval(u, v);
+        return Some((q, outward(s, af.sense, q)));
+    }
     let polys: Vec<Vec<Vec2>> = f.loops.iter().map(|l| loop_polygon(s, &pieces(arr, l))).collect();
     let mut cand: Vec<He> = f.loops[0].clone();
     let len = |h: &He| {
@@ -295,6 +310,22 @@ pub fn sample_point(arr: &Arrangement, f: &Fragment) -> Option<(Vec3, Vec3)> {
                 if near {
                     continue;
                 }
+                return Some((q, outward(s, af.sense, q)));
+            }
+        }
+    }
+    // degenerate loops (a revolve sphere: one meridian seam between two
+    // poles): a grid point of the loops' uv box that is inside
+    let (mut lo, mut hi) = (Vec2::new(f64::INFINITY, f64::INFINITY), Vec2::new(f64::NEG_INFINITY, f64::NEG_INFINITY));
+    for p in polys.iter().flatten() {
+        lo = Vec2::new(lo.x.min(p.x), lo.y.min(p.y));
+        hi = Vec2::new(hi.x.max(p.x), hi.y.max(p.y));
+    }
+    if lo.x.is_finite() && hi.x.is_finite() {
+        for (fu, fv) in [(0.37, 0.41), (0.61, 0.53), (0.23, 0.67), (0.5, 0.5)] {
+            let uv = Vec2::new(lo.x + (hi.x - lo.x) * fu, lo.y + (hi.y - lo.y) * fv);
+            if in_loops(s, uv, &polys) {
+                let q = s.eval(uv.x, uv.y);
                 return Some((q, outward(s, af.sense, q)));
             }
         }
@@ -344,13 +375,14 @@ pub fn select(arr: &Arrangement, bodies: [&Body; 2], op: Op) -> Result<Vec<OutFa
     let tol = arr.tol;
     let mut kept: Vec<(Fragment, bool)> = vec![];
     let mut n_frags: Vec<usize> = vec![0; arr.faces.len()];
+    let solids = [Solid::new(bodies[0], tol), Solid::new(bodies[1], tol)];
     for fi in 0..arr.faces.len() {
         let frs = fragments(arr, fi);
         n_frags[fi] = frs.len();
         for mut fr in frs {
             let side = arr.faces[fi].side;
             let (q, n) = sample_point(arr, &fr).ok_or_else(|| "booleanFailed".to_string())?;
-            let c = classify_point(bodies[1 - side], q, n, tol);
+            let c = solids[1 - side].classify(q, n);
             fr.class = Some(c);
             if let Some(flip) = keep(op, side, c) {
                 kept.push((fr, flip));
@@ -362,6 +394,10 @@ pub fn select(arr: &Arrangement, bodies: [&Body; 2], op: Op) -> Result<Vec<OutFa
         if !flip {
             return fr.loops.clone();
         }
+        // plain reversal; the edge walk of the boolean itself still uses
+        // the unflipped loops (oracle bracket slot cut: kept tool side
+        // F6.S.e3 numbers F6.S.e3|F6.S.e6 #44 before F6.S.e10|F6.S.e3 #45;
+        // the next boolean walks the stored, reversed loop: e10|e3 first)
         fr.loops.iter().map(|l| l.iter().rev().map(|&(e, r)| (e, !r)).collect()).collect()
     };
     // ---- merge coincident same-facing fragments sharing an edge
@@ -450,7 +486,7 @@ pub fn select(arr: &Arrangement, bodies: [&Body; 2], op: Op) -> Result<Vec<OutFa
             loops: loops_of(fr, *flip),
             group,
             key: (group, fr.af, fr.order),
-            walk: vec![((group, fr.af, fr.order), loops_of(fr, *flip))],
+            walk: vec![((group, fr.af, fr.order), fr.loops.clone())],
         });
     }
     // merged groups
@@ -471,15 +507,18 @@ pub fn select(arr: &Arrangement, bodies: [&Body; 2], op: Op) -> Result<Vec<OutFa
         if members.iter().all(|&m| kept[m].0.af == kept[lead].0.af) && members.len() == n_frags[kept[lead].0.af] {
             let flip = kept[lead].1;
             let whole = Fragment { af: kept[lead].0.af, loops: af.bound.clone(), order: 0, whole: true, class: None };
+            // listed with the merged faces (oracle mirrorTwo: F2.C0, which
+            // a boss standing on it splits and rejoins, comes last); its
+            // edges are still walked at the face's own position
             let group = af.side * 2;
             out.push(OutFace {
                 surface: af.surface.clone(),
                 sense,
                 name: af.name.clone(),
                 loops: loops_of(&whole, flip),
-                group,
-                key: (group, whole.af, 0),
-                walk: vec![((group, whole.af, 0), loops_of(&whole, flip))],
+                group: 4,
+                key: (4, whole.af, 0),
+                walk: vec![((group, whole.af, 0), whole.loops.clone())],
             });
             continue;
         }
@@ -495,7 +534,7 @@ pub fn select(arr: &Arrangement, bodies: [&Body; 2], op: Op) -> Result<Vec<OutFa
             .map(|&m| {
                 let fr = &kept[m].0;
                 let g = arr.faces[fr.af].side * 2 + if fr.whole { 0 } else { 1 };
-                ((g, fr.af, fr.order), loops_of(fr, kept[m].1))
+                ((g, fr.af, fr.order), fr.loops.clone())
             })
             .collect();
         for (k, loops) in group(arr, &af.surface, sense, cycles).into_iter().enumerate() {
@@ -514,7 +553,7 @@ pub fn select(arr: &Arrangement, bodies: [&Body; 2], op: Op) -> Result<Vec<OutFa
     Ok(out)
 }
 
-fn shift2(c: &Curve2, d: Vec2) -> Curve2 {
+pub(crate) fn shift2(c: &Curve2, d: Vec2) -> Curve2 {
     match c {
         Curve2::Line { o, d: dd } => Curve2::Line { o: *o + d, d: *dd },
         Curve2::Circle { c, x, r, ccw } => Curve2::Circle { c: *c + d, x: *x, r: *r, ccw: *ccw },
@@ -525,7 +564,108 @@ fn shift2(c: &Curve2, d: Vec2) -> Curve2 {
 
 /// Build the result body (one lump per connected shell; voids attach to
 /// their host via ck-topo `rebuild_lumps`).
+/// Join collinear line edges left meeting at a 2-valent vertex between the
+/// same two faces (a coplanar merge removed what separated them), the
+/// original's simplify pass: walking edges in numbering order, an edge
+/// absorbs the other edge at its END vertex (oracle mirrorBody: box with
+/// its mirror across x = 0 gives C0|S.e3 [40,0,-20]->[-40,0,-20] as ONE
+/// edge #6, while C0|S.e1 [0,0,0]->[40,0,0] and its mirror
+/// [0,0,0]->[-40,0,0], which only START there, stay two).
+fn join_collinear(arr: &Arrangement, faces: &[OutFace]) -> (Arrangement, Vec<OutFace>) {
+    let mut arr = arr.clone();
+    let mut faces = faces.to_vec();
+    let n = arr.edges.len();
+    let mut users: Vec<Vec<usize>> = vec![vec![]; n];
+    for (k, of) in faces.iter().enumerate() {
+        for &(e, _) in of.loops.iter().flatten() {
+            if !users[e].contains(&k) {
+                users[e].push(k);
+            }
+        }
+    }
+    let mut inc: std::collections::HashMap<usize, Vec<usize>> = Default::default();
+    for e in 0..n {
+        if users[e].is_empty() {
+            continue;
+        }
+        inc.entry(arr.edges[e].v0).or_default().push(e);
+        inc.entry(arr.edges[e].v1).or_default().push(e);
+    }
+    let mut items: Vec<&((usize, usize, usize), Vec<Vec<He>>)> = faces.iter().flat_map(|f| f.walk.iter()).collect();
+    items.sort_by_key(|x| x.0);
+    let mut order: Vec<usize> = vec![];
+    for (_, loops) in items {
+        for &(e, _) in loops.iter().flatten() {
+            if !users[e].is_empty() && !order.contains(&e) {
+                order.push(e);
+            }
+        }
+    }
+    let line = |c: &Curve| match c {
+        Curve::Line { o, d } => Some((*o, *d)),
+        _ => None,
+    };
+    let mut dead = vec![false; n];
+    let mut joined: Vec<(usize, usize)> = vec![];
+    for &e in &order {
+        if dead[e] {
+            continue;
+        }
+        loop {
+            let v = arr.edges[e].v1;
+            let at = &inc[&v];
+            if at.len() != 2 || arr.edges[e].v0 == v {
+                break;
+            }
+            let f = if at[0] == e { at[1] } else { at[0] };
+            if f == e || dead[f] {
+                break;
+            }
+            let (Some((o, d)), Some((_, d2))) = (line(&arr.edges[e].curve), line(&arr.edges[f].curve)) else { break };
+            let mut ue = users[e].clone();
+            let mut uf = users[f].clone();
+            ue.sort();
+            uf.sort();
+            if ue != uf || d.cross(d2).len() > 1e-12 || (arr.verts[arr.edges[f].v0] - o).cross(d).len() > arr.tol {
+                break;
+            }
+            let far = if arr.edges[f].v0 == v { arr.edges[f].v1 } else { arr.edges[f].v0 };
+            let t = (arr.verts[far] - o).dot(d);
+            if t <= arr.edges[e].t1 {
+                break;
+            }
+            arr.edges[e].t1 = t;
+            arr.edges[e].v1 = far;
+            dead[f] = true;
+            joined.push((e, f));
+            // the far vertex now meets e instead of f
+            let list = inc.get_mut(&far).unwrap();
+            for x in list.iter_mut() {
+                if *x == f {
+                    *x = e;
+                }
+            }
+        }
+    }
+    if joined.is_empty() {
+        return (arr, faces);
+    }
+    for of in &mut faces {
+        for l in of.loops.iter_mut() {
+            l.retain(|h| !dead[h.0]);
+        }
+        for (_, ls) in of.walk.iter_mut() {
+            for l in ls.iter_mut() {
+                l.retain(|h| !dead[h.0]);
+            }
+        }
+    }
+    (arr, faces)
+}
+
 pub fn build(arr: &Arrangement, faces: &[OutFace]) -> Body {
+    let (arr2, faces2) = join_collinear(arr, faces);
+    let (arr, faces) = (&arr2, &faces2[..]);
     let tol = arr.tol;
     let mut b = Body::new();
     let lump = b.add_lump();
@@ -604,78 +744,47 @@ pub fn build(arr: &Arrangement, faces: &[OutFace]) -> Body {
                 });
                 b.add_coedge(lp, eid, rev, pc);
             }
+            // a loop made only of seam twins (revolve sphere meridian): the
+            // twins' pcurves must lie one period apart, the loop CCW about
+            // the outward normal (positive uv area when sense)
+            if !l.is_empty() && l.iter().all(|&(e, r)| l.contains(&(e, !r))) {
+                if let Some(p) = pu.or(pv) {
+                    let cs = b.lp(lp).coedges.clone();
+                    let mut seen: Vec<usize> = vec![];
+                    for (k, &(e, _)) in l.iter().enumerate() {
+                        if seen.contains(&e) {
+                            if let Some(pc) = b.coedges[cs[k].idx()].pcurve.clone() {
+                                let d = if pu.is_some() { Vec2::new(p, 0.0) } else { Vec2::new(0.0, p) };
+                                b.coedges[cs[k].idx()].pcurve = Some(shift2(&pc, d));
+                            }
+                        } else {
+                            seen.push(e);
+                        }
+                    }
+                    if (ck_topo::orient::loop_uv_area(&b, lp) > 0.0) != of.sense {
+                        for (k, &(e, _)) in l.iter().enumerate() {
+                            if l.iter().position(|&(x, _)| x == e) != Some(k) {
+                                if let Some(pc) = b.coedges[cs[k].idx()].pcurve.clone() {
+                                    let d = if pu.is_some() { Vec2::new(-2.0 * p, 0.0) } else { Vec2::new(0.0, -2.0 * p) };
+                                    b.coedges[cs[k].idx()].pcurve = Some(shift2(&pc, d));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
     ck_topo::region::rebuild_lumps(&mut b);
     b
 }
 
-/// Wire-level edge chains: consecutive wire edges on the same carrier
-/// curve with the same face pair, joined at vertices whose only other
-/// edges are seams, form ONE oracle edge (the original kernel's periodic
-/// faces have no seam edges, so it never splits an arc where our seam
-/// lands; probe `boss`: the boss's bottom arc outside the box is a single
-/// edge `F2.C0|F4.S.e1` running through the seam point (43,0,-10)).
-/// Returns chains in wire order (each chain ordered head to tail); a
-/// wire exporter should emit one edge per chain (pts concatenated, `mid`
-/// at the chain's mid-parameter).
+/// Wire-level edge chains (seam-split arcs = one oracle edge; probe
+/// `boss`: the boss's bottom arc outside the box is a single edge
+/// `F2.C0|F4.S.e1` running through the seam point (43,0,-10)). Moved to
+/// ck-topo [`Body::wire_chains`], which `Body::edges_json` now uses.
 pub fn wire_chains(b: &Body) -> Vec<Vec<ck_topo::body::EdgeId>> {
-    use ck_topo::body::EdgeId;
-    let wire = b.wire_edges();
-    let pair = |e: EdgeId| {
-        let mut f = b.edge_faces(e);
-        f.sort();
-        f
-    };
-    let seam_only = |v: ck_topo::body::VertexId, a: EdgeId, c: EdgeId| {
-        b.edge_ids().all(|e| e == a || e == c || (b.edge(e).v0 != v && b.edge(e).v1 != v) || b.is_seam(e))
-    };
-    let same_carrier = |a: EdgeId, c: EdgeId| {
-        let (x, y) = (&b.edge(a).curve, &b.edge(c).curve);
-        match (x, y) {
-            (Curve::Circle { frame: f, r }, Curve::Circle { frame: g, r: s }) => {
-                (f.o - g.o).len() < 1e-9 && (r - s).abs() < 1e-9 && f.z.dot(g.z) > 1.0 - 1e-12
-            }
-            (Curve::Line { o, d }, Curve::Line { o: p, d: q }) => d.cross(*q).len() < 1e-12 && (*p - *o).cross(*d).len() < 1e-9,
-            _ => x == y,
-        }
-    };
-    let mut used = vec![false; b.edges.len()];
-    let mut out = vec![];
-    for &e in &wire {
-        if used[e.idx()] {
-            continue;
-        }
-        used[e.idx()] = true;
-        let mut chain = vec![e];
-        // extend forward (from v1) then backward (from v0)
-        for fwd in [true, false] {
-            loop {
-                let end = if fwd { *chain.last().unwrap() } else { chain[0] };
-                let v = if fwd { b.edge(end).v1 } else { b.edge(end).v0 };
-                let next = wire.iter().copied().find(|&n| {
-                    !used[n.idx()]
-                        && (if fwd { b.edge(n).v0 } else { b.edge(n).v1 }) == v
-                        && pair(n) == pair(end)
-                        && same_carrier(n, end)
-                        && seam_only(v, n, end)
-                });
-                match next {
-                    Some(n) => {
-                        used[n.idx()] = true;
-                        if fwd {
-                            chain.push(n)
-                        } else {
-                            chain.insert(0, n)
-                        }
-                    }
-                    None => break,
-                }
-            }
-        }
-        out.push(chain);
-    }
-    out
+    b.wire_chains()
 }
 
 /// Copy of `b` with faces in `order` (live faces not listed are dropped);

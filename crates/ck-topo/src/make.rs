@@ -239,7 +239,7 @@ pub fn plane_pcurve(fr: &Frame, c: &Curve) -> Option<Curve2> {
             let ccw = frame.z.dot(fr.z) > 0.0;
             Some(Curve2::Ellipse { c: c2, x: x2.normalize(), a: *a, b: *b, ccw })
         }
-        Curve::BSpline(_) => None,
+        Curve::BSpline(_) | Curve::Conic { .. } | Curve::Sinusoid { .. } => None,
     }
 }
 
@@ -389,6 +389,9 @@ pub(crate) fn build_sweep(
             }
         }
     }
+    // one entity split into several side faces (closed spline cut at half
+    // length): `S.<tag>~k`
+    b.number_split_faces();
     b
 }
 
@@ -549,7 +552,9 @@ fn extrude_loop(
                 let (Curve::Line { o: bo, d: bd }, Curve::Line { o: to, d: td }) = (&bottom3, &top3) else {
                     unreachable!()
                 };
-                let x = bd.normalize();
+                // oracle (box probe, sign of zero): x = entity end − start
+                // in 3D, not the sketch direction mapped through the frame
+                let x = (bottom3.eval(*bt1) - bottom3.eval(*bt0)).normalize();
                 let w = *to - *bo;
                 let y = (w - x * w.dot(x)).normalize();
                 let pf = Frame { o: *bo, x, y, z: x.cross(y) };
@@ -889,6 +894,38 @@ pub(crate) mod tests {
         let f6 = &fj2.as_arr().unwrap()[6];
         assert_eq!(f6.get("lump").unwrap().as_f64(), Some(1.0));
         assert_eq!(keys(&b2)[16], "F2.C0~2|F2.S.b0#16");
+    }
+
+    #[test]
+    fn closed_spline_halves_match_oracle() {
+        // oracle probe `cvs` (front plane closed cv-spline, blind 5): the
+        // profile is the clamped closed curve (cvs.step #83) cut at half
+        // length into two `e1` segments
+        let cp = [
+            (10.0, -1.3333333333333335),
+            (13.333333333333334, -0.6666666666666667),
+            (20.0, 4.0),
+            (12.0, 12.0),
+            (2.0, 9.0),
+            (0.0, 0.0),
+            (6.666666666666668, -2.0),
+            (10.0, -1.3333333333333333),
+        ];
+        let knots = vec![0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 5.0, 5.0, 5.0];
+        let c = ck_geom::nurbs::bspline::BSplineCurve::new(3, knots, cp.iter().map(|&(x, y)| Vec2::new(x, y)).collect())
+            .unwrap();
+        let seg = |t0, t1| ProfileSeg { tag: "e1".into(), curve: Curve2::BSpline(c.clone()), t0, t1, rev: false };
+        let prof = Profile::new(
+            Frame::identity(),
+            vec![ProfileRegion { outer: ProfileLoop::new(vec![seg(0.0, 2.5), seg(2.5, 5.0)]), holes: vec![] }],
+        );
+        let b = extrude("F2", &prof, ExtrudeOpts::blind(5.0)).unwrap();
+        assert!(check(&b, 1e-9).is_empty(), "{:?}", check(&b, 1e-9));
+        assert_eq!(face_ids(&b), ["F2.C0", "F2.C1", "F2.S.e1~2", "F2.S.e1~1"]);
+        let fj = ck_json::to_string(&b.faces_json().as_arr().unwrap()[2]);
+        assert_eq!(fj, r#"{"id":"F2.S.e1~2","kind":"extrusion","planar":false,"meta":{"feature":"F2","entity":"e1"}}"#);
+        // the two rails between the halves are numbered (#0, #1) but not listed
+        assert_eq!(keys(&b), ["F2.C0|F2.S.e1~2#2", "F2.C1|F2.S.e1~2#3", "F2.C0|F2.S.e1~1#4", "F2.C1|F2.S.e1~1#5"]);
     }
 
     #[test]

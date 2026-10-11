@@ -150,6 +150,7 @@ fn general(c: &Curve, r: (f64, f64), s: &Surface, tol: f64, out: &mut CsResult) 
         Curve::Line { .. } => 32,
         Curve::Circle { .. } | Curve::Ellipse { .. } => 96,
         Curve::BSpline(bs) => (bs.ctrl.len() * 12).clamp(32, 600),
+        Curve::Conic { .. } | Curve::Sinusoid { .. } => 96,
     };
     let ts: Vec<f64> = (0..=n).map(|i| a + (b - a) * i as f64 / n as f64).collect();
     // signed distance along the sample (sign from the surface normal)

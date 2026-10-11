@@ -37,6 +37,7 @@ pub fn samples_for(c: &Curve) -> usize {
         Curve::Line { .. } => 1,
         Curve::Circle { .. } | Curve::Ellipse { .. } => 24,
         Curve::BSpline(b) => (b.ctrl.len() * 4).clamp(8, 128),
+        Curve::Conic { .. } | Curve::Sinusoid { .. } => 32,
     }
 }
 
@@ -158,28 +159,149 @@ pub fn point_in_face(b: &Body, f: FaceId, p: Vec3, tol: f64) -> Where {
 }
 
 /// Classify point `q` (on a fragment with outward normal `n`) against
-/// solid `other`.
+/// solid `other` (one-shot; prefer [`Solid`] for repeated queries).
 pub fn classify_point(other: &Body, q: Vec3, n: Vec3, tol: f64) -> Class {
-    for g in other.face_ids() {
-        let s = &other.face(g).surface;
-        let (u, v, cp) = s.closest_point(q);
-        if cp.dist(q) > tol * 10.0 {
-            continue;
-        }
-        if point_in_face(other, g, q, tol) == Where::Out {
-            continue;
-        }
-        let ng = other.outward_normal(g, u, v);
-        return if ng.dot(n) > 0.0 { Class::OnSame } else { Class::OnOpp };
+    Solid::new(other, tol).classify(q, n)
+}
+
+/// A body prepared for repeated point classification: face uv polygons,
+/// face boxes and a BVH, so each query is an "on" test against the few
+/// faces near the point plus ray parity against the faces the ray's box
+/// path meets.
+pub struct Solid<'a> {
+    pub body: &'a Body,
+    tol: f64,
+    faces: Vec<FaceId>,
+    loops: Vec<Vec<Vec<Vec2>>>,
+    edges: Vec<Vec<ck_topo::body::EdgeId>>,
+    bvh: crate::bvh::Bvh,
+}
+
+/// Ray directions tried in turn (irrational-ish, away from the axes so a
+/// ray seldom grazes an axis-aligned edge or face).
+const RAYS: [[f64; 3]; 6] = [
+    [0.5773502691896258, 0.6123724356957945, 0.5400617248673217],
+    [-0.3511234415883917, 0.8164965809277260, 0.4580392070833400],
+    [0.7071067811865475, -0.2236067977499790, 0.6708203932499369],
+    [-0.6, -0.48, 0.64],
+    [0.1414213562373095, 0.4242640687119285, -0.8944271909999159],
+    [-0.8017837257372732, 0.2672612419124244, -0.5345224838248488],
+];
+
+impl<'a> Solid<'a> {
+    pub fn new(body: &'a Body, tol: f64) -> Solid<'a> {
+        let faces: Vec<FaceId> = body.face_ids().collect();
+        let loops = faces.iter().map(|&f| face_loops_uv(body, f)).collect();
+        let edges = faces.iter().map(|&f| body.face_edges(f)).collect();
+        let boxes: Vec<crate::bvh::Aabb> = faces
+            .iter()
+            .map(|&f| {
+                let bb = crate::bvh::face_box(body, f);
+                // sampled boxes under-cover curved faces by < 0.5% of their size
+                bb.padded(tol * 10.0 + 0.02 * bb.diagonal())
+            })
+            .collect();
+        Solid { body, tol, faces, loops, edges, bvh: crate::bvh::Bvh::build(&boxes) }
     }
-    let faces: Vec<FaceId> = other.face_ids().collect();
-    if faces.is_empty() {
-        return Class::Out;
+
+    /// Point `p` (near face `i`'s surface) inside / on / outside face `i`.
+    fn in_face(&self, i: usize, p: Vec3) -> Where {
+        let b = self.body;
+        for &e in &self.edges[i] {
+            let ed = b.edge(e);
+            if super::imprint::dist_in_range(&ed.curve, (ed.t0, ed.t1), p).1 <= self.tol {
+                return Where::On;
+            }
+        }
+        let s = &b.face(self.faces[i]).surface;
+        if s.distance(p) > self.tol * 10.0 {
+            return Where::Out;
+        }
+        if self.loops[i].iter().all(|l| l.len() < 3) {
+            return Where::In;
+        }
+        let (u, v) = s.closest_param(p);
+        if in_loops(s, Vec2::new(u, v), &self.loops[i]) {
+            Where::In
+        } else {
+            Where::Out
+        }
     }
-    if winding_number(other, &faces, q) > 0.5 {
-        Class::In
-    } else {
-        Class::Out
+
+    /// Classify point `q` (with outward normal `n` of the fragment it
+    /// samples).
+    pub fn classify(&self, q: Vec3, n: Vec3) -> Class {
+        let (b, tol) = (self.body, self.tol);
+        if self.faces.is_empty() {
+            return Class::Out;
+        }
+        let near = crate::bvh::Aabb::new(q, q).padded(tol * 10.0);
+        for i in self.bvh.query_box(&near) {
+            let g = self.faces[i];
+            let (u, v, cp) = b.face(g).surface.closest_point(q);
+            if cp.dist(q) > tol * 10.0 || self.in_face(i, q) == Where::Out {
+                continue;
+            }
+            let ng = b.outward_normal(g, u, v);
+            return if ng.dot(n) > 0.0 { Class::OnSame } else { Class::OnOpp };
+        }
+        for d in RAYS {
+            if let Some(inside) = self.ray_parity(q, Vec3::new(d[0], d[1], d[2])) {
+                return if inside { Class::In } else { Class::Out };
+            }
+        }
+        // every ray ambiguous (or a face without a closed-form line
+        // intersection): generalised winding number
+        if winding_number(b, &self.faces, q) > 0.5 {
+            Class::In
+        } else {
+            Class::Out
+        }
+    }
+
+    /// Parity of the crossings of the ray `q + t d` (t > 0); None when the
+    /// ray grazes a face, passes through an edge, or meets a surface
+    /// without a closed-form line intersection.
+    fn ray_parity(&self, q: Vec3, d: Vec3) -> Option<bool> {
+        let b = self.body;
+        let mut count = 0usize;
+        let mut seen = vec![];
+        for (i, _) in self.bvh.query_ray(q, d, 0.0, f64::INFINITY) {
+            if seen.contains(&i) {
+                continue;
+            }
+            seen.push(i);
+            let s = &b.face(self.faces[i]).surface;
+            let mut ts = crate::intersect::cs::line_params(q, d, s, self.tol)?;
+            ts.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let mut prev: Option<f64> = None;
+            for t in ts {
+                if t.abs() <= self.tol * 10.0 {
+                    return None; // q on this surface (outside the face): ambiguous
+                }
+                if t < 0.0 {
+                    continue;
+                }
+                if prev.map_or(false, |p| (t - p).abs() <= self.tol * 10.0) {
+                    return None; // double root: tangent
+                }
+                prev = Some(t);
+                let p = q + d * t;
+                match self.in_face(i, p) {
+                    Where::On => return None,
+                    Where::Out => {}
+                    Where::In => {
+                        let (u, v) = s.closest_param(p);
+                        let nn = s.normal(u, v).normalize();
+                        if nn.dot(d).abs() < 1e-3 {
+                            return None; // grazing
+                        }
+                        count += 1;
+                    }
+                }
+            }
+        }
+        Some(count % 2 == 1)
     }
 }
 

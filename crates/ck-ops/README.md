@@ -118,8 +118,16 @@ kernel.strings codes.
 - The original kernel's periodic faces have NO seam edges: closed SSI
   circles start at t = 0.62·2π of the cylinder frame (box C1 ∩ through-cut
   cylinder starts at (16.355,·,-6.577)), and arcs are not split where our
-  seam lands. We keep ck-topo seams; `assemble::wire_chains` merges wire
-  edges through seam-only vertices (fixes the `boss` probe). Remaining
+  seam lands. We keep ck-topo seams internally; the merge of wire edges
+  through seam-only vertices now lives in ck-topo `Body::wire_chains`
+  (used by `edges_json` and the STEP writer; `assemble::wire_chains`
+  delegates) — fixes the `boss` probe. After an in-place op use
+  `Body::seamless_index` for the oracle's arena `#n` (no seam slots).
+- `~k` of split faces (ck-topo `number_split_faces`, pinned on closed
+  spline extrudes): rank by the centre of the face's boundary
+  control-net box, (x, y, z) world-lexicographic. `assemble` still ranks
+  boolean fragments by vertex centroid (GUESS) — worth re-checking
+  against that rule. Remaining
   known mismatch: start point / `mid` of closed SSI circles that cross a
   seam (through cuts) — ours start at the seam.
 - extrude `op:"cut"` goes AGAINST the sketch normal unless `flip`

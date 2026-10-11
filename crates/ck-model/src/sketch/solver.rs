@@ -610,7 +610,7 @@ fn sumsq(r: &[f64]) -> f64 {
 /// `a[r][s] * (1/pivot)`), and the matrix counts as singular when the best
 /// pivot is `<= 1e-14 * max|A|` (client: `< 1e-300`). Returns `None` when
 /// singular.
-fn lu_solve(r: &mut [Vec<f64>], e: &mut [f64]) -> Option<Vec<f64>> {
+pub(crate) fn lu_solve(r: &mut [Vec<f64>], e: &mut [f64]) -> Option<Vec<f64>> {
     let t = e.len();
     let mut amax = 0.0f64;
     for row in r.iter() {

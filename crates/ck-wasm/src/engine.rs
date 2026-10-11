@@ -2,7 +2,7 @@
 //! ck-server stays geometry-free; everything engine-side is reached from here.
 
 use ck_json::{Json, Obj};
-use ck_model::features::{body_wire, Brep};
+use ck_model::features::{body_wire_with, Brep};
 use ck_model::regen::{self, RegenOpts, SketchResult, Tracer};
 use ck_model::sketch::offset::sketch_offset_json;
 use ck_model::{Part, Sketch};
@@ -64,6 +64,10 @@ impl regen::FeatureExec for Exec<'_> {
     fn face_frame(&mut self, state: &regen::RegenState, face: &str) -> Option<ck_core::linalg::Frame> {
         self.brep.face_frame(state, face)
     }
+    fn prepare(&mut self, state: &regen::RegenState, features: &[&ck_model::Feature]) {
+        self.brep.prepare(state, features);
+        self.brep.flush_spans(&mut self.sink);
+    }
     fn exec(&mut self, state: &mut regen::RegenState, f: &ck_model::Feature) -> Result<(), regen::FeatureError> {
         let r = self.brep.exec(state, f);
         self.brep.flush_spans(&mut self.sink);
@@ -78,9 +82,12 @@ fn regen_hook(part: &Json, cx: &mut Cx) -> Result<(Json, State), String> {
     let n = opts.up_to.map_or(part.features.len(), |u| part.features.len().min(u as usize));
     let (mut result, body) = cx.span(regen_label(n), |cx| {
         let mut ex = Exec { brep: Brep::new(), sink: TraceSink { trace: &mut *cx.trace, ids: vec![] } };
-        let r = regen::regen(&part, &opts, &mut ex);
-        (r, ex.brep.body)
+        let mut r = regen::regen(&part, &opts, &mut ex);
+        r.components = ex.brep.components_json();
+        let rn = ex.brep.renorm_faces();
+        (r, (ex.brep.body, rn))
     });
+    let (body, renorm) = body;
     let mut out = result.to_json();
     cx.span(SNAPSHOT_LABEL, |cx| {
         if let Some(b) = &body {
@@ -88,7 +95,7 @@ fn regen_hook(part: &Json, cx: &mut Cx) -> Result<(Json, State), String> {
             let tess = ck_tess::mesh::tessellate(b);
             cx.trace.relabel(&t, format!("tessellate {} faces → {} triangles", b.num_faces(), tess.mesh.tri_face.len()));
             cx.trace.end(t);
-            set_body(&mut out, body_json(b, &tess, cx));
+            set_body(&mut out, body_json(b, &tess, cx, &renorm));
         }
     });
     let state = match body {
@@ -115,14 +122,14 @@ fn set_body(result: &mut Json, body: Json) {
 /// buffer is EMPTY (the client gets a valid but invisible mesh; the oracle
 /// sends 3 f32 per vertex in positions/normals/mids and one i32 face index
 /// per triangle in triFace, non-indexed triangle soup).
-fn body_json(b: &Body, tess: &ck_tess::mesh::Tess, cx: &mut Cx) -> Json {
+fn body_json(b: &Body, tess: &ck_tess::mesh::Tess, cx: &mut Cx, renorm: &(Vec<(usize, usize)>, Vec<(usize, usize)>)) -> Json {
     let m = &tess.mesh;
     let positions = cx.bufs.f32(&m.positions);
     let normals = cx.bufs.f32(&m.normals);
     let mids = cx.bufs.f32(&m.mids);
     let tri_face = cx.bufs.i32(&m.tri_face);
     let silhouette = cx.bufs.f32(&m.silhouette);
-    let mut kv = body_wire(b);
+    let mut kv = body_wire_with(b, &|f| renorm.0.iter().any(|r| (r.0..r.1).contains(&f.idx())));
     // The oracle box is the union of the f32 display-mesh positions and the
     // f64 edge polyline points (pinned: brep cyl/zeroDepth/rev90 boxes take
     // each coordinate from whichever source is more extreme).
@@ -144,6 +151,7 @@ fn body_json(b: &Body, tess: &ck_tess::mesh::Tess, cx: &mut Cx) -> Json {
     }
     if let Some(slot) = kv.iter_mut().find(|(k, _)| k == "edges") {
         slot.1 = b.edges_json(&|b, e| tess.edge_polyline(b, e));
+        ck_model::features::renorm_edges(b, &mut slot.1, &|e| renorm.1.iter().any(|r| (r.0..r.1).contains(&e.idx())));
     }
     kv.push(("silhouette".into(), silhouette));
     kv.push((
