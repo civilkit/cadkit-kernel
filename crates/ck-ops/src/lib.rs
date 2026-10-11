@@ -9,6 +9,7 @@ pub mod guide;
 pub mod helix;
 pub mod intersect;
 pub mod loft;
+pub mod measure;
 pub mod offset;
 pub mod pipecut;
 pub mod shell;
