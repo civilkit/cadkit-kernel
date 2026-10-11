@@ -110,6 +110,6 @@ for (const k of Object.keys({ ...base, ...score }).sort()) {
   if (b !== undefined && m < b) worse++;
   console.log(`${k.padEnd(40)} ${String(m).padStart(4)}/${String(n).padEnd(4)}${d}`);
 }
-if (update) { writeFileSync(basePath, JSON.stringify(score, null, 1) + '\n'); console.log(`baseline written: ${basePath}`); }
+if (update) { const out = fast ? { ...base, ...score } : score; writeFileSync(basePath, JSON.stringify(out, null, 1) + '\n'); console.log(`baseline written: ${basePath}`); }
 else if (worse) { console.log(`\nGATE FAILED: ${worse} metric(s) regressed`); process.exitCode = 1; }
 else console.log('\ngate ok');
