@@ -285,6 +285,21 @@ fn blend_edges_at(
     if edges.len() == 1 && !earlier_blends {
         return Ok((out, refs, touched));
     }
+    // two edges leaving the same vertex (a bottom edge and the rail on its
+    // start, probes b<k>,v<k>): the face they share goes after the rest
+    let mut touched = touched;
+    for i in 0..refs.len() {
+        for j in i + 1..refs.len() {
+            if refs[i].ends[0].dist(refs[j].ends[0]) <= tol * 10.0 {
+                for f in refs[i].faces.iter().filter(|f| refs[j].faces.contains(f)) {
+                    if let Some(p) = touched.iter().position(|t| t == f) {
+                        let t = touched.remove(p);
+                        touched.push(t);
+                    }
+                }
+            }
+        }
+    }
     // a face whose whole boundary is blended (the top of a filleted ring)
     // is rebuilt rather than trimmed: oracle order puts it after the other
     // touched faces

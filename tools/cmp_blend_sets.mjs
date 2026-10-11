@@ -18,7 +18,11 @@ const perms = (a, k) => (k === 0 ? [[]] : a.flatMap((x, i) => perms([...a.slice(
 let sets;
 const arg = process.argv[2] ?? 'all4';
 if (arg === 'all4') sets = [2, 3, 4].flatMap((k) => perms(['t1', 't2', 't3', 't4'], k));
-else if (arg.startsWith('rand')) {
+else if (arg === 'pairs') {
+  const names = Object.keys(E);
+  sets = [];
+  for (const a of names) for (const b of names) if (a !== b) sets.push([a, b]);
+} else if (arg.startsWith('rand')) {
   // rand:N:seed -> N random ordered selections of 2-5 box edges (no three edges at one vertex)
   const [, nn, seed] = arg.split(':');
   let st = +(seed ?? 1);
