@@ -92,7 +92,11 @@ pub fn project_points(surf: &Surface, pts: &[Vec3]) -> Vec<Vec2> {
     let (pu, pv) = surf.periods();
     let mut out: Vec<Vec2> = Vec::with_capacity(pts.len());
     for &p in pts {
-        let (mut u, mut v) = surf.closest_param(p);
+        let warm = match (surf, out.last()) {
+            (Surface::BSpline(_), Some(prev)) => warm_project(surf, prev.x, prev.y, p),
+            _ => None,
+        };
+        let (mut u, mut v) = warm.unwrap_or_else(|| surf.closest_param(p));
         if let Some(prev) = out.last() {
             if let Some(per) = pu {
                 u = unwrap_near(u, prev.x, per);
@@ -104,6 +108,34 @@ pub fn project_points(surf: &Surface, pts: &[Vec3]) -> Vec<Vec2> {
         out.push(Vec2::new(u, v));
     }
     out
+}
+
+/// Warm-started Gauss-Newton projection of a point that lies ON the surface
+/// near the previous parameter (edge samples are consecutive). Accepted only
+/// when it lands on `p` to ~1e-10 and stays in the domain; otherwise the
+/// caller does the global closest-point search.
+fn warm_project(surf: &Surface, mut u: f64, mut v: f64, p: Vec3) -> Option<(f64, f64)> {
+    let ((u0, u1), (v0, v1)) = surf.domain();
+    let scale = 1.0 + p.len();
+    for _ in 0..12 {
+        let d = surf.derivs2(u, v);
+        let r = p - d.p;
+        if r.len() < 1e-10 * scale {
+            return Some((u, v));
+        }
+        let (a, b, c) = (d.du.dot(d.du), d.du.dot(d.dv), d.dv.dot(d.dv));
+        let det = a * c - b * b;
+        if !(det.abs() > 1e-24 * (a * c).abs()) {
+            return None;
+        }
+        let (ru, rv) = (r.dot(d.du), r.dot(d.dv));
+        u += (ru * c - rv * b) / det;
+        v += (a * rv - b * ru) / det;
+        if !(u.is_finite() && v.is_finite()) || u < u0 || u > u1 || v < v0 || v > v1 {
+            return None;
+        }
+    }
+    None
 }
 
 /// Shift `x` by whole periods to be nearest `near`.

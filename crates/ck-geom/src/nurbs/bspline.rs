@@ -419,7 +419,7 @@ impl<P: Pt> BSplineCurve<P> {
         let spans = basis::distinct_knots(&self.knots).len().max(2) - 1;
         let n = (spans * (self.degree + 1) * 4).max(16);
         let mut best = (f64::INFINITY, a);
-        if spans > 32 {
+        if spans > 6 {
             // long multi-span curves (helical rails): visit the knot spans
             // nearest to q first and stop when the control-point ball
             // (convex hull) of the remaining ones is farther than the best
