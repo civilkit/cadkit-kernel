@@ -81,5 +81,6 @@ dependencies = [
  "ck-json",
  "ck-model",
  "ck-server",
+ "ck-tess",
  "ck-topo",
 ]
