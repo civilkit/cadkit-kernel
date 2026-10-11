@@ -184,6 +184,7 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
         "inspect" => inspect(cx),
         "continuity" => Ok(ck_ops::continuity::reply(&snapshot(cx)?.body, &cx.msg)),
         "measure" => Ok(ck_ops::measure::reply(&snapshot(cx)?.body, &cx.msg)),
+        "comb" => Ok(comb(&snapshot(cx)?.body, &cx.msg)),
         "convert" => {
             let s = snapshot(cx)?;
             Ok(match cx.msg.get("ref").and_then(|r| r.get_str("kind")) {
@@ -273,4 +274,44 @@ fn sketch_offset_hook(cx: &mut Cx, distance: f64) -> Result<Json, String> {
         .map(|a| a.iter().filter_map(|j| j.as_str().map(str::to_string)).collect())
         .unwrap_or_default();
     Ok(sketch_offset_json(&sk, &ids, distance))
+}
+
+/// `comb {refs, density, lines, dir}`: one entry per ref.
+fn comb(body: &Body, msg: &Json) -> Json {
+    use ck_ops::measure::{resolve_ref, Ref};
+    // oracle clamps: density 10..=300 (default 50), lines 1..=30 (default 5)
+    let num = |k: &str, d: usize, lo: f64, hi: f64| msg.get_f64(k).map_or(d, |v| v.round().clamp(lo, hi) as usize);
+    let (density, lines) = (num("density", 50, 10.0, 300.0), num("lines", 5, 1.0, 30.0));
+    let dir = msg.get_str("dir").unwrap_or("uv");
+    let curve_json = |c: ck_tess::comb::CombCurve| {
+        let f = |v: &[f64]| Json::Arr(v.iter().map(|&x| Json::Num(x)).collect());
+        let mut o = Obj::new().put("p", f(&c.p)).put("k", f(&c.k));
+        if let Some(d) = c.dir {
+            o = o.put("dir", d);
+        }
+        o.build()
+    };
+    let one = |r: &Json| -> Json {
+        let err = |e: &str| Obj::new().put("error", e).build();
+        match r.get_str("kind") {
+            Some(k @ ("face" | "edge")) => match resolve_ref(body, r) {
+                Some(Ref::Edge(e)) => {
+                    let ed = body.edge(e);
+                    let c = ck_tess::comb::edge_comb(&ed.curve, ed.t0, ed.t1, density);
+                    Obj::new().put("curves", Json::Arr(vec![curve_json(c)])).build()
+                }
+                Some(Ref::Face(f)) => {
+                    let cs = ck_tess::comb::face_comb(body, f, density, lines, dir);
+                    Obj::new().put("curves", Json::Arr(cs.into_iter().map(curve_json).collect())).build()
+                }
+                None => {
+                    let _ = k;
+                    err("notFound")
+                }
+            },
+            Some("curve") => err("notFound"),
+            _ => err("notCurve"),
+        }
+    };
+    Json::Arr(msg.get_arr("refs").unwrap_or(&[]).iter().map(one).collect())
 }
