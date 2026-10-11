@@ -456,7 +456,7 @@ fn side_geom(sc: &Screw, phis: &[f64], c: &Curve, t0: f64, t1: f64, _va: &VertGe
         _ => {
             let span = (t1 - t0).abs();
             let per = match c {
-                Curve::Circle { .. } | Curve::Ellipse { .. } => std::f64::consts::FRAC_PI_2 / 6.0,
+                Curve::Circle { .. } | Curve::Ellipse { .. } => std::f64::consts::FRAC_PI_2 / 12.0,
                 _ => span / 24.0,
             };
             let n = ((span / per).ceil() as usize).clamp(8, 400);
@@ -543,6 +543,10 @@ mod tests {
         assert_eq!(sweep("F4", &p, &path, 0.0).unwrap_err(), PROFILE_NOT_NORMAL);
     }
 
+    /// Diagnostic (slow, run with `REVS=0.25 cargo test -p ck-ops --profile fast
+    /// cut_timing -- --ignored --nocapture`): groove swept into a bored tube.
+    /// Currently `booleanFailed`; prints the SSI timings and the open edges of
+    /// the assembled result (see the guard in ck-model features/sweep.rs).
     #[test]
     #[ignore]
     fn cut_timing() {
