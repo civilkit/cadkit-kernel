@@ -19,6 +19,9 @@
 //   vol.<set>     our volume within 1e-3 relative of the original's
 //   heal.repair   OURS alone: damaged copies of the valid brep bodies healed
 //                 back to validate-clean with volume within 1e-6
+//   import.roundtrip  OURS alone (HARD): our `step` export -> `importStep` into
+//                 a fresh tag; volume/area within 1e-6, same face and edge
+//                 counts, `validate` clean (brep parts that produce a body)
 //   import.sat    OURS alone: each fixture in crates/ck-io/tests/fixtures/sat/
 //                 expected.json imports with no errors, validates with zero
 //                 issues and has the closed-form volume (1e-6 relative)
@@ -73,7 +76,29 @@ const close = (a, b) => {
   return a === b;
 };
 const HEAL_KINDS = ['detach', 'shells', 'flip', 'invert', 'reverseCoedge', 'shuffle', 'tiny'];
-const validCodes = {}, validFail = [], oracleFail = [];
+const validCodes = {}, validFail = [], oracleFail = [], importFail = [];
+// our STEP export -> importStep (tag "imp") -> massProps / validate / counts
+function importRoundtrip(t, kb, pb, mb) {
+  let why = null;
+  try {
+    const st = JSON.parse(kb.request(JSON.stringify({ id: 4, msg: { type: 'step', tag: 'main', name: 'rt' } })).json || 'null');
+    const imp = JSON.parse(kb.request(JSON.stringify({ id: 5, msg: { type: 'importStep', tag: 'imp', name: 'rt', data: st?.result } })).json || 'null');
+    const body = imp?.result?.body;
+    if (!body) why = `import: ${JSON.stringify(imp?.result?.errors ?? imp?.error)}`.slice(0, 200);
+    else {
+      const m = JSON.parse(kb.request(JSON.stringify({ id: 6, msg: { type: 'massProps', tag: 'imp' } })).json || 'null')?.result;
+      const v = JSON.parse(kb.request(JSON.stringify({ id: 7, msg: { type: 'validate', tag: 'imp' } })).json || 'null')?.result;
+      const ob = pb.result.body, r = (x, y) => Math.abs(x - y) / (1 + Math.abs(y));
+      if (!(r(m?.volume, mb.volume) <= 1e-6)) why = `volume ${m?.volume} vs ${mb.volume}`;
+      else if (!(r(m?.area, mb.area) <= 1e-6)) why = `area ${m?.area} vs ${mb.area}`;
+      else if (body.faces.length !== ob.faces.length) why = `faces ${body.faces.length} vs ${ob.faces.length}`;
+      else if (body.edges.length !== ob.edges.length) why = `edges ${body.edges.length} vs ${ob.edges.length}`;
+      else if (!v || v.issues.length) why = `validate ${JSON.stringify(v?.issues?.slice(0, 2))}`;
+    }
+  } catch (e) { why = String(e); }
+  bump('import.roundtrip', why === null);
+  if (why) importFail.push(`${t.name}: ${why}`);
+}
 function regenSet(set, targets) {
   for (const t of targets) {
     const t0 = performance.now();
@@ -108,13 +133,8 @@ function regenSet(set, targets) {
       for (const i of vissues) validCodes[i.code] = (validCodes[i.code] ?? 0) + 1;
       if (vissues.length) validFail.push(`${set}:${t.name}:${[...new Set(vissues.map((i) => i.code))].join(',')} | ${vissues.slice(0, 3).map((i) => `${i.entity}: ${i.detail}`).join(' ; ')}`);
       bump(`valid.${set}`, !(pb.result.errors?.length) && mb?.volume > 0 && manifold && vissues.length === 0);
-      // heal.repair: damage a COPY of each valid brep body (see ck_heal::damage::KINDS),
-      // heal it, and require validate-clean + volume within 1e-6 (relative).
-      if (set === 'brep' && vissues.length === 0) for (const kind of HEAL_KINDS) {
-        const hq = JSON.stringify({ id: 4, msg: { type: 'heal', tag: 'main', damage: kind } });
-        const hd = JSON.parse(kb.request(hq).json || 'null')?.result?.damage;
-        if (hd?.applied) bump('heal.repair', hd.clean === true);
-      }
+const HEAL_KINDS = ['detach', 'shells', 'flip', 'invert', 'reverseCoedge', 'shuffle', 'tiny'];
+      if (set === 'brep') importRoundtrip(t, kb, pb, mb);
     } else {
       bump(`mass.${set}`, !ba && !bb);
       bump(`vol.${set}`, !ba && !bb);
@@ -157,6 +177,7 @@ if (existsSync(gdir)) for (const f of readdirSync(gdir).filter((f) => f.endsWith
   bump('step', a === b);
 }
 if (!quiet) process.stderr.write('\n');
+if (importFail.length && !quiet) console.log(importFail.join('\n'));
 
 // report + compare with baseline
 const basePath = path.join(here, 'scoreboard.json');

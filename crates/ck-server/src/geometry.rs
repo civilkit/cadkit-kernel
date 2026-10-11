@@ -64,3 +64,18 @@ pub fn import_sat(cx: &mut Cx) -> Result<Json, String> {
 pub fn step(cx: &mut Cx) -> Result<Json, String> {
     null_or_query(cx, "step")
 }
+
+/// Extension `{type:"importStep", tag?, name?, data:"<STEP text>"}`: parse the
+/// B-rep solids of a STEP file into the tag's state (same body tagging as
+/// regen, so massProps / inspect / validate / mesh / step work on it).
+pub fn import_step(cx: &mut Cx) -> Result<Json, String> {
+    let data = cx.msg.get_str("data").ok_or_else(|| "importStep: data must be a STEP file as a string".to_string())?;
+    let name = cx.msg.get_str("name").unwrap_or("part");
+    let tag = cx.tag();
+    let Some(h) = cx.hooks.import_step else { return Err(crate::session::todo("importStep")) };
+    let (result, state) = h(cx, name, data)?;
+    if let Some(st) = state {
+        cx.session.put(&tag, st);
+    }
+    Ok(result)
+}

@@ -14,6 +14,7 @@ pub fn install() {
     ck_server::set_hooks(Hooks {
         import_sat: Some(import_sat_hook),
         regen: Some(regen_hook),
+        import_step: Some(import_hook),
         query: Some(query_hook),
         sketch_offset: Some(sketch_offset_hook),
         match_edges: Some(match_edges_hook),
@@ -132,6 +133,43 @@ fn regen_hook(part: &Json, cx: &mut Cx) -> Result<(Json, State), String> {
         None => State::empty(),
     };
     Ok((out, state))
+}
+
+/// `importStep`: STEP text -> the tag's body (regen-style result: `body`,
+/// `errors` as `["import", {code, params:{entity, message}}]`, plus
+/// `import:{solids, faces, unitScale, warnings}`).
+fn import_hook(cx: &mut Cx, _name: &str, data: &str) -> Result<(Json, Option<State>), String> {
+    let mut out = ck_server::session::empty_regen_result();
+    let err_json = |e: &ck_io::step::ImportError| {
+        let mut params = Obj::new().put("message", e.message.as_str());
+        if let Some(id) = e.entity {
+            params = params.put("entity", id as f64);
+        }
+        Json::Arr(vec![Json::Str("import".into()), Obj::new().put("code", e.code).put("params", params.build()).build()])
+    };
+    match ck_io::step::read_step(data) {
+        Err(e) => {
+            set_key(&mut out, "errors", Json::Arr(vec![err_json(&e)]));
+            Ok((out, None))
+        }
+        Ok(imp) => {
+            let mut body = imp.body;
+            ck_topo::region::rebuild_lumps(&mut body);
+            let tess = ck_tess::mesh::tessellate(&body);
+            set_body(&mut out, body_json(&body, &tess, cx, &(vec![], vec![])));
+            let info = Obj::new()
+                .put("solids", imp.solids as f64)
+                .put("faces", body.num_faces() as f64)
+                .put("unitScale", imp.length_scale)
+                .put("warnings", Json::Arr(imp.warnings.iter().map(err_json).collect()))
+                .build();
+            if let Json::Obj(kv) = &mut out {
+                kv.push(("import".into(), info));
+            }
+            let snap = Snapshot { body, sketches: vec![], asm: Default::default() };
+            Ok((out, Some(State { has_body: true, data: Some(Box::new(snap)) })))
+        }
+    }
 }
 
 /// `importSat`: ACIS SAT text -> body snapshot. Reply = regen-shaped result

@@ -584,9 +584,26 @@ impl StepWriter {
 }
 
 /// Runs of non-seam coedges per loop (seam = edge with both coedges on
-/// this face).
+/// this face). A planar face has no seam, but the oracle-style revolve cuts a
+/// disc / annulus with a slit edge that is dropped like one; an edge used
+/// twice in a planar loop is only dropped when the runs it leaves are closed
+/// (a hole bridged to the outer boundary would otherwise be cut into open
+/// chains no reader can close again, so those loops stay whole).
 fn face_pieces(body: &Body, f: FaceId) -> Vec<Vec<CoedgeId>> {
+    let out = pieces_of(body, f, true);
+    let planar = matches!(body.face(f).surface, Surface::Plane { .. });
+    let closed = |run: &Vec<CoedgeId>| body.coedge_start(run[0]) == body.coedge_end(*run.last().unwrap());
+    if planar && !out.iter().all(closed) {
+        return pieces_of(body, f, false);
+    }
+    out
+}
+
+fn pieces_of(body: &Body, f: FaceId, drop_seams: bool) -> Vec<Vec<CoedgeId>> {
     let seam = |c: CoedgeId| {
+        if !drop_seams {
+            return false;
+        }
         let e = body.edge(body.coedge(c).edge);
         let n = e.coedges.iter().filter(|&&k| body.coedge(k).alive && body.lp(body.coedge(k).lp).face == f).count();
         n >= 2
