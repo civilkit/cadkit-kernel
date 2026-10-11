@@ -520,18 +520,57 @@ impl FeatureKind {
 
 // ---------------------------------------------------------------- B-rep exec
 
-/// Boolean hook (ck-ops): combine `body` with a freshly swept `tool`.
-pub type BooleanFn = fn(body: &ck_topo::body::Body, tool: &ck_topo::body::Body, op: extrude::Combine) -> Result<ck_topo::body::Body, String>;
+/// Modelling tolerance handed to ck-ops. GUESS: 1e-6 (ck-ops tests).
+pub const TOL: f64 = 1e-6;
+
+/// A debug-trace span produced inside a feature (drained into the regen
+/// [`crate::regen::Tracer`] by [`Brep::flush_spans`], nested under the
+/// feature's own span).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Span {
+    pub label: String,
+    pub children: Vec<Span>,
+}
+
+impl Span {
+    pub fn leaf(label: impl Into<String>) -> Span {
+        Span { label: label.into(), children: vec![] }
+    }
+    fn emit(&self, t: &mut dyn crate::regen::Tracer) {
+        let id = t.begin(&self.label);
+        for c in &self.children {
+            c.emit(t);
+        }
+        t.end(id);
+    }
+}
+
+/// Oracle boolean span: `boolean Subtract (8 × 15 faces) → 13 faces` with
+/// the stage children (kernel.strings
+/// `locateimprintapplyclassifyassemblesimplifycheck`).
+pub fn boolean_span(op: ck_ops::boolean::Op, na: usize, nb: usize, nout: usize) -> Span {
+    let name = match op {
+        ck_ops::boolean::Op::Union => "Unite",
+        ck_ops::boolean::Op::Cut => "Subtract",
+        ck_ops::boolean::Op::Intersect => "Intersect",
+    };
+    Span {
+        label: format!("boolean {name} ({na} × {nb} faces) → {nout} faces"),
+        children: ["locate", "imprint", "apply", "classify", "assemble", "simplify", "check"].iter().map(|s| Span::leaf(*s)).collect(),
+    }
+}
 
 /// The geometry [`crate::regen::FeatureExec`]: owns the part's body during
-/// a regen. Extrude / revolve onto an EMPTY body are built here (ck-topo);
-/// anything that needs booleans goes through `boolean` (None until ck-ops
-/// lands -> a `TODO(rebuild)` error code). Unported feature types also report
-/// `TODO(rebuild): <type> needs ck-ops` instead of being skipped silently.
+/// a regen. Extrude / revolve tools are swept here (ck-topo) and combined
+/// with the body by ck-ops booleans; mirror / patterns re-use the seed
+/// features' tools ([`Brep::tools`]); fillets go to ck-ops blends.
 #[derive(Default)]
 pub struct Brep {
     pub body: Option<ck_topo::body::Body>,
-    pub boolean: Option<BooleanFn>,
+    /// Tool of every body-making feature so far (feature id, tool).
+    pub tools: Vec<(String, extrude::Tool)>,
+    /// Trace spans of the feature being executed (see [`Brep::flush_spans`]).
+    pub spans: Vec<Span>,
 }
 
 impl Brep {
@@ -539,30 +578,126 @@ impl Brep {
         Brep::default()
     }
 
-    fn apply(&mut self, tool: extrude::Tool) -> Result<(), crate::regen::FeatureError> {
+    /// Emit (and clear) the spans recorded by the last `exec`.
+    pub fn flush_spans(&mut self, t: &mut dyn crate::regen::Tracer) {
+        for s in std::mem::take(&mut self.spans) {
+            s.emit(t);
+        }
+    }
+
+    pub fn tool(&self, feature: &str) -> Option<&extrude::Tool> {
+        self.tools.iter().rev().find(|(id, _)| id == feature).map(|(_, t)| t)
+    }
+
+    /// Combine `tool` with the body: the first add becomes the body, later
+    /// ones go through a boolean (pinned: also for disjoint tools, the
+    /// result is re-ordered by the boolean).
+    pub fn combine(&mut self, tool: &ck_topo::body::Body, combine: extrude::Combine, warn_no_effect: bool) -> Result<(), crate::regen::FeatureError> {
         use crate::regen::FeatureError;
-        match (&self.body, tool.combine) {
+        use ck_ops::boolean::Op as BOp;
+        match (&self.body, combine) {
             (None, extrude::Combine::Add) => {
-                self.body = Some(tool.body);
+                self.body = Some(tool.clone());
                 Ok(())
             }
             (None, extrude::Combine::Cut) => Err(FeatureError::new(crate::regen::codes::NOTHING_TO_CUT)),
-            (Some(b), op) => {
-                // Oracle: `boolean Unite|Subtract (m × n faces) → k faces`
-                // child spans (locate, imprint, apply, classify, assemble,
-                // simplify, check); the result is re-ordered by the boolean,
-                // so a plain `Body::append` does not reproduce it even for
-                // disjoint tools.
-                let f = self.boolean.ok_or_else(|| {
-                    FeatureError::new(&extrude::todo(if op == extrude::Combine::Cut { "boolean subtract" } else { "boolean unite" }))
-                })?;
-                let r = f(b, &tool.body, op).map_err(|e| FeatureError::new(&e))?;
-                self.body = Some(r);
-                Ok(())
+            (Some(b), c) => {
+                let op = if c == extrude::Combine::Cut { BOp::Cut } else { BOp::Union };
+                let r = ck_ops::boolean::boolean(b, tool, op, TOL);
+                match r {
+                    Ok(out) => {
+                        self.spans.push(boolean_span(op, b.num_faces(), tool.num_faces(), out.body.num_faces()));
+                        if out.no_effect && op == BOp::Cut && warn_no_effect {
+                            // pinned: body unchanged (original edge order)
+                            return Err(FeatureError::new(CUT_NO_EFFECT));
+                        }
+                        if !out.no_effect {
+                            self.body = Some(out.body);
+                        }
+                        Ok(())
+                    }
+                    Err(e) => {
+                        // GUESS: failed boolean span label keeps the input counts
+                        self.spans.push(boolean_span(op, b.num_faces(), tool.num_faces(), b.num_faces()));
+                        Err(FeatureError::new(&e))
+                    }
+                }
             }
         }
     }
+
+    /// `upToNext` (oracle probes): add -> `tool − body` (span `boolean
+    /// Subtract (tool × body faces)`), cut -> `tool ∩ body` (`boolean
+    /// Intersect`); the pieces touching the sketch plane become the tool,
+    /// none -> `upToNextNone`. The tool is a `through` sweep.
+    /// GUESS: "touching" = has a vertex on the sketch plane; for an add the
+    /// piece must also be bounded by the body (a tool that misses -> none).
+    fn up_to_next(&mut self, mut tool: extrude::Tool) -> Result<extrude::Tool, crate::regen::FeatureError> {
+        use crate::regen::FeatureError;
+        use ck_ops::boolean::Op as BOp;
+        let body = self.body.as_ref().expect("upToNext with a body");
+        let Some(extrude::Recipe::Extrude { profile, .. }) = &tool.recipe else { unreachable!() };
+        let (o, n) = (profile.frame.o, profile.frame.z);
+        let op = if tool.combine == extrude::Combine::Cut { BOp::Intersect } else { BOp::Cut };
+        let none = || FeatureError::new(extrude::UP_TO_NEXT_NONE);
+        let r = ck_ops::boolean::boolean(&tool.body, body, op, TOL).map_err(|e| FeatureError::new(&e))?;
+        self.spans.push(boolean_span(op, tool.body.num_faces(), body.num_faces(), r.body.num_faces()));
+        // pinned: an add whose tool runs off without meeting the body
+        // (missing it, or flipped away) -> upToNextOpen
+        let open = || FeatureError::new(extrude::UP_TO_NEXT_OPEN);
+        if op == BOp::Cut && r.no_effect {
+            return Err(open());
+        }
+        let b = &r.body;
+        let on_plane = |f: ck_topo::body::FaceId| {
+            b.face_edges(f).into_iter().any(|e| {
+                let ed = b.edge(e);
+                [ed.v0, ed.v1].iter().any(|&v| (b.vertex(v).p - o).dot(n).abs() < 1e-6)
+            })
+        };
+        let keep: Vec<ck_topo::body::FaceId> =
+            ck_topo::region::components(b).into_iter().filter(|c| c.iter().any(|&f| on_plane(f))).flatten().collect();
+        if keep.is_empty() {
+            return Err(none());
+        }
+        if op == BOp::Cut && keep.len() == b.num_faces() && ck_topo::region::components(b).len() == 1 {
+            // GUESS: the whole tool survived -> nothing bounds it
+            return Err(open());
+        }
+        let mut order: Vec<ck_topo::body::FaceId> = b.face_ids().collect();
+        order.retain(|f| keep.contains(f));
+        let mut piece = ck_ops::boolean::assemble::rebuild_in_order(b, &order);
+        // The `~k` split suffixes belong to the intermediate boolean; a
+        // face left whole in the kept piece gets its tool name back
+        // (pinned: `F4.S.e1`, not `F4.S.e1~1`).
+        let orig: Vec<String> = tool.body.face_ids().map(|f| tool.body.face_id_str(f)).collect();
+        let base = |n: &ck_topo::body::FaceName| {
+            let mut m = n.clone();
+            m.region = None;
+            m
+        };
+        let names: Vec<ck_topo::body::FaceName> = piece.face_ids().map(|f| piece.face(f).name.clone()).collect();
+        for f in piece.faces.iter_mut().filter(|f| f.alive) {
+            let id = f.name.id();
+            let b0 = base(&f.name);
+            if f.name.region.is_some() && !orig.contains(&id) && orig.contains(&b0.id()) && names.iter().filter(|n| base(n) == b0).count() == 1 {
+                f.name = b0;
+            }
+        }
+        tool.body = piece;
+        Ok(tool)
+    }
+
+    fn apply(&mut self, id: &str, tool: extrude::Tool) -> Result<(), crate::regen::FeatureError> {
+        let r = self.combine(&tool.body, tool.combine, true);
+        // GUESS: the tool is remembered even when the combine fails.
+        self.tools.push((id.to_string(), tool));
+        r
+    }
 }
+
+/// Feature warning: a cut that removes nothing (kernel.strings).
+pub const CUT_NO_EFFECT: &str = "cutNoEffect";
 
 /// Chord-height of the stand-in edge polylines relative to the body
 /// diagonal (ck-topo README: oracle counts fit ≈ 3.74e-4 × diagonal).
@@ -635,13 +770,19 @@ impl crate::regen::FeatureExec for Brep {
         self.body.as_ref().map(|b| b.num_faces())
     }
     fn exec(&mut self, state: &mut crate::regen::RegenState, f: &crate::Feature) -> Result<(), crate::regen::FeatureError> {
-        let has_body = self.body.is_some();
         let tool = match &f.kind {
-            FeatureKind::Extrude { .. } => extrude::exec_extrude(state, f, has_body)?,
-            FeatureKind::Revolve { .. } => extrude::exec_revolve(state, f, has_body)?,
+            FeatureKind::Extrude { end: End::UpToNext, .. } if self.body.is_some() => {
+                let t = extrude::exec_extrude(state, f, self.body.as_ref())?;
+                self.up_to_next(t)?
+            }
+            FeatureKind::Extrude { .. } => extrude::exec_extrude(state, f, self.body.as_ref())?,
+            FeatureKind::Revolve { .. } => extrude::exec_revolve(state, f, self.body.is_some())?,
+            FeatureKind::Mirror { .. } => return pattern::exec_mirror(self, state, f),
+            FeatureKind::LPattern { .. } | FeatureKind::CPattern { .. } => return pattern::exec_pattern(self, state, f),
+            FeatureKind::Fillet { .. } => return blends::exec_fillet(self, state, f),
             _ => return Err(crate::regen::FeatureError::new(&extrude::todo(&f.type_name))),
         };
-        self.apply(tool)
+        self.apply(&f.id, tool)
     }
 }
 

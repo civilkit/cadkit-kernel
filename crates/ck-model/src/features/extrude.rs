@@ -126,10 +126,29 @@ pub fn sketch_profile(sk: &SketchResult) -> Result<Profile, FeatureError> {
     Ok(Profile::new(sk.frame, regions))
 }
 
+/// How a feature's tool body was swept (kept so mirror / patterns can
+/// rebuild it in place of reflecting a finished body).
+#[derive(Debug, Clone)]
+pub enum Recipe {
+    Extrude { profile: Profile, opts: ExtrudeOpts },
+    Revolve { profile: Profile, o: Vec3, d: Vec3, a0: f64, a1: f64 },
+}
+
 /// A swept tool body plus how it combines with the current body.
 pub struct Tool {
     pub body: Body,
     pub combine: Combine,
+    pub recipe: Option<Recipe>,
+}
+
+/// `through` length with a body (oracle probe: a flipped add `through`
+/// from a plane 2000 below a 40×10×20 box gave a 2060.95 tool).
+/// GUESS: distance from the sketch origin to the body box centre + box
+/// diagonal + 10 (matches that probe to 3e-6).
+pub fn through_len(frame_o: Vec3, body: &Body) -> f64 {
+    let (lo, hi) = crate::features::body_box(body);
+    let c = (lo + hi) * 0.5;
+    frame_o.dist(c) + lo.dist(hi) + 10.0
 }
 
 fn sketch_of<'a>(state: &'a RegenState, f: &Feature) -> Result<&'a SketchResult, FeatureError> {
@@ -147,8 +166,11 @@ fn topo_err(e: String) -> FeatureError {
 }
 
 /// `extrude`. `has_body`: whether a body exists (cut / upToNext targets).
-pub fn exec_extrude(state: &RegenState, f: &Feature, has_body: bool) -> Result<Tool, FeatureError> {
+pub fn exec_extrude(state: &RegenState, f: &Feature, body: Option<&Body>) -> Result<Tool, FeatureError> {
+    let has_body = body.is_some();
     let FeatureKind::Extrude { op, end, flip, draft_out, .. } = &f.kind else { unreachable!() };
+    // Oracle: a cut goes AGAINST the sketch normal unless `flip`.
+    let flip = &(*flip ^ (*op == Op::Cut));
     let sk = sketch_of(state, f)?;
     let depth = state.num(f, "depth", 0.0)?;
     let draft = state.num(f, "draft", 0.0)?;
@@ -159,15 +181,16 @@ pub fn exec_extrude(state: &RegenState, f: &Feature, has_body: bool) -> Result<T
         End::Blind if *flip => ExtrudeOpts::flipped(depth),
         End::Blind => ExtrudeOpts::blind(depth),
         End::Mid => ExtrudeOpts::mid(depth),
-        // GUESS: with a body the oracle sizes these from the body extent.
-        End::Through if *flip => ExtrudeOpts::flipped(THROUGH_EMPTY),
-        End::Through => ExtrudeOpts::blind(THROUGH_EMPTY),
-        End::ThroughBoth => ExtrudeOpts::mid(2.0 * THROUGH_EMPTY),
-        End::UpToNext => {
-            if !has_body {
-                return Err(FeatureError::new(codes::NOTHING_TO_CUT));
+        // upToNext with a body: a `through` tool, trimmed by the caller
+        // (`Brep::up_to_next`); without one: nothingToCut (oracle).
+        End::UpToNext if !has_body => return Err(FeatureError::new(codes::NOTHING_TO_CUT)),
+        End::Through | End::ThroughBoth | End::UpToNext => {
+            let l = body.map_or(THROUGH_EMPTY, |b| through_len(sk.frame.o, b));
+            match end {
+                End::ThroughBoth => ExtrudeOpts::mid(2.0 * l),
+                _ if *flip => ExtrudeOpts::flipped(l),
+                _ => ExtrudeOpts::blind(l),
             }
-            return Err(FeatureError::new(&todo("extrude upToNext")));
         }
         End::UpToFace | End::OffsetFromFace | End::UpToPoint => {
             // GUESS: the face/point reference is resolved against the body;
@@ -193,10 +216,14 @@ pub fn exec_extrude(state: &RegenState, f: &Feature, has_body: bool) -> Result<T
         }
     }
     let body = extrude(&f.id, &profile, o).map_err(topo_err)?;
-    Ok(Tool { body, combine })
+    Ok(Tool { body, combine, recipe: Some(Recipe::Extrude { profile, opts: o }) })
 }
 
 pub const UNKNOWN_END: &str = "unknownEnd";
+/// upToNext found no face to stop at (oracle code).
+pub const UP_TO_NEXT_NONE: &str = "upToNextNone";
+/// upToNext add whose tool never meets the body (oracle code).
+pub const UP_TO_NEXT_OPEN: &str = "upToNextOpen";
 pub const MISSING_AXIS: &str = "missingAxis";
 
 /// Error code for paths that need not-yet-rebuilt operations (never produced
@@ -249,5 +276,5 @@ pub fn exec_revolve(state: &RegenState, f: &Feature, has_body: bool) -> Result<T
     let (d, a0, a1) = if a1 < a0 { (-d, -a0, -a1) } else { (d, a0, a1) };
     let (a0, a1) = (a0.min(a1), a0.max(a1));
     let body = revolve(&f.id, &profile, o, d, a0, a1).map_err(topo_err)?;
-    Ok(Tool { body, combine })
+    Ok(Tool { body, combine, recipe: Some(Recipe::Revolve { profile, o, d, a0, a1 }) })
 }

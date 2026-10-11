@@ -2,8 +2,7 @@
 
 The document model and feature program: parses .ckpart JSON, resolves
 references, evaluates expressions, runs the regen program by calling into
-ck-topo. Depends on ck-core, ck-geom, ck-topo, ck-json; ck-ops plugs in
-later through `features::Brep::boolean` (and per-feature code).
+ck-topo / ck-ops. Depends on ck-core, ck-geom, ck-topo, ck-ops, ck-json.
 
 ## Modules
 
@@ -56,9 +55,8 @@ later through `features::Brep::boolean` (and per-feature code).
   mid / through = 1000 / throughBoth = ±1000 on an empty body, depth <= 0
   -> 1e-6, draft / draftOut one-sided) and `revolve` (axis = a sketch line
   entity by id, degrees, flip, mid, >= 360 full) onto an EMPTY body via
-  ck-topo. `op:"cut"` / add onto an existing body -> `Brep::boolean`
-  (None -> `TODO(rebuild): boolean ... needs ck-ops` error code); other
-  geometry feature types -> `TODO(rebuild): <type> needs ck-ops`.
+  ck-topo. Other geometry feature types -> `TODO(rebuild): <type> needs
+  ck-ops`.
   Error codes/precedence pinned: badExpression -> missingAxis (revolve) ->
   noClosedProfile -> unknownEnd{end} / invalidValue (angle 0) ->
   missingReference (upToFace/offsetFromFace/upToPoint) / nothingToCut.
@@ -76,3 +74,48 @@ later through `features::Brep::boolean` (and per-feature code).
   oracle's integration rounds differently; degenerate principal axes are
   arbitrary). `node tools/diff.mjs --cases brep` diffs the follow-up
   requests byte-for-byte.
+
+## Status (ck-ops wiring: Gate A = bracket.ckpart)
+
+- `Brep::combine`: cut / add onto an existing body -> `ck_ops::boolean`
+  (tol `features::TOL` = 1e-6, GUESS). Trace child span
+  `boolean Unite|Subtract (m × n faces) → k faces` + stage leaves
+  locate/imprint/apply/classify/assemble/simplify/check (`Brep::spans`,
+  drained by the server's exec wrapper via `Brep::flush_spans`).
+  Extrude/revolve cut that removes nothing -> `cutNoEffect`, body
+  unchanged; the boolean span is still emitted.
+- extrude `op:"cut"` runs against the sketch normal unless `flip`; revolve
+  cuts do NOT flip (probe). `through`/`throughBoth` with a body: length =
+  |sketch origin − body box centre| + box diagonal + 10 (GUESS fitted to one
+  probe to 3e-6; long enough for every cut). `upToNext` with a body
+  (`Brep::up_to_next`, probes): a `through` tool; add -> `boolean Subtract
+  (tool × body)`, cut -> `boolean Intersect (tool × body)`; the pieces
+  touching the sketch plane are the real tool (split `~k` suffixes dropped),
+  then the usual Unite / Subtract. Cut piece not at the sketch ->
+  `upToNextNone`; add that never meets the body -> `upToNextOpen`.
+- `Brep::tools`: every extrude/revolve keeps its tool body + `Recipe`
+  (profile + sweep params). mirror / lpattern / cpattern seed on FEATURES ->
+  their tool bodies (`features/pattern.rs`): copies named `@<feature>.<k>`,
+  one boolean per seed (patterns append all instances of a seed into one
+  tool), a patterned/mirrored cut that misses is silent; `noSeeds` /
+  `missingReference`; count <= 1 -> no-op. Mirror copies are re-swept from
+  the reflected profile (ck-topo transforms are rigid-only), caps renamed
+  back so `C0@F10.1` is the image of C0. `mirror body:true`: the whole body
+  reflected exactly (`pattern::reflect_body`: right-handed frames, v -> −v
+  pcurves on analytic curved faces, senses / loops flipped), renamed
+  `@<feature>.1`, united — or appended with no boolean span when the copy's
+  box is clear of the body (oracle; GUESS: box test).
+- fillet -> `ck_ops::blend::build::fillet` (`features/blends.rs`); span
+  `"F11: Fillet(5.0, Circular) of 4 edges"`; the selected pair is reordered
+  so the face whose loop runs the edge forward comes first (oracle touched
+  face order, independent of selection order).
+- bracket.ckpart, every prefix upTo 1..11: faces (ids/order/normals/lumps),
+  box, errors, trace labels identical to the oracle, massProps within
+  3e-14; wire EDGE lists have the same face-pair set but differ in order
+  and closed-circle start points (ck-ops, see crates/ck-ops README
+  findings). Pinned by `tests/brep_golden.rs::parts_match_oracle`
+  (`--ignored`, release: ~35 s — the ck-ops classifier integrates winding
+  numbers) + 12 ck-ops mini-parts in `tools/brep_cases.mjs`.
+- `tools/regencmp.mjs` (`--prefixes --mass --trace --show`) diffs regen
+  replies vs the oracle per body key; `examples/regen_part.rs` times each
+  feature natively.
