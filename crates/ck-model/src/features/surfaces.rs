@@ -111,11 +111,13 @@ impl Brep {
         match slot {
             Slot::Solid => self.body = Some(b),
             Slot::Surf(i) => {
+                // pinned (extend probe): the result is appended after the
+                // other surfaces; a closed shell becomes the solid body
+                self.surfs.remove(i);
                 if is_closed(&b) {
-                    self.surfs.remove(i);
                     self.body = Some(b);
                 } else {
-                    self.surfs[i] = (id.to_string(), b);
+                    self.surfs.push((id.to_string(), b));
                 }
             }
         }
@@ -360,12 +362,19 @@ pub fn exec_extend(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
     let mut edges = vec![];
     for (faces, at) in &picks {
         let (s, e) = pick_edge(br, faces, *at)?;
-        if *slot.get_or_insert(s) != s {
+        // pinned: only surface bodies extend (a solid's edge is `missingReference`)
+        if s == Slot::Solid || *slot.get_or_insert(s) != s {
             return Err(missing());
         }
         edges.push(e);
     }
     let slot = slot.unwrap();
+    if let Some(sh) = f.raw.get("shape").and_then(|s| s.as_str()) {
+        if sh != "same" {
+            // oracle: linear / soft / reflective add a separate spline face `X<k>`
+            return Err(FeatureError::new(&super::extrude::todo("extend shape other than same")));
+        }
+    }
     let shape = f.raw.get("shape").and_then(|s| s.as_str()).and_then(sf::extend::Shape::parse).unwrap_or(sf::extend::Shape::Same);
     let end_kind = f.raw.get("end").and_then(|s| s.as_str()).unwrap_or("distance");
     let end = if end_kind == "surface" {

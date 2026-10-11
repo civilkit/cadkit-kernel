@@ -87,6 +87,31 @@ pub fn exec_surface_extrude(br: &mut Brep, state: &mut RegenState, f: &Feature) 
     Ok(())
 }
 
+/// Error code of a profile that straddles the revolve axis.
+pub const PROFILE_CROSSES_AXIS: &str = "profileCrossesAxis";
+
+/// Does any profile segment lie on both sides of the revolve axis?
+/// (oracle: a region or chain with points on both sides of the axis line.)
+pub fn crosses_axis(profile: &Profile, o: Vec3, d: Vec3) -> bool {
+    let fr = &profile.frame;
+    let (mut pos, mut neg) = (false, false);
+    for reg in &profile.regions {
+        for l in reg.loops() {
+            for s in &l.segs {
+                for k in 0..=8 {
+                    let t = s.t0 + (s.t1 - s.t0) * k as f64 / 8.0;
+                    let q = s.curve.eval(t);
+                    let p = fr.o + fr.x * q.x + fr.y * q.y;
+                    let side = (p - o).cross(d).dot(fr.z);
+                    pos |= side > 1e-9;
+                    neg |= side < -1e-9;
+                }
+            }
+        }
+    }
+    pos && neg
+}
+
 pub fn exec_surface_revolve(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
     let FeatureKind::SurfaceRevolve { end, flip, .. } = &f.kind else { unreachable!() };
     let sk = sketch_of(state, f)?;
@@ -97,6 +122,11 @@ pub fn exec_surface_revolve(br: &mut Brep, state: &mut RegenState, f: &Feature) 
         .and_then(|a| sketch_axis(sk, a))
         .ok_or_else(|| FeatureError::new(MISSING_AXIS))?;
     let profile = sheet_profile(sk, true)?;
+    if crosses_axis(&profile, o, d) {
+        // pinned: closed region -> empty detail, open chain -> the projection text
+        let detail = if sk.profiles.regions.is_empty() { "the profile and its projection onto the axis cross" } else { "" };
+        return Err(FeatureError::new(PROFILE_CROSSES_AXIS).with("detail", ck_json::Json::Str(detail.into())));
+    }
     if angle.abs() < 1e-9 {
         return Err(FeatureError::new(codes::INVALID_VALUE));
     }

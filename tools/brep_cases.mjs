@@ -298,6 +298,35 @@ parts.mirrorBodyCone = part([...parts.cone.features, { type: 'plane', id: 'F8', 
   parts.lipBadFace = part([...hollow, lip({ faces: ['F9.C0'] })]);
 }
 
+// profiles crossing the revolve axis, monotone spline chain
+{
+  const AX2 = [pt('a1', 0, -20), pt('a2', 0, 20)];
+  const axl = line('ax', 'a1', 'a2', { construction: true });
+  const sr = (o = {}) => ({ type: 'surfaceRevolve', id: 'F2', sketch: 'F1', axis: 'ax', end: 'blind', angle: 360, ...o });
+  const crossRect = [pt('p1', -5, 0), pt('p2', 5, 0), pt('p3', 5, 5), pt('p4', -5, 5)];
+  const crossE = [line('e1', 'p1', 'p2'), line('e2', 'p2', 'p3'), line('e3', 'p3', 'p4'), line('e4', 'p4', 'p1')];
+  parts.srCrossRect = part([sketch('front', [...crossRect, ...AX2], [...crossE, axl]), sr()]);
+  parts.rvCrossRect = part([sketch('front', [...crossRect, ...AX2], [...crossE, axl]), revolve({ angle: 360 })]);
+  parts.srCrossChain = part([sketch('front', [pt('c1', -5, 3), pt('c2', 6, 8), ...AX2], [line('l1', 'c1', 'c2'), axl]), sr()]);
+  const arch = [pt('c1', 10, -10), pt('c2', 14, -3), pt('c3', 15, 5), pt('c4', 12, 14)];
+  parts.srSpline = part([sketch('front', [...arch, ...AX2], [{ type: 'spline', id: 'e8', pts: ['c1', 'c2', 'c3', 'c4'] }, axl]), sr({ angle: 180 })]);
+}
+
+// extend to a target surface / half-cylinder rim
+{
+  const [P, E] = rect(0, 0, 40, 20);
+  const [T, TE] = rect(-30, -30, 30, 30, ['t1', 't2', 't3', 't4'], 't');
+  const sp = (id, sk) => ({ type: 'surfacePlanar', id, sketch: sk });
+  const tgt = [{ type: 'plane', id: 'F3', mode: 'offset', base: STD('right'), offset: 60 },
+    { type: 'sketch', id: 'F4', plane: { kind: 'feature', id: 'F3' }, points: T, entities: TE, constraints: [] }, sp('F5', 'F4')];
+  parts.extendToSurface = part([sketch('top', P, E), sp('F2', 'F1'), ...tgt,
+    { type: 'extend', id: 'F6', edges: [{ faces: ['F2.P'], at: [40, 0, -10] }], end: 'surface', target: { kind: 'surface', id: 'F5' } }]);
+  // shape linear / soft / reflective add a separate spline face F3.X0 (not reconstructed)
+  parts.extendNotBoundary = part([sketch('top', P, E), extrude(),
+    { type: 'extend', id: 'F3', edges: [{ faces: ['F2.C0', 'F2.S.e1'], at: [20, 0, 0] }], distance: 7 }]);
+  parts.extendNoEdges = part([sketch('top', P, E), sp('F2', 'F1'), { type: 'extend', id: 'F3', edges: [], distance: 7 }]);
+}
+
 const m = (msg) => JSON.stringify({ id: 1, msg });
 /// Follow-up requests on each part's state (compared byte-for-byte).
 export const queries = [
