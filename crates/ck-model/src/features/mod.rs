@@ -518,6 +518,133 @@ impl FeatureKind {
     }
 }
 
+// ---------------------------------------------------------------- B-rep exec
+
+/// Boolean hook (ck-ops): combine `body` with a freshly swept `tool`.
+pub type BooleanFn = fn(body: &ck_topo::body::Body, tool: &ck_topo::body::Body, op: extrude::Combine) -> Result<ck_topo::body::Body, String>;
+
+/// The geometry [`crate::regen::FeatureExec`]: owns the part's body during
+/// a regen. Extrude / revolve onto an EMPTY body are built here (ck-topo);
+/// anything that needs booleans goes through `boolean` (None until ck-ops
+/// lands -> a `TODO(rebuild)` error code). Unported feature types also report
+/// `TODO(rebuild): <type> needs ck-ops` instead of being skipped silently.
+#[derive(Default)]
+pub struct Brep {
+    pub body: Option<ck_topo::body::Body>,
+    pub boolean: Option<BooleanFn>,
+}
+
+impl Brep {
+    pub fn new() -> Brep {
+        Brep::default()
+    }
+
+    fn apply(&mut self, tool: extrude::Tool) -> Result<(), crate::regen::FeatureError> {
+        use crate::regen::FeatureError;
+        match (&self.body, tool.combine) {
+            (None, extrude::Combine::Add) => {
+                self.body = Some(tool.body);
+                Ok(())
+            }
+            (None, extrude::Combine::Cut) => Err(FeatureError::new(crate::regen::codes::NOTHING_TO_CUT)),
+            (Some(b), op) => {
+                // Oracle: `boolean Unite|Subtract (m × n faces) → k faces`
+                // child spans (locate, imprint, apply, classify, assemble,
+                // simplify, check); the result is re-ordered by the boolean,
+                // so a plain `Body::append` does not reproduce it even for
+                // disjoint tools.
+                let f = self.boolean.ok_or_else(|| {
+                    FeatureError::new(&extrude::todo(if op == extrude::Combine::Cut { "boolean subtract" } else { "boolean unite" }))
+                })?;
+                let r = f(b, &tool.body, op).map_err(|e| FeatureError::new(&e))?;
+                self.body = Some(r);
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Chord-height of the stand-in edge polylines relative to the body
+/// diagonal (ck-topo README: oracle counts fit ≈ 3.74e-4 × diagonal).
+pub const EDGE_SAG: f64 = 3.74e-4;
+
+/// Bounds of vertices, edges and a uv grid over each face's pcurve box
+/// (ck-topo's `bbox` only sees edges, which misses e.g. a revolved sphere).
+pub fn body_box(b: &ck_topo::body::Body) -> (ck_core::linalg::Vec3, ck_core::linalg::Vec3) {
+    use ck_geom::Vec2;
+    let (mut lo, mut hi) = b.bbox();
+    for f in b.face_ids() {
+        let face = b.face(f);
+        if matches!(face.surface, ck_geom::surface::Surface::Plane { .. }) {
+            continue;
+        }
+        let (mut a, mut z) = (Vec2::new(f64::INFINITY, f64::INFINITY), Vec2::new(f64::NEG_INFINITY, f64::NEG_INFINITY));
+        for &l in &face.loops {
+            for &c in &b.lp(l).coedges {
+                let (t0, t1) = b.coedge_params(c);
+                for k in 0..=8 {
+                    let uv = b.coedge_uv(c, t0 + (t1 - t0) * k as f64 / 8.0, None);
+                    a = Vec2::new(a.x.min(uv.x), a.y.min(uv.y));
+                    z = Vec2::new(z.x.max(uv.x), z.y.max(uv.y));
+                }
+            }
+        }
+        if !(a.x.is_finite() && z.x.is_finite()) {
+            continue;
+        }
+        let n = 32;
+        for i in 0..=n {
+            for j in 0..=n {
+                let (u, v) = (a.x + (z.x - a.x) * i as f64 / n as f64, a.y + (z.y - a.y) * j as f64 / n as f64);
+                let p = face.surface.eval(u, v);
+                lo = lo.min(p);
+                hi = hi.max(p);
+            }
+        }
+    }
+    // Oracle (drafted box): the wire box is the union of the exact bounds
+    // and the f32 display-mesh positions, e.g. min.z = f32(-20.87488663516974)
+    // = -20.874887466430664 while min.x keeps the exact f64.
+    let f = |x: f64| x as f32 as f64;
+    let r = |p: ck_core::linalg::Vec3| ck_core::linalg::Vec3::new(f(p.x), f(p.y), f(p.z));
+    (lo.min(r(lo)), hi.max(r(hi)))
+}
+
+/// The geometry part of the wire `body`: `box`, `faces`, `edges` (in that
+/// key order; the server appends `silhouette` and `mesh`). Edge `pts` use
+/// ck-topo's `sample_edge` stand-in until ck-tess provides its own.
+pub fn body_wire(b: &ck_topo::body::Body) -> Vec<(String, Json)> {
+    let (lo, hi) = body_box(b);
+    let v = |p: ck_core::linalg::Vec3| Json::Arr(vec![Json::Num(p.x), Json::Num(p.y), Json::Num(p.z)]);
+    // GUESS: the oracle box comes from the display mesh (curved bodies show
+    // f32 mesh coordinates); exact bounds match it for planar bodies.
+    let bx = Json::Obj(vec![("min".into(), v(lo)), ("max".into(), v(hi))]);
+    let tol = EDGE_SAG * lo.dist(hi);
+    vec![
+        ("box".into(), bx),
+        ("faces".into(), b.faces_json()),
+        ("edges".into(), b.edges_json(&|b, e| b.sample_edge(e, tol))),
+    ]
+}
+
+impl crate::regen::FeatureExec for Brep {
+    fn face_frame(&mut self, _state: &crate::regen::RegenState, face: &str) -> Option<ck_core::linalg::Frame> {
+        crate::refs::face_frame(self.body.as_ref()?, face)
+    }
+    fn face_count(&self) -> Option<usize> {
+        self.body.as_ref().map(|b| b.num_faces())
+    }
+    fn exec(&mut self, state: &mut crate::regen::RegenState, f: &crate::Feature) -> Result<(), crate::regen::FeatureError> {
+        let has_body = self.body.is_some();
+        let tool = match &f.kind {
+            FeatureKind::Extrude { .. } => extrude::exec_extrude(state, f, has_body)?,
+            FeatureKind::Revolve { .. } => extrude::exec_revolve(state, f, has_body)?,
+            _ => return Err(crate::regen::FeatureError::new(&extrude::todo(&f.type_name))),
+        };
+        self.apply(tool)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

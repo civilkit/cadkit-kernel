@@ -603,10 +603,28 @@ fn sumsq(r: &[f64]) -> f64 {
     r.iter().fold(0.0, |e, t| e + t * t)
 }
 
-/// Dense LU with partial pivoting, in place (client `dl()`); `None` when a
-/// pivot is below 1e-300.
+/// Dense Gaussian elimination with partial pivoting, in place.
+///
+/// Kernel version (WAT f3941), which differs from the client's `dl()` in
+/// two rounding-relevant ways: the multiplier is `a[r][s] / pivot` (not
+/// `a[r][s] * (1/pivot)`), and the matrix counts as singular when the best
+/// pivot is `<= 1e-14 * max|A|` (client: `< 1e-300`). Returns `None` when
+/// singular.
 fn lu_solve(r: &mut [Vec<f64>], e: &mut [f64]) -> Option<Vec<f64>> {
     let t = e.len();
+    let mut amax = 0.0f64;
+    for row in r.iter() {
+        for &v in row.iter() {
+            let v = v.abs();
+            if v > amax || v.is_nan() {
+                amax = v;
+            }
+        }
+    }
+    if amax == 0.0 {
+        return None;
+    }
+    let tiny = amax * 1e-14;
     for s in 0..t {
         let mut i = s;
         let mut o = r[s][s].abs();
@@ -617,19 +635,18 @@ fn lu_solve(r: &mut [Vec<f64>], e: &mut [f64]) -> Option<Vec<f64>> {
                 i = c;
             }
         }
-        if o < 1e-300 {
+        if o <= tiny {
             return None;
         }
         if i != s {
             r.swap(s, i);
             e.swap(s, i);
         }
-        let l = 1.0 / r[s][s];
         let (top, bot) = r.split_at_mut(s + 1);
         let a = &top[s];
         for (ci, h) in bot.iter_mut().enumerate() {
             let c = s + 1 + ci;
-            let d = h[s] * l;
+            let d = h[s] / a[s];
             if d != 0.0 {
                 for u in s..t {
                     h[u] -= d * a[u];
@@ -964,9 +981,15 @@ mod tests {
     fn golden_rect_30() {
         let mut s = sk(&RECT.replace("VAL", "30"));
         assert!(solve_sketch(&mut s, &SolveOpts::default()).unwrap().ok);
-        assert_eq!(pts(&s)[0], (-9.499999902516906, 0.50000009027764));
-        assert_eq!(pts(&s)[1], (20.500000097511588, 0.50000009027764));
-        assert_eq!(pts(&s)[2], (20.500000097513997, 5.499999999894264));
+        assert_eq!(
+            pts(&s),
+            vec![
+                (-9.499999902516906, 0.50000009027764),
+                (20.500000097511588, 0.50000009027764),
+                (20.500000097513997, 5.499999999894265),
+                (-9.499999902526271, 5.499999999894264)
+            ]
+        );
     }
 
     /// Oracle golden: value 25.4 (expr "1in").
@@ -982,6 +1005,30 @@ mod tests {
                 (18.200000037409836, 5.499999999894265),
                 (-7.199999962628626, 5.499999999894264)
             ]
+        );
+    }
+
+    fn solve_src(src: &str) -> Vec<(f64, f64)> {
+        let mut s = sk(src);
+        assert!(solve_sketch(&mut s, &SolveOpts::default()).unwrap().ok);
+        pts(&s)
+    }
+
+    /// Oracle goldens (regen with `expr` driving the value from 0).
+    #[test]
+    fn golden_small() {
+        let two = |fixed: &str, k: &str| {
+            format!(
+                r#"{{"points":[{{"id":"p1","x":0,"y":0{fixed}}},{{"id":"p2","x":10,"y":1}}],"entities":[{{"type":"line","id":"e1","p1":"p1","p2":"p2"}}],"constraints":[{{"type":"{k}","id":"c1","refs":["p1","p2"],"value":25}}]}}"#
+            )
+        };
+        assert_eq!(solve_src(&two("", "distance")), vec![(-7.437964839797623, -0.7437965038973292), (17.437964912225137, 1.743796503897329)]);
+        assert_eq!(solve_src(&two("", "hdist")), vec![(-7.499999975776952, 0.0), (17.500000024223045, 1.0)]);
+        assert_eq!(solve_src(&two(r#","fixed":true"#, "distance")), vec![(0.0, 0.0), (24.875929752739864, 2.487593000623617)]);
+        let src = r#"{"points":[{"id":"p1","x":0,"y":0},{"id":"p2","x":10,"y":1},{"id":"p3","x":11,"y":5}],"entities":[{"type":"line","id":"e1","p1":"p1","p2":"p2"},{"type":"line","id":"e2","p1":"p2","p2":"p3"}],"constraints":[{"type":"vertical","id":"c0","refs":["e2"]},{"type":"distance","id":"c1","refs":["p1","p2"],"value":25}]}"#;
+        assert_eq!(
+            solve_src(src),
+            vec![(-9.553327993908944, -0.9552916803561808), (15.276664042328626, 1.9552916803730227), (15.27666404232873, 5.0)]
         );
     }
 
@@ -1057,25 +1104,6 @@ mod tests {
     }
 
 }
-#[cfg(test)]
-mod scratch_probe {
-    #[test]
-    fn probe_files() {
-        let Ok(list) = std::env::var("PROBE") else { return };
-        for f in list.split(',') {
-            let src = std::fs::read_to_string(f).unwrap();
-            let j = ck_json::parse(&src).unwrap();
-            let fj = &j.get("msg").unwrap().get("part").unwrap().get("features").unwrap().as_arr().unwrap()[0];
-            let mut s = super::Sketch::from_json(fj);
-            for c in s.constraints.iter_mut() {
-                if let Some(e) = &c.expr { c.value = crate::expr::eval(e, None).ok(); }
-            }
-            let r = super::solve_sketch(&mut s, &Default::default()).unwrap();
-            eprintln!("PROBE {f} ok={} it={} {:?}", r.ok, r.iterations, s.points.iter().map(|p| (p.x, p.y)).collect::<Vec<_>>());
-        }
-    }
-}
-
 /// Correctly rounded `hypot`.
 ///
 /// kernel.wasm's hypot (WAT f4194 -> f4190) is the CORE-MATH correctly
@@ -1092,9 +1120,6 @@ pub mod cr {
     struct Big(Vec<u64>);
 
     impl Big {
-        fn from_u128(v: u128) -> Big {
-            Big(vec![v as u64, (v >> 64) as u64])
-        }
         fn mul(a: u128, b: u128) -> Big {
             let a = [a as u64, (a >> 64) as u64];
             let b = [b as u64, (b >> 64) as u64];
