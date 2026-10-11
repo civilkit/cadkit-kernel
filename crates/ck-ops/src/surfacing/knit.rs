@@ -196,6 +196,13 @@ pub fn knit(bodies: &[Body], solid: bool, tol: f64) -> Result<Body, KnitError> {
                     killed.insert(eb);
                 }
                 None => {
+                    // Two edges of the SAME face that share both endpoints
+                    // (a half-disc: arc + chord, a lens, a split circle) are
+                    // legitimately different edges, not a near miss.
+                    let fa: Vec<FaceId> = b.edge_coedges(ea).iter().map(|&c| b.coedge_face(c)).collect();
+                    if b.edge_coedges(eb).iter().any(|&c| fa.contains(&b.coedge_face(c))) {
+                        continue;
+                    }
                     let mid_a = mid_point(&b, ea);
                     let mid_b = mid_point(&b, eb);
                     if mid_a.dist(mid_b) > tol * 100.0 {
@@ -509,6 +516,28 @@ mod tests {
         let bl = super::super::boundary::open_boundaries(&b, &faces);
         assert_eq!(bl.len(), 1);
         assert_eq!(bl[0].len(), 6);
+    }
+
+    /// Half-disc face (arc + chord share both endpoints): must not be a near miss.
+    #[test]
+    fn knit_half_disc_not_near_miss() {
+        let mut b = Body::new();
+        let lump = b.add_lump();
+        let shell = b.add_shell(lump);
+        let surf = Surface::plane(Vec3::ZERO, Vec3::new(0.0, 0.0, 1.0));
+        let f = b.add_face(shell, surf, true, name("F9"));
+        let lp = b.add_loop(f);
+        let arc = ck_geom::curve::Curve::circle(Vec3::ZERO, Vec3::new(0.0, 0.0, 1.0), 5.0);
+        let p0 = arc.eval(0.0);
+        let p1 = arc.eval(std::f64::consts::PI);
+        let v0 = b.add_vertex(p0);
+        let v1 = b.add_vertex(p1);
+        let e0 = b.add_edge(arc, 0.0, std::f64::consts::PI, v0, v1);
+        let e1 = b.add_edge(ck_geom::curve::Curve::line(p1, p0 - p1), 0.0, 10.0, v1, v0);
+        b.add_coedge(lp, e0, false, None);
+        b.add_coedge(lp, e1, false, None);
+        let k = knit(&[b], false, 1e-6).unwrap();
+        assert_eq!(k.edge_ids().count(), 2);
     }
 
     #[test]
