@@ -272,12 +272,28 @@ pub fn exec_pattern(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Resul
     let tools: Vec<(Body, Combine)> = if xs.is_empty() { vec![] } else { seed_tools(br, seeds)?.into_iter().map(|(_, t)| (t.body.clone(), t.combine)).collect() };
     // Pinned: per seed ONE boolean with all its instances (`boolean Subtract
     // (7 × 6 faces)` for 2 copies of a 3-face hole), seeds in order.
+    // Instances are appended while their box is clear of the tool so far,
+    // else united (stator F14: `boolean Unite (50 × 10 faces) → 60 faces`
+    // before `boolean Subtract (168 × 70 faces)`).
+    let mut all = Body::new();
+    let mut last = Combine::Add;
     for (seed, c) in &tools {
-        let mut tool = Body::new();
+        let mut tool: Option<Body> = None;
         for (k, x) in xs.iter().enumerate() {
-            tool.append(&ck_ops::boolean::apply::instance(seed, x, &f.id, k + 1));
+            let inst = ck_ops::boolean::apply::instance(seed, x, &f.id, k + 1);
+            tool = Some(match tool {
+                None => inst,
+                Some(t) => accumulate(br, t, inst)?,
+            });
         }
+        let tool = tool.unwrap_or_default();
         br.combine(&tool, *c, false)?;
+        all.append(&tool);
+        last = *c;
+    }
+    // the pattern's own tool (seeds of later patterns): every instance
+    if !tools.is_empty() {
+        br.tools.push((f.id.clone(), Tool { body: all, combine: last, recipe: None }));
     }
     Ok(())
 }
@@ -293,3 +309,19 @@ fn count_of(c: f64) -> Result<usize, FeatureError> {
 
 /// Mirror / pattern with an empty `seeds` list (oracle code).
 pub const NO_SEEDS: &str = "noSeeds";
+
+/// Add `b` to the tool `t`: appended when their boxes are clear (GUESS:
+/// exact bounds ± tol, the `mirror body:true` rule), else `boolean Unite`.
+pub fn accumulate(br: &mut Brep, mut t: Body, b: Body) -> Result<Body, FeatureError> {
+    let (alo, ahi) = super::body_box(&t);
+    let (blo, bhi) = super::body_box(&b);
+    let e = super::TOL;
+    let apart = alo.x > bhi.x + e || blo.x > ahi.x + e || alo.y > bhi.y + e || blo.y > ahi.y + e || alo.z > bhi.z + e || blo.z > ahi.z + e;
+    if apart {
+        t.append(&b);
+        return Ok(t);
+    }
+    let out = ck_ops::boolean::boolean(&t, &b, ck_ops::boolean::Op::Union, super::TOL).map_err(|e| FeatureError::new(&e))?;
+    br.spans.push(super::boolean_span(ck_ops::boolean::Op::Union, t.num_faces(), b.num_faces(), out.body.num_faces()));
+    Ok(out.body)
+}

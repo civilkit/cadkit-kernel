@@ -160,6 +160,11 @@ pub fn regen_nested(part: &Part) -> (super::Span, Nested) {
     (span, Nested { body: ex.brep.body, errors, n_features: n })
 }
 
+/// Error codes that only mean "not rebuilt yet" (see [`Brep::exec_insert`]).
+pub fn is_rebuild_gap(code: &str) -> bool {
+    code.starts_with("TODO(rebuild)") || code == "blendUnsupported"
+}
+
 /// Canonical text of a nested part (cache key).
 fn part_key(p: &Part) -> String {
     ck_json::to_string(&p.raw)
@@ -174,6 +179,8 @@ pub struct Assembly {
     pub face_ranges: Vec<(usize, usize)>,
     /// Edge index ranges of the same bodies.
     pub edge_ranges: Vec<(usize, usize)>,
+    /// Mates so far, in feature order.
+    pub mates: Vec<MateRec>,
     /// Nested regen results by part text (filled by the pre-pass or lazily).
     pub cache: Vec<(String, Nested)>,
 }
@@ -220,7 +227,10 @@ impl Brep {
                 n
             }
         };
-        if let Some(e) = nested.errors.first() {
+        // REBUILD-ONLY: errors of operations not reconstructed yet (ck-ops
+        // gaps: chamfer, sweep, curved-edge fillets) do not abort the insert
+        // so assemblies can be measured; the oracle never produces them.
+        if let Some(e) = nested.errors.iter().find(|e| !is_rebuild_gap(&e.error.code)) {
             let detail = format!("{}: {}", e.feature, e.error.code);
             return Err(FeatureError::new(INSERT_PART_ERRORS).with("detail", Json::Str(detail)));
         }
@@ -342,80 +352,307 @@ fn placement(state: &RegenState, f: &Feature, p: &Placement) -> Result<Xf, Featu
     Ok(x)
 }
 
-/// `mate` (first pass: recorded, no solve yet).
-pub fn exec_mate(br: &mut Brep, _state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
-    let FeatureKind::Mate { a, b, .. } = &f.kind else { unreachable!() };
+/// A recorded mate: the moving component and the faces.
+#[derive(Debug, Clone)]
+pub struct MateRec {
+    pub id: String,
+    pub kind: super::MateKind,
+    /// component index that moves
+    pub mover: usize,
+    /// face on the mover / on the reference side
+    pub moving: String,
+    pub target: String,
+    pub distance: f64,
+    pub flip: bool,
+}
+
+/// Mate geometry of a face: plane (point, outward normal) or axis (point, dir).
+#[derive(Debug, Clone, Copy)]
+enum Geo {
+    Plane { o: Vec3, n: Vec3 },
+    Axis { o: Vec3, d: Vec3 },
+}
+
+/// Kernel normalisation (`sqrt(z² + (x² + y²))`, times `1/len`).
+pub fn knorm(v: Vec3) -> Vec3 {
+    let l = (v.z * v.z + (v.x * v.x + v.y * v.y)).sqrt();
+    if !(l > TINY) || !l.is_finite() {
+        return Vec3::ZERO;
+    }
+    let i = 1.0 / l;
+    Vec3::new(v.x * i, v.y * i, v.z * i)
+}
+
+/// Outward normal of a plane as the kernel derives it: `normalize(x × y)`
+/// (pinned: after a solved rotation the target normal x-component is
+/// `r12·r20 − r22·r10`, not the transformed frame z), negated when the
+/// face is reversed.
+pub fn plane_normal(fr: &Frame, sense: bool) -> Vec3 {
+    let (x, y) = (fr.x, fr.y);
+    let n = knorm(Vec3::new(x.y * y.z - x.z * y.y, x.z * y.x - x.x * y.z, x.x * y.y - x.y * y.x));
+    if sense { n } else { -n }
+}
+
+/// Directions are re-normalised (pinned: a cylinder turned 170° about x
+/// gives the record axis `(0, −0.984807753012208, 0.17364817766693028)`,
+/// i.e. its transformed frame z normalised once more).
+fn face_geo(b: &Body, id: &str) -> Option<Geo> {
+    use ck_geom::surface::Surface;
+    let f = b.find_face(id)?;
+    match &b.face(f).surface {
+        Surface::Plane { frame } => Some(Geo::Plane { o: frame.o, n: plane_normal(frame, b.face(f).sense) }),
+        Surface::Cylinder { frame, .. } => Some(Geo::Axis { o: frame.o, d: knorm(frame.z) }),
+        // GUESS: cones also give their axis
+        Surface::Cone { frame, .. } => Some(Geo::Axis { o: frame.o, d: knorm(frame.z) }),
+        _ => None,
+    }
+}
+
+/// Records of one mate for its mover (probes: coincident = normals opposed
+/// (`flip` -> aligned) + point on plane; distance = the same at `d`;
+/// parallel = the direction record only; concentric = axis directions
+/// aligned with the sign of their current dot + point on axis).
+fn mate_recs(b: &Body, m: &MateRec) -> Result<Vec<Rec>, FeatureError> {
+    use super::MateKind as K;
+    let geo = |id: &str| face_geo(b, id).ok_or_else(|| FeatureError::new(MATE_GEOMETRY));
+    let (gm, gt) = (geo(&m.moving)?, geo(&m.target)?);
+    let s = if m.flip { 1.0 } else { -1.0 };
+    Ok(match (m.kind, gm, gt) {
+        (K::Coincident | K::Distance, Geo::Plane { o: p, n: a }, Geo::Plane { o: q, n }) => {
+            let d = if m.kind == K::Distance { m.distance } else { 0.0 };
+            vec![Rec::Dir { a, b: n, s }, Rec::PtPlane { p, q, n, d }]
+        }
+        (K::Parallel, Geo::Plane { n: a, .. }, Geo::Plane { n, .. }) => vec![Rec::Dir { a, b: n, s }],
+        (K::Concentric, Geo::Axis { o: p, d: a }, Geo::Axis { o: q, d: u }) => {
+            // GUESS: flip ignored; sign from the current alignment
+            let dot = a.dot(u);
+            vec![Rec::Dir { a, b: u, s: if dot < 0.0 { -1.0 } else { 1.0 } }, Rec::PtLine { p, q, u }]
+        }
+        _ => return Err(FeatureError::new(MATE_GEOMETRY)),
+    })
+}
+
+/// func f3769: box of the arc `c + cos t·X + sin t·Y`, `t ∈ [t0, t1]`
+/// (end points + the per-axis critical angles `atan2(Y_i, X_i)` (+π)).
+fn arc_box(c: Vec3, x: Vec3, y: Vec3, t0: f64, t1: f64) -> (Vec3, Vec3) {
+    let tau = std::f64::consts::TAU;
+    let pt0 = |t: f64| {
+        let (s, co) = (ck_topo::trig::sin(t), ck_topo::trig::cos(t));
+        Vec3::new((c.x + co * x.x) + s * y.x, (c.y + co * x.y) + s * y.y, (c.z + co * x.z) + s * y.z)
+    };
+    let (a, b) = (pt0(t0), pt0(t1));
+    let (mut lo, mut hi) = (a.min(b), a.max(b));
+    for (xi, yi) in [(x.x, y.x), (x.y, y.y), (x.z, y.z)] {
+        if xi.abs() < TINY && yi.abs() < TINY {
+            continue;
+        }
+        let base = yi.atan2(xi);
+        for cand in [base, base + std::f64::consts::PI] {
+            let mut d = (cand - t0) % tau;
+            if d < 0.0 {
+                d += tau;
+            }
+            let t = t0 + if d >= tau { 0.0 } else { d };
+            if t <= t1 {
+                let (s, co) = (ck_topo::trig::sin(t), ck_topo::trig::cos(t));
+                let p = Vec3::new(y.x * s + (c.x + x.x * co), y.y * s + (c.y + x.y * co), y.z * s + (c.z + x.z * co));
+                lo = lo.min(p);
+                hi = hi.max(p);
+            }
+        }
+    }
+    (lo, hi)
+}
+
+/// func f3768 (lines, circles; GUESS: other curves from their sampled
+/// points).
+fn edge_box(e: &ck_topo::body::Edge) -> (Vec3, Vec3) {
+    use ck_geom::curve::Curve;
+    match &e.curve {
+        Curve::Line { o, d } => {
+            let p = |t: f64| Vec3::new(o.x + t * d.x, o.y + t * d.y, o.z + t * d.z);
+            let (a, b) = (p(e.t0), p(e.t1));
+            (a.min(b), a.max(b))
+        }
+        Curve::Circle { frame, r } => arc_box(frame.o, frame.x.scale(*r), frame.y.scale(*r), e.t0, e.t1),
+        Curve::Ellipse { frame, a, b } => arc_box(frame.o, frame.x.scale(*a), frame.y.scale(*b), e.t0, e.t1),
+        c => {
+            let pts = c.sample(e.t0, e.t1, 64);
+            let mut lo = pts[0];
+            let mut hi = pts[0];
+            for q in pts {
+                lo = lo.min(q);
+                hi = hi.max(q);
+            }
+            (lo, hi)
+        }
+    }
+}
+
+/// Bounds of a component: the union of its face boxes (func f3512 = the
+/// surface box over the face mesh's uv bounds ∪ every edge box padded by
+/// the edge tolerance 1e-6). Pinned: a 40×10×20 box solves with scale
+/// 22.912880002304444 = half the diagonal grown by 1e-6 per side. GUESS:
+/// the surface-box part is skipped (it lies inside the edge boxes for the
+/// planar / cylindrical faces of the samples).
+fn comp_box(b: &Body, r: &Span3) -> Option<(Vec3, Vec3)> {
+    let mut lo = Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
+    let mut hi = -lo;
+    let tol = 1e-6;
+    for fi in r.faces.0..r.faces.1 {
+        let f = ck_topo::body::FaceId(fi as u32);
+        if !b.face(f).alive {
+            continue;
+        }
+        for e in b.face_edges(f) {
+            let (a, z) = edge_box(b.edge(e));
+            if a.x <= z.x && a.y <= z.y && a.z <= z.z {
+                lo = lo.min(Vec3::new(a.x - tol, a.y - tol, a.z - tol));
+                hi = hi.max(Vec3::new(z.x + tol, z.y + tol, z.z + tol));
+            }
+        }
+    }
+    (lo.x <= hi.x).then_some((lo, hi))
+}
+
+impl Assembly {
+    fn recs_for(&self, b: &Body, k: usize) -> Result<Vec<Rec>, FeatureError> {
+        let mut out = vec![];
+        for m in self.mates.iter().filter(|m| m.mover == k) {
+            out.extend(mate_recs(b, m)?);
+        }
+        Ok(out)
+    }
+}
+
+/// func f1375: Gauss-Seidel over the components (the new mate's mover
+/// first, then the others in insertion order), each solved against its
+/// own mates with everything else frozen, until a pass moves nothing.
+fn solve_all(br: &mut Brep, first: usize) -> Result<(), FeatureError> {
+    let n = br.asm.components.len();
+    let order: Vec<usize> = std::iter::once(first).chain((0..n).filter(|&k| k != first)).collect();
+    let mut moves = 0usize;
+    loop {
+        let mut changed = false;
+        for &k in &order {
+            if br.asm.components[k].fixed {
+                continue;
+            }
+            let body = br.body.as_ref().unwrap();
+            let recs = br.asm.recs_for(body, k)?;
+            if recs.is_empty() {
+                continue;
+            }
+            let range = br.asm.components[k].range.clone();
+            let bx = comp_box(body, &range);
+            DEBUG.with(|d| d.borrow_mut().push(format!("box {:?}", bx)));
+            let (c, scale) = match bx {
+                Some((lo, hi)) => {
+                    let (ex, ey, ez) = (hi.x - lo.x, hi.y - lo.y, hi.z - lo.z);
+                    (Vec3::new((hi.x + lo.x) * 0.5, (hi.y + lo.y) * 0.5, (hi.z + lo.z) * 0.5), (ez * ez + (ex * ex + ey * ey)).sqrt() * 0.5)
+                }
+                None => (Vec3::ZERO, 0.0),
+            };
+            DEBUG.with(|d| d.borrow_mut().push(format!("solve comp {k} center {:?} scale {:?} recs {:?}", c, scale, recs)));
+            let sv = solve(&recs, c, scale).ok_or_else(|| FeatureError::new(MATE_CONFLICT))?;
+            DEBUG.with(|d| d.borrow_mut().push(format!("  -> iters {} delta {:?}", sv.iterations, sv.x)));
+            if sv.iterations == 0 {
+                continue;
+            }
+            sv.x.range(br.body.as_mut().unwrap(), &range);
+            let comp = &mut br.asm.components[k];
+            comp.place = sv.x.compose(&comp.place);
+            changed = true;
+            moves += 1;
+            if moves > 8 * n {
+                return Err(FeatureError::new(MATE_CONFLICT));
+            }
+        }
+        if !changed {
+            return Ok(());
+        }
+    }
+}
+
+/// Numeric rank of the rows (rotation columns scaled like the solver).
+/// GUESS: Gaussian elimination, pivots below 1e-8 · max count as zero.
+fn rank(rows: &[Row], l8: f64) -> usize {
+    let mut m: Vec<[f64; 6]> = rows.iter().map(|r| [r.j[0] / l8, r.j[1] / l8, r.j[2] / l8, r.j[3], r.j[4], r.j[5]]).collect();
+    let amax = m.iter().flat_map(|r| r.iter()).fold(0.0f64, |a, v| a.max(v.abs()));
+    if amax == 0.0 {
+        return 0;
+    }
+    let tol = amax * 1e-8;
+    let mut rk = 0;
+    for col in 0..6 {
+        let Some(p) = (rk..m.len()).max_by(|&a, &b| m[a][col].abs().total_cmp(&m[b][col].abs())) else { break };
+        if m[p][col].abs() <= tol {
+            continue;
+        }
+        m.swap(rk, p);
+        for i in rk + 1..m.len() {
+            let f = m[i][col] / m[rk][col];
+            for j in col..6 {
+                m[i][j] -= f * m[rk][j];
+            }
+        }
+        rk += 1;
+    }
+    rk
+}
+
+/// Remaining DOF of every component (GUESS: 6 − rank of its mate rows at
+/// the solved position; fixed = 0).
+fn update_dof(br: &mut Brep) {
+    let Some(body) = br.body.as_ref() else { return };
+    for k in 0..br.asm.components.len() {
+        let c = &br.asm.components[k];
+        if c.fixed {
+            continue;
+        }
+        let Ok(recs) = br.asm.recs_for(body, k) else { continue };
+        let mut rs = vec![];
+        let (cen, scale) = match comp_box(body, &c.range) {
+            Some((lo, hi)) => ((lo + hi).scale(0.5), lo.dist(hi) * 0.5),
+            None => (Vec3::ZERO, 0.0),
+        };
+        for r in &recs {
+            rows(r, &Xf::IDENTITY.r, Vec3::ZERO, cen, &mut rs);
+        }
+        let dof = 6 - rank(&rs, scale.max(1.0)).min(6);
+        br.asm.components[k].dof = dof as u32;
+    }
+}
+
+/// `mate`.
+pub fn exec_mate(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
+    let FeatureKind::Mate { kind, a, b, flip, .. } = &f.kind else { unreachable!() };
     if br.body.is_none() || br.asm.components.is_empty() {
         return Err(FeatureError::new(regen::codes::NOTHING_TO_CUT));
     }
-    let ca = a.as_ref().and_then(|r| br.component_of(r.as_str()));
-    let cb = b.as_ref().and_then(|r| br.component_of(r.as_str()));
-    let (Some(_ca), Some(_cb)) = (ca, cb) else { return Err(FeatureError::new(regen::codes::MISSING_REFERENCE)) };
-    Ok(())
-}
-
-/// The entities of `r` as a standalone body (ids re-based).
-pub fn sub_body(b: &Body, r: &Span3) -> Body {
-    use ck_topo::body::{CoedgeId, EdgeId, FaceId, LoopId, LumpId, ShellId, VertexId};
-    let o = |x: (usize, usize)| x.0 as u32;
-    let (ov, oe, oc, ol, of, os, olu) = (o(r.vertices), o(r.edges), o(r.coedges), o(r.loops), o(r.faces), o(r.shells), o(r.lumps));
-    let mut out = Body::new();
-    out.vertices = b.vertices[r.vertices.0..r.vertices.1].to_vec();
-    out.edges = b.edges[r.edges.0..r.edges.1]
-        .iter()
-        .map(|e| {
-            let mut e = e.clone();
-            e.v0 = VertexId(e.v0.0 - ov);
-            e.v1 = VertexId(e.v1.0 - ov);
-            e.coedges.iter_mut().for_each(|c| *c = CoedgeId(c.0 - oc));
-            e
-        })
-        .collect();
-    out.coedges = b.coedges[r.coedges.0..r.coedges.1]
-        .iter()
-        .map(|c| {
-            let mut c = c.clone();
-            c.edge = EdgeId(c.edge.0 - oe);
-            c.lp = LoopId(c.lp.0 - ol);
-            c
-        })
-        .collect();
-    out.loops = b.loops[r.loops.0..r.loops.1]
-        .iter()
-        .map(|l| {
-            let mut l = l.clone();
-            l.face = FaceId(l.face.0 - of);
-            l.coedges.iter_mut().for_each(|c| *c = CoedgeId(c.0 - oc));
-            l
-        })
-        .collect();
-    out.faces = b.faces[r.faces.0..r.faces.1]
-        .iter()
-        .map(|f| {
-            let mut f = f.clone();
-            f.shell = ShellId(f.shell.0 - os);
-            f.loops.iter_mut().for_each(|l| *l = LoopId(l.0 - ol));
-            f
-        })
-        .collect();
-    out.shells = b.shells[r.shells.0..r.shells.1]
-        .iter()
-        .map(|s| {
-            let mut s = s.clone();
-            s.lump = LumpId(s.lump.0 - olu);
-            s.faces.iter_mut().for_each(|f| *f = FaceId(f.0 - of));
-            s
-        })
-        .collect();
-    out.lumps = b.lumps[r.lumps.0..r.lumps.1]
-        .iter()
-        .map(|l| {
-            let mut l = l.clone();
-            l.shells.iter_mut().for_each(|s| *s = ShellId(s.0 - os));
-            l
-        })
-        .collect();
-    out
+    let (ra, rb) = (a.as_ref().map(|r| r.as_str().to_string()), b.as_ref().map(|r| r.as_str().to_string()));
+    let ca = ra.as_deref().and_then(|r| br.component_of(r));
+    let cb = rb.as_deref().and_then(|r| br.component_of(r));
+    let (Some(ca), Some(cb)) = (ca, cb) else { return Err(FeatureError::new(regen::codes::MISSING_REFERENCE)) };
+    if ca == cb {
+        return Err(FeatureError::new(MATE_SAME_BODY));
+    }
+    let (fa, fb) = (br.asm.components[ca].fixed, br.asm.components[cb].fixed);
+    if fa && fb {
+        return Err(FeatureError::new(MATE_FIXED));
+    }
+    let distance = state.num(f, "distance", 0.0)?;
+    let (mover, moving, target) = if fa { (cb, rb.unwrap(), ra.unwrap()) } else { (ca, ra.unwrap(), rb.unwrap()) };
+    let m = MateRec { id: f.id.clone(), kind: *kind, mover, moving, target, distance, flip: *flip };
+    // validate the geometry before keeping it
+    mate_recs(br.body.as_ref().unwrap(), &m)?;
+    br.asm.mates.push(m);
+    let r = solve_all(br, mover);
+    if r.is_err() {
+        br.asm.mates.pop();
+    }
+    update_dof(br);
+    r
 }
 
 // ------------------------------------------------------------------ Xf
@@ -591,4 +828,319 @@ impl Xf {
             f.surface = self.surface(&f.surface);
         }
     }
+}
+
+// ------------------------------------------------------------ mate solver
+
+thread_local! {
+    /// Solver trace for native debugging (`examples/asm_debug.rs`).
+    pub static DEBUG: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// One constraint record of the moving component (kernel 352-byte records,
+/// kinds decoded from func f1352). Vectors are world-space at the time the
+/// record was built; the trial motion is `p ↦ R(p − c) + c + t`.
+#[derive(Debug, Clone, Copy)]
+pub enum Rec {
+    /// kind 0: `R·a = s·b` (unit directions; 3 angular rows).
+    Dir { a: Vec3, b: Vec3, s: f64 },
+    /// kind 2: `n·(p' − q) = d` (1 positional row).
+    PtPlane { p: Vec3, q: Vec3, n: Vec3, d: f64 },
+    /// kind 4: `p'` on the line `q + λu` (3 positional rows).
+    PtLine { p: Vec3, q: Vec3, u: Vec3 },
+}
+
+impl Rec {
+    /// kernel kind byte (`<= 1` = direction records, used to perturb).
+    fn kind(&self) -> u8 {
+        match self {
+            Rec::Dir { .. } => 0,
+            Rec::PtPlane { .. } => 2,
+            Rec::PtLine { .. } => 4,
+        }
+    }
+    fn first(&self) -> Vec3 {
+        match *self {
+            Rec::Dir { a, .. } => a,
+            Rec::PtPlane { p, .. } | Rec::PtLine { p, .. } => p,
+        }
+    }
+}
+
+/// A Jacobian row: residual, `∂/∂ω` (3), `∂/∂t` (3).
+#[derive(Debug, Clone, Copy)]
+pub struct Row {
+    pub r: f64,
+    pub j: [f64; 6],
+}
+
+fn rdot(r: &[f64; 9], i: usize, v: Vec3) -> f64 {
+    (r[3 * i] * v.x + r[3 * i + 1] * v.y) + r[3 * i + 2] * v.z
+}
+
+/// func f1352 for the decoded kinds: push the rows, return
+/// `(angular error, positional error)`.
+pub fn rows(rec: &Rec, r: &[f64; 9], t: Vec3, c: Vec3, out: &mut Vec<Row>) -> (f64, f64) {
+    match *rec {
+        Rec::Dir { a, b, s } => {
+            let l16 = rdot(r, 0, a);
+            let l14 = rdot(r, 2, a);
+            let l24 = rdot(r, 1, a);
+            let r1 = l16 - b.x * s;
+            let r2 = l24 - b.y * s;
+            let r3 = l14 - b.z * s;
+            out.push(Row { r: r1, j: [-0.0, l14, -l24, 0.0, 0.0, 0.0] });
+            out.push(Row { r: r2, j: [-l14, -0.0, l16, 0.0, 0.0, 0.0] });
+            out.push(Row { r: r3, j: [l24, -l16, -0.0, 0.0, 0.0, 0.0] });
+            (((r1 * r1) + (r2 * r2) + (r3 * r3)).sqrt(), 0.0)
+        }
+        Rec::PtPlane { p, q, n, d } => {
+            let dv = Vec3::new(p.x - c.x, p.y - c.y, p.z - c.z);
+            let l15 = rdot(r, 0, dv);
+            let l16 = rdot(r, 1, dv);
+            let l24 = rdot(r, 2, dv);
+            let (l22, l14, l23) = (n.x, n.y, n.z);
+            let l28 = (l14 * l15) - (l22 * l16);
+            let l25 = (l22 * l24) - (l23 * l15);
+            let l31 = (l23 * l16) - (l14 * l24);
+            let res = ((l23 * ((t.z + (c.z + l24)) - q.z)) + ((l22 * ((t.x + (c.x + l15)) - q.x)) + (l14 * ((t.y + (c.y + l16)) - q.y)))) - d;
+            out.push(Row { r: res, j: [l31, l25, l28, l22, l14, l23] });
+            (0.0, res.abs())
+        }
+        Rec::PtLine { p, q, u } => {
+            let (l25, l15, l17) = (p.x - c.x, p.y - c.y, p.z - c.z);
+            let dv = Vec3::new(l25, l15, l17);
+            let l14 = rdot(r, 0, dv);
+            let (l23, l24) = (u.x, u.y);
+            let l16 = 0.0 - (l23 * l24);
+            let l22 = rdot(r, 1, dv);
+            let l27 = 1.0 - (l23 * l23);
+            let l33 = (l14 * l16) - (l22 * l27);
+            let l25 = rdot(r, 2, dv);
+            let l15 = u.z;
+            let l34 = l23 * l15;
+            let l26 = 0.0 - l34;
+            let l35 = (l25 * l27) - (l14 * l26);
+            let l36 = l25 * l16;
+            let l37 = (l22 * l26) - l36;
+            let l32 = (t.z + (c.z + l25)) - q.z;
+            let l28 = (t.x + (c.x + l14)) - q.x;
+            let l31 = (t.y + (c.y + l22)) - q.y;
+            let l17 = (l15 * l32) + ((l23 * l28) + (l24 * l31));
+            let l38 = l24 * l17;
+            let rx = l28 - (l23 * l17);
+            let l28b = l24 * l15;
+            let l24b = 1.0 - (l24 * l24);
+            let l39 = l15 * l15;
+            let l40 = l15 * l17;
+            let ry = l31 - l38;
+            let l17b = 1.0 - l39;
+            out.push(Row { r: rx, j: [l37, l35, l33, l27, l16, l26] });
+            let l31b = (l14 * l24b) - (l22 * l16);
+            let l26b = 0.0 - l28b;
+            let l33b = l36 - (l14 * l26b);
+            let l35b = (l22 * l26b) - (l25 * l24b);
+            let rz = l32 - l40;
+            out.push(Row { r: ry, j: [l35b, l33b, l31b, l16, l24b, l26b] });
+            let l24c = 0.0 - l28b;
+            let l16c = 0.0 - l34;
+            let l26c = (l14 * l24c) - (l22 * l16c);
+            let l14c = (l25 * l16c) - (l14 * l17b);
+            let l22c = (l22 * l17b) - (l25 * l24c);
+            out.push(Row { r: rz, j: [l22c, l14c, l26c, l16c, l24c, l17b] });
+            (0.0, ((rz * rz) + ((rx * rx) + (ry * ry))).sqrt())
+        }
+    }
+}
+
+/// Outcome of [`solve`]: the delta transform and the iteration count
+/// (0 = already satisfied).
+#[derive(Debug, Clone, Copy)]
+pub struct Solved {
+    pub x: Xf,
+    pub iterations: u32,
+}
+
+fn fmax(a: f64, b: f64) -> f64 {
+    a.max(b)
+}
+
+/// func f1351: damped Gauss-Newton (LM diagonal 1e-4 rotation / 1e-10
+/// translation of the largest diagonal entry) on one rigid body with
+/// numeric-free analytic rows; rotation columns scaled by `1/max(scale,1)`;
+/// steps capped at 0.5 rad; a stalled start is kicked by 0.001 rad once;
+/// at most 200 iterations. Converged: positional ≤ 1e-7, angular ≤ 1e-9.
+pub fn solve(recs: &[Rec], c: Vec3, scale: f64) -> Option<Solved> {
+    let scale = if scale.is_nan() { 1.0 } else { scale };
+    let l8 = if scale > 1.0 { scale } else { 1.0 };
+    let l9 = 1.0 / l8;
+    let mut r = Xf::IDENTITY.r;
+    let mut t = Vec3::ZERO;
+    let mut perturbed = false;
+    let mut iter = 0u32;
+    loop {
+        let mut rs: Vec<Row> = vec![];
+        let (mut pos, mut ang) = (0.0f64, 0.0f64);
+        for rec in recs {
+            let (a, p) = rows(rec, &r, t, c, &mut rs);
+            pos = fmax(pos, p);
+            ang = fmax(ang, a);
+        }
+        if pos <= 1e-7 && ang <= 1e-9 {
+            let tx = Vec3::new((c.x - rdot(&r, 0, c)) + t.x, (c.y - rdot(&r, 1, c)) + t.y, (c.z - rdot(&r, 2, c)) + t.z);
+            return Some(Solved { x: Xf { r, t: [tx.x, tx.y, tx.z] }, iterations: iter });
+        }
+        let mut a = [[0.0f64; 6]; 6];
+        let mut b = [0.0f64; 6];
+        for row in &rs {
+            let j = [row.j[0] / l8, row.j[1] / l8, row.j[2] / l8, row.j[3], row.j[4], row.j[5]];
+            for i in 0..6 {
+                for k in 0..6 {
+                    a[i][k] += j[i] * j[k];
+                }
+                b[i] -= j[i] * row.r;
+            }
+        }
+        let mut g = 0.0f64;
+        for v in b {
+            g = fmax(g, v.abs());
+        }
+        iter += 1;
+        let mut m = 0.0f64;
+        for i in 0..6 {
+            m = fmax(m, a[i][i]);
+        }
+        let m = fmax(m, f64::MIN_POSITIVE);
+        for i in 3..6 {
+            a[i][i] += m * 1e-10;
+        }
+        for i in 0..3 {
+            a[i][i] += m * 1e-4;
+        }
+        if g <= (pos + ang) * 1e-12 {
+            if perturbed {
+                return None;
+            }
+            let v = match recs.iter().find(|q| q.kind() <= 1) {
+                Some(q) => {
+                    let f = q.first();
+                    Vec3::new(rdot(&r, 0, f), rdot(&r, 1, f), rdot(&r, 2, f))
+                }
+                None => Vec3::new(0.0, 0.0, 1.0),
+            };
+            let rot = Xf::rotation(perp(v), 0.001);
+            r = Xf::mul_r(&rot.r, &r);
+            perturbed = true;
+            if iter < 200 {
+                continue;
+            }
+            return None;
+        }
+        let mut am: Vec<Vec<f64>> = a.iter().map(|row| row.to_vec()).collect();
+        let mut bv = b.to_vec();
+        let x = crate::sketch::solver::lu_solve(&mut am, &mut bv)?;
+        let (mut w0, mut w1, mut w2) = (l9 * x[0], l9 * x[1], l9 * x[2]);
+        let mut ww = (w0 * w0 + w1 * w1) + w2 * w2;
+        let n = ww.sqrt();
+        if n > 0.5 {
+            let k = 0.5 / n;
+            w0 *= k;
+            w1 *= k;
+            w2 *= k;
+            ww = (w0 * w0 + w1 * w1) + w2 * w2;
+        }
+        if ww > 0.0 {
+            let an = ww.sqrt();
+            let i = 1.0 / an;
+            let rot = Xf::rotation(Vec3::new(w0 * i, w1 * i, w2 * i), an);
+            r = Xf::mul_r(&rot.r, &r);
+        }
+        t = Vec3::new(x[3] + t.x, x[4] + t.y, x[5] + t.z);
+        if iter == 200 {
+            return None;
+        }
+    }
+}
+
+/// func f3907: unit `v × e` with `e` the axis of the smallest |component|.
+fn perp(v: Vec3) -> Vec3 {
+    let (ax, ay, az) = (v.x.abs(), v.y.abs(), v.z.abs());
+    let p1 = ax <= ay && ax <= az;
+    let l8 = ay <= az;
+    let ey = if l8 { if p1 { 0.0 } else { 1.0 } } else { 0.0 };
+    let ex = if p1 { 1.0 } else { 0.0 };
+    let ez = if p1 { 0.0 } else if l8 { 0.0 } else { 1.0 };
+    let l3 = (v.x * ey) - (v.y * ex);
+    let l2 = (v.z * ex) - (v.x * ez);
+    let l4 = (v.y * ez) - (v.z * ey);
+    let l = ((l3 * l3) + ((l2 * l2) + (l4 * l4))).sqrt();
+    if !(l > TINY) || !l.is_finite() {
+        return Vec3::ZERO;
+    }
+    let i = 1.0 / l;
+    Vec3::new(l4 * i, l2 * i, l3 * i)
+}
+
+/// The entities of `r` as a standalone body (ids re-based).
+pub fn sub_body(b: &Body, r: &Span3) -> Body {
+    use ck_topo::body::{CoedgeId, EdgeId, FaceId, LoopId, LumpId, ShellId, VertexId};
+    let o = |x: (usize, usize)| x.0 as u32;
+    let (ov, oe, oc, ol, of, os, olu) = (o(r.vertices), o(r.edges), o(r.coedges), o(r.loops), o(r.faces), o(r.shells), o(r.lumps));
+    let mut out = Body::new();
+    out.vertices = b.vertices[r.vertices.0..r.vertices.1].to_vec();
+    out.edges = b.edges[r.edges.0..r.edges.1]
+        .iter()
+        .map(|e| {
+            let mut e = e.clone();
+            e.v0 = VertexId(e.v0.0 - ov);
+            e.v1 = VertexId(e.v1.0 - ov);
+            e.coedges.iter_mut().for_each(|c| *c = CoedgeId(c.0 - oc));
+            e
+        })
+        .collect();
+    out.coedges = b.coedges[r.coedges.0..r.coedges.1]
+        .iter()
+        .map(|c| {
+            let mut c = c.clone();
+            c.edge = EdgeId(c.edge.0 - oe);
+            c.lp = LoopId(c.lp.0 - ol);
+            c
+        })
+        .collect();
+    out.loops = b.loops[r.loops.0..r.loops.1]
+        .iter()
+        .map(|l| {
+            let mut l = l.clone();
+            l.face = FaceId(l.face.0 - of);
+            l.coedges.iter_mut().for_each(|c| *c = CoedgeId(c.0 - oc));
+            l
+        })
+        .collect();
+    out.faces = b.faces[r.faces.0..r.faces.1]
+        .iter()
+        .map(|f| {
+            let mut f = f.clone();
+            f.shell = ShellId(f.shell.0 - os);
+            f.loops.iter_mut().for_each(|l| *l = LoopId(l.0 - ol));
+            f
+        })
+        .collect();
+    out.shells = b.shells[r.shells.0..r.shells.1]
+        .iter()
+        .map(|s| {
+            let mut s = s.clone();
+            s.lump = LumpId(s.lump.0 - olu);
+            s.faces.iter_mut().for_each(|f| *f = FaceId(f.0 - of));
+            s
+        })
+        .collect();
+    out.lumps = b.lumps[r.lumps.0..r.lumps.1]
+        .iter()
+        .map(|l| {
+            let mut l = l.clone();
+            l.shells.iter_mut().for_each(|s| *s = ShellId(s.0 - os));
+            l
+        })
+        .collect();
+    out
 }

@@ -119,3 +119,54 @@ ck-topo / ck-ops. Depends on ck-core, ck-geom, ck-topo, ck-ops, ck-json.
 - `tools/regencmp.mjs` (`--prefixes --mass --trace --show`) diffs regen
   replies vs the oracle per body key; `examples/regen_part.rs` times each
   feature natively.
+
+## Status (Gate B: assemblies — `features/mate.rs`, `hole.rs`, `sweep.rs`)
+
+- `insertPart` (pinned by `tools/asm/asmcases.mjs`, 22/22 byte-identical
+  minus mesh/pts incl. trace): nested regen (nested `rollback` ignored),
+  faces renamed `@<insert>.1`, placement `place` / `dx,dy,dz` + `axis` +
+  `angle`, components appended as their own lumps (never united),
+  `components[] {id, dof, place}` sorted by id, `insertPartErrors {detail:
+  "<first error id>: <code>"}`, `insertPartEmpty`, empty parts silent,
+  `"<n> inserted parts"` pre-pass span for >= 2 distinct parts (identical
+  parts regenerate once). Component `cpattern` (`seeds:[]`, `bodies:[{face}]`):
+  copies in component order, `@F12.k` after the component suffix, not in
+  `components[]`.
+- `Xf`: the kernel's rigid transform with its decompiled arithmetic (WAT
+  f3910 rotation, f3920 compose, f3928 frame (axes re-normalised), f3499 /
+  f3800 / f3762 body transform, radii × cbrt|det|). ck-core's `Xform`
+  associates differently and is NOT bit-compatible.
+- Wire planar normals / circle normals of assembly faces print
+  `normalize(x × y)` of the frame (component faces only: ck-topo's own
+  frames already print like the oracle).
+- `mate` solver = port of f1375 (Gauss-Seidel over components, the new
+  mate's mover first, until a pass moves nothing, ≤ 8n moves) + f1351
+  (damped Gauss-Newton: J^T J with 1e-4 / 1e-10 diagonal damping of the
+  largest diagonal, rotation columns / max(scale, 1), step ≤ 0.5 rad, one
+  0.001 rad kick when stalled, 200 iterations, converged at pos ≤ 1e-7 /
+  ang ≤ 1e-9) + f1352 kinds 0 (direction), 2 (point on plane), 4 (point on
+  line) with their analytic rows. Mover = a's component unless a is fixed.
+  Records: coincident / distance = normals opposed (flip: aligned) + point
+  on plane at `distance`; parallel = direction only; concentric = axes
+  aligned by the sign of their dot + point on axis; directions =
+  normalize(x × y) of the face frame (planes) / normalize(frame z)
+  (cylinders), points = frame origins. Centre / scale = component box from
+  edge boxes padded by 1e-6 (arc box = f3769). `tools/asm/matecases.mjs`:
+  16/17 byte-identical (cylinder–plane coincident = kinds 1/2, not decoded
+  -> `mateGeometry`). `dof` GUESS = 6 − rank(mate rows) (matches all
+  probes, stepper and flange).
+- `hole` (`tools/asm/holecases.mjs`): iso table, simple / cbore, fits,
+  blind / through / tip, `S.h0..h4` (+ `~k` per point), holeInvalid /
+  holeNoPoints; tools combined with the box rule (append if clear, else
+  `boolean Unite`) — same rule now used for pattern instances, and
+  patterns keep their combined tool as a seed for later patterns.
+- `helix` -> `curves[]` byte-identical (`tools/asm/helixcases.mjs`).
+- REBUILD-ONLY: nested errors from unrebuilt ops (`TODO(rebuild)…`,
+  `blendUnsupported`) don't abort an insert (`mate::is_rebuild_gap`).
+
+Flange (oracle-flange.json): components dof 6/0/1/0 all match; places Δ
+F1 0, F2 1.7e-14, F6 2.2e-12, F9 2.9e-10 (the residue: the oracle's x/z
+component box extents are NOT padded for the rotated half — its face box
+is the surface box over the mesh uv bounds ∪ edge boxes, and some circle
+extremes evidently come from the unpadded surface part; plus the missing
+chamfer / fillet / thread faces of bolt and nut).
