@@ -184,6 +184,7 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
         "inspect" => inspect(cx),
         "continuity" => Ok(ck_ops::continuity::reply(&snapshot(cx)?.body, &cx.msg)),
         "measure" => Ok(ck_ops::measure::reply(&snapshot(cx)?.body, &cx.msg)),
+        "curvatureAt" => Ok(ck_ops::curvature_at::reply(&snapshot(cx)?.body, &cx.msg)),
         "step" => {
             // Reply: the whole STEP file as one JSON string (oracle); `name`
             // defaults to "part". Void shells must be split out first.

@@ -3,6 +3,7 @@ pub mod boolean;
 pub mod bvh;
 pub mod contain;
 pub mod continuity;
+pub mod curvature_at;
 pub mod curve_edit;
 pub mod draft;
 pub mod guide;
