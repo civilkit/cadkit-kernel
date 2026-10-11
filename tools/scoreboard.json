@@ -4,11 +4,11 @@
   280
  ],
  "regen.brep.faces": [
-  41,
+  42,
   44
  ],
  "regen.brep.edges": [
-  30,
+  39,
   44
  ],
  "regen.brep.box": [
@@ -20,7 +20,7 @@
   44
  ],
  "regen.brep.json": [
-  22,
+  25,
   44
  ],
  "mass.brep": [
