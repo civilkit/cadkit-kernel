@@ -216,20 +216,38 @@ pub fn face_integral<const K: usize>(b: &Body, f: FaceId, res: usize, integrand:
         }
         cuts.extend(mid);
         cuts.push(u);
+        // non-rational B-spline: fixed-v evaluator (v basis once; v direction
+        // collapsed per knot span); each cut segment lies in one polynomial
+        // span, where two GL8 panels are exact for the area-element
+        // polynomials and ~1e-13 for |Su x Sv|
+        let vl = match surf {
+            Surface::BSpline(bs) => bs.vline(v),
+            _ => None,
+        };
         for seg in cuts.windows(2) {
             let (a, c) = (seg[0], seg[1]);
             let span = c - a;
             if span == 0.0 {
                 continue;
             }
-            let n = ((span.abs() / hu).ceil() as usize).clamp(1, 512 * res);
+            let fast = vl.as_ref().and_then(|l| l.segment(0.5 * (a + c))).filter(|s| s.covers(a, c));
+            let n = if fast.is_some() { 2 * res } else { ((span.abs() / hu).ceil() as usize).clamp(1, 512 * res) };
             let h = span / n as f64;
             for i in 0..n {
                 let m = a + h * (i as f64 + 0.5);
                 for &(x, w) in GL.iter() {
                     let s = m + 0.5 * h * x;
-                    let d = surf.derivs2(s, v);
-                    let val = integrand(d.p, d.du.cross(d.dv));
+                    let (pt, nrm) = match &fast {
+                        Some(sg) => {
+                            let (p, du, dv) = sg.eval1(s);
+                            (p, du.cross(dv))
+                        }
+                        None => {
+                            let d = surf.derivs2(s, v);
+                            (d.p, d.du.cross(d.dv))
+                        }
+                    };
+                    let val = integrand(pt, nrm);
                     for k in 0..K {
                         g[k] += 0.5 * h * w * val[k];
                     }
@@ -283,10 +301,15 @@ pub fn face_integral<const K: usize>(b: &Body, f: FaceId, res: usize, integrand:
                     w *= (v - vn[m]) / (vn[j] - vn[m]);
                 }
             }
-            let part = seg_integral(ks[k], u, vn[j]);
             for i in 0..K {
-                g[i] += w * (cum[j][k][i] + part[i]);
+                g[i] += w * cum[j][k][i];
             }
+        }
+        // the partial span is integrated directly at the true v (one
+        // seg_integral instead of one per interpolation node)
+        let part = seg_integral(ks[k], u, v);
+        for i in 0..K {
+            g[i] += part[i];
         }
         g
     };

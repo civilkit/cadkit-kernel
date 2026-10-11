@@ -179,6 +179,21 @@ impl BSplineSurface {
         SurfDerivs { p: s[0][0], du: s[1][0], dv: s[0][1], duu: s[2][0], duv: s[1][1], dvv: s[0][2] }
     }
 
+    /// Evaluator for repeated first-order evaluation along one iso-v line
+    /// of a non-rational surface (None for rational / very high degree).
+    /// The v basis is computed once; `segment` collapses the v direction
+    /// for one u knot span so each `eval1` costs only a degree-p u basis.
+    pub fn vline(&self, v: f64) -> Option<VLine<'_>> {
+        if self.weights.is_some() || self.deg_u >= 12 || self.deg_v >= 12 {
+            return None;
+        }
+        let (_, (v0, v1)) = self.domain();
+        let v = v.clamp(v0, v1);
+        let sv = find_span(self.nv - 1, self.deg_v, v, &self.knots_v);
+        let nv = basis::ders_basis_funs2(sv, v, self.deg_v, 1, &self.knots_v);
+        Some(VLine { s: self, sv, nv })
+    }
+
     /// Unit normal Su × Sv (zero vector at degenerate points).
     pub fn normal(&self, u: f64, v: f64) -> Vec3 {
         self.derivs2(u, v).normal()
@@ -398,6 +413,73 @@ impl BSplineSurface {
 
 /// Homogeneous evaluation: returns (Euclidean point, weight) — used to
 /// build exact iso curves of rational surfaces.
+/// See [`BSplineSurface::vline`].
+pub struct VLine<'a> {
+    s: &'a BSplineSurface,
+    sv: usize,
+    nv: [[f64; 12]; 3],
+}
+
+/// A VLine restricted to the u knot span containing a given parameter.
+pub struct VSegment<'a> {
+    s: &'a BSplineSurface,
+    su: usize,
+    c: [Vec3; 12],
+    d: [Vec3; 12],
+}
+
+impl<'a> VLine<'a> {
+    /// Segment for the span containing `u`; None when `u` is outside the
+    /// domain.
+    pub fn segment(&self, u: f64) -> Option<VSegment<'a>> {
+        let s = self.s;
+        let ((u0, u1), _) = s.domain();
+        if !(u >= u0 && u <= u1) {
+            return None;
+        }
+        let (p, q) = (s.deg_u, s.deg_v);
+        let su = find_span(s.nu - 1, p, u, &s.knots_u);
+        let mut c = [Vec3::ZERO; 12];
+        let mut d = [Vec3::ZERO; 12];
+        for r in 0..=p {
+            let i = su - p + r;
+            let (mut a, mut b) = (Vec3::ZERO, Vec3::ZERO);
+            for t in 0..=q {
+                let cp = s.cp(i, self.sv - q + t);
+                a = a + cp * self.nv[0][t];
+                b = b + cp * self.nv[1][t];
+            }
+            c[r] = a;
+            d[r] = b;
+        }
+        Some(VSegment { s, su, c, d })
+    }
+}
+
+impl VSegment<'_> {
+    /// (point, S_u, S_v) at `u` (within the segment's span).
+    #[inline]
+    pub fn eval1(&self, u: f64) -> (Vec3, Vec3, Vec3) {
+        let s = self.s;
+        let p = s.deg_u;
+        let b = basis::ders_basis_funs2(self.su, u, p, 1, &s.knots_u);
+        let (mut pt, mut du, mut dv) = (Vec3::ZERO, Vec3::ZERO, Vec3::ZERO);
+        for r in 0..=p {
+            pt = pt + self.c[r] * b[0][r];
+            du = du + self.c[r] * b[1][r];
+            dv = dv + self.d[r] * b[0][r];
+        }
+        (pt, du, dv)
+    }
+
+    /// True when `[a, b]` lies inside this segment's knot span.
+    pub fn covers(&self, a: f64, b: f64) -> bool {
+        let k = &self.s.knots_u;
+        let (lo, hi) = (k[self.su], k[self.su + 1]);
+        a.min(b) >= lo - 1e-12 && a.max(b) <= hi + 1e-12
+    }
+}
+
 fn hom_eval(c: &BSplineCurve, u: f64) -> (Vec3, f64) {
     let p = c.degree;
     let (a, b) = c.domain();
