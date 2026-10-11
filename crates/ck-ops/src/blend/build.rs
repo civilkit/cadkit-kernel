@@ -617,7 +617,8 @@ fn blend_edge_hint(
             // circle between coaxial plane / cylinder / cone faces
             let Some((c, axis, rad)) = ed.curve.circle_info() else { return Err(BlendError::code("blendUnsupported")) };
             let axis = axis.normalize();
-            let p0 = ed.curve.eval(ed.t0);
+            let t_start = ed.t0.min(ed.t1);
+            let p0 = ed.curve.eval(t_start);
             let coaxial = |f: FaceId| match &b.face(f).surface {
                 Surface::Plane { frame } => frame.z.cross(axis).len() < 1e-9,
                 Surface::Cylinder { frame, .. } | Surface::Cone { frame, .. } => {
@@ -632,7 +633,7 @@ fn blend_edge_hint(
                 let (u, v) = b.face(f).surface.closest_param(p0);
                 b.outward_normal(f, u, v).normalize()
             };
-            let dir = ed.curve.tangent(ed.t0).normalize();
+            let dir = ed.curve.tangent(t_start).normalize();
             (p0, p0, dir, nrm(faces[0]), nrm(faces[1]), Some((c, axis)))
         }
     };
@@ -704,7 +705,21 @@ fn blend_edge_hint(
     let prof = Profile::new(fr, vec![ProfileRegion { outer: lp, holes: vec![] }]).normalized();
     let made = match circ {
         None => extrude(feature, &prof, ExtrudeOpts { s0: 0.0, s1: len + 2.0 * margin, dir: None, draft: 0.0 }),
-        Some((c, axis)) => ck_topo::make::revolve::revolve(feature, &prof, c, axis, 0.0, std::f64::consts::TAU),
+        Some((c, axis)) => {
+            // a partial arc sweeps only its own angle (convex: a margin more at
+            // both ends so the tool pierces the adjacent faces; concave:
+            // flush, like the straight edge); a full circle is one turn
+            use std::f64::consts::TAU;
+            let span = (ed.t1 - ed.t0).abs();
+            let rad = (p0 - c).len();
+            let (a0, a1) = if span >= TAU - 1e-9 {
+                (0.0, TAU)
+            } else {
+                let m = if convex { (r.max(span * rad * 0.05) + 1.0) / rad } else { 0.0 };
+                if span + 2.0 * m >= TAU { (0.0, TAU) } else { (-m, span + m) }
+            };
+            ck_topo::make::revolve::revolve(feature, &prof, c, axis, a0, a1)
+        }
     };
     let mut tool = made.map_err(|e| {
         dbg_fail(&format!("tool: {e}"));

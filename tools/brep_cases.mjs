@@ -156,6 +156,20 @@ parts.cone = part([sketch('front', [pt('p1', 5, 0), pt('p2', 15, 0), pt('p3', 5,
   parts.ringOuterFillet = part([...parts.ring.features, fil(1, rim('F2.S.e2', 'F2.S.e3', [-6, 10, 0]))]);
   parts.chamferVertexD3 = part([...base(), ch({ chamferType: 'vertex', distance: 2, distance2: 3, distance3: 4 }, [{ faces: ['F2.C1', 'F2.S.e1'], at: [39, 10, 0] }])]);
   parts.chamferVertexBot = part([...base(), ch({ chamferType: 'vertex', distance: 1.5 }, [{ faces: ['F2.C0', 'F2.S.e3'], at: [1, 0, -20] }])]);
+  // partial arcs: the half-round edge of a D-shaped prism, and a D boss on the box top (concave arc)
+  parts.dextArcFillet = part([...parts.dext.features, fil(1, rim('F2.C1', 'F2.S.e2', [0, 10, 5]))]);
+  parts.dextArcChamfer = part([...parts.dext.features, ch({ distance: 1 }, rim('F2.C1', 'F2.S.e2', [0, 10, 5]))]);
+  parts.dextArcBotFillet = part([...parts.dext.features, fil(1, rim('F2.C0', 'F2.S.e2', [0, 10, 0]))]);
+  {
+    const dsk = { type: 'sketch', id: 'F3', plane: { kind: 'face', id: 'F2.C1' }, points: [pt('p1', 10, 5), pt('p2', 20, 5), pt('c', 15, 5)],
+      entities: [line('e1', 'p1', 'p2'), { type: 'arc', id: 'e2', c: 'c', p1: 'p2', p2: 'p1' }], constraints: [] };
+    const dboss = [...base(), dsk, ex2('F4', 'F3', { depth: 5 })];
+    parts.dboss = part(dboss);
+    parts.dbossBaseFillet = part([...dboss, fil(1, rim('F2.C1', 'F4.S.e2', [15, 10, -10]))]);
+    parts.dbossBaseChamfer = part([...dboss, ch({ distance: 1 }, rim('F2.C1', 'F4.S.e2', [15, 10, -10]))]);
+    parts.dbossTopFillet = part([...dboss, fil(1, rim('F4.C1', 'F4.S.e2', [15, 15, -10]))]);
+    parts.dbossTopChamfer = part([...dboss, ch({ distance: 1 }, rim('F4.C1', 'F4.S.e2', [15, 15, -10]))]);
+  }
   parts.chamferRail = part([...base(), ch({ distance: 3 }, [{ faces: ['F2.S.e2', 'F2.S.e1'], at: [40, 5, 0] }])]);
   parts.chamferBig = part([...base(), ch({ distance: 30 }, e1)]);
   const cylTop = [{ faces: ['F2.C1', 'F2.S.e7'], at: [15, 10, -3] }];
