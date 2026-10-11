@@ -230,7 +230,7 @@ impl Cdt {
         if d.is_nan() || d <= 1e-9 {
             d = 1e-9;
         }
-        let r = d * 0.5 * 64.0;
+        let r = d * 0.5 * std::env::var("CK_R").ok().and_then(|x| x.parse::<f64>().ok()).unwrap_or(64.0);
         let lo = cy - r;
         let r2 = r + r;
         let pts = vec![[cx - r2, lo], [cx + r2, lo], [cx, cy + r2]];
@@ -353,6 +353,7 @@ impl Cdt {
 
     /// Walks from the hint triangle to the one holding `p` (original f3303): the first edge tested rotates 1,2,0,1,... per step.
     pub fn locate(&self, p: Pt) -> Loc {
+        crate::tr!(4, 0, 0, p[0], p[1]);
         let mut t = self.hint;
         let mut first = 0usize;
         let cap = 4 * self.tris.len() + 0x40;
@@ -393,6 +394,7 @@ impl Cdt {
 
     /// Swaps the diagonal of the quadrilateral across edge `k` of triangle `t` (original f3309). Returns `(t, s)`.
     fn flip(&mut self, t: u32, k: usize) -> (u32, u32) {
+        crate::tr!(3, 0, 0, t, k);
         let tr = self.tris[t as usize];
         let (w, u, v) = (tr.v[k], tr.v[(k + 1) % 3], tr.v[(k + 2) % 3]);
         let s = tr.n[k];
@@ -433,6 +435,13 @@ impl Cdt {
         }
     }
 
+    /// Global Delaunay pass over every unconstrained edge (diagnostic).
+    pub fn legalize_all(&mut self) {
+        let mut st = vec![];
+        for t in 0..self.tris.len() { for k in 0..3 { st.push((t as u32, k)); } }
+        self.legalize(st);
+    }
+
     fn add_vertex(&mut self, p: Pt) -> u32 {
         let pi = self.pts.len() as u32;
         self.pts.push(p);
@@ -442,6 +451,7 @@ impl Cdt {
 
     /// Inserts the point strictly inside triangle `t` (original f3305); returns the new vertex index.
     pub fn insert_in_tri(&mut self, t: u32, p: Pt) -> u32 {
+        crate::tr!(1, 0, t, self.pts.len(), 0);
         let pi = self.add_vertex(p);
         let tr = self.tris[t as usize];
         let (a, b, c) = (tr.v[0], tr.v[1], tr.v[2]);
@@ -463,6 +473,7 @@ impl Cdt {
 
     /// Splits edge `k` of triangle `t` (and the triangle across it) at `p` (original f3295). A constrained edge becomes two.
     pub fn insert_on_edge(&mut self, t: u32, k: usize, p: Pt) -> u32 {
+        crate::tr!(2, 0, t, k, self.pts.len());
         let pi = self.add_vertex(p);
         let tr = self.tris[t as usize];
         let (w, u, v) = (tr.v[k], tr.v[(k + 1) % 3], tr.v[(k + 2) % 3]);
@@ -515,6 +526,7 @@ impl Cdt {
     /// Recovers segment `a`-`b` as a constrained edge (original f3307): a work stack of sub-segments; the crossed edges are flipped out
     /// FIFO (Sloan), then the new edges are swapped to Delaunay in passes.
     pub fn insert_segment(&mut self, a0: u32, b0: u32) {
+        crate::tr!(6, 0, a0, b0, 0);
         let mut work: Vec<(u32, u32)> = vec![(a0, b0)];
         let mut iters = 0u32;
         while let Some((a, b)) = work.pop() {
@@ -630,7 +642,7 @@ impl Cdt {
         self.mark_segment(a, b);
 
         // --- 4. swap the new edges to Delaunay, pass after pass
-        if !fresh.is_empty() {
+        if !fresh.is_empty() && std::env::var("CK_NOP4").is_err() {
             let mut pass = 0u32;
             loop {
                 let mut changed = false;
@@ -793,6 +805,7 @@ pub fn triangulate(pts: &[Pt], segs: &[(usize, usize)]) -> Result<Triangulation,
     for &(a, b) in segs {
         cdt.insert_segment(vmap[a], vmap[b]);
     }
+    if std::env::var("CK_GLOBAL").is_ok() { cdt.legalize_all(); }
     cdt.classify_parity();
     Ok(Triangulation { cdt, vmap })
 }
@@ -865,6 +878,38 @@ mod perm_probe {
             let lab = |cv: u32| -> usize { let q = t.cdt.pts[cv as usize]; (0..4).find(|&i| p[i] == q).unwrap_or(9) };
             let r: Vec<[usize; 3]> = t.cdt.inside_tris().iter().map(|(_, vv)| [lab(vv[0]), lab(vv[1]), lab(vv[2])]).collect();
             eprintln!("PERM {:?} -> {:?}", v, r);
+        }
+    }
+}
+
+#[cfg(test)]
+mod rect_probe {
+    use super::*;
+    fn perms(n: usize) -> Vec<Vec<usize>> {
+        if n == 1 { return vec![vec![0]]; }
+        let mut out = vec![];
+        for p in perms(n - 1) { for i in 0..n { let mut q = p.clone(); q.insert(i, n - 1); out.push(q); } }
+        out
+    }
+    #[test]
+    fn rect() {
+        let p = [[0.0, 0.0], [38.0, 0.0], [38.0, 18.0], [0.0, 18.0]]; // CCW labels 0..3
+        let rings: Vec<Vec<usize>> = vec![vec![0,1,2,3], vec![1,2,3,0], vec![2,3,0,1], vec![3,0,1,2], vec![3,2,1,0], vec![2,1,0,3], vec![1,0,3,2], vec![0,3,2,1]];
+        let targets: Vec<(&str, Vec<[usize; 3]>)> = vec![
+            ("P1", vec![[0,1,2],[0,2,3]]), ("P2", vec![[0,2,1],[0,3,2]]), ("M1", vec![[0,3,2],[0,2,1]]), ("M2", vec![[0,2,3],[0,1,2]]),
+        ];
+        for ins in perms(4) {
+            for ring in &rings {
+                let pts: Vec<Pt> = ins.iter().map(|&i| p[i]).collect();
+                let pos = |lab: usize| ins.iter().position(|&x| x == lab).unwrap();
+                let segs: Vec<(usize, usize)> = (0..4).map(|i| (pos(ring[i]), pos(ring[(i + 1) % 4]))).collect();
+                let t = triangulate(&pts, &segs).unwrap();
+                let lab = |cv: u32| -> usize { let q = t.cdt.pts[cv as usize]; (0..4).find(|&i| p[i] == q).unwrap_or(9) };
+                let r: Vec<[usize; 3]> = t.cdt.inside_tris().iter().map(|(_, vv)| [lab(vv[0]), lab(vv[1]), lab(vv[2])]).collect();
+                for (n, tg) in &targets { if &r == tg { eprintln!("RECT {n} ins={:?} ring={:?}", ins, ring); } }
+                if std::env::var("CK_TRACE").is_ok() { eprintln!("TR ---- ins={:?} ring={:?} result {:?} tris={:?}", ins, ring, r, t.cdt.tris.iter().map(|x| x.v).collect::<Vec<_>>()); }
+                if &ins == ring { eprintln!("HIT {:?} ins={:?} ring={:?}", r, ins, ring); }
+            }
         }
     }
 }

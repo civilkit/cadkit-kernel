@@ -173,10 +173,12 @@ fn shift_into(x: f64, m: f64, c: f64, p: f64) -> f64 {
 /// Triangulates face `f`. `params[e]` = final sorted param list of edge `e`.
 pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], cut: FaceCut, tol: &Tol) -> Result<FaceMesh, String> {
     let face = body.face(f);
+    crate::tr!(9, 0, 0, f.idx(), 0);
     let surf = &face.surface;
     let (pu, pv) = surf.periods();
-    let cu = pu.map(|_| cut.u.unwrap_or(0.0));
-    let cv = pv.map(|_| cut.v.unwrap_or(0.0));
+    // The original opens a periodic direction at the window [cut - p, cut] (its uv bounds are exactly that window).
+    let cu = pu.map(|p| cut.u.unwrap_or(p) - p);
+    let cv = pv.map(|p| cut.v.unwrap_or(p) - p);
 
     let mut b = Builder { surf, pts: vec![], index: HashMap::new(), segs: vec![] };
     let eps_u = pu.map(|p| p * 1e-9).unwrap_or(0.0);
@@ -195,10 +197,8 @@ pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], cut: FaceCut, tol:
         }
         let mut poly: Vec<BPt> = vec![];
         let mut prev: Option<Vec2> = None;
-        // the original walks the loops of a reversed-sense face backwards (coedges last to first, each flipped)
-        let backwards = !face.sense;
-        let order: Vec<_> = if backwards { lp.coedges.iter().rev().copied().collect() } else { lp.coedges.to_vec() };
-        for &c in &order {
+        let backwards = false;
+        for &c in lp.coedges.iter() {
             let ce = body.coedge(c);
             if !ce.alive {
                 continue;
@@ -240,6 +240,7 @@ pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], cut: FaceCut, tol:
                 u_hi = u_hi.max(uv.x);
                 pl.push(BPt { uv, p });
             }
+            if std::env::var("CK_DUMP3").is_ok() { eprintln!("COEDGE f{:?} c={:?} rev={} backwards={} n={} first={:?} last={:?}", f, c, ce.rev, backwards, pl.len(), pl.first().map(|q| q.uv), pl.last().map(|q| q.uv)); }
             if seam {
                 // seams are interior once the face is cut open; they only bound the v/u range
                 poly.push(BPt { uv: Vec2::new(f64::NAN, f64::NAN), p: Vec3::ZERO });
@@ -262,6 +263,10 @@ pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], cut: FaceCut, tol:
                 poly.pop();
             } else {
                 join(&mut poly, last, first, tol);
+            }
+            if !face.sense && poly.len() > 1 {
+                // a reversed-sense face walks its polygon backwards from the same first vertex
+                poly[1..].reverse();
             }
         }
         // split at NaN markers into open chains; a loop without markers is closed
@@ -439,24 +444,75 @@ pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], cut: FaceCut, tol:
     }
 
     // ---- 4. CDT in a metric-scaled frame
-    let cuv = {
-        let mut s = Vec2::ZERO;
-        for q in &b.pts {
-            s = s + q.uv;
-        }
-        s / b.pts.len() as f64
+    // uv bounds of the face (original f3578): the sample bbox grown by 1e-3 of its extent on each side; a periodic direction
+    // is exactly its window.
+    let infl = |lo: f64, hi: f64| -> (f64, f64) {
+        let e = (hi - lo) * 1e-3;
+        (lo - e, hi + e)
     };
+    let ubnd = match (pu, cut.u) {
+        (Some(p), Some(c)) => (c - p, c),
+        _ => infl(u_lo, u_hi),
+    };
+    let vbnd = match (pv, cut.v) {
+        (Some(p), Some(c)) => (c - p, c),
+        _ => infl(v_lo, v_hi),
+    };
+    let cuv = Vec2::new((ubnd.0 + ubnd.1) * 0.5, (vbnd.0 + vbnd.1) * 0.5);
+    if std::env::var("CK_BND").is_ok() { eprintln!("BND {:?} {:?}", ubnd, vbnd); }
+    crate::tr!(20, ubnd.0, vbnd.0, ubnd.1, vbnd.1);
     let (su, sv) = {
-        let (du, dv) = surf.partials(cuv.x, cuv.y);
-        let (a, bb) = (du.len(), dv.len());
-        let a = if a.is_finite() && a > 1e-12 { a } else { 1.0 };
-        let bb = if bb.is_finite() && bb > 1e-12 { bb } else { 1.0 };
-        (a, bb)
+        let (su, sv) = metric_scale(surf, ubnd, vbnd);
+        (if su.is_nan() { 1e-12 } else { su.max(1e-12) }, if sv.is_nan() { 1e-12 } else { sv.max(1e-12) })
     };
-    let to_c = |uv: Vec2| -> Pt { [(uv.x - cuv.x) * su, (uv.y - cuv.y) * sv] };
-    let from_c = |p: Pt| -> Vec2 { Vec2::new(p[0] / su + cuv.x, p[1] / sv + cuv.y) };
+    let mir = !face.sense && std::env::var("CK_MIR").is_ok();
+    let mx = if mir { -1.0 } else { 1.0 };
+    let to_c = |uv: Vec2| -> Pt { [mx * (uv.x - cuv.x) * su, (uv.y - cuv.y) * sv] };
+    let from_c = |p: Pt| -> Vec2 { Vec2::new(mx * p[0] / su + cuv.x, p[1] / sv + cuv.y) };
+    if let Ok(spec) = std::env::var("CK_RING") {
+        // EXPERIMENT: reorder a single boundary cycle (rotation, direction)
+        let mut it = spec.split(',');
+        let st: usize = it.next().unwrap().parse().unwrap();
+        let dir: usize = it.next().unwrap().parse().unwrap();
+        let n = b.pts.len();
+        let mut adj: Vec<Vec<usize>> = vec![vec![]; n];
+        for &(x, y) in &b.segs { adj[x].push(y); adj[y].push(x); }
+        if adj.iter().all(|a| a.len() == 2) && b.segs.len() == n {
+            let mut ring = vec![0usize];
+            let mut prev = usize::MAX;
+            let mut cur = 0usize;
+            loop {
+                let nx = if adj[cur][0] != prev { adj[cur][0] } else { adj[cur][1] };
+                if nx == 0 { break; }
+                ring.push(nx);
+                prev = cur;
+                cur = nx;
+                if ring.len() > n { break; }
+            }
+            if ring.len() == n {
+                if dir == 1 { ring.reverse(); }
+                ring.rotate_left(st % n);
+                for (j, &i) in ring.iter().enumerate().take(5) { eprintln!("RINGPT f{:?} {} {:?} cu={:?} cv={:?}", f, j, b.pts[i].uv, cu, cv); }
+                let np: Vec<BPt> = ring.iter().map(|&i| b.pts[i]).collect();
+                b.pts = np;
+                b.segs = (0..n).map(|i| (i, (i + 1) % n)).collect();
+            }
+        }
+    }
+    if let Ok(spec) = std::env::var("CK_INS") {
+        let ord: Vec<usize> = spec.split(',').map(|x| x.parse().unwrap()).collect();
+        if ord.len() == b.pts.len() {
+            let mut inv = vec![0usize; ord.len()];
+            for (ni, &oi) in ord.iter().enumerate() { inv[oi] = ni; }
+            let np: Vec<BPt> = ord.iter().map(|&i| b.pts[i]).collect();
+            b.segs = b.segs.iter().map(|&(x, y)| (inv[x], inv[y])).collect();
+            b.pts = np;
+        }
+    }
     let cpts: Vec<Pt> = b.pts.iter().map(|q| to_c(q.uv)).collect();
+    if std::env::var("CK_DUMP").is_ok() { eprintln!("CPTS_BITS {:?}", cpts.iter().map(|p| [p[0].to_bits(), p[1].to_bits()]).collect::<Vec<_>>()); }
     let mut tri = cdt::triangulate(&cpts, &b.segs)?;
+    if std::env::var("CK_DUMP2").is_ok() { eprintln!("F2 {:?} sense={} cpts={:?} vmap={:?} tris={:?}", f, face.sense, cpts, tri.vmap, tri.cdt.inside_tris().iter().map(|x| x.1).collect::<Vec<_>>()); }
     // vertex data indexed by CDT vertex
     let mut vdata: HashMap<u32, (Vec2, Vec3)> = HashMap::new();
     for (i, &v) in tri.vmap.iter().enumerate() {
@@ -573,12 +629,44 @@ pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], cut: FaceCut, tol:
         if (pb - pa).cross(pc - pa).len2() <= 0.0 {
             continue; // degenerate (pole)
         }
-        out.tris.push(if sense { ids } else { [ids[0], ids[2], ids[1]] });
+        let em = std::env::var("CK_EMIT").ok().and_then(|x| x.parse::<u32>().ok()).unwrap_or(0);
+        out.tris.push(if sense || mir { ids } else { match em { 1 => [ids[1], ids[0], ids[2]], 2 => [ids[2], ids[1], ids[0]], _ => [ids[0], ids[2], ids[1]] } });
     }
     if out.tris.is_empty() {
         return Err("face produced no triangles".into());
     }
     Ok(out)
+}
+
+/// Per-axis scale of the centred CDT frame (original f3573, with the cone special case of f3325):
+/// plane (1,1), cylinder (r,1), cone (max radius over the v range, 1/cos), sphere (r,r), torus (R+r,r), else |Su|,|Sv| at the domain centre.
+fn metric_scale(surf: &Surface, ur: (f64, f64), vr: (f64, f64)) -> (f64, f64) {
+    match surf {
+        Surface::Plane { .. } if std::env::var("CK_PL").is_err() => (1.0, 1.0),
+        Surface::Cylinder { r, .. } if std::env::var("CK_PL").is_err() => (*r, 1.0),
+        Surface::Cone { r, semi_angle, .. } => {
+            let sv = 1.0 / semi_angle.cos();
+            if vr.0.is_finite() && vr.1.is_finite() {
+                let t = semi_angle.tan();
+                let a = (vr.1 * t + r).abs();
+                let b = (vr.0 * t + r).abs();
+                let m = if a.is_nan() { b } else if b.is_nan() { a } else { a.max(b) };
+                (if m.is_nan() { 0.001 } else { m.max(0.001) }, sv)
+            } else {
+                (if r.is_nan() { 0.001 } else { r.abs() }, sv)
+            }
+        }
+        Surface::Sphere { r, .. } if std::env::var("CK_PL").is_err() => (*r, *r),
+        Surface::Torus { major, minor, .. } => (minor + major, *minor),
+        _ => {
+            let (du, dv) = surf.domain();
+            let mid = |a: (f64, f64)| if a.0.is_finite() && a.1.is_finite() { (a.0 + a.1) * 0.5 } else { 0.0 };
+            let _ = (ur, vr);
+            let (a, b) = surf.partials(mid(du), mid(dv));
+            let f = |x: f64| if x.is_nan() { 1e-9 } else { x.max(1e-9) };
+            (f(a.len()), f(b.len()))
+        }
+    }
 }
 
 fn same_uv(a: Vec2, b: Vec2) -> bool {

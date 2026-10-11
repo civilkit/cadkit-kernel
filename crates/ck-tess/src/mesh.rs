@@ -328,7 +328,9 @@ fn assemble(body: &Body, faces: &[Option<FaceMesh>]) -> Mesh {
                 push3(&mut m.mids, mid);
             }
             m.tri_face.push(wi as i32);
-            fnorm.push((fm.pts[b] - fm.pts[a]).cross(fm.pts[c] - fm.pts[a]).normalize());
+            // facet normals come from the f32 display positions (pinned: oracle silhouette normals)
+            let r = |p: Vec3| Vec3::new(p.x as f32 as f64, p.y as f32 as f64, p.z as f32 as f64);
+            fnorm.push((r(fm.pts[b]) - r(fm.pts[a])).cross(r(fm.pts[c]) - r(fm.pts[a])).normalize());
         }
         let _ = base_tri;
         if planar {
