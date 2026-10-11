@@ -314,6 +314,15 @@ parts.mirrorBodyCone = part([...parts.cone.features, { type: 'plane', id: 'F8', 
   parts.knitSheet = part([...tube, ...cap, { type: 'knit', id: 'F7', surfaces: ['F2', 'F3'], solid: false }]);
   parts.knitNotClosed = part([...tube, ...cap, { type: 'knit', id: 'F7', surfaces: ['F2', 'F3'], solid: true }]);
   parts.knitMissing = part([...tube, { type: 'knit', id: 'F7', surfaces: ['F2', 'F9'], solid: false }]);
+  // half-disc faces (arc + chord share both endpoints): knit must not report knitNearMiss
+  parts.knitHalfDisc = part([
+    { type: 'sketch', id: 'F1', plane: STD('top'), points: [pt('O', 0, 0), pt('p1', 0, -23), pt('p2', 0, 23)],
+      entities: [{ id: 'e3', type: 'arc', c: 'O', p1: 'p1', p2: 'p2' }, line('e4', 'p2', 'p1')], constraints: [] },
+    sp('F2', 'F1'),
+    { type: 'sketch', id: 'F3', plane: STD('front'), points: [pt('O', 0, 0), pt('p1', 0, -23), pt('p2', 0, 23)],
+      entities: [{ id: 'e3', type: 'arc', c: 'O', p1: 'p1', p2: 'p2' }, line('e4', 'p2', 'p1')], constraints: [] },
+    sp('F4', 'F3'),
+    { type: 'knit', id: 'F5', surfaces: ['F2', 'F4'], solid: false }]);
   const rim = (face, at) => ({ faces: [face], at });
   const top = [rim('F2.S.e1', [20, 10, 0]), rim('F2.S.e2', [40, 10, -10]), rim('F2.S.e3', [20, 10, -20]), rim('F2.S.e4', [0, 10, -10])];
   const bot = [rim('F2.S.e1', [20, 0, 0]), rim('F2.S.e2', [40, 0, -10]), rim('F2.S.e3', [20, 0, -20]), rim('F2.S.e4', [0, 0, -10])];

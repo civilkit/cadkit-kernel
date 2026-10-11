@@ -481,7 +481,11 @@ fn build_layer(
             }
             let nloop = out.add_loop(nf.unwrap());
             if ls[li].original {
-                for &cid in &sheet.lp(lid).coedges {
+                // a flipped layer runs the loop backwards: reverse the coedge
+                // order as well as each direction so the loop still chains
+                let cl = &sheet.lp(lid).coedges;
+                let ordered: Vec<_> = if flipped { cl.iter().rev().copied().collect() } else { cl.to_vec() };
+                for cid in ordered {
                     let co = sheet.coedge(cid);
                     if !co.alive {
                         continue;

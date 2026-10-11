@@ -31,7 +31,49 @@ pub fn check(b: &Body, out: &mut Vec<Issue>) {
             continue;
         }
         connectivity(b, &faces, out);
-        euler(b, &faces, s.idx(), out);
+    }
+    euler_components(b, out);
+}
+
+/// Euler-Poincare per edge-connected face component of the whole body.
+/// A surface patch (fill / knit) may sit in its own single-face shell next to
+/// the shell it caps, so a per-shell count would see a bare disc; the
+/// component spanning both is the closed manifold. Components are found
+/// across shells by shared edges.
+fn euler_components(b: &Body, out: &mut Vec<Issue>) {
+    let faces: Vec<FaceId> = b
+        .shell_ids()
+        .flat_map(|s| b.shell(s).faces.iter().copied().collect::<Vec<_>>())
+        .filter(|&f| b.face(f).alive)
+        .collect();
+    let mut by_edge: HashMap<EdgeId, Vec<usize>> = HashMap::new();
+    for (i, &f) in faces.iter().enumerate() {
+        for e in b.face_edges(f) {
+            by_edge.entry(e).or_default().push(i);
+        }
+    }
+    let mut seen = vec![false; faces.len()];
+    let mut comp_no = 0;
+    for start in 0..faces.len() {
+        if seen[start] {
+            continue;
+        }
+        seen[start] = true;
+        let mut comp = vec![];
+        let mut stack = vec![start];
+        while let Some(i) = stack.pop() {
+            comp.push(faces[i]);
+            for e in b.face_edges(faces[i]) {
+                for &j in &by_edge[&e] {
+                    if !seen[j] {
+                        seen[j] = true;
+                        stack.push(j);
+                    }
+                }
+            }
+        }
+        euler(b, &comp, comp_no, out);
+        comp_no += 1;
     }
 }
 
@@ -86,7 +128,7 @@ fn euler(b: &Body, faces: &[FaceId], idx: usize, out: &mut Vec<Issue>) {
     if chi % 2 != 0 || chi > 2 {
         out.push(Issue {
             code: "EULER",
-            entity: format!("shell#{idx}"),
+            entity: format!("component#{idx}"),
             detail: format!("V-E+F-(L-F) = {chi} (V={} E={} F={} L={})", vs.len(), es.len(), f, loops),
         });
     }
