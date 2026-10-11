@@ -12,6 +12,15 @@
 //                 keys outside body / whole JSON reply (edge pts included)
 //   mass.<set>    massProps volume/area/com within 1e-9 relative
 //   step          STEP replies byte-identical (ck-io golden request bodies)
+//   valid.<set>   OURS alone: no feature errors, volume > 0, every edge
+//                 bounds exactly 2 faces (closed manifold shell)
+//   vol.<set>     our volume within 1e-3 relative of the original's
+//
+// Direction (2026-10-12): correctness + robustness, not byte-identity.
+// HARD metrics (a drop fails the gate): wire, valid.*, vol.*.
+// SOFT metrics (oracle-identity: faces/edges/box/rest/json/mesh/mass/step):
+// a drop prints WARN but does not fail. The original is a reference, not
+// the arbiter.
 import { readFileSync, writeFileSync, existsSync, readdirSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -75,7 +84,14 @@ function regenSet(set, targets) {
       const q = JSON.stringify({ id: 2, msg: { type: 'massProps', tag: 'main' } });
       const ma = JSON.parse(ka.request(q).json || 'null')?.result, mb = JSON.parse(kb.request(q).json || 'null')?.result;
       bump(`mass.${set}`, ['volume', 'area', 'com'].every((k) => close(mb?.[k], ma?.[k])));
-    } else bump(`mass.${set}`, !ba && !bb);
+      bump(`vol.${set}`, typeof mb?.volume === 'number' && Math.abs(mb.volume - ma?.volume) <= 1e-3 * Math.abs(ma?.volume ?? 0));
+      const manifold = (bb.edges ?? []).every((e) => e.faces?.length === 2);
+      bump(`valid.${set}`, !(pb.result.errors?.length) && mb?.volume > 0 && manifold);
+    } else {
+      bump(`mass.${set}`, !ba && !bb);
+      bump(`vol.${set}`, !ba && !bb);
+      bump(`valid.${set}`, !ba && !bb && !(pb?.result?.errors?.length));
+    }
     if (!quiet) process.stderr.write(`${t.name} ${((performance.now() - t0) / 1000).toFixed(1)}s\n`);
   }
 }
@@ -101,15 +117,16 @@ if (!quiet) process.stderr.write('\n');
 // report + compare with baseline
 const basePath = path.join(here, 'scoreboard.json');
 const base = existsSync(basePath) ? JSON.parse(readFileSync(basePath, 'utf8')) : {};
-let worse = 0;
-const skipped = (k) => fast && /^(regen|mass)\.(bracket|stepper|flange|hair)/.test(k);
+let worse = 0, soft = 0;
+const hard = (k) => /^(wire|valid\.|vol\.)/.test(k);
+const skipped = (k) => fast && /^(regen|mass|valid|vol)\.(bracket|stepper|flange|hair)/.test(k);
 for (const k of Object.keys({ ...base, ...score }).sort()) {
   const [m, n] = score[k] ?? [0, 0], b = base[k]?.[0];
-  const d = b === undefined ? ' (new)' : m > b ? ` (+${m - b})` : m < b ? ` (-${b - m}) REGRESSION` : '';
+  const d = b === undefined ? ' (new)' : m > b ? ` (+${m - b})` : m < b ? ` (-${b - m}) ${hard(k) ? 'REGRESSION' : 'WARN(soft)'}` : '';
   if (skipped(k)) continue;
-  if (b !== undefined && m < b) worse++;
+  if (b !== undefined && m < b) hard(k) ? worse++ : soft++;
   console.log(`${k.padEnd(40)} ${String(m).padStart(4)}/${String(n).padEnd(4)}${d}`);
 }
 if (update) { const out = fast ? { ...base, ...score } : score; writeFileSync(basePath, JSON.stringify(out, null, 1) + '\n'); console.log(`baseline written: ${basePath}`); }
 else if (worse) { console.log(`\nGATE FAILED: ${worse} metric(s) regressed`); process.exitCode = 1; }
-else console.log('\ngate ok');
+else console.log(`\ngate ok${soft ? ` (${soft} soft oracle-identity metric(s) dropped)` : ''}`);
