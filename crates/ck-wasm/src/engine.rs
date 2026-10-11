@@ -15,6 +15,7 @@ pub fn install() {
         regen: Some(regen_hook),
         query: Some(query_hook),
         sketch_offset: Some(sketch_offset_hook),
+        match_edges: Some(match_edges_hook),
         ..Hooks::default()
     });
 }
@@ -23,6 +24,8 @@ pub fn install() {
 pub struct Snapshot {
     pub body: Body,
     pub sketches: Vec<SketchResult>,
+    /// Assembly state (components, mates) for `drag`.
+    pub asm: ck_model::features::mate::Assembly,
 }
 
 /// ck-server trace as a ck-model [`Tracer`].
@@ -85,10 +88,11 @@ fn regen_hook(part: &Json, cx: &mut Cx) -> Result<(Json, State), String> {
         let mut r = regen::regen(&part, &opts, &mut ex);
         r.components = ex.brep.components_json();
         let rn = ex.brep.renorm_faces();
+        let asm = ex.brep.asm.clone();
         let surfs = std::mem::take(&mut ex.brep.surfs);
-        (r, (ex.brep.body, rn, surfs))
+        (r, (ex.brep.body, rn, asm, surfs))
     });
-    let (body, renorm, surfs) = body;
+    let (body, renorm, asm, surfs) = body;
     let mut out = result.to_json();
     cx.span(SNAPSHOT_LABEL, |cx| {
         if let Some(b) = &body {
@@ -111,7 +115,7 @@ fn regen_hook(part: &Json, cx: &mut Cx) -> Result<(Json, State), String> {
     let state = match body {
         Some(body) => {
             let sketches = std::mem::take(&mut result.sketches);
-            State { has_body: true, data: Some(Box::new(Snapshot { body, sketches })) }
+            State { has_body: true, data: Some(Box::new(Snapshot { body, sketches, asm })) }
         }
         None => State::empty(),
     };
@@ -209,6 +213,45 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
         }
         "inspect" => inspect(cx),
         "continuity" => Ok(ck_ops::continuity::reply(&snapshot(cx)?.body, &cx.msg)),
+        "measure" => Ok(ck_ops::measure::reply(&snapshot(cx)?.body, &cx.msg)),
+        "drag" => {
+            let s = snapshot(cx)?;
+            Ok(crate::drag::reply(&s.body, &s.asm, &cx.msg))
+        }
+        "interference" => Ok(ck_ops::interference::reply(&snapshot(cx)?.body)),
+        "comb" => Ok(comb(&snapshot(cx)?.body, &cx.msg)),
+        "curvatureMap" => {
+            let body = &snapshot(cx)?.body;
+            let tess = ck_tess::mesh::tessellate(body);
+            let m = ck_tess::curvmap::curvature_map(body, &tess);
+            let ids: Vec<Json> = m.faces.iter().map(|&f| Json::Str(body.face_id_str(f))).collect();
+            let failed: Vec<Json> = body.face_ids().enumerate().filter(|(i, _)| m.failed.contains(i)).map(|(_, f)| Json::Str(body.face_id_str(f))).collect();
+            let mesh = Obj::new()
+                .put("positions", cx.bufs.f32(&m.positions))
+                .put("normals", cx.bufs.f32(&m.normals))
+                .put("k", cx.bufs.f32(&m.k))
+                .put("triFace", cx.bufs.i32(&m.tri_face))
+                .build();
+            let b = Obj::new().put("id", Json::Null).put("faces", Json::Arr(ids)).put("mesh", mesh).build();
+            Ok(Obj::new().put("bodies", Json::Arr(vec![b])).put("failed", Json::Arr(failed)).build())
+        }
+        "convert" => {
+            let s = snapshot(cx)?;
+            Ok(match cx.msg.get("ref").and_then(|r| r.get_str("kind")) {
+                Some("sketchCurve") => crate::sketch_q::convert(&s.sketches, &cx.msg),
+                _ => ck_ops::convert_proj::reply(&s.body, &cx.msg),
+            })
+        }
+        "refCurve" => {
+            let s = snapshot(cx)?;
+            let r = cx.msg.get("ref").unwrap_or(&Json::Null);
+            Ok(match r.get_str("kind") {
+                Some("edge") => ck_ops::ref_curve::edge_reply(&s.body, r),
+                Some("sketchCurve") => crate::sketch_q::ref_curve(&s.sketches, r),
+                _ => ck_ops::ref_curve::missing_reference(),
+            })
+        }
+        "curvatureAt" => Ok(ck_ops::curvature_at::reply(&snapshot(cx)?.body, &cx.msg)),
         "step" => {
             // Reply: the whole STEP file as one JSON string (oracle); `name`
             // defaults to "part". Void shells must be split out first.
@@ -281,4 +324,61 @@ fn sketch_offset_hook(cx: &mut Cx, distance: f64) -> Result<Json, String> {
         .map(|a| a.iter().filter_map(|j| j.as_str().map(str::to_string)).collect())
         .unwrap_or_default();
     Ok(sketch_offset_json(&sk, &ids, distance))
+}
+
+/// `comb {refs, density, lines, dir}`: one entry per ref.
+fn comb(body: &Body, msg: &Json) -> Json {
+    use ck_ops::measure::{resolve_ref, Ref};
+    // oracle clamps: density 10..=300 (default 50), lines 1..=30 (default 5)
+    let num = |k: &str, d: usize, lo: f64, hi: f64| msg.get_f64(k).map_or(d, |v| v.round().clamp(lo, hi) as usize);
+    let (density, lines) = (num("density", 50, 10.0, 300.0), num("lines", 5, 1.0, 30.0));
+    let dir = msg.get_str("dir").unwrap_or("uv");
+    let curve_json = |c: ck_tess::comb::CombCurve| {
+        let f = |v: &[f64]| Json::Arr(v.iter().map(|&x| Json::Num(x)).collect());
+        let mut o = Obj::new().put("p", f(&c.p)).put("k", f(&c.k));
+        if let Some(d) = c.dir {
+            o = o.put("dir", d);
+        }
+        o.build()
+    };
+    let one = |r: &Json| -> Json {
+        let err = |e: &str| Obj::new().put("error", e).build();
+        match r.get_str("kind") {
+            Some(k @ ("face" | "edge")) => match resolve_ref(body, r) {
+                Some(Ref::Edge(e)) => {
+                    let ed = body.edge(e);
+                    let c = ck_tess::comb::edge_comb(&ed.curve, ed.t0, ed.t1, density);
+                    Obj::new().put("curves", Json::Arr(vec![curve_json(c)])).build()
+                }
+                Some(Ref::Face(f)) => {
+                    let cs = ck_tess::comb::face_comb(body, f, density, lines, dir);
+                    Obj::new().put("curves", Json::Arr(cs.into_iter().map(curve_json).collect())).build()
+                }
+                None => {
+                    let _ = k;
+                    err("notFound")
+                }
+            },
+            Some("curve") => err("notFound"),
+            _ => err("notCurve"),
+        }
+    };
+    Json::Arr(msg.get_arr("refs").unwrap_or(&[]).iter().map(one).collect())
+}
+
+/// `matchEdges` on a part with features: a private regen (span
+/// "regenerate N features", nothing stored), then the edge matcher.
+fn match_edges_hook(part: &Json, cx: &mut Cx) -> Result<Json, String> {
+    let part = Part::from_json(part)?;
+    let opts = RegenOpts { up_to: cx.msg.get_f64("upTo").filter(|v| *v >= 0.0).map(|v| v as u32), ignore_rollback: false };
+    let n = opts.up_to.map_or(part.features.len(), |u| part.features.len().min(u as usize));
+    let body = cx.span(regen_label(n), |cx| {
+        let mut ex = Exec { brep: Brep::new(), sink: TraceSink { trace: &mut *cx.trace, ids: vec![] } };
+        regen::regen(&part, &opts, &mut ex);
+        ex.brep.body
+    });
+    Ok(match body {
+        Some(b) => ck_ops::match_edges::reply(&b, &cx.msg),
+        None => Json::Arr(vec![]),
+    })
 }

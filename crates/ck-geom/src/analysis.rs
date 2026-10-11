@@ -169,7 +169,9 @@ pub fn surface_curvature(s: &SurfDerivs, flip: bool) -> SurfCurvature {
         s.du.normalize()
     } else {
         // eigenvector of S for k1 in (du, dv)
-        let (x1, y1) = (b, k1 - a);
+        // sign pinned by oracle curvatureAt on concave cylinders / tori
+        // (k1 on the v direction): d1 = -dv there, i.e. (-b, a - k1)
+        let (x1, y1) = (-b, a - k1);
         let (x2, y2) = (k1 - d, c);
         let (du, dv) = if x1 * x1 + y1 * y1 >= x2 * x2 + y2 * y2 { (x1, y1) } else { (x2, y2) };
         (s.du * du + s.dv * dv).normalize()
