@@ -1,20 +1,79 @@
 # ck-io
 
-File export. rs_paths.txt shows step/write.rs only — a STEP (AP203/AP214)
-writer. The complete writer strings survive in kernel.strings:
+File export. rs_paths.txt shows step/write.rs only — a STEP (AP214,
+`AUTOMOTIVE_DESIGN`) writer. Every format string survives in
+kernel.strings; layout/numbering/formatting are pinned by `step` replies
+of the original kernel (`tests/golden/*.step`).
 
-- CARTESIAN_POINT/DIRECTION/VECTOR, AXIS2_PLACEMENT_3D/AXIS1_PLACEMENT
-- CIRCLE/ELLIPSE/LINE, B_SPLINE_CURVE_WITH_KNOTS (+RATIONAL)
-- PLANE/CYLINDRICAL/CONICAL/SPHERICAL/TOROIDAL_SURFACE,
-  SURFACE_OF_REVOLUTION / SURFACE_OF_LINEAR_EXTRUSION,
-  B_SPLINE_SURFACE_WITH_KNOTS (+RATIONAL), OFFSET_SURFACE
-- ADVANCED_FACE/FACE_BOUND/ORIENTED_EDGE/EDGE_LOOP/VERTEX_POINT
-- CLOSED_SHELL/MANIFOLD_SOLID_BREP/BREP_WITH_VOIDS/
-  SHELL_BASED_SURFACE_MODEL/MANIFOLD_SURFACE_SHAPE_REPRESENTATION
-- header: FILE_NAME(...'CadKit','CadKit','') /
-  'automotive_design',2000 / uncertainty 1.E-06 'confusion accuracy'
+## API
 
-## Interface
+```rust
+use ck_io::step::{write_step, StepOpts, StepWriter};
+let text: String = write_step(&body, name, &StepOpts { unix_ms: host_ck_unix_ms() });
+```
 
-Body -> STEP text. The exact entity attribute order/flags
-(.UNSPECIFIED.,.F.,...) are in kernel.strings verbatim.
+- `step::write::real(f64)`, `string(&str)` (STEP string escaping),
+  `timestamp(unix_ms)` are public helpers.
+- `StepWriter` emits single entities (`point`, `dir`, `axis2`, `curve`,
+  `surface`, ...) — used by the entity tests; `starting_at(n)` /
+  `seed_dir` exist for those tests.
+
+## `step` request (wire, pinned with tools/q.mjs)
+
+- request `{type:"step", tag:"main", name:<partName>}` (client:
+  app.pretty.js `exportSTEP` / `export({format:"step"})`).
+- reply: `{"ok":true,"result":"<whole STEP file as a JSON string>","ms":0}`
+  — no binary buffers. `result:null` when the regenerated body is null
+  (empty part / surface-only part). `tag` missing / null / `"main"` → the
+  regen state; any other tag → `{"ok":false,"error":"noState: nothing
+  regenerated yet","ms":0}` (also before any regen). `name` missing or not
+  a string → `"part"`.
+- `FILE_NAME('<name>.step','<UTC of ck_unix_ms>',...)`, the same escaped
+  name in `PRODUCT('<n>','<n>',...)`, `MANIFOLD_SOLID_BREP('<n>',..)` and
+  `ADVANCED_BREP_SHAPE_REPRESENTATION('<n>',..)`.
+
+## Pinned rules (see write.rs header for detail)
+
+- reals: `0.`; plain shortest decimal + `.`; scientific `1.E-7`,
+  `6.123233995736766E-17`, `1.E15` when |x|<1e-6 or ≥1e15.
+- strings: `''`, `\\`, control chars dropped, non-ASCII → `\X2\hhhh\X0\`
+  per char (UTF-16 units).
+- DIRECTION sharing keyed by exact bits (sign of zero matters);
+  CARTESIAN_POINT / VECTOR never shared.
+- order: context #1..#14, world placement #15..#18, faces in shell order
+  (surface, then per coedge: edge on first use [v0, v1, curve,
+  EDGE_CURVE] + ORIENTED_EDGE, EDGE_LOOP, bound, ADVANCED_FACE),
+  CLOSED_SHELL per shell, then all MANIFOLD_SOLID_BREP / BREP_WITH_VOIDS,
+  ABSR(name,(breps..,#18),#14), SDR(#9,ABSR).
+- seams dropped; loops cut at seams; closed sphere/torus split into two
+  faces on one surface; FACE_OUTER_BOUND only on planar faces.
+- voids: CLOSED_SHELL with flipped face sense / bound flags +
+  `ORIENTED_CLOSED_SHELL('',*,#,.F.)` + `BREP_WITH_VOIDS`.
+- negative cone semi-angle written as reversed axis + positive angle.
+
+## Tests / status
+
+`cargo test -p ck-io`:
+- `tests/step_oracle.rs`, 16 golden bodies (ck-topo make::* constructions):
+  BYTE-identical: box3 flip mid two dext sphere torus.
+  STRUCT-identical (only DIRECTION sharing differs — ck-topo's sign of
+  zero in frames/line directions): box cyl rev360 rev90 revax360 revax90
+  cone void. `draft`: one drafted side plane has ref dir (1,0,0) where the
+  oracle has (-1,0,0) (ck-topo frame choice).
+- `tests/entities.rs`: rational B-spline surface/curve, B-spline curve,
+  ellipse + SURFACE_OF_LINEAR_EXTRUSION, SURFACE_OF_REVOLUTION verbatim
+  against oracle lines.
+
+Golden capture: `tests/golden/<n>.req.json` is the regen request; run
+`node tools/q.mjs "$(cat <n>.req.json)" '{"id":2,"msg":{"type":"step","tag":"main","name":"<n>"}}'`
+and take `result` of the second reply. ell/spl/cvs/loft/revspl `.step`
+are reference-only (bodies not buildable with ck-topo yet).
+
+## GUESS / open
+
+- OFFSET_SURFACE self_intersect `.F.`; open shells (OPEN_SHELL,
+  SHELL_BASED_SURFACE_MODEL, MANIFOLD_SURFACE_SHAPE_REPRESENTATION,
+  SHAPE_REPRESENTATION_RELATIONSHIP) layout — no oracle body produced them.
+- multi-lump + void ordering (shells of all lumps, then all breps).
+- split of a sense=false sphere/torus; loop-run joining across loop start.
+- B-spline `closed_curve` = first ctrl == last ctrl.
