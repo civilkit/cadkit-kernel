@@ -85,6 +85,9 @@ parts.cone = part([sketch('front', [pt('p1', 5, 0), pt('p2', 15, 0), pt('p3', 5,
   parts.boss = part([...base(), circ('F3', { kind: 'face', id: 'F2.C1' }, 10, 10, 3), ex2('F4', 'F3', { depth: 5 })]);
   parts.lpatternCut = part([...base(), ...hole, { type: 'lpattern', id: 'F5', seeds: ['F4'], dir: { kind: 'axis', axis: 'x' }, spacing: 10, count: 3 }]);
   parts.cpatternCut = part([...base(), ...hole, { type: 'cpattern', id: 'F5', seeds: ['F4'], axis: { kind: 'axis', axis: 'y' }, count: 3, angle: 90, equal: true }]);
+  parts.cpatternBoss = part([...base(), circ('F3', { kind: 'face', id: 'F2.C1' }, 30, 10, 3), ex2('F4', 'F3', { depth: 5 }),
+    { type: 'cpattern', id: 'F5', seeds: ['F4'], axis: { kind: 'axis', axis: 'y' }, count: 4, angle: 360, equal: true }]);
+  parts.lpatternRev = part([...base(), ...hole, { type: 'lpattern', id: 'F5', seeds: ['F4'], dir: { kind: 'axis', axis: 'z' }, spacing: 8, count: 2, reverse: true }]);
   parts.mirrorTwo = part([...base(), ...hole, circ('F6', STD('top'), 5, 15, 2), ex2('F7', 'F6', { depth: 15 }),
     { type: 'mirror', id: 'F5', seeds: ['F4', 'F7'], plane: STD('right') }]);
   const below = { type: 'plane', id: 'F5', mode: 'offset', base: STD('top'), offset: -5 };
