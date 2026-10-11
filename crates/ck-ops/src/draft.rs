@@ -109,7 +109,7 @@ pub fn interior_point(b: &Body, f: FaceId, tol: f64) -> Option<(Vec3, Vec3)> {
 /// the neutral plane (`q`, pull direction `d`) by `ang`. `Err(())` when the
 /// face normal is parallel to the pull direction.
 fn draft_plane(fr: &Frame, sense: bool, d: Vec3, q: Vec3, ang: f64) -> Result<Surface, ()> {
-    let (sn, cs) = (ang.sin(), ang.cos());
+    let (sn, cs) = (ck_topo::trig::sin(ang), ck_topo::trig::cos(ang));
     let s = if sense { 1.0 } else { -1.0 };
     let nx = (fr.x.y * fr.y.z - fr.x.z * fr.y.y) * s;
     let ny = s * (fr.x.z * fr.y.x - fr.y.z * fr.x.x);
@@ -146,8 +146,13 @@ fn draft_plane(fr: &Frame, sense: bool, d: Vec3, q: Vec3, ang: f64) -> Result<Su
     // slide the origin along w onto the neutral plane
     let t = (d.z * (q.z - fr.o.z) + d.x * (q.x - fr.o.x) + d.y * (q.y - fr.o.y)) / (d.z * wz + d.x * wx + d.y * wy);
     let o = Vec3::new(fr.o.x + wx * t, fr.o.y + wy * t, fr.o.z + wz * t);
-    let y = Vec3::new(hz * n2y - hy * n2z, hx * n2z - hz * n2x, hy * n2x - hx * n2y);
-    Ok(Surface::Plane { frame: Frame { o, x: Vec3::new(hx, hy, hz), y, z: Vec3::new(n2x, n2y, n2z) } })
+    // the oracle's normals come out normalised a second time (probe: 4, 6,
+    // 7, 10 ... degrees match only with two passes), as if the frame were
+    // rebuilt from (o, z, x) afterwards
+    let z = Vec3::new(n2x, n2y, n2z).normalize();
+    let x = Vec3::new(hx, hy, hz);
+    let y = z.cross(x);
+    Ok(Surface::Plane { frame: Frame { o, x, y, z } })
 }
 
 /// f2868: the cone that replaces a cylinder (or a degenerate cone) whose
@@ -409,6 +414,20 @@ fn new_edge_curve(sa: &Surface, sb: &Surface, old: &Curve, near: Vec3) -> Option
     }
 }
 
+/// Sort key of a face name: feature, role (Side < Cap < Blend < Other),
+/// role payload, region, instance suffix.
+fn name_key(b: &Body, f: FaceId) -> (String, u8, String, Option<u32>, String) {
+    use ck_topo::body::Role;
+    let n = &b.face(f).name;
+    let (rank, payload) = match &n.role {
+        Role::Side(e) => (0, e.clone()),
+        Role::Cap(k) => (1, format!("{k:010}")),
+        Role::Blend(k) => (2, format!("{k:010}")),
+        Role::Other(o) => (3, o.clone()),
+    };
+    (n.feature.clone(), rank, payload, n.region, n.suffix.clone())
+}
+
 fn pair_name(b: &Body, fs: &[FaceId]) -> String {
     match fs {
         [a, c] => format!("between {} and {}", b.face_id_str(*a), b.face_id_str(*c)),
@@ -563,15 +582,17 @@ fn rebuild(b: &Body, edits: &[Edit]) -> Result<Body, DraftError> {
         slot.t1 = bb;
     }
 
-    // plane/plane rails and cap edges are re-derived as n_a x n_b (face
-    // order): reverse the ones that run the other way (oracle: drafted
-    // extrude probes, see ck-topo make.rs `orient_draft_edges`)
+    // plane/plane edges are re-derived as n_a x n_b (natural normals):
+    // reverse the ones that run the other way (oracle: the drafted extrude
+    // probes pinned in ck-topo make.rs `orient_draft_edges`, golden brep.json)
     for &e in &touched {
         let fs = b.edge_faces(e);
         if fs.len() != 2 {
             continue;
         }
-        let (fa, fb) = if fs[0].0 <= fs[1].0 { (fs[0], fs[1]) } else { (fs[1], fs[0]) };
+        // faces in name order (side faces sort before caps: cap edges run
+        // side x cap in natural normals; rails by entity id)
+        let (fa, fb) = if name_key(&nb, fs[0]) <= name_key(&nb, fs[1]) { (fs[0], fs[1]) } else { (fs[1], fs[0]) };
         let (Surface::Plane { frame: ra }, Surface::Plane { frame: rb }) = (&nb.faces[fa.idx()].surface, &nb.faces[fb.idx()].surface)
         else {
             continue;
@@ -641,6 +662,20 @@ mod tests {
         assert_eq!(e.code, "draftParallelFace");
         assert_eq!(e.detail.as_deref(), Some("F2.C1"));
         let _ = face(&b, "F2.C0");
+    }
+
+    #[test]
+    fn cylinder_becomes_cone() {
+        use crate::boolean::tests::cyl_body;
+        let b = cyl_body("F2", 5.0, 3.0, 10.0, 0.0, 10.0);
+        let side = b.face_ids().find(|&f| b.face_id_str(f).contains(".S.")).unwrap();
+        let out = draft(&b, Vec3::ZERO, Vec3::Y, &[side], 3f64.to_radians(), 1e-6).unwrap();
+        assert!(ck_topo::check::check(&out, 1e-9).is_empty(), "{:?}", ck_topo::check::check(&out, 1e-9));
+        let Surface::Cone { r, semi_angle, .. } = &out.face(side).surface else { panic!("not a cone") };
+        assert!((r - 10.0).abs() < 1e-12 && (semi_angle.abs() - 3f64.to_radians()).abs() < 1e-12);
+        // top circle shrinks by 10 * tan(3 deg)
+        let (lo, hi) = out.bbox();
+        assert!(((hi.x - lo.x) - 2.0 * (10.0 - 10.0 * 3f64.to_radians().tan()).max(10.0)).abs() < 1e-6, "{lo:?} {hi:?}");
     }
 
     #[test]

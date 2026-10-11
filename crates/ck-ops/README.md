@@ -59,9 +59,10 @@ where noted):
 | `surfacing::sheet` | `sheet(body, faces)` — keep the faces as an open sheet | **oracle**: deleteFace box probe (5 faces left, the deleted cap's edges open, original edge order) |
 
 | `continuity` | `judge_edge(body, e, &Settings) -> EdgeReport`, `reply(body, msg) -> Json` (the `continuity` query, wired in ck-wasm `query_hook`) | **oracle**: G1-G3 fields, normals, curvature/rate, status/fails, max, worst for fillets (planar / cylinder), box / cylinder corners (`ck-model/tests/continuity_golden.rs`); gap = golden-section noise, bit-exact only when the blend edges use the oracle's line parameterisation |
+| `draft` | `draft(body, neutral, dir, faces, angle, tol) -> Result<Body, DraftError{code, detail}>` — plane faces rotate about the neutral hinge, cylinders become cones; `interior_point` | **oracle**: face normals bit-exact for 1..44 degrees (two normalisation passes), cylinder -> cone exact, all error codes + details (`invalidValue`, `draftParallelFace`, `draftTooLarge` ...); vertices/edge pts within ~1e-11 (the oracle's offset engine leaves ~1e-10 solver noise, not reconstructed); NOT ported: offset engine f2871 (own `rebuild` stand-in), `~slab`/`~wedge` retry (f2874), extrusion-surface faces (`draftUnsupported`) |
 | `contain` | `Containment::{new, point_in_face, classify_point}` | unit; agrees with the winding classifier on grids (face test is a GUESS, see header) |
 
-Everything else (sweep, loft/*, shell, offset, draft, pipecut,
+Everything else (sweep, loft/*, shell, offset, pipecut,
 curve_edit, guide, simplify, other blend/* files,
 `surfacing::rebuild::edits`) is a stub whose header lists its
 kernel.strings codes.

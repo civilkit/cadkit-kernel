@@ -215,7 +215,11 @@ pub fn exec_extrude(state: &RegenState, f: &Feature, body: Option<&Body>) -> Res
             return Err(FeatureError::new(&todo("mid-plane drafted extrude (boolean unite)")));
         }
     }
-    let body = extrude(&f.id, &profile, o).map_err(topo_err)?;
+    let body = if o.draft != 0.0 {
+        super::draft::drafted_extrude(&f.id, &profile, o)?
+    } else {
+        extrude(&f.id, &profile, o).map_err(topo_err)?
+    };
     Ok(Tool { body, combine, recipe: Some(Recipe::Extrude { profile, opts: o }) })
 }
 

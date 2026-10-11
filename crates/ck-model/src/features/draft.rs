@@ -81,3 +81,37 @@ pub fn exec_draft(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<
     br.body = Some(out);
     Ok(())
 }
+
+/// A drafted extrude as the oracle builds it: the straight extrude, then the
+/// draft operation on every side face about the sketch plane (the pull
+/// direction runs from the sketch plane into the material). `o.draft` is the
+/// signed angle in radians (negative = `draftOut`).
+pub fn drafted_extrude(
+    feature: &str,
+    profile: &ck_topo::make::Profile,
+    o: ck_topo::make::ExtrudeOpts,
+) -> Result<Body, FeatureError> {
+    use ck_topo::body::Role;
+    let fr = profile.frame;
+    let mut d = o.dir.unwrap_or(fr.z).normalize();
+    if d.dot(fr.z) < 0.0 {
+        d = -d;
+    }
+    let (s0, s1) = (o.s0.min(o.s1), o.s0.max(o.s1));
+    let skew = (d - fr.z).len() > 1e-12;
+    if skew || (s0 < -1e-12 && s1 > 1e-12) {
+        return Err(FeatureError::new("draftUnsupported"));
+    }
+    let straight = ck_topo::make::extrude(feature, profile, ck_topo::make::ExtrudeOpts { draft: 0.0, ..o })
+        .map_err(|e| FeatureError::new(&e))?;
+    let sides: Vec<FaceId> =
+        straight.face_ids().filter(|&f| matches!(straight.face(f).name.role, Role::Side(_))).collect();
+    let pull = if s1 <= 1e-12 { -d } else { d };
+    ck_ops::draft::draft(&straight, fr.o, pull, &sides, o.draft, super::TOL).map_err(|e| {
+        let fe = FeatureError::new(e.code);
+        match e.detail {
+            Some(d) => fe.with("detail", Json::Str(d)),
+            None => fe,
+        }
+    })
+}
