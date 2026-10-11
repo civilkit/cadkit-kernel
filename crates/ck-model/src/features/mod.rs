@@ -626,6 +626,68 @@ impl Brep {
         }
     }
 
+    /// `upToNext` (oracle probes): add -> `tool − body` (span `boolean
+    /// Subtract (tool × body faces)`), cut -> `tool ∩ body` (`boolean
+    /// Intersect`); the pieces touching the sketch plane become the tool,
+    /// none -> `upToNextNone`. The tool is a `through` sweep.
+    /// GUESS: "touching" = has a vertex on the sketch plane; for an add the
+    /// piece must also be bounded by the body (a tool that misses -> none).
+    fn up_to_next(&mut self, mut tool: extrude::Tool) -> Result<extrude::Tool, crate::regen::FeatureError> {
+        use crate::regen::FeatureError;
+        use ck_ops::boolean::Op as BOp;
+        let body = self.body.as_ref().expect("upToNext with a body");
+        let Some(extrude::Recipe::Extrude { profile, .. }) = &tool.recipe else { unreachable!() };
+        let (o, n) = (profile.frame.o, profile.frame.z);
+        let op = if tool.combine == extrude::Combine::Cut { BOp::Intersect } else { BOp::Cut };
+        let none = || FeatureError::new(extrude::UP_TO_NEXT_NONE);
+        let r = ck_ops::boolean::boolean(&tool.body, body, op, TOL).map_err(|e| FeatureError::new(&e))?;
+        self.spans.push(boolean_span(op, tool.body.num_faces(), body.num_faces(), r.body.num_faces()));
+        // pinned: an add whose tool runs off without meeting the body
+        // (missing it, or flipped away) -> upToNextOpen
+        let open = || FeatureError::new(extrude::UP_TO_NEXT_OPEN);
+        if op == BOp::Cut && r.no_effect {
+            return Err(open());
+        }
+        let b = &r.body;
+        let on_plane = |f: ck_topo::body::FaceId| {
+            b.face_edges(f).into_iter().any(|e| {
+                let ed = b.edge(e);
+                [ed.v0, ed.v1].iter().any(|&v| (b.vertex(v).p - o).dot(n).abs() < 1e-6)
+            })
+        };
+        let keep: Vec<ck_topo::body::FaceId> =
+            ck_topo::region::components(b).into_iter().filter(|c| c.iter().any(|&f| on_plane(f))).flatten().collect();
+        if keep.is_empty() {
+            return Err(none());
+        }
+        if op == BOp::Cut && keep.len() == b.num_faces() && ck_topo::region::components(b).len() == 1 {
+            // GUESS: the whole tool survived -> nothing bounds it
+            return Err(open());
+        }
+        let mut order: Vec<ck_topo::body::FaceId> = b.face_ids().collect();
+        order.retain(|f| keep.contains(f));
+        let mut piece = ck_ops::boolean::assemble::rebuild_in_order(b, &order);
+        // The `~k` split suffixes belong to the intermediate boolean; a
+        // face left whole in the kept piece gets its tool name back
+        // (pinned: `F4.S.e1`, not `F4.S.e1~1`).
+        let orig: Vec<String> = tool.body.face_ids().map(|f| tool.body.face_id_str(f)).collect();
+        let base = |n: &ck_topo::body::FaceName| {
+            let mut m = n.clone();
+            m.region = None;
+            m
+        };
+        let names: Vec<ck_topo::body::FaceName> = piece.face_ids().map(|f| piece.face(f).name.clone()).collect();
+        for f in piece.faces.iter_mut().filter(|f| f.alive) {
+            let id = f.name.id();
+            let b0 = base(&f.name);
+            if f.name.region.is_some() && !orig.contains(&id) && orig.contains(&b0.id()) && names.iter().filter(|n| base(n) == b0).count() == 1 {
+                f.name = b0;
+            }
+        }
+        tool.body = piece;
+        Ok(tool)
+    }
+
     fn apply(&mut self, id: &str, tool: extrude::Tool) -> Result<(), crate::regen::FeatureError> {
         let r = self.combine(&tool.body, tool.combine, true);
         // GUESS: the tool is remembered even when the combine fails.
@@ -709,6 +771,10 @@ impl crate::regen::FeatureExec for Brep {
     }
     fn exec(&mut self, state: &mut crate::regen::RegenState, f: &crate::Feature) -> Result<(), crate::regen::FeatureError> {
         let tool = match &f.kind {
+            FeatureKind::Extrude { end: End::UpToNext, .. } if self.body.is_some() => {
+                let t = extrude::exec_extrude(state, f, self.body.as_ref())?;
+                self.up_to_next(t)?
+            }
             FeatureKind::Extrude { .. } => extrude::exec_extrude(state, f, self.body.as_ref())?,
             FeatureKind::Revolve { .. } => extrude::exec_revolve(state, f, self.body.is_some())?,
             FeatureKind::Mirror { .. } => return pattern::exec_mirror(self, state, f),

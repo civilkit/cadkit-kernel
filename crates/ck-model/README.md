@@ -87,9 +87,12 @@ ck-topo / ck-ops. Depends on ck-core, ck-geom, ck-topo, ck-ops, ck-json.
 - extrude `op:"cut"` runs against the sketch normal unless `flip`; revolve
   cuts do NOT flip (probe). `through`/`throughBoth` with a body: length =
   |sketch origin − body box centre| + box diagonal + 10 (GUESS fitted to one
-  probe to 3e-6; long enough for every cut). `upToNext` with a body: oracle
-  runs `boolean Intersect (tool × body)` and reports `upToNextNone` when
-  nothing is hit — TODO.
+  probe to 3e-6; long enough for every cut). `upToNext` with a body
+  (`Brep::up_to_next`, probes): a `through` tool; add -> `boolean Subtract
+  (tool × body)`, cut -> `boolean Intersect (tool × body)`; the pieces
+  touching the sketch plane are the real tool (split `~k` suffixes dropped),
+  then the usual Unite / Subtract. Cut piece not at the sketch ->
+  `upToNextNone`; add that never meets the body -> `upToNextOpen`.
 - `Brep::tools`: every extrude/revolve keeps its tool body + `Recipe`
   (profile + sweep params). mirror / lpattern / cpattern seed on FEATURES ->
   their tool bodies (`features/pattern.rs`): copies named `@<feature>.<k>`,

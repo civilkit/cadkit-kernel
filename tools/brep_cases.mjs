@@ -87,6 +87,12 @@ parts.cone = part([sketch('front', [pt('p1', 5, 0), pt('p2', 15, 0), pt('p3', 5,
   parts.cpatternCut = part([...base(), ...hole, { type: 'cpattern', id: 'F5', seeds: ['F4'], axis: { kind: 'axis', axis: 'y' }, count: 3, angle: 90, equal: true }]);
   parts.mirrorTwo = part([...base(), ...hole, circ('F6', STD('top'), 5, 15, 2), ex2('F7', 'F6', { depth: 15 }),
     { type: 'mirror', id: 'F5', seeds: ['F4', 'F7'], plane: STD('right') }]);
+  const below = { type: 'plane', id: 'F5', mode: 'offset', base: STD('top'), offset: -5 };
+  const onBelow = circ('F3', { kind: 'feature', id: 'F5' }, 20, 10, 3);
+  parts.upToNextAdd = part([...base(), below, onBelow, ex2('F4', 'F3', { end: 'upToNext' })]);
+  parts.upToNextOpen = part([...base(), below, onBelow, ex2('F4', 'F3', { end: 'upToNext', flip: true })]);
+  parts.upToNextCut = part([...base(), circ('F3', { kind: 'face', id: 'F2.C1' }, 20, 10, 3), ex2('F4', 'F3', { op: 'cut', end: 'upToNext' })]);
+  parts.upToNextNone = part([...base(), below, onBelow, ex2('F4', 'F3', { op: 'cut', end: 'upToNext', flip: true })]);
   const fil = (r, edges) => ({ type: 'fillet', id: 'F3', radius: r, edges });
   parts.filletOne = part([...base(), fil(2, [{ faces: ['F2.S.e1', 'F2.C1'], at: [20, 10, 0] }])]);
   parts.filletTwo = part([...base(), fil(2, [{ faces: ['F2.C1', 'F2.S.e1'], at: [20, 10, 0] }, { faces: ['F2.C1', 'F2.S.e3'], at: [20, 10, -20] }])]);

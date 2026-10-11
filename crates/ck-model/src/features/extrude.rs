@@ -181,19 +181,16 @@ pub fn exec_extrude(state: &RegenState, f: &Feature, body: Option<&Body>) -> Res
         End::Blind if *flip => ExtrudeOpts::flipped(depth),
         End::Blind => ExtrudeOpts::blind(depth),
         End::Mid => ExtrudeOpts::mid(depth),
-        End::Through | End::ThroughBoth => {
+        // upToNext with a body: a `through` tool, trimmed by the caller
+        // (`Brep::up_to_next`); without one: nothingToCut (oracle).
+        End::UpToNext if !has_body => return Err(FeatureError::new(codes::NOTHING_TO_CUT)),
+        End::Through | End::ThroughBoth | End::UpToNext => {
             let l = body.map_or(THROUGH_EMPTY, |b| through_len(sk.frame.o, b));
             match end {
                 End::ThroughBoth => ExtrudeOpts::mid(2.0 * l),
                 _ if *flip => ExtrudeOpts::flipped(l),
                 _ => ExtrudeOpts::blind(l),
             }
-        }
-        End::UpToNext => {
-            if !has_body {
-                return Err(FeatureError::new(codes::NOTHING_TO_CUT));
-            }
-            return Err(FeatureError::new(&todo("extrude upToNext")));
         }
         End::UpToFace | End::OffsetFromFace | End::UpToPoint => {
             // GUESS: the face/point reference is resolved against the body;
@@ -223,6 +220,10 @@ pub fn exec_extrude(state: &RegenState, f: &Feature, body: Option<&Body>) -> Res
 }
 
 pub const UNKNOWN_END: &str = "unknownEnd";
+/// upToNext found no face to stop at (oracle code).
+pub const UP_TO_NEXT_NONE: &str = "upToNextNone";
+/// upToNext add whose tool never meets the body (oracle code).
+pub const UP_TO_NEXT_OPEN: &str = "upToNextOpen";
 pub const MISSING_AXIS: &str = "missingAxis";
 
 /// Error code for paths that need not-yet-rebuilt operations (never produced
