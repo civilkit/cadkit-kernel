@@ -173,6 +173,15 @@ parts.cone = part([sketch('front', [pt('p1', 5, 0), pt('p2', 15, 0), pt('p3', 5,
   // vertex blend: three fillets at a box corner give a sphere patch V0
   parts.filletCornerBot = part([...base(), fil(2, [{ faces: ['F2.C0', 'F2.S.e1'], at: [20, 0, 0] }, { faces: ['F2.C0', 'F2.S.e4'], at: [0, 0, -10] }, { faces: ['F2.S.e1', 'F2.S.e4'], at: [0, 5, 0] }])]);
   parts.filletCornerBig = part([...base(), fil(4, [{ faces: ['F2.C1', 'F2.S.e3'], at: [20, 10, -20] }, { faces: ['F2.C1', 'F2.S.e4'], at: [0, 10, -10] }, { faces: ['F2.S.e3', 'F2.S.e4'], at: [0, 5, -20] }])]);
+  // non-right dihedral: rails of a triangular prism
+  {
+    const tri = part([sketch('top', [pt('p1', 0, 0), pt('p2', 30, 0), pt('p3', 10, 20)], [line('e1', 'p1', 'p2'), line('e2', 'p2', 'p3'), line('e3', 'p3', 'p1')]), extrude()]);
+    parts.triPrism = tri;
+    parts.triChamferRail = part([...tri.features, ch({ distance: 1.5 }, rim('F2.S.e1', 'F2.S.e2', [30, 5, 0]))]);
+    parts.triChamferRail2 = part([...tri.features, ch({ distance: 1.5 }, rim('F2.S.e2', 'F2.S.e3', [10, 5, -20]))]);
+    parts.triFilletRail = part([...tri.features, fil(1.5, rim('F2.S.e1', 'F2.S.e2', [30, 5, 0]))]);
+    parts.triChamferTop = part([...tri.features, ch({ distance: 1.5 }, rim('F2.C1', 'F2.S.e2', [20, 10, -10]))]);
+  }
   parts.chamferRail = part([...base(), ch({ distance: 3 }, [{ faces: ['F2.S.e2', 'F2.S.e1'], at: [40, 5, 0] }])]);
   parts.chamferBig = part([...base(), ch({ distance: 30 }, e1)]);
   const cylTop = [{ faces: ['F2.C1', 'F2.S.e7'], at: [15, 10, -3] }];

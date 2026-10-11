@@ -358,6 +358,28 @@ pub fn general(c1: &Curve, r1: (f64, f64), c2: &Curve, r2: (f64, f64), tol: f64)
     let n2 = samples_for(c2);
     let p1 = c1.sample(r1.0, r1.1, n1);
     let p2 = c2.sample(r2.0, r2.1, n2);
+    // sample boxes (padded by the longest chord, the reach the segment test
+    // below allows) that do not meet cannot intersect: skips the closest-
+    // point overlap scan over a spline, the slow part of most misses
+    {
+        let bx = |p: &[Vec3]| {
+            let (mut lo, mut hi, mut m) = (p[0], p[0], 0.0f64);
+            for (i, q) in p.iter().enumerate() {
+                lo = Vec3::new(lo.x.min(q.x), lo.y.min(q.y), lo.z.min(q.z));
+                hi = Vec3::new(hi.x.max(q.x), hi.y.max(q.y), hi.z.max(q.z));
+                if i > 0 {
+                    m = m.max(q.dist(p[i - 1]));
+                }
+            }
+            (lo, hi, m)
+        };
+        let (lo1, hi1, m1) = bx(&p1);
+        let (lo2, hi2, m2) = bx(&p2);
+        let pad = m1.max(m2) + tol;
+        if lo1.x - pad > hi2.x || lo2.x - pad > hi1.x || lo1.y - pad > hi2.y || lo2.y - pad > hi1.y || lo1.z - pad > hi2.z || lo2.z - pad > hi1.z {
+            return out;
+        }
+    }
     let t1s: Vec<f64> = (0..=n1).map(|i| r1.0 + (r1.1 - r1.0) * i as f64 / n1 as f64).collect();
     let t2s: Vec<f64> = (0..=n2).map(|i| r2.0 + (r2.1 - r2.0) * i as f64 / n2 as f64).collect();
     // overlap check: all samples of c1 (or a run) on c2
