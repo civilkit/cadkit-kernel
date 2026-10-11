@@ -54,15 +54,6 @@ pub fn boolean(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> 
         let a_in_b = ck_topo::region::classify(b, pa, tol) == ck_topo::region::Containment::Inside;
         let b_in_a = ck_topo::region::classify(a, pb, tol) == ck_topo::region::Containment::Inside;
         match op {
-            // disjoint union: B appended as its own lump(s), arena order A
-            // then B (oracle: a box and its mirror copy away from the
-            // plane keep both bodies' own edge order; two disjoint spheres)
-            Op::Union if !a_in_b && !b_in_a => {
-                let mut out = a0.clone();
-                out.append(b0);
-                ck_topo::region::rebuild_lumps(&mut out);
-                return Ok(BoolOut { body: out, no_effect: false });
-            }
             Op::Cut if !a_in_b && !b_in_a => return Ok(BoolOut { body: a0.clone(), no_effect: true }),
             Op::Intersect if !a_in_b && !b_in_a => return Ok(BoolOut { body: Body::new(), no_effect: true }),
             _ => {} // nested: the general path (void shells / swallowed bodies)

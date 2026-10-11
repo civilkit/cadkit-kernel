@@ -263,8 +263,10 @@ pub fn fragments(arr: &Arrangement, fi: usize) -> Vec<Fragment> {
 pub fn sample_point(arr: &Arrangement, f: &Fragment) -> Option<(Vec3, Vec3)> {
     let af = &arr.faces[f.af];
     let s = &af.surface;
-    if f.loops.iter().all(|l| l.is_empty()) {
-        // closed surface without boundary (full sphere / torus)
+    let seam_only = |l: &Vec<He>| l.iter().all(|&(e, r)| l.contains(&(e, !r)));
+    if f.loops.iter().all(|l| l.is_empty() || seam_only(l)) {
+        // closed surface without boundary (full sphere / torus, or a
+        // revolve sphere bounded only by its meridian seam)
         let ((u0, u1), (v0, v1)) = s.domain();
         let (u, v) = (u0 + 0.37 * (u1 - u0), v0 + 0.41 * (v1 - v0));
         let q = s.eval(u, v);
@@ -308,6 +310,22 @@ pub fn sample_point(arr: &Arrangement, f: &Fragment) -> Option<(Vec3, Vec3)> {
                 if near {
                     continue;
                 }
+                return Some((q, outward(s, af.sense, q)));
+            }
+        }
+    }
+    // degenerate loops (a revolve sphere: one meridian seam between two
+    // poles): a grid point of the loops' uv box that is inside
+    let (mut lo, mut hi) = (Vec2::new(f64::INFINITY, f64::INFINITY), Vec2::new(f64::NEG_INFINITY, f64::NEG_INFINITY));
+    for p in polys.iter().flatten() {
+        lo = Vec2::new(lo.x.min(p.x), lo.y.min(p.y));
+        hi = Vec2::new(hi.x.max(p.x), hi.y.max(p.y));
+    }
+    if lo.x.is_finite() && hi.x.is_finite() {
+        for (fu, fv) in [(0.37, 0.41), (0.61, 0.53), (0.23, 0.67), (0.5, 0.5)] {
+            let uv = Vec2::new(lo.x + (hi.x - lo.x) * fu, lo.y + (hi.y - lo.y) * fv);
+            if in_loops(s, uv, &polys) {
+                let q = s.eval(uv.x, uv.y);
                 return Some((q, outward(s, af.sense, q)));
             }
         }
@@ -725,6 +743,35 @@ pub fn build(arr: &Arrangement, faces: &[OutFace]) -> Body {
                     pc
                 });
                 b.add_coedge(lp, eid, rev, pc);
+            }
+            // a loop made only of seam twins (revolve sphere meridian): the
+            // twins' pcurves must lie one period apart, the loop CCW about
+            // the outward normal (positive uv area when sense)
+            if !l.is_empty() && l.iter().all(|&(e, r)| l.contains(&(e, !r))) {
+                if let Some(p) = pu.or(pv) {
+                    let cs = b.lp(lp).coedges.clone();
+                    let mut seen: Vec<usize> = vec![];
+                    for (k, &(e, _)) in l.iter().enumerate() {
+                        if seen.contains(&e) {
+                            if let Some(pc) = b.coedges[cs[k].idx()].pcurve.clone() {
+                                let d = if pu.is_some() { Vec2::new(p, 0.0) } else { Vec2::new(0.0, p) };
+                                b.coedges[cs[k].idx()].pcurve = Some(shift2(&pc, d));
+                            }
+                        } else {
+                            seen.push(e);
+                        }
+                    }
+                    if (ck_topo::orient::loop_uv_area(&b, lp) > 0.0) != of.sense {
+                        for (k, &(e, _)) in l.iter().enumerate() {
+                            if l.iter().position(|&(x, _)| x == e) != Some(k) {
+                                if let Some(pc) = b.coedges[cs[k].idx()].pcurve.clone() {
+                                    let d = if pu.is_some() { Vec2::new(-2.0 * p, 0.0) } else { Vec2::new(0.0, -2.0 * p) };
+                                    b.coedges[cs[k].idx()].pcurve = Some(shift2(&pc, d));
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
