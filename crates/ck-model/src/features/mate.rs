@@ -160,6 +160,22 @@ pub fn regen_nested(part: &Part) -> (super::Span, Nested) {
     (span, Nested { body: ex.brep.body, errors, n_features: n })
 }
 
+/// A face reference: the exact id, else the first face whose id minus its
+/// split index `~k` equals it (GUESS: the stepper mates name
+/// `F3.S.e41@F2.1` while the oracle body only has `F3.S.e41~1@F2.1`..
+/// `~48`, and the mate resolves).
+pub fn find_ref(b: &Body, id: &str) -> Option<ck_topo::body::FaceId> {
+    b.find_face(id).or_else(|| {
+        b.face_ids().find(|&f| {
+            let mut n = b.face(f).name.clone();
+            n.region.is_some() && {
+                n.region = None;
+                n.id() == id
+            }
+        })
+    })
+}
+
 /// Error codes that only mean "not rebuilt yet" (see [`Brep::exec_insert`]).
 pub fn is_rebuild_gap(code: &str) -> bool {
     code.starts_with("TODO(rebuild)") || code == "blendUnsupported"
@@ -284,7 +300,7 @@ impl Brep {
     /// Component owning the face named `id`.
     pub fn component_of(&self, id: &str) -> Option<usize> {
         let b = self.body.as_ref()?;
-        let f = b.find_face(id)?;
+        let f = find_ref(b, id)?;
         self.asm.components.iter().position(|c| c.owns_face(f))
     }
 
@@ -398,7 +414,7 @@ pub fn plane_normal(fr: &Frame, sense: bool) -> Vec3 {
 /// i.e. its transformed frame z normalised once more).
 fn face_geo(b: &Body, id: &str) -> Option<Geo> {
     use ck_geom::surface::Surface;
-    let f = b.find_face(id)?;
+    let f = find_ref(b, id)?;
     match &b.face(f).surface {
         Surface::Plane { frame } => Some(Geo::Plane { o: frame.o, n: plane_normal(frame, b.face(f).sense) }),
         Surface::Cylinder { frame, .. } => Some(Geo::Axis { o: frame.o, d: knorm(frame.z) }),
