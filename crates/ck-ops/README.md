@@ -60,6 +60,12 @@ where noted):
 
 | `continuity` | `judge_edge(body, e, &Settings) -> EdgeReport`, `reply(body, msg) -> Json` (the `continuity` query, wired in ck-wasm `query_hook`) | **oracle**: G1-G3 fields, normals, curvature/rate, status/fails, max, worst for fillets (planar / cylinder), box / cylinder corners (`ck-model/tests/continuity_golden.rs`); gap = golden-section noise, bit-exact only when the blend edges use the oracle's line parameterisation |
 | `contain` | `Containment::{new, point_in_face, classify_point}` | unit; agrees with the winding classifier on grids (face test is a GUESS, see header) |
+| `measure` | `reply(body, msg)` (the `measure` query; `resolve_ref`) | **oracle** (`ck-wasm/tests/query_golden.rs`, 3027 queries): face/edge items, wedge, angle, normal/centre distance exact; pair `distance`/`points` reconstructed from the wasm structure (sample, project, refine top 3) — zero-distance contacts pick another point than the oracle's noise-ordered one |
+| `curvature_at` | `reply(body, msg)` (`curvatureAt`) | **oracle**: p/n/k1/k2/d1/d2/gaussian/mean; sphere-pole nudge (1e-7 of the v range); needs the `analysis::surface_curvature` d1 sign (pinned) |
+| `ref_curve` | `edge_reply`, `curve_reply`, `nurbs_json` (`refCurve`; sketch curves in ck-wasm `sketch_q`) | **oracle**: edge NURBS (P,p,knots,w), start/end/closed |
+| `convert_proj` | `project_curve`, `project_ref`, `apply`, `reply` (`convert`) | **oracle**: line/circle/arc/ellipse/edge-on line entities, point reuse (1e-7), id/seq numbering, `from`; oblique arcs/splines: point count right (natural-spline deviation test), fit points direct samples (GUESS) |
+| `interference` | `reply(body)` (lump-pair booleans) | **oracle**: `{bodies,pairs:[]}` on every brep part; pair record is a GUESS (parts never contain overlapping lumps) |
+| `match_edges` | `match_edges`, `reply` (`matchEdges`: similar / parallel / tangent) | **oracle**: similar = kind + length + dihedral, parallel = line direction / circle axis, results in wire order; tangent order + tolerance partly GUESS |
 
 Everything else (sweep, loft/*, shell, offset, draft, pipecut,
 curve_edit, guide, simplify, other blend/* files,
