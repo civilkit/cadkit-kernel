@@ -143,6 +143,10 @@ pub(crate) fn rot_curve(r: &Xform, c: &Curve) -> Curve {
         Curve::Circle { frame, r: rad } => Curve::Circle { frame: rot_frame(r, frame), r: *rad },
         Curve::Ellipse { frame, a, b } => Curve::Ellipse { frame: rot_frame(r, frame), a: *a, b: *b },
         Curve::BSpline(b) => Curve::BSpline(b.map(|p| r.apply_point(p))),
+        Curve::Conic { frame, p, e } => Curve::Conic { frame: rot_frame(r, frame), p: *p, e: *e },
+        Curve::Sinusoid { frame, amp, freq, phase } => {
+            Curve::Sinusoid { frame: rot_frame(r, frame), amp: *amp, freq: *freq, phase: *phase }
+        }
     }
 }
 
