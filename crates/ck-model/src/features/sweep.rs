@@ -209,4 +209,4 @@ pub fn exec_sweep(br: &Brep, state: &RegenState, f: &Feature) -> Result<Tool, Fe
 }
 
 /// Set to `false` once ck-ops booleans handle helical spline tools.
-const SPLINE_TOOL_NEEDS_BOOLEAN: bool = true;
+const SPLINE_TOOL_NEEDS_BOOLEAN: bool = false;

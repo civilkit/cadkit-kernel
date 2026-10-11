@@ -43,6 +43,14 @@ pub fn samples_for(c: &Curve) -> usize {
 
 /// uv of a 3D point, unwrapped near `prev`.
 pub fn uv_near(s: &Surface, p: Vec3, prev: Option<Vec2>) -> Vec2 {
+    // long B-spline faces (screw sweeps): the global closest-point search is
+    // O(spans); a point on the surface next to the previous sample is found
+    // by a local Gauss-Newton projection from it
+    if let (Surface::BSpline(bs), Some(q)) = (s, prev) {
+        if let Some(uv) = local_project(bs, p, q) {
+            return uv;
+        }
+    }
     let (mut u, mut v) = s.closest_param(p);
     if let Some(q) = prev {
         let (pu, pv) = s.periods();
@@ -54,6 +62,35 @@ pub fn uv_near(s: &Surface, p: Vec3, prev: Option<Vec2>) -> Vec2 {
         }
     }
     Vec2::new(u, v)
+}
+
+/// Gauss-Newton projection of `p` onto `bs` from the parameter `q`; Some
+/// only when it lands on the surface (distance < 1e-7).
+fn local_project(bs: &ck_geom::nurbs::bsurf::BSplineSurface, p: Vec3, q: Vec2) -> Option<Vec2> {
+    let ((u0, u1), (v0, v1)) = bs.domain();
+    let (mut u, mut v) = (q.x.clamp(u0, u1), q.y.clamp(v0, v1));
+    for _ in 0..12 {
+        let d = bs.derivs(u, v, 1);
+        let r = d[0][0] - p;
+        if r.len() < 1e-9 {
+            return Some(Vec2::new(u, v));
+        }
+        let (su, sv) = (d[1][0], d[0][1]);
+        let (a, b, c) = (su.dot(su), su.dot(sv), sv.dot(sv));
+        let (e, f) = (su.dot(r), sv.dot(r));
+        let det = a * c - b * b;
+        if det.abs() < 1e-300 {
+            return None;
+        }
+        let du = -(c * e - b * f) / det;
+        let dv = -(a * f - b * e) / det;
+        u = (u + du).clamp(u0, u1);
+        v = (v + dv).clamp(v0, v1);
+        if du.abs() < 1e-13 && dv.abs() < 1e-13 {
+            break;
+        }
+    }
+    (bs.eval(u, v).dist(p) < 1e-7).then(|| Vec2::new(u, v))
 }
 
 /// Samples per curve piece for the polygons of [`Solid`] (point
@@ -118,14 +155,36 @@ fn crossings(p: Vec2, poly: &[Vec2]) -> bool {
 /// Point-in-polygon with periodic shifts (true if inside for some shift).
 pub fn in_polygon(s: &Surface, uv: Vec2, poly: &[Vec2]) -> bool {
     let (pu, pv) = s.periods();
-    let su: Vec<f64> = match pu {
-        Some(p) => vec![0.0, -p, p, -2.0 * p, 2.0 * p],
-        None => vec![0.0],
+    // shifts that can bring the point into the polygon's extent (a helical
+    // boundary on a cylinder spans many periods)
+    let shifts = |per: Option<f64>, pick: fn(&Vec2) -> f64, x: f64| -> Vec<f64> {
+        match per {
+            Some(p) => {
+                let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+                for q in poly {
+                    lo = lo.min(pick(q));
+                    hi = hi.max(pick(q));
+                }
+                if !lo.is_finite() {
+                    return vec![0.0];
+                }
+                let (k0, k1) = (((lo - x) / p).floor().min(0.0).max(-1e6) as i64 - 1, ((hi - x) / p).ceil().max(0.0).min(1e6) as i64 + 1);
+                let mut out = vec![0.0];
+                for k in 1..=k0.abs().max(k1.abs()).max(2) {
+                    if -k >= k0.min(-2) {
+                        out.push(-(k as f64) * p);
+                    }
+                    if k <= k1.max(2) {
+                        out.push(k as f64 * p);
+                    }
+                }
+                out
+            }
+            None => vec![0.0],
+        }
     };
-    let sv: Vec<f64> = match pv {
-        Some(p) => vec![0.0, -p, p, -2.0 * p, 2.0 * p],
-        None => vec![0.0],
-    };
+    let su = shifts(pu, |q| q.x, uv.x);
+    let sv = shifts(pv, |q| q.y, uv.y);
     su.iter().any(|&a| sv.iter().any(|&b| crossings(Vec2::new(uv.x + a, uv.y + b), poly)))
 }
 
@@ -172,6 +231,15 @@ fn face_loops_uv_with(b: &Body, f: FaceId, nfun: impl Fn(&Curve, f64, f64) -> us
 /// Is `p` (assumed near the face's surface) inside / on the boundary of /
 /// outside face `f`?
 pub fn point_in_face(b: &Body, f: FaceId, p: Vec3, tol: f64) -> Where {
+    point_in_face_cached(b, f, p, tol, &mut std::collections::HashMap::new())
+}
+
+/// uv-loop cache of [`point_in_face_cached`], keyed by (body address, face).
+pub type LoopCache = std::collections::HashMap<(usize, u32), Vec<Vec<Vec2>>>;
+
+/// As [`point_in_face`], reusing the face's uv polygons across calls (they
+/// cost thousands of closest-point searches on a long helical face).
+pub fn point_in_face_cached(b: &Body, f: FaceId, p: Vec3, tol: f64, cache: &mut LoopCache) -> Where {
     for e in b.face_edges(f) {
         let ed = b.edge(e);
         if super::imprint::dist_in_range(&ed.curve, (ed.t0, ed.t1), p).1 <= tol {
@@ -182,12 +250,12 @@ pub fn point_in_face(b: &Body, f: FaceId, p: Vec3, tol: f64) -> Where {
     if face.surface.distance(p) > tol * 10.0 {
         return Where::Out;
     }
-    let loops = face_loops_uv(b, f);
+    let loops = cache.entry((b as *const Body as usize, f.idx() as u32)).or_insert_with(|| face_loops_uv(b, f));
     if loops.iter().all(|l| l.len() < 3) {
         return Where::In; // closed surface without boundary (full sphere/torus)
     }
     let (u, v) = face.surface.closest_param(p);
-    if in_loops(&face.surface, Vec2::new(u, v), &loops) {
+    if in_loops(&face.surface, Vec2::new(u, v), loops) {
         Where::In
     } else {
         Where::Out

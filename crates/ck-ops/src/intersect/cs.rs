@@ -124,8 +124,86 @@ pub fn line_params(o: Vec3, d: Vec3, s: &Surface, tol: f64) -> Option<Vec<f64>> 
             let q0 = c * c - r4 * (lo.x * lo.x + lo.y * lo.y);
             Some(roots(quad::quartic(q4, q3, q2, q1, q0)))
         }
+        Surface::BSpline(bs) => line_bspline(o, d, bs, tol),
         _ => None,
     }
+}
+
+/// Line `o + t d` against a (non-rational) B-spline surface: the control
+/// net box of every knot-span cell prunes (convex hull), then a 3-variable
+/// Newton on `o + t d - S(u, v)` per cell hit. Roots over the whole line
+/// (the whole surface domain), de-duplicated.
+fn line_bspline(o: Vec3, d: Vec3, bs: &ck_geom::nurbs::bsurf::BSplineSurface, tol: f64) -> Option<Vec<f64>> {
+    if bs.weights.is_some() {
+        return None;
+    }
+    let dd = d.dot(d);
+    if dd < 1e-300 {
+        return Some(vec![]);
+    }
+    let ((u0, u1), (v0, v1)) = bs.domain();
+    let spans = |kn: &[f64], p: usize, n: usize| -> Vec<usize> { (p..n).filter(|&s| kn[s] < kn[s + 1]).collect() };
+    let (su, sv) = (spans(&bs.knots_u, bs.deg_u, bs.nu), spans(&bs.knots_v, bs.deg_v, bs.nv));
+    let pad = tol.max(1e-9) * 10.0;
+    let mut roots: Vec<f64> = vec![];
+    for &a in &su {
+        for &b in &sv {
+            let (mut lo, mut hi) = (Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY), Vec3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY));
+            for i in a - bs.deg_u..=a {
+                for j in b - bs.deg_v..=b {
+                    let c = bs.cp(i, j);
+                    lo = Vec3::new(lo.x.min(c.x), lo.y.min(c.y), lo.z.min(c.z));
+                    hi = Vec3::new(hi.x.max(c.x), hi.y.max(c.y), hi.z.max(c.z));
+                }
+            }
+            // slab test of the line against the padded box
+            let (mut t0, mut t1) = (f64::NEG_INFINITY, f64::INFINITY);
+            let mut miss = false;
+            for (oo, dk, l, h) in [(o.x, d.x, lo.x, hi.x), (o.y, d.y, lo.y, hi.y), (o.z, d.z, lo.z, hi.z)] {
+                let (l, h) = (l - pad, h + pad);
+                if dk.abs() < 1e-300 {
+                    if oo < l || oo > h {
+                        miss = true;
+                    }
+                } else {
+                    let (x, y) = ((l - oo) / dk, (h - oo) / dk);
+                    t0 = t0.max(x.min(y));
+                    t1 = t1.min(x.max(y));
+                }
+            }
+            if miss || t0 > t1 {
+                continue;
+            }
+            let (ua, ub, va, vb) = (bs.knots_u[a], bs.knots_u[a + 1], bs.knots_v[b], bs.knots_v[b + 1]);
+            let tm = if t0.is_finite() && t1.is_finite() { 0.5 * (t0 + t1) } else { 0.0 };
+            for (fu, fv) in [(0.5, 0.5), (0.2, 0.2), (0.8, 0.8), (0.2, 0.8), (0.8, 0.2)] {
+                let (mut u, mut v, mut t) = (ua + (ub - ua) * fu, va + (vb - va) * fv, tm);
+                let mut ok = false;
+                for _ in 0..25 {
+                    let ders = bs.derivs(u, v, 1);
+                    let f = o + d * t - ders[0][0];
+                    if f.len() < tol * 0.01 {
+                        ok = true;
+                        break;
+                    }
+                    let (su_, sv_) = (ders[1][0], ders[0][1]);
+                    let rows = [Vec3::new(d.x, -su_.x, -sv_.x), Vec3::new(d.y, -su_.y, -sv_.y), Vec3::new(d.z, -su_.z, -sv_.z)];
+                    let Some(dl) = solve3(rows, [-f.x, -f.y, -f.z]) else { break };
+                    t += dl.x;
+                    u = (u + dl.y).clamp(u0, u1);
+                    v = (v + dl.z).clamp(v0, v1);
+                }
+                if ok {
+                    // the root must lie in this cell (or a neighbour reports it)
+                    if u >= ua - 1e-9 && u <= ub + 1e-9 && v >= va - 1e-9 && v <= vb + 1e-9 && !roots.iter().any(|r| (r - t).abs() < 1e-7 * (1.0 + t.abs())) {
+                        roots.push(t);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    Some(roots)
 }
 
 /// Quadratic roots; a slightly negative discriminant within `tol` of

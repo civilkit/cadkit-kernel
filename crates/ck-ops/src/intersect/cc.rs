@@ -383,9 +383,18 @@ pub fn general(c1: &Curve, r1: (f64, f64), c2: &Curve, r2: (f64, f64), tol: f64)
     let t1s: Vec<f64> = (0..=n1).map(|i| r1.0 + (r1.1 - r1.0) * i as f64 / n1 as f64).collect();
     let t2s: Vec<f64> = (0..=n2).map(|i| r2.0 + (r2.1 - r2.0) * i as f64 / n2 as f64).collect();
     // overlap check: all samples of c1 (or a run) on c2
+    // (a sample farther from c2's polyline than its chord sag cannot lie on
+    // c2: skips the closest-point search on long splines such as helices)
+    let sag2 = (0..n2)
+        .map(|j| c2.eval(0.5 * (t2s[j] + t2s[j + 1])).dist((p2[j] + p2[j + 1]) * 0.5))
+        .fold(0.0f64, f64::max);
+    let far = 2.0 * sag2 + 4.0 * tol;
     let on2: Vec<bool> = p1
         .iter()
         .map(|&p| {
+            if n2 > 8 && (0..n2).all(|j| point_seg_dist(p, p2[j], p2[j + 1]) > far) {
+                return false;
+            }
             let t = c2.closest_param(p);
             c2.eval(t).dist(p) <= tol && fit_param(c2, t, r2, param_slack(c2, t, tol)).is_some()
         })
@@ -457,6 +466,13 @@ fn samples_for(c: &Curve) -> usize {
 }
 
 /// Closest points of segments [a0,a1], [b0,b1]: (s, t, distance).
+fn point_seg_dist(p: Vec3, a: Vec3, b: Vec3) -> f64 {
+    let d = b - a;
+    let l2 = d.dot(d);
+    let t = if l2 > 1e-300 { ((p - a).dot(d) / l2).clamp(0.0, 1.0) } else { 0.0 };
+    p.dist(a + d * t)
+}
+
 pub fn seg_seg(a0: Vec3, a1: Vec3, b0: Vec3, b1: Vec3) -> (f64, f64, f64) {
     let d1 = a1 - a0;
     let d2 = b1 - b0;

@@ -419,6 +419,41 @@ impl<P: Pt> BSplineCurve<P> {
         let spans = basis::distinct_knots(&self.knots).len().max(2) - 1;
         let n = (spans * (self.degree + 1) * 4).max(16);
         let mut best = (f64::INFINITY, a);
+        if spans > 32 {
+            // long multi-span curves (helical rails): visit the knot spans
+            // nearest to q first and stop when the control-point ball
+            // (convex hull) of the remaining ones is farther than the best
+            let p = self.degree;
+            let mut cells: Vec<(f64, usize)> = (p..self.ctrl.len())
+                .filter(|&s| self.knots[s] < self.knots[s + 1])
+                .map(|s| {
+                    let pts = &self.ctrl[s - p..=s];
+                    let mut c = pts[0];
+                    for &x in &pts[1..] {
+                        c = c + x;
+                    }
+                    let c = c / pts.len() as f64;
+                    let r = pts.iter().map(|&x| x.dist(c)).fold(0.0f64, f64::max);
+                    ((q.dist(c) - r).max(0.0), s)
+                })
+                .collect();
+            cells.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap());
+            let m = (p + 1) * 4;
+            for (lb, s) in cells {
+                if lb >= best.0 {
+                    break;
+                }
+                let (k0, k1) = (self.knots[s].max(a), self.knots[s + 1].min(b));
+                for j in 0..=m {
+                    let u = k0 + (k1 - k0) * j as f64 / m as f64;
+                    let d = self.eval(u).dist(q);
+                    if d < best.0 {
+                        best = (d, u);
+                    }
+                }
+            }
+            return newton_closest(|u| self.derivs(u, 2), q, best.1, a, b);
+        }
         for i in 0..=n {
             let u = a + (b - a) * i as f64 / n as f64;
             let d = self.eval(u).dist(q);

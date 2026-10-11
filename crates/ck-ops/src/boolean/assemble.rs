@@ -234,6 +234,13 @@ pub fn fragments(arr: &Arrangement, fi: usize) -> Vec<Fragment> {
         hes.push((e, true));
     }
     let cycles = walk(arr, &af.surface, af.sense, &hes);
+    if std::env::var("SSDBG").is_ok() {
+        eprintln!("DBG frag face {} {} hes {} (bound {} inner {}) cycles {:?}", af.name.id(), af.surface.kind(), hes.len(), af.bound.iter().flatten().count(), inner.len(), cycles.iter().map(|c| c.len()).collect::<Vec<_>>());
+        for (i, c) in cycles.iter().enumerate() {
+            let poly = loop_polygon(&af.surface, &pieces(arr, c));
+            eprintln!("DBG   cycle {} len {} area {:.4} edges {:?}", i, c.len(), poly_area(&poly), c.iter().map(|h| (h.0, h.1 as u8)).collect::<Vec<_>>());
+        }
+    }
     let groups = group(arr, &af.surface, af.sense, cycles);
     let flat: Vec<He> = af.bound.iter().flatten().copied().collect();
     let mut out: Vec<Fragment> = groups
@@ -384,6 +391,9 @@ pub fn select(arr: &Arrangement, bodies: [&Body; 2], op: Op) -> Result<Vec<OutFa
             let (q, n) = sample_point(arr, &fr).ok_or_else(|| "booleanFailed".to_string())?;
             let c = solids[1 - side].classify(q, n);
             fr.class = Some(c);
+            if std::env::var("SSDBG").is_ok() {
+                eprintln!("DBG classify face {} loops {:?} q {:?} n {:?} -> {:?}", arr.faces[fi].name.id(), fr.loops.iter().map(|l| l.len()).collect::<Vec<_>>(), q, n, c);
+            }
             if let Some(flip) = keep(op, side, c) {
                 kept.push((fr, flip));
             }
@@ -529,6 +539,13 @@ pub fn select(arr: &Arrangement, bodies: [&Body; 2], op: Op) -> Result<Vec<OutFa
         let all = hes.clone();
         hes.retain(|&(e, r)| !all.contains(&(e, !r)));
         let cycles = walk(arr, &af.surface, sense, &hes);
+        if std::env::var("SSDBG").is_ok() {
+            eprintln!("DBG merged {} members {:?} hes {} cycles {:?}", af.name.id(), members.iter().map(|&m| (kept[m].0.af, kept[m].0.loops.iter().map(|l| l.len()).collect::<Vec<_>>())).collect::<Vec<_>>(), hes.len(), cycles.iter().map(|c| c.len()).collect::<Vec<_>>());
+            for c in &cycles {
+                let poly = loop_polygon(&af.surface, &pieces(arr, c));
+                eprintln!("DBG   mcycle area {:.4} {:?}", poly_area(&poly), c.iter().map(|h| (h.0, h.1 as u8)).collect::<Vec<_>>());
+            }
+        }
         let walk_items: Vec<_> = members
             .iter()
             .map(|&m| {

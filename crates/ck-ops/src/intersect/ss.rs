@@ -76,10 +76,30 @@ pub fn intersect(s1: &Surface, s2: &Surface, bounds: Option<Bounds>, tol: f64) -
     if let Some(r) = analytic(s2, s1, tol) {
         return r;
     }
+    // plane vs B-spline: the control net's hull on one side of the plane
+    for (a, b) in [(s1, s2), (s2, s1)] {
+        if let (Surface::Plane { frame }, Surface::BSpline(bs)) = (a, b) {
+            let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+            for &c in &bs.ctrl {
+                let d = (c - frame.o).dot(frame.z);
+                lo = lo.min(d);
+                hi = hi.max(d);
+            }
+            if lo > tol || hi < -tol {
+                return SsResult::Disjoint;
+            }
+        }
+    }
+    if let Some(r) = screw_rev(s1, s2, tol).or_else(|| screw_rev(s2, s1, tol)) {
+        return r;
+    }
     match bounds {
         Some(b) => {
             let step = ((b.hi - b.lo).len() / 64.0).max(tol * 100.0);
+            let t_dbg = std::time::Instant::now();
+            if std::env::var("SSDBG").is_ok() { eprintln!("DBG start march {} x {} box {:?} {:?}", s1.kind(), s2.kind(), b.lo, b.hi); }
             let cs = march(s1, s2, b, tol, step);
+            if std::env::var("SSDBG").is_ok() { eprintln!("DBG march {} x {} -> {} in {:?}", s1.kind(), s2.kind(), cs.len(), t_dbg.elapsed()); }
             if cs.is_empty() {
                 SsResult::Disjoint
             } else {
@@ -468,6 +488,167 @@ fn coaxial(s1: &Surface, s2: &Surface, tol: f64) -> Option<SsResult> {
         }
     }
     Some(curves(out))
+}
+
+
+// ------------------------------------------------- screw spline x revolution
+
+/// A B-spline surface whose radius and height about the axis of a coaxial
+/// revolution surface (cylinder / cone / sphere / torus) are
+/// `ρ(u, v) = ρ(v)`, `h(u, v) = h(v) + k (u - u0)` (a helical-sweep side
+/// face: u = rotation angle) meets it in curves that follow from the
+/// meridian alone: a cylinder gives iso-v lines, the other surfaces one
+/// `u = φ(v)` curve per meridian branch. Replaces marching a 7-19 turn
+/// spline (minutes). `None` = not such a pair (march instead).
+fn screw_rev(sp: &Surface, rev: &Surface, tol: f64) -> Option<SsResult> {
+    let Surface::BSpline(bs) = sp else { return None };
+    let (o, z) = match rev {
+        Surface::Cylinder { frame, .. } | Surface::Cone { frame, .. } | Surface::Sphere { frame, .. } | Surface::Torus { frame, .. } | Surface::Plane { frame } => (frame.o, frame.z),
+        _ => return None,
+    };
+    // a plane normal to the axis is the meridian `h = 0` (the screw check
+    // below rejects planes that are not normal to the spline's own axis)
+    let m = match rev {
+        Surface::Plane { .. } => Meridian::Cone(0.0, f64::INFINITY),
+        _ => meridian(rev, o, z, tol)?,
+    };
+    let ((u0, u1), (v0, v1)) = bs.domain();
+    if !(u1 - u0).is_finite() || u1 - u0 < 1e-9 || v1 - v0 < 1e-12 {
+        return None;
+    }
+    let rh = |p: Vec3| {
+        let d = p - o;
+        let h = d.dot(z);
+        ((d - z * h).len(), h)
+    };
+    let vm = 0.5 * (v0 + v1);
+    let k = (rh(bs.eval(u1, vm)).1 - rh(bs.eval(u0, vm)).1) / (u1 - u0);
+    if k.abs() < 1e-9 {
+        return None;
+    }
+    let chk = 2e-6;
+    for j in 0..=4 {
+        let v = v0 + (v1 - v0) * (j as f64 + 0.13) / 4.26;
+        let (r0, h0) = rh(bs.eval(u0, v));
+        for i in 0..=24 {
+            let u = u0 + (u1 - u0) * (i as f64 + 0.37) / 24.74;
+            let (r, h) = rh(bs.eval(u, v));
+            if (r - r0).abs() > chk || (h - h0 - k * (u - u0)).abs() > chk {
+                return None;
+            }
+        }
+    }
+    let rho_h = |v: f64| rh(bs.eval(u0, v));
+    let nsamp = 96usize;
+    let vs: Vec<f64> = (0..=nsamp).map(|i| v0 + (v1 - v0) * i as f64 / nsamp as f64).collect();
+    let mut out: Vec<SsCurve> = vec![];
+    if let Meridian::Cyl(r) = m {
+        // roots of ρ(v) = r
+        let g = |v: f64| rho_h(v).0 - r;
+        for w in vs.windows(2) {
+            let (mut a, mut b) = (w[0], w[1]);
+            let (ga, gb) = (g(a), g(b));
+            if ga == 0.0 && a != v0 {
+                continue; // reported by the previous window
+            }
+            if ga * gb > 0.0 || (ga == 0.0 && gb == 0.0) {
+                continue;
+            }
+            for _ in 0..60 {
+                let c = 0.5 * (a + b);
+                if g(c) * ga > 0.0 {
+                    a = c;
+                } else {
+                    b = c;
+                }
+            }
+            let v = 0.5 * (a + b);
+            let curve = bs.iso_v(v);
+            let n = (bs.nu * 2).max(16);
+            let (c0, c1) = (curve.knots[curve.degree], curve.knots[curve.knots.len() - 1 - curve.degree]);
+            let pts: Vec<Vec3> = (0..=n).map(|i| curve.eval(c0 + (c1 - c0) * i as f64 / n as f64)).collect();
+            out.push(SsCurve::Fitted { pts, curve: Curve::BSpline(curve), closed: false });
+        }
+        return Some(if out.is_empty() { SsResult::Disjoint } else { SsResult::Curves(out) });
+    }
+    // heights of branch `b` at radius ρ
+    let (nb, hb): (usize, Box<dyn Fn(f64, usize) -> Option<f64>>) = match m {
+        Meridian::Cyl(_) => unreachable!(),
+        Meridian::Cone(_, kc) if kc.is_infinite() => (1, Box::new(|_, _| Some(0.0))),
+        Meridian::Cone(r0, kc) => {
+            if kc.abs() < 1e-12 {
+                return None;
+            }
+            (1, Box::new(move |rho, _| Some((rho - r0) / kc)))
+        }
+        Meridian::Sphere(rs, hc) => (
+            2,
+            Box::new(move |rho, b| {
+                let w2 = rs * rs - rho * rho;
+                (w2 >= 0.0).then(|| hc + if b == 0 { -w2.sqrt() } else { w2.sqrt() })
+            }),
+        ),
+        Meridian::Torus(big, small, hc) => (
+            2,
+            Box::new(move |rho, b| {
+                let w2 = small * small - (rho - big) * (rho - big);
+                (w2 >= 0.0).then(|| hc + if b == 0 { -w2.sqrt() } else { w2.sqrt() })
+            }),
+        ),
+    };
+    for b in 0..nb {
+        // φ(v) on this branch, None where undefined or outside [u0, u1]
+        let phi = |v: f64| -> Option<f64> {
+            let (rho, h) = rho_h(v);
+            let p = u0 + (hb(rho, b)? - h) / k;
+            (p >= u0 - 1e-12 && p <= u1 + 1e-12).then(|| p.clamp(u0, u1))
+        };
+        let vals: Vec<Option<f64>> = vs.iter().map(|&v| phi(v)).collect();
+        let mut i = 0;
+        while i <= nsamp {
+            if vals[i].is_none() {
+                i += 1;
+                continue;
+            }
+            let mut j = i;
+            while j < nsamp && vals[j + 1].is_some() {
+                j += 1;
+            }
+            // run i..=j; extend to the exact boundary on either side
+            let mut vlist: Vec<f64> = vs[i..=j].to_vec();
+            let edge = |valid: f64, invalid: f64| -> f64 {
+                let (mut a, mut c) = (valid, invalid);
+                for _ in 0..50 {
+                    let mid = 0.5 * (a + c);
+                    if phi(mid).is_some() {
+                        a = mid;
+                    } else {
+                        c = mid;
+                    }
+                }
+                a
+            };
+            if i > 0 {
+                vlist.insert(0, edge(vs[i], vs[i - 1]));
+            }
+            if j < nsamp {
+                vlist.push(edge(vs[j], vs[j + 1]));
+            }
+            let mut pts: Vec<Vec3> = vec![];
+            for v in vlist {
+                let p = bs.eval(phi(v)?, v);
+                if pts.last().map_or(true, |q| q.dist(p) > 1e-9) {
+                    pts.push(p);
+                }
+            }
+            if pts.len() >= 2 {
+                let c = interpolate(&pts, 3.min(pts.len() - 1), Param::ChordLength).ok()?;
+                out.push(SsCurve::Fitted { pts, curve: Curve::BSpline(c), closed: false });
+            }
+            i = j + 1;
+        }
+    }
+    Some(if out.is_empty() { SsResult::Disjoint } else { SsResult::Curves(out) })
 }
 
 // ---------------------------------------------------------------- marching

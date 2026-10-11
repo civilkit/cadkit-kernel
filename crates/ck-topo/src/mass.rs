@@ -200,15 +200,13 @@ pub fn face_integral<const K: usize>(b: &Body, f: FaceId, res: usize, integrand:
         }
         _ => vec![],
     };
-    let inner = |u: f64, v: f64| -> [f64; K] {
+    // ∫ from u = a to u = c at fixed v, cut at the interior knots
+    let seg_integral = |a0: f64, u: f64, v: f64| -> [f64; K] {
         let mut g = [0.0; K];
-        if u - ustar == 0.0 {
-            return g;
-        }
-        let mut cuts = vec![ustar];
-        let (lo, hi) = (ustar.min(u), ustar.max(u));
+        let mut cuts = vec![a0];
+        let (lo, hi) = (a0.min(u), a0.max(u));
         let mut mid: Vec<f64> = knots_u.iter().copied().filter(|&k| k > lo && k < hi).collect();
-        if u < ustar {
+        if u < a0 {
             mid.reverse();
         }
         cuts.extend(mid);
@@ -233,6 +231,37 @@ pub fn face_integral<const K: usize>(b: &Body, f: FaceId, res: usize, integrand:
                 }
             }
         }
+        g
+    };
+    // long multi-knot B-spline faces (screw sweeps): boundary samples along
+    // a constant-v edge would each re-integrate from u*, O(n^2); keep
+    // checkpoints per v and continue from the nearest one
+    let long_spline = knots_u.len() >= 32;
+    let ckpt: std::cell::RefCell<std::collections::HashMap<u64, Vec<(f64, [f64; K])>>> = Default::default();
+    let inner = |u: f64, v: f64| -> [f64; K] {
+        if u - ustar == 0.0 {
+            return [0.0; K];
+        }
+        if !long_spline {
+            return seg_integral(ustar, u, v);
+        }
+        // (edges along a constant-v rail differ in v by rounding noise)
+        let v = (v * 1e9).round() / 1e9;
+        let mut map = ckpt.borrow_mut();
+        let list = map.entry(v.to_bits()).or_insert_with(|| vec![(ustar, [0.0; K])]);
+        let idx = list.partition_point(|e| e.0 < u);
+        let cand = [idx.checked_sub(1), (idx < list.len()).then_some(idx)];
+        let best = cand.iter().flatten().copied().min_by(|&x, &y| (list[x].0 - u).abs().partial_cmp(&(list[y].0 - u).abs()).unwrap()).unwrap();
+        let (uc, gc) = list[best];
+        if uc == u {
+            return gc;
+        }
+        let d = seg_integral(uc, u, v);
+        let mut g = gc;
+        for k in 0..K {
+            g[k] += d[k];
+        }
+        list.insert(idx, (u, g));
         g
     };
     let mut add = |uv: Vec2, dvdt: f64, wt: f64| {

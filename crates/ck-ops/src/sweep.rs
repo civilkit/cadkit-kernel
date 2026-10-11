@@ -543,6 +543,64 @@ mod tests {
         assert_eq!(sweep("F4", &p, &path, 0.0).unwrap_err(), PROFILE_NOT_NORMAL);
     }
 
+    /// Groove (swept trapezoid, `REVS` turns of pitch 2, r 4) cut into a solid
+    /// shank cylinder r 4.0 spanning z in [ZLO, ZHI]: `ZLO=-10 ZHI=8` keeps the
+    /// whole groove inside (a pocket), `ZHI=3` lets it run out of the top end.
+    /// `SSDBG=1` prints the boolean's phases and open edges.
+    #[test]
+    #[ignore]
+    fn screw_cut_shank() {
+        use crate::boolean::{boolean, Op};
+        use ck_topo::make::extrude;
+        let env = |k: &str, d: f64| std::env::var(k).ok().and_then(|s| s.parse().ok()).unwrap_or(d);
+        let circ = |tag: &str, r: f64| ProfileLoop::new(vec![ProfileSeg::circle(tag, Vec2::ZERO, r)]);
+        let prof = Profile::new(Frame::identity(), vec![ProfileRegion { outer: circ("e1", 4.0), holes: vec![] }]);
+        let (zlo, zhi) = (env("ZLO", -10.0), env("ZHI", 8.0));
+        let shank = extrude("F2", &prof, ExtrudeOpts { s0: zlo, s1: zhi, dir: None, draft: 0.0 }).unwrap();
+        let tool = sweep("F13", &trap(), &helix_path(env("REVS", 3.0), false), 0.0).unwrap();
+        let t = std::time::Instant::now();
+        let r = boolean(&shank, &tool, Op::Cut, 1e-6);
+        eprintln!("cut {:?} in {:?}", r.as_ref().map(|o| o.body.num_faces()), t.elapsed());
+        if let Ok(o) = r {
+            eprintln!("issues {:?}", check(&o.body, 1e-6));
+        }
+    }
+
+    /// Point classification against a multi-turn screw tool along the line
+    /// x = -4 (the groove is centred on z = 1, 3, 5 ...).
+    #[test]
+    #[ignore]
+    fn screw_tool_classify() {
+        use crate::boolean::classify::Solid;
+        let tool = sweep("F13", &trap(), &helix_path(4.0, false), 0.0).unwrap();
+        let t = std::time::Instant::now();
+        let solid = Solid::new(&tool, 1e-6);
+        eprintln!("solid built in {:?}", t.elapsed());
+        for i in 0..=70 {
+            let z = 0.1 * i as f64;
+            let t = std::time::Instant::now();
+            let c = solid.classify(Vec3::new(-4.0, 0.01, z), Vec3::new(-1.0, 0.0, 0.0));
+            eprintln!("z {z:.1} {c:?} {:?}", t.elapsed());
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn screw_tool_rays() {
+        use crate::boolean::classify::point_in_face;
+        let tool = sweep("F13", &trap(), &helix_path(4.0, false), 0.0).unwrap();
+        let q = Vec3::new(-4.0, 0.01, 2.3);
+        let d = Vec3::new(0.5773502691896258, 0.6123724356957945, 0.5400617248673217);
+        for f in tool.face_ids() {
+            let s = &tool.face(f).surface;
+            let ts = crate::intersect::cs::line_params(q, d, s, 1e-6);
+            let mut ts = ts.unwrap_or_default();
+            ts.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let inf: Vec<_> = ts.iter().filter(|&&t| t > 0.0).map(|&t| (format!("{t:.4}"), format!("{:?}", point_in_face(&tool, f, q + d * t, 1e-6)))).collect();
+            eprintln!("face {} {} roots(t>0) {:?}", tool.face_id_str(f), s.kind(), inf);
+        }
+    }
+
     /// Diagnostic (slow, run with `REVS=0.25 cargo test -p ck-ops --profile fast
     /// cut_timing -- --ignored --nocapture`): groove swept into a bored tube.
     /// Currently `booleanFailed`; prints the SSI timings and the open edges of

@@ -13,7 +13,7 @@
 //! Coincident face pairs (same plane / same analytic carrier) imprint each
 //! other's boundary edges instead of an SSI curve.
 
-use super::classify::{point_in_face, Where};
+use super::classify::{point_in_face_cached, LoopCache, Where};
 use crate::bvh::{face_box, Aabb, Bvh};
 use crate::intersect::ss::{self, Bounds, SsResult};
 use crate::intersect::{cc, fit_param, param_slack};
@@ -171,6 +171,7 @@ pub fn imprint(a: &Body, b: &Body, tol: f64) -> Arrangement {
     let boxes_b: Vec<Aabb> = fb.iter().map(|&f| face_box(b, f).padded(EDGE_TOL + pad)).collect();
     let (ta, tb) = (Bvh::build(&boxes_a), Bvh::build(&boxes_b));
     let mut cuts: Vec<CutSeg> = vec![];
+    let mut loop_cache = LoopCache::new();
     let mut extra: Vec<Vec3> = vec![];
     for (i, j) in ta.overlap_pairs_ordered(&tb, pad) {
         // the SSI / trim bounds keep the old, wider slack
@@ -188,7 +189,7 @@ pub fn imprint(a: &Body, b: &Body, tol: f64) -> Arrangement {
                     let sb = bodies[src];
                     for e in sb.face_edges(sf_id) {
                         let ed = sb.edge(e);
-                        for (t0, t1) in trim(&ed.curve, (ed.t0, ed.t1), &[(bodies[dst], df_id)], &bx, tol, true) {
+                        for (t0, t1) in trim(&ed.curve, (ed.t0, ed.t1), &[(bodies[dst], df_id)], &bx, tol, true, &mut loop_cache) {
                             cuts.push(CutSeg { curve: ed.curve.clone(), t0, t1, faces: vec![(dst, df_id)] });
                         }
                     }
@@ -199,7 +200,7 @@ pub fn imprint(a: &Body, b: &Body, tol: f64) -> Arrangement {
                 for c in cs {
                     let curve = c.curve().clone();
                     let r = curve.range();
-                    let kept = trim(&curve, r, &[(a, f), (b, g)], &bx, tol, false);
+                    let kept = trim(&curve, r, &[(a, f), (b, g)], &bx, tol, false, &mut loop_cache);
                     // whole closed curve: kept pieces contiguous over one
                     // period (a relocated seam crossing splits the range)
                     let mut kept = kept;
@@ -378,7 +379,7 @@ pub fn imprint(a: &Body, b: &Body, tol: f64) -> Arrangement {
 /// crossings with every boundary edge of every face (+ overlap ends).
 /// Kept: intervals whose midpoint is not Out of any face and (unless
 /// `allow_all_on`) not On the boundary of all of them.
-fn trim(c: &Curve, r: (f64, f64), faces: &[(&Body, FaceId)], bx: &Aabb, tol: f64, allow_all_on: bool) -> Vec<(f64, f64)> {
+fn trim(c: &Curve, r: (f64, f64), faces: &[(&Body, FaceId)], bx: &Aabb, tol: f64, allow_all_on: bool, cache: &mut LoopCache) -> Vec<(f64, f64)> {
     let r = crate::intersect::finite_range(c, r, bx.min, bx.max);
     if !(r.0.is_finite() && r.1.is_finite()) || r.1 - r.0 <= 0.0 {
         return vec![];
@@ -407,7 +408,7 @@ fn trim(c: &Curve, r: (f64, f64), faces: &[(&Body, FaceId)], bx: &Aabb, tol: f64
         let mut all_on = true;
         let mut out_any = false;
         for &(body, f) in faces {
-            match point_in_face(body, f, m, tol) {
+            match point_in_face_cached(body, f, m, tol, cache) {
                 Where::Out => out_any = true,
                 Where::In => all_on = false,
                 Where::On => {}
