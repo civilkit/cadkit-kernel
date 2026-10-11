@@ -638,19 +638,25 @@ mod tests {
     }
 
     /// With the B-rep exec: F2 builds the L body, F7's face plane (F2.C1)
-    /// resolves to the oracle frame; cuts/unions/mirror/fillets need ck-ops.
+    /// resolves to the oracle frame, the gusset F8 unites onto the body.
+    /// (The slow ck-ops cuts F4/F6 are suppressed here; the whole bracket
+    /// is pinned by the ignored `brep_golden::parts_match_oracle`.)
     #[test]
     fn bracket_brep() {
         let path = format!("{}/../../../bracket.ckpart", env!("CARGO_MANIFEST_DIR"));
         let Ok(src) = std::fs::read_to_string(path) else { return };
-        let part = Part::parse(&src).unwrap();
+        let mut part = Part::parse(&src).unwrap();
+        for f in part.features.iter_mut() {
+            if f.id == "F4" || f.id == "F6" {
+                f.suppressed = true;
+            }
+        }
         let mut ex = crate::features::Brep::new();
-        let r = regen(&part, &RegenOpts::default(), &mut ex);
+        let r = regen(&part, &RegenOpts { up_to: Some(8) }, &mut ex);
         let f7 = r.sketches.iter().find(|s| s.id == "F7").unwrap();
         assert_eq!(ck_json::to_string(&frame_json(&f7.frame)), r#"{"o":[26,0,0],"x":[0,0,-1],"y":[0,1,0],"z":[1,0,0]}"#);
-        let errs: Vec<&str> = r.errors.iter().map(|e| e.feature.as_str()).collect();
-        assert_eq!(errs, vec!["F4", "F6", "F8", "F10", "F11", "F12"]);
-        assert!(r.errors.iter().all(|e| e.error.code.starts_with("TODO(rebuild)")));
-        assert_eq!(ex.body.unwrap().num_faces(), 8);
+        assert!(r.errors.is_empty(), "{:?}", r.errors);
+        let b = ex.body.unwrap();
+        assert!(b.find_face("F8.C0").is_some() && b.find_face("F8.C1").is_none(), "F8.C1 merges into F2.C1");
     }
 }

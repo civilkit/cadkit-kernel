@@ -69,6 +69,31 @@ parts.torus = part([sketch('front', [pt('c', 20, 0), ...AX.points], [{ type: 'ci
 parts.cone = part([sketch('front', [pt('p1', 5, 0), pt('p2', 15, 0), pt('p3', 5, 10), ...AX.points],
   [line('e1', 'p1', 'p2'), line('e2', 'p2', 'p3'), line('e3', 'p3', 'p1'), AX.ent]), revolve({ angle: 120 })]);
 
+// ck-ops-backed features on the 40×20×10 top-plane box F2 (booleans,
+// patterns, mirror, fillets). Edge order / closed SSI circle starts after
+// booleans are ck-ops's (see crates/ck-model/tests/brep_golden.rs OPS).
+{
+  const [P, E] = rect(0, 0, 40, 20);
+  const base = () => [sketch('top', P, E), extrude()];
+  const circ = (id, plane, cx, cy, r) => ({ type: 'sketch', id, plane, points: [pt('c', cx, cy)], entities: [{ type: 'circle', id: 'e1', c: 'c', r }], constraints: [] });
+  const ex2 = (id, sk, o = {}) => ({ type: 'extrude', id, op: 'add', sketch: sk, end: 'blind', depth: 10, ...o });
+  const hole = [circ('F3', STD('top'), 5, 5, 2), ex2('F4', 'F3', { op: 'cut', end: 'throughBoth' })];
+  parts.cutHole = part([...base(), ...hole]);
+  parts.cutThroughFlip = part([...base(), circ('F3', STD('top'), 20, 10, 3), ex2('F4', 'F3', { op: 'cut', end: 'through', flip: true })]);
+  parts.cutMiss = part([...base(), circ('F3', STD('top'), 100, 10, 3), ex2('F4', 'F3', { op: 'cut', end: 'throughBoth' })]);
+  parts.pocket = part([...base(), circ('F3', { kind: 'face', id: 'F2.C1' }, 10, 10, 3), ex2('F4', 'F3', { op: 'cut', depth: 4 })]);
+  parts.boss = part([...base(), circ('F3', { kind: 'face', id: 'F2.C1' }, 10, 10, 3), ex2('F4', 'F3', { depth: 5 })]);
+  parts.lpatternCut = part([...base(), ...hole, { type: 'lpattern', id: 'F5', seeds: ['F4'], dir: { kind: 'axis', axis: 'x' }, spacing: 10, count: 3 }]);
+  parts.cpatternCut = part([...base(), ...hole, { type: 'cpattern', id: 'F5', seeds: ['F4'], axis: { kind: 'axis', axis: 'y' }, count: 3, angle: 90, equal: true }]);
+  parts.mirrorTwo = part([...base(), ...hole, circ('F6', STD('top'), 5, 15, 2), ex2('F7', 'F6', { depth: 15 }),
+    { type: 'mirror', id: 'F5', seeds: ['F4', 'F7'], plane: STD('right') }]);
+  const fil = (r, edges) => ({ type: 'fillet', id: 'F3', radius: r, edges });
+  parts.filletOne = part([...base(), fil(2, [{ faces: ['F2.S.e1', 'F2.C1'], at: [20, 10, 0] }])]);
+  parts.filletTwo = part([...base(), fil(2, [{ faces: ['F2.C1', 'F2.S.e1'], at: [20, 10, 0] }, { faces: ['F2.C1', 'F2.S.e3'], at: [20, 10, -20] }])]);
+  parts.filletRail = part([...base(), fil(3, [{ faces: ['F2.S.e2', 'F2.S.e1'], at: [40, 5, 0] }])]);
+  parts.filletTooBig = part([...base(), fil(30, [{ faces: ['F2.C1', 'F2.S.e1'], at: [20, 10, 0] }])]);
+}
+
 const m = (msg) => JSON.stringify({ id: 1, msg });
 /// Follow-up requests on each part's state (compared byte-for-byte).
 export const queries = [

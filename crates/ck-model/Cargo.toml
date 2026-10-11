@@ -3,10 +3,9 @@ name = "ck-model"
 version = "0.1.0"
 edition = "2021"
 
-# ck-ops is deliberately NOT a dependency yet (being rebuilt concurrently):
-# operations that need booleans/blends go through hooks on `features::Brep`.
 [dependencies]
 ck-core = { path = "../ck-core" }
 ck-geom = { path = "../ck-geom" }
 ck-json = { path = "../ck-json" }
 ck-topo = { path = "../ck-topo" }
+ck-ops = { path = "../ck-ops" }

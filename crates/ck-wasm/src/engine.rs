@@ -65,7 +65,9 @@ impl regen::FeatureExec for Exec<'_> {
         self.brep.face_frame(state, face)
     }
     fn exec(&mut self, state: &mut regen::RegenState, f: &ck_model::Feature) -> Result<(), regen::FeatureError> {
-        self.brep.exec(state, f)
+        let r = self.brep.exec(state, f);
+        self.brep.flush_spans(&mut self.sink);
+        r
     }
 }
 
