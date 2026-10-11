@@ -109,6 +109,17 @@ parts.cone = part([sketch('front', [pt('p1', 5, 0), pt('p2', 15, 0), pt('p3', 5,
   parts.chamferDD = part([...base(), ch({ chamferType: 'distanceDistance', distance2: 3 }, e1)]);
   parts.chamferAD = part([...base(), ch({ chamferType: 'angleDistance', angle: 30 }, e1)]);
   parts.chamferVertex = part([...base(), ch({ chamferType: 'vertex' }, e1)]);
+  // chains / corners on the box (top face C1 at y=10; side faces e1..e4)
+  const top4 = [{ faces: ['F2.C1', 'F2.S.e1'], at: [20, 10, 0] }, { faces: ['F2.C1', 'F2.S.e2'], at: [40, 10, -10] },
+    { faces: ['F2.C1', 'F2.S.e3'], at: [20, 10, -20] }, { faces: ['F2.C1', 'F2.S.e4'], at: [0, 10, -10] }];
+  parts.filletTop4 = part([...base(), fil(2, top4)]);
+  parts.chamferTop4 = part([...base(), ch({}, top4)]);
+  parts.filletCorner2 = part([...base(), fil(2, top4.slice(0, 2))]);
+  parts.chamferCorner2 = part([...base(), ch({}, top4.slice(0, 2))]);
+  parts.filletChain3 = part([...base(), fil(2, top4.slice(0, 3))]);
+  parts.filletCorner3 = part([...base(), fil(2, [top4[0], top4[1], { faces: ['F2.S.e1', 'F2.S.e2'], at: [40, 5, 0] }])]);
+  parts.chamferCorner3 = part([...base(), ch({}, [top4[0], top4[1], { faces: ['F2.S.e1', 'F2.S.e2'], at: [40, 5, 0] }])]);
+  parts.filletTwoParallel = part([...base(), fil(2, [top4[0], top4[2]])]);
   parts.chamferRail = part([...base(), ch({ distance: 3 }, [{ faces: ['F2.S.e2', 'F2.S.e1'], at: [40, 5, 0] }])]);
   parts.chamferBig = part([...base(), ch({ distance: 30 }, e1)]);
   const cylTop = [{ faces: ['F2.C1', 'F2.S.e7'], at: [15, 10, -3] }];

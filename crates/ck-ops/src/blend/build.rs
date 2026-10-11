@@ -91,6 +91,49 @@ pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featu
     if edges.is_empty() {
         return Err(BlendError::code("missingEdge"));
     }
+    if matches!(spec, Spec::Chamfer(_)) && edges.len() > 1 {
+        // Oracle (box probes): chamfers run in ROUNDS. An edge's round is
+        // the number of earlier-selected edges in its connected component
+        // (shared end vertices): the first edge of every chain goes in one
+        // op (the fillet's single-op face order), the second of every chain
+        // in the next, and so on; blend names stay selection-indexed.
+        let fwd: Vec<(String, String, Vec3)> = edges.iter().map(|(fa, fb, at)| forward_first(b, fa, fb, *at)).collect();
+        let ends: Vec<[usize; 2]> = fwd
+            .iter()
+            .map(|(fa, fb, at)| {
+                let e = find_edge(b, fa, fb, *at).ok_or_else(|| BlendError::code("missingEdge"))?;
+                Ok([b.edge(e).v0.idx(), b.edge(e).v1.idx()])
+            })
+            .collect::<Result<_, BlendError>>()?;
+        let n = edges.len();
+        let mut comp: Vec<usize> = (0..n).collect();
+        for i in 0..n {
+            for j in 0..i {
+                if ends[i].iter().any(|v| ends[j].contains(v)) {
+                    let (ci, cj) = (comp[i], comp[j]);
+                    for c in comp.iter_mut() {
+                        if *c == ci {
+                            *c = cj;
+                        }
+                    }
+                }
+            }
+        }
+        let level: Vec<usize> = (0..n).map(|i| (0..i).filter(|&j| comp[j] == comp[i]).count()).collect();
+        let mut out = b.clone();
+        for lv in 0..=*level.iter().max().unwrap() {
+            let idx: Vec<u32> = (0..n).filter(|&i| level[i] == lv).map(|i| i as u32).collect();
+            let sel: Vec<(String, String, Vec3)> = idx.iter().map(|&i| fwd[i as usize].clone()).collect();
+            out = blend_edges_at(&out, &sel, spec, feature, tol, &idx)?;
+        }
+        return Ok(out);
+    }
+    let idx: Vec<u32> = (0..edges.len() as u32).collect();
+    blend_edges_at(b, edges, spec, feature, tol, &idx)
+}
+
+/// One blend op over `edges`; `idx[k]` is the blend number (`B<idx>`) of edge k.
+fn blend_edges_at(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, feature: &str, tol: f64, idx: &[u32]) -> Result<Body, BlendError> {
     let edges: Vec<(String, String, Vec3)> = edges.iter().map(|(fa, fb, at)| forward_first(b, fa, fb, *at)).collect();
     // blend references on the INPUT body (for the in-place numbering)
     let mut refs: Vec<BlendRef> = vec![];
@@ -98,7 +141,7 @@ pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featu
         let e = find_edge(b, fa, fb, *at).ok_or_else(|| BlendError::code("missingEdge"))?;
         let ed = b.edge(e);
         refs.push(BlendRef {
-            name: FaceName::blend(feature, k as u32).id(),
+            name: FaceName::blend(feature, idx[k]).id(),
             faces: [fa.clone(), fb.clone()],
             ends: [b.vertex(ed.v0).p, b.vertex(ed.v1).p],
         });
@@ -108,7 +151,7 @@ pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featu
     for (k, (fa, fb, at)) in edges.iter().enumerate() {
         let e = find_edge(&out, fa, fb, *at).ok_or_else(|| BlendError::code("missingEdge"))?;
         let (f1, f2) = (out.find_face(fa).unwrap(), out.find_face(fb).unwrap());
-        let (body, hint) = blend_edge_hint(&out, e, [f1, f2], spec, feature, k as u32, tol)?;
+        let (body, hint) = blend_edge_hint(&out, e, [f1, f2], spec, feature, idx[k], tol)?;
         for h in hint {
             if !touched.contains(&h) {
                 touched.push(h);
@@ -620,6 +663,10 @@ mod tests {
         // torus ring removed: 2*pi*(R - r*(4-pi)/(3*(4-pi)... ) simply compare to oracle
         assert!((mass_props(&r).volume - 3090.0668137679036).abs() < 1e-6, "{} {}", mass_props(&r).volume, v0);
         let _ = pi;
+        for e in r.edge_ids() {
+            let ed = r.edge(e);
+            eprintln!("EDGE {:?} {} t=({:?},{:?}) v={:?}", r.edge_faces(e).iter().map(|&f| r.face_id_str(f)).collect::<Vec<_>>(), ed.curve.kind(), ed.t0, ed.t1, r.vertex(ed.v0).p);
+        }
         let r = chamfer(&cyl, &[(a, bb, at)], 1.0, "F3", 1e-6).unwrap();
         assert!((mass_props(&r).volume - 3111.223924605093).abs() < 1e-6);
     }

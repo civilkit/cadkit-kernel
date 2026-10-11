@@ -280,8 +280,24 @@ fn plane_torus(p: &Frame, tf: &Frame, big: f64, small: f64, tol: f64) -> Option<
 }
 
 fn cyl_cyl(a: &Frame, ra: f64, b: &Frame, rb: f64, tol: f64) -> Option<SsResult> {
-    if a.z.cross(b.z).len() > 1e-12 {
-        return None;
+    let n = a.z.cross(b.z);
+    if n.len() > 1e-12 {
+        // equal radii, axes meeting at O (two equal fillets round a box
+        // corner): p·a = ±p·b, i.e. the two bisector planes through O cut
+        // the cylinder in an ellipse each
+        let d = b.o - a.o;
+        if (ra - rb).abs() > tol || d.dot(n).abs() > tol * n.len() {
+            return None;
+        }
+        let s = d.cross(b.z).dot(n) / n.dot(n);
+        let o = a.o + a.z * s;
+        let mut out = vec![];
+        for nn in [a.z + b.z, a.z - b.z] {
+            if let SsResult::Curves(cs) = plane_cylinder(&frame_from(o, nn, any_perp(nn)), a, ra, tol) {
+                out.extend(cs);
+            }
+        }
+        return Some(if out.is_empty() { SsResult::Disjoint } else { SsResult::Curves(out) });
     }
     let z = a.z;
     let dvec = (b.o - a.o).reject(z);
