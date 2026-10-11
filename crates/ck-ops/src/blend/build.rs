@@ -102,13 +102,11 @@ pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featu
         // (v1 -> v0 links; positions relative to the chain's first
         // selected edge, so a closed ring is a single op).
         let fwd: Vec<(String, String, Vec3)> = edges.iter().map(|(fa, fb, at)| forward_first(b, fa, fb, *at)).collect();
-        let ends: Vec<[usize; 2]> = fwd
+        let eids: Vec<EdgeId> = fwd
             .iter()
-            .map(|(fa, fb, at)| {
-                let e = find_edge(b, fa, fb, *at).ok_or_else(|| BlendError::code("missingEdge"))?;
-                Ok([b.edge(e).v0.idx(), b.edge(e).v1.idx()])
-            })
+            .map(|(fa, fb, at)| find_edge(b, fa, fb, *at).ok_or_else(|| BlendError::code("missingEdge")))
             .collect::<Result<_, BlendError>>()?;
+        let ends: Vec<[usize; 2]> = eids.iter().map(|&e| [b.edge(e).v0.idx(), b.edge(e).v1.idx()]).collect();
         let n = edges.len();
         let rounds: Vec<Vec<usize>> = match spec {
             Spec::Chamfer(_) => {
@@ -143,11 +141,22 @@ pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featu
                 // after (v1 -> v0 links; positions relative to the chain's
                 // first selected edge) at least one member of it
                 let pos = chain_positions(&ends);
+                // the three edges of a vertex blend are one op
+                let mates = |i: usize| -> Vec<usize> {
+                    let mut out = vec![];
+                    for v in ends[i] {
+                        let at: Vec<usize> = (0..n).filter(|&j| ends[j].contains(&v)).collect();
+                        if at.len() == 3 {
+                            out.extend(at.into_iter().filter(|&j| j != i));
+                        }
+                    }
+                    out
+                };
                 let mut rounds: Vec<Vec<usize>> = vec![];
                 let mut cur: Vec<usize> = vec![];
                 for i in 0..n {
                     let same: Vec<i64> = cur.iter().filter(|&&j| pos[j].0 == pos[i].0).map(|&j| pos[j].1).collect();
-                    if cur.is_empty() || same.is_empty() || pos[i].1 > *same.iter().min().unwrap() {
+                    if cur.is_empty() || same.is_empty() || pos[i].1 > *same.iter().min().unwrap() || mates(i).iter().any(|j| cur.contains(j)) {
                         cur.push(i);
                     } else {
                         rounds.push(std::mem::take(&mut cur));
@@ -181,13 +190,34 @@ pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featu
             }
         }
         if matches!(spec, Spec::Fillet(_)) {
+            // three fillets meeting at a convex planar corner: the rolling
+            // ball's sphere patch `V<k>` replaces the miter
+            let mut corners: Vec<Vec3> = vec![];
+            for corner in super::corner::find_corner(b, &eids) {
+                let name = FaceName::other(feature, &format!("V{}", corners.len()));
+                let Ok(tool) = super::corner::sphere_corner_tool(b, &corner, r, feature, &name, tol) else { continue };
+                let Ok((mut cut, _)) = apply_tool(&out, &tool, Op::Cut, &name, vec![], tol) else { continue };
+                super::corner::fix_sphere_pcurves(&mut cut, &name.id());
+                // faces: the input order, then the new vertex blends
+                let order: Vec<FaceId> = {
+                    let key = |f: FaceId| -> usize {
+                        let n = cut.face_id_str(f);
+                        out.face_ids().position(|g| out.face_id_str(g) == n).unwrap_or(usize::MAX)
+                    };
+                    let mut o: Vec<FaceId> = cut.face_ids().collect();
+                    o.sort_by_key(|&f| key(f));
+                    o
+                };
+                out = crate::boolean::assemble::rebuild_in_order(&cut, &order);
+                corners.push(b.vertex(corner.vertex).p);
+            }
             let mut all: Vec<BlendRef> = vec![];
             for (k, (fa, fb, at)) in fwd.iter().enumerate() {
                 let e = find_edge(b, fa, fb, *at).ok_or_else(|| BlendError::code("missingEdge"))?;
                 let ed = b.edge(e);
                 all.push(BlendRef { name: FaceName::blend(feature, k as u32).id(), faces: [fa.clone(), fb.clone()], ends: [b.vertex(ed.v0).p, b.vertex(ed.v1).p] });
             }
-            out = in_place_layout(b, &out, &all, tol);
+            out = in_place_layout_opts(b, &out, &all, tol, &LayoutOpts { corners, ..Default::default() });
         }
         return Ok(out);
     }
@@ -290,7 +320,8 @@ fn blend_edges_at(
     let mut touched = touched;
     for i in 0..refs.len() {
         for j in i + 1..refs.len() {
-            if refs[i].ends[0].dist(refs[j].ends[0]) <= tol * 10.0 {
+            let full_corner = (0..refs.len()).filter(|&k| refs[k].ends.iter().any(|q| q.dist(refs[i].ends[0]) <= tol * 10.0)).count() >= 3;
+            if !full_corner && refs[i].ends[0].dist(refs[j].ends[0]) <= tol * 10.0 {
                 for f in refs[i].faces.iter().filter(|f| refs[j].faces.contains(f)) {
                     if let Some(p) = touched.iter().position(|t| t == f) {
                         let t = touched.remove(p);
@@ -389,6 +420,9 @@ pub struct LayoutOpts {
     pub reserve: Option<usize>,
     /// (input slot, slot of its kept piece when the edge is trimmed at its start).
     pub piece_slots: Vec<(usize, usize)>,
+    /// Vertex-blend corners (three fillets meeting in a sphere patch): no
+    /// junction (miter / deferred spring / slot) there.
+    pub corners: Vec<Vec3>,
 }
 
 pub fn in_place_layout_opts(input: &Body, out: &Body, refs: &[BlendRef], tol: f64, opts: &LayoutOpts) -> Body {
@@ -433,9 +467,10 @@ pub fn in_place_layout_opts(input: &Body, out: &Body, refs: &[BlendRef], tol: f6
     // neighbour one per window it opens (a rail trimmed at one end: one, an
     // edge trimmed at both ends: two).
     let near_pt = |p: Vec3, q: Vec3| p.dist(q) <= tol * 10.0;
+    let at_corner = |p: Vec3| opts.corners.iter().any(|&q| near_pt(p, q));
     let junction_ends = |k: usize| -> usize {
         (0..2)
-            .filter(|&e| (0..refs.len()).any(|j| j != k && refs[j].ends.iter().any(|&q| near_pt(refs[k].ends[e], q))))
+            .filter(|&e| !at_corner(refs[k].ends[e]) && (0..refs.len()).any(|j| j != k && refs[j].ends.iter().any(|&q| near_pt(refs[k].ends[e], q))))
             .count()
     };
     let mut sel_cost: Vec<usize> = vec![0; in_slots.len()];
@@ -518,7 +553,7 @@ pub fn in_place_layout_opts(input: &Body, out: &Body, refs: &[BlendRef], tol: f6
     // blend pair (i<j) lexicographically: the miter edge B<i>|B<j>, then
     // the deferred spring of the blend that starts at the junction.
     let near_pt = |p: Vec3, q: Vec3| p.dist(q) <= tol * 10.0;
-    let meets = |a: usize, ea: usize, b2: usize| refs[b2].ends.iter().any(|&q| near_pt(refs[a].ends[ea], q));
+    let meets = |a: usize, ea: usize, b2: usize| !at_corner(refs[a].ends[ea]) && refs[b2].ends.iter().any(|&q| near_pt(refs[a].ends[ea], q));
     let common_face = |a: usize, b2: usize| refs[a].faces.iter().find(|f| refs[b2].faces.contains(f)).cloned();
     // deferred spring face of blend a (junction at its v0)
     let deferred: Vec<Option<String>> = (0..refs.len())

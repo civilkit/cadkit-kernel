@@ -18,7 +18,12 @@ const perms = (a, k) => (k === 0 ? [[]] : a.flatMap((x, i) => perms([...a.slice(
 let sets;
 const arg = process.argv[2] ?? 'all4';
 if (arg === 'all4') sets = [2, 3, 4].flatMap((k) => perms(['t1', 't2', 't3', 't4'], k));
-else if (arg === 'pairs') {
+else if (arg === 'corners') {
+  // every box vertex with its three edges, in all 6 orders
+  const verts = { T1: ['t4', 't1', 'v41'], T2: ['t1', 't2', 'v12'], T3: ['t2', 't3', 'v23'], T4: ['t3', 't4', 'v34'],
+    B1: ['b4', 'b1', 'v41'], B2: ['b1', 'b2', 'v12'], B3: ['b2', 'b3', 'v23'], B4: ['b3', 'b4', 'v34'] };
+  sets = Object.values(verts).flatMap((tri) => perms(tri, 3));
+} else if (arg === 'pairs') {
   const names = Object.keys(E);
   sets = [];
   for (const a of names) for (const b of names) if (a !== b) sets.push([a, b]);

@@ -148,6 +148,12 @@ fn face_loops_uv_with(b: &Body, f: FaceId, nfun: impl Fn(&Curve, f64, f64) -> us
     let face = b.face(f);
     face.loops
         .iter()
+        // a loop that only walks seams (every edge both ways: a revolved
+        // sphere's meridian) bounds nothing: the face spans its period
+        .filter(|&&l| {
+            let cs = &b.lp(l).coedges;
+            !cs.iter().all(|&c| cs.iter().any(|&d| b.coedge(d).edge == b.coedge(c).edge && b.coedge(d).rev != b.coedge(c).rev))
+        })
         .map(|&l| {
             let pieces: Vec<(&Curve, f64, f64)> = b
                 .lp(l)
