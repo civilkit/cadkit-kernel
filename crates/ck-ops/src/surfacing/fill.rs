@@ -27,8 +27,8 @@
 //! &feat_id, 1e-6)`. `merge:false` produces the patch as its own surface
 //! body instead of appending to the input body.
 
+use crate::surfacing::fair::{fair, Fairing};
 use ck_geom::curve::Curve;
-use ck_geom::nurbs::bsurf::BSplineSurface;
 use ck_geom::surface::Surface;
 use ck_geom::Vec3;
 use ck_topo::body::{Body, EdgeId, FaceName, Role};
@@ -100,7 +100,15 @@ fn walk_chain(b: &Body, chain: &[EdgeId]) -> Result<Vec<Step>, FillError> {
 }
 
 /// Fill a chain of boundary edges of `body` with a patch face.
-pub fn fill(body: &Body, chain: &[EdgeId], continuity: &str, feature: &str, tol: f64) -> Result<Body, FillError> {
+pub fn fill(
+    body: &Body,
+    chain: &[EdgeId],
+    continuity: &str,
+    fairing: Fairing,
+    strength: f64,
+    feature: &str,
+    tol: f64,
+) -> Result<Body, FillError> {
     let steps = walk_chain(body, chain)?;
     let closed_ring = steps.len() == 1 && {
         let e = body.edge(steps[0].e);
@@ -124,11 +132,15 @@ pub fn fill(body: &Body, chain: &[EdgeId], continuity: &str, feature: &str, tol:
     let shell = out.add_shell(lump);
     let name = FaceName { feature: feature.into(), role: Role::Other("F".into()), region: None, suffix: String::new() };
 
-    let (surface, area) = if closed_ring {
-        planar_or_ruled(&sample_chain(body, &steps, 16), &[], tol)
-    } else {
-        planar_or_ruled(&sample_chain(body, &steps, 16), &[start, end], tol)
-    };
+    let mut boundary = sample_chain(body, &steps, 16);
+    if !closed_ring {
+        boundary.push(end);
+        boundary.push(start);
+    }
+    let surface = fair(&boundary, fairing, strength);
+    // validity area (planar patch area; the ruled fallback passes)
+    let n = surface_normal_of(&surface, start);
+    let area = polygon_area(&boundary, n).max(if surface.is_planar(tol.max(1e-6)) { 0.0 } else { 1.0 });
     let nf = out.add_face(shell, surface, true, name);
 
     // loop: the chain edges traversed opposite the body faces' coedges
@@ -178,60 +190,32 @@ fn sample_chain(b: &Body, steps: &[Step], per_edge: usize) -> Vec<Vec3> {
     pts
 }
 
-/// Plane patch when the closed boundary (chain + chord) is planar; else a
-/// ruled deg-1×1 surface between the chain polyline and the chord. Returns
-/// (surface, area).
-fn planar_or_ruled(chain_pts: &[Vec3], chord: &[Vec3], tol: f64) -> (Surface, f64) {
-    let mut pts: Vec<Vec3> = chain_pts.to_vec();
-    if chord.len() == 2 && chord[0].dist(chord[1]) > tol {
-        // the loop runs the chord end->start
-        pts.push(chord[1]);
-        pts.push(chord[0]);
-    }
-    // drop a duplicate closing point
-    if pts.len() > 2 && pts.first().unwrap().dist(*pts.last().unwrap()) <= tol {
-        pts.pop();
-    }
-    // Newell normal
-    let mut n = Vec3::ZERO;
+/// Planar polygon area about normal `n` (Newell).
+fn polygon_area(pts: &[Vec3], n: Vec3) -> f64 {
+    let mut a = 0.0;
     for i in 0..pts.len() {
-        let a = pts[i];
-        let b = pts[(i + 1) % pts.len()];
-        n = n + a.cross(b);
+        let p = pts[i];
+        let q = pts[(i + 1) % pts.len()];
+        a += n.dot(p.cross(q));
     }
-    let area = n.len() * 0.5;
-    let n = if n.len() > 1e-15 { n.normalize() } else { n };
-    // planarity: every point within tol of the plane through pts[0]
-    let planar = pts.iter().all(|&p| (p - pts[0]).dot(n).abs() <= tol.max(1e-6));
-    if planar {
-        (Surface::plane(pts[0], n), area)
-    } else {
-        // ruled: deg 1 in v between the chain polyline and its chord
-        let nu = chain_pts.len();
-        let knots_u = flat_knots(1, nu);
-        let knots_v = vec![0.0, 0.0, 1.0, 1.0];
-        let d0 = *chord.first().unwrap_or(&chain_pts[0]);
-        let d1 = *chord.last().unwrap_or(chain_pts.last().unwrap());
-        let mut net: Vec<Vec3> = Vec::with_capacity(nu * 2);
-        for i in 0..nu {
-            let t = i as f64 / (nu - 1).max(1) as f64;
-            net.push(chain_pts[i]);
-            net.push(d0.lerp(d1, t));
-        }
-        let bs = BSplineSurface::new(1, 1, knots_u, knots_v, nu, 2, net, None)
-            .unwrap_or_else(|_| BSplineSurface::bilinear(chain_pts[0], chain_pts[nu - 1], d0, d1));
-        (Surface::BSpline(Box::new(bs)), area)
-    }
+    (a * 0.5).abs()
 }
 
-fn flat_knots(deg: usize, n_ctrl: usize) -> Vec<f64> {
-    let inner = n_ctrl - deg - 1;
-    let mut k = vec![0.0; deg + 1];
-    for i in 1..=inner {
-        k.push(i as f64);
+/// The patch's outward normal for the area validity check.
+fn surface_normal_of(s: &Surface, at: Vec3) -> Vec3 {
+    match s {
+        Surface::Plane { frame } => frame.z,
+        _ => {
+            let (u, v) = match s {
+                Surface::Plane { .. } => (0.0, 0.0),
+                _ => {
+                    let (uu, vv) = s.closest_param(at);
+                    (uu, vv)
+                }
+            };
+            s.normal(u, v).normalize()
+        }
     }
-    k.extend(std::iter::repeat(inner as f64).take(deg + 1));
-    k
 }
 
 #[cfg(test)]
@@ -314,7 +298,7 @@ mod tests {
         let e0 = rim_of(&body, "F4", "e0");
         let e1 = rim_of(&body, "F4", "e1");
         let e2 = rim_of(&body, "F4", "e2");
-        let b = fill(&body, &[e0, e1, e2], "G0", "F6", 1e-6).unwrap();
+        let b = fill(&body, &[e0, e1, e2], "G0", Fairing::MeowNurbs, 0.5, "F6", 1e-6).unwrap();
         let fids: Vec<String> = b.face_ids().map(|f| b.face(f).name.id()).collect();
         assert_eq!(fids.last().unwrap(), "F6.F");
         assert_eq!(fids.len(), 5);
@@ -336,7 +320,7 @@ mod tests {
         let body = u_sheet();
         let e0 = rim_of(&body, "F4", "e0");
         let e1 = rim_of(&body, "F4", "e1");
-        let b = fill(&body, &[e0, e1], "G0", "F6", 1e-6).unwrap();
+        let b = fill(&body, &[e0, e1], "G0", Fairing::MeowNurbs, 0.5, "F6", 1e-6).unwrap();
         let chord = b.edge_ids().last().unwrap();
         let ed = b.edge(chord);
         assert!(ed.curve.eval(ed.t0).dist(Vec3::new(0.0, 0.0, 10.0)) < 1e-9);
@@ -351,7 +335,7 @@ mod tests {
         // validity detail
         let body = u_sheet();
         let e0 = rim_of(&body, "F4", "e0");
-        let err = fill(&body, &[e0, e0], "G0", "F6", 1e-6).unwrap_err();
+        let err = fill(&body, &[e0, e0], "G0", Fairing::MeowNurbs, 0.5, "F6", 1e-6).unwrap_err();
         assert_eq!(err.code, "fillFailed");
         assert_eq!(
             err.detail,
@@ -364,10 +348,10 @@ mod tests {
         let body = u_sheet();
         let e0 = rim_of(&body, "F4", "e0");
         let e2 = rim_of(&body, "F4", "e2");
-        let err = fill(&body, &[e0, e2], "G0", "F6", 1e-6).unwrap_err();
+        let err = fill(&body, &[e0, e2], "G0", Fairing::MeowNurbs, 0.5, "F6", 1e-6).unwrap_err();
         assert_eq!(err.code, "fillInvalid");
         assert_eq!(err.detail, "the edges do not form one chain");
-        let err = fill(&body, &[e0], "G0", "F6", 1e-6).unwrap_err();
+        let err = fill(&body, &[e0], "G0", Fairing::MeowNurbs, 0.5, "F6", 1e-6).unwrap_err();
         assert_eq!(err.code, "fillNotClosed");
         assert_eq!(err.detail, "the chain is open");
     }
