@@ -1,4 +1,8 @@
-//! STUB (not reconstructed yet): compiles to kernel.wasm (ck-ops/src/surfacing/rebuild/edits.rs)
+//! STUB (not reconstructed yet): the freeform feature's control-point
+//! edits on a rebuilt net (ck-ops/src/surfacing/rebuild/edits.rs).
 //!
-//! Surfacing op. Codes by family: knit (knitNotClosed, knitNearMiss, knitGapClosed, knitFailed), fill (fillNotClosed, fillInvalid, fillFailed, fillCrosses, fillContinuity, fillGuideMissing), thicken (thickenFailed, thickenPointedPole, thickenReach, thickenTooThick), trim (trimNoIntersection, trimNothingLeft, trimBothOneSurface), extend (extendNotBoundary, extendTargetSelf, extendOneSurface, extendNoTarget, extendUnsupported, extendReflectTooFar, extendPointBehind, extendFolds), rebuild (rebuildDirectionEdge, rebuildFreeShared, rebuildPeriodicFace, rebuildFailed, rebuildTooFine, rebuildContinuity*), project (projectCurve*).
+//! Kernel codes in scope: freeformEntryInvalid, freeformEntryOutside,
+//! freeformEntryPlane, freeformMapped, freeformOneFace, freeformNotSymmetric,
+//! freeformFold, freeformCrosses ("the edited face runs through other faces
+//! of the part"), rebuildEdgeOff ("gap"), rebuildInnerContinuity.
 #![allow(unused)]
