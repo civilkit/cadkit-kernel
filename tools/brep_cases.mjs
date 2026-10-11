@@ -151,6 +151,51 @@ parts.mirrorBodyCone = part([...parts.cone.features, { type: 'plane', id: 'F8', 
   parts.surfExtrudeSpline = part([sketch('front', sp3, [{ type: 'spline', id: 'e8', pts: ['c1', 'c2', 'c3'] }, line('ax', 'a1', 'a2', { construction: true })]), se('F2', 'F1', { depth: 7 })]);
 }
 
+// Surface-body operations (knit / fill / trimSurface / thicken / extend / deleteFace / freeform / deleteBody)
+{
+  const [P, E] = rect(0, 0, 40, 20);
+  const sp = (id, s) => ({ type: 'surfacePlanar', id, sketch: s });
+  const se = (id, s, o = {}) => ({ type: 'surfaceExtrude', id, sketch: s, end: 'blind', depth: 10, ...o });
+  const tube = [sketch('top', P, E), se('F2', 'F1')];
+  const cap = [sp('F3', 'F1'), { type: 'plane', id: 'F4', mode: 'offset', base: STD('top'), offset: 10 },
+    { type: 'sketch', id: 'F5', plane: { kind: 'feature', id: 'F4' }, points: P, entities: E, constraints: [] }, sp('F6', 'F5')];
+  parts.knitBox = part([...tube, ...cap, { type: 'knit', id: 'F7', surfaces: ['F2', 'F3', 'F6'], solid: true }]);
+  parts.knitSheet = part([...tube, ...cap, { type: 'knit', id: 'F7', surfaces: ['F2', 'F3'], solid: false }]);
+  parts.knitNotClosed = part([...tube, ...cap, { type: 'knit', id: 'F7', surfaces: ['F2', 'F3'], solid: true }]);
+  parts.knitMissing = part([...tube, { type: 'knit', id: 'F7', surfaces: ['F2', 'F9'], solid: false }]);
+  const rim = (face, at) => ({ faces: [face], at });
+  const top = [rim('F2.S.e1', [20, 10, 0]), rim('F2.S.e2', [40, 10, -10]), rim('F2.S.e3', [20, 10, -20]), rim('F2.S.e4', [0, 10, -10])];
+  const bot = [rim('F2.S.e1', [20, 0, 0]), rim('F2.S.e2', [40, 0, -10]), rim('F2.S.e3', [20, 0, -20]), rim('F2.S.e4', [0, 0, -10])];
+  const fill = (id, edges, o = {}) => ({ type: 'fill', id, edges, merge: true, continuity: 'G0', ...o });
+  parts.fillTop = part([...tube, fill('F3', top)]);
+  parts.fillTopLoose = part([...tube, fill('F3', top, { merge: false })]);
+  parts.fillBoth = part([...tube, fill('F3', top), fill('F4', bot)]);
+  parts.fillSame = part([...tube, fill('F3', [top[0], top[0]])]);
+  // two perpendicular sheets for trimSurface
+  const [R, RE] = rect(-5, -5, 5, 5);
+  const [S, SE] = rect(-6, -6, 6, 6);
+  const two = [sketch('right', R, RE), sp('F2', 'F1'), { ...sketch('front', S, SE), id: 'F3' }, sp('F4', 'F3')];
+  const trim = (o) => ({ type: 'trimSurface', id: 'F5', surface: 'F2', toolSurface: 'F4', flip: false, mutual: false, ...o });
+  parts.trimKeep = part([...two, trim({})]);
+  parts.trimFlip = part([...two, trim({ flip: true })]);
+  parts.trimMutual = part([...two, trim({ mutual: true })]);
+  parts.trimDeleteTool = part([...two, trim({ deleteTool: true })]);
+  parts.thickenFront = part([sketch('top', P, E), sp('F2', 'F1'), { type: 'thicken', id: 'F3', surface: 'F2', thickness: 2, side: 'front' }]);
+  parts.thickenBoth = part([sketch('top', P, E), sp('F2', 'F1'), { type: 'thicken', id: 'F3', surface: 'F2', thickness: 2, side: 'both' }]);
+  parts.thickenTube = part([...tube, { type: 'thicken', id: 'F3', surface: 'F2', thickness: 1, side: 'back' }]);
+  parts.thickenZero = part([...tube, { type: 'thicken', id: 'F3', surface: 'F2', thickness: 0, side: 'front' }]);
+  parts.extendPlane = part([sketch('top', P, E), sp('F2', 'F1'), { type: 'extend', id: 'F3', edges: [{ faces: ['F2.P'], at: [20, 0, 0] }], distance: 5 }]);
+  parts.deleteFaceBox = part([sketch('top', P, E), extrude(), { type: 'deleteFace', id: 'F3', faces: ['F2.C1'], mode: 'delete', edges: [] }]);
+  parts.freeformCap = part([sketch('top', P, E), extrude(), { type: 'freeform', id: 'F3', faces: ['F2.C1'], degreeU: 3, degreeV: 3, spansU: 2, spansV: 2, edits: [], edges: [] }]);
+  parts.freeformCapFront = part([sketch('front', P, E), extrude(), { type: 'freeform', id: 'F3', faces: ['F2.C1'], degreeU: 3, degreeV: 3, spansU: 2, spansV: 2, edits: [], edges: [] }]);
+  parts.deleteBodySurf = part([...tube, ...cap.slice(0, 1), { type: 'deleteBody', id: 'F4', mode: 'delete', bodies: ['F2'] }]);
+  parts.deleteBodySurface = part([...tube, ...cap.slice(0, 1), { type: 'deleteBody', id: 'F4', mode: 'delete', bodies: [{ surface: 'F2' }] }]);
+  parts.deleteBodyKeepSurface = part([...tube, ...cap.slice(0, 1), { type: 'deleteBody', id: 'F4', mode: 'keep', bodies: [{ surface: 'F2' }] }]);
+  parts.deleteBodyFace = part([...tube, ...cap.slice(0, 1), { type: 'deleteBody', id: 'F4', mode: 'delete', bodies: [{ face: 'F2.S.e1' }] }]);
+  parts.deleteBodySolid = part([sketch('top', P, E), extrude(), { ...sketch('front', P, E), id: 'F3' }, sp('F4', 'F3'), { type: 'deleteBody', id: 'F5', mode: 'delete', bodies: [{ face: 'F2.C0' }] }]);
+  parts.deleteBodyNone = part([...tube, { type: 'deleteBody', id: 'F3', mode: 'delete', bodies: [] }]);
+}
+
 const m = (msg) => JSON.stringify({ id: 1, msg });
 /// Follow-up requests on each part's state (compared byte-for-byte).
 export const queries = [

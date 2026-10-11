@@ -207,12 +207,41 @@ pub fn exec_knit(br: &mut Brep, _state: &mut RegenState, f: &Feature) -> Result<
     if surfaces.is_empty() {
         return Err(missing());
     }
-    let mut idx = vec![];
+    // pinned: unresolved references are skipped (knit of [F2, F9] = F2)
+    let mut idx: Vec<usize> = vec![];
     for r in surfaces {
-        idx.push(br.surface_ref(r.as_str()).ok_or_else(missing)?);
+        if let Some(i) = br.surface_ref(r.as_str()) {
+            if !idx.contains(&i) {
+                idx.push(i);
+            }
+        }
+    }
+    if idx.is_empty() {
+        return Err(missing());
     }
     let bodies: Vec<Body> = idx.iter().map(|&i| br.surfs[i].1.clone()).collect();
-    let out = sf::knit::knit(&bodies, *solid, super::TOL).map_err(|e| coded(e.code, &e.detail))?;
+    let out = sf::knit::knit(&bodies, *solid, super::TOL).map_err(|e| {
+        if e.code == "knitNotClosed" {
+            // pinned params: `{open: <n open edges>, points: [edge mids]}`
+            if let Ok(sheet) = sf::knit::knit(&bodies, false, super::TOL) {
+                let open: Vec<EdgeId> = sheet
+                    .edge_ids()
+                    .filter(|&x| sheet.edge_coedges(x).iter().filter(|&&c| sheet.coedge(c).alive).count() == 1)
+                    .collect();
+                let pts = open
+                    .iter()
+                    .map(|&x| {
+                        let m = sheet.edge_mid(x);
+                        Json::Arr(vec![Json::Num(m.x), Json::Num(m.y), Json::Num(m.z)])
+                    })
+                    .collect();
+                return FeatureError::new("knitNotClosed")
+                    .with("open", Json::Num(open.len() as f64))
+                    .with("points", Json::Arr(pts));
+            }
+        }
+        coded(e.code, &e.detail)
+    })?;
     br.drop_surfaces(idx);
     if *solid {
         join_solid(br, &f.id, out)?;
@@ -231,7 +260,9 @@ fn join_solid(br: &mut Brep, id: &str, b: Body) -> Result<(), FeatureError> {
 // ------------------------------------------------------------------ trim
 
 pub fn exec_trim(br: &mut Brep, _state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
-    let FeatureKind::TrimSurface { surface, surfaces, tool_surface, mutual, flip, delete_tool, .. } = &f.kind else { unreachable!() };
+    let FeatureKind::TrimSurface { surface, surfaces, tool_surface, mutual, flip, .. } = &f.kind else { unreachable!() };
+    // pinned: an absent `deleteTool` keeps the tool (the client writes true)
+    let delete_tool = &flag(f, "deleteTool");
     let mut refs: Vec<&crate::Ref> = surfaces.iter().collect();
     if let Some(s) = surface {
         if refs.is_empty() {
@@ -289,7 +320,11 @@ pub fn exec_fill(br: &mut Brep, _state: &mut RegenState, f: &Feature) -> Result<
         super::Continuity::G2 => "G2",
         super::Continuity::G3 => "G3",
     };
-    let out = sf::fill::fill(&body, &chain, cont, mode, strength, &f.id, super::TOL).map_err(|e| coded(e.code, &e.detail))?;
+    let out = sf::fill::fill(&body, &chain, cont, mode, strength, &f.id, super::TOL).map_err(|e| {
+        // pinned: an invalid patch face is reported as `fillInvalid`
+        let code = if e.detail.contains("not a valid face") { "fillInvalid" } else { e.code };
+        coded(code, &e.detail)
+    })?;
     if *merge {
         br.replace_slot(slot, &f.id, out);
     } else {
@@ -309,6 +344,8 @@ pub fn exec_thicken(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Resul
     let t = state.num(f, "thickness", 2.0)?;
     let side = f.raw.get("side").and_then(|s| s.as_str()).and_then(sf::thicken::Side::parse).unwrap_or(sf::thicken::Side::Front);
     let out = sf::thicken::thicken(&br.surfs[i].1, &f.id, t, side, super::TOL).map_err(|e| coded(e.code, &e.detail))?;
+    // pinned: the thickened surface is consumed
+    br.drop_surfaces(vec![i]);
     join_solid(br, &f.id, out)
 }
 
@@ -342,6 +379,9 @@ pub fn exec_extend(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
     };
     let body = br.slot_body(slot).ok_or_else(missing)?.clone();
     let out = sf::extend::extend(&body, &edges, shape, &end, &f.id, super::TOL).map_err(|e| coded(e.code, &e.detail))?;
+    // pinned: the wire edge numbers are compact (no dead arena slots)
+    let all: Vec<FaceId> = out.face_ids().collect();
+    let out = sf::sheet::sheet(&out, &all);
     br.replace_slot(slot, &f.id, out);
     Ok(())
 }
@@ -396,6 +436,22 @@ pub fn exec_freeform(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Resu
     let (du, dv) = (n("degreeU", 3.0)?.max(1.0) as usize, n("degreeV", 3.0)?.max(1.0) as usize);
     let (su, sv) = (n("spansU", 2.0)?.max(1.0) as usize, n("spansV", 2.0)?.max(1.0) as usize);
     let out = sf::rebuild::rebuild(&body, &faces, du, dv, su, sv, super::TOL).map_err(|e| coded(e.code, &e.detail))?;
+    // pinned marker: the refit control net of every face, `net[i * nv + j]`
+    let num = |x: usize| Json::Num(x as f64);
+    let mut mf = vec![];
+    for (n, &fid) in names.iter().zip(&faces) {
+        if let ck_geom::surface::Surface::BSpline(bs) = &out.face(fid).surface {
+            let net = bs.ctrl.iter().map(|p| Json::Arr(vec![Json::Num(p.x), Json::Num(p.y), Json::Num(p.z)])).collect();
+            mf.push(Json::Obj(vec![
+                ("face".into(), Json::Str(n.clone())),
+                ("degree".into(), Json::Arr(vec![num(du), num(dv)])),
+                ("spans".into(), Json::Arr(vec![num(su), num(sv)])),
+                ("size".into(), Json::Arr(vec![num(bs.nu), num(bs.nv)])),
+                ("net".into(), Json::Arr(net)),
+            ]));
+        }
+    }
+    state.result.markers.push(Json::Arr(vec![Json::Str(f.id.clone()), Json::Obj(vec![("faces".into(), Json::Arr(mf))])]));
     br.replace_slot(slot, &f.id, out);
     Ok(())
 }

@@ -95,8 +95,11 @@ pub fn trim(targets: &[Body], tool: &Body, flip: bool, mutual: bool, tol: f64) -
         }
     }
     if mutual {
+        // pinned: the uncut tool is its own lump (`lump: 1` in the wire faces)
+        let tool_lump = out.add_lump();
+        let tool_shell = out.add_shell(tool_lump);
         for t in tool.face_ids().collect::<Vec<_>>() {
-            copy_face_into(&mut out, shell, tool, t);
+            copy_face_into(&mut out, tool_shell, tool, t);
         }
     }
     if !any_cut {
@@ -109,7 +112,12 @@ pub fn trim(targets: &[Body], tool: &Body, flip: bool, mutual: bool, tol: f64) -
     for fi in out.face_ids().collect::<Vec<_>>() {
         ck_topo::orient::fix_planar_loops(&mut out, fi);
     }
-    ck_topo::orient::orient_body(&mut out);
+    // volume-based outward orientation only means something for closed shells
+    // (pinned: mutual trim of two sheets keeps both sheets' normals)
+    let closed = out.edge_ids().all(|e| out.edge_coedges(e).iter().filter(|&&c| out.coedge(c).alive).count() == 2);
+    if closed {
+        ck_topo::orient::orient_body(&mut out);
+    }
     Ok(out)
 }
 

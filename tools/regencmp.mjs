@@ -35,7 +35,7 @@ for (const t of args) {
 // --loose: structure check only (numbers to 6 decimals, no mesh buffers / silhouette)
 const rnd = (x) => typeof x === 'number' ? Math.round(x * 1e6) / 1e6 + 0 : Array.isArray(x) ? x.map(rnd) : x && typeof x === 'object' ? Object.fromEntries(Object.entries(x).map(([k, v]) => [k, rnd(v)])) : x;
 const loosen = (b) => { if (!b) return b; delete b.mesh; delete b.silhouette; for (const e of b.edges ?? []) { delete e.mid; delete e.pts; } for (const k of ['faces', 'edges']) if (b[k]) b[k] = rnd(b[k]); if (b.box) b.box = JSON.parse(JSON.stringify(b.box), (_, v) => typeof v === 'number' ? Math.round(v * 1e2) / 1e2 + 0 : v); return b; };
-const strip = (o) => { if (loose) { loosen(o?.result?.body); for (const [, sb] of o?.result?.surfaces ?? []) loosen(sb); } const b = o?.result?.body; if (b?.edges) for (const e of b.edges) e.pts = e.pts?.length; for (const [, sb] of o?.result?.surfaces ?? []) if (sb?.edges) for (const e of sb.edges) e.pts = e.pts?.length; return o; };
+const strip = (o) => { if (loose) { if (o?.result?.markers) o.result.markers = rnd(o.result.markers); loosen(o?.result?.body); for (const [, sb] of o?.result?.surfaces ?? []) loosen(sb); } const b = o?.result?.body; if (b?.edges) for (const e of b.edges) e.pts = e.pts?.length; for (const [, sb] of o?.result?.surfaces ?? []) if (sb?.edges) for (const e of sb.edges) e.pts = e.pts?.length; return o; };
 const rel = (x, y) => Math.abs(x - y) / (1 + Math.abs(y));
 const maxdiff = (a, b) => {
   if (typeof a === 'number' && typeof b === 'number') return rel(a, b);
