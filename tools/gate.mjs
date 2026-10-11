@@ -15,9 +15,12 @@
 //   valid.<set>   OURS alone: no feature errors, volume > 0, every edge
 //                 bounds exactly 2 faces (closed manifold shell)
 //   vol.<set>     our volume within 1e-3 relative of the original's
+//   import.sat    OURS alone: each fixture in crates/ck-io/tests/fixtures/sat/
+//                 expected.json imports with no errors, validates with zero
+//                 issues and has the closed-form volume (1e-6 relative)
 //
 // Direction (2026-10-12): correctness + robustness, not byte-identity.
-// HARD metrics (a drop fails the gate): wire, valid.*, vol.*.
+// HARD metrics (a drop fails the gate): wire, valid.*, vol.*, import.*.
 // SOFT metrics (oracle-identity: faces/edges/box/rest/json/mesh/mass/step):
 // a drop prints WARN but does not fail. The original is a reference, not
 // the arbiter.
@@ -110,6 +113,22 @@ for (const f of fast ? [] : ['bracket', 'stepper-sample', 'coupling-sample', 'la
   regenSet(f, part.features.map((_, k) => ({ name: `${f}@${k + 1}`, part, upTo: k + 1 })));
 }
 
+// 2b. ACIS SAT import (ours only; closed-form volumes in expected.json)
+const sdir = path.join(here, '../crates/ck-io/tests/fixtures/sat');
+if (existsSync(path.join(sdir, 'expected.json'))) {
+  const expected = JSON.parse(readFileSync(path.join(sdir, 'expected.json'), 'utf8'));
+  for (const [f, vol] of Object.entries(expected)) {
+    const kb = new Kernel(B);
+    const rq = (id, msg) => { const r = kb.request(JSON.stringify({ id, msg })); return r.trap ? null : JSON.parse(r.json)?.result; };
+    const imp = rq(1, { type: 'importSat', tag: 'main', name: f, data: readFileSync(path.join(sdir, f), 'utf8') });
+    const val = rq(2, { type: 'validate', tag: 'main' });
+    const mass = rq(3, { type: 'massProps', tag: 'main' });
+    const ok = !!imp && !imp.errors?.length && !!imp.body && val?.issues?.length === 0 && Math.abs(mass?.volume - vol) <= 1e-6 * vol;
+    if (!ok && !quiet) process.stderr.write(`import.sat ${f}: ${JSON.stringify(imp?.errors)} issues=${JSON.stringify(val?.issues?.slice(0, 2))} vol=${mass?.volume} want=${vol}\n`);
+    bump('import.sat', ok);
+  }
+}
+
 // 3. STEP export
 const gdir = path.join(here, '../crates/ck-io/tests/golden');
 if (existsSync(gdir)) for (const f of readdirSync(gdir).filter((f) => f.endsWith('.req.json')).sort()) {
@@ -124,7 +143,7 @@ if (!quiet) process.stderr.write('\n');
 const basePath = path.join(here, 'scoreboard.json');
 const base = existsSync(basePath) ? JSON.parse(readFileSync(basePath, 'utf8')) : {};
 let worse = 0, soft = 0;
-const hard = (k) => /^(wire|valid\.|vol\.)/.test(k);
+const hard = (k) => /^(wire|valid\.|vol\.|import\.)/.test(k);
 const skipped = (k) => fast && /^(regen|mass|valid|vol)\.(bracket|stepper|flange|hair)/.test(k);
 for (const k of Object.keys({ ...base, ...score }).sort()) {
   const [m, n] = score[k] ?? [0, 0], b = base[k]?.[0];
