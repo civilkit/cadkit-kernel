@@ -104,6 +104,30 @@ parts.cone = part([sketch('front', [pt('p1', 5, 0), pt('p2', 15, 0), pt('p3', 5,
   parts.filletTooBig = part([...base(), fil(30, [{ faces: ['F2.C1', 'F2.S.e1'], at: [20, 10, 0] }])]);
 }
 
+// draft feature on the 40x20x10 top-plane box: side faces about the bottom
+// cap (F2.C0) / top cap (F2.C1); and on a cylinder.
+{
+  const [P, E] = rect(0, 0, 40, 20);
+  const base = () => [sketch('top', P, E), extrude()];
+  const dr = (faces, o = {}) => ({ type: 'draft', id: 'F3', neutral: { kind: 'face', id: 'F2.C0' }, faces, angle: 5, ...o });
+  const sides = ['F2.S.e1', 'F2.S.e2', 'F2.S.e3', 'F2.S.e4'];
+  parts.draftBox = part([...base(), dr(sides)]);
+  parts.draftBoxFlip = part([...base(), dr(sides, { flip: true })]);
+  parts.draftBoxTop = part([...base(), dr(sides, { neutral: { kind: 'face', id: 'F2.C1' } })]);
+  parts.draftBoxStd = part([...base(), dr(sides, { neutral: STD('top') })]);
+  parts.draftBoxFeat = part([...base(), { type: 'plane', id: 'F4', mode: 'offset', base: STD('top'), offset: 10 }, dr(sides, { id: 'F5', neutral: { kind: 'feature', id: 'F4' } })]);
+  parts.draftOne = part([...base(), dr(['F2.S.e1'])]);
+  parts.draftTwo = part([...base(), dr(['F2.S.e1', 'F2.S.e3'], { angle: 8 })]);
+  parts.draftCyl = part([sketch('top', [pt('c', 5, 3)], [{ type: 'circle', id: 'e7', c: 'c', r: 10 }]), extrude(),
+    dr(['F2.S.e7'], { angle: 3 })]);
+  parts.draftParallel = part([...base(), dr(['F2.C1'])]);
+  parts.draftZero = part([...base(), dr(sides, { angle: 0 })]);
+  parts.draftRight = part([...base(), dr(sides, { angle: 90 })]);
+  parts.draftNoFaces = part([...base(), dr([])]);
+  parts.draftBadRef = part([...base(), dr(['nope'])]);
+  parts.draftBig = part([...base(), dr(sides, { angle: 89 })]);
+}
+
 parts.mirrorBodyCone = part([...parts.cone.features, { type: 'plane', id: 'F8', mode: 'offset', base: STD('right'), offset: -30 },
   { type: 'mirror', id: 'F9', seeds: [], plane: { kind: 'feature', id: 'F8' }, body: true }]);
 

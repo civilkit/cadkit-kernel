@@ -45,6 +45,7 @@ pub mod convert;
 pub mod curve_plane;
 pub mod curve_ref;
 pub mod delete_body;
+pub mod draft;
 pub mod edit_curve;
 pub mod extrude;
 pub mod freeform;
@@ -859,6 +860,7 @@ impl crate::regen::FeatureExec for Brep {
             FeatureKind::Hole { .. } => return hole::exec_hole(self, state, f),
             FeatureKind::Helix { .. } => return sweep::exec_helix(self, state, f),
             FeatureKind::Mate { .. } => return mate::exec_mate(self, state, f),
+            FeatureKind::Draft { .. } => return draft::exec_draft(self, state, f),
             _ => return Err(crate::regen::FeatureError::new(&extrude::todo(&f.type_name))),
         };
         self.apply(&f.id, tool)
