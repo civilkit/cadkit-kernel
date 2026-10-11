@@ -16,6 +16,7 @@
 
 use super::assemble::{build, select};
 use super::imprint::imprint;
+use super::classify::{Class, Solid};
 use super::Op;
 use ck_core::xform::Xform;
 use ck_geom::Vec3;
@@ -40,6 +41,11 @@ pub fn boolean(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> 
             _ => BoolOut { body: Body::new(), no_effect: true },
         });
     }
+    // (results keep the caller's bodies for the no-effect returns)
+    let (a0, b0) = (a, b);
+    let a1 = relocate_seams(a0, b0, dropped(op, 0), tol);
+    let b1 = relocate_seams(b0, a0, dropped(op, 1), tol);
+    let (a, b) = (&a1, &b1);
     let arr = imprint(a, b, tol);
     if arr.interacting_pairs == 0 {
         // no face interaction: containment decides
@@ -48,7 +54,7 @@ pub fn boolean(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> 
         let a_in_b = ck_topo::region::classify(b, pa, tol) == ck_topo::region::Containment::Inside;
         let b_in_a = ck_topo::region::classify(a, pb, tol) == ck_topo::region::Containment::Inside;
         match op {
-            Op::Cut if !a_in_b && !b_in_a => return Ok(BoolOut { body: a.clone(), no_effect: true }),
+            Op::Cut if !a_in_b && !b_in_a => return Ok(BoolOut { body: a0.clone(), no_effect: true }),
             Op::Intersect if !a_in_b && !b_in_a => return Ok(BoolOut { body: Body::new(), no_effect: true }),
             _ => {} // nested: the general path (void shells / swallowed bodies)
         }
@@ -56,9 +62,12 @@ pub fn boolean(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> 
     let faces = select(&arr, [a, b], op)?;
     // nothing removed from A and nothing added from B → unchanged
     let a_faces = a.num_faces();
-    let untouched_a = faces.iter().filter(|f| f.group == 0).count();
-    if op == Op::Cut && untouched_a == a_faces && faces.iter().all(|f| f.group == 0) {
-        return Ok(BoolOut { body: a.clone(), no_effect: true });
+    // (a face split by an imprint and rejoined is listed with the merged
+    // faces but walked as untouched)
+    let whole_a = |f: &super::assemble::OutFace| f.group == 0 || (f.group == 4 && f.walk.len() == 1 && f.walk[0].0 .0 == 0);
+    let untouched_a = faces.iter().filter(|f| whole_a(f)).count();
+    if op == Op::Cut && untouched_a == a_faces && faces.iter().all(|f| whole_a(f)) {
+        return Ok(BoolOut { body: a0.clone(), no_effect: true });
     }
     let body = build(&arr, &faces);
     let bad = check(&body, tol)
@@ -68,6 +77,128 @@ pub fn boolean(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> 
         return Err("booleanFailed".into());
     }
     Ok(BoolOut { body, no_effect: false })
+}
+
+/// The class of the other body's region whose faces `op` discards on side
+/// `side` (see `assemble::select`'s keep rule).
+fn dropped(op: Op, side: usize) -> Class {
+    match (op, side) {
+        (Op::Union, _) | (Op::Cut, 0) => Class::In,
+        (Op::Intersect, _) | (Op::Cut, _) => Class::Out,
+    }
+}
+
+/// Move the seam of every cylinder / cone face whose two boundary circles
+/// both lie in the region the boolean discards (through holes: the tool's
+/// caps) to the angle where the boolean's closed intersection circles
+/// start (`imprint::closed_start`, 0.62·2π of the face frame). The
+/// oracle has no seams, so such a hole is bounded by single closed circles;
+/// with the seam there our intersection circles are not split at it and
+/// export (and tessellate) as one edge. Faces whose circles survive keep
+/// their seam (their circles start at c + r·x).
+pub fn relocate_seams(b: &Body, other: &Body, drop: Class, tol: f64) -> Body {
+    use ck_geom::curve::Curve;
+    use ck_geom::pcurve::{exact_pcurve, pcurve_of};
+    use ck_geom::surface::Surface;
+    use std::f64::consts::TAU;
+    let mut out = b.clone();
+    let solid = Solid::new(other, tol);
+    let (t0, _) = super::imprint::closed_start(TAU);
+    for f in b.face_ids() {
+        let face = b.face(f);
+        let frame = match &face.surface {
+            Surface::Cylinder { frame, .. } | Surface::Cone { frame, .. } => *frame,
+            _ => continue,
+        };
+        if face.loops.len() != 1 {
+            continue;
+        }
+        let cs = b.lp(face.loops[0]).coedges.clone();
+        let mut seams = vec![];
+        let mut circles = vec![];
+        for &c in &cs {
+            let e = b.coedge(c).edge;
+            if b.is_seam(e) {
+                if !seams.contains(&e) {
+                    seams.push(e);
+                }
+            } else {
+                circles.push(e);
+            }
+        }
+        if seams.len() != 1 || circles.len() != 2 {
+            continue;
+        }
+        let full = |e: ck_topo::body::EdgeId| {
+            let ed = b.edge(e);
+            matches!(ed.curve, Curve::Circle { .. }) && ed.v0 == ed.v1 && ((ed.t1 - ed.t0) - TAU).abs() < 1e-9
+        };
+        if !circles.iter().all(|&e| full(e)) {
+            continue;
+        }
+        let in_drop = circles.iter().all(|&e| {
+            let p = b.edge_mid(e);
+            solid.classify(p, frame.z) == drop
+        });
+        if !in_drop {
+            continue;
+        }
+        let s = seams[0];
+        let radial = frame.x * t0.cos() + frame.y * t0.sin();
+        for &e in &circles {
+            let ed = b.edge(e).clone();
+            let Curve::Circle { frame: cf, r } = ed.curve else { continue };
+            let target = cf.o + radial * r;
+            let mut t = ed.curve.closest_param(target);
+            // same start convention as imprint: the run [t, t + 2π]
+            t = t0 + (t - t0 - TAU * ((t - t0) / TAU).round());
+            out.edges[e.idx()].t0 = t;
+            out.edges[e.idx()].t1 = t + TAU;
+            out.vertices[ed.v0.idx()].p = ed.curve.eval(t);
+        }
+        let se = b.edge(s).clone();
+        let (pa, pb) = (out.vertex(se.v0).p, out.vertex(se.v1).p);
+        let len = pa.dist(pb);
+        out.edges[s.idx()].curve = Curve::Line { o: pa, d: (pb - pa) / len };
+        out.edges[s.idx()].t0 = 0.0;
+        out.edges[s.idx()].t1 = len;
+        // pcurves of the touched faces (cylinder loop kept uv-continuous)
+        let mut faces: Vec<ck_topo::body::FaceId> = vec![f];
+        for &e in &circles {
+            for g in b.edge_faces(e) {
+                if !faces.contains(&g) {
+                    faces.push(g);
+                }
+            }
+        }
+        for g in faces {
+            let surf = out.face(g).surface.clone();
+            let (pu, pv) = surf.periods();
+            for l in out.face(g).loops.clone() {
+                let mut prev_end: Option<ck_geom::Vec2> = None;
+                for c in out.lp(l).coedges.clone() {
+                    let ce = out.coedge(c).clone();
+                    let ed = out.edge(ce.edge).clone();
+                    let pc = exact_pcurve(&surf, &ed.curve, tol * 10.0).or_else(|| pcurve_of(&surf, &ed.curve, ed.t0, ed.t1, tol).ok());
+                    let pc = pc.map(|mut pc| {
+                        let (ta, tb) = if ce.rev { (ed.t1, ed.t0) } else { (ed.t0, ed.t1) };
+                        if let Some(prev) = prev_end {
+                            let st = pc.eval(ta);
+                            let du = pu.map_or(0.0, |p| ((prev.x - st.x) / p).round() * p);
+                            let dv = pv.map_or(0.0, |p| ((prev.y - st.y) / p).round() * p);
+                            if du != 0.0 || dv != 0.0 {
+                                pc = super::assemble::shift2(&pc, ck_geom::Vec2::new(du, dv));
+                            }
+                        }
+                        prev_end = Some(pc.eval(tb));
+                        pc
+                    });
+                    out.coedges[c.idx()].pcurve = pc;
+                }
+            }
+        }
+    }
+    out
 }
 
 fn first_point(b: &Body) -> Vec3 {
@@ -196,10 +327,10 @@ mod tests {
         // edge keys: oracle has the 12 box edges + two circles C0|F4, C1|F4
         let wire: Vec<String> = r
             .body
-            .wire_edges()
+            .wire_chains()
             .iter()
-            .map(|&e| {
-                let fs = r.body.edge_faces(e);
+            .map(|ch| {
+                let fs = r.body.edge_faces(ch[0]);
                 let mut ids: Vec<String> = fs.iter().map(|&f| r.body.face_id_str(f)).collect();
                 ids.sort();
                 ids.join("|")
