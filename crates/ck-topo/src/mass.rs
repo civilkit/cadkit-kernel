@@ -67,6 +67,54 @@ fn face_pieces(b: &Body, f: FaceId) -> Vec<Piece<'_>> {
     out
 }
 
+/// B-spline faces are piecewise polynomial: cut straight boundary pcurves
+/// where they cross an interior knot line, so that every Gauss panel lies
+/// in one polynomial span (loft side faces have knots at the stations).
+fn split_at_knots<'a>(surf: &Surface, pieces: Vec<Piece<'a>>) -> Vec<Piece<'a>> {
+    let Surface::BSpline(bs) = surf else { return pieces };
+    let ((u0, u1), (v0, v1)) = bs.domain();
+    let inner = |k: &[f64], lo: f64, hi: f64| -> Vec<f64> {
+        let mut out: Vec<f64> = k.iter().copied().filter(|&x| x > lo && x < hi).collect();
+        out.dedup();
+        out
+    };
+    let (ku, kv) = (inner(&bs.knots_u, u0, u1), inner(&bs.knots_v, v0, v1));
+    if ku.is_empty() && kv.is_empty() {
+        return pieces;
+    }
+    let mut out = vec![];
+    for p in pieces {
+        match p {
+            Piece::Exact(pc @ Curve2::Line { o, d }, ta, tb) => {
+                let mut ts: Vec<f64> = vec![];
+                for (ks, oo, dd) in [(&ku, o.x, d.x), (&kv, o.y, d.y)] {
+                    if dd == 0.0 {
+                        continue;
+                    }
+                    for &k in ks.iter() {
+                        let t = (k - oo) / dd;
+                        if t > ta.min(*&tb) && t < ta.max(tb) {
+                            ts.push(t);
+                        }
+                    }
+                }
+                ts.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                if tb < ta {
+                    ts.reverse();
+                }
+                let mut a = ta;
+                for t in ts {
+                    out.push(Piece::Exact(pc, a, t));
+                    a = t;
+                }
+                out.push(Piece::Exact(pc, a, tb));
+            }
+            p => out.push(p),
+        }
+    }
+    out
+}
+
 /// Outer panel count: angular parameters get ≤ π/8 panels (GL8 is then
 /// exact to ~1e-16 for the trig-polynomial integrands of analytic faces).
 fn panels_for(pc: &Curve2, ta: f64, tb: f64, ang: (bool, bool), curved: bool) -> usize {
@@ -104,7 +152,7 @@ fn angular(s: &Surface) -> (bool, bool) {
 /// panel counts (region.rs refines near-singular integrands with it).
 pub fn face_integral<const K: usize>(b: &Body, f: FaceId, res: usize, integrand: &dyn Fn(Vec3, Vec3) -> [f64; K]) -> [f64; K] {
     let surf = &b.face(f).surface;
-    let pieces = face_pieces(b, f);
+    let pieces = split_at_knots(surf, face_pieces(b, f));
     let mut acc = [0.0; K];
     if pieces.is_empty() {
         return acc;
@@ -141,22 +189,47 @@ pub fn face_integral<const K: usize>(b: &Body, f: FaceId, res: usize, integrand:
         hu = hu.min(width / (16.0 * res as f64));
     }
     let curved = !matches!(surf, Surface::Plane { .. });
+    // B-spline faces: cut the u-integral at the interior knots (rational
+    // quarter-turn arcs have C0 knots; a panel across one loses ~1e-4)
+    let knots_u: Vec<f64> = match surf {
+        Surface::BSpline(bs) => {
+            let (a, z) = bs.domain().0;
+            let mut k: Vec<f64> = bs.knots_u.iter().copied().filter(|&x| x > a && x < z).collect();
+            k.dedup();
+            k
+        }
+        _ => vec![],
+    };
     let inner = |u: f64, v: f64| -> [f64; K] {
         let mut g = [0.0; K];
-        let span = u - ustar;
-        if span == 0.0 {
+        if u - ustar == 0.0 {
             return g;
         }
-        let n = ((span.abs() / hu).ceil() as usize).clamp(1, 512 * res);
-        let h = span / n as f64;
-        for i in 0..n {
-            let m = ustar + h * (i as f64 + 0.5);
-            for &(x, w) in GL.iter() {
-                let s = m + 0.5 * h * x;
-                let d = surf.derivs2(s, v);
-                let val = integrand(d.p, d.du.cross(d.dv));
-                for k in 0..K {
-                    g[k] += 0.5 * h * w * val[k];
+        let mut cuts = vec![ustar];
+        let (lo, hi) = (ustar.min(u), ustar.max(u));
+        let mut mid: Vec<f64> = knots_u.iter().copied().filter(|&k| k > lo && k < hi).collect();
+        if u < ustar {
+            mid.reverse();
+        }
+        cuts.extend(mid);
+        cuts.push(u);
+        for seg in cuts.windows(2) {
+            let (a, c) = (seg[0], seg[1]);
+            let span = c - a;
+            if span == 0.0 {
+                continue;
+            }
+            let n = ((span.abs() / hu).ceil() as usize).clamp(1, 512 * res);
+            let h = span / n as f64;
+            for i in 0..n {
+                let m = a + h * (i as f64 + 0.5);
+                for &(x, w) in GL.iter() {
+                    let s = m + 0.5 * h * x;
+                    let d = surf.derivs2(s, v);
+                    let val = integrand(d.p, d.du.cross(d.dv));
+                    for k in 0..K {
+                        g[k] += 0.5 * h * w * val[k];
+                    }
                 }
             }
         }

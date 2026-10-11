@@ -852,6 +852,82 @@ pub fn profiles(sk: &Sketch) -> Profiles {
     Profiles { open: regions.is_empty() && any, regions }
 }
 
+/// The non-construction curves of `sk` as ONE open chain (surface-loft
+/// profile): `None` unless they form a single simple path (no closed
+/// curve, branch, cycle or second component). Oracle probes (surface
+/// loft, 3-line chain in every entity order / direction): the chain runs
+/// in the direction of the first-listed entity that has a free end — from
+/// that free end when the entity starts there, from the other end of the
+/// chain when it ends there. No intersections are split.
+pub fn open_chain(sk: &Sketch) -> Option<Vec<Seg>> {
+    let (curves, _) = curves_of(sk);
+    if curves.is_empty() || curves.iter().any(|c| c.closed) {
+        return None;
+    }
+    let ends: Vec<(P, P)> = curves.iter().map(|c| (c.geom.eval(c.t0), c.geom.eval(c.t1))).collect();
+    let mut scale = 1.0f64;
+    for (a, b) in &ends {
+        scale = scale.max(a[0].abs()).max(a[1].abs()).max(b[0].abs()).max(b[1].abs());
+    }
+    let tol = 1e-9 * scale * 10.0;
+    // vertices
+    let mut verts: Vec<P> = vec![];
+    let mut vid = |p: P| -> usize {
+        match verts.iter().position(|q| dist(*q, p) <= tol) {
+            Some(i) => i,
+            None => {
+                verts.push(p);
+                verts.len() - 1
+            }
+        }
+    };
+    let ev: Vec<(usize, usize)> = ends.iter().map(|(a, b)| (vid(*a), vid(*b))).collect();
+    let mut deg = vec![0usize; verts.len()];
+    for &(a, b) in &ev {
+        if a == b {
+            return None;
+        }
+        deg[a] += 1;
+        deg[b] += 1;
+    }
+    if deg.iter().any(|&d| d > 2) || deg.iter().filter(|&&d| d == 1).count() != 2 {
+        return None;
+    }
+    // start vertex: first-listed curve with a free end
+    let mut start = None;
+    for (i, &(a, b)) in ev.iter().enumerate() {
+        if deg[a] == 1 {
+            start = Some(a);
+            break;
+        }
+        if deg[b] == 1 {
+            // the chain starts at the OTHER free end
+            start = (0..verts.len()).find(|&v| deg[v] == 1 && v != b);
+            break;
+        }
+        let _ = i;
+    }
+    let mut v = start?;
+    let mut used = vec![false; curves.len()];
+    let mut out = vec![];
+    while out.len() < curves.len() {
+        let i = (0..curves.len()).find(|&i| !used[i] && (ev[i].0 == v || ev[i].1 == v))?;
+        used[i] = true;
+        let c = &curves[i];
+        let fwd = ev[i].0 == v;
+        let (ta, tb) = if fwd { (c.t0, c.t1) } else { (c.t1, c.t0) };
+        v = if fwd { ev[i].1 } else { ev[i].0 };
+        out.push(Seg {
+            kind: c.kind,
+            tag: c.tag.clone(),
+            a: c.geom.eval(ta),
+            b: c.geom.eval(tb),
+            curve: SegGeom { geom: c.geom.clone(), ta, tb },
+        });
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

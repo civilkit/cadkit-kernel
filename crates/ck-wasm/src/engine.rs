@@ -85,9 +85,10 @@ fn regen_hook(part: &Json, cx: &mut Cx) -> Result<(Json, State), String> {
         let mut r = regen::regen(&part, &opts, &mut ex);
         r.components = ex.brep.components_json();
         let rn = ex.brep.renorm_faces();
-        (r, (ex.brep.body, rn))
+        let sheets = std::mem::take(&mut ex.brep.sheets);
+        (r, (ex.brep.body, rn, sheets))
     });
-    let (body, renorm) = body;
+    let (body, renorm, mut sheets) = body;
     let mut out = result.to_json();
     cx.span(SNAPSHOT_LABEL, |cx| {
         if let Some(b) = &body {
@@ -96,6 +97,21 @@ fn regen_hook(part: &Json, cx: &mut Cx) -> Result<(Json, State), String> {
             cx.trace.relabel(&t, format!("tessellate {} faces → {} triangles", b.num_faces(), tess.mesh.tri_face.len()));
             cx.trace.end(t);
             set_body(&mut out, body_json(b, &tess, cx, &renorm));
+        }
+        // surface bodies (sheets), in id order; faces carry `meta.surface`
+        sheets.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut surfaces = vec![];
+        for (id, sb) in &sheets {
+            let t = cx.trace.begin(String::new());
+            let tess = ck_tess::mesh::tessellate(sb);
+            cx.trace.relabel(&t, format!("tessellate {} faces → {} triangles", sb.num_faces(), tess.mesh.tri_face.len()));
+            cx.trace.end(t);
+            let mut j = body_json(sb, &tess, cx, &renorm_none());
+            mark_surface(&mut j);
+            surfaces.push(Json::Arr(vec![Json::Str(id.clone()), j]));
+        }
+        if !surfaces.is_empty() {
+            set_key(&mut out, "surfaces", Json::Arr(surfaces));
         }
     });
     let state = match body {
@@ -106,6 +122,31 @@ fn regen_hook(part: &Json, cx: &mut Cx) -> Result<(Json, State), String> {
         None => State::empty(),
     };
     Ok((out, state))
+}
+
+fn renorm_none() -> (Vec<(usize, usize)>, Vec<(usize, usize)>) {
+    (vec![], vec![])
+}
+
+fn set_key(result: &mut Json, key: &str, v: Json) {
+    if let Json::Obj(kv) = result {
+        if let Some(slot) = kv.iter_mut().find(|(k, _)| k == key) {
+            slot.1 = v;
+        }
+    }
+}
+
+/// Faces of a sheet carry `meta.surface: true` (oracle `surfaces[]`).
+fn mark_surface(body: &mut Json) {
+    let Json::Obj(kv) = body else { return };
+    let Some((_, Json::Arr(faces))) = kv.iter_mut().find(|(k, _)| k == "faces") else { return };
+    for f in faces {
+        if let Json::Obj(fk) = f {
+            if let Some((_, Json::Obj(meta))) = fk.iter_mut().find(|(k, _)| k == "meta") {
+                meta.push(("surface".into(), Json::Bool(true)));
+            }
+        }
+    }
 }
 
 fn set_body(result: &mut Json, body: Json) {
