@@ -463,6 +463,19 @@ pub fn face_box(b: &Body, f: FaceId) -> Aabb {
             }
         }
         if ulo.is_finite() && vlo.is_finite() {
+            // a full revolution bounded only by its meridian seam (u constant
+            // along the loop, e.g. a revolved sphere): the face spans the period
+            let (pu, pv) = face.surface.periods();
+            if let Some(per) = pu {
+                if uhi - ulo < 1e-9 * per {
+                    uhi = ulo + per;
+                }
+            }
+            if let Some(per) = pv {
+                if vhi - vlo < 1e-9 * per {
+                    vhi = vlo + per;
+                }
+            }
             let n = 12;
             for i in 0..=n {
                 for j in 0..=n {
