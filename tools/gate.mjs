@@ -14,6 +14,8 @@
 //   step          STEP replies byte-identical (ck-io golden request bodies)
 //   valid.<set>   OURS alone: no feature errors, volume > 0, every edge
 //                 bounds exactly 2 faces (closed manifold shell)
+//   oracle.<set>  HARD: massProps volume/area/com + box vs the closed-form
+//                 oracles of tools/oracles (independent of the original), 1e-6
 //   vol.<set>     our volume within 1e-3 relative of the original's
 //   import.roundtrip  OURS alone (HARD): our `step` export -> `importStep` into
 //                 a fresh tag; volume/area within 1e-6, same face and edge
@@ -30,6 +32,8 @@ import { fileURLToPath } from 'node:url';
 import { Kernel } from './kernel.mjs';
 import cases from './cases.mjs';
 import { parts as brepParts } from './brep_cases.mjs';
+import { oracles } from './oracles/index.mjs';
+import { checkOracle } from './oracles/check.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2);
@@ -66,7 +70,7 @@ const close = (a, b) => {
   if (a && b && typeof a === 'object') return Object.keys(a).join() === Object.keys(b).join() && Object.keys(a).every((k) => close(a[k], b[k]));
   return a === b;
 };
-const validCodes = {}, validFail = [], importFail = [];
+const validCodes = {}, validFail = [], oracleFail = [], importFail = [];
 // our STEP export -> importStep (tag "imp") -> massProps / validate / counts
 function importRoundtrip(t, kb, pb, mb) {
   let why = null;
@@ -110,6 +114,11 @@ function regenSet(set, targets) {
       const q = JSON.stringify({ id: 2, msg: { type: 'massProps', tag: 'main' } });
       const ma = JSON.parse(ka.request(q).json || 'null')?.result, mb = JSON.parse(kb.request(q).json || 'null')?.result;
       bump(`mass.${set}`, ['volume', 'area', 'com'].every((k) => close(mb?.[k], ma?.[k])));
+      if (set === 'brep' && oracles[t.name]) {
+        const bad = checkOracle(oracles[t.name], mb, bb.box);
+        bump('oracle.brep', bad.length === 0);
+        if (bad.length) oracleFail.push(`${t.name}: ${bad.join(' | ')}`);
+      }
       bump(`vol.${set}`, typeof mb?.volume === 'number' && Math.abs(mb.volume - ma?.volume) <= 1e-3 * Math.abs(ma?.volume ?? 0));
       const manifold = (bb.edges ?? []).every((e) => e.faces?.length === 2);
       const vq = JSON.stringify({ id: 3, msg: { type: 'validate', tag: 'main' } });
@@ -151,7 +160,7 @@ if (importFail.length && !quiet) console.log(importFail.join('\n'));
 const basePath = path.join(here, 'scoreboard.json');
 const base = existsSync(basePath) ? JSON.parse(readFileSync(basePath, 'utf8')) : {};
 let worse = 0, soft = 0;
-const hard = (k) => /^(wire|valid\.|vol\.|import\.)/.test(k);
+const hard = (k) => /^(wire|valid\.|vol\.|oracle\.|import\.)/.test(k);
 const skipped = (k) => fast && /^(regen|mass|valid|vol)\.(bracket|stepper|flange|hair)/.test(k);
 for (const k of Object.keys({ ...base, ...score }).sort()) {
   const [m, n] = score[k] ?? [0, 0], b = base[k]?.[0];
@@ -160,6 +169,7 @@ for (const k of Object.keys({ ...base, ...score }).sort()) {
   if (b !== undefined && m < b) hard(k) ? worse++ : soft++;
   console.log(`${k.padEnd(40)} ${String(m).padStart(4)}/${String(n).padEnd(4)}${d}`);
 }
+for (const f of oracleFail) console.log(`ORACLE MISMATCH ${f}`);
 if (Object.keys(validCodes).length) { console.log('validate issue codes:', JSON.stringify(validCodes)); if (!quiet) console.log(validFail.join('\n')); else console.log(`validate-failing cases: ${validFail.length}`); }
 if (update) { const out = fast ? { ...base, ...score } : score; writeFileSync(basePath, JSON.stringify(out, null, 1) + '\n'); console.log(`baseline written: ${basePath}`); }
 else if (worse) { console.log(`\nGATE FAILED: ${worse} metric(s) regressed`); process.exitCode = 1; }

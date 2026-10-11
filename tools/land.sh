@@ -27,6 +27,7 @@ if ! git merge -q --no-edit main; then
 fi
 cargo test -q --workspace --profile fast 2>&1 | grep -E "^test result|FAILED|panicked" | grep -v " 0 failed" | grep . && { echo "land: tests failed"; exit 1; } || true
 cargo build -q -p ck-wasm --target wasm32-unknown-unknown --release
+node tools/lint_protocol.mjs --quiet || { echo "land: protocol lint failed"; exit 1; }
 node tools/gate.mjs --fast --quiet | tail -1 | grep -q "gate ok" || { node tools/gate.mjs --fast --quiet | grep REGRESSION; echo "land: gate failed"; exit 1; }
 git -C "$MAIN" merge --ff-only "$BR"
 echo "landed $BR -> main @ $(git -C "$MAIN" rev-parse --short HEAD)"
