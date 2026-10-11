@@ -1054,3 +1054,53 @@ mod tests {
         );
     }
 }
+
+/// Open sketch chains for surface features (`surfaceRevolve` /
+/// `surfaceExtrude` over a sketch without regions): the non-construction
+/// curves joined end to end (tolerance 1e-6). Each chain runs in the first
+/// entity's direction, later curves are appended (or prepended) and flipped
+/// where needed. No intersection splitting.
+pub fn open_chains(sk: &Sketch) -> Vec<Vec<Seg>> {
+    let (curves, _) = curves_of(sk);
+    let seg_of = |c: &Curve, rev: bool| -> Seg {
+        let (ta, tb) = if rev { (c.t1, c.t0) } else { (c.t0, c.t1) };
+        Seg { kind: c.kind, tag: c.tag.clone(), a: c.geom.eval(ta), b: c.geom.eval(tb), curve: SegGeom { geom: c.geom.clone(), ta, tb } }
+    };
+    let mut used = vec![false; curves.len()];
+    let mut chains = vec![];
+    for i in 0..curves.len() {
+        if used[i] {
+            continue;
+        }
+        used[i] = true;
+        let mut chain = vec![seg_of(&curves[i], false)];
+        let closed = |ch: &Vec<Seg>| dist(ch[0].a, ch[ch.len() - 1].b) < 1e-6;
+        let mut grew = true;
+        while grew && !(chain.len() > 1 && closed(&chain)) {
+            grew = false;
+            for j in 0..curves.len() {
+                if used[j] {
+                    continue;
+                }
+                let (tail, head) = (chain[chain.len() - 1].b, chain[0].a);
+                let fwd = seg_of(&curves[j], false);
+                let rev = seg_of(&curves[j], true);
+                if dist(fwd.a, tail) < 1e-6 {
+                    chain.push(fwd);
+                } else if dist(rev.a, tail) < 1e-6 {
+                    chain.push(rev);
+                } else if dist(fwd.b, head) < 1e-6 {
+                    chain.insert(0, fwd);
+                } else if dist(rev.b, head) < 1e-6 {
+                    chain.insert(0, rev);
+                } else {
+                    continue;
+                }
+                used[j] = true;
+                grew = true;
+            }
+        }
+        chains.push(chain);
+    }
+    chains
+}

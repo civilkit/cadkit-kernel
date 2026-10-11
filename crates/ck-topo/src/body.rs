@@ -660,7 +660,8 @@ impl Body {
         let mut out = vec![];
         for f in self.face_ids() {
             let face = &self.faces[f.idx()];
-            let planar = face.surface.is_planar(1e-9);
+            // pinned: a refit (spline) face is never reported planar
+            let planar = face.surface.kind() != "spline" && face.surface.is_planar(1e-9);
             let meta = Obj::new()
                 .put("feature", face.name.feature.as_str())
                 .put_opt("entity", face.name.meta_entity());

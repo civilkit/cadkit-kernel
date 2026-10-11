@@ -30,3 +30,23 @@ Buffers are referenced in JSON as {"$buf":i,"type":"f32|f64|u32|i32|u8",
 kernelworker.js (exact working client) and rebuild/oracle.mjs (harness).
 On panic: ck_panic receives ptr/len; host resets by re-instantiating the
 module ("the kernel ran out of stack" handling).
+
+## Body-bearing queries (engine.rs `query_hook`)
+
+`measure` `curvatureAt` `refCurve` `convert` `curvatureMap` `comb`
+`interference` `matchEdges` (private-regen hook) `drag` are answered here
+from the regen snapshot (`Snapshot { body, sketches, asm }`); geometry lives
+in ck-ops (`measure`, `curvature_at`, `ref_curve`, `convert_proj`,
+`interference`, `match_edges`), ck-tess (`comb`, `curvmap`) and, where the
+sketch results or assembly state are needed, here (`sketch_q.rs`, `drag.rs`).
+
+`tests/query_golden.rs` runs the whole server path against oracle replies
+captured by `node tools/query_golden.mjs [types] [part]` (golden:
+`crates/ck-model/tests/golden/queries.json`; compared to 1e-9, `drag` 1e-6).
+Per-type counts of replies still differing are pinned in `allowed` (ties of
+zero-distance `measure` points, other agents' body differences, oblique
+`convert` splines, `comb` of faces with several chords, `drag` against free
+reference components). `curvatureMap` has no golden: the oracle meshes every
+face on a dense adaptive grid (50-250k triangles per curved face); ours
+reuses the display mesh (structure and per-vertex curvature exact,
+triangles differ) - `tests/curvmap.rs`.

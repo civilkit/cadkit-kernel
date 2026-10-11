@@ -260,6 +260,10 @@ pub fn uv_tol(surf: &Surface, uv: Vec2, tol: &Tol) -> f64 {
 /// Unit surface normal at (u,v) with a fallback for degenerate points (poles):
 /// nudges towards the domain interior.
 pub fn surface_normal(surf: &Surface, u: f64, v: f64) -> Vec3 {
+    // a plane's normal is the cross product of its axes (the sign of its zero components is visible in the wire buffers)
+    if let Surface::Plane { frame } = surf {
+        return frame.x.cross(frame.y);
+    }
     let n = surf.normal(u, v);
     if n.is_finite() && n.len2() > 0.5 {
         return n;

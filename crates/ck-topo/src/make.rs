@@ -246,7 +246,7 @@ pub fn plane_pcurve(fr: &Frame, c: &Curve) -> Option<Curve2> {
 // ---------------------------------------------------------------- sweep core
 
 /// Side surface + exact pcurves of its boundary pieces.
-pub(crate) struct SideGeom {
+pub struct SideGeom {
     pub surface: Surface,
     pub sense: bool,
     pub pc_bottom: Curve2,
@@ -257,7 +257,7 @@ pub(crate) struct SideGeom {
     pub pc_rail_t1: Option<Curve2>,
 }
 
-pub(crate) struct SegGeom {
+pub struct SegGeom {
     pub bottom: (Curve, f64, f64),
     pub top: (Curve, f64, f64),
     pub cap0_pc: Option<Curve2>,
@@ -265,25 +265,25 @@ pub(crate) struct SegGeom {
     pub side: Option<SideGeom>,
 }
 
-pub(crate) struct VertGeom {
+pub struct VertGeom {
     pub bottom: Vec3,
     pub top: Vec3,
     pub rail: Option<(Curve, f64, f64)>,
 }
 
-pub(crate) struct LoopGeom {
+pub struct LoopGeom {
     pub verts: Vec<VertGeom>,
     pub segs: Vec<SegGeom>,
 }
 
-pub(crate) struct Caps {
+pub struct Caps {
     pub c0: Frame,
     pub c1: Frame,
 }
 
 /// Assemble topology for a profile sweep. `sigma_pos`: sweep direction is
 /// along +sketch-normal at the profile (decides loop orientation).
-pub(crate) fn build_sweep(
+pub fn build_sweep(
     feature: &str,
     profile: &Profile,
     regions: Vec<Vec<LoopGeom>>,
@@ -291,18 +291,35 @@ pub(crate) fn build_sweep(
     sigma_pos: bool,
     closed: bool,
 ) -> Body {
+    build_sweep_with(feature, profile, regions, caps, sigma_pos, closed, false)
+}
+
+/// [`build_sweep`] with the cap faces optionally listed AFTER the side faces
+/// (`caps_last`: the oracle's general (spline) sweeps number sides first).
+pub fn build_sweep_with(
+    feature: &str,
+    profile: &Profile,
+    regions: Vec<Vec<LoopGeom>>,
+    caps: Option<&[Caps]>,
+    sigma_pos: bool,
+    closed: bool,
+    caps_last: bool,
+) -> Body {
     let mut b = Body::new();
     let multi = profile.regions.len() > 1;
     for (ri, (preg, lgs)) in profile.regions.iter().zip(regions).enumerate() {
         let lump = b.add_lump();
         let shell = b.add_shell(lump);
         let rtag = if multi { Some(ri as u32 + 1) } else { None };
-        let cap_faces = caps.map(|cs| {
-            let c = &cs[ri.min(cs.len() - 1)];
-            let f0 = b.add_face(shell, Surface::Plane { frame: c.c0 }, !sigma_pos, FaceName::cap(feature, 0, rtag));
-            let f1 = b.add_face(shell, Surface::Plane { frame: c.c1 }, sigma_pos, FaceName::cap(feature, 1, rtag));
-            (f0, f1)
-        });
+        let mk_caps = |b: &mut Body| {
+            caps.map(|cs| {
+                let c = &cs[ri.min(cs.len() - 1)];
+                let f0 = b.add_face(shell, Surface::Plane { frame: c.c0 }, !sigma_pos, FaceName::cap(feature, 0, rtag));
+                let f1 = b.add_face(shell, Surface::Plane { frame: c.c1 }, sigma_pos, FaceName::cap(feature, 1, rtag));
+                (f0, f1)
+            })
+        };
+        let mut cap_faces = if caps_last { None } else { mk_caps(&mut b) };
         let ploops: Vec<&ProfileLoop> = preg.loops().collect();
         // side faces first (face order: caps, then all sides of the region)
         let mut side_faces = vec![];
@@ -314,6 +331,9 @@ pub(crate) fn build_sweep(
                 }));
             }
             side_faces.push(fs);
+        }
+        if caps_last {
+            cap_faces = mk_caps(&mut b);
         }
         for (li, (pl, lg)) in ploops.iter().zip(lgs.into_iter()).enumerate() {
             let m = pl.segs.len();
@@ -396,7 +416,7 @@ pub(crate) fn build_sweep(
 }
 
 /// Numerical sense: does the natural normal at `uv` agree with `outward`?
-pub(crate) fn sense_of(s: &Surface, uv: Vec2, outward: Vec3) -> bool {
+pub fn sense_of(s: &Surface, uv: Vec2, outward: Vec3) -> bool {
     s.normal(uv.x, uv.y).dot(outward) >= 0.0
 }
 

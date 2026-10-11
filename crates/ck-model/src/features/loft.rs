@@ -113,8 +113,8 @@ pub fn exec_loft(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(
     state.result.markers.retain(|m| m.as_arr().and_then(|a| a.first()).and_then(|j| j.as_str()) != Some(f.id.as_str()));
     state.result.markers.push(Json::Arr(vec![Json::Str(f.id.clone()), marker]));
     if *surface {
-        br.sheets.retain(|(id, _)| id != &f.id);
-        br.sheets.push((f.id.clone(), out.body));
+        br.surfs.retain(|(id, _)| id != &f.id);
+        br.surfs.push((f.id.clone(), out.body));
         return Ok(());
     }
     let combine = if *op == Op::Cut { super::extrude::Combine::Cut } else { super::extrude::Combine::Add };

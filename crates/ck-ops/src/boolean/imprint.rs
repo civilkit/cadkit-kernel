@@ -207,6 +207,21 @@ pub fn imprint(a: &Body, b: &Body, tol: f64) -> Arrangement {
                     let whole = contiguous
                         && curve.period().map_or(false, |p| (kept[kept.len() - 1].1 - kept[0].0 - p).abs() <= 1e-9);
                     if whole && kept.len() > 1 && matches!(curve, Curve::Circle { .. } | Curve::Ellipse { .. }) {
+                        // an interior break on a boundary edge (a seam that
+                        // was not relocated) stays a split point
+                        let start_pt = curve.eval(closed_start(kept[kept.len() - 1].1 - kept[0].0).0);
+                        for w in kept.windows(2) {
+                            let p = curve.eval(w[0].1);
+                            let on_edge = [(a, f), (b, g)].iter().any(|&(bd, fc)| {
+                                bd.face_edges(fc).into_iter().any(|e| {
+                                    let ed = bd.edge(e);
+                                    dist_in_range(&ed.curve, (ed.t0, ed.t1), p).1 <= tol
+                                })
+                            });
+                            if on_edge && p.dist(start_pt) > tol {
+                                extra.push(p);
+                            }
+                        }
                         kept = vec![(kept[0].0, kept[kept.len() - 1].1)];
                     }
                     let whole = whole && kept.len() == 1;
