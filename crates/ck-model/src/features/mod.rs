@@ -865,6 +865,7 @@ impl crate::regen::FeatureExec for Brep {
             FeatureKind::Mate { .. } => return mate::exec_mate(self, state, f),
             _ if surfaces::handles(f) => return surfaces::dispatch(self, state, f),
             FeatureKind::Rib { .. } => return rib::exec_rib(self, state, f),
+            FeatureKind::Lip { .. } => return lip::exec_lip(self, state, f),
             FeatureKind::Draft { .. } => return draft::exec_draft(self, state, f),
             _ => return Err(crate::regen::FeatureError::new(&extrude::todo(&f.type_name))),
         };

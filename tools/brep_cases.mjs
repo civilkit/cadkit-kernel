@@ -241,6 +241,25 @@ parts.mirrorBodyCone = part([...parts.cone.features, { type: 'plane', id: 'F8', 
   parts.ribNoSketch = part([...hollow, { type: 'rib', id: 'F6', thickness: 1.2 }]);
 }
 
+// lip / groove along the outer rim edges of a shelled box
+{
+  const [P, E] = rect(0, 0, 40, 20);
+  const hollow = [sketch('top', P, E), extrude(), { type: 'shell', id: 'F3', faces: ['F2.C1'], thickness: 2 }];
+  const edge = (a, b, at) => ({ faces: [a, b], at });
+  const outer = [edge('F2.C1', 'F2.S.e1~1', [20, 10, 0]), edge('F2.C1', 'F2.S.e2~2', [40, 10, -10]), edge('F2.C1', 'F2.S.e3~1', [20, 10, -20]), edge('F2.C1', 'F2.S.e4~1', [0, 10, -10])];
+  const lip = (o = {}) => ({ type: 'lip', id: 'F4', kind: 'lip', faces: ['F2.C1'], edges: outer, width: 0.5, height: 1, ...o });
+  parts.lipHollow = part([...hollow, lip()]);
+  parts.lipGroove = part([...hollow, lip({ kind: 'groove' })]);
+  parts.lipOne = part([...hollow, lip({ edges: [outer[0]] })]);
+  parts.lipWide = part([...hollow, lip({ width: 3 })]);
+  parts.lipNoBody = part([lip()]);
+  parts.lipNoFaces = part([...hollow, lip({ faces: [] })]);
+  parts.lipNoEdges = part([...hollow, lip({ edges: [] })]);
+  parts.lipZeroWidth = part([...hollow, lip({ width: 0 })]);
+  parts.lipZeroHeight = part([...hollow, lip({ height: 0 })]);
+  parts.lipBadFace = part([...hollow, lip({ faces: ['F9.C0'] })]);
+}
+
 const m = (msg) => JSON.stringify({ id: 1, msg });
 /// Follow-up requests on each part's state (compared byte-for-byte).
 export const queries = [
