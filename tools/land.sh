@@ -18,6 +18,8 @@ if ! git merge -q --no-edit main; then
       tools/funcmap/layouts.md|*README.md)
         git show :2:"$F" > "$F.a"; git show :3:"$F" > "$F.b"; (git show :1:"$F" 2>/dev/null || :) > "$F.o"
         git merge-file --union "$F.a" "$F.o" "$F.b"; mv "$F.a" "$F"; rm -f "$F.o" "$F.b"; git add "$F" ;;
+      tools/scoreboard.json)
+        git checkout --theirs "$F" && git add "$F" ;;   # baseline follows main
       *) echo "land: real conflict in $F — resolve in $WT and rerun"; exit 1 ;;
     esac
   done
