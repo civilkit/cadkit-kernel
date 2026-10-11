@@ -222,6 +222,25 @@ parts.mirrorBodyCone = part([...parts.cone.features, { type: 'plane', id: 'F8', 
   parts.deleteBodyNone = part([...tube, { type: 'deleteBody', id: 'F3', mode: 'delete', bodies: [] }]);
 }
 
+// rib on a shelled 40x20x10 box (sketch plane x runs along world -x: flipped offset plane)
+{
+  const [P, E] = rect(0, 0, 40, 20);
+  const hollow = [sketch('top', P, E), extrude(), { type: 'shell', id: 'F3', faces: ['F2.C1'], thickness: 2 }];
+  const plane = { type: 'plane', id: 'F4', mode: 'offset', base: STD('front'), offset: 10, flip: true };
+  const onPlane = (pts, ents) => ({ type: 'sketch', id: 'F5', plane: { kind: 'feature', id: 'F4' }, points: pts, entities: ents, constraints: [] });
+  const ln = (a, b) => onPlane([pt('a', a[0], a[1]), pt('b', b[0], b[1])], [line('e1', 'a', 'b')]);
+  const rib = (t, o = {}) => ({ type: 'rib', id: 'F6', sketch: 'F5', thickness: t, ...o });
+  parts.ribHollow = part([...hollow, plane, ln([-5, 5], [-35, 5]), rib(1.2)]);
+  parts.ribHollowFlip = part([...hollow, plane, ln([-5, 5], [-35, 5]), rib(1.2, { flip: true })]);
+  parts.ribPoly = part([...hollow, plane, onPlane([pt('a', -5, 3), pt('b', -20, 8), pt('c', -35, 3)], [line('e1', 'a', 'b'), line('e2', 'b', 'c')]), rib(1.2)]);
+  parts.ribThrough = part([...hollow, plane, ln([5, 5], [-45, 5]), rib(1.2)]);
+  parts.ribFar = part([...hollow, plane, ln([100, 5], [130, 5]), rib(1.2)]);
+  parts.ribClosed = part([...hollow, plane, onPlane(rect(5, 3, 35, 7, ['r1', 'r2', 'r3', 'r4'], 'q')[0], rect(5, 3, 35, 7, ['r1', 'r2', 'r3', 'r4'], 'q')[1]), rib(1.2)]);
+  parts.ribZero = part([...hollow, plane, ln([-5, 5], [-35, 5]), rib(0)]);
+  parts.ribNoBody = part([plane, ln([-5, 5], [-35, 5]), rib(1.2)]);
+  parts.ribNoSketch = part([...hollow, { type: 'rib', id: 'F6', thickness: 1.2 }]);
+}
+
 const m = (msg) => JSON.stringify({ id: 1, msg });
 /// Follow-up requests on each part's state (compared byte-for-byte).
 export const queries = [
