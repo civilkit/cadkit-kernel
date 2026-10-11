@@ -854,6 +854,7 @@ impl crate::regen::FeatureExec for Brep {
             FeatureKind::LPattern { .. } | FeatureKind::CPattern { .. } => return pattern::exec_pattern(self, state, f),
             FeatureKind::Fillet { .. } => return blends::exec_fillet(self, state, f),
             FeatureKind::InsertPart { .. } => return self.exec_insert(state, f),
+            FeatureKind::Hole { .. } => return hole::exec_hole(self, state, f),
             FeatureKind::Mate { .. } => return mate::exec_mate(self, state, f),
             _ => return Err(crate::regen::FeatureError::new(&extrude::todo(&f.type_name))),
         };
