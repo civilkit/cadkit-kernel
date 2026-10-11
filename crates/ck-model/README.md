@@ -170,3 +170,10 @@ component box extents are NOT padded for the rotated half — its face box
 is the surface box over the mesh uv bounds ∪ edge boxes, and some circle
 extremes evidently come from the unpadded surface part; plus the missing
 chamfer / fillet / thread faces of bolt and nut).
+
+stepper (TODO): components F1 0, F13 1.2e-23 (exact), F10 1.4e-8; F2 / F6 /
+F22 / F26 / F30 off by 1..31 mm — the stator / rear-cap mate records differ
+(clocking concentric on split faces `~k`, cbore `h3` refs; `find_ref` picks
+the first split piece, GUESS); F16 shaft / F19 rotor fail nested
+`booleanFailed` (ck-ops). Not yet decoded: mate kinds 1/3/5..9 (tangent,
+angle, hinge, gear, ...), f1378 dof (rank GUESS), face surface box f3805.

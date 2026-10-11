@@ -239,7 +239,7 @@ pub fn plane_pcurve(fr: &Frame, c: &Curve) -> Option<Curve2> {
             let ccw = frame.z.dot(fr.z) > 0.0;
             Some(Curve2::Ellipse { c: c2, x: x2.normalize(), a: *a, b: *b, ccw })
         }
-        Curve::BSpline(_) => None,
+        Curve::BSpline(_) | Curve::Conic { .. } | Curve::Sinusoid { .. } => None,
     }
 }
 

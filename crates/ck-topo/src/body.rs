@@ -791,6 +791,19 @@ impl Body {
                     }
                 }
             }
+            // a closed ring of one conic starts where its parameter run
+            // starts: the piece whose t0 is no other piece's t1 (ck-ops
+            // imprint gives closed SSI circles the range [0.62·2π − 2π,
+            // 0.62·2π] and our seam splits it at 0; a ring split at t
+            // inside [0, 2π] keeps its original start)
+            let n = chain.len();
+            if n > 1 && self.edges[chain[0].idx()].v0 == self.edges[chain[n - 1].idx()].v1 {
+                let ends: Vec<f64> = chain.iter().map(|&c| self.edges[c.idx()].t1).collect();
+                let starts: Vec<usize> = (0..n).filter(|&k| !ends.contains(&self.edges[chain[k].idx()].t0)).collect();
+                if starts.len() == 1 {
+                    chain.rotate_left(starts[0]);
+                }
+            }
             out.push(chain);
         }
         out
@@ -804,6 +817,41 @@ impl Body {
     /// `F2.C0|F2.S.e7#0, F2.C1|F3.B0#2, F2.S.e7|F3.B0#3` — the dead C1
     /// circle is #1 and there is no slot for the rail seam (our arena:
     /// seam 0, C0 1, C1 2).
+    /// Wire chains with their oracle edge number `#n`: arena slots in order,
+    /// where every DEAD non-seam edge also takes a slot (an in-place op —
+    /// fillet — keeps its survivors' numbers and leaves gaps for dead
+    /// edges; ck-ops blend writes its result in that arena layout) and a
+    /// live chain takes the slot of its first arena member. Seams and the
+    /// further pieces of a chain take none. Without dead edges this is the
+    /// chain's position in [`Body::wire_chains`]. Also returns the slot
+    /// count (the next free number).
+    pub fn wire_numbered(&self) -> (Vec<(usize, Vec<EdgeId>)>, usize) {
+        let chains = self.wire_chains();
+        let mut head = vec![usize::MAX; self.edges.len()];
+        let mut member = vec![false; self.edges.len()];
+        for (k, ch) in chains.iter().enumerate() {
+            let first = ch.iter().map(|e| e.idx()).min().unwrap();
+            head[first] = k;
+            for e in ch {
+                member[e.idx()] = true;
+            }
+        }
+        let mut num = vec![0usize; chains.len()];
+        let mut slot = 0usize;
+        for i in 0..self.edges.len() {
+            let ed = &self.edges[i];
+            if ed.alive {
+                if head[i] != usize::MAX {
+                    num[head[i]] = slot;
+                    slot += 1;
+                }
+            } else if !member[i] && !self.edge_was_seam(EdgeId(i as u32)) {
+                slot += 1;
+            }
+        }
+        (num.into_iter().zip(chains).collect(), slot)
+    }
+
     pub fn seamless_index(&self, e: EdgeId) -> usize {
         (0..e.idx()).filter(|&i| !self.edge_was_seam(EdgeId(i as u32))).count()
     }
@@ -819,6 +867,17 @@ impl Body {
     pub fn chain_mid(&self, chain: &[EdgeId]) -> Vec3 {
         if chain.len() == 1 {
             return self.edge_mid(chain[0]);
+        }
+        // pieces of one conic with contiguous parameters: the mid parameter
+        // of the whole run (what the oracle's single edge reports)
+        let (f, l) = (&self.edges[chain[0].idx()], &self.edges[chain[chain.len() - 1].idx()]);
+        if matches!(f.curve, Curve::Circle { .. } | Curve::Ellipse { .. })
+            && chain.windows(2).all(|w| {
+                let (a, b) = (&self.edges[w[0].idx()], &self.edges[w[1].idx()]);
+                a.curve == b.curve && a.t1 == b.t0
+            })
+        {
+            return f.curve.eval(0.5 * (f.t0 + l.t1));
         }
         let lens: Vec<f64> = chain.iter().map(|&e| self.edge_length(e)).collect();
         let mut half = 0.5 * lens.iter().sum::<f64>();
@@ -841,7 +900,7 @@ impl Body {
     /// stand-alone default), concatenated along a chain.
     pub fn edges_json(&self, pts: &dyn Fn(&Body, EdgeId) -> Vec<Vec3>) -> Json {
         let mut out = vec![];
-        for (seq, chain) in self.wire_chains().into_iter().enumerate() {
+        for (seq, chain) in self.wire_numbered().0 {
             let e = chain[0];
             if self.is_split_rail(e) {
                 continue; // numbered, not listed
@@ -892,7 +951,7 @@ impl Body {
             Curve::Line { .. } => 1,
             Curve::Circle { r, .. } => arc_segments(*r, ed.t1 - ed.t0, tol),
             Curve::Ellipse { a, b, .. } => arc_segments(a.max(*b), ed.t1 - ed.t0, tol),
-            Curve::BSpline(_) => {
+            Curve::BSpline(_) | Curve::Conic { .. } | Curve::Sinusoid { .. } => {
                 let len = ed.curve.length_between(ed.t0, ed.t1);
                 ((len / (8.0 * tol).sqrt().max(1e-9)).ceil() as usize).clamp(2, 512)
             }

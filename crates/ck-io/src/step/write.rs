@@ -336,6 +336,12 @@ impl StepWriter {
                     )),
                 }
             }
+            // GUESS: no oracle evidence of STEP CONIC entities; conic and
+            // sinusoid edges are written as their B-spline approximations.
+            Curve::Conic { .. } | Curve::Sinusoid { .. } => {
+                let bs = ck_geom::convert::curve_to_nurbs(c, c.range().0, c.range().1);
+                self.curve(&Curve::BSpline(bs))
+            }
         }
     }
 

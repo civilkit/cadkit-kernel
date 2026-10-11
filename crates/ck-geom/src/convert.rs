@@ -76,6 +76,18 @@ pub fn curve_to_nurbs(c: &Curve, t0: f64, t1: f64) -> BSplineCurve {
         Curve::Line { .. } => segment(c.eval(t0), c.eval(t1), t0, t1),
         Curve::Circle { frame, r } => conic_arc(frame, *r, *r, t0, t1),
         Curve::Ellipse { frame, a, b } => conic_arc(frame, *a, *b, t0, t1),
+        // Conic/sinusoid: no closed rational form in this parameterisation
+        // is wired up — approximate by a cubic through 32 samples.
+        Curve::Conic { .. } | Curve::Sinusoid { .. } => {
+            let n = 32;
+            let pts: Vec<Vec3> = (0..=n).map(|i| c.eval(t0 + (t1 - t0) * i as f64 / n as f64)).collect();
+            let u: Vec<f64> = (0..=n).map(|i| i as f64 / n as f64).collect();
+            let knots = crate::fit::averaged_knots(&u, 3);
+            let b = crate::fit::interpolate_with(&pts, 3, &u, knots)
+                .or_else(|_| crate::fit::interpolate(&pts, 3, crate::fit::Param::ChordLength))
+                .unwrap_or_else(|_| segment(c.eval(t0), c.eval(t1), t0, t1));
+            b.reparam(t0, t1)
+        }
         Curve::BSpline(b) => b.segment(t0, t1),
     }
 }
@@ -276,6 +288,24 @@ mod tests {
         assert!(v2close(n.start(), c2.eval(0.5), 1e-14));
         assert!(v2close(n.end(), c2.eval(2.0), 1e-14));
         assert!(close(n.eval(1.1).dist(Vec2::new(1., 0.)), 2.0, 1e-14));
+    }
+
+    #[test]
+    fn conic_and_sinusoid_nurbs_approx() {
+        // no exact rational form wired up: the interpolated spline tracks
+        // the carrier closely
+        let c = Curve::conic(Vec3::ZERO, Vec3::Z, Vec3::X, 1.0, 1.3);
+        let n = curve_to_nurbs(&c, -0.5, 0.6);
+        for i in 0..=20 {
+            let t = -0.5 + 1.1 * i as f64 / 20.0;
+            assert!(vclose(n.eval(t), c.eval(t), 1e-6), "conic t={t}");
+        }
+        let s = Curve::sinusoid(Vec3::new(1., 1., 0.), Vec3::Z, Vec3::X, 0.5, 2.0, 0.3);
+        let n = curve_to_nurbs(&s, 0.0, 3.0);
+        for i in 0..=20 {
+            let t = 3.0 * i as f64 / 20.0;
+            assert!(vclose(n.eval(t), s.eval(t), 1e-6), "sinusoid t={t}");
+        }
     }
 
     fn check_on(s: &Surface, n: &BSplineSurface, ur: (f64, f64), vr: (f64, f64)) {
