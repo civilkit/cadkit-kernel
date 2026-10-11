@@ -48,6 +48,8 @@ pub struct FaceMesh {
     pub nrm: Vec<Vec3>,
     /// Triangles, CCW about the outward normal.
     pub tris: Vec<[u32; 3]>,
+    /// Cut windows `(start, period)` of the periodic directions (a strip point at `start + period` evaluates at `start`).
+    pub win: [Option<(f64, f64)>; 2],
 }
 
 impl FaceMesh {
@@ -67,6 +69,8 @@ impl FaceMesh {
 struct BPt {
     uv: Vec2,
     p: Vec3,
+    /// Junction of a merged circle chain: dropped from the polygon once the loops are split into chains.
+    virt: bool,
 }
 
 struct Builder<'a> {
@@ -82,7 +86,7 @@ impl<'a> Builder<'a> {
         if let Some(&i) = self.index.get(&key) {
             return i;
         }
-        self.pts.push(BPt { uv, p });
+        self.pts.push(BPt { uv, p, virt: false });
         self.index.insert(key, self.pts.len() - 1);
         self.pts.len() - 1
     }
@@ -94,6 +98,58 @@ impl<'a> Builder<'a> {
             p = q.p;
         }
         self.add(uv, p)
+    }
+    /// Reorders the points so that, when the segments form one simple cycle, the ring starts at the (u, v)-lexicographically
+    /// smallest point and runs counter-clockwise (after the first point reversed for a reversed-sense face).
+    fn canonical_ring(&mut self, sense: bool) {
+        let n = self.pts.len();
+        if n < 3 || self.segs.len() != n {
+            return;
+        }
+        let mut adj: Vec<Vec<usize>> = vec![vec![]; n];
+        for &(x, y) in &self.segs {
+            adj[x].push(y);
+            adj[y].push(x);
+        }
+        if adj.iter().any(|a| a.len() != 2) {
+            return;
+        }
+        let start = (0..n)
+            .min_by(|&i, &j| self.pts[i].uv.x.total_cmp(&self.pts[j].uv.x).then(self.pts[i].uv.y.total_cmp(&self.pts[j].uv.y)))
+            .unwrap();
+        let mut ring = vec![start];
+        let (mut prev, mut cur) = (usize::MAX, start);
+        loop {
+            let nx = if adj[cur][0] != prev { adj[cur][0] } else { adj[cur][1] };
+            if nx == start {
+                break;
+            }
+            ring.push(nx);
+            prev = cur;
+            cur = nx;
+            if ring.len() > n {
+                return;
+            }
+        }
+        if ring.len() != n {
+            return;
+        }
+        let area: f64 = (0..n)
+            .map(|i| {
+                let (p, q) = (self.pts[ring[i]].uv, self.pts[ring[(i + 1) % n]].uv);
+                p.x * q.y - q.x * p.y
+            })
+            .sum();
+        if area < 0.0 {
+            ring[1..].reverse();
+        }
+        let _ = sense;
+        self.pts = ring.iter().map(|&i| self.pts[i]).collect();
+        self.segs = (0..n).map(|i| (i, (i + 1) % n)).collect();
+        self.index.clear();
+        for (i, q) in self.pts.iter().enumerate() {
+            self.index.insert((q.uv.x.to_bits(), q.uv.y.to_bits()), i);
+        }
     }
     fn seg(&mut self, a: usize, b: usize) {
         if a != b {
@@ -171,12 +227,20 @@ fn shift_into(x: f64, m: f64, c: f64, p: f64) -> f64 {
 }
 
 /// Triangulates face `f`. `params[e]` = final sorted param list of edge `e`.
-pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], cut: FaceCut, tol: &Tol) -> Result<FaceMesh, String> {
+pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bool)], ssi: &[f64], cut: FaceCut, tol: &Tol) -> Result<FaceMesh, String> {
     let face = body.face(f);
+    crate::tr!(9, 0, 0, f.idx(), 0);
     let surf = &face.surface;
     let (pu, pv) = surf.periods();
-    let cu = pu.map(|_| cut.u.unwrap_or(0.0));
-    let cv = pv.map(|_| cut.v.unwrap_or(0.0));
+    // The original opens a periodic direction at the window [cut - p, cut] (its uv bounds are exactly that window).
+    // A cylinder wall bounded by the original's first SSI circle opens the other way: window [cut, cut + p].
+    let ssi_hole = face.loops.iter().any(|&l| body.lp(l).coedges.iter().any(|&c| body.coedge(c).alive && ssi.get(body.coedge(c).edge.idx()).map_or(false, |&o| o != 0.0)));
+    let wsh = if ssi_hole { 0.0 } else { 1.0 };
+    // full spheres / tori are opened at their parameter domain [0, p] (oracle bounds)
+    let full_dom = matches!(surf, Surface::Sphere { .. } | Surface::Torus { .. });
+    let cut = if full_dom { FaceCut { u: pu, v: pv } } else { cut };
+    let cu = pu.map(|p| cut.u.unwrap_or(p) - p * wsh);
+    let cv = pv.map(|p| cut.v.unwrap_or(p) - p * wsh);
 
     let mut b = Builder { surf, pts: vec![], index: HashMap::new(), segs: vec![] };
     let eps_u = pu.map(|p| p * 1e-9).unwrap_or(0.0);
@@ -195,7 +259,8 @@ pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], cut: FaceCut, tol:
         }
         let mut poly: Vec<BPt> = vec![];
         let mut prev: Option<Vec2> = None;
-        for &c in &lp.coedges {
+        let backwards = false;
+        for &c in lp.coedges.iter() {
             let ce = body.coedge(c);
             if !ce.alive {
                 continue;
@@ -207,11 +272,13 @@ pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], cut: FaceCut, tol:
             if ps.len() < 2 {
                 ps = vec![ed.t0, ed.t1];
             }
-            if ce.rev {
+            if ce.rev != backwards {
                 ps.reverse();
             }
-            let va = body.vertex(body.coedge_start(c)).p;
-            let vb = body.vertex(body.coedge_end(c)).p;
+            let (va, vb) = {
+                let (s0, s1) = (body.vertex(body.coedge_start(c)).p, body.vertex(body.coedge_end(c)).p);
+                if backwards { (s1, s0) } else { (s0, s1) }
+            };
             let mut pl: Vec<BPt> = Vec::with_capacity(ps.len());
             for (i, &t) in ps.iter().enumerate() {
                 let mut uv = body.coedge_uv(c, t, prev);
@@ -233,11 +300,22 @@ pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], cut: FaceCut, tol:
                 v_hi = v_hi.max(uv.y);
                 u_lo = u_lo.min(uv.x);
                 u_hi = u_hi.max(uv.x);
-                pl.push(BPt { uv, p });
+                pl.push(BPt { uv, p, virt: false });
+            }
+            if std::env::var("CK_DUMP3").is_ok() { eprintln!("COEDGE f{:?} c={:?} rev={} seam={} n={} first={:?} last={:?}", f, c, ce.rev, seam, pl.len(), pl.first().map(|q| q.uv), pl.last().map(|q| q.uv)); }
+            // junctions of a merged circle chain are not vertices of the original's single edge: mark, drop later
+            if let Some(&(v0, v1)) = virt.get(e.idx()) {
+                let (sv, ev) = if ce.rev { (v1, v0) } else { (v0, v1) };
+                if ev {
+                    pl.last_mut().unwrap().virt = true;
+                }
+                if sv {
+                    pl[0].virt = true;
+                }
             }
             if seam {
                 // seams are interior once the face is cut open; they only bound the v/u range
-                poly.push(BPt { uv: Vec2::new(f64::NAN, f64::NAN), p: Vec3::ZERO });
+                poly.push(BPt { uv: Vec2::new(f64::NAN, f64::NAN), p: Vec3::ZERO, virt: false });
                 continue;
             }
             if let Some(last) = poly.last().copied() {
@@ -297,6 +375,32 @@ pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], cut: FaceCut, tol:
             *closed = true;
         }
     }
+    // drop the junction points of merged circle chains; a chain that began and ended on one closes over it
+    for (ch, closed) in chains.iter_mut() {
+        if ch.iter().any(|q| q.virt) {
+            let ends = !*closed && ch.len() >= 2 && ch[0].virt && ch[ch.len() - 1].virt;
+            ch.retain(|q| !q.virt);
+            if ends && ch.len() >= 3 {
+                *closed = true;
+            }
+        }
+    }
+    // A face whose outer loop (largest area) runs clockwise is walked backwards: every closed chain keeps its first vertex and
+    // is reversed after it.
+    {
+        let area = |ch: &Vec<BPt>| -> f64 {
+            let n = ch.len();
+            (0..n).map(|i| ch[i].uv.x * ch[(i + 1) % n].uv.y - ch[(i + 1) % n].uv.x * ch[i].uv.y).sum::<f64>()
+        };
+        let outer = chains.iter().filter(|c| c.1 && c.0.len() > 2).map(|c| area(&c.0)).fold(0.0f64, |m, a| if a.abs() > m.abs() { a } else { m });
+        if outer < 0.0 {
+            for (ch, closed) in chains.iter_mut() {
+                if *closed && ch.len() > 1 {
+                    ch[1..].reverse();
+                }
+            }
+        }
+    }
     let snap = |x: f64, c: Option<f64>, p: Option<f64>, eps: f64| -> f64 {
         match (c, p) {
             (Some(c), Some(p)) => {
@@ -317,6 +421,15 @@ pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], cut: FaceCut, tol:
         let m = if *closed { n } else { n - 1 };
         for i in 0..m {
             let (mut a, mut q) = (chain[i], chain[(i + 1) % n]);
+            if *closed && i + 1 == n {
+                // the closing segment of a ring: the first point is the period copy nearest the last one
+                if let Some(per) = pu {
+                    q.uv.x = ck_geom::pcurve::unwrap_near(q.uv.x, a.uv.x, per);
+                }
+                if let Some(per) = pv {
+                    q.uv.y = ck_geom::pcurve::unwrap_near(q.uv.y, a.uv.y, per);
+                }
+            }
             if a.uv.dist(q.uv) == 0.0 {
                 continue;
             }
@@ -432,26 +545,44 @@ pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], cut: FaceCut, tol:
     if b.pts.len() < 3 {
         return Err("face has fewer than 3 boundary points".into());
     }
+    // A cut-open periodic strip whose boundary is a single simple cycle: the original walks it counter-clockwise from the
+    // corner with the smallest (u, v) (the reversed-sense rule: first vertex kept, the rest reversed).
+    let full_u = pu.map_or(false, |p| u_hi - u_lo >= p * (1.0 - 1e-6));
+    let full_v = pv.map_or(false, |p| v_hi - v_lo >= p * (1.0 - 1e-6));
+    if full_u || full_v {
+        b.canonical_ring(face.sense);
+    }
 
     // ---- 4. CDT in a metric-scaled frame
-    let cuv = {
-        let mut s = Vec2::ZERO;
-        for q in &b.pts {
-            s = s + q.uv;
-        }
-        s / b.pts.len() as f64
+    // uv bounds of the face (original f3578): the sample bbox grown by 1e-3 of its extent on each side; a periodic direction
+    // is exactly its window.
+    let infl = |lo: f64, hi: f64| -> (f64, f64) {
+        let e = (hi - lo) * 1e-3;
+        (lo - e, hi + e)
     };
+    let ubnd = match (pu, cut.u) {
+        (Some(p), Some(c)) => (c - p * wsh, c + p * (1.0 - wsh)),
+        _ => infl(u_lo, u_hi),
+    };
+    let vbnd = match (pv, cut.v) {
+        (Some(p), Some(c)) => (c - p * wsh, c + p * (1.0 - wsh)),
+        _ => infl(v_lo, v_hi),
+    };
+    let cuv = Vec2::new((ubnd.0 + ubnd.1) * 0.5, (vbnd.0 + vbnd.1) * 0.5);
+    crate::tr!(20, ubnd.0, vbnd.0, ubnd.1, vbnd.1);
     let (su, sv) = {
-        let (du, dv) = surf.partials(cuv.x, cuv.y);
-        let (a, bb) = (du.len(), dv.len());
-        let a = if a.is_finite() && a > 1e-12 { a } else { 1.0 };
-        let bb = if bb.is_finite() && bb > 1e-12 { bb } else { 1.0 };
-        (a, bb)
+        let (su, sv) = metric_scale(surf, ubnd, vbnd);
+        (if su.is_nan() { 1e-12 } else { su.max(1e-12) }, if sv.is_nan() { 1e-12 } else { sv.max(1e-12) })
     };
     let to_c = |uv: Vec2| -> Pt { [(uv.x - cuv.x) * su, (uv.y - cuv.y) * sv] };
     let from_c = |p: Pt| -> Vec2 { Vec2::new(p[0] / su + cuv.x, p[1] / sv + cuv.y) };
     let cpts: Vec<Pt> = b.pts.iter().map(|q| to_c(q.uv)).collect();
     let mut tri = cdt::triangulate(&cpts, &b.segs)?;
+    if std::env::var("CK_DBG").is_ok() {
+        eprintln!("DBG face {:?} cu={:?} cv={:?} npts={} nsegs={} inside={} failed={}", f, cu, cv, b.pts.len(), b.segs.len(), tri.cdt.inside_tris().len(), tri.cdt.failed);
+        for (i, q) in b.pts.iter().enumerate().take(400) { eprintln!("DBGPT {} {:?}", i, q.uv); }
+        eprintln!("DBGSEGS {:?}", b.segs);
+    }
     // vertex data indexed by CDT vertex
     let mut vdata: HashMap<u32, (Vec2, Vec3)> = HashMap::new();
     for (i, &v) in tri.vmap.iter().enumerate() {
@@ -524,7 +655,7 @@ pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], cut: FaceCut, tol:
             if inserted >= budget {
                 break;
             }
-            if let Some(v) = tri.cdt.insert_interior(p, hint) {
+            if let Some(v) = tri.cdt.insert_interior(p) {
                 let uv = from_c(p);
                 let e = wrap_eval(uv);
                 vdata.insert(v, (uv, surf.eval(e.x, e.y)));
@@ -538,7 +669,7 @@ pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], cut: FaceCut, tol:
     }
 
     // ---- 6. output
-    let mut out = FaceMesh { face: Some(f), ..Default::default() };
+    let mut out = FaceMesh { face: Some(f), win: [cu.zip(pu), cv.zip(pv)], ..Default::default() };
     let mut local: HashMap<u32, u32> = HashMap::new();
     for (_, v) in tri.cdt.inside_tris() {
         let mut ids = [0u32; 3];
@@ -573,6 +704,38 @@ pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], cut: FaceCut, tol:
     Ok(out)
 }
 
+/// Per-axis scale of the centred CDT frame (original f3573, with the cone special case of f3325):
+/// plane (1,1), cylinder (r,1), cone (max radius over the v range, 1/cos), sphere (r,r), torus (R+r,r), else |Su|,|Sv| at the domain centre.
+fn metric_scale(surf: &Surface, ur: (f64, f64), vr: (f64, f64)) -> (f64, f64) {
+    match surf {
+        Surface::Plane { .. } => (1.0, 1.0),
+        Surface::Cylinder { r, .. } => (*r, 1.0),
+        Surface::Cone { r, semi_angle, .. } => {
+            let sv = 1.0 / semi_angle.cos();
+            if vr.0.is_finite() && vr.1.is_finite() {
+                let t = semi_angle.tan();
+                let a = (vr.1 * t + r).abs();
+                let b = (vr.0 * t + r).abs();
+                let m = if a.is_nan() { b } else if b.is_nan() { a } else { a.max(b) };
+                (if m.is_nan() { 0.001 } else { m.max(0.001) }, sv)
+            } else {
+                (if r.is_nan() { 0.001 } else { r.abs() }, sv)
+            }
+        }
+        Surface::Sphere { .. } | Surface::Torus { .. } if std::env::var("X").is_ok() => (1.0, 1.0),
+        Surface::Sphere { r, .. } => (*r, *r),
+        Surface::Torus { major, minor, .. } => (minor + major, *minor),
+        _ => {
+            let (du, dv) = surf.domain();
+            let mid = |a: (f64, f64)| if a.0.is_finite() && a.1.is_finite() { (a.0 + a.1) * 0.5 } else { 0.0 };
+            let _ = (ur, vr);
+            let (a, b) = surf.partials(mid(du), mid(dv));
+            let f = |x: f64| if x.is_nan() { 1e-9 } else { x.max(1e-9) };
+            (f(a.len()), f(b.len()))
+        }
+    }
+}
+
 fn same_uv(a: Vec2, b: Vec2) -> bool {
     a.dist(b) <= 1e-9 * (1.0 + a.x.abs() + a.y.abs())
 }
@@ -585,7 +748,7 @@ fn join(poly: &mut Vec<BPt>, a: BPt, b: BPt, tol: &Tol) {
     }
     let n = (a.uv.dist(b.uv) / tol.angle).ceil().max(1.0) as usize;
     for i in 1..n {
-        poly.push(BPt { uv: a.uv.lerp(b.uv, i as f64 / n as f64), p: b.p });
+        poly.push(BPt { uv: a.uv.lerp(b.uv, i as f64 / n as f64), p: b.p, virt: false });
     }
 }
 
