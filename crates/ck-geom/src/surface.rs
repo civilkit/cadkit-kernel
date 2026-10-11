@@ -17,9 +17,20 @@
 //!   - extrusion:  σ = λ(u) + v·V
 //! - oracle-flange.json face kinds: 82 plane, 38 cylinder, 40 cone,
 //!   6 torus, 16 spline.
+//! - oracle probe (surfaceOffset on an extruded circle R=10, then
+//!   `curvatureAt`): the offset face at [12,10,0] reports n=[1,0,0],
+//!   k1=1/12, k2=0 — offset of a cylinder R by d is the cylinder R+d
+//!   (outward normal kept), so offset second derivatives are pinned by the
+//!   adjusted-radius analytic forms.
 //!
 //! Natural normal = Su × Sv (outward for the analytic closed forms). Face
 //! orientation (sense) is a topology concern.
+//!
+//! Offsets are exact: O = B + d·n with the unit normal's derivatives
+//! differentiated from the cross-product field W = Su × Sv (see
+//! `derivs2`). This needs third partials of the base (`thirds`); nested
+//! offsets collapse to one level because offset surfaces keep the base
+//! normals.
 
 use crate::curve::{wrap_angle, Curve};
 use crate::nurbs::bsurf::BSplineSurface;
@@ -42,6 +53,18 @@ impl SurfDerivs {
     pub fn normal(&self) -> Vec3 {
         self.du.cross(self.dv).normalize()
     }
+}
+
+/// Third partial derivatives ∂³S/∂u³, ∂³S/∂u²∂v, ∂³S/∂u∂v², ∂³S/∂v³.
+/// Needed for the analytic derivatives of offset surfaces (the unit
+/// normal's second derivatives differentiate the cross-product field, which
+/// is genuinely third-order data — no second-order shortcut exists).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct SurfThirds {
+    pub duuu: Vec3,
+    pub duuv: Vec3,
+    pub duvv: Vec3,
+    pub dvvv: Vec3,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -142,8 +165,7 @@ impl Surface {
     }
 
     /// Point + first/second partials.
-    pub fn derivs2(&self, u: f64, v: f64) -> SurfDerivs {
-        match self {
+    pub fn derivs2(&self, u: f64, v: f64) -> SurfDerivs {        match self {
             Surface::Plane { frame } => SurfDerivs {
                 p: frame.o + frame.x * u + frame.y * v,
                 du: frame.x,
@@ -222,25 +244,123 @@ impl Surface {
             }
             Surface::BSpline(s) => s.derivs2(u, v),
             Surface::Offset { base, dist } => {
-                // GUESS/approx: normal derivatives by central differences of
-                // the base normal; exact for analytic bases up to O(h²).
-                let b = base.derivs2(u, v);
-                let n = b.normal();
-                let h = 1e-6;
-                let nu = (base.normal(u + h, v) - base.normal(u - h, v)) / (2.0 * h);
-                let nv = (base.normal(u, v + h) - base.normal(u, v - h)) / (2.0 * h);
-                let nuu = (base.normal(u + h, v) - n * 2.0 + base.normal(u - h, v)) / (h * h);
-                let nvv = (base.normal(u, v + h) - n * 2.0 + base.normal(u, v - h)) / (h * h);
-                let nuv = (base.normal(u + h, v + h) - base.normal(u + h, v - h) - base.normal(u - h, v + h)
-                    + base.normal(u - h, v - h))
-                    / (4.0 * h * h);
+                // Analytic: O = B + d·n with n = W/w, W = Bu × Bv. The
+                // normal's derivatives differentiate the cross-product field
+                // (only base 2nd/3rd partials needed):
+                //   n_u = (W_u − α W)/w, n_uu = (W_uu − 2αW_u + (2α² − β)W)/w
+                // with α = w_u/w, β = w_uu/w; likewise for v (and the mixed
+                // n_uv = (W_uv − αW_v − γW_u + (2αγ − β_uv)W)/w). Nested
+                // offsets collapse: offset surfaces keep the base normals,
+                // so offset(offset(B, d1), d2) = offset(B, d1 + d2).
+                let (b0, d0) = offset_collapse(base);
+                let d = *dist + d0;
+                let b = b0.derivs2(u, v);
+                let w2 = b.du.cross(b.dv).len2();
+                if w2 <= 1e-300 {
+                    // degenerate base (apex/pole): keep the finite-difference
+                    // normal derivatives of the old fallback
+                    return offset_fd(b0, u, v, d);
+                }
+                let t3 = b0.thirds(u, v);
+                let w0 = b.du.cross(b.dv);
+                let w = w2.sqrt();
+                let n = w0 / w;
+                let wu = b.duu.cross(b.dv) + b.du.cross(b.duv);
+                let wv = b.duv.cross(b.dv) + b.du.cross(b.dvv);
+                let (su, sv) = (w0.dot(wu) / w, w0.dot(wv) / w);
+                let nu = (wu - n * su) / w;
+                let nv = (wv - n * sv) / w;
+                let wuu = t3.duuu.cross(b.dv) + b.duu.cross(b.duv) * 2.0 + b.du.cross(t3.duuv);
+                let wuv = t3.duuv.cross(b.dv) + b.duu.cross(b.dvv) + b.du.cross(t3.duvv);
+                let wvv = t3.duvv.cross(b.dv) + b.duv.cross(b.dvv) * 2.0 + b.du.cross(t3.dvvv);
+                let suu = (wu.dot(wu) + w0.dot(wuu)) / w - su * su / w;
+                let suv = (wu.dot(wv) + w0.dot(wuv)) / w - su * sv / w;
+                let svv = (wv.dot(wv) + w0.dot(wvv)) / w - sv * sv / w;
+                let (a, c) = (su / w, sv / w);
+                let nuu = (wuu - wu * (2.0 * a) + w0 * (2.0 * a * a - suu / w)) / w;
+                let nuv = (wuv - wu * c - wv * a + w0 * (2.0 * a * c - suv / w)) / w;
+                let nvv = (wvv - wv * (2.0 * c) + w0 * (2.0 * c * c - svv / w)) / w;
                 SurfDerivs {
-                    p: b.p + n * *dist,
-                    du: b.du + nu * *dist,
-                    dv: b.dv + nv * *dist,
-                    duu: b.duu + nuu * *dist,
-                    duv: b.duv + nuv * *dist,
-                    dvv: b.dvv + nvv * *dist,
+                    p: b.p + n * d,
+                    du: b.du + nu * d,
+                    dv: b.dv + nv * d,
+                    duu: b.duu + nuu * d,
+                    duv: b.duv + nuv * d,
+                    dvv: b.dvv + nvv * d,
+                }
+            }
+        }
+    }
+
+    /// ∂³ partials. Exact for the analytic surfaces and B-splines; offsets
+    /// return finite differences of their analytic second partials (only
+    /// reached by direct calls — the offset evaluation itself collapses
+    /// nested offsets and uses the base's exact thirds).
+    pub fn thirds(&self, u: f64, v: f64) -> SurfThirds {
+        match self {
+            Surface::Plane { .. } => SurfThirds::default(),
+            Surface::Cylinder { frame, r } => {
+                // Buu = −r·radial, so Buuu = −r·tangential (∂u radial = tang)
+                SurfThirds { duuu: tangential(frame, u) * -r, ..Default::default() }
+            }
+            Surface::Cone { frame, r, semi_angle } => {
+                let (rad, tan) = (radial(frame, u), tangential(frame, u));
+                let t = semi_angle.tan();
+                SurfThirds { duuu: tan * -(r + v * t), duuv: rad * -t, ..Default::default() }
+            }
+            Surface::Sphere { frame, r } => {
+                let (rad, tan) = (radial(frame, u), tangential(frame, u));
+                let (sv, cv) = v.sin_cos();
+                SurfThirds {
+                    duuu: tan * -(r * cv),
+                    duuv: rad * (r * sv),
+                    duvv: tan * -(r * cv),
+                    dvvv: rad * (r * sv) + frame.z * -(r * cv),
+                }
+            }
+            Surface::Torus { frame, major, minor } => {
+                let (rad, tan) = (radial(frame, u), tangential(frame, u));
+                let (sv, cv) = v.sin_cos();
+                SurfThirds {
+                    duuu: tan * -(major + minor * cv),
+                    duuv: rad * (minor * sv),
+                    duvv: tan * -(minor * cv),
+                    dvvv: rad * (minor * sv) + frame.z * -(minor * cv),
+                }
+            }
+            Surface::Revolution { profile, axis_o, axis } => {
+                let c = profile.derivs(v, 3);
+                let (su, cu) = u.sin_cos();
+                let z = *axis;
+                // Rodrigues: R(u)w = w cos u + (z·w) z (1 - cos u) + (z×w) sin u
+                let rot = |w: Vec3| w * cu + z * (z.dot(w) * (1.0 - cu)) + z.cross(w) * su;
+                let rot_u = |w: Vec3| w * (-su) + z * (z.dot(w) * su) + z.cross(w) * cu;
+                let rot_uu = |w: Vec3| w * (-cu) + z * (z.dot(w) * cu) - z.cross(w) * su;
+                let w = c[0] - *axis_o;
+                // ∂u³ R = −∂u R; the v chain just rotates the profile's
+                // derivatives
+                SurfThirds {
+                    duuu: rot_u(w) * -1.0,
+                    duuv: rot_uu(c[1]),
+                    duvv: rot_u(c[2]),
+                    dvvv: rot(c[3]),
+                }
+            }
+            Surface::Extrusion { profile, .. } => {
+                let c = profile.derivs(u, 3);
+                SurfThirds { duuu: c[3], ..Default::default() }
+            }
+            Surface::BSpline(s) => {
+                let skl = s.derivs(u, v, 3);
+                SurfThirds { duuu: skl[3][0], duuv: skl[2][1], duvv: skl[1][2], dvvv: skl[0][3] }
+            }
+            Surface::Offset { .. } => {
+                let h = 1e-5;
+                SurfThirds {
+                    duuu: (self.derivs2(u + h, v).duu - self.derivs2(u - h, v).duu) / (2.0 * h),
+                    duuv: (self.derivs2(u + h, v).duv - self.derivs2(u - h, v).duv) / (2.0 * h),
+                    duvv: (self.derivs2(u, v + h).duv - self.derivs2(u, v - h).duv) / (2.0 * h),
+                    dvvv: (self.derivs2(u, v + h).dvv - self.derivs2(u, v - h).dvv) / (2.0 * h),
                 }
             }
         }
@@ -271,6 +391,8 @@ impl Surface {
                     n
                 }
             }
+            // offsets keep the base's normal field
+            Surface::Offset { base, .. } => offset_collapse(base).0.normal(u, v),
             _ => self.derivs2(u, v).normal(),
         }
     }
@@ -369,6 +491,42 @@ fn radial(f: &Frame, u: f64) -> Vec3 {
 fn tangential(f: &Frame, u: f64) -> Vec3 {
     let (s, c) = u.sin_cos();
     f.x * (-s) + f.y * c
+}
+
+/// Nested offsets collapse to one level over a non-offset base: offset
+/// surfaces keep the base's normals, so offset(offset(B, d1), d2) =
+/// offset(B, d1 + d2).
+fn offset_collapse(base: &Surface) -> (&Surface, f64) {
+    let mut cur = base;
+    let mut d = 0.0;
+    while let Surface::Offset { base: b, dist } = cur {
+        d += *dist;
+        cur = &**b;
+    }
+    (cur, d)
+}
+
+/// Finite-difference fallback for degenerate bases (apex/pole) where the
+/// cross-product field vanishes; O(h²), the old behaviour.
+fn offset_fd(base: &Surface, u: f64, v: f64, d: f64) -> SurfDerivs {
+    let b = base.derivs2(u, v);
+    let n = b.normal();
+    let h = 1e-6;
+    let nu = (base.normal(u + h, v) - base.normal(u - h, v)) / (2.0 * h);
+    let nv = (base.normal(u, v + h) - base.normal(u, v - h)) / (2.0 * h);
+    let nuu = (base.normal(u + h, v) - n * 2.0 + base.normal(u - h, v)) / (h * h);
+    let nvv = (base.normal(u, v + h) - n * 2.0 + base.normal(u, v - h)) / (h * h);
+    let nuv = (base.normal(u + h, v + h) - base.normal(u + h, v - h) - base.normal(u - h, v + h)
+        + base.normal(u - h, v - h))
+        / (4.0 * h * h);
+    SurfDerivs {
+        p: b.p + n * d,
+        du: b.du + nu * d,
+        dv: b.dv + nv * d,
+        duu: b.duu + nuu * d,
+        duv: b.duv + nuv * d,
+        dvv: b.dvv + nvv * d,
+    }
 }
 #[inline]
 fn ang(x: f64, y: f64) -> f64 {
@@ -497,7 +655,7 @@ mod tests {
                 let fuu = (s.derivs2(u + h, v).du - s.derivs2(u - h, v).du) / (2.0 * h);
                 let fuv = (s.derivs2(u, v + h).du - s.derivs2(u, v - h).du) / (2.0 * h);
                 let fvv = (s.derivs2(u, v + h).dv - s.derivs2(u, v - h).dv) / (2.0 * h);
-                let tol = if s.kind() == "offset" { 1e-3 } else { 1e-6 };
+                let tol = if s.kind() == "offset" { 1e-5 } else { 1e-6 };
                 assert!(vclose(d.duu, fuu, tol), "{} duu", s.kind());
                 assert!(vclose(d.duv, fuv, tol), "{} duv", s.kind());
                 assert!(vclose(d.dvv, fvv, tol), "{} dvv", s.kind());
@@ -532,5 +690,170 @@ mod tests {
         assert!(vclose(k.eval(0.5, 3.0), c.eval(0.5, 3.0) * 0.5 + Vec3::Z * 1.5, 1e-14));
         assert!(Surface::Plane { frame: f }.is_planar(1e-9));
         assert!(!c.is_planar(1e-9));
+    }
+
+    /// Offsetting a quadric gives the same family with the radius adjusted —
+    /// the analytic 2nd derivatives must match that surface exactly.
+    #[test]
+    fn offset_quadrics_exact() {
+        let f = frame_from(Vec3::new(1., -2., 0.5), Vec3::new(0.3, 0.4, 1.0), Vec3::X);
+        let (u, v) = (0.9, 0.35);
+        // plane -> plane shifted along z
+        let pl = Surface::Offset { base: Box::new(Surface::Plane { frame: f }), dist: 0.7 };
+        assert!(vclose(pl.derivs2(u, v).p, Surface::Plane { frame: f }.eval(u, v) + f.z * 0.7, 1e-13));
+        assert_eq!(pl.derivs2(u, v).duu, Vec3::ZERO);
+        assert_eq!(pl.derivs2(u, v).duv, Vec3::ZERO);
+        assert_eq!(pl.derivs2(u, v).dvv, Vec3::ZERO);
+        // cylinder r -> r + d (same parameterisation)
+        let cy = Surface::Offset { base: Box::new(Surface::Cylinder { frame: f, r: 2.0 }), dist: 0.7 };
+        check_offset_eq(&cy, &Surface::Cylinder { frame: f, r: 2.7 }, u, v, 1e-12);
+        // sphere R -> R + d
+        let sp = Surface::Offset { base: Box::new(Surface::Sphere { frame: f, r: 3.0 }), dist: 0.7 };
+        check_offset_eq(&sp, &Surface::Sphere { frame: f, r: 3.7 }, u, v, 1e-12);
+        // cone r, α -> r + d/cos α, v shifted by −d·sin α (the offset slides
+        // the generator)
+        let k = Surface::Cone { frame: f, r: 2.0, semi_angle: 0.4 };
+        let ko = Surface::Offset { base: Box::new(k.clone()), dist: 0.7 };
+        let truth = Surface::Cone { frame: f, r: 2.0 + 0.7 / 0.4f64.cos(), semi_angle: 0.4 };
+        let dv = -0.7 * 0.4f64.sin();
+        let a = ko.derivs2(u, v);
+        let b = truth.derivs2(u, v + dv);
+        assert!(vclose(a.p, b.p, 1e-12), "cone p");
+        assert!(vclose(a.du, b.du, 1e-12) && vclose(a.dv, b.dv, 1e-12), "cone 1st");
+        assert!(vclose(a.duu, b.duu, 1e-12) && vclose(a.duv, b.duv, 1e-12) && vclose(a.dvv, b.dvv, 1e-12), "cone 2nd");
+        // torus (R, r) -> (R, r + d)
+        let to = Surface::Offset { base: Box::new(Surface::Torus { frame: f, major: 5.0, minor: 1.5 }), dist: 0.7 };
+        check_offset_eq(&to, &Surface::Torus { frame: f, major: 5.0, minor: 2.2 }, u, v, 1e-12);
+        // inward: sphere 3 − 0.7
+        let sp2 = Surface::Offset { base: Box::new(Surface::Sphere { frame: f, r: 3.0 }), dist: -0.7 };
+        check_offset_eq(&sp2, &Surface::Sphere { frame: f, r: 2.3 }, u, v, 1e-12);
+        // nested offsets collapse to the summed distance
+        let nested = Surface::Offset {
+            base: Box::new(Surface::Offset { base: Box::new(Surface::Sphere { frame: f, r: 3.0 }), dist: 0.4 }),
+            dist: 0.3,
+        };
+        check_offset_eq(&nested, &Surface::Sphere { frame: f, r: 3.7 }, u, v, 1e-12);
+    }
+
+    fn check_offset_eq(off: &Surface, truth: &Surface, u: f64, v: f64, tol: f64) {
+        let a = off.derivs2(u, v);
+        let b = truth.derivs2(u, v);
+        assert!(vclose(a.p, b.p, tol), "{} p", truth.kind());
+        assert!(vclose(a.du, b.du, tol) && vclose(a.dv, b.dv, tol), "{} 1st", truth.kind());
+        assert!(vclose(a.duu, b.duu, tol), "{} duu", truth.kind());
+        assert!(vclose(a.duv, b.duv, tol), "{} duv", truth.kind());
+        assert!(vclose(a.dvv, b.dvv, tol), "{} dvv", truth.kind());
+        assert!(vclose(off.normal(u, v), truth.normal(u, v), tol), "{} normal", truth.kind());
+    }
+
+    /// Oracle (kernel.wasm, `surfaceOffset` on an extruded circle R=10 + 20,
+    /// then `curvatureAt`): the offset face F3.O at [12,10,0] reports
+    /// n=[1,0,0], k1=1/12, k2=0, d1=[0,0,-1], d2=[0,1,0]; flipped (inward,
+    /// dist 3) at [7,10,0]: k1=1/7. The analytic second derivatives must
+    /// reproduce the offset cylinder's curvature exactly.
+    #[test]
+    fn offset_curvature_oracle() {
+        let axis = frame_from(Vec3::ZERO, Vec3::Y, Vec3::Z);
+        let off = Surface::Offset { base: Box::new(Surface::Cylinder { frame: axis, r: 10.0 }), dist: 2.0 };
+        // [12,10,0]: u = π/2 (radial +x), v = 10 along the axis
+        let k = crate::analysis::surface_curvature(&off.derivs2(FRAC_PI_2, 10.0), false);
+        assert!(vclose(k.n, Vec3::X, 1e-14));
+        assert!(close(k.k1, 1.0 / 12.0, 1e-14), "{}", k.k1);
+        assert!(close(k.k2, 0.0, 1e-14));
+        assert!(close(k.mean, 1.0 / 24.0, 1e-14) && close(k.gaussian, 0.0, 1e-14));
+        assert!(close(k.d1.z.abs(), 1.0, 1e-14));
+        assert!(vclose(k.d2, k.n.cross(k.d1), 1e-14));
+        // flipped / inward: R=7, curvature 1/7 (oracle [7,10,0])
+        let off2 = Surface::Offset { base: Box::new(Surface::Cylinder { frame: axis, r: 10.0 }), dist: -3.0 };
+        let k2 = crate::analysis::surface_curvature(&off2.derivs2(FRAC_PI_2, 10.0), false);
+        assert!(vclose(k2.n, Vec3::X, 1e-14));
+        assert!(close(k2.k1, 1.0 / 7.0, 1e-14), "{}", k2.k1);
+        assert!(close(k2.k2, 0.0, 1e-14));
+    }
+
+    /// Non-quadric bases: the analytic second partials agree with finite
+    /// differences of the offset points (the old behaviour, now O(h²) only
+    /// in the check, not in the implementation).
+    #[test]
+    fn offset_nonquadric_fd() {
+        let prof = Curve::circle_x(Vec3::new(5., 0., 0.), Vec3::Y, Vec3::X, 1.5);
+        let ex = Surface::Extrusion {
+            profile: Box::new(Curve::ellipse(Vec3::ZERO, Vec3::Z, Vec3::X, 3.0, 1.0)),
+            dir: Vec3::new(0.2, 0.0, 2.0),
+        };
+        let cases = [
+            (
+                Surface::Offset {
+                    base: Box::new(Surface::Revolution { profile: Box::new(prof), axis_o: Vec3::ZERO, axis: Vec3::Z }),
+                    dist: 0.4,
+                },
+                [(0.7, 0.3), (2.0, -0.4), (4.1, 0.8)],
+            ),
+            (Surface::Offset { base: Box::new(ex.clone()), dist: 0.3 }, [(0.7, 0.3), (2.0, -0.4), (4.1, 0.8)]),
+            // B-spline patch: stay inside its [0,1]² domain
+            (
+                Surface::Offset { base: Box::new(Surface::BSpline(Box::new(spline_patch()))), dist: -0.2 },
+                [(0.3, 0.4), (0.7, 0.25), (0.5, 0.8)],
+            ),
+            // nested offsets collapse to dist 0.45 over the extrusion
+            (Surface::Offset { base: Box::new(Surface::Offset { base: Box::new(ex), dist: 0.3 }), dist: 0.15 },
+             [(0.7, 0.3), (2.0, -0.4), (4.1, 0.8)]),
+        ];
+        let h = 1e-4;
+        for (s, pts) in &cases {
+            for &(u, v) in pts {
+                let d = s.derivs2(u, v);
+                assert!(vclose(d.p, s.eval(u, v), 1e-13), "{} p", s.kind());
+                let fuu = (s.eval(u + h, v) - d.p * 2.0 + s.eval(u - h, v)) / (h * h);
+                let fvv = (s.eval(u, v + h) - d.p * 2.0 + s.eval(u, v - h)) / (h * h);
+                let fuv = (s.eval(u + h, v + h) - s.eval(u + h, v - h) - s.eval(u - h, v + h)
+                    + s.eval(u - h, v - h))
+                    / (4.0 * h * h);
+                assert!(vclose(d.duu, fuu, 1e-5), "{} duu {:?} vs {:?}", s.kind(), d.duu, fuu);
+                assert!(vclose(d.dvv, fvv, 1e-5), "{} dvv", s.kind());
+                assert!(vclose(d.duv, fuv, 1e-5), "{} duv", s.kind());
+                // the normal field differentiates exactly: n_u from FD of the
+                // analytic normal matches the implied one
+                let nu_fd = (s.normal(u + h, v) - s.normal(u - h, v)) / (2.0 * h);
+                assert!(vclose((d.du - base_du(s, u, v)) / offset_dist(s), nu_fd, 1e-6), "{} nu", s.kind());
+            }
+        }
+    }
+
+    fn offset_dist(s: &Surface) -> f64 {
+        match s {
+            Surface::Offset { base, dist } => {
+                let (_, d0) = offset_collapse(base);
+                *dist + d0
+            }
+            _ => 0.0,
+        }
+    }
+    fn base_du(s: &Surface, u: f64, v: f64) -> Vec3 {
+        match s {
+            Surface::Offset { base, .. } => offset_collapse(base).0.derivs2(u, v).du,
+            _ => Vec3::ZERO,
+        }
+    }
+
+    fn spline_patch() -> crate::nurbs::bsurf::BSplineSurface {
+        let (nu, nv) = (4, 4);
+        let ctrl: Vec<Vec3> = (0..nu * nv)
+            .map(|k| {
+                let (i, j) = (k / nv, k % nv);
+                Vec3::new(i as f64 * 1.5, j as f64 * 1.2, ((i * 3 + j * 5) % 7) as f64 * 0.35 - 1.0)
+            })
+            .collect();
+        crate::nurbs::bsurf::BSplineSurface::new(
+            3,
+            3,
+            crate::nurbs::basis::clamped_uniform(nu, 3),
+            crate::nurbs::basis::clamped_uniform(nv, 3),
+            nu,
+            nv,
+            ctrl,
+            None,
+        )
+        .unwrap()
     }
 }
