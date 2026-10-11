@@ -908,6 +908,9 @@ impl Body {
             }
             let mut names: Vec<String> = self.edge_faces(e).iter().map(|&f| self.face_id_str(f)).collect();
             names.sort();
+            // pieces of one sheet entity share a face name (surface loft):
+            // the oracle lists it once and keys `<id>#n`
+            names.dedup();
             let key = if names.len() >= 2 {
                 edge_key(&names[0], &names[1], seq)
             } else {

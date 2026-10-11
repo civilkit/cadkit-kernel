@@ -869,6 +869,7 @@ impl crate::regen::FeatureExec for Brep {
             FeatureKind::Rib { .. } => return rib::exec_rib(self, state, f),
             FeatureKind::Lip { .. } => return lip::exec_lip(self, state, f),
             FeatureKind::Draft { .. } => return draft::exec_draft(self, state, f),
+            FeatureKind::Loft { .. } => return loft::exec_loft(self, state, f),
             _ => return Err(crate::regen::FeatureError::new(&extrude::todo(&f.type_name))),
         };
         self.apply(&f.id, tool)
