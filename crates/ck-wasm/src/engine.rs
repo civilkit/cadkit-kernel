@@ -211,6 +211,15 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
             let ds = ds.filter(|d| bodies && d.len() == s.body.num_lumps());
             Ok(ck_topo::mass::mass_props_json(&s.body, bodies, ds.as_deref()))
         }
+        "validate" => {
+            let tol = cx.msg.get_f64("tol").unwrap_or(1e-6);
+            let iss = ck_check::validate(&snapshot(cx)?.body, tol);
+            let arr = iss
+                .iter()
+                .map(|i| Obj::new().put("code", i.code).put("entity", i.entity.as_str()).put("detail", i.detail.as_str()).build())
+                .collect();
+            Ok(Obj::new().put("ok", iss.is_empty()).put("issues", Json::Arr(arr)).build())
+        }
         "inspect" => inspect(cx),
         "continuity" => Ok(ck_ops::continuity::reply(&snapshot(cx)?.body, &cx.msg)),
         "measure" => Ok(ck_ops::measure::reply(&snapshot(cx)?.body, &cx.msg)),

@@ -37,6 +37,10 @@ pub fn interference(cx: &mut Cx) -> Result<Json, String> {
     cx.span(INTERFERENCE_LABEL, |cx| null_or_query(cx, "interference"))
 }
 
+pub fn validate(cx: &mut Cx) -> Result<Json, String> {
+    null_or_query(cx, "validate")
+}
+
 pub fn step(cx: &mut Cx) -> Result<Json, String> {
     null_or_query(cx, "step")
 }

@@ -63,6 +63,7 @@ const close = (a, b) => {
   if (a && b && typeof a === 'object') return Object.keys(a).join() === Object.keys(b).join() && Object.keys(a).every((k) => close(a[k], b[k]));
   return a === b;
 };
+const validCodes = {}, validFail = [];
 function regenSet(set, targets) {
   for (const t of targets) {
     const t0 = performance.now();
@@ -86,7 +87,12 @@ function regenSet(set, targets) {
       bump(`mass.${set}`, ['volume', 'area', 'com'].every((k) => close(mb?.[k], ma?.[k])));
       bump(`vol.${set}`, typeof mb?.volume === 'number' && Math.abs(mb.volume - ma?.volume) <= 1e-3 * Math.abs(ma?.volume ?? 0));
       const manifold = (bb.edges ?? []).every((e) => e.faces?.length === 2);
-      bump(`valid.${set}`, !(pb.result.errors?.length) && mb?.volume > 0 && manifold);
+      const vq = JSON.stringify({ id: 3, msg: { type: 'validate', tag: 'main' } });
+      const vr = JSON.parse(kb.request(vq).json || 'null')?.result;
+      const vissues = vr?.issues ?? [{ code: 'NO_VALIDATE' }];
+      for (const i of vissues) validCodes[i.code] = (validCodes[i.code] ?? 0) + 1;
+      if (vissues.length) validFail.push(`${set}:${t.name}:${[...new Set(vissues.map((i) => i.code))].join(',')} | ${vissues.slice(0, 3).map((i) => `${i.entity}: ${i.detail}`).join(' ; ')}`);
+      bump(`valid.${set}`, !(pb.result.errors?.length) && mb?.volume > 0 && manifold && vissues.length === 0);
     } else {
       bump(`mass.${set}`, !ba && !bb);
       bump(`vol.${set}`, !ba && !bb);
@@ -127,6 +133,7 @@ for (const k of Object.keys({ ...base, ...score }).sort()) {
   if (b !== undefined && m < b) hard(k) ? worse++ : soft++;
   console.log(`${k.padEnd(40)} ${String(m).padStart(4)}/${String(n).padEnd(4)}${d}`);
 }
+if (Object.keys(validCodes).length) { console.log('validate issue codes:', JSON.stringify(validCodes)); if (!quiet) console.log(validFail.join('\n')); else console.log(`validate-failing cases: ${validFail.length}`); }
 if (update) { const out = fast ? { ...base, ...score } : score; writeFileSync(basePath, JSON.stringify(out, null, 1) + '\n'); console.log(`baseline written: ${basePath}`); }
 else if (worse) { console.log(`\nGATE FAILED: ${worse} metric(s) regressed`); process.exitCode = 1; }
 else console.log(`\ngate ok${soft ? ` (${soft} soft oracle-identity metric(s) dropped)` : ''}`);

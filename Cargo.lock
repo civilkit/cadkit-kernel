@@ -3,6 +3,14 @@
 version = 4
 
 [[package]]
+name = "ck-check"
+version = "0.1.0"
+dependencies = [
+ "ck-geom",
+ "ck-topo",
+]
+
+[[package]]
 name = "ck-core"
 version = "0.1.0"
 
@@ -79,6 +87,7 @@ dependencies = [
 name = "ck-wasm"
 version = "0.1.0"
 dependencies = [
+ "ck-check",
  "ck-core",
  "ck-geom",
  "ck-io",

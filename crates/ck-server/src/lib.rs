@@ -60,6 +60,8 @@ pub const REQUEST_TYPES: &[(&str, Handler)] = &[
     ("massProps", geometry::mass_props),
     ("interference", geometry::interference),
     ("step", geometry::step),
+    // Extension (not in the original kernel): independent solid validator.
+    ("validate", geometry::validate),
     ("inspect", query::inspect),
     ("continuity", query::continuity),
     ("curvatureAt", curvature::curvature_at),
