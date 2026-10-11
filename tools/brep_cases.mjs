@@ -124,6 +124,38 @@ parts.mirrorBodyCone = part([...parts.cone.features, { type: 'plane', id: 'F8', 
   parts.shellCylTooThick = sh(parts.cyl, ['F2.C1'], 10);
 }
 
+// loft cases (ck-ops loft): profiles on offset top planes, matched by the
+// station rules pinned in crates/ck-ops/src/loft/stations.rs
+{
+  const ngon = (n, r, a0 = 0, pf = 'p') => {
+    const P = [], E = [];
+    for (let i = 0; i < n; i++) { const a = a0 + (2 * Math.PI * i) / n; P.push(pt(`${pf}${i + 1}`, r * Math.cos(a), r * Math.sin(a))); }
+    for (let i = 0; i < n; i++) E.push(line(`e${i + 1}`, `${pf}${i + 1}`, `${pf}${((i + 1) % n) + 1}`));
+    return [P, E];
+  };
+  const sq = (a) => rect(-a, -a, a, a);
+  const circ = (cx, cy, r) => [[pt('c', cx, cy)], [{ type: 'circle', id: 'e1', c: 'c', r }]];
+  const loftOf = (profiles, extra = {}) => {
+    const fs = []; let n = 0; const sks = [];
+    for (const [off, [P, E]] of profiles) {
+      let pl = STD('top');
+      if (off !== 0) { const id = `F${++n}`; fs.push({ type: 'plane', id, mode: 'offset', base: STD('top'), offset: off }); pl = { kind: 'feature', id }; }
+      const sid = `F${++n}`; fs.push({ type: 'sketch', id: sid, plane: pl, points: P, entities: E, constraints: [] }); sks.push(sid);
+    }
+    fs.push({ type: 'loft', id: `F${++n}`, op: 'add', sketches: sks, ...extra });
+    return part(fs);
+  };
+  parts.loftSq2 = loftOf([[0, sq(10)], [30, sq(5)]]);
+  parts.loftSq3 = loftOf([[0, sq(10)], [30, sq(5)], [50, sq(8)]]);
+  parts.loftCircSq = loftOf([[0, circ(0, 0, 8)], [30, sq(5)]]);
+  parts.loftCircCirc = loftOf([[0, circ(0, 0, 8)], [30, circ(2, 0, 4)]]);
+  parts.loftTriSq = loftOf([[0, ngon(3, 10)], [30, sq(5)]]);
+  parts.loftSqOct = loftOf([[0, sq(10)], [30, ngon(8, 6)]]);
+  parts.loftSqTwist = loftOf([[0, sq(10)], [30, ngon(4, 7, Math.PI / 4)]]);
+  parts.loftSurface = loftOf([[0, sq(10)], [30, sq(5)]], { surface: true });
+  parts.loftSurfaceCirc = loftOf([[0, circ(0, 0, 8)], [30, sq(5)]], { surface: true });
+}
+
 const m = (msg) => JSON.stringify({ id: 1, msg });
 /// Follow-up requests on each part's state (compared byte-for-byte).
 export const queries = [

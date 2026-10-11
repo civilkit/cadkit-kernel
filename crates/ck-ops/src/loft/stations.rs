@@ -65,30 +65,13 @@ impl Geom3 {
     pub fn is_line(&self) -> bool {
         matches!(self, Geom3::Line { .. })
     }
-    /// Arc length.
+    /// Arc length as the kernel measures it: one 8-point Gauss-Legendre
+    /// panel per knot span of the piece's B-spline (`nurbs_length`). Pinned
+    /// by the `f` marker bits of square profiles (a line of length 16 comes
+    /// out 16 + 1ulp noise exactly like the oracle's, 4 sub-panels do not),
+    /// and by the float-noise decided choice among equal circle quarters.
     pub fn length(&self) -> f64 {
-        match self {
-            Geom3::Line { a, b } => a.dist(*b),
-            Geom3::Conic { u, v, t0, t1, .. } => {
-                if (u.len() - v.len()).abs() <= 1e-12 * u.len().max(1.0) && u.dot(*v).abs() <= 1e-12 * u.len2().max(1.0) {
-                    u.len() * (t1 - t0).abs()
-                } else {
-                    self.numeric_length()
-                }
-            }
-            Geom3::Spline { .. } => self.numeric_length(),
-        }
-    }
-    fn numeric_length(&self) -> f64 {
-        let n = 128;
-        let mut l = 0.0;
-        let mut p = self.at(0.0);
-        for i in 1..=n {
-            let q = self.at(i as f64 / n as f64);
-            l += p.dist(q);
-            p = q;
-        }
-        l
+        nurbs_length(&self.to_nurbs())
     }
     /// The part between `s0` and `s1` (in travel direction).
     pub fn sub(&self, s0: f64, s1: f64) -> Geom3 {
@@ -153,6 +136,37 @@ impl Geom3 {
             }
         }
     }
+}
+
+const GL8: [(f64, f64); 8] = [
+    (-0.9602898564975363, 0.1012285362903763),
+    (-0.7966664774136267, 0.2223810344533745),
+    (-0.5255324099163290, 0.3137066458778873),
+    (-0.1834346424956498, 0.3626837833783620),
+    (0.1834346424956498, 0.3626837833783620),
+    (0.5255324099163290, 0.3137066458778873),
+    (0.7966664774136267, 0.2223810344533745),
+    (0.9602898564975363, 0.1012285362903763),
+];
+
+/// Length of a B-spline: GL8 on every knot span, summed in span order.
+pub fn nurbs_length(c: &BSplineCurve) -> f64 {
+    let (lo, hi) = c.domain();
+    let mut breaks = vec![lo];
+    for k in ck_geom::nurbs::basis::distinct_knots(&c.knots) {
+        if k > lo && k < hi {
+            breaks.push(k);
+        }
+    }
+    breaks.push(hi);
+    let mut total = 0.0;
+    for w in breaks.windows(2) {
+        let (m, h) = ((w[0] + w[1]) / 2.0, (w[1] - w[0]) / 2.0);
+        for &(x, wt) in GL8.iter() {
+            total += wt * h * c.derivs(m + h * x, 1)[1].len();
+        }
+    }
+    total
 }
 
 /// A profile piece with the name of the sketch entity it comes from.
@@ -240,7 +254,12 @@ impl Chain {
         for p in &self.pieces {
             c = c + p.g.start();
         }
-        c / self.pieces.len() as f64
+        let mut n = self.pieces.len();
+        if !self.closed {
+            c = c + self.pieces[n - 1].g.end();
+            n += 1;
+        }
+        c / n as f64
     }
 }
 

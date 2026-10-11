@@ -114,12 +114,13 @@ fn chain_planar(c: &Chain, tol: f64) -> bool {
 /// the arc-length fraction of the piece start plus `k/16` of its length.
 pub fn marker_samples(p: &ProfileIn) -> Vec<(Vec3, f64)> {
     let pieces: Vec<Geom3> = p.segs.iter().filter_map(|s| geom_of(&s.curve, s.t0, s.t1, s.rev)).collect();
-    let lens: Vec<f64> = pieces.iter().map(|g| g.length()).collect();
+    let nurbs: Vec<BSplineCurve> = pieces.iter().map(|g| g.to_nurbs()).collect();
+    let lens: Vec<f64> = nurbs.iter().map(stations::nurbs_length).collect();
     let total: f64 = lens.iter().sum();
     let mut out = vec![];
     let mut before = 0.0;
     for (i, g) in pieces.iter().enumerate() {
-        let c = g.to_nurbs();
+        let c = &nurbs[i];
         let (a, b) = c.domain();
         for k in 0..=16 {
             if i > 0 && k == 0 {
@@ -230,12 +231,21 @@ fn side(st: &Stations, j: usize) -> Result<Side, LoftError> {
             }
         }
     }
+    let same_weights = (1..k).all(|q| {
+        (0..cs[0].ctrl.len()).all(|i| (cs[q].weight(i) - cs[0].weight(i)).abs() <= 1e-13)
+    });
+    if k > 2 && !same_weights {
+        return Ok(Side { surface: blend_surface(&cs, &st.ts)?, cs, plane: None });
+    }
     let nu = cs[0].ctrl.len();
-    let mut net: Vec<Vec<[f64; 4]>> = vec![]; // [i][v ctrl]
+    // control points interpolated by the natural spline per control index
+    // (weights agree, or there are only two stations: then the homogeneous
+    // blend and this coincide)
+    let mut cols: Vec<Vec<[f64; 4]>> = vec![];
     let mut vdeg = 1;
     let mut vknots = vec![];
     for i in 0..nu {
-        let pts: Vec<[f64; 4]> = cs
+        let hp: Vec<[f64; 4]> = cs
             .iter()
             .map(|c| {
                 let w = c.weight(i);
@@ -243,19 +253,18 @@ fn side(st: &Stations, j: usize) -> Result<Side, LoftError> {
                 [p.x * w, p.y * w, p.z * w, w]
             })
             .collect();
-        let (d, kn, q) = smooth::through(&st.ts, &pts).map_err(|_| LoftError::new(FAILED))?;
+        let (d, kn, q) = smooth::through(&st.ts, &hp).map_err(|_| LoftError::new(FAILED))?;
         vdeg = d;
         vknots = kn;
-        net.push(q);
+        cols.push(q);
     }
-    let nv = net[0].len();
+    let nv = cols[0].len();
     let mut ctrl = Vec::with_capacity(nu * nv);
     let mut wts = Vec::with_capacity(nu * nv);
-    for col in &net {
+    for col in &cols {
         for q in col {
-            let w = q[3];
-            ctrl.push(Vec3::new(q[0] / w, q[1] / w, q[2] / w));
-            wts.push(w);
+            ctrl.push(Vec3::new(q[0] / q[3], q[1] / q[3], q[2] / q[3]));
+            wts.push(q[3]);
         }
     }
     let rational = cs.iter().any(|c| c.weights.is_some()) && wts.iter().any(|w| (w - 1.0).abs() > 1e-14);
@@ -271,6 +280,47 @@ fn side(st: &Stations, j: usize) -> Result<Side, LoftError> {
     )
     .map_err(|_| LoftError::new(FAILED))?;
     Ok(Side { surface: Surface::BSpline(Box::new(surf)), cs, plane: None })
+}
+
+/// Side face of three or more stations whose profile pieces carry different
+/// rational weights (arcs of different sweep, arcs with lines).
+///
+/// Oracle (random 3-station arc lofts, mesh vertices of the face): the
+/// surface is the point blend `S(u, v) = sum_k b_k(v) C_k(u)` of the exact
+/// station curves `C_k` (matched at the same NURBS parameter `u`) with the
+/// natural-spline cardinal functions `b_k` of the rails, NOT a NURBS in the
+/// homogeneous control points (mass off by ~1e-3) nor in separate point /
+/// weight nets. The blend is not a rational spline, so it is represented
+/// by a bicubic interpolant: exact (cubic) in `v`, interpolated at `U`
+/// parameter samples in `u` (error ~1e-8 for arcs).
+fn blend_surface(cs: &[BSplineCurve], ts: &[f64]) -> Result<Surface, LoftError> {
+    let spans = (ck_geom::nurbs::basis::distinct_knots(&cs[0].knots).len() - 1).max(1);
+    let n = 24 * spans + 1;
+    let us: Vec<f64> = (0..n).map(|a| a as f64 / (n - 1) as f64).collect();
+    // v-direction: control points of the natural spline through C_k(u_a)
+    let mut vdeg = 3;
+    let mut vknots = vec![];
+    let mut q: Vec<Vec<Vec3>> = vec![]; // [a][j]
+    for &u in &us {
+        let pts: Vec<[f64; 3]> = cs.iter().map(|c| { let p = c.eval(u); [p.x, p.y, p.z] }).collect();
+        let (d, kn, c) = smooth::through(ts, &pts).map_err(|_| LoftError::new(FAILED))?;
+        vdeg = d;
+        vknots = kn;
+        q.push(c.iter().map(|p| Vec3::new(p[0], p[1], p[2])).collect());
+    }
+    let nv = q[0].len();
+    // u-direction: cubic interpolation through the samples of every row j
+    let ku = ck_geom::fit::averaged_knots(&us, 3);
+    let mut ctrl = vec![Vec3::new(0.0, 0.0, 0.0); n * nv];
+    for j in 0..nv {
+        let col: Vec<Vec3> = (0..n).map(|a| q[a][j]).collect();
+        let c = ck_geom::fit::interpolate_with(&col, 3, &us, ku.clone()).map_err(|_| LoftError::new(FAILED))?;
+        for a in 0..n {
+            ctrl[a * nv + j] = c.ctrl[a];
+        }
+    }
+    let surf = BSplineSurface::new(3, vdeg, ku, vknots, n, nv, ctrl, None).map_err(|_| LoftError::new(FAILED))?;
+    Ok(Surface::BSpline(Box::new(surf)))
 }
 
 /// Rail through the matching vertices `pts` of the stations.
@@ -416,8 +466,10 @@ fn build(feature: &str, st: &Stations, profiles: &[ProfileIn], surface: bool) ->
             b.faces[f.idx()].sense = a >= 0.0;
         }
     }
-    b.number_split_faces();
+    // sheets keep one name for all pieces of an entity (oracle: four
+    // `F4.S.e1` faces, no `~k`); solids number them
     if !surface {
+        b.number_split_faces();
         ck_topo::orient::orient_body(&mut b);
     }
     let _ = TOL;
