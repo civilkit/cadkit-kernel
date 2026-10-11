@@ -236,6 +236,9 @@ pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, boo
     // A cylinder wall bounded by the original's first SSI circle opens the other way: window [cut, cut + p].
     let ssi_hole = face.loops.iter().any(|&l| body.lp(l).coedges.iter().any(|&c| body.coedge(c).alive && ssi.get(body.coedge(c).edge.idx()).map_or(false, |&o| o != 0.0)));
     let wsh = if ssi_hole { 0.0 } else { 1.0 };
+    // full spheres / tori are opened at their parameter domain [0, p] (oracle bounds)
+    let full_dom = matches!(surf, Surface::Sphere { .. } | Surface::Torus { .. });
+    let cut = if full_dom { FaceCut { u: pu, v: pv } } else { cut };
     let cu = pu.map(|p| cut.u.unwrap_or(p) - p * wsh);
     let cv = pv.map(|p| cut.v.unwrap_or(p) - p * wsh);
 
@@ -719,6 +722,7 @@ fn metric_scale(surf: &Surface, ur: (f64, f64), vr: (f64, f64)) -> (f64, f64) {
                 (if r.is_nan() { 0.001 } else { r.abs() }, sv)
             }
         }
+        Surface::Sphere { .. } | Surface::Torus { .. } if std::env::var("X").is_ok() => (1.0, 1.0),
         Surface::Sphere { r, .. } => (*r, *r),
         Surface::Torus { major, minor, .. } => (minor + major, *minor),
         _ => {

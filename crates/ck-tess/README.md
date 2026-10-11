@@ -47,3 +47,14 @@ counts (refinement acceptance rule is a GUESS; oracle cone uses a v-bisection gr
 `tools/wat_instrument.py` adds an `env.ck_log(i32,f64,f64,f64,f64)` import and log calls into
 kernel.wat, `wat2wasm --no-check` rebuilds in ~1 s, `tools/runlog.mjs <wasm> <part.json>` prints logs.
 `tools/meshdump.mjs part.json out.json` decodes the `$buf` arrays of a regen reply.
+
+## Update: CDT port + front end
+- cdt.rs is a line port of the original (f3295/f3298/f3299/f3303/f3305/f3307/f3309/f3312): hint-based deterministic locate, eps snap, Lawson stack
+  (flip pushes (t,0),(s,0); edge split pushes [(s,2),(s2,1),(t,2),(t2,1)]), Sloan recovery with FIFO flips + swap passes, super triangle R = 32*diag.
+- Loops are walked in natural coedge order; if the outer loop is clockwise every closed chain keeps its first vertex and is reversed after it.
+- uv bounds = sample bbox grown 1e-3 of its extent; periodic window [cut-p, cut]; centre = bounds centre; scale per surface kind (f3573).
+- Full-period strips: ring CCW from the lowest-left corner. Merged circle chains are sampled as one curve (junction not a sample).
+- Silhouette normals / mids / plane normal signs: f32 positions, cross(x,y).
+- HEURISTIC: closed SSI circles (t0<0) sit +-2pi off on their cylinder and open the window [cut, cut+p] (cutHole probes).
+- Debug: `--features ck-tess/trace` + tools/cdt_trace.py + tools/cdtcmp.mjs diff CDT op traces against the original.
+- Open: f3444 (face loops / cut / window) and f3325 refinement are not ported; sphere/torus/cone counts, shell/draft noise, hole-wall ties.

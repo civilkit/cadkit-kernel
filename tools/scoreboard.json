@@ -4,124 +4,32 @@
   280
  ],
  "regen.brep.faces": [
-  42,
-  44
+  152,
+  155
  ],
  "regen.brep.edges": [
-  39,
-  44
+  112,
+  155
  ],
  "regen.brep.box": [
-  41,
-  44
+  141,
+  155
  ],
  "regen.brep.rest": [
-  44,
-  44
+  141,
+  155
  ],
  "regen.brep.json": [
-  25,
-  44
+  79,
+  155
+ ],
+ "regen.brep.mesh": [
+  68,
+  155
  ],
  "mass.brep": [
-  44,
-  44
- ],
- "regen.bracket.faces": [
-  11,
-  11
- ],
- "regen.bracket.edges": [
-  11,
-  11
- ],
- "regen.bracket.box": [
-  11,
-  11
- ],
- "regen.bracket.rest": [
-  11,
-  11
- ],
- "regen.bracket.json": [
-  3,
-  11
- ],
- "mass.bracket": [
-  11,
-  11
- ],
- "regen.stepper-sample.faces": [
-  0,
-  34
- ],
- "regen.stepper-sample.edges": [
-  0,
-  34
- ],
- "regen.stepper-sample.box": [
-  4,
-  34
- ],
- "regen.stepper-sample.rest": [
-  4,
-  34
- ],
- "regen.stepper-sample.json": [
-  0,
-  34
- ],
- "mass.stepper-sample": [
-  0,
-  34
- ],
- "regen.coupling-sample.faces": [
-  0,
-  13
- ],
- "regen.coupling-sample.edges": [
-  0,
-  13
- ],
- "regen.coupling-sample.box": [
-  0,
-  13
- ],
- "regen.coupling-sample.rest": [
-  0,
-  13
- ],
- "regen.coupling-sample.json": [
-  0,
-  13
- ],
- "mass.coupling-sample": [
-  0,
-  13
- ],
- "regen.large-sample.faces": [
-  19,
-  44
- ],
- "regen.large-sample.edges": [
-  19,
-  44
- ],
- "regen.large-sample.box": [
-  19,
-  44
- ],
- "regen.large-sample.rest": [
-  1,
-  44
- ],
- "regen.large-sample.json": [
-  1,
-  44
- ],
- "mass.large-sample": [
-  19,
-  44
+  148,
+  155
  ],
  "step": [
   16,

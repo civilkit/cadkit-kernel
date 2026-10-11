@@ -70,6 +70,7 @@ function regenSet(set, targets) {
     bump(`regen.${set}.box`, !!pa && !!pb && JSON.stringify(ba?.box) === JSON.stringify(bb?.box));
     bump(`regen.${set}.rest`, !!pa && !!pb && rest(pa) === rest(pb));
     bump(`regen.${set}.json`, !!pa && !!pb && norm(ra) === norm(rb));
+    bump(`regen.${set}.mesh`, !!pa && !!pb && norm(ra) === norm(rb) && bin(ra) === bin(rb));
     if (ba && bb) {
       const q = JSON.stringify({ id: 2, msg: { type: 'massProps', tag: 'main' } });
       const ma = JSON.parse(ka.request(q).json || 'null')?.result, mb = JSON.parse(kb.request(q).json || 'null')?.result;
