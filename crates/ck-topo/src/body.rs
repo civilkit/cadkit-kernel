@@ -496,6 +496,84 @@ impl Body {
         (lo, hi)
     }
 
+    /// Box of a face from its boundary edges' control points: lines by
+    /// their ends, splines by the control net of the trimmed piece.
+    /// GUESS for conics (sampled arc). This is the key the oracle orders
+    /// `~k` pieces of one face name by (see [`Body::number_split_faces`]).
+    pub fn face_ctrl_box(&self, f: FaceId) -> (Vec3, Vec3) {
+        let mut lo = Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
+        let mut hi = -lo;
+        for e in self.face_edges(f) {
+            let ed = &self.edges[e.idx()];
+            let pts = match &ed.curve {
+                Curve::Line { .. } => vec![self.vertices[ed.v0.idx()].p, self.vertices[ed.v1.idx()].p],
+                Curve::BSpline(c) => clamped_net(c, ed.t0.min(ed.t1), ed.t0.max(ed.t1)),
+                c => c.sample(ed.t0, ed.t1, 64),
+            };
+            for p in pts {
+                lo = lo.min(p);
+                hi = hi.max(p);
+            }
+        }
+        (lo, hi)
+    }
+
+    /// Give `~k` suffixes to live faces that would otherwise share one id
+    /// (one sketch entity split into several side faces, e.g. a closed
+    /// spline profile cut at half length): k = rank of the face's
+    /// [`Body::face_ctrl_box`] centre, compared (x, y, z) lexicographically
+    /// in world axes. Oracle probes: closed-spline extrudes (60 random
+    /// shapes per plane + symmetric ones on front/top/right) name `S.e1~1`
+    /// the piece with the smaller control-box centre x (the curve's own
+    /// box or mid point get 2..9 of 60 wrong), ties broken by y then z;
+    /// near-ties of 4e-16 in y fall through to z, so the compare has a
+    /// tolerance; the loft probe (`~1..~4` around a circle→square loft)
+    /// fits the same rule. Faces that already carry a region keep it.
+    pub fn number_split_faces(&mut self) {
+        let mut groups: std::collections::BTreeMap<String, Vec<FaceId>> = Default::default();
+        for f in self.face_ids() {
+            if self.faces[f.idx()].name.region.is_none() {
+                groups.entry(self.face_id_str(f)).or_default().push(f);
+            }
+        }
+        for fs in groups.into_values().filter(|g| g.len() > 1) {
+            let mut keyed: Vec<(Vec3, FaceId)> = fs
+                .into_iter()
+                .map(|f| {
+                    let (lo, hi) = self.face_ctrl_box(f);
+                    ((lo + hi) * 0.5, f)
+                })
+                .collect();
+            // GUESS: tie tolerance 1e-9 (pinned only to lie in [4e-16, 0.05))
+            let cmp = |p: f64, q: f64| if (p - q).abs() <= 1e-9 { std::cmp::Ordering::Equal } else { p.total_cmp(&q) };
+            keyed.sort_by(|a, b| {
+                let (p, q) = (a.0, b.0);
+                cmp(p.x, q.x).then(cmp(p.y, q.y)).then(cmp(p.z, q.z))
+            });
+            for (k, (_, f)) in keyed.into_iter().enumerate() {
+                self.faces[f.idx()].name.region = Some(k as u32 + 1);
+            }
+        }
+    }
+
+    /// Edge between two pieces of one split face (same feature / role /
+    /// suffix, different `~k`) lying on the same surface: the oracle keeps
+    /// it in the topology (it takes a wire number and is written to STEP)
+    /// but leaves it out of `body.edges` (closed-spline extrude: rails #0,
+    /// #1 between `S.e1~2` and `S.e1~1` are missing from the reply).
+    pub fn is_split_rail(&self, e: EdgeId) -> bool {
+        let fs = self.edge_faces(e);
+        if fs.len() != 2 {
+            return false;
+        }
+        let (a, b) = (&self.faces[fs[0].idx()], &self.faces[fs[1].idx()]);
+        a.name.region != b.name.region
+            && a.name.feature == b.name.feature
+            && a.name.role == b.name.role
+            && a.name.suffix == b.name.suffix
+            && a.surface == b.surface
+    }
+
     // ---- whole-body ops
     /// Append all of `other` (ids are offset); returns the new lump ids.
     pub fn append(&mut self, other: &Body) -> Vec<LumpId> {
@@ -765,6 +843,9 @@ impl Body {
         let mut out = vec![];
         for (seq, chain) in self.wire_chains().into_iter().enumerate() {
             let e = chain[0];
+            if self.is_split_rail(e) {
+                continue; // numbered, not listed
+            }
             let mut names: Vec<String> = self.edge_faces(e).iter().map(|&f| self.face_id_str(f)).collect();
             names.sort();
             let key = if names.len() >= 2 {
@@ -831,15 +912,30 @@ fn arc_segments(r: f64, sweep: f64, tol: f64) -> usize {
     ((sweep.abs() / step).ceil() as usize).clamp(1, 1024)
 }
 
-/// Wire face `kind`.
-/// GUESS: swept (extrusion/revolution) and offset surfaces are reported as
-/// `spline` — the frontend only knows plane/cylinder/cone/sphere/torus/spline
-/// (oracle-flange.json + probes); the kernel likely converts them to NURBS.
+/// Wire face `kind`: the kind table in kernel.strings is
+/// `plane cylinder cone sphere torus spline offset extrusion revolution`;
+/// oracle probes report `extrusion` (closed-spline / ellipse extrudes) and
+/// `revolution` (spline revolve). `offset` unprobed.
 pub fn wire_kind(s: &Surface) -> &'static str {
-    match s {
-        Surface::Extrusion { .. } | Surface::Revolution { .. } | Surface::Offset { .. } => "spline",
-        s => s.kind(),
+    s.kind()
+}
+
+/// Control net of the piece [u0,u1] of `c`, clamped at both ends (knots
+/// raised to multiplicity p there, also at an unclamped domain end of a
+/// periodic curve) — the oracle represents a closed cv-spline as a clamped
+/// curve and its halves by knot insertion (cvs.step: 8 CPs on (0..5),
+/// halves 6 CPs on (0,1,2,2.5) / (2.5,3,4,5)).
+fn clamped_net(c: &ck_geom::nurbs::bspline::BSplineCurve<Vec3>, u0: f64, u1: f64) -> Vec<Vec3> {
+    let p = c.degree;
+    let c = c.insert_knot(u0, p).insert_knot(u1, p);
+    let first_ge = |u: f64| c.knots.iter().position(|&k| k >= u).unwrap_or(c.knots.len());
+    let last_le = |u: f64| c.knots.iter().rposition(|&k| k <= u).unwrap_or(0);
+    let i0 = last_le(u0).saturating_sub(p);
+    let i1 = first_ge(u1).saturating_sub(1).min(c.ctrl.len() - 1);
+    if i0 > i1 {
+        return c.ctrl.clone();
     }
+    c.ctrl[i0..=i1].to_vec()
 }
 
 pub(crate) fn v3(p: Vec3) -> Json {
