@@ -817,6 +817,41 @@ impl Body {
     /// `F2.C0|F2.S.e7#0, F2.C1|F3.B0#2, F2.S.e7|F3.B0#3` — the dead C1
     /// circle is #1 and there is no slot for the rail seam (our arena:
     /// seam 0, C0 1, C1 2).
+    /// Wire chains with their oracle edge number `#n`: arena slots in order,
+    /// where every DEAD non-seam edge also takes a slot (an in-place op —
+    /// fillet — keeps its survivors' numbers and leaves gaps for dead
+    /// edges; ck-ops blend writes its result in that arena layout) and a
+    /// live chain takes the slot of its first arena member. Seams and the
+    /// further pieces of a chain take none. Without dead edges this is the
+    /// chain's position in [`Body::wire_chains`]. Also returns the slot
+    /// count (the next free number).
+    pub fn wire_numbered(&self) -> (Vec<(usize, Vec<EdgeId>)>, usize) {
+        let chains = self.wire_chains();
+        let mut head = vec![usize::MAX; self.edges.len()];
+        let mut member = vec![false; self.edges.len()];
+        for (k, ch) in chains.iter().enumerate() {
+            let first = ch.iter().map(|e| e.idx()).min().unwrap();
+            head[first] = k;
+            for e in ch {
+                member[e.idx()] = true;
+            }
+        }
+        let mut num = vec![0usize; chains.len()];
+        let mut slot = 0usize;
+        for i in 0..self.edges.len() {
+            let ed = &self.edges[i];
+            if ed.alive {
+                if head[i] != usize::MAX {
+                    num[head[i]] = slot;
+                    slot += 1;
+                }
+            } else if !member[i] && !self.edge_was_seam(EdgeId(i as u32)) {
+                slot += 1;
+            }
+        }
+        (num.into_iter().zip(chains).collect(), slot)
+    }
+
     pub fn seamless_index(&self, e: EdgeId) -> usize {
         (0..e.idx()).filter(|&i| !self.edge_was_seam(EdgeId(i as u32))).count()
     }
@@ -865,7 +900,7 @@ impl Body {
     /// stand-alone default), concatenated along a chain.
     pub fn edges_json(&self, pts: &dyn Fn(&Body, EdgeId) -> Vec<Vec3>) -> Json {
         let mut out = vec![];
-        for (seq, chain) in self.wire_chains().into_iter().enumerate() {
+        for (seq, chain) in self.wire_numbered().0 {
             let e = chain[0];
             if self.is_split_rail(e) {
                 continue; // numbered, not listed

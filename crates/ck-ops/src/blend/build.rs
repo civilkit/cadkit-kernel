@@ -50,12 +50,31 @@ pub fn find_edge(b: &Body, fa: &str, fb: &str, at: Vec3) -> Option<EdgeId> {
 
 /// Constant-radius fillets of `edges` (face-name pairs + pick point, in
 /// ref order), blend faces `B0, B1, …` of `feature`.
+///
+/// Each pair is first normalised so that the face whose loop runs the edge
+/// FORWARD comes first (oracle box probes, bracket F12: selection
+/// `["F2.S.e8","F2.S.e9"]` lists `F12.B0|F2.S.e9` before `…|F2.S.e8`, and
+/// the touched faces come e9, e8). The result is written in the original's
+/// IN-PLACE arena layout ([`in_place_layout`]), so wire `#n` keep the
+/// input's numbers.
 pub fn fillet(b: &Body, edges: &[(String, String, Vec3)], r: f64, feature: &str, tol: f64) -> Result<Body, BlendError> {
     if !(r > 0.0) || !r.is_finite() {
         return Err(BlendError::code("invalidValue"));
     }
     if edges.is_empty() {
         return Err(BlendError::code("missingEdge"));
+    }
+    let edges: Vec<(String, String, Vec3)> = edges.iter().map(|(fa, fb, at)| forward_first(b, fa, fb, *at)).collect();
+    // blend references on the INPUT body (for the in-place numbering)
+    let mut refs: Vec<BlendRef> = vec![];
+    for (k, (fa, fb, at)) in edges.iter().enumerate() {
+        let e = find_edge(b, fa, fb, *at).ok_or_else(|| BlendError::code("missingEdge"))?;
+        let ed = b.edge(e);
+        refs.push(BlendRef {
+            name: FaceName::blend(feature, k as u32).id(),
+            faces: [fa.clone(), fb.clone()],
+            ends: [b.vertex(ed.v0).p, b.vertex(ed.v1).p],
+        });
     }
     let mut out = b.clone();
     let mut touched: Vec<String> = vec![];
@@ -71,7 +90,7 @@ pub fn fillet(b: &Body, edges: &[(String, String, Vec3)], r: f64, feature: &str,
         out = body;
     }
     if edges.len() == 1 {
-        return Ok(out);
+        return Ok(in_place_layout(b, &out, &refs, tol));
     }
     // one blend op over all edges: untouched faces, touched faces in
     // first-touch order, blend faces (probe fil2)
@@ -91,7 +110,214 @@ pub fn fillet(b: &Body, edges: &[(String, String, Vec3)], r: f64, feature: &str,
     };
     let mut order: Vec<FaceId> = out.face_ids().collect();
     order.sort_by_key(|&f| rank(f)); // stable: keeps relative order within ties
-    Ok(crate::boolean::assemble::rebuild_in_order(&out, &order))
+    let out = crate::boolean::assemble::rebuild_in_order(&out, &order);
+    Ok(in_place_layout(b, &out, &refs, tol))
+}
+
+/// `(fa, fb)` with the face whose coedge runs the selected edge forward
+/// first (unchanged when the edge is not found).
+pub fn forward_first(b: &Body, fa: &str, fb: &str, at: Vec3) -> (String, String, Vec3) {
+    let keep = (fa.to_string(), fb.to_string(), at);
+    let Some(e) = find_edge(b, fa, fb, at) else { return keep };
+    let fwd = b.edge_coedges(e).into_iter().find(|&c| !b.coedge(c).rev).map(|c| b.coedge_face(c));
+    match (fwd, b.find_face(fb)) {
+        (Some(f), Some(g)) if f == g => (fb.to_string(), fa.to_string(), at),
+        _ => keep,
+    }
+}
+
+/// One selected blend: its face id, the edge's two faces (forward face
+/// first) and end points (v0, v1) on the input body.
+#[derive(Debug, Clone)]
+pub struct BlendRef {
+    pub name: String,
+    pub faces: [String; 2],
+    pub ends: [Vec3; 2],
+}
+
+/// Re-lay `out` (the blended body) in the original's in-place arena, so
+/// [`Body::wire_numbered`] gives the oracle `#n` (bracket F11 / F12):
+/// - an input edge that survives unchanged keeps its slot;
+/// - an input edge the blend trims is split in parameter order (in
+///   ascending input slot order): its first piece keeps the slot, each
+///   further piece takes the next new slot; pieces the blend removed stay
+///   as dead slots (F11: C0|S.e9 #2 trimmed at its end keeps #2, C0|S.e8
+///   #1 trimmed at its start dies and its kept piece is #76, S.e10|S.e9 #6
+///   trimmed at both ends -> #80 kept, #81 dead);
+/// - removed input edges stay dead slots;
+/// - then per blend (selection order) its edges: spring on the forward
+///   face, spring on the other face, end arc at v0, end arc at v1.
+pub fn in_place_layout(input: &Body, out: &Body, refs: &[BlendRef], tol: f64) -> Body {
+    let (in_slots, n_in) = input.wire_numbered();
+    let out_chains = out.wire_chains();
+    let names = |b: &Body, e: EdgeId| {
+        let mut v: Vec<String> = b.edge_faces(e).iter().map(|&f| b.face_id_str(f)).collect();
+        v.sort();
+        v
+    };
+    let ends = |b: &Body, ch: &[EdgeId]| (b.vertex(b.edge(ch[0]).v0).p, b.vertex(b.edge(*ch.last().unwrap()).v1).p);
+    let near = |p: Vec3, q: Vec3| p.dist(q) <= tol * 10.0;
+    let on = |b: &Body, ch: &[EdgeId], p: Vec3| {
+        ch.iter().any(|&e| {
+            let ed = b.edge(e);
+            crate::boolean::imprint::dist_in_range(&ed.curve, (ed.t0, ed.t1), p).1 <= tol * 10.0
+        })
+    };
+    let mut slot_of: Vec<Option<usize>> = vec![None; out_chains.len()];
+    let mut used_in = vec![false; in_slots.len()];
+    // 1. unchanged edges
+    for (k, ch) in out_chains.iter().enumerate() {
+        let (p, q) = ends(out, ch);
+        let nm = names(out, ch[0]);
+        let mid = out.chain_mid(ch);
+        for (i, (s, ich)) in in_slots.iter().enumerate() {
+            if used_in[i] || names(input, ich[0]) != nm {
+                continue;
+            }
+            let (a, b2) = ends(input, ich);
+            if ((near(a, p) && near(b2, q)) || (near(a, q) && near(b2, p))) && near(input.chain_mid(ich), mid) {
+                slot_of[k] = Some(*s);
+                used_in[i] = true;
+                break;
+            }
+        }
+    }
+    // 2. trimmed edges, split in parameter order
+    let mut next = n_in;
+    for (i, (s, ich)) in in_slots.iter().enumerate() {
+        if used_in[i] || ich.len() != 1 {
+            continue;
+        }
+        let ie = input.edge(ich[0]);
+        let nm = names(input, ich[0]);
+        let pieces: Vec<usize> = (0..out_chains.len())
+            .filter(|&k| slot_of[k].is_none() && names(out, out_chains[k][0]) == nm && {
+                let (p, q) = ends(out, &out_chains[k]);
+                on(input, ich, p) && on(input, ich, q) && on(input, ich, out.chain_mid(&out_chains[k]))
+            })
+            .collect();
+        if pieces.is_empty() {
+            continue;
+        }
+        let param = |p: Vec3| crate::boolean::imprint::dist_in_range(&ie.curve, (ie.t0, ie.t1), p).0;
+        let mut cuts: Vec<f64> = vec![];
+        for &k in &pieces {
+            let (p, q) = ends(out, &out_chains[k]);
+            for t in [param(p), param(q)] {
+                let slack = crate::intersect::param_slack(&ie.curve, t, tol * 10.0);
+                if t > ie.t0 + slack && t < ie.t1 - slack && !cuts.iter().any(|&c| (c - t).abs() <= slack) {
+                    cuts.push(t);
+                }
+            }
+        }
+        cuts.sort_by(|a, b| a.total_cmp(b));
+        let mut bounds = vec![ie.t0];
+        bounds.extend(cuts);
+        bounds.push(ie.t1);
+        for (j, w) in bounds.windows(2).enumerate() {
+            let slot = if j == 0 { *s } else {
+                next += 1;
+                next - 1
+            };
+            let tm = 0.5 * (w[0] + w[1]);
+            if let Some(&k) = pieces.iter().find(|&&k| {
+                let t = param(out.chain_mid(&out_chains[k]));
+                t > w[0] && t < w[1] && slot_of[k].is_none()
+            }) {
+                let _ = tm;
+                slot_of[k] = Some(slot);
+            }
+        }
+        used_in[i] = true;
+    }
+    // 3. blend edges per blend
+    for r in refs {
+        let mut mine: Vec<(usize, usize, f64)> = vec![];
+        for (k, ch) in out_chains.iter().enumerate() {
+            if slot_of[k].is_some() {
+                continue;
+            }
+            let nm = names(out, ch[0]);
+            if !nm.contains(&r.name) {
+                continue;
+            }
+            let other = nm.iter().find(|n| **n != r.name).cloned().unwrap_or_default();
+            let (p, q) = ends(out, ch);
+            let d0 = p.dist(r.ends[0]).min(q.dist(r.ends[0]));
+            let d1 = p.dist(r.ends[1]).min(q.dist(r.ends[1]));
+            let rank = if other == r.faces[0] {
+                0
+            } else if other == r.faces[1] {
+                1
+            } else if d0 <= d1 {
+                2
+            } else {
+                3
+            };
+            mine.push((rank, k, d0.min(d1)));
+        }
+        mine.sort_by(|a, b| a.0.cmp(&b.0).then(a.2.total_cmp(&b.2)));
+        for (_, k, _) in mine {
+            slot_of[k] = Some(next);
+            next += 1;
+        }
+    }
+    // 4. anything else, in out order
+    for k in 0..out_chains.len() {
+        if slot_of[k].is_none() {
+            slot_of[k] = Some(next);
+            next += 1;
+        }
+    }
+    // ---- write the arena: slot order, dead placeholders, seams last
+    let mut res = Body::new();
+    let lump = res.add_lump();
+    let shell = res.add_shell(lump);
+    let mut vmap: Vec<Option<ck_topo::body::VertexId>> = vec![None; out.vertices.len()];
+    for v in out.vertex_ids() {
+        vmap[v.idx()] = Some(res.add_vertex(out.vertex(v).p));
+    }
+    let mut by_slot: Vec<Option<usize>> = vec![None; next];
+    for (k, s) in slot_of.iter().enumerate() {
+        by_slot[s.unwrap()] = Some(k);
+    }
+    let mut emap: Vec<Option<EdgeId>> = vec![None; out.edges.len()];
+    let dummy = res.add_vertex(Vec3::ZERO);
+    res.vertices[dummy.idx()].alive = false;
+    for s in 0..next {
+        match by_slot[s] {
+            Some(k) => {
+                for &e in &out_chains[k] {
+                    let ed = out.edge(e);
+                    emap[e.idx()] =
+                        Some(res.add_edge(ed.curve.clone(), ed.t0, ed.t1, vmap[ed.v0.idx()].unwrap(), vmap[ed.v1.idx()].unwrap()));
+                }
+            }
+            None => {
+                let d = res.add_edge(Curve::Line { o: Vec3::ZERO, d: Vec3::X }, 0.0, 0.0, dummy, dummy);
+                res.edges[d.idx()].alive = false;
+            }
+        }
+    }
+    for e in out.edge_ids() {
+        if emap[e.idx()].is_none() {
+            let ed = out.edge(e);
+            emap[e.idx()] = Some(res.add_edge(ed.curve.clone(), ed.t0, ed.t1, vmap[ed.v0.idx()].unwrap(), vmap[ed.v1.idx()].unwrap()));
+        }
+    }
+    for f in out.face_ids() {
+        let face = out.face(f);
+        let nf = res.add_face(shell, face.surface.clone(), face.sense, face.name.clone());
+        for &l in &face.loops {
+            let nl = res.add_loop(nf);
+            for &c in &out.lp(l).coedges {
+                let ce = out.coedge(c).clone();
+                res.add_coedge(nl, emap[ce.edge.idx()].unwrap(), ce.rev, ce.pcurve);
+            }
+        }
+    }
+    ck_topo::region::rebuild_lumps(&mut res);
+    res
 }
 
 /// One straight edge between two planar faces.
@@ -156,7 +382,19 @@ fn fillet_line_edge_hint(
     let (cp, t1, t2) = (uv(p0), uv(p0 + off - n1 * (s * r)), uv(p0 + off - n2 * (s * r)));
     let cc = uv(p0 + off);
     let short_ccw = (t1 - cc).cross(t2 - cc) > 0.0;
-    let arc = if short_ccw { ProfileSeg::arc("arc", cc, t1, t2) } else { ProfileSeg::arc("arc", cc, t2, t1).reversed() };
+    let arc = if short_ccw {
+        ProfileSeg::arc("arc", cc, t1, t2)
+    } else if !convex {
+        // concave: the tool's cap arcs ARE the end arcs; the oracle runs
+        // them from the forward face's spring to the other one, n = (s1 −
+        // c) × (s2 − c) (bracket F12 on S.e8|S.e9 along +x: n = −x)
+        let x = (t1 - cc).normalize();
+        let (a, b) = (t1 - cc, t2 - cc);
+        let sweep = -(a.cross(b)).atan2(a.dot(b));
+        ProfileSeg { tag: "arc".into(), curve: ck_geom::curve2::Curve2::Circle { c: cc, x, r: cc.dist(t1), ccw: false }, t0: 0.0, t1: sweep, rev: false }
+    } else {
+        ProfileSeg::arc("arc", cc, t2, t1).reversed()
+    };
     let lp = ProfileLoop::new(vec![ProfileSeg::line("l2", t2, cp), ProfileSeg::line("l1", cp, t1), arc]);
     let prof = Profile::new(fr, vec![ProfileRegion { outer: lp, holes: vec![] }]).normalized();
     let mut tool = extrude(feature, &prof, ExtrudeOpts { s0: 0.0, s1: len + 2.0 * margin, dir: None, draft: 0.0 })
