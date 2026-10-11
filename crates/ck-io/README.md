@@ -1,0 +1,20 @@
+# ck-io
+
+File export. rs_paths.txt shows step/write.rs only — a STEP (AP203/AP214)
+writer. The complete writer strings survive in kernel.strings:
+
+- CARTESIAN_POINT/DIRECTION/VECTOR, AXIS2_PLACEMENT_3D/AXIS1_PLACEMENT
+- CIRCLE/ELLIPSE/LINE, B_SPLINE_CURVE_WITH_KNOTS (+RATIONAL)
+- PLANE/CYLINDRICAL/CONICAL/SPHERICAL/TOROIDAL_SURFACE,
+  SURFACE_OF_REVOLUTION / SURFACE_OF_LINEAR_EXTRUSION,
+  B_SPLINE_SURFACE_WITH_KNOTS (+RATIONAL), OFFSET_SURFACE
+- ADVANCED_FACE/FACE_BOUND/ORIENTED_EDGE/EDGE_LOOP/VERTEX_POINT
+- CLOSED_SHELL/MANIFOLD_SOLID_BREP/BREP_WITH_VOIDS/
+  SHELL_BASED_SURFACE_MODEL/MANIFOLD_SURFACE_SHAPE_REPRESENTATION
+- header: FILE_NAME(...'CadKit','CadKit','') /
+  'automotive_design',2000 / uncertainty 1.E-06 'confusion accuracy'
+
+## Interface
+
+Body -> STEP text. The exact entity attribute order/flags
+(.UNSPECIFIED.,.F.,...) are in kernel.strings verbatim.
