@@ -13,3 +13,4 @@ ck-model = { path = "../ck-model" }
 ck-core = { path = "../ck-core" }
 ck-topo = { path = "../ck-topo" }
 ck-io = { path = "../ck-io" }
+ck-tess = { path = "../ck-tess" }

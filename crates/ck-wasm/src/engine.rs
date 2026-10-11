@@ -82,10 +82,11 @@ fn regen_hook(part: &Json, cx: &mut Cx) -> Result<(Json, State), String> {
     let mut out = result.to_json();
     cx.span(SNAPSHOT_LABEL, |cx| {
         if let Some(b) = &body {
-            // GUESS: triangle count unknown until ck-tess (mesh buffers are empty).
-            let t = cx.trace.begin(format!("tessellate {} faces → 0 triangles", b.num_faces()));
+            let t = cx.trace.begin(String::new());
+            let tess = ck_tess::mesh::tessellate(b);
+            cx.trace.relabel(&t, format!("tessellate {} faces → {} triangles", b.num_faces(), tess.mesh.tri_face.len()));
             cx.trace.end(t);
-            set_body(&mut out, body_json(b, cx));
+            set_body(&mut out, body_json(b, &tess, cx));
         }
     });
     let state = match body {
@@ -112,13 +113,36 @@ fn set_body(result: &mut Json, body: Json) {
 /// buffer is EMPTY (the client gets a valid but invisible mesh; the oracle
 /// sends 3 f32 per vertex in positions/normals/mids and one i32 face index
 /// per triangle in triFace, non-indexed triangle soup).
-fn body_json(b: &Body, cx: &mut Cx) -> Json {
-    let positions = cx.bufs.f32(&[]);
-    let normals = cx.bufs.f32(&[]);
-    let mids = cx.bufs.f32(&[]);
-    let tri_face = cx.bufs.i32(&[]);
-    let silhouette = cx.bufs.f32(&[]);
+fn body_json(b: &Body, tess: &ck_tess::mesh::Tess, cx: &mut Cx) -> Json {
+    let m = &tess.mesh;
+    let positions = cx.bufs.f32(&m.positions);
+    let normals = cx.bufs.f32(&m.normals);
+    let mids = cx.bufs.f32(&m.mids);
+    let tri_face = cx.bufs.i32(&m.tri_face);
+    let silhouette = cx.bufs.f32(&m.silhouette);
     let mut kv = body_wire(b);
+    // The oracle box is the union of the f32 display-mesh positions and the
+    // f64 edge polyline points (pinned: brep cyl/zeroDepth/rev90 boxes take
+    // each coordinate from whichever source is more extreme).
+    let mut bounds = m.bbox();
+    for e in b.wire_edges() {
+        for p in tess.edge_polyline(b, e) {
+            bounds = Some(match bounds {
+                None => (p, p),
+                Some((lo, hi)) => (
+                    ck_core::linalg::Vec3::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z)),
+                    ck_core::linalg::Vec3::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z)),
+                ),
+            });
+        }
+    }
+    if let Some((lo, hi)) = bounds {
+        let v = |p: ck_core::linalg::Vec3| Json::Arr(vec![Json::Num(p.x), Json::Num(p.y), Json::Num(p.z)]);
+        kv[0].1 = Obj::new().put("min", v(lo)).put("max", v(hi)).build();
+    }
+    if let Some(slot) = kv.iter_mut().find(|(k, _)| k == "edges") {
+        slot.1 = b.edges_json(&|b, e| tess.edge_polyline(b, e));
+    }
     kv.push(("silhouette".into(), silhouette));
     kv.push((
         "mesh".into(),
