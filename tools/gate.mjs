@@ -14,12 +14,17 @@
 //   step          STEP replies byte-identical (ck-io golden request bodies)
 //   valid.<set>   OURS alone: no feature errors, volume > 0, every edge
 //                 bounds exactly 2 faces (closed manifold shell)
+//   oracle.<set>  HARD: massProps volume/area/com + box vs the closed-form
+//                 oracles of tools/oracles (independent of the original), 1e-6
 //   vol.<set>     our volume within 1e-3 relative of the original's
 //   heal.repair   OURS alone: damaged copies of the valid brep bodies healed
 //                 back to validate-clean with volume within 1e-6
+//   import.sat    OURS alone: each fixture in crates/ck-io/tests/fixtures/sat/
+//                 expected.json imports with no errors, validates with zero
+//                 issues and has the closed-form volume (1e-6 relative)
 //
 // Direction (2026-10-12): correctness + robustness, not byte-identity.
-// HARD metrics (a drop fails the gate): wire, valid.*, vol.*, heal.repair.
+// HARD metrics (a drop fails the gate): wire, valid.*, vol.*, oracle.*, import.*, heal.repair.
 // SOFT metrics (oracle-identity: faces/edges/box/rest/json/mesh/mass/step):
 // a drop prints WARN but does not fail. The original is a reference, not
 // the arbiter.
@@ -29,6 +34,8 @@ import { fileURLToPath } from 'node:url';
 import { Kernel } from './kernel.mjs';
 import cases from './cases.mjs';
 import { parts as brepParts } from './brep_cases.mjs';
+import { oracles } from './oracles/index.mjs';
+import { checkOracle } from './oracles/check.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2);
@@ -66,7 +73,7 @@ const close = (a, b) => {
   return a === b;
 };
 const HEAL_KINDS = ['detach', 'shells', 'flip', 'invert', 'reverseCoedge', 'shuffle', 'tiny'];
-const validCodes = {}, validFail = [];
+const validCodes = {}, validFail = [], oracleFail = [];
 function regenSet(set, targets) {
   for (const t of targets) {
     const t0 = performance.now();
@@ -88,6 +95,11 @@ function regenSet(set, targets) {
       const q = JSON.stringify({ id: 2, msg: { type: 'massProps', tag: 'main' } });
       const ma = JSON.parse(ka.request(q).json || 'null')?.result, mb = JSON.parse(kb.request(q).json || 'null')?.result;
       bump(`mass.${set}`, ['volume', 'area', 'com'].every((k) => close(mb?.[k], ma?.[k])));
+      if (set === 'brep' && oracles[t.name]) {
+        const bad = checkOracle(oracles[t.name], mb, bb.box);
+        bump('oracle.brep', bad.length === 0);
+        if (bad.length) oracleFail.push(`${t.name}: ${bad.join(' | ')}`);
+      }
       bump(`vol.${set}`, typeof mb?.volume === 'number' && Math.abs(mb.volume - ma?.volume) <= 1e-3 * Math.abs(ma?.volume ?? 0));
       const manifold = (bb.edges ?? []).every((e) => e.faces?.length === 2);
       const vq = JSON.stringify({ id: 3, msg: { type: 'validate', tag: 'main' } });
@@ -120,6 +132,22 @@ for (const f of fast ? [] : ['bracket', 'stepper-sample', 'coupling-sample', 'la
   regenSet(f, part.features.map((_, k) => ({ name: `${f}@${k + 1}`, part, upTo: k + 1 })));
 }
 
+// 2b. ACIS SAT import (ours only; closed-form volumes in expected.json)
+const sdir = path.join(here, '../crates/ck-io/tests/fixtures/sat');
+if (existsSync(path.join(sdir, 'expected.json'))) {
+  const expected = JSON.parse(readFileSync(path.join(sdir, 'expected.json'), 'utf8'));
+  for (const [f, vol] of Object.entries(expected)) {
+    const kb = new Kernel(B);
+    const rq = (id, msg) => { const r = kb.request(JSON.stringify({ id, msg })); return r.trap ? null : JSON.parse(r.json)?.result; };
+    const imp = rq(1, { type: 'importSat', tag: 'main', name: f, data: readFileSync(path.join(sdir, f), 'utf8') });
+    const val = rq(2, { type: 'validate', tag: 'main' });
+    const mass = rq(3, { type: 'massProps', tag: 'main' });
+    const ok = !!imp && !imp.errors?.length && !!imp.body && val?.issues?.length === 0 && Math.abs(mass?.volume - vol) <= 1e-6 * vol;
+    if (!ok && !quiet) process.stderr.write(`import.sat ${f}: ${JSON.stringify(imp?.errors)} issues=${JSON.stringify(val?.issues?.slice(0, 2))} vol=${mass?.volume} want=${vol}\n`);
+    bump('import.sat', ok);
+  }
+}
+
 // 3. STEP export
 const gdir = path.join(here, '../crates/ck-io/tests/golden');
 if (existsSync(gdir)) for (const f of readdirSync(gdir).filter((f) => f.endsWith('.req.json')).sort()) {
@@ -134,7 +162,7 @@ if (!quiet) process.stderr.write('\n');
 const basePath = path.join(here, 'scoreboard.json');
 const base = existsSync(basePath) ? JSON.parse(readFileSync(basePath, 'utf8')) : {};
 let worse = 0, soft = 0;
-const hard = (k) => /^(wire|valid\.|vol\.|heal\.)/.test(k);
+const hard = (k) => /^(wire|valid\.|vol\.|oracle\.|import\.|heal\.)/.test(k);
 const skipped = (k) => fast && /^(regen|mass|valid|vol)\.(bracket|stepper|flange|hair)/.test(k);
 for (const k of Object.keys({ ...base, ...score }).sort()) {
   const [m, n] = score[k] ?? [0, 0], b = base[k]?.[0];
@@ -143,6 +171,7 @@ for (const k of Object.keys({ ...base, ...score }).sort()) {
   if (b !== undefined && m < b) hard(k) ? worse++ : soft++;
   console.log(`${k.padEnd(40)} ${String(m).padStart(4)}/${String(n).padEnd(4)}${d}`);
 }
+for (const f of oracleFail) console.log(`ORACLE MISMATCH ${f}`);
 if (Object.keys(validCodes).length) { console.log('validate issue codes:', JSON.stringify(validCodes)); if (!quiet) console.log(validFail.join('\n')); else console.log(`validate-failing cases: ${validFail.length}`); }
 if (update) { const out = fast ? { ...base, ...score } : score; writeFileSync(basePath, JSON.stringify(out, null, 1) + '\n'); console.log(`baseline written: ${basePath}`); }
 else if (worse) { console.log(`\nGATE FAILED: ${worse} metric(s) regressed`); process.exitCode = 1; }

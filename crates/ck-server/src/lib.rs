@@ -64,6 +64,8 @@ pub const REQUEST_TYPES: &[(&str, Handler)] = &[
     ("validate", geometry::validate),
     // Extension: shape healing (ck-heal) of the current body.
     ("heal", geometry::heal),
+    // Extension: ACIS SAT import -> a body in the tag's state.
+    ("importSat", geometry::import_sat),
     ("inspect", query::inspect),
     ("continuity", query::continuity),
     ("curvatureAt", curvature::curvature_at),

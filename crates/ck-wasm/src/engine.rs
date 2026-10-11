@@ -12,6 +12,7 @@ use ck_topo::body::Body;
 
 pub fn install() {
     ck_server::set_hooks(Hooks {
+        import_sat: Some(import_sat_hook),
         regen: Some(regen_hook),
         query: Some(query_hook),
         sketch_offset: Some(sketch_offset_hook),
@@ -131,6 +132,47 @@ fn regen_hook(part: &Json, cx: &mut Cx) -> Result<(Json, State), String> {
         None => State::empty(),
     };
     Ok((out, state))
+}
+
+/// `importSat`: ACIS SAT text -> body snapshot. Reply = regen-shaped result
+/// (`errors`, `body`, ...) plus `import` {format, name, units, sheet, faces}.
+fn import_sat_hook(cx: &mut Cx) -> Result<(Json, Option<State>), String> {
+    let data = cx.msg.get_str("data").unwrap_or("").to_string();
+    let name = cx.msg.get_str("name").unwrap_or("part").to_string();
+    let mut out = ck_server::session::empty_regen_result();
+    match ck_io::sat::import_sat(&data) {
+        Err(e) => {
+            let err = Obj::new()
+                .put("code", e.code)
+                .put("entity", e.entity_id().map_or(Json::Null, Json::Str))
+                .put("kind", e.kind.as_str())
+                .put("line", e.line as f64)
+                .put("message", e.detail.as_str())
+                .build();
+            set_key(&mut out, "errors", Json::Arr(vec![err]));
+            Ok((out, None))
+        }
+        Ok(imp) => {
+            let body = imp.body;
+            let tess = ck_tess::mesh::tessellate(&body);
+            let renorm = (vec![], vec![]);
+            set_body(&mut out, body_json(&body, &tess, cx, &renorm));
+            if let Json::Obj(kv) = &mut out {
+                kv.push((
+                    "import".into(),
+                    Obj::new()
+                        .put("format", "sat")
+                        .put("name", name.as_str())
+                        .put("units", imp.units)
+                        .put("sheet", imp.sheet)
+                        .put("faces", body.num_faces() as f64)
+                        .build(),
+                ));
+            }
+            let state = State { has_body: true, data: Some(Box::new(Snapshot { body, sketches: vec![], asm: Default::default() })) };
+            Ok((out, Some(state)))
+        }
+    }
 }
 
 fn set_body(result: &mut Json, body: Json) {

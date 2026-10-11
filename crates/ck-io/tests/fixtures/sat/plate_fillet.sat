@@ -1,0 +1,108 @@
+700 0 1 0
+@12 ck-test-gen @9 ACIS 7.0 @24 Mon Oct 12 00:00:00 2026
+1 1e-06 1e-10
+body $-1 -1 $-1 $1 $-1 $-1 #
+lump $-1 -1 $-1 $-1 $2 $0 #
+shell $-1 -1 $-1 $-1 $-1 $60 $-1 $1 #
+point $-1 -1 $-1 0.0 0.0 0.0 #
+vertex $-1 -1 $-1 $24 $3 #
+point $-1 -1 $-1 0.0 20.0 0.0 #
+vertex $-1 -1 $-1 $24 $5 #
+point $-1 -1 $-1 0.0 20.0 2.0 #
+vertex $-1 -1 $-1 $26 $7 #
+point $-1 -1 $-1 0.0 17.0 5.0 #
+vertex $-1 -1 $-1 $28 $9 #
+point $-1 -1 $-1 0.0 0.0 5.0 #
+vertex $-1 -1 $-1 $30 $11 #
+point $-1 -1 $-1 40.0 0.0 0.0 #
+vertex $-1 -1 $-1 $34 $13 #
+point $-1 -1 $-1 40.0 20.0 0.0 #
+vertex $-1 -1 $-1 $34 $15 #
+point $-1 -1 $-1 40.0 20.0 2.0 #
+vertex $-1 -1 $-1 $36 $17 #
+point $-1 -1 $-1 40.0 17.0 5.0 #
+vertex $-1 -1 $-1 $38 $19 #
+point $-1 -1 $-1 40.0 0.0 5.0 #
+vertex $-1 -1 $-1 $40 $21 #
+straight-curve $-1 -1 $-1 0.0 0.0 0.0 0.0 1.0 0.0 I I #
+edge $-1 -1 $-1 $4 0.0 $6 20.0 $-1 $23 forward @7 unknown #
+straight-curve $-1 -1 $-1 0.0 20.0 0.0 0.0 0.0 1.0 I I #
+edge $-1 -1 $-1 $6 0.0 $8 2.0 $-1 $25 forward @7 unknown #
+ellipse-curve $-1 -1 $-1 0.0 17.0 2.0 1.0 0.0 0.0 0.0 3.0 0.0 1.0 I I #
+edge $-1 -1 $-1 $8 0.0 $10 1.5707963267948966 $-1 $27 forward @7 unknown #
+straight-curve $-1 -1 $-1 0.0 17.0 5.0 0.0 -1.0 0.0 I I #
+edge $-1 -1 $-1 $10 0.0 $12 17.0 $-1 $29 forward @7 unknown #
+straight-curve $-1 -1 $-1 0.0 0.0 5.0 0.0 0.0 -1.0 I I #
+edge $-1 -1 $-1 $12 0.0 $4 5.0 $-1 $31 forward @7 unknown #
+straight-curve $-1 -1 $-1 40.0 0.0 0.0 0.0 1.0 0.0 I I #
+edge $-1 -1 $-1 $14 0.0 $16 20.0 $-1 $33 forward @7 unknown #
+straight-curve $-1 -1 $-1 40.0 20.0 0.0 0.0 0.0 1.0 I I #
+edge $-1 -1 $-1 $16 0.0 $18 2.0 $-1 $35 forward @7 unknown #
+ellipse-curve $-1 -1 $-1 40.0 17.0 2.0 1.0 0.0 0.0 0.0 3.0 0.0 1.0 I I #
+edge $-1 -1 $-1 $18 0.0 $20 1.5707963267948966 $-1 $37 forward @7 unknown #
+straight-curve $-1 -1 $-1 40.0 17.0 5.0 0.0 -1.0 0.0 I I #
+edge $-1 -1 $-1 $20 0.0 $22 17.0 $-1 $39 forward @7 unknown #
+straight-curve $-1 -1 $-1 40.0 0.0 5.0 0.0 0.0 -1.0 I I #
+edge $-1 -1 $-1 $22 0.0 $14 5.0 $-1 $41 forward @7 unknown #
+straight-curve $-1 -1 $-1 0.0 0.0 0.0 1.0 0.0 0.0 I I #
+edge $-1 -1 $-1 $4 0.0 $14 40.0 $-1 $43 forward @7 unknown #
+straight-curve $-1 -1 $-1 0.0 20.0 0.0 1.0 0.0 0.0 I I #
+edge $-1 -1 $-1 $6 0.0 $16 40.0 $-1 $45 forward @7 unknown #
+straight-curve $-1 -1 $-1 0.0 20.0 2.0 1.0 0.0 0.0 I I #
+edge $-1 -1 $-1 $8 0.0 $18 40.0 $-1 $47 forward @7 unknown #
+straight-curve $-1 -1 $-1 0.0 17.0 5.0 1.0 0.0 0.0 I I #
+edge $-1 -1 $-1 $10 0.0 $20 40.0 $-1 $49 forward @7 unknown #
+straight-curve $-1 -1 $-1 0.0 0.0 5.0 1.0 0.0 0.0 I I #
+edge $-1 -1 $-1 $12 0.0 $22 40.0 $-1 $51 forward @7 unknown #
+plane-surface $-1 -1 $-1 0.0 0.0 0.0 -1.0 0.0 0.0 0.0 1.0 0.0 forward_v I I I I #
+plane-surface $-1 -1 $-1 40.0 0.0 0.0 1.0 0.0 0.0 0.0 1.0 0.0 forward_v I I I I #
+plane-surface $-1 -1 $-1 0.0 0.0 0.0 0.0 0.0 -1.0 1.0 0.0 0.0 forward_v I I I I #
+plane-surface $-1 -1 $-1 0.0 20.0 0.0 0.0 1.0 -0.0 1.0 0.0 0.0 forward_v I I I I #
+cone-surface $-1 -1 $-1 0.0 17.0 2.0 1.0 0.0 0.0 0.0 3.0 0.0 1.0 forward I I 0.0 1.0 3.0 I I #
+plane-surface $-1 -1 $-1 0.0 17.0 5.0 0.0 0.0 1.0 1.0 0.0 0.0 forward_v I I I I #
+plane-surface $-1 -1 $-1 0.0 0.0 5.0 0.0 -1.0 0.0 1.0 0.0 0.0 forward_v I I I I #
+face $-1 -1 $-1 $61 $67 $2 $-1 $53 forward single in #
+face $-1 -1 $-1 $62 $73 $2 $-1 $54 forward single in #
+face $-1 -1 $-1 $63 $79 $2 $-1 $55 forward single in #
+face $-1 -1 $-1 $64 $84 $2 $-1 $56 forward single in #
+face $-1 -1 $-1 $65 $89 $2 $-1 $57 forward single in #
+face $-1 -1 $-1 $66 $94 $2 $-1 $58 forward single in #
+face $-1 -1 $-1 $-1 $99 $2 $-1 $59 forward single in #
+loop $-1 -1 $-1 $-1 $68 $60 #
+coedge $-1 -1 $-1 $69 $72 $-1 $32 reversed $67 $-1 #
+coedge $-1 -1 $-1 $70 $68 $-1 $30 reversed $67 $-1 #
+coedge $-1 -1 $-1 $71 $69 $-1 $28 reversed $67 $-1 #
+coedge $-1 -1 $-1 $72 $70 $-1 $26 reversed $67 $-1 #
+coedge $-1 -1 $-1 $68 $71 $-1 $24 reversed $67 $-1 #
+loop $-1 -1 $-1 $-1 $74 $61 #
+coedge $-1 -1 $-1 $75 $78 $-1 $34 forward $73 $-1 #
+coedge $-1 -1 $-1 $76 $74 $-1 $36 forward $73 $-1 #
+coedge $-1 -1 $-1 $77 $75 $-1 $38 forward $73 $-1 #
+coedge $-1 -1 $-1 $78 $76 $-1 $40 forward $73 $-1 #
+coedge $-1 -1 $-1 $74 $77 $-1 $42 forward $73 $-1 #
+loop $-1 -1 $-1 $-1 $80 $62 #
+coedge $-1 -1 $-1 $81 $83 $-1 $24 forward $79 $-1 #
+coedge $-1 -1 $-1 $82 $80 $-1 $46 forward $79 $-1 #
+coedge $-1 -1 $-1 $83 $81 $-1 $34 reversed $79 $-1 #
+coedge $-1 -1 $-1 $80 $82 $-1 $44 reversed $79 $-1 #
+loop $-1 -1 $-1 $-1 $85 $63 #
+coedge $-1 -1 $-1 $86 $88 $-1 $26 forward $84 $-1 #
+coedge $-1 -1 $-1 $87 $85 $-1 $48 forward $84 $-1 #
+coedge $-1 -1 $-1 $88 $86 $-1 $36 reversed $84 $-1 #
+coedge $-1 -1 $-1 $85 $87 $-1 $46 reversed $84 $-1 #
+loop $-1 -1 $-1 $-1 $90 $64 #
+coedge $-1 -1 $-1 $91 $93 $-1 $28 forward $89 $-1 #
+coedge $-1 -1 $-1 $92 $90 $-1 $50 forward $89 $-1 #
+coedge $-1 -1 $-1 $93 $91 $-1 $38 reversed $89 $-1 #
+coedge $-1 -1 $-1 $90 $92 $-1 $48 reversed $89 $-1 #
+loop $-1 -1 $-1 $-1 $95 $65 #
+coedge $-1 -1 $-1 $96 $98 $-1 $30 forward $94 $-1 #
+coedge $-1 -1 $-1 $97 $95 $-1 $52 forward $94 $-1 #
+coedge $-1 -1 $-1 $98 $96 $-1 $40 reversed $94 $-1 #
+coedge $-1 -1 $-1 $95 $97 $-1 $50 reversed $94 $-1 #
+loop $-1 -1 $-1 $-1 $100 $66 #
+coedge $-1 -1 $-1 $101 $103 $-1 $32 forward $99 $-1 #
+coedge $-1 -1 $-1 $102 $100 $-1 $44 forward $99 $-1 #
+coedge $-1 -1 $-1 $103 $101 $-1 $42 reversed $99 $-1 #
+coedge $-1 -1 $-1 $100 $102 $-1 $52 reversed $99 $-1 #
+End-of-ACIS-data
