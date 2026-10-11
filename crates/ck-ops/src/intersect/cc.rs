@@ -389,10 +389,33 @@ pub fn general(c1: &Curve, r1: (f64, f64), c2: &Curve, r2: (f64, f64), tol: f64)
         .map(|j| c2.eval(0.5 * (t2s[j] + t2s[j + 1])).dist((p2[j] + p2[j + 1]) * 0.5))
         .fold(0.0f64, f64::max);
     let far = 2.0 * sag2 + 4.0 * tol;
+    // boxes of blocks of c2's chords: lossless culling of the chord scans
+    // (a chord within r of a point/segment has its block box within r on
+    // every axis)
+    const BLK: usize = 16;
+    let boxes2: Vec<(Vec3, Vec3)> = (0..n2.div_ceil(BLK))
+        .map(|b| {
+            let (s, e) = (b * BLK, ((b + 1) * BLK).min(n2));
+            let (mut lo, mut hi) = (p2[s], p2[s]);
+            for &q in &p2[s..=e] {
+                lo = lo.min(q);
+                hi = hi.max(q);
+            }
+            (lo, hi)
+        })
+        .collect();
+    let box_gap = |alo: Vec3, ahi: Vec3, blo: Vec3, bhi: Vec3| -> f64 {
+        (alo.x - bhi.x).max(blo.x - ahi.x).max(alo.y - bhi.y).max(blo.y - ahi.y).max(alo.z - bhi.z).max(blo.z - ahi.z)
+    };
     let on2: Vec<bool> = p1
         .iter()
         .map(|&p| {
-            if n2 > 8 && (0..n2).all(|j| point_seg_dist(p, p2[j], p2[j + 1]) > far) {
+            if n2 > 8
+                && boxes2
+                    .iter()
+                    .enumerate()
+                    .all(|(bi, &(lo, hi))| box_gap(p, p, lo, hi) > far || (bi * BLK..((bi + 1) * BLK).min(n2)).all(|j| point_seg_dist(p, p2[j], p2[j + 1]) > far))
+            {
                 return false;
             }
             let t = c2.closest_param(p);
@@ -422,9 +445,18 @@ pub fn general(c1: &Curve, r1: (f64, f64), c2: &Curve, r2: (f64, f64), tol: f64)
     // crossing of the curves puts the two chords within the sum of the sags)
     let long_pair = n1 >= 200 || n2 >= 200;
     let sag1 = (0..n1).map(|i| c1.eval(0.5 * (t1s[i] + t1s[i + 1])).dist((p1[i] + p1[i + 1]) * 0.5)).fold(0.0f64, f64::max);
+    let maxchord2 = (0..n2).map(|j| p2[j].dist(p2[j + 1])).fold(0.0f64, f64::max);
     for i in 0..n1 {
         let (a0, a1) = (p1[i], p1[i + 1]);
-        for j in 0..n2 {
+        let (alo, ahi) = (a0.min(a1), a0.max(a1));
+        let reach_max = if long_pair { 1.5 * (sag1 + sag2) + 4.0 * tol } else { 0.5 * (a0.dist(a1) + maxchord2) + tol };
+        // only chord blocks whose box is within reach of this chord
+        let cand = boxes2
+            .iter()
+            .enumerate()
+            .filter(|&(_, &(blo, bhi))| box_gap(alo, ahi, blo, bhi) <= reach_max)
+            .flat_map(|(bi, _)| bi * BLK..((bi + 1) * BLK).min(n2));
+        for j in cand {
             let (b0, b1) = (p2[j], p2[j + 1]);
             let (s, t, d) = seg_seg(a0, a1, b0, b1);
             let reach = if long_pair { 1.5 * (sag1 + sag2) + 4.0 * tol } else { 0.5 * (a0.dist(a1) + b0.dist(b1)) + tol };
