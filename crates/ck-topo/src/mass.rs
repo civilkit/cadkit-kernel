@@ -386,27 +386,35 @@ pub fn mass_props_json(b: &Body, bodies: bool, densities: Option<&[f64]>) -> Jso
     o.build()
 }
 
-/// Symmetric 3×3 eigen-decomposition (cyclic Jacobi). Eigenvalues
-/// ascending; eigenvectors unit.
-/// GUESS: sign convention — each vector's largest-magnitude component made
-/// positive (oracle box/cylinder axes satisfy it; degenerate pairs are
-/// arbitrary in the oracle too).
+/// Symmetric 3×3 eigen-decomposition, decoded from the oracle (WAT f3939,
+/// called by the massProps builder f3561): cyclic Jacobi over the pairs
+/// (0,1), (0,2), (1,2), up to 64 sweeps, stopping only when
+/// |a01|+|a02|+|a12| < 1e-300; a pair is skipped when |apq| < 1e-300;
+/// θ = (aqq − app)/(apq + apq), t = sign(θ)/(|θ| + √(θ²+1)) (1 when θ = 0),
+/// c = 1/√(t²+1), s = t·c; A ← JᵀAJ (columns, then rows), V ← VJ.
+/// Eigenvalues sorted ascending (total order, stable); eigenvectors are the
+/// columns of V scaled by 1/|v| — NO sign convention: the signs are those
+/// the rotations produce (oracle rev90 / rev90flip axes
+/// [.707,0,.707],[.707,0,−.707] / [−.707,0,.707],[.707,0,.707]). For
+/// repeated moments (cylinder, sphere, torus) the result depends on the
+/// rounding noise of the tensor (e.g. a 45° pair when two diagonal entries
+/// are bit-equal), so it matches the oracle only as far as the integrated
+/// tensor does.
 pub fn eigen_sym(m: [[f64; 3]; 3]) -> ([f64; 3], [Vec3; 3]) {
     let mut a = m;
     let mut v = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
     for _ in 0..64 {
-        let off = a[0][1].abs() + a[0][2].abs() + a[1][2].abs();
-        let scale = a[0][0].abs() + a[1][1].abs() + a[2][2].abs();
-        if off <= 1e-17 * scale.max(1e-300) {
+        if a[0][1].abs() + a[0][2].abs() + a[1][2].abs() < 1e-300 {
             break;
         }
         for (p, q) in [(0, 1), (0, 2), (1, 2)] {
-            if a[p][q] == 0.0 {
+            if a[p][q].abs() < 1e-300 {
                 continue;
             }
-            let theta = (a[q][q] - a[p][p]) / (2.0 * a[p][q]);
-            let t = theta.signum() / (theta.abs() + (theta * theta + 1.0).sqrt());
-            let t = if theta == 0.0 { 1.0 } else { t };
+            let apq = a[p][q];
+            let theta = (a[q][q] - a[p][p]) / (apq + apq);
+            let sg = if theta.is_nan() { f64::NAN } else { 1f64.copysign(theta) };
+            let t = if theta == 0.0 { 1.0 } else { sg / (theta.abs() + (theta * theta + 1.0).sqrt()) };
             let c = 1.0 / (t * t + 1.0).sqrt();
             let s = t * c;
             for k in 0..3 {
@@ -427,17 +435,12 @@ pub fn eigen_sym(m: [[f64; 3]; 3]) -> ([f64; 3], [Vec3; 3]) {
         }
     }
     let mut idx = [0usize, 1, 2];
-    idx.sort_by(|&i, &j| a[i][i].partial_cmp(&a[j][j]).unwrap());
+    idx.sort_by(|&i, &j| a[i][i].total_cmp(&a[j][j]));
     let mut vals = [0.0; 3];
     let mut vecs = [Vec3::ZERO; 3];
     for (k, &i) in idx.iter().enumerate() {
         vals[k] = a[i][i];
-        let mut e = Vec3::new(v[0][i], v[1][i], v[2][i]).normalize();
-        let big = [e.x, e.y, e.z].into_iter().fold(0.0f64, |m, x| if x.abs() > m.abs() + 1e-12 { x } else { m });
-        if big < 0.0 {
-            e = -e;
-        }
-        vecs[k] = e;
+        vecs[k] = Vec3::new(v[0][i], v[1][i], v[2][i]).normalize();
     }
     (vals, vecs)
 }
@@ -592,6 +595,28 @@ mod tests {
         assert!(close(m.area, 710.3514612362036, 1e-13));
         assert!(vclose(m.com, [3.721470044097097, 3.0, -6.445775195221761], 1e-11));
         assert!(close(m.principal[1], 24886.35364447574, 1e-12));
+        // oracle axes (raw Jacobi signs, brep probe `cone`)
+        for (a, o) in m.axes.iter().zip([
+            [0.8660254037844387, 1.6315768633458208e-16, 0.49999999999999983],
+            [-0.3896325508076662, 0.6266944242646857, 0.6748633742815399],
+            [0.3133472121323425, 0.7792651016153322, -0.542733291823281],
+        ]) {
+            assert!(vclose(*a, o, 1e-9), "{a:?} {o:?}");
+        }
+    }
+
+    #[test]
+    fn jacobi_signs_are_the_rotations() {
+        // oracle rev90 / rev90flip (front rect (10,0)-(20,5) about +Y, ±90°):
+        // the 45° pair comes out of the (0,2) rotation unsigned-normalised
+        let fr = Frame::identity();
+        let r = || ProfileRegion { outer: rect(["e1", "e2", "e3", "e4"], 10.0, 0.0, 20.0, 5.0), holes: vec![] };
+        let m = mass_props(&revolve("F2", &Profile::new(fr, vec![r()]), Vec3::ZERO, Vec3::Y, 0.0, PI / 2.0).unwrap());
+        let h = std::f64::consts::FRAC_1_SQRT_2;
+        assert!(vclose(m.axes[0], [h, 0.0, h], 1e-9) && vclose(m.axes[1], [h, 0.0, -h], 1e-9), "{:?}", m.axes);
+        // a hand-made tensor: off-diagonal sign decides the rotation sign
+        let (_, v) = eigen_sym([[2.0, 0.0, -0.5], [0.0, 5.0, 0.0], [-0.5, 0.0, 3.0]]);
+        assert!(v[0].x > 0.0 && v[0].z > 0.0 && v[1].x < 0.0 && v[1].z > 0.0, "{v:?}");
     }
 
     #[test]
