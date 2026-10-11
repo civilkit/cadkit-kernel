@@ -33,6 +33,9 @@ pub struct EdgeSampling {
     /// Per edge `(start, end)`: that end is a seam-only junction inside a merged circle chain. The original has ONE edge there, so the
     /// junction vertex is not a sample of the polyline (wire `pts`) nor a vertex of the face polygons.
     pub virt: Vec<(bool, bool)>,
+    /// Per edge: u offset of its pcurve on the cylinder in the original. Closed SSI circles (negative start parameter) alternate
+    /// -2pi / +2pi in edge order (pinned on the cutHole probe: both give the original's cut). HEURISTIC.
+    pub ssi: Vec<f64>,
     /// Periodic cut of every face (indexed by face id).
     pub cuts: Vec<FaceCut>,
 }
@@ -156,6 +159,17 @@ pub fn sample_edges(body: &Body, tol: &Tol) -> EdgeSampling {
             a = b;
         }
     }
+    let mut ssi = vec![0.0f64; body.edges.len()];
+    {
+        let mut k = 0usize;
+        for e in body.edge_ids() {
+            let ed = body.edge(e);
+            if ed.t0 < 0.0 && matches!(ed.curve, ck_geom::curve::Curve::Circle { .. }) && !body.is_seam(e) {
+                ssi[e.idx()] = if k % 2 == 0 { -std::f64::consts::TAU } else { std::f64::consts::TAU };
+                k += 1;
+            }
+        }
+    }
     for e in body.edge_ids() {
         let ed = body.edge(e);
         let mut ps = base[e.idx()].take().unwrap_or_else(|| curvature::curve_params(&ed.curve, ed.t0, ed.t1, tol));
@@ -203,7 +217,8 @@ pub fn sample_edges(body: &Body, tol: &Tol) -> EdgeSampling {
                         continue; // junction of a merged chain: not a sample of the original's single edge
                     }
                     let uv = body.coedge_uv(c, t, None);
-                    us.push(uv.x);
+                        let sh = ssi[e.idx()];
+                    us.push(uv.x + sh);
                     vs.push(uv.y);
                 }
             }
@@ -225,7 +240,7 @@ pub fn sample_edges(body: &Body, tol: &Tol) -> EdgeSampling {
             let ps = &params[e.idx()];
             for (dir, per, cv) in [(0usize, pu, cut.u), (1usize, pv, cut.v)] {
                 let (Some(p), Some(cv)) = (per, cv) else { continue };
-                for t in crossings(body, c, ps, dir, cv, p) {
+                for t in crossings(body, c, ps, dir, cv, p, &ssi) {
                     extra[e.idx()].push(t);
                 }
             }
@@ -241,12 +256,12 @@ pub fn sample_edges(body: &Body, tol: &Tol) -> EdgeSampling {
         let span = (ps[ps.len() - 1] - ps[0]).abs().max(1e-300);
         ps.dedup_by(|a, b| (*a - *b).abs() <= 1e-12 * span);
     }
-    EdgeSampling { params, virt, cuts }
+    EdgeSampling { params, virt, ssi, cuts }
 }
 
 /// Params in the open sample range where coordinate `dir` of the coedge's
 /// (u,v) equals `cut + k·p`. Lines solved exactly, other pcurves by bisection.
-fn crossings(body: &Body, c: ck_topo::body::CoedgeId, ps: &[f64], dir: usize, cut: f64, p: f64) -> Vec<f64> {
+fn crossings(body: &Body, c: ck_topo::body::CoedgeId, ps: &[f64], dir: usize, cut: f64, p: f64, ssi: &[f64]) -> Vec<f64> {
     let mut out = vec![];
     if ps.len() < 2 {
         return out;
@@ -255,7 +270,10 @@ fn crossings(body: &Body, c: ck_topo::body::CoedgeId, ps: &[f64], dir: usize, cu
     let (lo, hi) = (ps[0].min(ps[ps.len() - 1]), ps[0].max(ps[ps.len() - 1]));
     let tiny = 1e-12 * (hi - lo).abs().max(1e-300);
     if let Some(ck_geom::curve2::Curve2::Line { o, d }) = &body.coedge(c).pcurve {
-        let (o, d) = (comp(*o), comp(*d));
+        let (mut o, d) = (comp(*o), comp(*d));
+        if dir == 0 && ssi[body.coedge(c).edge.idx()] < 0.0 {
+            o += ssi[body.coedge(c).edge.idx()]; // the first SSI circle of a pair sits a period lower in the original
+        }
         if d == 0.0 {
             return out;
         }
@@ -320,7 +338,7 @@ pub fn tessellate_with(body: &Body, tol: &Tol) -> Tess {
     let edges = sample_edges(body, tol);
     let mut faces = vec![];
     for f in body.face_ids() {
-        faces.push(face::mesh_face(body, f, &edges.params, &edges.virt, edges.cuts[f.idx()], tol).ok());
+        faces.push(face::mesh_face(body, f, &edges.params, &edges.virt, &edges.ssi, edges.cuts[f.idx()], tol).ok());
     }
     let mesh = assemble(body, &faces);
     Tess { tol: Some(*tol), edges, mesh, faces }

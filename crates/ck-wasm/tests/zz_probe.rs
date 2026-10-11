@@ -34,7 +34,9 @@ fn probe(name: &str) -> Vec<(i32, String)> {
     let _ = regen::regen(&part, &RegenOpts::default(), &mut ex);
     let body = ex.brep.body.as_ref().expect("body");
     if std::env::var("PROBE_BBOX").is_ok() { let (lo, hi) = body.bbox(); eprintln!("BBOX {:?} {:?} tol {:?}", lo, hi, ck_tess::mesh::body_tol(body)); for e in body.edge_ids() { let ed = body.edge(e); eprintln!("EDGE {} {:?} t {} {}", e.idx(), ed.curve.kind(), ed.t0, ed.t1); } }
+    if std::env::var("PROBE_SENSE").is_ok() { for f in body.face_ids() { let fc = body.face(f); eprintln!("SENSE {} f{} sense={} kind={}", name, f.idx(), fc.sense, fc.surface.kind()); } }
     let t = ck_tess::mesh::tessellate(body);
+    for &wi in &t.mesh.failed { let fid: Vec<_> = body.face_ids().collect(); let r = ck_tess::face::mesh_face(body, fid[wi], &t.edges.params, &t.edges.virt, t.edges.cuts[fid[wi].idx()], &t.tol.unwrap()); eprintln!("FAILED face {} -> {:?}", wi, r.err()); }
     let gtxt = std::fs::read_to_string(format!("{GDIR}{name}.json")).unwrap();
     let gc = ck_json::parse(&gtxt).unwrap();
     let gpos: Vec<f32> = nums(gc.get("positions").unwrap()).into_iter().map(|x| x as f32).collect();
