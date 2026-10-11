@@ -9,6 +9,7 @@ pub mod curve_edit;
 pub mod draft;
 pub mod guide;
 pub mod helix;
+pub mod interference;
 pub mod intersect;
 pub mod loft;
 pub mod measure;
