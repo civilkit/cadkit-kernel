@@ -54,6 +54,8 @@ const NORMAL_TOL: f64 = 5e-5;
 /// Rows per revolution of the interpolated screw surfaces / rails.
 const PER_REV: f64 = 48.0;
 const TOL: f64 = 1e-9;
+/// Degree of the rotation-direction interpolation.
+const DEG_U: usize = 5;
 
 /// One piece of a sweep path (world coordinates).
 #[derive(Debug, Clone)]
@@ -290,8 +292,12 @@ fn scaled_knots(u: &[f64], p: usize) -> Vec<f64> {
 
 /// Orbit of `p` under the screw as a cubic B-spline over φ ∈ [0, angle].
 fn orbit(sc: &Screw, p: Vec3, phis: &[f64]) -> Result<BSplineCurve, String> {
+    orbit_deg(sc, p, phis, DEG_U)
+}
+
+fn orbit_deg(sc: &Screw, p: Vec3, phis: &[f64], deg: usize) -> Result<BSplineCurve, String> {
     let pts: Vec<Vec3> = phis.iter().map(|&f| sc.pt(f, p)).collect();
-    interpolate_with(&pts, 3, phis, scaled_knots(phis, 3))
+    interpolate_with(&pts, deg, phis, scaled_knots(phis, deg))
 }
 
 /// Surface through `grid[i][j]` (i along φ, j along the profile parameter).
@@ -459,7 +465,7 @@ fn side_geom(sc: &Screw, phis: &[f64], c: &Curve, t0: f64, t1: f64, _va: &VertGe
     };
     let qs: Vec<Vec3> = vs.iter().map(|&t| c.eval(t)).collect();
     let grid: Vec<Vec<Vec3>> = phis.iter().map(|&f| qs.iter().map(|&q| sc.pt(f, q)).collect()).collect();
-    let surf = match grid_surface(&grid, phis, &vs, 3, pv) {
+    let surf = match grid_surface(&grid, phis, &vs, DEG_U, pv) {
         Ok(s) => s,
         Err(e) => return Some(Err(e)),
     };
@@ -511,16 +517,16 @@ mod tests {
     fn orbit_accuracy() {
         let sc = Screw { o: Vec3::ZERO, a: Vec3::Z, angle: 3.0 * std::f64::consts::TAU, rise: 6.0 };
         let p = Vec3::new(4.5, 0.0, 0.3);
-        for per_rev in [24.0, 48.0, 96.0, 192.0] {
+        for (deg, per_rev) in [(3usize, 48.0), (5, 16.0), (5, 24.0), (5, 32.0), (5, 48.0), (7, 16.0), (7, 24.0)] {
             let n = (per_rev * 3.0) as usize;
             let phis: Vec<f64> = (0..=n).map(|i| sc.angle * i as f64 / n as f64).collect();
-            let c = orbit(&sc, p, &phis).unwrap();
+            let c = orbit_deg(&sc, p, &phis, deg).unwrap();
             let mut worst: f64 = 0.0;
             for k in 0..=4000 {
                 let u = sc.angle * k as f64 / 4000.0;
                 worst = worst.max(c.eval(u).dist(sc.pt(u, p)));
             }
-            eprintln!("per_rev {per_rev}: max deviation {worst:e}");
+            eprintln!("deg {deg} per_rev {per_rev}: max deviation {worst:e}");
         }
     }
 
