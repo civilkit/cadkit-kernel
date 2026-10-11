@@ -86,6 +86,26 @@ impl BSplineSurface {
     }
 
     pub fn eval(&self, u: f64, v: f64) -> Vec3 {
+        if self.weights.is_none() && self.deg_u < 12 && self.deg_v < 12 {
+            let ((u0, u1), (v0, v1)) = self.domain();
+            let (u, v) = (u.clamp(u0, u1), v.clamp(v0, v1));
+            let (p, q) = (self.deg_u, self.deg_v);
+            let su = find_span(self.nu - 1, p, u, &self.knots_u);
+            let sv = find_span(self.nv - 1, q, v, &self.knots_v);
+            let nu = basis::ders_basis_funs2(su, u, p, 0, &self.knots_u);
+            let nv = basis::ders_basis_funs2(sv, v, q, 0, &self.knots_v);
+            let mut tp = [Vec3::ZERO; 12];
+            for s in 0..=q {
+                for r in 0..=p {
+                    tp[s] = tp[s] + self.cp(su - p + r, sv - q + s) * (nu[0][r] * 1.0);
+                }
+            }
+            let mut a = Vec3::ZERO;
+            for s in 0..=q {
+                a = a + tp[s] * nv[0][s];
+            }
+            return a;
+        }
         self.derivs(u, v, 0)[0][0]
     }
 
@@ -128,6 +148,33 @@ impl BSplineSurface {
 
     /// Point + first + second partials.
     pub fn derivs2(&self, u: f64, v: f64) -> SurfDerivs {
+        let (p, q) = (self.deg_u, self.deg_v);
+        if self.weights.is_none() && p < 12 && q < 12 {
+            // allocation-free non-rational path (same arithmetic as `derivs`)
+            let ((u0, u1), (v0, v1)) = self.domain();
+            let u = u.clamp(u0, u1);
+            let v = v.clamp(v0, v1);
+            let su = find_span(self.nu - 1, p, u, &self.knots_u);
+            let sv = find_span(self.nv - 1, q, v, &self.knots_v);
+            let nu = basis::ders_basis_funs2(su, u, p, 2, &self.knots_u);
+            let nv = basis::ders_basis_funs2(sv, v, q, 2, &self.knots_v);
+            let mut a = [[Vec3::ZERO; 3]; 3];
+            for k in 0..=2usize.min(p) {
+                let mut tp = [Vec3::ZERO; 12];
+                for s in 0..=q {
+                    for r in 0..=p {
+                        let (i, j) = (su - p + r, sv - q + s);
+                        tp[s] = tp[s] + self.cp(i, j) * (nu[k][r] * 1.0);
+                    }
+                }
+                for l in 0..=(2 - k).min(q) {
+                    for s in 0..=q {
+                        a[k][l] = a[k][l] + tp[s] * nv[l][s];
+                    }
+                }
+            }
+            return SurfDerivs { p: a[0][0], du: a[1][0], dv: a[0][1], duu: a[2][0], duv: a[1][1], dvv: a[0][2] };
+        }
         let s = self.derivs(u, v, 2);
         SurfDerivs { p: s[0][0], du: s[1][0], dv: s[0][1], duu: s[2][0], duv: s[1][1], dvv: s[0][2] }
     }

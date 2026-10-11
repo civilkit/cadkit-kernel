@@ -92,7 +92,33 @@ impl<P: Pt> BSplineCurve<P> {
 
     /// Point at `u` (clamped to the domain).
     pub fn eval(&self, u: f64) -> P {
-        self.derivs(u, 0)[0]
+        let p = self.degree;
+        if self.weights.is_some() || p >= 12 {
+            return self.derivs(u, 0)[0];
+        }
+        // allocation-free non-rational path (A2.2 + dot)
+        let (a, b) = self.domain();
+        let u = u.clamp(a, b);
+        let span = find_span(self.n(), p, u, &self.knots);
+        let (mut n, mut left, mut right) = ([0.0f64; 12], [0.0f64; 12], [0.0f64; 12]);
+        n[0] = 1.0;
+        for j in 1..=p {
+            left[j] = u - self.knots[span + 1 - j];
+            right[j] = self.knots[span + j] - u;
+            let mut saved = 0.0;
+            for r in 0..j {
+                let den = right[r + 1] + left[j - r];
+                let temp = if den != 0.0 { n[r] / den } else { 0.0 };
+                n[r] = saved + right[r + 1] * temp;
+                saved = left[j - r] * temp;
+            }
+            n[j] = saved;
+        }
+        let mut acc = P::default();
+        for j in 0..=p {
+            acc = acc + self.ctrl[span - p + j] * n[j];
+        }
+        acc
     }
 
     /// `[C(u), C'(u), ..., C^(d)(u)]` (A3.2 / A4.2). Orders above the degree
