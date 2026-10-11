@@ -49,8 +49,11 @@ where noted):
 | `helix` | `helix(frame, c, r, &HelixParams) -> Helix{o,a,x,y,r,k,angle}`, `pts()`, `to_curve()` | oracle fields/pts (definedBy = `pitchRevs`/`heightRevs`/`heightPitch`, NOT pitchHeight/revsHeight) |
 | `blend::build` | `fillet(body, &[(faceA, faceB, at)], r, feature, tol)`, `find_edge`, `fillet_line_edge`, `BlendError{code, detail}` | oracle faces/order/massProps for 1 edge, 2 edges, vertical edge; errors invalidValue / missingEdge / blendOverflow detail |
 
+| `continuity` | `judge_edge(body, e, &Settings) -> EdgeReport`, `reply(body, msg) -> Json` (the `continuity` query, wired in ck-wasm `query_hook`) | **oracle**: G1-G3 fields, normals, curvature/rate, status/fails, max, worst for fillets (planar / cylinder), box / cylinder corners (`ck-model/tests/continuity_golden.rs`); gap = golden-section noise, bit-exact only when the blend edges use the oracle's line parameterisation |
+| `contain` | `Containment::{new, point_in_face, classify_point}` | unit; agrees with the winding classifier on grids (face test is a GUESS, see header) |
+
 Everything else (sweep, loft/*, shell, offset, draft, pipecut, surfacing/*,
-contain, continuity, curve_edit, guide, simplify, other blend/* files) is a
+curve_edit, guide, simplify, other blend/* files) is a
 stub whose header lists its kernel.strings codes.
 
 ### Findings for other crates
