@@ -288,6 +288,14 @@ pub fn forward_first(b: &Body, fa: &str, fb: &str, at: Vec3) -> (String, String,
     let keep = (fa.to_string(), fb.to_string(), at);
     let Some(e) = find_edge(b, fa, fb, at) else { return keep };
     let fwd = b.edge_coedges(e).into_iter().find(|&c| !b.coedge(c).rev).map(|c| b.coedge_face(c));
+    if std::env::var_os("CK_BLEND_DEBUG").is_some() {
+        let ed = b.edge(e);
+        eprintln!(
+            "forward_first {fa} {fb}: edge {:?} v0={:?} v1={:?} t=({},{}) coedges {:?}",
+            e, b.vertex(ed.v0).p, b.vertex(ed.v1).p, ed.t0, ed.t1,
+            b.edge_coedges(e).iter().map(|&c| (b.face_id_str(b.coedge_face(c)), b.coedge(c).rev)).collect::<Vec<_>>()
+        );
+    }
     match (fwd, b.find_face(fb)) {
         (Some(f), Some(g)) if f == g => (fb.to_string(), fa.to_string(), at),
         _ => keep,
@@ -472,6 +480,9 @@ pub fn in_place_layout_opts(input: &Body, out: &Body, refs: &[BlendRef], tol: f6
             mine.push((rank, k, d0.min(d1)));
         }
         mine.sort_by(|a, b| a.0.cmp(&b.0).then(a.2.total_cmp(&b.2)));
+        if std::env::var_os("CK_BLEND_DEBUG").is_some() {
+            eprintln!("  layout blend {} faces {:?}: {:?}", r.name, r.faces, mine.iter().map(|&(rk, k, d)| (rk, names(out, out_chains[k][0]), d)).collect::<Vec<_>>());
+        }
         for (_, k, _) in mine {
             slot_of[k] = Some(next);
             next += 1;
@@ -562,9 +573,6 @@ pub fn in_place_layout_opts(input: &Body, out: &Body, refs: &[BlendRef], tol: f6
     ck_topo::region::rebuild_lumps(&mut res);
     res
 }
-
-/// Azimuth (rad) of a revolved blend tool's seam from the edge's start.
-const SEAM_ANGLE: f64 = 1.0;
 
 /// `CK_BLEND_DEBUG=1` prints why a blend gave up (native runs only).
 fn dbg_fail(m: &str) {
@@ -668,16 +676,6 @@ fn blend_edge_hint(
             ck_geom::frame_from(c, rad.cross(axis), rad)
         }
     };
-    // a revolved tool's seam plane sits at an arbitrary azimuth: with the seam
-    // on a hole-pattern axis the ray classifier of the boolean loses a hole
-    let fr_tool = match circ {
-        None => fr,
-        Some((c, axis)) => {
-            let rad = (p0 - c).normalize();
-            let rt = rad * SEAM_ANGLE.cos() + axis.cross(rad) * SEAM_ANGLE.sin();
-            ck_geom::frame_from(c, rt.cross(axis), rt)
-        }
-    };
     let uv = |p: Vec3| {
         let q = fr.world_to_uv(p);
         Vec2::new(q.x, q.y)
@@ -703,7 +701,7 @@ fn blend_edge_hint(
         };
         ProfileLoop::new(vec![ProfileSeg::line("l2", t2, cp), ProfileSeg::line("l1", cp, t1), arc])
     };
-    let prof = Profile::new(fr_tool, vec![ProfileRegion { outer: lp, holes: vec![] }]).normalized();
+    let prof = Profile::new(fr, vec![ProfileRegion { outer: lp, holes: vec![] }]).normalized();
     let made = match circ {
         None => extrude(feature, &prof, ExtrudeOpts { s0: 0.0, s1: len + 2.0 * margin, dir: None, draft: 0.0 }),
         Some((c, axis)) => ck_topo::make::revolve::revolve(feature, &prof, c, axis, 0.0, std::f64::consts::TAU),
@@ -858,37 +856,58 @@ mod tests {
 
     #[test]
     fn cylinder_top_circle() {
+        // oracle volumes (tools/brep_cases.mjs filletCylTop / chamferCylTop)
         let cyl = crate::boolean::tests::cyl_body("F2", 5.0, 3.0, 10.0, 0.0, 10.0);
         let top = cyl.face_ids().find(|&f| cyl.face_id_str(f) == "F2.C1").unwrap();
         let side = cyl.face_ids().find(|&f| matches!(cyl.face(f).surface, Surface::Cylinder { .. })).unwrap();
         let (a, bb) = (cyl.face_id_str(top), cyl.face_id_str(side));
         let at = Vec3::new(15., 10., -3.);
-        let v0 = mass_props(&cyl).volume;
         let r = fillet(&cyl, &[(a.clone(), bb.clone(), at)], 2.0, "F3", 1e-6).unwrap();
-        let pi = std::f64::consts::PI;
-        // torus ring removed: 2*pi*(R - r*(4-pi)/(3*(4-pi)... ) simply compare to oracle
-        assert!((mass_props(&r).volume - 3090.0668137679036).abs() < 1e-6, "{} {}", mass_props(&r).volume, v0);
-        let _ = pi;
-        for e in r.edge_ids() {
-            let ed = r.edge(e);
-            eprintln!("EDGE {:?} {} t=({:?},{:?}) v={:?}", r.edge_faces(e).iter().map(|&f| r.face_id_str(f)).collect::<Vec<_>>(), ed.curve.kind(), ed.t0, ed.t1, r.vertex(ed.v0).p);
-        }
+        assert!((mass_props(&r).volume - 3090.0668137679036).abs() < 1e-6);
+        assert_eq!(r.face(r.find_face("F3.B0").unwrap()).surface.kind(), "torus");
         let r = chamfer(&cyl, &[(a, bb, at)], 1.0, "F3", 1e-6).unwrap();
         assert!((mass_props(&r).volume - 3111.223924605093).abs() < 1e-6);
+        assert_eq!(r.face(r.find_face("F3.B0").unwrap()).surface.kind(), "cone");
     }
 
     #[test]
-    fn corner2_vertices() {
-        let r = fillet(&the_box(), &[e("F2.C1", "F2.S.e1", [20., 10., 0.]), e("F2.C1", "F2.S.e2", [40., 10., -10.])], 2.0, "F3", 1e-6).unwrap();
-        for e in r.edge_ids() {
-            let ed = r.edge(e);
-            let names: Vec<String> = r.edge_faces(e).iter().map(|&f| r.face_id_str(f)).collect();
-            if names.iter().any(|n| n == "F3.B1") && names.iter().any(|n| n == "F3.B0") {
-                eprintln!("MITRE {} t=({:?},{:?}) a={:?} b={:?}", ed.curve.kind(), ed.t0, ed.t1, r.vertex(ed.v0).p, r.vertex(ed.v1).p);
-                eprintln!("  curve {:?}", ed.curve);
-                eprintln!("  cp(a)={:?} cp(b)={:?} ev(t1)={:?}", ed.curve.closest_param(r.vertex(ed.v0).p), ed.curve.closest_param(r.vertex(ed.v1).p), ed.curve.eval(ed.t1));
-            }
-        }
+    fn oracle_chamfers_on_the_box() {
+        // chamferOne / chamferTwo / chamferRail / chamferBig (oracle)
+        let b = the_box();
+        let one = [e("F2.C1", "F2.S.e1", [20., 10., 0.])];
+        let r = chamfer(&b, &one, 2.0, "F3", 1e-6).unwrap();
+        assert_eq!(ids(&r), ["F2.C0", "F2.S.e3", "F2.C1", "F2.S.e1", "F2.S.e4", "F2.S.e2", "F3.B0"]);
+        assert!((mass_props(&r).volume - 7920.0).abs() < 1e-9);
+        let two = [one[0].clone(), e("F2.C1", "F2.S.e3", [20., 10., -20.])];
+        assert!((mass_props(&chamfer(&b, &two, 2.0, "F3", 1e-6).unwrap()).volume - 7840.0).abs() < 1e-9);
+        assert_eq!(
+            chamfer(&b, &one, 30.0, "F3", 1e-6).unwrap_err(),
+            BlendError::detail("blendOverflow", "F3.B0: spring leaves its face away from its edges")
+        );
+        // a ring of four runs in rounds; blend names stay selection-indexed
+        let ring = [
+            e("F2.C1", "F2.S.e1", [20., 10., 0.]),
+            e("F2.C1", "F2.S.e2", [40., 10., -10.]),
+            e("F2.C1", "F2.S.e3", [20., 10., -20.]),
+            e("F2.C1", "F2.S.e4", [0., 10., -10.]),
+        ];
+        let r = chamfer(&b, &ring, 2.0, "F3", 1e-6).unwrap();
+        assert_eq!(ids(&r), ["F2.C0", "F2.S.e1", "F2.S.e2", "F2.S.e3", "F3.B1", "F2.C1", "F2.S.e4", "F3.B2", "F3.B0", "F3.B3"]);
+    }
+
+    #[test]
+    fn vertex_chamfer_on_the_box() {
+        use crate::blend::vertex::chamfer_vertex;
+        let b = the_box();
+        // distances 2 / 3 / 4 along the vertex edges in arena order (rail, +x, -z)
+        let r = chamfer_vertex(&b, Vec3::new(0., 10., 0.), [2., 3., 4.], "F3", 1e-6).unwrap();
+        assert!((mass_props(&r).volume - (8000.0 - 2.0 * 3.0 * 4.0 / 6.0)).abs() < 1e-9);
+        assert_eq!(ids(&r), ["F2.C0", "F2.S.e2", "F2.S.e3", "F2.S.e1", "F2.C1", "F2.S.e4", "F3.B0"]);
+        // oracle normal (-0.512, 0.768, 0.384)
+        let n = r.planar_normal(r.find_face("F3.B0").unwrap());
+        assert!((n - Vec3::new(-4., 6., 3.).normalize()).len() < 1e-12, "{n:?}");
+        assert_eq!(chamfer_vertex(&b, Vec3::new(0., 10., 0.), [10., 1., 1.], "F3", 1e-6).unwrap_err(), BlendError::code("blendTooLarge"));
+        assert_eq!(chamfer_vertex(&b, Vec3::new(0., 10., 0.), [1., 0., 1.], "F3", 1e-6).unwrap_err(), BlendError::code("invalidValue"));
     }
 
     #[test]

@@ -1,9 +1,15 @@
 //! Fillets and chamfers (ck-ops/src/blend/*, 17 files in rs_paths.txt).
 //!
-//! Implemented: [`build::fillet`] — constant-radius fillet along straight
-//! edges between planar faces (convex / concave), blend faces `B<k>`.
-//! Everything else is a documented stub (see each file's header for the
-//! kernel.strings messages it owns).
+//! Implemented (RECONSTRUCTED from oracle probes, not ported from the
+//! 2 MB of rolling-ball C in march.rs / rolling.rs / stripe.rs ...):
+//! [`build::fillet`] / [`build::chamfer`] — constant-radius fillets and
+//! equal-distance chamfers along straight edges between planar faces and
+//! along circle edges between coaxial plane / cylinder / cone faces
+//! (convex / concave), blend faces `B<k>`, as a boolean with a tool (extruded
+//! or revolved corner profile); multi-edge selections in rounds; and
+//! [`vertex::chamfer_vertex`] (3-valent corner cut). Everything else is a
+//! documented stub (see each file's header for the kernel.strings messages
+//! it owns).
 //!
 //! Feature-level codes (kernel.strings): `filletChamfer`, `filletType`,
 //! `chamferType`, `chamferVertexEdges`, `nothingToBlend`, `missingEdge`,
