@@ -89,7 +89,7 @@ pub fn exec_hole(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(
     if pts.is_empty() {
         return Err(FeatureError::new(HOLE_NO_POINTS));
     }
-    let Some(body) = br.body.as_ref() else { return Err(FeatureError::new(codes::NOTHING_TO_CUT)) };
+    let Some(body) = br.body.clone() else { return Err(FeatureError::new(codes::NOTHING_TO_CUT)) };
     let fr = sk.frame;
     let down = if *flip { fr.z } else { -fr.z };
     let r = d / 2.0;
@@ -99,7 +99,7 @@ pub fn exec_hole(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(
     let mut tool: Option<Body> = None;
     for (k, p) in pts.iter().enumerate() {
         let pw = fr.o + fr.x * p[0] + fr.y * p[1];
-        let len = if through { through_len(pw, body) } else { depth };
+        let len = if through { through_len(pw, &body) } else { depth };
         // section plane: through the hole axis, x = sketch x, y = down
         let sec = Frame { o: fr.o + fr.y * p[1], x: fr.x, y: -down, z: fr.x.cross(-down) };
         let u = p[0];
@@ -136,21 +136,7 @@ pub fn exec_hole(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(
         }
         tool = Some(match tool {
             None => b,
-            Some(t) => {
-                let (alo, ahi) = super::body_box(&t);
-                let (blo, bhi) = super::body_box(&b);
-                let e = super::TOL;
-                let apart = alo.x > bhi.x + e || blo.x > ahi.x + e || alo.y > bhi.y + e || blo.y > ahi.y + e || alo.z > bhi.z + e || blo.z > ahi.z + e;
-                if apart {
-                    let mut t = t;
-                    t.append(&b);
-                    t
-                } else {
-                    let out = ck_ops::boolean::boolean(&t, &b, ck_ops::boolean::Op::Union, super::TOL).map_err(|e| FeatureError::new(&e))?;
-                    br.spans.push(super::boolean_span(ck_ops::boolean::Op::Union, t.num_faces(), b.num_faces(), out.body.num_faces()));
-                    out.body
-                }
-            }
+            Some(t) => super::pattern::accumulate(br, t, b)?,
         });
     }
     let tool = Tool { body: tool.unwrap(), combine: Combine::Cut, recipe: None };

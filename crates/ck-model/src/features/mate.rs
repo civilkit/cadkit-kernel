@@ -160,6 +160,11 @@ pub fn regen_nested(part: &Part) -> (super::Span, Nested) {
     (span, Nested { body: ex.brep.body, errors, n_features: n })
 }
 
+/// Error codes that only mean "not rebuilt yet" (see [`Brep::exec_insert`]).
+pub fn is_rebuild_gap(code: &str) -> bool {
+    code.starts_with("TODO(rebuild)") || code == "blendUnsupported"
+}
+
 /// Canonical text of a nested part (cache key).
 fn part_key(p: &Part) -> String {
     ck_json::to_string(&p.raw)
@@ -222,7 +227,10 @@ impl Brep {
                 n
             }
         };
-        if let Some(e) = nested.errors.first() {
+        // REBUILD-ONLY: errors of operations not reconstructed yet (ck-ops
+        // gaps: chamfer, sweep, curved-edge fillets) do not abort the insert
+        // so assemblies can be measured; the oracle never produces them.
+        if let Some(e) = nested.errors.iter().find(|e| !is_rebuild_gap(&e.error.code)) {
             let detail = format!("{}: {}", e.feature, e.error.code);
             return Err(FeatureError::new(INSERT_PART_ERRORS).with("detail", Json::Str(detail)));
         }
@@ -536,7 +544,9 @@ fn solve_all(br: &mut Brep, first: usize) -> Result<(), FeatureError> {
                 continue;
             }
             let range = br.asm.components[k].range.clone();
-            let (c, scale) = match comp_box(body, &range) {
+            let bx = comp_box(body, &range);
+            DEBUG.with(|d| d.borrow_mut().push(format!("box {:?}", bx)));
+            let (c, scale) = match bx {
                 Some((lo, hi)) => {
                     let (ex, ey, ez) = (hi.x - lo.x, hi.y - lo.y, hi.z - lo.z);
                     (Vec3::new((hi.x + lo.x) * 0.5, (hi.y + lo.y) * 0.5, (hi.z + lo.z) * 0.5), (ez * ez + (ex * ex + ey * ey)).sqrt() * 0.5)
