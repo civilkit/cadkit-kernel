@@ -139,6 +139,10 @@ pub fn dist_in_range(c: &Curve, r: (f64, f64), p: Vec3) -> (f64, f64) {
     }
 }
 
+/// Edge tolerance the original stores on every edge (face boxes grow by it:
+/// a cap disk's box is 2e-5 + 2·1e-6 thick in the oracle's BVH dump).
+const EDGE_TOL: f64 = 1e-5;
+
 /// Build the arrangement of `a` (side 0) and `b` (side 1).
 pub fn imprint(a: &Body, b: &Body, tol: f64) -> Arrangement {
     let bodies = [a, b];
@@ -146,14 +150,29 @@ pub fn imprint(a: &Body, b: &Body, tol: f64) -> Arrangement {
     // ---- 1. face pairs and cut segments
     let fa: Vec<FaceId> = a.face_ids().collect();
     let fb: Vec<FaceId> = b.face_ids().collect();
-    let boxes_a: Vec<Aabb> = fa.iter().map(|&f| face_box(a, f).padded(tol * 10.0)).collect();
-    let boxes_b: Vec<Aabb> = fb.iter().map(|&f| face_box(b, f).padded(tol * 10.0)).collect();
+    // oracle (f2331): face boxes padded by max(tol, 1e-6), pairs in the
+    // original BVH traversal order (decides cut-edge / hole-loop order)
+    // (face boxes = edge boxes grown by the edge tolerance 1e-5, f_cee)
+    let pad = tol.max(1e-6);
+    let boxes_a: Vec<Aabb> = fa.iter().map(|&f| face_box(a, f).padded(EDGE_TOL + pad)).collect();
+    let boxes_b: Vec<Aabb> = fb.iter().map(|&f| face_box(b, f).padded(EDGE_TOL + pad)).collect();
     let (ta, tb) = (Bvh::build(&boxes_a), Bvh::build(&boxes_b));
+    if std::env::var("CK_DBG_BOXES").is_ok() {
+        for bs in [&boxes_a, &boxes_b] {
+            eprintln!("--- boxes n={}", bs.len());
+            for b in bs.iter() {
+                eprintln!("{},{},{},{},{},{}", b.min.x, b.min.y, b.min.z, b.max.x, b.max.y, b.max.z);
+            }
+        }
+        eprintln!("pairs {:?}", ta.overlap_pairs_ordered(&tb, pad));
+    }
     let mut cuts: Vec<CutSeg> = vec![];
-    for (i, j) in ta.overlap_pairs(&tb) {
+    for (i, j) in ta.overlap_pairs_ordered(&tb, pad) {
+        // the SSI / trim bounds keep the old, wider slack
+        let (bi, bj) = (boxes_a[i], boxes_b[j]);
         let (f, g) = (fa[i], fb[j]);
         let (sf, sg) = (&a.face(f).surface, &b.face(g).surface);
-        let bx = boxes_a[i].union(&boxes_b[j]);
+        let bx = bi.union(&bj);
         let bounds = Bounds { lo: bx.min, hi: bx.max };
         let before = cuts.len();
         match ss::intersect(sf, sg, Some(bounds), tol) {
