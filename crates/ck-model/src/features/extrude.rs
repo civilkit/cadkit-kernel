@@ -215,7 +215,11 @@ pub fn exec_extrude(state: &RegenState, f: &Feature, body: Option<&Body>) -> Res
             return Err(FeatureError::new(&todo("mid-plane drafted extrude (boolean unite)")));
         }
     }
-    let body = extrude(&f.id, &profile, o).map_err(topo_err)?;
+    let body = if o.draft != 0.0 {
+        super::draft::drafted_extrude(&f.id, &profile, o)?
+    } else {
+        extrude(&f.id, &profile, o).map_err(topo_err)?
+    };
     Ok(Tool { body, combine, recipe: Some(Recipe::Extrude { profile, opts: o }) })
 }
 
@@ -255,6 +259,10 @@ pub fn exec_revolve(state: &RegenState, f: &Feature, has_body: bool) -> Result<T
         .and_then(|a| sketch_axis(sk, a))
         .ok_or_else(|| FeatureError::new(MISSING_AXIS))?;
     let profile = sketch_profile(sk)?;
+    // pinned: a region on both sides of the axis -> profileCrossesAxis (no params)
+    if super::surface_extrude::crosses_axis(&profile, o, d) {
+        return Err(FeatureError::new(super::surface_extrude::PROFILE_CROSSES_AXIS));
+    }
     // GUESS: threshold for a zero angle (1e-12 deg is rejected).
     if angle.abs() < 1e-9 {
         return Err(FeatureError::new(codes::INVALID_VALUE));

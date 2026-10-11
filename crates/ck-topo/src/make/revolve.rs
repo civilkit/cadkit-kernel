@@ -118,7 +118,7 @@ pub fn revolve(feature: &str, profile: &Profile, axis_o: Vec3, axis: Vec3, a0: f
 
 /// Rotation by `ang` about the axis (`o`, unit `a`): ck-core's Rodrigues
 /// matrix (`Mat3::rotation` formula) with the kernel's sin/cos.
-pub(crate) fn rotation(o: Vec3, a: Vec3, ang: f64) -> Xform {
+pub fn rotation(o: Vec3, a: Vec3, ang: f64) -> Xform {
     let (s, c) = (trig::sin(ang), trig::cos(ang));
     let t = 1.0 - c;
     let (x, y, z) = (a.x, a.y, a.z);
@@ -131,13 +131,13 @@ pub(crate) fn rotation(o: Vec3, a: Vec3, ang: f64) -> Xform {
 }
 
 /// Rotated frame: x, y re-normalised, z rotated as is (see `revolve`).
-pub(crate) fn rot_frame(r: &Xform, f: &Frame) -> Frame {
+pub fn rot_frame(r: &Xform, f: &Frame) -> Frame {
     Frame { o: r.apply_point(f.o), x: r.apply_vec(f.x).normalize(), y: r.apply_vec(f.y).normalize(), z: r.apply_vec(f.z) }
 }
 
 /// Rotated curve. GUESS: conic frames are treated like cap frames
 /// (x, y re-normalised); only line / plane data is pinned.
-pub(crate) fn rot_curve(r: &Xform, c: &Curve) -> Curve {
+pub fn rot_curve(r: &Xform, c: &Curve) -> Curve {
     match c {
         Curve::Line { o, d } => Curve::Line { o: r.apply_point(*o), d: r.apply_vec(*d) },
         Curve::Circle { frame, r: rad } => Curve::Circle { frame: rot_frame(r, frame), r: *rad },

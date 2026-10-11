@@ -107,9 +107,73 @@ parts.cone = part([sketch('front', [pt('p1', 5, 0), pt('p2', 15, 0), pt('p3', 5,
   parts.filletTooBig = part([...base(), fil(30, [{ faces: ['F2.C1', 'F2.S.e1'], at: [20, 10, 0] }])]);
 }
 
+// draft feature on the 40x20x10 top-plane box: side faces about the bottom
+// cap (F2.C0) / top cap (F2.C1); and on a cylinder.
+{
+  const [P, E] = rect(0, 0, 40, 20);
+  const base = () => [sketch('top', P, E), extrude()];
+  const dr = (faces, o = {}) => ({ type: 'draft', id: 'F3', neutral: { kind: 'face', id: 'F2.C0' }, faces, angle: 5, ...o });
+  const sides = ['F2.S.e1', 'F2.S.e2', 'F2.S.e3', 'F2.S.e4'];
+  parts.draftBox = part([...base(), dr(sides)]);
+  parts.draftBoxFlip = part([...base(), dr(sides, { flip: true })]);
+  parts.draftBoxTop = part([...base(), dr(sides, { neutral: { kind: 'face', id: 'F2.C1' } })]);
+  parts.draftBoxStd = part([...base(), dr(sides, { neutral: STD('top') })]);
+  parts.draftBoxFeat = part([...base(), { type: 'plane', id: 'F4', mode: 'offset', base: STD('top'), offset: 10 }, dr(sides, { id: 'F5', neutral: { kind: 'feature', id: 'F4' } })]);
+  parts.draftBox10 = part([...base(), dr(sides, { angle: 10 })]);
+  parts.draftBox3 = part([...base(), dr(sides, { angle: 3 })]);
+  parts.draftOne = part([...base(), dr(['F2.S.e1'])]);
+  parts.draftTwo = part([...base(), dr(['F2.S.e1', 'F2.S.e3'], { angle: 8 })]);
+  parts.draftCyl = part([sketch('top', [pt('c', 5, 3)], [{ type: 'circle', id: 'e7', c: 'c', r: 10 }]), extrude(),
+    dr(['F2.S.e7'], { angle: 3 })]);
+  parts.draftParallel = part([...base(), dr(['F2.C1'])]);
+  parts.draftZero = part([...base(), dr(sides, { angle: 0 })]);
+  parts.draftRight = part([...base(), dr(sides, { angle: 90 })]);
+  parts.draftNoFaces = part([...base(), dr([])]);
+  parts.draftBadRef = part([...base(), dr(['nope'])]);
+  parts.draftBig = part([...base(), dr(sides, { angle: 89 })]);
+}
+
 parts.mirrorBodyCone = part([...parts.cone.features, { type: 'plane', id: 'F8', mode: 'offset', base: STD('right'), offset: -30 },
   { type: 'mirror', id: 'F9', seeds: [], plane: { kind: 'feature', id: 'F8' }, body: true }]);
 
+// ---- sweep (circle / square profiles along a line, an arc and a helix)
+{
+  const sk = (id, plane, points, entities) => ({ type: 'sketch', id, plane: STD(plane), points, entities, constraints: [] });
+  const circleSk = (id, plane, cx, cy, r) => sk(id, plane, [pt('c', cx, cy)], [{ type: 'circle', id: 'e1', c: 'c', r }]);
+  const squareSk = (id, plane, x0, y0, w) => {
+    const [P, E] = rect(x0, y0, x0 + w, y0 + w, ['e5', 'e6', 'e7', 'e8']);
+    return sk(id, plane, P, E);
+  };
+  const trapSk = (id, plane) => sk(id, plane, [pt('p1', 3.3, -0.5), pt('p2', 4.5, -0.3), pt('p3', 4.5, 0.3), pt('p4', 3.3, 0.5)],
+    [line('e5', 'p1', 'p2'), line('e6', 'p2', 'p3'), line('e7', 'p3', 'p4'), line('e8', 'p4', 'p1')]);
+  const lineSk = (id, a, b) => sk(id, 'front', [pt('a', ...a), pt('b', ...b)], [line('e1', 'a', 'b')]);
+  const arcSk = (id) => sk(id, 'front', [pt('c', -10, 0), pt('a', 0, 0), pt('b', -10, 10)], [{ type: 'arc', id: 'e1', c: 'c', p1: 'a', p2: 'b' }]);
+  const helixF = (o = {}) => [circleSk('F1', 'front', 0, 0, 4),
+    { type: 'helix', id: 'F2', sketch: 'F1', definedBy: 'pitchRevs', pitch: 2, revolutions: 3, height: 6, startAngle: 0, leftHand: false, reverse: false, ...o }];
+  const sweep = (path, o = {}) => ({ type: 'sweep', id: 'F4', op: 'add', sketch: 'F3', path, ...o });
+  const SK = (id) => ({ kind: 'sketch', id });
+  const CV = (id) => ({ kind: 'curve', id });
+  parts.sweepLine = part([lineSk('F2', [0, 0], [0, 20]), circleSk('F3', 'top', 0, 0, 3), sweep(SK('F2'))]);
+  parts.sweepLineNeg = part([lineSk('F2', [0, 0], [0, -20]), squareSk('F3', 'top', 0, 0, 2), sweep(SK('F2'))]);
+  parts.sweepLineFar = part([lineSk('F2', [0, 5], [0, 25]), squareSk('F3', 'top', 0, 0, 2), sweep(SK('F2'))]);
+  parts.sweepArc = part([arcSk('F2'), circleSk('F3', 'top', 0, 0, 2), sweep(SK('F2'))]);
+  parts.sweepArcSquare = part([arcSk('F2'), squareSk('F3', 'top', 0, 0, 2), sweep(SK('F2'))]);
+  parts.sweepNotNormal = part([lineSk('F2', [0, 0], [0, 20]), squareSk('F3', 'front', 0, 0, 2), sweep(SK('F2'))]);
+  parts.sweepTwist = part([lineSk('F2', [5, 0], [5, 20]), squareSk('F3', 'top', 1, 1, 2), sweep(SK('F2'), { twist: 90 })]);
+  parts.sweepTwistNeg = part([lineSk('F2', [0, 0], [0, -20]), squareSk('F3', 'top', 1, 1, 2), sweep(SK('F2'), { twist: -135 })]);
+  parts.sweepNoPath =part([circleSk('F3', 'top', 0, 0, 3), sweep(null)]);
+  parts.sweepHelixTrap = part([...helixF(), trapSk('F3', 'top'), sweep(CV('F2'))]);
+  parts.sweepHelixRev = part([...helixF({ reverse: true }), trapSk('F3', 'top'), sweep(CV('F2'))]);
+  parts.sweepHelixLeft = part([...helixF({ leftHand: true }), trapSk('F3', 'top'), sweep(CV('F2'))]);
+  parts.sweepHelixSquare = part([...helixF(), squareSk('F3', 'top', 3.5, -0.5, 1), sweep(CV('F2'))]);
+  parts.sweepHelixCircle = part([...helixF(), circleSk('F3', 'top', 4, 0, 0.5), sweep(CV('F2'))]);
+  // thread-like cut: a groove swept along a helix into a bored cylinder
+  const tube = [sk('F10', 'front', [pt('o', 0, 0)], [{ type: 'circle', id: 'e1', c: 'o', r: 6 }, { type: 'circle', id: 'e2', c: 'o', r: 3.4 }]),
+    { type: 'extrude', id: 'F11', op: 'add', sketch: 'F10', end: 'blind', depth: 8 }];
+  parts.sweepCut = part([...tube, circleSk('F1', 'front', 0, 0, 4),
+    { type: 'helix', id: 'F2', sketch: 'F1', definedBy: 'pitchRevs', pitch: 1.25, revolutions: 4, height: 5, startAngle: 0, leftHand: false, reverse: false },
+    trapSk('F3', 'top'), sweep(CV('F2'), { op: 'cut' })]);
+}
 // shell (hollow) cases
 {
   const sh = (base, faces, thickness, extra = {}) => part([...base.features, { type: 'shell', id: 'F9', faces, thickness, ...extra }]);
@@ -125,6 +189,149 @@ parts.mirrorBodyCone = part([...parts.cone.features, { type: 'plane', id: 'F8', 
   parts.shellCylOpen = sh(parts.cyl, ['F2.C1'], 1);
   parts.shellCylClosed = sh(parts.cyl, [], 1);
   parts.shellCylTooThick = sh(parts.cyl, ['F2.C1'], 10);
+}
+
+// Surface bodies (surfacePlanar / surfaceRevolve / surfaceExtrude, open chains)
+{
+  const [P, E] = rect(0, 0, 40, 20);
+  const sp = (id, s) => ({ type: 'surfacePlanar', id, sketch: s });
+  const se = (id, s, o = {}) => ({ type: 'surfaceExtrude', id, sketch: s, end: 'blind', depth: 10, ...o });
+  const sr = (id, s, o = {}) => ({ type: 'surfaceRevolve', id, sketch: s, axis: 'ax', end: 'blind', angle: 360, ...o });
+  parts.surfPlanar = part([sketch('top', P, E), sp('F2', 'F1')]);
+  parts.surfPlanarSolid = part([sketch('top', P, E), extrude(), { ...sketch('front', P, E), id: 'F3' }, sp('F4', 'F3')]);
+  parts.surfPlanarTwo = part([sketch('top', P, E), sp('F2', 'F1'), { ...sketch('front', P, E), id: 'F3' }, sp('F4', 'F3')]);
+  parts.surfExtrude = part([sketch('top', P, E), se('F2', 'F1')]);
+  parts.surfExtrudeMid = part([sketch('top', P, E), se('F2', 'F1', { end: 'mid' })]);
+  parts.surfExtrudeFlip = part([sketch('top', P, E), se('F2', 'F1', { flip: true })]);
+  const [Q, QE] = withAxis(...rect(10, 0, 20, 5));
+  parts.surfRevolve = part([sketch('front', Q, QE), sr('F2', 'F1', { angle: 180 })]);
+  parts.surfRevolve360 = part([sketch('front', Q, QE), sr('F2', 'F1')]);
+  // open chains: polyline and spline, closed by a chord internally
+  const chain = [pt('c1', 10, 8), pt('c2', 14, 12), pt('c3', 20, 9), pt('a1', 0, 0), pt('a2', 0, 10)];
+  const chainE = [line('l1', 'c1', 'c2'), line('l2', 'c2', 'c3'), line('ax', 'a1', 'a2', { construction: true })];
+  parts.surfRevolveChain = part([sketch('front', chain, chainE), sr('F2', 'F1', { angle: 180 })]);
+  parts.surfExtrudeChain = part([sketch('front', chain, chainE), se('F2', 'F1')]);
+  const chain2 = [pt('c1', 20, 9), pt('c2', 14, 12), pt('c3', 10, 8), pt('a1', 0, 0), pt('a2', 0, 10)];
+  parts.surfRevolveChainCcw = part([sketch('front', chain2, chainE), sr('F2', 'F1', { angle: 200 })]);
+  const sp3 = [pt('c1', 10, 3), pt('c2', 15, 6), pt('c3', 22, 7), pt('a1', 0, 0), pt('a2', 0, 10)];
+  parts.surfRevolveSpline = part([sketch('front', sp3, [{ type: 'spline', id: 'e8', pts: ['c1', 'c2', 'c3'] }, line('ax', 'a1', 'a2', { construction: true })]), sr('F2', 'F1', { angle: 180 })]);
+  parts.surfExtrudeSpline = part([sketch('front', sp3, [{ type: 'spline', id: 'e8', pts: ['c1', 'c2', 'c3'] }, line('ax', 'a1', 'a2', { construction: true })]), se('F2', 'F1', { depth: 7 })]);
+}
+
+// Surface-body operations (knit / fill / trimSurface / thicken / extend / deleteFace / freeform / deleteBody)
+{
+  const [P, E] = rect(0, 0, 40, 20);
+  const sp = (id, s) => ({ type: 'surfacePlanar', id, sketch: s });
+  const se = (id, s, o = {}) => ({ type: 'surfaceExtrude', id, sketch: s, end: 'blind', depth: 10, ...o });
+  const tube = [sketch('top', P, E), se('F2', 'F1')];
+  const cap = [sp('F3', 'F1'), { type: 'plane', id: 'F4', mode: 'offset', base: STD('top'), offset: 10 },
+    { type: 'sketch', id: 'F5', plane: { kind: 'feature', id: 'F4' }, points: P, entities: E, constraints: [] }, sp('F6', 'F5')];
+  parts.knitBox = part([...tube, ...cap, { type: 'knit', id: 'F7', surfaces: ['F2', 'F3', 'F6'], solid: true }]);
+  parts.knitSheet = part([...tube, ...cap, { type: 'knit', id: 'F7', surfaces: ['F2', 'F3'], solid: false }]);
+  parts.knitNotClosed = part([...tube, ...cap, { type: 'knit', id: 'F7', surfaces: ['F2', 'F3'], solid: true }]);
+  parts.knitMissing = part([...tube, { type: 'knit', id: 'F7', surfaces: ['F2', 'F9'], solid: false }]);
+  const rim = (face, at) => ({ faces: [face], at });
+  const top = [rim('F2.S.e1', [20, 10, 0]), rim('F2.S.e2', [40, 10, -10]), rim('F2.S.e3', [20, 10, -20]), rim('F2.S.e4', [0, 10, -10])];
+  const bot = [rim('F2.S.e1', [20, 0, 0]), rim('F2.S.e2', [40, 0, -10]), rim('F2.S.e3', [20, 0, -20]), rim('F2.S.e4', [0, 0, -10])];
+  const fill = (id, edges, o = {}) => ({ type: 'fill', id, edges, merge: true, continuity: 'G0', ...o });
+  parts.fillTop = part([...tube, fill('F3', top)]);
+  parts.fillTopLoose = part([...tube, fill('F3', top, { merge: false })]);
+  parts.fillBoth = part([...tube, fill('F3', top), fill('F4', bot)]);
+  parts.fillSame = part([...tube, fill('F3', [top[0], top[0]])]);
+  // two perpendicular sheets for trimSurface
+  const [R, RE] = rect(-5, -5, 5, 5);
+  const [S, SE] = rect(-6, -6, 6, 6);
+  const two = [sketch('right', R, RE), sp('F2', 'F1'), { ...sketch('front', S, SE), id: 'F3' }, sp('F4', 'F3')];
+  const trim = (o) => ({ type: 'trimSurface', id: 'F5', surface: 'F2', toolSurface: 'F4', flip: false, mutual: false, ...o });
+  parts.trimKeep = part([...two, trim({})]);
+  parts.trimFlip = part([...two, trim({ flip: true })]);
+  parts.trimMutual = part([...two, trim({ mutual: true })]);
+  const stdTrim = (o) => part([{ ...sketch('front', ...rect(-6, -6, 6, 6)), id: 'F1' }, sp('F2', 'F1'), { type: 'trimSurface', id: 'F3', surfaces: ['F2'], plane: STD('right'), flip: false, ...o }]);
+  parts.trimStdPlane = stdTrim({});
+  parts.trimStdPlaneFlip = stdTrim({ flip: true });
+  parts.trimStdPlaneMiss = part([{ ...sketch('front', ...rect(2, 2, 6, 6)), id: 'F1' }, sp('F2', 'F1'), { type: 'trimSurface', id: 'F3', surfaces: ['F2'], plane: STD('right'), flip: true }]);
+  parts.trimDeleteTool = part([...two, trim({ deleteTool: true })]);
+  parts.thickenFront = part([sketch('top', P, E), sp('F2', 'F1'), { type: 'thicken', id: 'F3', surface: 'F2', thickness: 2, side: 'front' }]);
+  parts.thickenBoth = part([sketch('top', P, E), sp('F2', 'F1'), { type: 'thicken', id: 'F3', surface: 'F2', thickness: 2, side: 'both' }]);
+  parts.thickenTube = part([...tube, { type: 'thicken', id: 'F3', surface: 'F2', thickness: 1, side: 'back' }]);
+  parts.thickenZero = part([...tube, { type: 'thicken', id: 'F3', surface: 'F2', thickness: 0, side: 'front' }]);
+  parts.extendPlane = part([sketch('top', P, E), sp('F2', 'F1'), { type: 'extend', id: 'F3', edges: [{ faces: ['F2.P'], at: [20, 0, 0] }], distance: 5 }]);
+  parts.deleteFaceBox = part([sketch('top', P, E), extrude(), { type: 'deleteFace', id: 'F3', faces: ['F2.C1'], mode: 'delete', edges: [] }]);
+  parts.freeformCap = part([sketch('top', P, E), extrude(), { type: 'freeform', id: 'F3', faces: ['F2.C1'], degreeU: 3, degreeV: 3, spansU: 2, spansV: 2, edits: [], edges: [] }]);
+  parts.freeformCapFront = part([sketch('front', P, E), extrude(), { type: 'freeform', id: 'F3', faces: ['F2.C1'], degreeU: 3, degreeV: 3, spansU: 2, spansV: 2, edits: [], edges: [] }]);
+  parts.deleteBodySurf = part([...tube, ...cap.slice(0, 1), { type: 'deleteBody', id: 'F4', mode: 'delete', bodies: ['F2'] }]);
+  parts.deleteBodySurface = part([...tube, ...cap.slice(0, 1), { type: 'deleteBody', id: 'F4', mode: 'delete', bodies: [{ surface: 'F2' }] }]);
+  parts.deleteBodyKeepSurface = part([...tube, ...cap.slice(0, 1), { type: 'deleteBody', id: 'F4', mode: 'keep', bodies: [{ surface: 'F2' }] }]);
+  parts.deleteBodyFace = part([...tube, ...cap.slice(0, 1), { type: 'deleteBody', id: 'F4', mode: 'delete', bodies: [{ face: 'F2.S.e1' }] }]);
+  parts.deleteBodySolid = part([sketch('top', P, E), extrude(), { ...sketch('front', P, E), id: 'F3' }, sp('F4', 'F3'), { type: 'deleteBody', id: 'F5', mode: 'delete', bodies: [{ face: 'F2.C0' }] }]);
+  parts.deleteBodyNone = part([...tube, { type: 'deleteBody', id: 'F3', mode: 'delete', bodies: [] }]);
+}
+
+// rib on a shelled 40x20x10 box (sketch plane x runs along world -x: flipped offset plane)
+{
+  const [P, E] = rect(0, 0, 40, 20);
+  const hollow = [sketch('top', P, E), extrude(), { type: 'shell', id: 'F3', faces: ['F2.C1'], thickness: 2 }];
+  const plane = { type: 'plane', id: 'F4', mode: 'offset', base: STD('front'), offset: 10, flip: true };
+  const onPlane = (pts, ents) => ({ type: 'sketch', id: 'F5', plane: { kind: 'feature', id: 'F4' }, points: pts, entities: ents, constraints: [] });
+  const ln = (a, b) => onPlane([pt('a', a[0], a[1]), pt('b', b[0], b[1])], [line('e1', 'a', 'b')]);
+  const rib = (t, o = {}) => ({ type: 'rib', id: 'F6', sketch: 'F5', thickness: t, ...o });
+  parts.ribHollow = part([...hollow, plane, ln([-5, 5], [-35, 5]), rib(1.2)]);
+  parts.ribHollowFlip = part([...hollow, plane, ln([-5, 5], [-35, 5]), rib(1.2, { flip: true })]);
+  parts.ribPoly = part([...hollow, plane, onPlane([pt('a', -5, 3), pt('b', -20, 8), pt('c', -35, 3)], [line('e1', 'a', 'b'), line('e2', 'b', 'c')]), rib(1.2)]);
+  parts.ribThrough = part([...hollow, plane, ln([5, 5], [-45, 5]), rib(1.2)]);
+  parts.ribFar = part([...hollow, plane, ln([100, 5], [130, 5]), rib(1.2)]);
+  parts.ribClosed = part([...hollow, plane, onPlane(rect(5, 3, 35, 7, ['r1', 'r2', 'r3', 'r4'], 'q')[0], rect(5, 3, 35, 7, ['r1', 'r2', 'r3', 'r4'], 'q')[1]), rib(1.2)]);
+  parts.ribZero = part([...hollow, plane, ln([-5, 5], [-35, 5]), rib(0)]);
+  parts.ribNoBody = part([plane, ln([-5, 5], [-35, 5]), rib(1.2)]);
+  parts.ribNoSketch = part([...hollow, { type: 'rib', id: 'F6', thickness: 1.2 }]);
+}
+
+// lip / groove along the outer rim edges of a shelled box
+{
+  const [P, E] = rect(0, 0, 40, 20);
+  const hollow = [sketch('top', P, E), extrude(), { type: 'shell', id: 'F3', faces: ['F2.C1'], thickness: 2 }];
+  const edge = (a, b, at) => ({ faces: [a, b], at });
+  const outer = [edge('F2.C1', 'F2.S.e1~1', [20, 10, 0]), edge('F2.C1', 'F2.S.e2~2', [40, 10, -10]), edge('F2.C1', 'F2.S.e3~1', [20, 10, -20]), edge('F2.C1', 'F2.S.e4~1', [0, 10, -10])];
+  const lip = (o = {}) => ({ type: 'lip', id: 'F4', kind: 'lip', faces: ['F2.C1'], edges: outer, width: 0.5, height: 1, ...o });
+  parts.lipHollow = part([...hollow, lip()]);
+  parts.lipGroove = part([...hollow, lip({ kind: 'groove' })]);
+  parts.lipOne = part([...hollow, lip({ edges: [outer[0]] })]);
+  parts.lipWide = part([...hollow, lip({ width: 3 })]);
+  parts.lipNoBody = part([lip()]);
+  parts.lipNoFaces = part([...hollow, lip({ faces: [] })]);
+  parts.lipNoEdges = part([...hollow, lip({ edges: [] })]);
+  parts.lipZeroWidth = part([...hollow, lip({ width: 0 })]);
+  parts.lipZeroHeight = part([...hollow, lip({ height: 0 })]);
+  parts.lipBadFace = part([...hollow, lip({ faces: ['F9.C0'] })]);
+}
+
+// profiles crossing the revolve axis, monotone spline chain
+{
+  const AX2 = [pt('a1', 0, -20), pt('a2', 0, 20)];
+  const axl = line('ax', 'a1', 'a2', { construction: true });
+  const sr = (o = {}) => ({ type: 'surfaceRevolve', id: 'F2', sketch: 'F1', axis: 'ax', end: 'blind', angle: 360, ...o });
+  const crossRect = [pt('p1', -5, 0), pt('p2', 5, 0), pt('p3', 5, 5), pt('p4', -5, 5)];
+  const crossE = [line('e1', 'p1', 'p2'), line('e2', 'p2', 'p3'), line('e3', 'p3', 'p4'), line('e4', 'p4', 'p1')];
+  parts.srCrossRect = part([sketch('front', [...crossRect, ...AX2], [...crossE, axl]), sr()]);
+  parts.rvCrossRect = part([sketch('front', [...crossRect, ...AX2], [...crossE, axl]), revolve({ angle: 360 })]);
+  parts.srCrossChain = part([sketch('front', [pt('c1', -5, 3), pt('c2', 6, 8), ...AX2], [line('l1', 'c1', 'c2'), axl]), sr()]);
+  const arch = [pt('c1', 10, -10), pt('c2', 14, -3), pt('c3', 15, 5), pt('c4', 12, 14)];
+  parts.srSpline = part([sketch('front', [...arch, ...AX2], [{ type: 'spline', id: 'e8', pts: ['c1', 'c2', 'c3', 'c4'] }, axl]), sr({ angle: 180 })]);
+}
+
+// extend to a target surface / half-cylinder rim
+{
+  const [P, E] = rect(0, 0, 40, 20);
+  const [T, TE] = rect(-30, -30, 30, 30, ['t1', 't2', 't3', 't4'], 't');
+  const sp = (id, sk) => ({ type: 'surfacePlanar', id, sketch: sk });
+  const tgt = [{ type: 'plane', id: 'F3', mode: 'offset', base: STD('right'), offset: 60 },
+    { type: 'sketch', id: 'F4', plane: { kind: 'feature', id: 'F3' }, points: T, entities: TE, constraints: [] }, sp('F5', 'F4')];
+  parts.extendToSurface = part([sketch('top', P, E), sp('F2', 'F1'), ...tgt,
+    { type: 'extend', id: 'F6', edges: [{ faces: ['F2.P'], at: [40, 0, -10] }], end: 'surface', target: { kind: 'surface', id: 'F5' } }]);
+  // shape linear / soft / reflective add a separate spline face F3.X0 (not reconstructed)
+  parts.extendNotBoundary = part([sketch('top', P, E), extrude(),
+    { type: 'extend', id: 'F3', edges: [{ faces: ['F2.C0', 'F2.S.e1'], at: [20, 0, 0] }], distance: 7 }]);
+  parts.extendNoEdges = part([sketch('top', P, E), sp('F2', 'F1'), { type: 'extend', id: 'F3', edges: [], distance: 7 }]);
 }
 
 const m = (msg) => JSON.stringify({ id: 1, msg });

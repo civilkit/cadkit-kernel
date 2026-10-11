@@ -89,9 +89,10 @@ fn regen_hook(part: &Json, cx: &mut Cx) -> Result<(Json, State), String> {
         r.components = ex.brep.components_json();
         let rn = ex.brep.renorm_faces();
         let asm = ex.brep.asm.clone();
-        (r, (ex.brep.body, rn, asm))
+        let surfs = std::mem::take(&mut ex.brep.surfs);
+        (r, (ex.brep.body, rn, asm, surfs))
     });
-    let (body, renorm, asm) = body;
+    let (body, renorm, asm, surfs) = body;
     let mut out = result.to_json();
     cx.span(SNAPSHOT_LABEL, |cx| {
         if let Some(b) = &body {
@@ -101,6 +102,15 @@ fn regen_hook(part: &Json, cx: &mut Cx) -> Result<(Json, State), String> {
             cx.trace.end(t);
             set_body(&mut out, body_json(b, &tess, cx, &renorm));
         }
+        // surface bodies follow the solid body (buffer order is pinned)
+        let mut sj = vec![];
+        for (id, sb) in &surfs {
+            let t = ck_tess::mesh::tessellate(sb);
+            let mut bj = body_json(sb, &t, cx, &(vec![(0, sb.faces.len())], vec![]));
+            mark_surface_faces(&mut bj);
+            sj.push(Json::Arr(vec![Json::Str(id.clone()), bj]));
+        }
+        set_key(&mut out, "surfaces", Json::Arr(sj));
     });
     let state = match body {
         Some(body) => {
@@ -113,9 +123,25 @@ fn regen_hook(part: &Json, cx: &mut Cx) -> Result<(Json, State), String> {
 }
 
 fn set_body(result: &mut Json, body: Json) {
+    set_key(result, "body", body)
+}
+
+/// Faces of a surface body carry `meta.surface: true` (oracle).
+fn mark_surface_faces(body: &mut Json) {
+    let Json::Obj(kv) = body else { return };
+    let Some((_, Json::Arr(faces))) = kv.iter_mut().find(|(k, _)| k == "faces") else { return };
+    for f in faces {
+        let Json::Obj(fk) = f else { continue };
+        if let Some((_, Json::Obj(meta))) = fk.iter_mut().find(|(k, _)| k == "meta") {
+            meta.push(("surface".into(), Json::Bool(true)));
+        }
+    }
+}
+
+fn set_key(result: &mut Json, key: &str, v: Json) {
     if let Json::Obj(kv) = result {
-        if let Some(slot) = kv.iter_mut().find(|(k, _)| k == "body") {
-            slot.1 = body;
+        if let Some(slot) = kv.iter_mut().find(|(k, _)| k == key) {
+            slot.1 = v;
         }
     }
 }
