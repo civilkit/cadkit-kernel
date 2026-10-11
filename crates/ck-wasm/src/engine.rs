@@ -184,6 +184,13 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
         "inspect" => inspect(cx),
         "continuity" => Ok(ck_ops::continuity::reply(&snapshot(cx)?.body, &cx.msg)),
         "measure" => Ok(ck_ops::measure::reply(&snapshot(cx)?.body, &cx.msg)),
+        "convert" => {
+            let s = snapshot(cx)?;
+            Ok(match cx.msg.get("ref").and_then(|r| r.get_str("kind")) {
+                Some("sketchCurve") => crate::sketch_q::convert(&s.sketches, &cx.msg),
+                _ => ck_ops::convert_proj::reply(&s.body, &cx.msg),
+            })
+        }
         "refCurve" => {
             let s = snapshot(cx)?;
             let r = cx.msg.get("ref").unwrap_or(&Json::Null);
