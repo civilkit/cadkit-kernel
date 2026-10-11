@@ -15,7 +15,7 @@ if ! git merge -q --no-edit main; then
       tools/funcmap/rust_map.json)
         git show :2:"$F" > "$F.ours"; git show :3:"$F" > "$F.theirs"
         python3 -I "$MAIN/tools/funcmap/jsonunion.py" x "$F.ours" "$F.theirs" && mv "$F.ours" "$F"; rm -f "$F.theirs"; git add "$F" ;;
-      tools/funcmap/layouts.md)
+      tools/funcmap/layouts.md|*README.md)
         git show :2:"$F" > "$F.a"; git show :3:"$F" > "$F.b"; (git show :1:"$F" 2>/dev/null || :) > "$F.o"
         git merge-file --union "$F.a" "$F.o" "$F.b"; mv "$F.a" "$F"; rm -f "$F.o" "$F.b"; git add "$F" ;;
       *) echo "land: real conflict in $F — resolve in $WT and rerun"; exit 1 ;;
