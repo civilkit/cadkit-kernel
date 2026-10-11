@@ -170,15 +170,6 @@ pub fn imprint(a: &Body, b: &Body, tol: f64) -> Arrangement {
     let boxes_a: Vec<Aabb> = fa.iter().map(|&f| face_box(a, f).padded(EDGE_TOL + pad)).collect();
     let boxes_b: Vec<Aabb> = fb.iter().map(|&f| face_box(b, f).padded(EDGE_TOL + pad)).collect();
     let (ta, tb) = (Bvh::build(&boxes_a), Bvh::build(&boxes_b));
-    if std::env::var("CK_DBG_BOXES").is_ok() {
-        for bs in [&boxes_a, &boxes_b] {
-            eprintln!("--- boxes n={}", bs.len());
-            for b in bs.iter() {
-                eprintln!("{},{},{},{},{},{}", b.min.x, b.min.y, b.min.z, b.max.x, b.max.y, b.max.z);
-            }
-        }
-        eprintln!("pairs {:?}", ta.overlap_pairs_ordered(&tb, pad));
-    }
     let mut cuts: Vec<CutSeg> = vec![];
     let mut extra: Vec<Vec3> = vec![];
     for (i, j) in ta.overlap_pairs_ordered(&tb, pad) {

@@ -136,13 +136,15 @@ pub struct Bvh {
     boxes: Vec<Aabb>,
 }
 
-/// Surface area as the original computes it (f_rte): 2 (dx dz + dx dy + dy dz), 0 when empty.
+/// Surface area as the original computes it (f3917): 2 (dx dz + (dx dy + dy dz)), 0 when empty
+/// (the association decides SAH ties: oracle costs 50444.867930432294 vs
+/// 50444.86793043229 for mirror-symmetric splits).
 fn area(b: &Aabb) -> f64 {
     if !(b.min.x <= b.max.x && b.min.y <= b.max.y && b.min.z <= b.max.z) {
         return 0.0;
     }
     let (dx, dy, dz) = (b.max.x - b.min.x, b.max.y - b.min.y, b.max.z - b.min.z);
-    let a = dx * dz + dx * dy + dy * dz;
+    let a = dx * dz + (dx * dy + dy * dz);
     a + a
 }
 
@@ -572,6 +574,63 @@ mod tests {
         assert!(sp.contains(&(0, 1)) && !sp.contains(&(0, 2)));
     }
 
+    /// Oracle (instrumented f2660 / f2661, regen of a 60×60×5 front box cut
+    /// throughBoth by five r1 circles at x = −25..15 step 10, y = 30 +
+    /// 0.01·i): the two BVHs' item boxes as the original built them, its
+    /// leaves and its pair order.
+    #[test]
+    fn oracle_build_and_pair_order() {
+        // the boxes exactly as the original's dump printed them (SAH bins
+        // are sensitive to the last bits)
+        let bx = |v: &[f64; 6]| Aabb::new(Vec3::new(v[0], v[1], v[2]), Vec3::new(v[3], v[4], v[5]));
+        let a: Vec<Aabb> = [
+            [-30.000011, -0.000011, -0.000011, 30.000011, 60.000011, 0.000011],
+            [-30.000011, -0.000011, 4.999989, 30.000011, 60.000011, 5.000011],
+            [-30.000011, -0.000011, -0.000011, 30.000011, 0.000011, 5.000011],
+            [29.999989, -0.000011, -0.000011, 30.000011, 60.000011, 5.000011],
+            [-30.000011, 59.999989, -0.000011, 30.000011, 60.000011, 5.000011],
+            [-30.000011, -0.000011, -0.000011, -29.999989, 60.000011, 5.000011],
+        ].iter().map(bx).collect();
+        let b: Vec<Aabb> = [
+            [-26.000011, 28.999989, -125.10400038815723, -23.999989, 31.000011, -125.10397838815723],
+            [-26.000011, 28.999989, 125.10397838815723, -23.999989, 31.000011, 125.10400038815723],
+            [-26.000011, 28.999989, -125.10400038815723, -23.999989, 31.000011, 125.10400038815723],
+            [-16.000011, 29.009989, -125.10400038815723, -13.999989000000001, 31.010011000000002, -125.10397838815723],
+            [-16.000011, 29.009989, 125.10397838815723, -13.999989000000001, 31.010011000000002, 125.10400038815723],
+            [-16.000011, 29.009989, -125.10400038815723, -13.999989000000001, 31.010011000000002, 125.10400038815723],
+            [-6.000011, 29.019989, -125.10400038815723, -3.999989, 31.020011, -125.10397838815723],
+            [-6.000011, 29.019989, 125.10397838815723, -3.999989, 31.020011, 125.10400038815723],
+            [-6.000011, 29.019989, -125.10400038815723, -3.999989, 31.020011, 125.10400038815723],
+            [3.999989, 29.029989, -125.10400038815723, 6.000011, 31.030011000000002, -125.10397838815723],
+            [3.999989, 29.029989, 125.10397838815723, 6.000011, 31.030011000000002, 125.10400038815723],
+            [3.999989, 29.029989, -125.10400038815723, 6.000011, 31.030011000000002, 125.10400038815723],
+            [13.999989000000001, 29.039989, -125.10400038815723, 16.000011, 31.040011, -125.10397838815723],
+            [13.999989000000001, 29.039989, 125.10397838815723, 16.000011, 31.040011, 125.10400038815723],
+            [13.999989000000001, 29.039989, -125.10400038815723, 16.000011, 31.040011, 125.10400038815723],
+        ].iter().map(bx).collect();
+        let (ta, tb) = (Bvh::build(&a), Bvh::build(&b));
+        let leaves = |t: &Bvh| -> Vec<Vec<usize>> {
+            let mut out = vec![];
+            let mut st = vec![0usize];
+            while let Some(n) = st.pop() {
+                let nd = &t.nodes[n];
+                if nd.left == usize::MAX {
+                    out.push(t.items[nd.start..nd.start + nd.count].to_vec());
+                } else {
+                    st.push(nd.right);
+                    st.push(nd.left);
+                }
+            }
+            out
+        };
+        assert_eq!(leaves(&ta), vec![vec![5], vec![2], vec![4, 1, 0, 3]]);
+        assert_eq!(leaves(&tb), vec![vec![0, 6, 3], vec![9, 12], vec![5, 2, 8], vec![11, 14], vec![7, 1, 4], vec![13, 10]]);
+        assert_eq!(
+            ta.overlap_pairs_ordered(&tb, 1e-6),
+            vec![(1, 11), (1, 14), (0, 11), (0, 14), (1, 5), (1, 2), (1, 8), (0, 5), (0, 2), (0, 8)]
+        );
+    }
+
     #[test]
     fn ray_tri() {
         let t = ray_triangle(Vec3::new(0.2, 0.2, 5.0), -Vec3::Z, Vec3::ZERO, Vec3::X, Vec3::Y).unwrap();
@@ -579,33 +638,4 @@ mod tests {
         assert!(ray_triangle(Vec3::new(0.8, 0.8, 5.0), -Vec3::Z, Vec3::ZERO, Vec3::X, Vec3::Y).is_none());
     }
 
-    fn tree(t: &Bvh, n: usize, out: &mut Vec<String>) {
-        let nd = &t.nodes[n];
-        if nd.left == usize::MAX {
-            out.push(format!("leaf {} {:?}", n, &t.items[nd.start..nd.start + nd.count]));
-        } else {
-            out.push(format!("node {} -> {} {}", n, nd.left, nd.right));
-            tree(t, nd.left, out);
-            tree(t, nd.right, out);
-        }
-    }
-
-    /// debug: tree of the boxes in `.claude/boxes.txt` (x0,y0,z0,x1,y1,z1 per line)
-    #[test]
-    #[ignore]
-    fn dump_tree() {
-        let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../.claude/boxes.txt")).unwrap();
-        let boxes: Vec<Aabb> = src
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .map(|s| {
-                let v: Vec<f64> = s.split(',').map(|x| x.trim().parse().unwrap()).collect();
-                Aabb::new(Vec3::new(v[0], v[1], v[2]), Vec3::new(v[3], v[4], v[5]))
-            })
-            .collect();
-        let t = Bvh::build(&boxes);
-        let mut out = vec![];
-        tree(&t, 0, &mut out);
-        eprintln!("{}", out.join("\n"));
-    }
 }

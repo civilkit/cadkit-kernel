@@ -263,6 +263,13 @@ pub fn fragments(arr: &Arrangement, fi: usize) -> Vec<Fragment> {
 pub fn sample_point(arr: &Arrangement, f: &Fragment) -> Option<(Vec3, Vec3)> {
     let af = &arr.faces[f.af];
     let s = &af.surface;
+    if f.loops.iter().all(|l| l.is_empty()) {
+        // closed surface without boundary (full sphere / torus)
+        let ((u0, u1), (v0, v1)) = s.domain();
+        let (u, v) = (u0 + 0.37 * (u1 - u0), v0 + 0.41 * (v1 - v0));
+        let q = s.eval(u, v);
+        return Some((q, outward(s, af.sense, q)));
+    }
     let polys: Vec<Vec<Vec2>> = f.loops.iter().map(|l| loop_polygon(s, &pieces(arr, l))).collect();
     let mut cand: Vec<He> = f.loops[0].clone();
     let len = |h: &He| {
