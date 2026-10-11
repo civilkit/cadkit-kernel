@@ -11,7 +11,7 @@ strings from kernel.strings, and dispatch to ck-ops/ck-topo.
 | sketch | plane, points[{id,x,y,fixed}], entities[{type:id,...}], constraints[{type,refs,value,offset}], seq, visible |
 | extrude | op(add/cut), sketch, end(blind/through/throughBoth/upToNext/mid), depth(expr), flip, draft(expr), draftOut |
 | revolve | op, sketch, axis, end, angle(expr), flip |
-| sweep | op, sketch, path, (+guides, surface from UI) |
+| sweep | op, sketch, path ({kind: curve or sketch, id}), twist (deg), (+guides, guideMode, surface: not reconstructed) |
 | loft | op, sketches[], surface, centreLine, guides |
 | fillet | radius(expr), edges[] |
 | chamfer | chamferType(equal/angleDistance/distanceDistance/vertex), distance, angle, distance2, edges[] |

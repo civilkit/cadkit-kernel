@@ -133,6 +133,44 @@ parts.cone = part([sketch('front', [pt('p1', 5, 0), pt('p2', 15, 0), pt('p3', 5,
 parts.mirrorBodyCone = part([...parts.cone.features, { type: 'plane', id: 'F8', mode: 'offset', base: STD('right'), offset: -30 },
   { type: 'mirror', id: 'F9', seeds: [], plane: { kind: 'feature', id: 'F8' }, body: true }]);
 
+// ---- sweep (circle / square profiles along a line, an arc and a helix)
+{
+  const sk = (id, plane, points, entities) => ({ type: 'sketch', id, plane: STD(plane), points, entities, constraints: [] });
+  const circleSk = (id, plane, cx, cy, r) => sk(id, plane, [pt('c', cx, cy)], [{ type: 'circle', id: 'e1', c: 'c', r }]);
+  const squareSk = (id, plane, x0, y0, w) => {
+    const [P, E] = rect(x0, y0, x0 + w, y0 + w, ['e5', 'e6', 'e7', 'e8']);
+    return sk(id, plane, P, E);
+  };
+  const trapSk = (id, plane) => sk(id, plane, [pt('p1', 3.3, -0.5), pt('p2', 4.5, -0.3), pt('p3', 4.5, 0.3), pt('p4', 3.3, 0.5)],
+    [line('e5', 'p1', 'p2'), line('e6', 'p2', 'p3'), line('e7', 'p3', 'p4'), line('e8', 'p4', 'p1')]);
+  const lineSk = (id, a, b) => sk(id, 'front', [pt('a', ...a), pt('b', ...b)], [line('e1', 'a', 'b')]);
+  const arcSk = (id) => sk(id, 'front', [pt('c', -10, 0), pt('a', 0, 0), pt('b', -10, 10)], [{ type: 'arc', id: 'e1', c: 'c', p1: 'a', p2: 'b' }]);
+  const helixF = (o = {}) => [circleSk('F1', 'front', 0, 0, 4),
+    { type: 'helix', id: 'F2', sketch: 'F1', definedBy: 'pitchRevs', pitch: 2, revolutions: 3, height: 6, startAngle: 0, leftHand: false, reverse: false, ...o }];
+  const sweep = (path, o = {}) => ({ type: 'sweep', id: 'F4', op: 'add', sketch: 'F3', path, ...o });
+  const SK = (id) => ({ kind: 'sketch', id });
+  const CV = (id) => ({ kind: 'curve', id });
+  parts.sweepLine = part([lineSk('F2', [0, 0], [0, 20]), circleSk('F3', 'top', 0, 0, 3), sweep(SK('F2'))]);
+  parts.sweepLineNeg = part([lineSk('F2', [0, 0], [0, -20]), squareSk('F3', 'top', 0, 0, 2), sweep(SK('F2'))]);
+  parts.sweepLineFar = part([lineSk('F2', [0, 5], [0, 25]), squareSk('F3', 'top', 0, 0, 2), sweep(SK('F2'))]);
+  parts.sweepArc = part([arcSk('F2'), circleSk('F3', 'top', 0, 0, 2), sweep(SK('F2'))]);
+  parts.sweepArcSquare = part([arcSk('F2'), squareSk('F3', 'top', 0, 0, 2), sweep(SK('F2'))]);
+  parts.sweepNotNormal = part([lineSk('F2', [0, 0], [0, 20]), squareSk('F3', 'front', 0, 0, 2), sweep(SK('F2'))]);
+  parts.sweepTwist = part([lineSk('F2', [5, 0], [5, 20]), squareSk('F3', 'top', 1, 1, 2), sweep(SK('F2'), { twist: 90 })]);
+  parts.sweepTwistNeg = part([lineSk('F2', [0, 0], [0, -20]), squareSk('F3', 'top', 1, 1, 2), sweep(SK('F2'), { twist: -135 })]);
+  parts.sweepNoPath =part([circleSk('F3', 'top', 0, 0, 3), sweep(null)]);
+  parts.sweepHelixTrap = part([...helixF(), trapSk('F3', 'top'), sweep(CV('F2'))]);
+  parts.sweepHelixRev = part([...helixF({ reverse: true }), trapSk('F3', 'top'), sweep(CV('F2'))]);
+  parts.sweepHelixLeft = part([...helixF({ leftHand: true }), trapSk('F3', 'top'), sweep(CV('F2'))]);
+  parts.sweepHelixSquare = part([...helixF(), squareSk('F3', 'top', 3.5, -0.5, 1), sweep(CV('F2'))]);
+  parts.sweepHelixCircle = part([...helixF(), circleSk('F3', 'top', 4, 0, 0.5), sweep(CV('F2'))]);
+  // thread-like cut: a groove swept along a helix into a bored cylinder
+  const tube = [sk('F10', 'front', [pt('o', 0, 0)], [{ type: 'circle', id: 'e1', c: 'o', r: 6 }, { type: 'circle', id: 'e2', c: 'o', r: 3.4 }]),
+    { type: 'extrude', id: 'F11', op: 'add', sketch: 'F10', end: 'blind', depth: 8 }];
+  parts.sweepCut = part([...tube, circleSk('F1', 'front', 0, 0, 4),
+    { type: 'helix', id: 'F2', sketch: 'F1', definedBy: 'pitchRevs', pitch: 1.25, revolutions: 4, height: 5, startAngle: 0, leftHand: false, reverse: false },
+    trapSk('F3', 'top'), sweep(CV('F2'), { op: 'cut' })]);
+}
 // shell (hollow) cases
 {
   const sh = (base, faces, thickness, extra = {}) => part([...base.features, { type: 'shell', id: 'F9', faces, thickness, ...extra }]);
