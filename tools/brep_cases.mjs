@@ -93,12 +93,16 @@ parts.cone = part([sketch('front', [pt('p1', 5, 0), pt('p2', 15, 0), pt('p3', 5,
   parts.upToNextOpen = part([...base(), below, onBelow, ex2('F4', 'F3', { end: 'upToNext', flip: true })]);
   parts.upToNextCut = part([...base(), circ('F3', { kind: 'face', id: 'F2.C1' }, 20, 10, 3), ex2('F4', 'F3', { op: 'cut', end: 'upToNext' })]);
   parts.upToNextNone = part([...base(), below, onBelow, ex2('F4', 'F3', { op: 'cut', end: 'upToNext', flip: true })]);
+  parts.mirrorBody = part([...base(), ...hole, { type: 'mirror', id: 'F5', seeds: [], plane: STD('right'), body: true }]);
   const fil = (r, edges) => ({ type: 'fillet', id: 'F3', radius: r, edges });
   parts.filletOne = part([...base(), fil(2, [{ faces: ['F2.S.e1', 'F2.C1'], at: [20, 10, 0] }])]);
   parts.filletTwo = part([...base(), fil(2, [{ faces: ['F2.C1', 'F2.S.e1'], at: [20, 10, 0] }, { faces: ['F2.C1', 'F2.S.e3'], at: [20, 10, -20] }])]);
   parts.filletRail = part([...base(), fil(3, [{ faces: ['F2.S.e2', 'F2.S.e1'], at: [40, 5, 0] }])]);
   parts.filletTooBig = part([...base(), fil(30, [{ faces: ['F2.C1', 'F2.S.e1'], at: [20, 10, 0] }])]);
 }
+
+parts.mirrorBodyCone = part([...parts.cone.features, { type: 'plane', id: 'F8', mode: 'offset', base: STD('right'), offset: -30 },
+  { type: 'mirror', id: 'F9', seeds: [], plane: { kind: 'feature', id: 'F8' }, body: true }]);
 
 const m = (msg) => JSON.stringify({ id: 1, msg });
 /// Follow-up requests on each part's state (compared byte-for-byte).

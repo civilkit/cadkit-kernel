@@ -102,6 +102,92 @@ pub fn mirror_tool(feature: &str, recipe: &Recipe, pl: &Plane) -> Result<Body, S
     }
 }
 
+/// Exact mirror image of a body in the plane `pl` (ck-topo transforms are
+/// rigid-only). Geometry is rebuilt on RIGHT-handed frames so every
+/// surface/curve evaluates exactly to the image of the original:
+/// planes / extrusions / revolutions / B-splines keep their parameters and
+/// flip `sense`; cylinders, cones, spheres, tori take frame (Mx, My, −Mz)
+/// with v -> −v in their pcurves (cones also negate the semi-angle) and keep
+/// `sense`; conic edges take frame (Mx, My, Mx×My). Every loop is reversed
+/// (a reflection turns CCW loops CW about the image normal).
+pub fn reflect_body(b: &Body, pl: &Plane) -> Result<Body, String> {
+    use ck_geom::curve::Curve;
+    use ck_geom::curve2::Curve2;
+    use ck_geom::surface::Surface;
+    use ck_geom::Vec2;
+    let m = Xform::mirror(pl);
+    let (p, v) = (|q: Vec3| m.apply_point(q), |d: Vec3| m.apply_vec(d));
+    let rh = |f: &Frame| {
+        let (x, y) = (v(f.x), v(f.y));
+        Frame { o: p(f.o), x, y, z: x.cross(y) }
+    };
+    let curve = |c: &Curve| -> Curve {
+        match c {
+            Curve::Line { o, d } => Curve::Line { o: p(*o), d: v(*d) },
+            Curve::Circle { frame, r } => Curve::Circle { frame: rh(frame), r: *r },
+            Curve::Ellipse { frame, a, b } => Curve::Ellipse { frame: rh(frame), a: *a, b: *b },
+            Curve::BSpline(s) => Curve::BSpline(s.map(|q| p(q))),
+        }
+    };
+    let flip_v = |c: &Curve2| -> Curve2 {
+        let f = |q: Vec2| Vec2::new(q.x, -q.y);
+        match c {
+            Curve2::Line { o, d } => Curve2::Line { o: f(*o), d: f(*d) },
+            Curve2::Circle { c, x, r, ccw } => Curve2::Circle { c: f(*c), x: f(*x), r: *r, ccw: !ccw },
+            Curve2::Ellipse { c, x, a, b, ccw } => Curve2::Ellipse { c: f(*c), x: f(*x), a: *a, b: *b, ccw: !ccw },
+            Curve2::BSpline(s) => Curve2::BSpline(s.map(f)),
+        }
+    };
+    let mut out = b.clone();
+    for vx in &mut out.vertices {
+        vx.p = p(vx.p);
+    }
+    for e in &mut out.edges {
+        e.curve = curve(&e.curve);
+    }
+    let mut vflip = vec![false; out.faces.len()];
+    for (i, f) in out.faces.iter_mut().enumerate() {
+        let lh = |fr: &Frame| Frame { o: p(fr.o), x: v(fr.x), y: v(fr.y), z: -v(fr.z) };
+        let (s, flip_sense, fv) = match &f.surface {
+            Surface::Plane { frame } => (Surface::Plane { frame: rh(frame) }, true, false),
+            Surface::Cylinder { frame, r } => (Surface::Cylinder { frame: lh(frame), r: *r }, false, true),
+            Surface::Cone { frame, r, semi_angle } => (Surface::Cone { frame: lh(frame), r: *r, semi_angle: -semi_angle }, false, true),
+            Surface::Sphere { frame, r } => (Surface::Sphere { frame: lh(frame), r: *r }, false, true),
+            Surface::Torus { frame, major, minor } => (Surface::Torus { frame: lh(frame), major: *major, minor: *minor }, false, true),
+            Surface::Extrusion { profile, dir } => (Surface::Extrusion { profile: Box::new(curve(profile)), dir: v(*dir) }, true, false),
+            // M·R(a, u) = R(−M a, u)·M
+            Surface::Revolution { profile, axis_o, axis } => {
+                (Surface::Revolution { profile: Box::new(curve(profile)), axis_o: p(*axis_o), axis: -v(*axis) }, true, false)
+            }
+            Surface::BSpline(s) => {
+                let mut s = s.clone();
+                s.ctrl.iter_mut().for_each(|q| *q = p(*q));
+                (Surface::BSpline(s), true, false)
+            }
+            Surface::Offset { .. } => return Err(super::extrude::todo("mirror of an offset surface")),
+        };
+        f.surface = s;
+        if flip_sense {
+            f.sense = !f.sense;
+        }
+        vflip[i] = fv;
+    }
+    for l in 0..out.loops.len() {
+        let face = out.loops[l].face.idx();
+        let mut cs = out.loops[l].coedges.clone();
+        cs.reverse();
+        for &c in &cs {
+            let ce = &mut out.coedges[c.idx()];
+            ce.rev = !ce.rev;
+            if vflip[face] {
+                ce.pcurve = ce.pcurve.as_ref().map(&flip_v);
+            }
+        }
+        out.loops[l].coedges = cs;
+    }
+    Ok(out)
+}
+
 fn seed_tools<'a>(br: &'a Brep, seeds: &[Ref]) -> Result<Vec<(&'a str, &'a Tool)>, FeatureError> {
     if seeds.is_empty() {
         return Err(FeatureError::new(NO_SEEDS));
@@ -123,10 +209,29 @@ fn seed_tools<'a>(br: &'a Brep, seeds: &[Ref]) -> Result<Vec<(&'a str, &'a Tool)
 pub fn exec_mirror(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
     let FeatureKind::Mirror { seeds, plane, body } = &f.kind else { unreachable!() };
     let fr = plane.as_ref().and_then(|p| plane_frame(br, state, p)).ok_or_else(|| FeatureError::new(codes::MISSING_REFERENCE))?;
-    if *body {
-        return Err(FeatureError::new(&super::extrude::todo("mirror body (reflected body copy)")));
-    }
     let pl = Plane::new(fr.o, fr.z);
+    if *body {
+        // Pinned (probe): the whole current body reflected, renamed
+        // `@<feature>.1`, one `boolean Unite (n × n faces)`; seeds ignored.
+        // GUESS: no body -> missingReference.
+        let b = br.body.as_ref().ok_or_else(|| FeatureError::new(codes::MISSING_REFERENCE))?;
+        let mut copy = reflect_body(b, &pl).map_err(|e| FeatureError::new(&e))?;
+        copy.push_instance(&format!("{}.1", f.id));
+        // Pinned: a copy clear of the body is appended with NO boolean span
+        // (reflected cone 30 off the plane); touching copies are united.
+        // GUESS: "clear" = disjoint bounding boxes (exact bounds ± tol).
+        let (alo, ahi) = super::body_box(b);
+        let (blo, bhi) = super::body_box(&copy);
+        let t = super::TOL;
+        let apart = alo.x > bhi.x + t || blo.x > ahi.x + t || alo.y > bhi.y + t || blo.y > ahi.y + t || alo.z > bhi.z + t || blo.z > ahi.z + t;
+        if apart {
+            let mut nb = b.clone();
+            nb.append(&copy);
+            br.body = Some(nb);
+            return Ok(());
+        }
+        return br.combine(&copy, Combine::Add, false);
+    }
     let mut copies = vec![];
     for (id, t) in seed_tools(br, seeds)? {
         let recipe = t.recipe.as_ref().ok_or_else(|| FeatureError::new(&super::extrude::todo("mirror of a tool without a recipe")))?;

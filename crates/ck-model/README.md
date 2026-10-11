@@ -100,9 +100,11 @@ ck-topo / ck-ops. Depends on ck-core, ck-geom, ck-topo, ck-ops, ck-json.
   tool), a patterned/mirrored cut that misses is silent; `noSeeds` /
   `missingReference`; count <= 1 -> no-op. Mirror copies are re-swept from
   the reflected profile (ck-topo transforms are rigid-only), caps renamed
-  back so `C0@F10.1` is the image of C0. `mirror body:true` (oracle:
-  reflected copy of the whole body united, `@F5.1`) -> TODO (needs a real
-  reflection of a Body).
+  back so `C0@F10.1` is the image of C0. `mirror body:true`: the whole body
+  reflected exactly (`pattern::reflect_body`: right-handed frames, v -> −v
+  pcurves on analytic curved faces, senses / loops flipped), renamed
+  `@<feature>.1`, united — or appended with no boolean span when the copy's
+  box is clear of the body (oracle; GUESS: box test).
 - fillet -> `ck_ops::blend::build::fillet` (`features/blends.rs`); span
   `"F11: Fillet(5.0, Circular) of 4 edges"`; the selected pair is reordered
   so the face whose loop runs the edge forward comes first (oracle touched
