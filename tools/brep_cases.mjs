@@ -243,6 +243,10 @@ parts.mirrorBodyCone = part([...parts.cone.features, { type: 'plane', id: 'F8', 
   parts.trimKeep = part([...two, trim({})]);
   parts.trimFlip = part([...two, trim({ flip: true })]);
   parts.trimMutual = part([...two, trim({ mutual: true })]);
+  const stdTrim = (o) => part([{ ...sketch('front', ...rect(-6, -6, 6, 6)), id: 'F1' }, sp('F2', 'F1'), { type: 'trimSurface', id: 'F3', surfaces: ['F2'], plane: STD('right'), flip: false, ...o }]);
+  parts.trimStdPlane = stdTrim({});
+  parts.trimStdPlaneFlip = stdTrim({ flip: true });
+  parts.trimStdPlaneMiss = part([{ ...sketch('front', ...rect(2, 2, 6, 6)), id: 'F1' }, sp('F2', 'F1'), { type: 'trimSurface', id: 'F3', surfaces: ['F2'], plane: STD('right'), flip: true }]);
   parts.trimDeleteTool = part([...two, trim({ deleteTool: true })]);
   parts.thickenFront = part([sketch('top', P, E), sp('F2', 'F1'), { type: 'thicken', id: 'F3', surface: 'F2', thickness: 2, side: 'front' }]);
   parts.thickenBoth = part([sketch('top', P, E), sp('F2', 'F1'), { type: 'thicken', id: 'F3', surface: 'F2', thickness: 2, side: 'both' }]);

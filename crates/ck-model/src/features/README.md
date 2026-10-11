@@ -56,3 +56,27 @@ strings from kernel.strings, and dispatch to ck-ops/ck-topo.
 - blends: filletChamfer, chamferVertexEdges(two/points), chamferType+filletType,
   "edge of blend X is gone after an earlier blend", "X collapses and cannot be removed"
 - assembly: mirrorOntoItself, mirrorNotKnitted
+
+## Surface bodies, rib, lip (reconstruction notes)
+
+- `Brep::surfs` holds the surface (sheet) bodies by feature id; the wire
+  `surfaces: [[id, body], ..]` follows the solid `body` (engine.rs adds
+  `meta.surface: true` to every face and re-normalises plane normals).
+  Consumers remove their inputs: knit (all inputs), trim (targets, + tool
+  with `mutual`/`deleteTool`; an absent `deleteTool` keeps the tool), thicken,
+  deleteFace; extend / rebuild / fill-merge append the result; a closed
+  result (`fill {merge}` closing a knit skin, `knit {solid}`) is the solid body.
+- Sheets are the solid sweep minus caps (`sheet()`); an open sketch chain is
+  swept as `chain + closing chord` (chord faces/edges dropped, a clockwise
+  revolve chain is reversed to CCW as a plain reverse). Probe parts: brep_cases
+  `surf*`, `knit*`, `fill*`, `trim*`, `thicken*`, `extend*`, `deleteBody*`.
+- Known gaps: trimSurface of curved surfaces (needs SSI), extend shapes
+  linear/soft/reflective (separate `X<k>` spline face), freeform marker
+  (`deviation`, `edges`, `bound`, `frames`), surface extrude draft / upTo ends,
+  rib/lip with curved rim faces or chains that leave the plane.
+- rib: thin wall (`thickness`, centred on the sketch plane) between the open
+  chain and the body, extended to contact; errors `nothingToCut`,
+  `missingSketch`, `invalidValue`, `ribNeedsOpenSketch`, `ribNoContact`.
+- lip: band of `width` along the rim edges, `height` out of (lip) / into
+  (groove) the rim face; errors `nothingToCut`, `lipFace`, `invalidValue`,
+  `missingReference`.

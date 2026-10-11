@@ -261,8 +261,8 @@ fn join_solid(br: &mut Brep, id: &str, b: Body) -> Result<(), FeatureError> {
 
 // ------------------------------------------------------------------ trim
 
-pub fn exec_trim(br: &mut Brep, _state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
-    let FeatureKind::TrimSurface { surface, surfaces, tool_surface, mutual, flip, .. } = &f.kind else { unreachable!() };
+pub fn exec_trim(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
+    let FeatureKind::TrimSurface { surface, surfaces, tool_surface, plane, mutual, flip, .. } = &f.kind else { unreachable!() };
     // pinned: an absent `deleteTool` keeps the tool (the client writes true)
     let delete_tool = &flag(f, "deleteTool");
     let mut refs: Vec<&crate::Ref> = surfaces.iter().collect();
@@ -278,20 +278,53 @@ pub fn exec_trim(br: &mut Brep, _state: &mut RegenState, f: &Feature) -> Result<
     for r in refs {
         tidx.push(br.surface_ref(r.as_str()).ok_or_else(missing)?);
     }
-    let tool_i = match tool_surface {
-        Some(t) => br.surface_ref(t.as_str()).ok_or_else(missing)?,
-        None => return Err(missing()),
-    };
     let targets: Vec<Body> = tidx.iter().map(|&i| br.surfs[i].1.clone()).collect();
-    let tool = br.surfs[tool_i].1.clone();
+    // tool: a surface body, or a plane (std / plane feature / planar face) as a bare plane face
+    let (tool, tool_i) = match (tool_surface, plane) {
+        (Some(t), _) => {
+            let i = br.surface_ref(t.as_str()).ok_or_else(missing)?;
+            (br.surfs[i].1.clone(), Some(i))
+        }
+        (None, Some(pl)) => {
+            let fr = match pl {
+                crate::GeomRef::Std(p) => p.frame(),
+                crate::GeomRef::Feature(id) => state.plane(id).ok_or_else(missing)?,
+                crate::GeomRef::Face(id) => {
+                    let slot = br.slot_of_face(id).ok_or_else(missing)?;
+                    crate::refs::face_frame(br.slot_body(slot).ok_or_else(missing)?, id).ok_or_else(missing)?
+                }
+                _ => return Err(missing()),
+            };
+            (plane_sheet(fr), None)
+        }
+        _ => return Err(missing()),
+    };
+    // ck-ops trim cuts by a PLANE tool only; surface x surface trimming (the
+    // large sample's loft x barrel) is not reconstructed yet
+    let planar_tool = tool.face_ids().all(|x| matches!(tool.face(x).surface, ck_geom::surface::Surface::Plane { .. }));
+    let planar_targets = targets.iter().all(|t| t.face_ids().all(|x| matches!(t.face(x).surface, ck_geom::surface::Surface::Plane { .. })));
+    if !planar_tool || !planar_targets {
+        return Err(FeatureError::new(&super::extrude::todo("trimSurface of curved surfaces")));
+    }
     let out = sf::trim::trim(&targets, &tool, *flip, *mutual, super::TOL).map_err(|e| coded(e.code, &e.detail))?;
     let mut gone = tidx;
-    if *delete_tool || *mutual {
-        gone.push(tool_i);
+    if let Some(ti) = tool_i {
+        if *delete_tool || *mutual {
+            gone.push(ti);
+        }
     }
     br.drop_surfaces(gone);
     br.set_surface(&f.id, out);
     Ok(())
+}
+
+/// A bare plane face (no loops): only its plane matters to `trim`.
+fn plane_sheet(fr: ck_geom::Frame) -> Body {
+    let mut b = Body::new();
+    let lump = b.add_lump();
+    let shell = b.add_shell(lump);
+    b.add_face(shell, ck_geom::surface::Surface::Plane { frame: fr }, true, ck_topo::body::FaceName::other("plane", "P"));
+    b
 }
 
 // ------------------------------------------------------------------ fill
