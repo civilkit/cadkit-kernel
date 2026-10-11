@@ -41,6 +41,10 @@ pub fn validate(cx: &mut Cx) -> Result<Json, String> {
     null_or_query(cx, "validate")
 }
 
+pub fn heal(cx: &mut Cx) -> Result<Json, String> {
+    null_or_query(cx, "heal")
+}
+
 /// `{"type":"importSat","tag":t,"name":n?,"data":"<SAT text>"}` -> regen-shaped
 /// result (`errors`, `body`, ...). A failed import answers `body:null` with a
 /// structured error and leaves the tag's state alone.

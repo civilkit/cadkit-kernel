@@ -22,6 +22,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ck-heal"
+version = "0.1.0"
+dependencies = [
+ "ck-check",
+ "ck-core",
+ "ck-geom",
+ "ck-json",
+ "ck-model",
+ "ck-topo",
+]
+
+[[package]]
 name = "ck-io"
 version = "0.1.0"
 dependencies = [
@@ -91,6 +103,7 @@ dependencies = [
  "ck-check",
  "ck-core",
  "ck-geom",
+ "ck-heal",
  "ck-io",
  "ck-json",
  "ck-model",

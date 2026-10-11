@@ -17,6 +17,8 @@
 //   oracle.<set>  HARD: massProps volume/area/com + box vs the closed-form
 //                 oracles of tools/oracles (independent of the original), 1e-6
 //   vol.<set>     our volume within 1e-3 relative of the original's
+//   heal.repair   OURS alone: damaged copies of the valid brep bodies healed
+//                 back to validate-clean with volume within 1e-6
 //   import.roundtrip  OURS alone (HARD): our `step` export -> `importStep` into
 //                 a fresh tag; volume/area within 1e-6, same face and edge
 //                 counts, `validate` clean (brep parts that produce a body)
@@ -25,7 +27,7 @@
 //                 issues and has the closed-form volume (1e-6 relative)
 //
 // Direction (2026-10-12): correctness + robustness, not byte-identity.
-// HARD metrics (a drop fails the gate): wire, valid.*, vol.*, oracle.*, import.*.
+// HARD metrics (a drop fails the gate): wire, valid.*, vol.*, oracle.*, import.*, heal.repair.
 // SOFT metrics (oracle-identity: faces/edges/box/rest/json/mesh/mass/step):
 // a drop prints WARN but does not fail. The original is a reference, not
 // the arbiter.
@@ -73,6 +75,7 @@ const close = (a, b) => {
   if (a && b && typeof a === 'object') return Object.keys(a).join() === Object.keys(b).join() && Object.keys(a).every((k) => close(a[k], b[k]));
   return a === b;
 };
+const HEAL_KINDS = ['detach', 'shells', 'flip', 'invert', 'reverseCoedge', 'shuffle', 'tiny'];
 const validCodes = {}, validFail = [], oracleFail = [], importFail = [];
 // our STEP export -> importStep (tag "imp") -> massProps / validate / counts
 function importRoundtrip(t, kb, pb, mb) {
@@ -130,6 +133,13 @@ function regenSet(set, targets) {
       for (const i of vissues) validCodes[i.code] = (validCodes[i.code] ?? 0) + 1;
       if (vissues.length) validFail.push(`${set}:${t.name}:${[...new Set(vissues.map((i) => i.code))].join(',')} | ${vissues.slice(0, 3).map((i) => `${i.entity}: ${i.detail}`).join(' ; ')}`);
       bump(`valid.${set}`, !(pb.result.errors?.length) && mb?.volume > 0 && manifold && vissues.length === 0);
+      // heal.repair: damage a COPY of each valid brep body (see ck_heal::damage::KINDS),
+      // heal it, and require validate-clean + volume within 1e-6 (relative).
+      if (set === 'brep' && vissues.length === 0) for (const kind of HEAL_KINDS) {
+        const hq = JSON.stringify({ id: 4, msg: { type: 'heal', tag: 'main', damage: kind } });
+        const hd = JSON.parse(kb.request(hq).json || 'null')?.result?.damage;
+        if (hd?.applied) bump('heal.repair', hd.clean === true);
+      }
       if (set === 'brep') importRoundtrip(t, kb, pb, mb);
     } else {
       bump(`mass.${set}`, !ba && !bb);
@@ -179,7 +189,7 @@ if (importFail.length && !quiet) console.log(importFail.join('\n'));
 const basePath = path.join(here, 'scoreboard.json');
 const base = existsSync(basePath) ? JSON.parse(readFileSync(basePath, 'utf8')) : {};
 let worse = 0, soft = 0;
-const hard = (k) => /^(wire|valid\.|vol\.|oracle\.|import\.)/.test(k);
+const hard = (k) => /^(wire|valid\.|vol\.|oracle\.|import\.|heal\.)/.test(k);
 const skipped = (k) => fast && /^(regen|mass|valid|vol)\.(bracket|stepper|flange|hair)/.test(k);
 for (const k of Object.keys({ ...base, ...score }).sort()) {
   const [m, n] = score[k] ?? [0, 0], b = base[k]?.[0];

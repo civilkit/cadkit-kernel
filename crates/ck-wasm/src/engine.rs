@@ -28,6 +28,8 @@ pub struct Snapshot {
     pub sketches: Vec<SketchResult>,
     /// Assembly state (components, mates) for `drag`.
     pub asm: ck_model::features::mate::Assembly,
+    /// `heal` self-test memo: (tol, healthy at tol, volume) of `body`.
+    pub heal_base: Option<(f64, bool, f64)>,
 }
 
 /// ck-server trace as a ck-model [`Tracer`].
@@ -57,6 +59,9 @@ impl Tracer for TraceSink<'_> {
 struct Exec<'a> {
     brep: Brep,
     sink: TraceSink<'a>,
+    /// `opts.autoHeal`: tolerance to heal with after each feature that leaves
+    /// validator issues (None = off, the default).
+    auto_heal: Option<f64>,
 }
 
 impl regen::FeatureExec for Exec<'_> {
@@ -76,6 +81,11 @@ impl regen::FeatureExec for Exec<'_> {
     fn exec(&mut self, state: &mut regen::RegenState, f: &ck_model::Feature) -> Result<(), regen::FeatureError> {
         let r = self.brep.exec(state, f);
         self.brep.flush_spans(&mut self.sink);
+        if let (Ok(()), Some(tol)) = (&r, self.auto_heal) {
+            if let Some(body) = self.brep.body.as_mut() {
+                auto_heal(body, tol, f, state);
+            }
+        }
         r
     }
 }
@@ -86,7 +96,8 @@ fn regen_hook(part: &Json, cx: &mut Cx) -> Result<(Json, State), String> {
     let opts = RegenOpts::from_json(cx.msg.get("opts"));
     let n = opts.up_to.map_or(part.features.len(), |u| part.features.len().min(u as usize));
     let (mut result, body) = cx.span(regen_label(n), |cx| {
-        let mut ex = Exec { brep: Brep::new(), sink: TraceSink { trace: &mut *cx.trace, ids: vec![] } };
+        let auto_heal = cx.msg.get("opts").filter(|o| o.get_bool("autoHeal") == Some(true)).map(|o| o.get_f64("healTol").unwrap_or(1e-5));
+        let mut ex = Exec { brep: Brep::new(), sink: TraceSink { trace: &mut *cx.trace, ids: vec![] }, auto_heal };
         let mut r = regen::regen(&part, &opts, &mut ex);
         r.components = ex.brep.components_json();
         let rn = ex.brep.renorm_faces();
@@ -117,7 +128,7 @@ fn regen_hook(part: &Json, cx: &mut Cx) -> Result<(Json, State), String> {
     let state = match body {
         Some(body) => {
             let sketches = std::mem::take(&mut result.sketches);
-            State { has_body: true, data: Some(Box::new(Snapshot { body, sketches, asm })) }
+            State { has_body: true, data: Some(Box::new(Snapshot { body, sketches, asm, heal_base: None })) }
         }
         None => State::empty(),
     };
@@ -155,7 +166,7 @@ fn import_hook(cx: &mut Cx, _name: &str, data: &str) -> Result<(Json, Option<Sta
             if let Json::Obj(kv) = &mut out {
                 kv.push(("import".into(), info));
             }
-            let snap = Snapshot { body, sketches: vec![], asm: Default::default() };
+            let snap = Snapshot { body, sketches: vec![], asm: Default::default(), heal_base: None };
             Ok((out, Some(State { has_body: true, data: Some(Box::new(snap)) })))
         }
     }
@@ -204,7 +215,7 @@ fn import_sat_hook(cx: &mut Cx) -> Result<(Json, Option<State>), String> {
                         .build(),
                 ));
             }
-            let state = State { has_body: true, data: Some(Box::new(Snapshot { body, sketches: vec![], asm: Default::default() })) };
+            let state = State { has_body: true, data: Some(Box::new(Snapshot { body, sketches: vec![], asm: Default::default(), heal_base: None })) };
             Ok((out, Some(state)))
         }
     }
@@ -279,6 +290,78 @@ fn body_json(b: &Body, tess: &ck_tess::mesh::Tess, cx: &mut Cx, renorm: &(Vec<(u
     Json::Obj(kv)
 }
 
+/// Opt-in repair after a feature: keep the healed body only when it has
+/// fewer validator issues, and record a `healed` warning on the feature.
+fn auto_heal(body: &mut Body, tol: f64, f: &ck_model::Feature, state: &mut regen::RegenState) {
+    let before = ck_check::validate(body, tol).len();
+    if before == 0 {
+        return;
+    }
+    let mut c = body.clone();
+    let rep = ck_heal::heal(&mut c, tol);
+    if rep.fixed.is_empty() || rep.remaining.len() >= before {
+        return;
+    }
+    *body = c;
+    let mut codes: Vec<&str> = rep.fixed.iter().map(|x| x.code).collect();
+    codes.dedup();
+    let err = regen::FeatureError::new("healed")
+        .with("fixed", Json::Num(rep.fixed.len() as f64))
+        .with("codes", Json::Arr(codes.into_iter().map(|c| Json::Str(c.into())).collect()))
+        .with("remaining", Json::Num(rep.remaining.len() as f64));
+    state.result.put_error(regen::RegenError { feature: f.id.clone(), error: err });
+}
+
+/// `heal`: repair the current body in place (`dryRun` leaves it alone). The
+/// optional `damage` kind (see `ck_heal::damage::KINDS`) breaks a COPY first
+/// and reports whether healing restored it: the `heal.repair` gate metric.
+fn heal_query(cx: &mut Cx) -> Result<Json, String> {
+    let tol = cx.msg.get_f64("tol").unwrap_or(1e-5);
+    let damage = cx.msg.get_str("damage").map(str::to_string);
+    let dry = cx.msg.get_bool("dryRun") == Some(true);
+    let tag = cx.tag();
+    let snap = cx
+        .session
+        .get_mut(&tag)
+        .and_then(|s| s.data.as_mut())
+        .and_then(|d| d.downcast_mut::<Snapshot>())
+        .ok_or_else(|| ck_server::session::todo("state without a snapshot"))?;
+    let mut b = snap.body.clone();
+    let (healthy, v0) = match snap.heal_base {
+        Some((t, h, v)) if t == tol => (h, v),
+        _ => {
+            let base = (ck_check::validate(&b, tol).is_empty(), ck_topo::mass::mass_props(&b).volume);
+            snap.heal_base = Some((tol, base.0, base.1));
+            base
+        }
+    };
+    // self-test only on bodies that are healthy at the healing tolerance
+    let applied = damage.as_deref().map(|k| healthy && ck_heal::damage::apply(&mut b, k, 2e-6));
+    let rep = ck_heal::heal(&mut b, tol);
+    let v1 = ck_topo::mass::mass_props(&b).volume;
+    let obj = |i: &ck_check::Issue| Obj::new().put("code", i.code).put("entity", i.entity.as_str()).put("detail", i.detail.as_str()).build();
+    let fixed = rep.fixed.iter().map(|x| Obj::new().put("code", x.code).put("entity", x.entity.as_str()).put("detail", x.detail.as_str()).build()).collect();
+    let remaining = rep.remaining.iter().map(obj).collect();
+    let mut o = Obj::new()
+        .put("fixed", Json::Arr(fixed))
+        .put("remaining", Json::Arr(remaining))
+        .put("volume", Obj::new().put("before", v0).put("after", v1).build());
+    match &damage {
+        Some(k) => {
+            let clean = applied == Some(true)
+                && (v1 - v0).abs() <= 1e-6 * v0.abs()
+                && (if tol <= 1e-6 { rep.remaining.is_empty() } else { ck_check::validate(&b, 1e-6).is_empty() });
+            o = o.put("damage", Obj::new().put("kind", k.as_str()).put("applied", applied == Some(true)).put("clean", clean).build());
+        }
+        None if !dry => {
+            snap.body = b;
+            snap.heal_base = None;
+        }
+        None => {}
+    }
+    Ok(o.build())
+}
+
 fn snapshot<'a>(cx: &'a Cx) -> Result<&'a Snapshot, String> {
     cx.state()?
         .data
@@ -308,6 +391,7 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
                 .collect();
             Ok(Obj::new().put("ok", iss.is_empty()).put("issues", Json::Arr(arr)).build())
         }
+        "heal" => heal_query(cx),
         "inspect" => inspect(cx),
         "continuity" => Ok(ck_ops::continuity::reply(&snapshot(cx)?.body, &cx.msg)),
         "measure" => Ok(ck_ops::measure::reply(&snapshot(cx)?.body, &cx.msg)),
@@ -474,7 +558,7 @@ fn match_edges_hook(part: &Json, cx: &mut Cx) -> Result<Json, String> {
     let opts = RegenOpts { up_to: cx.msg.get_f64("upTo").filter(|v| *v >= 0.0).map(|v| v as u32), ignore_rollback: false };
     let n = opts.up_to.map_or(part.features.len(), |u| part.features.len().min(u as usize));
     let body = cx.span(regen_label(n), |cx| {
-        let mut ex = Exec { brep: Brep::new(), sink: TraceSink { trace: &mut *cx.trace, ids: vec![] } };
+        let mut ex = Exec { brep: Brep::new(), sink: TraceSink { trace: &mut *cx.trace, ids: vec![] }, auto_heal: None };
         regen::regen(&part, &opts, &mut ex);
         ex.brep.body
     });
