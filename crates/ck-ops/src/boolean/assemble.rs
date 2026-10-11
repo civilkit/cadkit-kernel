@@ -234,13 +234,6 @@ pub fn fragments(arr: &Arrangement, fi: usize) -> Vec<Fragment> {
         hes.push((e, true));
     }
     let cycles = walk(arr, &af.surface, af.sense, &hes);
-    if std::env::var("SSDBG").is_ok() {
-        eprintln!("DBG frag face {} {} hes {} (bound {} inner {}) cycles {:?}", af.name.id(), af.surface.kind(), hes.len(), af.bound.iter().flatten().count(), inner.len(), cycles.iter().map(|c| c.len()).collect::<Vec<_>>());
-        for (i, c) in cycles.iter().enumerate() {
-            let poly = loop_polygon(&af.surface, &pieces(arr, c));
-            eprintln!("DBG   cycle {} len {} area {:.4} edges {:?}", i, c.len(), poly_area(&poly), c.iter().map(|h| (h.0, h.1 as u8)).collect::<Vec<_>>());
-        }
-    }
     let groups = group(arr, &af.surface, af.sense, cycles);
     let flat: Vec<He> = af.bound.iter().flatten().copied().collect();
     let mut out: Vec<Fragment> = groups
@@ -377,6 +370,18 @@ pub struct OutFace {
     pub walk: Vec<((usize, usize, usize), Vec<Vec<He>>)>,
 }
 
+/// Is arrangement edge `e` the seam (u = 0 / 2π generator) of periodic `s`?
+fn is_seam_edge(arr: &Arrangement, s: &Surface, e: usize) -> bool {
+    let ed = &arr.edges[e];
+    if !matches!(ed.curve, Curve::Line { .. }) || !matches!(s, Surface::Cylinder { .. } | Surface::Cone { .. }) {
+        return false;
+    }
+    [0.25, 0.5, 0.75].iter().all(|&k| {
+        let u = s.closest_param(ed.curve.eval(ed.t0 + (ed.t1 - ed.t0) * k)).0;
+        u.min(TAU - u) < 1e-6
+    })
+}
+
 /// Classify fragments against the other body and select/flip them.
 pub fn select(arr: &Arrangement, bodies: [&Body; 2], op: Op) -> Result<Vec<OutFace>, String> {
     let tol = arr.tol;
@@ -391,9 +396,6 @@ pub fn select(arr: &Arrangement, bodies: [&Body; 2], op: Op) -> Result<Vec<OutFa
             let (q, n) = sample_point(arr, &fr).ok_or_else(|| "booleanFailed".to_string())?;
             let c = solids[1 - side].classify(q, n);
             fr.class = Some(c);
-            if std::env::var("SSDBG").is_ok() {
-                eprintln!("DBG classify face {} loops {:?} q {:?} n {:?} -> {:?}", arr.faces[fi].name.id(), fr.loops.iter().map(|l| l.len()).collect::<Vec<_>>(), q, n, c);
-            }
             if let Some(flip) = keep(op, side, c) {
                 kept.push((fr, flip));
             }
@@ -532,20 +534,32 @@ pub fn select(arr: &Arrangement, bodies: [&Body; 2], op: Op) -> Result<Vec<OutFa
             });
             continue;
         }
-        let mut hes: Vec<He> = vec![];
-        for &m in &members {
-            hes.extend(loops_of(&kept[m].0, kept[m].1).into_iter().flatten());
+        let mut tagged: Vec<(usize, He)> = vec![];
+        for (mi, &m) in members.iter().enumerate() {
+            tagged.extend(loops_of(&kept[m].0, kept[m].1).into_iter().flatten().map(|h| (mi, h)));
         }
-        let all = hes.clone();
-        hes.retain(|&(e, r)| !all.contains(&(e, !r)));
-        let cycles = walk(arr, &af.surface, sense, &hes);
-        if std::env::var("SSDBG").is_ok() {
-            eprintln!("DBG merged {} members {:?} hes {} cycles {:?}", af.name.id(), members.iter().map(|&m| (kept[m].0.af, kept[m].0.loops.iter().map(|l| l.len()).collect::<Vec<_>>())).collect::<Vec<_>>(), hes.len(), cycles.iter().map(|c| c.len()).collect::<Vec<_>>());
-            for c in &cycles {
-                let poly = loop_polygon(&af.surface, &pieces(arr, c));
-                eprintln!("DBG   mcycle area {:.4} {:?}", poly_area(&poly), c.iter().map(|h| (h.0, h.1 as u8)).collect::<Vec<_>>());
+        // shared edges cancel (the fragments fuse across them) - except the
+        // seam of a periodic face once its two sides are already fused: the
+        // seam must stay in a loop to keep the face's uv region simply
+        // connected (a ribbon wrapping a cylinder cut by a helical groove)
+        let same_face = members.iter().all(|&m| kept[m].0.af == kept[lead].0.af);
+        let periodic = af.surface.periods().0.is_some();
+        let mut comp: Vec<usize> = (0..members.len()).collect();
+        let mut cancelled: Vec<usize> = vec![];
+        for &(mi, h) in &tagged {
+            if h.1 {
+                continue;
             }
+            let Some(&(mj, _)) = tagged.iter().find(|x| x.1 == (h.0, true)) else { continue };
+            let (ri, rj) = (find(&mut comp, mi), find(&mut comp, mj));
+            if same_face && periodic && ri == rj && is_seam_edge(arr, &af.surface, h.0) {
+                continue;
+            }
+            comp[ri.max(rj)] = ri.min(rj);
+            cancelled.push(h.0);
         }
+        let hes: Vec<He> = tagged.iter().map(|x| x.1).filter(|h| !cancelled.contains(&h.0)).collect();
+        let cycles = walk(arr, &af.surface, sense, &hes);
         let walk_items: Vec<_> = members
             .iter()
             .map(|&m| {
@@ -554,14 +568,22 @@ pub fn select(arr: &Arrangement, bodies: [&Body; 2], op: Op) -> Result<Vec<OutFa
                 ((g, fr.af, fr.order), fr.loops.clone())
             })
             .collect();
+        // fragments of one periodic face fused across its seam (a ribbon left
+        // by a helical groove) stay that face, listed as a modified face of
+        // its body (oracle: the bore of a nut cut by a thread)
+        let (grp, ord) = if same_face && periodic {
+            (af.side * 2 + 1, members.iter().map(|&m| kept[m].0.order).min().unwrap_or(0))
+        } else {
+            (4, 0)
+        };
         for (k, loops) in group(arr, &af.surface, sense, cycles).into_iter().enumerate() {
             out.push(OutFace {
                 surface: af.surface.clone(),
                 sense,
                 name: af.name.clone(),
                 loops,
-                group: 4,
-                key: (4, kept[lead].0.af, k),
+                group: grp,
+                key: (grp, kept[lead].0.af, ord + k),
                 walk: if k == 0 { walk_items.clone() } else { vec![] },
             });
         }

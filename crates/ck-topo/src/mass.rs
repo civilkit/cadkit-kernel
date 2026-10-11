@@ -164,18 +164,23 @@ pub fn face_integral<const K: usize>(b: &Body, f: FaceId, res: usize, integrand:
     };
     let ustar = first.x;
     let (mut umin, mut umax) = (ustar, ustar);
+    let (mut vmin, mut vmax) = (first.y, first.y);
     for p in &pieces {
         match p {
             Piece::Exact(pc, ta, tb) => {
                 for k in 0..=8 {
-                    let u = pc.eval(ta + (tb - ta) * k as f64 / 8.0).x;
-                    umin = umin.min(u);
-                    umax = umax.max(u);
+                    let q = pc.eval(ta + (tb - ta) * k as f64 / 8.0);
+                    umin = umin.min(q.x);
+                    umax = umax.max(q.x);
+                    vmin = vmin.min(q.y);
+                    vmax = vmax.max(q.y);
                 }
             }
             Piece::Poly(pts) => pts.iter().for_each(|q| {
                 umin = umin.min(q.x);
                 umax = umax.max(q.x);
+                vmin = vmin.min(q.y);
+                vmax = vmax.max(q.y);
             }),
         }
     }
@@ -233,36 +238,126 @@ pub fn face_integral<const K: usize>(b: &Body, f: FaceId, res: usize, integrand:
         }
         g
     };
-    // long multi-knot B-spline faces (screw sweeps): boundary samples along
-    // a constant-v edge would each re-integrate from u*, O(n^2); keep
-    // checkpoints per v and continue from the nearest one
+    // long multi-knot B-spline faces (screw sweeps): the inner integral over
+    // u from u* would cost O(spans) per boundary sample. The integrand is a
+    // low-degree polynomial in v on a span, so keep the cumulative integral
+    // at every u knot for a few v nodes and Lagrange-interpolate in v
     let long_spline = knots_u.len() >= 32;
+    let vtab: Option<(Vec<f64>, Vec<f64>, Vec<Vec<[f64; K]>>)> = match surf {
+        Surface::BSpline(bs) if long_spline && bs.knots_v.windows(2).filter(|w| w[0] < w[1]).count() == 1 => {
+            let ((du0, du1), (dv0, dv1)) = bs.domain();
+            // Chebyshev-Lobatto nodes: exact for the polynomial integrands,
+            // ~1e-12 for the smooth area element |Su x Sv|
+            let nvn = 3 * bs.deg_v + 6;
+            let vn: Vec<f64> = (0..nvn).map(|j| dv0 + (dv1 - dv0) * 0.5 * (1.0 - (std::f64::consts::PI * j as f64 / (nvn - 1) as f64).cos())).collect();
+            let mut ks = vec![du0];
+            ks.extend(knots_u.iter().copied());
+            ks.push(du1);
+            let cum: Vec<Vec<[f64; K]>> = vn
+                .iter()
+                .map(|&v| {
+                    let mut c = vec![[0.0; K]];
+                    for w in ks.windows(2) {
+                        let d = seg_integral(w[0], w[1], v);
+                        let mut g = *c.last().unwrap();
+                        for k in 0..K {
+                            g[k] += d[k];
+                        }
+                        c.push(g);
+                    }
+                    c
+                })
+                .collect();
+            Some((ks, vn, cum))
+        }
+        _ => None,
+    };
+    let h_at = |u: f64, v: f64| -> [f64; K] {
+        let (ks, vn, cum) = vtab.as_ref().unwrap();
+        let k = (ks.partition_point(|&x| x <= u).max(1) - 1).min(ks.len() - 2);
+        let mut g = [0.0; K];
+        for j in 0..vn.len() {
+            let mut w = 1.0;
+            for m in 0..vn.len() {
+                if m != j {
+                    w *= (v - vn[m]) / (vn[j] - vn[m]);
+                }
+            }
+            let part = seg_integral(ks[k], u, vn[j]);
+            for i in 0..K {
+                g[i] += w * (cum[j][k][i] + part[i]);
+            }
+        }
+        g
+    };
+    let period_tab: Option<(Vec<f64>, Vec<[f64; K]>)> = match (surf, surf.periods().0) {
+        (Surface::Cylinder { .. } | Surface::Cone { .. }, Some(per)) if umax - umin > 1.5 * per && vmax > vmin => {
+            let vn: Vec<f64> = (0..6).map(|j| vmin + (vmax - vmin) * j as f64 / 5.0).collect();
+            let tab = vn.iter().map(|&v| seg_integral(ustar, ustar + per, v)).collect();
+            Some((vn, tab))
+        }
+        _ => None,
+    };
+    // (a long face with several v spans: integrals checkpointed per v, the
+    // v of a constant-v edge being equal to rounding)
     let ckpt: std::cell::RefCell<std::collections::HashMap<u64, Vec<(f64, [f64; K])>>> = Default::default();
     let inner = |u: f64, v: f64| -> [f64; K] {
         if u - ustar == 0.0 {
             return [0.0; K];
         }
-        if !long_spline {
-            return seg_integral(ustar, u, v);
+        if long_spline && vtab.is_none() {
+            let v = (v * 1e9).round() / 1e9;
+            let mut map = ckpt.borrow_mut();
+            let list = map.entry(v.to_bits()).or_insert_with(|| vec![(ustar, [0.0; K])]);
+            let idx = list.partition_point(|e| e.0 < u);
+            let cand = [idx.checked_sub(1), (idx < list.len()).then_some(idx)];
+            let best = cand.iter().flatten().copied().min_by(|&x, &y| (list[x].0 - u).abs().partial_cmp(&(list[y].0 - u).abs()).unwrap()).unwrap();
+            let (uc, gc) = list[best];
+            if uc == u {
+                return gc;
+            }
+            let d = seg_integral(uc, u, v);
+            let mut g = gc;
+            for k in 0..K {
+                g[k] += d[k];
+            }
+            list.insert(idx, (u, g));
+            return g;
         }
-        // (edges along a constant-v rail differ in v by rounding noise)
-        let v = (v * 1e9).round() / 1e9;
-        let mut map = ckpt.borrow_mut();
-        let list = map.entry(v.to_bits()).or_insert_with(|| vec![(ustar, [0.0; K])]);
-        let idx = list.partition_point(|e| e.0 < u);
-        let cand = [idx.checked_sub(1), (idx < list.len()).then_some(idx)];
-        let best = cand.iter().flatten().copied().min_by(|&x, &y| (list[x].0 - u).abs().partial_cmp(&(list[y].0 - u).abs()).unwrap()).unwrap();
-        let (uc, gc) = list[best];
-        if uc == u {
-            return gc;
+        if vtab.is_some() {
+            let (a, b) = (h_at(u, v), h_at(ustar, v));
+            let mut g = a;
+            for i in 0..K {
+                g[i] -= b[i];
+            }
+            return g;
         }
-        let d = seg_integral(uc, u, v);
-        let mut g = gc;
-        for k in 0..K {
-            g[k] += d[k];
+        // a face wound many times round its axis (cylinder cut by a
+        // helical groove): whole periods integrate to the same value, a
+        // polynomial in v for cylinders / cones (tabulated at a few nodes)
+        if let (Some(per), Some((vn, tab))) = (surf.periods().0, period_tab.as_ref()) {
+            if (u - ustar).abs() > 1.5 * per {
+                let k = ((u - ustar) / per).trunc();
+                let mut full = [0.0; K];
+                for j in 0..vn.len() {
+                    let mut w = 1.0;
+                    for m in 0..vn.len() {
+                        if m != j {
+                            w *= (v - vn[m]) / (vn[j] - vn[m]);
+                        }
+                    }
+                    for i in 0..K {
+                        full[i] += w * tab[j][i];
+                    }
+                }
+                let mut g = seg_integral(ustar, u - k * per, v);
+                for i in 0..K {
+                    g[i] += k * full[i];
+                }
+                return g;
+            }
         }
-        list.insert(idx, (u, g));
-        g
+        seg_integral(ustar, u, v)
     };
     let mut add = |uv: Vec2, dvdt: f64, wt: f64| {
         if dvdt == 0.0 {

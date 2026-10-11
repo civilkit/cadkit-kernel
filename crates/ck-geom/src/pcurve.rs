@@ -187,9 +187,40 @@ pub fn pcurve_of(surf: &Surface, c: &Curve, t0: f64, t1: f64, tol: f64) -> Resul
     if let Some(p) = exact_pcurve(surf, c, tol) {
         return Ok(p);
     }
-    let n = 32;
+    // sample count: 32, more for a curve winding many times round a
+    // periodic surface (a helix): the unwrap needs < half a turn per step
+    let mut n = 32;
+    if surf.periods().0.is_some() || surf.periods().1.is_some() {
+        let coarse: Vec<Vec3> = (0..=256).map(|i| c.eval(t0 + (t1 - t0) * i as f64 / 256.0)).collect();
+        let len: f64 = coarse.windows(2).map(|w| w[0].dist(w[1])).sum();
+        let rad = match surf {
+            Surface::Cylinder { r, .. } | Surface::Cone { r, .. } | Surface::Sphere { r, .. } => *r,
+            Surface::Torus { major, minor, .. } => major + minor,
+            _ => 1.0,
+        }
+        .max(1e-6);
+        let turns = len / (std::f64::consts::TAU * rad);
+        n = (32 + (16.0 * turns).ceil() as usize).clamp(32, 2048);
+    }
     let pts: Vec<Vec3> = (0..=n).map(|i| c.eval(t0 + (t1 - t0) * i as f64 / n as f64)).collect();
     let uv = project_points(surf, &pts);
+    // a straight, uniformly traversed uv path (a helix on a cylinder, a
+    // screw rail on a sweep face): exact line pcurve
+    if n > 32 || matches!(surf, Surface::BSpline(_)) {
+        let (a, mut b) = (uv[0], uv[n]);
+        // a constant coordinate (a screw rail: v = const) stays exactly constant
+        if (b.x - a.x).abs() < 1e-9 {
+            b.x = a.x;
+        }
+        if (b.y - a.y).abs() < 1e-9 {
+            b.y = a.y;
+        }
+        let d = (b - a) / (t1 - t0);
+        let dev = uv.iter().enumerate().map(|(i, q)| q.dist(a + d * (t1 - t0) * (i as f64 / n as f64))).fold(0.0, f64::max);
+        if dev < 1e-6 {
+            return Ok(Curve2::Line { o: a - d * t0, d });
+        }
+    }
     let u: Vec<f64> = (0..=n).map(|i| i as f64 / n as f64).collect();
     let knots = fit::averaged_knots(&u, 3);
     let b = fit::interpolate_with(&uv, 3, &u, knots).or_else(|_| fit::interpolate(&uv, 3, Param::ChordLength))?;

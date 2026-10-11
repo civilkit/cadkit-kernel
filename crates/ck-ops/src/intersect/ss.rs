@@ -93,13 +93,15 @@ pub fn intersect(s1: &Surface, s2: &Surface, bounds: Option<Bounds>, tol: f64) -
     if let Some(r) = screw_rev(s1, s2, tol).or_else(|| screw_rev(s2, s1, tol)) {
         return r;
     }
+    if let Some(b) = bounds {
+        if let Some(r) = long_spline_implicit(s1, s2, b, tol).or_else(|| long_spline_implicit(s2, s1, b, tol)) {
+            return r;
+        }
+    }
     match bounds {
         Some(b) => {
             let step = ((b.hi - b.lo).len() / 64.0).max(tol * 100.0);
-            let t_dbg = std::time::Instant::now();
-            if std::env::var("SSDBG").is_ok() { eprintln!("DBG start march {} x {} box {:?} {:?}", s1.kind(), s2.kind(), b.lo, b.hi); }
             let cs = march(s1, s2, b, tol, step);
-            if std::env::var("SSDBG").is_ok() { eprintln!("DBG march {} x {} -> {} in {:?}", s1.kind(), s2.kind(), cs.len(), t_dbg.elapsed()); }
             if cs.is_empty() {
                 SsResult::Disjoint
             } else {
@@ -647,6 +649,218 @@ fn screw_rev(sp: &Surface, rev: &Surface, tol: f64) -> Option<SsResult> {
             }
             i = j + 1;
         }
+    }
+    Some(if out.is_empty() { SsResult::Disjoint } else { SsResult::Curves(out) })
+}
+
+
+// ------------------------------------------- long ruled spline x quadric
+
+/// Implicit function of an analytic surface (zero set = the surface).
+fn implicit(s: &Surface) -> Option<Box<dyn Fn(Vec3) -> f64>> {
+    Some(match s.clone() {
+        Surface::Plane { frame } => Box::new(move |p| (p - frame.o).dot(frame.z)),
+        Surface::Cylinder { frame, r } => Box::new(move |p| {
+            let d = p - frame.o;
+            (d - frame.z * d.dot(frame.z)).len() - r
+        }),
+        Surface::Cone { frame, r, semi_angle } => {
+            let k = semi_angle.tan();
+            Box::new(move |p| {
+                let d = p - frame.o;
+                let h = d.dot(frame.z);
+                (d - frame.z * h).len() - (r + k * h)
+            })
+        }
+        Surface::Sphere { frame, r } => Box::new(move |p| (p - frame.o).len() - r),
+        Surface::Torus { frame, major, minor } => Box::new(move |p| {
+            let d = p - frame.o;
+            let h = d.dot(frame.z);
+            let rho = (d - frame.z * h).len();
+            ((rho - major).powi(2) + h * h).sqrt() - minor
+        }),
+        _ => return None,
+    })
+}
+
+/// A long (many u-spans) non-rational B-spline surface that is linear in v
+/// (a screw / ruled sweep face) against an analytic surface: the lines
+/// `v -> S(u, v)` meet the quadric in 0-2 points, tracked along u inside
+/// `b` only. Replaces marching, whose closest-point corrector costs
+/// O(spans) per step. `None` = not such a pair.
+fn long_spline_implicit(sp: &Surface, other: &Surface, b: Bounds, tol: f64) -> Option<SsResult> {
+    let Surface::BSpline(bs) = sp else { return None };
+    if bs.weights.is_some() || bs.deg_v != 1 || bs.nv != 2 {
+        return None;
+    }
+    let f = implicit(other)?;
+    let spans: Vec<usize> = (bs.deg_u..bs.nu).filter(|&s| bs.knots_u[s] < bs.knots_u[s + 1]).collect();
+    if spans.len() < 32 {
+        return None;
+    }
+    let ((_, _), (v0, v1)) = bs.domain();
+    let pad = tol.max(1e-9) * 10.0;
+    // spans whose control-net box meets the bounds
+    let hit: Vec<bool> = spans
+        .iter()
+        .map(|&s| {
+            let (mut lo, mut hi) = (Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY), Vec3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY));
+            for i in s - bs.deg_u..=s {
+                for j in 0..2 {
+                    let c = bs.cp(i, j);
+                    lo = lo.min(c);
+                    hi = hi.max(c);
+                }
+            }
+            lo.x <= b.hi.x + pad && hi.x >= b.lo.x - pad && lo.y <= b.hi.y + pad && hi.y >= b.lo.y - pad && lo.z <= b.hi.z + pad && hi.z >= b.lo.z - pad
+        })
+        .collect();
+    let point = |u: f64, t: f64| bs.eval(u, v0 + (v1 - v0) * t);
+    // roots t in [0, 1] of f(S(u, t))
+    let roots_at = |u: f64| -> Vec<f64> {
+        let nt = 8usize;
+        let g = |t: f64| f(point(u, t));
+        let ts: Vec<f64> = (0..=nt).map(|j| j as f64 / nt as f64).collect();
+        let gs: Vec<f64> = ts.iter().map(|&t| g(t)).collect();
+        let mut out = vec![];
+        for j in 0..nt {
+            if gs[j] == 0.0 {
+                out.push(ts[j]);
+            } else if gs[j] * gs[j + 1] < 0.0 {
+                let (mut a, mut c) = (ts[j], ts[j + 1]);
+                let ga = gs[j];
+                for _ in 0..50 {
+                    let m = 0.5 * (a + c);
+                    if g(m) * ga > 0.0 {
+                        a = m;
+                    } else {
+                        c = m;
+                    }
+                }
+                out.push(0.5 * (a + c));
+            }
+        }
+        if gs[nt] == 0.0 {
+            out.push(1.0);
+        }
+        out
+    };
+    let per_span = 4usize;
+    let mut out: Vec<SsCurve> = vec![];
+    let mut i = 0;
+    while i < spans.len() {
+        if !hit[i] {
+            i += 1;
+            continue;
+        }
+        let mut j = i;
+        while j + 1 < spans.len() && hit[j + 1] {
+            j += 1;
+        }
+        // run of spans i..=j (extended by one on each side)
+        let (ia, ib) = (i.saturating_sub(1), (j + 1).min(spans.len() - 1));
+        let mut tracks: Vec<Vec<(f64, f64)>> = vec![];
+        let mut active: Vec<usize> = vec![];
+        let mut finish = |tr: Vec<(f64, f64)>, out: &mut Vec<SsCurve>| {
+            if tr.len() < 2 {
+                return;
+            }
+            let mut pts: Vec<Vec3> = tr.iter().map(|&(u, t)| point(u, t)).collect();
+            pts.dedup_by(|a, c| a.dist(*c) < 1e-9);
+            if pts.len() < 2 {
+                return;
+            }
+            if pts.len() > 400 {
+                let n = pts.len();
+                pts = (0..400).map(|k| pts[(k * (n - 1)) / 399]).collect();
+            }
+            if let Ok(c) = interpolate(&pts, 3.min(pts.len() - 1), Param::ChordLength) {
+                out.push(SsCurve::Fitted { pts, curve: Curve::BSpline(c), closed: false });
+            }
+        };
+        let mut prev_u: Option<f64> = None;
+        for si in ia..=ib {
+            let s = spans[si];
+            let (ua, ub) = (bs.knots_u[s], bs.knots_u[s + 1]);
+            for k in 0..=per_span {
+                if si > ia && k == 0 {
+                    continue;
+                }
+                let u = ua + (ub - ua) * k as f64 / per_span as f64;
+                let rs = roots_at(u);
+                // match roots to active tracks by nearest t
+                let mut used = vec![false; rs.len()];
+                let mut still: Vec<usize> = vec![];
+                for &ti in &active {
+                    let last = tracks[ti].last().unwrap().1;
+                    let best = rs.iter().enumerate().filter(|(q, _)| !used[*q]).min_by(|a, c| (a.1 - last).abs().partial_cmp(&(c.1 - last).abs()).unwrap());
+                    match best {
+                        Some((q, &t)) if (t - last).abs() < 0.2 => {
+                            used[q] = true;
+                            tracks[ti].push((u, t));
+                            still.push(ti);
+                        }
+                        _ => {
+                            // the root left [0, 1] between prev_u and u: end exactly at the boundary
+                            if let Some(pu) = prev_u {
+                                let edge_t = if last < 0.5 { 0.0 } else { 1.0 };
+                                let g = |uu: f64| f(point(uu, edge_t));
+                                let (mut a, mut c) = (pu, u);
+                                let ga = g(a);
+                                if ga * g(c) < 0.0 {
+                                    for _ in 0..50 {
+                                        let m = 0.5 * (a + c);
+                                        if g(m) * ga > 0.0 {
+                                            a = m;
+                                        } else {
+                                            c = m;
+                                        }
+                                    }
+                                    tracks[ti].push((0.5 * (a + c), edge_t));
+                                }
+                            }
+                            let tr = std::mem::take(&mut tracks[ti]);
+                            finish(tr, &mut out);
+                        }
+                    }
+                }
+                active = still;
+                for (q, &t) in rs.iter().enumerate() {
+                    if !used[q] {
+                        let mut tr = vec![];
+                        // started between prev_u and u: begin exactly at the boundary
+                        if let Some(pu) = prev_u {
+                            if t < 0.05 || t > 0.95 {
+                                let edge_t = if t < 0.5 { 0.0 } else { 1.0 };
+                                let g = |uu: f64| f(point(uu, edge_t));
+                                let (mut a, mut c) = (pu, u);
+                                let ga = g(a);
+                                if ga * g(c) < 0.0 {
+                                    for _ in 0..50 {
+                                        let m = 0.5 * (a + c);
+                                        if g(m) * ga > 0.0 {
+                                            a = m;
+                                        } else {
+                                            c = m;
+                                        }
+                                    }
+                                    tr.push((0.5 * (a + c), edge_t));
+                                }
+                            }
+                        }
+                        tr.push((u, t));
+                        tracks.push(tr);
+                        active.push(tracks.len() - 1);
+                    }
+                }
+                prev_u = Some(u);
+            }
+        }
+        for ti in active {
+            let tr = std::mem::take(&mut tracks[ti]);
+            finish(tr, &mut out);
+        }
+        i = j + 1;
     }
     Some(if out.is_empty() { SsResult::Disjoint } else { SsResult::Curves(out) })
 }

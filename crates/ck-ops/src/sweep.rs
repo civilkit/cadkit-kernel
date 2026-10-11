@@ -563,6 +563,17 @@ mod tests {
         eprintln!("cut {:?} in {:?}", r.as_ref().map(|o| o.body.num_faces()), t.elapsed());
         if let Ok(o) = r {
             eprintln!("issues {:?}", check(&o.body, 1e-6));
+            let (v0, v1) = (ck_topo::mass::mass_props(&shank).volume, ck_topo::mass::mass_props(&o.body).volume);
+            let mut tot = ck_geom::Vec3::ZERO;
+            for f in o.body.face_ids() {
+                let a = ck_topo::mass::face_integral::<3>(&o.body, f, 1, &|_, n| [n.x, n.y, n.z]);
+                let ar = ck_topo::mass::face_integral::<1>(&o.body, f, 1, &|_, n| [n.len()])[0];
+                let v = ck_geom::Vec3::new(a[0], a[1], a[2]);
+                tot = tot + v;
+                eprintln!("face {} {} area {:.4} vecarea {:?}", o.body.face_id_str(f), o.body.face(f).surface.kind(), ar, v);
+            }
+            eprintln!("sum vecarea {:?}", tot);
+            eprintln!("volume {v0:.4} -> {v1:.4} (removed {:.4}); tool {:.4}", v0 - v1, ck_topo::mass::mass_props(&tool).volume);
         }
     }
 

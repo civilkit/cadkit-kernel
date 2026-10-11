@@ -43,14 +43,10 @@ pub fn boolean(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> 
     }
     // (results keep the caller's bodies for the no-effect returns)
     let (a0, b0) = (a, b);
-    let dbg = std::env::var("SSDBG").is_ok();
-    let t_dbg = std::time::Instant::now();
     let a1 = relocate_seams(a0, b0, dropped(op, 0), tol);
     let b1 = relocate_seams(b0, a0, dropped(op, 1), tol);
     let (a, b) = (&a1, &b1);
-    if dbg { eprintln!("DBG relocate {:?}", t_dbg.elapsed()); }
     let arr = imprint(a, b, tol);
-    if dbg { eprintln!("DBG imprint {:?} pairs {}", t_dbg.elapsed(), arr.interacting_pairs); }
     if arr.interacting_pairs == 0 {
         // no face interaction: containment decides
         let pa = first_point(a);
@@ -64,7 +60,6 @@ pub fn boolean(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> 
         }
     }
     let faces = select(&arr, [a, b], op)?;
-    if dbg { eprintln!("DBG select {:?} -> {} faces", t_dbg.elapsed(), faces.len()); }
     // nothing removed from A and nothing added from B → unchanged
     let a_faces = a.num_faces();
     // (a face split by an imprint and rejoined is listed with the merged
@@ -75,22 +70,7 @@ pub fn boolean(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> 
         return Ok(BoolOut { body: a0.clone(), no_effect: true });
     }
     let body = build(&arr, &faces);
-    if dbg { eprintln!("DBG build {:?}", t_dbg.elapsed()); }
     let issues = check(&body, tol);
-    if dbg {
-        eprintln!("DBG issues {}", issues.len());
-        for f in body.face_ids() {
-            eprintln!("DBG face {} {} loops {:?}", body.face_id_str(f), body.face(f).surface.kind(), body.face(f).loops.iter().map(|&l| body.lp(l).coedges.len()).collect::<Vec<_>>());
-        }
-        for e in body.edge_ids() {
-            let ed = body.edge(e);
-            let fs: Vec<_> = body.edge_faces(e).iter().map(|&f| body.face_id_str(f)).collect();
-            let kind = match &ed.curve { ck_geom::curve::Curve::Line { .. } => "line", ck_geom::curve::Curve::Circle { .. } => "circle", ck_geom::curve::Curve::BSpline(_) => "bspline", _ => "other" };
-            if body.edge_coedges(e).len() != 2 {
-                eprintln!("DBG edge e{} {} t[{:.3},{:.3}] {:?} -> {:?} faces {:?} coedges {}", e.idx(), kind, ed.t0, ed.t1, body.vertex(ed.v0).p, body.vertex(ed.v1).p, fs, body.edge_coedges(e).len());
-            }
-        }
-    }
     let bad = issues
         .into_iter()
         .any(|i| matches!(i, Issue::OpenEdge(_) | Issue::NonManifoldEdge(..) | Issue::BrokenLoop(..) | Issue::BadPairing(_)));

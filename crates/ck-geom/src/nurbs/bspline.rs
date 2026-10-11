@@ -437,19 +437,24 @@ impl<P: Pt> BSplineCurve<P> {
                     ((q.dist(c) - r).max(0.0), s)
                 })
                 .collect();
-            cells.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap());
             let m = (p + 1) * 4;
-            for (lb, s) in cells {
-                if lb >= best.0 {
-                    break;
-                }
+            let sample = |s: usize, best: &mut (f64, f64)| {
                 let (k0, k1) = (self.knots[s].max(a), self.knots[s + 1].min(b));
                 for j in 0..=m {
                     let u = k0 + (k1 - k0) * j as f64 / m as f64;
                     let d = self.eval(u).dist(q);
                     if d < best.0 {
-                        best = (d, u);
+                        *best = (d, u);
                     }
+                }
+            };
+            // seed with the nearest cell, then every cell that can still beat it
+            if let Some(&(_, s0)) = cells.iter().min_by(|x, y| x.0.partial_cmp(&y.0).unwrap()) {
+                sample(s0, &mut best);
+            }
+            for (lb, s) in cells {
+                if lb < best.0 {
+                    sample(s, &mut best);
                 }
             }
             return newton_closest(|u| self.derivs(u, 2), q, best.1, a, b);

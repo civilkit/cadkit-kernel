@@ -417,18 +417,28 @@ pub fn general(c1: &Curve, r1: (f64, f64), c2: &Curve, r2: (f64, f64), tol: f64)
             i += 1;
         }
     }
-    // segment pairs closer than their chord lengths
+    // segment pairs closer than their chord lengths (long splines, whose
+    // chords run side by side: closer than the chord sags suffices - a
+    // crossing of the curves puts the two chords within the sum of the sags)
+    let long_pair = n1 >= 200 || n2 >= 200;
+    let sag1 = (0..n1).map(|i| c1.eval(0.5 * (t1s[i] + t1s[i + 1])).dist((p1[i] + p1[i + 1]) * 0.5)).fold(0.0f64, f64::max);
     for i in 0..n1 {
         let (a0, a1) = (p1[i], p1[i + 1]);
         for j in 0..n2 {
             let (b0, b1) = (p2[j], p2[j + 1]);
             let (s, t, d) = seg_seg(a0, a1, b0, b1);
-            let reach = 0.5 * (a0.dist(a1) + b0.dist(b1)) + tol;
+            let reach = if long_pair { 1.5 * (sag1 + sag2) + 4.0 * tol } else { 0.5 * (a0.dist(a1) + b0.dist(b1)) + tol };
             if d > reach {
                 continue;
             }
             let ta = t1s[i] + (t1s[i + 1] - t1s[i]) * s;
             let tb = t2s[j] + (t2s[j + 1] - t2s[j]) * t;
+            // neighbouring segment pairs report the same crossing (long
+            // splines running side by side): skip a hit already found
+            let (d1, d2) = ((t1s[i + 1] - t1s[i]).abs(), (t2s[j + 1] - t2s[j]).abs());
+            if out.hits.iter().any(|h| (h.t1 - ta).abs() <= d1 && (h.t2 - tb).abs() <= d2) {
+                continue;
+            }
             if let Some((x, y)) = newton2(c1, c2, ta, tb, r1, r2) {
                 if c1.eval(x).dist(c2.eval(y)) <= tol {
                     if out.overlaps.iter().any(|o| x >= o.a.0 - 1e-9 && x <= o.a.1 + 1e-9) {

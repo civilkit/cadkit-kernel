@@ -193,20 +193,5 @@ pub fn exec_sweep(br: &Brep, state: &RegenState, f: &Feature) -> Result<Tool, Fe
     // `twist` is in degrees (f626: twist * pi / 180)
     let twist = state.num(f, "twist", 0.0)?.to_radians();
     let body = ck_ops::sweep::sweep(&f.id, &profile, &segs, twist).map_err(|e| FeatureError::new(&e))?;
-    // Guard: ck-ops booleans cannot yet assemble a cut against the spline
-    // faces of a screw sweep. Probe (ck_ops::sweep::tests::cut_timing, a
-    // trapezoid groove swept 0.25 turn into a bored tube): the SSI curves and
-    // the cut-plane arcs are all found (rails are within 3e-7 of the screw),
-    // but the plane face z=0 of the tube is not re-looped around the groove
-    // opening: the fragment inside the opening is kept (open edge on the
-    // bore arc) and the face splits `C0~1` / `C0~2` -> booleanFailed. On a
-    // 7-19 turn tool the marching also takes minutes. Fail fast with a TODO
-    // code (the pre-sweep behaviour) until that is fixed in ck-ops/boolean.
-    if SPLINE_TOOL_NEEDS_BOOLEAN && br.body.is_some() && body.face_ids().any(|f| matches!(body.face(f).surface, ck_geom::surface::Surface::BSpline(_))) {
-        return Err(FeatureError::new(&todo("boolean with a swept spline (screw) tool")));
-    }
     Ok(Tool { body, combine, recipe: None })
 }
-
-/// Set to `false` once ck-ops booleans handle helical spline tools.
-const SPLINE_TOOL_NEEDS_BOOLEAN: bool = false;
