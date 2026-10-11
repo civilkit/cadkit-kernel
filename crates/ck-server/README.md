@@ -35,6 +35,8 @@ pinned by app.pretty.js + oracle goldens. Error paths produce
   (`node tools/diff.mjs`, tests-golden/wire.json).
 - Geometry plugs in via `ck_server::set_hooks(Hooks{regen, query, ...})`;
   without hooks, body-bearing paths return `TODO(rebuild): ...` errors.
+  ck-wasm `engine.rs` installs the hooks for every body-bearing request
+  except `drawing` (see crates/ck-wasm/README.md).
 - Deps trimmed to ck-json only (hooks decouple it from ck-model).
 
 ## Rebuild notes

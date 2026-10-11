@@ -134,6 +134,25 @@ pub fn knit(bodies: &[Body], solid: bool, tol: f64) -> Result<Body, KnitError> {
     for src in bodies {
         let lump = b.add_lump();
         let shell = b.add_shell(lump);
+        // pinned (oracle knit probes): the result keeps each source's edge
+        // order (rails, then per segment its edges), a later body's
+        // coincident edges merge into the earlier ones -> copy the edges
+        // first, in source order, then the faces
+        let src_id = src as *const _ as usize;
+        let used: std::collections::HashSet<EdgeId> = src
+            .face_ids()
+            .flat_map(|f| src.face_edges(f))
+            .filter(|&e| src.edge(e).alive)
+            .collect();
+        for e in src.edge_ids().collect::<Vec<_>>() {
+            if !used.contains(&e) {
+                continue;
+            }
+            let ed = src.edge(e);
+            let v0 = *vmap.entry((src_id, ed.v0)).or_insert_with(|| b.add_vertex(src.vertex(ed.v0).p));
+            let v1 = *vmap.entry((src_id, ed.v1)).or_insert_with(|| b.add_vertex(src.vertex(ed.v1).p));
+            emap.entry((src_id, e)).or_insert_with(|| b.add_edge(ed.curve.clone(), ed.t0, ed.t1, v0, v1));
+        }
         for f in src.face_ids().collect::<Vec<_>>() {
             faces.push(copy_face(&mut b, shell, src, f, &mut vmap, &mut emap));
         }
@@ -192,6 +211,7 @@ pub fn knit(bodies: &[Body], solid: bool, tol: f64) -> Result<Body, KnitError> {
 
     reloop(&mut b);
     assign_shells(&mut b);
+    orient_consistent(&mut b);
 
     let bl = super::boundary::open_boundaries(&b, &b.face_ids().collect::<Vec<_>>());
     // Every boundary loop is an aperture of the shell (open sheets have
@@ -205,6 +225,52 @@ pub fn knit(bodies: &[Body], solid: bool, tol: f64) -> Result<Body, KnitError> {
         ));
     }
     Ok(b)
+}
+
+/// Pinned (oracle: knit of a tube + planar cap flips the cap): faces are
+/// re-oriented from the first face so that every manifold edge is
+/// traversed oppositely by its two coedges; a CLOSED result is made
+/// outward (GUESS: positive signed volume).
+fn orient_consistent(b: &mut Body) {
+    use ck_topo::orient::flip_face;
+    let faces: Vec<FaceId> = b.face_ids().collect();
+    let mut seen = vec![false; b.faces.len()];
+    for &seed in &faces {
+        if seen[seed.idx()] {
+            continue;
+        }
+        seen[seed.idx()] = true;
+        let mut stack = vec![seed];
+        while let Some(f) = stack.pop() {
+            for e in b.face_edges(f) {
+                let cs: Vec<CoedgeId> = b.edge_coedges(e).into_iter().filter(|&c| b.coedge(c).alive).collect();
+                if cs.len() != 2 {
+                    continue;
+                }
+                let (c0, c1) = (cs[0], cs[1]);
+                let (f0, f1) = (b.coedge_face(c0), b.coedge_face(c1));
+                if f0 == f1 {
+                    continue;
+                }
+                let other = if f0 == f { f1 } else { f0 };
+                if seen[other.idx()] {
+                    continue;
+                }
+                if b.coedge(c0).rev == b.coedge(c1).rev {
+                    flip_face(b, other);
+                }
+                seen[other.idx()] = true;
+                stack.push(other);
+            }
+        }
+    }
+    let closed = !faces.is_empty()
+        && b.edge_ids().all(|e| b.edge_coedges(e).iter().filter(|&&c| b.coedge(c).alive).count() == 2);
+    if closed && ck_topo::mass::signed_volume(b, &faces) < 0.0 {
+        for &f in &faces {
+            flip_face(b, f);
+        }
+    }
 }
 
 fn mid_point(b: &Body, e: EdgeId) -> ck_geom::Vec3 {

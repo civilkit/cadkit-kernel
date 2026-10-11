@@ -428,7 +428,7 @@ fn face_geo(b: &Body, id: &str) -> Option<Geo> {
 /// (`flip` -> aligned) + point on plane; distance = the same at `d`;
 /// parallel = the direction record only; concentric = axis directions
 /// aligned with the sign of their current dot + point on axis).
-fn mate_recs(b: &Body, m: &MateRec) -> Result<Vec<Rec>, FeatureError> {
+pub fn mate_recs(b: &Body, m: &MateRec) -> Result<Vec<Rec>, FeatureError> {
     use super::MateKind as K;
     let geo = |id: &str| face_geo(b, id).ok_or_else(|| FeatureError::new(MATE_GEOMETRY));
     let (gm, gt) = (geo(&m.moving)?, geo(&m.target)?);
@@ -511,7 +511,7 @@ fn edge_box(e: &ck_topo::body::Edge) -> (Vec3, Vec3) {
 /// 22.912880002304444 = half the diagonal grown by 1e-6 per side. GUESS:
 /// the surface-box part is skipped (it lies inside the edge boxes for the
 /// planar / cylindrical faces of the samples).
-fn comp_box(b: &Body, r: &Span3) -> Option<(Vec3, Vec3)> {
+pub fn comp_box(b: &Body, r: &Span3) -> Option<(Vec3, Vec3)> {
     let mut lo = Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
     let mut hi = -lo;
     let tol = 1e-6;
@@ -532,7 +532,7 @@ fn comp_box(b: &Body, r: &Span3) -> Option<(Vec3, Vec3)> {
 }
 
 impl Assembly {
-    fn recs_for(&self, b: &Body, k: usize) -> Result<Vec<Rec>, FeatureError> {
+    pub fn recs_for(&self, b: &Body, k: usize) -> Result<Vec<Rec>, FeatureError> {
         let mut out = vec![];
         for m in self.mates.iter().filter(|m| m.mover == k) {
             out.extend(mate_recs(b, m)?);
