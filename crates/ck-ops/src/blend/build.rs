@@ -110,37 +110,68 @@ pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featu
             })
             .collect::<Result<_, BlendError>>()?;
         let n = edges.len();
-        let pos = chain_positions(&ends);
-        let conflict = |i: usize, j: usize| match spec {
-            Spec::Chamfer(_) => ends[i].iter().any(|v| ends[j].contains(v)),
-            // GUESS: fillets would defer an edge that precedes an earlier one
-            // in its chain (pairs then match the oracle's face order) but
-            // the numbering of 3+ edge selections stops matching, so
-            // fillets stay one op: `pos[i].0 == pos[j].0 && ends[i][1] == ends[j][0] && j < i && pos[j].1 > pos[i].1`
-            Spec::Fillet(_) => false && pos[i].0 == pos[j].0 && ends[i][1] == ends[j][0] && j < i && pos[j].1 > pos[i].1,
+        let rounds: Vec<Vec<usize>> = match spec {
+            Spec::Chamfer(_) => {
+                let mut done = vec![false; n];
+                let mut rounds = vec![];
+                while done.iter().any(|d| !d) {
+                    // an edge joins the round unless it shares a vertex with an
+                    // edge in it or with an earlier-selected deferred edge
+                    let mut round: Vec<usize> = vec![];
+                    let mut blocked: Vec<usize> = vec![];
+                    for i in 0..n {
+                        if done[i] {
+                            continue;
+                        }
+                        if blocked.iter().any(|&j| ends[i].iter().any(|v| ends[j].contains(v))) {
+                            blocked.push(i);
+                        } else {
+                            round.push(i);
+                            blocked.push(i);
+                        }
+                    }
+                    for &i in &round {
+                        done[i] = true;
+                    }
+                    rounds.push(round);
+                }
+                rounds
+            }
+            Spec::Fillet(_) => {
+                // consecutive groups of the selection: an edge joins the
+                // current group when it is not in the group's chain, or lies
+                // after (v1 -> v0 links; positions relative to the chain's
+                // first selected edge) at least one member of it
+                let pos = chain_positions(&ends);
+                let mut rounds: Vec<Vec<usize>> = vec![];
+                let mut cur: Vec<usize> = vec![];
+                for i in 0..n {
+                    let same: Vec<i64> = cur.iter().filter(|&&j| pos[j].0 == pos[i].0).map(|&j| pos[j].1).collect();
+                    if cur.is_empty() || same.is_empty() || pos[i].1 > *same.iter().min().unwrap() {
+                        cur.push(i);
+                    } else {
+                        rounds.push(std::mem::take(&mut cur));
+                        cur.push(i);
+                    }
+                }
+                rounds.push(cur);
+                rounds
+            }
         };
-        let mut done = vec![false; n];
         let mut out = b.clone();
-        while done.iter().any(|d| !d) {
-            let mut round: Vec<usize> = vec![];
-            let mut blocked: Vec<usize> = vec![];
-            for i in 0..n {
-                if done[i] {
-                    continue;
-                }
-                if blocked.iter().any(|&j| conflict(i, j)) {
-                    blocked.push(i);
-                } else {
-                    round.push(i);
-                    blocked.push(i);
-                }
-            }
-            for &i in &round {
-                done[i] = true;
-            }
+        let mut earlier: Vec<String> = vec![];
+        for round in rounds {
             let idx: Vec<u32> = round.iter().map(|&i| i as u32).collect();
             let sel: Vec<(String, String, Vec3)> = round.iter().map(|&i| fwd[i].clone()).collect();
-            let (raw, round_refs) = blend_edges_at(&out, &sel, spec, feature, tol, &idx)?;
+            let (raw, round_refs, touched) = blend_edges_at(&out, &sel, spec, feature, tol, &idx, &earlier)?;
+            if std::env::var_os("CK_BLEND_DEBUG").is_some() {
+                eprintln!("round {:?}: touched {:?} -> faces {:?}", round, touched, raw.face_ids().map(|f| raw.face_id_str(f)).collect::<Vec<_>>());
+            }
+            for t in touched {
+                if !earlier.contains(&t) {
+                    earlier.push(t);
+                }
+            }
             if matches!(spec, Spec::Chamfer(_)) {
                 // chamfers number their edges round by round
                 out = in_place_layout(&out, &raw, &round_refs, tol);
@@ -161,7 +192,7 @@ pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featu
         return Ok(out);
     }
     let idx: Vec<u32> = (0..edges.len() as u32).collect();
-    let (raw, refs) = blend_edges_at(b, edges, spec, feature, tol, &idx)?;
+    let (raw, refs, _) = blend_edges_at(b, edges, spec, feature, tol, &idx, &[])?;
     Ok(in_place_layout(b, &raw, &refs, tol))
 }
 
@@ -197,7 +228,15 @@ fn chain_positions(ends: &[[usize; 2]]) -> Vec<(usize, i64)> {
 }
 
 /// One blend op over `edges`; `idx[k]` is the blend number (`B<idx>`) of edge k.
-fn blend_edges_at(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, feature: &str, tol: f64, idx: &[u32]) -> Result<(Body, Vec<BlendRef>), BlendError> {
+fn blend_edges_at(
+    b: &Body,
+    edges: &[(String, String, Vec3)],
+    spec: Spec,
+    feature: &str,
+    tol: f64,
+    idx: &[u32],
+    skip_end: &[String],
+) -> Result<(Body, Vec<BlendRef>, Vec<String>), BlendError> {
     let edges: Vec<(String, String, Vec3)> = edges.iter().map(|(fa, fb, at)| forward_first(b, fa, fb, *at)).collect();
     // blend references on the INPUT body (for the in-place numbering)
     let mut refs: Vec<BlendRef> = vec![];
@@ -229,6 +268,10 @@ fn blend_edges_at(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featur
             if n >= 2 && junction_faces.iter().any(|f| **f == h) {
                 continue;
             }
+            // fillets: an end face an earlier round already touched stays put
+            if n >= 2 && matches!(spec, Spec::Fillet(_)) && skip_end.contains(&h) {
+                continue;
+            }
             if !touched.contains(&h) {
                 touched.push(h);
             }
@@ -240,7 +283,7 @@ fn blend_edges_at(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featur
         n.feature == feature && matches!(n.role, Role::Blend(_))
     });
     if edges.len() == 1 && !earlier_blends {
-        return Ok((out, refs));
+        return Ok((out, refs, touched));
     }
     // a face whose whole boundary is blended (the top of a filleted ring)
     // is rebuilt rather than trimmed: oracle order puts it after the other
@@ -273,13 +316,16 @@ fn blend_edges_at(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featur
         }
         match touched.iter().position(|t| base(t) == base(&name.id())) {
             Some(p) => (1, p),
-            None => (0, 0),
+            // untouched faces keep the INPUT body's order (a face the cut
+            // modified but the oracle did not count as touched sits at its
+            // old place)
+            None => (0, b.face_ids().position(|g| base(&b.face_id_str(g)) == base(&name.id())).unwrap_or(usize::MAX)),
         }
     };
     let mut order: Vec<FaceId> = out.face_ids().collect();
     order.sort_by_key(|&f| rank(f)); // stable: keeps relative order within ties
     let out = crate::boolean::assemble::rebuild_in_order(&out, &order);
-    Ok((out, refs))
+    Ok((out, refs, touched))
 }
 
 /// `(fa, fb)` with the face whose coedge runs the selected edge forward
@@ -374,19 +420,40 @@ pub fn in_place_layout_opts(input: &Body, out: &Body, refs: &[BlendRef], tol: f6
         }
     }
     // 2. trimmed edges, split in parameter order
-    // Oracle (box fillet chains): every junction of two blends (selected
-    // edges meeting at a vertex) leaves two dead slots right after the
-    // input's.
-    let mut junctions = 0;
-    for i in 0..refs.len() {
-        for j in i + 1..refs.len() {
-            if refs[i].ends.iter().any(|&p| refs[j].ends.iter().any(|&q| p.dist(q) <= tol * 10.0)) {
-                junctions += 1;
+    // Oracle (box fillet chains): the new slots follow the touched input
+    // edges in ascending slot order; a selected edge uses one slot per end
+    // it shares with another selected edge (a junction), a trimmed
+    // neighbour one per window it opens (a rail trimmed at one end: one, an
+    // edge trimmed at both ends: two).
+    let near_pt = |p: Vec3, q: Vec3| p.dist(q) <= tol * 10.0;
+    let junction_ends = |k: usize| -> usize {
+        (0..2)
+            .filter(|&e| (0..refs.len()).any(|j| j != k && refs[j].ends.iter().any(|&q| near_pt(refs[k].ends[e], q))))
+            .count()
+    };
+    let mut sel_cost: Vec<usize> = vec![0; in_slots.len()];
+    for (k, r) in refs.iter().enumerate() {
+        let mut want = r.faces.to_vec();
+        want.sort();
+        for (i, (_, ich)) in in_slots.iter().enumerate() {
+            let (a, b2) = ends(input, ich);
+            if names(input, ich[0]) == want
+                && ((near(a, r.ends[0]) && near(b2, r.ends[1])) || (near(a, r.ends[1]) && near(b2, r.ends[0])))
+            {
+                sel_cost[i] = junction_ends(k);
+                break;
             }
         }
     }
-    let mut next = n_in + opts.reserve.unwrap_or(2 * junctions);
-    for (i, (s, ich)) in in_slots.iter().enumerate() {
+    let mut next = n_in + opts.reserve.unwrap_or(0);
+    // ascending input slot order (oracle: the new slots follow it)
+    let mut slot_order: Vec<usize> = (0..in_slots.len()).collect();
+    slot_order.sort_by_key(|&i| in_slots[i].0);
+    for i in slot_order {
+        let (s, ich) = &in_slots[i];
+        if opts.reserve.is_none() {
+            next += sel_cost[i];
+        }
         if used_in[i] || ich.len() != 1 {
             continue;
         }

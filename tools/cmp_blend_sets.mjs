@@ -18,7 +18,25 @@ const perms = (a, k) => (k === 0 ? [[]] : a.flatMap((x, i) => perms([...a.slice(
 let sets;
 const arg = process.argv[2] ?? 'all4';
 if (arg === 'all4') sets = [2, 3, 4].flatMap((k) => perms(['t1', 't2', 't3', 't4'], k));
-else if (arg === 'mix') sets = [['t1', 'v12'], ['v12', 't1'], ['t1', 'v41'], ['v41', 't1'], ['v12', 'v23'], ['v23', 'v12'], ['t1', 'b2'], ['b2', 't1'], ['t1', 't2', 'v12'], ['v12', 't2', 't1'], ['t1', 'v23'], ['v12', 'b1'], ['b1', 'v12', 't1']];
+else if (arg.startsWith('rand')) {
+  // rand:N:seed -> N random ordered selections of 2-5 box edges (no three edges at one vertex)
+  const [, nn, seed] = arg.split(':');
+  let st = +(seed ?? 1);
+  const rnd = () => { st = (st * 1664525 + 1013904223) % 4294967296; return st / 4294967296; };
+  const names = Object.keys(E);
+  const ends = { t1: ['T1', 'T2'], t2: ['T2', 'T3'], t3: ['T3', 'T4'], t4: ['T4', 'T1'], b1: ['B1', 'B2'], b2: ['B2', 'B3'], b3: ['B3', 'B4'], b4: ['B4', 'B1'],
+    v12: ['B2', 'T2'], v23: ['B3', 'T3'], v34: ['B4', 'T4'], v41: ['B1', 'T1'] };
+  sets = [];
+  while (sets.length < +nn) {
+    const k = 2 + Math.floor(rnd() * 4);
+    const pick = [];
+    while (pick.length < k) { const n = names[Math.floor(rnd() * names.length)]; if (!pick.includes(n)) pick.push(n); }
+    const deg = {};
+    for (const n of pick) for (const v of ends[n]) deg[v] = (deg[v] ?? 0) + 1;
+    if (Object.values(deg).some((d) => d >= 3)) continue;
+    sets.push(pick);
+  }
+} else if (arg === 'mix') sets = [['t1', 'v12'], ['v12', 't1'], ['t1', 'v41'], ['v41', 't1'], ['v12', 'v23'], ['v23', 'v12'], ['t1', 'b2'], ['b2', 't1'], ['t1', 't2', 'v12'], ['v12', 't2', 't1'], ['t1', 'v23'], ['v12', 'b1'], ['b1', 'v12', 't1']];
 else sets = arg.split(';').map((s) => s.split(','));
 const type = process.env.TYPE ?? 'fillet';
 const run = (k, edges) => {
