@@ -41,10 +41,85 @@ fn planar_loops_ok(b: &Body, f: FaceId) -> bool {
     })
 }
 
+/// Are the face's loops consistent with its sense?
+fn loops_ok(b: &Body, f: FaceId) -> bool {
+    if matches!(b.face(f).surface, Surface::Plane { .. }) {
+        planar_loops_ok(b, f)
+    } else {
+        loops_consistent(b, f)
+    }
+}
+
+/// Consecutive coedges of a loop whose face-surface (u,v) ends do not meet.
+fn uv_gaps(b: &Body, f: FaceId) -> usize {
+    let mut n = 0;
+    for &l in &b.face(f).loops {
+        let cs: Vec<_> = b.lp(l).coedges.iter().copied().filter(|&c| b.coedge(c).alive).collect();
+        for i in 0..cs.len() {
+            let (c, d) = (cs[i], cs[(i + 1) % cs.len()]);
+            let (_, te) = b.coedge_params(c);
+            let (ts, _) = b.coedge_params(d);
+            let (a, e) = (b.coedge_uv(c, te, None), b.coedge_uv(d, ts, None));
+            if (a - e).len() > 1e-6 * (1.0 + a.len()) {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+/// 0 when the face's loops are consistent with its sense and meet in (u,v).
+fn loop_score(b: &Body, f: FaceId) -> usize {
+    (!loops_ok(b, f)) as usize + uv_gaps(b, f)
+}
+
+/// A coedge running against its neighbour in a face whose loops are
+/// inconsistent with the face sense (or do not meet in uv): flip just that
+/// coedge when doing so makes the loops consistent again (a stray coedge,
+/// not a wrong face).
+fn fix_stray_coedges(b: &mut Body, out: &mut Vec<Fixed>) -> usize {
+    let mut n = 0;
+    for f in conflict_faces(b) {
+        if b.face(f).loops.is_empty() || loop_score(b, f) == 0 {
+            continue;
+        }
+        let cands: Vec<_> = b
+            .face(f)
+            .loops
+            .iter()
+            .flat_map(|&l| b.lp(l).coedges.clone())
+            .filter(|&c| {
+                let e = b.coedge(c).edge;
+                let cs = b.edge_coedges(e);
+                cs.len() == 2 && !b.is_seam(e) && cs.iter().any(|&o| o != c && b.coedge(o).rev == b.coedge(c).rev)
+            })
+            .collect();
+        for c in cands {
+            b.coedges[c.idx()].rev = !b.coedges[c.idx()].rev;
+            if loop_score(b, f) == 0 {
+                out.push(Fixed { code: "COEDGE_FLIPPED", entity: b.face_id_str(f), detail: "coedge ran against its neighbour and its loop".into() });
+                n += 1;
+                break;
+            }
+            b.coedges[c.idx()].rev = !b.coedges[c.idx()].rev;
+        }
+    }
+    // a seam whose two uses agree: reverse one of them
+    for e in b.edge_ids().collect::<Vec<_>>() {
+        let cs = b.edge_coedges(e);
+        if cs.len() == 2 && b.is_seam(e) && b.coedge(cs[0]).rev == b.coedge(cs[1]).rev {
+            b.coedges[cs[1].idx()].rev = !b.coedges[cs[1].idx()].rev;
+            out.push(Fixed { code: "COEDGE_FLIPPED", entity: format!("edge#{}", e.idx()), detail: "seam uses made opposite".into() });
+            n += 1;
+        }
+    }
+    n
+}
+
 /// Fix faces whose loops run against their sense (only faces that also
 /// disagree with a neighbour are examined, so healthy faces stay put).
 pub fn fix_loop_senses(b: &mut Body, out: &mut Vec<Fixed>) -> usize {
-    let mut n = 0;
+    let mut n = fix_stray_coedges(b, out);
     for f in conflict_faces(b) {
         if b.face(f).loops.is_empty() {
             continue;
@@ -120,12 +195,41 @@ pub fn fix_orientation(b: &mut Body, out: &mut Vec<Fixed>) -> usize {
             }
         }
     }
+    // Per lump: edge-connected components. The largest |volume| is the
+    // outer surface (outward, positive); any other component is a void
+    // (inward, negative).
     let lumps: Vec<_> = b.lump_ids().collect();
     for l in lumps {
         let fs = lump_faces(b, l);
-        if !fs.is_empty() && signed_volume(b, &fs) < 0.0 {
-            for &f in &fs {
-                flip(b, f);
+        if fs.is_empty() {
+            continue;
+        }
+        let fset: HashSet<FaceId> = fs.iter().copied().collect();
+        let mut seen: HashSet<FaceId> = HashSet::new();
+        let mut comps: Vec<(Vec<FaceId>, f64)> = vec![];
+        for &seed in &fs {
+            if !seen.insert(seed) {
+                continue;
+            }
+            let (mut comp, mut stack) = (vec![seed], vec![seed]);
+            while let Some(f) = stack.pop() {
+                for g in b.face_neighbors(f) {
+                    if fset.contains(&g) && seen.insert(g) {
+                        comp.push(g);
+                        stack.push(g);
+                    }
+                }
+            }
+            let v = signed_volume(b, &comp);
+            comps.push((comp, v));
+        }
+        let big = (0..comps.len()).max_by(|&i, &j| comps[i].1.abs().partial_cmp(&comps[j].1.abs()).unwrap()).unwrap();
+        for (i, (comp, v)) in comps.iter().enumerate() {
+            let want_pos = i == big;
+            if (*v > 0.0) != want_pos && *v != 0.0 {
+                for &f in comp {
+                    flip(b, f);
+                }
             }
         }
     }

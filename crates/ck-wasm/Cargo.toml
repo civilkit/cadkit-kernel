@@ -14,6 +14,7 @@ ck-core = { path = "../ck-core" }
 ck-geom = { path = "../ck-geom" }
 ck-topo = { path = "../ck-topo" }
 ck-check = { path = "../ck-check" }
+ck-heal = { path = "../ck-heal" }
 ck-ops = { path = "../ck-ops" }
 ck-io = { path = "../ck-io" }
 ck-tess = { path = "../ck-tess" }

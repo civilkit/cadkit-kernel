@@ -41,6 +41,10 @@ pub fn validate(cx: &mut Cx) -> Result<Json, String> {
     null_or_query(cx, "validate")
 }
 
+pub fn heal(cx: &mut Cx) -> Result<Json, String> {
+    null_or_query(cx, "heal")
+}
+
 pub fn step(cx: &mut Cx) -> Result<Json, String> {
     null_or_query(cx, "step")
 }

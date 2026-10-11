@@ -36,7 +36,7 @@ fn wire_golden() {
 
 #[test]
 fn all_types_dispatch() {
-    assert_eq!(REQUEST_TYPES.len(), 18); // 17 original + validate extension
+    assert_eq!(REQUEST_TYPES.len(), 19); // 17 original + validate + heal extensions
     for (t, _) in REQUEST_TYPES {
         let (j, _) = run(&mut Server::new(), &format!(r#"{{"msg":{{"type":"{t}"}}}}"#));
         assert!(!j.contains("unknown request"), "{t}");

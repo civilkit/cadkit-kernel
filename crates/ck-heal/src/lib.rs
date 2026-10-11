@@ -36,8 +36,8 @@ pub struct HealReport {
 /// Heal `b` in place with model tolerance `tol` (mm).
 pub fn heal(b: &mut Body, tol: f64) -> HealReport {
     let mut fixed: Vec<Fixed> = vec![];
+    let mut issues = ck_check::validate(b, tol);
     for _ in 0..4 {
-        let issues = ck_check::validate(b, tol);
         if issues.is_empty() {
             break;
         }
@@ -52,25 +52,28 @@ pub fn heal(b: &mut Body, tol: f64) -> HealReport {
         if has("LOOP_OPEN") {
             wire::fix_loops(b, &mut fixed);
         }
-        if has("SHELL_OPEN") || has("EDGE_UNUSED") {
+        if has("SHELL_OPEN") || has("EDGE_UNUSED") || has("SHELL_EMPTY") {
             let joined = sew::sew_free_edges(b, tol, &mut fixed);
             sew::merge_shells(b, &joined, &mut fixed);
-        }
-        // sewing can introduce orientation conflicts; check the geometry again
-        let post = ck_check::validate(b, tol);
-        if post
-            .iter()
-            .any(|i| matches!(i.code, "SHELL_ORIENTATION" | "VOLUME_NONPOSITIVE"))
-        {
-            orient::fix_loop_senses(b, &mut fixed);
-            orient::fix_orientation(b, &mut fixed);
         }
         if fixed.len() == n0 {
             break;
         }
+        // sewing can introduce orientation conflicts: re-check, then orient
+        issues = ck_check::validate(b, tol);
+        if issues.iter().any(|i| matches!(i.code, "SHELL_ORIENTATION" | "VOLUME_NONPOSITIVE")) {
+            orient::fix_loop_senses(b, &mut fixed);
+            orient::fix_orientation(b, &mut fixed);
+            issues = ck_check::validate(b, tol);
+        }
     }
-    let remaining = ck_check::validate(b, tol);
-    HealReport { fixed, remaining }
+    // orientation-only damage never reaches the structural fixes above
+    if issues.iter().any(|i| matches!(i.code, "SHELL_ORIENTATION" | "VOLUME_NONPOSITIVE")) {
+        orient::fix_loop_senses(b, &mut fixed);
+        orient::fix_orientation(b, &mut fixed);
+        issues = ck_check::validate(b, tol);
+    }
+    HealReport { fixed, remaining: issues }
 }
 
 #[cfg(test)]

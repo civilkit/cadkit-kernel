@@ -40,7 +40,7 @@ fn candidates(b: &Body, tol: f64) -> Vec<VertexId> {
             }
         }
     }
-    let mut v: Vec<VertexId> = set.into_iter().filter(|&v| b.vertex(v).alive).collect();
+    let mut v: Vec<VertexId> = set.into_iter().collect();
     v.sort();
     v
 }

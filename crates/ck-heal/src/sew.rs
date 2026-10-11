@@ -114,6 +114,41 @@ fn root(p: &mut HashMap<ShellId, ShellId>, s: ShellId) -> ShellId {
     r
 }
 
+/// Split every shell into its edge-connected components (extra components
+/// become their own shells in the same lump, i.e. voids stay voids).
+fn split_disconnected(b: &mut Body, out: &mut Vec<Fixed>) {
+    for s in b.shell_ids().collect::<Vec<_>>() {
+        let faces: Vec<FaceId> = b.shell(s).faces.iter().copied().filter(|&f| b.face(f).alive).collect();
+        let mut seen: std::collections::HashSet<FaceId> = Default::default();
+        let mut comps: Vec<Vec<FaceId>> = vec![];
+        for &seed in &faces {
+            if !seen.insert(seed) {
+                continue;
+            }
+            let (mut comp, mut stack) = (vec![seed], vec![seed]);
+            while let Some(f) = stack.pop() {
+                for g in b.face_neighbors(f) {
+                    if faces.contains(&g) && seen.insert(g) {
+                        comp.push(g);
+                        stack.push(g);
+                    }
+                }
+            }
+            comps.push(comp);
+        }
+        for comp in comps.into_iter().skip(1) {
+            let lump = b.shell(s).lump;
+            let ns = b.add_shell(lump);
+            for f in comp {
+                b.shells[s.idx()].faces.retain(|&x| x != f);
+                b.shells[ns.idx()].faces.push(f);
+                b.faces[f.idx()].shell = ns;
+            }
+            out.push(Fixed { code: "SHELL_SPLIT", entity: format!("shell#{}", s.idx()), detail: format!("disconnected component moved to shell#{}", ns.idx()) });
+        }
+    }
+}
+
 /// Merge the shells of sewn faces (and their lumps).
 pub fn merge_shells(b: &mut Body, joined: &[(FaceId, FaceId)], out: &mut Vec<Fixed>) {
     let mut p: HashMap<ShellId, ShellId> = b.shell_ids().map(|s| (s, s)).collect();
@@ -125,6 +160,18 @@ pub fn merge_shells(b: &mut Body, joined: &[(FaceId, FaceId)], out: &mut Vec<Fix
         if ra != rb {
             let (keep, gone) = (ra.min(rb), ra.max(rb));
             p.insert(gone, keep);
+        }
+    }
+    // shells left without faces (e.g. after their faces were sewn elsewhere)
+    for s in b.shell_ids().collect::<Vec<_>>() {
+        if b.shell(s).faces.iter().all(|&f| !b.face(f).alive) {
+            let l = b.shell(s).lump;
+            b.shells[s.idx()].alive = false;
+            b.lumps[l.idx()].shells.retain(|&x| x != s);
+            out.push(Fixed { code: "SHELL_REMOVED", entity: format!("shell#{}", s.idx()), detail: "empty shell dropped".into() });
+            if b.lump(l).shells.iter().all(|&x| !b.shell(x).alive) {
+                b.lumps[l.idx()].alive = false;
+            }
         }
     }
     let ss: Vec<ShellId> = b.shell_ids().collect();
@@ -159,5 +206,8 @@ pub fn merge_shells(b: &mut Body, joined: &[(FaceId, FaceId)], out: &mut Vec<Fix
                 detail: format!("merged into lump#{}", lr.idx()),
             });
         }
+    }
+    if !joined.is_empty() {
+        split_disconnected(b, out);
     }
 }

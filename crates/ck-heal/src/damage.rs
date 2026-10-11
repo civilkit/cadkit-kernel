@@ -26,7 +26,12 @@ pub fn apply(b: &mut Body, kind: &str, shift: f64) -> bool {
     }
     match kind {
         "detach" => detach_faces(b, &faces[..1], shift, false),
-        "shells" => detach_faces(b, &faces[..faces.len() / 2], shift, true),
+        "shells" => {
+            // half of ONE shell (moving a void's faces would change what the body means)
+            let sh = b.face(faces[0]).shell;
+            let mine: Vec<FaceId> = b.shell(sh).faces.iter().copied().filter(|&f| b.face(f).alive).collect();
+            mine.len() >= 2 && detach_faces(b, &mine[..mine.len() / 2], shift, true)
+        }
         "flip" => {
             flip_face(b, faces[0]);
             true
