@@ -397,6 +397,7 @@ fn samples_for(c: &Curve) -> usize {
         Curve::Line { .. } => 1,
         Curve::Circle { .. } | Curve::Ellipse { .. } => 64,
         Curve::BSpline(b) => (b.ctrl.len() * 8).clamp(16, 512),
+        Curve::Conic { .. } | Curve::Sinusoid { .. } => 64,
     }
 }
 

@@ -127,6 +127,11 @@ pub fn reflect_body(b: &Body, pl: &Plane) -> Result<Body, String> {
             Curve::Circle { frame, r } => Curve::Circle { frame: rh(frame), r: *r },
             Curve::Ellipse { frame, a, b } => Curve::Ellipse { frame: rh(frame), a: *a, b: *b },
             Curve::BSpline(s) => Curve::BSpline(s.map(|q| p(q))),
+            // GUESS: analytic carrier frames transform like ellipse frames
+            Curve::Conic { frame, p, e } => Curve::Conic { frame: rh(frame), p: *p, e: *e },
+            Curve::Sinusoid { frame, amp, freq, phase } => {
+                Curve::Sinusoid { frame: rh(frame), amp: *amp, freq: *freq, phase: *phase }
+            }
         }
     };
     let flip_v = |c: &Curve2| -> Curve2 {

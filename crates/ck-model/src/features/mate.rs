@@ -782,6 +782,11 @@ impl Xf {
             // GUESS: the kernel ellipse is centre + two axis vectors
             Curve::Ellipse { frame, a, b } => Curve::Ellipse { frame: self.frame(frame), a: *a, b: *b },
             Curve::BSpline(s) => Curve::BSpline(s.map(|p| self.point(p))),
+            // GUESS: analytic carrier frames transform like ellipse frames
+            Curve::Conic { frame, p, e } => Curve::Conic { frame: self.frame(frame), p: self.scale() * p, e: *e },
+            Curve::Sinusoid { frame, amp, freq, phase } => {
+                Curve::Sinusoid { frame: self.frame(frame), amp: self.scale() * amp, freq: *freq, phase: *phase }
+            }
         }
     }
 
