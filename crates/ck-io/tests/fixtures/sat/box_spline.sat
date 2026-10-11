@@ -37,7 +37,7 @@ straight-curve $-1 -1 $-1 10.0 20.0 30.0 -1.0 0.0 0.0 I I #
 edge $-1 -1 $-1 $16 0.0 $18 10.0 $-1 $32 forward @7 unknown #
 straight-curve $-1 -1 $-1 0.0 20.0 30.0 0.0 -1.0 0.0 I I #
 edge $-1 -1 $-1 $18 0.0 $12 20.0 $-1 $34 forward @7 unknown #
-spline-surface $-1 -1 $-1 forward { exactsur full nurbs 1 1 open open none none 2 2 0.0 1 1.0 1 0.0 1 1.0 1 0.0 0.0 30.0 1.0 0.0 20.0 30.0 1.0 10.0 0.0 30.0 1.0 10.0 20.0 30.0 1.0 0.0 } I I I I #
+spline-surface $-1 -1 $-1 forward { exactsur full nurbs 1 1 open open none none 2 2 0.0 1 1.0 1 0.0 1 1.0 1 0.0 0.0 30.0 1.0 10.0 0.0 30.0 1.0 0.0 20.0 30.0 1.0 10.0 20.0 30.0 1.0 0.0 } I I I I #
 straight-curve $-1 -1 $-1 10.0 0.0 0.0 0.0 0.0 1.0 I I #
 edge $-1 -1 $-1 $6 0.0 $14 30.0 $-1 $37 forward @7 unknown #
 straight-curve $-1 -1 $-1 0.0 0.0 30.0 0.0 0.0 -1.0 I I #

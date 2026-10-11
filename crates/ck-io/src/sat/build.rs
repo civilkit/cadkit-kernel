@@ -1,7 +1,7 @@
 //! SAT record table -> ck-topo [`Body`].
 
 use super::parse::{Rec, Table};
-use super::{SatError, SatImport};
+use super::{SatError, SatImport, SatSummary};
 use ck_geom::curve::Curve;
 use ck_geom::curve2::Curve2;
 use ck_geom::nurbs::bspline::BSplineCurve;
@@ -32,6 +32,10 @@ struct EInfo {
 struct Ce {
     edge: EdgeId,
     rev: bool,
+    /// Coedge leaving an (implicit) pole: its pcurve is aligned by its END to
+    /// the loop's start instead of by its start to the previous end, so the
+    /// loop's u-winding is kept (the pole's v = const edge adds nothing).
+    pole_jump: bool,
 }
 
 struct CurveG {
@@ -62,25 +66,55 @@ impl<'a> Cur<'a> {
     }
 }
 
+/// Body transform: `p' = (p . M) * s + t` (ACIS row-vector convention).
+#[derive(Clone, Copy)]
+struct Xf {
+    m: [[f64; 3]; 3],
+    s: f64,
+    t: Vec3,
+}
+
+impl Xf {
+    fn identity() -> Xf {
+        Xf { m: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], s: 1.0, t: Vec3::ZERO }
+    }
+    /// Row-vector times the linear part (rotation only).
+    fn dir(&self, v: Vec3) -> Vec3 {
+        let m = &self.m;
+        Vec3::new(
+            v.x * m[0][0] + v.y * m[1][0] + v.z * m[2][0],
+            v.x * m[0][1] + v.y * m[1][1] + v.z * m[2][1],
+            v.x * m[0][2] + v.y * m[1][2] + v.z * m[2][2],
+        )
+    }
+}
+
 struct B<'a> {
     t: &'a Table,
     body: Body,
     verts: HashMap<usize, (VertexId, Vec3)>,
     edges: HashMap<usize, EInfo>,
     units: f64,
+    xf: Xf,
 }
 
+/// Record types the importer reads (everything else is skipped and counted).
+const READ_TYPES: &[&str] = &[
+    "body", "lump", "shell", "face", "loop", "coedge", "edge", "vertex", "point", "transform", "plane-surface", "cone-surface", "sphere-surface", "torus-surface", "spline-surface",
+    "straight-curve", "ellipse-curve", "intcurve-curve",
+];
+
 pub fn build(t: &Table) -> R<SatImport> {
-    let mut b = B { t, body: Body::new(), verts: HashMap::new(), edges: HashMap::new(), units: t.units };
+    let mut b = B { t, body: Body::new(), verts: HashMap::new(), edges: HashMap::new(), units: t.units, xf: Xf::identity() };
     let bodies: Vec<&Rec> = t.recs.iter().filter(|r| r.ty() == "body").collect();
     if bodies.is_empty() {
         return Err(SatError { code: "sat.topology", entity: None, kind: String::new(), line: 0, detail: "no body record".into() });
     }
     // phase 1: lumps / shells / faces, and the single/double-sided census
-    let mut plan: Vec<Vec<Vec<&Rec>>> = vec![];
+    let mut plan: Vec<(Xf, Vec<Vec<&Rec>>)> = vec![];
     let (mut single, mut double) = (None::<&Rec>, None::<&Rec>);
     for br in &bodies {
-        b.check_transform(br)?;
+        let xf = b.body_transform(br)?;
         let mut lumps = vec![];
         for lump in b.chain(b.ptr(br, 4)?, 4, "lump")? {
             let mut shells = vec![];
@@ -97,14 +131,15 @@ pub fn build(t: &Table) -> R<SatImport> {
             }
             lumps.push(shells);
         }
-        plan.extend(lumps);
+        plan.extend(lumps.into_iter().map(|l| (xf, l)));
     }
     if let (Some(s), Some(_)) = (single, double) {
         return Err(SatError::at("sat.unsupported", s, "mixed single- and double-sided faces (solid with internal sheets)"));
     }
     let sheet = double.is_some();
     // phase 2: build
-    for shells in &plan {
+    for (xf, shells) in &plan {
+        b.xf = *xf;
         let lump = b.body.add_lump();
         for faces in shells {
             let sh = b.body.add_shell(lump);
@@ -113,7 +148,32 @@ pub fn build(t: &Table) -> R<SatImport> {
             }
         }
     }
-    Ok(SatImport { body: b.body, sheet, units: t.units })
+    let nfaces = b.body.num_faces();
+    if nfaces == 0 {
+        return Err(SatError {
+            code: "sat.empty",
+            entity: None,
+            kind: String::new(),
+            line: 0,
+            detail: format!("file has {} body record(s) but no faces (wire/point-only or empty bodies)", bodies.len()),
+        });
+    }
+    let mut skipped: std::collections::BTreeMap<String, usize> = Default::default();
+    for r in &t.recs {
+        if !READ_TYPES.contains(&r.ty()) {
+            *skipped.entry(r.ty().to_string()).or_default() += 1;
+        }
+    }
+    let summary = SatSummary {
+        version: t.version,
+        records: t.recs.len(),
+        bodies: bodies.len(),
+        lumps: plan.len(),
+        shells: plan.iter().map(|p| p.1.len()).sum(),
+        faces: nfaces,
+        skipped: skipped.into_iter().collect(),
+    };
+    Ok(SatImport { body: b.body, sheet, units: t.units, summary })
 }
 
 impl<'a> B<'a> {
@@ -143,13 +203,25 @@ impl<'a> B<'a> {
         let t = self.tok(r, k)?;
         t.parse::<f64>().ok().filter(|v| v.is_finite()).ok_or_else(|| SatError::at("sat.parse", r, format!("cannot parse '{t}' as a number at token {k}")))
     }
-    /// Raw 3-vector (no unit scaling).
-    fn vec(&self, r: &Rec, k: usize) -> R<Vec3> {
+    /// Raw 3-vector (file frame, no transform, no unit scaling).
+    fn raw(&self, r: &Rec, k: usize) -> R<Vec3> {
         Ok(Vec3::new(self.num(r, k)?, self.num(r, k + 1)?, self.num(r, k + 2)?))
     }
-    /// Point / length-valued vector scaled to mm.
+    /// Direction vector: body-transform rotation applied, no unit scaling.
+    fn vec(&self, r: &Rec, k: usize) -> R<Vec3> {
+        Ok(self.xf.dir(self.raw(r, k)?))
+    }
+    /// Point in mm: body transform (rotate, scale, translate), then units.
     fn pt(&self, r: &Rec, k: usize) -> R<Vec3> {
-        Ok(self.vec(r, k)? * self.units)
+        Ok(self.xp(self.raw(r, k)?))
+    }
+    /// File-frame point -> mm.
+    fn xp(&self, p: Vec3) -> Vec3 {
+        (self.xf.dir(p) * self.xf.s + self.xf.t) * self.units
+    }
+    /// File length -> mm (units x body-transform scale).
+    fn ls(&self) -> f64 {
+        self.units * self.xf.s
     }
     fn typed(&self, from: &Rec, i: usize, tys: &[&str]) -> R<&'a Rec> {
         let r = self.rec(from, i)?;
@@ -178,18 +250,44 @@ impl<'a> B<'a> {
         Ok(out)
     }
 
-    fn check_transform(&self, br: &Rec) -> R<()> {
-        let Some(ti) = self.ptr(br, 6).ok().flatten() else { return Ok(()) };
+    /// Body transform: rotation (3 rows), translation, uniform scale, then
+    /// `rotate|no_rotate reflect|no_reflect shear|no_shear`. Reflections and
+    /// shears / non-uniform scale are rejected.
+    fn body_transform(&self, br: &Rec) -> R<Xf> {
+        let Some(ti) = self.ptr(br, 6).ok().flatten() else { return Ok(Xf::identity()) };
         let tr = self.typed(br, ti, &["transform"])?;
-        let mut v = vec![];
-        for k in 4..17 {
-            v.push(self.num(tr, k)?);
+        let flag = tr
+            .t
+            .iter()
+            .position(|s| s == "rotate" || s == "no_rotate")
+            .filter(|&k| k >= 14)
+            .ok_or_else(|| SatError::at("sat.parse", tr, "transform without rotate flag"))?;
+        let mut v = [0.0f64; 13];
+        for (i, x) in v.iter_mut().enumerate() {
+            *x = self.num(tr, flag - 13 + i)?;
         }
-        let id = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
-        if v.iter().zip(id.iter()).any(|(a, b)| (a - b).abs() > 1e-12) {
-            return Err(SatError::at("sat.unsupported", tr, "non-identity body transform"));
+        let has = |w: &str| tr.t.iter().any(|s| s == w);
+        if has("reflect") {
+            return Err(SatError::at("sat.unsupported", tr, "reflecting body transform"));
         }
-        Ok(())
+        let m = [[v[0], v[1], v[2]], [v[3], v[4], v[5]], [v[6], v[7], v[8]]];
+        for i in 0..3 {
+            for j in 0..3 {
+                let d: f64 = (0..3).map(|k| m[i][k] * m[j][k]).sum();
+                if (d - if i == j { 1.0 } else { 0.0 }).abs() > 1e-6 {
+                    return Err(SatError::at("sat.unsupported", tr, "body transform with shear / non-uniform scale in its matrix"));
+                }
+            }
+        }
+        let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+        if det < 0.0 {
+            return Err(SatError::at("sat.unsupported", tr, "reflecting body transform"));
+        }
+        let s = v[12];
+        if !(s > 0.0) || !s.is_finite() {
+            return Err(SatError::at("sat.parse", tr, "non-positive transform scale"));
+        }
+        Ok(Xf { m, s, t: Vec3::new(v[9], v[10], v[11]) })
     }
 
     // ------------------------------------------------------------ vertices / edges
@@ -213,12 +311,12 @@ impl<'a> B<'a> {
                 if l < 1e-12 {
                     return Err(SatError::at("sat.geometry", r, "zero direction"));
                 }
-                Ok(CurveG { curve: Curve::line(o, d), scale: l * self.units, offset: 0.0 })
+                Ok(CurveG { curve: Curve::line(o, d), scale: l * self.ls(), offset: 0.0 })
             }
             "ellipse-curve" => {
                 let (c, n, m) = (self.pt(r, 4)?, self.vec(r, 7)?, self.vec(r, 10)?);
                 let ratio = self.num(r, 13)?;
-                let a = m.len() * self.units;
+                let a = m.len() * self.ls();
                 if n.len() < 1e-12 || a < 1e-12 || ratio <= 0.0 {
                     return Err(SatError::at("sat.geometry", r, "degenerate ellipse (axis, major radius or ratio)"));
                 }
@@ -295,16 +393,26 @@ impl<'a> B<'a> {
     /// Cursor positioned at the first token after `{ exactcur|exactsur [full]`.
     fn spline_cursor(&self, r: &'a Rec) -> R<Cur<'a>> {
         let open = r.t.iter().position(|s| s == "{").ok_or_else(|| SatError::at("sat.unsupported", r, "spline record without an inline definition block"))?;
-        let mut k = open + 1;
-        while let Some(t) = r.t.get(k) {
+        // `{ ref N }`: shared definition, the N-th `{` block of the file
+        let (dr, mut k) = if r.t.get(open + 1).map(|s| s.as_str()) == Some("ref") {
+            let n: usize = r.t.get(open + 2).and_then(|s| s.parse().ok()).ok_or_else(|| SatError::at("sat.parse", r, "bad spline ref index"))?;
+            let &(ri, ki) = self.t.defs.get(n).ok_or_else(|| SatError::at("sat.topology", r, format!("spline ref {n} has no definition")))?;
+            let d: &'a Rec = &self.t.recs[ri];
+            if d.t.get(ki + 1).map(|s| s.as_str()) == Some("spline") {
+                return Err(SatError::at("sat.unsupported", r, format!("spline ref {n} resolves to a non-exact definition")));
+            }
+            (d, ki + 1)
+        } else {
+            (r, open + 1)
+        };
+        while let Some(t) = dr.t.get(k) {
             match t.as_str() {
                 "exactcur" | "exactsur" | "full" => k += 1,
                 "nubs" | "nurbs" => break,
-                "ref" => return Err(SatError::at("sat.unsupported", r, "shared spline definition (ref)")),
                 other => return Err(SatError::at("sat.unsupported", r, format!("spline definition '{other}' (only exact nubs/nurbs)"))),
             }
         }
-        Ok(Cur { r, k })
+        Ok(Cur { r: dr, k })
     }
 
     /// Distinct knots + multiplicities -> full clamped knot vector and the
@@ -363,7 +471,7 @@ impl<'a> B<'a> {
         let mut ctrl = Vec::with_capacity(ncp);
         let mut w = Vec::with_capacity(ncp);
         for _ in 0..ncp {
-            ctrl.push(Vec3::new(c.f()?, c.f()?, c.f()?) * self.units);
+            ctrl.push(self.xp(Vec3::new(c.f()?, c.f()?, c.f()?)));
             if rational {
                 w.push(c.f()?);
             }
@@ -376,14 +484,21 @@ impl<'a> B<'a> {
         let mut c = self.spline_cursor(r)?;
         let rational = c.tok()? == "nurbs";
         let (du, dv) = (c.u()?, c.u()?);
-        self.form(&mut c)?;
-        self.form(&mut c)?;
-        // singularity flags (u, v)
-        for _ in 0..2 {
-            match c.tok()? {
-                "none" | "low" | "high" | "both" => {}
-                o => return Err(SatError::at("sat.parse", r, format!("bad singularity flag '{o}'"))),
+        // forms (open|closed|periodic) and singularity flags (none|low|high|both);
+        // newer ACIS writes one extra leading flag, so read the whole run.
+        let mut forms = 0;
+        while let Some(t) = c.r.t.get(c.k) {
+            match t.as_str() {
+                "open" | "closed" | "periodic" => {
+                    self.form(&mut c)?;
+                    forms += 1;
+                }
+                "none" | "low" | "high" | "both" => c.k += 1,
+                _ => break,
             }
+        }
+        if forms != 2 {
+            return Err(SatError::at("sat.parse", r, format!("expected two spline forms, found {forms}")));
         }
         let (nku, nkv) = (c.u()?, c.u()?);
         let (ku, ncu) = self.knots(&mut c, du, nku)?;
@@ -391,12 +506,15 @@ impl<'a> B<'a> {
         if ncu.saturating_mul(ncv) > 10_000_000 {
             return Err(SatError::at("sat.parse", r, "absurd control net size"));
         }
-        let mut ctrl = Vec::with_capacity(ncu * ncv);
-        let mut w = Vec::with_capacity(ncu * ncv);
-        for _ in 0..ncu * ncv {
-            ctrl.push(Vec3::new(c.f()?, c.f()?, c.f()?) * self.units);
-            if rational {
-                w.push(c.f()?);
+        // File order: u varies fastest (P[v][u]); ours is ctrl[i * nv + j].
+        let mut ctrl = vec![Vec3::ZERO; ncu * ncv];
+        let mut w = vec![1.0; ncu * ncv];
+        for j in 0..ncv {
+            for i in 0..ncu {
+                ctrl[i * ncv + j] = self.xp(Vec3::new(c.f()?, c.f()?, c.f()?));
+                if rational {
+                    w[i * ncv + j] = c.f()?;
+                }
             }
         }
         BSplineSurface::new(du, dv, ku, kv, ncu, ncv, ctrl, if rational { Some(w) } else { None })
@@ -420,12 +538,15 @@ impl<'a> B<'a> {
                 if (ratio - 1.0).abs() > 1e-9 {
                     return Err(SatError::at("sat.unsupported", r, "elliptical cone/cylinder (ratio != 1)"));
                 }
-                let r0 = m.len() * self.units;
+                let r0 = m.len() * self.ls();
                 if ax.len() < 1e-12 {
                     return Err(SatError::at("sat.geometry", r, "zero cone axis"));
                 }
-                // tokens: 14 sense, then the u-range (two bounds), then sin, cos
-                let mut c = Cur { r, k: 15 };
+                // Real ACIS: `ratio <u-range: 2 bounds> sin cos scale sense ...`.
+                // (Hand-written fixtures put the sense before the range and
+                // have no scale; both are accepted.)
+                let sense_first = matches!(self.tok(r, 14)?, "forward" | "reversed");
+                let mut c = Cur { r, k: if sense_first { 15 } else { 14 } };
                 for _ in 0..2 {
                     match c.tok()? {
                         "I" => {}
@@ -436,6 +557,7 @@ impl<'a> B<'a> {
                     }
                 }
                 let (s, co) = (c.f()?, c.f()?);
+                let cone_rev = if sense_first { self.tok(r, 14)? == "reversed" } else { r.t.iter().skip(c.k).any(|t| t == "reversed") };
                 if (s * s + co * co - 1.0).abs() > 1e-6 || co <= 0.0 {
                     return Err(SatError::at("sat.parse", r, "cone sine/cosine are not a half-angle"));
                 }
@@ -444,7 +566,7 @@ impl<'a> B<'a> {
                     return Err(SatError::at("sat.geometry", r, "zero-radius cylinder"));
                 }
                 if s.abs() < 1e-12 {
-                    return Ok((Surface::Cylinder { frame, r: r0 }, false));
+                    return Ok((Surface::Cylinder { frame, r: r0 }, cone_rev));
                 }
                 // sign of the taper: pick the one the face's vertices satisfy
                 let t = (s / co).abs();
@@ -459,10 +581,10 @@ impl<'a> B<'a> {
                         .fold(0.0, f64::max)
                 };
                 let tan = if err(t) + 1e-9 < err(-t) { t } else { -t };
-                Ok((Surface::Cone { frame, r: r0, semi_angle: tan.atan() }, false))
+                Ok((Surface::Cone { frame, r: r0, semi_angle: tan.atan() }, cone_rev))
             }
             "sphere-surface" => {
-                let (c, rad, u, pole) = (self.pt(r, 4)?, self.num(r, 7)? * self.units, self.vec(r, 8)?, self.vec(r, 11)?);
+                let (c, rad, u, pole) = (self.pt(r, 4)?, self.num(r, 7)? * self.ls(), self.vec(r, 8)?, self.vec(r, 11)?);
                 if rad.abs() < 1e-12 || pole.len() < 1e-12 {
                     return Err(SatError::at("sat.geometry", r, "degenerate sphere"));
                 }
@@ -470,7 +592,7 @@ impl<'a> B<'a> {
             }
             "torus-surface" => {
                 let (c, n) = (self.pt(r, 4)?, self.vec(r, 7)?);
-                let (major, minor) = (self.num(r, 10)? * self.units, self.num(r, 11)? * self.units);
+                let (major, minor) = (self.num(r, 10)? * self.ls(), self.num(r, 11)? * self.ls());
                 let u = self.vec(r, 12)?;
                 if n.len() < 1e-12 || !(major > 0.0) || minor.abs() < 1e-12 {
                     return Err(SatError::at("sat.geometry", r, "degenerate torus"));
@@ -493,6 +615,15 @@ impl<'a> B<'a> {
     }
 
     // ------------------------------------------------------------ faces
+    /// Polyline resolution for winding / area estimates: splines may spiral
+    /// many turns (threads), so sample them densely.
+    fn samples(&self, ce: &Ce) -> usize {
+        match &self.body.edges[ce.edge.idx()].curve {
+            Curve::BSpline(_) => 1024,
+            _ => 16,
+        }
+    }
+
     fn ce_points(&self, ce: &Ce, n: usize) -> Vec<Vec3> {
         let e = &self.body.edges[ce.edge.idx()];
         let (a, b) = if ce.rev { (e.t1, e.t0) } else { (e.t0, e.t1) };
@@ -517,7 +648,7 @@ impl<'a> B<'a> {
         };
         // single-sided with containment 'out': the back of the face is outside
         // the material, i.e. the stored normal points into the material.
-        let cont_flip = !sheet && fr.t.get(11).map(|s| s == "out").unwrap_or(false);
+        let cont_flip = !sheet && fr.t.get(11..).map(|s| s.iter().any(|t| t == "out")).unwrap_or(false);
 
         // loops
         let mut loops: Vec<Vec<Ce>> = vec![];
@@ -538,7 +669,7 @@ impl<'a> B<'a> {
                     o => return Err(SatError::at("sat.parse", cr, format!("bad coedge sense '{o}'"))),
                 };
                 let (id, flip) = self.edge(cr, self.ptr_req(cr, 7)?)?;
-                ring.push(Ce { edge: id, rev: sense ^ flip });
+                ring.push(Ce { edge: id, rev: sense ^ flip, pole_jump: false });
                 let e = &self.body.edges[id.idx()];
                 pts.push(self.body.vertices[e.v0.idx()].p);
                 pts.push(self.body.vertices[e.v1.idx()].p);
@@ -567,7 +698,7 @@ impl<'a> B<'a> {
             return Err(SatError::at("sat.topology", fr, "face without a loop on a non-closed surface"));
         }
 
-        let loops = self.seam_wrapping(fr, &surface, loops)?;
+        let loops = self.seam_wrapping(fr, &surface, sense, loops)?;
         let loops = self.order_planar(fr, &surface, sense, loops)?;
 
         let name = FaceName::other("sat", &format!("F{}", fr.idx));
@@ -577,19 +708,31 @@ impl<'a> B<'a> {
             let lp = self.body.add_loop(f);
             // pcurves (continuity-aligned across periodic seams)
             let mut prev_end: Option<Vec2> = None;
+            let mut loop_start: Option<Vec2> = None;
             for ce in ring {
                 let e = &self.body.edges[ce.edge.idx()];
                 let (t0, t1, curve) = (e.t0, e.t1, e.curve.clone());
                 let mut pc = pcurve_of(&surface, &curve, t0, t1, 1e-6).ok();
                 let (ts, te) = if ce.rev { (t1, t0) } else { (t0, t1) };
                 if let Some(c) = pc.as_mut() {
-                    if let Some(pe) = prev_end {
+                    if ce.pole_jump {
+                        if let Some(ls) = loop_start {
+                            let s = c.eval(te);
+                            let du = pu.map_or(0.0, |p| ((ls.x - s.x) / p).round() * p);
+                            if du != 0.0 {
+                                *c = shift_pc(c, du, 0.0);
+                            }
+                        }
+                    } else if let Some(pe) = prev_end {
                         let s = c.eval(ts);
                         let du = pu.map_or(0.0, |p| ((pe.x - s.x) / p).round() * p);
                         let dv = pv.map_or(0.0, |p| ((pe.y - s.y) / p).round() * p);
                         if du != 0.0 || dv != 0.0 {
                             *c = shift_pc(c, du, dv);
                         }
+                    }
+                    if loop_start.is_none() {
+                        loop_start = Some(c.eval(ts));
                     }
                     prev_end = Some(c.eval(te));
                 }
@@ -611,8 +754,11 @@ impl<'a> B<'a> {
                 let mut total = 0.0;
                 let mut last: Option<f64> = None;
                 for ce in ring {
-                    for p in self.ce_points(ce, 16) {
+                    for p in self.ce_points(ce, self.samples(ce)) {
                         let d = p - frame.o;
+                        if d.dot(frame.x).hypot(d.dot(frame.y)) < 1e-9 * (1.0 + d.len()) {
+                            continue; // on the pole axis: azimuth undefined
+                        }
                         let u = d.dot(frame.y).atan2(d.dot(frame.x));
                         if let Some(l) = last {
                             let mut du = u - l;
@@ -634,7 +780,7 @@ impl<'a> B<'a> {
 
     /// ACIS periodic faces have no seam edge: the two boundary loops of a
     /// cylinder / cone each wrap the axis. Join them with a seam line.
-    fn seam_wrapping(&mut self, fr: &Rec, surface: &Surface, mut loops: Vec<Vec<Ce>>) -> R<Vec<Vec<Ce>>> {
+    fn seam_wrapping(&mut self, fr: &Rec, surface: &Surface, sense: bool, mut loops: Vec<Vec<Ce>>) -> R<Vec<Vec<Ce>>> {
         if surface.periods().0.is_none() {
             return Ok(loops);
         }
@@ -642,6 +788,9 @@ impl<'a> B<'a> {
         let wrap: Vec<usize> = (0..loops.len()).filter(|&i| w[i] != 0).collect();
         if wrap.is_empty() {
             return Ok(loops);
+        }
+        if let Surface::Sphere { frame, r } = surface {
+            return self.sphere_seam(fr, surface, sense, loops, &wrap, &w);
         }
         let frame = match surface {
             Surface::Cylinder { frame, .. } | Surface::Cone { frame, .. } => frame.clone(),
@@ -682,12 +831,95 @@ impl<'a> B<'a> {
         }
         let seam = self.body.add_edge(curve, 0.0, len, va, vb);
         let mut joined = a;
-        joined.push(Ce { edge: seam, rev: false });
+        joined.push(Ce { edge: seam, rev: false, pole_jump: false });
         joined.extend(bl);
-        joined.push(Ce { edge: seam, rev: true });
+        joined.push(Ce { edge: seam, rev: true, pole_jump: false });
         let mut out = vec![joined];
         for (i, l) in loops.drain(..).enumerate() {
             if i != wrap[0] && i != wrap[1] {
+                out.push(l);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Sphere faces whose boundary circles wrap the pole axis: a cap (one
+    /// wrapping loop; a meridian seam runs from the loop to the pole and
+    /// back, the pole itself stays implicit as in a revolved sphere) or a
+    /// band (two wrapping loops joined by a meridian arc).
+    fn sphere_seam(&mut self, fr: &Rec, surface: &Surface, sense: bool, loops: Vec<Vec<Ce>>, wrap: &[usize], w: &[i32]) -> R<Vec<Vec<Ce>>> {
+        let Surface::Sphere { frame, r } = surface else { unreachable!() };
+        let (c, axis) = (frame.o, frame.z);
+        if wrap.iter().any(|&i| w[i].abs() != 1) || wrap.len() > 2 {
+            return Err(SatError::at("sat.unsupported", fr, format!("sphere face with {} wrapping loop(s) of winding {:?}", wrap.len(), wrap.iter().map(|&i| w[i]).collect::<Vec<_>>())));
+        }
+        let azimuth = |p: Vec3| -> R<Vec3> {
+            let d = p - c;
+            let h = d - axis * d.dot(axis);
+            if h.len() < 1e-9 * r.max(1.0) {
+                return Err(SatError::at("sat.geometry", fr, "sphere loop vertex sits on the pole axis"));
+            }
+            Ok(h.normalize())
+        };
+        let mut out: Vec<Vec<Ce>> = vec![];
+        if wrap.len() == 1 {
+            let ring = loops[wrap[0]].clone();
+            let va = self.ce_start(&ring[0]);
+            let pa = self.body.vertices[va.idx()].p;
+            let pts = self.ce_points(&ring[0], 8);
+            let tan = pts[1] - pts[0];
+            let nrm = if sense { (pa - c).normalize() } else { -(pa - c).normalize() };
+            let north = nrm.cross(tan).dot(axis) > 0.0;
+            let xdir = if north { axis } else { -axis };
+            let e = azimuth(pa)?;
+            let t0 = (pa - c).dot(e).atan2((pa - c).dot(xdir));
+            if !(t0 > 1e-9) {
+                return Err(SatError::at("sat.geometry", fr, "sphere cap loop lies on the pole"));
+            }
+            let pole = self.body.add_vertex(c + xdir * *r);
+            let seam = self.body.add_edge(Curve::circle_x(c, xdir.cross(e), xdir, *r), 0.0, t0, pole, va);
+            let mut joined = ring;
+            joined.push(Ce { edge: seam, rev: true, pole_jump: false });
+            joined.push(Ce { edge: seam, rev: false, pole_jump: true });
+            out.push(joined);
+        } else {
+            if w[wrap[0]] == w[wrap[1]] {
+                return Err(SatError::at("sat.orientation", fr, "both wrapping loops run the same way round the axis"));
+            }
+            let a = loops[wrap[0]].clone();
+            let mut bl = loops[wrap[1]].clone();
+            let va = self.ce_start(&a[0]);
+            let pa = self.body.vertices[va.idx()].p;
+            let ea = azimuth(pa)?;
+            let mut k = None;
+            for i in 0..bl.len() {
+                let p = self.body.vertices[self.ce_start(&bl[i]).idx()].p;
+                if azimuth(p)?.dist(ea) < 1e-6 {
+                    k = Some(i);
+                    break;
+                }
+            }
+            let k = k.ok_or_else(|| SatError::at("sat.unsupported", fr, "sphere band whose two loops have no vertices at a common azimuth (seam needs an edge split)"))?;
+            bl.rotate_left(k);
+            let vb = self.ce_start(&bl[0]);
+            let pb = self.body.vertices[vb.idx()].p;
+            let ang = |p: Vec3| (p - c).dot(ea).atan2((p - c).dot(axis));
+            let (ta, tb) = (ang(pa), ang(pb));
+            if (ta - tb).abs() < 1e-9 {
+                return Err(SatError::at("sat.geometry", fr, "zero-length seam"));
+            }
+            let curve = Curve::circle_x(c, axis.cross(ea), axis, *r);
+            let (lo, hi, vlo, vhi) = if ta < tb { (ta, tb, va, vb) } else { (tb, ta, vb, va) };
+            let seam = self.body.add_edge(curve, lo, hi, vlo, vhi);
+            let fwd_rev = ta > tb; // coedge va -> vb runs against the edge
+            let mut joined = a;
+            joined.push(Ce { edge: seam, rev: fwd_rev, pole_jump: false });
+            joined.extend(bl);
+            joined.push(Ce { edge: seam, rev: !fwd_rev, pole_jump: false });
+            out.push(joined);
+        }
+        for (i, l) in loops.into_iter().enumerate() {
+            if !wrap.contains(&i) {
                 out.push(l);
             }
         }
@@ -704,7 +936,7 @@ impl<'a> B<'a> {
             .map(|ring| {
                 let mut poly: Vec<Vec3> = vec![];
                 for ce in &ring {
-                    let mut p = self.ce_points(ce, 16);
+                    let mut p = self.ce_points(ce, self.samples(ce));
                     p.pop();
                     poly.extend(p);
                 }

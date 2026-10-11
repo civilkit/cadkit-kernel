@@ -28,6 +28,10 @@ pub struct Table {
     /// Millimetres per model unit (header line 3, first number).
     pub units: f64,
     pub version: u32,
+    /// Inline subtype definitions (`{ exactcur ... }`, `{ exppc ... }`, ...)
+    /// in file order, as (record ordinal, token index of the `{`). ACIS
+    /// `{ ref N }` points at entry N.
+    pub defs: Vec<(usize, usize)>,
 }
 
 fn is_index_prefix(s: &str) -> bool {
@@ -45,6 +49,15 @@ fn canon(ty: &str) -> String {
 }
 
 pub fn parse_table(text: &str) -> Result<Table, SatError> {
+    // old-Mac exports use CR-only line endings, Windows ones CRLF
+    let norm;
+    let text = if text.contains('\r') {
+        norm = text.replace("\r\n", "\n").replace('\r', "\n");
+        norm.as_str()
+    } else {
+        text
+    };
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut lines = text.split_inclusive('\n');
     let l1 = lines.next().ok_or_else(|| SatError::parse(1, "empty file"))?;
     let l2 = lines.next();
@@ -73,6 +86,12 @@ pub fn parse_table(text: &str) -> Result<Table, SatError> {
             t.remove(0);
         }
         t[0] = canon(&t[0]);
+        // ACIS >= ~20 writes a second integer after the entity id
+        // (`body $att -1 -1 $hist ...`); drop it so field offsets match 7.0.
+        // Attributes and transforms have their own layouts.
+        if !t[0].ends_with("attrib") && t[0] != "transform" && t.len() > 3 && !t[3].starts_with('$') && t[3].parse::<i64>().is_ok() {
+            t.remove(3);
+        }
         let idx = recs.len();
         recs.push(Rec { idx, line: ln, t });
     };
@@ -127,5 +146,13 @@ pub fn parse_table(text: &str) -> Result<Table, SatError> {
         }
     }
     finish(&mut cur, &mut recs, cur_line);
-    Ok(Table { recs, units, version })
+    let mut defs = vec![];
+    for r in &recs {
+        for (k, tok) in r.t.iter().enumerate() {
+            if tok == "{" && r.t.get(k + 1).map(|s| s.as_str()) != Some("ref") {
+                defs.push((r.idx, k));
+            }
+        }
+    }
+    Ok(Table { recs, units, version, defs })
 }

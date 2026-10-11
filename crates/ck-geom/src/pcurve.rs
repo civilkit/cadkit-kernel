@@ -185,10 +185,14 @@ pub fn exact_pcurve(surf: &Surface, c: &Curve, tol: f64) -> Option<Curve2> {
             | Surface::Cone { frame, .. }
             | Surface::Sphere { frame, .. }
             | Surface::Torus { frame, .. },
-            Curve::Circle { frame: cf, .. },
+            Curve::Circle { frame: cf, r: cr },
         ) => {
             // circle coaxial with the surface frame
             if cf.z.cross(frame.z).len() > tol || (cf.o - frame.o).cross(frame.z).len() > tol {
+                // great circle through the poles of a sphere: u const, v = ±t + φ0
+                if let Surface::Sphere { r, .. } = surf {
+                    return sphere_meridian(frame, *r, cf, *cr, tol);
+                }
                 return None;
             }
             let p0 = cf.o + cf.x * c.circle_info().unwrap().2;
@@ -201,6 +205,29 @@ pub fn exact_pcurve(surf: &Surface, c: &Curve, tol: f64) -> Option<Curve2> {
         }
         _ => None,
     }
+}
+
+/// Great circle of a sphere whose plane contains the sphere's axis (a
+/// meridian): exact line pcurve (u constant, v = φ0 ± t; v may run past the
+/// pole, the surface evaluation continues onto the opposite meridian).
+fn sphere_meridian(frame: &crate::Frame, r: f64, cf: &crate::Frame, cr: f64, tol: f64) -> Option<Curve2> {
+    if (cf.o - frame.o).len() > tol || (cr - r).abs() > tol || cf.z.dot(frame.z).abs() > tol {
+        return None;
+    }
+    let (xc, yc) = (cf.x, cf.z.cross(cf.x));
+    let mut h = xc - frame.z * xc.dot(frame.z);
+    if h.len() < 1e-6 {
+        h = yc - frame.z * yc.dot(frame.z);
+    }
+    if h.len() < 1e-6 {
+        return None;
+    }
+    let m = h.normalize();
+    let phi0 = xc.dot(frame.z).atan2(xc.dot(m));
+    let tangent = frame.z * phi0.cos() - m * phi0.sin();
+    let s = if yc.dot(tangent) > 0.0 { 1.0 } else { -1.0 };
+    let u = m.dot(frame.y).atan2(m.dot(frame.x));
+    Some(Curve2::Line { o: Vec2::new(u, phi0), d: Vec2::new(0.0, s) })
 }
 
 fn plane_conic(pf: &crate::Frame, cf: &crate::Frame, _a: f64, _b: f64, tol: f64) -> Option<(Vec2, Vec2, bool)> {

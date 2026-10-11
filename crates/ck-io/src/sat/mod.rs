@@ -17,6 +17,13 @@
 //! - periodic faces without seam edges (ACIS style) get a seam inserted on
 //!   cylinders / cones whose two boundary loops wrap the axis.
 //!
+//! - file dialects: CR / CRLF / LF line endings, `-N` record prefixes, the
+//!   extra id integer of ACIS >= ~20, `{ ref N }` shared spline definitions,
+//!   tolerant `tedge` / `tcoedge` / `tvertex`, rotate + uniform-scale +
+//!   translate body transforms (reflections / shears are rejected).
+//! - attributes, pcurves and other unread records are skipped and counted in
+//!   [`SatSummary::skipped`]; a file with no faces is a `sat.empty` error.
+//!
 //! Anything else is a structured [`SatError`] naming the record (`$N`) and
 //! entity type; the importer never panics on malformed input.
 
@@ -71,6 +78,21 @@ pub struct SatImport {
     pub sheet: bool,
     /// Millimetres per file unit (already applied to the geometry).
     pub units: f64,
+    pub summary: SatSummary,
+}
+
+/// What the importer saw and did (reported in the `importSat` result).
+#[derive(Debug, Clone, Default)]
+pub struct SatSummary {
+    pub version: u32,
+    pub records: usize,
+    pub bodies: usize,
+    pub lumps: usize,
+    pub shells: usize,
+    pub faces: usize,
+    /// Record types the importer does not read (attributes, pcurves, ...)
+    /// with their counts, sorted by name.
+    pub skipped: Vec<(String, usize)>,
 }
 
 /// Import the first/all `body` records of a SAT text into one [`Body`]
