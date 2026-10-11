@@ -8,3 +8,4 @@ edition = "2021"
 ck-core = { path = "../ck-core" }
 ck-geom = { path = "../ck-geom" }
 ck-topo = { path = "../ck-topo" }
+ck-json = { path = "../ck-json" }

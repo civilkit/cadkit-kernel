@@ -44,6 +44,7 @@ version = "0.1.0"
 dependencies = [
  "ck-core",
  "ck-geom",
+ "ck-json",
  "ck-topo",
 ]
 
@@ -81,6 +82,7 @@ dependencies = [
  "ck-io",
  "ck-json",
  "ck-model",
+ "ck-ops",
  "ck-server",
  "ck-tess",
  "ck-topo",

@@ -182,6 +182,7 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
             Ok(ck_topo::mass::mass_props_json(&s.body, bodies, ds.as_deref()))
         }
         "inspect" => inspect(cx),
+        "continuity" => Ok(ck_ops::continuity::reply(&snapshot(cx)?.body, &cx.msg)),
         "step" => {
             // Reply: the whole STEP file as one JSON string (oracle); `name`
             // defaults to "part". Void shells must be split out first.
