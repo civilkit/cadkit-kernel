@@ -263,7 +263,7 @@ pub fn ellipse_plane_params(f: &ck_geom::Frame, ra: f64, rb: f64, o: Vec3, n: Ve
     }
     let phi = b.atan2(a);
     let al = x.max(-1.0).min(1.0).acos();
-    if al < 1e-9 || al * ra.max(rb) < 1e-7 {
+    if al < 1e-9 || (ra != rb && al * ra.max(rb) < 1e-7) {
         vec![ck_geom::curve::wrap_angle(phi)]
     } else {
         let mut v = vec![ck_geom::curve::wrap_angle(phi - al), ck_geom::curve::wrap_angle(phi + al)];

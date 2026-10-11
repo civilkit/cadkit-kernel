@@ -56,12 +56,33 @@ pub fn uv_near(s: &Surface, p: Vec3, prev: Option<Vec2>) -> Vec2 {
     Vec2::new(u, v)
 }
 
+/// Samples per curve piece for the polygons of [`Solid`] (point
+/// classification): circles / ellipses get enough chords for a sag of
+/// ~1e-4 (24 chords sag 0.9% of the radius: a ray hit 0.4 inside the
+/// r = 49 hole of an annulus read as inside the face), capped at 720.
+fn samples_fine(c: &Curve, ta: f64, tb: f64) -> usize {
+    let r = match c {
+        Curve::Circle { r, .. } => *r,
+        Curve::Ellipse { a, b, .. } => a.max(*b),
+        _ => return samples_for(c),
+    };
+    let alpha = (2.0e-4 / r.max(1e-6)).sqrt().max(1e-6);
+    let full = ((std::f64::consts::PI / alpha).ceil() as usize).clamp(samples_for(c), 720);
+    // pieces shorter than a full turn need proportionally fewer
+    let frac = ((tb - ta).abs() / std::f64::consts::TAU).min(1.0);
+    ((full as f64 * frac).ceil() as usize).max(8)
+}
+
 /// uv polygon of a loop given as directed curve pieces `(curve, ta, tb)`.
 pub fn loop_polygon(s: &Surface, pieces: &[(&Curve, f64, f64)]) -> Vec<Vec2> {
+    loop_polygon_with(s, pieces, |c, _, _| samples_for(c))
+}
+
+fn loop_polygon_with(s: &Surface, pieces: &[(&Curve, f64, f64)], nfun: impl Fn(&Curve, f64, f64) -> usize) -> Vec<Vec2> {
     let mut out = vec![];
     let mut prev: Option<Vec2> = None;
     for &(c, ta, tb) in pieces {
-        let n = samples_for(c);
+        let n = nfun(c, ta, tb);
         for k in 0..n {
             let uv = uv_near(s, c.eval(ta + (tb - ta) * k as f64 / n as f64), prev);
             prev = Some(uv);
@@ -115,6 +136,15 @@ pub fn in_loops(s: &Surface, uv: Vec2, loops: &[Vec<Vec2>]) -> bool {
 
 /// Directed pieces of the loops of a body face.
 pub fn face_loops_uv(b: &Body, f: FaceId) -> Vec<Vec<Vec2>> {
+    face_loops_uv_with(b, f, |c, _, _| samples_for(c))
+}
+
+/// As [`face_loops_uv`] with the finer circle sampling of [`Solid`].
+fn face_loops_uv_fine(b: &Body, f: FaceId) -> Vec<Vec<Vec2>> {
+    face_loops_uv_with(b, f, samples_fine)
+}
+
+fn face_loops_uv_with(b: &Body, f: FaceId, nfun: impl Fn(&Curve, f64, f64) -> usize + Copy) -> Vec<Vec<Vec2>> {
     let face = b.face(f);
     face.loops
         .iter()
@@ -128,7 +158,7 @@ pub fn face_loops_uv(b: &Body, f: FaceId) -> Vec<Vec<Vec2>> {
                     (&b.edge(b.coedge(c).edge).curve, ta, tb)
                 })
                 .collect();
-            loop_polygon(&face.surface, &pieces)
+            loop_polygon_with(&face.surface, &pieces, nfun)
         })
         .collect()
 }
@@ -191,7 +221,7 @@ const RAYS: [[f64; 3]; 6] = [
 impl<'a> Solid<'a> {
     pub fn new(body: &'a Body, tol: f64) -> Solid<'a> {
         let faces: Vec<FaceId> = body.face_ids().collect();
-        let loops = faces.iter().map(|&f| face_loops_uv(body, f)).collect();
+        let loops = faces.iter().map(|&f| face_loops_uv_fine(body, f)).collect();
         let edges = faces.iter().map(|&f| body.face_edges(f)).collect();
         let boxes: Vec<crate::bvh::Aabb> = faces
             .iter()
@@ -277,7 +307,13 @@ impl<'a> Solid<'a> {
             let mut prev: Option<f64> = None;
             for t in ts {
                 if t.abs() <= self.tol * 10.0 {
-                    return None; // q on this surface (outside the face): ambiguous
+                    // q on this surface: outside the face there is no crossing
+                    // at the start of the ray (the fallback to the winding
+                    // number costs seconds); on its boundary / inside: ambiguous
+                    if self.in_face(i, q) == Where::Out {
+                        continue;
+                    }
+                    return None;
                 }
                 if t < 0.0 {
                     continue;

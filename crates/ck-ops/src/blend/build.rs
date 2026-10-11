@@ -316,6 +316,21 @@ pub struct BlendRef {
 /// - then per blend (selection order) its edges: spring on the forward
 ///   face, spring on the other face, end arc at v0, end arc at v1.
 pub fn in_place_layout(input: &Body, out: &Body, refs: &[BlendRef], tol: f64) -> Body {
+    in_place_layout_opts(input, out, refs, tol, &LayoutOpts::default())
+}
+
+/// Overrides of the in-place numbering (vertex chamfer: three slots are
+/// reserved right after the input's and handed to the trimmed edges by their
+/// vertex-edge order).
+#[derive(Debug, Clone, Default)]
+pub struct LayoutOpts {
+    /// Dead / reserved slots after the input's (None: two per junction).
+    pub reserve: Option<usize>,
+    /// (input slot, slot of its kept piece when the edge is trimmed at its start).
+    pub piece_slots: Vec<(usize, usize)>,
+}
+
+pub fn in_place_layout_opts(input: &Body, out: &Body, refs: &[BlendRef], tol: f64, opts: &LayoutOpts) -> Body {
     let (in_slots, n_in) = input.wire_numbered();
     let out_chains = out.wire_chains();
     let names = |b: &Body, e: EdgeId| {
@@ -362,7 +377,7 @@ pub fn in_place_layout(input: &Body, out: &Body, refs: &[BlendRef], tol: f64) ->
             }
         }
     }
-    let mut next = n_in + 2 * junctions;
+    let mut next = n_in + opts.reserve.unwrap_or(2 * junctions);
     for (i, (s, ich)) in in_slots.iter().enumerate() {
         if used_in[i] || ich.len() != 1 {
             continue;
@@ -394,7 +409,11 @@ pub fn in_place_layout(input: &Body, out: &Body, refs: &[BlendRef], tol: f64) ->
         bounds.extend(cuts);
         bounds.push(ie.t1);
         for (j, w) in bounds.windows(2).enumerate() {
-            let slot = if j == 0 { *s } else {
+            let slot = if j == 0 {
+                *s
+            } else if let Some(&(_, forced)) = opts.piece_slots.iter().find(|(is, _)| is == s) {
+                forced
+            } else {
                 next += 1;
                 next - 1
             };
@@ -544,12 +563,15 @@ pub fn in_place_layout(input: &Body, out: &Body, refs: &[BlendRef], tol: f64) ->
     res
 }
 
-#[cfg(test)]
+/// Azimuth (rad) of a revolved blend tool's seam from the edge's start.
+const SEAM_ANGLE: f64 = 1.0;
+
+/// `CK_BLEND_DEBUG=1` prints why a blend gave up (native runs only).
 fn dbg_fail(m: &str) {
-    eprintln!("blend fail: {m}");
+    if std::env::var_os("CK_BLEND_DEBUG").is_some() {
+        eprintln!("blend fail: {m}");
+    }
 }
-#[cfg(not(test))]
-fn dbg_fail(_: &str) {}
 
 /// One straight edge between two planar faces.
 pub fn fillet_line_edge(b: &Body, e: EdgeId, faces: [FaceId; 2], r: f64, feature: &str, k: u32, tol: f64) -> Result<Body, BlendError> {
@@ -646,6 +668,16 @@ fn blend_edge_hint(
             ck_geom::frame_from(c, rad.cross(axis), rad)
         }
     };
+    // a revolved tool's seam plane sits at an arbitrary azimuth: with the seam
+    // on a hole-pattern axis the ray classifier of the boolean loses a hole
+    let fr_tool = match circ {
+        None => fr,
+        Some((c, axis)) => {
+            let rad = (p0 - c).normalize();
+            let rt = rad * SEAM_ANGLE.cos() + axis.cross(rad) * SEAM_ANGLE.sin();
+            ck_geom::frame_from(c, rt.cross(axis), rt)
+        }
+    };
     let uv = |p: Vec3| {
         let q = fr.world_to_uv(p);
         Vec2::new(q.x, q.y)
@@ -671,7 +703,7 @@ fn blend_edge_hint(
         };
         ProfileLoop::new(vec![ProfileSeg::line("l2", t2, cp), ProfileSeg::line("l1", cp, t1), arc])
     };
-    let prof = Profile::new(fr, vec![ProfileRegion { outer: lp, holes: vec![] }]).normalized();
+    let prof = Profile::new(fr_tool, vec![ProfileRegion { outer: lp, holes: vec![] }]).normalized();
     let made = match circ {
         None => extrude(feature, &prof, ExtrudeOpts { s0: 0.0, s1: len + 2.0 * margin, dir: None, draft: 0.0 }),
         Some((c, axis)) => ck_topo::make::revolve::revolve(feature, &prof, c, axis, 0.0, std::f64::consts::TAU),
@@ -686,11 +718,6 @@ fn blend_edge_hint(
         }
     }
     let op = if convex { Op::Cut } else { Op::Union };
-    let arr = imprint(b, &tool, tol);
-    let mut faces_out = select(&arr, [b, &tool], op).map_err(|e| {
-        dbg_fail(&format!("select: {e:?}"));
-        BlendError::code("blendFailed")
-    })?;
     // order: untouched; edge faces (ref order), end faces (start, end);
     // other touched faces; blend
     let ends: Vec<FaceId> = [ed.v0, ed.v1]
@@ -710,6 +737,17 @@ fn blend_edge_hint(
             hint.push(id);
         }
     }
+    apply_tool(b, &tool, op, &name, hint, tol)
+}
+
+/// Boolean `b op tool`, faces ordered untouched / `hint` (touched, in that
+/// order) / the tool's new faces; returns the body and the hint.
+pub(super) fn apply_tool(b: &Body, tool: &Body, op: Op, name: &FaceName, hint: Vec<String>, tol: f64) -> Result<(Body, Vec<String>), BlendError> {
+    let arr = imprint(b, tool, tol);
+    let mut faces_out = select(&arr, [b, tool], op).map_err(|e| {
+        dbg_fail(&format!("select: {e:?}"));
+        BlendError::code("blendFailed")
+    })?;
     for f in &mut faces_out {
         if f.group == 1 {
             let mut base = f.name.clone();
@@ -729,7 +767,7 @@ fn blend_edge_hint(
         }
     }
     faces_out.sort_by_key(|f| f.key);
-    if !faces_out.iter().any(|f| f.name == name) {
+    if !faces_out.iter().any(|f| f.name == *name) {
         dbg_fail("no blend face in result");
         return Err(BlendError::code("blendFailed"));
     }
@@ -739,6 +777,20 @@ fn blend_edge_hint(
         .any(|i| matches!(i, ck_topo::check::Issue::OpenEdge(_) | ck_topo::check::Issue::BrokenLoop(..)));
     if bad {
         dbg_fail(&format!("check: {:?}", ck_topo::check::check(&body, tol)));
+        if std::env::var_os("CK_BLEND_DEBUG").is_some() {
+            eprintln!("  in : {:?}", b.face_ids().map(|f| b.face_id_str(f)).collect::<Vec<_>>());
+            eprintln!("  out: {:?}", body.face_ids().map(|f| body.face_id_str(f)).collect::<Vec<_>>());
+            for i in ck_topo::check::check(&body, tol) {
+                if let ck_topo::check::Issue::OpenEdge(e) = i {
+                    let ed = body.edge(e);
+                    eprintln!(
+                        "  open {:?} {} t=({:.6},{:.6}) a={:?} b={:?} faces={:?}",
+                        e, ed.curve.kind(), ed.t0, ed.t1, body.vertex(ed.v0).p, body.vertex(ed.v1).p,
+                        body.edge_faces(e).iter().map(|&f| body.face_id_str(f)).collect::<Vec<_>>()
+                    );
+                }
+            }
+        }
         return Err(BlendError::code("blendFailed"));
     }
     Ok((body, hint))
