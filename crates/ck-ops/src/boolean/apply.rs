@@ -196,10 +196,10 @@ mod tests {
         // edge keys: oracle has the 12 box edges + two circles C0|F4, C1|F4
         let wire: Vec<String> = r
             .body
-            .wire_edges()
+            .wire_chains()
             .iter()
-            .map(|&e| {
-                let fs = r.body.edge_faces(e);
+            .map(|ch| {
+                let fs = r.body.edge_faces(ch[0]);
                 let mut ids: Vec<String> = fs.iter().map(|&f| r.body.face_id_str(f)).collect();
                 ids.sort();
                 ids.join("|")

@@ -791,6 +791,19 @@ impl Body {
                     }
                 }
             }
+            // a closed ring of one conic starts where its parameter run
+            // starts: the piece whose t0 is no other piece's t1 (ck-ops
+            // imprint gives closed SSI circles the range [0.62·2π − 2π,
+            // 0.62·2π] and our seam splits it at 0; a ring split at t
+            // inside [0, 2π] keeps its original start)
+            let n = chain.len();
+            if n > 1 && self.edges[chain[0].idx()].v0 == self.edges[chain[n - 1].idx()].v1 {
+                let ends: Vec<f64> = chain.iter().map(|&c| self.edges[c.idx()].t1).collect();
+                let starts: Vec<usize> = (0..n).filter(|&k| !ends.contains(&self.edges[chain[k].idx()].t0)).collect();
+                if starts.len() == 1 {
+                    chain.rotate_left(starts[0]);
+                }
+            }
             out.push(chain);
         }
         out
@@ -819,6 +832,17 @@ impl Body {
     pub fn chain_mid(&self, chain: &[EdgeId]) -> Vec3 {
         if chain.len() == 1 {
             return self.edge_mid(chain[0]);
+        }
+        // pieces of one conic with contiguous parameters: the mid parameter
+        // of the whole run (what the oracle's single edge reports)
+        let (f, l) = (&self.edges[chain[0].idx()], &self.edges[chain[chain.len() - 1].idx()]);
+        if matches!(f.curve, Curve::Circle { .. } | Curve::Ellipse { .. })
+            && chain.windows(2).all(|w| {
+                let (a, b) = (&self.edges[w[0].idx()], &self.edges[w[1].idx()]);
+                a.curve == b.curve && a.t1 == b.t0
+            })
+        {
+            return f.curve.eval(0.5 * (f.t0 + l.t1));
         }
         let lens: Vec<f64> = chain.iter().map(|&e| self.edge_length(e)).collect();
         let mut half = 0.5 * lens.iter().sum::<f64>();

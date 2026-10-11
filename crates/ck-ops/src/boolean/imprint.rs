@@ -143,6 +143,19 @@ pub fn dist_in_range(c: &Curve, r: (f64, f64), p: Vec3) -> (f64, f64) {
 /// a cap disk's box is 2e-5 + 2·1e-6 thick in the oracle's BVH dump).
 const EDGE_TOL: f64 = 1e-5;
 
+/// Parameter range of a CLOSED intersection conic that no boundary cuts:
+/// [−0.38·2π − 1e-9, +2π] of its frame, i.e. it starts at 0.62·2π (oracle:
+/// box C0 ∩ through hole r2 at (5,5) starts at (3.542062743788083, 0,
+/// −3.6309057896005594) = angle −0.38·τ − 1e-9 of the cylinder frame bit
+/// for bit, mid at 0.7539822358615504; same for r3 / r11.25 / r1.7 circles
+/// on top / front sketches). Our periodic faces keep a seam, so
+/// the edge is split there too; ck-topo `wire_chains` rotates the merged
+/// ring to start at this vertex.
+pub fn closed_start(period: f64) -> (f64, f64) {
+    let t0 = -0.38 * std::f64::consts::TAU - 1e-9;
+    (t0, t0 + period)
+}
+
 /// Build the arrangement of `a` (side 0) and `b` (side 1).
 pub fn imprint(a: &Body, b: &Body, tol: f64) -> Arrangement {
     let bodies = [a, b];
@@ -167,6 +180,7 @@ pub fn imprint(a: &Body, b: &Body, tol: f64) -> Arrangement {
         eprintln!("pairs {:?}", ta.overlap_pairs_ordered(&tb, pad));
     }
     let mut cuts: Vec<CutSeg> = vec![];
+    let mut extra: Vec<Vec3> = vec![];
     for (i, j) in ta.overlap_pairs_ordered(&tb, pad) {
         // the SSI / trim bounds keep the old, wider slack
         let (bi, bj) = (boxes_a[i], boxes_b[j]);
@@ -194,7 +208,37 @@ pub fn imprint(a: &Body, b: &Body, tol: f64) -> Arrangement {
                 for c in cs {
                     let curve = c.curve().clone();
                     let r = curve.range();
-                    for (t0, t1) in trim(&curve, r, &[(a, f), (b, g)], &bx, tol, false) {
+                    let kept = trim(&curve, r, &[(a, f), (b, g)], &bx, tol, false);
+                    let whole = kept.len() == 1 && curve.period().map_or(false, |p| (kept[0].1 - kept[0].0 - p).abs() <= 1e-9);
+                    for (t0, t1) in kept {
+                        // (a cut that is an existing edge keeps that edge's start)
+                        let on_existing = whole
+                            && [(a, f), (b, g)].iter().any(|&(bd, fc)| {
+                                bd.face_edges(fc).into_iter().any(|e| {
+                                    let ed = bd.edge(e);
+                                    [0.13, 0.41, 0.77].iter().all(|&k| {
+                                        let q = curve.eval(t0 + (t1 - t0) * k);
+                                        dist_in_range(&ed.curve, (ed.t0, ed.t1), q).1 <= tol
+                                    })
+                                })
+                            });
+                        let (t0, t1) = if whole && !on_existing && matches!(curve, Curve::Circle { .. } | Curve::Ellipse { .. }) {
+                            // keep the old start as a split point where a
+                            // boundary edge (our seam) crosses it
+                            let p = curve.eval(t0);
+                            let on_edge = [(a, f), (b, g)].iter().any(|&(bd, fc)| {
+                                bd.face_edges(fc).into_iter().any(|e| {
+                                    let ed = bd.edge(e);
+                                    dist_in_range(&ed.curve, (ed.t0, ed.t1), p).1 <= tol
+                                })
+                            });
+                            if on_edge {
+                                extra.push(p);
+                            }
+                            closed_start(t1 - t0)
+                        } else {
+                            (t0, t1)
+                        };
                         cuts.push(CutSeg { curve: curve.clone(), t0, t1, faces: vec![(0, f), (1, g)] });
                     }
                 }
@@ -215,6 +259,7 @@ pub fn imprint(a: &Body, b: &Body, tol: f64) -> Arrangement {
         pts.push(c.curve.eval(c.t0));
         pts.push(c.curve.eval(c.t1));
     }
+    pts.extend(extra.iter().copied());
     for &p in &pts {
         arr.vertex(p);
     }
@@ -371,12 +416,15 @@ mod tests {
         let a = box_body("F2", 0.0, 0.0, 40.0, 20.0, 0.0, 10.0);
         let b = cyl_body("F4", 20.0, 10.0, 5.0, -1.0, 11.0);
         let arr = imprint(&a, &b, 1e-6);
-        // C0 and C1 of the box get one inner circle each; the tool
+        // C0 and C1 of the box get one inner circle each (two pieces: it
+        // starts at 0.62·2π and our tool seam splits it at 0); the tool
         // cylinder gets both circles inside
         let c0 = arr.faces.iter().find(|f| f.side == 0 && f.name.id() == "F2.C0").unwrap();
-        assert_eq!(c0.inner.len(), 1);
+        assert_eq!(c0.inner.len(), 2);
+        let (t0, _) = closed_start(std::f64::consts::TAU);
+        assert!(c0.inner.iter().any(|&e| arr.edges[e].t0 == t0));
         let side = arr.faces.iter().find(|f| f.side == 1 && f.name.id() == "F4.S.e1").unwrap();
-        assert_eq!(side.inner.len(), 2);
+        assert_eq!(side.inner.len(), 4);
         assert!(side.touched());
         let s1 = arr.faces.iter().find(|f| f.side == 0 && f.name.id() == "F2.S.e1").unwrap();
         assert!(!s1.touched());
