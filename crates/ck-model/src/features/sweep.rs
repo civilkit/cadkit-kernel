@@ -193,5 +193,16 @@ pub fn exec_sweep(br: &Brep, state: &RegenState, f: &Feature) -> Result<Tool, Fe
     // `twist` is in degrees (f626: twist * pi / 180)
     let twist = state.num(f, "twist", 0.0)?.to_radians();
     let body = ck_ops::sweep::sweep(&f.id, &profile, &segs, twist).map_err(|e| FeatureError::new(&e))?;
+    // GUESS/guard: ck-ops booleans cannot yet assemble results against the
+    // spline faces of a screw sweep (probe: trapezoid groove cut into a bored
+    // tube -> imprint leaves the cut-plane arcs of the cylinder face out, the
+    // result has open edges -> booleanFailed after minutes of marching on a
+    // 7-19 turn tool). Fail fast with the same kind of TODO code instead.
+    if SPLINE_TOOL_NEEDS_BOOLEAN && br.body.is_some() && body.face_ids().any(|f| matches!(body.face(f).surface, ck_geom::surface::Surface::BSpline(_))) {
+        return Err(FeatureError::new(&todo("boolean with a swept spline (screw) tool")));
+    }
     Ok(Tool { body, combine, recipe: None })
 }
+
+/// Set to `false` once ck-ops booleans handle helical spline tools.
+const SPLINE_TOOL_NEEDS_BOOLEAN: bool = true;

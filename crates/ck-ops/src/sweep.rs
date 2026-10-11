@@ -508,6 +508,23 @@ mod tests {
     }
 
     #[test]
+    fn orbit_accuracy() {
+        let sc = Screw { o: Vec3::ZERO, a: Vec3::Z, angle: 3.0 * std::f64::consts::TAU, rise: 6.0 };
+        let p = Vec3::new(4.5, 0.0, 0.3);
+        for per_rev in [24.0, 48.0, 96.0, 192.0] {
+            let n = (per_rev * 3.0) as usize;
+            let phis: Vec<f64> = (0..=n).map(|i| sc.angle * i as f64 / n as f64).collect();
+            let c = orbit(&sc, p, &phis).unwrap();
+            let mut worst: f64 = 0.0;
+            for k in 0..=4000 {
+                let u = sc.angle * k as f64 / 4000.0;
+                worst = worst.max(c.eval(u).dist(sc.pt(u, p)));
+            }
+            eprintln!("per_rev {per_rev}: max deviation {worst:e}");
+        }
+    }
+
+    #[test]
     fn profile_not_normal() {
         let l = ProfileLoop::new(vec![
             ProfileSeg::line("e1", Vec2::new(0.0, 0.0), Vec2::new(1.0, 0.0)),
@@ -541,5 +558,40 @@ mod tests {
         let t = std::time::Instant::now();
         let r = boolean(&tube, &tool, Op::Cut, 1e-6);
         eprintln!("cut {:?} in {:?}", r.as_ref().map(|o| o.body.num_faces()), t.elapsed());
+        if r.is_err() {
+            use crate::boolean::{assemble, imprint};
+            let a1 = crate::boolean::apply::relocate_seams(&tube, &tool, crate::boolean::classify::Class::In, 1e-6);
+            let b1 = crate::boolean::apply::relocate_seams(&tool, &tube, crate::boolean::classify::Class::Out, 1e-6);
+            let arr = imprint::imprint(&a1, &b1, 1e-6);
+            eprintln!("imprint: interacting {}", arr.interacting_pairs);
+            match assemble::select(&arr, [&a1, &b1], Op::Cut) {
+                Err(e) => eprintln!("select failed: {e}"),
+                Ok(faces) => {
+                    let body = assemble::build(&arr, &faces);
+                    eprintln!("built {} faces; issues {:?}", body.num_faces(), check(&body, 1e-6));
+                    for e in body.edge_ids() {
+                        let ed = body.edge(e);
+                        let fs: Vec<_> = body.edge_faces(e).iter().map(|&f| body.face_id_str(f)).collect();
+                        let kind = match &ed.curve {
+                            Curve::Line { .. } => "line",
+                            Curve::Circle { .. } => "circle",
+                            Curve::BSpline(_) => "bspline",
+                            _ => "other",
+                        };
+                        eprintln!(
+                            "  e{} {} t[{:.4},{:.4}] {:?} -> {:?} faces {:?} coedges {}",
+                            e.idx(),
+                            kind,
+                            ed.t0,
+                            ed.t1,
+                            body.vertex(ed.v0).p,
+                            body.vertex(ed.v1).p,
+                            fs,
+                            body.edge_coedges(e).len()
+                        );
+                    }
+                }
+            }
+        }
     }
 }

@@ -288,6 +288,18 @@ impl BSplineSurface {
                 (v, cell_v(v))
             })
             .collect();
+        // grid evaluation without the derivative machinery (non-rational)
+        let fast = self.weights.is_none();
+        let bv: Vec<(usize, Vec<f64>)> = if fast {
+            vs.iter()
+                .map(|&(v, _)| {
+                    let s = find_span(self.nv - 1, pv, v, &self.knots_v);
+                    (s, basis::basis_funs(s, v, pv, &self.knots_v))
+                })
+                .collect()
+        } else {
+            vec![]
+        };
         let mut rows: Vec<(f64, usize, f64, usize)> = (0..=nu)
             .map(|a| {
                 let u = u0 + (u1 - u0) * a as f64 / nu as f64;
@@ -301,11 +313,28 @@ impl BSplineSurface {
             if row_lb >= best.0 {
                 break;
             }
-            for &(v, iv) in &vs {
+            let (su, bu) = if fast {
+                let s = find_span(self.nu - 1, pu, u, &self.knots_u);
+                (s, basis::basis_funs(s, u, pu, &self.knots_u))
+            } else {
+                (0, vec![])
+            };
+            for (k, &(v, iv)) in vs.iter().enumerate() {
                 if lb[iu * cv + iv] >= best.0 {
                     continue;
                 }
-                let d = self.eval(u, v).dist(q);
+                let d = if fast {
+                    let (sv, ref bvk) = bv[k];
+                    let mut p = Vec3::ZERO;
+                    for (i, &wu) in bu.iter().enumerate() {
+                        for (j, &wv) in bvk.iter().enumerate() {
+                            p = p + self.cp(su - pu + i, sv - pv + j) * (wu * wv);
+                        }
+                    }
+                    p.dist(q)
+                } else {
+                    self.eval(u, v).dist(q)
+                };
                 if d < best.0 {
                     best = (d, u, v);
                 }
