@@ -570,7 +570,7 @@ fn extend_open_edge(
     tol: f64,
 ) -> Result<(), ThickenError> {
     let se = sheet.edge(e);
-    let (mut curve, mut t0, mut t1) = translate_curve(&se.curve, se.t0, se.t1, nf.scale(d));
+    let (curve, mut t0, mut t1) = translate_curve(&se.curve, se.t0, se.t1, nf.scale(d));
     for end in [0usize, 1] {
         let te = if end == 0 { se.t0 } else { se.t1 };
         let p = se.curve.eval(te);
