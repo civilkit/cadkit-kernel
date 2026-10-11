@@ -482,14 +482,17 @@ pub fn select(arr: &Arrangement, bodies: [&Body; 2], op: Op) -> Result<Vec<OutFa
         if members.iter().all(|&m| kept[m].0.af == kept[lead].0.af) && members.len() == n_frags[kept[lead].0.af] {
             let flip = kept[lead].1;
             let whole = Fragment { af: kept[lead].0.af, loops: af.bound.clone(), order: 0, whole: true, class: None };
+            // listed with the merged faces (oracle mirrorTwo: F2.C0, which
+            // a boss standing on it splits and rejoins, comes last); its
+            // edges are still walked at the face's own position
             let group = af.side * 2;
             out.push(OutFace {
                 surface: af.surface.clone(),
                 sense,
                 name: af.name.clone(),
                 loops: loops_of(&whole, flip),
-                group,
-                key: (group, whole.af, 0),
+                group: 4,
+                key: (4, whole.af, 0),
                 walk: vec![((group, whole.af, 0), whole.loops.clone())],
             });
             continue;

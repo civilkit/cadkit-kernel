@@ -62,8 +62,11 @@ pub fn boolean(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> 
     let faces = select(&arr, [a, b], op)?;
     // nothing removed from A and nothing added from B → unchanged
     let a_faces = a.num_faces();
-    let untouched_a = faces.iter().filter(|f| f.group == 0).count();
-    if op == Op::Cut && untouched_a == a_faces && faces.iter().all(|f| f.group == 0) {
+    // (a face split by an imprint and rejoined is listed with the merged
+    // faces but walked as untouched)
+    let whole_a = |f: &super::assemble::OutFace| f.group == 0 || (f.group == 4 && f.walk.len() == 1 && f.walk[0].0 .0 == 0);
+    let untouched_a = faces.iter().filter(|f| whole_a(f)).count();
+    if op == Op::Cut && untouched_a == a_faces && faces.iter().all(|f| whole_a(f)) {
         return Ok(BoolOut { body: a0.clone(), no_effect: true });
     }
     let body = build(&arr, &faces);
