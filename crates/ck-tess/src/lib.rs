@@ -20,6 +20,8 @@ macro_rules! tr {
     };
 }
 pub mod cdt;
+pub mod comb;
+pub mod curvmap;
 pub mod curvature;
 pub mod face;
 pub mod mesh;
