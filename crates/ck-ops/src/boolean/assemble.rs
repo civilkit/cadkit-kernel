@@ -610,72 +610,12 @@ pub fn build(arr: &Arrangement, faces: &[OutFace]) -> Body {
     b
 }
 
-/// Wire-level edge chains: consecutive wire edges on the same carrier
-/// curve with the same face pair, joined at vertices whose only other
-/// edges are seams, form ONE oracle edge (the original kernel's periodic
-/// faces have no seam edges, so it never splits an arc where our seam
-/// lands; probe `boss`: the boss's bottom arc outside the box is a single
-/// edge `F2.C0|F4.S.e1` running through the seam point (43,0,-10)).
-/// Returns chains in wire order (each chain ordered head to tail); a
-/// wire exporter should emit one edge per chain (pts concatenated, `mid`
-/// at the chain's mid-parameter).
+/// Wire-level edge chains (seam-split arcs = one oracle edge; probe
+/// `boss`: the boss's bottom arc outside the box is a single edge
+/// `F2.C0|F4.S.e1` running through the seam point (43,0,-10)). Moved to
+/// ck-topo [`Body::wire_chains`], which `Body::edges_json` now uses.
 pub fn wire_chains(b: &Body) -> Vec<Vec<ck_topo::body::EdgeId>> {
-    use ck_topo::body::EdgeId;
-    let wire = b.wire_edges();
-    let pair = |e: EdgeId| {
-        let mut f = b.edge_faces(e);
-        f.sort();
-        f
-    };
-    let seam_only = |v: ck_topo::body::VertexId, a: EdgeId, c: EdgeId| {
-        b.edge_ids().all(|e| e == a || e == c || (b.edge(e).v0 != v && b.edge(e).v1 != v) || b.is_seam(e))
-    };
-    let same_carrier = |a: EdgeId, c: EdgeId| {
-        let (x, y) = (&b.edge(a).curve, &b.edge(c).curve);
-        match (x, y) {
-            (Curve::Circle { frame: f, r }, Curve::Circle { frame: g, r: s }) => {
-                (f.o - g.o).len() < 1e-9 && (r - s).abs() < 1e-9 && f.z.dot(g.z) > 1.0 - 1e-12
-            }
-            (Curve::Line { o, d }, Curve::Line { o: p, d: q }) => d.cross(*q).len() < 1e-12 && (*p - *o).cross(*d).len() < 1e-9,
-            _ => x == y,
-        }
-    };
-    let mut used = vec![false; b.edges.len()];
-    let mut out = vec![];
-    for &e in &wire {
-        if used[e.idx()] {
-            continue;
-        }
-        used[e.idx()] = true;
-        let mut chain = vec![e];
-        // extend forward (from v1) then backward (from v0)
-        for fwd in [true, false] {
-            loop {
-                let end = if fwd { *chain.last().unwrap() } else { chain[0] };
-                let v = if fwd { b.edge(end).v1 } else { b.edge(end).v0 };
-                let next = wire.iter().copied().find(|&n| {
-                    !used[n.idx()]
-                        && (if fwd { b.edge(n).v0 } else { b.edge(n).v1 }) == v
-                        && pair(n) == pair(end)
-                        && same_carrier(n, end)
-                        && seam_only(v, n, end)
-                });
-                match next {
-                    Some(n) => {
-                        used[n.idx()] = true;
-                        if fwd {
-                            chain.push(n)
-                        } else {
-                            chain.insert(0, n)
-                        }
-                    }
-                    None => break,
-                }
-            }
-        }
-        out.push(chain);
-    }
-    out
+    b.wire_chains()
 }
 
 /// Copy of `b` with faces in `order` (live faces not listed are dropped);

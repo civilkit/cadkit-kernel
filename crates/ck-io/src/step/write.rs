@@ -169,6 +169,8 @@ pub struct StepWriter {
     edges: HashMap<EdgeId, usize>,
     /// print -0 DIRECTION components as `-0.` (test support)
     signed_zero: bool,
+    /// member edge -> (head, tail) of its seam-split chain (len > 1 only)
+    chain: HashMap<EdgeId, (EdgeId, EdgeId)>,
 }
 
 impl Default for StepWriter {
@@ -186,6 +188,7 @@ impl StepWriter {
             verts: HashMap::new(),
             edges: HashMap::new(),
             signed_zero: false,
+            chain: HashMap::new(),
         }
     }
 
@@ -439,12 +442,15 @@ impl StepWriter {
     }
 
     fn edge(&mut self, body: &Body, e: EdgeId) -> usize {
+        // a seam-split arc (ck-topo `wire_chains`) is ONE oracle edge: the
+        // head's curve from the head's start to the tail's end vertex
+        let (e, tail) = self.chain.get(&e).copied().unwrap_or((e, e));
         if let Some(&i) = self.edges.get(&e) {
             return i;
         }
         let ed = body.edge(e);
         let a = self.vertex(body, ed.v0);
-        let b = self.vertex(body, ed.v1);
+        let b = self.vertex(body, body.edge(tail).v1);
         // Oracle LINE location = the edge start point (draft rails).
         // GUESS: lines are re-anchored at t0, other curves written as is.
         let c = match &ed.curve {
@@ -485,8 +491,23 @@ impl StepWriter {
         let outer = if matches!(face.surface, Surface::Plane { .. }) { outer_piece(body, f, &pieces) } else { None };
         let mut bounds = Vec::new();
         for (k, piece) in pieces.iter().enumerate() {
-            let mut oes = Vec::new();
+            // collapse runs of coedges on one chain (also across the loop
+            // start) into one ORIENTED_EDGE
+            let head = |c: CoedgeId| {
+                let e = body.coedge(c).edge;
+                self.chain.get(&e).map_or(e, |h| h.0)
+            };
+            let mut cs: Vec<CoedgeId> = Vec::new();
             for &c in piece {
+                if cs.last().map_or(true, |&p| head(p) != head(c)) {
+                    cs.push(c);
+                }
+            }
+            if cs.len() > 1 && head(cs[0]) == head(*cs.last().unwrap()) {
+                cs.pop();
+            }
+            let mut oes = Vec::new();
+            for c in cs {
                 let ce = body.coedge(c);
                 let e = self.edge(body, ce.edge);
                 oes.push(self.oriented(e, !ce.rev));
@@ -666,6 +687,11 @@ fn write_step_impl(body: &Body, name: &str, opts: &StepOpts, signed_zero: bool) 
     let nm = string(name);
     let mut w = StepWriter::new();
     w.signed_zero = signed_zero;
+    for ch in body.wire_chains().into_iter().filter(|c| c.len() > 1) {
+        for &e in &ch {
+            w.chain.insert(e, (ch[0], *ch.last().unwrap()));
+        }
+    }
     w.ent("APPLICATION_CONTEXT('core data for automotive mechanical design processes')");
     w.ent("APPLICATION_PROTOCOL_DEFINITION('international standard','automotive_design',2000,#1)");
     w.ent("PRODUCT_CONTEXT('',#1,'mechanical')");
