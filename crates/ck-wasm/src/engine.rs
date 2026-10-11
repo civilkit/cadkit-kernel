@@ -157,6 +157,10 @@ fn import_hook(cx: &mut Cx, _name: &str, data: &str) -> Result<(Json, Option<Sta
             }
             let snap = Snapshot { body, sketches: vec![], asm: Default::default() };
             Ok((out, Some(State { has_body: true, data: Some(Box::new(snap)) })))
+        }
+    }
+}
+
 /// `importSat`: ACIS SAT text -> body snapshot. Reply = regen-shaped result
 /// (`errors`, `body`, ...) plus `import` {format, name, units, sheet, faces}.
 fn import_sat_hook(cx: &mut Cx) -> Result<(Json, Option<State>), String> {
