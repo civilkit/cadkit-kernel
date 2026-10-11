@@ -27,6 +27,8 @@ use std::cell::RefCell;
 /// The build id the original reports.
 pub const COMMIT: &str = "class-a-surfacing da3c6f49122f7955186a15d91471699f37e7fcf5";
 
+pub mod engine;
+
 #[cfg(target_arch = "wasm32")]
 mod host {
     #[link(wasm_import_module = "env")]
@@ -73,6 +75,7 @@ fn init() {
         }));
         ck_server::clock::set_now(now);
         ck_server::clock::set_unix_ms(unix_ms);
+        engine::install();
     });
 }
 

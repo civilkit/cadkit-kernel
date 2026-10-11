@@ -4,20 +4,25 @@
 // (both hosts' clocks return 0, so ms only differs if the rebuild times
 // differently).
 //
-// usage: node tools/diff.mjs [--wasm path] [--verbose] [--file bodies.json] ['<body>' ...]
+// usage: node tools/diff.mjs [--wasm path] [--verbose] [--cases name] [--file bodies.json] ['<body>' ...]
+//   --cases brep  uses tools/brep_cases.mjs instead of tools/cases.mjs; a case's
+//                 `ignore: [i]` lists bodies that are run but not compared
 //   default rebuilt wasm: target/wasm32-unknown-unknown/release/ck_wasm.wasm
 //   (build: cargo build -p ck-wasm --target wasm32-unknown-unknown --release)
 import { readFileSync } from 'node:fs';
-import cases from './cases.mjs';
+import defaultCases from './cases.mjs';
 import { Kernel } from './kernel.mjs';
 
 const args = process.argv.slice(2);
 let rebuilt = new URL('../target/wasm32-unknown-unknown/release/ck_wasm.wasm', import.meta.url);
-let verbose = false; const extra = [];
+let verbose = false; const extra = []; let cases = defaultCases;
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--wasm') rebuilt = args[++i];
   else if (args[i] === '--verbose') verbose = true;
-  else if (args[i] === '--file') extra.push(...JSON.parse(readFileSync(args[++i], 'utf8')).map((b) => (typeof b === 'string' ? b : JSON.stringify(b))));
+  else if (args[i] === '--cases') cases = (await import(`./${args[++i]}_cases.mjs`)).default;
+  // --file: a JSON array; each entry is one body (fresh kernel), or an array
+  // of bodies run in sequence on one kernel (stateful: regen then queries).
+  else if (args[i] === '--file') extra.push(...JSON.parse(readFileSync(args[++i], 'utf8')).map((e) => (Array.isArray(e) ? e : [e]).map((b) => (typeof b === 'string' ? b : JSON.stringify(b)))));
   else extra.push(args[i]);
 }
 const A = new WebAssembly.Module(readFileSync(new URL('../../kernel.wasm', import.meta.url)));
@@ -41,12 +46,13 @@ const same = (a, b) => a.s === b.s && a.bin.length === b.bin.length && a.bin.eve
 
 const KNOWN = new Set(['ping', 'regen', 'matchEdges', 'drag', 'convert', 'sketchOffset', 'refCurve', 'measure', 'massProps',
   'interference', 'step', 'inspect', 'continuity', 'curvatureAt', 'curvatureMap', 'comb', 'drawing']);
-const all = [...cases, ...extra.map((b, i) => ({ name: `arg#${i}`, bodies: [b] }))];
+const all = [...cases, ...extra.map((b, i) => ({ name: `arg#${i}`, bodies: Array.isArray(b) ? b : [b] }))];
 let ok = 0, bad = 0; const byType = new Map();
 for (const c of all) {
   const a = new Kernel(A), b = new Kernel(B);
-  for (const body of c.bodies) {
+  for (const [bi, body] of c.bodies.entries()) {
     const ra = norm(a.request(body)), rb = norm(b.request(body));
+    if (c.ignore?.includes(bi)) continue;
     let ty = '?'; try { ty = JSON.parse(body).msg?.type ?? '(envelope)'; } catch { ty = '(envelope)'; }
     if (typeof ty !== 'string' || !ty) ty = '(envelope)';
     else if (ty !== '(envelope)' && !KNOWN.has(ty)) ty = '(unknown type)';

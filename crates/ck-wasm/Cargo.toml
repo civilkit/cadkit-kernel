@@ -9,3 +9,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 ck-json = { path = "../ck-json" }
 ck-server = { path = "../ck-server" }
+ck-model = { path = "../ck-model" }
+ck-core = { path = "../ck-core" }
+ck-topo = { path = "../ck-topo" }
+ck-io = { path = "../ck-io" }

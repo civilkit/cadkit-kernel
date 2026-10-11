@@ -19,6 +19,7 @@ version = "0.1.0"
 dependencies = [
  "ck-core",
  "ck-geom",
+ "ck-json",
  "ck-topo",
 ]
 
@@ -31,7 +32,9 @@ name = "ck-model"
 version = "0.1.0"
 dependencies = [
  "ck-core",
+ "ck-geom",
  "ck-json",
+ "ck-topo",
 ]
 
 [[package]]
@@ -56,6 +59,7 @@ version = "0.1.0"
 dependencies = [
  "ck-core",
  "ck-geom",
+ "ck-json",
  "ck-topo",
 ]
 
@@ -65,12 +69,17 @@ version = "0.1.0"
 dependencies = [
  "ck-core",
  "ck-geom",
+ "ck-json",
 ]
 
 [[package]]
 name = "ck-wasm"
 version = "0.1.0"
 dependencies = [
+ "ck-core",
+ "ck-io",
  "ck-json",
+ "ck-model",
  "ck-server",
+ "ck-topo",
 ]

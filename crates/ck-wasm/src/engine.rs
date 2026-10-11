@@ -1,0 +1,223 @@
+//! Composition root: installs the ck-model engine into ck-server's hooks.
+//! ck-server stays geometry-free; everything engine-side is reached from here.
+
+use ck_json::{Json, Obj};
+use ck_model::features::{body_wire, Brep};
+use ck_model::regen::{self, RegenOpts, SketchResult, Tracer};
+use ck_model::sketch::offset::sketch_offset_json;
+use ck_model::{Part, Sketch};
+use ck_server::session::{regen_label, Cx, Hooks, State, SNAPSHOT_LABEL};
+use ck_server::trace::{SpanId, Trace};
+use ck_topo::body::Body;
+
+pub fn install() {
+    ck_server::set_hooks(Hooks {
+        regen: Some(regen_hook),
+        query: Some(query_hook),
+        sketch_offset: Some(sketch_offset_hook),
+        ..Hooks::default()
+    });
+}
+
+/// What a regen leaves behind for later requests on its tag.
+pub struct Snapshot {
+    pub body: Body,
+    pub sketches: Vec<SketchResult>,
+}
+
+/// ck-server trace as a ck-model [`Tracer`].
+struct TraceSink<'a> {
+    trace: &'a mut Trace,
+    ids: Vec<Option<SpanId>>,
+}
+
+impl Tracer for TraceSink<'_> {
+    fn begin(&mut self, label: &str) -> usize {
+        self.ids.push(Some(self.trace.begin(label)));
+        self.ids.len() - 1
+    }
+    fn relabel(&mut self, id: usize, label: &str) {
+        if let Some(s) = &self.ids[id] {
+            self.trace.relabel(s, label);
+        }
+    }
+    fn end(&mut self, id: usize) {
+        if let Some(s) = self.ids[id].take() {
+            self.trace.end(s);
+        }
+    }
+}
+
+/// [`Brep`] + the request's trace.
+struct Exec<'a> {
+    brep: Brep,
+    sink: TraceSink<'a>,
+}
+
+impl regen::FeatureExec for Exec<'_> {
+    fn tracer(&mut self) -> Option<&mut dyn Tracer> {
+        Some(&mut self.sink)
+    }
+    fn face_count(&self) -> Option<usize> {
+        self.brep.face_count()
+    }
+    fn face_frame(&mut self, state: &regen::RegenState, face: &str) -> Option<ck_core::linalg::Frame> {
+        self.brep.face_frame(state, face)
+    }
+    fn exec(&mut self, state: &mut regen::RegenState, f: &ck_model::Feature) -> Result<(), regen::FeatureError> {
+        self.brep.exec(state, f)
+    }
+}
+
+/// `regen`: parse, run the feature program, snapshot.
+fn regen_hook(part: &Json, cx: &mut Cx) -> Result<(Json, State), String> {
+    let part = Part::from_json(part)?;
+    let opts = RegenOpts::from_json(cx.msg.get("opts"));
+    let n = opts.up_to.map_or(part.features.len(), |u| part.features.len().min(u as usize));
+    let (mut result, body) = cx.span(regen_label(n), |cx| {
+        let mut ex = Exec { brep: Brep::new(), sink: TraceSink { trace: &mut *cx.trace, ids: vec![] } };
+        let r = regen::regen(&part, &opts, &mut ex);
+        (r, ex.brep.body)
+    });
+    let mut out = result.to_json();
+    cx.span(SNAPSHOT_LABEL, |cx| {
+        if let Some(b) = &body {
+            // GUESS: triangle count unknown until ck-tess (mesh buffers are empty).
+            let t = cx.trace.begin(format!("tessellate {} faces → 0 triangles", b.num_faces()));
+            cx.trace.end(t);
+            set_body(&mut out, body_json(b, cx));
+        }
+    });
+    let state = match body {
+        Some(body) => {
+            let sketches = std::mem::take(&mut result.sketches);
+            State { has_body: true, data: Some(Box::new(Snapshot { body, sketches })) }
+        }
+        None => State::empty(),
+    };
+    Ok((out, state))
+}
+
+fn set_body(result: &mut Json, body: Json) {
+    if let Json::Obj(kv) = result {
+        if let Some(slot) = kv.iter_mut().find(|(k, _)| k == "body") {
+            slot.1 = body;
+        }
+    }
+}
+
+/// Wire `body`: `{box, faces, edges, silhouette, mesh}`. Buffer creation
+/// order is pinned (positions 0, normals 1, mids 2, triFace 3, silhouette 4,
+/// silhouette serialised first). GUESS: until ck-tess lands every mesh
+/// buffer is EMPTY (the client gets a valid but invisible mesh; the oracle
+/// sends 3 f32 per vertex in positions/normals/mids and one i32 face index
+/// per triangle in triFace, non-indexed triangle soup).
+fn body_json(b: &Body, cx: &mut Cx) -> Json {
+    let positions = cx.bufs.f32(&[]);
+    let normals = cx.bufs.f32(&[]);
+    let mids = cx.bufs.f32(&[]);
+    let tri_face = cx.bufs.i32(&[]);
+    let silhouette = cx.bufs.f32(&[]);
+    let mut kv = body_wire(b);
+    kv.push(("silhouette".into(), silhouette));
+    kv.push((
+        "mesh".into(),
+        Obj::new().put("positions", positions).put("normals", normals).put("mids", mids).put("triFace", tri_face).build(),
+    ));
+    Json::Obj(kv)
+}
+
+fn snapshot<'a>(cx: &'a Cx) -> Result<&'a Snapshot, String> {
+    cx.state()?
+        .data
+        .as_ref()
+        .and_then(|d| d.downcast_ref::<Snapshot>())
+        .ok_or_else(|| ck_server::session::todo("state without a snapshot"))
+}
+
+/// Body-bearing requests.
+fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
+    match ty {
+        "massProps" => {
+            let s = snapshot(cx)?;
+            let bodies = cx.msg.get("bodies").map_or(false, |b| matches!(b, Json::Bool(true)));
+            let ds: Option<Vec<f64>> =
+                cx.msg.get_arr("densities").map(|a| a.iter().map(|d| d.as_f64().unwrap_or(1.0)).collect());
+            // Pinned: `byMass` only with `bodies:true` AND one density per lump.
+            let ds = ds.filter(|d| bodies && d.len() == s.body.num_lumps());
+            Ok(ck_topo::mass::mass_props_json(&s.body, bodies, ds.as_deref()))
+        }
+        "inspect" => inspect(cx),
+        "step" => {
+            // Reply: the whole STEP file as one JSON string (oracle); `name`
+            // defaults to "part". Void shells must be split out first.
+            let name = cx.msg.get_str("name").unwrap_or("part").to_string();
+            let mut body = snapshot(cx)?.body.clone();
+            ck_topo::region::rebuild_lumps(&mut body);
+            let opts = ck_io::step::StepOpts { unix_ms: ck_server::clock::unix_ms() };
+            Ok(Json::Str(ck_io::step::write_step(&body, &name, &opts)))
+        }
+        _ => Err(ck_server::session::todo(ty)),
+    }
+}
+
+/// `inspect` with a body: only `sketch` refs so far.
+fn inspect(cx: &mut Cx) -> Result<Json, String> {
+    let r = cx.msg.get("ref");
+    let kind = r.and_then(|r| r.get_str("kind")).unwrap_or("");
+    match kind {
+        "sketch" => {
+            let s = snapshot(cx)?;
+            let id = r.and_then(|r| r.get_str("id")).unwrap_or("");
+            let sk = s.sketches.iter().find(|k| k.id == id).ok_or_else(|| "sketch not found".to_string())?;
+            let areas: Vec<Json> = sk.profiles.regions.iter().map(|g| Json::Num(region_area(g))).collect();
+            Ok(Obj::new()
+                .put("type", "sketch")
+                .put("frame", regen::frame_json(&sk.frame))
+                .put("regions", sk.profiles.regions.len())
+                .put("areas", Json::Arr(areas))
+                .put("open", sk.profiles.open)
+                .build())
+        }
+        k => Err(ck_server::session::todo(&format!("inspect {k}"))),
+    }
+}
+
+/// Region area (outer + signed holes): Green's theorem on the exact
+/// segment curves (8 × 8-point Gauss-Legendre per segment).
+/// GUESS: last-ulp rounding vs the oracle (40×20 -> 800.0000000000001).
+fn region_area(r: &ck_model::sketch::profile::Region) -> f64 {
+    const X: [f64; 4] = [0.1834346424956498, 0.5255324099163290, 0.7966664774136267, 0.9602898564975363];
+    const W: [f64; 4] = [0.3626837833783620, 0.3137066458778873, 0.2223810344533745, 0.1012285362903763];
+    let lp = |l: &Vec<ck_model::sketch::profile::Seg>| -> f64 {
+        let mut a = 0.0;
+        for s in l {
+            let g = &s.curve.geom;
+            let (ta, tb) = (s.curve.ta, s.curve.tb);
+            let k = 8;
+            for i in 0..k {
+                let (p, q) = (ta + (tb - ta) * i as f64 / k as f64, ta + (tb - ta) * (i + 1) as f64 / k as f64);
+                let (m, h) = ((p + q) / 2.0, (q - p) / 2.0);
+                for (x, w) in X.iter().zip(W) {
+                    for t in [m - h * x, m + h * x] {
+                        let (pt, d) = (g.eval(t), g.d1(t));
+                        a += 0.5 * w * h * (pt[0] * d[1] - pt[1] * d[0]);
+                    }
+                }
+            }
+        }
+        a
+    };
+    lp(&r.outer) + r.holes.iter().map(lp).sum::<f64>()
+}
+
+/// `sketchOffset {sketch, ids, distance}`.
+fn sketch_offset_hook(cx: &mut Cx, distance: f64) -> Result<Json, String> {
+    let sk = Sketch::from_json(cx.msg.get("sketch").unwrap_or(&Json::Null));
+    let ids: Vec<String> = cx
+        .msg
+        .get_arr("ids")
+        .map(|a| a.iter().filter_map(|j| j.as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    Ok(sketch_offset_json(&sk, &ids, distance))
+}

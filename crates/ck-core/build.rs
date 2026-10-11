@@ -11,11 +11,13 @@ fn main() {
     let lib = Path::new(&c2).join("libkerneloracle.a");
     println!("cargo:rerun-if-changed={}", lib.display());
     println!("cargo:rerun-if-env-changed=CK_ORACLE_DIR");
-    if lib.exists() {
+    // Native host builds only, and linked into the integration tests only —
+    // never bundled into the ck-core rlib (it would leak into ck-wasm).
+    let native = !std::env::var("TARGET").unwrap_or_default().starts_with("wasm32");
+    if native && lib.exists() {
         println!("cargo:rustc-cfg=ck_oracle");
-        println!("cargo:rustc-link-search=native={}", c2);
-        println!("cargo:rustc-link-lib=static=kerneloracle");
+        println!("cargo:rustc-link-arg-tests={}", lib.display());
         // the C side needs libm
-        println!("cargo:rustc-link-lib=m");
+        println!("cargo:rustc-link-arg-tests=-lm");
     }
 }
