@@ -185,6 +185,21 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
         "continuity" => Ok(ck_ops::continuity::reply(&snapshot(cx)?.body, &cx.msg)),
         "measure" => Ok(ck_ops::measure::reply(&snapshot(cx)?.body, &cx.msg)),
         "comb" => Ok(comb(&snapshot(cx)?.body, &cx.msg)),
+        "curvatureMap" => {
+            let body = &snapshot(cx)?.body;
+            let tess = ck_tess::mesh::tessellate(body);
+            let m = ck_tess::curvmap::curvature_map(body, &tess);
+            let ids: Vec<Json> = m.faces.iter().map(|&f| Json::Str(body.face_id_str(f))).collect();
+            let failed: Vec<Json> = body.face_ids().enumerate().filter(|(i, _)| m.failed.contains(i)).map(|(_, f)| Json::Str(body.face_id_str(f))).collect();
+            let mesh = Obj::new()
+                .put("positions", cx.bufs.f32(&m.positions))
+                .put("normals", cx.bufs.f32(&m.normals))
+                .put("k", cx.bufs.f32(&m.k))
+                .put("triFace", cx.bufs.i32(&m.tri_face))
+                .build();
+            let b = Obj::new().put("id", Json::Null).put("faces", Json::Arr(ids)).put("mesh", mesh).build();
+            Ok(Obj::new().put("bodies", Json::Arr(vec![b])).put("failed", Json::Arr(failed)).build())
+        }
         "convert" => {
             let s = snapshot(cx)?;
             Ok(match cx.msg.get("ref").and_then(|r| r.get_str("kind")) {

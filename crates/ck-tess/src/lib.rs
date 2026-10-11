@@ -6,6 +6,7 @@
 //! - [`mesh`]: body mesh assembly (`positions/normals/mids/triFace/silhouette`).
 pub mod cdt;
 pub mod comb;
+pub mod curvmap;
 pub mod curvature;
 pub mod face;
 pub mod mesh;
