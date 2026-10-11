@@ -24,6 +24,8 @@ pub fn install() {
 pub struct Snapshot {
     pub body: Body,
     pub sketches: Vec<SketchResult>,
+    /// Assembly state (components, mates) for `drag`.
+    pub asm: ck_model::features::mate::Assembly,
 }
 
 /// ck-server trace as a ck-model [`Tracer`].
@@ -86,9 +88,10 @@ fn regen_hook(part: &Json, cx: &mut Cx) -> Result<(Json, State), String> {
         let mut r = regen::regen(&part, &opts, &mut ex);
         r.components = ex.brep.components_json();
         let rn = ex.brep.renorm_faces();
-        (r, (ex.brep.body, rn))
+        let asm = ex.brep.asm.clone();
+        (r, (ex.brep.body, rn, asm))
     });
-    let (body, renorm) = body;
+    let (body, renorm, asm) = body;
     let mut out = result.to_json();
     cx.span(SNAPSHOT_LABEL, |cx| {
         if let Some(b) = &body {
@@ -102,7 +105,7 @@ fn regen_hook(part: &Json, cx: &mut Cx) -> Result<(Json, State), String> {
     let state = match body {
         Some(body) => {
             let sketches = std::mem::take(&mut result.sketches);
-            State { has_body: true, data: Some(Box::new(Snapshot { body, sketches })) }
+            State { has_body: true, data: Some(Box::new(Snapshot { body, sketches, asm })) }
         }
         None => State::empty(),
     };
@@ -185,6 +188,10 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
         "inspect" => inspect(cx),
         "continuity" => Ok(ck_ops::continuity::reply(&snapshot(cx)?.body, &cx.msg)),
         "measure" => Ok(ck_ops::measure::reply(&snapshot(cx)?.body, &cx.msg)),
+        "drag" => {
+            let s = snapshot(cx)?;
+            Ok(crate::drag::reply(&s.body, &s.asm, &cx.msg))
+        }
         "interference" => Ok(ck_ops::interference::reply(&snapshot(cx)?.body)),
         "comb" => Ok(comb(&snapshot(cx)?.body, &cx.msg)),
         "curvatureMap" => {
