@@ -40,6 +40,11 @@ pub fn intersect(c1: &Curve, r1: (f64, f64), c2: &Curve, r2: (f64, f64), tol: f6
         (Curve::Line { .. }, Curve::Circle { .. }) => line_circle(c1, r1, c2, r2, tol),
         (Curve::Circle { .. }, Curve::Line { .. }) => swap(line_circle(c2, r2, c1, r1, tol)),
         (Curve::Circle { .. }, Curve::Circle { .. }) => circle_circle(c1, r1, c2, r2, tol),
+        (Curve::Ellipse { .. }, Curve::Circle { .. }) => ellipse_circle(c1, r1, c2, r2, tol).unwrap_or_else(|| general(c1, r1, c2, r2, tol)),
+        (Curve::Circle { .. }, Curve::Ellipse { .. }) => match ellipse_circle(c2, r2, c1, r1, tol) {
+            Some(r) => swap(r),
+            None => general(c1, r1, c2, r2, tol),
+        },
         _ => general(c1, r1, c2, r2, tol),
     };
     finish(raw, tol)
@@ -215,10 +220,38 @@ fn circle_circle(c1: &Curve, r1: (f64, f64), c2: &Curve, r2: (f64, f64), tol: f6
     out
 }
 
+/// Ellipse x circle on a different plane: the ellipse's points on the
+/// circle's plane, kept when on the circle (closed form: a tangent contact,
+/// e.g. mitre ellipses of two equal fillets touching a face plane, keeps
+/// full precision where the Newton fallback loses half the digits).
+/// `None` when the planes coincide.
+fn ellipse_circle(e: &Curve, re: (f64, f64), c: &Curve, rc: (f64, f64), tol: f64) -> Option<CcResult> {
+    let (Curve::Ellipse { frame: fe, a, b }, Curve::Circle { frame: fc, r }) = (e, c) else { return None };
+    if fe.z.cross(fc.z).len() < 1e-10 {
+        return None;
+    }
+    let mut out = CcResult::default();
+    for t in ellipse_plane_params(fe, *a, *b, fc.o, fc.z) {
+        let p = e.eval(t);
+        if ((p - fc.o).reject(fc.z).len() - r).abs() <= tol {
+            push_hit(&mut out, e, re, t, c, rc, c.closest_param(p), tol);
+        }
+    }
+    Some(out)
+}
+
 /// Circle parameters where the circle meets plane (o, n): a cos t + b sin t + c = 0.
 pub fn circle_plane_params(f: &ck_geom::Frame, r: f64, o: Vec3, n: Vec3) -> Vec<f64> {
-    let a = r * f.x.dot(n);
-    let b = r * f.y.dot(n);
+    ellipse_plane_params(f, r, r, o, n)
+}
+
+/// Ellipse (semi-axes `ra` along x, `rb` along y) parameters where it meets
+/// plane (o, n). A tangency (the two roots closer than ~1e-7 in length: the
+/// rounding noise of `acos` near 1 would otherwise split it by ~1e-8) is
+/// one root.
+pub fn ellipse_plane_params(f: &ck_geom::Frame, ra: f64, rb: f64, o: Vec3, n: Vec3) -> Vec<f64> {
+    let a = ra * f.x.dot(n);
+    let b = rb * f.y.dot(n);
     let c = (f.o - o).dot(n);
     let m = (a * a + b * b).sqrt();
     if m < 1e-300 {
@@ -230,7 +263,7 @@ pub fn circle_plane_params(f: &ck_geom::Frame, r: f64, o: Vec3, n: Vec3) -> Vec<
     }
     let phi = b.atan2(a);
     let al = x.max(-1.0).min(1.0).acos();
-    if al < 1e-9 {
+    if al < 1e-9 || al * ra.max(rb) < 1e-7 {
         vec![ck_geom::curve::wrap_angle(phi)]
     } else {
         let mut v = vec![ck_geom::curve::wrap_angle(phi - al), ck_geom::curve::wrap_angle(phi + al)];

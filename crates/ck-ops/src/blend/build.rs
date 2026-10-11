@@ -106,24 +106,29 @@ pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featu
             })
             .collect::<Result<_, BlendError>>()?;
         let n = edges.len();
-        let mut comp: Vec<usize> = (0..n).collect();
-        for i in 0..n {
-            for j in 0..i {
-                if ends[i].iter().any(|v| ends[j].contains(v)) {
-                    let (ci, cj) = (comp[i], comp[j]);
-                    for c in comp.iter_mut() {
-                        if *c == ci {
-                            *c = cj;
-                        }
-                    }
+        let mut done = vec![false; n];
+        let mut out = b.clone();
+        while done.iter().any(|d| !d) {
+            // an edge joins the round unless it touches an edge already in
+            // it or an earlier-selected edge deferred to a later round
+            let mut round: Vec<usize> = vec![];
+            let mut blocked: Vec<usize> = vec![];
+            for i in 0..n {
+                if done[i] {
+                    continue;
+                }
+                if blocked.iter().any(|&j| ends[i].iter().any(|v| ends[j].contains(v))) {
+                    blocked.push(i);
+                } else {
+                    round.push(i);
+                    blocked.push(i);
                 }
             }
-        }
-        let level: Vec<usize> = (0..n).map(|i| (0..i).filter(|&j| comp[j] == comp[i]).count()).collect();
-        let mut out = b.clone();
-        for lv in 0..=*level.iter().max().unwrap() {
-            let idx: Vec<u32> = (0..n).filter(|&i| level[i] == lv).map(|i| i as u32).collect();
-            let sel: Vec<(String, String, Vec3)> = idx.iter().map(|&i| fwd[i as usize].clone()).collect();
+            for &i in &round {
+                done[i] = true;
+            }
+            let idx: Vec<u32> = round.iter().map(|&i| i as u32).collect();
+            let sel: Vec<(String, String, Vec3)> = round.iter().map(|&i| fwd[i].clone()).collect();
             out = blend_edges_at(&out, &sel, spec, feature, tol, &idx)?;
         }
         return Ok(out);
@@ -137,8 +142,10 @@ fn blend_edges_at(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featur
     let edges: Vec<(String, String, Vec3)> = edges.iter().map(|(fa, fb, at)| forward_first(b, fa, fb, *at)).collect();
     // blend references on the INPUT body (for the in-place numbering)
     let mut refs: Vec<BlendRef> = vec![];
+    let mut sel_edges: Vec<EdgeId> = vec![];
     for (k, (fa, fb, at)) in edges.iter().enumerate() {
         let e = find_edge(b, fa, fb, *at).ok_or_else(|| BlendError::code("missingEdge"))?;
+        sel_edges.push(e);
         let ed = b.edge(e);
         refs.push(BlendRef {
             name: FaceName::blend(feature, idx[k]).id(),
@@ -152,7 +159,17 @@ fn blend_edges_at(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featur
         let e = find_edge(&out, fa, fb, *at).ok_or_else(|| BlendError::code("missingEdge"))?;
         let (f1, f2) = (out.find_face(fa).unwrap(), out.find_face(fb).unwrap());
         let (body, hint) = blend_edge_hint(&out, e, [f1, f2], spec, feature, idx[k], tol)?;
-        for h in hint {
+        // end faces at a junction with another selected edge are that
+        // edge's own faces, not extra touches (oracle: the ring's face
+        // order is e1 e2 e3 e4, the open chain's C1 e1 e4 e2 e3)
+        let junction_faces: Vec<&String> = (0..edges.len())
+            .filter(|&j| j != k && refs[j].ends.iter().any(|&q| refs[k].ends.iter().any(|&p| p.dist(q) <= tol * 10.0)))
+            .flat_map(|j| refs[j].faces.iter())
+            .collect();
+        for (n, h) in hint.into_iter().enumerate() {
+            if n >= 2 && junction_faces.iter().any(|f| **f == h) {
+                continue;
+            }
             if !touched.contains(&h) {
                 touched.push(h);
             }
@@ -162,6 +179,18 @@ fn blend_edges_at(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featur
     if edges.len() == 1 {
         return Ok(in_place_layout(b, &out, &refs, tol));
     }
+    // a face whose whole boundary is blended (the top of a filleted ring)
+    // is rebuilt rather than trimmed: oracle order puts it after the other
+    // touched faces
+    let replaced = |id: &String| {
+        b.find_face(id).is_some_and(|f| {
+            let es = b.face_edges(f);
+            !es.is_empty() && es.iter().all(|e| sel_edges.contains(e))
+        })
+    };
+    let (rep, mut keep): (Vec<String>, Vec<String>) = touched.iter().cloned().partition(|t| replaced(t));
+    keep.extend(rep);
+    let touched = keep;
     // one blend op over all edges: untouched faces, touched faces in
     // first-touch order, blend faces (probe fil2)
     let base = |id: &str| FaceName::parse(id).map(|mut n| {
@@ -170,8 +199,12 @@ fn blend_edges_at(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featur
     });
     let rank = |f: FaceId| -> (usize, usize) {
         let name = &out.face(f).name;
-        if name.feature == feature && matches!(name.role, Role::Blend(_)) {
-            return (2, 0);
+        if name.feature == feature {
+            if let Role::Blend(i) = name.role {
+                if idx.contains(&i) {
+                    return (2, i as usize); // new in this op (earlier rounds' blends are ordinary faces)
+                }
+            }
         }
         match touched.iter().position(|t| base(t) == base(&name.id())) {
             Some(p) => (1, p),
@@ -253,7 +286,18 @@ pub fn in_place_layout(input: &Body, out: &Body, refs: &[BlendRef], tol: f64) ->
         }
     }
     // 2. trimmed edges, split in parameter order
-    let mut next = n_in;
+    // Oracle (box fillet chains): every junction of two blends (selected
+    // edges meeting at a vertex) leaves two dead slots right after the
+    // input's.
+    let mut junctions = 0;
+    for i in 0..refs.len() {
+        for j in i + 1..refs.len() {
+            if refs[i].ends.iter().any(|&p| refs[j].ends.iter().any(|&q| p.dist(q) <= tol * 10.0)) {
+                junctions += 1;
+            }
+        }
+    }
+    let mut next = n_in + 2 * junctions;
     for (i, (s, ich)) in in_slots.iter().enumerate() {
         if used_in[i] || ich.len() != 1 {
             continue;
@@ -300,8 +344,22 @@ pub fn in_place_layout(input: &Body, out: &Body, refs: &[BlendRef], tol: f64) ->
         }
         used_in[i] = true;
     }
-    // 3. blend edges per blend
-    for r in refs {
+    // 3. blend edges. Oracle (chains of box fillets, probes filletChain3 /
+    // filletTop4): per blend in selection order its edges [spring on the
+    // forward face, spring on the other face, end arc at v0, end arc at v1]
+    // - except that where another selected edge meets the blend's v0 the
+    // spring on the COMMON face is deferred; the junctions follow, by
+    // blend pair (i<j) lexicographically: the miter edge B<i>|B<j>, then
+    // the deferred spring of the blend that starts at the junction.
+    let near_pt = |p: Vec3, q: Vec3| p.dist(q) <= tol * 10.0;
+    let meets = |a: usize, ea: usize, b2: usize| refs[b2].ends.iter().any(|&q| near_pt(refs[a].ends[ea], q));
+    let common_face = |a: usize, b2: usize| refs[a].faces.iter().find(|f| refs[b2].faces.contains(f)).cloned();
+    // deferred spring face of blend a (junction at its v0)
+    let deferred: Vec<Option<String>> = (0..refs.len())
+        .map(|a| (0..refs.len()).filter(|&o| o != a && meets(a, 0, o)).find_map(|o| common_face(a, o)))
+        .collect();
+    let is_blend = |n: &String| refs.iter().any(|r| &r.name == n);
+    for (ri, r) in refs.iter().enumerate() {
         let mut mine: Vec<(usize, usize, f64)> = vec![];
         for (k, ch) in out_chains.iter().enumerate() {
             if slot_of[k].is_some() {
@@ -312,6 +370,9 @@ pub fn in_place_layout(input: &Body, out: &Body, refs: &[BlendRef], tol: f64) ->
                 continue;
             }
             let other = nm.iter().find(|n| **n != r.name).cloned().unwrap_or_default();
+            if is_blend(&other) || deferred[ri].as_deref() == Some(other.as_str()) {
+                continue; // miter / deferred spring: the junction pass
+            }
             let (p, q) = ends(out, ch);
             let d0 = p.dist(r.ends[0]).min(q.dist(r.ends[0]));
             let d1 = p.dist(r.ends[1]).min(q.dist(r.ends[1]));
@@ -330,6 +391,34 @@ pub fn in_place_layout(input: &Body, out: &Body, refs: &[BlendRef], tol: f64) ->
         for (_, k, _) in mine {
             slot_of[k] = Some(next);
             next += 1;
+        }
+    }
+    for i in 0..refs.len() {
+        for j in i + 1..refs.len() {
+            if !(meets(i, 0, j) || meets(i, 1, j)) {
+                continue;
+            }
+            let find = |x: &str, y: &str, slot_of: &Vec<Option<usize>>| {
+                (0..out_chains.len()).find(|&k| {
+                    slot_of[k].is_none() && {
+                        let nm = names(out, out_chains[k][0]);
+                        nm.len() == 2 && nm.iter().any(|n| n == x) && nm.iter().any(|n| n == y)
+                    }
+                })
+            };
+            if let Some(k) = find(&refs[i].name, &refs[j].name, &slot_of) {
+                slot_of[k] = Some(next);
+                next += 1;
+            }
+            let owner = if meets(i, 0, j) { Some(i) } else if meets(j, 0, i) { Some(j) } else { None };
+            if let Some(o) = owner {
+                if let Some(f) = &deferred[o] {
+                    if let Some(k) = find(&refs[o].name, f, &slot_of) {
+                        slot_of[k] = Some(next);
+                        next += 1;
+                    }
+                }
+            }
         }
     }
     // 4. anything else, in out order
@@ -669,6 +758,20 @@ mod tests {
         }
         let r = chamfer(&cyl, &[(a, bb, at)], 1.0, "F3", 1e-6).unwrap();
         assert!((mass_props(&r).volume - 3111.223924605093).abs() < 1e-6);
+    }
+
+    #[test]
+    fn corner2_vertices() {
+        let r = fillet(&the_box(), &[e("F2.C1", "F2.S.e1", [20., 10., 0.]), e("F2.C1", "F2.S.e2", [40., 10., -10.])], 2.0, "F3", 1e-6).unwrap();
+        for e in r.edge_ids() {
+            let ed = r.edge(e);
+            let names: Vec<String> = r.edge_faces(e).iter().map(|&f| r.face_id_str(f)).collect();
+            if names.iter().any(|n| n == "F3.B1") && names.iter().any(|n| n == "F3.B0") {
+                eprintln!("MITRE {} t=({:?},{:?}) a={:?} b={:?}", ed.curve.kind(), ed.t0, ed.t1, r.vertex(ed.v0).p, r.vertex(ed.v1).p);
+                eprintln!("  curve {:?}", ed.curve);
+                eprintln!("  cp(a)={:?} cp(b)={:?} ev(t1)={:?}", ed.curve.closest_param(r.vertex(ed.v0).p), ed.curve.closest_param(r.vertex(ed.v1).p), ed.curve.eval(ed.t1));
+            }
+        }
     }
 
     #[test]

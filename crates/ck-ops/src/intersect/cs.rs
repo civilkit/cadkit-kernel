@@ -40,6 +40,9 @@ pub fn intersect(c: &Curve, r: (f64, f64), s: &Surface, tol: f64) -> CsResult {
         (Curve::Circle { frame, r: rad }, Surface::Plane { frame: pf }) => {
             Some(super::cc::circle_plane_params(frame, *rad, pf.o, pf.z))
         }
+        (Curve::Ellipse { frame, a, b }, Surface::Plane { frame: pf }) => {
+            Some(super::cc::ellipse_plane_params(frame, *a, *b, pf.o, pf.z))
+        }
         _ => None,
     };
     match ts {
