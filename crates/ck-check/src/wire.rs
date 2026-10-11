@@ -18,7 +18,10 @@ pub fn check(b: &Body, tol: f64, out: &mut Vec<Issue>) {
             continue;
         }
         for &l in &face.loops {
-            let cs = &b.lp(l).coedges;
+            if !b.lp(l).alive {
+                continue;
+            }
+            let cs: &Vec<_> = &b.lp(l).coedges.iter().copied().filter(|&c| b.coedge(c).alive).collect();
             if cs.is_empty() {
                 out.push(Issue { code: "LOOP_EMPTY", entity: face_ent(b, f), detail: "loop has no edges".into() });
                 continue;
@@ -46,8 +49,11 @@ pub fn check(b: &Body, tol: f64, out: &mut Vec<Issue>) {
 fn self_intersection(b: &Body, f: ck_topo::body::FaceId, out: &mut Vec<Issue>) {
     let mut polys: Vec<Vec<Vec2>> = vec![];
     for &l in &b.face(f).loops {
+        if !b.lp(l).alive {
+            continue;
+        }
         let mut pts: Vec<Vec2> = vec![];
-        for &c in &b.lp(l).coedges {
+        for &c in b.lp(l).coedges.iter().filter(|&&c| b.coedge(c).alive) {
             let (t0, t1) = b.coedge_params(c);
             let n = 8;
             for k in 0..n {
@@ -81,9 +87,39 @@ fn self_intersection(b: &Body, f: ck_topo::body::FaceId, out: &mut Vec<Issue>) {
     }
 }
 
+/// True when the segments cross strictly inside both. Endpoints that touch
+/// the other segment (shared vertices, keyhole bridges that run back over each
+/// other, pinch points where a loop revisits a vertex) are not crossings: the
+/// test is on signed *distances* so float noise at a shared vertex cannot
+/// flip a sign.
 fn proper_cross(p: Vec2, q: Vec2, r: Vec2, s: Vec2) -> bool {
-    let o = |a: Vec2, b: Vec2, c: Vec2| (b - a).cross(c - a);
-    let (d1, d2, d3, d4) = (o(r, s, p), o(r, s, q), o(p, q, r), o(p, q, s));
-    let eps = 1e-9;
-    d1 * d2 < -eps * eps && d3 * d4 < -eps * eps
+    let dist = |a: Vec2, b: Vec2, c: Vec2| {
+        let l = (b - a).len();
+        if l < 1e-12 { 0.0 } else { (b - a).cross(c - a) / l }
+    };
+    let (d1, d2, d3, d4) = (dist(r, s, p), dist(r, s, q), dist(p, q, r), dist(p, q, s));
+    let eps = 1e-6;
+    (d1 < -eps && d2 > eps || d1 > eps && d2 < -eps) && (d3 < -eps && d4 > eps || d3 > eps && d4 < -eps)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::proper_cross;
+    use ck_geom::Vec2;
+    fn v(x: f64, y: f64) -> Vec2 {
+        Vec2::new(x, y)
+    }
+    #[test]
+    fn real_crossing() {
+        assert!(proper_cross(v(0., 0.), v(2., 2.), v(0., 2.), v(2., 0.)));
+    }
+    #[test]
+    fn shared_vertex_with_noise_is_not_a_crossing() {
+        // two segments meeting at (42, ~1e-15) from opposite sides of the x axis
+        assert!(!proper_cross(v(42.0, 1e-15), v(41.657, 1.722), v(41.657, -1.722), v(42.0, 0.0)));
+    }
+    #[test]
+    fn overlapping_bridge_is_not_a_crossing() {
+        assert!(!proper_cross(v(0., 0.), v(5., 0.), v(5., 0.), v(0., 0.)));
+    }
 }

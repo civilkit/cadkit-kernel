@@ -149,21 +149,28 @@ pub fn fill(
 
     // loop: the chain edges traversed opposite the body faces' coedges
     let nloop = out.add_loop(nf);
-    for s in &steps {
-        let body_rev = body
-            .edge_coedges(s.e)
-            .iter()
-            .find(|&&c| body.coedge(c).alive)
-            .map(|&c| body.coedge(c).rev)
-            .unwrap_or(false);
-        out.add_coedge(nloop, s.e, !body_rev, None);
-    }
+    let body_rev = |e: EdgeId| {
+        body.edge_coedges(e).iter().find(|&&c| body.coedge(c).alive).map(|&c| body.coedge(c).rev).unwrap_or(false)
+    };
+    // The walk traverses step i v0->v1 iff `fwd`; the neighbouring face
+    // traverses it v0->v1 iff !body_rev. The patch loop must oppose its
+    // neighbours: keep the walk order when it does, run the whole loop
+    // backwards (order AND directions) when the walk follows them.
+    let agree = steps.iter().filter(|s| s.fwd == !body_rev(s.e)).count();
+    let backwards = agree * 2 > steps.len();
+    let mut co: Vec<(EdgeId, bool)> = steps.iter().map(|s| (s.e, if backwards { s.fwd } else { !s.fwd })).collect();
     if !closed_ring {
         // the chord: stored start->end, traversed reversed (probe-pinned)
         let va = out.add_vertex(start);
         let vb = out.add_vertex(end);
         let ce = out.add_edge(Curve::line_through(start, end), 0.0, (end - start).len(), va, vb);
-        out.add_coedge(nloop, ce, true, None);
+        co.push((ce, !backwards));
+    }
+    if backwards {
+        co.reverse();
+    }
+    for (e, rev) in co {
+        out.add_coedge(nloop, e, rev, None);
     }
 
     // the loop direction is fixed by the neighbours (opposite to theirs):
