@@ -20,6 +20,10 @@ fn one(fr: Frame, outer: ProfileLoop, holes: Vec<ProfileLoop>) -> Profile {
     Profile::new(fr, vec![ProfileRegion { outer, holes }])
 }
 const E: [&str; 4] = ["e1", "e2", "e3", "e4"];
+pub const NAMES: [&str; 16] = [
+    "box", "box3", "cyl", "dext", "draft", "flip", "mid", "two", "rev360", "rev90", "revax360", "revax90", "sphere",
+    "torus", "cone", "void",
+];
 
 pub fn build(name: &str) -> Body {
     let fr = Frame::identity();

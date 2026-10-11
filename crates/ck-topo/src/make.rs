@@ -549,7 +549,9 @@ fn extrude_loop(
                 let (Curve::Line { o: bo, d: bd }, Curve::Line { o: to, d: td }) = (&bottom3, &top3) else {
                     unreachable!()
                 };
-                let x = bd.normalize();
+                // oracle (box probe, sign of zero): x = entity end − start
+                // in 3D, not the sketch direction mapped through the frame
+                let x = (bottom3.eval(*bt1) - bottom3.eval(*bt0)).normalize();
                 let w = *to - *bo;
                 let y = (w - x * w.dot(x)).normalize();
                 let pf = Frame { o: *bo, x, y, z: x.cross(y) };

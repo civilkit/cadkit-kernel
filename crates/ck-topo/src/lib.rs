@@ -5,3 +5,4 @@ pub mod make;
 pub mod mass;
 pub mod orient;
 pub mod region;
+pub mod trig;

@@ -11,6 +11,8 @@
 //!   vertex (x = radial direction of the vertex).
 
 use super::{build_sweep, curve2_to_3d, sense_of, Caps, LoopGeom, MakeResult, Profile, SegGeom, SideGeom, VertGeom};
+use crate::trig;
+use ck_core::linalg::Mat3;
 use ck_core::xform::Xform;
 use ck_geom::curve::Curve;
 use ck_geom::curve2::Curve2;
@@ -35,11 +37,17 @@ pub fn revolve(feature: &str, profile: &Profile, axis_o: Vec3, axis: Vec3, a0: f
     if profile.frame.z.dot(a).abs() > 1e-9 || profile.frame.z.dot(axis_o - profile.frame.o).abs() > 1e-6 {
         return Err("revolveAxisNotInPlane".into()); // GUESS: error string
     }
-    let r0 = Xform::rotation(axis_o, a, a0);
-    let r1 = Xform::rotation(axis_o, a, a0 + sweep);
-    let rs = Xform::rotation(axis_o, a, sweep);
-    let fr0 = r0.apply_frame(&profile.frame);
-    let fr1 = r1.apply_frame(&profile.frame);
+    // Oracle (cone 120° probe, bit-level): the C1 cap and every C1 edge /
+    // vertex are the sketch geometry rotated by the Rodrigues matrix built
+    // with the kernel's own sin/cos (trig.rs), applied column-wise; rotated
+    // frames keep x, y normalised and z = R·z as is (STEP writes x × y, the
+    // wire normal is ±R·z). An unrotated start (a0 = 0) keeps the sketch
+    // geometry bit-for-bit (applying an identity matrix would flip -0s).
+    let r0 = (a0 != 0.0).then(|| rotation(axis_o, a, a0));
+    let r1 = rotation(axis_o, a, a0 + sweep);
+    let rot_pt = |r: &Option<Xform>, p: Vec3| r.as_ref().map_or(p, |x| x.apply_point(p));
+    let fr0 = r0.as_ref().map_or(profile.frame, |x| rot_frame(x, &profile.frame));
+    let fr1 = rot_frame(&r1, &profile.frame);
     let ax = Axis { o: axis_o, a };
 
     // sweep sense: w = a × r at any off-axis profile point vs plane normal
@@ -71,16 +79,19 @@ pub fn revolve(feature: &str, profile: &Profile, axis_o: Vec3, axis: Vec3, a0: f
         for pl in reg.loops() {
             let m = pl.segs.len();
             let mut verts = vec![];
+            let pf = &profile.frame;
             for s in &pl.segs {
                 let st = s.start();
-                let p = fr0.o + fr0.x * st.x + fr0.y * st.y;
-                let top = if closed { p } else { rs.apply_point(p) };
+                let base = pf.o + pf.x * st.x + pf.y * st.y;
+                let p = rot_pt(&r0, base);
+                let top = if closed { p } else { r1.apply_point(base) };
                 verts.push(VertGeom { bottom: p, top, rail: ax.rail(p, sweep) });
             }
             let mut segs = vec![];
             for (i, s) in pl.segs.iter().enumerate() {
-                let bottom = curve2_to_3d(&fr0, &s.curve, Vec3::ZERO);
-                let top = if closed { bottom.clone() } else { curve2_to_3d(&fr1, &s.curve, Vec3::ZERO) };
+                let base = curve2_to_3d(pf, &s.curve, Vec3::ZERO);
+                let bottom = r0.as_ref().map_or_else(|| base.clone(), |x| rot_curve(x, &base));
+                let top = if closed { bottom.clone() } else { rot_curve(&r1, &base) };
                 let (vs, ve) = if s.rev { ((i + 1) % m, i) } else { (i, (i + 1) % m) };
                 let side = side_geom(&ax, &bottom, s.t0, s.t1, sweep, &verts[vs], &verts[ve]).map(|mut g| {
                     let tm = 0.5 * (s.t0 + s.t1);
@@ -103,6 +114,36 @@ pub fn revolve(feature: &str, profile: &Profile, axis_o: Vec3, axis: Vec3, a0: f
         caps.push(Caps { c0: fr0, c1: fr1 });
     }
     Ok(build_sweep(feature, profile, regions, if closed { None } else { Some(&caps) }, sigma_pos, closed))
+}
+
+/// Rotation by `ang` about the axis (`o`, unit `a`): ck-core's Rodrigues
+/// matrix (`Mat3::rotation` formula) with the kernel's sin/cos.
+pub(crate) fn rotation(o: Vec3, a: Vec3, ang: f64) -> Xform {
+    let (s, c) = (trig::sin(ang), trig::cos(ang));
+    let t = 1.0 - c;
+    let (x, y, z) = (a.x, a.y, a.z);
+    let r = Mat3::from_rows(
+        Vec3::new(t * x * x + c, t * x * y - s * z, t * x * z + s * y),
+        Vec3::new(t * x * y + s * z, t * y * y + c, t * y * z - s * x),
+        Vec3::new(t * x * z - s * y, t * y * z + s * x, t * z * z + c),
+    );
+    Xform::new(r, o - r.mul_vec(o))
+}
+
+/// Rotated frame: x, y re-normalised, z rotated as is (see `revolve`).
+pub(crate) fn rot_frame(r: &Xform, f: &Frame) -> Frame {
+    Frame { o: r.apply_point(f.o), x: r.apply_vec(f.x).normalize(), y: r.apply_vec(f.y).normalize(), z: r.apply_vec(f.z) }
+}
+
+/// Rotated curve. GUESS: conic frames are treated like cap frames
+/// (x, y re-normalised); only line / plane data is pinned.
+pub(crate) fn rot_curve(r: &Xform, c: &Curve) -> Curve {
+    match c {
+        Curve::Line { o, d } => Curve::Line { o: r.apply_point(*o), d: r.apply_vec(*d) },
+        Curve::Circle { frame, r: rad } => Curve::Circle { frame: rot_frame(r, frame), r: *rad },
+        Curve::Ellipse { frame, a, b } => Curve::Ellipse { frame: rot_frame(r, frame), a: *a, b: *b },
+        Curve::BSpline(b) => Curve::BSpline(b.map(|p| r.apply_point(p))),
+    }
 }
 
 struct Axis {
@@ -208,7 +249,7 @@ fn side_geom(ax: &Axis, c: &Curve, t0: f64, t1: f64, sweep: f64, v_t0: &VertGeom
             Kind::Ang { f0: 0.0, f1: 1.0 },
         ),
     };
-    let (cs, sn) = (sweep.cos(), sweep.sin());
+    let (cs, sn) = (trig::cos(sweep), trig::sin(sweep));
     let (pc_bottom, pc_top, rail_pc): (Curve2, Curve2, Box<dyn Fn(f64) -> Curve2>) = match kind {
         Kind::Polar { rho0, rho1 } => (
             Curve2::Line { o: Vec2::new(rho0, 0.0), d: Vec2::new(rho1, 0.0) },
