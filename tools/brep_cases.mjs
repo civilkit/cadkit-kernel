@@ -21,6 +21,7 @@ const AX = { points: [pt('a1', 0, 0), pt('a2', 0, 10)], ent: line('ax', 'a1', 'a
 const withAxis = (P, E) => [[...P, ...AX.points], [...E, AX.ent]];
 const part = (features) => ({ format: 'ck-part', version: 1, features });
 
+import { readFileSync } from 'node:fs';
 const parts = {};
 {
   const [P, E] = rect(0, 0, 40, 20);
@@ -333,6 +334,16 @@ parts.mirrorBodyCone = part([...parts.cone.features, { type: 'plane', id: 'F8', 
 
 const m = (msg) => JSON.stringify({ id: 1, msg });
 /// Follow-up requests on each part's state (compared byte-for-byte).
+// nested parts of the flange coupling assembly's insertParts (tools/cases/*.ckpart);
+// name@N = the first N features
+{
+  const dir = new URL('./cases/', import.meta.url);
+  const load = (n) => JSON.parse(readFileSync(new URL(`${n}.ckpart`, dir), 'utf8'));
+  const cut = (n, ks) => { const p = load(n); for (const k of ks) parts[`${n}@${k}`] = { ...p, features: p.features.slice(0, k) }; };
+  cut('flangeHalf', [8, 9, 10, 11]);
+  // (flangeBolt / flangeNut still hit TODO errors: swept-spline booleans, chamfer)
+}
+
 export const queries = [
   { type: 'massProps', tag: 'main' },
   { type: 'massProps', tag: 'main', bodies: true },
