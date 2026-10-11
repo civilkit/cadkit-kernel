@@ -30,6 +30,9 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Default)]
 pub struct EdgeSampling {
     pub params: Vec<Vec<f64>>,
+    /// Per edge `(start, end)`: that end is a seam-only junction inside a merged circle chain. The original has ONE edge there, so the
+    /// junction vertex is not a sample of the polyline (wire `pts`) nor a vertex of the face polygons.
+    pub virt: Vec<(bool, bool)>,
     /// Periodic cut of every face (indexed by face id).
     pub cuts: Vec<FaceCut>,
 }
@@ -79,21 +82,27 @@ pub struct Tess {
 impl Tess {
     /// Polyline of edge `e` (endpoints = its vertices).
     pub fn edge_polyline(&self, body: &Body, e: EdgeId) -> Vec<Vec3> {
-        polyline(body, e, &self.edges.params[e.idx()])
+        polyline(body, e, &self.edges.params[e.idx()], self.edges.virt[e.idx()])
     }
 }
 
-fn polyline(body: &Body, e: EdgeId, ps: &[f64]) -> Vec<Vec3> {
+fn polyline(body: &Body, e: EdgeId, ps: &[f64], virt: (bool, bool)) -> Vec<Vec3> {
     let ed = body.edge(e);
     let (a, b) = (body.vertex(ed.v0).p, body.vertex(ed.v1).p);
     if ps.len() < 2 {
         return vec![a, b];
     }
     let n = ps.len();
-    ps.iter()
+    let mut pl: Vec<Vec3> = ps
+        .iter()
         .enumerate()
         .map(|(i, &t)| if i == 0 { a } else if i + 1 == n { b } else { ed.curve.eval(t) })
-        .collect()
+        .collect();
+    if virt.1 {
+        // the next chain member's first point is skipped by the wire concatenation, so drop the junction here
+        pl.pop();
+    }
+    pl
 }
 
 /// Regen tolerance of a body (chord from its bbox, angle 0.3).
@@ -106,9 +115,50 @@ pub fn body_tol(body: &Body) -> Tol {
 /// normal refinement, then the periodic-face cut params (see curvature.rs).
 pub fn sample_edges(body: &Body, tol: &Tol) -> EdgeSampling {
     let mut params: Vec<Vec<f64>> = vec![vec![]; body.edges.len()];
+    let mut virt: Vec<(bool, bool)> = vec![(false, false); body.edges.len()];
+    // Circle arcs chained through seam-only vertices are ONE oracle edge: one sample grid over the whole run.
+    let mut base: Vec<Option<Vec<f64>>> = vec![None; body.edges.len()];
+    for chain in body.wire_chains() {
+        if chain.len() < 2 || !chain.iter().all(|&e| matches!(body.edge(e).curve, ck_geom::curve::Curve::Circle { .. })) {
+            continue;
+        }
+        let first = body.edge(chain[0]);
+        let p0 = first.t0;
+        let total: f64 = chain.iter().map(|&e| body.edge(e).t1 - body.edge(e).t0).sum();
+        let grid = curvature::curve_params(&first.curve, p0, p0 + total, tol);
+        let span = total.abs().max(1e-300);
+        let mut a = p0; // chain parameter where the member starts
+        for (k, &e) in chain.iter().enumerate() {
+            let ed = body.edge(e);
+            let s = ed.t1 - ed.t0;
+            let b = a + s;
+            let (lo, hi) = (a.min(b), a.max(b));
+            let eps = 1e-12 * span;
+            let mut ps = vec![ed.t0];
+            let mut on_end = false;
+            for &g in &grid {
+                if g > lo + eps && g < hi - eps {
+                    ps.push(g - a + ed.t0);
+                } else if k + 1 < chain.len() && (g - b).abs() <= eps {
+                    on_end = true;
+                }
+            }
+            ps.push(ed.t1);
+            if s < 0.0 {
+                // members run against increasing parameter: keep the list ascending in traversal order
+                ps.sort_by(|x, y| y.total_cmp(x));
+            }
+            base[e.idx()] = Some(ps);
+            if k + 1 < chain.len() && !on_end {
+                virt[e.idx()].1 = true;
+                virt[chain[k + 1].idx()].0 = true;
+            }
+            a = b;
+        }
+    }
     for e in body.edge_ids() {
         let ed = body.edge(e);
-        let mut ps = curvature::curve_params(&ed.curve, ed.t0, ed.t1, tol);
+        let mut ps = base[e.idx()].take().unwrap_or_else(|| curvature::curve_params(&ed.curve, ed.t0, ed.t1, tol));
         let cos = body.edge_coedges(e);
         // uv chord refinement, coedge by coedge
         for &c in &cos {
@@ -146,7 +196,12 @@ pub fn sample_edges(body: &Body, tol: &Tol) -> EdgeSampling {
                 }
                 cos.push(c);
                 let e = body.coedge(c).edge;
-                for &t in &params[e.idx()] {
+                let (v0, v1) = virt[e.idx()];
+                let pe = &params[e.idx()];
+                for (k, &t) in pe.iter().enumerate() {
+                    if (k == 0 && v0) || (k + 1 == pe.len() && v1) {
+                        continue; // junction of a merged chain: not a sample of the original's single edge
+                    }
                     let uv = body.coedge_uv(c, t, None);
                     us.push(uv.x);
                     vs.push(uv.y);
@@ -186,7 +241,7 @@ pub fn sample_edges(body: &Body, tol: &Tol) -> EdgeSampling {
         let span = (ps[ps.len() - 1] - ps[0]).abs().max(1e-300);
         ps.dedup_by(|a, b| (*a - *b).abs() <= 1e-12 * span);
     }
-    EdgeSampling { params, cuts }
+    EdgeSampling { params, virt, cuts }
 }
 
 /// Params in the open sample range where coordinate `dir` of the coedge's
@@ -252,7 +307,7 @@ fn crossings(body: &Body, c: ck_topo::body::CoedgeId, ps: &[f64], dir: usize, cu
 pub fn edge_polyline(body: &Body, e: EdgeId) -> Vec<Vec3> {
     let tol = body_tol(body);
     let s = sample_edges(body, &tol);
-    polyline(body, e, &s.params[e.idx()])
+    polyline(body, e, &s.params[e.idx()], s.virt[e.idx()])
 }
 
 /// Tessellates the body with the regen tolerance.
@@ -265,7 +320,7 @@ pub fn tessellate_with(body: &Body, tol: &Tol) -> Tess {
     let edges = sample_edges(body, tol);
     let mut faces = vec![];
     for f in body.face_ids() {
-        faces.push(face::mesh_face(body, f, &edges.params, edges.cuts[f.idx()], tol).ok());
+        faces.push(face::mesh_face(body, f, &edges.params, &edges.virt, edges.cuts[f.idx()], tol).ok());
     }
     let mesh = assemble(body, &faces);
     Tess { tol: Some(*tol), edges, mesh, faces }

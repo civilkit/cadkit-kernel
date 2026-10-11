@@ -227,7 +227,7 @@ fn shift_into(x: f64, m: f64, c: f64, p: f64) -> f64 {
 }
 
 /// Triangulates face `f`. `params[e]` = final sorted param list of edge `e`.
-pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], cut: FaceCut, tol: &Tol) -> Result<FaceMesh, String> {
+pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bool)], cut: FaceCut, tol: &Tol) -> Result<FaceMesh, String> {
     let face = body.face(f);
     crate::tr!(9, 0, 0, f.idx(), 0);
     let surf = &face.surface;
@@ -296,6 +296,17 @@ pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], cut: FaceCut, tol:
                 u_hi = u_hi.max(uv.x);
                 pl.push(BPt { uv, p });
             }
+            if std::env::var("CK_DUMP3").is_ok() { eprintln!("COEDGE f{:?} c={:?} rev={} seam={} n={} first={:?} last={:?}", f, c, ce.rev, seam, pl.len(), pl.first().map(|q| q.uv), pl.last().map(|q| q.uv)); }
+            // junctions of a merged circle chain are not vertices of the original's single edge
+            if let Some(&(v0, v1)) = virt.get(e.idx()) {
+                let (sv, ev) = if ce.rev { (v1, v0) } else { (v0, v1) };
+                if ev && pl.len() > 2 {
+                    pl.pop();
+                }
+                if sv && pl.len() > 2 {
+                    pl.remove(0);
+                }
+            }
             if seam {
                 // seams are interior once the face is cut open; they only bound the v/u range
                 poly.push(BPt { uv: Vec2::new(f64::NAN, f64::NAN), p: Vec3::ZERO });
@@ -318,10 +329,6 @@ pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], cut: FaceCut, tol:
                 poly.pop();
             } else {
                 join(&mut poly, last, first, tol);
-            }
-            if !face.sense && poly.len() > 1 {
-                // a reversed-sense face walks its polygon backwards from the same first vertex
-                poly[1..].reverse();
             }
         }
         // split at NaN markers into open chains; a loop without markers is closed
@@ -360,6 +367,22 @@ pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], cut: FaceCut, tol:
         if !*closed && ch.len() >= 3 && same_uv(ch[0].uv, ch[ch.len() - 1].uv) {
             ch.pop();
             *closed = true;
+        }
+    }
+    // A face whose outer loop (largest area) runs clockwise is walked backwards: every closed chain keeps its first vertex and
+    // is reversed after it.
+    {
+        let area = |ch: &Vec<BPt>| -> f64 {
+            let n = ch.len();
+            (0..n).map(|i| ch[i].uv.x * ch[(i + 1) % n].uv.y - ch[(i + 1) % n].uv.x * ch[i].uv.y).sum::<f64>()
+        };
+        let outer = chains.iter().filter(|c| c.1 && c.0.len() > 2).map(|c| area(&c.0)).fold(0.0f64, |m, a| if a.abs() > m.abs() { a } else { m });
+        if outer < 0.0 {
+            for (ch, closed) in chains.iter_mut() {
+                if *closed && ch.len() > 1 {
+                    ch[1..].reverse();
+                }
+            }
         }
     }
     let snap = |x: f64, c: Option<f64>, p: Option<f64>, eps: f64| -> f64 {

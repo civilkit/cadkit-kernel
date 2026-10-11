@@ -24,7 +24,7 @@ function run(mod, part) {
   return dec(JSON.parse(r.json));
 }
 export { run };
-const eq = (a, b) => a.length === b.length && a.every((x, i) => Object.is(x, b[i]) || x === b[i]);
+const eq = (a, b) => a.length === b.length && a.every((x, i) => Object.is(x, b[i]));
 if (import.meta.url === `file://${process.argv[1]}`) {
   let ok = 0, n = 0;
   for (const [name, part] of Object.entries(parts)) {

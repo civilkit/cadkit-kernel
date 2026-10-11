@@ -33,6 +33,7 @@ fn probe(name: &str) -> Vec<(i32, String)> {
     let mut ex = Exec { brep: Brep::new(), t: Nop };
     let _ = regen::regen(&part, &RegenOpts::default(), &mut ex);
     let body = ex.brep.body.as_ref().expect("body");
+    if std::env::var("PROBE_BBOX").is_ok() { let (lo, hi) = body.bbox(); eprintln!("BBOX {:?} {:?} tol {:?}", lo, hi, ck_tess::mesh::body_tol(body)); for e in body.edge_ids() { let ed = body.edge(e); eprintln!("EDGE {} {:?} t {} {}", e.idx(), ed.curve.kind(), ed.t0, ed.t1); } }
     let t = ck_tess::mesh::tessellate(body);
     let gtxt = std::fs::read_to_string(format!("{GDIR}{name}.json")).unwrap();
     let gc = ck_json::parse(&gtxt).unwrap();
