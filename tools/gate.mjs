@@ -133,7 +133,13 @@ function regenSet(set, targets) {
       for (const i of vissues) validCodes[i.code] = (validCodes[i.code] ?? 0) + 1;
       if (vissues.length) validFail.push(`${set}:${t.name}:${[...new Set(vissues.map((i) => i.code))].join(',')} | ${vissues.slice(0, 3).map((i) => `${i.entity}: ${i.detail}`).join(' ; ')}`);
       bump(`valid.${set}`, !(pb.result.errors?.length) && mb?.volume > 0 && manifold && vissues.length === 0);
-const HEAL_KINDS = ['detach', 'shells', 'flip', 'invert', 'reverseCoedge', 'shuffle', 'tiny'];
+      // heal.repair: damage a COPY of each valid brep body (see ck_heal::damage::KINDS),
+      // heal it, and require validate-clean + volume within 1e-6 (relative).
+      if (set === 'brep' && vissues.length === 0) for (const kind of HEAL_KINDS) {
+        const hq = JSON.stringify({ id: 4, msg: { type: 'heal', tag: 'main', damage: kind } });
+        const hd = JSON.parse(kb.request(hq).json || 'null')?.result?.damage;
+        if (hd?.applied) bump('heal.repair', hd.clean === true);
+      }
       if (set === 'brep') importRoundtrip(t, kb, pb, mb);
     } else {
       bump(`mass.${set}`, !ba && !bb);
