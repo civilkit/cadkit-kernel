@@ -120,6 +120,36 @@ parts.cone = part([sketch('front', [pt('p1', 5, 0), pt('p2', 15, 0), pt('p3', 5,
   parts.filletCorner3 = part([...base(), fil(2, [top4[0], top4[1], { faces: ['F2.S.e1', 'F2.S.e2'], at: [40, 5, 0] }])]);
   parts.chamferCorner3 = part([...base(), ch({}, [top4[0], top4[1], { faces: ['F2.S.e1', 'F2.S.e2'], at: [40, 5, 0] }])]);
   parts.filletTwoParallel = part([...base(), fil(2, [top4[0], top4[2]])]);
+  // circular edges of holes / pockets / bosses on the box
+  const rim = (f1, f2, at) => [{ faces: [f1, f2], at }];
+  parts.holeRimFillet = part([...base(), ...hole, fil(0.5, rim('F2.C1', 'F4.S.e1', [7, 10, -5]))]);
+  parts.holeRimChamfer = part([...base(), ...hole, ch({ distance: 0.5 }, rim('F2.C1', 'F4.S.e1', [7, 10, -5]))]);
+  parts.holeBotFillet = part([...base(), ...hole, fil(0.5, rim('F2.C0', 'F4.S.e1', [7, 0, -5]))]);
+  parts.holeBothChamfer = part([...base(), ...hole, ch({ distance: 0.5 }, [...rim('F2.C1', 'F4.S.e1', [7, 10, -5]), ...rim('F2.C0', 'F4.S.e1', [7, 0, -5])])]);
+  parts.pocketFloorFillet = part([...parts.pocket.features, fil(1, rim('F4.C0', 'F4.S.e1', [13, 6, -10]))]);
+  parts.pocketRimChamfer = part([...parts.pocket.features, ch({ distance: 0.5 }, rim('F2.C1', 'F4.S.e1', [13, 10, -10]))]);
+  parts.bossTopFillet = part([...parts.boss.features, fil(1, rim('F4.C1', 'F4.S.e1', [13, 15, -10]))]);
+  parts.bossBaseFillet = part([...parts.boss.features, fil(1, rim('F2.C1', 'F4.S.e1', [13, 10, -10]))]);
+  parts.bossBaseChamfer = part([...parts.boss.features, ch({ distance: 1 }, rim('F2.C1', 'F4.S.e1', [13, 10, -10]))]);
+  parts.bossTopChamfer = part([...parts.boss.features, ch({ distance: 1 }, rim('F4.C1', 'F4.S.e1', [13, 15, -10]))]);
+  // revolved frustum (plane / cone / plane) and a ring with a conical bore
+  {
+    const [P, E] = withAxis([pt('p1', 0, 0), pt('p2', 10, 0), pt('p3', 6, 10), pt('p4', 0, 10)],
+      [line('e1', 'p1', 'p2'), line('e2', 'p2', 'p3'), line('e3', 'p3', 'p4'), line('e4', 'p4', 'p1')]);
+    const frustum = part([sketch('front', P, E), revolve()]);
+    parts.frustum = frustum;
+    const [P2, E2] = withAxis([pt('p1', 4, 0), pt('p2', 10, 0), pt('p3', 6, 10), pt('p4', 4, 10)],
+      [line('e1', 'p1', 'p2'), line('e2', 'p2', 'p3'), line('e3', 'p3', 'p4'), line('e4', 'p4', 'p1')]);
+    parts.ring = part([sketch('front', P2, E2), revolve()]);
+  }
+  parts.frustumBotFillet = part([...parts.frustum.features, fil(1, rim('F2.S.e1', 'F2.S.e2', [-10, 0, 0]))]);
+  parts.frustumTopFillet = part([...parts.frustum.features, fil(1, rim('F2.S.e2', 'F2.S.e3', [-6, 10, 0]))]);
+  parts.frustumBotChamfer = part([...parts.frustum.features, ch({ distance: 1 }, rim('F2.S.e1', 'F2.S.e2', [-10, 0, 0]))]);
+  parts.frustumTopChamfer = part([...parts.frustum.features, ch({ distance: 1 }, rim('F2.S.e2', 'F2.S.e3', [-6, 10, 0]))]);
+  parts.frustumBothChamfer = part([...parts.frustum.features, ch({ distance: 1 }, [...rim('F2.S.e1', 'F2.S.e2', [-10, 0, 0]), ...rim('F2.S.e2', 'F2.S.e3', [-6, 10, 0])])]);
+  parts.ringInnerFillet = part([...parts.ring.features, fil(1, rim('F2.S.e3', 'F2.S.e4', [-4, 10, 0]))]);
+  parts.ringInnerChamfer = part([...parts.ring.features, ch({ distance: 1 }, rim('F2.S.e1', 'F2.S.e4', [-4, 0, 0]))]);
+  parts.ringOuterFillet = part([...parts.ring.features, fil(1, rim('F2.S.e2', 'F2.S.e3', [-6, 10, 0]))]);
   parts.chamferRail = part([...base(), ch({ distance: 3 }, [{ faces: ['F2.S.e2', 'F2.S.e1'], at: [40, 5, 0] }])]);
   parts.chamferBig = part([...base(), ch({ distance: 30 }, e1)]);
   const cylTop = [{ faces: ['F2.C1', 'F2.S.e7'], at: [15, 10, -3] }];
