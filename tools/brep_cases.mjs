@@ -104,6 +104,32 @@ parts.cone = part([sketch('front', [pt('p1', 5, 0), pt('p2', 15, 0), pt('p3', 5,
   parts.filletTooBig = part([...base(), fil(30, [{ faces: ['F2.C1', 'F2.S.e1'], at: [20, 10, 0] }])]);
 }
 
+// draft feature on the 40x20x10 top-plane box: side faces about the bottom
+// cap (F2.C0) / top cap (F2.C1); and on a cylinder.
+{
+  const [P, E] = rect(0, 0, 40, 20);
+  const base = () => [sketch('top', P, E), extrude()];
+  const dr = (faces, o = {}) => ({ type: 'draft', id: 'F3', neutral: { kind: 'face', id: 'F2.C0' }, faces, angle: 5, ...o });
+  const sides = ['F2.S.e1', 'F2.S.e2', 'F2.S.e3', 'F2.S.e4'];
+  parts.draftBox = part([...base(), dr(sides)]);
+  parts.draftBoxFlip = part([...base(), dr(sides, { flip: true })]);
+  parts.draftBoxTop = part([...base(), dr(sides, { neutral: { kind: 'face', id: 'F2.C1' } })]);
+  parts.draftBoxStd = part([...base(), dr(sides, { neutral: STD('top') })]);
+  parts.draftBoxFeat = part([...base(), { type: 'plane', id: 'F4', mode: 'offset', base: STD('top'), offset: 10 }, dr(sides, { id: 'F5', neutral: { kind: 'feature', id: 'F4' } })]);
+  parts.draftBox10 = part([...base(), dr(sides, { angle: 10 })]);
+  parts.draftBox3 = part([...base(), dr(sides, { angle: 3 })]);
+  parts.draftOne = part([...base(), dr(['F2.S.e1'])]);
+  parts.draftTwo = part([...base(), dr(['F2.S.e1', 'F2.S.e3'], { angle: 8 })]);
+  parts.draftCyl = part([sketch('top', [pt('c', 5, 3)], [{ type: 'circle', id: 'e7', c: 'c', r: 10 }]), extrude(),
+    dr(['F2.S.e7'], { angle: 3 })]);
+  parts.draftParallel = part([...base(), dr(['F2.C1'])]);
+  parts.draftZero = part([...base(), dr(sides, { angle: 0 })]);
+  parts.draftRight = part([...base(), dr(sides, { angle: 90 })]);
+  parts.draftNoFaces = part([...base(), dr([])]);
+  parts.draftBadRef = part([...base(), dr(['nope'])]);
+  parts.draftBig = part([...base(), dr(sides, { angle: 89 })]);
+}
+
 parts.mirrorBodyCone = part([...parts.cone.features, { type: 'plane', id: 'F8', mode: 'offset', base: STD('right'), offset: -30 },
   { type: 'mirror', id: 'F9', seeds: [], plane: { kind: 'feature', id: 'F8' }, body: true }]);
 
@@ -144,6 +170,22 @@ parts.mirrorBodyCone = part([...parts.cone.features, { type: 'plane', id: 'F8', 
   parts.sweepCut = part([...tube, circleSk('F1', 'front', 0, 0, 4),
     { type: 'helix', id: 'F2', sketch: 'F1', definedBy: 'pitchRevs', pitch: 1.25, revolutions: 4, height: 5, startAngle: 0, leftHand: false, reverse: false },
     trapSk('F3', 'top'), sweep(CV('F2'), { op: 'cut' })]);
+}
+// shell (hollow) cases
+{
+  const sh = (base, faces, thickness, extra = {}) => part([...base.features, { type: 'shell', id: 'F9', faces, thickness, ...extra }]);
+  parts.shellBoxClosed = sh(parts.box, [], 1);
+  parts.shellBoxOpen = sh(parts.box, ['F2.C1'], 1);
+  parts.shellBoxOpenSide = sh(parts.box, ['F2.S.e1'], 1);
+  parts.shellBoxOpenTwo = sh(parts.box, ['F2.S.e1', 'F2.C1'], 1);
+  parts.shellBoxOpenThick = sh(parts.box, ['F2.C1'], 4.99);
+  parts.shellBoxOutward = sh(parts.box, ['F2.C1'], 1, { outward: true });
+  parts.shellBoxTooThick = sh(parts.box, [], 5);
+  parts.shellBoxReverses = sh(parts.box, [], 6);
+  parts.shellBoxOpenTooThick = sh(parts.box, ['F2.C1'], 20);
+  parts.shellCylOpen = sh(parts.cyl, ['F2.C1'], 1);
+  parts.shellCylClosed = sh(parts.cyl, [], 1);
+  parts.shellCylTooThick = sh(parts.cyl, ['F2.C1'], 10);
 }
 
 const m = (msg) => JSON.stringify({ id: 1, msg });

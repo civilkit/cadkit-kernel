@@ -15,11 +15,11 @@
 //!    metric-scaled (u,v) frame, inside = odd parity. Pinned: the oracle
 //!    meshes planar caps and cylinder sides from boundary points only (cap of
 //!    an N-gon = N−2 triangles, cylinder side = 2N), which this reproduces.
-//! 4. Refinement: insert the (u,v) centroid of every triangle whose centroid
-//!    deviates more than the chord tolerance from the flat triangle, or whose
-//!    centroid normal is more than the angle tolerance off a vertex normal
-//!    (GUESS: the oracle's f3325 evaluates centroids with a 1/3 constant;
-//!    the exact acceptance test was not decompiled).
+//! 4. Refinement: insert the (u,v) centroid of every triangle whose surface
+//!    depth at the centroid exceeds the chord tolerance. Pinned by A/B on the
+//!    sphere: the oracle's max accepted centroid depth == chord tol exactly,
+//!    with no normal-angle term (36.9deg observed vs 17.2deg tol) and no
+//!    edge-midpoint chord term.
 //!
 //! Triangles are CCW about the OUTWARD normal (flipped for `sense == false`).
 use crate::cdt::{self, Pt};
@@ -500,21 +500,18 @@ pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], cut: FaceCut, tol:
             let cuv3 = (a.0 + bb.0 + c.0) * (1.0 / 3.0);
             let e = wrap_eval(cuv3);
             let sp = surf.eval(e.x, e.y);
-            let dev = (sp - a.1).dot(nn).abs();
-            // edge-midpoint chord height (GUESS: the oracle also refines diagonal edges of ruled faces)
-            let mut dev = dev;
+            // Pinned (sphere A/B): the oracle's interior acceptance test is the
+            // surface depth at the triangle centroid alone — it saturates at
+            // exactly the chord tolerance (0.01384 vs tol 0.01386 on R=10
+            // sphere) and does NOT bound the centroid normal angle (36.9deg
+            // observed > 17.2deg angle tol) or the edge-midpoint chords.
+            let mut dev = (sp - a.1).dot(nn).abs();
             for (x, y) in [(a, bb), (bb, c), (c, a)] {
                 let w = wrap_eval((x.0 + y.0) * 0.5);
                 let sm = surf.eval(w.x, w.y);
                 dev = dev.max(sm.dist((x.1 + y.1) * 0.5));
             }
-            let ns = curvature::surface_normal(surf, e.x, e.y);
-            let mut ang: f64 = 0.0;
-            for q in [a.0, bb.0, c.0] {
-                let w = wrap_eval(q);
-                ang = ang.max(curvature::normal_angle(ns, curvature::surface_normal(surf, w.x, w.y)));
-            }
-            if dev > tol.chord || ang > tol.angle {
+            if dev > tol.chord {
                 let cp = to_c(cuv3);
                 cands.push((cp, ti));
             }
