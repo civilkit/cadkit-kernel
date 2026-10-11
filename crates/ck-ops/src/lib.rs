@@ -12,6 +12,7 @@ pub mod intersect;
 pub mod loft;
 pub mod measure;
 pub mod offset;
+pub mod ref_curve;
 pub mod pipecut;
 pub mod shell;
 pub mod simplify;

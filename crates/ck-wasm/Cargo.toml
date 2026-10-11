@@ -11,6 +11,7 @@ ck-json = { path = "../ck-json" }
 ck-server = { path = "../ck-server" }
 ck-model = { path = "../ck-model" }
 ck-core = { path = "../ck-core" }
+ck-geom = { path = "../ck-geom" }
 ck-topo = { path = "../ck-topo" }
 ck-ops = { path = "../ck-ops" }
 ck-io = { path = "../ck-io" }

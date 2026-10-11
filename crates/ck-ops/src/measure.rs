@@ -31,7 +31,7 @@ use ck_json::{Json, Obj};
 use ck_topo::body::{Body, EdgeId, FaceId};
 
 #[derive(Clone, Copy, PartialEq)]
-enum Ref {
+pub enum Ref {
     Face(FaceId),
     Edge(EdgeId),
 }
@@ -64,7 +64,7 @@ fn unit(v: Vec3) -> Vec3 {
 }
 
 /// Resolve `{kind,..}` to a face / live edge (`None` -> the reply is null).
-fn resolve(body: &Body, r: &Json) -> Option<Ref> {
+pub fn resolve_ref(body: &Body, r: &Json) -> Option<Ref> {
     match r.get_str("kind")? {
         "face" => body.find_face(r.get_str("id")?).map(Ref::Face),
         "edge" => {
@@ -366,7 +366,7 @@ pub fn reply(body: &Body, msg: &Json) -> Json {
     let Some(rs) = msg.get_arr("refs") else { return Json::Null };
     let mut refs = vec![];
     for r in rs {
-        match resolve(body, r) {
+        match resolve_ref(body, r) {
             Some(x) => refs.push(x),
             None => return Json::Null,
         }

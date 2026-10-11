@@ -184,6 +184,15 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
         "inspect" => inspect(cx),
         "continuity" => Ok(ck_ops::continuity::reply(&snapshot(cx)?.body, &cx.msg)),
         "measure" => Ok(ck_ops::measure::reply(&snapshot(cx)?.body, &cx.msg)),
+        "refCurve" => {
+            let s = snapshot(cx)?;
+            let r = cx.msg.get("ref").unwrap_or(&Json::Null);
+            Ok(match r.get_str("kind") {
+                Some("edge") => ck_ops::ref_curve::edge_reply(&s.body, r),
+                Some("sketchCurve") => crate::sketch_q::ref_curve(&s.sketches, r),
+                _ => ck_ops::ref_curve::missing_reference(),
+            })
+        }
         "curvatureAt" => Ok(ck_ops::curvature_at::reply(&snapshot(cx)?.body, &cx.msg)),
         "step" => {
             // Reply: the whole STEP file as one JSON string (oracle); `name`

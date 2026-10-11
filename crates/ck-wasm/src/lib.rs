@@ -28,6 +28,7 @@ use std::cell::RefCell;
 pub const COMMIT: &str = "class-a-surfacing da3c6f49122f7955186a15d91471699f37e7fcf5";
 
 pub mod engine;
+pub mod sketch_q;
 
 #[cfg(target_arch = "wasm32")]
 mod host {

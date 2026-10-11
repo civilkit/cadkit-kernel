@@ -79,6 +79,7 @@ name = "ck-wasm"
 version = "0.1.0"
 dependencies = [
  "ck-core",
+ "ck-geom",
  "ck-io",
  "ck-json",
  "ck-model",
