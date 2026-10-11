@@ -1,0 +1,34 @@
+{
+ "wire": [
+  280,
+  280
+ ],
+ "regen.brep.faces": [
+  41,
+  44
+ ],
+ "regen.brep.edges": [
+  30,
+  44
+ ],
+ "regen.brep.box": [
+  41,
+  44
+ ],
+ "regen.brep.rest": [
+  44,
+  44
+ ],
+ "regen.brep.json": [
+  22,
+  44
+ ],
+ "mass.brep": [
+  44,
+  44
+ ],
+ "step": [
+  16,
+  21
+ ]
+}
