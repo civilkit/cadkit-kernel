@@ -357,20 +357,15 @@ mod tests {
         assert_eq!(corners.len(), 1);
         let name = FaceName::other("F3", "V0");
         let tool = sphere_corner_tool(&b, &corners[0], 2.0, "F3", &name, 1e-6).unwrap();
-        eprintln!("tool faces {:?} issues {:?}", tool.face_ids().map(|f| tool.face_id_str(f)).collect::<Vec<_>>(), ck_topo::check::check(&tool, 1e-6));
-        eprintln!("tool vol {} (expect {})", mass_props(&tool).volume, 125.0 - 4.0 / 3.0 * std::f64::consts::PI * 8.0 / 8.0);
+        assert!(ck_topo::check::check(&tool, 1e-6).is_empty());
+        // block 5^3 minus the ball octant
+        assert!((mass_props(&tool).volume - (125.0 - std::f64::consts::PI * 4.0 / 3.0)).abs() < 1e-9);
         let (mut r, _) = apply_tool(&mitred, &tool, Op::Cut, &name, vec![], 1e-6).unwrap();
         fix_sphere_pcurves(&mut r, &name.id());
-        eprintln!("faces {:?}", r.face_ids().map(|f| r.face_id_str(f)).collect::<Vec<_>>());
-        for f in r.face_ids() {
-            let cnt: Vec<(String, bool)> = r.face(f).loops.iter().flat_map(|&l| r.lp(l).coedges.iter().map(|&c| (r.edge(r.coedge(c).edge).curve.kind().to_string(), r.coedge(c).pcurve.is_some()))).collect();
-            eprintln!("  {} {} coedges {:?}", r.face_id_str(f), r.face(f).surface.kind(), cnt);
-        }
-        for f in r.face_ids() {
-            let a = ck_topo::mass::face_integral::<1>(&r, f, 1, &|_, n| [n.len()])[0];
-            eprintln!("  area {} = {}", r.face_id_str(f), a);
-        }
-        eprintln!("mitred vol {} result vol {} issues {:?}",mass_props(&mitred).volume, mass_props(&r).volume, ck_topo::check::check(&r, 1e-6));
+        assert!(ck_topo::check::check(&r, 1e-6).is_empty());
+        let faces: Vec<String> = r.face_ids().map(|f| r.face_id_str(f)).collect();
+        assert_eq!(faces[faces.len() - 4..], ["F3.B0", "F3.B1", "F3.B2", "F3.V0"]);
+        // oracle volume of filletCorner3 (exact: 8000 - 64(1-pi/4)4/4... see tools/brep_cases.mjs)
         assert!((mass_props(&r).volume - 7941.250719950454).abs() < 1e-6, "{}", mass_props(&r).volume);
     }
 }

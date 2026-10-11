@@ -7,7 +7,9 @@
 //! along circle edges between coaxial plane / cylinder / cone faces
 //! (convex / concave), blend faces `B<k>`, as a boolean with a tool (extruded
 //! or revolved corner profile); multi-edge selections in rounds; and
-//! [`vertex::chamfer_vertex`] (3-valent corner cut). Everything else is a
+//! [`vertex::chamfer_vertex`] (3-valent corner cut) and
+//! [`corner::sphere_corner_tool`] (the `V<k>` sphere patch of three equal
+//! fillets at a convex planar corner). Everything else is a
 //! documented stub (see each file's header for the kernel.strings messages
 //! it owns).
 //!
