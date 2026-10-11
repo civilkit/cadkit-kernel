@@ -198,6 +198,25 @@ mod tests {
     }
 
     #[test]
+    fn rebuild_extruded_box_keeps_mass() {
+        // an ck-topo built body (coedges carry pcurves): the refit cap must
+        // keep the volume (oracle probe: freeform on a 40x20x10 box)
+        use ck_topo::make::{extrude, ExtrudeOpts, Profile, ProfileLoop, ProfileRegion, ProfileSeg};
+        use ck_geom::Vec2;
+        let pts = [(0.0, 0.0), (40.0, 0.0), (40.0, 20.0), (0.0, 20.0)];
+        let segs = (0..4)
+            .map(|i| ProfileSeg::line(&format!("e{}", i + 1), Vec2::new(pts[i].0, pts[i].1), Vec2::new(pts[(i + 1) % 4].0, pts[(i + 1) % 4].1)))
+            .collect();
+        let fr = ck_geom::Frame { o: Vec3::ZERO, x: Vec3::X, y: Vec3::Y, z: Vec3::Z };
+        let prof = Profile::new(fr, vec![ProfileRegion { outer: ProfileLoop::new(segs), holes: vec![] }]);
+        let body = extrude("F2", &prof, ExtrudeOpts::blind(10.0)).unwrap();
+        let f = body.face_ids().find(|&f| body.face(f).name.id() == "F2.C1").unwrap();
+        let b = rebuild(&body, &[f], 3, 3, 2, 2, 1e-6).unwrap();
+        let mp = ck_topo::mass::mass_props(&b);
+        assert!((mp.volume - 8000.0).abs() < 1e-5, "volume {}", mp.volume);
+    }
+
+    #[test]
     fn rebuild_errors() {
         let body = box_body();
         let f = body.face_ids().next().unwrap();

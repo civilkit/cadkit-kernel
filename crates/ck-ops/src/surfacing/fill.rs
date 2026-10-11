@@ -110,9 +110,13 @@ pub fn fill(
     tol: f64,
 ) -> Result<Body, FillError> {
     let steps = walk_chain(body, chain)?;
-    let closed_ring = steps.len() == 1 && {
-        let e = body.edge(steps[0].e);
-        body.vertex(e.v0).p.dist(body.vertex(e.v1).p) <= tol
+    // a chain whose last edge ends where the first begins is a closed ring
+    // (no chord; oracle: filling the 4 rim edges of a tube adds 1 face, 0 edges)
+    let closed_ring = {
+        let (f, l) = (&steps[0], &steps[steps.len() - 1]);
+        let s0 = if f.fwd { body.edge(f.e).v0 } else { body.edge(f.e).v1 };
+        let s1 = if l.fwd { body.edge(l.e).v1 } else { body.edge(l.e).v0 };
+        body.vertex(s0).p.dist(body.vertex(s1).p) <= tol
     };
     if steps.len() == 1 && !closed_ring {
         return Err(FillError::detail("fillNotClosed", "the chain is open"));
@@ -160,6 +164,13 @@ pub fn fill(
         let vb = out.add_vertex(end);
         let ce = out.add_edge(Curve::line_through(start, end), 0.0, (end - start).len(), va, vb);
         out.add_coedge(nloop, ce, true, None);
+    }
+
+    // the loop direction is fixed by the neighbours (opposite to theirs):
+    // pick the patch's sense so the loop runs CCW about its outward normal
+    // (oracle: filling both rims of a tube gives opposite plane normals)
+    if matches!(out.face(nf).surface, Surface::Plane { .. }) && !ck_topo::orient::loops_consistent(&out, nf) {
+        out.faces[nf.idx()].sense = !out.faces[nf.idx()].sense;
     }
 
     // validity: the kernel's face check rejects a zero-parameter-area patch

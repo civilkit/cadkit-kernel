@@ -14,7 +14,7 @@ import { Kernel } from './kernel.mjs';
 const args = process.argv.slice(2);
 const flag = (f) => { const i = args.indexOf(f); if (i < 0) return false; args.splice(i, 1); return true; };
 const opt = (f) => { const i = args.indexOf(f); if (i < 0) return null; const v = args[i + 1]; args.splice(i, 2); return v; };
-const prefixes = flag('--prefixes'), mass = flag('--mass'), trace = flag('--trace'), show = opt('--show');
+const loose = flag('--loose'), prefixes = flag('--prefixes'), mass = flag('--mass'), trace = flag('--trace'), show = opt('--show');
 const wasmB = opt('--wasm') ?? new URL('../target/wasm32-unknown-unknown/release/ck_wasm.wasm', import.meta.url);
 const A = new WebAssembly.Module(readFileSync(new URL('../../kernel.wasm', import.meta.url)));
 const B = new WebAssembly.Module(readFileSync(wasmB));
@@ -32,7 +32,10 @@ for (const t of args) {
   }
 }
 
-const strip = (o) => { const b = o?.result?.body; if (b?.edges) for (const e of b.edges) e.pts = e.pts.length; return o; };
+// --loose: structure check only (numbers to 6 decimals, no mesh buffers / silhouette)
+const rnd = (x) => typeof x === 'number' ? Math.round(x * 1e6) / 1e6 + 0 : Array.isArray(x) ? x.map(rnd) : x && typeof x === 'object' ? Object.fromEntries(Object.entries(x).map(([k, v]) => [k, rnd(v)])) : x;
+const loosen = (b) => { if (!b) return b; delete b.mesh; delete b.silhouette; for (const e of b.edges ?? []) { delete e.mid; delete e.pts; } for (const k of ['faces', 'edges']) if (b[k]) b[k] = rnd(b[k]); if (b.box) b.box = JSON.parse(JSON.stringify(b.box), (_, v) => typeof v === 'number' ? Math.round(v * 1e2) / 1e2 + 0 : v); return b; };
+const strip = (o) => { if (loose) { if (o?.result?.markers) o.result.markers = rnd(o.result.markers); loosen(o?.result?.body); for (const [, sb] of o?.result?.surfaces ?? []) loosen(sb); } const b = o?.result?.body; if (b?.edges) for (const e of b.edges) e.pts = e.pts?.length; for (const [, sb] of o?.result?.surfaces ?? []) if (sb?.edges) for (const e of sb.edges) e.pts = e.pts?.length; return o; };
 const rel = (x, y) => Math.abs(x - y) / (1 + Math.abs(y));
 const maxdiff = (a, b) => {
   if (typeof a === 'number' && typeof b === 'number') return rel(a, b);
@@ -68,6 +71,15 @@ for (const t of targets) {
     if (keys.includes('box')) notes.push(`box maxrel ${maxdiff(ba.box, bb.box).toExponential(1)}`);
   } else if (!!ba !== !!bb) notes.push(`body ${bb ? 'yes' : 'no'}/${ba ? 'yes' : 'no'}`);
   const strip3 = (o) => { const r = { ...o.result }; delete r.body; return r; };
+  const sfa = oa.result?.surfaces ?? [], sfb = ob.result?.surfaces ?? [];
+  if (JSON.stringify(sfa) !== JSON.stringify(sfb)) {
+    const ids = (s) => s.map(([id]) => id).join();
+    if (ids(sfa) !== ids(sfb)) notes.push(`surfaces ours=[${ids(sfb)}] orig=[${ids(sfa)}]`);
+    else for (const [i, [id, x]] of sfa.entries()) {
+      const y = sfb[i][1], ks = ['box', 'faces', 'edges', 'silhouette', 'mesh'].filter((k) => JSON.stringify(x[k]) !== JSON.stringify(y[k]));
+      if (ks.length) notes.push(`surface ${id}: ${ks.join('/')}${show && ks.includes(show) ? `\n   orig    ${JSON.stringify(x[show])}\n   rebuilt ${JSON.stringify(y[show])}` : ''}`);
+    }
+  }
   const ra2 = strip3(oa), rb2 = strip3(ob);
   const other = Object.keys({ ...ra2, ...rb2 }).filter((k) => JSON.stringify(ra2[k]) !== JSON.stringify(rb2[k]));
   if (oa.ok !== ob.ok) other.push(`ok ${ob.ok}/${oa.ok} ${ob.error ?? oa.error}`);
