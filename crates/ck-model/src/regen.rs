@@ -40,13 +40,15 @@ use ck_json::Json;
 pub struct RegenOpts {
     /// Regenerate only the first `up_to` features.
     pub up_to: Option<u32>,
+    /// Ignore `part.rollback` (pinned: nested insertPart regens do).
+    pub ignore_rollback: bool,
 }
 
 impl RegenOpts {
     /// Parse `msg.opts` (`{"upTo": n}`; negative / non-numbers ignored).
     pub fn from_json(j: Option<&Json>) -> RegenOpts {
         let up_to = j.and_then(|o| o.get("upTo")).and_then(|v| v.as_f64()).filter(|v| *v >= 0.0).map(|v| v as u32);
-        RegenOpts { up_to }
+        RegenOpts { up_to, ignore_rollback: false }
     }
 }
 
@@ -355,6 +357,9 @@ pub trait FeatureExec {
     fn face_frame(&mut self, _state: &RegenState, _face: &str) -> Option<Frame> {
         None
     }
+    /// Called once before the feature loop with the features that will run
+    /// (assembly pre-pass, see `features::mate`).
+    fn prepare(&mut self, _state: &RegenState, _features: &[&Feature]) {}
     /// Execute a geometry feature (not sketch/sketch3d/plane).
     fn exec(&mut self, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError>;
 }
@@ -471,9 +476,11 @@ pub fn regen(part: &Part, opts: &RegenOpts, exec: &mut dyn FeatureExec) -> Regen
     if let Some(u) = opts.up_to {
         n = n.min(u as usize);
     }
-    if let Some(r) = part.rollback {
+    if let Some(r) = part.rollback.filter(|_| !opts.ignore_rollback) {
         n = n.min(r);
     }
+    let run: Vec<&Feature> = part.features[..n].iter().filter(|f| !f.suppressed).collect();
+    exec.prepare(&state, &run);
     for f in &part.features[..n] {
         if f.suppressed {
             continue;
@@ -652,7 +659,7 @@ mod tests {
             }
         }
         let mut ex = crate::features::Brep::new();
-        let r = regen(&part, &RegenOpts { up_to: Some(8) }, &mut ex);
+        let r = regen(&part, &RegenOpts { up_to: Some(8), ignore_rollback: false }, &mut ex);
         let f7 = r.sketches.iter().find(|s| s.id == "F7").unwrap();
         assert_eq!(ck_json::to_string(&frame_json(&f7.frame)), r#"{"o":[26,0,0],"x":[0,0,-1],"y":[0,1,0],"z":[1,0,0]}"#);
         assert!(r.errors.is_empty(), "{:?}", r.errors);
