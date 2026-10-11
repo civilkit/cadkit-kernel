@@ -15,6 +15,7 @@ pub fn install() {
         regen: Some(regen_hook),
         query: Some(query_hook),
         sketch_offset: Some(sketch_offset_hook),
+        match_edges: Some(match_edges_hook),
         ..Hooks::default()
     });
 }
@@ -330,4 +331,21 @@ fn comb(body: &Body, msg: &Json) -> Json {
         }
     };
     Json::Arr(msg.get_arr("refs").unwrap_or(&[]).iter().map(one).collect())
+}
+
+/// `matchEdges` on a part with features: a private regen (span
+/// "regenerate N features", nothing stored), then the edge matcher.
+fn match_edges_hook(part: &Json, cx: &mut Cx) -> Result<Json, String> {
+    let part = Part::from_json(part)?;
+    let opts = RegenOpts { up_to: cx.msg.get_f64("upTo").filter(|v| *v >= 0.0).map(|v| v as u32), ignore_rollback: false };
+    let n = opts.up_to.map_or(part.features.len(), |u| part.features.len().min(u as usize));
+    let body = cx.span(regen_label(n), |cx| {
+        let mut ex = Exec { brep: Brep::new(), sink: TraceSink { trace: &mut *cx.trace, ids: vec![] } };
+        regen::regen(&part, &opts, &mut ex);
+        ex.brep.body
+    });
+    Ok(match body {
+        Some(b) => ck_ops::match_edges::reply(&b, &cx.msg),
+        None => Json::Arr(vec![]),
+    })
 }

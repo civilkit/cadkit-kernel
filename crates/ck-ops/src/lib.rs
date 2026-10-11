@@ -12,6 +12,7 @@ pub mod helix;
 pub mod interference;
 pub mod intersect;
 pub mod loft;
+pub mod match_edges;
 pub mod measure;
 pub mod offset;
 pub mod ref_curve;
