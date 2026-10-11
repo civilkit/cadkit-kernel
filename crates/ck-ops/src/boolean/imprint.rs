@@ -298,7 +298,8 @@ pub fn imprint(a: &Body, b: &Body, tol: f64) -> Arrangement {
                 }
             }
         }
-        ts.sort_by(|x, y| x.partial_cmp(y).unwrap());
+        ts.retain(|t| t.is_finite()); // robustness: huge coordinates can yield NaN params
+        ts.sort_by(f64::total_cmp);
         ts.dedup_by(|x, y| (*x - *y).abs() <= 1e-12);
         ts
     };

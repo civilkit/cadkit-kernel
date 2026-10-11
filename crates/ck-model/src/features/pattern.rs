@@ -309,8 +309,15 @@ fn count_of(c: f64) -> Result<usize, FeatureError> {
     if !c.is_finite() || c < 1.0 {
         return Ok(1);
     }
+    // robustness: an absurd count would allocate/loop forever (wasm trap) -> structured error
+    if c > MAX_INSTANCES {
+        return Err(FeatureError::new(codes::INVALID_VALUE));
+    }
     Ok(c.round() as usize)
 }
+
+/// Upper bound on pattern instances (far above any real part).
+const MAX_INSTANCES: f64 = 10_000.0;
 
 /// Mirror / pattern with an empty `seeds` list (oracle code).
 pub const NO_SEEDS: &str = "noSeeds";
