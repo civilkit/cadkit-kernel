@@ -169,7 +169,7 @@ fn import_sat_hook(cx: &mut Cx) -> Result<(Json, Option<State>), String> {
                         .build(),
                 ));
             }
-            let state = State { has_body: true, data: Some(Box::new(Snapshot { body, sketches: vec![], asm: Default::default() })) };
+            let state = State { has_body: true, data: Some(Box::new(Snapshot { body, sketches: vec![], asm: Default::default(), heal_base: None })) };
             Ok((out, Some(state)))
         }
     }
