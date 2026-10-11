@@ -1,0 +1,837 @@
+{
+ "format": "ck-part",
+ "version": 1,
+ "name": "Hex bolt M8x40",
+ "features": [
+  {
+   "type": "sketch",
+   "name": "Shank",
+   "plane": {
+    "kind": "std",
+    "id": "front"
+   },
+   "points": [
+    {
+     "id": "O",
+     "x": 0,
+     "y": 0,
+     "fixed": true
+    }
+   ],
+   "entities": [
+    {
+     "id": "e1",
+     "type": "circle",
+     "c": "O",
+     "r": 4
+    }
+   ],
+   "constraints": [
+    {
+     "id": "k2",
+     "type": "diameter",
+     "refs": [
+      "e1"
+     ],
+     "value": 8,
+     "offset": [
+      5.6568,
+      5.6568
+     ]
+    }
+   ],
+   "seq": 3,
+   "visible": false,
+   "id": "F1",
+   "num": 1
+  },
+  {
+   "type": "extrude",
+   "op": "add",
+   "sketch": "F1",
+   "end": "blind",
+   "depth": 40,
+   "name": "Shank",
+   "id": "F2",
+   "num": 1
+  },
+  {
+   "type": "sketch",
+   "name": "Head",
+   "plane": {
+    "kind": "std",
+    "id": "front"
+   },
+   "points": [
+    {
+     "id": "O",
+     "x": 0,
+     "y": 0,
+     "fixed": true
+    },
+    {
+     "id": "p1",
+     "x": 4.595826034474597e-16,
+     "y": 7.505553499465135
+    },
+    {
+     "id": "p2",
+     "x": -6.499999999999999,
+     "y": 3.75277674973257
+    },
+    {
+     "id": "p3",
+     "x": -6.500000000000001,
+     "y": -3.7527767497325653
+    },
+    {
+     "id": "p4",
+     "x": -1.3787478103423788e-15,
+     "y": -7.505553499465135
+    },
+    {
+     "id": "p5",
+     "x": 6.499999999999998,
+     "y": -3.752776749732571
+    },
+    {
+     "id": "p6",
+     "x": 6.5,
+     "y": 3.7527767497325675
+    }
+   ],
+   "entities": [
+    {
+     "id": "e7",
+     "type": "line",
+     "p1": "p1",
+     "p2": "p2"
+    },
+    {
+     "id": "e8",
+     "type": "line",
+     "p1": "p2",
+     "p2": "p3"
+    },
+    {
+     "id": "e9",
+     "type": "line",
+     "p1": "p3",
+     "p2": "p4"
+    },
+    {
+     "id": "e10",
+     "type": "line",
+     "p1": "p4",
+     "p2": "p5"
+    },
+    {
+     "id": "e11",
+     "type": "line",
+     "p1": "p5",
+     "p2": "p6"
+    },
+    {
+     "id": "e12",
+     "type": "line",
+     "p1": "p6",
+     "p2": "p1"
+    },
+    {
+     "id": "e15",
+     "type": "circle",
+     "c": "O",
+     "r": 7.505553499465135,
+     "construction": true
+    }
+   ],
+   "constraints": [
+    {
+     "id": "k13",
+     "type": "vertical",
+     "refs": [
+      "e8"
+     ]
+    },
+    {
+     "id": "k14",
+     "type": "vertical",
+     "refs": [
+      "e11"
+     ]
+    },
+    {
+     "id": "k16",
+     "type": "pointOnCircle",
+     "refs": [
+      "p1",
+      "e15"
+     ]
+    },
+    {
+     "id": "k17",
+     "type": "pointOnCircle",
+     "refs": [
+      "p2",
+      "e15"
+     ]
+    },
+    {
+     "id": "k18",
+     "type": "pointOnCircle",
+     "refs": [
+      "p3",
+      "e15"
+     ]
+    },
+    {
+     "id": "k19",
+     "type": "pointOnCircle",
+     "refs": [
+      "p4",
+      "e15"
+     ]
+    },
+    {
+     "id": "k20",
+     "type": "pointOnCircle",
+     "refs": [
+      "p5",
+      "e15"
+     ]
+    },
+    {
+     "id": "k21",
+     "type": "pointOnCircle",
+     "refs": [
+      "p6",
+      "e15"
+     ]
+    },
+    {
+     "id": "k22",
+     "type": "equal",
+     "refs": [
+      "e7",
+      "e8"
+     ]
+    },
+    {
+     "id": "k23",
+     "type": "equal",
+     "refs": [
+      "e7",
+      "e9"
+     ]
+    },
+    {
+     "id": "k24",
+     "type": "equal",
+     "refs": [
+      "e7",
+      "e10"
+     ]
+    },
+    {
+     "id": "k25",
+     "type": "equal",
+     "refs": [
+      "e7",
+      "e11"
+     ]
+    },
+    {
+     "id": "k26",
+     "type": "pldist",
+     "refs": [
+      "p4",
+      "e7"
+     ],
+     "value": 13,
+     "offset": [
+      0,
+      -4
+     ]
+    }
+   ],
+   "seq": 27,
+   "visible": false,
+   "id": "F3",
+   "num": 2
+  },
+  {
+   "type": "extrude",
+   "op": "add",
+   "sketch": "F3",
+   "end": "blind",
+   "depth": 5.3,
+   "flip": true,
+   "name": "Head",
+   "id": "F4",
+   "num": 2
+  },
+  {
+   "type": "sketch",
+   "name": "Head chamfer section",
+   "plane": {
+    "kind": "std",
+    "id": "top"
+   },
+   "points": [
+    {
+     "id": "O",
+     "x": 0,
+     "y": 0,
+     "fixed": true
+    },
+    {
+     "id": "p1",
+     "x": 6.109999999999999,
+     "y": 5.3
+    },
+    {
+     "id": "p2",
+     "x": 8.5,
+     "y": 5.3
+    },
+    {
+     "id": "p3",
+     "x": 8.5,
+     "y": 3.920132856636794
+    },
+    {
+     "id": "p7",
+     "x": 0,
+     "y": -50
+    },
+    {
+     "id": "p8",
+     "x": 0,
+     "y": 50
+    }
+   ],
+   "entities": [
+    {
+     "id": "e4",
+     "type": "line",
+     "p1": "p1",
+     "p2": "p2"
+    },
+    {
+     "id": "e5",
+     "type": "line",
+     "p1": "p2",
+     "p2": "p3"
+    },
+    {
+     "id": "e6",
+     "type": "line",
+     "p1": "p3",
+     "p2": "p1"
+    },
+    {
+     "id": "e9",
+     "type": "line",
+     "p1": "p7",
+     "p2": "p8",
+     "construction": true
+    }
+   ],
+   "constraints": [
+    {
+     "id": "k10",
+     "type": "horizontal",
+     "refs": [
+      "e4"
+     ]
+    },
+    {
+     "id": "k11",
+     "type": "vertical",
+     "refs": [
+      "e5"
+     ]
+    },
+    {
+     "id": "k12",
+     "type": "vertical",
+     "refs": [
+      "e9"
+     ]
+    },
+    {
+     "id": "k13",
+     "type": "vertical",
+     "refs": [
+      "p7",
+      "O"
+     ]
+    },
+    {
+     "id": "k14",
+     "type": "distance",
+     "refs": [
+      "p1",
+      "p2"
+     ],
+     "value": 2.3900000000000006,
+     "offset": [
+      0,
+      6.372665401935036
+     ]
+    },
+    {
+     "id": "k15",
+     "type": "distance",
+     "refs": [
+      "p2",
+      "p3"
+     ],
+     "value": 1.3798671433632057,
+     "offset": [
+      6.372665401935036,
+      0
+     ]
+    },
+    {
+     "id": "k16",
+     "type": "hdist",
+     "refs": [
+      "O",
+      "p1"
+     ],
+     "value": 6.109999999999999,
+     "offset": [
+      0,
+      9.022665401935036
+     ]
+    },
+    {
+     "id": "k17",
+     "type": "vdist",
+     "refs": [
+      "O",
+      "p1"
+     ],
+     "value": 5.3,
+     "offset": [
+      9.427665401935036,
+      0
+     ]
+    },
+    {
+     "id": "k18",
+     "type": "vdist",
+     "refs": [
+      "O",
+      "p7"
+     ],
+     "value": 50,
+     "offset": [
+      6.372665401935036,
+      0
+     ]
+    },
+    {
+     "id": "k19",
+     "type": "vdist",
+     "refs": [
+      "O",
+      "p8"
+     ],
+     "value": 50,
+     "offset": [
+      6.372665401935036,
+      0
+     ]
+    }
+   ],
+   "seq": 20,
+   "visible": false,
+   "id": "F5",
+   "num": 3
+  },
+  {
+   "type": "revolve",
+   "op": "cut",
+   "sketch": "F5",
+   "axis": "e9",
+   "end": "blind",
+   "angle": 360,
+   "name": "Head chamfer",
+   "id": "F6",
+   "num": 1
+  },
+  {
+   "type": "chamfer",
+   "chamferType": "equal",
+   "distance": 1,
+   "edges": [
+    {
+     "faces": [
+      "F2.C1",
+      "F2.S.e1"
+     ],
+     "at": [
+      -4,
+      0,
+      40
+     ]
+    }
+   ],
+   "name": "Point chamfer",
+   "id": "F7",
+   "num": 1
+  },
+  {
+   "type": "fillet",
+   "radius": 0.4,
+   "edges": [
+    {
+     "faces": [
+      "F2.S.e1",
+      "F4.C1"
+     ],
+     "at": [
+      -4,
+      0,
+      0
+     ]
+    }
+   ],
+   "name": "Underhead fillet",
+   "id": "F8",
+   "num": 1
+  },
+  {
+   "type": "plane",
+   "mode": "offset",
+   "base": {
+    "kind": "std",
+    "id": "front"
+   },
+   "offset": 18,
+   "flip": false,
+   "name": "Thread end",
+   "id": "F9",
+   "num": 1
+  },
+  {
+   "type": "sketch",
+   "name": "Thread circle",
+   "plane": {
+    "kind": "feature",
+    "id": "F9"
+   },
+   "points": [
+    {
+     "id": "O",
+     "x": 0,
+     "y": 0,
+     "fixed": true
+    }
+   ],
+   "entities": [
+    {
+     "id": "e1",
+     "type": "circle",
+     "c": "O",
+     "r": 4
+    }
+   ],
+   "constraints": [
+    {
+     "id": "k2",
+     "type": "diameter",
+     "refs": [
+      "e1"
+     ],
+     "value": 8,
+     "offset": [
+      5.6568,
+      5.6568
+     ]
+    }
+   ],
+   "seq": 3,
+   "visible": false,
+   "id": "F10",
+   "num": 4
+  },
+  {
+   "type": "helix",
+   "sketch": "F10",
+   "definedBy": "pitchRevs",
+   "pitch": 1.25,
+   "revolutions": 19,
+   "height": 23.75,
+   "startAngle": 0,
+   "leftHand": false,
+   "reverse": false,
+   "name": "Thread helix",
+   "id": "F11",
+   "num": 1,
+   "visible": false
+  },
+  {
+   "type": "sketch",
+   "name": "Thread profile",
+   "plane": {
+    "kind": "std",
+    "id": "top"
+   },
+   "points": [
+    {
+     "id": "O",
+     "x": 0,
+     "y": 0,
+     "fixed": true
+    },
+    {
+     "id": "p1",
+     "x": 3.2,
+     "y": -18.110427405783632
+    },
+    {
+     "id": "p2",
+     "x": 4.05,
+     "y": -18.60117513459481
+    },
+    {
+     "id": "p3",
+     "x": 4.05,
+     "y": -17.39882486540519
+    },
+    {
+     "id": "p4",
+     "x": 3.2,
+     "y": -17.889572594216368
+    },
+    {
+     "id": "p9",
+     "x": 8,
+     "y": -21
+    },
+    {
+     "id": "p10",
+     "x": 8,
+     "y": -15
+    }
+   ],
+   "entities": [
+    {
+     "id": "e5",
+     "type": "line",
+     "p1": "p1",
+     "p2": "p2"
+    },
+    {
+     "id": "e6",
+     "type": "line",
+     "p1": "p2",
+     "p2": "p3"
+    },
+    {
+     "id": "e7",
+     "type": "line",
+     "p1": "p3",
+     "p2": "p4"
+    },
+    {
+     "id": "e8",
+     "type": "line",
+     "p1": "p4",
+     "p2": "p1"
+    },
+    {
+     "id": "e11",
+     "type": "line",
+     "p1": "p9",
+     "p2": "p10",
+     "construction": true
+    }
+   ],
+   "constraints": [
+    {
+     "id": "k12",
+     "type": "vertical",
+     "refs": [
+      "e6"
+     ]
+    },
+    {
+     "id": "k13",
+     "type": "vertical",
+     "refs": [
+      "e8"
+     ]
+    },
+    {
+     "id": "k14",
+     "type": "vertical",
+     "refs": [
+      "e11"
+     ]
+    },
+    {
+     "id": "k15",
+     "type": "distance",
+     "refs": [
+      "p1",
+      "p2"
+     ],
+     "value": 0.9814954576223622,
+     "offset": [
+      -1.9999999999999922,
+      -3.464101615137759
+     ]
+    },
+    {
+     "id": "k16",
+     "type": "distance",
+     "refs": [
+      "p2",
+      "p3"
+     ],
+     "value": 1.2023502691896226,
+     "offset": [
+      -4,
+      0
+     ]
+    },
+    {
+     "id": "k17",
+     "type": "distance",
+     "refs": [
+      "p3",
+      "p4"
+     ],
+     "value": 0.9814954576223622,
+     "offset": [
+      -1.9999999999999922,
+      3.464101615137759
+     ]
+    },
+    {
+     "id": "k18",
+     "type": "distance",
+     "refs": [
+      "p4",
+      "p1"
+     ],
+     "value": 0.22085481156726416,
+     "offset": [
+      -4,
+      0
+     ]
+    },
+    {
+     "id": "k19",
+     "type": "hdist",
+     "refs": [
+      "O",
+      "p1"
+     ],
+     "value": 3.2,
+     "offset": [
+      0,
+      -13.055213702891816
+     ]
+    },
+    {
+     "id": "k20",
+     "type": "vdist",
+     "refs": [
+      "O",
+      "p1"
+     ],
+     "value": 18.110427405783632,
+     "offset": [
+      5.6,
+      0
+     ]
+    },
+    {
+     "id": "k21",
+     "type": "hdist",
+     "refs": [
+      "O",
+      "p9"
+     ],
+     "value": 8,
+     "offset": [
+      0,
+      -14.5
+     ]
+    },
+    {
+     "id": "k22",
+     "type": "vdist",
+     "refs": [
+      "O",
+      "p9"
+     ],
+     "value": 21,
+     "offset": [
+      8,
+      0
+     ]
+    },
+    {
+     "id": "k23",
+     "type": "vdist",
+     "refs": [
+      "O",
+      "p10"
+     ],
+     "value": 15,
+     "offset": [
+      8,
+      0
+     ]
+    }
+   ],
+   "seq": 24,
+   "visible": false,
+   "id": "F12",
+   "num": 5
+  },
+  {
+   "type": "sweep",
+   "op": "cut",
+   "sketch": "F12",
+   "path": {
+    "kind": "curve",
+    "id": "F11"
+   },
+   "name": "Thread",
+   "id": "F13",
+   "num": 1
+  },
+  {
+   "type": "revolve",
+   "op": "cut",
+   "sketch": "F12",
+   "axis": "e11",
+   "end": "blind",
+   "angle": 30,
+   "flip": true,
+   "name": "Thread run-out",
+   "id": "F14",
+   "num": 2
+  }
+ ],
+ "seq": 15,
+ "rollback": null,
+ "material": "steel",
+ "counters": {
+  "sketch": 5,
+  "extrude": 2,
+  "cutRevolve": 2,
+  "chamfer": 1,
+  "fillet": 1,
+  "plane": 1,
+  "helix": 1,
+  "cutSweep": 1
+ }
+}

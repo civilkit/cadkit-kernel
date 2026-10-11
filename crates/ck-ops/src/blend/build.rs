@@ -58,20 +58,225 @@ pub fn find_edge(b: &Body, fa: &str, fb: &str, at: Vec3) -> Option<EdgeId> {
 /// IN-PLACE arena layout ([`in_place_layout`]), so wire `#n` keep the
 /// input's numbers.
 pub fn fillet(b: &Body, edges: &[(String, String, Vec3)], r: f64, feature: &str, tol: f64) -> Result<Body, BlendError> {
+    blend_edges(b, edges, Spec::Fillet(r), feature, tol)
+}
+
+/// Equal-distance chamfers (`Chamfer(d, d)` in the trace) of `edges`.
+pub fn chamfer(b: &Body, edges: &[(String, String, Vec3)], d: f64, feature: &str, tol: f64) -> Result<Body, BlendError> {
+    blend_edges(b, edges, Spec::Chamfer(d), feature, tol)
+}
+
+/// What one blend cuts: a rolling-ball fillet of radius `r` or an
+/// equal-distance chamfer of leg `d`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Spec {
+    Fillet(f64),
+    Chamfer(f64),
+}
+
+impl Spec {
+    fn size(self) -> f64 {
+        match self {
+            Spec::Fillet(r) | Spec::Chamfer(r) => r,
+        }
+    }
+}
+
+/// Shared fillet / chamfer driver (see [`fillet`]).
+pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, feature: &str, tol: f64) -> Result<Body, BlendError> {
+    let r = spec.size();
     if !(r > 0.0) || !r.is_finite() {
         return Err(BlendError::code("invalidValue"));
     }
     if edges.is_empty() {
         return Err(BlendError::code("missingEdge"));
     }
+    if edges.len() > 1 {
+        // Oracle (box probes): the selection runs in ROUNDS, each round one
+        // blend op (untouched faces, touched in first-touch order, new
+        // faces) numbering its edges in place; blend names stay
+        // selection-indexed. An edge joins the round unless it conflicts
+        // with an edge already in it or with an earlier-selected edge that
+        // was deferred. Chamfers conflict with any edge sharing an end
+        // vertex; fillets only with one they PRECEDE in the chain
+        // (v1 -> v0 links; positions relative to the chain's first
+        // selected edge, so a closed ring is a single op).
+        let fwd: Vec<(String, String, Vec3)> = edges.iter().map(|(fa, fb, at)| forward_first(b, fa, fb, *at)).collect();
+        let eids: Vec<EdgeId> = fwd
+            .iter()
+            .map(|(fa, fb, at)| find_edge(b, fa, fb, *at).ok_or_else(|| BlendError::code("missingEdge")))
+            .collect::<Result<_, BlendError>>()?;
+        let ends: Vec<[usize; 2]> = eids.iter().map(|&e| [b.edge(e).v0.idx(), b.edge(e).v1.idx()]).collect();
+        let n = edges.len();
+        let rounds: Vec<Vec<usize>> = match spec {
+            Spec::Chamfer(_) => {
+                let mut done = vec![false; n];
+                let mut rounds = vec![];
+                while done.iter().any(|d| !d) {
+                    // an edge joins the round unless it shares a vertex with an
+                    // edge in it or with an earlier-selected deferred edge
+                    let mut round: Vec<usize> = vec![];
+                    let mut blocked: Vec<usize> = vec![];
+                    for i in 0..n {
+                        if done[i] {
+                            continue;
+                        }
+                        if blocked.iter().any(|&j| ends[i].iter().any(|v| ends[j].contains(v))) {
+                            blocked.push(i);
+                        } else {
+                            round.push(i);
+                            blocked.push(i);
+                        }
+                    }
+                    for &i in &round {
+                        done[i] = true;
+                    }
+                    rounds.push(round);
+                }
+                rounds
+            }
+            Spec::Fillet(_) => {
+                // consecutive groups of the selection: an edge joins the
+                // current group when it is not in the group's chain, or lies
+                // after (v1 -> v0 links; positions relative to the chain's
+                // first selected edge) at least one member of it
+                let pos = chain_positions(&ends);
+                // the three edges of a vertex blend are one op
+                let mates = |i: usize| -> Vec<usize> {
+                    let mut out = vec![];
+                    for v in ends[i] {
+                        let at: Vec<usize> = (0..n).filter(|&j| ends[j].contains(&v)).collect();
+                        if at.len() == 3 {
+                            out.extend(at.into_iter().filter(|&j| j != i));
+                        }
+                    }
+                    out
+                };
+                let mut rounds: Vec<Vec<usize>> = vec![];
+                let mut cur: Vec<usize> = vec![];
+                for i in 0..n {
+                    let same: Vec<i64> = cur.iter().filter(|&&j| pos[j].0 == pos[i].0).map(|&j| pos[j].1).collect();
+                    if cur.is_empty() || same.is_empty() || pos[i].1 > *same.iter().min().unwrap() || mates(i).iter().any(|j| cur.contains(j)) {
+                        cur.push(i);
+                    } else {
+                        rounds.push(std::mem::take(&mut cur));
+                        cur.push(i);
+                    }
+                }
+                rounds.push(cur);
+                rounds
+            }
+        };
+        let mut out = b.clone();
+        let mut earlier: Vec<String> = vec![];
+        for round in rounds {
+            let idx: Vec<u32> = round.iter().map(|&i| i as u32).collect();
+            let sel: Vec<(String, String, Vec3)> = round.iter().map(|&i| fwd[i].clone()).collect();
+            let (raw, round_refs, touched) = blend_edges_at(&out, &sel, spec, feature, tol, &idx, &earlier)?;
+            if std::env::var_os("CK_BLEND_DEBUG").is_some() {
+                eprintln!("round {:?}: touched {:?} -> faces {:?}", round, touched, raw.face_ids().map(|f| raw.face_id_str(f)).collect::<Vec<_>>());
+            }
+            for t in touched {
+                if !earlier.contains(&t) {
+                    earlier.push(t);
+                }
+            }
+            if matches!(spec, Spec::Chamfer(_)) {
+                // chamfers number their edges round by round
+                out = in_place_layout(&out, &raw, &round_refs, tol);
+            } else {
+                // fillets: one global in-place numbering (junction layout)
+                out = raw;
+            }
+        }
+        if matches!(spec, Spec::Fillet(_)) {
+            // three fillets meeting at a convex planar corner: the rolling
+            // ball's sphere patch `V<k>` replaces the miter
+            let mut corners: Vec<Vec3> = vec![];
+            for corner in super::corner::find_corner(b, &eids) {
+                let name = FaceName::other(feature, &format!("V{}", corners.len()));
+                let Ok(tool) = super::corner::sphere_corner_tool(b, &corner, r, feature, &name, tol) else { continue };
+                let Ok((mut cut, _)) = apply_tool(&out, &tool, Op::Cut, &name, vec![], tol) else { continue };
+                super::corner::fix_sphere_pcurves(&mut cut, &name.id());
+                // faces: the input order, then the new vertex blends
+                let order: Vec<FaceId> = {
+                    let key = |f: FaceId| -> usize {
+                        let n = cut.face_id_str(f);
+                        out.face_ids().position(|g| out.face_id_str(g) == n).unwrap_or(usize::MAX)
+                    };
+                    let mut o: Vec<FaceId> = cut.face_ids().collect();
+                    o.sort_by_key(|&f| key(f));
+                    o
+                };
+                out = crate::boolean::assemble::rebuild_in_order(&cut, &order);
+                corners.push(b.vertex(corner.vertex).p);
+            }
+            let mut all: Vec<BlendRef> = vec![];
+            for (k, (fa, fb, at)) in fwd.iter().enumerate() {
+                let e = find_edge(b, fa, fb, *at).ok_or_else(|| BlendError::code("missingEdge"))?;
+                let ed = b.edge(e);
+                all.push(BlendRef { name: FaceName::blend(feature, k as u32).id(), faces: [fa.clone(), fb.clone()], ends: [b.vertex(ed.v0).p, b.vertex(ed.v1).p] });
+            }
+            out = in_place_layout_opts(b, &out, &all, tol, &LayoutOpts { corners, ..Default::default() });
+        }
+        return Ok(out);
+    }
+    let idx: Vec<u32> = (0..edges.len() as u32).collect();
+    let (raw, refs, _) = blend_edges_at(b, edges, spec, feature, tol, &idx, &[])?;
+    Ok(in_place_layout(b, &raw, &refs, tol))
+}
+
+/// Chain (component id, position) of each selected edge: components follow
+/// v1 -> v0 links from the first selected edge of the component, forwards
+/// (+1) then backwards (-1); a closed ring stops where it returns.
+fn chain_positions(ends: &[[usize; 2]]) -> Vec<(usize, i64)> {
+    let n = ends.len();
+    let mut pos: Vec<Option<(usize, i64)>> = vec![None; n];
+    let mut comp = 0;
+    for s0 in 0..n {
+        if pos[s0].is_some() {
+            continue;
+        }
+        pos[s0] = Some((comp, 0));
+        let mut cur = s0;
+        let mut p = 0;
+        while let Some(nx) = (0..n).find(|&j| pos[j].is_none() && ends[cur][1] == ends[j][0]) {
+            p += 1;
+            pos[nx] = Some((comp, p));
+            cur = nx;
+        }
+        let mut cur = s0;
+        let mut p = 0;
+        while let Some(pv) = (0..n).find(|&j| pos[j].is_none() && ends[j][1] == ends[cur][0]) {
+            p -= 1;
+            pos[pv] = Some((comp, p));
+            cur = pv;
+        }
+        comp += 1;
+    }
+    pos.into_iter().map(|p| p.unwrap()).collect()
+}
+
+/// One blend op over `edges`; `idx[k]` is the blend number (`B<idx>`) of edge k.
+fn blend_edges_at(
+    b: &Body,
+    edges: &[(String, String, Vec3)],
+    spec: Spec,
+    feature: &str,
+    tol: f64,
+    idx: &[u32],
+    skip_end: &[String],
+) -> Result<(Body, Vec<BlendRef>, Vec<String>), BlendError> {
     let edges: Vec<(String, String, Vec3)> = edges.iter().map(|(fa, fb, at)| forward_first(b, fa, fb, *at)).collect();
     // blend references on the INPUT body (for the in-place numbering)
     let mut refs: Vec<BlendRef> = vec![];
+    let mut sel_edges: Vec<EdgeId> = vec![];
     for (k, (fa, fb, at)) in edges.iter().enumerate() {
         let e = find_edge(b, fa, fb, *at).ok_or_else(|| BlendError::code("missingEdge"))?;
+        sel_edges.push(e);
         let ed = b.edge(e);
         refs.push(BlendRef {
-            name: FaceName::blend(feature, k as u32).id(),
+            name: FaceName::blend(feature, idx[k]).id(),
             faces: [fa.clone(), fb.clone()],
             ends: [b.vertex(ed.v0).p, b.vertex(ed.v1).p],
         });
@@ -81,17 +286,63 @@ pub fn fillet(b: &Body, edges: &[(String, String, Vec3)], r: f64, feature: &str,
     for (k, (fa, fb, at)) in edges.iter().enumerate() {
         let e = find_edge(&out, fa, fb, *at).ok_or_else(|| BlendError::code("missingEdge"))?;
         let (f1, f2) = (out.find_face(fa).unwrap(), out.find_face(fb).unwrap());
-        let (body, hint) = fillet_line_edge_hint(&out, e, [f1, f2], r, feature, k as u32, tol)?;
-        for h in hint {
+        let (body, hint) = blend_edge_hint(&out, e, [f1, f2], spec, feature, idx[k], tol)?;
+        // end faces at a junction with another selected edge are that
+        // edge's own faces, not extra touches (oracle: the ring's face
+        // order is e1 e2 e3 e4, the open chain's C1 e1 e4 e2 e3)
+        let junction_faces: Vec<&String> = (0..edges.len())
+            .filter(|&j| j != k && refs[j].ends.iter().any(|&q| refs[k].ends.iter().any(|&p| p.dist(q) <= tol * 10.0)))
+            .flat_map(|j| refs[j].faces.iter())
+            .collect();
+        for (n, h) in hint.into_iter().enumerate() {
+            if n >= 2 && junction_faces.iter().any(|f| **f == h) {
+                continue;
+            }
+            // fillets: an end face an earlier round already touched stays put
+            if n >= 2 && matches!(spec, Spec::Fillet(_)) && skip_end.contains(&h) {
+                continue;
+            }
             if !touched.contains(&h) {
                 touched.push(h);
             }
         }
         out = body;
     }
-    if edges.len() == 1 {
-        return Ok(in_place_layout(b, &out, &refs, tol));
+    let earlier_blends = b.face_ids().any(|f| {
+        let n = &b.face(f).name;
+        n.feature == feature && matches!(n.role, Role::Blend(_))
+    });
+    if edges.len() == 1 && !earlier_blends {
+        return Ok((out, refs, touched));
     }
+    // two edges leaving the same vertex (a bottom edge and the rail on its
+    // start, probes b<k>,v<k>): the face they share goes after the rest
+    let mut touched = touched;
+    for i in 0..refs.len() {
+        for j in i + 1..refs.len() {
+            let full_corner = (0..refs.len()).filter(|&k| refs[k].ends.iter().any(|q| q.dist(refs[i].ends[0]) <= tol * 10.0)).count() >= 3;
+            if !full_corner && refs[i].ends[0].dist(refs[j].ends[0]) <= tol * 10.0 {
+                for f in refs[i].faces.iter().filter(|f| refs[j].faces.contains(f)) {
+                    if let Some(p) = touched.iter().position(|t| t == f) {
+                        let t = touched.remove(p);
+                        touched.push(t);
+                    }
+                }
+            }
+        }
+    }
+    // a face whose whole boundary is blended (the top of a filleted ring)
+    // is rebuilt rather than trimmed: oracle order puts it after the other
+    // touched faces
+    let replaced = |id: &String| {
+        b.find_face(id).is_some_and(|f| {
+            let es = b.face_edges(f);
+            !es.is_empty() && es.iter().all(|e| sel_edges.contains(e))
+        })
+    };
+    let (rep, mut keep): (Vec<String>, Vec<String>) = touched.iter().cloned().partition(|t| replaced(t));
+    keep.extend(rep);
+    let touched = keep;
     // one blend op over all edges: untouched faces, touched faces in
     // first-touch order, blend faces (probe fil2)
     let base = |id: &str| FaceName::parse(id).map(|mut n| {
@@ -100,18 +351,27 @@ pub fn fillet(b: &Body, edges: &[(String, String, Vec3)], r: f64, feature: &str,
     });
     let rank = |f: FaceId| -> (usize, usize) {
         let name = &out.face(f).name;
-        if name.feature == feature && matches!(name.role, Role::Blend(_)) {
-            return (2, 0);
+        if name.feature == feature {
+            if let Role::Blend(i) = name.role {
+                // chamfer blends of earlier rounds are ordinary faces; fillet
+                // blends always sit at the end, by blend number
+                if idx.contains(&i) || matches!(spec, Spec::Fillet(_)) {
+                    return (2, i as usize);
+                }
+            }
         }
         match touched.iter().position(|t| base(t) == base(&name.id())) {
             Some(p) => (1, p),
-            None => (0, 0),
+            // untouched faces keep the INPUT body's order (a face the cut
+            // modified but the oracle did not count as touched sits at its
+            // old place)
+            None => (0, b.face_ids().position(|g| base(&b.face_id_str(g)) == base(&name.id())).unwrap_or(usize::MAX)),
         }
     };
     let mut order: Vec<FaceId> = out.face_ids().collect();
     order.sort_by_key(|&f| rank(f)); // stable: keeps relative order within ties
     let out = crate::boolean::assemble::rebuild_in_order(&out, &order);
-    Ok(in_place_layout(b, &out, &refs, tol))
+    Ok((out, refs, touched))
 }
 
 /// `(fa, fb)` with the face whose coedge runs the selected edge forward
@@ -148,6 +408,24 @@ pub struct BlendRef {
 /// - then per blend (selection order) its edges: spring on the forward
 ///   face, spring on the other face, end arc at v0, end arc at v1.
 pub fn in_place_layout(input: &Body, out: &Body, refs: &[BlendRef], tol: f64) -> Body {
+    in_place_layout_opts(input, out, refs, tol, &LayoutOpts::default())
+}
+
+/// Overrides of the in-place numbering (vertex chamfer: three slots are
+/// reserved right after the input's and handed to the trimmed edges by their
+/// vertex-edge order).
+#[derive(Debug, Clone, Default)]
+pub struct LayoutOpts {
+    /// Dead / reserved slots after the input's (None: two per junction).
+    pub reserve: Option<usize>,
+    /// (input slot, slot of its kept piece when the edge is trimmed at its start).
+    pub piece_slots: Vec<(usize, usize)>,
+    /// Vertex-blend corners (three fillets meeting in a sphere patch): no
+    /// junction (miter / deferred spring / slot) there.
+    pub corners: Vec<Vec3>,
+}
+
+pub fn in_place_layout_opts(input: &Body, out: &Body, refs: &[BlendRef], tol: f64, opts: &LayoutOpts) -> Body {
     let (in_slots, n_in) = input.wire_numbered();
     let out_chains = out.wire_chains();
     let names = |b: &Body, e: EdgeId| {
@@ -183,8 +461,41 @@ pub fn in_place_layout(input: &Body, out: &Body, refs: &[BlendRef], tol: f64) ->
         }
     }
     // 2. trimmed edges, split in parameter order
-    let mut next = n_in;
-    for (i, (s, ich)) in in_slots.iter().enumerate() {
+    // Oracle (box fillet chains): the new slots follow the touched input
+    // edges in ascending slot order; a selected edge uses one slot per end
+    // it shares with another selected edge (a junction), a trimmed
+    // neighbour one per window it opens (a rail trimmed at one end: one, an
+    // edge trimmed at both ends: two).
+    let near_pt = |p: Vec3, q: Vec3| p.dist(q) <= tol * 10.0;
+    let at_corner = |p: Vec3| opts.corners.iter().any(|&q| near_pt(p, q));
+    let junction_ends = |k: usize| -> usize {
+        (0..2)
+            .filter(|&e| !at_corner(refs[k].ends[e]) && (0..refs.len()).any(|j| j != k && refs[j].ends.iter().any(|&q| near_pt(refs[k].ends[e], q))))
+            .count()
+    };
+    let mut sel_cost: Vec<usize> = vec![0; in_slots.len()];
+    for (k, r) in refs.iter().enumerate() {
+        let mut want = r.faces.to_vec();
+        want.sort();
+        for (i, (_, ich)) in in_slots.iter().enumerate() {
+            let (a, b2) = ends(input, ich);
+            if names(input, ich[0]) == want
+                && ((near(a, r.ends[0]) && near(b2, r.ends[1])) || (near(a, r.ends[1]) && near(b2, r.ends[0])))
+            {
+                sel_cost[i] = junction_ends(k);
+                break;
+            }
+        }
+    }
+    let mut next = n_in + opts.reserve.unwrap_or(0);
+    // ascending input slot order (oracle: the new slots follow it)
+    let mut slot_order: Vec<usize> = (0..in_slots.len()).collect();
+    slot_order.sort_by_key(|&i| in_slots[i].0);
+    for i in slot_order {
+        let (s, ich) = &in_slots[i];
+        if opts.reserve.is_none() {
+            next += sel_cost[i];
+        }
         if used_in[i] || ich.len() != 1 {
             continue;
         }
@@ -215,7 +526,11 @@ pub fn in_place_layout(input: &Body, out: &Body, refs: &[BlendRef], tol: f64) ->
         bounds.extend(cuts);
         bounds.push(ie.t1);
         for (j, w) in bounds.windows(2).enumerate() {
-            let slot = if j == 0 { *s } else {
+            let slot = if j == 0 {
+                *s
+            } else if let Some(&(_, forced)) = opts.piece_slots.iter().find(|(is, _)| is == s) {
+                forced
+            } else {
                 next += 1;
                 next - 1
             };
@@ -230,8 +545,22 @@ pub fn in_place_layout(input: &Body, out: &Body, refs: &[BlendRef], tol: f64) ->
         }
         used_in[i] = true;
     }
-    // 3. blend edges per blend
-    for r in refs {
+    // 3. blend edges. Oracle (chains of box fillets, probes filletChain3 /
+    // filletTop4): per blend in selection order its edges [spring on the
+    // forward face, spring on the other face, end arc at v0, end arc at v1]
+    // - except that where another selected edge meets the blend's v0 the
+    // spring on the COMMON face is deferred; the junctions follow, by
+    // blend pair (i<j) lexicographically: the miter edge B<i>|B<j>, then
+    // the deferred spring of the blend that starts at the junction.
+    let near_pt = |p: Vec3, q: Vec3| p.dist(q) <= tol * 10.0;
+    let meets = |a: usize, ea: usize, b2: usize| !at_corner(refs[a].ends[ea]) && refs[b2].ends.iter().any(|&q| near_pt(refs[a].ends[ea], q));
+    let common_face = |a: usize, b2: usize| refs[a].faces.iter().find(|f| refs[b2].faces.contains(f)).cloned();
+    // deferred spring face of blend a (junction at its v0)
+    let deferred: Vec<Option<String>> = (0..refs.len())
+        .map(|a| (0..refs.len()).filter(|&o| o != a && meets(a, 0, o)).find_map(|o| common_face(a, o)))
+        .collect();
+    let is_blend = |n: &String| refs.iter().any(|r| &r.name == n);
+    for (ri, r) in refs.iter().enumerate() {
         let mut mine: Vec<(usize, usize, f64)> = vec![];
         for (k, ch) in out_chains.iter().enumerate() {
             if slot_of[k].is_some() {
@@ -242,6 +571,9 @@ pub fn in_place_layout(input: &Body, out: &Body, refs: &[BlendRef], tol: f64) ->
                 continue;
             }
             let other = nm.iter().find(|n| **n != r.name).cloned().unwrap_or_default();
+            if is_blend(&other) || deferred[ri].as_deref() == Some(other.as_str()) {
+                continue; // miter / deferred spring: the junction pass
+            }
             let (p, q) = ends(out, ch);
             let d0 = p.dist(r.ends[0]).min(q.dist(r.ends[0]));
             let d1 = p.dist(r.ends[1]).min(q.dist(r.ends[1]));
@@ -260,6 +592,34 @@ pub fn in_place_layout(input: &Body, out: &Body, refs: &[BlendRef], tol: f64) ->
         for (_, k, _) in mine {
             slot_of[k] = Some(next);
             next += 1;
+        }
+    }
+    for i in 0..refs.len() {
+        for j in i + 1..refs.len() {
+            if !(meets(i, 0, j) || meets(i, 1, j)) {
+                continue;
+            }
+            let find = |x: &str, y: &str, slot_of: &Vec<Option<usize>>| {
+                (0..out_chains.len()).find(|&k| {
+                    slot_of[k].is_none() && {
+                        let nm = names(out, out_chains[k][0]);
+                        nm.len() == 2 && nm.iter().any(|n| n == x) && nm.iter().any(|n| n == y)
+                    }
+                })
+            };
+            if let Some(k) = find(&refs[i].name, &refs[j].name, &slot_of) {
+                slot_of[k] = Some(next);
+                next += 1;
+            }
+            let owner = if meets(i, 0, j) { Some(i) } else if meets(j, 0, i) { Some(j) } else { None };
+            if let Some(o) = owner {
+                if let Some(f) = &deferred[o] {
+                    if let Some(k) = find(&refs[o].name, f, &slot_of) {
+                        slot_of[k] = Some(next);
+                        next += 1;
+                    }
+                }
+            }
         }
     }
     // 4. anything else, in out order
@@ -320,93 +680,163 @@ pub fn in_place_layout(input: &Body, out: &Body, refs: &[BlendRef], tol: f64) ->
     res
 }
 
+/// `CK_BLEND_DEBUG=1` prints why a blend gave up (native runs only).
+fn dbg_fail(m: &str) {
+    if std::env::var_os("CK_BLEND_DEBUG").is_some() {
+        eprintln!("blend fail: {m}");
+    }
+}
+
 /// One straight edge between two planar faces.
 pub fn fillet_line_edge(b: &Body, e: EdgeId, faces: [FaceId; 2], r: f64, feature: &str, k: u32, tol: f64) -> Result<Body, BlendError> {
-    fillet_line_edge_hint(b, e, faces, r, feature, k, tol).map(|x| x.0)
+    blend_edge_hint(b, e, faces, Spec::Fillet(r), feature, k, tol).map(|x| x.0)
 }
 
 /// As [`fillet_line_edge`], also returning the touched-face order hint
 /// (edge faces, then end faces).
-fn fillet_line_edge_hint(
+fn blend_edge_hint(
     b: &Body,
     e: EdgeId,
     faces: [FaceId; 2],
-    r: f64,
+    spec: Spec,
     feature: &str,
     k: u32,
     tol: f64,
 ) -> Result<(Body, Vec<String>), BlendError> {
     let ed = b.edge(e).clone();
-    let Curve::Line { .. } = ed.curve else { return Err(BlendError::code("blendUnsupported")) };
-    for f in faces {
-        if !matches!(b.face(f).surface, Surface::Plane { .. }) {
-            return Err(BlendError::code("blendUnsupported"));
+    let r = spec.size();
+    // Geometry at the working point P0 (line: edge midpoint; circle: its
+    // start vertex, which is also the faces' seam point).
+    let (p0, p1, dir, n1, n2, circ): (Vec3, Vec3, Vec3, Vec3, Vec3, Option<(Vec3, Vec3)>) = match ed.curve {
+        Curve::Line { .. } => {
+            for f in faces {
+                if !matches!(b.face(f).surface, Surface::Plane { .. }) {
+                    return Err(BlendError::code("blendUnsupported"));
+                }
+            }
+            let p0 = b.vertex(ed.v0).p;
+            let p1 = b.vertex(ed.v1).p;
+            let dir = (p1 - p0) / p0.dist(p1);
+            (p0, p1, dir, b.planar_normal(faces[0]), b.planar_normal(faces[1]), None)
         }
-    }
-    let p0 = b.vertex(ed.v0).p;
-    let p1 = b.vertex(ed.v1).p;
+        _ => {
+            // circle between coaxial plane / cylinder / cone faces
+            let Some((c, axis, rad)) = ed.curve.circle_info() else { return Err(BlendError::code("blendUnsupported")) };
+            let axis = axis.normalize();
+            let t_start = ed.t0.min(ed.t1);
+            let p0 = ed.curve.eval(t_start);
+            let coaxial = |f: FaceId| match &b.face(f).surface {
+                Surface::Plane { frame } => frame.z.cross(axis).len() < 1e-9,
+                Surface::Cylinder { frame, .. } | Surface::Cone { frame, .. } => {
+                    frame.z.cross(axis).len() < 1e-9 && (frame.o - c).cross(axis).len() < 1e-7 * (1.0 + rad)
+                }
+                _ => false,
+            };
+            if !coaxial(faces[0]) || !coaxial(faces[1]) || !(rad > 0.0) {
+                return Err(BlendError::code("blendUnsupported"));
+            }
+            let nrm = |f: FaceId| {
+                let (u, v) = b.face(f).surface.closest_param(p0);
+                b.outward_normal(f, u, v).normalize()
+            };
+            let dir = ed.curve.tangent(t_start).normalize();
+            (p0, p0, dir, nrm(faces[0]), nrm(faces[1]), Some((c, axis)))
+        }
+    };
     let len = p0.dist(p1);
-    let dir = (p1 - p0) / len;
-    let n1 = b.planar_normal(faces[0]);
-    let n2 = b.planar_normal(faces[1]);
     let c12 = n1.dot(n2);
     if (1.0 + c12).abs() < 1e-9 || (1.0 - c12).abs() < 1e-9 {
         return Err(BlendError::code("blendUnsupported")); // tangent / folded faces
     }
     // convex iff the direction into F1 (left of its coedge about the
     // outward normal) points against n2
-    let pm = (p0 + p1) * 0.5;
+    let pm = if circ.is_some() { p0 } else { (p0 + p1) * 0.5 };
     let co = b.edge_coedges(e).into_iter().find(|&c| b.coedge_face(c) == faces[0]).ok_or_else(|| BlendError::code("missingEdge"))?;
     let tdir = if b.coedge(co).rev { -dir } else { dir };
     let convex = n1.cross(tdir).dot(n2) < 0.0;
     let s = if convex { -1.0 } else { 1.0 };
+    // contact points on the two faces, the ball centre (fillet) and the
+    // chamfer legs (in-face directions away from the edge: n x coedge dir)
     let off = (n1 + n2) * (s * r / (1.0 + c12));
+    let (ta, tb) = match spec {
+        Spec::Fillet(_) => (pm + off - n1 * (s * r), pm + off - n2 * (s * r)),
+        Spec::Chamfer(_) => (pm + n1.cross(tdir).normalize() * r, pm - n2.cross(tdir).normalize() * r),
+    };
     // contact (spring) lines must stay on their faces
     let name = FaceName::blend(feature, k);
-    for (f, n) in [(faces[0], n1), (faces[1], n2)] {
-        let t = pm + off - n * (s * r);
+    for (f, t) in [(faces[0], ta), (faces[1], tb)] {
         if point_in_face(b, f, t, tol) == Where::Out {
             return Err(BlendError::detail("blendOverflow", &format!("{}: spring leaves its face away from its edges", name.id())));
         }
     }
-    // tool profile in the plane ⟂ dir through p0 − dir·margin
-    // convex: the tool pierces the end faces (the cut trims it); concave:
-    // GUESS end faces ⟂ the edge, the tool ends flush with them
-    let margin = if convex { r.max(len * 0.05) + 1.0 } else { 0.0 };
+    // tool profile in the plane perpendicular to dir through p0 - dir*margin
+    // (line) or in the meridian plane through P0 (circle: revolved about the
+    // axis). convex: the tool pierces the end faces (the cut trims it);
+    // concave: GUESS end faces perpendicular to the edge, the tool ends
+    // flush with them
+    let margin = if convex && circ.is_none() { r.max(len * 0.05) + 1.0 } else { 0.0 };
     let o = p0 - dir * margin;
-    let fr = Frame::from_normal(o, dir);
+    let fr = match circ {
+        None => Frame::from_normal(o, dir),
+        Some((c, axis)) => {
+            let rad = (p0 - c).normalize();
+            ck_geom::frame_from(c, rad.cross(axis), rad)
+        }
+    };
     let uv = |p: Vec3| {
         let q = fr.world_to_uv(p);
         Vec2::new(q.x, q.y)
     };
-    let (cp, t1, t2) = (uv(p0), uv(p0 + off - n1 * (s * r)), uv(p0 + off - n2 * (s * r)));
+    let (cp, t1, t2) = (uv(p0), uv(ta), uv(tb));
     let cc = uv(p0 + off);
-    let short_ccw = (t1 - cc).cross(t2 - cc) > 0.0;
-    let arc = if short_ccw {
-        ProfileSeg::arc("arc", cc, t1, t2)
-    } else if !convex {
-        // concave: the tool's cap arcs ARE the end arcs; the oracle runs
-        // them from the forward face's spring to the other one, n = (s1 −
-        // c) × (s2 − c) (bracket F12 on S.e8|S.e9 along +x: n = −x)
-        let x = (t1 - cc).normalize();
-        let (a, b) = (t1 - cc, t2 - cc);
-        let sweep = -(a.cross(b)).atan2(a.dot(b));
-        ProfileSeg { tag: "arc".into(), curve: ck_geom::curve2::Curve2::Circle { c: cc, x, r: cc.dist(t1), ccw: false }, t0: 0.0, t1: sweep, rev: false }
+    let lp = if matches!(spec, Spec::Chamfer(_)) {
+        ProfileLoop::new(vec![ProfileSeg::line("l2", t2, cp), ProfileSeg::line("l1", cp, t1), ProfileSeg::line("arc", t1, t2)])
     } else {
-        ProfileSeg::arc("arc", cc, t2, t1).reversed()
+        let short_ccw = (t1 - cc).cross(t2 - cc) > 0.0;
+        let arc = if short_ccw {
+            ProfileSeg::arc("arc", cc, t1, t2)
+        } else if !convex {
+            // concave: the tool's cap arcs ARE the end arcs; the oracle runs
+            // them from the forward face's spring to the other one, n = (s1 -
+            // c) x (s2 - c) (bracket F12 on S.e8|S.e9 along +x: n = -x)
+            let x = (t1 - cc).normalize();
+            let (a, b) = (t1 - cc, t2 - cc);
+            let sweep = -(a.cross(b)).atan2(a.dot(b));
+            ProfileSeg { tag: "arc".into(), curve: ck_geom::curve2::Curve2::Circle { c: cc, x, r: cc.dist(t1), ccw: false }, t0: 0.0, t1: sweep, rev: false }
+        } else {
+            ProfileSeg::arc("arc", cc, t2, t1).reversed()
+        };
+        ProfileLoop::new(vec![ProfileSeg::line("l2", t2, cp), ProfileSeg::line("l1", cp, t1), arc])
     };
-    let lp = ProfileLoop::new(vec![ProfileSeg::line("l2", t2, cp), ProfileSeg::line("l1", cp, t1), arc]);
     let prof = Profile::new(fr, vec![ProfileRegion { outer: lp, holes: vec![] }]).normalized();
-    let mut tool = extrude(feature, &prof, ExtrudeOpts { s0: 0.0, s1: len + 2.0 * margin, dir: None, draft: 0.0 })
-        .map_err(|_| BlendError::code("blendFailed"))?;
+    let made = match circ {
+        None => extrude(feature, &prof, ExtrudeOpts { s0: 0.0, s1: len + 2.0 * margin, dir: None, draft: 0.0 }),
+        Some((c, axis)) => {
+            // a partial arc sweeps only its own angle (convex: a margin more at
+            // both ends so the tool pierces the adjacent faces; concave:
+            // flush, like the straight edge); a full circle is one turn
+            use std::f64::consts::TAU;
+            let span = (ed.t1 - ed.t0).abs();
+            let rad = (p0 - c).len();
+            let (a0, a1) = if span >= TAU - 1e-9 {
+                (0.0, TAU)
+            } else {
+                let m = if convex { (r.max(span * rad * 0.05) + 1.0) / rad } else { 0.0 };
+                if span + 2.0 * m >= TAU { (0.0, TAU) } else { (-m, span + m) }
+            };
+            ck_topo::make::revolve::revolve(feature, &prof, c, axis, a0, a1)
+        }
+    };
+    let mut tool = made.map_err(|e| {
+        dbg_fail(&format!("tool: {e}"));
+        BlendError::code("blendFailed")
+    })?;
     for f in &mut tool.faces {
         if f.name.role == Role::Side("arc".into()) {
             f.name = name.clone();
         }
     }
     let op = if convex { Op::Cut } else { Op::Union };
-    let arr = imprint(b, &tool, tol);
-    let mut faces_out = select(&arr, [b, &tool], op).map_err(|_| BlendError::code("blendFailed"))?;
     // order: untouched; edge faces (ref order), end faces (start, end);
     // other touched faces; blend
     let ends: Vec<FaceId> = [ed.v0, ed.v1]
@@ -426,6 +856,17 @@ fn fillet_line_edge_hint(
             hint.push(id);
         }
     }
+    apply_tool(b, &tool, op, &name, hint, tol)
+}
+
+/// Boolean `b op tool`, faces ordered untouched / `hint` (touched, in that
+/// order) / the tool's new faces; returns the body and the hint.
+pub(super) fn apply_tool(b: &Body, tool: &Body, op: Op, name: &FaceName, hint: Vec<String>, tol: f64) -> Result<(Body, Vec<String>), BlendError> {
+    let arr = imprint(b, tool, tol);
+    let mut faces_out = select(&arr, [b, tool], op).map_err(|e| {
+        dbg_fail(&format!("select: {e:?}"));
+        BlendError::code("blendFailed")
+    })?;
     for f in &mut faces_out {
         if f.group == 1 {
             let mut base = f.name.clone();
@@ -445,7 +886,8 @@ fn fillet_line_edge_hint(
         }
     }
     faces_out.sort_by_key(|f| f.key);
-    if !faces_out.iter().any(|f| f.name == name) {
+    if !faces_out.iter().any(|f| f.name == *name) {
+        dbg_fail("no blend face in result");
         return Err(BlendError::code("blendFailed"));
     }
     let body = build(&arr, &faces_out);
@@ -453,6 +895,21 @@ fn fillet_line_edge_hint(
         .into_iter()
         .any(|i| matches!(i, ck_topo::check::Issue::OpenEdge(_) | ck_topo::check::Issue::BrokenLoop(..)));
     if bad {
+        dbg_fail(&format!("check: {:?}", ck_topo::check::check(&body, tol)));
+        if std::env::var_os("CK_BLEND_DEBUG").is_some() {
+            eprintln!("  in : {:?}", b.face_ids().map(|f| b.face_id_str(f)).collect::<Vec<_>>());
+            eprintln!("  out: {:?}", body.face_ids().map(|f| body.face_id_str(f)).collect::<Vec<_>>());
+            for i in ck_topo::check::check(&body, tol) {
+                if let ck_topo::check::Issue::OpenEdge(e) = i {
+                    let ed = body.edge(e);
+                    eprintln!(
+                        "  open {:?} {} t=({:.6},{:.6}) a={:?} b={:?} faces={:?}",
+                        e, ed.curve.kind(), ed.t0, ed.t1, body.vertex(ed.v0).p, body.vertex(ed.v1).p,
+                        body.edge_faces(e).iter().map(|&f| body.face_id_str(f)).collect::<Vec<_>>()
+                    );
+                }
+            }
+        }
         return Err(BlendError::code("blendFailed"));
     }
     Ok((body, hint))
@@ -516,6 +973,62 @@ mod tests {
         let r = fillet(&the_box(), &[e("F2.S.e1", "F2.S.e2", [40., 5., 0.])], 2.0, "F3", 1e-6).unwrap();
         assert_eq!(ids(&r), ["F2.S.e3", "F2.S.e4", "F2.S.e1", "F2.S.e2", "F2.C0", "F2.C1", "F3.B0"]);
         mass(&r, 7991.4159265358985, 2789.6991118430774, [19.978996631231546, 5., -10.010261751083915]);
+    }
+
+    #[test]
+    fn cylinder_top_circle() {
+        // oracle volumes (tools/brep_cases.mjs filletCylTop / chamferCylTop)
+        let cyl = crate::boolean::tests::cyl_body("F2", 5.0, 3.0, 10.0, 0.0, 10.0);
+        let top = cyl.face_ids().find(|&f| cyl.face_id_str(f) == "F2.C1").unwrap();
+        let side = cyl.face_ids().find(|&f| matches!(cyl.face(f).surface, Surface::Cylinder { .. })).unwrap();
+        let (a, bb) = (cyl.face_id_str(top), cyl.face_id_str(side));
+        let at = Vec3::new(15., 10., -3.);
+        let r = fillet(&cyl, &[(a.clone(), bb.clone(), at)], 2.0, "F3", 1e-6).unwrap();
+        assert!((mass_props(&r).volume - 3090.0668137679036).abs() < 1e-6);
+        assert_eq!(r.face(r.find_face("F3.B0").unwrap()).surface.kind(), "torus");
+        let r = chamfer(&cyl, &[(a, bb, at)], 1.0, "F3", 1e-6).unwrap();
+        assert!((mass_props(&r).volume - 3111.223924605093).abs() < 1e-6);
+        assert_eq!(r.face(r.find_face("F3.B0").unwrap()).surface.kind(), "cone");
+    }
+
+    #[test]
+    fn oracle_chamfers_on_the_box() {
+        // chamferOne / chamferTwo / chamferRail / chamferBig (oracle)
+        let b = the_box();
+        let one = [e("F2.C1", "F2.S.e1", [20., 10., 0.])];
+        let r = chamfer(&b, &one, 2.0, "F3", 1e-6).unwrap();
+        assert_eq!(ids(&r), ["F2.C0", "F2.S.e3", "F2.C1", "F2.S.e1", "F2.S.e4", "F2.S.e2", "F3.B0"]);
+        assert!((mass_props(&r).volume - 7920.0).abs() < 1e-9);
+        let two = [one[0].clone(), e("F2.C1", "F2.S.e3", [20., 10., -20.])];
+        assert!((mass_props(&chamfer(&b, &two, 2.0, "F3", 1e-6).unwrap()).volume - 7840.0).abs() < 1e-9);
+        assert_eq!(
+            chamfer(&b, &one, 30.0, "F3", 1e-6).unwrap_err(),
+            BlendError::detail("blendOverflow", "F3.B0: spring leaves its face away from its edges")
+        );
+        // a ring of four runs in rounds; blend names stay selection-indexed
+        let ring = [
+            e("F2.C1", "F2.S.e1", [20., 10., 0.]),
+            e("F2.C1", "F2.S.e2", [40., 10., -10.]),
+            e("F2.C1", "F2.S.e3", [20., 10., -20.]),
+            e("F2.C1", "F2.S.e4", [0., 10., -10.]),
+        ];
+        let r = chamfer(&b, &ring, 2.0, "F3", 1e-6).unwrap();
+        assert_eq!(ids(&r), ["F2.C0", "F2.S.e1", "F2.S.e2", "F2.S.e3", "F3.B1", "F2.C1", "F2.S.e4", "F3.B2", "F3.B0", "F3.B3"]);
+    }
+
+    #[test]
+    fn vertex_chamfer_on_the_box() {
+        use crate::blend::vertex::chamfer_vertex;
+        let b = the_box();
+        // distances 2 / 3 / 4 along the vertex edges in arena order (rail, +x, -z)
+        let r = chamfer_vertex(&b, Vec3::new(0., 10., 0.), [2., 3., 4.], "F3", 1e-6).unwrap();
+        assert!((mass_props(&r).volume - (8000.0 - 2.0 * 3.0 * 4.0 / 6.0)).abs() < 1e-9);
+        assert_eq!(ids(&r), ["F2.C0", "F2.S.e2", "F2.S.e3", "F2.S.e1", "F2.C1", "F2.S.e4", "F3.B0"]);
+        // oracle normal (-0.512, 0.768, 0.384)
+        let n = r.planar_normal(r.find_face("F3.B0").unwrap());
+        assert!((n - Vec3::new(-4., 6., 3.).normalize()).len() < 1e-12, "{n:?}");
+        assert_eq!(chamfer_vertex(&b, Vec3::new(0., 10., 0.), [10., 1., 1.], "F3", 1e-6).unwrap_err(), BlendError::code("blendTooLarge"));
+        assert_eq!(chamfer_vertex(&b, Vec3::new(0., 10., 0.), [1., 0., 1.], "F3", 1e-6).unwrap_err(), BlendError::code("invalidValue"));
     }
 
     #[test]

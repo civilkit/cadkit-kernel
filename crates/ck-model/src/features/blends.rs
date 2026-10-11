@@ -8,7 +8,7 @@
 //! * errors `invalidValue` (radius <= 0), `missingEdge`, `blendOverflow`
 //!   (`params.detail`), body unchanged.
 
-use super::{Brep, FeatureKind, Span};
+use super::{Brep, ChamferType, FeatureKind, Span};
 use crate::regen::{FeatureError, RegenState};
 use crate::Feature;
 use ck_geom::Vec3;
@@ -27,10 +27,35 @@ pub fn blend_error(e: ck_ops::blend::BlendError) -> FeatureError {
     fe
 }
 
-/// `fillet`.
-pub fn exec_fillet(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
-    let FeatureKind::Fillet { edges, .. } = &f.kind else { unreachable!() };
-    let r = state.num(f, "radius", 0.0)?;
+/// `Chamfer(<d>, <d>) of <n> edge(s)` (equal-distance chamfer).
+pub fn chamfer_label(id: &str, d: f64, n: usize) -> String {
+    format!("{id}: Chamfer({d:?}, {d:?}) of {n} edge{}", if n == 1 { "" } else { "s" })
+}
+
+/// `chamfer`. Oracle (box probes): `equal` (also the default) is the only
+/// supported edge chamfer; `distanceDistance` / `angleDistance` / unknown
+/// types fail `unsupported {what:"chamfer <type>"}` before anything else.
+pub fn exec_chamfer(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
+    let FeatureKind::Chamfer { chamfer_type, edges, .. } = &f.kind else { unreachable!() };
+    let ty = f.raw.get("chamferType").and_then(|v| v.as_str()).unwrap_or("equal").to_string();
+    match chamfer_type {
+        ChamferType::Equal => {}
+        ChamferType::Vertex => return exec_vertex_chamfer(br, state, f, edges),
+        _ => return Err(FeatureError::new("unsupported").with("what", Json::Str(format!("chamfer {ty}")))),
+    }
+    let d = state.num(f, "distance", 0.0)?;
+    if !(d > 0.0) || !d.is_finite() {
+        return Err(FeatureError::new("invalidValue"));
+    }
+    let sel = select_edges(br, edges)?;
+    br.spans.push(Span::leaf(chamfer_label(&f.id, d, sel.len())));
+    let body = br.body.as_ref().ok_or_else(|| FeatureError::new("missingEdge"))?;
+    let out = ck_ops::blend::build::chamfer(body, &sel, d, &f.id, super::TOL).map_err(blend_error)?;
+    br.body = Some(out);
+    Ok(())
+}
+
+fn select_edges(br: &Brep, edges: &[crate::EdgeRef]) -> Result<Vec<(String, String, Vec3)>, FeatureError> {
     // GUESS: no body -> missingEdge (nothing can be selected).
     let Some(body) = br.body.as_ref() else { return Err(FeatureError::new("missingEdge")) };
     let mut sel = vec![];
@@ -41,8 +66,32 @@ pub fn exec_fillet(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
             // GUESS: without a pick point the first edge between the faces
             None => first_edge_mid(body, a, b).ok_or_else(|| FeatureError::new("missingEdge"))?,
         };
+        if ck_ops::blend::build::find_edge(body, a, b, at).is_none() {
+            return Err(FeatureError::new("missingEdge"));
+        }
         sel.push(forward_first(body, a, b, at));
     }
+    if sel.is_empty() {
+        return Err(FeatureError::new("missingEdge"));
+    }
+    Ok(sel)
+}
+
+/// `fillet`. Oracle (box probes): any `filletType` string (even
+/// `"circular"`) fails `unsupported {what:"fillet <type>"}` first; then
+/// `radius <= 0` -> `invalidValue`; then unresolved / no edges ->
+/// `missingEdge`; none of these open the `Fillet(..)` span.
+pub fn exec_fillet(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
+    let FeatureKind::Fillet { edges, .. } = &f.kind else { unreachable!() };
+    if let Some(t) = f.raw.get("filletType").and_then(|v| v.as_str()) {
+        return Err(FeatureError::new("unsupported").with("what", Json::Str(format!("fillet {t}"))));
+    }
+    let r = state.num(f, "radius", 0.0)?;
+    if !(r > 0.0) || !r.is_finite() {
+        return Err(FeatureError::new("invalidValue"));
+    }
+    let sel = select_edges(br, edges)?;
+    let body = br.body.as_ref().ok_or_else(|| FeatureError::new("missingEdge"))?;
     br.spans.push(Span::leaf(fillet_label(&f.id, r, sel.len())));
     let out = ck_ops::blend::build::fillet(body, &sel, r, &f.id, super::TOL).map_err(blend_error)?;
     br.body = Some(out);
@@ -71,4 +120,28 @@ fn first_edge_mid(b: &ck_topo::body::Body, fa: &str, fb: &str) -> Option<Vec3> {
             fs.len() == 2 && fs.contains(&f) && fs.contains(&g)
         })
         .map(|e| b.edge_mid(e))
+}
+
+/// `chamferType: "vertex"`: the corner nearest `at` (feature `at`, else the
+/// first edge's pick point) is cut by the plane through the points at
+/// `distance` / `distance2` / `distance3` (defaults: `distance`) along the
+/// vertex's edges in arena order. No `Chamfer(..)` span (oracle trace).
+fn exec_vertex_chamfer(br: &mut Brep, state: &mut RegenState, f: &Feature, edges: &[crate::EdgeRef]) -> Result<(), FeatureError> {
+    let d1 = state.num(f, "distance", 0.0)?;
+    let d2 = if f.raw.get("distance2").is_some() { state.num(f, "distance2", d1)? } else { d1 };
+    let d3 = if f.raw.get("distance3").is_some() { state.num(f, "distance3", d1)? } else { d1 };
+    let at = f
+        .raw
+        .get("at")
+        .and_then(|a| a.as_arr())
+        .and_then(|a| (a.len() == 3).then(|| Vec3::new(a[0].as_f64().unwrap_or(0.0), a[1].as_f64().unwrap_or(0.0), a[2].as_f64().unwrap_or(0.0))))
+        .or_else(|| edges.first().and_then(|e| e.at).map(|p| Vec3::new(p[0], p[1], p[2])));
+    let Some(at) = at else { return Err(FeatureError::new("missingReference")) };
+    if [d1, d2, d3].iter().any(|d| !(*d > 0.0) || !d.is_finite()) {
+        return Err(FeatureError::new("invalidValue"));
+    }
+    let Some(body) = br.body.as_ref() else { return Err(FeatureError::new("missingReference")) };
+    let out = ck_ops::blend::vertex::chamfer_vertex(body, at, [d1, d2, d3], &f.id, super::TOL).map_err(blend_error)?;
+    br.body = Some(out);
+    Ok(())
 }

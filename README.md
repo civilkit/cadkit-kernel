@@ -122,3 +122,29 @@ node oracle.mjs ../bracket.ckpart ../out.json '{"type":"regen","tag":"plain","pa
    call sites, not names.
 5. `no_std`-ish kernel: the original used std with `panic=abort` on
    wasm32-unknown-unknown, dlmalloc, no wasm-bindgen.
+
+## Status / handoff (2026-10-11)
+
+How to work: read `tools/AGENT_RULES.md`. Original code comes from
+`python3 -I tools/funcmap/packet.py queue <path>` / `packet.py fNNNN`;
+verify with `node tools/gate.mjs --fast` (per commit; full gate ≈25 min);
+land a worktree branch with `tools/land.sh <worktree>`.
+
+Matches the original: wire layer (280/280), sketch solver, booleans,
+extrude/revolve/cut/mirror/patterns, planar + circular-edge fillets,
+chamfers (equal/vertex), shell/offset, draft, sweep (rigid paths), loft
+(solid/surface), surface features (knit/fill/trim/thicken/extend/...),
+insertPart + mates, hole, helix, 16/17 requests (all but `drawing`).
+bracket.ckpart matches end to end.
+
+Biggest open items (owner crate):
+- flange: bolt/nut revolve-cut booleans fail `booleanFailed` (ck-ops boolean);
+  thread cuts (swept spline tools) (ck-ops boolean/sweep)
+- stepper: screw part `booleanFailed`; mate refs to `~k` split faces (ck-model mate)
+- large sample: curved trimSurface (surface×surface), lip/rib on curved rims,
+  fillets between non-revolution faces (ck-ops trim/blend)
+- loft: unequal-arc-weight faces (~1e-3 off), centreLine + guides not read
+- chamfer distanceDistance/angleDistance; variable/curved-face blends
+- ck-tess: sphere/torus/cone triangle counts (~2x; port f3444/f3325)
+- STEP: 16/21 (draft STEP, conic serialisation)
+- drawing request; sketch3 solver; g1/g2/g3/onCurve/tension constraints

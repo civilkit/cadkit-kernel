@@ -106,6 +106,89 @@ parts.cone = part([sketch('front', [pt('p1', 5, 0), pt('p2', 15, 0), pt('p3', 5,
   parts.filletTwo = part([...base(), fil(2, [{ faces: ['F2.C1', 'F2.S.e1'], at: [20, 10, 0] }, { faces: ['F2.C1', 'F2.S.e3'], at: [20, 10, -20] }])]);
   parts.filletRail = part([...base(), fil(3, [{ faces: ['F2.S.e2', 'F2.S.e1'], at: [40, 5, 0] }])]);
   parts.filletTooBig = part([...base(), fil(30, [{ faces: ['F2.C1', 'F2.S.e1'], at: [20, 10, 0] }])]);
+  const ch = (o, edges) => ({ type: 'chamfer', id: 'F3', chamferType: 'equal', distance: 2, edges, ...o });
+  const e1 = [{ faces: ['F2.C1', 'F2.S.e1'], at: [20, 10, 0] }];
+  parts.chamferOne = part([...base(), ch({}, e1)]);
+  parts.chamferTwo = part([...base(), ch({}, [...e1, { faces: ['F2.C1', 'F2.S.e3'], at: [20, 10, -20] }])]);
+  parts.chamferDD = part([...base(), ch({ chamferType: 'distanceDistance', distance2: 3 }, e1)]);
+  parts.chamferAD = part([...base(), ch({ chamferType: 'angleDistance', angle: 30 }, e1)]);
+  parts.chamferVertex = part([...base(), ch({ chamferType: 'vertex' }, e1)]);
+  // chains / corners on the box (top face C1 at y=10; side faces e1..e4)
+  const top4 = [{ faces: ['F2.C1', 'F2.S.e1'], at: [20, 10, 0] }, { faces: ['F2.C1', 'F2.S.e2'], at: [40, 10, -10] },
+    { faces: ['F2.C1', 'F2.S.e3'], at: [20, 10, -20] }, { faces: ['F2.C1', 'F2.S.e4'], at: [0, 10, -10] }];
+  parts.filletTop4 = part([...base(), fil(2, top4)]);
+  parts.chamferTop4 = part([...base(), ch({}, top4)]);
+  parts.filletCorner2 = part([...base(), fil(2, top4.slice(0, 2))]);
+  parts.chamferCorner2 = part([...base(), ch({}, top4.slice(0, 2))]);
+  parts.filletChain3 = part([...base(), fil(2, top4.slice(0, 3))]);
+  parts.filletCorner3 = part([...base(), fil(2, [top4[0], top4[1], { faces: ['F2.S.e1', 'F2.S.e2'], at: [40, 5, 0] }])]);
+  parts.chamferCorner3 = part([...base(), ch({}, [top4[0], top4[1], { faces: ['F2.S.e1', 'F2.S.e2'], at: [40, 5, 0] }])]);
+  parts.filletTwoParallel = part([...base(), fil(2, [top4[0], top4[2]])]);
+  // circular edges of holes / pockets / bosses on the box
+  const rim = (f1, f2, at) => [{ faces: [f1, f2], at }];
+  parts.holeRimFillet = part([...base(), ...hole, fil(0.5, rim('F2.C1', 'F4.S.e1', [7, 10, -5]))]);
+  parts.holeRimChamfer = part([...base(), ...hole, ch({ distance: 0.5 }, rim('F2.C1', 'F4.S.e1', [7, 10, -5]))]);
+  parts.holeBotFillet = part([...base(), ...hole, fil(0.5, rim('F2.C0', 'F4.S.e1', [7, 0, -5]))]);
+  parts.holeBothChamfer = part([...base(), ...hole, ch({ distance: 0.5 }, [...rim('F2.C1', 'F4.S.e1', [7, 10, -5]), ...rim('F2.C0', 'F4.S.e1', [7, 0, -5])])]);
+  parts.pocketFloorFillet = part([...parts.pocket.features, fil(1, rim('F4.C0', 'F4.S.e1', [13, 6, -10]))]);
+  parts.pocketRimChamfer = part([...parts.pocket.features, ch({ distance: 0.5 }, rim('F2.C1', 'F4.S.e1', [13, 10, -10]))]);
+  parts.bossTopFillet = part([...parts.boss.features, fil(1, rim('F4.C1', 'F4.S.e1', [13, 15, -10]))]);
+  parts.bossBaseFillet = part([...parts.boss.features, fil(1, rim('F2.C1', 'F4.S.e1', [13, 10, -10]))]);
+  parts.bossBaseChamfer = part([...parts.boss.features, ch({ distance: 1 }, rim('F2.C1', 'F4.S.e1', [13, 10, -10]))]);
+  parts.bossTopChamfer = part([...parts.boss.features, ch({ distance: 1 }, rim('F4.C1', 'F4.S.e1', [13, 15, -10]))]);
+  // revolved frustum (plane / cone / plane) and a ring with a conical bore
+  {
+    const [P, E] = withAxis([pt('p1', 0, 0), pt('p2', 10, 0), pt('p3', 6, 10), pt('p4', 0, 10)],
+      [line('e1', 'p1', 'p2'), line('e2', 'p2', 'p3'), line('e3', 'p3', 'p4'), line('e4', 'p4', 'p1')]);
+    const frustum = part([sketch('front', P, E), revolve()]);
+    parts.frustum = frustum;
+    const [P2, E2] = withAxis([pt('p1', 4, 0), pt('p2', 10, 0), pt('p3', 6, 10), pt('p4', 4, 10)],
+      [line('e1', 'p1', 'p2'), line('e2', 'p2', 'p3'), line('e3', 'p3', 'p4'), line('e4', 'p4', 'p1')]);
+    parts.ring = part([sketch('front', P2, E2), revolve()]);
+  }
+  parts.frustumBotFillet = part([...parts.frustum.features, fil(1, rim('F2.S.e1', 'F2.S.e2', [-10, 0, 0]))]);
+  parts.frustumTopFillet = part([...parts.frustum.features, fil(1, rim('F2.S.e2', 'F2.S.e3', [-6, 10, 0]))]);
+  parts.frustumBotChamfer = part([...parts.frustum.features, ch({ distance: 1 }, rim('F2.S.e1', 'F2.S.e2', [-10, 0, 0]))]);
+  parts.frustumTopChamfer = part([...parts.frustum.features, ch({ distance: 1 }, rim('F2.S.e2', 'F2.S.e3', [-6, 10, 0]))]);
+  parts.frustumBothChamfer = part([...parts.frustum.features, ch({ distance: 1 }, [...rim('F2.S.e1', 'F2.S.e2', [-10, 0, 0]), ...rim('F2.S.e2', 'F2.S.e3', [-6, 10, 0])])]);
+  parts.ringInnerFillet = part([...parts.ring.features, fil(1, rim('F2.S.e3', 'F2.S.e4', [-4, 10, 0]))]);
+  parts.ringInnerChamfer = part([...parts.ring.features, ch({ distance: 1 }, rim('F2.S.e1', 'F2.S.e4', [-4, 0, 0]))]);
+  parts.ringOuterFillet = part([...parts.ring.features, fil(1, rim('F2.S.e2', 'F2.S.e3', [-6, 10, 0]))]);
+  parts.chamferVertexD3 = part([...base(), ch({ chamferType: 'vertex', distance: 2, distance2: 3, distance3: 4 }, [{ faces: ['F2.C1', 'F2.S.e1'], at: [39, 10, 0] }])]);
+  parts.chamferVertexBot = part([...base(), ch({ chamferType: 'vertex', distance: 1.5 }, [{ faces: ['F2.C0', 'F2.S.e3'], at: [1, 0, -20] }])]);
+  // partial arcs: the half-round edge of a D-shaped prism, and a D boss on the box top (concave arc)
+  parts.dextArcFillet = part([...parts.dext.features, fil(1, rim('F2.C1', 'F2.S.e2', [0, 10, 5]))]);
+  parts.dextArcChamfer = part([...parts.dext.features, ch({ distance: 1 }, rim('F2.C1', 'F2.S.e2', [0, 10, 5]))]);
+  parts.dextArcBotFillet = part([...parts.dext.features, fil(1, rim('F2.C0', 'F2.S.e2', [0, 10, 0]))]);
+  {
+    const dsk = { type: 'sketch', id: 'F3', plane: { kind: 'face', id: 'F2.C1' }, points: [pt('p1', 10, 5), pt('p2', 20, 5), pt('c', 15, 5)],
+      entities: [line('e1', 'p1', 'p2'), { type: 'arc', id: 'e2', c: 'c', p1: 'p2', p2: 'p1' }], constraints: [] };
+    const dboss = [...base(), dsk, ex2('F4', 'F3', { depth: 5 })];
+    parts.dboss = part(dboss);
+    parts.dbossBaseFillet = part([...dboss, fil(1, rim('F2.C1', 'F4.S.e2', [15, 10, -10]))]);
+    parts.dbossBaseChamfer = part([...dboss, ch({ distance: 1 }, rim('F2.C1', 'F4.S.e2', [15, 10, -10]))]);
+    parts.dbossTopFillet = part([...dboss, fil(1, rim('F4.C1', 'F4.S.e2', [15, 15, -10]))]);
+    parts.dbossTopChamfer = part([...dboss, ch({ distance: 1 }, rim('F4.C1', 'F4.S.e2', [15, 15, -10]))]);
+  }
+  // vertex blend: three fillets at a box corner give a sphere patch V0
+  parts.filletCornerBot = part([...base(), fil(2, [{ faces: ['F2.C0', 'F2.S.e1'], at: [20, 0, 0] }, { faces: ['F2.C0', 'F2.S.e4'], at: [0, 0, -10] }, { faces: ['F2.S.e1', 'F2.S.e4'], at: [0, 5, 0] }])]);
+  parts.filletCornerBig = part([...base(), fil(4, [{ faces: ['F2.C1', 'F2.S.e3'], at: [20, 10, -20] }, { faces: ['F2.C1', 'F2.S.e4'], at: [0, 10, -10] }, { faces: ['F2.S.e3', 'F2.S.e4'], at: [0, 5, -20] }])]);
+  // non-right dihedral: rails of a triangular prism
+  {
+    const tri = part([sketch('top', [pt('p1', 0, 0), pt('p2', 30, 0), pt('p3', 10, 20)], [line('e1', 'p1', 'p2'), line('e2', 'p2', 'p3'), line('e3', 'p3', 'p1')]), extrude()]);
+    parts.triPrism = tri;
+    parts.triChamferRail = part([...tri.features, ch({ distance: 1.5 }, rim('F2.S.e1', 'F2.S.e2', [30, 5, 0]))]);
+    parts.triChamferRail2 = part([...tri.features, ch({ distance: 1.5 }, rim('F2.S.e2', 'F2.S.e3', [10, 5, -20]))]);
+    parts.triFilletRail = part([...tri.features, fil(1.5, rim('F2.S.e1', 'F2.S.e2', [30, 5, 0]))]);
+    parts.triChamferTop = part([...tri.features, ch({ distance: 1.5 }, rim('F2.C1', 'F2.S.e2', [20, 10, -10]))]);
+  }
+  parts.chamferRail = part([...base(), ch({ distance: 3 }, [{ faces: ['F2.S.e2', 'F2.S.e1'], at: [40, 5, 0] }])]);
+  parts.chamferBig = part([...base(), ch({ distance: 30 }, e1)]);
+  const cylTop = [{ faces: ['F2.C1', 'F2.S.e7'], at: [15, 10, -3] }];
+  parts.chamferCylTop = part([...parts.cyl.features, ch({ distance: 1 }, cylTop)]);
+  parts.chamferCylTopDD = part([...parts.cyl.features, ch({ chamferType: 'distanceDistance', distance: 1, distance2: 2 }, cylTop)]);
+  parts.filletCylTop = part([...parts.cyl.features, fil(2, cylTop)]);
+  parts.filletCylBot = part([...parts.cyl.features, fil(2, [{ faces: ['F2.C0', 'F2.S.e7'], at: [15, 0, -3] }])]);
 }
 
 // draft feature on the 40x20x10 top-plane box: side faces about the bottom
@@ -335,6 +418,38 @@ parts.mirrorBodyCone = part([...parts.cone.features, { type: 'plane', id: 'F8', 
   parts.extendNoEdges = part([sketch('top', P, E), sp('F2', 'F1'), { type: 'extend', id: 'F3', edges: [], distance: 7 }]);
 }
 
+// loft cases (ck-ops loft): profiles on offset top planes, matched by the
+// station rules pinned in crates/ck-ops/src/loft/stations.rs
+{
+  const ngon = (n, r, a0 = 0, pf = 'p') => {
+    const P = [], E = [];
+    for (let i = 0; i < n; i++) { const a = a0 + (2 * Math.PI * i) / n; P.push(pt(`${pf}${i + 1}`, r * Math.cos(a), r * Math.sin(a))); }
+    for (let i = 0; i < n; i++) E.push(line(`e${i + 1}`, `${pf}${i + 1}`, `${pf}${((i + 1) % n) + 1}`));
+    return [P, E];
+  };
+  const sq = (a) => rect(-a, -a, a, a);
+  const circ = (cx, cy, r) => [[pt('c', cx, cy)], [{ type: 'circle', id: 'e1', c: 'c', r }]];
+  const loftOf = (profiles, extra = {}) => {
+    const fs = []; let n = 0; const sks = [];
+    for (const [off, [P, E]] of profiles) {
+      let pl = STD('top');
+      if (off !== 0) { const id = `F${++n}`; fs.push({ type: 'plane', id, mode: 'offset', base: STD('top'), offset: off }); pl = { kind: 'feature', id }; }
+      const sid = `F${++n}`; fs.push({ type: 'sketch', id: sid, plane: pl, points: P, entities: E, constraints: [] }); sks.push(sid);
+    }
+    fs.push({ type: 'loft', id: `F${++n}`, op: 'add', sketches: sks, ...extra });
+    return part(fs);
+  };
+  parts.loftSq2 = loftOf([[0, sq(10)], [30, sq(5)]]);
+  parts.loftSq3 = loftOf([[0, sq(10)], [30, sq(5)], [50, sq(8)]]);
+  parts.loftCircSq = loftOf([[0, circ(0, 0, 8)], [30, sq(5)]]);
+  parts.loftCircCirc = loftOf([[0, circ(0, 0, 8)], [30, circ(2, 0, 4)]]);
+  parts.loftTriSq = loftOf([[0, ngon(3, 10)], [30, sq(5)]]);
+  parts.loftSqOct = loftOf([[0, sq(10)], [30, ngon(8, 6)]]);
+  parts.loftSqTwist = loftOf([[0, sq(10)], [30, ngon(4, 7, Math.PI / 4)]]);
+  parts.loftSurface = loftOf([[0, sq(10)], [30, sq(5)]], { surface: true });
+  parts.loftSurfaceCirc = loftOf([[0, circ(0, 0, 8)], [30, sq(5)]], { surface: true });
+}
+
 const m = (msg) => JSON.stringify({ id: 1, msg });
 /// Follow-up requests on each part's state (compared byte-for-byte).
 // nested parts of the flange coupling assembly's insertParts (tools/cases/*.ckpart);
@@ -344,7 +459,9 @@ const m = (msg) => JSON.stringify({ id: 1, msg });
   const load = (n) => JSON.parse(readFileSync(new URL(`${n}.ckpart`, dir), 'utf8'));
   const cut = (n, ks) => { const p = load(n); for (const k of ks) parts[`${n}@${k}`] = { ...p, features: p.features.slice(0, k) }; };
   cut('flangeHalf', [8, 9, 10, 11]);
-  // (flangeBolt / flangeNut still hit TODO errors: swept-spline booleans, chamfer)
+  cut('flangeBolt', [6, 8, 12]);
+  cut('flangeNut', [4, 6, 11]);
+  // (the thread sweeps, Bolt F13 / Nut F12, still hit a TODO error)
 }
 
 export const queries = [
