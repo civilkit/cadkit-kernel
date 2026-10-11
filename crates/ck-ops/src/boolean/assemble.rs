@@ -525,7 +525,7 @@ pub fn select(arr: &Arrangement, bodies: [&Body; 2], op: Op) -> Result<Vec<OutFa
     Ok(out)
 }
 
-fn shift2(c: &Curve2, d: Vec2) -> Curve2 {
+pub(crate) fn shift2(c: &Curve2, d: Vec2) -> Curve2 {
     match c {
         Curve2::Line { o, d: dd } => Curve2::Line { o: *o + d, d: *dd },
         Curve2::Circle { c, x, r, ccw } => Curve2::Circle { c: *c + d, x: *x, r: *r, ccw: *ccw },

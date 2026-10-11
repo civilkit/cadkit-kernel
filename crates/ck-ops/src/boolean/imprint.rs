@@ -209,7 +209,16 @@ pub fn imprint(a: &Body, b: &Body, tol: f64) -> Arrangement {
                     let curve = c.curve().clone();
                     let r = curve.range();
                     let kept = trim(&curve, r, &[(a, f), (b, g)], &bx, tol, false);
-                    let whole = kept.len() == 1 && curve.period().map_or(false, |p| (kept[0].1 - kept[0].0 - p).abs() <= 1e-9);
+                    // whole closed curve: kept pieces contiguous over one
+                    // period (a relocated seam crossing splits the range)
+                    let mut kept = kept;
+                    let contiguous = !kept.is_empty() && kept.windows(2).all(|w| (w[0].1 - w[1].0).abs() <= 1e-12);
+                    let whole = contiguous
+                        && curve.period().map_or(false, |p| (kept[kept.len() - 1].1 - kept[0].0 - p).abs() <= 1e-9);
+                    if whole && kept.len() > 1 && matches!(curve, Curve::Circle { .. } | Curve::Ellipse { .. }) {
+                        kept = vec![(kept[0].0, kept[kept.len() - 1].1)];
+                    }
+                    let whole = whole && kept.len() == 1;
                     for (t0, t1) in kept {
                         // (a cut that is an existing edge keeps that edge's start)
                         let on_existing = whole
