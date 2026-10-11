@@ -23,7 +23,7 @@
 //!   GUESS/known mismatch: the oracle numbers kept whole edges first, then
 //!   split pieces, then new intersection edges, per face group.
 
-use super::classify::{classify_point, in_loops, in_polygon, loop_polygon, outward, poly_area, Class};
+use super::classify::{in_loops, in_polygon, loop_polygon, outward, poly_area, Class, Solid};
 use super::imprint::{ArrFace, Arrangement};
 use super::Op;
 use crate::intersect::ss::{self, SsResult};
@@ -344,13 +344,14 @@ pub fn select(arr: &Arrangement, bodies: [&Body; 2], op: Op) -> Result<Vec<OutFa
     let tol = arr.tol;
     let mut kept: Vec<(Fragment, bool)> = vec![];
     let mut n_frags: Vec<usize> = vec![0; arr.faces.len()];
+    let solids = [Solid::new(bodies[0], tol), Solid::new(bodies[1], tol)];
     for fi in 0..arr.faces.len() {
         let frs = fragments(arr, fi);
         n_frags[fi] = frs.len();
         for mut fr in frs {
             let side = arr.faces[fi].side;
             let (q, n) = sample_point(arr, &fr).ok_or_else(|| "booleanFailed".to_string())?;
-            let c = classify_point(bodies[1 - side], q, n, tol);
+            let c = solids[1 - side].classify(q, n);
             fr.class = Some(c);
             if let Some(flip) = keep(op, side, c) {
                 kept.push((fr, flip));
