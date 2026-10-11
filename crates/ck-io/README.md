@@ -93,3 +93,18 @@ are reference-only (bodies not buildable with ck-topo yet).
 - multi-lump + void ordering (shells of all lumps, then all breps).
 - split of a sense=false sphere/torus; loop-run joining across loop start.
 - B-spline `closed_curve` = first ctrl == last ctrl.
+
+## ACIS SAT import (`sat/`)
+
+`ck_io::sat::import_sat(text) -> Result<SatImport, SatError>` builds a real
+B-rep (ck-topo body, ck-geom surfaces/curves, mm). Origin: adapted from the
+author's own SGRebuild `sat_import.rs` parser. Supported: plane, cone-surface
+(cylinder/cone, circular), sphere, torus, spline-surface and intcurve-curve
+with exact nubs/nurbs, straight/ellipse curves; face/coedge/edge sense,
+single/double-sided (all-double = sheet), unit scale; ACIS seamless cylinder /
+cone faces get a seam inserted. Unsupported (structured `SatError` with the
+`$N` record): non-exact splines, periodic splines, elliptical cones,
+sphere/torus faces whose loops wrap an axis, non-identity body transform,
+mixed single/double faces. Wire request `importSat {tag?, name?, data}` ->
+regen-shaped result (+ `import` summary); fixtures in `tests/fixtures/sat`
+(`expected.json` = closed-form volumes, gated as `import.sat`).
