@@ -63,6 +63,8 @@ pub const REQUEST_TYPES: &[(&str, Handler)] = &[
     // Extension (not in the original kernel): independent solid validator.
     ("validate", geometry::validate),
     ("importStep", geometry::import_step),
+    // Extension: ACIS SAT import -> a body in the tag's state.
+    ("importSat", geometry::import_sat),
     ("inspect", query::inspect),
     ("continuity", query::continuity),
     ("curvatureAt", curvature::curvature_at),

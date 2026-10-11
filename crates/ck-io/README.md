@@ -142,3 +142,17 @@ export -> import: volume / area within 1e-6, same face and (non-seam) edge
 counts, `validate` clean. Known exporter limit: a hole arc split at a seam
 vertex but only half-used by a planar face (flangeHalf@9..11, flangeNut@12 in
 brep_cases) is written as a closed circle; the import is then wrong.
+## ACIS SAT import (`sat/`)
+
+`ck_io::sat::import_sat(text) -> Result<SatImport, SatError>` builds a real
+B-rep (ck-topo body, ck-geom surfaces/curves, mm). Origin: adapted from the
+author's own SGRebuild `sat_import.rs` parser. Supported: plane, cone-surface
+(cylinder/cone, circular), sphere, torus, spline-surface and intcurve-curve
+with exact nubs/nurbs, straight/ellipse curves; face/coedge/edge sense,
+single/double-sided (all-double = sheet), unit scale; ACIS seamless cylinder /
+cone faces get a seam inserted. Unsupported (structured `SatError` with the
+`$N` record): non-exact splines, periodic splines, elliptical cones,
+sphere/torus faces whose loops wrap an axis, non-identity body transform,
+mixed single/double faces. Wire request `importSat {tag?, name?, data}` ->
+regen-shaped result (+ `import` summary); fixtures in `tests/fixtures/sat`
+(`expected.json` = closed-form volumes, gated as `import.sat`).
