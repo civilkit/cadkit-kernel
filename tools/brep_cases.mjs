@@ -124,6 +124,33 @@ parts.mirrorBodyCone = part([...parts.cone.features, { type: 'plane', id: 'F8', 
   parts.shellCylTooThick = sh(parts.cyl, ['F2.C1'], 10);
 }
 
+// Surface bodies (surfacePlanar / surfaceRevolve / surfaceExtrude, open chains)
+{
+  const [P, E] = rect(0, 0, 40, 20);
+  const sp = (id, s) => ({ type: 'surfacePlanar', id, sketch: s });
+  const se = (id, s, o = {}) => ({ type: 'surfaceExtrude', id, sketch: s, end: 'blind', depth: 10, ...o });
+  const sr = (id, s, o = {}) => ({ type: 'surfaceRevolve', id, sketch: s, axis: 'ax', end: 'blind', angle: 360, ...o });
+  parts.surfPlanar = part([sketch('top', P, E), sp('F2', 'F1')]);
+  parts.surfPlanarSolid = part([sketch('top', P, E), extrude(), { ...sketch('front', P, E), id: 'F3' }, sp('F4', 'F3')]);
+  parts.surfPlanarTwo = part([sketch('top', P, E), sp('F2', 'F1'), { ...sketch('front', P, E), id: 'F3' }, sp('F4', 'F3')]);
+  parts.surfExtrude = part([sketch('top', P, E), se('F2', 'F1')]);
+  parts.surfExtrudeMid = part([sketch('top', P, E), se('F2', 'F1', { end: 'mid' })]);
+  parts.surfExtrudeFlip = part([sketch('top', P, E), se('F2', 'F1', { flip: true })]);
+  const [Q, QE] = withAxis(...rect(10, 0, 20, 5));
+  parts.surfRevolve = part([sketch('front', Q, QE), sr('F2', 'F1', { angle: 180 })]);
+  parts.surfRevolve360 = part([sketch('front', Q, QE), sr('F2', 'F1')]);
+  // open chains: polyline and spline, closed by a chord internally
+  const chain = [pt('c1', 10, 8), pt('c2', 14, 12), pt('c3', 20, 9), pt('a1', 0, 0), pt('a2', 0, 10)];
+  const chainE = [line('l1', 'c1', 'c2'), line('l2', 'c2', 'c3'), line('ax', 'a1', 'a2', { construction: true })];
+  parts.surfRevolveChain = part([sketch('front', chain, chainE), sr('F2', 'F1', { angle: 180 })]);
+  parts.surfExtrudeChain = part([sketch('front', chain, chainE), se('F2', 'F1')]);
+  const chain2 = [pt('c1', 20, 9), pt('c2', 14, 12), pt('c3', 10, 8), pt('a1', 0, 0), pt('a2', 0, 10)];
+  parts.surfRevolveChainCcw = part([sketch('front', chain2, chainE), sr('F2', 'F1', { angle: 200 })]);
+  const sp3 = [pt('c1', 10, 3), pt('c2', 15, 6), pt('c3', 22, 7), pt('a1', 0, 0), pt('a2', 0, 10)];
+  parts.surfRevolveSpline = part([sketch('front', sp3, [{ type: 'spline', id: 'e8', pts: ['c1', 'c2', 'c3'] }, line('ax', 'a1', 'a2', { construction: true })]), sr('F2', 'F1', { angle: 180 })]);
+  parts.surfExtrudeSpline = part([sketch('front', sp3, [{ type: 'spline', id: 'e8', pts: ['c1', 'c2', 'c3'] }, line('ax', 'a1', 'a2', { construction: true })]), se('F2', 'F1', { depth: 7 })]);
+}
+
 const m = (msg) => JSON.stringify({ id: 1, msg });
 /// Follow-up requests on each part's state (compared byte-for-byte).
 export const queries = [

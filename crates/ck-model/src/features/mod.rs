@@ -575,6 +575,8 @@ pub struct Brep {
     pub asm: mate::Assembly,
     /// Helix curves by feature id (sweep paths).
     pub helices: Vec<(String, ck_ops::helix::Helix)>,
+    /// Surface bodies by feature id (see `surfaces.rs`).
+    pub surfs: Vec<(String, ck_topo::body::Body)>,
 }
 
 impl Brep {
@@ -860,6 +862,7 @@ impl crate::regen::FeatureExec for Brep {
             FeatureKind::Hole { .. } => return hole::exec_hole(self, state, f),
             FeatureKind::Helix { .. } => return sweep::exec_helix(self, state, f),
             FeatureKind::Mate { .. } => return mate::exec_mate(self, state, f),
+            _ if surfaces::handles(f) => return surfaces::dispatch(self, state, f),
             _ => return Err(crate::regen::FeatureError::new(&extrude::todo(&f.type_name))),
         };
         self.apply(&f.id, tool)
