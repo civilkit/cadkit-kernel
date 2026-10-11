@@ -166,7 +166,7 @@ fn import_hook(cx: &mut Cx, _name: &str, data: &str) -> Result<(Json, Option<Sta
             if let Json::Obj(kv) = &mut out {
                 kv.push(("import".into(), info));
             }
-            let snap = Snapshot { body, sketches: vec![], asm: Default::default() };
+            let snap = Snapshot { body, sketches: vec![], asm: Default::default(), heal_base: None };
             Ok((out, Some(State { has_body: true, data: Some(Box::new(snap)) })))
         }
     }
