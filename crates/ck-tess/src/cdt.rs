@@ -188,6 +188,7 @@ pub const NONE: u32 = u32::MAX;
 /// Region value of a triangle not yet classified.
 pub const UNSET: i32 = -2;
 
+/// Triangle record (the original's 0x20-byte slot: v[3], n[3], c[3], alive, inside flag).
 #[derive(Clone, Copy, Debug)]
 pub struct Tri {
     pub v: [u32; 3],
@@ -197,58 +198,57 @@ pub struct Tri {
     pub alive: bool,
 }
 
+/// Where a point falls (original f3299/f3303): inside a triangle, on its edge `k`, or on (within `eps` of) an existing vertex id.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Loc {
-    /// Strictly inside the triangle.
     In(u32),
-    /// On edge `k` of the triangle.
     Edge(u32, usize),
-    /// On vertex index `k` of the triangle.
-    Vertex(u32, usize),
-    /// The walk toward the point would cross constrained edge `k` of the triangle.
-    Blocked(u32, usize),
+    Vertex(u32),
 }
 
+/// Constrained Delaunay triangulation. A line-by-line port of the original's cdt.rs (kernel.wasm f3295..f3312): deterministic
+/// last-triangle-hint walk, point snap tolerance `eps`, Lawson flips from an explicit stack, Sloan segment recovery with a FIFO queue
+/// and a swap-until-stable pass over the new edges.
 pub struct Cdt {
+    pub eps: f64,
     pub pts: Vec<Pt>,
     pub tris: Vec<Tri>,
     pub vt: Vec<u32>,
-    free: Vec<u32>,
-    /// Triangles created or changed since the caller last drained this list.
-    pub touched: Vec<u32>,
-    rng: u64,
-    /// Squared cosine of the apex angle that bounds the diametral lens (see `encroaches`).
-    pub lens: f64,
+    /// Last triangle created by an insertion: the start of the next point location (f3303).
+    pub hint: u32,
+    /// Count of segments that could not be recovered (original: field at +0x30).
+    pub failed: u32,
 }
 
-fn dot(a: Pt, b: Pt, c: Pt) -> f64 { (a[0] - c[0]) * (b[0] - c[0]) + (a[1] - c[1]) * (b[1] - c[1]) }
-
 impl Cdt {
-    /// An empty triangulation whose super-triangle encloses `bounds = (min_x, min_y, max_x, max_y)` with a wide margin.
-    pub fn new(bounds: (f64, f64, f64, f64)) -> Cdt {
-        let (cx, cy) = (0.5 * (bounds.0 + bounds.2), 0.5 * (bounds.1 + bounds.3));
-        let r = 100.0 * (bounds.2 - bounds.0).max(bounds.3 - bounds.1).max(1e-12);
-        let pts = vec![[cx - 2.0 * r, cy - r], [cx + 2.0 * r, cy - r], [cx, cy + 2.0 * r]];
-        let t = Tri { v: [0, 1, 2], n: [NONE; 3], c: [false; 3], region: UNSET, alive: true };
-        Cdt { pts, tris: vec![t], vt: vec![0, 0, 0], free: vec![], touched: vec![], rng: 0x9E3779B97F4A7C15, lens: 0.0 }
+    /// An empty triangulation whose super-triangle encloses `bounds = (min_x, min_y, max_x, max_y)` (original f3312, R = 32 * diagonal).
+    pub fn new(bounds: (f64, f64, f64, f64), eps: f64) -> Cdt {
+        let (minx, miny, maxx, maxy) = bounds;
+        let cx = (minx + maxx) * 0.5;
+        let cy = (miny + maxy) * 0.5;
+        let mut d = ((maxx - minx) * (maxx - minx) + (maxy - miny) * (maxy - miny)).sqrt();
+        if d.is_nan() || d <= 1e-9 {
+            d = 1e-9;
+        }
+        let r = d * 0.5 * 64.0;
+        let lo = cy - r;
+        let r2 = r + r;
+        let pts = vec![[cx - r2, lo], [cx + r2, lo], [cx, cy + r2]];
+        let t = Tri { v: [0, 1, 2], n: [NONE; 3], c: [false; 3], region: 0, alive: true };
+        Cdt { eps, pts, tris: vec![t], vt: vec![0, 0, 0], hint: 0, failed: 0 }
     }
 
     pub fn is_super(&self, v: u32) -> bool { v < 3 }
 
-    fn rand(&mut self) -> usize {
-        self.rng ^= self.rng << 13; self.rng ^= self.rng >> 7; self.rng ^= self.rng << 17;
-        (self.rng >> 33) as usize
+    fn push_tri(&mut self, t: Tri) -> u32 {
+        self.tris.push(t);
+        (self.tris.len() - 1) as u32
     }
-
-    fn alloc(&mut self, t: Tri) -> u32 {
-        if let Some(i) = self.free.pop() { self.tris[i as usize] = t; i } else { self.tris.push(t); (self.tris.len() - 1) as u32 }
-    }
-
-    pub fn touch(&mut self, t: u32) { self.touched.push(t); }
 
     pub fn orient(&self, a: u32, b: u32, c: u32) -> f64 { orient2d(self.pts[a as usize], self.pts[b as usize], self.pts[c as usize]) }
 
-    /// Makes the neighbour's pointer for the edge `(a, b)` of a new triangle (seen from the neighbour as `(b, a)`) point at `t`.
+    /// Makes the neighbour's pointer for the edge `(a, b)` of a new triangle (seen from the neighbour as `(b, a)`) point at `t`
+    /// (original: the first of n[0..3] equal to the old triangle id is overwritten; same effect for a consistent mesh).
     fn fix_back(&mut self, nb: u32, a: u32, b: u32, t: u32) {
         if nb == NONE { return; }
         let tr = &mut self.tris[nb as usize];
@@ -264,374 +264,408 @@ impl Cdt {
         (0..3).find(|&i| tr.v[(i + 1) % 3] == a && tr.v[(i + 2) % 3] == b)
     }
 
-    /// The triangles around vertex `v` in counter-clockwise order, each with the index of `v` in it.
-    pub fn fan(&self, v: u32) -> Vec<(u32, usize)> {
-        let t0 = self.vt[v as usize];
-        let mut out = vec![];
-        let mut t = t0;
-        loop {
-            let tr = &self.tris[t as usize];
-            let k = (0..3).find(|&i| tr.v[i] == v).expect("vt points at a triangle without the vertex");
-            out.push((t, k));
-            let nx = tr.n[(k + 1) % 3];
-            if nx == NONE || nx == t0 { break; }
-            t = nx;
-            if out.len() > self.tris.len() { panic!("fan loops"); }
-        }
-        out
+    fn pos(tr: &Tri, u: u32) -> usize {
+        if tr.v[0] == u { 0 } else if tr.v[1] == u { 1 } else { 2 }
     }
 
-    /// The triangle holding the edge between `u` and `v` (either direction) and the index of that edge in it.
+    /// The triangle holding the edge between `u` and `v` and the index of that edge in it (original f3278): fan walk from `vt[u]`,
+    /// preferring the triangle where the edge runs `u -> v`.
     pub fn find_edge(&self, u: u32, v: u32) -> Option<(u32, usize)> {
-        for (t, k) in self.fan(u) {
-            let tr = &self.tris[t as usize];
-            if tr.v[(k + 1) % 3] == v { return Some((t, (k + 2) % 3)); }
-            if tr.v[(k + 2) % 3] == v { return Some((t, (k + 1) % 3)); }
+        let start = self.vt[u as usize];
+        if start == NONE { return None; }
+        let mut cur = start;
+        let mut cnt = 0u32;
+        loop {
+            if cur as usize >= self.tris.len() { panic!("find_edge: index out of range"); }
+            let tr = &self.tris[cur as usize];
+            let k = Self::pos(tr, u);
+            let (k1, k2) = ((k + 1) % 3, (k + 2) % 3);
+            if tr.v[k1] == v { return Some((cur, k2)); }
+            let nxt = tr.n[k1];
+            if tr.v[k2] == v {
+                let mut res = (cur, k1);
+                if nxt != NONE {
+                    let nb = &self.tris[nxt as usize];
+                    if nb.v[1] == u && nb.v[2] == v { res = (nxt, 0); }
+                    else if nb.v[2] == u && nb.v[0] == v { res = (nxt, 1); }
+                    else if nb.v[0] == u && nb.v[1] == v { res = (nxt, 2); }
+                }
+                return Some(res);
+            }
+            if nxt != NONE && nxt != start && cnt < 0xfff {
+                cnt += 1;
+                cur = nxt;
+            } else {
+                break;
+            }
         }
-        None
+        let mut cur = start;
+        let mut cnt = 0u32;
+        loop {
+            let tr = &self.tris[cur as usize];
+            let k = Self::pos(tr, u);
+            let (k1, k2) = ((k + 1) % 3, (k + 2) % 3);
+            if tr.v[k1] == v { return Some((cur, k2)); }
+            if tr.v[k2] == v { return Some((cur, k1)); }
+            let nxt = tr.n[k2];
+            if nxt != NONE && nxt != start && cnt < 0xfff {
+                cnt += 1;
+                cur = nxt;
+            } else {
+                return None;
+            }
+        }
     }
 
+    /// Marks edge `k` of triangle `t` (and the twin) constrained (original f3306).
     fn mark_edge(&mut self, t: u32, k: usize) {
         self.tris[t as usize].c[k] = true;
         let tr = self.tris[t as usize];
         let nb = tr.n[k];
         if nb != NONE {
-            let (a, b) = (tr.v[(k + 1) % 3], tr.v[(k + 2) % 3]);
-            let j = self.edge_idx(nb, b, a).unwrap();
-            self.tris[nb as usize].c[j] = true;
+            let j = (0..3).find(|&j| self.tris[nb as usize].n[j] == t);
+            if let Some(j) = j { self.tris[nb as usize].c[j] = true; }
         }
+    }
+
+    fn mark_segment(&mut self, a: u32, b: u32) {
+        if let Some((t, k)) = self.find_edge(a, b) { self.mark_edge(t, k); }
     }
 
     // ------------------------------------------------------------------------------------------------------------------------------
     // point location
     // ------------------------------------------------------------------------------------------------------------------------------
 
-    /// Walks from `start` to the triangle containing `p`. With `stop_at_constrained` the walk reports `Blocked` instead of crossing a segment.
-    pub fn locate(&mut self, p: Pt, start: u32, stop_at_constrained: bool) -> Loc {
-        let mut t = if (start as usize) < self.tris.len() && self.tris[start as usize].alive { start } else { self.any_alive() };
-        let mut steps = 0usize;
-        loop {
-            steps += 1;
-            if steps > 3 * self.tris.len() + 64 {
-                return self.locate_brute(p);
-            }
-            let tr = self.tris[t as usize];
-            let k0 = self.rand() % 3;
-            let mut moved = false;
-            let mut zeros = [0usize; 3];
-            let mut nz = 0;
-            for dk in 0..3 {
-                let k = (k0 + dk) % 3;
-                let (a, b) = (self.pts[tr.v[(k + 1) % 3] as usize], self.pts[tr.v[(k + 2) % 3] as usize]);
-                let o = orient2d(a, b, p);
-                if o < 0.0 {
-                    if stop_at_constrained && tr.c[k] { return Loc::Blocked(t, k); }
-                    let nb = tr.n[k];
-                    if nb == NONE { return Loc::In(t); }
-                    t = nb;
-                    moved = true;
-                    break;
-                } else if o == 0.0 {
-                    zeros[nz] = k;
-                    nz += 1;
-                }
-            }
-            if moved { continue; }
-            return match nz {
-                0 => Loc::In(t),
-                1 => Loc::Edge(t, zeros[0]),
-                _ => Loc::Vertex(t, 3 - zeros[0] - zeros[1]),
-            };
+    /// Classifies `p` known to lie in triangle `t` (original f3299): snap to a vertex within `eps`, else exact-zero edge tests, else inside.
+    fn classify(&self, t: u32, p: Pt) -> Loc {
+        let tr = self.tris[t as usize];
+        for k in 0..3 {
+            let q = self.pts[tr.v[k] as usize];
+            let d = ((q[0] - p[0]) * (q[0] - p[0]) + (q[1] - p[1]) * (q[1] - p[1])).sqrt();
+            if !(self.eps < d) { return Loc::Vertex(tr.v[k]); }
         }
+        let (a, b, c) = (self.pts[tr.v[0] as usize], self.pts[tr.v[1] as usize], self.pts[tr.v[2] as usize]);
+        if orient2d(b, c, p) == 0.0 { return Loc::Edge(t, 0); }
+        if orient2d(c, a, p) == 0.0 { return Loc::Edge(t, 1); }
+        if orient2d(a, b, p) == 0.0 { return Loc::Edge(t, 2); }
+        Loc::In(t)
     }
 
-    fn any_alive(&self) -> u32 { self.tris.iter().position(|t| t.alive).unwrap() as u32 }
-
-    fn locate_brute(&self, p: Pt) -> Loc {
+    /// Walks from the hint triangle to the one holding `p` (original f3303): the first edge tested rotates 1,2,0,1,... per step.
+    pub fn locate(&self, p: Pt) -> Loc {
+        let mut t = self.hint;
+        let mut first = 0usize;
+        let cap = 4 * self.tris.len() + 0x40;
+        let mut steps = 0usize;
+        'walk: loop {
+            if steps >= cap { break; }
+            steps += 1;
+            if t as usize >= self.tris.len() { panic!("locate: index out of range"); }
+            let tr = self.tris[t as usize];
+            let e1 = if first != 2 { first + 1 } else { 0 };
+            for i in 0..3 {
+                let e = (e1 + i) % 3;
+                let (a, b) = (self.pts[tr.v[(e + 1) % 3] as usize], self.pts[tr.v[(e + 2) % 3] as usize]);
+                if orient2d(a, b, p) < 0.0 {
+                    let nb = tr.n[e];
+                    if nb == NONE { break 'walk; }
+                    t = nb;
+                    first = e1;
+                    continue 'walk;
+                }
+            }
+            return self.classify(t, p);
+        }
+        // original f3301: brute-force scan in triangle order
         for (i, tr) in self.tris.iter().enumerate() {
             if !tr.alive { continue; }
-            let mut zeros = vec![];
-            let mut ok = true;
-            for k in 0..3 {
-                let o = orient2d(self.pts[tr.v[(k + 1) % 3] as usize], self.pts[tr.v[(k + 2) % 3] as usize], p);
-                if o < 0.0 { ok = false; break; }
-                if o == 0.0 { zeros.push(k); }
-            }
-            if ok {
-                return match zeros.len() { 0 => Loc::In(i as u32), 1 => Loc::Edge(i as u32, zeros[0]), _ => Loc::Vertex(i as u32, 3 - zeros[0] - zeros[1]) };
+            let (a, b, c) = (self.pts[tr.v[0] as usize], self.pts[tr.v[1] as usize], self.pts[tr.v[2] as usize]);
+            if orient2d(b, c, p) >= 0.0 && orient2d(c, a, p) >= 0.0 && orient2d(a, b, p) >= 0.0 {
+                return self.classify(i as u32, p);
             }
         }
-        Loc::In(self.any_alive())
+        Loc::In(0)
     }
 
     // ------------------------------------------------------------------------------------------------------------------------------
     // edits
     // ------------------------------------------------------------------------------------------------------------------------------
 
-    /// Swaps the diagonal of the quadrilateral across edge `k` of triangle `t`. The caller guarantees the quadrilateral is convex.
-    fn flip(&mut self, t: u32, k: usize) {
+    /// Swaps the diagonal of the quadrilateral across edge `k` of triangle `t` (original f3309). Returns `(t, s)`.
+    fn flip(&mut self, t: u32, k: usize) -> (u32, u32) {
         let tr = self.tris[t as usize];
         let (w, u, v) = (tr.v[k], tr.v[(k + 1) % 3], tr.v[(k + 2) % 3]);
         let s = tr.n[k];
         let ts = self.tris[s as usize];
-        let j = self.edge_idx(s, v, u).unwrap();
+        let j = (0..3).find(|&j| ts.n[j] == t).expect("flip: neighbour does not point back");
         let x = ts.v[j];
         let (a_n, a_c) = (tr.n[(k + 2) % 3], tr.c[(k + 2) % 3]); // across (w,u)
         let (b_n, b_c) = (tr.n[(k + 1) % 3], tr.c[(k + 1) % 3]); // across (v,w)
         let (c_n, c_c) = (ts.n[(j + 1) % 3], ts.c[(j + 1) % 3]); // across (u,x)
         let (d_n, d_c) = (ts.n[(j + 2) % 3], ts.c[(j + 2) % 3]); // across (x,v)
-        let region = tr.region;
-        self.tris[t as usize] = Tri { v: [w, u, x], n: [c_n, s, a_n], c: [c_c, false, a_c], region, alive: true };
-        self.tris[s as usize] = Tri { v: [w, x, v], n: [d_n, b_n, t], c: [d_c, b_c, false], region, alive: true };
+        self.tris[t as usize] = Tri { v: [w, u, x], n: [c_n, s, a_n], c: [c_c, false, a_c], region: tr.region, alive: true };
+        self.tris[s as usize] = Tri { v: [w, x, v], n: [d_n, b_n, t], c: [d_c, b_c, false], region: ts.region, alive: true };
         self.fix_back(c_n, u, x, t); // (u,x) now belongs to t
         self.fix_back(b_n, v, w, s); // (v,w) now belongs to s
         self.vt[w as usize] = t; self.vt[u as usize] = t; self.vt[x as usize] = t; self.vt[v as usize] = s;
-        self.touch(t); self.touch(s);
+        (t, s)
     }
 
-    /// Restores the Delaunay property around the listed edges, flipping non-constrained edges whose opposite vertex is inside the circle.
+    /// Restores the Delaunay property from an explicit stack (original f3298): pop, flip if the opposite vertex is strictly inside the
+    /// circle, then push `(t,0)` and `(s,0)`.
     fn legalize(&mut self, mut stack: Vec<(u32, usize)>) {
+        let mut budget = 1_000_001i64;
         while let Some((t, k)) = stack.pop() {
+            budget -= 1;
+            if budget <= 0 { return; }
             let tr = self.tris[t as usize];
             if !tr.alive || tr.c[k] { continue; }
             let s = tr.n[k];
             if s == NONE { continue; }
-            let (u, v) = (tr.v[(k + 1) % 3], tr.v[(k + 2) % 3]);
-            let j = self.edge_idx(s, v, u).unwrap();
+            let j = match (0..3).find(|&j| self.tris[s as usize].n[j] == t) { Some(j) => j, None => continue };
             let x = self.tris[s as usize].v[j];
             let inside = incircle(self.pts[tr.v[0] as usize], self.pts[tr.v[1] as usize], self.pts[tr.v[2] as usize], self.pts[x as usize]);
             if inside > 0.0 {
-                self.flip(t, k);
-                // t = (w,u,x), s = (w,x,v): the four outer edges
-                stack.push((t, 2)); stack.push((t, 0)); stack.push((s, 0)); stack.push((s, 1));
+                let (a, b) = self.flip(t, k);
+                stack.push((a, 0));
+                stack.push((b, 0));
             }
         }
     }
 
-    /// Inserts the point strictly inside triangle `t`; returns the new vertex index.
-    pub fn insert_in_tri(&mut self, t: u32, p: Pt) -> u32 {
+    fn add_vertex(&mut self, p: Pt) -> u32 {
         let pi = self.pts.len() as u32;
         self.pts.push(p);
-        self.vt.push(0);
+        self.vt.push(NONE);
+        pi
+    }
+
+    /// Inserts the point strictly inside triangle `t` (original f3305); returns the new vertex index.
+    pub fn insert_in_tri(&mut self, t: u32, p: Pt) -> u32 {
+        let pi = self.add_vertex(p);
         let tr = self.tris[t as usize];
         let (a, b, c) = (tr.v[0], tr.v[1], tr.v[2]);
         let (n0, n1, n2) = (tr.n[0], tr.n[1], tr.n[2]);
         let (c0, c1, c2) = (tr.c[0], tr.c[1], tr.c[2]);
         let r = tr.region;
-        let t1 = self.alloc(Tri { v: [b, c, pi], n: [NONE; 3], c: [false; 3], region: r, alive: true });
-        let t2 = self.alloc(Tri { v: [c, a, pi], n: [NONE; 3], c: [false; 3], region: r, alive: true });
+        let t1 = self.push_tri(Tri { v: [b, c, pi], n: [NONE; 3], c: [false; 3], region: r, alive: true });
+        let t2 = self.push_tri(Tri { v: [c, a, pi], n: [NONE; 3], c: [false; 3], region: r, alive: true });
         self.tris[t as usize] = Tri { v: [a, b, pi], n: [t1, t2, n2], c: [false, false, c2], region: r, alive: true };
         self.tris[t1 as usize] = Tri { v: [b, c, pi], n: [t2, t, n0], c: [false, false, c0], region: r, alive: true };
         self.tris[t2 as usize] = Tri { v: [c, a, pi], n: [t, t1, n1], c: [false, false, c1], region: r, alive: true };
         self.fix_back(n0, b, c, t1);
         self.fix_back(n1, c, a, t2);
         self.vt[a as usize] = t; self.vt[b as usize] = t; self.vt[c as usize] = t1; self.vt[pi as usize] = t;
-        self.touch(t); self.touch(t1); self.touch(t2);
+        self.hint = t;
         self.legalize(vec![(t, 2), (t1, 2), (t2, 2)]);
         pi
     }
 
-    /// Splits edge `k` of triangle `t` (and the triangle across it) at `p`, which is taken to lie on the edge whether or not the floating
-    /// point coordinates are exactly on it. A constrained edge becomes two constrained edges.
+    /// Splits edge `k` of triangle `t` (and the triangle across it) at `p` (original f3295). A constrained edge becomes two.
     pub fn insert_on_edge(&mut self, t: u32, k: usize, p: Pt) -> u32 {
-        let pi = self.pts.len() as u32;
-        self.pts.push(p);
-        self.vt.push(0);
+        let pi = self.add_vertex(p);
         let tr = self.tris[t as usize];
         let (w, u, v) = (tr.v[k], tr.v[(k + 1) % 3], tr.v[(k + 2) % 3]);
         let s = tr.n[k];
-        assert!(s != NONE, "edge split on the hull");
-        let ts = self.tris[s as usize];
-        let j = self.edge_idx(s, v, u).unwrap();
-        let x = ts.v[j];
         let c_uv = tr.c[k];
         let (au_n, au_c) = (tr.n[(k + 2) % 3], tr.c[(k + 2) % 3]); // across (w,u)
         let (bv_n, bv_c) = (tr.n[(k + 1) % 3], tr.c[(k + 1) % 3]); // across (v,w)
+        let rt = tr.region;
+        if s == NONE {
+            let t2 = self.push_tri(Tri { v: [w, pi, v], n: [NONE; 3], c: [false; 3], region: rt, alive: true });
+            self.tris[t as usize] = Tri { v: [w, u, pi], n: [NONE, t2, au_n], c: [c_uv, false, au_c], region: rt, alive: true };
+            self.tris[t2 as usize] = Tri { v: [w, pi, v], n: [NONE, bv_n, t], c: [c_uv, bv_c, false], region: rt, alive: true };
+            self.fix_back(bv_n, v, w, t2);
+            self.vt[w as usize] = t; self.vt[u as usize] = t; self.vt[v as usize] = t2; self.vt[pi as usize] = t;
+            self.hint = t;
+            self.legalize(vec![(t, 2), (t2, 1)]);
+            return pi;
+        }
+        let ts = self.tris[s as usize];
+        let j = (0..3).find(|&j| ts.n[j] == t).expect("insert_on_edge: neighbour does not point back");
+        let x = ts.v[j];
         let (dxv_n, dxv_c) = (ts.n[(j + 2) % 3], ts.c[(j + 2) % 3]); // across (x,v)
         let (cux_n, cux_c) = (ts.n[(j + 1) % 3], ts.c[(j + 1) % 3]); // across (u,x)
-        let (rt, rs) = (tr.region, ts.region);
-        let t2 = self.alloc(Tri { v: [w, pi, v], n: [NONE; 3], c: [false; 3], region: rt, alive: true });
-        let s2 = self.alloc(Tri { v: [x, pi, u], n: [NONE; 3], c: [false; 3], region: rs, alive: true });
+        let rs = ts.region;
+        let t2 = self.push_tri(Tri { v: [w, pi, v], n: [NONE; 3], c: [false; 3], region: rt, alive: true });
+        let s2 = self.push_tri(Tri { v: [x, pi, u], n: [NONE; 3], c: [false; 3], region: rs, alive: true });
         let t1 = t;
         let s1 = s;
         self.tris[t1 as usize] = Tri { v: [w, u, pi], n: [s2, t2, au_n], c: [c_uv, false, au_c], region: rt, alive: true };
         self.tris[t2 as usize] = Tri { v: [w, pi, v], n: [s1, bv_n, t1], c: [c_uv, bv_c, false], region: rt, alive: true };
         self.tris[s1 as usize] = Tri { v: [x, v, pi], n: [t2, s2, dxv_n], c: [c_uv, false, dxv_c], region: rs, alive: true };
         self.tris[s2 as usize] = Tri { v: [x, pi, u], n: [t1, cux_n, s1], c: [c_uv, cux_c, false], region: rs, alive: true };
-        // note: edge indices above follow "k is opposite vertex k": t1 = (w,u,p): opp w = (u,p); t2 = (w,p,v): opp w = (p,v);
-        // s1 = (x,v,p): opp x = (v,p); s2 = (x,p,u): opp x = (p,u)
         self.fix_back(bv_n, v, w, t2);
         self.fix_back(cux_n, u, x, s2);
         self.vt[w as usize] = t1; self.vt[u as usize] = t1; self.vt[v as usize] = t2; self.vt[x as usize] = s1; self.vt[pi as usize] = t1;
-        self.touch(t1); self.touch(t2); self.touch(s1); self.touch(s2);
-        self.legalize(vec![(t1, 2), (t2, 1), (s1, 2), (s2, 1)]);
+        self.hint = t1;
+        self.legalize(vec![(s1, 2), (s2, 1), (t1, 2), (t2, 1)]);
         pi
     }
 
-    /// Inserts a point wherever it falls (no constraints involved); returns its vertex index, or the existing vertex it coincides with.
-    pub fn insert_point(&mut self, p: Pt, hint: u32) -> u32 {
-        match self.locate(p, hint, false) {
+    /// Inserts a point wherever it falls; returns its vertex index, or the existing vertex it snaps to (original f3310).
+    pub fn insert_point(&mut self, p: Pt) -> u32 {
+        match self.locate(p) {
             Loc::In(t) => self.insert_in_tri(t, p),
             Loc::Edge(t, k) => self.insert_on_edge(t, k, p),
-            Loc::Vertex(t, k) => self.tris[t as usize].v[k],
-            Loc::Blocked(..) => unreachable!(),
+            Loc::Vertex(v) => v,
         }
     }
 
-    /// Makes the segment `a`-`b` an edge of the triangulation and marks it constrained. A vertex lying exactly on the open segment splits it
-    /// there. Errors when another constrained segment crosses it.
-    pub fn insert_segment(&mut self, a: u32, b: u32) -> Result<(), String> {
-        if a == b { return Ok(()); }
-        if let Some((t, k)) = self.find_edge(a, b) {
-            self.mark_edge(t, k);
-            return Ok(());
-        }
-        let (pa, pb) = (self.pts[a as usize], self.pts[b as usize]);
-        let dir = [pb[0] - pa[0], pb[1] - pa[1]];
-        // the wedge at `a` that holds the direction to `b`
-        let mut start = None;
-        for (t, k) in self.fan(a) {
-            let tr = self.tris[t as usize];
-            let (p, q) = (tr.v[(k + 1) % 3], tr.v[(k + 2) % 3]);
-            let o1 = self.orient(a, p, b);
-            let o2 = self.orient(a, q, b);
-            let along = |m: u32| { let pm = self.pts[m as usize]; (pm[0] - pa[0]) * dir[0] + (pm[1] - pa[1]) * dir[1] > 0.0 };
-            if o1 == 0.0 && along(p) && !self.is_super(p) { self.insert_segment(a, p)?; return self.insert_segment(p, b); }
-            if o2 == 0.0 && along(q) && !self.is_super(q) { self.insert_segment(a, q)?; return self.insert_segment(q, b); }
-            if o1 > 0.0 && o2 < 0.0 { start = Some((t, k)); break; }
-        }
-        let (t, k) = start.ok_or_else(|| "no wedge toward segment end".to_string())?;
-        // collect the crossed edges, each as (right, left) of the directed segment
-        let mut crossed: Vec<(u32, u32)> = vec![];
-        let tr = self.tris[t as usize];
-        let (mut right, mut left) = (tr.v[(k + 1) % 3], tr.v[(k + 2) % 3]);
-        let mut cur = t;
-        let mut cur_edge = k; // edge opposite `a`
-        loop {
-            let trc = self.tris[cur as usize];
-            if trc.c[cur_edge] { return Err("segments cross".into()); }
-            crossed.push((right, left));
-            let nb = trc.n[cur_edge];
-            let j = self.edge_idx(nb, left, right).unwrap();
-            let r = self.tris[nb as usize].v[j];
-            if r == b { break; }
-            let s = self.orient(a, b, r);
-            if s == 0.0 {
-                // a vertex exactly on the segment: split there
-                if self.is_super(r) { return Err("super vertex on segment".into()); }
-                // the already collected crossing is stale once we split, recover each half afresh
-                self.insert_segment(a, r)?;
-                return self.insert_segment(r, b);
-            }
-            if s > 0.0 {
-                left = r;
-                cur_edge = (j + 1) % 3; // edge (right, r) in nb: nb = (r, left_old... ) see below
-                // nb vertices: [.., ..] with v[j] = r, v[(j+1)%3] = left_old, v[(j+2)%3] = right: edge (right, r) is opposite left_old = (j+1)%3
-            } else {
-                right = r;
-                cur_edge = (j + 2) % 3; // edge (r, left) is opposite right_old = (j+2)%3
-            }
-            cur = nb;
-        }
-        // flip the crossed edges out
-        let mut queue: VecDeque<(u32, u32)> = crossed.into_iter().collect();
-        let mut fresh: Vec<(u32, u32)> = vec![];
-        let mut guard = 0usize;
-        let limit = 100 + 20 * queue.len() * queue.len();
-        while let Some((u, v)) = queue.pop_front() {
-            guard += 1;
-            if guard > limit { return Err("segment recovery did not converge".into()); }
-            let (t, k) = self.find_edge(u, v).ok_or("crossed edge vanished")?;
-            let tr = self.tris[t as usize];
-            let (eu, ev) = (tr.v[(k + 1) % 3], tr.v[(k + 2) % 3]);
-            let w = tr.v[k];
-            let s = tr.n[k];
-            let j = self.edge_idx(s, ev, eu).unwrap();
-            let x = self.tris[s as usize].v[j];
-            let (o1, o2) = (self.orient(w, x, eu), self.orient(w, x, ev));
-            if !((o1 > 0.0 && o2 < 0.0) || (o1 < 0.0 && o2 > 0.0)) {
-                queue.push_back((u, v));
+    /// Recovers segment `a`-`b` as a constrained edge (original f3307): a work stack of sub-segments; the crossed edges are flipped out
+    /// FIFO (Sloan), then the new edges are swapped to Delaunay in passes.
+    pub fn insert_segment(&mut self, a0: u32, b0: u32) {
+        let mut work: Vec<(u32, u32)> = vec![(a0, b0)];
+        let mut iters = 0u32;
+        while let Some((a, b)) = work.pop() {
+            iters += 1;
+            if a == b || iters >= 100_001 { continue; }
+            if let Some((t, k)) = self.find_edge(a, b) {
+                self.mark_edge(t, k);
                 continue;
             }
-            if tr.c[k] { return Err("segments cross".into()); }
-            self.flip(t, k);
-            let (sw, sx) = (self.orient(a, b, w), self.orient(a, b, x));
-            if (sw > 0.0 && sx < 0.0) || (sw < 0.0 && sx > 0.0) { queue.push_back((w, x)); } else { fresh.push((w, x)); }
+            match self.segment_walk(a, b) {
+                Walk::Split(m) => { work.push((m, b)); work.push((a, m)); }
+                Walk::Fail => { self.failed += 1; }
+                Walk::Recovered => {}
+            }
         }
-        let (t, k) = self.find_edge(a, b).ok_or("segment not recovered")?;
-        self.mark_edge(t, k);
-        let mut stack = vec![];
-        for (u, v) in fresh {
+    }
+
+    fn dot_ab(&self, a: u32, b: u32, p: u32) -> f64 {
+        let (pa, pb, pp) = (self.pts[a as usize], self.pts[b as usize], self.pts[p as usize]);
+        (pb[0] - pa[0]) * (pp[0] - pa[0]) + (pb[1] - pa[1]) * (pp[1] - pa[1])
+    }
+
+    fn segment_walk(&mut self, a: u32, b: u32) -> Walk {
+        // --- 1. the wedge at `a` holding the direction to `b`: CCW fan first (with the on-segment vertex test), then CW
+        let start = self.vt[a as usize];
+        let mut wedge: Option<(u32, usize)> = None;
+        let mut cur = start;
+        let mut cnt = 0u32;
+        loop {
+            let tr = self.tris[cur as usize];
+            let k = Self::pos(&tr, a);
+            let (p, q) = (tr.v[(k + 1) % 3], tr.v[(k + 2) % 3]);
+            let op = self.orient(a, b, p);
+            let oq = self.orient(a, b, q);
+            if op == 0.0 && p != b && self.dot_ab(a, b, p) > 0.0 { return Walk::Split(p); }
+            if oq == 0.0 && q != b && self.dot_ab(a, b, q) > 0.0 { return Walk::Split(q); }
+            if op < 0.0 && oq > 0.0 { wedge = Some((cur, k)); break; }
+            let nxt = tr.n[(k + 1) % 3];
+            if nxt != NONE && nxt != start && cnt < 0xfff { cnt += 1; cur = nxt; } else { break; }
+        }
+        if wedge.is_none() {
+            let mut cur = start;
+            let mut cnt = 0u32;
+            loop {
+                let tr = self.tris[cur as usize];
+                let k = Self::pos(&tr, a);
+                let (p, q) = (tr.v[(k + 1) % 3], tr.v[(k + 2) % 3]);
+                if self.orient(a, b, p) < 0.0 && self.orient(a, b, q) > 0.0 { wedge = Some((cur, k)); break; }
+                let nxt = tr.n[(k + 2) % 3];
+                if nxt != NONE && nxt != start && cnt < 0xfff { cnt += 1; cur = nxt; } else { break; }
+            }
+        }
+        let (mut cur, mut k) = match wedge { Some(w) => w, None => return Walk::Fail };
+
+        // --- 2. walk across the triangles the segment crosses, recording the crossed edges
+        let mut crossed: Vec<(u32, u32)> = vec![];
+        let mut count = 1u32;
+        loop {
+            let tr = self.tris[cur as usize];
+            let (p, q) = (tr.v[(k + 1) % 3], tr.v[(k + 2) % 3]);
+            if tr.c[k] {
+                // crosses another constrained edge: split both at the intersection point
+                let (pa, pb, pp, pq) = (self.pts[a as usize], self.pts[b as usize], self.pts[p as usize], self.pts[q as usize]);
+                let den = (pb[0] - pa[0]) * (pq[1] - pp[1]) - (pb[1] - pa[1]) * (pq[0] - pp[0]);
+                let mut s = if den == 0.0 { 0.5 } else { ((pp[0] - pa[0]) * (pq[1] - pp[1]) - (pp[1] - pa[1]) * (pq[0] - pp[0])) / den };
+                s = if 0.0 <= s { s } else { 0.0 };
+                s = if s <= 1.0 { s } else { 1.0 };
+                let pt = [pa[0] + (pb[0] - pa[0]) * s, pa[1] + (pb[1] - pa[1]) * s];
+                let m = self.insert_point(pt);
+                if m == a || m == b { return Walk::Fail; }
+                return Walk::Split(m);
+            }
+            crossed.push((p, q));
+            let nb = tr.n[k];
+            if nb == NONE { return Walk::Fail; }
+            let j = (0..3).find(|&j| self.tris[nb as usize].n[j] == cur).expect("segment walk: neighbour does not point back");
+            let r = self.tris[nb as usize].v[j];
+            if r == b { break; }
+            let o = self.orient(a, b, r);
+            if o == 0.0 { return Walk::Split(r); }
+            k = if o > 0.0 { (j + 1) % 3 } else { (j + 2) % 3 };
+            cur = nb;
+            count += 1;
+            if count == 1_000_001 { return Walk::Fail; }
+        }
+
+        // --- 3. flip the crossed edges out, FIFO
+        let mut queue: VecDeque<(u32, u32)> = crossed.into_iter().collect();
+        let mut fresh: Vec<(u32, u32)> = vec![];
+        let mut popped = 0u32;
+        while let Some((u, v)) = queue.pop_front() {
+            popped += 1;
+            if popped == 200_000 { return Walk::Fail; }
+            let mut requeue = true;
             if let Some((t, k)) = self.find_edge(u, v) {
-                stack.push((t, k));
                 let tr = self.tris[t as usize];
-                let nb = tr.n[k];
-                if nb != NONE { let j = self.edge_idx(nb, tr.v[(k + 2) % 3], tr.v[(k + 1) % 3]).unwrap(); stack.push((nb, j)); }
-            }
-        }
-        self.legalize(stack);
-        Ok(())
-    }
-
-    /// Marks every unclassified triangle reachable from `t` without crossing a constrained edge.
-    pub fn flood(&mut self, t: u32, region: i32) {
-        if self.tris[t as usize].region != UNSET { return; }
-        let mut stack = vec![t];
-        self.tris[t as usize].region = region;
-        while let Some(u) = stack.pop() {
-            let tr = self.tris[u as usize];
-            for k in 0..3 {
-                if tr.c[k] { continue; }
-                let nb = tr.n[k];
-                if nb != NONE && self.tris[nb as usize].region == UNSET {
-                    self.tris[nb as usize].region = region;
-                    stack.push(nb);
+                let s = tr.n[k];
+                if s != NONE {
+                    let j = (0..3).find(|&j| self.tris[s as usize].n[j] == t).expect("flip phase: neighbour does not point back");
+                    let x = self.tris[s as usize].v[j];
+                    let (w, eu, ev) = (tr.v[k], tr.v[(k + 1) % 3], tr.v[(k + 2) % 3]);
+                    if self.orient(w, eu, x) > 0.0 && self.orient(x, ev, w) > 0.0 {
+                        self.flip(t, k);
+                        let (fw, fx) = (self.orient(a, b, w), self.orient(a, b, x));
+                        let (gw, gx) = (self.orient(w, x, a), self.orient(w, x, b));
+                        if 0.0 <= fw * fx || 0.0 <= gw * gx { fresh.push((w, x)); } else { queue.push_back((w, x)); }
+                        requeue = false;
+                    }
                 }
             }
+            if requeue { queue.push_back((u, v)); }
         }
-    }
+        self.mark_segment(a, b);
 
-    /// Gives every live triangle reachable from `t` without crossing a constrained edge the region `region`, whatever region it had (dead
-    /// triangles, region -1, stay dead).
-    pub fn reflood(&mut self, t: u32, region: i32) {
-        if self.tris[t as usize].region < 0 || self.tris[t as usize].region == region { return; }
-        let mut stack = vec![t];
-        self.tris[t as usize].region = region;
-        while let Some(u) = stack.pop() {
-            let tr = self.tris[u as usize];
-            for k in 0..3 {
-                if tr.c[k] { continue; }
-                let nb = tr.n[k];
-                if nb != NONE && self.tris[nb as usize].region >= 0 && self.tris[nb as usize].region != region {
-                    self.tris[nb as usize].region = region;
-                    stack.push(nb);
+        // --- 4. swap the new edges to Delaunay, pass after pass
+        if !fresh.is_empty() {
+            let mut pass = 0u32;
+            loop {
+                let mut changed = false;
+                for e in 0..fresh.len() {
+                    let (u, v) = fresh[e];
+                    if (u == a && v == b) || (u == b && v == a) { continue; }
+                    let (t, k) = match self.find_edge(u, v) { Some(r) => r, None => continue };
+                    let tr = self.tris[t as usize];
+                    if tr.c[k] { continue; }
+                    let s = tr.n[k];
+                    if s == NONE { continue; }
+                    let j = (0..3).find(|&j| self.tris[s as usize].n[j] == t).expect("swap phase: neighbour does not point back");
+                    let x = self.tris[s as usize].v[j];
+                    let inside = incircle(self.pts[tr.v[0] as usize], self.pts[tr.v[1] as usize], self.pts[tr.v[2] as usize], self.pts[x as usize]);
+                    if inside > 0.0 {
+                        let w = tr.v[k];
+                        self.flip(t, k);
+                        fresh[e] = (w, x);
+                        changed = true;
+                    }
                 }
+                if !changed || pass > 0x3e { break; }
+                pass += 1;
             }
         }
+        self.mark_segment(a, b);
+        Walk::Recovered
     }
+}
 
-    /// The circumcentre and circumradius of triangle `t`.
-    pub fn circumcircle(&self, t: u32) -> (Pt, f64) {
-        let tr = &self.tris[t as usize];
-        let (a, b, c) = (self.pts[tr.v[0] as usize], self.pts[tr.v[1] as usize], self.pts[tr.v[2] as usize]);
-        let (bx, by, cx, cy) = (b[0] - a[0], b[1] - a[1], c[0] - a[0], c[1] - a[1]);
-        let d = 2.0 * (bx * cy - by * cx);
-        let (b2, c2) = (bx * bx + by * by, cx * cx + cy * cy);
-        let (ux, uy) = ((cy * b2 - by * c2) / d, (bx * c2 - cx * b2) / d);
-        ([a[0] + ux, a[1] + uy], (ux * ux + uy * uy).sqrt())
-    }
-
-    /// True when `p` is strictly inside the diametral circle of segment `u`-`v`.
-    /// Whether `p` encroaches upon the segment `u`-`v`: it lies in the segment's diametral lens, the points that see it under an angle of at
-    /// least `180 - 2 * min_angle` degrees (the diametral circle itself, 90 degrees, when `lens` is 0).
-    pub fn encroaches(&self, p: Pt, u: u32, v: u32) -> bool {
-        let (a, b) = (self.pts[u as usize], self.pts[v as usize]);
-        let d = dot(a, b, p);
-        if d >= 0.0 { return false; }
-        if self.lens == 0.0 { return true; }
-        let (ax, ay, bx, by) = (a[0] - p[0], a[1] - p[1], b[0] - p[0], b[1] - p[1]);
-        d * d >= self.lens * (ax * ax + ay * ay) * (bx * bx + by * by)
-    }
+enum Walk {
+    Recovered,
+    /// Re-queue the segment as `(a, m)` and `(m, b)`.
+    Split(u32),
+    Fail,
 }
 
 
@@ -707,20 +741,22 @@ impl Cdt {
         out
     }
 
-    /// Inserts a Steiner point strictly inside an INSIDE triangle (no constrained edge is touched). Returns the new vertex, or None when
-    /// the point is not strictly inside an INSIDE triangle (on an edge, a vertex, or outside).
-    pub fn insert_interior(&mut self, p: Pt, hint: u32) -> Option<u32> {
-        match self.locate(p, hint, false) {
-            Loc::In(t) if self.tris[t as usize].region == INSIDE => Some(self.insert_in_tri(t, p)),
-            Loc::Edge(t, k) if self.tris[t as usize].region == INSIDE && !self.tris[t as usize].c[k] => {
-                let nb = self.tris[t as usize].n[k];
-                if nb != NONE && self.tris[nb as usize].region == INSIDE {
-                    Some(self.insert_on_edge(t, k, p))
-                } else {
-                    None
+    /// Inserts a Steiner point inside or on an edge of an INSIDE triangle (original f3302). Returns the new vertex, or None when the
+    /// point snaps to a vertex or lands in/beside only OUTSIDE triangles.
+    pub fn insert_interior(&mut self, p: Pt) -> Option<u32> {
+        match self.locate(p) {
+            Loc::Edge(t, k) => {
+                if self.tris[t as usize].region != INSIDE {
+                    let nb = self.tris[t as usize].n[k];
+                    if nb == NONE || self.tris[nb as usize].region != INSIDE { return None; }
                 }
+                Some(self.insert_on_edge(t, k, p))
             }
-            _ => None,
+            Loc::Vertex(_) => None,
+            Loc::In(t) => {
+                if self.tris[t as usize].region != INSIDE { return None; }
+                Some(self.insert_in_tri(t, p))
+            }
         }
     }
 }
@@ -744,19 +780,18 @@ pub fn triangulate(pts: &[Pt], segs: &[(usize, usize)]) -> Result<Triangulation,
         }
         b = (b.0.min(p[0]), b.1.min(p[1]), b.2.max(p[0]), b.3.max(p[1]));
     }
-    let mut cdt = Cdt::new(b);
+    let mut mx = 0.0f64;
+    for p in pts {
+        mx = mx.max(p[0].abs()).max(p[1].abs());
+    }
+    let eps = mx.max(1e-9) * 1e-13;
+    let mut cdt = Cdt::new(b, eps);
     let mut vmap = Vec::with_capacity(pts.len());
-    let mut hint = 0u32;
     for &p in pts {
-        let v = cdt.insert_point(p, hint);
-        hint = cdt.vt[v as usize];
-        vmap.push(v);
+        vmap.push(cdt.insert_point(p));
     }
     for &(a, b) in segs {
-        let (va, vb) = (vmap[a], vmap[b]);
-        if va != vb {
-            cdt.insert_segment(va, vb)?;
-        }
+        cdt.insert_segment(vmap[a], vmap[b]);
     }
     cdt.classify_parity();
     Ok(Triangulation { cdt, vmap })
@@ -804,9 +839,32 @@ mod layer_tests {
         let pts = [[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]];
         let segs = [(0, 1), (1, 2), (2, 3), (3, 0)];
         let mut t = triangulate(&pts, &segs).unwrap();
-        assert!(t.cdt.insert_interior([1.0, 1.5], 0).is_some());
-        assert!(t.cdt.insert_interior([9.0, 1.5], 0).is_none());
+        assert!(t.cdt.insert_interior([1.0, 1.5]).is_some());
+        assert!(t.cdt.insert_interior([9.0, 1.5]).is_none());
         assert_eq!(t.cdt.inside_tris().len(), 4);
         assert!((area(&t.cdt) - 16.0).abs() < 1e-12);
+    }
+}
+
+#[cfg(test)]
+mod perm_probe {
+    use super::*;
+    #[test]
+    fn probe() {
+        let p = [[-20.0, -10.0], [-20.0, 10.0], [20.0, 10.0], [20.0, -10.0]];
+        let mut perms = vec![];
+        for a in 0..4 { for b in 0..4 { for c in 0..4 { for d in 0..4 {
+            let v = [a, b, c, d];
+            let mut s = v; s.sort();
+            if s == [0, 1, 2, 3] { perms.push(v); }
+        }}}}
+        for v in perms {
+            let pts: Vec<Pt> = v.iter().map(|&i| p[i]).collect();
+            let segs: Vec<(usize, usize)> = (0..4).map(|i| (i, (i + 1) % 4)).collect();
+            let t = triangulate(&pts, &segs).unwrap();
+            let lab = |cv: u32| -> usize { let q = t.cdt.pts[cv as usize]; (0..4).find(|&i| p[i] == q).unwrap_or(9) };
+            let r: Vec<[usize; 3]> = t.cdt.inside_tris().iter().map(|(_, vv)| [lab(vv[0]), lab(vv[1]), lab(vv[2])]).collect();
+            eprintln!("PERM {:?} -> {:?}", v, r);
+        }
     }
 }

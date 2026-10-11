@@ -195,7 +195,10 @@ pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], cut: FaceCut, tol:
         }
         let mut poly: Vec<BPt> = vec![];
         let mut prev: Option<Vec2> = None;
-        for &c in &lp.coedges {
+        // the original walks the loops of a reversed-sense face backwards (coedges last to first, each flipped)
+        let backwards = !face.sense;
+        let order: Vec<_> = if backwards { lp.coedges.iter().rev().copied().collect() } else { lp.coedges.to_vec() };
+        for &c in &order {
             let ce = body.coedge(c);
             if !ce.alive {
                 continue;
@@ -207,11 +210,13 @@ pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], cut: FaceCut, tol:
             if ps.len() < 2 {
                 ps = vec![ed.t0, ed.t1];
             }
-            if ce.rev {
+            if ce.rev != backwards {
                 ps.reverse();
             }
-            let va = body.vertex(body.coedge_start(c)).p;
-            let vb = body.vertex(body.coedge_end(c)).p;
+            let (va, vb) = {
+                let (s0, s1) = (body.vertex(body.coedge_start(c)).p, body.vertex(body.coedge_end(c)).p);
+                if backwards { (s1, s0) } else { (s0, s1) }
+            };
             let mut pl: Vec<BPt> = Vec::with_capacity(ps.len());
             for (i, &t) in ps.iter().enumerate() {
                 let mut uv = body.coedge_uv(c, t, prev);
@@ -527,7 +532,7 @@ pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], cut: FaceCut, tol:
             if inserted >= budget {
                 break;
             }
-            if let Some(v) = tri.cdt.insert_interior(p, hint) {
+            if let Some(v) = tri.cdt.insert_interior(p) {
                 let uv = from_c(p);
                 let e = wrap_eval(uv);
                 vdata.insert(v, (uv, surf.eval(e.x, e.y)));
