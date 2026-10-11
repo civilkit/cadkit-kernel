@@ -25,6 +25,7 @@ dependencies = [
 name = "ck-io"
 version = "0.1.0"
 dependencies = [
+ "ck-check",
  "ck-core",
  "ck-geom",
  "ck-json",
