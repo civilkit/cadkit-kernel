@@ -223,6 +223,12 @@ pub fn fragments(arr: &Arrangement, fi: usize) -> Vec<Fragment> {
             break;
         }
     }
+    if inner.is_empty() {
+        // only boundary edges split: still the whole face, at its own
+        // position in the edge walk (oracle bracket prefix 8: F2.C1, whose
+        // C1|S.e9 / C1|S.e8 edges a coplanar gusset splits, keeps #6..#11)
+        return vec![Fragment { af: fi, loops: af.bound.clone(), order: 0, whole: true, class: None }];
+    }
     for &e in &inner {
         hes.push((e, false));
         hes.push((e, true));
@@ -363,6 +369,10 @@ pub fn select(arr: &Arrangement, bodies: [&Body; 2], op: Op) -> Result<Vec<OutFa
         if !flip {
             return fr.loops.clone();
         }
+        // plain reversal; the edge walk of the boolean itself still uses
+        // the unflipped loops (oracle bracket slot cut: kept tool side
+        // F6.S.e3 numbers F6.S.e3|F6.S.e6 #44 before F6.S.e10|F6.S.e3 #45;
+        // the next boolean walks the stored, reversed loop: e10|e3 first)
         fr.loops.iter().map(|l| l.iter().rev().map(|&(e, r)| (e, !r)).collect()).collect()
     };
     // ---- merge coincident same-facing fragments sharing an edge
@@ -451,7 +461,7 @@ pub fn select(arr: &Arrangement, bodies: [&Body; 2], op: Op) -> Result<Vec<OutFa
             loops: loops_of(fr, *flip),
             group,
             key: (group, fr.af, fr.order),
-            walk: vec![((group, fr.af, fr.order), loops_of(fr, *flip))],
+            walk: vec![((group, fr.af, fr.order), fr.loops.clone())],
         });
     }
     // merged groups
@@ -480,7 +490,7 @@ pub fn select(arr: &Arrangement, bodies: [&Body; 2], op: Op) -> Result<Vec<OutFa
                 loops: loops_of(&whole, flip),
                 group,
                 key: (group, whole.af, 0),
-                walk: vec![((group, whole.af, 0), loops_of(&whole, flip))],
+                walk: vec![((group, whole.af, 0), whole.loops.clone())],
             });
             continue;
         }
@@ -496,7 +506,7 @@ pub fn select(arr: &Arrangement, bodies: [&Body; 2], op: Op) -> Result<Vec<OutFa
             .map(|&m| {
                 let fr = &kept[m].0;
                 let g = arr.faces[fr.af].side * 2 + if fr.whole { 0 } else { 1 };
-                ((g, fr.af, fr.order), loops_of(fr, kept[m].1))
+                ((g, fr.af, fr.order), fr.loops.clone())
             })
             .collect();
         for (k, loops) in group(arr, &af.surface, sense, cycles).into_iter().enumerate() {
