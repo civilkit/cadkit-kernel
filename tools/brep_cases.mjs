@@ -102,6 +102,20 @@ parts.cone = part([sketch('front', [pt('p1', 5, 0), pt('p2', 15, 0), pt('p3', 5,
   parts.filletTwo = part([...base(), fil(2, [{ faces: ['F2.C1', 'F2.S.e1'], at: [20, 10, 0] }, { faces: ['F2.C1', 'F2.S.e3'], at: [20, 10, -20] }])]);
   parts.filletRail = part([...base(), fil(3, [{ faces: ['F2.S.e2', 'F2.S.e1'], at: [40, 5, 0] }])]);
   parts.filletTooBig = part([...base(), fil(30, [{ faces: ['F2.C1', 'F2.S.e1'], at: [20, 10, 0] }])]);
+  const ch = (o, edges) => ({ type: 'chamfer', id: 'F3', chamferType: 'equal', distance: 2, edges, ...o });
+  const e1 = [{ faces: ['F2.C1', 'F2.S.e1'], at: [20, 10, 0] }];
+  parts.chamferOne = part([...base(), ch({}, e1)]);
+  parts.chamferTwo = part([...base(), ch({}, [...e1, { faces: ['F2.C1', 'F2.S.e3'], at: [20, 10, -20] }])]);
+  parts.chamferDD = part([...base(), ch({ chamferType: 'distanceDistance', distance2: 3 }, e1)]);
+  parts.chamferAD = part([...base(), ch({ chamferType: 'angleDistance', angle: 30 }, e1)]);
+  parts.chamferVertex = part([...base(), ch({ chamferType: 'vertex' }, e1)]);
+  parts.chamferRail = part([...base(), ch({ distance: 3 }, [{ faces: ['F2.S.e2', 'F2.S.e1'], at: [40, 5, 0] }])]);
+  parts.chamferBig = part([...base(), ch({ distance: 30 }, e1)]);
+  const cylTop = [{ faces: ['F2.C1', 'F2.S.e7'], at: [15, 10, -3] }];
+  parts.chamferCylTop = part([...parts.cyl.features, ch({ distance: 1 }, cylTop)]);
+  parts.chamferCylTopDD = part([...parts.cyl.features, ch({ chamferType: 'distanceDistance', distance: 1, distance2: 2 }, cylTop)]);
+  parts.filletCylTop = part([...parts.cyl.features, fil(2, cylTop)]);
+  parts.filletCylBot = part([...parts.cyl.features, fil(2, [{ faces: ['F2.C0', 'F2.S.e7'], at: [15, 0, -3] }])]);
 }
 
 parts.mirrorBodyCone = part([...parts.cone.features, { type: 'plane', id: 'F8', mode: 'offset', base: STD('right'), offset: -30 },

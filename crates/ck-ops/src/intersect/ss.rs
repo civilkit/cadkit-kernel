@@ -331,6 +331,8 @@ enum Meridian {
     Cone(f64, f64),
     /// ρ² + (h − hc)² = R²
     Sphere(f64, f64),
+    /// (ρ − major)² + (h − hc)² = minor²
+    Torus(f64, f64, f64),
 }
 
 fn meridian(s: &Surface, o: Vec3, z: Vec3, tol: f64) -> Option<Meridian> {
@@ -346,6 +348,9 @@ fn meridian(s: &Surface, o: Vec3, z: Vec3, tol: f64) -> Option<Meridian> {
             Some(Meridian::Cone(r - k * sg * h0, k * sg))
         }
         Surface::Sphere { frame, r } if on_axis(frame.o) => Some(Meridian::Sphere(*r, (frame.o - o).dot(z))),
+        Surface::Torus { frame, major, minor } if frame.z.cross(z).len() < 1e-12 && on_axis(frame.o) => {
+            Some(Meridian::Torus(*major, *minor, (frame.o - o).dot(z)))
+        }
         _ => None,
     }
 }
@@ -406,6 +411,37 @@ fn coaxial(s1: &Surface, s2: &Surface, tol: f64) -> Option<SsResult> {
             }
         }
         (Sphere(..), Sphere(..)) => return None,
+        (Cyl(r), Torus(big, small, hc)) | (Torus(big, small, hc), Cyl(r)) => {
+            // (r − R)² + (h − hc)² = minor²; a tangent contact (the fillet
+            // ball touching the cylinder) is one circle
+            let w2 = small * small - (r - big) * (r - big);
+            if w2 >= -2.0 * small * tol {
+                if w2 <= 2.0 * small * tol {
+                    hs.push((*hc, *r));
+                } else {
+                    let w = w2.sqrt();
+                    hs.push((hc - w, *r));
+                    hs.push((hc + w, *r));
+                }
+            }
+        }
+        (Cone(r0, k), Torus(big, small, hc)) | (Torus(big, small, hc), Cone(r0, k)) => {
+            // (r0 + k h − R)² + (h − hc)² = minor²; double root = tangent
+            let (qa, qb, qc) = (k * k + 1.0, 2.0 * (k * (r0 - big) - hc), (r0 - big) * (r0 - big) + hc * hc - small * small);
+            let disc = qb * qb - 4.0 * qa * qc;
+            let scale = qb * qb + 4.0 * qa * qc.abs();
+            if disc >= -1e-12 * scale {
+                if disc <= 1e-12 * scale {
+                    let h = -qb / (2.0 * qa);
+                    hs.push((h, r0 + k * h));
+                } else {
+                    for h in ck_core::quad::quadratic(qa, qb, qc).iter() {
+                        hs.push((h, r0 + k * h));
+                    }
+                }
+            }
+        }
+        (Torus(..), _) | (_, Torus(..)) => return None,
     }
     let mut out = vec![];
     hs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());

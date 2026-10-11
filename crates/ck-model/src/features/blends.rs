@@ -8,7 +8,7 @@
 //! * errors `invalidValue` (radius <= 0), `missingEdge`, `blendOverflow`
 //!   (`params.detail`), body unchanged.
 
-use super::{Brep, FeatureKind, Span};
+use super::{Brep, ChamferType, FeatureKind, Span};
 use crate::regen::{FeatureError, RegenState};
 use crate::Feature;
 use ck_geom::Vec3;
@@ -25,6 +25,51 @@ pub fn blend_error(e: ck_ops::blend::BlendError) -> FeatureError {
         fe = fe.with("detail", Json::Str(d));
     }
     fe
+}
+
+/// `Chamfer(<d>, <d>) of <n> edge(s)` (equal-distance chamfer).
+pub fn chamfer_label(id: &str, d: f64, n: usize) -> String {
+    format!("{id}: Chamfer({d:?}, {d:?}) of {n} edge{}", if n == 1 { "" } else { "s" })
+}
+
+/// `chamfer`. Oracle (box probes): `equal` (also the default) is the only
+/// supported edge chamfer; `distanceDistance` / `angleDistance` / unknown
+/// types fail `unsupported {what:"chamfer <type>"}` before anything else.
+pub fn exec_chamfer(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
+    let FeatureKind::Chamfer { chamfer_type, edges, .. } = &f.kind else { unreachable!() };
+    let ty = f.raw.get("chamferType").and_then(|v| v.as_str()).unwrap_or("equal").to_string();
+    match chamfer_type {
+        ChamferType::Equal => {}
+        // TODO(rebuild): vertex chamfer (corner cut, chamferVertexEdges)
+        ChamferType::Vertex => return Err(FeatureError::new(&super::extrude::todo("chamfer vertex"))),
+        _ => return Err(FeatureError::new("unsupported").with("what", Json::Str(format!("chamfer {ty}")))),
+    }
+    let d = state.num(f, "distance", 0.0)?;
+    let sel = select_edges(br, edges)?;
+    if !(d > 0.0) || !d.is_finite() {
+        return Err(FeatureError::new("invalidValue"));
+    }
+    br.spans.push(Span::leaf(chamfer_label(&f.id, d, sel.len())));
+    let body = br.body.as_ref().ok_or_else(|| FeatureError::new("missingEdge"))?;
+    let out = ck_ops::blend::build::chamfer(body, &sel, d, &f.id, super::TOL).map_err(blend_error)?;
+    br.body = Some(out);
+    Ok(())
+}
+
+fn select_edges(br: &Brep, edges: &[crate::EdgeRef]) -> Result<Vec<(String, String, Vec3)>, FeatureError> {
+    // GUESS: no body -> missingEdge (nothing can be selected).
+    let Some(body) = br.body.as_ref() else { return Err(FeatureError::new("missingEdge")) };
+    let mut sel = vec![];
+    for e in edges {
+        let (Some(a), Some(b)) = (e.faces.first(), e.faces.get(1)) else { return Err(FeatureError::new("missingEdge")) };
+        let at = match e.at {
+            Some(p) => Vec3::new(p[0], p[1], p[2]),
+            // GUESS: without a pick point the first edge between the faces
+            None => first_edge_mid(body, a, b).ok_or_else(|| FeatureError::new("missingEdge"))?,
+        };
+        sel.push(forward_first(body, a, b, at));
+    }
+    Ok(sel)
 }
 
 /// `fillet`.

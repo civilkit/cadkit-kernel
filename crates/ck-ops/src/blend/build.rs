@@ -58,6 +58,33 @@ pub fn find_edge(b: &Body, fa: &str, fb: &str, at: Vec3) -> Option<EdgeId> {
 /// IN-PLACE arena layout ([`in_place_layout`]), so wire `#n` keep the
 /// input's numbers.
 pub fn fillet(b: &Body, edges: &[(String, String, Vec3)], r: f64, feature: &str, tol: f64) -> Result<Body, BlendError> {
+    blend_edges(b, edges, Spec::Fillet(r), feature, tol)
+}
+
+/// Equal-distance chamfers (`Chamfer(d, d)` in the trace) of `edges`.
+pub fn chamfer(b: &Body, edges: &[(String, String, Vec3)], d: f64, feature: &str, tol: f64) -> Result<Body, BlendError> {
+    blend_edges(b, edges, Spec::Chamfer(d), feature, tol)
+}
+
+/// What one blend cuts: a rolling-ball fillet of radius `r` or an
+/// equal-distance chamfer of leg `d`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Spec {
+    Fillet(f64),
+    Chamfer(f64),
+}
+
+impl Spec {
+    fn size(self) -> f64 {
+        match self {
+            Spec::Fillet(r) | Spec::Chamfer(r) => r,
+        }
+    }
+}
+
+/// Shared fillet / chamfer driver (see [`fillet`]).
+pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, feature: &str, tol: f64) -> Result<Body, BlendError> {
+    let r = spec.size();
     if !(r > 0.0) || !r.is_finite() {
         return Err(BlendError::code("invalidValue"));
     }
@@ -81,7 +108,7 @@ pub fn fillet(b: &Body, edges: &[(String, String, Vec3)], r: f64, feature: &str,
     for (k, (fa, fb, at)) in edges.iter().enumerate() {
         let e = find_edge(&out, fa, fb, *at).ok_or_else(|| BlendError::code("missingEdge"))?;
         let (f1, f2) = (out.find_face(fa).unwrap(), out.find_face(fb).unwrap());
-        let (body, hint) = fillet_line_edge_hint(&out, e, [f1, f2], r, feature, k as u32, tol)?;
+        let (body, hint) = blend_edge_hint(&out, e, [f1, f2], spec, feature, k as u32, tol)?;
         for h in hint {
             if !touched.contains(&h) {
                 touched.push(h);
@@ -320,85 +347,142 @@ pub fn in_place_layout(input: &Body, out: &Body, refs: &[BlendRef], tol: f64) ->
     res
 }
 
+#[cfg(test)]
+fn dbg_fail(m: &str) {
+    eprintln!("blend fail: {m}");
+}
+#[cfg(not(test))]
+fn dbg_fail(_: &str) {}
+
 /// One straight edge between two planar faces.
 pub fn fillet_line_edge(b: &Body, e: EdgeId, faces: [FaceId; 2], r: f64, feature: &str, k: u32, tol: f64) -> Result<Body, BlendError> {
-    fillet_line_edge_hint(b, e, faces, r, feature, k, tol).map(|x| x.0)
+    blend_edge_hint(b, e, faces, Spec::Fillet(r), feature, k, tol).map(|x| x.0)
 }
 
 /// As [`fillet_line_edge`], also returning the touched-face order hint
 /// (edge faces, then end faces).
-fn fillet_line_edge_hint(
+fn blend_edge_hint(
     b: &Body,
     e: EdgeId,
     faces: [FaceId; 2],
-    r: f64,
+    spec: Spec,
     feature: &str,
     k: u32,
     tol: f64,
 ) -> Result<(Body, Vec<String>), BlendError> {
     let ed = b.edge(e).clone();
-    let Curve::Line { .. } = ed.curve else { return Err(BlendError::code("blendUnsupported")) };
-    for f in faces {
-        if !matches!(b.face(f).surface, Surface::Plane { .. }) {
-            return Err(BlendError::code("blendUnsupported"));
+    let r = spec.size();
+    // Geometry at the working point P0 (line: edge midpoint; circle: its
+    // start vertex, which is also the faces' seam point).
+    let (p0, p1, dir, n1, n2, circ): (Vec3, Vec3, Vec3, Vec3, Vec3, Option<(Vec3, Vec3)>) = match ed.curve {
+        Curve::Line { .. } => {
+            for f in faces {
+                if !matches!(b.face(f).surface, Surface::Plane { .. }) {
+                    return Err(BlendError::code("blendUnsupported"));
+                }
+            }
+            let p0 = b.vertex(ed.v0).p;
+            let p1 = b.vertex(ed.v1).p;
+            let dir = (p1 - p0) / p0.dist(p1);
+            (p0, p1, dir, b.planar_normal(faces[0]), b.planar_normal(faces[1]), None)
         }
-    }
-    let p0 = b.vertex(ed.v0).p;
-    let p1 = b.vertex(ed.v1).p;
+        _ => {
+            // circle between coaxial plane / cylinder / cone faces
+            let Some((c, axis, rad)) = ed.curve.circle_info() else { return Err(BlendError::code("blendUnsupported")) };
+            let axis = axis.normalize();
+            let p0 = ed.curve.eval(ed.t0);
+            let coaxial = |f: FaceId| match &b.face(f).surface {
+                Surface::Plane { frame } => frame.z.cross(axis).len() < 1e-9,
+                Surface::Cylinder { frame, .. } | Surface::Cone { frame, .. } => {
+                    frame.z.cross(axis).len() < 1e-9 && (frame.o - c).cross(axis).len() < 1e-7 * (1.0 + rad)
+                }
+                _ => false,
+            };
+            if !coaxial(faces[0]) || !coaxial(faces[1]) || !(rad > 0.0) {
+                return Err(BlendError::code("blendUnsupported"));
+            }
+            let nrm = |f: FaceId| {
+                let (u, v) = b.face(f).surface.closest_param(p0);
+                b.outward_normal(f, u, v).normalize()
+            };
+            let dir = ed.curve.tangent(ed.t0).normalize();
+            (p0, p0, dir, nrm(faces[0]), nrm(faces[1]), Some((c, axis)))
+        }
+    };
     let len = p0.dist(p1);
-    let dir = (p1 - p0) / len;
-    let n1 = b.planar_normal(faces[0]);
-    let n2 = b.planar_normal(faces[1]);
     let c12 = n1.dot(n2);
     if (1.0 + c12).abs() < 1e-9 || (1.0 - c12).abs() < 1e-9 {
         return Err(BlendError::code("blendUnsupported")); // tangent / folded faces
     }
     // convex iff the direction into F1 (left of its coedge about the
     // outward normal) points against n2
-    let pm = (p0 + p1) * 0.5;
+    let pm = if circ.is_some() { p0 } else { (p0 + p1) * 0.5 };
     let co = b.edge_coedges(e).into_iter().find(|&c| b.coedge_face(c) == faces[0]).ok_or_else(|| BlendError::code("missingEdge"))?;
     let tdir = if b.coedge(co).rev { -dir } else { dir };
     let convex = n1.cross(tdir).dot(n2) < 0.0;
     let s = if convex { -1.0 } else { 1.0 };
+    // contact points on the two faces, the ball centre (fillet) and the
+    // chamfer legs (in-face directions away from the edge: n x coedge dir)
     let off = (n1 + n2) * (s * r / (1.0 + c12));
+    let (ta, tb) = match spec {
+        Spec::Fillet(_) => (pm + off - n1 * (s * r), pm + off - n2 * (s * r)),
+        Spec::Chamfer(_) => (pm + n1.cross(tdir).normalize() * r, pm - n2.cross(tdir).normalize() * r),
+    };
     // contact (spring) lines must stay on their faces
     let name = FaceName::blend(feature, k);
-    for (f, n) in [(faces[0], n1), (faces[1], n2)] {
-        let t = pm + off - n * (s * r);
+    for (f, t) in [(faces[0], ta), (faces[1], tb)] {
         if point_in_face(b, f, t, tol) == Where::Out {
             return Err(BlendError::detail("blendOverflow", &format!("{}: spring leaves its face away from its edges", name.id())));
         }
     }
-    // tool profile in the plane ⟂ dir through p0 − dir·margin
-    // convex: the tool pierces the end faces (the cut trims it); concave:
-    // GUESS end faces ⟂ the edge, the tool ends flush with them
-    let margin = if convex { r.max(len * 0.05) + 1.0 } else { 0.0 };
+    // tool profile in the plane perpendicular to dir through p0 - dir*margin
+    // (line) or in the meridian plane through P0 (circle: revolved about the
+    // axis). convex: the tool pierces the end faces (the cut trims it);
+    // concave: GUESS end faces perpendicular to the edge, the tool ends
+    // flush with them
+    let margin = if convex && circ.is_none() { r.max(len * 0.05) + 1.0 } else { 0.0 };
     let o = p0 - dir * margin;
-    let fr = Frame::from_normal(o, dir);
+    let fr = match circ {
+        None => Frame::from_normal(o, dir),
+        Some((c, axis)) => {
+            let rad = (p0 - c).normalize();
+            ck_geom::frame_from(c, rad.cross(axis), rad)
+        }
+    };
     let uv = |p: Vec3| {
         let q = fr.world_to_uv(p);
         Vec2::new(q.x, q.y)
     };
-    let (cp, t1, t2) = (uv(p0), uv(p0 + off - n1 * (s * r)), uv(p0 + off - n2 * (s * r)));
+    let (cp, t1, t2) = (uv(p0), uv(ta), uv(tb));
     let cc = uv(p0 + off);
-    let short_ccw = (t1 - cc).cross(t2 - cc) > 0.0;
-    let arc = if short_ccw {
-        ProfileSeg::arc("arc", cc, t1, t2)
-    } else if !convex {
-        // concave: the tool's cap arcs ARE the end arcs; the oracle runs
-        // them from the forward face's spring to the other one, n = (s1 −
-        // c) × (s2 − c) (bracket F12 on S.e8|S.e9 along +x: n = −x)
-        let x = (t1 - cc).normalize();
-        let (a, b) = (t1 - cc, t2 - cc);
-        let sweep = -(a.cross(b)).atan2(a.dot(b));
-        ProfileSeg { tag: "arc".into(), curve: ck_geom::curve2::Curve2::Circle { c: cc, x, r: cc.dist(t1), ccw: false }, t0: 0.0, t1: sweep, rev: false }
+    let lp = if matches!(spec, Spec::Chamfer(_)) {
+        ProfileLoop::new(vec![ProfileSeg::line("l2", t2, cp), ProfileSeg::line("l1", cp, t1), ProfileSeg::line("arc", t1, t2)])
     } else {
-        ProfileSeg::arc("arc", cc, t2, t1).reversed()
+        let short_ccw = (t1 - cc).cross(t2 - cc) > 0.0;
+        let arc = if short_ccw {
+            ProfileSeg::arc("arc", cc, t1, t2)
+        } else if !convex {
+            // concave: the tool's cap arcs ARE the end arcs; the oracle runs
+            // them from the forward face's spring to the other one, n = (s1 -
+            // c) x (s2 - c) (bracket F12 on S.e8|S.e9 along +x: n = -x)
+            let x = (t1 - cc).normalize();
+            let (a, b) = (t1 - cc, t2 - cc);
+            let sweep = -(a.cross(b)).atan2(a.dot(b));
+            ProfileSeg { tag: "arc".into(), curve: ck_geom::curve2::Curve2::Circle { c: cc, x, r: cc.dist(t1), ccw: false }, t0: 0.0, t1: sweep, rev: false }
+        } else {
+            ProfileSeg::arc("arc", cc, t2, t1).reversed()
+        };
+        ProfileLoop::new(vec![ProfileSeg::line("l2", t2, cp), ProfileSeg::line("l1", cp, t1), arc])
     };
-    let lp = ProfileLoop::new(vec![ProfileSeg::line("l2", t2, cp), ProfileSeg::line("l1", cp, t1), arc]);
     let prof = Profile::new(fr, vec![ProfileRegion { outer: lp, holes: vec![] }]).normalized();
-    let mut tool = extrude(feature, &prof, ExtrudeOpts { s0: 0.0, s1: len + 2.0 * margin, dir: None, draft: 0.0 })
-        .map_err(|_| BlendError::code("blendFailed"))?;
+    let made = match circ {
+        None => extrude(feature, &prof, ExtrudeOpts { s0: 0.0, s1: len + 2.0 * margin, dir: None, draft: 0.0 }),
+        Some((c, axis)) => ck_topo::make::revolve::revolve(feature, &prof, c, axis, 0.0, std::f64::consts::TAU),
+    };
+    let mut tool = made.map_err(|e| {
+        dbg_fail(&format!("tool: {e}"));
+        BlendError::code("blendFailed")
+    })?;
     for f in &mut tool.faces {
         if f.name.role == Role::Side("arc".into()) {
             f.name = name.clone();
@@ -406,7 +490,10 @@ fn fillet_line_edge_hint(
     }
     let op = if convex { Op::Cut } else { Op::Union };
     let arr = imprint(b, &tool, tol);
-    let mut faces_out = select(&arr, [b, &tool], op).map_err(|_| BlendError::code("blendFailed"))?;
+    let mut faces_out = select(&arr, [b, &tool], op).map_err(|e| {
+        dbg_fail(&format!("select: {e:?}"));
+        BlendError::code("blendFailed")
+    })?;
     // order: untouched; edge faces (ref order), end faces (start, end);
     // other touched faces; blend
     let ends: Vec<FaceId> = [ed.v0, ed.v1]
@@ -446,6 +533,7 @@ fn fillet_line_edge_hint(
     }
     faces_out.sort_by_key(|f| f.key);
     if !faces_out.iter().any(|f| f.name == name) {
+        dbg_fail("no blend face in result");
         return Err(BlendError::code("blendFailed"));
     }
     let body = build(&arr, &faces_out);
@@ -453,6 +541,7 @@ fn fillet_line_edge_hint(
         .into_iter()
         .any(|i| matches!(i, ck_topo::check::Issue::OpenEdge(_) | ck_topo::check::Issue::BrokenLoop(..)));
     if bad {
+        dbg_fail(&format!("check: {:?}", ck_topo::check::check(&body, tol)));
         return Err(BlendError::code("blendFailed"));
     }
     Ok((body, hint))
@@ -516,6 +605,23 @@ mod tests {
         let r = fillet(&the_box(), &[e("F2.S.e1", "F2.S.e2", [40., 5., 0.])], 2.0, "F3", 1e-6).unwrap();
         assert_eq!(ids(&r), ["F2.S.e3", "F2.S.e4", "F2.S.e1", "F2.S.e2", "F2.C0", "F2.C1", "F3.B0"]);
         mass(&r, 7991.4159265358985, 2789.6991118430774, [19.978996631231546, 5., -10.010261751083915]);
+    }
+
+    #[test]
+    fn cylinder_top_circle() {
+        let cyl = crate::boolean::tests::cyl_body("F2", 5.0, 3.0, 10.0, 0.0, 10.0);
+        let top = cyl.face_ids().find(|&f| cyl.face_id_str(f) == "F2.C1").unwrap();
+        let side = cyl.face_ids().find(|&f| matches!(cyl.face(f).surface, Surface::Cylinder { .. })).unwrap();
+        let (a, bb) = (cyl.face_id_str(top), cyl.face_id_str(side));
+        let at = Vec3::new(15., 10., -3.);
+        let v0 = mass_props(&cyl).volume;
+        let r = fillet(&cyl, &[(a.clone(), bb.clone(), at)], 2.0, "F3", 1e-6).unwrap();
+        let pi = std::f64::consts::PI;
+        // torus ring removed: 2*pi*(R - r*(4-pi)/(3*(4-pi)... ) simply compare to oracle
+        assert!((mass_props(&r).volume - 3090.0668137679036).abs() < 1e-6, "{} {}", mass_props(&r).volume, v0);
+        let _ = pi;
+        let r = chamfer(&cyl, &[(a, bb, at)], 1.0, "F3", 1e-6).unwrap();
+        assert!((mass_props(&r).volume - 3111.223924605093).abs() < 1e-6);
     }
 
     #[test]
