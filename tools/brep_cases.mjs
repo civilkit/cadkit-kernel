@@ -107,6 +107,23 @@ parts.cone = part([sketch('front', [pt('p1', 5, 0), pt('p2', 15, 0), pt('p3', 5,
 parts.mirrorBodyCone = part([...parts.cone.features, { type: 'plane', id: 'F8', mode: 'offset', base: STD('right'), offset: -30 },
   { type: 'mirror', id: 'F9', seeds: [], plane: { kind: 'feature', id: 'F8' }, body: true }]);
 
+// shell (hollow) cases
+{
+  const sh = (base, faces, thickness, extra = {}) => part([...base.features, { type: 'shell', id: 'F9', faces, thickness, ...extra }]);
+  parts.shellBoxClosed = sh(parts.box, [], 1);
+  parts.shellBoxOpen = sh(parts.box, ['F2.C1'], 1);
+  parts.shellBoxOpenSide = sh(parts.box, ['F2.S.e1'], 1);
+  parts.shellBoxOpenTwo = sh(parts.box, ['F2.S.e1', 'F2.C1'], 1);
+  parts.shellBoxOpenThick = sh(parts.box, ['F2.C1'], 4.99);
+  parts.shellBoxOutward = sh(parts.box, ['F2.C1'], 1, { outward: true });
+  parts.shellBoxTooThick = sh(parts.box, [], 5);
+  parts.shellBoxReverses = sh(parts.box, [], 6);
+  parts.shellBoxOpenTooThick = sh(parts.box, ['F2.C1'], 20);
+  parts.shellCylOpen = sh(parts.cyl, ['F2.C1'], 1);
+  parts.shellCylClosed = sh(parts.cyl, [], 1);
+  parts.shellCylTooThick = sh(parts.cyl, ['F2.C1'], 10);
+}
+
 const m = (msg) => JSON.stringify({ id: 1, msg });
 /// Follow-up requests on each part's state (compared byte-for-byte).
 export const queries = [
