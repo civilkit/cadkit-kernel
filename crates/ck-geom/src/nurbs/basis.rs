@@ -231,6 +231,14 @@ pub fn distinct_knots(knots: &[f64]) -> Vec<f64> {
     out
 }
 
+/// `distinct_knots(knots).len()` without allocating.
+pub fn distinct_count(knots: &[f64]) -> usize {
+    if knots.is_empty() {
+        return 0;
+    }
+    1 + knots.windows(2).filter(|w| w[0] != w[1]).count()
+}
+
 /// Clamped uniform knot vector for `n_ctrl` control points, degree `p`, on [0,1].
 pub fn clamped_uniform(n_ctrl: usize, p: usize) -> Vec<f64> {
     assert!(n_ctrl > p, "need more control points than the degree");

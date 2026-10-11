@@ -297,8 +297,8 @@ impl BSplineSurface {
     /// Parameters of the closest point to `q` (grid seed + 2D Newton).
     pub fn closest_param(&self, q: Vec3) -> (f64, f64) {
         let ((u0, u1), (v0, v1)) = self.domain();
-        let nu = ((basis::distinct_knots(&self.knots_u).len() - 1) * (self.deg_u + 1) * 3).max(12);
-        let nv = ((basis::distinct_knots(&self.knots_v).len() - 1) * (self.deg_v + 1) * 3).max(12);
+        let nu = ((basis::distinct_count(&self.knots_u) - 1) * (self.deg_u + 1) * 3).max(12);
+        let nv = ((basis::distinct_count(&self.knots_v) - 1) * (self.deg_v + 1) * 3).max(12);
         let mut best = (f64::INFINITY, u0, v0);
         // The seed grid is the same as a brute-force scan, but samples in
         // cells whose control-net box is farther from `q` than the best
@@ -342,12 +342,14 @@ impl BSplineSurface {
                 lb[iu * cv + iv] = d.len();
             }
         }
-        let cell_u = |u: f64| iu_of[find_span(self.nu - 1, pu, u, &self.knots_u)];
-        let cell_v = |v: f64| iv_of[find_span(self.nv - 1, pv, v, &self.knots_v)];
+        // Seed grid, visited cell by cell (nearest control-net box first):
+        // the grid is uniform in (u, v), so the rows / columns that fall in a
+        // knot cell are found arithmetically (then confirmed with find_span)
+        // instead of scanning and sorting every row per call.
         let vs: Vec<(f64, usize)> = (0..=nv)
             .map(|b| {
                 let v = v0 + (v1 - v0) * b as f64 / nv as f64;
-                (v, cell_v(v))
+                (v, iv_of[find_span(self.nv - 1, pv, v, &self.knots_v)])
             })
             .collect();
         // grid evaluation without the derivative machinery (non-rational)
@@ -362,45 +364,70 @@ impl BSplineSurface {
         } else {
             vec![]
         };
-        let mut rows: Vec<(f64, usize, f64, usize)> = (0..=nu)
-            .map(|a| {
-                let u = u0 + (u1 - u0) * a as f64 / nu as f64;
-                let iu = cell_u(u);
-                let row_lb = vs.iter().map(|&(_, iv)| lb[iu * cv + iv]).fold(f64::INFINITY, f64::min);
-                (row_lb, a, u, iu)
-            })
-            .collect();
-        rows.sort_by(|x, y| x.0.total_cmp(&y.0).then(x.1.cmp(&y.1)));
-        for (row_lb, _a, u, iu) in rows {
-            if row_lb >= best.0 {
-                break;
+        let mut cols: Vec<Vec<usize>> = vec![vec![]; cv.max(1)];
+        for (k, &(_, iv)) in vs.iter().enumerate() {
+            cols[iv].push(k);
+        }
+        let mut cells: Vec<(f64, usize, usize, usize)> = Vec::with_capacity(cu * cv);
+        for su in pu..self.nu {
+            let iu = iu_of[su];
+            if iu == usize::MAX {
+                continue;
             }
-            let (su, bu) = if fast {
-                let s = find_span(self.nu - 1, pu, u, &self.knots_u);
-                (s, basis::basis_funs(s, u, pu, &self.knots_u))
-            } else {
-                (0, vec![])
-            };
-            for (k, &(v, iv)) in vs.iter().enumerate() {
-                if lb[iu * cv + iv] >= best.0 {
+            for sv in pv..self.nv {
+                let iv = iv_of[sv];
+                if iv != usize::MAX {
+                    cells.push((lb[iu * cv + iv], su, iu, iv));
+                }
+            }
+        }
+        let u_at = |a: usize| u0 + (u1 - u0) * a as f64 / nu as f64;
+        let mut visit = |c: &(f64, usize, usize, usize), best: &mut (f64, f64, f64)| {
+            let (clb, su, _iu, iv) = *c;
+            if clb >= best.0 || cols[iv].is_empty() {
+                return;
+            }
+            let (k0, k1) = (self.knots_u[su], self.knots_u[su + 1]);
+            let span_u = (u1 - u0).max(f64::MIN_POSITIVE);
+            let alo = ((((k0 - u0) / span_u) * nu as f64).floor() - 1.0).max(0.0) as usize;
+            let ahi = ((((k1 - u0) / span_u) * nu as f64).ceil() + 1.0).min(nu as f64).max(0.0) as usize;
+            for a in alo..=ahi {
+                let u = u_at(a);
+                if find_span(self.nu - 1, pu, u, &self.knots_u) != su {
                     continue;
                 }
-                let d = if fast {
-                    let (sv, ref bvk) = bv[k];
-                    let mut p = Vec3::ZERO;
-                    for (i, &wu) in bu.iter().enumerate() {
-                        for (j, &wv) in bvk.iter().enumerate() {
-                            p = p + self.cp(su - pu + i, sv - pv + j) * (wu * wv);
+                let bu = if fast { basis::basis_funs(su, u, pu, &self.knots_u) } else { vec![] };
+                for &k in &cols[iv] {
+                    let v = vs[k].0;
+                    let d = if fast {
+                        let (sv, ref bvk) = bv[k];
+                        let mut p = Vec3::ZERO;
+                        for (i, &wu) in bu.iter().enumerate() {
+                            for (j, &wv) in bvk.iter().enumerate() {
+                                p = p + self.cp(su - pu + i, sv - pv + j) * (wu * wv);
+                            }
                         }
+                        p.dist(q)
+                    } else {
+                        self.eval(u, v).dist(q)
+                    };
+                    if d < best.0 {
+                        *best = (d, u, v);
                     }
-                    p.dist(q)
-                } else {
-                    self.eval(u, v).dist(q)
-                };
-                if d < best.0 {
-                    best = (d, u, v);
                 }
             }
+        };
+        // seed from the nearest few cells (a cell can hold no grid point),
+        // then every other cell whose box can still beat the best sample
+        let mut order: Vec<usize> = (0..cells.len()).collect();
+        let cmp = |x: &usize, y: &usize| cells[*x].0.total_cmp(&cells[*y].0).then(x.cmp(y));
+        let k = 8.min(order.len());
+        if k > 0 && k < order.len() {
+            order.select_nth_unstable_by(k - 1, cmp);
+        }
+        order[..k].sort_by(cmp);
+        for &i in &order {
+            visit(&cells[i], &mut best);
         }
         crate::surface::newton_surface(|u, v| self.derivs2(u, v), q, (best.1, best.2), ((u0, u1), (v0, v1)))
     }
