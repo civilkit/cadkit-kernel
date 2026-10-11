@@ -80,7 +80,7 @@ struct Rd<'a> {
     nface: usize,
 }
 
-const VTOL: f64 = 1e-6;
+const VTOL: f64 = 1e-7;
 const CELL: f64 = 1e-4;
 
 fn bad(id: u32, msg: impl Into<String>) -> ImportError {
@@ -462,7 +462,7 @@ impl<'a> Rd<'a> {
                 for dz in -1..=1 {
                     if let Some(l) = self.vgrid.get(&(kx + dx, ky + dy, kz + dz)) {
                         for &v in l {
-                            if self.b.vertex(v).p.dist(p) <= VTOL * (1.0 + p.len()) {
+                            if self.b.vertex(v).p.dist(p) <= VTOL {
                                 return v;
                             }
                         }
@@ -517,7 +517,7 @@ impl<'a> Rd<'a> {
         if lo == hi {
             let (t0, t1) = (Self::param(&curve, plo), curve.period().map_or(f64::NAN, |p| p));
             let closed_curve = matches!(curve, Curve::Circle { .. } | Curve::Ellipse { .. })
-                || matches!(&curve, Curve::BSpline(bs) if curve.eval(bs.domain().0).dist(curve.eval(bs.domain().1)) < VTOL * (1.0 + plo.len()) && curve.length_between(bs.domain().0, bs.domain().1) > 1e-6);
+                || matches!(&curve, Curve::BSpline(bs) if curve.eval(bs.domain().0).dist(curve.eval(bs.domain().1)) < 1e-6 * (1.0 + plo.len()) && curve.length_between(bs.domain().0, bs.domain().1) > 1e-6);
             let _ = (t0, t1);
             if !closed_curve {
                 self.edges.insert(id, None);
@@ -684,6 +684,7 @@ impl<'a> Rd<'a> {
         let lump = self.b.add_lump();
         let feature = format!("I{}", k + 1);
         let mut shell_ids: Vec<(ShellId, bool)> = vec![];
+        let mut queue: Vec<Option<(ShellId, FaceSpec)>> = vec![];
         for (shid, flipped) in shells {
             let shell = self.b.add_shell(lump);
             let mut specs = Vec::new();
@@ -691,12 +692,14 @@ impl<'a> Rd<'a> {
                 specs.push(self.face_spec(fid)?);
             }
             self.merge_full_periodic(&mut specs);
-            for s in specs {
-                self.nface += 1;
-                let name = FaceName::other(&feature, &format!("F{}", self.nface));
-                self.finalize_face(shell, s, name)?;
-            }
+            queue.extend(specs.into_iter().map(|s| Some((shell, s))));
             shell_ids.push((shell, flipped));
+        }
+        for i in 0..queue.len() {
+            let (shell, s) = queue[i].take().unwrap();
+            self.nface += 1;
+            let name = FaceName::other(&feature, &format!("F{}", self.nface));
+            self.finalize_face(shell, s, name, &mut queue[i + 1..])?;
         }
         self.orient_shells(lump, &shell_ids);
         Ok(())
@@ -1016,7 +1019,7 @@ impl Rd<'_> {
         0.5 * s
     }
 
-    fn finalize_face(&mut self, shell: ShellId, spec: FaceSpec, name: FaceName) -> R<()> {
+    fn finalize_face(&mut self, shell: ShellId, spec: FaceSpec, name: FaceName, rest: &mut [Option<(ShellId, FaceSpec)>]) -> R<()> {
         let FaceSpec { id, surface, sense, mut loops } = spec;
         let (pu, pv) = surface.periods();
         let periodic = pu.is_some() || pv.is_some();
@@ -1036,7 +1039,7 @@ impl Rd<'_> {
                 self.unwrap_loop(l, pu, pv);
                 self.fix_seam_pair(l, &surface, sense, pu, pv);
             }
-            loops = self.complete_periodic(id, &surface, sense, loops, pu, pv)?;
+            loops = self.complete_periodic(id, &surface, sense, loops, pu, pv, rest)?;
         }
         let f = self.b.add_face(shell, surface.clone(), sense, name);
         for l in loops {
@@ -1131,6 +1134,7 @@ impl Rd<'_> {
         loops: Vec<Vec<Co>>,
         pu: Option<f64>,
         pv: Option<f64>,
+        rest: &mut [Option<(ShellId, FaceSpec)>],
     ) -> R<Vec<Vec<Co>>> {
         let pers = [pu, pv];
         // classify
@@ -1156,7 +1160,7 @@ impl Rd<'_> {
             2 if wind[0].2 == -wind[1].2 => {
                 let (ia, ib) = (wind[0].0, wind[1].0);
                 let (la, lb) = (loops[ia].clone(), loops[ib].clone());
-                let joined = self.join_two(id, surf, d, per, pers[1 - d], la, lb, wind[0].2)?;
+                let joined = self.join_two(id, surf, d, per, pers[1 - d], la, lb, wind[0].2, rest)?;
                 // replace the first by the joined loop, drop the second
                 loops[ia] = joined;
                 loops.remove(ib);
@@ -1194,8 +1198,84 @@ impl Rd<'_> {
         Some((r, e))
     }
 
+    /// Split the edge of one coedge of `l` where its pcurve crosses
+    /// coordinate `s` (mod `per`) along axis `d`; patches `l`, the faces
+    /// already built and the pending specs. True if a split happened.
+    fn split_loop_at(&mut self, l: &mut Vec<Co>, d: usize, s: f64, per: f64, rest: &mut [Option<(ShellId, FaceSpec)>]) -> bool {
+        for i in 0..l.len() {
+            let Some(pc) = l[i].pc.clone() else { continue };
+            let ed = self.b.edge(l[i].edge);
+            let (t0, t1, e) = (ed.t0, ed.t1, l[i].edge);
+            let n = 64;
+            let h = |t: f64| (comp(pc.eval(t), d) - s) / per;
+            let mut found = None;
+            for k in 0..n {
+                let (a, b) = (t0 + (t1 - t0) * k as f64 / n as f64, t0 + (t1 - t0) * (k + 1) as f64 / n as f64);
+                let (ha, hb) = (h(a), h(b));
+                if ha.floor() != hb.floor() {
+                    let m = if hb > ha { hb.floor() } else { ha.floor() };
+                    let (mut lo, mut hi) = (a, b);
+                    for _ in 0..80 {
+                        let mid = 0.5 * (lo + hi);
+                        if (h(mid) - m) * (ha - m) > 0.0 {
+                            lo = mid;
+                        } else {
+                            hi = mid;
+                        }
+                    }
+                    found = Some(0.5 * (lo + hi));
+                    break;
+                }
+            }
+            let Some(t) = found else { continue };
+            let eps = 1e-9 * (1.0 + (t1 - t0).abs());
+            if t - t0 < eps || t1 - t < eps {
+                continue;
+            }
+            let (_, ne) = ck_topo::edit::split_edge(&mut self.b, e, t);
+            let rev = l[i].rev;
+            let (a, b) = (Co { edge: e, rev, pc: l[i].pc.clone() }, Co { edge: ne, rev, pc: l[i].pc.clone() });
+            if rev {
+                l.splice(i..=i, [b, a]);
+            } else {
+                l.splice(i..=i, [a, b]);
+            }
+            for sp in rest.iter_mut().flatten() {
+                for lp in &mut sp.1.loops {
+                    let mut out = Vec::with_capacity(lp.len() + 1);
+                    for c in lp.drain(..) {
+                        if c.edge == e {
+                            let (a, b) = (Co { edge: e, rev: c.rev, pc: None }, Co { edge: ne, rev: c.rev, pc: None });
+                            if c.rev {
+                                out.extend([b, a]);
+                            } else {
+                                out.extend([a, b]);
+                            }
+                        } else {
+                            out.push(c);
+                        }
+                    }
+                    *lp = out;
+                }
+            }
+            return true;
+        }
+        false
+    }
+
     #[allow(clippy::too_many_arguments)]
-    fn join_two(&mut self, id: u32, surf: &Surface, d: usize, per: f64, per_o: Option<f64>, la: Vec<Co>, lb: Vec<Co>, wa: i64) -> R<Vec<Co>> {
+    fn join_two(
+        &mut self,
+        id: u32,
+        surf: &Surface,
+        d: usize,
+        per: f64,
+        per_o: Option<f64>,
+        la: Vec<Co>,
+        mut lb: Vec<Co>,
+        wa: i64,
+        rest: &mut [Option<(ShellId, FaceSpec)>],
+    ) -> R<Vec<Co>> {
         let o = 1 - d;
         let fail = || ImportError::new("topology", Some(id), "periodic face whose two boundaries have no vertices at a common seam position");
         // candidate seam positions: the start coordinate of every coedge of A
@@ -1205,6 +1285,15 @@ impl Rd<'_> {
             if let Some((rb, _)) = self.rotate_to(&lb, d, s, per) {
                 chosen = Some((i, rb));
                 break;
+            }
+        }
+        if chosen.is_none() {
+            // no common seam position: cut B's boundary where it crosses A's first vertex
+            let s = comp(self.co_uv(&la[0], true).ok_or_else(fail)?, d);
+            if self.split_loop_at(&mut lb, d, s, per, rest) {
+                if let Some((rb, _)) = self.rotate_to(&lb, d, s, per) {
+                    chosen = Some((0, rb));
+                }
             }
         }
         let (ia, mut rb) = chosen.ok_or_else(fail)?;

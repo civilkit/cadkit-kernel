@@ -80,8 +80,13 @@ pub type MatchEdgesHook = fn(part: &Json, cx: &mut Cx) -> Result<Json, String>;
 /// Engine hook for `sketchOffset` on a sketch with entities.
 pub type SketchOffsetHook = fn(cx: &mut Cx, distance: f64) -> Result<Json, String>;
 
+/// Engine hook for `importStep`: `(cx, name, STEP text)` -> reply result plus
+/// the state to store (None = import failed, keep the previous state).
+pub type ImportHook = fn(cx: &mut Cx, name: &str, data: &str) -> Result<(Json, Option<State>), String>;
+
 #[derive(Default, Clone, Copy)]
 pub struct Hooks {
+    pub import_step: Option<ImportHook>,
     pub regen: Option<RegenHook>,
     pub query: Option<QueryHook>,
     pub match_edges: Option<MatchEdgesHook>,

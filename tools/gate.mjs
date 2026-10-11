@@ -15,6 +15,9 @@
 //   valid.<set>   OURS alone: no feature errors, volume > 0, every edge
 //                 bounds exactly 2 faces (closed manifold shell)
 //   vol.<set>     our volume within 1e-3 relative of the original's
+//   import.roundtrip  OURS alone (HARD): our `step` export -> `importStep` into
+//                 a fresh tag; volume/area within 1e-6, same face and edge
+//                 counts, `validate` clean (brep parts that produce a body)
 //
 // Direction (2026-10-12): correctness + robustness, not byte-identity.
 // HARD metrics (a drop fails the gate): wire, valid.*, vol.*.
@@ -63,7 +66,29 @@ const close = (a, b) => {
   if (a && b && typeof a === 'object') return Object.keys(a).join() === Object.keys(b).join() && Object.keys(a).every((k) => close(a[k], b[k]));
   return a === b;
 };
-const validCodes = {}, validFail = [];
+const validCodes = {}, validFail = [], importFail = [];
+// our STEP export -> importStep (tag "imp") -> massProps / validate / counts
+function importRoundtrip(t, kb, pb, mb) {
+  let why = null;
+  try {
+    const st = JSON.parse(kb.request(JSON.stringify({ id: 4, msg: { type: 'step', tag: 'main', name: 'rt' } })).json || 'null');
+    const imp = JSON.parse(kb.request(JSON.stringify({ id: 5, msg: { type: 'importStep', tag: 'imp', name: 'rt', data: st?.result } })).json || 'null');
+    const body = imp?.result?.body;
+    if (!body) why = `import: ${JSON.stringify(imp?.result?.errors ?? imp?.error)}`.slice(0, 200);
+    else {
+      const m = JSON.parse(kb.request(JSON.stringify({ id: 6, msg: { type: 'massProps', tag: 'imp' } })).json || 'null')?.result;
+      const v = JSON.parse(kb.request(JSON.stringify({ id: 7, msg: { type: 'validate', tag: 'imp' } })).json || 'null')?.result;
+      const ob = pb.result.body, r = (x, y) => Math.abs(x - y) / (1 + Math.abs(y));
+      if (!(r(m?.volume, mb.volume) <= 1e-6)) why = `volume ${m?.volume} vs ${mb.volume}`;
+      else if (!(r(m?.area, mb.area) <= 1e-6)) why = `area ${m?.area} vs ${mb.area}`;
+      else if (body.faces.length !== ob.faces.length) why = `faces ${body.faces.length} vs ${ob.faces.length}`;
+      else if (body.edges.length !== ob.edges.length) why = `edges ${body.edges.length} vs ${ob.edges.length}`;
+      else if (!v || v.issues.length) why = `validate ${JSON.stringify(v?.issues?.slice(0, 2))}`;
+    }
+  } catch (e) { why = String(e); }
+  bump('import.roundtrip', why === null);
+  if (why) importFail.push(`${t.name}: ${why}`);
+}
 function regenSet(set, targets) {
   for (const t of targets) {
     const t0 = performance.now();
@@ -93,6 +118,7 @@ function regenSet(set, targets) {
       for (const i of vissues) validCodes[i.code] = (validCodes[i.code] ?? 0) + 1;
       if (vissues.length) validFail.push(`${set}:${t.name}:${[...new Set(vissues.map((i) => i.code))].join(',')} | ${vissues.slice(0, 3).map((i) => `${i.entity}: ${i.detail}`).join(' ; ')}`);
       bump(`valid.${set}`, !(pb.result.errors?.length) && mb?.volume > 0 && manifold && vissues.length === 0);
+      if (set === 'brep') importRoundtrip(t, kb, pb, mb);
     } else {
       bump(`mass.${set}`, !ba && !bb);
       bump(`vol.${set}`, !ba && !bb);
@@ -119,12 +145,13 @@ if (existsSync(gdir)) for (const f of readdirSync(gdir).filter((f) => f.endsWith
   bump('step', a === b);
 }
 if (!quiet) process.stderr.write('\n');
+if (importFail.length && !quiet) console.log(importFail.join('\n'));
 
 // report + compare with baseline
 const basePath = path.join(here, 'scoreboard.json');
 const base = existsSync(basePath) ? JSON.parse(readFileSync(basePath, 'utf8')) : {};
 let worse = 0, soft = 0;
-const hard = (k) => /^(wire|valid\.|vol\.)/.test(k);
+const hard = (k) => /^(wire|valid\.|vol\.|import\.)/.test(k);
 const skipped = (k) => fast && /^(regen|mass|valid|vol)\.(bracket|stepper|flange|hair)/.test(k);
 for (const k of Object.keys({ ...base, ...score }).sort()) {
   const [m, n] = score[k] ?? [0, 0], b = base[k]?.[0];

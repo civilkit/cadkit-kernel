@@ -45,6 +45,39 @@ pub fn roundtrip(name: &str, b: &Body) -> Result<String, String> {
     }
 }
 
+/// Debug: `STEP=<file> cargo test -p ck-io --test roundtrip dump_file -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn dump_file() {
+    let text = std::fs::read_to_string(std::env::var("STEP").unwrap()).unwrap();
+    let imp = read_step(&text).unwrap();
+    let b = &imp.body;
+    for f in b.face_ids() {
+        let fa = b.face(f);
+        let area = ck_topo::mass::face_integral::<1>(b, f, 1, &|_, n| [n.len()])[0];
+        let vol = ck_topo::mass::signed_volume(b, &[f]);
+        let loops: Vec<usize> = fa.loops.iter().map(|&l| b.lp(l).coedges.len()).collect();
+        println!("{} {} sense={} loops={:?} area={:.6} vol3={:.6}", b.face_id_str(f), fa.surface.kind(), fa.sense, loops, area, vol);
+    }
+    for e in b.edge_ids() {
+        let cs = b.edge_coedges(e);
+        if cs.len() != 2 || std::env::var("ALL").is_ok() {
+            let ed = b.edge(e);
+            println!(
+                "edge{} {} t[{:.4},{:.4}] v{}->v{} co={:?}",
+                e.idx(),
+                ed.curve.kind(),
+                ed.t0,
+                ed.t1,
+                ed.v0.idx(),
+                ed.v1.idx(),
+                cs.iter().map(|&c| (b.face_id_str(b.coedge_face(c)), b.coedge(c).rev)).collect::<Vec<_>>()
+            );
+        }
+    }
+    println!("{:?}", ck_check::validate(b, 1e-6));
+}
+
 #[test]
 fn golden_bodies_roundtrip() {
     let mut fails = vec![];
