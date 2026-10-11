@@ -459,7 +459,9 @@ const m = (msg) => JSON.stringify({ id: 1, msg });
   const load = (n) => JSON.parse(readFileSync(new URL(`${n}.ckpart`, dir), 'utf8'));
   const cut = (n, ks) => { const p = load(n); for (const k of ks) parts[`${n}@${k}`] = { ...p, features: p.features.slice(0, k) }; };
   cut('flangeHalf', [8, 9, 10, 11]);
-  // (flangeBolt / flangeNut still hit TODO errors: swept-spline booleans, chamfer)
+  cut('flangeBolt', [6, 8, 12]);
+  cut('flangeNut', [4, 6, 11]);
+  // (the thread sweeps, Bolt F13 / Nut F12, still hit a TODO error)
 }
 
 export const queries = [

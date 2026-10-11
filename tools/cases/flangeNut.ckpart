@@ -1,0 +1,904 @@
+{
+ "format": "ck-part",
+ "version": 1,
+ "name": "Hex nut M8",
+ "features": [
+  {
+   "type": "sketch",
+   "name": "Nut",
+   "plane": {
+    "kind": "std",
+    "id": "front"
+   },
+   "points": [
+    {
+     "id": "O",
+     "x": 0,
+     "y": 0,
+     "fixed": true
+    },
+    {
+     "id": "p1",
+     "x": 4.595826034474597e-16,
+     "y": 7.505553499465135
+    },
+    {
+     "id": "p2",
+     "x": -6.499999999999999,
+     "y": 3.75277674973257
+    },
+    {
+     "id": "p3",
+     "x": -6.500000000000001,
+     "y": -3.7527767497325653
+    },
+    {
+     "id": "p4",
+     "x": -1.3787478103423788e-15,
+     "y": -7.505553499465135
+    },
+    {
+     "id": "p5",
+     "x": 6.499999999999998,
+     "y": -3.752776749732571
+    },
+    {
+     "id": "p6",
+     "x": 6.5,
+     "y": 3.7527767497325675
+    }
+   ],
+   "entities": [
+    {
+     "id": "e7",
+     "type": "line",
+     "p1": "p1",
+     "p2": "p2"
+    },
+    {
+     "id": "e8",
+     "type": "line",
+     "p1": "p2",
+     "p2": "p3"
+    },
+    {
+     "id": "e9",
+     "type": "line",
+     "p1": "p3",
+     "p2": "p4"
+    },
+    {
+     "id": "e10",
+     "type": "line",
+     "p1": "p4",
+     "p2": "p5"
+    },
+    {
+     "id": "e11",
+     "type": "line",
+     "p1": "p5",
+     "p2": "p6"
+    },
+    {
+     "id": "e12",
+     "type": "line",
+     "p1": "p6",
+     "p2": "p1"
+    },
+    {
+     "id": "e13",
+     "type": "circle",
+     "c": "O",
+     "r": 3.4
+    },
+    {
+     "id": "e16",
+     "type": "circle",
+     "c": "O",
+     "r": 7.505553499465135,
+     "construction": true
+    }
+   ],
+   "constraints": [
+    {
+     "id": "k14",
+     "type": "vertical",
+     "refs": [
+      "e8"
+     ]
+    },
+    {
+     "id": "k15",
+     "type": "vertical",
+     "refs": [
+      "e11"
+     ]
+    },
+    {
+     "id": "k17",
+     "type": "pointOnCircle",
+     "refs": [
+      "p1",
+      "e16"
+     ]
+    },
+    {
+     "id": "k18",
+     "type": "pointOnCircle",
+     "refs": [
+      "p2",
+      "e16"
+     ]
+    },
+    {
+     "id": "k19",
+     "type": "pointOnCircle",
+     "refs": [
+      "p3",
+      "e16"
+     ]
+    },
+    {
+     "id": "k20",
+     "type": "pointOnCircle",
+     "refs": [
+      "p4",
+      "e16"
+     ]
+    },
+    {
+     "id": "k21",
+     "type": "pointOnCircle",
+     "refs": [
+      "p5",
+      "e16"
+     ]
+    },
+    {
+     "id": "k22",
+     "type": "pointOnCircle",
+     "refs": [
+      "p6",
+      "e16"
+     ]
+    },
+    {
+     "id": "k23",
+     "type": "equal",
+     "refs": [
+      "e7",
+      "e8"
+     ]
+    },
+    {
+     "id": "k24",
+     "type": "equal",
+     "refs": [
+      "e7",
+      "e9"
+     ]
+    },
+    {
+     "id": "k25",
+     "type": "equal",
+     "refs": [
+      "e7",
+      "e10"
+     ]
+    },
+    {
+     "id": "k26",
+     "type": "equal",
+     "refs": [
+      "e7",
+      "e11"
+     ]
+    },
+    {
+     "id": "k27",
+     "type": "pldist",
+     "refs": [
+      "p4",
+      "e7"
+     ],
+     "value": 13,
+     "offset": [
+      0,
+      -4
+     ]
+    },
+    {
+     "id": "k28",
+     "type": "diameter",
+     "refs": [
+      "e13"
+     ],
+     "value": 6.8,
+     "offset": [
+      5.23254,
+      5.23254
+     ]
+    }
+   ],
+   "seq": 29,
+   "visible": false,
+   "id": "F1",
+   "num": 1
+  },
+  {
+   "type": "extrude",
+   "op": "add",
+   "sketch": "F1",
+   "end": "blind",
+   "depth": 6.5,
+   "name": "Nut",
+   "id": "F2",
+   "num": 1
+  },
+  {
+   "type": "sketch",
+   "name": "Chamfer below section",
+   "plane": {
+    "kind": "std",
+    "id": "top"
+   },
+   "points": [
+    {
+     "id": "O",
+     "x": 0,
+     "y": 0,
+     "fixed": true
+    },
+    {
+     "id": "p1",
+     "x": 6.109999999999999,
+     "y": 0
+    },
+    {
+     "id": "p2",
+     "x": 8.5,
+     "y": 0
+    },
+    {
+     "id": "p3",
+     "x": 8.5,
+     "y": -1.379867143363206
+    },
+    {
+     "id": "p7",
+     "x": 0,
+     "y": -50
+    },
+    {
+     "id": "p8",
+     "x": 0,
+     "y": 50
+    }
+   ],
+   "entities": [
+    {
+     "id": "e4",
+     "type": "line",
+     "p1": "p1",
+     "p2": "p2"
+    },
+    {
+     "id": "e5",
+     "type": "line",
+     "p1": "p2",
+     "p2": "p3"
+    },
+    {
+     "id": "e6",
+     "type": "line",
+     "p1": "p3",
+     "p2": "p1"
+    },
+    {
+     "id": "e9",
+     "type": "line",
+     "p1": "p7",
+     "p2": "p8",
+     "construction": true
+    }
+   ],
+   "constraints": [
+    {
+     "id": "k10",
+     "type": "horizontal",
+     "refs": [
+      "e4"
+     ]
+    },
+    {
+     "id": "k11",
+     "type": "vertical",
+     "refs": [
+      "e5"
+     ]
+    },
+    {
+     "id": "k12",
+     "type": "vertical",
+     "refs": [
+      "e9"
+     ]
+    },
+    {
+     "id": "k13",
+     "type": "horizontal",
+     "refs": [
+      "p1",
+      "O"
+     ]
+    },
+    {
+     "id": "k14",
+     "type": "vertical",
+     "refs": [
+      "p7",
+      "O"
+     ]
+    },
+    {
+     "id": "k15",
+     "type": "distance",
+     "refs": [
+      "p1",
+      "p2"
+     ],
+     "value": 2.3900000000000006,
+     "offset": [
+      0,
+      6.058557913405516
+     ]
+    },
+    {
+     "id": "k16",
+     "type": "distance",
+     "refs": [
+      "p2",
+      "p3"
+     ],
+     "value": 1.379867143363206,
+     "offset": [
+      6.058557913405516,
+      0
+     ]
+    },
+    {
+     "id": "k17",
+     "type": "hdist",
+     "refs": [
+      "O",
+      "p1"
+     ],
+     "value": 6.109999999999999,
+     "offset": [
+      0,
+      6.058557913405516
+     ]
+    },
+    {
+     "id": "k18",
+     "type": "vdist",
+     "refs": [
+      "O",
+      "p7"
+     ],
+     "value": 50,
+     "offset": [
+      6.058557913405516,
+      0
+     ]
+    },
+    {
+     "id": "k19",
+     "type": "vdist",
+     "refs": [
+      "O",
+      "p8"
+     ],
+     "value": 50,
+     "offset": [
+      6.058557913405516,
+      0
+     ]
+    }
+   ],
+   "seq": 20,
+   "visible": false,
+   "id": "F3",
+   "num": 2
+  },
+  {
+   "type": "revolve",
+   "op": "cut",
+   "sketch": "F3",
+   "axis": "e9",
+   "end": "blind",
+   "angle": 360,
+   "name": "Chamfer below",
+   "id": "F4",
+   "num": 1
+  },
+  {
+   "type": "sketch",
+   "name": "Chamfer above section",
+   "plane": {
+    "kind": "std",
+    "id": "top"
+   },
+   "points": [
+    {
+     "id": "O",
+     "x": 0,
+     "y": 0,
+     "fixed": true
+    },
+    {
+     "id": "p1",
+     "x": 6.109999999999999,
+     "y": -6.5
+    },
+    {
+     "id": "p2",
+     "x": 8.5,
+     "y": -6.5
+    },
+    {
+     "id": "p3",
+     "x": 8.5,
+     "y": -5.120132856636794
+    },
+    {
+     "id": "p7",
+     "x": 0,
+     "y": -50
+    },
+    {
+     "id": "p8",
+     "x": 0,
+     "y": 50
+    }
+   ],
+   "entities": [
+    {
+     "id": "e4",
+     "type": "line",
+     "p1": "p1",
+     "p2": "p2"
+    },
+    {
+     "id": "e5",
+     "type": "line",
+     "p1": "p2",
+     "p2": "p3"
+    },
+    {
+     "id": "e6",
+     "type": "line",
+     "p1": "p3",
+     "p2": "p1"
+    },
+    {
+     "id": "e9",
+     "type": "line",
+     "p1": "p7",
+     "p2": "p8",
+     "construction": true
+    }
+   ],
+   "constraints": [
+    {
+     "id": "k10",
+     "type": "horizontal",
+     "refs": [
+      "e4"
+     ]
+    },
+    {
+     "id": "k11",
+     "type": "vertical",
+     "refs": [
+      "e5"
+     ]
+    },
+    {
+     "id": "k12",
+     "type": "vertical",
+     "refs": [
+      "e9"
+     ]
+    },
+    {
+     "id": "k13",
+     "type": "vertical",
+     "refs": [
+      "p7",
+      "O"
+     ]
+    },
+    {
+     "id": "k14",
+     "type": "distance",
+     "refs": [
+      "p1",
+      "p2"
+     ],
+     "value": 2.3900000000000006,
+     "offset": [
+      0,
+      -6.458741919290697
+     ]
+    },
+    {
+     "id": "k15",
+     "type": "distance",
+     "refs": [
+      "p2",
+      "p3"
+     ],
+     "value": 1.3798671433632057,
+     "offset": [
+      6.458741919290697,
+      0
+     ]
+    },
+    {
+     "id": "k16",
+     "type": "hdist",
+     "refs": [
+      "O",
+      "p1"
+     ],
+     "value": 6.109999999999999,
+     "offset": [
+      0,
+      -9.708741919290697
+     ]
+    },
+    {
+     "id": "k17",
+     "type": "vdist",
+     "refs": [
+      "O",
+      "p1"
+     ],
+     "value": 6.5,
+     "offset": [
+      9.513741919290696,
+      0
+     ]
+    },
+    {
+     "id": "k18",
+     "type": "vdist",
+     "refs": [
+      "O",
+      "p7"
+     ],
+     "value": 50,
+     "offset": [
+      6.458741919290697,
+      0
+     ]
+    },
+    {
+     "id": "k19",
+     "type": "vdist",
+     "refs": [
+      "O",
+      "p8"
+     ],
+     "value": 50,
+     "offset": [
+      6.458741919290697,
+      0
+     ]
+    }
+   ],
+   "seq": 20,
+   "visible": false,
+   "id": "F5",
+   "num": 3
+  },
+  {
+   "type": "revolve",
+   "op": "cut",
+   "sketch": "F5",
+   "axis": "e9",
+   "end": "blind",
+   "angle": 360,
+   "name": "Chamfer above",
+   "id": "F6",
+   "num": 2
+  },
+  {
+   "type": "chamfer",
+   "chamferType": "equal",
+   "distance": 0.9,
+   "edges": [
+    {
+     "faces": [
+      "F2.C0",
+      "F2.S.e13"
+     ],
+     "at": [
+      -3.4,
+      0,
+      0
+     ]
+    },
+    {
+     "faces": [
+      "F2.C1",
+      "F2.S.e13"
+     ],
+     "at": [
+      -3.4,
+      0,
+      6.5
+     ]
+    }
+   ],
+   "name": "Bore chamfers",
+   "id": "F7",
+   "num": 1
+  },
+  {
+   "type": "plane",
+   "mode": "offset",
+   "base": {
+    "kind": "std",
+    "id": "front"
+   },
+   "offset": 7.75,
+   "flip": false,
+   "name": "Thread start",
+   "id": "F8",
+   "num": 1
+  },
+  {
+   "type": "sketch",
+   "name": "Thread circle",
+   "plane": {
+    "kind": "feature",
+    "id": "F8"
+   },
+   "points": [
+    {
+     "id": "O",
+     "x": 0,
+     "y": 0,
+     "fixed": true
+    }
+   ],
+   "entities": [
+    {
+     "id": "e1",
+     "type": "circle",
+     "c": "O",
+     "r": 4
+    }
+   ],
+   "constraints": [
+    {
+     "id": "k2",
+     "type": "diameter",
+     "refs": [
+      "e1"
+     ],
+     "value": 8,
+     "offset": [
+      5.6568,
+      5.6568
+     ]
+    }
+   ],
+   "seq": 3,
+   "visible": false,
+   "id": "F9",
+   "num": 4
+  },
+  {
+   "type": "helix",
+   "sketch": "F9",
+   "definedBy": "pitchRevs",
+   "pitch": 1.25,
+   "revolutions": 7,
+   "height": 8.75,
+   "startAngle": 0,
+   "leftHand": false,
+   "reverse": true,
+   "name": "Thread helix",
+   "id": "F10",
+   "num": 1,
+   "visible": false
+  },
+  {
+   "type": "sketch",
+   "name": "Thread profile",
+   "plane": {
+    "kind": "std",
+    "id": "top"
+   },
+   "points": [
+    {
+     "id": "O",
+     "x": 0,
+     "y": 0,
+     "fixed": true
+    },
+    {
+     "id": "p1",
+     "x": 3.3,
+     "y": -8.255334989909334
+    },
+    {
+     "id": "p2",
+     "x": 4.05,
+     "y": -7.822322288017116
+    },
+    {
+     "id": "p3",
+     "x": 4.05,
+     "y": -7.677677711982884
+    },
+    {
+     "id": "p4",
+     "x": 3.3,
+     "y": -7.244665010090665
+    }
+   ],
+   "entities": [
+    {
+     "id": "e5",
+     "type": "line",
+     "p1": "p1",
+     "p2": "p2"
+    },
+    {
+     "id": "e6",
+     "type": "line",
+     "p1": "p2",
+     "p2": "p3"
+    },
+    {
+     "id": "e7",
+     "type": "line",
+     "p1": "p3",
+     "p2": "p4"
+    },
+    {
+     "id": "e8",
+     "type": "line",
+     "p1": "p4",
+     "p2": "p1"
+    }
+   ],
+   "constraints": [
+    {
+     "id": "k9",
+     "type": "vertical",
+     "refs": [
+      "e6"
+     ]
+    },
+    {
+     "id": "k10",
+     "type": "vertical",
+     "refs": [
+      "e8"
+     ]
+    },
+    {
+     "id": "k11",
+     "type": "distance",
+     "refs": [
+      "p1",
+      "p2"
+     ],
+     "value": 0.8660254037844383,
+     "offset": [
+      1.9999999999999982,
+      -3.464101615137756
+     ]
+    },
+    {
+     "id": "k12",
+     "type": "distance",
+     "refs": [
+      "p2",
+      "p3"
+     ],
+     "value": 0.14464457603423142,
+     "offset": [
+      4,
+      0
+     ]
+    },
+    {
+     "id": "k13",
+     "type": "distance",
+     "refs": [
+      "p3",
+      "p4"
+     ],
+     "value": 0.8660254037844388,
+     "offset": [
+      2.000000000000001,
+      3.464101615137754
+     ]
+    },
+    {
+     "id": "k14",
+     "type": "distance",
+     "refs": [
+      "p4",
+      "p1"
+     ],
+     "value": 1.0106699798186698,
+     "offset": [
+      -4,
+      0
+     ]
+    },
+    {
+     "id": "k15",
+     "type": "hdist",
+     "refs": [
+      "O",
+      "p1"
+     ],
+     "value": 3.3,
+     "offset": [
+      0,
+      -8.127667494954668
+     ]
+    },
+    {
+     "id": "k16",
+     "type": "vdist",
+     "refs": [
+      "O",
+      "p1"
+     ],
+     "value": 8.255334989909334,
+     "offset": [
+      5.65,
+      0
+     ]
+    }
+   ],
+   "seq": 17,
+   "visible": false,
+   "id": "F11",
+   "num": 5
+  },
+  {
+   "type": "sweep",
+   "op": "cut",
+   "sketch": "F11",
+   "path": {
+    "kind": "curve",
+    "id": "F10"
+   },
+   "name": "Thread",
+   "id": "F12",
+   "num": 1
+  }
+ ],
+ "seq": 13,
+ "rollback": null,
+ "material": "steel",
+ "counters": {
+  "sketch": 5,
+  "extrude": 1,
+  "cutRevolve": 2,
+  "chamfer": 1,
+  "plane": 1,
+  "helix": 1,
+  "cutSweep": 1
+ }
+}

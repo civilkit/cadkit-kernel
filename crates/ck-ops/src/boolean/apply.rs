@@ -104,14 +104,14 @@ pub fn relocate_seams(b: &Body, other: &Body, drop: Class, tol: f64) -> Body {
     let mut out = b.clone();
     let solid = Solid::new(other, tol);
     let (t0, _) = super::imprint::closed_start(TAU);
-    for f in b.face_ids() {
+    let candidate = |f: ck_topo::body::FaceId| -> Option<(ck_geom::Frame, Vec<ck_topo::body::EdgeId>, Vec<ck_topo::body::EdgeId>)> {
         let face = b.face(f);
         let frame = match &face.surface {
             Surface::Cylinder { frame, .. } | Surface::Cone { frame, .. } => *frame,
-            _ => continue,
+            _ => return None,
         };
         if face.loops.len() != 1 {
-            continue;
+            return None;
         }
         let cs = b.lp(face.loops[0]).coedges.clone();
         let mut seams = vec![];
@@ -127,20 +127,51 @@ pub fn relocate_seams(b: &Body, other: &Body, drop: Class, tol: f64) -> Body {
             }
         }
         if seams.len() != 1 || circles.len() != 2 {
-            continue;
+            return None;
         }
         let full = |e: ck_topo::body::EdgeId| {
             let ed = b.edge(e);
             matches!(ed.curve, Curve::Circle { .. }) && ed.v0 == ed.v1 && ((ed.t1 - ed.t0) - TAU).abs() < 1e-9
         };
         if !circles.iter().all(|&e| full(e)) {
-            continue;
+            return None;
         }
         let in_drop = circles.iter().all(|&e| {
             let p = b.edge_mid(e);
             solid.classify(p, frame.z) == drop
         });
         if !in_drop {
+            return None;
+        }
+        Some((frame, seams, circles))
+    };
+    let cands: Vec<_> = b.face_ids().filter_map(|f| candidate(f).map(|c| (f, c))).collect();
+    let ids: Vec<ck_topo::body::FaceId> = cands.iter().map(|c| c.0).collect();
+    // a face sharing a circle (so its seam end vertex) with a seamed
+    // cylinder / cone that keeps its seam cannot move its circle starts
+    let mut ok: Vec<bool> = vec![true; cands.len()];
+    loop {
+        let mut changed = false;
+        for (i, (f, c)) in cands.iter().enumerate() {
+            if !ok[i] {
+                continue;
+            }
+            let blocked = c.2.iter().any(|&e| {
+                b.edge_faces(e).into_iter().any(|g| {
+                    g != *f && matches!(b.face(g).surface, Surface::Cylinder { .. } | Surface::Cone { .. }) && ids.iter().position(|&x| x == g).map_or(true, |k| !ok[k])
+                })
+            });
+            if blocked {
+                ok[i] = false;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    for (i, (f, (frame, seams, circles))) in cands.into_iter().enumerate() {
+        if !ok[i] {
             continue;
         }
         let s = seams[0];
@@ -717,5 +748,35 @@ mod oracle_cylinders {
                 assert_eq!(ks, *keys, "{name} edge order");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod flange_tests {
+    use super::*;
+    use crate::boolean::tests::top;
+    use ck_geom::{Frame, Vec2, Vec3};
+    use ck_topo::mass::mass_props;
+    use ck_topo::make::{extrude, revolve::revolve, ExtrudeOpts, Profile, ProfileLoop, ProfileRegion, ProfileSeg};
+
+    /// Hex prism (corner radius 7.5055, across flats 13) + revolved chamfer
+    /// triangle cut (flangeBolt F4+F6 / flangeNut F4 shape).
+    #[test]
+    fn hex_prism_minus_revolved_chamfer_cone() {
+        let front = Frame { o: Vec3::ZERO, x: Vec3::X, y: Vec3::Y, z: Vec3::Z };
+        let r = 7.505553499465135;
+        let p: Vec<Vec2> = (0..6).map(|i| { let a = std::f64::consts::FRAC_PI_3 * i as f64 + std::f64::consts::FRAC_PI_2; Vec2::new(r * a.cos(), r * a.sin()) }).collect();
+        let lp = ProfileLoop::new((0..6).map(|i| ProfileSeg::line(&format!("e{}", i + 7), p[i], p[(i + 1) % 6])).collect());
+        let prof = Profile::new(front, vec![ProfileRegion { outer: lp, holes: vec![] }]);
+        let hex = extrude("F4", &prof, ExtrudeOpts { s0: 0.0, s1: -5.3, dir: None, draft: 0.0 }).unwrap();
+        let q = [Vec2::new(6.11, 5.3), Vec2::new(8.5, 3.920132856636794), Vec2::new(8.5, 5.3)];
+        let tl = ProfileLoop::new((0..3).map(|i| ProfileSeg::line(&format!("e{}", i + 4), q[i], q[(i + 1) % 3])).collect());
+        let tp = Profile::new(top(), vec![ProfileRegion { outer: tl, holes: vec![] }]);
+        let tool = revolve("F6", &tp, Vec3::ZERO, Vec3::new(0.0, 0.0, -1.0), 0.0, std::f64::consts::TAU).unwrap();
+        let r = boolean(&hex, &tool, Op::Cut, 1e-6);
+        let r = r.unwrap();
+        assert_eq!(r.body.num_faces(), 9);
+        let (vh, vt, vr) = (mass_props(&hex).volume, mass_props(&tool).volume, mass_props(&r.body).volume);
+        assert!(vr < vh && vr > vh - vt, "{vr} {vh} {vt}");
     }
 }
