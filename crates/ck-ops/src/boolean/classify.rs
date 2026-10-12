@@ -71,6 +71,7 @@ const LOCAL_TOL: f64 = 2e-4;
 fn local_project(bs: &ck_geom::nurbs::bsurf::BSplineSurface, p: Vec3, q: Vec2) -> Option<Vec2> {
     let ((u0, u1), (v0, v1)) = bs.domain();
     let (mut u, mut v) = (q.x.clamp(u0, u1), q.y.clamp(v0, v1));
+    let mut converged = false;
     for _ in 0..12 {
         let d = bs.derivs(u, v, 1);
         let r = d[0][0] - p;
@@ -89,14 +90,20 @@ fn local_project(bs: &ck_geom::nurbs::bsurf::BSplineSurface, p: Vec3, q: Vec2) -
         u = (u + du).clamp(u0, u1);
         v = (v + dv).clamp(v0, v1);
         if du.abs() < 1e-13 && dv.abs() < 1e-13 {
+            converged = true;
             break;
         }
+        converged = du.abs() < 1e-9 * (u1 - u0) && dv.abs() < 1e-9 * (v1 - v0);
     }
     // interpolated screw sweeps deviate ~1e-5 from the exact surface, so the
     // arc / rail edges of their faces are that far off it: a converged
     // projection that close is the right foot point, no need for the O(spans)
     // global search
-    (bs.eval(u, v).dist(p) < LOCAL_TOL).then(|| Vec2::new(u, v))
+    // (a converged projection is the continuous foot point even when the edge
+    // sample is off the face by its fit error -- shelled / offset-fitted
+    // surfaces carry ~1e-3 -- and the global search would cost a full scan)
+    let dist = bs.eval(u, v).dist(p);
+    (dist < LOCAL_TOL || (converged && dist < 2e-4 * (1.0 + p.len()))).then(|| Vec2::new(u, v))
 }
 
 /// Samples per curve piece for the polygons of [`Solid`] (point
@@ -327,7 +334,8 @@ pub struct Solid<'a> {
     pub body: &'a Body,
     tol: f64,
     faces: Vec<FaceId>,
-    loops: Vec<Vec<Vec<Vec2>>>,
+    /// uv polygons per face, built on first use (most faces are never near a probe)
+    loops: Vec<std::cell::OnceCell<Vec<Vec<Vec2>>>>,
     edges: Vec<Vec<ck_topo::body::EdgeId>>,
     bvh: crate::bvh::Bvh,
 }
@@ -346,7 +354,7 @@ const RAYS: [[f64; 3]; 6] = [
 impl<'a> Solid<'a> {
     pub fn new(body: &'a Body, tol: f64) -> Solid<'a> {
         let faces: Vec<FaceId> = body.face_ids().collect();
-        let loops = faces.iter().map(|&f| face_loops_uv_fine(body, f)).collect();
+        let loops = faces.iter().map(|_| std::cell::OnceCell::new()).collect();
         let edges = faces.iter().map(|&f| body.face_edges(f)).collect();
         let boxes: Vec<crate::bvh::Aabb> = faces
             .iter()
@@ -372,11 +380,12 @@ impl<'a> Solid<'a> {
         if s.distance(p) > self.tol * 10.0 {
             return Where::Out;
         }
-        if self.loops[i].iter().all(|l| l.len() < 3) {
+        let loops = self.loops[i].get_or_init(|| face_loops_uv_fine(b, self.faces[i]));
+        if loops.iter().all(|l| l.len() < 3) {
             return Where::In;
         }
         let (u, v) = s.closest_param(p);
-        if in_loops(s, Vec2::new(u, v), &self.loops[i]) {
+        if in_loops(s, Vec2::new(u, v), loops) {
             Where::In
         } else {
             Where::Out

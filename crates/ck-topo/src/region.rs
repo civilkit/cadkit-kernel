@@ -328,7 +328,9 @@ pub fn rebuild_lumps(b: &mut Body) {
         l.alive = false;
         l.shells.clear();
     }
-    let vols: Vec<f64> = comps.iter().map(|c| signed_volume(b, c)).collect();
+    // a lone component gets its own lump whatever its orientation (a void
+    // shell with no host also opens a fresh lump): skip the volume integral
+    let vols: Vec<f64> = if comps.len() == 1 { vec![0.0] } else { comps.iter().map(|c| signed_volume(b, c)).collect() };
     let mut shell_of: Vec<Option<ShellId>> = vec![None; comps.len()];
     let mut lump_of_shell: Vec<(ShellId, LumpId, f64, usize)> = vec![];
     for (i, c) in comps.iter().enumerate() {

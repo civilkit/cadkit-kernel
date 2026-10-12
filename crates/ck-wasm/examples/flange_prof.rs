@@ -11,7 +11,17 @@ impl regen::FeatureExec for Ex {
     fn exec(&mut self, s: &mut regen::RegenState, f: &ck_model::Feature) -> Result<(), regen::FeatureError> {
         let t = Instant::now();
         let r = self.0.exec(s, f);
-        eprintln!("{} {} {:.3}s", f.id, f.type_name, t.elapsed().as_secs_f64());
+        let dt = t.elapsed().as_secs_f64();
+        if std::env::var("FEATSTAT").is_ok() {
+            // per-feature result (excluded from the timing above): faces + volume
+            let (nf, vol) = match &self.0.body {
+                Some(b) => (b.face_ids().count(), ck_topo::mass::mass_props(b).volume),
+                None => (0, 0.0),
+            };
+            eprintln!("{} {} {:.3}s faces {} vol {:.4} {}", f.id, f.type_name, dt, nf, vol, if r.is_err() { "ERR" } else { "" });
+        } else {
+            eprintln!("{} {} {:.3}s", f.id, f.type_name, dt);
+        }
         r
     }
 }

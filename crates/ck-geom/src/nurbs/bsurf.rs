@@ -27,6 +27,19 @@ pub struct BSplineSurface {
     pub weights: Option<Vec<f64>>,
 }
 
+struct CpPrep {
+    nu: usize,
+    cv: usize,
+    boxes: Vec<(Vec3, Vec3)>,
+    vs: Vec<(f64, usize)>,
+    bv: Vec<(usize, Vec<f64>)>,
+    cols: Vec<Vec<usize>>,
+    /// (u span, iu, iv, first / last u grid column of the cell)
+    cells: Vec<(usize, usize, usize, usize, usize)>,
+    ubas: Vec<(usize, Vec<f64>)>,
+    cell_scale: f64,
+}
+
 impl BSplineSurface {
     pub fn new(
         deg_u: usize,
@@ -361,47 +374,76 @@ impl BSplineSurface {
 
     /// Parameters of the closest point to `q` (grid seed + 2D Newton).
     pub fn closest_param(&self, q: Vec3) -> (f64, f64) {
-        self.closest_param_within(q, f64::INFINITY).unwrap_or_else(|| {
+        // the same foot point is asked for again and again (every loop of an
+        // arrangement re-samples its start; each fragment of a face re-projects
+        // the same edges): memoised per (surface, point)
+        use std::cell::RefCell;
+        use std::collections::HashMap;
+        thread_local! {
+            static MEMO: RefCell<HashMap<(u64, u64, u64, u64), (f64, f64)>> = RefCell::new(HashMap::new());
+        }
+        let key = (self.fingerprint(), q.x.to_bits(), q.y.to_bits(), q.z.to_bits());
+        if let Some(r) = MEMO.with(|m| m.borrow().get(&key).copied()) {
+            return r;
+        }
+        let r = self.closest_param_within(q, f64::INFINITY).unwrap_or_else(|| {
             let ((u0, _), (v0, _)) = self.domain();
             (u0, v0)
-        })
+        });
+        MEMO.with(|m| {
+            let mut m = m.borrow_mut();
+            if m.len() >= 1 << 16 {
+                m.clear();
+            }
+            m.insert(key, r);
+        });
+        r
+    }
+
+    /// Hash of the whole surface (degrees, knots, control net, weights).
+    fn fingerprint(&self) -> u64 {
+        let mut h: u64 = 0xcbf29ce484222325;
+        let mut mix = |x: u64| {
+            h = (h ^ x).wrapping_mul(0x100000001b3);
+            h ^= h >> 29;
+        };
+        mix(self.deg_u as u64 | (self.deg_v as u64) << 8 | (self.nu as u64) << 16 | (self.nv as u64) << 40);
+        for &k in self.knots_u.iter().chain(&self.knots_v) {
+            mix(k.to_bits());
+        }
+        for c in &self.ctrl {
+            mix(c.x.to_bits());
+            mix(c.y.to_bits());
+            mix(c.z.to_bits());
+        }
+        if let Some(w) = &self.weights {
+            for x in w {
+                mix(x.to_bits());
+            }
+        }
+        h
     }
 
     /// [`closest_param`](Self::closest_param), but `None` when the surface is
     /// not within `maxd` of `q`: cells whose control-net box is farther away
     /// are never sampled, so a far query costs one pass over the boxes.
     pub fn closest_param_within(&self, q: Vec3, maxd: f64) -> Option<(f64, f64)> {
+        self.closest_param_within_(q, maxd)
+    }
+    pub fn closest_param_within_(&self, q: Vec3, maxd: f64) -> Option<(f64, f64)> {
         let ((u0, u1), (v0, v1)) = self.domain();
-        let cells_n = (basis::distinct_count(&self.knots_u) - 1) * (basis::distinct_count(&self.knots_v) - 1);
-        // long multi-span surfaces (screw sweeps): a coarser sample grid per
-        // cell, the Newton polish below recovers the foot point
-        let dens = if cells_n >= 256 { 1 } else { 3 };
-        let nu = ((basis::distinct_count(&self.knots_u) - 1) * (self.deg_u + 1) * dens).max(12);
-        let nv = ((basis::distinct_count(&self.knots_v) - 1) * (self.deg_v + 1) * dens).max(12);
+        let (pu, pv) = (self.deg_u, self.deg_v);
+        let prep = self.cp_prep();
+        let (nu, boxes, cv, vs, bv, cols, ubas) = (prep.nu, &prep.boxes, prep.cv, &prep.vs, &prep.bv, &prep.cols, &prep.ubas);
         // (the grid samples are up to a cell away from the foot point: the
         // sample bound is looser than `maxd`, the final distance is checked)
-        let mut best = (maxd + self.cell_scale(), u0, v0);
+        let mut best = (maxd + prep.cell_scale, u0, v0);
         let mut found = false;
         // The seed grid is the same as a brute-force scan, but samples in
         // cells whose control-net box is farther from `q` than the best
         // sample so far are skipped (convex hull property: exact pruning).
         // Long multi-span surfaces (screw sweeps) made the plain scan
         // O(spans) per call.
-        let (pu, pv) = (self.deg_u, self.deg_v);
-        let spans = |kn: &[f64], p: usize, n: usize| -> Vec<usize> {
-            let mut idx = vec![usize::MAX; kn.len()];
-            let mut k = 0;
-            for s in p..n {
-                if kn[s] < kn[s + 1] {
-                    idx[s] = k;
-                    k += 1;
-                }
-            }
-            idx
-        };
-        let (iu_of, iv_of) = (spans(&self.knots_u, pu, self.nu), spans(&self.knots_v, pv, self.nv));
-        let (cu, cv) = (iu_of.iter().filter(|&&i| i != usize::MAX).count(), iv_of.iter().filter(|&&i| i != usize::MAX).count());
-        let boxes = self.cell_boxes(&iu_of, &iv_of, cu, cv);
         let lb: Vec<f64> = boxes
             .iter()
             .map(|&(lo, hi)| {
@@ -411,68 +453,69 @@ impl BSplineSurface {
                 Vec3::new((lo.x - q.x).max(q.x - hi.x).max(0.0), (lo.y - q.y).max(q.y - hi.y).max(0.0), (lo.z - q.z).max(q.z - hi.z).max(0.0)).len()
             })
             .collect();
-        // Seed grid, visited cell by cell (nearest control-net box first):
-        // the grid is uniform in (u, v), so the rows / columns that fall in a
-        // knot cell are found arithmetically (then confirmed with find_span)
-        // instead of scanning and sorting every row per call.
-        let vs: Vec<(f64, usize)> = (0..=nv)
-            .map(|b| {
-                let v = v0 + (v1 - v0) * b as f64 / nv as f64;
-                (v, iv_of[find_span(self.nv - 1, pv, v, &self.knots_v)])
-            })
-            .collect();
+        // (exact) no cell's control-net box within `maxd`: the surface lies in
+        // the union of the boxes, so no point of it is that near
+        if maxd.is_finite() && lb.iter().all(|&d| d > maxd) {
+            return None;
+        }
         // grid evaluation without the derivative machinery (non-rational)
         let fast = self.weights.is_none();
-        let bv: Vec<(usize, Vec<f64>)> = if fast {
-            vs.iter()
-                .map(|&(v, _)| {
-                    let s = find_span(self.nv - 1, pv, v, &self.knots_v);
-                    (s, basis::basis_funs(s, v, pv, &self.knots_v))
-                })
-                .collect()
-        } else {
-            vec![]
-        };
-        let mut cols: Vec<Vec<usize>> = vec![vec![]; cv.max(1)];
-        for (k, &(_, iv)) in vs.iter().enumerate() {
-            cols[iv].push(k);
-        }
-        let mut cells: Vec<(f64, usize, usize, usize)> = Vec::with_capacity(cu * cv);
-        for su in pu..self.nu {
-            let iu = iu_of[su];
-            if iu == usize::MAX {
-                continue;
-            }
-            for sv in pv..self.nv {
-                let iv = iv_of[sv];
-                if iv != usize::MAX {
-                    cells.push((lb[iu * cv + iv], su, iu, iv));
-                }
-            }
-        }
+        let cells: Vec<(f64, usize, usize, usize, usize, usize)> = prep.cells.iter().map(|&(su, iu, iv, alo, ahi)| (lb[iu * cv + iv], su, iu, iv, alo, ahi)).collect();
         let u_at = |a: usize| u0 + (u1 - u0) * a as f64 / nu as f64;
         let found_flag = std::cell::Cell::new(false);
         // best grid sample of every visited cell (multi-start seeds)
         let cell_best: std::cell::RefCell<Vec<(f64, f64, f64, f64)>> = Default::default();
-        let visit = |c: &(f64, usize, usize, usize), best: &mut (f64, f64, f64)| {
-            let (clb, su, _iu, iv) = *c;
+        let visit = |c: &(f64, usize, usize, usize, usize, usize), best: &mut (f64, f64, f64)| {
+            let (clb, su, _iu, iv, alo, ahi) = *c;
             if clb >= best.0 || cols[iv].is_empty() {
                 return;
             }
             let mut local = (f64::INFINITY, 0.0, 0.0);
-            let (k0, k1) = (self.knots_u[su], self.knots_u[su + 1]);
-            let span_u = (u1 - u0).max(f64::MIN_POSITIVE);
-            let alo = ((((k0 - u0) / span_u) * nu as f64).floor() - 1.0).max(0.0) as usize;
-            let ahi = ((((k1 - u0) / span_u) * nu as f64).ceil() + 1.0).min(nu as f64).max(0.0) as usize;
             for a in alo..=ahi {
                 let u = u_at(a);
-                if find_span(self.nu - 1, pu, u, &self.knots_u) != su {
+                if ubas[a].0 != su {
                     continue;
                 }
-                let bu = if fast { basis::basis_funs(su, u, pu, &self.knots_u) } else { vec![] };
+                let bu = &ubas[a].1;
+                // non-rational: collapse the u direction once per (u, cell)
+                // (every v sample of the cell lies in the same v span)
+                let mut tcol = [Vec3::ZERO; 16];
+                if fast && pv < 16 {
+                    if let Some(&k0) = cols[iv].first() {
+                        let sv = bv[k0].0;
+                        for j in 0..=pv {
+                            let mut t = Vec3::ZERO;
+                            for (i, &wu) in bu.iter().enumerate() {
+                                t = t + self.cp(su - pu + i, sv - pv + j) * wu;
+                            }
+                            tcol[j] = t;
+                        }
+                    }
+                }
+                // bounded query (no multi-start polish reads `local`): a row
+                // whose control-point box is no nearer than the best sample
+                // cannot improve it
+                if fast && pv < 16 && maxd.is_finite() {
+                    let (mut lo, mut hi) = (tcol[0], tcol[0]);
+                    for t in &tcol[1..=pv] {
+                        lo = lo.min(*t);
+                        hi = hi.max(*t);
+                    }
+                    let g = Vec3::new((lo.x - q.x).max(q.x - hi.x).max(0.0), (lo.y - q.y).max(q.y - hi.y).max(0.0), (lo.z - q.z).max(q.z - hi.z).max(0.0));
+                    if g.len() >= best.0 {
+                        continue;
+                    }
+                }
                 for &k in &cols[iv] {
                     let v = vs[k].0;
-                    let d = if fast {
+                    let d = if fast && pv < 16 {
+                        let bvk = &bv[k].1;
+                        let mut p = Vec3::ZERO;
+                        for (j, &wv) in bvk.iter().enumerate() {
+                            p = p + tcol[j] * wv;
+                        }
+                        p.dist(q)
+                    } else if fast {
                         let (sv, ref bvk) = bv[k];
                         let mut p = Vec3::ZERO;
                         for (i, &wu) in bu.iter().enumerate() {
@@ -581,6 +624,97 @@ impl BSplineSurface {
             return in_range(res.1).then_some(res.1);
         }
         in_range(first).then_some(first)
+    }
+
+    /// Per-surface constants of the closest-point seed grid (spans, cell
+    /// boxes, v-sample bases, per-u bases), cached by a hash of the surface:
+    /// a query then allocates nothing per sample.
+    fn cp_prep(&self) -> std::rc::Rc<CpPrep> {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        thread_local! {
+            static CACHE: RefCell<Vec<(u64, Rc<CpPrep>)>> = const { RefCell::new(Vec::new()) };
+        }
+        let key = self.fingerprint();
+        if let Some(r) = CACHE.with(|c| c.borrow().iter().find(|e| e.0 == key).map(|e| e.1.clone())) {
+            return r;
+        }
+        let ((u0, u1), (v0, v1)) = self.domain();
+        let cells_n = (basis::distinct_count(&self.knots_u) - 1) * (basis::distinct_count(&self.knots_v) - 1);
+        // long multi-span surfaces (screw sweeps): a coarser sample grid per
+        // cell, the Newton polish recovers the foot point
+        let dens = if cells_n >= 256 { 1 } else { 3 };
+        let nu = ((basis::distinct_count(&self.knots_u) - 1) * (self.deg_u + 1) * dens).max(12);
+        let nv = ((basis::distinct_count(&self.knots_v) - 1) * (self.deg_v + 1) * dens).max(12);
+        let (pu, pv) = (self.deg_u, self.deg_v);
+        let spans = |kn: &[f64], p: usize, n: usize| -> Vec<usize> {
+            let mut idx = vec![usize::MAX; kn.len()];
+            let mut k = 0;
+            for s in p..n {
+                if kn[s] < kn[s + 1] {
+                    idx[s] = k;
+                    k += 1;
+                }
+            }
+            idx
+        };
+        let (iu_of, iv_of) = (spans(&self.knots_u, pu, self.nu), spans(&self.knots_v, pv, self.nv));
+        let (cu, cv) = (iu_of.iter().filter(|&&i| i != usize::MAX).count(), iv_of.iter().filter(|&&i| i != usize::MAX).count());
+        let boxes = self.cell_boxes(&iu_of, &iv_of, cu, cv);
+        let fast = self.weights.is_none();
+        let vs: Vec<(f64, usize)> = (0..=nv)
+            .map(|b| {
+                let v = v0 + (v1 - v0) * b as f64 / nv as f64;
+                (v, iv_of[find_span(self.nv - 1, pv, v, &self.knots_v)])
+            })
+            .collect();
+        let bv: Vec<(usize, Vec<f64>)> = if fast {
+            vs.iter()
+                .map(|&(v, _)| {
+                    let s = find_span(self.nv - 1, pv, v, &self.knots_v);
+                    (s, basis::basis_funs(s, v, pv, &self.knots_v))
+                })
+                .collect()
+        } else {
+            vec![]
+        };
+        let mut cols: Vec<Vec<usize>> = vec![vec![]; cv.max(1)];
+        for (k, &(_, iv)) in vs.iter().enumerate() {
+            cols[iv].push(k);
+        }
+        let span_u = (u1 - u0).max(f64::MIN_POSITIVE);
+        let mut cells = Vec::with_capacity(cu * cv);
+        for su in pu..self.nu {
+            let iu = iu_of[su];
+            if iu == usize::MAX {
+                continue;
+            }
+            let (k0, k1) = (self.knots_u[su], self.knots_u[su + 1]);
+            let alo = ((((k0 - u0) / span_u) * nu as f64).floor() - 1.0).max(0.0) as usize;
+            let ahi = ((((k1 - u0) / span_u) * nu as f64).ceil() + 1.0).min(nu as f64).max(0.0) as usize;
+            for sv in pv..self.nv {
+                let iv = iv_of[sv];
+                if iv != usize::MAX {
+                    cells.push((su, iu, iv, alo, ahi));
+                }
+            }
+        }
+        let ubas: Vec<(usize, Vec<f64>)> = (0..=nu)
+            .map(|a| {
+                let u = u0 + (u1 - u0) * a as f64 / nu as f64;
+                let su = find_span(self.nu - 1, pu, u, &self.knots_u);
+                (su, if fast { basis::basis_funs(su, u, pu, &self.knots_u) } else { vec![] })
+            })
+            .collect();
+        let prep = Rc::new(CpPrep { nu, cv, boxes: (*boxes).clone(), vs, bv, cols, cells, ubas, cell_scale: self.cell_scale() });
+        CACHE.with(|c| {
+            let mut c = c.borrow_mut();
+            if c.len() >= 24 {
+                c.remove(0);
+            }
+            c.push((key, prep.clone()));
+        });
+        prep
     }
 
     /// Typical size of a knot-span cell (diagonal of the control-net box of
