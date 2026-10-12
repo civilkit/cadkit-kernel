@@ -638,8 +638,20 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
     }
     // vertex data indexed by CDT vertex
     let mut vdata: HashMap<u32, (Vec2, Vec3)> = HashMap::new();
+    // Boundary vertices keep the edge curve's 3D point (the neighbours share it), but an edge curve can lie
+    // well off the surface (an approximated cut that grazes it: the uv of a near-tangent point is ill
+    // conditioned). Refinement must judge the surface, not that offset, or it never converges there.
+    let mut off_surf: HashMap<u32, Vec3> = HashMap::new();
     for (i, &v) in tri.vmap.iter().enumerate() {
         vdata.entry(v).or_insert((b.pts[i].uv, b.pts[i].p));
+    }
+    if matches!(surf, Surface::BSpline(_)) {
+        for (&v, &(uv, p)) in vdata.iter() {
+            let sp = surf.eval(uv.x, uv.y);
+            if sp.dist(p) > 0.25 * tol.chord {
+                off_surf.insert(v, sp);
+            }
+        }
     }
     let wrap_eval = |uv: Vec2| -> Vec2 {
         let mut e = uv;
@@ -656,10 +668,21 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
         e
     };
 
+    // ---- 4b. lattice seeding of big smooth spline faces
+    // Centroid insertion alone grows a long thin face by one triangle layer per pass (64 passes max, each
+    // re-testing the whole mesh): a swept coil face came out half empty and 100k triangles heavy. Seed the
+    // interior with the (u,v) lattice the surface needs along its iso-lines, then let refinement mop up.
+    if let (Surface::BSpline(bs), None, None) = (surf, cu, cv) {
+        if u_hi > u_lo && v_hi > v_lo && b.pts.len() >= 64 {
+            seed_lattice(bs, surf, &mut tri, &mut vdata, (u_lo, u_hi), (v_lo, v_hi), (su, sv), tol, &to_c);
+        }
+    }
+
     // ---- 5. refinement
     let budget = 20000 + 50 * b.pts.len();
     let mut inserted = 0usize;
     let sense = face.sense;
+    let is_spline = matches!(surf, Surface::BSpline(_));
     // Triangles that passed keep their vertices (and so their verdict) across
     // passes: remember them instead of re-evaluating the surface 4x each pass.
     let mut accepted: HashSet<[u32; 3]> = HashSet::new();
@@ -677,7 +700,7 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
             }
             let get = |k: u32| -> (Vec2, Vec3) {
                 match vdata.get(&k) {
-                    Some(&d) => d,
+                    Some(&d) => (d.0, off_surf.get(&k).copied().unwrap_or(d.1)),
                     None => {
                         let uv = from_c(tri.cdt.pts[k as usize]);
                         let e = wrap_eval(uv);
@@ -688,12 +711,16 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
             let (a, bb, c) = (get(ids[0]), get(ids[1]), get(ids[2]));
             let n = (bb.1 - a.1).cross(c.1 - a.1);
             let area2 = n.len();
-            if !(area2 > 1e-24 * (1.0 + a.1.len2())) {
+            let cuv3 = (a.0 + bb.0 + c.0) * (1.0 / 3.0);
+            let flat3 = !(area2 > 1e-24 * (1.0 + a.1.len2()));
+            if flat3 && !is_spline {
                 accepted.insert(key);
                 continue;
             }
-            let nn = n / area2;
-            let cuv3 = (a.0 + bb.0 + c.0) * (1.0 / 3.0);
+            // A triangle flat in 3D but not in uv (it spans a closing seam, e.g. (0,v0) (2pi,v0) (0,v1) on a
+            // tube) has no plane to measure depth against: it must still be refined, else the face keeps a
+            // hole there. Judge it by the distance of the surface at the centroid to the 3D centroid.
+            let nn = if flat3 { Vec3::ZERO } else { n / area2 };
             let e = wrap_eval(cuv3);
             let sp = surf.eval(e.x, e.y);
             // Pinned (sphere A/B): the oracle's interior acceptance test is the
@@ -701,7 +728,7 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
             // exactly the chord tolerance (0.01384 vs tol 0.01386 on R=10
             // sphere) and does NOT bound the centroid normal angle (36.9deg
             // observed > 17.2deg angle tol) or the edge-midpoint chords.
-            let mut dev = (sp - a.1).dot(nn).abs();
+            let mut dev = if flat3 { sp.dist((a.1 + bb.1 + c.1) * (1.0 / 3.0)) } else { (sp - a.1).dot(nn).abs() };
             for (x, y) in [(a, bb), (bb, c), (c, a)] {
                 let w = wrap_eval((x.0 + y.0) * 0.5);
                 let sm = surf.eval(w.x, w.y);
@@ -858,4 +885,122 @@ fn inside_parity_v(segs: &[(BPt, BPt)], p: Vec2) -> bool {
         }
     }
     odd
+}
+
+/// Distinct knot spans of a clamped knot vector.
+fn knot_spans(k: &[f64]) -> usize {
+    let mut n = 0;
+    for w in k.windows(2) {
+        if w[1] > w[0] {
+            n += 1;
+        }
+    }
+    n
+}
+
+/// Interior parameter fractions in (0,1) for the lattice lines of one direction. Along each of a few section
+/// iso-lines the polyline is sampled at `m` uniform steps; every step needs `max(len * sqrt(k / 8 chord), turn / angle)`
+/// nodes (k = turning angle per length), the sections' needs are maxed, and the nodes are spread to equalise the
+/// cumulative need (continuous, unlike bisection which jumps by powers of two).
+fn lattice_fractions(surf: &Surface, rng: (f64, f64), other: (f64, f64), along_u: bool, tol: &Tol, m: usize) -> Vec<f64> {
+    let mut need = vec![0.0f64; m];
+    for f in [0.1, 0.3, 0.5, 0.7, 0.9] {
+        let o = other.0 + (other.1 - other.0) * f;
+        let pts: Vec<Vec3> = (0..=m)
+            .map(|k| {
+                let t = rng.0 + (rng.1 - rng.0) * k as f64 / m as f64;
+                if along_u { surf.eval(t, o) } else { surf.eval(o, t) }
+            })
+            .collect();
+        let len: Vec<f64> = pts.windows(2).map(|w| w[0].dist(w[1])).collect();
+        // turning angle at interior sample k (between interval k-1 and k)
+        let turn = |k: usize| -> f64 {
+            if len[k - 1] > 1e-12 && len[k] > 1e-12 {
+                curvature::normal_angle((pts[k] - pts[k - 1]) / len[k - 1], (pts[k + 1] - pts[k]) / len[k])
+            } else {
+                0.0
+            }
+        };
+        let th: Vec<f64> = (0..=m).map(|k| if k == 0 || k == m { 0.0 } else { turn(k) }).collect();
+        for k in 0..m {
+            // the larger turn at either end of the interval, spread over the interval
+            let t = th[k].max(th[k + 1]);
+            let l = len[k].max(1e-300);
+            let kappa = t / l;
+            let n = (l * (kappa / (8.0 * tol.chord)).sqrt()).max(t / tol.angle);
+            if n > need[k] {
+                need[k] = n;
+            }
+        }
+    }
+    let total: f64 = need.iter().sum();
+    let nlines = total.ceil() as usize;
+    if nlines < 2 || nlines > 100_000 {
+        return vec![];
+    }
+    let mut out = Vec::with_capacity(nlines);
+    let (mut acc, mut j) = (0.0, 1usize);
+    for k in 0..m {
+        let nk = need[k];
+        while j < nlines && acc + nk >= total * j as f64 / nlines as f64 && nk > 0.0 {
+            let want = total * j as f64 / nlines as f64;
+            out.push((k as f64 + (want - acc) / nk) / m as f64);
+            j += 1;
+        }
+        acc += nk;
+    }
+    out.retain(|&s| s > 0.0 && s < 1.0);
+    out
+}
+
+#[allow(clippy::too_many_arguments)]
+fn seed_lattice(
+    bs: &ck_geom::nurbs::bsurf::BSplineSurface,
+    surf: &Surface,
+    tri: &mut cdt::Triangulation,
+    vdata: &mut HashMap<u32, (Vec2, Vec3)>,
+    ur: (f64, f64),
+    vr: (f64, f64),
+    sc: (f64, f64),
+    tol: &Tol,
+    to_c: &dyn Fn(Vec2) -> Pt,
+) {
+    let n0u = (knot_spans(&bs.knots_u) * 4).clamp(64, 4096);
+    let n0v = (knot_spans(&bs.knots_v) * 4).clamp(64, 4096);
+    // the two iso-line sags add up on a cell diagonal: sample each direction to a third of the chord tolerance
+    let tol = &Tol { chord: tol.chord / 3.0, angle: tol.angle };
+    let fu = lattice_fractions(surf, ur, vr, true, tol, n0u);
+    let fv = lattice_fractions(surf, vr, ur, false, tol, n0v);
+    if fu.is_empty() || fv.is_empty() || fu.len().saturating_mul(fv.len()) > 400_000 {
+        return;
+    }
+    let us: Vec<f64> = fu.iter().map(|s| ur.0 + (ur.1 - ur.0) * s).collect();
+    let vs: Vec<f64> = fv.iter().map(|s| vr.0 + (vr.1 - vr.0) * s).collect();
+    let gap = |x: &[f64], i: usize, lo: f64, hi: f64| {
+        let a = if i == 0 { lo } else { x[i - 1] };
+        let b = if i + 1 == x.len() { hi } else { x[i + 1] };
+        (x[i] - a).min(b - x[i])
+    };
+    for i in 0..us.len() {
+        let hu = gap(&us, i, ur.0, ur.1) * sc.0;
+        for j in 0..vs.len() {
+            let hv = gap(&vs, j, vr.0, vr.1) * sc.1;
+            let uv = Vec2::new(us[i], vs[j]);
+            let p = to_c(uv);
+            let cdt::Loc::In(t) = tri.cdt.locate(p) else { continue };
+            if tri.cdt.tris[t as usize].region != cdt::INSIDE {
+                continue;
+            }
+            let h2 = (0.3 * hu.min(hv)).powi(2);
+            let near = tri.cdt.tris[t as usize].v.iter().any(|&k| {
+                let q = tri.cdt.pts[k as usize];
+                (q[0] - p[0]).powi(2) + (q[1] - p[1]).powi(2) < h2
+            });
+            if near {
+                continue;
+            }
+            let v = tri.cdt.insert_in_tri(t, p);
+            vdata.insert(v, (uv, surf.eval(uv.x, uv.y)));
+        }
+    }
 }
