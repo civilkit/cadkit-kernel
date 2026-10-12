@@ -1176,14 +1176,6 @@
    "skip": "regen does not finish in 50 s (a single 12-turn helix sweep takes 19 s, union with a leg never returns)",
    "note": "leg workplanes are rotated 2.8 deg about X (plane mode angle, now implemented and used by the translation); remaining blockers: the 12-turn helix sweep alone takes 19 s and its union with a coaxial-end leg hangs (kernel-bug perf/hang). Ground truth is two disjoint solids (multi-body result)."
   },
-  "pipe_elbow_000012": {
-   "label": "kernel-gap",
-   "note": "sweep along a multi-piece path (line-arc-line) is TODO(rebuild) in ck-model sweep (F3) -> F5 then nothingToCut."
-  },
-  "duct_elbow_000181": {
-   "label": "kernel-gap",
-   "note": "same: sweep along a multi-piece path (line-arc-line) is TODO(rebuild) (F3); F5 nothingToCut."
-  },
   "torus_link_000095": {
    "label": "kernel-gap",
    "note": "lugs touch the torus in a single point, so the union is two disjoint solids (ground truth: solids=2). Our feature union returns only the second body (volume 2548 = lugs only; torus silently dropped, no error): no multi-body result for a union of disjoint/point-contact bodies. The internal blind cross holes (void shells) are not reached."
