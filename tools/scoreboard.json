@@ -60,11 +60,11 @@
   280
  ],
  "bench.benchcad": [
-  7,
-  10
+  15,
+  30
  ],
  "bench.benchcad.step": [
-  9,
-  10
+  21,
+  30
  ]
 }

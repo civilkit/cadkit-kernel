@@ -1214,7 +1214,7 @@
   },
   "u_channel_000058": {
    "label": "kernel-gap",
-   "note": "F7 blendUnsupported: chamfer on the edges of the top faces after the vertical-edge fillet (plane/fillet-cylinder tangent edges); box, slot and the 8-edge |Z fillet are exact."
+   "note": "F7 blendUnsupported: chamfer of a planar face edge that meets a fillet cylinder tangentially. Probed: the 4 end-edge chamfers (plane x plane) alone succeed, any single chamfer on a plane/fillet-cylinder edge fails. Box, slot and the 8-edge |Z fillet are exact."
   },
   "spline_hub_000030": {
    "label": "kernel-bug",
@@ -1226,7 +1226,7 @@
   },
   "pan_head_screw_000035": {
    "label": "ground-truth-mismatch",
-   "note": "everything but the thread is exact (unthreaded 1492.07 mm3). Our swept V-groove removes 24.07 mm3 (= area 0.0924 mm2 x helix length, the geometric truth); the dataset's sweep (isFrenet=False, profile in the XZ plane not normal to the helix) removes only 10.08 mm3, so the ground truth is not the geometric groove. Cannot match; the STEP-in side also fails (SHELL_NONMANIFOLD / EDGE_OFF_SURFACE)."
+   "note": "everything but the thread is exact (unthreaded 1492.07 mm3). Our swept V-groove removes 24.07 mm3 (= groove area 0.0924 mm2 x centroid path length, the geometric truth); the dataset's sweep (isFrenet=False, profile plane not exactly normal to the helix) only removes 10.08 mm3 (cause not determined), so the ground truth is not the geometric groove and cannot be matched."
   }
  },
  "knownStep": {
