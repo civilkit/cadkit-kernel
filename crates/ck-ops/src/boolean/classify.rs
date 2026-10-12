@@ -73,12 +73,12 @@ fn local_project(bs: &ck_geom::nurbs::bsurf::BSplineSurface, p: Vec3, q: Vec2) -
     let (mut u, mut v) = (q.x.clamp(u0, u1), q.y.clamp(v0, v1));
     let mut converged = false;
     for _ in 0..12 {
-        let d = bs.derivs(u, v, 1);
-        let r = d[0][0] - p;
+        let d = bs.derivs2(u, v);
+        let r = d.p - p;
         if r.len() < 1e-9 {
             return Some(Vec2::new(u, v));
         }
-        let (su, sv) = (d[1][0], d[0][1]);
+        let (su, sv) = (d.du, d.dv);
         let (a, b, c) = (su.dot(su), su.dot(sv), sv.dot(sv));
         let (e, f) = (su.dot(r), sv.dot(r));
         let det = a * c - b * b;
