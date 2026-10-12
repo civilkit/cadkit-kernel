@@ -373,6 +373,9 @@ pub fn imprint_hooked(a: &Body, b: &Body, tol: f64, hook: Option<PairHook>) -> A
     let split_params = |c: &Curve, t0: f64, t1: f64| -> Vec<f64> {
         let mut ts = vec![t0, t1];
         for &p in &pool {
+            if !c.may_be_within(p, tol) {
+                continue; // farther than `tol` from the whole curve: skip the closest-point search
+            }
             let (t, d) = dist_in_range(c, (t0, t1), p);
             if d <= tol {
                 let s = param_slack(c, t, tol);

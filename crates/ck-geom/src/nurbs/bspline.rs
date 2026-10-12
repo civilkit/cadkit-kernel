@@ -93,10 +93,10 @@ impl<P: Pt> BSplineCurve<P> {
     /// Point at `u` (clamped to the domain).
     pub fn eval(&self, u: f64) -> P {
         let p = self.degree;
-        if self.weights.is_some() || p >= 12 {
+        if p >= 12 {
             return self.derivs(u, 0)[0];
         }
-        // allocation-free non-rational path (A2.2 + dot)
+        // allocation-free path (A2.2 + dot; rational: homogeneous sum, then the quotient)
         let (a, b) = self.domain();
         let u = u.clamp(a, b);
         let span = find_span(self.n(), p, u, &self.knots);
@@ -114,11 +114,45 @@ impl<P: Pt> BSplineCurve<P> {
             }
             n[j] = saved;
         }
+        if let Some(w) = &self.weights {
+            let (mut acc, mut wd) = (P::default(), 0.0);
+            for j in 0..=p {
+                let i = span - p + j;
+                acc = acc + self.ctrl[i] * (n[j] * w[i]);
+                wd += n[j] * w[i];
+            }
+            return acc / wd;
+        }
         let mut acc = P::default();
         for j in 0..=p {
             acc = acc + self.ctrl[span - p + j] * n[j];
         }
         acc
+    }
+
+    /// `[C(u), C'(u), C''(u)]` without allocating (orders above `d` are zero); same arithmetic as [`Self::derivs`].
+    pub fn derivs_arr(&self, u: f64, d: usize) -> [P; 3] {
+        debug_assert!(d <= 2);
+        let p = self.degree;
+        if self.weights.is_none() && p < 12 {
+            let (a, b) = self.domain();
+            let u = u.clamp(a, b);
+            let span = find_span(self.n(), p, u, &self.knots);
+            let nd = basis::ders_basis_funs2(span, u, p, d, &self.knots);
+            let mut ad = [P::default(); 3];
+            for k in 0..=d.min(p) {
+                for j in 0..=p {
+                    ad[k] = ad[k] + self.ctrl[span - p + j] * (nd[k][j] * 1.0);
+                }
+            }
+            return ad;
+        }
+        let v = self.derivs(u, d);
+        let mut out = [P::default(); 3];
+        for (o, x) in out.iter_mut().zip(v) {
+            *o = x;
+        }
+        out
     }
 
     /// `[C(u), C'(u), ..., C^(d)(u)]` (A3.2 / A4.2). Orders above the degree
@@ -128,6 +162,16 @@ impl<P: Pt> BSplineCurve<P> {
         let u = u.clamp(a, b);
         let p = self.degree;
         let span = find_span(self.n(), p, u, &self.knots);
+        if self.weights.is_none() && p < 12 && d <= 2 {
+            let nd = basis::ders_basis_funs2(span, u, p, d, &self.knots);
+            let mut ad = vec![P::default(); d + 1];
+            for k in 0..=d.min(p) {
+                for j in 0..=p {
+                    ad[k] = ad[k] + self.ctrl[span - p + j] * (nd[k][j] * 1.0);
+                }
+            }
+            return ad;
+        }
         let nd = ders_basis_funs(span, u, p, d, &self.knots);
         let mut ad = vec![P::default(); d + 1];
         let mut wd = vec![0.0; d + 1];
@@ -427,7 +471,7 @@ impl<P: Pt> BSplineCurve<P> {
                 let b = w[0] + (w[1] - w[0]) * (s + 1) as f64 / sub as f64;
                 let (m, h) = ((a + b) / 2.0, (b - a) / 2.0);
                 for &(x, wt) in GL8.iter() {
-                    total += wt * h * self.derivs(m + h * x, 1)[1].len();
+                    total += wt * h * self.derivs_arr(m + h * x, 1)[1].len();
                 }
             }
         }
@@ -506,7 +550,7 @@ impl<P: Pt> BSplineCurve<P> {
                     sample(s, &mut best);
                 }
             }
-            return newton_closest(|u| self.derivs(u, 2), q, best.1, a, b);
+            return newton_closest(|u| self.derivs_arr(u, 2), q, best.1, a, b);
         }
         for i in 0..=n {
             let u = a + (b - a) * i as f64 / n as f64;
@@ -515,7 +559,7 @@ impl<P: Pt> BSplineCurve<P> {
                 best = (d, u);
             }
         }
-        newton_closest(|u| self.derivs(u, 2), q, best.1, a, b)
+        newton_closest(|u| self.derivs_arr(u, 2), q, best.1, a, b)
     }
 
     /// Conservative proximity test: false only when `q` is farther than
@@ -580,10 +624,11 @@ impl<P: Pt> BSplineCurve<P> {
 
 /// Newton iteration for the closest point on a parametric curve given a
 /// derivative oracle `[C, C', C'']`; clamps to [a,b].
-pub(crate) fn newton_closest<P: Pt>(d: impl Fn(f64) -> Vec<P>, q: P, u0: f64, a: f64, b: f64) -> f64 {
+pub(crate) fn newton_closest<P: Pt, R: AsRef<[P]>>(d: impl Fn(f64) -> R, q: P, u0: f64, a: f64, b: f64) -> f64 {
     let mut u = u0;
     for _ in 0..30 {
         let ds = d(u);
+        let ds = ds.as_ref();
         let r = ds[0] - q;
         let f = ds[1].dot(r);
         let fp = ds[2].dot(r) + ds[1].dot(ds[1]);

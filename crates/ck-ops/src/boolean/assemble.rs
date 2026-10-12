@@ -320,7 +320,8 @@ pub fn sample_point(arr: &Arrangement, f: &Fragment) -> Option<(Vec3, Vec3)> {
                 // keep away from the other boundary pieces
                 let near = f.loops.iter().flatten().any(|g| {
                     let ge = &arr.edges[g.0];
-                    super::imprint::dist_in_range(&ge.curve, (ge.t0, ge.t1), q).1 < eps * size * 0.25
+                    let thr = eps * size * 0.25;
+                    ge.curve.may_be_within(q, thr) && super::imprint::dist_in_range(&ge.curve, (ge.t0, ge.t1), q).1 < thr
                 });
                 if near {
                     continue;
