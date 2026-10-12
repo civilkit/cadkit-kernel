@@ -17,6 +17,8 @@
 //   oracle.<set>  HARD: massProps volume/area/com + box vs the closed-form
 //                 oracles of tools/oracles (independent of the original), 1e-6
 //   vol.<set>     our volume within 1e-3 relative of the original's
+//   naming.stable OURS alone (SOFT): case/edit pairs where every name referenced by a later
+//                 feature still resolves to the same geometric entity (tools/naming_stability.mjs)
 //   heal.repair   OURS alone: damaged copies of the valid brep bodies healed
 //                 back to validate-clean with volume within 1e-6
 //   import.roundtrip  OURS alone (HARD): our `step` export -> `importStep` into
@@ -39,6 +41,7 @@ import cases from './cases.mjs';
 import { parts as brepParts } from './brep_cases.mjs';
 import { oracles } from './oracles/index.mjs';
 import { checkOracle } from './oracles/check.mjs';
+import { runNaming } from './naming_stability.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2);
@@ -173,6 +176,10 @@ if (existsSync(path.join(sdir, 'expected.json'))) {
     bump('import.sat', ok);
   }
 }
+
+// 2c. naming.stable (SOFT): references to earlier-feature faces/edges still point at the
+// same geometric entity after upstream dimension edits (tools/naming_stability.mjs)
+for (const r of runNaming({ ours: wasmB })) if (!r.neg && r.edit !== '(baseline)') bump('naming.stable', r.cls === 'ok');
 
 // 3. STEP export
 const gdir = path.join(here, '../crates/ck-io/tests/golden');
