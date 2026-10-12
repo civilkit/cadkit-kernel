@@ -129,14 +129,13 @@ pub fn line_params(o: Vec3, d: Vec3, s: &Surface, tol: f64) -> Option<Vec<f64>> 
     }
 }
 
-/// Line `o + t d` against a (non-rational) B-spline surface: the control
+/// Line `o + t d` against a B-spline surface: the control
 /// net box of every knot-span cell prunes (convex hull), then a 3-variable
 /// Newton on `o + t d - S(u, v)` per cell hit. Roots over the whole line
 /// (the whole surface domain), de-duplicated.
 fn line_bspline(o: Vec3, d: Vec3, bs: &ck_geom::nurbs::bsurf::BSplineSurface, tol: f64) -> Option<Vec<f64>> {
-    if bs.weights.is_some() {
-        return None;
-    }
+    // rational surfaces too: `derivs` handles the weights and the control
+    // net's box still bounds the surface (weights are positive)
     let dd = d.dot(d);
     if dd < 1e-300 {
         return Some(vec![]);
