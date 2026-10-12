@@ -196,3 +196,44 @@ fn flange_hole_breaking_out_of_the_rim() {
         assert!((got - area * t).abs() < 2e-3 * area * t, "hole at {deg} deg removed {got} vs {}", area * t);
     }
 }
+
+// ---- eyebolt: torus eye unioned with the shank ----
+
+fn right() -> Frame {
+    Frame { o: Vec3::ZERO, x: Vec3::Z, y: Vec3::Y, z: Vec3::new(-1.0, 0.0, 0.0) }
+}
+
+/// Torus ring (major 49, minor 14) with its axis along Z through (0, 59.67, 0).
+fn eye() -> Body {
+    let outer = ProfileLoop::new(vec![ProfileSeg::circle("e1", v(0.0, 108.67), 14.0)]);
+    // axis: sketch line y = 59.67, along sketch x (world Z)
+    revolve("F12", &Profile::new(right(), region(outer)), Vec3::new(0.0, 59.67, 0.0), Vec3::Z, 0.0, TAU).unwrap()
+}
+
+fn shank_parts() -> Vec<Body> {
+    let collar = cyl("F2", top(), 0.0, 0.0, 35.0, 0.0, 26.0);
+    let neck = {
+        let q = [v(0.0, 26.0), v(19.39, 26.0), v(16.0, 31.67), v(0.0, 31.67)];
+        let lp = ProfileLoop::new((0..4).map(|i| ProfileSeg::line(&format!("e{}", i + 1), q[i], q[(i + 1) % 4])).collect());
+        revolve("F7", &Profile::new(front(), region(lp)), Vec3::ZERO, Vec3::Y, 0.0, TAU).unwrap()
+    };
+    let rod = cyl("F10", top(), 0.0, 0.0, 18.0, -54.0, 0.0);
+    vec![collar, neck, rod]
+}
+
+#[test]
+fn eyebolt_eye_union_shank() {
+    let mut body = shank_parts().remove(0);
+    for (i, part) in shank_parts().into_iter().enumerate().skip(1) {
+        body = boolean(&body, &part, Op::Union, 1e-6).unwrap_or_else(|e| panic!("shank part {i}: {e}")).body;
+    }
+    let shank_v = mass_props(&body).volume;
+    let joined = boolean(&body, &eye(), Op::Union, 1e-6).expect("eye union shank").body;
+    assert_valid(&joined);
+    let v = mass_props(&joined).volume;
+    // ground truth (CadQuery) of the full eyebolt
+    assert!((v - 309589.0).abs() < 2e-3 * 309589.0, "volume {v} (shank {shank_v})");
+    let t = ck_tess::mesh::tessellate(&joined);
+    let missing: Vec<_> = joined.face_ids().filter(|f| t.faces[f.idx()].is_none()).map(|f| joined.face_id_str(f)).collect();
+    assert!(missing.is_empty(), "unmeshed faces {missing:?}");
+}

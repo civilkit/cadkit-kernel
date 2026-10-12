@@ -31,7 +31,29 @@ pub struct BoolOut {
 }
 
 /// `a op b`. Errors: `booleanFailed` (topology could not be assembled).
+///
+/// Fallback ladder: marched intersection curves meet their neighbours only
+/// to ~1e-6, so a configuration whose edge endpoints sit within a few
+/// model tolerances of each other (a sliver where a cylinder grazes a
+/// torus) can leave the arrangement open at `tol`. On `booleanFailed` the
+/// operation is retried with the welding tolerance raised 10x and 100x
+/// (the vertex pool, edge de-duplication and trims all follow `tol`); the
+/// first result that assembles into a closed manifold wins.
 pub fn boolean(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> {
+    let first = boolean_at(a, b, op, tol);
+    if !matches!(&first, Err(e) if e == "booleanFailed") {
+        return first;
+    }
+    for k in [10.0, 100.0] {
+        super::bool_dbg!("retrying with tolerance {:e}", tol * k);
+        if let Ok(out) = boolean_at(a, b, op, tol * k) {
+            return Ok(out);
+        }
+    }
+    first
+}
+
+fn boolean_at(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> {
     if b.num_faces() == 0 {
         return Ok(BoolOut { body: a.clone(), no_effect: op != Op::Union });
     }
@@ -77,6 +99,13 @@ pub fn boolean(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> 
         .collect();
     if !bad_issues.is_empty() {
         super::bool_dbg!("arrangement:\n{}", arr.dump());
+        for i in &bad_issues {
+            if let Issue::OpenEdge(e) | Issue::NonManifoldEdge(e, _) | Issue::BadPairing(e) = i {
+                let ed = body.edge(*e);
+                let faces: Vec<_> = body.edge_coedges(*e).iter().map(|&c| body.face_id_str(body.coedge_face(c))).collect();
+                super::bool_dbg!("  bad edge {:?}: {} t[{:.5},{:.5}] p0 {:?} p1 {:?} faces {:?}", e, ed.curve.kind(), ed.t0, ed.t1, ed.curve.eval(ed.t0), ed.curve.eval(ed.t1), faces);
+            }
+        }
         super::bool_dbg!("assembled body invalid: {} issues, first {:?}", bad_issues.len(), &bad_issues[..bad_issues.len().min(6)]);
         return Err("booleanFailed".into());
     }

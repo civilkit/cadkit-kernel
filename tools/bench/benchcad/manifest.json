@@ -1188,29 +1188,13 @@
    "label": "kernel-gap",
    "note": "same: sweep along a multi-piece path (line-arc-line) is TODO(rebuild) (F3); F5 nothingToCut."
   },
-  "i_beam_000007": {
-   "label": "kernel-bug",
-   "note": "F6 booleanFailed: the 2.175 mm hole whose axis lies in the beam end-face plane (half hole through flanges and web) fails; the full hole at z=120.84 alone is fine. Everything else (chamfer, fillet, full hole) is exact: the volume is off by exactly the half-hole."
-  },
   "torus_link_000095": {
    "label": "kernel-gap",
    "note": "lugs touch the torus in a single point, so the union is two disjoint solids (ground truth: solids=2). Our feature union returns only the second body (volume 2548 = lugs only; torus silently dropped, no error): no multi-body result for a union of disjoint/point-contact bodies. The internal blind cross holes (void shells) are not reached."
   },
-  "dome_cap_000212": {
-   "label": "kernel-bug",
-   "note": "revolving an arc whose centre lies on the axis builds a degenerate torus (major radius 0) instead of a sphere: volume is right (389600) but the face is missing from the mesh/box/area (area 4693 vs 33426, box ends at the cylinder); the 4-hole through cut then fails (F6 booleanFailed). STEP import of the ground truth: unsupported 'single boundary winding a revolution surface' (sphere pole)."
-  },
-  "bellows_000367": {
-   "label": "kernel-bug",
-   "note": "F5/F7 booleanFailed: 6-hole bolt-circle cuts through the end flanges. Probed: the cylinders cross the conical convolution flank (F5, parallel-axis cylinder x cone) and the six-circle tool fails at the flat end too (F7) while a single circle passes; also fails with holes inside the rim radius, so the rim break-out is not the cause."
-  },
   "u_channel_000058": {
    "label": "kernel-gap",
    "note": "F7 blendUnsupported: chamfer of a planar face edge that meets a fillet cylinder tangentially. Probed: the 4 end-edge chamfers (plane x plane) alone succeed, any single chamfer on a plane/fillet-cylinder edge fails. Box, slot and the 8-edge |Z fillet are exact."
-  },
-  "eyebolt_000265": {
-   "label": "kernel-bug",
-   "note": "F12 booleanFailed: union of the revolved torus (exact alone, V=189575) with the collar/neck/shank (torus x coaxial cylinders and cone, torus tube crossing the shank axis region). The torus overlaps the shank, so the boolean has torus x cylinder and torus x plane intersections."
   },
   "pan_head_screw_000035": {
    "label": "ground-truth-mismatch",

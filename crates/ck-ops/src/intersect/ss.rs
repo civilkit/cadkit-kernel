@@ -1084,6 +1084,19 @@ pub fn march(s1: &Surface, s2: &Surface, b: Bounds, tol: f64, step: f64) -> Vec<
         if pts.len() < 2 {
             continue;
         }
+        let mut pts = pts;
+        if !closed {
+            // a march stops up to a step short of a surface's domain edge (loft seams,
+            // sphere poles): finish the curve exactly on it so the neighbouring
+            // face's curve meets it at the same point
+            let n = pts.len();
+            if let Some(e) = extend_to_domain_edge(s1, s2, &pts[n - 1], &pts[n - 2], &b, tol, step, pad) {
+                pts.push(e);
+            }
+            if let Some(e) = extend_to_domain_edge(s1, s2, &pts[0], &pts[1], &b, tol, step, pad) {
+                pts.insert(0, e);
+            }
+        }
         let n = pts.len();
         for i in 0..n {
             let gap = |j: usize| pts[i].p.dist(pts[j].p);
@@ -1094,6 +1107,67 @@ pub fn march(s1: &Surface, s2: &Surface, b: Bounds, tol: f64, step: f64) -> Vec<
         out.push(SsCurve::Fitted { pts, curve: Curve::BSpline(bs), closed });
     }
     out
+}
+
+/// The point where the intersection curve continuing from `last` (coming from
+/// `before`) reaches the boundary of a non-periodic parameter domain of `s1` or
+/// `s2`: Newton on (u1, v1, u2, v2) with S1 = S2 and the parameter pinned to
+/// the bound. Only a bound within two steps ahead of `last` qualifies.
+#[allow(clippy::too_many_arguments)]
+fn extend_to_domain_edge(s1: &Surface, s2: &Surface, last: &MPt, before: &MPt, b: &Bounds, tol: f64, step: f64, pad: f64) -> Option<MPt> {
+    let t = (last.p - before.p).try_normalize()?;
+    let mut best: Option<(f64, MPt)> = None;
+    for (si, s) in [s1, s2].into_iter().enumerate() {
+        let (dom, per) = (s.domain(), s.periods());
+        for dir in 0..2 {
+            let ((lo, hi), p) = if dir == 0 { (dom.0, per.0) } else { (dom.1, per.1) };
+            if p.is_some() || !lo.is_finite() || !hi.is_finite() {
+                continue;
+            }
+            let k = 2 * si + dir; // index into (u1, v1, u2, v2)
+            for bound in [lo, hi] {
+                let mut x = last.uv;
+                x[k] = bound;
+                let mut ok = false;
+                for _ in 0..30 {
+                    let d1 = s1.derivs2(x[0], x[1]);
+                    let d2 = s2.derivs2(x[2], x[3]);
+                    let f = d1.p - d2.p;
+                    let g = x[k] - bound;
+                    if f.len() < tol * 1e-4 && g.abs() < 1e-12 {
+                        ok = true;
+                        break;
+                    }
+                    let mut sel = [0.0; 5];
+                    sel[k] = 1.0;
+                    sel[4] = -g;
+                    let m = [
+                        [d1.du.x, d1.dv.x, -d2.du.x, -d2.dv.x, -f.x],
+                        [d1.du.y, d1.dv.y, -d2.du.y, -d2.dv.y, -f.y],
+                        [d1.du.z, d1.dv.z, -d2.du.z, -d2.dv.z, -f.z],
+                        sel,
+                    ];
+                    let Some(dx) = solve4(m) else { break };
+                    for j in 0..4 {
+                        x[j] += dx[j];
+                    }
+                    let (a, c) = wrap_uv(s1, x[0], x[1]);
+                    let (e, g2) = wrap_uv(s2, x[2], x[3]);
+                    x = [a, c, e, g2];
+                    x[k] = bound;
+                }
+                if !ok {
+                    continue;
+                }
+                let q = (s1.eval(x[0], x[1]) + s2.eval(x[2], x[3])) * 0.5;
+                let d = q.dist(last.p);
+                if d > 1e-9 && d <= 2.0 * step && (q - last.p).dot(t) > 0.0 && inside(b, q, pad) && best.as_ref().map_or(true, |(bd, _)| d < *bd) {
+                    best = Some((d, MPt { p: q, uv: x }));
+                }
+            }
+        }
+    }
+    best.map(|(_, m)| m)
 }
 
 /// Interpolate the traced points with a cubic B-spline, then refine: the

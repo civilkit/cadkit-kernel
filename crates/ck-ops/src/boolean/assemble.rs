@@ -151,6 +151,8 @@ pub fn walk(arr: &Arrangement, s: &Surface, sense: bool, hes: &[He]) -> Vec<Vec<
         }
         if ok {
             cycles.push(cyc);
+        } else {
+            super::bool_dbg!("walk: open chain of {} half-edges dropped: {:?}", cyc.len(), cyc);
         }
     }
     cycles
@@ -218,7 +220,19 @@ pub fn fragments(arr: &Arrangement, fi: usize) -> Vec<Fragment> {
         let before = inner.len();
         inner.retain(|&e| {
             let ed = &arr.edges[e];
-            ed.v0 == ed.v1 || (deg[&ed.v0] > 2 && deg[&ed.v1] > 2)
+            let keep = ed.v0 == ed.v1 || (deg[&ed.v0] > 2 && deg[&ed.v1] > 2);
+            if !keep {
+                let (p0, p1) = (arr.verts[ed.v0], arr.verts[ed.v1]);
+                let near = |v: usize| {
+                    let p = arr.verts[v];
+                    arr.verts.iter().enumerate().filter(|(i, _)| *i != v).map(|(i, q)| (q.dist(p), i)).fold((f64::INFINITY, 0), |a, b| if b.0 < a.0 { b } else { a })
+                };
+                super::bool_dbg!(
+                    "face {fi}: dangling inner edge {e} dropped (v{} {:?} deg {} nearest {:?}; v{} {:?} deg {} nearest {:?})",
+                    ed.v0, p0, deg[&ed.v0], near(ed.v0), ed.v1, p1, deg[&ed.v1], near(ed.v1)
+                );
+            }
+            keep
         });
         if inner.len() == before {
             break;
