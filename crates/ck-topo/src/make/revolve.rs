@@ -228,7 +228,11 @@ fn side_geom(ax: &Axis, c: &Curve, t0: f64, t1: f64, sweep: f64, v_t0: &VertGeom
         Curve::Circle { frame: cf, r } => {
             let cc = cf.o;
             let rc = ax.radial(cc);
-            let (o, x, major) = if rc.len() < TOL { (cc, xr, 0.0) } else { (ax.foot(cc), rc.normalize(), rc.len()) };
+            // an arc centred on the axis up to sketch precision (relative 1e-4)
+            // is a sphere, not a torus of vanishing major radius (whose
+            // degenerate pole breaks tessellation and booleans)
+            let on_axis = rc.len() < TOL || rc.len() < 1e-4 * *r;
+            let (o, x, major) = if on_axis { (ax.foot(cc), xr, 0.0) } else { (ax.foot(cc), rc.normalize(), rc.len()) };
             let fr = ax.frame_at(o, x);
             // φ(p) = atan2(z, ρ - major) about the circle centre
             let phi = |p: Vec3| {

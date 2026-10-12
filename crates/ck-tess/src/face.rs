@@ -252,6 +252,8 @@ pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, boo
     let mut u_lo = f64::INFINITY;
     let mut u_hi = f64::NEG_INFINITY;
     let mut polys: Vec<Vec<BPt>> = vec![];
+    // v of every seam end (a seam that reaches a pole is the only boundary there)
+    let mut seam_v: Vec<f64> = vec![];
     for &l in &face.loops {
         let lp = body.lp(l);
         if !lp.alive {
@@ -314,6 +316,7 @@ pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, boo
                 }
             }
             if seam {
+                seam_v.extend([pl[0].uv.y, pl[pl.len() - 1].uv.y]);
                 // seams are interior once the face is cut open; they only bound the v/u range
                 poly.push(BPt { uv: Vec2::new(f64::NAN, f64::NAN), p: Vec3::ZERO, virt: false });
                 continue;
@@ -515,8 +518,23 @@ pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, boo
                 // boundary points on the cut lines -> inside intervals
                 let mut on: Vec<f64> = b.pts.iter().filter(|q| q.uv.x == c).map(|q| q.uv.y).collect();
                 on.extend(b.pts.iter().filter(|q| q.uv.x == c + p).map(|q| q.uv.y));
+                // a seam ending at a pole (a hemisphere cap bounded by one circle): the pole is not a
+                // boundary point, so the cut lines must reach it and the pole line closes the strip
+                let mut poles: Vec<f64> = vec![];
+                if pv.is_none() {
+                    for &sv in &seam_v {
+                        let (q0, q1) = (surf.eval(c, sv), surf.eval(c + 0.5 * p, sv));
+                        if q0.dist(q1) <= 1e-9 * (1.0 + q0.len()) && !poles.iter().any(|&x| (x - sv).abs() < 1e-12) {
+                            poles.push(sv);
+                            on.push(sv);
+                        }
+                    }
+                }
                 on.sort_by(|x, y| x.total_cmp(y));
                 on.dedup();
+                for &pv0 in &poles {
+                    iso(&mut b, Vec2::new(c, pv0), Vec2::new(c + p, pv0), Vec2::ZERO);
+                }
                 for w in on.windows(2) {
                     let vm = 0.5 * (w[0] + w[1]);
                     if inside_parity(&seg_list, Vec2::new(c + 0.5 * p * 1e-6, vm)) {
