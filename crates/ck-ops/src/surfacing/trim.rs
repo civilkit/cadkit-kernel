@@ -474,9 +474,18 @@ fn trim_curved(targets: &[Body], tool: &Body, flip: bool, mutual: bool, tol: f64
             lo = lo.min(lo2);
             hi = hi.max(hi2);
             let (sa, sb) = (out.face(fa).surface.clone(), out.face(fb).surface.clone());
+            let t_ssi = std::time::Instant::now();
             let res = crate::intersect::ss::intersect(&sa, &sb, Some(crate::intersect::ss::Bounds { lo, hi }), tol);
+            if std::env::var("TRIM_DEBUG").is_ok() {
+                eprintln!("  ssi {:?}x{:?}: {} curves in {:?}", out.face(fa).name.id(), out.face(fb).name.id(), res.curves().len(), t_ssi.elapsed());
+            }
             for c in res.curves() {
-                if let Some((ta, tb)) = clip_to_face_pair(&out, fa, fb, c.curve(), tol) {
+                let t_clip = std::time::Instant::now();
+                let clipped = clip_to_face_pair(&out, fa, fb, c.curve(), tol);
+                if std::env::var("TRIM_DEBUG").is_ok() {
+                    eprintln!("  clip took {:?}", t_clip.elapsed());
+                }
+                if let Some((ta, tb)) = clipped {
                     cuts.push((c.curve().clone(), ta, tb, c.curve().eval(ta), c.curve().eval(tb), fa, fb));
                 }
             }
@@ -532,39 +541,7 @@ fn trim_curved(targets: &[Body], tool: &Body, flip: bool, mutual: bool, tol: f64
             let (blo, bhi) = face_pts_box(out, *fb);
             let fbd = (bhi - blo).len().max(1.0);
             let tight = 0.01 * fbd;
-            // nearest fb-boundary distance (same search as endpoint_vertex)
-            let mut best: Option<(f64, EdgeId, f64)> = None;
-            for e in out.face_edges(*fb) {
-                let ed = out.edge(e);
-                let n = 24;
-                let step = (ed.t1 - ed.t0) / n as f64;
-                let mut ci = 0usize;
-                let mut cd = f64::INFINITY;
-                for i in 0..=n {
-                    let t = ed.t0 + step * i as f64;
-                    let d = ed.curve.eval(t).dist(q);
-                    if d < cd {
-                        cd = d;
-                        ci = i;
-                    }
-                }
-                let mut lo = (ed.t0 + step * ci as f64 - step).max(ed.t0);
-                let mut hi = (ed.t0 + step * ci as f64 + step).min(ed.t1);
-                for _ in 0..50 {
-                    let m1 = lo + (hi - lo) / 3.0;
-                    let m2 = hi - (hi - lo) / 3.0;
-                    if ed.curve.eval(m1).dist(q) < ed.curve.eval(m2).dist(q) {
-                        hi = m2;
-                    } else {
-                        lo = m1;
-                    }
-                }
-                let t = 0.5 * (lo + hi);
-                let d = ed.curve.eval(t).dist(q);
-                if best.map(|(bd, _, _)| d < bd).unwrap_or(true) {
-                    best = Some((d, e, t));
-                }
-            }
+            let best = nearest_on_boundary(out, *fb, q);
             let Some((d, e, t)) = best else { return };
             if d > tight {
                 if dbg {
@@ -726,6 +703,17 @@ fn trim_curved(targets: &[Body], tool: &Body, flip: bool, mutual: bool, tol: f64
     faces.extend(tool_faces.iter().copied());
     faces.sort_unstable();
     faces.dedup();
+    // The keep test asks "is this coedge covered by the opposing face?" — it
+    // must see the opposing faces as they were BEFORE any loop is rebuilt, or
+    // the answer depends on face order (a trimmed loft no longer covers the
+    // barrel boundary run under its own arch).
+    let snaps: HashMap<FaceId, FaceSnap> = faces
+        .iter()
+        .map(|&f| {
+            let (lo, hi) = face_pts_box(&out, f);
+            (f, FaceSnap { poly: face_poly(&out, f), lo, hi })
+        })
+        .collect();
     for f in faces {
         let fcuts: Vec<(EdgeId, VertexId, VertexId)> = placed
             .iter()
@@ -745,7 +733,7 @@ fn trim_curved(targets: &[Body], tool: &Body, flip: bool, mutual: bool, tol: f64
             if !out.lp(l).alive {
                 continue;
             }
-            if rebuild_loop(&mut out, f, l, &fcuts, &opposing, flip, mutual, tol) {
+            if rebuild_loop(&mut out, f, l, &fcuts, &opposing, &snaps, flip, mutual, tol) {
                 any_kept = true;
             }
         }
@@ -778,6 +766,7 @@ fn rebuild_loop(
     l: ck_topo::body::LoopId,
     fcuts: &[(EdgeId, VertexId, VertexId)],
     opposing: &[FaceId],
+    snaps: &HashMap<FaceId, FaceSnap>,
     flip: bool,
     mutual: bool,
     tol: f64,
@@ -788,7 +777,7 @@ fn rebuild_loop(
     }
     let debug = std::env::var("TRIM_DEBUG").is_ok();
     let keep: Vec<bool> = cos.iter().map(|&c| {
-        let k = !discarded(out, c, opposing, flip, mutual);
+        let k = !discarded(out, c, opposing, snaps, flip, mutual);
         if debug {
             let ed = out.edge(out.coedge(c).edge);
             let p = ed.curve.eval((ed.t0 + ed.t1) * 0.5);
@@ -796,8 +785,9 @@ fn rebuild_loop(
             for &of in opposing {
                 let (u, v, cp) = out.face(of).surface.closest_point(p);
                 info.push_str(&format!(
-                    " {proj:?}:uv=({u:.3},{v:.3}) d={:.3}",
+                    " {proj:?}:uv=({u:.3},{v:.3}) d={:.3} in={}",
                     cp.dist(p),
+                    snap_contains(out, snaps, of, p),
                     proj = out.face(of).name.id()
                 ));
             }
@@ -955,7 +945,7 @@ fn rebuild_loop(
 /// Is this coedge on the discarded side? Mutual: its midpoint projects
 /// inside an opposing face. Non-mutual: on the wrong side of the tool
 /// surface's normal (GUESS for curved tools).
-fn discarded(out: &Body, c: CoedgeId, opposing: &[FaceId], flip: bool, mutual: bool) -> bool {
+fn discarded(out: &Body, c: CoedgeId, opposing: &[FaceId], snaps: &HashMap<FaceId, FaceSnap>, flip: bool, mutual: bool) -> bool {
     let ed = out.edge(out.coedge(c).edge);
     let p = ed.curve.eval((ed.t0 + ed.t1) * 0.5);
     if mutual {
@@ -967,9 +957,8 @@ fn discarded(out: &Body, c: CoedgeId, opposing: &[FaceId], flip: bool, mutual: b
             let s = &out.face(of).surface;
             let (_u, _v, cp) = s.closest_point(p);
             let d = cp.dist(p);
-            let (lo, hi) = face_pts_box(out, of);
-            let cap = 0.14 * (hi - lo).len().max(1.0);
-            d <= cap && face_contains(out, of, p)
+            let cap = 0.14 * (snaps[&of].hi - snaps[&of].lo).len().max(1.0);
+            d <= cap && snap_contains(out, snaps, of, p)
         })
     } else {
         let mut best: Option<(f64, Vec3, Vec3)> = None;
@@ -996,25 +985,49 @@ fn tol_sign() -> f64 {
     1e-9
 }
 
+/// Pre-rebuild view of a face: outer-loop uv polygon + sampled box.
+struct FaceSnap {
+    poly: Option<Vec<Uv2>>,
+    lo: Vec3,
+    hi: Vec3,
+}
+
+fn snap_contains(b: &Body, snaps: &HashMap<FaceId, FaceSnap>, f: FaceId, p: Vec3) -> bool {
+    match &snaps[&f].poly {
+        Some(poly) => face_contains_poly(b, f, poly, p),
+        None => false,
+    }
+}
+
 /// Does `p` project inside face `f`'s outer loop (uv containment of the
 /// closest param, trying periodic shifts)?
 fn face_contains(b: &Body, f: FaceId, p: Vec3) -> bool {
-    let face = b.face(f);
-    let Some(&l) = face.loops.first() else { return false };
+    match face_poly(b, f) {
+        Some(poly) => face_contains_poly(b, f, &poly, p),
+        None => false,
+    }
+}
+
+/// Outer-loop uv polygon of `f` (None = no usable loop). Build once per face
+/// when many containment queries follow.
+fn face_poly(b: &Body, f: FaceId) -> Option<Vec<Uv2>> {
+    let &l = b.face(f).loops.first()?;
     if !b.lp(l).alive {
-        return false;
+        return None;
     }
     let poly = loop_uv_polygon(b, l);
-    if poly.len() < 3 {
-        return false;
-    }
+    (poly.len() >= 3).then_some(poly)
+}
+
+fn face_contains_poly(b: &Body, f: FaceId, poly: &[Uv2], p: Vec3) -> bool {
+    let face = b.face(f);
     let (u, v) = face.surface.closest_param(p);
     let (pu, pv) = face.surface.periods();
     for ku in -2i32..=2 {
         for kv in -2i32..=2 {
             let uu = u + ku as f64 * pu.unwrap_or(0.0);
             let vv = v + kv as f64 * pv.unwrap_or(0.0);
-            if uv_in_poly(Uv2::new(uu, vv), &poly) {
+            if uv_in_poly(Uv2::new(uu, vv), poly) {
                 return true;
             }
         }
@@ -1151,11 +1164,11 @@ fn curve_domain(cv: &Curve3, diag: f64) -> (f64, f64) {
 }
 
 /// Is `p` on BOTH faces (inside their loops and close to their surfaces)?
-fn on_pair(b: &Body, fa: FaceId, fb: FaceId, p: Vec3, slack: f64) -> bool {
+fn on_pair(b: &Body, fa: FaceId, fb: FaceId, polys: &(Vec<Uv2>, Vec<Uv2>), p: Vec3, slack: f64) -> bool {
     b.face(fa).surface.distance(p) < slack
         && b.face(fb).surface.distance(p) < slack
-        && face_contains(b, fa, p)
-        && face_contains(b, fb, p)
+        && face_contains_poly(b, fa, &polys.0, p)
+        && face_contains_poly(b, fb, &polys.1, p)
 }
 
 /// Clip an SSI curve to the (fa, fb) face region: longest sampled run on
@@ -1166,7 +1179,9 @@ fn clip_to_face_pair(b: &Body, fa: FaceId, fb: FaceId, cv: &Curve3, tol: f64) ->
     let slack = (diag * 1e-4).max(1e-4);
     let (t0, t1) = curve_domain(cv, diag);
     let n = 400usize;
-    let valid = |t: f64| on_pair(b, fa, fb, cv.eval(t), slack);
+    let (Some(pa), Some(pb)) = (face_poly(b, fa), face_poly(b, fb)) else { return None };
+    let polys = (pa, pb);
+    let valid = |t: f64| on_pair(b, fa, fb, &polys, cv.eval(t), slack);
     let mut best: Option<(usize, usize)> = None;
     let mut cur: Option<usize> = None;
     for i in 0..=n {
@@ -1227,7 +1242,7 @@ fn clip_to_face_pair(b: &Body, fa: FaceId, fb: FaceId, cv: &Curve3, tol: f64) ->
     let on_face = |p: Vec3| {
         b.face(fa).surface.distance(p) < ext_slack && b.face(fb).surface.distance(p) < ext_slack
     };
-    let step = (t1 - t0) / n as f64 / 16.0;
+    let step = (t1 - t0) / n as f64 / 4.0;
     let near_both = |p: Vec3| near(p, fa).min(near(p, fb));
     let bound = (0.01 * diag).max(1.0);
     let dbg = std::env::var("TRIM_DEBUG").is_ok();
@@ -1241,7 +1256,7 @@ fn clip_to_face_pair(b: &Body, fa: FaceId, fb: FaceId, cv: &Curve3, tol: f64) ->
             near(pa, fa), near(pa, fb), near(pb, fa), near(pb, fb)
         );
     }
-    for _ in 0..64 {
+    for _ in 0..(4 * n) {
         let t = ta - step;
         if t < t0 {
             break;
@@ -1256,7 +1271,7 @@ fn clip_to_face_pair(b: &Body, fa: FaceId, fb: FaceId, cv: &Curve3, tol: f64) ->
             break;
         }
     }
-    for _ in 0..64 {
+    for _ in 0..(4 * n) {
         let t = tb + step;
         if t > t1 {
             break;
@@ -1285,6 +1300,43 @@ fn clip_to_face_pair(b: &Body, fa: FaceId, fb: FaceId, cv: &Curve3, tol: f64) ->
     Some((ta, tb))
 }
 
+/// Nearest point of `face`'s boundary edges to `q`: (distance, edge, param).
+/// 24-sample coarse search per edge, then ternary refine.
+fn nearest_on_boundary(out: &Body, face: FaceId, q: Vec3) -> Option<(f64, EdgeId, f64)> {
+    let mut best: Option<(f64, EdgeId, f64)> = None;
+    for e in out.face_edges(face) {
+        let ed = out.edge(e);
+        let n = 24;
+        let step = (ed.t1 - ed.t0) / n as f64;
+        let mut ci = 0usize;
+        let mut cd = f64::INFINITY;
+        for i in 0..=n {
+            let d = ed.curve.eval(ed.t0 + step * i as f64).dist(q);
+            if d < cd {
+                cd = d;
+                ci = i;
+            }
+        }
+        let mut lo = (ed.t0 + step * ci as f64 - step).max(ed.t0);
+        let mut hi = (ed.t0 + step * ci as f64 + step).min(ed.t1);
+        for _ in 0..50 {
+            let m1 = lo + (hi - lo) / 3.0;
+            let m2 = hi - (hi - lo) / 3.0;
+            if ed.curve.eval(m1).dist(q) < ed.curve.eval(m2).dist(q) {
+                hi = m2;
+            } else {
+                lo = m1;
+            }
+        }
+        let t = 0.5 * (lo + hi);
+        let d = ed.curve.eval(t).dist(q);
+        if best.map(|(bd, _, _)| d < bd).unwrap_or(true) {
+            best = Some((d, e, t));
+        }
+    }
+    best
+}
+
 /// Vertex at `p`: welds an existing vertex within `tol`, else splits the
 /// face's boundary edge that passes through `p` (snapping to the nearest
 /// boundary point within a scaled tolerance — the fitted SSI curve ends a
@@ -1305,41 +1357,7 @@ fn endpoint_vertex(out: &mut Body, face: FaceId, p: Vec3, tol: f64) -> Option<Ve
         }
         return Some(v);
     }
-    let edges: Vec<EdgeId> = out.face_edges(face);
-    let mut best: Option<(f64, EdgeId, f64)> = None; // (dist, edge, t)
-    for e in edges {
-        let ed = out.edge(e);
-        let n = 24;
-        let step = (ed.t1 - ed.t0) / n as f64;
-        // nearest coarse sample
-        let mut ci = 0usize;
-        let mut cd = f64::INFINITY;
-        for i in 0..=n {
-            let t = ed.t0 + step * i as f64;
-            let d = ed.curve.eval(t).dist(p);
-            if d < cd {
-                cd = d;
-                ci = i;
-            }
-        }
-        // ternary-refine around that sample
-        let mut lo = (ed.t0 + step * ci as f64 - step).max(ed.t0);
-        let mut hi = (ed.t0 + step * ci as f64 + step).min(ed.t1);
-        for _ in 0..50 {
-            let m1 = lo + (hi - lo) / 3.0;
-            let m2 = hi - (hi - lo) / 3.0;
-            if ed.curve.eval(m1).dist(p) < ed.curve.eval(m2).dist(p) {
-                hi = m2;
-            } else {
-                lo = m1;
-            }
-        }
-        let t = 0.5 * (lo + hi);
-        let d = ed.curve.eval(t).dist(p);
-        if best.map(|(bd, _, _)| d < bd).unwrap_or(true) {
-            best = Some((d, e, t));
-        }
-    }
+    let best = nearest_on_boundary(out, face, p);
     let (d, e, t) = best?;
     if d > snap {
         if std::env::var("TRIM_DEBUG").is_ok() {
