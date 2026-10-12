@@ -66,6 +66,11 @@ fn main() {
     eprintln!("regen {:.3}s (cpu)", cpu() - t);
     let body = ex.0.body.take().unwrap();
     if std::env::var("PERFACE").is_ok() { per_face(&body); }
+    if let Ok(n) = std::env::var("TESSREP") {
+        for _ in 0..n.parse::<usize>().unwrap_or(0) {
+            let _ = ck_tess::mesh::tessellate(&body);
+        }
+    }
     let t = Instant::now();
     let tess = ck_tess::mesh::tessellate(&body);
     eprintln!("tessellate {:.3}s tris {}", t.elapsed().as_secs_f64(), tess.mesh.tri_face.len());

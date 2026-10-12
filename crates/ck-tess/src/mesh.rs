@@ -24,7 +24,7 @@ use crate::curvature::{self, Tol};
 use crate::face::{self, FaceCut, FaceMesh};
 use ck_geom::{Vec2, Vec3};
 use ck_topo::body::{Body, EdgeId, FaceId};
-use std::collections::HashMap;
+use ck_core::fxhash::FxHashMap as HashMap;
 
 /// Shared edge samples: `params[e]` = sorted parameter list of edge `e`.
 #[derive(Debug, Clone, Default)]
@@ -415,7 +415,7 @@ fn assemble(body: &Body, faces: &[Option<FaceMesh>]) -> Mesh {
         }
         // silhouette candidates: same-face edges welded by position, strictly convex
         let key = |p: Vec3| (p.x.to_bits(), p.y.to_bits(), p.z.to_bits());
-        let mut seen: HashMap<((u64, u64, u64), (u64, u64, u64)), usize> = HashMap::new();
+        let mut seen: HashMap<((u64, u64, u64), (u64, u64, u64)), usize> = HashMap::default();
         for (ti, t) in fm.tris.iter().enumerate() {
             for k in 0..3 {
                 let (ia, ib) = (t[k] as usize, t[(k + 1) % 3] as usize);

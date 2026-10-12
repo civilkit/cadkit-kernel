@@ -27,7 +27,7 @@ use crate::curvature::{self, Tol};
 use ck_geom::surface::Surface;
 use ck_geom::{Vec2, Vec3};
 use ck_topo::body::{Body, FaceId};
-use std::collections::{HashMap, HashSet};
+use ck_core::fxhash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 /// Periodic cuts of a face: `(u cut, v cut)` for the periodic directions.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -272,7 +272,7 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
         (pu.map(|p| cut.u.unwrap_or(p) - p * wsh), pv.map(|p| cut.v.unwrap_or(p) - p * wsh))
     };
 
-    let mut b = Builder { surf, pts: vec![], index: HashMap::new(), segs: vec![] };
+    let mut b = Builder { surf, pts: vec![], index: HashMap::default(), segs: vec![] };
     let eps_u = pu.map(|p| p * 1e-9).unwrap_or(0.0);
     let eps_v = pv.map(|p| p * 1e-9).unwrap_or(0.0);
 
@@ -637,11 +637,11 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
         eprintln!("DBGSEGS {:?}", b.segs);
     }
     // vertex data indexed by CDT vertex
-    let mut vdata: HashMap<u32, (Vec2, Vec3)> = HashMap::new();
+    let mut vdata: HashMap<u32, (Vec2, Vec3)> = HashMap::default();
     // Boundary vertices keep the edge curve's 3D point (the neighbours share it), but an edge curve can lie
     // well off the surface (an approximated cut that grazes it: the uv of a near-tangent point is ill
     // conditioned). Refinement must judge the surface, not that offset, or it never converges there.
-    let mut off_surf: HashMap<u32, Vec3> = HashMap::new();
+    let mut off_surf: HashMap<u32, Vec3> = HashMap::default();
     for (i, &v) in tri.vmap.iter().enumerate() {
         vdata.entry(v).or_insert((b.pts[i].uv, b.pts[i].p));
     }
@@ -691,7 +691,7 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
     let is_spline = matches!(surf, Surface::BSpline(_) | Surface::Screw { .. });
     // Triangles that passed keep their vertices (and so their verdict) across
     // passes: remember them instead of re-evaluating the surface 4x each pass.
-    let mut accepted: HashSet<[u32; 3]> = HashSet::new();
+    let mut accepted: HashSet<[u32; 3]> = HashSet::default();
     for _pass in 0..64 {
         let mut cands: Vec<(Pt, u32)> = vec![];
         for (ti, v) in tri.cdt.inside_tris() {
@@ -756,7 +756,7 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
         // per point. Start it from the candidate's own triangle instead (the
         // result does not depend on the start except on exact ties, so small
         // faces keep the original's walk).
-        let hinted = cands.len() > 4000;
+        let hinted = cands.len() > 64;
         for (p, hint) in cands {
             if inserted >= budget {
                 break;
@@ -779,7 +779,7 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
 
     // ---- 6. output
     let mut out = FaceMesh { face: Some(f), win: [cu.zip(pu), cv.zip(pv)], ..Default::default() };
-    let mut local: HashMap<u32, u32> = HashMap::new();
+    let mut local: HashMap<u32, u32> = HashMap::default();
     for (_, v) in tri.cdt.inside_tris() {
         let mut ids = [0u32; 3];
         for k in 0..3 {

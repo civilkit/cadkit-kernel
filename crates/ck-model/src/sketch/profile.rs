@@ -483,6 +483,47 @@ fn inter_generic(a: &Curve, b: &Curve, ta: &mut Vec<f64>, tb: &mut Vec<f64>) {
     }
 }
 
+/// `[xmin, ymin, xmax, ymax]` of a line or circular arc, padded by 5e-3 + 1e-6 of its
+/// size (the line/circle tangency tolerance reaches ~1e-3 for tiny radii);
+/// None for other geometry (always tested).
+fn curve_box(c: &Curve) -> Option<[f64; 4]> {
+    let mut b = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+    let mut add = |q: P| {
+        b[0] = b[0].min(q[0]);
+        b[1] = b[1].min(q[1]);
+        b[2] = b[2].max(q[0]);
+        b[3] = b[3].max(q[1]);
+    };
+    match &c.geom {
+        Geom::Line { .. } => {
+            add(c.geom.eval(c.t0));
+            add(c.geom.eval(c.t1));
+        }
+        Geom::Circle { .. } => {
+            add(c.geom.eval(c.t0));
+            add(c.geom.eval(c.t1));
+            let (lo, hi) = (c.t0.min(c.t1), c.t0.max(c.t1));
+            if !(hi - lo).is_finite() || hi - lo > 8.0 * PI {
+                return None;
+            }
+            let k0 = (lo / (0.5 * PI)).floor() as i64 - 1;
+            let k1 = (hi / (0.5 * PI)).ceil() as i64 + 1;
+            for k in k0..=k1 {
+                let t = k as f64 * 0.5 * PI;
+                if t >= lo && t <= hi {
+                    add(c.geom.eval(t));
+                }
+            }
+        }
+        _ => return None,
+    }
+    if !b.iter().all(|x| x.is_finite()) {
+        return None;
+    }
+    let pad = 5e-3 + 1e-6 * b.iter().fold(0.0f64, |m, x| m.max(x.abs()));
+    Some([b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad])
+}
+
 fn intersect(a: &Curve, b: &Curve, ta: &mut Vec<f64>, tb: &mut Vec<f64>) {
     match (&a.geom, &b.geom) {
         (Geom::Line { .. }, Geom::Line { .. }) => inter_line_line(a, b, ta, tb),
@@ -513,8 +554,14 @@ struct Graph {
 
 impl Graph {
     fn vertex(&mut self, p: P) -> usize {
+        let tol = self.tol;
         for (i, v) in self.verts.iter().enumerate() {
-            if dist(*v, p) <= self.tol {
+            // hypot >= max(|dx|, |dy|): the box test rejects exactly what the
+            // distance would, without its (software-fma) cost
+            if (v[0] - p[0]).abs() > tol || (v[1] - p[1]).abs() > tol {
+                continue;
+            }
+            if dist(*v, p) <= tol {
                 return i;
             }
         }
@@ -643,8 +690,16 @@ pub fn profiles(sk: &Sketch) -> Profiles {
     let n = curves.len();
     // split parameters
     let mut params: Vec<Vec<f64>> = curves.iter().map(|c| vec![c.t0, c.t1]).collect();
+    // conservative boxes (padded past every intersection tolerance below):
+    // curves with disjoint boxes cannot cross
+    let boxes: Vec<Option<[f64; 4]>> = curves.iter().map(curve_box).collect();
     for i in 0..n {
         for j in i + 1..n {
+            if let (Some(a), Some(b)) = (&boxes[i], &boxes[j]) {
+                if a[0] > b[2] || b[0] > a[2] || a[1] > b[3] || b[1] > a[3] {
+                    continue;
+                }
+            }
             let (mut ta, mut tb) = (Vec::new(), Vec::new());
             intersect(&curves[i], &curves[j], &mut ta, &mut tb);
             params[i].extend(ta);

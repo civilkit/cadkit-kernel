@@ -57,6 +57,18 @@ pub mod predicates {
     #[inline]
     fn two_prod(a: f64, b: f64) -> (f64, f64) {
         let x = a * b;
+        // wasm has no fma instruction: mul_add is a ~50x slower software routine
+        // there, so use Dekker's exact split product (same error term)
+        #[cfg(target_arch = "wasm32")]
+        {
+            const SPLIT: f64 = 134217729.0; // 2^27 + 1
+            if a.abs() < 1e150 && b.abs() < 1e150 {
+                let (ca, cb) = (SPLIT * a, SPLIT * b);
+                let (ah, bh) = (ca - (ca - a), cb - (cb - b));
+                let (al, bl) = (a - ah, b - bh);
+                return (x, ((ah * bh - x) + ah * bl + al * bh) + al * bl);
+            }
+        }
         (x, a.mul_add(b, -x))
     }
 
