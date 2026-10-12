@@ -84,7 +84,7 @@ const FIX: Record<string, (feature: string, params: Record<string, unknown>) => 
   referenceLost: (f) => `${f}: a referenced entity is gone after an edit — pick a replacement ref`,
 };
 
-function hintFor(feature: string, code: string, params: Record<string, unknown>): RepairHint {
+export function hintFor(feature: string, code: string, params: Record<string, unknown>): RepairHint {
   const fix = FIX[code];
   return { feature, code, hint: fix ? fix(feature, params) : `${feature || 'part'}: error ${code}${Object.keys(params).length ? ` ${JSON.stringify(params)}` : ''} — see the features field table` };
 }
