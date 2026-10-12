@@ -773,6 +773,51 @@ pub struct Triangulation {
     pub vmap: Vec<u32>,
 }
 
+/// Point count from which [`triangulate`] inserts in BRIO order (smaller faces keep the original's boundary order).
+const BRIO_MIN: usize = 1000;
+
+/// Hilbert curve index of the cell `(x, y)` of a `2^16 x 2^16` grid.
+fn hilbert(mut x: u32, mut y: u32) -> u64 {
+    let mut d = 0u64;
+    let mut s = 1u32 << 15;
+    while s > 0 {
+        let rx = u32::from(x & s != 0);
+        let ry = u32::from(y & s != 0);
+        d += (s as u64) * (s as u64) * ((3 * rx) ^ ry) as u64;
+        if ry == 0 {
+            if rx == 1 {
+                x = (1 << 16) - 1 - x;
+                y = (1 << 16) - 1 - y;
+            }
+            std::mem::swap(&mut x, &mut y);
+        }
+        s >>= 1;
+    }
+    d
+}
+
+/// Biased randomised insertion order (Amenta-Choi-Rote): round `r` holds about `n / 2^r` points chosen pseudo-randomly,
+/// the earliest rounds are the sparsest, and each round is sorted along a Hilbert curve so consecutive points are close.
+fn brio_order(pts: &[Pt], b: (f64, f64, f64, f64)) -> Vec<usize> {
+    let n = pts.len();
+    let (sx, sy) = (65535.0 / (b.2 - b.0).max(1e-300), 65535.0 / (b.3 - b.1).max(1e-300));
+    let mut keyed: Vec<(u32, u64, usize)> = (0..n)
+        .map(|i| {
+            // splitmix64 of the index: deterministic, platform independent
+            let mut z = (i as u64).wrapping_add(0x9E37_79B9_7F4A_7C15).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 30)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^= z >> 31;
+            // round: trailing zeros of the hash (geometric), latest round first
+            let round = z.trailing_zeros().min(40);
+            let hx = (((pts[i][0] - b.0) * sx) as u32).min(65535);
+            let hy = (((pts[i][1] - b.1) * sy) as u32).min(65535);
+            (u32::MAX - round, hilbert(hx, hy), i)
+        })
+        .collect();
+    keyed.sort_unstable();
+    keyed.into_iter().map(|k| k.2).collect()
+}
+
 /// Triangulates the PSLG `pts` + constrained `segs` (pairs of indices into `pts`) and classifies triangles by parity.
 pub fn triangulate(pts: &[Pt], segs: &[(usize, usize)]) -> Result<Triangulation, String> {
     if pts.len() < 3 {
@@ -792,8 +837,18 @@ pub fn triangulate(pts: &[Pt], segs: &[(usize, usize)]) -> Result<Triangulation,
     let eps = mx.max(1e-9) * 1e-13;
     let mut cdt = Cdt::new(b, eps);
     let mut vmap = Vec::with_capacity(pts.len());
-    for &p in pts {
-        vmap.push(cdt.insert_point(p));
+    if pts.len() >= BRIO_MIN {
+        // Big faces: insertion in boundary order makes every new point a hull extension of a long thin strip, so each
+        // insertion flips O(n) edges around the far super-triangle corners (quadratic). Insert in a spatially coherent
+        // randomised order (BRIO) instead; vertices are numbered in insertion order, `vmap` maps the caller's indices.
+        vmap.resize(pts.len(), 0);
+        for i in brio_order(pts, b) {
+            vmap[i] = cdt.insert_point(pts[i]);
+        }
+    } else {
+        for &p in pts {
+            vmap.push(cdt.insert_point(p));
+        }
     }
     for &(a, b) in segs {
         cdt.insert_segment(vmap[a], vmap[b]);
