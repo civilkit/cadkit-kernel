@@ -631,6 +631,14 @@ fn blend_chain(b: &Body, links: Vec<Link>, r: f64, feature: &str, k: u32, tol: f
     // re-fit edges to them, so the result validates at the model tolerance
     // (vertices that coincide with a tool vertex take the tool's exact spot:
     // it lies on all the faces it joins)
+    if std::env::var_os("CK_BLEND_DEBUG3").is_some() {
+        for v in out.vertex_ids() {
+            eprintln!("PRE-SNAP VERT {:?} {:?}", v, out.vertex(v).p);
+        }
+        for v in tool.vertex_ids() {
+            eprintln!("TOOL VERT {:?} {:?}", v, tool.vertex(v).p);
+        }
+    }
     for v in out.vertex_ids().collect::<Vec<_>>() {
         let p = out.vertex(v).p;
         let near = tool.vertex_ids().map(|w| tool.vertex(w).p).filter(|q| q.dist(p) <= 2.0 * FF_TOL).min_by(|a, b| a.dist(p).total_cmp(&b.dist(p)));
@@ -638,6 +646,7 @@ fn blend_chain(b: &Body, links: Vec<Link>, r: f64, feature: &str, k: u32, tol: f
             out.vertex_mut(v).p = q;
         }
     }
+    collapse_short_edges(&mut out, 6.0 * FF_TOL);
     crate::surfacing::trim::settle_vertices(&mut out, tol);
     refit_edges_on_faces(&mut out);
     crate::surfacing::trim::snap_edge_ends(&mut out, tol);
@@ -890,5 +899,37 @@ pub fn refit_edges_on_faces(out: &mut Body) {
                 out.coedge_mut(co).pcurve = None;
             }
         }
+    }
+}
+
+/// Collapse edges shorter than `max_len` whose end vertices coincide to
+/// within it (slivers the welding at a loose tolerance leaves where an
+/// inexact trimmed edge crosses a tool edge): the edge and its coedges
+/// vanish and its second vertex is merged into the first.
+pub fn collapse_short_edges(out: &mut Body, max_len: f64) {
+    loop {
+        let cand = out.edge_ids().find(|&e| {
+            let ed = out.edge(e);
+            ed.v0 != ed.v1 && out.vertex(ed.v0).p.dist(out.vertex(ed.v1).p) < max_len && out.edge_length(e) < 3.0 * max_len
+        });
+        let Some(e) = cand else { break };
+        let (keep, gone) = (out.edge(e).v0, out.edge(e).v1);
+        // never collapse an edge that is a whole loop on its own face
+        for c in out.edge(e).coedges.clone() {
+            let l = out.coedge(c).lp;
+            out.loops[l.idx()].coedges.retain(|&x| x != c);
+            out.coedges[c.idx()].alive = false;
+        }
+        out.edges[e.idx()].alive = false;
+        out.edges[e.idx()].coedges.clear();
+        for ed in out.edges.iter_mut().filter(|d| d.alive) {
+            if ed.v0 == gone {
+                ed.v0 = keep;
+            }
+            if ed.v1 == gone {
+                ed.v1 = keep;
+            }
+        }
+        out.vertices[gone.idx()].alive = false;
     }
 }
