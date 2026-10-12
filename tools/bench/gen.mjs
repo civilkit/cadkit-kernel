@@ -113,8 +113,8 @@ const parts = {};
     { type: 'chamfer', id: 'F9', chamferType: 'equal', distance: 1.45, edges: [
       edge('F4.C1', 'F4.S.e1~1', [0, 38.45, -14.5]), edge('F4.C1', 'F4.S.e1~2', [0, 38.45, 14.5]), edge('F4.C1', 'F8.S.e1', [4.622, 38.45, -4.34])] }]);
 }
-// 10. twisted_drill: fluted section, twist-extruded 471.6 deg (UNSUPPORTED:
-// extruded straight here), conical tip cut
+// 10. twisted_drill: fluted section, twist-extruded 471.6 deg/35.2 mm (the cutter
+// is 80 long, centred on the base plane, so its caps clear the body), conical tip cut
 {
   const a = new Sk('F1', STD('top')); a.circle(0, 0, 2.4156);
   // flute loop: three 3-point arcs. [p1, mid, p2] -> centre + ccw endpoints
@@ -140,7 +140,7 @@ const parts = {};
   const f = new Sk('F3', STD('top')); loop(f, 0); loop(f, 180);
   const r = new Sk('F5', STD('front'));
   r.poly([[2.44, 33.734], [2.44, 35.3], [0, 35.3], [0, 35.2], [0.05, 35.2]]); r.axis(0, 0, 0, 10);
-  parts.twisted_drill_000546 = part('twisted_drill', [a.json(), ext('F2', 'F1', { depth: 35.2 }), f.json(), ext('F4', 'F3', { op: 'cut', end: 'throughBoth' }),
+  parts.twisted_drill_000546 = part('twisted_drill', [a.json(), ext('F2', 'F1', { depth: 35.2 }), f.json(), ext('F4', 'F3', { op: 'cut', end: 'mid', depth: 80, twist: (471.6 * 80) / 35.2 }),
     r.json(), { type: 'revolve', id: 'F6', op: 'cut', sketch: 'F5', axis: `e${r.ne}`, angle: 360 }]);
 }
 

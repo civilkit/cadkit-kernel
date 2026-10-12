@@ -212,6 +212,47 @@ pub fn sweep(feature: &str, profile: &Profile, path: &[PathSeg], twist: f64) -> 
     sweep_motion(feature, profile, motion)
 }
 
+/// Extrude `profile` along its normal over `[o.s0, o.s1]` while rotating it
+/// by `twist` radians (total, about the axis through `centre`, a point of the
+/// sketch plane in sketch coordinates, parallel to the normal). The rotation
+/// is zero at the sketch plane (s = 0), so a flipped / mid extrude twists on
+/// either side of it. Side faces are screw (helicoidal) surfaces: exact
+/// cylinders for circles about the axis, interpolated B-splines otherwise.
+/// Names follow the plain extrude (`F.S.<tag>`, caps `F.C0` / `F.C1`; a closed
+/// off-axis loop is split into `~1` / `~2` halves like the general sweeps).
+pub fn twist_extrude(feature: &str, profile: &Profile, o: ExtrudeOpts, twist: f64, centre: Vec2) -> Result<Body, String> {
+    profile.validate()?;
+    let fr = profile.frame;
+    let (s0, s1) = (o.s0.min(o.s1), o.s0.max(o.s1));
+    let depth = s1 - s0;
+    if depth < TOL {
+        return Err("zeroDepth".into());
+    }
+    if o.dir.map_or(false, |d| d.cross(fr.z).len() > 1e-9) {
+        return Err("twistUnsupported".into());
+    }
+    if o.draft != 0.0 {
+        return Err("draftUnsupported".into());
+    }
+    if twist.abs() < 1e-12 {
+        return extrude(feature, profile, o);
+    }
+    let a = fr.z;
+    let axis_pt = fr.o + fr.x * centre.x + fr.y * centre.y;
+    // start the screw at s0: shift the profile there and pre-rotate it by the
+    // twist accumulated between the sketch plane and s0
+    let phi0 = twist * s0 / depth;
+    let rot0 = rotation(axis_pt, a, phi0);
+    let shifted = rot_frame(&rot0, &Frame { o: fr.o + a * s0, ..fr });
+    let pr = Profile::new(shifted, profile.regions.clone());
+    let o_axis = axis_pt + a * s0;
+    if twist < 0.0 {
+        screw_with(feature, &pr, o_axis, -a, -twist, -depth, false)
+    } else {
+        screw_with(feature, &pr, o_axis, a, twist, depth, false)
+    }
+}
+
 /// Mean of the profile's vertices (world).
 fn profile_ref_point(p: &Profile) -> Vec3 {
     let f = &p.frame;
@@ -323,9 +364,15 @@ fn grid_surface(grid: &[Vec<Vec3>], u: &[f64], v: &[f64], pu: usize, pv: usize) 
 }
 
 fn screw(feature: &str, profile: &Profile, o: Vec3, a: Vec3, angle: f64, rise: f64) -> Result<Body, String> {
-    let split = split_closed(profile);
-    let profile = &split;
+    screw_with(feature, profile, o, a, angle, rise, true)
+}
+
+/// [`screw`] with the cap-face numbering choice (`caps_last`: general
+/// sweeps list sides first; the twisted extrude keeps the extrude order).
+fn screw_with(feature: &str, profile: &Profile, o: Vec3, a: Vec3, angle: f64, rise: f64, caps_last: bool) -> Result<Body, String> {
     let a = a.normalize();
+    let split = split_closed(profile, &|g: &ProfileSeg| on_axis_circle(&profile.frame, g, o, a));
+    let profile = &split;
     let sc = Screw { o, a, angle, rise };
     let pf = &profile.frame;
     let n_rows = ((PER_REV * angle / std::f64::consts::TAU).ceil() as usize).max(8);
@@ -400,15 +447,23 @@ fn screw(feature: &str, profile: &Profile, o: Vec3, a: Vec3, angle: f64, rise: f
         caps.push(Caps { c0: *pf, c1: rot_frame(&xf_end, pf) });
     }
     // general sweeps list the side faces before the caps (oracle)
-    Ok(build_sweep_with(feature, profile, regions, Some(&caps), sigma > 0.0, false, true))
+    Ok(build_sweep_with(feature, profile, regions, Some(&caps), sigma > 0.0, false, caps_last))
+}
+
+/// A closed circle centred on the screw axis (and normal to it): the screw
+/// maps it onto itself, so its side face is an exact cylinder.
+fn on_axis_circle(fr: &Frame, g: &ProfileSeg, o: Vec3, a: Vec3) -> bool {
+    let Curve2::Circle { c, .. } = &g.curve else { return false };
+    let w = fr.o + fr.x * c.x + fr.y * c.y;
+    g.is_closed() && (w - o).cross(a).len() < 1e-9 && fr.z.cross(a).len() < 1e-9
 }
 
 /// The oracle's general sweeps cut a closed single-entity loop (a circle)
 /// into two half pieces of one entity: faces `S.<tag>~1`, `S.<tag>~2`
 /// (numbered by `Body::number_split_faces`), two rails, two C0 / C1 edges.
-fn split_closed(p: &Profile) -> Profile {
+fn split_closed(p: &Profile, keep: &dyn Fn(&ProfileSeg) -> bool) -> Profile {
     let half = |l: &ProfileLoop| -> ProfileLoop {
-        if l.segs.len() != 1 || !l.segs[0].is_closed() {
+        if l.segs.len() != 1 || !l.segs[0].is_closed() || keep(&l.segs[0]) {
             return l.clone();
         }
         let s = &l.segs[0];
@@ -447,6 +502,24 @@ fn side_geom(sc: &Screw, phis: &[f64], c: &Curve, t0: f64, t1: f64, _va: &VertGe
                 pc_top: Curve2::Line { o: Vec2::new(angle, f0 + sc.rise), d: Vec2::new(0.0, f1) },
                 pc_rail_t0: Some(Curve2::Line { o: Vec2::new(0.0, f0 + f1 * t0), d: Vec2::new(1.0, slope) }),
                 pc_rail_t1: Some(Curve2::Line { o: Vec2::new(0.0, f0 + f1 * t1), d: Vec2::new(1.0, slope) }),
+            }));
+        }
+    }
+    // circle about the axis -> cylinder (u = angle about the axis, v = height)
+    if let Curve::Circle { frame: cf, r } = c {
+        let radial = (cf.o - sc.o).cross(a).len();
+        if radial < 1e-9 && cf.z.cross(a).len() < 1e-9 {
+            let su = if cf.z.dot(a) > 0.0 { 1.0 } else { -1.0 };
+            let frame = Frame { o: cf.o, x: cf.x, y: a.cross(cf.x), z: a };
+            let slope = sc.rise / angle;
+            let surface = Surface::Cylinder { frame, r: *r };
+            return Some(Ok(SideGeom {
+                surface,
+                sense: true,
+                pc_bottom: Curve2::Line { o: Vec2::ZERO, d: Vec2::new(su, 0.0) },
+                pc_top: Curve2::Line { o: Vec2::new(angle, sc.rise), d: Vec2::new(su, 0.0) },
+                pc_rail_t0: Some(Curve2::Line { o: Vec2::new(su * t0, 0.0), d: Vec2::new(1.0, slope) }),
+                pc_rail_t1: Some(Curve2::Line { o: Vec2::new(su * t1, 0.0), d: Vec2::new(1.0, slope) }),
             }));
         }
     }
@@ -528,6 +601,57 @@ mod tests {
             }
             eprintln!("deg {deg} per_rev {per_rev}: max deviation {worst:e}");
         }
+    }
+
+    fn vol(b: &Body) -> f64 {
+        ck_topo::mass::mass_props(b).volume
+    }
+
+    #[test]
+    fn twist_extrude_keeps_volume_and_names() {
+        let rect = ProfileLoop::new(
+            [(0.0, 0.0), (40.0, 0.0), (40.0, 20.0), (0.0, 20.0)]
+                .iter()
+                .enumerate()
+                .map(|(i, &(x, y))| {
+                    let (x2, y2) = [(40.0, 0.0), (40.0, 20.0), (0.0, 20.0), (0.0, 0.0)][i];
+                    ProfileSeg::line(&format!("e{}", i + 1), Vec2::new(x, y), Vec2::new(x2, y2))
+                })
+                .collect(),
+        );
+        let circ = |tag: &str, c: Vec2, r: f64| ProfileLoop::new(vec![ProfileSeg::circle(tag, c, r)]);
+        let cases = [
+            (Profile::new(top(), vec![ProfileRegion { outer: rect, holes: vec![] }]), 8000.0),
+            (
+                Profile::new(
+                    top(),
+                    vec![ProfileRegion { outer: circ("e7", Vec2::new(5.0, 3.0), 10.0), holes: vec![ProfileLoop::new(vec![ProfileSeg::circle("e8", Vec2::new(8.0, 5.0), 3.0).reversed()])] }],
+                ),
+                std::f64::consts::PI * 91.0 * 10.0,
+            ),
+        ];
+        for (p, want) in &cases {
+            for deg in [90.0f64, -200.0, 471.6] {
+                let b = twist_extrude("F2", p, ExtrudeOpts::blind(10.0), deg.to_radians(), Vec2::ZERO).unwrap();
+                assert!(check(&b, 1e-6).is_empty(), "{deg}: {:?}", check(&b, 1e-6));
+                assert!((vol(&b) - want).abs() < 1e-4 * want, "{deg}: {} vs {want}", vol(&b));
+                let ids: Vec<_> = b.face_ids().map(|f| b.face_id_str(f)).collect();
+                assert_eq!(&ids[..2], ["F2.C0", "F2.C1"], "{ids:?}");
+                assert!(ids[2..].iter().all(|i| i.starts_with("F2.S.e")), "{ids:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn twist_of_circle_about_its_axis_is_a_cylinder() {
+        let l = ProfileLoop::new(vec![ProfileSeg::circle("e1", Vec2::ZERO, 5.0)]);
+        let p = Profile::new(top(), vec![ProfileRegion { outer: l, holes: vec![] }]);
+        let b = twist_extrude("F2", &p, ExtrudeOpts::mid(8.0), 1.0, Vec2::ZERO).unwrap();
+        let ids: Vec<_> = b.face_ids().map(|f| b.face_id_str(f)).collect();
+        assert_eq!(ids, ["F2.C0", "F2.C1", "F2.S.e1"]);
+        assert_eq!(b.face(b.face_ids().nth(2).unwrap()).surface.kind(), "cylinder");
+        assert!(check(&b, 1e-6).is_empty());
+        assert!((vol(&b) - std::f64::consts::PI * 25.0 * 8.0).abs() < 1e-6);
     }
 
     #[test]
