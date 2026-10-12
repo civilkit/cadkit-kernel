@@ -11,7 +11,7 @@
 // normal +y; front: (x,y,0), normal +z; right: (-z,y), normal +x. Revolves
 // sweep from +x toward -z about the world Y axis; patterns rotate right-handed.
 import {
-  PI, poly, rectL, circL, halfDiscL, prism, boxS, cylY, csg, lump, revolvePoly, edgeCut, simpson,
+  PI, PLANES, poly, rectL, circL, halfDiscL, prism, boxS, cylY, csg, lump, revolvePoly, edgeCut, simpson,
 } from './geom.mjs';
 
 const o = {};
@@ -31,6 +31,53 @@ o.dext = done(prism('front', [[halfDiscL(0, 0, 10), 1]], 0, 5)); // D: chord (-1
 o.box3 = done(prism('front', [[R40x20, 1], [rectL(5, 5, 15, 15), -1], [circL(30, 10, 4), -1]], 0, 10));
 o.two = done(prism('front', [[rectL(0, 0, 10, 10), 1], [rectL(20, 0, 30, 10), 1]], 0, 5));
 o.triPrism = done(prism('top', [[poly([[0, 0], [30, 0], [10, 20]]), 1]], 0, 10));
+
+// twisted extrudes: every slice is a rigid copy of the profile, so
+// volume = area * depth; the centroid of the slices turns about the axis
+// (average of R(theta) over the twist); area has no elementary form (null).
+// bbox: dense scan of the rotating profile corners / circle centres.
+{
+  const twist = (plane, loops, t0, t1, deg, centre, corners, bboxRound) => {
+    const base = prism(plane, loops, t0, t1);
+    const tw = (deg * PI) / 180, d = t1 - t0;
+    // slice centroid in sketch coords, rotated about `centre` by tw*(t-0)/d
+    const A = loops.reduce((s, [l, sg]) => s + sg * l.A, 0);
+    const cx = loops.reduce((s, [l, sg]) => s + sg * l.A * l.cx, 0) / A - centre[0];
+    const cy = loops.reduce((s, [l, sg]) => s + sg * l.A * l.cy, 0) / A - centre[1];
+    // exact mean of cos / sin over [tw t0/d, tw t1/d]
+    const a0 = (tw * t0) / d, a1 = (tw * t1) / d;
+    const mc = tw === 0 ? 1 : (Math.sin(a1) - Math.sin(a0)) / (a1 - a0);
+    const ms = tw === 0 ? 0 : (Math.cos(a0) - Math.cos(a1)) / (a1 - a0);
+    const sx = centre[0] + mc * cx - ms * cy, sy = centre[1] + ms * cx + mc * cy;
+    const V = base.V;
+    const [pu, pv, pn] = [PLANES[plane].u, PLANES[plane].v, PLANES[plane].n];
+    const w = (x, y, t) => [0, 1, 2].map((i) => pu[i] * x + pv[i] * y + pn[i] * t);
+    const com = w(sx, sy, (t0 + t1) / 2);
+    const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    const N = 200000;
+    for (let k = 0; k <= N; k++) {
+      const t = t0 + (d * k) / N, th = (tw * t) / d, c = Math.cos(th), s = Math.sin(th);
+      for (const [x, y, r] of corners) {
+        const rx = centre[0] + c * (x - centre[0]) - s * (y - centre[1]), ry = centre[1] + s * (x - centre[0]) + c * (y - centre[1]);
+        const p = w(rx, ry, t);
+        // r: circle radius (box of the disc) or 0 for a polygon corner
+        for (let i = 0; i < 3; i++) {
+          const ext = r * (Math.abs(pu[i]) + Math.abs(pv[i]));
+          lo[i] = Math.min(lo[i], p[i] - ext); hi[i] = Math.max(hi[i], p[i] + ext);
+        }
+      }
+    }
+    return { V, M: com.map((c) => c * V), A: null, bbox: { min: lo, max: hi }, exact: bboxRound };
+  };
+  const rc = [[0, 0], [40, 0], [40, 20], [0, 20]].map(([x, y]) => [x, y, 0]);
+  o.twistBox = done(twist('top', [[R40x20, 1]], 0, 10, 90, [0, 0], rc, false));
+  o.twistBoxNeg = done(twist('top', [[R40x20, 1]], -5, 5, -90, [0, 0], rc, false));
+  o.twistBoxCentre = done(twist('top', [[R40x20, 1]], 0, 10, 90, [20, 10], rc, false));
+  // circle c(5,3) r10 with a hole c(8,5) r3, one full turn: centroid of the slices on the axis
+  o.twistRing = done(twist('top', [[circL(5, 3, 10), 1], [circL(8, 5, 3), -1]], 0, 10, 360, [0, 0], [[5, 3, 10]], false));
+  // closed form for the circle part of the bbox: |c| + r = sqrt(34) + 10 in both sketch axes
+  o.twistCylAxis = done(twist('top', [[circL(0, 0, 8), 1]], 0, 10, 180, [0, 0], [[0, 0, 8]], false));
+}
 
 // draft 10 degrees (inward) on the 40x20 front-plane box, depth 10
 {

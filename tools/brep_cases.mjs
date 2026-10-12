@@ -47,6 +47,18 @@ const parts = {};
     { type: 'sketch', id: 'F5', plane: { kind: 'feature', id: 'F4' }, points: [], entities: [], constraints: [] }]);
 }
 parts.cyl = part([sketch('top', [pt('c', 5, 3)], [{ type: 'circle', id: 'e7', c: 'c', r: 10 }]), extrude()]);
+// twisted extrudes (`twist` degrees over the full depth about the sketch origin;
+// not an oracle option -- the original ignores it, so only volume matches it)
+{
+  const [P, E] = rect(0, 0, 40, 20);
+  parts.twistBox = part([sketch('top', P, E), extrude({ twist: 90 })]);
+  parts.twistBoxNeg = part([sketch('top', P, E), extrude({ twist: -90, end: 'mid' })]);
+  parts.twistBoxCentre = part([sketch('top', P, E), extrude({ twist: 90, twistCentre: [20, 10] })]);
+  const ring = [pt('c', 5, 3), pt('h', 8, 5)];
+  const rE = [{ type: 'circle', id: 'e7', c: 'c', r: 10 }, { type: 'circle', id: 'e8', c: 'h', r: 3 }];
+  parts.twistRing = part([sketch('top', ring, rE), extrude({ twist: 360 })]);
+  parts.twistCylAxis = part([sketch('top', [pt('c', 0, 0)], [{ type: 'circle', id: 'e1', c: 'c', r: 8 }]), extrude({ twist: 180 })]);
+}
 parts.dext = part([sketch('front', [pt('p1', -10, 0), pt('p2', 10, 0), pt('c', 0, 0)],
   [line('e1', 'p1', 'p2'), { type: 'arc', id: 'e2', c: 'c', p1: 'p2', p2: 'p1' }]), extrude({ depth: 5 })]);
 {

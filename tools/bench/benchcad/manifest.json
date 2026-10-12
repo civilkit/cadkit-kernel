@@ -391,10 +391,6 @@
   "tapered_boss_000256": {
    "label": "kernel-gap",
    "note": "chamfer on the plane/B-spline edge of the lofted side is blendUnsupported (F9); the hole-rim chamfer alone works. Loft itself is exact (unchamfered volume equals the closed-form frustum to 4e-8)."
-  },
-  "twisted_drill_000546": {
-   "label": "kernel-gap",
-   "note": "no twist on extrude/sweep (twistExtrude); translated as a straight extrude of the same flute section, so volume and com match but area (2.8% low) and bbox (flutes do not rotate) cannot."
   }
  }
 }
