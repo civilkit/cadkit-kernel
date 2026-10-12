@@ -33,3 +33,83 @@ fn eyebolt_torus_fragments_tessellate() {
     assert!(lo.x < -62.9 && hi.x > 62.9, "{lo:?} {hi:?}");
     assert!(t.faces.iter().all(|f| f.is_some()), "a face failed to tessellate");
 }
+
+/// Deviation of the ground-truth coil faces from the ideal screw tube
+/// (circle r in the meridian plane swept by the helix): diagnostic.
+#[test]
+#[ignore]
+fn torsion_spring_gt_coil_vs_ideal_tube() {
+    use ck_geom::surface::Surface;
+    let r = read_step(&gt("torsion_spring_000054")).unwrap();
+    let (big_r, rad, k) = (56.25f64, 3.52f64, 17.24 / std::f64::consts::TAU);
+    let (mut smin, mut smax) = (f64::INFINITY, f64::NEG_INFINITY);
+    let mut worst = 0.0f64;
+    let mut sum = 0.0;
+    let mut n = 0;
+    for f in r.body.face_ids() {
+        let Surface::BSpline(bs) = &r.body.face(f).surface else { continue };
+        let ((u0, u1), (v0, v1)) = bs.domain();
+        for i in 0..=400 {
+            for j in 0..=24 {
+                let p = bs.eval(u0 + (u1 - u0) * i as f64 / 400.0, v0 + (v1 - v0) * j as f64 / 24.0);
+                let rho = p.x.hypot(p.y);
+                let alpha = p.y.atan2(p.x);
+                let mut best = f64::INFINITY;
+                let mut sg = 0.0;
+                for m in -2..16 {
+                    let phi = alpha + std::f64::consts::TAU * m as f64;
+                    let s = (rho - big_r).hypot(p.z - k * phi);
+                    if (s - rad).abs() < best { best = (s - rad).abs(); sg = s - rad; }
+                }
+                worst = worst.max(best);
+                sum += best;
+                smin = smin.min(sg);
+                smax = smax.max(sg);
+                n += 1;
+            }
+        }
+    }
+    eprintln!("GT coil faces: max |dist to ideal tube| {worst:.5}, mean {:.5}, signed [{smin:.5}, {smax:.5}] over {n} samples", sum / n as f64);
+}
+
+/// coil_spring ground truth: closed rational degree-6 sweep face + 4 planes (timing diagnostic).
+#[test]
+#[ignore]
+fn coil_spring_gt_probe() {
+    let t = std::time::Instant::now();
+    let r = read_step(&gt("coil_spring_000026")).unwrap();
+    eprintln!("read_step {:.2}s solids {} faces {}", t.elapsed().as_secs_f64(), r.solids, r.body.face_ids().count());
+    let t = std::time::Instant::now();
+    let mp = ck_topo::mass::mass_props(&r.body);
+    eprintln!("mass_props {:.2}s volume {} area {}", t.elapsed().as_secs_f64(), mp.volume, mp.area);
+    let t = std::time::Instant::now();
+    let v = ck_check::validate(&r.body, 1e-6);
+    eprintln!("validate {:.2}s {} issues {:?}", t.elapsed().as_secs_f64(), v.len(), v.iter().take(3).collect::<Vec<_>>());
+    let t = std::time::Instant::now();
+    let tm = ck_tess::mesh::tessellate(&r.body);
+    eprintln!("tessellate {:.2}s tris {}", t.elapsed().as_secs_f64(), tm.mesh.tri_face.len());
+}
+
+/// closest-point recovery on the GT coil face: random surface points must project back onto themselves.
+#[test]
+#[ignore]
+fn coil_spring_closest_point_recovery() {
+    use ck_geom::surface::Surface;
+    let r = read_step(&gt("coil_spring_000026")).unwrap();
+    let bs = r.body.face_ids().find_map(|f| match &r.body.face(f).surface { Surface::BSpline(b) => Some(b.clone()), _ => None }).unwrap();
+    let ((u0, u1), (v0, v1)) = bs.domain();
+    eprintln!("deg {} {} nu {} nv {} domain u {u0}..{u1} v {v0}..{v1} rational {}", bs.deg_u, bs.deg_v, bs.nu, bs.nv, bs.weights.is_some());
+    let mut rng = 12345u64;
+    let mut next = || { rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407); (rng >> 11) as f64 / (1u64 << 53) as f64 };
+    let (mut bad, mut worst) = (0, 0.0f64);
+    let t = std::time::Instant::now();
+    for _ in 0..300 {
+        let (u, v) = (u0 + (u1 - u0) * next(), v0 + (v1 - v0) * next());
+        let p = bs.eval(u, v);
+        let (cu, cv) = bs.closest_param(p);
+        let d = bs.eval(cu, cv).dist(p);
+        worst = worst.max(d);
+        if d > 1e-7 { bad += 1; eprintln!("miss target uv ({u:.4},{v:.3}) got ({cu:.4},{cv:.3}) d {d:.3e}"); }
+    }
+    eprintln!("closest_param on surface points: {bad}/300 missed (>1e-7), worst {worst:.3e}, {:.3}s", t.elapsed().as_secs_f64());
+}

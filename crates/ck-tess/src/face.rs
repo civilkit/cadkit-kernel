@@ -660,10 +660,18 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
     let budget = 20000 + 50 * b.pts.len();
     let mut inserted = 0usize;
     let sense = face.sense;
+    // triangles that passed the chord test: the test only depends on the
+    // triangle's three vertices, so it is not repeated in later passes
+    let mut accepted: std::collections::HashSet<[u32; 3]> = std::collections::HashSet::new();
     for _pass in 0..64 {
         let mut cands: Vec<(Pt, u32)> = vec![];
         for (ti, v) in tri.cdt.inside_tris() {
             let ids = [v[0], v[1], v[2]];
+            let mut key = ids;
+            key.sort_unstable();
+            if accepted.contains(&key) {
+                continue;
+            }
             let get = |k: u32| -> (Vec2, Vec3) {
                 match vdata.get(&k) {
                     Some(&d) => d,
@@ -698,6 +706,8 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
             if dev > tol.chord {
                 let cp = to_c(cuv3);
                 cands.push((cp, ti));
+            } else {
+                accepted.insert(key);
             }
         }
         if cands.is_empty() {
