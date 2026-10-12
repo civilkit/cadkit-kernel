@@ -19,6 +19,8 @@
 //   vol.<set>     our volume within 1e-3 relative of the original's
 //   naming.stable OURS alone (SOFT): case/edit pairs where every name referenced by a later
 //                 feature still resolves to the same geometric entity (tools/naming_stability.mjs)
+//   iface.*       OURS alone (SOFT): describe/resolve/check/refDiff self-consistency on every 4th
+//                 brep part (tools/agent_iface.mjs, docs/agent-queries.md)
 //   heal.repair   OURS alone: damaged copies of the valid brep bodies healed
 //                 back to validate-clean with volume within 1e-6
 //   import.roundtrip  OURS alone (HARD): our `step` export -> `importStep` into
@@ -47,6 +49,7 @@ import { oracles } from './oracles/index.mjs';
 import { checkOracle } from './oracles/check.mjs';
 import { runBench } from './bench/run.mjs';
 import { runNaming } from './naming_stability.mjs';
+import { runIface } from './agent_iface.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2);
@@ -192,6 +195,9 @@ for (const r of runBench({ wasm: wasmB })) {
 // 2c. naming.stable (SOFT): references to earlier-feature faces/edges still point at the
 // same geometric entity after upstream dimension edits (tools/naming_stability.mjs)
 for (const r of runNaming({ ours: wasmB })) if (!r.neg && r.edit !== '(baseline)') bump('naming.stable', r.cls === 'ok');
+
+// 2c'. iface.* (SOFT): agent queries (check/resolve/describe/refDiff) self-consistency, every 4th brep part
+for (const r of runIface({ wasm: wasmB, stride: 4 })) bump(`iface.${r.key}`, r.ok);
 
 // 3. STEP export
 const gdir = path.join(here, '../crates/ck-io/tests/golden');

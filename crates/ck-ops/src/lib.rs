@@ -1,3 +1,4 @@
+pub mod agent;
 pub mod blend;
 pub mod boolean;
 pub mod bvh;
