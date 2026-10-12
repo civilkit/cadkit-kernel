@@ -160,3 +160,39 @@ fn dome_hole_off_seam() {
 fn dome_hole_straddling_seam() {
     dome_hole(29.5, 0.0);
 }
+
+/// Point classification against a face with a large circular rim (a flange annulus): with 24 chords per
+/// circle the polygon sags 0.3 mm inside the r = 35.1 rim, so a hole arc 0.16 mm inside the rim read as
+/// outside the face and the cut came back non-manifold (bellows flange).
+#[test]
+fn flange_hole_breaking_out_of_the_rim() {
+    let (ri, ro, t, hr, bc) = (12.167, 35.1, 4.15, 1.915, 33.759);
+    let outer = ProfileLoop::new(vec![
+        ProfileSeg::line("e1", v(ri, 0.0), v(ro, 0.0)),
+        ProfileSeg::line("e2", v(ro, 0.0), v(ro, t)),
+        ProfileSeg::line("e3", v(ro, t), v(ri, t)),
+        ProfileSeg::line("e4", v(ri, t), v(ri, 0.0)),
+    ]);
+    let plate = revolve("F2", &Profile::new(top(), region(outer)), Vec3::ZERO, Vec3::new(0.0, 0.0, -1.0), 0.0, TAU).unwrap();
+    for deg in [0.0f64, 60.0, 120.0, 200.0] {
+        let a = deg.to_radians();
+        let (hx, hy) = (bc * a.cos(), bc * a.sin());
+        let tool = cyl("F4", front(), hx, hy, hr, -10.0, 10.0);
+        let out = boolean(&plate, &tool, Op::Cut, 1e-6).unwrap_or_else(|e| panic!("hole at {deg} deg: {e}"));
+        assert_valid(&out.body);
+        // removed volume = thickness * area(hole disc inside the annulus)
+        let n = 600;
+        let mut area = 0.0;
+        for i in 0..n {
+            for j in 0..n {
+                let (x, y) = (hx + hr * (-1.0 + 2.0 * (i as f64 + 0.5) / n as f64), hy + hr * (-1.0 + 2.0 * (j as f64 + 0.5) / n as f64));
+                let rr = (x * x + y * y).sqrt();
+                if (x - hx).powi(2) + (y - hy).powi(2) <= hr * hr && rr >= ri && rr <= ro {
+                    area += (2.0 * hr / n as f64).powi(2);
+                }
+            }
+        }
+        let got = mass_props(&plate).volume - mass_props(&out.body).volume;
+        assert!((got - area * t).abs() < 2e-3 * area * t, "hole at {deg} deg removed {got} vs {}", area * t);
+    }
+}

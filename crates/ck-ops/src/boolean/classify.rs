@@ -112,7 +112,9 @@ fn samples_fine(c: &Curve, ta: f64, tb: f64) -> usize {
 
 /// uv polygon of a loop given as directed curve pieces `(curve, ta, tb)`.
 pub fn loop_polygon(s: &Surface, pieces: &[(&Curve, f64, f64)]) -> Vec<Vec2> {
-    loop_polygon_with(s, pieces, |c, _, _| samples_for(c))
+    // fine circle sampling: a chord sag of 0.9% of the radius (24 chords)
+    // misclassifies points near a large rim (flange annulus holes)
+    loop_polygon_with(s, pieces, samples_fine)
 }
 
 fn loop_polygon_with(s: &Surface, pieces: &[(&Curve, f64, f64)], nfun: impl Fn(&Curve, f64, f64) -> usize) -> Vec<Vec2> {
@@ -293,7 +295,7 @@ pub fn point_in_face_cached(b: &Body, f: FaceId, p: Vec3, tol: f64, cache: &mut 
     if face.surface.distance(p) > tol * 10.0 {
         return Where::Out;
     }
-    let loops = cache.entry((b as *const Body as usize, f.idx() as u32)).or_insert_with(|| face_loops_uv(b, f));
+    let loops = cache.entry((b as *const Body as usize, f.idx() as u32)).or_insert_with(|| face_loops_uv_fine(b, f));
     if loops.iter().all(|l| l.len() < 3) {
         return Where::In; // closed surface without boundary (full sphere/torus)
     }
