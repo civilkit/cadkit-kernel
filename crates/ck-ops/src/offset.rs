@@ -489,6 +489,29 @@ fn offset_spline_edge(src: &Body, e: EdgeId, moved: &[Option<Surface>], dnat: &d
         }
         Err(OffsetError::new("offsetDegenerate", "the offset faces do not meet at an edge"))
     };
+    // A short original edge can move a long way (offsets slide along grazing
+    // faces): its samples would cover only a sliver of the offset curve, so
+    // the curve is sampled between its own end vertices instead (planes
+    // through points of the chord p0-p1, normal to it).
+    let _ = sample(0.5 * (ed.t0 + ed.t1))?; // sets `grazing` for the edge
+    let dmax = fs.iter().map(|&f| dnat(f).abs()).fold(0.0f64, f64::max);
+    let chord_sampling = !grazing.get() && src.edge_length(e) < 3.0 * dmax + 1e-9 && p0.dist(p1) > 1e-9;
+    let sample_chord = |s: f64| -> Result<Vec3, OffsetError> {
+        let x = p0 + (p1 - p0) * s;
+        let dir = (p1 - p0).normalize();
+        let mut q = x;
+        for _ in 0..40 {
+            let (q1, n1) = foot_n(m1, q).ok_or_else(|| OffsetError::new("offsetUnsupported", "degenerate normal"))?;
+            let (q2, n2) = foot_n(m2, q).ok_or_else(|| OffsetError::new("offsetUnsupported", "degenerate normal"))?;
+            let g = [(q - q1).dot(n1), (q - q2).dot(n2), (q - x).dot(dir)];
+            if g.iter().all(|v| v.abs() < 1e-11) {
+                return Ok(q);
+            }
+            let dq = crate::intersect::solve3([n1, n2, dir], [-g[0], -g[1], -g[2]]).ok_or_else(|| OffsetError::new("offsetDegenerate", "the offset faces do not meet at an edge"))?;
+            q = q + dq;
+        }
+        Err(OffsetError::new("offsetDegenerate", "the offset faces do not meet at an edge"))
+    };
     let mut n = 24usize;
     loop {
         let mut pts = Vec::with_capacity(n + 1);
@@ -496,6 +519,7 @@ fn offset_spline_edge(src: &Body, e: EdgeId, moved: &[Option<Surface>], dnat: &d
             pts.push(match k {
                 0 => p0,
                 _ if k == n => p1,
+                _ if chord_sampling => sample_chord(k as f64 / n as f64)?,
                 _ => sample(ed.t0 + (ed.t1 - ed.t0) * k as f64 / n as f64)?,
             });
         }
@@ -504,10 +528,22 @@ fn offset_spline_edge(src: &Body, e: EdgeId, moved: &[Option<Surface>], dnat: &d
         }
         let c = ck_geom::fit::interpolate(&pts, 3, ck_geom::fit::Param::ChordLength).map_err(|e| OffsetError::new("offsetUnsupported", format!("edge fit: {e}")))?;
         let (a, b) = c.domain();
-        let dev = (0..4 * n).map(|k| {
-            let q = c.eval(a + (b - a) * (k as f64 + 0.5) / (4 * n) as f64);
-            m1.closest_point(q).2.dist(q).max(m2.closest_point(q).2.dist(q))
-        }).fold(0.0f64, f64::max);
+        let devs: Vec<(f64, Vec3)> = (0..4 * n)
+            .map(|k| {
+                let q = c.eval(a + (b - a) * (k as f64 + 0.5) / (4 * n) as f64);
+                (m1.closest_point(q).2.dist(q).max(m2.closest_point(q).2.dist(q)), q)
+            })
+            .collect();
+        let dev = devs.iter().map(|x| x.0).fold(0.0f64, f64::max);
+        if std::env::var_os("CK_OFFSET_DEBUG").is_some() && dev > 1e-2 {
+            let w = devs.iter().cloned().fold((0.0, Vec3::ZERO), |a, b| if b.0 > a.0 { b } else { a });
+            let k = devs.iter().position(|x| x.0 == w.0).unwrap();
+            eprintln!(
+                "  worst at {:?} (sample {}/{}) p0 {:?} p1 {:?} orig edge {:?}->{:?}; dev to m1 {:.2e} m2 {:.2e}",
+                w.1, k, devs.len(), p0, p1, ed.curve.eval(ed.t0), ed.curve.eval(ed.t1),
+                m1.closest_point(w.1).2.dist(w.1), m2.closest_point(w.1).2.dist(w.1)
+            );
+        }
         if std::env::var_os("CK_OFFSET_DEBUG").is_some() {
             eprintln!("offset edge fit: {} | {} n={n} dev={dev:.2e} grazing={}", src.face_id_str(fs[0]), src.face_id_str(fs[1]), grazing.get());
         }

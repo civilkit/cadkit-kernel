@@ -981,8 +981,14 @@ fn split_blend_at_links(out: &mut Body, name: &FaceName, tool: &Body, tool_blend
                 if let Some((d, e, t)) = best {
                     let ed = out.edge(e);
                     if d <= tol && t > ed.t0.min(ed.t1) + 1e-9 && t < ed.t0.max(ed.t1) - 1e-9 {
-                        let (v, _) = ck_topo::edit::split_edge(out, e, t);
+                        let (v, ne) = ck_topo::edit::split_edge(out, e, t);
                         out.vertex_mut(v).p = pt;
+                        // the copied pcurves no longer fit the halves
+                        for x in [e, ne] {
+                            for c in out.edge(x).coedges.clone() {
+                                out.coedge_mut(c).pcurve = None;
+                            }
+                        }
                         found = Some(v);
                     }
                 }
