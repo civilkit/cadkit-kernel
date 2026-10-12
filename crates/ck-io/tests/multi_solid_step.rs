@@ -163,6 +163,7 @@ fn coil_spring_gt_centerline() {
     for k in (0..rows.len()).step_by(60) {
         eprintln!("  v {:.1} rho {:.4} z {:.3}", rows[k].0, rows[k].1, rows[k].2);
     }
+}
 
 /// Mesh area, triangle count and degenerate-triangle count of a tessellation.
 fn mesh_stats(m: &ck_tess::mesh::Mesh) -> (f64, usize) {
