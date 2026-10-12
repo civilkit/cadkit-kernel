@@ -53,6 +53,13 @@ impl regen::FeatureExec for Ex {
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     let part = ck_model::Part::parse(&std::fs::read_to_string(&a[1]).unwrap()).unwrap();
+    // REPEAT=n: regen n extra times silently (gives a sampler something to chew on)
+    if let Ok(n) = std::env::var("REPEAT") {
+        for _ in 0..n.parse::<usize>().unwrap_or(0) {
+            let mut ex = Ex(Brep::new());
+            regen::regen(&part, &RegenOpts::default(), &mut ex);
+        }
+    }
     let t = cpu();
     let mut ex = Ex(Brep::new());
     regen::regen(&part, &RegenOpts::default(), &mut ex);

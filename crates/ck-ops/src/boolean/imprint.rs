@@ -14,7 +14,7 @@
 //! other's boundary edges instead of an SSI curve.
 
 use super::classify::{point_in_face_cached, LoopCache, Where};
-use crate::bvh::{face_box, Aabb, Bvh};
+use crate::bvh::{curve_range_box, face_box, Aabb, Bvh};
 use crate::intersect::ss::{self, Bounds, SsResult};
 use crate::intersect::{cc, fit_param, param_slack};
 use ck_geom::curve::Curve;
@@ -65,6 +65,10 @@ pub struct Arrangement {
     pub tol: f64,
     /// Number of face pairs that produced cut segments or coincidences.
     pub interacting_pairs: usize,
+    /// Welding grid over `verts` (cell = tol) and `edges` by end-vertex pair:
+    /// lookups instead of linear scans (private, filled by `vertex` / `edge`).
+    vgrid: ck_core::fxhash::FxHashMap<(i64, i64, i64), Vec<usize>>,
+    eidx: ck_core::fxhash::FxHashMap<(usize, usize), Vec<usize>>,
 }
 
 /// A trimmed intersection curve before splitting.
@@ -81,22 +85,47 @@ impl Arrangement {
     /// Weld `p` into the pool.
     fn vertex(&mut self, p: Vec3) -> usize {
         let tol = self.tol;
-        if let Some(i) = self.verts.iter().position(|q| q.dist(p) <= tol) {
+        let usable = tol > 0.0 && p.x.is_finite() && p.y.is_finite() && p.z.is_finite() && p.x.abs().max(p.y.abs()).max(p.z.abs()) / tol < 1e15;
+        if !usable {
+            if let Some(i) = self.verts.iter().position(|q| q.dist(p) <= tol) {
+                return i;
+            }
+            self.verts.push(p);
+            return self.verts.len() - 1;
+        }
+        let cell = |p: Vec3| ((p.x / tol).floor() as i64, (p.y / tol).floor() as i64, (p.z / tol).floor() as i64);
+        let (cx, cy, cz) = cell(p);
+        let mut best: Option<usize> = None;
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                for dz in -1..=1 {
+                    if let Some(v) = self.vgrid.get(&(cx + dx, cy + dy, cz + dz)) {
+                        for &i in v {
+                            if best.map_or(true, |b| i < b) && self.verts[i].dist(p) <= tol {
+                                best = Some(i);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(i) = best {
             return i;
         }
         self.verts.push(p);
-        self.verts.len() - 1
+        let i = self.verts.len() - 1;
+        self.vgrid.entry((cx, cy, cz)).or_default().push(i);
+        i
     }
 
     /// Add an edge piece or return the coincident existing one. Returns
     /// (edge index, same direction as given).
     fn edge(&mut self, curve: &Curve, t0: f64, t1: f64, v0: usize, v1: usize, src: Option<(usize, EdgeId)>) -> (usize, bool) {
         let tol = self.tol;
-        for (i, e) in self.edges.iter().enumerate() {
-            let same_ends = (e.v0 == v0 && e.v1 == v1) || (e.v0 == v1 && e.v1 == v0);
-            if !same_ends {
-                continue;
-            }
+        let key = (v0.min(v1), v0.max(v1));
+        let cands: Vec<usize> = self.eidx.get(&key).cloned().unwrap_or_default();
+        for i in cands {
+            let e = &self.edges[i];
             // samples of the new piece on the existing one
             let on = [0.31, 0.5, 0.73].iter().all(|&f| {
                 let p = curve.eval(t0 + (t1 - t0) * f);
@@ -117,6 +146,7 @@ impl Arrangement {
             return (i, same);
         }
         self.edges.push(ArrEdge { curve: curve.clone(), t0, t1, v0, v1, src });
+        self.eidx.entry(key).or_default().push(self.edges.len() - 1);
         (self.edges.len() - 1, true)
     }
 
@@ -373,9 +403,27 @@ pub fn imprint_hooked(a: &Body, b: &Body, tol: f64, hook: Option<PairHook>) -> A
     }
     let pool = arr.verts.clone();
     // ---- 3. split original edges and cut segments at pool points on them
+    // spatial index over the pool: a point can only split a curve piece
+    // when it lies within `tol` of the piece, so lines / conics query the
+    // pool by the piece's box instead of testing every point
+    let pool_boxes: Vec<Aabb> = pool.iter().map(|&p| Aabb::new(p, p)).collect();
+    let pool_bvh = Bvh::build(&pool_boxes);
     let split_params = |c: &Curve, t0: f64, t1: f64| -> Vec<f64> {
         let mut ts = vec![t0, t1];
-        for &p in &pool {
+        let cand: Option<Vec<usize>> = match c {
+            Curve::Line { .. } | Curve::Circle { .. } | Curve::Ellipse { .. } => {
+                let bb = curve_range_box(c, t0, t1);
+                if bb.is_empty() || !(bb.diagonal().is_finite()) {
+                    None
+                } else {
+                    Some(pool_bvh.query_box(&bb.padded(4.0 * tol + 1e-9)))
+                }
+            }
+            _ => None,
+        };
+        let n_cand = cand.as_ref().map_or(pool.len(), |c| c.len());
+        for k in 0..n_cand {
+            let p = pool[cand.as_ref().map_or(k, |c| c[k])];
             if !c.may_be_within(p, tol) {
                 continue; // farther than `tol` from the whole curve: skip the closest-point search
             }

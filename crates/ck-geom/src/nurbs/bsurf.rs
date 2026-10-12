@@ -107,8 +107,8 @@ impl BSplineSurface {
             let (p, q) = (self.deg_u, self.deg_v);
             let su = find_span(self.nu - 1, p, u, &self.knots_u);
             let sv = find_span(self.nv - 1, q, v, &self.knots_v);
-            let nu = basis::ders_basis_funs2(su, u, p, 0, &self.knots_u);
-            let nv = basis::ders_basis_funs2(sv, v, q, 0, &self.knots_v);
+            let nu = [basis::basis_funs2(su, u, p, &self.knots_u)];
+            let nv = [basis::basis_funs2(sv, v, q, &self.knots_v)];
             let mut tp = [Vec3::ZERO; 12];
             for s in 0..=q {
                 for r in 0..=p {
@@ -128,8 +128,8 @@ impl BSplineSurface {
             let (p, q) = (self.deg_u, self.deg_v);
             let su = find_span(self.nu - 1, p, u, &self.knots_u);
             let sv = find_span(self.nv - 1, q, v, &self.knots_v);
-            let nu = basis::ders_basis_funs2(su, u, p, 0, &self.knots_u);
-            let nv = basis::ders_basis_funs2(sv, v, q, 0, &self.knots_v);
+            let nu = [basis::basis_funs2(su, u, p, &self.knots_u)];
+            let nv = [basis::basis_funs2(sv, v, q, &self.knots_v)];
             let mut tp = [Vec3::ZERO; 12];
             let mut tw = [0.0f64; 12];
             for s in 0..=q {
@@ -148,6 +148,68 @@ impl BSplineSurface {
             return a / w;
         }
         self.derivs(u, v, 0)[0][0]
+    }
+
+    /// Points on the grid `us x vs` (row-major, `i * vs.len() + j`), each
+    /// bit-identical to `eval(us[i], vs[j])`: the basis functions are computed
+    /// once per row / column instead of once per point.
+    pub fn eval_grid(&self, us: &[f64], vs: &[f64]) -> Vec<Vec3> {
+        if self.deg_u >= 12 || self.deg_v >= 12 {
+            return us.iter().flat_map(|&u| vs.iter().map(move |&v| self.eval(u, v))).collect();
+        }
+        let ((u0, u1), (v0, v1)) = self.domain();
+        let (p, q) = (self.deg_u, self.deg_v);
+        let rows: Vec<(usize, [f64; 12])> = us
+            .iter()
+            .map(|&u| {
+                let u = u.clamp(u0, u1);
+                let su = find_span(self.nu - 1, p, u, &self.knots_u);
+                (su, basis::basis_funs2(su, u, p, &self.knots_u))
+            })
+            .collect();
+        let cols: Vec<(usize, [f64; 12])> = vs
+            .iter()
+            .map(|&v| {
+                let v = v.clamp(v0, v1);
+                let sv = find_span(self.nv - 1, q, v, &self.knots_v);
+                (sv, basis::basis_funs2(sv, v, q, &self.knots_v))
+            })
+            .collect();
+        let mut out = Vec::with_capacity(us.len() * vs.len());
+        for &(su, nu) in &rows {
+            for &(sv, nv) in &cols {
+                let mut tp = [Vec3::ZERO; 12];
+                if self.weights.is_none() {
+                    for s in 0..=q {
+                        for r in 0..=p {
+                            tp[s] = tp[s] + self.cp(su - p + r, sv - q + s) * (nu[r] * 1.0);
+                        }
+                    }
+                    let mut a = Vec3::ZERO;
+                    for s in 0..=q {
+                        a = a + tp[s] * nv[s];
+                    }
+                    out.push(a);
+                } else {
+                    let mut tw = [0.0f64; 12];
+                    for s in 0..=q {
+                        for r in 0..=p {
+                            let (i, j) = (su - p + r, sv - q + s);
+                            let wt = self.weight(i, j);
+                            tp[s] = tp[s] + self.cp(i, j) * (nu[r] * wt);
+                            tw[s] += nu[r] * wt;
+                        }
+                    }
+                    let (mut a, mut w) = (Vec3::ZERO, 0.0);
+                    for s in 0..=q {
+                        a = a + tp[s] * nv[s];
+                        w += tw[s] * nv[s];
+                    }
+                    out.push(a / w);
+                }
+            }
+        }
+        out
     }
 
     /// `skl[k][l]` = ∂^{k+l} S / ∂u^k ∂v^l for k + l <= d (A3.6 / A4.4).

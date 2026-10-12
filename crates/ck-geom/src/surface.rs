@@ -239,6 +239,15 @@ impl Surface {
         }
     }
 
+    /// Points on the grid `us x vs`, row-major (`i * vs.len() + j`); each is
+    /// bit-identical to `eval(us[i], vs[j])` (splines share their basis work).
+    pub fn eval_grid(&self, us: &[f64], vs: &[f64]) -> Vec<Vec3> {
+        match self {
+            Surface::BSpline(s) => s.eval_grid(us, vs),
+            _ => us.iter().flat_map(|&u| vs.iter().map(move |&v| self.eval(u, v))).collect(),
+        }
+    }
+
     /// Point + first/second partials.
     pub fn derivs2(&self, u: f64, v: f64) -> SurfDerivs {        match self {
             Surface::Plane { frame } => SurfDerivs {

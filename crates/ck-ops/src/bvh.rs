@@ -408,31 +408,37 @@ impl Bvh {
 /// extreme points are not needed — boxes are padded by the caller's tol).
 pub fn edge_box(b: &Body, e: EdgeId) -> Aabb {
     let ed = b.edge(e);
-    let n = match ed.curve {
+    let mut bb = curve_range_box(&ed.curve, ed.t0, ed.t1);
+    bb.add_point(b.vertex(ed.v0).p);
+    bb.add_point(b.vertex(ed.v1).p);
+    bb
+}
+
+/// Box of the curve over `[t0, t1]`: samples plus (conics) the exact
+/// per-axis extreme points inside the range.
+pub fn curve_range_box(curve: &ck_geom::curve::Curve, t0: f64, t1: f64) -> Aabb {
+    let n = match curve {
         ck_geom::curve::Curve::Line { .. } => 1,
         _ => 32,
     };
-    let mut bb = Aabb::from_points(&ed.curve.sample(ed.t0, ed.t1, n));
-    // conics: add the exact per-axis extreme points inside the range
-    let conic = match &ed.curve {
+    let mut bb = Aabb::from_points(&curve.sample(t0, t1, n));
+    let conic = match curve {
         ck_geom::curve::Curve::Circle { frame, r } => Some((frame, *r, *r)),
         ck_geom::curve::Curve::Ellipse { frame, a, b } => Some((frame, *a, *b)),
         _ => None,
     };
     if let Some((fr, a, b)) = conic {
-        let (lo, hi) = (ed.t0.min(ed.t1), ed.t0.max(ed.t1));
+        let (lo, hi) = (t0.min(t1), t0.max(t1));
         for i in 0..3 {
             let t = (fr.y.get(i) * b).atan2(fr.x.get(i) * a);
             for k in -3..=3 {
                 let tt = t + k as f64 * std::f64::consts::PI;
                 if tt >= lo && tt <= hi {
-                    bb.add_point(ed.curve.eval(tt));
+                    bb.add_point(curve.eval(tt));
                 }
             }
         }
     }
-    bb.add_point(b.vertex(ed.v0).p);
-    bb.add_point(b.vertex(ed.v1).p);
     bb
 }
 
@@ -477,12 +483,10 @@ pub fn face_box(b: &Body, f: FaceId) -> Aabb {
                 }
             }
             let n = 12;
-            for i in 0..=n {
-                for j in 0..=n {
-                    let u = ulo + (uhi - ulo) * i as f64 / n as f64;
-                    let v = vlo + (vhi - vlo) * j as f64 / n as f64;
-                    bb.add_point(face.surface.eval(u, v));
-                }
+            let us: Vec<f64> = (0..=n).map(|i| ulo + (uhi - ulo) * i as f64 / n as f64).collect();
+            let vs: Vec<f64> = (0..=n).map(|j| vlo + (vhi - vlo) * j as f64 / n as f64).collect();
+            for p in face.surface.eval_grid(&us, &vs) {
+                bb.add_point(p);
             }
         }
     }

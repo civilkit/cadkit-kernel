@@ -740,13 +740,11 @@ pub fn body_box(b: &ck_topo::body::Body) -> (ck_core::linalg::Vec3, ck_core::lin
             continue;
         }
         let n = 32;
-        for i in 0..=n {
-            for j in 0..=n {
-                let (u, v) = (a.x + (z.x - a.x) * i as f64 / n as f64, a.y + (z.y - a.y) * j as f64 / n as f64);
-                let p = face.surface.eval(u, v);
-                lo = lo.min(p);
-                hi = hi.max(p);
-            }
+        let us: Vec<f64> = (0..=n).map(|i| a.x + (z.x - a.x) * i as f64 / n as f64).collect();
+        let vs: Vec<f64> = (0..=n).map(|j| a.y + (z.y - a.y) * j as f64 / n as f64).collect();
+        for p in face.surface.eval_grid(&us, &vs) {
+            lo = lo.min(p);
+            hi = hi.max(p);
         }
     }
     // Oracle (drafted box): the wire box is the union of the exact bounds

@@ -1,3 +1,4 @@
+pub mod fxhash;
 pub mod kdtree;
 pub mod linalg;
 pub mod quad;

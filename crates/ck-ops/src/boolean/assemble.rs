@@ -199,6 +199,7 @@ pub fn group(arr: &Arrangement, s: &Surface, sense: bool, cycles: Vec<Vec<He>>) 
 }
 
 /// Fragments of arrangement face `fi`.
+#[inline(never)]
 pub fn fragments(arr: &Arrangement, fi: usize) -> Vec<Fragment> {
     let af = &arr.faces[fi];
     if !af.touched() {
@@ -275,6 +276,7 @@ pub fn fragments(arr: &Arrangement, fi: usize) -> Vec<Fragment> {
 
 /// An interior point of the fragment (on its surface) and the outward
 /// normal there.
+#[inline(never)]
 pub fn sample_point(arr: &Arrangement, f: &Fragment) -> Option<(Vec3, Vec3)> {
     let af = &arr.faces[f.af];
     let s = &af.surface;
@@ -444,11 +446,22 @@ pub fn select(arr: &Arrangement, bodies: [&Body; 2], op: Op) -> Result<Vec<OutFa
         i
     }
     let edges_of: Vec<Vec<usize>> = kept.iter().map(|(f, _)| f.loops.iter().flatten().map(|h| h.0).collect()).collect();
-    for i in 0..n {
-        for j in i + 1..n {
-            if !edges_of[i].iter().any(|e| edges_of[j].contains(e)) {
-                continue;
+    // fragments sharing an edge (edge -> fragment indices, ascending): only
+    // those pairs can merge, so no all-pairs scan on many-fragment bodies
+    let mut by_edge: ck_core::fxhash::FxHashMap<usize, Vec<usize>> = Default::default();
+    for (i, es) in edges_of.iter().enumerate() {
+        for &e in es {
+            let v = by_edge.entry(e).or_default();
+            if v.last() != Some(&i) {
+                v.push(i);
             }
+        }
+    }
+    for i in 0..n {
+        let mut js: Vec<usize> = edges_of[i].iter().flat_map(|e| by_edge[e].iter().copied()).filter(|&j| j > i).collect();
+        js.sort_unstable();
+        js.dedup();
+        for j in js {
             let (fi, fj) = (&arr.faces[kept[i].0.af], &arr.faces[kept[j].0.af]);
             let si = fi.sense ^ kept[i].1;
             let sj = fj.sense ^ kept[j].1;
@@ -469,7 +482,15 @@ pub fn select(arr: &Arrangement, bodies: [&Body; 2], op: Op) -> Result<Vec<OutFa
     }
     // ---- region suffixes: count kept, unmerged fragments per original face
     let mut roots: Vec<usize> = (0..n).map(|i| find(&mut parent, i)).collect();
-    let merged: Vec<bool> = (0..n).map(|i| roots.iter().filter(|&&r| r == roots[i]).count() > 1).collect();
+    let mut root_count = vec![0usize; n];
+    for &r in &roots {
+        root_count[r] += 1;
+    }
+    let merged: Vec<bool> = (0..n).map(|i| root_count[roots[i]] > 1).collect();
+    let mut members_of: Vec<Vec<usize>> = vec![vec![]; n];
+    for (j, &r) in roots.iter().enumerate() {
+        members_of[r].push(j);
+    }
     let mut out: Vec<OutFace> = vec![];
     let mut per_face: std::collections::BTreeMap<usize, Vec<usize>> = Default::default();
     for i in 0..n {
@@ -523,14 +544,14 @@ pub fn select(arr: &Arrangement, bodies: [&Body; 2], op: Op) -> Result<Vec<OutFa
     }
     // merged groups
     roots.dedup();
-    let mut done = vec![];
+    let mut done = vec![false; n];
     for i in 0..n {
         let r = find(&mut parent, i);
-        if !merged[i] || done.contains(&r) {
+        if !merged[i] || done[r] {
             continue;
         }
-        done.push(r);
-        let members: Vec<usize> = (0..n).filter(|&j| find(&mut parent, j) == r).collect();
+        done[r] = true;
+        let members: Vec<usize> = std::mem::take(&mut members_of[r]);
         let lead = members[0];
         let af = &arr.faces[kept[lead].0.af];
         let sense = af.sense ^ kept[lead].1;

@@ -396,10 +396,17 @@ impl Body {
     }
     pub fn face_edges(&self, f: FaceId) -> Vec<EdgeId> {
         let mut out = vec![];
+        let n: usize = self.faces[f.idx()].loops.iter().map(|&l| self.loops[l.idx()].coedges.len()).sum();
+        // big faces (gear caps, pattern lids): dedupe through a set, not a scan
+        let mut seen = ck_core::fxhash::FxHashSet::default();
         for &l in &self.faces[f.idx()].loops {
             for &c in &self.loops[l.idx()].coedges {
                 let e = self.coedges[c.idx()].edge;
-                if !out.contains(&e) {
+                if n > 16 {
+                    if seen.insert(e) {
+                        out.push(e);
+                    }
+                } else if !out.contains(&e) {
                     out.push(e);
                 }
             }

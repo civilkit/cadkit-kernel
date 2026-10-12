@@ -122,6 +122,46 @@ pub fn ders_basis_funs(span: usize, u: f64, p: usize, nd: usize, knots: &[f64]) 
     ders
 }
 
+/// Values only of the non-vanishing basis functions (p < 12), allocation-free;
+/// bit-identical to `ders_basis_funs2(.., nd = 0)[0]` (same recurrences), minus
+/// the derivative tables and the 3x12 return value.
+#[inline]
+pub fn basis_funs2(span: usize, u: f64, p: usize, knots: &[f64]) -> [f64; 12] {
+    if p == 3 {
+        basis_funs2_n::<4>(span, u, 3, knots)
+    } else if p == 2 {
+        basis_funs2_n::<3>(span, u, 2, knots)
+    } else if p < 6 {
+        basis_funs2_n::<6>(span, u, p, knots)
+    } else {
+        basis_funs2_n::<12>(span, u, p, knots)
+    }
+}
+
+#[inline(always)]
+fn basis_funs2_n<const N: usize>(span: usize, u: f64, p: usize, knots: &[f64]) -> [f64; 12] {
+    // ndu column p is what the derivative-free path reads; keep the same
+    // (right + left) divisions as the A2.3 table so the values match bit for bit
+    let mut n = [0.0f64; N];
+    let (mut left, mut right) = ([0.0f64; N], [0.0f64; N]);
+    n[0] = 1.0;
+    for j in 1..=p {
+        left[j] = u - knots[span + 1 - j];
+        right[j] = knots[span + j] - u;
+        let mut saved = 0.0;
+        for r in 0..j {
+            let den = right[r + 1] + left[j - r];
+            let temp = if den != 0.0 { n[r] / den } else { 0.0 };
+            n[r] = saved + right[r + 1] * temp;
+            saved = left[j - r] * temp;
+        }
+        n[j] = saved;
+    }
+    let mut out = [0.0f64; 12];
+    out[..=p].copy_from_slice(&n[..=p]);
+    out
+}
+
 /// Allocation-free `ders_basis_funs` for nd <= 2, p < 12 (same arithmetic).
 pub fn ders_basis_funs2(span: usize, u: f64, p: usize, nd: usize, knots: &[f64]) -> [[f64; 12]; 3] {
     // (small working arrays for the usual degrees: the zero-fill of a 12x12
