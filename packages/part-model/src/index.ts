@@ -86,6 +86,8 @@ export interface PartDoc {
   rollback: null;
   material: Material;
   counters: Record<string, unknown>;
+  /** Intent expectations (check grammar): verified by default, Survives round-trips. */
+  expect?: Array<Record<string, unknown>>;
 }
 
 export function isSketchFeature(f: Feature): f is SketchFeature {

@@ -5,7 +5,7 @@
 // {id, author, time, ops, reason}; undo reverts the last N batches.
 import { createWorkerKernel, type WorkerKernel } from '../../kernel-client/src/worker.js';
 import { emptyPart, FEATURE_TYPES, type PartDoc } from '../../part-model/src/index.js';
-import { hintFor, verify, type KernelTransport, type RegenError, type VerifyReport } from '../../driver/src/verify.js';
+import { hintFor, verify, type CheckResultItem, type KernelTransport, type RegenError, type VerifyReport } from '../../driver/src/verify.js';
 import {
   check, describe, heal, importSat, importStep, massProps, resolveDescriptions, step, validate,
   type CheckReport, type DescribeItem, type HealReport, type ImportReport, type MassReport,
@@ -63,6 +63,8 @@ export interface EditResult {
   schemaError?: string;
   diff?: BodyDiff | null;
   refWarnings?: RefWarning[];
+  /** Document expectations check (present when the doc carries expect). */
+  intent?: { passed: number; failed: number; results: CheckResultItem[] } | null;
 }
 
 const ID = /^F\d+$/;
@@ -326,11 +328,45 @@ export class Session {
     this.doc = candidate;
     const record: EditRecord = { id: `edit-${this.editSeq++}`, author: this.author, time: Date.now(), ops: clone(ops), reason };
     this.stack.push({ record, before });
-    return { ok: true, record, diff: diffFacts(pre, post), refWarnings };
+
+    // Intent: a document carrying expectations flags breaks automatically.
+    // Flagged, not reverted — redesigning away from stated intent is legal.
+    let intent: EditResult['intent'] = null;
+    const hints: ReturnType<typeof hintFor>[] = [];
+    if (candidate.expect?.length) {
+      try {
+        const c = await this.kernel.request({ type: 'check', tag: this.tag, expect: candidate.expect });
+        if (!c.trap && c.ok && c.result) {
+          const res = c.result as { passed: number; failed: number; results: CheckResultItem[] };
+          intent = { passed: res.passed ?? 0, failed: res.failed ?? 0, results: res.results ?? [] };
+          for (const item of intent.results) {
+            if (!item.pass) {
+              hints.push({
+                feature: '',
+                code: `expect:${item.kind}`,
+                hint: `document expectation ${item.kind} broken by ${record.id} — measured ${JSON.stringify(item.measured)} vs expected ${JSON.stringify(item.expected)}${item.detail ? ` (${item.detail})` : ''}`,
+              });
+            }
+          }
+        }
+      } catch { intent = null; }
+    }
+    return { ok: true, record, diff: diffFacts(pre, post), refWarnings, intent, hints: hints.length ? hints : undefined };
   }
 
-  /** Revert the last n applied batches. The document is the source of truth;
-   *  the kernel tag is re-synced (resynced:false if that regen itself fails). */
+  /** Set the document's intent expectations (check grammar). Recorded like an
+   *  edit so undo reverts it; does not touch the kernel (checked on edit/verify). */
+  setExpect(expect: Array<Record<string, unknown>>, reason?: string): EditRecord {
+    if (!Array.isArray(expect)) throw new Error('expect must be an array');
+    const before = clone(this.doc);
+    this.doc = { ...clone(this.doc), expect: clone(expect) };
+    if (expect.length === 0) delete (this.doc as { expect?: unknown }).expect;
+    const record: EditRecord = { id: `edit-${this.editSeq++}`, author: this.author, time: Date.now(), ops: [], reason: reason ?? 'set expectations' };
+    this.stack.push({ record, before });
+    return record;
+  }
+
+  /** Revert the last n applied batches. The document is the source of truth;   *  the kernel tag is re-synced (resynced:false if that regen itself fails). */
   async undo(n = 1): Promise<{ records: EditRecord[]; resynced: boolean }> {
     const popped = this.stack.splice(Math.max(0, this.stack.length - n), n);
     if (popped.length) this.doc = clone(popped[0].before);

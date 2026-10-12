@@ -125,3 +125,33 @@ describe('verify live', { skip: !existsSync(wasmPath()) && 'no wasm built' }, ()
     }
   });
 });
+
+describe('verify document expectations', () => {
+  function seenFake(): { k: KernelTransport; seen: Array<Record<string, unknown>> } {
+    const seen: Array<Record<string, unknown>> = [];
+    const k: KernelTransport = {
+      async request(msg: Record<string, unknown>): Promise<KernelReply> {
+        seen.push(msg);
+        if (msg.type === 'regen') return { ok: true, result: { errors: [], body: {} } };
+        if (msg.type === 'validate') return { ok: true, result: { ok: true, issues: [] } };
+        return { ok: true, result: { ok: true, passed: 1, failed: 0, results: [] } };
+      },
+    };
+    return { k, seen };
+  }
+
+  it('checks the document expect array by default', async () => {
+    const { k, seen } = seenFake();
+    const doc = { ...emptyPart('T'), expect: [{ kind: 'volume', min: 10 }] };
+    const r = await verify(k, doc);
+    assert.deepEqual((seen.find((m) => m.type === 'check') as Record<string, unknown>).expect, [{ kind: 'volume', min: 10 }]);
+    assert.equal(r.ok, true);
+  });
+
+  it('explicit expect wins over the document', async () => {
+    const { k, seen } = seenFake();
+    const doc = { ...emptyPart('T'), expect: [{ kind: 'volume', min: 10 }] };
+    await verify(k, doc, { expect: [{ kind: 'valid' }] });
+    assert.deepEqual((seen.find((m) => m.type === 'check') as Record<string, unknown>).expect, [{ kind: 'valid' }]);
+  });
+});

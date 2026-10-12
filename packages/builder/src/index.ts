@@ -77,10 +77,20 @@ export class Part {
   material: Material;
   features: Feature[] = [];
   seq = 1;
+  expect?: Array<Record<string, unknown>>;
 
   constructor(name = 'Part', material: Material = 'steel') {
     this.name = name;
     this.material = material;
+  }
+
+  /** Adopt an existing document (including its expectations) for editing. */
+  static fromJSON(doc: PartDoc): Part {
+    const p = new Part(doc.name, doc.material);
+    p.features = JSON.parse(JSON.stringify(doc.features)) as Feature[];
+    p.seq = doc.seq;
+    if (doc.expect) p.expect = JSON.parse(JSON.stringify(doc.expect)) as Array<Record<string, unknown>>;
+    return p;
   }
 
   nextId(): FeatureId { return (`F${this.seq++}`) as FeatureId; }
@@ -266,10 +276,12 @@ export class Part {
   }
 
   toJSON(): PartDoc {
-    return {
+    const doc: PartDoc = {
       ...emptyPart(this.name, this.material),
       features: this.features,
       seq: this.seq,
     };
+    if (this.expect) doc.expect = JSON.parse(JSON.stringify(this.expect)) as Array<Record<string, unknown>>;
+    return doc;
   }
 }

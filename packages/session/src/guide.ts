@@ -59,6 +59,9 @@ export function getGuide(): { version: string; text: string } {
 Units mm. Features F1, F2, … in creation order; seq is the next id. Every
 change is an edit to this document (ADR 0001). Batches are atomic: a failing
 batch leaves the document unchanged. Undo reverts whole batches.
+A document may carry intent: top-level "expect" with check expectations
+([{kind:"volume",min:1000}]). verify checks them by default and edits flag
+breaks automatically (ADR 0003 item 5).
 
 ## Features (${FEATURE_TYPES.length} wire types)
 ${FIELD_TABLE}

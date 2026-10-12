@@ -109,7 +109,8 @@ export async function verify(
   const t0 = performance.now();
   const tag = opts.tag ?? 'main';
   const tol = opts.tol ?? 1e-6;
-  const expect = opts.expect ?? [{ kind: 'valid' }];
+  // Intent checks run by default: explicit expect wins, else the document's own.
+  const expect = opts.expect ?? part.expect ?? [{ kind: 'valid' }];
   const hints: RepairHint[] = [];
 
   const fail = (code: string, hint: string): VerifyReport => ({

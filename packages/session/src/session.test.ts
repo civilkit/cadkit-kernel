@@ -178,3 +178,53 @@ describe('session persistence', { skip: !existsSync(wasmPath()) && 'no wasm buil
     }
   });
 });
+
+describe('session intent', () => {
+  const docWithBody = () => plateDoc();
+
+  function fake(checkResults: Array<Record<string, unknown>> = []): KernelTransport {
+    return {
+      async request(msg: Record<string, unknown>): Promise<KernelReply> {
+        if (msg.type === 'regen') return { ok: true, result: { errors: [], body: cleanBody } };
+        if (msg.type === 'massProps') return { ok: true, result: { volume: 100, bodies: [{ volume: 100 }] } };
+        if (msg.type === 'refDiff') return { ok: true, result: { warnings: [] } };
+        if (msg.type === 'validate') return { ok: true, result: { ok: true, issues: [] } };
+        if (msg.type === 'check') {
+          const failed = checkResults.filter((r) => !r.pass);
+          return { ok: true, result: { ok: failed.length === 0, passed: checkResults.length - failed.length, failed: failed.length, results: checkResults } };
+        }
+        throw new Error('unexpected ' + (msg.type as string));
+      },
+    };
+  }
+
+  it('setExpect records history and survives undo', async () => {
+    const s = new Session(docWithBody(), fake(), 't', 'tag');
+    const rec = s.setExpect([{ kind: 'volume', min: 10 }], 'pin volume');
+    assert.equal(rec.id, 'edit-1');
+    assert.deepEqual(s.document.expect, [{ kind: 'volume', min: 10 }]);
+    assert.equal(s.history().length, 1);
+    await s.undo();
+    assert.equal(s.document.expect, undefined);
+  });
+
+  it('flags edits that break document expectations without reverting', async () => {
+    const s = new Session(docWithBody(), fake([{ index: 0, kind: 'volume', pass: false, measured: 5, expected: { min: 10 }, detail: 'low' }]), 't', 'tag');
+    s.setExpect([{ kind: 'volume', min: 10 }]);
+    const r = await s.edit([{ op: 'set', id: 'F2', path: 'depth', value: 5 }]);
+    assert.equal(r.ok, true); // flagged, not reverted
+    assert.equal(r.intent?.failed, 1);
+    assert.equal(r.hints?.[0].code, 'expect:volume');
+    assert.match(r.hints?.[0].hint ?? '', /edit-2/);
+    assert.equal((s.document.features[1] as { depth: number }).depth, 5);
+  });
+
+  it('clean intent stays silent', async () => {
+    const s = new Session(docWithBody(), fake([{ index: 0, kind: 'volume', pass: true }]), 't', 'tag');
+    s.setExpect([{ kind: 'volume', min: 10 }]);
+    const r = await s.edit([{ op: 'set', id: 'F2', path: 'depth', value: 5 }]);
+    assert.equal(r.ok, true);
+    assert.equal(r.intent?.failed, 0);
+    assert.equal(r.hints, undefined);
+  });
+});
