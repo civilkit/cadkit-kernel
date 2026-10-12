@@ -27,7 +27,7 @@ use crate::curvature::{self, Tol};
 use ck_geom::surface::Surface;
 use ck_geom::{Vec2, Vec3};
 use ck_topo::body::{Body, FaceId};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Periodic cuts of a face: `(u cut, v cut)` for the periodic directions.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -298,7 +298,9 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
                 continue;
             }
             let e = ce.edge;
-            let seam = body.is_seam(e);
+            // (a B-spline patch closed on itself is an ordinary rectangle in uv: its seam edge
+            // bounds the polygon on both sides, there is no cut window to open)
+            let seam = body.is_seam(e) && !matches!(surf, Surface::BSpline(_));
             let ed = body.edge(e);
             let mut ps: Vec<f64> = params.get(e.idx()).cloned().unwrap_or_default();
             if ps.len() < 2 {
@@ -369,7 +371,7 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
             } else {
                 join(&mut poly, last, first, tol);
                 // universal cover: the loop must close in uv itself (not one period away)
-                if cover && !same_uv(first.uv, poly.last().unwrap().uv) && first.p.dist(poly.last().unwrap().p) <= 1e-6 * (1.0 + first.p.len()) {
+                if cover && first.uv.dist(poly.last().unwrap().uv) > 1e-6 && first.p.dist(poly.last().unwrap().p) <= 1e-6 * (1.0 + first.p.len()) {
                     return Err("loop winds a period".into());
                 }
             }
@@ -658,10 +660,21 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
     let budget = 20000 + 50 * b.pts.len();
     let mut inserted = 0usize;
     let sense = face.sense;
+    // Triangles that passed keep their vertices (and so their verdict) across
+    // passes: remember them instead of re-evaluating the surface 4x each pass.
+    let mut accepted: HashSet<[u32; 3]> = HashSet::new();
     for _pass in 0..64 {
         let mut cands: Vec<(Pt, u32)> = vec![];
         for (ti, v) in tri.cdt.inside_tris() {
             let ids = [v[0], v[1], v[2]];
+            let key = {
+                let mut k = ids;
+                k.sort_unstable();
+                k
+            };
+            if accepted.contains(&key) {
+                continue;
+            }
             let get = |k: u32| -> (Vec2, Vec3) {
                 match vdata.get(&k) {
                     Some(&d) => d,
@@ -676,6 +689,7 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
             let n = (bb.1 - a.1).cross(c.1 - a.1);
             let area2 = n.len();
             if !(area2 > 1e-24 * (1.0 + a.1.len2())) {
+                accepted.insert(key);
                 continue;
             }
             let nn = n / area2;
@@ -696,15 +710,26 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
             if dev > tol.chord {
                 let cp = to_c(cuv3);
                 cands.push((cp, ti));
+            } else {
+                accepted.insert(key);
             }
         }
         if cands.is_empty() {
             break;
         }
         let mut any = false;
+        // Candidates come out in triangle-id order, which is spatially random:
+        // on a large face the locate walk from the last insertion is O(sqrt n)
+        // per point. Start it from the candidate's own triangle instead (the
+        // result does not depend on the start except on exact ties, so small
+        // faces keep the original's walk).
+        let hinted = cands.len() > 4000;
         for (p, hint) in cands {
             if inserted >= budget {
                 break;
+            }
+            if hinted && (hint as usize) < tri.cdt.tris.len() {
+                tri.cdt.hint = hint;
             }
             if let Some(v) = tri.cdt.insert_interior(p) {
                 let uv = from_c(p);

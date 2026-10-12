@@ -28,9 +28,9 @@ const rot = (v) => [v[0], v[2], -v[1]];
 const rotBox = (b) => { const lo = [b[0], b[1], b[2]], hi = [b[3], b[4], b[5]]; const a = rot(lo), c = rot(hi); return { min: a.map((x, i) => Math.min(x, c[i])), max: a.map((x, i) => Math.max(x, c[i])) }; };
 const rel = (x, y) => Math.abs(x - y) / Math.max(Math.abs(y), 1e-12);
 
-function compare(got, want, diag) {
+function compare(got, want, diag, volTol = TOL) {
   const bad = [];
-  if (!(rel(got.volume, want.volume) <= TOL)) bad.push(`volume ${got.volume?.toPrecision(6)} vs ${want.volume.toPrecision(6)} (${(rel(got.volume, want.volume) * 100).toFixed(2)}%)`);
+  if (!(rel(got.volume, want.volume) <= volTol)) bad.push(`volume ${got.volume?.toPrecision(6)} vs ${want.volume.toPrecision(6)} (${(rel(got.volume, want.volume) * 100).toFixed(2)}%)`);
   if (!(rel(got.area, want.area) <= TOL)) bad.push(`area ${got.area?.toPrecision(6)} vs ${want.area.toPrecision(6)} (${(rel(got.area, want.area) * 100).toFixed(2)}%)`);
   const dc = Math.max(...want.com.map((c, i) => Math.abs(got.com[i] - c))) / diag;
   if (!(dc <= TOL)) bad.push(`com ${got.com.map((x) => +x.toFixed(3))} vs ${want.com.map((x) => +x.toFixed(3))}`);
@@ -67,7 +67,9 @@ export function runBench({ wasm, only = null, log = () => {} } = {}) {
     const mp = q(2, { type: 'massProps', tag: 'main' }).result;
     const got = { volume: mp.volume, area: mp.area, com: mp.com, box: body.box };
     row.got = got; row.want = want;
-    if (!errs.length) row.bad.push(...compare(got, want, diag));
+    const volTol = manifest.tolerances?.[m.id]?.volume ?? TOL;
+    if (volTol !== TOL) row.notes.push(`volume tolerance ${volTol} (${manifest.tolerances[m.id].note.slice(0, 60)}...)`);
+    if (!errs.length) row.bad.push(...compare(got, want, diag, volTol));
     else row.bad.push(...compare(got, want, diag).map((s) => `(after errors) ${s}`));
     const v = q(3, { type: 'validate', tag: 'main' }).result;
     row.validate = v?.issues?.length ?? -1;
@@ -108,6 +110,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   for (const r of rows) {
     const imp = r.import === null ? '-' : r.import ? 'PASS' : 'FAIL';
     console.log(`${pad(r.id, 22)} ${pad(r.tier, 6)} ${pad(r.pass ? 'PASS' : 'FAIL', 6)} ${pad(imp, 8)} ${r.pass ? '' : (r.known ? `${r.known.label}: ${r.known.note}` : 'UNLABELLED')}`);
+    for (const n of r.notes) console.log(`    note: ${n}`);
     if (r.pass && r.known) console.log(`    note: recorded as ${r.known.label} but now passes - update manifest`);
     if (!r.pass || verbose) for (const b of r.bad) console.log(`    - ${b}`);
     if (r.import === false || verbose) for (const b of r.importBad) console.log(`    - step-in: ${b}`);

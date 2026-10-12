@@ -6,6 +6,7 @@ version = 4
 name = "ck-check"
 version = "0.1.0"
 dependencies = [
+ "ck-core",
  "ck-geom",
  "ck-topo",
 ]
@@ -41,6 +42,7 @@ dependencies = [
  "ck-core",
  "ck-geom",
  "ck-json",
+ "ck-tess",
  "ck-topo",
 ]
 

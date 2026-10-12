@@ -107,3 +107,43 @@ fn bow_tie_polygon_is_flagged() {
         assert!(validate(&b, 1e-7).iter().any(|i| i.code == "LOOP_SELF_INTERSECT"), "{:?}", codes(&b));
     }
 }
+
+/// Two disjoint solids in one body (a multi-solid result) are each judged on
+/// their own: valid, and breaking one names its lump.
+#[test]
+fn two_disjoint_solids_are_valid_per_lump() {
+    let mut a = box_body();
+    let mut c = box_body();
+    c.transform(&ck_core::xform::Xform::translation(Vec3::new(100.0, 0.0, 0.0)));
+    a.append(&c);
+    assert_eq!(a.num_lumps(), 2);
+    assert!(validate(&a, 1e-7).is_empty(), "{:?}", validate(&a, 1e-7));
+    // flip the second solid inside out: only lump#1 is reported
+    let second: Vec<FaceId> = a.face_ids().filter(|&f| a.lump_index(a.face_lump(f)) == 1).collect();
+    for f in second {
+        ck_topo::orient::flip_face(&mut a, f);
+    }
+    let v = validate(&a, 1e-7);
+    assert!(v.iter().any(|i| i.code == "VOLUME_NONPOSITIVE" && i.entity == "lump#1"), "{v:?}");
+    assert!(!v.iter().any(|i| i.entity == "lump#0"), "{v:?}");
+}
+
+/// Two outer shells in one lump are two solids: flagged.
+#[test]
+fn two_outer_shells_in_one_lump_are_flagged() {
+    let mut a = box_body();
+    let mut c = box_body();
+    c.transform(&ck_core::xform::Xform::translation(Vec3::new(100.0, 0.0, 0.0)));
+    a.append(&c);
+    // move the second lump's shell into the first lump
+    let (l0, l1): (Vec<_>, Vec<_>) = a.lump_ids().partition(|&l| a.lump_index(l) == 0);
+    let (l0, l1) = (l0[0], l1[0]);
+    let shells = a.lumps[l1.idx()].shells.clone();
+    for s in &shells {
+        a.shells[s.idx()].lump = l0;
+    }
+    a.lumps[l0.idx()].shells.extend(shells);
+    a.lumps[l1.idx()].shells.clear();
+    a.lumps[l1.idx()].alive = false;
+    assert!(validate(&a, 1e-7).iter().any(|i| i.code == "SOLID_MULTIPLE_OUTERS"), "{:?}", validate(&a, 1e-7));
+}

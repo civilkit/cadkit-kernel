@@ -28,6 +28,7 @@
 //!   edges lie exactly on both faces.
 //! * GUESS: general (non rigid) paths are not reconstructed -> sweepFailed.
 
+use crate::boolean::{boolean, Op};
 use crate::helix::Helix;
 use ck_core::xform::Xform;
 use ck_geom::curve::Curve;
@@ -196,9 +197,10 @@ pub fn sweep(feature: &str, profile: &Profile, path: &[PathSeg], twist: f64) -> 
     }
     // oracle: a path of several pieces is swept piece by piece and the
     // pieces united with mitre joints (strings 'mitre', 'half-space block',
-    // 'the pieces did not unite'; f2329 / f2894 / f2331) -- not rebuilt
-    let motion = path_motion(&oriented)
-        .ok_or_else(|| "TODO(rebuild): sweep along a multi-piece path (piecewise union with mitre joints)".to_string())?;
+    // 'the pieces did not unite'; f2329 / f2894 / f2331)
+    let Some(motion) = path_motion(&oriented) else {
+        return sweep_pieces(feature, profile, &oriented, twist);
+    };
     if twist != 0.0 {
         let Motion::Translate(v) = motion else {
             return Err("TODO(rebuild): twisted sweep along a curved path".to_string());
@@ -607,6 +609,33 @@ mod tests {
         ck_topo::mass::mass_props(b).volume
     }
 
+    /// A circle profile in the meridian plane swept `revs` turns: a long spline face with a curved
+    /// (multi-span) section, the shape of a coil spring.
+    fn coil(revs: f64) -> Body {
+        let fr = Frame { o: Vec3::new(30.0, 0.0, 0.0), x: Vec3::X, y: Vec3::Z, z: -Vec3::Y };
+        let c = ProfileLoop::new(vec![ProfileSeg::circle("c", Vec2::ZERO, 2.0)]);
+        let prof = Profile::new(fr, vec![ProfileRegion { outer: c, holes: vec![] }]);
+        let h = HelixParams { pitch: 7.0, revolutions: revs, ..Default::default() };
+        let path = vec![PathSeg::Helix { h: helix(&Frame::identity(), Vec3::ZERO, 30.0, &h).unwrap(), rev: false }];
+        sweep("F1", &prof, &path, 0.0).expect("coil sweep")
+    }
+
+    #[test]
+    fn long_spline_face_integrals_use_exact_rules() {
+        // the polynomial-degree Gauss rules (one panel per span, 5 points across the section)
+        // must reproduce the generic composite rule on every face
+        let b = coil(6.0);
+        let r = ck_topo::mass::ref_point_of(&b);
+        for f in b.face_ids() {
+            let g = ck_topo::mass::face_integral::<1>(&b, f, 1, &|p, n| [(p - r).dot(n) / 3.0])[0];
+            let e = ck_topo::mass::face_integral_poly::<1>(&b, f, 1, &|p, n| [(p - r).dot(n) / 3.0])[0];
+            assert!((g - e).abs() <= 1e-9 * g.abs().max(1.0), "{} {g} vs {e}", b.face_id_str(f));
+        }
+        // closed form: A * 2 pi R * N
+        let want = std::f64::consts::PI * 4.0 * std::f64::consts::TAU * 30.0 * 6.0;
+        assert!((vol(&b) - want).abs() / want < 3e-5, "{} vs {want}", vol(&b));
+    }
+
     #[test]
     fn twist_extrude_keeps_volume_and_names() {
         let rect = ProfileLoop::new(
@@ -796,5 +825,240 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+// ------------------------------------------------------- multi-piece paths
+
+fn motion_xf(m: Motion) -> Xform {
+    match m {
+        Motion::Translate(v) => Xform::translation(v),
+        Motion::Screw { o, a, angle, rise } => Screw { o, a, angle, rise }.xf(angle),
+    }
+}
+
+/// Largest distance between sampled profile points (an upper bound for any
+/// chord of the section).
+fn profile_extent(p: &Profile) -> f64 {
+    let mut pts: Vec<Vec2> = vec![];
+    for r in &p.regions {
+        for l in r.loops() {
+            for g in &l.segs {
+                pts.extend(g.curve.sample(g.t0.min(g.t1), g.t0.max(g.t1), 12));
+            }
+        }
+    }
+    let mut d: f64 = 0.0;
+    for a in &pts {
+        for b in &pts {
+            d = d.max(a.dist(*b));
+        }
+    }
+    d
+}
+
+/// Unit end direction of a piece.
+fn end_dir(s: &PathSeg) -> Option<Vec3> {
+    s.reversed().start_dir().map(|d| -d)
+}
+
+/// Big block on one side of the plane through `p` with normal `m`
+/// (`positive`: the side `m` points to).
+fn half_space(p: Vec3, m: Vec3, positive: bool, h: f64) -> Result<Body, String> {
+    let x = if m.x.abs() < 0.9 { Vec3::X } else { Vec3::Y };
+    let x = (x - m * x.dot(m)).normalize();
+    let frame = Frame { o: p, x, y: m.cross(x), z: m };
+    let c = [Vec2::new(-h, -h), Vec2::new(h, -h), Vec2::new(h, h), Vec2::new(-h, h)];
+    let lp = ProfileLoop::new((0..4).map(|i| ProfileSeg::line("h", c[i], c[(i + 1) % 4])).collect());
+    let prof = Profile::new(frame, vec![ProfileRegion { outer: lp, holes: vec![] }]);
+    let (s0, s1) = if positive { (0.0, h) } else { (-h, 0.0) };
+    extrude("H", &prof, ExtrudeOpts { s0, s1, dir: None, draft: 0.0 })
+}
+
+/// Sweep along a path that is not one rigid motion: every piece is swept
+/// separately (the section carried along by the previous pieces), the pieces
+/// are united. Tangent joints (G1) meet in coincident caps; corner joints
+/// between straight pieces are mitred: both pieces are overshot and clipped
+/// by the bisector plane. Side faces keep the profile entity tag with a
+/// `~k` piece number (`F3.S.e1~2` = entity `e1` on the 2nd piece); the first
+/// cap stays `C0`, the last `C1`, interior caps disappear in the union.
+fn sweep_pieces(feature: &str, profile: &Profile, path: &[PathSeg], twist: f64) -> Result<Body, String> {
+    if twist != 0.0 {
+        return Err("TODO(rebuild): twisted sweep along a multi-piece path".to_string());
+    }
+    if profile.regions.len() != 1 {
+        return Err("TODO(rebuild): multi-region profile swept along a multi-piece path".to_string());
+    }
+    let n = path.len();
+    if path.iter().any(|s| matches!(s, PathSeg::Helix { .. })) {
+        return Err(PATH_INVALID.into());
+    }
+    let ext = profile_extent(profile);
+    // joint i joins piece i and i + 1: None = tangent, Some(turn angle) = mitre
+    let mut joints: Vec<Option<f64>> = vec![];
+    for i in 0..n.saturating_sub(1) {
+        let (d1, d2) = (end_dir(&path[i]).ok_or(PATH_INVALID)?, path[i + 1].start_dir().ok_or(PATH_INVALID)?);
+        if path[i].end().dist(path[i + 1].start()) > 1e-6 {
+            return Err(PATH_INVALID.into());
+        }
+        let c = d1.dot(d2).clamp(-1.0, 1.0);
+        if c > 1.0 - 1e-9 {
+            joints.push(None);
+        } else {
+            let th = c.acos();
+            if th > 2.9 || !matches!(path[i], PathSeg::Line { .. }) || !matches!(path[i + 1], PathSeg::Line { .. }) {
+                return Err("TODO(rebuild): mitre joint other than line-line (turn < 166 deg)".to_string());
+            }
+            joints.push(Some(th));
+        }
+    }
+    let mut fr = profile.frame;
+    let mut acc: Option<Body> = None;
+    for (i, seg) in path.iter().enumerate() {
+        let m_start = i > 0 && joints[i - 1].is_some();
+        let m_end = i + 1 < n && joints[i].is_some();
+        let motion = path_motion(std::slice::from_ref(seg)).ok_or(PATH_INVALID)?;
+        // mitred ends: overshoot (straight pieces only, checked above)
+        let e_s = if m_start { ext * ((joints[i - 1].unwrap() / 2.0).tan() + 0.5) } else { 0.0 };
+        let e_e = if m_end { ext * ((joints[i].unwrap() / 2.0).tan() + 0.5) } else { 0.0 };
+        let mut body = if m_start || m_end {
+            let PathSeg::Line { a, b } = seg else { unreachable!() };
+            let d = (*b - *a).normalize();
+            let pf = Profile::new(Frame { o: fr.o - d * e_s, ..fr }, profile.regions.clone());
+            sweep_motion(feature, &pf, Motion::Translate(*b - *a + d * (e_s + e_e)))?
+        } else {
+            sweep_motion(feature, &Profile::new(fr, profile.regions.clone()), motion)?
+        };
+        let h = 4.0 * (ext + e_s + e_e + seg_len(seg));
+        if m_start {
+            let (d1, d2) = (end_dir(&path[i - 1]).unwrap(), seg.start_dir().unwrap());
+            let m = (d1 + d2).normalize();
+            body = boolean(&body, &half_space(seg.start(), m, true, h)?, Op::Intersect, 1e-6)?.body;
+        }
+        if m_end {
+            let (d1, d2) = (end_dir(seg).unwrap(), path[i + 1].start_dir().unwrap());
+            let m = (d1 + d2).normalize();
+            body = boolean(&body, &half_space(seg.end(), m, false, h)?, Op::Intersect, 1e-6)?.body;
+        }
+        for f in body.faces.iter_mut() {
+            if matches!(f.name.role, ck_topo::body::Role::Side(_)) && f.name.region.is_none() {
+                f.name.region = Some(i as u32 + 1);
+            }
+        }
+        acc = Some(match acc {
+            None => body,
+            Some(a) => boolean(&a, &body, Op::Union, 1e-6).map_err(|_| "the pieces did not unite".to_string())?.body,
+        });
+        // carry the section to the end of the piece (and round the corner)
+        let x = motion_xf(motion);
+        fr = rot_frame(&x, &fr);
+        if let (true, Some(th)) = (m_end, joints.get(i).copied().flatten()) {
+            let (d1, d2) = (end_dir(seg).unwrap(), path[i + 1].start_dir().unwrap());
+            let axis = d1.cross(d2).normalize();
+            let mut r = rotation(seg.end(), axis, th);
+            if r.apply_vec(d1).dist(d2) > 1e-6 {
+                r = rotation(seg.end(), axis, -th);
+            }
+            fr = rot_frame(&r, &fr);
+        }
+    }
+    acc.ok_or_else(|| PATH_INVALID.to_string())
+}
+
+fn seg_len(s: &PathSeg) -> f64 {
+    match s {
+        PathSeg::Line { a, b } => a.dist(*b),
+        PathSeg::Arc { r, a0, a1, .. } => r * (a1 - a0).abs(),
+        PathSeg::Helix { .. } => 0.0,
+    }
+}
+
+#[cfg(test)]
+mod piece_tests {
+    use super::*;
+    use ck_topo::check::check;
+    use ck_topo::mass::mass_props;
+    use std::f64::consts::{FRAC_PI_2, PI};
+
+    /// Section in the XY plane (normal +Z) at the origin.
+    fn frame_z() -> Frame {
+        Frame { o: Vec3::ZERO, x: Vec3::X, y: Vec3::Y, z: Vec3::Z }
+    }
+    fn circle(r: f64) -> Profile {
+        let lp = ProfileLoop::new(vec![ProfileSeg::circle("e1", Vec2::new(0.0, 0.0), r)]);
+        Profile::new(frame_z(), vec![ProfileRegion { outer: lp, holes: vec![] }])
+    }
+    fn square(h: f64) -> Profile {
+        let c = [Vec2::new(-h, -h), Vec2::new(h, -h), Vec2::new(h, h), Vec2::new(-h, h)];
+        let tags = ["e1", "e2", "e3", "e4"];
+        let lp = ProfileLoop::new((0..4).map(|i| ProfileSeg::line(tags[i], c[i], c[(i + 1) % 4])).collect());
+        Profile::new(frame_z(), vec![ProfileRegion { outer: lp, holes: vec![] }])
+    }
+    fn line(a: [f64; 3], b: [f64; 3]) -> PathSeg {
+        PathSeg::Line { a: Vec3::new(a[0], a[1], a[2]), b: Vec3::new(b[0], b[1], b[2]) }
+    }
+
+    /// line - quarter arc - line (tangent joints), in the XZ plane.
+    fn elbow(l1: f64, ra: f64, l2: f64) -> Vec<PathSeg> {
+        // up +Z, turn towards +X about the arc centre (ra, 0, l1)
+        let fr = Frame { o: Vec3::new(ra, 0.0, l1), x: -Vec3::X, y: Vec3::Z, z: Vec3::Y };
+        vec![
+            line([0.0, 0.0, 0.0], [0.0, 0.0, l1]),
+            PathSeg::Arc { frame: fr, r: ra, a0: 0.0, a1: FRAC_PI_2 },
+            line([ra, 0.0, l1 + ra], [ra + l2, 0.0, l1 + ra]),
+        ]
+    }
+
+    #[test]
+    fn tangent_elbow_circle() {
+        let (r, l1, ra, l2) = (2.0, 10.0, 6.0, 8.0);
+        let b = sweep("F3", &circle(r), &elbow(l1, ra, l2), 0.0).unwrap();
+        assert!(check(&b, 1e-6).is_empty(), "{:?}", check(&b, 1e-6));
+        let want = PI * r * r * (l1 + l2 + ra * FRAC_PI_2);
+        let v = mass_props(&b).volume;
+        assert!((v - want).abs() < 1e-3 * want, "{v} vs {want}");
+        let ids: Vec<_> = b.face_ids().map(|f| b.face_id_str(f)).collect();
+        assert!(ids.contains(&"F3.S.e1~1".to_string()) && ids.contains(&"F3.S.e1~2".to_string()) && ids.contains(&"F3.S.e1~3".to_string()), "{ids:?}");
+        assert!(ids.contains(&"F3.C0".to_string()) && ids.contains(&"F3.C1".to_string()), "{ids:?}");
+        assert_eq!(ids.len(), 5, "{ids:?}");
+    }
+
+    #[test]
+    fn tangent_elbow_square_reversed_path() {
+        let (h, l1, ra, l2) = (1.5, 10.0, 6.0, 8.0);
+        let rev: Vec<PathSeg> = elbow(l1, ra, l2).iter().rev().map(|s| s.reversed()).collect();
+        let b = sweep("F3", &square(h), &rev, 0.0).unwrap();
+        assert!(check(&b, 1e-6).is_empty(), "{:?}", check(&b, 1e-6));
+        let want = 4.0 * h * h * (l1 + l2 + ra * FRAC_PI_2);
+        let v = mass_props(&b).volume;
+        assert!((v - want).abs() < 1e-3 * want, "{v} vs {want}");
+    }
+
+    #[test]
+    fn mitre_corner_square() {
+        // L path: up 10 then along +X 8, square section half-width h:
+        // mitred volume = area * (centre-line length) (the inner/outer excess cancel)
+        let h = 1.5;
+        let path = vec![line([0.0, 0.0, 0.0], [0.0, 0.0, 10.0]), line([0.0, 0.0, 10.0], [8.0, 0.0, 10.0])];
+        let b = sweep("F3", &square(h), &path, 0.0).unwrap();
+        assert!(check(&b, 1e-6).is_empty(), "{:?}", check(&b, 1e-6));
+        let want = 4.0 * h * h * 18.0;
+        let v = mass_props(&b).volume;
+        assert!((v - want).abs() < 1e-3 * want, "{v} vs {want}");
+    }
+
+    #[test]
+    fn mitre_corner_circle_oblique() {
+        let r = 1.0;
+        let th = 2.2_f64; // heading change of the second leg
+        let p1 = Vec3::new(0.0, 0.0, 10.0);
+        let p2 = p1 + Vec3::new(th.sin(), 0.0, th.cos()) * 8.0;
+        let path = vec![line([0.0, 0.0, 0.0], [0.0, 0.0, 10.0]), PathSeg::Line { a: p1, b: p2 }];
+        let b = sweep("F3", &circle(r), &path, 0.0).unwrap();
+        assert!(check(&b, 1e-6).is_empty(), "{:?}", check(&b, 1e-6));
+        // mitred volume = pi r^2 (L1 + L2) (inner and outer wedges are equal for a symmetric mitre)
+        let want = PI * r * r * 18.0;
+        let v = mass_props(&b).volume;
+        assert!((v - want).abs() < 2e-3 * want, "{v} vs {want}");
     }
 }

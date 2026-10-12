@@ -591,6 +591,11 @@ fn blend_chain(b: &Body, links: Vec<Link>, r: f64, feature: &str, k: u32, tol: f
         }
     }
     let fit = fit_cols(&secs, &ps)?;
+    // chain parameter of every link junction (a blend face per link, like
+    // one fillet per edge): the last station of link L-1
+    let junction_u: Vec<f64> = (1..ctx.links.len())
+        .filter_map(|l| nodes.iter().rposition(|n| n.li == l - 1).map(|i| fit.u[i + usize::from(convex)]))
+        .collect();
     let tool = build_tool(&fit, &secs, feature, k, convex, b, &ctx.links, &end_info, tol)?;
     if std::env::var("CK_FF_STOP").as_deref() == Ok("3") {
         return Err(failed("stopped after tool"));
@@ -629,6 +634,7 @@ fn blend_chain(b: &Body, links: Vec<Link>, r: f64, feature: &str, k: u32, tol: f
     let (mut out, _) = apply_tool_hooked(b, &tool, op, &blend_name, hint, tol.max(FF_TOL), Some(&hook))?;
     // the imprint welded at FF_TOL: put the vertices back on their faces and
     // re-fit edges to them, so the result validates at the model tolerance
+    split_blend_at_links(&mut out, &blend_name, &tool, blend_f, &junction_u, tol.max(FF_TOL));
     // (vertices that coincide with a tool vertex take the tool's exact spot:
     // it lies on all the faces it joins)
     if std::env::var_os("CK_BLEND_DEBUG3").is_some() {
@@ -843,6 +849,9 @@ pub fn refit_edges_on_faces(out: &mut Body) {
             continue;
         }
         let (s1, s2) = (out.face(fs[0]).surface.clone(), out.face(fs[1]).surface.clone());
+        if s1 == s2 {
+            continue; // a split rail inside one surface
+        }
         let mid = ed.curve.eval(0.5 * (ed.t0 + ed.t1));
         let nrm = |s: &Surface| -> Option<Vec3> {
             let (u, v, _) = s.closest_point(mid);
@@ -931,5 +940,62 @@ pub fn collapse_short_edges(out: &mut Body, max_len: f64) {
             }
         }
         out.vertices[gone.idx()].alive = false;
+    }
+}
+
+/// Cut the blend face of a chain into one face per link along the section
+/// arcs at the link junctions (the oracle blends edge by edge: one blend
+/// face per edge, all named alike; `~k` numbering follows later).
+fn split_blend_at_links(out: &mut Body, name: &FaceName, tool: &Body, tool_blend: FaceId, junction_u: &[f64], tol: f64) {
+    let Surface::BSpline(bs) = tool.face(tool_blend).surface.clone() else { return };
+    for &uj in junction_u {
+        let arc = bs.iso_u(uj);
+        let (a_pt, b_pt, mid) = (arc.eval(arc.domain().0), arc.eval(arc.domain().1), arc.eval(0.5 * (arc.domain().0 + arc.domain().1)));
+        let faces: Vec<FaceId> = out.face_ids().filter(|&f| out.face(f).name == *name).collect();
+        let Some(f) = faces.into_iter().find(|&f| crate::boolean::classify::point_in_face(out, f, mid, tol) == crate::boolean::classify::Where::In) else {
+            dbg("junction arc is not inside a blend face");
+            continue;
+        };
+        let mut ends = vec![];
+        for pt in [a_pt, b_pt] {
+            // the vertex of f's boundary at the arc end, splitting the edge there when it has none
+            let mut found = None;
+            for &l in &out.face(f).loops.clone() {
+                for &c in &out.lp(l).coedges.clone() {
+                    let v = out.coedge_start(c);
+                    if out.vertex(v).p.dist(pt) <= 1e-4 {
+                        found = Some(v);
+                    }
+                }
+            }
+            if found.is_none() {
+                let best = out
+                    .face_edges(f)
+                    .into_iter()
+                    .map(|e| {
+                        let ed = out.edge(e);
+                        let (t, d) = crate::boolean::imprint::dist_in_range(&ed.curve, (ed.t0.min(ed.t1), ed.t0.max(ed.t1)), pt);
+                        (d, e, t)
+                    })
+                    .min_by(|a, b| a.0.total_cmp(&b.0));
+                if let Some((d, e, t)) = best {
+                    let ed = out.edge(e);
+                    if d <= tol && t > ed.t0.min(ed.t1) + 1e-9 && t < ed.t0.max(ed.t1) - 1e-9 {
+                        let (v, _) = ck_topo::edit::split_edge(out, e, t);
+                        out.vertex_mut(v).p = pt;
+                        found = Some(v);
+                    }
+                }
+            }
+            ends.push(found);
+        }
+        let (Some(va), Some(vb)) = (ends[0], ends[1]) else {
+            dbg("junction arc ends are not on the blend boundary");
+            continue;
+        };
+        let (t0, t1) = arc.domain();
+        if let Err(e) = ck_topo::edit::split_face(out, f, va, vb, Curve::BSpline(arc), t0, t1, None, name.clone()) {
+            dbg(&format!("junction split failed: {e}"));
+        }
     }
 }

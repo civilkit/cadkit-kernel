@@ -851,10 +851,63 @@ impl crate::regen::FeatureExec for Brep {
         let b = self.body.as_ref()?;
         let at = at.map(|a| Vec3::new(a[0], a[1], a[2])).unwrap_or(Vec3::ZERO);
         let e = ck_ops::blend::build::find_edge(b, faces.first()?, faces.get(1)?, at)?;
-        match &b.edge(e).curve {
-            ck_geom::curve::Curve::Line { o, d } => Some((*o, *d)),
+        let ed = b.edge(e);
+        match &ed.curve {
+            // origin = the edge's start point (oracle-pinned)
+            ck_geom::curve::Curve::Line { o, d } => Some((*o + *d * (b.vertex(ed.v0).p - *o).dot(*d), *d)),
             _ => None,
         }
+    }
+    fn edge_seg(&mut self, _state: &crate::regen::RegenState, faces: &[String], at: Option<ck_core::linalg::Vec3>) -> Option<ck_ops::sweep::PathSeg> {
+        use ck_ops::sweep::PathSeg;
+        let b = self.body.as_ref()?;
+        let e = ck_ops::blend::build::find_edge(b, faces.first()?, faces.get(1)?, at.unwrap_or(ck_core::linalg::Vec3::ZERO))?;
+        let ed = b.edge(e);
+        match &ed.curve {
+            ck_geom::curve::Curve::Line { .. } => Some(PathSeg::Line { a: b.vertex(ed.v0).p, b: b.vertex(ed.v1).p }),
+            ck_geom::curve::Curve::Circle { frame, r } => Some(PathSeg::Arc { frame: *frame, r: *r, a0: ed.t0, a1: ed.t1 }),
+            _ => None,
+        }
+    }
+    fn vertex_point(&mut self, _state: &crate::regen::RegenState, faces: &[String], at: Option<ck_core::linalg::Vec3>) -> Option<ck_core::linalg::Vec3> {
+        let b = self.body.as_ref()?;
+        let ids: Vec<_> = faces.iter().map(|f| b.find_face(f)).collect::<Option<_>>()?;
+        let at = at.unwrap_or(ck_core::linalg::Vec3::ZERO);
+        let mut best: Option<(f64, ck_core::linalg::Vec3)> = None;
+        // vertices that every named face touches
+        let mut cands: Vec<ck_topo::body::VertexId> = vec![];
+        for (i, f) in ids.iter().enumerate() {
+            let mut vs = vec![];
+            for e in b.face_edges(*f) {
+                vs.push(b.edge(e).v0);
+                vs.push(b.edge(e).v1);
+            }
+            if i == 0 {
+                cands = vs;
+            } else {
+                cands.retain(|v| vs.contains(v));
+            }
+        }
+        for v in cands {
+            let p = b.vertex(v).p;
+            let d = p.dist(at);
+            if best.map_or(true, |(bd, _)| d < bd) {
+                best = Some((d, p));
+            }
+        }
+        best.map(|x| x.1)
+    }
+    fn face_surf(&mut self, _state: &crate::regen::RegenState, face: &str) -> Option<crate::regen::FaceSurf> {
+        use crate::regen::FaceSurf;
+        use ck_geom::surface::Surface;
+        let b = self.body.as_ref()?;
+        let f = b.find_face(face)?;
+        Some(match &b.face(f).surface {
+            Surface::Plane { frame } => FaceSurf::Plane(*frame),
+            Surface::Cylinder { frame, r } => FaceSurf::Cylinder { o: frame.o, a: frame.z, r: *r, x: frame.x },
+            Surface::Sphere { frame, r } => FaceSurf::Sphere { c: frame.o, r: *r, x: frame.x },
+            _ => FaceSurf::Other,
+        })
     }
     fn exec(&mut self, state: &mut crate::regen::RegenState, f: &crate::Feature) -> Result<(), crate::regen::FeatureError> {
         let tool = match &f.kind {

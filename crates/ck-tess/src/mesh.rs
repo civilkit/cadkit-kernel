@@ -338,7 +338,12 @@ pub fn tessellate_with(body: &Body, tol: &Tol) -> Tess {
     let edges = sample_edges(body, tol);
     let mut faces = vec![];
     for f in body.face_ids() {
-        faces.push(face::mesh_face(body, f, &edges.params, &edges.virt, &edges.ssi, edges.cuts[f.idx()], tol).ok());
+        let r = face::mesh_face(body, f, &edges.params, &edges.virt, &edges.ssi, edges.cuts[f.idx()], tol);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let (Err(e), true) = (&r, std::env::var("CK_TESS_DBG").is_ok()) {
+            eprintln!("tessellate: face {} dropped: {e}", body.face_id_str(f));
+        }
+        faces.push(r.ok());
     }
     let mesh = assemble(body, &faces);
     Tess { tol: Some(*tol), edges, mesh, faces }

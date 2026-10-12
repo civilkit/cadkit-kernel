@@ -1048,14 +1048,7 @@ pub fn march(s1: &Surface, s2: &Surface, b: Bounds, tol: f64, step: f64) -> Vec<
                 if !inside(&b, p0, pad) {
                     continue;
                 }
-                let (ub, vb, q1) = match hint {
-                    Some(h) if matches!(sb, Surface::BSpline(_)) => sb.closest_point_near(p0, h),
-                    _ => sb.closest_point(p0),
-                };
-                hint = Some((ub, vb));
-                if q1.dist(p0) > thr {
-                    continue;
-                }
+                let Some((ub, vb, q1)) = sb.closest_point_within(p0, thr) else { continue };
                 let uv = if swap { [ub, vb, ua, va] } else { [ua, va, ub, vb] };
                 let Some(t) = tangent_uv(s1, s2, uv) else { continue };
                 let pred = (p0 + q1) * 0.5;

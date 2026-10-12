@@ -64,6 +64,8 @@ pub fn uv_near(s: &Surface, p: Vec3, prev: Option<Vec2>) -> Vec2 {
     Vec2::new(u, v)
 }
 
+const LOCAL_TOL: f64 = 2e-4;
+
 /// Gauss-Newton projection of `p` onto `bs` from the parameter `q`; Some
 /// only when it lands on the surface (distance < 1e-7).
 fn local_project(bs: &ck_geom::nurbs::bsurf::BSplineSurface, p: Vec3, q: Vec2) -> Option<Vec2> {
@@ -90,7 +92,11 @@ fn local_project(bs: &ck_geom::nurbs::bsurf::BSplineSurface, p: Vec3, q: Vec2) -
             break;
         }
     }
-    (bs.eval(u, v).dist(p) < 1e-7).then(|| Vec2::new(u, v))
+    // interpolated screw sweeps deviate ~1e-5 from the exact surface, so the
+    // arc / rail edges of their faces are that far off it: a converged
+    // projection that close is the right foot point, no need for the O(spans)
+    // global search
+    (bs.eval(u, v).dist(p) < LOCAL_TOL).then(|| Vec2::new(u, v))
 }
 
 /// Samples per curve piece for the polygons of [`Solid`] (point

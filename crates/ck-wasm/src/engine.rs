@@ -33,9 +33,15 @@ pub struct Snapshot {
 }
 
 /// ck-server trace as a ck-model [`Tracer`].
-struct TraceSink<'a> {
+pub(crate) struct TraceSink<'a> {
     trace: &'a mut Trace,
     ids: Vec<Option<SpanId>>,
+}
+
+impl<'a> TraceSink<'a> {
+    pub(crate) fn new(trace: &'a mut Trace) -> Self {
+        TraceSink { trace, ids: vec![] }
+    }
 }
 
 impl Tracer for TraceSink<'_> {
@@ -56,12 +62,12 @@ impl Tracer for TraceSink<'_> {
 }
 
 /// [`Brep`] + the request's trace.
-struct Exec<'a> {
-    brep: Brep,
-    sink: TraceSink<'a>,
+pub(crate) struct Exec<'a> {
+    pub(crate) brep: Brep,
+    pub(crate) sink: TraceSink<'a>,
     /// `opts.autoHeal`: tolerance to heal with after each feature that leaves
     /// validator issues (None = off, the default).
-    auto_heal: Option<f64>,
+    pub(crate) auto_heal: Option<f64>,
 }
 
 impl regen::FeatureExec for Exec<'_> {
@@ -73,6 +79,18 @@ impl regen::FeatureExec for Exec<'_> {
     }
     fn face_frame(&mut self, state: &regen::RegenState, face: &str) -> Option<ck_core::linalg::Frame> {
         self.brep.face_frame(state, face)
+    }
+    fn edge_line(&mut self, state: &regen::RegenState, faces: &[String], at: Option<[f64; 3]>) -> Option<(ck_core::linalg::Vec3, ck_core::linalg::Vec3)> {
+        self.brep.edge_line(state, faces, at)
+    }
+    fn edge_seg(&mut self, state: &regen::RegenState, faces: &[String], at: Option<ck_core::linalg::Vec3>) -> Option<ck_ops::sweep::PathSeg> {
+        self.brep.edge_seg(state, faces, at)
+    }
+    fn vertex_point(&mut self, state: &regen::RegenState, faces: &[String], at: Option<ck_core::linalg::Vec3>) -> Option<ck_core::linalg::Vec3> {
+        self.brep.vertex_point(state, faces, at)
+    }
+    fn face_surf(&mut self, state: &regen::RegenState, face: &str) -> Option<regen::FaceSurf> {
+        self.brep.face_surf(state, face)
     }
     fn prepare(&mut self, state: &regen::RegenState, features: &[&ck_model::Feature]) {
         self.brep.prepare(state, features);
@@ -392,6 +410,14 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
             Ok(Obj::new().put("ok", iss.is_empty()).put("issues", Json::Arr(arr)).build())
         }
         "heal" => heal_query(cx),
+        "check" => {
+            let body = &snapshot(cx)?.body;
+            let tol = cx.msg.get_f64("tol").unwrap_or(1e-6);
+            Ok(ck_ops::agent::check(body, &cx.msg, &|| ck_check::validate(body, tol).len()))
+        }
+        "resolve" => Ok(ck_ops::agent::resolve(&snapshot(cx)?.body, &cx.msg)),
+        "describe" => Ok(ck_ops::agent::describe(&snapshot(cx)?.body, &cx.msg)),
+        "refDiff" => crate::refdiff::reply(cx),
         "inspect" => inspect(cx),
         "continuity" => Ok(ck_ops::continuity::reply(&snapshot(cx)?.body, &cx.msg)),
         "measure" => Ok(ck_ops::measure::reply(&snapshot(cx)?.body, &cx.msg)),

@@ -151,6 +151,49 @@ fn angular(s: &Surface) -> (bool, bool) {
 /// the integral of F against the OUTWARD area element. `res` ≥ 1 scales
 /// panel counts (region.rs refines near-singular integrands with it).
 pub fn face_integral<const K: usize>(b: &Body, f: FaceId, res: usize, integrand: &dyn Fn(Vec3, Vec3) -> [f64; K]) -> [f64; K] {
+    face_integral_with(b, f, res, integrand, None)
+}
+
+/// n-point Gauss-Legendre rule on [-1, 1] (Newton on the Legendre polynomial).
+fn gauss_legendre(n: usize) -> Vec<(f64, f64)> {
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let mut x = (std::f64::consts::PI * (i as f64 + 0.75) / (n as f64 + 0.5)).cos();
+        let mut dp = 1.0;
+        for _ in 0..100 {
+            let (mut p0, mut p1) = (1.0, x);
+            for k in 2..=n {
+                let p2 = ((2 * k - 1) as f64 * x * p1 - (k - 1) as f64 * p0) / k as f64;
+                p0 = p1;
+                p1 = p2;
+            }
+            if n == 1 {
+                p0 = 1.0;
+                p1 = x;
+            }
+            dp = n as f64 * (x * p1 - p0) / (x * x - 1.0);
+            let dx = p1 / dp;
+            x -= dx;
+            if dx.abs() < 1e-16 {
+                break;
+            }
+        }
+        out.push((x, 2.0 / ((1.0 - x * x) * dp * dp)));
+    }
+    out.reverse();
+    out
+}
+
+/// [`face_integral`] for an integrand that is a polynomial of degree `ord`
+/// in the position times the (bilinear) area element, at `res` = 1. On a
+/// non-rational B-spline face every Gauss panel is then exact with just the
+/// points the degree needs (one panel per u span, fewer points across v),
+/// which matters on long screw sweeps (hundreds of spans).
+pub fn face_integral_poly<const K: usize>(b: &Body, f: FaceId, ord: usize, integrand: &dyn Fn(Vec3, Vec3) -> [f64; K]) -> [f64; K] {
+    face_integral_with(b, f, 1, integrand, Some(ord))
+}
+
+fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand: &dyn Fn(Vec3, Vec3) -> [f64; K], poly_ord: Option<usize>) -> [f64; K] {
     let surf = &b.face(f).surface;
     let pieces = split_at_knots(surf, face_pieces(b, f));
     let mut acc = [0.0; K];
@@ -193,6 +236,17 @@ pub fn face_integral<const K: usize>(b: &Body, f: FaceId, res: usize, integrand:
     if matches!(surf, Surface::BSpline(_) | Surface::Revolution { .. } | Surface::Extrusion { .. }) {
         hu = hu.min(width / (16.0 * res as f64));
     }
+    // polynomial integrand on a non-rational spline: exact panel counts
+    // (u: degree (ord+2) pu, cumulated; v: degree (ord+2) pv - 1, GL points)
+    let poly_deg = match (surf, poly_ord) {
+        (Surface::BSpline(bs), Some(ord)) if bs.weights.is_none() => Some(((ord + 2) * bs.deg_u, (ord + 2) * bs.deg_v)),
+        _ => None,
+    };
+    let fast_panels = match poly_deg {
+        Some((du, _)) if du <= 15 => 1,
+        _ => 2,
+    };
+    let v_rule: Option<Vec<(f64, f64)>> = poly_deg.map(|(_, dv)| gauss_legendre(((dv + 1) / 2).clamp(2, 8)));
     let curved = !matches!(surf, Surface::Plane { .. });
     // non-rational B-spline boundary lines are cut at the knots: pieces are short
     let spline = matches!(surf, Surface::BSpline(b) if b.weights.is_none());
@@ -244,7 +298,7 @@ pub fn face_integral<const K: usize>(b: &Body, f: FaceId, res: usize, integrand:
                 continue;
             }
             let fast = vl.as_ref().and_then(|l| l.segment(0.5 * (a + c))).filter(|s| s.covers(a, c));
-            let n = if fast.is_some() { 2 * res } else { ((span.abs() / hu).ceil() as usize).clamp(1, 512 * res) };
+            let n = if fast.is_some() { fast_panels * res } else { ((span.abs() / hu).ceil() as usize).clamp(1, 512 * res) };
             let h = span / n as f64;
             for i in 0..n {
                 let m = a + h * (i as f64 + 0.5);
@@ -409,9 +463,15 @@ pub fn face_integral<const K: usize>(b: &Body, f: FaceId, res: usize, integrand:
             Piece::Exact(pc, ta, tb) => {
                 let n = panels_for(pc, *ta, *tb, ang, curved, spline) * res;
                 let h = (tb - ta) / n as f64;
+                // a piece along v at constant u (a cap of a long sweep): the
+                // cumulated integrand is a polynomial in v of the degree above
+                let rule: &[(f64, f64)] = match (&v_rule, pc) {
+                    (Some(r), Curve2::Line { d, .. }) if d.x == 0.0 && n == 1 => r,
+                    _ => &GL,
+                };
                 for i in 0..n {
                     let m = ta + h * (i as f64 + 0.5);
-                    for &(x, w) in GL.iter() {
+                    for &(x, w) in rule.iter() {
                         let t = m + 0.5 * h * x;
                         let d = pc.derivs(t, 1);
                         add(d[0], d[1].y, 0.5 * h * w);
@@ -528,6 +588,11 @@ pub fn lump_faces(b: &Body, l: LumpId) -> Vec<FaceId> {
     out
 }
 
+/// Reference point (bbox centre) the moments are taken about.
+pub fn ref_point_of(b: &Body) -> Vec3 {
+    ref_point(b)
+}
+
 fn ref_point(b: &Body) -> Vec3 {
     let (lo, hi) = b.bbox();
     if lo.is_finite() && hi.is_finite() {
@@ -548,7 +613,7 @@ pub fn signed_volume(b: &Body, faces: &[FaceId]) -> f64 {
     let r = ref_point(b);
     faces
         .iter()
-        .map(|&f| face_integral::<1>(b, f, 1, &|p, n| [(p - r).dot(n) / 3.0])[0])
+        .map(|&f| face_integral_poly::<1>(b, f, 1, &|p, n| [(p - r).dot(n) / 3.0])[0])
         .sum()
 }
 
@@ -880,5 +945,17 @@ mod tests {
         assert!(close(bm.get_arr("principal").unwrap()[1].as_f64().unwrap(), 148958.33333333308, 1e-12));
         assert_eq!(j.get_arr("bodies").unwrap().len(), 2);
         assert!(close(j.get_arr("bodies").unwrap()[1].get_f64("volume").unwrap(), 500.0, 1e-13));
+    }
+
+    #[test]
+    fn gauss_legendre_rules() {
+        for (g, r) in GL.iter().zip(gauss_legendre(8)) {
+            assert!((g.0 - r.0).abs() < 1e-14 && (g.1 - r.1).abs() < 1e-14, "{g:?} {r:?}");
+        }
+        // 5 points integrate x^8 exactly: 2/9
+        let s: f64 = gauss_legendre(5).iter().map(|&(x, w)| w * x.powi(8)).sum();
+        assert!((s - 2.0 / 9.0).abs() < 1e-15, "{s}");
+        let s: f64 = gauss_legendre(2).iter().map(|&(x, w)| w * x * x).sum();
+        assert!((s - 2.0 / 3.0).abs() < 1e-15, "{s}");
     }
 }

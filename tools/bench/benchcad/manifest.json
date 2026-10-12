@@ -1167,26 +1167,7 @@
  "known": {
   "coil_spring_000026": {
    "label": "kernel-gap",
-   "skip": "regen does not finish in 50 s (union of the 2nd helical sweep with the 1st never returns)",
-   "skipStep": "importStep of the ground-truth STEP (spline-swept torus-like coils) does not finish in 60 s",
    "note": "variable-pitch helix needs a 3D spline sweep path (sketch paths are planar lines/arcs, helix is constant pitch) -> translated as three constant-pitch helix sweeps; their union (adjacent end caps, overlapping coils since pitch 6 < wire dia 6.94) hangs (kernel-bug: boolean of coil sweeps does not terminate); importStep of the ground truth also hangs."
-  },
-  "torsion_spring_000054": {
-   "label": "kernel-gap",
-   "skip": "regen does not finish in 50 s (a single 12-turn helix sweep takes 19 s, union with a leg never returns)",
-   "note": "leg workplanes are rotated 2.8 deg about X (plane mode angle, now implemented and used by the translation); remaining blockers: the 12-turn helix sweep alone takes 19 s and its union with a coaxial-end leg hangs (kernel-bug perf/hang). Ground truth is two disjoint solids (multi-body result)."
-  },
-  "pipe_elbow_000012": {
-   "label": "kernel-gap",
-   "note": "sweep along a multi-piece path (line-arc-line) is TODO(rebuild) in ck-model sweep (F3) -> F5 then nothingToCut."
-  },
-  "duct_elbow_000181": {
-   "label": "kernel-gap",
-   "note": "same: sweep along a multi-piece path (line-arc-line) is TODO(rebuild) (F3); F5 nothingToCut."
-  },
-  "torus_link_000095": {
-   "label": "kernel-gap",
-   "note": "lugs touch the torus in a single point, so the union is two disjoint solids (ground truth: solids=2). Our feature union returns only the second body (volume 2548 = lugs only; torus silently dropped, no error): no multi-body result for a union of disjoint/point-contact bodies. The internal blind cross holes (void shells) are not reached."
   },
   "pan_head_screw_000035": {
    "label": "ground-truth-mismatch",
@@ -1194,33 +1175,15 @@
   }
  },
  "knownStep": {
-  "t_pipe_fitting_000075": {
-   "label": "kernel-bug",
-   "note": "ground-truth STEP imports with the right volume/area/bbox but validate reports EDGE_OFF_SURFACE x2 (cylinder x cylinder branch edges after STEP import)."
-  },
   "pan_head_screw_000035": {
-   "label": "kernel-bug",
-   "note": "validate on the imported ground-truth STEP: SHELL_NONMANIFOLD + EDGE_OFF_SURFACE (helical thread faces); also the thread volume differs from our regen (see regen cause)."
-  },
-  "dome_cap_000212": {
-   "label": "kernel-gap",
-   "note": "importStep: unsupported 'single boundary winding a revolution surface' (a sphere pole boundary) - same degenerate sphere-as-revolution case as the regen side."
-  },
-  "eyebolt_000265": {
-   "label": "kernel-bug",
-   "note": "importStep returns a body without the torus eye (bbox x +-35 instead of +-63, volume short): torus surface in the STEP is dropped silently."
-  },
-  "torus_link_000095": {
-   "label": "kernel-gap",
-   "note": "ground-truth STEP holds two disjoint solids; importStep keeps one body (box shows the lug+partial only): no multi-solid import."
-  },
+   "label": "ground-truth-mismatch",
+   "note": "the reference STEP is itself non-manifold (one EDGE_CURVE is used by four oriented edges of the thread faces); we import it faithfully (volume, area, bbox, com all match) and validate reports SHELL_NONMANIFOLD for that edge."
+  }
+ },
+ "tolerances": {
   "torsion_spring_000054": {
-   "label": "kernel-gap",
-   "note": "ground-truth STEP holds two solids; importStep returns a single small solid (9% of the volume): no multi-solid import."
-  },
-  "coil_spring_000026": {
-   "label": "kernel-bug",
-   "note": "importStep of the ground-truth STEP (spline-swept coil, 5 faces) does not return within 60 s."
+   "volume": 0.0015,
+   "note": "the ground-truth coil is an OCC pipe approximation: every sampled point of its two sweep faces lies 0 to +4.2 um outside the ideal screw tube (mean +2.1 um, tests/multi_solid_step.rs torsion_spring_gt_coil_vs_ideal_tube), which inflates the coil volume by 0.12%. Ours is within 3e-5 mm of the ideal tube and equals the closed-form A*2*pi*R*N (N = height/pitch = 11.9977 revolutions): 165057.3. Volume therefore differs from the dataset by 0.11% while the geometry is the more exact one."
   }
  }
 }
