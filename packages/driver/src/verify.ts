@@ -58,6 +58,7 @@ export interface VerifyOpts {
 /** Fix guidance per error/issue code. Sources: features field table, ADR 0003. */
 const FIX: Record<string, (feature: string, params: Record<string, unknown>) => string> = {
   missingSketch: (f) => `${f}.sketch names a sketch id that does not exist — point it at an existing sketch feature`,
+  missingAxis: (f) => `${f}.axis is missing — pass a sketch line entity id (the builder defaults to the sketch's first line)`,
   missingReference: (f) => `${f} references geometry that no longer exists — re-pick the face/edge by name (resolve) and update the ref`,
   nothingToCut: (f) => `${f} removes nothing — move the profile so it overlaps the body, or flip the cut direction`,
   booleanFailed: (f) => `${f}: boolean failed — check the tool and target overlap in a volume, not just a face`,
