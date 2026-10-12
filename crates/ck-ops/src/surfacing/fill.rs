@@ -31,7 +31,7 @@ use crate::surfacing::fair::{fair, Fairing};
 use ck_geom::curve::Curve;
 use ck_geom::surface::Surface;
 use ck_geom::Vec3;
-use ck_topo::body::{Body, EdgeId, FaceName, Role};
+use ck_topo::body::{Body, EdgeId, FaceName, Role, VertexId};
 
 #[derive(Debug, Clone)]
 pub struct FillError {
@@ -68,6 +68,40 @@ struct Step {
 /// Order the chain head-to-tail; the walk starts at chain[0]'s v0 unless
 /// the second edge forces the flip.
 fn walk_chain(b: &Body, chain: &[EdgeId]) -> Result<Vec<Step>, FillError> {
+    match walk_in_order(b, chain) {
+        Ok(s) => Ok(s),
+        // picks arrive in selection order, not walk order: reorder greedily
+        Err(e) => match order_chain(b, chain) {
+            Some(ordered) => walk_in_order(b, &ordered),
+            None => Err(e),
+        },
+    }
+}
+
+/// Greedy head-to-tail reorder of `chain` (None = not one chain). Vertices
+/// match by id or position (knit leaves coincident duplicates).
+fn order_chain(b: &Body, chain: &[EdgeId]) -> Option<Vec<EdgeId>> {
+    let same = |a: VertexId, c: VertexId| a == c || b.vertex(a).p.dist(b.vertex(c).p) <= 1e-6;
+    let touches = |e: EdgeId, v: VertexId| same(b.edge(e).v0, v) || same(b.edge(e).v1, v);
+    let other = |e: EdgeId, v: VertexId| if same(b.edge(e).v0, v) { b.edge(e).v1 } else { b.edge(e).v0 };
+    let mut rest: Vec<EdgeId> = chain[1..].to_vec();
+    let first = chain[0];
+    // walk away from whichever end of the first edge continues
+    let mut tail = b.edge(first).v1;
+    if !rest.iter().any(|&e| touches(e, tail)) {
+        tail = b.edge(first).v0;
+    }
+    let mut out = vec![first];
+    while !rest.is_empty() {
+        let i = rest.iter().position(|&e| touches(e, tail))?;
+        let e = rest.remove(i);
+        tail = other(e, tail);
+        out.push(e);
+    }
+    Some(out)
+}
+
+fn walk_in_order(b: &Body, chain: &[EdgeId]) -> Result<Vec<Step>, FillError> {
     if chain.is_empty() {
         return Err(FillError::detail("fillInvalid", "the edges do not form one chain"));
     }

@@ -474,17 +474,9 @@ fn trim_curved(targets: &[Body], tool: &Body, flip: bool, mutual: bool, tol: f64
             lo = lo.min(lo2);
             hi = hi.max(hi2);
             let (sa, sb) = (out.face(fa).surface.clone(), out.face(fb).surface.clone());
-            let t_ssi = std::time::Instant::now();
             let res = crate::intersect::ss::intersect(&sa, &sb, Some(crate::intersect::ss::Bounds { lo, hi }), tol);
-            if std::env::var("TRIM_DEBUG").is_ok() {
-                eprintln!("  ssi {:?}x{:?}: {} curves in {:?}", out.face(fa).name.id(), out.face(fb).name.id(), res.curves().len(), t_ssi.elapsed());
-            }
             for c in res.curves() {
-                let t_clip = std::time::Instant::now();
                 let clipped = clip_to_face_pair(&out, fa, fb, c.curve(), tol);
-                if std::env::var("TRIM_DEBUG").is_ok() {
-                    eprintln!("  clip took {:?}", t_clip.elapsed());
-                }
                 if let Some((ta, tb)) = clipped {
                     cuts.push((c.curve().clone(), ta, tb, c.curve().eval(ta), c.curve().eval(tb), fa, fb));
                 }
@@ -742,6 +734,9 @@ fn trim_curved(targets: &[Body], tool: &Body, flip: bool, mutual: bool, tol: f64
         }
     }
 
+    settle_vertices(&mut out, tol);
+    snap_edge_ends(&mut out, tol);
+
     // non-mutual: the tool was copied only for cutting — remove it again
     if !mutual {
         for f in tool_faces {
@@ -755,6 +750,116 @@ fn trim_curved(targets: &[Body], tool: &Body, flip: bool, mutual: bool, tol: f64
         return Err(TrimError::detail("trimNothingLeft", "nothing left on that side"));
     }
     Ok(out)
+}
+
+/// Welding moves a shared vertex off the surfaces of the faces that meet at
+/// it (it was snapped to one face's boundary within a loose radius). Settle
+/// each such vertex onto all of its faces by alternating closest-point
+/// projection (converges to the faces' common point/curve nearest the
+/// vertex); `snap_edge_ends` then re-fits the edges to the settled vertices.
+fn settle_vertices(out: &mut Body, tol: f64) {
+    let eps = tol.max(1e-7);
+    for v in out.vertex_ids().collect::<Vec<_>>() {
+        if !out.vertex(v).alive {
+            continue;
+        }
+        let mut faces: Vec<FaceId> = Vec::new();
+        for e in out.edge_ids() {
+            let ed = out.edge(e);
+            if ed.alive && (ed.v0 == v || ed.v1 == v) {
+                for c in out.edge_coedges(e) {
+                    let f = out.coedge_face(c);
+                    if out.face(f).alive && !faces.contains(&f) {
+                        faces.push(f);
+                    }
+                }
+            }
+        }
+        if faces.len() < 2 {
+            continue;
+        }
+        let dev = |out: &Body, p: Vec3| faces.iter().map(|&f| out.face(f).surface.distance(p)).fold(0.0f64, f64::max);
+        let p0 = out.vertex(v).p;
+        let d0 = dev(out, p0);
+        if d0 <= eps || d0 > 0.1 {
+            continue;
+        }
+        let mut p = p0;
+        for _ in 0..30 {
+            for &f in &faces {
+                p = out.face(f).surface.closest_point(p).2;
+            }
+            if dev(out, p) <= 1e-10 {
+                break;
+            }
+        }
+        // accept only a real improvement that stays near the original spot
+        if dev(out, p) < d0 && p.dist(p0) <= 4.0 * d0 + 1e-6 {
+            if std::env::var("TRIM_DEBUG").is_ok() {
+                eprintln!("  settle vertex {v:?}: surface dev {d0:.3e} -> {:.3e}, moved {:.3e}", dev(out, p), p.dist(p0));
+            }
+            out.vertex_mut(v).p = p;
+        }
+    }
+}
+
+/// After the endpoint welds/snaps, an edge's end vertex can sit off its
+/// curve (a fitted SSI curve stops short of the face boundary; a weld moved
+/// a shared vertex). Re-fit such an edge so it passes through both vertices:
+/// lines are rebuilt exactly, other curves become a cubic interpolant of the
+/// old curve's samples with the end samples replaced by the vertices (and the
+/// samples nearer than the gap to an end dropped, so no kink forms).
+fn snap_edge_ends(out: &mut Body, tol: f64) {
+    let eps = tol.max(1e-7);
+    for e in out.edge_ids().collect::<Vec<_>>() {
+        let ed = out.edge(e).clone();
+        if !ed.alive || ed.v0 == ed.v1 {
+            continue;
+        }
+        let (p0, p1) = (out.vertex(ed.v0).p, out.vertex(ed.v1).p);
+        let (c0, c1) = (ed.curve.eval(ed.t0), ed.curve.eval(ed.t1));
+        let (d0, d1) = (c0.dist(p0), c1.dist(p1));
+        if d0.max(d1) <= eps {
+            continue;
+        }
+        let len = (p1 - p0).len();
+        // gaps comparable to the edge itself are not a snap, they are a bug
+        if d0.max(d1) > 0.5 * len.max(1e-9) {
+            continue;
+        }
+        let new_curve = if let Curve3::Line { .. } = ed.curve {
+            let d = (p1 - p0) * (1.0 / len.max(1e-300));
+            Some((Curve3::Line { o: p0, d }, 0.0, len))
+        } else {
+            let n = 32usize;
+            let mut pts = vec![p0];
+            for i in 1..n {
+                let q = ed.curve.eval(ed.t0 + (ed.t1 - ed.t0) * i as f64 / n as f64);
+                if q.dist(p0) > 1.5 * d0 && q.dist(p1) > 1.5 * d1 && pts.last().map_or(true, |l| l.dist(q) > 1e-9) {
+                    pts.push(q);
+                }
+            }
+            pts.push(p1);
+            ck_geom::fit::interpolate(&pts, 3.min(pts.len() - 1), ck_geom::fit::Param::ChordLength)
+                .ok()
+                .map(|c| {
+                    let (a, b) = (c.knots[0], c.knots[c.knots.len() - 1]);
+                    (Curve3::BSpline(c), a, b)
+                })
+        };
+        if let Some((curve, t0, t1)) = new_curve {
+            if std::env::var("TRIM_DEBUG").is_ok() {
+                eprintln!("  snap edge {e:?}: ends were {d0:.4}/{d1:.4} off");
+            }
+            let em = out.edge_mut(e);
+            em.curve = curve;
+            em.t0 = t0;
+            em.t1 = t1;
+            for c in out.edge(e).coedges.clone() {
+                out.coedge_mut(c).pcurve = None;
+            }
+        }
+    }
 }
 
 /// Rebuild loop `l` of face `f`: drop the coedges whose midpoints fall on

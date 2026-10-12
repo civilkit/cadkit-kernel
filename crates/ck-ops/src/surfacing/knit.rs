@@ -116,13 +116,27 @@ fn edges_match(b: &Body, a: EdgeId, b2: EdgeId, tol: f64) -> Option<bool> {
     let sa = sample(b, a, 9);
     let sb = sample(b, b2, 9);
     let close = |x: &ck_geom::Vec3, y: &ck_geom::Vec3| x.dist(*y) <= tol;
-    if sa.iter().zip(sb.iter()).all(|(x, y)| close(x, y)) {
+    let (fwd, rev) = (
+        sa.iter().zip(sb.iter()).all(|(x, y)| close(x, y)),
+        sa.iter().zip(sb.iter().rev()).all(|(x, y)| close(x, y)),
+    );
+    if fwd {
         return Some(false);
     }
-    if sa.iter().zip(sb.iter().rev()).all(|(x, y)| close(x, y)) {
+    if rev {
         return Some(true);
     }
-    None
+    // Two fits of one boundary (an arc re-fitted as a spline, a different
+    // parameterisation) agree only to the near-miss threshold `knit` uses
+    // (tol * 100): same orientation as the endpoints, and every interior
+    // sample of each lies within that distance of the other curve.
+    let loose = tol * 100.0;
+    let r = sa[0].dist(sb[0]) > sa[0].dist(*sb.last()?);
+    let on = |pts: &[ck_geom::Vec3], other: EdgeId| {
+        let c = &b.edge(other).curve;
+        pts.iter().all(|p| c.closest_point(*p).1.dist(*p) <= loose)
+    };
+    (on(&sa, b2) && on(&sb, a)).then_some(r)
 }
 
 /// Sew bodies into one. `tol` is the coincidence tolerance.
