@@ -1,0 +1,273 @@
+{
+ "format": "ck-part",
+ "version": 1,
+ "name": "duct_elbow",
+ "features": [
+  {
+   "type": "sketch",
+   "id": "F1",
+   "plane": {
+    "kind": "std",
+    "id": "front"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 0,
+     "y": 0
+    },
+    {
+     "id": "p2",
+     "x": 0,
+     "y": 38.94
+    },
+    {
+     "id": "p3",
+     "x": 108.47,
+     "y": 147.41
+    },
+    {
+     "id": "p4",
+     "x": 145.13,
+     "y": 147.41
+    },
+    {
+     "id": "p5",
+     "x": 108.47,
+     "y": 38.94
+    }
+   ],
+   "entities": [
+    {
+     "type": "line",
+     "id": "e1",
+     "p1": "p1",
+     "p2": "p2"
+    },
+    {
+     "type": "arc",
+     "id": "e2",
+     "c": "p5",
+     "p1": "p3",
+     "p2": "p2"
+    },
+    {
+     "type": "line",
+     "id": "e3",
+     "p1": "p3",
+     "p2": "p4"
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "sketch",
+   "id": "F2",
+   "plane": {
+    "kind": "std",
+    "id": "top"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": -23.05,
+     "y": -25.055
+    },
+    {
+     "id": "p2",
+     "x": 23.05,
+     "y": -25.055
+    },
+    {
+     "id": "p3",
+     "x": 23.05,
+     "y": 25.055
+    },
+    {
+     "id": "p4",
+     "x": -23.05,
+     "y": 25.055
+    }
+   ],
+   "entities": [
+    {
+     "type": "line",
+     "id": "e1",
+     "p1": "p1",
+     "p2": "p2"
+    },
+    {
+     "type": "line",
+     "id": "e2",
+     "p1": "p2",
+     "p2": "p3"
+    },
+    {
+     "type": "line",
+     "id": "e3",
+     "p1": "p3",
+     "p2": "p4"
+    },
+    {
+     "type": "line",
+     "id": "e4",
+     "p1": "p4",
+     "p2": "p1"
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "sweep",
+   "id": "F3",
+   "op": "add",
+   "sketch": "F2",
+   "path": {
+    "kind": "sketch",
+    "id": "F1"
+   }
+  },
+  {
+   "type": "sketch",
+   "id": "F4",
+   "plane": {
+    "kind": "std",
+    "id": "top"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": -19.9,
+     "y": -21.855
+    },
+    {
+     "id": "p2",
+     "x": 19.9,
+     "y": -21.855
+    },
+    {
+     "id": "p3",
+     "x": 19.9,
+     "y": 21.855
+    },
+    {
+     "id": "p4",
+     "x": -19.9,
+     "y": 21.855
+    }
+   ],
+   "entities": [
+    {
+     "type": "line",
+     "id": "e1",
+     "p1": "p1",
+     "p2": "p2"
+    },
+    {
+     "type": "line",
+     "id": "e2",
+     "p1": "p2",
+     "p2": "p3"
+    },
+    {
+     "type": "line",
+     "id": "e3",
+     "p1": "p3",
+     "p2": "p4"
+    },
+    {
+     "type": "line",
+     "id": "e4",
+     "p1": "p4",
+     "p2": "p1"
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "sweep",
+   "id": "F5",
+   "op": "cut",
+   "sketch": "F4",
+   "path": {
+    "kind": "sketch",
+    "id": "F1"
+   }
+  },
+  {
+   "type": "plane",
+   "id": "F6",
+   "mode": "offset",
+   "base": {
+    "kind": "std",
+    "id": "top"
+   },
+   "offset": 11.445
+  },
+  {
+   "type": "sketch",
+   "id": "F7",
+   "plane": {
+    "kind": "feature",
+    "id": "F6"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 23.05,
+     "y": -17.5385
+    },
+    {
+     "id": "p2",
+     "x": 27.71,
+     "y": -17.5385
+    },
+    {
+     "id": "p3",
+     "x": 27.71,
+     "y": 17.5385
+    },
+    {
+     "id": "p4",
+     "x": 23.05,
+     "y": 17.5385
+    }
+   ],
+   "entities": [
+    {
+     "type": "line",
+     "id": "e1",
+     "p1": "p1",
+     "p2": "p2"
+    },
+    {
+     "type": "line",
+     "id": "e2",
+     "p1": "p2",
+     "p2": "p3"
+    },
+    {
+     "type": "line",
+     "id": "e3",
+     "p1": "p3",
+     "p2": "p4"
+    },
+    {
+     "type": "line",
+     "id": "e4",
+     "p1": "p4",
+     "p2": "p1"
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F8",
+   "op": "add",
+   "sketch": "F7",
+   "end": "blind",
+   "depth": 16.05
+  }
+ ]
+}

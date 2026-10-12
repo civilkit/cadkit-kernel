@@ -1,0 +1,175 @@
+{
+ "format": "ck-part",
+ "version": 1,
+ "name": "sheet_metal_tray",
+ "features": [
+  {
+   "type": "sketch",
+   "id": "F1",
+   "plane": {
+    "kind": "std",
+    "id": "front"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": -117.985,
+     "y": -20.77
+    },
+    {
+     "id": "p2",
+     "x": 117.985,
+     "y": -20.77
+    },
+    {
+     "id": "p3",
+     "x": 117.985,
+     "y": 20.77
+    },
+    {
+     "id": "p4",
+     "x": -117.985,
+     "y": 20.77
+    }
+   ],
+   "entities": [
+    {
+     "type": "line",
+     "id": "e1",
+     "p1": "p1",
+     "p2": "p2"
+    },
+    {
+     "type": "line",
+     "id": "e2",
+     "p1": "p2",
+     "p2": "p3"
+    },
+    {
+     "type": "line",
+     "id": "e3",
+     "p1": "p3",
+     "p2": "p4"
+    },
+    {
+     "type": "line",
+     "id": "e4",
+     "p1": "p4",
+     "p2": "p1"
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F2",
+   "op": "add",
+   "sketch": "F1",
+   "end": "mid",
+   "depth": 39.03
+  },
+  {
+   "type": "chamfer",
+   "id": "F3",
+   "chamferType": "equal",
+   "distance": 0.96,
+   "edges": [
+    {
+     "faces": [
+      "F2.C0",
+      "F2.S.e1"
+     ],
+     "at": [
+      0,
+      -20.77,
+      -19.515
+     ]
+    },
+    {
+     "faces": [
+      "F2.C0",
+      "F2.S.e2"
+     ],
+     "at": [
+      117.985,
+      0,
+      -19.515
+     ]
+    },
+    {
+     "faces": [
+      "F2.C0",
+      "F2.S.e3"
+     ],
+     "at": [
+      0,
+      20.77,
+      -19.515
+     ]
+    },
+    {
+     "faces": [
+      "F2.C0",
+      "F2.S.e4"
+     ],
+     "at": [
+      -117.985,
+      0,
+      -19.515
+     ]
+    }
+   ]
+  },
+  {
+   "type": "shell",
+   "id": "F4",
+   "faces": [
+    "F2.C0"
+   ],
+   "thickness": 3.83
+  },
+  {
+   "type": "sketch",
+   "id": "F5",
+   "plane": {
+    "kind": "std",
+    "id": "front"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 0,
+     "y": -13.045
+    },
+    {
+     "id": "p2",
+     "x": 0,
+     "y": 13.045
+    }
+   ],
+   "entities": [
+    {
+     "type": "circle",
+     "id": "e1",
+     "c": "p1",
+     "r": 2.395
+    },
+    {
+     "type": "circle",
+     "id": "e2",
+     "c": "p2",
+     "r": 2.395
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F6",
+   "op": "cut",
+   "sketch": "F5",
+   "end": "throughBoth",
+   "depth": 10
+  }
+ ]
+}

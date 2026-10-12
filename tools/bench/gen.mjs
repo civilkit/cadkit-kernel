@@ -16,24 +16,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const out = path.join(here, 'benchcad');
 mkdirSync(out, { recursive: true });
 
-class Sk {
-  constructor(id, plane) { this.id = id; this.plane = plane; this.points = []; this.entities = []; this.np = 0; this.ne = 0; }
-  p(x, y) { const id = `p${++this.np}`; this.points.push({ id, x, y }); return id; }
-  line(a, b, o = {}) { const id = `e${++this.ne}`; this.entities.push({ type: 'line', id, p1: a, p2: b, ...o }); return id; }
-  circle(cx, cy, r) { const id = `e${++this.ne}`; this.entities.push({ type: 'circle', id, c: this.p(cx, cy), r }); return id; }
-  arc(c, a, b) { const id = `e${++this.ne}`; this.entities.push({ type: 'arc', id, c, p1: a, p2: b }); return id; }
-  poly(pts) { const ids = pts.map(([x, y]) => this.p(x, y)); ids.forEach((a, i) => this.line(a, ids[(i + 1) % ids.length])); return this; }
-  rect(x0, y0, x1, y1) { return this.poly([[x0, y0], [x1, y0], [x1, y1], [x0, y1]]); }
-  axis(x0, y0, x1, y1) { this.line(this.p(x0, y0), this.p(x1, y1), { construction: true }); return `e${this.ne}`; }
-  json() { return { type: 'sketch', id: this.id, plane: this.plane, points: this.points, entities: this.entities, constraints: [] }; }
-}
-const STD = (id) => ({ kind: 'std', id });
-const FEAT = (id) => ({ kind: 'feature', id });
-const FACE = (id) => ({ kind: 'face', id });
-const plane = (id, base, offset) => ({ type: 'plane', id, mode: 'offset', base: STD(base), offset });
-const ext = (id, sketch, o = {}) => ({ type: 'extrude', id, op: 'add', sketch, end: 'blind', depth: 10, ...o });
-const edge = (f1, f2, at) => ({ faces: [f1, f2], at });
-const part = (name, features) => ({ format: 'ck-part', version: 1, name, features });
+import { Sk, STD, FEAT, FACE, plane, ext, edge, part } from './lib.mjs';
 
 const parts = {};
 

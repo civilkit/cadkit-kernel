@@ -1,0 +1,126 @@
+{
+ "format": "ck-part",
+ "version": 1,
+ "name": "hex_nut",
+ "features": [
+  {
+   "type": "sketch",
+   "id": "F1",
+   "plane": {
+    "kind": "std",
+    "id": "top"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 3.175,
+     "y": 0
+    },
+    {
+     "id": "p2",
+     "x": 1.5875000000000004,
+     "y": 2.7496306570155924
+    },
+    {
+     "id": "p3",
+     "x": -1.5874999999999992,
+     "y": 2.749630657015593
+    },
+    {
+     "id": "p4",
+     "x": -3.175,
+     "y": 3.888253587292846e-16
+    },
+    {
+     "id": "p5",
+     "x": -1.5875000000000012,
+     "y": -2.749630657015592
+    },
+    {
+     "id": "p6",
+     "x": 1.5875000000000004,
+     "y": -2.7496306570155924
+    }
+   ],
+   "entities": [
+    {
+     "type": "line",
+     "id": "e1",
+     "p1": "p1",
+     "p2": "p2"
+    },
+    {
+     "type": "line",
+     "id": "e2",
+     "p1": "p2",
+     "p2": "p3"
+    },
+    {
+     "type": "line",
+     "id": "e3",
+     "p1": "p3",
+     "p2": "p4"
+    },
+    {
+     "type": "line",
+     "id": "e4",
+     "p1": "p4",
+     "p2": "p5"
+    },
+    {
+     "type": "line",
+     "id": "e5",
+     "p1": "p5",
+     "p2": "p6"
+    },
+    {
+     "type": "line",
+     "id": "e6",
+     "p1": "p6",
+     "p2": "p1"
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F2",
+   "op": "add",
+   "sketch": "F1",
+   "end": "blind",
+   "depth": 2.4
+  },
+  {
+   "type": "sketch",
+   "id": "F3",
+   "plane": {
+    "kind": "std",
+    "id": "top"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 0,
+     "y": 0
+    }
+   ],
+   "entities": [
+    {
+     "type": "circle",
+     "id": "e1",
+     "c": "p1",
+     "r": 1.5
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F4",
+   "op": "cut",
+   "sketch": "F3",
+   "end": "throughBoth",
+   "depth": 10
+  }
+ ]
+}

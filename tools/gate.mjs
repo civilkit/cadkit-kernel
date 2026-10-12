@@ -27,7 +27,7 @@
 //   import.sat    OURS alone: each fixture in crates/ck-io/tests/fixtures/sat/
 //                 expected.json imports with no errors, validates with zero
 //                 issues and has the closed-form volume (1e-6 relative)
-//   bench.benchcad  SOFT: BenchCAD parts (tools/bench/benchcad, 10 parts) whose
+//   bench.benchcad  SOFT: BenchCAD parts (tools/bench/benchcad, 30 parts) whose
 //                 regen matches the CadQuery ground truth (volume/area/com/
 //                 bbox 1e-3) and validates clean; bench.benchcad.step: the
 //                 ground-truth STEP imports to the same numbers, validate clean

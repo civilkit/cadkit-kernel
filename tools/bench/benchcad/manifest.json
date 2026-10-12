@@ -1,5 +1,5 @@
 {
- "name": "benchcad-10",
+ "name": "benchcad-30",
  "source": "BenchCAD (arXiv 2605.10865), HF dataset BenchCAD/BenchCAD, licence cc-by-4.0",
  "frame": "ground truth is Z-up; the scorer rotates (x,y,z)->(x,z,-y) to our Y-up world",
  "parts": [
@@ -253,7 +253,7 @@
     "area": 12883.38136,
     "com": [
      16.87459501,
-     -0.000001987965397,
+     -1.987965397e-06,
      -1.416929355e-15
     ],
     "bbox": [
@@ -369,14 +369,14 @@
     "volume": 263.6561549,
     "area": 577.5651996,
     "com": [
-     -8.270520802e-8,
-     1.834975739e-7,
+     -8.270520802e-08,
+     1.834975739e-07,
      17.14327948
     ],
     "bbox": [
      -2.415625624,
      -2.415625599,
-     -1.000000029e-7,
+     -1.000000029e-07,
      2.415625624,
      2.415625599,
      35.2000001
@@ -385,6 +385,783 @@
     "solids": 1
    },
    "step": "gt/twisted_drill_000546.step"
+  },
+  {
+   "id": "hex_nut_000006",
+   "benchcad_stem": "hex_nut_000006_s20260505",
+   "family": "hex_nut",
+   "tier": "easy",
+   "benchcad_difficulty": "easy",
+   "standard": "ISO 4032",
+   "ops": [
+    "polygon",
+    "extrude",
+    "cutThruAll"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0 (re-verified from the card); attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 45.891956489991564,
+    "area": 106.58276418083948,
+    "com": [
+     -7.741473562094266e-17,
+     2.7095157467329933e-16,
+     1.2
+    ],
+    "bbox": [
+     -3.175,
+     -2.7496306570155937,
+     0,
+     3.1750000000000003,
+     2.749630657015593,
+     2.4
+    ],
+    "faces": 9,
+    "solids": 1
+   },
+   "step": "gt/hex_nut_000006.step"
+  },
+  {
+   "id": "bolt_000008",
+   "benchcad_stem": "bolt_000008_s20260505",
+   "family": "bolt",
+   "tier": "easy",
+   "benchcad_difficulty": "medium",
+   "standard": "ISO 4014",
+   "ops": [
+    "circle",
+    "extrude",
+    "polygon",
+    "chamfer"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0 (re-verified from the card); attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 27014.48187118416,
+    "area": 7281.688700388683,
+    "com": [
+     2.525019837812628e-17,
+     2.1010006134050083e-16,
+     65.86296436565985
+    ],
+    "bbox": [
+     -13.855000000000002,
+     -11.998781969433404,
+     0,
+     13.855000000000002,
+     11.9987819694334,
+     120
+    ],
+    "faces": 16,
+    "solids": 1
+   },
+   "step": "gt/bolt_000008.step"
+  },
+  {
+   "id": "coil_spring_000026",
+   "benchcad_stem": "coil_spring_000026_s20260505",
+   "family": "coil_spring",
+   "tier": "hard",
+   "benchcad_difficulty": "medium",
+   "standard": "DIN 2095",
+   "ops": [
+    "spline",
+    "sweep(isFrenet)",
+    "cut",
+    "box"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0 (re-verified from the card); attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 89283.67330643036,
+    "area": 52788.0403643346,
+    "com": [
+     -0.8414269604720119,
+     -0.01410663199097533,
+     42.726443399038025
+    ],
+    "bbox": [
+     -59.05997098081488,
+     -59.05997098084075,
+     -1.0000000377475828e-07,
+     59.060439689092775,
+     59.05997098083941,
+     85.50000010000029
+    ],
+    "faces": 5,
+    "solids": 1
+   },
+   "step": "gt/coil_spring_000026.step"
+  },
+  {
+   "id": "torsion_spring_000054",
+   "benchcad_stem": "torsion_spring_000054_s20260505",
+   "family": "torsion_spring",
+   "tier": "hard",
+   "benchcad_difficulty": "hard",
+   "standard": "DIN 2088",
+   "ops": [
+    "makeHelix",
+    "sweep(isFrenet)",
+    "union",
+    "transformed(rotate)"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0 (re-verified from the card); attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 180176.51722880593,
+    "area": 102528.72126157297,
+    "com": [
+     4.648854228017792,
+     2.383805026448472,
+     104.82390309064131
+    ],
+    "bbox": [
+     -59.77001059310106,
+     -162.84807901270423,
+     -11.450971564651582,
+     59.770010727352854,
+     220.40963972455253,
+     221.09874939459672
+    ],
+    "faces": 7,
+    "solids": 2
+   },
+   "step": "gt/torsion_spring_000054.step"
+  },
+  {
+   "id": "pipe_elbow_000012",
+   "benchcad_stem": "pipe_elbow_000012_s20260505",
+   "family": "pipe_elbow",
+   "tier": "medium",
+   "benchcad_difficulty": "easy",
+   "standard": "ASME B16.9",
+   "ops": [
+    "sweep(isFrenet)",
+    "lineTo",
+    "radiusArc",
+    "cut"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0 (re-verified from the card); attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 55586.000537866516,
+    "area": 30356.08910631181,
+    "com": [
+     22.35247765049475,
+     6.173631485544763e-17,
+     57.18752234950524
+    ],
+    "bbox": [
+     -18.5800001,
+     -18.5800001,
+     0,
+     79.53999999999999,
+     18.5800001,
+     98.12000009999998
+    ],
+    "faces": 8,
+    "solids": 1
+   },
+   "step": "gt/pipe_elbow_000012.step"
+  },
+  {
+   "id": "duct_elbow_000181",
+   "benchcad_stem": "duct_elbow_000181_s20260505",
+   "family": "duct_elbow",
+   "tier": "medium",
+   "benchcad_difficulty": "easy",
+   "standard": null,
+   "ops": [
+    "rect",
+    "sweep(isFrenet)",
+    "radiusArc",
+    "cut",
+    "union",
+    "box"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0 (re-verified from the card); attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 142936.14378107755,
+    "area": 90033.9183688415,
+    "com": [
+     44.561656444976386,
+     -4.902900691683007e-16,
+     99.6350357405745
+    ],
+    "bbox": [
+     -23.05,
+     -25.055,
+     0,
+     145.13,
+     25.055,
+     170.45999999999998
+    ],
+    "faces": 23,
+    "solids": 1
+   },
+   "step": "gt/duct_elbow_000181.step"
+  },
+  {
+   "id": "i_beam_000007",
+   "benchcad_stem": "i_beam_000007_s20260505",
+   "family": "i_beam",
+   "tier": "medium",
+   "benchcad_difficulty": "hard",
+   "standard": "EN 10034",
+   "ops": [
+    "polyline",
+    "mirrorY",
+    "extrude",
+    "chamfer",
+    "fillet",
+    "pushPoints",
+    "hole"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0 (re-verified from the card); attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 871072.2130770143,
+    "area": 302804.68554661155,
+    "com": [
+     6.41898841170092e-11,
+     77.32909614610122,
+     242.31539189924186
+    ],
+    "bbox": [
+     -39.6350001,
+     -1.000000002220446e-07,
+     -1.0000000053272136e-07,
+     39.6350001,
+     154.6800001,
+     483.3600000000001
+    ],
+    "faces": 27,
+    "solids": 1
+   },
+   "step": "gt/i_beam_000007.step"
+  },
+  {
+   "id": "spur_gear_000098",
+   "benchcad_stem": "spur_gear_000098_s20260505",
+   "family": "spur_gear",
+   "tier": "hard",
+   "benchcad_difficulty": "hard",
+   "standard": "ISO 53",
+   "ops": [
+    "polyline(448)",
+    "extrude",
+    "cutThruAll",
+    "union",
+    "cylinder",
+    "box",
+    "hole"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0 (re-verified from the card); attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 77156.46036970489,
+    "area": 27442.819171545027,
+    "com": [
+     5.2620147804350094e-14,
+     -0.05106142429619485,
+     14.265000000000008
+    ],
+    "bbox": [
+     -38.25,
+     -38.25,
+     0,
+     38.25,
+     38.25,
+     28.53
+    ],
+    "faces": 470,
+    "solids": 1
+   },
+   "step": "gt/spur_gear_000098.step"
+  },
+  {
+   "id": "bevel_gear_000437",
+   "benchcad_stem": "bevel_gear_000437_s20260505",
+   "family": "bevel_gear",
+   "tier": "hard",
+   "benchcad_difficulty": "hard",
+   "standard": "ISO 23509",
+   "ops": [
+    "polyline(156)",
+    "workplane(offset)",
+    "loft",
+    "hole",
+    "cutThruAll"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0 (re-verified from the card); attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 3868.0413449700945,
+    "area": 2193.160562398126,
+    "com": [
+     5.058264548837499,
+     -2.613297850252476e-05,
+     -0.0068386836946022714
+    ],
+    "bbox": [
+     -1e-07,
+     -14.3210001,
+     -14.546000099999999,
+     12.850000099999999,
+     14.5800001,
+     14.546000099999999
+    ],
+    "faces": 162,
+    "solids": 1
+   },
+   "step": "gt/bevel_gear_000437.step"
+  },
+  {
+   "id": "spline_hub_000030",
+   "benchcad_stem": "spline_hub_000030_s20260505",
+   "family": "spline_hub",
+   "tier": "hard",
+   "benchcad_difficulty": "medium",
+   "standard": "DIN 5480",
+   "ops": [
+    "threePointArc(100)",
+    "extrude",
+    "cut",
+    "circle"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0 (re-verified from the card); attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 404678.0378224177,
+    "area": 57604.437319397875,
+    "com": [
+     3.513591363096633e-07,
+     7.893756708736146e-15,
+     25.3832476161934
+    ],
+    "bbox": [
+     -57.15,
+     -57.15,
+     0,
+     57.15,
+     57.15,
+     57.92
+    ],
+    "faces": 207,
+    "solids": 1
+   },
+   "step": "gt/spline_hub_000030.step"
+  },
+  {
+   "id": "torus_link_000095",
+   "benchcad_stem": "torus_link_000095_s20260505",
+   "family": "torus_link",
+   "tier": "hard",
+   "benchcad_difficulty": "hard",
+   "standard": null,
+   "ops": [
+    "revolve",
+    "union",
+    "box",
+    "transformed(rotate)",
+    "cylinder",
+    "cut(internal void)"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0 (re-verified from the card); attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 102954.14299591476,
+    "area": 22783.10618285535,
+    "com": [
+     2.0696623952117257e-11,
+     1.3496229141413497e-09,
+     -2.3130814624058064e-11
+    ],
+    "bbox": [
+     -62.8500001,
+     -9.8200001,
+     -62.8500001,
+     70.09,
+     9.8200001,
+     62.8500001
+    ],
+    "faces": 28,
+    "solids": 2
+   },
+   "step": "gt/torus_link_000095.step"
+  },
+  {
+   "id": "dome_cap_000212",
+   "benchcad_stem": "dome_cap_000212_s20260505",
+   "family": "dome_cap",
+   "tier": "medium",
+   "benchcad_difficulty": "hard",
+   "standard": null,
+   "ops": [
+    "polyline",
+    "threePointArc",
+    "revolve",
+    "cutBlind",
+    "polarArray",
+    "hole",
+    "fillet"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0 (re-verified from the card); attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 328738.724369601,
+    "area": 33426.47866758815,
+    "com": [
+     -1.2062212187923503e-05,
+     39.38402432105253,
+     4.443346651080911e-05
+    ],
+    "bbox": [
+     -42.8800001,
+     0,
+     -42.880000100000004,
+     42.8800001,
+     81.7400001,
+     42.880000100000004
+    ],
+    "faces": 11,
+    "solids": 1
+   },
+   "step": "gt/dome_cap_000212.step"
+  },
+  {
+   "id": "venturi_tube_000129",
+   "benchcad_stem": "venturi_tube_000129_s20260505",
+   "family": "venturi_tube",
+   "tier": "medium",
+   "benchcad_difficulty": "hard",
+   "standard": "ISO 5167-4",
+   "ops": [
+    "polyline",
+    "revolve"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0 (re-verified from the card); attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 33313807.52537467,
+    "area": 2902433.34400269,
+    "com": [
+     -1.010890882780201e-13,
+     708.5968213210275,
+     1.0317430947512173e-14
+    ],
+    "bbox": [
+     -190.54,
+     0,
+     -190.54,
+     190.54,
+     1421.0624,
+     190.54
+    ],
+    "faces": 12,
+    "solids": 1
+   },
+   "step": "gt/venturi_tube_000129.step"
+  },
+  {
+   "id": "bellows_000367",
+   "benchcad_stem": "bellows_000367_s20260505",
+   "family": "bellows",
+   "tier": "medium",
+   "benchcad_difficulty": "hard",
+   "standard": null,
+   "ops": [
+    "polyline",
+    "revolve",
+    "polarArray",
+    "cutBlind"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0 (re-verified from the card); attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 316273.477102497,
+    "area": 73695.67800384841,
+    "com": [
+     1.3260277403699765e-07,
+     109.77755586922467,
+     -5.507945762619666e-07
+    ],
+    "bbox": [
+     -35.07231942225486,
+     0,
+     -35.1000001,
+     35.07231942225533,
+     236.30000010000006,
+     35.1000001
+    ],
+    "faces": 50,
+    "solids": 1
+   },
+   "step": "gt/bellows_000367.step"
+  },
+  {
+   "id": "t_pipe_fitting_000075",
+   "benchcad_stem": "t_pipe_fitting_000075_s20260505",
+   "family": "t_pipe_fitting",
+   "tier": "easy",
+   "benchcad_difficulty": "easy",
+   "standard": "ASME B16.9",
+   "ops": [
+    "cylinder",
+    "union",
+    "cut",
+    "transformed(rotate)"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0 (re-verified from the card); attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 104294.41712280322,
+    "area": 52635.72238704952,
+    "com": [
+     -2.7144595125521406e-05,
+     1.8585225512418981,
+     6.571785109990278e-07
+    ],
+    "bbox": [
+     -26.7500001,
+     -26.7500001,
+     -78.36500009999999,
+     26.7500001,
+     46.630000100000004,
+     78.36500009999999
+    ],
+    "faces": 7,
+    "solids": 1
+   },
+   "step": "gt/t_pipe_fitting_000075.step"
+  },
+  {
+   "id": "dovetail_slide_000038",
+   "benchcad_stem": "dovetail_slide_000038_s20260505",
+   "family": "dovetail_slide",
+   "tier": "medium",
+   "benchcad_difficulty": "hard",
+   "standard": null,
+   "ops": [
+    "polyline",
+    "extrude",
+    "chamfer",
+    "pushPoints",
+    "cboreHole",
+    "cut"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0 (re-verified from the card); attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 34473.97478391248,
+    "area": 17522.951447731957,
+    "com": [
+     -4.734841470853819e-16,
+     4.688434688073932,
+     47.89694866986445
+    ],
+    "bbox": [
+     -25.85,
+     0,
+     -7.525236397157991e-16,
+     25.85,
+     9.770000000000003,
+     95.50000000000001
+    ],
+    "faces": 28,
+    "solids": 1
+   },
+   "step": "gt/dovetail_slide_000038.step"
+  },
+  {
+   "id": "sheet_metal_tray_000130",
+   "benchcad_stem": "sheet_metal_tray_000130_s20260505",
+   "family": "sheet_metal_tray",
+   "tier": "medium",
+   "benchcad_difficulty": "medium",
+   "standard": null,
+   "ops": [
+    "box",
+    "chamfer",
+    "shell",
+    "pushPoints",
+    "hole"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0 (re-verified from the card); attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 111585.61519783374,
+    "area": 61272.6625750084,
+    "com": [
+     5.416957573794395e-08,
+     -4.414511733946695,
+     1.2519390240816076e-14
+    ],
+    "bbox": [
+     -117.985,
+     -19.515,
+     -20.77,
+     117.985,
+     19.515000000000004,
+     20.77
+    ],
+    "faces": 23,
+    "solids": 1
+   },
+   "step": "gt/sheet_metal_tray_000130.step"
+  },
+  {
+   "id": "u_channel_000058",
+   "benchcad_stem": "u_channel_000058_s20260505",
+   "family": "u_channel",
+   "tier": "hard",
+   "benchcad_difficulty": "medium",
+   "standard": "EN 10279",
+   "ops": [
+    "box",
+    "cutBlind",
+    "fillet(|Z)",
+    "chamfer"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0 (re-verified from the card); attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 11725934.423011813,
+    "area": 1929885.0683241212,
+    "com": [
+     -10.792258158625453,
+     -1.8426406759257155e-14,
+     6.83510698953976e-15
+    ],
+    "bbox": [
+     -95.13000000000002,
+     -38.645,
+     -1085.085,
+     95.13000000000002,
+     38.645,
+     1085.085
+    ],
+    "faces": 50,
+    "solids": 1
+   },
+   "step": "gt/u_channel_000058.step"
+  },
+  {
+   "id": "eyebolt_000265",
+   "benchcad_stem": "eyebolt_000265_s20260505",
+   "family": "eyebolt",
+   "tier": "medium",
+   "benchcad_difficulty": "hard",
+   "standard": "DIN 580",
+   "ops": [
+    "circle",
+    "extrude",
+    "loft",
+    "union",
+    "makeTorus"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0 (re-verified from the card); attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 309589.10966921004,
+    "area": 39950.63044949715,
+    "com": [
+     -1.734159862534491e-05,
+     -9.112843303670201e-08,
+     34.706154792713406
+    ],
+    "bbox": [
+     -63.0000001,
+     -35.0000001,
+     -54.0000001,
+     63.0000001,
+     35.0000001,
+     122.6700001
+    ],
+    "faces": 12,
+    "solids": 1
+   },
+   "step": "gt/eyebolt_000265.step"
+  },
+  {
+   "id": "pan_head_screw_000035",
+   "benchcad_stem": "pan_head_screw_000035_s20260505",
+   "family": "pan_head_screw",
+   "tier": "hard",
+   "benchcad_difficulty": "hard",
+   "standard": "ISO 1580",
+   "ops": [
+    "cylinder",
+    "extrude",
+    "fillet",
+    "cut",
+    "makeHelix",
+    "sweep"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0 (re-verified from the card); attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 1481.9759813775468,
+    "area": 1245.503142612901,
+    "com": [
+     0.0001330093892422636,
+     -0.0008823243196232272,
+     25.390194647723057
+    ],
+    "bbox": [
+     -6,
+     -6.0000001,
+     -1.000000000153512e-07,
+     6,
+     6.0000001,
+     43.6000001
+    ],
+    "faces": 32,
+    "solids": 1
+   },
+   "step": "gt/pan_head_screw_000035.step"
   }
  ],
  "known": {
@@ -399,6 +1176,95 @@
   "twisted_drill_000546": {
    "label": "kernel-gap",
    "note": "no twist on extrude/sweep (twistExtrude); translated as a straight extrude of the same flute section, so volume and com match but area (2.8% low) and bbox (flutes do not rotate) cannot."
+  },
+  "coil_spring_000026": {
+   "label": "kernel-gap",
+   "skip": "regen does not finish in 50 s (union of the 2nd helical sweep with the 1st never returns)",
+   "skipStep": "importStep of the ground-truth STEP (spline-swept torus-like coils) does not finish in 60 s",
+   "note": "variable-pitch helix needs a 3D spline sweep path (sketch paths are planar lines/arcs, helix is constant pitch) -> translated as three constant-pitch helix sweeps; their union (adjacent end caps, overlapping coils since pitch 6 < wire dia 6.94) hangs (kernel-bug: boolean of coil sweeps does not terminate); importStep of the ground truth also hangs."
+  },
+  "torsion_spring_000054": {
+   "label": "kernel-gap",
+   "skip": "regen does not finish in 50 s (a single 12-turn helix sweep takes 19 s, union with a leg never returns)",
+   "note": "leg workplanes are rotated 2.8 deg about X (refPlane mode angle/axis is parsed but every mode behaves as offset), so the legs are built along the untilted normal; additionally the 12-turn helix sweep alone takes 19 s and its union with a coaxial-end leg hangs (kernel-bug perf/hang). Ground truth is two disjoint solids (multi-body result)."
+  },
+  "pipe_elbow_000012": {
+   "label": "kernel-gap",
+   "note": "sweep along a multi-piece path (line-arc-line) is TODO(rebuild) in ck-model sweep (F3) -> F5 then nothingToCut."
+  },
+  "duct_elbow_000181": {
+   "label": "kernel-gap",
+   "note": "same: sweep along a multi-piece path (line-arc-line) is TODO(rebuild) (F3); F5 nothingToCut."
+  },
+  "i_beam_000007": {
+   "label": "kernel-bug",
+   "note": "F6 booleanFailed: the 2.175 mm hole whose axis lies in the beam end-face plane (half hole through flanges and web) fails; the full hole at z=120.84 alone is fine. Everything else (chamfer, fillet, full hole) is exact: the volume is off by exactly the half-hole."
+  },
+  "torus_link_000095": {
+   "label": "kernel-gap",
+   "note": "lugs touch the torus in a single point, so the union is two disjoint solids (ground truth: solids=2). Our feature union returns only the second body (volume 2548 = lugs only; torus silently dropped, no error): no multi-body result for a union of disjoint/point-contact bodies. The internal blind cross holes (void shells) are not reached."
+  },
+  "dome_cap_000212": {
+   "label": "kernel-bug",
+   "note": "revolving an arc whose centre lies on the axis builds a degenerate torus (major radius 0) instead of a sphere: volume is right (389600) but the face is missing from the mesh/box/area (area 4693 vs 33426, box ends at the cylinder); the 4-hole through cut then fails (F6 booleanFailed). STEP import of the ground truth: unsupported 'single boundary winding a revolution surface' (sphere pole)."
+  },
+  "bellows_000367": {
+   "label": "kernel-bug",
+   "note": "F5/F7 booleanFailed: 6-hole bolt-circle cuts through the end flanges. Probed: the cylinders cross the conical convolution flank (F5, parallel-axis cylinder x cone) and the six-circle tool fails at the flat end too (F7) while a single circle passes; also fails with holes inside the rim radius, so the rim break-out is not the cause."
+  },
+  "u_channel_000058": {
+   "label": "kernel-gap",
+   "note": "F7 blendUnsupported: chamfer on the edges of the top faces after the vertical-edge fillet (plane/fillet-cylinder tangent edges); box, slot and the 8-edge |Z fillet are exact."
+  },
+  "spline_hub_000030": {
+   "label": "kernel-bug",
+   "note": "geometry matches (vol/area/com/bbox ok); validate reports LOOP_SELF_INTERSECT on the groove disc caps (F8.C0/C1): the r=40.15 circle lies 1 mm from the 100-arc spline loop, the known ck-check wire.rs 8-point chord-sag false positive. The ground-truth STEP trips the same check."
+  },
+  "eyebolt_000265": {
+   "label": "kernel-bug",
+   "note": "F12 booleanFailed: union of the revolved torus (exact alone, V=189575) with the collar/neck/shank (torus x coaxial cylinders and cone, torus tube crossing the shank axis region). The torus overlaps the shank, so the boolean has torus x cylinder and torus x plane intersections."
+  },
+  "pan_head_screw_000035": {
+   "label": "ground-truth-mismatch",
+   "note": "everything but the thread is exact (unthreaded 1492.07 mm3). Our swept V-groove removes 24.07 mm3 (= area 0.0924 mm2 x helix length, the geometric truth); the dataset's sweep (isFrenet=False, profile in the XZ plane not normal to the helix) removes only 10.08 mm3, so the ground truth is not the geometric groove. Cannot match; the STEP-in side also fails (SHELL_NONMANIFOLD / EDGE_OFF_SURFACE)."
+  }
+ },
+ "knownStep": {
+  "nozzle_000069": {
+   "label": "kernel-bug",
+   "note": "LOOP_SELF_INTERSECT x2 on the ground-truth STEP (same ck-check wire.rs 8-point sampling false positive as the regen side)."
+  },
+  "spline_hub_000030": {
+   "label": "kernel-bug",
+   "note": "LOOP_SELF_INTERSECT x2 on the ground-truth STEP: groove-disc loop 1 mm from the 100-arc spline loop (ck-check wire.rs sampling false positive)."
+  },
+  "t_pipe_fitting_000075": {
+   "label": "kernel-bug",
+   "note": "ground-truth STEP imports with the right volume/area/bbox but validate reports EDGE_OFF_SURFACE x2 (cylinder x cylinder branch edges after STEP import)."
+  },
+  "pan_head_screw_000035": {
+   "label": "kernel-bug",
+   "note": "validate on the imported ground-truth STEP: SHELL_NONMANIFOLD + EDGE_OFF_SURFACE (helical thread faces); also the thread volume differs from our regen (see regen cause)."
+  },
+  "dome_cap_000212": {
+   "label": "kernel-gap",
+   "note": "importStep: unsupported 'single boundary winding a revolution surface' (a sphere pole boundary) - same degenerate sphere-as-revolution case as the regen side."
+  },
+  "eyebolt_000265": {
+   "label": "kernel-bug",
+   "note": "importStep returns a body without the torus eye (bbox x +-35 instead of +-63, volume short): torus surface in the STEP is dropped silently."
+  },
+  "torus_link_000095": {
+   "label": "kernel-gap",
+   "note": "ground-truth STEP holds two disjoint solids; importStep keeps one body (box shows the lug+partial only): no multi-solid import."
+  },
+  "torsion_spring_000054": {
+   "label": "kernel-gap",
+   "note": "ground-truth STEP holds two solids; importStep returns a single small solid (9% of the volume): no multi-solid import."
+  },
+  "coil_spring_000026": {
+   "label": "kernel-bug",
+   "note": "importStep of the ground-truth STEP (spline-swept coil, 5 faces) does not return within 60 s."
   }
  }
 }
