@@ -112,7 +112,9 @@ fn samples_fine(c: &Curve, ta: f64, tb: f64) -> usize {
 
 /// uv polygon of a loop given as directed curve pieces `(curve, ta, tb)`.
 pub fn loop_polygon(s: &Surface, pieces: &[(&Curve, f64, f64)]) -> Vec<Vec2> {
-    loop_polygon_with(s, pieces, |c, _, _| samples_for(c))
+    // fine circle sampling: a chord sag of 0.9% of the radius (24 chords)
+    // misclassifies points near a large rim (flange annulus holes)
+    loop_polygon_with(s, pieces, samples_fine)
 }
 
 fn loop_polygon_with(s: &Surface, pieces: &[(&Curve, f64, f64)], nfun: impl Fn(&Curve, f64, f64) -> usize) -> Vec<Vec2> {
@@ -121,12 +123,55 @@ fn loop_polygon_with(s: &Surface, pieces: &[(&Curve, f64, f64)], nfun: impl Fn(&
     for &(c, ta, tb) in pieces {
         let n = nfun(c, ta, tb);
         for k in 0..n {
-            let uv = uv_near(s, c.eval(ta + (tb - ta) * k as f64 / n as f64), prev);
+            let mut uv = uv_near(s, c.eval(ta + (tb - ta) * k as f64 / n as f64), prev);
+            // u is arbitrary at a pole: carry the previous u through it so the
+            // samples after the pole are not unwrapped against junk
+            if let Some(q) = prev {
+                if s.is_pole(uv.x, uv.y) {
+                    uv.x = q.x;
+                }
+            }
             prev = Some(uv);
             out.push(uv);
         }
     }
+    close_pole_spikes(s, &mut out);
     out
+}
+
+/// A loop that reaches a pole of a periodic surface along a seam and comes
+/// back along the same seam (a hemisphere cap bounded by one circle:
+/// circle, seam up, seam down) encloses nothing in uv as sampled: the up
+/// and down seams coincide (a spike). The loop did advance one full period
+/// in u (first and last sample differ by it), so the pole is really a
+/// line: insert the pole line (u runs one period back to the loop's start)
+/// and carry the descent along the start seam. The polygon becomes the
+/// strip `[u0, u0 + period] x [circle, pole]`.
+fn close_pole_spikes(s: &Surface, poly: &mut Vec<Vec2>) {
+    let Some(per) = s.periods().0 else { return };
+    let n = poly.len();
+    if n < 4 {
+        return;
+    }
+    let adv = poly[n - 1].x - poly[0].x;
+    if (adv.abs() - per).abs() > 1e-6 * per {
+        return;
+    }
+    for i in 1..n - 1 {
+        let (prev, p, next) = (poly[i - 1], poly[i], poly[i + 1]);
+        if !s.is_pole(p.x, p.y) {
+            continue;
+        }
+        if (prev.x - next.x).abs() > 1e-6 * per {
+            continue; // a pole crossing, not a spike
+        }
+        let shift = -adv.signum() * per;
+        for q in poly[i + 1..].iter_mut() {
+            q.x += shift;
+        }
+        poly.insert(i + 1, Vec2::new(p.x + shift, p.y));
+        return;
+    }
 }
 
 /// Shoelace area (positive = counter-clockwise in uv).
@@ -242,7 +287,7 @@ pub type LoopCache = std::collections::HashMap<(usize, u32), Vec<Vec<Vec2>>>;
 pub fn point_in_face_cached(b: &Body, f: FaceId, p: Vec3, tol: f64, cache: &mut LoopCache) -> Where {
     for e in b.face_edges(f) {
         let ed = b.edge(e);
-        if super::imprint::dist_in_range(&ed.curve, (ed.t0, ed.t1), p).1 <= tol {
+        if super::imprint::near_in_range(&ed.curve, (ed.t0, ed.t1), p, tol) {
             return Where::On;
         }
     }
@@ -250,7 +295,7 @@ pub fn point_in_face_cached(b: &Body, f: FaceId, p: Vec3, tol: f64, cache: &mut 
     if face.surface.distance(p) > tol * 10.0 {
         return Where::Out;
     }
-    let loops = cache.entry((b as *const Body as usize, f.idx() as u32)).or_insert_with(|| face_loops_uv(b, f));
+    let loops = cache.entry((b as *const Body as usize, f.idx() as u32)).or_insert_with(|| face_loops_uv_fine(b, f));
     if loops.iter().all(|l| l.len() < 3) {
         return Where::In; // closed surface without boundary (full sphere/torus)
     }
@@ -313,7 +358,7 @@ impl<'a> Solid<'a> {
         let b = self.body;
         for &e in &self.edges[i] {
             let ed = b.edge(e);
-            if super::imprint::dist_in_range(&ed.curve, (ed.t0, ed.t1), p).1 <= self.tol {
+            if super::imprint::near_in_range(&ed.curve, (ed.t0, ed.t1), p, self.tol) {
                 return Where::On;
             }
         }

@@ -31,7 +31,7 @@ fn v3(p: ck_core::linalg::Vec3) -> Json {
 
 /// `helix`.
 pub fn exec_helix(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
-    let FeatureKind::Helix { defined_by, left_hand, reverse, .. } = &f.kind else { unreachable!() };
+    let FeatureKind::Helix { left_hand, reverse, .. } = &f.kind else { unreachable!() };
     let sk = f.raw.get("sketch").and_then(|s| s.as_str()).and_then(|s| state.sketch(s)).ok_or_else(|| FeatureError::new(codes::MISSING_SKETCH))?;
     let (c, r) = sk
         .sketch
@@ -45,10 +45,9 @@ pub fn exec_helix(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<
     let fr = sk.frame;
     let cw = fr.o + fr.x * c[0] + fr.y * c[1];
     let p = HelixParams {
-        defined_by: match defined_by {
-            DefinedBy::PitchRevs => ck_ops::helix::DefinedBy::PitchRevs,
-            _ => ck_ops::helix::DefinedBy::parse(f.raw.get("definedBy").and_then(|v| v.as_str()).unwrap_or("")),
-        },
+        // wire values are pitchRevs / heightRevs / heightPitch (the FeatureKind
+        // enum's PitchHeight/RevsHeight names never match), so parse the raw field
+        defined_by: ck_ops::helix::DefinedBy::parse(f.raw.get("definedBy").and_then(|v| v.as_str()).unwrap_or("")),
         pitch: state.num(f, "pitch", 1.0)?,
         revolutions: state.num(f, "revolutions", 10.0)?,
         height: state.num(f, "height", 10.0)?,

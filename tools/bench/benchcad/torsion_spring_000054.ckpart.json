@@ -1,0 +1,140 @@
+{
+ "format": "ck-part",
+ "version": 1,
+ "name": "torsion_spring",
+ "features": [
+  {
+   "type": "sketch",
+   "id": "H",
+   "plane": {
+    "kind": "std",
+    "id": "top"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 0,
+     "y": 0
+    }
+   ],
+   "entities": [
+    {
+     "type": "circle",
+     "id": "e1",
+     "c": "p1",
+     "r": 56.25
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "helix",
+   "id": "X",
+   "sketch": "H",
+   "definedBy": "heightPitch",
+   "pitch": 17.24,
+   "height": 206.84,
+   "revolutions": 12,
+   "startAngle": 0
+  },
+  {
+   "type": "sketch",
+   "id": "S",
+   "plane": {
+    "kind": "std",
+    "id": "front"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 56.25,
+     "y": 0
+    }
+   ],
+   "entities": [
+    {
+     "type": "circle",
+     "id": "e1",
+     "c": "p1",
+     "r": 3.52
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "sweep",
+   "id": "W",
+   "op": "add",
+   "sketch": "S",
+   "path": {
+    "kind": "curve",
+    "id": "X"
+   }
+  },
+  {
+   "type": "sketch",
+   "id": "L1",
+   "plane": {
+    "kind": "std",
+    "id": "front"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 56.25,
+     "y": 206.84
+    }
+   ],
+   "entities": [
+    {
+     "type": "circle",
+     "id": "e1",
+     "c": "p1",
+     "r": 3.52
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "E1",
+   "op": "add",
+   "sketch": "L1",
+   "end": "blind",
+   "depth": 220.5,
+   "flip": true
+  },
+  {
+   "type": "sketch",
+   "id": "L2",
+   "plane": {
+    "kind": "std",
+    "id": "front"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 56.25,
+     "y": 0
+    }
+   ],
+   "entities": [
+    {
+     "type": "circle",
+     "id": "e1",
+     "c": "p1",
+     "r": 3.52
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "E2",
+   "op": "add",
+   "sketch": "L2",
+   "end": "blind",
+   "depth": 162.87
+  }
+ ]
+}

@@ -25,6 +25,18 @@
 //! Error codes in kernel.strings: `booleanFailed`, `cutNoEffect`,
 //! `nothingToCut`, `cancelled`.
 
+/// Diagnostics for failed booleans: `CK_BOOL_DBG=1` prints the failing stage
+/// to stderr (native builds only; the wasm build is silent).
+macro_rules! bool_dbg {
+    ($($a:tt)*) => {
+        #[cfg(not(target_arch = "wasm32"))]
+        if std::env::var("CK_BOOL_DBG").is_ok() {
+            eprintln!("boolean: {}", format!($($a)*));
+        }
+    };
+}
+pub(crate) use bool_dbg;
+
 pub mod apply;
 pub mod assemble;
 pub mod classify;

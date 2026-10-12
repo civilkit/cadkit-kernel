@@ -1,0 +1,132 @@
+{
+ "format": "ck-part",
+ "version": 1,
+ "name": "pipe_elbow",
+ "features": [
+  {
+   "type": "sketch",
+   "id": "F1",
+   "plane": {
+    "kind": "std",
+    "id": "front"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 0,
+     "y": 0
+    },
+    {
+     "id": "p2",
+     "x": 0,
+     "y": 37.16
+    },
+    {
+     "id": "p3",
+     "x": 42.38,
+     "y": 79.53999999999999
+    },
+    {
+     "id": "p4",
+     "x": 79.54,
+     "y": 79.53999999999999
+    },
+    {
+     "id": "p5",
+     "x": 42.38,
+     "y": 37.16
+    }
+   ],
+   "entities": [
+    {
+     "type": "line",
+     "id": "e1",
+     "p1": "p1",
+     "p2": "p2"
+    },
+    {
+     "type": "arc",
+     "id": "e2",
+     "c": "p5",
+     "p1": "p3",
+     "p2": "p2"
+    },
+    {
+     "type": "line",
+     "id": "e3",
+     "p1": "p3",
+     "p2": "p4"
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "sketch",
+   "id": "F2",
+   "plane": {
+    "kind": "std",
+    "id": "top"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 0,
+     "y": 0
+    }
+   ],
+   "entities": [
+    {
+     "type": "circle",
+     "id": "e1",
+     "c": "p1",
+     "r": 18.58
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "sweep",
+   "id": "F3",
+   "op": "add",
+   "sketch": "F2",
+   "path": {
+    "kind": "sketch",
+    "id": "F1"
+   }
+  },
+  {
+   "type": "sketch",
+   "id": "F4",
+   "plane": {
+    "kind": "std",
+    "id": "top"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 0,
+     "y": 0
+    }
+   ],
+   "entities": [
+    {
+     "type": "circle",
+     "id": "e1",
+     "c": "p1",
+     "r": 14.82
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "sweep",
+   "id": "F5",
+   "op": "cut",
+   "sketch": "F4",
+   "path": {
+    "kind": "sketch",
+    "id": "F1"
+   }
+  }
+ ]
+}

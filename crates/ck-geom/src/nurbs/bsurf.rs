@@ -86,6 +86,26 @@ impl BSplineSurface {
     }
 
     pub fn eval(&self, u: f64, v: f64) -> Vec3 {
+        if self.weights.is_none() && self.deg_u < 12 && self.deg_v < 12 {
+            let ((u0, u1), (v0, v1)) = self.domain();
+            let (u, v) = (u.clamp(u0, u1), v.clamp(v0, v1));
+            let (p, q) = (self.deg_u, self.deg_v);
+            let su = find_span(self.nu - 1, p, u, &self.knots_u);
+            let sv = find_span(self.nv - 1, q, v, &self.knots_v);
+            let nu = basis::ders_basis_funs2(su, u, p, 0, &self.knots_u);
+            let nv = basis::ders_basis_funs2(sv, v, q, 0, &self.knots_v);
+            let mut tp = [Vec3::ZERO; 12];
+            for s in 0..=q {
+                for r in 0..=p {
+                    tp[s] = tp[s] + self.cp(su - p + r, sv - q + s) * (nu[0][r] * 1.0);
+                }
+            }
+            let mut a = Vec3::ZERO;
+            for s in 0..=q {
+                a = a + tp[s] * nv[0][s];
+            }
+            return a;
+        }
         self.derivs(u, v, 0)[0][0]
     }
 
@@ -128,8 +148,50 @@ impl BSplineSurface {
 
     /// Point + first + second partials.
     pub fn derivs2(&self, u: f64, v: f64) -> SurfDerivs {
+        let (p, q) = (self.deg_u, self.deg_v);
+        if self.weights.is_none() && p < 12 && q < 12 {
+            // allocation-free non-rational path (same arithmetic as `derivs`)
+            let ((u0, u1), (v0, v1)) = self.domain();
+            let u = u.clamp(u0, u1);
+            let v = v.clamp(v0, v1);
+            let su = find_span(self.nu - 1, p, u, &self.knots_u);
+            let sv = find_span(self.nv - 1, q, v, &self.knots_v);
+            let nu = basis::ders_basis_funs2(su, u, p, 2, &self.knots_u);
+            let nv = basis::ders_basis_funs2(sv, v, q, 2, &self.knots_v);
+            let mut a = [[Vec3::ZERO; 3]; 3];
+            for k in 0..=2usize.min(p) {
+                let mut tp = [Vec3::ZERO; 12];
+                for s in 0..=q {
+                    for r in 0..=p {
+                        let (i, j) = (su - p + r, sv - q + s);
+                        tp[s] = tp[s] + self.cp(i, j) * (nu[k][r] * 1.0);
+                    }
+                }
+                for l in 0..=(2 - k).min(q) {
+                    for s in 0..=q {
+                        a[k][l] = a[k][l] + tp[s] * nv[l][s];
+                    }
+                }
+            }
+            return SurfDerivs { p: a[0][0], du: a[1][0], dv: a[0][1], duu: a[2][0], duv: a[1][1], dvv: a[0][2] };
+        }
         let s = self.derivs(u, v, 2);
         SurfDerivs { p: s[0][0], du: s[1][0], dv: s[0][1], duu: s[2][0], duv: s[1][1], dvv: s[0][2] }
+    }
+
+    /// Evaluator for repeated first-order evaluation along one iso-v line
+    /// of a non-rational surface (None for rational / very high degree).
+    /// The v basis is computed once; `segment` collapses the v direction
+    /// for one u knot span so each `eval1` costs only a degree-p u basis.
+    pub fn vline(&self, v: f64) -> Option<VLine<'_>> {
+        if self.weights.is_some() || self.deg_u >= 12 || self.deg_v >= 12 {
+            return None;
+        }
+        let (_, (v0, v1)) = self.domain();
+        let v = v.clamp(v0, v1);
+        let sv = find_span(self.nv - 1, self.deg_v, v, &self.knots_v);
+        let nv = basis::ders_basis_funs2(sv, v, self.deg_v, 1, &self.knots_v);
+        Some(VLine { s: self, sv, nv })
     }
 
     /// Unit normal Su × Sv (zero vector at degenerate points).
@@ -235,8 +297,8 @@ impl BSplineSurface {
     /// Parameters of the closest point to `q` (grid seed + 2D Newton).
     pub fn closest_param(&self, q: Vec3) -> (f64, f64) {
         let ((u0, u1), (v0, v1)) = self.domain();
-        let nu = ((basis::distinct_knots(&self.knots_u).len() - 1) * (self.deg_u + 1) * 3).max(12);
-        let nv = ((basis::distinct_knots(&self.knots_v).len() - 1) * (self.deg_v + 1) * 3).max(12);
+        let nu = ((basis::distinct_count(&self.knots_u) - 1) * (self.deg_u + 1) * 3).max(12);
+        let nv = ((basis::distinct_count(&self.knots_v) - 1) * (self.deg_v + 1) * 3).max(12);
         let mut best = (f64::INFINITY, u0, v0);
         // The seed grid is the same as a brute-force scan, but samples in
         // cells whose control-net box is farther from `q` than the best
@@ -280,12 +342,14 @@ impl BSplineSurface {
                 lb[iu * cv + iv] = d.len();
             }
         }
-        let cell_u = |u: f64| iu_of[find_span(self.nu - 1, pu, u, &self.knots_u)];
-        let cell_v = |v: f64| iv_of[find_span(self.nv - 1, pv, v, &self.knots_v)];
+        // Seed grid, visited cell by cell (nearest control-net box first):
+        // the grid is uniform in (u, v), so the rows / columns that fall in a
+        // knot cell are found arithmetically (then confirmed with find_span)
+        // instead of scanning and sorting every row per call.
         let vs: Vec<(f64, usize)> = (0..=nv)
             .map(|b| {
                 let v = v0 + (v1 - v0) * b as f64 / nv as f64;
-                (v, cell_v(v))
+                (v, iv_of[find_span(self.nv - 1, pv, v, &self.knots_v)])
             })
             .collect();
         // grid evaluation without the derivative machinery (non-rational)
@@ -300,45 +364,70 @@ impl BSplineSurface {
         } else {
             vec![]
         };
-        let mut rows: Vec<(f64, usize, f64, usize)> = (0..=nu)
-            .map(|a| {
-                let u = u0 + (u1 - u0) * a as f64 / nu as f64;
-                let iu = cell_u(u);
-                let row_lb = vs.iter().map(|&(_, iv)| lb[iu * cv + iv]).fold(f64::INFINITY, f64::min);
-                (row_lb, a, u, iu)
-            })
-            .collect();
-        rows.sort_by(|x, y| x.0.total_cmp(&y.0).then(x.1.cmp(&y.1)));
-        for (row_lb, _a, u, iu) in rows {
-            if row_lb >= best.0 {
-                break;
+        let mut cols: Vec<Vec<usize>> = vec![vec![]; cv.max(1)];
+        for (k, &(_, iv)) in vs.iter().enumerate() {
+            cols[iv].push(k);
+        }
+        let mut cells: Vec<(f64, usize, usize, usize)> = Vec::with_capacity(cu * cv);
+        for su in pu..self.nu {
+            let iu = iu_of[su];
+            if iu == usize::MAX {
+                continue;
             }
-            let (su, bu) = if fast {
-                let s = find_span(self.nu - 1, pu, u, &self.knots_u);
-                (s, basis::basis_funs(s, u, pu, &self.knots_u))
-            } else {
-                (0, vec![])
-            };
-            for (k, &(v, iv)) in vs.iter().enumerate() {
-                if lb[iu * cv + iv] >= best.0 {
+            for sv in pv..self.nv {
+                let iv = iv_of[sv];
+                if iv != usize::MAX {
+                    cells.push((lb[iu * cv + iv], su, iu, iv));
+                }
+            }
+        }
+        let u_at = |a: usize| u0 + (u1 - u0) * a as f64 / nu as f64;
+        let mut visit = |c: &(f64, usize, usize, usize), best: &mut (f64, f64, f64)| {
+            let (clb, su, _iu, iv) = *c;
+            if clb >= best.0 || cols[iv].is_empty() {
+                return;
+            }
+            let (k0, k1) = (self.knots_u[su], self.knots_u[su + 1]);
+            let span_u = (u1 - u0).max(f64::MIN_POSITIVE);
+            let alo = ((((k0 - u0) / span_u) * nu as f64).floor() - 1.0).max(0.0) as usize;
+            let ahi = ((((k1 - u0) / span_u) * nu as f64).ceil() + 1.0).min(nu as f64).max(0.0) as usize;
+            for a in alo..=ahi {
+                let u = u_at(a);
+                if find_span(self.nu - 1, pu, u, &self.knots_u) != su {
                     continue;
                 }
-                let d = if fast {
-                    let (sv, ref bvk) = bv[k];
-                    let mut p = Vec3::ZERO;
-                    for (i, &wu) in bu.iter().enumerate() {
-                        for (j, &wv) in bvk.iter().enumerate() {
-                            p = p + self.cp(su - pu + i, sv - pv + j) * (wu * wv);
+                let bu = if fast { basis::basis_funs(su, u, pu, &self.knots_u) } else { vec![] };
+                for &k in &cols[iv] {
+                    let v = vs[k].0;
+                    let d = if fast {
+                        let (sv, ref bvk) = bv[k];
+                        let mut p = Vec3::ZERO;
+                        for (i, &wu) in bu.iter().enumerate() {
+                            for (j, &wv) in bvk.iter().enumerate() {
+                                p = p + self.cp(su - pu + i, sv - pv + j) * (wu * wv);
+                            }
                         }
+                        p.dist(q)
+                    } else {
+                        self.eval(u, v).dist(q)
+                    };
+                    if d < best.0 {
+                        *best = (d, u, v);
                     }
-                    p.dist(q)
-                } else {
-                    self.eval(u, v).dist(q)
-                };
-                if d < best.0 {
-                    best = (d, u, v);
                 }
             }
+        };
+        // seed from the nearest few cells (a cell can hold no grid point),
+        // then every other cell whose box can still beat the best sample
+        let mut order: Vec<usize> = (0..cells.len()).collect();
+        let cmp = |x: &usize, y: &usize| cells[*x].0.total_cmp(&cells[*y].0).then(x.cmp(y));
+        let k = 8.min(order.len());
+        if k > 0 && k < order.len() {
+            order.select_nth_unstable_by(k - 1, cmp);
+        }
+        order[..k].sort_by(cmp);
+        for &i in &order {
+            visit(&cells[i], &mut best);
         }
         crate::surface::newton_surface(|u, v| self.derivs2(u, v), q, (best.1, best.2), ((u0, u1), (v0, v1)))
     }
@@ -351,6 +440,73 @@ impl BSplineSurface {
 
 /// Homogeneous evaluation: returns (Euclidean point, weight) — used to
 /// build exact iso curves of rational surfaces.
+/// See [`BSplineSurface::vline`].
+pub struct VLine<'a> {
+    s: &'a BSplineSurface,
+    sv: usize,
+    nv: [[f64; 12]; 3],
+}
+
+/// A VLine restricted to the u knot span containing a given parameter.
+pub struct VSegment<'a> {
+    s: &'a BSplineSurface,
+    su: usize,
+    c: [Vec3; 12],
+    d: [Vec3; 12],
+}
+
+impl<'a> VLine<'a> {
+    /// Segment for the span containing `u`; None when `u` is outside the
+    /// domain.
+    pub fn segment(&self, u: f64) -> Option<VSegment<'a>> {
+        let s = self.s;
+        let ((u0, u1), _) = s.domain();
+        if !(u >= u0 && u <= u1) {
+            return None;
+        }
+        let (p, q) = (s.deg_u, s.deg_v);
+        let su = find_span(s.nu - 1, p, u, &s.knots_u);
+        let mut c = [Vec3::ZERO; 12];
+        let mut d = [Vec3::ZERO; 12];
+        for r in 0..=p {
+            let i = su - p + r;
+            let (mut a, mut b) = (Vec3::ZERO, Vec3::ZERO);
+            for t in 0..=q {
+                let cp = s.cp(i, self.sv - q + t);
+                a = a + cp * self.nv[0][t];
+                b = b + cp * self.nv[1][t];
+            }
+            c[r] = a;
+            d[r] = b;
+        }
+        Some(VSegment { s, su, c, d })
+    }
+}
+
+impl VSegment<'_> {
+    /// (point, S_u, S_v) at `u` (within the segment's span).
+    #[inline]
+    pub fn eval1(&self, u: f64) -> (Vec3, Vec3, Vec3) {
+        let s = self.s;
+        let p = s.deg_u;
+        let b = basis::ders_basis_funs2(self.su, u, p, 1, &s.knots_u);
+        let (mut pt, mut du, mut dv) = (Vec3::ZERO, Vec3::ZERO, Vec3::ZERO);
+        for r in 0..=p {
+            pt = pt + self.c[r] * b[0][r];
+            du = du + self.c[r] * b[1][r];
+            dv = dv + self.d[r] * b[0][r];
+        }
+        (pt, du, dv)
+    }
+
+    /// True when `[a, b]` lies inside this segment's knot span.
+    pub fn covers(&self, a: f64, b: f64) -> bool {
+        let k = &self.s.knots_u;
+        let (lo, hi) = (k[self.su], k[self.su + 1]);
+        a.min(b) >= lo - 1e-12 && a.max(b) <= hi + 1e-12
+    }
+}
+
 fn hom_eval(c: &BSplineCurve, u: f64) -> (Vec3, f64) {
     let p = c.degree;
     let (a, b) = c.domain();

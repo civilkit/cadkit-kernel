@@ -9,7 +9,7 @@ strings from kernel.strings, and dispatch to ck-ops/ck-topo.
 | type | fields |
 |---|---|
 | sketch | plane, points[{id,x,y,fixed}], entities[{type:id,...}], constraints[{type,refs,value,offset}], seq, visible |
-| extrude | op(add/cut), sketch, end(blind/through/throughBoth/upToNext/mid), depth(expr), flip, draft(expr), draftOut |
+| extrude | op(add/cut), sketch, end(blind/through/throughBoth/upToNext/mid), depth(expr), flip, draft(expr), draftOut, twist(expr, deg), twistCentre([x,y]) |
 | revolve | op, sketch, axis, end, angle(expr), flip |
 | sweep | op, sketch, path ({kind: curve or sketch, id}), twist (deg), (+guides, guideMode, surface: not reconstructed) |
 | loft | op, sketches[], surface, centreLine, guides |
@@ -17,8 +17,8 @@ strings from kernel.strings, and dispatch to ck-ops/ck-topo.
 | chamfer | chamferType(equal/angleDistance/distanceDistance/vertex), distance, angle, distance2, edges[] |
 | draft | neutral, faces[], angle(expr), flip |
 | shell | faces[], thickness(expr) |
-| hole | sketch, standard(iso), size, fit(normal/tap), kind(simple/cbore/csink), end, depth, tip, flip |
-| helix | sketch, definedBy(pitchRevs/pitchHeight/revsHeight), pitch, revolutions, height, startAngle, leftHand, reverse |
+| hole | sketch, standard(iso), size, diameter (simple holes only: plain diameter instead of size), fit(normal/tap), kind(simple/cbore/csink), end, depth, tip, flip |
+| helix | sketch, definedBy(pitchRevs/heightRevs/heightPitch), pitch, revolutions, height, startAngle, leftHand, reverse |
 | rib | sketch, thickness(expr) |
 | lip | kind(material/move/offset/linear/turn/tension), faces[], edges[], width, height |
 | lpattern | seeds[], dir, spacing(expr), count, reverse |
@@ -80,3 +80,16 @@ strings from kernel.strings, and dispatch to ck-ops/ck-topo.
 - lip: band of `width` along the rim edges, `height` out of (lip) / into
   (groove) the rim face; errors `nothingToCut`, `lipFace`, `invalidValue`,
   `missingReference`.
+- extrude `twist` (not an oracle option): degrees over the FULL depth, positive
+  = counter-clockwise about the sketch normal; the rotation is zero at the
+  sketch plane (so `mid` / `flip` twist on either side of it) about the axis
+  through `twistCentre` (sketch xy, default the sketch origin; area per slice
+  is preserved, so volume = area * depth). Side faces keep the extrude names
+  (`F.S.e<k>`, caps `F.C0` / `F.C1`; a closed loop not about the axis is split
+  `~1` / `~2`); they are screw surfaces: exact cylinders for circles about
+  the axis, interpolated B-splines otherwise (volume error ~1e-8). Cannot be
+  combined with `draft` or `upToNext` (`draftUnsupported`). A twisted CUT
+  tool whose caps are coplanar with body faces currently fails with
+  `booleanFailed`: let it overshoot the body (scale `twist` with `depth`).
+- hole `diameter` (simple holes only, not an oracle option): plain diameter
+  (expr) used instead of `size`/`fit`; `<= 0` -> `holeInvalid`.

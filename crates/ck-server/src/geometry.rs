@@ -37,6 +37,45 @@ pub fn interference(cx: &mut Cx) -> Result<Json, String> {
     cx.span(INTERFERENCE_LABEL, |cx| null_or_query(cx, "interference"))
 }
 
+pub fn validate(cx: &mut Cx) -> Result<Json, String> {
+    null_or_query(cx, "validate")
+}
+
+pub fn heal(cx: &mut Cx) -> Result<Json, String> {
+    null_or_query(cx, "heal")
+}
+
+/// `{"type":"importSat","tag":t,"name":n?,"data":"<SAT text>"}` -> regen-shaped
+/// result (`errors`, `body`, ...). A failed import answers `body:null` with a
+/// structured error and leaves the tag's state alone.
+pub fn import_sat(cx: &mut Cx) -> Result<Json, String> {
+    if cx.msg.get_str("data").is_none() {
+        return Err("importSat: data (the SAT file text) is required".to_string());
+    }
+    let tag = cx.tag();
+    let Some(h) = cx.hooks.import_sat else { return Err(crate::session::todo("importSat")) };
+    let (reply, state) = h(cx)?;
+    if let Some(s) = state {
+        cx.session.put(&tag, s);
+    }
+    Ok(reply)
+}
+
 pub fn step(cx: &mut Cx) -> Result<Json, String> {
     null_or_query(cx, "step")
+}
+
+/// Extension `{type:"importStep", tag?, name?, data:"<STEP text>"}`: parse the
+/// B-rep solids of a STEP file into the tag's state (same body tagging as
+/// regen, so massProps / inspect / validate / mesh / step work on it).
+pub fn import_step(cx: &mut Cx) -> Result<Json, String> {
+    let data = cx.msg.get_str("data").ok_or_else(|| "importStep: data must be a STEP file as a string".to_string())?;
+    let name = cx.msg.get_str("name").unwrap_or("part");
+    let tag = cx.tag();
+    let Some(h) = cx.hooks.import_step else { return Err(crate::session::todo("importStep")) };
+    let (result, state) = h(cx, name, data)?;
+    if let Some(st) = state {
+        cx.session.put(&tag, st);
+    }
+    Ok(result)
 }

@@ -117,11 +117,11 @@ fn split_at_knots<'a>(surf: &Surface, pieces: Vec<Piece<'a>>) -> Vec<Piece<'a>> 
 
 /// Outer panel count: angular parameters get ≤ π/8 panels (GL8 is then
 /// exact to ~1e-16 for the trig-polynomial integrands of analytic faces).
-fn panels_for(pc: &Curve2, ta: f64, tb: f64, ang: (bool, bool), curved: bool) -> usize {
+fn panels_for(pc: &Curve2, ta: f64, tb: f64, ang: (bool, bool), curved: bool, spline: bool) -> usize {
     match pc {
         Curve2::Line { d, .. } => {
             let step = std::f64::consts::PI / 8.0;
-            let mut n: f64 = if curved { 4.0 } else { 2.0 };
+            let mut n: f64 = if spline { 1.0 } else if curved { 4.0 } else { 2.0 };
             if ang.0 {
                 n = n.max((d.x * (tb - ta)).abs() / step);
             }
@@ -194,6 +194,8 @@ pub fn face_integral<const K: usize>(b: &Body, f: FaceId, res: usize, integrand:
         hu = hu.min(width / (16.0 * res as f64));
     }
     let curved = !matches!(surf, Surface::Plane { .. });
+    // non-rational B-spline boundary lines are cut at the knots: pieces are short
+    let spline = matches!(surf, Surface::BSpline(b) if b.weights.is_none());
     // B-spline faces: cut the u-integral at the interior knots (rational
     // quarter-turn arcs have C0 knots; a panel across one loses ~1e-4)
     let knots_u: Vec<f64> = match surf {
@@ -208,28 +210,57 @@ pub fn face_integral<const K: usize>(b: &Body, f: FaceId, res: usize, integrand:
     // ∫ from u = a to u = c at fixed v, cut at the interior knots
     let seg_integral = |a0: f64, u: f64, v: f64| -> [f64; K] {
         let mut g = [0.0; K];
-        let mut cuts = vec![a0];
-        let (lo, hi) = (a0.min(u), a0.max(u));
-        let mut mid: Vec<f64> = knots_u.iter().copied().filter(|&k| k > lo && k < hi).collect();
-        if u < a0 {
-            mid.reverse();
+        if a0 == u {
+            return g;
         }
-        cuts.extend(mid);
-        cuts.push(u);
-        for seg in cuts.windows(2) {
-            let (a, c) = (seg[0], seg[1]);
+        // cut points: a0, the interior knots strictly between a0 and u (in
+        // travel order), u -- indexed, no allocation
+        let (lo, hi) = (a0.min(u), a0.max(u));
+        let (i0, i1) = (knots_u.partition_point(|&k| k <= lo), knots_u.partition_point(|&k| k < hi));
+        let m_in = i1.saturating_sub(i0);
+        let cut = |j: usize| -> f64 {
+            if j == 0 {
+                a0
+            } else if j == m_in + 1 {
+                u
+            } else if u >= a0 {
+                knots_u[i0 + j - 1]
+            } else {
+                knots_u[i1 - j]
+            }
+        };
+        // non-rational B-spline: fixed-v evaluator (v basis once; v direction
+        // collapsed per knot span); each cut segment lies in one polynomial
+        // span, where two GL8 panels are exact for the area-element
+        // polynomials and ~1e-13 for |Su x Sv|
+        let vl = match surf {
+            Surface::BSpline(bs) => bs.vline(v),
+            _ => None,
+        };
+        for j in 0..=m_in {
+            let (a, c) = (cut(j), cut(j + 1));
             let span = c - a;
             if span == 0.0 {
                 continue;
             }
-            let n = ((span.abs() / hu).ceil() as usize).clamp(1, 512 * res);
+            let fast = vl.as_ref().and_then(|l| l.segment(0.5 * (a + c))).filter(|s| s.covers(a, c));
+            let n = if fast.is_some() { 2 * res } else { ((span.abs() / hu).ceil() as usize).clamp(1, 512 * res) };
             let h = span / n as f64;
             for i in 0..n {
                 let m = a + h * (i as f64 + 0.5);
                 for &(x, w) in GL.iter() {
                     let s = m + 0.5 * h * x;
-                    let d = surf.derivs2(s, v);
-                    let val = integrand(d.p, d.du.cross(d.dv));
+                    let (pt, nrm) = match &fast {
+                        Some(sg) => {
+                            let (p, du, dv) = sg.eval1(s);
+                            (p, du.cross(dv))
+                        }
+                        None => {
+                            let d = surf.derivs2(s, v);
+                            (d.p, d.du.cross(d.dv))
+                        }
+                    };
+                    let val = integrand(pt, nrm);
                     for k in 0..K {
                         g[k] += 0.5 * h * w * val[k];
                     }
@@ -283,10 +314,15 @@ pub fn face_integral<const K: usize>(b: &Body, f: FaceId, res: usize, integrand:
                     w *= (v - vn[m]) / (vn[j] - vn[m]);
                 }
             }
-            let part = seg_integral(ks[k], u, vn[j]);
             for i in 0..K {
-                g[i] += w * (cum[j][k][i] + part[i]);
+                g[i] += w * cum[j][k][i];
             }
+        }
+        // the partial span is integrated directly at the true v (one
+        // seg_integral instead of one per interpolation node)
+        let part = seg_integral(ks[k], u, v);
+        for i in 0..K {
+            g[i] += part[i];
         }
         g
     };
@@ -371,7 +407,7 @@ pub fn face_integral<const K: usize>(b: &Body, f: FaceId, res: usize, integrand:
     for p in &pieces {
         match p {
             Piece::Exact(pc, ta, tb) => {
-                let n = panels_for(pc, *ta, *tb, ang, curved) * res;
+                let n = panels_for(pc, *ta, *tb, ang, curved, spline) * res;
                 let h = (tb - ta) / n as f64;
                 for i in 0..n {
                     let m = ta + h * (i as f64 + 0.5);

@@ -68,15 +68,25 @@ fn line(a: Vec2, b: Vec2, tag: &str) -> ProfileSeg {
 pub fn exec_hole(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
     let FeatureKind::Hole { size, fit, kind, tip, flip, end, .. } = &f.kind else { unreachable!() };
     let sk = f.raw.get("sketch").and_then(|s| s.as_str()).and_then(|s| state.sketch(s)).ok_or_else(|| FeatureError::new(codes::MISSING_SKETCH))?;
-    let row = size.as_deref().and_then(|s| ISO.iter().find(|(n, _)| *n == s)).map(|r| r.1).ok_or_else(|| FeatureError::new(HOLE_INVALID))?;
+    // GUESS (not an oracle option): a simple hole may give a plain `diameter`
+    // instead of a standard `size`.
+    let plain = (*kind == HoleKind::Simple && f.raw.get("diameter").is_some()).then(|| state.num(f, "diameter", 0.0)).transpose()?;
+    let row = match (plain, size.as_deref().and_then(|s| ISO.iter().find(|(n, _)| *n == s)).map(|r| r.1)) {
+        (Some(_), r) => r.unwrap_or([0.0; 7]),
+        (None, r) => r.ok_or_else(|| FeatureError::new(HOLE_INVALID))?,
+    };
     let fit_s = f.raw.get("fit").and_then(|v| v.as_str()).unwrap_or("");
     let _ = fit;
-    let d = match (kind, fit_s) {
-        (HoleKind::Simple, "tap") => row[0],
-        (_, "close") => row[1],
-        (_, "loose") => row[3],
+    let d = match (plain, kind, fit_s) {
+        (Some(d), ..) => d,
+        (_, HoleKind::Simple, "tap") => row[0],
+        (_, _, "close") => row[1],
+        (_, _, "loose") => row[3],
         _ => row[2],
     };
+    if d <= 0.0 {
+        return Err(FeatureError::new(HOLE_INVALID));
+    }
     let pts: Vec<[f64; 2]> = sk
         .sketch
         .entities

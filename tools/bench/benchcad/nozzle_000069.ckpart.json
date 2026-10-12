@@ -1,0 +1,231 @@
+{
+ "format": "ck-part",
+ "version": 1,
+ "name": "nozzle",
+ "features": [
+  {
+   "type": "sketch",
+   "id": "F1",
+   "plane": {
+    "kind": "std",
+    "id": "top"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 0,
+     "y": 16.19
+    },
+    {
+     "id": "p2",
+     "x": 60.53,
+     "y": 5.18
+    },
+    {
+     "id": "p3",
+     "x": 60.53,
+     "y": 8.05
+    },
+    {
+     "id": "p4",
+     "x": 0,
+     "y": 19.06
+    },
+    {
+     "id": "p5",
+     "x": 0,
+     "y": 0
+    },
+    {
+     "id": "p6",
+     "x": 10,
+     "y": 0
+    }
+   ],
+   "entities": [
+    {
+     "type": "line",
+     "id": "e1",
+     "p1": "p1",
+     "p2": "p2"
+    },
+    {
+     "type": "line",
+     "id": "e2",
+     "p1": "p2",
+     "p2": "p3"
+    },
+    {
+     "type": "line",
+     "id": "e3",
+     "p1": "p3",
+     "p2": "p4"
+    },
+    {
+     "type": "line",
+     "id": "e4",
+     "p1": "p4",
+     "p2": "p1"
+    },
+    {
+     "type": "line",
+     "id": "e5",
+     "p1": "p5",
+     "p2": "p6",
+     "construction": true
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "revolve",
+   "id": "F10",
+   "op": "add",
+   "sketch": "F1",
+   "axis": "e5",
+   "angle": 360
+  },
+  {
+   "type": "plane",
+   "id": "F2",
+   "mode": "offset",
+   "base": {
+    "kind": "std",
+    "id": "right"
+   },
+   "offset": -7.09
+  },
+  {
+   "type": "sketch",
+   "id": "F3",
+   "plane": {
+    "kind": "feature",
+    "id": "F2"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 0,
+     "y": 0
+    }
+   ],
+   "entities": [
+    {
+     "type": "circle",
+     "id": "e1",
+     "c": "p1",
+     "r": 22.99
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F4",
+   "op": "add",
+   "sketch": "F3",
+   "end": "blind",
+   "depth": 7.09
+  },
+  {
+   "type": "plane",
+   "id": "F5",
+   "mode": "offset",
+   "base": {
+    "kind": "std",
+    "id": "right"
+   },
+   "offset": -7.59
+  },
+  {
+   "type": "sketch",
+   "id": "F6",
+   "plane": {
+    "kind": "feature",
+    "id": "F5"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 0,
+     "y": 0
+    }
+   ],
+   "entities": [
+    {
+     "type": "circle",
+     "id": "e1",
+     "c": "p1",
+     "r": 16.19
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F7",
+   "op": "cut",
+   "sketch": "F6",
+   "end": "blind",
+   "depth": 8.09,
+   "flip": true
+  },
+  {
+   "type": "plane",
+   "id": "F8",
+   "mode": "offset",
+   "base": {
+    "kind": "std",
+    "id": "right"
+   },
+   "offset": -8.09
+  },
+  {
+   "type": "sketch",
+   "id": "F9",
+   "plane": {
+    "kind": "feature",
+    "id": "F8"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 21.025,
+     "y": 0
+    }
+   ],
+   "entities": [
+    {
+     "type": "circle",
+     "id": "e1",
+     "c": "p1",
+     "r": 1.3
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F11",
+   "op": "cut",
+   "sketch": "F9",
+   "end": "blind",
+   "depth": 8.09,
+   "flip": true
+  },
+  {
+   "type": "cpattern",
+   "id": "F12",
+   "seeds": [
+    "F11"
+   ],
+   "axis": {
+    "kind": "axis",
+    "axis": "x"
+   },
+   "count": 6,
+   "angle": 360,
+   "equal": true
+  }
+ ]
+}

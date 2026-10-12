@@ -215,6 +215,18 @@ pub fn exec_extrude(state: &RegenState, f: &Feature, body: Option<&Body>) -> Res
             return Err(FeatureError::new(&todo("mid-plane drafted extrude (boolean unite)")));
         }
     }
+    // GUESS (not an oracle option): `twist` degrees over the full depth about
+    // the axis through `twistCentre` (sketch xy, default the sketch origin).
+    let twist = state.num(f, "twist", 0.0)?;
+    if twist != 0.0 {
+        if o.draft != 0.0 || matches!(end, End::UpToNext) {
+            return Err(FeatureError::new("draftUnsupported"));
+        }
+        let c = f.raw.get("twistCentre").and_then(|c| c.as_arr()).filter(|a| a.len() == 2);
+        let centre = c.map_or(Vec2::ZERO, |a| Vec2::new(a[0].as_f64().unwrap_or(0.0), a[1].as_f64().unwrap_or(0.0)));
+        let body = ck_ops::sweep::twist_extrude(&f.id, &profile, o, twist.to_radians(), centre).map_err(topo_err)?;
+        return Ok(Tool { body, combine, recipe: None });
+    }
     let body = if o.draft != 0.0 {
         super::draft::drafted_extrude(&f.id, &profile, o)?
     } else {

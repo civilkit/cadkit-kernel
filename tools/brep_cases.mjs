@@ -47,6 +47,18 @@ const parts = {};
     { type: 'sketch', id: 'F5', plane: { kind: 'feature', id: 'F4' }, points: [], entities: [], constraints: [] }]);
 }
 parts.cyl = part([sketch('top', [pt('c', 5, 3)], [{ type: 'circle', id: 'e7', c: 'c', r: 10 }]), extrude()]);
+// twisted extrudes (`twist` degrees over the full depth about the sketch origin;
+// not an oracle option -- the original ignores it, so only volume matches it)
+{
+  const [P, E] = rect(0, 0, 40, 20);
+  parts.twistBox = part([sketch('top', P, E), extrude({ twist: 90 })]);
+  parts.twistBoxNeg = part([sketch('top', P, E), extrude({ twist: -90, end: 'mid' })]);
+  parts.twistBoxCentre = part([sketch('top', P, E), extrude({ twist: 90, twistCentre: [20, 10] })]);
+  const ring = [pt('c', 5, 3), pt('h', 8, 5)];
+  const rE = [{ type: 'circle', id: 'e7', c: 'c', r: 10 }, { type: 'circle', id: 'e8', c: 'h', r: 3 }];
+  parts.twistRing = part([sketch('top', ring, rE), extrude({ twist: 360 })]);
+  parts.twistCylAxis = part([sketch('top', [pt('c', 0, 0)], [{ type: 'circle', id: 'e1', c: 'c', r: 8 }]), extrude({ twist: 180 })]);
+}
 parts.dext = part([sketch('front', [pt('p1', -10, 0), pt('p2', 10, 0), pt('c', 0, 0)],
   [line('e1', 'p1', 'p2'), { type: 'arc', id: 'e2', c: 'c', p1: 'p2', p2: 'p1' }]), extrude({ depth: 5 })]);
 {
@@ -314,6 +326,15 @@ parts.mirrorBodyCone = part([...parts.cone.features, { type: 'plane', id: 'F8', 
   parts.knitSheet = part([...tube, ...cap, { type: 'knit', id: 'F7', surfaces: ['F2', 'F3'], solid: false }]);
   parts.knitNotClosed = part([...tube, ...cap, { type: 'knit', id: 'F7', surfaces: ['F2', 'F3'], solid: true }]);
   parts.knitMissing = part([...tube, { type: 'knit', id: 'F7', surfaces: ['F2', 'F9'], solid: false }]);
+  // half-disc faces (arc + chord share both endpoints): knit must not report knitNearMiss
+  parts.knitHalfDisc = part([
+    { type: 'sketch', id: 'F1', plane: STD('top'), points: [pt('O', 0, 0), pt('p1', 0, -23), pt('p2', 0, 23)],
+      entities: [{ id: 'e3', type: 'arc', c: 'O', p1: 'p1', p2: 'p2' }, line('e4', 'p2', 'p1')], constraints: [] },
+    sp('F2', 'F1'),
+    { type: 'sketch', id: 'F3', plane: STD('front'), points: [pt('O', 0, 0), pt('p1', 0, -23), pt('p2', 0, 23)],
+      entities: [{ id: 'e3', type: 'arc', c: 'O', p1: 'p1', p2: 'p2' }, line('e4', 'p2', 'p1')], constraints: [] },
+    sp('F4', 'F3'),
+    { type: 'knit', id: 'F5', surfaces: ['F2', 'F4'], solid: false }]);
   const rim = (face, at) => ({ faces: [face], at });
   const top = [rim('F2.S.e1', [20, 10, 0]), rim('F2.S.e2', [40, 10, -10]), rim('F2.S.e3', [20, 10, -20]), rim('F2.S.e4', [0, 10, -10])];
   const bot = [rim('F2.S.e1', [20, 0, 0]), rim('F2.S.e2', [40, 0, -10]), rim('F2.S.e3', [20, 0, -20]), rim('F2.S.e4', [0, 0, -10])];

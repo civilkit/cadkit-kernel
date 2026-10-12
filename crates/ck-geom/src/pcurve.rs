@@ -92,7 +92,11 @@ pub fn project_points(surf: &Surface, pts: &[Vec3]) -> Vec<Vec2> {
     let (pu, pv) = surf.periods();
     let mut out: Vec<Vec2> = Vec::with_capacity(pts.len());
     for &p in pts {
-        let (mut u, mut v) = surf.closest_param(p);
+        let warm = match (surf, out.last()) {
+            (Surface::BSpline(_), Some(prev)) => warm_project(surf, prev.x, prev.y, p),
+            _ => None,
+        };
+        let (mut u, mut v) = warm.unwrap_or_else(|| surf.closest_param(p));
         if let Some(prev) = out.last() {
             if let Some(per) = pu {
                 u = unwrap_near(u, prev.x, per);
@@ -103,7 +107,53 @@ pub fn project_points(surf: &Surface, pts: &[Vec3]) -> Vec<Vec2> {
         }
         out.push(Vec2::new(u, v));
     }
+    // u is arbitrary at a pole: take it from the neighbouring samples, so the
+    // sequence stays continuous (a fitted pcurve must not swing across it)
+    if pu.is_some() {
+        let pole: Vec<bool> = out.iter().map(|q| surf.is_pole(q.x, q.y)).collect();
+        if let Some(first) = pole.iter().position(|&b| !b) {
+            for i in (0..first).rev() {
+                out[i].x = out[i + 1].x;
+            }
+            for i in first + 1..out.len() {
+                if pole[i] {
+                    out[i].x = out[i - 1].x;
+                } else if pole[i - 1] {
+                    // re-unwrap the sample after a pole against the carried u
+                    out[i].x = unwrap_near(out[i].x, out[i - 1].x, pu.unwrap());
+                }
+            }
+        }
+    }
     out
+}
+
+/// Warm-started Gauss-Newton projection of a point that lies ON the surface
+/// near the previous parameter (edge samples are consecutive). Accepted only
+/// when it lands on `p` to ~1e-10 and stays in the domain; otherwise the
+/// caller does the global closest-point search.
+fn warm_project(surf: &Surface, mut u: f64, mut v: f64, p: Vec3) -> Option<(f64, f64)> {
+    let ((u0, u1), (v0, v1)) = surf.domain();
+    let scale = 1.0 + p.len();
+    for _ in 0..12 {
+        let d = surf.derivs2(u, v);
+        let r = p - d.p;
+        if r.len() < 1e-10 * scale {
+            return Some((u, v));
+        }
+        let (a, b, c) = (d.du.dot(d.du), d.du.dot(d.dv), d.dv.dot(d.dv));
+        let det = a * c - b * b;
+        if !(det.abs() > 1e-24 * (a * c).abs()) {
+            return None;
+        }
+        let (ru, rv) = (r.dot(d.du), r.dot(d.dv));
+        u += (ru * c - rv * b) / det;
+        v += (a * rv - b * ru) / det;
+        if !(u.is_finite() && v.is_finite()) || u < u0 || u > u1 || v < v0 || v > v1 {
+            return None;
+        }
+    }
+    None
 }
 
 /// Shift `x` by whole periods to be nearest `near`.
@@ -153,10 +203,14 @@ pub fn exact_pcurve(surf: &Surface, c: &Curve, tol: f64) -> Option<Curve2> {
             | Surface::Cone { frame, .. }
             | Surface::Sphere { frame, .. }
             | Surface::Torus { frame, .. },
-            Curve::Circle { frame: cf, .. },
+            Curve::Circle { frame: cf, r: cr },
         ) => {
             // circle coaxial with the surface frame
             if cf.z.cross(frame.z).len() > tol || (cf.o - frame.o).cross(frame.z).len() > tol {
+                // great circle through the poles of a sphere: u const, v = ±t + φ0
+                if let Surface::Sphere { r, .. } = surf {
+                    return sphere_meridian(frame, *r, cf, *cr, tol);
+                }
                 return None;
             }
             let p0 = cf.o + cf.x * c.circle_info().unwrap().2;
@@ -169,6 +223,29 @@ pub fn exact_pcurve(surf: &Surface, c: &Curve, tol: f64) -> Option<Curve2> {
         }
         _ => None,
     }
+}
+
+/// Great circle of a sphere whose plane contains the sphere's axis (a
+/// meridian): exact line pcurve (u constant, v = φ0 ± t; v may run past the
+/// pole, the surface evaluation continues onto the opposite meridian).
+fn sphere_meridian(frame: &crate::Frame, r: f64, cf: &crate::Frame, cr: f64, tol: f64) -> Option<Curve2> {
+    if (cf.o - frame.o).len() > tol || (cr - r).abs() > tol || cf.z.dot(frame.z).abs() > tol {
+        return None;
+    }
+    let (xc, yc) = (cf.x, cf.z.cross(cf.x));
+    let mut h = xc - frame.z * xc.dot(frame.z);
+    if h.len() < 1e-6 {
+        h = yc - frame.z * yc.dot(frame.z);
+    }
+    if h.len() < 1e-6 {
+        return None;
+    }
+    let m = h.normalize();
+    let phi0 = xc.dot(frame.z).atan2(xc.dot(m));
+    let tangent = frame.z * phi0.cos() - m * phi0.sin();
+    let s = if yc.dot(tangent) > 0.0 { 1.0 } else { -1.0 };
+    let u = m.dot(frame.y).atan2(m.dot(frame.x));
+    Some(Curve2::Line { o: Vec2::new(u, phi0), d: Vec2::new(0.0, s) })
 }
 
 fn plane_conic(pf: &crate::Frame, cf: &crate::Frame, _a: f64, _b: f64, tol: f64) -> Option<(Vec2, Vec2, bool)> {

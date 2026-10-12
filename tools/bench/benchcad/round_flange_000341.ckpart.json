@@ -1,0 +1,71 @@
+{
+ "format": "ck-part",
+ "version": 1,
+ "name": "round_flange",
+ "features": [
+  {
+   "type": "sketch",
+   "id": "F1",
+   "plane": {
+    "kind": "std",
+    "id": "top"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 0,
+     "y": 0
+    }
+   ],
+   "entities": [
+    {
+     "type": "circle",
+     "id": "e1",
+     "c": "p1",
+     "r": 102.63
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F2",
+   "op": "add",
+   "sketch": "F1",
+   "end": "mid",
+   "depth": 25.66
+  },
+  {
+   "type": "sketch",
+   "id": "F3",
+   "plane": {
+    "kind": "std",
+    "id": "top"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 0,
+     "y": 0
+    }
+   ],
+   "entities": [
+    {
+     "type": "circle",
+     "id": "e1",
+     "c": "p1",
+     "r": 17.54
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F4",
+   "op": "cut",
+   "sketch": "F3",
+   "end": "throughBoth",
+   "depth": 10
+  }
+ ]
+}

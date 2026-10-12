@@ -927,45 +927,148 @@ fn uv_box(s: &Surface, b: &Bounds) -> ((f64, f64), (f64, f64)) {
     ((u0, u1), (v0, v1))
 }
 
+// ---- parameter-space marcher (warm-started 4x4 Newton, cf. original f2503)
+
+type Uv4 = [f64; 4];
+
+fn wrap_uv(s: &Surface, u: f64, v: f64) -> (f64, f64) {
+    let ((a, b), (c, d)) = s.domain();
+    let (pu, pv) = s.periods();
+    let f = |x: f64, lo: f64, hi: f64, per: Option<f64>| match per {
+        Some(p) if lo.is_finite() => lo + (x - lo).rem_euclid(p),
+        _ => x.clamp(lo, hi),
+    };
+    (f(u, a, b, pu), f(v, c, d, pv))
+}
+
+/// Gauss-Newton projection of `t` onto `s` from a warm start.
+fn refine_uv(s: &Surface, mut u: f64, mut v: f64, t: Vec3) -> (f64, f64) {
+    for _ in 0..3 {
+        let d = s.derivs2(u, v);
+        let r = t - d.p;
+        let (a, b, c) = (d.du.dot(d.du), d.du.dot(d.dv), d.dv.dot(d.dv));
+        let det = a * c - b * b;
+        if !(det.abs() > 1e-30 * (a * c).abs().max(1e-300)) {
+            break;
+        }
+        let (ru, rv) = (r.dot(d.du), r.dot(d.dv));
+        let (du, dv) = ((ru * c - rv * b) / det, (a * rv - b * ru) / det);
+        if !du.is_finite() || !dv.is_finite() {
+            break;
+        }
+        (u, v) = wrap_uv(s, u + du, v + dv);
+    }
+    (u, v)
+}
+
+fn solve4(mut a: [[f64; 5]; 4]) -> Option<[f64; 4]> {
+    for c in 0..4 {
+        let mut piv = c;
+        for r in c + 1..4 {
+            if a[r][c].abs() > a[piv][c].abs() {
+                piv = r;
+            }
+        }
+        if !(a[piv][c].abs() > 1e-14) {
+            return None;
+        }
+        a.swap(c, piv);
+        for r in c + 1..4 {
+            let f = a[r][c] / a[c][c];
+            for k in c..5 {
+                a[r][k] -= f * a[c][k];
+            }
+        }
+    }
+    let mut x = [0.0; 4];
+    for r in (0..4).rev() {
+        let mut v = a[r][4];
+        for k in r + 1..4 {
+            v -= a[r][k] * x[k];
+        }
+        x[r] = v / a[r][r];
+    }
+    x.iter().all(|v| v.is_finite()).then_some(x)
+}
+
+/// Newton on (u1, v1, u2, v2): S1 = S2 and (S1 - pred)·dir = 0.
+fn correct_uv(s1: &Surface, s2: &Surface, pred: Vec3, dir: Vec3, uv: Uv4, tol: f64) -> Option<(Vec3, Uv4)> {
+    let (mut u1, mut v1) = refine_uv(s1, uv[0], uv[1], pred);
+    let (mut u2, mut v2) = refine_uv(s2, uv[2], uv[3], pred);
+    let eps = tol * 1e-4;
+    for _ in 0..30 {
+        let d1 = s1.derivs2(u1, v1);
+        let d2 = s2.derivs2(u2, v2);
+        let f = d1.p - d2.p;
+        let g = (d1.p - pred).dot(dir);
+        if f.x.abs() < eps && f.y.abs() < eps && f.z.abs() < eps && g.abs() < eps {
+            return Some(((d1.p + d2.p) * 0.5, [u1, v1, u2, v2]));
+        }
+        let m = [
+            [d1.du.x, d1.dv.x, -d2.du.x, -d2.dv.x, -f.x],
+            [d1.du.y, d1.dv.y, -d2.du.y, -d2.dv.y, -f.y],
+            [d1.du.z, d1.dv.z, -d2.du.z, -d2.dv.z, -f.z],
+            [d1.du.dot(dir), d1.dv.dot(dir), 0.0, 0.0, -g],
+        ];
+        let x = solve4(m)?;
+        (u1, v1) = wrap_uv(s1, u1 + x[0], v1 + x[1]);
+        (u2, v2) = wrap_uv(s2, u2 + x[2], v2 + x[3]);
+    }
+    None
+}
+
+fn tangent_uv(s1: &Surface, s2: &Surface, uv: Uv4) -> Option<Vec3> {
+    s1.normal(uv[0], uv[1]).cross(s2.normal(uv[2], uv[3])).try_normalize()
+}
+
+#[derive(Clone, Copy)]
+struct MPt {
+    p: Vec3,
+    uv: Uv4,
+}
+
 /// Marching SSI inside `b`. `step` = chord length of the march.
 pub fn march(s1: &Surface, s2: &Surface, b: Bounds, tol: f64, step: f64) -> Vec<SsCurve> {
     let diag = (b.hi - b.lo).len().max(step);
     let pad = step * 2.0;
     // seeds from a uv grid on s1 (and on s2, for small features of s2)
-    let mut seeds: Vec<Vec3> = vec![];
-    for (sa, sb) in [(s1, s2), (s2, s1)] {
+    let mut seeds: Vec<MPt> = vec![];
+    for (swap, (sa, sb)) in [(false, (s1, s2)), (true, (s2, s1))] {
         let ((u0, u1), (v0, v1)) = uv_box(sa, &b);
         let n = 24;
+        let thr = diag / n as f64 * 2.0;
         for i in 0..=n {
             for j in 0..=n {
-                let p0 = sa.eval(u0 + (u1 - u0) * i as f64 / n as f64, v0 + (v1 - v0) * j as f64 / n as f64);
+                let (ua, va) = (u0 + (u1 - u0) * i as f64 / n as f64, v0 + (v1 - v0) * j as f64 / n as f64);
+                let p0 = sa.eval(ua, va);
                 if !inside(&b, p0, pad) {
                     continue;
                 }
-                // pull onto both surfaces (alternating projection, then Newton)
-                let mut q = p0;
-                for _ in 0..8 {
-                    q = sa.closest_point(sb.closest_point(q).2).2;
-                }
-                if q.dist(p0) > diag / n as f64 * 2.0 {
+                let (ub, vb, q1) = sb.closest_point(p0);
+                if q1.dist(p0) > thr {
                     continue;
                 }
-                let Some(t) = tangent(s1, s2, q) else { continue };
-                if let Some(p) = correct(s1, s2, q, t, tol) {
-                    if inside(&b, p, pad) {
-                        seeds.push(p);
+                let uv = if swap { [ub, vb, ua, va] } else { [ua, va, ub, vb] };
+                let Some(t) = tangent_uv(s1, s2, uv) else { continue };
+                let pred = (p0 + q1) * 0.5;
+                if let Some((p, uv)) = correct_uv(s1, s2, pred, t, uv, tol) {
+                    if inside(&b, p, pad) && p.dist(p0) <= thr {
+                        seeds.push(MPt { p, uv });
                     }
                 }
             }
         }
     }
     let mut out: Vec<SsCurve> = vec![];
-    let mut traced: Vec<Vec3> = vec![];
+    // (point, exclusion radius): a seed this close to an already traced point
+    // lies on the same curve; the radius follows the local sample spacing, not
+    // the nominal step (loops smaller than the step must not shadow each other)
+    let mut traced: Vec<(Vec3, f64)> = vec![];
     for seed in seeds {
-        if traced.iter().any(|q| q.dist(seed) < step * 1.5) {
+        if traced.iter().any(|(q, r)| q.dist(seed.p) < *r) {
             continue;
         }
-        let Some(t0) = tangent(s1, s2, seed) else { continue };
+        let Some(t0) = tangent_uv(s1, s2, seed.uv) else { continue };
         let (fwd, closed) = trace(s1, s2, seed, t0, &b, tol, step, pad);
         let pts = if closed {
             let mut p = fwd;
@@ -973,7 +1076,7 @@ pub fn march(s1: &Surface, s2: &Surface, b: Bounds, tol: f64, step: f64) -> Vec<
             p
         } else {
             let (bwd, _) = trace(s1, s2, seed, -t0, &b, tol, step, pad);
-            let mut p: Vec<Vec3> = bwd.into_iter().rev().collect();
+            let mut p: Vec<MPt> = bwd.into_iter().rev().collect();
             p.pop(); // seed duplicated
             p.extend(fwd);
             p
@@ -981,11 +1084,90 @@ pub fn march(s1: &Surface, s2: &Surface, b: Bounds, tol: f64, step: f64) -> Vec<
         if pts.len() < 2 {
             continue;
         }
-        traced.extend(pts.iter().copied());
+        let mut pts = pts;
+        if !closed {
+            // a march stops up to a step short of a surface's domain edge (loft seams,
+            // sphere poles): finish the curve exactly on it so the neighbouring
+            // face's curve meets it at the same point
+            let n = pts.len();
+            if let Some(e) = extend_to_domain_edge(s1, s2, &pts[n - 1], &pts[n - 2], &b, tol, step, pad) {
+                pts.push(e);
+            }
+            if let Some(e) = extend_to_domain_edge(s1, s2, &pts[0], &pts[1], &b, tol, step, pad) {
+                pts.insert(0, e);
+            }
+        }
+        let n = pts.len();
+        for i in 0..n {
+            let gap = |j: usize| pts[i].p.dist(pts[j].p);
+            let sp = if i > 0 { gap(i - 1) } else { 0.0 }.max(if i + 1 < n { gap(i + 1) } else { 0.0 });
+            traced.push((pts[i].p, (1.5 * sp).min(step * 1.5).max(tol * 10.0)));
+        }
         let Some((pts, bs)) = fit_refined(s1, s2, pts, tol) else { continue };
         out.push(SsCurve::Fitted { pts, curve: Curve::BSpline(bs), closed });
     }
     out
+}
+
+/// The point where the intersection curve continuing from `last` (coming from
+/// `before`) reaches the boundary of a non-periodic parameter domain of `s1` or
+/// `s2`: Newton on (u1, v1, u2, v2) with S1 = S2 and the parameter pinned to
+/// the bound. Only a bound within two steps ahead of `last` qualifies.
+#[allow(clippy::too_many_arguments)]
+fn extend_to_domain_edge(s1: &Surface, s2: &Surface, last: &MPt, before: &MPt, b: &Bounds, tol: f64, step: f64, pad: f64) -> Option<MPt> {
+    let t = (last.p - before.p).try_normalize()?;
+    let mut best: Option<(f64, MPt)> = None;
+    for (si, s) in [s1, s2].into_iter().enumerate() {
+        let (dom, per) = (s.domain(), s.periods());
+        for dir in 0..2 {
+            let ((lo, hi), p) = if dir == 0 { (dom.0, per.0) } else { (dom.1, per.1) };
+            if p.is_some() || !lo.is_finite() || !hi.is_finite() {
+                continue;
+            }
+            let k = 2 * si + dir; // index into (u1, v1, u2, v2)
+            for bound in [lo, hi] {
+                let mut x = last.uv;
+                x[k] = bound;
+                let mut ok = false;
+                for _ in 0..30 {
+                    let d1 = s1.derivs2(x[0], x[1]);
+                    let d2 = s2.derivs2(x[2], x[3]);
+                    let f = d1.p - d2.p;
+                    let g = x[k] - bound;
+                    if f.len() < tol * 1e-4 && g.abs() < 1e-12 {
+                        ok = true;
+                        break;
+                    }
+                    let mut sel = [0.0; 5];
+                    sel[k] = 1.0;
+                    sel[4] = -g;
+                    let m = [
+                        [d1.du.x, d1.dv.x, -d2.du.x, -d2.dv.x, -f.x],
+                        [d1.du.y, d1.dv.y, -d2.du.y, -d2.dv.y, -f.y],
+                        [d1.du.z, d1.dv.z, -d2.du.z, -d2.dv.z, -f.z],
+                        sel,
+                    ];
+                    let Some(dx) = solve4(m) else { break };
+                    for j in 0..4 {
+                        x[j] += dx[j];
+                    }
+                    let (a, c) = wrap_uv(s1, x[0], x[1]);
+                    let (e, g2) = wrap_uv(s2, x[2], x[3]);
+                    x = [a, c, e, g2];
+                    x[k] = bound;
+                }
+                if !ok {
+                    continue;
+                }
+                let q = (s1.eval(x[0], x[1]) + s2.eval(x[2], x[3])) * 0.5;
+                let d = q.dist(last.p);
+                if d > 1e-9 && d <= 2.0 * step && (q - last.p).dot(t) > 0.0 && inside(b, q, pad) && best.as_ref().map_or(true, |(bd, _)| d < *bd) {
+                    best = Some((d, MPt { p: q, uv: x }));
+                }
+            }
+        }
+    }
+    best.map(|(_, m)| m)
 }
 
 /// Interpolate the traced points with a cubic B-spline, then refine: the
@@ -995,48 +1177,52 @@ pub fn march(s1: &Surface, s2: &Surface, b: Bounds, tol: f64, step: f64) -> Vec<
 fn fit_refined(
     s1: &Surface,
     s2: &Surface,
-    mut pts: Vec<Vec3>,
+    mut mp: Vec<MPt>,
     tol: f64,
 ) -> Option<(Vec<Vec3>, ck_geom::nurbs::bspline::BSplineCurve)> {
     for _round in 0..8 {
+        let pts: Vec<Vec3> = mp.iter().map(|m| m.p).collect();
         let deg = 3.min(pts.len() - 1);
         let bs = interpolate(&pts, deg, Param::ChordLength).ok()?;
         let us = ck_geom::fit::params(&pts, Param::ChordLength);
-        let mut next = vec![pts[0]];
+        let mut next = vec![mp[0]];
         let mut refined = false;
         for i in 0..pts.len() - 1 {
             let um = 0.5 * (us[i] + us[i + 1]);
             let pm = bs.eval(um);
             let t = bs.derivs(um, 1)[1].normalize();
-            if let Some(q) = correct(s1, s2, pm, t, tol) {
+            // warm start: parameters of the nearer data point
+            let w = if pm.dist(pts[i]) <= pm.dist(pts[i + 1]) { mp[i].uv } else { mp[i + 1].uv };
+            if let Some((q, uv)) = correct_uv(s1, s2, pm, t, w, tol) {
                 if q.dist(pm) > tol * 1e-2 && pts.len() < 20000 {
-                    next.push(q);
+                    next.push(MPt { p: q, uv });
                     refined = true;
                 }
             }
-            next.push(pts[i + 1]);
+            next.push(mp[i + 1]);
         }
         if !refined {
             return Some((pts, bs));
         }
-        pts = next;
+        mp = next;
     }
+    let pts: Vec<Vec3> = mp.iter().map(|m| m.p).collect();
     let deg = 3.min(pts.len() - 1);
     interpolate(&pts, deg, Param::ChordLength).ok().map(|b| (pts, b))
 }
 
 #[allow(clippy::too_many_arguments)]
-fn trace(s1: &Surface, s2: &Surface, seed: Vec3, t0: Vec3, b: &Bounds, tol: f64, step: f64, pad: f64) -> (Vec<Vec3>, bool) {
+fn trace(s1: &Surface, s2: &Surface, seed: MPt, t0: Vec3, b: &Bounds, tol: f64, step: f64, pad: f64) -> (Vec<MPt>, bool) {
     let mut pts = vec![seed];
-    let mut p = seed;
+    let mut cur = seed;
     let mut t = t0;
     let mut h = step;
     for it in 0..5000 {
-        let pred = p + t * h;
-        let next = correct(s1, s2, pred, t, tol);
-        let ok = next.and_then(|q| tangent(s1, s2, q).map(|tq| (q, tq)));
+        let pred = cur.p + t * h;
+        let next = correct_uv(s1, s2, pred, t, cur.uv, tol);
+        let ok = next.and_then(|(q, uv)| tangent_uv(s1, s2, uv).map(|tq| (q, uv, tq)));
         match ok {
-            Some((q, mut tq)) if q.dist(p) < 2.0 * h && q.dist(p) > 0.1 * h => {
+            Some((q, uv, mut tq)) if q.dist(cur.p) < 2.0 * h && q.dist(cur.p) > 0.1 * h => {
                 if tq.dot(t) < 0.0 {
                     tq = -tq;
                 }
@@ -1045,11 +1231,11 @@ fn trace(s1: &Surface, s2: &Surface, seed: Vec3, t0: Vec3, b: &Bounds, tol: f64,
                     continue;
                 }
                 // closed loop?
-                if it > 2 && q.dist(seed) < 0.75 * h.max(step * 0.5) {
+                if it > 2 && pts.len() >= 3 && q.dist(seed.p) < 0.75 * h {
                     return (pts, true);
                 }
-                pts.push(q);
-                p = q;
+                cur = MPt { p: q, uv };
+                pts.push(cur);
                 t = tq;
                 if h < step {
                     h = (h * 1.5).min(step);

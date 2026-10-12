@@ -27,6 +27,8 @@ const TOL: f64 = 1e-9;
 pub fn revolve(feature: &str, profile: &Profile, axis_o: Vec3, axis: Vec3, a0: f64, a1: f64) -> MakeResult {
     profile.validate()?;
     let a = axis.normalize();
+    let snapped = snap_axis_arcs(profile, axis_o, a);
+    let profile = &snapped;
     let (a0, a1) = (a0.min(a1), a0.max(a1));
     let sweep = a1 - a0;
     if sweep < 1e-9 {
@@ -114,6 +116,72 @@ pub fn revolve(feature: &str, profile: &Profile, axis_o: Vec3, axis: Vec3, a0: f
         caps.push(Caps { c0: fr0, c1: fr1 });
     }
     Ok(build_sweep(feature, profile, regions, if closed { None } else { Some(&caps) }, sigma_pos, closed))
+}
+
+/// Arcs whose centre is on the axis up to sketch precision (relative 1e-4:
+/// a solved sketch leaves ~1e-4 residuals) are re-centred exactly on it, so
+/// the revolved face is a true sphere whose meridian is the profile arc
+/// (consistent pole, seam and pcurves). The radius becomes the mean of the
+/// two end distances (or reaches an end on the axis exactly) and the other
+/// end moves onto the new circle (<= ~1e-4).
+fn snap_axis_arcs(profile: &Profile, axis_o: Vec3, a: Vec3) -> Profile {
+    let f = &profile.frame;
+    let o2 = Vec2::new((axis_o - f.o).dot(f.x), (axis_o - f.o).dot(f.y));
+    let d2 = Vec2::new(a.dot(f.x), a.dot(f.y));
+    if d2.len() < 1e-9 {
+        return profile.clone();
+    }
+    let d2 = d2.normalize();
+    let mut out = profile.clone();
+    for reg in &mut out.regions {
+        for l in std::iter::once(&mut reg.outer).chain(reg.holes.iter_mut()) {
+            for s in &mut l.segs {
+                let Curve2::Circle { c, x, r, ccw } = s.curve.clone() else { continue };
+                if s.t1 - s.t0 >= TAU - 1e-9 {
+                    continue;
+                }
+                let off = c - o2;
+                let radial = off - d2 * off.dot(d2);
+                if radial.len() < TOL || radial.len() > 1e-4 * r {
+                    continue;
+                }
+                let c2 = c - radial;
+                let (pa, pb) = (s.curve.eval(s.t0), s.curve.eval(s.t1));
+                // an end on the axis (the pole) stays exactly where it is
+                let on_axis = |p: Vec2| {
+                    let q = p - o2;
+                    (q - d2 * q.dot(d2)).len() < 1e-9
+                };
+                let r2 = match (on_axis(pa), on_axis(pb)) {
+                    (true, _) => pa.dist(c2),
+                    (_, true) => pb.dist(c2),
+                    _ => 0.5 * (pa.dist(c2) + pb.dist(c2)),
+                };
+                let ang = |p: Vec2| {
+                    let q = p - c2;
+                    let t = x.cross(q).atan2(x.dot(q));
+                    if ccw {
+                        t
+                    } else {
+                        -t
+                    }
+                };
+                let t0 = ang(pa);
+                let span = s.t1 - s.t0;
+                let mut t1 = ang(pb);
+                while t1 < t0 + span - std::f64::consts::PI {
+                    t1 += TAU;
+                }
+                while t1 > t0 + span + std::f64::consts::PI {
+                    t1 -= TAU;
+                }
+                s.curve = Curve2::Circle { c: c2, x, r: r2, ccw };
+                s.t0 = t0;
+                s.t1 = t1;
+            }
+        }
+    }
+    out
 }
 
 /// Rotation by `ang` about the axis (`o`, unit `a`): ck-core's Rodrigues
@@ -228,7 +296,11 @@ fn side_geom(ax: &Axis, c: &Curve, t0: f64, t1: f64, sweep: f64, v_t0: &VertGeom
         Curve::Circle { frame: cf, r } => {
             let cc = cf.o;
             let rc = ax.radial(cc);
-            let (o, x, major) = if rc.len() < TOL { (cc, xr, 0.0) } else { (ax.foot(cc), rc.normalize(), rc.len()) };
+            // an arc centred on the axis up to sketch precision (relative 1e-4)
+            // is a sphere, not a torus of vanishing major radius (whose
+            // degenerate pole breaks tessellation and booleans)
+            let on_axis = rc.len() < TOL || rc.len() < 1e-4 * *r;
+            let (o, x, major) = if on_axis { (ax.foot(cc), xr, 0.0) } else { (ax.foot(cc), rc.normalize(), rc.len()) };
             let fr = ax.frame_at(o, x);
             // φ(p) = atan2(z, ρ - major) about the circle centre
             let phi = |p: Vec3| {

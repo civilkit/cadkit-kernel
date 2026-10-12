@@ -100,7 +100,7 @@ impl Arrangement {
             // samples of the new piece on the existing one
             let on = [0.31, 0.5, 0.73].iter().all(|&f| {
                 let p = curve.eval(t0 + (t1 - t0) * f);
-                dist_in_range(&e.curve, (e.t0, e.t1), p).1 <= tol * 10.0
+                near_in_range(&e.curve, (e.t0, e.t1), p, tol * 10.0)
             });
             if !on {
                 continue;
@@ -120,6 +120,25 @@ impl Arrangement {
         (self.edges.len() - 1, true)
     }
 
+    /// Human-readable dump (CK_BOOL_DBG diagnostics).
+    pub fn dump(&self) -> String {
+        use std::fmt::Write;
+        let mut s = String::new();
+        for (i, e) in self.edges.iter().enumerate() {
+            let kind = match &e.curve {
+                Curve::Line { .. } => "line",
+                Curve::Circle { .. } => "circle",
+                Curve::Ellipse { .. } => "ellipse",
+                _ => "other",
+            };
+            let _ = writeln!(s, "  edge {i}: {kind} v{}->v{} t[{:.5},{:.5}] src={:?} p0={:?} p1={:?}", e.v0, e.v1, e.t0, e.t1, e.src, e.curve.eval(e.t0), e.curve.eval(e.t1));
+        }
+        for (i, f) in self.faces.iter().enumerate() {
+            let _ = writeln!(s, "  face {i}: side {} {} {} bound={:?} inner={:?}", f.side, f.name.id(), ck_topo::body::wire_kind(&f.surface), f.bound, f.inner);
+        }
+        s
+    }
+
     pub fn face_index(&self, side: usize, f: FaceId) -> Option<usize> {
         self.faces.iter().position(|af| af.side == side && af.face == f)
     }
@@ -137,6 +156,12 @@ pub fn dist_in_range(c: &Curve, r: (f64, f64), p: Vec3) -> (f64, f64) {
     } else {
         (r.1, d1)
     }
+}
+
+/// `dist_in_range(..).1 <= tol`, skipping the closest-point search when a
+/// control-polygon bound already puts `p` farther than `tol` from a spline.
+pub fn near_in_range(c: &Curve, r: (f64, f64), p: Vec3, tol: f64) -> bool {
+    c.may_be_within(p, tol) && dist_in_range(c, r, p).1 <= tol
 }
 
 /// Edge tolerance the original stores on every edge (face boxes grow by it:
@@ -201,6 +226,7 @@ pub fn imprint(a: &Body, b: &Body, tol: f64) -> Arrangement {
                     let curve = c.curve().clone();
                     let r = curve.range();
                     let kept = trim(&curve, r, &[(a, f), (b, g)], &bx, tol, false, &mut loop_cache);
+                    super::bool_dbg!("ssi A{} x B{}: curve range {:?} p0 {:?} pm {:?} kept {:?}", f.idx(), g.idx(), r, curve.eval(r.0), curve.eval(0.5 * (r.0 + r.1)), kept);
                     // whole closed curve: kept pieces contiguous over one
                     // period (a relocated seam crossing splits the range)
                     let mut kept = kept;
@@ -216,7 +242,7 @@ pub fn imprint(a: &Body, b: &Body, tol: f64) -> Arrangement {
                             let on_edge = [(a, f), (b, g)].iter().any(|&(bd, fc)| {
                                 bd.face_edges(fc).into_iter().any(|e| {
                                     let ed = bd.edge(e);
-                                    dist_in_range(&ed.curve, (ed.t0, ed.t1), p).1 <= tol
+                                    near_in_range(&ed.curve, (ed.t0, ed.t1), p, tol)
                                 })
                             });
                             if on_edge && p.dist(start_pt) > tol {
@@ -234,7 +260,7 @@ pub fn imprint(a: &Body, b: &Body, tol: f64) -> Arrangement {
                                     let ed = bd.edge(e);
                                     [0.13, 0.41, 0.77].iter().all(|&k| {
                                         let q = curve.eval(t0 + (t1 - t0) * k);
-                                        dist_in_range(&ed.curve, (ed.t0, ed.t1), q).1 <= tol
+                                        near_in_range(&ed.curve, (ed.t0, ed.t1), q, tol)
                                     })
                                 })
                             });
@@ -245,7 +271,7 @@ pub fn imprint(a: &Body, b: &Body, tol: f64) -> Arrangement {
                             let on_edge = [(a, f), (b, g)].iter().any(|&(bd, fc)| {
                                 bd.face_edges(fc).into_iter().any(|e| {
                                     let ed = bd.edge(e);
-                                    dist_in_range(&ed.curve, (ed.t0, ed.t1), p).1 <= tol
+                                    near_in_range(&ed.curve, (ed.t0, ed.t1), p, tol)
                                 })
                             });
                             if on_edge {
@@ -292,7 +318,8 @@ pub fn imprint(a: &Body, b: &Body, tol: f64) -> Arrangement {
                 }
             }
         }
-        ts.sort_by(|x, y| x.partial_cmp(y).unwrap());
+        ts.retain(|t| t.is_finite()); // robustness: huge coordinates can yield NaN params
+        ts.sort_by(f64::total_cmp);
         ts.dedup_by(|x, y| (*x - *y).abs() <= 1e-12);
         ts
     };
@@ -399,6 +426,7 @@ fn trim(c: &Curve, r: (f64, f64), faces: &[(&Body, FaceId)], bx: &Aabb, tol: f64
     ts.sort_by(|x, y| x.partial_cmp(y).unwrap());
     ts.dedup_by(|x, y| (*x - *y).abs() <= 1e-12 || (*x - *y).abs() <= param_slack(c, *y, tol * 0.5));
     let mut out: Vec<(f64, f64)> = vec![];
+    super::bool_dbg!("  trim breakpoints {:?}", ts);
     for w in ts.windows(2) {
         let (t0, t1) = (w[0], w[1]);
         if c.eval(t0).dist(c.eval(t1)) <= tol && c.eval(t0).dist(c.eval(0.5 * (t0 + t1))) <= tol {
@@ -408,7 +436,9 @@ fn trim(c: &Curve, r: (f64, f64), faces: &[(&Body, FaceId)], bx: &Aabb, tol: f64
         let mut all_on = true;
         let mut out_any = false;
         for &(body, f) in faces {
-            match point_in_face_cached(body, f, m, tol, cache) {
+            let w = point_in_face_cached(body, f, m, tol, cache);
+            super::bool_dbg!("  trim interval ({t0:.4},{t1:.4}) m={m:?} face {} -> {w:?}", f.idx());
+            match w {
                 Where::Out => out_any = true,
                 Where::In => all_on = false,
                 Where::On => {}

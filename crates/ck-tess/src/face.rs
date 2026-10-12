@@ -227,7 +227,28 @@ fn shift_into(x: f64, m: f64, c: f64, p: f64) -> f64 {
 }
 
 /// Triangulates face `f`. `params[e]` = final sorted param list of edge `e`.
+///
+/// Periodic faces are normally opened at a cut window (the strip approach of
+/// the original kernel); when that cannot close the region (a torus
+/// fragment bounded by intersection loops that cross both seams) the face is
+/// retried in the universal cover: loops are unwrapped continuously through
+/// their seam coedges and triangulated as ordinary closed polygons.
 pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bool)], ssi: &[f64], cut: FaceCut, tol: &Tol) -> Result<FaceMesh, String> {
+    match mesh_face_impl(body, f, params, virt, ssi, cut, tol, false) {
+        Ok(m) => Ok(m),
+        Err(e) => {
+            let periodic = body.face(f).surface.periods() != (None, None);
+            if periodic {
+                mesh_face_impl(body, f, params, virt, ssi, cut, tol, true).map_err(|e2| format!("{e}; cover: {e2}"))
+            } else {
+                Err(e)
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bool)], ssi: &[f64], cut: FaceCut, tol: &Tol, cover: bool) -> Result<FaceMesh, String> {
     let face = body.face(f);
     crate::tr!(9, 0, 0, f.idx(), 0);
     let surf = &face.surface;
@@ -238,9 +259,18 @@ pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, boo
     let wsh = if ssi_hole { 0.0 } else { 1.0 };
     // full spheres / tori are opened at their parameter domain [0, p] (oracle bounds)
     let full_dom = matches!(surf, Surface::Sphere { .. } | Surface::Torus { .. });
-    let cut = if full_dom { FaceCut { u: pu, v: pv } } else { cut };
-    let cu = pu.map(|p| cut.u.unwrap_or(p) - p * wsh);
-    let cv = pv.map(|p| cut.v.unwrap_or(p) - p * wsh);
+    let cut = if cover {
+        FaceCut::default()
+    } else if full_dom {
+        FaceCut { u: pu, v: pv }
+    } else {
+        cut
+    };
+    let (cu, cv) = if cover {
+        (None, None)
+    } else {
+        (pu.map(|p| cut.u.unwrap_or(p) - p * wsh), pv.map(|p| cut.v.unwrap_or(p) - p * wsh))
+    };
 
     let mut b = Builder { surf, pts: vec![], index: HashMap::new(), segs: vec![] };
     let eps_u = pu.map(|p| p * 1e-9).unwrap_or(0.0);
@@ -252,6 +282,8 @@ pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, boo
     let mut u_lo = f64::INFINITY;
     let mut u_hi = f64::NEG_INFINITY;
     let mut polys: Vec<Vec<BPt>> = vec![];
+    // v of every seam end (a seam that reaches a pole is the only boundary there)
+    let mut seam_v: Vec<f64> = vec![];
     for &l in &face.loops {
         let lp = body.lp(l);
         if !lp.alive {
@@ -313,7 +345,8 @@ pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, boo
                     pl[0].virt = true;
                 }
             }
-            if seam {
+            if seam && !cover {
+                seam_v.extend([pl[0].uv.y, pl[pl.len() - 1].uv.y]);
                 // seams are interior once the face is cut open; they only bound the v/u range
                 poly.push(BPt { uv: Vec2::new(f64::NAN, f64::NAN), p: Vec3::ZERO, virt: false });
                 continue;
@@ -335,6 +368,10 @@ pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, boo
                 poly.pop();
             } else {
                 join(&mut poly, last, first, tol);
+                // universal cover: the loop must close in uv itself (not one period away)
+                if cover && !same_uv(first.uv, poly.last().unwrap().uv) && first.p.dist(poly.last().unwrap().p) <= 1e-6 * (1.0 + first.p.len()) {
+                    return Err("loop winds a period".into());
+                }
             }
         }
         // split at NaN markers into open chains; a loop without markers is closed
@@ -393,7 +430,7 @@ pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, boo
             (0..n).map(|i| ch[i].uv.x * ch[(i + 1) % n].uv.y - ch[(i + 1) % n].uv.x * ch[i].uv.y).sum::<f64>()
         };
         let outer = chains.iter().filter(|c| c.1 && c.0.len() > 2).map(|c| area(&c.0)).fold(0.0f64, |m, a| if a.abs() > m.abs() { a } else { m });
-        if outer < 0.0 {
+        if outer < 0.0 && !cover {
             for (ch, closed) in chains.iter_mut() {
                 if *closed && ch.len() > 1 {
                     ch[1..].reverse();
@@ -515,8 +552,22 @@ pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, boo
                 // boundary points on the cut lines -> inside intervals
                 let mut on: Vec<f64> = b.pts.iter().filter(|q| q.uv.x == c).map(|q| q.uv.y).collect();
                 on.extend(b.pts.iter().filter(|q| q.uv.x == c + p).map(|q| q.uv.y));
+                // a seam ending at a pole (a hemisphere cap bounded by one circle): the pole is not a
+                // boundary point, so the cut lines must reach it and the pole line closes the strip
+                let mut poles: Vec<f64> = vec![];
+                if pv.is_none() {
+                    for &sv in &seam_v {
+                        if surf.is_pole(c, sv) && !poles.iter().any(|&x| (x - sv).abs() < 1e-12) {
+                            poles.push(sv);
+                            on.push(sv);
+                        }
+                    }
+                }
                 on.sort_by(|x, y| x.total_cmp(y));
                 on.dedup();
+                for &pv0 in &poles {
+                    iso(&mut b, Vec2::new(c, pv0), Vec2::new(c + p, pv0), Vec2::ZERO);
+                }
                 for w in on.windows(2) {
                     let vm = 0.5 * (w[0] + w[1]);
                     if inside_parity(&seg_list, Vec2::new(c + 0.5 * p * 1e-6, vm)) {
@@ -549,7 +600,7 @@ pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, boo
     // corner with the smallest (u, v) (the reversed-sense rule: first vertex kept, the rest reversed).
     let full_u = pu.map_or(false, |p| u_hi - u_lo >= p * (1.0 - 1e-6));
     let full_v = pv.map_or(false, |p| v_hi - v_lo >= p * (1.0 - 1e-6));
-    if full_u || full_v {
+    if (full_u || full_v) && !cover {
         b.canonical_ring(face.sense);
     }
 

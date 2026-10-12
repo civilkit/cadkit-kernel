@@ -1,0 +1,101 @@
+{
+ "format": "ck-part",
+ "version": 1,
+ "name": "washer",
+ "features": [
+  {
+   "type": "sketch",
+   "id": "F1",
+   "plane": {
+    "kind": "std",
+    "id": "front"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 0,
+     "y": 0
+    }
+   ],
+   "entities": [
+    {
+     "type": "circle",
+     "id": "e1",
+     "c": "p1",
+     "r": 32.4
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F2",
+   "op": "add",
+   "sketch": "F1",
+   "end": "blind",
+   "depth": 5
+  },
+  {
+   "type": "sketch",
+   "id": "F3",
+   "plane": {
+    "kind": "std",
+    "id": "front"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 0,
+     "y": 0
+    }
+   ],
+   "entities": [
+    {
+     "type": "circle",
+     "id": "e1",
+     "c": "p1",
+     "r": 18.5
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F4",
+   "op": "cut",
+   "sketch": "F3",
+   "end": "throughBoth",
+   "depth": 10
+  },
+  {
+   "type": "chamfer",
+   "id": "F5",
+   "chamferType": "equal",
+   "distance": 0.4,
+   "edges": [
+    {
+     "faces": [
+      "F2.C0",
+      "F2.S.e1"
+     ],
+     "at": [
+      32.4,
+      0,
+      0
+     ]
+    },
+    {
+     "faces": [
+      "F2.C0",
+      "F4.S.e1"
+     ],
+     "at": [
+      18.5,
+      0,
+      0
+     ]
+    }
+   ]
+  }
+ ]
+}

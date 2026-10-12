@@ -60,6 +60,13 @@ pub const REQUEST_TYPES: &[(&str, Handler)] = &[
     ("massProps", geometry::mass_props),
     ("interference", geometry::interference),
     ("step", geometry::step),
+    // Extension (not in the original kernel): independent solid validator.
+    ("validate", geometry::validate),
+    // Extension: shape healing (ck-heal) of the current body.
+    ("heal", geometry::heal),
+    ("importStep", geometry::import_step),
+    // Extension: ACIS SAT import -> a body in the tag's state.
+    ("importSat", geometry::import_sat),
     ("inspect", query::inspect),
     ("continuity", query::continuity),
     ("curvatureAt", curvature::curvature_at),

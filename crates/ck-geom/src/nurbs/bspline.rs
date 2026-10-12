@@ -92,7 +92,33 @@ impl<P: Pt> BSplineCurve<P> {
 
     /// Point at `u` (clamped to the domain).
     pub fn eval(&self, u: f64) -> P {
-        self.derivs(u, 0)[0]
+        let p = self.degree;
+        if self.weights.is_some() || p >= 12 {
+            return self.derivs(u, 0)[0];
+        }
+        // allocation-free non-rational path (A2.2 + dot)
+        let (a, b) = self.domain();
+        let u = u.clamp(a, b);
+        let span = find_span(self.n(), p, u, &self.knots);
+        let (mut n, mut left, mut right) = ([0.0f64; 12], [0.0f64; 12], [0.0f64; 12]);
+        n[0] = 1.0;
+        for j in 1..=p {
+            left[j] = u - self.knots[span + 1 - j];
+            right[j] = self.knots[span + j] - u;
+            let mut saved = 0.0;
+            for r in 0..j {
+                let den = right[r + 1] + left[j - r];
+                let temp = if den != 0.0 { n[r] / den } else { 0.0 };
+                n[r] = saved + right[r + 1] * temp;
+                saved = left[j - r] * temp;
+            }
+            n[j] = saved;
+        }
+        let mut acc = P::default();
+        for j in 0..=p {
+            acc = acc + self.ctrl[span - p + j] * n[j];
+        }
+        acc
     }
 
     /// `[C(u), C'(u), ..., C^(d)(u)]` (A3.2 / A4.2). Orders above the degree
@@ -416,28 +442,25 @@ impl<P: Pt> BSplineCurve<P> {
     /// Parameter of the closest point to `q` (sampling seed + Newton).
     pub fn closest_param(&self, q: P) -> f64 {
         let (a, b) = self.domain();
-        let spans = basis::distinct_knots(&self.knots).len().max(2) - 1;
+        let spans = basis::distinct_count(&self.knots).max(2) - 1;
         let n = (spans * (self.degree + 1) * 4).max(16);
         let mut best = (f64::INFINITY, a);
-        if spans > 32 {
+        if spans > 6 {
             // long multi-span curves (helical rails): visit the knot spans
             // nearest to q first and stop when the control-point ball
             // (convex hull) of the remaining ones is farther than the best
             let p = self.degree;
-            let mut cells: Vec<(f64, usize)> = (p..self.ctrl.len())
-                .filter(|&s| self.knots[s] < self.knots[s + 1])
-                .map(|s| {
-                    let pts = &self.ctrl[s - p..=s];
-                    let mut c = pts[0];
-                    for &x in &pts[1..] {
-                        c = c + x;
-                    }
-                    let c = c / pts.len() as f64;
-                    let r = pts.iter().map(|&x| x.dist(c)).fold(0.0f64, f64::max);
-                    ((q.dist(c) - r).max(0.0), s)
-                })
-                .collect();
             let m = (p + 1) * 4;
+            let ball = |s: usize| -> f64 {
+                let pts = &self.ctrl[s - p..=s];
+                let mut c = pts[0];
+                for &x in &pts[1..] {
+                    c = c + x;
+                }
+                let c = c / pts.len() as f64;
+                let r = pts.iter().map(|&x| x.dist(c)).fold(0.0f64, f64::max);
+                (q.dist(c) - r).max(0.0)
+            };
             let sample = |s: usize, best: &mut (f64, f64)| {
                 let (k0, k1) = (self.knots[s].max(a), self.knots[s + 1].min(b));
                 for j in 0..=m {
@@ -448,12 +471,38 @@ impl<P: Pt> BSplineCurve<P> {
                     }
                 }
             };
-            // seed with the nearest cell, then every cell that can still beat it
-            if let Some(&(_, s0)) = cells.iter().min_by(|x, y| x.0.partial_cmp(&y.0).unwrap()) {
-                sample(s0, &mut best);
-            }
-            for (lb, s) in cells {
-                if lb < best.0 {
+            // two levels: blocks of BLK spans (one cheap ball per block, from
+            // the control polygon) are visited nearest first; inside a block
+            // the nearest span seeds `best` and every span whose own ball can
+            // still beat it is sampled. Same sampled-set rule as a flat scan.
+            const BLK: usize = 8;
+            let ns = self.ctrl.len();
+            let mut blocks: Vec<(f64, usize, usize)> = (p..ns)
+                .step_by(BLK)
+                .map(|s0| {
+                    let s1 = (s0 + BLK).min(ns) - 1;
+                    let pts = &self.ctrl[s0 - p..=s1];
+                    let c = (pts[0] + pts[pts.len() - 1]) * 0.5;
+                    let r2 = pts.iter().map(|&x| (x - c).dot(x - c)).fold(0.0f64, f64::max);
+                    ((q.dist(c) - r2.sqrt()).max(0.0), s0, s1)
+                })
+                .collect();
+            blocks.sort_by(|x, y| x.0.total_cmp(&y.0).then(x.1.cmp(&y.1)));
+            for (lb, s0, s1) in blocks {
+                if lb >= best.0 {
+                    break;
+                }
+                let mut cells: Vec<(f64, usize)> = (s0..=s1).filter(|&s| self.knots[s] < self.knots[s + 1]).map(|s| (ball(s), s)).collect();
+                if best.0.is_infinite() {
+                    if let Some(&(_, sn)) = cells.iter().min_by(|x, y| x.0.total_cmp(&y.0)) {
+                        sample(sn, &mut best);
+                    }
+                }
+                cells.sort_by(|x, y| x.0.total_cmp(&y.0));
+                for (l, s) in cells {
+                    if l >= best.0 {
+                        break;
+                    }
                     sample(s, &mut best);
                 }
             }
@@ -467,6 +516,43 @@ impl<P: Pt> BSplineCurve<P> {
             }
         }
         newton_closest(|u| self.derivs(u, 2), q, best.1, a, b)
+    }
+
+    /// Conservative proximity test: false only when `q` is farther than
+    /// `tol` from every knot span's control-point ball (so from the curve);
+    /// true means the curve may be within `tol`. Cost is a pass over the
+    /// control points, with no curve evaluation.
+    pub fn may_be_within(&self, q: P, tol: f64) -> bool {
+        let p = self.degree;
+        let ns = self.ctrl.len();
+        if ns <= p {
+            return true;
+        }
+        const BLK: usize = 8;
+        for s0 in (p..ns).step_by(BLK) {
+            let s1 = (s0 + BLK).min(ns) - 1;
+            let pts = &self.ctrl[s0 - p..=s1];
+            let c = (pts[0] + pts[pts.len() - 1]) * 0.5;
+            let r2 = pts.iter().map(|&x| (x - c).dot(x - c)).fold(0.0f64, f64::max);
+            if q.dist(c) - r2.sqrt() > tol {
+                continue;
+            }
+            for s in s0..=s1 {
+                if self.knots[s] < self.knots[s + 1] {
+                    let pts = &self.ctrl[s - p..=s];
+                    let mut c = pts[0];
+                    for &x in &pts[1..] {
+                        c = c + x;
+                    }
+                    let c = c / pts.len() as f64;
+                    let r = pts.iter().map(|&x| x.dist(c)).fold(0.0f64, f64::max);
+                    if q.dist(c) - r <= tol {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
     }
 
     /// Closest point and its parameter.
