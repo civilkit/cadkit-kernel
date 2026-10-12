@@ -387,5 +387,18 @@
    "step": "gt/twisted_drill_000546.step"
   }
  ],
- "known": {}
+ "known": {
+  "nozzle_000069": {
+   "label": "kernel-bug",
+   "note": "geometry matches (vol/area/com/bbox ok) but validate reports LOOP_SELF_INTERSECT on the 0.09 mm-wide annulus left where the bore cutter ends inside the cone wall; the ground-truth STEP trips the same check on import. ck-check wire.rs samples each coedge at 8 points, so near-concentric loops closer than the chord sag falsely cross."
+  },
+  "tapered_boss_000256": {
+   "label": "kernel-gap",
+   "note": "chamfer on the plane/B-spline edge of the lofted side is blendUnsupported (F9); the hole-rim chamfer alone works. Loft itself is exact (unchamfered volume equals the closed-form frustum to 4e-8)."
+  },
+  "twisted_drill_000546": {
+   "label": "kernel-gap",
+   "note": "no twist on extrude/sweep (twistExtrude); translated as a straight extrude of the same flute section, so volume and com match but area (2.8% low) and bbox (flutes do not rotate) cannot."
+  }
+ }
 }

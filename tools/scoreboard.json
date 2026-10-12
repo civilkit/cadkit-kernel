@@ -54,5 +54,13 @@
  "heal.repair": [
   1287,
   1292
+ ],
+ "bench.benchcad": [
+  7,
+  10
+ ],
+ "bench.benchcad.step": [
+  9,
+  10
  ]
 }

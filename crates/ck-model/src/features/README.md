@@ -18,7 +18,7 @@ strings from kernel.strings, and dispatch to ck-ops/ck-topo.
 | draft | neutral, faces[], angle(expr), flip |
 | shell | faces[], thickness(expr) |
 | hole | sketch, standard(iso), size, fit(normal/tap), kind(simple/cbore/csink), end, depth, tip, flip |
-| helix | sketch, definedBy(pitchRevs/pitchHeight/revsHeight), pitch, revolutions, height, startAngle, leftHand, reverse |
+| helix | sketch, definedBy(pitchRevs/heightRevs/heightPitch), pitch, revolutions, height, startAngle, leftHand, reverse |
 | rib | sketch, thickness(expr) |
 | lip | kind(material/move/offset/linear/turn/tension), faces[], edges[], width, height |
 | lpattern | seeds[], dir, spacing(expr), count, reverse |

@@ -25,6 +25,10 @@
 //   import.sat    OURS alone: each fixture in crates/ck-io/tests/fixtures/sat/
 //                 expected.json imports with no errors, validates with zero
 //                 issues and has the closed-form volume (1e-6 relative)
+//   bench.benchcad  SOFT: BenchCAD parts (tools/bench/benchcad, 10 parts) whose
+//                 regen matches the CadQuery ground truth (volume/area/com/
+//                 bbox 1e-3) and validates clean; bench.benchcad.step: the
+//                 ground-truth STEP imports to the same numbers, validate clean
 //
 // Direction (2026-10-12): correctness + robustness, not byte-identity.
 // HARD metrics (a drop fails the gate): wire, valid.*, vol.*, oracle.*, import.*, heal.repair.
@@ -39,6 +43,7 @@ import cases from './cases.mjs';
 import { parts as brepParts } from './brep_cases.mjs';
 import { oracles } from './oracles/index.mjs';
 import { checkOracle } from './oracles/check.mjs';
+import { runBench } from './bench/run.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2);
@@ -172,6 +177,13 @@ if (existsSync(path.join(sdir, 'expected.json'))) {
     if (!ok && !quiet) process.stderr.write(`import.sat ${f}: ${JSON.stringify(imp?.errors)} issues=${JSON.stringify(val?.issues?.slice(0, 2))} vol=${mass?.volume} want=${vol}\n`);
     bump('import.sat', ok);
   }
+}
+
+// 2c. BenchCAD adapter (SOFT; failures carry a recorded cause in the manifest)
+for (const r of runBench({ wasm: wasmB })) {
+  bump('bench.benchcad', r.pass);
+  if (r.import !== null) bump('bench.benchcad.step', r.import);
+  if (!r.pass && !quiet) process.stderr.write(`bench.benchcad ${r.id}: ${r.known ? r.known.label : 'UNLABELLED'}: ${r.bad[0]}\n`);
 }
 
 // 3. STEP export
