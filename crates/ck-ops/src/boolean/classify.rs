@@ -51,6 +51,12 @@ pub fn uv_near(s: &Surface, p: Vec3, prev: Option<Vec2>) -> Vec2 {
             return uv;
         }
     }
+    if let (Surface::Screw { .. }, Some(q)) = (s, prev) {
+        let (u, v, foot) = s.closest_point_near(p, (q.x, q.y));
+        if foot.dist(p) < LOCAL_TOL {
+            return Vec2::new(u, v);
+        }
+    }
     let (mut u, mut v) = s.closest_param(p);
     if let Some(q) = prev {
         let (pu, pv) = s.periods();

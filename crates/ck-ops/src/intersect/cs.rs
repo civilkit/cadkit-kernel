@@ -125,6 +125,7 @@ pub fn line_params(o: Vec3, d: Vec3, s: &Surface, tol: f64) -> Option<Vec<f64>> 
             Some(roots(quad::quartic(q4, q3, q2, q1, q0)))
         }
         Surface::BSpline(bs) => line_bspline(o, d, bs, tol),
+        Surface::Screw { .. } => line_screw(o, d, s, tol),
         Surface::Revolution { profile, axis_o, axis } => line_revolution(o, d, s, profile, *axis_o, *axis, tol),
         _ => None,
     }
@@ -309,6 +310,101 @@ fn line_bspline(o: Vec3, d: Vec3, bs: &ck_geom::nurbs::bsurf::BSplineSurface, to
     Some(roots)
 }
 
+/// Line `o + t d` against a screw patch: the patch is cut into cells (pi/16 of rotation by the profile's
+/// pieces), each bounded by its corner box padded by the bilinear interpolation error
+/// `du^2/8 |Suu| + dv^2/8 |Svv|`; the cells the line's slab test passes are solved by Newton on
+/// `S(u, v) - (o + t d)` (a root counts in the cell that contains it).
+fn line_screw(o: Vec3, d: Vec3, s: &Surface, tol: f64) -> Option<Vec<f64>> {
+    let Surface::Screw { profile, axis_o, axis, urange: (u0, u1), vrange: (v0, v1), .. } = s else { return None };
+    if d.dot(d) < 1e-300 {
+        return Some(vec![]);
+    }
+    let nu = (((u1 - u0) / (std::f64::consts::PI / 16.0)).ceil() as usize).max(1);
+    let nv = if matches!(**profile, Curve::Line { .. }) {
+        1
+    } else {
+        (((v1 - v0) / (std::f64::consts::PI / 8.0)).ceil() as usize).clamp(2, 24)
+    };
+    // profile samples: points relative to the axis, and the largest |c''| and radius about the axis
+    let mut prof: Vec<Vec3> = Vec::with_capacity(nv + 1);
+    let (mut rmax, mut cdd) = (0.0f64, 0.0f64);
+    for j in 0..=nv {
+        let v = v0 + (v1 - v0) * j as f64 / nv as f64;
+        let c = profile.derivs(v, 2);
+        let w = c[0] - *axis_o;
+        rmax = rmax.max((w - *axis * w.dot(*axis)).len());
+        cdd = cdd.max(c[2].len());
+        prof.push(w);
+    }
+    let (du, dv) = ((u1 - u0) / nu as f64, (v1 - v0) / nv as f64);
+    let pad = tol.max(1e-9) * 10.0 + 1.25 * (du * du / 8.0 * rmax + dv * dv / 8.0 * cdd);
+    let rot_row = |u: f64| -> Vec<Vec3> {
+        let (su, cu) = u.sin_cos();
+        let rise = if let Surface::Screw { rise, .. } = s { *rise } else { 0.0 };
+        prof.iter().map(|&w| *axis_o + w * cu + *axis * (axis.dot(w) * (1.0 - cu) + rise * u) + axis.cross(w) * su).collect()
+    };
+    let mut roots: Vec<f64> = vec![];
+    let mut lower = rot_row(*u0);
+    for i in 0..nu {
+        let ua = u0 + du * i as f64;
+        let ub = if i + 1 == nu { *u1 } else { ua + du };
+        let upper = rot_row(ub);
+        for j in 0..nv {
+            let (va, vb) = (v0 + dv * j as f64, if j + 1 == nv { *v1 } else { v0 + dv * (j + 1) as f64 });
+            let cs = [lower[j], lower[j + 1], upper[j], upper[j + 1]];
+            let mut lo = cs[0];
+            let mut hi = cs[0];
+            for c in &cs[1..] {
+                lo = lo.min(*c);
+                hi = hi.max(*c);
+            }
+            let (mut t0, mut t1) = (f64::NEG_INFINITY, f64::INFINITY);
+            let mut miss = false;
+            for (oo, dk, l, h) in [(o.x, d.x, lo.x, hi.x), (o.y, d.y, lo.y, hi.y), (o.z, d.z, lo.z, hi.z)] {
+                let (l, h) = (l - pad, h + pad);
+                if dk.abs() < 1e-300 {
+                    if oo < l || oo > h {
+                        miss = true;
+                    }
+                } else {
+                    let (x, y) = ((l - oo) / dk, (h - oo) / dk);
+                    t0 = t0.max(x.min(y));
+                    t1 = t1.min(x.max(y));
+                }
+            }
+            if miss || t0 > t1 {
+                continue;
+            }
+            let tm = if t0.is_finite() && t1.is_finite() { 0.5 * (t0 + t1) } else { 0.0 };
+            for (fu, fv) in [(0.5, 0.5), (0.2, 0.2), (0.8, 0.8), (0.2, 0.8), (0.8, 0.2)] {
+                let (mut u, mut v, mut t) = (ua + (ub - ua) * fu, va + (vb - va) * fv, tm);
+                let mut ok = false;
+                for _ in 0..25 {
+                    let sd = s.derivs2(u, v);
+                    let f = o + d * t - sd.p;
+                    if f.len() < tol * 0.01 {
+                        ok = true;
+                        break;
+                    }
+                    let rows = [Vec3::new(d.x, -sd.du.x, -sd.dv.x), Vec3::new(d.y, -sd.du.y, -sd.dv.y), Vec3::new(d.z, -sd.du.z, -sd.dv.z)];
+                    let Some(dl) = solve3(rows, [-f.x, -f.y, -f.z]) else { break };
+                    t += dl.x;
+                    u = (u + dl.y).clamp(*u0, *u1);
+                    v = (v + dl.z).clamp(*v0, *v1);
+                }
+                if ok {
+                    if u >= ua - 1e-9 && u <= ub + 1e-9 && v >= va - 1e-9 && v <= vb + 1e-9 && !roots.iter().any(|r| (r - t).abs() < 1e-7 * (1.0 + t.abs())) {
+                        roots.push(t);
+                    }
+                    break;
+                }
+            }
+        }
+        lower = upper;
+    }
+    Some(roots)
+}
+
 /// Quadratic roots; a slightly negative discriminant within `tol` of
 /// tangency gives the double root.
 fn tangent_quadratic(a: f64, b: f64, c: f64, tol: f64, scale: f64) -> Vec<f64> {
@@ -413,6 +509,35 @@ mod tests {
 
     fn all() -> (f64, f64) {
         (f64::NEG_INFINITY, f64::INFINITY)
+    }
+
+    #[test]
+    fn line_vs_screw_patch() {
+        use ck_geom::curve::Curve;
+        let prof = Curve::circle_x(Vec3::new(5., 0., 0.), Vec3::Y, Vec3::X, 1.5);
+        let s = Surface::Screw {
+            profile: Box::new(prof),
+            axis_o: Vec3::ZERO,
+            axis: Vec3::Z,
+            rise: 0.4,
+            urange: (0.0, 3.0 * TAU),
+            vrange: (0.0, std::f64::consts::PI),
+        };
+        // a line through the tube along the axis direction offset to x = 5: crosses the patch at every turn
+        let (o, d) = (Vec3::new(5.0, 0.0, -10.0), Vec3::Z);
+        let ts = line_params(o, d, &s, 1e-9).unwrap();
+        // brute force: points where the line meets the patch are S(u, v) with x = 5, y = 0
+        for &t in &ts {
+            let p = o + d * t;
+            let (u, v, foot) = s.closest_point(p);
+            assert!(foot.dist(p) < 1e-7, "t = {t}: u {u} v {v}");
+        }
+        assert!(ts.len() >= 4 && ts.len() <= 6, "{ts:?}");
+        // a point sampled on the patch, hit from outside along its normal
+        let (u, v) = (7.0, 1.2);
+        let (p, n) = (s.eval(u, v), s.normal(u, v));
+        let ts = line_params(p + n * 2.0, -n, &s, 1e-9).unwrap();
+        assert!(ts.iter().any(|t| (t - 2.0).abs() < 1e-7), "{ts:?}");
     }
 
     #[test]

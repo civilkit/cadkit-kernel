@@ -81,11 +81,37 @@ pub enum Surface {
     /// Profile swept along `dir` (magnitude kept: v=1 is one `dir`).
     Extrusion { profile: Box<Curve>, dir: Vec3 },
     BSpline(Box<BSplineSurface>),
+    /// Screw (helicoidal) patch `σ(u, v) = o + R(u) (c(v) - o) + rise·u·axis`: the profile `c` carried by a
+    /// rotation `u` about the axis through `axis_o` along unit `axis` plus an axial advance `rise` per
+    /// radian. Bounded like a B-spline patch: `u` in `urange`, `v` in `vrange` (closest points clamp to it).
+    Screw { profile: Box<Curve>, axis_o: Vec3, axis: Vec3, rise: f64, urange: (f64, f64), vrange: (f64, f64) },
     /// σ = base + d·N_base.
     Offset { base: Box<Surface>, dist: f64 },
 }
 
 const INF: f64 = f64::INFINITY;
+
+/// First-order evaluator of a screw patch along one iso-v line (see [`Surface::screw_vline`]).
+#[derive(Debug, Clone, Copy)]
+pub struct ScrewVLine {
+    w: Vec3,
+    c1: Vec3,
+    axis: Vec3,
+    axis_o: Vec3,
+    rise: f64,
+}
+
+impl ScrewVLine {
+    /// (point, S_u, S_v) at rotation `u`.
+    #[inline]
+    pub fn eval1(&self, u: f64) -> (Vec3, Vec3, Vec3) {
+        let (su, cu) = u.sin_cos();
+        let z = self.axis;
+        let rot = |w: Vec3| w * cu + z * (z.dot(w) * (1.0 - cu)) + z.cross(w) * su;
+        let rot_u = |w: Vec3| w * (-su) + z * (z.dot(w) * su) + z.cross(w) * cu;
+        (self.axis_o + rot(self.w) + z * (self.rise * u), rot_u(self.w) + z * self.rise, rot(self.c1))
+    }
+}
 
 impl Surface {
     /// Hash identifying the surface's geometry (equal surfaces hash equal;
@@ -119,7 +145,7 @@ impl Surface {
             Surface::Torus { .. } => "torus",
             Surface::Revolution { .. } => "revolution",
             Surface::Extrusion { .. } => "extrusion",
-            Surface::BSpline(_) => "spline",
+            Surface::BSpline(_) | Surface::Screw { .. } => "spline",
             Surface::Offset { .. } => "offset",
         }
     }
@@ -136,6 +162,25 @@ impl Surface {
         }
     }
 
+    /// Evaluator along the iso-v line of a screw patch (the profile is evaluated once): `None` for other
+    /// surfaces.
+    pub fn screw_vline(&self, v: f64) -> Option<ScrewVLine> {
+        let Surface::Screw { profile, axis_o, axis, rise, .. } = self else { return None };
+        let c = profile.derivs(v, 1);
+        Some(ScrewVLine { w: c[0] - *axis_o, c1: c[1], axis: *axis, axis_o: *axis_o, rise: *rise })
+    }
+
+    /// A multi-turn sweep patch (a long multi-span B-spline or a screw of more than ~1.3 turns): global
+    /// searches and winding numbers over it are costly, so callers use windowed marching and trust the
+    /// nearest-feature test.
+    pub fn is_long_sweep(&self) -> bool {
+        match self {
+            Surface::BSpline(bs) => bs.knots_u.len() > 64,
+            Surface::Screw { urange, .. } => urange.1 - urange.0 > 8.0,
+            _ => false,
+        }
+    }
+
     /// ((u0,u1),(v0,v1)) natural domain (may be infinite).
     pub fn domain(&self) -> ((f64, f64), (f64, f64)) {
         match self {
@@ -146,6 +191,7 @@ impl Surface {
             Surface::Revolution { profile, .. } => ((0.0, TAU), profile.range()),
             Surface::Extrusion { profile, .. } => (profile.range(), (-INF, INF)),
             Surface::BSpline(s) => s.domain(),
+            Surface::Screw { urange, vrange, .. } => (*urange, *vrange),
             Surface::Offset { base, .. } => base.domain(),
         }
     }
@@ -184,6 +230,11 @@ impl Surface {
                 frame.o + radial(frame, u) * (major + minor * v.cos()) + frame.z * (minor * v.sin())
             }
             Surface::BSpline(s) => s.eval(u, v),
+            Surface::Screw { profile, axis_o, axis, rise, .. } => {
+                let (su, cu) = u.sin_cos();
+                let w = profile.eval(v) - *axis_o;
+                *axis_o + w * cu + *axis * (axis.dot(w) * (1.0 - cu) + rise * u) + axis.cross(w) * su
+            }
             _ => self.derivs2(u, v).p,
         }
     }
@@ -256,6 +307,23 @@ impl Surface {
                 SurfDerivs {
                     p: *axis_o + rot(w),
                     du: rot_u(w),
+                    dv: rot(c[1]),
+                    duu: rot_uu(w),
+                    duv: rot_u(c[1]),
+                    dvv: rot(c[2]),
+                }
+            }
+            Surface::Screw { profile, axis_o, axis, rise, .. } => {
+                let c = profile.derivs(v, 2);
+                let (su, cu) = u.sin_cos();
+                let z = *axis;
+                let rot = |w: Vec3| w * cu + z * (z.dot(w) * (1.0 - cu)) + z.cross(w) * su;
+                let rot_u = |w: Vec3| w * (-su) + z * (z.dot(w) * su) + z.cross(w) * cu;
+                let rot_uu = |w: Vec3| w * (-cu) + z * (z.dot(w) * cu) - z.cross(w) * su;
+                let w = c[0] - *axis_o;
+                SurfDerivs {
+                    p: *axis_o + rot(w) + z * (rise * u),
+                    du: rot_u(w) + z * *rise,
                     dv: rot(c[1]),
                     duu: rot_uu(w),
                     duv: rot_u(c[1]),
@@ -370,6 +438,16 @@ impl Surface {
                     dvvv: rot(c[3]),
                 }
             }
+            Surface::Screw { profile, axis_o, axis, .. } => {
+                let c = profile.derivs(v, 3);
+                let (su, cu) = u.sin_cos();
+                let z = *axis;
+                let rot = |w: Vec3| w * cu + z * (z.dot(w) * (1.0 - cu)) + z.cross(w) * su;
+                let rot_u = |w: Vec3| w * (-su) + z * (z.dot(w) * su) + z.cross(w) * cu;
+                let rot_uu = |w: Vec3| w * (-cu) + z * (z.dot(w) * cu) - z.cross(w) * su;
+                let w = c[0] - *axis_o;
+                SurfThirds { duuu: rot_u(w) * -1.0, duuv: rot_uu(c[1]), duvv: rot_u(c[2]), dvvv: rot(c[3]) }
+            }
             Surface::Extrusion { profile, .. } => {
                 let c = profile.derivs(u, 3);
                 SurfThirds { duuu: c[3], ..Default::default() }
@@ -451,6 +529,7 @@ impl Surface {
                 (ang(l.x, l.y), wrap_angle(l.z.atan2(rho - major)))
             }
             Surface::BSpline(s) => s.closest_param(q),
+            Surface::Screw { .. } => screw_foot(self, q),
             Surface::Offset { base, .. } => base.closest_param(q),
             Surface::Extrusion { profile, dir } => {
                 // exact: project q along dir onto the profile's "base" by
@@ -514,7 +593,7 @@ impl Surface {
     /// march); falls back to the global search when the Newton foot is not a
     /// stationary point of the distance.
     pub fn closest_point_near(&self, q: Vec3, hint: (f64, f64)) -> (f64, f64, Vec3) {
-        if matches!(self, Surface::BSpline(_) | Surface::Revolution { .. } | Surface::Extrusion { .. }) {
+        if matches!(self, Surface::BSpline(_) | Surface::Revolution { .. } | Surface::Extrusion { .. } | Surface::Screw { .. }) {
             let dom = match self {
                 Surface::Revolution { .. } => {
                     let (_, (v0, v1)) = self.domain();
@@ -775,6 +854,47 @@ fn revolution_foot(profile: &Curve, axis_o: Vec3, axis: Vec3, q: Vec3) -> Option
     Some((wrap_angle(phi), v))
 }
 
+/// Closest point of a screw patch: the profile is sampled; for every sample the 1D problem in the
+/// rotation `u` has its minima near `delta + 2 pi k` (the angular term) and near `Delta / rise` (the axial
+/// term), so a few candidates per sample are scored by the exact squared distance; the best is polished by a
+/// clamped 2D Newton.
+fn screw_foot(s: &Surface, q: Vec3) -> (f64, f64) {
+    let Surface::Screw { profile, axis_o, axis, rise, urange: (u0, u1), vrange: (v0, v1) } = s else { unreachable!() };
+    let a = *axis;
+    let e1 = crate::any_perp(a);
+    let e2 = a.cross(e1);
+    let qw = q - *axis_o;
+    let (qz, qx, qy) = (qw.dot(a), qw.dot(e1), qw.dot(e2));
+    let rho = qx.hypot(qy);
+    let th_q = qy.atan2(qx);
+    let n = if matches!(**profile, Curve::Line { .. }) { 16 } else { 48 };
+    let mut best = (INF, *u0, *v0);
+    let mut cand = |u: f64, r: f64, th: f64, z: f64, v: f64| {
+        let u = u.clamp(*u0, *u1);
+        let d = r * r + rho * rho - 2.0 * r * rho * (th + u - th_q).cos() + (z + rise * u - qz).powi(2);
+        if d < best.0 {
+            best = (d, u, v);
+        }
+    };
+    for j in 0..=n {
+        let v = v0 + (v1 - v0) * j as f64 / n as f64;
+        let w = profile.eval(v) - *axis_o;
+        let (z, x, y) = (w.dot(a), w.dot(e1), w.dot(e2));
+        let (r, th) = (x.hypot(y), y.atan2(x));
+        let delta = th_q - th;
+        let k0 = if rise.abs() > 1e-12 { (((qz - z) / rise - delta) / TAU).round() } else { ((0.5 * (u0 + u1) - delta) / TAU).round() };
+        for k in -1..=1 {
+            cand(delta + TAU * (k0 + k as f64), r, th, z, v);
+        }
+        if rise.abs() > 1e-12 {
+            cand((qz - z) / rise, r, th, z, v);
+        }
+        cand(*u0, r, th, z, v);
+        cand(*u1, r, th, z, v);
+    }
+    newton_surface(|u, v| s.derivs2(u, v), q, (best.1, best.2), ((*u0, *u1), (*v0, *v1)))
+}
+
 /// 2D Newton for the foot point on a parametric surface given a
 /// second-derivative oracle; clamps to `dom` (infinite bounds = free).
 pub(crate) fn newton_surface(
@@ -839,13 +959,21 @@ mod tests {
                 dir: Vec3::new(0.2, 0.0, 2.0),
             },
             Surface::Offset { base: Box::new(Surface::Sphere { frame: f, r: 3.0 }), dist: 0.5 },
+            Surface::Screw {
+                profile: Box::new(prof),
+                axis_o: Vec3::new(0.2, -0.1, 0.0),
+                axis: Vec3::Z,
+                rise: 0.6,
+                urange: (0.0, 6.0),
+                vrange: (-1.0, 1.5),
+            },
         ]
     }
 
     #[test]
     fn kinds() {
         let k: Vec<_> = all().iter().map(|s| s.kind()).collect();
-        assert_eq!(k, ["plane", "cylinder", "cone", "sphere", "torus", "revolution", "extrusion", "offset"]);
+        assert_eq!(k, ["plane", "cylinder", "cone", "sphere", "torus", "revolution", "extrusion", "offset", "spline"]);
     }
 
     #[test]
@@ -884,6 +1012,29 @@ mod tests {
                 assert!(vclose(back, p, 1e-8), "{} ({u},{v}) -> ({cu},{cv})", s.kind());
             }
         }
+    }
+
+    /// The foot of a point on a multi-turn screw patch is found on the right turn, and a point beyond the
+    /// ends clamps to them.
+    #[test]
+    fn screw_closest_point_picks_the_turn() {
+        let prof = Curve::circle_x(Vec3::new(5., 0., 0.), Vec3::Y, Vec3::X, 1.5);
+        let s = Surface::Screw {
+            profile: Box::new(prof),
+            axis_o: Vec3::ZERO,
+            axis: Vec3::Z,
+            rise: 0.3,
+            urange: (0.0, 6.0 * TAU),
+            vrange: (0.0, std::f64::consts::PI),
+        };
+        for &(u, v) in &[(0.4, 0.5), (10.0, 2.0), (25.0, 1.0), (36.0, 2.5)] {
+            let p = s.eval(u, v);
+            let q = p + s.normal(u, v) * 0.05;
+            let (cu, cv) = s.closest_param(q);
+            assert!((cu - u).abs() < 1e-7 && (cv - v).abs() < 1e-7, "({u},{v}) -> ({cu},{cv})");
+        }
+        let past = s.eval(6.0 * TAU, 1.0) + Vec3::Z * 5.0;
+        assert!((s.closest_param(past).0 - 6.0 * TAU).abs() < 1.0);
     }
 
     #[test]

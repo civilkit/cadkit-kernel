@@ -424,6 +424,11 @@ impl StepWriter {
                     }
                 }
             }
+            // no STEP entity for a helicoidal patch: write the interpolated B-spline surface
+            Surface::Screw { urange, vrange, .. } => match ck_geom::convert::surface_to_nurbs(s, *urange, *vrange) {
+                Ok(bs) => self.surface(&Surface::BSpline(Box::new(bs))),
+                Err(_) => self.surface(&Surface::plane(Vec3::ZERO, Vec3::Z)),
+            },
             Surface::Offset { base, dist } => {
                 let b = self.surface(base);
                 // GUESS: self_intersect flag .F. (string `OFFSET_SURFACE('',#`

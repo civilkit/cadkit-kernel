@@ -116,7 +116,7 @@ pub fn project_points(surf: &Surface, pts: &[Vec3]) -> Vec<Vec2> {
     let mut out: Vec<Vec2> = Vec::with_capacity(pts.len());
     for &p in pts {
         let warm = match (surf, out.last()) {
-            (Surface::BSpline(_), Some(prev)) => warm_project(surf, prev.x, prev.y, p),
+            (Surface::BSpline(_) | Surface::Screw { .. }, Some(prev)) => warm_project(surf, prev.x, prev.y, p),
             _ => None,
         };
         let (mut u, mut v) = warm.unwrap_or_else(|| surf.closest_param(p));
@@ -382,7 +382,7 @@ fn pcurve_of_n(surf: &Surface, c: &Curve, t0: f64, t1: f64, tol: f64, n_min: Opt
     let uv_uniform = project_points(surf, &pts);
     // a straight, uniformly traversed uv path (a helix on a cylinder, a
     // screw rail on a sweep face): exact line pcurve
-    if n > 32 || matches!(surf, Surface::BSpline(_)) {
+    if n > 32 || matches!(surf, Surface::BSpline(_) | Surface::Screw { .. }) {
         let (a, mut b) = (uv_uniform[0], uv_uniform[n]);
         // a constant coordinate (a screw rail: v = const) stays exactly constant
         if (b.x - a.x).abs() < 1e-9 {

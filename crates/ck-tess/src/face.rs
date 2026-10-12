@@ -300,7 +300,7 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
             let e = ce.edge;
             // (a B-spline patch closed on itself is an ordinary rectangle in uv: its seam edge
             // bounds the polygon on both sides, there is no cut window to open)
-            let seam = body.is_seam(e) && !matches!(surf, Surface::BSpline(_));
+            let seam = body.is_seam(e) && !matches!(surf, Surface::BSpline(_) | Surface::Screw { .. });
             let ed = body.edge(e);
             let mut ps: Vec<f64> = params.get(e.idx()).cloned().unwrap_or_default();
             if ps.len() < 2 {
@@ -645,7 +645,7 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
     for (i, &v) in tri.vmap.iter().enumerate() {
         vdata.entry(v).or_insert((b.pts[i].uv, b.pts[i].p));
     }
-    if matches!(surf, Surface::BSpline(_)) {
+    if matches!(surf, Surface::BSpline(_) | Surface::Screw { .. }) {
         for (&v, &(uv, p)) in vdata.iter() {
             let sp = surf.eval(uv.x, uv.y);
             if sp.dist(p) > 0.25 * tol.chord {
@@ -672,9 +672,15 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
     // Centroid insertion alone grows a long thin face by one triangle layer per pass (64 passes max, each
     // re-testing the whole mesh): a swept coil face came out half empty and 100k triangles heavy. Seed the
     // interior with the (u,v) lattice the surface needs along its iso-lines, then let refinement mop up.
-    if let (Surface::BSpline(bs), None, None) = (surf, cu, cv) {
+    let lattice_n0 = match surf {
+        Surface::BSpline(bs) => Some(((knot_spans(&bs.knots_u) * 4).clamp(64, 4096), (knot_spans(&bs.knots_v) * 4).clamp(64, 4096))),
+        // a screw patch: the density of the rows its interpolated stand-in had (48 per turn, 24 along arcs)
+        Surface::Screw { urange, .. } => Some((((48.0 * (urange.1 - urange.0) / std::f64::consts::TAU).ceil() as usize * 4).clamp(64, 4096), 96)),
+        _ => None,
+    };
+    if let (Some(n0), None, None) = (lattice_n0, cu, cv) {
         if u_hi > u_lo && v_hi > v_lo && b.pts.len() >= 64 {
-            seed_lattice(bs, surf, &mut tri, &mut vdata, (u_lo, u_hi), (v_lo, v_hi), (su, sv), tol, &to_c);
+            seed_lattice(n0, surf, &mut tri, &mut vdata, (u_lo, u_hi), (v_lo, v_hi), (su, sv), tol, &to_c);
         }
     }
 
@@ -682,7 +688,7 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
     let budget = 20000 + 50 * b.pts.len();
     let mut inserted = 0usize;
     let sense = face.sense;
-    let is_spline = matches!(surf, Surface::BSpline(_));
+    let is_spline = matches!(surf, Surface::BSpline(_) | Surface::Screw { .. });
     // Triangles that passed keep their vertices (and so their verdict) across
     // passes: remember them instead of re-evaluating the surface 4x each pass.
     let mut accepted: HashSet<[u32; 3]> = HashSet::new();
@@ -955,7 +961,7 @@ fn lattice_fractions(surf: &Surface, rng: (f64, f64), other: (f64, f64), along_u
 
 #[allow(clippy::too_many_arguments)]
 fn seed_lattice(
-    bs: &ck_geom::nurbs::bsurf::BSplineSurface,
+    n0: (usize, usize),
     surf: &Surface,
     tri: &mut cdt::Triangulation,
     vdata: &mut HashMap<u32, (Vec2, Vec3)>,
@@ -965,8 +971,7 @@ fn seed_lattice(
     tol: &Tol,
     to_c: &dyn Fn(Vec2) -> Pt,
 ) {
-    let n0u = (knot_spans(&bs.knots_u) * 4).clamp(64, 4096);
-    let n0v = (knot_spans(&bs.knots_v) * 4).clamp(64, 4096);
+    let (n0u, n0v) = n0;
     // the two iso-line sags add up on a cell diagonal: sample each direction to a third of the chord tolerance
     let tol = &Tol { chord: tol.chord / 3.0, angle: tol.angle };
     let fu = lattice_fractions(surf, ur, vr, true, tol, n0u);

@@ -88,7 +88,7 @@ const GRAZE_TOL: f64 = 1e-1;
 const MIN_SPAN: f64 = 0.04;
 
 fn is_freeform(s: &Surface) -> bool {
-    matches!(s, Surface::BSpline(_) | Surface::Revolution { .. } | Surface::Extrusion { .. } | Surface::Offset { .. })
+    matches!(s, Surface::BSpline(_) | Surface::Screw { .. } | Surface::Revolution { .. } | Surface::Extrusion { .. } | Surface::Offset { .. })
 }
 
 /// (u, v) bounding box of the face's loops on its surface (periodic

@@ -117,11 +117,11 @@ fn split_at_knots<'a>(surf: &Surface, pieces: Vec<Piece<'a>>) -> Vec<Piece<'a>> 
 
 /// Outer panel count: angular parameters get ≤ π/8 panels (GL8 is then
 /// exact to ~1e-16 for the trig-polynomial integrands of analytic faces).
-fn panels_for(pc: &Curve2, ta: f64, tb: f64, ang: (bool, bool), curved: bool, spline: bool) -> usize {
+fn panels_for(pc: &Curve2, ta: f64, tb: f64, ang: (bool, bool), curved: bool, spline: bool, poly: bool) -> usize {
     match pc {
         Curve2::Line { d, .. } => {
             let step = std::f64::consts::PI / 8.0;
-            let mut n: f64 = if spline { 1.0 } else if curved { 4.0 } else { 2.0 };
+            let mut n: f64 = if spline && (poly || d.y == 0.0) { 1.0 } else if curved { 4.0 } else { 2.0 };
             if ang.0 {
                 n = n.max((d.x * (tb - ta)).abs() / step);
             }
@@ -144,6 +144,7 @@ fn angular(s: &Surface) -> (bool, bool) {
         Surface::Extrusion { profile, .. } => (profile.period().is_some(), false),
         Surface::Offset { base, .. } => angular(base),
         Surface::BSpline(_) => (false, false),
+        Surface::Screw { .. } => (true, false),
     }
 }
 
@@ -151,7 +152,14 @@ fn angular(s: &Surface) -> (bool, bool) {
 /// the integral of F against the OUTWARD area element. `res` ≥ 1 scales
 /// panel counts (region.rs refines near-singular integrands with it).
 pub fn face_integral<const K: usize>(b: &Body, f: FaceId, res: usize, integrand: &dyn Fn(Vec3, Vec3) -> [f64; K]) -> [f64; K] {
-    face_integral_with(b, f, res, integrand, None)
+    face_integral_with(b, f, res, integrand, None, false)
+}
+
+/// [`face_integral`] for an integrand that is a polynomial in the surface parameter `v` on cylinders and
+/// cones (the area element and the moments of a cylinder / cone are): a face with a long dense boundary
+/// (cut by helical flutes) then tabulates its inner integrals (see `analytic_tab`).
+pub fn face_integral_vpoly<const K: usize>(b: &Body, f: FaceId, res: usize, integrand: &dyn Fn(Vec3, Vec3) -> [f64; K]) -> [f64; K] {
+    face_integral_with(b, f, res, integrand, None, true)
 }
 
 /// n-point Gauss-Legendre rule on [-1, 1] (Newton on the Legendre polynomial).
@@ -190,10 +198,10 @@ fn gauss_legendre(n: usize) -> Vec<(f64, f64)> {
 /// points the degree needs (one panel per u span, fewer points across v),
 /// which matters on long screw sweeps (hundreds of spans).
 pub fn face_integral_poly<const K: usize>(b: &Body, f: FaceId, ord: usize, integrand: &dyn Fn(Vec3, Vec3) -> [f64; K]) -> [f64; K] {
-    face_integral_with(b, f, 1, integrand, Some(ord))
+    face_integral_with(b, f, 1, integrand, Some(ord), true)
 }
 
-fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand: &dyn Fn(Vec3, Vec3) -> [f64; K], poly_ord: Option<usize>) -> [f64; K] {
+fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand: &dyn Fn(Vec3, Vec3) -> [f64; K], poly_ord: Option<usize>, vpoly: bool) -> [f64; K] {
     let surf = &b.face(f).surface;
     let pieces = split_at_knots(surf, face_pieces(b, f));
     let mut acc = [0.0; K];
@@ -229,12 +237,28 @@ fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand
     }
     let width = (umax - umin).max(1e-12);
     let ang = angular(surf);
+    // (many boundary samples: a face cut by helical flutes)
+    let dense_boundary = vpoly && {
+        let dense: usize = pieces
+            .iter()
+            .map(|p| match p {
+                Piece::Exact(pc @ Curve2::BSpline(_), ta, tb) => panels_for(pc, *ta, *tb, ang, true, false, false) * 8,
+                Piece::Poly(pts) => pts.len() * 8,
+                _ => 0,
+            })
+            .sum();
+        dense > 1500
+    };
     let mut hu = width / (4.0 * res as f64);
     if ang.0 {
         hu = hu.min(std::f64::consts::PI / (8.0 * res as f64));
     }
-    if matches!(surf, Surface::BSpline(_) | Surface::Revolution { .. } | Surface::Extrusion { .. }) {
+    if matches!(surf, Surface::BSpline(_) | Surface::Revolution { .. } | Surface::Extrusion { .. } | Surface::Screw { .. }) {
         hu = hu.min(width / (16.0 * res as f64));
+    }
+    // a plane's polynomial integrands are exact in one GL8 panel: with a dense boundary do not subdivide
+    if dense_boundary && matches!(surf, Surface::Plane { .. }) {
+        hu = width * 2.0;
     }
     // polynomial integrand on a non-rational spline: exact panel counts
     // (u: degree (ord+2) pu, cumulated; v: degree (ord+2) pv - 1, GL points)
@@ -247,9 +271,16 @@ fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand
         _ => 2,
     };
     let v_rule: Option<Vec<(f64, f64)>> = poly_deg.map(|(_, dv)| gauss_legendre(((dv + 1) / 2).clamp(2, 8)));
+    // a cylinder / cone cut by helical flutes: thousands of boundary samples, each needing an inner integral
+    // over up to a turn. The integrands are polynomial in v, so tabulate the cumulative integral at the
+    // pi/8 cuts for a few v nodes (as for the screw patches) and interpolate
+    let analytic_tab = dense_boundary && matches!(surf, Surface::Cylinder { .. } | Surface::Cone { .. }) && umax - umin > 0.8 && vmax > vmin;
     let curved = !matches!(surf, Surface::Plane { .. });
     // non-rational B-spline boundary lines are cut at the knots: pieces are short
+    // (the one-panel rule is exact for polynomial integrands only; an area element is not, e.g. a ruled twisted
+    // face. A piece along u (v constant) contributes nothing, so it keeps the single panel)
     let spline = matches!(surf, Surface::BSpline(b) if b.weights.is_none());
+
     // B-spline faces: cut the u-integral at the interior knots (rational
     // quarter-turn arcs have C0 knots; a panel across one loses ~1e-4)
     let knots_u: Vec<f64> = match surf {
@@ -258,6 +289,16 @@ fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand
             let mut k: Vec<f64> = bs.knots_u.iter().copied().filter(|&x| x > a && x < z).collect();
             k.dedup();
             k
+        }
+        // a screw patch: cut every pi/8 (a hair less, so a cut segment never needs a second panel), where one
+        // GL8 panel is exact to rounding for the trigonometric integrands
+        Surface::Screw { urange: (a, z), .. } => {
+            let step = std::f64::consts::PI / 8.0 * 0.9999;
+            (1..).map(|i| a + step * i as f64).take_while(|&x| x < z - 1e-12).collect()
+        }
+        _ if analytic_tab => {
+            let step = std::f64::consts::PI / 8.0 * 0.9999;
+            (1..).map(|i| umin + step * i as f64).take_while(|&x| x < umax - 1e-12).collect()
         }
         _ => vec![],
     };
@@ -291,6 +332,7 @@ fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand
             Surface::BSpline(bs) => bs.vline(v),
             _ => None,
         };
+        let sl = surf.screw_vline(v);
         for j in 0..=m_in {
             let (a, c) = (cut(j), cut(j + 1));
             let span = c - a;
@@ -307,6 +349,10 @@ fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand
                     let (pt, nrm) = match &fast {
                         Some(sg) => {
                             let (p, du, dv) = sg.eval1(s);
+                            (p, du.cross(dv))
+                        }
+                        None if sl.is_some() => {
+                            let (p, du, dv) = sl.as_ref().unwrap().eval1(s);
                             (p, du.cross(dv))
                         }
                         None => {
@@ -327,7 +373,7 @@ fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand
     // u from u* would cost O(spans) per boundary sample. The integrand is a
     // low-degree polynomial in v on a span, so keep the cumulative integral
     // at every u knot for a few v nodes and Lagrange-interpolate in v
-    let long_spline = knots_u.len() >= 32;
+    let long_spline = analytic_tab || knots_u.len() >= if matches!(surf, Surface::Screw { .. }) { 6 } else { 32 };
     // per v span: Chebyshev-Lobatto nodes (exact for the polynomial integrands, ~1e-12 for the smooth
     // area element |Su x Sv|) and the cumulative integral at every u knot for each node
     type VSpanTab<const K: usize> = (f64, f64, Vec<f64>, Vec<Vec<[f64; K]>>);
@@ -340,15 +386,22 @@ fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand
             ks.dedup();
             ks.windows(2).map(|w| (w[0], w[1])).collect()
         }
+        Surface::Screw { vrange, .. } if long_spline && vrange.1 > vrange.0 => vec![*vrange],
+        _ if analytic_tab => vec![(vmin, vmax)],
         _ => vec![],
     };
     let build_vtab = || -> Option<(Vec<f64>, Vec<VSpanTab<K>>)> {
-        let Surface::BSpline(bs) = surf else { return None };
+        let ((du0, du1), nvn) = match surf {
+            Surface::BSpline(bs) => (bs.domain().0, 3 * bs.deg_v + 6),
+            // (volume-type integrands are trigonometric polynomials in v: 24 nodes are spectral; the area
+            // element of a strongly twisted face has singularities near the real axis: 56)
+            Surface::Screw { urange, .. } => (*urange, if poly_ord.is_some() { 24 } else { 56 }),
+            _ if analytic_tab => ((umin, umax), 10),
+            _ => return None,
+        };
         if !long_spline || vspans.is_empty() {
             return None;
         }
-        let ((du0, du1), _) = bs.domain();
-        let nvn = 3 * bs.deg_v + 6;
         let mut ks = vec![du0];
         ks.extend(knots_u.iter().copied());
         ks.push(du1);
@@ -391,32 +444,48 @@ fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand
         // sit at distinct v)
         let nodes = vspans.len() * match surf {
             Surface::BSpline(bs) => 3 * bs.deg_v + 6,
+            Surface::Screw { .. } => 56,
             _ => 0,
         };
         new_lists.get() >= nodes && vtab.get_or_init(build_vtab).is_some()
     };
-    let h_at = |u: f64, v: f64| -> [f64; K] {
+    // h(u, v) - h(u*, v) from the table: the v interpolation (barycentric form on the Chebyshev-Lobatto
+    // nodes) is shared by both ends; the partial spans are integrated directly at the true v (one
+    // seg_integral instead of one per interpolation node)
+    let h_diff = |u: f64, v: f64| -> [f64; K] {
         let (ks, tabs) = vtab.get().unwrap().as_ref().unwrap();
-        let k = (ks.partition_point(|&x| x <= u).max(1) - 1).min(ks.len() - 2);
+        let kof = |x: f64| (ks.partition_point(|&y| y <= x).max(1) - 1).min(ks.len() - 2);
+        let (k, k0) = (kof(u), kof(ustar));
         let si = (tabs.partition_point(|t| t.0 <= v).max(1) - 1).min(tabs.len() - 1);
         let (_, _, vn, cum) = &tabs[si];
-        let mut g = [0.0; K];
-        for j in 0..vn.len() {
-            let mut w = 1.0;
-            for m in 0..vn.len() {
-                if m != j {
-                    w *= (v - vn[m]) / (vn[j] - vn[m]);
-                }
+        let n = vn.len();
+        let mut w = [0.0f64; 128];
+        let (mut sum, mut exact) = (0.0, None);
+        for j in 0..n {
+            let d = v - vn[j];
+            if d == 0.0 {
+                exact = Some(j);
+                break;
             }
+            let lam = if j % 2 == 0 { 1.0 } else { -1.0 } * if j == 0 || j + 1 == n { 0.5 } else { 1.0 };
+            w[j] = lam / d;
+            sum += w[j];
+        }
+        if let Some(j) = exact {
+            w[..n].fill(0.0);
+            w[j] = 1.0;
+            sum = 1.0;
+        }
+        let mut g = [0.0; K];
+        for j in 0..n {
+            let wj = w[j] / sum;
             for i in 0..K {
-                g[i] += w * cum[j][k][i];
+                g[i] += wj * (cum[j][k][i] - cum[j][k0][i]);
             }
         }
-        // the partial span is integrated directly at the true v (one
-        // seg_integral instead of one per interpolation node)
-        let part = seg_integral(ks[k], u, v);
+        let (part, part0) = (seg_integral(ks[k], u, v), seg_integral(ks[k0], ustar, v));
         for i in 0..K {
-            g[i] += part[i];
+            g[i] += part[i] - part0[i];
         }
         g
     };
@@ -436,12 +505,7 @@ fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand
             return [0.0; K];
         }
         if long_spline && table_ready() {
-            let (a, b) = (h_at(u, v), h_at(ustar, v));
-            let mut g = a;
-            for i in 0..K {
-                g[i] -= b[i];
-            }
-            return g;
+            return h_diff(u, v);
         }
         if long_spline {
             let v = (v * 1e9).round() / 1e9;
@@ -501,10 +565,41 @@ fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand
             acc[k] += wt * dvdt * g[k];
         }
     };
+    // a generic (non-polynomial) integrand on a screw patch -- the area element of a strongly twisted face
+    // has complex singularities close to the real axis -- is integrated along the boundary adaptively
+    let adaptive = matches!(surf, Surface::Screw { .. }) && poly_ord.is_none();
+    let mut acc_ad = [0.0; K];
+    let panel = |pc: &Curve2, a: f64, b: f64| -> [f64; K] {
+        let mut s = [0.0; K];
+        let (m, hh) = (0.5 * (a + b), 0.5 * (b - a));
+        for &(x, w) in GL.iter() {
+            let d = pc.derivs(m + hh * x, 1);
+            if d[1].y == 0.0 {
+                continue;
+            }
+            let g = inner(d[0].x, d[0].y);
+            for k in 0..K {
+                s[k] += hh * w * d[1].y * g[k];
+            }
+        }
+        s
+    };
     for p in &pieces {
         match p {
+            // (the dense panels of a fitted boundary curve already follow it; the straight cap edges have 4)
+            Piece::Exact(pc, ta, tb) if adaptive && matches!(pc, Curve2::Line { d, .. } if d.y != 0.0) => {
+                let n = panels_for(pc, *ta, *tb, ang, curved, spline, false) * res;
+                let h = (tb - ta) / n as f64;
+                for i in 0..n {
+                    let (a, b) = (ta + h * i as f64, ta + h * (i + 1) as f64);
+                    let g = adapt_panel(&|x, y| panel(pc, x, y), a, b, panel(pc, a, b), 0);
+                    for k in 0..K {
+                        acc_ad[k] += g[k];
+                    }
+                }
+            }
             Piece::Exact(pc, ta, tb) => {
-                let n = panels_for(pc, *ta, *tb, ang, curved, spline) * res;
+                let n = panels_for(pc, *ta, *tb, ang, curved, spline, poly_ord.is_some()) * res;
                 let h = (tb - ta) / n as f64;
                 // a piece along v at constant u (a cap of a long sweep): the
                 // cumulated integrand is a polynomial in v of the degree above
@@ -533,7 +628,33 @@ fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand
             }
         }
     }
+    for k in 0..K {
+        acc[k] += acc_ad[k];
+    }
     acc
+}
+
+/// Panel `[a, b]` of a boundary integral refined (by halves, to depth 6) until the two halves agree with
+/// the whole to 1e-10 in every component.
+fn adapt_panel<const K: usize>(panel: &dyn Fn(f64, f64) -> [f64; K], a: f64, b: f64, whole: [f64; K], depth: u32) -> [f64; K] {
+    let m = 0.5 * (a + b);
+    let (l, r) = (panel(a, m), panel(m, b));
+    let mut ok = true;
+    let mut sum = [0.0; K];
+    for k in 0..K {
+        sum[k] = l[k] + r[k];
+        if (sum[k] - whole[k]).abs() > 1e-10 * (l[k].abs() + r[k].abs()) + 1e-12 {
+            ok = false;
+        }
+    }
+    if ok || depth >= 6 {
+        return sum;
+    }
+    let (gl, gr) = (adapt_panel(panel, a, m, l, depth + 1), adapt_panel(panel, m, b, r, depth + 1));
+    for k in 0..K {
+        sum[k] = gl[k] + gr[k];
+    }
+    sum
 }
 
 /// Raw moments of a set of faces about `r` (density 1).
@@ -594,7 +715,7 @@ impl Moments {
 pub fn faces_moments(b: &Body, faces: &[FaceId], r: Vec3) -> Moments {
     let mut m = Moments { r, ..Default::default() };
     for &f in faces {
-        let v = face_integral::<11>(b, f, 1, &|p, n| {
+        let v = face_integral_vpoly::<11>(b, f, 1, &|p, n| {
             let q = p - r;
             [
                 q.dot(n) / 3.0,

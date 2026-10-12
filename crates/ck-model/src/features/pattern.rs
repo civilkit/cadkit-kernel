@@ -169,6 +169,11 @@ pub fn reflect_body(b: &Body, pl: &Plane) -> Result<Body, String> {
                 s.ctrl.iter_mut().for_each(|q| *q = p(*q));
                 (Surface::BSpline(s), true, false)
             }
+            Surface::Screw { profile, axis_o, axis, rise, urange, vrange } => (
+                Surface::Screw { profile: Box::new(curve(profile)), axis_o: p(*axis_o), axis: -v(*axis), rise: -*rise, urange: *urange, vrange: *vrange },
+                true,
+                false,
+            ),
             Surface::Offset { .. } => return Err(super::extrude::todo("mirror of an offset surface")),
         };
         f.surface = s;

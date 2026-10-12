@@ -107,8 +107,17 @@ pub fn exec_rib(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<()
         let Ok(tool) = extrude(&f.id, &profile, ExtrudeOpts::mid(t)) else { continue };
         let cut = match ck_ops::boolean::boolean(&tool, &body, ck_ops::boolean::Op::Cut, super::TOL) {
             Ok(c) if !c.no_effect => c.body,
-            _ => continue,
+            r => {
+                if std::env::var_os("CK_RIB_DBG").is_some() {
+                    eprintln!("RIB side {s}: boolean {:?}", r.map(|c| c.no_effect).map_err(|e| format!("{e:?}")));
+                }
+                continue;
+            }
         };
+        if std::env::var_os("CK_RIB_DBG").is_some() {
+            let comps = ck_topo::region::components(&cut);
+            eprintln!("RIB side {s}: cut faces {} comps {:?} issues {:?}", cut.num_faces(), comps.iter().map(|c| c.len()).collect::<Vec<_>>(), ck_topo::check::check(&cut, 1e-6).iter().take(6).collect::<Vec<_>>());
+        }
         // pieces that never reach a far face are enclosed by the body
         let mut keep: Vec<FaceId> = vec![];
         for comp in ck_topo::region::components(&cut) {
@@ -149,32 +158,9 @@ pub fn exec_rib(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<()
         }
         br.combine(&piece, Combine::Add, false)?;
         if let Some(b) = br.body.as_mut() {
-            renumber_duplicates(b);
+            super::renumber_duplicates(b);
         }
         return Ok(());
     }
     Err(FeatureError::new(RIB_NO_CONTACT))
-}
-
-/// A face split by the union (the shell floor cut by the rib) keeps its old
-/// `~k` on both pieces; pinned: the whole family is re-ranked by control-box
-/// centre (`F2.C0~1` outer, `~2`/`~3` the floor pieces).
-fn renumber_duplicates(b: &mut Body) {
-    use std::collections::BTreeMap;
-    let mut fam: BTreeMap<(String, String, String), Vec<FaceId>> = BTreeMap::new();
-    for fid in b.face_ids() {
-        let n = &b.face(fid).name;
-        let base = ck_topo::body::FaceName { region: None, ..n.clone() };
-        fam.entry((base.id(), String::new(), String::new())).or_default().push(fid);
-    }
-    for (_, fs) in fam {
-        let ids: Vec<String> = fs.iter().map(|&x| b.face_id_str(x)).collect();
-        let dup = ids.iter().enumerate().any(|(i, a)| ids[..i].contains(a));
-        if dup {
-            for &x in &fs {
-                b.faces[x.idx()].name.region = None;
-            }
-            b.number_split_faces();
-        }
-    }
 }

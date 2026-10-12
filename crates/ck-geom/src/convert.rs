@@ -215,6 +215,15 @@ pub fn surface_to_nurbs(s: &Surface, (u0, u1): (f64, f64), (v0, v1): (f64, f64))
             }
             Ok(c)
         }
+        Surface::Screw { .. } => {
+            // interpolated tensor surface, 48 rows per turn (the density the screw sweeps use)
+            let rows = ((48.0 * (u1 - u0).abs() / std::f64::consts::TAU).ceil() as usize).max(8);
+            let us: Vec<f64> = (0..=rows).map(|i| u0 + (u1 - u0) * i as f64 / rows as f64).collect();
+            let nv = if matches!(s, Surface::Screw { profile, .. } if matches!(**profile, Curve::Line { .. })) { 1 } else { 24 };
+            let vs: Vec<f64> = (0..=nv).map(|j| v0 + (v1 - v0) * j as f64 / nv as f64).collect();
+            let grid: Vec<Vec<Vec3>> = us.iter().map(|&u| vs.iter().map(|&v| s.eval(u, v)).collect()).collect();
+            crate::fit::grid_surface(&grid, &us, &vs, 5, if nv == 1 { 1 } else { 3 })
+        }
         Surface::Offset { .. } => Err("offset surfaces have no exact NURBS form".into()),
     }
 }

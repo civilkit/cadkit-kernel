@@ -1028,6 +1028,18 @@ pub fn transform_surface(s: &Surface, x: &Xform) -> Surface {
             b.ctrl.iter_mut().for_each(|p| *p = x.apply_point(*p));
             Surface::BSpline(b)
         }
+        // a mirror reverses the handedness: M R(a, u) = R(-M a, u) M, so the axis flips and the rise changes sign
+        Surface::Screw { profile, axis_o, axis, rise, urange, vrange } => {
+            let m = x.det() < 0.0;
+            Surface::Screw {
+                profile: Box::new(profile.transform(|p| x.apply_point(p), |d| x.apply_vec(d))),
+                axis_o: x.apply_point(*axis_o),
+                axis: if m { -x.apply_vec(*axis) } else { x.apply_vec(*axis) },
+                rise: if m { -*rise } else { *rise },
+                urange: *urange,
+                vrange: *vrange,
+            }
+        }
         Surface::Offset { base, dist } => Surface::Offset { base: Box::new(transform_surface(base, x)), dist: *dist },
     }
 }

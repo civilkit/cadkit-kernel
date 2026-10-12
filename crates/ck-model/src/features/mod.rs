@@ -621,7 +621,10 @@ impl Brep {
                             return Err(FeatureError::new(CUT_NO_EFFECT));
                         }
                         if !out.no_effect {
-                            self.body = Some(out.body);
+                            let mut nb = out.body;
+                            // a re-split piece keeps its old `~k`: re-rank the family
+                            renumber_duplicates(&mut nb);
+                            self.body = Some(nb);
                         }
                         Ok(())
                     }
@@ -1080,5 +1083,28 @@ mod tests {
         let p = Part::parse(r#"{"format":"ck-part","version":2,"features":[3,{"type":"bogus"}],"name":5,"seq":"x"}"#).unwrap();
         assert_eq!(p.features.len(), 2);
         assert_eq!(p.features[1].type_name, "bogus");
+    }
+}
+
+/// A face split by the union (the shell floor cut by the rib) keeps its old
+/// `~k` on both pieces; pinned: the whole family is re-ranked by control-box
+/// centre (`F2.C0~1` outer, `~2`/`~3` the floor pieces).
+pub(crate) fn renumber_duplicates(b: &mut ck_topo::body::Body) {
+    use std::collections::BTreeMap;
+    let mut fam: BTreeMap<(String, String, String), Vec<ck_topo::body::FaceId>> = BTreeMap::new();
+    for fid in b.face_ids() {
+        let n = &b.face(fid).name;
+        let base = ck_topo::body::FaceName { region: None, ..n.clone() };
+        fam.entry((base.id(), String::new(), String::new())).or_default().push(fid);
+    }
+    for (_, fs) in fam {
+        let ids: Vec<String> = fs.iter().map(|&x| b.face_id_str(x)).collect();
+        let dup = ids.iter().enumerate().any(|(i, a)| ids[..i].contains(a));
+        if dup {
+            for &x in &fs {
+                b.faces[x.idx()].name.region = None;
+            }
+            b.number_split_faces();
+        }
     }
 }

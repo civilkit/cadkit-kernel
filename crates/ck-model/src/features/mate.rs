@@ -822,6 +822,14 @@ impl Xf {
             }
             Surface::Extrusion { profile, dir } => Surface::Extrusion { profile: Box::new(self.curve(profile)), dir: self.vec(*dir) },
             Surface::BSpline(b) => Surface::BSpline(Box::new(b.map(|p| self.point(p)))),
+            Surface::Screw { profile, axis_o, axis, rise, urange, vrange } => Surface::Screw {
+                profile: Box::new(self.curve(profile)),
+                axis_o: self.point(*axis_o),
+                axis: self.unit(*axis),
+                rise: k * rise,
+                urange: *urange,
+                vrange: *vrange,
+            },
             Surface::Offset { base, dist } => Surface::Offset { base: Box::new(self.surface(base)), dist: k * dist },
         }
     }
