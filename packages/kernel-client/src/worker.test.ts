@@ -39,3 +39,9 @@ describe('worker kernel', { skip: !existsSync(defaultWasmPath()) && 'no wasm bui
     }
   });
 });
+
+describe('worker kernel, missing wasm', () => {
+  it('names the path and the fix instead of a vague worker error', async () => {
+    await assert.rejects(createWorkerKernel('/nonexistent/ck_wasm.wasm'), /kernel wasm not found at \/nonexistent\/ck_wasm\.wasm.*CK_WASM/s);
+  });
+});

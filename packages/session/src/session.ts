@@ -61,6 +61,8 @@ export interface EditResult {
   errors?: RegenError[];
   hints?: ReturnType<typeof hintFor>[];
   schemaError?: string;
+  /** Ids of the features this batch added (assigned when the op had none). */
+  added?: string[];
   diff?: BodyDiff | null;
   refWarnings?: RefWarning[];
   /** Document expectations check (present when the doc carries expect). */
@@ -382,7 +384,9 @@ export class Session {
         }
       } catch { intent = null; }
     }
-    return { ok: true, record, diff: diffFacts(pre, post), refWarnings, intent, hints: hints.length ? hints : undefined };
+    const had = new Set(before.features.map((f) => f.id));
+    const added = candidate.features.map((f) => f.id).filter((id) => !had.has(id));
+    return { ok: true, record, added, diff: diffFacts(pre, post), refWarnings, intent, hints: hints.length ? hints : undefined };
   }
 
   /** Set the document's intent expectations (check grammar). Recorded like an

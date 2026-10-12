@@ -25,6 +25,8 @@ if ! git merge -q --no-edit main; then
   done
   git commit -q --no-edit
 fi
+DEL=$(git diff --name-only --diff-filter=D main HEAD -- '*.test.*' 'crates/*/tests/*')
+[ -z "$DEL" ] || [ -n "$ALLOW_TEST_DELETE" ] || { echo "land: branch deletes test files (set ALLOW_TEST_DELETE=1 if intended):"; echo "$DEL"; exit 1; }
 cargo test -q --workspace --profile fast 2>&1 | grep -E "^test result|FAILED|panicked" | grep -v " 0 failed" | grep . && { echo "land: tests failed"; exit 1; } || true
 cargo build -q -p ck-wasm --target wasm32-unknown-unknown --release
 npm --prefix packages ci --silent 2>&1 | tail -2

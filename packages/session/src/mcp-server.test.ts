@@ -90,3 +90,24 @@ describe('mcp server', () => {
     }
   });
 });
+
+describe('mcp server: discovery and ids', () => {
+  it('serves the guide and schema as tools, and reports assigned ids', async () => {
+    const client = await linked();
+    const names = (await client.listTools()).tools.map((t) => t.name);
+    assert.ok(names.includes('guide') && names.includes('schema'));
+    const guide = textOf(await client.callTool({ name: 'guide', arguments: {} })) as { text: string };
+    assert.match(guide.text, /Frames and traps/);
+    const schema = textOf(await client.callTool({ name: 'schema', arguments: {} })) as { exampleOps: unknown[] };
+    assert.ok(schema.exampleOps.length >= 2);
+    const { session } = textOf(await client.callTool({ name: 'open', arguments: {} })) as { session: string };
+    const r = textOf(await client.callTool({ name: 'edit', arguments: { session, ops: [{
+      op: 'add', feature: { type: 'sketch', plane: { kind: 'std', id: 'front' },
+        points: [{ id: 'p1', x: 0, y: 0 }, { id: 'p2', x: 10, y: 0 }, { id: 'p3', x: 10, y: 10 }, { id: 'p4', x: 0, y: 10 }],
+        entities: [['p1', 'p2'], ['p2', 'p3'], ['p3', 'p4'], ['p4', 'p1']].map(([a, b], i) => ({ id: `e${i + 1}`, type: 'line', p1: a, p2: b })),
+        constraints: [] } }] } })) as { ok: boolean; added: string[] };
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.added, ['F1']);
+    await client.callTool({ name: 'close', arguments: { session } });
+  });
+});

@@ -33,14 +33,36 @@ export function createMcpServer(): { server: McpServer; sessions: Map<string, Se
   server.tool('open', 'Open a session holding one document (empty or from part JSON)', {
     name: z.string().optional(),
     doc: FeatureJson.optional(),
-  }, async ({ name, doc }) => {
+    wasmPath: z.string().optional(),
+  }, async ({ name, doc, wasmPath }) => {
     const { emptyPart } = await import('../../part-model/src/index.js');
     const part = doc && typeof doc === 'object' && Array.isArray((doc as Record<string, unknown>).features)
       ? (doc as unknown as Parameters<typeof Session.open>[0])
       : emptyPart(name ?? 'Part');
     const id = `sess-${seq++}`;
-    sessions.set(id, await Session.open(part));
+    sessions.set(id, await Session.open(part, wasmPath ? { wasmPath } : undefined));
     return text({ session: id });
+  });
+
+  server.tool('guide', 'The authoring guide: feature fields, frames and traps, naming, recipes, error fixes. Read first.', {}, async () => text(getGuide()));
+
+  server.tool('schema', 'Feature types and a minimal example edit batch (a plate)', {}, async () => {
+    const { FEATURE_TYPES } = await import('../../part-model/src/index.js');
+    const sk = (id: string, plane: string, pts: number[][]) => ({
+      type: 'sketch', id, plane: { kind: 'std', id: plane },
+      points: pts.map(([x, y], i) => ({ id: `p${i + 1}`, x, y })),
+      entities: pts.map((_, i) => ({ id: `e${i + 1}`, type: 'line', p1: `p${i + 1}`, p2: `p${((i + 1) % pts.length) + 1}` })),
+      constraints: [],
+    });
+    return text({
+      featureTypes: FEATURE_TYPES,
+      planes: { front: 'XY, normal +Z', top: 'XZ, local y maps to -z', right: 'ZY' },
+      exampleOps: [
+        { op: 'add', feature: sk('F1', 'front', [[0, 0], [60, 0], [60, 40], [0, 40]]) },
+        { op: 'add', feature: { type: 'extrude', id: 'F2', op: 'add', sketch: 'F1', end: 'blind', depth: 10 } },
+      ],
+      exampleExpect: [{ kind: 'volume', value: 24000, tol: 0.01 }, { kind: 'valid' }],
+    });
   });
 
   server.tool('read', 'Read the document, body facts and edit history', {

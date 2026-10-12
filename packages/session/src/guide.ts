@@ -66,6 +66,22 @@ breaks automatically (ADR 0003 item 5).
 ## Features (${FEATURE_TYPES.length} wire types)
 ${FIELD_TABLE}
 
+## Frames and traps (read before writing sketches)
+- Sketch planes: front = XY (normal +Z), top = XZ, right = ZY. A sketch on
+  **top** maps local y to **-z** in the body: a point at y=+15 lands at z=-15.
+  A cut that misses the body fails with cutNoEffect; flip the sign of local y.
+- Extrude and cut run along the plane normal; a cut sketched on a plane inside
+  the body goes the other way from what a CadQuery reader expects, so check the
+  floor and wall positions with query/describe or render.
+- Revolve: axis is a sketch line id. Add a **construction** line for the axis
+  (\`{type:"line", construction:true}\`); otherwise the first profile edge is
+  used and the solid is wrong with no error.
+- edit returns ok:false with errors/hints (it is not a protocol error). The
+  document is unchanged then. Check ok and read hints before the next call.
+- Omit "id" on an added feature and it is assigned; the reply lists them in
+  "added". Reference features by those ids in later ops.
+- A sketch's entities reference point ids; circle needs {c: pointId, r}.
+
 ## Naming (ADR 0002)
 Cap faces: F2.C0. Side faces from sketch entities: F2.S.e10. Edges:
 {faces:[a,b], at:[x,y,z]}. Prefer referencing caps and sketch-entity sides

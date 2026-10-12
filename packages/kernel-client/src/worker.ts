@@ -3,6 +3,7 @@
 // tags calls with numeric ids, resolves replies by id.
 //
 // No browser involved: the gate can boot this anywhere node runs.
+import { existsSync } from 'node:fs';
 import { Worker } from 'node:worker_threads';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -27,6 +28,12 @@ export function defaultWasmPath(): string {
 }
 
 export async function createWorkerKernel(wasmPath = defaultWasmPath()): Promise<WorkerKernel> {
+  if (!existsSync(wasmPath)) {
+    throw new Error(
+      `kernel wasm not found at ${wasmPath}. Build it (cargo build -p ck-wasm --target wasm32-unknown-unknown --release) ` +
+      'or set CK_WASM / pass wasmPath to open.',
+    );
+  }
   const worker = new Worker(new URL('./worker-host.js', import.meta.url));
   const pending = new Map<number, (r: KernelReply) => void>();
   let nextId = 1;
