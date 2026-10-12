@@ -296,10 +296,25 @@ impl BSplineSurface {
 
     /// Parameters of the closest point to `q` (grid seed + 2D Newton).
     pub fn closest_param(&self, q: Vec3) -> (f64, f64) {
+        self.closest_param_within(q, f64::INFINITY).unwrap_or_else(|| {
+            let ((u0, _), (v0, _)) = self.domain();
+            (u0, v0)
+        })
+    }
+
+    /// [`closest_param`](Self::closest_param), but `None` when the surface is
+    /// not within `maxd` of `q`: cells whose control-net box is farther away
+    /// are never sampled, so a far query costs one pass over the boxes.
+    pub fn closest_param_within(&self, q: Vec3, maxd: f64) -> Option<(f64, f64)> {
         let ((u0, u1), (v0, v1)) = self.domain();
-        let nu = ((basis::distinct_count(&self.knots_u) - 1) * (self.deg_u + 1) * 3).max(12);
-        let nv = ((basis::distinct_count(&self.knots_v) - 1) * (self.deg_v + 1) * 3).max(12);
-        let mut best = (f64::INFINITY, u0, v0);
+        let cells_n = (basis::distinct_count(&self.knots_u) - 1) * (basis::distinct_count(&self.knots_v) - 1);
+        // long multi-span surfaces (screw sweeps): a coarser sample grid per
+        // cell, the Newton polish below recovers the foot point
+        let dens = if cells_n >= 256 { 1 } else { 3 };
+        let nu = ((basis::distinct_count(&self.knots_u) - 1) * (self.deg_u + 1) * dens).max(12);
+        let nv = ((basis::distinct_count(&self.knots_v) - 1) * (self.deg_v + 1) * dens).max(12);
+        let mut best = (maxd, u0, v0);
+        let mut found = false;
         // The seed grid is the same as a brute-force scan, but samples in
         // cells whose control-net box is farther from `q` than the best
         // sample so far are skipped (convex hull property: exact pruning).
@@ -319,29 +334,16 @@ impl BSplineSurface {
         };
         let (iu_of, iv_of) = (spans(&self.knots_u, pu, self.nu), spans(&self.knots_v, pv, self.nv));
         let (cu, cv) = (iu_of.iter().filter(|&&i| i != usize::MAX).count(), iv_of.iter().filter(|&&i| i != usize::MAX).count());
-        let mut lb = vec![f64::INFINITY; cu * cv.max(1)];
-        for su in pu..self.nu {
-            let iu = iu_of[su];
-            if iu == usize::MAX {
-                continue;
-            }
-            for sv in pv..self.nv {
-                let iv = iv_of[sv];
-                if iv == usize::MAX {
-                    continue;
+        let boxes = self.cell_boxes(&iu_of, &iv_of, cu, cv);
+        let lb: Vec<f64> = boxes
+            .iter()
+            .map(|&(lo, hi)| {
+                if lo.x > hi.x {
+                    return f64::INFINITY;
                 }
-                let (mut lo, mut hi) = (Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY), Vec3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY));
-                for i in su - pu..=su {
-                    for j in sv - pv..=sv {
-                        let c = self.cp(i, j);
-                        lo = lo.min(c);
-                        hi = hi.max(c);
-                    }
-                }
-                let d = Vec3::new((lo.x - q.x).max(q.x - hi.x).max(0.0), (lo.y - q.y).max(q.y - hi.y).max(0.0), (lo.z - q.z).max(q.z - hi.z).max(0.0));
-                lb[iu * cv + iv] = d.len();
-            }
-        }
+                Vec3::new((lo.x - q.x).max(q.x - hi.x).max(0.0), (lo.y - q.y).max(q.y - hi.y).max(0.0), (lo.z - q.z).max(q.z - hi.z).max(0.0)).len()
+            })
+            .collect();
         // Seed grid, visited cell by cell (nearest control-net box first):
         // the grid is uniform in (u, v), so the rows / columns that fall in a
         // knot cell are found arithmetically (then confirmed with find_span)
@@ -382,6 +384,7 @@ impl BSplineSurface {
             }
         }
         let u_at = |a: usize| u0 + (u1 - u0) * a as f64 / nu as f64;
+        let found_flag = std::cell::Cell::new(false);
         let mut visit = |c: &(f64, usize, usize, usize), best: &mut (f64, f64, f64)| {
             let (clb, su, _iu, iv) = *c;
             if clb >= best.0 || cols[iv].is_empty() {
@@ -413,6 +416,7 @@ impl BSplineSurface {
                     };
                     if d < best.0 {
                         *best = (d, u, v);
+                        found_flag.set(true);
                     }
                 }
             }
@@ -429,7 +433,83 @@ impl BSplineSurface {
         for &i in &order {
             visit(&cells[i], &mut best);
         }
-        crate::surface::newton_surface(|u, v| self.derivs2(u, v), q, (best.1, best.2), ((u0, u1), (v0, v1)))
+        found = found || found_flag.get();
+        if !found {
+            return None;
+        }
+        Some(crate::surface::newton_surface(|u, v| self.derivs2(u, v), q, (best.1, best.2), ((u0, u1), (v0, v1))))
+    }
+
+    /// Control-net boxes of the knot-span cells, `[iu * cv + iv]` (an empty
+    /// box, lo > hi, for a cell index with no span). Long multi-span surfaces
+    /// (screw sweeps) are queried thousands of times, so their boxes are kept
+    /// in a small thread-local cache keyed by a hash of the whole surface.
+    fn cell_boxes(&self, iu_of: &[usize], iv_of: &[usize], cu: usize, cv: usize) -> std::rc::Rc<Vec<(Vec3, Vec3)>> {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        thread_local! {
+            static CACHE: RefCell<Vec<(u64, Rc<Vec<(Vec3, Vec3)>>)>> = const { RefCell::new(Vec::new()) };
+        }
+        let big = cu * cv >= 256;
+        let key = if big {
+            let mut h: u64 = 0xcbf29ce484222325;
+            let mut mix = |x: u64| {
+                h = (h ^ x).wrapping_mul(0x100000001b3);
+                h ^= h >> 29;
+            };
+            mix(self.deg_u as u64 | (self.deg_v as u64) << 8 | (self.nu as u64) << 16 | (self.nv as u64) << 40);
+            for &k in self.knots_u.iter().chain(&self.knots_v) {
+                mix(k.to_bits());
+            }
+            for c in &self.ctrl {
+                mix(c.x.to_bits());
+                mix(c.y.to_bits());
+                mix(c.z.to_bits());
+            }
+            Some(h)
+        } else {
+            None
+        };
+        if let Some(k) = key {
+            if let Some(r) = CACHE.with(|c| c.borrow().iter().find(|e| e.0 == k).map(|e| e.1.clone())) {
+                return r;
+            }
+        }
+        let (pu, pv) = (self.deg_u, self.deg_v);
+        let inf = Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
+        let mut out = vec![(inf, -inf); cu * cv.max(1)];
+        for su in pu..self.nu {
+            let iu = iu_of[su];
+            if iu == usize::MAX {
+                continue;
+            }
+            for sv in pv..self.nv {
+                let iv = iv_of[sv];
+                if iv == usize::MAX {
+                    continue;
+                }
+                let (mut lo, mut hi) = (inf, -inf);
+                for i in su - pu..=su {
+                    for j in sv - pv..=sv {
+                        let c = self.cp(i, j);
+                        lo = lo.min(c);
+                        hi = hi.max(c);
+                    }
+                }
+                out[iu * cv + iv] = (lo, hi);
+            }
+        }
+        let out = Rc::new(out);
+        if let Some(k) = key {
+            CACHE.with(|c| {
+                let mut c = c.borrow_mut();
+                if c.len() >= 6 {
+                    c.remove(0);
+                }
+                c.push((k, out.clone()));
+            });
+        }
+        out
     }
 
     /// Apply a point map to the control net (exact for affine maps).

@@ -485,6 +485,17 @@ impl Surface {
         (u, v, self.eval(u, v))
     }
 
+    /// [`closest_point`](Self::closest_point), `None` when the surface is
+    /// farther than `maxd` from `q` (cheap for long B-spline faces).
+    pub fn closest_point_within(&self, q: Vec3, maxd: f64) -> Option<(f64, f64, Vec3)> {
+        if let Surface::BSpline(bs) = self {
+            let (u, v) = bs.closest_param_within(q, maxd)?;
+            return Some((u, v, self.eval(u, v)));
+        }
+        let r = self.closest_point(q);
+        (r.2.dist(q) <= maxd).then_some(r)
+    }
+
     /// Distance from `q` to the (untrimmed) surface.
     pub fn distance(&self, q: Vec3) -> f64 {
         self.closest_point(q).2.dist(q)
