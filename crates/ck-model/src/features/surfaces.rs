@@ -299,13 +299,9 @@ pub fn exec_trim(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(
         }
         _ => return Err(missing()),
     };
-    // ck-ops trim cuts by a PLANE tool only; surface x surface trimming (the
-    // large sample's loft x barrel) is not reconstructed yet
-    let planar_tool = tool.face_ids().all(|x| matches!(tool.face(x).surface, ck_geom::surface::Surface::Plane { .. }));
-    let planar_targets = targets.iter().all(|t| t.face_ids().all(|x| matches!(t.face(x).surface, ck_geom::surface::Surface::Plane { .. })));
-    if !planar_tool || !planar_targets {
-        return Err(FeatureError::new(&super::extrude::todo("trimSurface of curved surfaces")));
-    }
+    // ck-ops trims planar tools with the pinned half-plane clip and any
+    // other pairing (surface x surface, the large sample's loft x barrel)
+    // via SSI + region clipping in `sf::trim::trim_curved`
     let out = sf::trim::trim(&targets, &tool, *flip, *mutual, super::TOL).map_err(|e| coded(e.code, &e.detail))?;
     let mut gone = tidx;
     if let Some(ti) = tool_i {
