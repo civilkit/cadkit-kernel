@@ -588,6 +588,11 @@ pub fn lump_faces(b: &Body, l: LumpId) -> Vec<FaceId> {
     out
 }
 
+/// Reference point (bbox centre) the moments are taken about.
+pub fn ref_point_of(b: &Body) -> Vec3 {
+    ref_point(b)
+}
+
 fn ref_point(b: &Body) -> Vec3 {
     let (lo, hi) = b.bbox();
     if lo.is_finite() && hi.is_finite() {

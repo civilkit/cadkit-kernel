@@ -378,7 +378,9 @@ impl BSplineSurface {
         let dens = if cells_n >= 256 { 1 } else { 3 };
         let nu = ((basis::distinct_count(&self.knots_u) - 1) * (self.deg_u + 1) * dens).max(12);
         let nv = ((basis::distinct_count(&self.knots_v) - 1) * (self.deg_v + 1) * dens).max(12);
-        let mut best = (maxd, u0, v0);
+        // (the grid samples are up to a cell away from the foot point: the
+        // sample bound is looser than `maxd`, the final distance is checked)
+        let mut best = (maxd + self.cell_scale(), u0, v0);
         let mut found = false;
         // The seed grid is the same as a brute-force scan, but samples in
         // cells whose control-net box is farther from `q` than the best
@@ -553,6 +555,7 @@ impl BSplineSurface {
             best
         };
         let first = newton((best.1, best.2));
+        let in_range = |uv: (f64, f64)| self.eval(uv.0, uv.1).dist(q) <= maxd;
         // Near the surface (a point ON it, say) the best grid sample can sit
         // on another sheet of a self-overlapping sweep: also polish the best
         // samples of the other cells, keep the nearest result.
@@ -574,9 +577,9 @@ impl BSplineSurface {
                     break;
                 }
             }
-            return Some(res.1);
+            return in_range(res.1).then_some(res.1);
         }
-        Some(first)
+        in_range(first).then_some(first)
     }
 
     /// Typical size of a knot-span cell (diagonal of the control-net box of
@@ -861,5 +864,42 @@ mod tests {
                 assert!(vclose(a, b, 1e-11), "{a:?} vs {b:?}");
             }
         }
+    }
+
+    /// Full rational circle (unit radius, 9 control points) times a segment: u closes on itself.
+    fn closed_tube() -> BSplineSurface {
+        let h = std::f64::consts::FRAC_1_SQRT_2;
+        let ring = [(1., 0., 1.), (1., 1., h), (0., 1., 1.), (-1., 1., h), (-1., 0., 1.), (-1., -1., h), (0., -1., 1.), (1., -1., h), (1., 0., 1.)];
+        let mut ctrl = vec![];
+        let mut ws = vec![];
+        for &(x, y, w) in &ring {
+            for z in [0.0, 2.0] {
+                ctrl.push(Vec3::new(x, y, z));
+                ws.push(w);
+            }
+        }
+        BSplineSurface::new(2, 1, vec![0., 0., 0., 0.25, 0.25, 0.5, 0.5, 0.75, 0.75, 1., 1., 1.], vec![0., 0., 1., 1.], 9, 2, ctrl, Some(ws)).unwrap()
+    }
+
+    #[test]
+    fn closest_param_across_the_closing_isoline() {
+        let s = closed_tube();
+        // just short of the closing isoline u = 1: the nearest grid sample is on u = 0
+        for &(u, v) in &[(0.9995, 0.3), (0.9999, 1.7 / 2.0), (0.0004, 0.5), (0.99999, 0.0)] {
+            let p = s.eval(u, v);
+            let (cu, cv) = s.closest_param(p);
+            assert!(s.eval(cu, cv).dist(p) < 1e-9, "{u} {v} -> {cu} {cv}: {}", s.eval(cu, cv).dist(p));
+        }
+    }
+
+    #[test]
+    fn closest_param_within_bounds_the_search() {
+        let s = closed_tube();
+        let p = s.eval(0.3, 0.4) + Vec3::new(0.0, 0.0, 0.0);
+        assert!(s.closest_param_within(p, 1e-6).is_some());
+        let far = Vec3::new(10.0, 0.0, 1.0);
+        assert!(s.closest_param_within(far, 5.0).is_none());
+        let (u, v) = s.closest_param_within(far, 20.0).unwrap();
+        assert!((s.eval(u, v).dist(far) - 9.0).abs() < 1e-9);
     }
 }

@@ -609,6 +609,33 @@ mod tests {
         ck_topo::mass::mass_props(b).volume
     }
 
+    /// A circle profile in the meridian plane swept `revs` turns: a long spline face with a curved
+    /// (multi-span) section, the shape of a coil spring.
+    fn coil(revs: f64) -> Body {
+        let fr = Frame { o: Vec3::new(30.0, 0.0, 0.0), x: Vec3::X, y: Vec3::Z, z: -Vec3::Y };
+        let c = ProfileLoop::new(vec![ProfileSeg::circle("c", Vec2::ZERO, 2.0)]);
+        let prof = Profile::new(fr, vec![ProfileRegion { outer: c, holes: vec![] }]);
+        let h = HelixParams { pitch: 7.0, revolutions: revs, ..Default::default() };
+        let path = vec![PathSeg::Helix { h: helix(&Frame::identity(), Vec3::ZERO, 30.0, &h).unwrap(), rev: false }];
+        sweep("F1", &prof, &path, 0.0).expect("coil sweep")
+    }
+
+    #[test]
+    fn long_spline_face_integrals_use_exact_rules() {
+        // the polynomial-degree Gauss rules (one panel per span, 5 points across the section)
+        // must reproduce the generic composite rule on every face
+        let b = coil(6.0);
+        let r = ck_topo::mass::ref_point_of(&b);
+        for f in b.face_ids() {
+            let g = ck_topo::mass::face_integral::<1>(&b, f, 1, &|p, n| [(p - r).dot(n) / 3.0])[0];
+            let e = ck_topo::mass::face_integral_poly::<1>(&b, f, 1, &|p, n| [(p - r).dot(n) / 3.0])[0];
+            assert!((g - e).abs() <= 1e-9 * g.abs().max(1.0), "{} {g} vs {e}", b.face_id_str(f));
+        }
+        // closed form: A * 2 pi R * N
+        let want = std::f64::consts::PI * 4.0 * std::f64::consts::TAU * 30.0 * 6.0;
+        assert!((vol(&b) - want).abs() / want < 3e-5, "{} vs {want}", vol(&b));
+    }
+
     #[test]
     fn twist_extrude_keeps_volume_and_names() {
         let rect = ProfileLoop::new(

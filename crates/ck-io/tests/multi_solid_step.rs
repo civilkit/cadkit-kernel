@@ -72,7 +72,28 @@ fn torsion_spring_gt_coil_vs_ideal_tube() {
     eprintln!("GT coil faces: max |dist to ideal tube| {worst:.5}, mean {:.5}, signed [{smin:.5}, {smax:.5}] over {n} samples", sum / n as f64);
 }
 
-/// coil_spring ground truth: closed rational degree-6 sweep face + 4 planes (timing diagnostic).
+/// coil_spring ground truth: one closed rational degree-6 sweep face (976 knot spans along the path,
+/// self-overlapping coils: pitch 6 < wire 6.94) + 4 planes. Import, mass, validate and tessellation used
+/// to cost 16 + 11 + 13 + 38 s (every closest-point query scanned all spans, closest points across the
+/// closing isoline were wrong, the refinement re-tested every triangle each pass).
+#[test]
+fn coil_spring_gt_imports_and_tessellates_fast() {
+    let t = std::time::Instant::now();
+    let r = read_step(&gt("coil_spring_000026")).unwrap();
+    assert_eq!(r.solids, 1);
+    assert_eq!(r.body.face_ids().count(), 5);
+    let mp = ck_topo::mass::mass_props(&r.body);
+    // dataset volume 89283.67, area 52788.04 (the face integral double-counts the coils' overlap, as OCC does)
+    assert!((mp.volume - 89283.67).abs() / 89283.67 < 1e-3, "volume {}", mp.volume);
+    assert!((mp.area - 52788.04).abs() / 52788.04 < 1e-3, "area {}", mp.area);
+    assert!(ck_check::validate(&r.body, 1e-6).is_empty());
+    let tm = ck_tess::mesh::tessellate(&r.body);
+    assert!(tm.mesh.failed.is_empty());
+    assert!(tm.mesh.tri_face.len() > 50_000, "{} triangles", tm.mesh.tri_face.len());
+    assert!(t.elapsed().as_secs_f64() < 120.0, "{:.1} s", t.elapsed().as_secs_f64());
+}
+
+/// Timing diagnostic: `cargo test -p ck-io --profile fast --test multi_solid_step coil_spring_gt_probe -- --ignored --nocapture`.
 #[test]
 #[ignore]
 fn coil_spring_gt_probe() {
