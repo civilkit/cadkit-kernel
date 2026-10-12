@@ -377,7 +377,7 @@ fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand
         Some((ks, tabs))
     };
     // a ruled screw face (one v span): the table is always cheaper; a face with several v spans builds it
-    // only once many boundary samples sit at distinct v (a cut curve across the sweep)
+    // only once as many boundary samples as table nodes sit at distinct v (a cut curve across the sweep)
     let vtab: std::cell::OnceCell<Option<(Vec<f64>, Vec<VSpanTab<K>>)>> = std::cell::OnceCell::new();
     if vspans.len() == 1 {
         let _ = vtab.set(build_vtab());
@@ -387,7 +387,13 @@ fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand
         if vspans.len() == 1 {
             return vtab.get().map_or(false, |t| t.is_some());
         }
-        new_lists.get() >= 48 && vtab.get_or_init(build_vtab).is_some()
+        // (building costs one inner integral per table node: worth it once that many boundary samples
+        // sit at distinct v)
+        let nodes = vspans.len() * match surf {
+            Surface::BSpline(bs) => 3 * bs.deg_v + 6,
+            _ => 0,
+        };
+        new_lists.get() >= nodes && vtab.get_or_init(build_vtab).is_some()
     };
     let h_at = |u: f64, v: f64| -> [f64; K] {
         let (ks, tabs) = vtab.get().unwrap().as_ref().unwrap();

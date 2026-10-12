@@ -558,9 +558,10 @@ impl BSplineSurface {
         let in_range = |uv: (f64, f64)| self.eval(uv.0, uv.1).dist(q) <= maxd;
         // Near the surface (a point ON it, say) the best grid sample can sit
         // on another sheet of a self-overlapping sweep: also polish the best
-        // samples of the other cells, keep the nearest result.
+        // samples of the other cells, keep the nearest result (not for the
+        // bounded query, which the SSI seeding calls thousands of times).
         let fd = self.eval(first.0, first.1).dist(q);
-        if fd > 1e-9 && best.0 < 4.0 * fd.max(1e-3) + self.cell_scale() {
+        if maxd.is_infinite() && fd > 1e-9 && best.0 < 4.0 * fd.max(1e-3) + self.cell_scale() {
             let mut cb = cell_best.into_inner();
             cb.sort_by(|a, b| a.0.total_cmp(&b.0));
             let mut res = (fd, first);
