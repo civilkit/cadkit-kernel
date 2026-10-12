@@ -45,6 +45,13 @@ export class Sketch {
     this.entities.push({ id, type: 'circle', c, r });
     return id;
   }
+  /** hole centre: a point entity over a new point (what the hole feature reads) */
+  point(x: number, y: number): string {
+    const p = this.pt(x, y);
+    const id = this.id('e');
+    this.entities.push({ id, type: 'point', p });
+    return id;
+  }
   /** closed polygon through [x,y] vertices */
   poly(pts: Array<[number, number]>): string[] {
     const ids = pts.map(([x, y]) => this.pt(x, y));

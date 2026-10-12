@@ -107,4 +107,21 @@ describe('verify live', { skip: !existsSync(wasmPath()) && 'no wasm built' }, ()
       await k.close();
     }
   });
+
+  it('verifies a hole feature with point-entity centres', async () => {
+    const { createWorkerKernel } = await import('../../kernel-client/src/worker.js');
+    const { Part } = await import('../../builder/src/index.js');
+    const p = new Part('Disc', 'aluminium');
+    const s = p.sketch('Disc', 'front', (sk) => { sk.circle(0, 0, 20); });
+    p.extrude({ sketch: s, op: 'add', end: 'blind', depth: 10 });
+    const c = p.sketch('Centres', 'front', (sk) => { sk.point(0, 0); });
+    p.hole({ sketch: c, diameter: 8, flip: true });
+    const k = await createWorkerKernel();
+    try {
+      const r = await verify(k, p.toJSON(), { expect: [{ kind: 'volume', equals: Math.PI * 384 * 10, relTol: 1e-3 }] });
+      assert.equal(r.ok, true);
+    } finally {
+      await k.close();
+    }
+  });
 });
