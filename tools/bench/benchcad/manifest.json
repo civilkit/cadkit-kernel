@@ -1208,10 +1208,6 @@
    "label": "kernel-gap",
    "note": "F7 blendUnsupported: chamfer of a planar face edge that meets a fillet cylinder tangentially. Probed: the 4 end-edge chamfers (plane x plane) alone succeed, any single chamfer on a plane/fillet-cylinder edge fails. Box, slot and the 8-edge |Z fillet are exact."
   },
-  "spline_hub_000030": {
-   "label": "kernel-bug",
-   "note": "geometry matches (vol/area/com/bbox ok); validate reports LOOP_SELF_INTERSECT on the groove disc caps (F8.C0/C1): the r=40.15 circle lies 1 mm from the 100-arc spline loop, the known ck-check wire.rs 8-point chord-sag false positive. The ground-truth STEP trips the same check."
-  },
   "eyebolt_000265": {
    "label": "kernel-bug",
    "note": "F12 booleanFailed: union of the revolved torus (exact alone, V=189575) with the collar/neck/shank (torus x coaxial cylinders and cone, torus tube crossing the shank axis region). The torus overlaps the shank, so the boolean has torus x cylinder and torus x plane intersections."
@@ -1222,10 +1218,6 @@
   }
  },
  "knownStep": {
-  "spline_hub_000030": {
-   "label": "kernel-bug",
-   "note": "LOOP_SELF_INTERSECT x2 on the ground-truth STEP: groove-disc loop 1 mm from the 100-arc spline loop (ck-check wire.rs sampling false positive)."
-  },
   "t_pipe_fitting_000075": {
    "label": "kernel-bug",
    "note": "ground-truth STEP imports with the right volume/area/bbox but validate reports EDGE_OFF_SURFACE x2 (cylinder x cylinder branch edges after STEP import)."
