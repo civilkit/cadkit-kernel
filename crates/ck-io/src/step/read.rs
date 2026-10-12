@@ -23,7 +23,7 @@ use ck_geom::curve::Curve;
 use ck_geom::curve2::Curve2;
 use ck_geom::nurbs::bspline::BSplineCurve;
 use ck_geom::nurbs::bsurf::BSplineSurface;
-use ck_geom::pcurve::{exact_pcurve, pcurve_of};
+use ck_geom::pcurve::{exact_pcurve, pcurve_of, pcurve_of_dense};
 use ck_geom::surface::Surface;
 use ck_geom::{frame_from, Frame, Vec2, Vec3};
 use ck_topo::body::{Body, EdgeId, FaceId, FaceName, LumpId, ShellId, VertexId};
@@ -398,6 +398,9 @@ impl<'a> Rd<'a> {
             "SURFACE_OF_REVOLUTION" => {
                 let c = self.curve(a.get(1).and_then(Val::as_ref).ok_or_else(|| bad(id, "revolution without curve"))?)?;
                 let (o, z) = self.axis1(a.get(2).and_then(Val::as_ref).ok_or_else(|| bad(id, "revolution without axis"))?)?;
+                if let Some(sph) = revolved_circle_as_sphere(&c, o, z) {
+                    return Ok(sph);
+                }
                 Ok(Surface::Revolution { profile: Box::new(c), axis_o: o, axis: z })
             }
             "SURFACE_OF_LINEAR_EXTRUSION" => {
@@ -1045,7 +1048,10 @@ fn edge_pcurve(b: &Body, e: EdgeId, surf: &Surface) -> Option<Curve2> {
     if let Some(p) = exact_pcurve(surf, &ed.curve, 1e-7) {
         return Some(p);
     }
-    pcurve_of(surf, &ed.curve, ed.t0, ed.t1, 1e-6).ok()
+    if matches!(surf, Surface::BSpline(_)) {
+        return pcurve_of(surf, &ed.curve, ed.t0, ed.t1, 1e-6).ok();
+    }
+    pcurve_of_dense(surf, &ed.curve, ed.t0, ed.t1, 1e-6, 2e-6).ok()
 }
 
 impl Rd<'_> {
@@ -1406,12 +1412,29 @@ impl Rd<'_> {
             1 => {
                 let ia = wind[0].0;
                 let la = loops[ia].clone();
+                // a loop that already runs into the pole and out again (the
+                // seam spike OCC writes, with no degenerate edge) is closed
+                // in 3D by the pole jump in uv: nothing to add
+                if self.has_pole_jump(&la, d, per) {
+                    return Ok(loops);
+                }
                 let joined = self.close_at_pole(id, surf, sense, d, per, la, wind[0].2)?;
                 loops[ia] = joined;
                 Ok(loops)
             }
             _ => Err(ImportError::new("unsupported", Some(id), "periodic face with an unsupported set of winding boundaries")),
         }
+    }
+
+    /// Consecutive coedges whose uv ends differ by a whole period along `d`
+    /// only: a jump across a pole.
+    fn has_pole_jump(&self, l: &[Co], d: usize, per: f64) -> bool {
+        let n = l.len();
+        (0..n).any(|i| {
+            let (Some(a), Some(b)) = (self.co_uv(&l[i], false), self.co_uv(&l[(i + 1) % n], true)) else { return false };
+            let (dd, od) = (comp(b, d) - comp(a, d), comp(b, 1 - d) - comp(a, 1 - d));
+            od.abs() < 1e-6 && dd.abs() > 0.5 * per
+        })
     }
 
     /// Index of the coedge of `l` whose start coordinate along `d` is `s`
@@ -1536,6 +1559,13 @@ impl Rd<'_> {
         let (ia, mut rb) = chosen.ok_or_else(fail)?;
         let mut ra = la[ia..].to_vec();
         ra.extend_from_slice(&la[..ia]);
+        // The loops were unwrapped from their first coedge, so the +-period
+        // closure jump sits where that coedge was; rotating moved it into
+        // the middle. Unwrap again from the new start so each loop is
+        // continuous and gains its whole winding at the end.
+        let (pu, pv) = if d == 0 { (Some(per), per_o) } else { (per_o, Some(per)) };
+        self.unwrap_loop(&mut ra, pu, pv);
+        self.unwrap_loop(&mut rb, pu, pv);
         let a0 = self.co_uv(&ra[0], true).ok_or_else(fail)?;
         let s = comp(a0, d);
         // shift B so its start meets the end of the seam leg
@@ -1657,6 +1687,23 @@ impl Rd<'_> {
         out.push(Co { edge: e, rev: !rev, pc: Some(pc_at(s)) });
         Ok(out)
     }
+}
+
+/// A circle revolved about an axis through (almost) its centre, lying in a plane
+/// containing the axis, with its parameter origin on the equator, is a sphere
+/// whose (u, v) equal the revolution's (angle, circle parameter). CAD exporters
+/// that build a dome by revolving an arc emit this form (centre off the axis by
+/// ~1e-4); the pole then needs the sphere treatment on import.
+fn revolved_circle_as_sphere(c: &Curve, axis_o: Vec3, axis: Vec3) -> Option<Surface> {
+    let Curve::Circle { frame, r } = c else { return None };
+    let a = axis.normalize();
+    let off = frame.o - axis_o;
+    let along = off.dot(a);
+    let perp = (off - a * along).len();
+    if perp > 5e-4 * *r || frame.z.dot(a).abs() > 1e-4 || frame.x.dot(a).abs() > 1e-4 || frame.y.dot(a) < 1.0 - 1e-6 {
+        return None;
+    }
+    Some(Surface::Sphere { frame: frame_from(axis_o + a * along, a, frame.x), r: *r })
 }
 
 #[cfg(test)]

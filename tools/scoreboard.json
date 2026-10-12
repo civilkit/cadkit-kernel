@@ -66,5 +66,21 @@
  "bench.benchcad.step": [
   23,
   30
+ ],
+ "iface.check": [
+  41,
+  41
+ ],
+ "iface.describe": [
+  41,
+  41
+ ],
+ "iface.refdiff": [
+  41,
+  41
+ ],
+ "iface.resolve": [
+  41,
+  41
  ]
 }

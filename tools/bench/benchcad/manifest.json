@@ -1175,21 +1175,9 @@
   }
  },
  "knownStep": {
-  "t_pipe_fitting_000075": {
-   "label": "kernel-bug",
-   "note": "ground-truth STEP imports with the right volume/area/bbox but validate reports EDGE_OFF_SURFACE x2 (cylinder x cylinder branch edges after STEP import)."
-  },
   "pan_head_screw_000035": {
-   "label": "kernel-bug",
-   "note": "validate on the imported ground-truth STEP: SHELL_NONMANIFOLD + EDGE_OFF_SURFACE (helical thread faces); also the thread volume differs from our regen (see regen cause)."
-  },
-  "dome_cap_000212": {
-   "label": "kernel-gap",
-   "note": "importStep: unsupported 'single boundary winding a revolution surface' (a sphere pole boundary) - same degenerate sphere-as-revolution case as the regen side."
-  },
-  "torus_link_000095": {
-   "label": "kernel-gap",
-   "note": "ground-truth STEP holds two disjoint solids; importStep keeps one body (box shows the lug+partial only): no multi-solid import."
+   "label": "ground-truth-mismatch",
+   "note": "the reference STEP is itself non-manifold (one EDGE_CURVE is used by four oriented edges of the thread faces); we import it faithfully (volume, area, bbox, com all match) and validate reports SHELL_NONMANIFOLD for that edge."
   }
  },
  "tolerances": {

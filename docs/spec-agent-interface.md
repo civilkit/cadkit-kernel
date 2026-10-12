@@ -3,6 +3,8 @@
 Status: Proposed. Describes a thin server that lets a language model (or any
 program) build and edit models through the kernel. Implements ADR 0001-0003.
 Nothing here requires kernel changes except where marked **(kernel)**.
+The kernel pieces `check`, `resolve`, `describe` and the reference-change
+warning (`refDiff`) are implemented: see `docs/agent-queries.md`.
 
 ## Goals
 

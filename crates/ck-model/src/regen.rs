@@ -318,6 +318,8 @@ pub struct RegenState<'p> {
     /// Resolved global variables.
     pub vars: Vars,
     pub result: RegenResult,
+    /// `axis` features: id -> (point, unit direction).
+    pub axes: Vec<(String, (Vec3, Vec3))>,
 }
 
 impl<'p> RegenState<'p> {
@@ -363,11 +365,34 @@ pub trait FeatureExec {
     fn edge_line(&mut self, _state: &RegenState, _faces: &[String], _at: Option<[f64; 3]>) -> Option<(Vec3, Vec3)> {
         None
     }
+    /// Analytic surface of a face (tangent planes, cylindrical axes).
+    fn face_surf(&mut self, _state: &RegenState, _face: &str) -> Option<FaceSurf> {
+        None
+    }
+    /// Position of the vertex shared by `faces` nearest `at`.
+    fn vertex_point(&mut self, _state: &RegenState, _faces: &[String], _at: Option<Vec3>) -> Option<Vec3> {
+        None
+    }
+    /// The edge between `faces` nearest `at` as a path piece (line or circle arc).
+    fn edge_seg(&mut self, _state: &RegenState, _faces: &[String], _at: Option<Vec3>) -> Option<ck_ops::sweep::PathSeg> {
+        None
+    }
     /// Called once before the feature loop with the features that will run
     /// (assembly pre-pass, see `features::mate`).
     fn prepare(&mut self, _state: &RegenState, _features: &[&Feature]) {}
     /// Execute a geometry feature (not sketch/sketch3d/plane).
     fn exec(&mut self, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError>;
+}
+
+/// Analytic surface summary for [`FeatureExec::face_surf`].
+#[derive(Debug, Clone, Copy)]
+pub enum FaceSurf {
+    Plane(Frame),
+    /// `o` on the axis, `a` the unit axis.
+    Cylinder { o: Vec3, a: Vec3, r: f64, x: Vec3 },
+    /// `x` = the surface frame's x axis (degenerate-direction fallback).
+    Sphere { c: Vec3, r: f64, x: Vec3 },
+    Other,
 }
 
 /// Placeholder hook until the geometry crates are wired: geometry features
@@ -380,7 +405,7 @@ impl FeatureExec for NoGeometry {
     }
 }
 
-fn resolve_plane(state: &RegenState, exec: &mut dyn FeatureExec, r: &GeomRef) -> Option<Frame> {
+pub(crate) fn resolve_plane(state: &RegenState, exec: &mut dyn FeatureExec, r: &GeomRef) -> Option<Frame> {
     match r {
         GeomRef::Std(p) => Some(p.frame()),
         GeomRef::Feature(id) => state.plane(id),
@@ -415,23 +440,6 @@ fn regen_sketch(state: &mut RegenState, exec: &mut dyn FeatureExec, f: &Feature,
     Ok(())
 }
 
-/// Axis `(point, unit direction)` of a plane-feature axis reference: a world
-/// axis (`{kind:"axis"}`) or a straight edge selection (`{kind:"edge"}`).
-/// The point is the foot of the world origin on the axis line.
-fn resolve_axis(state: &RegenState, exec: &mut dyn FeatureExec, r: &GeomRef) -> Option<(Vec3, Vec3)> {
-    let (o, d) = match r {
-        GeomRef::Axis(_) => crate::features::pattern::axis_of(r)?,
-        GeomRef::Other(j) if j.get("kind").and_then(|k| k.as_str()) == Some("edge") => {
-            let e = crate::EdgeRef::from_json(j)?;
-            let at = e.at;
-            exec.edge_line(state, &e.faces, at)?
-        }
-        _ => return None,
-    };
-    let d = d.normalize();
-    Some((o - d.scale(o.dot(d)), d))
-}
-
 /// Solution of `z1.p = d1, z2.p = d2, x.p = d3` (numerator of Cramer's rule).
 fn z_cross_scale(z1: Vec3, z2: Vec3, x: Vec3, d1: f64, d2: f64, d3: f64) -> Vec3 {
     z2.cross(x).scale(d1) + x.cross(z1).scale(d2) + z1.cross(z2).scale(d3)
@@ -441,39 +449,66 @@ fn rotate_about(v: Vec3, axis: Vec3, ang: f64) -> Vec3 {
     ck_core::linalg::Mat3::rotation(axis, ang).mul_vec(v)
 }
 
+fn base_ref(f: &Feature) -> Option<GeomRef> {
+    match &f.kind {
+        FeatureKind::RefPlane { base, .. } => base.clone(),
+        _ => None,
+    }
+}
+
 fn regen_plane(state: &mut RegenState, exec: &mut dyn FeatureExec, f: &Feature) -> Result<(), FeatureError> {
     let FeatureKind::RefPlane { mode, base, flip, axis, base2, .. } = &f.kind else { unreachable!() };
+    use crate::planes as pl;
+    // Point / curve / face driven modes (no base plane needed).
+    let driven = match mode.as_str() {
+        "threePoints" => Some(pl::three_points(state, exec, f, *flip)),
+        "linePoint" => Some(pl::line_point(state, exec, f, axis, *flip)),
+        "normal" => Some(pl::normal(state, f, *flip)),
+        "normalCurve" => Some(pl::normal_curve(state, exec, f, *flip)),
+        "curve" => Some(pl::curve_plane(state, exec, f, *flip)),
+        "tangent" => Some(pl::tangent(state, exec, f, &base_ref(f), axis, *flip)),
+        "parallel" => Some(pl::parallel(state, exec, f, &base_ref(f), *flip)),
+        _ => None,
+    };
+    if let Some(r) = driven {
+        state.result.put_plane(&f.id, r?);
+        return Ok(());
+    }
     let base = base
         .as_ref()
         .and_then(|b| resolve_plane(state, exec, b))
         .ok_or_else(|| FeatureError::new(codes::MISSING_REFERENCE))?;
     let missing = || FeatureError::new(codes::MISSING_REFERENCE);
-    // Modes pinned against the original: offset, angle, perpendicular, mid.
-    // Anything else (unknown, or point/curve driven modes not yet ported)
-    // still behaves as "offset".
+    // Modes pinned against the original: offset, angle, perpendicular, mid
+    // (the others live in `planes`). Unknown modes behave as "offset".
     let mut fr = base;
     match mode.as_str() {
         "angle" => {
             // Base frame rotated about the axis line by `angle` (degrees,
             // negated by `flip`); the plane passes through the axis. When
             // the axis lies in the base plane it becomes the new x.
-            let (o, d) = axis.as_ref().and_then(|a| resolve_axis(state, exec, a)).ok_or_else(missing)?;
+            let (o, d) = axis.as_ref().and_then(|a| crate::planes::resolve_axis(state, exec, a)).ok_or_else(missing)?;
             let mut a = state.num(f, "angle", 0.0)?.to_radians();
             if *flip {
                 a = -a;
             }
             let z = rotate_about(base.z, d, a);
-            let x = if d.dot(base.z).abs() < 1e-9 { d } else { rotate_about(base.x, d, a) };
+            let mut x = if d.dot(base.z).abs() < 1e-9 { d } else { rotate_about(base.x, d, a) };
+            // oblique axis: the oracle keeps x on the axis' positive side
+            if x.dot(d) < -1e-12 {
+                x = -x;
+            }
             fr = Frame { o, x, y: z.cross(x), z };
         }
         "perpendicular" => {
             // Plane through the axis line, perpendicular to the base plane:
             // x = axis direction, y = base normal, z = x × y.
-            let (o, d) = axis.as_ref().and_then(|a| resolve_axis(state, exec, a)).ok_or_else(missing)?;
+            let (o, d) = axis.as_ref().and_then(|a| crate::planes::resolve_axis(state, exec, a)).ok_or_else(missing)?;
             if d.cross(base.z).len() < 1e-9 {
                 return Err(FeatureError::new(codes::PLANE_LINE_NORMAL));
             }
-            let y = base.z;
+            // y = the base normal made perpendicular to the axis
+            let y = base.z.reject(d).normalize();
             let (x, z) = if *flip { (-d, -d.cross(y)) } else { (d, d.cross(y)) };
             fr = Frame { o, x, y, z };
         }
@@ -554,6 +589,7 @@ fn run_feature(state: &mut RegenState, exec: &mut dyn FeatureExec, f: &Feature) 
         return regen_sketch3(state, f, sk);
     }
     match f.type_name.as_str() {
+        "axis" => return crate::planes::exec_axis(state, exec, f),
         "sketch3d" => {
             state.result.put_sketch3(&f.id, sketch3d_echo(&f.raw));
             return Ok(());
@@ -577,7 +613,7 @@ fn run_feature(state: &mut RegenState, exec: &mut dyn FeatureExec, f: &Feature) 
 /// Run the regen program.
 pub fn regen(part: &Part, opts: &RegenOpts, exec: &mut dyn FeatureExec) -> RegenResult {
     let res = expr::resolve_variables(&part.variables);
-    let mut state = RegenState { part, vars: res.values, result: RegenResult::default() };
+    let mut state = RegenState { part, vars: res.values, result: RegenResult::default(), axes: vec![] };
     let mut n = part.features.len();
     if let Some(u) = opts.up_to {
         n = n.min(u as usize);

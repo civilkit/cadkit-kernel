@@ -321,6 +321,41 @@ fn plane_conic(pf: &crate::Frame, cf: &crate::Frame, _a: f64, _b: f64, tol: f64)
 /// (parameter preserved), otherwise a cubic interpolation of `n` projected
 /// samples, reparameterised to [t0,t1].
 pub fn pcurve_of(surf: &Surface, c: &Curve, t0: f64, t1: f64, tol: f64) -> Result<Curve2, String> {
+    pcurve_of_n(surf, c, t0, t1, tol, None)
+}
+
+/// [`pcurve_of`] whose sampled fit is refined (sample count doubled up to
+/// 1024) until the pcurve reproduces the 3D curve between the samples to
+/// `dev_tol` relative to the curve's size. A sharply curved intersection
+/// spline (two cylinders) is ~1e-3 off between 32 cubic-interpolated samples.
+pub fn pcurve_of_dense(surf: &Surface, c: &Curve, t0: f64, t1: f64, tol: f64, dev_tol: f64) -> Result<Curve2, String> {
+    let mut best = pcurve_of(surf, c, t0, t1, tol)?;
+    let scale = 1.0 + c.eval(t0).len();
+    let dev = |pc: &Curve2| -> f64 {
+        (0..64)
+            .map(|k| {
+                let t = t0 + (t1 - t0) * (k as f64 + 0.5) / 64.0;
+                let uv = pc.eval(t);
+                surf.eval(uv.x, uv.y).dist(c.eval(t))
+            })
+            .fold(0.0, f64::max)
+    };
+    let mut cur = dev(&best);
+    let mut n = 64;
+    while cur > dev_tol * scale && n <= 1024 {
+        if let Ok(pc) = pcurve_of_n(surf, c, t0, t1, tol, Some(n)) {
+            let d = dev(&pc);
+            if d < cur {
+                best = pc;
+                cur = d;
+            }
+        }
+        n *= 2;
+    }
+    Ok(best)
+}
+
+fn pcurve_of_n(surf: &Surface, c: &Curve, t0: f64, t1: f64, tol: f64, n_min: Option<usize>) -> Result<Curve2, String> {
     if let Some(p) = exact_pcurve(surf, c, tol) {
         return Ok(p);
     }
@@ -338,6 +373,9 @@ pub fn pcurve_of(surf: &Surface, c: &Curve, t0: f64, t1: f64, tol: f64) -> Resul
         .max(1e-6);
         let turns = len / (std::f64::consts::TAU * rad);
         n = (32 + (16.0 * turns).ceil() as usize).clamp(32, 2048);
+    }
+    if let Some(m) = n_min {
+        n = n.max(m);
     }
     let pts: Vec<Vec3> = (0..=n).map(|i| c.eval(t0 + (t1 - t0) * i as f64 / n as f64)).collect();
     let uv = project_points(surf, &pts);
