@@ -158,32 +158,9 @@ pub fn exec_rib(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<()
         }
         br.combine(&piece, Combine::Add, false)?;
         if let Some(b) = br.body.as_mut() {
-            renumber_duplicates(b);
+            super::renumber_duplicates(b);
         }
         return Ok(());
     }
     Err(FeatureError::new(RIB_NO_CONTACT))
-}
-
-/// A face split by the union (the shell floor cut by the rib) keeps its old
-/// `~k` on both pieces; pinned: the whole family is re-ranked by control-box
-/// centre (`F2.C0~1` outer, `~2`/`~3` the floor pieces).
-fn renumber_duplicates(b: &mut Body) {
-    use std::collections::BTreeMap;
-    let mut fam: BTreeMap<(String, String, String), Vec<FaceId>> = BTreeMap::new();
-    for fid in b.face_ids() {
-        let n = &b.face(fid).name;
-        let base = ck_topo::body::FaceName { region: None, ..n.clone() };
-        fam.entry((base.id(), String::new(), String::new())).or_default().push(fid);
-    }
-    for (_, fs) in fam {
-        let ids: Vec<String> = fs.iter().map(|&x| b.face_id_str(x)).collect();
-        let dup = ids.iter().enumerate().any(|(i, a)| ids[..i].contains(a));
-        if dup {
-            for &x in &fs {
-                b.faces[x.idx()].name.region = None;
-            }
-            b.number_split_faces();
-        }
-    }
 }

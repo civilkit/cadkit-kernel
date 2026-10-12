@@ -96,7 +96,16 @@ pub fn exec_lip(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<()
         picked.push((eid, rim, base_id(other)));
     }
     let rim = picked[0].1;
-    if !matches!(body.face(rim).surface, ck_geom::surface::Surface::Plane { .. }) || picked.iter().any(|p| p.1 != rim) {
+    // several rim faces are fine while they are pieces of one plane
+    let same_plane = |a: FaceId, b: FaceId| {
+        a == b || {
+            use ck_geom::surface::Surface::Plane;
+            matches!((&body.face(a).surface, &body.face(b).surface), (Plane { .. }, Plane { .. }))
+                && body.planar_normal(a).dot(body.planar_normal(b)) > 1.0 - 1e-9
+                && (body.vertex(body.edge(picked[0].0).v0).p - body.face(b).surface.closest_point(body.vertex(body.edge(picked[0].0).v0).p).2).len() < 1e-6
+        }
+    };
+    if !matches!(body.face(rim).surface, ck_geom::surface::Surface::Plane { .. }) || picked.iter().any(|p| !same_plane(p.1, rim)) {
         return Err(FeatureError::new(&super::extrude::todo("lip on a curved / several rim faces")));
     }
     let n = body.planar_normal(rim);
@@ -180,8 +189,30 @@ pub fn exec_lip(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<()
             pts.push((p.x, p.y));
             format!("p{}", pts.len() - 1)
         };
-        for &ei in chain {
-            for pc in &path[ei].pieces {
+        // consecutive edges meet at a shared vertex but their sampled ends can
+        // differ by ~1e-7: snap each piece start onto the previous piece end
+        // (the sketch offset only links pieces whose points coincide)
+        let mut flat: Vec<(usize, Piece)> = chain.iter().flat_map(|&ei| path[ei].pieces.iter().map(move |p| (ei, p.clone()))).collect();
+        let m = flat.len();
+        let (set_a, get_b): (fn(&mut Piece, Vec2), fn(&Piece) -> Vec2) = (
+            |p, v| match p {
+                Piece::Line { a, .. } | Piece::Arc { a, .. } => *a = v,
+            },
+            |p| match p {
+                Piece::Line { b, .. } | Piece::Arc { b, .. } => *b,
+            },
+        );
+        for i in 1..m + usize::from(path[*chain.last().unwrap()].end == path[chain[0]].start) {
+            let (prev, cur) = (get_b(&flat[(i + m - 1) % m].1), i % m);
+            let a = match &flat[cur].1 {
+                Piece::Line { a, .. } | Piece::Arc { a, .. } => *a,
+            };
+            if (a - prev).len() < 1e-4 {
+                set_a(&mut flat[cur].1, prev);
+            }
+        }
+        for (ei, pc) in flat.iter().map(|(ei, p)| (*ei, p)) {
+            {
                 let k = ents.len();
                 match pc {
                     Piece::Line { a, b } => {
@@ -207,6 +238,15 @@ pub fn exec_lip(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<()
         let sk = Sketch::from_json(&sk_json);
         let ids: Vec<String> = (0..ents.len()).map(|k| format!("e{k}")).collect();
         let off = sketch_offset(&sk, &ids, width).map_err(|e| FeatureError::new(e))?;
+        if std::env::var_os("CK_LIP_DBG").is_some() {
+            eprintln!("LIP chain of {} edges: {} pieces; offset chains {:?}", chain.len(), ent_pieces.len(), off.iter().map(|c| c.len()).collect::<Vec<_>>());
+            for (k, (t, pc)) in ent_pieces.iter().enumerate() {
+                match pc {
+                    Piece::Arc { c, a, b, ccw } => eprintln!("  piece {k} {t} arc c {:?} r {:.4} a {:?} b {:?} ccw {ccw}", (c.x, c.y), (*a - *c).len(), (a.x, a.y), (b.x, b.y)),
+                    Piece::Line { a, b } => eprintln!("  piece {k} {t} line {:?} -> {:?} len {:.4}", (a.x, a.y), (b.x, b.y), (*b - *a).len()),
+                }
+            }
+        }
         let Some(off_chain) = off.into_iter().next() else { return Err(missing()) };
         if off_chain.len() != ent_pieces.len() {
             return Err(FeatureError::new(&super::extrude::todo("lip offset with dropped pieces")));
