@@ -72,17 +72,41 @@
    }
   },
   {
+   "type": "plane",
+   "id": "PT",
+   "mode": "angle",
+   "base": {
+    "kind": "std",
+    "id": "front"
+   },
+   "axis": {
+    "kind": "axis",
+    "axis": "x"
+   },
+   "angle": 2.8
+  },
+  {
+   "type": "plane",
+   "id": "PU",
+   "mode": "offset",
+   "base": {
+    "kind": "feature",
+    "id": "PT"
+   },
+   "offset": -10.104086384524646
+  },
+  {
    "type": "sketch",
    "id": "L1",
    "plane": {
-    "kind": "std",
-    "id": "front"
+    "kind": "feature",
+    "id": "PU"
    },
    "points": [
     {
      "id": "p1",
      "x": 56.25,
-     "y": 206.84
+     "y": 206.59306144770224
     }
    ],
    "entities": [
@@ -108,8 +132,8 @@
    "type": "sketch",
    "id": "L2",
    "plane": {
-    "kind": "std",
-    "id": "front"
+    "kind": "feature",
+    "id": "PT"
    },
    "points": [
     {

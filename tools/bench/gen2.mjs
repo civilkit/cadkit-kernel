@@ -68,16 +68,20 @@ const parts = {};
 }
 
 // 4. torsion_spring: 12-turn helix sweep + two straight legs. The dataset tilts the leg workplanes by
-//    2.8 deg about X; our reference planes are offset-only, so the legs are built along the untilted normal.
+//    2.8 deg about X (plane mode "angle" through the X axis); leg 1 starts at the helix end, so its plane is the
+//    tilted one offset along its own normal to pass through that point.
 {
   const R = 56.25, r = 3.52;
   const hs = new Sk('H', STD('top')); hs.circle(0, 0, R);
   const ps = new Sk('S', STD('front')); ps.circle(R, 0, r);
-  const l1 = new Sk('L1', STD('front')); l1.circle(R, 206.84, r);
-  const l2 = new Sk('L2', STD('front')); l2.circle(R, 0, r);
+  const th = 2.8 * Math.PI / 180;
+  const tilt = { type: 'plane', id: 'PT', mode: 'angle', base: STD('front'), axis: { kind: 'axis', axis: 'x' }, angle: 2.8 };
+  const up = { type: 'plane', id: 'PU', mode: 'offset', base: FEAT('PT'), offset: -206.84 * Math.sin(th) };
+  const l1 = new Sk('L1', FEAT('PU')); l1.circle(R, 206.84 * Math.cos(th), r);
+  const l2 = new Sk('L2', FEAT('PT')); l2.circle(R, 0, r);
   parts.torsion_spring_000054 = part('torsion_spring', [hs.json(), { type: 'helix', id: 'X', sketch: 'H', definedBy: 'heightPitch', pitch: 17.24, height: 206.84, revolutions: 12, startAngle: 0 },
     ps.json(), { type: 'sweep', id: 'W', op: 'add', sketch: 'S', path: { kind: 'curve', id: 'X' } },
-    l1.json(), ext('E1', 'L1', { depth: 220.5, flip: true }), l2.json(), ext('E2', 'L2', { depth: 162.87 })]);
+    tilt, up, l1.json(), ext('E1', 'L1', { depth: 220.5, flip: true }), l2.json(), ext('E2', 'L2', { depth: 162.87 })]);
 }
 
 // path in the XZ (front) plane: up L1, quarter arc radius ra, then along +X

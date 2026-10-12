@@ -28,7 +28,7 @@ Chamfer batch: tapered_boss, u_channel.
 | pipe_elbow | kernel-gap | sweep along a multi-piece path |
 | duct_elbow | kernel-gap | sweep along a multi-piece path |
 | torus_link | kernel-gap | point-contact union leaves two solids (multi-body result) |
-| torsion_spring | kernel-gap | multi-body, rotated workplane, helical sweep time; skipped in gate |
+| torsion_spring | kernel-gap | multi-body, helical sweep time; skipped in gate (rotated workplane now supported) |
 | coil_spring | kernel-gap | 3D spline sweep path, helical sweep hangs or takes minutes; skipped in gate |
 | pan_head_screw | ground-truth-mismatch | dataset thread removes 10.08 mm3; the geometric groove removes 24.07 |
 
@@ -43,8 +43,7 @@ Also: t_pipe_fitting regenerates but its ground-truth STEP fails `validate`
 4. Multi-body results and multi-solid STEP import: 2 (torus_link,
    torsion_spring).
 5. Helical sweep performance and hangs: 2 (coil_spring, torsion_spring).
-6. Rotated workplanes (every plane mode currently behaves as offset): 1
-   (torsion_spring).
+6. Rotated workplanes: done. Plane modes `angle` (rotation about a world axis or straight-edge axis), `perpendicular` and `mid` are implemented and pinned against the original (plus `planeLineNormal`); torsion_spring now uses the tilted leg planes. Still offset-fallback: parallel, threePoints, linePoint, tangent, normal, normalCurve, curve (point/curve driven), and axis refs other than world axes / straight edges (sketch lines, axis features).
 7. 3D spline sweep path: 1 (coil_spring).
 8. STEP-import-only failures: t_pipe_fitting, pan_head_screw, eyebolt,
    dome_cap (sphere pole boundary), coil_spring.

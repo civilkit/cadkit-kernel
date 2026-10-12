@@ -37,7 +37,7 @@
 //! | fill            | edges, merge, continuity, fairing |
 //! | insertPart      | part (nested .ckpart), source, place{o,x,y,z} or dx/dy/dz+axis+angle, fixed |
 //! | mate            | kind, a, b, distance, flip |
-//! | plane           | mode ("offset"), base, offset, flip, axis, angle, base2, curves, visible, userHidden |
+//! | plane           | mode ("offset"/"angle"/"perpendicular"/"mid"; others fall back to offset), base, offset, flip, axis, angle, base2, curves, visible, userHidden |
 //! | deleteBody      | mode, bodies |
 
 pub mod blends;
@@ -845,6 +845,16 @@ impl crate::regen::FeatureExec for Brep {
     }
     fn face_count(&self) -> Option<usize> {
         self.body.as_ref().map(|b| b.num_faces())
+    }
+    fn edge_line(&mut self, _state: &crate::regen::RegenState, faces: &[String], at: Option<[f64; 3]>) -> Option<(ck_core::linalg::Vec3, ck_core::linalg::Vec3)> {
+        use ck_core::linalg::Vec3;
+        let b = self.body.as_ref()?;
+        let at = at.map(|a| Vec3::new(a[0], a[1], a[2])).unwrap_or(Vec3::ZERO);
+        let e = ck_ops::blend::build::find_edge(b, faces.first()?, faces.get(1)?, at)?;
+        match &b.edge(e).curve {
+            ck_geom::curve::Curve::Line { o, d } => Some((*o, *d)),
+            _ => None,
+        }
     }
     fn exec(&mut self, state: &mut crate::regen::RegenState, f: &crate::Feature) -> Result<(), crate::regen::FeatureError> {
         let tool = match &f.kind {
