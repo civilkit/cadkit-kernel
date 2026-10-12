@@ -89,6 +89,11 @@ export function hintFor(feature: string, code: string, params: Record<string, un
   return { feature, code, hint: fix ? fix(feature, params) : `${feature || 'part'}: error ${code}${Object.keys(params).length ? ` ${JSON.stringify(params)}` : ''} — see the features field table` };
 }
 
+/** Every coded fix, sampled for display (powers the authoring guide). */
+export function listFixes(): Array<{ code: string; sample: string }> {
+  return Object.keys(FIX).map((code) => ({ code, sample: FIX[code]('Fn', {}) }));
+}
+
 /** Face/edge entity name -> owning feature id (F2.C0 -> F2), else the raw name. */
 function ownerOf(entity: string): string {
   const head = entity.split('.')[0];
