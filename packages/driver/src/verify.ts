@@ -95,10 +95,10 @@ export function listFixes(): Array<{ code: string; sample: string }> {
   return Object.keys(FIX).map((code) => ({ code, sample: FIX[code]('Fn', {}) }));
 }
 
-/** Face/edge entity name -> owning feature id (F2.C0 -> F2), else the raw name. */
+/** Face/edge entity name -> owning feature id (F2.C0 -> F2, P.C0 -> P), else the raw name. */
 function ownerOf(entity: string): string {
   const head = entity.split('.')[0];
-  return /^F\d+$/.test(head) ? head : entity;
+  return /^\w+$/.test(head) ? head : entity;
 }
 
 export async function verify(

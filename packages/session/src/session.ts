@@ -67,7 +67,16 @@ export interface EditResult {
   intent?: { passed: number; failed: number; results: CheckResultItem[] } | null;
 }
 
-const ID = /^F\d+$/;
+/** Any non-empty string identifies a feature (the app mints F-ids; the kernel
+ *  and hand-written docs use readable ids like P, W, K1). */
+function isId(id: unknown): id is string {
+  return typeof id === 'string' && id.length > 0;
+}
+
+function seqOf(id: string): number | null {
+  const n = /^F(\d+)$/.exec(id);
+  return n ? +n[1] : null;
+}
 
 function clone<T>(v: T): T {
   return JSON.parse(JSON.stringify(v)) as T;
@@ -91,7 +100,7 @@ export function checkOp(doc: PartDoc, op: EditOp): string | null {
         return `unknown feature type ${JSON.stringify(t)}`;
       }
       const id = (op.feature as { id?: unknown }).id;
-      if (id !== undefined && (typeof id !== 'string' || !ID.test(id))) return `bad id ${JSON.stringify(id)}`;
+      if (id !== undefined && !isId(id)) return `bad id ${JSON.stringify(id)}`;
       if (typeof id === 'string' && ids.has(id)) return `id ${id} already exists`;
       if (op.index !== undefined && (op.index < 0 || op.index > doc.features.length)) {
         return `index ${op.index} out of range`;
@@ -116,6 +125,24 @@ export function checkOp(doc: PartDoc, op: EditOp): string | null {
     case 'move': {
       if (!ids.has(op.id)) return `unknown feature ${op.id}`;
       if (op.to < 0 || op.to >= doc.features.length) return `index ${op.to} out of range`;
+      // Definition order: sketch/seeds references must keep pointing backwards.
+      const order = doc.features.map((f) => f.id);
+      order.splice(order.indexOf(op.id), 1);
+      order.splice(op.to, 0, op.id);
+      const pos = new Map(order.map((id, i) => [id, i]));
+      for (const f of doc.features) {
+        const refs: string[] = [];
+        const g = f as unknown as Record<string, unknown>;
+        if (typeof g.sketch === 'string') refs.push(g.sketch);
+        for (const k of ['sketches', 'seeds']) {
+          if (Array.isArray(g[k])) refs.push(...(g[k] as unknown[]).filter((x): x is string => typeof x === 'string'));
+        }
+        for (const r of refs) {
+          if (typeof r === 'string' && pos.has(r) && (pos.get(r) as number) > (pos.get(f.id) as number)) {
+            return `moving ${op.id} to ${op.to} leaves ${f.id} referencing later feature ${r}`;
+          }
+        }
+      }
       return null;
     }
     case 'replace': {
@@ -154,6 +181,10 @@ function applyOp(doc: PartDoc, op: EditOp): void {
     case 'add': {
       const f = clone(op.feature);
       if (f.id === undefined) f.id = `F${doc.seq++}`;
+      else if (typeof f.id === 'string') {
+        const n = seqOf(f.id);
+        if (n !== null) doc.seq = Math.max(doc.seq, n + 1);
+      }
       const rec = f as unknown as import('../../part-model/src/index.js').Feature;
       if (op.index === undefined) doc.features.push(rec);
       else doc.features.splice(op.index, 0, rec);

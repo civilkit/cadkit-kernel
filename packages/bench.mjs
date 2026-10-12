@@ -5,7 +5,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadTasks, replayModel, runAgentBench } from './dist/session/src/bench.js';
+import { loadTasks, replayModel, runAgentBench, runEditBench } from './dist/session/src/bench.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2);
@@ -25,4 +25,7 @@ const report = await runAgentBench({ tasks, model: replayModel(docs), log: (l) =
 console.log('by family: ' + Object.entries(report.byFamily).map(([f, s]) => `${f} ${s.pass}/${s.total}`).join(' '));
 const n = report.results.filter((r) => r.pass).length;
 console.log(`agent-bench ${n}/${report.results.length}`);
-process.exit(n === report.results.length ? 0 : 1);
+const edits = await runEditBench({ log: (l) => console.log(l) });
+const ne = edits.results.filter((r) => r.pass).length;
+console.log(`edit-bench ${ne}/${edits.results.length}`);
+process.exit(n === report.results.length && ne === edits.results.length ? 0 : 1);

@@ -60,13 +60,11 @@ describe('session ops (pure)', () => {
     assert.equal((s.document.features[1] as { depth: number }).depth, 5);
     assert.match((await s.edit([{ op: 'set', id: 'F9', path: 'depth', value: 5 }])).schemaError ?? '', /unknown feature/);
     assert.match((await s.edit([{ op: 'set', id: 'F2', path: 'id', value: 'F9' }])).schemaError ?? '', /cannot set/);
-    assert.equal((await s.edit([{ op: 'move', id: 'F2', to: 0 }])).ok, true);
-    assert.equal(s.document.features[0].id, 'F2');
+    assert.match((await s.edit([{ op: 'move', id: 'F2', to: 0 }])).schemaError ?? '', /referencing later feature F1/);
     assert.match((await s.edit([{ op: 'move', id: 'F2', to: 9 }])).schemaError ?? '', /out of range/);
     assert.equal((await s.edit([{ op: 'replace', id: 'F2', feature: { type: 'fillet', radius: 2, edges: [] } }])).ok, true);
-    assert.equal(s.document.features[0].id, 'F2');
-    assert.equal(s.document.features[0].type, 'fillet');
-    assert.equal(s.document.features[1].id, 'F1');
+    assert.equal(s.document.features[1].id, 'F2');
+    assert.equal(s.document.features[1].type, 'fillet');
   });
 
   it('remove refuses referenced features without cascade', async () => {

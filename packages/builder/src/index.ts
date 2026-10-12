@@ -270,7 +270,12 @@ export class Part {
   // build their payloads with add() (shapes in part-model).
 
   add(feature: Omit<GenericFeature, 'id'> & { id?: string }): FeatureId {
-    (feature as GenericFeature).id ||= this.nextId();
+    const f = feature as GenericFeature;
+    if (f.id === undefined) f.id = this.nextId();
+    else if (typeof f.id === 'string') {
+      const n = /^F(\d+)$/.exec(f.id);
+      if (n) this.seq = Math.max(this.seq, +n[1] + 1);
+    }
     this.features.push(feature as Feature);
     return (feature as GenericFeature).id as FeatureId;
   }
