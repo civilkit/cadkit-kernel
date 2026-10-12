@@ -88,6 +88,21 @@ pub enum Surface {
 const INF: f64 = f64::INFINITY;
 
 impl Surface {
+    /// Hash identifying the surface's geometry (equal surfaces hash equal;
+    /// for memoising pure functions of surfaces).
+    pub fn fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        match self {
+            Surface::BSpline(b) => b.fingerprint(),
+            Surface::Offset { base, dist } => base.fingerprint().rotate_left(17) ^ dist.to_bits().wrapping_mul(0x9e3779b97f4a7c15),
+            other => {
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                format!("{other:?}").hash(&mut h);
+                h.finish()
+            }
+        }
+    }
+
     pub fn plane(o: Vec3, n: Vec3) -> Surface {
         Surface::Plane { frame: crate::frame_from(o, n, crate::any_perp(n)) }
     }

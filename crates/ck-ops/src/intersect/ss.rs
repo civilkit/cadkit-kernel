@@ -70,6 +70,31 @@ pub struct Bounds {
 /// Intersect two surfaces. `bounds` limits the marching fallback (required
 /// for it; without bounds non-analytic pairs return `Curves(vec![])`).
 pub fn intersect(s1: &Surface, s2: &Surface, bounds: Option<Bounds>, tol: f64) -> SsResult {
+    // pure in its inputs, and the marching path costs seconds on spline
+    // nets: memoised (a retried boolean, the same tool cutting again)
+    let free_form = |s: &Surface| matches!(s, Surface::BSpline(_) | Surface::Offset { .. });
+    let Some(b) = bounds.filter(|_| free_form(s1) || free_form(s2)) else { return intersect_uncached(s1, s2, bounds, tol) };
+    thread_local! {
+        static MEMO: std::cell::RefCell<std::collections::HashMap<[u64; 9], SsResult>> = std::cell::RefCell::new(std::collections::HashMap::new());
+    }
+    let bits = |v: Vec3| [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()];
+    let (l, h) = (bits(b.lo), bits(b.hi));
+    let key = [s1.fingerprint(), s2.fingerprint(), tol.to_bits(), l[0], l[1], l[2], h[0], h[1], h[2]];
+    if let Some(r) = MEMO.with(|m| m.borrow().get(&key).cloned()) {
+        return r;
+    }
+    let r = intersect_uncached(s1, s2, bounds, tol);
+    MEMO.with(|m| {
+        let mut m = m.borrow_mut();
+        if m.len() >= 512 {
+            m.clear();
+        }
+        m.insert(key, r.clone());
+    });
+    r
+}
+
+fn intersect_uncached(s1: &Surface, s2: &Surface, bounds: Option<Bounds>, tol: f64) -> SsResult {
     if let Some(r) = analytic(s1, s2, tol) {
         return r;
     }

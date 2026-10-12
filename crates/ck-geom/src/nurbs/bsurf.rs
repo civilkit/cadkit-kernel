@@ -404,7 +404,7 @@ impl BSplineSurface {
     /// Hash of the whole surface (degrees, knots, control net, weights).
     /// Four independent lanes: the control net of a big fitted surface is
     /// hashed on every cached query.
-    fn fingerprint(&self) -> u64 {
+    pub fn fingerprint(&self) -> u64 {
         let mut lanes: [u64; 4] = [0xcbf29ce484222325, 0x9e3779b97f4a7c15, 0xc2b2ae3d27d4eb4f, 0x165667b19e3779f9];
         let mut n = 0usize;
         let mut mix = |x: u64| {

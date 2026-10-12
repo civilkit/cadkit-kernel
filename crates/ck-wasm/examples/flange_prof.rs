@@ -4,14 +4,38 @@ use ck_model::features::Brep;
 use ck_model::regen::{self, RegenOpts};
 use std::time::Instant;
 
+/// Thread CPU seconds (immune to wall-clock inflation from machine load).
+fn cpu() -> f64 {
+    #[cfg(unix)]
+    {
+        extern "C" {
+            fn clock_gettime(clk: i32, ts: *mut [i64; 2]) -> i32;
+        }
+        #[cfg(target_os = "macos")]
+        const CLK: i32 = 16;
+        #[cfg(not(target_os = "macos"))]
+        const CLK: i32 = 3;
+        let mut ts = [0i64; 2];
+        unsafe { clock_gettime(CLK, &mut ts) };
+        return ts[0] as f64 + ts[1] as f64 * 1e-9;
+    }
+    #[allow(unreachable_code)]
+    0.0
+}
+
 struct Ex(Brep);
 impl regen::FeatureExec for Ex {
     fn face_count(&self) -> Option<usize> { self.0.face_count() }
     fn face_frame(&mut self, s: &regen::RegenState, face: &str) -> Option<ck_core::linalg::Frame> { self.0.face_frame(s, face) }
     fn exec(&mut self, s: &mut regen::RegenState, f: &ck_model::Feature) -> Result<(), regen::FeatureError> {
-        let t = Instant::now();
+        if std::env::var("PROF_FEAT").map(|v| v == f.id).unwrap_or(false) {
+            // handshake for an external sampler: touch the marker, give it a moment to attach
+            let _ = std::fs::write(std::env::var("PROF_MARK").unwrap_or("/tmp/prof_ready".into()), "1");
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+        }
+        let t = cpu();
         let r = self.0.exec(s, f);
-        let dt = t.elapsed().as_secs_f64();
+        let dt = cpu() - t;
         if std::env::var("FEATSTAT").is_ok() {
             // per-feature result (excluded from the timing above): faces + volume
             let (nf, vol) = match &self.0.body {
@@ -29,10 +53,10 @@ impl regen::FeatureExec for Ex {
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     let part = ck_model::Part::parse(&std::fs::read_to_string(&a[1]).unwrap()).unwrap();
-    let t = Instant::now();
+    let t = cpu();
     let mut ex = Ex(Brep::new());
     regen::regen(&part, &RegenOpts::default(), &mut ex);
-    eprintln!("regen {:.3}s", t.elapsed().as_secs_f64());
+    eprintln!("regen {:.3}s (cpu)", cpu() - t);
     let body = ex.0.body.take().unwrap();
     if std::env::var("PERFACE").is_ok() { per_face(&body); }
     let t = Instant::now();
