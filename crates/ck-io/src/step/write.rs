@@ -583,6 +583,85 @@ impl StepWriter {
     }
 }
 
+/// A chain (several wire edges written as one oracle edge) may only be
+/// written as one EDGE_CURVE if every face walks it as one run. A planar face
+/// with a slit (or any vertex where a face's loop turns onto another edge)
+/// uses part of the chain on its own: e.g. the two halves of a hole circle
+/// cut by a slit line, which `wire_chains` fuses into one closed circle
+/// through the slit's endpoints. Split such chains between the members that
+/// some face does not walk back to back; every piece is still one edge for
+/// all the faces that use it.
+fn split_chains(body: &Body, chains: Vec<Vec<EdgeId>>) -> Vec<Vec<EdgeId>> {
+    if chains.iter().all(|c| c.len() < 2) {
+        return chains;
+    }
+    // member -> position in its chain
+    let mut pos: HashMap<EdgeId, (usize, usize)> = HashMap::new();
+    for (ci, ch) in chains.iter().enumerate() {
+        if ch.len() > 1 {
+            for (k, &e) in ch.iter().enumerate() {
+                pos.insert(e, (ci, k));
+            }
+        }
+    }
+    // joined[ci][k]: members k and k+1 are walked back to back by every piece using either
+    let mut joined: Vec<Vec<bool>> = chains.iter().map(|c| vec![true; c.len().saturating_sub(1)]).collect();
+    for f in body.face_ids() {
+        for piece in face_pieces(body, f) {
+            let n = piece.len();
+            let cyc = n > 0 && body.coedge_start(piece[0]) == body.coedge_end(piece[n - 1]);
+            let edge_at = |i: usize| body.coedge(piece[i]).edge;
+            // neighbours of position i inside the piece
+            let adj = |i: usize| -> [Option<usize>; 2] {
+                let prev = if i > 0 { Some(i - 1) } else if cyc && n > 1 { Some(n - 1) } else { None };
+                let next = if i + 1 < n { Some(i + 1) } else if cyc && n > 1 { Some(0) } else { None };
+                [prev, next]
+            };
+            for i in 0..n {
+                let Some(&(ci, k)) = pos.get(&edge_at(i)) else { continue };
+                let ch = &chains[ci];
+                // the link to the next member (k, k+1) and to the previous one (k-1, k)
+                for (link, other) in [(k, ch.get(k + 1)), (k.wrapping_sub(1), k.checked_sub(1).map(|j| &ch[j]))] {
+                    let Some(&other) = other else { continue };
+                    let present = adj(i).iter().flatten().any(|&j| edge_at(j) == other);
+                    if !present {
+                        joined[ci][link] = false;
+                    }
+                }
+                // a closed chain (a whole circle) is one EDGE_CURVE from and
+                // back to its closing vertex: a run that enters it anywhere
+                // else (a slit line ending on the circle) cannot use it
+                if body.edge(*ch.last().unwrap()).v1 == body.edge(ch[0]).v0 {
+                    let [prev, _] = adj(i);
+                    let starts_run = prev.map_or(true, |j| pos.get(&edge_at(j)).map(|p| p.0) != Some(ci));
+                    let x = body.coedge_start(piece[i]);
+                    if starts_run && x != body.edge(ch[0]).v0 {
+                        if let Some(j) = ch.iter().position(|&m| body.edge(m).v1 == x) {
+                            if j + 1 < ch.len() {
+                                joined[ci][j] = false;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut out = vec![];
+    for (ci, ch) in chains.into_iter().enumerate() {
+        let mut cur: Vec<EdgeId> = vec![];
+        for (k, e) in ch.iter().enumerate() {
+            cur.push(*e);
+            if k + 1 < ch.len() && !joined[ci][k] {
+                out.push(std::mem::take(&mut cur));
+            }
+        }
+        if !cur.is_empty() {
+            out.push(cur);
+        }
+    }
+    out
+}
+
 /// Runs of non-seam coedges per loop (seam = edge with both coedges on
 /// this face). A planar face has no seam, but the oracle-style revolve cuts a
 /// disc / annulus with a slit edge that is dropped like one; an edge used
@@ -710,7 +789,7 @@ fn write_step_impl(body: &Body, name: &str, opts: &StepOpts, signed_zero: bool) 
     let nm = string(name);
     let mut w = StepWriter::new();
     w.signed_zero = signed_zero;
-    for ch in body.wire_chains().into_iter().filter(|c| c.len() > 1) {
+    for ch in split_chains(body, body.wire_chains()).into_iter().filter(|c| c.len() > 1) {
         for &e in &ch {
             w.chain.insert(e, (ch[0], *ch.last().unwrap()));
         }

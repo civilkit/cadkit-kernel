@@ -1559,6 +1559,13 @@ impl Rd<'_> {
         let (ia, mut rb) = chosen.ok_or_else(fail)?;
         let mut ra = la[ia..].to_vec();
         ra.extend_from_slice(&la[..ia]);
+        // The loops were unwrapped from their first coedge, so the +-period
+        // closure jump sits where that coedge was; rotating moved it into
+        // the middle. Unwrap again from the new start so each loop is
+        // continuous and gains its whole winding at the end.
+        let (pu, pv) = if d == 0 { (Some(per), per_o) } else { (per_o, Some(per)) };
+        self.unwrap_loop(&mut ra, pu, pv);
+        self.unwrap_loop(&mut rb, pu, pv);
         let a0 = self.co_uv(&ra[0], true).ok_or_else(fail)?;
         let s = comp(a0, d);
         // shift B so its start meets the end of the seam leg
