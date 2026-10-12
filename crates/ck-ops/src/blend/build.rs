@@ -91,6 +91,12 @@ pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featu
     if edges.is_empty() {
         return Err(BlendError::code("missingEdge"));
     }
+    if matches!(spec, Spec::Fillet(_)) {
+        let free = edges.iter().any(|(fa, fb, at)| find_edge(b, fa, fb, *at).is_some_and(|e| super::freeform::needs_freeform(b, e)));
+        if free {
+            return super::freeform::fillet_freeform(b, edges, r, feature, tol);
+        }
+    }
     if edges.len() > 1 {
         // Oracle (box probes): the selection runs in ROUNDS, each round one
         // blend op (untouched faces, touched in first-touch order, new
@@ -1014,11 +1020,33 @@ fn blend_edge_hint(
 /// Boolean `b op tool`, faces ordered untouched / `hint` (touched, in that
 /// order) / the tool's new faces; returns the body and the hint.
 pub(super) fn apply_tool(b: &Body, tool: &Body, op: Op, name: &FaceName, hint: Vec<String>, tol: f64) -> Result<(Body, Vec<String>), BlendError> {
-    let arr = imprint(b, tool, tol);
+    apply_tool_hooked(b, tool, op, name, hint, tol, None)
+}
+
+/// [`apply_tool`] with a per-face-pair SSI override (see
+/// [`crate::boolean::imprint::PairHook`]).
+pub(super) fn apply_tool_hooked(
+    b: &Body,
+    tool: &Body,
+    op: Op,
+    name: &FaceName,
+    hint: Vec<String>,
+    tol: f64,
+    hook: Option<crate::boolean::imprint::PairHook>,
+) -> Result<(Body, Vec<String>), BlendError> {
+    let dbg_t = std::env::var_os("CK_BLEND_DEBUG").is_some().then(std::time::Instant::now);
+    let arr = crate::boolean::imprint::imprint_hooked(b, tool, tol, hook);
+    if let Some(t) = dbg_t {
+        eprintln!("apply_tool: imprint {:.1}s", t.elapsed().as_secs_f64());
+    }
+    let dbg_t = std::env::var_os("CK_BLEND_DEBUG").is_some().then(std::time::Instant::now);
     let mut faces_out = select(&arr, [b, tool], op).map_err(|e| {
         dbg_fail(&format!("select: {e:?}"));
         BlendError::code("blendFailed")
     })?;
+    if let Some(t) = dbg_t {
+        eprintln!("apply_tool: select {:.1}s", t.elapsed().as_secs_f64());
+    }
     for f in &mut faces_out {
         if f.group == 1 {
             let mut base = f.name.clone();

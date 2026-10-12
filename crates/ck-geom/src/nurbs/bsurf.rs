@@ -320,6 +320,9 @@ impl BSplineSurface {
         let (iu_of, iv_of) = (spans(&self.knots_u, pu, self.nu), spans(&self.knots_v, pv, self.nv));
         let (cu, cv) = (iu_of.iter().filter(|&&i| i != usize::MAX).count(), iv_of.iter().filter(|&&i| i != usize::MAX).count());
         let mut lb = vec![f64::INFINITY; cu * cv.max(1)];
+        // control-net box of every knot-span cell, cached per surface: the
+        // projection is called thousands of times on the same big net
+        let boxes = self.cell_boxes();
         for su in pu..self.nu {
             let iu = iu_of[su];
             if iu == usize::MAX {
@@ -330,14 +333,7 @@ impl BSplineSurface {
                 if iv == usize::MAX {
                     continue;
                 }
-                let (mut lo, mut hi) = (Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY), Vec3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY));
-                for i in su - pu..=su {
-                    for j in sv - pv..=sv {
-                        let c = self.cp(i, j);
-                        lo = lo.min(c);
-                        hi = hi.max(c);
-                    }
-                }
+                let (lo, hi) = boxes[su * self.nv + sv];
                 let d = Vec3::new((lo.x - q.x).max(q.x - hi.x).max(0.0), (lo.y - q.y).max(q.y - hi.y).max(0.0), (lo.z - q.z).max(q.z - hi.z).max(0.0));
                 lb[iu * cv + iv] = d.len();
             }
@@ -430,6 +426,44 @@ impl BSplineSurface {
             visit(&cells[i], &mut best);
         }
         crate::surface::newton_surface(|u, v| self.derivs2(u, v), q, (best.1, best.2), ((u0, u1), (v0, v1)))
+    }
+
+    /// Control-net box (min, max) of the `(deg_u+1) x (deg_v+1)` block behind
+    /// every cell `su * nv + sv` (spans `deg..n`; other entries unused).
+    /// Cached per surface (keyed by the net's address, size and a checksum).
+    fn cell_boxes(&self) -> std::rc::Rc<Vec<(Vec3, Vec3)>> {
+        thread_local! {
+            static CACHE: std::cell::RefCell<Vec<((usize, usize, usize, u64), std::rc::Rc<Vec<(Vec3, Vec3)>>)>> = const { std::cell::RefCell::new(Vec::new()) };
+        }
+        let sum = self.ctrl.iter().fold(0u64, |h, c| h.wrapping_mul(1_000_003).wrapping_add(c.x.to_bits() ^ c.y.to_bits().rotate_left(21) ^ c.z.to_bits().rotate_left(42)));
+        let key = (self.ctrl.as_ptr() as usize, self.nu, self.nv, sum);
+        if let Some(b) = CACHE.with(|c| c.borrow().iter().find(|(k, _)| *k == key).map(|(_, b)| b.clone())) {
+            return b;
+        }
+        let (pu, pv) = (self.deg_u, self.deg_v);
+        let mut v = vec![(Vec3::ZERO, Vec3::ZERO); self.nu * self.nv];
+        for su in pu..self.nu {
+            for sv in pv..self.nv {
+                let (mut lo, mut hi) = (Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY), Vec3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY));
+                for i in su - pu..=su {
+                    for j in sv - pv..=sv {
+                        let c = self.cp(i, j);
+                        lo = lo.min(c);
+                        hi = hi.max(c);
+                    }
+                }
+                v[su * self.nv + sv] = (lo, hi);
+            }
+        }
+        let rc = std::rc::Rc::new(v);
+        CACHE.with(|c| {
+            let mut c = c.borrow_mut();
+            if c.len() >= 48 {
+                c.remove(0);
+            }
+            c.push((key, rc.clone()));
+        });
+        rc
     }
 
     /// Apply a point map to the control net (exact for affine maps).

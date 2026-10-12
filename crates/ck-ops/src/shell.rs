@@ -59,6 +59,11 @@ pub fn shell(body: &Body, open: &[FaceId], thickness: f64, outward: bool, tol: f
     }
     let is_open = |f: FaceId| open.contains(&f);
     let t = thickness;
+    // fitted offset surfaces / edges of free-form faces are accurate to ~1e-5,
+    // so the cut welds at a matching tolerance
+    let freeform = body.face_ids().any(|f| matches!(body.face(f).surface, Surface::BSpline(_) | Surface::Revolution { .. } | Surface::Extrusion { .. } | Surface::Offset { .. }));
+    let tol = if freeform { tol.max(1e-3) } else { tol };
+    let dbg_t = std::env::var_os("CK_OFFSET_DEBUG").is_some().then(std::time::Instant::now);
     let (base, cavity) = if outward {
         let base = offset_body(body, &|f| if is_open(f) { 0.0 } else { t }).map_err(from_offset)?;
         let cav = offset_body(body, &|f| if is_open(f) { t } else { 0.0 }).map_err(from_offset)?;
@@ -67,7 +72,17 @@ pub fn shell(body: &Body, open: &[FaceId], thickness: f64, outward: bool, tol: f
         let cav = offset_body(body, &|f| if is_open(f) { t } else { -t }).map_err(from_offset)?;
         (body.clone(), cav)
     };
+    if let Some(t) = dbg_t {
+        eprintln!("shell: offset {:.1}s", t.elapsed().as_secs_f64());
+    }
+    let dbg_t = std::env::var_os("CK_OFFSET_DEBUG").is_some().then(std::time::Instant::now);
+    // the cavity keeps the body's face order: face k of the cavity is the
+    // offset of face k, parallel to it, so those pairs never intersect
+    let _skip = crate::boolean::imprint::skip_pairs(base.face_ids().zip(cavity.face_ids()).filter(|(a, b)| a == b).collect());
     let out = boolean(&base, &cavity, Op::Cut, tol).map_err(|_| ShellError::code("shellFailed"))?;
+    if let Some(t) = dbg_t {
+        eprintln!("shell: cavity cut {:.1}s", t.elapsed().as_secs_f64());
+    }
     if out.no_effect || out.body.num_faces() == 0 {
         return Err(ShellError::code("shellFailed"));
     }

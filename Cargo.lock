@@ -52,8 +52,10 @@ version = "0.1.0"
 name = "ck-model"
 version = "0.1.0"
 dependencies = [
+ "ck-check",
  "ck-core",
  "ck-geom",
+ "ck-io",
  "ck-json",
  "ck-ops",
  "ck-topo",

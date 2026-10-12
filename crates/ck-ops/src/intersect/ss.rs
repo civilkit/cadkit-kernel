@@ -1037,6 +1037,10 @@ pub fn march(s1: &Surface, s2: &Surface, b: Bounds, tol: f64, step: f64) -> Vec<
         let ((u0, u1), (v0, v1)) = uv_box(sa, &b);
         let n = 24;
         let thr = diag / n as f64 * 2.0;
+        // successive grid points project to nearby feet: warm-start the
+        // projection from the previous foot (the global search of a big
+        // spline net dominates otherwise)
+        let mut hint: Option<(f64, f64)> = None;
         for i in 0..=n {
             for j in 0..=n {
                 let (ua, va) = (u0 + (u1 - u0) * i as f64 / n as f64, v0 + (v1 - v0) * j as f64 / n as f64);
@@ -1044,7 +1048,11 @@ pub fn march(s1: &Surface, s2: &Surface, b: Bounds, tol: f64, step: f64) -> Vec<
                 if !inside(&b, p0, pad) {
                     continue;
                 }
-                let (ub, vb, q1) = sb.closest_point(p0);
+                let (ub, vb, q1) = match hint {
+                    Some(h) if matches!(sb, Surface::BSpline(_)) => sb.closest_point_near(p0, h),
+                    _ => sb.closest_point(p0),
+                };
+                hint = Some((ub, vb));
                 if q1.dist(p0) > thr {
                     continue;
                 }

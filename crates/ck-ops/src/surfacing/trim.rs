@@ -757,7 +757,7 @@ fn trim_curved(targets: &[Body], tool: &Body, flip: bool, mutual: bool, tol: f64
 /// each such vertex onto all of its faces by alternating closest-point
 /// projection (converges to the faces' common point/curve nearest the
 /// vertex); `snap_edge_ends` then re-fits the edges to the settled vertices.
-fn settle_vertices(out: &mut Body, tol: f64) {
+pub fn settle_vertices(out: &mut Body, tol: f64) {
     let eps = tol.max(1e-7);
     for v in out.vertex_ids().collect::<Vec<_>>() {
         if !out.vertex(v).alive {
@@ -809,7 +809,7 @@ fn settle_vertices(out: &mut Body, tol: f64) {
 /// lines are rebuilt exactly, other curves become a cubic interpolant of the
 /// old curve's samples with the end samples replaced by the vertices (and the
 /// samples nearer than the gap to an end dropped, so no kink forms).
-fn snap_edge_ends(out: &mut Body, tol: f64) {
+pub fn snap_edge_ends(out: &mut Body, tol: f64) {
     let eps = tol.max(1e-7);
     for e in out.edge_ids().collect::<Vec<_>>() {
         let ed = out.edge(e).clone();

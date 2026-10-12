@@ -181,8 +181,43 @@ pub fn closed_start(period: f64) -> (f64, f64) {
     (t0, t0 + period)
 }
 
+/// Per-face-pair override of the surface/surface intersection: given a face
+/// of `a` and a face of `b`, `Some(curves)` replaces the SSI result (empty =
+/// the pair does not interact, e.g. a tangent blend patch; otherwise the
+/// known intersection curves, trimmed to both faces as usual); `None` runs
+/// the normal SSI. Used by free-form blends, whose tool faces touch the body
+/// tangentially (SSI cannot find that) or along an exactly known curve.
+pub type PairHook<'a> = &'a dyn Fn(FaceId, FaceId) -> Option<Vec<Curve>>;
+
+thread_local! {
+    static SKIP_PAIRS: std::cell::RefCell<Vec<(FaceId, FaceId)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Guard returned by [`skip_pairs`]; clears the list when dropped.
+pub struct SkipGuard;
+
+impl Drop for SkipGuard {
+    fn drop(&mut self) {
+        SKIP_PAIRS.with(|s| s.borrow_mut().clear());
+    }
+}
+
+/// Declare face pairs `(face of a, face of b)` that never intersect (e.g.
+/// a shell's cavity face and the parallel face it was offset from) for the
+/// booleans run while the guard lives: their surface/surface intersection
+/// is skipped (it only burns time marching between near-parallel sheets).
+pub fn skip_pairs(pairs: Vec<(FaceId, FaceId)>) -> SkipGuard {
+    SKIP_PAIRS.with(|s| *s.borrow_mut() = pairs);
+    SkipGuard
+}
+
 /// Build the arrangement of `a` (side 0) and `b` (side 1).
 pub fn imprint(a: &Body, b: &Body, tol: f64) -> Arrangement {
+    imprint_hooked(a, b, tol, None)
+}
+
+/// [`imprint`] with an optional per-pair SSI override.
+pub fn imprint_hooked(a: &Body, b: &Body, tol: f64, hook: Option<PairHook>) -> Arrangement {
     let bodies = [a, b];
     let mut arr = Arrangement { tol, ..Default::default() };
     // ---- 1. face pairs and cut segments
@@ -206,7 +241,17 @@ pub fn imprint(a: &Body, b: &Body, tol: f64) -> Arrangement {
         let bx = bi.union(&bj);
         let bounds = Bounds { lo: bx.min, hi: bx.max };
         let before = cuts.len();
-        match ss::intersect(sf, sg, Some(bounds), tol) {
+        let skipped = SKIP_PAIRS.with(|sp| {
+            let sp = sp.borrow();
+            !sp.is_empty() && sp.contains(&(f, g))
+        });
+        let ssi = match hook.and_then(|h| h(f, g)) {
+            _ if skipped => SsResult::Disjoint,
+            Some(cs) if cs.is_empty() => SsResult::Disjoint,
+            Some(cs) => SsResult::Curves(cs.into_iter().map(ss::SsCurve::Exact).collect()),
+            None => ss::intersect(sf, sg, Some(bounds), tol),
+        };
+        match ssi {
             SsResult::Disjoint => {}
             SsResult::Coincident => {
                 // imprint each face's boundary onto the other

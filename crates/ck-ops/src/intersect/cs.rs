@@ -125,8 +125,112 @@ pub fn line_params(o: Vec3, d: Vec3, s: &Surface, tol: f64) -> Option<Vec<f64>> 
             Some(roots(quad::quartic(q4, q3, q2, q1, q0)))
         }
         Surface::BSpline(bs) => line_bspline(o, d, bs, tol),
+        Surface::Revolution { profile, axis_o, axis } => line_revolution(o, d, s, profile, *axis_o, *axis, tol),
         _ => None,
     }
+}
+
+/// Line `o + t d` against a surface of revolution. In the meridian
+/// coordinates (z along the axis, rho radial) the line is the conic
+/// `rho² = A t² + B t + C`, `z = z0 + zd t`; the profile, sampled as a
+/// polyline in (z, rho), is intersected segment by segment (a quadratic per
+/// segment) and every candidate is refined by Newton on `S(u, v) - (o + t d)`.
+fn line_revolution(o: Vec3, d: Vec3, s: &Surface, profile: &Curve, axis_o: Vec3, axis: Vec3, tol: f64) -> Option<Vec<f64>> {
+    let a = axis.try_normalize()?;
+    let w = o - axis_o;
+    let (wz, dz) = (w.dot(a), d.dot(a));
+    let (wp, dp) = (w - a * wz, d - a * dz);
+    let (qa, qb, qc) = (dp.dot(dp), 2.0 * wp.dot(dp), wp.dot(wp));
+    let ((_, _), (v0, v1)) = s.domain();
+    if !(v0.is_finite() && v1.is_finite()) {
+        return None;
+    }
+    const N: usize = 192;
+    let pts: Vec<(f64, f64, f64)> = (0..=N)
+        .map(|k| {
+            let v = v0 + (v1 - v0) * k as f64 / N as f64;
+            let q = profile.eval(v) - axis_o;
+            let z = q.dot(a);
+            (v, z, (q - a * z).len())
+        })
+        .collect();
+    let mut cands: Vec<(f64, f64)> = vec![]; // (t, v)
+    for w2 in pts.windows(2) {
+        let ((va, za, ra), (vb, zb, rb)) = (w2[0], w2[1]);
+        let (dzs, drs) = (zb - za, rb - ra);
+        // rho(s)^2 - (qa t^2 + qb t + qc) = 0 with t(s) = (za + s dzs - wz) / dz
+        let (c2, c1, c0);
+        if dz.abs() > 1e-12 {
+            let (t0, t1) = ((za - wz) / dz, dzs / dz);
+            c2 = drs * drs - qa * t1 * t1;
+            c1 = 2.0 * ra * drs - (2.0 * qa * t0 * t1 + qb * t1);
+            c0 = ra * ra - (qa * t0 * t0 + qb * t0 + qc);
+        } else {
+            // line normal to the axis: it meets the profile where z = wz
+            if dzs.abs() < 1e-300 {
+                continue;
+            }
+            let sx = (wz - za) / dzs;
+            if !(-1e-9..=1.0 + 1e-9).contains(&sx) {
+                continue;
+            }
+            let rho = ra + sx * drs;
+            // rho^2 = qa t^2 + qb t + qc
+            for t in tangent_quadratic(qa, qb, qc - rho * rho, tol, rho.max(1.0)) {
+                cands.push((t, va + (vb - va) * sx));
+            }
+            continue;
+        }
+        let sols: Vec<f64> = if c2.abs() < 1e-14 * (1.0 + c1.abs()) {
+            if c1.abs() > 1e-300 { vec![-c0 / c1] } else { vec![] }
+        } else {
+            let disc = c1 * c1 - 4.0 * c2 * c0;
+            if disc < 0.0 {
+                // near-tangent: keep the vertex of the parabola if it nearly touches
+                let sv = -c1 / (2.0 * c2);
+                let fv = c0 - c1 * c1 / (4.0 * c2);
+                if fv.abs() < 1e-9 { vec![sv] } else { vec![] }
+            } else {
+                let sq = disc.sqrt();
+                vec![(-c1 - sq) / (2.0 * c2), (-c1 + sq) / (2.0 * c2)]
+            }
+        };
+        for sx in sols {
+            if (-1e-6..=1.0 + 1e-6).contains(&sx) {
+                let t = (za + sx * dzs - wz) / dz;
+                cands.push((t, va + (vb - va) * sx.clamp(0.0, 1.0)));
+            }
+        }
+    }
+    let mut ts: Vec<f64> = vec![];
+    for (t0, v) in cands {
+        // refine (u, v, t): S(u, v) - o - t d = 0 by Newton (Cramer on the 3x3)
+        let (u, _) = s.closest_param(o + d * t0);
+        let (mut u, mut v, mut t) = (u, v, t0);
+        for _ in 0..30 {
+            let sd = s.derivs2(u, v);
+            let f = sd.p - (o + d * t);
+            if f.len() < 1e-12 * (1.0 + sd.p.len()) {
+                break;
+            }
+            let (c1, c2, c3) = (sd.du, sd.dv, -d);
+            let det = c1.dot(c2.cross(c3));
+            if det.abs() < 1e-300 {
+                break;
+            }
+            let r = -f;
+            u += r.dot(c2.cross(c3)) / det;
+            v += r.dot(c3.cross(c1)) / det;
+            t += r.dot(c1.cross(c2)) / det;
+        }
+        // keep only converged roots (the polyline can offer spurious ones)
+        if (s.eval(u, v) - (o + d * t)).len() <= tol.max(1e-9) * 10.0 && v >= v0 - 1e-9 && v <= v1 + 1e-9 {
+            ts.push(t);
+        }
+    }
+    ts.sort_by(|a, b| a.total_cmp(b));
+    ts.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+    Some(ts)
 }
 
 /// Line `o + t d` against a B-spline surface: the control
@@ -309,6 +413,22 @@ mod tests {
 
     fn all() -> (f64, f64) {
         (f64::NEG_INFINITY, f64::INFINITY)
+    }
+
+    #[test]
+    fn line_vs_revolution() {
+        use ck_geom::curve::Curve;
+        // sphere as a half-circle profile revolved about z
+        let circ = Curve::Circle { frame: ck_geom::frame_from(Vec3::ZERO, Vec3::Y, Vec3::X), r: 5.0 };
+        let sph = Surface::Revolution { profile: Box::new(circ), axis_o: Vec3::ZERO, axis: Vec3::Z };
+        let o = Vec3::new(-10.0, 1.0, 0.5);
+        let d = Vec3::new(1.0, 0.1, 0.05);
+        let mine = line_revolution(o, d, &sph, match &sph { Surface::Revolution { profile, .. } => profile, _ => unreachable!() }, Vec3::ZERO, Vec3::Z, 1e-9).unwrap();
+        let exact = line_params(o, d, &Surface::Sphere { frame: Frame::identity(), r: 5.0 }, 1e-9).unwrap();
+        assert_eq!(mine.len(), 2, "{mine:?}");
+        for t in exact {
+            assert!(mine.iter().any(|m| (m - t).abs() < 1e-7), "{t} vs {mine:?}");
+        }
     }
 
     #[test]
