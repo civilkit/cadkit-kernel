@@ -218,7 +218,10 @@ pub fn skip_pairs(pairs: Vec<(FaceId, FaceId)>) -> SkipGuard {
 /// sweep (every turn crossing a small cap's plane) costs minutes.
 fn ssi_bounds(sf: &Surface, sg: &Surface, bi: &Aabb, bj: &Aabb, bx: &Aabb, pad: f64) -> Bounds {
     let long = |s: &Surface| matches!(s, Surface::BSpline(bs) if bs.knots_u.len() > 64);
-    if long(sf) || long(sg) {
+    // a huge companion face (the rib's wall-to-wall tool) makes the union box
+    // so large that the marcher misses a branch of a small spline face
+    let lopsided = bi.diagonal().min(bj.diagonal()) * 8.0 < bx.diagonal();
+    if long(sf) || long(sg) || lopsided {
         let inter = Aabb::new(bi.min.max(bj.min), bi.max.min(bj.max));
         if !inter.is_empty() {
             let tight = inter.padded(0.01 * bi.diagonal().max(bj.diagonal()) + pad);

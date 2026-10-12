@@ -107,8 +107,17 @@ pub fn exec_rib(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<()
         let Ok(tool) = extrude(&f.id, &profile, ExtrudeOpts::mid(t)) else { continue };
         let cut = match ck_ops::boolean::boolean(&tool, &body, ck_ops::boolean::Op::Cut, super::TOL) {
             Ok(c) if !c.no_effect => c.body,
-            _ => continue,
+            r => {
+                if std::env::var_os("CK_RIB_DBG").is_some() {
+                    eprintln!("RIB side {s}: boolean {:?}", r.map(|c| c.no_effect).map_err(|e| format!("{e:?}")));
+                }
+                continue;
+            }
         };
+        if std::env::var_os("CK_RIB_DBG").is_some() {
+            let comps = ck_topo::region::components(&cut);
+            eprintln!("RIB side {s}: cut faces {} comps {:?} issues {:?}", cut.num_faces(), comps.iter().map(|c| c.len()).collect::<Vec<_>>(), ck_topo::check::check(&cut, 1e-6).iter().take(6).collect::<Vec<_>>());
+        }
         // pieces that never reach a far face are enclosed by the body
         let mut keep: Vec<FaceId> = vec![];
         for comp in ck_topo::region::components(&cut) {
