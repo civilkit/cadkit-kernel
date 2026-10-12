@@ -489,6 +489,7 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
             seg_list.push((a, q));
         }
     }
+    weld_dangling_ends(&mut seg_list, 1e-8);
     for (a, q) in &seg_list {
         let ia = b.add(a.uv, a.p);
         let iq = b.add(q.uv, q.p);
@@ -841,6 +842,52 @@ fn metric_scale(surf: &Surface, ur: (f64, f64), vr: (f64, f64)) -> (f64, f64) {
             let (a, b) = surf.partials(mid(du), mid(dv));
             let f = |x: f64| if x.is_nan() { 1e-9 } else { x.max(1e-9) };
             (f(a.len()), f(b.len()))
+        }
+    }
+}
+
+/// Open chains that should meet (the two halves of a hole straddling a periodic seam) can end a few ulps apart because each
+/// edge evaluates its own pcurve; the CDT keys points by exact bits, so the halves would stay unjoined and the hole would
+/// be filled. Snap every dangling segment end (degree one in uv) onto another dangling end within `eps`.
+fn weld_dangling_ends(segs: &mut [(BPt, BPt)], eps: f64) {
+    let key = |v: Vec2| (v.x.to_bits(), v.y.to_bits());
+    let mut deg: HashMap<(u64, u64), u32> = HashMap::default();
+    for (a, q) in segs.iter() {
+        *deg.entry(key(a.uv)).or_insert(0) += 1;
+        *deg.entry(key(q.uv)).or_insert(0) += 1;
+    }
+    let mut dang: Vec<Vec2> = vec![];
+    for (a, q) in segs.iter() {
+        for v in [a.uv, q.uv] {
+            if deg[&key(v)] == 1 {
+                dang.push(v);
+            }
+        }
+    }
+    if dang.len() < 2 {
+        return;
+    }
+    let mut snap: HashMap<(u64, u64), Vec2> = HashMap::default();
+    for i in 0..dang.len() {
+        if snap.contains_key(&key(dang[i])) {
+            continue;
+        }
+        for j in (i + 1)..dang.len() {
+            if !snap.contains_key(&key(dang[j])) && (dang[i].x - dang[j].x).abs() <= eps && (dang[i].y - dang[j].y).abs() <= eps && key(dang[i]) != key(dang[j]) {
+                snap.insert(key(dang[j]), dang[i]);
+                break;
+            }
+        }
+    }
+    if snap.is_empty() {
+        return;
+    }
+    for (a, q) in segs.iter_mut() {
+        if let Some(&v) = snap.get(&key(a.uv)) {
+            a.uv = v;
+        }
+        if let Some(&v) = snap.get(&key(q.uv)) {
+            q.uv = v;
         }
     }
 }
