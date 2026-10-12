@@ -38,6 +38,8 @@ pub struct CpPrep {
     cells: Vec<(usize, usize, usize, usize, usize)>,
     ubas: Vec<(usize, Vec<f64>)>,
     cell_scale: f64,
+    /// box of every cell box
+    hull: (Vec3, Vec3),
 }
 
 impl BSplineSurface {
@@ -185,10 +187,9 @@ impl BSplineSurface {
         rat_surface_derivs(&a, &w, d)
     }
 
-    /// Point + first + second partials.
-    pub fn derivs2(&self, u: f64, v: f64) -> SurfDerivs {
-        let (p, q) = (self.deg_u, self.deg_v);
-        if self.weights.is_none() && p < 12 && q < 12 {
+    /// Non-rational second derivatives (allocation free, same arithmetic as `derivs`).
+    #[inline(always)]
+    fn derivs2_nr(&self, u: f64, v: f64, p: usize, q: usize) -> SurfDerivs {
             // allocation-free non-rational path (same arithmetic as `derivs`)
             let ((u0, u1), (v0, v1)) = self.domain();
             let u = u.clamp(u0, u1);
@@ -213,6 +214,13 @@ impl BSplineSurface {
                 }
             }
             return SurfDerivs { p: a[0][0], du: a[1][0], dv: a[0][1], duu: a[2][0], duv: a[1][1], dvv: a[0][2] };
+    }
+
+    /// Point + first + second partials.
+    pub fn derivs2(&self, u: f64, v: f64) -> SurfDerivs {
+        let (p, q) = (self.deg_u, self.deg_v);
+        if self.weights.is_none() && p < 12 && q < 12 {
+            return if p == 3 && q == 3 { self.derivs2_nr(u, v, 3, 3) } else { self.derivs2_nr(u, v, p, q) };
         }
         if p < 12 && q < 12 {
             // allocation-free rational path: homogeneous derivatives, then the
@@ -499,6 +507,14 @@ impl BSplineSurface {
         let ((u0, u1), (v0, v1)) = self.domain();
         let (pu, pv) = (self.deg_u, self.deg_v);
         let (nu, boxes, cv, vs, bv, cols, ubas) = (prep.nu, &prep.boxes, prep.cv, &prep.vs, &prep.bv, &prep.cols, &prep.ubas);
+        // (exact) farther than `maxd` from the box of the whole net
+        if maxd.is_finite() {
+            let (lo, hi) = prep.hull;
+            let g = Vec3::new((lo.x - q.x).max(q.x - hi.x).max(0.0), (lo.y - q.y).max(q.y - hi.y).max(0.0), (lo.z - q.z).max(q.z - hi.z).max(0.0));
+            if g.len() > maxd {
+                return None;
+            }
+        }
         // (the grid samples are up to a cell away from the foot point: the
         // sample bound is looser than `maxd`, the final distance is checked)
         let mut best = (maxd + prep.cell_scale, u0, v0);
@@ -578,7 +594,13 @@ impl BSplineSurface {
                         for (j, &wv) in bvk.iter().enumerate() {
                             p = p + tcol[j] * wv;
                         }
-                        p.dist(q)
+                        // clearly no nearer than the best / local samples: skip the root
+                        let d2 = (p - q).len2();
+                        let lim = best.0.max(local.0);
+                        if d2 > lim * lim * (1.0 + 1e-9) {
+                            continue;
+                        }
+                        d2.sqrt()
                     } else if fast {
                         let (sv, ref bvk) = bv[k];
                         let mut p = Vec3::ZERO;
@@ -769,7 +791,8 @@ impl BSplineSurface {
                 (su, if fast { basis::basis_funs(su, u, pu, &self.knots_u) } else { vec![] })
             })
             .collect();
-        let prep = Rc::new(CpPrep { nu, cv, boxes: (*boxes).clone(), vs, bv, cols, cells, ubas, cell_scale: self.cell_scale() });
+        let hull = boxes.iter().filter(|b| b.0.x <= b.1.x).fold((Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY), Vec3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY)), |a, b| (a.0.min(b.0), a.1.max(b.1)));
+        let prep = Rc::new(CpPrep { nu, cv, boxes: (*boxes).clone(), vs, bv, cols, cells, ubas, cell_scale: self.cell_scale(), hull });
         CACHE.with(|c| {
             let mut c = c.borrow_mut();
             if c.len() >= 24 {

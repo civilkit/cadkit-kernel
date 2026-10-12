@@ -126,7 +126,12 @@ pub fn ders_basis_funs(span: usize, u: f64, p: usize, nd: usize, knots: &[f64]) 
 pub fn ders_basis_funs2(span: usize, u: f64, p: usize, nd: usize, knots: &[f64]) -> [[f64; 12]; 3] {
     // (small working arrays for the usual degrees: the zero-fill of a 12x12
     // table dominated the cost of a cubic evaluation)
-    if p < 6 {
+    // (literal degrees: the loops unroll)
+    if p == 3 {
+        ders_basis_funs2_n::<4>(span, u, 3, nd, knots)
+    } else if p == 2 {
+        ders_basis_funs2_n::<3>(span, u, 2, nd, knots)
+    } else if p < 6 {
         ders_basis_funs2_n::<6>(span, u, p, nd, knots)
     } else {
         ders_basis_funs2_n::<12>(span, u, p, nd, knots)
