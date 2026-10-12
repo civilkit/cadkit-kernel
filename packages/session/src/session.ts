@@ -5,8 +5,12 @@
 // {id, author, time, ops, reason}; undo reverts the last N batches.
 import { createWorkerKernel, type WorkerKernel } from '../../kernel-client/src/worker.js';
 import { emptyPart, FEATURE_TYPES, type PartDoc } from '../../part-model/src/index.js';
-import { hintFor, verify, type RegenError, type VerifyReport } from '../../driver/src/verify.js';
-
+import { hintFor, verify, type KernelTransport, type RegenError, type VerifyReport } from '../../driver/src/verify.js';
+import {
+  check, describe, heal, importSat, importStep, massProps, resolveDescriptions, step, validate,
+  type CheckReport, type DescribeItem, type HealReport, type ImportReport, type MassReport,
+  type ResolveMatch, type ValidateIssue,
+} from './queries.js';
 export type EditOp =
   | { op: 'add'; feature: Record<string, unknown>; index?: number }
   | { op: 'set'; id: string; path: string; value: unknown }
@@ -223,6 +227,9 @@ export class Session {
     const worker = await createWorkerKernel(opts?.wasmPath);
     const s = new Session(doc ?? emptyPart('Part'), worker, opts?.author ?? 'agent');
     s.worker = worker;
+    // Warm the session tag so body queries work immediately (best effort:
+    // an empty or failing document simply leaves the tag without a body).
+    await s.regen(s.document).catch(() => null);
     return s;
   }
 
@@ -331,6 +338,43 @@ export class Session {
 
   verify(expect?: Array<Record<string, unknown>>): Promise<VerifyReport> {
     return verify(this.kernel, this.doc, { tag: this.tag, expect });
+  }
+
+  /** The spec's query tools, bound to this session's tag. */
+  check(expect: Array<Record<string, unknown>> | Record<string, unknown>, tol?: number): Promise<CheckReport> {
+    return check(this.kernel, expect, { tag: this.tag, tol });
+  }
+
+  resolve(descriptions: Array<Record<string, unknown>>): Promise<ResolveMatch[]> {
+    return resolveDescriptions(this.kernel, descriptions, { tag: this.tag });
+  }
+
+  describe(names: unknown[]): Promise<DescribeItem[]> {
+    return describe(this.kernel, names, { tag: this.tag });
+  }
+
+  validate(tol?: number): Promise<{ ok: boolean; issues: ValidateIssue[] }> {
+    return validate(this.kernel, { tag: this.tag, tol });
+  }
+
+  heal(opts?: { damage?: string; dryRun?: boolean; tol?: number }): Promise<HealReport> {
+    return heal(this.kernel, { tag: this.tag, ...opts });
+  }
+
+  massProps(opts?: { bodies?: boolean; densities?: number[] }): Promise<MassReport> {
+    return massProps(this.kernel, { tag: this.tag, ...opts });
+  }
+
+  step(name?: string): Promise<string> {
+    return step(this.kernel, name ?? this.doc.name, { tag: this.tag });
+  }
+
+  importStep(data: string, name?: string): Promise<ImportReport> {
+    return importStep(this.kernel, data, { name });
+  }
+
+  importSat(data: string, name?: string): Promise<ImportReport> {
+    return importSat(this.kernel, data, { name });
   }
 
   async close(): Promise<void> {
