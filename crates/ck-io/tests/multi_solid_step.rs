@@ -89,7 +89,7 @@ fn coil_spring_gt_imports_and_tessellates_fast() {
     assert!(ck_check::validate(&r.body, 1e-6).is_empty());
     let tm = ck_tess::mesh::tessellate(&r.body);
     assert!(tm.mesh.failed.is_empty());
-    assert!(tm.mesh.tri_face.len() > 50_000, "{} triangles", tm.mesh.tri_face.len());
+    assert!(tm.mesh.tri_face.len() > 30_000, "{} triangles", tm.mesh.tri_face.len());
     assert!(t.elapsed().as_secs_f64() < 120.0, "{:.1} s", t.elapsed().as_secs_f64());
 }
 
@@ -163,4 +163,47 @@ fn coil_spring_gt_centerline() {
     for k in (0..rows.len()).step_by(60) {
         eprintln!("  v {:.1} rho {:.4} z {:.3}", rows[k].0, rows[k].1, rows[k].2);
     }
+
+/// Mesh area, triangle count and degenerate-triangle count of a tessellation.
+fn mesh_stats(m: &ck_tess::mesh::Mesh) -> (f64, usize) {
+    let (mut area, mut tiny) = (0.0, 0);
+    for i in 0..m.tri_face.len() {
+        let p = |k: usize| ck_geom::Vec3::new(m.positions[i * 9 + k * 3] as f64, m.positions[i * 9 + k * 3 + 1] as f64, m.positions[i * 9 + k * 3 + 2] as f64);
+        let (e0, e1, e2) = ((p(1) - p(0)).len(), (p(2) - p(1)).len(), (p(0) - p(2)).len());
+        area += 0.5 * (p(1) - p(0)).cross(p(2) - p(0)).len();
+        if e0.min(e1).min(e2) < 1e-3 {
+            tiny += 1;
+        }
+    }
+    (area, tiny)
+}
+
+/// The coil sweep face is a 12-turn closed rational B-spline tube (u around the wire, v along the path). Its mesh
+/// used to cover only the two ends (the long seam-spanning triangles in the middle were judged flat and accepted
+/// as is: 44% of the area missing), carried ~47k sliver triangles where the grazing end cuts lie 0.15 off the
+/// surface, and took 100k triangles. Timing-insensitive checks: full area coverage, a bounded triangle count, no slivers.
+#[test]
+fn coil_spring_gt_mesh_covers_face_with_bounded_triangles() {
+    let r = read_step(&gt("coil_spring_000026")).unwrap();
+    let mp = ck_topo::mass::mass_props(&r.body);
+    let tm = ck_tess::mesh::tessellate(&r.body);
+    assert!(tm.mesh.failed.is_empty());
+    let (area, tiny) = mesh_stats(&tm.mesh);
+    // dataset area 52788.04; the polygon is inscribed so slightly smaller, but not by a missing half
+    assert!(area > 0.99 * mp.area && area < 1.001 * mp.area, "mesh area {area} vs {}", mp.area);
+    let n = tm.mesh.tri_face.len();
+    assert!((30_000..80_000).contains(&n), "{n} triangles");
+    assert!(tiny < 100, "{tiny} sliver triangles");
+}
+
+/// Same check on the two-solid torsion spring (swept coil faces + legs): the mesh covers the exact area.
+#[test]
+fn torsion_spring_gt_mesh_covers_area() {
+    let r = read_step(&gt("torsion_spring_000054")).unwrap();
+    let mp = ck_topo::mass::mass_props(&r.body);
+    let tm = ck_tess::mesh::tessellate(&r.body);
+    let (area, tiny) = mesh_stats(&tm.mesh);
+    eprintln!("torsion mesh area {area} vs {} tris {} tiny {tiny}", mp.area, tm.mesh.tri_face.len());
+    assert!(area > 0.99 * mp.area && area < 1.001 * mp.area, "mesh area {area} vs {}", mp.area);
+    assert!(tiny < 100, "{tiny} sliver triangles");
 }

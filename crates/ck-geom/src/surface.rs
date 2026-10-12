@@ -457,6 +457,9 @@ impl Surface {
                 newton_surface(|u, v| self.derivs2(u, v), q, (best.1, best.2), dom)
             }
             Surface::Revolution { profile, axis_o, axis } => {
+                if let Some(r) = revolution_foot(profile, *axis_o, *axis, q) {
+                    return r;
+                }
                 let (a, b) = finite_range(profile.range(), q, profile);
                 let nu = 36;
                 let nv = 48;
@@ -483,6 +486,33 @@ impl Surface {
     pub fn closest_point(&self, q: Vec3) -> (f64, f64, Vec3) {
         let (u, v) = self.closest_param(q);
         (u, v, self.eval(u, v))
+    }
+
+    /// [`Self::closest_point`] by Newton from the parameter `hint` (cheap
+    /// when the hint is near the foot, e.g. the previous station of a
+    /// march); falls back to the global search when the Newton foot is not a
+    /// stationary point of the distance.
+    pub fn closest_point_near(&self, q: Vec3, hint: (f64, f64)) -> (f64, f64, Vec3) {
+        if matches!(self, Surface::BSpline(_) | Surface::Revolution { .. } | Surface::Extrusion { .. }) {
+            let dom = match self {
+                Surface::Revolution { .. } => {
+                    let (_, (v0, v1)) = self.domain();
+                    ((-INF, INF), (v0, v1))
+                }
+                _ => self.domain(),
+            };
+            let (u, v) = newton_surface(|u, v| self.derivs2(u, v), q, hint, dom);
+            let s = self.derivs2(u, v);
+            let r = s.p - q;
+            let (nu, nv) = (s.du.len().max(1e-300), s.dv.len().max(1e-300));
+            // stationary only: a Newton foot pinned on the domain boundary may
+            // be a local minimum, so that case takes the global search
+            if (s.du.dot(r) / nu).abs() < 1e-9 && (s.dv.dot(r) / nv).abs() < 1e-9 {
+                let u = if matches!(self, Surface::Revolution { .. }) { wrap_angle(u) } else { u };
+                return (u, v, s.p);
+            }
+        }
+        self.closest_point(q)
     }
 
     /// [`closest_point`](Self::closest_point), `None` when the surface is
@@ -586,6 +616,64 @@ fn points_coplanar(pts: &[Vec3], tol: f64) -> bool {
         return true;
     }
     pts.iter().all(|&p| (p - p0).dot(n).abs() <= tol)
+}
+
+/// Foot of `q` on a surface of revolution whose profile lies in one
+/// half-plane through the axis (the usual case): the foot is in `q`'s own
+/// meridian plane, so `u` is `q`'s angle and `v` is a 1D closest-point search
+/// on the profile (scan + Newton). `None` when the profile is not such a
+/// one-sided planar curve (the general search takes over).
+fn revolution_foot(profile: &Curve, axis_o: Vec3, axis: Vec3, q: Vec3) -> Option<(f64, f64)> {
+    let a = axis.try_normalize()?;
+    let (p0, p1) = profile.range();
+    if !(p0.is_finite() && p1.is_finite()) || p1 <= p0 {
+        return None;
+    }
+    const N: usize = 160;
+    let mut perp = Vec::with_capacity(N + 1);
+    let mut zs = Vec::with_capacity(N + 1);
+    for k in 0..=N {
+        let w = profile.eval(p0 + (p1 - p0) * k as f64 / N as f64) - axis_o;
+        let z = w.dot(a);
+        zs.push(z);
+        perp.push(w - a * z);
+    }
+    let scale = perp.iter().map(|w| w.len()).fold(0.0f64, f64::max).max(zs.iter().fold(0.0f64, |m, z| m.max(z.abs())));
+    let er = perp.iter().copied().max_by(|x, y| x.len().total_cmp(&y.len()))?.try_normalize()?;
+    let et = a.cross(er);
+    let ras: Vec<f64> = perp.iter().map(|w| w.dot(er)).collect();
+    // one-sided and planar through the axis
+    if ras.iter().any(|&r| r < -1e-9 * (1.0 + scale)) || perp.iter().any(|w| w.dot(et).abs() > 1e-7 * (1.0 + scale)) {
+        return None;
+    }
+    let qw = q - axis_o;
+    let qz = qw.dot(a);
+    let qp = qw - a * qz;
+    let (rho, phi) = (qp.len(), if qp.len() > 1e-12 * (1.0 + scale) { qp.dot(et).atan2(qp.dot(er)) } else { 0.0 });
+    let mut best = (f64::INFINITY, 0usize);
+    for k in 0..=N {
+        let d = (ras[k] - rho).powi(2) + (zs[k] - qz).powi(2);
+        if d < best.0 {
+            best = (d, k);
+        }
+    }
+    let mut v = p0 + (p1 - p0) * best.1 as f64 / N as f64;
+    for _ in 0..40 {
+        let c = profile.derivs(v.clamp(p0, p1), 2);
+        let (dr, dz) = ((c[0] - axis_o).dot(er) - rho, (c[0] - axis_o).dot(a) - qz);
+        let (d1r, d1z) = (c[1].dot(er), c[1].dot(a));
+        let (d2r, d2z) = (c[2].dot(er), c[2].dot(a));
+        let f = dr * d1r + dz * d1z;
+        let df = d1r * d1r + d1z * d1z + dr * d2r + dz * d2z;
+        let step = if df.abs() > 1e-300 { -f / df } else { 0.0 };
+        let nv = (v + step).clamp(p0, p1);
+        let done = (nv - v).abs() < 1e-14 * (1.0 + v.abs());
+        v = nv;
+        if done {
+            break;
+        }
+    }
+    Some((wrap_angle(phi), v))
 }
 
 /// 2D Newton for the foot point on a parametric surface given a
@@ -794,6 +882,23 @@ mod tests {
     /// Non-quadric bases: the analytic second partials agree with finite
     /// differences of the offset points (the old behaviour, now O(h²) only
     /// in the check, not in the implementation).
+    #[test]
+    fn revolution_foot_matches_the_sphere() {
+        // half circle in the x-z plane (x >= 0) revolved about z: a sphere
+        let pts: Vec<Vec3> = (0..=24).map(|i| {
+            let t = -std::f64::consts::FRAC_PI_2 + std::f64::consts::PI * i as f64 / 24.0;
+            Vec3::new(5.0 * t.cos(), 0.0, 5.0 * t.sin())
+        }).collect();
+        let circ = Curve::BSpline(crate::fit::interpolate(&pts, 3, crate::fit::Param::ChordLength).unwrap());
+        let rev = Surface::Revolution { profile: Box::new(circ), axis_o: Vec3::ZERO, axis: Vec3::Z };
+        let sph = Surface::Sphere { frame: crate::Frame::identity(), r: 5.0 };
+        for q in [Vec3::new(8.0, 3.0, 2.0), Vec3::new(-1.0, 2.5, 0.7), Vec3::new(0.3, -2.0, -3.1), Vec3::new(2.0, 2.0, 7.0)] {
+            let (_, _, p) = rev.closest_point(q);
+            let (_, _, ps) = sph.closest_point(q);
+            assert!(p.dist(ps) < 2e-4, "{q:?}: {p:?} vs {ps:?}");
+        }
+    }
+
     #[test]
     fn offset_nonquadric_fd() {
         let prof = Curve::circle_x(Vec3::new(5., 0., 0.), Vec3::Y, Vec3::X, 1.5);

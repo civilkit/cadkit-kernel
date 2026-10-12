@@ -11,5 +11,6 @@ ck-topo = { path = "../ck-topo" }
 ck-ops = { path = "../ck-ops" }
 
 [dev-dependencies]
+ck-io = { path = "../ck-io" }
 ck-check = { path = "../ck-check" }
 ck-tess = { path = "../ck-tess" }

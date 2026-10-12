@@ -13,6 +13,9 @@
 //! documented stub (see each file's header for the kernel.strings messages
 //! it owns).
 //!
+//! [`freeform`]: rolling-ball fillets along chains of free-form edges (B-spline /
+//! revolution faces, spline intersection edges), also built as a boolean tool.
+//!
 //! Feature-level codes (kernel.strings): `filletChamfer`, `filletType`,
 //! `chamferType`, `chamferVertexEdges`, `nothingToBlend`, `missingEdge`,
 //! `blendFailed`, `blendTooLarge`, `blendTooLargeMax`, `blendUnsupported`,
@@ -32,6 +35,7 @@ pub mod build;
 pub mod cap;
 pub mod chain;
 pub mod corner;
+pub mod freeform;
 pub mod g2;
 pub mod inplace;
 pub mod interp;

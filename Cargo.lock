@@ -57,6 +57,7 @@ dependencies = [
  "ck-check",
  "ck-core",
  "ck-geom",
+ "ck-io",
  "ck-json",
  "ck-ops",
  "ck-tess",
