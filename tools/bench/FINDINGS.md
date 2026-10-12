@@ -3,9 +3,10 @@
 Source: Hugging Face `BenchCAD/BenchCAD`, config `code_gen`; dataset card says
 cc-by-4.0. Ground truth from CadQuery 2.8.0 (volume, area, centre of mass,
 bbox, STEP). Parameters translated by hand; no CadQuery source copied.
-Run: `node tools/bench/run.mjs`. Gate: `bench.benchcad` 22/30 (soft),
+Run: `node tools/bench/run.mjs`. Gate: `bench.benchcad` 24/30 (soft),
 `bench.benchcad.step` 24/30 (soft). Figures as of 2026-10-12 after the
-boolean-robustness fixes (i_beam, bellows, eyebolt, dome_cap now regen).
+boolean-robustness fixes (i_beam, bellows, eyebolt, dome_cap now regen) and
+the curved/tangent chamfer fix (tapered_boss, u_channel).
 
 Failure causes: kernel-gap = feature or operation missing; kernel-bug = exists
 but wrong; ground-truth-mismatch = the reference itself differs from the
@@ -18,13 +19,12 @@ nozzle, worm_screw, twisted_drill.
 Next 20: hex_nut, bolt, spur_gear, bevel_gear, spline_hub, venturi_tube,
 t_pipe_fitting, dovetail_slide, sheet_metal_tray.
 Boolean-robustness batch: i_beam, bellows, eyebolt, dome_cap (see below).
+Chamfer batch: tapered_boss, u_channel.
 
 ## Failing
 
 | part | cause | detail |
 |---|---|---|
-| tapered_boss | kernel-gap | chamfer on a plane / lofted-spline edge: `blendUnsupported` |
-| u_channel | kernel-gap | chamfer on a plane / fillet edge: `blendUnsupported` |
 | pipe_elbow | kernel-gap | sweep along a multi-piece path |
 | duct_elbow | kernel-gap | sweep along a multi-piece path |
 | torus_link | kernel-gap | point-contact union leaves two solids (multi-body result) |
@@ -38,7 +38,7 @@ Also: t_pipe_fitting regenerates but its ground-truth STEP fails `validate`
 ## Ranked kernel gaps (parts blocked)
 
 1. Boolean robustness: done for this set (was 4: i_beam, dome_cap, bellows, eyebolt). Root causes fixed: marching SSI closed small loops prematurely and shadowed seeds (i_beam, dome_cap), near-axis revolve arcs gave off-axis pcurves/poles, point-in-face sampled big circles with 24 chords (bellows), marched curves stopped short of loft/domain edges, torus fragments crossing both seams did not tessellate (eyebolt).
-2. Chamfer across curved or tangent edges: 2 (tapered_boss, u_channel).
+2. Chamfer across curved or tangent edges: done for this set (was 2: tapered_boss, u_channel). Root causes fixed: the blend code only took straight edges between planes and true `Circle` edges between analytic coaxial faces, so a spline rim of a lofted cone and a G1 plane/fillet-cylinder edge were `blendUnsupported`; split rims, tangent edges and rational-spline classification (winding-number fallback, 16 s) now handled. Remaining: tangent/curved *fillets* and concave tangent chamfers still `blendUnsupported`; a chamfered split ring yields one blend face (B0), not one per arc.
 3. Multi-piece sweep path: 2 (pipe_elbow, duct_elbow).
 4. Multi-body results and multi-solid STEP import: 2 (torus_link,
    torsion_spring).

@@ -112,12 +112,18 @@ pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featu
             Spec::Chamfer(_) => {
                 let mut done = vec![false; n];
                 let mut rounds = vec![];
+                // G1 (tangent) edges go first: their sliver cut is only
+                // stable on a body no other chamfer has touched yet. Blend
+                // names stay selection-indexed.
+                let tang: Vec<bool> = eids.iter().map(|&e| is_tangent_edge(b, e)).collect();
+                let mut order: Vec<usize> = (0..n).collect();
+                order.sort_by_key(|&i| !tang[i]);
                 while done.iter().any(|d| !d) {
                     // an edge joins the round unless it shares a vertex with an
                     // edge in it or with an earlier-selected deferred edge
                     let mut round: Vec<usize> = vec![];
                     let mut blocked: Vec<usize> = vec![];
-                    for i in 0..n {
+                    for &i in &order {
                         if done[i] {
                             continue;
                         }
@@ -169,10 +175,18 @@ pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featu
         };
         let mut out = b.clone();
         let mut earlier: Vec<String> = vec![];
+        // chamfer: arcs of one split ring (a lofted cap rim cut in two at the
+        // seam) are ONE revolved cut, named for the first arc
+        let (ring_lead, ring_skip) = if chamfer_only(spec) { split_rings(b, &eids) } else { (vec![false; n], vec![false; n]) };
         for round in rounds {
+            let round: Vec<usize> = round.into_iter().filter(|&i| !ring_skip[i]).collect();
+            if round.is_empty() {
+                continue;
+            }
+            let rings: Vec<bool> = round.iter().map(|&i| ring_lead[i]).collect();
             let idx: Vec<u32> = round.iter().map(|&i| i as u32).collect();
             let sel: Vec<(String, String, Vec3)> = round.iter().map(|&i| fwd[i].clone()).collect();
-            let (raw, round_refs, touched) = blend_edges_at(&out, &sel, spec, feature, tol, &idx, &earlier)?;
+            let (raw, round_refs, touched) = blend_edges_at(&out, &sel, spec, feature, tol, &idx, &earlier, &rings)?;
             if std::env::var_os("CK_BLEND_DEBUG").is_some() {
                 eprintln!("round {:?}: touched {:?} -> faces {:?}", round, touched, raw.face_ids().map(|f| raw.face_id_str(f)).collect::<Vec<_>>());
             }
@@ -222,7 +236,7 @@ pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featu
         return Ok(out);
     }
     let idx: Vec<u32> = (0..edges.len() as u32).collect();
-    let (raw, refs, _) = blend_edges_at(b, edges, spec, feature, tol, &idx, &[])?;
+    let (raw, refs, _) = blend_edges_at(b, edges, spec, feature, tol, &idx, &[], &[])?;
     Ok(in_place_layout(b, &raw, &refs, tol))
 }
 
@@ -266,6 +280,7 @@ fn blend_edges_at(
     tol: f64,
     idx: &[u32],
     skip_end: &[String],
+    rings: &[bool],
 ) -> Result<(Body, Vec<BlendRef>, Vec<String>), BlendError> {
     let edges: Vec<(String, String, Vec3)> = edges.iter().map(|(fa, fb, at)| forward_first(b, fa, fb, *at)).collect();
     // blend references on the INPUT body (for the in-place numbering)
@@ -286,7 +301,7 @@ fn blend_edges_at(
     for (k, (fa, fb, at)) in edges.iter().enumerate() {
         let e = find_edge(&out, fa, fb, *at).ok_or_else(|| BlendError::code("missingEdge"))?;
         let (f1, f2) = (out.find_face(fa).unwrap(), out.find_face(fb).unwrap());
-        let (body, hint) = blend_edge_hint(&out, e, [f1, f2], spec, feature, idx[k], tol)?;
+        let (body, hint) = blend_edge_hint(&out, e, [f1, f2], spec, feature, idx[k], tol, rings.get(k).copied().unwrap_or(false))?;
         // end faces at a junction with another selected edge are that
         // edge's own faces, not extra touches (oracle: the ring's face
         // order is e1 e2 e3 e4, the open chain's C1 e1 e4 e2 e3)
@@ -687,9 +702,61 @@ fn dbg_fail(m: &str) {
     }
 }
 
+fn chamfer_only(spec: Spec) -> bool {
+    matches!(spec, Spec::Chamfer(_))
+}
+
+/// Split rings in a chamfer selection: arcs (non-`Circle` curves, e.g. the
+/// halves of a lofted cap rim) on one circle sharing a face
+/// whose spans add up to a full turn. Returns `(leader, skipped)` flags per
+/// selected edge: the first arc cuts the whole ring, the rest are absorbed.
+fn split_rings(b: &Body, eids: &[EdgeId]) -> (Vec<bool>, Vec<bool>) {
+    let n = eids.len();
+    let (mut lead, mut skip) = (vec![false; n], vec![false; n]);
+    let info: Vec<Option<(Vec3, Vec3, f64, f64, Vec<FaceId>)>> = eids
+        .iter()
+        .map(|&e| {
+            let ed = b.edge(e);
+            if matches!(ed.curve, Curve::Circle { .. } | Curve::Line { .. }) {
+                return None;
+            }
+            let (c, a, r, sp) = fit_circle(&ed.curve, ed.t0.min(ed.t1), ed.t0.max(ed.t1))?;
+            let mut fs = b.edge_faces(e);
+            fs.sort_by_key(|f| f.idx());
+            Some((c, a, r, sp, fs))
+        })
+        .collect();
+    let mut used = vec![false; n];
+    for i in 0..n {
+        let Some((c, a, r, _, fs)) = &info[i] else { continue };
+        if used[i] {
+            continue;
+        }
+        let grp: Vec<usize> = (0..n)
+            .filter(|&j| {
+                !used[j]
+                    && info[j].as_ref().map_or(false, |(c2, a2, r2, _, f2)| {
+                        f2.iter().any(|f| fs.contains(f)) && (*c2 - *c).len() < 1e-7 * (1.0 + r) && a2.cross(*a).len() < 1e-7 && (r2 - r).abs() < 1e-7 * (1.0 + r)
+                    })
+            })
+            .collect();
+        let total: f64 = grp.iter().map(|&j| info[j].as_ref().unwrap().3).sum();
+        if grp.len() >= 2 && (total - std::f64::consts::TAU).abs() < 1e-6 {
+            lead[grp[0]] = true;
+            for &j in &grp[1..] {
+                skip[j] = true;
+            }
+        }
+        for &j in &grp {
+            used[j] = true;
+        }
+    }
+    (lead, skip)
+}
+
 /// One straight edge between two planar faces.
 pub fn fillet_line_edge(b: &Body, e: EdgeId, faces: [FaceId; 2], r: f64, feature: &str, k: u32, tol: f64) -> Result<Body, BlendError> {
-    blend_edge_hint(b, e, faces, Spec::Fillet(r), feature, k, tol).map(|x| x.0)
+    blend_edge_hint(b, e, faces, Spec::Fillet(r), feature, k, tol, false).map(|x| x.0)
 }
 
 /// As [`fillet_line_edge`], also returning the touched-face order hint
@@ -702,39 +769,81 @@ fn blend_edge_hint(
     feature: &str,
     k: u32,
     tol: f64,
+    ring: bool,
 ) -> Result<(Body, Vec<String>), BlendError> {
     let ed = b.edge(e).clone();
     let r = spec.size();
+    let chamfer = matches!(spec, Spec::Chamfer(_));
+    // `ext`: chamfer through curved geometry (a cylinder / lofted cone face,
+    // a tangent edge, a spline edge that is a circle). The tool then reaches
+    // OUT of the part past both legs, so no tool face is coincident with a
+    // body face of a different surface type.
+    let mut ext = false;
+    // angle swept by a circle edge (from its start point, ccw about the axis)
+    let mut sweep = 0.0f64;
     // Geometry at the working point P0 (line: edge midpoint; circle: its
     // start vertex, which is also the faces' seam point).
     let (p0, p1, dir, n1, n2, circ): (Vec3, Vec3, Vec3, Vec3, Vec3, Option<(Vec3, Vec3)>) = match ed.curve {
         Curve::Line { .. } => {
-            for f in faces {
-                if !matches!(b.face(f).surface, Surface::Plane { .. }) {
-                    return Err(BlendError::code("blendUnsupported"));
-                }
-            }
             let p0 = b.vertex(ed.v0).p;
             let p1 = b.vertex(ed.v1).p;
             let dir = (p1 - p0) / p0.dist(p1);
-            (p0, p1, dir, b.planar_normal(faces[0]), b.planar_normal(faces[1]), None)
+            let pm = (p0 + p1) * 0.5;
+            for f in faces {
+                match &b.face(f).surface {
+                    Surface::Plane { .. } => {}
+                    Surface::Cylinder { frame, .. } if chamfer && frame.z.cross(dir).len() < 1e-9 => ext = true,
+                    other => {
+                        dbg_fail(&format!("line edge on {} face", other.kind()));
+                        return Err(BlendError::code("blendUnsupported"));
+                    }
+                }
+            }
+            let nrm = |f: FaceId| match &b.face(f).surface {
+                Surface::Plane { .. } => b.planar_normal(f),
+                sf => {
+                    let (u, v) = sf.closest_param(pm);
+                    b.outward_normal(f, u, v).normalize()
+                }
+            };
+            (p0, p1, dir, nrm(faces[0]), nrm(faces[1]), None)
         }
         _ => {
             // circle between coaxial plane / cylinder / cone faces
-            let Some((c, axis, rad)) = ed.curve.circle_info() else { return Err(BlendError::code("blendUnsupported")) };
-            let axis = axis.normalize();
+            let (c, axis, rad, span) = match ed.curve.circle_info() {
+                Some((c, axis, rad)) => (c, axis.normalize(), rad, (ed.t1 - ed.t0).abs()),
+                None => match chamfer.then(|| fit_circle(&ed.curve, ed.t0.min(ed.t1), ed.t0.max(ed.t1))).flatten() {
+                    Some(x) => {
+                        ext = true;
+                        x
+                    }
+                    None => {
+                        dbg_fail(&format!("non-circle edge {}", ed.curve.kind()));
+                        return Err(BlendError::code("blendUnsupported"));
+                    }
+                },
+            };
+            sweep = if ring { std::f64::consts::TAU } else { span };
             let t_start = ed.t0.min(ed.t1);
             let p0 = ed.curve.eval(t_start);
-            let coaxial = |f: FaceId| match &b.face(f).surface {
+            let mut spline_face = false;
+            let mut coaxial = |f: FaceId| match &b.face(f).surface {
                 Surface::Plane { frame } => frame.z.cross(axis).len() < 1e-9,
                 Surface::Cylinder { frame, .. } | Surface::Cone { frame, .. } => {
                     frame.z.cross(axis).len() < 1e-9 && (frame.o - c).cross(axis).len() < 1e-7 * (1.0 + rad)
                 }
+                Surface::BSpline(_) if chamfer => {
+                    let ok = bspline_coaxial_cone(&b.face(f).surface, c, axis);
+                    spline_face |= ok;
+                    ok
+                }
                 _ => false,
             };
             if !coaxial(faces[0]) || !coaxial(faces[1]) || !(rad > 0.0) {
+                dbg_fail(&format!("circle edge not coaxial: {} {}", b.face(faces[0]).surface.kind(), b.face(faces[1]).surface.kind()));
                 return Err(BlendError::code("blendUnsupported"));
             }
+            ext |= spline_face;
             let nrm = |f: FaceId| {
                 let (u, v) = b.face(f).surface.closest_param(p0);
                 b.outward_normal(f, u, v).normalize()
@@ -745,7 +854,9 @@ fn blend_edge_hint(
     };
     let len = p0.dist(p1);
     let c12 = n1.dot(n2);
-    if (1.0 + c12).abs() < 1e-9 || (1.0 - c12).abs() < 1e-9 {
+    let tangent = (1.0 - c12).abs() < 1e-9;
+    if (1.0 + c12).abs() < 1e-9 || (tangent && !(ext && circ.is_none())) {
+        dbg_fail("tangent / folded faces");
         return Err(BlendError::code("blendUnsupported")); // tangent / folded faces
     }
     // convex iff the direction into F1 (left of its coedge about the
@@ -753,14 +864,37 @@ fn blend_edge_hint(
     let pm = if circ.is_some() { p0 } else { (p0 + p1) * 0.5 };
     let co = b.edge_coedges(e).into_iter().find(|&c| b.coedge_face(c) == faces[0]).ok_or_else(|| BlendError::code("missingEdge"))?;
     let tdir = if b.coedge(co).rev { -dir } else { dir };
-    let convex = n1.cross(tdir).dot(n2) < 0.0;
+    let up = |f: FaceId, q: Vec3| -> Vec3 {
+        // on-face point nearest `q` (planes are exact already)
+        match &b.face(f).surface {
+            Surface::Plane { .. } => q,
+            sf => sf.closest_point(q).2,
+        }
+    };
+    let (leg1, leg2) = (n1.cross(tdir).normalize(), -n2.cross(tdir).normalize());
+    let convex = if tangent {
+        // G1 edge: convex iff a curved face falls away from the shared
+        // tangent plane on the leg side (the cut then removes a sliver)
+        let away = |f: FaceId, n: Vec3, leg: Vec3| {
+            let q = pm + leg * r;
+            !matches!(b.face(f).surface, Surface::Plane { .. }) && (q - up(f, q)).dot(n) > 1e-12 * (1.0 + r)
+        };
+        let cv = away(faces[0], n1, leg1) || away(faces[1], n2, leg2);
+        if !cv {
+            dbg_fail("concave tangent edge");
+            return Err(BlendError::code("blendUnsupported"));
+        }
+        true
+    } else {
+        n1.cross(tdir).dot(n2) < 0.0
+    };
     let s = if convex { -1.0 } else { 1.0 };
     // contact points on the two faces, the ball centre (fillet) and the
     // chamfer legs (in-face directions away from the edge: n x coedge dir)
-    let off = (n1 + n2) * (s * r / (1.0 + c12));
+    let off = if tangent { Vec3::ZERO } else { (n1 + n2) * (s * r / (1.0 + c12)) };
     let (ta, tb) = match spec {
         Spec::Fillet(_) => (pm + off - n1 * (s * r), pm + off - n2 * (s * r)),
-        Spec::Chamfer(_) => (pm + n1.cross(tdir).normalize() * r, pm - n2.cross(tdir).normalize() * r),
+        Spec::Chamfer(_) => (up(faces[0], pm + leg1 * r), up(faces[1], pm + leg2 * r)),
     };
     // contact (spring) lines must stay on their faces
     let name = FaceName::blend(feature, k);
@@ -789,7 +923,20 @@ fn blend_edge_hint(
     };
     let (cp, t1, t2) = (uv(p0), uv(ta), uv(tb));
     let cc = uv(p0 + off);
-    let lp = if matches!(spec, Spec::Chamfer(_)) {
+    let lp = if ext {
+        // chord t1-t2 plus an outer rim a margin beyond both faces
+        let k = r;
+        let dn = |n: Vec3| uv(p0 + n) - cp;
+        let (d1, d2) = (dn(n1), dn(n2));
+        let mut pts = vec![t1, t2, t2 + d2 * k];
+        if !tangent {
+            pts.push(cp + (d1 + d2).normalize() * (k * 1.5));
+        }
+        pts.push(t1 + d1 * k);
+        let tags = ["arc", "o1", "o2", "o3", "o4"];
+        let n = pts.len();
+        ProfileLoop::new((0..n).map(|i| ProfileSeg::line(tags[i], pts[i], pts[(i + 1) % n])).collect())
+    } else if matches!(spec, Spec::Chamfer(_)) {
         ProfileLoop::new(vec![ProfileSeg::line("l2", t2, cp), ProfileSeg::line("l1", cp, t1), ProfileSeg::line("arc", t1, t2)])
     } else {
         let short_ccw = (t1 - cc).cross(t2 - cc) > 0.0;
@@ -816,13 +963,18 @@ fn blend_edge_hint(
             // both ends so the tool pierces the adjacent faces; concave:
             // flush, like the straight edge); a full circle is one turn
             use std::f64::consts::TAU;
-            let span = (ed.t1 - ed.t0).abs();
+            let span = sweep;
             let rad = (p0 - c).len();
             let (a0, a1) = if span >= TAU - 1e-9 {
                 (0.0, TAU)
             } else {
                 let m = if convex { (r.max(span * rad * 0.05) + 1.0) / rad } else { 0.0 };
-                if span + 2.0 * m >= TAU { (0.0, TAU) } else { (-m, span + m) }
+                // an end that runs on into another arc of the same circle (a
+                // split ring) stops flush: that arc is cut by its own tool
+                let ends = [p0, ed.curve.eval(ed.t0.max(ed.t1))];
+                let flush = |q: Vec3| ext && (continues_circle(b, e, q, c, axis, rad) || meets_own_blend(b, e, q, feature, tol));
+                let (m0, m1) = (if flush(ends[0]) { 0.0 } else { m }, if flush(ends[1]) { 0.0 } else { m });
+                if span + m0 + m1 >= TAU { (0.0, TAU) } else { (-m0, span + m1) }
             };
             ck_topo::make::revolve::revolve(feature, &prof, c, axis, a0, a1)
         }
@@ -886,7 +1038,10 @@ pub(super) fn apply_tool(b: &Body, tool: &Body, op: Op, name: &FaceName, hint: V
         }
     }
     faces_out.sort_by_key(|f| f.key);
-    if !faces_out.iter().any(|f| f.name == *name) {
+    // the blend face may have merged into the coincident blend face of the
+    // ring's previous arc (a split ring chamfered edge by edge: one cone)
+    let merged_into_earlier = faces_out.iter().any(|f| (f.group == 0 || f.group == 4) && f.name.feature == name.feature && matches!(f.name.role, Role::Blend(_)));
+    if !faces_out.iter().any(|f| f.name == *name) && !merged_into_earlier {
         dbg_fail("no blend face in result");
         return Err(BlendError::code("blendFailed"));
     }
@@ -1063,4 +1218,105 @@ mod tests {
         let add = (1.0 - std::f64::consts::PI / 4.0) * 20.0;
         assert!((v - v0 - add).abs() < 1e-9 * v, "{v} {v0}");
     }
+}
+
+/// Circle through a curve's samples on `[t0, t1]`: `(centre, axis, radius,
+/// swept angle)`, the axis oriented so increasing `t` runs counter-clockwise.
+/// `None` unless every sample lies on that circle (1e-6 relative).
+fn fit_circle(c: &Curve, t0: f64, t1: f64) -> Option<(Vec3, Vec3, f64, f64)> {
+    const N: usize = 48;
+    let p = |i: usize| c.eval(t0 + (t1 - t0) * i as f64 / N as f64);
+    let (a, m, d) = (p(0), p(N / 3), p(2 * N / 3));
+    let (u, v) = (m - a, d - a);
+    let w = u.cross(v);
+    let w2 = w.dot(w);
+    if w2 < 1e-24 {
+        return None;
+    }
+    let ctr = a + (v.cross(w) * u.dot(u) + w.cross(u) * v.dot(v)) / (2.0 * w2);
+    let axis = w.normalize();
+    let rad = a.dist(ctr);
+    if !(rad > 0.0) {
+        return None;
+    }
+    let (mut ang, mut prev) = (0.0, a - ctr);
+    for i in 1..=N {
+        let q = p(i) - ctr;
+        if (q.len() - rad).abs() > 1e-6 * rad || q.dot(axis).abs() > 1e-6 * rad {
+            return None;
+        }
+        ang += prev.cross(q).dot(axis).atan2(prev.dot(q));
+        prev = q;
+    }
+    (ang > 1e-6).then_some((ctr, axis, rad, ang.min(std::f64::consts::TAU)))
+}
+
+/// Is this B-spline face a cone / cylinder about the axis `(c, axis)`
+/// (radius linear in height over a sample grid, 1e-6 relative)? A lofted
+/// side between two coaxial circles is one.
+fn bspline_coaxial_cone(sf: &Surface, c: Vec3, axis: Vec3) -> bool {
+    let ((u0, u1), (v0, v1)) = sf.domain();
+    if ![u0, u1, v0, v1].iter().all(|x| x.is_finite()) {
+        return false;
+    }
+    let mut hr: Vec<(f64, f64)> = vec![];
+    for i in 0..=8 {
+        for j in 0..=8 {
+            let q = sf.eval(u0 + (u1 - u0) * i as f64 / 8.0, v0 + (v1 - v0) * j as f64 / 8.0) - c;
+            let h = q.dot(axis);
+            hr.push((h, (q - axis * h).len()));
+        }
+    }
+    let (lo, hi) = hr.iter().fold((f64::MAX, f64::MIN), |(l, h), x| (l.min(x.0), h.max(x.0)));
+    let scale = hr.iter().map(|x| x.1.max(x.0.abs())).fold(0.0, f64::max);
+    if !(hi - lo > 1e-6 * scale) {
+        return false;
+    }
+    let a = hr.iter().find(|x| x.0 == lo).unwrap();
+    let z = hr.iter().find(|x| x.0 == hi).unwrap();
+    let slope = (z.1 - a.1) / (z.0 - a.0);
+    hr.iter().all(|x| (a.1 + slope * (x.0 - a.0) - x.1).abs() < 1e-6 * scale)
+}
+
+/// Do the two faces of `e` meet tangentially (G1) along it?
+fn is_tangent_edge(b: &Body, e: EdgeId) -> bool {
+    let fs = b.edge_faces(e);
+    if fs.len() != 2 {
+        return false;
+    }
+    let ed = b.edge(e);
+    let pm = ed.curve.eval(0.5 * (ed.t0 + ed.t1));
+    let n = |f: FaceId| {
+        let (u, v) = b.face(f).surface.closest_param(pm);
+        b.outward_normal(f, u, v).normalize()
+    };
+    (1.0 - n(fs[0]).dot(n(fs[1]))).abs() < 1e-9
+}
+
+/// Does another edge of `b` leave the point `q` on the same circle
+/// `(c, axis, rad)` as edge `e` (a ring split in several edges)?
+fn continues_circle(b: &Body, e: EdgeId, q: Vec3, c: Vec3, axis: Vec3, rad: f64) -> bool {
+    b.edge_ids().filter(|&x| x != e).any(|x| {
+        let ed = b.edge(x);
+        let (t0, t1) = (ed.t0.min(ed.t1), ed.t0.max(ed.t1));
+        if ed.curve.eval(t0).dist(q) > 1e-7 * (1.0 + rad) && ed.curve.eval(t1).dist(q) > 1e-7 * (1.0 + rad) {
+            return false;
+        }
+        let fit = ed.curve.circle_info().map(|(c2, a2, r2)| (c2, a2.normalize(), r2)).or_else(|| fit_circle(&ed.curve, t0, t1).map(|x| (x.0, x.1, x.2)));
+        fit.map_or(false, |(c2, a2, r2)| (c2 - c).len() < 1e-7 * (1.0 + rad) && a2.cross(axis).len() < 1e-7 && (r2 - rad).abs() < 1e-7 * (1.0 + rad))
+    })
+}
+
+/// Does another edge of `b` leave `q` along a face blended by `feature`
+/// earlier in this feature (the ring's previous arc, already chamfered: its blend
+/// face or the flush end wall the tool left)?
+fn meets_own_blend(b: &Body, e: EdgeId, q: Vec3, feature: &str, tol: f64) -> bool {
+    b.edge_ids().filter(|&x| x != e).any(|x| {
+        let ed = b.edge(x);
+        (b.vertex(ed.v0).p.dist(q) <= tol.max(1e-7) * 10.0 || b.vertex(ed.v1).p.dist(q) <= tol.max(1e-7) * 10.0)
+            && b.edge_faces(x).iter().any(|&f| {
+                let n = &b.face(f).name;
+                n.feature == feature && matches!(n.role, Role::Blend(_) | Role::Cap(_))
+            })
+    })
 }

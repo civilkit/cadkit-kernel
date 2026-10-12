@@ -1165,10 +1165,6 @@
   }
  ],
  "known": {
-  "tapered_boss_000256": {
-   "label": "kernel-gap",
-   "note": "chamfer on the plane/B-spline edge of the lofted side is blendUnsupported (F9); the hole-rim chamfer alone works. Loft itself is exact (unchamfered volume equals the closed-form frustum to 4e-8)."
-  },
   "coil_spring_000026": {
    "label": "kernel-gap",
    "skip": "regen does not finish in 50 s (union of the 2nd helical sweep with the 1st never returns)",
@@ -1191,10 +1187,6 @@
   "torus_link_000095": {
    "label": "kernel-gap",
    "note": "lugs touch the torus in a single point, so the union is two disjoint solids (ground truth: solids=2). Our feature union returns only the second body (volume 2548 = lugs only; torus silently dropped, no error): no multi-body result for a union of disjoint/point-contact bodies. The internal blind cross holes (void shells) are not reached."
-  },
-  "u_channel_000058": {
-   "label": "kernel-gap",
-   "note": "F7 blendUnsupported: chamfer of a planar face edge that meets a fillet cylinder tangentially. Probed: the 4 end-edge chamfers (plane x plane) alone succeed, any single chamfer on a plane/fillet-cylinder edge fails. Box, slot and the 8-edge |Z fillet are exact."
   },
   "pan_head_screw_000035": {
    "label": "ground-truth-mismatch",
