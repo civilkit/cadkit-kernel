@@ -756,7 +756,7 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
         // per point. Start it from the candidate's own triangle instead (the
         // result does not depend on the start except on exact ties, so small
         // faces keep the original's walk).
-        let hinted = cands.len() > 64;
+        let hinted = cands.len() > 4000;
         for (p, hint) in cands {
             if inserted >= budget {
                 break;

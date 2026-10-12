@@ -74,6 +74,11 @@ fn main() {
     let t = Instant::now();
     let tess = ck_tess::mesh::tessellate(&body);
     eprintln!("tessellate {:.3}s tris {}", t.elapsed().as_secs_f64(), tess.mesh.tri_face.len());
+    if std::env::var("MESHHASH").is_ok() {
+        let mut h = 0xcbf29ce484222325u64;
+        for x in tess.mesh.positions.iter() { h = (h ^ x.to_bits() as u64).wrapping_mul(0x100000001b3); }
+        eprintln!("meshhash {:016x}", h);
+    }
 }
 
 #[allow(dead_code)]
