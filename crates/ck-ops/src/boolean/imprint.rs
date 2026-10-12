@@ -217,7 +217,7 @@ pub fn skip_pairs(pairs: Vec<(FaceId, FaceId)>) -> SkipGuard {
 /// meets it only inside the overlap of the boxes, and marching the whole
 /// sweep (every turn crossing a small cap's plane) costs minutes.
 fn ssi_bounds(sf: &Surface, sg: &Surface, bi: &Aabb, bj: &Aabb, bx: &Aabb, pad: f64) -> Bounds {
-    let long = |s: &Surface| matches!(s, Surface::BSpline(bs) if bs.knots_u.len() > 64);
+    let long = |s: &Surface| s.is_long_sweep();
     if long(sf) || long(sg) {
         let inter = Aabb::new(bi.min.max(bj.min), bi.max.min(bj.max));
         if !inter.is_empty() {

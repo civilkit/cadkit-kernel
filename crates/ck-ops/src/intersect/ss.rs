@@ -495,6 +495,54 @@ fn coaxial(s1: &Surface, s2: &Surface, tol: f64) -> Option<SsResult> {
 
 // ------------------------------------------------- screw spline x revolution
 
+/// The two screw-like surface kinds `screw_rev` handles: an interpolated B-spline sweep face or an exact
+/// [`Surface::Screw`] patch (u = rotation angle, v = profile parameter).
+enum Patch<'a> {
+    Bs(&'a ck_geom::nurbs::bsurf::BSplineSurface),
+    Screw(&'a Surface),
+}
+
+impl<'a> Patch<'a> {
+    fn of(s: &'a Surface) -> Option<Patch<'a>> {
+        match s {
+            Surface::BSpline(bs) => Some(Patch::Bs(bs)),
+            Surface::Screw { .. } => Some(Patch::Screw(s)),
+            _ => None,
+        }
+    }
+    fn domain(&self) -> ((f64, f64), (f64, f64)) {
+        match self {
+            Patch::Bs(b) => b.domain(),
+            Patch::Screw(s) => s.domain(),
+        }
+    }
+    fn eval(&self, u: f64, v: f64) -> Vec3 {
+        match self {
+            Patch::Bs(b) => b.eval(u, v),
+            Patch::Screw(s) => s.eval(u, v),
+        }
+    }
+    fn rows(&self) -> usize {
+        match self {
+            Patch::Bs(b) => b.nu,
+            Patch::Screw(s) => (48.0 * (s.domain().0 .1 - s.domain().0 .0) / std::f64::consts::TAU).ceil() as usize + 1,
+        }
+    }
+    /// The iso-v curve over the whole u range (a screw's: the interpolated orbit, 48 rows per turn).
+    fn iso_v(&self, v: f64) -> Option<ck_geom::nurbs::bspline::BSplineCurve> {
+        match self {
+            Patch::Bs(b) => Some(b.iso_v(v)),
+            Patch::Screw(s) => {
+                let (u0, u1) = s.domain().0;
+                let n = self.rows().max(8);
+                let us: Vec<f64> = (0..=n).map(|i| u0 + (u1 - u0) * i as f64 / n as f64).collect();
+                let pts: Vec<Vec3> = us.iter().map(|&u| s.eval(u, v)).collect();
+                ck_geom::fit::interpolate_with(&pts, 5, &us, ck_geom::fit::scaled_knots(&us, 5)).ok()
+            }
+        }
+    }
+}
+
 /// A B-spline surface whose radius and height about the axis of a coaxial
 /// revolution surface (cylinder / cone / sphere / torus) are
 /// `ρ(u, v) = ρ(v)`, `h(u, v) = h(v) + k (u - u0)` (a helical-sweep side
@@ -503,7 +551,7 @@ fn coaxial(s1: &Surface, s2: &Surface, tol: f64) -> Option<SsResult> {
 /// `u = φ(v)` curve per meridian branch. Replaces marching a 7-19 turn
 /// spline (minutes). `None` = not such a pair (march instead).
 fn screw_rev(sp: &Surface, rev: &Surface, tol: f64) -> Option<SsResult> {
-    let Surface::BSpline(bs) = sp else { return None };
+    let bs = Patch::of(sp)?;
     let (o, z) = match rev {
         Surface::Cylinder { frame, .. } | Surface::Cone { frame, .. } | Surface::Sphere { frame, .. } | Surface::Torus { frame, .. } | Surface::Plane { frame } => (frame.o, frame.z),
         _ => return None,
@@ -565,8 +613,8 @@ fn screw_rev(sp: &Surface, rev: &Surface, tol: f64) -> Option<SsResult> {
                 }
             }
             let v = 0.5 * (a + b);
-            let curve = bs.iso_v(v);
-            let n = (bs.nu * 2).max(16);
+            let curve = bs.iso_v(v)?;
+            let n = (bs.rows() * 2).max(16);
             let (c0, c1) = (curve.knots[curve.degree], curve.knots[curve.knots.len() - 1 - curve.degree]);
             let pts: Vec<Vec3> = (0..=n).map(|i| curve.eval(c0 + (c1 - c0) * i as f64 / n as f64)).collect();
             out.push(SsCurve::Fitted { pts, curve: Curve::BSpline(curve), closed: false });

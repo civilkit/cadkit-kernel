@@ -283,6 +283,35 @@ pub fn interpolate_surface(grid: &[Vec<Vec3>], pu: usize, pv: usize) -> Result<B
     BSplineSurface::new(pu, pv, ku, kv, nu, nv, ctrl, None)
 }
 
+/// Knots for parameters `u` rescaled to [0, 1], averaged, and mapped back.
+pub fn scaled_knots(u: &[f64], p: usize) -> Vec<f64> {
+    let (u0, u1) = (u[0], u[u.len() - 1]);
+    let un: Vec<f64> = u.iter().map(|x| (x - u0) / (u1 - u0)).collect();
+    averaged_knots(&un, p).into_iter().map(|k| u0 + k * (u1 - u0)).collect()
+}
+
+/// Surface through `grid[i][j]` (i along the parameters `u`, j along `v`), degrees `pu`, `pv`.
+pub fn grid_surface(grid: &[Vec<Vec3>], u: &[f64], v: &[f64], pu: usize, pv: usize) -> Result<BSplineSurface, String> {
+    let (nu, nv) = (grid.len(), grid[0].len());
+    let (pu, pv) = (pu.min(nu - 1), pv.min(nv - 1));
+    let ku = scaled_knots(u, pu);
+    let kv = scaled_knots(v, pv);
+    let mut r = vec![vec![Vec3::ZERO; nv]; nu];
+    for j in 0..nv {
+        let col: Vec<Vec3> = (0..nu).map(|i| grid[i][j]).collect();
+        let c = interpolate_with(&col, pu, u, ku.clone())?;
+        for i in 0..nu {
+            r[i][j] = c.ctrl[i];
+        }
+    }
+    let mut ctrl = Vec::with_capacity(nu * nv);
+    for row in r.iter() {
+        let c = interpolate_with(row, pv, v, kv.clone())?;
+        ctrl.extend(c.ctrl);
+    }
+    BSplineSurface::new(pu, pv, ku, kv, nu, nv, ctrl, None)
+}
+
 /// Uniform clamped knots helper re-export for callers building fits.
 pub fn uniform_knots(n_ctrl: usize, p: usize) -> Vec<f64> {
     basis::clamped_uniform(n_ctrl, p)

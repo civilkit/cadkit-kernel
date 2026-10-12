@@ -678,7 +678,24 @@ fn side_geom(sc: &Screw, phis: &[f64], c: &Curve, t0: f64, t1: f64, _va: &VertGe
             }));
         }
     }
-    generic_side(&|i, q| sc.pt(phis[i], q), phis, c, t0, t1, angle)
+    // exact helicoidal patch (u = rotation, v = profile parameter): same parametrization, pcurves and rails
+    // as the interpolated tensor surface it replaces, with closed-form evaluation and closest point
+    let surface = Surface::Screw {
+        profile: Box::new(c.clone()),
+        axis_o: sc.o,
+        axis: sc.a,
+        rise: sc.rise / angle,
+        urange: (0.0, angle),
+        vrange: (t0.min(t1), t0.max(t1)),
+    };
+    Some(Ok(SideGeom {
+        surface,
+        sense: true,
+        pc_bottom: Curve2::Line { o: Vec2::new(0.0, 0.0), d: Vec2::new(0.0, 1.0) },
+        pc_top: Curve2::Line { o: Vec2::new(angle, 0.0), d: Vec2::new(0.0, 1.0) },
+        pc_rail_t0: Some(Curve2::Line { o: Vec2::new(0.0, t0), d: Vec2::new(1.0, 0.0) }),
+        pc_rail_t1: Some(Curve2::Line { o: Vec2::new(0.0, t1), d: Vec2::new(1.0, 0.0) }),
+    }))
 }
 
 /// Side surface of a profile curve `c` swept by `pt(i, q)` (the image of `q` after row `i`) over rows
@@ -828,6 +845,25 @@ mod tests {
                 assert!(ids[2..].iter().all(|i| i.starts_with("F2.S.e")), "{ids:?}");
             }
         }
+    }
+
+    #[test]
+    fn twisted_faces_have_exact_area_and_volume() {
+        // one full turn of an off-axis circle (r = 10 at (5, 3), depth 10): the screw face area is
+        // 2 pi * integral of |Su x Sv| over the circle = 2 * 819.1865011815 (Gauss-Legendre reference);
+        // the area element has singularities close to the real axis, which needs the table nodes and the
+        // adaptive cap integration
+        let circ = |tag: &str, c: Vec2, r: f64| ProfileLoop::new(vec![ProfileSeg::circle(tag, c, r)]);
+        let p = Profile::new(top(), vec![ProfileRegion { outer: circ("e7", Vec2::new(5.0, 3.0), 10.0), holes: vec![] }]);
+        let b = twist_extrude("F2", &p, ExtrudeOpts::blind(10.0), std::f64::consts::TAU, Vec2::ZERO).unwrap();
+        let mut side = 0.0;
+        for f in b.face_ids() {
+            if matches!(b.face(f).surface, ck_geom::surface::Surface::Screw { .. }) {
+                side += ck_topo::mass::face_integral::<1>(&b, f, 1, &|_, n| [n.len()])[0].abs();
+            }
+        }
+        assert!((side - 1638.3730023632).abs() < 2e-7, "{side}");
+        assert!((vol(&b) - std::f64::consts::PI * 100.0 * 10.0).abs() < 1e-8, "{}", vol(&b));
     }
 
     #[test]

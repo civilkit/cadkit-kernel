@@ -788,7 +788,7 @@ pub fn build(arr: &Arrangement, faces: &[OutFace]) -> Body {
                     }
                 };
                 let pc = exact_pcurve(&of.surface, &ae.curve, tol * 10.0).or_else(|| {
-                    if matches!(of.surface, ck_geom::surface::Surface::BSpline(_) | ck_geom::surface::Surface::Plane { .. }) && matches!(ae.curve, ck_geom::curve::Curve::BSpline(_)) {
+                    if matches!(of.surface, ck_geom::surface::Surface::BSpline(_) | ck_geom::surface::Surface::Screw { .. } | ck_geom::surface::Surface::Plane { .. }) && matches!(ae.curve, ck_geom::curve::Curve::BSpline(_)) {
                         // (a long cut curve turning round inside a sweep face is ~1 mm off its
                         // 32-sample cubic fit at the tip: refine until it reproduces the curve)
                         pcurve_of_dense(&of.surface, &ae.curve, ae.t0, ae.t1, tol, 1e-5).ok()

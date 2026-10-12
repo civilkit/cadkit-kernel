@@ -61,7 +61,7 @@ pub fn shell(body: &Body, open: &[FaceId], thickness: f64, outward: bool, tol: f
     let t = thickness;
     // fitted offset surfaces / edges of free-form faces are accurate to ~1e-5,
     // so the cut welds at a matching tolerance
-    let freeform = body.face_ids().any(|f| matches!(body.face(f).surface, Surface::BSpline(_) | Surface::Revolution { .. } | Surface::Extrusion { .. } | Surface::Offset { .. }));
+    let freeform = body.face_ids().any(|f| matches!(body.face(f).surface, Surface::BSpline(_) | Surface::Screw { .. } | Surface::Revolution { .. } | Surface::Extrusion { .. } | Surface::Offset { .. }));
     let tol = if freeform { tol.max(1e-3) } else { tol };
     let dbg_t = std::env::var_os("CK_OFFSET_DEBUG").is_some().then(std::time::Instant::now);
     let (base, cavity) = if outward {

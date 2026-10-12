@@ -100,7 +100,7 @@ pub fn classify(b: &Body, q: Vec3, tol: f64) -> Containment {
         // (a body with a long multi-span spline face -- a screw sweep -- trusts
         // the nearest feature at any distance: its winding number costs
         // seconds per face and the closest-point search is global)
-        let long_spline = || b.face_ids().any(|f| matches!(&b.face(f).surface, ck_geom::surface::Surface::BSpline(bs) if bs.knots_u.len() > 64));
+        let long_spline = || b.face_ids().any(|f| b.face(f).surface.is_long_sweep());
         if d < 0.01 * diag || !diag.is_finite() || long_spline() {
             return if side < 0.0 { Containment::Inside } else { Containment::Outside };
         }
