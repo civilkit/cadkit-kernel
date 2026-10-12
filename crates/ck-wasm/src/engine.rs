@@ -80,6 +80,18 @@ impl regen::FeatureExec for Exec<'_> {
     fn face_frame(&mut self, state: &regen::RegenState, face: &str) -> Option<ck_core::linalg::Frame> {
         self.brep.face_frame(state, face)
     }
+    fn edge_line(&mut self, state: &regen::RegenState, faces: &[String], at: Option<[f64; 3]>) -> Option<(ck_core::linalg::Vec3, ck_core::linalg::Vec3)> {
+        self.brep.edge_line(state, faces, at)
+    }
+    fn edge_seg(&mut self, state: &regen::RegenState, faces: &[String], at: Option<ck_core::linalg::Vec3>) -> Option<ck_ops::sweep::PathSeg> {
+        self.brep.edge_seg(state, faces, at)
+    }
+    fn vertex_point(&mut self, state: &regen::RegenState, faces: &[String], at: Option<ck_core::linalg::Vec3>) -> Option<ck_core::linalg::Vec3> {
+        self.brep.vertex_point(state, faces, at)
+    }
+    fn face_surf(&mut self, state: &regen::RegenState, face: &str) -> Option<regen::FaceSurf> {
+        self.brep.face_surf(state, face)
+    }
     fn prepare(&mut self, state: &regen::RegenState, features: &[&ck_model::Feature]) {
         self.brep.prepare(state, features);
         self.brep.flush_spans(&mut self.sink);
