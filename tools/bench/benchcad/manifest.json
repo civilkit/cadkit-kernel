@@ -1168,21 +1168,13 @@
   "coil_spring_000026": {
    "label": "kernel-gap",
    "skip": "regen does not finish in 50 s (union of the 2nd helical sweep with the 1st never returns)",
-   "note": "variable-pitch helix needs a 3D spline sweep path (sketch paths are planar lines/arcs, helix is constant pitch) -> translated as three constant-pitch helix sweeps; their union (adjacent end caps, overlapping coils since pitch 6 < wire dia 6.94) hangs (kernel-bug: boolean of coil sweeps does not terminate); importStep of the ground truth also hangs.",
-   "skipStep": "importStep of the ground-truth STEP takes ~35 s (tessellating its 100k-triangle sweep face); imports exactly, rerun with --force-skipped"
+   "skipStep": "importStep of the ground-truth STEP takes ~35 s (tessellating its 100k-triangle sweep face); imports exactly, rerun with --force-skipped",
+   "note": "variable-pitch helix needs a 3D spline sweep path (sketch paths are planar lines/arcs, helix is constant pitch) -> translated as three constant-pitch helix sweeps; their union (adjacent end caps, overlapping coils since pitch 6 < wire dia 6.94) hangs (kernel-bug: boolean of coil sweeps does not terminate); importStep of the ground truth also hangs."
   },
   "torsion_spring_000054": {
    "label": "kernel-gap",
    "skip": "regen does not finish in 50 s (a single 12-turn helix sweep takes 19 s, union with a leg never returns)",
    "note": "regen is skipped (a single 12-turn helix sweep takes 19 s and the union with a leg ~100 s; run with --force-skipped). Ground truth is two disjoint solids: multi-solid results are supported (lumps), our regen gives two lumps with volume within 0.11% (helical sweep accuracy), the ground-truth STEP now imports exactly."
-  },
-  "pipe_elbow_000012": {
-   "label": "kernel-gap",
-   "note": "sweep along a multi-piece path (line-arc-line) is TODO(rebuild) in ck-model sweep (F3) -> F5 then nothingToCut."
-  },
-  "duct_elbow_000181": {
-   "label": "kernel-gap",
-   "note": "same: sweep along a multi-piece path (line-arc-line) is TODO(rebuild) (F3); F5 nothingToCut."
   },
   "pan_head_screw_000035": {
    "label": "ground-truth-mismatch",
