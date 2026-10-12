@@ -27,7 +27,7 @@ pub struct BSplineSurface {
     pub weights: Option<Vec<f64>>,
 }
 
-struct CpPrep {
+pub struct CpPrep {
     nu: usize,
     cv: usize,
     boxes: Vec<(Vec3, Vec3)>,
@@ -382,11 +382,12 @@ impl BSplineSurface {
         thread_local! {
             static MEMO: RefCell<HashMap<(u64, u64, u64, u64), (f64, f64)>> = RefCell::new(HashMap::new());
         }
-        let key = (self.fingerprint(), q.x.to_bits(), q.y.to_bits(), q.z.to_bits());
+        let fp = self.fingerprint();
+        let key = (fp, q.x.to_bits(), q.y.to_bits(), q.z.to_bits());
         if let Some(r) = MEMO.with(|m| m.borrow().get(&key).copied()) {
             return r;
         }
-        let r = self.closest_param_within(q, f64::INFINITY).unwrap_or_else(|| {
+        let r = self.closest_param_within_with(&self.cp_prep(fp), q, f64::INFINITY).unwrap_or_else(|| {
             let ((u0, _), (v0, _)) = self.domain();
             (u0, v0)
         });
@@ -401,11 +402,16 @@ impl BSplineSurface {
     }
 
     /// Hash of the whole surface (degrees, knots, control net, weights).
+    /// Four independent lanes: the control net of a big fitted surface is
+    /// hashed on every cached query.
     fn fingerprint(&self) -> u64 {
-        let mut h: u64 = 0xcbf29ce484222325;
+        let mut lanes: [u64; 4] = [0xcbf29ce484222325, 0x9e3779b97f4a7c15, 0xc2b2ae3d27d4eb4f, 0x165667b19e3779f9];
+        let mut n = 0usize;
         let mut mix = |x: u64| {
-            h = (h ^ x).wrapping_mul(0x100000001b3);
-            h ^= h >> 29;
+            let l = &mut lanes[n & 3];
+            *l = (*l ^ x).wrapping_mul(0x100000001b3);
+            *l ^= *l >> 29;
+            n += 1;
         };
         mix(self.deg_u as u64 | (self.deg_v as u64) << 8 | (self.nu as u64) << 16 | (self.nv as u64) << 40);
         for &k in self.knots_u.iter().chain(&self.knots_v) {
@@ -421,19 +427,25 @@ impl BSplineSurface {
                 mix(x.to_bits());
             }
         }
-        h
+        lanes.iter().fold(0u64, |h, &l| (h ^ l).wrapping_mul(0x9e3779b97f4a7c15).rotate_left(23))
     }
 
     /// [`closest_param`](Self::closest_param), but `None` when the surface is
     /// not within `maxd` of `q`: cells whose control-net box is farther away
     /// are never sampled, so a far query costs one pass over the boxes.
     pub fn closest_param_within(&self, q: Vec3, maxd: f64) -> Option<(f64, f64)> {
-        self.closest_param_within_(q, maxd)
+        self.closest_param_within_with(&self.cp_prep(self.fingerprint()), q, maxd)
     }
-    pub fn closest_param_within_(&self, q: Vec3, maxd: f64) -> Option<(f64, f64)> {
+
+    /// Prepared seed grid of this surface, for many bounded queries
+    /// ([`closest_param_within_with`](Self::closest_param_within_with)).
+    pub fn closest_prep(&self) -> std::rc::Rc<CpPrep> {
+        self.cp_prep(self.fingerprint())
+    }
+
+    pub fn closest_param_within_with(&self, prep: &CpPrep, q: Vec3, maxd: f64) -> Option<(f64, f64)> {
         let ((u0, u1), (v0, v1)) = self.domain();
         let (pu, pv) = (self.deg_u, self.deg_v);
-        let prep = self.cp_prep();
         let (nu, boxes, cv, vs, bv, cols, ubas) = (prep.nu, &prep.boxes, prep.cv, &prep.vs, &prep.bv, &prep.cols, &prep.ubas);
         // (the grid samples are up to a cell away from the foot point: the
         // sample bound is looser than `maxd`, the final distance is checked)
@@ -629,13 +641,12 @@ impl BSplineSurface {
     /// Per-surface constants of the closest-point seed grid (spans, cell
     /// boxes, v-sample bases, per-u bases), cached by a hash of the surface:
     /// a query then allocates nothing per sample.
-    fn cp_prep(&self) -> std::rc::Rc<CpPrep> {
+    fn cp_prep(&self, key: u64) -> std::rc::Rc<CpPrep> {
         use std::cell::RefCell;
         use std::rc::Rc;
         thread_local! {
             static CACHE: RefCell<Vec<(u64, Rc<CpPrep>)>> = const { RefCell::new(Vec::new()) };
         }
-        let key = self.fingerprint();
         if let Some(r) = CACHE.with(|c| c.borrow().iter().find(|e| e.0 == key).map(|e| e.1.clone())) {
             return r;
         }

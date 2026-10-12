@@ -464,11 +464,17 @@ impl Surface {
                 let nu = 36;
                 let nv = 48;
                 let mut best = (INF, 0.0, a);
+                // the profile points once per v (the same values `eval` rotates)
+                let ws: Vec<Vec3> = (0..=nv).map(|j| profile.derivs(a + (b - a) * j as f64 / nv as f64, 2)[0] - *axis_o).collect();
+                let z = *axis;
                 for i in 0..nu {
                     let u = TAU * i as f64 / nu as f64;
-                    for j in 0..=nv {
+                    let (su, cu) = u.sin_cos();
+                    for (j, &w) in ws.iter().enumerate() {
                         let v = a + (b - a) * j as f64 / nv as f64;
-                        let d = self.eval(u, v).dist(q);
+                        // Rodrigues, as in `derivs2`
+                        let p = *axis_o + (w * cu + z * (z.dot(w) * (1.0 - cu)) + z.cross(w) * su);
+                        let d = p.dist(q);
                         if d < best.0 {
                             best = (d, u, v);
                         }
@@ -513,6 +519,17 @@ impl Surface {
             }
         }
         self.closest_point(q)
+    }
+
+    /// As [`closest_point_within`](Self::closest_point_within), many queries
+    /// against one surface: `prep` is `closest_prep()` of the B-spline (None
+    /// for other surfaces).
+    pub fn closest_point_within_prep(&self, prep: Option<&crate::nurbs::bsurf::CpPrep>, q: Vec3, maxd: f64) -> Option<(f64, f64, Vec3)> {
+        if let (Surface::BSpline(bs), Some(p)) = (self, prep) {
+            let (u, v) = bs.closest_param_within_with(p, q, maxd)?;
+            return Some((u, v, self.eval(u, v)));
+        }
+        self.closest_point_within(q, maxd)
     }
 
     /// [`closest_point`](Self::closest_point), `None` when the surface is
@@ -630,22 +647,89 @@ fn revolution_foot(profile: &Curve, axis_o: Vec3, axis: Vec3, q: Vec3) -> Option
         return None;
     }
     const N: usize = 160;
-    let mut perp = Vec::with_capacity(N + 1);
-    let mut zs = Vec::with_capacity(N + 1);
-    for k in 0..=N {
-        let w = profile.eval(p0 + (p1 - p0) * k as f64 / N as f64) - axis_o;
-        let z = w.dot(a);
-        zs.push(z);
-        perp.push(w - a * z);
+    // the 161 profile samples depend on the surface only: cached for a B-spline
+    // profile (the foot is asked for thousands of times per surface)
+    struct RevPrep {
+        scale: f64,
+        er: Vec3,
+        et: Vec3,
+        ras: Vec<f64>,
+        zs: Vec<f64>,
+        ok: bool,
     }
-    let scale = perp.iter().map(|w| w.len()).fold(0.0f64, f64::max).max(zs.iter().fold(0.0f64, |m, z| m.max(z.abs())));
-    let er = perp.iter().copied().max_by(|x, y| x.len().total_cmp(&y.len()))?.try_normalize()?;
-    let et = a.cross(er);
-    let ras: Vec<f64> = perp.iter().map(|w| w.dot(er)).collect();
-    // one-sided and planar through the axis
-    if ras.iter().any(|&r| r < -1e-9 * (1.0 + scale)) || perp.iter().any(|w| w.dot(et).abs() > 1e-7 * (1.0 + scale)) {
+    thread_local! {
+        static CACHE: std::cell::RefCell<Vec<(u64, std::rc::Rc<RevPrep>)>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    let key = if let Curve::BSpline(bs) = profile {
+        let mut h: u64 = 0xcbf29ce484222325;
+        let mut mix = |x: u64| {
+            h = (h ^ x).wrapping_mul(0x100000001b3);
+            h ^= h >> 29;
+        };
+        mix(bs.degree as u64);
+        for &k in &bs.knots {
+            mix(k.to_bits());
+        }
+        for c in &bs.ctrl {
+            mix(c.x.to_bits());
+            mix(c.y.to_bits());
+            mix(c.z.to_bits());
+        }
+        if let Some(w) = &bs.weights {
+            for x in w {
+                mix(x.to_bits());
+            }
+        }
+        for v in [axis_o, axis] {
+            mix(v.x.to_bits());
+            mix(v.y.to_bits());
+            mix(v.z.to_bits());
+        }
+        Some(h)
+    } else {
+        None
+    };
+    let cached = key.and_then(|k| CACHE.with(|c| c.borrow().iter().find(|e| e.0 == k).map(|e| e.1.clone())));
+    let prep = match cached {
+        Some(p) => p,
+        None => {
+            let mut perp = Vec::with_capacity(N + 1);
+            let mut zs = Vec::with_capacity(N + 1);
+            for k in 0..=N {
+                let w = profile.eval(p0 + (p1 - p0) * k as f64 / N as f64) - axis_o;
+                let z = w.dot(a);
+                zs.push(z);
+                perp.push(w - a * z);
+            }
+            let scale = perp.iter().map(|w| w.len()).fold(0.0f64, f64::max).max(zs.iter().fold(0.0f64, |m, z| m.max(z.abs())));
+            let er = perp.iter().copied().max_by(|x, y| x.len().total_cmp(&y.len())).and_then(|e| e.try_normalize());
+            let prep = match er {
+                None => RevPrep { scale, er: Vec3::ZERO, et: Vec3::ZERO, ras: vec![], zs, ok: false },
+                Some(er) => {
+                    let et = a.cross(er);
+                    let ras: Vec<f64> = perp.iter().map(|w| w.dot(er)).collect();
+                    // one-sided and planar through the axis
+                    let ok = !(ras.iter().any(|&r| r < -1e-9 * (1.0 + scale)) || perp.iter().any(|w| w.dot(et).abs() > 1e-7 * (1.0 + scale)));
+                    RevPrep { scale, er, et, ras, zs, ok }
+                }
+            };
+            let prep = std::rc::Rc::new(prep);
+            if let Some(k) = key {
+                CACHE.with(|c| {
+                    let mut c = c.borrow_mut();
+                    if c.len() >= 32 {
+                        c.remove(0);
+                    }
+                    c.push((k, prep.clone()));
+                });
+            }
+            prep
+        }
+    };
+    if !prep.ok {
         return None;
     }
+    let (scale, er, et, ras, zs) = (prep.scale, prep.er, prep.et, &prep.ras, &prep.zs);
     let qw = q - axis_o;
     let qz = qw.dot(a);
     let qp = qw - a * qz;
