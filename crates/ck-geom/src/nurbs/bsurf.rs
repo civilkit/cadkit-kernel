@@ -402,9 +402,61 @@ impl BSplineSurface {
     }
 
     /// Hash of the whole surface (degrees, knots, control net, weights).
-    /// Four independent lanes: the control net of a big fitted surface is
-    /// hashed on every cached query.
+    /// Memoised per object by a cheap signature (address, dimensions, an
+    /// additive checksum of every coordinate, sampled points, knots): the
+    /// control net of a big fitted surface is otherwise hashed on every
+    /// cached query.
     pub fn fingerprint(&self) -> u64 {
+        use std::cell::RefCell;
+        use std::collections::HashMap;
+        thread_local! {
+            static QUICK: RefCell<HashMap<[u64; 4], u64>> = RefCell::new(HashMap::new());
+        }
+        let mut sums = [0u64; 4];
+        for (i, c) in self.ctrl.iter().enumerate() {
+            let l = i & 3;
+            sums[l] = sums[l].wrapping_add(c.x.to_bits()).wrapping_add(c.y.to_bits().rotate_left(21)).wrapping_add(c.z.to_bits().rotate_left(42));
+        }
+        let mut sig = 0xcbf29ce484222325u64;
+        let mut mix = |x: u64| {
+            sig = (sig ^ x).wrapping_mul(0x100000001b3);
+            sig ^= sig >> 29;
+        };
+        mix(self.ctrl.as_ptr() as usize as u64);
+        mix(self.deg_u as u64 | (self.deg_v as u64) << 8 | (self.nu as u64) << 16 | (self.nv as u64) << 40);
+        mix(self.weights.as_ref().map_or(0, |w| w.as_ptr() as usize as u64 ^ w.len() as u64));
+        for &k in self.knots_u.iter().chain(&self.knots_v) {
+            mix(k.to_bits());
+        }
+        let n = self.ctrl.len();
+        for j in 0..16usize.min(n) {
+            let c = self.ctrl[j * n / 16.max(1)];
+            mix(c.x.to_bits() ^ c.y.to_bits().rotate_left(7) ^ c.z.to_bits().rotate_left(13));
+        }
+        if let Some(w) = &self.weights {
+            let mut ws = 0u64;
+            for x in w {
+                ws = ws.wrapping_add(x.to_bits());
+            }
+            mix(ws);
+        }
+        let key = [sig, sums[0], sums[1] ^ sums[2].rotate_left(9), sums[3]];
+        if let Some(fp) = QUICK.with(|m| m.borrow().get(&key).copied()) {
+            return fp;
+        }
+        let fp = self.fingerprint_full();
+        QUICK.with(|m| {
+            let mut m = m.borrow_mut();
+            if m.len() >= 4096 {
+                m.clear();
+            }
+            m.insert(key, fp);
+        });
+        fp
+    }
+
+    /// The content hash itself: four independent lanes over the whole surface.
+    fn fingerprint_full(&self) -> u64 {
         let mut lanes: [u64; 4] = [0xcbf29ce484222325, 0x9e3779b97f4a7c15, 0xc2b2ae3d27d4eb4f, 0x165667b19e3779f9];
         let mut n = 0usize;
         let mut mix = |x: u64| {
