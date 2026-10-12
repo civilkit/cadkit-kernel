@@ -124,8 +124,19 @@ pub fn ders_basis_funs(span: usize, u: f64, p: usize, nd: usize, knots: &[f64]) 
 
 /// Allocation-free `ders_basis_funs` for nd <= 2, p < 12 (same arithmetic).
 pub fn ders_basis_funs2(span: usize, u: f64, p: usize, nd: usize, knots: &[f64]) -> [[f64; 12]; 3] {
-    let mut ndu = [[0.0f64; 12]; 12];
-    let (mut left, mut right) = ([0.0f64; 12], [0.0f64; 12]);
+    // (small working arrays for the usual degrees: the zero-fill of a 12x12
+    // table dominated the cost of a cubic evaluation)
+    if p < 6 {
+        ders_basis_funs2_n::<6>(span, u, p, nd, knots)
+    } else {
+        ders_basis_funs2_n::<12>(span, u, p, nd, knots)
+    }
+}
+
+#[inline(always)]
+fn ders_basis_funs2_n<const N: usize>(span: usize, u: f64, p: usize, nd: usize, knots: &[f64]) -> [[f64; 12]; 3] {
+    let mut ndu = [[0.0f64; N]; N];
+    let (mut left, mut right) = ([0.0f64; N], [0.0f64; N]);
     ndu[0][0] = 1.0;
     for j in 1..=p {
         left[j] = u - knots[span + 1 - j];
@@ -143,7 +154,7 @@ pub fn ders_basis_funs2(span: usize, u: f64, p: usize, nd: usize, knots: &[f64])
     for j in 0..=p {
         ders[0][j] = ndu[j][p];
     }
-    let mut a = [[0.0f64; 12]; 2];
+    let mut a = [[0.0f64; N]; 2];
     for r in 0..=p as isize {
         let (mut s1, mut s2) = (0usize, 1usize);
         a[0][0] = 1.0;

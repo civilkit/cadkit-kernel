@@ -356,8 +356,9 @@ pub fn general(c1: &Curve, r1: (f64, f64), c2: &Curve, r2: (f64, f64), tol: f64)
     }
     let n1 = samples_for(c1);
     let n2 = samples_for(c2);
-    let p1 = c1.sample(r1.0, r1.1, n1);
-    let p2 = c2.sample(r2.0, r2.1, n2);
+    let (s1, s2) = (sampled(c1, r1, n1), sampled(c2, r2, n2));
+    let (p1, sag1_c) = (&s1.0, s1.1);
+    let (p2, sag2_c) = (&s2.0, s2.1);
     // sample boxes (padded by the longest chord, the reach the segment test
     // below allows) that do not meet cannot intersect: skips the closest-
     // point overlap scan over a spline, the slow part of most misses
@@ -373,8 +374,8 @@ pub fn general(c1: &Curve, r1: (f64, f64), c2: &Curve, r2: (f64, f64), tol: f64)
             }
             (lo, hi, m)
         };
-        let (lo1, hi1, m1) = bx(&p1);
-        let (lo2, hi2, m2) = bx(&p2);
+        let (lo1, hi1, m1) = bx(p1);
+        let (lo2, hi2, m2) = bx(p2);
         let pad = m1.max(m2) + tol;
         if lo1.x - pad > hi2.x || lo2.x - pad > hi1.x || lo1.y - pad > hi2.y || lo2.y - pad > hi1.y || lo1.z - pad > hi2.z || lo2.z - pad > hi1.z {
             return out;
@@ -385,9 +386,7 @@ pub fn general(c1: &Curve, r1: (f64, f64), c2: &Curve, r2: (f64, f64), tol: f64)
     // overlap check: all samples of c1 (or a run) on c2
     // (a sample farther from c2's polyline than its chord sag cannot lie on
     // c2: skips the closest-point search on long splines such as helices)
-    let sag2 = (0..n2)
-        .map(|j| c2.eval(0.5 * (t2s[j] + t2s[j + 1])).dist((p2[j] + p2[j + 1]) * 0.5))
-        .fold(0.0f64, f64::max);
+    let sag2 = sag2_c;
     let far = 2.0 * sag2 + 4.0 * tol;
     // boxes of blocks of c2's chords: lossless culling of the chord scans
     // (a chord within r of a point/segment has its block box within r on
@@ -444,7 +443,7 @@ pub fn general(c1: &Curve, r1: (f64, f64), c2: &Curve, r2: (f64, f64), tol: f64)
     // chords run side by side: closer than the chord sags suffices - a
     // crossing of the curves puts the two chords within the sum of the sags)
     let long_pair = n1 >= 200 || n2 >= 200;
-    let sag1 = (0..n1).map(|i| c1.eval(0.5 * (t1s[i] + t1s[i + 1])).dist((p1[i] + p1[i + 1]) * 0.5)).fold(0.0f64, f64::max);
+    let sag1 = sag1_c;
     let maxchord2 = (0..n2).map(|j| p2[j].dist(p2[j + 1])).fold(0.0f64, f64::max);
     for i in 0..n1 {
         let (a0, a1) = (p1[i], p1[i + 1]);
@@ -482,6 +481,57 @@ pub fn general(c1: &Curve, r1: (f64, f64), c2: &Curve, r2: (f64, f64), tol: f64)
         }
     }
     out
+}
+
+/// `n + 1` samples of `c` over `r` and the largest chord sag (distance of a
+/// chord's midpoint to the curve at the parameter midpoint). A B-spline's
+/// are memoised by content: a fitted intersection curve is crossed with
+/// every boundary edge of both faces, and every edge with every curve.
+fn sampled(c: &Curve, r: (f64, f64), n: usize) -> std::rc::Rc<(Vec<Vec3>, f64)> {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    thread_local! {
+        static MEMO: RefCell<std::collections::HashMap<(u64, u64, u64, usize), Rc<(Vec<Vec3>, f64)>>> = RefCell::new(std::collections::HashMap::new());
+    }
+    let compute = || {
+        let ts: Vec<f64> = (0..=n).map(|i| r.0 + (r.1 - r.0) * i as f64 / n as f64).collect();
+        let pts: Vec<Vec3> = ts.iter().map(|&t| c.eval(t)).collect();
+        let sag = (0..n).map(|j| c.eval(0.5 * (ts[j] + ts[j + 1])).dist((pts[j] + pts[j + 1]) * 0.5)).fold(0.0f64, f64::max);
+        Rc::new((pts, sag))
+    };
+    let Curve::BSpline(b) = c else { return compute() };
+    let mut h: u64 = 0xcbf29ce484222325;
+    let mut mix = |x: u64| {
+        h = (h ^ x).wrapping_mul(0x100000001b3);
+        h ^= h >> 29;
+    };
+    mix(b.degree as u64);
+    for &k in &b.knots {
+        mix(k.to_bits());
+    }
+    for p in &b.ctrl {
+        mix(p.x.to_bits());
+        mix(p.y.to_bits());
+        mix(p.z.to_bits());
+    }
+    if let Some(w) = &b.weights {
+        for x in w {
+            mix(x.to_bits());
+        }
+    }
+    let key = (h, r.0.to_bits(), r.1.to_bits(), n);
+    if let Some(v) = MEMO.with(|m| m.borrow().get(&key).cloned()) {
+        return v;
+    }
+    let v = compute();
+    MEMO.with(|m| {
+        let mut m = m.borrow_mut();
+        if m.len() >= 2048 {
+            m.clear();
+        }
+        m.insert(key, v.clone());
+    });
+    v
 }
 
 fn range_box(c: &Curve, r: (f64, f64)) -> Option<(Vec3, Vec3)> {
