@@ -14,7 +14,7 @@ const FIELD_TABLE = `| type | key fields |
 | fillet | radius, edges[{faces:[a,b],at:[x,y,z]}] |
 | chamfer | chamferType(equal/angleDistance/distanceDistance/vertex), distance, distance2, angle, edges |
 | shell | faces[] (empty = whole body), thickness, outward |
-| hole | sketch(points = centres), kind(simple/cbore/csink), diameter, end, depth, tip |
+| hole | sketch of point entities (sk.point(x,y) -> {type:"point",p}), kind(simple/cbore/csink), diameter, end, depth, tip |
 | draft | neutral, faces[], angle |
 | rib | sketch(open chain), thickness |
 | lip | kind, faces[], edges[], width, height |
@@ -38,6 +38,13 @@ p.extrude({ sketch: h, op: 'cut', end: 'throughBoth' });
 ### revolve profile
 Revolve needs an axis: a sketch line id. The builder defaults to the sketch's
 first line. Keep the profile on one side of the axis.
+### hole feature (not an extrude-cut)
+Hole centres are point entities, not circles or bare points. The hole drills
+away from the sketch plane by default; flip it to drill into the body:
+\`\`\`js
+const c = p.sketch('Centres', 'front', (sk) => { sk.point(50, 30); });
+p.hole({ sketch: c, diameter: 8, flip: true });
+\`\`\`
 ### shell
 Shell faces[] empty hollows the whole body; list faces to keep them open.
 Thickness must stay below the thinnest wall (else shellTooThick).`;
@@ -52,6 +59,9 @@ export function getGuide(): { version: string; text: string } {
 Units mm. Features F1, F2, … in creation order; seq is the next id. Every
 change is an edit to this document (ADR 0001). Batches are atomic: a failing
 batch leaves the document unchanged. Undo reverts whole batches.
+A document may carry intent: top-level "expect" with check expectations
+([{kind:"volume",min:1000}]). verify checks them by default and edits flag
+breaks automatically (ADR 0003 item 5).
 
 ## Features (${FEATURE_TYPES.length} wire types)
 ${FIELD_TABLE}

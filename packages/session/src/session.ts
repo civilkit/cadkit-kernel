@@ -5,7 +5,7 @@
 // {id, author, time, ops, reason}; undo reverts the last N batches.
 import { createWorkerKernel, type WorkerKernel } from '../../kernel-client/src/worker.js';
 import { emptyPart, FEATURE_TYPES, type PartDoc } from '../../part-model/src/index.js';
-import { hintFor, verify, type KernelTransport, type RegenError, type VerifyReport } from '../../driver/src/verify.js';
+import { hintFor, verify, type CheckResultItem, type KernelTransport, type RegenError, type VerifyReport } from '../../driver/src/verify.js';
 import {
   check, describe, heal, importSat, importStep, massProps, resolveDescriptions, step, validate,
   type CheckReport, type DescribeItem, type HealReport, type ImportReport, type MassReport,
@@ -63,9 +63,20 @@ export interface EditResult {
   schemaError?: string;
   diff?: BodyDiff | null;
   refWarnings?: RefWarning[];
+  /** Document expectations check (present when the doc carries expect). */
+  intent?: { passed: number; failed: number; results: CheckResultItem[] } | null;
 }
 
-const ID = /^F\d+$/;
+/** Any non-empty string identifies a feature (the app mints F-ids; the kernel
+ *  and hand-written docs use readable ids like P, W, K1). */
+function isId(id: unknown): id is string {
+  return typeof id === 'string' && id.length > 0;
+}
+
+function seqOf(id: string): number | null {
+  const n = /^F(\d+)$/.exec(id);
+  return n ? +n[1] : null;
+}
 
 function clone<T>(v: T): T {
   return JSON.parse(JSON.stringify(v)) as T;
@@ -89,7 +100,7 @@ export function checkOp(doc: PartDoc, op: EditOp): string | null {
         return `unknown feature type ${JSON.stringify(t)}`;
       }
       const id = (op.feature as { id?: unknown }).id;
-      if (id !== undefined && (typeof id !== 'string' || !ID.test(id))) return `bad id ${JSON.stringify(id)}`;
+      if (id !== undefined && !isId(id)) return `bad id ${JSON.stringify(id)}`;
       if (typeof id === 'string' && ids.has(id)) return `id ${id} already exists`;
       if (op.index !== undefined && (op.index < 0 || op.index > doc.features.length)) {
         return `index ${op.index} out of range`;
@@ -114,6 +125,24 @@ export function checkOp(doc: PartDoc, op: EditOp): string | null {
     case 'move': {
       if (!ids.has(op.id)) return `unknown feature ${op.id}`;
       if (op.to < 0 || op.to >= doc.features.length) return `index ${op.to} out of range`;
+      // Definition order: sketch/seeds references must keep pointing backwards.
+      const order = doc.features.map((f) => f.id);
+      order.splice(order.indexOf(op.id), 1);
+      order.splice(op.to, 0, op.id);
+      const pos = new Map(order.map((id, i) => [id, i]));
+      for (const f of doc.features) {
+        const refs: string[] = [];
+        const g = f as unknown as Record<string, unknown>;
+        if (typeof g.sketch === 'string') refs.push(g.sketch);
+        for (const k of ['sketches', 'seeds']) {
+          if (Array.isArray(g[k])) refs.push(...(g[k] as unknown[]).filter((x): x is string => typeof x === 'string'));
+        }
+        for (const r of refs) {
+          if (typeof r === 'string' && pos.has(r) && (pos.get(r) as number) > (pos.get(f.id) as number)) {
+            return `moving ${op.id} to ${op.to} leaves ${f.id} referencing later feature ${r}`;
+          }
+        }
+      }
       return null;
     }
     case 'replace': {
@@ -152,6 +181,10 @@ function applyOp(doc: PartDoc, op: EditOp): void {
     case 'add': {
       const f = clone(op.feature);
       if (f.id === undefined) f.id = `F${doc.seq++}`;
+      else if (typeof f.id === 'string') {
+        const n = seqOf(f.id);
+        if (n !== null) doc.seq = Math.max(doc.seq, n + 1);
+      }
       const rec = f as unknown as import('../../part-model/src/index.js').Feature;
       if (op.index === undefined) doc.features.push(rec);
       else doc.features.splice(op.index, 0, rec);
@@ -262,13 +295,20 @@ export class Session {
     }
   }
 
-  async facts(): Promise<BodyFacts> {
-    const { body } = await this.regen(this.doc);
+  async facts(): Promise<BodyFacts> {    const { body } = await this.regen(this.doc);
     const faces = ((body?.faces as Array<{ id: string }> | undefined) ?? []).map((f) => f.id);
     const edges = ((body?.edges as Array<{ key: string }> | undefined) ?? []).map((e) => e.key);
     const box = (body?.box as BodyFacts['box']) ?? null;
     const { volume, solids } = await this.mass();
     return { faces, edges, solids, volume, box };
+  }
+
+  /** Display mesh of the current document for the renderer. */
+  async mesh(): Promise<import('../../render/src/mesh.js').MeshData> {
+    const { meshFromBody } = await import('../../render/src/mesh.js');
+    const { body } = await this.regen(this.doc);
+    if (!body) throw new Error('no body to mesh');
+    return meshFromBody(body as Parameters<typeof meshFromBody>[0]);
   }
 
   async edit(ops: EditOp[], reason?: string): Promise<EditResult> {
@@ -319,11 +359,45 @@ export class Session {
     this.doc = candidate;
     const record: EditRecord = { id: `edit-${this.editSeq++}`, author: this.author, time: Date.now(), ops: clone(ops), reason };
     this.stack.push({ record, before });
-    return { ok: true, record, diff: diffFacts(pre, post), refWarnings };
+
+    // Intent: a document carrying expectations flags breaks automatically.
+    // Flagged, not reverted — redesigning away from stated intent is legal.
+    let intent: EditResult['intent'] = null;
+    const hints: ReturnType<typeof hintFor>[] = [];
+    if (candidate.expect?.length) {
+      try {
+        const c = await this.kernel.request({ type: 'check', tag: this.tag, expect: candidate.expect });
+        if (!c.trap && c.ok && c.result) {
+          const res = c.result as { passed: number; failed: number; results: CheckResultItem[] };
+          intent = { passed: res.passed ?? 0, failed: res.failed ?? 0, results: res.results ?? [] };
+          for (const item of intent.results) {
+            if (!item.pass) {
+              hints.push({
+                feature: '',
+                code: `expect:${item.kind}`,
+                hint: `document expectation ${item.kind} broken by ${record.id} — measured ${JSON.stringify(item.measured)} vs expected ${JSON.stringify(item.expected)}${item.detail ? ` (${item.detail})` : ''}`,
+              });
+            }
+          }
+        }
+      } catch { intent = null; }
+    }
+    return { ok: true, record, diff: diffFacts(pre, post), refWarnings, intent, hints: hints.length ? hints : undefined };
   }
 
-  /** Revert the last n applied batches. The document is the source of truth;
-   *  the kernel tag is re-synced (resynced:false if that regen itself fails). */
+  /** Set the document's intent expectations (check grammar). Recorded like an
+   *  edit so undo reverts it; does not touch the kernel (checked on edit/verify). */
+  setExpect(expect: Array<Record<string, unknown>>, reason?: string): EditRecord {
+    if (!Array.isArray(expect)) throw new Error('expect must be an array');
+    const before = clone(this.doc);
+    this.doc = { ...clone(this.doc), expect: clone(expect) };
+    if (expect.length === 0) delete (this.doc as { expect?: unknown }).expect;
+    const record: EditRecord = { id: `edit-${this.editSeq++}`, author: this.author, time: Date.now(), ops: [], reason: reason ?? 'set expectations' };
+    this.stack.push({ record, before });
+    return record;
+  }
+
+  /** Revert the last n applied batches. The document is the source of truth;   *  the kernel tag is re-synced (resynced:false if that regen itself fails). */
   async undo(n = 1): Promise<{ records: EditRecord[]; resynced: boolean }> {
     const popped = this.stack.splice(Math.max(0, this.stack.length - n), n);
     if (popped.length) this.doc = clone(popped[0].before);
@@ -338,6 +412,42 @@ export class Session {
 
   verify(expect?: Array<Record<string, unknown>>): Promise<VerifyReport> {
     return verify(this.kernel, this.doc, { tag: this.tag, expect });
+  }
+
+  /** Save the document as name.ckpart plus the edit log as name.edits.json. */
+  async save(dir: string, name?: string): Promise<{ part: string; log: string }> {
+    const { writeFileSync, mkdirSync } = await import('node:fs');
+    const { default: path } = await import('node:path');
+    mkdirSync(dir, { recursive: true });
+    const base = name ?? (this.doc.name.replace(/[^\w\- ]+/g, '_').trim() || 'part');
+    const partFile = path.join(dir, `${base}.ckpart`);
+    const logFile = path.join(dir, `${base}.edits.json`);
+    writeFileSync(partFile, JSON.stringify(this.doc, null, 1));
+    writeFileSync(logFile, JSON.stringify({
+      format: 'ck-edit-log',
+      version: 1,
+      base: this.stack.length ? this.stack[0].before : this.doc,
+      entries: this.stack.map((e) => ({ record: e.record, before: e.before })),
+    }, null, 1));
+    return { part: partFile, log: logFile };
+  }
+
+  /** Reopen a saved session: document, records and undo states restored. */
+  static async openSaved(dir: string, name: string, opts?: { wasmPath?: string }): Promise<Session> {
+    const { readFileSync } = await import('node:fs');
+    const { default: path } = await import('node:path');
+    const doc = JSON.parse(readFileSync(path.join(dir, `${name}.ckpart`), 'utf8')) as PartDoc;
+    const log = JSON.parse(readFileSync(path.join(dir, `${name}.edits.json`), 'utf8')) as {
+      format: string; version: number; entries: Array<{ record: EditRecord; before: PartDoc }>;
+    };
+    if (log.format !== 'ck-edit-log' || log.version !== 1) throw new Error(`unreadable edit log ${name}`);
+    const worker = await createWorkerKernel(opts?.wasmPath);
+    const s = new Session(doc, worker, log.entries.at(-1)?.record.author ?? 'agent');
+    s.worker = worker;
+    s.editSeq = log.entries.length + 1;
+    s.stack = log.entries.map((e) => ({ record: e.record, before: clone(e.before) }));
+    await s.regen(s.document).catch(() => null);
+    return s;
   }
 
   /** The spec's query tools, bound to this session's tag. */
@@ -380,4 +490,30 @@ export class Session {
   async close(): Promise<void> {
     await this.worker?.close();
   }
+}
+
+/** Log file shape written by save(). */
+export interface EditLogFile {
+  format: 'ck-edit-log';
+  version: 1;
+  base: PartDoc;
+  entries: Array<{ record: EditRecord; before: PartDoc }>;
+}
+
+/** Replay a saved log onto a session step by step (for "step through the
+ *  agent's edits"). The session should hold the log's base document first;
+ *  each step applies one record's ops. Stops at the first failure. */
+export async function replaySteps(
+  session: Session,
+  log: EditLogFile,
+  onStep?: (record: EditRecord, result: EditResult) => void,
+): Promise<{ applied: number; failed: EditRecord | null; result: EditResult | null }> {
+  let applied = 0;
+  for (const e of log.entries) {
+    const result = await session.edit(e.record.ops, e.record.reason);
+    onStep?.(e.record, result);
+    if (!result.ok) return { applied, failed: e.record, result };
+    applied++;
+  }
+  return { applied, failed: null, result: null };
 }

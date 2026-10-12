@@ -1,1 +1,1 @@
-{"extends": "./tsconfig.base.json", "compilerOptions": {"outDir": "dist", "rewriteRelativeImportExtensions": true, "types": ["node"]}, "include": ["part-model/src", "builder/src", "kernel-client/src", "driver/src", "session/src"]}
+{"extends": "./tsconfig.base.json", "compilerOptions": {"outDir": "dist", "rewriteRelativeImportExtensions": true, "types": ["node"]}, "include": ["part-model/src", "builder/src", "kernel-client/src", "driver/src", "session/src", "render/src"]}

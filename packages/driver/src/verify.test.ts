@@ -107,4 +107,51 @@ describe('verify live', { skip: !existsSync(wasmPath()) && 'no wasm built' }, ()
       await k.close();
     }
   });
+
+  it('verifies a hole feature with point-entity centres', async () => {
+    const { createWorkerKernel } = await import('../../kernel-client/src/worker.js');
+    const { Part } = await import('../../builder/src/index.js');
+    const p = new Part('Disc', 'aluminium');
+    const s = p.sketch('Disc', 'front', (sk) => { sk.circle(0, 0, 20); });
+    p.extrude({ sketch: s, op: 'add', end: 'blind', depth: 10 });
+    const c = p.sketch('Centres', 'front', (sk) => { sk.point(0, 0); });
+    p.hole({ sketch: c, diameter: 8, flip: true });
+    const k = await createWorkerKernel();
+    try {
+      const r = await verify(k, p.toJSON(), { expect: [{ kind: 'volume', equals: Math.PI * 384 * 10, relTol: 1e-3 }] });
+      assert.equal(r.ok, true);
+    } finally {
+      await k.close();
+    }
+  });
+});
+
+describe('verify document expectations', () => {
+  function seenFake(): { k: KernelTransport; seen: Array<Record<string, unknown>> } {
+    const seen: Array<Record<string, unknown>> = [];
+    const k: KernelTransport = {
+      async request(msg: Record<string, unknown>): Promise<KernelReply> {
+        seen.push(msg);
+        if (msg.type === 'regen') return { ok: true, result: { errors: [], body: {} } };
+        if (msg.type === 'validate') return { ok: true, result: { ok: true, issues: [] } };
+        return { ok: true, result: { ok: true, passed: 1, failed: 0, results: [] } };
+      },
+    };
+    return { k, seen };
+  }
+
+  it('checks the document expect array by default', async () => {
+    const { k, seen } = seenFake();
+    const doc = { ...emptyPart('T'), expect: [{ kind: 'volume', min: 10 }] };
+    const r = await verify(k, doc);
+    assert.deepEqual((seen.find((m) => m.type === 'check') as Record<string, unknown>).expect, [{ kind: 'volume', min: 10 }]);
+    assert.equal(r.ok, true);
+  });
+
+  it('explicit expect wins over the document', async () => {
+    const { k, seen } = seenFake();
+    const doc = { ...emptyPart('T'), expect: [{ kind: 'volume', min: 10 }] };
+    await verify(k, doc, { expect: [{ kind: 'valid' }] });
+    assert.deepEqual((seen.find((m) => m.type === 'check') as Record<string, unknown>).expect, [{ kind: 'valid' }]);
+  });
 });

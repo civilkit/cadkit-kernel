@@ -45,6 +45,13 @@ export class Sketch {
     this.entities.push({ id, type: 'circle', c, r });
     return id;
   }
+  /** hole centre: a point entity over a new point (what the hole feature reads) */
+  point(x: number, y: number): string {
+    const p = this.pt(x, y);
+    const id = this.id('e');
+    this.entities.push({ id, type: 'point', p });
+    return id;
+  }
   /** closed polygon through [x,y] vertices */
   poly(pts: Array<[number, number]>): string[] {
     const ids = pts.map(([x, y]) => this.pt(x, y));
@@ -70,10 +77,20 @@ export class Part {
   material: Material;
   features: Feature[] = [];
   seq = 1;
+  expect?: Array<Record<string, unknown>>;
 
   constructor(name = 'Part', material: Material = 'steel') {
     this.name = name;
     this.material = material;
+  }
+
+  /** Adopt an existing document (including its expectations) for editing. */
+  static fromJSON(doc: PartDoc): Part {
+    const p = new Part(doc.name, doc.material);
+    p.features = JSON.parse(JSON.stringify(doc.features)) as Feature[];
+    p.seq = doc.seq;
+    if (doc.expect) p.expect = JSON.parse(JSON.stringify(doc.expect)) as Array<Record<string, unknown>>;
+    return p;
   }
 
   nextId(): FeatureId { return (`F${this.seq++}`) as FeatureId; }
@@ -253,16 +270,23 @@ export class Part {
   // build their payloads with add() (shapes in part-model).
 
   add(feature: Omit<GenericFeature, 'id'> & { id?: string }): FeatureId {
-    (feature as GenericFeature).id ||= this.nextId();
+    const f = feature as GenericFeature;
+    if (f.id === undefined) f.id = this.nextId();
+    else if (typeof f.id === 'string') {
+      const n = /^F(\d+)$/.exec(f.id);
+      if (n) this.seq = Math.max(this.seq, +n[1] + 1);
+    }
     this.features.push(feature as Feature);
     return (feature as GenericFeature).id as FeatureId;
   }
 
   toJSON(): PartDoc {
-    return {
+    const doc: PartDoc = {
       ...emptyPart(this.name, this.material),
       features: this.features,
       seq: this.seq,
     };
+    if (this.expect) doc.expect = JSON.parse(JSON.stringify(this.expect)) as Array<Record<string, unknown>>;
+    return doc;
   }
 }

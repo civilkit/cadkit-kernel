@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadTasks, replayModel, runAgentBench } from './bench.js';
+import { loadTasks, replayModel, runAgentBench, runEditBench } from './bench.js';
 import { defaultWasmPath as wasmPath } from '../../kernel-client/src/worker.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
@@ -31,5 +31,11 @@ describe('agent bench', { skip: !existsSync(wasmPath()) && 'no wasm built' }, ()
     const fail = await runAgentBench({ tasks, model: replayModel(broken) });
     assert.ok(fail.results.every((r) => !r.pass));
     assert.ok(Object.keys(fail.byFamily).length > 0);
+  });
+
+  it('edit tasks pass with exact volumes', async () => {
+    const { results } = await runEditBench({});
+    assert.ok(results.length >= 4);
+    for (const r of results) assert.equal(r.pass, true, `${r.id}: ${r.detail}`);
   });
 });

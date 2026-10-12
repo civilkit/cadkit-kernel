@@ -108,4 +108,24 @@ describe('builder solid features', () => {
     assert.equal(rec(p, 13).equal, true);
     assert.deepEqual(rec(p, 15), { type: 'scale', name: 'scale', factor: 2, about: 'centroid', id: 'F16' });
   });
+
+  it('point() makes a hole-centre point entity', () => {    const p = new Part('T');
+    let eid = '';
+    p.sketch('C', 'front', (s) => { eid = s.point(50, 30); });
+    const f = p.features[0];
+    assert.equal(isSketchFeature(f), true);
+    if (!isSketchFeature(f)) return;
+    assert.equal(f.points.length, 2); // O + centre
+    assert.deepEqual(f.entities, [{ id: eid, type: 'point', p: 'p1' }]);
+  });
+});
+
+describe('builder document metadata', () => {
+  it('fromJSON/toJSON preserve expectations', () => {
+    const p = new Part('T');
+    p.expect = [{ kind: 'volume', min: 10 }];
+    const q = Part.fromJSON(p.toJSON());
+    assert.deepEqual(q.toJSON().expect, [{ kind: 'volume', min: 10 }]);
+    assert.equal(q.seq, p.seq);
+  });
 });

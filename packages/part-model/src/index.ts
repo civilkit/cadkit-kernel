@@ -16,7 +16,11 @@ export interface SketchPoint { id: string; x: number; y: number; fixed?: boolean
 export type SketchEntity =
   | { id: string; type: 'line'; p1: string; p2: string }
   | { id: string; type: 'circle'; c: string; r: number }
-  | { id: string; type: 'arc'; c: string; p1: string; p2: string };
+  | { id: string; type: 'arc'; c: string; p1: string; p2: string }
+  | { id: string; type: 'ellipse'; c: string; p: string; r: number }
+  | { id: string; type: 'point'; p: string }
+  | { id: string; type: 'spline'; pts: string[]; closed?: boolean }
+  | { id: string; type: 'cvspline'; pts: string[]; degree?: number; knots?: number[]; closed?: boolean };
 
 export interface SketchConstraint {
   id: string;
@@ -82,6 +86,8 @@ export interface PartDoc {
   rollback: null;
   material: Material;
   counters: Record<string, unknown>;
+  /** Intent expectations (check grammar): verified by default, Survives round-trips. */
+  expect?: Array<Record<string, unknown>>;
 }
 
 export function isSketchFeature(f: Feature): f is SketchFeature {

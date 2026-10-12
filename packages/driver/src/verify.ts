@@ -61,10 +61,11 @@ const FIX: Record<string, (feature: string, params: Record<string, unknown>) => 
   missingAxis: (f) => `${f}.axis is missing — pass a sketch line entity id (the builder defaults to the sketch's first line)`,
   missingReference: (f) => `${f} references geometry that no longer exists — re-pick the face/edge by name (resolve) and update the ref`,
   nothingToCut: (f) => `${f} removes nothing — move the profile so it overlaps the body, or flip the cut direction`,
+  cutNoEffect: (f) => `${f} cuts nothing — the tool misses the body: flip it or move it to overlap`,
   booleanFailed: (f) => `${f}: boolean failed — check the tool and target overlap in a volume, not just a face`,
   shellTooThick: (f) => `${f}: thickness exceeds the thinnest wall — reduce thickness`,
   shellUnsupported: (f) => `${f}: this shape cannot be shelled — remove the feature or change the base solid`,
-  holeNoPoints: (f) => `${f}: hole sketch has no points — add centre points to the hole sketch`,
+  holeNoPoints: (f) => `${f}: hole sketch has no centres — add {type:'point'} entities over centre points (sk.point(x, y)), not circles or bare points`,
   holeInvalid: (f) => `${f}: hole parameters invalid — check diameter/depth against the stock`,
   ribNeedsOpenSketch: (f) => `${f}: rib profile must be an open chain — open the sketch profile`,
   ribNoContact: (f) => `${f}: rib does not touch the body — extend the profile to contact`,
@@ -94,10 +95,10 @@ export function listFixes(): Array<{ code: string; sample: string }> {
   return Object.keys(FIX).map((code) => ({ code, sample: FIX[code]('Fn', {}) }));
 }
 
-/** Face/edge entity name -> owning feature id (F2.C0 -> F2), else the raw name. */
+/** Face/edge entity name -> owning feature id (F2.C0 -> F2, P.C0 -> P), else the raw name. */
 function ownerOf(entity: string): string {
   const head = entity.split('.')[0];
-  return /^F\d+$/.test(head) ? head : entity;
+  return /^\w+$/.test(head) ? head : entity;
 }
 
 export async function verify(
@@ -108,7 +109,8 @@ export async function verify(
   const t0 = performance.now();
   const tag = opts.tag ?? 'main';
   const tol = opts.tol ?? 1e-6;
-  const expect = opts.expect ?? [{ kind: 'valid' }];
+  // Intent checks run by default: explicit expect wins, else the document's own.
+  const expect = opts.expect ?? part.expect ?? [{ kind: 'valid' }];
   const hints: RepairHint[] = [];
 
   const fail = (code: string, hint: string): VerifyReport => ({
