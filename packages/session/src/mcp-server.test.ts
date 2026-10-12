@@ -48,6 +48,10 @@ describe('mcp server', () => {
     const v = textOf(await client.callTool({ name: 'verify', arguments: { session: s, expect: [{ kind: 'volume', min: 1 }] } })) as { ok: boolean };
     assert.equal(v.ok, true);
 
+    const img = textOf(await client.callTool({ name: 'render', arguments: { session: s, view: 'iso', highlights: ['F2.C1'] } })) as { png: string; legend: Array<{ face: string }> };
+    assert.deepEqual(Buffer.from(img.png, 'base64').subarray(0, 4), Buffer.from([137, 80, 78, 71]));
+    assert.equal(img.legend[0].face, 'F2.C1');
+
     const guide = await client.readResource({ uri: 'ck-guide://v1' });
     const text = (guide.contents[0] as { text: string }).text;
     assert.ok(text.includes('ck-guide/1'));

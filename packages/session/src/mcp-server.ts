@@ -96,6 +96,19 @@ export function createMcpServer(): { server: McpServer; sessions: Map<string, Se
     return text(await get(session).verify(expect as Array<Record<string, unknown>> | undefined));
   });
 
+  server.tool('render', 'Render the body to PNG with highlighted faces + legend', {
+    session: z.string(),
+    view: z.enum(['iso', 'front', 'top', 'right']).optional(),
+    highlights: z.array(z.string()).optional(),
+    width: z.number().optional(),
+    height: z.number().optional(),
+  }, async ({ session, view, highlights, width, height }) => {
+    const { renderMesh } = await import('../../render/src/render.js');
+    const s = get(session);
+    const r = renderMesh(await s.mesh(), { view, highlights, width, height });
+    return text({ png: r.png.toString('base64'), width: r.width, height: r.height, legend: r.legend });
+  });
+
   server.tool('close', 'Close a session and its kernel worker', {
     session: z.string(),
   }, async ({ session }) => {

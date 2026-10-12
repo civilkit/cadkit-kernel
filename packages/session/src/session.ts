@@ -262,13 +262,20 @@ export class Session {
     }
   }
 
-  async facts(): Promise<BodyFacts> {
-    const { body } = await this.regen(this.doc);
+  async facts(): Promise<BodyFacts> {    const { body } = await this.regen(this.doc);
     const faces = ((body?.faces as Array<{ id: string }> | undefined) ?? []).map((f) => f.id);
     const edges = ((body?.edges as Array<{ key: string }> | undefined) ?? []).map((e) => e.key);
     const box = (body?.box as BodyFacts['box']) ?? null;
     const { volume, solids } = await this.mass();
     return { faces, edges, solids, volume, box };
+  }
+
+  /** Display mesh of the current document for the renderer. */
+  async mesh(): Promise<import('../../render/src/mesh.js').MeshData> {
+    const { meshFromBody } = await import('../../render/src/mesh.js');
+    const { body } = await this.regen(this.doc);
+    if (!body) throw new Error('no body to mesh');
+    return meshFromBody(body as Parameters<typeof meshFromBody>[0]);
   }
 
   async edit(ops: EditOp[], reason?: string): Promise<EditResult> {
