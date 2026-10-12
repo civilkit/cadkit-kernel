@@ -77,6 +77,17 @@ describe('verify', () => {
     assert.equal(r.ok, false);
     assert.equal(r.hints[0].code, 'trap');
   });
+
+  it('never reports done on an empty part', async () => {
+    const k = fake({
+      regen: { ok: true, result: { errors: [], body: null } },
+      validate: { ok: true, result: null },
+      check: { ok: true, result: null },
+    });
+    const r = await verify(k, part);
+    assert.equal(r.ok, false);
+    assert.equal(r.hints[0].code, 'noBody');
+  });
 });
 
 const wasm = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../target/wasm32-unknown-unknown/release/ck_wasm.wasm');

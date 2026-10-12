@@ -51,6 +51,8 @@ export interface ExtrudeFeature {
   end: ExtrudeEnd;
   depth?: number; // required unless end === 'throughBoth'
   flip?: boolean;
+  draft?: number;
+  draftOut?: boolean;
 }
 
 /** Every other feature the app's table knows (README §Feature defaults).
@@ -62,7 +64,11 @@ export interface GenericFeature {
   [key: string]: unknown;
 }
 
-export type Feature = SketchFeature | ExtrudeFeature | GenericFeature;
+export type Feature = SketchFeature | ExtrudeFeature | KnownFeature | GenericFeature;
+
+import type { KnownFeature } from './features.js';
+export type { KnownFeature, FeatureTypeName, EdgeRef, GeomRef, Expr } from './features.js';
+export { FEATURE_TYPES } from './features.js';
 
 export type Material = 'steel' | 'aluminium' | string;
 

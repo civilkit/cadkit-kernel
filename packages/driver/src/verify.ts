@@ -58,6 +58,7 @@ export interface VerifyOpts {
 /** Fix guidance per error/issue code. Sources: features field table, ADR 0003. */
 const FIX: Record<string, (feature: string, params: Record<string, unknown>) => string> = {
   missingSketch: (f) => `${f}.sketch names a sketch id that does not exist — point it at an existing sketch feature`,
+  missingAxis: (f) => `${f}.axis is missing — pass a sketch line entity id (the builder defaults to the sketch's first line)`,
   missingReference: (f) => `${f} references geometry that no longer exists — re-pick the face/edge by name (resolve) and update the ref`,
   nothingToCut: (f) => `${f} removes nothing — move the profile so it overlaps the body, or flip the cut direction`,
   booleanFailed: (f) => `${f}: boolean failed — check the tool and target overlap in a volume, not just a face`,
@@ -83,9 +84,14 @@ const FIX: Record<string, (feature: string, params: Record<string, unknown>) => 
   referenceLost: (f) => `${f}: a referenced entity is gone after an edit — pick a replacement ref`,
 };
 
-function hintFor(feature: string, code: string, params: Record<string, unknown>): RepairHint {
+export function hintFor(feature: string, code: string, params: Record<string, unknown>): RepairHint {
   const fix = FIX[code];
   return { feature, code, hint: fix ? fix(feature, params) : `${feature || 'part'}: error ${code}${Object.keys(params).length ? ` ${JSON.stringify(params)}` : ''} — see the features field table` };
+}
+
+/** Every coded fix, sampled for display (powers the authoring guide). */
+export function listFixes(): Array<{ code: string; sample: string }> {
+  return Object.keys(FIX).map((code) => ({ code, sample: FIX[code]('Fn', {}) }));
 }
 
 /** Face/edge entity name -> owning feature id (F2.C0 -> F2), else the raw name. */
@@ -120,6 +126,10 @@ export async function verify(
   if (r.trap) return fail('trap', `regen trapped: ${r.trap}`);
   if (!r.ok) return fail('regenFailed', `regen errored: ${r.error ?? 'unknown'}`);
   const errors = ((r.result as { errors?: RegenError[] }).errors ?? []) as RegenError[];
+  const body = (r.result as { body?: { empty?: boolean } | null }).body ?? null;
+  // No body means nothing to check: never report "done" on an empty part.
+  const noBody = !body || body.empty === true;
+  if (noBody) hints.push({ feature: '', code: 'noBody', hint: 'regen produced no body — the document is empty or every solid feature failed: add or fix a solid feature' });
 
   let validate: VerifyReport['validate'] = null;
   try {
@@ -151,6 +161,6 @@ export async function verify(
     }
   }
 
-  const ok = errors.length === 0 && (validate ? validate.ok : true) && (check ? check.failed === 0 : true);
+  const ok = !noBody && errors.length === 0 && (validate ? validate.ok : true) && (check ? check.failed === 0 : true);
   return { ok, tag, ms: Math.round(performance.now() - t0), regen: { errors }, validate, check, hints };
 }

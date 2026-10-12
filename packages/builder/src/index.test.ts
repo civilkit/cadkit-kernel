@@ -47,8 +47,7 @@ describe('builder', () => {
     });
   });
 
-  it('plate golden: 4 features, 4 hole circles, cut has no depth', () => {
-    const p = new Part('Plate with holes', 'aluminium');
+  it('plate golden: 4 features, 4 hole circles, cut has no depth', () => {    const p = new Part('Plate with holes', 'aluminium');
     const base = p.sketch('Outline', 'front', (s) => s.rect(0, 0, 100, 60));
     p.extrude({ sketch: base, op: 'add', end: 'blind', depth: 10, name: 'Plate' });
     const holes = p.sketch('Holes', 'front', (s) => {
@@ -66,5 +65,47 @@ describe('builder', () => {
     assert.equal(holeSketch.points.length, 5); // O + 4 centres
     assert.deepEqual((doc.features[1] as Record<string, unknown>).depth, 10);
     assert.ok(!('depth' in (doc.features[3] as Record<string, unknown>)));
+  });
+});
+
+describe('builder solid features', () => {
+  const rec = (p: Part, i: number) => p.features[i] as unknown as Record<string, unknown>;
+  it('emits defaults matching the kernel dispatch', () => {
+    const p = new Part('T');
+    const s = p.sketch('S', 'front', () => {});
+    p.revolve({ sketch: s });
+    p.fillet({ radius: 3, edges: [] });
+    p.chamfer({ distance: 1, edges: [] });
+    p.shell({ thickness: 2 });
+    p.hole({ sketch: s });
+    p.draft({ faces: [], angle: 3 });
+    p.rib({ sketch: s, thickness: 2 });
+    p.lip({ width: 1, height: 1 });
+    p.helix({ sketch: s });
+    p.sweep({ sketch: s });
+    p.loft({ sketches: [s] });
+    p.lpattern({ seeds: ['F2'], spacing: 20, count: 3 });
+    p.cpattern({ seeds: ['F2'], count: 4 });
+    p.mirror({ seeds: ['F2'] });
+    p.scale({ factor: 2 });
+    p.mate({});
+    p.deleteBody({});
+    p.deleteFace({ faces: [] });
+    p.moveFace({ faces: [], distance: 1 });
+    p.dome({ height: 5 });
+    p.splitLine({ faces: [] });
+    p.axis({ refs: [] });
+    const types = p.features.map((f) => (f as { type: string }).type);
+    assert.deepEqual(types, ['sketch', 'revolve', 'fillet', 'chamfer', 'shell', 'hole', 'draft', 'rib', 'lip', 'helix', 'sweep', 'loft', 'lpattern', 'cpattern', 'mirror', 'scale', 'mate', 'deleteBody', 'deleteFace', 'moveFace', 'dome', 'splitLine', 'axis']);
+    assert.deepEqual(rec(p, 1), { type: 'revolve', name: 'add revolve', op: 'add', sketch: 'F1', axis: null, end: 'blind', angle: 360, id: 'F2' });
+    assert.deepEqual(rec(p, 2), { type: 'fillet', name: 'fillet', radius: 3, edges: [], id: 'F3' });
+    assert.deepEqual(rec(p, 3), { type: 'chamfer', name: 'chamfer', chamferType: 'equal', distance: 1, edges: [], id: 'F4' });
+    assert.deepEqual(rec(p, 4), { type: 'shell', name: 'shell', faces: [], thickness: 2, id: 'F5' });
+    assert.deepEqual(rec(p, 5), { type: 'hole', name: 'hole', sketch: 'F1', kind: 'simple', diameter: 6, end: 'blind', depth: 10, tip: true, id: 'F6' });
+    assert.deepEqual(rec(p, 10), { type: 'sweep', name: 'add sweep', op: 'add', sketch: 'F1', path: null, id: 'F11' });
+    assert.deepEqual(rec(p, 11), { type: 'loft', name: 'add loft', op: 'add', sketches: ['F1'], id: 'F12' });
+    assert.deepEqual(rec(p, 12).dir, { kind: 'axis', axis: 'x' });
+    assert.equal(rec(p, 13).equal, true);
+    assert.deepEqual(rec(p, 15), { type: 'scale', name: 'scale', factor: 2, about: 'centroid', id: 'F16' });
   });
 });
