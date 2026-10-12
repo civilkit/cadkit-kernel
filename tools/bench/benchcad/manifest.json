@@ -1174,7 +1174,7 @@
   "torsion_spring_000054": {
    "label": "kernel-gap",
    "skip": "regen does not finish in 50 s (a single 12-turn helix sweep takes 19 s, union with a leg never returns)",
-   "note": "leg workplanes are rotated 2.8 deg about X (refPlane mode angle/axis is parsed but every mode behaves as offset), so the legs are built along the untilted normal; additionally the 12-turn helix sweep alone takes 19 s and its union with a coaxial-end leg hangs (kernel-bug perf/hang). Ground truth is two disjoint solids (multi-body result)."
+   "note": "leg workplanes are rotated 2.8 deg about X (plane mode angle, now implemented and used by the translation); remaining blockers: the 12-turn helix sweep alone takes 19 s and its union with a coaxial-end leg hangs (kernel-bug perf/hang). Ground truth is two disjoint solids (multi-body result)."
   },
   "pipe_elbow_000012": {
    "label": "kernel-gap",

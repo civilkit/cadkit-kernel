@@ -83,6 +83,7 @@ impl RegenTag {
 pub mod codes {
     pub const UNKNOWN_FEATURE: &str = "unknownFeature";
     pub const MISSING_REFERENCE: &str = "missingReference";
+    pub const PLANE_LINE_NORMAL: &str = "planeLineNormal";
     pub const MISSING_SKETCH: &str = "missingSketch";
     pub const BAD_EXPRESSION: &str = "badExpression";
     pub const INSERT_PART_MISSING: &str = "insertPartMissing";
@@ -357,6 +358,11 @@ pub trait FeatureExec {
     fn face_frame(&mut self, _state: &RegenState, _face: &str) -> Option<Frame> {
         None
     }
+    /// Straight edge `(point, unit direction)` of an edge selection
+    /// (`{kind:"edge", faces, at}`), for plane axes. `None` = unresolvable.
+    fn edge_line(&mut self, _state: &RegenState, _faces: &[String], _at: Option<[f64; 3]>) -> Option<(Vec3, Vec3)> {
+        None
+    }
     /// Called once before the feature loop with the features that will run
     /// (assembly pre-pass, see `features::mate`).
     fn prepare(&mut self, _state: &RegenState, _features: &[&Feature]) {}
@@ -409,20 +415,96 @@ fn regen_sketch(state: &mut RegenState, exec: &mut dyn FeatureExec, f: &Feature,
     Ok(())
 }
 
+/// Axis `(point, unit direction)` of a plane-feature axis reference: a world
+/// axis (`{kind:"axis"}`) or a straight edge selection (`{kind:"edge"}`).
+/// The point is the foot of the world origin on the axis line.
+fn resolve_axis(state: &RegenState, exec: &mut dyn FeatureExec, r: &GeomRef) -> Option<(Vec3, Vec3)> {
+    let (o, d) = match r {
+        GeomRef::Axis(_) => crate::features::pattern::axis_of(r)?,
+        GeomRef::Other(j) if j.get("kind").and_then(|k| k.as_str()) == Some("edge") => {
+            let e = crate::EdgeRef::from_json(j)?;
+            let at = e.at;
+            exec.edge_line(state, &e.faces, at)?
+        }
+        _ => return None,
+    };
+    let d = d.normalize();
+    Some((o - d.scale(o.dot(d)), d))
+}
+
+/// Solution of `z1.p = d1, z2.p = d2, x.p = d3` (numerator of Cramer's rule).
+fn z_cross_scale(z1: Vec3, z2: Vec3, x: Vec3, d1: f64, d2: f64, d3: f64) -> Vec3 {
+    z2.cross(x).scale(d1) + x.cross(z1).scale(d2) + z1.cross(z2).scale(d3)
+}
+
+fn rotate_about(v: Vec3, axis: Vec3, ang: f64) -> Vec3 {
+    ck_core::linalg::Mat3::rotation(axis, ang).mul_vec(v)
+}
+
 fn regen_plane(state: &mut RegenState, exec: &mut dyn FeatureExec, f: &Feature) -> Result<(), FeatureError> {
-    let FeatureKind::RefPlane { base, flip, .. } = &f.kind else { unreachable!() };
+    let FeatureKind::RefPlane { mode, base, flip, axis, base2, .. } = &f.kind else { unreachable!() };
     let base = base
         .as_ref()
         .and_then(|b| resolve_plane(state, exec, b))
         .ok_or_else(|| FeatureError::new(codes::MISSING_REFERENCE))?;
-    // GUESS: every mode currently behaves as "offset" (a bogus mode does).
-    let offset = state.num(f, "offset", 0.0)?;
+    let missing = || FeatureError::new(codes::MISSING_REFERENCE);
+    // Modes pinned against the original: offset, angle, perpendicular, mid.
+    // Anything else (unknown, or point/curve driven modes not yet ported)
+    // still behaves as "offset".
     let mut fr = base;
-    if *flip {
-        fr.x = -fr.x;
-        fr.z = -fr.z;
+    match mode.as_str() {
+        "angle" => {
+            // Base frame rotated about the axis line by `angle` (degrees,
+            // negated by `flip`); the plane passes through the axis. When
+            // the axis lies in the base plane it becomes the new x.
+            let (o, d) = axis.as_ref().and_then(|a| resolve_axis(state, exec, a)).ok_or_else(missing)?;
+            let mut a = state.num(f, "angle", 0.0)?.to_radians();
+            if *flip {
+                a = -a;
+            }
+            let z = rotate_about(base.z, d, a);
+            let x = if d.dot(base.z).abs() < 1e-9 { d } else { rotate_about(base.x, d, a) };
+            fr = Frame { o, x, y: z.cross(x), z };
+        }
+        "perpendicular" => {
+            // Plane through the axis line, perpendicular to the base plane:
+            // x = axis direction, y = base normal, z = x × y.
+            let (o, d) = axis.as_ref().and_then(|a| resolve_axis(state, exec, a)).ok_or_else(missing)?;
+            if d.cross(base.z).len() < 1e-9 {
+                return Err(FeatureError::new(codes::PLANE_LINE_NORMAL));
+            }
+            let y = base.z;
+            let (x, z) = if *flip { (-d, -d.cross(y)) } else { (d, d.cross(y)) };
+            fr = Frame { o, x, y, z };
+        }
+        "mid" => {
+            // Mid plane of two planes: midpoint of the origins, normal the
+            // bisector (parallel planes keep the base frame).
+            let b2 = base2.as_ref().and_then(|b| resolve_plane(state, exec, b)).ok_or_else(missing)?;
+            let c = base.z.cross(b2.z);
+            if c.len() < 1e-9 {
+                // parallel: slide the origin along the normal only
+                fr.o = base.o + base.z.scale((b2.o - base.o).dot(base.z) * 0.5);
+            } else {
+                // oracle: z = norm(z1 - z2), x = norm(z1 x z2); the origin is
+                // the point of the planes' intersection line nearest the
+                // midpoint of the two origins.
+                let (z, x) = ((base.z - b2.z).normalize(), c.normalize());
+                let m = (base.o + b2.o).scale(0.5);
+                let num = z_cross_scale(base.z, b2.z, x, base.z.dot(base.o), b2.z.dot(b2.o), x.dot(m));
+                let o = num.scale(1.0 / base.z.dot(b2.z.cross(x)));
+                fr = Frame { o, x, y: z.cross(x), z };
+            }
+        }
+        _ => {
+            let offset = state.num(f, "offset", 0.0)?;
+            if *flip {
+                fr.x = -fr.x;
+                fr.z = -fr.z;
+            }
+            fr.o = fr.o + fr.z.scale(offset);
+        }
     }
-    fr.o = fr.o + fr.z.scale(offset);
     state.result.put_plane(&f.id, fr);
     Ok(())
 }
@@ -636,6 +718,50 @@ mod tests {
             // oracle: the dependent extrude then reports missingSketch
             assert!(run(&rect(v, e), "{}").starts_with(r#"{"errors":[["F1",{"code":"badExpression","params":{}}],["F2",{"code":"missingSketch","params":{}}]],"components":[],"planes":[],"markers":[],"sketches":[]"#));
         }
+    }
+
+    /// Oracle-pinned plane modes: angle (rotation about a world axis, axis
+    /// in-plane becomes x), perpendicular, mid; plus their error codes.
+    #[test]
+    fn plane_modes_match_oracle() {
+        let planes = |feats: &str| {
+            let src = format!(r#"{{"format":"ck-part","version":1,"name":"t","features":[{feats}]}}"#);
+            let r = regen(&Part::parse(&src).unwrap(), &RegenOpts::default(), &mut NoGeometry);
+            (r.planes.iter().map(|(i, f)| (i.clone(), *f)).collect::<Vec<_>>(), r.errors.iter().map(|e| e.error.code.clone()).collect::<Vec<_>>())
+        };
+        let near = |a: Vec3, b: [f64; 3]| (a - Vec3::new(b[0], b[1], b[2])).len() < 1e-9;
+        let top = r#""base":{"kind":"std","id":"top"}"#;
+        let ax = |a: &str| format!(r#""axis":{{"kind":"axis","axis":"{a}"}}"#);
+        let one = |feats: String| planes(&feats).0.pop().unwrap().1;
+        let (s, c) = (0.5, 0.75f64.sqrt());
+        // angle about x (axis in the base plane: x = axis)
+        let f = one(format!(r#"{{"type":"plane","id":"P","mode":"angle",{top},{},"angle":30}}"#, ax("x")));
+        assert!(near(f.x, [1., 0., 0.]) && near(f.y, [0., s, -c]) && near(f.z, [0., c, s]), "{f:?}");
+        // angle about y (axis along the base normal: x rotates)
+        let f = one(format!(r#"{{"type":"plane","id":"P","mode":"angle",{top},{},"angle":30,"flip":true}}"#, ax("y")));
+        assert!(near(f.x, [c, 0., s]) && near(f.y, [s, 0., -c]) && near(f.z, [0., 1., 0.]), "{f:?}");
+        // angle about z
+        let f = one(format!(r#"{{"type":"plane","id":"P","mode":"angle",{top},{},"angle":"=10+20"}}"#, ax("z")));
+        assert!(near(f.x, [0., 0., 1.]) && near(f.y, [c, s, 0.]) && near(f.z, [-s, c, 0.]), "{f:?}");
+        // the plane passes through the axis, not through the (offset) base
+        let f = one(format!(r#"{{"type":"plane","id":"A","mode":"offset",{top},"offset":10}},{{"type":"plane","id":"P","mode":"angle","base":{{"kind":"feature","id":"A"}},{},"angle":30}}"#, ax("x")));
+        assert!(near(f.o, [0., 0., 0.]));
+        // perpendicular
+        let f = one(format!(r#"{{"type":"plane","id":"P","mode":"perpendicular",{top},{}}}"#, ax("z")));
+        assert!(near(f.x, [0., 0., 1.]) && near(f.y, [0., 1., 0.]) && near(f.z, [-1., 0., 0.]), "{f:?}");
+        let f = one(format!(r#"{{"type":"plane","id":"P","mode":"perpendicular",{top},{},"flip":true}}"#, ax("x")));
+        assert!(near(f.x, [-1., 0., 0.]) && near(f.z, [0., 0., -1.]), "{f:?}");
+        assert_eq!(planes(&format!(r#"{{"type":"plane","id":"P","mode":"perpendicular",{top},{}}}"#, ax("y"))).1, vec!["planeLineNormal"]);
+        // mid: parallel and bisecting
+        let f = one(format!(r#"{{"type":"plane","id":"A","mode":"offset",{top},"offset":10}},{{"type":"plane","id":"P","mode":"mid",{top},"base2":{{"kind":"feature","id":"A"}}}}"#));
+        assert!(near(f.o, [0., 5., 0.]) && near(f.z, [0., 1., 0.]));
+        let f = one(format!(r#"{{"type":"plane","id":"P","mode":"mid",{top},"base2":{{"kind":"std","id":"front"}}}}"#));
+        assert!(near(f.x, [1., 0., 0.]) && near(f.y, [0., -0.7071067811865476, -0.7071067811865476]) && near(f.z, [0., 0.7071067811865476, -0.7071067811865476]), "{f:?}");
+        let f = one(format!(r#"{{"type":"plane","id":"P","mode":"mid","base":{{"kind":"std","id":"right"}},"base2":{{"kind":"std","id":"top"}}}}"#));
+        assert!(near(f.x, [0., 0., 1.]) && near(f.z, [0.7071067811865476, -0.7071067811865476, 0.]), "{f:?}");
+        // missing axis / base2
+        assert_eq!(planes(&format!(r#"{{"type":"plane","id":"P","mode":"angle",{top},"angle":30}}"#)).1, vec!["missingReference"]);
+        assert_eq!(planes(&format!(r#"{{"type":"plane","id":"P","mode":"mid",{top}}}"#)).1, vec!["missingReference"]);
     }
 
     /// Oracle: upTo / rollback / suppressed.
