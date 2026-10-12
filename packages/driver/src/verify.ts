@@ -126,6 +126,10 @@ export async function verify(
   if (r.trap) return fail('trap', `regen trapped: ${r.trap}`);
   if (!r.ok) return fail('regenFailed', `regen errored: ${r.error ?? 'unknown'}`);
   const errors = ((r.result as { errors?: RegenError[] }).errors ?? []) as RegenError[];
+  const body = (r.result as { body?: { empty?: boolean } | null }).body ?? null;
+  // No body means nothing to check: never report "done" on an empty part.
+  const noBody = !body || body.empty === true;
+  if (noBody) hints.push({ feature: '', code: 'noBody', hint: 'regen produced no body — the document is empty or every solid feature failed: add or fix a solid feature' });
 
   let validate: VerifyReport['validate'] = null;
   try {
@@ -157,6 +161,6 @@ export async function verify(
     }
   }
 
-  const ok = errors.length === 0 && (validate ? validate.ok : true) && (check ? check.failed === 0 : true);
+  const ok = !noBody && errors.length === 0 && (validate ? validate.ok : true) && (check ? check.failed === 0 : true);
   return { ok, tag, ms: Math.round(performance.now() - t0), regen: { errors }, validate, check, hints };
 }
