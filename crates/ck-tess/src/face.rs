@@ -523,8 +523,7 @@ pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, boo
                 let mut poles: Vec<f64> = vec![];
                 if pv.is_none() {
                     for &sv in &seam_v {
-                        let (q0, q1) = (surf.eval(c, sv), surf.eval(c + 0.5 * p, sv));
-                        if q0.dist(q1) <= 1e-9 * (1.0 + q0.len()) && !poles.iter().any(|&x| (x - sv).abs() < 1e-12) {
+                        if surf.is_pole(c, sv) && !poles.iter().any(|&x| (x - sv).abs() < 1e-12) {
                             poles.push(sv);
                             on.push(sv);
                         }

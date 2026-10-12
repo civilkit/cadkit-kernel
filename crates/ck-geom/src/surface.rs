@@ -135,6 +135,15 @@ impl Surface {
         }
     }
 
+    /// Is `(u, v)` a pole of a u-periodic surface (sphere pole, cone apex): the
+    /// whole iso-v circle collapses to a point within `1e-5` relative (sketch
+    /// noise leaves seam parameters a few 1e-6 rad short of the exact pole).
+    pub fn is_pole(&self, u: f64, v: f64) -> bool {
+        let Some(per) = self.periods().0 else { return false };
+        let (a, b) = (self.eval(u, v), self.eval(u + 0.5 * per, v));
+        a.dist(b) <= 1e-5 * (1.0 + a.len())
+    }
+
     /// Periods in (u, v).
     pub fn periods(&self) -> (Option<f64>, Option<f64>) {
         match self {

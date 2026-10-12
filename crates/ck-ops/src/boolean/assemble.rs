@@ -161,6 +161,7 @@ pub fn group(arr: &Arrangement, s: &Surface, sense: bool, cycles: Vec<Vec<He>>) 
     let sg = if sense { 1.0 } else { -1.0 };
     let polys: Vec<Vec<Vec2>> = cycles.iter().map(|c| loop_polygon(s, &pieces(arr, c))).collect();
     let areas: Vec<f64> = polys.iter().map(|p| poly_area(p) * sg).collect();
+    super::bool_dbg!("group: {} cycles, areas {:?}", cycles.len(), areas);
     let mut frags: Vec<Vec<Vec<He>>> = vec![];
     let mut outer_of: Vec<usize> = vec![]; // cycle index of each fragment's outer
     for (i, c) in cycles.iter().enumerate() {
@@ -393,9 +394,13 @@ pub fn select(arr: &Arrangement, bodies: [&Body; 2], op: Op) -> Result<Vec<OutFa
         n_frags[fi] = frs.len();
         for mut fr in frs {
             let side = arr.faces[fi].side;
-            let (q, n) = sample_point(arr, &fr).ok_or_else(|| "booleanFailed".to_string())?;
+            let (q, n) = sample_point(arr, &fr).ok_or_else(|| {
+                super::bool_dbg!("no sample point for a fragment of face {fi} (side {side}, {} loops)", fr.loops.len());
+                "booleanFailed".to_string()
+            })?;
             let c = solids[1 - side].classify(q, n);
             fr.class = Some(c);
+            super::bool_dbg!("fragment of face {fi} (side {side}, {}, {} loops): sample {q:?} class {c:?} keep {:?}", arr.faces[fi].name.id(), fr.loops.len(), keep(op, side, c));
             if let Some(flip) = keep(op, side, c) {
                 kept.push((fr, flip));
             }
@@ -745,6 +750,8 @@ pub fn build(arr: &Arrangement, faces: &[OutFace]) -> Body {
         for l in &of.loops {
             let lp = b.add_loop(f);
             let mut prev_end: Option<Vec2> = None;
+            // (start, end) uv of every coedge's pcurve, for the pole fix below
+            let mut ends: Vec<Option<(Vec2, Vec2)>> = vec![];
             for &(ei, rev) in l {
                 let ae = &arr.edges[ei];
                 let eid = match emap[ei] {
@@ -779,10 +786,15 @@ pub fn build(arr: &Arrangement, faces: &[OutFace]) -> Body {
                         }
                     }
                     prev_end = Some(pc.eval(tb));
+                    ends.push(Some((pc.eval(ta), pc.eval(tb))));
                     pc
                 });
+                if pc.is_none() {
+                    ends.push(None);
+                }
                 b.add_coedge(lp, eid, rev, pc);
             }
+            fix_pole_jump(&mut b, lp, &of.surface, &ends);
             // a loop made only of seam twins (revolve sphere meridian): the
             // twins' pcurves must lie one period apart, the loop CCW about
             // the outward normal (positive uv area when sense)
@@ -816,6 +828,34 @@ pub fn build(arr: &Arrangement, faces: &[OutFace]) -> Body {
     }
     ck_topo::region::rebuild_lumps(&mut b);
     b
+}
+
+/// A loop through a pole of a periodic surface (a sphere cap bounded by one
+/// circle: circle, seam up, seam down) jumps in u at the pole: u is free
+/// there, and the loop must close in uv. The pcurves were chained by
+/// continuity (u unchanged across the pole), so the coedges after the pole
+/// are shifted by the whole periods that make the last end meet the first
+/// start.
+fn fix_pole_jump(b: &mut Body, lp: ck_topo::body::LoopId, s: &Surface, ends: &[Option<(Vec2, Vec2)>]) {
+    let Some(per) = s.periods().0 else { return };
+    let n = ends.len();
+    if n < 3 || ends.iter().any(|e| e.is_none()) {
+        return;
+    }
+    let is_pole = |q: Vec2| s.is_pole(q.x, q.y);
+    let ends: Vec<(Vec2, Vec2)> = ends.iter().map(|e| e.unwrap()).collect();
+    let Some(k) = (0..n).find(|&k| is_pole(ends[k].1) && is_pole(ends[(k + 1) % n].0) && k + 1 < n) else { return };
+    let gap = ends[0].0.x - ends[n - 1].1.x;
+    let d = (gap / per).round() * per;
+    if d == 0.0 || (gap - d).abs() > 1e-6 * per {
+        return;
+    }
+    let cs = b.lp(lp).coedges.clone();
+    for &c in &cs[k + 1..] {
+        if let Some(pc) = b.coedges[c.idx()].pcurve.clone() {
+            b.coedges[c.idx()].pcurve = Some(shift2(&pc, Vec2::new(d, 0.0)));
+        }
+    }
 }
 
 /// Wire-level edge chains (seam-split arcs = one oracle edge; probe

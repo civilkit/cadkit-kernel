@@ -121,12 +121,55 @@ fn loop_polygon_with(s: &Surface, pieces: &[(&Curve, f64, f64)], nfun: impl Fn(&
     for &(c, ta, tb) in pieces {
         let n = nfun(c, ta, tb);
         for k in 0..n {
-            let uv = uv_near(s, c.eval(ta + (tb - ta) * k as f64 / n as f64), prev);
+            let mut uv = uv_near(s, c.eval(ta + (tb - ta) * k as f64 / n as f64), prev);
+            // u is arbitrary at a pole: carry the previous u through it so the
+            // samples after the pole are not unwrapped against junk
+            if let Some(q) = prev {
+                if s.is_pole(uv.x, uv.y) {
+                    uv.x = q.x;
+                }
+            }
             prev = Some(uv);
             out.push(uv);
         }
     }
+    close_pole_spikes(s, &mut out);
     out
+}
+
+/// A loop that reaches a pole of a periodic surface along a seam and comes
+/// back along the same seam (a hemisphere cap bounded by one circle:
+/// circle, seam up, seam down) encloses nothing in uv as sampled: the up
+/// and down seams coincide (a spike). The loop did advance one full period
+/// in u (first and last sample differ by it), so the pole is really a
+/// line: insert the pole line (u runs one period back to the loop's start)
+/// and carry the descent along the start seam. The polygon becomes the
+/// strip `[u0, u0 + period] x [circle, pole]`.
+fn close_pole_spikes(s: &Surface, poly: &mut Vec<Vec2>) {
+    let Some(per) = s.periods().0 else { return };
+    let n = poly.len();
+    if n < 4 {
+        return;
+    }
+    let adv = poly[n - 1].x - poly[0].x;
+    if (adv.abs() - per).abs() > 1e-6 * per {
+        return;
+    }
+    for i in 1..n - 1 {
+        let (prev, p, next) = (poly[i - 1], poly[i], poly[i + 1]);
+        if !s.is_pole(p.x, p.y) {
+            continue;
+        }
+        if (prev.x - next.x).abs() > 1e-6 * per {
+            continue; // a pole crossing, not a spike
+        }
+        let shift = -adv.signum() * per;
+        for q in poly[i + 1..].iter_mut() {
+            q.x += shift;
+        }
+        poly.insert(i + 1, Vec2::new(p.x + shift, p.y));
+        return;
+    }
 }
 
 /// Shoelace area (positive = counter-clockwise in uv).

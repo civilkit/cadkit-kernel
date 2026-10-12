@@ -107,6 +107,24 @@ pub fn project_points(surf: &Surface, pts: &[Vec3]) -> Vec<Vec2> {
         }
         out.push(Vec2::new(u, v));
     }
+    // u is arbitrary at a pole: take it from the neighbouring samples, so the
+    // sequence stays continuous (a fitted pcurve must not swing across it)
+    if pu.is_some() {
+        let pole: Vec<bool> = out.iter().map(|q| surf.is_pole(q.x, q.y)).collect();
+        if let Some(first) = pole.iter().position(|&b| !b) {
+            for i in (0..first).rev() {
+                out[i].x = out[i + 1].x;
+            }
+            for i in first + 1..out.len() {
+                if pole[i] {
+                    out[i].x = out[i - 1].x;
+                } else if pole[i - 1] {
+                    // re-unwrap the sample after a pole against the carried u
+                    out[i].x = unwrap_near(out[i].x, out[i - 1].x, pu.unwrap());
+                }
+            }
+        }
+    }
     out
 }
 

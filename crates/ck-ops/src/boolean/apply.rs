@@ -71,10 +71,13 @@ pub fn boolean(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> 
     }
     let body = build(&arr, &faces);
     let issues = check(&body, tol);
-    let bad = issues
+    let bad_issues: Vec<_> = issues
         .into_iter()
-        .any(|i| matches!(i, Issue::OpenEdge(_) | Issue::NonManifoldEdge(..) | Issue::BrokenLoop(..) | Issue::BadPairing(_)));
-    if bad {
+        .filter(|i| matches!(i, Issue::OpenEdge(_) | Issue::NonManifoldEdge(..) | Issue::BrokenLoop(..) | Issue::BadPairing(_)))
+        .collect();
+    if !bad_issues.is_empty() {
+        super::bool_dbg!("arrangement:\n{}", arr.dump());
+        super::bool_dbg!("assembled body invalid: {} issues, first {:?}", bad_issues.len(), &bad_issues[..bad_issues.len().min(6)]);
         return Err("booleanFailed".into());
     }
     Ok(BoolOut { body, no_effect: false })

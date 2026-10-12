@@ -1060,9 +1060,12 @@ pub fn march(s1: &Surface, s2: &Surface, b: Bounds, tol: f64, step: f64) -> Vec<
         }
     }
     let mut out: Vec<SsCurve> = vec![];
-    let mut traced: Vec<Vec3> = vec![];
+    // (point, exclusion radius): a seed this close to an already traced point
+    // lies on the same curve; the radius follows the local sample spacing, not
+    // the nominal step (loops smaller than the step must not shadow each other)
+    let mut traced: Vec<(Vec3, f64)> = vec![];
     for seed in seeds {
-        if traced.iter().any(|q| q.dist(seed.p) < step * 1.5) {
+        if traced.iter().any(|(q, r)| q.dist(seed.p) < *r) {
             continue;
         }
         let Some(t0) = tangent_uv(s1, s2, seed.uv) else { continue };
@@ -1081,7 +1084,12 @@ pub fn march(s1: &Surface, s2: &Surface, b: Bounds, tol: f64, step: f64) -> Vec<
         if pts.len() < 2 {
             continue;
         }
-        traced.extend(pts.iter().map(|m| m.p));
+        let n = pts.len();
+        for i in 0..n {
+            let gap = |j: usize| pts[i].p.dist(pts[j].p);
+            let sp = if i > 0 { gap(i - 1) } else { 0.0 }.max(if i + 1 < n { gap(i + 1) } else { 0.0 });
+            traced.push((pts[i].p, (1.5 * sp).min(step * 1.5).max(tol * 10.0)));
+        }
         let Some((pts, bs)) = fit_refined(s1, s2, pts, tol) else { continue };
         out.push(SsCurve::Fitted { pts, curve: Curve::BSpline(bs), closed });
     }
@@ -1149,7 +1157,7 @@ fn trace(s1: &Surface, s2: &Surface, seed: MPt, t0: Vec3, b: &Bounds, tol: f64, 
                     continue;
                 }
                 // closed loop?
-                if it > 2 && q.dist(seed.p) < 0.75 * h.max(step * 0.5) {
+                if it > 2 && pts.len() >= 3 && q.dist(seed.p) < 0.75 * h {
                     return (pts, true);
                 }
                 cur = MPt { p: q, uv };
