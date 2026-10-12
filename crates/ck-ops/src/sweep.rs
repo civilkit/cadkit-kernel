@@ -30,6 +30,8 @@
 
 use crate::boolean::{boolean, Op};
 use crate::helix::Helix;
+use crate::spline_path::SplinePath;
+use std::sync::Arc;
 use ck_core::xform::Xform;
 use ck_geom::curve::Curve;
 use ck_geom::curve2::Curve2;
@@ -54,6 +56,8 @@ pub const FAILED: &str = "sweepFailed";
 const NORMAL_TOL: f64 = 5e-5;
 /// Rows per revolution of the interpolated screw surfaces / rails.
 const PER_REV: f64 = 48.0;
+/// A spline path accepts a profile plane within 15 degrees of its normal.
+const SPLINE_NORMAL_COS: f64 = 0.9659258262890683;
 const TOL: f64 = 1e-9;
 /// Degree of the rotation-direction interpolation.
 const DEG_U: usize = 5;
@@ -67,6 +71,9 @@ pub enum PathSeg {
     Arc { frame: Frame, r: f64, a0: f64, a1: f64 },
     /// A helix feature; `rev` walks it from its end to its start.
     Helix { h: Helix, rev: bool },
+    /// A natural cubic spline through points (a `sketch3d` spline entity);
+    /// `rev` walks it from its end to its start.
+    Spline { sp: Arc<SplinePath>, rev: bool },
 }
 
 impl PathSeg {
@@ -75,6 +82,7 @@ impl PathSeg {
             PathSeg::Line { a, .. } => *a,
             PathSeg::Arc { frame, r, a0, .. } => arc_pt(frame, *r, *a0),
             PathSeg::Helix { h, rev } => h.eval(if *rev { h.angle } else { 0.0 }),
+            PathSeg::Spline { sp, rev } => sp.eval(if *rev { sp.length() } else { 0.0 }),
         }
     }
     pub fn end(&self) -> Vec3 {
@@ -85,6 +93,7 @@ impl PathSeg {
             PathSeg::Line { a, b } => PathSeg::Line { a: *b, b: *a },
             PathSeg::Arc { frame, r, a0, a1 } => PathSeg::Arc { frame: *frame, r: *r, a0: *a1, a1: *a0 },
             PathSeg::Helix { h, rev } => PathSeg::Helix { h: *h, rev: !rev },
+            PathSeg::Spline { sp, rev } => PathSeg::Spline { sp: sp.clone(), rev: !rev },
         }
     }
     /// Unit direction of travel at the start (a helix: its rotational part,
@@ -100,6 +109,10 @@ impl PathSeg {
                 let t = if *rev { h.angle } else { 0.0 };
                 let d = h.x * (-t.sin()) + h.y * t.cos();
                 Some(if *rev { -d } else { d })
+            }
+            PathSeg::Spline { sp, rev } => {
+                let (u, sg) = if *rev { (sp.length(), -1.0) } else { (0.0, 1.0) };
+                sp.d1(u).try_normalize().map(|d| d * sg)
             }
         }
     }
@@ -169,6 +182,8 @@ pub fn path_motion(path: &[PathSeg]) -> Option<Motion> {
             let m = Motion::Screw { o: h.o, a: h.a, angle: sigma * h.angle, rise: h.k * h.angle };
             Some(if *rev { m.inverse() } else { m })
         }
+        // a spline is not one rigid motion: `sweep` carries the section along it by frames
+        PathSeg::Spline { .. } => None,
     }
 }
 
@@ -192,6 +207,16 @@ pub fn sweep(feature: &str, profile: &Profile, path: &[PathSeg], twist: f64) -> 
     };
     let t0 = oriented[0].start_dir().ok_or_else(|| PATH_INVALID.to_string())?;
     let n = profile.frame.z;
+    if let [PathSeg::Spline { sp, rev }] = &oriented[..] {
+        // (like a helix, a spline carries a profile that is only roughly normal to it)
+        if t0.dot(n).abs() < SPLINE_NORMAL_COS {
+            return Err(PROFILE_NOT_NORMAL.into());
+        }
+        if twist != 0.0 {
+            return Err("TODO(rebuild): twisted sweep along a spline path".to_string());
+        }
+        return sweep_spline(feature, profile, sp, *rev);
+    }
     if (t0.dot(n).abs() - 1.0).abs() > NORMAL_TOL {
         return Err(PROFILE_NOT_NORMAL.into());
     }
@@ -452,6 +477,134 @@ fn screw_with(feature: &str, profile: &Profile, o: Vec3, a: Vec3, angle: f64, ri
     Ok(build_sweep_with(feature, profile, regions, Some(&caps), sigma > 0.0, false, caps_last))
 }
 
+// ------------------------------------------------------------ spline sweep
+
+/// The section's rigid motion along a spline path: `rows[i] = (u_i, M(u_i))` with
+/// `M(u) = F(u) F(0)^-1` (plus the translation), F a rotation-minimizing frame (T, R, T x R) of the
+/// path carried by the double-reflection method. The original kernel carries the section this way
+/// (verified: centre of mass and principal moments of a rectangle swept along a 2-turn spline
+/// agree to 2e-5; Frenet frames, which roll with the torsion, do not).
+fn spline_rows(sp: &SplinePath, rev: bool) -> Vec<(f64, Xform)> {
+    let len = sp.length();
+    // oriented parameter -> path parameter, tangent sign
+    let at = |u: f64| if rev { len - u } else { u };
+    let sg = if rev { -1.0 } else { 1.0 };
+    // rows: PER_REV per revolution of the tangent, at least two per cubic piece
+    let probe = (sp.spans() * 8).max(64);
+    let mut turn = 0.0;
+    let mut prev = sp.d1(at(0.0)).normalize();
+    for i in 1..=probe {
+        let t = sp.d1(at(len * i as f64 / probe as f64)).normalize();
+        turn += prev.dot(t).clamp(-1.0, 1.0).acos();
+        prev = t;
+    }
+    let n = ((PER_REV * turn / std::f64::consts::TAU).ceil() as usize).max(2 * sp.spans()).clamp(8, 8000);
+    let pts: Vec<Vec3> = (0..=n).map(|i| sp.eval(at(len * i as f64 / n as f64))).collect();
+    let tans: Vec<Vec3> = (0..=n).map(|i| sp.d1(at(len * i as f64 / n as f64)).normalize() * sg).collect();
+    // double-reflection transport of the reference vector r
+    let mut r = {
+        let a = if tans[0].x.abs() < 0.9 { Vec3::X } else { Vec3::Y };
+        (a - tans[0] * a.dot(tans[0])).normalize()
+    };
+    let mut frames: Vec<[Vec3; 3]> = vec![[tans[0], r, tans[0].cross(r)]];
+    for i in 0..n {
+        let v1 = pts[i + 1] - pts[i];
+        let c1 = v1.len2();
+        if c1 > 1e-300 {
+            let r_l = r - v1 * (2.0 / c1 * v1.dot(r));
+            let t_l = tans[i] - v1 * (2.0 / c1 * v1.dot(tans[i]));
+            let v2 = tans[i + 1] - t_l;
+            let c2 = v2.len2();
+            r = if c2 > 1e-300 { r_l - v2 * (2.0 / c2 * v2.dot(r_l)) } else { r_l };
+        }
+        // keep r exactly normal to the tangent and unit
+        r = (r - tans[i + 1] * r.dot(tans[i + 1])).normalize();
+        frames.push([tans[i + 1], r, tans[i + 1].cross(r)]);
+    }
+    let f0 = ck_core::linalg::Mat3::from_cols(frames[0][0], frames[0][1], frames[0][2]);
+    (0..=n)
+        .map(|i| {
+            let f = ck_core::linalg::Mat3::from_cols(frames[i][0], frames[i][1], frames[i][2]);
+            let m = f.mul_mat(&f0.transpose());
+            (len * i as f64 / n as f64, Xform::new(m, pts[i] - m.mul_vec(pts[0])))
+        })
+        .collect()
+}
+
+/// Sweep `profile` along a spline: S(u, t) = M(u) c(t), interpolated over the rows of
+/// [`spline_rows`] like the screw sweeps (faces `S.<tag>`, a closed single-entity loop is
+/// split into `~1` / `~2` halves, caps `C0` at the profile and `C1` carried to the path end).
+fn sweep_spline(feature: &str, profile: &Profile, sp: &SplinePath, rev: bool) -> Result<Body, String> {
+    let rows = spline_rows(sp, rev);
+    let phis: Vec<f64> = rows.iter().map(|r| r.0).collect();
+    let angle = *phis.last().unwrap();
+    let xf_end = rows.last().unwrap().1;
+    let split = split_closed(profile, &|_| false);
+    let profile = &split;
+    let pf = &profile.frame;
+    let world = |p: Vec2| pf.o + pf.x * p.x + pf.y * p.y;
+    // sweep sense: first-row velocity of a profile vertex against the plane normal
+    let h = phis[1] - phis[0];
+    let mut sigma = 0.0;
+    'outer: for reg in &profile.regions {
+        for l in reg.loops() {
+            for sg in &l.segs {
+                let p = world(sg.start());
+                let v = (rows[1].1.apply_point(p) - p) * (1.0 / h);
+                if v.dot(pf.z).abs() > 1e-9 {
+                    sigma = v.dot(pf.z);
+                    break 'outer;
+                }
+            }
+        }
+    }
+    if sigma == 0.0 {
+        return Err(PROFILE_NOT_NORMAL.into());
+    }
+    let pt = |i: usize, q: Vec3| rows[i].1.apply_point(q);
+    let mut regions = vec![];
+    let mut caps = vec![];
+    for reg in &profile.regions {
+        let mut lgs = vec![];
+        for pl in reg.loops() {
+            let m = pl.segs.len();
+            let mut verts = vec![];
+            for s in &pl.segs {
+                let base = world(s.start());
+                let top = xf_end.apply_point(base);
+                let pts: Vec<Vec3> = (0..phis.len()).map(|i| pt(i, base)).collect();
+                let orbit = interpolate_with(&pts, DEG_U, &phis, scaled_knots(&phis, DEG_U))?;
+                verts.push(VertGeom { bottom: base, top, rail: Some((Curve::BSpline(orbit), 0.0, angle)) });
+            }
+            let mut segs = vec![];
+            for (i, s) in pl.segs.iter().enumerate() {
+                let base = curve2_to_3d(pf, &s.curve, Vec3::ZERO);
+                let top = rot_curve(&xf_end, &base);
+                let (vs, ve) = if s.rev { ((i + 1) % m, i) } else { (i, (i + 1) % m) };
+                let _ = (vs, ve);
+                let side = generic_side(&pt, &phis, &base, s.t0, s.t1, angle).transpose()?.map(|mut g| {
+                    let tm = 0.5 * (s.t0 + s.t1);
+                    let t2 = s.travel_tangent(tm);
+                    let outward = (pf.x * t2.x + pf.y * t2.y).cross(pf.z);
+                    g.sense = sense_of(&g.surface, g.pc_bottom.eval(tm), outward);
+                    g
+                });
+                segs.push(SegGeom {
+                    bottom: (base, s.t0, s.t1),
+                    top: (top, s.t0, s.t1),
+                    cap0_pc: Some(s.curve.clone()),
+                    cap1_pc: Some(s.curve.clone()),
+                    side,
+                });
+            }
+            lgs.push(LoopGeom { verts, segs });
+        }
+        regions.push(lgs);
+        caps.push(Caps { c0: *pf, c1: rot_frame(&xf_end, pf) });
+    }
+    Ok(build_sweep_with(feature, profile, regions, Some(&caps), sigma > 0.0, false, true))
+}
+
 /// A closed circle centred on the screw axis (and normal to it): the screw
 /// maps it onto itself, so its side face is an exact cylinder.
 fn on_axis_circle(fr: &Frame, g: &ProfileSeg, o: Vec3, a: Vec3) -> bool {
@@ -525,6 +678,12 @@ fn side_geom(sc: &Screw, phis: &[f64], c: &Curve, t0: f64, t1: f64, _va: &VertGe
             }));
         }
     }
+    generic_side(&|i, q| sc.pt(phis[i], q), phis, c, t0, t1, angle)
+}
+
+/// Side surface of a profile curve `c` swept by `pt(i, q)` (the image of `q` after row `i`) over rows
+/// `phis`: the interpolated tensor surface through the grid. u = row parameter, v = profile parameter.
+fn generic_side(pt: &dyn Fn(usize, Vec3) -> Vec3, phis: &[f64], c: &Curve, t0: f64, t1: f64, angle: f64) -> Option<Result<SideGeom, String>> {
     // v samples along the profile curve
     let (vs, pv): (Vec<f64>, usize) = match c {
         Curve::Line { .. } => (vec![t0, t1], 1),
@@ -539,7 +698,7 @@ fn side_geom(sc: &Screw, phis: &[f64], c: &Curve, t0: f64, t1: f64, _va: &VertGe
         }
     };
     let qs: Vec<Vec3> = vs.iter().map(|&t| c.eval(t)).collect();
-    let grid: Vec<Vec<Vec3>> = phis.iter().map(|&f| qs.iter().map(|&q| sc.pt(f, q)).collect()).collect();
+    let grid: Vec<Vec<Vec3>> = (0..phis.len()).map(|i| qs.iter().map(|&q| pt(i, q)).collect()).collect();
     let surf = match grid_surface(&grid, phis, &vs, DEG_U, pv) {
         Ok(s) => s,
         Err(e) => return Some(Err(e)),
@@ -890,7 +1049,7 @@ fn sweep_pieces(feature: &str, profile: &Profile, path: &[PathSeg], twist: f64) 
         return Err("TODO(rebuild): multi-region profile swept along a multi-piece path".to_string());
     }
     let n = path.len();
-    if path.iter().any(|s| matches!(s, PathSeg::Helix { .. })) {
+    if path.iter().any(|s| matches!(s, PathSeg::Helix { .. } | PathSeg::Spline { .. })) {
         return Err(PATH_INVALID.into());
     }
     let ext = profile_extent(profile);
@@ -970,6 +1129,7 @@ fn seg_len(s: &PathSeg) -> f64 {
         PathSeg::Line { a, b } => a.dist(*b),
         PathSeg::Arc { r, a0, a1, .. } => r * (a1 - a0).abs(),
         PathSeg::Helix { .. } => 0.0,
+        PathSeg::Spline { sp, .. } => sp.length(),
     }
 }
 
@@ -1060,5 +1220,72 @@ mod piece_tests {
         let want = PI * r * r * 18.0;
         let v = mass_props(&b).volume;
         assert!((v - want).abs() < 2e-3 * want, "{v} vs {want}");
+    }
+}
+
+#[cfg(test)]
+mod spline_tests {
+    use super::*;
+
+    fn helix_spline(n: usize, turns: f64) -> SplinePath {
+        let pts: Vec<Vec3> = (0..=n)
+            .map(|i| {
+                let th = std::f64::consts::TAU * turns * i as f64 / n as f64;
+                Vec3::new(20.0 * th.cos(), 7.0 * th / std::f64::consts::TAU, -20.0 * th.sin())
+            })
+            .collect();
+        SplinePath::new(&pts, None, None).unwrap()
+    }
+
+    /// Circle r=2 normal to the spline's start tangent.
+    fn circle_profile(sp: &SplinePath, r: f64) -> Profile {
+        let t = sp.d1(0.0).normalize();
+        let x = Vec3::Y.cross(t).normalize();
+        let fr = Frame { o: sp.eval(0.0), x, y: t.cross(x), z: t };
+        let c = ProfileLoop::new(vec![ProfileSeg::circle("e1", Vec2::ZERO, r)]);
+        Profile::new(fr, vec![ProfileRegion { outer: c, holes: vec![] }])
+    }
+
+    #[test]
+    fn spline_rows_keep_the_section_normal() {
+        let sp = helix_spline(24, 2.0);
+        let prof = circle_profile(&sp, 2.0);
+        let rows = spline_rows(&sp, false);
+        let (mut w1, mut w2) = (0.0f64, 0.0f64);
+        for (u, x) in &rows {
+            let t = sp.d1(*u).normalize();
+            for a in [0.0, 1.0, 2.5, 4.0] {
+                let q = prof.frame.o + prof.frame.x * (2.0 * f64::cos(a)) + prof.frame.y * (2.0 * f64::sin(a));
+                let m = x.apply_point(q) - sp.eval(*u);
+                w1 = w1.max(m.dot(t).abs());
+                w2 = w2.max((m.len() - 2.0).abs());
+            }
+        }
+        assert!(w1 < 1e-9 && w2 < 1e-9, "{w1} {w2} rows {}", rows.len());
+    }
+
+    #[test]
+    fn spline_sweep_is_a_tube_of_the_right_volume() {
+        let sp = helix_spline(24, 2.0);
+        let b = sweep("F1", &circle_profile(&sp, 2.0), &[PathSeg::Spline { sp: Arc::new(sp.clone()), rev: false }], 0.0).unwrap();
+        // every surface point is 2 from the path
+        let mut worst: f64 = 0.0;
+        for f in b.face_ids() {
+            let Surface::BSpline(bs) = &b.face(f).surface else { continue };
+            let ((u0, u1), (v0, v1)) = bs.domain();
+            for i in 0..=60 {
+                for j in 0..=8 {
+                    let p = bs.eval(u0 + (u1 - u0) * i as f64 / 60.0, v0 + (v1 - v0) * j as f64 / 8.0);
+                    let d = (0..=4000).map(|k| sp.eval(sp.length() * k as f64 / 4000.0).dist(p)).fold(f64::INFINITY, f64::min);
+                    worst = worst.max((d - 2.0).abs());
+                }
+            }
+        }
+        assert!(worst < 5e-3, "tube radius deviates by {worst}");
+        let v = ck_topo::mass::mass_props(&b).volume;
+        let n = 4000;
+        let l: f64 = (0..n).map(|i| sp.eval(sp.length() * i as f64 / n as f64).dist(sp.eval(sp.length() * (i + 1) as f64 / n as f64))).sum();
+        let want = std::f64::consts::PI * 4.0 * l;
+        assert!((v - want).abs() / want < 1e-3, "volume {v} vs A L {want}");
     }
 }

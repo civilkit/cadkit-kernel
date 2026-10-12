@@ -177,6 +177,12 @@ fn end_state(seg: &PathSeg, at_end: bool) -> Option<(Vec3, Vec3)> {
             let s = if a1 >= a0 { 1.0 } else { -1.0 };
             Some((arc_pt(frame, *r, t), (frame.y * t.cos() - frame.x * t.sin()) * s))
         }
+        PathSeg::Spline { sp, rev } => {
+            // the end of the walked curve: parameter 0 (or its length when reversed)
+            let u = if at_end != *rev { sp.length() } else { 0.0 };
+            let t = sp.d1(u).try_normalize()?;
+            Some((sp.eval(u), if *rev { -t } else { t }))
+        }
         _ => None,
     }
 }
@@ -361,12 +367,23 @@ pub fn line_point(state: &RegenState, exec: &mut dyn FeatureExec, f: &Feature, a
 /// `normal`: plane normal to a sketch path at its start (or end).
 pub fn normal(state: &RegenState, f: &Feature, flip: bool) -> Result<Frame, FeatureError> {
     let id = f.raw.get("path").and_then(|p| p.as_str()).ok_or_else(|| err(MISSING_PATH))?;
-    let sk = state.sketch(id).ok_or_else(|| err(MISSING_PATH))?;
     let at_end = f.raw.get("atEnd").and_then(|b| b.as_bool()).unwrap_or(false);
-    let chain = sketch_chain(sk).ok_or_else(|| err(crate::features::sweep::PATH_INVALID))?;
-    let seg = if at_end { chain.last() } else { chain.first() }.ok_or_else(|| err(MISSING_PATH))?;
-    let (o, t) = end_state(seg, at_end).ok_or_else(|| err(MISSING_PATH))?;
-    let x = sk.frame.z.reject(t).try_normalize().unwrap_or_else(|| up_frame_x(t));
+    let (o, t, x) = match state.sketch(id) {
+        Some(sk) => {
+            let chain = sketch_chain(sk).ok_or_else(|| err(crate::features::sweep::PATH_INVALID))?;
+            let seg = if at_end { chain.last() } else { chain.first() }.ok_or_else(|| err(MISSING_PATH))?;
+            let (o, t) = end_state(seg, at_end).ok_or_else(|| err(MISSING_PATH))?;
+            (o, t, sk.frame.z.reject(t).try_normalize().unwrap_or_else(|| up_frame_x(t)))
+        }
+        None => {
+            // a sketch3d spline path: no sketch plane, the "up = Y" frame rule
+            let j = state.result.sketches3.iter().find(|s| s.0 == id).map(|s| &s.1).ok_or_else(|| err(MISSING_PATH))?;
+            let chain = crate::features::sweep::sketch3_path(j)?;
+            let seg = chain.first().ok_or_else(|| err(MISSING_PATH))?;
+            let (o, t) = end_state(seg, at_end).ok_or_else(|| err(MISSING_PATH))?;
+            (o, t, up_frame_x(t))
+        }
+    };
     let z = if flip { -t } else { t };
     Ok(Frame { o, x, y: z.cross(x), z })
 }

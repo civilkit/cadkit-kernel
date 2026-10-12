@@ -1165,10 +1165,6 @@
   }
  ],
  "known": {
-  "coil_spring_000026": {
-   "label": "kernel-gap",
-   "note": "variable-pitch helix needs a 3D spline sweep path (sketch paths are planar lines/arcs, helix is constant pitch) -> translated as three constant-pitch helix sweeps; their union (adjacent end caps, overlapping coils since pitch 6 < wire dia 6.94) hangs (kernel-bug: boolean of coil sweeps does not terminate); importStep of the ground truth also hangs."
-  },
   "pan_head_screw_000035": {
    "label": "ground-truth-mismatch",
    "note": "everything but the thread is exact (unthreaded 1492.07 mm3). Our swept V-groove removes 24.07 mm3 (= groove area 0.0924 mm2 x centroid path length, the geometric truth); the dataset's sweep (isFrenet=False, profile plane not exactly normal to the helix) only removes 10.08 mm3 (cause not determined), so the ground truth is not the geometric groove and cannot be matched."

@@ -8,6 +8,9 @@
 //! (a helix feature) or `{kind:"sketch", id}` (an open sketch chain of
 //! lines / arcs); anything else -> `missingPath`. Check order: path ->
 //! profile (`noClosedProfile`) -> `nothingToCut` -> geometry codes.
+//! A `{kind:"sketch"}` path may also name a `sketch3d` holding one `spline` entity (natural cubic
+//! spline, end tangents from `tangent` constraints to lines): the section is carried along it by a
+//! rotation-minimizing frame (ck_ops::sweep::sweep_spline).
 //! `cut` sweeps are not flipped (unlike extrude). GUESS: `twist`, `guides`
 //! (guide.rs) and `surface` sweeps are not reconstructed yet.
 
@@ -157,6 +160,61 @@ fn sketch_path(sk: &crate::regen::SketchResult) -> Result<Vec<PathSeg>, FeatureE
     Ok(chain)
 }
 
+/// A `sketch3d` path: one `spline` entity (natural cubic spline through its points, the curve the
+/// client draws), swept with the section carried along it by Frenet frames.
+pub(crate) fn sketch3_path(j: &Json) -> Result<Vec<PathSeg>, FeatureError> {
+    let bad = || FeatureError::new(PATH_INVALID);
+    let sk = j.get("sketch").unwrap_or(j);
+    let all = sk.get_arr("entities").unwrap_or(&[]);
+    let live = |e: &&Json| e.get("construction").and_then(|c| c.as_bool()) != Some(true);
+    let splines: Vec<&Json> = all.iter().filter(live).filter(|e| e.get_str("type") == Some("spline")).collect();
+    let [e] = splines[..] else { return Err(bad()) };
+    if e.get("closed").and_then(|c| c.as_bool()) == Some(true) {
+        return Err(bad());
+    }
+    // (the only other entities a path may hold: points and the lines that give the spline end tangents)
+    let eid = e.get_str("id").unwrap_or("");
+    let tangent_line = |l: &Json| {
+        sk.get_arr("constraints").unwrap_or(&[]).iter().any(|c| {
+            let refs: Vec<&str> = c.get_arr("refs").unwrap_or(&[]).iter().filter_map(|r| r.as_str()).collect();
+            c.get_str("type") == Some("tangent") && refs.len() == 2 && refs.contains(&eid) && refs.contains(&l.get_str("id").unwrap_or("\u{0}"))
+        })
+    };
+    if all.iter().filter(live).any(|o| o.get_str("id") != Some(eid) && o.get_str("type") != Some("point") && !(o.get_str("type") == Some("line") && tangent_line(o))) {
+        return Err(bad());
+    }
+    let points = sk.get_arr("points").ok_or_else(bad)?;
+    let point = |id: &str| -> Option<Vec3> {
+        let p = points.iter().find(|p| p.get_str("id") == Some(id))?;
+        Some(Vec3::new(p.get_f64("x").unwrap_or(0.0), p.get_f64("y").unwrap_or(0.0), p.get_f64("z").unwrap_or(0.0)))
+    };
+    let ids: Vec<&str> = e.get_arr("pts").ok_or_else(bad)?.iter().filter_map(|i| i.as_str()).collect();
+    let pts: Vec<Vec3> = ids.iter().map(|id| point(id)).collect::<Option<_>>().ok_or_else(bad)?;
+    // `tangent` constraints against a line fix the end tangents (client `$n`): the line's contact
+    // end point minus its far end point, the contact being the spline's first / last point
+    let (mut t0, mut t1) = (None, None);
+    let (first, last) = (ids.first().copied().unwrap_or(""), ids.last().copied().unwrap_or(""));
+    for c in sk.get_arr("constraints").unwrap_or(&[]) {
+        let refs: Vec<&str> = c.get_arr("refs").unwrap_or(&[]).iter().filter_map(|r| r.as_str()).collect();
+        if c.get_str("type") != Some("tangent") || refs.len() != 2 || !refs.contains(&eid) {
+            continue;
+        }
+        let other = if refs[0] == eid { refs[1] } else { refs[0] };
+        let Some(line) = sk.get_arr("entities").unwrap_or(&[]).iter().find(|l| l.get_str("id") == Some(other) && l.get_str("type") == Some("line")) else { continue };
+        let (Some(a), Some(b)) = (line.get_str("p1"), line.get_str("p2")) else { continue };
+        for (l, r) in [(a, b), (b, a)] {
+            let (Some(pl), Some(pr)) = (point(l), point(r)) else { continue };
+            if l == first {
+                t0 = Some(pl - pr);
+            } else if l == last {
+                t1 = Some(pl - pr);
+            }
+        }
+    }
+    let sp = ck_ops::spline_path::SplinePath::new(&pts, t0, t1).ok_or_else(bad)?;
+    Ok(vec![PathSeg::Spline { sp: std::sync::Arc::new(sp), rev: false }])
+}
+
 /// `sweep`.
 pub fn exec_sweep(br: &Brep, state: &RegenState, f: &Feature) -> Result<Tool, FeatureError> {
     let FeatureKind::Sweep { op, path, surface, .. } = &f.kind else { unreachable!() };
@@ -174,7 +232,10 @@ pub fn exec_sweep(br: &Brep, state: &RegenState, f: &Feature) -> Result<Tool, Fe
         }
         GeomRef::Other(j) if j.get("kind").and_then(|k| k.as_str()) == Some("sketch") => {
             let id = j.get("id").and_then(|v| v.as_str()).ok_or_else(missing)?;
-            sketch_path(state.sketch(id).ok_or_else(missing)?)?
+            match state.sketch(id) {
+                Some(sk) => sketch_path(sk)?,
+                None => sketch3_path(state.result.sketches3.iter().find(|s| s.0 == id).map(|s| &s.1).ok_or_else(missing)?)?,
+            }
         }
         _ => return Err(missing()),
     };

@@ -134,3 +134,33 @@ fn coil_spring_closest_point_recovery() {
     }
     eprintln!("closest_param on surface points: {bad}/300 missed (>1e-7), worst {worst:.3e}, {:.3}s", t.elapsed().as_secs_f64());
 }
+
+/// Centre line of the ground-truth coil: radius of the section-circle centres against the path parameter.
+#[test]
+#[ignore]
+fn coil_spring_gt_centerline() {
+    use ck_geom::surface::Surface;
+    let r = read_step(&gt("coil_spring_000026")).unwrap();
+    let bs = r.body.face_ids().find_map(|f| match &r.body.face(f).surface { Surface::BSpline(b) => Some(b.clone()), _ => None }).unwrap();
+    let ((u0, u1), (v0, v1)) = bs.domain();
+    let (mut rmin, mut rmax, mut sum, mut n) = (f64::INFINITY, 0.0f64, 0.0, 0);
+    let mut rows = vec![];
+    for k in 0..=2400 {
+        let v = v0 + (v1 - v0) * k as f64 / 2400.0;
+        let c = (0..8).map(|i| bs.eval(u0 + (u1 - u0) * i as f64 / 8.0, v)).fold(ck_geom::Vec3::ZERO, |a, p| a + p) * (1.0 / 8.0);
+        let rho = c.x.hypot(c.y);
+        rmin = rmin.min(rho);
+        rmax = rmax.max(rho);
+        sum += rho;
+        n += 1;
+        rows.push((v, rho, c.z));
+    }
+    eprintln!("GT centre-line radius: min {rmin:.4} max {rmax:.4} mean {:.4}; wire radius {:.4}", sum / n as f64, {
+        let p = bs.eval(u0, v0);
+        let c = (0..8).map(|i| bs.eval(u0 + (u1 - u0) * i as f64 / 8.0, v0)).fold(ck_geom::Vec3::ZERO, |a, p| a + p) * (1.0 / 8.0);
+        p.dist(c)
+    });
+    for k in (0..rows.len()).step_by(60) {
+        eprintln!("  v {:.1} rho {:.4} z {:.3}", rows[k].0, rows[k].1, rows[k].2);
+    }
+}

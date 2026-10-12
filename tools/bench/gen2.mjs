@@ -46,25 +46,29 @@ const parts = {};
     { type: 'chamfer', id: 'F6', chamferType: 'equal', distance: 1.5, edges: ed }]);
 }
 
-// 3. coil_spring: three constant-pitch helix sweeps (closed ends pitch 6 x2 turns, active pitch 20.5 x3 turns)
-//    standing in for the dataset's piecewise spline path; flat-ground ends by two box cuts.
+// 3. coil_spring: the dataset sweeps a circle along one spline through a variable-pitch helix (closed ends
+//    pitch 6 x 2 turns, active pitch 20.5 x 3 turns, 6 x 2 turns). Here: a `sketch3d` natural spline through 24
+//    points per turn of that helix with tangent end constraints (lines p1-q0, pn-q1 along the helix tangent), the
+//    circle in the meridian plane at its start; flat-ground ends by two box cuts.
 {
-  const R = 55.59, r = 3.47;
-  const segs = [[0, 6, 12], [12, 20.5, 61.5], [73.5, 6, 12]];
-  const feats = [];
-  let n = 1;
-  segs.forEach(([z0, pitch, height], i) => {
-    const base = z0 === 0 ? STD('top') : FEAT(`P${i}`);
-    if (z0 !== 0) feats.push(plane(`P${i}`, 'top', z0));
-    const hs = new Sk(`H${i}`, base); hs.circle(0, 0, R);
-    const ps = new Sk(`S${i}`, STD('front')); ps.circle(R, z0, r);
-    feats.push(hs.json(), { type: 'helix', id: `X${i}`, sketch: `H${i}`, definedBy: 'heightPitch', pitch, height, revolutions: height / pitch, startAngle: 0 },
-      ps.json(), { type: 'sweep', id: `W${i}`, op: 'add', sketch: `S${i}`, path: { kind: 'curve', id: `X${i}` } });
-  });
+  const R = 55.59, r = 3.47, per = 24;
+  const segs = [[2, 6], [3, 20.5], [2, 6]];
+  const r9 = (x) => Math.round(x * 1e9) / 1e9;
+  const pts = [[R, 0, 0]];
+  let th = 0, y = 0;
+  for (const [turns, pitch] of segs) for (let k = 1; k <= turns * per; k++) { th += 2 * Math.PI / per; y += pitch / per; pts.push([R * Math.cos(th), y, -R * Math.sin(th)]); }
+  const k = 6 / (2 * Math.PI), nrm = Math.hypot(k, R), t = [0, k / nrm, -R / nrm]; // helix tangent at the ends (pitch 6)
+  const P = pts.map(([x, yy, z], i) => ({ id: `p${i + 1}`, x: r9(x), y: r9(yy), z: r9(z) }));
+  const n = P.length, a = pts[0], b = pts[n - 1];
+  P.push({ id: 'q0', x: r9(a[0] - t[0]), y: r9(a[1] - t[1]), z: r9(a[2] - t[2]) }, { id: 'q1', x: r9(b[0] - t[0]), y: r9(b[1] - t[1]), z: r9(b[2] - t[2]) });
+  const path = { type: 'sketch3d', id: 'P', points: P,
+    entities: [{ type: 'spline', id: 'e1', pts: P.slice(0, n).map((q) => q.id) }, { type: 'line', id: 'e2', p1: 'p1', p2: 'q0' }, { type: 'line', id: 'e3', p1: `p${n}`, p2: 'q1' }],
+    constraints: [{ id: 'c1', type: 'tangent', refs: ['e1', 'e2'] }, { id: 'c2', type: 'tangent', refs: ['e1', 'e3'] }] };
+  const ps = new Sk('S0', STD('front')); ps.circle(R, 0, r);
   const c1 = new Sk('C1', FEAT('PT')); c1.rect(-73.825, -73.825, 73.825, 73.825);
   const c2 = new Sk('C2', FEAT('PB')); c2.rect(-73.825, -73.825, 73.825, 73.825);
-  feats.push(plane('PT', 'top', 85.5), c1.json(), cut('K1', 'C1', { depth: 7.88, flip: true }), plane('PB', 'top', -7.88), c2.json(), cut('K2', 'C2', { depth: 7.88, flip: true }));
-  parts.coil_spring_000026 = part('coil_spring', feats);
+  parts.coil_spring_000026 = part('coil_spring', [path, ps.json(), { type: 'sweep', id: 'W', op: 'add', sketch: 'S0', path: { kind: 'sketch', id: 'P' } },
+    plane('PT', 'top', 85.5), c1.json(), cut('K1', 'C1', { depth: 7.88, flip: true }), plane('PB', 'top', -7.88), c2.json(), cut('K2', 'C2', { depth: 7.88, flip: true })]);
 }
 
 // 4. torsion_spring: 12-turn helix sweep + two straight legs. The dataset tilts the leg workplanes by

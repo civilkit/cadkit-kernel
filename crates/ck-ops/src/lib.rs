@@ -21,5 +21,6 @@ pub mod ref_curve;
 pub mod pipecut;
 pub mod shell;
 pub mod simplify;
+pub mod spline_path;
 pub mod surfacing;
 pub mod sweep;

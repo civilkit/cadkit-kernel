@@ -131,7 +131,7 @@ fn panels_for(pc: &Curve2, ta: f64, tb: f64, ang: (bool, bool), curved: bool, sp
             n.ceil() as usize
         }
         Curve2::Circle { .. } | Curve2::Ellipse { .. } => ((tb - ta).abs() / (std::f64::consts::PI / 8.0)).ceil().max(2.0) as usize,
-        Curve2::BSpline(bs) => (bs.ctrl.len() * 2).clamp(4, 256),
+        Curve2::BSpline(bs) => (bs.ctrl.len() * 2).clamp(4, 4096),
     }
 }
 
@@ -328,38 +328,72 @@ fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand
     // low-degree polynomial in v on a span, so keep the cumulative integral
     // at every u knot for a few v nodes and Lagrange-interpolate in v
     let long_spline = knots_u.len() >= 32;
-    let vtab: Option<(Vec<f64>, Vec<f64>, Vec<Vec<[f64; K]>>)> = match surf {
-        Surface::BSpline(bs) if long_spline && bs.knots_v.windows(2).filter(|w| w[0] < w[1]).count() == 1 => {
-            let ((du0, du1), (dv0, dv1)) = bs.domain();
-            // Chebyshev-Lobatto nodes: exact for the polynomial integrands,
-            // ~1e-12 for the smooth area element |Su x Sv|
-            let nvn = 3 * bs.deg_v + 6;
-            let vn: Vec<f64> = (0..nvn).map(|j| dv0 + (dv1 - dv0) * 0.5 * (1.0 - (std::f64::consts::PI * j as f64 / (nvn - 1) as f64).cos())).collect();
-            let mut ks = vec![du0];
-            ks.extend(knots_u.iter().copied());
-            ks.push(du1);
-            let cum: Vec<Vec<[f64; K]>> = vn
-                .iter()
-                .map(|&v| {
-                    let mut c = vec![[0.0; K]];
-                    for w in ks.windows(2) {
-                        let d = seg_integral(w[0], w[1], v);
-                        let mut g = *c.last().unwrap();
-                        for k in 0..K {
-                            g[k] += d[k];
-                        }
-                        c.push(g);
-                    }
-                    c
-                })
-                .collect();
-            Some((ks, vn, cum))
+    // per v span: Chebyshev-Lobatto nodes (exact for the polynomial integrands, ~1e-12 for the smooth
+    // area element |Su x Sv|) and the cumulative integral at every u knot for each node
+    type VSpanTab<const K: usize> = (f64, f64, Vec<f64>, Vec<Vec<[f64; K]>>);
+    let vspans: Vec<(f64, f64)> = match surf {
+        Surface::BSpline(bs) if long_spline => {
+            let ((_, _), (dv0, dv1)) = bs.domain();
+            let mut ks: Vec<f64> = vec![dv0];
+            ks.extend(bs.knots_v.iter().copied().filter(|&x| x > dv0 && x < dv1));
+            ks.push(dv1);
+            ks.dedup();
+            ks.windows(2).map(|w| (w[0], w[1])).collect()
         }
-        _ => None,
+        _ => vec![],
+    };
+    let build_vtab = || -> Option<(Vec<f64>, Vec<VSpanTab<K>>)> {
+        let Surface::BSpline(bs) = surf else { return None };
+        if !long_spline || vspans.is_empty() {
+            return None;
+        }
+        let ((du0, du1), _) = bs.domain();
+        let nvn = 3 * bs.deg_v + 6;
+        let mut ks = vec![du0];
+        ks.extend(knots_u.iter().copied());
+        ks.push(du1);
+        let tabs = vspans
+            .iter()
+            .map(|&(a, b)| {
+                let vn: Vec<f64> = (0..nvn).map(|j| a + (b - a) * 0.5 * (1.0 - (std::f64::consts::PI * j as f64 / (nvn - 1) as f64).cos())).collect();
+                let cum: Vec<Vec<[f64; K]>> = vn
+                    .iter()
+                    .map(|&v| {
+                        let mut c = vec![[0.0; K]];
+                        for w in ks.windows(2) {
+                            let d = seg_integral(w[0], w[1], v);
+                            let mut g = *c.last().unwrap();
+                            for k in 0..K {
+                                g[k] += d[k];
+                            }
+                            c.push(g);
+                        }
+                        c
+                    })
+                    .collect();
+                (a, b, vn, cum)
+            })
+            .collect();
+        Some((ks, tabs))
+    };
+    // a ruled screw face (one v span): the table is always cheaper; a face with several v spans builds it
+    // only once many boundary samples sit at distinct v (a cut curve across the sweep)
+    let vtab: std::cell::OnceCell<Option<(Vec<f64>, Vec<VSpanTab<K>>)>> = std::cell::OnceCell::new();
+    if vspans.len() == 1 {
+        let _ = vtab.set(build_vtab());
+    }
+    let new_lists = std::cell::Cell::new(0usize);
+    let table_ready = || -> bool {
+        if vspans.len() == 1 {
+            return vtab.get().map_or(false, |t| t.is_some());
+        }
+        new_lists.get() >= 48 && vtab.get_or_init(build_vtab).is_some()
     };
     let h_at = |u: f64, v: f64| -> [f64; K] {
-        let (ks, vn, cum) = vtab.as_ref().unwrap();
+        let (ks, tabs) = vtab.get().unwrap().as_ref().unwrap();
         let k = (ks.partition_point(|&x| x <= u).max(1) - 1).min(ks.len() - 2);
+        let si = (tabs.partition_point(|t| t.0 <= v).max(1) - 1).min(tabs.len() - 1);
+        let (_, _, vn, cum) = &tabs[si];
         let mut g = [0.0; K];
         for j in 0..vn.len() {
             let mut w = 1.0;
@@ -395,10 +429,21 @@ fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand
         if u - ustar == 0.0 {
             return [0.0; K];
         }
-        if long_spline && vtab.is_none() {
+        if long_spline && table_ready() {
+            let (a, b) = (h_at(u, v), h_at(ustar, v));
+            let mut g = a;
+            for i in 0..K {
+                g[i] -= b[i];
+            }
+            return g;
+        }
+        if long_spline {
             let v = (v * 1e9).round() / 1e9;
             let mut map = ckpt.borrow_mut();
-            let list = map.entry(v.to_bits()).or_insert_with(|| vec![(ustar, [0.0; K])]);
+            let list = map.entry(v.to_bits()).or_insert_with(|| {
+                new_lists.set(new_lists.get() + 1);
+                vec![(ustar, [0.0; K])]
+            });
             let idx = list.partition_point(|e| e.0 < u);
             let cand = [idx.checked_sub(1), (idx < list.len()).then_some(idx)];
             let best = cand.iter().flatten().copied().min_by(|&x, &y| (list[x].0 - u).abs().partial_cmp(&(list[y].0 - u).abs()).unwrap()).unwrap();
@@ -412,14 +457,6 @@ fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand
                 g[k] += d[k];
             }
             list.insert(idx, (u, g));
-            return g;
-        }
-        if vtab.is_some() {
-            let (a, b) = (h_at(u, v), h_at(ustar, v));
-            let mut g = a;
-            for i in 0..K {
-                g[i] -= b[i];
-            }
             return g;
         }
         // a face wound many times round its axis (cylinder cut by a

@@ -377,12 +377,13 @@ fn pcurve_of_n(surf: &Surface, c: &Curve, t0: f64, t1: f64, tol: f64, n_min: Opt
     if let Some(m) = n_min {
         n = n.max(m);
     }
-    let pts: Vec<Vec3> = (0..=n).map(|i| c.eval(t0 + (t1 - t0) * i as f64 / n as f64)).collect();
-    let uv = project_points(surf, &pts);
+    let ts_uniform: Vec<f64> = (0..=n).map(|i| t0 + (t1 - t0) * i as f64 / n as f64).collect();
+    let pts: Vec<Vec3> = ts_uniform.iter().map(|&t| c.eval(t)).collect();
+    let uv_uniform = project_points(surf, &pts);
     // a straight, uniformly traversed uv path (a helix on a cylinder, a
     // screw rail on a sweep face): exact line pcurve
     if n > 32 || matches!(surf, Surface::BSpline(_)) {
-        let (a, mut b) = (uv[0], uv[n]);
+        let (a, mut b) = (uv_uniform[0], uv_uniform[n]);
         // a constant coordinate (a screw rail: v = const) stays exactly constant
         if (b.x - a.x).abs() < 1e-9 {
             b.x = a.x;
@@ -391,12 +392,35 @@ fn pcurve_of_n(surf: &Surface, c: &Curve, t0: f64, t1: f64, tol: f64, n_min: Opt
             b.y = a.y;
         }
         let d = (b - a) / (t1 - t0);
-        let dev = uv.iter().enumerate().map(|(i, q)| q.dist(a + d * (t1 - t0) * (i as f64 / n as f64))).fold(0.0, f64::max);
+        let dev = uv_uniform.iter().enumerate().map(|(i, q)| q.dist(a + d * (t1 - t0) * (i as f64 / n as f64))).fold(0.0, f64::max);
         if dev < 1e-6 {
             return Ok(Curve2::Line { o: a - d * t0, d });
         }
     }
-    let u: Vec<f64> = (0..=n).map(|i| i as f64 / n as f64).collect();
+    // fitted samples: the uniform ones plus (for a B-spline curve) the middle of every knot span -- a
+    // fitted intersection curve is dense where it turns sharply (a hairpin at the tip of a lens is ~1 mm of
+    // a 100 mm curve) and uniform samples cannot follow it
+    let mut ts = ts_uniform;
+    let mut uv = uv_uniform;
+    // (not on a periodic surface: the extra samples would be unwrapped on their own)
+    if let (Curve::BSpline(bs), (None, None)) = (c, surf.periods()) {
+        let (lo, hi) = (t0.min(t1), t0.max(t1));
+        let ks: Vec<f64> = bs.knots.iter().copied().filter(|&k| k > lo && k < hi).collect();
+        if ks.len() > 4 && ks.len() < 6000 {
+            let mut all = vec![lo];
+            all.extend(ks);
+            all.push(hi);
+            all.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
+            let extra: Vec<f64> = all.windows(2).map(|w| 0.5 * (w[0] + w[1])).collect();
+            let extra_uv = project_points(surf, &extra.iter().map(|&t| c.eval(t)).collect::<Vec<_>>());
+            let mut both: Vec<(f64, Vec2)> = ts.iter().copied().zip(uv.iter().copied()).chain(extra.into_iter().zip(extra_uv)).collect();
+            both.sort_by(|a, b| if t1 >= t0 { a.0.total_cmp(&b.0) } else { b.0.total_cmp(&a.0) });
+            both.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-12 * (1.0 + t1.abs()));
+            ts = both.iter().map(|x| x.0).collect();
+            uv = both.iter().map(|x| x.1).collect();
+        }
+    }
+    let u: Vec<f64> = ts.iter().map(|&t| (t - t0) / (t1 - t0)).collect();
     let knots = fit::averaged_knots(&u, 3);
     let b = fit::interpolate_with(&uv, 3, &u, knots).or_else(|_| fit::interpolate(&uv, 3, Param::ChordLength))?;
     Ok(Curve2::BSpline(b.reparam(t0, t1)))

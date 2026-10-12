@@ -29,7 +29,7 @@ use super::Op;
 use crate::intersect::ss::{self, SsResult};
 use ck_geom::curve::Curve;
 use ck_geom::curve2::Curve2;
-use ck_geom::pcurve::{exact_pcurve, pcurve_of};
+use ck_geom::pcurve::{exact_pcurve, pcurve_of, pcurve_of_dense};
 use ck_geom::surface::Surface;
 use ck_geom::{Vec2, Vec3};
 use ck_topo::body::{Body, FaceName};
@@ -786,8 +786,15 @@ pub fn build(arr: &Arrangement, faces: &[OutFace]) -> Body {
                         e
                     }
                 };
-                let pc = exact_pcurve(&of.surface, &ae.curve, tol * 10.0)
-                    .or_else(|| pcurve_of(&of.surface, &ae.curve, ae.t0, ae.t1, tol).ok());
+                let pc = exact_pcurve(&of.surface, &ae.curve, tol * 10.0).or_else(|| {
+                    if matches!(of.surface, ck_geom::surface::Surface::BSpline(_) | ck_geom::surface::Surface::Plane { .. }) && matches!(ae.curve, ck_geom::curve::Curve::BSpline(_)) {
+                        // (a long cut curve turning round inside a sweep face is ~1 mm off its
+                        // 32-sample cubic fit at the tip: refine until it reproduces the curve)
+                        pcurve_of_dense(&of.surface, &ae.curve, ae.t0, ae.t1, tol, 1e-5).ok()
+                    } else {
+                        pcurve_of(&of.surface, &ae.curve, ae.t0, ae.t1, tol).ok()
+                    }
+                });
                 let pc = pc.map(|pc| {
                     let (ta, tb) = if rev { (ae.t1, ae.t0) } else { (ae.t0, ae.t1) };
                     let mut pc = pc;

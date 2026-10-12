@@ -12,3 +12,4 @@ ck-ops = { path = "../ck-ops" }
 
 [dev-dependencies]
 ck-check = { path = "../ck-check" }
+ck-tess = { path = "../ck-tess" }
