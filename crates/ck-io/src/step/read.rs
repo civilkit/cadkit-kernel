@@ -23,7 +23,7 @@ use ck_geom::curve::Curve;
 use ck_geom::curve2::Curve2;
 use ck_geom::nurbs::bspline::BSplineCurve;
 use ck_geom::nurbs::bsurf::BSplineSurface;
-use ck_geom::pcurve::{exact_pcurve, pcurve_of_dense};
+use ck_geom::pcurve::{exact_pcurve, pcurve_of, pcurve_of_dense};
 use ck_geom::surface::Surface;
 use ck_geom::{frame_from, Frame, Vec2, Vec3};
 use ck_topo::body::{Body, EdgeId, FaceId, FaceName, LumpId, ShellId, VertexId};
@@ -1047,6 +1047,9 @@ fn edge_pcurve(b: &Body, e: EdgeId, surf: &Surface) -> Option<Curve2> {
     }
     if let Some(p) = exact_pcurve(surf, &ed.curve, 1e-7) {
         return Some(p);
+    }
+    if matches!(surf, Surface::BSpline(_)) {
+        return pcurve_of(surf, &ed.curve, ed.t0, ed.t1, 1e-6).ok();
     }
     pcurve_of_dense(surf, &ed.curve, ed.t0, ed.t1, 1e-6, 2e-6).ok()
 }
