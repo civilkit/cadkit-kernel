@@ -7,3 +7,4 @@ license = "MIT OR Apache-2.0"
 [dependencies]
 ck-geom = { path = "../ck-geom" }
 ck-topo = { path = "../ck-topo" }
+ck-core = { path = "../ck-core" }

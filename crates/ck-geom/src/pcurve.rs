@@ -88,8 +88,31 @@ impl<'a> CurveOnSurface<'a> {
 
 /// Project points to (u,v), unwrapping periodic parameters so the sequence
 /// is continuous across seams.
+/// Parameter lengths a B-spline surface closes on itself in (its first and
+/// last isoline coincide: a sweep or revolve of a closed profile stored as
+/// one patch). `Surface::periods` is None for these; the uv of a path
+/// crossing the closing isoline must still be unwrapped.
+pub fn closed_periods(surf: &Surface) -> (Option<f64>, Option<f64>) {
+    let Surface::BSpline(bs) = surf else { return (None, None) };
+    let ((u0, u1), (v0, v1)) = bs.domain();
+    if !(u1 > u0 && v1 > v0) || !(u1 - u0).is_finite() || !(v1 - v0).is_finite() {
+        return (None, None);
+    }
+    let scale = 1.0 + bs.eval(u0, v0).len();
+    let closed_u = (0..5).all(|k| {
+        let v = v0 + (v1 - v0) * (k as f64 + 0.5) / 5.0;
+        bs.eval(u0, v).dist(bs.eval(u1, v)) < 1e-7 * scale
+    });
+    let closed_v = (0..5).all(|k| {
+        let u = u0 + (u1 - u0) * (k as f64 + 0.5) / 5.0;
+        bs.eval(u, v0).dist(bs.eval(u, v1)) < 1e-7 * scale
+    });
+    (closed_u.then_some(u1 - u0), closed_v.then_some(v1 - v0))
+}
+
 pub fn project_points(surf: &Surface, pts: &[Vec3]) -> Vec<Vec2> {
     let (pu, pv) = surf.periods();
+    let (cu, cv) = closed_periods(surf);
     let mut out: Vec<Vec2> = Vec::with_capacity(pts.len());
     for &p in pts {
         let warm = match (surf, out.last()) {
@@ -105,7 +128,44 @@ pub fn project_points(surf: &Surface, pts: &[Vec3]) -> Vec<Vec2> {
                 v = unwrap_near(v, prev.y, per);
             }
         }
+        if let Some(prev) = out.last() {
+            if let Some(per) = cu {
+                u = unwrap_near(u, prev.x, per);
+            }
+            if let Some(per) = cv {
+                v = unwrap_near(v, prev.y, per);
+            }
+        }
         out.push(Vec2::new(u, v));
+    }
+    // a closed B-spline path that starts ON its closing isoline projects to
+    // either side of it; after unwrapping, move the whole path into the
+    // domain when it only leaves it by that ambiguity
+    if let Surface::BSpline(bs) = surf {
+        let ((u0, u1), (v0, v1)) = bs.domain();
+        for (per, lo, hi, d) in [(cu, u0, u1, 0usize), (cv, v0, v1, 1)] {
+            let Some(per) = per else { continue };
+            let c = |q: &Vec2| if d == 0 { q.x } else { q.y };
+            let tol = 1e-6 * per;
+            let mn = out.iter().map(c).fold(f64::INFINITY, f64::min);
+            let mx = out.iter().map(c).fold(f64::NEG_INFINITY, f64::max);
+            let sh = if mn < lo - tol && mx + per <= hi + tol {
+                per
+            } else if mx > hi + tol && mn - per >= lo - tol {
+                -per
+            } else {
+                0.0
+            };
+            if sh != 0.0 {
+                for q in out.iter_mut() {
+                    if d == 0 {
+                        q.x += sh;
+                    } else {
+                        q.y += sh;
+                    }
+                }
+            }
+        }
     }
     // u is arbitrary at a pole: take it from the neighbouring samples, so the
     // sequence stays continuous (a fitted pcurve must not swing across it)

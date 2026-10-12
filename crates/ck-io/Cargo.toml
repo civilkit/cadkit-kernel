@@ -12,3 +12,4 @@ ck-topo = { path = "../ck-topo" }
 [dev-dependencies]
 ck-json = { path = "../ck-json" }
 ck-check = { path = "../ck-check" }
+ck-tess = { path = "../ck-tess" }

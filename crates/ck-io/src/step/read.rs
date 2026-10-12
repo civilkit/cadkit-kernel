@@ -1187,6 +1187,11 @@ impl Rd<'_> {
                 }
             }
         }
+        if !periodic && matches!(surface, Surface::BSpline(_)) {
+            for l in &mut loops {
+                self.fix_closed_spline_loop(l, &surface, sense);
+            }
+        }
         if periodic {
             if loops.iter().flatten().any(|c| c.pc.is_none()) {
                 return Err(ImportError::new("topology", Some(id), "no pcurve for an edge of a periodic face"));
@@ -1208,6 +1213,82 @@ impl Rd<'_> {
             ck_topo::orient::fix_planar_loops(&mut self.b, f);
         }
         Ok(())
+    }
+
+    /// A B-spline surface that closes on itself (a sweep of a circle stored as
+    /// one patch: u closed) is bounded by a loop that runs up one side of the
+    /// seam and back down the other. Projection cannot tell the two sides
+    /// apart (both land on the same u), so the pcurves of the loop (already
+    /// unwrapped within each edge) are shifted by whole periods: the seam
+    /// twins to opposite sides, the two chains of edges between them to join
+    /// them up, oriented to the face sense. Left alone if the result does not
+    /// reproduce the 3D edges.
+    fn fix_closed_spline_loop(&self, l: &mut [Co], surf: &Surface, sense: bool) {
+        let Surface::BSpline(bs) = surf else { return };
+        let n = l.len();
+        if n < 3 || l.iter().any(|c| c.pc.is_none()) {
+            return;
+        }
+        let (cu, cv) = ck_geom::pcurve::closed_periods(surf);
+        let (d, per) = match (cu, cv) {
+            (Some(p), None) => (0usize, p),
+            (None, Some(p)) => (1usize, p),
+            _ => return,
+        };
+        let pairs: Vec<(usize, usize)> = (0..n).flat_map(|i| (i + 1..n).map(move |j| (i, j))).filter(|&(i, j)| l[i].edge == l[j].edge && l[i].rev != l[j].rev).collect();
+        let [(i, j)] = pairs[..] else { return };
+        let (du, dv) = bs.domain();
+        let (lo, hi) = if d == 0 { du } else { dv };
+        let tol = 1e-5 * per;
+        let shifted = |c: &Co, x: f64| -> Co {
+            let pc = c.pc.as_ref().unwrap();
+            let mut o = c.clone();
+            o.pc = Some(translate(pc, unit2(d, x)));
+            o
+        };
+        for first in [lo, hi] {
+            let other = if first == lo { hi } else { lo };
+            let mut t: Vec<Co> = l.to_vec();
+            let mut ok = true;
+            // seam twins
+            for (k, lvl) in [(i, first), (j, other)] {
+                let x = comp(self.co_uv(&l[k], true).unwrap(), d);
+                let sh = ((lvl - x) / per).round() * per;
+                if (x + sh - lvl).abs() > tol {
+                    ok = false;
+                }
+                t[k] = shifted(&l[k], sh);
+            }
+            // the two chains between the twins: from `lvl_from` to `lvl_to`
+            for (start, count, lvl_from, lvl_to) in [(i + 1, j - i - 1, first, other), (j + 1, n - (j - i) - 1, other, first)] {
+                let mut at = lvl_from;
+                for q in 0..count {
+                    let k = (start + q) % n;
+                    let x = comp(self.co_uv(&l[k], true).unwrap(), d);
+                    let sh = ((at - x) / per).round() * per;
+                    t[k] = shifted(&l[k], sh);
+                    at = comp(self.co_uv(&t[k], false).unwrap(), d);
+                }
+                if (at - lvl_to).abs() > tol {
+                    ok = false;
+                }
+            }
+            if !ok {
+                continue;
+            }
+            // the pcurves must reproduce the 3D edges
+            let scale = 1.0 + bs.eval(du.0, dv.0).len();
+            let good = t.iter().all(|c| {
+                let ed = self.b.edge(c.edge);
+                let tm = 0.5 * (ed.t0 + ed.t1);
+                let uv = c.pc.as_ref().unwrap().eval(tm);
+                bs.eval(uv.x, uv.y).dist(ed.curve.eval(tm)) < 1e-4 * scale
+            });
+            if good && self.loop_area(&t) * if sense { 1.0 } else { -1.0 } > 0.0 {
+                l.clone_from_slice(&t);
+                return;
+            }
+        }
     }
 
     /// Shift pcurves by whole periods so consecutive coedges join up.

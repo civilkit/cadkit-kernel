@@ -298,7 +298,9 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
                 continue;
             }
             let e = ce.edge;
-            let seam = body.is_seam(e);
+            // (a B-spline patch closed on itself is an ordinary rectangle in uv: its seam edge
+            // bounds the polygon on both sides, there is no cut window to open)
+            let seam = body.is_seam(e) && !matches!(surf, Surface::BSpline(_));
             let ed = body.edge(e);
             let mut ps: Vec<f64> = params.get(e.idx()).cloned().unwrap_or_default();
             if ps.len() < 2 {
@@ -369,7 +371,7 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
             } else {
                 join(&mut poly, last, first, tol);
                 // universal cover: the loop must close in uv itself (not one period away)
-                if cover && !same_uv(first.uv, poly.last().unwrap().uv) && first.p.dist(poly.last().unwrap().p) <= 1e-6 * (1.0 + first.p.len()) {
+                if cover && first.uv.dist(poly.last().unwrap().uv) > 1e-6 && first.p.dist(poly.last().unwrap().p) <= 1e-6 * (1.0 + first.p.len()) {
                     return Err("loop winds a period".into());
                 }
             }

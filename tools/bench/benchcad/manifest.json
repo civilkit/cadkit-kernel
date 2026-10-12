@@ -1168,13 +1168,13 @@
   "coil_spring_000026": {
    "label": "kernel-gap",
    "skip": "regen does not finish in 50 s (union of the 2nd helical sweep with the 1st never returns)",
-   "skipStep": "importStep of the ground-truth STEP (spline-swept torus-like coils) does not finish in 60 s",
-   "note": "variable-pitch helix needs a 3D spline sweep path (sketch paths are planar lines/arcs, helix is constant pitch) -> translated as three constant-pitch helix sweeps; their union (adjacent end caps, overlapping coils since pitch 6 < wire dia 6.94) hangs (kernel-bug: boolean of coil sweeps does not terminate); importStep of the ground truth also hangs."
+   "note": "variable-pitch helix needs a 3D spline sweep path (sketch paths are planar lines/arcs, helix is constant pitch) -> translated as three constant-pitch helix sweeps; their union (adjacent end caps, overlapping coils since pitch 6 < wire dia 6.94) hangs (kernel-bug: boolean of coil sweeps does not terminate); importStep of the ground truth also hangs.",
+   "skipStep": "importStep of the ground-truth STEP takes ~35 s (tessellating its 100k-triangle sweep face); imports exactly, rerun with --force-skipped"
   },
   "torsion_spring_000054": {
    "label": "kernel-gap",
    "skip": "regen does not finish in 50 s (a single 12-turn helix sweep takes 19 s, union with a leg never returns)",
-   "note": "leg workplanes are rotated 2.8 deg about X (plane mode angle, now implemented and used by the translation); remaining blockers: the 12-turn helix sweep alone takes 19 s and its union with a coaxial-end leg hangs (kernel-bug perf/hang). Ground truth is two disjoint solids (multi-body result)."
+   "note": "regen is skipped (a single 12-turn helix sweep takes 19 s and the union with a leg ~100 s; run with --force-skipped). Ground truth is two disjoint solids: multi-solid results are supported (lumps), our regen gives two lumps with volume within 0.11% (helical sweep accuracy), the ground-truth STEP now imports exactly."
   },
   "pipe_elbow_000012": {
    "label": "kernel-gap",
@@ -1183,10 +1183,6 @@
   "duct_elbow_000181": {
    "label": "kernel-gap",
    "note": "same: sweep along a multi-piece path (line-arc-line) is TODO(rebuild) (F3); F5 nothingToCut."
-  },
-  "torus_link_000095": {
-   "label": "kernel-gap",
-   "note": "lugs touch the torus in a single point, so the union is two disjoint solids (ground truth: solids=2). Our feature union returns only the second body (volume 2548 = lugs only; torus silently dropped, no error): no multi-body result for a union of disjoint/point-contact bodies. The internal blind cross holes (void shells) are not reached."
   },
   "pan_head_screw_000035": {
    "label": "ground-truth-mismatch",
@@ -1206,21 +1202,13 @@
    "label": "kernel-gap",
    "note": "importStep: unsupported 'single boundary winding a revolution surface' (a sphere pole boundary) - same degenerate sphere-as-revolution case as the regen side."
   },
-  "eyebolt_000265": {
-   "label": "kernel-bug",
-   "note": "importStep returns a body without the torus eye (bbox x +-35 instead of +-63, volume short): torus surface in the STEP is dropped silently."
-  },
   "torus_link_000095": {
    "label": "kernel-gap",
    "note": "ground-truth STEP holds two disjoint solids; importStep keeps one body (box shows the lug+partial only): no multi-solid import."
   },
-  "torsion_spring_000054": {
-   "label": "kernel-gap",
-   "note": "ground-truth STEP holds two solids; importStep returns a single small solid (9% of the volume): no multi-solid import."
-  },
   "coil_spring_000026": {
    "label": "kernel-bug",
-   "note": "importStep of the ground-truth STEP (spline-swept coil, 5 faces) does not return within 60 s."
+   "note": "the ground-truth STEP imports exactly (closed spline sweep face, 5 faces) but tessellating its 100k-triangle sweep face takes ~35 s, past the bench budget (run with --force-skipped)."
   }
  }
 }

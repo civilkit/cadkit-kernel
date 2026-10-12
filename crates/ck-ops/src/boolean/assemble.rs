@@ -813,7 +813,9 @@ pub fn build(arr: &Arrangement, faces: &[OutFace]) -> Body {
             // twins' pcurves must lie one period apart, the loop CCW about
             // the outward normal (positive uv area when sense)
             if !l.is_empty() && l.iter().all(|&(e, r)| l.contains(&(e, !r))) {
-                if let Some(p) = pu.or(pv) {
+                // (a torus has two seams: the continuity chaining above already
+                // places the four twins one period apart, so it is left alone)
+                if let (Some(p), None) | (None, Some(p)) = (pu, pv) {
                     let cs = b.lp(lp).coedges.clone();
                     let mut seen: Vec<usize> = vec![];
                     for (k, &(e, _)) in l.iter().enumerate() {
