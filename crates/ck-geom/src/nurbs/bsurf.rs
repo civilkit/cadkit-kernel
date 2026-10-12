@@ -106,6 +106,32 @@ impl BSplineSurface {
             }
             return a;
         }
+        if self.deg_u < 12 && self.deg_v < 12 {
+            // allocation-free rational path (same arithmetic as `derivs(.., 0)`)
+            let ((u0, u1), (v0, v1)) = self.domain();
+            let (u, v) = (u.clamp(u0, u1), v.clamp(v0, v1));
+            let (p, q) = (self.deg_u, self.deg_v);
+            let su = find_span(self.nu - 1, p, u, &self.knots_u);
+            let sv = find_span(self.nv - 1, q, v, &self.knots_v);
+            let nu = basis::ders_basis_funs2(su, u, p, 0, &self.knots_u);
+            let nv = basis::ders_basis_funs2(sv, v, q, 0, &self.knots_v);
+            let mut tp = [Vec3::ZERO; 12];
+            let mut tw = [0.0f64; 12];
+            for s in 0..=q {
+                for r in 0..=p {
+                    let (i, j) = (su - p + r, sv - q + s);
+                    let wt = self.weight(i, j);
+                    tp[s] = tp[s] + self.cp(i, j) * (nu[0][r] * wt);
+                    tw[s] += nu[0][r] * wt;
+                }
+            }
+            let (mut a, mut w) = (Vec3::ZERO, 0.0);
+            for s in 0..=q {
+                a = a + tp[s] * nv[0][s];
+                w += tw[s] * nv[0][s];
+            }
+            return a / w;
+        }
         self.derivs(u, v, 0)[0][0]
     }
 
@@ -174,6 +200,45 @@ impl BSplineSurface {
                 }
             }
             return SurfDerivs { p: a[0][0], du: a[1][0], dv: a[0][1], duu: a[2][0], duv: a[1][1], dvv: a[0][2] };
+        }
+        if p < 12 && q < 12 {
+            // allocation-free rational path: homogeneous derivatives, then the
+            // quotient rule to second order (same result as `rat_surface_derivs`)
+            let ((u0, u1), (v0, v1)) = self.domain();
+            let u = u.clamp(u0, u1);
+            let v = v.clamp(v0, v1);
+            let su = find_span(self.nu - 1, p, u, &self.knots_u);
+            let sv = find_span(self.nv - 1, q, v, &self.knots_v);
+            let nu = basis::ders_basis_funs2(su, u, p, 2, &self.knots_u);
+            let nv = basis::ders_basis_funs2(sv, v, q, 2, &self.knots_v);
+            let mut a = [[Vec3::ZERO; 3]; 3];
+            let mut w = [[0.0f64; 3]; 3];
+            for k in 0..=2usize.min(p) {
+                let mut tp = [Vec3::ZERO; 12];
+                let mut tw = [0.0f64; 12];
+                for s in 0..=q {
+                    for r in 0..=p {
+                        let (i, j) = (su - p + r, sv - q + s);
+                        let wt = self.weight(i, j);
+                        tp[s] = tp[s] + self.cp(i, j) * (nu[k][r] * wt);
+                        tw[s] += nu[k][r] * wt;
+                    }
+                }
+                for l in 0..=(2 - k).min(q) {
+                    for s in 0..=q {
+                        a[k][l] = a[k][l] + tp[s] * nv[l][s];
+                        w[k][l] += tw[s] * nv[l][s];
+                    }
+                }
+            }
+            let w0 = w[0][0];
+            let pt = a[0][0] / w0;
+            let du = (a[1][0] - pt * w[1][0]) / w0;
+            let dv = (a[0][1] - pt * w[0][1]) / w0;
+            let duu = (a[2][0] - du * (2.0 * w[1][0]) - pt * w[2][0]) / w0;
+            let dvv = (a[0][2] - dv * (2.0 * w[0][1]) - pt * w[0][2]) / w0;
+            let duv = (a[1][1] - dv * w[1][0] - du * w[0][1] - pt * w[1][1]) / w0;
+            return SurfDerivs { p: pt, du, dv, duu, duv, dvv };
         }
         let s = self.derivs(u, v, 2);
         SurfDerivs { p: s[0][0], du: s[1][0], dv: s[0][1], duu: s[2][0], duv: s[1][1], dvv: s[0][2] }
@@ -615,5 +680,36 @@ mod tests {
         let s = BSplineSurface::bilinear(Vec3::ZERO, Vec3::X, Vec3::Y, Vec3::new(1., 1., 0.));
         assert!(vclose(s.normal(0.5, 0.5), Vec3::Z, 1e-15));
         assert!(vclose(s.eval(0.5, 0.25), Vec3::new(0.5, 0.25, 0.), 1e-15));
+    }
+}
+
+#[cfg(test)]
+mod rational_fast_path_tests {
+    use super::*;
+
+    /// A rational patch (quarter cylinder, degree 2 x 1): the allocation-free
+    /// `eval` / `derivs2` agree with the generic `derivs`.
+    #[test]
+    fn rational_fast_path_matches_generic() {
+        let s2 = std::f64::consts::FRAC_1_SQRT_2;
+        let ring = [Vec3::new(1.0, 0.0, 0.0), Vec3::new(1.0, 1.0, 0.0), Vec3::new(0.0, 1.0, 0.0)];
+        let w = [1.0, s2, 1.0];
+        let mut ctrl = vec![];
+        let mut wt = vec![];
+        for i in 0..3 {
+            for z in [0.0, 2.0] {
+                ctrl.push(ring[i] + Vec3::new(0.0, 0.0, z));
+                wt.push(w[i]);
+            }
+        }
+        let s = BSplineSurface::new(2, 1, vec![0., 0., 0., 1., 1., 1.], vec![0., 0., 1., 1.], 3, 2, ctrl, Some(wt)).unwrap();
+        for &(u, v) in &[(0.1, 0.2), (0.5, 0.5), (0.93, 0.77), (0.0, 1.0)] {
+            let g = s.derivs(u, v, 2);
+            let e = s.eval(u, v);
+            let d = s.derivs2(u, v);
+            for (a, b) in [(e, g[0][0]), (d.p, g[0][0]), (d.du, g[1][0]), (d.dv, g[0][1]), (d.duu, g[2][0]), (d.duv, g[1][1]), (d.dvv, g[0][2])] {
+                assert!(a.dist(b) < 1e-12, "{a:?} vs {b:?}");
+            }
+        }
     }
 }

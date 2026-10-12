@@ -1168,7 +1168,6 @@
   "coil_spring_000026": {
    "label": "kernel-gap",
    "skip": "regen does not finish in 50 s (union of the 2nd helical sweep with the 1st never returns)",
-   "skipStep": "importStep of the ground-truth STEP takes ~35 s (tessellating its 100k-triangle sweep face); imports exactly, rerun with --force-skipped",
    "note": "variable-pitch helix needs a 3D spline sweep path (sketch paths are planar lines/arcs, helix is constant pitch) -> translated as three constant-pitch helix sweeps; their union (adjacent end caps, overlapping coils since pitch 6 < wire dia 6.94) hangs (kernel-bug: boolean of coil sweeps does not terminate); importStep of the ground truth also hangs."
   },
   "torsion_spring_000054": {
@@ -1182,25 +1181,9 @@
   }
  },
  "knownStep": {
-  "t_pipe_fitting_000075": {
-   "label": "kernel-bug",
-   "note": "ground-truth STEP imports with the right volume/area/bbox but validate reports EDGE_OFF_SURFACE x2 (cylinder x cylinder branch edges after STEP import)."
-  },
   "pan_head_screw_000035": {
-   "label": "kernel-bug",
-   "note": "validate on the imported ground-truth STEP: SHELL_NONMANIFOLD + EDGE_OFF_SURFACE (helical thread faces); also the thread volume differs from our regen (see regen cause)."
-  },
-  "dome_cap_000212": {
-   "label": "kernel-gap",
-   "note": "importStep: unsupported 'single boundary winding a revolution surface' (a sphere pole boundary) - same degenerate sphere-as-revolution case as the regen side."
-  },
-  "torus_link_000095": {
-   "label": "kernel-gap",
-   "note": "ground-truth STEP holds two disjoint solids; importStep keeps one body (box shows the lug+partial only): no multi-solid import."
-  },
-  "coil_spring_000026": {
-   "label": "kernel-bug",
-   "note": "the ground-truth STEP imports exactly (closed spline sweep face, 5 faces) but tessellating its 100k-triangle sweep face takes ~35 s, past the bench budget (run with --force-skipped)."
+   "label": "ground-truth-mismatch",
+   "note": "the reference STEP is itself non-manifold (one EDGE_CURVE is used by four oriented edges of the thread faces); we import it faithfully (volume, area, bbox, com all match) and validate reports SHELL_NONMANIFOLD for that edge."
   }
  }
 }
