@@ -347,6 +347,42 @@ export class Session {
     return verify(this.kernel, this.doc, { tag: this.tag, expect });
   }
 
+  /** Save the document as name.ckpart plus the edit log as name.edits.json. */
+  async save(dir: string, name?: string): Promise<{ part: string; log: string }> {
+    const { writeFileSync, mkdirSync } = await import('node:fs');
+    const { default: path } = await import('node:path');
+    mkdirSync(dir, { recursive: true });
+    const base = name ?? (this.doc.name.replace(/[^\w\- ]+/g, '_').trim() || 'part');
+    const partFile = path.join(dir, `${base}.ckpart`);
+    const logFile = path.join(dir, `${base}.edits.json`);
+    writeFileSync(partFile, JSON.stringify(this.doc, null, 1));
+    writeFileSync(logFile, JSON.stringify({
+      format: 'ck-edit-log',
+      version: 1,
+      base: this.stack.length ? this.stack[0].before : this.doc,
+      entries: this.stack.map((e) => ({ record: e.record, before: e.before })),
+    }, null, 1));
+    return { part: partFile, log: logFile };
+  }
+
+  /** Reopen a saved session: document, records and undo states restored. */
+  static async openSaved(dir: string, name: string, opts?: { wasmPath?: string }): Promise<Session> {
+    const { readFileSync } = await import('node:fs');
+    const { default: path } = await import('node:path');
+    const doc = JSON.parse(readFileSync(path.join(dir, `${name}.ckpart`), 'utf8')) as PartDoc;
+    const log = JSON.parse(readFileSync(path.join(dir, `${name}.edits.json`), 'utf8')) as {
+      format: string; version: number; entries: Array<{ record: EditRecord; before: PartDoc }>;
+    };
+    if (log.format !== 'ck-edit-log' || log.version !== 1) throw new Error(`unreadable edit log ${name}`);
+    const worker = await createWorkerKernel(opts?.wasmPath);
+    const s = new Session(doc, worker, log.entries.at(-1)?.record.author ?? 'agent');
+    s.worker = worker;
+    s.editSeq = log.entries.length + 1;
+    s.stack = log.entries.map((e) => ({ record: e.record, before: clone(e.before) }));
+    await s.regen(s.document).catch(() => null);
+    return s;
+  }
+
   /** The spec's query tools, bound to this session's tag. */
   check(expect: Array<Record<string, unknown>> | Record<string, unknown>, tol?: number): Promise<CheckReport> {
     return check(this.kernel, expect, { tag: this.tag, tol });
@@ -387,4 +423,30 @@ export class Session {
   async close(): Promise<void> {
     await this.worker?.close();
   }
+}
+
+/** Log file shape written by save(). */
+export interface EditLogFile {
+  format: 'ck-edit-log';
+  version: 1;
+  base: PartDoc;
+  entries: Array<{ record: EditRecord; before: PartDoc }>;
+}
+
+/** Replay a saved log onto a session step by step (for "step through the
+ *  agent's edits"). The session should hold the log's base document first;
+ *  each step applies one record's ops. Stops at the first failure. */
+export async function replaySteps(
+  session: Session,
+  log: EditLogFile,
+  onStep?: (record: EditRecord, result: EditResult) => void,
+): Promise<{ applied: number; failed: EditRecord | null; result: EditResult | null }> {
+  let applied = 0;
+  for (const e of log.entries) {
+    const result = await session.edit(e.record.ops, e.record.reason);
+    onStep?.(e.record, result);
+    if (!result.ok) return { applied, failed: e.record, result };
+    applied++;
+  }
+  return { applied, failed: null, result: null };
 }

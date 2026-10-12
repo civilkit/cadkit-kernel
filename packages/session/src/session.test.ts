@@ -137,3 +137,44 @@ describe('session live', { skip: !existsSync(wasmPath()) && 'no wasm built' }, (
     }
   });
 });
+
+describe('session persistence', { skip: !existsSync(wasmPath()) && 'no wasm built' }, () => {
+  it('saves, reopens with history, undoes and replays', async () => {
+    const { mkdtempSync, readFileSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const dir = mkdtempSync(path.join(tmpdir(), 'ck-sess-'));
+    const s = await Session.open(undefined, { author: 'agent' });
+    try {
+      assert.equal((await s.edit([{ op: 'add', feature: { type: 'sketch', name: 'S', plane: { kind: 'std', id: 'front' }, points: [{ id: 'O', x: 0, y: 0, fixed: true }, { id: 'p1', x: 0, y: 0 }, { id: 'p2', x: 10, y: 0 }, { id: 'p3', x: 10, y: 5 }, { id: 'p4', x: 0, y: 5 }], entities: [{ id: 'e5', type: 'line', p1: 'p1', p2: 'p2' }, { id: 'e6', type: 'line', p1: 'p2', p2: 'p3' }, { id: 'e7', type: 'line', p1: 'p3', p2: 'p4' }, { id: 'e8', type: 'line', p1: 'p4', p2: 'p1' }], constraints: [] } }], 'sketch it')).ok, true);
+      assert.equal((await s.edit([{ op: 'add', feature: { type: 'extrude', op: 'add', sketch: 'F1', end: 'blind', depth: 2 } }], 'block it')).ok, true);
+      const saved = await s.save(dir, 't1');
+      assert.ok(saved.part.endsWith('t1.ckpart'));
+      assert.ok(JSON.parse(readFileSync(saved.log, 'utf8')).entries.length === 2);
+
+      const r = await Session.openSaved(dir, 't1');
+      try {
+        assert.deepEqual(r.document, s.document);
+        assert.deepEqual(r.history().map((h) => [h.id, h.author, h.reason]), [['edit-1', 'agent', 'sketch it'], ['edit-2', 'agent', 'block it']]);
+        const u = await r.undo();
+        assert.equal(u.records.length, 1);
+        assert.equal(r.document.features.length, 1);
+      } finally {
+        await r.close();
+      }
+
+      const fresh = await Session.open(undefined, { author: 'replay' });
+      try {
+        const { replaySteps } = await import('./session.js');
+        const log = JSON.parse(readFileSync(saved.log, 'utf8'));
+        const rep = await replaySteps(fresh, log);
+        assert.equal(rep.failed, null);
+        assert.equal(rep.applied, 2);
+        assert.deepEqual(fresh.document, s.document);
+      } finally {
+        await fresh.close();
+      }
+    } finally {
+      await s.close();
+    }
+  });
+});
