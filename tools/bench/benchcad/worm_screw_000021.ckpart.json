@@ -1,0 +1,150 @@
+{
+ "format": "ck-part",
+ "version": 1,
+ "name": "worm_screw",
+ "features": [
+  {
+   "type": "plane",
+   "id": "F1",
+   "mode": "offset",
+   "base": {
+    "kind": "std",
+    "id": "top"
+   },
+   "offset": -18.01
+  },
+  {
+   "type": "sketch",
+   "id": "F2",
+   "plane": {
+    "kind": "feature",
+    "id": "F1"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 0,
+     "y": 0
+    }
+   ],
+   "entities": [
+    {
+     "type": "circle",
+     "id": "e1",
+     "c": "p1",
+     "r": 8.4
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F3",
+   "op": "add",
+   "sketch": "F2",
+   "end": "blind",
+   "depth": 72.04
+  },
+  {
+   "type": "sketch",
+   "id": "F4",
+   "plane": {
+    "kind": "std",
+    "id": "top"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 0,
+     "y": 0
+    }
+   ],
+   "entities": [
+    {
+     "type": "circle",
+     "id": "e1",
+     "c": "p1",
+     "r": 8.4
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "helix",
+   "id": "F5",
+   "sketch": "F4",
+   "definedBy": "heightPitch",
+   "pitch": 9.425,
+   "height": 36.02,
+   "revolutions": 3.8,
+   "startAngle": 0
+  },
+  {
+   "type": "sketch",
+   "id": "F6",
+   "plane": {
+    "kind": "std",
+    "id": "front"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 8.4,
+     "y": -3.667
+    },
+    {
+     "id": "p2",
+     "x": 15,
+     "y": -1.264
+    },
+    {
+     "id": "p3",
+     "x": 15,
+     "y": 1.264
+    },
+    {
+     "id": "p4",
+     "x": 8.4,
+     "y": 3.667
+    }
+   ],
+   "entities": [
+    {
+     "type": "line",
+     "id": "e1",
+     "p1": "p1",
+     "p2": "p2"
+    },
+    {
+     "type": "line",
+     "id": "e2",
+     "p1": "p2",
+     "p2": "p3"
+    },
+    {
+     "type": "line",
+     "id": "e3",
+     "p1": "p3",
+     "p2": "p4"
+    },
+    {
+     "type": "line",
+     "id": "e4",
+     "p1": "p4",
+     "p2": "p1"
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "sweep",
+   "id": "F7",
+   "op": "add",
+   "sketch": "F6",
+   "path": {
+    "kind": "curve",
+    "id": "F5"
+   }
+  }
+ ]
+}

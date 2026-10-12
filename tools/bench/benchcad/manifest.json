@@ -1,0 +1,391 @@
+{
+ "name": "benchcad-10",
+ "source": "BenchCAD (arXiv 2605.10865), HF dataset BenchCAD/BenchCAD, licence cc-by-4.0",
+ "frame": "ground truth is Z-up; the scorer rotates (x,y,z)->(x,z,-y) to our Y-up world",
+ "parts": [
+  {
+   "id": "round_flange_000341",
+   "benchcad_stem": "round_flange_000341_s20260505",
+   "family": "round_flange",
+   "tier": "easy",
+   "benchcad_difficulty": "easy",
+   "standard": "ASME B16.5",
+   "ops": [
+    "cylinder",
+    "hole"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0 (verified from the card); attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 824292.0468,
+    "area": 83621.8294,
+    "com": [
+     -5.013688948e-15,
+     3.272582895e-15,
+     2.805980804e-16
+    ],
+    "bbox": [
+     -102.63,
+     -102.63,
+     -12.83,
+     102.63,
+     102.63,
+     12.83
+    ],
+    "faces": 4,
+    "solids": 1
+   },
+   "step": "gt/round_flange_000341.step"
+  },
+  {
+   "id": "pulley_000030",
+   "benchcad_stem": "pulley_000030_s20260505",
+   "family": "pulley",
+   "tier": "easy",
+   "benchcad_difficulty": "easy",
+   "standard": "ISO 22",
+   "ops": [
+    "polyline",
+    "revolve"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0 (verified from the card); attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 315628.4374,
+    "area": 41991.97254,
+    "com": [
+     -6.685095521e-16,
+     6.592954344e-15,
+     3.531329169e-16
+    ],
+    "bbox": [
+     -70,
+     -70,
+     -12.6,
+     70,
+     70,
+     12.6
+    ],
+    "faces": 8,
+    "solids": 1
+   },
+   "step": "gt/pulley_000030.step"
+  },
+  {
+   "id": "washer_000001",
+   "benchcad_stem": "washer_000001_s20260505",
+   "family": "washer",
+   "tier": "easy",
+   "benchcad_difficulty": "medium",
+   "standard": "ISO 7089",
+   "ops": [
+    "circle",
+    "extrude",
+    "hole",
+    "chamfer"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0 (verified from the card); attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 11087.95596,
+    "area": 5969.549985,
+    "com": [
+     -2.747852951e-15,
+     -2.505461013,
+     -6.58501192e-16
+    ],
+    "bbox": [
+     -32.4,
+     -5,
+     -32.4,
+     32.4,
+     1.678108418e-17,
+     32.4
+    ],
+    "faces": 6,
+    "solids": 1
+   },
+   "step": "gt/washer_000001.step"
+  },
+  {
+   "id": "fan_shroud_000001",
+   "benchcad_stem": "fan_shroud_000001_s20260505",
+   "family": "fan_shroud",
+   "tier": "easy",
+   "benchcad_difficulty": "medium",
+   "standard": null,
+   "ops": [
+    "box",
+    "cutThruAll",
+    "pushPoints",
+    "hole"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0 (verified from the card); attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 145776.2735,
+    "area": 40188.1518,
+    "com": [
+     4.042856582e-15,
+     -3.551542113e-17,
+     -5.902071491e-15
+    ],
+    "bbox": [
+     -79.9,
+     -4.845,
+     -79.9,
+     79.9,
+     4.845,
+     79.9
+    ],
+    "faces": 11,
+    "solids": 1
+   },
+   "step": "gt/fan_shroud_000001.step"
+  },
+  {
+   "id": "enclosure_000042",
+   "benchcad_stem": "enclosure_000042_s20260505",
+   "family": "enclosure",
+   "tier": "medium",
+   "benchcad_difficulty": "medium",
+   "standard": null,
+   "ops": [
+    "box",
+    "shell",
+    "fillet"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0 (verified from the card); attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 100770.1092,
+    "area": 113093.2511,
+    "com": [
+     7.967394213e-14,
+     -9.688138417,
+     1.44851162e-13
+    ],
+    "bbox": [
+     -96.435,
+     -19.82,
+     -77.635,
+     96.435,
+     19.82,
+     77.635
+    ],
+    "faces": 15,
+    "solids": 1
+   },
+   "step": "gt/enclosure_000042.step"
+  },
+  {
+   "id": "heat_sink_000029",
+   "benchcad_stem": "heat_sink_000029_s20260505",
+   "family": "heat_sink",
+   "tier": "medium",
+   "benchcad_difficulty": "hard",
+   "standard": null,
+   "ops": [
+    "box",
+    "rarray",
+    "rect",
+    "extrude",
+    "chamfer",
+    "pushPoints",
+    "hole"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0 (verified from the card); attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 75942.73332,
+    "area": 44245.32768,
+    "com": [
+     16.22119282,
+     1.2536048e-13,
+     -2.507786884e-14
+    ],
+    "bbox": [
+     -1.85,
+     -29.42,
+     -42.655,
+     41.21,
+     29.42,
+     42.655
+    ],
+    "faces": 81,
+    "solids": 1
+   },
+   "step": "gt/heat_sink_000029.step"
+  },
+  {
+   "id": "nozzle_000069",
+   "benchcad_stem": "nozzle_000069_s20260505",
+   "family": "nozzle",
+   "tier": "medium",
+   "benchcad_difficulty": "easy",
+   "standard": null,
+   "ops": [
+    "polyline",
+    "revolve",
+    "union",
+    "cylinder",
+    "cut",
+    "circular-hole-ring"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0 (verified from the card); attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 18935.37855,
+    "area": 12883.38136,
+    "com": [
+     16.87459501,
+     -0.000001987965397,
+     -1.416929355e-15
+    ],
+    "bbox": [
+     -7.09,
+     -22.99,
+     -22.99,
+     60.53,
+     22.99,
+     22.99
+    ],
+    "faces": 14,
+    "solids": 1
+   },
+   "step": "gt/nozzle_000069.step"
+  },
+  {
+   "id": "worm_screw_000021",
+   "benchcad_stem": "worm_screw_000021_s20260505",
+   "family": "worm_screw",
+   "tier": "hard",
+   "benchcad_difficulty": "easy",
+   "standard": "ISO 10828",
+   "ops": [
+    "cylinder",
+    "union",
+    "makeHelix",
+    "sweep(isFrenet)"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0 (verified from the card); attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 24693.6291,
+    "area": 7717.863026,
+    "com": [
+     -0.1518122805,
+     0.09517578701,
+     18.00999943
+    ],
+    "bbox": [
+     -15.00000707,
+     -15.00000709,
+     -18.0100001,
+     15.00001468,
+     15.00000649,
+     54.0300001
+    ],
+    "faces": 11,
+    "solids": 1
+   },
+   "step": "gt/worm_screw_000021.step"
+  },
+  {
+   "id": "tapered_boss_000256",
+   "benchcad_stem": "tapered_boss_000256_s20260505",
+   "family": "tapered_boss",
+   "tier": "hard",
+   "benchcad_difficulty": "medium",
+   "standard": null,
+   "ops": [
+    "circle",
+    "loft",
+    "extrude",
+    "hole",
+    "chamfer"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0 (verified from the card); attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 141314.5693,
+    "area": 24153.23331,
+    "com": [
+     1.222832112e-15,
+     -1.350722516e-15,
+     4.972519643
+    ],
+    "bbox": [
+     -50.855,
+     -50.855,
+     -8.64,
+     50.855,
+     50.855,
+     38.45
+    ],
+    "faces": 8,
+    "solids": 1
+   },
+   "step": "gt/tapered_boss_000256.step"
+  },
+  {
+   "id": "twisted_drill_000546",
+   "benchcad_stem": "twisted_drill_000546_s20260505",
+   "family": "twisted_drill",
+   "tier": "hard",
+   "benchcad_difficulty": "medium",
+   "standard": "DIN 338",
+   "ops": [
+    "Sketch circle",
+    "Sketch face(mode=s)",
+    "twistExtrude",
+    "cut",
+    "union",
+    "loft"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0 (verified from the card); attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 263.6561549,
+    "area": 577.5651996,
+    "com": [
+     -8.270520802e-8,
+     1.834975739e-7,
+     17.14327948
+    ],
+    "bbox": [
+     -2.415625624,
+     -2.415625599,
+     -1.000000029e-7,
+     2.415625624,
+     2.415625599,
+     35.2000001
+    ],
+    "faces": 9,
+    "solids": 1
+   },
+   "step": "gt/twisted_drill_000546.step"
+  }
+ ],
+ "known": {}
+}
