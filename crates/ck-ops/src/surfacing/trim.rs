@@ -419,6 +419,15 @@ fn weld_vertices(b: &mut Body, tol: f64) {
 //
 // Result shape: one lump/shell; cut edges are SHARED between the two sides
 // (so a later knit sews along them); faces keep their original names.
+//
+// NOTE: `ck_ops::boolean::imprint` (and its `edit::split_face`) were checked
+// as a candidate for the face-split step — they are NOT used here. imprint()
+// never mutates the input Bodies: it builds a side-car `Arrangement` and
+// `assemble::build` emits a *fresh* Body from fragments, which would lose the
+// "shared cut edge + keep face names" contract trim needs for the later knit.
+// `edit::split_face` is dead code and requires the boundary split first
+// anyway. This path therefore mutates faces in place via `endpoint_vertex`
+// (split_edge) + `add_edge` + `rebuild_loop`.
 
 use std::collections::{HashMap, HashSet};
 use ck_geom::curve::Curve as Curve3;
