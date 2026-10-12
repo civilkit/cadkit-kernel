@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { check, describe as describeNames, heal, importSat, importStep, massProps, resolveDescriptions, validate } from './queries.js';
+import { defaultWasmPath as wasmPath } from '../../kernel-client/src/worker.js';
 import type { KernelReply } from '../../kernel-client/src/protocol.js';
 import type { KernelTransport } from '../../driver/src/verify.js';
 
@@ -69,9 +70,7 @@ describe('queries', () => {
   });
 });
 
-const wasm = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../target/wasm32-unknown-unknown/release/ck_wasm.wasm');
-
-describe('queries live', { skip: !existsSync(wasm) && 'no wasm built' }, () => {
+describe('queries live', { skip: !existsSync(wasmPath()) && 'no wasm built' }, () => {
   it('runs the whole tool table on the plate', async () => {
     const { Session } = await import('./session.js');
     const { Part } = await import('../../builder/src/index.js');

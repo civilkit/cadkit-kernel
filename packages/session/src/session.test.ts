@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Session, checkOp, referencers } from './session.js';
+import { defaultWasmPath as wasmPath } from '../../kernel-client/src/worker.js';
 import type { KernelReply } from '../../kernel-client/src/protocol.js';
 import { emptyPart } from '../../part-model/src/index.js';
 import type { KernelTransport } from '../../driver/src/verify.js';
@@ -112,9 +113,7 @@ describe('session ops (pure)', () => {
   });
 });
 
-const wasm = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../target/wasm32-unknown-unknown/release/ck_wasm.wasm');
-
-describe('session live', { skip: !existsSync(wasm) && 'no wasm built' }, () => {
+describe('session live', { skip: !existsSync(wasmPath()) && 'no wasm built' }, () => {
   it('edits depth, diffs volume, undoes', async () => {
     const { Part } = await import('../../builder/src/index.js');
     const p = new Part('Plate', 'aluminium');

@@ -10,6 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FEATURE_TYPES, type PartDoc } from './index.js';
 import { Part } from '../../builder/src/index.js';
+import { defaultWasmPath as wasmPath } from '../../kernel-client/src/worker.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
 
@@ -85,12 +86,10 @@ describe('round-trip', () => {
   });
 });
 
-const wasm = path.join(ROOT, 'target/wasm32-unknown-unknown/release/ck_wasm.wasm');
-
-describe('round-trip regen', { skip: !existsSync(wasm) && 'no wasm built' }, () => {
+describe('round-trip regen', { skip: !existsSync(wasmPath()) && 'no wasm built' }, () => {
   it('original and rebuilt agree', async () => {
     const { createWorkerKernel } = await import('../../kernel-client/src/worker.js');
-    const k = await createWorkerKernel(wasm);
+    const k = await createWorkerKernel();
     try {
       const files = corpus().filter((f) => {
         const why = SKIP_REGEN[path.basename(f)];

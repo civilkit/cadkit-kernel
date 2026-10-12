@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { verify, type KernelTransport } from './verify.js';
+import { defaultWasmPath as wasmPath } from '../../kernel-client/src/worker.js';
 import type { KernelReply } from '../../kernel-client/src/protocol.js';
 import { emptyPart } from '../../part-model/src/index.js';
 
@@ -90,9 +91,7 @@ describe('verify', () => {
   });
 });
 
-const wasm = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../target/wasm32-unknown-unknown/release/ck_wasm.wasm');
-
-describe('verify live', { skip: !existsSync(wasm) && 'no wasm built' }, () => {
+describe('verify live', { skip: !existsSync(wasmPath()) && 'no wasm built' }, () => {
   it('verifies the plate through the worker', async () => {
     const { createWorkerKernel } = await import('../../kernel-client/src/worker.js');
     const { Part } = await import('../../builder/src/index.js');
