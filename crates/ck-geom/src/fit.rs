@@ -64,6 +64,9 @@ pub fn averaged_knots(u: &[f64], p: usize) -> Vec<f64> {
 /// Solve A·X = B (dense, partial pivoting) with vector-valued RHS.
 pub fn solve<P: Pt>(mut a: Vec<Vec<f64>>, mut b: Vec<P>) -> Result<Vec<P>, String> {
     let n = b.len();
+    // last non-zero column of each pivot row: the fit systems are banded, and
+    // adding f * 0 changes nothing, so the row operations stop there
+    let mut hi = vec![0usize; n];
     for c in 0..n {
         let piv = (c..n).max_by(|&i, &j| a[i][c].abs().partial_cmp(&a[j][c].abs()).unwrap()).unwrap();
         if a[piv][c].abs() < 1e-300 {
@@ -71,11 +74,16 @@ pub fn solve<P: Pt>(mut a: Vec<Vec<f64>>, mut b: Vec<P>) -> Result<Vec<P>, Strin
         }
         a.swap(c, piv);
         b.swap(c, piv);
+        let last = (c..n).rev().find(|&k| a[c][k] != 0.0).unwrap_or(c);
+        hi[c] = last;
         for r in (c + 1)..n {
             let f = a[r][c] / a[c][c];
             if f != 0.0 {
-                for k in c..n {
-                    a[r][k] -= f * a[c][k];
+                // (split borrow: row c is read, row r written)
+                let (top, bot) = a.split_at_mut(r);
+                let (rc, rr) = (&top[c], &mut bot[0]);
+                for k in c..=last {
+                    rr[k] -= f * rc[k];
                 }
                 b[r] = b[r] - b[c] * f;
             }
@@ -84,7 +92,7 @@ pub fn solve<P: Pt>(mut a: Vec<Vec<f64>>, mut b: Vec<P>) -> Result<Vec<P>, Strin
     let mut x = vec![P::default(); n];
     for r in (0..n).rev() {
         let mut s = b[r];
-        for k in (r + 1)..n {
+        for k in (r + 1)..=hi[r] {
             s = s - x[k] * a[r][k];
         }
         x[r] = s / a[r][r];
