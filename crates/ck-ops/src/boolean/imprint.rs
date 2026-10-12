@@ -182,6 +182,24 @@ pub fn closed_start(period: f64) -> (f64, f64) {
 }
 
 /// Build the arrangement of `a` (side 0) and `b` (side 1).
+/// Region the SSI marches in. The union of the two face boxes, except when one
+/// face is a long multi-span B-spline (a screw sweep): the other face then
+/// meets it only inside the overlap of the boxes, and marching the whole
+/// sweep (every turn crossing a small cap's plane) costs minutes.
+fn ssi_bounds(sf: &Surface, sg: &Surface, bi: &Aabb, bj: &Aabb, bx: &Aabb, pad: f64) -> Bounds {
+    let long = |s: &Surface| matches!(s, Surface::BSpline(bs) if bs.knots_u.len() > 64);
+    if long(sf) || long(sg) {
+        let inter = Aabb::new(bi.min.max(bj.min), bi.max.min(bj.max));
+        if !inter.is_empty() {
+            let tight = inter.padded(0.01 * bi.diagonal().max(bj.diagonal()) + pad);
+            if tight.diagonal() < 0.5 * bx.diagonal() {
+                return Bounds { lo: tight.min, hi: tight.max };
+            }
+        }
+    }
+    Bounds { lo: bx.min, hi: bx.max }
+}
+
 pub fn imprint(a: &Body, b: &Body, tol: f64) -> Arrangement {
     let bodies = [a, b];
     let mut arr = Arrangement { tol, ..Default::default() };
@@ -204,7 +222,7 @@ pub fn imprint(a: &Body, b: &Body, tol: f64) -> Arrangement {
         let (f, g) = (fa[i], fb[j]);
         let (sf, sg) = (&a.face(f).surface, &b.face(g).surface);
         let bx = bi.union(&bj);
-        let bounds = Bounds { lo: bx.min, hi: bx.max };
+        let bounds = ssi_bounds(sf, sg, &bi, &bj, &bx, pad);
         let before = cuts.len();
         match ss::intersect(sf, sg, Some(bounds), tol) {
             SsResult::Disjoint => {}
