@@ -58,9 +58,11 @@ if (isMainThread) {
     measure: { a: { kind: 'face', id: 'F2.C1' }, b: { kind: 'face', id: 'F2.C0' } }, massProps: {}, interference: {}, step: { name: 't' },
     validate: {}, inspect: { ref: { kind: 'sketch', id: 'F1' } }, continuity: { refs: [] }, curvatureAt: { ref: { kind: 'face', id: 'F2.C1' }, u: 0.5, v: 0.5 },
     curvatureMap: {}, comb: { refs: [{ kind: 'face', id: 'F2.C1' }] }, drawing: {},
+    check: { expect: [{ kind: 'volume', min: 0 }] }, resolve: { descriptions: [{ kind: 'face', surface: 'plane' }] }, describe: { names: ['F2.C1'] },
+    refDiff: { base: parts.box, part: parts.box },
   };
-  const MUST_OK = new Set(['ping', 'regen', 'massProps', 'validate', 'interference', 'step']); // minimal body must succeed once a body exists
-  const FIELDS = ['part', 'tag', 'opts', 'ref', 'refs', 'ids', 'sketch', 'distance', 'name', 'upTo', 'densities', 'bodies', 'dir', 'tol', 'a', 'b', 'u', 'at'];
+  const MUST_OK = new Set(['ping', 'regen', 'massProps', 'validate', 'interference', 'step', 'check', 'resolve', 'describe', 'refDiff']); // minimal body must succeed once a body exists
+  const FIELDS = ['part', 'tag', 'opts', 'ref', 'refs', 'ids', 'sketch', 'distance', 'name', 'upTo', 'densities', 'bodies', 'dir', 'tol', 'a', 'b', 'u', 'at', 'expect', 'descriptions', 'description', 'names', 'base'];
   const VALUES = [null, 'x', 'NaN', '-1e999', 1e308, -1e308, -1, 0, [], {}, [[]], [null], true, { kind: 'face', id: 'nope' }, { kind: 5 }, [1, 2, 3]];
 
   function check(label, k, body) {

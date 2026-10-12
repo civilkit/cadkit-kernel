@@ -22,6 +22,7 @@
 //! kernel.strings and app.pretty.js (107k candidates, all substrings) was
 //! sent as a type; exactly these 17 are not "unknown request".
 
+pub mod agent;
 pub mod clock;
 pub mod comb;
 pub mod curvature;
@@ -73,6 +74,11 @@ pub const REQUEST_TYPES: &[(&str, Handler)] = &[
     ("curvatureMap", curvature::curvature_map),
     ("comb", comb::comb),
     ("drawing", drawing::drawing),
+    // Extensions: agent interface (docs/agent-queries.md).
+    ("check", agent::check),
+    ("resolve", agent::resolve),
+    ("describe", agent::describe),
+    ("refDiff", agent::ref_diff),
 ];
 
 pub fn handler_for(ty: &str) -> Option<Handler> {
