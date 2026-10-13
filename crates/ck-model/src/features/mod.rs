@@ -616,6 +616,10 @@ impl Brep {
                 match r {
                     Ok(out) => {
                         self.spans.push(boolean_span(op, b.num_faces(), tool.num_faces(), out.body.num_faces()));
+                        if let Some(m) = &out.mismatch {
+                            // wrong but valid: do not commit it, report it
+                            return Err(volume_mismatch(m));
+                        }
                         if out.no_effect && op == BOp::Cut && warn_no_effect {
                             // pinned: body unchanged (original edge order)
                             return Err(FeatureError::new(CUT_NO_EFFECT));
@@ -653,6 +657,9 @@ impl Brep {
         let op = if tool.combine == extrude::Combine::Cut { BOp::Intersect } else { BOp::Cut };
         let none = || FeatureError::new(extrude::UP_TO_NEXT_NONE);
         let r = ck_ops::boolean::boolean(&tool.body, body, op, TOL).map_err(|e| FeatureError::new(&e))?;
+        if let Some(m) = &r.mismatch {
+            return Err(volume_mismatch(m));
+        }
         self.spans.push(boolean_span(op, tool.body.num_faces(), body.num_faces(), r.body.num_faces()));
         // pinned: an add whose tool runs off without meeting the body
         // (missing it, or flipped away) -> upToNextOpen
@@ -710,6 +717,21 @@ impl Brep {
 
 /// Feature warning: a cut that removes nothing (kernel.strings).
 pub const CUT_NO_EFFECT: &str = "cutNoEffect";
+
+/// Not in kernel.strings: a boolean whose closed, valid result lies outside
+/// the volume (or box) bounds its operands allow, see `ck_ops::boolean::sanity`.
+/// The body is left as it was before the feature. Params: `what`
+/// (`volume` / `box`), `expected_min`, `expected_max`, `got`.
+pub const BOOLEAN_VOLUME_MISMATCH: &str = "booleanVolumeMismatch";
+
+pub(crate) fn volume_mismatch(m: &ck_ops::boolean::sanity::VolumeMismatch) -> crate::regen::FeatureError {
+    use ck_json::Json;
+    crate::regen::FeatureError::new(BOOLEAN_VOLUME_MISMATCH)
+        .with("what", Json::Str(m.what.to_string()))
+        .with("expected_min", Json::Num(m.expected_min))
+        .with("expected_max", Json::Num(m.expected_max))
+        .with("got", Json::Num(m.got))
+}
 
 /// Chord-height of the stand-in edge polylines relative to the body
 /// diagonal (ck-topo README: oracle counts fit ≈ 3.74e-4 × diagonal).

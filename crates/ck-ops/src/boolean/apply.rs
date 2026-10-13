@@ -28,6 +28,9 @@ pub struct BoolOut {
     pub body: Body,
     /// Cut / intersect that changed nothing (feature warning `cutNoEffect`).
     pub no_effect: bool,
+    /// The result is outside the volume / box bounds the operands allow
+    /// ([`super::sanity`]): wrong but topologically valid. `None` = plausible.
+    pub mismatch: Option<super::sanity::VolumeMismatch>,
 }
 
 /// `a op b`. Errors: `booleanFailed` (topology could not be assembled).
@@ -41,26 +44,56 @@ pub struct BoolOut {
 /// first result that assembles into a closed manifold wins.
 pub fn boolean(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> {
     let first = boolean_at(a, b, op, tol);
-    if !matches!(&first, Err(e) if e == "booleanFailed") {
-        return first;
+    match &first {
+        Err(e) if e == "booleanFailed" => {
+            for k in [10.0, 100.0] {
+                super::bool_dbg!("retrying with tolerance {:e}", tol * k);
+                if let Ok(out) = boolean_at(a, b, op, tol * k) {
+                    return Ok(sanity(a, b, op, out));
+                }
+            }
+            first
+        }
+        Ok(out) if !out.no_effect => {
+            let out = sanity(a, b, op, out.clone());
+            if out.mismatch.is_none() {
+                return Ok(out);
+            }
+            // wrong but valid: a coincident rim can classify differently at a
+            // looser welding tolerance; keep the first plausible result
+            for k in [10.0, 100.0] {
+                if let Ok(r) = boolean_at(a, b, op, tol * k) {
+                    let r = sanity(a, b, op, r);
+                    if r.mismatch.is_none() {
+                        return Ok(r);
+                    }
+                }
+            }
+            Ok(out)
+        }
+        _ => first,
     }
-    for k in [10.0, 100.0] {
-        super::bool_dbg!("retrying with tolerance {:e}", tol * k);
-        if let Ok(out) = boolean_at(a, b, op, tol * k) {
-            return Ok(out);
+}
+
+/// Attach the [`super::sanity`] verdict to a finished result.
+fn sanity(a: &Body, b: &Body, op: Op, mut out: BoolOut) -> BoolOut {
+    if !out.no_effect {
+        out.mismatch = super::sanity::check_result(a, b, op, &out.body);
+        if let Some(m) = &out.mismatch {
+            super::bool_dbg!("sanity: {} got {} outside [{}, {}]", m.what, m.got, m.expected_min, m.expected_max);
         }
     }
-    first
+    out
 }
 
 fn boolean_at(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> {
     if b.num_faces() == 0 {
-        return Ok(BoolOut { body: a.clone(), no_effect: op != Op::Union });
+        return Ok(BoolOut { body: a.clone(), no_effect: op != Op::Union, mismatch: None });
     }
     if a.num_faces() == 0 {
         return Ok(match op {
-            Op::Union => BoolOut { body: b.clone(), no_effect: false },
-            _ => BoolOut { body: Body::new(), no_effect: true },
+            Op::Union => BoolOut { body: b.clone(), no_effect: false, mismatch: None },
+            _ => BoolOut { body: Body::new(), no_effect: true, mismatch: None },
         });
     }
     // (results keep the caller's bodies for the no-effect returns)
@@ -76,8 +109,8 @@ fn boolean_at(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> {
         let a_in_b = ck_topo::region::classify(b, pa, tol) == ck_topo::region::Containment::Inside;
         let b_in_a = ck_topo::region::classify(a, pb, tol) == ck_topo::region::Containment::Inside;
         match op {
-            Op::Cut if !a_in_b && !b_in_a => return Ok(BoolOut { body: a0.clone(), no_effect: true }),
-            Op::Intersect if !a_in_b && !b_in_a => return Ok(BoolOut { body: Body::new(), no_effect: true }),
+            Op::Cut if !a_in_b && !b_in_a => return Ok(BoolOut { body: a0.clone(), no_effect: true, mismatch: None }),
+            Op::Intersect if !a_in_b && !b_in_a => return Ok(BoolOut { body: Body::new(), no_effect: true, mismatch: None }),
             _ => {} // nested: the general path (void shells / swallowed bodies)
         }
     }
@@ -89,7 +122,7 @@ fn boolean_at(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> {
     let whole_a = |f: &super::assemble::OutFace| f.group == 0 || (f.group == 4 && f.walk.len() == 1 && f.walk[0].0 .0 == 0);
     let untouched_a = faces.iter().filter(|f| whole_a(f)).count();
     if op == Op::Cut && untouched_a == a_faces && faces.iter().all(|f| whole_a(f)) {
-        return Ok(BoolOut { body: a0.clone(), no_effect: true });
+        return Ok(BoolOut { body: a0.clone(), no_effect: true, mismatch: None });
     }
     let body = build(&arr, &faces);
     let issues = check(&body, tol);
@@ -109,7 +142,7 @@ fn boolean_at(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> {
         super::bool_dbg!("assembled body invalid: {} issues, first {:?}", bad_issues.len(), &bad_issues[..bad_issues.len().min(6)]);
         return Err("booleanFailed".into());
     }
-    Ok(BoolOut { body, no_effect: false })
+    Ok(BoolOut { body, no_effect: false, mismatch: None })
 }
 
 /// The class of the other body's region whose faces `op` discards on side

@@ -57,6 +57,13 @@ strings from kernel.strings, and dispatch to ck-ops/ck-topo.
 - blends: filletChamfer, chamferVertexEdges(two/points), chamferType+filletType,
   "edge of blend X is gone after an earlier blend", "X collapses and cannot be removed"
 - assembly: mirrorOntoItself, mirrorNotKnitted
+- boolean: booleanFailed, cutNoEffect; `booleanVolumeMismatch` (ours, not in kernel.strings):
+  the boolean closed into a valid body whose volume (or, for a union, box)
+  falls outside what the operands allow (`ck_ops::boolean::sanity`: union
+  between va+vb-overlap and va+vb, cut between va-overlap and va, overlap
+  capped by the operands' box overlap). Params `what` (`volume`/`box`),
+  `expected_min`, `expected_max`, `got`. The body is left as before the
+  feature. Hint text lives in packages/driver/src/verify.ts.
 
 ## Surface bodies, rib, lip (reconstruction notes)
 

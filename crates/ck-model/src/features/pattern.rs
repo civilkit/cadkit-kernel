@@ -339,6 +339,9 @@ pub fn accumulate(br: &mut Brep, mut t: Body, b: Body) -> Result<Body, FeatureEr
         return Ok(t);
     }
     let out = ck_ops::boolean::boolean(&t, &b, ck_ops::boolean::Op::Union, super::TOL).map_err(|e| FeatureError::new(&e))?;
+    if let Some(m) = &out.mismatch {
+        return Err(super::volume_mismatch(m));
+    }
     br.spans.push(super::boolean_span(ck_ops::boolean::Op::Union, t.num_faces(), b.num_faces(), out.body.num_faces()));
     Ok(out.body)
 }

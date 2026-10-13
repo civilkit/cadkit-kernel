@@ -62,7 +62,9 @@ const FIX: Record<string, (feature: string, params: Record<string, unknown>) => 
   missingReference: (f) => `${f} references geometry that no longer exists — re-pick the face/edge by name (resolve) and update the ref`,
   nothingToCut: (f) => `${f} removes nothing — move the profile so it overlaps the body, or flip the cut direction`,
   cutNoEffect: (f) => `${f} cuts nothing — the tool misses the body: flip it or move it to overlap`,
-  booleanFailed: (f) => `${f}: boolean failed — check the tool and target overlap in a volume, not just a face`,
+  booleanFailed: (f) => `${f}: boolean failed — check the tool and target overlap in a volume, not just a face; also suspect a tool edge or circle lying exactly on the other solid's wall (tangent or coincident: nudge the radius or position by 0.01) or a hole tangent to a side wall`,
+  booleanVolumeMismatch: (f, p) =>
+    `${f}: boolean result rejected — its volume${typeof p.got === 'number' ? ` ${Number(p.got).toPrecision(6)}` : ''} is outside what the operands allow${typeof p.expected_min === 'number' && typeof p.expected_max === 'number' ? ` [${Number(p.expected_min).toPrecision(6)}, ${Number(p.expected_max).toPrecision(6)}]` : ''}, so material was dropped or added although the body validates; the body was left as before ${f}. Nudge the tool by 0.01 (a circle or edge lying exactly on the other solid's wall is the usual cause), reorder the features, or split the tool`,
   shellTooThick: (f) => `${f}: thickness exceeds the thinnest wall — reduce thickness`,
   shellUnsupported: (f) => `${f}: this shape cannot be shelled — remove the feature or change the base solid`,
   holeNoPoints: (f) => `${f}: hole sketch has no centres — add {type:'point'} entities over centre points (sk.point(x, y)), not circles or bare points`,

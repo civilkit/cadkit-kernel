@@ -41,6 +41,7 @@ pub mod apply;
 pub mod assemble;
 pub mod classify;
 pub mod imprint;
+pub mod sanity;
 
 /// Boolean operation (A op B).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
