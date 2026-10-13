@@ -33,6 +33,9 @@ use ck_topo::make::{extrude, ExtrudeOpts, Profile, ProfileLoop, ProfileRegion, P
 
 pub const LIP_FACE: &str = "lipFace";
 
+/// A recorded pick point lies on its edge within this distance.
+const PICK_TOL: f64 = 1e-3;
+
 /// One path piece in rim-plane 2D, in travel direction (rim face on the left).
 #[derive(Clone)]
 enum Piece {
@@ -44,13 +47,16 @@ enum Piece {
 struct PathEdge {
     tag: String,
     pieces: Vec<Piece>,
+    /// A B-spline rim edge, exact in the rim plane: curve and travel
+    /// parameters `(from, to)` (`from > to` when travelled backwards)
+    exact: Option<(ck_geom::nurbs::bspline::BSplineCurve<Vec2>, f64, f64)>,
     start: VertexId,
     end: VertexId,
 }
 
 /// Face id without its split suffix: `F2.S.e1~1` -> `F2.S.e1` (a side face
 /// keeps `~k` inside its entity, so strip it textually).
-fn base_id(name: &str) -> String {
+pub(super) fn base_id(name: &str) -> String {
     let (head, inst) = match name.find('@') {
         Some(i) => (&name[..i], &name[i..]),
         None => (name, ""),
@@ -84,16 +90,42 @@ pub fn exec_lip(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<()
     for e in edges {
         let (a, b) = (e.faces.first().ok_or_else(missing)?, e.faces.get(1).ok_or_else(missing)?);
         let at = e.at.map(|p| Vec3::new(p[0], p[1], p[2])).unwrap_or(Vec3::ZERO);
-        let eid = ck_ops::blend::build::find_edge(&body, a, b, at).ok_or_else(missing)?;
-        let (fa, fb) = (body.find_face(a).ok_or_else(missing)?, body.find_face(b).ok_or_else(missing)?);
-        let (rim, other) = if rim_faces.contains(&fa) {
-            (fa, b)
-        } else if rim_faces.contains(&fb) {
-            (fb, a)
-        } else {
-            return Err(missing());
+        // Split faces are numbered `~k` by an ordering the oracle derives from
+        // its own control nets (inner / outer of a shell, blend pieces): ours can
+        // differ. The pick point is on the wanted edge, so an exact-name edge that
+        // misses it is replaced by the edge between the same face FAMILIES nearest
+        // to it.
+        let dist = |e: EdgeId| {
+            let ed = body.edge(e);
+            ck_ops::boolean::imprint::dist_in_range(&ed.curve, (ed.t0, ed.t1), at).1
         };
-        picked.push((eid, rim, base_id(other)));
+        let exact = ck_ops::blend::build::find_edge(&body, a, b, at).filter(|&e| dist(e) < PICK_TOL);
+        let eid = match exact {
+            Some(e) => e,
+            None => {
+                let (ba, bb) = (base_id(a), base_id(b));
+                body.edge_ids()
+                    .filter(|&e| {
+                        let fs = body.edge_faces(e);
+                        fs.len() == 2 && {
+                            let (x, y) = (base_id(&body.face_id_str(fs[0])), base_id(&body.face_id_str(fs[1])));
+                            (x == ba && y == bb) || (x == bb && y == ba)
+                        }
+                    })
+                    .min_by(|&x, &y| dist(x).total_cmp(&dist(y)))
+                    .filter(|&e| dist(e) < PICK_TOL)
+                    .or_else(|| ck_ops::blend::build::find_edge(&body, a, b, at))
+                    .ok_or_else(missing)?
+            }
+        };
+        let fs = body.edge_faces(eid);
+        let in_rim = |f: FaceId| rim_faces.contains(&f);
+        let (rim, other) = match (fs.first().copied(), fs.get(1).copied()) {
+            (Some(f0), Some(f1)) if in_rim(f0) => (f0, body.face_id_str(f1)),
+            (Some(f0), Some(f1)) if in_rim(f1) => (f1, body.face_id_str(f0)),
+            _ => return Err(missing()),
+        };
+        picked.push((eid, rim, base_id(&other)));
     }
     let rim = picked[0].1;
     // several rim faces are fine while they are pieces of one plane
@@ -125,6 +157,13 @@ pub fn exec_lip(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<()
         let (t0, t1) = body.coedge_params(co);
         let ed = body.edge(*eid);
         let (pa, pb) = (ed.curve.eval(t0), ed.curve.eval(t1));
+        let exact = match &ed.curve {
+            Curve::BSpline(bs) if ed.v0 != ed.v1 => {
+                let c2 = bs.map(|q: Vec3| to2(q)).segment(t0.min(t1), t0.max(t1));
+                Some((c2, t0, t1))
+            }
+            _ => None,
+        };
         let pieces = match &ed.curve {
             Curve::Line { .. } => vec![Piece::Line { a: to2(pa), b: to2(pb) }],
             Curve::Circle { frame: cf, .. } if cf.z.cross(n).len() < 1e-9 => {
@@ -144,9 +183,14 @@ pub fn exec_lip(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<()
                     .collect()
             }
         };
-        path.push(PathEdge { tag: other.clone(), pieces, start: body.coedge_start(co), end: body.coedge_end(co) });
+        path.push(PathEdge { tag: other.clone(), pieces, exact, start: body.coedge_start(co), end: body.coedge_end(co) });
     }
 
+    if std::env::var_os("CK_LIP_DBG").is_some() {
+        for (i, pe) in path.iter().enumerate() {
+            eprintln!("LIP path edge {i}: {} v {:?} -> {:?} at {:?} -> {:?}", pe.tag, pe.start, pe.end, body.vertex(pe.start).p, body.vertex(pe.end).p);
+        }
+    }
     // chains head to tail (travel direction); a closed loop starts anywhere
     let mut chains: Vec<Vec<usize>> = vec![];
     let mut used = vec![false; path.len()];
@@ -194,6 +238,9 @@ pub fn exec_lip(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<()
         // (the sketch offset only links pieces whose points coincide)
         let mut flat: Vec<(usize, Piece)> = chain.iter().flat_map(|&ei| path[ei].pieces.iter().map(move |p| (ei, p.clone()))).collect();
         let m = flat.len();
+        let get_a = |p: &Piece| match p {
+            Piece::Line { a, .. } | Piece::Arc { a, .. } => *a,
+        };
         let (set_a, get_b): (fn(&mut Piece, Vec2), fn(&Piece) -> Vec2) = (
             |p, v| match p {
                 Piece::Line { a, .. } | Piece::Arc { a, .. } => *a = v,
@@ -252,20 +299,56 @@ pub fn exec_lip(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<()
             return Err(FeatureError::new(&super::extrude::todo("lip offset with dropped pieces")));
         }
         let closed = path[*chain.last().unwrap()].end == path[chain[0]].start;
-        // original side
-        let orig: Vec<ProfileSeg> = ent_pieces.iter().map(|(t, p)| seg_of_piece(&format!("{t}r"), p)).collect();
-        let offs: Vec<ProfileSeg> = off_chain
-            .iter()
-            .zip(&ent_pieces)
-            .flat_map(|(o, (t, _))| segs_of_off(&format!("{t}l"), o))
-            .collect();
-        if closed {
-            let a_o = ProfileLoop::new(orig).signed_area();
-            let (outer, hole) = if a_o >= 0.0 {
-                (ProfileLoop::new(ent_pieces.iter().map(|(t, p)| seg_of_piece(&format!("{t}r"), p)).collect()), ProfileLoop::new(offs))
+        // original side; a B-spline rim edge stays one exact segment (the
+        // tool's path-side face must share the host edge, not a chord polygon),
+        // its offset side is fitted through the true offset points
+        let mut orig: Vec<ProfileSeg> = vec![];
+        let mut offs: Vec<ProfileSeg> = vec![];
+        let mut i = 0;
+        while i < flat.len() {
+            let ei = flat[i].0;
+            let mut j = i;
+            while j < flat.len() && flat[j].0 == ei {
+                j += 1;
+            }
+            let tag = &path[ei].tag;
+            let fitted = path[ei].exact.as_ref().and_then(|(c2, ta, tb)| {
+                let (first, last) = (&off_chain[i], &off_chain[j - 1]);
+                let (o_start, o_end) = (off_start(first), off_end(last));
+                fit_offset(c2, *ta, *tb, width, Vec2::new(o_start[0], o_start[1]), Vec2::new(o_end[0], o_end[1]))
+            });
+            if let Some(fit) = fitted {
+                let (mut c2, ta, tb) = path[ei].exact.clone().unwrap();
+                // close the profile exactly: the travel start is the snapped
+                // end of the previous piece (a clamped spline's end control
+                // points are its ends)
+                {
+                    let (sp, ep) = (get_a(&flat[i].1), get_b(&flat[j - 1].1));
+                    let last = c2.ctrl.len() - 1;
+                    let (fi, li) = if ta <= tb { (0, last) } else { (last, 0) };
+                    c2.ctrl[fi] = sp;
+                    c2.ctrl[li] = ep;
+                }
+                orig.push(ProfileSeg {
+                    tag: format!("{tag}r"),
+                    curve: ck_geom::curve2::Curve2::BSpline(c2),
+                    t0: ta.min(tb),
+                    t1: ta.max(tb),
+                    rev: ta > tb,
+                });
+                let (d0, d1) = fit.domain();
+                offs.push(ProfileSeg { tag: format!("{tag}l"), curve: ck_geom::curve2::Curve2::BSpline(fit), t0: d0, t1: d1, rev: false });
             } else {
-                (ProfileLoop::new(offs), ProfileLoop::new(ent_pieces.iter().map(|(t, p)| seg_of_piece(&format!("{t}r"), p)).collect()))
-            };
+                for k in i..j {
+                    orig.push(seg_of_piece(&format!("{}r", ent_pieces[k].0), &ent_pieces[k].1));
+                    offs.extend(segs_of_off(&format!("{}l", ent_pieces[k].0), &off_chain[k]));
+                }
+            }
+            i = j;
+        }
+        if closed {
+            let a_o = ProfileLoop::new(orig.clone()).signed_area();
+            let (outer, hole) = if a_o >= 0.0 { (ProfileLoop::new(orig), ProfileLoop::new(offs)) } else { (ProfileLoop::new(offs), ProfileLoop::new(orig)) };
             regions.push(ProfileRegion { outer, holes: vec![hole] });
         } else {
             // pinned loop start: the offset side runs first
@@ -297,6 +380,59 @@ pub fn exec_lip(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<()
     let opts = if groove { ExtrudeOpts::flipped(height) } else { ExtrudeOpts::blind(height) };
     let tool = extrude(&f.id, &profile, opts).map_err(|e| FeatureError::new(&e))?;
     br.combine(&tool, if groove { Combine::Cut } else { Combine::Add }, false)
+}
+
+fn off_start(o: &OffSeg) -> [f64; 2] {
+    match o {
+        OffSeg::Line { a, .. } | OffSeg::Arc { a, .. } => *a,
+        OffSeg::Circle { c, r } => [c[0] + r, c[1]],
+        OffSeg::Curve { pts, .. } => pts[0],
+    }
+}
+
+fn off_end(o: &OffSeg) -> [f64; 2] {
+    match o {
+        OffSeg::Line { b, .. } | OffSeg::Arc { b, .. } => *b,
+        OffSeg::Circle { c, r } => [c[0] + r, c[1]],
+        OffSeg::Curve { pts, .. } => pts[pts.len() - 1],
+    }
+}
+
+/// The offset of a rim B-spline travelled from `ta` to `tb` by `width` to the
+/// side of the sketch offset (`o_start` / `o_end`: its trimmed ends), as a
+/// cubic fitted through dense true offset points (error far below the model
+/// tolerance). `None` when the fit fails or the sides disagree.
+fn fit_offset(
+    c2: &ck_geom::nurbs::bspline::BSplineCurve<Vec2>,
+    ta: f64,
+    tb: f64,
+    width: f64,
+    o_start: Vec2,
+    o_end: Vec2,
+) -> Option<ck_geom::nurbs::bspline::BSplineCurve<Vec2>> {
+    let n = ((c2.length_between(ta.min(tb), ta.max(tb)) / 0.4).ceil() as usize).clamp(16, 600);
+    let at = |k: usize| ta + (tb - ta) * k as f64 / n as f64;
+    // side: the offset point nearest the sketch offset's start
+    let nrm = |t: f64| {
+        let d = c2.derivs(t, 1)[1];
+        let d = if tb >= ta { d } else { -d };
+        let l = d.len();
+        Vec2::new(-d.y / l, d.x / l)
+    };
+    let (p0, n0) = (c2.eval(ta), nrm(ta));
+    let side = if (p0 + n0 * width - o_start).len() <= (p0 - n0 * width - o_start).len() { 1.0 } else { -1.0 };
+    let mut pts: Vec<Vec2> = (0..=n).map(|k| c2.eval(at(k)) + nrm(at(k)) * (width * side)).collect();
+    // the trimmed ends of the sketch offset (corners with the neighbours)
+    if (pts[0] - o_start).len() > 0.05 * width.max(1e-3) + 1e-3 || (pts[n] - o_end).len() > 0.05 * width.max(1e-3) + 1e-3 {
+        // a corner: take the sketch offset's end only if it stays close
+        if (pts[0] - o_start).len() > 2.0 * width || (pts[n] - o_end).len() > 2.0 * width {
+            return None;
+        }
+    }
+    pts[0] = o_start;
+    pts[n] = o_end;
+    pts.dedup_by(|a, b| (*a - *b).len() < 1e-9);
+    ck_geom::fit::interpolate(&pts, 3, ck_geom::fit::Param::ChordLength).ok()
 }
 
 fn seg_of_piece(tag: &str, p: &Piece) -> ProfileSeg {

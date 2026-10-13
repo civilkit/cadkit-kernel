@@ -61,6 +61,15 @@ pub fn exec_draft(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<
             if !ids.contains(&g) {
                 ids.push(g);
             }
+        } else {
+            // a face split into pieces `<id>~k` (six pilot holes) is named by
+            // its base id (oracle: large sample F49 on `F32.S.h1`)
+            let base = super::lip::base_id(r.as_str());
+            for g in body.face_ids().filter(|&g| super::lip::base_id(&body.face_id_str(g)) == base) {
+                if !ids.contains(&g) {
+                    ids.push(g);
+                }
+            }
         }
     }
     if ids.is_empty() {
