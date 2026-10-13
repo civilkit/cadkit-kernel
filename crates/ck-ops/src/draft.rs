@@ -321,11 +321,6 @@ fn solve_vertex(mut p: Vec3, surfs: &[&Surface]) -> Option<Vec3> {
             let n = s.normal(u, v).normalize();
             rows.push((n, (p - q).dot(n)));
         }
-        // already on every surface (a vertex on the neutral plane): leave it
-        // bit-exact instead of letting rounding noise move it
-        if rows.iter().all(|r| r.1.abs() < 1e-13) {
-            return Some(p);
-        }
         let step = match rows.len() {
             0 => return Some(p),
             1 => rows[0].0 * rows[0].1,
@@ -386,14 +381,6 @@ fn new_edge_curve(sa: &Surface, sb: &Surface, old: &Curve, near: Vec3) -> Option
             let hc = dir.dot(near);
             let det = l2;
             let p = (nb.cross(dir) * ha + dir.cross(na) * hb + na.cross(nb) * hc) * (1.0 / det);
-            // the old line still lies on both planes (the edge on the neutral
-            // plane): keep it bit-exact
-            if let Curve::Line { o: oo, d: od } = old {
-                let nd = dir.normalize();
-                if od.cross(nd).len() < 1e-12 && (na.dot(*oo) - ha).abs() < 1e-12 && (nb.dot(*oo) - hb).abs() < 1e-12 {
-                    return Some(Curve::Line { o: *oo, d: *od });
-                }
-            }
             Some(Curve::Line { o: p, d: dir.normalize() })
         }
         (Surface::Plane { frame: pf }, s @ (Surface::Cone { frame: cf, .. } | Surface::Cylinder { frame: cf, .. }))
@@ -614,11 +601,6 @@ fn rebuild(b: &Body, edits: &[Edit]) -> Result<Body, DraftError> {
         let Curve::Line { d, .. } = nb.edges[e.idx()].curve else { continue };
         if d.dot(want) < 0.0 {
             reverse_line_edge(&mut nb, e);
-            // negating a unit axis leaves -0 components; DIRECTION sharing in
-            // the STEP writer is keyed by exact bits, so normalise them
-            if let Curve::Line { o, d } = nb.edges[e.idx()].curve {
-                nb.edges[e.idx()].curve = Curve::Line { o, d: Vec3::new(d.x + 0.0, d.y + 0.0, d.z + 0.0) };
-            }
         }
     }
 

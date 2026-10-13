@@ -140,25 +140,6 @@ fn reals(xs: &[f64]) -> String {
     v.join(",")
 }
 
-/// The clamped sub-curve of `bs` on `[t0, t1]` when that is a proper part of
-/// the domain (None for the whole curve or an unusable range).
-fn sub_span(bs: &ck_geom::nurbs::bspline::BSplineCurve, t0: f64, t1: f64) -> Option<ck_geom::nurbs::bspline::BSplineCurve> {
-    let (a, b) = bs.domain();
-    let eps = 1e-9 * (b - a).abs().max(1.0);
-    if !(t1 > t0 + eps) || t0 < a - eps || t1 > b + eps || (t0 <= a + eps && t1 >= b - eps) {
-        return None;
-    }
-    let mut sub = bs.segment(t0.max(a), t1.min(b)).clamp_ends();
-    // an unclamped (periodic-style) curve counts its parameter from the
-    // start of the domain
-    if bs.knots[..=bs.degree].iter().any(|&k| k != bs.knots[0]) {
-        for k in sub.knots.iter_mut() {
-            *k -= a;
-        }
-    }
-    Some(sub)
-}
-
 /// An unclamped spline as its domain only: clamped ends, parameter counted
 /// from the start of the domain.
 fn unclamped_to_clamped(bs: &ck_geom::nurbs::bspline::BSplineCurve) -> ck_geom::nurbs::bspline::BSplineCurve {
@@ -168,28 +149,6 @@ fn unclamped_to_clamped(bs: &ck_geom::nurbs::bspline::BSplineCurve) -> ck_geom::
         *k -= a;
     }
     c
-}
-
-/// A closed spline stored over two periods (the sketch's wrap-around profile):
-/// the first period alone, which is how the oracle writes it.
-fn halve_doubled(bs: &ck_geom::nurbs::bspline::BSplineCurve) -> Option<ck_geom::nurbs::bspline::BSplineCurve> {
-    let (a, b) = bs.domain();
-    let h = 0.5 * (b - a);
-    if !(h > 0.0) || bs.ctrl.first() != bs.ctrl.last() {
-        return None;
-    }
-    let scale = (bs.eval(a) - bs.eval(a + h)).len().max(1e-300);
-    let tol = 1e-9 * (1.0 + bs.eval(a).len());
-    if scale > tol {
-        // the curve does not close at the half way point
-        return None;
-    }
-    for f in [0.13, 0.37, 0.61, 0.89] {
-        if (bs.eval(a + f * h) - bs.eval(a + h + f * h)).len() > tol {
-            return None;
-        }
-    }
-    Some(bs.segment(a, a + h).clamp_ends())
 }
 
 /// Distinct knot values + multiplicities (exact comparison).
@@ -467,10 +426,7 @@ impl StepWriter {
                 self.ent(&format!("SURFACE_OF_REVOLUTION('',#{c},#{a})"))
             }
             Surface::Extrusion { profile, dir } => {
-                let c = match profile.as_ref() {
-                    Curve::BSpline(bs) => self.curve(&Curve::BSpline(halve_doubled(bs).unwrap_or_else(|| bs.clone()))),
-                    other => self.curve(other),
-                };
+                let c = self.curve(profile);
                 // Oracle: VECTOR('',#unit,1.) even for a 5 mm extrusion.
                 // GUESS: direction normalised, magnitude always 1.
                 let v = self.vector(dir.normalize(), 1.0);
@@ -559,23 +515,6 @@ impl StepWriter {
         // GUESS: lines are re-anchored at t0, other curves written as is.
         let c = match &ed.curve {
             Curve::Line { o, d } if ed.t0 != 0.0 => self.curve(&Curve::Line { o: *o + *d * ed.t0, d: *d }),
-            // a spline edge that covers part of its curve is written as that
-            // clamped sub-span (the oracle does the same), not the whole curve
-            Curve::BSpline(bs) if tail == e => match sub_span(bs, ed.t0, ed.t1) {
-                Some(mut sub) => {
-                    // the end poles ARE the edge's vertices (no rounding noise)
-                    let (p0, p1) = (body.vertex(ed.v0).p, body.vertex(body.edge(tail).v1).p);
-                    let tol = 1e-9 * (1.0 + p0.len().max(p1.len()));
-                    if sub.ctrl.first().map_or(false, |q| q.dist(p0) < tol) {
-                        sub.ctrl[0] = p0;
-                    }
-                    if sub.ctrl.last().map_or(false, |q| q.dist(p1) < tol) {
-                        *sub.ctrl.last_mut().unwrap() = p1;
-                    }
-                    self.curve(&Curve::BSpline(sub))
-                }
-                None => self.curve(&ed.curve),
-            },
             c => self.curve(c),
         };
         let i = self.ent(&format!("EDGE_CURVE('',#{a},#{b},#{c},.T.)"));
