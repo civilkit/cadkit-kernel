@@ -49,6 +49,10 @@ export function summarize(mod, part) {
     id, faces: s.faces.length, edges: s.edges.length,
     area: +meshArea(s.mesh).toFixed(3),
   }));
+  const r3 = (p) => p.map((x) => +x.toFixed(3));
+  out.curves = (res.curves ?? []).filter(([, c]) => c.pts).map(([id, c]) => ({ id, a: r3(c.pts[0]), b: r3(c.pts.at(-1)) }));
+  // editCurve-style markers: informational (the fits differ), not part of the SAME test
+  out.info = (res.markers ?? []).filter(([, m]) => m.cvs).map(([id, m]) => `${id}: deg ${m.degree} count ${m.count} corners ${m.corners} dev ${m.deviation} edited ${m.edited} w ${m.weights.some((w) => w !== 1) ? 'yes' : 'no'}`);
   return out;
 }
 
@@ -58,7 +62,8 @@ for (const [name, part] of Object.entries(parts)) {
   const a = summarize(orig, part);
   const b = ours ? summarize(ours, part) : null;
   if (asJson) { console.log(JSON.stringify({ name, orig: a, ours: b })); continue; }
-  const same = b && JSON.stringify(a) === JSON.stringify(b);
-  console.log(`${name.padEnd(22)} ORIG ${JSON.stringify(a)}`);
-  if (b) console.log(`${''.padEnd(22)} ${same ? 'SAME' : 'OURS'} ${same ? '' : JSON.stringify(b)}`);
+  const core = (x) => JSON.stringify({ ...x, info: undefined });
+  const same = b && core(a) === core(b);
+  console.log(`${name.padEnd(22)} ORIG ${core(a)}${a.info?.length ? '  ' + a.info.join('; ') : ''}`);
+  if (b) console.log(`${''.padEnd(22)} ${same ? 'SAME' : 'OURS'} ${same ? '' : core(b)}${b.info?.length ? '  ' + b.info.join('; ') : ''}`);
 }

@@ -36,7 +36,7 @@ use ck_geom::surface::Surface;
 use ck_geom::{Frame, Vec2, Vec3};
 use ck_topo::body::{Body, EdgeId, FaceId, FaceName, VertexId};
 use ck_topo::make::plane_line_pc;
-use stations::{geom_of, match_chains, Chain, Geom3, Piece, Stations};
+use stations::{geom_of, Chain, Geom3, Piece, Stations};
 
 /// One piece of an input profile: the sketch entity curve trimmed to
 /// `[t0, t1]`, travelled backwards when `rev`.

@@ -937,6 +937,7 @@ impl crate::regen::FeatureExec for Brep {
             FeatureKind::Draft { .. } => return draft::exec_draft(self, state, f),
             FeatureKind::Loft { .. } => return loft::exec_loft(self, state, f),
             _ if f.type_name == "pipeCut" => return pipecut::exec_pipecut(self, state, f),
+            _ if f.type_name == "editCurve" => return edit_curve::exec_edit_curve(self, state, f),
             _ => return Err(crate::regen::FeatureError::new(&extrude::todo(&f.type_name))),
         };
         self.apply(&f.id, tool)

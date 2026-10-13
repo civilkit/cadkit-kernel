@@ -495,6 +495,23 @@ parts.mirrorBodyCone = part([...parts.cone.features, { type: 'plane', id: 'F8', 
   parts.loft3EndNormal = part([...base3, p4, sq8, loft3({ endNormal: 1.5 })]);
 }
 
+// editCurve (ck-ops curve_edit): the rebuilt curve goes to `curves[]` / `markers[]`, the solid is untouched
+// (the fit is least squares, the oracle's is a different one: deviations differ, see docs/ck-ops-stubs.md).
+{
+  const spl = { type: 'sketch', id: 'F1', plane: STD('front'), points: [pt('c1', 0, 0), pt('c2', 5, 8), pt('c3', 10, 2), pt('c4', 15, 9), pt('c5', 20, 0)],
+    entities: [{ type: 'spline', id: 'e1', pts: ['c1', 'c2', 'c3', 'c4', 'c5'] }], constraints: [] };
+  const poly = { type: 'sketch', id: 'F1', plane: STD('front'), points: [pt('q0', 0, 0), pt('q1', 10, 0), pt('q2', 10, 10)],
+    entities: [line('l1', 'q0', 'q1'), line('l2', 'q1', 'q2')], constraints: [] };
+  const cref = (e) => ({ kind: 'sketchCurve', sketch: 'F1', entity: e });
+  const ec = (o = {}) => ({ type: 'editCurve', id: 'F2', curves: [cref('e1')], method: 'count', degree: 3, count: 6, tolerance: 0.01, keepEnds: true, keepTangents: false, keepCorners: false, entries: [], planar: false, plane: null, ...o });
+  parts.editCurveSpline = part([spl, ec()]);
+  parts.editCurveMove = part([spl, ec({ entries: [{ cv: 2, of: 6, frame: 'world', dx: 0, dy: 3, dz: 0 }] })]);
+  parts.editCurveTol = part([spl, ec({ method: 'tolerance', tolerance: 0.05 })]);
+  parts.editCurveCorner = part([poly, ec({ curves: [cref('l1'), cref('l2')], keepCorners: true, count: 8 })]);
+  const [Pb, Eb] = rect(0, 0, 40, 20);
+  parts.editCurveEdge = part([sketch('top', Pb, Eb), extrude(), ec({ id: 'F3', curves: [{ kind: 'edge', faces: ['F2.C1', 'F2.S.e1'], at: [20, 10, 0] }] })]);
+}
+
 // pipeCut (ck-ops pipecut): a ball of `radius` rolled along edges / face rims removes
 // what it touches; the solid becomes a surface body (docs/ck-ops-stubs.md). Exploration
 // cases with error paths live in tools/stub_cases.mjs (node tools/cmp_stubs.mjs pipeCut).
