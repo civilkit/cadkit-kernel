@@ -536,6 +536,8 @@ parts.mirrorBodyCone = part([...parts.cone.features, { type: 'plane', id: 'F8', 
   parts.chamferDistTwo = boxF(ch({ chamferType: 'distances', distance2: 3, edges: [e1, e3] }));
   parts.chamferAngle = boxF(ch({ chamferType: 'angle', angle: 30 }));
   parts.chamferAngleRev = boxF(ch({ chamferType: 'angle', angle: 30, edges: [E('F2.S.e1', 'F2.C1', [20, 10, 0])] }));
+  parts.fullRound = boxF({ type: 'fillet', filletType: 'fullRound', radius: 2, edges: [], side1: 'F2.S.e1', center: 'F2.C1', side2: 'F2.S.e3' });
+  parts.fullRoundTwoFillets = boxF(fl({ radius: 10, edges: [e1, e3] }));
   // variable radius: radii[0] at the end of the edge nearer the pick
   const nearStart = E('F2.C1', 'F2.S.e1', [4, 10, 0]), nearEnd = E('F2.C1', 'F2.S.e1', [36, 10, 0]);
   const vr = (o) => boxF(fl({ filletType: 'variable', radii: [1, 3], edges: [nearStart], ...o }));
