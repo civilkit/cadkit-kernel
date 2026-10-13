@@ -333,6 +333,17 @@ pub fn imprint_hooked(a: &Body, b: &Body, tol: f64, hook: Option<PairHook>) -> A
                         // an interior break on a boundary edge (a seam that
                         // was not relocated) stays a split point
                         let start_pt = curve.eval(closed_start(kept[kept.len() - 1].1 - kept[0].0).0);
+                        // a cut that is an existing edge (a tool's rim circle lying in the
+                        // interior of the other face) keeps that edge's own start, so it
+                        // never becomes the relocated-seam start: the seam crossing must
+                        // stay a split point or the circle is not tied to the seam
+                        let (w0, w1) = (kept[0].0, kept[kept.len() - 1].1);
+                        let is_existing = [(a, f), (b, g)].iter().any(|&(bd, fc)| {
+                            bd.face_edges(fc).into_iter().any(|e| {
+                                let ed = bd.edge(e);
+                                [0.13, 0.41, 0.77].iter().all(|&k| near_in_range(&ed.curve, (ed.t0, ed.t1), curve.eval(w0 + (w1 - w0) * k), tol))
+                            })
+                        });
                         for w in kept.windows(2) {
                             let p = curve.eval(w[0].1);
                             let on_edge = [(a, f), (b, g)].iter().any(|&(bd, fc)| {
@@ -341,7 +352,7 @@ pub fn imprint_hooked(a: &Body, b: &Body, tol: f64, hook: Option<PairHook>) -> A
                                     near_in_range(&ed.curve, (ed.t0, ed.t1), p, tol)
                                 })
                             });
-                            if on_edge && p.dist(start_pt) > tol {
+                            if on_edge && (is_existing || p.dist(start_pt) > tol) {
                                 extra.push(p);
                             }
                         }

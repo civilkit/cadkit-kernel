@@ -154,7 +154,14 @@ fn loop_polygon_with(s: &Surface, pieces: &[(&Curve, f64, f64)], nfun: impl Fn(&
             out.push(uv);
         }
     }
-    close_pole_spikes(s, &mut out);
+    // the loop's true end point (the samples stop one chord short of it): the
+    // winding in u is read from it, so a loop that ends on a circle piece
+    // (seam up, seam down, circle) is recognised like one that ends on a seam
+    let end_u = match (pieces.last(), out.first()) {
+        (Some(&(c, _, tb)), Some(_)) => Some(uv_near(s, c.eval(tb), prev).x),
+        _ => None,
+    };
+    close_pole_spikes(s, &mut out, end_u);
     out
 }
 
@@ -166,13 +173,13 @@ fn loop_polygon_with(s: &Surface, pieces: &[(&Curve, f64, f64)], nfun: impl Fn(&
 /// line: insert the pole line (u runs one period back to the loop's start)
 /// and carry the descent along the start seam. The polygon becomes the
 /// strip `[u0, u0 + period] x [circle, pole]`.
-fn close_pole_spikes(s: &Surface, poly: &mut Vec<Vec2>) {
+fn close_pole_spikes(s: &Surface, poly: &mut Vec<Vec2>, end_u: Option<f64>) {
     let Some(per) = s.periods().0 else { return };
     let n = poly.len();
     if n < 4 {
         return;
     }
-    let adv = poly[n - 1].x - poly[0].x;
+    let adv = end_u.unwrap_or(poly[n - 1].x) - poly[0].x;
     if (adv.abs() - per).abs() > 1e-6 * per {
         return;
     }

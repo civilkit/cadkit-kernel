@@ -237,3 +237,199 @@ fn eyebolt_eye_union_shank() {
     let missing: Vec<_> = joined.face_ids().filter(|f| t.faces[f.idx()].is_none()).map(|f| joined.face_id_str(f)).collect();
     assert!(missing.is_empty(), "unmeshed faces {missing:?}");
 }
+
+// ---- brepjs mechanical batch: coincident circle on a cylinder wall (BJ-1) and sphere pole inside the other solid (BJ-2)
+
+/// Plate z in [-t, 0] (a rectangle 20 x 20 centred on the axis).
+fn plate(t: f64) -> Body {
+    let lp = ProfileLoop::new(vec![
+        ProfileSeg::line("e1", v(-10.0, -10.0), v(10.0, -10.0)),
+        ProfileSeg::line("e2", v(10.0, -10.0), v(10.0, 10.0)),
+        ProfileSeg::line("e3", v(10.0, 10.0), v(-10.0, 10.0)),
+        ProfileSeg::line("e4", v(-10.0, 10.0), v(-10.0, -10.0)),
+    ]);
+    extrude("F1", &Profile::new(front(), region(lp)), ExtrudeOpts { s0: -t, s1: 0.0, dir: None, draft: 0.0 }).unwrap()
+}
+
+/// Countersink cutter: a cone from radius `r` at depth `d` widening at 45 degrees to the top, extended 0.5 above z = 0.
+fn countersink(r: f64, d: f64) -> Body {
+    countersink_at(0.0, r, d)
+}
+
+/// As `countersink`, the axis at x = cx.
+fn countersink_at(cx: f64, r: f64, d: f64) -> Body {
+    let big = r + d + 0.5;
+    let outer = ProfileLoop::new(vec![
+        ProfileSeg::line("e1", v(cx, -0.5), v(cx + big, -0.5)),
+        ProfileSeg::line("e2", v(cx + big, -0.5), v(cx + r, d)),
+        ProfileSeg::line("e3", v(cx + r, d), v(cx, d)),
+        ProfileSeg::line("e4", v(cx, d), v(cx, -0.5)),
+    ]);
+    revolve("F3", &Profile::new(top(), region(outer)), Vec3::new(cx, 0.0, 0.0), Vec3::new(0.0, 0.0, -1.0), 0.0, TAU).unwrap()
+}
+
+fn frustum(h: f64, r1: f64, r2: f64) -> f64 {
+    PI * h / 3.0 * (r1 * r1 + r1 * r2 + r2 * r2)
+}
+
+/// Hole radius `hr`, countersink base circle radius `cr` (== hr is the coincident case), in either cut order.
+fn countersunk(hr: f64, cr: f64, hole_first: bool) {
+    let (t, d) = (5.0, 1.7);
+    let p = plate(t);
+    let hole = cyl("F2", front(), 0.0, 0.0, hr, -200.0, 200.0);
+    let cone = countersink(cr, d);
+    let out = if hole_first {
+        let a = boolean(&p, &hole, Op::Cut, 1e-6).expect("hole").body;
+        boolean(&a, &cone, Op::Cut, 1e-6).expect("countersink cut after hole").body
+    } else {
+        let a = boolean(&p, &cone, Op::Cut, 1e-6).expect("countersink").body;
+        boolean(&a, &hole, Op::Cut, 1e-6).expect("hole cut after countersink").body
+    };
+    assert_valid(&out);
+    let big = cr + d; // cone radius at z = 0
+    let cone_in_plate = frustum(d, cr, big);
+    let m = hr; // cr >= hr: the hole lies inside the cone over its depth
+    let want = 20.0 * 20.0 * t - PI * hr * hr * t - (cone_in_plate - PI * m * m * d);
+    let got = mass_props(&out).volume;
+    assert!((got - want).abs() < 1e-6 * want, "volume {got} vs {want}");
+}
+
+#[test]
+fn countersink_base_on_hole_wall_hole_first() {
+    countersunk(2.3, 2.3, true);
+}
+
+#[test]
+fn countersink_base_on_hole_wall_cone_first() {
+    countersunk(2.3, 2.3, false);
+}
+
+#[test]
+fn countersink_base_off_hole_wall() {
+    countersunk(2.3, 2.31, true);
+}
+
+/// Truncated ball (revolved arc, pole on the axis at the top), flat base at profile y = 0.
+fn ball(r: f64, c: f64) -> Body {
+    let x = (r * r - c * c).sqrt();
+    let outer = ProfileLoop::new(vec![
+        ProfileSeg::line("e1", v(0.0, 0.0), v(x, 0.0)),
+        ProfileSeg::arc("e2", v(0.0, c), v(x, 0.0), v(0.0, c + r)),
+        ProfileSeg::line("e3", v(0.0, c + r), v(0.0, 0.0)),
+    ]);
+    revolve("F2", &Profile::new(top(), region(outer)), Vec3::ZERO, Vec3::new(0.0, 0.0, -1.0), 0.0, TAU).unwrap()
+}
+
+/// Ball (flat base at profile y 0, pole at y 8.33) united with a cylinder of radius `cylr` at (cx, 0) spanning
+/// profile y y0..y1, checked against the closed-form-by-quadrature volume of the union.
+fn ball_union(cx: f64, cylr: f64, y0: f64, y1: f64) {
+    let (r, c) = (4.9, 3.43);
+    let b = ball(r, c);
+    let vb = mass_props(&b).volume;
+    let cap = |hh: f64| PI * hh * hh * (3.0 * r - hh) / 3.0;
+    let full = cap(2.0 * r) - cap(r - c);
+    assert!((vb - full).abs() < 1e-6 * full, "ball {vb} vs {full}");
+    let tool = cyl("F5", front(), cx, 0.0, cylr, -y1, -y0);
+    let out = boolean(&b, &tool, Op::Union, 1e-6).expect("union of the ball with a cylinder over the pole").body;
+    assert_valid(&out);
+    // overlap by midpoint quadrature over the cylinder disc (ball height at (x, y) is c + sqrt(r^2 - x^2 - y^2))
+    let n = 600;
+    let mut inside = 0.0;
+    for i in 0..n {
+        for j in 0..n {
+            let (dx, dy) = (cylr * (-1.0 + 2.0 * (i as f64 + 0.5) / n as f64), cylr * (-1.0 + 2.0 * (j as f64 + 0.5) / n as f64));
+            if dx * dx + dy * dy > cylr * cylr {
+                continue;
+            }
+            let (x, y) = (cx + dx, dy);
+            let rho2 = x * x + y * y;
+            if rho2 >= r * r - c * c {
+                // outside the flat base: the sphere height there is above the base plane only inside rho < r
+            }
+            let top_y = if rho2 < r * r { (c + (r * r - rho2).sqrt()).min(y1) } else { 0.0 };
+            // the ball's lower bound is the base plane y = 0 (rho < sqrt(r^2 - c^2)) else the lower sphere surface
+            let low_sphere = if rho2 < r * r { c - (r * r - rho2).sqrt() } else { f64::INFINITY };
+            let ball_lo = low_sphere.max(0.0);
+            let (lo, hi) = (ball_lo.max(y0), top_y);
+            if hi > lo {
+                inside += (2.0 * cylr / n as f64).powi(2) * (hi - lo);
+            }
+        }
+    }
+    let want = vb + PI * cylr * cylr * (y1 - y0) - inside;
+    let got = mass_props(&out).volume;
+    assert!((got - want).abs() < 1e-3 * want, "volume {got} vs {want}");
+}
+
+#[test]
+fn ball_union_cylinder_through_the_pole() {
+    // cylinder radius 2.65 along the axis from profile y 4.4 to 12.515, crossing the pole at 8.33
+    ball_union(0.0, 2.65, 4.4, 12.515);
+}
+
+#[test]
+fn ball_union_cylinder_off_axis_over_the_pole() {
+    ball_union(0.5, 2.65, 4.4, 12.515);
+}
+
+#[test]
+fn ball_union_cylinder_ending_below_the_pole() {
+    ball_union(0.0, 2.65, 4.4, 8.0);
+}
+
+/// Revolve about the Y axis of the front plane.
+fn spin(feature: &str, segs: Vec<ProfileSeg>) -> Body {
+    revolve(feature, &Profile::new(front(), region(ProfileLoop::new(segs))), Vec3::ZERO, Vec3::Y, 0.0, TAU).unwrap()
+}
+
+/// The modular hose segment's first cuts: truncated ball + waist cylinder + collar cylinder, minus a spherical
+/// pocket whose equator plane lies inside the collar, then a revolved cone-frustum cutter whose two circles both
+/// lie in the void (so its seam is relocated). The relocation must turn the radial edge of the cutter's disc caps
+/// with it, or point classification against the cutter goes wrong and the cut fails.
+#[test]
+fn collar_cut_by_a_frustum_whose_circles_lie_in_a_pocket() {
+    let (r, c): (f64, f64) = (4.9, 3.43);
+    let x = (r * r - c * c).sqrt();
+    let ball = spin(
+        "F2",
+        vec![
+            ProfileSeg::line("e1", v(0.0, 0.0), v(x, 0.0)),
+            ProfileSeg::arc("e2", v(0.0, c), v(x, 0.0), v(0.0, c + r)),
+            ProfileSeg::line("e3", v(0.0, c + r), v(0.0, 0.0)),
+        ],
+    );
+    let waist = cyl("F5", top(), 0.0, 0.0, 2.65, 4.4, 4.4 + 8.115);
+    let collar = cyl("F8", top(), 0.0, 0.0, 6.3, 5.615, 14.0);
+    let mut a = boolean(&ball, &waist, Op::Union, 1e-6).expect("ball + waist").body;
+    a = boolean(&a, &collar, Op::Union, 1e-6).expect("+ collar").body;
+    let (yc, rp) = (11.965, 5.15);
+    let pocket = spin("F10", vec![ProfileSeg::arc("e1", v(0.0, yc), v(0.0, yc - rp), v(0.0, yc + rp)), ProfileSeg::line("e2", v(0.0, yc + rp), v(0.0, yc - rp))]);
+    a = boolean(&a, &pocket, Op::Cut, 1e-6).expect("pocket").body;
+    assert_valid(&a);
+    let (y0, y1, r0, r1) = (yc, 17.355, 4.3, 6.8);
+    let cutter = spin(
+        "F12",
+        vec![
+            ProfileSeg::line("e1", v(0.0, y0), v(r0, y0)),
+            ProfileSeg::line("e2", v(r0, y0), v(r1, y1)),
+            ProfileSeg::line("e3", v(r1, y1), v(0.0, y1)),
+            ProfileSeg::line("e4", v(0.0, y1), v(0.0, y0)),
+        ],
+    );
+    let va = mass_props(&a).volume;
+    let out = boolean(&a, &cutter, Op::Cut, 1e-6).expect("frustum cut").body;
+    assert_valid(&out);
+    // removed = collar material (rho < 6.3, y <= 14) inside the frustum and outside the pocket sphere
+    let n = 4000;
+    let mut want = 0.0;
+    for i in 0..n {
+        let y = y0 + (14.0 - y0) * (i as f64 + 0.5) / n as f64;
+        let cone_r = r0 + (r1 - r0) * (y - y0) / (y1 - y0);
+        let pocket_r = (rp * rp - (y - yc).powi(2)).max(0.0).sqrt();
+        if cone_r > pocket_r {
+            want += PI * (cone_r * cone_r - pocket_r * pocket_r) * (14.0 - y0) / n as f64;
+        }
+    }
+    let got = va - mass_props(&out).volume;
+    assert!((got - want).abs() < 1e-4 * want, "removed {got} vs {want}");
+}

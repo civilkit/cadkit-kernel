@@ -219,6 +219,31 @@ pub fn relocate_seams(b: &Body, other: &Body, drop: Class, tol: f64) -> Body {
             out.edges[e.idx()].t0 = t;
             out.edges[e.idx()].t1 = t + TAU;
             out.vertices[ed.v0.idx()].p = ed.curve.eval(t);
+            // a radial line from the circle's centre to the moved vertex (the seam of
+            // a revolved disc cap) turns with it, or the cap's boundary no longer
+            // closes: its uv polygon loses a wedge and point classification against
+            // this body goes wrong (a hose cone cut read a point outside as inside)
+            for e2 in b.edge_ids() {
+                let x = b.edge(e2);
+                if e2 == e || e2 == s || circles.contains(&e2) || !matches!(x.curve, Curve::Line { .. }) {
+                    continue;
+                }
+                let other = if x.v0 == ed.v0 {
+                    x.v1
+                } else if x.v1 == ed.v0 {
+                    x.v0
+                } else {
+                    continue;
+                };
+                if b.vertex(other).p.dist(cf.o) > tol * 10.0 {
+                    continue;
+                }
+                let (pa, pb) = (out.vertex(x.v0).p, out.vertex(x.v1).p);
+                let len = pa.dist(pb);
+                out.edges[e2.idx()].curve = Curve::Line { o: pa, d: (pb - pa) / len };
+                out.edges[e2.idx()].t0 = 0.0;
+                out.edges[e2.idx()].t1 = len;
+            }
         }
         let se = b.edge(s).clone();
         let (pa, pb) = (out.vertex(se.v0).p, out.vertex(se.v1).p);
