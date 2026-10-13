@@ -33,6 +33,7 @@ strings from kernel.strings, and dispatch to ck-ops/ck-topo.
 | mate | kind(coincident/concentric/distance/angle/parallel), a, b, distance(expr), flip |
 | refPlane | mode, base, offset, flip, visible |
 | deleteBody | bodies[] |
+| pipeCut | radius(expr), edges[{faces,at}], faces[] (all their rim edges); the picks may sit in the solid or in a surface body; the result is a SURFACE body registered under the feature id (solid disappears) |
 
 ## Error strings (kernel.strings, verbatim per feature)
 

@@ -471,6 +471,29 @@ parts.mirrorBodyCone = part([...parts.cone.features, { type: 'plane', id: 'F8', 
   parts.loftSurfaceCirc = loftOf([[0, circ(0, 0, 8)], [30, sq(5)]], { surface: true });
 }
 
+// pipeCut (ck-ops pipecut): a ball of `radius` rolled along edges / face rims removes
+// what it touches; the solid becomes a surface body (docs/ck-ops-stubs.md). Exploration
+// cases with error paths live in tools/stub_cases.mjs (node tools/cmp_stubs.mjs pipeCut).
+{
+  const E = (a, b, at) => ({ faces: [a, b], at });
+  const e1 = E('F2.C1', 'F2.S.e1', [20, 10, 0]), e2 = E('F2.C1', 'F2.S.e2', [40, 10, -10]);
+  const e3 = E('F2.C1', 'F2.S.e3', [20, 10, -20]), e4 = E('F2.C1', 'F2.S.e4', [0, 10, -10]);
+  const pc = (o) => ({ type: 'pipeCut', id: 'F3', radius: 2, edges: [], faces: [], ...o });
+  const withBox = (f) => part([sketch('top', ...rect(0, 0, 40, 20)), extrude(), f]);
+  parts.pipeCutEdge = withBox(pc({ edges: [e1] }));
+  parts.pipeCutEdge2 = withBox(pc({ edges: [e1, e3] }));
+  parts.pipeCutRing = withBox(pc({ edges: [e1, e2, e3, e4] }));
+  parts.pipeCutFace = withBox(pc({ faces: ['F2.C1'] }));
+  parts.pipeCutBig = withBox(pc({ radius: 8, edges: [e1] }));
+  parts.pipeCut12 = withBox(pc({ radius: 12, edges: [e1] }));
+  const cyl = [sketch('top', [pt('c', 0, 0)], [{ type: 'circle', id: 'e1', c: 'c', r: 10 }]), extrude()];
+  parts.pipeCutCyl = part([...cyl, pc({ edges: [E('F2.C1', 'F2.S.e1', [10, 10, 0])] })]);
+  parts.pipeCutCylBot = part([...cyl, pc({ radius: 3, edges: [E('F2.C0', 'F2.S.e1', [10, 0, 0])] })]);
+  const lSheet = [{ type: 'sketch', id: 'F1', plane: STD('front'), points: [pt('a', 0, 0), pt('b', 20, 0), pt('c', 20, 20)], entities: [line('e1', 'a', 'b'), line('e2', 'b', 'c')], constraints: [] },
+    { type: 'surfaceExtrude', id: 'F2', sketch: 'F1', end: 'blind', depth: 10, flip: false }];
+  parts.pipeCutSheet = part([...lSheet, pc({ edges: [E('F2.S.e1', 'F2.S.e2', [20, 0, 5])] })]);
+}
+
 const m = (msg) => JSON.stringify({ id: 1, msg });
 /// Follow-up requests on each part's state (compared byte-for-byte).
 // nested parts of the flange coupling assembly's insertParts (tools/cases/*.ckpart);

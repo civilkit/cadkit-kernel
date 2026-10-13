@@ -9,9 +9,11 @@
 //! or revolved corner profile); multi-edge selections in rounds; and
 //! [`vertex::chamfer_vertex`] (3-valent corner cut) and
 //! [`corner::sphere_corner_tool`] (the `V<k>` sphere patch of three equal
-//! fillets at a convex planar corner). Everything else is a
-//! documented stub (see each file's header for the kernel.strings messages
-//! it owns).
+//! fillets at a convex planar corner). The remaining stubs
+//! (`cap`, `g2`, `interp`, `overlap`, `sheet`, `stripe`, `surface`) are
+//! classified in docs/ck-ops-stubs.md; the original's `inplace`, `rolling`,
+//! `march`, `chain`, `spring` and `split` are covered by `build` /
+//! `freeform` and were removed.
 //!
 //! [`freeform`]: rolling-ball fillets along chains of free-form edges (B-spline /
 //! revolution faces, spline intersection edges), also built as a boolean tool.
@@ -33,18 +35,12 @@
 
 pub mod build;
 pub mod cap;
-pub mod chain;
 pub mod corner;
 pub mod freeform;
 pub mod g2;
-pub mod inplace;
 pub mod interp;
-pub mod march;
 pub mod overlap;
-pub mod rolling;
 pub mod sheet;
-pub mod split;
-pub mod spring;
 pub mod stripe;
 pub mod surface;
 pub mod vertex;

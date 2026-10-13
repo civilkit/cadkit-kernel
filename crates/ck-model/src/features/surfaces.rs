@@ -151,7 +151,7 @@ fn flag(f: &Feature, k: &str) -> bool {
 /// Resolve an `edges[]` pick `{faces, at}` to (slot, edge): a one-face pick
 /// is the open boundary edge of that face nearest `at`; with several faces
 /// the edge they share (nearest `at`).
-fn pick_edge(br: &Brep, faces: &[String], at: Option<Vec3>) -> Result<(Slot, EdgeId), FeatureError> {
+pub(super) fn pick_edge(br: &Brep, faces: &[String], at: Option<Vec3>) -> Result<(Slot, EdgeId), FeatureError> {
     let first = faces.first().ok_or_else(missing)?;
     let slot = br.slot_of_face(first).ok_or_else(missing)?;
     let b = br.slot_body(slot).ok_or_else(missing)?;
