@@ -108,3 +108,73 @@ Passing but notable: ball_knob (stem touches the sphere at one point: two lumps)
 to the leaf along a line: three lumps) reproduce CadQuery's multi-solid results exactly; clevis, whose cross
 hole sits beyond the block edge, reproduces the dataset's sliver cut exactly; helical_gear (twisted loft
 of two 252-vertex outlines) matches in volume to 1e-12.
+
+---
+
+## brepjs mechanical
+
+25 of the 41 examples in the brepjs playground category "mechanical" (https://brepjs.dev/playground/examples; source
+`apps/playground/src/lib/examples/mechanical.ts` in https://github.com/andymai/brepjs, Apache-2.0), translated by hand into
+our feature tree (`gen4.mjs` + `lib4.mjs`, parts and `manifest.json` in `tools/bench/brepjs/`). The playground shows no
+difficulty; the tier in the manifest is a proxy by example source length. Reference figures (volume, area, bbox, centre
+of mass, STEP) come from running the unmodified examples with brepjs 20.5.0 + occt-wasm 5.6.0 (`tools/bench/brepjs_ref/`);
+all 41 examples ran. The 16 not translated are mostly many-solid assemblies (gears, vise, chuck, truss, enclosures).
+Run: `node tools/bench/run.mjs --set brepjs` gives 18/25 regen, 22/25 step import;
+`node tools/bench/mcp_check.mjs --set brepjs` builds each part through the MCP server (edit batch, then `check`
+volume / area / bbox / centre of mass / valid at 1e-3): 19 parts pass (rubber-foot too: its MCP bbox is exact), 5 are rejected
+by `edit` (pipe-saddle, conduit-snap-clip, conical-pour-funnel, knuckle-hinge, modular-hose-segment), dovetail-joint fails
+volume and area by 0.18%.
+
+Translation notes. Cut extrudes run against the plane normal by default (a cut needs `flip` to go with it); the example
+cutters that touch the body in a single corner point only (l-angle bracket heel, v-groove rail lead-ins) are no-ops in brepjs
+too and are not translated; ruled lofts become one two-section loft per stretch; rounded boxes are rounded-rectangle
+sketches. No translation mistake is left open.
+
+| part | regen | step import | cause |
+|---|---|---|---|
+| o-ring, fluted-knob, flanged-tee, gridfinity-bin, fan-guard, gt2-pulley, nema-stepper, linear-bearing-block, tripod-rc2-plate, l-angle-gusset-bracket, hobby-rc-servo, button-top-battery-cell, axial-fan, finger-tab-split-joint, v-groove-slider-rail, vented-louvre-case, wall-mount-flanged-junction-box | pass | pass | |
+| rotary-potentiometer | pass | FAIL | kernel-gap: STEP import of HYPERBOLA curves |
+| rubber-foot | FAIL | FAIL | regen: kernel-bug, mesh-derived bbox 0.044 mm short (volume, area, com exact; MCP bbox passes); step: SHELL_ORIENTATION on the fillet torus |
+| pipe-saddle-p-clamp | FAIL | pass | kernel-gap: fillet of a plane/cylinder line edge |
+| conduit-snap-clip | FAIL | FAIL | kernel-gap (same fillet) + kernel-bug (countersink cone coincident with the hole); step: HYPERBOLA |
+| conical-pour-funnel | FAIL | pass | kernel-bug: cut with a cylinder whose wall contains the earlier cone cut's base circle |
+| knuckle-hinge | FAIL | pass | kernel-bug (4 countersinks, same coincident circle) + reference-mismatch (the example's two leaves overlap: sum 5146.71, union 4990.04) |
+| dovetail-joint | FAIL | pass | kernel-gap: no body-level intersect; male half exact (12415.619), female taper missing, 0.18% volume |
+| modular-hose-segment | FAIL | pass | kernel-bug: boolean fails when a sphere pole lies inside the other solid |
+
+### Ranked gaps from the brepjs batch
+
+BJ-1. Coincident circle on a cylinder wall (6 features in 3 parts: conduit-snap-clip, knuckle-hinge, conical-pour-funnel;
+same family as B3-1). A countersink cone cut (revolve) whose base circle has exactly the radius of the drilled hole is
+`booleanFailed`; base radius +-0.01 off (2.29 / 2.31 for a 2.3 hole) works. Funnel: a bore cylinder cut after a cone cut
+that starts on a circle of the bore's radius fails the same way. This is the common countersunk-hole shape.
+
+BJ-2. Boolean with a sphere pole inside the other solid (modular-hose-segment, cascades to 7 errors). Union of the
+revolved truncated sphere with a cylinder whose cap or side encloses the pole is `booleanFailed`, also for a full-sphere
+cut from a cylinder whose body holds a pole, and off-axis (cylinder at x = 0.5); a cylinder ending below the pole (z = 8.0
+of a pole at 8.33) works.
+
+BJ-3. Fillet of a straight edge between a plane and a cylinder whose axis is parallel to the plane (pipe-saddle-p-clamp
+concave foot/tube edge, conduit-snap-clip lip). `blendUnsupported` at r 2, 0.5 and 0.05; chamfer of the same edge works.
+
+BJ-4. STEP import: HYPERBOLA curve (rotary-potentiometer, conduit-snap-clip); torus fillet rim from OCCT gives
+SHELL_ORIENTATION and 44% low volume (rubber-foot; same as B3-3).
+
+BJ-5. No body-level boolean between two tools (dovetail-joint female cavity = prism minus two rotated slabs). Not
+expressible with add/cut features; only `upToNext` intersects, and only against the existing body.
+
+BJ-6. Several separate overlapping solids in one document (knuckle-hinge) cannot be represented: features union into one
+body. Not fixable by translation; the figures of that part cannot be matched exactly.
+
+BJ-7. `body.box` is mesh-derived and short on curved rims (rubber-foot 0.044 mm), while the MCP `check` bbox matches.
+Same quantity, two answers.
+
+### MCP tool problems seen
+
+- `edit` with a failing feature rejects the whole batch and leaves the document empty (atomic by design); the reply lists
+  only the code. For `blendUnsupported` the hint is "see the features field table", which names neither the edge
+  nor the face types; it should say which surface pair is unsupported and suggest a chamfer or another order.
+- The `booleanFailed` hint ("check the tool and target overlap in a volume, not just a face") is wrong for BJ-1 and BJ-2:
+  the tool does overlap in a volume there. It should mention tangent/coincident circles and sphere poles as suspects.
+- The `check` bbox and `read`/`run.mjs` body box disagree on curved parts (BJ-7); `check` should say which one it uses.
+- `mcp_check.mjs` used an absolute `tol: 0.001` on volume (kept for the BenchCAD mode, relative tolerance used for `--set brepjs`).
