@@ -495,6 +495,26 @@ parts.mirrorBodyCone = part([...parts.cone.features, { type: 'plane', id: 'F8', 
   parts.loft3EndNormal = part([...base3, p4, sq8, loft3({ endNormal: 1.5 })]);
 }
 
+// freeform control point edits (ck-ops surfacing/rebuild/edits.rs): the box top face rebuilt as a 5 x 5 net (degree 3, two
+// spans) and its control points moved; volumes agree with the oracle to its own fit error (<= 5e-5).
+{
+  const ffPart = (edits, extra = []) => part([sketch('top', ...rect(0, 0, 40, 20)), extrude(), ...extra,
+    { type: 'freeform', id: 'F3', faces: ['F2.C1'], degreeU: 3, degreeV: 3, spansU: 2, spansV: 2, useTolerance: false, tolerance: 0.01, extend: 0, shrink: true, direction: null, edges: [], edits }]);
+  const ed = (points, o = {}) => ({ points, of: [5, 5], frame: 'world', dx: 0, dy: 0, dz: 0, ...o });
+  const plane20 = { type: 'plane', id: 'F7', mode: 'offset', base: STD('right'), offset: 20 };
+  parts.ffEdit = ffPart([ed([[2, 2]], { dy: 2 })]);
+  parts.ffEditTwo = ffPart([ed([[2, 2]], { dy: 2 }), ed([[1, 1], [3, 3]], { dy: -1 })]);
+  parts.ffEditBig = ffPart([ed([[2, 2]], { dy: -30 })]);
+  parts.ffFold = ffPart([ed([[2, 2], [2, 1]], { dy: 15 })]);
+  parts.ffProp1 = ffPart([ed([[2, 2]], { dy: 2, proportional: 1 })]);
+  parts.ffProp2 = ffPart([ed([[2, 2]], { dy: 2, proportional: 2 })]);
+  parts.ffPropEdge = ffPart([ed([[1, 2]], { dy: 2, proportional: 2 })]);
+  parts.ffSurfaceFrame = ffPart([ed([[2, 2]], { frame: 'surface', dz: 2 })]);
+  parts.ffMapped = ffPart([ed([[1, 1]], { dy: 2, of: [3, 3] })]);
+  parts.ffSymmetric = ffPart([ed([[1, 2]], { dy: 2, symmetric: { kind: 'feature', id: 'F7' } })], [plane20]);
+  parts.ffBoundaryLocked = ffPart([ed([[0, 2]], { dy: 2 })]);
+}
+
 // fillet profiles (conic / chord / curvature = Euler spiral - arc - spiral, blend/g2.rs) and chamfer legs
 // (`distances`, `angle`): oracle volumes within 1e-6 (curvature 1e-6: the oracle fits a spline to the spiral).
 {

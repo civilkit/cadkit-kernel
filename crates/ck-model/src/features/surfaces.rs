@@ -455,6 +455,57 @@ pub fn exec_delete_face(br: &mut Brep, _state: &mut RegenState, f: &Feature) -> 
 
 // -------------------------------------------------------------- freeform
 
+/// `freeform.edits[]` -> ck-ops edits. Codes: `freeformEntryInvalid {entry}` (points not `[i, j]` with
+/// non-negative integers, or an unreadable offset), `freeformEntryPlane {entry}` (a `plane` frame or
+/// `symmetric` plane that does not resolve).
+fn parse_ff_edits(br: &Brep, state: &RegenState, js: &[&Json]) -> Result<Vec<sf::rebuild::edits::Edit>, FeatureError> {
+    use sf::rebuild::edits::{Edit, EditFrame};
+    let mut out = vec![];
+    for (ei, e) in js.iter().enumerate() {
+        let entry = Json::Num((ei + 1) as f64);
+        let invalid = || FeatureError::new("freeformEntryInvalid").with("entry", entry.clone());
+        let noplane = || FeatureError::new("freeformEntryPlane").with("entry", entry.clone());
+        let mut points = vec![];
+        for p in e.get("points").and_then(|p| p.as_arr()).unwrap_or(&[]) {
+            let a = p.as_arr().filter(|a| a.len() == 2).ok_or_else(invalid)?;
+            let (i, j) = (a[0].as_f64().ok_or_else(invalid)?, a[1].as_f64().ok_or_else(invalid)?);
+            if i < 0.0 || j < 0.0 || i.fract() != 0.0 || j.fract() != 0.0 {
+                return Err(invalid());
+            }
+            points.push((i as usize, j as usize));
+        }
+        let num = |k: &str| crate::expr::eval_field(e.get(k), &state.vars, 0.0).map_err(|_| invalid());
+        let d = Vec3::new(num("dx")?, num("dy")?, num("dz")?);
+        let plane_of = |j: &Json| -> Result<ck_core::linalg::Frame, FeatureError> {
+            let r = crate::GeomRef::from_json(j).ok_or_else(noplane)?;
+            super::pattern::plane_frame(br, state, &r).ok_or_else(noplane)
+        };
+        let frame = match e.get_str("frame") {
+            Some("surface") => EditFrame::Surface,
+            Some("plane") => EditFrame::Plane(plane_of(e.get("plane").unwrap_or(&Json::Null))?),
+            _ => EditFrame::World,
+        };
+        let symmetric = match e.get("symmetric") {
+            Some(j) if !matches!(j, Json::Null | Json::Bool(false)) => {
+                let fr = plane_of(j)?;
+                Some((fr.o, fr.z))
+            }
+            _ => None,
+        };
+        let of = e.get("of").and_then(|o| o.as_arr()).filter(|o| o.len() == 2).map(|o| (o[0].as_f64().unwrap_or(0.0) as usize, o[1].as_f64().unwrap_or(0.0) as usize));
+        out.push(Edit {
+            points,
+            of,
+            frame,
+            d,
+            proportional: num("proportional")?.max(0.0),
+            symmetric,
+            disabled: crate::sketch::jtruthy(e.get("disabled")),
+        });
+    }
+    Ok(out)
+}
+
 pub fn exec_freeform(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
     let names = strs(f.raw.get("faces"));
     if names.is_empty() {
@@ -466,14 +517,32 @@ pub fn exec_freeform(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Resu
     for n in &names {
         faces.push(body.find_face(n).ok_or_else(missing)?);
     }
-    let has_edits = f.raw.get("edits").and_then(|e| e.as_arr()).map_or(false, |a| !a.is_empty());
-    if has_edits {
-        return Err(FeatureError::new(&super::extrude::todo("freeform edits")));
+    let edits_json: Vec<&Json> = f.raw.get("edits").and_then(|e| e.as_arr()).map(|a| a.iter().collect()).unwrap_or_default();
+    // control point edits work on exactly one face
+    if !edits_json.is_empty() && names.len() != 1 {
+        return Err(FeatureError::new("freeformOneFace"));
     }
+    let edits = parse_ff_edits(br, state, &edits_json)?;
     let n = |k: &str, d: f64| state.num(f, k, d);
     let (du, dv) = (n("degreeU", 3.0)?.max(1.0) as usize, n("degreeV", 3.0)?.max(1.0) as usize);
     let (su, sv) = (n("spansU", 2.0)?.max(1.0) as usize, n("spansV", 2.0)?.max(1.0) as usize);
-    let out = sf::rebuild::rebuild(&body, &faces, du, dv, su, sv, super::TOL).map_err(|e| coded(e.code, &e.detail))?;
+    let mut out = sf::rebuild::rebuild(&body, &faces, du, dv, su, sv, super::TOL).map_err(|e| coded(e.code, &e.detail))?;
+    let mut entry_json: Vec<Json> = vec![];
+    if !edits.is_empty() {
+        let ed = sf::rebuild::edits::apply_edits(&out, faces[0], &edits, super::TOL).map_err(|e| {
+            FeatureError::new(e.code).with("entry", Json::Num(e.entry as f64))
+        })?;
+        for e in &ed.entries {
+            let pts = Json::Arr(e.points.iter().map(|&(i, j)| Json::Arr(vec![Json::Num(i as f64), Json::Num(j as f64)])).collect());
+            entry_json.push(Json::Obj(vec![
+                ("points".into(), pts),
+                ("mapped".into(), Json::Bool(e.mapped)),
+                ("applied".into(), Json::Bool(e.applied)),
+                ("kept".into(), Json::Num(e.points.len() as f64)),
+            ]));
+        }
+        out = ed.body;
+    }
     // pinned marker: the refit control net of every face, `net[i * nv + j]`
     let num = |x: usize| Json::Num(x as f64);
     let mut mf = vec![];
@@ -489,7 +558,11 @@ pub fn exec_freeform(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Resu
             ]));
         }
     }
-    state.result.markers.push(Json::Arr(vec![Json::Str(f.id.clone()), Json::Obj(vec![("faces".into(), Json::Arr(mf))])]));
+    let mut marker = vec![("faces".to_string(), Json::Arr(mf))];
+    if !edits.is_empty() {
+        marker.push(("entries".into(), Json::Arr(entry_json)));
+    }
+    state.result.markers.push(Json::Arr(vec![Json::Str(f.id.clone()), Json::Obj(marker)]));
     br.replace_slot(slot, &f.id, out);
     Ok(())
 }
