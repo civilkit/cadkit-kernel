@@ -1162,18 +1162,455 @@
     "solids": 1
    },
    "step": "gt/pan_head_screw_000035.step"
+  },
+  {
+   "id": "bucket_003137",
+   "benchcad_stem": "bucket_003137_s20260505",
+   "family": "bucket",
+   "tier": "easy",
+   "benchcad_difficulty": "medium",
+   "batch": "3a",
+   "standard": null,
+   "ops": [
+    "polyline",
+    "revolve"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0; attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program (the code_gen config carries code and images only, no STEP or metrics)",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 115309.44676180696,
+    "area": 75852.43288184467,
+    "com": [
+     5.956583940583222e-14,
+     50.97110157688176,
+     -2.9708069765306998e-15
+    ],
+    "bbox": [
+     -54.5,
+     0.0,
+     -54.5,
+     54.5,
+     112.09,
+     54.5
+    ],
+    "faces": 5,
+    "solids": 1
+   },
+   "step": "gt/bucket_003137.step"
+  },
+  {
+   "id": "ball_knob_007575",
+   "benchcad_stem": "ball_knob_007575_s20260505",
+   "family": "ball_knob",
+   "tier": "medium",
+   "benchcad_difficulty": "hard",
+   "batch": "3a",
+   "standard": "DIN 319",
+   "ops": [
+    "sphere",
+    "cylinder",
+    "union",
+    "cut",
+    "tangent-point contact (2 solids)"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0; attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program (the code_gen config carries code and images only, no STEP or metrics)",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 15479.338240655134,
+    "area": 5523.356880548972,
+    "com": [
+     2.8586898801647106e-16,
+     8.084708253295023,
+     1.9179790794494246e-16
+    ],
+    "bbox": [
+     -14.32,
+     -14.32,
+     -14.32,
+     14.32,
+     71.58,
+     14.32
+    ],
+    "faces": 6,
+    "solids": 2
+   },
+   "step": "gt/ball_knob_007575.step",
+   "note": "the stem cylinder's end face touches the sphere at a single point, so the reference is two solids (volume is the sum); the translation reproduces that."
+  },
+  {
+   "id": "clevis_014687",
+   "benchcad_stem": "clevis_014687_s20260505",
+   "family": "clevis",
+   "tier": "hard",
+   "benchcad_difficulty": "hard",
+   "batch": "3a",
+   "standard": "DIN 71751",
+   "ops": [
+    "box",
+    "cutBlind",
+    "chamfer",
+    "hole",
+    "union",
+    "cylinder",
+    "cut"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0; attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program (the code_gen config carries code and images only, no STEP or metrics)",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 66902.68855227898,
+    "area": 17181.180591095832,
+    "com": [
+     -8.31184766851387e-15,
+     2.940310286559008,
+     -0.01629419586532629
+    ],
+    "bbox": [
+     -16.96,
+     -33.375,
+     -17.725,
+     16.960000000000004,
+     66.205,
+     17.72500000000015
+    ],
+    "faces": 26,
+    "solids": 1
+   },
+   "step": "gt/clevis_014687.step",
+   "note": "the dataset's cross hole sits 22.435 mm off the block centre, beyond the 17.725 mm half width, so it only nicks a 0.76 mm sliver off one edge (the reference is that, not a through hole); the translation reproduces it."
+  },
+  {
+   "id": "hinge_000079",
+   "benchcad_stem": "hinge_000079_s20260506",
+   "family": "hinge",
+   "tier": "medium",
+   "benchcad_difficulty": "medium",
+   "batch": "3a",
+   "standard": "DIN 7954/7955",
+   "ops": [
+    "box",
+    "hole",
+    "pushPoints",
+    "transformed(rotate)",
+    "cylinder",
+    "union",
+    "cut",
+    "tangent contact (3 solids)"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0; attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program (the code_gen config carries code and images only, no STEP or metrics)",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 4192.891177478503,
+    "area": 4416.470470722462,
+    "com": [
+     1.487631049498981e-17,
+     4.65074989588669,
+     -0.00012744654773085587
+    ],
+    "bbox": [
+     -3.490000000000001,
+     -14.545,
+     -23.275,
+     3.490000000000001,
+     21.525,
+     23.275
+    ],
+    "faces": 18,
+    "solids": 3
+   },
+   "step": "gt/hinge_000079.step",
+   "note": "both knuckle barrels are tangent (along a line) to the leaf edge, so the reference is three separate solids; the translation reproduces that."
+  },
+  {
+   "id": "j_hook_001383",
+   "benchcad_stem": "j_hook_001383_s20260506",
+   "family": "j_hook",
+   "tier": "hard",
+   "benchcad_difficulty": "hard",
+   "batch": "3a",
+   "standard": null,
+   "ops": [
+    "cylinder",
+    "revolve(180)",
+    "union",
+    "box",
+    "polyline",
+    "extrude(both)"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0; attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program (the code_gen config carries code and images only, no STEP or metrics)",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 32302.836292319997,
+    "area": 12218.343724871538,
+    "com": [
+     20.37863265050538,
+     -0.029641900427069,
+     56.785133287965245
+    ],
+    "bbox": [
+     -37.0000001,
+     -21.0,
+     -13.899999999999999,
+     52.0,
+     21.0,
+     136.2400001
+    ],
+    "faces": 16,
+    "solids": 1
+   },
+   "step": "gt/j_hook_001383.step",
+   "note": "the dataset's base boss is a closed polyline of 5 points whose moveTo start vertex is dropped, so it is a pentagon, not a hexagon (the reference volume only matches with the pentagon). The rod/handle union has the handle's start-cap rim exactly on the rod's cylinder surface."
+  },
+  {
+   "id": "gridfinity_bin_000166",
+   "benchcad_stem": "gridfinity_bin_000166_s20260505",
+   "family": "gridfinity_bin",
+   "tier": "medium",
+   "benchcad_difficulty": "medium",
+   "batch": "3a",
+   "standard": "N/A (open-source)",
+   "ops": [
+    "box",
+    "fillet",
+    "cut",
+    "union"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0; attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program (the code_gen config carries code and images only, no STEP or metrics)",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 48124.98414321641,
+    "area": 43192.9609301233,
+    "com": [
+     2.700898742646922e-15,
+     -2.7575150438507667,
+     -4.334621813962251
+    ],
+    "bbox": [
+     -42.0,
+     -42.0,
+     -21.0,
+     42.0,
+     42.0,
+     21.000000000000004
+    ],
+    "faces": 20,
+    "solids": 1
+   },
+   "step": "gt/gridfinity_bin_000166.step"
+  },
+  {
+   "id": "cam_012392",
+   "benchcad_stem": "cam_012392_s20260505",
+   "family": "cam",
+   "tier": "hard",
+   "benchcad_difficulty": "hard",
+   "batch": "3a",
+   "standard": null,
+   "ops": [
+    "polyline(64)",
+    "extrude",
+    "union",
+    "cylinder",
+    "cutThruAll",
+    "pushPoints",
+    "rect",
+    "cut"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0; attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program (the code_gen config carries code and images only, no STEP or metrics)",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 18609.00027859291,
+    "area": 5245.8472804792345,
+    "com": [
+     -0.1870580096497042,
+     -0.16401100795630075,
+     15.080649729705906
+    ],
+    "bbox": [
+     -14.004,
+     -14.056,
+     -2.0000000233721948e-07,
+     13.93,
+     13.948,
+     40.4
+    ],
+    "faces": 73,
+    "solids": 1
+   },
+   "step": "gt/cam_012392.step",
+   "note": "64-vertex lobe outline kept as a polyline (coordinates in gen3_data.json)."
+  },
+  {
+   "id": "motor_end_cap_000242",
+   "benchcad_stem": "motor_end_cap_000242_s20260507",
+   "family": "motor_end_cap",
+   "tier": "hard",
+   "benchcad_difficulty": "hard",
+   "batch": "3a",
+   "standard": "IEC 60072-1",
+   "ops": [
+    "cylinder",
+    "hole",
+    "circle",
+    "extrude",
+    "chamfer",
+    "fillet",
+    "polarArray",
+    "hole"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0; attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program (the code_gen config carries code and images only, no STEP or metrics)",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 245873.66139676693,
+    "area": 43117.68510201314,
+    "com": [
+     0.9597555474043468,
+     -1.213282709855327e-15,
+     1.6777961717319286e-15
+    ],
+    "bbox": [
+     -8.085,
+     -69.86,
+     -69.86,
+     13.365000000000002,
+     69.86,
+     69.86
+    ],
+    "faces": 26,
+    "solids": 1
+   },
+   "step": "gt/motor_end_cap_000242.step"
+  },
+  {
+   "id": "cable_routing_panel_004961",
+   "benchcad_stem": "cable_routing_panel_004961_s20260505",
+   "family": "cable_routing_panel",
+   "tier": "hard",
+   "benchcad_difficulty": "hard",
+   "batch": "3a",
+   "standard": null,
+   "ops": [
+    "box",
+    "chamfer",
+    "fillet(|Z)",
+    "rarray",
+    "rect",
+    "cutThruAll",
+    "hole",
+    "pushPoints"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0; attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program (the code_gen config carries code and images only, no STEP or metrics)",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 64258.66391410016,
+    "area": 38820.58427268054,
+    "com": [
+     -6.115283058983615e-12,
+     -1.4901508388757994,
+     -0.006662868202659294
+    ],
+    "bbox": [
+     -105.135,
+     -46.08,
+     -1.8950000000000102,
+     105.135,
+     46.08,
+     1.8950000000000102
+    ],
+    "faces": 66,
+    "solids": 1
+   },
+   "step": "gt/cable_routing_panel_004961.step",
+   "note": "vertical-edge fillets (0.83) are applied after the 0.95 top-rim chamfer, so each fillet ends on the chamfer faces."
+  },
+  {
+   "id": "helical_gear_015542",
+   "benchcad_stem": "helical_gear_015542_s20260505",
+   "family": "helical_gear",
+   "tier": "hard",
+   "benchcad_difficulty": "easy",
+   "batch": "3a",
+   "standard": "ISO 53",
+   "ops": [
+    "polyline(252)",
+    "workplane(offset)",
+    "loft",
+    "hole"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0; attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program (the code_gen config carries code and images only, no STEP or metrics)",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 7993.083756449881,
+    "area": 3398.1753718267178,
+    "com": [
+     10.275020789977788,
+     -2.0830283928701333e-15,
+     -1.004826632857274e-17
+    ],
+    "bbox": [
+     -1e-07,
+     -12.5000001,
+     -12.5000001,
+     20.550000100000002,
+     12.5000001,
+     12.5000001
+    ],
+    "faces": 255,
+    "solids": 1
+   },
+   "step": "gt/helical_gear_015542.step",
+   "note": "two 252-vertex outlines 20.55 apart, the second one turned about the axis (twisted loft); coordinates in gen3_data.json."
   }
  ],
  "known": {
   "pan_head_screw_000035": {
    "label": "ground-truth-mismatch",
    "note": "everything but the thread is exact (unthreaded 1492.07 mm3). Our swept V-groove removes 24.07 mm3 (= groove area 0.0924 mm2 x centroid path length, the geometric truth); the dataset's sweep (isFrenet=False, profile plane not exactly normal to the helix) only removes 10.08 mm3 (cause not determined), so the ground truth is not the geometric groove and cannot be matched."
+  },
+  "j_hook_001383": {
+   "label": "kernel-bug",
+   "note": "silent wrong union: rod (cylinder r6) + revolved 180 degree handle whose start-cap rim lies exactly on the rod's cylinder surface gives 14938.2 mm3 instead of 22782.6 (the part of the handle outside the rod is mostly dropped; validate reports no issue), then the next union (E2, a plate) fails booleanFailed on that body. Nudging the handle radius to 5.99 gives the right union (and the whole part then matches CadQuery for the same nudged input: 32266.86 vs 32266.87), so the translation is right; the reference is the exact-coincident input."
+  },
+  "cable_routing_panel_004961": {
+   "label": "kernel-bug",
+   "note": "fillet of the |Z corner edges after the top-rim chamfer: blendFailed for one of the four symmetric corner edges (S.e1|S.e2), the other three fillet fine alone, and success is erratic in radius (ok at 0.3 and 0.95, fails at 0.7-0.9, 1.0, 1.2) and chamfer distance (fails at 0.95 and 1.5, ok at 0.5-1.0 otherwise); fillet-ends-on-chamfer-faces corner patch."
   }
  },
  "knownStep": {
   "pan_head_screw_000035": {
    "label": "ground-truth-mismatch",
    "note": "the reference STEP is itself non-manifold (one EDGE_CURVE is used by four oriented edges of the thread faces); we import it faithfully (volume, area, bbox, com all match) and validate reports SHELL_NONMANIFOLD for that edge."
+  },
+  "ball_knob_007575": {
+   "label": "kernel-bug",
+   "note": "STEP import of the reference's full sphere face (one face, seam + two pole points, OCC primitive sphere) gives lump#1 signed volume 0 (VOLUME_NONPOSITIVE), so only the stem lump counts (3178.98 of 15479.3). Same family as the dome_cap sphere-pole import failure; regen of the translation is exact."
+  },
+  "motor_end_cap_000242": {
+   "label": "kernel-bug",
+   "note": "STEP import: SHELL_ORIENTATION on the cylinder|torus edge (outer rim fillet, r 69.86 / minor 0.91) and torus|plane edge: two face uses run the same direction, volume 8.66% low (224589 vs 245874). The geometry is the dataset's CadQuery output; our regen of the translation is exact."
+  },
+  "j_hook_001383": {
+   "label": "kernel-bug",
+   "note": "STEP import: volume 32302.8365 and area 12218.3437 match the reference, validate is clean, but the body box (mesh-derived) stops at z 102.24 instead of 136.24: the half-torus handle face does not contribute to the box (not tessellated)."
   }
  },
  "tolerances": {

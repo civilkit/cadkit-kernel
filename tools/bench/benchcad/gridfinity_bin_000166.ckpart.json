@@ -1,0 +1,273 @@
+{
+ "format": "ck-part",
+ "version": 1,
+ "name": "gridfinity_bin",
+ "features": [
+  {
+   "type": "sketch",
+   "id": "F1",
+   "plane": {
+    "kind": "std",
+    "id": "top"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": -42,
+     "y": -42
+    },
+    {
+     "id": "p2",
+     "x": 42,
+     "y": -42
+    },
+    {
+     "id": "p3",
+     "x": 42,
+     "y": 42
+    },
+    {
+     "id": "p4",
+     "x": -42,
+     "y": 42
+    }
+   ],
+   "entities": [
+    {
+     "type": "line",
+     "id": "e1",
+     "p1": "p1",
+     "p2": "p2"
+    },
+    {
+     "type": "line",
+     "id": "e2",
+     "p1": "p2",
+     "p2": "p3"
+    },
+    {
+     "type": "line",
+     "id": "e3",
+     "p1": "p3",
+     "p2": "p4"
+    },
+    {
+     "type": "line",
+     "id": "e4",
+     "p1": "p4",
+     "p2": "p1"
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F2",
+   "op": "add",
+   "sketch": "F1",
+   "end": "mid",
+   "depth": 42
+  },
+  {
+   "type": "fillet",
+   "id": "F3",
+   "radius": 1.24,
+   "edges": [
+    {
+     "faces": [
+      "F2.C0",
+      "F2.S.e1"
+     ],
+     "at": [
+      0,
+      -21,
+      42
+     ]
+    },
+    {
+     "faces": [
+      "F2.C0",
+      "F2.S.e2"
+     ],
+     "at": [
+      42,
+      -21,
+      0
+     ]
+    },
+    {
+     "faces": [
+      "F2.C0",
+      "F2.S.e3"
+     ],
+     "at": [
+      0,
+      -21,
+      -42
+     ]
+    },
+    {
+     "faces": [
+      "F2.C0",
+      "F2.S.e4"
+     ],
+     "at": [
+      -42,
+      -21,
+      0
+     ]
+    }
+   ]
+  },
+  {
+   "type": "plane",
+   "id": "F4",
+   "mode": "offset",
+   "base": {
+    "kind": "std",
+    "id": "top"
+   },
+   "offset": 1.115
+  },
+  {
+   "type": "sketch",
+   "id": "F5",
+   "plane": {
+    "kind": "feature",
+    "id": "F4"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": -39.77,
+     "y": -39.77
+    },
+    {
+     "id": "p2",
+     "x": 39.77,
+     "y": -39.77
+    },
+    {
+     "id": "p3",
+     "x": 39.77,
+     "y": 39.77
+    },
+    {
+     "id": "p4",
+     "x": -39.77,
+     "y": 39.77
+    }
+   ],
+   "entities": [
+    {
+     "type": "line",
+     "id": "e1",
+     "p1": "p1",
+     "p2": "p2"
+    },
+    {
+     "type": "line",
+     "id": "e2",
+     "p1": "p2",
+     "p2": "p3"
+    },
+    {
+     "type": "line",
+     "id": "e3",
+     "p1": "p3",
+     "p2": "p4"
+    },
+    {
+     "type": "line",
+     "id": "e4",
+     "p1": "p4",
+     "p2": "p1"
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F6",
+   "op": "cut",
+   "sketch": "F5",
+   "end": "mid",
+   "depth": 39.97
+  },
+  {
+   "type": "plane",
+   "id": "F7",
+   "mode": "offset",
+   "base": {
+    "kind": "std",
+    "id": "top"
+   },
+   "offset": 12.25
+  },
+  {
+   "type": "sketch",
+   "id": "F8",
+   "plane": {
+    "kind": "feature",
+    "id": "F7"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": -38.77,
+     "y": -39.77
+    },
+    {
+     "id": "p2",
+     "x": 38.77,
+     "y": -39.77
+    },
+    {
+     "id": "p3",
+     "x": 38.77,
+     "y": -24.57
+    },
+    {
+     "id": "p4",
+     "x": -38.77,
+     "y": -24.57
+    }
+   ],
+   "entities": [
+    {
+     "type": "line",
+     "id": "e1",
+     "p1": "p1",
+     "p2": "p2"
+    },
+    {
+     "type": "line",
+     "id": "e2",
+     "p1": "p2",
+     "p2": "p3"
+    },
+    {
+     "type": "line",
+     "id": "e3",
+     "p1": "p3",
+     "p2": "p4"
+    },
+    {
+     "type": "line",
+     "id": "e4",
+     "p1": "p4",
+     "p2": "p1"
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F9",
+   "op": "add",
+   "sketch": "F8",
+   "end": "blind",
+   "depth": 3.5
+  }
+ ]
+}

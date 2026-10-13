@@ -1,0 +1,253 @@
+{
+ "format": "ck-part",
+ "version": 1,
+ "name": "motor_end_cap",
+ "features": [
+  {
+   "type": "sketch",
+   "id": "F1",
+   "plane": {
+    "kind": "std",
+    "id": "right"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 0,
+     "y": 0
+    }
+   ],
+   "entities": [
+    {
+     "type": "circle",
+     "id": "e1",
+     "c": "p1",
+     "r": 69.86
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F2",
+   "op": "add",
+   "sketch": "F1",
+   "end": "mid",
+   "depth": 16.17
+  },
+  {
+   "type": "sketch",
+   "id": "F3",
+   "plane": {
+    "kind": "std",
+    "id": "right"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 0,
+     "y": 0
+    }
+   ],
+   "entities": [
+    {
+     "type": "circle",
+     "id": "e1",
+     "c": "p1",
+     "r": 20.62
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F4",
+   "op": "cut",
+   "sketch": "F3",
+   "end": "throughBoth",
+   "depth": 10
+  },
+  {
+   "type": "plane",
+   "id": "F5",
+   "mode": "offset",
+   "base": {
+    "kind": "std",
+    "id": "right"
+   },
+   "offset": 8.085
+  },
+  {
+   "type": "sketch",
+   "id": "F6",
+   "plane": {
+    "kind": "feature",
+    "id": "F5"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 0,
+     "y": 0
+    }
+   ],
+   "entities": [
+    {
+     "type": "circle",
+     "id": "e1",
+     "c": "p1",
+     "r": 36.58
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F7",
+   "op": "add",
+   "sketch": "F6",
+   "end": "blind",
+   "depth": 5.28
+  },
+  {
+   "type": "chamfer",
+   "id": "F8",
+   "chamferType": "equal",
+   "distance": 1.4,
+   "edges": [
+    {
+     "faces": [
+      "F7.C1",
+      "F7.S.e1"
+     ],
+     "at": [
+      13.365,
+      0,
+      36.58
+     ]
+    }
+   ]
+  },
+  {
+   "type": "fillet",
+   "id": "F9",
+   "radius": 0.91,
+   "edges": [
+    {
+     "faces": [
+      "F2.C0",
+      "F2.S.e1"
+     ],
+     "at": [
+      -8.085,
+      0,
+      69.86
+     ]
+    },
+    {
+     "faces": [
+      "F2.C0",
+      "F4.S.e1"
+     ],
+     "at": [
+      -8.085,
+      14.115,
+      -15.031
+     ]
+    }
+   ]
+  },
+  {
+   "type": "sketch",
+   "id": "F10",
+   "plane": {
+    "kind": "std",
+    "id": "right"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 44.32,
+     "y": 0
+    }
+   ],
+   "entities": [
+    {
+     "type": "circle",
+     "id": "e1",
+     "c": "p1",
+     "r": 1.65
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F11",
+   "op": "cut",
+   "sketch": "F10",
+   "end": "throughBoth",
+   "depth": 10
+  },
+  {
+   "type": "cpattern",
+   "id": "F11p",
+   "seeds": [
+    "F11"
+   ],
+   "axis": {
+    "kind": "axis",
+    "axis": "x"
+   },
+   "count": 8,
+   "angle": 360,
+   "equal": true
+  },
+  {
+   "type": "sketch",
+   "id": "F12",
+   "plane": {
+    "kind": "std",
+    "id": "right"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 64.75,
+     "y": 0
+    }
+   ],
+   "entities": [
+    {
+     "type": "circle",
+     "id": "e1",
+     "c": "p1",
+     "r": 1.73
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F13",
+   "op": "cut",
+   "sketch": "F12",
+   "end": "throughBoth",
+   "depth": 10
+  },
+  {
+   "type": "cpattern",
+   "id": "F13p",
+   "seeds": [
+    "F13"
+   ],
+   "axis": {
+    "kind": "axis",
+    "axis": "x"
+   },
+   "count": 8,
+   "angle": 360,
+   "equal": true
+  }
+ ]
+}
