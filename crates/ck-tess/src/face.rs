@@ -259,14 +259,15 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
     let wsh = if ssi_hole { 0.0 } else { 1.0 };
     // full spheres / tori are opened at their parameter domain [0, p] (oracle bounds)
     let full_dom = matches!(surf, Surface::Sphere { .. } | Surface::Torus { .. });
-    let cut = if cover {
+    let cut0 = cut;
+    let mut cut = if cover {
         FaceCut::default()
     } else if full_dom {
         FaceCut { u: pu, v: pv }
     } else {
         cut
     };
-    let (cu, cv) = if cover {
+    let (mut cu, mut cv) = if cover {
         (None, None)
     } else {
         (pu.map(|p| cut.u.unwrap_or(p) - p * wsh), pv.map(|p| cut.v.unwrap_or(p) - p * wsh))
@@ -380,6 +381,25 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
         polys.push(poly);
     }
 
+    // A partial sphere / torus (a fillet band) whose unwrapped boundary spills out of the oracle's [0, p] window (a torus fillet
+    // band spans v = 3pi/2 .. 2pi + a) cannot be mapped into it: the segments beyond the window edge would be shifted a
+    // period down and the strip folds over itself (mesh area/volume wrong). Open such a direction at the face's own cut.
+    if full_dom && !cover {
+        let spill = |lo: f64, hi: f64, p: f64| lo < -1e-9 || hi > p + 1e-9;
+        if let (Some(p), Some(c)) = (pu, cut0.u) {
+            if spill(u_lo, u_hi, p) {
+                cut.u = Some(c);
+                cu = Some(c - p * wsh);
+            }
+        }
+        if let (Some(p), Some(c)) = (pv, cut0.v) {
+            if spill(v_lo, v_hi, p) {
+                cut.v = Some(c);
+                cv = Some(c - p * wsh);
+            }
+        }
+    }
+
     // ---- 2. map into the strip and add boundary segments
     let mut chains: Vec<(Vec<BPt>, bool)> = vec![];
     for poly in polys {
@@ -454,6 +474,13 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
             _ => x,
         }
     };
+    // A segment lying exactly on the window's upper edge `c + p` is that edge's boundary (not the lower edge a period
+    // down) when the whole face sits below it: lo > c and hi == c + p (a partial torus band ending on its outer equator).
+    let on_top = |ya: f64, yb: f64, lo: f64, hi: f64, c: f64, p: f64| -> bool {
+        let eps = 1e-9 * (1.0 + p);
+        let top = c + p;
+        (ya - top).abs() <= eps && (yb - top).abs() <= eps && (hi - top).abs() <= eps && lo > c + eps
+    };
     let mut seg_list: Vec<(BPt, BPt)> = vec![];
     for (chain, closed) in &chains {
         let n = chain.len();
@@ -474,13 +501,17 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
             }
             if let (Some(c), Some(p)) = (cu, pu) {
                 let mid = 0.5 * (a.uv.x + q.uv.x);
-                a.uv.x = shift_into(a.uv.x, mid, c, p);
-                q.uv.x = shift_into(q.uv.x, mid, c, p);
+                if !on_top(a.uv.x, q.uv.x, u_lo, u_hi, c, p) {
+                    a.uv.x = shift_into(a.uv.x, mid, c, p);
+                    q.uv.x = shift_into(q.uv.x, mid, c, p);
+                }
             }
             if let (Some(c), Some(p)) = (cv, pv) {
                 let mid = 0.5 * (a.uv.y + q.uv.y);
-                a.uv.y = shift_into(a.uv.y, mid, c, p);
-                q.uv.y = shift_into(q.uv.y, mid, c, p);
+                if !on_top(a.uv.y, q.uv.y, v_lo, v_hi, c, p) {
+                    a.uv.y = shift_into(a.uv.y, mid, c, p);
+                    q.uv.y = shift_into(q.uv.y, mid, c, p);
+                }
             }
             a.uv.x = snap(a.uv.x, cu, pu, eps_u);
             q.uv.x = snap(q.uv.x, cu, pu, eps_u);
