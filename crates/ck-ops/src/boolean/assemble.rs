@@ -388,6 +388,13 @@ pub struct OutFace {
     pub walk: Vec<((usize, usize, usize), Vec<Vec<He>>)>,
 }
 
+/// The edge is traversed in both directions by one boundary loop of the
+/// original face: the seam of a periodic face, wherever `relocate_seams` put it
+/// (a seam moved off u = 0 is not recognised by its parameter).
+fn bound_twice(af: &super::imprint::ArrFace, e: usize) -> bool {
+    af.bound.iter().any(|l| l.contains(&(e, false)) && l.contains(&(e, true)))
+}
+
 /// Is arrangement edge `e` the seam (u = 0 / 2π generator) of periodic `s`?
 fn is_seam_edge(arr: &Arrangement, s: &Surface, e: usize) -> bool {
     let ed = &arr.edges[e];
@@ -612,23 +619,35 @@ pub fn select_with(
         let periodic = af.surface.periods().0.is_some();
         let mut comp: Vec<usize> = (0..members.len()).collect();
         let mut cancelled: Vec<usize> = vec![];
-        for &(mi, h) in &tagged {
-            if h.1 {
-                continue;
+        // Seam edges are decided after every other shared edge: whether the
+        // two sides of a seam are "already fused" depends on all the other
+        // cancellations, not on the order the half-edges happen to be listed
+        // (a cylinder band kept on both sides of its seam above a cut, joined
+        // to the part below it only along cut edges listed later, lost the
+        // seam: a dangling slit and a second loop, lateral area 0).
+        for seam_pass in [false, true] {
+            for &(mi, h) in &tagged {
+                if h.1 {
+                    continue;
+                }
+                let Some(&(mj, _)) = tagged.iter().find(|x| x.1 == (h.0, true)) else { continue };
+                // both coedges inside ONE fragment: the seam twin of a periodic
+                // face, which is no shared edge (cancelling it would drop the
+                // seam of a merged cylinder: its lateral area integrates to 0)
+                if mi == mj && periodic {
+                    continue;
+                }
+                let seam = same_face && periodic && (is_seam_edge(arr, &af.surface, h.0) || bound_twice(af, h.0));
+                if seam != seam_pass {
+                    continue;
+                }
+                let (ri, rj) = (find(&mut comp, mi), find(&mut comp, mj));
+                if seam && ri == rj {
+                    continue;
+                }
+                comp[ri.max(rj)] = ri.min(rj);
+                cancelled.push(h.0);
             }
-            let Some(&(mj, _)) = tagged.iter().find(|x| x.1 == (h.0, true)) else { continue };
-            // both coedges inside ONE fragment: the seam twin of a periodic
-            // face, which is no shared edge (cancelling it would drop the
-            // seam of a merged cylinder: its lateral area integrates to 0)
-            if mi == mj && periodic {
-                continue;
-            }
-            let (ri, rj) = (find(&mut comp, mi), find(&mut comp, mj));
-            if same_face && periodic && ri == rj && is_seam_edge(arr, &af.surface, h.0) {
-                continue;
-            }
-            comp[ri.max(rj)] = ri.min(rj);
-            cancelled.push(h.0);
         }
         let hes: Vec<He> = tagged.iter().map(|x| x.1).filter(|h| !cancelled.contains(&h.0)).collect();
         let cycles = walk(arr, &af.surface, sense, &hes);

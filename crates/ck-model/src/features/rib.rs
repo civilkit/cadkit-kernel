@@ -106,7 +106,7 @@ pub fn exec_rib(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<()
         let profile = Profile::new(sk.frame, vec![ProfileRegion { outer, holes: vec![] }]);
         let Ok(tool) = extrude(&f.id, &profile, ExtrudeOpts::mid(t)) else { continue };
         let cut = match ck_ops::boolean::boolean(&tool, &body, ck_ops::boolean::Op::Cut, super::TOL) {
-            Ok(c) if !c.no_effect => c.body,
+            Ok(c) if !c.no_effect && c.mismatch.is_none() => c.body,
             r => {
                 if std::env::var_os("CK_RIB_DBG").is_some() {
                     eprintln!("RIB side {s}: boolean {:?}", r.map(|c| c.no_effect).map_err(|e| format!("{e:?}")));
