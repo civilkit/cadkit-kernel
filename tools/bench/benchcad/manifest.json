@@ -2026,25 +2026,9 @@
    "label": "ground-truth-mismatch",
    "note": "the reference STEP is itself non-manifold (one EDGE_CURVE is used by four oriented edges of the thread faces); we import it faithfully (volume, area, bbox, com all match) and validate reports SHELL_NONMANIFOLD for that edge."
   },
-  "ball_knob_007575": {
-   "label": "kernel-bug",
-   "note": "STEP import of the reference's full sphere face (one face, seam + two pole points, OCC primitive sphere) gives lump#1 signed volume 0 (VOLUME_NONPOSITIVE), so only the stem lump counts (3178.98 of 15479.3). Same family as the dome_cap sphere-pole import failure; regen of the translation is exact."
-  },
-  "motor_end_cap_000242": {
-   "label": "kernel-bug",
-   "note": "STEP import: SHELL_ORIENTATION on the cylinder|torus edge (outer rim fillet, r 69.86 / minor 0.91) and torus|plane edge: two face uses run the same direction, volume 8.66% low (224589 vs 245874). The geometry is the dataset's CadQuery output; our regen of the translation is exact."
-  },
   "j_hook_001383": {
    "label": "kernel-bug",
    "note": "STEP import: volume 32302.8365 and area 12218.3437 match the reference, validate is clean, but the body box (mesh-derived) stops at z 102.24 instead of 136.24: the half-torus handle face does not contribute to the box (not tessellated)."
-  },
-  "rect_frame_008694": {
-   "label": "kernel-bug",
-   "note": "STEP import: SHELL_ORIENTATION (8 issues) on the fillet faces of the reference; volume 43591.8 vs 43446.9 (+0.33%), area 27989.1 vs 28324.4 (-1.18%). Same family as motor_end_cap / rubber-foot (OCCT fillet faces); the reference STEP is the CadQuery output."
-  },
-  "snap_clip_000052": {
-   "label": "kernel-gap",
-   "note": "STEP import: PARABOLA curve is not supported (chamfer cone/plane intersection from OCCT)."
   },
   "propeller_000192": {
    "label": "kernel-bug",

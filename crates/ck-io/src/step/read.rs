@@ -289,6 +289,28 @@ impl<'a> Rd<'a> {
                 }
                 Ok(Curve::Ellipse { frame: f, a: sa, b: sb })
             }
+            // STEP conics are centred on the vertex / centre; ck-geom's Conic is
+            // in focus form with the polar axis towards the vertex (the near
+            // branch of a hyperbola, the only one STEP can express)
+            "PARABOLA" => {
+                let f = self.axis2(a.get(1).and_then(Val::as_ref).ok_or_else(|| bad(id, "PARABOLA without placement"))?)?;
+                let fd = self.real(id, a.get(2), "focal distance")? * self.len;
+                if fd <= 0.0 {
+                    return Err(bad(id, "non-positive focal distance"));
+                }
+                let o = f.o + f.x * fd;
+                Ok(Curve::Conic { frame: Frame { o, x: -f.x, y: f.z.cross(-f.x), z: f.z }, p: 2.0 * fd, e: 1.0 })
+            }
+            "HYPERBOLA" => {
+                let f = self.axis2(a.get(1).and_then(Val::as_ref).ok_or_else(|| bad(id, "HYPERBOLA without placement"))?)?;
+                let (sa, sb) = (self.real(id, a.get(2), "semi axis")? * self.len, self.real(id, a.get(3), "semi imaginary axis")? * self.len);
+                if sa <= 0.0 || sb <= 0.0 {
+                    return Err(bad(id, "non-positive semi axis"));
+                }
+                let c = (sa * sa + sb * sb).sqrt();
+                let o = f.o + f.x * c;
+                Ok(Curve::Conic { frame: Frame { o, x: -f.x, y: f.z.cross(-f.x), z: f.z }, p: sb * sb / sa, e: c / sa })
+            }
             "TRIMMED_CURVE" => {
                 let basis = self.curve(a.get(1).and_then(Val::as_ref).ok_or_else(|| bad(id, "TRIMMED_CURVE without basis"))?)?;
                 // the edge's vertices decide the bounds; sense_agreement picks the direction
@@ -574,8 +596,13 @@ impl<'a> Rd<'a> {
                 t1 -= p;
             }
         } else if t1 <= t0 {
-            // runs against the carrier direction: flip the carrier
-            curve = curve.reversed();
+            // the carrier runs from the second vertex to the first (a wrong
+            // same_sense flag): the edge starts at the other vertex
+            if matches!(curve, Curve::BSpline(_)) {
+                // (splines: flip the carrier as well, the closed / multi-pass
+                // parameter search below depends on it)
+                curve = curve.reversed();
+            }
             std::mem::swap(&mut lo, &mut hi);
             std::mem::swap(&mut plo, &mut phi);
             lo_is_start = !lo_is_start;
@@ -628,6 +655,7 @@ impl<'a> Rd<'a> {
         let sense = a.get(3).and_then(Val::as_bool).unwrap_or(true);
         let mut loops = Vec::new();
         let mut flagged: Vec<bool> = Vec::new();
+        let mut vertex_loop = false;
         let mut outer = None;
         for (bi, bid) in bounds.iter().enumerate() {
             let ba = self.simple(*bid, &["FACE_BOUND", "FACE_OUTER_BOUND"])?;
@@ -635,6 +663,7 @@ impl<'a> Rd<'a> {
             let orient = ba.get(2).and_then(Val::as_bool).unwrap_or(true);
             let Some(mut l) = self.edge_loop(lid)? else {
                 self.warnings.push(ImportError::new("skipped", Some(lid), "vertex loop ignored"));
+                vertex_loop = true;
                 continue;
             };
             if l.is_empty() {
@@ -657,6 +686,14 @@ impl<'a> Rd<'a> {
             if o < loops.len() && o != 0 {
                 loops.swap(0, o);
                 flagged.swap(0, o);
+            }
+        }
+        // a whole sphere / torus bounded only by a vertex (OCCT primitive
+        // spheres): the seam structure ck-topo uses for a full surface
+        if loops.is_empty() && vertex_loop && matches!(surface, Surface::Sphere { .. } | Surface::Torus { .. }) {
+            if let Some(l) = self.full_periodic_loop(&surface, sense) {
+                loops.push(l);
+                flagged.push(false);
             }
         }
         Ok(FaceSpec { id, surface, sense, loops, flagged })
@@ -1455,7 +1492,7 @@ impl Rd<'_> {
             2 if wind[0].2 == -wind[1].2 => {
                 let (ia, ib) = (wind[0].0, wind[1].0);
                 let (la, lb) = (loops[ia].clone(), loops[ib].clone());
-                let joined = self.join_two(id, surf, d, per, pers[1 - d], la, lb, wind[0].2, rest)?;
+                let joined = self.join_two(id, surf, sense, d, per, pers[1 - d], la, lb, wind[0].2, rest)?;
                 // replace the first by the joined loop, drop the second
                 loops[ia] = joined;
                 loops.remove(ib);
@@ -1580,6 +1617,7 @@ impl Rd<'_> {
         &mut self,
         id: u32,
         surf: &Surface,
+        sense: bool,
         d: usize,
         per: f64,
         per_o: Option<f64>,
@@ -1625,7 +1663,21 @@ impl Rd<'_> {
         let target_d = s + wa as f64 * per;
         let mut sh = unit2(d, ((target_d - comp(b0, d)) / per).round() * per);
         if let Some(po) = per_o {
-            let k = ((comp(a0, o) - comp(b0, o)) / po).round();
+            // B's copy along the other period: the face lies to the left of A's
+            // travel (seen against the face normal, so to the right for a
+            // reversed face). When the loops are not half a period apart the
+            // nearest copy is the same thing; at exactly half (a half torus)
+            // this orientation is all there is to decide by.
+            let plus_o = (if d == 0 { wa > 0 } else { wa < 0 }) == sense;
+            let diff = comp(b0, o) - comp(a0, o);
+            let mut k = ((comp(a0, o) - comp(b0, o)) / po).round();
+            let lo_hi = |k: f64| diff + k * po;
+            // wanted: o_b - o_a in (0, po) for plus_o, (-po, 0) otherwise
+            let want_k = if plus_o { (-diff / po).ceil() } else { (-diff / po).floor() };
+            let near_half = ((lo_hi(k)).abs() - 0.5 * po).abs() < 1e-6 * po;
+            if near_half {
+                k = want_k;
+            }
             sh = with(sh, o, k * po);
         }
         for c in rb.iter_mut() {

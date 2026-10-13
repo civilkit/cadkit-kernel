@@ -812,17 +812,9 @@
   }
  },
  "knownStep": {
-  "rubber-foot": {
-   "label": "kernel-bug:step-import-torus-fillet",
-   "note": "SHELL_ORIENTATION x2, volume 44% low (fillet torus rim from OCCT; same family as BenchCAD B3-3)."
-  },
   "conduit-snap-clip": {
-   "label": "kernel-gap:step-import-hyperbola",
-   "note": "the reference STEP carries a HYPERBOLA curve, which ck-io does not support."
-  },
-  "rotary-potentiometer": {
-   "label": "kernel-gap:step-import-hyperbola",
-   "note": "the reference STEP carries a HYPERBOLA curve, which ck-io does not support."
+   "label": "ground-truth-mismatch",
+   "note": "the reference STEP is itself non-manifold (one EDGE_CURVE is used by four oriented edges); volume and area match to 1e-9 and we import it faithfully, validate reports SHELL_NONMANIFOLD for that edge."
   }
  },
  "engine_note": "examples read from the repository HEAD (brepjs 20.5.0) and run with the npm package brepjs 20.5.0 + occt-wasm 5.6.0; the deployed playground build is 20.4.0 (commit 2907fb1) and was not compared"

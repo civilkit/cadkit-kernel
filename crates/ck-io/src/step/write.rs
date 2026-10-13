@@ -399,8 +399,30 @@ impl StepWriter {
                     )),
                 }
             }
-            // GUESS: no oracle evidence of STEP CONIC entities; conic and
-            // sinusoid edges are written as their B-spline approximations.
+            // GUESS: no oracle evidence of STEP conic entities. Conics are
+            // written as the analytic ELLIPSE / PARABOLA / HYPERBOLA (the
+            // inverse of the importer's focus-form mapping) so they survive a
+            // round trip exactly; sinusoids as B-spline approximations.
+            Curve::Conic { frame, p, e } if *e >= 0.0 && *p > 0.0 && e.is_finite() => {
+                if *e == 0.0 {
+                    let a = self.frame(frame);
+                    return self.ent(&format!("CIRCLE('',#{a},{})", real(*p)));
+                } else if *e < 1.0 {
+                    let a = p / (1.0 - e * e);
+                    let b = p / (1.0 - e * e).sqrt();
+                    let ax = self.axis2(frame.o - frame.x * (a * e), frame.z, frame.x);
+                    self.ent(&format!("ELLIPSE('',#{ax},{},{})", real(a), real(b)))
+                } else if *e == 1.0 {
+                    let f = 0.5 * p;
+                    let ax = self.axis2(frame.o + frame.x * f, frame.z, -frame.x);
+                    self.ent(&format!("PARABOLA('',#{ax},{})", real(f)))
+                } else {
+                    let a = p / (e * e - 1.0);
+                    let b = (a * p).sqrt();
+                    let ax = self.axis2(frame.o + frame.x * (a * e), frame.z, -frame.x);
+                    self.ent(&format!("HYPERBOLA('',#{ax},{},{})", real(a), real(b)))
+                }
+            }
             Curve::Conic { .. } | Curve::Sinusoid { .. } => {
                 let bs = ck_geom::convert::curve_to_nurbs(c, c.range().0, c.range().1);
                 self.curve(&Curve::BSpline(bs))
@@ -539,7 +561,7 @@ impl StepWriter {
             Curve::Line { o, d } if ed.t0 != 0.0 => self.curve(&Curve::Line { o: *o + *d * ed.t0, d: *d }),
             // a spline edge that covers part of its curve is written as that
             // clamped sub-span (the oracle does the same), not the whole curve
-            Curve::BSpline(bs) => match sub_span(bs, ed.t0, ed.t1) {
+            Curve::BSpline(bs) if tail == e => match sub_span(bs, ed.t0, ed.t1) {
                 Some(mut sub) => {
                     // the end poles ARE the edge's vertices (no rounding noise)
                     let (p0, p1) = (body.vertex(ed.v0).p, body.vertex(body.edge(tail).v1).p);
