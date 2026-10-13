@@ -192,6 +192,11 @@ for (const r of runBench({ wasm: wasmB })) {
   if (!r.pass && !quiet) process.stderr.write(`bench.benchcad ${r.id}: ${r.known ? r.known.label : 'UNLABELLED'}: ${r.bad[0]}\n`);
 }
 
+// 2d'. brepjs reference STEP files through importStep (the dataset's own OCCT output; HARD via bench.brepjs.step)
+for (const r of runBench({ wasm: wasmB, set: 'brepjs' })) {
+  if (r.import !== null) bump('bench.brepjs.step', r.import);
+}
+
 // 2c. naming.stable (SOFT): references to earlier-feature faces/edges still point at the
 // same geometric entity after upstream dimension edits (tools/naming_stability.mjs)
 for (const r of runNaming({ ours: wasmB })) if (!r.neg && r.edit !== '(baseline)') bump('naming.stable', r.cls === 'ok');
@@ -206,6 +211,10 @@ if (existsSync(gdir)) for (const f of readdirSync(gdir).filter((f) => f.endsWith
   const st = '{"id":2,"msg":{"type":"step","name":"t"}}';
   const [a, b] = [A, B].map((m) => { const k = new Kernel(m); k.request(req); return norm(k.request(st)); });
   bump('step', a === b);
+  // same replies with every number rounded to 9 significant digits and -0 as 0: only
+  // float-order noise (the oracle's own solver residue) separates these from identical
+  const near = (t) => t.replace(/-?\d+\.\d*(?:E-?\d+)?/g, (x) => { const v = Number(x); return v === 0 ? '0' : v.toPrecision(9); });
+  bump('step.near', near(a) === near(b));
 }
 if (!quiet) process.stderr.write('\n');
 if (importFail.length && !quiet) console.log(importFail.join('\n'));

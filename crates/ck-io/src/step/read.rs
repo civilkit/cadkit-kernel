@@ -64,6 +64,8 @@ struct FaceSpec {
     surface: Surface,
     sense: bool,
     loops: Vec<Vec<Co>>,
+    /// loop i came from a FACE_BOUND with orientation `.F.` (already applied)
+    flagged: Vec<bool>,
 }
 
 struct Rd<'a> {
@@ -286,6 +288,28 @@ impl<'a> Rd<'a> {
                     return Err(bad(id, "non-positive semi axis"));
                 }
                 Ok(Curve::Ellipse { frame: f, a: sa, b: sb })
+            }
+            // STEP conics are centred on the vertex / centre; ck-geom's Conic is
+            // in focus form with the polar axis towards the vertex (the near
+            // branch of a hyperbola, the only one STEP can express)
+            "PARABOLA" => {
+                let f = self.axis2(a.get(1).and_then(Val::as_ref).ok_or_else(|| bad(id, "PARABOLA without placement"))?)?;
+                let fd = self.real(id, a.get(2), "focal distance")? * self.len;
+                if fd <= 0.0 {
+                    return Err(bad(id, "non-positive focal distance"));
+                }
+                let o = f.o + f.x * fd;
+                Ok(Curve::Conic { frame: Frame { o, x: -f.x, y: f.z.cross(-f.x), z: f.z }, p: 2.0 * fd, e: 1.0 })
+            }
+            "HYPERBOLA" => {
+                let f = self.axis2(a.get(1).and_then(Val::as_ref).ok_or_else(|| bad(id, "HYPERBOLA without placement"))?)?;
+                let (sa, sb) = (self.real(id, a.get(2), "semi axis")? * self.len, self.real(id, a.get(3), "semi imaginary axis")? * self.len);
+                if sa <= 0.0 || sb <= 0.0 {
+                    return Err(bad(id, "non-positive semi axis"));
+                }
+                let c = (sa * sa + sb * sb).sqrt();
+                let o = f.o + f.x * c;
+                Ok(Curve::Conic { frame: Frame { o, x: -f.x, y: f.z.cross(-f.x), z: f.z }, p: sb * sb / sa, e: c / sa })
             }
             "TRIMMED_CURVE" => {
                 let basis = self.curve(a.get(1).and_then(Val::as_ref).ok_or_else(|| bad(id, "TRIMMED_CURVE without basis"))?)?;
@@ -572,8 +596,13 @@ impl<'a> Rd<'a> {
                 t1 -= p;
             }
         } else if t1 <= t0 {
-            // runs against the carrier direction: flip the carrier
-            curve = curve.reversed();
+            // the carrier runs from the second vertex to the first (a wrong
+            // same_sense flag): the edge starts at the other vertex
+            if matches!(curve, Curve::BSpline(_)) {
+                // (splines: flip the carrier as well, the closed / multi-pass
+                // parameter search below depends on it)
+                curve = curve.reversed();
+            }
             std::mem::swap(&mut lo, &mut hi);
             std::mem::swap(&mut plo, &mut phi);
             lo_is_start = !lo_is_start;
@@ -625,6 +654,8 @@ impl<'a> Rd<'a> {
         let surface = self.surface(a.get(2).and_then(Val::as_ref).ok_or_else(|| bad(id, "face without surface"))?)?;
         let sense = a.get(3).and_then(Val::as_bool).unwrap_or(true);
         let mut loops = Vec::new();
+        let mut flagged: Vec<bool> = Vec::new();
+        let mut vertex_loop = false;
         let mut outer = None;
         for (bi, bid) in bounds.iter().enumerate() {
             let ba = self.simple(*bid, &["FACE_BOUND", "FACE_OUTER_BOUND"])?;
@@ -632,6 +663,7 @@ impl<'a> Rd<'a> {
             let orient = ba.get(2).and_then(Val::as_bool).unwrap_or(true);
             let Some(mut l) = self.edge_loop(lid)? else {
                 self.warnings.push(ImportError::new("skipped", Some(lid), "vertex loop ignored"));
+                vertex_loop = true;
                 continue;
             };
             if l.is_empty() {
@@ -648,13 +680,23 @@ impl<'a> Rd<'a> {
                 outer = Some(bi.min(loops.len()));
             }
             loops.push(l);
+            flagged.push(!orient);
         }
         if let Some(o) = outer {
             if o < loops.len() && o != 0 {
                 loops.swap(0, o);
+                flagged.swap(0, o);
             }
         }
-        Ok(FaceSpec { id, surface, sense, loops })
+        // a whole sphere / torus bounded only by a vertex (OCCT primitive
+        // spheres): the seam structure ck-topo uses for a full surface
+        if loops.is_empty() && vertex_loop && matches!(surface, Surface::Sphere { .. } | Surface::Torus { .. }) {
+            if let Some(l) = self.full_periodic_loop(&surface, sense) {
+                loops.push(l);
+                flagged.push(false);
+            }
+        }
+        Ok(FaceSpec { id, surface, sense, loops, flagged })
     }
 
     // ------------------------------------------------------------ driver
@@ -719,6 +761,7 @@ impl<'a> Rd<'a> {
             for fid in self.shell_faces(shid)? {
                 specs.push(self.face_spec(fid)?);
             }
+            self.unflip_inconsistent_bounds(&mut specs);
             self.merge_full_periodic(&mut specs);
             queue.extend(specs.into_iter().map(|s| Some((shell, s))));
             shell_ids.push((shell, flipped));
@@ -731,6 +774,52 @@ impl<'a> Rd<'a> {
         }
         self.orient_shells(lump, &shell_ids);
         Ok(())
+    }
+
+    /// Some writers (OpenCASCADE, on faces of reversed-axis tori) give a
+    /// FACE_BOUND the orientation `.F.` although the loop as written already
+    /// runs against its neighbours' edge uses. A flagged loop whose edges all
+    /// run the same way as the faces next to them is put back the way it was
+    /// written, which then makes every shared edge consistent.
+    fn unflip_inconsistent_bounds(&self, specs: &mut [FaceSpec]) {
+        // edge -> uses (face index, loop index, rev)
+        let mut uses: HashMap<EdgeId, Vec<(usize, usize, bool)>> = HashMap::new();
+        for (fi, s) in specs.iter().enumerate() {
+            for (li, l) in s.loops.iter().enumerate() {
+                for c in l {
+                    uses.entry(c.edge).or_default().push((fi, li, c.rev));
+                }
+            }
+        }
+        for fi in 0..specs.len() {
+            for li in 0..specs[fi].loops.len() {
+                if !specs[fi].flagged[li] {
+                    continue;
+                }
+                let (mut same, mut opp) = (0, 0);
+                for c in &specs[fi].loops[li] {
+                    let u = &uses[&c.edge];
+                    // seam / doubly used edges are judged from other faces only
+                    let others: Vec<&(usize, usize, bool)> = u.iter().filter(|x| x.0 != fi).collect();
+                    if others.len() != 1 || u.iter().filter(|x| x.0 == fi).count() != 1 {
+                        continue;
+                    }
+                    if others[0].2 == c.rev {
+                        same += 1;
+                    } else {
+                        opp += 1;
+                    }
+                }
+                if same > 0 && opp == 0 {
+                    let l = &mut specs[fi].loops[li];
+                    l.reverse();
+                    for c in l.iter_mut() {
+                        c.rev = !c.rev;
+                    }
+                    specs[fi].flagged[li] = false;
+                }
+            }
+        }
     }
 
     /// Outer shell outward (positive volume), void shells inward (negative).
@@ -1099,7 +1188,7 @@ impl Rd<'_> {
             }
             let (surface, sense, id) = (specs[i].surface.clone(), specs[i].sense, specs[i].id);
             if let Some(loop_) = self.full_periodic_loop(&surface, sense) {
-                out.push(FaceSpec { id, surface, sense, loops: vec![loop_] });
+                out.push(FaceSpec { id, surface, sense, loops: vec![loop_], flagged: vec![false] });
             }
         }
         let mut k = 0;
@@ -1182,7 +1271,7 @@ impl Rd<'_> {
     }
 
     fn finalize_face(&mut self, shell: ShellId, spec: FaceSpec, name: FaceName, rest: &mut [Option<(ShellId, FaceSpec)>]) -> R<()> {
-        let FaceSpec { id, surface, sense, mut loops } = spec;
+        let FaceSpec { id, surface, sense, mut loops, .. } = spec;
         let (pu, pv) = periods_of(&surface);
         let periodic = pu.is_some() || pv.is_some();
         // pcurves
@@ -1403,7 +1492,7 @@ impl Rd<'_> {
             2 if wind[0].2 == -wind[1].2 => {
                 let (ia, ib) = (wind[0].0, wind[1].0);
                 let (la, lb) = (loops[ia].clone(), loops[ib].clone());
-                let joined = self.join_two(id, surf, d, per, pers[1 - d], la, lb, wind[0].2, rest)?;
+                let joined = self.join_two(id, surf, sense, d, per, pers[1 - d], la, lb, wind[0].2, rest)?;
                 // replace the first by the joined loop, drop the second
                 loops[ia] = joined;
                 loops.remove(ib);
@@ -1528,6 +1617,7 @@ impl Rd<'_> {
         &mut self,
         id: u32,
         surf: &Surface,
+        sense: bool,
         d: usize,
         per: f64,
         per_o: Option<f64>,
@@ -1573,7 +1663,21 @@ impl Rd<'_> {
         let target_d = s + wa as f64 * per;
         let mut sh = unit2(d, ((target_d - comp(b0, d)) / per).round() * per);
         if let Some(po) = per_o {
-            let k = ((comp(a0, o) - comp(b0, o)) / po).round();
+            // B's copy along the other period: the face lies to the left of A's
+            // travel (seen against the face normal, so to the right for a
+            // reversed face). When the loops are not half a period apart the
+            // nearest copy is the same thing; at exactly half (a half torus)
+            // this orientation is all there is to decide by.
+            let plus_o = (if d == 0 { wa > 0 } else { wa < 0 }) == sense;
+            let diff = comp(b0, o) - comp(a0, o);
+            let mut k = ((comp(a0, o) - comp(b0, o)) / po).round();
+            let lo_hi = |k: f64| diff + k * po;
+            // wanted: o_b - o_a in (0, po) for plus_o, (-po, 0) otherwise
+            let want_k = if plus_o { (-diff / po).ceil() } else { (-diff / po).floor() };
+            let near_half = ((lo_hi(k)).abs() - 0.5 * po).abs() < 1e-6 * po;
+            if near_half {
+                k = want_k;
+            }
             sh = with(sh, o, k * po);
         }
         for c in rb.iter_mut() {

@@ -140,6 +140,17 @@ fn reals(xs: &[f64]) -> String {
     v.join(",")
 }
 
+/// An unclamped spline as its domain only: clamped ends, parameter counted
+/// from the start of the domain.
+fn unclamped_to_clamped(bs: &ck_geom::nurbs::bspline::BSplineCurve) -> ck_geom::nurbs::bspline::BSplineCurve {
+    let a = bs.domain().0;
+    let mut c = bs.clamp_ends();
+    for k in c.knots.iter_mut() {
+        *k -= a;
+    }
+    c
+}
+
 /// Distinct knot values + multiplicities (exact comparison).
 fn knot_mults(knots: &[f64]) -> (Vec<usize>, Vec<f64>) {
     let mut m: Vec<usize> = Vec::new();
@@ -310,13 +321,24 @@ impl StepWriter {
                 self.ent(&format!("ELLIPSE('',#{ax},{},{})", real(*a), real(*b)))
             }
             Curve::BSpline(bs) => {
+                let norm;
+                let bs = if bs.knots[..=bs.degree].iter().any(|&k| k != bs.knots[0]) {
+                    // unclamped (periodic-style) knots: the domain as a clamped curve
+                    norm = unclamped_to_clamped(bs);
+                    &norm
+                } else {
+                    bs
+                };
                 let pts: Vec<usize> = bs.ctrl.iter().map(|p| self.point(*p)).collect();
                 // GUESS: closed_curve = first and last control point equal
                 // (the oracle writes .T. for the periodic extrusion profile
                 // of a closed spline and .F. for its open halves).
-                let closed = bs.ctrl.len() > 1 && bs.ctrl.first() == bs.ctrl.last();
+                let closed = bs.ctrl.len() > 1
+                    && bs.ctrl.first().zip(bs.ctrl.last()).map_or(false, |(a, b)| a.dist(*b) <= 1e-9 * (1.0 + a.len()));
                 let (m, k) = knot_mults(&bs.knots);
-                match &bs.weights {
+                // all-ones weights are a non-rational curve
+                let weights = bs.weights.as_ref().filter(|w| w.iter().any(|&x| x != 1.0));
+                match weights {
                     None => self.ent(&format!(
                         "B_SPLINE_CURVE_WITH_KNOTS('',{},({}),.UNSPECIFIED.,{},.F.,({}),({}),.UNSPECIFIED.)",
                         bs.degree,
@@ -336,8 +358,30 @@ impl StepWriter {
                     )),
                 }
             }
-            // GUESS: no oracle evidence of STEP CONIC entities; conic and
-            // sinusoid edges are written as their B-spline approximations.
+            // GUESS: no oracle evidence of STEP conic entities. Conics are
+            // written as the analytic ELLIPSE / PARABOLA / HYPERBOLA (the
+            // inverse of the importer's focus-form mapping) so they survive a
+            // round trip exactly; sinusoids as B-spline approximations.
+            Curve::Conic { frame, p, e } if *e >= 0.0 && *p > 0.0 && e.is_finite() => {
+                if *e == 0.0 {
+                    let a = self.frame(frame);
+                    return self.ent(&format!("CIRCLE('',#{a},{})", real(*p)));
+                } else if *e < 1.0 {
+                    let a = p / (1.0 - e * e);
+                    let b = p / (1.0 - e * e).sqrt();
+                    let ax = self.axis2(frame.o - frame.x * (a * e), frame.z, frame.x);
+                    self.ent(&format!("ELLIPSE('',#{ax},{},{})", real(a), real(b)))
+                } else if *e == 1.0 {
+                    let f = 0.5 * p;
+                    let ax = self.axis2(frame.o + frame.x * f, frame.z, -frame.x);
+                    self.ent(&format!("PARABOLA('',#{ax},{})", real(f)))
+                } else {
+                    let a = p / (e * e - 1.0);
+                    let b = (a * p).sqrt();
+                    let ax = self.axis2(frame.o + frame.x * (a * e), frame.z, -frame.x);
+                    self.ent(&format!("HYPERBOLA('',#{ax},{},{})", real(a), real(b)))
+                }
+            }
             Curve::Conic { .. } | Curve::Sinusoid { .. } => {
                 let bs = ck_geom::convert::curve_to_nurbs(c, c.range().0, c.range().1);
                 self.curve(&Curve::BSpline(bs))
@@ -395,7 +439,12 @@ impl StepWriter {
                     rows.push(format!("({})", refs(&r)));
                 }
                 let (mu, ku) = knot_mults(&bs.knots_u);
-                let (mv, kv) = knot_mults(&bs.knots_v);
+                let (mv, mut kv) = knot_mults(&bs.knots_v);
+                // a ruled direction (one linear span) is written on [0, 1] (the
+                // oracle's lofts); the length-parametrised domain stays internal
+                if bs.deg_v == 1 && kv.len() == 2 && kv[0] == 0.0 && kv[1] > 0.0 {
+                    kv[1] = 1.0;
+                }
                 match &bs.weights {
                     None => self.ent(&format!(
                         "B_SPLINE_SURFACE_WITH_KNOTS('',{},{},({}),.UNSPECIFIED.,.F.,.F.,.F.,({}),({}),({}),({}),.UNSPECIFIED.)",
