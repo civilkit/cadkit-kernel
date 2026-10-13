@@ -731,6 +731,12 @@ pub(crate) fn volume_mismatch(m: &ck_ops::boolean::sanity::VolumeMismatch) -> cr
         .with("expected_min", Json::Num(m.expected_min))
         .with("expected_max", Json::Num(m.expected_max))
         .with("got", Json::Num(m.got))
+        .with(
+            "hint",
+            Json::Str(
+                "the boolean closed into a valid body whose volume is impossible for these operands, so material was dropped or added; the body was left as before this feature. A circle or edge of the tool lying exactly on the other solid's wall (tangent or coincident) is the usual cause: nudge the tool by 0.01, change the feature order, or split the tool".to_string(),
+            ),
+        )
 }
 
 /// Chord-height of the stand-in edge polylines relative to the body

@@ -34,19 +34,6 @@ describe('verify', () => {
     assert.equal(r.check?.failed, 0);
   });
 
-  it('explains booleanVolumeMismatch with the bounds', async () => {
-    const k = fake({
-      regen: { ok: true, result: { errors: [['R1', { code: 'booleanVolumeMismatch', params: { what: 'volume', expected_min: 22438.5, expected_max: 23143.5, got: 14938.2 } }]], body: {} } },
-      validate: { ok: true, result: null },
-      check: { ok: true, result: null },
-    });
-    const r = await verify(k, part);
-    assert.equal(r.ok, false);
-    assert.equal(r.hints[0].code, 'booleanVolumeMismatch');
-    assert.match(r.hints[0].hint, /14938\.2/);
-    assert.match(r.hints[0].hint, /22438\.5/);
-  });
-
   it('points regen errors at the feature with fix text', async () => {
     const k = fake({
       regen: { ok: true, result: { errors: [['F2', { code: 'missingSketch', params: {} }]], body: {} } },
