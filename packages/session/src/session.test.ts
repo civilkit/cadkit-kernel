@@ -146,7 +146,7 @@ describe('session bodyForView', { skip: !existsSync(wasmPath()) && 'no wasm buil
     }
   });
 
-  it('a plate returns a mesh with edges', async () => {
+  it('a plate returns a mesh with edges and its sketch frame', async () => {
     const { Part } = await import('../../builder/src/index.js');
     const p = new Part('Plate');
     const base = p.sketch('S', 'front', (sk) => sk.rect(0, 0, 10, 10));
@@ -158,6 +158,36 @@ describe('session bodyForView', { skip: !existsSync(wasmPath()) && 'no wasm buil
       assert.ok(v.mesh.positions.length > 0);
       assert.ok(v.edges.length > 0);
       assert.ok(v.box.max.length === 3);
+      assert.equal(v.sketches.length, 1);
+      assert.equal(v.sketches[0].id, 'F1');
+      assert.equal(v.sketches[0].sketch.entities.length, 4);
+      assert.deepEqual(v.sketches[0].frame.o, [0, 0, 0]);
+      assert.deepEqual(v.curves, []);
+      assert.deepEqual(v.planes, []);
+      assert.deepEqual(v.markers, []);
+    } finally {
+      await s.close();
+    }
+  });
+
+  it('a helixed part returns the helix curve and datum planes', async () => {
+    const { Part } = await import('../../builder/src/index.js');
+    const p = new Part('Spring');
+    const prof = p.sketch('C', 'front', (sk) => { sk.circle(0, 0, 4); });
+    p.helix({ sketch: prof, pitch: 2, revolutions: 2, height: 4 });
+    p.offsetPlane('top', 10, 'P');
+    p.extrude({ sketch: prof, op: 'add', end: 'blind', depth: 5 });
+    const s = await Session.open(p.toJSON());
+    try {
+      const v = await s.bodyForView();
+      assert.ok(v, 'expected a body');
+      assert.ok(v.curves.length >= 1, 'expected the helix curve');
+      assert.ok(v.curves[0].pts.length > 2);
+      assert.equal(v.curves[0].pts[0].length, 3);
+      assert.equal(v.planes.length, 1, 'expected the datum plane');
+      assert.equal(v.planes[0].id, 'F3');
+      assert.equal(v.planes[0].frame.x.length, 3);
+      assert.equal(v.sketches.length, 1, 'only the circle sketch, not the helix');
     } finally {
       await s.close();
     }
