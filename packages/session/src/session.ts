@@ -49,6 +49,9 @@ export interface PreviewResult {
   errors: RegenError[];
   hints: ReturnType<typeof hintFor>[];
   body: ViewBody | null;
+  /** The solved sketches of the regen, present on every successful preview. A prefix that has no solid yet
+   *  (a first sketch, `upTo` cutting off the extrude) has `body: null` but still has its sketches. */
+  sketches?: ViewBody['sketches'];
   schemaError?: string;
   /** true when a newer preview superseded this one before it finished: the result is dropped. */
   stale?: boolean;
@@ -420,7 +423,13 @@ export class Session {
       };
     }
     const { body, sketches, curves, planes, markers } = regenRes;
-    if (!body) return { ok: true, errors: [], hints: [], body: null };
+    const viewSketches: ViewBody['sketches'] = sketches.map(([id, e]) => ({
+      id,
+      frame: e.frame as ViewFrame,
+      sketch: e.sketch as import('../../part-model/src/index.js').SketchFeature,
+      ...(e.status ? { status: e.status as import('../../part-model/src/index.js').SketchSolverStatus } : {}),
+    }));
+    if (!body) return { ok: true, errors: [], hints: [], body: null, sketches: viewSketches };
     const { meshFromBody } = await import('../../render/src/mesh.js');
     return {
       ok: true,
@@ -440,6 +449,7 @@ export class Session {
         planes: planes.map(([id, frame]) => ({ id, frame: frame as ViewFrame })),
         markers,
       },
+      sketches: viewSketches,
     };
   }
 
