@@ -1134,7 +1134,42 @@ pub(super) fn apply_tool(b: &Body, tool: &Body, op: Op, name: &FaceName, hint: V
 
 /// [`apply_tool`] with a per-face-pair SSI override (see
 /// [`crate::boolean::imprint::PairHook`]).
+///
+/// Marched intersection curves meet their neighbours only to ~1e-6, so a
+/// corner whose cut curve ends 1.5e-6 short of an existing vertex (the
+/// vertical fillet at one of four symmetric chamfered corners) leaves the
+/// arrangement open at `tol`. Like `boolean::boolean`, a failure is retried
+/// with the welding tolerance raised 10x and 100x; a result that closes but
+/// falls outside the volume bounds the operands allow (`boolean::sanity`)
+/// counts as a failure too.
 pub(super) fn apply_tool_hooked(
+    b: &Body,
+    tool: &Body,
+    op: Op,
+    name: &FaceName,
+    hint: Vec<String>,
+    tol: f64,
+    hook: Option<crate::boolean::imprint::PairHook>,
+) -> Result<(Body, Vec<String>), BlendError> {
+    let mut first = None;
+    for k in [1.0, 10.0, 100.0] {
+        match apply_tool_once(b, tool, op, name, hint.clone(), tol * k, hook) {
+            Ok(r) => match crate::boolean::sanity::check_result(b, tool, op, &r.0) {
+                None => return Ok(r),
+                Some(m) => {
+                    dbg_fail(&format!("sanity at tol {:e}: {} {} outside [{}, {}]", tol * k, m.what, m.got, m.expected_min, m.expected_max));
+                    first.get_or_insert(BlendError::code("blendFailed"));
+                }
+            },
+            Err(e) => {
+                first.get_or_insert(e);
+            }
+        }
+    }
+    Err(first.unwrap_or_else(|| BlendError::code("blendFailed")))
+}
+
+fn apply_tool_once(
     b: &Body,
     tool: &Body,
     op: Op,
