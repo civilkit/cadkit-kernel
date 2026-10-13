@@ -33,6 +33,27 @@ export interface ViewFrame {
   z: number[];
 }
 
+/** What bodyForView (and a successful preview) hands a viewer. */
+export interface ViewBody {
+  mesh: import('../../render/src/mesh.js').MeshData;
+  edges: Array<{ key?: string; pts: number[][] }>;
+  box: { min: number[]; max: number[] };
+  sketches: Array<{ id: string; frame: ViewFrame; sketch: import('../../part-model/src/index.js').SketchFeature }>;
+  curves: Array<{ id: string; pts: number[][] }>;
+  planes: Array<{ id: string; frame: ViewFrame }>;
+  markers: unknown[];
+}
+
+export interface PreviewResult {
+  ok: boolean;
+  errors: RegenError[];
+  hints: ReturnType<typeof hintFor>[];
+  body: ViewBody | null;
+  schemaError?: string;
+  /** true when a newer preview superseded this one before it finished: the result is dropped. */
+  stale?: boolean;
+}
+
 export interface BodyFacts {
   faces: string[];
   edges: string[];
@@ -284,7 +305,7 @@ export class Session {
     return this.stack.map((e) => e.record);
   }
 
-  private async regen(doc: PartDoc): Promise<{
+  private async regen(doc: PartDoc, tag = this.tag): Promise<{
     errors: RegenError[];
     body: Record<string, unknown> | null;
     sketches: Array<[string, Record<string, unknown>]>;
@@ -292,7 +313,7 @@ export class Session {
     planes: Array<[string, { o: number[]; x: number[]; y: number[]; z: number[] }]>;
     markers: unknown[];
   }> {
-    const r = await this.kernel.request({ type: 'regen', tag: this.tag, part: doc });
+    const r = await this.kernel.request({ type: 'regen', tag, part: doc });
     if (r.trap || !r.ok || !r.result) throw new Error(r.trap ?? (typeof r.error === 'string' ? r.error : 'regen failed'));
     const res = r.result as {
       errors?: RegenError[];
@@ -344,15 +365,7 @@ export class Session {
 
   /** Display body for a viewer: mesh, edge polylines, the box, plus the sketches,
    *  curves, planes and markers of the current document (regen reply passthrough). */
-  async bodyForView(): Promise<{
-    mesh: import('../../render/src/mesh.js').MeshData;
-    edges: Array<{ key?: string; pts: number[][] }>;
-    box: { min: number[]; max: number[] };
-    sketches: Array<{ id: string; frame: ViewFrame; sketch: import('../../part-model/src/index.js').SketchFeature }>;
-    curves: Array<{ id: string; pts: number[][] }>;
-    planes: Array<{ id: string; frame: ViewFrame }>;
-    markers: unknown[];
-  } | null> {
+  async bodyForView(): Promise<ViewBody | null> {
     const { body, sketches, curves, planes, markers } = await this.regen(this.doc);
     if (!body) return null;
     const { meshFromBody } = await import('../../render/src/mesh.js');
@@ -368,6 +381,62 @@ export class Session {
       curves: curves.map(([id, e]) => ({ id, pts: e.pts })),
       planes: planes.map(([id, frame]) => ({ id, frame: frame as ViewFrame })),
       markers,
+    };
+  }
+
+  private previewSeq = 0;
+
+  /** Apply `ops` to a copy of the document and regen it on a scratch tag: the
+   *  document, the edit stack and this session's tag are untouched. A newer
+   *  preview supersedes an older one — the stale call resolves with `stale:true`
+   *  and no body, so it can never overwrite a newer result. */
+  async preview(ops: EditOp[]): Promise<PreviewResult> {
+    const seq = ++this.previewSeq;
+    for (const op of ops) {
+      const problem = checkOp(this.doc, op);
+      if (problem) return { ok: false, errors: [], hints: [], body: null, schemaError: problem };
+    }
+    const candidate = clone(this.doc);
+    try {
+      for (const op of ops) applyOp(candidate, op);
+    } catch (e) {
+      return { ok: false, errors: [], hints: [], body: null, schemaError: String((e as Error).message ?? e) };
+    }
+    let regenRes: Awaited<ReturnType<Session['regen']>>;
+    try {
+      regenRes = await this.regen(candidate, `${this.tag}-preview`);
+    } catch (e) {
+      return { ok: false, errors: [], hints: [{ feature: '', code: 'trap', hint: String((e as Error).message ?? e) }], body: null };
+    }
+    if (seq !== this.previewSeq) return { ok: true, errors: [], hints: [], body: null, stale: true };
+    if (regenRes.errors.length) {
+      return {
+        ok: false,
+        errors: regenRes.errors,
+        hints: regenRes.errors.map(([fid, err]) => hintFor(fid, err.code, err.params ?? {})),
+        body: null,
+      };
+    }
+    const { body, sketches, curves, planes, markers } = regenRes;
+    if (!body) return { ok: true, errors: [], hints: [], body: null };
+    const { meshFromBody } = await import('../../render/src/mesh.js');
+    return {
+      ok: true,
+      errors: [],
+      hints: [],
+      body: {
+        mesh: meshFromBody(body as Parameters<typeof meshFromBody>[0]),
+        edges: (body.edges as Array<{ key?: string; pts: number[][] }> | undefined) ?? [],
+        box: body.box as { min: number[]; max: number[] },
+        sketches: sketches.map(([id, e]) => ({
+          id,
+          frame: e.frame as ViewFrame,
+          sketch: e.sketch as import('../../part-model/src/index.js').SketchFeature,
+        })),
+        curves: curves.map(([id, e]) => ({ id, pts: e.pts })),
+        planes: planes.map(([id, frame]) => ({ id, frame: frame as ViewFrame })),
+        markers,
+      },
     };
   }
 
