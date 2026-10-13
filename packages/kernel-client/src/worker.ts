@@ -27,6 +27,23 @@ export function defaultWasmPath(): string {
   );
 }
 
+/**
+ * The compiled worker-host.js: beside this file in dist. When this module is
+ * loaded from src (vitest aliasing), fall back to packages/dist. A plain path
+ * string, not `new URL(..., import.meta.url)`: bundlers rewrite that pattern
+ * to an http URL, which node:worker_threads refuses.
+ */
+export function hostScriptPath(): string {
+  const dir = path.dirname(fileURLToPath(import.meta.url));
+  const beside = path.join(dir, 'worker-host.js');
+  if (existsSync(beside)) return beside;
+  const fromSrc = path.resolve(dir, '../../dist/kernel-client/src/worker-host.js');
+  if (existsSync(fromSrc)) return fromSrc;
+  throw new Error(
+    `worker-host.js not found beside ${dir} or at ${fromSrc}. Run npm run build in packages/.`,
+  );
+}
+
 export async function createWorkerKernel(wasmPath = defaultWasmPath()): Promise<WorkerKernel> {
   if (!existsSync(wasmPath)) {
     throw new Error(
@@ -34,7 +51,7 @@ export async function createWorkerKernel(wasmPath = defaultWasmPath()): Promise<
       'or set CK_WASM / pass wasmPath to open.',
     );
   }
-  const worker = new Worker(new URL('./worker-host.js', import.meta.url));
+  const worker = new Worker(hostScriptPath());
   const pending = new Map<number, (r: KernelReply) => void>();
   let nextId = 1;
 
