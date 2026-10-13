@@ -129,6 +129,24 @@ describe('session ops (pure)', () => {
     const bare = seen.find((m) => m.type === 'regen');
     assert.equal(bare !== undefined && 'opts' in bare, false);
   });
+
+  it('preview forwards opts.sketchStatus and returns the per-sketch status', async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const status = { dof: 0, fullyDefined: true, conflicts: [], redundant: [], solved: true, state: 'full', residual: 0 };
+    const kernel: KernelTransport = {
+      async request(msg: Record<string, unknown>) {
+        seen.push(msg);
+        if (msg.type === 'regen') return { ok: true, result: { errors: [], body: cleanBody, sketches: [['F1', { frame: { o: [0, 0, 0], x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] }, sketch: { type: 'sketch', id: 'F1' }, ...((msg.opts as { sketchStatus?: boolean } | undefined)?.sketchStatus ? { status } : {}) }]] } };
+        throw new Error('unexpected ' + String(msg.type));
+      },
+    };
+    const s = new Session(plateDoc(), kernel, 't');
+    const r = await s.preview([], { upTo: 1, sketchStatus: true });
+    assert.deepEqual(seen.find((m) => m.type === 'regen')?.opts, { upTo: 1, sketchStatus: true });
+    assert.deepEqual(r.body?.sketches[0]?.status, status);
+    const plain = await s.preview([]);
+    assert.equal(plain.body?.sketches[0]?.status, undefined);
+  });
 });
 
 describe('session live', { skip: !existsSync(wasmPath()) && 'no wasm built' }, () => {
