@@ -3,7 +3,6 @@
 // the typed features before it reaches the kernel; a batch applies atomically
 // (regen errors leave the document unchanged). Every applied batch records
 // {id, author, time, ops, reason}; undo reverts the last N batches.
-import { createWorkerKernel, type WorkerKernel } from '../../kernel-client/src/worker.js';
 import { emptyPart, FEATURE_TYPES, type PartDoc } from '../../part-model/src/index.js';
 import { hintFor, verify, type CheckResultItem, type KernelTransport, type RegenError, type VerifyReport } from '../../driver/src/verify.js';
 import {
@@ -244,7 +243,7 @@ let sessionSeq = 1;
 
 export class Session {
   private kernel: import('../../driver/src/verify.js').KernelTransport;
-  private worker?: WorkerKernel;
+  private worker?: import('../../kernel-client/src/worker.js').WorkerKernel;
   private doc: PartDoc;
   private tag: string;
   readonly author: string;
@@ -259,6 +258,7 @@ export class Session {
   }
 
   static async open(doc?: PartDoc, opts?: { wasmPath?: string; author?: string }): Promise<Session> {
+    const { createWorkerKernel } = await import('../../kernel-client/src/worker.js');
     const worker = await createWorkerKernel(opts?.wasmPath);
     const s = new Session(doc ?? emptyPart('Part'), worker, opts?.author ?? 'agent');
     s.worker = worker;
@@ -445,6 +445,7 @@ export class Session {
       format: string; version: number; entries: Array<{ record: EditRecord; before: PartDoc }>;
     };
     if (log.format !== 'ck-edit-log' || log.version !== 1) throw new Error(`unreadable edit log ${name}`);
+    const { createWorkerKernel } = await import('../../kernel-client/src/worker.js');
     const worker = await createWorkerKernel(opts?.wasmPath);
     const s = new Session(doc, worker, log.entries.at(-1)?.record.author ?? 'agent');
     s.worker = worker;

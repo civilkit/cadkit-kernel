@@ -799,24 +799,16 @@
    "note": "fillet (r 2, also 0.5 and 0.05) of the straight edge where a foot top plane meets the tube cylinder (axis parallel to the plane) is blendUnsupported; a chamfer of the same edge works."
   },
   "conduit-snap-clip": {
-   "label": "kernel-gap:fillet-plane-cylinder-line + kernel-bug:countersink-coincident",
-   "note": "F7 lip fillet is blendUnsupported (plane wall x bore cylinder, line edge); F15 countersink cone cut booleanFailed: the cone base circle has the radius of the drilled hole (exact coincidence on the cylinder wall; radius +-0.01 works)."
-  },
-  "conical-pour-funnel": {
-   "label": "kernel-bug:cut-coincident-circle-on-cylinder",
-   "note": "F14 bore cylinder cut booleanFailed: the earlier inner-cone cut leaves a base circle exactly on the bore cylinder wall (r 4.4)."
+   "label": "kernel-gap:fillet-plane-cylinder-line + kernel-bug:hole-tangent-to-side-wall",
+   "note": "F7 lip fillet is blendUnsupported (plane wall x bore cylinder, line edge); F15 countersink cone cut booleanFailed: the F13 hole (x = -12.7, r 2.3) is tangent to the plate's side wall x = -15, so the hole cylinder touches the wall plane along a line and its fragment has no sample point (the coincident base circle itself is fixed: BJ-1)."
   },
   "knuckle-hinge": {
-   "label": "kernel-bug:countersink-coincident + reference-mismatch:overlapping-solids",
-   "note": "four countersink cone cuts booleanFailed (cone base circle = hole radius 1.8). Also the example returns two leaves that overlap each other (sum of volumes 5146.71, union 4990.04, brepjs fuse); we build one body, so the volume reference is the sum and cannot be matched exactly even when the cuts work."
+   "label": "reference-mismatch:overlapping-solids",
+   "note": "the countersinks now cut (BJ-1 fixed). The example returns two leaves that overlap each other (sum of volumes 5146.71, union 4990.04, brepjs fuse); we build one body, so the volume reference is the sum and cannot be matched exactly even when the cuts work."
   },
   "dovetail-joint": {
    "label": "kernel-gap:body-level-intersect",
    "note": "male half matches exactly (12415.619). The female cavity is a prism minus two rotated slabs (tool = A minus B), which no sequence of add/cut features can express without first cutting the plate; translated without the taper: volume 0.18% low (-45.6 mm3)."
-  },
-  "modular-hose-segment": {
-   "label": "kernel-bug:sphere-pole-inside-other-solid",
-   "note": "F5 union of the truncated ball with the waist cylinder is booleanFailed; any union/cut where a sphere pole lies inside the other solid fails (cylinder ending below the pole works); later features cascade (cutNoEffect)."
   }
  },
  "knownStep": {
