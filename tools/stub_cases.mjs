@@ -243,3 +243,46 @@ parts.sweepGuideOnPathG = sg({ guides: [cvRef('e1', 'F4')], guideMode: 'scale' }
 parts.sweepGuideTilt = sg({ guides: [cvRef('e1', 'F4')], guideMode: 'scale' }, [lineSk('F4', FRONT, [3, 0], [3, -5])]);
 parts.sweepGuideTwistG = sg({ guides: [cvRef('e1', 'F4')], guideMode: 'scale', twist: 90 }, [lineSk('F4', FRONT, [3, 0], [6, 20])]);
 parts.sweepGuideCut = { ...base.box, features: [...box, lineSk('F2b', FRONT, [20, 0], [20, 20]).id ? { ...lineSk('F4', FRONT, [20, 5], [20, -5]) } : null].filter(Boolean) };
+
+// ---- blend profiles, round two: parameter ranges and angles
+add('filletConicRho0', [fl({ profile: 'conic', rho: 0 })]);
+add('filletConicRho1', [fl({ profile: 'conic', rho: 1 })]);
+add('filletConicRho9', [fl({ profile: 'conic', rho: 0.95 })]);
+add('filletConicRho15', [fl({ profile: 'conic', rho: 1.5 })]);
+add('filletConicNone', [fl({ profile: 'conic' })]);
+add('filletCurvS0', [fl({ profile: 'curvature', shape: 0 })]);
+add('filletCurvS15', [fl({ profile: 'curvature', shape: 1.5 })]);
+add('filletCurvS005', [fl({ profile: 'curvature', shape: 0.05 })]);
+add('filletCurvNone', [fl({ profile: 'curvature' })]);
+add('filletChordBig', [fl({ profile: 'chord', radius: 12 })]);
+add('filletBogus', [fl({ profile: 'wavy' })]);
+add('filletCurvChain', [fl({ profile: 'curvature', shape: 0.5, edges: [TOP_E1, TOP_E2, TOP_E3, TOP_E4] })]);
+add('filletCurvTwo', [fl({ profile: 'curvature', shape: 0.5, edges: [TOP_E1, TOP_E3] })]);
+add('filletConicChain', [fl({ profile: 'conic', rho: 0.5, edges: [TOP_E1, TOP_E2, TOP_E3, TOP_E4] })]);
+add('filletConicTwo', [fl({ profile: 'conic', rho: 0.6, edges: [TOP_E1, TOP_E3] })]);
+add('filletChordTwo', [fl({ profile: 'chord', radius: 3, edges: [TOP_E1, TOP_E3] })]);
+// angled edge: a wedge (triangular prism) and a 120 degree corner
+const wedge = { ...base.box, features: [{ type: 'sketch', id: 'F1', plane: STDP('top'), points: [pt('a', 0, 0), pt('b', 30, 0), pt('c', 10, 20)], entities: [['e1', 'a', 'b'], ['e2', 'b', 'c'], ['e3', 'c', 'a']].map(([i, p, q]) => ({ type: 'line', id: i, p1: p, p2: q })), constraints: [] }, ex('F2', 'F1')] };
+parts.wedgePlain = wedge;
+
+// fillets with profiles on a cylinder rim (circle edge, revolve tool)
+const cylRim = (o) => ({ ...base.box, features: [circSk('F1', STDP('top'), 0, 0, 10), ex('F2', 'F1'), { type: 'fillet', id: 'F3', radius: 2, edges: [{ faces: ['F2.C1', 'F2.S.e1'], at: [10, 10, 0] }], ...o }] });
+parts.filletCylCirc = cylRim({});
+parts.filletCylConic = cylRim({ profile: 'conic', rho: 0.5 });
+parts.filletCylCurv = cylRim({ profile: 'curvature', shape: 0.5 });
+parts.filletCylChord = cylRim({ profile: 'chord' });
+parts.filletCylBotConic = { ...base.box, features: [circSk('F1', STDP('top'), 0, 0, 10), ex('F2', 'F1'), { type: 'fillet', id: 'F3', radius: 2, profile: 'conic', rho: 0.6, edges: [{ faces: ['F2.C0', 'F2.S.e1'], at: [10, 0, 0] }] }] };
+
+// chamfer legs: face order and several edges
+const rev = (e) => ({ faces: [e.faces[1], e.faces[0]], at: e.at });
+add('chamferDistRev', [ch({ chamferType: 'distances', distance: 2, distance2: 3, edges: [rev(TOP_E1)] })]);
+add('chamferDistE3', [ch({ chamferType: 'distances', distance: 2, distance2: 3, edges: [TOP_E3] })]);
+add('chamferDistE2', [ch({ chamferType: 'distances', distance: 2, distance2: 3, edges: [TOP_E2] })]);
+add('chamferDistTwo', [ch({ chamferType: 'distances', distance: 2, distance2: 3, edges: [TOP_E1, TOP_E3] })]);
+add('chamferDistMixed', [ch({ chamferType: 'distances', distance: 2, distance2: 3, edges: [TOP_E1, rev(TOP_E3)] })]);
+add('chamferAngleRev', [ch({ chamferType: 'angle', distance: 2, angle: 30, edges: [rev(TOP_E1)] })]);
+add('chamferAngleE4', [ch({ chamferType: 'angle', distance: 2, angle: 30, edges: [TOP_E4] })]);
+add('chamferAngle0', [ch({ chamferType: 'angle', distance: 2, angle: 0 })]);
+add('chamferAngle90', [ch({ chamferType: 'angle', distance: 2, angle: 90 })]);
+add('chamferDist0', [ch({ chamferType: 'distances', distance: 2, distance2: 0 })]);
+add('chamferDistRing', [ch({ chamferType: 'distances', distance: 2, distance2: 3, edges: [TOP_E1, TOP_E2, TOP_E3, TOP_E4] })]);

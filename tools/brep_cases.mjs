@@ -495,6 +495,34 @@ parts.mirrorBodyCone = part([...parts.cone.features, { type: 'plane', id: 'F8', 
   parts.loft3EndNormal = part([...base3, p4, sq8, loft3({ endNormal: 1.5 })]);
 }
 
+// fillet profiles (conic / chord / curvature = Euler spiral - arc - spiral, blend/g2.rs) and chamfer legs
+// (`distances`, `angle`): oracle volumes within 1e-6 (curvature 1e-6: the oracle fits a spline to the spiral).
+{
+  const E = (a, b, at) => ({ faces: [a, b], at });
+  const e1 = E('F2.C1', 'F2.S.e1', [20, 10, 0]), e3 = E('F2.C1', 'F2.S.e3', [20, 10, -20]);
+  const boxF = (f) => part([sketch('top', ...rect(0, 0, 40, 20)), extrude(), { id: 'F3', ...f }]);
+  const fl = (o) => ({ type: 'fillet', radius: 2, edges: [e1], ...o });
+  const ch = (o) => ({ type: 'chamfer', chamferType: 'equal', distance: 2, edges: [e1], ...o });
+  parts.filletConic = boxF(fl({ profile: 'conic', rho: 0.5 }));
+  parts.filletConic3 = boxF(fl({ profile: 'conic', rho: 0.3 }));
+  parts.filletConicTwo = boxF(fl({ profile: 'conic', rho: 0.6, edges: [e1, e3] }));
+  parts.filletChord = boxF(fl({ profile: 'chord' }));
+  parts.filletChordTwo = boxF(fl({ profile: 'chord', radius: 3, edges: [e1, e3] }));
+  parts.filletCurv = boxF(fl({ profile: 'curvature', shape: 0.5 }));
+  parts.filletCurvTwo = boxF(fl({ profile: 'curvature', shape: 0.5, edges: [e1, e3] }));
+  parts.filletCurvShape1 = boxF(fl({ profile: 'curvature', shape: 1 }));
+  parts.chamferDist = boxF(ch({ chamferType: 'distances', distance2: 3 }));
+  parts.chamferDistRev = boxF(ch({ chamferType: 'distances', distance2: 3, edges: [E('F2.S.e1', 'F2.C1', [20, 10, 0])] }));
+  parts.chamferDistTwo = boxF(ch({ chamferType: 'distances', distance2: 3, edges: [e1, e3] }));
+  parts.chamferAngle = boxF(ch({ chamferType: 'angle', angle: 30 }));
+  parts.chamferAngleRev = boxF(ch({ chamferType: 'angle', angle: 30, edges: [E('F2.S.e1', 'F2.C1', [20, 10, 0])] }));
+  const cyl = [sketch('top', [pt('c', 0, 0)], [{ type: 'circle', id: 'e1', c: 'c', r: 10 }]), extrude()];
+  const rim = (o) => part([...cyl, { type: 'fillet', id: 'F3', radius: 2, edges: [E('F2.C1', 'F2.S.e1', [10, 10, 0])], ...o }]);
+  parts.filletCylConic = rim({ profile: 'conic', rho: 0.5 });
+  parts.filletCylCurv = rim({ profile: 'curvature', shape: 0.5 });
+  parts.filletCylChord = rim({ profile: 'chord' });
+}
+
 // sweep guides (ck-ops guide.rs): circle r=3 swept 20 along a line while a guide scales / turns / stretches it
 // (volumes match the oracle to 1e-6: cone frustum, ellipse sections, ...).
 {

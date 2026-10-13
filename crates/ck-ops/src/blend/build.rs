@@ -58,26 +58,57 @@ pub fn find_edge(b: &Body, fa: &str, fb: &str, at: Vec3) -> Option<EdgeId> {
 /// IN-PLACE arena layout ([`in_place_layout`]), so wire `#n` keep the
 /// input's numbers.
 pub fn fillet(b: &Body, edges: &[(String, String, Vec3)], r: f64, feature: &str, tol: f64) -> Result<Body, BlendError> {
-    blend_edges(b, edges, Spec::Fillet(r), feature, tol)
+    blend_edges(b, edges, Spec::Fillet(r, FilletProfile::Circular), feature, tol)
 }
 
 /// Equal-distance chamfers (`Chamfer(d, d)` in the trace) of `edges`.
 pub fn chamfer(b: &Body, edges: &[(String, String, Vec3)], d: f64, feature: &str, tol: f64) -> Result<Body, BlendError> {
-    blend_edges(b, edges, Spec::Chamfer(d), feature, tol)
+    blend_edges(b, edges, Spec::Chamfer(d, ChamferLeg::Dist(d)), feature, tol)
+}
+
+/// Chamfer with distance `d1` on the FIRST face of every edge pick and a second leg given by a
+/// distance or by the angle between the chamfer and the first face (oracle `distances` / `angle`).
+pub fn chamfer_legs(b: &Body, edges: &[(String, String, Vec3)], d1: f64, leg: ChamferLeg, feature: &str, tol: f64) -> Result<Body, BlendError> {
+    blend_edges(b, edges, Spec::Chamfer(d1, leg), feature, tol)
 }
 
 /// What one blend cuts: a rolling-ball fillet of radius `r` or an
 /// equal-distance chamfer of leg `d`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Spec {
-    Fillet(f64),
-    Chamfer(f64),
+    Fillet(f64, FilletProfile),
+    Chamfer(f64, ChamferLeg),
+}
+
+/// Second leg of a chamfer: a distance on the second face, or the angle (radians) between the
+/// chamfer face and the first face.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ChamferLeg {
+    Dist(f64),
+    Angle(f64),
+    /// [`ChamferLeg::Angle`] with the pick's faces listed the other way round: the angle is to
+    /// the second face, the distance on it.
+    AngleRev(f64),
+}
+
+/// Section of a fillet (`fillet.profile`): a circular arc, a conic (rational
+/// quadratic through the circular fillet's contact points, `rho` in (0, 1)),
+/// a circular arc of the given CHORD width, or the curvature-continuous
+/// spiral - arc - spiral of `blend::g2` (`shape` in [0.1, 1]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FilletProfile {
+    Circular,
+    Conic(f64),
+    Chord,
+    Curvature(f64),
 }
 
 impl Spec {
     fn size(self) -> f64 {
         match self {
-            Spec::Fillet(r) | Spec::Chamfer(r) => r,
+            Spec::Fillet(r, _) => r,
+            Spec::Chamfer(a, ChamferLeg::Dist(b)) => a.max(b),
+            Spec::Chamfer(a, ChamferLeg::Angle(_) | ChamferLeg::AngleRev(_)) => a,
         }
     }
 }
@@ -91,7 +122,7 @@ pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featu
     if edges.is_empty() {
         return Err(BlendError::code("missingEdge"));
     }
-    if matches!(spec, Spec::Fillet(_)) {
+    if matches!(spec, Spec::Fillet(..)) {
         let free = edges.iter().any(|(fa, fb, at)| find_edge(b, fa, fb, *at).is_some_and(|e| super::freeform::needs_freeform(b, e)));
         if free {
             return super::freeform::fillet_freeform(b, edges, r, feature, tol);
@@ -115,7 +146,7 @@ pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featu
         let ends: Vec<[usize; 2]> = eids.iter().map(|&e| [b.edge(e).v0.idx(), b.edge(e).v1.idx()]).collect();
         let n = edges.len();
         let rounds: Vec<Vec<usize>> = match spec {
-            Spec::Chamfer(_) => {
+            Spec::Chamfer(..) => {
                 let mut done = vec![false; n];
                 let mut rounds = vec![];
                 // G1 (tangent) edges go first: their sliver cut is only
@@ -147,7 +178,7 @@ pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featu
                 }
                 rounds
             }
-            Spec::Fillet(_) => {
+            Spec::Fillet(..) => {
                 // consecutive groups of the selection: an edge joins the
                 // current group when it is not in the group's chain, or lies
                 // after (v1 -> v0 links; positions relative to the chain's
@@ -201,7 +232,7 @@ pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featu
                     earlier.push(t);
                 }
             }
-            if matches!(spec, Spec::Chamfer(_)) {
+            if matches!(spec, Spec::Chamfer(..)) {
                 // chamfers number their edges round by round
                 out = in_place_layout(&out, &raw, &round_refs, tol);
             } else {
@@ -209,7 +240,7 @@ pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featu
                 out = raw;
             }
         }
-        if matches!(spec, Spec::Fillet(_)) {
+        if matches!(spec, Spec::Fillet(..)) {
             // three fillets meeting at a convex planar corner: the rolling
             // ball's sphere patch `V<k>` replaces the miter
             let mut corners: Vec<Vec3> = vec![];
@@ -320,7 +351,7 @@ fn blend_edges_at(
                 continue;
             }
             // fillets: an end face an earlier round already touched stays put
-            if n >= 2 && matches!(spec, Spec::Fillet(_)) && skip_end.contains(&h) {
+            if n >= 2 && matches!(spec, Spec::Fillet(..)) && skip_end.contains(&h) {
                 continue;
             }
             if !touched.contains(&h) {
@@ -376,7 +407,7 @@ fn blend_edges_at(
             if let Role::Blend(i) = name.role {
                 // chamfer blends of earlier rounds are ordinary faces; fillet
                 // blends always sit at the end, by blend number
-                if idx.contains(&i) || matches!(spec, Spec::Fillet(_)) {
+                if idx.contains(&i) || matches!(spec, Spec::Fillet(..)) {
                     return (2, i as usize);
                 }
             }
@@ -709,7 +740,7 @@ fn dbg_fail(m: &str) {
 }
 
 fn chamfer_only(spec: Spec) -> bool {
-    matches!(spec, Spec::Chamfer(_))
+    matches!(spec, Spec::Chamfer(..))
 }
 
 /// Split rings in a chamfer selection: arcs (non-`Circle` curves, e.g. the
@@ -762,7 +793,7 @@ fn split_rings(b: &Body, eids: &[EdgeId]) -> (Vec<bool>, Vec<bool>) {
 
 /// One straight edge between two planar faces.
 pub fn fillet_line_edge(b: &Body, e: EdgeId, faces: [FaceId; 2], r: f64, feature: &str, k: u32, tol: f64) -> Result<Body, BlendError> {
-    blend_edge_hint(b, e, faces, Spec::Fillet(r), feature, k, tol, false).map(|x| x.0)
+    blend_edge_hint(b, e, faces, Spec::Fillet(r, FilletProfile::Circular), feature, k, tol, false).map(|x| x.0)
 }
 
 /// As [`fillet_line_edge`], also returning the touched-face order hint
@@ -779,7 +810,7 @@ fn blend_edge_hint(
 ) -> Result<(Body, Vec<String>), BlendError> {
     let ed = b.edge(e).clone();
     let r = spec.size();
-    let chamfer = matches!(spec, Spec::Chamfer(_));
+    let chamfer = matches!(spec, Spec::Chamfer(..));
     // `ext`: chamfer through curved geometry (a cylinder / lofted cone face,
     // a tangent edge, a spline edge that is a circle). The tool then reaches
     // OUT of the part past both legs, so no tool face is coincident with a
@@ -861,6 +892,44 @@ fn blend_edge_hint(
     let len = p0.dist(p1);
     let c12 = n1.dot(n2);
     let tangent = (1.0 - c12).abs() < 1e-9;
+    // turning angle of the edge; a CHORD fillet is the circular fillet whose
+    // arc has that chord width
+    let phi = c12.clamp(-1.0, 1.0).acos();
+    let (spec, r) = match spec {
+        Spec::Fillet(w, FilletProfile::Chord) if phi > 1e-9 && phi < std::f64::consts::PI - 1e-9 => {
+            let rr = w / (2.0 * (0.5 * phi).sin());
+            (Spec::Fillet(rr, FilletProfile::Circular), rr)
+        }
+        _ => (spec, r),
+    };
+    // chamfer legs on the first / second face
+    let (ch1, ch2) = match spec {
+        Spec::Chamfer(a, ChamferLeg::Dist(b)) => (a, b),
+        Spec::Chamfer(a, ChamferLeg::Angle(al) | ChamferLeg::AngleRev(al)) => {
+            // triangle corner / first contact / second contact: law of sines with the interior angle
+            let psi = std::f64::consts::PI - phi;
+            let den = (al + psi).sin();
+            if !(al > 0.0) {
+                return Err(BlendError::code("invalidValue"));
+            }
+            if !(den > 1e-9) {
+                return Err(BlendError::detail("blendSize", &format!("{}: no blend fits between the faces", FaceName::blend(feature, k).id())));
+            }
+            let x = a * al.sin() / den;
+            if matches!(spec, Spec::Chamfer(_, ChamferLeg::AngleRev(_))) {
+                (x, a)
+            } else {
+                (a, x)
+            }
+        }
+        _ => (r, r),
+    };
+    let r = r.max(ch1).max(ch2);
+    // curvature-continuous profile: the contact points lie `g2d` from the edge
+    let g2d = match spec {
+        Spec::Fillet(_, FilletProfile::Curvature(sh)) => super::g2::tangent_distance(r, sh, phi).ok_or_else(|| BlendError::code("blendUnsupported"))?,
+        _ => 0.0,
+    };
     if (1.0 + c12).abs() < 1e-9 || (tangent && !(ext && circ.is_none())) {
         dbg_fail("tangent / folded faces");
         return Err(BlendError::code("blendUnsupported")); // tangent / folded faces
@@ -899,13 +968,33 @@ fn blend_edge_hint(
     // chamfer legs (in-face directions away from the edge: n x coedge dir)
     let off = if tangent { Vec3::ZERO } else { (n1 + n2) * (s * r / (1.0 + c12)) };
     let (ta, tb) = match spec {
-        Spec::Fillet(_) => (pm + off - n1 * (s * r), pm + off - n2 * (s * r)),
-        Spec::Chamfer(_) => (up(faces[0], pm + leg1 * r), up(faces[1], pm + leg2 * r)),
+        Spec::Fillet(_, FilletProfile::Curvature(_)) => (up(faces[0], pm + leg1 * g2d), up(faces[1], pm + leg2 * g2d)),
+        Spec::Fillet(..) => (pm + off - n1 * (s * r), pm + off - n2 * (s * r)),
+        Spec::Chamfer(..) => (up(faces[0], pm + leg1 * ch1), up(faces[1], pm + leg2 * ch2)),
     };
     // contact (spring) lines must stay on their faces
     let name = FaceName::blend(feature, k);
     for (f, t) in [(faces[0], ta), (faces[1], tb)] {
         if point_in_face(b, f, t, tol) == Where::Out {
+            if let Spec::Fillet(_, FilletProfile::Curvature(sh)) = spec {
+                // the largest radius whose contact points still lie on their faces
+                let fits = |rr: f64| -> bool {
+                    let Some(d) = super::g2::tangent_distance(rr, sh, phi) else { return false };
+                    [(faces[0], leg1), (faces[1], leg2)].iter().all(|&(f, leg)| point_in_face(b, f, up(f, pm + leg * d), tol) != Where::Out)
+                };
+                let (mut lo, mut hi) = (0.0, r);
+                for _ in 0..40 {
+                    let mid = 0.5 * (lo + hi);
+                    if fits(mid) {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                let mut e = BlendError::detail("blendG2TooLargeMax", &format!("{}: spring ends out of order", name.id()));
+                e.params = vec![("max".into(), format!("{lo:.2}")), ("shape".into(), format!("{sh}"))];
+                return Err(e);
+            }
             return Err(BlendError::detail("blendOverflow", &format!("{}: spring leaves its face away from its edges", name.id())));
         }
     }
@@ -942,7 +1031,13 @@ fn blend_edge_hint(
         let tags = ["arc", "o1", "o2", "o3", "o4"];
         let n = pts.len();
         ProfileLoop::new((0..n).map(|i| ProfileSeg::line(tags[i], pts[i], pts[(i + 1) % n])).collect())
-    } else if matches!(spec, Spec::Chamfer(_)) {
+    } else if let Some(seg) = match spec {
+        Spec::Fillet(_, FilletProfile::Conic(rho)) => super::g2::conic_segment(rho, t1, cp, t2),
+        Spec::Fillet(_, FilletProfile::Curvature(sh)) => super::g2::g2_segment(r, sh, phi, t1, cp, t2),
+        _ => None,
+    } {
+        ProfileLoop::new(vec![ProfileSeg::line("l2", t2, cp), ProfileSeg::line("l1", cp, t1), seg])
+    } else if matches!(spec, Spec::Chamfer(..)) {
         ProfileLoop::new(vec![ProfileSeg::line("l2", t2, cp), ProfileSeg::line("l1", cp, t1), ProfileSeg::line("arc", t1, t2)])
     } else {
         let short_ccw = (t1 - cc).cross(t2 - cc) > 0.0;
@@ -1013,6 +1108,13 @@ fn blend_edge_hint(
         if !hint.contains(&id) {
             hint.push(id);
         }
+    }
+    if matches!(spec, Spec::Fillet(_, FilletProfile::Conic(_) | FilletProfile::Curvature(_))) {
+        // the spline section touches the two faces tangentially along its end rulings (their
+        // contact lines are the edges it shares with the tool's flat legs): no marching
+        let blend_f = tool.face_ids().find(|&f| tool.face(f).name == name);
+        let hook = |f: FaceId, g: FaceId| -> Option<Vec<Curve>> { (Some(g) == blend_f && faces.contains(&f)).then(Vec::new) };
+        return apply_tool_hooked(b, &tool, op, &name, hint, tol, Some(&hook));
     }
     apply_tool(b, &tool, op, &name, hint, tol)
 }

@@ -24,7 +24,36 @@ pub fn blend_error(e: ck_ops::blend::BlendError) -> FeatureError {
     if let Some(d) = e.detail {
         fe = fe.with("detail", Json::Str(d));
     }
+    for (k, v) in e.params {
+        fe = fe.with(&k, Json::Str(v));
+    }
     fe
+}
+
+/// `fillet.profile`: `circular` (default), `conic` (`rho` in (0, 1), default 0.5: `filletRho`),
+/// `chord` (the radius is the chord width) or `curvature` (`shape` in [0.1, 1], default 0.5:
+/// `filletShape`; `g3` is accepted). Anything else answers `unsupported`.
+fn fillet_profile(state: &RegenState, f: &Feature) -> Result<ck_ops::blend::build::FilletProfile, FeatureError> {
+    use ck_ops::blend::build::FilletProfile as P;
+    match f.raw.get("profile").and_then(|p| p.as_str()) {
+        None | Some("circular") => Ok(P::Circular),
+        Some("chord") => Ok(P::Chord),
+        Some("conic") => {
+            let rho = state.num(f, "rho", 0.5)?;
+            if !(rho > 0.0 && rho < 1.0) {
+                return Err(FeatureError::new("filletRho"));
+            }
+            Ok(P::Conic(rho))
+        }
+        Some("curvature") => {
+            let shape = state.num(f, "shape", 0.5)?;
+            if !(shape >= ck_ops::blend::g2::SHAPE_MIN - 1e-12 && shape <= ck_ops::blend::g2::SHAPE_MAX) {
+                return Err(FeatureError::new("filletShape"));
+            }
+            Ok(P::Curvature(shape))
+        }
+        Some(other) => Err(FeatureError::new("unsupported").with("what", Json::Str(format!("fillet profile {other}")))),
+    }
 }
 
 /// `Chamfer(<d>, <d>) of <n> edge(s)` (equal-distance chamfer).
@@ -38,6 +67,9 @@ pub fn chamfer_label(id: &str, d: f64, n: usize) -> String {
 pub fn exec_chamfer(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
     let FeatureKind::Chamfer { chamfer_type, edges, .. } = &f.kind else { unreachable!() };
     let ty = f.raw.get("chamferType").and_then(|v| v.as_str()).unwrap_or("equal").to_string();
+    if matches!(ty.as_str(), "distances" | "angle") {
+        return exec_chamfer_legs(br, state, f, edges, &ty);
+    }
     match chamfer_type {
         ChamferType::Equal => {}
         ChamferType::Vertex => return exec_vertex_chamfer(br, state, f, edges),
@@ -51,6 +83,50 @@ pub fn exec_chamfer(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Resul
     br.spans.push(Span::leaf(chamfer_label(&f.id, d, sel.len())));
     let body = br.body.as_ref().ok_or_else(|| FeatureError::new("missingEdge"))?;
     let out = ck_ops::blend::build::chamfer(body, &sel, d, &f.id, super::TOL).map_err(blend_error)?;
+    br.body = Some(out);
+    Ok(())
+}
+
+/// `chamferType: "distances"` (`distance` on the first face of each pick, `distance2` on the second)
+/// or `"angle"` (`distance` on the first face, `angle` degrees between the chamfer and that face).
+/// Oracle (box probes): `distance` 2 / `distance2` 3 cuts 2 on the first face and 3 on the second
+/// (volume 7880); `distance` 2, `angle` 30 cuts 2 and 2 tan 30 (7953.81). The first face is the first
+/// of the pick's `faces`; picks whose faces the kernel lists the other way round are not supported
+/// must all agree (mixed orders are `unsupported`).
+fn exec_chamfer_legs(br: &mut Brep, state: &mut RegenState, f: &Feature, edges: &[crate::EdgeRef], ty: &str) -> Result<(), FeatureError> {
+    use ck_ops::blend::build::ChamferLeg;
+    let d1 = state.num(f, "distance", 0.0)?;
+    if !(d1 > 0.0) || !d1.is_finite() {
+        return Err(FeatureError::new("invalidValue"));
+    }
+    let leg = if ty == "distances" {
+        let d2 = if f.raw.get("distance2").is_some() { state.num(f, "distance2", d1)? } else { d1 };
+        if !(d2 > 0.0) || !d2.is_finite() {
+            return Err(FeatureError::new("invalidValue"));
+        }
+        ChamferLeg::Dist(d2)
+    } else {
+        let a = state.num(f, "angle", 45.0)?.to_radians();
+        if !(a > 0.0 && a < std::f64::consts::PI) {
+            return Err(FeatureError::new("invalidValue"));
+        }
+        ChamferLeg::Angle(a)
+    };
+    let sel = select_edges(br, edges)?;
+    let swapped: Vec<bool> = sel.iter().zip(edges).map(|(s, e)| e.faces.first().map_or(false, |a| *a != s.0)).collect();
+    let (d1, leg) = if swapped.iter().all(|x| !x) {
+        (d1, leg)
+    } else if swapped.iter().all(|x| *x) {
+        match leg {
+            ChamferLeg::Dist(d2) => (d2, ChamferLeg::Dist(d1)),
+            ChamferLeg::Angle(a) | ChamferLeg::AngleRev(a) => (d1, ChamferLeg::AngleRev(a)),
+        }
+    } else {
+        return Err(FeatureError::new("unsupported").with("what", Json::Str(format!("chamfer {ty} with mixed face order"))));
+    };
+    let body = br.body.as_ref().ok_or_else(|| FeatureError::new("missingEdge"))?;
+    br.spans.push(Span::leaf(chamfer_label(&f.id, d1, sel.len())));
+    let out = ck_ops::blend::build::chamfer_legs(body, &sel, d1, leg, &f.id, super::TOL).map_err(blend_error)?;
     br.body = Some(out);
     Ok(())
 }
@@ -90,10 +166,11 @@ pub fn exec_fillet(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
     if !(r > 0.0) || !r.is_finite() {
         return Err(FeatureError::new("invalidValue"));
     }
+    let profile = fillet_profile(state, f)?;
     let sel = select_edges(br, edges)?;
     let body = br.body.as_ref().ok_or_else(|| FeatureError::new("missingEdge"))?;
     br.spans.push(Span::leaf(fillet_label(&f.id, r, sel.len())));
-    let out = ck_ops::blend::build::fillet(body, &sel, r, &f.id, super::TOL).map_err(blend_error)?;
+    let out = ck_ops::blend::build::blend_edges(body, &sel, ck_ops::blend::build::Spec::Fillet(r, profile), &f.id, super::TOL).map_err(blend_error)?;
     br.body = Some(out);
     Ok(())
 }

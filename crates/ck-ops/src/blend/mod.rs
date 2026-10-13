@@ -48,16 +48,18 @@ pub mod vertex;
 /// Feature error `{code, params:{detail?}}` (oracle: regen `errors[]`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlendError {
+    /// Extra error params (`blendG2TooLargeMax`: `max`, `shape`).
+    pub params: Vec<(String, String)>,
     pub code: String,
     pub detail: Option<String>,
 }
 
 impl BlendError {
     pub fn code(c: &str) -> BlendError {
-        BlendError { code: c.into(), detail: None }
+        BlendError { code: c.into(), detail: None, params: vec![] }
     }
     pub fn detail(c: &str, d: &str) -> BlendError {
-        BlendError { code: c.into(), detail: Some(d.into()) }
+        BlendError { code: c.into(), detail: Some(d.into()), params: vec![] }
     }
 }
 

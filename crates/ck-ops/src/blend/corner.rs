@@ -351,7 +351,7 @@ mod tests {
             ("F2.C1".to_string(), "F2.S.e2".to_string(), Vec3::new(40., 10., -10.)),
             ("F2.S.e1".to_string(), "F2.S.e2".to_string(), Vec3::new(40., 5., 0.)),
         ];
-        let mitred = blend_edges(&b, &sel, Spec::Fillet(2.0), "F3", 1e-6).unwrap();
+        let mitred = blend_edges(&b, &sel, Spec::Fillet(2.0, crate::blend::build::FilletProfile::Circular), "F3", 1e-6).unwrap();
         let ids: Vec<EdgeId> = sel.iter().map(|(a, bb, at)| find_edge(&b, a, bb, *at).unwrap()).collect();
         let corners = find_corner(&b, &ids);
         assert_eq!(corners.len(), 1);
