@@ -305,7 +305,7 @@ export class Session {
     return this.stack.map((e) => e.record);
   }
 
-  private async regen(doc: PartDoc, tag = this.tag): Promise<{
+  private async regen(doc: PartDoc, tag = this.tag, opts?: { upTo?: number }): Promise<{
     errors: RegenError[];
     body: Record<string, unknown> | null;
     sketches: Array<[string, Record<string, unknown>]>;
@@ -313,7 +313,7 @@ export class Session {
     planes: Array<[string, { o: number[]; x: number[]; y: number[]; z: number[] }]>;
     markers: unknown[];
   }> {
-    const r = await this.kernel.request({ type: 'regen', tag, part: doc });
+    const r = await this.kernel.request({ type: 'regen', tag, part: doc, ...(opts ? { opts } : {}) });
     if (r.trap || !r.ok || !r.result) throw new Error(r.trap ?? (typeof r.error === 'string' ? r.error : 'regen failed'));
     const res = r.result as {
       errors?: RegenError[];
@@ -389,8 +389,9 @@ export class Session {
   /** Apply `ops` to a copy of the document and regen it on a scratch tag: the
    *  document, the edit stack and this session's tag are untouched. A newer
    *  preview supersedes an older one — the stale call resolves with `stale:true`
-   *  and no body, so it can never overwrite a newer result. */
-  async preview(ops: EditOp[]): Promise<PreviewResult> {
+   *  and no body, so it can never overwrite a newer result. `opts.upTo` regens
+   *  only the first N features (the kernel's sketch-mode partial regen). */
+  async preview(ops: EditOp[], opts?: { upTo?: number }): Promise<PreviewResult> {
     const seq = ++this.previewSeq;
     for (const op of ops) {
       const problem = checkOp(this.doc, op);
@@ -404,7 +405,7 @@ export class Session {
     }
     let regenRes: Awaited<ReturnType<Session['regen']>>;
     try {
-      regenRes = await this.regen(candidate, `${this.tag}-preview`);
+      regenRes = await this.regen(candidate, `${this.tag}-preview`, opts);
     } catch (e) {
       return { ok: false, errors: [], hints: [{ feature: '', code: 'trap', hint: String((e as Error).message ?? e) }], body: null };
     }

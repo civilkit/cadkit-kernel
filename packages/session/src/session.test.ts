@@ -109,6 +109,26 @@ describe('session ops (pure)', () => {
     assert.match(checkOp(doc, { op: 'remove', id: 'F9' }) ?? '', /unknown feature/);
     assert.match(checkOp(doc, { op: 'replace', id: 'F2', feature: { type: 'x' } }) ?? '', /unknown feature type/);
   });
+
+  it('preview forwards opts.upTo to the regen request, and omits opts when absent', async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const kernel: KernelTransport = {
+      async request(msg: Record<string, unknown>) {
+        seen.push(msg);
+        if (msg.type === 'regen') return { ok: true, result: { errors: [], body: cleanBody } };
+        throw new Error('unexpected ' + String(msg.type));
+      },
+    };
+    const s = new Session(plateDoc(), kernel, 't');
+    await s.preview([], { upTo: 1 });
+    const regen = seen.find((m) => m.type === 'regen');
+    assert.deepEqual(regen?.opts, { upTo: 1 });
+
+    seen.length = 0;
+    await s.preview([]);
+    const bare = seen.find((m) => m.type === 'regen');
+    assert.equal(bare !== undefined && 'opts' in bare, false);
+  });
 });
 
 describe('session live', { skip: !existsSync(wasmPath()) && 'no wasm built' }, () => {
