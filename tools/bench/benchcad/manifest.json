@@ -2000,21 +2000,13 @@
    "label": "ground-truth-mismatch",
    "note": "everything but the thread is exact (unthreaded 1492.07 mm3). Our swept V-groove removes 24.07 mm3 (= groove area 0.0924 mm2 x centroid path length, the geometric truth); the dataset's sweep (isFrenet=False, profile plane not exactly normal to the helix) only removes 10.08 mm3 (cause not determined), so the ground truth is not the geometric groove and cannot be matched."
   },
-  "j_hook_001383": {
-   "label": "kernel-bug",
-   "note": "silent wrong union: rod (cylinder r6) + revolved 180 degree handle whose start-cap rim lies exactly on the rod's cylinder surface gives 14938.2 mm3 instead of 22782.6 (the part of the handle outside the rod is mostly dropped; validate reports no issue), then the next union (E2, a plate) fails booleanFailed on that body. Nudging the handle radius to 5.99 gives the right union (and the whole part then matches CadQuery for the same nudged input: 32266.86 vs 32266.87), so the translation is right; the reference is the exact-coincident input."
-  },
   "cable_routing_panel_004961": {
-   "label": "kernel-bug",
-   "note": "fillet of the |Z corner edges after the top-rim chamfer: blendFailed for one of the four symmetric corner edges (S.e1|S.e2), the other three fillet fine alone, and success is erratic in radius (ok at 0.3 and 0.95, fails at 0.7-0.9, 1.0, 1.2) and chamfer distance (fails at 0.95 and 1.5, ok at 0.5-1.0 otherwise); fillet-ends-on-chamfer-faces corner patch."
+   "label": "ground-truth-mismatch",
+   "note": "regen has no feature error since the blend welding retry (B3-2 fixed), but the volume is 63176.6 vs 64258.7 (-1.68%): the reference STEP has 66 faces to our 54 (13 planes with normal +-y each against 9, 16 cylinders against 12), so the CadQuery program builds more or different cutouts than the translation (one slot of volume 1078 mm3 more material and a centre of mass shifted 1.49 mm). Our own volume checks out against closed forms (plate 73444.45, rim chamfer 272.8, corner fillets 1.7, eight 35.3 x 8.06 slots, four r 5.035 and four r 1.835 holes -> 63175)."
   },
   "rect_frame_008694": {
    "label": "kernel-bug",
    "note": "silent wrong fillet around the window: filleting the 12 edges of the back face (outer rectangle, 4-corner window, 4 holes) gives volume 43433.87 / area 28419.0 vs CadQuery 43446.95 / 28324.4 (area +0.33%, validate clean). Per group against CadQuery (same fillet r 1.07, run on the same face edges): outer rectangle alone 43591.530 / 28588.323 and holes alone 43730.228 / 28853.894 are identical to CadQuery, but the four window edges alone are blendFailed at r 0.5, 1.0, 1.07 and 1.5 (CadQuery: 43632.81 / 28668.54), and together with the other groups they remove 13.2 mm3 too much. The window corners are 270 degree material corners (concave vertical edge), where two filleted edges meet."
-  },
-  "snap_clip_000052": {
-   "label": "kernel-bug",
-   "note": "chamfer 0.08 on the 8 edges of the outer face is blendFailed. The body before the chamfer matches CadQuery exactly (volume 4.381141853812 / area 30.5618537575 vs CadQuery without the chamfer 4.381141853812135 / 30.56185375747479). Outer arc alone (r 2.2 about 325 degrees, end faces within 1.6e-3 degrees of radial): blendFailed for distance >= 0.05, fine for <= 0.04. With the end faces exactly radial the arc chamfers (0.08) fine, and a 0.0023 degree slant of the end face brings blendFailed / blendOverflow (spring leaves its face) back. Chamfering only the short end-face edges (cut in two by the holes) or the two hole arcs together is blendFailed even with exact radial ends."
   },
   "propeller_000192": {
    "label": "kernel-bug",

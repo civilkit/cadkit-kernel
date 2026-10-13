@@ -3,7 +3,7 @@
 Source: Hugging Face `BenchCAD/BenchCAD`, config `code_gen`; dataset card says
 cc-by-4.0. Ground truth from CadQuery 2.8.0 (volume, area, centre of mass,
 bbox, STEP). Parameters translated by hand; no CadQuery source copied.
-Run: `node tools/bench/run.mjs`. Gate: `bench.benchcad` 29/30 (soft),
+Run: `node tools/bench/run.mjs`. Gate: `bench.benchcad` 29/30 (soft; see the per-batch figures below, now 46/50 regen),
 `bench.benchcad.step` 27/30 (soft). Figures as of 2026-10-12 after the
 boolean-robustness fixes (i_beam, bellows, eyebolt, dome_cap now regen) and
 the curved/tangent chamfer fix (tapered_boss, u_channel).
@@ -83,20 +83,24 @@ drops the `moveTo` start vertex, so the boss is a pentagon, not a hexagon; with 
 
 ### Ranked gaps from batch 3
 
-B3-1. Silent wrong union (j_hook, worst kind: no error, validate clean). A cylinder (r 6) unioned with a
-revolved 180 degree handle of the same radius whose start-cap rim lies exactly on the cylinder surface gives
-14938.2 mm3 where CadQuery gives 22782.6 (the handle outside the rod is mostly dropped). The same union with
-the handle radius 5.99 or the rod 6.01 is right (22746.7 / 22822.6), and the whole part with the 5.99
-handle matches CadQuery run on the same input (32266.86 vs 32266.87), so the translation is right. The next
-feature (a plate union) then fails `booleanFailed` on the bad body. Cause not yet located in the Rust:
-coincident circle between a planar cap and a coaxial cylinder side (curve-on-surface contact).
+B3-1. FIXED. Silent wrong union (j_hook, worst kind: no error, validate clean). A cylinder (r 6) unioned with a
+revolved 180 degree handle of the same radius whose start-cap rim lies exactly on the cylinder gave 14938.2 mm3 where
+CadQuery gives 22782.6. Root cause (assemble.rs `select_with`, merge of kept fragments): the rod's cylinder band above
+the rim was kept in three fragments (two outer wedges and the lower part) joined by cancelling shared edges in listing
+order; the seam of the band (the two wedges meet only across it) was cancelled when it was listed before the cut edges that
+join the wedges to the lower part, which left a dangling slit plus a second loop: lateral area 0, closed and manifold, so
+validate was clean. Seam edges are now decided after every other shared edge. Tests: `hook_union_is_right` in
+crates/ck-ops/tests/boolean_sanity.rs (22782.6 for the handle going up; 21176.2 for the handle going down, against a Monte
+Carlo overlap of 1944.2). Also caught by the new sanity check when the merge is bypassed (below).
 
-B3-2. Fillet ending on chamfer faces (cable_routing_panel): the four `|Z` corner fillets (r 0.83) after a
-0.95 top-rim chamfer. `blendFailed` for one of the four symmetric edges alone (S.e1|S.e2), the other three
-work, and success is erratic in the parameters (fillet radius ok at 0.3 and 0.95, fails at 0.7 to 0.9, 1.0,
-1.2; chamfer distance fails at 0.95 and 1.5, ok at 0.5 to 1.0). Looks like a numerically marginal corner
-patch where the vertical fillet meets the mitred chamfer corner. Chamfering after the fillet instead also
-fails (tangent rim chain), so there is no order that works.
+B3-2. FIXED (error), the part still fails on volume. Fillet ending on chamfer faces (cable_routing_panel): the four `|Z`
+corner fillets (r 0.83) after a 0.95 top-rim chamfer were `blendFailed` for one of four symmetric corners and erratic in the
+parameters. Root cause: `blend::build::apply_tool_hooked` ran a single imprint/select/build at the model tolerance; at that
+corner the marched cut curve of the fillet cylinder with the mitred chamfer faces ended 1.5e-6 short of the existing vertex
+(tolerance 1e-6), the arrangement stayed open (`OpenEdge`), and unlike `boolean::boolean` the blend path had no retry. It now
+retries at 10x and 100x the welding tolerance. Volumes after F4 match the closed forms (73172.65 after the chamfer, 73170.93
+after the fillets); test `corner_fillets_after_a_rim_chamfer` in crates/ck-model/tests/blend_retry.rs. The part's final
+volume is 1.68% under the reference because the reference geometry differs (66 faces against 54), see the manifest.
 
 B3-3. STEP import of primitives from OCCT (items 9 family): a full sphere face (ball_knob: lump volume 0,
 `VOLUME_NONPOSITIVE`; same as dome_cap's pole case); a body with an outer-rim fillet torus (motor_end_cap:
@@ -180,11 +184,14 @@ expressible with add/cut features; only `upToNext` intersects, and only against 
 BJ-6. Several separate overlapping solids in one document (knuckle-hinge) cannot be represented: features union into one
 body. Not fixable by translation; the figures of that part cannot be matched exactly.
 
-BJ-8. Hole tangent to the plate's side wall (conduit-snap-clip F13 at x = -12.7, r 2.3 against the wall at x = -15). A
-further cut that meets the hole cylinder (here the countersink cone, F15) is `booleanFailed`: the cylinder face touches the
-wall plane along a line, a fragment of it gets no sample point ("no sample point for a fragment of face"), at every retry
-tolerance. Reproduces on a plate with a hole tangent to a side wall and a countersink cone (r 2.3 or 2.4); independent of
-BJ-1. Not fixed.
+BJ-8. FIXED. Hole tangent to the plate's side wall (conduit-snap-clip F13 at x = -12.7, r 2.3 against the wall at x = -15). The
+hole itself was already silently wrong (volume 1417.8 instead of 1373.5: a third of the hole removed) and a further cut that met
+the hole cylinder (the countersink cone, F15) was `booleanFailed` with "no sample point for a fragment". Root cause (assemble.rs): the cylinder
+touches the wall along a line, which splits its kept fragments; the merge cancelled that line and also the seam, because
+the seam test only knew a seam at u = 0 and `relocate_seams` had moved the hole's seam to 0.62 of the period. The cylinder came
+out as a seamless two-loop band of lateral area 0. A seam is now an edge traversed both ways by one original boundary loop.
+Tests: crates/ck-ops/tests/boolean_tangent.rs (hole and countersink against closed form and a quadrature of the clipped cone, at the
+tangent position and 0.001 inside it). conduit-snap-clip still fails on F7 (BJ-3, lip fillet).
 
 BJ-7. `body.box` is mesh-derived and short on curved rims (rubber-foot 0.044 mm), while the MCP `check` bbox matches.
 Same quantity, two answers.
@@ -245,16 +252,30 @@ rectangular window in a plate (r 0.5 to 1.5, any radius tried) is `blendFailed` 
 and the four hole rims on the same face it succeeds but removes 13.2 mm3 too much (volume 43433.87 vs 43446.95, area +94.6 mm2).
 Outer rectangle alone, hole rims alone and their union are identical to CadQuery to 10 digits (43591.530 / 43730.228 / 43567.948).
 The window corner has a concave vertical edge where two filleted edges meet.
+Not caught by the new sanity check: the error is 13 mm3 of 43434 and the fillet bounds (below) only bound the overlap volume of a boolean, they cannot see a few mm3 error in a
+blend; catching it needs the exact expected volume change of each blend (profile area times length plus end terms).
 
-B4-2. Chamfer of a curved rim that ends on a side face not exactly perpendicular to it (snap_clip). The body before the chamfer
-equals CadQuery's pre-chamfer body in volume and area to 14 digits. Outer arc alone (r 2.2, 325 degrees, end faces 1.6e-3 degrees off
-radial): `blendFailed` for distance 0.05 and up, works up to 0.04. Same shape with exactly radial end faces: arcs chamfer fine at
-0.08; a slant of 0.0023 degrees brings `blendFailed` / `blendOverflow` (spring leaves its face) back, up to 1 degree. In the part itself
-the short end-face edges (split by the two holes) and the two hole arcs together fail even with exact radial ends (a single hole arc is fine).
-Chamfering on partial arcs and short split edges of a thin part is the shape that matters for clips.
+B4-2. FIXED. Chamfer of a curved rim that ends on a side face not exactly perpendicular to it (snap_clip). Three defects, none of them
+the end-face angle in the SSI: (1) the contact-point check (`spring leaves its face`) judged a point that runs along an end line
+perpendicular to the edge up to the 4-decimal sketch precision (off by 1e-5) outside its face; it is now on the boundary within
+2e-5 of the body size (at most a quarter of the blend size). (2) a blend face split by a hole centred on the chamfered line was named
+`B2~1`, `B2~2` and the "no blend face in result" test looked for `B2`. (3) one tool chamfers both pieces of a straight edge split by a
+hole centred on its line (the margin runs on over the notch), so the second piece was gone and answered `missingEdge`; an edge
+whose two faces both border an earlier blend face of the feature is now done. Volume and area match CadQuery to 1e-5 (test
+`chamfer_on_the_rims_of_a_split_clip`). Remaining: that margin (`r.max(len * 0.05) + 1.0` along a straight edge) also chamfers
+an UNSELECTED collinear edge within reach beyond a notch; not fixed, silent.
 
-B4-3. Union of two lofted ellipse blades that overlap near the axis (propeller): `booleanFailed`. Hub exact (18679.4007), hub plus
+B4-3. NOT FIXED. Union of two lofted ellipse blades that overlap near the axis (propeller): `booleanFailed`. Hub exact (18679.4007), hub plus
 one blade exact (20113.6368 vs 20113.6370), hub plus blades 180 degrees apart right (21540.32 vs 21540.24), any second blade turned by 90, 100, 120, 135 or 170 degrees `booleanFailed`, with `cpattern` and with a hand-built blade.
+What was learned (blade A united with blade B alone fails the same way): the blades are thin plates in the same x slab (thickness 3.4 along x, width 16.8)
+crossing like an X. The root of each blade sticks out of the hub (width 8.4 against hub radius 5.29), so the overlap is not hidden in the hub: applying the
+instances one by one to the body instead of uniting them first does not help (tried, reverted). The arrangement has the intersection curves of the lateral faces
+(two 45 degree diagonals through the point where the two seam lines cross, v11) and the root-plane sections, but at the vertex where blade A's root ellipse meets
+curve A0xB0 (the diagonal) and A0xB2 (blade A half with blade B's root plane) the walk's angular order (A0xB0 then A0xB2 clockwise from the root ellipse) contradicts the
+order of the other end vertices along the face boundary (the seam point v8 before v11), so the face walk closes one big cycle that uses curve A0xB0 in both directions
+(4 faces on an edge: NonManifoldEdge). So one of the pieces is attached to the wrong end: most likely the trimmed piece of the marched spline A0xB2 (`kept (0.862, 1.0)`;
+its mirror image A1xB2 is kept empty) or the join of the two A0xB0 branches at the seam crossing. Retries at 10x and 100x the tolerance give the identical arrangement.
+Next step: dump the uv polylines of the cut edges on A0 and check that curve 23 and the chain 22-24-25 do not cross; a missing crossing vertex there would be the bug.
 
 B4-4. STEP import (all three failing parts): rect_frame SHELL_ORIENTATION on OCCT fillet faces (volume +0.33%, area -1.18%, same family
 as B3-3 / BJ-4), snap_clip `PARABOLA is not supported` (conic from the chamfer), propeller `VERTEX_OFF_CURVE` (volume -0.23%).
@@ -269,3 +290,20 @@ as B3-3 / BJ-4), snap_clip `PARABOLA is not supported` (conic from the chamfer),
   the CQ-to-ours rule (x,y,z)->(x,z,-y) is only in the bench scripts.
 - `normalCurve` planes and `ellipse` sketch entities work but are undocumented in the guide's field table (`p` is the major-axis end point,
   `r` the minor radius; a plane from a line in the top-plane sketch has local x horizontal and local y vertical).
+
+---
+
+## Post-boolean sanity check (2026-10-13)
+
+A boolean can close into a valid, manifold body that is wrong (j_hook, the tangent hole): validate cannot see it. `boolean::sanity`
+(crates/ck-ops/src/boolean/sanity.rs) checks every result against what the operands allow, with signed volumes va, vb, vr and
+ov = min(va, vb, volume of the overlap of the operands' padded boxes), tolerance 1e-3 of the operands:
+union va + vb - ov <= vr <= va + vb; cut va - ov <= vr <= va; intersect 0 <= vr <= ov; a union's box contains both operand boxes.
+The simple bound max(va, vb) <= vr alone does NOT catch j_hook (14938 > the rod's 12106); the box-overlap cap does (the dropped handle reads as an
+overlap of 8178 against a box overlap of 432 mm3). It is skipped for sheets, open shells and non-positive volumes.
+`boolean()` retries a failing result at 10x and 100x the tolerance, else returns it with `BoolOut::mismatch`; the feature layer answers
+`booleanVolumeMismatch {what, expected_min, expected_max, got, hint}` (also pattern unions and `upToNext`), leaves the body as it was and
+the rest of the tree regenerates; the blend tool boolean treats a mismatch as a failure and retries. No false positive on the gate or on the 80 bench parts
+(only j_hook triggered before its root cause was fixed). Limits: only gross loss (a few percent of the smaller operand); a hole that removes 22 of 66 mm3 passes
+(BJ-8) and a 13 mm3 error in a blend (B4-1) is far below it. Tests: crates/ck-ops/tests/boolean_sanity.rs, crates/ck-model/tests/boolean_sanity.rs.
+The driver hint table (packages/driver/src/verify.ts) still has the old `booleanFailed` text; the new code carries its hint in the error params.

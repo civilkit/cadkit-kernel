@@ -87,7 +87,7 @@
     "bbox": [
      -14.866981936072596,
      -14.866981936072596,
-     -1.000000001110223e-7,
+     -1.000000001110223e-07,
      14.866981936072593,
      14.866981936072595,
      18.0000001
@@ -111,8 +111,8 @@
     "volume": 135796.8560207086,
     "area": 44463.783307722246,
     "com": [
-     0.0000346371909667881,
-     -0.000045995961417135915,
+     3.46371909667881e-05,
+     -4.5995961417135915e-05,
      9.750620279048196
     ],
     "bbox": [
@@ -205,8 +205,8 @@
     "volume": 1300.6060170087612,
     "area": 1356.4544488250187,
     "com": [
-     0.000036044091955408094,
-     -1.3815560655612986e-9,
+     3.6044091955408094e-05,
+     -1.3815560655612986e-09,
      0.9497856135891313
     ],
     "bbox": [
@@ -517,7 +517,7 @@
     "area": 18919.058362785738,
     "com": [
      0.8131892398707422,
-     4.403987502539924e-8,
+     4.403987502539924e-08,
      69.13667179968812
     ],
     "bbox": [
@@ -547,14 +547,14 @@
     "volume": 31403.504454012844,
     "area": 13444.16574844864,
     "com": [
-     1.2360868667762459e-9,
+     1.2360868667762459e-09,
      1.2705772549721524e-11,
      7.950036004736302
     ],
     "bbox": [
      -28.5,
      -28.5,
-     -1e-7,
+     -1e-07,
      28.5,
      28.5,
      17.0000001
@@ -707,8 +707,8 @@
     "volume": 907.5332657429896,
     "area": 941.3551079854998,
     "com": [
-     3.7850812191582344e-7,
-     6.708306716020949e-8,
+     3.7850812191582344e-07,
+     6.708306716020949e-08,
      6.679501938115595
     ],
     "bbox": [
@@ -799,8 +799,8 @@
    "note": "fillet (r 2, also 0.5 and 0.05) of the straight edge where a foot top plane meets the tube cylinder (axis parallel to the plane) is blendUnsupported; a chamfer of the same edge works."
   },
   "conduit-snap-clip": {
-   "label": "kernel-gap:fillet-plane-cylinder-line + kernel-bug:hole-tangent-to-side-wall",
-   "note": "F7 lip fillet is blendUnsupported (plane wall x bore cylinder, line edge); F15 countersink cone cut booleanFailed: the F13 hole (x = -12.7, r 2.3) is tangent to the plate's side wall x = -15, so the hole cylinder touches the wall plane along a line and its fragment has no sample point (the coincident base circle itself is fixed: BJ-1)."
+   "label": "kernel-gap:fillet-plane-cylinder-line",
+   "note": "F7 lip fillet is blendUnsupported (plane wall x bore cylinder, line edge, BJ-3). The hole tangent to the plate wall (F13) and its countersink (F15) are fixed (BJ-8)."
   },
   "knuckle-hinge": {
    "label": "reference-mismatch:overlapping-solids",
