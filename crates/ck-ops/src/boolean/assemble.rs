@@ -388,6 +388,13 @@ pub struct OutFace {
     pub walk: Vec<((usize, usize, usize), Vec<Vec<He>>)>,
 }
 
+/// The edge is traversed in both directions by one boundary loop of the
+/// original face: the seam of a periodic face, wherever `relocate_seams` put it
+/// (a seam moved off u = 0 is not recognised by its parameter).
+fn bound_twice(af: &super::imprint::ArrFace, e: usize) -> bool {
+    af.bound.iter().any(|l| l.contains(&(e, false)) && l.contains(&(e, true)))
+}
+
 /// Is arrangement edge `e` the seam (u = 0 / 2π generator) of periodic `s`?
 fn is_seam_edge(arr: &Arrangement, s: &Surface, e: usize) -> bool {
     let ed = &arr.edges[e];
@@ -630,7 +637,7 @@ pub fn select_with(
                 if mi == mj && periodic {
                     continue;
                 }
-                let seam = same_face && periodic && is_seam_edge(arr, &af.surface, h.0);
+                let seam = same_face && periodic && (is_seam_edge(arr, &af.surface, h.0) || bound_twice(af, h.0));
                 if seam != seam_pass {
                     continue;
                 }
