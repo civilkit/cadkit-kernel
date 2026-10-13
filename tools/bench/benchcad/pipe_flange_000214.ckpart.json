@@ -1,0 +1,292 @@
+{
+ "format": "ck-part",
+ "version": 1,
+ "name": "pipe_flange",
+ "features": [
+  {
+   "type": "sketch",
+   "id": "F1",
+   "plane": {
+    "kind": "std",
+    "id": "top"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": -61.75,
+     "y": -56.83
+    },
+    {
+     "id": "p2",
+     "x": 61.75,
+     "y": -56.83
+    },
+    {
+     "id": "p3",
+     "x": 61.75,
+     "y": 56.83
+    },
+    {
+     "id": "p4",
+     "x": -61.75,
+     "y": 56.83
+    }
+   ],
+   "entities": [
+    {
+     "type": "line",
+     "id": "e1",
+     "p1": "p1",
+     "p2": "p2"
+    },
+    {
+     "type": "line",
+     "id": "e2",
+     "p1": "p2",
+     "p2": "p3"
+    },
+    {
+     "type": "line",
+     "id": "e3",
+     "p1": "p3",
+     "p2": "p4"
+    },
+    {
+     "type": "line",
+     "id": "e4",
+     "p1": "p4",
+     "p2": "p1"
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F2",
+   "op": "add",
+   "sketch": "F1",
+   "end": "mid",
+   "depth": 18
+  },
+  {
+   "type": "fillet",
+   "id": "F3",
+   "radius": 1.03,
+   "edges": [
+    {
+     "faces": [
+      "F2.S.e1",
+      "F2.S.e2"
+     ],
+     "at": [
+      61.75,
+      0,
+      56.83
+     ]
+    },
+    {
+     "faces": [
+      "F2.S.e2",
+      "F2.S.e3"
+     ],
+     "at": [
+      61.75,
+      0,
+      -56.83
+     ]
+    },
+    {
+     "faces": [
+      "F2.S.e3",
+      "F2.S.e4"
+     ],
+     "at": [
+      -61.75,
+      0,
+      -56.83
+     ]
+    },
+    {
+     "faces": [
+      "F2.S.e1",
+      "F2.S.e4"
+     ],
+     "at": [
+      -61.75,
+      0,
+      56.83
+     ]
+    }
+   ]
+  },
+  {
+   "type": "sketch",
+   "id": "F4",
+   "plane": {
+    "kind": "std",
+    "id": "top"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": -17.85,
+     "y": -12.93
+    },
+    {
+     "id": "p2",
+     "x": -17.85,
+     "y": 12.93
+    },
+    {
+     "id": "p3",
+     "x": 17.85,
+     "y": -12.93
+    },
+    {
+     "id": "p4",
+     "x": 17.85,
+     "y": 12.93
+    }
+   ],
+   "entities": [
+    {
+     "type": "circle",
+     "id": "e1",
+     "c": "p1",
+     "r": 2.765
+    },
+    {
+     "type": "circle",
+     "id": "e2",
+     "c": "p2",
+     "r": 2.765
+    },
+    {
+     "type": "circle",
+     "id": "e3",
+     "c": "p3",
+     "r": 2.765
+    },
+    {
+     "type": "circle",
+     "id": "e4",
+     "c": "p4",
+     "r": 2.765
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F5",
+   "op": "cut",
+   "sketch": "F4",
+   "end": "throughBoth",
+   "depth": 10
+  },
+  {
+   "type": "plane",
+   "id": "F6",
+   "mode": "offset",
+   "base": {
+    "kind": "std",
+    "id": "top"
+   },
+   "offset": 9
+  },
+  {
+   "type": "sketch",
+   "id": "F7",
+   "plane": {
+    "kind": "feature",
+    "id": "F6"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 0,
+     "y": 0
+    }
+   ],
+   "entities": [
+    {
+     "type": "circle",
+     "id": "e1",
+     "c": "p1",
+     "r": 29.73
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F8",
+   "op": "add",
+   "sketch": "F7",
+   "end": "blind",
+   "depth": 2.81
+  },
+  {
+   "type": "sketch",
+   "id": "F9",
+   "plane": {
+    "kind": "std",
+    "id": "top"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 0,
+     "y": 0
+    }
+   ],
+   "entities": [
+    {
+     "type": "circle",
+     "id": "e1",
+     "c": "p1",
+     "r": 22.46
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F10",
+   "op": "cut",
+   "sketch": "F9",
+   "end": "throughBoth",
+   "depth": 10
+  },
+  {
+   "type": "chamfer",
+   "id": "F11",
+   "chamferType": "equal",
+   "distance": 1.13,
+   "edges": [
+    {
+     "faces": [
+      "F8.C1",
+      "F8.S.e1"
+     ],
+     "at": [
+      -29.73,
+      11.81,
+      0
+     ]
+    },
+    {
+     "faces": [
+      "F10.S.e1",
+      "F8.C1"
+     ],
+     "at": [
+      16.373,
+      11.81,
+      -15.375
+     ]
+    }
+   ]
+  }
+ ]
+}

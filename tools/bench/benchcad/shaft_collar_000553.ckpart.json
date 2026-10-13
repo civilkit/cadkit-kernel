@@ -1,0 +1,133 @@
+{
+ "format": "ck-part",
+ "version": 1,
+ "name": "shaft_collar",
+ "features": [
+  {
+   "type": "sketch",
+   "id": "F1",
+   "plane": {
+    "kind": "std",
+    "id": "right"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 0,
+     "y": 0
+    }
+   ],
+   "entities": [
+    {
+     "type": "circle",
+     "id": "e1",
+     "c": "p1",
+     "r": 11.57
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F2",
+   "op": "add",
+   "sketch": "F1",
+   "end": "blind",
+   "depth": 9.92
+  },
+  {
+   "type": "sketch",
+   "id": "F3",
+   "plane": {
+    "kind": "std",
+    "id": "right"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 0,
+     "y": 0
+    }
+   ],
+   "entities": [
+    {
+     "type": "circle",
+     "id": "e1",
+     "c": "p1",
+     "r": 6.61
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F4",
+   "op": "cut",
+   "sketch": "F3",
+   "end": "throughBoth",
+   "depth": 10
+  },
+  {
+   "type": "chamfer",
+   "id": "F5",
+   "chamferType": "equal",
+   "distance": 0.91,
+   "edges": [
+    {
+     "faces": [
+      "F2.C0",
+      "F2.S.e1"
+     ],
+     "at": [
+      0,
+      0,
+      11.57
+     ]
+    },
+    {
+     "faces": [
+      "F2.C0",
+      "F4.S.e1"
+     ],
+     "at": [
+      0,
+      4.525,
+      -4.818
+     ]
+    }
+   ]
+  },
+  {
+   "type": "sketch",
+   "id": "F6",
+   "plane": {
+    "kind": "std",
+    "id": "front"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 4.96,
+     "y": 0
+    }
+   ],
+   "entities": [
+    {
+     "type": "circle",
+     "id": "e1",
+     "c": "p1",
+     "r": 0.87
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F7",
+   "op": "cut",
+   "sketch": "F6",
+   "end": "throughBoth",
+   "depth": 10
+  }
+ ]
+}
