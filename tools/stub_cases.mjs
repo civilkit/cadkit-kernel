@@ -152,3 +152,70 @@ parts.simpCylPlug = { ...base.box, features: [circSk('F1', STDP('top'), 0, 0, 10
 parts.simpCylSideBoss = { ...base.box, features: [circSk('F1', STDP('top'), 0, 0, 10), ex('F2', 'F1'),
   circSk('F3', { kind: 'face', id: 'F2.C1' }, 0, 0, 10), ex('F4', 'F3', { depth: 5 }),
   circSk('F5', { kind: 'face', id: 'F4.C1' }, 0, 0, 10), ex('F6', 'F5', { depth: 5 })] };
+
+// ---- loft guides, round two (curved guides, directions, errors)
+const guideArc = (id, plane, c, a, b) => ({ type: 'sketch', id, plane, points: [pt('c', ...c), pt('a', ...a), pt('b', ...b)], entities: [{ type: 'arc', id: 'e1', c: 'c', p1: 'a', p2: 'b' }], constraints: [] });
+const guideSpl = (id, plane, pts) => ({ type: 'sketch', id, plane, points: pts.map((p, i) => pt('s' + i, ...p)), entities: [{ type: 'spline', id: 'e1', pts: pts.map((_, i) => 's' + i) }], constraints: [] });
+// profile square edge x=+10 midpoint (10,0,0) -> top (5,30,0): bulge by a spline through (13,15)
+parts.loftGuideSpline = { ...base.box, features: [...loftBase, guideSpl('F4', FRONT, [[10, 0], [13, 15], [5, 30]]), loftF('F5', { guides: [{ sketch: 'F4' }] })] };
+parts.loftGuideSplineBig = { ...base.box, features: [...loftBase, guideSpl('F4', FRONT, [[10, 0], [20, 15], [5, 30]]), loftF('F5', { guides: [{ sketch: 'F4' }] })] };
+parts.loftGuideRev = { ...base.box, features: [...loftBase, lineSk('F4', FRONT, [5, 30], [10, 0]), loftF('F5', { guides: [{ sketch: 'F4' }] })] };
+parts.loftGuideShort = { ...base.box, features: [...loftBase, lineSk('F4', FRONT, [10, 0], [7.5, 15]), loftF('F5', { guides: [{ sketch: 'F4' }] })] };
+parts.loftGuideCorner = { ...base.box, features: [...loftBase, lineSk('F4', STDP('right'), [10, 0], [5, 30]), loftF('F5', { guides: [{ sketch: 'F4' }] })] };
+parts.loftGuideTwoOpp = { ...base.box, features: [...loftBase, guideSpl('F4', FRONT, [[10, 0], [13, 15], [5, 30]]), guideSpl('F6', FRONT, [[-10, 0], [-13, 15], [-5, 30]]), loftF('F5', { guides: [{ sketch: 'F4' }, { sketch: 'F6' }] })] };
+parts.loftGuideInfl = { ...base.box, features: [...loftBase, guideSpl('F4', FRONT, [[10, 0], [13, 15], [5, 30]]), loftF('F5', { guides: [{ sketch: 'F4', influence: 'sharp' }] })] };
+parts.loftGuideGlobal = { ...base.box, features: [...loftBase, guideSpl('F4', FRONT, [[10, 0], [13, 15], [5, 30]]), loftF('F5', { guides: [{ sketch: 'F4', influence: 'global' }] })] };
+
+// ---- loft centre line with an offset second profile
+const offSq = (id, plane, cx, h) => ({ type: 'sketch', id, plane, points: [pt('p1', cx - h, -h), pt('p2', cx + h, -h), pt('p3', cx + h, h), pt('p4', cx - h, h)],
+  entities: [['e1', 'p1', 'p2'], ['e2', 'p2', 'p3'], ['e3', 'p3', 'p4'], ['e4', 'p4', 'p1']].map(([i, a, b]) => ({ type: 'line', id: i, p1: a, p2: b })), constraints: [] });
+const offBase = [base.loftSq2.features[0], base.loftSq2.features[1], offSq('F3', { kind: 'feature', id: 'F2' }, 8, 5)];
+parts.loftOffsetPlain = { ...base.box, features: [...offBase, loftF('F5')] };
+parts.loftOffsetCentre = { ...base.box, features: [...offBase, lineSk('F4', FRONT, [0, 0], [8, 30]), loftF('F5', { centreLine: { sketch: 'F4' } })] };
+parts.loftOffsetCentreFollow = { ...base.box, features: [...offBase, lineSk('F4', FRONT, [0, 0], [8, 30]), loftF('F5', { centreLine: { sketch: 'F4' }, followNormal: true })] };
+parts.loftOffsetCentreS8 = { ...base.box, features: [...offBase, lineSk('F4', FRONT, [0, 0], [8, 30]), loftF('F5', { centreLine: { sketch: 'F4' }, sections: 8 })] };
+parts.loftOffsetCentreCurved = { ...base.box, features: [...offBase, guideSpl('F4', FRONT, [[0, 0], [6, 15], [8, 30]]), loftF('F5', { centreLine: { sketch: 'F4' } })] };
+parts.loftCentreMiss = { ...base.box, features: [...offBase, lineSk('F4', FRONT, [0, 0], [20, 30]), loftF('F5', { centreLine: { sketch: 'F4' } })] };
+parts.loftCentreShort = { ...base.box, features: [...offBase, lineSk('F4', FRONT, [0, 0], [4, 15]), loftF('F5', { centreLine: { sketch: 'F4' } })] };
+
+// ---- loft end constraints (startNormal / endNormal carry the tension), connectors
+parts.loftStartNormal2 = { ...base.box, features: [...loftBase, loftF('F5', { startNormal: 2 })] };
+parts.loftStartNormalHalf = { ...base.box, features: [...loftBase, loftF('F5', { startNormal: 0.5 })] };
+parts.loftBothNormal = { ...base.box, features: [...loftBase, loftF('F5', { startNormal: 1, endNormal: 1 })] };
+parts.loftStartTangent = { ...base.box, features: [...loftBase, loftF('F5', { startTangent: 1 })] };
+parts.loftStartCurv = { ...base.box, features: [...loftBase, loftF('F5', { startTangent: 1, startContinuity: 'G2' })] };
+const loft3 = [...loftBase.slice(0, 2), loftBase[2], { type: 'plane', id: 'F4', mode: 'offset', base: STDP('top'), offset: 50 }, offSq('F6', { kind: 'feature', id: 'F4' }, 0, 8)];
+parts.loft3Plain = { ...base.box, features: [...loft3, { type: 'loft', id: 'F7', op: 'add', sketches: ['F1', 'F3', 'F6'] }] };
+parts.loft3StartNormal = { ...base.box, features: [...loft3, { type: 'loft', id: 'F7', op: 'add', sketches: ['F1', 'F3', 'F6'], startNormal: 1 }] };
+parts.loft3EndNormal = { ...base.box, features: [...loft3, { type: 'loft', id: 'F7', op: 'add', sketches: ['F1', 'F3', 'F6'], endNormal: 1.5 }] };
+parts.loftConn = { ...base.box, features: [...loftBase, loftF('F5', { connectors: [null, 0.25] })] };
+parts.loftConn0 = { ...base.box, features: [...loftBase, loftF('F5', { connectors: [0, 0.5] })] };
+parts.loftConnNone = { ...base.box, features: [...loftBase, loftF('F5')] };
+
+// ---- editCurve, round two: corners, counts, tolerances, entries, chains
+const polySk = (id, pts) => ({ type: 'sketch', id, plane: STDP('front'), points: pts.map((p, i) => pt('q' + i, ...p)),
+  entities: pts.slice(1).map((_, i) => ({ type: 'line', id: 'l' + (i + 1), p1: 'q' + i, p2: 'q' + (i + 1) })), constraints: [] });
+const cref = (sk, e) => ({ kind: 'sketchCurve', sketch: sk, entity: e });
+parts.ecCorner = mkp([polySk('F1', [[0, 0], [10, 0], [10, 10]]), ec({ curves: [cref('F1', 'l1'), cref('F1', 'l2')] })]);
+parts.ecCornerKeep = mkp([polySk('F1', [[0, 0], [10, 0], [10, 10]]), ec({ curves: [cref('F1', 'l1'), cref('F1', 'l2')], keepCorners: true, count: 8 })]);
+parts.ecCornerKeepFew = mkp([polySk('F1', [[0, 0], [10, 0], [10, 10]]), ec({ curves: [cref('F1', 'l1'), cref('F1', 'l2')], keepCorners: true, count: 4 })]);
+parts.ecNotChain = mkp([polySk('F1', [[0, 0], [10, 0]]), { ...polySk('F3', [[0, 5], [10, 7]]) }, ec({ curves: [cref('F1', 'l1'), cref('F3', 'l1')] })]);
+parts.ecChainSmooth = mkp([polySk('F1', [[0, 0], [10, 0], [20, 0]]), ec({ curves: [cref('F1', 'l1'), cref('F1', 'l2')] })]);
+parts.ecFew = mkp([splSk('F1'), ec({ count: 3 })]);
+parts.ecFew4 = mkp([splSk('F1'), ec({ count: 4 })]);
+parts.ecMany = mkp([splSk('F1'), ec({ count: 500 })]);
+parts.ecDeg2 = mkp([splSk('F1'), ec({ degree: 2, count: 8 })]);
+parts.ecTolTight = mkp([splSk('F1'), ec({ method: 'tolerance', tolerance: 1e-9 })]);
+parts.ecWeight0 = mkp([splSk('F1'), ec({ entries: [{ cv: 2, of: 6, frame: 'world', dx: 0, dy: 1, dz: 0, weight: 0 }] })]);
+parts.ecWeight2 = mkp([splSk('F1'), ec({ entries: [{ cv: 2, of: 6, frame: 'world', dx: 0, dy: 1, dz: 0, weight: 3 }] })]);
+parts.ecEntryBad = mkp([splSk('F1'), ec({ entries: [{ cv: 2, of: 6, frame: 'world', dx: 'abc', dy: 1, dz: 0 }] })]);
+parts.ecEntryCurveFrame = mkp([splSk('F1'), ec({ entries: [{ cv: 2, of: 6, frame: 'curve', dx: 0, dy: 2, dz: 0 }] })]);
+parts.ecRemap = mkp([splSk('F1'), ec({ entries: [{ cv: 2, of: 4, frame: 'world', dx: 0, dy: 1, dz: 0 }] })]);
+parts.ecDisabled = mkp([splSk('F1'), ec({ entries: [{ cv: 2, of: 6, frame: 'world', dx: 0, dy: 1, dz: 0, disabled: true }] })]);
+parts.ecTwoEntries = mkp([splSk('F1'), ec({ entries: [{ cv: 2, of: 6, frame: 'world', dx: 0, dy: 1, dz: 0 }, { cv: 2, of: 6, frame: 'world', dx: 1, dy: 0, dz: 0 }] })]);
+parts.ecKeepTang = mkp([splSk('F1'), ec({ keepTangents: true })]);
+parts.ecNoKeepEnds = mkp([splSk('F1'), ec({ keepEnds: false })]);
+parts.ecPlanar = mkp([splSk('F1'), ec({ planar: true, plane: STDP('top') })]);
+parts.ecCircle = mkp([circSk('F1', STDP('top'), 0, 0, 10), ec({ curves: [cref('F1', 'e1')] })]);
+parts.ecRim = mkp([...box, ec({ id: 'F3', curves: [TOP_E1, TOP_E3].map((e) => ({ kind: 'edge', faces: e.faces, at: e.at })) })]);
+parts.ecRimRing = mkp([...box, ec({ id: 'F3', keepCorners: true, count: 12, curves: [TOP_E1, TOP_E2, TOP_E3, TOP_E4].map((e) => ({ kind: 'edge', faces: e.faces, at: e.at })) })]);

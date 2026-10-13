@@ -36,7 +36,7 @@ use ck_geom::surface::Surface;
 use ck_geom::{Frame, Vec2, Vec3};
 use ck_topo::body::{Body, EdgeId, FaceId, FaceName, VertexId};
 use ck_topo::make::plane_line_pc;
-use stations::{geom_of, match_chains, Chain, Geom3, Piece, Stations};
+use stations::{geom_of, Chain, Geom3, Piece, Stations};
 
 /// One piece of an input profile: the sketch entity curve trimmed to
 /// `[t0, t1]`, travelled backwards when `rev`.
@@ -60,6 +60,30 @@ pub struct ProfileIn {
 #[derive(Debug, Clone, Default)]
 pub struct LoftOpts {
     pub surface: bool,
+    /// Guide curves (dense polylines): see [`guides`].
+    pub guides: Vec<guides::GuideIn>,
+    /// `startNormal` / `endNormal`: the loft leaves the first / last profile
+    /// along its normal with this tension (unit speed times the tension).
+    pub start_normal: Option<f64>,
+    pub end_normal: Option<f64>,
+    /// `connectors[i]`: arc-length fraction at which profile `i` starts.
+    pub connectors: Vec<Option<f64>>,
+}
+
+/// End tangents of the rails (derivative with respect to the loft parameter).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Ends {
+    pub d0: Option<Vec3>,
+    pub d1: Option<Vec3>,
+}
+
+impl Ends {
+    fn arr(d: Option<Vec3>) -> Option<[f64; 3]> {
+        d.map(|v| [v.x, v.y, v.z])
+    }
+    fn any(&self) -> bool {
+        self.d0.is_some() || self.d1.is_some()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -67,6 +91,9 @@ pub struct LoftOut {
     pub body: Body,
     /// Start point of every matched profile (the `starts` marker).
     pub starts: Vec<Vec3>,
+    /// The end tangents used (`d0`, `d1`) and the first / last station centroid.
+    pub ends: Ends,
+    pub end_centroids: [Vec3; 2],
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -159,10 +186,33 @@ pub fn loft(feature: &str, profiles: &[ProfileIn], opts: &LoftOpts) -> Result<Lo
             return Err(LoftError::new(PROFILE_NOT_PLANAR));
         }
     }
-    let st = match_chains(chains);
+    let (st, grails) = if opts.guides.is_empty() {
+        (stations::match_chains_with(chains, &opts.connectors), vec![])
+    } else {
+        let g = guides::guided_stations(chains, &opts.guides)?;
+        (g.st, g.rails)
+    };
+    // end constraints: the profile normal pointing into the loft
+    let mut ends = Ends::default();
+    let cen: Vec<Vec3> = st.chains.iter().map(|c| c.centroid()).collect();
+    let k = cen.len();
+    if let Some(t) = opts.start_normal {
+        let mut n = profiles[0].frame.z;
+        if n.dot(cen[1] - cen[0]) < 0.0 {
+            n = -n;
+        }
+        ends.d0 = Some(n * t);
+    }
+    if let Some(t) = opts.end_normal {
+        let mut n = profiles[profiles.len() - 1].frame.z;
+        if n.dot(cen[k - 1] - cen[k - 2]) < 0.0 {
+            n = -n;
+        }
+        ends.d1 = Some(n * t);
+    }
     let starts = st.chains.iter().map(|c| c.pieces[0].g.start()).collect();
-    let body = build(feature, &st, profiles, opts.surface)?;
-    Ok(LoftOut { body, starts })
+    let body = build(feature, &st, profiles, opts.surface, &grails, ends)?;
+    Ok(LoftOut { body, starts, ends, end_centroids: [cen[0], cen[k - 1]] })
 }
 
 // ------------------------------------------------------------------ faces
@@ -213,12 +263,12 @@ struct Side {
     plane: Option<Frame>,
 }
 
-fn side(st: &Stations, j: usize) -> Result<Side, LoftError> {
+fn side(st: &Stations, j: usize, ends: Ends) -> Result<Side, LoftError> {
     let k = st.chains.len();
     let pieces: Vec<&Geom3> = st.chains.iter().map(|c| &c.pieces[j].g).collect();
     let cs = compat(pieces.iter().map(|g| g.to_nurbs()).collect());
     // flat quad of two straight pieces
-    if k == 2 && pieces.iter().all(|g| g.is_line()) {
+    if k == 2 && !ends.any() && pieces.iter().all(|g| g.is_line()) {
         let (a0, b0, a1, b1) = (pieces[0].start(), pieces[0].end(), pieces[1].start(), pieces[1].end());
         let x = (b0 - a0).try_normalize();
         let z = (b0 - a0).cross(a1 - a0).try_normalize();
@@ -235,7 +285,7 @@ fn side(st: &Stations, j: usize) -> Result<Side, LoftError> {
         (0..cs[0].ctrl.len()).all(|i| (cs[q].weight(i) - cs[0].weight(i)).abs() <= 1e-13)
     });
     if k > 2 && !same_weights {
-        return Ok(Side { surface: blend_surface(&cs, &st.ts)?, cs, plane: None });
+        return Ok(Side { surface: blend_surface(&cs, &st.ts, ends)?, cs, plane: None });
     }
     let nu = cs[0].ctrl.len();
     // control points interpolated by the natural spline per control index
@@ -253,7 +303,8 @@ fn side(st: &Stations, j: usize) -> Result<Side, LoftError> {
                 [p.x * w, p.y * w, p.z * w, w]
             })
             .collect();
-        let (d, kn, q) = smooth::through(&st.ts, &hp).map_err(|_| LoftError::new(FAILED))?;
+        let hd = |d: Option<Vec3>, c: &BSplineCurve| d.map(|v| [v.x * c.weight(i), v.y * c.weight(i), v.z * c.weight(i), 0.0]);
+        let (d, kn, q) = smooth::through_ends(&st.ts, &hp, hd(ends.d0, &cs[0]), hd(ends.d1, &cs[k - 1])).map_err(|_| LoftError::new(FAILED))?;
         vdeg = d;
         vknots = kn;
         cols.push(q);
@@ -293,7 +344,7 @@ fn side(st: &Stations, j: usize) -> Result<Side, LoftError> {
 /// weight nets. The blend is not a rational spline, so it is represented
 /// by a bicubic interpolant: exact (cubic) in `v`, interpolated at `U`
 /// parameter samples in `u` (error ~1e-8 for arcs).
-fn blend_surface(cs: &[BSplineCurve], ts: &[f64]) -> Result<Surface, LoftError> {
+fn blend_surface(cs: &[BSplineCurve], ts: &[f64], ends: Ends) -> Result<Surface, LoftError> {
     let spans = (ck_geom::nurbs::basis::distinct_knots(&cs[0].knots).len() - 1).max(1);
     let n = 24 * spans + 1;
     let us: Vec<f64> = (0..n).map(|a| a as f64 / (n - 1) as f64).collect();
@@ -303,7 +354,7 @@ fn blend_surface(cs: &[BSplineCurve], ts: &[f64]) -> Result<Surface, LoftError> 
     let mut q: Vec<Vec<Vec3>> = vec![]; // [a][j]
     for &u in &us {
         let pts: Vec<[f64; 3]> = cs.iter().map(|c| { let p = c.eval(u); [p.x, p.y, p.z] }).collect();
-        let (d, kn, c) = smooth::through(ts, &pts).map_err(|_| LoftError::new(FAILED))?;
+        let (d, kn, c) = smooth::through_ends(ts, &pts, Ends::arr(ends.d0), Ends::arr(ends.d1)).map_err(|_| LoftError::new(FAILED))?;
         vdeg = d;
         vknots = kn;
         q.push(c.iter().map(|p| Vec3::new(p[0], p[1], p[2])).collect());
@@ -323,21 +374,75 @@ fn blend_surface(cs: &[BSplineCurve], ts: &[f64]) -> Result<Surface, LoftError> 
     Ok(Surface::BSpline(Box::new(surf)))
 }
 
+/// Side face with a guide as (one of) its rails: the Gordon surface
+/// `S = ruled(L, R) + blend(stations) - blend(ruled stations)` sampled and
+/// interpolated by a bicubic B-spline (the same representation as
+/// [`blend_surface`]); `lf` / `rf` give the left / right rail at the loft
+/// parameter `v`.
+fn gordon_side(st: &Stations, j: usize, lf: &dyn Fn(f64) -> Vec3, rf: &dyn Fn(f64) -> Vec3, ends: Ends) -> Result<Side, LoftError> {
+    let k = st.chains.len();
+    let pieces: Vec<&Geom3> = st.chains.iter().map(|c| &c.pieces[j].g).collect();
+    let cs = compat(pieces.iter().map(|g| g.to_nurbs()).collect());
+    let ts = &st.ts;
+    let spans = (ck_geom::nurbs::basis::distinct_knots(&cs[0].knots).len() - 1).max(1);
+    let n = 24 * spans + 1;
+    let us: Vec<f64> = (0..n).map(|a| a as f64 / (n - 1) as f64).collect();
+    let per = 8;
+    let mut vs: Vec<f64> = vec![];
+    for s in 0..k - 1 {
+        for i in 0..per {
+            vs.push(ts[s] + (ts[s + 1] - ts[s]) * (i as f64 / per as f64));
+        }
+    }
+    vs.push(ts[k - 1]);
+    let spline = |xs: &[f64], pts: &[Vec3]| -> Result<BSplineCurve, LoftError> {
+        let q: Vec<[f64; 3]> = pts.iter().map(|p| [p.x, p.y, p.z]).collect();
+        let (d, kn, c) = smooth::through_ends(xs, &q, Ends::arr(ends.d0), Ends::arr(ends.d1)).map_err(|_| LoftError::new(FAILED))?;
+        BSplineCurve::new(d, kn, c.iter().map(|p| Vec3::new(p[0], p[1], p[2])).collect()).map_err(|_| LoftError::new(FAILED))
+    };
+    let mut vdeg = 3;
+    let mut vknots = vec![];
+    let mut q: Vec<Vec<Vec3>> = vec![]; // [a][i]
+    for &u in &us {
+        let cp: Vec<Vec3> = cs.iter().map(|c| c.eval(u)).collect();
+        let tp: Vec<Vec3> = ts.iter().map(|&t| lf(t) * (1.0 - u) + rf(t) * u).collect();
+        let (cc, tc) = (spline(ts, &cp)?, spline(ts, &tp)?);
+        let row: Vec<Vec3> = vs.iter().map(|&v| lf(v) * (1.0 - u) + rf(v) * u + cc.eval(v) - tc.eval(v)).collect();
+        let r3: Vec<[f64; 3]> = row.iter().map(|p| [p.x, p.y, p.z]).collect();
+        let (d, kn, c) = smooth::through_ends(&vs, &r3, Ends::arr(ends.d0), Ends::arr(ends.d1)).map_err(|_| LoftError::new(FAILED))?;
+        vdeg = d;
+        vknots = kn;
+        q.push(c.iter().map(|p| Vec3::new(p[0], p[1], p[2])).collect());
+    }
+    let nv = q[0].len();
+    let ku = ck_geom::fit::averaged_knots(&us, 3);
+    let mut ctrl = vec![Vec3::new(0.0, 0.0, 0.0); n * nv];
+    for jj in 0..nv {
+        let col: Vec<Vec3> = (0..n).map(|a| q[a][jj]).collect();
+        let c = ck_geom::fit::interpolate_with(&col, 3, &us, ku.clone()).map_err(|_| LoftError::new(FAILED))?;
+        for a in 0..n {
+            ctrl[a * nv + jj] = c.ctrl[a];
+        }
+    }
+    let surf = BSplineSurface::new(3, vdeg, ku, vknots, n, nv, ctrl, None).map_err(|_| LoftError::new(FAILED))?;
+    Ok(Side { surface: Surface::BSpline(Box::new(surf)), cs, plane: None })
+}
+
 /// Rail through the matching vertices `pts` of the stations.
-fn rail(ts: &[f64], pts: &[Vec3]) -> Result<(Curve, f64, f64), LoftError> {
-    if ts.len() == 2 {
+fn rail(ts: &[f64], pts: &[Vec3], ends: Ends) -> Result<(Curve, f64, f64), LoftError> {
+    if ts.len() == 2 && !ends.any() {
         let d = pts[0].dist(pts[1]);
         return Ok((Curve::line_through(pts[0], pts[1]), 0.0, d));
     }
     let q: Vec<[f64; 3]> = pts.iter().map(|p| [p.x, p.y, p.z]).collect();
-    let (deg, kn, c) = smooth::through(ts, &q).map_err(|_| LoftError::new(FAILED))?;
+    let (deg, kn, c) = smooth::through_ends(ts, &q, Ends::arr(ends.d0), Ends::arr(ends.d1)).map_err(|_| LoftError::new(FAILED))?;
     let cur = BSplineCurve::new(deg, kn, c.iter().map(|p| Vec3::new(p[0], p[1], p[2])).collect())
         .map_err(|_| LoftError::new(FAILED))?;
     let (a, b) = cur.domain();
     Ok((Curve::BSpline(cur), a, b))
 }
 
-fn build(feature: &str, st: &Stations, profiles: &[ProfileIn], surface: bool) -> Result<Body, LoftError> {
+fn build(feature: &str, st: &Stations, profiles: &[ProfileIn], surface: bool, grails: &[Option<guides::GuideRail>], ends: Ends) -> Result<Body, LoftError> {
     let k = st.chains.len();
     let n = st.tags.len();
     let closed = st.closed;
@@ -346,8 +451,49 @@ fn build(feature: &str, st: &Stations, profiles: &[ProfileIn], surface: bool) ->
     let mut b = Body::new();
     let lump = b.add_lump();
     let shell = b.add_shell(lump);
+    // vertices: [station][piece start (+ far end of an open chain)]
+    let vp = |s: usize, i: usize| -> Vec3 {
+        let c = &st.chains[s];
+        if i < n {
+            c.pieces[i].g.start()
+        } else {
+            c.pieces[n - 1].g.end()
+        }
+    };
+    // rails: the natural spline through the stations, or the guide
+    let mut rail_curves: Vec<(Curve, f64, f64)> = vec![];
+    for i in 0..nv {
+        match grails.get(i).and_then(|g| g.as_ref()) {
+            Some(g) => {
+                let (a, bb) = g.curve.domain();
+                rail_curves.push((Curve::BSpline(g.curve.clone()), a, bb));
+            }
+            None => {
+                let pts: Vec<Vec3> = (0..k).map(|s| vp(s, i)).collect();
+                rail_curves.push(rail(&st.ts, &pts, ends)?);
+            }
+        }
+    }
+    let guided_rail = |i: usize| grails.get(i).map_or(false, |g| g.is_some());
+    // position on rail `i` at the loft parameter `v`
+    let rail_at = |i: usize, v: f64| -> Vec3 {
+        let (c, t0, t1) = &rail_curves[i];
+        match c {
+            Curve::Line { .. } => c.eval(t0 + (t1 - t0) * (v / total)),
+            _ => c.eval(v),
+        }
+    };
     // sides
-    let sides: Vec<Side> = (0..n).map(|j| side(st, j)).collect::<Result<_, _>>()?;
+    let sides: Vec<Side> = (0..n)
+        .map(|j| {
+            let jn = if closed { (j + 1) % n } else { j + 1 };
+            if guided_rail(j) || guided_rail(jn) {
+                gordon_side(st, j, &|v| rail_at(j, v), &|v| rail_at(jn, v), ends)
+            } else {
+                side(st, j, ends)
+            }
+        })
+        .collect::<Result<_, _>>()?;
     let faces: Vec<FaceId> = (0..n)
         .map(|j| b.add_face(shell, sides[j].surface.clone(), true, FaceName::side(feature, &st.tags[j])))
         .collect();
@@ -360,22 +506,12 @@ fn build(feature: &str, st: &Stations, profiles: &[ProfileIn], surface: bool) ->
         let f1 = b.add_face(shell, Surface::Plane { frame: fr1 }, true, FaceName::cap(feature, 1, None));
         Some((f0, f1, fr0, fr1))
     };
-    // vertices: [station][piece start (+ far end of an open chain)]
-    let vp = |s: usize, i: usize| -> Vec3 {
-        let c = &st.chains[s];
-        if i < n {
-            c.pieces[i].g.start()
-        } else {
-            c.pieces[n - 1].g.end()
-        }
-    };
     let v0: Vec<VertexId> = (0..nv).map(|i| b.add_vertex(vp(0, i))).collect();
     let v1: Vec<VertexId> = (0..nv).map(|i| b.add_vertex(vp(k - 1, i))).collect();
     // rails
     let mut rails: Vec<(EdgeId, bool)> = vec![];
     for i in 0..nv {
-        let pts: Vec<Vec3> = (0..k).map(|s| vp(s, i)).collect();
-        let (c, t0, t1) = rail(&st.ts, &pts)?;
+        let (c, t0, t1) = rail_curves[i].clone();
         rails.push((b.add_edge(c.clone(), t0, t1, v0[i], v1[i]), matches!(c, Curve::Line { .. })));
     }
     // cap edges
@@ -491,6 +627,60 @@ mod tests {
             frame: fr,
             closed: true,
             segs: vec![SegIn { tag: "e1".into(), curve: Curve::Circle { frame: fr, r }, t0: 0.0, t1: TAU, rev: false }],
+        }
+    }
+
+    fn square_profile(y: f64, h: f64) -> ProfileIn {
+        let fr = frame_at(y);
+        let p = |x: f64, z: f64| Vec2::new(x, -z); // frame y = -z world
+        let c = [p(-h, h), p(h, h), p(h, -h), p(-h, -h)];
+        let segs = (0..4)
+            .map(|i| {
+                let (a, b) = (c[i], c[(i + 1) % 4]);
+                let (wa, wb) = (fr.o + fr.x * a.x + fr.y * a.y, fr.o + fr.x * b.x + fr.y * b.y);
+                SegIn { tag: format!("e{}", i + 1), curve: Curve::line_through(wa, wb), t0: 0.0, t1: wa.dist(wb), rev: false }
+            })
+            .collect();
+        ProfileIn { frame: fr, closed: true, segs }
+    }
+
+    /// Guided loft (oracle `loftGuideLine`: 7 faces / 15 edges, volume 7000 for a straight
+    /// guide through two edge mid-points); a bulging guide is followed exactly and the
+    /// result is a valid closed solid (oracle `loftGuideSpline`: 8029.2, ours is smaller:
+    /// the oracle spreads the pull wider over the profile).
+    #[test]
+    fn guided_loft_follows_the_guide() {
+        use crate::loft::guides::GuideIn;
+        let profiles = [square_profile(0.0, 10.0), square_profile(30.0, 5.0)];
+        let line = GuideIn { pts: (0..=8).map(|i| Vec3::new(10.0 - 5.0 * i as f64 / 8.0, 30.0 * i as f64 / 8.0, 0.0)).collect() };
+        let out = loft("F5", &profiles, &LoftOpts { surface: false, guides: vec![line], ..Default::default() }).unwrap();
+        assert_eq!(out.body.num_faces(), 7);
+        assert_eq!(out.body.edge_ids().count(), 15);
+        let m = ck_topo::mass::mass_props(&out.body);
+        assert!((m.volume - 7000.0).abs() < 1e-6, "{}", m.volume);
+        // bulging guide: x(y) = 10 - 5y/30 + 4 sin(pi y/30)
+        let bulge = GuideIn {
+            pts: (0..=60)
+                .map(|i| {
+                    let y = 30.0 * i as f64 / 60.0;
+                    Vec3::new(10.0 - 5.0 * y / 30.0 + 4.0 * (std::f64::consts::PI * y / 30.0).sin(), y, 0.0)
+                })
+                .collect(),
+        };
+        let out = loft("F5", &profiles, &LoftOpts { surface: false, guides: vec![bulge.clone()], ..Default::default() }).unwrap();
+        assert!(ck_topo::check::check(&out.body, 1e-6).is_empty(), "closed manifold");
+        let m = ck_topo::mass::mass_props(&out.body);
+        assert!(m.volume > 7000.0 + 300.0 && m.volume < 9500.0, "{}", m.volume);
+        // the guide rail (the edge between the two halves of S.e2) lies on the guide
+        let rail = out.body.edge_ids().find(|&e| {
+            let f: Vec<String> = out.body.edge_faces(e).iter().map(|&f| out.body.face_id_str(f)).collect();
+            f.iter().any(|n| n.starts_with("F5.S.e2~1")) && f.iter().any(|n| n.starts_with("F5.S.e2~2"))
+        });
+        let ed = out.body.edge(rail.expect("guide rail"));
+        for k in 0..=10 {
+            let p = ed.curve.eval(ed.t0 + (ed.t1 - ed.t0) * k as f64 / 10.0);
+            let x = 10.0 - 5.0 * p.y / 30.0 + 4.0 * (std::f64::consts::PI * p.y / 30.0).sin();
+            assert!((p.x - x).abs() < 2e-3 && p.z.abs() < 1e-9, "{p:?} vs x {x}");
         }
     }
 

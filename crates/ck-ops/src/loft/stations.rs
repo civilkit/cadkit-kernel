@@ -280,7 +280,44 @@ fn cost(a: &Chain, b: &Chain, k: usize) -> f64 {
 }
 
 /// Bring the chains to common piece count and matching order.
-pub fn match_chains(mut chains: Vec<Chain>) -> Stations {
+pub fn match_chains(chains: Vec<Chain>) -> Stations {
+    match_chains_with(chains, &[])
+}
+
+/// Cut a closed chain at arc-length fraction `f` (from its first vertex, in
+/// travel direction) and start it there. GUESS: the fraction is measured on
+/// the chain as given (after the orientation fix) by piece length; a point
+/// inside a piece splits it at the same fraction of its parameter.
+fn start_at_fraction(c: &Chain, f: f64) -> Chain {
+    let f = f.rem_euclid(1.0);
+    if f < 1e-12 {
+        return c.clone();
+    }
+    let lens: Vec<f64> = c.pieces.iter().map(|p| p.g.length()).collect();
+    let total: f64 = lens.iter().sum();
+    let mut target = f * total;
+    let mut pieces = c.pieces.clone();
+    for (i, l) in lens.iter().enumerate() {
+        if target <= *l * 1e-9 {
+            return Chain { closed: c.closed, pieces: pieces.clone() }.rotated(i);
+        }
+        if target < *l * (1.0 - 1e-9) {
+            let s = target / l;
+            let p = pieces[i].clone();
+            pieces.splice(i..=i, [Piece { tag: p.tag.clone(), g: p.g.sub(0.0, s) }, Piece { tag: p.tag, g: p.g.sub(s, 1.0) }]);
+            return Chain { closed: c.closed, pieces }.rotated(i + 1);
+        }
+        target -= l;
+    }
+    c.clone()
+}
+
+/// [`match_chains`] with per-profile start connectors (`connectors[i]`: the
+/// fraction of the profile's length at which it starts; `None` = chosen by
+/// the cost rule). Oracle probes: square -> square with `[null, 0.25]` /
+/// `[0, 0.5]` give volumes 5000 / 3000 (the second profile starts one / two
+/// corners round).
+pub fn match_chains_with(mut chains: Vec<Chain>, connectors: &[Option<f64>]) -> Stations {
     let closed = chains[0].closed;
     let mut n = chains.iter().map(|c| c.pieces.len()).max().unwrap_or(1);
     if closed && n < 2 {
@@ -293,10 +330,20 @@ pub fn match_chains(mut chains: Vec<Chain>) -> Stations {
             *c = c.reversed();
         }
     }
+    let conn = |i: usize| connectors.get(i).copied().flatten().filter(|_| closed);
+    for (i, c) in chains.iter_mut().enumerate() {
+        if let Some(f) = conn(i) {
+            *c = start_at_fraction(c, f);
+            n = n.max(c.pieces.len());
+        }
+    }
     for c in chains.iter_mut() {
         c.split_to(n);
     }
     for i in 1..chains.len() {
+        if conn(i).is_some() {
+            continue;
+        }
         if closed {
             let mut best = 0;
             let mut bv = f64::INFINITY;
