@@ -304,3 +304,28 @@ add('varTwoEdges', [fl({ filletType: 'variable', radii: [1, 3], edges: [nearStar
 add('varEdgeE2', [fl({ filletType: 'variable', radii: [1, 3], edges: [{ faces: ['F2.C1', 'F2.S.e2'], at: [40, 10, -3] }] })]);
 add('varBottom', [fl({ filletType: 'variable', radii: [1, 3], edges: [{ faces: ['F2.C0', 'F2.S.e1'], at: [4, 0, 0] }] })]);
 add('varCyl', [{ ...base.box, features: [circSk('F1', STDP('top'), 0, 0, 10), ex('F2', 'F1'), { type: 'fillet', id: 'F3', radius: 2, filletType: 'variable', radii: [1, 3], edges: [{ faces: ['F2.C1', 'F2.S.e1'], at: [10, 10, 0] }] }] }.features]);
+
+// freeform edits, round two
+const ffe = (points, o = {}) => ff({ edits: [edit(points, o)] });
+add('ffEdge', [ffe([[0, 2]], { dy: 2 })]);
+add('ffEdgeNear', [ffe([[1, 2]], { dy: 2 })]);
+add('ffCorner', [ffe([[0, 0]], { dy: 2 })]);
+add('ffCrossBottom', [ffe([[2, 2]], { dy: -50 })]);
+add('ffFold', [ffe([[2, 2], [2, 1]], { dy: 15 })]);
+add('ffSurfaceFrame', [ffe([[2, 2]], { frame: 'surface', dx: 0, dy: 0, dz: 2 })]);
+add('ffSurfaceFrameU', [ffe([[2, 2]], { frame: 'surface', dx: 3, dy: 0, dz: 0 })]);
+add('ffWorldX', [ffe([[2, 2]], { dx: 3, dy: 0 })]);
+add('ffProp1', [ffe([[2, 2]], { dy: 2, proportional: 1 })]);
+add('ffProp3', [ffe([[2, 2]], { dy: 2, proportional: 3 })]);
+add('ffPropEdge', [ffe([[1, 2]], { dy: 2, proportional: 2 })]);
+add('ffTwoPts', [ffe([[1, 1], [3, 3]], { dy: 2 })]);
+add('ffMapped', [ffe([[1, 1]], { dy: 2, of: [3, 3] })]);
+add('ffDisabled', [ff({ edits: [{ ...edit([[2, 2]], { dy: 2 }), enabled: false }] })]);
+add('ffDisabled2', [ff({ edits: [{ ...edit([[2, 2]], { dy: 2 }), disabled: true }] })]);
+add('ffNegIdx', [ffe([[-1, 2]], { dy: 2 })]);
+add('ffExprDy', [ff({ edits: [edit([[2, 2]], { dy: '=1+1' })] })]);
+add('ffTwoFaces', [ff({ faces: ['F2.C1', 'F2.C0'], edits: [edit([[2, 2]], { dy: 2 })] })]);
+add('ffSymOK', [{ type: 'plane', id: 'F7', mode: 'offset', base: STDP('right'), offset: 20 }, ffe([[1, 2]], { dy: 2, symmetric: { kind: 'feature', id: 'F7' } })]);
+add('ffSymOK2', [{ type: 'plane', id: 'F7', mode: 'offset', base: STDP('right'), offset: 20 }, ffe([[2, 1]], { dy: 2, symmetric: { kind: 'feature', id: 'F7' } })]);
+add('ffPlaneFrame', [{ type: 'plane', id: 'F7', mode: 'offset', base: STDP('right'), offset: 20 }, ffe([[2, 2]], { frame: 'plane', plane: { kind: 'feature', id: 'F7' }, dx: 0, dy: 0, dz: 2 })]);
+add('ffPlaneMissing', [ffe([[2, 2]], { frame: 'plane', plane: { kind: 'feature', id: 'F99' }, dz: 2 })]);
