@@ -370,12 +370,14 @@ export class Session {
    *  curves, planes and markers of the current document (regen reply passthrough). */
   async bodyForView(): Promise<ViewBody | null> {
     const { body, sketches, curves, planes, markers } = await this.regen(this.doc);
-    if (!body) return null;
+    // No solid yet is not an empty document: a part that is only sketches, curves or planes still has
+    // something to show, so hand the viewer an empty mesh with those layers instead of nothing.
+    if (!body && !sketches.length && !curves.length && !planes.length) return null;
     const { meshFromBody } = await import('../../render/src/mesh.js');
     return {
-      mesh: meshFromBody(body as Parameters<typeof meshFromBody>[0]),
-      edges: (body.edges as Array<{ key?: string; pts: number[][] }> | undefined) ?? [],
-      box: body.box as { min: number[]; max: number[] },
+      mesh: meshFromBody((body ?? {}) as Parameters<typeof meshFromBody>[0]),
+      edges: (body?.edges as Array<{ key?: string; pts: number[][] }> | undefined) ?? [],
+      box: (body?.box as { min: number[]; max: number[] } | undefined) ?? { min: [0, 0, 0], max: [0, 0, 0] },
       sketches: sketches.map(([id, e]) => ({
         id,
         frame: e.frame as ViewFrame,
