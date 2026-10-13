@@ -367,7 +367,7 @@ fn solve_vertex(mut p: Vec3, surfs: &[&Surface]) -> Option<Vec3> {
 }
 
 /// Curve of the intersection of two (new) face surfaces near `near`.
-fn new_edge_curve(sa: &Surface, sb: &Surface, old: &Curve, near: Vec3) -> Option<Curve> {
+fn new_edge_curve(sa: &Surface, sb: &Surface, old: &Curve, near: Vec3, span: (Vec3, Vec3, f64, f64)) -> Option<Curve> {
     match (sa, sb) {
         (Surface::Plane { frame: fa }, Surface::Plane { frame: fb }) => {
             let (na, nb) = (fa.z, fb.z);
@@ -399,7 +399,22 @@ fn new_edge_curve(sa: &Surface, sb: &Surface, old: &Curve, near: Vec3) -> Option
             Some(Curve::Circle { frame: Frame { o: c, ..*of }, r: rad })
         }
         _ => {
-            let r = crate::intersect::ss::intersect(sa, sb, None, 1e-9);
+            let mut r = crate::intersect::ss::intersect(sa, sb, None, 1e-9);
+            if r.curves().is_empty() {
+                // free-form neighbour (a spline wall): march inside the box
+                // of the old edge and its moved ends
+                let (p0, p1, t0, t1) = span;
+                let mut lo = p0.min(p1).min(near);
+                let mut hi = p0.max(p1).max(near);
+                for i in 0..=16 {
+                    let q = old.eval(t0 + (t1 - t0) * i as f64 / 16.0);
+                    lo = lo.min(q);
+                    hi = hi.max(q);
+                }
+                let pad = 0.5 + 0.1 * (hi - lo).len();
+                let (lo, hi) = (lo - Vec3::new(pad, pad, pad), hi + Vec3::new(pad, pad, pad));
+                r = crate::intersect::ss::intersect(sa, sb, Some(crate::intersect::ss::Bounds { lo, hi }), 1e-9);
+            }
             let mut best: Option<(f64, Curve)> = None;
             for c in r.curves() {
                 let cv = c.curve();
@@ -503,8 +518,22 @@ fn rebuild(b: &Body, edits: &[Edit]) -> Result<Body, DraftError> {
                 return Err(failed(&format!("edge {} with {} faces", e.0, fs.len())));
             }
             let (fa, fb) = if fs[0].0 <= fs[1].0 { (fs[0], fs[1]) } else { (fs[1], fs[0]) };
-            let c = new_edge_curve(&nb.faces[fa.idx()].surface, &nb.faces[fb.idx()].surface, &ed.curve, near)
-                .ok_or_else(|| failed("edges do not intersect"))?;
+            let c = new_edge_curve(&nb.faces[fa.idx()].surface, &nb.faces[fb.idx()].surface, &ed.curve, near, (p0, p1, ed.t0, ed.t1))
+                .ok_or_else(|| {
+                    if std::env::var_os("CK_DRAFT_DBG").is_some() {
+                        eprintln!(
+                            "DRAFT no curve: edge {} {} / {} curve {:?} near {:?}\n  A {:?}\n  B {:?}",
+                            e.0,
+                            b.face_id_str(fa),
+                            b.face_id_str(fb),
+                            ed.curve.kind(),
+                            near,
+                            nb.faces[fa.idx()].surface,
+                            nb.faces[fb.idx()].surface
+                        );
+                    }
+                    failed("edges do not intersect")
+                })?;
             match c {
                 Curve::Line { o, d } => {
                     // keep the old direction; the draft rule re-orients below
@@ -549,6 +578,9 @@ fn rebuild(b: &Body, edits: &[Edit]) -> Result<Body, DraftError> {
                     curve = ln;
                 }
                 other => {
+                    // a marched curve may run against the edge: flip it
+                    let (a0, b0) = (other.closest_param(p0), other.closest_param(p1));
+                    let other = if a0 > b0 { other.reversed() } else { other };
                     let (a, bb) = (other.closest_param(p0), other.closest_param(p1));
                     t0 = a;
                     t1 = bb;
@@ -612,15 +644,37 @@ fn rebuild(b: &Body, edits: &[Edit]) -> Result<Body, DraftError> {
             let old = nb.coedges[c.idx()].pcurve.clone();
             let pc = match &nb.faces[f.idx()].surface {
                 Surface::Plane { frame } => plane_pcurve(frame, &curve),
-                Surface::Cone { frame, .. } | Surface::Cylinder { frame, .. } => match (old, &curve) {
-                    (Some(Curve2::Line { o, d }), Curve::Circle { frame: cf, .. }) if d.y == 0.0 => {
-                        Some(Curve2::Line { o: Vec2::new(o.x, (cf.o - frame.o).dot(frame.z)), d })
+                Surface::Cone { frame, .. } | Surface::Cylinder { frame, .. } => {
+                    // the new cone's frame z is the pull direction: opposite to
+                    // the old axis it mirrors u (u' = m u + c, c from the old
+                    // reference point (u, v) = (0, 0))
+                    let (m, c) = match &b.faces[f.idx()].surface {
+                        Surface::Cone { frame: of, .. } | Surface::Cylinder { frame: of, .. } => {
+                            let m = if of.z.dot(frame.z) < 0.0 { -1.0 } else { 1.0 };
+                            let p = b.faces[f.idx()].surface.eval(0.0, 0.0);
+                            let mut c = nb.faces[f.idx()].surface.closest_param(p).0;
+                            if c > std::f64::consts::PI {
+                                c -= std::f64::consts::TAU;
+                            }
+                            if c.abs() < 1e-9 {
+                                c = 0.0;
+                            }
+                            (m, c)
+                        }
+                        _ => (1.0, 0.0),
+                    };
+                    match (old, &curve) {
+                        (Some(Curve2::Line { o, d }), Curve::Circle { frame: cf, .. }) if d.y == 0.0 => Some(Curve2::Line {
+                            o: Vec2::new(m * o.x + c, (cf.o - frame.o).dot(frame.z)),
+                            d: Vec2::new(m * d.x, d.y),
+                        }),
+                        (Some(Curve2::Line { o, d }), Curve::Line { o: lo, d: ld }) if d.x == 0.0 => Some(Curve2::Line {
+                            o: Vec2::new(m * o.x + c, (*lo - frame.o).dot(frame.z)),
+                            d: Vec2::new(0.0, ld.dot(frame.z)),
+                        }),
+                        _ => None,
                     }
-                    (Some(Curve2::Line { o, d }), Curve::Line { o: lo, d: ld }) if d.x == 0.0 => {
-                        Some(Curve2::Line { o: Vec2::new(o.x, (*lo - frame.o).dot(frame.z)), d: Vec2::new(0.0, ld.dot(frame.z)) })
-                    }
-                    _ => None,
-                },
+                }
                 _ => None,
             };
             nb.coedges[c.idx()].pcurve = pc;
@@ -676,6 +730,56 @@ mod tests {
         // top circle shrinks by 10 * tan(3 deg)
         let (lo, hi) = out.bbox();
         assert!(((hi.x - lo.x) - 2.0 * (10.0 - 10.0 * 3f64.to_radians().tan()).max(10.0)).abs() < 1e-6, "{lo:?} {hi:?}");
+    }
+
+    /// Pull direction against the cylinder axis (a hole drafted from the
+    /// neutral plane at its mouth): the cone frame mirrors u, the pcurves
+    /// follow. Volume = the frustum, topology valid (large sample F49).
+    #[test]
+    fn cylinder_pulled_against_its_axis() {
+        use crate::boolean::tests::cyl_body;
+        for dir in [Vec3::Y, -Vec3::Y] {
+            let b = cyl_body("F2", 5.0, 3.0, 10.0, 0.0, 10.0);
+            let side = b.face_ids().find(|&f| b.face_id_str(f).contains(".S.")).unwrap();
+            let out = draft(&b, Vec3::ZERO, dir, &[side], 3f64.to_radians(), 1e-6).unwrap();
+            assert!(ck_topo::check::check(&out, 1e-9).is_empty(), "{:?}", ck_topo::check::check(&out, 1e-9));
+            let t = 3f64.to_radians().tan();
+            // the far end moves by 10 tan(3 deg): inwards for +Y, outwards for -Y
+            let r1 = if dir.y > 0.0 { 10.0 - 10.0 * t } else { 10.0 + 10.0 * t };
+            let want = std::f64::consts::PI * 10.0 / 3.0 * (100.0 + 10.0 * r1 + r1 * r1);
+            let v = ck_topo::mass::mass_props(&out).volume;
+            assert!((v - want).abs() < 1e-6 * want, "dir {dir:?}: volume {v} want {want}");
+        }
+    }
+
+    /// A drafted plane next to a free-form wall: the new edge comes from a
+    /// bounded marching intersection and keeps the old edge direction
+    /// (large sample F48, rib sides against the lofted shell wall).
+    #[test]
+    fn plane_next_to_spline_wall() {
+        use ck_geom::curve2::Curve2;
+        use ck_geom::nurbs::bspline::BSplineCurve;
+        use ck_topo::make::{extrude, ExtrudeOpts, Profile, ProfileLoop, ProfileRegion, ProfileSeg};
+        let c = BSplineCurve::new(
+            3,
+            vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            vec![Vec2::new(40.0, 0.0), Vec2::new(46.0, 7.0), Vec2::new(34.0, 14.0), Vec2::new(40.0, 20.0)],
+        )
+        .unwrap();
+        let spl = ProfileSeg { tag: "e2".into(), curve: Curve2::BSpline(c), t0: 0.0, t1: 1.0, rev: false };
+        let loop_ = ProfileLoop::new(vec![
+            ProfileSeg::line("e1", Vec2::new(0.0, 0.0), Vec2::new(40.0, 0.0)),
+            spl,
+            ProfileSeg::line("e3", Vec2::new(40.0, 20.0), Vec2::new(0.0, 20.0)),
+            ProfileSeg::line("e4", Vec2::new(0.0, 20.0), Vec2::new(0.0, 0.0)),
+        ]);
+        let prof = Profile::new(Frame { o: Vec3::ZERO, x: Vec3::X, y: Vec3::new(0.0, 0.0, -1.0), z: Vec3::Y }, vec![ProfileRegion { outer: loop_, holes: vec![] }]);
+        let b = extrude("F2", &prof, ExtrudeOpts::blind(10.0)).unwrap();
+        let sides: Vec<FaceId> = ["F2.S.e1", "F2.S.e3", "F2.S.e4"].iter().map(|n| face(&b, n)).collect();
+        let out = draft(&b, Vec3::ZERO, Vec3::Y, &sides, 2f64.to_radians(), 1e-6).unwrap();
+        assert!(ck_topo::check::check(&out, 1e-9).is_empty(), "{:?}", ck_topo::check::check(&out, 1e-9));
+        let (v0, v1) = (ck_topo::mass::mass_props(&b).volume, ck_topo::mass::mass_props(&out).volume);
+        assert!(v1 < v0 && v1 > 0.9 * v0, "volume {v0} -> {v1}");
     }
 
     #[test]
