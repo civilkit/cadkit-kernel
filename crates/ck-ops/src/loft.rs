@@ -267,15 +267,15 @@ fn side(st: &Stations, j: usize, ends: Ends) -> Result<Side, LoftError> {
     let k = st.chains.len();
     let pieces: Vec<&Geom3> = st.chains.iter().map(|c| &c.pieces[j].g).collect();
     let cs = compat(pieces.iter().map(|g| g.to_nurbs()).collect());
-    // flat quad of two straight pieces
-    if k == 2 && !ends.any() && pieces.iter().all(|g| g.is_line()) {
-        let (a0, b0, a1, b1) = (pieces[0].start(), pieces[0].end(), pieces[1].start(), pieces[1].end());
+    // flat quad of straight pieces (every station's piece in one plane)
+    if !ends.any() && pieces.iter().all(|g| g.is_line()) {
+        let (a0, b0, a1, b1) = (pieces[0].start(), pieces[0].end(), pieces[k - 1].start(), pieces[k - 1].end());
         let x = (b0 - a0).try_normalize();
         let z = (b0 - a0).cross(a1 - a0).try_normalize();
         if let (Some(x), Some(z)) = (x, z) {
-            let flat = (b1 - a0).dot(z).abs();
             let size = a0.dist(b0).max(a0.dist(a1)).max(1.0);
-            if flat <= 1e-9 * size {
+            let flat = pieces.iter().all(|g| (g.start() - a0).dot(z).abs() <= 1e-9 * size && (g.end() - a0).dot(z).abs() <= 1e-9 * size);
+            if flat {
                 let frame = Frame { o: a0, x, y: z.cross(x), z };
                 return Ok(Side { surface: Surface::Plane { frame }, cs, plane: Some(frame) });
             }
@@ -433,6 +433,20 @@ fn rail(ts: &[f64], pts: &[Vec3], ends: Ends) -> Result<(Curve, f64, f64), LoftE
     if ts.len() == 2 && !ends.any() {
         let d = pts[0].dist(pts[1]);
         return Ok((Curve::line_through(pts[0], pts[1]), 0.0, d));
+    }
+    if !ends.any() && ts.len() > 2 {
+        let total = pts[0].dist(pts[pts.len() - 1]);
+        let d = (pts[pts.len() - 1] - pts[0]).try_normalize();
+        let span = ts[ts.len() - 1] - ts[0];
+        if let (Some(d), true) = (d, total > 0.0 && span > 0.0) {
+            let straight = pts.iter().zip(ts).all(|(p, t)| {
+                let along = (*p - pts[0]).dot(d);
+                (*p - pts[0] - d * along).len() <= 1e-9 * total && (along - total * (t - ts[0]) / span).abs() <= 1e-9 * total
+            });
+            if straight {
+                return Ok((Curve::line_through(pts[0], pts[pts.len() - 1]), 0.0, total));
+            }
+        }
     }
     let q: Vec<[f64; 3]> = pts.iter().map(|p| [p.x, p.y, p.z]).collect();
     let (deg, kn, c) = smooth::through_ends(ts, &q, Ends::arr(ends.d0), Ends::arr(ends.d1)).map_err(|_| LoftError::new(FAILED))?;

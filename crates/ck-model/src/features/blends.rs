@@ -30,6 +30,42 @@ pub fn blend_error(e: ck_ops::blend::BlendError) -> FeatureError {
     fe
 }
 
+/// `filletType: "variable"`: `radii: [near, far]` (the first at the end of each picked edge nearer its
+/// pick point; for `chord` the widths), `profile` as for constant fillets, `rhos: [a, b]` for conic.
+/// Oracle: radii missing / not two positive numbers -> `invalidValue`; `blendTooLarge` when a contact
+/// line leaves its face.
+fn exec_variable_fillet(br: &mut Brep, state: &mut RegenState, f: &Feature, edges: &[crate::EdgeRef]) -> Result<(), FeatureError> {
+    use ck_ops::blend::build::FilletProfile as P;
+    let radii: Vec<f64> = match f.raw.get("radii").and_then(|a| a.as_arr()) {
+        Some(a) if a.len() == 2 => a.iter().map(|x| crate::expr::eval_field(Some(x), &state.vars, f64::NAN).unwrap_or(f64::NAN)).collect(),
+        _ => return Err(FeatureError::new("invalidValue")),
+    };
+    if radii.iter().any(|r| !(*r > 0.0) || !r.is_finite()) {
+        return Err(FeatureError::new("invalidValue"));
+    }
+    let profile = fillet_profile(state, f)?;
+    let rhos = match f.raw.get("rhos").and_then(|a| a.as_arr()) {
+        Some(a) if a.len() == 2 => {
+            let v: Vec<f64> = a.iter().map(|x| crate::expr::eval_field(Some(x), &state.vars, 0.5).unwrap_or(0.5)).collect();
+            [v[0], v[1]]
+        }
+        _ => {
+            let r = state.num(f, "rho", 0.5)?;
+            [r, r]
+        }
+    };
+    if matches!(profile, P::Conic(_)) && rhos.iter().any(|r| !(*r > 0.0 && *r < 1.0)) {
+        return Err(FeatureError::new("filletRho"));
+    }
+    let sel = select_edges(br, edges)?;
+    let body = br.body.as_ref().ok_or_else(|| FeatureError::new("missingEdge"))?;
+    br.spans.push(Span::leaf(fillet_label(&f.id, radii[0], sel.len())));
+    let spec = ck_ops::blend::interp::VarSpec { radii: [radii[0], radii[1]], profile, rhos };
+    let out = ck_ops::blend::interp::variable_fillet(body, &sel, spec, &f.id, super::TOL).map_err(blend_error)?;
+    br.body = Some(out);
+    Ok(())
+}
+
 /// `fillet.profile`: `circular` (default), `conic` (`rho` in (0, 1), default 0.5: `filletRho`),
 /// `chord` (the radius is the chord width) or `curvature` (`shape` in [0.1, 1], default 0.5:
 /// `filletShape`; `g3` is accepted). Anything else answers `unsupported`.
@@ -160,6 +196,9 @@ fn select_edges(br: &Brep, edges: &[crate::EdgeRef]) -> Result<Vec<(String, Stri
 pub fn exec_fillet(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
     let FeatureKind::Fillet { edges, .. } = &f.kind else { unreachable!() };
     if let Some(t) = f.raw.get("filletType").and_then(|v| v.as_str()) {
+        if t == "variable" {
+            return exec_variable_fillet(br, state, f, edges);
+        }
         return Err(FeatureError::new("unsupported").with("what", Json::Str(format!("fillet {t}"))));
     }
     let r = state.num(f, "radius", 0.0)?;

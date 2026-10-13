@@ -516,6 +516,19 @@ parts.mirrorBodyCone = part([...parts.cone.features, { type: 'plane', id: 'F8', 
   parts.chamferDistTwo = boxF(ch({ chamferType: 'distances', distance2: 3, edges: [e1, e3] }));
   parts.chamferAngle = boxF(ch({ chamferType: 'angle', angle: 30 }));
   parts.chamferAngleRev = boxF(ch({ chamferType: 'angle', angle: 30, edges: [E('F2.S.e1', 'F2.C1', [20, 10, 0])] }));
+  // variable radius: radii[0] at the end of the edge nearer the pick
+  const nearStart = E('F2.C1', 'F2.S.e1', [4, 10, 0]), nearEnd = E('F2.C1', 'F2.S.e1', [36, 10, 0]);
+  const vr = (o) => boxF(fl({ filletType: 'variable', radii: [1, 3], edges: [nearStart], ...o }));
+  parts.varNearStart = vr({});
+  parts.varNearEnd = vr({ edges: [nearEnd] });
+  parts.varBig = vr({ radii: [1, 9] });
+  parts.varChord = vr({ profile: 'chord' });
+  parts.varConic = vr({ profile: 'conic', rhos: [0.4, 0.6] });
+  parts.varConicRho = vr({ profile: 'conic', rho: 0.5 });
+  parts.varCurv = vr({ profile: 'curvature', shape: 0.5 });
+  parts.varTwoEdges = vr({ edges: [nearStart, E('F2.C1', 'F2.S.e3', [20, 10, -20])] });
+  parts.varEdgeE2 = vr({ edges: [E('F2.C1', 'F2.S.e2', [40, 10, -3])] });
+  parts.varBottom = vr({ edges: [E('F2.C0', 'F2.S.e1', [4, 0, 0])] });
   const cyl = [sketch('top', [pt('c', 0, 0)], [{ type: 'circle', id: 'e1', c: 'c', r: 10 }]), extrude()];
   const rim = (o) => part([...cyl, { type: 'fillet', id: 'F3', radius: 2, edges: [E('F2.C1', 'F2.S.e1', [10, 10, 0])], ...o }]);
   parts.filletCylConic = rim({ profile: 'conic', rho: 0.5 });

@@ -286,3 +286,21 @@ add('chamferAngle0', [ch({ chamferType: 'angle', distance: 2, angle: 0 })]);
 add('chamferAngle90', [ch({ chamferType: 'angle', distance: 2, angle: 90 })]);
 add('chamferDist0', [ch({ chamferType: 'distances', distance: 2, distance2: 0 })]);
 add('chamferDistRing', [ch({ chamferType: 'distances', distance: 2, distance2: 3, edges: [TOP_E1, TOP_E2, TOP_E3, TOP_E4] })]);
+
+// variable radius: pick near the x=0 end / x=40 end, other profiles, concave, limits
+const nearStart = { faces: ['F2.C1', 'F2.S.e1'], at: [4, 10, 0] }, nearEnd = { faces: ['F2.C1', 'F2.S.e1'], at: [36, 10, 0] };
+add('varNearStart', [fl({ filletType: 'variable', radii: [1, 3], edges: [nearStart] })]);
+add('varNearEnd', [fl({ filletType: 'variable', radii: [1, 3], edges: [nearEnd] })]);
+add('varSame', [fl({ filletType: 'variable', radii: [2, 2] })]);
+add('varBig', [fl({ filletType: 'variable', radii: [1, 9], edges: [nearStart] })]);
+add('varTooBig', [fl({ filletType: 'variable', radii: [1, 12], edges: [nearStart] })]);
+add('varConic', [fl({ filletType: 'variable', radii: [1, 3], profile: 'conic', rhos: [0.4, 0.6], edges: [nearStart] })]);
+add('varConicRho', [fl({ filletType: 'variable', radii: [1, 3], profile: 'conic', rho: 0.5, edges: [nearStart] })]);
+add('varChord', [fl({ filletType: 'variable', radii: [1, 3], profile: 'chord', edges: [nearStart] })]);
+add('varCurv', [fl({ filletType: 'variable', radii: [1, 3], profile: 'curvature', shape: 0.5, edges: [nearStart] })]);
+add('varNoRadii', [fl({ filletType: 'variable', edges: [nearStart] })]);
+add('varZero', [fl({ filletType: 'variable', radii: [0, 3], edges: [nearStart] })]);
+add('varTwoEdges', [fl({ filletType: 'variable', radii: [1, 3], edges: [nearStart, TOP_E3] })]);
+add('varEdgeE2', [fl({ filletType: 'variable', radii: [1, 3], edges: [{ faces: ['F2.C1', 'F2.S.e2'], at: [40, 10, -3] }] })]);
+add('varBottom', [fl({ filletType: 'variable', radii: [1, 3], edges: [{ faces: ['F2.C0', 'F2.S.e1'], at: [4, 0, 0] }] })]);
+add('varCyl', [{ ...base.box, features: [circSk('F1', STDP('top'), 0, 0, 10), ex('F2', 'F1'), { type: 'fillet', id: 'F3', radius: 2, filletType: 'variable', radii: [1, 3], edges: [{ faces: ['F2.C1', 'F2.S.e1'], at: [10, 10, 0] }] }] }.features]);
