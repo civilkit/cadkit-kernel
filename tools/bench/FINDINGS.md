@@ -178,3 +178,74 @@ Same quantity, two answers.
   the tool does overlap in a volume there. It should mention tangent/coincident circles and sphere poles as suspects.
 - The `check` bbox and `read`/`run.mjs` body box disagree on curved parts (BJ-7); `check` should say which one it uses.
 - `mcp_check.mjs` used an absolute `tol: 0.001` on volume (kept for the BenchCAD mode, relative tolerance used for `--set brepjs`).
+
+---
+
+## Batch 4 (n-z)
+
+10 more BenchCAD parts from families n to z (`"batch": "4"` in the manifest): ratchet_sector, shaft_collar, pipe_flange,
+piston, pull_handle, vented_panel, waffle_plate, rect_frame, snap_clip, propeller. Rows come from the dataset-server
+filter API (config `code_gen`); the tier is the dataset's own difficulty (7 hard, 3 medium; no easy part was drawn).
+Authoring script `gen5.mjs` (+ `gen5_blends.json` probed edge refs), translated by hand from the programs
+(parameters paraphrased, no CadQuery source copied).
+
+Reference figures: every figure and STEP file in the manifest comes from executing the unmodified dataset program in
+CadQuery 2.8.0 (`uv run --no-project --python 3.12 --with cadquery python ...`; a small runner that `exec`s the program, prints
+volume, area, centre of mass, bbox, face and solid counts and exports the STEP). All 10 programs ran, each gives one valid
+solid. No reference was edited after the fact. Diagnostic CadQuery runs used to classify failures (program without its last
+chamfer, fillet per edge group, propeller with a subset of its blade unions) are not references and are not stored.
+
+Run: `node tools/bench/run.mjs` gives 44/50 regen, 43/50 step import. `node tools/bench/mcp_check.mjs <ids>` (batch-4 parts now use the
+relative volume / area / bbox / com / valid check): 7 parts pass every check; rect_frame passes volume (3.0e-4) but fails area;
+snap_clip and propeller are rejected by `edit`.
+
+| part | tier | regen | step import | our volume vs CadQuery | cause |
+|---|---|---|---|---|---|
+| ratchet_sector_001018 | hard | pass | pass | 146263.4918 vs 146263.4918 (1.4e-15) | |
+| shaft_collar_000553 | hard | pass | pass | 2739.285 vs 2739.320 (1.3e-5) | |
+| pipe_flange_000214 | hard | pass | pass | 226543.2305 vs 226543.2305 (4e-16) | |
+| piston_002697 | hard | pass | pass | 764271.04 vs 764265.70 (7e-6) | |
+| pull_handle_007593 | medium | pass | pass | 178178.2764 vs 178178.2767 (1.4e-9) | |
+| vented_panel_003475 | medium | pass | pass | 109757.4456 vs 109757.4456 (8e-16) | |
+| waffle_plate_010153 | medium | pass | pass | 69341.4467 vs 69341.4467 (1e-15) | |
+| rect_frame_008694 | hard | FAIL (area) | FAIL | 43433.87 vs 43446.95 (3.0e-4); area 28419.0 vs 28324.4 (+0.33%) | kernel-bug: window fillet; step: SHELL_ORIENTATION |
+| snap_clip_000052 | hard | FAIL | FAIL | no body (pre-chamfer body 4.381142 = CadQuery pre-chamfer 4.381142) | kernel-bug: chamfer; step: PARABOLA unsupported |
+| propeller_000192 | hard | FAIL | FAIL | 20113.64 (one blade) vs 23868.82 | kernel-bug: union of overlapping lofted blades; step: VERTEX_OFF_CURVE |
+
+Nothing here is a translation mistake. Two corrections made on the way, both caught by comparing with CadQuery:
+(a) piston's cross hole: the program names a `cutThruAll` from the mid plane; CadQuery cuts both ways (volume only matches
+with `throughBoth`: 764271 vs 764266; one way gave 785950); (b) the shaft_collar inner step cylinder lies inside the wall and is
+not translated (the volume matches without it). Where a failure was investigated, the translation was shown right by matching
+CadQuery on a sub-state of the same part (below), not by editing a reference.
+
+### Ranked gaps from batch 4
+
+B4-1. Silent wrong fillet at 270 degree material corners (rect_frame, no error, validate clean). Filleting the four edges of a
+rectangular window in a plate (r 0.5 to 1.5, any radius tried) is `blendFailed` on its own; together with the outer rectangle
+and the four hole rims on the same face it succeeds but removes 13.2 mm3 too much (volume 43433.87 vs 43446.95, area +94.6 mm2).
+Outer rectangle alone, hole rims alone and their union are identical to CadQuery to 10 digits (43591.530 / 43730.228 / 43567.948).
+The window corner has a concave vertical edge where two filleted edges meet.
+
+B4-2. Chamfer of a curved rim that ends on a side face not exactly perpendicular to it (snap_clip). The body before the chamfer
+equals CadQuery's pre-chamfer body in volume and area to 14 digits. Outer arc alone (r 2.2, 325 degrees, end faces 1.6e-3 degrees off
+radial): `blendFailed` for distance 0.05 and up, works up to 0.04. Same shape with exactly radial end faces: arcs chamfer fine at
+0.08; a slant of 0.0023 degrees brings `blendFailed` / `blendOverflow` (spring leaves its face) back, up to 1 degree. In the part itself
+the short end-face edges (split by the two holes) and the two hole arcs together fail even with exact radial ends (a single hole arc is fine).
+Chamfering on partial arcs and short split edges of a thin part is the shape that matters for clips.
+
+B4-3. Union of two lofted ellipse blades that overlap near the axis (propeller): `booleanFailed`. Hub exact (18679.4007), hub plus
+one blade exact (20113.6368 vs 20113.6370), hub plus blades 180 degrees apart right (21540.32 vs 21540.24), any second blade turned by 90, 100, 120, 135 or 170 degrees `booleanFailed`, with `cpattern` and with a hand-built blade.
+
+B4-4. STEP import (all three failing parts): rect_frame SHELL_ORIENTATION on OCCT fillet faces (volume +0.33%, area -1.18%, same family
+as B3-3 / BJ-4), snap_clip `PARABOLA is not supported` (conic from the chamfer), propeller `VERTEX_OFF_CURVE` (volume -0.23%).
+
+### MCP tool problems seen (batch 4)
+
+- `mcp_check.mjs` used an absolute volume tolerance of 0.001 mm3 in benchcad mode: shaft_collar and piston showed as failing at 1e-5
+  relative. Batch-4 parts now go through the relative check; batch 3 keeps the old one.
+- A rejected `edit` (snap_clip, propeller) reports only `blendFailed` / `booleanFailed` with no edge or feature pair; for `blendFailed` it
+  would help to say which edge failed and whether the end condition or the face pair was the problem (B4-2 took bisecting by hand).
+- The guide's frame paragraph ("top = XZ", "local y maps to -z") and gen.mjs's CadQuery mapping describe the same thing differently;
+  the CQ-to-ours rule (x,y,z)->(x,z,-y) is only in the bench scripts.
+- `normalCurve` planes and `ellipse` sketch entities work but are undocumented in the guide's field table (`p` is the major-axis end point,
+  `r` the minor radius; a plane from a line in the top-plane sketch has local x horizontal and local y vertical).

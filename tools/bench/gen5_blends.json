@@ -1,0 +1,61 @@
+{
+ "shaft_collar_000553": [
+  { "after": "F4", "type": "chamfer", "id": "F5", "chamferType": "equal", "distance": 0.91, "edges": [
+   { "faces": ["F2.C0", "F2.S.e1"], "at": [0, 0, 11.57] },
+   { "faces": ["F2.C0", "F4.S.e1"], "at": [0, 4.525, -4.818] } ] }
+ ],
+ "pipe_flange_000214": [
+  { "after": "F2", "type": "fillet", "id": "F3", "radius": 1.03, "edges": [
+   { "faces": ["F2.S.e1", "F2.S.e2"], "at": [61.75, 0, 56.83] },
+   { "faces": ["F2.S.e2", "F2.S.e3"], "at": [61.75, 0, -56.83] },
+   { "faces": ["F2.S.e3", "F2.S.e4"], "at": [-61.75, 0, -56.83] },
+   { "faces": ["F2.S.e1", "F2.S.e4"], "at": [-61.75, 0, 56.83] } ] },
+  { "after": "F10", "type": "chamfer", "id": "F11", "chamferType": "equal", "distance": 1.13, "edges": [
+   { "faces": ["F8.C1", "F8.S.e1"], "at": [-29.73, 11.81, 0] },
+   { "faces": ["F10.S.e1", "F8.C1"], "at": [16.373, 11.81, -15.375] } ] }
+ ],
+ "piston_002697": [
+  { "after": "F4", "type": "chamfer", "id": "F5", "chamferType": "equal", "distance": 0.52, "edges": [
+   { "faces": ["F2.S.e14", "F2.S.e15"], "at": [-45.3, 0, -125.79] } ] }
+ ],
+ "vented_panel_003475": [
+  { "after": "F2", "type": "chamfer", "id": "F3", "chamferType": "equal", "distance": 2.03, "edges": [
+   { "faces": ["F2.C1", "F2.S.e1"], "at": [0, 5.175, 48.225] },
+   { "faces": ["F2.C1", "F2.S.e2"], "at": [63.805, 5.175, 0] },
+   { "faces": ["F2.C1", "F2.S.e3"], "at": [0, 5.175, -48.225] },
+   { "faces": ["F2.C1", "F2.S.e4"], "at": [-63.805, 5.175, 0] } ] }
+ ],
+ "waffle_plate_010153": [
+  { "after": "F2", "type": "chamfer", "id": "F3", "chamferType": "equal", "distance": 0.5, "edges": [
+   { "faces": ["F2.C0", "F2.S.e1"], "at": [0, -26.045, -10.275] },
+   { "faces": ["F2.C0", "F2.S.e2"], "at": [39.445, 0, -10.275] },
+   { "faces": ["F2.C0", "F2.S.e3"], "at": [0, 26.045, -10.275] },
+   { "faces": ["F2.C0", "F2.S.e4"], "at": [-39.445, 0, -10.275] } ] }
+ ],
+ "rect_frame_008694": [
+  { "after": "F6", "type": "fillet", "id": "F7", "radius": 1.07, "edges": [
+   { "faces": ["F2.C1", "F2.S.e1"], "at": [0, -53.71, 3.58] },
+   { "faces": ["F2.C1", "F2.S.e2"], "at": [111.89, 0, 3.58] },
+   { "faces": ["F2.C1", "F2.S.e3"], "at": [0, 53.71, 3.58] },
+   { "faces": ["F2.C1", "F2.S.e4"], "at": [-111.89, 0, 3.58] },
+   { "faces": ["F2.C1", "F4.S.e1"], "at": [0, -32.23, 3.58] },
+   { "faces": ["F2.C1", "F4.S.e2"], "at": [90.41, 0, 3.58] },
+   { "faces": ["F2.C1", "F4.S.e3"], "at": [0, 32.23, 3.58] },
+   { "faces": ["F2.C1", "F4.S.e4"], "at": [-90.41, 0, 3.58] },
+   { "faces": ["F2.C1", "F6.S.e2"], "at": [-98.54, 45.421, 3.58] },
+   { "faces": ["F2.C1", "F6.S.e4"], "at": [-98.54, -40.519, 3.58] },
+   { "faces": ["F2.C1", "F6.S.e1"], "at": [103.76, 45.421, 3.58] },
+   { "faces": ["F2.C1", "F6.S.e3"], "at": [103.76, -40.519, 3.58] } ] }
+ ],
+ "snap_clip_000052": [
+  { "after": "F4", "type": "chamfer", "id": "F5", "chamferType": "equal", "distance": 0.08, "edges": [
+   { "faces": ["F2.C1", "F2.S.e1"], "at": [0.39, 0, 2.2] },
+   { "faces": ["F2.C1", "F2.S.e3"], "at": [0.39, 0, 0.9] },
+   { "faces": ["F2.C1", "F2.S.e2~1"], "at": [0.39, -0.601, -1.907] },
+   { "faces": ["F2.C1", "F2.S.e2~2"], "at": [0.39, -0.331, -1.049] },
+   { "faces": ["F2.C1", "F2.S.e4~1"], "at": [0.39, 0.331, -1.049] },
+   { "faces": ["F2.C1", "F2.S.e4~2"], "at": [0.39, 0.601, -1.907] },
+   { "faces": ["F2.C1", "F4.S.e2"], "at": [0.39, -0.705, -1.403] },
+   { "faces": ["F2.C1", "F4.S.e1"], "at": [0.39, 0.705, -1.403] } ] }
+ ]
+}

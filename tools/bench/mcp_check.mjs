@@ -2,7 +2,8 @@
 // `edit` batch of `add` ops from the translated feature list, then `check` volume/area/bbox/centre of mass and
 // `valid` against the reference from the set's manifest.json).
 // usage: node tools/bench/mcp_check.mjs [--set benchcad|brepjs] [id ...]      (needs `npm --prefix packages run build` once)
-//   benchcad (default): batch-3a parts, volume + bbox + valid (the original check)
+//   benchcad (default): batch-3a parts, volume (absolute 1e-3) + bbox + valid (the original check); batch-4 parts use the
+//           relative volume / area / bbox / com / valid check of the brepjs mode
 //   brepjs: every part of tools/bench/brepjs, relative tolerance 1e-3 on volume and area, 1e-3 of the diagonal on
 //           bbox and centre of mass; prints one summary line per part
 import { readFileSync } from 'node:fs';
@@ -18,7 +19,7 @@ const set = si >= 0 ? args.splice(si, 2)[1] : 'benchcad';
 const dir = path.join(here, set);
 const manifest = JSON.parse(readFileSync(path.join(dir, 'manifest.json'), 'utf8'));
 const ids = args;
-const sel = manifest.parts.filter((m) => (ids.length ? ids.includes(m.id) : set !== 'benchcad' || m.batch === '3a'));
+const sel = manifest.parts.filter((m) => (ids.length ? ids.includes(m.id) : set !== 'benchcad' || ['3a', '4'].includes(m.batch)));
 
 const transport = new StdioClientTransport({ command: 'node', args: [path.join(here, '../../packages/mcp.mjs')], env: { ...process.env } });
 const client = new Client({ name: 'bench-mcp', version: '1' });
@@ -33,7 +34,7 @@ for (const m of sel) {
   const g = m.ground_truth, lo = rot(g.bbox.slice(0, 3)), hi = rot(g.bbox.slice(3));
   const min = lo.map((x, i) => Math.min(x, hi[i])), max = lo.map((x, i) => Math.max(x, hi[i]));
   const diag = Math.hypot(...g.bbox.slice(3).map((x, i) => x - g.bbox[i]));
-  if (set === 'benchcad') {
+  if (set === 'benchcad' && m.batch !== '4') {
     const out = { id: m.id, editOk: edit.ok, errors: edit.errors ?? edit.hints ?? null };
     out.check = await call('check', { session, expect: [{ kind: 'volume', value: g.volume, tol: 0.001 }, { kind: 'bbox', min, max, tol: 0.05 }, { kind: 'valid' }] });
     console.log(JSON.stringify(out).slice(0, 1500));

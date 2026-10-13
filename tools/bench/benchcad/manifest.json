@@ -1579,6 +1579,420 @@
    },
    "step": "gt/helical_gear_015542.step",
    "note": "two 252-vertex outlines 20.55 apart, the second one turned about the axis (twisted loft); coordinates in gen3_data.json."
+  },
+  {
+   "id": "ratchet_sector_001018",
+   "benchcad_stem": "ratchet_sector_001018_s20260505",
+   "family": "ratchet_sector",
+   "tier": "hard",
+   "benchcad_difficulty": "hard",
+   "batch": "4",
+   "ops": [
+    "moveTo/lineTo/threePointArc",
+    "extrude",
+    "hole",
+    "pushPoints(4)",
+    "cut(box, rotated)x3"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0; attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 146263.49181287,
+    "area": 28389.53873985834,
+    "com": [
+     9.002897782633156,
+     35.58028478129666,
+     47.73459706134273
+    ],
+    "bbox": [
+     -5.118128143521972e-16,
+     -28.457400000000003,
+     0.0,
+     17.44,
+     99.61000000000023,
+     99.6099888843897
+    ],
+    "faces": 25,
+    "solids": 1
+   },
+   "step": "gt/ratchet_sector_001018.step",
+   "note": "sector outline from a three-point arc; the three slot cutters are boxes turned about the plate normal by 26.65, 53.3 and 79.95 degrees and centred on the start face, so they cut 9.22 deep."
+  },
+  {
+   "id": "shaft_collar_000553",
+   "benchcad_stem": "shaft_collar_000553_s20260505",
+   "family": "shaft_collar",
+   "tier": "hard",
+   "benchcad_difficulty": "hard",
+   "batch": "4",
+   "standard": "DIN 705",
+   "ops": [
+    "circle",
+    "extrude",
+    "union(cylinder)",
+    "hole",
+    "chamfer",
+    "cut(cylinder, cross)"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0; attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 2739.320372251258,
+    "area": 1683.6658210583657,
+    "com": [
+     5.0403976187620545,
+     -4.98895025104368e-05,
+     -2.1506989423895333e-15
+    ],
+    "bbox": [
+     -2.5811497156540287e-17,
+     -11.5700001,
+     -11.570000100000001,
+     9.9200001,
+     11.5700001,
+     11.570000100000001
+    ],
+    "faces": 8,
+    "solids": 1
+   },
+   "step": "gt/shaft_collar_000553.step",
+   "note": "the dataset's inner step cylinder (r 9.3, x 4.46 to 9.75) lies entirely inside the wall, so its union changes nothing and is not translated; the cross hole is a cylinder along the dataset y axis through the wall at x 4.96."
+  },
+  {
+   "id": "pipe_flange_000214",
+   "benchcad_stem": "pipe_flange_000214_s20260505",
+   "family": "pipe_flange",
+   "tier": "hard",
+   "benchcad_difficulty": "hard",
+   "batch": "4",
+   "standard": "ASME B16.5",
+   "ops": [
+    "box",
+    "fillet(|Z)",
+    "hole",
+    "pushPoints(4)",
+    "hole",
+    "circle",
+    "extrude",
+    "hole",
+    "chamfer"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0; attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 226543.23049632422,
+    "area": 36845.037133348385,
+    "com": [
+     -3.132566182679523e-15,
+     1.7350871202874686e-16,
+     0.14327373979787486
+    ],
+    "bbox": [
+     -61.75,
+     -56.83,
+     -9.0,
+     61.75,
+     56.83,
+     11.81
+    ],
+    "faces": 23,
+    "solids": 1
+   },
+   "step": "gt/pipe_flange_000214.step",
+   "note": "the four small holes (r 2.765 at radius 22.04) graze the bore (r 22.46) and are covered by the boss, which is added after them."
+  },
+  {
+   "id": "piston_002697",
+   "benchcad_stem": "piston_002697_s20260505",
+   "family": "piston",
+   "tier": "hard",
+   "benchcad_difficulty": "hard",
+   "batch": "4",
+   "ops": [
+    "polyline(16)",
+    "revolve",
+    "circle",
+    "cutThruAll",
+    "chamfer"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0; attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 764265.6990016189,
+    "area": 57476.18045966548,
+    "com": [
+     0.00010110878203471057,
+     65.03696620142395,
+     -1.4439743145781044e-10
+    ],
+    "bbox": [
+     -45.3000001,
+     -1e-07,
+     -45.3000001,
+     45.3000001,
+     125.79,
+     45.3000001
+    ],
+    "faces": 17,
+    "solids": 1
+   },
+   "step": "gt/piston_002697.step",
+   "note": "the cross hole (r 12.39 at height 22.09) cuts through the whole piston, both ways, although only one workplane side is named in the program (checked: volume only matches with a through cut)."
+  },
+  {
+   "id": "pull_handle_007593",
+   "benchcad_stem": "pull_handle_007593_s20260505",
+   "family": "pull_handle",
+   "tier": "medium",
+   "benchcad_difficulty": "medium",
+   "batch": "4",
+   "ops": [
+    "cylinder",
+    "union(cylinder)x2",
+    "union(box)x2",
+    "cut(cylinder)x2"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0; attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 178178.27667746608,
+    "area": 38294.97106430592,
+    "com": [
+     43.07359819853071,
+     -2.4826005132702644e-11,
+     -4.910082207238579e-11
+    ],
+    "bbox": [
+     0.0,
+     -126.1,
+     -26.1,
+     86.60000000000001,
+     126.10000000000001,
+     26.1
+    ],
+    "faces": 21,
+    "solids": 1
+   },
+   "step": "gt/pull_handle_007593.step",
+   "note": "the foot-plate holes (r 6.25, 13.5 deep from the plate face) also bite into the end of each leg (r 10.45)."
+  },
+  {
+   "id": "vented_panel_003475",
+   "benchcad_stem": "vented_panel_003475_s20260505",
+   "family": "vented_panel",
+   "tier": "medium",
+   "benchcad_difficulty": "medium",
+   "batch": "4",
+   "ops": [
+    "box",
+    "chamfer",
+    "rarray(5x5)",
+    "hole"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0; attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 109757.44564364226,
+    "area": 32856.6538742933,
+    "com": [
+     3.4471446899917373e-15,
+     3.0376536193595882e-15,
+     -0.037367671020662546
+    ],
+    "bbox": [
+     -63.805,
+     -48.22500000000001,
+     -5.175,
+     63.805,
+     48.225,
+     5.175000000000007
+    ],
+    "faces": 35,
+    "solids": 1
+   },
+   "step": "gt/vented_panel_003475.step",
+   "note": "25 vent holes (r 4.535) on a 25.38 x 18.09 grid."
+  },
+  {
+   "id": "waffle_plate_010153",
+   "benchcad_stem": "waffle_plate_010153_s20260505",
+   "family": "waffle_plate",
+   "tier": "medium",
+   "benchcad_difficulty": "medium",
+   "batch": "4",
+   "ops": [
+    "box",
+    "chamfer",
+    "rarray(4x2)",
+    "rect",
+    "cutBlind",
+    "pushPoints(4)",
+    "hole"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0; attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 69341.44665212167,
+    "area": 19012.112991825845,
+    "com": [
+     -7.804125435538985e-16,
+     -0.8570314679960438,
+     8.656676953707109e-16
+    ],
+    "bbox": [
+     -39.44500000000001,
+     -10.275,
+     -26.045000000000005,
+     39.445,
+     10.275000000000002,
+     26.045
+    ],
+    "faces": 54,
+    "solids": 1
+   },
+   "step": "gt/waffle_plate_010153.step",
+   "note": "chamfer on the rim of the pocketed face (the dataset +y face, our start face); eight pockets 10.08 x 14.51 and 12.39 deep."
+  },
+  {
+   "id": "rect_frame_008694",
+   "benchcad_stem": "rect_frame_008694_s20260505",
+   "family": "rect_frame",
+   "tier": "hard",
+   "benchcad_difficulty": "hard",
+   "batch": "4",
+   "ops": [
+    "rect",
+    "extrude",
+    "rect",
+    "cutThruAll",
+    "pushPoints(4)",
+    "circle",
+    "cutThruAll",
+    "fillet(face edges)"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0; attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 43446.94836285351,
+    "area": 28324.399303470338,
+    "com": [
+     -1.524338252747904e-08,
+     -1.7790420791132124,
+     -7.32568983555957e-09
+    ],
+    "bbox": [
+     -111.89,
+     -3.5800000000000063,
+     -53.71,
+     111.89,
+     0.0,
+     53.71
+    ],
+    "faces": 26,
+    "solids": 1
+   },
+   "step": "gt/rect_frame_008694.step",
+   "note": "fillet 1.07 on all 12 edges of the back face: outer rectangle, window, four corner holes."
+  },
+  {
+   "id": "snap_clip_000052",
+   "benchcad_stem": "snap_clip_000052_s20260505",
+   "family": "snap_clip",
+   "tier": "hard",
+   "benchcad_difficulty": "hard",
+   "batch": "4",
+   "standard": "DIN 6799",
+   "ops": [
+    "moveTo",
+    "threePointArc",
+    "lineTo",
+    "threePointArc",
+    "close",
+    "extrude",
+    "hole",
+    "hole",
+    "chamfer"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0; attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 4.315531069529865,
+    "area": 29.576804605002973,
+    "com": [
+     0.19244198431499987,
+     -0.20598277619011254,
+     -1.8088748559852325e-17
+    ],
+    "bbox": [
+     0.0,
+     -2.1999999999999997,
+     -2.2000183565213343,
+     0.3900000000000008,
+     2.0982000000000003,
+     2.2000183565213347
+    ],
+    "faces": 18,
+    "solids": 1
+   },
+   "step": "gt/snap_clip_000052.step",
+   "note": "thin C-shaped clip (outer r 2.2, inner r 0.9, 0.39 thick); the two holes are centred on the open end faces; the chamfer takes all 8 edges of the outer face."
+  },
+  {
+   "id": "propeller_000192",
+   "benchcad_stem": "propeller_000192_s20260505",
+   "family": "propeller",
+   "tier": "hard",
+   "benchcad_difficulty": "hard",
+   "batch": "4",
+   "ops": [
+    "cylinder",
+    "loft(circles)",
+    "hole",
+    "union(loft(ellipses, transformed planes))x4"
+   ],
+   "source": "https://huggingface.co/datasets/BenchCAD/BenchCAD (config code_gen)",
+   "licence": "dataset card: cc-by-4.0; attribution: BenchCAD, arXiv 2605.10865. CadQuery source NOT copied; parameters paraphrased.",
+   "ground_truth": {
+    "engine": "CadQuery 2.8.0 / OCCT, run from the dataset program",
+    "frame": "Z-up CadQuery, mm",
+    "volume": 23868.815832807737,
+    "area": 10300.242783809874,
+    "com": [
+     2.9453287324112214,
+     0.0008084713919682292,
+     0.0011345265698605024
+    ],
+    "bbox": [
+     -6.290000099999999,
+     -57.64823642507827,
+     -57.64823642507827,
+     16.173589354008904,
+     57.64823642507827,
+     57.64823642507827
+    ],
+    "faces": 29,
+    "solids": 1
+   },
+   "step": "gt/propeller_000192.step",
+   "note": "hub = cylinder (r 20.71, 12.58 long) + cone (r 18.639 to 1.5 over 8.91) with an axial bore r 5.29 (the cone is cut by the bore, so it is translated as one revolved profile); blades = lofts of ellipses 1.72 x 8.4 and 0.635 x 4.45, 59.03 apart, tilted 12.9 and 9.8 degrees, root on the axis at x 14.497, four copies 90 degrees apart (they overlap each other near the axis)."
   }
  ],
  "known": {
@@ -1593,6 +2007,18 @@
   "cable_routing_panel_004961": {
    "label": "kernel-bug",
    "note": "fillet of the |Z corner edges after the top-rim chamfer: blendFailed for one of the four symmetric corner edges (S.e1|S.e2), the other three fillet fine alone, and success is erratic in radius (ok at 0.3 and 0.95, fails at 0.7-0.9, 1.0, 1.2) and chamfer distance (fails at 0.95 and 1.5, ok at 0.5-1.0 otherwise); fillet-ends-on-chamfer-faces corner patch."
+  },
+  "rect_frame_008694": {
+   "label": "kernel-bug",
+   "note": "silent wrong fillet around the window: filleting the 12 edges of the back face (outer rectangle, 4-corner window, 4 holes) gives volume 43433.87 / area 28419.0 vs CadQuery 43446.95 / 28324.4 (area +0.33%, validate clean). Per group against CadQuery (same fillet r 1.07, run on the same face edges): outer rectangle alone 43591.530 / 28588.323 and holes alone 43730.228 / 28853.894 are identical to CadQuery, but the four window edges alone are blendFailed at r 0.5, 1.0, 1.07 and 1.5 (CadQuery: 43632.81 / 28668.54), and together with the other groups they remove 13.2 mm3 too much. The window corners are 270 degree material corners (concave vertical edge), where two filleted edges meet."
+  },
+  "snap_clip_000052": {
+   "label": "kernel-bug",
+   "note": "chamfer 0.08 on the 8 edges of the outer face is blendFailed. The body before the chamfer matches CadQuery exactly (volume 4.381141853812 / area 30.5618537575 vs CadQuery without the chamfer 4.381141853812135 / 30.56185375747479). Outer arc alone (r 2.2 about 325 degrees, end faces within 1.6e-3 degrees of radial): blendFailed for distance >= 0.05, fine for <= 0.04. With the end faces exactly radial the arc chamfers (0.08) fine, and a 0.0023 degree slant of the end face brings blendFailed / blendOverflow (spring leaves its face) back. Chamfering only the short end-face edges (cut in two by the holes) or the two hole arcs together is blendFailed even with exact radial ends."
+  },
+  "propeller_000192": {
+   "label": "kernel-bug",
+   "note": "booleanFailed on the union of the second blade (the first blade is exact: hub 18679.4007 and hub + one blade 20113.6368 vs CadQuery 18679.4007 / 20113.6370; hub + blades 0 and 180 degrees 21540.32 vs CadQuery 21540.24). Any second blade that overlaps the first near the axis fails: cpattern of the blade loft with copies at 90, 100, 120, 135, 170 degrees (count 3 and 4 over 360 too) and a hand-built second blade turned 90 degrees (no pattern) are all booleanFailed; two blades 180 degrees apart union fine. Union of two lofts between ellipses (B-spline side faces) whose roots cross on the axis."
   }
  },
  "knownStep": {
@@ -1611,6 +2037,18 @@
   "j_hook_001383": {
    "label": "kernel-bug",
    "note": "STEP import: volume 32302.8365 and area 12218.3437 match the reference, validate is clean, but the body box (mesh-derived) stops at z 102.24 instead of 136.24: the half-torus handle face does not contribute to the box (not tessellated)."
+  },
+  "rect_frame_008694": {
+   "label": "kernel-bug",
+   "note": "STEP import: SHELL_ORIENTATION (8 issues) on the fillet faces of the reference; volume 43591.8 vs 43446.9 (+0.33%), area 27989.1 vs 28324.4 (-1.18%). Same family as motor_end_cap / rubber-foot (OCCT fillet faces); the reference STEP is the CadQuery output."
+  },
+  "snap_clip_000052": {
+   "label": "kernel-gap",
+   "note": "STEP import: PARABOLA curve is not supported (chamfer cone/plane intersection from OCCT)."
+  },
+  "propeller_000192": {
+   "label": "kernel-bug",
+   "note": "STEP import: VERTEX_OFF_CURVE (3 issues), volume 23814.1 vs 23868.8 (-0.23%), area -0.57%; the reference is the CadQuery union of four ellipse lofts."
   }
  },
  "tolerances": {
