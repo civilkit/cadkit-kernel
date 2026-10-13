@@ -201,6 +201,13 @@ pub struct Assembly {
     pub cache: Vec<(String, Nested)>,
 }
 
+impl Assembly {
+    /// No components, mates, ranges or nested results.
+    pub fn is_empty(&self) -> bool {
+        self.components.is_empty() && self.face_ranges.is_empty() && self.edge_ranges.is_empty() && self.mates.is_empty() && self.cache.is_empty()
+    }
+}
+
 impl Brep {
     /// Pre-pass (oracle trace): >= 2 distinct inserted parts are regenerated
     /// up front under `"<n> inserted parts"`.
@@ -209,7 +216,7 @@ impl Brep {
         for f in features {
             if let FeatureKind::InsertPart { part: Some(p), .. } = &f.kind {
                 let k = part_key(p);
-                if !keys.iter().any(|(x, _)| *x == k) {
+                if !keys.iter().any(|(x, _)| *x == k) && !self.asm.cache.iter().any(|(x, _)| *x == k) {
                     keys.push((k, p));
                 }
             }

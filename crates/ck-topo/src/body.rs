@@ -246,6 +246,69 @@ impl Body {
         Body::default()
     }
 
+    /// Estimated heap + inline bytes of this body (arenas, surface and curve
+    /// control data, face names). Used to bound the regen state cache; not
+    /// exact, but proportional to the real allocation.
+    pub fn est_bytes(&self) -> usize {
+        use std::mem::size_of;
+        fn bs_curve<P>(c: &ck_geom::nurbs::bspline::BSplineCurve<P>) -> usize
+        where
+            P: ck_geom::Pt,
+        {
+            c.knots.len() * 8 + c.ctrl.len() * size_of::<P>() + c.weights.as_ref().map_or(0, |w| w.len() * 8)
+        }
+        fn curve(c: &Curve) -> usize {
+            match c {
+                Curve::BSpline(b) => bs_curve(b),
+                _ => 0,
+            }
+        }
+        fn curve2(c: &Curve2) -> usize {
+            match c {
+                Curve2::BSpline(b) => bs_curve(b),
+                _ => 0,
+            }
+        }
+        fn surf(s: &Surface) -> usize {
+            match s {
+                Surface::BSpline(b) => {
+                    size_of::<ck_geom::nurbs::bsurf::BSplineSurface>()
+                        + (b.knots_u.len() + b.knots_v.len()) * 8
+                        + b.ctrl.len() * size_of::<Vec3>()
+                        + b.weights.as_ref().map_or(0, |w| w.len() * 8)
+                }
+                Surface::Revolution { profile, .. } | Surface::Extrusion { profile, .. } | Surface::Screw { profile, .. } => {
+                    size_of::<Curve>() + curve(profile)
+                }
+                Surface::Offset { base, .. } => size_of::<Surface>() + surf(base),
+                _ => 0,
+            }
+        }
+        let mut n = size_of::<Body>();
+        n += self.vertices.len() * size_of::<Vertex>();
+        n += self.edges.iter().map(|e| size_of::<Edge>() + e.coedges.len() * size_of::<CoedgeId>() + curve(&e.curve)).sum::<usize>();
+        n += self.coedges.iter().map(|c| size_of::<Coedge>() + c.pcurve.as_ref().map_or(0, curve2)).sum::<usize>();
+        n += self.loops.iter().map(|l| size_of::<Loop>() + l.coedges.len() * size_of::<CoedgeId>()).sum::<usize>();
+        n += self
+            .faces
+            .iter()
+            .map(|f| {
+                size_of::<Face>()
+                    + surf(&f.surface)
+                    + f.loops.len() * size_of::<LoopId>()
+                    + f.name.feature.len()
+                    + f.name.suffix.len()
+                    + match &f.name.role {
+                        Role::Side(s) | Role::Other(s) => s.len(),
+                        _ => 0,
+                    }
+            })
+            .sum::<usize>();
+        n += self.shells.iter().map(|s| size_of::<Shell>() + s.faces.len() * size_of::<FaceId>()).sum::<usize>();
+        n += self.lumps.iter().map(|l| size_of::<Lump>() + l.shells.len() * size_of::<ShellId>()).sum::<usize>();
+        n
+    }
+
     // ---- accessors
     pub fn vertex(&self, v: VertexId) -> &Vertex {
         &self.vertices[v.idx()]

@@ -130,6 +130,33 @@ describe('session ops (pure)', () => {
     assert.equal(bare !== undefined && 'opts' in bare, false);
   });
 
+  it('bodyForView shows a sketch-only part, and still returns null for an empty document', async () => {
+    const frame = { o: [0, 0, 0], x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] };
+    const withSketch = { async request(msg: Record<string, unknown>) { if (msg.type === 'regen') return { ok: true, result: { errors: [], body: null, sketches: [['F1', { frame, sketch: { type: 'sketch', id: 'F1' } }]] } }; throw new Error('unexpected'); } } as KernelTransport;
+    const empty = { async request(msg: Record<string, unknown>) { if (msg.type === 'regen') return { ok: true, result: { errors: [], body: null } }; throw new Error('unexpected'); } } as KernelTransport;
+    const v = await new Session(plateDoc(), withSketch, 't').bodyForView();
+    assert.ok(v, 'a sketch-only part has a view');
+    assert.equal(v!.mesh.positions.length, 0);
+    assert.equal(v!.sketches.length, 1);
+    assert.equal(await new Session(plateDoc(), empty, 't').bodyForView(), null);
+  });
+
+  it('a preview with no solid yet still returns its sketches', async () => {
+    const frame = { o: [0, 0, 0], x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] };
+    const kernel: KernelTransport = {
+      async request(msg: Record<string, unknown>) {
+        if (msg.type === 'regen') return { ok: true, result: { errors: [], body: null, sketches: [['F1', { frame, sketch: { type: 'sketch', id: 'F1' } }]] } };
+        throw new Error('unexpected ' + String(msg.type));
+      },
+    };
+    const s = new Session(plateDoc(), kernel, 't');
+    const r = await s.preview([], { upTo: 1 });
+    assert.equal(r.ok, true);
+    assert.equal(r.body, null);
+    assert.equal(r.sketches?.length, 1);
+    assert.equal(r.sketches?.[0].id, 'F1');
+  });
+
   it('preview forwards opts.sketchStatus and returns the per-sketch status', async () => {
     const seen: Array<Record<string, unknown>> = [];
     const status = { dof: 0, fullyDefined: true, conflicts: [], redundant: [], solved: true, state: 'full', residual: 0 };

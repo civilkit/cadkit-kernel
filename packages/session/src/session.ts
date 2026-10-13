@@ -49,6 +49,9 @@ export interface PreviewResult {
   errors: RegenError[];
   hints: ReturnType<typeof hintFor>[];
   body: ViewBody | null;
+  /** The solved sketches of the regen, present on every successful preview. A prefix that has no solid yet
+   *  (a first sketch, `upTo` cutting off the extrude) has `body: null` but still has its sketches. */
+  sketches?: ViewBody['sketches'];
   schemaError?: string;
   /** true when a newer preview superseded this one before it finished: the result is dropped. */
   stale?: boolean;
@@ -367,12 +370,14 @@ export class Session {
    *  curves, planes and markers of the current document (regen reply passthrough). */
   async bodyForView(): Promise<ViewBody | null> {
     const { body, sketches, curves, planes, markers } = await this.regen(this.doc);
-    if (!body) return null;
+    // No solid yet is not an empty document: a part that is only sketches, curves or planes still has
+    // something to show, so hand the viewer an empty mesh with those layers instead of nothing.
+    if (!body && !sketches.length && !curves.length && !planes.length) return null;
     const { meshFromBody } = await import('../../render/src/mesh.js');
     return {
-      mesh: meshFromBody(body as Parameters<typeof meshFromBody>[0]),
-      edges: (body.edges as Array<{ key?: string; pts: number[][] }> | undefined) ?? [],
-      box: body.box as { min: number[]; max: number[] },
+      mesh: meshFromBody((body ?? {}) as Parameters<typeof meshFromBody>[0]),
+      edges: (body?.edges as Array<{ key?: string; pts: number[][] }> | undefined) ?? [],
+      box: (body?.box as { min: number[]; max: number[] } | undefined) ?? { min: [0, 0, 0], max: [0, 0, 0] },
       sketches: sketches.map(([id, e]) => ({
         id,
         frame: e.frame as ViewFrame,
@@ -420,7 +425,13 @@ export class Session {
       };
     }
     const { body, sketches, curves, planes, markers } = regenRes;
-    if (!body) return { ok: true, errors: [], hints: [], body: null };
+    const viewSketches: ViewBody['sketches'] = sketches.map(([id, e]) => ({
+      id,
+      frame: e.frame as ViewFrame,
+      sketch: e.sketch as import('../../part-model/src/index.js').SketchFeature,
+      ...(e.status ? { status: e.status as import('../../part-model/src/index.js').SketchSolverStatus } : {}),
+    }));
+    if (!body) return { ok: true, errors: [], hints: [], body: null, sketches: viewSketches };
     const { meshFromBody } = await import('../../render/src/mesh.js');
     return {
       ok: true,
@@ -440,6 +451,7 @@ export class Session {
         planes: planes.map(([id, frame]) => ({ id, frame: frame as ViewFrame })),
         markers,
       },
+      sketches: viewSketches,
     };
   }
 
