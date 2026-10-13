@@ -51,6 +51,7 @@ agent all read the same list.
 | Exporters to CadQuery, build123d, brepjs | M | Feature tree out as code; check by running it in the real library |
 | brepjs compatibility | M | Functional, shape-valued style is a poor fit without a body-level boolean (section 2) |
 | FeatureScript | L+ | Interpreter plus mapping of Onshape's operations and query system. Very large, subset at best, licence unchecked. Defer. Our own macro features cover the use case |
+| Mesh and 2D interchange: STL, DXF (DWG not planned) | M | The kernel has STEP (export, import landed) and SAT code only. **STL export** from the existing `mesh` reply is a small writer (S) and ties into 3D-printing validation. **STL import** gives a faceted shell; sew and heal it into a solid (`ck-heal`), watch the face count on scans (M). **DXF** is plain text: import lines, arcs, circles and polylines into a sketch (the sketch convert tool), export a sketch or the `drawing` reply (the original's `dwgDxf`). **DWG** is a binary, proprietary format whose open readers are GPL or consortium-licensed, so we do not build it; point users to a converter to DXF. 3MF and OBJ are trivial add-ons later |
 | Sketch editor (constraints, snapping) | L | The first thing that lets you build a part by hand in the GUI |
 | Sketch/curve/plane layers in the viewport | S | Underway; makes display toggles real |
 
