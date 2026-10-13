@@ -93,6 +93,56 @@ pub fn through<const N: usize>(ts: &[f64], pts: &[[f64; N]]) -> Result<(usize, V
     Ok((p, knots, ctrl))
 }
 
+/// [`through`] with optional first-derivative end conditions: where `d0` /
+/// `d1` is given the derivative at the first / last station replaces the
+/// natural (zero second derivative) condition. Two stations with a
+/// derivative give a cubic. Oracle (`startNormal` / `endNormal` probes, a
+/// square-to-square loft): the rail leaves the profile along its unit normal
+/// times the tension, with the natural condition at the other end; the volumes
+/// 8207.142857 / 5957.142857 are the closed form of that cubic.
+pub fn through_ends<const N: usize>(
+    ts: &[f64],
+    pts: &[[f64; N]],
+    d0: Option<[f64; N]>,
+    d1: Option<[f64; N]>,
+) -> Result<(usize, Vec<f64>, Vec<[f64; N]>), String> {
+    if d0.is_none() && d1.is_none() {
+        return through(ts, pts);
+    }
+    let k = ts.len();
+    if k < 2 || pts.len() != k {
+        return Err("loft needs at least two stations".into());
+    }
+    let p = 3;
+    let n = k + 2;
+    let mut knots = vec![ts[0]; 4];
+    knots.extend_from_slice(&ts[1..k - 1]);
+    knots.extend(std::iter::repeat(ts[k - 1]).take(4));
+    let mut a = vec![vec![0.0; n]; n];
+    let mut rhs = vec![[0.0; N]; n];
+    for (r, (&t, q)) in ts.iter().zip(pts).enumerate() {
+        let s = find_span(n - 1, p, t, &knots);
+        let b = basis_funs(s, t, p, &knots);
+        for j in 0..=p {
+            a[r][s - p + j] = b[j];
+        }
+        rhs[r] = *q;
+    }
+    for (r, t, d) in [(k, ts[0], d0), (k + 1, ts[k - 1], d1)] {
+        let s = find_span(n - 1, p, t, &knots);
+        let ders = ders_basis_funs(s, t, p, 2, &knots);
+        let order = if d.is_some() { 1 } else { 2 };
+        for j in 0..=p {
+            a[r][s - p + j] = ders[order][j];
+        }
+        if let Some(d) = d {
+            rhs[r] = d;
+        }
+    }
+    let ctrl = solve(a, rhs)?;
+    Ok((p, knots, ctrl))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -102,6 +152,21 @@ mod tests {
     /// Oracle: natural spline through (0, 30, 50) at t = (0, 30, 50) is
     /// linear; through x = (10, 5, 8) the rail value at y = 7.5 is
     /// 8.08203125 (three-square loft probe).
+    /// startNormal: x(0)=10, x'(0)=0 with y linear: x(y) = 10 + a y^2 + b y^3 (natural at 30).
+    #[test]
+    fn clamped_start_matches_the_closed_form() {
+        let ts = [0.0, 30.0];
+        let pts: Vec<[f64; 2]> = vec![[10.0, 0.0], [5.0, 30.0]];
+        let (p, k, c) = through_ends(&ts, &pts, Some([0.0, 1.0]), None).unwrap();
+        let cur = ck_geom::nurbs::bspline::BSplineCurve::new(p, k, c.iter().map(|q| Vec3::new(q[0], q[1], 0.0)).collect()).unwrap();
+        let b = 5.0 / 54000.0;
+        let a = -90.0 * b;
+        for y in [3.0, 12.0, 25.0] {
+            let q = cur.eval(y);
+            assert!((q.y - y).abs() < 1e-9 && (q.x - (10.0 + a * y * y + b * y * y * y)).abs() < 1e-9, "{q:?}");
+        }
+    }
+
     #[test]
     fn natural_three_station_rail() {
         let ts = [0.0, 30.0, 50.0];

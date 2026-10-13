@@ -471,6 +471,30 @@ parts.mirrorBodyCone = part([...parts.cone.features, { type: 'plane', id: 'F8', 
   parts.loftSurfaceCirc = loftOf([[0, circ(0, 0, 8)], [30, sq(5)]], { surface: true });
 }
 
+// loft guides / end normals / connectors / centre line (ck-ops loft/guides.rs, smooth::through_ends).
+// Straight guides, end tangents and connectors reproduce the oracle's volumes; curved guides and
+// curved centre lines are not in the gate (see docs/ck-ops-stubs.md, tools/stub_cases.mjs).
+{
+  const [s1, p2, s3] = parts.loftSq2.features;   // square r10 at y=0, plane y=30, square r5
+  const base3 = [s1, p2, s3];
+  const lineSk = (id, plane, a, b) => ({ type: 'sketch', id, plane, points: [pt('g1', ...a), pt('g2', ...b)], entities: [line('e1', 'g1', 'g2')], constraints: [] });
+  const loft = (o = {}) => ({ type: 'loft', id: 'F5', op: 'add', sketches: ['F1', 'F3'], ...o });
+  parts.loftGuideLine = part([...base3, lineSk('F4', STD('front'), [10, 0], [5, 30]), loft({ guides: [{ sketch: 'F4' }] })]);
+  parts.loftGuideRev = part([...base3, lineSk('F4', STD('front'), [5, 30], [10, 0]), loft({ guides: [{ sketch: 'F4' }] })]);
+  parts.loftGuide2 = part([...base3, lineSk('F4', STD('front'), [10, 0], [5, 30]), lineSk('F6', STD('front'), [-10, 0], [-5, 30]), loft({ guides: [{ sketch: 'F4' }, { sketch: 'F6' }] })]);
+  parts.loftCentreSlant = part([...base3, lineSk('F4', STD('front'), [0, 0], [8, 30]), loft({ centreLine: { sketch: 'F4' } })]);
+  parts.loftStartNormal = part([...base3, loft({ startNormal: 1 })]);
+  parts.loftStartNormal2 = part([...base3, loft({ startNormal: 2 })]);
+  parts.loftBothNormal = part([...base3, loft({ startNormal: 1, endNormal: 1 })]);
+  parts.loftConn = part([...base3, loft({ connectors: [null, 0.25] })]);
+  const p4 = { type: 'plane', id: 'F4', mode: 'offset', base: STD('top'), offset: 50 };
+  const sq8 = { type: 'sketch', id: 'F6', plane: { kind: 'feature', id: 'F4' }, points: [pt('p1', -8, -8), pt('p2', 8, -8), pt('p3', 8, 8), pt('p4', -8, 8)],
+    entities: [line('e1', 'p1', 'p2'), line('e2', 'p2', 'p3'), line('e3', 'p3', 'p4'), line('e4', 'p4', 'p1')], constraints: [] };
+  const loft3 = (o = {}) => ({ type: 'loft', id: 'F7', op: 'add', sketches: ['F1', 'F3', 'F6'], ...o });
+  parts.loft3StartNormal = part([...base3, p4, sq8, loft3({ startNormal: 1 })]);
+  parts.loft3EndNormal = part([...base3, p4, sq8, loft3({ endNormal: 1.5 })]);
+}
+
 // pipeCut (ck-ops pipecut): a ball of `radius` rolled along edges / face rims removes
 // what it touches; the solid becomes a surface body (docs/ck-ops-stubs.md). Exploration
 // cases with error paths live in tools/stub_cases.mjs (node tools/cmp_stubs.mjs pipeCut).
