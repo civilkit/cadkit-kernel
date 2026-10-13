@@ -617,6 +617,12 @@ pub fn select_with(
                 continue;
             }
             let Some(&(mj, _)) = tagged.iter().find(|x| x.1 == (h.0, true)) else { continue };
+            // both coedges inside ONE fragment: the seam twin of a periodic
+            // face, which is no shared edge (cancelling it would drop the
+            // seam of a merged cylinder: its lateral area integrates to 0)
+            if mi == mj && periodic {
+                continue;
+            }
             let (ri, rj) = (find(&mut comp, mi), find(&mut comp, mj));
             if same_face && periodic && ri == rj && is_seam_edge(arr, &af.surface, h.0) {
                 continue;
