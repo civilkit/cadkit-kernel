@@ -284,6 +284,19 @@ pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featu
     Ok(in_place_layout(b, &raw, &refs, tol))
 }
 
+/// Both faces border a blend face of `feature` in `b` (their shared edge was
+/// consumed by a tool of this feature).
+fn blended_by_earlier_tool(b: &Body, fa: &str, fb: &str, feature: &str) -> bool {
+    let (Some(f1), Some(f2)) = (b.find_face(fa), b.find_face(fb)) else { return false };
+    b.face_ids().any(|g| {
+        let n = &b.face(g).name;
+        n.feature == feature && matches!(n.role, Role::Blend(_)) && {
+            let nb = b.face_neighbors(g);
+            nb.contains(&f1) && nb.contains(&f2)
+        }
+    })
+}
+
 /// Chain (component id, position) of each selected edge: components follow
 /// v1 -> v0 links from the first selected edge of the component, forwards
 /// (+1) then backwards (-1); a closed ring stops where it returns.
@@ -343,7 +356,18 @@ fn blend_edges_at(
     let mut out = b.clone();
     let mut touched: Vec<String> = vec![];
     for (k, (fa, fb, at)) in edges.iter().enumerate() {
-        let e = find_edge(&out, fa, fb, *at).ok_or_else(|| BlendError::code("missingEdge"))?;
+        let Some(e) = find_edge(&out, fa, fb, *at) else {
+            // an earlier tool of this feature already blended it: collinear edges
+            // separated by a notch (a hole centred on the edge line) are cut by one
+            // tool, whose margin runs on over the notch; the edge is gone but both of
+            // its faces now border that feature's blend face
+            if blended_by_earlier_tool(&out, fa, fb, feature) {
+                dbg_fail(&format!("edge {k} ({fa} | {fb}) was blended by an earlier tool"));
+                continue;
+            }
+            dbg_fail(&format!("edge {k} ({fa} | {fb} at {at:?}) not found after earlier blends"));
+            return Err(BlendError::code("missingEdge"));
+        };
         let (f1, f2) = (out.find_face(fa).unwrap(), out.find_face(fb).unwrap());
         let (body, hint) = blend_edge_hint(&out, e, [f1, f2], spec, feature, idx[k], tol, rings.get(k).copied().unwrap_or(false))?;
         // end faces at a junction with another selected edge are that
@@ -981,8 +1005,19 @@ fn blend_edge_hint(
     };
     // contact (spring) lines must stay on their faces
     let name = FaceName::blend(feature, k);
+    // (a contact point that runs along an end face which is perpendicular to the
+    // edge up to the data precision -- sketch coordinates carry 4 decimals, so an
+    // "exactly radial" end line of a clip is off by 1e-5 -- lies on that face's
+    // boundary line within `ptol`, not outside the face)
+    let ptol = (10.0 * tol).max(2e-5 * (b.bbox().1 - b.bbox().0).len()).min(0.25 * r);
     for (f, t) in [(faces[0], ta), (faces[1], tb)] {
-        if point_in_face(b, f, t, tol) == Where::Out {
+        let on_boundary = || {
+            b.face_edges(f).into_iter().any(|e2| {
+                let x = b.edge(e2);
+                crate::boolean::imprint::near_in_range(&x.curve, (x.t0, x.t1), t, ptol)
+            })
+        };
+        if point_in_face(b, f, t, tol) == Where::Out && !on_boundary() {
             if let Spec::Fillet(_, FilletProfile::Curvature(sh)) = spec {
                 // the largest radius whose contact points still lie on their faces
                 let fits = |rr: f64| -> bool {
@@ -1002,6 +1037,7 @@ fn blend_edge_hint(
                 e.params = vec![("max".into(), format!("{lo:.2}")), ("shape".into(), format!("{sh}"))];
                 return Err(e);
             }
+            dbg_fail(&format!("spring leaves face {} at {:?} (edge {:?} t=({:.4},{:.4}) corev {}, p0 {:?}, dir {:?}, leg1 {:?} leg2 {:?}, circ {})", b.face_id_str(f), t, e, ed.t0, ed.t1, b.coedge(co).rev, p0, dir, leg1, leg2, circ.is_some()));
             return Err(BlendError::detail("blendOverflow", &format!("{}: spring leaves its face away from its edges", name.id())));
         }
     }
@@ -1213,7 +1249,7 @@ fn apply_tool_once(
     // the blend face may have merged into the coincident blend face of the
     // ring's previous arc (a split ring chamfered edge by edge: one cone)
     let merged_into_earlier = faces_out.iter().any(|f| (f.group == 0 || f.group == 4) && f.name.feature == name.feature && matches!(f.name.role, Role::Blend(_)));
-    if !faces_out.iter().any(|f| f.name == *name) && !merged_into_earlier {
+    if !faces_out.iter().any(|f| { let mut n = f.name.clone(); n.region = None; n == *name }) && !merged_into_earlier {
         dbg_fail("no blend face in result");
         return Err(BlendError::code("blendFailed"));
     }

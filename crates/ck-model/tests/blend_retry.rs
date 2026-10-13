@@ -42,3 +42,14 @@ fn corner_fillets_after_a_rim_chamfer() {
     let removed = v3 - v4;
     assert!((removed - 4.0 * (1.0 - std::f64::consts::FRAC_PI_4) * 0.83 * 0.83 * 2.84).abs() < 0.1, "fillets removed {removed}");
 }
+#[test]
+fn chamfer_on_the_rims_of_a_split_clip() {
+    // snap_clip F5: eight edges, arcs whose radial end lines are off by the 4-decimal sketch precision,
+    // and a straight end edge split by a hole centred on its line (one tool chamfers both pieces)
+    let (errs, v, issues) = run("snap_clip_000052", None);
+    assert!(errs.is_empty(), "{errs:?}");
+    assert_eq!(issues, 0);
+    // CadQuery 2.8.0 on the same input (tools/bench/benchcad/manifest.json)
+    let want = 4.3155310695;
+    assert!((v - want).abs() < 1e-5 * want, "volume {v}");
+}
