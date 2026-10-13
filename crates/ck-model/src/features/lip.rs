@@ -379,7 +379,11 @@ pub fn exec_lip(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<()
     let groove = kind == "groove";
     let opts = if groove { ExtrudeOpts::flipped(height) } else { ExtrudeOpts::blind(height) };
     let tool = extrude(&f.id, &profile, opts).map_err(|e| FeatureError::new(&e))?;
-    br.combine(&tool, if groove { Combine::Cut } else { Combine::Add }, false)
+    // a tool built on exact spline rim curves welds to the host edges only to the accuracy of the
+    // marched intersections: start at the looser tolerance the boolean ends up needing (the
+    // large sample lip spent two thirds of its time in failed attempts at the tight ones)
+    let tol = if path.iter().any(|p| p.exact.is_some()) { super::TOL * 100.0 } else { super::TOL };
+    br.combine_at(&tool, if groove { Combine::Cut } else { Combine::Add }, false, tol)
 }
 
 fn off_start(o: &OffSeg) -> [f64; 2] {

@@ -24,7 +24,7 @@ a week, L is several weeks. "Needs" lists what has to exist first. Items move be
 | Missing outline (silhouette) lines in the `drawing` request | M | The original emits them, ours does not. Affects drawings and prints |
 | STEP import gaps | M | HYPERBOLA and PARABOLA curves, torus-fillet shell orientation, sphere pole boundary |
 | Ignored fields become errors or warnings | S | A field the kernel does not understand must say so, not be skipped |
-| Regen speed | M | Small parts are 1.5 to 3.8 times slower than the original in wasm; the large sample is about 6 times. Levers: tessellation locate walk, allocator, helical-sweep closest point |
+| Regen speed | M | Small parts are 1.5 to 3.8 times slower than the original in wasm; the large sample is now about 3 times (was 10; its lip boolean classified through the winding number, see `docs/regen-speeds.md`). Levers: B-spline closest point and SSI marching in the shell, fillets and wall cuts, tessellation locate walk, allocator, helical-sweep closest point |
 | `Session.preview(ops)` and speculative regen | S | Powers the draft editor and live handles |
 
 ## 3. Validation and manufacturability

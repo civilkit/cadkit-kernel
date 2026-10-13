@@ -127,8 +127,97 @@ pub fn line_params(o: Vec3, d: Vec3, s: &Surface, tol: f64) -> Option<Vec<f64>> 
         Surface::BSpline(bs) => line_bspline(o, d, bs, tol),
         Surface::Screw { .. } => line_screw(o, d, s, tol),
         Surface::Revolution { profile, axis_o, axis } => line_revolution(o, d, s, profile, *axis_o, *axis, tol),
+        Surface::Extrusion { profile, dir } => line_extrusion(o, d, profile, *dir),
         _ => None,
     }
+}
+
+/// Line `o + t d` against a linear extrusion `C(u) + v dir`. The line meets the
+/// surface where the profile crosses the plane through the line spanned by `d`
+/// and `dir`: roots of the scalar `g(u) = n . (C(u) - o)`, `n = dir x d`, found by
+/// sign changes of a dense scan and bisection. `None` (the caller falls back) for a
+/// line parallel to the generators, an unbounded or unsupported profile, a scan that
+/// touches zero without crossing (tangent) and roots whose residual is not tiny.
+fn line_extrusion(o: Vec3, d: Vec3, profile: &Curve, dir: Vec3) -> Option<Vec<f64>> {
+    let n = dir.cross(d);
+    let nl = n.len();
+    if !(nl > 1e-9 * dir.len() * d.len()) || !nl.is_finite() {
+        return None;
+    }
+    let n = n * (1.0 / nl);
+    let (a, b) = profile.range();
+    if !(a.is_finite() && b.is_finite() && b > a) {
+        return None;
+    }
+    let steps = match profile {
+        Curve::BSpline(c) => 32 * (c.knots.len().saturating_sub(2 * c.degree + 1)).max(1),
+        Curve::Circle { .. } | Curve::Ellipse { .. } => 256,
+        _ => return None,
+    }
+    .clamp(64, 20000);
+    let g = |t: f64| n.dot(profile.eval(t) - o);
+    let ts: Vec<f64> = (0..=steps).map(|i| a + (b - a) * i as f64 / steps as f64).collect();
+    let gs: Vec<f64> = ts.iter().map(|&t| g(t)).collect();
+    let scale = gs.iter().fold(0.0f64, |m, v| m.max(v.abs())).max(1e-12);
+    let near0 = 1e-9 * scale.max(1.0);
+    let mut roots: Vec<f64> = vec![];
+    for i in 0..steps {
+        let (g0, g1) = (gs[i], gs[i + 1]);
+        if g0 == 0.0 {
+            roots.push(ts[i]);
+        } else if g0 * g1 < 0.0 {
+            let (mut lo, mut hi, mut glo) = (ts[i], ts[i + 1], g0);
+            for _ in 0..80 {
+                let mid = 0.5 * (lo + hi);
+                let gm = g(mid);
+                if gm == 0.0 {
+                    lo = mid;
+                    hi = mid;
+                    break;
+                }
+                if gm * glo < 0.0 {
+                    hi = mid;
+                } else {
+                    lo = mid;
+                    glo = gm;
+                }
+                if hi - lo < 1e-15 * (1.0 + hi.abs()) {
+                    break;
+                }
+            }
+            roots.push(0.5 * (lo + hi));
+        } else if i > 0 {
+            // a local extremum of |g| that comes within noise of zero without a sign change
+            let (gp, gc, gn) = (gs[i - 1].abs(), g0.abs(), g1.abs());
+            if gc <= gp && gc <= gn && gc < 1e-3 * scale && gc > 0.0 && g0 * g1 > 0.0 && gs[i - 1] * g0 > 0.0 {
+                // flat minimum: tangent line, ambiguous
+                if gc < 1e-6 * scale + near0 {
+                    return None;
+                }
+            }
+        }
+    }
+    if gs[steps] == 0.0 {
+        roots.push(ts[steps]);
+    }
+    let dxl = d.cross(dir);
+    let dxl2 = dxl.len2();
+    let dir2 = dir.len2();
+    let mut out: Vec<f64> = vec![];
+    for t in roots {
+        let p = profile.eval(t);
+        let lam = (p - o).cross(dir).dot(dxl) / dxl2;
+        let q = o + d * lam;
+        let sv = (q - p).dot(dir) / dir2;
+        let res = (q - (p + dir * sv)).len();
+        if !(res <= 1e-7 * (1.0 + p.len().max(o.len()))) {
+            return None;
+        }
+        if !out.iter().any(|&x| (x - lam).abs() < 1e-9 * (1.0 + lam.abs())) {
+            out.push(lam);
+        }
+    }
+    Some(out)
 }
 
 /// Line `o + t d` against a surface of revolution. In the meridian
@@ -608,6 +697,48 @@ mod tests {
         assert_eq!(r.hits.len(), 2, "{r:?}");
         for h in &r.hits {
             assert!((h.p.x - 1.0).abs() < 1e-9);
+        }
+    }
+}
+
+#[cfg(test)]
+mod extrusion_tests {
+    use super::*;
+    use ck_geom::nurbs::bspline::BSplineCurve;
+
+    #[test]
+    fn line_through_a_spline_extrusion() {
+        // arch profile in the xy plane extruded along z
+        let c = BSplineCurve::new(
+            3,
+            vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            vec![Vec3::new(0.0, 0.0, 0.0), Vec3::new(2.0, 6.0, 0.0), Vec3::new(8.0, 6.0, 0.0), Vec3::new(10.0, 0.0, 0.0)],
+        )
+        .unwrap();
+        let s = Surface::Extrusion { profile: Box::new(Curve::BSpline(c.clone())), dir: Vec3::Z };
+        // a slanted line through the arch at two places
+        let (o, d) = (Vec3::new(-1.0, 3.0, -2.0), Vec3::new(1.0, 0.0, 0.3).normalize());
+        let ts = line_params(o, d, &s, 1e-6).expect("closed form");
+        assert_eq!(ts.len(), 2, "{ts:?}");
+        for t in &ts {
+            let p = o + d * *t;
+            assert!(s.distance(p) < 1e-9, "t {t}: {}", s.distance(p));
+        }
+        // a line above the arch misses it
+        assert_eq!(line_params(Vec3::new(-1.0, 9.0, 0.0), Vec3::X, &s, 1e-6).unwrap().len(), 0);
+        // along the generators: no closed form
+        assert!(line_params(o, Vec3::Z, &s, 1e-6).is_none());
+        // a circle profile agrees with the cylinder
+        let circle = Curve::Circle { frame: ck_geom::Frame::identity(), r: 3.0 };
+        let ex = Surface::Extrusion { profile: Box::new(circle), dir: Vec3::Z };
+        let cy = Surface::Cylinder { frame: ck_geom::Frame::identity(), r: 3.0 };
+        let (o, d) = (Vec3::new(-5.0, 1.0, 2.0), Vec3::new(1.0, 0.2, 0.1).normalize());
+        let (mut a, mut b) = (line_params(o, d, &ex, 1e-6).unwrap(), line_params(o, d, &cy, 1e-6).unwrap());
+        a.sort_by(|x, y| x.total_cmp(y));
+        b.sort_by(|x, y| x.total_cmp(y));
+        assert_eq!(a.len(), b.len());
+        for (x, y) in a.iter().zip(&b) {
+            assert!((x - y).abs() < 1e-9, "{a:?} vs {b:?}");
         }
     }
 }

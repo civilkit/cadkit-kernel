@@ -602,6 +602,15 @@ impl Brep {
     /// ones go through a boolean (pinned: also for disjoint tools, the
     /// result is re-ordered by the boolean).
     pub fn combine(&mut self, tool: &ck_topo::body::Body, combine: extrude::Combine, warn_no_effect: bool) -> Result<(), crate::regen::FeatureError> {
+        self.combine_at(tool, combine, warn_no_effect, TOL)
+    }
+
+    /// [`Brep::combine`] with the boolean's welding tolerance first tried at `tol`
+    /// (the boolean still falls back to 10x and 100x). A tool that shares exact curves
+    /// with the host (lip along a spline rim) meets the host's edges only to the accuracy
+    /// of the marched intersection curves (~1e-5): trying `TOL` first costs a full failed
+    /// boolean (tens of seconds) before the looser tolerance that always ends up used.
+    pub fn combine_at(&mut self, tool: &ck_topo::body::Body, combine: extrude::Combine, warn_no_effect: bool, tol: f64) -> Result<(), crate::regen::FeatureError> {
         use crate::regen::FeatureError;
         use ck_ops::boolean::Op as BOp;
         match (&self.body, combine) {
@@ -612,7 +621,7 @@ impl Brep {
             (None, extrude::Combine::Cut) => Err(FeatureError::new(crate::regen::codes::NOTHING_TO_CUT)),
             (Some(b), c) => {
                 let op = if c == extrude::Combine::Cut { BOp::Cut } else { BOp::Union };
-                let r = ck_ops::boolean::boolean(b, tool, op, TOL);
+                let r = ck_ops::boolean::boolean(b, tool, op, tol);
                 match r {
                     Ok(out) => {
                         self.spans.push(boolean_span(op, b.num_faces(), tool.num_faces(), out.body.num_faces()));

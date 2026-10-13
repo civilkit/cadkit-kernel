@@ -43,12 +43,19 @@ pub struct BoolOut {
 /// (the vertex pool, edge de-duplication and trims all follow `tol`); the
 /// first result that assembles into a closed manifold wins.
 pub fn boolean(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let clock = std::time::Instant::now();
     let first = boolean_at(a, b, op, tol);
+    #[cfg(not(target_arch = "wasm32"))]
+    super::bool_dbg!("attempt at tolerance {:e}: {:.1}s", tol, clock.elapsed().as_secs_f64());
     match &first {
         Err(e) if e == "booleanFailed" => {
             for k in [10.0, 100.0] {
                 super::bool_dbg!("retrying with tolerance {:e}", tol * k);
-                if let Ok(out) = boolean_at(a, b, op, tol * k) {
+                let r = boolean_at(a, b, op, tol * k);
+                #[cfg(not(target_arch = "wasm32"))]
+                super::bool_dbg!("attempt at tolerance {:e}: {:.1}s ({})", tol * k, clock.elapsed().as_secs_f64(), if r.is_ok() { "ok" } else { "failed" });
+                if let Ok(out) = r {
                     return Ok(sanity(a, b, op, out));
                 }
             }
