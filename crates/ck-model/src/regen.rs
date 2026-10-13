@@ -45,6 +45,10 @@ pub struct RegenOpts {
     /// `opts.sketchStatus: true`: add a solver `status` to every `sketches`
     /// entry (see `sketch::status`). Off by default: the oracle has no such field.
     pub sketch_status: bool,
+    /// `opts.solveSketches: true`: solve every sketch from its supplied
+    /// coordinates with all constraints and use the solved coordinates (reply
+    /// and downstream profiles). Implies `sketch_status`. Off by default.
+    pub solve_sketches: bool,
 }
 
 impl RegenOpts {
@@ -52,7 +56,8 @@ impl RegenOpts {
     pub fn from_json(j: Option<&Json>) -> RegenOpts {
         let up_to = j.and_then(|o| o.get("upTo")).and_then(|v| v.as_f64()).filter(|v| *v >= 0.0).map(|v| v as u32);
         let sketch_status = j.and_then(|o| o.get("sketchStatus")).map_or(false, |v| matches!(v, Json::Bool(true)));
-        RegenOpts { up_to, ignore_rollback: false, sketch_status }
+        let solve_sketches = j.and_then(|o| o.get("solveSketches")).map_or(false, |v| matches!(v, Json::Bool(true)));
+        RegenOpts { up_to, ignore_rollback: false, sketch_status: sketch_status || solve_sketches, solve_sketches }
     }
 }
 
@@ -328,6 +333,8 @@ pub struct RegenState<'p> {
     pub axes: Vec<(String, (Vec3, Vec3))>,
     /// `opts.sketchStatus`.
     pub sketch_status: bool,
+    /// `opts.solveSketches`.
+    pub solve_sketches: bool,
 }
 
 impl<'p> RegenState<'p> {
@@ -441,6 +448,17 @@ fn regen_sketch(state: &mut RegenState, exec: &mut dyn FeatureExec, f: &Feature,
     }
     if changed {
         let _ = solve_sketch(&mut sk, &SolveOpts::default());
+    }
+    if state.solve_sketches && !changed {
+        // GUI solve: skip when the supplied coordinates already satisfy every
+        // constraint; on failure (no convergence / conflict) keep them as sent.
+        if let Ok(sys) = crate::sketch::solver::build(&sk) {
+            let res = crate::sketch::solver::residuals(&sys, &sys.x);
+            let worst = res.iter().fold(0.0f64, |m, v| if v.is_nan() || m.is_nan() { f64::NAN } else { m.max(v.abs()) });
+            if !(worst <= crate::sketch::status::SOLVED_TOL) {
+                let _ = solve_sketch(&mut sk, &SolveOpts::default());
+            }
+        }
     }
     let profiles = profiles(&sk);
     let _ = f;
@@ -622,7 +640,7 @@ fn run_feature(state: &mut RegenState, exec: &mut dyn FeatureExec, f: &Feature) 
 /// Run the regen program.
 pub fn regen(part: &Part, opts: &RegenOpts, exec: &mut dyn FeatureExec) -> RegenResult {
     let res = expr::resolve_variables(&part.variables);
-    let mut state = RegenState { part, vars: res.values, result: RegenResult::default(), axes: vec![], sketch_status: opts.sketch_status };
+    let mut state = RegenState { part, vars: res.values, result: RegenResult::default(), axes: vec![], sketch_status: opts.sketch_status, solve_sketches: opts.solve_sketches };
     let mut n = part.features.len();
     if let Some(u) = opts.up_to {
         n = n.min(u as usize);
@@ -696,6 +714,70 @@ mod tests {
         assert!(with.contains(st), "{with}");
         assert_eq!(with.replacen(st, "", 1), plain);
         assert_eq!(run(src, r#"{"sketchStatus":1}"#), plain);
+    }
+
+    fn solve_reply(points: &str, ents: &str, cons: &str, opts: &str) -> (Vec<(f64, f64)>, Json, usize) {
+        let src = format!(r#"{{"format":"ck-part","features":[{{"type":"sketch","id":"F1","plane":{{"kind":"std","id":"top"}},"points":[{points}],"entities":[{ents}],"constraints":[{cons}]}}]}}"#);
+        let r = regen(&Part::parse(&src).unwrap(), &RegenOpts::from_json(Some(&ck_json::parse(opts).unwrap())), &mut NoGeometry).to_json();
+        let e = &r.get("sketches").unwrap().as_arr().unwrap()[0].as_arr().unwrap()[1];
+        let pts = e.get("sketch").unwrap().get("points").unwrap().as_arr().unwrap().iter().map(|p| (p.get("x").unwrap().as_f64().unwrap(), p.get("y").unwrap().as_f64().unwrap())).collect();
+        (pts, e.get("status").cloned().unwrap_or(Json::Null), r.get("errors").unwrap().as_arr().unwrap().len())
+    }
+    const SOLVE: &str = r#"{"solveSketches":true}"#;
+    const LINES4: &str = r#"{"type":"line","id":"e1","p1":"p1","p2":"p2"},{"type":"line","id":"e2","p1":"p2","p2":"p3"},{"type":"line","id":"e3","p1":"p3","p2":"p4"},{"type":"line","id":"e4","p1":"p4","p2":"p1"}"#;
+    const HV4: &str = r#"{"type":"horizontal","id":"c1","refs":["e1"]},{"type":"vertical","id":"c2","refs":["e2"]},{"type":"horizontal","id":"c3","refs":["e3"]},{"type":"vertical","id":"c4","refs":["e4"]}"#;
+
+    #[test]
+    fn solve_sketches_perpendicular_pair() {
+        let pts = r#"{"id":"a","x":0,"y":0},{"id":"b","x":10,"y":1},{"id":"c","x":9,"y":8}"#;
+        let ents = r#"{"type":"line","id":"e1","p1":"a","p2":"b"},{"type":"line","id":"e2","p1":"b","p2":"c"}"#;
+        let cons = r#"{"type":"perpendicular","id":"k1","refs":["e1","e2"]}"#;
+        let (off, st, _) = solve_reply(pts, ents, cons, "{}");
+        assert_eq!(off[1], (10.0, 1.0));
+        assert_eq!(st, Json::Null);
+        let (on, st, errs) = solve_reply(pts, ents, cons, SOLVE);
+        assert_ne!(on, off);
+        let d = ((on[1].0 - on[0].0) * (on[2].0 - on[1].0) + (on[1].1 - on[0].1) * (on[2].1 - on[1].1)).abs();
+        assert!(d < 1e-6, "{on:?}");
+        assert_eq!(errs, 0);
+        assert_eq!(st.get("solved"), Some(&Json::Bool(true)));
+    }
+
+    #[test]
+    fn solve_sketches_rect_distance_and_pin() {
+        let pts = r#"{"id":"p1","x":0,"y":0},{"id":"p2","x":10,"y":1},{"id":"p3","x":11,"y":5},{"id":"p4","x":1,"y":6}"#;
+        let cons = format!(r#"{HV4},{{"type":"distance","id":"c5","refs":["p1","p2"],"value":25,"offset":null}}"#);
+        let (on, _, _) = solve_reply(pts, LINES4, &cons, SOLVE);
+        assert!((on[1].0 - on[0].0 - 25.0).abs() < 1e-6 && (on[1].1 - on[0].1).abs() < 1e-6, "{on:?}");
+        // drag: pin p3 -> corners follow
+        let cons = format!(r#"{HV4},{{"type":"fix","id":"c9","refs":["p3"],"value":[14,9]}}"#);
+        let (on, st, _) = solve_reply(pts, LINES4, &cons, SOLVE);
+        assert!((on[2].0 - 14.0).abs() < 1e-6 && (on[2].1 - 9.0).abs() < 1e-6, "{on:?}");
+        assert!((on[1].0 - 14.0).abs() < 1e-6 && (on[3].1 - 9.0).abs() < 1e-6, "{on:?}");
+        assert_eq!(st.get("solved"), Some(&Json::Bool(true)));
+        // free point pin
+        let (on, _, _) = solve_reply(r#"{"id":"p","x":1,"y":2}"#, "", r#"{"type":"fix","id":"c1","refs":["p"],"value":[7,-3]}"#, SOLVE);
+        assert!((on[0].0 - 7.0).abs() < 1e-9 && (on[0].1 + 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn solve_sketches_conflict_keeps_coordinates() {
+        let pts = r#"{"id":"p1","x":0,"y":0},{"id":"p2","x":10,"y":0},{"id":"p3","x":10,"y":5},{"id":"p4","x":0,"y":5}"#;
+        let cons = format!(r#"{HV4},{{"type":"fix","id":"c5","refs":["p1"],"value":[0,0]}},{{"type":"distance","id":"c6","refs":["p1","p2"],"value":10,"offset":null}},{{"type":"distance","id":"c7","refs":["p2","p3"],"value":5,"offset":null}},{{"type":"fix","id":"pin","refs":["p3"],"value":[30,30]}}"#);
+        let (on, st, errs) = solve_reply(pts, LINES4, &cons, SOLVE);
+        assert_eq!(on, vec![(0.0, 0.0), (10.0, 0.0), (10.0, 5.0), (0.0, 5.0)]);
+        assert_eq!(errs, 0);
+        assert_eq!(st.get("solved"), Some(&Json::Bool(false)));
+        assert!(ck_json::to_string(st.get("conflicts").unwrap()).contains("pin"), "{st:?}");
+    }
+
+    #[test]
+    fn solve_sketches_off_is_unchanged() {
+        let pts = r#"{"id":"p1","x":0,"y":0},{"id":"p2","x":10,"y":1},{"id":"p3","x":11,"y":5},{"id":"p4","x":1,"y":6}"#;
+        let (a, _, _) = solve_reply(pts, LINES4, HV4, "{}");
+        let (b, _, _) = solve_reply(pts, LINES4, HV4, r#"{"solveSketches":1}"#);
+        assert_eq!(a, b);
+        assert_eq!(a[1], (10.0, 1.0));
     }
 
     /// Oracle replies, verbatim.

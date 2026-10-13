@@ -1,6 +1,6 @@
 // Cost of opts.sketchStatus on regen: BenchCAD parts, regen with vs without the option
 // (interleaved, median of N runs each). Budget: < 10% added over the whole set.
-// usage: node tools/bench/sketch_status_timing.mjs [--wasm path] [--runs N]
+// usage: node tools/bench/sketch_status_timing.mjs [--wasm path] [--runs N] [--option sketchStatus|solveSketches]
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +12,7 @@ const args = process.argv.slice(2);
 const opt = (f, d) => { const i = args.indexOf(f); return i < 0 ? d : args[i + 1]; };
 const mod = new WebAssembly.Module(readFileSync(opt('--wasm', path.join(here, '../../target/wasm32-unknown-unknown/fast/ck_wasm.wasm'))));
 const runs = Number(opt('--runs', 5));
+const optName = opt('--option', 'sketchStatus'); // or solveSketches
 const median = (a) => [...a].sort((x, y) => x - y)[Math.floor(a.length / 2)];
 const manifest = JSON.parse(readFileSync(path.join(dir, 'manifest.json'), 'utf8'));
 let totA = 0, totB = 0, n = 0;
@@ -28,7 +29,7 @@ for (const m of manifest.parts) {
   const a = [], b = [];
   let sk = 0, trap = false;
   for (let i = 0; i < runs; i++) {
-    const [ta, ra] = one(null), [tb, rb] = one({ sketchStatus: true });
+    const [ta, ra] = one(null), [tb, rb] = one({ [optName]: true });
     if (!ra || !rb) { trap = true; break; }
     a.push(ta); b.push(tb); sk = rb.sketches.length;
   }

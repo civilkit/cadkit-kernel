@@ -147,6 +147,20 @@ describe('session ops (pure)', () => {
     const plain = await s.preview([]);
     assert.equal(plain.body?.sketches[0]?.status, undefined);
   });
+
+  it('preview forwards opts.solveSketches to the kernel', async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const kernel: KernelTransport = {
+      async request(msg: Record<string, unknown>) {
+        seen.push(msg);
+        if (msg.type === 'regen') return { ok: true, result: { errors: [], body: cleanBody, sketches: [] } };
+        throw new Error('unexpected ' + String(msg.type));
+      },
+    };
+    const s = new Session(plateDoc(), kernel, 't');
+    await s.preview([], { upTo: 2, solveSketches: true });
+    assert.deepEqual(seen.find((m) => m.type === 'regen')?.opts, { upTo: 2, solveSketches: true });
+  });
 });
 
 describe('session live', { skip: !existsSync(wasmPath()) && 'no wasm built' }, () => {

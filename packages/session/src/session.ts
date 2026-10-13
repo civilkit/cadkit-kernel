@@ -305,7 +305,7 @@ export class Session {
     return this.stack.map((e) => e.record);
   }
 
-  private async regen(doc: PartDoc, tag = this.tag, opts?: { upTo?: number; sketchStatus?: boolean }): Promise<{
+  private async regen(doc: PartDoc, tag = this.tag, opts?: { upTo?: number; sketchStatus?: boolean; solveSketches?: boolean }):Promise<{
     errors: RegenError[];
     body: Record<string, unknown> | null;
     sketches: Array<[string, Record<string, unknown>]>;
@@ -392,7 +392,7 @@ export class Session {
    *  preview supersedes an older one — the stale call resolves with `stale:true`
    *  and no body, so it can never overwrite a newer result. `opts.upTo` regens
    *  only the first N features (the kernel's sketch-mode partial regen). */
-  async preview(ops: EditOp[], opts?: { upTo?: number; sketchStatus?: boolean }): Promise<PreviewResult> {
+  async preview(ops: EditOp[], opts?: { upTo?: number; sketchStatus?: boolean; solveSketches?: boolean }):Promise<PreviewResult> {
     const seq = ++this.previewSeq;
     for (const op of ops) {
       const problem = checkOp(this.doc, op);

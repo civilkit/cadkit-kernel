@@ -1,4 +1,4 @@
-# Sketch solver status (`opts.sketchStatus`)
+# Sketch solver status and live solve (`opts.sketchStatus`, `opts.solveSketches`)
 
 The sketch editor needs "fully defined / under-defined / over-constrained" per sketch. The original kernel
 reports none of it (probed: `regen` entries are `{frame, profiles, sketch}` only; conflicting or redundant
@@ -48,3 +48,28 @@ Notes:
   Checks: `cargo test -p ck-model --lib status`, `node tools/sketch_status_check.mjs` (through the wasm),
   `node tools/probe_sketch_status.mjs --orig | --status` (probe the oracle / ours),
   `node tools/bench/sketch_status_timing.mjs` (cost on the BenchCAD parts).
+
+## Live solve (`opts.solveSketches`)
+
+`{"type":"regen","part":...,"opts":{"solveSketches":true}}` (literal `true` only). Off by default, so every
+existing reply stays byte-identical (checked against a pre-option build by `tools/sketch_solve_check.mjs`).
+It is for the GUI (drag / edit), not for agents; the agent guide does not mention it.
+
+For every `sketch` feature regen runs the existing solver (`solver::solve_sketch`, the client `Qe()`/`Bs()`
+port) from the supplied coordinates with ALL constraints, including a `fix` constraint with `value: [x, y]`
+(the GUI's temporary drag pin; the solver treats it as a hard equation on that point). The SOLVED
+coordinates are used both in `sketches[i].sketch.points` and for the profiles that downstream features
+(extrude, ...) consume, so a preview body matches the sketch. Circle/ellipse radii are written back too.
+
+* Sketches whose coordinates already satisfy every constraint (max abs residual <= 1e-7) are not solved
+  again (no extra solve); a sketch already re-solved because an `expr` changed a value is not solved twice.
+* If the solve does not converge or the constraints conflict, the supplied coordinates are kept, the
+  reply carries `status.solved: false` with the `conflicts` / `redundant` lists, and NO feature error is
+  raised (the original raises none either). A conflicting pin on a fully constrained sketch is named in
+  `conflicts` (the later constraint in document order is blamed).
+* `solveSketches` implies `sketchStatus`: every `sketches` entry carries `status`, computed on the
+  coordinates in the reply. `sketchStatus: true` alongside gives an identical reply.
+* Cost: 50 BenchCAD parts, interleaved median of 7 runs, +0.5% total
+  (`node tools/bench/sketch_status_timing.mjs --option solveSketches`).
+* Checks: `cargo test -p ck-model --lib solve_sketches`, `node tools/sketch_solve_check.mjs`
+  (fixture `tools/fixtures/sketch_solve_off.json` = sha256 of option-off replies from a build without the option).
