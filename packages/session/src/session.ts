@@ -313,6 +313,18 @@ export class Session {
     return meshFromBody(body as Parameters<typeof meshFromBody>[0]);
   }
 
+  /** Display body for a viewer: mesh, edge polylines and the box of the current document. */
+  async bodyForView(): Promise<{ mesh: import('../../render/src/mesh.js').MeshData; edges: Array<{ key?: string; pts: number[][] }>; box: { min: number[]; max: number[] } } | null> {
+    const { body } = await this.regen(this.doc);
+    if (!body) return null;
+    const { meshFromBody } = await import('../../render/src/mesh.js');
+    return {
+      mesh: meshFromBody(body as Parameters<typeof meshFromBody>[0]),
+      edges: (body.edges as Array<{ key?: string; pts: number[][] }> | undefined) ?? [],
+      box: body.box as { min: number[]; max: number[] },
+    };
+  }
+
   async edit(ops: EditOp[], reason?: string): Promise<EditResult> {
     for (const op of ops) {
       const problem = checkOp(this.doc, op);

@@ -136,6 +136,34 @@ describe('session live', { skip: !existsSync(wasmPath()) && 'no wasm built' }, (
   });
 });
 
+describe('session bodyForView', { skip: !existsSync(wasmPath()) && 'no wasm built' }, () => {
+  it('an empty document returns null', async () => {
+    const s = await Session.open(emptyPart('Empty'));
+    try {
+      assert.equal(await s.bodyForView(), null);
+    } finally {
+      await s.close();
+    }
+  });
+
+  it('a plate returns a mesh with edges', async () => {
+    const { Part } = await import('../../builder/src/index.js');
+    const p = new Part('Plate');
+    const base = p.sketch('S', 'front', (sk) => sk.rect(0, 0, 10, 10));
+    p.extrude({ sketch: base, op: 'add', end: 'blind', depth: 5 });
+    const s = await Session.open(p.toJSON());
+    try {
+      const v = await s.bodyForView();
+      assert.ok(v, 'expected a body');
+      assert.ok(v.mesh.positions.length > 0);
+      assert.ok(v.edges.length > 0);
+      assert.ok(v.box.max.length === 3);
+    } finally {
+      await s.close();
+    }
+  });
+});
+
 describe('session persistence', { skip: !existsSync(wasmPath()) && 'no wasm built' }, () => {
   it('saves, reopens with history, undoes and replays', async () => {
     const { mkdtempSync, readFileSync } = await import('node:fs');
