@@ -41,18 +41,22 @@ fn rod_and_handle(a0: f64, a1: f64) -> (Body, Body) {
     (rod, handle)
 }
 
-/// A union is either right or reported, never silently wrong (both handle
-/// directions; with the right answer the overlap is 337.9 up and 1944.2 down).
+/// j_hook root cause: the rod's cylinder band above the handle's start rim was
+/// kept on both sides of its seam; the seam was cancelled or kept depending on
+/// the order the shared edges were listed, and a cancelled seam left a dangling
+/// slit plus a second loop (cylinder lateral area 0, volume 14938).
+/// The up handle matches CadQuery (22782.6); for the down handle the overlap
+/// (1944.2) is a Monte Carlo of rod and tube, so the union is the sum minus it.
 #[test]
-fn hook_union_is_never_silently_wrong() {
-    for (a0, a1, want) in [(0.0, PI, 22782.6), (-PI, 0.0, 12105.94 + 11014.48 - 1944.2)] {
+fn hook_union_is_right() {
+    for (a0, a1, want, tol) in [(0.0, PI, 22782.6, 1e-4), (-PI, 0.0, 12105.94 + 11014.48 - 1944.2, 5e-4)] {
         let (rod, handle) = rod_and_handle(a0, a1);
         let out = boolean(&rod, &handle, Op::Union, 1e-6).expect("union");
+        assert!(out.mismatch.is_none(), "{:?}", out.mismatch);
+        let issues = ck_topo::check::check(&out.body, 1e-6);
+        assert!(issues.is_empty(), "{issues:?}");
         let got = vol(&out.body);
-        match out.mismatch {
-            None => assert!((got - want).abs() < 5e-4 * want, "silent wrong union {got} vs {want}"),
-            Some(m) => assert!((m.got - got).abs() < 1e-6 * got && (got < m.expected_min || got > m.expected_max), "{m:?}"),
-        }
+        assert!((got - want).abs() < tol * want, "hook {a0}..{a1}: volume {got} vs {want}");
     }
 }
 
