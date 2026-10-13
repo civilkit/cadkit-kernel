@@ -495,6 +495,26 @@ parts.mirrorBodyCone = part([...parts.cone.features, { type: 'plane', id: 'F8', 
   parts.loft3EndNormal = part([...base3, p4, sq8, loft3({ endNormal: 1.5 })]);
 }
 
+// sweep guides (ck-ops guide.rs): circle r=3 swept 20 along a line while a guide scales / turns / stretches it
+// (volumes match the oracle to 1e-6: cone frustum, ellipse sections, ...).
+{
+  const front = (id, points, entities) => ({ type: 'sketch', id, plane: STD('front'), points, entities, constraints: [] });
+  const gl = (id, a, b) => front(id, [pt('g1', ...a), pt('g2', ...b)], [line('e1', 'g1', 'g2')]);
+  const path = front('F2', [pt('a', 0, 0), pt('b', 0, 20)], [line('e1', 'a', 'b')]);
+  const circ = { type: 'sketch', id: 'F3', plane: STD('top'), points: [pt('c', 0, 0)], entities: [{ type: 'circle', id: 'e1', c: 'c', r: 3 }], constraints: [] };
+  const sq = { type: 'sketch', id: 'F3', plane: STD('top'), points: [pt('p1', -3, -3), pt('p2', 3, -3), pt('p3', 3, 3), pt('p4', -3, 3)], entities: [line('e1', 'p1', 'p2'), line('e2', 'p2', 'p3'), line('e3', 'p3', 'p4'), line('e4', 'p4', 'p1')], constraints: [] };
+  const cr = (sk) => ({ kind: 'sketchCurve', sketch: sk, entity: 'e1' });
+  const sw = (o) => ({ type: 'sweep', id: 'F5', op: 'add', sketch: 'F3', path: { kind: 'sketch', id: 'F2' }, ...o });
+  const spl = front('F4', [pt('s0', 3, 0), pt('s1', 5.5, 10), pt('s2', 4, 20)], [{ type: 'spline', id: 'e1', pts: ['s0', 's1', 's2'] }]);
+  parts.sweepGuideScale = part([path, circ, gl('F4', [3, 0], [6, 20]), sw({ guides: [cr('F4')], guideMode: 'scale' })]);
+  parts.sweepGuideTurn = part([path, circ, gl('F4', [3, 0], [6, 20]), sw({ guides: [cr('F4')], guideMode: 'turn' })]);
+  parts.sweepGuideShrink = part([path, circ, gl('F4', [3, 0], [1.5, 20]), sw({ guides: [cr('F4')] })]);
+  parts.sweepGuideCurved = part([path, circ, spl, sw({ guides: [cr('F4')], guideMode: 'scale' })]);
+  parts.sweepGuideStretch = part([path, circ, gl('F4', [3, 0], [6, 20]), gl('F6', [-3, 0], [-4, 20]), sw({ guides: [cr('F4'), cr('F6')], guideMode: 'stretch' })]);
+  parts.sweepGuide2Scale = part([path, circ, gl('F4', [3, 0], [6, 20]), gl('F6', [-3, 0], [-5, 20]), sw({ guides: [cr('F4'), cr('F6')], guideMode: 'scale' })]);
+  parts.sweepGuideSquare = part([path, sq, gl('F4', [3, 0], [6, 20]), sw({ guides: [cr('F4')], guideMode: 'scale' })]);
+}
+
 // editCurve (ck-ops curve_edit): the rebuilt curve goes to `curves[]` / `markers[]`, the solid is untouched
 // (the fit is least squares, the oracle's is a different one: deviations differ, see docs/ck-ops-stubs.md).
 {

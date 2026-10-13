@@ -216,7 +216,7 @@ pub(crate) fn sketch3_path(j: &Json) -> Result<Vec<PathSeg>, FeatureError> {
 }
 
 /// `sweep`.
-pub fn exec_sweep(br: &Brep, state: &RegenState, f: &Feature) -> Result<Tool, FeatureError> {
+pub fn exec_sweep(br: &Brep, state: &mut RegenState, f: &Feature) -> Result<Tool, FeatureError> {
     let FeatureKind::Sweep { op, path, surface, .. } = &f.kind else { unreachable!() };
     let sk = f
         .raw
@@ -247,11 +247,32 @@ pub fn exec_sweep(br: &Brep, state: &RegenState, f: &Feature) -> Result<Tool, Fe
     if *surface {
         return Err(FeatureError::new(&todo("surface sweep (open profile -> sheet body)")));
     }
-    if f.raw.get("guides").and_then(|g| g.as_arr()).map_or(false, |g| !g.is_empty()) {
-        return Err(FeatureError::new(&todo("sweep guides")));
-    }
     // `twist` is in degrees (f626: twist * pi / 180)
     let twist = state.num(f, "twist", 0.0)?.to_radians();
+    if let Some(gs) = f.raw.get("guides").and_then(|g| g.as_arr()).filter(|g| !g.is_empty()) {
+        // guides: curve refs (`{kind:"sketchCurve"|"edge"|"curve", ...}`); a ref that does not resolve
+        // is `sweepGuideMissing`, a twist with guides `sweepGuidesTwist` (oracle probes)
+        let mut polys = vec![];
+        for g in gs {
+            polys.push(super::curve_ref::ref_samples(br, state, g).ok_or_else(|| FeatureError::new("sweepGuideMissing"))?);
+        }
+        if twist != 0.0 {
+            return Err(FeatureError::new("sweepGuidesTwist"));
+        }
+        let mode = ck_ops::guide::GuideMode::parse(f.raw.get_str("guideMode"));
+        let g = ck_ops::guide::guided_sweep(&f.id, &profile, &segs, &polys, mode).map_err(|e| {
+            let fe = FeatureError::new(&e.code);
+            match e.detail {
+                Some(d) => fe.with("detail", Json::Str(d)),
+                None => fe,
+            }
+        })?;
+        // marker `{guides: [contact point on the profile, ..]}`
+        let contacts = Json::Arr(g.contacts.iter().map(|p| v3(*p)).collect());
+        state.result.markers.retain(|m| m.as_arr().and_then(|a| a.first()).and_then(|j| j.as_str()) != Some(f.id.as_str()));
+        state.result.markers.push(Json::Arr(vec![Json::Str(f.id.clone()), Json::Obj(vec![("guides".into(), contacts)])]));
+        return Ok(Tool { body: g.body, combine, recipe: None });
+    }
     let body = ck_ops::sweep::sweep(&f.id, &profile, &segs, twist).map_err(|e| FeatureError::new(&e))?;
     Ok(Tool { body, combine, recipe: None })
 }
