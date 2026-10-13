@@ -568,3 +568,25 @@ export interface SketchSpec {
   constraints: SketchConstraint[];
 }
 export type { FeatureId };
+
+/**
+ * Solver status of one solved sketch, present on a regen reply's `sketches[i][1].status`
+ * only when the request carried `opts: { sketchStatus: true }` (docs/sketch-status.md).
+ * The original kernel has no such field.
+ */
+export interface SketchSolverStatus {
+  /** Unknowns (x,y of every non-fixed point, r of circles/ellipses) minus Jacobian rank. */
+  dof: number;
+  /** state === 'full' and solved. */
+  fullyDefined: boolean;
+  /** Constraint ids that cannot hold together with earlier ones (document order). */
+  conflicts: string[];
+  /** Constraint ids implied by earlier ones (document order). */
+  redundant: string[];
+  /** The coordinates satisfy every constraint, or a solve from them converges. */
+  solved: boolean;
+  /** 'over' when any constraint is dependent, else 'full' at dof 0, else 'under'. */
+  state: 'under' | 'full' | 'over';
+  /** max |constraint residual| at the coordinates in the reply (-1 if unavailable). */
+  residual: number;
+}

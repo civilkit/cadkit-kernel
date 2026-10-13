@@ -581,7 +581,7 @@ fn comb(body: &Body, msg: &Json) -> Json {
 /// "regenerate N features", nothing stored), then the edge matcher.
 fn match_edges_hook(part: &Json, cx: &mut Cx) -> Result<Json, String> {
     let part = Part::from_json(part)?;
-    let opts = RegenOpts { up_to: cx.msg.get_f64("upTo").filter(|v| *v >= 0.0).map(|v| v as u32), ignore_rollback: false };
+    let opts = RegenOpts { up_to: cx.msg.get_f64("upTo").filter(|v| *v >= 0.0).map(|v| v as u32), ..RegenOpts::default() };
     let n = opts.up_to.map_or(part.features.len(), |u| part.features.len().min(u as usize));
     let body = cx.span(regen_label(n), |cx| {
         let mut ex = Exec { brep: Brep::new(), sink: TraceSink { trace: &mut *cx.trace, ids: vec![] }, auto_heal: None };
