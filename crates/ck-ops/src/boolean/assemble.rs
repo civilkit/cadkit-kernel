@@ -403,22 +403,44 @@ fn is_seam_edge(arr: &Arrangement, s: &Surface, e: usize) -> bool {
 /// Classify fragments against the other body and select/flip them.
 pub fn select(arr: &Arrangement, bodies: [&Body; 2], op: Op) -> Result<Vec<OutFace>, String> {
     let tol = arr.tol;
+    let solids = [Solid::new(bodies[0], tol), Solid::new(bodies[1], tol)];
+    select_with(arr, true, None, |side, _fi, q, n| {
+        let c = solids[1 - side].classify(q, n);
+        (c, keep(op, side, c))
+    })
+}
+
+/// [`select`] with the decision supplied by the caller: `decide(side, face
+/// index in the arrangement, interior sample point, outward normal)` returns
+/// the fragment's class (diagnostics only) and `Some(flip)` to keep it.
+/// `merge = false` skips the re-fusing of coincident same-facing fragments
+/// (a split-only pass, e.g. the pipe cut, must keep the pieces apart).
+/// Fragments of `skip_side` are dropped without a sample point.
+pub fn select_with(
+    arr: &Arrangement,
+    merge: bool,
+    skip_side: Option<usize>,
+    mut decide: impl FnMut(usize, usize, Vec3, Vec3) -> (Class, Option<bool>),
+) -> Result<Vec<OutFace>, String> {
+    let tol = arr.tol;
     let mut kept: Vec<(Fragment, bool)> = vec![];
     let mut n_frags: Vec<usize> = vec![0; arr.faces.len()];
-    let solids = [Solid::new(bodies[0], tol), Solid::new(bodies[1], tol)];
     for fi in 0..arr.faces.len() {
         let frs = fragments(arr, fi);
         n_frags[fi] = frs.len();
         for mut fr in frs {
             let side = arr.faces[fi].side;
+            if skip_side == Some(side) {
+                continue;
+            }
             let (q, n) = sample_point(arr, &fr).ok_or_else(|| {
                 super::bool_dbg!("no sample point for a fragment of face {fi} (side {side}, {} loops)", fr.loops.len());
                 "booleanFailed".to_string()
             })?;
-            let c = solids[1 - side].classify(q, n);
+            let (c, k) = decide(side, fi, q, n);
             fr.class = Some(c);
-            super::bool_dbg!("fragment of face {fi} (side {side}, {}, {} loops): sample {q:?} class {c:?} keep {:?}", arr.faces[fi].name.id(), fr.loops.len(), keep(op, side, c));
-            if let Some(flip) = keep(op, side, c) {
+            super::bool_dbg!("fragment of face {fi} (side {side}, {}, {} loops): sample {q:?} class {c:?} keep {:?}", arr.faces[fi].name.id(), fr.loops.len(), k);
+            if let Some(flip) = k {
                 kept.push((fr, flip));
             }
         }
@@ -458,6 +480,9 @@ pub fn select(arr: &Arrangement, bodies: [&Body; 2], op: Op) -> Result<Vec<OutFa
         }
     }
     for i in 0..n {
+        if !merge {
+            break;
+        }
         let mut js: Vec<usize> = edges_of[i].iter().flat_map(|e| by_edge[e].iter().copied()).filter(|&j| j > i).collect();
         js.sort_unstable();
         js.dedup();

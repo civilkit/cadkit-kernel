@@ -71,10 +71,12 @@ where noted):
 | `match_edges` | `match_edges`, `reply` (`matchEdges`: similar / parallel / tangent) | **oracle**: similar = kind + length + dihedral, parallel = line direction / circle axis, results in wire order; tangent order + tolerance partly GUESS |
 | `sweep` | `sweep(feature, &Profile, &[PathSeg], twist) -> Body`; `PathSeg::{Line, Arc, Helix, Spline}`, `Motion`, `path_motion`, `sweep_motion`; `spline_path::SplinePath` (natural cubic, chord-length: a `sketch3d` spline) | **oracle**: rigid-motion paths only. Line -> ck-topo extrude, arc about an in-plane axis -> revolve (identical numbering), helix / twist / off-plane arc -> screw sweep (spline side faces, cylinders for lines parallel to the axis, caps listed after the sides, closed profile entities split `S.e1~1/~2`); the path end nearest the profile starts the sweep; `sweepProfileNotNormal` (`|\|t·n\|-1\| > 5e-5`). Volumes agree to ~1e-6 (the oracle's own spline fits), faces/edges/keys exact. Spline paths (`sketch3d`, one spline entity): the section is carried by a rotation-minimizing frame (probed against the original: centre of mass / principal moments of a swept rectangle agree to 2e-5), a profile within 15 degrees of normal is accepted, B-spline side faces over rows of the motion like the screw sweeps. Multi-piece paths (mitre unions), guides: not reconstructed |
 
-Everything else (loft/*, pipecut,
-curve_edit, guide, simplify, other blend/* files,
-`surfacing::rebuild::edits`) is a stub whose header lists its
-kernel.strings codes.
+| `pipecut` | `pipe_cut(body, edges, r, tol) -> Result<Body, PipeCutError{code, max, detail}>` — remove what a ball of radius `r` rolled along the edges touches; the result is a SHEET (a solid input becomes a surface body). Cutter solids (cylinder / torus sector per edge, ball per end vertex) only split the faces (`boolean::assemble::select_with`, split-only); a fragment survives when its interior sample is >= `r` from the path | **oracle** (`tools/cmp_stubs.mjs pipeCut`, `cargo test -p ck-ops pipecut`): single edge, opposite edges, 4-edge ring, face rim, r=8, r=12 (face removed + bottom trimmed), cylinder rims, sheet input — faces/edges/mesh area identical to the oracle; closed-form areas; `pipeCutRadius {max}` / `pipeCutNothingLeft`. Not supported: spline / ellipse edges (`pipeCutFailed`) |
+
+The remaining stubs (loft/*, curve_edit, guide, simplify, blend cap / g2 / interp /
+overlap / sheet / stripe / surface, `surfacing::rebuild::edits`) are classified in
+[docs/ck-ops-stubs.md](../../docs/ck-ops-stubs.md) (feature missing / already
+implemented elsewhere / internal helper).
 
 ### How to wire the surface ops (Gate B, ck-model/src/features)
 
