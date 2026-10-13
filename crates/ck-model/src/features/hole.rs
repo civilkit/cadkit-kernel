@@ -151,6 +151,6 @@ pub fn exec_hole(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(
     }
     let tool = Tool { body: tool.unwrap(), combine: Combine::Cut, recipe: None };
     let r = br.combine(&tool.body, Combine::Cut, true);
-    br.tools.push((f.id.clone(), tool));
+    br.tools.push((f.id.clone(), std::rc::Rc::new(tool)));
     r
 }

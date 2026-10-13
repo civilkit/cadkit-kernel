@@ -8,6 +8,7 @@ use ck_model::sketch::offset::sketch_offset_json;
 use ck_model::{Part, Sketch};
 use ck_server::session::{regen_label, Cx, Hooks, State, SNAPSHOT_LABEL};
 use ck_server::trace::{SpanId, Trace};
+use crate::regen_cache;
 use ck_topo::body::Body;
 
 pub fn install() {
@@ -96,6 +97,12 @@ impl regen::FeatureExec for Exec<'_> {
         self.brep.prepare(state, features);
         self.brep.flush_spans(&mut self.sink);
     }
+    fn save(&self, prev: Option<&ck_model::features::BrepSnap>) -> Option<ck_model::features::BrepSnap> {
+        Some(self.brep.save(prev))
+    }
+    fn load(&mut self, snap: &ck_model::features::BrepSnap) {
+        self.brep.load(snap)
+    }
     fn exec(&mut self, state: &mut regen::RegenState, f: &ck_model::Feature) -> Result<(), regen::FeatureError> {
         let r = self.brep.exec(state, f);
         self.brep.flush_spans(&mut self.sink);
@@ -108,15 +115,43 @@ impl regen::FeatureExec for Exec<'_> {
     }
 }
 
-/// `regen`: parse, run the feature program, snapshot.
+/// `regen`: parse, run the feature program (continuing from the longest
+/// cached prefix, see regen_cache.rs), snapshot.
 fn regen_hook(part: &Json, cx: &mut Cx) -> Result<(Json, State), String> {
+    let part_json = part;
     let part = Part::from_json(part)?;
     let opts = RegenOpts::from_json(cx.msg.get("opts"));
     let n = opts.up_to.map_or(part.features.len(), |u| part.features.len().min(u as usize));
+    let o = cx.msg.get("opts");
+    let flag = |k: &str| o.map_or(false, |o| o.get_bool(k) == Some(true));
+    let auto_heal = o.filter(|o| o.get_bool("autoHeal") == Some(true)).map(|o| o.get_f64("healTol").unwrap_or(1e-5));
+    if let Some(cap) = o.and_then(|o| o.get_f64("cacheCap")).filter(|c| *c >= 0.0) {
+        regen_cache::with(|c| c.set_cap(cap as usize));
+    }
+    // debug requests want the real per-feature spans, so they never replay
+    let use_cache = !flag("noCache") && !cx.trace.enabled();
+    let want_stats = flag("cacheStats");
+    let run_n = regen::run_len(&part, &opts);
+    let mut stats = (0usize, run_n); // (features reused, features in the run)
     let (mut result, body) = cx.span(regen_label(n), |cx| {
-        let auto_heal = cx.msg.get("opts").filter(|o| o.get_bool("autoHeal") == Some(true)).map(|o| o.get_f64("healTol").unwrap_or(1e-5));
         let mut ex = Exec { brep: Brep::new(), sink: TraceSink { trace: &mut *cx.trace, ids: vec![] }, auto_heal };
-        let mut r = regen::regen(&part, &opts, &mut ex);
+        let mut resume = None;
+        let mut rec = None;
+        if use_cache && run_n > 0 {
+            let ko = regen_cache::KeyOpts { sketch_status: opts.sketch_status, solve_sketches: opts.solve_sketches, auto_heal };
+            let keys = regen_cache::chain_keys(part_json, &ko, run_n);
+            let hit = regen_cache::with(|c| c.lookup(&keys));
+            let mut chained = None;
+            if let Some(h) = hit {
+                ex.brep.load(&h.snap);
+                stats.0 = h.next;
+                chained = Some((h.result.clone(), h.snap));
+                resume = Some(regen::Resume { next: h.next, result: h.result, axes: h.axes });
+            }
+            rec = Some(regen_cache::Recorder::new(keys, chained));
+        }
+        let ck = rec.as_mut().map(|r| r as &mut dyn regen::Checkpoint);
+        let mut r = regen::regen_from(&part, &opts, &mut ex, resume, ck);
         r.components = ex.brep.components_json();
         let rn = ex.brep.renorm_faces();
         let asm = ex.brep.asm.clone();
@@ -143,6 +178,26 @@ fn regen_hook(part: &Json, cx: &mut Cx) -> Result<(Json, State), String> {
         }
         set_key(&mut out, "surfaces", Json::Arr(sj));
     });
+    if want_stats {
+        let (reused, total) = stats;
+        let (entries, bytes, cap, st) = regen_cache::with(|c| (c.len(), c.bytes(), c.cap(), c.stats));
+        let j = Obj::new()
+            .put("enabled", use_cache)
+            .put("reusedFeatures", reused as f64)
+            .put("ranFeatures", (total - reused) as f64)
+            .put("fullHit", use_cache && total > 0 && reused == total)
+            .put("entries", entries as f64)
+            .put("bytes", bytes as f64)
+            .put("cap", cap as f64)
+            .put("lookups", st.lookups as f64)
+            .put("hits", st.hits as f64)
+            .put("stored", st.stored as f64)
+            .put("evicted", st.evicted as f64)
+            .build();
+        if let Json::Obj(kv) = &mut out {
+            kv.push(("cacheStats".into(), j));
+        }
+    }
     let state = match body {
         Some(body) => {
             let sketches = std::mem::take(&mut result.sketches);

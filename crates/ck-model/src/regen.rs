@@ -397,6 +397,28 @@ pub trait FeatureExec {
     fn prepare(&mut self, _state: &RegenState, _features: &[&Feature]) {}
     /// Execute a geometry feature (not sketch/sketch3d/plane).
     fn exec(&mut self, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError>;
+    /// Snapshot of the executor's accumulated state (the regen cache stores one
+    /// after every feature). `prev` is the previous snapshot of the same run,
+    /// whose unchanged parts the new one shares. `None` = not snapshottable.
+    fn save(&self, _prev: Option<&crate::features::BrepSnap>) -> Option<crate::features::BrepSnap> {
+        None
+    }
+    /// Replace the executor's state by a snapshot made by [`FeatureExec::save`].
+    fn load(&mut self, _snap: &crate::features::BrepSnap) {}
+}
+
+/// Where a cached regen continues: features `..next` already ran and left
+/// `result` / `axes` behind (the executor was [`FeatureExec::load`]ed).
+pub struct Resume {
+    pub next: usize,
+    pub result: RegenResult,
+    pub axes: Vec<(String, (Vec3, Vec3))>,
+}
+
+/// Called by [`regen_from`] after every feature of the run (suppressed ones
+/// included, `ran = false`), with the state a continuation would need.
+pub trait Checkpoint {
+    fn after(&mut self, index: usize, ran: bool, state: &RegenState, exec: &mut dyn FeatureExec);
 }
 
 /// Analytic surface summary for [`FeatureExec::face_surf`].
@@ -637,10 +659,8 @@ fn run_feature(state: &mut RegenState, exec: &mut dyn FeatureExec, f: &Feature) 
     exec.exec(state, f)
 }
 
-/// Run the regen program.
-pub fn regen(part: &Part, opts: &RegenOpts, exec: &mut dyn FeatureExec) -> RegenResult {
-    let res = expr::resolve_variables(&part.variables);
-    let mut state = RegenState { part, vars: res.values, result: RegenResult::default(), axes: vec![], sketch_status: opts.sketch_status, solve_sketches: opts.solve_sketches };
+/// Number of features a regen with these options runs (`upTo` / `rollback`).
+pub fn run_len(part: &Part, opts: &RegenOpts) -> usize {
     let mut n = part.features.len();
     if let Some(u) = opts.up_to {
         n = n.min(u as usize);
@@ -648,10 +668,34 @@ pub fn regen(part: &Part, opts: &RegenOpts, exec: &mut dyn FeatureExec) -> Regen
     if let Some(r) = part.rollback.filter(|_| !opts.ignore_rollback) {
         n = n.min(r);
     }
+    n
+}
+
+/// Run the regen program.
+pub fn regen(part: &Part, opts: &RegenOpts, exec: &mut dyn FeatureExec) -> RegenResult {
+    regen_from(part, opts, exec, None, None)
+}
+
+/// [`regen`], optionally continuing from a cached state (`resume`: the first
+/// `resume.next` features are not run) and reporting a [`Checkpoint`] after
+/// every feature.
+pub fn regen_from(part: &Part, opts: &RegenOpts, exec: &mut dyn FeatureExec, resume: Option<Resume>, mut ck: Option<&mut dyn Checkpoint>) -> RegenResult {
+    let res = expr::resolve_variables(&part.variables);
+    let mut state = RegenState { part, vars: res.values, result: RegenResult::default(), axes: vec![], sketch_status: opts.sketch_status, solve_sketches: opts.solve_sketches };
+    let mut start = 0;
+    if let Some(r) = resume {
+        start = r.next;
+        state.result = r.result;
+        state.axes = r.axes;
+    }
+    let n = run_len(part, opts);
     let run: Vec<&Feature> = part.features[..n].iter().filter(|f| !f.suppressed).collect();
     exec.prepare(&state, &run);
-    for f in &part.features[..n] {
+    for (i, f) in part.features[..n].iter().enumerate().skip(start) {
         if f.suppressed {
+            if let Some(c) = ck.as_deref_mut() {
+                c.after(i, false, &state, exec);
+            }
             continue;
         }
         let label = format!("{} {}", f.id, f.type_name);
@@ -680,6 +724,9 @@ pub fn regen(part: &Part, opts: &RegenOpts, exec: &mut dyn FeatureExec) -> Regen
         }
         if let Err(e) = r {
             state.result.put_error(RegenError { feature: f.id.clone(), error: e });
+        }
+        if let Some(c) = ck.as_deref_mut() {
+            c.after(i, true, &state, exec);
         }
     }
     state.result

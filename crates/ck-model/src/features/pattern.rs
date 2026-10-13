@@ -209,7 +209,7 @@ fn seed_tools<'a>(br: &'a Brep, seeds: &[Ref]) -> Result<Vec<(&'a str, &'a Tool)
                 .iter()
                 .rev()
                 .find(|(id, _)| id == s.as_str())
-                .map(|(id, t)| (id.as_str(), t))
+                .map(|(id, t)| (id.as_str(), &**t))
                 .ok_or_else(|| FeatureError::new(codes::MISSING_REFERENCE))
         })
         .collect()
@@ -303,7 +303,7 @@ pub fn exec_pattern(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Resul
     }
     // the pattern's own tool (seeds of later patterns): every instance
     if !tools.is_empty() {
-        br.tools.push((f.id.clone(), Tool { body: all, combine: last, recipe: None }));
+        br.tools.push((f.id.clone(), std::rc::Rc::new(Tool { body: all, combine: last, recipe: None })));
     }
     Ok(())
 }

@@ -571,7 +571,7 @@ pub fn boolean_span(op: ck_ops::boolean::Op, na: usize, nb: usize, nout: usize) 
 pub struct Brep {
     pub body: Option<ck_topo::body::Body>,
     /// Tool of every body-making feature so far (feature id, tool).
-    pub tools: Vec<(String, extrude::Tool)>,
+    pub tools: Vec<(String, std::rc::Rc<extrude::Tool>)>,
     /// Trace spans of the feature being executed (see [`Brep::flush_spans`]).
     pub spans: Vec<Span>,
     /// Assembly components (insertPart / mate / component patterns).
@@ -582,9 +582,54 @@ pub struct Brep {
     pub surfs: Vec<(String, ck_topo::body::Body)>,
 }
 
+/// Everything a [`Brep`] has accumulated, as cheaply shareable pieces: the
+/// regen cache keeps one per feature and consecutive snapshots share the
+/// pieces a feature did not change (`Rc` pointer-equal).
+#[derive(Clone)]
+pub struct BrepSnap {
+    pub body: std::rc::Rc<Option<ck_topo::body::Body>>,
+    pub tools: Vec<(String, std::rc::Rc<extrude::Tool>)>,
+    pub asm: std::rc::Rc<mate::Assembly>,
+    pub helices: std::rc::Rc<Vec<(String, ck_ops::helix::Helix)>>,
+    pub surfs: std::rc::Rc<Vec<(String, ck_topo::body::Body)>>,
+}
+
 impl Brep {
     pub fn new() -> Brep {
         Brep::default()
+    }
+
+    /// Snapshot of the accumulated state; pieces equal to `prev`'s are shared
+    /// instead of copied.
+    pub fn save(&self, prev: Option<&BrepSnap>) -> BrepSnap {
+        use std::rc::Rc;
+        fn share<T: PartialEq + Clone>(prev: Option<&Rc<T>>, cur: &T) -> Rc<T> {
+            match prev {
+                Some(p) if **p == *cur => p.clone(),
+                _ => Rc::new(cur.clone()),
+            }
+        }
+        BrepSnap {
+            body: share(prev.map(|p| &p.body), &self.body),
+            tools: self.tools.clone(),
+            asm: match prev {
+                Some(p) if self.asm.is_empty() && p.asm.is_empty() => p.asm.clone(),
+                _ => Rc::new(self.asm.clone()),
+            },
+            helices: share(prev.map(|p| &p.helices), &self.helices),
+            surfs: share(prev.map(|p| &p.surfs), &self.surfs),
+        }
+    }
+
+    /// Replace the accumulated state by a snapshot (the pieces are copied, the
+    /// snapshot stays intact).
+    pub fn load(&mut self, s: &BrepSnap) {
+        self.body = (*s.body).clone();
+        self.tools = s.tools.clone();
+        self.asm = (*s.asm).clone();
+        self.helices = (*s.helices).clone();
+        self.surfs = (*s.surfs).clone();
+        self.spans.clear();
     }
 
     /// Emit (and clear) the spans recorded by the last `exec`.
@@ -595,7 +640,7 @@ impl Brep {
     }
 
     pub fn tool(&self, feature: &str) -> Option<&extrude::Tool> {
-        self.tools.iter().rev().find(|(id, _)| id == feature).map(|(_, t)| t)
+        self.tools.iter().rev().find(|(id, _)| id == feature).map(|(_, t)| &**t)
     }
 
     /// Combine `tool` with the body: the first add becomes the body, later
@@ -710,7 +755,7 @@ impl Brep {
     fn apply(&mut self, id: &str, tool: extrude::Tool) -> Result<(), crate::regen::FeatureError> {
         let r = self.combine(&tool.body, tool.combine, true);
         // GUESS: the tool is remembered even when the combine fails.
-        self.tools.push((id.to_string(), tool));
+        self.tools.push((id.to_string(), std::rc::Rc::new(tool)));
         r
     }
 }
@@ -874,6 +919,12 @@ impl crate::regen::FeatureExec for Brep {
     }
     fn face_count(&self) -> Option<usize> {
         self.body.as_ref().map(|b| b.num_faces())
+    }
+    fn save(&self, prev: Option<&BrepSnap>) -> Option<BrepSnap> {
+        Some(Brep::save(self, prev))
+    }
+    fn load(&mut self, snap: &BrepSnap) {
+        Brep::load(self, snap)
     }
     fn edge_line(&mut self, _state: &crate::regen::RegenState, faces: &[String], at: Option<[f64; 3]>) -> Option<(ck_core::linalg::Vec3, ck_core::linalg::Vec3)> {
         use ck_core::linalg::Vec3;
