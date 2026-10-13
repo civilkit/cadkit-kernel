@@ -42,13 +42,17 @@ pub struct RegenOpts {
     pub up_to: Option<u32>,
     /// Ignore `part.rollback` (pinned: nested insertPart regens do).
     pub ignore_rollback: bool,
+    /// `opts.sketchStatus: true`: add a solver `status` to every `sketches`
+    /// entry (see `sketch::status`). Off by default: the oracle has no such field.
+    pub sketch_status: bool,
 }
 
 impl RegenOpts {
     /// Parse `msg.opts` (`{"upTo": n}`; negative / non-numbers ignored).
     pub fn from_json(j: Option<&Json>) -> RegenOpts {
         let up_to = j.and_then(|o| o.get("upTo")).and_then(|v| v.as_f64()).filter(|v| *v >= 0.0).map(|v| v as u32);
-        RegenOpts { up_to, ignore_rollback: false }
+        let sketch_status = j.and_then(|o| o.get("sketchStatus")).map_or(false, |v| matches!(v, Json::Bool(true)));
+        RegenOpts { up_to, ignore_rollback: false, sketch_status }
     }
 }
 
@@ -208,6 +212,8 @@ pub struct SketchResult {
     pub profiles: Profiles,
     /// The (possibly re-solved) sketch.
     pub sketch: Sketch,
+    /// Solver status; only computed when `opts.sketchStatus` is set.
+    pub status: Option<crate::sketch::status::SketchStatus>,
 }
 
 /// `{"o":[..],"x":[..],"y":[..],"z":[..]}`.
@@ -290,7 +296,7 @@ impl RegenResult {
                                     ("frame".into(), frame_json(&s.frame)),
                                     ("profiles".into(), s.profiles.to_json()),
                                     ("sketch".into(), s.sketch.to_json()),
-                                ]),
+                                ].into_iter().chain(s.status.as_ref().map(|t| ("status".to_string(), t.to_json()))).collect()),
                             ])
                         })
                         .collect(),
@@ -320,6 +326,8 @@ pub struct RegenState<'p> {
     pub result: RegenResult,
     /// `axis` features: id -> (point, unit direction).
     pub axes: Vec<(String, (Vec3, Vec3))>,
+    /// `opts.sketchStatus`.
+    pub sketch_status: bool,
 }
 
 impl<'p> RegenState<'p> {
@@ -436,7 +444,8 @@ fn regen_sketch(state: &mut RegenState, exec: &mut dyn FeatureExec, f: &Feature,
     }
     let profiles = profiles(&sk);
     let _ = f;
-    state.result.put_sketch(SketchResult { id: sk.id.clone(), frame, profiles, sketch: sk });
+    let status = state.sketch_status.then(|| crate::sketch::status::sketch_status(&sk));
+    state.result.put_sketch(SketchResult { id: sk.id.clone(), frame, profiles, sketch: sk, status });
     Ok(())
 }
 
@@ -613,7 +622,7 @@ fn run_feature(state: &mut RegenState, exec: &mut dyn FeatureExec, f: &Feature) 
 /// Run the regen program.
 pub fn regen(part: &Part, opts: &RegenOpts, exec: &mut dyn FeatureExec) -> RegenResult {
     let res = expr::resolve_variables(&part.variables);
-    let mut state = RegenState { part, vars: res.values, result: RegenResult::default(), axes: vec![] };
+    let mut state = RegenState { part, vars: res.values, result: RegenResult::default(), axes: vec![], sketch_status: opts.sketch_status };
     let mut n = part.features.len();
     if let Some(u) = opts.up_to {
         n = n.min(u as usize);
@@ -673,6 +682,20 @@ mod tests {
     #[test]
     fn empty_part() {
         assert_eq!(run(r#"{"format":"ck-part","features":[]}"#, "{}"), EMPTY);
+    }
+
+    /// `opts.sketchStatus` is additive: without it the reply is unchanged; with it
+    /// only a `status` key appears inside each `sketches` entry.
+    #[test]
+    fn sketch_status_is_opt_in_and_additive() {
+        let src = r#"{"format":"ck-part","features":[{"type":"sketch","id":"F1","plane":{"kind":"std","id":"top"},"points":[{"id":"p1","x":1,"y":2}],"entities":[],"constraints":[]}]}"#;
+        let plain = run(src, "{}");
+        assert!(!plain.contains("\"status\""));
+        let with = run(src, r#"{"sketchStatus":true}"#);
+        let st = r#","status":{"dof":2,"fullyDefined":false,"conflicts":[],"redundant":[],"solved":true,"state":"under","residual":0}"#;
+        assert!(with.contains(st), "{with}");
+        assert_eq!(with.replacen(st, "", 1), plain);
+        assert_eq!(run(src, r#"{"sketchStatus":1}"#), plain);
     }
 
     /// Oracle replies, verbatim.
@@ -845,7 +868,7 @@ mod tests {
             }
         }
         let mut ex = crate::features::Brep::new();
-        let r = regen(&part, &RegenOpts { up_to: Some(8), ignore_rollback: false }, &mut ex);
+        let r = regen(&part, &RegenOpts { up_to: Some(8), ..RegenOpts::default() }, &mut ex);
         let f7 = r.sketches.iter().find(|s| s.id == "F7").unwrap();
         assert_eq!(ck_json::to_string(&frame_json(&f7.frame)), r#"{"o":[26,0,0],"x":[0,0,-1],"y":[0,1,0],"z":[1,0,0]}"#);
         assert!(r.errors.is_empty(), "{:?}", r.errors);

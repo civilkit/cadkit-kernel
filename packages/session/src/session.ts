@@ -38,7 +38,7 @@ export interface ViewBody {
   mesh: import('../../render/src/mesh.js').MeshData;
   edges: Array<{ key?: string; pts: number[][] }>;
   box: { min: number[]; max: number[] };
-  sketches: Array<{ id: string; frame: ViewFrame; sketch: import('../../part-model/src/index.js').SketchFeature }>;
+  sketches: Array<{ id: string; frame: ViewFrame; sketch: import('../../part-model/src/index.js').SketchFeature; status?: import('../../part-model/src/index.js').SketchSolverStatus }>;
   curves: Array<{ id: string; pts: number[][] }>;
   planes: Array<{ id: string; frame: ViewFrame }>;
   markers: unknown[];
@@ -377,6 +377,7 @@ export class Session {
         id,
         frame: e.frame as ViewFrame,
         sketch: e.sketch as import('../../part-model/src/index.js').SketchFeature,
+        ...(e.status ? { status: e.status as import('../../part-model/src/index.js').SketchSolverStatus } : {}),
       })),
       curves: curves.map(([id, e]) => ({ id, pts: e.pts })),
       planes: planes.map(([id, frame]) => ({ id, frame: frame as ViewFrame })),

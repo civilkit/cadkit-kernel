@@ -71,7 +71,7 @@ export interface GenericFeature {
 export type Feature = SketchFeature | ExtrudeFeature | KnownFeature | GenericFeature;
 
 import type { KnownFeature } from './features.js';
-export type { KnownFeature, FeatureTypeName, EdgeRef, GeomRef, Expr } from './features.js';
+export type { KnownFeature, FeatureTypeName, EdgeRef, GeomRef, Expr, SketchSolverStatus } from './features.js';
 export { FEATURE_TYPES } from './features.js';
 
 export type Material = 'steel' | 'aluminium' | string;

@@ -23,6 +23,7 @@ pub mod offset;
 pub mod profile;
 pub mod smooth;
 pub mod solver;
+pub mod status;
 pub mod spline;
 
 use crate::{GeomRef, Plane};

@@ -1296,7 +1296,7 @@ fn tension(b: &mut Builder, k: &super::Constraint) -> Result<(), String> {
 }
 
 /// Sparse Jacobian rows by central differences (client `wl()`).
-fn jacobian(sys: &System, x: &mut [f64]) -> Vec<Vec<(usize, f64)>> {
+pub(crate) fn jacobian(sys: &System, x: &mut [f64]) -> Vec<Vec<(usize, f64)>> {
     let mut rows = Vec::with_capacity(sys.eqs.len());
     for eq in &sys.eqs {
         let mut s = Vec::new();
@@ -1318,7 +1318,7 @@ fn jacobian(sys: &System, x: &mut [f64]) -> Vec<Vec<(usize, f64)>> {
     rows
 }
 
-fn residuals(sys: &System, x: &[f64]) -> Vec<f64> {
+pub(crate) fn residuals(sys: &System, x: &[f64]) -> Vec<f64> {
     sys.eqs.iter().map(|e| e.eval(x)).collect()
 }
 
