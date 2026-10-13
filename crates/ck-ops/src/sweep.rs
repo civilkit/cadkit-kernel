@@ -98,7 +98,7 @@ impl PathSeg {
     }
     /// Unit direction of travel at the start (a helix: its rotational part,
     /// see the module header).
-    fn start_dir(&self) -> Option<Vec3> {
+    pub(crate) fn start_dir(&self) -> Option<Vec3> {
         match self {
             PathSeg::Line { a, b } => (*b - *a).try_normalize(),
             PathSeg::Arc { frame, a0, a1, .. } => {
@@ -281,7 +281,7 @@ pub fn twist_extrude(feature: &str, profile: &Profile, o: ExtrudeOpts, twist: f6
 }
 
 /// Mean of the profile's vertices (world).
-fn profile_ref_point(p: &Profile) -> Vec3 {
+pub(crate) fn profile_ref_point(p: &Profile) -> Vec3 {
     let f = &p.frame;
     let (mut s, mut k) = (Vec3::ZERO, 0.0);
     for r in &p.regions {
@@ -728,6 +728,154 @@ fn generic_side(pt: &dyn Fn(usize, Vec3) -> Vec3, phis: &[f64], c: &Curve, t0: f
         pc_rail_t0: Some(Curve2::Line { o: Vec2::new(0.0, t0), d: Vec2::new(1.0, 0.0) }),
         pc_rail_t1: Some(Curve2::Line { o: Vec2::new(0.0, t1), d: Vec2::new(1.0, 0.0) }),
     }))
+}
+
+// ------------------------------------------------------- guided (general) sweep
+
+/// Points and unit tangents along a path (a chain of connected pieces, already
+/// oriented), `n` intervals per piece (the first sample of a later piece is dropped).
+pub(crate) fn path_samples(path: &[PathSeg], n: usize) -> Option<(Vec<Vec3>, Vec<Vec3>)> {
+    let (mut pts, mut tans) = (vec![], vec![]);
+    for (k, seg) in path.iter().enumerate() {
+        for i in 0..=n {
+            if k > 0 && i == 0 {
+                continue;
+            }
+            let t = i as f64 / n as f64;
+            let (p, d) = match seg {
+                PathSeg::Line { a, b } => (*a + (*b - *a) * t, (*b - *a).try_normalize()?),
+                PathSeg::Arc { frame, r, a0, a1 } => {
+                    let th = a0 + (a1 - a0) * t;
+                    let sg = if a1 >= a0 { 1.0 } else { -1.0 };
+                    (arc_pt(frame, *r, th), (frame.y * th.cos() - frame.x * th.sin()) * sg)
+                }
+                PathSeg::Helix { h, rev } => {
+                    let th = if *rev { h.angle * (1.0 - t) } else { h.angle * t };
+                    let e = 1e-6 * h.angle.max(1e-3);
+                    let d = (h.eval(th + e) - h.eval(th - e)).try_normalize()?;
+                    (h.eval(th), if *rev { -d } else { d })
+                }
+                PathSeg::Spline { sp, rev } => {
+                    let len = sp.length();
+                    let (u, sg) = if *rev { (len * (1.0 - t), -1.0) } else { (len * t, 1.0) };
+                    (sp.eval(u), sp.d1(u).try_normalize()? * sg)
+                }
+            };
+            pts.push(p);
+            tans.push(d);
+        }
+    }
+    Some((pts, tans))
+}
+
+/// Rigid motions `M_i` carrying the section placed at the first sample along the samples
+/// (rotation-minimizing frames, double reflection; the same transport as the spline sweep).
+pub(crate) fn rmf_rows(pts: &[Vec3], tans: &[Vec3]) -> Vec<Xform> {
+    let n = pts.len() - 1;
+    let mut r = {
+        let a = if tans[0].x.abs() < 0.9 { Vec3::X } else { Vec3::Y };
+        (a - tans[0] * a.dot(tans[0])).normalize()
+    };
+    let mut frames: Vec<[Vec3; 3]> = vec![[tans[0], r, tans[0].cross(r)]];
+    for i in 0..n {
+        let v1 = pts[i + 1] - pts[i];
+        let c1 = v1.len2();
+        if c1 > 1e-300 {
+            let r_l = r - v1 * (2.0 / c1 * v1.dot(r));
+            let t_l = tans[i] - v1 * (2.0 / c1 * v1.dot(tans[i]));
+            let v2 = tans[i + 1] - t_l;
+            let c2 = v2.len2();
+            r = if c2 > 1e-300 { r_l - v2 * (2.0 / c2 * v2.dot(r_l)) } else { r_l };
+        }
+        r = (r - tans[i + 1] * r.dot(tans[i + 1])).normalize();
+        frames.push([tans[i + 1], r, tans[i + 1].cross(r)]);
+    }
+    let f0 = ck_core::linalg::Mat3::from_cols(frames[0][0], frames[0][1], frames[0][2]);
+    (0..=n)
+        .map(|i| {
+            let f = ck_core::linalg::Mat3::from_cols(frames[i][0], frames[i][1], frames[i][2]);
+            let m = f.mul_mat(&f0.transpose());
+            Xform::new(m, pts[i] - m.mul_vec(pts[0]))
+        })
+        .collect()
+}
+
+/// Sweep `profile` by an arbitrary (not rigid) motion: `pt(i, q)` is the image of the point `q`
+/// after row `i`, `phis[i]` the row parameter (increasing from `phis[0]`). Like [`sweep_spline`]:
+/// side faces are interpolated tensor surfaces over the rows, a closed single-entity loop is cut
+/// into `~1` / `~2`, the end cap `C1` is the plane through the image of the profile (its edges
+/// are the last-row iso-curves of the side faces).
+pub(crate) fn sweep_rows_general(feature: &str, profile: &Profile, phis: &[f64], pt: &dyn Fn(usize, Vec3) -> Vec3) -> Result<Body, String> {
+    let split = split_closed(profile, &|_| false);
+    let profile = &split;
+    let pf = &profile.frame;
+    let last = phis.len() - 1;
+    let angle = phis[last];
+    let world = |p: Vec2| pf.o + pf.x * p.x + pf.y * p.y;
+    // sweep sense: first-row velocity of a profile vertex against the plane normal
+    let h = phis[1] - phis[0];
+    let mut sigma = 0.0;
+    'outer: for reg in &profile.regions {
+        for l in reg.loops() {
+            for sg in &l.segs {
+                let p = world(sg.start());
+                let v = (pt(1, p) - pt(0, p)) * (1.0 / h);
+                if v.dot(pf.z).abs() > 1e-9 {
+                    sigma = v.dot(pf.z);
+                    break 'outer;
+                }
+            }
+        }
+    }
+    if sigma == 0.0 {
+        return Err(PROFILE_NOT_NORMAL.into());
+    }
+    // end cap frame: the image of the profile frame (orthonormalised)
+    let o1 = pt(last, pf.o);
+    let x1 = (pt(last, pf.o + pf.x) - o1).try_normalize().ok_or("degenerate end section")?;
+    let y1 = (pt(last, pf.o + pf.y) - o1).try_normalize().ok_or("degenerate end section")?;
+    let z1 = x1.cross(y1).try_normalize().ok_or("degenerate end section")?;
+    let z1 = if z1.dot(pf.z) >= 0.0 || sigma < 0.0 { z1 } else { -z1 };
+    let c1 = Frame { o: o1, x: x1, y: z1.cross(x1), z: z1 };
+    let mut regions = vec![];
+    let mut caps = vec![];
+    for reg in &profile.regions {
+        let mut lgs = vec![];
+        for pl in reg.loops() {
+            let mut verts = vec![];
+            for s in &pl.segs {
+                let base = world(s.start());
+                let pts: Vec<Vec3> = (0..phis.len()).map(|i| pt(i, base)).collect();
+                let orbit = interpolate_with(&pts, DEG_U, phis, scaled_knots(phis, DEG_U))?;
+                verts.push(VertGeom { bottom: base, top: pt(last, base), rail: Some((Curve::BSpline(orbit), phis[0], angle)) });
+            }
+            let mut segs = vec![];
+            for s in pl.segs.iter() {
+                let base = curve2_to_3d(pf, &s.curve, Vec3::ZERO);
+                let side = generic_side(pt, phis, &base, s.t0, s.t1, angle).transpose()?.map(|mut g| {
+                    let tm = 0.5 * (s.t0 + s.t1);
+                    let t2 = s.travel_tangent(tm);
+                    let outward = (pf.x * t2.x + pf.y * t2.y).cross(pf.z);
+                    g.sense = sense_of(&g.surface, g.pc_bottom.eval(tm), outward);
+                    g
+                });
+                let (top, cap1_pc) = match side.as_ref().map(|g| &g.surface) {
+                    Some(Surface::BSpline(bs)) => {
+                        let iso = bs.iso_u(angle);
+                        let pc = Curve2::BSpline(iso.map(|p| Vec2::new((p - c1.o).dot(c1.x), (p - c1.o).dot(c1.y))));
+                        let (d0, d1) = iso.domain();
+                        ((Curve::BSpline(iso), d0, d1), Some(pc))
+                    }
+                    _ => ((base.clone(), s.t0, s.t1), None),
+                };
+                segs.push(SegGeom { bottom: (base, s.t0, s.t1), top, cap0_pc: Some(s.curve.clone()), cap1_pc, side });
+            }
+            lgs.push(LoopGeom { verts, segs });
+        }
+        regions.push(lgs);
+        caps.push(Caps { c0: *pf, c1 });
+    }
+    Ok(build_sweep_with(feature, profile, regions, Some(&caps), sigma > 0.0, false, true))
 }
 
 #[cfg(test)]

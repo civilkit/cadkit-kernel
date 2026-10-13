@@ -219,3 +219,27 @@ parts.ecPlanar = mkp([splSk('F1'), ec({ planar: true, plane: STDP('top') })]);
 parts.ecCircle = mkp([circSk('F1', STDP('top'), 0, 0, 10), ec({ curves: [cref('F1', 'e1')] })]);
 parts.ecRim = mkp([...box, ec({ id: 'F3', curves: [TOP_E1, TOP_E3].map((e) => ({ kind: 'edge', faces: e.faces, at: e.at })) })]);
 parts.ecRimRing = mkp([...box, ec({ id: 'F3', keepCorners: true, count: 12, curves: [TOP_E1, TOP_E2, TOP_E3, TOP_E4].map((e) => ({ kind: 'edge', faces: e.faces, at: e.at })) })]);
+
+// ---- sweep guides, round two
+const arcG = (id, plane, c, a, b) => ({ type: 'sketch', id, plane, points: [pt('c', ...c), pt('a', ...a), pt('b', ...b)], entities: [{ type: 'arc', id: 'e1', c: 'c', p1: 'a', p2: 'b' }], constraints: [] });
+const sg = (extra, fs) => mkp([swPath, swCirc, ...fs, swFeat(extra)]);
+parts.sweepGuideNotTouch = sg({ guides: [cvRef('e1', 'F4')], guideMode: 'scale' }, [lineSk('F4', FRONT, [4, 0], [6, 20])]);
+parts.sweepGuideShortG = sg({ guides: [cvRef('e1', 'F4')], guideMode: 'scale' }, [lineSk('F4', FRONT, [3, 0], [5, 10])]);
+parts.sweepGuideLong = sg({ guides: [cvRef('e1', 'F4')], guideMode: 'scale' }, [lineSk('F4', FRONT, [3, 0], [6, 30])]);
+parts.sweepGuideArc = sg({ guides: [cvRef('e1', 'F4')], guideMode: 'scale' }, [guideSpl('F4', FRONT, [[3, 0], [5.5, 10], [4, 20]])]);
+parts.sweepGuideShrink = sg({ guides: [cvRef('e1', 'F4')], guideMode: 'scale' }, [lineSk('F4', FRONT, [3, 0], [1.5, 20])]);
+parts.sweepGuideDefault = sg({ guides: [cvRef('e1', 'F4')] }, [lineSk('F4', FRONT, [3, 0], [6, 20])]);
+parts.sweepGuideTurnArc = sg({ guides: [cvRef('e1', 'F4')], guideMode: 'turn' }, [guideSpl('F4', FRONT, [[3, 0], [5.5, 10], [4, 20]])]);
+parts.sweepGuideStretchAsym = sg({ guides: [cvRef('e1', 'F4'), cvRef('e1', 'F6')], guideMode: 'stretch' }, [lineSk('F4', FRONT, [3, 0], [6, 20]), lineSk('F6', FRONT, [-3, 0], [-4, 20])]);
+parts.sweepGuide3 = sg({ guides: [cvRef('e1', 'F4'), cvRef('e1', 'F6'), cvRef('e1', 'F7')], guideMode: 'scale' }, [lineSk('F4', FRONT, [3, 0], [6, 20]), lineSk('F6', FRONT, [-3, 0], [-6, 20]), lineSk('F7', FRONT, [3, 0], [3, 20])]);
+parts.sweepGuideSame = sg({ guides: [cvRef('e1', 'F4'), cvRef('e1', 'F4')], guideMode: 'stretch' }, [lineSk('F4', FRONT, [3, 0], [6, 20])]);
+parts.sweepGuideSq = mkp([swPath, { type: 'sketch', id: 'F3', plane: STDP('top'), points: [pt('p1', -3, -3), pt('p2', 3, -3), pt('p3', 3, 3), pt('p4', -3, 3)], entities: [['e1', 'p1', 'p2'], ['e2', 'p2', 'p3'], ['e3', 'p3', 'p4'], ['e4', 'p4', 'p1']].map(([i, a, b]) => ({ type: 'line', id: i, p1: a, p2: b })), constraints: [] }, lineSk('F4', FRONT, [3, 0], [6, 20]), swFeat({ guides: [cvRef('e1', 'F4')], guideMode: 'scale' })]);
+parts.sweepGuideArcPath = mkp([{ type: 'sketch', id: 'F2', plane: FRONT, points: [pt('c', -10, 0), pt('a', 0, 0), pt('b', -10, 10)], entities: [{ type: 'arc', id: 'e1', c: 'c', p1: 'a', p2: 'b' }], constraints: [] }, swCirc, lineSk('F4', FRONT, [3, 0], [3, 10]), swFeat({ guides: [cvRef('e1', 'F4')], guideMode: 'scale' })]);
+
+parts.sweepGuide2Scale = sg({ guides: [cvRef('e1', 'F4'), cvRef('e1', 'F6')], guideMode: 'scale' }, [lineSk('F4', FRONT, [3, 0], [6, 20]), lineSk('F6', FRONT, [-3, 0], [-5, 20])]);
+parts.sweepGuide2Turn = sg({ guides: [cvRef('e1', 'F4'), cvRef('e1', 'F6')], guideMode: 'turn' }, [lineSk('F4', FRONT, [3, 0], [6, 20]), lineSk('F6', FRONT, [-3, 0], [-5, 20])]);
+parts.sweepGuideInside = sg({ guides: [cvRef('e1', 'F4')], guideMode: 'scale' }, [lineSk('F4', FRONT, [0, 0], [6, 20])]);
+parts.sweepGuideOnPathG = sg({ guides: [cvRef('e1', 'F4')], guideMode: 'scale' }, [lineSk('F4', FRONT, [0, 0], [0, 20])]);
+parts.sweepGuideTilt = sg({ guides: [cvRef('e1', 'F4')], guideMode: 'scale' }, [lineSk('F4', FRONT, [3, 0], [3, -5])]);
+parts.sweepGuideTwistG = sg({ guides: [cvRef('e1', 'F4')], guideMode: 'scale', twist: 90 }, [lineSk('F4', FRONT, [3, 0], [6, 20])]);
+parts.sweepGuideCut = { ...base.box, features: [...box, lineSk('F2b', FRONT, [20, 0], [20, 20]).id ? { ...lineSk('F4', FRONT, [20, 5], [20, -5]) } : null].filter(Boolean) };
