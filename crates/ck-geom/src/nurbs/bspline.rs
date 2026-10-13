@@ -289,6 +289,27 @@ impl<P: Pt> BSplineCurve<P> {
         )
     }
 
+    /// The same curve over its domain with end knots of multiplicity p+1
+    /// (an unclamped / periodic-style knot vector is cut back to its domain).
+    pub fn clamp_ends(&self) -> Self {
+        self.clamp_start().reversed().clamp_start().reversed()
+    }
+
+    fn clamp_start(&self) -> Self {
+        let p = self.degree;
+        let (a, _) = self.domain();
+        if p == 0 || basis::multiplicity(&self.knots, a, 0.0) >= p + 1 {
+            return self.clone();
+        }
+        let d = self.insert_knot(a, p);
+        let first = d.knots.iter().position(|&k| k == a).unwrap();
+        let last = first + basis::multiplicity(&d.knots, a, 0.0) - 1;
+        let h = d.hom();
+        let mut k: Vec<f64> = vec![a; p + 1];
+        k.extend_from_slice(&d.knots[last + 1..]);
+        Self::from_hom_parts(p, k, &h[first - 1..], self.weights.is_some())
+    }
+
     /// Sub-curve on [u0, u1] within the domain.
     pub fn segment(&self, u0: f64, u1: f64) -> Self {
         let (a, b) = self.domain();

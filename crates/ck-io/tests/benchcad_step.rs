@@ -11,7 +11,16 @@ fn gt(name: &str) -> String {
 }
 
 fn check(name: &str, vol: f64, area: f64) {
-    let r = read_step(&gt(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
+    check_file(&gt(name), name, vol, area)
+}
+
+fn check_brepjs(name: &str, vol: f64, area: f64) {
+    let p = format!("{}/../../tools/bench/brepjs/gt/{name}.step", env!("CARGO_MANIFEST_DIR"));
+    check_file(&std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{p}: {e}")), name, vol, area)
+}
+
+fn check_file(text: &str, name: &str, vol: f64, area: f64) {
+    let r = read_step(text).unwrap_or_else(|e| panic!("{name}: {e}"));
     let m = ck_topo::mass::mass_props(&r.body);
     assert!((m.volume - vol).abs() <= 1e-3 * vol, "{name}: volume {} vs {vol}", m.volume);
     assert!((m.area - area).abs() <= 1e-3 * area, "{name}: area {} vs {area}", m.area);
@@ -27,4 +36,13 @@ fn dome_cap_sphere_pole_boundary() {
 #[test]
 fn t_pipe_fitting_cylinder_intersection_edges() {
     check("t_pipe_fitting_000075", 104294.41712280322, 52635.72238704952);
+}
+
+/// OCCT writes FACE_BOUND(.F.) on torus fillet faces whose loop already runs
+/// against its neighbours: SHELL_ORIENTATION and a volume 9-44% low.
+#[test]
+fn torus_fillet_face_bound_orientation() {
+    check("motor_end_cap_000242", 245873.66139676693, 43117.68510201314);
+    check("rect_frame_008694", 43446.94836285351, 28324.399303470338);
+    check_brepjs("rubber-foot", 4200.65768740757, 1830.9416713149517);
 }

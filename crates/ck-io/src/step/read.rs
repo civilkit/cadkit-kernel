@@ -64,6 +64,8 @@ struct FaceSpec {
     surface: Surface,
     sense: bool,
     loops: Vec<Vec<Co>>,
+    /// loop i came from a FACE_BOUND with orientation `.F.` (already applied)
+    flagged: Vec<bool>,
 }
 
 struct Rd<'a> {
@@ -625,6 +627,7 @@ impl<'a> Rd<'a> {
         let surface = self.surface(a.get(2).and_then(Val::as_ref).ok_or_else(|| bad(id, "face without surface"))?)?;
         let sense = a.get(3).and_then(Val::as_bool).unwrap_or(true);
         let mut loops = Vec::new();
+        let mut flagged: Vec<bool> = Vec::new();
         let mut outer = None;
         for (bi, bid) in bounds.iter().enumerate() {
             let ba = self.simple(*bid, &["FACE_BOUND", "FACE_OUTER_BOUND"])?;
@@ -648,13 +651,15 @@ impl<'a> Rd<'a> {
                 outer = Some(bi.min(loops.len()));
             }
             loops.push(l);
+            flagged.push(!orient);
         }
         if let Some(o) = outer {
             if o < loops.len() && o != 0 {
                 loops.swap(0, o);
+                flagged.swap(0, o);
             }
         }
-        Ok(FaceSpec { id, surface, sense, loops })
+        Ok(FaceSpec { id, surface, sense, loops, flagged })
     }
 
     // ------------------------------------------------------------ driver
@@ -719,6 +724,7 @@ impl<'a> Rd<'a> {
             for fid in self.shell_faces(shid)? {
                 specs.push(self.face_spec(fid)?);
             }
+            self.unflip_inconsistent_bounds(&mut specs);
             self.merge_full_periodic(&mut specs);
             queue.extend(specs.into_iter().map(|s| Some((shell, s))));
             shell_ids.push((shell, flipped));
@@ -731,6 +737,52 @@ impl<'a> Rd<'a> {
         }
         self.orient_shells(lump, &shell_ids);
         Ok(())
+    }
+
+    /// Some writers (OpenCASCADE, on faces of reversed-axis tori) give a
+    /// FACE_BOUND the orientation `.F.` although the loop as written already
+    /// runs against its neighbours' edge uses. A flagged loop whose edges all
+    /// run the same way as the faces next to them is put back the way it was
+    /// written, which then makes every shared edge consistent.
+    fn unflip_inconsistent_bounds(&self, specs: &mut [FaceSpec]) {
+        // edge -> uses (face index, loop index, rev)
+        let mut uses: HashMap<EdgeId, Vec<(usize, usize, bool)>> = HashMap::new();
+        for (fi, s) in specs.iter().enumerate() {
+            for (li, l) in s.loops.iter().enumerate() {
+                for c in l {
+                    uses.entry(c.edge).or_default().push((fi, li, c.rev));
+                }
+            }
+        }
+        for fi in 0..specs.len() {
+            for li in 0..specs[fi].loops.len() {
+                if !specs[fi].flagged[li] {
+                    continue;
+                }
+                let (mut same, mut opp) = (0, 0);
+                for c in &specs[fi].loops[li] {
+                    let u = &uses[&c.edge];
+                    // seam / doubly used edges are judged from other faces only
+                    let others: Vec<&(usize, usize, bool)> = u.iter().filter(|x| x.0 != fi).collect();
+                    if others.len() != 1 || u.iter().filter(|x| x.0 == fi).count() != 1 {
+                        continue;
+                    }
+                    if others[0].2 == c.rev {
+                        same += 1;
+                    } else {
+                        opp += 1;
+                    }
+                }
+                if same > 0 && opp == 0 {
+                    let l = &mut specs[fi].loops[li];
+                    l.reverse();
+                    for c in l.iter_mut() {
+                        c.rev = !c.rev;
+                    }
+                    specs[fi].flagged[li] = false;
+                }
+            }
+        }
     }
 
     /// Outer shell outward (positive volume), void shells inward (negative).
@@ -1099,7 +1151,7 @@ impl Rd<'_> {
             }
             let (surface, sense, id) = (specs[i].surface.clone(), specs[i].sense, specs[i].id);
             if let Some(loop_) = self.full_periodic_loop(&surface, sense) {
-                out.push(FaceSpec { id, surface, sense, loops: vec![loop_] });
+                out.push(FaceSpec { id, surface, sense, loops: vec![loop_], flagged: vec![false] });
             }
         }
         let mut k = 0;
@@ -1182,7 +1234,7 @@ impl Rd<'_> {
     }
 
     fn finalize_face(&mut self, shell: ShellId, spec: FaceSpec, name: FaceName, rest: &mut [Option<(ShellId, FaceSpec)>]) -> R<()> {
-        let FaceSpec { id, surface, sense, mut loops } = spec;
+        let FaceSpec { id, surface, sense, mut loops, .. } = spec;
         let (pu, pv) = periods_of(&surface);
         let periodic = pu.is_some() || pv.is_some();
         // pcurves
