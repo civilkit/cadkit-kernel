@@ -191,3 +191,31 @@ parts.loft3EndNormal = { ...base.box, features: [...loft3, { type: 'loft', id: '
 parts.loftConn = { ...base.box, features: [...loftBase, loftF('F5', { connectors: [null, 0.25] })] };
 parts.loftConn0 = { ...base.box, features: [...loftBase, loftF('F5', { connectors: [0, 0.5] })] };
 parts.loftConnNone = { ...base.box, features: [...loftBase, loftF('F5')] };
+
+// ---- editCurve, round two: corners, counts, tolerances, entries, chains
+const polySk = (id, pts) => ({ type: 'sketch', id, plane: STDP('front'), points: pts.map((p, i) => pt('q' + i, ...p)),
+  entities: pts.slice(1).map((_, i) => ({ type: 'line', id: 'l' + (i + 1), p1: 'q' + i, p2: 'q' + (i + 1) })), constraints: [] });
+const cref = (sk, e) => ({ kind: 'sketchCurve', sketch: sk, entity: e });
+parts.ecCorner = mkp([polySk('F1', [[0, 0], [10, 0], [10, 10]]), ec({ curves: [cref('F1', 'l1'), cref('F1', 'l2')] })]);
+parts.ecCornerKeep = mkp([polySk('F1', [[0, 0], [10, 0], [10, 10]]), ec({ curves: [cref('F1', 'l1'), cref('F1', 'l2')], keepCorners: true, count: 8 })]);
+parts.ecCornerKeepFew = mkp([polySk('F1', [[0, 0], [10, 0], [10, 10]]), ec({ curves: [cref('F1', 'l1'), cref('F1', 'l2')], keepCorners: true, count: 4 })]);
+parts.ecNotChain = mkp([polySk('F1', [[0, 0], [10, 0]]), { ...polySk('F3', [[0, 5], [10, 7]]) }, ec({ curves: [cref('F1', 'l1'), cref('F3', 'l1')] })]);
+parts.ecChainSmooth = mkp([polySk('F1', [[0, 0], [10, 0], [20, 0]]), ec({ curves: [cref('F1', 'l1'), cref('F1', 'l2')] })]);
+parts.ecFew = mkp([splSk('F1'), ec({ count: 3 })]);
+parts.ecFew4 = mkp([splSk('F1'), ec({ count: 4 })]);
+parts.ecMany = mkp([splSk('F1'), ec({ count: 500 })]);
+parts.ecDeg2 = mkp([splSk('F1'), ec({ degree: 2, count: 8 })]);
+parts.ecTolTight = mkp([splSk('F1'), ec({ method: 'tolerance', tolerance: 1e-9 })]);
+parts.ecWeight0 = mkp([splSk('F1'), ec({ entries: [{ cv: 2, of: 6, frame: 'world', dx: 0, dy: 1, dz: 0, weight: 0 }] })]);
+parts.ecWeight2 = mkp([splSk('F1'), ec({ entries: [{ cv: 2, of: 6, frame: 'world', dx: 0, dy: 1, dz: 0, weight: 3 }] })]);
+parts.ecEntryBad = mkp([splSk('F1'), ec({ entries: [{ cv: 2, of: 6, frame: 'world', dx: 'abc', dy: 1, dz: 0 }] })]);
+parts.ecEntryCurveFrame = mkp([splSk('F1'), ec({ entries: [{ cv: 2, of: 6, frame: 'curve', dx: 0, dy: 2, dz: 0 }] })]);
+parts.ecRemap = mkp([splSk('F1'), ec({ entries: [{ cv: 2, of: 4, frame: 'world', dx: 0, dy: 1, dz: 0 }] })]);
+parts.ecDisabled = mkp([splSk('F1'), ec({ entries: [{ cv: 2, of: 6, frame: 'world', dx: 0, dy: 1, dz: 0, disabled: true }] })]);
+parts.ecTwoEntries = mkp([splSk('F1'), ec({ entries: [{ cv: 2, of: 6, frame: 'world', dx: 0, dy: 1, dz: 0 }, { cv: 2, of: 6, frame: 'world', dx: 1, dy: 0, dz: 0 }] })]);
+parts.ecKeepTang = mkp([splSk('F1'), ec({ keepTangents: true })]);
+parts.ecNoKeepEnds = mkp([splSk('F1'), ec({ keepEnds: false })]);
+parts.ecPlanar = mkp([splSk('F1'), ec({ planar: true, plane: STDP('top') })]);
+parts.ecCircle = mkp([circSk('F1', STDP('top'), 0, 0, 10), ec({ curves: [cref('F1', 'e1')] })]);
+parts.ecRim = mkp([...box, ec({ id: 'F3', curves: [TOP_E1, TOP_E3].map((e) => ({ kind: 'edge', faces: e.faces, at: e.at })) })]);
+parts.ecRimRing = mkp([...box, ec({ id: 'F3', keepCorners: true, count: 12, curves: [TOP_E1, TOP_E2, TOP_E3, TOP_E4].map((e) => ({ kind: 'edge', faces: e.faces, at: e.at })) })]);
