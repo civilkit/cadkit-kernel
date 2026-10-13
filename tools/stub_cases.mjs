@@ -138,3 +138,17 @@ parts.pipeCutCyl = { ...base.box, features: [circSk('F1', STDP('top'), 0, 0, 10)
 parts.pipeCutCylTight = { ...base.box, features: [circSk('F1', STDP('top'), 0, 0, 10), ex('F2', 'F1'), pc({ id: 'F3', radius: 11, edges: [{ faces: ['F2.C1', 'F2.S.e1'], at: [10, 10, 0] }] })] };
 parts.pipeCutCylBot = { ...base.box, features: [circSk('F1', STDP('top'), 0, 0, 10), ex('F2', 'F1'), pc({ id: 'F3', radius: 3, edges: [{ faces: ['F2.C0', 'F2.S.e1'], at: [10, 0, 0] }] })] };
 parts.pipeCut12 = { ...base.box, features: [...box, pc({ id: 'F3', radius: 12, edges: [TOP_E1] })] };
+
+// more simplify probes: stacked cones, a hole refilled by a plug
+const frontSk = (id, pts, ents) => ({ type: 'sketch', id, plane: STDP('front'), points: pts, entities: ents, constraints: [] });
+const ln = (id, a, b, o = {}) => ({ type: 'line', id, p1: a, p2: b, ...o });
+const revF = (id, sk) => ({ type: 'revolve', id, op: 'add', sketch: sk, axis: 'ax', angle: 360 });
+const coneSk = (id, r0, y0, r1, y1) => frontSk(id, [pt('a', 0, y0), pt('b', r0, y0), pt('c', r1, y1), pt('d', 0, y1), pt('x1', 0, 0), pt('x2', 0, 30)],
+  [ln('e1', 'a', 'b'), ln('e2', 'b', 'c'), ln('e3', 'c', 'd'), ln('e4', 'd', 'a'), ln('ax', 'x1', 'x2', { construction: true })]);
+parts.simpConeStack = { ...base.box, features: [coneSk('F1', 10, 0, 6, 10), revF('F2', 'F1'), coneSk('F3', 6, 10, 2, 20), revF('F4', 'F3')] };
+parts.simpCylPlug = { ...base.box, features: [circSk('F1', STDP('top'), 0, 0, 10), ex('F2', 'F1'),
+  circSk('F3', STDP('top'), 0, 0, 3), ex('F4', 'F3', { op: 'cut', end: 'throughBoth' }),
+  circSk('F5', STDP('top'), 0, 0, 3), ex('F6', 'F5')] };
+parts.simpCylSideBoss = { ...base.box, features: [circSk('F1', STDP('top'), 0, 0, 10), ex('F2', 'F1'),
+  circSk('F3', { kind: 'face', id: 'F2.C1' }, 0, 0, 10), ex('F4', 'F3', { depth: 5 }),
+  circSk('F5', { kind: 'face', id: 'F4.C1' }, 0, 0, 10), ex('F6', 'F5', { depth: 5 })] };

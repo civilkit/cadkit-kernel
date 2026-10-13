@@ -494,6 +494,25 @@ parts.mirrorBodyCone = part([...parts.cone.features, { type: 'plane', id: 'F8', 
   parts.pipeCutSheet = part([...lSheet, pc({ edges: [E('F2.S.e1', 'F2.S.e2', [20, 0, 5])] })]);
 }
 
+// simplify stage of the boolean: coplanar / cocylindrical / cocone faces left by an edit are
+// merged (docs/ck-ops-stubs.md). simpCylStack used to return volume 2094 (the merged
+// cylinder lost its seam) with no error.
+{
+  const circSk = (id, plane, cx, cy, r) => ({ type: 'sketch', id, plane, points: [pt('c', cx, cy)], entities: [{ type: 'circle', id: 'e1', c: 'c', r }], constraints: [] });
+  const ex = (id, sk, o = {}) => ({ type: 'extrude', id, op: 'add', sketch: sk, end: 'blind', depth: 10, ...o });
+  const FACE = (id) => ({ kind: 'face', id });
+  parts.simpCylStack = part([circSk('F1', STD('top'), 5, 3, 10), ex('F2', 'F1'), circSk('F3', FACE('F2.C1'), 5, 3, 10), ex('F4', 'F3')]);
+  parts.simpCylStackCut = part([circSk('F1', STD('top'), 5, 3, 10), ex('F2', 'F1', { depth: 20 }), circSk('F3', FACE('F2.C1'), 5, 3, 10), ex('F4', 'F3', { op: 'cut' })]);
+  parts.simpCylPlug = part([circSk('F1', STD('top'), 0, 0, 10), ex('F2', 'F1'), circSk('F3', STD('top'), 0, 0, 3), ex('F4', 'F3', { op: 'cut', end: 'throughBoth' }),
+    circSk('F5', STD('top'), 0, 0, 3), ex('F6', 'F5')]);
+  parts.simpCylTriple = part([circSk('F1', STD('top'), 0, 0, 10), ex('F2', 'F1'), circSk('F3', FACE('F2.C1'), 0, 0, 10), ex('F4', 'F3', { depth: 5 }),
+    circSk('F5', FACE('F4.C1'), 0, 0, 10), ex('F6', 'F5', { depth: 5 })]);
+  const coneSk = (id, r0, y0, r1, y1) => ({ type: 'sketch', id, plane: STD('front'), points: [pt('a', 0, y0), pt('b', r0, y0), pt('c', r1, y1), pt('d', 0, y1), pt('x1', 0, 0), pt('x2', 0, 30)],
+    entities: [line('e1', 'a', 'b'), line('e2', 'b', 'c'), line('e3', 'c', 'd'), line('e4', 'd', 'a'), line('ax', 'x1', 'x2', { construction: true })], constraints: [] });
+  const rev = (id, sk) => ({ type: 'revolve', id, op: 'add', sketch: sk, axis: 'ax', angle: 360 });
+  parts.simpConeStack = part([coneSk('F1', 10, 0, 6, 10), rev('F2', 'F1'), coneSk('F3', 6, 10, 2, 20), rev('F4', 'F3')]);
+}
+
 const m = (msg) => JSON.stringify({ id: 1, msg });
 /// Follow-up requests on each part's state (compared byte-for-byte).
 // nested parts of the flange coupling assembly's insertParts (tools/cases/*.ckpart);
