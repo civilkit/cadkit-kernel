@@ -329,3 +329,12 @@ add('ffSymOK', [{ type: 'plane', id: 'F7', mode: 'offset', base: STDP('right'), 
 add('ffSymOK2', [{ type: 'plane', id: 'F7', mode: 'offset', base: STDP('right'), offset: 20 }, ffe([[2, 1]], { dy: 2, symmetric: { kind: 'feature', id: 'F7' } })]);
 add('ffPlaneFrame', [{ type: 'plane', id: 'F7', mode: 'offset', base: STDP('right'), offset: 20 }, ffe([[2, 2]], { frame: 'plane', plane: { kind: 'feature', id: 'F7' }, dx: 0, dy: 0, dz: 2 })]);
 add('ffPlaneMissing', [ffe([[2, 2]], { frame: 'plane', plane: { kind: 'feature', id: 'F99' }, dz: 2 })]);
+
+// full round: side1 / center / side2
+add('frTwoFillets', [fl({ radius: 10, edges: [TOP_E1, TOP_E3] })]);
+add('frFull', [fl({ filletType: 'fullRound', edges: [], side1: 'F2.S.e1', center: 'F2.C1', side2: 'F2.S.e3' })]);
+add('frFullTall', [{ ...base.box.features[0] }, { ...base.box.features[1], depth: 30 }, fl({ filletType: 'fullRound', edges: [], side1: 'F2.S.e1', center: 'F2.C1', side2: 'F2.S.e3' })].slice(2));
+add('frMissing', [fl({ filletType: 'fullRound', edges: [], side1: 'F2.S.e1', center: 'F2.C1' })]);
+add('frSame', [fl({ filletType: 'fullRound', edges: [], side1: 'F2.S.e1', center: 'F2.C1', side2: 'F2.S.e1' })]);
+add('frNotAdjacent', [fl({ filletType: 'fullRound', edges: [], side1: 'F2.S.e1', center: 'F2.S.e3', side2: 'F2.C1' })]);
+add('frSides24', [fl({ filletType: 'fullRound', edges: [], side1: 'F2.S.e2', center: 'F2.C1', side2: 'F2.S.e4' })]);

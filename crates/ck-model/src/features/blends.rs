@@ -30,6 +30,100 @@ pub fn blend_error(e: ck_ops::blend::BlendError) -> FeatureError {
     fe
 }
 
+/// `filletType: "fullRound"` (`side1`, `center`, `side2` faces): the ball tangent to all three planar
+/// faces rolls between the sides and the center face vanishes. Built as the two circular fillets of the
+/// edges `side1 | center` and `side2 | center` whose radius is the ball's. Oracle (box probes):
+/// 5 faces / 9 edges, volume 6283.18531 for sides 20 apart on a 10 high box (= two r = 10 fillets,
+/// ours merges the two cylinder halves into one face: 4 / 8); a missing face is `missingReference`; the
+/// same face twice, or a center face not adjacent to both sides: `fullRoundUnsupported`; a ball that does
+/// not fit: `blendFailed {detail: "<id>.B0: spring ends out of order"}`.
+fn exec_full_round(br: &mut Brep, f: &Feature) -> Result<(), FeatureError> {
+    use ck_geom::surface::Surface;
+    let miss = || FeatureError::new("missingReference");
+    let unsup = || FeatureError::new("fullRoundUnsupported");
+    let name = |k: &str| f.raw.get(k).and_then(|v| v.as_str()).map(str::to_string).ok_or_else(miss);
+    let (s1, c, s2) = (name("side1")?, name("center")?, name("side2")?);
+    let body = br.body.as_ref().ok_or_else(miss)?;
+    let fid = |n: &str| body.find_face(n).ok_or_else(miss);
+    let (f1, fc, f2) = (fid(&s1)?, fid(&c)?, fid(&s2)?);
+    if f1 == f2 || f1 == fc || f2 == fc {
+        return Err(unsup());
+    }
+    for x in [f1, fc, f2] {
+        if !matches!(body.face(x).surface, Surface::Plane { .. }) {
+            return Err(unsup());
+        }
+    }
+    // the two edges the ball rolls over
+    let shared = |a: ck_topo::body::FaceId| -> Result<ck_topo::body::EdgeId, FeatureError> {
+        body.edge_ids().find(|&e| matches!(body.edge(e).curve, ck_geom::curve::Curve::Line { .. }) && {
+            let fs = body.edge_faces(e);
+            fs.len() == 2 && fs.contains(&a) && fs.contains(&fc)
+        }).ok_or_else(unsup)
+    };
+    let (e1, e2) = (shared(f1)?, shared(f2)?);
+    // radius: the ball centre c has distance R inside all three planes: (c - o_i) . n_i = -R
+    let dir = {
+        let ed = body.edge(e1);
+        (body.vertex(ed.v1).p - body.vertex(ed.v0).p).normalize()
+    };
+    let plane_of = |x: ck_topo::body::FaceId| -> (Vec3, Vec3) {
+        let Surface::Plane { frame } = &body.face(x).surface else { unreachable!() };
+        (frame.o, body.planar_normal(x))
+    };
+    let rows: Vec<[f64; 4]> = [f1, fc, f2]
+        .iter()
+        .map(|&x| {
+            let (o, n) = plane_of(x);
+            [n.x, n.y, n.z, n.dot(o)]
+        })
+        .collect();
+    // unknowns: centre c (3, the component along the edge is free: fix it at 0) and R:
+    //   n_i . c + R = n_i . o_i   (i = 1..3); the edge direction gets a fourth equation d . c = 0
+    let mut a = [[0.0f64; 5]; 4];
+    for (i, r) in rows.iter().enumerate() {
+        a[i] = [r[0], r[1], r[2], 1.0, r[3]];
+    }
+    a[3] = [dir.x, dir.y, dir.z, 0.0, 0.0];
+    for col in 0..4 {
+        let piv = (col..4).max_by(|&x, &y| a[x][col].abs().partial_cmp(&a[y][col].abs()).unwrap()).unwrap();
+        if a[piv][col].abs() < 1e-12 {
+            return Err(unsup());
+        }
+        a.swap(col, piv);
+        for r in col + 1..4 {
+            let k = a[r][col] / a[col][col];
+            for cc in col..5 {
+                a[r][cc] -= k * a[col][cc];
+            }
+        }
+    }
+    let mut x = [0.0f64; 4];
+    for r in (0..4).rev() {
+        let mut v = a[r][4];
+        for cc in r + 1..4 {
+            v -= a[r][cc] * x[cc];
+        }
+        x[r] = v / a[r][r];
+    }
+    let rad = x[3];
+    if !(rad > 1e-9) || !rad.is_finite() {
+        return Err(unsup());
+    }
+    let mid = |e: ck_topo::body::EdgeId| (body.vertex(body.edge(e).v0).p + body.vertex(body.edge(e).v1).p) * 0.5;
+    let sel = vec![(s1.clone(), c.clone(), mid(e1)), (s2.clone(), c.clone(), mid(e2))];
+    br.spans.push(Span::leaf(fillet_label(&f.id, rad, 2)));
+    let out = ck_ops::blend::build::fillet(body, &sel, rad, &f.id, super::TOL).map_err(|e| {
+        if e.code == "blendOverflow" {
+            FeatureError::new("blendFailed").with("detail", Json::Str(format!("{}.B0: spring ends out of order", f.id)))
+        } else {
+            blend_error(e)
+        }
+    })?;
+    br.body = Some(out);
+    Ok(())
+}
+
 /// `filletType: "variable"`: `radii: [near, far]` (the first at the end of each picked edge nearer its
 /// pick point; for `chord` the widths), `profile` as for constant fillets, `rhos: [a, b]` for conic.
 /// Oracle: radii missing / not two positive numbers -> `invalidValue`; `blendTooLarge` when a contact
@@ -198,6 +292,9 @@ pub fn exec_fillet(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
     if let Some(t) = f.raw.get("filletType").and_then(|v| v.as_str()) {
         if t == "variable" {
             return exec_variable_fillet(br, state, f, edges);
+        }
+        if t == "fullRound" {
+            return exec_full_round(br, f);
         }
         return Err(FeatureError::new("unsupported").with("what", Json::Str(format!("fillet {t}"))));
     }
