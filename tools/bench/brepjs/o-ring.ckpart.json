@@ -1,0 +1,56 @@
+{
+ "format": "ck-part",
+ "version": 1,
+ "name": "o-ring",
+ "features": [
+  {
+   "type": "sketch",
+   "id": "F1",
+   "plane": {
+    "kind": "std",
+    "id": "front"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 10.75,
+     "y": 0
+    },
+    {
+     "id": "p2",
+     "x": 0,
+     "y": 0
+    },
+    {
+     "id": "p3",
+     "x": 0,
+     "y": 10
+    }
+   ],
+   "entities": [
+    {
+     "type": "circle",
+     "id": "e1",
+     "c": "p1",
+     "r": 1.5
+    },
+    {
+     "type": "line",
+     "id": "e2",
+     "p1": "p2",
+     "p2": "p3",
+     "construction": true
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "revolve",
+   "id": "F2",
+   "op": "add",
+   "sketch": "F1",
+   "axis": "e2",
+   "angle": 360
+  }
+ ]
+}

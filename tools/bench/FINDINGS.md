@@ -49,3 +49,132 @@ Also: t_pipe_fitting regenerates but its ground-truth STEP fails `validate`
 - Item 6 is a feature-semantics bug that also affects interactive use.
 - Re-rank after each fix; add the next batch of parts only when this list
   is short.
+
+---
+
+## Batch 3 (a-m)
+
+10 more BenchCAD parts from families a to m (`"batch": "3a"` in the manifest): bucket, ball_knob, clevis, hinge,
+j_hook, gridfinity_bin, cam, motor_end_cap, cable_routing_panel, helical_gear. Authoring script `gen3.mjs`
+(+ `gen3_data.json` outline coordinates, `gen3_blends.json` probed edge refs); `probe_all.sh` probes them,
+`mcp_check.mjs` rebuilds them through the MCP server (open, one `edit` batch, `check` volume/bbox/valid).
+Run: `node tools/bench/run.mjs` gives 37/40 regen, 36/40 step import.
+
+The `code_gen` config carries the CadQuery program and images only (no STEP, no metrics), so the reference
+volume / area / centre of mass / bbox / STEP were produced by running the dataset program in CadQuery 2.8.0
+(OCCT 7.9). Nothing here was derived from our own importer.
+
+| part | tier | regen | step import | cause |
+|---|---|---|---|---|
+| bucket_003137 | easy | pass | pass | |
+| ball_knob_007575 | medium | pass | FAIL | kernel-bug: imported full sphere face has zero signed volume |
+| clevis_014687 | hard | pass | pass | |
+| hinge_000079 | medium | pass | pass | |
+| j_hook_001383 | hard | FAIL | FAIL | kernel-bug: silent wrong union (coincident circle rim on a cylinder); step: box misses the torus |
+| gridfinity_bin_000166 | medium | pass | pass | |
+| cam_012392 | hard | pass | pass | |
+| motor_end_cap_000242 | hard | pass | FAIL | kernel-bug (step only): SHELL_ORIENTATION at the outer rim fillet |
+| cable_routing_panel_004961 | hard | FAIL | pass | kernel-bug: fillet after chamfer, `blendFailed` at one of four symmetric corners |
+| helical_gear_015542 | hard | pass | pass | |
+
+Translation mistake found and fixed on the way (not a failure): j_hook's base boss. The dataset's polyline
+drops the `moveTo` start vertex, so the boss is a pentagon, not a hexagon; with the hexagon the volume was
+319 mm3 high (also in the nudged-radius control run), with the pentagon it matches CadQuery.
+
+### Ranked gaps from batch 3
+
+B3-1. Silent wrong union (j_hook, worst kind: no error, validate clean). A cylinder (r 6) unioned with a
+revolved 180 degree handle of the same radius whose start-cap rim lies exactly on the cylinder surface gives
+14938.2 mm3 where CadQuery gives 22782.6 (the handle outside the rod is mostly dropped). The same union with
+the handle radius 5.99 or the rod 6.01 is right (22746.7 / 22822.6), and the whole part with the 5.99
+handle matches CadQuery run on the same input (32266.86 vs 32266.87), so the translation is right. The next
+feature (a plate union) then fails `booleanFailed` on the bad body. Cause not yet located in the Rust:
+coincident circle between a planar cap and a coaxial cylinder side (curve-on-surface contact).
+
+B3-2. Fillet ending on chamfer faces (cable_routing_panel): the four `|Z` corner fillets (r 0.83) after a
+0.95 top-rim chamfer. `blendFailed` for one of the four symmetric edges alone (S.e1|S.e2), the other three
+work, and success is erratic in the parameters (fillet radius ok at 0.3 and 0.95, fails at 0.7 to 0.9, 1.0,
+1.2; chamfer distance fails at 0.95 and 1.5, ok at 0.5 to 1.0). Looks like a numerically marginal corner
+patch where the vertical fillet meets the mitred chamfer corner. Chamfering after the fillet instead also
+fails (tangent rim chain), so there is no order that works.
+
+B3-3. STEP import of primitives from OCCT (items 9 family): a full sphere face (ball_knob: lump volume 0,
+`VOLUME_NONPOSITIVE`; same as dome_cap's pole case); a body with an outer-rim fillet torus (motor_end_cap:
+`SHELL_ORIENTATION` on cylinder|torus and torus|plane edges, volume 8.7% low); a partial torus (j_hook
+handle, volume and area right but the mesh-derived box ignores it). All three regen exactly from our own
+translations; only reading the reference STEP is wrong.
+
+Passing but notable: ball_knob (stem touches the sphere at one point: two lumps) and hinge (knuckles tangent
+to the leaf along a line: three lumps) reproduce CadQuery's multi-solid results exactly; clevis, whose cross
+hole sits beyond the block edge, reproduces the dataset's sliver cut exactly; helical_gear (twisted loft
+of two 252-vertex outlines) matches in volume to 1e-12.
+
+---
+
+## brepjs mechanical
+
+25 of the 41 examples in the brepjs playground category "mechanical" (https://brepjs.dev/playground/examples; source
+`apps/playground/src/lib/examples/mechanical.ts` in https://github.com/andymai/brepjs, Apache-2.0), translated by hand into
+our feature tree (`gen4.mjs` + `lib4.mjs`, parts and `manifest.json` in `tools/bench/brepjs/`). The playground shows no
+difficulty; the tier in the manifest is a proxy by example source length. Reference figures (volume, area, bbox, centre
+of mass, STEP) come from running the unmodified examples with brepjs 20.5.0 + occt-wasm 5.6.0 (`tools/bench/brepjs_ref/`);
+all 41 examples ran. The 16 not translated are mostly many-solid assemblies (gears, vise, chuck, truss, enclosures).
+Run: `node tools/bench/run.mjs --set brepjs` gives 18/25 regen, 22/25 step import;
+`node tools/bench/mcp_check.mjs --set brepjs` builds each part through the MCP server (edit batch, then `check`
+volume / area / bbox / centre of mass / valid at 1e-3): 19 parts pass (rubber-foot too: its MCP bbox is exact), 5 are rejected
+by `edit` (pipe-saddle, conduit-snap-clip, conical-pour-funnel, knuckle-hinge, modular-hose-segment), dovetail-joint fails
+volume and area by 0.18%.
+
+Translation notes. Cut extrudes run against the plane normal by default (a cut needs `flip` to go with it); the example
+cutters that touch the body in a single corner point only (l-angle bracket heel, v-groove rail lead-ins) are no-ops in brepjs
+too and are not translated; ruled lofts become one two-section loft per stretch; rounded boxes are rounded-rectangle
+sketches. No translation mistake is left open.
+
+| part | regen | step import | cause |
+|---|---|---|---|
+| o-ring, fluted-knob, flanged-tee, gridfinity-bin, fan-guard, gt2-pulley, nema-stepper, linear-bearing-block, tripod-rc2-plate, l-angle-gusset-bracket, hobby-rc-servo, button-top-battery-cell, axial-fan, finger-tab-split-joint, v-groove-slider-rail, vented-louvre-case, wall-mount-flanged-junction-box | pass | pass | |
+| rotary-potentiometer | pass | FAIL | kernel-gap: STEP import of HYPERBOLA curves |
+| rubber-foot | FAIL | FAIL | regen: kernel-bug, mesh-derived bbox 0.044 mm short (volume, area, com exact; MCP bbox passes); step: SHELL_ORIENTATION on the fillet torus |
+| pipe-saddle-p-clamp | FAIL | pass | kernel-gap: fillet of a plane/cylinder line edge |
+| conduit-snap-clip | FAIL | FAIL | kernel-gap (same fillet) + kernel-bug (countersink cone coincident with the hole); step: HYPERBOLA |
+| conical-pour-funnel | FAIL | pass | kernel-bug: cut with a cylinder whose wall contains the earlier cone cut's base circle |
+| knuckle-hinge | FAIL | pass | kernel-bug (4 countersinks, same coincident circle) + reference-mismatch (the example's two leaves overlap: sum 5146.71, union 4990.04) |
+| dovetail-joint | FAIL | pass | kernel-gap: no body-level intersect; male half exact (12415.619), female taper missing, 0.18% volume |
+| modular-hose-segment | FAIL | pass | kernel-bug: boolean fails when a sphere pole lies inside the other solid |
+
+### Ranked gaps from the brepjs batch
+
+BJ-1. Coincident circle on a cylinder wall (6 features in 3 parts: conduit-snap-clip, knuckle-hinge, conical-pour-funnel;
+same family as B3-1). A countersink cone cut (revolve) whose base circle has exactly the radius of the drilled hole is
+`booleanFailed`; base radius +-0.01 off (2.29 / 2.31 for a 2.3 hole) works. Funnel: a bore cylinder cut after a cone cut
+that starts on a circle of the bore's radius fails the same way. This is the common countersunk-hole shape.
+
+BJ-2. Boolean with a sphere pole inside the other solid (modular-hose-segment, cascades to 7 errors). Union of the
+revolved truncated sphere with a cylinder whose cap or side encloses the pole is `booleanFailed`, also for a full-sphere
+cut from a cylinder whose body holds a pole, and off-axis (cylinder at x = 0.5); a cylinder ending below the pole (z = 8.0
+of a pole at 8.33) works.
+
+BJ-3. Fillet of a straight edge between a plane and a cylinder whose axis is parallel to the plane (pipe-saddle-p-clamp
+concave foot/tube edge, conduit-snap-clip lip). `blendUnsupported` at r 2, 0.5 and 0.05; chamfer of the same edge works.
+
+BJ-4. STEP import: HYPERBOLA curve (rotary-potentiometer, conduit-snap-clip); torus fillet rim from OCCT gives
+SHELL_ORIENTATION and 44% low volume (rubber-foot; same as B3-3).
+
+BJ-5. No body-level boolean between two tools (dovetail-joint female cavity = prism minus two rotated slabs). Not
+expressible with add/cut features; only `upToNext` intersects, and only against the existing body.
+
+BJ-6. Several separate overlapping solids in one document (knuckle-hinge) cannot be represented: features union into one
+body. Not fixable by translation; the figures of that part cannot be matched exactly.
+
+BJ-7. `body.box` is mesh-derived and short on curved rims (rubber-foot 0.044 mm), while the MCP `check` bbox matches.
+Same quantity, two answers.
+
+### MCP tool problems seen
+
+- `edit` with a failing feature rejects the whole batch and leaves the document empty (atomic by design); the reply lists
+  only the code. For `blendUnsupported` the hint is "see the features field table", which names neither the edge
+  nor the face types; it should say which surface pair is unsupported and suggest a chamfer or another order.
+- The `booleanFailed` hint ("check the tool and target overlap in a volume, not just a face") is wrong for BJ-1 and BJ-2:
+  the tool does overlap in a volume there. It should mention tangent/coincident circles and sphere poles as suspects.
+- The `check` bbox and `read`/`run.mjs` body box disagree on curved parts (BJ-7); `check` should say which one it uses.
+- `mcp_check.mjs` used an absolute `tol: 0.001` on volume (kept for the BenchCAD mode, relative tolerance used for `--set brepjs`).

@@ -1,0 +1,360 @@
+{
+ "format": "ck-part",
+ "version": 1,
+ "name": "clevis",
+ "features": [
+  {
+   "type": "sketch",
+   "id": "F1",
+   "plane": {
+    "kind": "std",
+    "id": "front"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": -16.96,
+     "y": -17.725
+    },
+    {
+     "id": "p2",
+     "x": 16.96,
+     "y": -17.725
+    },
+    {
+     "id": "p3",
+     "x": 16.96,
+     "y": 17.725
+    },
+    {
+     "id": "p4",
+     "x": -16.96,
+     "y": 17.725
+    }
+   ],
+   "entities": [
+    {
+     "type": "line",
+     "id": "e1",
+     "p1": "p1",
+     "p2": "p2"
+    },
+    {
+     "type": "line",
+     "id": "e2",
+     "p1": "p2",
+     "p2": "p3"
+    },
+    {
+     "type": "line",
+     "id": "e3",
+     "p1": "p3",
+     "p2": "p4"
+    },
+    {
+     "type": "line",
+     "id": "e4",
+     "p1": "p4",
+     "p2": "p1"
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F2",
+   "op": "add",
+   "sketch": "F1",
+   "end": "mid",
+   "depth": 66.75
+  },
+  {
+   "type": "plane",
+   "id": "F3",
+   "mode": "offset",
+   "base": {
+    "kind": "std",
+    "id": "front"
+   },
+   "offset": -33.375
+  },
+  {
+   "type": "sketch",
+   "id": "F4",
+   "plane": {
+    "kind": "feature",
+    "id": "F3"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": -6.02,
+     "y": -18.225
+    },
+    {
+     "id": "p2",
+     "x": 6.02,
+     "y": -18.225
+    },
+    {
+     "id": "p3",
+     "x": 6.02,
+     "y": 18.225
+    },
+    {
+     "id": "p4",
+     "x": -6.02,
+     "y": 18.225
+    }
+   ],
+   "entities": [
+    {
+     "type": "line",
+     "id": "e1",
+     "p1": "p1",
+     "p2": "p2"
+    },
+    {
+     "type": "line",
+     "id": "e2",
+     "p1": "p2",
+     "p2": "p3"
+    },
+    {
+     "type": "line",
+     "id": "e3",
+     "p1": "p3",
+     "p2": "p4"
+    },
+    {
+     "type": "line",
+     "id": "e4",
+     "p1": "p4",
+     "p2": "p1"
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F5",
+   "op": "cut",
+   "sketch": "F4",
+   "end": "blind",
+   "depth": 49.02,
+   "flip": true
+  },
+  {
+   "type": "chamfer",
+   "id": "F6",
+   "chamferType": "equal",
+   "distance": 1.31,
+   "edges": [
+    {
+     "faces": [
+      "F2.C0~1",
+      "F2.S.e4"
+     ],
+     "at": [
+      -16.96,
+      0,
+      -33.375
+     ]
+    },
+    {
+     "faces": [
+      "F2.C0~1",
+      "F2.S.e3"
+     ],
+     "at": [
+      -11.49,
+      17.725,
+      -33.375
+     ]
+    },
+    {
+     "faces": [
+      "F2.C0~1",
+      "F2.S.e1"
+     ],
+     "at": [
+      -11.49,
+      -17.725,
+      -33.375
+     ]
+    },
+    {
+     "faces": [
+      "F2.C0~1",
+      "F5.S.e4"
+     ],
+     "at": [
+      -6.02,
+      0,
+      -33.375
+     ]
+    },
+    {
+     "faces": [
+      "F2.C0~2",
+      "F2.S.e2"
+     ],
+     "at": [
+      16.96,
+      0,
+      -33.375
+     ]
+    },
+    {
+     "faces": [
+      "F2.C0~2",
+      "F2.S.e3"
+     ],
+     "at": [
+      11.49,
+      17.725,
+      -33.375
+     ]
+    },
+    {
+     "faces": [
+      "F2.C0~2",
+      "F2.S.e1"
+     ],
+     "at": [
+      11.49,
+      -17.725,
+      -33.375
+     ]
+    },
+    {
+     "faces": [
+      "F2.C0~2",
+      "F5.S.e2"
+     ],
+     "at": [
+      6.02,
+      0,
+      -33.375
+     ]
+    }
+   ]
+  },
+  {
+   "type": "sketch",
+   "id": "F7",
+   "plane": {
+    "kind": "std",
+    "id": "right"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 0,
+     "y": 22.435
+    }
+   ],
+   "entities": [
+    {
+     "type": "circle",
+     "id": "e1",
+     "c": "p1",
+     "r": 5.47
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F8",
+   "op": "cut",
+   "sketch": "F7",
+   "end": "throughBoth",
+   "depth": 10
+  },
+  {
+   "type": "plane",
+   "id": "F9",
+   "mode": "offset",
+   "base": {
+    "kind": "std",
+    "id": "front"
+   },
+   "offset": -49.79
+  },
+  {
+   "type": "sketch",
+   "id": "F10",
+   "plane": {
+    "kind": "feature",
+    "id": "F9"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 0,
+     "y": 0
+    }
+   ],
+   "entities": [
+    {
+     "type": "circle",
+     "id": "e1",
+     "c": "p1",
+     "r": 9.85
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F11",
+   "op": "add",
+   "sketch": "F10",
+   "end": "mid",
+   "depth": 32.83
+  },
+  {
+   "type": "plane",
+   "id": "F12",
+   "mode": "offset",
+   "base": {
+    "kind": "std",
+    "id": "front"
+   },
+   "offset": -50.79
+  },
+  {
+   "type": "sketch",
+   "id": "F13",
+   "plane": {
+    "kind": "feature",
+    "id": "F12"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 0,
+     "y": 0
+    }
+   ],
+   "entities": [
+    {
+     "type": "circle",
+     "id": "e1",
+     "c": "p1",
+     "r": 4.65
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F14",
+   "op": "cut",
+   "sketch": "F13",
+   "end": "mid",
+   "depth": 34.83
+  }
+ ]
+}

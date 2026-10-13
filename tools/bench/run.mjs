@@ -3,7 +3,7 @@
 // (tools/bench/benchcad/manifest.json), run `validate`, and, when the ground
 // truth STEP exists, run it through `importStep` and compare that too.
 //
-// usage: node tools/bench/run.mjs [--wasm path] [--only id] [-v]
+// usage: node tools/bench/run.mjs [--set benchcad|brepjs] [--wasm path] [--only id] [-v]
 //   exit code 0 always; the gate reads runBench() (metric bench.benchcad).
 //
 // Frame: the dataset is Z-up, we are Y-up; ground truth is rotated
@@ -21,7 +21,6 @@ import { fileURLToPath } from 'node:url';
 import { Kernel } from '../kernel.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const dir = path.join(here, 'benchcad');
 const TOL = 1e-3;
 
 const rot = (v) => [v[0], v[2], -v[1]];
@@ -39,7 +38,8 @@ function compare(got, want, diag, volTol = TOL) {
   return bad;
 }
 
-export function runBench({ wasm, only = null, log = () => {} } = {}) {
+export function runBench({ wasm, only = null, set = 'benchcad', log = () => {} } = {}) {
+  const dir = path.join(here, set);
   const B = new WebAssembly.Module(readFileSync(wasm ?? path.join(here, '../../target/wasm32-unknown-unknown/release/ck_wasm.wasm')));
   const manifest = JSON.parse(readFileSync(path.join(dir, 'manifest.json'), 'utf8'));
   const rows = [];
@@ -57,7 +57,9 @@ export function runBench({ wasm, only = null, log = () => {} } = {}) {
     const q = (id, msg) => { const r = k.request(JSON.stringify({ id, msg })); return r.trap ? { trap: r.trap } : JSON.parse(r.json); };
     regen: {
     if (row.skipped) break regen;
-    const part = JSON.parse(readFileSync(path.join(dir, `${m.id}.ckpart.json`), 'utf8'));
+    const pf = path.join(dir, `${m.id}.ckpart.json`);
+    if (!existsSync(pf)) { row.bad.push('no translation file'); break regen; }
+    const part = JSON.parse(readFileSync(pf, 'utf8'));
     const reg = q(1, { type: 'regen', tag: 'main', part });
     if (reg.trap) { row.bad.push(`TRAP ${reg.trap.slice(0, 120)}`); row.errors = 'trap'; break regen; }
     const errs = reg.result?.errors ?? [];
@@ -103,8 +105,8 @@ export function runBench({ wasm, only = null, log = () => {} } = {}) {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2);
   const opt = (f) => { const i = args.indexOf(f); if (i < 0) return null; const v = args[i + 1]; args.splice(i, 2); return v; };
-  const wasm = opt('--wasm'), only = opt('--only'), verbose = args.includes('-v');
-  const rows = runBench({ wasm, only });
+  const wasm = opt('--wasm'), only = opt('--only'), set = opt('--set') ?? 'benchcad', verbose = args.includes('-v');
+  const rows = runBench({ wasm, only, set });
   const pad = (s, n) => String(s).padEnd(n);
   console.log(`${pad('id', 22)} ${pad('tier', 6)} ${pad('regen', 6)} ${pad('step-in', 8)} cause`);
   for (const r of rows) {
@@ -116,5 +118,5 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     if (r.import === false || verbose) for (const b of r.importBad) console.log(`    - step-in: ${b}`);
     if (r.import === false) console.log(`    step-in cause: ${r.knownStep ? `${r.knownStep.label}: ${r.knownStep.note}` : r.known && !r.pass ? '(see regen cause)' : 'UNLABELLED'}`);
   }
-  console.log(`bench.benchcad ${rows.filter((r) => r.pass).length}/${rows.length} regen, ${rows.filter((r) => r.import === true).length}/${rows.filter((r) => r.import !== null).length} step import`);
+  console.log(`bench.${set} ${rows.filter((r) => r.pass).length}/${rows.length} regen, ${rows.filter((r) => r.import === true).length}/${rows.filter((r) => r.import !== null).length} step import`);
 }

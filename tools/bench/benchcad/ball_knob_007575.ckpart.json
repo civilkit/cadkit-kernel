@@ -1,0 +1,157 @@
+{
+ "format": "ck-part",
+ "version": 1,
+ "name": "ball_knob",
+ "features": [
+  {
+   "type": "sketch",
+   "id": "F1",
+   "plane": {
+    "kind": "std",
+    "id": "front"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 0,
+     "y": 0
+    },
+    {
+     "id": "p2",
+     "x": 0,
+     "y": 14.32
+    },
+    {
+     "id": "p3",
+     "x": 0,
+     "y": -14.32
+    },
+    {
+     "id": "p4",
+     "x": 0,
+     "y": 0
+    },
+    {
+     "id": "p5",
+     "x": 0,
+     "y": 10
+    }
+   ],
+   "entities": [
+    {
+     "type": "arc",
+     "id": "e1",
+     "c": "p1",
+     "p1": "p3",
+     "p2": "p2"
+    },
+    {
+     "type": "line",
+     "id": "e2",
+     "p1": "p2",
+     "p2": "p3"
+    },
+    {
+     "type": "line",
+     "id": "e3",
+     "p1": "p4",
+     "p2": "p5",
+     "construction": true
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "revolve",
+   "id": "F2",
+   "op": "add",
+   "sketch": "F1",
+   "axis": "e3",
+   "angle": 360
+  },
+  {
+   "type": "plane",
+   "id": "F3",
+   "mode": "offset",
+   "base": {
+    "kind": "std",
+    "id": "front"
+   },
+   "offset": -42.95
+  },
+  {
+   "type": "sketch",
+   "id": "F4",
+   "plane": {
+    "kind": "feature",
+    "id": "F3"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 0,
+     "y": 0
+    }
+   ],
+   "entities": [
+    {
+     "type": "circle",
+     "id": "e1",
+     "c": "p1",
+     "r": 5.15
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F5",
+   "op": "add",
+   "sketch": "F4",
+   "end": "mid",
+   "depth": 57.26
+  },
+  {
+   "type": "plane",
+   "id": "F6",
+   "mode": "offset",
+   "base": {
+    "kind": "std",
+    "id": "front"
+   },
+   "offset": -71.58
+  },
+  {
+   "type": "sketch",
+   "id": "F7",
+   "plane": {
+    "kind": "feature",
+    "id": "F6"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 0,
+     "y": 0
+    }
+   ],
+   "entities": [
+    {
+     "type": "circle",
+     "id": "e1",
+     "c": "p1",
+     "r": 3.435
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F8",
+   "op": "cut",
+   "sketch": "F7",
+   "end": "mid",
+   "depth": 85.9
+  }
+ ]
+}

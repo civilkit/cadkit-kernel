@@ -1,0 +1,525 @@
+{
+ "format": "ck-part",
+ "version": 1,
+ "name": "v-groove-slider-rail",
+ "features": [
+  {
+   "type": "sketch",
+   "id": "F1",
+   "plane": {
+    "kind": "std",
+    "id": "top"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": -10,
+     "y": -40
+    },
+    {
+     "id": "p2",
+     "x": 10,
+     "y": -40
+    },
+    {
+     "id": "p3",
+     "x": 10,
+     "y": 40
+    },
+    {
+     "id": "p4",
+     "x": -10,
+     "y": 40
+    }
+   ],
+   "entities": [
+    {
+     "type": "line",
+     "id": "e1",
+     "p1": "p1",
+     "p2": "p2"
+    },
+    {
+     "type": "line",
+     "id": "e2",
+     "p1": "p2",
+     "p2": "p3"
+    },
+    {
+     "type": "line",
+     "id": "e3",
+     "p1": "p3",
+     "p2": "p4"
+    },
+    {
+     "type": "line",
+     "id": "e4",
+     "p1": "p4",
+     "p2": "p1"
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F2",
+   "op": "add",
+   "sketch": "F1",
+   "end": "blind",
+   "depth": 16
+  },
+  {
+   "type": "plane",
+   "id": "F4",
+   "mode": "offset",
+   "base": {
+    "kind": "std",
+    "id": "front"
+   },
+   "offset": 41
+  },
+  {
+   "type": "sketch",
+   "id": "F3",
+   "plane": {
+    "kind": "feature",
+    "id": "F4"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 10,
+     "y": 4
+    },
+    {
+     "id": "p2",
+     "x": 10,
+     "y": 12
+    },
+    {
+     "id": "p3",
+     "x": 6,
+     "y": 8
+    }
+   ],
+   "entities": [
+    {
+     "type": "line",
+     "id": "e1",
+     "p1": "p1",
+     "p2": "p2"
+    },
+    {
+     "type": "line",
+     "id": "e2",
+     "p1": "p2",
+     "p2": "p3"
+    },
+    {
+     "type": "line",
+     "id": "e3",
+     "p1": "p3",
+     "p2": "p1"
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F5",
+   "op": "cut",
+   "sketch": "F3",
+   "end": "blind",
+   "depth": 82
+  },
+  {
+   "type": "sketch",
+   "id": "F6",
+   "plane": {
+    "kind": "feature",
+    "id": "F4"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": -10,
+     "y": 4
+    },
+    {
+     "id": "p2",
+     "x": -10,
+     "y": 12
+    },
+    {
+     "id": "p3",
+     "x": -6,
+     "y": 8
+    }
+   ],
+   "entities": [
+    {
+     "type": "line",
+     "id": "e1",
+     "p1": "p1",
+     "p2": "p2"
+    },
+    {
+     "type": "line",
+     "id": "e2",
+     "p1": "p2",
+     "p2": "p3"
+    },
+    {
+     "type": "line",
+     "id": "e3",
+     "p1": "p3",
+     "p2": "p1"
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F7",
+   "op": "cut",
+   "sketch": "F6",
+   "end": "blind",
+   "depth": 82
+  },
+  {
+   "type": "plane",
+   "id": "F9",
+   "mode": "offset",
+   "base": {
+    "kind": "std",
+    "id": "top"
+   },
+   "offset": 0.4
+  },
+  {
+   "type": "sketch",
+   "id": "F8",
+   "plane": {
+    "kind": "feature",
+    "id": "F9"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 10.4,
+     "y": 3
+    },
+    {
+     "id": "p2",
+     "x": 14.4,
+     "y": 3
+    },
+    {
+     "id": "p3",
+     "x": 14.4,
+     "y": 37
+    },
+    {
+     "id": "p4",
+     "x": 10.4,
+     "y": 37
+    }
+   ],
+   "entities": [
+    {
+     "type": "line",
+     "id": "e1",
+     "p1": "p1",
+     "p2": "p2"
+    },
+    {
+     "type": "line",
+     "id": "e2",
+     "p1": "p2",
+     "p2": "p3"
+    },
+    {
+     "type": "line",
+     "id": "e3",
+     "p1": "p3",
+     "p2": "p4"
+    },
+    {
+     "type": "line",
+     "id": "e4",
+     "p1": "p4",
+     "p2": "p1"
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F10",
+   "op": "add",
+   "sketch": "F8",
+   "end": "blind",
+   "depth": 20.400000000000002
+  },
+  {
+   "type": "sketch",
+   "id": "F11",
+   "plane": {
+    "kind": "feature",
+    "id": "F9"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": -14.4,
+     "y": 3
+    },
+    {
+     "id": "p2",
+     "x": -10.4,
+     "y": 3
+    },
+    {
+     "id": "p3",
+     "x": -10.4,
+     "y": 37
+    },
+    {
+     "id": "p4",
+     "x": -14.4,
+     "y": 37
+    }
+   ],
+   "entities": [
+    {
+     "type": "line",
+     "id": "e1",
+     "p1": "p1",
+     "p2": "p2"
+    },
+    {
+     "type": "line",
+     "id": "e2",
+     "p1": "p2",
+     "p2": "p3"
+    },
+    {
+     "type": "line",
+     "id": "e3",
+     "p1": "p3",
+     "p2": "p4"
+    },
+    {
+     "type": "line",
+     "id": "e4",
+     "p1": "p4",
+     "p2": "p1"
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F12",
+   "op": "add",
+   "sketch": "F11",
+   "end": "blind",
+   "depth": 20.400000000000002
+  },
+  {
+   "type": "plane",
+   "id": "F14",
+   "mode": "offset",
+   "base": {
+    "kind": "std",
+    "id": "top"
+   },
+   "offset": 17.3
+  },
+  {
+   "type": "sketch",
+   "id": "F13",
+   "plane": {
+    "kind": "feature",
+    "id": "F14"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": -14.4,
+     "y": 3
+    },
+    {
+     "id": "p2",
+     "x": 14.4,
+     "y": 3
+    },
+    {
+     "id": "p3",
+     "x": 14.4,
+     "y": 37
+    },
+    {
+     "id": "p4",
+     "x": -14.4,
+     "y": 37
+    }
+   ],
+   "entities": [
+    {
+     "type": "line",
+     "id": "e1",
+     "p1": "p1",
+     "p2": "p2"
+    },
+    {
+     "type": "line",
+     "id": "e2",
+     "p1": "p2",
+     "p2": "p3"
+    },
+    {
+     "type": "line",
+     "id": "e3",
+     "p1": "p3",
+     "p2": "p4"
+    },
+    {
+     "type": "line",
+     "id": "e4",
+     "p1": "p4",
+     "p2": "p1"
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F15",
+   "op": "add",
+   "sketch": "F13",
+   "end": "blind",
+   "depth": 3.5
+  },
+  {
+   "type": "plane",
+   "id": "F17",
+   "mode": "offset",
+   "base": {
+    "kind": "std",
+    "id": "front"
+   },
+   "offset": -2
+  },
+  {
+   "type": "sketch",
+   "id": "F16",
+   "plane": {
+    "kind": "feature",
+    "id": "F17"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 11.4,
+     "y": 4
+    },
+    {
+     "id": "p2",
+     "x": 11.4,
+     "y": 13.2
+    },
+    {
+     "id": "p3",
+     "x": 6.8,
+     "y": 8.6
+    }
+   ],
+   "entities": [
+    {
+     "type": "line",
+     "id": "e1",
+     "p1": "p1",
+     "p2": "p2"
+    },
+    {
+     "type": "line",
+     "id": "e2",
+     "p1": "p2",
+     "p2": "p3"
+    },
+    {
+     "type": "line",
+     "id": "e3",
+     "p1": "p3",
+     "p2": "p1"
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F18",
+   "op": "add",
+   "sketch": "F16",
+   "end": "blind",
+   "depth": 36,
+   "flip": true
+  },
+  {
+   "type": "sketch",
+   "id": "F19",
+   "plane": {
+    "kind": "feature",
+    "id": "F17"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": -11.4,
+     "y": 4
+    },
+    {
+     "id": "p2",
+     "x": -11.4,
+     "y": 13.2
+    },
+    {
+     "id": "p3",
+     "x": -6.8,
+     "y": 8.6
+    }
+   ],
+   "entities": [
+    {
+     "type": "line",
+     "id": "e1",
+     "p1": "p1",
+     "p2": "p2"
+    },
+    {
+     "type": "line",
+     "id": "e2",
+     "p1": "p2",
+     "p2": "p3"
+    },
+    {
+     "type": "line",
+     "id": "e3",
+     "p1": "p3",
+     "p2": "p1"
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F20",
+   "op": "add",
+   "sketch": "F19",
+   "end": "blind",
+   "depth": 36,
+   "flip": true
+  }
+ ]
+}

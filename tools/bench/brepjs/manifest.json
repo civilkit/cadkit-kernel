@@ -1,0 +1,837 @@
+{
+ "name": "brepjs-mechanical",
+ "source": "brepjs playground examples, category mechanical (https://brepjs.dev/playground/examples), repo https://github.com/andymai/brepjs, licence Apache-2.0",
+ "frame": "reference is Z-up; the scorer rotates (x,y,z)->(x,z,-y) to our Y-up world",
+ "difficulty": "the playground shows no difficulty; tier is a proxy by example source length (<70 lines easy, <120 medium, else hard)",
+ "parts": [
+  {
+   "id": "o-ring",
+   "family": "mechanical",
+   "tier": "easy",
+   "label": "O-ring (nitrile seal)",
+   "solids_in_example": 1,
+   "source": "https://github.com/andymai/brepjs/blob/main/apps/playground/src/lib/examples/mechanical.ts (example id 'o-ring'; playground https://brepjs.dev/playground/examples)",
+   "licence": "Apache-2.0; attribution: the brepjs project (Andy Aragon, https://github.com/andymai/brepjs). Example source NOT copied; geometry and parameters translated by hand into our feature tree.",
+   "ground_truth": {
+    "engine": "brepjs 20.5.0 with occt-wasm 5.6.0 (OCCT), example run unmodified",
+    "frame": "Z-up, mm",
+    "volume": 477.44211290269783,
+    "area": 636.5894838702637,
+    "com": [
+     0,
+     1.4382124059133807e-15,
+     -2.621973991169888e-16
+    ],
+    "bbox": [
+     -12.2500001,
+     -12.2500001,
+     -1.5000001,
+     12.2500001,
+     12.2500001,
+     1.5000001
+    ],
+    "faces": 1,
+    "solids": 1
+   },
+   "step": "gt/o-ring.step"
+  },
+  {
+   "id": "rubber-foot",
+   "family": "mechanical",
+   "tier": "easy",
+   "label": "Rubber foot (tapered, hollow, screw-mount)",
+   "solids_in_example": 1,
+   "source": "https://github.com/andymai/brepjs/blob/main/apps/playground/src/lib/examples/mechanical.ts (example id 'rubber-foot'; playground https://brepjs.dev/playground/examples)",
+   "licence": "Apache-2.0; attribution: the brepjs project (Andy Aragon, https://github.com/andymai/brepjs). Example source NOT copied; geometry and parameters translated by hand into our feature tree.",
+   "ground_truth": {
+    "engine": "brepjs 20.5.0 with occt-wasm 5.6.0 (OCCT), example run unmodified",
+    "frame": "Z-up, mm",
+    "volume": 4200.65768740757,
+    "area": 1830.9416713149517,
+    "com": [
+     -1.2381805928523136e-15,
+     -4.0276270029729877e-16,
+     5.796605434232733
+    ],
+    "bbox": [
+     -12.116492914811579,
+     -12.116492914811579,
+     0,
+     12.116492914811579,
+     12.116492914811579,
+     12.000000000000002
+    ],
+    "faces": 8,
+    "solids": 1
+   },
+   "step": "gt/rubber-foot.step"
+  },
+  {
+   "id": "fluted-knob",
+   "family": "mechanical",
+   "tier": "easy",
+   "label": "Fluted knob",
+   "solids_in_example": 1,
+   "source": "https://github.com/andymai/brepjs/blob/main/apps/playground/src/lib/examples/mechanical.ts (example id 'fluted-knob'; playground https://brepjs.dev/playground/examples)",
+   "licence": "Apache-2.0; attribution: the brepjs project (Andy Aragon, https://github.com/andymai/brepjs). Example source NOT copied; geometry and parameters translated by hand into our feature tree.",
+   "ground_truth": {
+    "engine": "brepjs 20.5.0 with occt-wasm 5.6.0 (OCCT), example run unmodified",
+    "frame": "Z-up, mm",
+    "volume": 8852.878723154578,
+    "area": 3087.896474077679,
+    "com": [
+     -3.220445009734721e-10,
+     3.3944149654322204e-11,
+     8.341018076355146
+    ],
+    "bbox": [
+     -14.866981936072596,
+     -14.866981936072596,
+     -1.000000001110223e-7,
+     14.866981936072593,
+     14.866981936072595,
+     18.0000001
+    ],
+    "faces": 36,
+    "solids": 1
+   },
+   "step": "gt/fluted-knob.step"
+  },
+  {
+   "id": "flanged-tee",
+   "family": "mechanical",
+   "tier": "easy",
+   "label": "Flanged Pipe Tee",
+   "solids_in_example": 1,
+   "source": "https://github.com/andymai/brepjs/blob/main/apps/playground/src/lib/examples/mechanical.ts (example id 'flanged-tee'; playground https://brepjs.dev/playground/examples)",
+   "licence": "Apache-2.0; attribution: the brepjs project (Andy Aragon, https://github.com/andymai/brepjs). Example source NOT copied; geometry and parameters translated by hand into our feature tree.",
+   "ground_truth": {
+    "engine": "brepjs 20.5.0 with occt-wasm 5.6.0 (OCCT), example run unmodified",
+    "frame": "Z-up, mm",
+    "volume": 135796.8560207086,
+    "area": 44463.783307722246,
+    "com": [
+     0.0000346371909667881,
+     -0.000045995961417135915,
+     9.750620279048196
+    ],
+    "bbox": [
+     -65.0000001,
+     -30,
+     -30,
+     65.0000001,
+     30,
+     60.0000001
+    ],
+    "faces": 29,
+    "solids": 1
+   },
+   "step": "gt/flanged-tee.step"
+  },
+  {
+   "id": "gridfinity-bin",
+   "family": "mechanical",
+   "tier": "easy",
+   "label": "Gridfinity Bin",
+   "solids_in_example": 1,
+   "source": "https://github.com/andymai/brepjs/blob/main/apps/playground/src/lib/examples/mechanical.ts (example id 'gridfinity-bin'; playground https://brepjs.dev/playground/examples)",
+   "licence": "Apache-2.0; attribution: the brepjs project (Andy Aragon, https://github.com/andymai/brepjs). Example source NOT copied; geometry and parameters translated by hand into our feature tree.",
+   "ground_truth": {
+    "engine": "brepjs 20.5.0 with occt-wasm 5.6.0 (OCCT), example run unmodified",
+    "frame": "Z-up, mm",
+    "volume": 14043.384877918474,
+    "area": 11659.644356110412,
+    "com": [
+     4.865021732592717e-16,
+     6.730749328657667e-15,
+     4.049156838724004
+    ],
+    "bbox": [
+     -20.7500001,
+     -20.7500001,
+     -5.0000001,
+     20.7500001,
+     20.7500001,
+     25.4000001
+    ],
+    "faces": 91,
+    "solids": 1
+   },
+   "step": "gt/gridfinity-bin.step",
+   "note": "our loft is smooth through its sections, so each ruled stretch of the foot and lip profile is its own two-section loft; our loft is smooth through its sections, so each ruled stretch of the foot and lip profile is its own two-section loft"
+  },
+  {
+   "id": "fan-guard",
+   "family": "mechanical",
+   "tier": "medium",
+   "label": "Fan guard grille",
+   "solids_in_example": 1,
+   "source": "https://github.com/andymai/brepjs/blob/main/apps/playground/src/lib/examples/mechanical.ts (example id 'fan-guard'; playground https://brepjs.dev/playground/examples)",
+   "licence": "Apache-2.0; attribution: the brepjs project (Andy Aragon, https://github.com/andymai/brepjs). Example source NOT copied; geometry and parameters translated by hand into our feature tree.",
+   "ground_truth": {
+    "engine": "brepjs 20.5.0 with occt-wasm 5.6.0 (OCCT), example run unmodified",
+    "frame": "Z-up, mm",
+    "volume": 5359.406325630426,
+    "area": 7284.886550020718,
+    "com": [
+     -8.040098296216947e-14,
+     -2.562139029774701e-14,
+     1.2499999999999998
+    ],
+    "bbox": [
+     -30,
+     -30,
+     0,
+     30,
+     30,
+     2.5
+    ],
+    "faces": 430,
+    "solids": 1
+   },
+   "step": "gt/fan-guard.step"
+  },
+  {
+   "id": "gt2-pulley",
+   "family": "mechanical",
+   "tier": "easy",
+   "label": "GT2 Timing Pulley",
+   "solids_in_example": 1,
+   "source": "https://github.com/andymai/brepjs/blob/main/apps/playground/src/lib/examples/mechanical.ts (example id 'gt2-pulley'; playground https://brepjs.dev/playground/examples)",
+   "licence": "Apache-2.0; attribution: the brepjs project (Andy Aragon, https://github.com/andymai/brepjs). Example source NOT copied; geometry and parameters translated by hand into our feature tree.",
+   "ground_truth": {
+    "engine": "brepjs 20.5.0 with occt-wasm 5.6.0 (OCCT), example run unmodified",
+    "frame": "Z-up, mm",
+    "volume": 1300.6060170087612,
+    "area": 1356.4544488250187,
+    "com": [
+     0.000036044091955408094,
+     -1.3815560655612986e-9,
+     0.9497856135891313
+    ],
+    "bbox": [
+     -7.866197823675814,
+     -7.866197823675814,
+     -6.0000001,
+     7.866197823675814,
+     7.866197823675814,
+     7.0000001
+    ],
+    "faces": 92,
+    "solids": 1
+   },
+   "step": "gt/gt2-pulley.step"
+  },
+  {
+   "id": "nema-stepper",
+   "family": "mechanical",
+   "tier": "easy",
+   "label": "NEMA Stepper Motor Body",
+   "solids_in_example": 1,
+   "source": "https://github.com/andymai/brepjs/blob/main/apps/playground/src/lib/examples/mechanical.ts (example id 'nema-stepper'; playground https://brepjs.dev/playground/examples)",
+   "licence": "Apache-2.0; attribution: the brepjs project (Andy Aragon, https://github.com/andymai/brepjs). Example source NOT copied; geometry and parameters translated by hand into our feature tree.",
+   "ground_truth": {
+    "engine": "brepjs 20.5.0 with occt-wasm 5.6.0 (OCCT), example run unmodified",
+    "frame": "Z-up, mm",
+    "volume": 72316.5999095669,
+    "area": 10796.579611906061,
+    "com": [
+     1.4474844774654571e-15,
+     -3.647204982590128e-16,
+     -19.613337212378287
+    ],
+    "bbox": [
+     -21.15,
+     -21.15,
+     -40,
+     21.15,
+     21.15,
+     24
+    ],
+    "faces": 22,
+    "solids": 1
+   },
+   "step": "gt/nema-stepper.step"
+  },
+  {
+   "id": "linear-bearing-block",
+   "family": "mechanical",
+   "tier": "easy",
+   "label": "Linear-bearing pillow block (LM8UU clamp)",
+   "solids_in_example": 1,
+   "source": "https://github.com/andymai/brepjs/blob/main/apps/playground/src/lib/examples/mechanical.ts (example id 'linear-bearing-block'; playground https://brepjs.dev/playground/examples)",
+   "licence": "Apache-2.0; attribution: the brepjs project (Andy Aragon, https://github.com/andymai/brepjs). Example source NOT copied; geometry and parameters translated by hand into our feature tree.",
+   "ground_truth": {
+    "engine": "brepjs 20.5.0 with occt-wasm 5.6.0 (OCCT), example run unmodified",
+    "frame": "Z-up, mm",
+    "volume": 8400.544665489962,
+    "area": 5209.519725076743,
+    "com": [
+     -7.223382774594577e-16,
+     -0.060209955112292185,
+     0.10443640381344267
+    ],
+    "bbox": [
+     -12.000000000000002,
+     -10.5,
+     -14.5,
+     12.000000000000002,
+     10.5,
+     19.5
+    ],
+    "faces": 31,
+    "solids": 1
+   },
+   "step": "gt/linear-bearing-block.step"
+  },
+  {
+   "id": "tripod-rc2-plate",
+   "family": "mechanical",
+   "tier": "medium",
+   "label": "Manfrotto RC2 quick-release plate",
+   "solids_in_example": 1,
+   "source": "https://github.com/andymai/brepjs/blob/main/apps/playground/src/lib/examples/mechanical.ts (example id 'tripod-rc2-plate'; playground https://brepjs.dev/playground/examples)",
+   "licence": "Apache-2.0; attribution: the brepjs project (Andy Aragon, https://github.com/andymai/brepjs). Example source NOT copied; geometry and parameters translated by hand into our feature tree.",
+   "ground_truth": {
+    "engine": "brepjs 20.5.0 with occt-wasm 5.6.0 (OCCT), example run unmodified",
+    "frame": "Z-up, mm",
+    "volume": 18605.65279010877,
+    "area": 6264.373586892673,
+    "com": [
+     6.042551993951545e-16,
+     7.386082639116154e-17,
+     5.5570640556306765
+    ],
+    "bbox": [
+     -21.2,
+     -26.25,
+     -2.220446049250313e-16,
+     21.2,
+     26.25,
+     10.5
+    ],
+    "faces": 33,
+    "solids": 1
+   },
+   "step": "gt/tripod-rc2-plate.step"
+  },
+  {
+   "id": "l-angle-gusset-bracket",
+   "family": "mechanical",
+   "tier": "medium",
+   "label": "L-angle gusset bracket (corner brace)",
+   "solids_in_example": 1,
+   "source": "https://github.com/andymai/brepjs/blob/main/apps/playground/src/lib/examples/mechanical.ts (example id 'l-angle-gusset-bracket'; playground https://brepjs.dev/playground/examples)",
+   "licence": "Apache-2.0; attribution: the brepjs project (Andy Aragon, https://github.com/andymai/brepjs). Example source NOT copied; geometry and parameters translated by hand into our feature tree.",
+   "ground_truth": {
+    "engine": "brepjs 20.5.0 with occt-wasm 5.6.0 (OCCT), example run unmodified",
+    "frame": "Z-up, mm",
+    "volume": 20862.808007881602,
+    "area": 11983.606801464768,
+    "com": [
+     -0.2736232969967179,
+     16.438243462503316,
+     16.438243462503316
+    ],
+    "bbox": [
+     -20,
+     -2.886579864025407e-16,
+     0,
+     20,
+     60,
+     60
+    ],
+    "faces": 23,
+    "solids": 1
+   },
+   "step": "gt/l-angle-gusset-bracket.step",
+   "note": "the example cuts a 45-degree slab \"to chamfer the heel\"; that slab touches the body in one corner point only (brepjs volume = geometry without it), so the cut is not translated; the example cuts a 45-degree slab \"to chamfer the heel\"; that slab touches the body in one corner point only (brepjs volume = geometry without it), so the cut is not translated"
+  },
+  {
+   "id": "pipe-saddle-p-clamp",
+   "family": "mechanical",
+   "tier": "medium",
+   "label": "Two-bolt P-clamp (pipe saddle clamp)",
+   "solids_in_example": 1,
+   "source": "https://github.com/andymai/brepjs/blob/main/apps/playground/src/lib/examples/mechanical.ts (example id 'pipe-saddle-p-clamp'; playground https://brepjs.dev/playground/examples)",
+   "licence": "Apache-2.0; attribution: the brepjs project (Andy Aragon, https://github.com/andymai/brepjs). Example source NOT copied; geometry and parameters translated by hand into our feature tree.",
+   "ground_truth": {
+    "engine": "brepjs 20.5.0 with occt-wasm 5.6.0 (OCCT), example run unmodified",
+    "frame": "Z-up, mm",
+    "volume": 3336.6592600780323,
+    "area": 2688.576631895803,
+    "com": [
+     -1.896588997288083e-16,
+     -1.444655130678159e-14,
+     3.3069813993058186
+    ],
+    "bbox": [
+     -7.000000000000002,
+     -29,
+     -2,
+     7,
+     29,
+     13.000000000000002
+    ],
+    "faces": 26,
+    "solids": 1
+   },
+   "step": "gt/pipe-saddle-p-clamp.step"
+  },
+  {
+   "id": "conduit-snap-clip",
+   "family": "mechanical",
+   "tier": "medium",
+   "label": "Conduit cable snap-clip",
+   "solids_in_example": 1,
+   "source": "https://github.com/andymai/brepjs/blob/main/apps/playground/src/lib/examples/mechanical.ts (example id 'conduit-snap-clip'; playground https://brepjs.dev/playground/examples)",
+   "licence": "Apache-2.0; attribution: the brepjs project (Andy Aragon, https://github.com/andymai/brepjs). Example source NOT copied; geometry and parameters translated by hand into our feature tree.",
+   "ground_truth": {
+    "engine": "brepjs 20.5.0 with occt-wasm 5.6.0 (OCCT), example run unmodified",
+    "frame": "Z-up, mm",
+    "volume": 2687.6807671338415,
+    "area": 2329.112149254925,
+    "com": [
+     0.4106574469425228,
+     8.068406981276151e-11,
+     6.517833920736838
+    ],
+    "bbox": [
+     -15,
+     -10.4,
+     -0.5,
+     15,
+     10.4,
+     22.54102838853485
+    ],
+    "faces": 21,
+    "solids": 1
+   },
+   "step": "gt/conduit-snap-clip.step"
+  },
+  {
+   "id": "hobby-rc-servo",
+   "family": "mechanical",
+   "tier": "medium",
+   "label": "Hobby RC Servo Motor",
+   "solids_in_example": 1,
+   "source": "https://github.com/andymai/brepjs/blob/main/apps/playground/src/lib/examples/mechanical.ts (example id 'hobby-rc-servo'; playground https://brepjs.dev/playground/examples)",
+   "licence": "Apache-2.0; attribution: the brepjs project (Andy Aragon, https://github.com/andymai/brepjs). Example source NOT copied; geometry and parameters translated by hand into our feature tree.",
+   "ground_truth": {
+    "engine": "brepjs 20.5.0 with occt-wasm 5.6.0 (OCCT), example run unmodified",
+    "frame": "Z-up, mm",
+    "volume": 33547.74653868689,
+    "area": 7330.954523565965,
+    "com": [
+     0.15816816758499452,
+     1.7999746991325555e-17,
+     20.648244205090226
+    ],
+    "bbox": [
+     -27.25,
+     -10,
+     0,
+     27.25,
+     10,
+     49
+    ],
+    "faces": 46,
+    "solids": 1
+   },
+   "step": "gt/hobby-rc-servo.step"
+  },
+  {
+   "id": "rotary-potentiometer",
+   "family": "mechanical",
+   "tier": "medium",
+   "label": "Panel-mount rotary potentiometer (can, M10 bushing, D-shaft)",
+   "solids_in_example": 1,
+   "source": "https://github.com/andymai/brepjs/blob/main/apps/playground/src/lib/examples/mechanical.ts (example id 'rotary-potentiometer'; playground https://brepjs.dev/playground/examples)",
+   "licence": "Apache-2.0; attribution: the brepjs project (Andy Aragon, https://github.com/andymai/brepjs). Example source NOT copied; geometry and parameters translated by hand into our feature tree.",
+   "ground_truth": {
+    "engine": "brepjs 20.5.0 with occt-wasm 5.6.0 (OCCT), example run unmodified",
+    "frame": "Z-up, mm",
+    "volume": 7752.984457404009,
+    "area": 2753.2684415038934,
+    "com": [
+     -0.0116273708962799,
+     -0.013459312282219757,
+     10.18398371356597
+    ],
+    "bbox": [
+     -12,
+     -12,
+     -4,
+     12,
+     12,
+     44
+    ],
+    "faces": 54,
+    "solids": 1
+   },
+   "step": "gt/rotary-potentiometer.step"
+  },
+  {
+   "id": "button-top-battery-cell",
+   "family": "mechanical",
+   "tier": "medium",
+   "label": "Button-top battery cell (AA / 18650)",
+   "solids_in_example": 1,
+   "source": "https://github.com/andymai/brepjs/blob/main/apps/playground/src/lib/examples/mechanical.ts (example id 'button-top-battery-cell'; playground https://brepjs.dev/playground/examples)",
+   "licence": "Apache-2.0; attribution: the brepjs project (Andy Aragon, https://github.com/andymai/brepjs). Example source NOT copied; geometry and parameters translated by hand into our feature tree.",
+   "ground_truth": {
+    "engine": "brepjs 20.5.0 with occt-wasm 5.6.0 (OCCT), example run unmodified",
+    "frame": "Z-up, mm",
+    "volume": 8226.88680297208,
+    "area": 2588.6854244055967,
+    "com": [
+     -1.6582725462644515e-16,
+     2.2532682641454966e-18,
+     -0.2561040739595594
+    ],
+    "bbox": [
+     -7.25,
+     -7.25,
+     -25.25,
+     7.25,
+     7.25,
+     25.25
+    ],
+    "faces": 9,
+    "solids": 1
+   },
+   "step": "gt/button-top-battery-cell.step"
+  },
+  {
+   "id": "conical-pour-funnel",
+   "family": "mechanical",
+   "tier": "medium",
+   "label": "Kitchen / Lab Funnel",
+   "solids_in_example": 1,
+   "source": "https://github.com/andymai/brepjs/blob/main/apps/playground/src/lib/examples/mechanical.ts (example id 'conical-pour-funnel'; playground https://brepjs.dev/playground/examples)",
+   "licence": "Apache-2.0; attribution: the brepjs project (Andy Aragon, https://github.com/andymai/brepjs). Example source NOT copied; geometry and parameters translated by hand into our feature tree.",
+   "ground_truth": {
+    "engine": "brepjs 20.5.0 with occt-wasm 5.6.0 (OCCT), example run unmodified",
+    "frame": "Z-up, mm",
+    "volume": 23856.496359955618,
+    "area": 18919.058362785738,
+    "com": [
+     0.8131892398707422,
+     4.403987502539924e-8,
+     69.13667179968812
+    ],
+    "bbox": [
+     -37.5000001,
+     -37.5000001,
+     0,
+     51.4000001,
+     37.5000001,
+     95.7000001
+    ],
+    "faces": 15,
+    "solids": 1
+   },
+   "step": "gt/conical-pour-funnel.step"
+  },
+  {
+   "id": "axial-fan",
+   "family": "mechanical",
+   "tier": "medium",
+   "label": "Axial Cooling Fan (57x15)",
+   "solids_in_example": 1,
+   "source": "https://github.com/andymai/brepjs/blob/main/apps/playground/src/lib/examples/mechanical.ts (example id 'axial-fan'; playground https://brepjs.dev/playground/examples)",
+   "licence": "Apache-2.0; attribution: the brepjs project (Andy Aragon, https://github.com/andymai/brepjs). Example source NOT copied; geometry and parameters translated by hand into our feature tree.",
+   "ground_truth": {
+    "engine": "brepjs 20.5.0 with occt-wasm 5.6.0 (OCCT), example run unmodified",
+    "frame": "Z-up, mm",
+    "volume": 31403.504454012844,
+    "area": 13444.16574844864,
+    "com": [
+     1.2360868667762459e-9,
+     1.2705772549721524e-11,
+     7.950036004736302
+    ],
+    "bbox": [
+     -28.5,
+     -28.5,
+     -1e-7,
+     28.5,
+     28.5,
+     17.0000001
+    ],
+    "faces": 63,
+    "solids": 2
+   },
+   "step": "gt/axial-fan.step",
+   "note": "blades: one smooth loft through three tilted sections + a 9-fold circular pattern, as in the example; blades: one smooth loft through three tilted sections + a 9-fold circular pattern, as in the example"
+  },
+  {
+   "id": "knuckle-hinge",
+   "family": "mechanical",
+   "tier": "medium",
+   "label": "Knuckle (Butt) Hinge",
+   "solids_in_example": 3,
+   "source": "https://github.com/andymai/brepjs/blob/main/apps/playground/src/lib/examples/mechanical.ts (example id 'knuckle-hinge'; playground https://brepjs.dev/playground/examples)",
+   "licence": "Apache-2.0; attribution: the brepjs project (Andy Aragon, https://github.com/andymai/brepjs). Example source NOT copied; geometry and parameters translated by hand into our feature tree.",
+   "ground_truth": {
+    "engine": "brepjs 20.5.0 with occt-wasm 5.6.0 (OCCT), example run unmodified",
+    "frame": "Z-up, mm",
+    "volume": 5146.705766939399,
+    "area": 6351.366294607732,
+    "com": [
+     1.6870659843746733e-15,
+     -0.012972919576811352,
+     0.9927493243511004
+    ],
+    "bbox": [
+     -26,
+     -22,
+     -2.0000000000000004,
+     26,
+     22,
+     4
+    ],
+    "faces": 59,
+    "solids": 3
+   },
+   "step": "gt/knuckle-hinge.step",
+   "note": "the example returns 3 separate solids; volume/area are sums, com is volume-weighted, bbox is the union; the STEP is one compound"
+  },
+  {
+   "id": "dovetail-joint",
+   "family": "mechanical",
+   "tier": "medium",
+   "label": "Dovetail Joint",
+   "solids_in_example": 2,
+   "source": "https://github.com/andymai/brepjs/blob/main/apps/playground/src/lib/examples/mechanical.ts (example id 'dovetail-joint'; playground https://brepjs.dev/playground/examples)",
+   "licence": "Apache-2.0; attribution: the brepjs project (Andy Aragon, https://github.com/andymai/brepjs). Example source NOT copied; geometry and parameters translated by hand into our feature tree.",
+   "ground_truth": {
+    "engine": "brepjs 20.5.0 with occt-wasm 5.6.0 (OCCT), example run unmodified",
+    "frame": "Z-up, mm",
+    "volume": 24765.222598259425,
+    "area": 9223.458529825315,
+    "com": [
+     -0.0773038406417976,
+     0.00018431067771574176,
+     -3.668845436909457
+    ],
+    "bbox": [
+     -52,
+     -15,
+     -12,
+     52,
+     15,
+     8
+    ],
+    "faces": 30,
+    "solids": 2
+   },
+   "step": "gt/dovetail-joint.step",
+   "note": "the example returns 2 separate solids; volume/area are sums, com is volume-weighted, bbox is the union; the STEP is one compound"
+  },
+  {
+   "id": "finger-tab-split-joint",
+   "family": "mechanical",
+   "tier": "medium",
+   "label": "Interlocking finger-tab split joint",
+   "solids_in_example": 2,
+   "source": "https://github.com/andymai/brepjs/blob/main/apps/playground/src/lib/examples/mechanical.ts (example id 'finger-tab-split-joint'; playground https://brepjs.dev/playground/examples)",
+   "licence": "Apache-2.0; attribution: the brepjs project (Andy Aragon, https://github.com/andymai/brepjs). Example source NOT copied; geometry and parameters translated by hand into our feature tree.",
+   "ground_truth": {
+    "engine": "brepjs 20.5.0 with occt-wasm 5.6.0 (OCCT), example run unmodified",
+    "frame": "Z-up, mm",
+    "volume": 41291.06963682911,
+    "area": 15363.558395395032,
+    "com": [
+     0.015319262366473404,
+     -1.097481458113553,
+     7.999999999999997
+    ],
+    "bbox": [
+     -45,
+     -24,
+     -4.440892098500626e-16,
+     45,
+     24,
+     16
+    ],
+    "faces": 58,
+    "solids": 2
+   },
+   "step": "gt/finger-tab-split-joint.step",
+   "note": "the example returns 2 separate solids; volume/area are sums, com is volume-weighted, bbox is the union; the STEP is one compound; the example splits a chamfered, bored bar with intersect/cut; translated as the two halves (comb polygons) then chamfer of the outer long edges and the bore; the example splits a chamfered, bored bar with intersect/cut; translated as the two halves (comb polygons) then chamfer of the outer long edges and the bore"
+  },
+  {
+   "id": "v-groove-slider-rail",
+   "family": "mechanical",
+   "tier": "medium",
+   "label": "V-groove linear slider (rail + carriage)",
+   "solids_in_example": 2,
+   "source": "https://github.com/andymai/brepjs/blob/main/apps/playground/src/lib/examples/mechanical.ts (example id 'v-groove-slider-rail'; playground https://brepjs.dev/playground/examples)",
+   "licence": "Apache-2.0; attribution: the brepjs project (Andy Aragon, https://github.com/andymai/brepjs). Example source NOT copied; geometry and parameters translated by hand into our feature tree.",
+   "ground_truth": {
+    "engine": "brepjs 20.5.0 with occt-wasm 5.6.0 (OCCT), example run unmodified",
+    "frame": "Z-up, mm",
+    "volume": 32029.91999999999,
+    "area": 12176.475379070758,
+    "com": [
+     2.83951599558453e-17,
+     5.613451422919571,
+     9.32243202605564
+    ],
+    "bbox": [
+     -14.4,
+     -40,
+     0,
+     14.4,
+     40.00000000000001,
+     20.799999999999997
+    ],
+    "faces": 36,
+    "solids": 2
+   },
+   "step": "gt/v-groove-slider-rail.step",
+   "note": "the example returns 2 separate solids; volume/area are sums, com is volume-weighted, bbox is the union; the STEP is one compound; the two lead-in slabs the example cuts from the rail touch it in a corner point only (rail volume 23040 = bar minus grooves), so they are not translated; carriage built as walls + top plate + ribs so it never overlaps the rail; the two lead-in slabs the example cuts from the rail touch it in a corner point only (rail volume 23040 = bar minus grooves), so they are not translated; carriage built as walls + top plate + ribs so it never overlaps the rail"
+  },
+  {
+   "id": "modular-hose-segment",
+   "family": "mechanical",
+   "tier": "medium",
+   "label": "Modular coolant hose segment (Loc-Line)",
+   "solids_in_example": 1,
+   "source": "https://github.com/andymai/brepjs/blob/main/apps/playground/src/lib/examples/mechanical.ts (example id 'modular-hose-segment'; playground https://brepjs.dev/playground/examples)",
+   "licence": "Apache-2.0; attribution: the brepjs project (Andy Aragon, https://github.com/andymai/brepjs). Example source NOT copied; geometry and parameters translated by hand into our feature tree.",
+   "ground_truth": {
+    "engine": "brepjs 20.5.0 with occt-wasm 5.6.0 (OCCT), example run unmodified",
+    "frame": "Z-up, mm",
+    "volume": 907.5332657429896,
+    "area": 941.3551079854998,
+    "com": [
+     3.7850812191582344e-7,
+     6.708306716020949e-8,
+     6.679501938115595
+    ],
+    "bbox": [
+     -6.300000100000002,
+     -6.300000100000003,
+     -2.220446049250313e-15,
+     6.300000100000002,
+     6.300000100000003,
+     14.0000001
+    ],
+    "faces": 12,
+    "solids": 1
+   },
+   "step": "gt/modular-hose-segment.step"
+  },
+  {
+   "id": "vented-louvre-case",
+   "family": "mechanical",
+   "tier": "hard",
+   "label": "Vented Louvre Instrument Case",
+   "solids_in_example": 2,
+   "source": "https://github.com/andymai/brepjs/blob/main/apps/playground/src/lib/examples/mechanical.ts (example id 'vented-louvre-case'; playground https://brepjs.dev/playground/examples)",
+   "licence": "Apache-2.0; attribution: the brepjs project (Andy Aragon, https://github.com/andymai/brepjs). Example source NOT copied; geometry and parameters translated by hand into our feature tree.",
+   "ground_truth": {
+    "engine": "brepjs 20.5.0 with occt-wasm 5.6.0 (OCCT), example run unmodified",
+    "frame": "Z-up, mm",
+    "volume": 67633.08248804559,
+    "area": 73031.64715046372,
+    "com": [
+     1.2390694208804194,
+     32.02989894077976,
+     11.08014042615907
+    ],
+    "bbox": [
+     -62.4,
+     -42.4,
+     0,
+     62.4,
+     139.2,
+     33
+    ],
+    "faces": 460,
+    "solids": 2
+   },
+   "step": "gt/vented-louvre-case.step",
+   "note": "the example returns 2 separate solids; volume/area are sums, com is volume-weighted, bbox is the union; the STEP is one compound; rounded boxes are rounded-rectangle sketches (equivalent to filleting the vertical edges); rounded boxes are rounded-rectangle sketches (equivalent to filleting the vertical edges)"
+  },
+  {
+   "id": "wall-mount-flanged-junction-box",
+   "family": "mechanical",
+   "tier": "hard",
+   "label": "Wall-Mount Flanged Junction Box (base + lid)",
+   "solids_in_example": 2,
+   "source": "https://github.com/andymai/brepjs/blob/main/apps/playground/src/lib/examples/mechanical.ts (example id 'wall-mount-flanged-junction-box'; playground https://brepjs.dev/playground/examples)",
+   "licence": "Apache-2.0; attribution: the brepjs project (Andy Aragon, https://github.com/andymai/brepjs). Example source NOT copied; geometry and parameters translated by hand into our feature tree.",
+   "ground_truth": {
+    "engine": "brepjs 20.5.0 with occt-wasm 5.6.0 (OCCT), example run unmodified",
+    "frame": "Z-up, mm",
+    "volume": 53207.79427463846,
+    "area": 53805.11593711621,
+    "com": [
+     -2.640229645739155e-10,
+     30.48476733145993,
+     8.37576511036844
+    ],
+    "bbox": [
+     -52.4,
+     -48.4,
+     -2.6645352591003757e-15,
+     52.4,
+     128.2,
+     26.8
+    ],
+    "faces": 201,
+    "solids": 2
+   },
+   "step": "gt/wall-mount-flanged-junction-box.step",
+   "note": "the example returns 2 separate solids; volume/area are sums, com is volume-weighted, bbox is the union; the STEP is one compound; rounded boxes are rounded-rectangle sketches; convex hulls are the triangular gusset prism and the six-sided slot prism; rounded boxes are rounded-rectangle sketches; convex hulls are the triangular gusset prism and the six-sided slot prism"
+  }
+ ],
+ "known": {
+  "rubber-foot": {
+   "label": "kernel-bug:bbox-from-mesh",
+   "note": "volume, area and centre of mass match; body.box (mesh-derived) is 0.044 mm short of the analytic bbox on the filleted rim, over the 1e-3 diagonal tolerance. The MCP check (analytic bbox) passes."
+  },
+  "pipe-saddle-p-clamp": {
+   "label": "kernel-gap:fillet-plane-cylinder-line",
+   "note": "fillet (r 2, also 0.5 and 0.05) of the straight edge where a foot top plane meets the tube cylinder (axis parallel to the plane) is blendUnsupported; a chamfer of the same edge works."
+  },
+  "conduit-snap-clip": {
+   "label": "kernel-gap:fillet-plane-cylinder-line + kernel-bug:countersink-coincident",
+   "note": "F7 lip fillet is blendUnsupported (plane wall x bore cylinder, line edge); F15 countersink cone cut booleanFailed: the cone base circle has the radius of the drilled hole (exact coincidence on the cylinder wall; radius +-0.01 works)."
+  },
+  "conical-pour-funnel": {
+   "label": "kernel-bug:cut-coincident-circle-on-cylinder",
+   "note": "F14 bore cylinder cut booleanFailed: the earlier inner-cone cut leaves a base circle exactly on the bore cylinder wall (r 4.4)."
+  },
+  "knuckle-hinge": {
+   "label": "kernel-bug:countersink-coincident + reference-mismatch:overlapping-solids",
+   "note": "four countersink cone cuts booleanFailed (cone base circle = hole radius 1.8). Also the example returns two leaves that overlap each other (sum of volumes 5146.71, union 4990.04, brepjs fuse); we build one body, so the volume reference is the sum and cannot be matched exactly even when the cuts work."
+  },
+  "dovetail-joint": {
+   "label": "kernel-gap:body-level-intersect",
+   "note": "male half matches exactly (12415.619). The female cavity is a prism minus two rotated slabs (tool = A minus B), which no sequence of add/cut features can express without first cutting the plate; translated without the taper: volume 0.18% low (-45.6 mm3)."
+  },
+  "modular-hose-segment": {
+   "label": "kernel-bug:sphere-pole-inside-other-solid",
+   "note": "F5 union of the truncated ball with the waist cylinder is booleanFailed; any union/cut where a sphere pole lies inside the other solid fails (cylinder ending below the pole works); later features cascade (cutNoEffect)."
+  }
+ },
+ "knownStep": {
+  "rubber-foot": {
+   "label": "kernel-bug:step-import-torus-fillet",
+   "note": "SHELL_ORIENTATION x2, volume 44% low (fillet torus rim from OCCT; same family as BenchCAD B3-3)."
+  },
+  "conduit-snap-clip": {
+   "label": "kernel-gap:step-import-hyperbola",
+   "note": "the reference STEP carries a HYPERBOLA curve, which ck-io does not support."
+  },
+  "rotary-potentiometer": {
+   "label": "kernel-gap:step-import-hyperbola",
+   "note": "the reference STEP carries a HYPERBOLA curve, which ck-io does not support."
+  }
+ },
+ "engine_note": "examples read from the repository HEAD (brepjs 20.5.0) and run with the npm package brepjs 20.5.0 + occt-wasm 5.6.0; the deployed playground build is 20.4.0 (commit 2907fb1) and was not compared"
+}
