@@ -16,6 +16,7 @@ use ck_json::{Json, Obj};
 use ck_topo::body::{Body, FaceId};
 
 mod hatch;
+mod silhouette;
 
 /// Standard view frames (pinned: box probes in all seven names).
 pub fn std_frame(name: &str) -> Option<(Vec3, Vec3, Vec3)> {
@@ -470,6 +471,65 @@ fn view_json(body: &Body, view: &ViewReq, hidden: bool) -> Json {
         }
     }
 
+    // silhouettes of the non-planar, non-cylindrical smooth faces (cone,
+    // sphere, torus, revolution/extrusion, B-spline, screw): marching
+    // triangles on n·z over the display mesh (trimmed like the face). Straight
+    // generators (cone) become a two-point outline with an `edges` entry, the
+    // curved contours are plain `o` polylines without `e` (like the oracle's
+    // sphere/torus outlines).
+    // scale for the silhouette passes: the DISPLAY MESH extent (the vertex
+    // bbox above is degenerate for vertex-less bodies such as a torus)
+    let mesh_diag = tess.mesh.bbox().map_or(step * 1e6, |(lo, hi)| (hi - lo).len()).max(step * 1e6);
+    let sil_off = (mesh_diag * 1.5e-3).max(tol);
+    for (wi, f) in body.face_ids().enumerate() {
+        let face = body.face(f);
+        if !face.alive || matches!(face.surface, Surface::Plane { .. } | Surface::Cylinder { .. }) {
+            continue;
+        }
+        for chain in silhouette::face_contours(&tess.mesh, wi as i32, z, mesh_diag, (mesh_diag * 2e-4).max(tol * 0.25)) {
+            let pts: Vec<P2> = chain.iter().map(|&(p, _)| proj(p)).collect();
+            // visibility is tested a little OUTSIDE the surface (along the
+            // projected outward normal): a silhouette point sits where the
+            // surface is edge-on, so its own face right next to it would
+            // otherwise read as an occluder
+            let test: Vec<P2> = chain
+                .iter()
+                .zip(&pts)
+                .map(|(&(_, n), p)| {
+                    let (a, b) = (n.dot(x), n.dot(y));
+                    let l = a.hypot(b);
+                    if l > 1e-9 { P2 { u: p.u + a / l * sil_off, v: p.v + b / l * sil_off, w: p.w } } else { *p }
+                })
+                .collect();
+            if pts.len() == 2 {
+                let (pa, pb) = (pts[0], pts[1]);
+                let (pa3, pb3) = (chain[0].0, chain[1].0);
+                let eidx = edges_json.len();
+                edges_json.push(
+                    Obj::new()
+                        .put("faces", Json::Arr(vec![Json::Str(body.face_id_str(f))]))
+                        .put(
+                            "at",
+                            Json::Arr(vec![
+                                Json::Num((pa3.x + pb3.x) * 0.5),
+                                Json::Num((pa3.y + pb3.y) * 0.5),
+                                Json::Num((pa3.z + pb3.z) * 0.5),
+                            ]),
+                        )
+                        .put("line", Json::Arr(vec![point_json([pa.u, pa.v]), point_json([pb.u, pb.v])]))
+                        .put("mid", point_json([(pa.u + pb.u) * 0.5, (pa.v + pb.v) * 0.5]))
+                        .put("outline", Json::Bool(true))
+                        .put("ends", Json::Arr(vec![point_json([pa.u, pa.v]), point_json([pb.u, pb.v])]))
+                        .build(),
+                );
+                round_info.push(None);
+                push_pieces_impl(&occ, &mut pieces, &pts, Some(&test), eidx, b'o', tol, false);
+            } else {
+                push_pieces_impl(&occ, &mut pieces, &pts, Some(&test), usize::MAX, b'o', tol, true);
+            }
+        }
+    }
+
     // ---- line assembly ---------------------------------------------------
     let mut straight: Vec<Piece> = vec![];
     let mut curved: Vec<Piece> = vec![];
@@ -752,11 +812,11 @@ fn canonicalize(p: &mut [P2]) {
 
 /// Split a polyline into visibility pieces and push them.
 fn push_pieces(occ: &Occluders, out: &mut Vec<Piece>, pts: &[P2], e: usize, k: u8, tol: f64) {
-    push_pieces_impl(occ, out, pts, e, k, tol, false)
+    push_pieces_impl(occ, out, pts, None, e, k, tol, false)
 }
 
 fn push_pieces_curve(occ: &Occluders, out: &mut Vec<Piece>, pts: &[P2], e: usize, k: u8, tol: f64, _closed: bool) {
-    push_pieces_impl(occ, out, pts, e, k, tol, true)
+    push_pieces_impl(occ, out, pts, None, e, k, tol, true)
 }
 
 static DBGLOG: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
@@ -764,8 +824,8 @@ pub(crate) fn dbg_dump() -> Vec<String> {
     std::mem::take(&mut *DBGLOG.lock().unwrap())
 }
 
-fn push_pieces_impl(occ: &Occluders, out: &mut Vec<Piece>, pts: &[P2], e: usize, k: u8, tol: f64, _closed: bool) {
-    let runs = occ.runs(pts, tol);
+fn push_pieces_impl(occ: &Occluders, out: &mut Vec<Piece>, pts: &[P2], test: Option<&[P2]>, e: usize, k: u8, tol: f64, _closed: bool) {
+    let runs = occ.runs(test.unwrap_or(pts), tol);
     if std::env::var("FWDBG").is_ok() {
         eprintln!("push e={e} k={} pts={:?} runs={:?}", k as char, pts.iter().map(|p| (p.u, p.v, p.w)).collect::<Vec<_>>(), runs);
     }
