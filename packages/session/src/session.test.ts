@@ -194,6 +194,107 @@ describe('session bodyForView', { skip: !existsSync(wasmPath()) && 'no wasm buil
   });
 });
 
+describe('session preview', { skip: !existsSync(wasmPath()) && 'no wasm built' }, () => {
+  async function plate() {
+    const { Part } = await import('../../builder/src/index.js');
+    const p = new Part('Plate');
+    const base = p.sketch('S', 'front', (sk) => sk.rect(0, 0, 10, 10));
+    p.extrude({ sketch: base, op: 'add', end: 'blind', depth: 5 });
+    return Session.open(p.toJSON());
+  }
+
+  it('leaves the document and history() untouched', async () => {
+    const s = await plate();
+    try {
+      const docBefore = JSON.stringify(s.document);
+      const histBefore = JSON.stringify(s.history());
+
+      const r = await s.preview([{ op: 'set', id: 'F2', path: 'depth', value: 12 }]);
+
+      assert.equal(r.ok, true);
+      assert.ok(r.body, 'expected a preview body');
+      assert.ok(r.body.mesh.positions.length > 0);
+      assert.equal(JSON.stringify(s.document), docBefore);
+      assert.equal(JSON.stringify(s.history()), histBefore);
+      // the session tag still answers for the un-previewed document
+      assert.ok((await s.facts()).faces.length > 0);
+    } finally {
+      await s.close();
+    }
+  });
+
+  it('a failing op reports the error and the hint', async () => {
+    const s = await plate();
+    try {
+      const r = await s.preview([
+        {
+          op: 'add',
+          feature: {
+            type: 'sketch', name: 'Far', id: 'F9', plane: { kind: 'std', id: 'front' },
+            points: [
+              { id: 'O', x: 100, y: 0, fixed: true },
+              { id: 'p1', x: 100, y: 0 },
+              { id: 'p2', x: 110, y: 0 },
+              { id: 'p3', x: 110, y: 10 },
+              { id: 'p4', x: 100, y: 10 },
+            ],
+            entities: [
+              { id: 'e5', type: 'line', p1: 'p1', p2: 'p2' },
+              { id: 'e6', type: 'line', p1: 'p2', p2: 'p3' },
+              { id: 'e7', type: 'line', p1: 'p3', p2: 'p4' },
+              { id: 'e8', type: 'line', p1: 'p4', p2: 'p1' },
+            ],
+            constraints: [],
+          },
+        },
+        { op: 'add', feature: { type: 'extrude', op: 'cut', sketch: 'F9', end: 'blind', depth: 5 } },
+      ]);
+
+      assert.equal(r.ok, false);
+      assert.equal(r.body, null);
+      assert.ok(r.errors.length > 0, 'expected regen errors');
+      assert.ok(r.hints.some((h) => /cuts nothing/.test(h.hint)), 'expected the cutNoEffect hint');
+    } finally {
+      await s.close();
+    }
+  });
+
+  it('a preview followed by the real edit gives the same body', async () => {
+    const s = await plate();
+    try {
+      const ops = [{ op: 'set', id: 'F2', path: 'depth', value: 12 } as const];
+      const pr = await s.preview(ops);
+      const er = await s.edit([...ops]);
+      assert.equal(er.ok, true);
+      assert.ok(pr.body);
+      const v = await s.bodyForView();
+      assert.ok(v);
+      assert.deepEqual(Array.from(v.mesh.positions), Array.from(pr.body.mesh.positions));
+      assert.deepEqual(v.edges, pr.body.edges);
+    } finally {
+      await s.close();
+    }
+  });
+
+  it('two quick previews: the first result is dropped', async () => {
+    const s = await plate();
+    try {
+      const depthBefore = (s.document.features.find((f) => f.id === 'F2') as { depth: number }).depth;
+      const p1 = s.preview([{ op: 'set', id: 'F2', path: 'depth', value: 7 }]);
+      const p2 = s.preview([{ op: 'set', id: 'F2', path: 'depth', value: 12 }]);
+      const [r1, r2] = await Promise.all([p1, p2]);
+
+      assert.equal(r1.stale, true);
+      assert.equal(r1.body, null, 'the superseded preview carries no body');
+      assert.notEqual(r2.stale, true);
+      assert.ok(r2.body, 'the newest preview carries the body');
+      assert.equal((s.document.features.find((f) => f.id === 'F2') as { depth: number }).depth, depthBefore);
+    } finally {
+      await s.close();
+    }
+  });
+});
+
 describe('session persistence', { skip: !existsSync(wasmPath()) && 'no wasm built' }, () => {
   it('saves, reopens with history, undoes and replays', async () => {
     const { mkdtempSync, readFileSync } = await import('node:fs');

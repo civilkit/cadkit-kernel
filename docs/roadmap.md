@@ -104,6 +104,8 @@ CivilKit already has the platform pieces, and they are generic over opaque data:
 | Command bar for the active tool, handles with typed values | M | Needs `Session.preview` |
 | Multiple documents (tab strip), scopes (edit a part in the assembly with the rest faded) | M | State per document, small worker pool |
 | Assemblies and mates in the new UI | L | Outliner, exploded view, interference check |
+| Placement gizmo (IronCAD TriBall-style): one manipulator for move, rotate, re-anchor and arrays | L | Wanted. The TriBall patent (US5861889A) shows as expired (anticipated expiration 2016-04-19, Google Patents), so the idea is free to build; the name "TriBall" is a separate trademark, so call ours the placement gizmo. Not legal advice. Each gesture ends as a small edit op on a placement node (frames as first-class parameters), the gizmo can detach from its object and snap to references, dragging a handle can create a linear or circular array, and a typed value overrides a drag. See `docs/research-cad-ux-ironcad-plasticity.md` section 3. Needs `Session.preview` |
+| Parity with the original UI's tools (105 ribbon tools) | L | Inventory in `docs/original-ui-tools-inventory.md`: each tool with its tooltip and kernel mapping. Build order: sketch tools and solver UI, the common features (extrude, revolve, fillet, hole, patterns), assemblies, surfaces, evaluate, drawing |
 | Display layers and per-feature visibility | S | Spec Step 4b |
 | Workspace presets and settings (done), theme (dark) in the real app | S | |
 | Platform wrappers: desktop (Tauri, native kernel), mobile (Capacitor), touch tool flows | L | Native regen is 2 to 3 times faster than wasm |
