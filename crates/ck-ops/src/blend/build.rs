@@ -145,6 +145,13 @@ pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featu
             .collect::<Result<_, BlendError>>()?;
         let ends: Vec<[usize; 2]> = eids.iter().map(|&e| [b.edge(e).v0.idx(), b.edge(e).v1.idx()]).collect();
         let n = edges.len();
+        // two spline sections (conic / curvature) meeting at a vertex need a corner patch: the
+        // spline x spline intersection is not closed by the marcher (documented gap)
+        if matches!(spec, Spec::Fillet(_, FilletProfile::Conic(_) | FilletProfile::Curvature(_)))
+            && (0..n).any(|i| (i + 1..n).any(|j| ends[i].iter().any(|v| ends[j].contains(v))))
+        {
+            return Err(BlendError::detail("blendUnsupported", "adjacent edges with a conic or curvature profile"));
+        }
         let rounds: Vec<Vec<usize>> = match spec {
             Spec::Chamfer(..) => {
                 let mut done = vec![false; n];
