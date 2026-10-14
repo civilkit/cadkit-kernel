@@ -121,6 +121,36 @@ Rules:
 - Not covered: `sweep`, `loft`, `hole` and surface extrudes still use all regions.
   Check: `tools/region_select_check.mjs`, `crates/ck-model/tests/region_select.rs`.
 
+## Threads: `threadData` request and `thread` feature
+
+### `threadData` (read-only, stateless)
+
+The thread tables live in the kernel (`crates/ck-model/src/threads.rs`), so a
+GUI fills its "standard" and "size" dropdowns from this request instead of
+hard-coding them, and an agent uses the same data. No session state is needed
+(no `tag`). All lengths are mm.
+
+```json
+{"type":"threadData"}
+-> {"units":"mm","standards":[{"id":"metric","description":"ISO metric coarse, M1 to M64 (60 degrees)","count":35,"sizes":["M1","M1.2", "..."]}, {"id":"UNC",...}]}
+
+{"type":"threadData","standard":"UNC"}
+-> {"standard":"UNC","units":"mm","sizes":[{"size":"1/4-20","standard":"UNC","major":6.35,"pitch":1.27,"tpi":20,
+    "minorInternal":4.9,"minorExternal":4.77,"pitchDiameter":5.5256,"angle":60,"tapDrill":5.105,"tapDrillName":"#7",
+    "classInternal":"2B","classExternal":"2A","tapered":false}, ...]}
+
+{"type":"threadData","standard":"BSP","size":"G1/4"}      // one entry
+```
+
+Standard ids: `metric` (coarse, `M6`), `metric-fine` (`M10x1.25`), `UNC`, `UNF`
+(`1/4-20`, `#10-24`), `BSP` (parallel G, `G1/4`), `NPT` (`1/4 NPT`, tapered
+1:16), `Tr` (`Tr20x4`), `Acme` (`Acme 1/2-10`). Aliases are accepted
+(`ISO`, `G`, `bspp`, case-insensitive). `major` is the nominal diameter (for
+NPT the pipe outside diameter, `pitchDiameter` the gauge-plane value);
+`minorInternal` is D1 (the crest of an internal thread), `minorExternal` is d3
+(the root of an external thread); `tapDrill` is the bore an internal thread is
+cut into. An unknown standard or size is a wire error listing the choices.
+
 ## Acceptance
 
 - A scripted agent session (no human) builds the benchmark parts in

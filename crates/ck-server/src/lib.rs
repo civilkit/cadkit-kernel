@@ -79,6 +79,8 @@ pub const REQUEST_TYPES: &[(&str, Handler)] = &[
     ("resolve", agent::resolve),
     ("describe", agent::describe),
     ("refDiff", agent::ref_diff),
+    // Extension: thread standards as data (stateless, read-only).
+    ("threadData", agent::thread_data),
 ];
 
 pub fn handler_for(ty: &str) -> Option<Handler> {

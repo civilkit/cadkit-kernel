@@ -473,6 +473,14 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
         "resolve" => Ok(ck_ops::agent::resolve(&snapshot(cx)?.body, &cx.msg)),
         "describe" => Ok(ck_ops::agent::describe(&snapshot(cx)?.body, &cx.msg)),
         "refDiff" => crate::refdiff::reply(cx),
+        "threadData" => {
+            let get = |k: &str| match cx.msg.get(k) {
+                Some(Json::Str(s)) if !s.is_empty() => Ok(Some(s.as_str())),
+                None | Some(Json::Null) => Ok(None),
+                Some(_) => Err(format!("threadData: {k} must be a string")),
+            };
+            ck_model::threads::reply(get("standard")?, get("size")?)
+        }
         "inspect" => inspect(cx),
         "continuity" => Ok(ck_ops::continuity::reply(&snapshot(cx)?.body, &cx.msg)),
         "measure" => Ok(ck_ops::measure::reply(&snapshot(cx)?.body, &cx.msg)),

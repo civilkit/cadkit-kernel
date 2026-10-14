@@ -34,3 +34,11 @@ pub fn ref_diff(cx: &mut Cx) -> Result<Json, String> {
     check_part(cx.msg.get("part"))?;
     cx.query("refDiff")
 }
+
+/// `{type:"threadData", standard?, size?}`: the thread tables (stateless).
+/// No `standard`: the list of standards with their size designations; with
+/// it: that standard's sizes with all numbers (mm); with `size` too: the one
+/// entry. Unknown standard / size are wire errors that list the choices.
+pub fn thread_data(cx: &mut Cx) -> Result<Json, String> {
+    cx.query("threadData")
+}

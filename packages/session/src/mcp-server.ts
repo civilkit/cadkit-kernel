@@ -56,6 +56,7 @@ export function createMcpServer(): { server: McpServer; sessions: Map<string, Se
     });
     return text({
       featureTypes: FEATURE_TYPES,
+      threadStandards: ['metric', 'metric-fine', 'UNC', 'UNF', 'BSP', 'NPT', 'Tr', 'Acme'],
       planes: { front: 'XY, normal +Z', top: 'XZ, local y maps to -z', right: 'ZY' },
       exampleOps: [
         { op: 'add', feature: sk('F1', 'front', [[0, 0], [60, 0], [60, 40], [0, 40]]) },
@@ -63,6 +64,14 @@ export function createMcpServer(): { server: McpServer; sessions: Map<string, Se
       ],
       exampleExpect: [{ kind: 'volume', value: 24000, tol: 0.01 }, { kind: 'valid' }],
     });
+  });
+
+  server.tool('threadData', 'Thread standards and sizes (ISO metric, UNC/UNF, BSP, NPT, Tr, Acme) with diameters, pitch, tap drill and default class; use for the thread feature', {
+    session: z.string(),
+    standard: z.string().optional(),
+    size: z.string().optional(),
+  }, async ({ session, standard, size }) => {
+    return text(await get(session).threadData(standard, size));
   });
 
   server.tool('read', 'Read the document, body facts and edit history', {
