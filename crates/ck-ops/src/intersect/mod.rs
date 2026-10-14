@@ -13,6 +13,7 @@
 
 pub mod cc;
 pub mod cs;
+pub mod patch;
 pub mod ss;
 
 use ck_geom::curve::Curve;

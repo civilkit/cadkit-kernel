@@ -130,6 +130,8 @@ fn regen_hook(part: &Json, cx: &mut Cx) -> Result<(Json, State), String> {
     }
     // debug requests want the real per-feature spans, so they never replay
     let use_cache = !flag("noCache") && !cx.trace.enabled();
+    ck_ops::intersect::ss::GRID_SEEDS.store(flag("ssiGridSeeds"), std::sync::atomic::Ordering::Relaxed);
+    ck_ops::intersect::ss::ORIG_STEP.store(flag("ssiOrigStep"), std::sync::atomic::Ordering::Relaxed);
     let want_stats = flag("cacheStats");
     let run_n = regen::run_len(&part, &opts);
     let mut stats = (0usize, run_n); // (features reused, features in the run)
