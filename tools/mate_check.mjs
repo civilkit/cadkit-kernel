@@ -75,10 +75,24 @@ const CYL = (id, o = {}) => ins(id, C, o);
   check('oracle kinds: no assembly key', old.errs.length === 0 && old.asm === undefined);
   const forced = regen([...bx, mate('F3', 'coincident', 'F2.C0@F2.1', 'F2.C1@F1.1')], { dofReport: true });
   check('dofReport opt reports oracle kinds', forced.asm?.dof.total === 3 && forced.asm.dof.translational === 2 && forced.asm.dof.rotational === 1, JSON.stringify(forced.asm?.dof));
+  const cf = regen([...bx, mate('F3', 'coincident', 'F2.C0@F2.1', 'F2.C1@F1.1'), mate('F4', 'distance', 'F2.C0@F2.1', 'F2.C1@F1.1', { distance: 5 }),
+    mate('F5', 'coincident', 'F2.C0@F2.1', 'F2.C1@F1.1')], { dofReport: true });
+  check('oracle-kind conflict is named in the report', cf.asm?.conflicts?.[0]?.mate === 'F4' && cf.asm.overConstrained === true, JSON.stringify(cf.asm?.conflicts) + cf.errs);
   const bad1 = regen([...bx, mate('F3', 'hinge', 'F2.C0@F2.1', 'F2.C1@F1.1')]);
   check('unsupported geometry is a structured error', bad1.errs.join() === 'F3:mateGeometry', bad1.errs.join());
   const bad2 = regen([...bx, mate('F3', 'cam', 'F2.C0@F2.1', 'F2.C1@F1.1')]);
   check('unknown kind is a structured error', bad2.errs.join() === 'F3:mateGeometry', bad2.errs.join());
+}
+{
+  // a second regen of an edited document in the same session (regen cache) keeps the report
+  const k = new Kernel(mod);
+  const ask = (features) => JSON.parse(k.request(JSON.stringify({ id: 1, msg: { type: 'regen', tag: 'main', part: part(features) } })).json).result;
+  const f = [CYL('F1', { fixed: true }), CYL('F2', { dx: 100, dy: 7, dz: 3 }), mate('F3', 'hinge', 'F2.S.e1@F2.1', 'F2.S.e1@F1.1')];
+  const a = ask(f);
+  const b = ask([...f, mate('F4', 'perpendicular', 'F2.C0@F2.1', 'F2.C1@F1.1')]);
+  check('regen cache: report follows the edit', a.assembly?.dof.total === 2 && (b.assembly?.dof.total === 2 || b.errors.length === 1), JSON.stringify([a.assembly?.dof, b.assembly?.dof, b.errors]));
+  const c = ask(f);
+  check('regen cache: same document, same report', JSON.stringify(a.assembly) === JSON.stringify(c.assembly) && JSON.stringify(a.components) === JSON.stringify(c.components));
 }
 console.log(bad ? `mate_check: ${bad} FAILED` : 'mate_check: ok');
 process.exit(bad ? 1 : 0);

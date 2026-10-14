@@ -201,7 +201,9 @@ pub struct Assembly {
     pub cache: Vec<(String, Nested)>,
     /// Mates rejected by the solver (conflicting), `(mate id, mates it
     /// conflicted with)`, in feature order (the `assembly.conflicts` report).
-    pub conflicts: Vec<(String, Vec<String>)>,
+    /// The flag: the rejected mate was of an extended kind (oracle kinds
+    /// only surface it when the report is asked for).
+    pub conflicts: Vec<(String, Vec<String>, bool)>,
 }
 
 impl Assembly {
@@ -711,7 +713,10 @@ pub fn exec_mate(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(
     br.asm.mates.push(m);
     let r = solve_all(br, mover);
     if r.is_err() {
-        br.asm.mates.pop();
+        let new = br.asm.mates.pop().unwrap();
+        if let Some(tc) = br.component_of(&new.target) {
+            super::mate_kinds::record_conflict(br, &new, tc);
+        }
     }
     update_dof(br);
     r

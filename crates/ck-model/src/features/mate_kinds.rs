@@ -510,17 +510,28 @@ pub fn exec_ext(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<()
         for (c, p) in br.asm.components.iter_mut().zip(saved_places) {
             c.place = p;
         }
-        let touch = [new.mover, tc];
-        let with: Vec<String> =
-            br.asm.mates.iter().filter(|o| touch.contains(&o.mover) || o.ext.as_ref().is_some_and(|x| touch.contains(&x.tc))).map(|o| o.id.clone()).collect();
+        let with = record_conflict(br, &new, tc);
         if err.code == MATE_CONFLICT {
             err = err.with("mates", Json::Arr(std::iter::once(new.id.clone()).chain(with.iter().cloned()).map(Json::Str).collect()));
         }
-        br.asm.conflicts.push((new.id, with));
         return Err(err);
     }
     super::mate::update_dof(br);
     Ok(())
+}
+
+/// Remember a rejected mate and the earlier mates on its components.
+pub fn record_conflict(br: &mut Brep, new: &MateRec, tc: usize) -> Vec<String> {
+    let touch = [new.mover, tc];
+    let with: Vec<String> = br
+        .asm
+        .mates
+        .iter()
+        .filter(|o| touch.contains(&o.mover) || o.ext.as_ref().is_some_and(|x| touch.contains(&x.tc)) || br.component_of(&o.target).is_some_and(|c| touch.contains(&c)))
+        .map(|o| o.id.clone())
+        .collect();
+    br.asm.conflicts.push((new.id.clone(), with.clone(), new.ext.is_some()));
+    with
 }
 
 fn move_comp(br: &mut Brep, k: usize, x: &Xf) {
@@ -899,7 +910,7 @@ fn rank_of(a: &[Vec<f64>]) -> usize {
 /// The `assembly` report, plus the joint DOF written into `components[]`
 /// when the assembly has extended mates. `force`: report even without them.
 pub fn finalize(br: &mut Brep, force: bool) -> Option<Json> {
-    let has_ext = br.asm.mates.iter().any(|m| m.ext.is_some()) || !br.asm.conflicts.is_empty();
+    let has_ext = br.asm.mates.iter().any(|m| m.ext.is_some()) || br.asm.conflicts.iter().any(|c| c.2);
     if !has_ext && !force {
         return None;
     }
@@ -1087,7 +1098,7 @@ pub fn finalize(br: &mut Brep, force: bool) -> Option<Json> {
     let conflicts: Vec<Json> = asm
         .conflicts
         .iter()
-        .map(|(id, with)| Obj::new().put("mate", id.as_str()).put("with", Json::Arr(with.iter().map(|s| Json::Str(s.clone())).collect())).build())
+        .map(|(id, with, _)| Obj::new().put("mate", id.as_str()).put("with", Json::Arr(with.iter().map(|s| Json::Str(s.clone())).collect())).build())
         .collect();
     let over = !redundant.is_empty() || !asm.conflicts.is_empty();
     let mut o = Obj::new()

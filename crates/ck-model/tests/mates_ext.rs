@@ -466,3 +466,53 @@ fn solve_is_deterministic() {
     assert_eq!(a.places, b.places);
     assert_eq!(a.report.as_ref().map(ck_json::to_string), b.report.as_ref().map(ck_json::to_string));
 }
+
+/// Every kind against every pair of face types and several option sets: no
+/// panic, errors are structured, a clean regen yields a DOF report that is
+/// consistent (total never above 6 for the one floating component) and the
+/// second run is identical.
+#[test]
+fn every_kind_on_every_face_pair_is_safe() {
+    let cyl = cylp(5.0, 20.0);
+    let bx = boxp(40.0, 20.0, 10.0);
+    let faces = ["F2.C0", "F2.C1", "F2.S.e1", "F2.S.e2"];
+    let kinds = [
+        "coincident", "concentric", "distance", "angle", "parallel", "perpendicular", "tangent", "lock", "symmetric", "width", "hinge", "slot", "screw", "gear",
+        "rackPinion", "limits", "cam", "",
+    ];
+    let opts = [
+        "",
+        r#","flip":true"#,
+        r#","angle":45,"ratio":3,"pitch":1.5,"radius":4,"min":1,"max":9,"dir":[0,0,1],"distance":2"#,
+        r#","angle":"=1e9","of":"angle","min":-5"#,
+        r#","a2":"F2.C1@F2.1","b2":"F2.C1@F1.1","c":"F2.C0@F1.1""#,
+    ];
+    let mut ran = 0;
+    for kind in kinds {
+        for fa in faces {
+            for fb in faces {
+                for (oi, o) in opts.iter().enumerate() {
+                    let round = fa.ends_with("e1") || fb.ends_with("e1");
+                    let part = if round { &cyl } else { &bx };
+                    let f = vec![
+                        ins("F1", part, r#","fixed":true"#),
+                        ins("F2", part, r#","dx":100,"dy":7,"dz":3,"axis":{"kind":"axis","axis":"x"},"angle":17"#),
+                        mate("F3", kind, &format!("{fa}@F2.1"), &format!("{fb}@F1.1"), o),
+                    ];
+                    let r = run(&f);
+                    let again = run(&f);
+                    assert_eq!(r.places, again.places, "{kind} {fa} {fb} {oi}");
+                    assert_eq!(r.errors, again.errors);
+                    for e in &r.errors {
+                        assert!(e.starts_with("F3:"), "{e}");
+                    }
+                    if r.report.is_some() {
+                        assert!(r.dof().0 <= 6, "{kind} {fa} {fb} {oi}: {:?}", r.dof());
+                    }
+                    ran += 1;
+                }
+            }
+        }
+    }
+    assert!(ran > 1000);
+}
