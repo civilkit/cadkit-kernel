@@ -165,9 +165,15 @@ impl Surface {
     /// Evaluator along the iso-v line of a screw patch (the profile is evaluated once): `None` for other
     /// surfaces.
     pub fn screw_vline(&self, v: f64) -> Option<ScrewVLine> {
-        let Surface::Screw { profile, axis_o, axis, rise, .. } = self else { return None };
+        // (a surface of revolution is a screw patch of rise 0: face integrals over it evaluate
+        // the profile once per iso-v line instead of once per Gauss point)
+        let (profile, axis_o, axis, rise) = match self {
+            Surface::Screw { profile, axis_o, axis, rise, .. } => (profile, axis_o, axis, *rise),
+            Surface::Revolution { profile, axis_o, axis } => (profile, axis_o, axis, 0.0),
+            _ => return None,
+        };
         let c = profile.derivs(v, 1);
-        Some(ScrewVLine { w: c[0] - *axis_o, c1: c[1], axis: *axis, axis_o: *axis_o, rise: *rise })
+        Some(ScrewVLine { w: c[0] - *axis_o, c1: c[1], axis: *axis, axis_o: *axis_o, rise })
     }
 
     /// A multi-turn sweep patch (a long multi-span B-spline or a screw of more than ~1.3 turns): global
@@ -1155,6 +1161,20 @@ mod tests {
             let (_, _, p) = rev.closest_point(q);
             let (_, _, ps) = sph.closest_point(q);
             assert!(p.dist(ps) < 2e-4, "{q:?}: {p:?} vs {ps:?}");
+        }
+    }
+
+    #[test]
+    fn revolution_vline_matches_derivs2() {
+        let prof = Curve::circle_x(Vec3::new(5., 0., 0.), Vec3::Y, Vec3::X, 1.5);
+        let rev = Surface::Revolution { profile: Box::new(prof), axis_o: Vec3::new(0.1, -0.2, 0.3), axis: Vec3::Z };
+        for v in [0.3, 1.9, 4.4] {
+            let vl = rev.screw_vline(v).expect("revolution has an iso-v evaluator");
+            for u in [-0.4, 0.0, 1.3, 5.9] {
+                let d = rev.derivs2(u, v);
+                let (p, du, dv) = vl.eval1(u);
+                assert!(p.dist(d.p) < 1e-12 && du.dist(d.du) < 1e-12 && dv.dist(d.dv) < 1e-12, "u {u} v {v}");
+            }
         }
     }
 

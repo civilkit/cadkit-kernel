@@ -110,6 +110,20 @@ fn legitimate_configurations_pass() {
     }
 }
 
+/// A solid of revolution of an ellipse (faces on `Surface::Revolution`, integrated along iso-v
+/// lines with the profile evaluated once): Pappus gives 2 pi R * pi a b.
+#[test]
+fn revolved_ellipse_volume() {
+    let seg = ProfileSeg { tag: "e1".into(), curve: ck_geom::curve2::Curve2::ellipse(v(20.0, 0.0), v(1.0, 0.0), 4.0, 2.5), t0: 0.0, t1: 2.0 * PI, rev: false };
+    let body = revolve("R", &Profile::new(top_at(0.0), region(ProfileLoop::new(vec![seg]))), Vec3::ZERO, Vec3::Z, 0.0, 2.0 * PI).unwrap();
+    let want = 2.0 * PI * 20.0 * PI * 4.0 * 2.5;
+    let got = vol(&body);
+    assert!((got - want).abs() < 1e-6 * want, "mass_props {got} vs {want}");
+    let faces: Vec<_> = body.face_ids().collect();
+    let sum: f64 = faces.iter().map(|&f| ck_topo::mass::face_signed_volume(&body, f)).sum();
+    assert!((sum - want).abs() < 1e-6 * want, "per-face {sum} vs {want}");
+}
+
 /// The sanity check sums per-face volume integrals memoised per face: the sum must equal the
 /// whole-body volume, and the second pass over a chain of cuts (cache warm) must agree.
 #[test]

@@ -152,14 +152,14 @@ fn angular(s: &Surface) -> (bool, bool) {
 /// the integral of F against the OUTWARD area element. `res` ≥ 1 scales
 /// panel counts (region.rs refines near-singular integrands with it).
 pub fn face_integral<const K: usize>(b: &Body, f: FaceId, res: usize, integrand: &dyn Fn(Vec3, Vec3) -> [f64; K]) -> [f64; K] {
-    face_integral_with(b, f, res, integrand, None, false)
+    face_integral_with(b, f, res, integrand, None, false, None)
 }
 
 /// [`face_integral`] for an integrand that is a polynomial in the surface parameter `v` on cylinders and
 /// cones (the area element and the moments of a cylinder / cone are): a face with a long dense boundary
 /// (cut by helical flutes) then tabulates its inner integrals (see `analytic_tab`).
 pub fn face_integral_vpoly<const K: usize>(b: &Body, f: FaceId, res: usize, integrand: &dyn Fn(Vec3, Vec3) -> [f64; K]) -> [f64; K] {
-    face_integral_with(b, f, res, integrand, None, true)
+    face_integral_with(b, f, res, integrand, None, true, None)
 }
 
 /// n-point Gauss-Legendre rule on [-1, 1] (Newton on the Legendre polynomial).
@@ -198,10 +198,23 @@ fn gauss_legendre(n: usize) -> Vec<(f64, f64)> {
 /// points the degree needs (one panel per u span, fewer points across v),
 /// which matters on long screw sweeps (hundreds of spans).
 pub fn face_integral_poly<const K: usize>(b: &Body, f: FaceId, ord: usize, integrand: &dyn Fn(Vec3, Vec3) -> [f64; K]) -> [f64; K] {
-    face_integral_with(b, f, 1, integrand, Some(ord), true)
+    face_integral_with(b, f, 1, integrand, Some(ord), true, None)
 }
 
-fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand: &dyn Fn(Vec3, Vec3) -> [f64; K], poly_ord: Option<usize>, vpoly: bool) -> [f64; K] {
+thread_local! {
+    /// Cumulative-integral tables of long spline faces (see `build_vtab`), by caller-chosen key.
+    static VTAB_CACHE: std::cell::RefCell<std::collections::HashMap<u64, std::rc::Rc<dyn std::any::Any>>> = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// [`face_integral_poly`] for an integrand that is the same function on every call with the same
+/// `key` (the key must identify the integrand and the surface): the tables a long spline face
+/// builds depend on the surface and the integrand, not on the face's trimming, so a surface that
+/// comes back with other trimming (a cut through a shell wall) reuses them.
+pub fn face_integral_poly_keyed<const K: usize>(b: &Body, f: FaceId, ord: usize, key: u64, integrand: &dyn Fn(Vec3, Vec3) -> [f64; K]) -> [f64; K] {
+    face_integral_with(b, f, 1, integrand, Some(ord), true, Some(key ^ (K as u64).wrapping_mul(0x9e3779b97f4a7c15) ^ (ord as u64) << 56))
+}
+
+fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand: &dyn Fn(Vec3, Vec3) -> [f64; K], poly_ord: Option<usize>, vpoly: bool, tab_key: Option<u64>) -> [f64; K] {
     let surf = &b.face(f).surface;
     let pieces = split_at_knots(surf, face_pieces(b, f));
     let mut acc = [0.0; K];
@@ -390,7 +403,7 @@ fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand
         _ if analytic_tab => vec![(vmin, vmax)],
         _ => vec![],
     };
-    let build_vtab = || -> Option<(Vec<f64>, Vec<VSpanTab<K>>)> {
+    let build_vtab_raw = || -> Option<(Vec<f64>, Vec<VSpanTab<K>>)> {
         let ((du0, du1), nvn) = match surf {
             Surface::BSpline(bs) => (bs.domain().0, 3 * bs.deg_v + 6),
             // (volume-type integrands are trigonometric polynomials in v: 24 nodes are spectral; the area
@@ -429,15 +442,41 @@ fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand
             .collect();
         Some((ks, tabs))
     };
+    type VTab<const K: usize> = Option<(Vec<f64>, Vec<VSpanTab<K>>)>;
+    let cache_get = || -> Option<std::rc::Rc<VTab<K>>> {
+        let key = tab_key?;
+        VTAB_CACHE.with(|c| c.borrow().get(&key).cloned()).and_then(|r| r.downcast::<VTab<K>>().ok())
+    };
+    let build_vtab = || -> std::rc::Rc<VTab<K>> {
+        if let Some(hit) = cache_get() {
+            return hit;
+        }
+        let t = std::rc::Rc::new(build_vtab_raw());
+        if let (Some(key), true) = (tab_key, t.is_some()) {
+            VTAB_CACHE.with(|c| {
+                let mut c = c.borrow_mut();
+                if c.len() >= 16 {
+                    c.clear();
+                }
+                c.insert(key, t.clone() as std::rc::Rc<dyn std::any::Any>);
+            });
+        }
+        t
+    };
     // a ruled screw face (one v span): the table is always cheaper; a face with several v spans builds it
     // only once as many boundary samples as table nodes sit at distinct v (a cut curve across the sweep)
-    let vtab: std::cell::OnceCell<Option<(Vec<f64>, Vec<VSpanTab<K>>)>> = std::cell::OnceCell::new();
+    let vtab: std::cell::OnceCell<std::rc::Rc<VTab<K>>> = std::cell::OnceCell::new();
     if vspans.len() == 1 {
         let _ = vtab.set(build_vtab());
     }
     let new_lists = std::cell::Cell::new(0usize);
     let table_ready = || -> bool {
-        if vspans.len() == 1 {
+        if vtab.get().is_none() && vspans.len() > 1 {
+            if let Some(hit) = cache_get() {
+                let _ = vtab.set(hit);
+            }
+        }
+        if vspans.len() == 1 || vtab.get().is_some() {
             return vtab.get().map_or(false, |t| t.is_some());
         }
         // (building costs one inner integral per table node: worth it once that many boundary samples
@@ -453,7 +492,7 @@ fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand
     // nodes) is shared by both ends; the partial spans are integrated directly at the true v (one
     // seg_integral instead of one per interpolation node)
     let h_diff = |u: f64, v: f64| -> [f64; K] {
-        let (ks, tabs) = vtab.get().unwrap().as_ref().unwrap();
+        let (ks, tabs) = (**vtab.get().unwrap()).as_ref().unwrap();
         let kof = |x: f64| (ks.partition_point(|&y| y <= x).max(1) - 1).min(ks.len() - 2);
         let (k, k0) = (kof(u), kof(ustar));
         let si = (tabs.partition_point(|t| t.0 <= v).max(1) - 1).min(tabs.len() - 1);
@@ -784,7 +823,7 @@ pub fn signed_volume(b: &Body, faces: &[FaceId]) -> f64 {
 /// One face's share of the signed volume, measured from the origin (so it depends on the face
 /// alone and can be cached per face; the sum over a closed shell does not depend on the origin).
 pub fn face_signed_volume(b: &Body, f: FaceId) -> f64 {
-    face_integral_poly::<1>(b, f, 1, &|p, n| [p.dot(n) / 3.0])[0]
+    face_integral_poly_keyed::<1>(b, f, 1, b.face(f).surface.fingerprint() ^ 0x5eed_0001, &|p, n| [p.dot(n) / 3.0])[0]
 }
 
 #[derive(Debug, Clone, PartialEq)]
