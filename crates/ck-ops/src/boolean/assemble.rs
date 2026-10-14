@@ -485,8 +485,55 @@ pub fn select_with(
             }
         }
     }
+    // ---- membranes: two kept fragments of the same surface, facing opposite ways and bounded by the same
+    // edges, enclose no volume (an operand that touches itself along a wall: a disc extruded into the hole
+    // of its own plate, both walls surviving). Both go, the material on either side fuses.
+    if merge {
+        let sets: Vec<Vec<usize>> = kept
+            .iter()
+            .map(|(f, _)| {
+                let mut v: Vec<usize> = f.loops.iter().flatten().map(|h| h.0).collect();
+                v.sort_unstable();
+                v.dedup();
+                v
+            })
+            .collect();
+        let mut by_set: std::collections::BTreeMap<&Vec<usize>, Vec<usize>> = Default::default();
+        for (i, s) in sets.iter().enumerate() {
+            by_set.entry(s).or_default().push(i);
+        }
+        let mut gone = vec![false; kept.len()];
+        for idx in by_set.values().filter(|v| v.len() > 1) {
+            for (a, &i) in idx.iter().enumerate() {
+                for &j in &idx[a + 1..] {
+                    if gone[i] || gone[j] {
+                        continue;
+                    }
+                    let (fi, fj) = (&arr.faces[kept[i].0.af], &arr.faces[kept[j].0.af]);
+                    if !coincident(&fi.surface, &fj.surface, tol) {
+                        continue;
+                    }
+                    let p = arr.verts[he_start(arr, kept[i].0.loops[0][0])];
+                    let ni = outward(&fi.surface, fi.sense ^ kept[i].1, p);
+                    let nj = outward(&fj.surface, fj.sense ^ kept[j].1, p);
+                    if ni.dot(nj) < -0.5 {
+                        super::bool_dbg!("membrane: fragments of faces {} and {} cancel", kept[i].0.af, kept[j].0.af);
+                        gone[i] = true;
+                        gone[j] = true;
+                    }
+                }
+            }
+        }
+        if gone.iter().any(|&g| g) {
+            let mut k = 0;
+            kept.retain(|_| {
+                k += 1;
+                !gone[k - 1]
+            });
+        }
+    }
     // directed loops after flipping
-    let loops_of = |fr: &Fragment, flip: bool| -> Vec<Vec<He>> {
+    let loops_of =|fr: &Fragment, flip: bool| -> Vec<Vec<He>> {
         if !flip {
             return fr.loops.clone();
         }
