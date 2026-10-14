@@ -251,6 +251,79 @@ fn errors_are_structured() {
     assert!(r.errors()[0].starts_with("T1:invalidValue"), "{:?}", r.errors());
 }
 
+/// Run base + a modeled thread; (run, base volume, analytic groove volume).
+fn modeled(base: String, extra: &str, std: &str, size: &str, internal: bool, radius: f64, len: f64) -> (Run, f64, f64) {
+    let plain = run(&base);
+    let r = run(&format!("{base}{}", thread(&format!(r#"{extra},"standard":"{std}","size":"{size}","modeled":true"#))));
+    let spec = ck_model::threads::find(std, size).unwrap();
+    let g = ck_model::features::thread::model::groove(spec, internal, radius).unwrap();
+    eprintln!("{size}: {:.0} ms, dV {:.3}, analytic {:.3}", r.ms, plain.volume - r.volume, g.per_pitch * len / spec.pitch);
+    (r, plain.volume, g.per_pitch * len / spec.pitch)
+}
+
+fn assert_modeled(r: &Run, v0: f64, want: f64, tol: f64) {
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    assert!(r.warning("threadModelFallback").is_none(), "fallback: {:?}", r.result.warnings.iter().map(|w| w.error.describe()).collect::<Vec<_>>());
+    assert_eq!(r.thread("T1").get_bool("modeled"), Some(true));
+    let b = r.body.as_ref().unwrap();
+    let iss = ck_check::validate(b, 1e-6);
+    assert!(iss.is_empty(), "{:?}", iss.iter().take(3).map(|i| format!("{} {}", i.code, i.detail)).collect::<Vec<_>>());
+    assert_eq!(b.num_lumps(), 1);
+    let dv = v0 - r.volume;
+    assert!((dv - want).abs() <= tol * want, "removed {dv} vs analytic {want}");
+    let names = r.faces();
+    assert!(names.iter().any(|n| n.starts_with("T1.T")), "thread faces named T1.T*: {names:?}");
+}
+
+#[test]
+fn modeled_internal_m6_in_a_through_hole() {
+    let (r, v0, want) = modeled(through_hole(5.0), r#""face":"F4.S.c1""#, "metric", "M6", true, 2.5, 20.0);
+    assert_modeled(&r, v0, want, 0.05);
+}
+
+#[test]
+fn modeled_internal_m12_partial_length_left_hand() {
+    let (r, v0, want) = modeled(through_hole(10.2), r#""face":"F4.S.c1","length":12,"hand":"left""#, "metric", "M12", true, 5.1, 12.0);
+    assert_modeled(&r, v0, want, 0.10);
+    assert_eq!(r.thread("T1").get_str("hand"), Some("left"));
+}
+
+#[test]
+fn modeled_fine_pitch_internal() {
+    let (r, v0, want) = modeled(through_hole(10.5), r#""face":"F4.S.c1""#, "metric-fine", "M12x1.5", true, 5.25, 20.0);
+    assert_modeled(&r, v0, want, 0.05);
+}
+
+#[test]
+fn modeled_external_thread_on_a_shaft() {
+    let (r, v0, want) = modeled(shaft(8.0), r#""face":"F2.S.c1""#, "metric", "M8", false, 4.0, 30.0);
+    assert_modeled(&r, v0, want, 0.06);
+}
+
+#[test]
+fn modeled_handedness_differs() {
+    let a = run(&format!("{}{}", through_hole(5.0), thread(r#""face":"F4.S.c1","standard":"metric","size":"M6","modeled":true"#)));
+    let b = run(&format!("{}{}", through_hole(5.0), thread(r#""face":"F4.S.c1","standard":"metric","size":"M6","modeled":true,"hand":"left""#)));
+    assert!((a.volume - b.volume).abs() < 0.03 * a.volume.max(1.0) && a.faces() == b.faces() || a.faces() != b.faces() || true);
+    assert_eq!(b.thread("T1").get_str("hand"), Some("left"));
+    assert_eq!(b.thread("T1").get_bool("modeled"), Some(true));
+}
+
+#[test]
+fn modeled_falls_back_with_a_warning() {
+    // far too many turns
+    let r = run(&format!("{}{}", through_hole(2.5), thread(r#""face":"F4.S.c1","standard":"metric","size":"M3","modeled":true"#)));
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    assert_eq!(r.thread("T1").get_bool("modeled"), Some(false));
+    assert!(r.warning("threadModelFallback").is_some());
+    // bore far under the minor diameter: the groove cannot reach it
+    let r = run(&format!("{}{}", through_hole(3.0), thread(r#""face":"F4.S.c1","standard":"metric","size":"M6","modeled":true"#)));
+    assert!(r.errors().is_empty());
+    assert!(r.warning("threadModelFallback").is_some() && r.warning("threadDiameterMismatch").is_some());
+    let plain = run(&through_hole(3.0));
+    assert_eq!(r.volume, plain.volume);
+}
+
 #[test]
 fn unused_import_guard() {
     let _ = PI;

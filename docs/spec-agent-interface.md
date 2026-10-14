@@ -265,13 +265,20 @@ and boolean machinery.
   the body carries `T1`, `T2`, `T3` and, where the groove ends inside the
   material, `T4` / `T5`.
 - Fallback rules (the regen never fails because of a modeled thread): the
-  feature stays cosmetic and a `threadModelFallback` warning gives the reason
-  when the thread is tapered (NPT: modeled tapered threads are not built), the
-  groove would need more than 60 turns, the bore is too small for the groove to
-  reach it (hole far under the minor diameter), the profile would overlap itself
-  (pitch too coarse for the diameter), or the boolean fails, produces an invalid
-  solid, or the volume change is not plausible for the groove. The body is left
-  exactly as before in every fallback.
+  feature stays cosmetic, `modeled` reads false, the body is exactly as before and
+  a `threadModelFallback {reason}` warning says why: the thread is tapered (NPT;
+  modeled tapered threads are not built), the groove would need more than 60
+  turns (the stand-in for a time budget: there is no clock in the kernel), the
+  thread length is shorter than one groove, the bore is not smaller than the
+  major diameter or is too small for the groove to reach it (a hole far under the
+  minor diameter), the shaft is smaller than the root or so far over the major
+  that the groove cannot clear it, the boolean fails, the result is an invalid
+  solid or splits into several lumps, or the removed volume is not within
+  0.4x-1.6x of the analytic groove volume.
+- Volume: the removed volume equals the analytic groove volume (ring integral of
+  the groove width over the cut radii, per pitch, times length / pitch); the
+  tests check it to 5 percent for full-length threads and to 10 percent for partial
+  lengths (the flat groove end).
 - Check: `tools/thread_check.mjs`, `crates/ck-model/tests/thread_feature.rs`.
 ## Design rules: `profiles` and `checkProfile`
 

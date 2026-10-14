@@ -9,8 +9,8 @@ ck-geom = { path = "../ck-geom" }
 ck-json = { path = "../ck-json" }
 ck-topo = { path = "../ck-topo" }
 ck-ops = { path = "../ck-ops" }
+ck-check = { path = "../ck-check" }
 
 [dev-dependencies]
 ck-io = { path = "../ck-io" }
-ck-check = { path = "../ck-check" }
 ck-tess = { path = "../ck-tess" }

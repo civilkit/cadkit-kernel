@@ -268,6 +268,7 @@ pub struct Placement {
 fn place(cf: &CylFace, req: &Req) -> Placement {
     let full = cf.hi - cf.lo;
     let length = req.length.map_or(full, |l| l.min(full));
+    let reaches = length >= full - 1e-9;
     let top = match req.start {
         Some(t) => t,
         None => match cf.open {
@@ -277,9 +278,9 @@ fn place(cf: &CylFace, req: &Req) -> Placement {
         },
     };
     let (s, dir, start_open, far_open) = if top {
-        (cf.hi, -cf.up, cf.open[1], cf.open[0])
+        (cf.hi, -cf.up, cf.open[1], cf.open[0] && reaches)
     } else {
-        (cf.lo, cf.up, cf.open[0], cf.open[1])
+        (cf.lo, cf.up, cf.open[0], cf.open[1] && reaches)
     };
     Placement { start: cf.o + cf.up * s, dir, length, start_open, far_open }
 }
@@ -337,21 +338,180 @@ pub fn exec_thread(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
 }
 
 pub mod model {
-    //! Modeled threads (the real helical groove).
+    //! Modeled threads: a helical groove (a trapezoid swept along a screw motion about the
+    //! face axis) cut from the body.
+    //!
+    //! Groove width at radius r (axial), flank half-angle a = angle / 2:
+    //! * internal: `g(r) = fm P + 2 (r_major - r) tan a`  (narrowest at the root, the major);
+    //! * external: `g(r) = (1 - fm) P - 2 (r_major - r) tan a`  (widest at the crest, the major);
+    //! with `fm` the flat fraction of the profile (P/8 ISO / UN, ...). SIMPLIFICATION: straight
+    //! flanks and flat crests / roots, no rounded roots; the groove reaches from the minor (external)
+    //! or from just inside the bore (internal) to the major (internal) or just outside the shaft
+    //! (external).
     use super::*;
+    use crate::features::extrude::Combine;
+    use ck_geom::{Frame, Vec2};
+    use ck_ops::sweep::{sweep_motion, Motion};
+    use ck_topo::body::{FaceName, Role};
+    use ck_topo::make::{Profile, ProfileLoop, ProfileRegion, ProfileSeg};
 
-    pub fn apply(
-        _br: &mut Brep,
-        _state: &mut RegenState,
-        _f: &Feature,
-        spec: &ThreadSpec,
-        _cf: &CylFace,
-        _pl: &Placement,
-        _left: bool,
-    ) -> Result<(), String> {
+    /// More turns than this are not modeled (the sweep and the boolean grow with the turns).
+    pub const MAX_TURNS: f64 = 60.0;
+    /// Axial width of the groove never exceeds this fraction of the pitch (turns must not touch).
+    const MAX_WIDTH: f64 = 0.9;
+
+    /// Flat fraction of the profile at the major diameter.
+    fn flat(spec: &ThreadSpec) -> f64 {
+        match spec.standard {
+            "BSP" => 0.1665,
+            "Tr" => 0.366,
+            "Acme" => 0.3707,
+            _ => 0.125,
+        }
+    }
+
+    /// The groove cross-section (radial r, axial s) as four vertices, CCW:
+    /// `[(r_a, -w_a/2), (r_b, -w_b/2), (r_b, +w_b/2), (r_a, +w_a/2)]`. Returns it with the axial
+    /// half-width bound.
+    pub struct Groove {
+        pub pts: [(f64, f64); 4],
+        /// Largest axial half-width.
+        pub half: f64,
+        /// Volume per pitch of axial length (ring integral of the groove width).
+        pub per_pitch: f64,
+    }
+
+    /// Ring integral of the groove width over `[ra, rb]`: ∫ g(r) 2π r dr (exact for the linear g).
+    fn ring(g: &dyn Fn(f64) -> f64, ra: f64, rb: f64) -> f64 {
+        // g is linear in r: Simpson is exact for g(r) r
+        let (ga, gm, gb) = (g(ra), g(0.5 * (ra + rb)), g(rb));
+        let rm = 0.5 * (ra + rb);
+        std::f64::consts::TAU * (rb - ra) / 6.0 * (ga * ra + 4.0 * gm * rm + gb * rb)
+    }
+
+    pub fn groove(spec: &ThreadSpec, internal: bool, radius: f64) -> Result<Groove, String> {
+        let p = spec.pitch;
+        let tn = (spec.angle.to_radians() * 0.5).tan();
+        let fm = flat(spec);
+        let r_maj = spec.major * 0.5;
+        let eps = 0.1 * p;
+        if internal {
+            let g = |r: f64| fm * p + 2.0 * (r_maj - r) * tn;
+            if radius >= r_maj - 0.02 * p {
+                return Err(format!("the bore (diameter {}) is not smaller than the {} major diameter {}; there is nothing to cut", super::fmt(2.0 * radius), spec.designation, super::fmt(spec.major)));
+            }
+            let r_lim = r_maj - (MAX_WIDTH - fm) * p / (2.0 * tn);
+            let r_in = (radius - eps).max(r_lim);
+            if r_in > radius - 0.02 * p {
+                return Err(format!(
+                    "the bore (diameter {}) is too small for the groove of {} to reach it (needs a diameter of at least {})",
+                    super::fmt(2.0 * radius), spec.designation, super::fmt(2.0 * (r_lim + 0.02 * p))
+                ));
+            }
+            let (wa, wb) = (g(r_in), g(r_maj));
+            Ok(Groove { pts: [(r_in, -wa / 2.0), (r_maj, -wb / 2.0), (r_maj, wb / 2.0), (r_in, wa / 2.0)], half: wa / 2.0, per_pitch: ring(&g, radius, r_maj) })
+        } else {
+            let g = |r: f64| (1.0 - fm) * p - 2.0 * (r_maj - r) * tn;
+            let r_min = spec.minor_external * 0.5;
+            // keep the root groove at least 0.1 P wide and the outer end under MAX_WIDTH
+            let r_root = r_min.max(r_maj - ((1.0 - fm) * p - 0.1 * p) / (2.0 * tn));
+            let r_lim = r_maj + (MAX_WIDTH - (1.0 - fm)) * p / (2.0 * tn);
+            let r_out = (radius + eps).min(r_lim);
+            if r_out < radius + 0.02 * p {
+                return Err(format!(
+                    "the shaft (diameter {}) is too far over the {} major diameter {} for the groove to clear it",
+                    super::fmt(2.0 * radius), spec.designation, super::fmt(spec.major)
+                ));
+            }
+            if r_out <= r_root + 0.05 * p {
+                return Err(format!("the shaft (diameter {}) is smaller than the {} root diameter; there is nothing to cut", super::fmt(2.0 * radius), spec.designation));
+            }
+            let (wa, wb) = (g(r_root), g(r_out));
+            Ok(Groove { pts: [(r_root, -wa / 2.0), (r_out, -wb / 2.0), (r_out, wb / 2.0), (r_root, wa / 2.0)], half: wb.max(wa) / 2.0, per_pitch: ring(&g, r_root, radius.min(r_out)) })
+        }
+    }
+
+    fn radial_for(d: Vec3) -> Vec3 {
+        // the world axis least aligned with d, made perpendicular
+        let a = if d.x.abs() <= d.y.abs() && d.x.abs() <= d.z.abs() {
+            Vec3::new(1.0, 0.0, 0.0)
+        } else if d.y.abs() <= d.z.abs() {
+            Vec3::new(0.0, 1.0, 0.0)
+        } else {
+            Vec3::new(0.0, 0.0, 1.0)
+        };
+        (a - d * a.dot(d)).normalize()
+    }
+
+    /// Build the groove solid for a thread; faces named `<id>.T<k>`.
+    pub fn tool(id: &str, spec: &ThreadSpec, cf: &CylFace, pl: &Placement, left: bool) -> Result<(Body, Groove), String> {
+        let gr = groove(spec, cf.internal, cf.radius)?;
+        let p = spec.pitch;
+        let d = pl.dir;
+        // centre line of the helix along the axis: from s0 to s1 (distance from the start end into the face)
+        let margin = 0.05 * p;
+        let s0 = if pl.start_open { -(gr.half + 0.5 * p) } else { gr.half + margin };
+        let s1 = if pl.far_open { pl.length + gr.half + 0.5 * p } else { pl.length - gr.half - margin };
+        let travel = s1 - s0;
+        if !(travel > 0.5 * p) {
+            return Err(format!("the thread length {} is shorter than one groove ({})", super::fmt(pl.length), super::fmt(2.0 * gr.half + 0.5 * p)));
+        }
+        let turns = travel / p;
+        if turns > MAX_TURNS {
+            return Err(format!("{} turns; modeled threads are limited to {} turns (shorten the length)", turns.round(), MAX_TURNS));
+        }
+        let o = pl.start + d * s0;
+        let x = radial_for(d);
+        let fr = Frame { o, x, y: d, z: x.cross(d) };
+        let segs: Vec<ProfileSeg> = (0..4)
+            .map(|i| {
+                let (a, b) = (gr.pts[i], gr.pts[(i + 1) % 4]);
+                ProfileSeg::line(&format!("t{i}"), Vec2::new(a.0, a.1), Vec2::new(b.0, b.1))
+            })
+            .collect();
+        let prof = Profile::new(fr, vec![ProfileRegion { outer: ProfileLoop::new(segs), holes: vec![] }]).normalized();
+        let angle = std::f64::consts::TAU * turns * if left { -1.0 } else { 1.0 };
+        let mut body = sweep_motion(id, &prof, Motion::Screw { o, a: d, angle, rise: travel })?;
+        for f in body.faces.iter_mut().filter(|f| f.alive) {
+            let k = match &f.name.role {
+                Role::Side(t) => t.trim_start_matches('t').parse::<u32>().unwrap_or(0),
+                Role::Cap(k) => 4 + *k,
+                _ => continue,
+            };
+            f.name = FaceName::other(id, &format!("T{k}"));
+        }
+        Ok((body, gr))
+    }
+
+    pub fn apply(br: &mut Brep, _state: &mut RegenState, f: &Feature, spec: &ThreadSpec, cf: &CylFace, pl: &Placement, left: bool) -> Result<(), String> {
         if spec.tapered {
             return Err(format!("{} is a tapered (1:16) thread; modeled tapered threads are not built", spec.designation));
         }
-        Err("modeled threads are not built yet".to_string())
+        let before = br.body.clone().ok_or("no solid")?;
+        let v0 = ck_topo::mass::mass_props(&before).volume;
+        let (tool, gr) = tool(&f.id, spec, cf, pl, left)?;
+        let r = br.combine(&tool, Combine::Cut, false);
+        let fail = |br: &mut Brep, why: String| {
+            br.body = Some(before.clone());
+            Err(why)
+        };
+        if let Err(e) = r {
+            return fail(br, format!("the groove could not be cut ({})", e.describe()));
+        }
+        let after = br.body.as_ref().unwrap();
+        let v1 = ck_topo::mass::mass_props(after).volume;
+        // the removed volume must be close to the analytic groove (per pitch x turns of the threaded length)
+        let want = gr.per_pitch * pl.length / spec.pitch;
+        let dv = v0 - v1;
+        if !(dv > 0.4 * want && dv < 1.6 * want) {
+            return fail(br, format!("the cut removed {} mm3, expected about {}", super::fmt(dv), super::fmt(want)));
+        }
+        if ck_check::validate(after, 1e-6).len() > ck_check::validate(&before, 1e-6).len() {
+            return fail(br, "the cut produced an invalid solid".to_string());
+        }
+        if after.num_lumps() != before.num_lumps() {
+            return fail(br, "the cut split the body".to_string());
+        }
+        Ok(())
     }
 }

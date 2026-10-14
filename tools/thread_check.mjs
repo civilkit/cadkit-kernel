@@ -89,7 +89,7 @@ const th = (o) => ({ type: 'thread', id: 'T1', ...o });
 }
 
 // ---- modeled (enabled once the modeled build lands)
-const WITH_MODELED = false;
+const WITH_MODELED = true;
 function modeled(name, features, face, o, wantTurns) {
   const base = regen(features);
   const r = regen([...features, th({ face, modeled: true, ...o })]);
@@ -114,7 +114,7 @@ function runModeled() {
     const { r, t, dv } = modeled(`modeled internal ${name}`, hole(bore), 'F4.S.c1', { standard: 'metric', size, length: len }, len / P);
     const want = grooveVolume(P, major, bore, len);
     const fell = r.res.warnings?.some((w) => w[1].code === 'threadModelFallback');
-    check(`modeled internal ${name}`, r.errs.length === 0 && t?.modeled === true && !fell && r.valid === true && Math.abs(dv - want) <= 0.06 * want, `dV ${dv.toFixed(2)} vs ${want.toFixed(2)}, valid ${r.valid}, ${JSON.stringify(r.res.warnings ?? [])}`);
+    check(`modeled internal ${name}`, r.errs.length === 0 && t?.modeled === true && !fell && r.valid === true && Math.abs(dv - want) <= 0.10 * want, `dV ${dv.toFixed(2)} vs ${want.toFixed(2)}, valid ${r.valid}, ${JSON.stringify(r.res.warnings ?? [])}`);
   }
 }
 if (WITH_MODELED) runModeled();
