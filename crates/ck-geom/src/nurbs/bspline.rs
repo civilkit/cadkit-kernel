@@ -140,9 +140,17 @@ impl<P: Pt> BSplineCurve<P> {
             let span = find_span(self.n(), p, u, &self.knots);
             let nd = basis::ders_basis_funs2(span, u, p, d, &self.knots);
             let mut ad = [P::default(); 3];
-            for k in 0..=d.min(p) {
-                for j in 0..=p {
-                    ad[k] = ad[k] + self.ctrl[span - p + j] * (nd[k][j] * 1.0);
+            // one pass over the control points for every order (bit-identical
+            // to a pass per order: each accumulator sees the same operations)
+            let kd = d.min(p);
+            for j in 0..=p {
+                let c = self.ctrl[span - p + j];
+                ad[0] = ad[0] + c * (nd[0][j] * 1.0);
+                if kd >= 1 {
+                    ad[1] = ad[1] + c * (nd[1][j] * 1.0);
+                }
+                if kd >= 2 {
+                    ad[2] = ad[2] + c * (nd[2][j] * 1.0);
                 }
             }
             return ad;

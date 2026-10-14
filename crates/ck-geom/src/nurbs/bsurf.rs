@@ -279,17 +279,28 @@ impl BSplineSurface {
             let nu = basis::ders_basis_funs2(su, u, p, 2, &self.knots_u);
             let nv = basis::ders_basis_funs2(sv, v, q, 2, &self.knots_v);
             let mut a = [[Vec3::ZERO; 3]; 3];
-            for k in 0..=2usize.min(p) {
-                let mut tp = [Vec3::ZERO; 12];
-                for s in 0..=q {
-                    for r in 0..=p {
-                        let (i, j) = (su - p + r, sv - q + s);
-                        tp[s] = tp[s] + self.cp(i, j) * (nu[k][r] * 1.0);
+            // one pass over the control points for the three u orders (each
+            // accumulator sees the same operations in the same order as a
+            // pass per order: bit-identical)
+            let ku = 2usize.min(p);
+            let mut tp = [[Vec3::ZERO; 12]; 3];
+            for s in 0..=q {
+                let row = &self.ctrl[(sv - q + s)..];
+                for r in 0..=p {
+                    let c = row[(su - p + r) * self.nv];
+                    tp[0][s] = tp[0][s] + c * (nu[0][r] * 1.0);
+                    if ku >= 1 {
+                        tp[1][s] = tp[1][s] + c * (nu[1][r] * 1.0);
+                    }
+                    if ku >= 2 {
+                        tp[2][s] = tp[2][s] + c * (nu[2][r] * 1.0);
                     }
                 }
+            }
+            for k in 0..=ku {
                 for l in 0..=(2 - k).min(q) {
                     for s in 0..=q {
-                        a[k][l] = a[k][l] + tp[s] * nv[l][s];
+                        a[k][l] = a[k][l] + tp[k][s] * nv[l][s];
                     }
                 }
             }
@@ -1265,6 +1276,30 @@ mod tests {
             let p = s.eval(u, v);
             let (cu, cv) = s.closest_param(p);
             assert!(s.eval(cu, cv).dist(p) < 1e-9, "{u} {v} -> {cu} {cv}: {}", s.eval(cu, cv).dist(p));
+        }
+    }
+
+    #[test]
+    fn derivs2_is_bit_identical_to_derivs() {
+        let mut x = 0x2545f4914f6cdd1du64;
+        let mut rnd = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for (p, q) in [(1usize, 1usize), (2, 3), (3, 3), (3, 2), (5, 4)] {
+            let (nu, nv) = (p + 3, q + 4);
+            let ctrl: Vec<Vec3> = (0..nu * nv).map(|_| Vec3::new(rnd(), rnd(), rnd())).collect();
+            let s = BSplineSurface::new(p, q, basis::clamped_uniform(nu, p), basis::clamped_uniform(nv, q), nu, nv, ctrl, None).unwrap();
+            for _ in 0..50 {
+                let (u, v) = (rnd(), rnd());
+                let a = s.derivs2(u, v);
+                let b = s.derivs(u, v, 2);
+                for (x, y) in [(a.p, b[0][0]), (a.du, b[1][0]), (a.dv, b[0][1]), (a.duu, b[2][0]), (a.duv, b[1][1]), (a.dvv, b[0][2])] {
+                    assert_eq!((x.x.to_bits(), x.y.to_bits(), x.z.to_bits()), (y.x.to_bits(), y.y.to_bits(), y.z.to_bits()));
+                }
+            }
         }
     }
 
