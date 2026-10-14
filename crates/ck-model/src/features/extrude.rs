@@ -179,6 +179,23 @@ pub fn selected_profile(sk: &SketchResult, f: &Feature) -> Result<Profile, Featu
     Ok(Profile::new(sk.frame, regions))
 }
 
+/// Splits a profile into (regions that are not islands, islands): an island is a region whose outer
+/// boundary is made of the same sketch entities as a hole of another region of the profile. `None`
+/// when there is no such pair.
+pub fn split_islands(p: &Profile) -> Option<(Profile, Profile)> {
+    let key = |l: &ProfileLoop| -> Vec<String> {
+        let mut k: Vec<String> = l.segs.iter().map(|s| s.tag.clone()).collect();
+        k.sort_unstable();
+        k
+    };
+    let holes: Vec<Vec<String>> = p.regions.iter().flat_map(|r| r.holes.iter().map(key)).collect();
+    let (isl, base): (Vec<_>, Vec<_>) = p.regions.iter().cloned().partition(|r| holes.contains(&key(&r.outer)));
+    if isl.is_empty() || base.is_empty() {
+        return None;
+    }
+    Some((Profile::new(p.frame, base), Profile::new(p.frame, isl)))
+}
+
 /// How a feature's tool body was swept (kept so mirror / patterns can
 /// rebuild it in place of reflecting a finished body).
 #[derive(Debug, Clone)]
@@ -280,10 +297,23 @@ pub fn exec_extrude(state: &RegenState, f: &Feature, body: Option<&Body>) -> Res
         let body = ck_ops::sweep::twist_extrude(&f.id, &profile, o, twist.to_radians(), centre).map_err(topo_err)?;
         return Ok(Tool { body, combine, recipe: None });
     }
-    let body = if o.draft != 0.0 {
-        super::draft::drafted_extrude(&f.id, &profile, o)?
-    } else {
-        extrude(&f.id, &profile, o).map_err(topo_err)?
+    let build = |p: &Profile| -> Result<Body, FeatureError> {
+        if o.draft != 0.0 {
+            super::draft::drafted_extrude(&f.id, p, o)
+        } else {
+            extrude(&f.id, p, o).map_err(topo_err)
+        }
+    };
+    let body = match f.raw.get("regions").and_then(|_| split_islands(&profile)) {
+        // a selected region that fills a hole of another selected one: sweep the two apart and unite
+        // them, so the shared wall disappears and the caps merge (one lump, not two touching ones)
+        Some((base, islands)) => {
+            let a = build(&base)?;
+            let b = build(&islands)?;
+            let out = ck_ops::boolean::boolean(&a, &b, ck_ops::boolean::Op::Union, 1e-6).map_err(|e| FeatureError::new(&e))?;
+            out.body
+        }
+        None => build(&profile)?,
     };
     Ok(Tool { body, combine, recipe: Some(Recipe::Extrude { profile, opts: o }) })
 }
