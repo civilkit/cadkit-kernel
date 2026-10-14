@@ -24,7 +24,7 @@ use super::Op;
 use ck_geom::surface::Surface;
 use ck_geom::{Vec2, Vec3};
 use ck_topo::body::Body;
-use ck_topo::mass::signed_volume;
+use ck_topo::mass::face_signed_volume;
 
 /// A result outside the bounds that `op` allows.
 #[derive(Debug, Clone, PartialEq)]
@@ -45,53 +45,59 @@ fn solid_volume(b: &Body) -> Option<f64> {
     if b.edge_ids().any(|e| b.edge_coedges(e).len() != 2) {
         return None;
     }
-    // The running body of a feature chain is the previous boolean's result, whose volume the
-    // previous check already integrated (about a third of a boolean's time on spline shells):
-    // memoised by a hash of its geometry and trimming.
+    // Boolean chains keep most faces from one result to the next (a cut through a shell wall
+    // changes a handful of faces among hundreds of spline faces, and a face integral of a spline
+    // face costs milliseconds), so the volume is summed from per-face integrals memoised by a
+    // hash of each face's surface and trimming.
     thread_local! {
         static MEMO: std::cell::RefCell<std::collections::HashMap<u64, f64>> = std::cell::RefCell::new(std::collections::HashMap::new());
     }
-    let key = geometry_key(b);
-    if let Some(v) = MEMO.with(|m| m.borrow().get(&key).copied()) {
-        return Some(v);
-    }
-    let faces: Vec<_> = b.face_ids().collect();
-    let v = signed_volume(b, &faces);
-    if v.is_finite() {
-        MEMO.with(|m| {
-            let mut m = m.borrow_mut();
-            if m.len() >= 64 {
-                m.clear();
+    let mut v = 0.0;
+    for f in b.face_ids() {
+        let key = face_key(b, f);
+        let cached = MEMO.with(|m| m.borrow().get(&key).copied());
+        let fv = match cached {
+            Some(x) => x,
+            None => {
+                let x = face_signed_volume(b, f);
+                if x.is_finite() {
+                    MEMO.with(|m| {
+                        let mut m = m.borrow_mut();
+                        if m.len() >= 8192 {
+                            m.clear();
+                        }
+                        m.insert(key, x);
+                    });
+                }
+                x
             }
-            m.insert(key, v);
-        });
+        };
+        v += fv;
     }
     v.is_finite().then_some(v)
 }
 
-/// Hash of everything the volume depends on: every live face's surface and sense and the
-/// ends and middle of every coedge's edge curve.
-fn geometry_key(b: &Body) -> u64 {
+/// Hash of everything one face's volume integral depends on: its surface and sense and the ends
+/// and middle of every coedge's edge curve.
+fn face_key(b: &Body, f: ck_topo::body::FaceId) -> u64 {
     let mut h = 0xcbf29ce484222325u64;
     let mut mix = |x: u64| {
         h = (h ^ x).wrapping_mul(0x100000001b3);
         h ^= h >> 29;
     };
-    for f in b.face_ids() {
-        let face = b.face(f);
-        mix(face.surface.fingerprint());
-        mix(face.sense as u64);
-        for &l in &face.loops {
-            mix(0xa5a5);
-            for &c in &b.lp(l).coedges {
-                let ed = b.edge(b.coedge(c).edge);
-                mix(b.coedge(c).rev as u64);
-                for t in [ed.t0, 0.5 * (ed.t0 + ed.t1), ed.t1] {
-                    let p = ed.curve.eval(t);
-                    mix(p.x.to_bits());
-                    mix(p.y.to_bits());
-                    mix(p.z.to_bits());
-                }
+    let face = b.face(f);
+    mix(face.surface.fingerprint());
+    mix(face.sense as u64);
+    for &l in &face.loops {
+        mix(0xa5a5);
+        for &c in &b.lp(l).coedges {
+            let ed = b.edge(b.coedge(c).edge);
+            mix(b.coedge(c).rev as u64);
+            for t in [ed.t0, 0.5 * (ed.t0 + ed.t1), ed.t1] {
+                let p = ed.curve.eval(t);
+                mix(p.x.to_bits());
+                mix(p.y.to_bits());
+                mix(p.z.to_bits());
             }
         }
     }

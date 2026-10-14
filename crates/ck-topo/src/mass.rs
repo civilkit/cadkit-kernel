@@ -781,6 +781,12 @@ pub fn signed_volume(b: &Body, faces: &[FaceId]) -> f64 {
         .sum()
 }
 
+/// One face's share of the signed volume, measured from the origin (so it depends on the face
+/// alone and can be cached per face; the sum over a closed shell does not depend on the origin).
+pub fn face_signed_volume(b: &Body, f: FaceId) -> f64 {
+    face_integral_poly::<1>(b, f, 1, &|p, n| [p.dot(n) / 3.0])[0]
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct MassProps {
     pub volume: f64,

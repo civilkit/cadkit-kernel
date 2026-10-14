@@ -109,3 +109,21 @@ fn legitimate_configurations_pass() {
         }
     }
 }
+
+/// The sanity check sums per-face volume integrals memoised per face: the sum must equal the
+/// whole-body volume, and the second pass over a chain of cuts (cache warm) must agree.
+#[test]
+fn per_face_volume_sum_matches_body_volume() {
+    let mut body = boxb("B", 0.0, 0.0, 40.0, 30.0, 0.0, 20.0);
+    for i in 0..3 {
+        let tool = cyl("C", top_at(0.0), 8.0 + 12.0 * i as f64, 15.0, 4.0, -5.0, 25.0);
+        let out = boolean(&body, &tool, Op::Cut, 1e-6).expect("cut");
+        assert!(out.mismatch.is_none(), "{:?}", out.mismatch);
+        let faces: Vec<_> = out.body.face_ids().collect();
+        let sum: f64 = faces.iter().map(|&f| ck_topo::mass::face_signed_volume(&out.body, f)).sum();
+        let want = vol(&out.body);
+        assert!((sum - want).abs() < 1e-6 * want, "cut {i}: per-face {sum} vs body {want}");
+        assert!(check_result(&body, &tool, Op::Cut, &out.body).is_none());
+        body = out.body;
+    }
+}
