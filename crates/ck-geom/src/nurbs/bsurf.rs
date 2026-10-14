@@ -47,6 +47,19 @@ pub struct CpPrep {
     grid: Option<(Vec<Vec3>, Vec<(Vec3, Vec3)>)>,
 }
 
+/// Working storage of one bounded closest-point query (see `SCRATCH`).
+#[derive(Default)]
+struct CpScratch {
+    lb: Vec<f64>,
+    cells: Vec<(f64, usize, usize, usize, usize, usize)>,
+    order: Vec<usize>,
+    cell_best: Vec<(f64, f64, f64, f64)>,
+}
+
+thread_local! {
+    static SCRATCH: std::cell::RefCell<CpScratch> = const { std::cell::RefCell::new(CpScratch { lb: Vec::new(), cells: Vec::new(), order: Vec::new(), cell_best: Vec::new() }) };
+}
+
 impl BSplineSurface {
     pub fn new(
         deg_u: usize,
@@ -577,9 +590,8 @@ impl BSplineSurface {
     }
 
     pub fn closest_param_within_with(&self, prep: &CpPrep, q: Vec3, maxd: f64) -> Option<(f64, f64)> {
-        let ((u0, u1), (v0, v1)) = self.domain();
-        let (pu, pv) = (self.deg_u, self.deg_v);
-        let (nu, boxes, cv, vs, bv, cols, ubas) = (prep.nu, &prep.boxes, prep.cv, &prep.vs, &prep.bv, &prep.cols, &prep.ubas);
+        let ((u0, _), (v0, _)) = self.domain();
+        let boxes = &prep.boxes;
         // (exact) farther than `maxd` from the box of the whole net
         if maxd.is_finite() {
             let (lo, hi) = prep.hull;
@@ -590,22 +602,34 @@ impl BSplineSurface {
         }
         // (the grid samples are up to a cell away from the foot point: the
         // sample bound is looser than `maxd`, the final distance is checked)
-        let mut best = (maxd + prep.cell_scale, u0, v0);
-        let mut found = false;
+        let best = (maxd + prep.cell_scale, u0, v0);
         // The seed grid is the same as a brute-force scan, but samples in
         // cells whose control-net box is farther from `q` than the best
         // sample so far are skipped (convex hull property: exact pruning).
         // Long multi-span surfaces (screw sweeps) made the plain scan
         // O(spans) per call.
-        let lb: Vec<f64> = boxes
-            .iter()
-            .map(|&(lo, hi)| {
-                if lo.x > hi.x {
-                    return f64::INFINITY;
-                }
-                Vec3::new((lo.x - q.x).max(q.x - hi.x).max(0.0), (lo.y - q.y).max(q.y - hi.y).max(0.0), (lo.z - q.z).max(q.z - hi.z).max(0.0)).len()
-            })
-            .collect();
+        // Per-query working storage, kept across calls (the SSI seeding asks
+        // thousands of bounded queries per surface: no allocation per query;
+        // taken out of the slot for the call so a nested query gets its own)
+        let mut sc = SCRATCH.with(|s| std::mem::take(&mut *s.borrow_mut()));
+        sc.lb.clear();
+        sc.lb.extend(boxes.iter().map(|&(lo, hi)| {
+            if lo.x > hi.x {
+                return f64::INFINITY;
+            }
+            Vec3::new((lo.x - q.x).max(q.x - hi.x).max(0.0), (lo.y - q.y).max(q.y - hi.y).max(0.0), (lo.z - q.z).max(q.z - hi.z).max(0.0)).len()
+        }));
+        let r = self.closest_param_within_scan(prep, q, maxd, &mut sc, best);
+        SCRATCH.with(|s| *s.borrow_mut() = sc);
+        r
+    }
+
+    fn closest_param_within_scan(&self, prep: &CpPrep, q: Vec3, maxd: f64, sc: &mut CpScratch, mut best: (f64, f64, f64)) -> Option<(f64, f64)> {
+        let ((u0, u1), (v0, v1)) = self.domain();
+        let (pu, pv) = (self.deg_u, self.deg_v);
+        let (nu, cv, vs, bv, cols, ubas) = (prep.nu, prep.cv, &prep.vs, &prep.bv, &prep.cols, &prep.ubas);
+        let mut found = false;
+        let CpScratch { lb, cells, order, cell_best } = sc;
         // (exact) no cell's control-net box within `maxd`: the surface lies in
         // the union of the boxes, so no point of it is that near
         if maxd.is_finite() && lb.iter().all(|&d| d > maxd) {
@@ -613,11 +637,14 @@ impl BSplineSurface {
         }
         // grid evaluation without the derivative machinery (non-rational)
         let fast = self.weights.is_none();
-        let cells: Vec<(f64, usize, usize, usize, usize, usize)> = prep.cells.iter().map(|&(su, iu, iv, alo, ahi)| (lb[iu * cv + iv], su, iu, iv, alo, ahi)).collect();
+        cells.clear();
+        cells.extend(prep.cells.iter().map(|&(su, iu, iv, alo, ahi)| (lb[iu * cv + iv], su, iu, iv, alo, ahi)));
+        let cells: &[(f64, usize, usize, usize, usize, usize)] = cells;
         let u_at = |a: usize| u0 + (u1 - u0) * a as f64 / nu as f64;
         let found_flag = std::cell::Cell::new(false);
         // best grid sample of every visited cell (multi-start seeds)
-        let cell_best: std::cell::RefCell<Vec<(f64, f64, f64, f64)>> = Default::default();
+        cell_best.clear();
+        let cell_best: std::cell::RefCell<&mut Vec<(f64, f64, f64, f64)>> = std::cell::RefCell::new(cell_best);
         let grid = prep.grid.as_ref();
         let nv1 = vs.len();
         let visit = |c: &(f64, usize, usize, usize, usize, usize), best: &mut (f64, f64, f64)| {
@@ -715,14 +742,15 @@ impl BSplineSurface {
         };
         // seed from the nearest few cells (a cell can hold no grid point),
         // then every other cell whose box can still beat the best sample
-        let mut order: Vec<usize> = (0..cells.len()).collect();
+        order.clear();
+        order.extend(0..cells.len());
         let cmp = |x: &usize, y: &usize| cells[*x].0.total_cmp(&cells[*y].0).then(x.cmp(y));
         let k = 8.min(order.len());
         if k > 0 && k < order.len() {
             order.select_nth_unstable_by(k - 1, cmp);
         }
         order[..k].sort_by(cmp);
-        for &i in &order {
+        for &i in order.iter() {
             visit(&cells[i], &mut best);
         }
         found = found || found_flag.get();
@@ -750,17 +778,21 @@ impl BSplineSurface {
                     None
                 }
             };
-            let mut tries = vec![];
+            let mut tries = [(0.0f64, 0.0f64); 3];
+            let mut nt = 0usize;
             if let Some(u) = ends(r.0, u0, u1) {
-                tries.push((u, r.1));
+                tries[nt] = (u, r.1);
+                nt += 1;
             }
             if let Some(v) = ends(r.1, v0, v1) {
-                tries.push((r.0, v));
+                tries[nt] = (r.0, v);
+                nt += 1;
             }
-            if tries.len() == 2 {
-                tries.push((tries[0].0, tries[1].1));
+            if nt == 2 {
+                tries[2] = (tries[0].0, tries[1].1);
+                nt = 3;
             }
-            for t in tries {
+            for &t in &tries[..nt] {
                 let c = newton0(t);
                 let dc = self.eval(c.0, c.1).dist(q);
                 if dc < bd {
@@ -778,7 +810,7 @@ impl BSplineSurface {
         // bounded query, which the SSI seeding calls thousands of times).
         let fd = self.eval(first.0, first.1).dist(q);
         if maxd.is_infinite() && fd > 1e-9 && best.0 < 4.0 * fd.max(1e-3) + self.cell_scale() {
-            let mut cb = cell_best.into_inner();
+            let cb = cell_best.into_inner();
             cb.sort_by(|a, b| a.0.total_cmp(&b.0));
             let mut res = (fd, first);
             for c in cb.iter().take(6) {
