@@ -23,7 +23,7 @@
 use super::solve3;
 use ck_geom::curve::Curve;
 use ck_geom::fit::{interpolate, Param};
-use ck_geom::surface::Surface;
+use ck_geom::surface::{SurfDerivs, Surface};
 use ck_geom::{any_perp, frame_from, Frame, Vec3};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1088,6 +1088,13 @@ fn solve4(mut a: [[f64; 5]; 4]) -> Option<[f64; 4]> {
 
 /// Newton on (u1, v1, u2, v2): S1 = S2 and (S1 - pred)·dir = 0.
 fn correct_uv(s1: &Surface, s2: &Surface, pred: Vec3, dir: Vec3, uv: Uv4, tol: f64) -> Option<(Vec3, Uv4)> {
+    correct_uv_d(s1, s2, pred, dir, uv, tol).map(|(p, uv, _, _)| (p, uv))
+}
+
+/// `correct_uv` that also returns the second derivatives of both surfaces at
+/// the converged parameters (the last Newton evaluation): the tracer derives
+/// the next tangent from them instead of evaluating both surfaces again.
+fn correct_uv_d(s1: &Surface, s2: &Surface, pred: Vec3, dir: Vec3, uv: Uv4, tol: f64) -> Option<(Vec3, Uv4, SurfDerivs, SurfDerivs)> {
     let (mut u1, mut v1) = refine_uv(s1, uv[0], uv[1], pred);
     let (mut u2, mut v2) = refine_uv(s2, uv[2], uv[3], pred);
     let eps = tol * 1e-4;
@@ -1097,7 +1104,7 @@ fn correct_uv(s1: &Surface, s2: &Surface, pred: Vec3, dir: Vec3, uv: Uv4, tol: f
         let f = d1.p - d2.p;
         let g = (d1.p - pred).dot(dir);
         if f.x.abs() < eps && f.y.abs() < eps && f.z.abs() < eps && g.abs() < eps {
-            return Some(((d1.p + d2.p) * 0.5, [u1, v1, u2, v2]));
+            return Some(((d1.p + d2.p) * 0.5, [u1, v1, u2, v2], d1, d2));
         }
         let m = [
             [d1.du.x, d1.dv.x, -d2.du.x, -d2.dv.x, -f.x],
@@ -1114,6 +1121,21 @@ fn correct_uv(s1: &Surface, s2: &Surface, pred: Vec3, dir: Vec3, uv: Uv4, tol: f
 
 fn tangent_uv(s1: &Surface, s2: &Surface, uv: Uv4) -> Option<Vec3> {
     s1.normal(uv[0], uv[1]).cross(s2.normal(uv[2], uv[3])).try_normalize()
+}
+
+/// `Surface::normal` at `(u, v)` given `derivs2(u, v)`: the free-form kinds
+/// define the normal as `derivs2(u, v).normal()` (bit-identical reuse); the
+/// closed-form kinds keep their own expression.
+fn normal_from(s: &Surface, u: f64, v: f64, d: &SurfDerivs) -> Vec3 {
+    match s {
+        Surface::Plane { .. } | Surface::Cylinder { .. } | Surface::Sphere { .. } | Surface::Torus { .. } | Surface::Cone { .. } | Surface::Offset { .. } => s.normal(u, v),
+        _ => d.normal(),
+    }
+}
+
+/// `tangent_uv` from the derivatives `correct_uv_d` already evaluated.
+fn tangent_from(s1: &Surface, s2: &Surface, uv: Uv4, d1: &SurfDerivs, d2: &SurfDerivs) -> Option<Vec3> {
+    normal_from(s1, uv[0], uv[1], d1).cross(normal_from(s2, uv[2], uv[3], d2)).try_normalize()
 }
 
 #[derive(Clone, Copy)]
@@ -1315,8 +1337,8 @@ fn trace(s1: &Surface, s2: &Surface, seed: MPt, t0: Vec3, b: &Bounds, tol: f64, 
     let mut h = step;
     for it in 0..5000 {
         let pred = cur.p + t * h;
-        let next = correct_uv(s1, s2, pred, t, cur.uv, tol);
-        let ok = next.and_then(|(q, uv)| tangent_uv(s1, s2, uv).map(|tq| (q, uv, tq)));
+        let next = correct_uv_d(s1, s2, pred, t, cur.uv, tol);
+        let ok = next.and_then(|(q, uv, d1, d2)| tangent_from(s1, s2, uv, &d1, &d2).map(|tq| (q, uv, tq)));
         match ok {
             Some((q, uv, mut tq)) if q.dist(cur.p) < 2.0 * h && q.dist(cur.p) > 0.1 * h => {
                 if tq.dot(t) < 0.0 {
