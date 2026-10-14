@@ -24,14 +24,17 @@ impl Vec3 {
     pub const Y: Vec3 = Vec3 { x: 0.0, y: 1.0, z: 0.0 };
     pub const Z: Vec3 = Vec3 { x: 0.0, y: 0.0, z: 1.0 };
 
+    #[inline]
     pub fn new(x: f64, y: f64, z: f64) -> Self {
         Vec3 { x, y, z }
     }
 
+    #[inline]
     pub fn dot(self, o: Vec3) -> f64 {
         self.x * o.x + self.y * o.y + self.z * o.z
     }
 
+    #[inline]
     pub fn cross(self, o: Vec3) -> Vec3 {
         Vec3 {
             x: self.y * o.z - self.z * o.y,
@@ -40,14 +43,17 @@ impl Vec3 {
         }
     }
 
+    #[inline]
     pub fn len(self) -> f64 {
         self.dot(self).sqrt()
     }
 
+    #[inline]
     pub fn len2(self) -> f64 {
         self.dot(self)
     }
 
+    #[inline]
     pub fn dist(self, o: Vec3) -> f64 {
         (self - o).len()
     }
@@ -63,12 +69,14 @@ impl Vec3 {
     /// is not finite the result is the ZERO vector; otherwise each component
     /// is multiplied by the reciprocal `1/l` (NOT divided — matters for
     /// bit-exactness).
+    #[inline]
     pub fn normalize(self) -> Vec3 {
         self.try_normalize().unwrap_or(Vec3::ZERO)
     }
 
     /// `Some(unit)` or `None` for degenerate / non-finite input (same guard
     /// as [`Vec3::normalize`]).
+    #[inline]
     pub fn try_normalize(self) -> Option<Vec3> {
         let l = self.len();
         if !(l > TINY) || !l.is_finite() {
@@ -87,15 +95,18 @@ impl Vec3 {
     }
 
     /// Component-wise min / max (bounding boxes).
+    #[inline]
     pub fn min(self, o: Vec3) -> Vec3 {
         Vec3::new(self.x.min(o.x), self.y.min(o.y), self.z.min(o.z))
     }
 
+    #[inline]
     pub fn max(self, o: Vec3) -> Vec3 {
         Vec3::new(self.x.max(o.x), self.y.max(o.y), self.z.max(o.z))
     }
 
     /// Component by axis index 0/1/2 (kd-tree splits).
+    #[inline]
     pub fn get(self, i: usize) -> f64 {
         match i {
             0 => self.x,
@@ -108,6 +119,7 @@ impl Vec3 {
         self.x.is_finite() && self.y.is_finite() && self.z.is_finite()
     }
 
+    #[inline]
     pub fn dist2(self, o: Vec3) -> f64 {
         (self - o).len2()
     }
@@ -152,6 +164,7 @@ impl Vec3 {
         self.cross(a).normalize()
     }
 
+    #[inline]
     pub fn scale(self, s: f64) -> Vec3 {
         Vec3 { x: self.x * s, y: self.y * s, z: self.z * s }
     }
@@ -167,30 +180,35 @@ impl Vec3 {
 
 impl Add for Vec3 {
     type Output = Vec3;
+    #[inline]
     fn add(self, o: Vec3) -> Vec3 {
         Vec3 { x: self.x + o.x, y: self.y + o.y, z: self.z + o.z }
     }
 }
 impl Sub for Vec3 {
     type Output = Vec3;
+    #[inline]
     fn sub(self, o: Vec3) -> Vec3 {
         Vec3 { x: self.x - o.x, y: self.y - o.y, z: self.z - o.z }
     }
 }
 impl Mul<f64> for Vec3 {
     type Output = Vec3;
+    #[inline]
     fn mul(self, s: f64) -> Vec3 {
         self.scale(s)
     }
 }
 impl Div<f64> for Vec3 {
     type Output = Vec3;
+    #[inline]
     fn div(self, s: f64) -> Vec3 {
         Vec3 { x: self.x / s, y: self.y / s, z: self.z / s }
     }
 }
 impl Neg for Vec3 {
     type Output = Vec3;
+    #[inline]
     fn neg(self) -> Vec3 {
         Vec3 { x: -self.x, y: -self.y, z: -self.z }
     }
@@ -257,29 +275,37 @@ impl Vec2 {
     pub const X: Vec2 = Vec2 { x: 1.0, y: 0.0 };
     pub const Y: Vec2 = Vec2 { x: 0.0, y: 1.0 };
 
+    #[inline]
     pub fn new(x: f64, y: f64) -> Self {
         Vec2 { x, y }
     }
+    #[inline]
     pub fn dot(self, o: Vec2) -> f64 {
         self.x * o.x + self.y * o.y
     }
     /// z-component of the 3D cross product (signed area ×2).
+    #[inline]
     pub fn cross(self, o: Vec2) -> f64 {
         self.x * o.y - self.y * o.x
     }
+    #[inline]
     pub fn len(self) -> f64 {
         self.dot(self).sqrt()
     }
+    #[inline]
     pub fn len2(self) -> f64 {
         self.dot(self)
     }
+    #[inline]
     pub fn dist(self, o: Vec2) -> f64 {
         (self - o).len()
     }
+    #[inline]
     pub fn scale(self, s: f64) -> Vec2 {
         Vec2 { x: self.x * s, y: self.y * s }
     }
     /// Same guard as [`Vec3::normalize`] (zero for degenerate input).
+    #[inline]
     pub fn normalize(self) -> Vec2 {
         let l = self.len();
         if !(l > TINY) || !l.is_finite() {
@@ -313,30 +339,35 @@ impl Vec2 {
 
 impl Add for Vec2 {
     type Output = Vec2;
+    #[inline]
     fn add(self, o: Vec2) -> Vec2 {
         Vec2 { x: self.x + o.x, y: self.y + o.y }
     }
 }
 impl Sub for Vec2 {
     type Output = Vec2;
+    #[inline]
     fn sub(self, o: Vec2) -> Vec2 {
         Vec2 { x: self.x - o.x, y: self.y - o.y }
     }
 }
 impl Mul<f64> for Vec2 {
     type Output = Vec2;
+    #[inline]
     fn mul(self, s: f64) -> Vec2 {
         self.scale(s)
     }
 }
 impl Div<f64> for Vec2 {
     type Output = Vec2;
+    #[inline]
     fn div(self, s: f64) -> Vec2 {
         Vec2 { x: self.x / s, y: self.y / s }
     }
 }
 impl Neg for Vec2 {
     type Output = Vec2;
+    #[inline]
     fn neg(self) -> Vec2 {
         Vec2 { x: -self.x, y: -self.y }
     }
@@ -392,6 +423,7 @@ impl Mat3 {
         // rows of the inverse are (b×c, c×a, a×b)/det
         Some(Mat3::from_rows(b.cross(c).scale(inv), c.cross(a).scale(inv), a.cross(b).scale(inv)))
     }
+    #[inline]
     pub fn scale(&self, s: f64) -> Mat3 {
         Mat3 { c: [self.c[0].scale(s), self.c[1].scale(s), self.c[2].scale(s)] }
     }
@@ -439,12 +471,14 @@ impl Mat3 {
 
 impl Mul for Mat3 {
     type Output = Mat3;
+    #[inline]
     fn mul(self, o: Mat3) -> Mat3 {
         self.mul_mat(&o)
     }
 }
 impl Mul<Vec3> for Mat3 {
     type Output = Vec3;
+    #[inline]
     fn mul(self, v: Vec3) -> Vec3 {
         self.mul_vec(v)
     }
@@ -528,6 +562,7 @@ pub struct Plane {
 
 impl Plane {
     /// Normal is normalised (zero if degenerate).
+    #[inline]
     pub fn new(o: Vec3, n: Vec3) -> Plane {
         Plane { o, n: n.normalize() }
     }
@@ -542,6 +577,7 @@ impl Plane {
     }
     /// |n·(p − o)| — kernel func[912] / func[1000] (verified by the
     /// differential test tests/ffi_diff.rs).
+    #[inline]
     pub fn dist(&self, p: Vec3) -> f64 {
         p.plane_dist(self.n, self.o)
     }
@@ -743,10 +779,12 @@ impl Quat {
         v + t.scale(2.0 * self.w) + qv.cross(t).scale(2.0)
     }
 
+    #[inline]
     pub fn len(self) -> f64 {
         (self.w * self.w + self.x * self.x + self.y * self.y + self.z * self.z).sqrt()
     }
 
+    #[inline]
     pub fn normalize(self) -> Quat {
         let l = self.len();
         if !(l > TINY) || !l.is_finite() {
@@ -760,6 +798,7 @@ impl Quat {
         Quat { w: self.w, x: -self.x, y: -self.y, z: -self.z }
     }
 
+    #[inline]
     pub fn dot(self, o: Quat) -> f64 {
         self.w * o.w + self.x * o.x + self.y * o.y + self.z * o.z
     }
@@ -801,6 +840,7 @@ impl Quat {
 
 impl Mul for Quat {
     type Output = Quat;
+    #[inline]
     fn mul(self, o: Quat) -> Quat {
         Quat {
             w: self.w * o.w - self.x * o.x - self.y * o.y - self.z * o.z,
