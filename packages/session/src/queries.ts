@@ -81,6 +81,38 @@ export async function describe(
   return res.items ?? [];
 }
 
+export interface ThreadSize {
+  size: string;
+  standard: string;
+  major: number;
+  pitch: number;
+  tpi: number;
+  minorInternal: number;
+  minorExternal: number;
+  pitchDiameter: number;
+  angle: number;
+  tapDrill: number;
+  tapDrillName?: string;
+  classInternal: string;
+  classExternal: string;
+  tapered: boolean;
+}
+
+export interface ThreadStandardInfo {
+  id: string;
+  description: string;
+  count: number;
+  sizes: string[];
+}
+
+/** Thread tables for dropdowns (stateless). No standard: the standards; with one: its sizes with all numbers (mm). */
+export async function threadData(kernel: KernelTransport, standard?: string, size?: string): Promise<{ standards?: ThreadStandardInfo[]; standard?: string; units: string; sizes?: ThreadSize[] }> {
+  const msg: Record<string, unknown> = { type: 'threadData' };
+  if (standard !== undefined) msg.standard = standard;
+  if (size !== undefined) msg.size = size;
+  return call(kernel, msg);
+}
+
 export interface ValidateIssue {
   code: string;
   entity: string;

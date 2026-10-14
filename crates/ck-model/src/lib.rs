@@ -21,6 +21,7 @@ pub mod refs;
 pub mod regen;
 pub mod sketch;
 pub mod sketch3;
+pub mod threads;
 
 pub use sketch::{Constraint, Sketch, SketchEntity, SketchPoint};
 
