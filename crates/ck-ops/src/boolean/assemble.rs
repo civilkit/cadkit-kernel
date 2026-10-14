@@ -161,8 +161,24 @@ pub fn walk(arr: &Arrangement, s: &Surface, sense: bool, hes: &[He]) -> Vec<Vec<
 /// Group cycles into fragments (outer + holes).
 pub fn group(arr: &Arrangement, s: &Surface, sense: bool, cycles: Vec<Vec<He>>) -> Vec<Vec<Vec<He>>> {
     let sg = if sense { 1.0 } else { -1.0 };
-    let polys: Vec<Vec<Vec2>> = cycles.iter().map(|c| loop_polygon(s, &pieces(arr, c))).collect();
-    let areas: Vec<f64> = polys.iter().map(|p| poly_area(p) * sg).collect();
+    // A seam-only cycle (a revolved sphere's meridian, every half-edge walked
+    // both ways) is the outer boundary of the face's whole parameter domain; as
+    // sampled it is a zero-area spike, so it would never host the circles that
+    // cut the sphere (the cap and the rest would merge into one fragment).
+    let ((du0, du1), (dv0, dv1)) = s.domain();
+    let whole = [du0, du1, dv0, dv1].iter().all(|x| x.is_finite());
+    let seam_cycle = |c: &Vec<He>| whole && !c.is_empty() && c.iter().all(|&(e, r)| c.contains(&(e, !r)));
+    let polys: Vec<Vec<Vec2>> = cycles
+        .iter()
+        .map(|c| {
+            if seam_cycle(c) {
+                vec![Vec2::new(du0, dv0), Vec2::new(du1, dv0), Vec2::new(du1, dv1), Vec2::new(du0, dv1)]
+            } else {
+                loop_polygon(s, &pieces(arr, c))
+            }
+        })
+        .collect();
+    let areas: Vec<f64> = polys.iter().zip(&cycles).map(|(p, c)| if seam_cycle(c) { poly_area(p).abs() } else { poly_area(p) * sg }).collect();
     super::bool_dbg!("group: {} cycles, areas {:?}", cycles.len(), areas);
     let mut frags: Vec<Vec<Vec<He>>> = vec![];
     let mut outer_of: Vec<usize> = vec![]; // cycle index of each fragment's outer
@@ -289,8 +305,25 @@ pub fn sample_point(arr: &Arrangement, f: &Fragment) -> Option<(Vec3, Vec3)> {
         let q = s.eval(u, v);
         return Some((q, outward(s, af.sense, q)));
     }
-    let polys: Vec<Vec<Vec2>> = f.loops.iter().map(|l| loop_polygon(s, &pieces(arr, l))).collect();
-    let mut cand: Vec<He> = f.loops[0].clone();
+    // A seam-only loop (a revolved sphere's meridian) is the outer boundary of
+    // a face that spans its whole parameter domain: as a polygon it is a
+    // spike that encloses nothing, so a fragment "whole sphere minus a cap"
+    // (seam loop + the cap's circle) would count the CAP as its inside under
+    // the even-odd rule. Use the domain rectangle for it.
+    let ((du0, du1), (dv0, dv1)) = s.domain();
+    let whole = [du0, du1, dv0, dv1].iter().all(|x| x.is_finite());
+    let polys: Vec<Vec<Vec2>> = f
+        .loops
+        .iter()
+        .map(|l| {
+            if whole && !l.is_empty() && seam_only(l) {
+                vec![Vec2::new(du0, dv0), Vec2::new(du1, dv0), Vec2::new(du1, dv1), Vec2::new(du0, dv1)]
+            } else {
+                loop_polygon(s, &pieces(arr, l))
+            }
+        })
+        .collect();
+    let mut cand: Vec<He> = f.loops.iter().find(|l| !l.is_empty() && !seam_only(l)).unwrap_or(&f.loops[0]).clone();
     let len = |h: &He| {
         let e = &arr.edges[h.0];
         e.curve.eval(e.t0).dist(e.curve.eval(e.t1)).max(e.curve.eval(e.t0).dist(e.curve.eval(0.5 * (e.t0 + e.t1))))
