@@ -36,7 +36,7 @@
 //! | knit            | surfaces, solid |
 //! | fill            | edges, merge, continuity, fairing |
 //! | insertPart      | part (nested .ckpart), source, place{o,x,y,z} or dx/dy/dz+axis+angle, fixed |
-//! | mate            | kind, a, b, distance, flip |
+//! | mate            | kind, a, b, distance, flip; extended kinds: a2, b2, c, angle, ratio, pitch, radius, min, max, of, dir (see mate_kinds.rs) |
 //! | plane           | mode ("offset"/"angle"/"perpendicular"/"mid"; others fall back to offset), base, offset, flip, axis, angle, base2, curves, visible, userHidden |
 //! | deleteBody      | mode, bodies |
 //! | moveFace        | faces, mode (offset / translate), distance, translate, flip (parsed from the raw DOM, see move_face.rs) |
@@ -56,6 +56,7 @@ pub mod hole;
 pub mod lip;
 pub mod loft;
 pub mod mate;
+pub mod mate_kinds;
 pub mod move_body;
 pub mod move_face;
 pub mod pattern;
@@ -144,7 +145,9 @@ pub enum FeatureKind {
     Fill { edges: Vec<EdgeRef>, merge: bool, continuity: Continuity, fairing: Option<String> },
     /// `part` is `None` when missing/invalid (regen error `insertPartMissing`).
     InsertPart { part: Option<Box<Part>>, source: Option<String>, place: Placement, fixed: bool },
-    Mate { kind: MateKind, a: Option<Ref>, b: Option<Ref>, distance: Expr, flip: bool },
+    /// `a2` / `b2` / `c`: extra face references of the multi-face kinds
+    /// (width, symmetric, hinge, slot; see docs/spec-agent-interface.md).
+    Mate { kind: MateKind, a: Option<Ref>, b: Option<Ref>, distance: Expr, flip: bool, a2: Option<Ref>, b2: Option<Ref>, c: Option<Ref> },
     /// Wire type `"plane"` (reference plane).
     RefPlane {
         mode: String,
@@ -259,7 +262,47 @@ pub enum MateKind {
     Distance,
     Angle,
     Parallel,
+    Perpendicular,
+    Tangent,
+    Lock,
+    Symmetric,
+    Width,
+    Hinge,
+    Slot,
+    Screw,
+    Gear,
+    RackPinion,
+    Limits,
     Unknown,
+}
+
+impl MateKind {
+    /// Kinds added after the oracle's five (no oracle behaviour to match).
+    pub fn is_extended(self) -> bool {
+        !matches!(self, MateKind::Coincident | MateKind::Concentric | MateKind::Distance | MateKind::Parallel | MateKind::Unknown)
+    }
+    /// Wire name.
+    pub fn name(self) -> &'static str {
+        match self {
+            MateKind::Coincident => "coincident",
+            MateKind::Concentric => "concentric",
+            MateKind::Distance => "distance",
+            MateKind::Angle => "angle",
+            MateKind::Parallel => "parallel",
+            MateKind::Perpendicular => "perpendicular",
+            MateKind::Tangent => "tangent",
+            MateKind::Lock => "lock",
+            MateKind::Symmetric => "symmetric",
+            MateKind::Width => "width",
+            MateKind::Hinge => "hinge",
+            MateKind::Slot => "slot",
+            MateKind::Screw => "screw",
+            MateKind::Gear => "gear",
+            MateKind::RackPinion => "rackPinion",
+            MateKind::Limits => "limits",
+            MateKind::Unknown => "unknown",
+        }
+    }
 }
 
 /// insertPart placement: either an explicit frame (`place:{o,x,y,z}`) or a
@@ -493,12 +536,26 @@ impl FeatureKind {
                     "distance" => MateKind::Distance,
                     "angle" => MateKind::Angle,
                     "parallel" => MateKind::Parallel,
+                    "perpendicular" => MateKind::Perpendicular,
+                    "tangent" => MateKind::Tangent,
+                    "lock" => MateKind::Lock,
+                    "symmetric" => MateKind::Symmetric,
+                    "width" => MateKind::Width,
+                    "hinge" => MateKind::Hinge,
+                    "slot" => MateKind::Slot,
+                    "screw" => MateKind::Screw,
+                    "gear" => MateKind::Gear,
+                    "rackPinion" => MateKind::RackPinion,
+                    "limits" => MateKind::Limits,
                     _ => MateKind::Unknown,
                 },
                 a: r_opt(j, "a"),
                 b: r_opt(j, "b"),
                 distance: e(j, "distance", 0.0),
                 flip: b(j, "flip"),
+                a2: r_opt(j, "a2"),
+                b2: r_opt(j, "b2"),
+                c: r_opt(j, "c"),
             },
             "plane" => FeatureKind::RefPlane {
                 mode: s_opt(j, "mode").unwrap_or_else(|| "offset".into()),

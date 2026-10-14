@@ -348,10 +348,30 @@ export interface MateFeature {
   type: 'mate';
   id: string;
   name?: string;
-  kind: 'coincident' | 'concentric' | 'distance' | 'angle' | 'parallel' | string;
+  kind:
+    | 'coincident' | 'concentric' | 'distance' | 'angle' | 'parallel'
+    | 'perpendicular' | 'tangent' | 'lock' | 'symmetric' | 'width'
+    | 'hinge' | 'slot' | 'screw' | 'gear' | 'rackPinion' | 'limits'
+    | string;
   a?: string | null;
   b?: string | null;
+  /** Second face of the mover / target side (width, hinge stop, slot wall). */
+  a2?: string | null;
+  b2?: string | null;
+  /** Mirror face of `symmetric`. */
+  c?: string | null;
   distance?: Expr;
+  /** Degrees: the `angle` mate's angle, or the drive of gear / rackPinion / screw. */
+  angle?: Expr;
+  ratio?: Expr;
+  pitch?: Expr;
+  radius?: Expr;
+  /** `limits`: range of the measured distance (or of the angle, degrees, with `of: 'angle'`). */
+  min?: Expr;
+  max?: Expr;
+  of?: 'distance' | 'angle';
+  /** Travel direction of a planar rack. */
+  dir?: [number, number, number];
   flip?: boolean;
   [key: string]: unknown;
 }

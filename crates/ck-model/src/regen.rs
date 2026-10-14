@@ -249,6 +249,9 @@ pub struct RegenResult {
     /// Non-fatal hints per feature (same shape as `errors`): the document still
     /// regenerates. Only on the wire when non-empty.
     pub warnings: Vec<RegenError>,
+    /// Assembly degrees-of-freedom report (docs/spec-agent-interface.md,
+    /// "Mate kinds"). Only on the wire when set.
+    pub assembly: Option<Json>,
 }
 
 fn upsert<T>(v: &mut Vec<T>, key: impl Fn(&T) -> &str, item: T) {
@@ -288,6 +291,9 @@ impl RegenResult {
         if let Json::Obj(m) = &mut out {
             if !self.threads.is_empty() {
                 m.push(("threads".into(), Json::Arr(sorted(&self.threads, |t| &t.0).into_iter().map(|t| t.1.clone()).collect())));
+            }
+            if let Some(a) = &self.assembly {
+                m.push(("assembly".into(), a.clone()));
             }
             if !self.warnings.is_empty() {
                 m.push(("warnings".into(), Json::Arr(sorted(&self.warnings, |e| &e.feature).into_iter().map(|e| e.to_json()).collect())));

@@ -559,6 +559,90 @@ with 0.5 mm walls, a 45 degree underside, a 0.5 mm hole, a 0.4 mm slot, drafted
 and straight extrudes), `tools/profile_check.mjs` (wasm, run by `tools/land.sh`;
 `--bench` sweeps the BenchCAD parts: no failures, every run under 5 s).
 
+## Assembly mates and the degrees-of-freedom report
+
+`mate` features constrain inserted components (`insertPart`). A mate has `a` and `b`, persistent face references
+(`F2.C0@F2.1`: face of component `F2`), and moves the component of `a` onto the component of `b`; if that
+component is `fixed` the other one moves. Both fixed is `mateFixed`; both faces on one component is
+`mateSameBody`; an unresolved face is `missingReference`; geometry a kind cannot use is `mateGeometry`
+with `params.detail` saying why; a mate the solver cannot satisfy together with the earlier ones is
+`mateConflict` (below). No mate ever panics, and a rejected mate leaves every component where the earlier
+mates put it.
+
+Oracle kinds (`coincident`, `concentric`, `distance`, `parallel`) are unchanged. Kinds added here (the "Leaves"
+column is the remaining freedom of a free component mated to a fixed one):
+
+| `kind` | Fields (besides `a`, `b`) | Faces | Constraint | Leaves |
+|---|---|---|---|---|
+| `angle` | `angle` (degrees, default 0), `flip` (supplementary angle) | plane / cylinder / cone (normal or axis) | angle between the two directions | 5 |
+| `perpendicular` | | plane or axis pairs; plane + axis puts the axis along the normal | directions at 90 degrees | 5 |
+| `tangent` | `flip` | cylinder or sphere (a) on plane (b); plane (a) on cylinder / sphere (b); cylinder-cylinder (parallel axes), sphere-sphere, sphere on cylinder (sphere in `a`) | contact; the side of a plane is the one the faces start on, `flip` takes the other; `flip` on two round faces is internal contact (radius difference) instead of external (sum) | cylinder on plane 4 |
+| `lock` | | any face of each component | relative pose when the mate is made, kept when either moves | 0 |
+| `symmetric` | `c` (planar mirror face) | plane+plane, cylinder+cylinder, sphere+sphere | `a` is the mirror image of `b` about `c` (`c`'s component is treated as fixed) | plane pair 3 |
+| `width` | `a2`, `b2` | `a`, `a2` parallel planes of the tab; `b`, `b2` parallel planes of the slot | tab mid-plane on slot mid-plane, normals parallel | 3 |
+| `hinge` | `a2`, `b2` optional, `distance` (stop offset) | cylinders / cones (concentric); `a2` / `b2` planes (axial stop) | concentric axes, stop faces in contact | 1 rotation (2 without the stop) |
+| `slot` | `b2` optional, `flip` | `a` pin (cylinder), `b` (and `b2`) planar slot wall(s) | pin axis parallel to the walls and centred between `b` and `b2` (or resting on `b`) | 4 |
+| `screw` | `pitch` (length per turn, default 1), `angle` (drive, degrees, may exceed 360), `flip` (left hand) | `a` screw and `b` nut cylinders | concentric, and advance = pitch * turns; with `angle` the nut is placed that far along the thread | 1 helical; 0 with `angle` |
+| `gear` | `ratio` (turns of `a` per turn of `b`, default 1), `angle` (drive of `a`, degrees), `flip` (same direction) | `a` driver and `b` follower axes (cylinders) | `b` turns `-angle / ratio` about its axis, measured from the pose when the mate was made | one coupling row, one more with `angle` |
+| `rackPinion` | `radius` (pitch radius), `angle` (drive of the pinion), `dir` (unit vector, for a planar rack), `flip` | `a` pinion (cylinder), `b` rack: cylinder (its axis is the travel direction) or plane with `dir` | rack travel = radius * pinion angle | one coupling row |
+| `limits` | `of` (`"distance"` default, or `"angle"`), `min`, `max` (length, or degrees) | two planes (distance along `b`'s normal), or two directions (angle) | the measured value is clamped into the range, by translating the mover (distance) or rotating it about the origin of face `a` (angle); inside the range the mate consumes no freedom | 6 inside the range |
+
+Couplings (`gear`, `rackPinion`, `screw`) are measured from the placements the components have when the mate
+is made (after the earlier mates were solved), so a later mate that moves the driver drags the follower. The
+follower is the component of `b` (if `b` is fixed, `gear` and `screw` swap roles and invert the relation;
+`rackPinion` then answers `mateFixed`). The rotation of a driver is read modulo 360 degrees; `angle` itself is
+not (a screw with `angle: 1080` is three full turns). Not supported (`mateGeometry`): `symmetric` with `c` on a
+moving component, `tangent` with the cylinder in `a` and a sphere in `b`, a rack that is neither a cylinder
+nor a plane with `dir`.
+
+Examples:
+
+```json
+{"type":"mate","id":"F5","kind":"hinge","a":"F2.S.e1@F2.1","b":"F2.S.e1@F1.1","a2":"F2.C0@F2.1","b2":"F2.C1@F1.1"}
+{"type":"mate","id":"F7","kind":"gear","a":"F2.S.e1@F2.1","b":"F2.S.e1@F3.1","ratio":2,"angle":40}
+{"type":"mate","id":"F8","kind":"screw","a":"F2.S.e1@F1.1","b":"F2.S.e1@F2.1","pitch":2,"angle":1080}
+{"type":"mate","id":"F9","kind":"limits","a":"F2.C0@F2.1","b":"F2.C1@F1.1","min":0,"max":15}
+{"type":"mate","id":"F6","kind":"width","a":"F2.C0@F2.1","a2":"F2.C1@F2.1","b":"F2.C0@F1.1","b2":"F2.C1@F1.1"}
+```
+
+### Degrees of freedom: `assembly` in the regen reply
+
+When the document has a mate of an added kind (or a rejected one), or when the request has `opts.dofReport:
+true`, the regen reply carries an `assembly` object next to `components` (assemblies of oracle kinds only keep
+the oracle reply byte for byte unless asked):
+
+```json
+"assembly": {
+  "dof": {"total": 2, "translational": 1, "rotational": 1},
+  "components": [{"id": "F1", "fixed": true, "dof": 0, "translational": 0, "rotational": 0},
+                 {"id": "F2", "fixed": false, "dof": 2, "translational": 1, "rotational": 1}],
+  "overConstrained": true,
+  "redundant": ["F4"],
+  "conflicts": [{"mate": "F5", "with": ["F3", "F4"]}]
+}
+```
+
+* `dof.total` is the dimension of the motion space of all floating components left by all mates together
+  (couplings count once). `rotational` is the part that rotates (the rank of the rotation block of the motion
+  space), `translational` the rest. Each component's own numbers are the motions it can still make, so a
+  component locked to a floating one reports the freedoms of that one. Fixed components report 0.
+  `components[].dof` in the regen reply carries the same number once an added kind is present.
+* `redundant` lists mates that add no constraint (their rows depend on the earlier mates): harmless, but they
+  are why `overConstrained` is true.
+* `conflicts` lists each mate the solver rejected (also an error `mateConflict` on that mate, whose
+  `params.mates` is the mate followed by its neighbours) with the earlier mates on the same components. A
+  rejected mate is dropped and the components return to the pose before it.
+* The rank comes from a numeric Jacobian of the mate residuals at the solved pose (singular values below
+  1e-6 of the largest count as zero), so a near-singular pose can misreport. Assemblies of more than 30
+  floating components skip the null-space part (`truncated: true`).
+* Solve order is deterministic: the new mate's mover first, then the other components in insertion order,
+  each against its own mates with the rest frozen, repeated until nothing moves (at most `8 n` moves, else
+  `mateConflict`).
+
+Native checks: `crates/ck-model/tests/mates_ext.rs` (hinge leaves one rotation, gear 2:1 turns the follower by
+half, screw advance, rack travel, tangent distances, limits clamping, conflicts and redundancy named, structured
+errors); wasm: `tools/mate_check.mjs` (run by `tools/land.sh`).
+
 ## Acceptance
 
 - A scripted agent session (no human) builds the benchmark parts in
