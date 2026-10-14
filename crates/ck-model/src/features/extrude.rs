@@ -126,6 +126,59 @@ pub fn sketch_profile(sk: &SketchResult) -> Result<Profile, FeatureError> {
     Ok(Profile::new(sk.frame, regions))
 }
 
+/// `extrudeRegionNone {regions}`: the `regions` selection of an extrude /
+/// revolve matched no closed region (empty list, or ids that are no region's
+/// outer boundary). Never falls back to "all regions".
+pub const REGION_NONE: &str = "extrudeRegionNone";
+/// `extrudeRegionUnknown {ids}`: `regions` names ids that are no entity of the sketch.
+pub const REGION_UNKNOWN: &str = "extrudeRegionUnknown";
+
+/// The profile of the sketch restricted to the feature's optional `regions`
+/// selection (docs/spec-agent-interface.md, "Region selection").
+///
+/// `regions` is a list of sketch entity ids. A region is selected when any
+/// segment of its OUTER loop carries one of the ids (so a GUI can pass
+/// whatever the user clicked; a split entity piece or a shared entity can
+/// select several regions). A selected region keeps all its hole loops.
+/// Regions nested inside a selected one (an island in its hole) are separate
+/// regions and stay out unless named themselves. Absent `regions` = every
+/// region (unchanged behaviour). The kept regions keep sketch order, so one
+/// selected region is named exactly as if it were alone in the sketch (no
+/// `~k`); several get `~1..~n` over the selection.
+pub fn selected_profile(sk: &SketchResult, f: &Feature) -> Result<Profile, FeatureError> {
+    let Some(sel) = f.raw.get("regions") else { return sketch_profile(sk) };
+    let ids: Vec<String> = sel
+        .as_arr()
+        .and_then(|a| a.iter().map(|v| v.as_str().map(str::to_string)).collect::<Option<_>>())
+        .ok_or_else(|| FeatureError::new(codes::INVALID_VALUE).with("field", Json::Str("regions".into())))?;
+    let unknown: Vec<Json> = ids.iter().filter(|i| sk.sketch.entity(i).is_none()).map(|i| Json::Str(i.clone())).collect();
+    if !unknown.is_empty() {
+        return Err(FeatureError::new(REGION_UNKNOWN).with("ids", Json::Arr(unknown)));
+    }
+    let full = sketch_profile(sk)?;
+    let hit = |l: &[Seg]| l.iter().any(|s| ids.contains(&s.tag));
+    let mut regions: Vec<ProfileRegion> =
+        full.regions.iter().zip(&sk.profiles.regions).filter(|(_, r)| hit(&r.outer)).map(|(p, _)| p.clone()).collect();
+    // ids that bound no region's outer loop but a hole loop select that hole's filled disc (no holes)
+    let matched: Vec<&String> = sk.profiles.regions.iter().filter(|r| hit(&r.outer)).flat_map(|r| r.outer.iter().map(|s| &s.tag)).collect();
+    let unmatched: Vec<&String> = ids.iter().filter(|i| !matched.contains(i)).collect();
+    for (p, r) in full.regions.iter().zip(&sk.profiles.regions) {
+        for (hp, h) in p.holes.iter().zip(&r.holes) {
+            if h.iter().any(|s| unmatched.contains(&&s.tag)) {
+                let outer = if hp.signed_area() < 0.0 { hp.reversed() } else { hp.clone() };
+                let reg = ProfileRegion { outer, holes: vec![] };
+                if !regions.contains(&reg) {
+                    regions.push(reg);
+                }
+            }
+        }
+    }
+    if regions.is_empty() {
+        return Err(FeatureError::new(REGION_NONE).with("regions", Json::Arr(ids.into_iter().map(Json::Str).collect())));
+    }
+    Ok(Profile::new(sk.frame, regions))
+}
+
 /// How a feature's tool body was swept (kept so mirror / patterns can
 /// rebuild it in place of reflecting a finished body).
 #[derive(Debug, Clone)]
@@ -174,7 +227,7 @@ pub fn exec_extrude(state: &RegenState, f: &Feature, body: Option<&Body>) -> Res
     let sk = sketch_of(state, f)?;
     let depth = state.num(f, "depth", 0.0)?;
     let draft = state.num(f, "draft", 0.0)?;
-    let profile = sketch_profile(sk)?;
+    let profile = selected_profile(sk, f)?;
     let depth = depth.max(MIN_DEPTH);
     let combine = if *op == Op::Cut { Combine::Cut } else { Combine::Add };
     let mut o = match end {
@@ -270,7 +323,7 @@ pub fn exec_revolve(state: &RegenState, f: &Feature, has_body: bool) -> Result<T
         .get("axis")
         .and_then(|a| sketch_axis(sk, a))
         .ok_or_else(|| FeatureError::new(MISSING_AXIS))?;
-    let profile = sketch_profile(sk)?;
+    let profile = selected_profile(sk, f)?;
     // pinned: a region on both sides of the axis -> profileCrossesAxis (no params)
     if super::surface_extrude::crosses_axis(&profile, o, d) {
         return Err(FeatureError::new(super::surface_extrude::PROFILE_CROSSES_AXIS));

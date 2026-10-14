@@ -78,6 +78,49 @@ field tables, the naming grammar, common recipes (plate with hole pattern,
 revolve profile, shell), error code meanings with usual fixes, and the rule
 "prefer referencing caps and sketch-entity sides over positions".
 
+## Region selection (`extrude` / `revolve` `regions`)
+
+By default `extrude` and `revolve` sweep every closed region of the referenced
+sketch. The optional field `regions` (list of sketch entity ids) picks some of
+them, so several shapes in one sketch can be used by different features:
+
+```json
+{"type":"extrude","id":"F2","op":"add","sketch":"F1","end":"blind","depth":10,"regions":["e5"]}
+{"type":"extrude","id":"F3","op":"cut","sketch":"F1","end":"blind","depth":4,"regions":["e1","e6"],"flip":true}
+{"type":"revolve","id":"F4","op":"add","sketch":"F1","axis":"ax","angle":360,"regions":["g"]}
+```
+
+Rules:
+
+- A region is selected when ANY entity id in `regions` is a segment of its
+  OUTER boundary (a GUI can pass whatever the user clicked; duplicates and
+  several ids of one loop are fine). The selected region keeps all its holes.
+- Nesting follows the sketch profile rules: a loop inside a region's outer loop
+  is that region's hole; a loop inside a hole (an island) is a region of its
+  own. Only regions named by `regions` are built, so selecting the outer ring
+  leaves the island out, and selecting the island leaves the ring out.
+- An id that bounds no region's outer loop but a hole loop (a circle drawn
+  inside a rectangle) selects that hole's filled disc, without holes. Selecting
+  the rectangle alone keeps the circle as a hole; add the circle's id for the
+  disc. Such discs come after the real regions in the order.
+- Absent field: every region, exactly as before. The field is optional and
+  documents without it are unchanged.
+- Errors (never a silent fallback to all regions): `extrudeRegionUnknown
+  {ids}` (ids that are no entity of the sketch), `extrudeRegionNone
+  {regions}` (empty list, or ids that bound no outer or hole loop, e.g. a
+  construction line), `invalidValue {field:"regions"}` (not a list of strings).
+- Works for `op` add and cut and every end condition (draft, flip, mid, ...);
+  the regen cache keys on the whole feature JSON, so changing `regions`
+  invalidates from that feature on.
+- Persistent face names: the swept profile contains only the selected regions
+  in sketch order, so one selected region is named exactly as if it were alone
+  in the sketch (`F2.C0`, `F2.S.e5`, no `~k`); several selected regions get the
+  `~1..~n` suffixes numbered over the selection, as multi-region sketches do
+  today. Editing the selection can therefore renumber the `~k` of the other
+  selected regions (not of other features' faces).
+- Not covered: `sweep`, `loft`, `hole` and surface extrudes still use all regions.
+  Check: `tools/region_select_check.mjs`, `crates/ck-model/tests/region_select.rs`.
+
 ## Acceptance
 
 - A scripted agent session (no human) builds the benchmark parts in

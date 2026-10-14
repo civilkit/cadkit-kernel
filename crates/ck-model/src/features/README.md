@@ -9,8 +9,8 @@ strings from kernel.strings, and dispatch to ck-ops/ck-topo.
 | type | fields |
 |---|---|
 | sketch | plane, points[{id,x,y,fixed}], entities[{type:id,...}], constraints[{type,refs,value,offset}], seq, visible |
-| extrude | op(add/cut), sketch, end(blind/through/throughBoth/upToNext/mid), depth(expr), flip, draft(expr), draftOut, twist(expr, deg), twistCentre([x,y]) |
-| revolve | op, sketch, axis, end, angle(expr), flip |
+| extrude | op(add/cut), sketch, end(blind/through/throughBoth/upToNext/mid), depth(expr), flip, draft(expr), draftOut, twist(expr, deg), twistCentre([x,y]), regions([entity ids], optional) |
+| revolve | op, sketch, axis, end, angle(expr), flip, regions([entity ids], optional) |
 | sweep | op, sketch, path ({kind: curve or sketch, id}; a `sketch` id may name a `sketch3d` holding one `spline`, tangent-constrained end lines allowed), twist (deg), (+guides, guideMode, surface: not reconstructed) |
 | loft | op, sketches[], surface, guides[{sketch, influence next only}], centreLine ({sketch}, straight only), startNormal / endNormal (tension; `true` = 1), connectors[null\|fraction]; startTangent / *Continuity -> `loftTangentEdges` (sketch profiles) |
 | fillet | radius(expr), edges[] |

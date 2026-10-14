@@ -15,8 +15,8 @@
 //! | type            | fields |
 //! |-----------------|--------|
 //! | sketch          | plane, points, entities, constraints, seq, visible |
-//! | extrude         | op, sketch, end, depth, flip, draft, draftOut |
-//! | revolve         | op, sketch, axis ("e14"), end, angle, flip |
+//! | extrude         | op, sketch, end, depth, flip, draft, draftOut, regions |
+//! | revolve         | op, sketch, axis ("e14"), end, angle, flip, regions |
 //! | sweep           | op, sketch, path ({kind:curve}), surface |
 //! | loft            | op, sketches, surface |
 //! | fillet          | radius, edges[{faces,at}] |

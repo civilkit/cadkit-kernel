@@ -57,6 +57,8 @@ export interface ExtrudeFeature {
   flip?: boolean;
   draft?: number;
   draftOut?: boolean;
+  /** optional: sketch entity ids selecting which closed regions to sweep (default all) */
+  regions?: string[];
 }
 
 /** Every other feature the app's table knows (README §Feature defaults).

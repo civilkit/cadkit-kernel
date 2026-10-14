@@ -53,6 +53,8 @@ export interface RevolveFeature {
   end: string;
   angle?: Expr;
   flip?: boolean;
+  /** optional: sketch entity ids selecting which closed regions to sweep (default all) */
+  regions?: string[];
   [key: string]: unknown;
 }
 
