@@ -43,6 +43,24 @@ pub struct BoolOut {
 /// (the vertex pool, edge de-duplication and trims all follow `tol`); the
 /// first result that assembles into a closed manifold wins.
 pub fn boolean(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> {
+    // A free-form operand (B-spline or offset faces) meets the other solid along marched curves whose
+    // ends agree with their neighbours only to ~1e-6 to 1e-5, so at the base welding tolerance the first
+    // attempt of such a cut or union tends to leave the arrangement open (a full wasted attempt before the
+    // 10x retry, 30 to 50 percent of the boolean on the large sample's cuts): start the ladder at 10x, and
+    // fall back to the base tolerance only if the whole raised ladder fails. (Only for the default welding
+    // tolerance: callers that pass a larger one, the shell and the lip, chose it already.)
+    let free_form = |b: &Body| b.face_ids().any(|f| matches!(b.face(f).surface, ck_geom::surface::Surface::BSpline(_) | ck_geom::surface::Surface::Offset { .. }));
+    if tol <= 1.5e-6 && (free_form(a) || free_form(b)) {
+        let r = boolean_ladder(a, b, op, tol * 10.0);
+        if r.is_ok() {
+            return r;
+        }
+        return boolean_ladder(a, b, op, tol);
+    }
+    boolean_ladder(a, b, op, tol)
+}
+
+fn boolean_ladder(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> {
     #[cfg(not(target_arch = "wasm32"))]
     let clock = std::time::Instant::now();
     let first = boolean_at(a, b, op, tol);

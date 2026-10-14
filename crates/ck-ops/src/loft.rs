@@ -707,4 +707,41 @@ mod tests {
         let want = std::f64::consts::PI * 10.0 * 112.0;
         assert!((m.volume - want).abs() < 1e-6 * want, "{} vs {}", m.volume, want);
     }
+
+    /// A cross-hole through a lofted (free-form) frustum: the boolean starts its welding ladder at 10x
+    /// the base tolerance for free-form operands; the result must stay a valid solid whose volume is
+    /// the frustum's minus the hole (grid-integrated here).
+    #[test]
+    fn cross_hole_through_lofted_frustum() {
+        use crate::boolean::{boolean, Op};
+        use ck_topo::make::{extrude, ExtrudeOpts, Profile, ProfileLoop, ProfileRegion, ProfileSeg};
+        let frustum = loft("F4", &[circle_profile(0.0, 0.0, 8.0), circle_profile(30.0, 2.0, 4.0)], &LoftOpts::default()).unwrap().body;
+        assert!(frustum.face_ids().any(|f| matches!(frustum.face(f).surface, ck_geom::surface::Surface::BSpline(_))), "a free-form lateral face");
+        let fr = Frame { o: Vec3::new(-20.0, 15.0, 0.0), x: Vec3::new(0.0, 1.0, 0.0), y: Vec3::new(0.0, 0.0, 1.0), z: Vec3::new(1.0, 0.0, 0.0) };
+        let lp = ProfileLoop::new(vec![ProfileSeg::circle("e1", Vec2::new(0.0, 0.0), 2.0)]);
+        let tool = extrude("T", &Profile::new(fr, vec![ProfileRegion { outer: lp, holes: vec![] }]), ExtrudeOpts { s0: 0.0, s1: 40.0, dir: None, draft: 0.0 }).unwrap();
+        let out = boolean(&frustum, &tool, Op::Cut, 1e-6).expect("cut");
+        assert!(out.mismatch.is_none(), "{:?}", out.mismatch);
+        assert!(ck_topo::check::check(&out.body, 1e-6).is_empty());
+        // hole volume: midpoint grid over the tool cylinder (axis along x at y = 15, z = 0, radius 2)
+        let (nx, nr, nt) = (400usize, 40usize, 64usize);
+        let mut removed = 0.0;
+        for i in 0..nx {
+            let x = -20.0 + 40.0 * (i as f64 + 0.5) / nx as f64;
+            for j in 0..nr {
+                let rr = 2.0 * (j as f64 + 0.5) / nr as f64;
+                for k in 0..nt {
+                    let a = TAU * (k as f64 + 0.5) / nt as f64;
+                    let (y, z) = (15.0 + rr * a.cos(), rr * a.sin());
+                    let (cx, rad) = (2.0 * y / 30.0, 8.0 - 4.0 * y / 30.0);
+                    if (x - cx) * (x - cx) + z * z <= rad * rad {
+                        removed += (40.0 / nx as f64) * (2.0 / nr as f64) * rr * (TAU / nt as f64);
+                    }
+                }
+            }
+        }
+        let full = std::f64::consts::PI * 10.0 * 112.0;
+        let got = ck_topo::mass::mass_props(&out.body).volume;
+        assert!((got - (full - removed)).abs() < 3e-3 * full, "{got} vs {}", full - removed);
+    }
 }

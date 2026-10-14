@@ -124,6 +124,24 @@ fn revolved_ellipse_volume() {
     assert!((sum - want).abs() < 1e-6 * want, "per-face {sum} vs {want}");
 }
 
+/// Trim curves that are fitted splines (an oblique cylinder through a cylinder): the volume check
+/// integrates their faces with a quarter of the boundary panels, which must stay within 1e-4 of
+/// the full integration.
+#[test]
+fn coarse_volume_check_matches_full_integration_on_spline_trims() {
+    let c = (30.0f64.to_radians().cos(), 30.0f64.to_radians().sin());
+    let tilted = Frame { o: Vec3::new(0.0, 5.0, 0.0), x: Vec3::X, y: Vec3::new(0.0, -c.1, -c.0), z: Vec3::new(0.0, c.0, -c.1) };
+    let host = cyl("H", top_at(0.0), 0.0, 0.0, 10.0, -20.0, 20.0);
+    let tool = cyl("T", tilted, 0.0, 0.0, 4.0, -30.0, 30.0);
+    for op in [Op::Cut, Op::Union] {
+        let out = boolean(&host, &tool, op, 1e-6).expect("boolean");
+        assert!(out.mismatch.is_none(), "{:?}", out.mismatch);
+        let sum: f64 = out.body.face_ids().map(|f| ck_topo::mass::face_signed_volume(&out.body, f)).sum();
+        let want = vol(&out.body);
+        assert!((sum - want).abs() < 1e-4 * want, "{op:?}: per-face {sum} vs mass_props {want}");
+    }
+}
+
 /// The sanity check sums per-face volume integrals memoised per face: the sum must equal the
 /// whole-body volume, and the second pass over a chain of cuts (cache warm) must agree.
 #[test]
