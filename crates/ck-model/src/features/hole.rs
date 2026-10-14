@@ -12,7 +12,9 @@
 //!   tap/close/normal/loose for `simple`, close/normal/loose for `cbore` /
 //!   `csk`, anything else -> `normal`; cbore `[diameter, depth]`; unknown
 //!   `size` -> `holeInvalid`; no points -> `holeNoPoints`; `kind:"csink"`
-//!   (not a kind) behaves as simple;
+//!   without `cskDiameter` behaves as simple (legacy); with it, or as
+//!   `countersink`, a cone `K0` is cut (head diameter, `cskAngle` included
+//!   angle, default 90); `cboreDiameter` / `cboreDepth` override the table;
 //! * the tools are combined into one (`boolean Unite (9 × 3 faces)` for the
 //!   4th of four holes whose box meets the others'; disjoint boxes are
 //!   appended) then `boolean Subtract (body × tool)`; a hole that misses ->
@@ -39,6 +41,20 @@ use ck_topo::make::{Profile, ProfileLoop, ProfileRegion, ProfileSeg};
 
 pub const HOLE_INVALID: &str = "holeInvalid";
 pub const HOLE_NO_POINTS: &str = "holeNoPoints";
+/// `holeCskDiameter {cskDiameter, holeDiameter, hint}`: countersink head diameter / angle impossible.
+pub const HOLE_CSK_DIAMETER: &str = "holeCskDiameter";
+/// `holeCboreInvalid {hint, ..}`: counterbore diameter / depth impossible.
+pub const HOLE_CBORE_INVALID: &str = "holeCboreInvalid";
+
+fn given(f: &Feature, key: &str) -> bool {
+    f.raw.get(key).is_some_and(|v| !matches!(v, ck_json::Json::Null))
+}
+fn num(v: f64) -> ck_json::Json {
+    ck_json::Json::Num(v)
+}
+fn hint(e: FeatureError, s: &str) -> FeatureError {
+    e.with("hint", ck_json::Json::Str(s.to_string()))
+}
 
 /// `(tap, close, normal, loose, cbore diameter, cbore depth, csk diameter)`.
 const ISO: &[(&str, [f64; 7])] = &[
@@ -103,6 +119,39 @@ pub fn exec_hole(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(
     let fr = sk.frame;
     let down = if *flip { fr.z } else { -fr.z };
     let r = d / 2.0;
+    // counterbore: explicit fields beat the table (absent: table, as before)
+    let (mut cbore_d, mut cbore_h) = (row[4], row[5]);
+    let mut cbore_custom = false;
+    let mut csk: Option<(f64, f64)> = None; // (head radius, half angle rad)
+    if *kind == HoleKind::Cbore {
+        let (gd, gh) = (given(f, "cboreDiameter"), given(f, "cboreDepth"));
+        if gd {
+            cbore_d = state.num(f, "cboreDiameter", 0.0)?;
+        }
+        if gh {
+            cbore_h = state.num(f, "cboreDepth", 0.0)?;
+        }
+        cbore_custom = gd || gh;
+        if cbore_custom && (cbore_d <= d + 1e-9 || cbore_h <= 0.0) {
+            return Err(hint(
+                FeatureError::new(HOLE_CBORE_INVALID).with("cboreDiameter", num(cbore_d)).with("cboreDepth", num(cbore_h)).with("holeDiameter", num(d)),
+                "the counterbore diameter must be larger than the hole diameter and its depth positive",
+            ));
+        }
+    } else if *kind == HoleKind::Countersink || (*kind == HoleKind::Csink && given(f, "cskDiameter")) {
+        let head = if given(f, "cskDiameter") { state.num(f, "cskDiameter", 0.0)? } else { row[6] };
+        let ang = if given(f, "cskAngle") { state.num(f, "cskAngle", 90.0)? } else { 90.0 };
+        if head <= d + 1e-9 {
+            return Err(hint(
+                FeatureError::new(HOLE_CSK_DIAMETER).with("cskDiameter", num(head)).with("holeDiameter", num(d)),
+                "the countersink head diameter must be larger than the hole diameter; set cskDiameter (for a plain hole use kind simple)",
+            ));
+        }
+        if !(ang > 0.0 && ang < 180.0) {
+            return Err(hint(FeatureError::new(HOLE_CSK_DIAMETER).with("cskAngle", num(ang)), "cskAngle is the included cone angle in degrees, between 0 and 180 (typically 90 or 82)"));
+        }
+        csk = Some((head / 2.0, (ang / 2.0).to_radians()));
+    }
     let depth = state.num(f, "depth", 0.0)?;
     let through = *end != super::End::Blind;
     let multi = pts.len() > 1;
@@ -116,12 +165,30 @@ pub fn exec_hole(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(
         let mut segs = vec![];
         let (rw, top_tag);
         if *kind == HoleKind::Cbore {
-            let (cr, cd) = (row[4] / 2.0, row[5]);
+            let (cr, cd) = (cbore_d / 2.0, cbore_h);
+            if cbore_custom && cd >= len - 1e-9 {
+                return Err(hint(
+                    FeatureError::new(HOLE_CBORE_INVALID).with("cboreDepth", num(cd)).with("holeDepth", num(len)),
+                    "the counterbore must be shallower than the hole: reduce cboreDepth or increase depth",
+                ));
+            }
             segs.push(line(Vec2::new(u, 0.0), Vec2::new(u + cr, 0.0), "h0"));
             segs.push(line(Vec2::new(u + cr, 0.0), Vec2::new(u + cr, -(cd)), "h1"));
             segs.push(line(Vec2::new(u + cr, -(cd)), Vec2::new(u + r, -(cd)), "h2"));
             rw = cd;
             top_tag = "h3";
+        } else if let Some((hr, half)) = csk {
+            let cd = (hr - r) / half.tan();
+            if cd >= len - 1e-9 {
+                return Err(hint(
+                    FeatureError::new(HOLE_CSK_DIAMETER).with("cskDiameter", num(hr * 2.0)).with("coneDepth", num(cd)).with("holeDepth", num(len)),
+                    "the countersink cone is deeper than the hole: reduce cskDiameter, increase cskAngle or increase depth",
+                ));
+            }
+            segs.push(line(Vec2::new(u, 0.0), Vec2::new(u + hr, 0.0), "h0"));
+            segs.push(line(Vec2::new(u + hr, 0.0), Vec2::new(u + r, -cd), "K0"));
+            rw = cd;
+            top_tag = "h1";
         } else {
             segs.push(line(Vec2::new(u, 0.0), Vec2::new(u + r, 0.0), "h0"));
             rw = 0.0;
