@@ -40,6 +40,11 @@ pub struct CpPrep {
     cell_scale: f64,
     /// box of every cell box
     hull: (Vec3, Vec3),
+    /// Non-rational nets: the seed grid points `[a * (nv + 1) + k]` and the
+    /// box of each (u column, v span) row `[a * cv + iv]`, computed once with
+    /// the very expressions the query scan used per call (the scan is then a
+    /// distance lookup; results are bit-identical).
+    grid: Option<(Vec<Vec3>, Vec<(Vec3, Vec3)>)>,
 }
 
 impl BSplineSurface {
@@ -613,6 +618,8 @@ impl BSplineSurface {
         let found_flag = std::cell::Cell::new(false);
         // best grid sample of every visited cell (multi-start seeds)
         let cell_best: std::cell::RefCell<Vec<(f64, f64, f64, f64)>> = Default::default();
+        let grid = prep.grid.as_ref();
+        let nv1 = vs.len();
         let visit = |c: &(f64, usize, usize, usize, usize, usize), best: &mut (f64, f64, f64)| {
             let (clb, su, _iu, iv, alo, ahi) = *c;
             if clb >= best.0 || cols[iv].is_empty() {
@@ -628,7 +635,7 @@ impl BSplineSurface {
                 // non-rational: collapse the u direction once per (u, cell)
                 // (every v sample of the cell lies in the same v span)
                 let mut tcol = [Vec3::ZERO; 16];
-                if fast && pv < 16 {
+                if fast && pv < 16 && grid.is_none() {
                     if let Some(&k0) = cols[iv].first() {
                         let sv = bv[k0].0;
                         for j in 0..=pv {
@@ -644,11 +651,17 @@ impl BSplineSurface {
                 // whose control-point box is no nearer than the best sample
                 // cannot improve it
                 if fast && pv < 16 && maxd.is_finite() {
-                    let (mut lo, mut hi) = (tcol[0], tcol[0]);
-                    for t in &tcol[1..=pv] {
-                        lo = lo.min(*t);
-                        hi = hi.max(*t);
-                    }
+                    let (lo, hi) = match grid {
+                        Some((_, rows)) => rows[a * cv + iv],
+                        None => {
+                            let (mut lo, mut hi) = (tcol[0], tcol[0]);
+                            for t in &tcol[1..=pv] {
+                                lo = lo.min(*t);
+                                hi = hi.max(*t);
+                            }
+                            (lo, hi)
+                        }
+                    };
                     let g = Vec3::new((lo.x - q.x).max(q.x - hi.x).max(0.0), (lo.y - q.y).max(q.y - hi.y).max(0.0), (lo.z - q.z).max(q.z - hi.z).max(0.0));
                     if g.len() >= best.0 {
                         continue;
@@ -657,11 +670,17 @@ impl BSplineSurface {
                 for &k in &cols[iv] {
                     let v = vs[k].0;
                     let d = if fast && pv < 16 {
-                        let bvk = &bv[k].1;
-                        let mut p = Vec3::ZERO;
-                        for (j, &wv) in bvk.iter().enumerate() {
-                            p = p + tcol[j] * wv;
-                        }
+                        let p = match grid {
+                            Some((pts, _)) => pts[a * nv1 + k],
+                            None => {
+                                let bvk = &bv[k].1;
+                                let mut p = Vec3::ZERO;
+                                for (j, &wv) in bvk.iter().enumerate() {
+                                    p = p + tcol[j] * wv;
+                                }
+                                p
+                            }
+                        };
                         // clearly no nearer than the best / local samples: skip the root
                         let d2 = (p - q).len2();
                         let lim = best.0.max(local.0);
@@ -860,7 +879,43 @@ impl BSplineSurface {
             })
             .collect();
         let hull = boxes.iter().filter(|b| b.0.x <= b.1.x).fold((Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY), Vec3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY)), |a, b| (a.0.min(b.0), a.1.max(b.1)));
-        let prep = Rc::new(CpPrep { nu, cv, boxes: (*boxes).clone(), vs, bv, cols, cells, ubas, cell_scale: self.cell_scale(), hull });
+        // the seed grid points and row boxes, with the expressions of the query scan
+        let grid = if fast && pv < 16 && (nu + 1) * (nv + 1) <= 1 << 18 {
+            let mut pts = vec![Vec3::ZERO; (nu + 1) * (nv + 1)];
+            let mut rows = vec![(Vec3::ZERO, Vec3::ZERO); (nu + 1) * cv.max(1)];
+            for a in 0..=nu {
+                let (su, ref bu) = ubas[a];
+                for (iv, col) in cols.iter().enumerate() {
+                    let Some(&k0) = col.first() else { continue };
+                    let sv = bv[k0].0;
+                    let mut tcol = [Vec3::ZERO; 16];
+                    for j in 0..=pv {
+                        let mut t = Vec3::ZERO;
+                        for (i, &wu) in bu.iter().enumerate() {
+                            t = t + self.cp(su - pu + i, sv - pv + j) * wu;
+                        }
+                        tcol[j] = t;
+                    }
+                    let (mut lo, mut hi) = (tcol[0], tcol[0]);
+                    for t in &tcol[1..=pv] {
+                        lo = lo.min(*t);
+                        hi = hi.max(*t);
+                    }
+                    rows[a * cv + iv] = (lo, hi);
+                    for &k in col {
+                        let mut p = Vec3::ZERO;
+                        for (j, &wv) in bv[k].1.iter().enumerate() {
+                            p = p + tcol[j] * wv;
+                        }
+                        pts[a * (nv + 1) + k] = p;
+                    }
+                }
+            }
+            Some((pts, rows))
+        } else {
+            None
+        };
+        let prep = Rc::new(CpPrep { nu, cv, boxes: (*boxes).clone(), vs, bv, cols, cells, ubas, cell_scale: self.cell_scale(), hull, grid });
         CACHE.with(|c| {
             let mut c = c.borrow_mut();
             if c.len() >= 24 {

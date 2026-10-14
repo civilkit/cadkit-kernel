@@ -995,7 +995,16 @@ pub(crate) fn newton_surface(
 ) -> (f64, f64) {
     let ((u0, u1), (v0, v1)) = dom;
     let (mut u, mut v) = seed;
-    for _ in 0..50 {
+    // The step is a pure function of (u, v): once a state repeats bit for bit
+    // the iteration cycles for ever (a foot point bouncing between two
+    // clamped parameters, say). Return the state the loop would end on after
+    // the 50th step instead of walking the cycle out. `hist[j]` = state j
+    // steps before the current one.
+    const N: usize = 50;
+    let mut hist = [(f64::NAN, f64::NAN); 4];
+    for i in 0..N {
+        hist.rotate_right(1);
+        hist[0] = (u, v);
         let s = d(u, v);
         let r = s.p - q;
         let f = s.du.dot(r);
@@ -1019,6 +1028,15 @@ pub(crate) fn newton_surface(
         v = nv;
         if done {
             break;
+        }
+        // state i + 1 equals state i + 1 - p (p = 1 is `done`): period p from
+        // state i + 1 - p on, so state N is state (i + 1 - p) + (N - (i + 1 - p)) mod p
+        for p in 2..=4 {
+            if i + 1 >= p && hist[p - 1].0.to_bits() == nu.to_bits() && hist[p - 1].1.to_bits() == nv.to_bits() {
+                let base = i + 1 - p;
+                let m = base + (N - base) % p;
+                return hist[i - m];
+            }
         }
     }
     (u, v)

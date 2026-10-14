@@ -266,7 +266,9 @@ fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand
     if ang.0 {
         hu = hu.min(std::f64::consts::PI / (8.0 * res as f64));
     }
-    if matches!(surf, Surface::BSpline(_) | Surface::Revolution { .. } | Surface::Extrusion { .. } | Surface::Screw { .. }) {
+    // (the keyed caller is the post-boolean volume check at 1e-3 of the volume: the original kernel
+    // integrates with one panel per knot span there; `width / 4` is enough for it)
+    if tab_key.is_none() && matches!(surf, Surface::BSpline(_) | Surface::Revolution { .. } | Surface::Extrusion { .. } | Surface::Screw { .. }) {
         hu = hu.min(width / (16.0 * res as f64));
     }
     // a plane's polynomial integrands are exact in one GL8 panel: with a dense boundary do not subdivide
@@ -642,7 +644,7 @@ fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand
                 // (the keyed caller is the post-boolean volume check, which needs ~1e-4 of the volume: a quarter
                 // of the usual two panels per control point of a fitted trim curve is good to ~5e-5 there)
                 if tab_key.is_some() && matches!(pc, Curve2::BSpline(_)) {
-                    n = (n / 4).max(4).min(n);
+                    n = (n / 16).max(2).min(n);
                 }
                 let h = (tb - ta) / n as f64;
                 // a piece along v at constant u (a cap of a long sweep): the
