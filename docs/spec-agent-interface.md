@@ -151,6 +151,91 @@ NPT the pipe outside diameter, `pitchDiameter` the gauge-plane value);
 (the root of an external thread); `tapDrill` is the bore an internal thread is
 cut into. An unknown standard or size is a wire error listing the choices.
 
+### `thread` feature
+
+A thread on a cylindrical face: the wall of a hole (internal) or a shaft
+(external). Built from a `hole` feature, a circle cut through a body, or an
+extruded circle: pick the face by its persistent name.
+
+```json
+{"type":"thread","id":"F5","face":"F4.S.c1","standard":"metric","size":"M6"}
+{"type":"thread","id":"F6","face":"F2.S.c1","standard":"UNC","size":"1/4-20","length":12,"hand":"left","start":"top","modeled":true}
+{"type":"thread","id":"F7","face":"F4.S.c1","standard":"metric-fine","size":"M12x1.5","class":"6H","length":"full"}
+```
+
+Fields: `face` (cylindrical face name), `standard` and `size` (a designation from
+`threadData`, validated against the table), `class` (optional, default `6H` /
+`6g`, `2B` / `2A`, `7H` / `7e`, ...; recorded, it does not change the geometry),
+`length` (mm, or `"full"` = the whole face, the default; clamped to the face),
+`hand` (`"right"` default, `"left"`), `start` (`"top"` / `"bottom"`: the end of
+the face with the higher / lower coordinate along the axis, the axis oriented so
+its dominant world component is positive; default the OPEN end: a hole's mouth,
+a shaft's free end; `"top"` when both or neither end is open), `modeled`
+(bool, default false). Internal or external is read from the face: concave =
+internal, convex = external (reported as `internal`; it cannot be overridden).
+
+**Cosmetic** (`modeled` false): no geometry change. The regen result gets, only
+when there is at least one thread, a `threads` list (sorted by feature id):
+
+```json
+"threads":[{"id":"F5","face":"F4.S.c1","standard":"metric","size":"M6","class":"6H","pitch":1,"major":6,
+  "minor":4.917468,"pitchDiameter":5.350481,"angle":60,"length":20,"hand":"right","internal":true,
+  "modeled":false,"tapered":false,"diameter":5,"start":[20,20,-20],"dir":[0,-1,0]}]
+```
+
+`minor` is D1 for an internal thread, d3 for an external one; `diameter` is the
+face's actual diameter; `start` / `dir` are the point on the axis where the
+thread starts and the unit direction into the face. Drawings, a BOM and validation
+read this list.
+
+**Warnings** (a `warnings` list of `[featureId, {code, params}]`, same shape as
+`errors`, only when non-empty; the document still regenerates and `ok` stays true):
+
+- `threadDiameterMismatch {expected, actual, size, standard, internal, nearest,
+  hint}`: an internal thread wants the face diameter within 3 percent of the tap
+  drill (or of the minor diameter), an external one within 3 percent of the major
+  diameter. `hint` is actionable, e.g. `hole is 6.5, M6 tap drill is 5: drill the
+  hole to 5, or choose M8 (tap drill 6.8)`, `shaft is 7, M8 major diameter is 8:
+  turn the shaft to 8, or choose M7 (major diameter 7)`.
+- `threadModelFallback {reason, hint}`: `modeled` was asked for but not built;
+  the feature stays cosmetic (see the fallback rules below).
+
+**Errors** (per feature, the rest of the document regenerates):
+`threadSizeUnknown {standard, size, suggestions, hint}` (unknown standard or
+size; suggestions are the nearest designations, or the standard ids),
+`threadFaceNotCylinder {face, surface, hint}`, `missingReference` (no / unknown
+`face`, or no solid yet), `invalidValue {field}` (`length` <= 0, bad `hand` /
+`start`).
+
+**Modeled** (`modeled` true): the real helical groove, cut with the helix-sweep
+and boolean machinery.
+
+- Profile: a straight-flank trapezoid with the standard flank angle (ISO / UN 60,
+  BSP 55, Tr 30, Acme 29 degrees). SIMPLIFICATION: crests and roots are the
+  flats of the basic profile (P/8 for ISO / UN, 0.1665 P BSP, 0.366 P Tr,
+  0.3707 P Acme), never the rounded roots of the real standards. An internal
+  thread cuts from just inside the bore out to the major diameter (the bore stays
+  the actual face diameter, so a bore at the tap drill gives the usual slightly
+  truncated crests); an external thread cuts from the minor diameter d3 out past
+  the shaft surface. Left hand mirrors the helix.
+- The groove starts a little outside an open start end so it runs out cleanly,
+  and stops with a flat end inside the face (the thread length).
+- Persistent names: the groove tool's faces are renamed `<id>.T0` ... `<id>.T5`:
+  `T0` inner (internal) / outer (external) surface of the groove, `T1` lower
+  flank, `T2` root (internal) / bottom (external), `T3` upper flank, `T4` start
+  cap, `T5` end cap. The inner / outer surface lies in the void, so after the cut
+  the body carries `T1`, `T2`, `T3` and, where the groove ends inside the
+  material, `T4` / `T5`.
+- Fallback rules (the regen never fails because of a modeled thread): the
+  feature stays cosmetic and a `threadModelFallback` warning gives the reason
+  when the thread is tapered (NPT: modeled tapered threads are not built), the
+  groove would need more than 60 turns, the bore is too small for the groove to
+  reach it (hole far under the minor diameter), the profile would overlap itself
+  (pitch too coarse for the diameter), or the boolean fails, produces an invalid
+  solid, or the volume change is not plausible for the groove. The body is left
+  exactly as before in every fallback.
+- Check: `tools/thread_check.mjs`, `crates/ck-model/tests/thread_feature.rs`.
+
 ## Acceptance
 
 - A scripted agent session (no human) builds the benchmark parts in

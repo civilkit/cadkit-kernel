@@ -18,6 +18,7 @@ const FIELD_TABLE = `| type | key fields |
 | draft | neutral, faces[], angle |
 | rib | sketch(open chain), thickness |
 | lip | kind, faces[], edges[], width, height |
+| thread | face (cylindrical hole wall or shaft, e.g. "F3.S.e2"), standard(metric/metric-fine/UNC/UNF/BSP/NPT/Tr/Acme), size ("M6", "1/4-20", "G1/4"; list them with the threadData tool), class, length(number or "full"), hand, start, modeled(bool; false = cosmetic callout + diameter check) |
 | helix | sketch, definedBy(pitchRevs), pitch, revolutions, height |
 | sweep/loft | op, sketch(+path) / sketches[] |
 | lpattern/cpattern | seeds[], dir/axis, spacing/count, angle, equal, reverse |

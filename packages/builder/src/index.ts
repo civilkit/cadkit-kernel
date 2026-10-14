@@ -238,6 +238,19 @@ export class Part {
     return this.push('deleteBody', { mode: o.mode ?? 'delete', bodies: o.bodies ?? [] }, o.name);
   }
 
+  /** Thread on a cylindrical face; list standards / sizes with the threadData request. */
+  thread(o: { face: string; standard: string; size: string; class?: string; length?: number | 'full'; hand?: 'right' | 'left'; start?: 'top' | 'bottom'; modeled?: boolean; name?: string }): FeatureId {
+    const { face, standard, size, name } = o;
+    return this.push('thread', {
+      face, standard, size,
+      ...(o.class ? { class: o.class } : {}),
+      ...(o.length !== undefined ? { length: o.length } : {}),
+      ...(o.hand ? { hand: o.hand } : {}),
+      ...(o.start ? { start: o.start } : {}),
+      ...(o.modeled ? { modeled: true } : {}),
+    }, name);
+  }
+
   deleteFace(o: { faces: string[]; edges?: EdgeRef[]; mode?: string; continuity?: string; name?: string }): FeatureId {
     return this.push('deleteFace', {
       faces: o.faces, edges: o.edges ?? [], mode: o.mode ?? 'delete', continuity: o.continuity ?? 'G0',

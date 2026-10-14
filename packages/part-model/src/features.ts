@@ -535,6 +535,28 @@ export interface AxisFeature {
   [key: string]: unknown;
 }
 
+/**
+ * A thread on a cylindrical face (a hole wall or a shaft). `standard` / `size`
+ * come from the `threadData` request. Cosmetic unless `modeled` is true; the regen
+ * result lists it under `threads` and warns (`warnings`) when the diameter does
+ * not fit the thread.
+ */
+export interface ThreadFeature {
+  type: 'thread';
+  id: string;
+  name?: string;
+  face: string;
+  standard: string;
+  size: string;
+  class?: string;
+  /** mm, or "full" (default) = the whole face */
+  length?: Expr | 'full';
+  hand?: 'right' | 'left';
+  start?: 'top' | 'bottom';
+  modeled?: boolean;
+  [key: string]: unknown;
+}
+
 /** Every typed feature except sketch/extrude (declared in index.ts). */
 export type KnownFeature =
   | Sketch3DFeature | RevolveFeature | SweepFeature | LoftFeature
@@ -548,7 +570,7 @@ export type KnownFeature =
   | DeleteFaceFeature | ThickenFeature | CutWithSurfaceFeature | PipeCutFeature
   | FreeformFeature | EditCurveFeature | ProjectCurveFeature | ExtendFeature
   | DomeFeature | SplitLineFeature | MoveFaceFeature | MoveBodyFeature
-  | ScaleFeature | AxisFeature;
+  | ScaleFeature | AxisFeature | ThreadFeature;
 
 /** All wire type strings the kernel dispatches on. */
 export const FEATURE_TYPES = [
@@ -559,7 +581,7 @@ export const FEATURE_TYPES = [
   'surfaceOffset', 'knit', 'fill', 'insertPart', 'mate', 'plane',
   'deleteBody', 'deleteFace', 'thicken', 'cutWithSurface', 'pipeCut',
   'freeform', 'editCurve', 'projectCurve', 'extend', 'dome', 'splitLine',
-  'moveFace', 'moveBody', 'scale', 'axis',
+  'moveFace', 'moveBody', 'scale', 'axis', 'thread',
 ] as const;
 
 export type FeatureTypeName = (typeof FEATURE_TYPES)[number];

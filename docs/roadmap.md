@@ -45,7 +45,7 @@ agent all read the same list.
 
 | Item | Size | Notes |
 |---|---|---|
-| Parametric generators as macro features (gears, threads, standard holes, fasteners) | M | Expand into ordinary features so they stay editable in the tree. Involute spur, helical, internal, bevel gears and racks; ISO metric threads, cosmetic or real. We already have twist-extrude screw surfaces and helix sweeps. Gear rules (undercut, contact ratio) become validation rules |
+| Parametric generators as macro features (gears, threads, standard holes, fasteners) | M | Expand into ordinary features so they stay editable in the tree. Involute spur, helical, internal, bevel gears and racks; ISO metric threads, cosmetic or real (threads: cosmetic and modeled done, see below). We already have twist-extrude screw surfaces and helix sweeps. Gear rules (undercut, contact ratio) become validation rules |
 | CadQuery compatibility | M | Facade or shim that records a script into a feature tree. String selectors become `resolve` descriptions. Score it on the 50 BenchCAD programs (real CadQuery references exist) |
 | build123d builder mode | M | Context-manager style maps to feature steps. Algebra mode maps poorly |
 | Exporters to CadQuery, build123d, brepjs | M | Feature tree out as code; check by running it in the real library |

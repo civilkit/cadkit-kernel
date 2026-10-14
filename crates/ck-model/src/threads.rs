@@ -464,6 +464,13 @@ pub fn find(standard: &str, size: &str) -> Option<&'static ThreadSpec> {
     }
 }
 
+/// The size of `standard` whose tap drill (internal) or major diameter
+/// (external) is nearest to `dia`.
+pub fn nearest_for_diameter(standard: &str, dia: f64, internal: bool) -> Option<&'static ThreadSpec> {
+    let key = |t: &ThreadSpec| if internal { t.tap_drill } else { t.major };
+    sizes(standard).into_iter().min_by(|a, b| (key(a) - dia).abs().total_cmp(&(key(b) - dia).abs()))
+}
+
 fn lev(a: &str, b: &str) -> usize {
     let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
     let mut prev: Vec<usize> = (0..=b.len()).collect();

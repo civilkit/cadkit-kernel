@@ -39,6 +39,7 @@
 //! | mate            | kind, a, b, distance, flip |
 //! | plane           | mode ("offset"/"angle"/"perpendicular"/"mid"; others fall back to offset), base, offset, flip, axis, angle, base2, curves, visible, userHidden |
 //! | deleteBody      | mode, bodies |
+//! | thread          | face, standard, size, class, length, hand, start, modeled (parsed from the raw DOM, see thread.rs) |
 
 pub mod blends;
 pub mod convert;
@@ -62,6 +63,7 @@ pub mod shell;
 pub mod surface_extrude;
 pub mod surfaces;
 pub mod sweep;
+pub mod thread;
 
 use crate::sketch::jtruthy;
 use crate::{EdgeRef, Expr, GeomRef, Part, Ref, Sketch};
@@ -1024,6 +1026,7 @@ impl crate::regen::FeatureExec for Brep {
             FeatureKind::Lip { .. } => return lip::exec_lip(self, state, f),
             FeatureKind::Draft { .. } => return draft::exec_draft(self, state, f),
             FeatureKind::Loft { .. } => return loft::exec_loft(self, state, f),
+            _ if f.type_name == "thread" => return thread::exec_thread(self, state, f),
             _ if f.type_name == "pipeCut" => return pipecut::exec_pipecut(self, state, f),
             _ if f.type_name == "editCurve" => return edit_curve::exec_edit_curve(self, state, f),
             _ => return Err(crate::regen::FeatureError::new(&extrude::todo(&f.type_name))),

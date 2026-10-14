@@ -33,6 +33,7 @@ strings from kernel.strings, and dispatch to ck-ops/ck-topo.
 | mate | kind(coincident/concentric/distance/angle/parallel), a, b, distance(expr), flip |
 | refPlane | mode, base, offset, flip, visible |
 | deleteBody | bodies[] |
+| thread | face (cylinder face name), standard, size (validated against `crate::threads`), class, length (number or "full"), hand, start, modeled. Cosmetic: a `threads` entry + `warnings` (threadDiameterMismatch, threadModelFallback) in the regen result; modeled: helical groove tool cut from the body, faces `<id>.T0..T5` |
 | pipeCut | radius(expr), edges[{faces,at}], faces[] (all their rim edges); the picks may sit in the solid or in a surface body; the result is a SURFACE body registered under the feature id (solid disappears) |
 
 ## Error strings (kernel.strings, verbatim per feature)
@@ -49,6 +50,7 @@ strings from kernel.strings, and dispatch to ck-ops/ck-topo.
 - knit: knitNotClosed, knitNearMiss, knitFailed, knitted
 - fill: fillNotClosed, fillInvalid, fillFailed, fillCrosses, fillContinuity
 - thicken: thickenFailed, thickenPointedPole, thickenReach
+- thread: threadSizeUnknown, threadFaceNotCylinder (warnings: threadDiameterMismatch, threadModelFallback)
 - pipeCut: pipeCutRadius, pipeCutFailed, pipeCutNothingLeft, alignPipeCutOneBody
 - project: projectCurveNoFaces, projectCurveMisses, projectCurveSeverals,
   projectCurveFailed, projectCurveTolerance, projectCurvePlane/Line/Curve

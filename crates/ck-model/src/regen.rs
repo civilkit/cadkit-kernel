@@ -109,7 +109,7 @@ pub const KNOWN_TYPES: &[&str] = &[
     "lip", "dome", "splitLine", "draft", "moveFace", "hole", "lpattern", "cpattern", "mirror", "spattern",
     "fillpattern", "curvepattern", "moveBody", "mate", "insertPart", "scale", "surfaceExtrude", "surfaceRevolve",
     "surfacePlanar", "surfaceOffset", "deleteFace", "fill", "knit", "extend", "freeform", "trimSurface", "thicken",
-    "cutWithSurface", "pipeCut", "deleteBody", "editCurve", "projectCurve", "helix",
+    "cutWithSurface", "pipeCut", "deleteBody", "editCurve", "projectCurve", "helix", "thread",
 ];
 
 /// The error the oracle reports for each known type when the payload is
@@ -244,6 +244,11 @@ pub struct RegenResult {
     pub curves: Vec<Json>,
     pub body: Option<Json>,
     pub surfaces: Vec<Json>,
+    /// `thread` features: one entry per thread (id-keyed). Only on the wire when non-empty.
+    pub threads: Vec<(String, Json)>,
+    /// Non-fatal hints per feature (same shape as `errors`): the document still
+    /// regenerates. Only on the wire when non-empty.
+    pub warnings: Vec<RegenError>,
 }
 
 fn upsert<T>(v: &mut Vec<T>, key: impl Fn(&T) -> &str, item: T) {
@@ -271,11 +276,27 @@ impl RegenResult {
     pub fn put_sketch(&mut self, s: SketchResult) {
         upsert(&mut self.sketches, |x| &x.id, s);
     }
+    pub fn put_thread(&mut self, id: &str, j: Json) {
+        upsert(&mut self.threads, |x| &x.0, (id.to_string(), j));
+    }
     pub fn put_sketch3(&mut self, id: &str, j: Json) {
         upsert(&mut self.sketches3, |x| &x.0, (id.to_string(), j));
     }
 
     pub fn to_json(&self) -> Json {
+        let mut out = self.to_json_base();
+        if let Json::Obj(m) = &mut out {
+            if !self.threads.is_empty() {
+                m.push(("threads".into(), Json::Arr(sorted(&self.threads, |t| &t.0).into_iter().map(|t| t.1.clone()).collect())));
+            }
+            if !self.warnings.is_empty() {
+                m.push(("warnings".into(), Json::Arr(sorted(&self.warnings, |e| &e.feature).into_iter().map(|e| e.to_json()).collect())));
+            }
+        }
+        out
+    }
+
+    fn to_json_base(&self) -> Json {
         Json::Obj(vec![
             ("errors".into(), Json::Arr(sorted(&self.errors, |e| &e.feature).into_iter().map(|e| e.to_json()).collect())),
             ("components".into(), Json::Arr(self.components.clone())),
