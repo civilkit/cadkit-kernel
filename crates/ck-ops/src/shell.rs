@@ -64,12 +64,18 @@ pub fn shell(body: &Body, open: &[FaceId], thickness: f64, outward: bool, tol: f
     let freeform = body.face_ids().any(|f| matches!(body.face(f).surface, Surface::BSpline(_) | Surface::Screw { .. } | Surface::Revolution { .. } | Surface::Extrusion { .. } | Surface::Offset { .. }));
     let tol = if freeform { tol.max(1e-3) } else { tol };
     let dbg_t = std::env::var_os("CK_OFFSET_DEBUG").is_some().then(std::time::Instant::now);
+    // How far the cavity overshoots an opened face. The overshoot region lies
+    // outside the body, so any positive value gives the same result; a short
+    // one keeps the free-form neighbours' continuation past their domain
+    // (second-order, so neighbouring fillets and walls drift apart with the
+    // square of the distance) inside the fit tolerance for thick walls.
+    let ov = (0.25 * t).max(t.min(10.0 * tol));
     let (base, cavity) = if outward {
         let base = offset_body(body, &|f| if is_open(f) { 0.0 } else { t }).map_err(from_offset)?;
-        let cav = offset_body(body, &|f| if is_open(f) { t } else { 0.0 }).map_err(from_offset)?;
+        let cav = offset_body(body, &|f| if is_open(f) { ov } else { 0.0 }).map_err(from_offset)?;
         (base, cav)
     } else {
-        let cav = offset_body(body, &|f| if is_open(f) { t } else { -t }).map_err(from_offset)?;
+        let cav = offset_body(body, &|f| if is_open(f) { ov } else { -t }).map_err(from_offset)?;
         (body.clone(), cav)
     };
     if let Some(t) = dbg_t {
