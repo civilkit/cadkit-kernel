@@ -41,6 +41,12 @@ pub(super) fn now() -> Option<std::time::Instant> {
 }
 
 const N: usize = 10;
+/// Cell-pair cap (of 10 000 possible) above which the seeding gives up in favour of the projection grids.
+const MAX_PAIRS: usize = 4000;
+/// Seed cap: more seeds than this on one intersection means a degenerate (tangent / coincident)
+/// contact; the march keeps the first ones only.
+pub const MAX_SEEDS_PUB: usize = 400;
+pub(super) const MAX_SEEDS: usize = MAX_SEEDS_PUB;
 
 pub(super) struct Cell {
     pub u: (f64, f64),
@@ -195,6 +201,11 @@ pub(super) fn seeds(s1: &Surface, s2: &Surface, g1: &Grid, g2: &Grid, b: &Bounds
     if pr.is_empty() {
         return None;
     }
+    if pr.len() > MAX_PAIRS {
+        // nearly every cell overlaps nearly every other (coincident-ish or wildly padded boxes):
+        // the boundary seeding would cost more than the projection grids; let the caller fall back
+        return Some((vec![], true));
+    }
     let (f1, f2) = (super::ss::implicit(s1), super::ss::implicit(s2));
     // partners per cell, both ways
     let mut p1: Vec<Vec<usize>> = vec![vec![]; N * N];
@@ -207,8 +218,11 @@ pub(super) fn seeds(s1: &Surface, s2: &Surface, g1: &Grid, g2: &Grid, b: &Bounds
     let mut newtons = 0usize;
     let mut strong = false;
     let dedupe = (10.0 * tol).max(1e-12);
+    // a seed where the surfaces are tangent (|n1 x n2| below 1e-6, the original's cut-off is 1e-7)
+    // has no march direction: the tracer would wander along the contact (a swept tube meeting its
+    // own guide torus: hundreds of such seeds, each a failing 5000-step trace)
     let push = |out: &mut Vec<MPt>, p: Vec3, uv: Uv4| {
-        if inside(b, p, pad) && !out.iter().any(|m| m.p.dist(p) < dedupe) {
+        if inside(b, p, pad) && !out.iter().any(|m| m.p.dist(p) < dedupe) && s1.normal(uv[0], uv[1]).cross(s2.normal(uv[2], uv[3])).len() > 1e-6 {
             out.push(MPt { p, uv });
         }
     };
@@ -317,6 +331,7 @@ pub(super) fn seeds(s1: &Surface, s2: &Surface, g1: &Grid, g2: &Grid, b: &Bounds
         }
     }
     let _ = step;
+    out.truncate(MAX_SEEDS);
     STATS[2].fetch_add(newtons, Ordering::Relaxed);
     STATS[3].fetch_add(out.len(), Ordering::Relaxed);
     Some((out, strong))
