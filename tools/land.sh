@@ -33,6 +33,7 @@ npm --prefix packages ci --silent 2>&1 | tail -2
 npm --prefix packages test --silent 2>&1 | tail -8 | grep -q "# fail 0" || { echo "land: packages failed"; exit 1; }
 node tools/region_select_check.mjs >/dev/null || { echo "land: region select check failed"; exit 1; }
 node tools/coincident_boolean_check.mjs >/dev/null || { echo "land: coincident boolean check failed"; exit 1; }
+node tools/hole_dims_check.mjs >/dev/null || { echo "land: hole dims check failed"; exit 1; }
 node tools/lint_protocol.mjs --quiet || { echo "land: protocol lint failed"; exit 1; }
 node tools/gate.mjs --fast --quiet | tail -1 | grep -q "gate ok" || { node tools/gate.mjs --fast --quiet | grep REGRESSION; echo "land: gate failed"; exit 1; }
 git -C "$MAIN" merge --ff-only "$BR"
