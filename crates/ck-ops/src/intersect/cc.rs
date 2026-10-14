@@ -609,8 +609,8 @@ pub fn newton2(c1: &Curve, c2: &Curve, mut s: f64, mut t: f64, r1: (f64, f64), r
     let w1 = (r1.1 - r1.0).abs() * 0.05 + 1e-9;
     let w2 = (r2.1 - r2.0).abs() * 0.05 + 1e-9;
     for _ in 0..40 {
-        let d1 = c1.derivs(s, 1);
-        let d2 = c2.derivs(t, 1);
+        let d1 = c1.derivs1_arr(s);
+        let d2 = c2.derivs1_arr(t);
         let f = d1[0] - d2[0];
         if f.len() < 1e-15 {
             break;

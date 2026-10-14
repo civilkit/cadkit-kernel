@@ -190,6 +190,36 @@ impl Curve {
         }
     }
 
+    /// `[C, C', C'']` at t without allocating (same arithmetic as [`Self::derivs`]`(t, 2)`):
+    /// the surface evaluators of revolution, screw and extrusion patches call this per point.
+    #[inline]
+    pub fn derivs2_arr(&self, t: f64) -> [Vec3; 3] {
+        match self {
+            Curve::Line { o, d } => [*o + *d * t, *d, Vec3::ZERO],
+            Curve::BSpline(c) if c.weights.is_none() && c.degree < 12 => c.derivs_arr(t, 2),
+            _ => {
+                let v = self.derivs(t, 2);
+                [v[0], v[1], v[2]]
+            }
+        }
+    }
+
+    /// `[C, C']` at t without allocating (same arithmetic as [`Self::derivs`]`(t, 1)`).
+    #[inline]
+    pub fn derivs1_arr(&self, t: f64) -> [Vec3; 2] {
+        match self {
+            Curve::Line { o, d } => [*o + *d * t, *d],
+            Curve::BSpline(c) if c.weights.is_none() && c.degree < 12 => {
+                let a = c.derivs_arr(t, 1);
+                [a[0], a[1]]
+            }
+            _ => {
+                let v = self.derivs(t, 1);
+                [v[0], v[1]]
+            }
+        }
+    }
+
     pub fn deriv(&self, t: f64) -> Vec3 {
         self.derivs(t, 1)[1]
     }

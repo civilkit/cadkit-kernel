@@ -311,7 +311,7 @@ impl Surface {
                 }
             }
             Surface::Revolution { profile, axis_o, axis } => {
-                let c = profile.derivs(v, 2);
+                let c = profile.derivs2_arr(v);
                 let (su, cu) = u.sin_cos();
                 let z = *axis;
                 // Rodrigues: R(u)w = w cos u + (z·w) z (1 - cos u) + (z×w) sin u
@@ -329,7 +329,7 @@ impl Surface {
                 }
             }
             Surface::Screw { profile, axis_o, axis, rise, .. } => {
-                let c = profile.derivs(v, 2);
+                let c = profile.derivs2_arr(v);
                 let (su, cu) = u.sin_cos();
                 let z = *axis;
                 let rot = |w: Vec3| w * cu + z * (z.dot(w) * (1.0 - cu)) + z.cross(w) * su;
@@ -346,7 +346,7 @@ impl Surface {
                 }
             }
             Surface::Extrusion { profile, dir } => {
-                let c = profile.derivs(u, 2);
+                let c = profile.derivs2_arr(u);
                 SurfDerivs { p: c[0] + *dir * v, du: c[1], dv: *dir, duu: c[2], ..Default::default() }
             }
             Surface::BSpline(s) => s.derivs2(u, v),
@@ -574,7 +574,7 @@ impl Surface {
                 let nv = 48;
                 let mut best = (INF, 0.0, a);
                 // the profile points once per v (the same values `eval` rotates)
-                let ws: Vec<Vec3> = (0..=nv).map(|j| profile.derivs(a + (b - a) * j as f64 / nv as f64, 2)[0] - *axis_o).collect();
+                let ws: Vec<Vec3> = (0..=nv).map(|j| profile.derivs2_arr(a + (b - a) * j as f64 / nv as f64)[0] - *axis_o).collect();
                 let z = *axis;
                 for i in 0..nu {
                     let u = TAU * i as f64 / nu as f64;
@@ -852,7 +852,7 @@ fn revolution_foot(profile: &Curve, axis_o: Vec3, axis: Vec3, q: Vec3) -> Option
     }
     let mut v = p0 + (p1 - p0) * best.1 as f64 / N as f64;
     for _ in 0..40 {
-        let c = profile.derivs(v.clamp(p0, p1), 2);
+        let c = profile.derivs2_arr(v.clamp(p0, p1));
         let (dr, dz) = ((c[0] - axis_o).dot(er) - rho, (c[0] - axis_o).dot(a) - qz);
         let (d1r, d1z) = (c[1].dot(er), c[1].dot(a));
         let (d2r, d2z) = (c[2].dot(er), c[2].dot(a));

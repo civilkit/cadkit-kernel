@@ -444,6 +444,13 @@ impl BSplineSurface {
 
     /// Parameters of the closest point to `q` (grid seed + 2D Newton).
     pub fn closest_param(&self, q: Vec3) -> (f64, f64) {
+        self.closest_param_fp(self.fingerprint(), q)
+    }
+
+    /// [`closest_param`](Self::closest_param) with the surface's [`fingerprint`](Self::fingerprint)
+    /// computed by the caller (one pass over the control net per call otherwise: a polyline of
+    /// hundreds of points projected onto one surface pays it once).
+    pub fn closest_param_fp(&self, fp: u64, q: Vec3) -> (f64, f64) {
         // the same foot point is asked for again and again (every loop of an
         // arrangement re-samples its start; each fragment of a face re-projects
         // the same edges): memoised per (surface, point)
@@ -452,7 +459,6 @@ impl BSplineSurface {
         thread_local! {
             static MEMO: RefCell<HashMap<(u64, u64, u64, u64), (f64, f64)>> = RefCell::new(HashMap::new());
         }
-        let fp = self.fingerprint();
         let key = (fp, q.x.to_bits(), q.y.to_bits(), q.z.to_bits());
         if let Some(r) = MEMO.with(|m| m.borrow().get(&key).copied()) {
             return r;
