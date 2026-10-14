@@ -36,7 +36,7 @@
 //! | knit            | surfaces, solid |
 //! | fill            | edges, merge, continuity, fairing |
 //! | insertPart      | part (nested .ckpart), source, place{o,x,y,z} or dx/dy/dz+axis+angle, fixed |
-//! | mate            | kind, a, b, distance, flip |
+//! | mate            | kind, a, b, distance, flip; extended kinds: a2, b2, c, angle, ratio, pitch, radius, min, max, of, dir (see mate_kinds.rs) |
 //! | plane           | mode ("offset"/"angle"/"perpendicular"/"mid"; others fall back to offset), base, offset, flip, axis, angle, base2, curves, visible, userHidden |
 //! | deleteBody      | mode, bodies |
 //! | moveFace        | faces, mode (offset / translate), distance, translate, flip (parsed from the raw DOM, see move_face.rs) |
