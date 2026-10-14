@@ -262,23 +262,123 @@ fn exec_chamfer_legs(br: &mut Brep, state: &mut RegenState, f: &Feature, edges: 
 }
 
 fn select_edges(br: &Brep, edges: &[crate::EdgeRef]) -> Result<Vec<(String, String, Vec3)>, FeatureError> {
+    use ck_topo::body::EdgeId;
     // GUESS: no body -> missingEdge (nothing can be selected).
     let Some(body) = br.body.as_ref() else { return Err(FeatureError::new("missingEdge")) };
-    let mut sel = vec![];
+    let missing = || FeatureError::new("missingEdge");
+    // pass 1: the recorded name pair, else the candidates between the same face FAMILIES
+    // (`~k` suffixes ignored). The `~k` numbers of split faces (inner / outer of a shell, pieces
+    // of a blend) come from the order the boolean walks them, which can change when the
+    // geometry is edited: the recorded pair may then name two faces that no longer meet.
+    enum Pick {
+        Exact(String, String, Vec3),
+        Family(Vec3, Vec<(EdgeId, f64)>),
+    }
+    let mut picks = vec![];
     for e in edges {
-        let (Some(a), Some(b)) = (e.faces.first(), e.faces.get(1)) else { return Err(FeatureError::new("missingEdge")) };
+        let (Some(a), Some(b)) = (e.faces.first(), e.faces.get(1)) else { return Err(missing()) };
         let at = match e.at {
             Some(p) => Vec3::new(p[0], p[1], p[2]),
             // GUESS: without a pick point the first edge between the faces
-            None => first_edge_mid(body, a, b).ok_or_else(|| FeatureError::new("missingEdge"))?,
+            None => first_edge_mid(body, a, b).ok_or_else(missing)?,
         };
-        if ck_ops::blend::build::find_edge(body, a, b, at).is_none() {
-            return Err(FeatureError::new("missingEdge"));
+        if ck_ops::blend::build::find_edge(body, a, b, at).is_some() {
+            picks.push(Pick::Exact(a.clone(), b.clone(), at));
+        } else {
+            let (ba, bb) = (super::lip::base_id(a), super::lip::base_id(b));
+            let cands: Vec<(EdgeId, f64)> = body
+                .edge_ids()
+                .filter(|&e| {
+                    let fs = body.edge_faces(e);
+                    fs.len() == 2 && {
+                        let (x, y) = (super::lip::base_id(&body.face_id_str(fs[0])), super::lip::base_id(&body.face_id_str(fs[1])));
+                        (x == ba && y == bb) || (x == bb && y == ba)
+                    }
+                })
+                .map(|e| {
+                    let ed = body.edge(e);
+                    (e, ck_ops::boolean::imprint::dist_in_range(&ed.curve, (ed.t0, ed.t1), at).1)
+                })
+                .collect();
+            if cands.is_empty() {
+                return Err(missing());
+            }
+            picks.push(Pick::Family(at, cands));
         }
-        sel.push(forward_first(body, a, b, at));
+    }
+    // pass 2: the stale pick point alone cannot tell the outer rim of a shell from the inner one
+    // once the part is edited (the rim moved further than the wall is thick). The picks of one
+    // feature lie on one chain of edges, so take the connected set of candidate edges that the
+    // picks are closest to as a whole and choose within it.
+    let mut comp: std::collections::HashMap<EdgeId, EdgeId> = Default::default();
+    fn root(c: &mut std::collections::HashMap<EdgeId, EdgeId>, e: EdgeId) -> EdgeId {
+        let p = *c.entry(e).or_insert(e);
+        if p == e {
+            e
+        } else {
+            let r = root(c, p);
+            c.insert(e, r);
+            r
+        }
+    }
+    let mut all: Vec<EdgeId> = vec![];
+    for p in &picks {
+        match p {
+            Pick::Exact(a, b, at) => all.extend(ck_ops::blend::build::find_edge(body, a, b, *at)),
+            Pick::Family(_, c) => all.extend(c.iter().map(|x| x.0)),
+        }
+    }
+    for (i, &e) in all.iter().enumerate() {
+        for &g in &all[i + 1..] {
+            let (x, y) = (body.edge(e), body.edge(g));
+            if [x.v0, x.v1].iter().any(|v| *v == y.v0 || *v == y.v1) {
+                let (r1, r2) = (root(&mut comp, e), root(&mut comp, g));
+                comp.insert(r1, r2);
+            }
+        }
+    }
+    let mut score: std::collections::BTreeMap<usize, f64> = Default::default();
+    for p in &picks {
+        if let Pick::Family(_, c) = p {
+            let mut best: std::collections::BTreeMap<usize, f64> = Default::default();
+            for &(e, d) in c {
+                let r = root(&mut comp, e).idx();
+                let v = best.entry(r).or_insert(f64::INFINITY);
+                *v = v.min(d);
+            }
+            // components this pick has no candidate in cost it the worst distance
+            let worst = best.values().cloned().fold(0.0f64, f64::max);
+            for &r in &score.keys().cloned().collect::<Vec<_>>() {
+                best.entry(r).or_insert(worst * 2.0 + 1.0);
+            }
+            for (r, d) in best {
+                *score.entry(r).or_insert(0.0) += d;
+            }
+        }
+    }
+    let chosen_comp = score.iter().min_by(|a, b| a.1.total_cmp(b.1)).map(|(r, _)| *r);
+    let mut sel = vec![];
+    for p in picks {
+        let (a, b, at) = match p {
+            Pick::Exact(a, b, at) => (a, b, at),
+            Pick::Family(at, c) => {
+                let roots: Vec<usize> = c.iter().map(|x| root(&mut comp, x.0).idx()).collect();
+                let best = |only: bool| {
+                    c.iter()
+                        .zip(&roots)
+                        .filter(|(_, r)| !only || chosen_comp.map_or(true, |k| **r == k))
+                        .min_by(|x, y| x.0 .1.total_cmp(&y.0 .1))
+                        .map(|x| x.0 .0)
+                };
+                let e = best(true).or_else(|| best(false)).ok_or_else(missing)?;
+                let fs = body.edge_faces(e);
+                (body.face_id_str(fs[0]), body.face_id_str(fs[1]), at)
+            }
+        };
+        sel.push(forward_first(body, &a, &b, at));
     }
     if sel.is_empty() {
-        return Err(FeatureError::new("missingEdge"));
+        return Err(missing());
     }
     Ok(sel)
 }

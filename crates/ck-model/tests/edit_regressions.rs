@@ -80,3 +80,14 @@ fn ball_knob_stem_end_inside_the_ball() {
     check(&edited("bench/benchcad/ball_knob_007575.ckpart.json", 4, "depth", 57.26, 1.25), 15849.86110205764);
     check(&edited("bench/benchcad/ball_knob_007575.ckpart.json", 4, "depth", 57.26, 1.5), 16180.92791897596);
 }
+
+/// Moving one sketch point of the enclosure turns the shelled box into a trapezoid; the shell's inner /
+/// outer `~k` face numbers change, so the recorded fillet pairs (`F2.C1~2` / `F2.S.e1~1`) name faces that
+/// no longer meet. The pick falls back to the same face families and keeps all four on ONE rim (the
+/// outer top rim; the original mixes in the inner edge of the slanted side, a concave fillet that ADDS
+/// material). Expected volume: the shelled trapezoid 105973.99 minus the outer-rim fillet removal
+/// (1 - pi/4) r^2 x rim length = 71.5.
+#[test]
+fn enclosure_fillet_pick_survives_renumbered_shell_faces() {
+    check(&edited("bench/benchcad/enclosure_000042.ckpart.json", 0, "points.0.x", -96.435, 1.25), 105902.44);
+}
