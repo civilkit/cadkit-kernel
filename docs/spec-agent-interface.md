@@ -417,6 +417,29 @@ offset profile placed in the plane (exact, no sampling).
   (B-spline surfaces) report a sampled radius (40 x 40 grid) and still fit through the tensor grid (slow for
   long faces); thickness larger than the part height with an opened face is reported from the plane gap.
 
+## Booleans on free-form walls and spheres on faces
+
+- A pocket, boss or ring cut whose profile is a closed spline, on a solid whose walls are extruded closed
+  splines (or any solid), used to fail with `booleanFailed`. Two causes: the section of the tool's wall with the
+  other body's cap plane was marched instead of taken exactly (a plane perpendicular to an extrusion's rulings
+  cuts it in the profile itself: `intersect::ss::plane_extrusion_perp`, exact and fast), and the two-lap
+  closest-parameter ambiguity of a closed sketch spline made "this edge lies on that face" tests and the uv
+  loops of the wall faces wrong. `boolean` now cuts both operands' two-lap curves down to their lap window first
+  (`offset::single_lap_body`, shared with `shell` / `moveFace`).
+- A lone sphere (a revolved semicircle) whose pole lies on a surface of the other body (the typical sphere
+  centred on a face with its axis in the face plane) met it in a circle through the poles, which the face's uv
+  polygon cannot hold: the sphere fragments collapsed and the sphere face was dropped (an error, or a silently
+  wrong volume). The sphere is now turned about its centre until no pole is on the other body
+  (`apply::unpole`; same point set, the face keeps its name, only seam and poles move). The union box check of
+  the sanity test uses the loose box of the result (a hemisphere bulge has no edge on it).
+- Checks: `crates/ck-model/tests/spline_boolean.rs` (ring cut, pocket, boss, through pocket on a spline and a
+  cvspline kidney, analytic volumes against the standalone inner extrusion; spline pocket in a block),
+  `crates/ck-model/tests/sphere_on_face.rs` (hemisphere face area 2 pi r^2, volume, validity, add and cut, six
+  faces, both axes in the sketch, sketch on the face), `tools/spline_boolean_check.mjs` (wasm, run by `tools/land.sh`).
+- Limits: the pole rotation applies to a body that is a single sphere face; a sphere that was already trimmed
+  and then cut again on a pole-containing plane is not rotated. Splines whose section with a tilted plane is
+  needed still march.
+
 ## Design rules: `profiles` and `checkProfile`
 
 A rule engine on top of `validate` / `check` (crates/ck-ops/src/profile). A

@@ -154,10 +154,32 @@ fn analytic(s1: &Surface, s2: &Surface, tol: f64) -> Option<SsResult> {
         (Plane { frame: p }, Sphere { frame, r }) => Some(plane_sphere(p, frame, *r, tol)),
         (Plane { frame: p }, Cone { frame, r, semi_angle }) => plane_cone(p, frame, *r, *semi_angle, tol),
         (Plane { frame: p }, Torus { frame, major, minor }) => plane_torus(p, frame, *major, *minor, tol),
+        (Plane { frame: p }, Extrusion { profile, dir }) => plane_extrusion_perp(p, profile, *dir, tol),
         (Cylinder { frame: a, r: ra }, Cylinder { frame: b, r: rb }) => cyl_cyl(a, *ra, b, *rb, tol),
         (Sphere { frame: a, r: ra }, Sphere { frame: b, r: rb }) => Some(sphere_sphere(a.o, *ra, b.o, *rb, tol)),
         _ => coaxial(s1, s2, tol),
     }
+}
+
+/// A plane perpendicular to the rulings of an extrusion whose profile lies in a plane perpendicular to
+/// them (every sketch extrusion): the section is the profile itself placed in the plane, exact, with the
+/// profile's own parameter. Anything else (tilted plane, skew profile) marches.
+fn plane_extrusion_perp(p: &Frame, profile: &Curve, dir: Vec3, tol: f64) -> Option<SsResult> {
+    let d = dir.normalize();
+    if d.cross(p.z).len() > 1e-9 {
+        return None;
+    }
+    let (t0, t1) = profile.range();
+    let (t0, t1) = if t0.is_finite() && t1.is_finite() { (t0, t1) } else { return None };
+    let h = |t: f64| (profile.eval(t) - p.o).dot(d);
+    let h0 = h(t0);
+    for k in 1..=16 {
+        if (h(t0 + (t1 - t0) * k as f64 / 16.0) - h0).abs() > tol * 0.1 {
+            return None;
+        }
+    }
+    let shift = d * (-h0);
+    Some(curves(vec![profile.transform(|q| q + shift, |v| v)]))
 }
 
 fn plane_plane(a: &Frame, b: &Frame, tol: f64) -> SsResult {

@@ -39,6 +39,7 @@ node tools/coincident_boolean_check.mjs >/dev/null || { echo "land: coincident b
 node tools/hole_dims_check.mjs >/dev/null || { echo "land: hole dims check failed"; exit 1; }
 node tools/move_check.mjs >/dev/null || { echo "land: move check failed"; exit 1; }
 node tools/spline_shell_check.mjs >/dev/null || { echo "land: spline shell check failed"; exit 1; }
+node tools/spline_boolean_check.mjs >/dev/null || { echo "land: spline boolean check failed"; exit 1; }
 node tools/lint_protocol.mjs --quiet || { echo "land: protocol lint failed"; exit 1; }
 node tools/gate.mjs --fast --quiet | tail -1 | grep -q "gate ok" || { node tools/gate.mjs --fast --quiet | grep REGRESSION; echo "land: gate failed"; exit 1; }
 git -C "$MAIN" merge --ff-only "$BR"

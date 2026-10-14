@@ -187,7 +187,9 @@ pub fn check_result(a: &Body, b: &Body, op: Op, result: &Body) -> Option<VolumeM
     if op == Op::Union {
         let (alo, ahi) = a.bbox();
         let (blo, bhi) = b.bbox();
-        let (rlo, rhi) = result.bbox();
+        // (the loose box: a sphere or cylinder bulge has no edge on it, so the edge box of a union that
+        // keeps only a hemisphere of a tool would read as short of the tool's own box)
+        let (rlo, rhi) = loose_box(result);
         let (lo, hi) = (alo.min(blo), ahi.max(bhi));
         let slack = 1e-2 * (hi - lo).len() + 1e-6;
         // positive when the result falls short of the operands
