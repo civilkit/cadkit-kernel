@@ -494,27 +494,48 @@ export interface SplitLineFeature {
   [key: string]: unknown;
 }
 
+/**
+ * Push / pull faces; unselected neighbours extend or trim, tangent round neighbours of a
+ * pushed plane travel with it. `mode: 'offset'` (default) moves each face along its outward
+ * normal by `distance` (positive adds material; planes slide, cylinders / cones / spheres /
+ * tori change radius, a hole wall with a positive distance shrinks the hole); `mode:
+ * 'translate'` moves planar faces by the component of `translate` along their outward normal.
+ * Errors: noFaces, missingReference, moveFaceUnsupported {detail}, moveFaceFailed {detail}.
+ */
 export interface MoveFaceFeature {
   type: 'moveFace';
   id: string;
   name?: string;
   faces: string[];
-  distance: Expr;
+  mode?: 'offset' | 'translate';
+  distance?: Expr;
+  translate?: [Expr, Expr, Expr];
   flip?: boolean;
   [key: string]: unknown;
 }
 
+/** A body of a `moveBody`: the lump holding a face, or a surface body by its feature id. */
+export type BodyRef = string | { face: string } | { surface: string };
+
+/**
+ * Rigid move (rotate about `rotate.axis` through `rotate.origin` by `rotate.angle` degrees,
+ * then translate) of the listed bodies (default: the whole solid), optionally as a copy
+ * (`copy: true`; the copy's face names carry `@<id>.1`). Face names of a moved body are
+ * unchanged. The legacy `dx/dy/dz` + `axis` + `angle` form still reads.
+ */
 export interface MoveBodyFeature {
   type: 'moveBody';
   id: string;
   name?: string;
   copy?: boolean;
+  bodies?: BodyRef[];
+  translate?: [Expr, Expr, Expr];
+  rotate?: { axis: [Expr, Expr, Expr] | 'x' | 'y' | 'z'; origin?: [Expr, Expr, Expr]; angle: Expr };
   dx?: number;
   dy?: number;
   dz?: number;
   axis?: GeomRef | null;
   angle?: Expr;
-  bodies?: unknown[];
   [key: string]: unknown;
 }
 

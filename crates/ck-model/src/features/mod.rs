@@ -39,6 +39,8 @@
 //! | mate            | kind, a, b, distance, flip |
 //! | plane           | mode ("offset"/"angle"/"perpendicular"/"mid"; others fall back to offset), base, offset, flip, axis, angle, base2, curves, visible, userHidden |
 //! | deleteBody      | mode, bodies |
+//! | moveFace        | faces, mode (offset / translate), distance, translate, flip (parsed from the raw DOM, see move_face.rs) |
+//! | moveBody        | bodies, translate, rotate{axis,origin,angle}, copy (see move_body.rs) |
 //! | thread          | face, standard, size, class, length, hand, start, modeled (parsed from the raw DOM, see thread.rs) |
 
 pub mod blends;
@@ -54,6 +56,8 @@ pub mod hole;
 pub mod lip;
 pub mod loft;
 pub mod mate;
+pub mod move_body;
+pub mod move_face;
 pub mod pattern;
 pub mod pipecut;
 pub mod project_curve;
@@ -1031,6 +1035,8 @@ impl crate::regen::FeatureExec for Brep {
             FeatureKind::Draft { .. } => return draft::exec_draft(self, state, f),
             FeatureKind::Loft { .. } => return loft::exec_loft(self, state, f),
             _ if f.type_name == "thread" => return thread::exec_thread(self, state, f),
+            _ if f.type_name == "moveBody" => return move_body::exec_move_body(self, state, f),
+            _ if f.type_name == "moveFace" => return move_face::exec_move_face(self, state, f),
             _ if f.type_name == "pipeCut" => return pipecut::exec_pipecut(self, state, f),
             _ if f.type_name == "editCurve" => return edit_curve::exec_edit_curve(self, state, f),
             _ => return Err(crate::regen::FeatureError::new(&extrude::todo(&f.type_name))),

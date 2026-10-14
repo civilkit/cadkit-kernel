@@ -646,6 +646,31 @@ fn solve_point(p0: Vec3, surfs: &[&Surface]) -> Option<Vec3> {
 /// face's OUTWARD normal (positive = grow). Returns the moved copy (same
 /// topology and element order, pcurves dropped).
 pub fn offset_body(src: &Body, dist: &dyn Fn(FaceId) -> f64) -> Result<Body, OffsetError> {
+    move_faces_body(src, &|f| FaceMove::Offset(dist(f)))
+}
+
+/// What happens to one face in [`move_faces_body`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FaceMove {
+    /// Along the outward normal by a signed distance (positive grows); planes slide, round
+    /// surfaces change radius.
+    Offset(f64),
+    /// The face's surface translates rigidly (a tangent fillet carried along with a pushed wall).
+    Shift(Vec3),
+}
+
+/// [`offset_body`] generalised: each face either offsets along its normal or translates
+/// rigidly. Vertices are re-solved on the moved surfaces (seeded where a translated face
+/// puts them), edges follow, circles about a translated axis move with it.
+pub fn move_faces_body(src: &Body, mv: &dyn Fn(FaceId) -> FaceMove) -> Result<Body, OffsetError> {
+    let dist = |f: FaceId| match mv(f) {
+        FaceMove::Offset(d) => d,
+        FaceMove::Shift(_) => 0.0,
+    };
+    let shift_of = |f: FaceId| match mv(f) {
+        FaceMove::Shift(s) => Some(s),
+        FaceMove::Offset(_) => None,
+    };
     let mut out = src.clone();
 
     // new surfaces (free-form offsets extend `reach` past their faces: the
@@ -656,7 +681,9 @@ pub fn offset_body(src: &Body, dist: &dyn Fn(FaceId) -> f64) -> Result<Body, Off
         let face = src.face(f);
         let d = dist(f);
         let nat = if face.sense { d } else { -d };
-        let r = if is_freeform(&face.surface) {
+        let r = if let Some(s) = shift_of(f) {
+            Ok(ck_topo::body::transform_surface(&face.surface, &ck_core::xform::Xform::translation(s)))
+        } else if is_freeform(&face.surface) {
             match face_uv_box(src, f) {
                 Some(bx) => fit_offset_surface(&face.surface, nat, bx, reach),
                 None => Err(OffsetError::new("offsetUnsupported", "face extent")),
@@ -698,7 +725,8 @@ pub fn offset_body(src: &Body, dist: &dyn Fn(FaceId) -> f64) -> Result<Body, Off
         if surfs.is_empty() {
             continue;
         }
-        newp[v.idx()] = solve_point(src.vertex(v).p, &surfs)
+        let seed = vfaces[v.idx()].iter().find_map(|&f| shift_of(f)).map_or(src.vertex(v).p, |s| src.vertex(v).p + s);
+        newp[v.idx()] = solve_point(seed, &surfs)
             .ok_or_else(|| OffsetError::new("offsetDegenerate", "the offset faces do not meet at a corner"))?;
         if std::env::var_os("CK_OFFSET_DEBUG").is_some() {
             let q = newp[v.idx()];
@@ -729,7 +757,19 @@ pub fn offset_body(src: &Body, dist: &dyn Fn(FaceId) -> f64) -> Result<Body, Off
             }
             Curve::Circle { frame, r } => {
                 let z = frame.z;
-                let c = frame.o + z.scale((p0 - frame.o).dot(z));
+                // a circle about the axis of a translated round surface moves with it
+                let carried = fs
+                    .iter()
+                    .filter_map(|&f| shift_of(f).map(|s| (f, s)))
+                    .find(|&(f, _)| match &src.face(f).surface {
+                        Surface::Cylinder { frame: sf, .. } | Surface::Cone { frame: sf, .. } => {
+                            sf.z.cross(z).len() < 1e-9 && (frame.o - sf.o).cross(sf.z).len() < 1e-7
+                        }
+                        _ => false,
+                    })
+                    .map_or(Vec3::ZERO, |(_, s)| s);
+                let fo = frame.o + carried;
+                let c = fo + z.scale((p0 - fo).dot(z));
                 let r2 = (p0 - c).len();
                 if r2 <= EPS {
                     return Err(shrink());
@@ -739,6 +779,9 @@ pub fn offset_body(src: &Body, dist: &dyn Fn(FaceId) -> f64) -> Result<Body, Off
                 (Curve::Circle { frame: Frame { o: c, ..frame.clone() }, r: r2 }, ed.t0, ed.t1)
             }
             Curve::BSpline(_) => {
+                if fs.iter().any(|&f| shift_of(f).is_some()) {
+                    return Err(OffsetError::new("offsetUnsupported", "free-form edge of a translated face"));
+                }
                 let dn = |f: FaceId| {
                     let d = dist(f);
                     if src.face(f).sense { d } else { -d }

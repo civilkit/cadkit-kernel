@@ -36,6 +36,7 @@ node tools/thread_check.mjs >/dev/null || { echo "land: thread check failed"; ex
 node tools/profile_check.mjs >/dev/null || { echo "land: profile check failed"; exit 1; }
 node tools/coincident_boolean_check.mjs >/dev/null || { echo "land: coincident boolean check failed"; exit 1; }
 node tools/hole_dims_check.mjs >/dev/null || { echo "land: hole dims check failed"; exit 1; }
+node tools/move_check.mjs >/dev/null || { echo "land: move check failed"; exit 1; }
 node tools/lint_protocol.mjs --quiet || { echo "land: protocol lint failed"; exit 1; }
 node tools/gate.mjs --fast --quiet | tail -1 | grep -q "gate ok" || { node tools/gate.mjs --fast --quiet | grep REGRESSION; echo "land: gate failed"; exit 1; }
 git -C "$MAIN" merge --ff-only "$BR"

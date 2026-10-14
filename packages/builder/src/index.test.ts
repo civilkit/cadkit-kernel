@@ -109,7 +109,18 @@ describe('builder solid features', () => {
     assert.deepEqual(rec(p, 15), { type: 'scale', name: 'scale', factor: 2, about: 'centroid', id: 'F16' });
   });
 
-  it('point() makes a hole-centre point entity', () => {    const p = new Part('T');
+  it('moveFace / moveBody wire shapes', () => {
+    const p = new Part('T');
+    p.moveFace({ faces: ['F2.C1'], distance: 2.5 });
+    p.moveFace({ faces: ['F2.S.e1'], mode: 'translate', translate: [3, 0, 0] });
+    p.moveBody({ bodies: [{ face: 'F2.C1' }], translate: [10, 0, 0], rotate: { axis: [0, 0, 1], origin: [0, 0, 0], angle: 30 }, copy: true });
+    assert.deepEqual(rec(p, 0), { type: 'moveFace', name: 'moveFace', faces: ['F2.C1'], distance: 2.5, id: 'F1' });
+    assert.deepEqual(rec(p, 1), { type: 'moveFace', name: 'moveFace', faces: ['F2.S.e1'], mode: 'translate', translate: [3, 0, 0], id: 'F2' });
+    assert.deepEqual(rec(p, 2), { type: 'moveBody', name: 'moveBody', bodies: [{ face: 'F2.C1' }], translate: [10, 0, 0], rotate: { axis: [0, 0, 1], origin: [0, 0, 0], angle: 30 }, copy: true, id: 'F3' });
+  });
+
+  it('point() makes a hole-centre point entity', () => {
+    const p = new Part('T');
     let eid = '';
     p.sketch('C', 'front', (s) => { eid = s.point(50, 30); });
     const f = p.features[0];

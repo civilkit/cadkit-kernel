@@ -280,6 +280,69 @@ and boolean machinery.
   tests check it to 5 percent for full-length threads and to 10 percent for partial
   lengths (the flat groove end).
 - Check: `tools/thread_check.mjs`, `crates/ck-model/tests/thread_feature.rs`.
+## Direct manipulation: `moveFace` and `moveBody`
+
+Two ordinary features for GUI handles (drag a face arrow, drag the move / rotate gizmo of a
+body). Both fail with a structured error and leave the model unchanged.
+
+### `moveFace`
+
+```json
+{"type":"moveFace","id":"F7","faces":["F2.C1"],"mode":"offset","distance":2.5}
+{"type":"moveFace","id":"F8","faces":["F2.S.e1"],"mode":"translate","translate":[3,0,0]}
+```
+
+- `faces`: persistent face names of the solid (a face split into `<id>~k` pieces is named by
+  its base id). `mode: "offset"` (default): each face moves along its OUTWARD normal by
+  `distance` (numbers or `"=expr"`; `flip: true` negates). Positive adds material: a pushed
+  plane grows the part, a cylinder's radius grows, and a hole wall with a positive distance
+  shrinks the hole. `mode: "translate"`: planar faces move by the component of `translate`
+  `[x,y,z]` along their outward normal (the sliding part changes nothing); curved faces are
+  `moveFaceUnsupported` in this mode. A distance of 0 is a no-op.
+- Supported surfaces: planes, cylinders, cones, spheres, tori. Unselected neighbours keep
+  their surfaces and are extended or trimmed: vertices are re-solved on the incident
+  surfaces and edges follow (ck-ops `move_faces_body`, the machinery shell uses). Round
+  faces (fillets, cylinders) tangent to a pushed plane travel with it (translate rigidly) so
+  the blend stays tangent; if that gives no valid body, the plain extension is tried.
+- Topology, face order and every persistent name are unchanged, so references and later
+  features (sketches on the moved face, fillets) keep working. Pcurves are rebuilt.
+- Result checks: edges must not collapse or reverse, `ck-check` finds no new issue, the
+  volume moves the way the faces do (all growing: not smaller; all shrinking: not larger).
+- Errors (`regen.errors`): `nothingToCut` (no solid), `noFaces`, `missingReference`,
+  `invalidValue {detail}` (bad mode, missing `translate`, non-finite), `moveFaceUnsupported
+  {detail}` (free-form or other surface, an edge of a kind the solve cannot follow such as
+  the ellipse a chamfer leaves, translate mode on a curved face, a face of a surface body),
+  `moveFaceFailed {detail}` (an edge collapses or reverses, the result is not valid, the
+  volume went the wrong way; e.g. pushing a 10 mm slab face in by 12, or the radius of a
+  fillet next to its tangent planes).
+- Not done: translating a cylinder sideways (moving a hole), carrying chamfers, a face
+  moved past other geometry (no interference check against unrelated parts of the body),
+  surface-body faces.
+
+### `moveBody`
+
+```json
+{"type":"moveBody","id":"F9","bodies":[{"face":"F2.C1"}],
+ "translate":[10,0,0],"rotate":{"axis":[0,0,1],"origin":[0,0,0],"angle":30},"copy":false}
+```
+
+- `bodies` (also `body` / `target`; an array, an object or a string): `{"face": name}` or the
+  bare name selects the lump holding that face, `{"surface": featureId}` a surface body.
+  Missing or empty: every lump of the solid.
+- Motion: the rotation first (`rotate.axis` a vector, `"x"|"y"|"z"` or `{kind:"axis",axis:"x"}`;
+  `origin` default the world origin; `angle` in degrees), then `translate`. Numbers or
+  `"=expr"`. The older `dx/dy/dz` + `axis` + `angle` keys still read. No motion is a no-op.
+- `copy: true` leaves the original and appends a moved copy whose face names get the
+  instance suffix `@<id>.1`; otherwise the entities move in place and all names are unchanged.
+- Moved bodies are not united with what they touch or cross: the result may hold overlapping
+  lumps (use a boolean feature after it).
+- Errors: `nothingToCut`, `missingReference`, `invalidValue {detail}` (non-finite numbers,
+  zero rotation axis, vector with the wrong length).
+
+Checks: `crates/ck-model/tests/move_features.rs` (analytic volumes, names, the fillet carry,
+a sweep of every face of several parts that must end valid or in a structured error),
+`tools/move_check.mjs` (wasm, run by `tools/land.sh`).
+
 ## Design rules: `profiles` and `checkProfile`
 
 A rule engine on top of `validate` / `check` (crates/ck-ops/src/profile). A

@@ -257,8 +257,28 @@ export class Part {
     }, o.name);
   }
 
-  moveFace(o: { faces: string[]; distance: number; flip?: boolean; name?: string }): FeatureId {
-    return this.push('moveFace', { faces: o.faces, distance: o.distance, ...(o.flip ? { flip: true } : {}) }, o.name);
+  moveFace(o: { faces: string[]; distance?: number; flip?: boolean; mode?: 'offset' | 'translate'; translate?: [number, number, number]; name?: string }): FeatureId {
+    return this.push('moveFace', {
+      faces: o.faces,
+      ...(o.mode ? { mode: o.mode } : {}),
+      ...(o.distance !== undefined ? { distance: o.distance } : o.mode === 'translate' ? {} : { distance: 0 }),
+      ...(o.translate ? { translate: o.translate } : {}),
+      ...(o.flip ? { flip: true } : {}),
+    }, o.name);
+  }
+
+  moveBody(o: {
+    bodies?: Array<string | { face: string } | { surface: string }>;
+    translate?: [number, number, number];
+    rotate?: { axis: [number, number, number] | 'x' | 'y' | 'z'; origin?: [number, number, number]; angle: number };
+    copy?: boolean; name?: string;
+  }): FeatureId {
+    return this.push('moveBody', {
+      ...(o.bodies ? { bodies: o.bodies } : {}),
+      ...(o.translate ? { translate: o.translate } : {}),
+      ...(o.rotate ? { rotate: o.rotate } : {}),
+      ...(o.copy ? { copy: true } : {}),
+    }, o.name);
   }
 
   dome(o: { face?: string | null; height: number; elliptical?: boolean; reverse?: boolean; name?: string }): FeatureId {

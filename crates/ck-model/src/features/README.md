@@ -34,6 +34,8 @@ strings from kernel.strings, and dispatch to ck-ops/ck-topo.
 | refPlane | mode, base, offset, flip, visible |
 | deleteBody | bodies[] |
 | thread | face (cylinder face name), standard, size (validated against `crate::threads`), class, length (number or "full"), hand, start, modeled. Cosmetic: a `threads` entry + `warnings` (threadDiameterMismatch, threadModelFallback) in the regen result; modeled: helical groove tool cut from the body, faces `<id>.T0..T5` |
+| moveFace | faces[], mode(offset/translate), distance, translate[x,y,z], flip. Offsets / translates faces via ck-ops `move_faces_body`; neighbours extend, tangent fillets travel, names unchanged; errors noFaces, missingReference, moveFaceUnsupported, moveFaceFailed (move_face.rs) |
+| moveBody | bodies[]({face}/{surface}, default all), translate[x,y,z], rotate{axis,origin,angle deg}, copy; rigid, names unchanged (copy: `@<id>.1`) (move_body.rs) |
 | pipeCut | radius(expr), edges[{faces,at}], faces[] (all their rim edges); the picks may sit in the solid or in a surface body; the result is a SURFACE body registered under the feature id (solid disappears) |
 
 ## Error strings (kernel.strings, verbatim per feature)

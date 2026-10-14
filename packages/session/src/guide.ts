@@ -24,10 +24,12 @@ const FIELD_TABLE = `| type | key fields |
 | lpattern/cpattern | seeds[], dir/axis, spacing/count, angle, equal, reverse |
 | mirror | seeds[], plane, body |
 | plane | mode(offset), base(std plane), offset |
-| dome/splitLine/moveFace/scale/axis/mate/deleteBody/deleteFace | see @ck-cad/part-model |
+| moveFace | faces[], mode(offset: distance along the outward normal, + adds material; translate: translate [x,y,z], planar faces), flip. Neighbours extend, tangent fillets travel, names survive |
+| moveBody | bodies[]({face}/{surface}, default whole solid), translate [x,y,z], rotate {axis, origin, angle deg}, copy |
+| dome/splitLine/scale/axis/mate/deleteBody/deleteFace | see @ck-cad/part-model |
 | sheet features | surfaceExtrude/Revolve/Planar/Offset, trimSurface, knit, fill, thicken, extend |
 | freeform/editCurve/projectCurve/pipeCut/cutWithSurface | see @ck-cad/part-model |
-| insertPart/moveBody/patterns | nested part, placement dx/dy/dz/axis/angle |`;
+| insertPart/patterns | nested part, placement dx/dy/dz/axis/angle |`;
 
 const RECIPES = `### plate with hole pattern
 \`\`\`js
