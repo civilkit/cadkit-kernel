@@ -152,6 +152,7 @@ fn regen_hook(part: &Json, cx: &mut Cx) -> Result<(Json, State), String> {
         }
         let ck = rec.as_mut().map(|r| r as &mut dyn regen::Checkpoint);
         let mut r = regen::regen_from(&part, &opts, &mut ex, resume, ck);
+        r.assembly = ex.brep.finalize_assembly(flag("dofReport"));
         r.components = ex.brep.components_json();
         let rn = ex.brep.renorm_faces();
         let asm = ex.brep.asm.clone();

@@ -199,12 +199,20 @@ pub struct Assembly {
     pub mates: Vec<MateRec>,
     /// Nested regen results by part text (filled by the pre-pass or lazily).
     pub cache: Vec<(String, Nested)>,
+    /// Mates rejected by the solver (conflicting), `(mate id, mates it
+    /// conflicted with)`, in feature order (the `assembly.conflicts` report).
+    pub conflicts: Vec<(String, Vec<String>)>,
 }
 
 impl Assembly {
     /// No components, mates, ranges or nested results.
     pub fn is_empty(&self) -> bool {
-        self.components.is_empty() && self.face_ranges.is_empty() && self.edge_ranges.is_empty() && self.mates.is_empty() && self.cache.is_empty()
+        self.components.is_empty()
+            && self.face_ranges.is_empty()
+            && self.edge_ranges.is_empty()
+            && self.mates.is_empty()
+            && self.cache.is_empty()
+            && self.conflicts.is_empty()
     }
 }
 
@@ -304,6 +312,12 @@ impl Brep {
         cs.into_iter().map(|c| c.to_json()).collect()
     }
 
+    /// The assembly DOF report (`None` without extended mates unless
+    /// `force`); also writes the joint DOF into the components.
+    pub fn finalize_assembly(&mut self, force: bool) -> Option<Json> {
+        super::mate_kinds::finalize(self, force)
+    }
+
     /// Component owning the face named `id`.
     pub fn component_of(&self, id: &str) -> Option<usize> {
         let b = self.body.as_ref()?;
@@ -387,6 +401,8 @@ pub struct MateRec {
     pub target: String,
     pub distance: f64,
     pub flip: bool,
+    /// Extended kinds only ([`super::mate_kinds`]).
+    pub ext: Option<Box<super::mate_kinds::Ext>>,
 }
 
 /// Mate geometry of a face: plane (point, outward normal) or axis (point, dir).
@@ -542,7 +558,11 @@ impl Assembly {
     pub fn recs_for(&self, b: &Body, k: usize) -> Result<Vec<Rec>, FeatureError> {
         let mut out = vec![];
         for m in self.mates.iter().filter(|m| m.mover == k) {
-            out.extend(mate_recs(b, m)?);
+            if m.ext.is_some() {
+                out.extend(super::mate_kinds::recs_ext(self, b, m)?);
+            } else {
+                out.extend(mate_recs(b, m)?);
+            }
         }
         Ok(out)
     }
@@ -551,7 +571,7 @@ impl Assembly {
 /// func f1375: Gauss-Seidel over the components (the new mate's mover
 /// first, then the others in insertion order), each solved against its
 /// own mates with everything else frozen, until a pass moves nothing.
-fn solve_all(br: &mut Brep, first: usize) -> Result<(), FeatureError> {
+pub(super) fn solve_all(br: &mut Brep, first: usize) -> Result<(), FeatureError> {
     let n = br.asm.components.len();
     let order: Vec<usize> = std::iter::once(first).chain((0..n).filter(|&k| k != first)).collect();
     let mut moves = 0usize;
@@ -561,40 +581,52 @@ fn solve_all(br: &mut Brep, first: usize) -> Result<(), FeatureError> {
             if br.asm.components[k].fixed {
                 continue;
             }
-            let body = br.body.as_ref().unwrap();
-            let recs = br.asm.recs_for(body, k)?;
-            if recs.is_empty() {
-                continue;
+            let mut moved = solve_one(br, k)?;
+            if br.asm.mates.iter().any(|m| m.mover == k && m.ext.is_some()) {
+                moved |= super::mate_kinds::apply_posts(br, k)?;
             }
-            let range = br.asm.components[k].range.clone();
-            let bx = comp_box(body, &range);
-            DEBUG.with(|d| d.borrow_mut().push(format!("box {:?}", bx)));
-            let (c, scale) = match bx {
-                Some((lo, hi)) => {
-                    let (ex, ey, ez) = (hi.x - lo.x, hi.y - lo.y, hi.z - lo.z);
-                    (Vec3::new((hi.x + lo.x) * 0.5, (hi.y + lo.y) * 0.5, (hi.z + lo.z) * 0.5), (ez * ez + (ex * ex + ey * ey)).sqrt() * 0.5)
+            if moved {
+                changed = true;
+                moves += 1;
+                if moves > 8 * n {
+                    return Err(FeatureError::new(MATE_CONFLICT));
                 }
-                None => (Vec3::ZERO, 0.0),
-            };
-            DEBUG.with(|d| d.borrow_mut().push(format!("solve comp {k} center {:?} scale {:?} recs {:?}", c, scale, recs)));
-            let sv = solve(&recs, c, scale).ok_or_else(|| FeatureError::new(MATE_CONFLICT))?;
-            DEBUG.with(|d| d.borrow_mut().push(format!("  -> iters {} delta {:?}", sv.iterations, sv.x)));
-            if sv.iterations == 0 {
-                continue;
-            }
-            sv.x.range(br.body.as_mut().unwrap(), &range);
-            let comp = &mut br.asm.components[k];
-            comp.place = sv.x.compose(&comp.place);
-            changed = true;
-            moves += 1;
-            if moves > 8 * n {
-                return Err(FeatureError::new(MATE_CONFLICT));
             }
         }
         if !changed {
             return Ok(());
         }
     }
+}
+
+/// One component against its own mates (everything else frozen); `true`
+/// when it moved.
+fn solve_one(br: &mut Brep, k: usize) -> Result<bool, FeatureError> {
+    let body = br.body.as_ref().unwrap();
+    let recs = br.asm.recs_for(body, k)?;
+    if recs.is_empty() {
+        return Ok(false);
+    }
+    let range = br.asm.components[k].range.clone();
+    let bx = comp_box(body, &range);
+    DEBUG.with(|d| d.borrow_mut().push(format!("box {:?}", bx)));
+    let (c, scale) = match bx {
+        Some((lo, hi)) => {
+            let (ex, ey, ez) = (hi.x - lo.x, hi.y - lo.y, hi.z - lo.z);
+            (Vec3::new((hi.x + lo.x) * 0.5, (hi.y + lo.y) * 0.5, (hi.z + lo.z) * 0.5), (ez * ez + (ex * ex + ey * ey)).sqrt() * 0.5)
+        }
+        None => (Vec3::ZERO, 0.0),
+    };
+    DEBUG.with(|d| d.borrow_mut().push(format!("solve comp {k} center {:?} scale {:?} recs {:?}", c, scale, recs)));
+    let sv = solve(&recs, c, scale).ok_or_else(|| FeatureError::new(MATE_CONFLICT))?;
+    DEBUG.with(|d| d.borrow_mut().push(format!("  -> iters {} delta {:?}", sv.iterations, sv.x)));
+    if sv.iterations == 0 {
+        return Ok(false);
+    }
+    sv.x.range(br.body.as_mut().unwrap(), &range);
+    let comp = &mut br.asm.components[k];
+    comp.place = sv.x.compose(&comp.place);
+    Ok(true)
 }
 
 /// Numeric rank of the rows (rotation columns scaled like the solver).
@@ -626,7 +658,11 @@ fn rank(rows: &[Row], l8: f64) -> usize {
 
 /// Remaining DOF of every component (GUESS: 6 − rank of its mate rows at
 /// the solved position; fixed = 0).
-fn update_dof(br: &mut Brep) {
+pub(super) fn update_dof(br: &mut Brep) {
+    if br.asm.mates.iter().any(|m| m.ext.is_some()) {
+        // joint DOF is computed once by `mate_kinds::finalize`
+        return;
+    }
     let Some(body) = br.body.as_ref() else { return };
     for k in 0..br.asm.components.len() {
         let c = &br.asm.components[k];
@@ -653,6 +689,9 @@ pub fn exec_mate(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(
     if br.body.is_none() || br.asm.components.is_empty() {
         return Err(FeatureError::new(regen::codes::NOTHING_TO_CUT));
     }
+    if kind.is_extended() {
+        return super::mate_kinds::exec_ext(br, state, f);
+    }
     let (ra, rb) = (a.as_ref().map(|r| r.as_str().to_string()), b.as_ref().map(|r| r.as_str().to_string()));
     let ca = ra.as_deref().and_then(|r| br.component_of(r));
     let cb = rb.as_deref().and_then(|r| br.component_of(r));
@@ -666,7 +705,7 @@ pub fn exec_mate(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(
     }
     let distance = state.num(f, "distance", 0.0)?;
     let (mover, moving, target) = if fa { (cb, rb.unwrap(), ra.unwrap()) } else { (ca, ra.unwrap(), rb.unwrap()) };
-    let m = MateRec { id: f.id.clone(), kind: *kind, mover, moving, target, distance, flip: *flip };
+    let m = MateRec { id: f.id.clone(), kind: *kind, mover, moving, target, distance, flip: *flip, ext: None };
     // validate the geometry before keeping it
     mate_recs(br.body.as_ref().unwrap(), &m)?;
     br.asm.mates.push(m);
@@ -884,6 +923,15 @@ pub enum Rec {
     PtPlane { p: Vec3, q: Vec3, n: Vec3, d: f64 },
     /// kind 4: `p'` on the line `q + λu` (3 positional rows).
     PtLine { p: Vec3, q: Vec3, u: Vec3 },
+    /// extended: `(R·a)·b = c` (1 angular row).
+    DirDot { a: Vec3, b: Vec3, c: f64 },
+    /// extended: `|p' − q| = d` (1 positional row).
+    PtDist { p: Vec3, q: Vec3, d: f64 },
+    /// extended: distance of `p'` from the line `q + λu` is `d`.
+    LineDist { p: Vec3, q: Vec3, u: Vec3, d: f64 },
+    /// extended: the moving plane `(p, n)` and the fixed point `q`:
+    /// `(R·n)·(q − p') = d`.
+    PlanePt { p: Vec3, n: Vec3, q: Vec3, d: f64 },
 }
 
 impl Rec {
@@ -893,12 +941,16 @@ impl Rec {
             Rec::Dir { .. } => 0,
             Rec::PtPlane { .. } => 2,
             Rec::PtLine { .. } => 4,
+            Rec::DirDot { .. } => 1,
+            Rec::PtDist { .. } => 3,
+            Rec::LineDist { .. } => 5,
+            Rec::PlanePt { .. } => 6,
         }
     }
     fn first(&self) -> Vec3 {
         match *self {
-            Rec::Dir { a, .. } => a,
-            Rec::PtPlane { p, .. } | Rec::PtLine { p, .. } => p,
+            Rec::Dir { a, .. } | Rec::DirDot { a, .. } => a,
+            Rec::PtPlane { p, .. } | Rec::PtLine { p, .. } | Rec::PtDist { p, .. } | Rec::LineDist { p, .. } | Rec::PlanePt { p, .. } => p,
         }
     }
 }
@@ -941,6 +993,44 @@ pub fn rows(rec: &Rec, r: &[f64; 9], t: Vec3, c: Vec3, out: &mut Vec<Row>) -> (f
             let l31 = (l23 * l16) - (l14 * l24);
             let res = ((l23 * ((t.z + (c.z + l24)) - q.z)) + ((l22 * ((t.x + (c.x + l15)) - q.x)) + (l14 * ((t.y + (c.y + l16)) - q.y)))) - d;
             out.push(Row { r: res, j: [l31, l25, l28, l22, l14, l23] });
+            (0.0, res.abs())
+        }
+        Rec::DirDot { a, b, c: cc } => {
+            let ra = Vec3::new(rdot(r, 0, a), rdot(r, 1, a), rdot(r, 2, a));
+            let res = ra.dot(b) - cc;
+            let g = ra.cross(b);
+            out.push(Row { r: res, j: [g.x, g.y, g.z, 0.0, 0.0, 0.0] });
+            (res.abs(), 0.0)
+        }
+        Rec::PtDist { p, q, d } => {
+            let w = Vec3::new(rdot(r, 0, p - c), rdot(r, 1, p - c), rdot(r, 2, p - c));
+            let v = Vec3::new(t.x + c.x + w.x - q.x, t.y + c.y + w.y - q.y, t.z + c.z + w.z - q.z);
+            let rho = v.len();
+            let m = if rho > 1e-12 { v.scale(1.0 / rho) } else { Vec3::new(1.0, 0.0, 0.0) };
+            let g = w.cross(m);
+            let res = rho - d;
+            out.push(Row { r: res, j: [g.x, g.y, g.z, m.x, m.y, m.z] });
+            (0.0, res.abs())
+        }
+        Rec::LineDist { p, q, u, d } => {
+            let w = Vec3::new(rdot(r, 0, p - c), rdot(r, 1, p - c), rdot(r, 2, p - c));
+            let v = Vec3::new(t.x + c.x + w.x - q.x, t.y + c.y + w.y - q.y, t.z + c.z + w.z - q.z);
+            let vp = v - u.scale(v.dot(u));
+            let rho = vp.len();
+            let m = if rho > 1e-12 { vp.scale(1.0 / rho) } else { u.any_perp().normalize() };
+            let g = w.cross(m);
+            let res = rho - d;
+            out.push(Row { r: res, j: [g.x, g.y, g.z, m.x, m.y, m.z] });
+            (0.0, res.abs())
+        }
+        Rec::PlanePt { p, n, q, d } => {
+            let w = Vec3::new(rdot(r, 0, p - c), rdot(r, 1, p - c), rdot(r, 2, p - c));
+            let np = Vec3::new(rdot(r, 0, n), rdot(r, 1, n), rdot(r, 2, n));
+            let pp = Vec3::new(t.x + c.x + w.x, t.y + c.y + w.y, t.z + c.z + w.z);
+            let qv = q - pp;
+            let res = np.dot(qv) - d;
+            let g = np.cross(qv + w);
+            out.push(Row { r: res, j: [g.x, g.y, g.z, -np.x, -np.y, -np.z] });
             (0.0, res.abs())
         }
         Rec::PtLine { p, q, u } => {
