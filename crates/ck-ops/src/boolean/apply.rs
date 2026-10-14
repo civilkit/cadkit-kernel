@@ -111,6 +111,49 @@ fn sanity(a: &Body, b: &Body, op: Op, mut out: BoolOut) -> BoolOut {
     out
 }
 
+/// A lone sphere (a revolved semicircle: one face, poles and a seam) whose pole lies on a surface of the
+/// other operand meets it in a circle through the poles, which the face's uv polygon cannot hold (the
+/// pole is a whole edge in uv): the trim fragments collapse and the sphere face is dropped. A sphere is
+/// the same point set in any orientation, so turn it about its centre until no pole sits on the other
+/// body (the face keeps its name; only its seam and poles move).
+fn unpole(a: Body, other: &Body) -> Body {
+    use ck_geom::surface::Surface;
+    if a.num_faces() != 1 {
+        return a;
+    }
+    let f = a.face_ids().next().unwrap();
+    let Surface::Sphere { frame, r } = &a.face(f).surface else { return a };
+    let (o, z, r) = (frame.o, frame.z, *r);
+    let near = |p: Vec3| other.face_ids().any(|g| other.face(g).surface.distance(p) < 1e-3 * r.max(1.0));
+    if !near(o + z * r) && !near(o - z * r) {
+        return a;
+    }
+    // first choice: the axis along the normal of a plane that cuts the sphere (the section is then a
+    // latitude circle, exact pcurve, hemisphere cap); then arbitrary tilts
+    let mut tries: Vec<(Vec3, f64)> = vec![];
+    for g in other.face_ids() {
+        if let Surface::Plane { frame } = &other.face(g).surface {
+            let n = frame.z;
+            let ax = z.cross(n);
+            if ax.len() > 1e-9 && (o - frame.o).dot(n).abs() < r {
+                tries.push((ax, z.dot(n).clamp(-1.0, 1.0).acos()));
+            }
+        }
+    }
+    tries.extend([(Vec3::new(1.0, 1.37, 0.61), 0.7), (Vec3::new(0.3, -1.0, 1.9), 1.1), (Vec3::new(-1.0, 0.45, 0.8), 2.3)]);
+    for (axis, ang) in tries {
+        let x = Xform::rotation(o, axis.normalize(), ang);
+        let mut c = a.clone();
+        c.transform(&x);
+        let Surface::Sphere { frame, .. } = &c.face(f).surface else { continue };
+        let (p, q) = (frame.o + frame.z * r, frame.o - frame.z * r);
+        if !near(p) && !near(q) {
+            return c;
+        }
+    }
+    a
+}
+
 fn boolean_at(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> {
     if b.num_faces() == 0 {
         return Ok(BoolOut { body: a.clone(), no_effect: op != Op::Union, mismatch: None });
@@ -129,6 +172,7 @@ fn boolean_at(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> {
     // curve may land on the other lap, so edge membership tests (a section lying on a face boundary)
     // and loop sampling fail; cut the curves down to the lap each face / edge uses
     let (a1, b1) = (crate::offset::single_lap_body(&a1), crate::offset::single_lap_body(&b1));
+    let (a1, b1) = (unpole(a1.clone(), &b1), unpole(b1.clone(), &a1));
     let (a, b) = (&a1, &b1);
     let arr = imprint(a, b, tol);
     if arr.interacting_pairs == 0 {
