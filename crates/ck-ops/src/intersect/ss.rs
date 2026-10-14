@@ -1187,6 +1187,10 @@ pub fn march(s1: &Surface, s2: &Surface, b: Bounds, tol: f64, step: f64) -> Vec<
         let g2 = super::patch::grid(s2, uv_box(s2, &b), tol);
         let r = super::patch::seeds(s1, s2, &g1, &g2, &b, tol, step, pad);
         super::patch::add_time(5, t_seed);
+        if std::env::var_os("CK_SSI_LOG").is_some() {
+            let st = super::patch::stats();
+            eprintln!("ssi: {} x {} step {step:.4} diag {diag:.3}: {:?} seeds, cumulative pairs {} newtons {}", s1.kind(), s2.kind(), r.as_ref().map(|(v, strong)| (v.len(), *strong)), st[1], st[2]);
+        }
         match r {
             None => {
                 super::patch::add_time(6, t_all);
@@ -1261,6 +1265,9 @@ pub fn march(s1: &Surface, s2: &Surface, b: Bounds, tol: f64, step: f64) -> Vec<
             p
         };
         if pts.len() < 2 {
+            // a seed the tracer cannot leave shadows its neighbours too (every seed along a tangent
+            // contact would otherwise pay a full failing trace)
+            traced.push((seed.p, step));
             continue;
         }
         let mut pts = pts;
