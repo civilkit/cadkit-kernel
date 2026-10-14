@@ -42,7 +42,7 @@ export interface VerifyReport {
   ok: boolean;
   tag: string;
   ms: number;
-  regen: { errors: RegenError[]; warnings?: RegenError[] };
+  regen: { errors: RegenError[] };
   validate: { ok: boolean; issues: ValidateIssue[] } | null;
   check: { passed: number; failed: number; results: CheckResultItem[] } | null;
   hints: RepairHint[];
@@ -81,10 +81,6 @@ const FIX: Record<string, (feature: string, params: Record<string, unknown>) => 
   extendFolds: (f) => `${f}: extension folds the surface — shorten the extension`,
   projectCurveMisses: (f) => `${f}: projected curve misses the faces — move it over the body`,
   mirrorOntoItself: (f) => `${f}: mirror plane maps the body onto itself — move the plane or seeds`,
-  threadSizeUnknown: (f, p) => `${f}: thread size ${JSON.stringify(p.size ?? '')} is not in ${JSON.stringify(p.standard ?? '')}${Array.isArray(p.suggestions) ? ` — use one of ${p.suggestions.join(', ')} (threadData lists all)` : ''}`,
-  threadFaceNotCylinder: (f, p) => `${f}: face ${JSON.stringify(p.face ?? '')} is not cylindrical — pick the wall of a hole or a shaft face`,
-  threadDiameterMismatch: (f, p) => `${f}: ${typeof p.hint === 'string' ? p.hint : `diameter ${p.actual} does not fit the thread (expected ${p.expected})`}`,
-  threadModelFallback: (f, p) => `${f}: the modeled thread was not built (${p.reason ?? 'see warnings'}); it stays a cosmetic thread — set modeled false or fix the cause`,
   referenceChanged: (f) => `${f}: a referenced entity changed shape after an edit — re-resolve the ref`,
   referenceLost: (f) => `${f}: a referenced entity is gone after an edit — pick a replacement ref`,
 };
@@ -155,10 +151,7 @@ export async function verify(
     }
   } catch { check = null; }
 
-  const warnings = ((r.result as { warnings?: RegenError[] }).warnings ?? []) as RegenError[];
   for (const [fid, err] of errors) hints.push(hintFor(fid, err.code, err.params ?? {}));
-  // warnings never fail verify: the document regenerated, but the hint says what to fix
-  for (const [fid, err] of warnings) hints.push(hintFor(fid, err.code, err.params ?? {}));
   for (const iss of validate?.issues ?? []) hints.push(hintFor(ownerOf(iss.entity), iss.code, {}));
   for (const res of check?.results ?? []) {
     if (!res.pass) {
@@ -171,5 +164,5 @@ export async function verify(
   }
 
   const ok = !noBody && errors.length === 0 && (validate ? validate.ok : true) && (check ? check.failed === 0 : true);
-  return { ok, tag, ms: Math.round(performance.now() - t0), regen: warnings.length ? { errors, warnings } : { errors }, validate, check, hints };
+  return { ok, tag, ms: Math.round(performance.now() - t0), regen: { errors }, validate, check, hints };
 }
