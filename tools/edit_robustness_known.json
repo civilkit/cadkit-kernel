@@ -1,0 +1,7 @@
+{
+  "enclosure_000042#F2.depthx1.25": "original diverges: after the depth edit it fillets the inner (concave) edge of one rim side, adding material; ours keeps all four picks on the outer rim (volume = shelled body minus outer-rim fillet removal, checked by hand; see crates/ck-model/tests/edit_regressions.rs)",
+  "enclosure_000042#F2.depthx1.5": "same as depth x1.25",
+  "twisted_drill_000546#F6.anglex0.8": "unresolved: partial revolve cut (288 deg) through a twisted-extrude cut; ours and the original differ by 0.23 % of the volume, the original's cut volume is non-monotonic in the angle (324 deg cuts less than 288 deg), ours is monotonic; no independent ground truth",
+  "propeller_000192#F9.anglex0.8": "OPEN: union of the lofted blade copies of the circular pattern (72 deg spacing) fails in the surface intersection of two tangent-touching loft surfaces (non-manifold edges at the hub); the same pattern at the document's own angle (360, 4 blades) fails on the ORIGINAL too. Needs intersect/ss.rs work",
+  "propeller_000192#F9.anglex1.25": "same as angle x0.8"
+}

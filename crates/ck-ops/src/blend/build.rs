@@ -1253,7 +1253,8 @@ fn apply_tool_once(
         dbg_fail("no blend face in result");
         return Err(BlendError::code("blendFailed"));
     }
-    let body = build(&arr, &faces_out);
+    let mut body = build(&arr, &faces_out);
+    super::freeform::drop_zero_edges(&mut body, 1e-4);
     let bad = ck_topo::check::check(&body, tol)
         .into_iter()
         .any(|i| matches!(i, ck_topo::check::Issue::OpenEdge(_) | ck_topo::check::Issue::BrokenLoop(..)));

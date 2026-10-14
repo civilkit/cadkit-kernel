@@ -911,11 +911,28 @@ pub fn refit_edges_on_faces(out: &mut Body) {
     }
 }
 
+/// Remove closed edges (both ends the same vertex) of length below `max_len`: the wrap-around
+/// remnant of a conic edge cut at a seam parameter (a 3e-6 rad ellipse sliver) is an open,
+/// degenerate loop member that bounds nothing.
+pub fn drop_zero_edges(out: &mut Body, max_len: f64) {
+    let cand: Vec<_> = out.edge_ids().filter(|&e| out.edge(e).v0 == out.edge(e).v1 && out.edge_length(e) < max_len).collect();
+    for e in cand {
+        for c in out.edge(e).coedges.clone() {
+            let l = out.coedge(c).lp;
+            out.loops[l.idx()].coedges.retain(|&x| x != c);
+            out.coedges[c.idx()].alive = false;
+        }
+        out.edges[e.idx()].alive = false;
+        out.edges[e.idx()].coedges.clear();
+    }
+}
+
 /// Collapse edges shorter than `max_len` whose end vertices coincide to
 /// within it (slivers the welding at a loose tolerance leaves where an
 /// inexact trimmed edge crosses a tool edge): the edge and its coedges
 /// vanish and its second vertex is merged into the first.
 pub fn collapse_short_edges(out: &mut Body, max_len: f64) {
+    drop_zero_edges(out, max_len);
     loop {
         let cand = out.edge_ids().find(|&e| {
             let ed = out.edge(e);

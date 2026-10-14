@@ -35,11 +35,12 @@
 //                 ground-truth STEP imports to the same numbers, validate clean
 //
 // Direction (2026-10-12): correctness + robustness, not byte-identity.
-// HARD metrics (a drop fails the gate): wire, valid.*, vol.*, oracle.*, import.*, heal.repair.
+// HARD metrics (a drop fails the gate): wire, edit.robust, valid.*, vol.*, oracle.*, import.*, heal.repair.
 // SOFT metrics (oracle-identity: faces/edges/box/rest/json/mesh/mass/step):
 // a drop prints WARN but does not fail. The original is a reference, not
 // the arbiter.
 import { readFileSync, writeFileSync, existsSync, readdirSync, realpathSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Kernel } from './kernel.mjs';
@@ -204,6 +205,19 @@ for (const r of runNaming({ ours: wasmB })) if (!r.neg && r.edit !== '(baseline)
 // 2c'. iface.* (SOFT): agent queries (check/resolve/describe/refDiff) self-consistency, every 4th brep part
 for (const r of runIface({ wasm: wasmB, stride: 4 })) bump(`iface.${r.key}`, r.ok);
 
+// 2e. edit.robust (HARD): single-parameter edits of 12 small parts regen like the original's (no feature
+// error, volume within 1e-3) wherever the original builds them (tools/edit_robustness_check.mjs --quick)
+{
+  const jf = path.join(art, 'edit_quick.json');
+  try { execFileSync(process.execPath, [path.join(here, 'edit_robustness_check.mjs'), '--quick', '--jobs', '4', '--wasm', wasmB, '--json', jf], { stdio: 'ignore' }); } catch { /* exit 1 = failures; the json is still written */ }
+  if (existsSync(jf)) {
+    const j = JSON.parse(readFileSync(jf, 'utf8'));
+    const bad = new Set(j.fails.filter((f) => !f.known).map((f) => `${f.part}#${f.n}`));
+    for (const r of j.rows) if (!r.hang && !(r.orig.trap || r.orig.errors.length)) bump('edit.robust', !bad.has(`${r.part}#${r.n}`));
+    for (const r of j.rows) if (r.hang) bump('edit.robust', false);
+  }
+}
+
 // 3. STEP export
 const gdir = path.join(here, '../crates/ck-io/tests/golden');
 if (existsSync(gdir)) for (const f of readdirSync(gdir).filter((f) => f.endsWith('.req.json')).sort()) {
@@ -223,7 +237,7 @@ if (importFail.length && !quiet) console.log(importFail.join('\n'));
 const basePath = path.join(here, 'scoreboard.json');
 const base = existsSync(basePath) ? JSON.parse(readFileSync(basePath, 'utf8')) : {};
 let worse = 0, soft = 0;
-const hard = (k) => /^(wire|valid\.|vol\.|oracle\.|import\.|heal\.)/.test(k);
+const hard = (k) => /^(wire|valid\.|vol\.|oracle\.|import\.|heal\.|edit\.)/.test(k);
 const skipped = (k) => fast && /^(regen|mass|valid|vol)\.(bracket|stepper|flange|hair)/.test(k);
 for (const k of Object.keys({ ...base, ...score }).sort()) {
   const [m, n] = score[k] ?? [0, 0], b = base[k]?.[0];
