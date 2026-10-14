@@ -81,7 +81,7 @@ export function createMcpServer(): { server: McpServer; sessions: Map<string, Se
 
   server.tool('checkProfile', 'Run a manufacturability profile on the body: issues name failing faces / edges by persistent name, with value, limit and severity. profile = id or inline {rules:[{id, params?, severity?}]}', {
     session: z.string(),
-    profile: z.union([z.string(), z.object({ rules: z.array(z.object({ id: z.string(), params: z.record(z.any()).optional(), severity: z.enum(['error', 'warn', 'info']).optional() })) }).passthrough()]),
+    profile: z.union([z.string(), z.object({ rules: z.array(z.object({ id: z.string(), params: z.record(z.string(), z.any()).optional(), severity: z.enum(['error', 'warn', 'info']).optional() })) }).passthrough()]),
     samples: z.number().optional(),
     maxIssues: z.number().optional(),
   }, async ({ session, profile, samples, maxIssues }) => {
