@@ -553,9 +553,16 @@ impl Surface {
                 let (a, b) = finite_range(profile.range(), q, profile);
                 let n = 64;
                 let mut best = (INF, a, 0.0);
+                // the scan samples the profile at the same 65 parameters for every query of a
+                // bounded spline profile: memoised per profile (uv polygons of an extruded spline
+                // face project thousands of points onto it)
+                let pts = extrusion_scan_points(profile, a, b, n);
                 for i in 0..=n {
                     let u = a + (b - a) * i as f64 / n as f64;
-                    let c = profile.eval(u);
+                    let c = match &pts {
+                        Some(p) => p[i],
+                        None => profile.eval(u),
+                    };
                     let v = (q - c).dot(*dir) / d2;
                     let dd = (c + *dir * v).dist(q);
                     if dd < best.0 {
@@ -711,6 +718,74 @@ fn ang(x: f64, y: f64) -> f64 {
     } else {
         wrap_angle(y.atan2(x))
     }
+}
+
+/// The 65 profile points `profile.eval(a + (b - a) i / n)` of the extrusion foot-point scan, memoised per
+/// spline profile and range (the values are exactly what the scan would evaluate itself). `None` for
+/// other profiles (their `eval` is cheap) and for ranges that depend on the query.
+fn extrusion_scan_points(profile: &Curve, a: f64, b: f64, n: usize) -> Option<std::rc::Rc<Vec<Vec3>>> {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::rc::Rc;
+    let Curve::BSpline(bs) = profile else { return None };
+    if !(a.is_finite() && b.is_finite()) {
+        return None;
+    }
+    thread_local! {
+        static MEMO: RefCell<HashMap<u64, Rc<Vec<Vec3>>>> = RefCell::new(HashMap::new());
+    }
+    // identity of the spline: address, shape, range, an additive checksum of every control point and
+    // knot (one cheap pass: these profiles have hundreds of control points, and the 65 evaluations
+    // the memo saves cost a few thousand flops) and a hash of 16 sampled control points
+    // (an address reused by a different profile hashes differently)
+    let mut h = 0xcbf29ce484222325u64;
+    let mut mix = |x: u64| {
+        h = (h ^ x).wrapping_mul(0x100000001b3);
+        h ^= h >> 29;
+    };
+    mix(bs.ctrl.as_ptr() as usize as u64);
+    mix(bs.ctrl.len() as u64 | (bs.degree as u64) << 32 | (bs.knots.len() as u64) << 40);
+    mix(bs.weights.as_ref().map_or(0, |w| w.as_ptr() as usize as u64 ^ w.len() as u64));
+    mix(a.to_bits());
+    mix(b.to_bits());
+    mix(n as u64);
+    let (mut s0, mut s1, mut s2, mut sk) = (0u64, 0u64, 0u64, 0u64);
+    for c in &bs.ctrl {
+        s0 = s0.wrapping_add(c.x.to_bits());
+        s1 = s1.wrapping_add(c.y.to_bits().rotate_left(21));
+        s2 = s2.wrapping_add(c.z.to_bits().rotate_left(42));
+    }
+    for &k in &bs.knots {
+        sk = sk.wrapping_add(k.to_bits());
+    }
+    mix(s0);
+    mix(s1);
+    mix(s2);
+    mix(sk);
+    let m = bs.ctrl.len();
+    for j in 0..16usize.min(m) {
+        let c = bs.ctrl[j * m / 16.max(1)];
+        mix(c.x.to_bits() ^ c.y.to_bits().rotate_left(7) ^ c.z.to_bits().rotate_left(13));
+    }
+    if let Some(w) = &bs.weights {
+        let mut ws = 0u64;
+        for x in w {
+            ws = ws.wrapping_add(x.to_bits());
+        }
+        mix(ws);
+    }
+    if let Some(p) = MEMO.with(|m| m.borrow().get(&h).cloned()) {
+        return Some(p);
+    }
+    let pts: Rc<Vec<Vec3>> = Rc::new((0..=n).map(|i| profile.eval(a + (b - a) * i as f64 / n as f64)).collect());
+    MEMO.with(|m| {
+        let mut m = m.borrow_mut();
+        if m.len() >= 1024 {
+            m.clear();
+        }
+        m.insert(h, pts.clone());
+    });
+    Some(pts)
 }
 
 /// Finite search range for a (possibly unbounded) curve parameter range:
