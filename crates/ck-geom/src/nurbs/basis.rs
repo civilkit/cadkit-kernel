@@ -216,7 +216,8 @@ fn ders_basis_funs2_n<const N: usize>(span: usize, u: f64, p: usize, nd: usize, 
     let mut neg = [0.0f64; N];
     for r in 0..p {
         inv[r] = quot(1.0, ndu[p][r]);
-        neg[r] = quot(-1.0, ndu[p][r]);
+        // (-1) / x rounds to -(1 / x) exactly: one quotient per span width
+        neg[r] = -inv[r];
     }
     for r in 0..=p {
         let mut d = 0.0;
