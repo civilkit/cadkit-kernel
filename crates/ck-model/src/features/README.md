@@ -63,7 +63,8 @@ strings from kernel.strings, and dispatch to ck-ops/ck-topo.
 - assembly: mirrorOntoItself, mirrorNotKnitted
 - boolean: booleanFailed (params `hostFace`, `toolFace`, `gap` when the failure is two nearly coincident free-form walls: the tool
   outline follows a wall to 1e-4..1e-2 but not exactly, so the section crosses it back and forth; use the sketch's own curve for the
-  tool outline or keep it clear of the wall), cutNoEffect; `booleanVolumeMismatch` (ours, not in kernel.strings):
+  tool outline or keep it clear of the wall; raising the welding tolerance to 2-5x the gap was tried and still leaves open edges, so the
+  walls are not merged in the kernel), cutNoEffect; `booleanVolumeMismatch` (ours, not in kernel.strings):
   the boolean closed into a valid body whose volume (or, for a union, box)
   falls outside what the operands allow (`ck_ops::boolean::sanity`: union
   between va+vb-overlap and va+vb, cut between va-overlap and va, overlap
