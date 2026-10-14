@@ -218,11 +218,18 @@ pub(super) fn seeds(s1: &Surface, s2: &Surface, g1: &Grid, g2: &Grid, b: &Bounds
     let mut newtons = 0usize;
     let mut strong = false;
     let dedupe = (10.0 * tol).max(1e-12);
-    // a seed where the surfaces are tangent (|n1 x n2| below 1e-6, the original's cut-off is 1e-7)
-    // has no march direction: the tracer would wander along the contact (a swept tube meeting its
-    // own guide torus: hundreds of such seeds, each a failing 5000-step trace)
+    // a seed where the surfaces are tangent (|n1 x n2| <= 1e-6) is dropped and the whole
+    // intersection is handed to the projection-grid seeding: a tangent contact is either a real rim
+    // (a rod joining a same-radius tube, boolean_sanity::hook_union_is_right) or an osculating
+    // contact where the boundary seeding finds hundreds of seeds that each start a wandering trace
+    // (kit sample swept-handle, 79 s); the grid seeding handles both as it always did
+    let tangent = std::cell::Cell::new(false);
     let push = |out: &mut Vec<MPt>, p: Vec3, uv: Uv4| {
-        if inside(b, p, pad) && !out.iter().any(|m| m.p.dist(p) < dedupe) && s1.normal(uv[0], uv[1]).cross(s2.normal(uv[2], uv[3])).len() > 1e-6 {
+        if inside(b, p, pad) && !out.iter().any(|m| m.p.dist(p) < dedupe) {
+            if s1.normal(uv[0], uv[1]).cross(s2.normal(uv[2], uv[3])).len() <= 1e-6 {
+                tangent.set(true);
+                return;
+            }
             out.push(MPt { p, uv });
         }
     };
@@ -333,6 +340,10 @@ pub(super) fn seeds(s1: &Surface, s2: &Surface, g1: &Grid, g2: &Grid, b: &Bounds
     let _ = step;
     out.truncate(MAX_SEEDS);
     STATS[2].fetch_add(newtons, Ordering::Relaxed);
+    if tangent.get() {
+        STATS[3].fetch_add(out.len(), Ordering::Relaxed);
+        return Some((vec![], true));
+    }
     STATS[3].fetch_add(out.len(), Ordering::Relaxed);
     Some((out, strong))
 }
