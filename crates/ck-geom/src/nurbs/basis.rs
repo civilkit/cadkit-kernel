@@ -180,6 +180,8 @@ pub fn ders_basis_funs2(span: usize, u: f64, p: usize, nd: usize, knots: &[f64])
 
 #[inline(always)]
 fn ders_basis_funs2_n<const N: usize>(span: usize, u: f64, p: usize, nd: usize, knots: &[f64]) -> [[f64; 12]; 3] {
+    // The triangular table of A2.3: `ndu[r][j]` = N_{span-j+r, j}(u),
+    // `ndu[j][r]` (j > r) = the knot difference u_{i+j} - u_i of that function.
     let mut ndu = [[0.0f64; N]; N];
     let (mut left, mut right) = ([0.0f64; N], [0.0f64; N]);
     ndu[0][0] = 1.0;
@@ -199,43 +201,55 @@ fn ders_basis_funs2_n<const N: usize>(span: usize, u: f64, p: usize, nd: usize, 
     for j in 0..=p {
         ders[0][j] = ndu[j][p];
     }
-    let mut a = [[0.0f64; N]; 2];
-    for r in 0..=p as isize {
-        let (mut s1, mut s2) = (0usize, 1usize);
-        a[0][0] = 1.0;
-        for k in 1..=(nd.min(p)) as isize {
+    if nd == 0 || p == 0 {
+        return ders;
+    }
+    // The a[][] loops of A2.3 for nd <= 2, written out: the coefficients of
+    // the first order are +-1 / (u_{i+p} - u_i), those of the second order
+    // their differences over the degree p-1 differences. Every quotient,
+    // product and sum is the one A2.3 forms (same operands, same order), so
+    // the values are bit for bit the same, at a third fewer divisions and
+    // no table.
+    let quot = |num: f64, den: f64| if den != 0.0 { num / den } else { 0.0 };
+    // a[1][0] of row r + 1 and a[1][1] of row r
+    let mut inv = [0.0f64; N];
+    let mut neg = [0.0f64; N];
+    for r in 0..p {
+        inv[r] = quot(1.0, ndu[p][r]);
+        neg[r] = quot(-1.0, ndu[p][r]);
+    }
+    for r in 0..=p {
+        let mut d = 0.0;
+        if r >= 1 {
+            d = inv[r - 1] * ndu[r - 1][p - 1];
+        }
+        if r <= p - 1 {
+            d += neg[r] * ndu[r][p - 1];
+        }
+        ders[1][r] = d;
+    }
+    let f1 = p as f64;
+    if nd >= 2 && p >= 2 {
+        let f2 = f1 * (p - 1) as f64;
+        for r in 0..=p {
             let mut d = 0.0;
-            let rk = r - k;
-            let pk = p as isize - k;
-            if r >= k {
-                let den = ndu[(pk + 1) as usize][rk as usize];
-                a[s2][0] = if den != 0.0 { a[s1][0] / den } else { 0.0 };
-                d = a[s2][0] * ndu[rk as usize][pk as usize];
+            if r >= 2 {
+                let a0 = quot(inv[r - 1], ndu[p - 1][r - 2]);
+                d = a0 * ndu[r - 2][p - 2];
             }
-            let j1 = if rk >= -1 { 1 } else { -rk };
-            let j2 = if r - 1 <= pk { k - 1 } else { p as isize - r };
-            let mut j = j1;
-            while j <= j2 {
-                let den = ndu[(pk + 1) as usize][(rk + j) as usize];
-                a[s2][j as usize] = if den != 0.0 { (a[s1][j as usize] - a[s1][(j - 1) as usize]) / den } else { 0.0 };
-                d += a[s2][j as usize] * ndu[(rk + j) as usize][pk as usize];
-                j += 1;
+            if r >= 1 && r <= p - 1 {
+                let a1 = quot(neg[r] - inv[r - 1], ndu[p - 1][r - 1]);
+                d += a1 * ndu[r - 1][p - 2];
             }
-            if r <= pk {
-                let den = ndu[(pk + 1) as usize][r as usize];
-                a[s2][k as usize] = if den != 0.0 { -a[s1][(k - 1) as usize] / den } else { 0.0 };
-                d += a[s2][k as usize] * ndu[r as usize][pk as usize];
+            if r <= p - 2 {
+                let a2 = quot(-neg[r], ndu[p - 1][r]);
+                d += a2 * ndu[r][p - 2];
             }
-            ders[k as usize][r as usize] = d;
-            std::mem::swap(&mut s1, &mut s2);
+            ders[2][r] = d * f2;
         }
     }
-    let mut f = p as f64;
-    for k in 1..=nd.min(p) {
-        for j in 0..=p {
-            ders[k][j] *= f;
-        }
-        f *= (p - k) as f64;
+    for j in 0..=p {
+        ders[1][j] *= f1;
     }
     ders
 }
@@ -371,6 +385,49 @@ mod tests {
             assert!((b.iter().sum::<f64>() - 1.0).abs() < 1e-14);
             for j in 0..=2 {
                 assert!((one_basis_fun(2, &U, s - 2 + j, u) - b[j]).abs() < 1e-13, "u={u}");
+            }
+        }
+    }
+
+    #[test]
+    fn ders_basis_funs2_is_bit_identical_to_a23() {
+        // repeated interior knots, degrees 1..7, points at and between knots
+        let mut x = 0x9e3779b97f4a7c15u64;
+        let mut rnd = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for p in 1..8usize {
+            for _ in 0..40 {
+                let n = p + 1 + (rnd() * 6.0) as usize;
+                let mut k = vec![0.0; p + 1];
+                let mut v = 0.0;
+                while k.len() < n + p + 1 - (p + 1) {
+                    if rnd() < 0.7 {
+                        v += 0.1 + rnd();
+                    }
+                    k.push(v);
+                }
+                let end = v + 0.5;
+                k.extend(std::iter::repeat(end).take(p + 1));
+                for i in 0..60 {
+                    let u = if i % 3 == 0 { k[(rnd() * k.len() as f64) as usize] } else { rnd() * end };
+                    let s = find_span(n - 1, p, u, &k);
+                    let a = ders_basis_funs(s, u, p, 2, &k);
+                    let b = ders_basis_funs2(s, u, p, 2, &k);
+                    for d in 0..3 {
+                        for j in 0..=p {
+                            assert_eq!(a[d][j].to_bits(), b[d][j].to_bits(), "p={p} d={d} j={j} u={u} {:?} {} {}", k, a[d][j], b[d][j]);
+                        }
+                    }
+                    let b1 = ders_basis_funs2(s, u, p, 1, &k);
+                    for j in 0..=p {
+                        assert_eq!(a[1][j].to_bits(), b1[1][j].to_bits());
+                        assert_eq!(b1[2][j], 0.0);
+                    }
+                }
             }
         }
     }
