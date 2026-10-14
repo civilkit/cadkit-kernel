@@ -86,8 +86,8 @@ fn face_distance(b: &Body, f: FaceId, translate: Option<ck_geom::Vec3>, offset: 
             Ok(t.dot(n))
         }
         (_, Some(_)) => Err(unsupported(format!("translate mode moves planar faces only; {name} is a {} (use mode offset)", face.surface.kind()))),
-        (Surface::Plane { .. } | Surface::Cylinder { .. } | Surface::Cone { .. } | Surface::Sphere { .. } | Surface::Torus { .. }, None) => Ok(offset),
-        (s, None) => Err(unsupported(format!("{name} is a {} face; planes, cylinders, cones, spheres and tori can be moved", s.kind()))),
+        (Surface::Plane { .. } | Surface::Cylinder { .. } | Surface::Cone { .. } | Surface::Sphere { .. } | Surface::Torus { .. } | Surface::Extrusion { .. }, None) => Ok(offset),
+        (s, None) => Err(unsupported(format!("{name} is a {} face; planes, cylinders, cones, spheres, tori and extruded walls can be moved", s.kind()))),
     }
 }
 
@@ -181,6 +181,9 @@ fn carried_faces(body: &Body, ids: &[FaceId], dist: &[f64]) -> Vec<(FaceId, ck_g
 /// `ids`; unselected faces stay, tangent round neighbours of a pushed plane travel with it
 /// when that gives a valid body). The pure geometric core, also used by the tests.
 pub fn move_faces(body: &Body, ids: &[FaceId], dist: &[f64]) -> Result<Body, FeatureError> {
+    // a closed-spline wall carries a two-lap profile: cut it to one lap per face first
+    let unrolled = ck_ops::offset::single_lap_body(body);
+    let body = &unrolled;
     let carried = carried_faces(body, ids, dist);
     if carried.is_empty() {
         return attempt(body, ids, dist, &[]);
@@ -204,9 +207,13 @@ fn attempt(body: &Body, ids: &[FaceId], dist: &[f64], carried: &[(FaceId, ck_geo
     };
     let mut out = ck_ops::offset::move_faces_body(body, &mv).map_err(|e| {
         let detail = e.detail.clone().unwrap_or_default();
-        match e.code {
+        let fe = match e.code {
             "offsetUnsupported" => unsupported(detail),
             _ => failed(detail),
+        };
+        match &e.limit {
+            Some(l) => super::offset_limit_params(fe, l),
+            None => fe,
         }
     })?;
     // geometry sanity: finite, edges inside their parameter range

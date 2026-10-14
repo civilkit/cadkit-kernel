@@ -63,7 +63,16 @@ const FIX: Record<string, (feature: string, params: Record<string, unknown>) => 
   nothingToCut: (f) => `${f} removes nothing — move the profile so it overlaps the body, or flip the cut direction`,
   cutNoEffect: (f) => `${f} cuts nothing — the tool misses the body: flip it or move it to overlap`,
   booleanFailed: (f) => `${f}: boolean failed — check the tool and target overlap in a volume, not just a face`,
-  shellTooThick: (f) => `${f}: thickness exceeds the thinnest wall — reduce thickness`,
+  shellTooThick: (f, p) =>
+    typeof p.detail === 'string' && typeof p.maxThickness === 'number'
+      ? `${f}: ${p.detail} — reduce thickness to ${p.maxThickness} mm or less`
+      : `${f}: thickness exceeds the thinnest wall — reduce thickness`,
+  shellFailed: (f, p) =>
+    typeof p.detail === 'string' ? `${f}: ${p.detail}` : `${f}: the shell cavity could not be cut — try a smaller thickness or open another face`,
+  moveFaceFailed: (f, p) =>
+    typeof p.detail === 'string'
+      ? `${f}: ${p.detail}${typeof p.maxThickness === 'number' && p.maxThickness > 0 ? ` — move by at most ${p.maxThickness} mm` : ''}`
+      : `${f}: the faces could not be moved — select tangent neighbours too or reduce the distance`,
   shellUnsupported: (f) => `${f}: this shape cannot be shelled — remove the feature or change the base solid`,
   holeNoPoints: (f) => `${f}: hole sketch has no centres — add {type:'point'} entities over centre points (sk.point(x, y)), not circles or bare points`,
   holeInvalid: (f) => `${f}: hole parameters invalid — check diameter/depth against the stock`,

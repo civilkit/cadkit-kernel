@@ -1288,3 +1288,17 @@ pub(crate) fn renumber_duplicates(b: &mut ck_topo::body::Body) {
         }
     }
 }
+
+/// Structured numbers of an offset that cannot be made, as error params: `limit`
+/// (`"curvature"` | `"thin"`), `minRadius` (smallest radius of curvature, or the narrowest gap
+/// for `thin`), `maxThickness` (the largest thickness / distance that still works, 0 when
+/// curvature is not the limit) and `face` (the limiting face).
+pub(crate) fn offset_limit_params(mut fe: crate::regen::FeatureError, l: &ck_ops::offset::OffsetLimit) -> crate::regen::FeatureError {
+    use ck_json::Json;
+    fe = fe.with("limit", Json::Str(l.kind.to_string())).with("minRadius", Json::Num((l.min_radius * 1000.0).round() / 1000.0));
+    fe = fe.with("maxThickness", Json::Num(l.max_thickness));
+    if let Some(f) = &l.face {
+        fe = fe.with("face", Json::Str(f.clone()));
+    }
+    fe
+}

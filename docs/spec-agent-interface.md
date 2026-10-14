@@ -341,7 +341,7 @@ body). Both fail with a structured error and leave the model unchanged.
   shrinks the hole. `mode: "translate"`: planar faces move by the component of `translate`
   `[x,y,z]` along their outward normal (the sliding part changes nothing); curved faces are
   `moveFaceUnsupported` in this mode. A distance of 0 is a no-op.
-- Supported surfaces: planes, cylinders, cones, spheres, tori. Unselected neighbours keep
+- Supported surfaces: planes, cylinders, cones, spheres, tori, extruded walls (spline outlines, see "Offset limits"). Unselected neighbours keep
   their surfaces and are extended or trimmed: vertices are re-solved on the incident
   surfaces and edges follow (ck-ops `move_faces_body`, the machinery shell uses). Round
   faces (fillets, cylinders) tangent to a pushed plane travel with it (translate rigidly) so
@@ -384,6 +384,38 @@ body). Both fail with a structured error and leave the model unchanged.
 Checks: `crates/ck-model/tests/move_features.rs` (analytic volumes, names, the fillet carry,
 a sweep of every face of several parts that must end valid or in a structured error),
 `tools/move_check.mjs` (wasm, run by `tools/land.sh`).
+
+## Offset limits: `shell` and `moveFace` hints, free-form walls
+
+Shell and face offsets of extruded free-form walls (a closed sketch spline, a kidney / bean outline;
+ck-ops `offset`, `shell`). The wall of such a part is an extrusion of a B-spline; its offset is the
+extrusion of the offset curve (`offset_extrusion`: sampled along the profile, cubic interpolant refined to
+1e-5 mm, no tensor grid), and the cap edge between that wall and a plane normal to the extrusion is the
+offset profile placed in the plane (exact, no sampling).
+
+- A closed sketch spline is a two-lap curve (domain twice the loop, split into two wall faces); a closed
+  `cvspline` is one lap whose seam point is both end parameters. Every closest-parameter search on such a
+  curve has two answers one lap apart, which scrambled pcurves and classification in the boolean (the
+  generic `shellFailed`). `shell` and `moveFace` first cut those curves down to the lap window each face / edge
+  uses (`offset::single_lap_body`, parameters kept).
+- Errors now carry numbers (`shellTooThick`, `shellFailed`, `moveFaceFailed`, `moveFaceUnsupported`):
+  `detail` (a sentence naming the face), `limit` (`"curvature"`: the offset passes a centre of curvature;
+  `"thin"`: two sheets closer than twice the offset), `minRadius` (smallest radius of curvature found, or
+  the narrowest gap for `thin`, mm), `maxThickness` (largest thickness / distance that works, 0.8 of the
+  radius or 0.4 of the gap, rounded down to 0.01 mm; 0 when curvature is not the limit) and `face` (the limiting
+  face). Example: `F2.S.e1~1 curves too tightly for an offset of 12.00 mm: its smallest radius of curvature
+  is 7.04 mm, use at most 5.62 mm`. A cavity the boolean could not cut is diagnosed the same way: tightest
+  free-form radius against the wall, then parallel planar faces closer than the wall allows (`thin`), else a
+  `shellFailed` that says curvature is not the limit.
+- `moveFace` accepts extruded walls (any extrusion surface) in `offset` mode and reports the same hints.
+- Checks: `crates/ck-model/tests/shell_spline_wall.rs` (analytic wall volumes of inward / outward, open /
+  closed shells of spline and cvspline kidneys against an independently offset polygon; the too-thick hint
+  with the suggested thickness shelling; moveFace of the wall), `tools/spline_shell_check.mjs` (wasm, run by
+  `tools/land.sh`).
+- Limits: the suggested thickness is a safe fraction, not the exact limit; a part thinner than the wall
+  reports the plane gap only after the curvature limit is met; free-form faces other than extrusions
+  (B-spline surfaces) report a sampled radius (40 x 40 grid) and still fit through the tensor grid (slow for
+  long faces); thickness larger than the part height with an opened face is reported from the plane gap.
 
 ## Design rules: `profiles` and `checkProfile`
 

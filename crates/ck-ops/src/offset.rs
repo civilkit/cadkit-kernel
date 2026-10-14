@@ -21,11 +21,31 @@ use ck_topo::body::{Body, EdgeId, FaceId, VertexId};
 pub struct OffsetError {
     pub code: &'static str,
     pub detail: Option<String>,
+    /// Why the offset is impossible, in numbers (set for curvature / thin-wall failures).
+    pub limit: Option<OffsetLimit>,
+}
+
+/// The numbers behind an offset that cannot be made.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OffsetLimit {
+    /// `"curvature"` (the offset passes a centre of curvature) or `"thin"` (two sheets of the
+    /// body are closer than twice the offset).
+    pub kind: &'static str,
+    /// Smallest radius of curvature found (curvature), or the narrowest gap between the sheets (thin).
+    pub min_radius: f64,
+    /// The largest offset that still works (a hair under the radius, or half the gap).
+    pub max_thickness: f64,
+    /// The face that limits the offset.
+    pub face: Option<String>,
 }
 
 impl OffsetError {
     fn new(code: &'static str, detail: impl Into<String>) -> OffsetError {
-        OffsetError { code, detail: Some(detail.into()) }
+        OffsetError { code, detail: Some(detail.into()), limit: None }
+    }
+    fn with_limit(mut self, limit: OffsetLimit) -> OffsetError {
+        self.limit = Some(limit);
+        self
     }
     /// True for the "offset became degenerate" family (shell maps these to
     /// `shellTooThick`).
@@ -41,24 +61,25 @@ const EPS: f64 = 1e-9;
 /// path of the caller: offsetTooLarge) — unsupported kinds return
 /// `Err(offsetUnsupported)` via [`offset_surface`].
 fn offset_surface(s: &Surface, d: f64) -> Result<Surface, OffsetError> {
-    let big = || OffsetError::new("offsetTooLarge", CENTRE);
+    // the offset reaches the centre of curvature: `r` is the radius it ran into (measured along the normal)
+    let big_r = |r: f64| OffsetError::new("offsetTooLarge", CENTRE).with_limit(OffsetLimit { kind: "curvature", min_radius: r, max_thickness: floor_hundredth(LIMIT_SAFETY * r), face: None });
     match s {
         Surface::Plane { frame } => Ok(Surface::Plane { frame: Frame { o: frame.o + frame.z.scale(d), ..frame.clone() } }),
         Surface::Cylinder { frame, r } => {
             let r2 = r + d;
-            if r2 > EPS { Ok(Surface::Cylinder { frame: frame.clone(), r: r2 }) } else { Err(big()) }
+            if r2 > EPS { Ok(Surface::Cylinder { frame: frame.clone(), r: r2 }) } else { Err(big_r(*r)) }
         }
         Surface::Cone { frame, r, semi_angle } => {
             let r2 = r + d / semi_angle.cos();
-            if r2 > EPS { Ok(Surface::Cone { frame: frame.clone(), r: r2, semi_angle: *semi_angle }) } else { Err(big()) }
+            if r2 > EPS { Ok(Surface::Cone { frame: frame.clone(), r: r2, semi_angle: *semi_angle }) } else { Err(big_r(*r * semi_angle.cos())) }
         }
         Surface::Sphere { frame, r } => {
             let r2 = r + d;
-            if r2 > EPS { Ok(Surface::Sphere { frame: frame.clone(), r: r2 }) } else { Err(big()) }
+            if r2 > EPS { Ok(Surface::Sphere { frame: frame.clone(), r: r2 }) } else { Err(big_r(*r)) }
         }
         Surface::Torus { frame, major, minor } => {
             let m2 = minor + d;
-            if m2 > EPS { Ok(Surface::Torus { frame: frame.clone(), major: *major, minor: m2 }) } else { Err(big()) }
+            if m2 > EPS { Ok(Surface::Torus { frame: frame.clone(), major: *major, minor: m2 }) } else { Err(big_r(*minor)) }
         }
         _ => Err(OffsetError::new("offsetUnsupported", "surface type")),
     }
@@ -110,7 +131,13 @@ fn face_uv_box(src: &Body, f: FaceId) -> Option<((f64, f64), (f64, f64))> {
             let ed = src.edge(src.coedge(c).edge);
             for k in 0..=32 {
                 let t = ta + (tb - ta) * k as f64 / 32.0;
-                let uv = crate::boolean::classify::uv_near(s, ed.curve.eval(t), prev);
+                // an extruded closed spline has a multi-lap profile domain: the global
+                // closest-point search may land on another lap, the pcurve never does
+                let pc = if matches!(s, Surface::Extrusion { .. }) { src.coedge(c).pcurve.as_ref() } else { None };
+                let uv = match pc {
+                    Some(pc) => pc.eval(t),
+                    None => crate::boolean::classify::uv_near(s, ed.curve.eval(t), prev),
+                };
                 prev = Some(uv);
                 u0 = u0.min(uv.x);
                 u1 = u1.max(uv.x);
@@ -173,9 +200,63 @@ fn fit_grid(grid: &[Vec<Vec3>]) -> Result<(ck_geom::nurbs::bsurf::BSplineSurface
 /// offset sample closer than `|d|` to the base surface (the offset folds
 /// over another sheet) is `offsetTooLarge`.
 fn fit_offset_surface(s: &Surface, d: f64, uvbox: ((f64, f64), (f64, f64)), reach: f64) -> Result<Surface, OffsetError> {
+    match fit_offset_surface_inner(s, d, uvbox, reach) {
+        Err(mut e) if e.code == "offsetTooLarge" && e.limit.is_none() => {
+            // say how tight the surface is: smallest radius on the side the offset moves to
+            if let Some(r) = grid_min_radius(s, d, uvbox) {
+                e.limit = Some(OffsetLimit { kind: "curvature", min_radius: r, max_thickness: floor_hundredth(LIMIT_SAFETY * r), face: None });
+            }
+            Err(e)
+        }
+        r => r,
+    }
+}
+
+/// Smallest radius of curvature of `s` over `uvbox` (a 40 x 40 sample grid) among the principal
+/// directions that curve toward the side an offset by `d` (along the natural normal) moves to;
+/// `None` when no sample curves that way. The offset factor of a principal direction is
+/// `1 - d kappa` with `kappa` the eigenvalue of `G^-1 II` (`II = n . S_xy`).
+pub fn grid_min_radius(s: &Surface, d: f64, uvbox: ((f64, f64), (f64, f64))) -> Option<f64> {
+    let ((u0, u1), (v0, v1)) = uvbox;
+    let ((du0, du1), (dv0, dv1)) = s.domain();
+    let (u0, u1, v0, v1) = (u0.max(du0), u1.min(du1), v0.max(dv0), v1.min(dv1));
+    if !(u1 > u0 && v1 > v0) {
+        return None;
+    }
+    let n = 40;
+    let mut best: Option<f64> = None;
+    for i in 0..=n {
+        for j in 0..=n {
+            let sd = s.derivs2(u0 + (u1 - u0) * i as f64 / n as f64, v0 + (v1 - v0) * j as f64 / n as f64);
+            let Some(nn) = sd.du.cross(sd.dv).try_normalize() else { continue };
+            let (e, f, g) = (sd.du.dot(sd.du), sd.du.dot(sd.dv), sd.dv.dot(sd.dv));
+            let (l, m, nv) = (nn.dot(sd.duu), nn.dot(sd.duv), nn.dot(sd.dvv));
+            let det = e * g - f * f;
+            if det <= 1e-24 {
+                continue;
+            }
+            // shape operator G^-1 II
+            let (a, b, c, dd) = ((g * l - f * m) / det, (g * m - f * nv) / det, (e * m - f * l) / det, (e * nv - f * m) / det);
+            let mean = 0.5 * (a + dd);
+            let disc = (0.25 * (a - dd) * (a - dd) + b * c).max(0.0).sqrt();
+            for k in [mean + disc, mean - disc] {
+                if d * k > 1e-12 {
+                    let r = 1.0 / k.abs();
+                    best = Some(best.map_or(r, |x: f64| x.min(r)));
+                }
+            }
+        }
+    }
+    best
+}
+
+fn fit_offset_surface_inner(s: &Surface, d: f64, uvbox: ((f64, f64), (f64, f64)), reach: f64) -> Result<Surface, OffsetError> {
     let big = || OffsetError::new("offsetTooLarge", CENTRE);
     if let Surface::Revolution { profile, axis_o, axis } = s {
         return offset_revolution(s, profile, *axis_o, *axis, d, uvbox.1, reach);
+    }
+    if let Surface::Extrusion { profile, dir } = s {
+        return offset_extrusion(profile, *dir, d, uvbox.0, reach);
     }
     let ((mut u0, mut u1), (mut v0, mut v1)) = uvbox;
     if !(u1 > u0 && v1 > v0) {
@@ -192,17 +273,24 @@ fn fit_offset_surface(s: &Surface, d: f64, uvbox: ((f64, f64), (f64, f64)), reac
         let sd = s.derivs2(mid_u, mid_v);
         let (lu, lv) = (sd.du.len().max(1e-9), sd.dv.len().max(1e-9));
         let (pu, pv) = (reach / lu, reach / lv);
-        // only directions bounded by the domain need padding (periodic ones wrap)
-        if du0.is_finite() && du1.is_finite() && s.periods().0.is_none() {
+        // periodic directions wrap; an unbounded direction (extrusion height) still has to
+        // reach `reach` past the face, the 3 % margin of the box is not enough
+        if s.periods().0.is_none() {
             u0 -= pu;
             u1 += pu;
         }
-        if dv0.is_finite() && dv1.is_finite() && s.periods().1.is_none() {
+        if s.periods().1.is_none() {
             v0 -= pv;
             v1 += pv;
         }
     }
+    let (per_u, per_v) = s.periods();
+    let wrap = |x: f64, lo: f64, hi: f64, per: Option<f64>| match per {
+        Some(p) if lo.is_finite() && hi.is_finite() && p > 0.0 && (x < lo || x > hi) => lo + (x - lo).rem_euclid(p),
+        _ => x,
+    };
     let point = |u: f64, v: f64| -> Result<Vec3, OffsetError> {
+        let (u, v) = (wrap(u, du0, du1, per_u), wrap(v, dv0, dv1, per_v));
         let (uc, vc) = (u.clamp(du0, du1), v.clamp(dv0, dv1));
         let (ea, eb) = (u - uc, v - vc);
         let inside = ea == 0.0 && eb == 0.0;
@@ -336,6 +424,168 @@ fn fit_offset_surface(s: &Surface, d: f64, uvbox: ((f64, f64), (f64, f64)), reac
         }
         for &(j, _) in bad_v.iter().rev() {
             vs.insert(j + 1, 0.5 * (vs[j] + vs[j + 1]));
+        }
+    }
+    Err(OffsetError::new("offsetUnsupported", format!("surface offset fit tolerance ({last_dev:.1e})")))
+}
+
+/// Smallest radius of curvature of face `f` on the side an offset by `d` (along its natural
+/// normal) moves to; `None` when the face does not curve that way (or is analytic: planes and
+/// the plain quadrics are handled by their exact offset).
+pub fn face_min_radius(src: &Body, f: FaceId, d: f64) -> Option<f64> {
+    let face = src.face(f);
+    let bx = face_uv_box(src, f)?;
+    match &face.surface {
+        Surface::Extrusion { profile, dir } => {
+            let (r0, r1) = profile.range();
+            let (u0, u1) = (bx.0 .0.max(r0), bx.0 .1.min(r1));
+            let mut best: Option<f64> = None;
+            for i in 0..=600 {
+                let c = profile.derivs(u0 + (u1 - u0) * i as f64 / 600.0, 2);
+                let Some(n) = c[1].cross(*dir).try_normalize() else { continue };
+                let kn = n.dot(c[2]) / c[1].len2();
+                if d * kn > 1e-12 {
+                    let r = 1.0 / kn.abs();
+                    best = Some(best.map_or(r, |x: f64| x.min(r)));
+                }
+            }
+            best
+        }
+        s if is_freeform(s) => grid_min_radius(s, d, bx),
+        _ => None,
+    }
+}
+
+/// The sentence a failed offset of `face` by `d` is reported with.
+pub fn limit_message(face: &str, d: f64, l: &OffsetLimit) -> String {
+    match l.kind {
+        "thin" => format!(
+            "{face} runs within {:.2} mm of another part of the same wall, too close for an offset of {:.2} mm: use at most {:.2} mm",
+            l.min_radius - d.abs(),
+            d.abs(),
+            l.max_thickness
+        ),
+        _ => format!(
+            "{face} curves too tightly for an offset of {:.2} mm: its smallest radius of curvature is {:.2} mm, use at most {:.2} mm",
+            d.abs(),
+            l.min_radius,
+            l.max_thickness
+        ),
+    }
+}
+
+/// Safe fraction of the limiting radius / half gap reported as the largest thickness.
+const LIMIT_SAFETY: f64 = 0.8;
+
+/// Round a reported limit down to 0.01 mm.
+fn floor_hundredth(x: f64) -> f64 {
+    (x * 100.0).floor() / 100.0
+}
+
+/// Offset of an extruded curve: the extrusion of the offset curve. The profile moves along
+/// the in-plane normal (`c' x dir` side, the surface's natural normal) and the offset curve is
+/// a cubic B-spline interpolating samples over `ubox` (padded by `reach`), refined until it
+/// follows the exact offset within `FIT_TOL`. The offset has to keep the profile regular
+/// (`1 - d kappa > 0`: the radius of curvature on the offset side exceeds `|d|`) and must not
+/// run into another part of the profile (a wall thinner than `2 |d|`); each failure comes with
+/// the numbers (smallest radius / narrowest gap and the thickness that would work).
+fn offset_extrusion(profile: &Curve, dir: Vec3, d: f64, ubox: (f64, f64), reach: f64) -> Result<Surface, OffsetError> {
+    let (r0, r1) = profile.range();
+    let (mut u0, mut u1) = ubox;
+    if !(u1 > u0) {
+        return Err(OffsetError::new("offsetUnsupported", "empty parameter range"));
+    }
+    let tmid = profile.derivs(0.5 * (u0 + u1), 1)[1].len().max(1e-9);
+    let pad = reach / tmid;
+    u0 = (u0 - pad).max(r0);
+    u1 = (u1 + pad).min(r1);
+    if !(u1 > u0) {
+        return Err(OffsetError::new("offsetUnsupported", "empty parameter range"));
+    }
+    let interior = ubox;
+    // (offset point, 1 - d kn, kn) at parameter u
+    let sample = |u: f64| -> Result<(Vec3, f64, f64), OffsetError> {
+        let c = profile.derivs(u, 2);
+        let n = c[1].cross(dir).try_normalize().ok_or_else(|| OffsetError::new("offsetUnsupported", "degenerate surface point"))?;
+        let kn = n.dot(c[2]) / c[1].len2();
+        Ok((c[0] + n * d, 1.0 - d * kn, kn))
+    };
+    // curvature scan on a dense set
+    let (mut worst, mut min_radius) = (f64::INFINITY, f64::INFINITY);
+    for i in 0..=600 {
+        let (_, factor, kn) = sample(u0 + (u1 - u0) * i as f64 / 600.0)?;
+        worst = worst.min(factor);
+        if d * kn > 1e-12 {
+            min_radius = min_radius.min(1.0 / kn.abs());
+        }
+    }
+    if worst < 0.1 {
+        return Err(OffsetError::new("offsetTooLarge", CENTRE).with_limit(OffsetLimit {
+            kind: "curvature",
+            min_radius,
+            max_thickness: floor_hundredth(LIMIT_SAFETY * min_radius),
+            face: None,
+        }));
+    }
+    // initial sample set: uniform plus the profile's knots
+    let mut us: Vec<f64> = (0..=48).map(|i| u0 + (u1 - u0) * i as f64 / 48.0).collect();
+    if let Curve::BSpline(bs) = profile {
+        us.extend(bs.knots.iter().copied().filter(|&k| k > u0 && k < u1));
+        us.sort_by(f64::total_cmp);
+        us.dedup_by(|a, b| (*a - *b).abs() < 1e-9 * (u1 - u0));
+    }
+    let mut last_dev = f64::INFINITY;
+    for _round in 0..16 {
+        let pts: Vec<Vec3> = us.iter().map(|&u| sample(u).map(|s| s.0)).collect::<Result<_, _>>()?;
+        if pts.windows(2).any(|w| w[0].dist(w[1]) < 1e-12) {
+            return Err(OffsetError::new("offsetUnsupported", "degenerate offset sample"));
+        }
+        let fit = ck_geom::fit::interpolate(&pts, 3, ck_geom::fit::Param::ChordLength).map_err(|e| OffsetError::new("offsetUnsupported", format!("fit: {e}")))?;
+        let mut bad = vec![];
+        let mut dev = 0.0f64;
+        for i in 0..us.len() - 1 {
+            if pts[i].dist(pts[i + 1]) < MIN_SPAN * 0.1 {
+                continue;
+            }
+            let e = sample(0.5 * (us[i] + us[i + 1]))?.0;
+            let w = fit.closest_point(e).1.dist(e);
+            dev = dev.max(w);
+            if w > FIT_TOL {
+                bad.push(i);
+            }
+        }
+        last_dev = dev;
+        if bad.is_empty() {
+            // thin walls: the offset must stay |d| from every other part of the profile
+            let mut gap = f64::INFINITY;
+            let m = 300;
+            for i in 0..=m {
+                let u = u0 + (u1 - u0) * i as f64 / m as f64;
+                if u < interior.0 || u > interior.1 {
+                    continue;
+                }
+                let q = sample(u)?.0;
+                let t = profile.closest_param(q).clamp(r0, r1);
+                let dist = profile.eval(t).dist(q);
+                if dist < d.abs() * (1.0 - 1e-3) - 1e-6 {
+                    gap = gap.min(d.abs() + dist);
+                }
+            }
+            if gap.is_finite() {
+                return Err(OffsetError::new("offsetTooLarge", "the offset runs into another part of the same wall").with_limit(OffsetLimit {
+                    kind: "thin",
+                    min_radius: gap,
+                    max_thickness: floor_hundredth(LIMIT_SAFETY * 0.5 * gap),
+                    face: None,
+                }));
+            }
+            return Ok(Surface::Extrusion { profile: Box::new(Curve::BSpline(fit)), dir });
+        }
+        if us.len() + bad.len() > 3000 {
+            break;
+        }
+        for &i in bad.iter().rev() {
+            us.insert(i + 1, 0.5 * (us[i] + us[i + 1]));
         }
     }
     Err(OffsetError::new("offsetUnsupported", format!("surface offset fit tolerance ({last_dev:.1e})")))
@@ -559,6 +809,39 @@ fn offset_spline_edge(src: &Body, e: EdgeId, moved: &[Option<Surface>], dnat: &d
     }
 }
 
+/// The edge between an extruded wall and a plane normal to the extrusion is the wall's profile
+/// itself placed in the plane: exact, no sampling. `None` when the edge is anything else.
+fn exact_cap_edge(fs: &[FaceId], moved: &[Option<Surface>], p0: Vec3, p1: Vec3) -> Option<(Curve, f64, f64)> {
+    if fs.len() != 2 {
+        return None;
+    }
+    let (m1, m2) = (moved[fs[0].idx()].as_ref()?, moved[fs[1].idx()].as_ref()?);
+    let (ext, pl) = match (m1, m2) {
+        (Surface::Extrusion { .. }, Surface::Plane { .. }) => (m1, m2),
+        (Surface::Plane { .. }, Surface::Extrusion { .. }) => (m2, m1),
+        _ => return None,
+    };
+    let (Surface::Extrusion { profile, dir }, Surface::Plane { frame }) = (ext, pl) else { return None };
+    let Curve::BSpline(bs) = &**profile else { return None };
+    if frame.z.cross(*dir).len() > 1e-9 * dir.len() {
+        return None;
+    }
+    let v = (frame.o - bs.eval(bs.domain().0)).dot(frame.z) / dir.dot(frame.z);
+    let shift = *dir * v;
+    let placed = bs.map(|p| p + shift);
+    let (a, b) = placed.domain();
+    let (ta, tb) = (placed.closest_param(p0), placed.closest_param(p1));
+    let tol = 1e-6 * (1.0 + p0.len());
+    if placed.eval(ta).dist(p0) > tol || placed.eval(tb).dist(p1) > tol {
+        return None;
+    }
+    if tb > ta {
+        Some((Curve::BSpline(placed), ta, tb))
+    } else {
+        Some((Curve::BSpline(placed.reversed()), a + b - ta, a + b - tb))
+    }
+}
+
 /// Solve `m · x = b` (3×3, Gaussian elimination with partial pivoting).
 fn solve3(mut m: [[f64; 3]; 3], mut b: [f64; 3]) -> Option<[f64; 3]> {
     for c in 0..3 {
@@ -642,6 +925,78 @@ fn solve_point(p0: Vec3, surfs: &[&Surface]) -> Option<Vec3> {
     p.is_finite().then_some(p)
 }
 
+/// Length of the repeating stretch of a closed spline curve whose parameter has more than one
+/// answer per point: a two-lap unrolling (the sketch builds closed splines that way so trimmed
+/// pieces may wrap; `bs(t) == bs(t + L)` for `L` = half the domain) or a single closed lap (the
+/// seam point is both the first and the last parameter).
+fn lap_length(bs: &ck_geom::nurbs::bspline::BSplineCurve) -> Option<f64> {
+    let (a, b) = bs.domain();
+    let l = 0.5 * (b - a);
+    if !(l.is_finite() && l > 0.0) {
+        return None;
+    }
+    let scale = 1.0 + bs.eval(a).len();
+    if (0..7).all(|k| {
+        let t = a + l * (k as f64 + 0.37) / 7.0;
+        bs.eval(t).dist(bs.eval(t + l)) < 1e-9 * scale
+    }) {
+        return Some(l);
+    }
+    (bs.eval(a).dist(bs.eval(b)) < 1e-9 * scale).then_some(b - a)
+}
+
+/// Copy of `src` whose two-lap closed-spline curves (wall profiles of extruded closed splines,
+/// their cap edges) are cut down to the lap window the faces / edges actually use, keeping the
+/// parameters (pcurves stay valid). A point on such a curve has two parameters one lap apart, so
+/// every closest-parameter search (boolean, pcurve rebuild, mass) may land on the wrong lap and
+/// scramble a face's pcurves; with one lap per curve there is a single answer.
+pub fn single_lap_body(src: &Body) -> Body {
+    use ck_geom::nurbs::bspline::BSplineCurve;
+    let mut out = src.clone();
+    let window = |bs: &BSplineCurve, lo: f64, hi: f64| -> Option<BSplineCurve> {
+        let l = lap_length(bs)?;
+        let (a, b) = bs.domain();
+        let m = 0.04 * l;
+        if hi - lo > 0.85 * l {
+            return None;
+        }
+        Some(bs.segment((lo - m).max(a), (hi + m).min(b)))
+    };
+    for f in src.face_ids() {
+        let Surface::Extrusion { profile, dir } = &src.face(f).surface else { continue };
+        let Curve::BSpline(bs) = &**profile else { continue };
+        let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+        for &l in &src.face(f).loops {
+            if !src.lp(l).alive {
+                continue;
+            }
+            for &c in &src.lp(l).coedges {
+                if !src.coedge(c).alive {
+                    continue;
+                }
+                let Some(pc) = &src.coedge(c).pcurve else { return src.clone() };
+                let (ta, tb) = src.coedge_params(c);
+                for k in 0..=16 {
+                    let u = pc.eval(ta + (tb - ta) * k as f64 / 16.0).x;
+                    lo = lo.min(u);
+                    hi = hi.max(u);
+                }
+            }
+        }
+        if let Some(w) = window(bs, lo, hi) {
+            out.faces[f.idx()].surface = Surface::Extrusion { profile: Box::new(Curve::BSpline(w)), dir: *dir };
+        }
+    }
+    for e in src.edge_ids() {
+        let ed = src.edge(e);
+        let Curve::BSpline(bs) = &ed.curve else { continue };
+        if let Some(w) = window(bs, ed.t0.min(ed.t1), ed.t0.max(ed.t1)) {
+            out.edges[e.idx()].curve = Curve::BSpline(w);
+        }
+    }
+    out
+}
+
 /// Offset the faces of `src`: `dist(face)` is the signed distance along the
 /// face's OUTWARD normal (positive = grow). Returns the moved copy (same
 /// topology and element order, pcurves dropped).
@@ -693,7 +1048,15 @@ pub fn move_faces_body(src: &Body, mv: &dyn Fn(FaceId) -> FaceMove) -> Result<Bo
         };
         moved[f.idx()] = Some(r.map_err(|e| {
             if e.code == "offsetTooLarge" {
-                OffsetError::new("offsetDegenerate", format!("{} collapses and cannot be removed", src.face_id_str(f)))
+                let name = src.face_id_str(f);
+                match e.limit {
+                    Some(mut l) => {
+                        let msg = limit_message(&name, d, &l);
+                        l.face = Some(name);
+                        OffsetError::new("offsetDegenerate", msg).with_limit(l)
+                    }
+                    None => OffsetError::new("offsetDegenerate", format!("{name} collapses and cannot be removed")),
+                }
             } else {
                 OffsetError::new(e.code, format!("{}: {}", src.face_id_str(f), e.detail.unwrap_or_default()))
             }
@@ -795,7 +1158,10 @@ pub fn move_faces_body(src: &Body, mv: &dyn Fn(FaceId) -> FaceMove) -> Result<Bo
                         vfaces[v.idx()].iter().map(|&f| moved[f.idx()].as_ref().map_or(0.0, |m| m.closest_point(q).2.dist(q))).fold(0.0f64, f64::max)
                     })
                     .fold(0.0f64, f64::max);
-                offset_spline_edge(src, e, &moved, &dn, p0, p1, gap)?
+                match exact_cap_edge(&fs, &moved, p0, p1) {
+                    Some(r) => r,
+                    None => offset_spline_edge(src, e, &moved, &dn, p0, p1, gap)?,
+                }
             }
             _ => return Err(OffsetError::new("offsetUnsupported", "edge curve type")),
         };

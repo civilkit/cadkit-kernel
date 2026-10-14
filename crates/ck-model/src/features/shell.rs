@@ -25,6 +25,9 @@ pub fn exec_shell(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<
         if let Some(d) = e.detail {
             fe = fe.with("detail", Json::Str(d));
         }
+        if let Some(l) = &e.limit {
+            fe = super::offset_limit_params(fe, l);
+        }
         fe
     })?;
     br.spans.push(boolean_span(ck_ops::boolean::Op::Cut, body.num_faces(), body.num_faces(), out.num_faces()));

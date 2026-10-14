@@ -251,6 +251,12 @@ fn vertex_pseudo_normal(b: &Body, v: VertexId) -> Vec3 {
 /// Nearest boundary feature of `q`: (distance, side) with side < 0 inside,
 /// > 0 outside (dot of q − p with the feature's (pseudo-)normal).
 fn nearest_feature(b: &Body, q: Vec3) -> Option<(f64, f64)> {
+    let faces: Vec<FaceId> = b.face_ids().collect();
+    nearest_feature_in(b, &faces, q)
+}
+
+/// [`nearest_feature`] over a subset of the faces (one shell of a multi-shell body).
+fn nearest_feature_in(b: &Body, faces: &[FaceId], q: Vec3) -> Option<(f64, f64)> {
     #[derive(Clone, Copy)]
     enum Feat {
         Face(FaceId),
@@ -263,14 +269,17 @@ fn nearest_feature(b: &Body, q: Vec3) -> Option<(f64, f64)> {
             best = Some((d, p, f));
         }
     };
-    for f in b.face_ids() {
+    for &f in faces {
         let s = &b.face(f).surface;
         let (u, v, p) = s.closest_point(q);
         if in_face(b, f, Vec2::new(u, v)) {
             take(p.dist(q), p, Feat::Face(f));
         }
     }
-    for e in b.edge_ids() {
+    let mut edges: Vec<EdgeId> = faces.iter().flat_map(|&f| b.face_edges(f)).collect();
+    edges.sort();
+    edges.dedup();
+    for e in edges {
         if b.edge_faces(e).is_empty() {
             continue;
         }
@@ -286,6 +295,18 @@ fn nearest_feature(b: &Body, q: Vec3) -> Option<(f64, f64)> {
         Feat::Vertex(v) => vertex_pseudo_normal(b, v),
     };
     Some((d, (q - p).dot(n)))
+}
+
+/// Is `q` inside the closed shell made of `faces`? The side of the nearest boundary feature
+/// decides (exact for a closed shell when the nearest feature is the true nearest, whatever
+/// the distance, and cheap); a point practically on the shell falls back to the winding number.
+fn inside_shell(b: &Body, faces: &[FaceId], q: Vec3) -> bool {
+    if let Some((d, side)) = nearest_feature_in(b, faces, q) {
+        if d > 1e-4 {
+            return side < 0.0;
+        }
+    }
+    winding_number(b, faces, q) > 0.5
 }
 
 /// Connected face components (faces linked through shared edges).
@@ -352,7 +373,7 @@ pub fn rebuild_lumps(b: &mut Body) {
         let probe = b.vertex(b.coedge_start(b.lp(b.face(c[0]).loops[0]).coedges[0])).p;
         let host = lump_of_shell
             .iter()
-            .filter(|(_, _, _, j)| winding_number(b, &comps[*j], probe) > 0.5)
+            .filter(|(_, _, _, j)| inside_shell(b, &comps[*j], probe))
             .min_by(|a, b2| a.2.partial_cmp(&b2.2).unwrap())
             .map(|x| x.1);
         let l = host.unwrap_or_else(|| b.add_lump());
