@@ -125,6 +125,10 @@ fn boolean_at(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> {
     let (a0, b0) = (a, b);
     let a1 = relocate_seams(a0, b0, dropped(op, 0), tol);
     let b1 = relocate_seams(b0, a0, dropped(op, 1), tol);
+    // two-lap closed-spline walls (extruded sketch splines): every closest-parameter search on such a
+    // curve may land on the other lap, so edge membership tests (a section lying on a face boundary)
+    // and loop sampling fail; cut the curves down to the lap each face / edge uses
+    let (a1, b1) = (crate::offset::single_lap_body(&a1), crate::offset::single_lap_body(&b1));
     let (a, b) = (&a1, &b1);
     let arr = imprint(a, b, tol);
     if arr.interacting_pairs == 0 {
