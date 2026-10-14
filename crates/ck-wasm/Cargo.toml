@@ -18,3 +18,6 @@ ck-heal = { path = "../ck-heal" }
 ck-ops = { path = "../ck-ops" }
 ck-io = { path = "../ck-io" }
 ck-tess = { path = "../ck-tess" }
+
+[features]
+sanity-shadow = ["ck-ops/sanity-shadow"]

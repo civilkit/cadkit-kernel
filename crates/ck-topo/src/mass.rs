@@ -32,6 +32,21 @@ pub const GL: [(f64, f64); 8] = [
     (0.960_289_856_497_536_2, 0.101_228_536_290_376_26),
 ];
 
+thread_local! {
+    static COARSE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `f` with the cheap tier of the keyed (post-boolean sanity) integrals: for a non-rational spline
+/// face, only as many Gauss points across a span and as many table nodes across v as the polynomial
+/// integrand's degree needs (exact to rounding, a third to a half fewer evaluations); every other face
+/// and the boundary quadrature are untouched.
+pub fn with_coarse<R>(f: impl FnOnce() -> R) -> R {
+    let prev = COARSE.with(|c| c.replace(true));
+    let r = f();
+    COARSE.with(|c| c.set(prev));
+    r
+}
+
 /// One boundary piece in uv: either an exact pcurve over [ta,tb] or a
 /// polyline (fallback when a coedge has no pcurve).
 enum Piece<'a> {
@@ -216,6 +231,8 @@ pub fn face_integral_poly_keyed<const K: usize>(b: &Body, f: FaceId, ord: usize,
 
 fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand: &dyn Fn(Vec3, Vec3) -> [f64; K], poly_ord: Option<usize>, vpoly: bool, tab_key: Option<u64>) -> [f64; K] {
     let surf = &b.face(f).surface;
+    let coarse = tab_key.is_some() && COARSE.with(|c| c.get());
+    let tab_key = tab_key.map(|k| if coarse { k ^ 0xc0a2_5e00_0000_0001 } else { k });
     let pieces = split_at_knots(surf, face_pieces(b, f));
     let mut acc = [0.0; K];
     if pieces.is_empty() {
@@ -285,6 +302,9 @@ fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand
         Some((du, _)) if du <= 15 => 1,
         _ => 2,
     };
+    // coarse tier: across a polynomial span the Gauss rule with just the points the degree needs
+    // (exact to rounding, like the 8 points, which are more than a cubic needs)
+    let coarse_rule: Option<Vec<(f64, f64)>> = if coarse { poly_deg.filter(|&(du, _)| du <= 15).map(|(du, _)| gauss_legendre(((du + 2) / 2).clamp(2, 8))) } else { None };
     let v_rule: Option<Vec<(f64, f64)>> = poly_deg.map(|(_, dv)| gauss_legendre(((dv + 1) / 2).clamp(2, 8)));
     // a cylinder / cone cut by helical flutes: thousands of boundary samples, each needing an inner integral
     // over up to a turn. The integrands are polynomial in v, so tabulate the cumulative integral at the
@@ -357,9 +377,13 @@ fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand
             let fast = vl.as_ref().and_then(|l| l.segment(0.5 * (a + c))).filter(|s| s.covers(a, c));
             let n = if fast.is_some() { fast_panels * res } else { ((span.abs() / hu).ceil() as usize).clamp(1, 512 * res) };
             let h = span / n as f64;
+            let rule: &[(f64, f64)] = match &coarse_rule {
+                Some(r) if fast.is_some() => r,
+                _ => &GL,
+            };
             for i in 0..n {
                 let m = a + h * (i as f64 + 0.5);
-                for &(x, w) in GL.iter() {
+                for &(x, w) in rule.iter() {
                     let s = m + 0.5 * h * x;
                     let (pt, nrm) = match &fast {
                         Some(sg) => {
@@ -407,7 +431,11 @@ fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand
     };
     let build_vtab_raw = || -> Option<(Vec<f64>, Vec<VSpanTab<K>>)> {
         let ((du0, du1), nvn) = match surf {
-            Surface::BSpline(bs) => (bs.domain().0, 3 * bs.deg_v + 6),
+            Surface::BSpline(bs) => (bs.domain().0, match poly_deg {
+                    // (the integrand is a polynomial of degree dv in v: dv + 1 nodes interpolate it exactly)
+                    Some((_, dv)) if coarse => dv + 1,
+                    _ => 3 * bs.deg_v + 6,
+                }),
             // (volume-type integrands are trigonometric polynomials in v: 24 nodes are spectral; the area
             // element of a strongly twisted face has singularities near the real axis: 56)
             Surface::Screw { urange, .. } => (*urange, if poly_ord.is_some() { 24 } else { 56 }),
