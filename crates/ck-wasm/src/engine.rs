@@ -473,6 +473,14 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
         "resolve" => Ok(ck_ops::agent::resolve(&snapshot(cx)?.body, &cx.msg)),
         "describe" => Ok(ck_ops::agent::describe(&snapshot(cx)?.body, &cx.msg)),
         "refDiff" => crate::refdiff::reply(cx),
+        "profiles" => Ok(crate::profile_q::profiles()),
+        "checkProfile" => {
+            if cx.msg.get("part").is_some() {
+                crate::profile_q::check_profile(cx, None)
+            } else {
+                crate::profile_q::check_profile(cx, Some(&snapshot(cx)?.body))
+            }
+        }
         "threadData" => {
             let get = |k: &str| match cx.msg.get(k) {
                 Some(Json::Str(s)) if !s.is_empty() => Ok(Some(s.as_str())),

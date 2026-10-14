@@ -33,13 +33,20 @@ A rule engine on top of today's `validate` / `check`: named **profiles** of rule
 each issue naming the failing face or edge by persistent name. The drawer's Diagnostics tab, the viewport and an
 agent all read the same list.
 
-| Profile | Size | Idea |
+**Done (2026-10-14, first slice):** the rule engine and three profiles, `profiles` and `checkProfile` requests
+(`docs/spec-agent-interface.md`, "Design rules"), session / MCP tools `profiles` and `checkProfile`, tests
+(`crates/ck-model/tests/profile.rs`, `tools/profile_check.mjs`). Rules: `openShell`, `bodyCount`, `minWall`,
+`overhang`, `bridge`, `minFeature`, `plateContact` (profile `fdm-print`); `minInternalRadius`, `undercut`, `minWall`
+(`cnc-3axis`); `draft`, `uniformWall`, `minWall` (`injection`). Exact where the B-rep gives the answer (hole / pin
+diameters, concave radii, plane draft), mesh-based or ray-sampled otherwise; accuracy notes are in the spec.
+
+| Item | Size | Status / idea |
 |---|---|---|
-| Rule framework (profiles, severities, per-entity issues, heat-map overlay) | M | First slice; everything below plugs in |
-| 3D printing | M | Overhang by face normal against the build direction and angle limit; bridges; thin walls; minimum features; support volume estimate. Stretch: suggest a build orientation |
-| Sheet metal and steel bending | L | Constant thickness, bend radius against material, flange length, hole-to-bend distance, self-collision when folded. The hard part is the flat pattern (unfold with a K-factor) and bend features, which we do not have yet. Validator alone is M |
-| Injection moulding and CNC | M | Draft, undercuts, minimum wall, tool reach. Draft and shell features already exist |
-| Design rules from the user | S | Min hole, min wall and similar as document-level expectations (extends the `expect` field) |
+| Rule framework (profiles, severities, per-entity issues) | M | Done. Left: heat-map overlay in the GUI (colour faces by issue `value` / `limit`, click an issue to focus `at`) and the Diagnostics tab reading `checkProfile` |
+| 3D printing | M | Done: overhang, bridges, thin walls, minimum features, plate contact. Left: support volume estimate, suggest a build orientation (run `overhang` over candidate directions), per-face tolerance for sampled rules |
+| Sheet metal and steel bending | L | Not started. Constant thickness, bend radius against material, flange length, hole-to-bend distance, self-collision when folded. The hard part is the flat pattern (unfold with a K-factor) and bend features, which we do not have yet. Validator alone is M; it plugs in as a fourth profile |
+| Injection moulding and CNC | M | Done: draft, undercut, minimum wall, internal radius, wall uniformity. Left: draft sign and parting line (needs a pull side), tool reach / stock, floor fillets for ball cutters, inscribed-sphere thickness instead of the straight ray |
+| Design rules from the user | S | Inline profiles with parameters already work per request. Left: custom rules (a rule defined in the document), min hole / min wall as document-level expectations (extends the `expect` field) and a stored per-document profile |
 
 ## 4. Authoring: ways to create parts
 

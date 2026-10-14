@@ -56,6 +56,7 @@ export function createMcpServer(): { server: McpServer; sessions: Map<string, Se
     });
     return text({
       featureTypes: FEATURE_TYPES,
+      profiles: ['fdm-print', 'cnc-3axis', 'injection'],
       threadStandards: ['metric', 'metric-fine', 'UNC', 'UNF', 'BSP', 'NPT', 'Tr', 'Acme'],
       planes: { front: 'XY, normal +Z', top: 'XZ, local y maps to -z', right: 'ZY' },
       exampleOps: [
@@ -72,6 +73,19 @@ export function createMcpServer(): { server: McpServer; sessions: Map<string, Se
     size: z.string().optional(),
   }, async ({ session, standard, size }) => {
     return text(await get(session).threadData(standard, size));
+  });
+
+  server.tool('profiles', 'Design-rule profiles (fdm-print, cnc-3axis, injection) with each rule\'s parameters, units and defaults', {
+    session: z.string(),
+  }, async ({ session }) => text(await get(session).profiles()));
+
+  server.tool('checkProfile', 'Run a manufacturability profile on the body: issues name failing faces / edges by persistent name, with value, limit and severity. profile = id or inline {rules:[{id, params?, severity?}]}', {
+    session: z.string(),
+    profile: z.union([z.string(), z.object({ rules: z.array(z.object({ id: z.string(), params: z.record(z.any()).optional(), severity: z.enum(['error', 'warn', 'info']).optional() })) }).passthrough()]),
+    samples: z.number().optional(),
+    maxIssues: z.number().optional(),
+  }, async ({ session, profile, samples, maxIssues }) => {
+    return text(await get(session).checkProfile(profile as string | Record<string, unknown>, { samples, maxIssues }));
   });
 
   server.tool('read', 'Read the document, body facts and edit history', {

@@ -151,6 +151,125 @@ NPT the pipe outside diameter, `pitchDiameter` the gauge-plane value);
 (the root of an external thread); `tapDrill` is the bore an internal thread is
 cut into. An unknown standard or size is a wire error listing the choices.
 
+## Design rules: `profiles` and `checkProfile`
+
+A rule engine on top of `validate` / `check` (crates/ck-ops/src/profile). A
+**profile** is a named list of rules, each with parameters and a severity. Every
+**issue** names the failing faces and edges by persistent name, so the GUI
+Diagnostics tab, a viewport heat map / highlight and an LLM agent all read the
+same list. Both requests are read-only; no tag state changes. All lengths mm,
+angles degrees, areas mm2.
+
+### `profiles` (stateless)
+
+Lists the built-in profiles (with the parameter values each uses) and the rule
+catalogue, so a GUI can build a settings form from `params`.
+
+```json
+{"type":"profiles"}
+-> {"profiles":[{"id":"fdm-print","name":"FDM 3D printing","description":"...","rules":[
+      {"id":"minWall","title":"Minimum wall thickness","description":"...","severity":"error",
+       "params":[{"name":"min","type":"number","default":1.2,"value":1.2,"unit":"mm","min":0,"description":"Thinnest wall allowed"}]},
+      {"id":"overhang","severity":"warn","params":[
+        {"name":"angle","type":"number","default":45,"value":45,"unit":"deg","min":0,"max":90,"description":"..."},
+        {"name":"direction","type":"vec3","default":[0,1,0],"value":[0,1,0],"unit":"","description":"Build direction (up)"},
+        {"name":"minArea","type":"number","default":0.5,"value":0.5,"unit":"mm2"}]}, ...]},
+     {"id":"cnc-3axis",...}, {"id":"injection",...}],
+    "rules":[{"id":"openShell","title":"Watertight","description":"...","severity":"error","params":[]}, ...]}
+```
+
+`value` is what the profile uses, `default` what the rule uses on its own.
+
+### `checkProfile`
+
+```json
+{"type":"checkProfile","tag":"main","profile":"fdm-print","opts":{"samples":3000,"maxIssues":100}}
+{"type":"checkProfile","part":<part>,"profile":{"id":"mine","name":"Mine","rules":[
+   {"id":"minWall","params":{"min":2},"severity":"error"},{"id":"draft","params":{"minAngle":2,"direction":[0,0,1]}}]}}
+```
+
+* `profile`: a built-in id (`fdm-print`, `cnc-3axis`, `injection`) or an inline
+  `{id?, name?, rules:[{id, params?, severity?}]}`. Rules not listed do not run;
+  omitted `params` keep the rule defaults; `severity` is `error|warn|info`.
+  Unknown profile / rule / parameter, a wrong type or an out-of-range value are
+  wire errors that list the valid choices.
+* Subject: the tag's regenerated body (`tag`, default `main`; no body gives
+  `null` like `check`), or `part`: the document is regenerated privately
+  through the same incremental regen cache as `regen`, so re-checking an edited
+  document only replays the changed tail (and a tag is neither created nor
+  changed). A part that makes no body returns `{profile, noBody:true, errors}`.
+* `opts.samples` (default 3000): surface samples for the ray rules.
+  `opts.maxIssues` (default 100): cap per rule, the rest is counted in
+  `summary.truncated`.
+
+```json
+-> {"profile":{"id":"fdm-print","name":"FDM 3D printing","rules":[...effective rules and parameters...]},
+    "ok":false,
+    "issues":[
+     {"rule":"minWall","severity":"error",
+      "message":"Wall between F2.C1 and F4.C1 is 0.50 mm thick, under the 1.20 mm minimum: thicken it by 0.70 mm.",
+      "faces":["F2.C1","F4.C1"],"edges":[],"value":0.5,"limit":1.2,"unit":"mm","at":[10.33,0.67,10]},
+     {"rule":"minInternalRadius","severity":"warn",
+      "message":"Sharp internal corner F2.S.e1|F4.S.e0#9 (radius 0) between ...",
+      "faces":["F4.S.e0","F4.S.e1"],"edges":["F4.S.e0|F4.S.e1#9"],"value":0,"limit":1,"unit":"mm"}],
+    "summary":{"errors":5,"warnings":1,"infos":0,"total":6,
+      "rules":[{"rule":"minWall","severity":"error","issues":5,"passed":false}, ...],
+      "truncated":[],"skippedFaces":[],"samples":3000}}
+```
+
+Issue fields: `rule`, `severity`, `message` (actionable, with the numbers),
+`faces` (persistent face names, usable in `describe` / `resolve` and as
+highlight targets), `edges` (persistent edge keys `faceA|faceB#n`, as in
+`body.edges[].key`), `value` (what was measured) and `limit` (what was allowed),
+`unit`, and `at` (a point on the part to focus on, when known). `ok` is true when
+there is no `error`. `skippedFaces` lists faces whose triangulation failed (the
+sampled rules cannot see them). Issues are ordered worst first within a rule.
+
+### Built-in profiles and rules
+
+| Profile | Rules (default severity; main defaults) |
+|---|---|
+| `fdm-print` | `openShell` (error), `bodyCount` (warn), `minWall` (error, 1.2), `overhang` (warn, 45 deg, +Y up), `bridge` (warn, 10 mm), `minFeature` (warn, 0.8 hole/pin diameter and gap), `plateContact` (warn, 20 mm2) |
+| `cnc-3axis` | `openShell`, `minInternalRadius` (warn, cutter radius 1.0, tool axis +Z), `minWall` (warn, 1.0), `undercut` (error, from +Z) |
+| `injection` | `openShell`, `draft` (warn, 1 deg, pull +Z), `uniformWall` (warn, +-25%), `minWall` (info, 0.8) |
+
+Accuracy and limits (the rules are a first slice, not a certification):
+
+* **Exact** (from the B-rep): hole and pin diameters (`minFeature`, cylinder
+  radius, full-circle barrels only, blend faces ignored), concave cylinder
+  radii and sharp concave edges parallel to the tool axis
+  (`minInternalRadius`), watertightness (`openShell`: open / non-manifold
+  edges, inside-out solids by volume sign) and solid count (`bodyCount`).
+* **Mesh based** (the display triangulation, error about 4e-4 of the part
+  diagonal): `overhang`, `bridge`, `plateContact`, `draft` and the facing-away
+  half of `undercut` are exact for planes (constant normal) and a per-triangle
+  area-weighted measure for curved faces. `draft` of a plane, a cone and an
+  axis-parallel cylinder is exact; a face is flagged when at least half of its
+  area is under the limit. `overhang` measures from vertical (0 wall, 90 flat
+  ceiling) and ignores triangles lying on the build plate (lowest height).
+  `bridge` takes a flat (within `flatTolerance`) downward face above the plate
+  and reports its narrowest horizontal width as the span; it does not look for
+  supports underneath.
+* **Sampled** (rays from area-proportional samples, `opts.samples`):
+  `minWall` (inward ray to the opposite wall; the hit must face along the ray
+  within about 45 degrees), the gap half of `minFeature` (outward rays that
+  meet a wall facing back), the hidden-under-material half of `undercut`, and
+  `uniformWall` (median thickness per pair of faces against the part's median;
+  only pairs much wider than their separation count as walls, so plate ends and
+  solid blocks are ignored). A feature thinner than the sample spacing can be
+  missed.
+  Thickness is the straight distance along the surface normal, not the
+  inscribed-sphere thickness: at the edge of a thin plate it reports the
+  length, at a sharp wedge tip it reports the distance across.
+* Not covered yet: sheet-metal rules (bend radius, flange length, flat
+  pattern), custom user rules, draft sign / parting line, tool reach and
+  stock, support volume, build orientation suggestion.
+
+Checks: `crates/ck-model/tests/profile.rs` (native, small known parts: a box
+with 0.5 mm walls, a 45 degree underside, a 0.5 mm hole, a 0.4 mm slot, drafted
+and straight extrudes), `tools/profile_check.mjs` (wasm, run by `tools/land.sh`;
+`--bench` sweeps the BenchCAD parts: no failures, every run under 5 s).
+
 ## Acceptance
 
 - A scripted agent session (no human) builds the benchmark parts in

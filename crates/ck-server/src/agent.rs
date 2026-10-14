@@ -42,3 +42,19 @@ pub fn ref_diff(cx: &mut Cx) -> Result<Json, String> {
 pub fn thread_data(cx: &mut Cx) -> Result<Json, String> {
     cx.query("threadData")
 }
+
+/// `{type:"checkProfile", tag? | part?, profile:"<id>"|{rules:[..]}, opts?}`:
+/// run a design-rule profile (fdm-print, cnc-3axis, injection or inline) on
+/// the tag's body, or on `part` regenerated privately. Read-only. No body: null.
+pub fn check_profile(cx: &mut Cx) -> Result<Json, String> {
+    if cx.msg.get("part").is_some() {
+        check_part(cx.msg.get("part"))?;
+        return cx.query("checkProfile");
+    }
+    null_or_query(cx, "checkProfile")
+}
+
+/// `{type:"profiles"}`: built-in profiles and the rule catalogue (stateless).
+pub fn profiles(cx: &mut Cx) -> Result<Json, String> {
+    cx.query("profiles")
+}

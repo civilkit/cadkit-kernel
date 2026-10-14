@@ -29,6 +29,7 @@ pub const COMMIT: &str = "class-a-surfacing da3c6f49122f7955186a15d91471699f37e7
 
 pub mod drag;
 pub mod engine;
+pub mod profile_q;
 pub mod refdiff;
 pub mod regen_cache;
 pub mod sketch_q;
