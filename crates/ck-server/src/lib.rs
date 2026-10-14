@@ -81,6 +81,9 @@ pub const REQUEST_TYPES: &[(&str, Handler)] = &[
     ("refDiff", agent::ref_diff),
     // Extension: thread standards as data (stateless, read-only).
     ("threadData", agent::thread_data),
+    // Extension: design-rule profiles (read-only).
+    ("checkProfile", agent::check_profile),
+    ("profiles", agent::profiles),
 ];
 
 pub fn handler_for(ty: &str) -> Option<Handler> {

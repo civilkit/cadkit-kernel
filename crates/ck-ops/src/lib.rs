@@ -19,6 +19,7 @@ pub mod measure;
 pub mod offset;
 pub mod ref_curve;
 pub mod pipecut;
+pub mod profile;
 pub mod shell;
 pub mod simplify;
 pub mod spline_path;

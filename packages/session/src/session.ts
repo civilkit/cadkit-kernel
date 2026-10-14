@@ -6,7 +6,7 @@
 import { emptyPart, FEATURE_TYPES, type PartDoc } from '../../part-model/src/index.js';
 import { hintFor, verify, type CheckResultItem, type KernelTransport, type RegenError, type VerifyReport } from '../../driver/src/verify.js';
 import {
-  check, describe, heal, importSat, importStep, massProps, resolveDescriptions, step, threadData, validate,
+  check, checkProfile, describe, heal, importSat, importStep, massProps, profiles, resolveDescriptions, step, threadData, validate,
   type CheckReport, type DescribeItem, type HealReport, type ImportReport, type MassReport,
   type ResolveMatch, type ValidateIssue,
 } from './queries.js';
@@ -613,6 +613,16 @@ export class Session {
   /** Thread standards and sizes (stateless; see docs/spec-agent-interface.md). */
   threadData(standard?: string, size?: string) {
     return threadData(this.kernel, standard, size);
+  }
+
+  /** Design-rule profiles (fdm-print, cnc-3axis, injection): the list with rule parameters. */
+  profiles() {
+    return profiles(this.kernel);
+  }
+
+  /** Run a design-rule profile on the current body: issues name faces / edges by persistent name. */
+  checkProfile(profile: string | Record<string, unknown>, opts?: { samples?: number; maxIssues?: number }) {
+    return checkProfile(this.kernel, profile, { tag: this.tag, opts });
   }
 
   validate(tol?: number): Promise<{ ok: boolean; issues: ValidateIssue[] }> {

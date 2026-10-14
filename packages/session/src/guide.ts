@@ -95,6 +95,15 @@ ${RECIPES}
 ## Error codes and usual fixes
 ${fixes}
 
+## Design rules (manufacturability)
+checkProfile runs a named profile of rules on the body: fdm-print (3D printing),
+cnc-3axis, injection. profiles lists them with each rule's parameters. Every
+issue has rule, severity (error/warn/info), an actionable message with numbers,
+faces / edges (persistent names, feed them to resolve / describe or highlight
+them), value and limit. Pass an inline profile to change a limit:
+{rules:[{id:"minWall", params:{min:2}, severity:"error"}]}. Sampled rules
+(walls, gaps, undercut) are estimates; planes, cylinders and edges are exact.
+
 ## Loop
 edit → read the diff (did anything unintended change?) → verify (regen +
 validate + check). Fix the smallest responsible feature first; hints name it.

@@ -113,6 +113,57 @@ export async function threadData(kernel: KernelTransport, standard?: string, siz
   return call(kernel, msg);
 }
 
+export interface ProfileIssue {
+  rule: string;
+  severity: 'error' | 'warn' | 'info';
+  message: string;
+  /** Persistent face names (heat-map / highlight targets). */
+  faces: string[];
+  /** Persistent edge keys. */
+  edges: string[];
+  value: number | null;
+  limit: number | null;
+  unit: string;
+  /** A point on the part to focus the viewport on. */
+  at?: [number, number, number];
+}
+
+export interface ProfileReport {
+  profile: { id: string; name: string; rules?: unknown[] };
+  ok: boolean;
+  issues: ProfileIssue[];
+  summary: {
+    errors: number; warnings: number; infos: number; total: number;
+    rules: Array<{ rule: string; severity: string; issues: number; passed: boolean }>;
+    truncated: Array<{ rule: string; total: number; shown: number }>;
+    skippedFaces: string[];
+    samples: number;
+  };
+}
+
+export interface ProfileInfo {
+  id: string;
+  name: string;
+  description: string;
+  rules: Array<{ id: string; title: string; description: string; severity: string; params: Array<{ name: string; type: 'number' | 'vec3'; default: unknown; value: unknown; unit: string; min?: number; max?: number; description: string }> }>;
+}
+
+/** Built-in design-rule profiles and the rule catalogue (stateless). */
+export async function profiles(kernel: KernelTransport): Promise<{ profiles: ProfileInfo[]; rules: ProfileInfo['rules'] }> {
+  return call(kernel, { type: 'profiles' });
+}
+
+/** Run a profile (built-in id or inline `{rules:[{id, params?, severity?}]}`) on the tag's body. Read-only. */
+export async function checkProfile(
+  kernel: KernelTransport,
+  profile: string | Record<string, unknown>,
+  opts: QueryOpts & { opts?: { samples?: number; maxIssues?: number } } = {},
+): Promise<ProfileReport> {
+  const msg: Record<string, unknown> = { type: 'checkProfile', tag: opts.tag ?? 'main', profile };
+  if (opts.opts) msg.opts = opts.opts;
+  return call(kernel, msg);
+}
+
 export interface ValidateIssue {
   code: string;
   entity: string;

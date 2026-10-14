@@ -36,7 +36,7 @@ fn wire_golden() {
 
 #[test]
 fn all_types_dispatch() {
-    assert_eq!(REQUEST_TYPES.len(), 26); // 17 original + validate/importSat/importStep/heal + check/resolve/describe/refDiff/threadData extensions
+    assert_eq!(REQUEST_TYPES.len(), 28); // 17 original + validate/importSat/importStep/heal + check/resolve/describe/refDiff/threadData/checkProfile/profiles extensions
     for (t, _) in REQUEST_TYPES {
         let (j, _) = run(&mut Server::new(), &format!(r#"{{"msg":{{"type":"{t}"}}}}"#));
         assert!(!j.contains("unknown request"), "{t}");
