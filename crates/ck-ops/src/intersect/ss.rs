@@ -22,16 +22,6 @@
 
 use super::solve3;
 use ck_geom::curve::Curve;
-use std::sync::atomic::{AtomicBool, Ordering};
-
-/// Seed the march from the 25 x 25 projection grids (the scheme before the patch boxes) instead of
-/// the patch-box cell boundaries (`patch.rs`). Set per regen by the `ssiGridSeeds` option.
-pub static GRID_SEEDS: AtomicBool = AtomicBool::new(false);
-/// March step and tracer start as the original computes them (`f2487`): step =
-/// clamp(0.1 min(cs1, cs2, diag), 0.001 diag, 0.05 diag) from the characteristic sizes, tracer
-/// starting at a quarter step. Off: diag / 64 and a full first step.
-pub static ORIG_STEP: AtomicBool = AtomicBool::new(false);
-
 use ck_geom::fit::{interpolate, Param};
 use ck_geom::surface::{SurfDerivs, Surface};
 use ck_geom::{any_perp, frame_from, Frame, Vec3};
@@ -135,12 +125,7 @@ fn intersect_uncached(s1: &Surface, s2: &Surface, bounds: Option<Bounds>, tol: f
     }
     match bounds {
         Some(b) => {
-            let diag = (b.hi - b.lo).len();
-            let step = if ORIG_STEP.load(Ordering::Relaxed) {
-                (0.1 * char_size(s1, diag).min(char_size(s2, diag)).min(diag)).clamp(0.001 * diag, 0.05 * diag).max(tol * 100.0)
-            } else {
-                (diag / 64.0).max(tol * 100.0)
-            };
+            let step = ((b.hi - b.lo).len() / 64.0).max(tol * 100.0);
             let cs = march(s1, s2, b, tol, step);
             if cs.is_empty() {
                 SsResult::Disjoint
@@ -149,20 +134,6 @@ fn intersect_uncached(s1: &Surface, s2: &Surface, bounds: Option<Bounds>, tol: f
             }
         }
         None => SsResult::Curves(vec![]),
-    }
-}
-
-/// Characteristic size of a surface (the original's `f2493`): plane 1000, cylinder / sphere / cone
-/// radius, torus minor radius, B-spline control-box diagonal over (nu + nv) floored at 1e-3, other
-/// kinds a fifth of the region diagonal.
-fn char_size(s: &Surface, diag: f64) -> f64 {
-    match s {
-        Surface::Plane { .. } => 1000.0,
-        Surface::Cylinder { r, .. } | Surface::Sphere { r, .. } | Surface::Cone { r, .. } => *r,
-        Surface::Torus { minor, .. } => *minor,
-        Surface::BSpline(bs) => (crate::bvh::Aabb::from_points(&bs.ctrl).diagonal() / (bs.nu + bs.nv) as f64).max(1e-3),
-        Surface::Offset { base, .. } => char_size(base, diag),
-        _ => 0.2 * diag,
     }
 }
 
@@ -781,7 +752,7 @@ fn screw_rev(sp: &Surface, rev: &Surface, tol: f64) -> Option<SsResult> {
 // ------------------------------------------- long ruled spline x quadric
 
 /// Implicit function of an analytic surface (zero set = the surface).
-pub(super) fn implicit(s: &Surface) -> Option<Box<dyn Fn(Vec3) -> f64>> {
+fn implicit(s: &Surface) -> Option<Box<dyn Fn(Vec3) -> f64>> {
     Some(match s.clone() {
         Surface::Plane { frame } => Box::new(move |p| (p - frame.o).dot(frame.z)),
         Surface::Cylinder { frame, r } => Box::new(move |p| {
@@ -1026,7 +997,7 @@ fn tangent(s1: &Surface, s2: &Surface, p: Vec3) -> Option<Vec3> {
     s1.normal(u1, v1).cross(s2.normal(u2, v2)).try_normalize()
 }
 
-pub(super) fn inside(b: &Bounds, p: Vec3, pad: f64) -> bool {
+fn inside(b: &Bounds, p: Vec3, pad: f64) -> bool {
     p.x >= b.lo.x - pad && p.y >= b.lo.y - pad && p.z >= b.lo.z - pad && p.x <= b.hi.x + pad && p.y <= b.hi.y + pad && p.z <= b.hi.z + pad
 }
 
@@ -1053,9 +1024,9 @@ fn uv_box(s: &Surface, b: &Bounds) -> ((f64, f64), (f64, f64)) {
 
 // ---- parameter-space marcher (warm-started 4x4 Newton, cf. original f2503)
 
-pub(super) type Uv4 = [f64; 4];
+type Uv4 = [f64; 4];
 
-pub(super) fn wrap_uv(s: &Surface, u: f64, v: f64) -> (f64, f64) {
+fn wrap_uv(s: &Surface, u: f64, v: f64) -> (f64, f64) {
     let ((a, b), (c, d)) = s.domain();
     let (pu, pv) = s.periods();
     let f = |x: f64, lo: f64, hi: f64, per: Option<f64>| match per {
@@ -1066,7 +1037,7 @@ pub(super) fn wrap_uv(s: &Surface, u: f64, v: f64) -> (f64, f64) {
 }
 
 /// Gauss-Newton projection of `t` onto `s` from a warm start.
-pub(super) fn refine_uv(s: &Surface, mut u: f64, mut v: f64, t: Vec3) -> (f64, f64) {
+fn refine_uv(s: &Surface, mut u: f64, mut v: f64, t: Vec3) -> (f64, f64) {
     for _ in 0..3 {
         let d = s.derivs2(u, v);
         let r = t - d.p;
@@ -1085,7 +1056,7 @@ pub(super) fn refine_uv(s: &Surface, mut u: f64, mut v: f64, t: Vec3) -> (f64, f
     (u, v)
 }
 
-pub(super) fn solve4(mut a: [[f64; 5]; 4]) -> Option<[f64; 4]> {
+fn solve4(mut a: [[f64; 5]; 4]) -> Option<[f64; 4]> {
     for c in 0..4 {
         let mut piv = c;
         for r in c + 1..4 {
@@ -1116,7 +1087,7 @@ pub(super) fn solve4(mut a: [[f64; 5]; 4]) -> Option<[f64; 4]> {
 }
 
 /// Newton on (u1, v1, u2, v2): S1 = S2 and (S1 - pred)·dir = 0.
-pub(super) fn correct_uv(s1: &Surface, s2: &Surface, pred: Vec3, dir: Vec3, uv: Uv4, tol: f64) -> Option<(Vec3, Uv4)> {
+fn correct_uv(s1: &Surface, s2: &Surface, pred: Vec3, dir: Vec3, uv: Uv4, tol: f64) -> Option<(Vec3, Uv4)> {
     correct_uv_d(s1, s2, pred, dir, uv, tol).map(|(p, uv, _, _)| (p, uv))
 }
 
@@ -1148,7 +1119,7 @@ fn correct_uv_d(s1: &Surface, s2: &Surface, pred: Vec3, dir: Vec3, uv: Uv4, tol:
     None
 }
 
-pub(super) fn tangent_uv(s1: &Surface, s2: &Surface, uv: Uv4) -> Option<Vec3> {
+fn tangent_uv(s1: &Surface, s2: &Surface, uv: Uv4) -> Option<Vec3> {
     s1.normal(uv[0], uv[1]).cross(s2.normal(uv[2], uv[3])).try_normalize()
 }
 
@@ -1168,50 +1139,18 @@ fn tangent_from(s1: &Surface, s2: &Surface, uv: Uv4, d1: &SurfDerivs, d2: &SurfD
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct MPt {
-    pub p: Vec3,
-    pub uv: Uv4,
+struct MPt {
+    p: Vec3,
+    uv: Uv4,
 }
 
 /// Marching SSI inside `b`. `step` = chord length of the march.
 pub fn march(s1: &Surface, s2: &Surface, b: Bounds, tol: f64, step: f64) -> Vec<SsCurve> {
     let diag = (b.hi - b.lo).len().max(step);
     let pad = step * 2.0;
-    let mut seeds: Vec<MPt> = vec![];
-    let mut grid_seeds = GRID_SEEDS.load(Ordering::Relaxed) || std::env::var_os("CK_SSI_GRID").is_some();
-    let t_all = super::patch::now();
-    if !grid_seeds {
-        let t_seed = super::patch::now();
-        // patch-box cell pairs and their boundary curves (the original's scheme, `patch.rs`)
-        let g1 = super::patch::grid(s1, uv_box(s1, &b), tol);
-        let g2 = super::patch::grid(s2, uv_box(s2, &b), tol);
-        let r = super::patch::seeds(s1, s2, &g1, &g2, &b, tol, step, pad);
-        super::patch::add_time(5, t_seed);
-        match r {
-            None => {
-                super::patch::add_time(6, t_all);
-                return vec![];
-            }
-            Some((v, strong)) if v.is_empty() => {
-                if !strong {
-                    super::patch::add_time(6, t_all);
-                    return vec![];
-                }
-                // boxes overlap but no boundary / centre seed: the projection grids, for robustness
-                super::patch::STATS[4].fetch_add(1, Ordering::Relaxed);
-                if std::env::var_os("CK_SSI_LOG").is_some() {
-                    eprintln!("ssi: patch seeding found nothing for {} x {}: projection-grid fallback", s1.kind(), s2.kind());
-                }
-                grid_seeds = true;
-            }
-            Some((v, _)) => seeds = v,
-        }
-    }
     // seeds from a uv grid on s1 (and on s2, for small features of s2)
+    let mut seeds: Vec<MPt> = vec![];
     for (swap, (sa, sb)) in [(false, (s1, s2)), (true, (s2, s1))] {
-        if !grid_seeds {
-            break;
-        }
         let ((u0, u1), (v0, v1)) = uv_box(sa, &b);
         let n = 24;
         let thr = diag / n as f64 * 2.0;
@@ -1285,7 +1224,6 @@ pub fn march(s1: &Surface, s2: &Surface, b: Bounds, tol: f64, step: f64) -> Vec<
         let Some((pts, bs)) = fit_refined(s1, s2, pts, tol) else { continue };
         out.push(SsCurve::Fitted { pts, curve: Curve::BSpline(bs), closed });
     }
-    super::patch::add_time(6, t_all);
     out
 }
 
@@ -1396,7 +1334,7 @@ fn trace(s1: &Surface, s2: &Surface, seed: MPt, t0: Vec3, b: &Bounds, tol: f64, 
     let mut pts = vec![seed];
     let mut cur = seed;
     let mut t = t0;
-    let mut h = if ORIG_STEP.load(Ordering::Relaxed) { 0.25 * step } else { step };
+    let mut h = step;
     for it in 0..5000 {
         let pred = cur.p + t * h;
         let next = correct_uv_d(s1, s2, pred, t, cur.uv, tol);
