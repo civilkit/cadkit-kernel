@@ -121,6 +121,48 @@ Rules:
 - Not covered: `sweep`, `loft`, `hole` and surface extrudes still use all regions.
   Check: `tools/region_select_check.mjs`, `crates/ck-model/tests/region_select.rs`.
 
+## End references (`extrude` `upToFace`, `offsetFromFace`, `upToPoint`)
+
+`extrude` (add or cut) can stop at a face, at a face moved by a distance, or at a point's plane.
+The end condition names its target in `endRef`:
+
+```json
+{"type":"extrude","id":"F4","op":"add","sketch":"F3","end":"upToFace","endRef":{"kind":"face","id":"F2.C1","at":[10,20,-3]}}
+{"type":"extrude","id":"F4","op":"cut","sketch":"F3","flip":true,"end":"offsetFromFace","endRef":"F2.C1","offset":-2.5}
+{"type":"extrude","id":"F4","op":"add","sketch":"F3","end":"upToPoint","endRef":[0,12,0]}
+{"type":"extrude","id":"F4","op":"add","sketch":"F3","end":"upToPoint","endRef":{"kind":"vertex","faces":["F2.C1","F2.S.e4","F2.S.e1"],"at":[0,20,0]}}
+```
+
+- `endRef` for the face ends: `{"kind":"face","id":<persistent face id>,"at":[x,y,z]?}` or the bare id string.
+  `at` is optional: a point on the face when it was picked (see "Persistence" below).
+- `endRef` for `upToPoint`: `[x,y,z]`, `{"kind":"point","at":[x,y,z]}`, or `{"kind":"vertex","faces":[ids],"at":[x,y,z]}`
+  (the vertex shared by the named faces nearest `at`; follows the faces when the model is edited). The end plane is
+  parallel to the sketch plane through the point.
+- `offset` (expression, `offsetFromFace` only): the end plane is the face's plane moved along the face's OUTWARD normal
+  by `offset`; negative moves into the material. Default 0.
+- Direction: as for `blind`: along the sketch normal, `flip` reverses; for `op:"cut"` the sketch normal is reversed first
+  (so a cut that must go along +normal needs `flip:true`, same as every cut).
+- Targets: planar faces only. A plane that is slanted against the sketch is supported (the tool is trimmed with a boolean
+  and the new end face takes the end cap's name `<id>.C<k>`). Cylinders, cones etc. are `upToFaceUnsupported`.
+- Coverage: `upToFace` needs the face to cover the whole profile along the extrusion direction (`upToFaceOutside`);
+  `offsetFromFace` and `upToPoint` use the (offset) plane without that test.
+- Errors (oracle codes): `missingReference {field:"endRef", face?}` (absent, malformed or unresolvable `endRef`, or a
+  face end with no body; this one is NEVER downgraded), `upToFaceBehind` (the face is not ahead of the whole profile
+  or parallel to the direction), `upToFaceOutside {face}`, `upToFaceUnsupported {face}`, `upToPointBehind`.
+- Fallback (REBUILD-ONLY): the four "unreachable" codes above are NOT errors by default. The feature runs as a blind
+  extrude of `depth` and the regen result gets a warning
+  `endConditionFallback {end, reason, fallback:"blind", depth, ...reason params}` (wire `warnings`, `[featureId, {code, params}]`).
+  A GUI shows it as a yellow badge on the feature. `"strictEnd":true` on the feature turns it back into the error.
+  A trim boolean that fails on a slanted end falls back the same way (`reason:"endClipFailed"`).
+- Persistence: a face id that no longer exists is looked up again: first the unique face of the same `~k` family
+  (`F2.C1~2` finds `F2.C1`), then, when `endRef.at` is given, the one planar face through that point. Both give a
+  warning `endRefRelinked {from, to}`. An ambiguous anchor (a corner or an edge point) is `missingReference`. The
+  normal case needs no relink: face ids come from the feature id, so editing parameters of earlier features (depth of
+  the block, sketch dimensions) keeps `F2.C1` and the end follows the face. GUIs should store `at` with every picked face.
+- `upToNext` is unchanged (already implemented: a through tool trimmed by the next faces of the body).
+- Tool memory: a trimmed (slanted) tool has no `Recipe`, so mirror and pattern features reflect the finished body.
+- Check: `tools/end_reference_check.mjs` (wasm, run by `tools/land.sh`), `crates/ck-model/tests/end_references.rs`.
+
 ## Hole: counterbore and countersink dimensions
 
 `hole` cuts one tool per sketch `point`. Standard sizes (`size` M2..M24 with
