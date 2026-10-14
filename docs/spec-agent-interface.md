@@ -121,6 +121,44 @@ Rules:
 - Not covered: `sweep`, `loft`, `hole` and surface extrudes still use all regions.
   Check: `tools/region_select_check.mjs`, `crates/ck-model/tests/region_select.rs`.
 
+## Hole: counterbore and countersink dimensions
+
+`hole` cuts one tool per sketch `point`. Standard sizes (`size` M2..M24 with
+`fit`) give the hole diameter `d`; `kind` picks the head shape.
+
+- `kind:"simple"`: plain hole (or `diameter` instead of `size`).
+- `kind:"cbore"`: counterbore. `cboreDiameter` and `cboreDepth` (mm or
+  expressions) override the ISO 4762 table values of the size; each is
+  independent (absent: that table value, so documents without them are
+  unchanged). Errors `holeCboreInvalid {hint, ...}`: `cboreDiameter <= d`,
+  `cboreDepth <= 0`, or (only when a field is given) `cboreDepth >= hole depth`.
+- `kind:"countersink"` (alias `"csk"`): always a cone. Head diameter
+  `cskDiameter` (default: ISO 10642 table value of the size), included angle
+  `cskAngle` in degrees (default 90, 0 < angle < 180). The cone starts with
+  the head diameter at the top face and tapers at half the angle to `d`; cone
+  depth = `(cskDiameter - d) / 2 / tan(cskAngle / 2)`.
+- `kind:"csink"` (the legacy wire spelling): a plain hole, exactly as before,
+  UNLESS `cskDiameter` is present, then it is cut like `countersink`
+  (`cskAngle` alone does not switch the cone on). A document that has
+  `csink` without `cskDiameter` therefore never changes; new documents should
+  use `countersink`.
+- Errors `holeCskDiameter {cskDiameter|cskAngle, holeDiameter|coneDepth,
+  holeDepth, hint}`: head diameter <= `d`, angle outside (0,180), or the cone
+  deeper than the hole. `hint` is a one-line fix.
+- Persistent face names (tags after `<id>.S.`, `~k` per point as before):
+  simple `h1` wall, `h2` bottom (`tip` cone); cbore `h1` counterbore wall,
+  `h2` step floor, `h3` hole wall, `h4` bottom; countersink `K0` cone,
+  `h1` hole wall, `h2` bottom. The top disc lies in the existing face and has
+  no name. Names do not depend on the dimensions.
+
+```json
+{"type":"hole","id":"F4","sketch":"F3","standard":"iso","size":"M8","fit":"close","kind":"cbore","end":"blind","depth":20,"cboreDiameter":15,"cboreDepth":8.6}
+{"type":"hole","id":"F5","sketch":"F3","standard":"iso","size":"M5","fit":"normal","kind":"countersink","end":"through","cskDiameter":10.4,"cskAngle":90}
+{"type":"hole","id":"F6","sketch":"F3","standard":"iso","size":"M6","fit":"normal","kind":"countersink","end":"through"}
+```
+
+Check: `tools/hole_dims_check.mjs`, `crates/ck-model/tests/hole_dims.rs`.
+
 ## Threads: `threadData` request and `thread` feature
 
 ### `threadData` (read-only, stateless)

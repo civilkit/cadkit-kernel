@@ -222,7 +222,10 @@ pub enum HoleFit {
 pub enum HoleKind {
     Simple,
     Cbore,
+    /// Wire `csink`: legacy plain hole unless `cskDiameter` is given (hole.rs).
     Csink,
+    /// Wire `countersink` / `csk`: always a cone (table head diameter by default).
+    Countersink,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -383,6 +386,7 @@ impl FeatureKind {
                 kind: match j.get("kind").and_then(|v| v.as_str()) {
                     Some("cbore") => HoleKind::Cbore,
                     Some("csink") => HoleKind::Csink,
+                    Some("countersink") | Some("csk") => HoleKind::Countersink,
                     _ => HoleKind::Simple,
                 },
                 diameter: e_opt(j, "diameter"),
