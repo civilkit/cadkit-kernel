@@ -114,12 +114,20 @@ pub fn project_points(surf: &Surface, pts: &[Vec3]) -> Vec<Vec2> {
     let (pu, pv) = surf.periods();
     let (cu, cv) = closed_periods(surf);
     let mut out: Vec<Vec2> = Vec::with_capacity(pts.len());
+    // (the spline's content hash once per path, not once per point)
+    let fp = match surf {
+        Surface::BSpline(bs) => Some(bs.fingerprint()),
+        _ => None,
+    };
     for &p in pts {
         let warm = match (surf, out.last()) {
             (Surface::BSpline(_) | Surface::Screw { .. }, Some(prev)) => warm_project(surf, prev.x, prev.y, p),
             _ => None,
         };
-        let (mut u, mut v) = warm.unwrap_or_else(|| surf.closest_param(p));
+        let (mut u, mut v) = warm.unwrap_or_else(|| match (surf, fp) {
+            (Surface::BSpline(bs), Some(fp)) => bs.closest_param_fp(fp, p),
+            _ => surf.closest_param(p),
+        });
         if let Some(prev) = out.last() {
             if let Some(per) = pu {
                 u = unwrap_near(u, prev.x, per);
