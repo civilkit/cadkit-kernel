@@ -6,6 +6,9 @@ members = ["crates/*"]
 opt-level = 3
 lto = true
 panic = "abort"
+# one codegen unit: the same results (no float reassociation), a 13 % smaller wasm and no slower
+# (docs/perf-large sample.md, round 5)
+codegen-units = 1
 
 # Fast iteration: release speed without LTO (cargo test --profile fast;
 # wasm: cargo build -p ck-wasm --target wasm32-unknown-unknown --profile fast,

@@ -41,8 +41,23 @@ pub fn samples_for(c: &Curve) -> usize {
     }
 }
 
+/// Content hash of a B-spline surface for [`uv_near_fp`] (`None` for any other surface): one pass over
+/// the control net, so a caller that projects a polygon of points takes it once, not once per point.
+pub fn spline_fp(s: &Surface) -> Option<u64> {
+    match s {
+        Surface::BSpline(bs) => Some(bs.fingerprint()),
+        _ => None,
+    }
+}
+
 /// uv of a 3D point, unwrapped near `prev`.
 pub fn uv_near(s: &Surface, p: Vec3, prev: Option<Vec2>) -> Vec2 {
+    uv_near_fp(s, None, p, prev)
+}
+
+/// [`uv_near`] with the surface's [`spline_fp`] taken by the caller (`None` = not yet known: the
+/// per-point hash of `closest_param`). Same answers, bit for bit.
+pub fn uv_near_fp(s: &Surface, fp: Option<u64>, p: Vec3, prev: Option<Vec2>) -> Vec2 {
     // long B-spline faces (screw sweeps): the global closest-point search is
     // O(spans); a point on the surface next to the previous sample is found
     // by a local Gauss-Newton projection from it
@@ -57,7 +72,10 @@ pub fn uv_near(s: &Surface, p: Vec3, prev: Option<Vec2>) -> Vec2 {
             return Vec2::new(u, v);
         }
     }
-    let (mut u, mut v) = s.closest_param(p);
+    let (mut u, mut v) = match (s, fp) {
+        (Surface::BSpline(bs), Some(fp)) => bs.closest_param_fp(fp, p),
+        _ => s.closest_param(p),
+    };
     if let Some(q) = prev {
         let (pu, pv) = s.periods();
         if let Some(per) = pu {
@@ -139,10 +157,11 @@ pub fn loop_polygon(s: &Surface, pieces: &[(&Curve, f64, f64)]) -> Vec<Vec2> {
 fn loop_polygon_with(s: &Surface, pieces: &[(&Curve, f64, f64)], nfun: impl Fn(&Curve, f64, f64) -> usize) -> Vec<Vec2> {
     let mut out = vec![];
     let mut prev: Option<Vec2> = None;
+    let fp = spline_fp(s);
     for &(c, ta, tb) in pieces {
         let n = nfun(c, ta, tb);
         for k in 0..n {
-            let mut uv = uv_near(s, c.eval(ta + (tb - ta) * k as f64 / n as f64), prev);
+            let mut uv = uv_near_fp(s, fp, c.eval(ta + (tb - ta) * k as f64 / n as f64), prev);
             // u is arbitrary at a pole: carry the previous u through it so the
             // samples after the pole are not unwrapped against junk
             if let Some(q) = prev {
@@ -158,7 +177,7 @@ fn loop_polygon_with(s: &Surface, pieces: &[(&Curve, f64, f64)], nfun: impl Fn(&
     // winding in u is read from it, so a loop that ends on a circle piece
     // (seam up, seam down, circle) is recognised like one that ends on a seam
     let end_u = match (pieces.last(), out.first()) {
-        (Some(&(c, _, tb)), Some(_)) => Some(uv_near(s, c.eval(tb), prev).x),
+        (Some(&(c, _, tb)), Some(_)) => Some(uv_near_fp(s, fp, c.eval(tb), prev).x),
         _ => None,
     };
     close_pole_spikes(s, &mut out, end_u);
@@ -523,5 +542,26 @@ mod tests {
             assert_eq!(point_in_face(&c, s, p, 1e-6), Where::In, "{ang}");
         }
         assert_eq!(point_in_face(&c, s, Vec3::new(25.0, 12.0, -10.0), 1e-6), Where::Out);
+    }
+
+    /// `uv_near_fp` with the surface hash taken once answers exactly what `uv_near` does per point.
+    #[test]
+    fn uv_near_fp_is_bit_identical() {
+        use ck_geom::nurbs::bsurf::BSplineSurface;
+        let n = 6;
+        let knots = vec![0.0, 0.0, 0.0, 0.0, 0.3, 0.7, 1.0, 1.0, 1.0, 1.0];
+        let ctrl: Vec<Vec3> = (0..n * n).map(|k| Vec3::new((k / n) as f64 * 3.0, (k % n) as f64 * 3.0, ((k * 7919 % 13) as f64 - 6.0) * 0.4)).collect();
+        let s = Surface::BSpline(Box::new(BSplineSurface::new(3, 3, knots.clone(), knots, n, n, ctrl, None).unwrap()));
+        let fp = spline_fp(&s);
+        assert!(fp.is_some());
+        let mut prev = None;
+        for k in 0..60 {
+            let t = k as f64 / 59.0;
+            let p = Vec3::new(2.0 + 11.0 * t, 1.5 + 9.0 * (6.0 * t).sin().abs(), 3.0 * (t * 9.0).cos());
+            let a = uv_near(&s, p, prev);
+            let b = uv_near_fp(&s, fp, p, prev);
+            assert_eq!((a.x.to_bits(), a.y.to_bits()), (b.x.to_bits(), b.y.to_bits()), "{k}");
+            prev = Some(a);
+        }
     }
 }

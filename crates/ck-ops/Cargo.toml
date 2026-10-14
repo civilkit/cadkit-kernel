@@ -10,3 +10,7 @@ ck-geom = { path = "../ck-geom" }
 ck-topo = { path = "../ck-topo" }
 ck-json = { path = "../ck-json" }
 ck-tess = { path = "../ck-tess" }
+
+[features]
+# proof mode for the post-boolean volume check: run the exact tier after every coarse pass and trap on a disagreement
+sanity-shadow = []

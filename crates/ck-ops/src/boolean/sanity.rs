@@ -36,9 +36,22 @@ pub struct VolumeMismatch {
     pub what: &'static str,
 }
 
+thread_local! {
+    /// Per-face integrals by orientation-free face key (see `face_key`), one table per tier.
+    static MEMO: std::cell::RefCell<[std::collections::HashMap<u64, f64>; 2]> = std::cell::RefCell::new([Default::default(), Default::default()]);
+    /// `[fine hits, fine misses, coarse hits, coarse misses]` (a miss is one face integral).
+    static COUNTS: std::cell::Cell<[u64; 4]> = const { std::cell::Cell::new([0; 4]) };
+}
+
+/// Work counters of the volume check on this thread: `[fine hits, fine misses, coarse hits, coarse
+/// misses]`, a miss being one face integral (for the work-counter tests).
+pub fn work_counts() -> [u64; 4] {
+    COUNTS.with(|c| c.get())
+}
+
 /// Net signed volume of a body (void shells count negative), `None` when it
-/// is not a closed solid.
-fn solid_volume(b: &Body) -> Option<f64> {
+/// is not a closed solid. `coarse` selects the cheap quadrature tier.
+fn solid_volume(b: &Body, coarse: bool) -> Option<f64> {
     if b.num_faces() == 0 {
         return Some(0.0);
     }
@@ -49,24 +62,27 @@ fn solid_volume(b: &Body) -> Option<f64> {
     // changes a handful of faces among hundreds of spline faces, and a face integral of a spline
     // face costs milliseconds), so the volume is summed from per-face integrals memoised by a
     // hash of each face's surface and trimming.
-    thread_local! {
-        static MEMO: std::cell::RefCell<std::collections::HashMap<u64, f64>> = std::cell::RefCell::new(std::collections::HashMap::new());
-    }
+    let tier = coarse as usize;
     let mut v = 0.0;
     for f in b.face_ids() {
-        let key = face_key(b, f);
-        let cached = MEMO.with(|m| m.borrow().get(&key).copied());
+        let (key, sgn) = face_key(b, f);
+        let cached = MEMO.with(|m| m.borrow()[tier].get(&key).copied());
+        COUNTS.with(|c| {
+            let mut a = c.get();
+            a[2 * tier + cached.is_none() as usize] += 1;
+            c.set(a);
+        });
         let fv = match cached {
-            Some(x) => x,
+            Some(x) => sgn * x,
             None => {
-                let x = face_signed_volume(b, f);
+                let x = if coarse { ck_topo::mass::with_coarse(|| face_signed_volume(b, f)) } else { face_signed_volume(b, f) };
                 if x.is_finite() {
                     MEMO.with(|m| {
                         let mut m = m.borrow_mut();
-                        if m.len() >= 8192 {
-                            m.clear();
+                        if m[tier].len() >= 8192 {
+                            m[tier].clear();
                         }
-                        m.insert(key, x);
+                        m[tier].insert(key, sgn * x);
                     });
                 }
                 x
@@ -77,31 +93,57 @@ fn solid_volume(b: &Body) -> Option<f64> {
     v.is_finite().then_some(v)
 }
 
-/// Hash of everything one face's volume integral depends on: its surface and sense and the ends
-/// and middle of every coedge's edge curve.
-fn face_key(b: &Body, f: ck_topo::body::FaceId) -> u64 {
-    let mut h = 0xcbf29ce484222325u64;
-    let mut mix = |x: u64| {
-        h = (h ^ x).wrapping_mul(0x100000001b3);
-        h ^= h >> 29;
-    };
+/// Orientation-free key of everything one face's volume integral depends on, and the sign that maps
+/// this face's integral to the key's canonical traversal. The integral runs along the face's boundary
+/// as traversed (the face `sense` does not enter it), so the same face traversed the other way round
+/// (the tool's face of a cut, reversed) has the negated integral: both traversals get the same key,
+/// `+1` for the one whose forward hash is the smaller.
+fn face_key(b: &Body, f: ck_topo::body::FaceId) -> (u64, f64) {
     let face = b.face(f);
-    mix(face.surface.fingerprint());
-    mix(face.sense as u64);
-    for &l in &face.loops {
-        mix(0xa5a5);
-        for &c in &b.lp(l).coedges {
-            let ed = b.edge(b.coedge(c).edge);
-            mix(b.coedge(c).rev as u64);
-            for t in [ed.t0, 0.5 * (ed.t0 + ed.t1), ed.t1] {
-                let p = ed.curve.eval(t);
-                mix(p.x.to_bits());
-                mix(p.y.to_bits());
-                mix(p.z.to_bits());
+    // (rev flag, [start, middle, end] of the edge curve) of every coedge, loop by loop
+    let loops: Vec<Vec<(bool, [Vec3; 3])>> = face
+        .loops
+        .iter()
+        .map(|&l| {
+            b.lp(l)
+                .coedges
+                .iter()
+                .map(|&c| {
+                    let ed = b.edge(b.coedge(c).edge);
+                    (b.coedge(c).rev, [ed.t0, 0.5 * (ed.t0 + ed.t1), ed.t1].map(|t| ed.curve.eval(t)))
+                })
+                .collect()
+        })
+        .collect();
+    let sfp = face.surface.fingerprint();
+    let hash = |reversed: bool| -> u64 {
+        let mut h = 0xcbf29ce484222325u64;
+        let mut mix = |x: u64| {
+            h = (h ^ x).wrapping_mul(0x100000001b3);
+            h ^= h >> 29;
+        };
+        mix(sfp);
+        for cs in &loops {
+            mix(0xa5a5);
+            for i in 0..cs.len() {
+                let (rev, pts) = &cs[if reversed { cs.len() - 1 - i } else { i }];
+                mix((*rev != reversed) as u64);
+                for k in 0..3 {
+                    let p = pts[if reversed { 2 - k } else { k }];
+                    mix(p.x.to_bits());
+                    mix(p.y.to_bits());
+                    mix(p.z.to_bits());
+                }
             }
         }
+        h
+    };
+    let (fw, rv) = (hash(false), hash(true));
+    if fw <= rv {
+        (fw, 1.0)
+    } else {
+        (rv, -1.0)
     }
-    h
 }
 
 /// Volume tolerance: face integrals of curved and spline faces are good to
@@ -159,46 +201,118 @@ fn box_overlap_volume(a: (Vec3, Vec3), b: (Vec3, Vec3)) -> f64 {
     }
 }
 
-/// Check `result` against the bounds of `a op b`. `None` = plausible (or not
-/// checkable).
-pub fn check_result(a: &Body, b: &Body, op: Op, result: &Body) -> Option<VolumeMismatch> {
-    if a.num_faces() == 0 || b.num_faces() == 0 {
-        return None;
-    }
-    let va = solid_volume(a)?;
-    let vb = solid_volume(b)?;
-    if va <= 0.0 || vb <= 0.0 {
-        return None;
-    }
-    let vr = solid_volume(result)?;
+/// How far from a bound of the window (as a fraction of the tolerance) the coarse tier's volumes must
+/// lie for its pass verdict to stand. The coarse quadrature is good to about 1e-6 of a volume (the
+/// tolerance is 1e-3), so a tenth of the tolerance is far outside its error and still inside the
+/// margin of every ordinary pass (a result that keeps all of an operand sits a whole tolerance from
+/// the bound).
+const GUARD: f64 = 0.1;
+
+/// Admissible window of the result volume for `op`, tolerance included.
+fn window(op: Op, va: f64, vb: f64, box_ov: f64) -> (f64, f64) {
     let tol = tolerance(va, vb);
-    let (ba, bb) = (loose_box(a), loose_box(b));
-    let ov = box_overlap_volume(ba, bb).min(va).min(vb);
+    let ov = box_ov.min(va).min(vb);
     // implied overlap vi in [0, ov]; vr as a function of vi
     let (lo, hi) = match op {
         Op::Union => (va + vb - ov, va + vb),
         Op::Cut => (va - ov, va),
         Op::Intersect => (0.0, ov),
     };
-    let (lo, hi) = (lo - tol, hi + tol);
+    (lo - tol, hi + tol)
+}
+
+/// Check `result` against the bounds of `a op b`. `None` = plausible (or not
+/// checkable).
+///
+/// Two tiers (the verdict only decides pass or fail and never feeds geometry): the volumes are first
+/// summed with the cheap quadrature, and a pass that clears every bound by [`GUARD`] tolerances (and
+/// the box test) is final. Everything else, every failure included, is decided by the exact rule.
+pub fn check_result(a: &Body, b: &Body, op: Op, result: &Body) -> Option<VolumeMismatch> {
+    if a.num_faces() == 0 || b.num_faces() == 0 {
+        return None;
+    }
+    let (ba, bb) = (loose_box(a), loose_box(b));
+    let box_ov = box_overlap_volume(ba, bb);
+    let coarse_pass = coarse_passes(a, b, op, result, box_ov);
+    let shadow = cfg!(feature = "sanity-shadow") || shadow_env();
+    let verdict = if coarse_pass && !shadow { None } else { check_exact(a, b, op, result, box_ov) };
+    if coarse_pass && shadow {
+        // proof mode: the exact rule must agree with the coarse pass
+        assert!(verdict.is_none(), "sanity: coarse tier passed what the exact tier rejects: {verdict:?}");
+    }
+    log_verdict(op, coarse_pass, &verdict);
+    verdict
+}
+
+/// Tier 1: the cheap volumes put the result inside the window with the guard band to spare and the
+/// box test passes.
+fn coarse_passes(a: &Body, b: &Body, op: Op, result: &Body, box_ov: f64) -> bool {
+    let vols = (|| {
+        let va = solid_volume(a, true)?;
+        let vb = solid_volume(b, true)?;
+        let guard = GUARD * tolerance(va, vb);
+        if !(va > guard && vb > guard) {
+            return None;
+        }
+        let vr = solid_volume(result, true)?;
+        let (lo, hi) = window(op, va, vb, box_ov);
+        (vr >= lo + guard && vr <= hi - guard).then_some(())
+    })();
+    vols.is_some() && !box_short(a, b, op, result)
+}
+
+/// The exact rule (`None` = plausible or not checkable).
+fn check_exact(a: &Body, b: &Body, op: Op, result: &Body, box_ov: f64) -> Option<VolumeMismatch> {
+    let va = solid_volume(a, false)?;
+    let vb = solid_volume(b, false)?;
+    if va <= 0.0 || vb <= 0.0 {
+        return None;
+    }
+    let vr = solid_volume(result, false)?;
+    let (lo, hi) = window(op, va, vb, box_ov);
     if !(vr >= lo && vr <= hi) {
         return Some(VolumeMismatch { expected_min: lo.max(0.0).min(hi), expected_max: hi, got: vr, what: "volume" });
     }
-    if op == Op::Union {
-        let (alo, ahi) = a.bbox();
-        let (blo, bhi) = b.bbox();
-        // (the loose box: a sphere or cylinder bulge has no edge on it, so the edge box of a union that
-        // keeps only a hemisphere of a tool would read as short of the tool's own box)
-        let (rlo, rhi) = loose_box(result);
-        let (lo, hi) = (alo.min(blo), ahi.max(bhi));
-        let slack = 1e-2 * (hi - lo).len() + 1e-6;
-        // positive when the result falls short of the operands
-        let short = [rlo.x - lo.x, rlo.y - lo.y, rlo.z - lo.z, hi.x - rhi.x, hi.y - rhi.y, hi.z - rhi.z]
-            .into_iter()
-            .fold(0.0f64, f64::max);
-        if short > slack {
-            return Some(VolumeMismatch { expected_min: va.max(vb), expected_max: va + vb, got: vr, what: "box" });
-        }
+    if box_short(a, b, op, result) {
+        return Some(VolumeMismatch { expected_min: va.max(vb), expected_max: va + vb, got: vr, what: "box" });
     }
     None
 }
+
+/// Union only: the result's box falls short of the operands' boxes.
+fn box_short(a: &Body, b: &Body, op: Op, result: &Body) -> bool {
+    if op != Op::Union {
+        return false;
+    }
+    let (alo, ahi) = a.bbox();
+    let (blo, bhi) = b.bbox();
+    // (the loose box: a sphere or cylinder bulge has no edge on it, so the edge box of a union that
+    // keeps only a hemisphere of a tool would read as short of the tool's own box)
+    let (rlo, rhi) = loose_box(result);
+    let (lo, hi) = (alo.min(blo), ahi.max(bhi));
+    let slack = 1e-2 * (hi - lo).len() + 1e-6;
+    // positive when the result falls short of the operands
+    let short = [rlo.x - lo.x, rlo.y - lo.y, rlo.z - lo.z, hi.x - rhi.x, hi.y - rhi.y, hi.z - rhi.z]
+        .into_iter()
+        .fold(0.0f64, f64::max);
+    short > slack
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn shadow_env() -> bool {
+    std::env::var_os("CK_SANITY_SHADOW").is_some()
+}
+#[cfg(target_arch = "wasm32")]
+fn shadow_env() -> bool {
+    false
+}
+
+/// `CK_SANITY_LOG=1` (native): one line per check with its verdict, to diff runs.
+#[cfg(not(target_arch = "wasm32"))]
+fn log_verdict(op: Op, coarse: bool, v: &Option<VolumeMismatch>) {
+    if std::env::var_os("CK_SANITY_LOG").is_some() {
+        eprintln!("SANITY {:?} {} tier={}", op, v.as_ref().map_or("pass", |m| m.what), if coarse { "coarse" } else { "exact" });
+    }
+}
+#[cfg(target_arch = "wasm32")]
+fn log_verdict(_: Op, _: bool, _: &Option<VolumeMismatch>) {}

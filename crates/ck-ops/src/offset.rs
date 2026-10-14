@@ -119,6 +119,7 @@ fn face_uv_box(src: &Body, f: FaceId) -> Option<((f64, f64), (f64, f64))> {
     let s = &src.face(f).surface;
     let (mut u0, mut u1, mut v0, mut v1) = (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
     let mut prev: Option<ck_geom::Vec2> = None;
+    let fp = crate::boolean::classify::spline_fp(s);
     for &l in &src.face(f).loops {
         if !src.lp(l).alive {
             continue;
@@ -136,7 +137,7 @@ fn face_uv_box(src: &Body, f: FaceId) -> Option<((f64, f64), (f64, f64))> {
                 let pc = if matches!(s, Surface::Extrusion { .. }) { src.coedge(c).pcurve.as_ref() } else { None };
                 let uv = match pc {
                     Some(pc) => pc.eval(t),
-                    None => crate::boolean::classify::uv_near(s, ed.curve.eval(t), prev),
+                    None => crate::boolean::classify::uv_near_fp(s, fp, ed.curve.eval(t), prev),
                 };
                 prev = Some(uv);
                 u0 = u0.min(uv.x);

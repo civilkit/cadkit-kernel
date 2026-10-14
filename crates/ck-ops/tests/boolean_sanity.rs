@@ -159,3 +159,28 @@ fn per_face_volume_sum_matches_body_volume() {
         body = out.body;
     }
 }
+
+/// The coarse tier of the volume check (`with_coarse`) takes only the Gauss points and table nodes a
+/// polynomial integrand needs: it must agree with the full rule per face to rounding, and the
+/// orientation-free memo must give the reversed tool's faces their negated integrals.
+#[test]
+fn coarse_tier_agrees_with_exact_tier_per_face() {
+    let c = (30.0f64.to_radians().cos(), 30.0f64.to_radians().sin());
+    let tilted = Frame { o: Vec3::new(0.0, 5.0, 0.0), x: Vec3::X, y: Vec3::new(0.0, -c.1, -c.0), z: Vec3::new(0.0, c.0, -c.1) };
+    let host = cyl("H", top_at(0.0), 0.0, 0.0, 10.0, -20.0, 20.0);
+    let tool = cyl("T", tilted, 0.0, 0.0, 4.0, -30.0, 30.0);
+    for op in [Op::Cut, Op::Union] {
+        let out = boolean(&host, &tool, op, 1e-6).expect("boolean");
+        for f in out.body.face_ids() {
+            let fine = ck_topo::mass::face_signed_volume(&out.body, f);
+            let coarse = ck_topo::mass::with_coarse(|| ck_topo::mass::face_signed_volume(&out.body, f));
+            assert!((fine - coarse).abs() <= 1e-9 * fine.abs().max(1.0), "{op:?}: fine {fine} coarse {coarse}");
+        }
+        // the check sees the same body three times (operands, result): a second call is all memo hits
+        assert!(check_result(&host, &tool, op, &out.body).is_none());
+        let before = ck_ops::boolean::sanity::work_counts();
+        assert!(check_result(&host, &tool, op, &out.body).is_none());
+        let after = ck_ops::boolean::sanity::work_counts();
+        assert_eq!(after[1] + after[3], before[1] + before[3], "{op:?}: a repeated check integrated a face again");
+    }
+}
