@@ -237,6 +237,11 @@ fn topo_err(e: String) -> FeatureError {
 
 /// `extrude`. `has_body`: whether a body exists (cut / upToNext targets).
 pub fn exec_extrude(state: &RegenState, f: &Feature, body: Option<&Body>) -> Result<Tool, FeatureError> {
+    exec_extrude_ex(state, f, body, &mut EndExtras::default())
+}
+
+/// `extrude` with the reference end conditions' side channel (see [`EndExtras`]).
+pub fn exec_extrude_ex(state: &RegenState, f: &Feature, body: Option<&Body>, extras: &mut EndExtras) -> Result<Tool, FeatureError> {
     let has_body = body.is_some();
     let FeatureKind::Extrude { op, end, flip, draft_out, .. } = &f.kind else { unreachable!() };
     // Oracle: a cut goes AGAINST the sketch normal unless `flip`.
@@ -263,12 +268,33 @@ pub fn exec_extrude(state: &RegenState, f: &Feature, body: Option<&Body>) -> Res
             }
         }
         End::UpToFace | End::OffsetFromFace | End::UpToPoint => {
-            // GUESS: the face/point reference is resolved against the body;
-            // with no body every reference is missing (oracle).
-            if !has_body {
-                return Err(FeatureError::new(codes::MISSING_REFERENCE));
+            // The reference is resolved against the body (persistent face names); with no body every face
+            // reference is missing (oracle). A reference that cannot be reached falls back to a blind
+            // extrude of `depth` plus an `endConditionFallback` warning (unless `strictEnd`).
+            let planned = match extras.force_fallback.take() {
+                Some(e) => Err(e),
+                None => plan_end(state, f, &sk.frame, &profile, *flip, *end, body, extras),
+            };
+            match planned {
+                Ok(p) => {
+                    extras.clip = p.clip;
+                    let l = p.depth.max(MIN_DEPTH);
+                    if *flip {
+                        ExtrudeOpts::flipped(l)
+                    } else {
+                        ExtrudeOpts::blind(l)
+                    }
+                }
+                Err(e) if !strict_end(f) && is_unreachable(&e.code) => {
+                    extras.warnings.push(fallback_warning(*end, &e, depth));
+                    if *flip {
+                        ExtrudeOpts::flipped(depth)
+                    } else {
+                        ExtrudeOpts::blind(depth)
+                    }
+                }
+                Err(e) => return Err(e),
             }
-            return Err(FeatureError::new(&todo("extrude up to a reference")));
         }
         End::Unknown => {
             let e = f.raw.get("end").cloned().unwrap_or(Json::Null);
@@ -315,10 +341,247 @@ pub fn exec_extrude(state: &RegenState, f: &Feature, body: Option<&Body>) -> Res
         }
         None => build(&profile)?,
     };
-    Ok(Tool { body, combine, recipe: Some(Recipe::Extrude { profile, opts: o }) })
+    let recipe = if extras.clip.is_some() { None } else { Some(Recipe::Extrude { profile, opts: o }) };
+    Ok(Tool { body, combine, recipe })
 }
 
 pub const UNKNOWN_END: &str = "unknownEnd";
+/// `upToFaceBehind` / `upToFaceOutside` / `upToFaceUnsupported` / `upToPointBehind`: oracle codes
+/// (kernel.strings) for an end reference the extrusion cannot reach.
+pub const UP_TO_FACE_BEHIND: &str = "upToFaceBehind";
+pub const UP_TO_FACE_OUTSIDE: &str = "upToFaceOutside";
+pub const UP_TO_FACE_UNSUPPORTED: &str = "upToFaceUnsupported";
+pub const UP_TO_POINT_BEHIND: &str = "upToPointBehind";
+/// Boolean that trims a slanted end failed (REBUILD-ONLY code, always downgraded).
+pub const END_CLIP_FAILED: &str = "endClipFailed";
+/// Warning (REBUILD-ONLY): the end reference was unreachable, the feature ran as a blind extrude of
+/// `depth`. Params: `end`, `reason` (the error code that was downgraded), its own params, `depth`.
+pub const END_FALLBACK: &str = "endConditionFallback";
+/// Warning (REBUILD-ONLY): the face id of `endRef` no longer exists, the face was re-found by its
+/// `~k` family or its `at` anchor. Params `from`, `to`.
+pub const END_REF_RELINKED: &str = "endRefRelinked";
+
+/// Codes of an end reference that can be downgraded to a fallback (never `missingReference`).
+pub fn is_unreachable(code: &str) -> bool {
+    matches!(code, UP_TO_FACE_BEHIND | UP_TO_FACE_OUTSIDE | UP_TO_FACE_UNSUPPORTED | UP_TO_POINT_BEHIND | END_CLIP_FAILED)
+}
+
+fn strict_end(f: &Feature) -> bool {
+    matches!(f.raw.get("strictEnd"), Some(Json::Bool(true)))
+}
+
+pub fn fallback_warning(end: End, e: &FeatureError, depth: f64) -> FeatureError {
+    let name = match end {
+        End::UpToFace => "upToFace",
+        End::OffsetFromFace => "offsetFromFace",
+        End::UpToPoint => "upToPoint",
+        _ => "",
+    };
+    let mut w = FeatureError::new(END_FALLBACK)
+        .with("end", Json::Str(name.into()))
+        .with("reason", Json::Str(e.code.clone()))
+        .with("fallback", Json::Str("blind".into()))
+        .with("depth", Json::Num(depth));
+    for (k, v) in &e.params {
+        w = w.with(k, v.clone());
+    }
+    w
+}
+
+/// Side channel of [`exec_extrude_ex`]: warnings to report, the trim a slanted end needs, and a
+/// forced fallback (set by the caller when the trim itself failed).
+#[derive(Default)]
+pub struct EndExtras {
+    pub warnings: Vec<FeatureError>,
+    pub clip: Option<EndClip>,
+    pub force_fallback: Option<FeatureError>,
+}
+
+/// A slanted end plane: the tool is cut by the half-space beyond `p0` (towards `w`).
+#[derive(Debug, Clone, Copy)]
+pub struct EndClip {
+    pub p0: Vec3,
+    /// Unit normal pointing to the side that is removed.
+    pub w: Vec3,
+}
+
+struct EndPlan {
+    depth: f64,
+    clip: Option<EndClip>,
+}
+
+fn bad_ref(field: &str) -> FeatureError {
+    FeatureError::new(codes::MISSING_REFERENCE).with("field", Json::Str(field.into()))
+}
+
+fn json_pt(j: &Json) -> Option<Vec3> {
+    let a = j.as_arr()?;
+    if a.len() != 3 {
+        return None;
+    }
+    Some(Vec3::new(a[0].as_f64()?, a[1].as_f64()?, a[2].as_f64()?))
+}
+
+fn strip_region(n: &ck_topo::body::FaceName) -> String {
+    let mut m = n.clone();
+    m.region = None;
+    m.id()
+}
+
+/// Persistent-name lookup of a face: the exact id; else the unique face of the same `~k` family
+/// (`F4.S.e1` finds `F4.S.e1~2` when a profile gained regions, and vice versa); else, with an `at`
+/// anchor, the planar face through that point. `Some((face, relinked))`.
+pub fn resolve_face(body: &Body, id: &str, at: Option<Vec3>) -> Option<(ck_topo::body::FaceId, bool)> {
+    if let Some(f) = body.find_face(id) {
+        return Some((f, false));
+    }
+    let base = id.split('~').next().unwrap_or(id);
+    let fam: Vec<_> = body.face_ids().filter(|&f| strip_region(&body.face(f).name) == base).collect();
+    if fam.len() == 1 {
+        return Some((fam[0], true));
+    }
+    let at = at?;
+    let pool: Vec<_> = if fam.is_empty() { body.face_ids().collect() } else { fam };
+    // the anchor must pick exactly one planar face (a corner or an edge point is ambiguous)
+    let hits: Vec<_> = pool
+        .into_iter()
+        .filter(|&f| {
+            let face = body.face(f);
+            matches!(face.surface, ck_geom::surface::Surface::Plane { .. })
+                && face.surface.distance(at) <= 1e-4
+                && ck_ops::boolean::classify::point_in_face(body, f, at, 1e-5) != ck_ops::boolean::classify::Where::Out
+        })
+        .collect();
+    (hits.len() == 1).then(|| (hits[0], true))
+}
+
+/// World points along the profile boundaries (end points and interior samples).
+fn profile_samples(p: &Profile) -> Vec<Vec3> {
+    let mut out = vec![];
+    for r in &p.regions {
+        for l in std::iter::once(&r.outer).chain(r.holes.iter()) {
+            for s in &l.segs {
+                for k in 0..=8 {
+                    let t = s.t0 + (s.t1 - s.t0) * k as f64 / 8.0;
+                    let q = s.curve.eval(t);
+                    out.push(p.frame.o + p.frame.x * q.x + p.frame.y * q.y);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// A vertex shared by the named faces, nearest `at` (persistent: faces by name, the vertex by position).
+fn vertex_of(body: &Body, faces: &[String], at: Vec3, extras: &mut EndExtras) -> Option<Vec3> {
+    let mut cands: Vec<ck_topo::body::VertexId> = vec![];
+    for (i, name) in faces.iter().enumerate() {
+        let (f, re) = resolve_face(body, name, Some(at))?;
+        if re {
+            extras.warnings.push(FeatureError::new(END_REF_RELINKED).with("from", Json::Str(name.clone())).with("to", Json::Str(body.face_id_str(f))));
+        }
+        let mut vs = vec![];
+        for e in body.face_edges(f) {
+            vs.push(body.edge(e).v0);
+            vs.push(body.edge(e).v1);
+        }
+        if i == 0 {
+            cands = vs;
+        } else {
+            cands.retain(|v| vs.contains(v));
+        }
+    }
+    cands.into_iter().map(|v| body.vertex(v).p).min_by(|a, b| a.dist(at).total_cmp(&b.dist(at)))
+}
+
+/// Where a reference end condition stops: the end plane's distance along the extrusion and, when the
+/// plane is slanted against the sketch, the trim it needs.
+///
+/// * `upToFace`: `endRef` = `{"kind":"face","id":"F2.C1","at":[x,y,z]}` (or the bare id). Planar faces only
+///   (`upToFaceUnsupported` otherwise); the face must lie ahead of the whole profile
+///   (`upToFaceBehind`) and cover it along the extrusion (`upToFaceOutside`).
+/// * `offsetFromFace`: the same face, its plane moved by `offset` along the face's outward normal
+///   (negative = into the material); no coverage test.
+/// * `upToPoint`: `endRef` = `[x,y,z]`, `{"kind":"point","at":[x,y,z]}` or `{"kind":"vertex","faces":[..],"at":[..]}`;
+///   the end plane is parallel to the sketch through the point (`upToPointBehind`).
+#[allow(clippy::too_many_arguments)]
+fn plan_end(
+    state: &RegenState,
+    f: &Feature,
+    fr: &ck_core::linalg::Frame,
+    profile: &Profile,
+    flip: bool,
+    end: End,
+    body: Option<&Body>,
+    extras: &mut EndExtras,
+) -> Result<EndPlan, FeatureError> {
+    let r = f.raw.get("endRef").filter(|v| !matches!(v, Json::Null)).ok_or_else(|| bad_ref("endRef"))?;
+    let d = if flip { -fr.z } else { fr.z };
+    let pts = profile_samples(profile);
+    let mut face = None;
+    // (a point on the end plane, its normal)
+    let (p0, mm): (Vec3, Vec3) = if end == End::UpToPoint {
+        let kind = r.get("kind").and_then(|k| k.as_str());
+        let pt = if let Some(p) = json_pt(r) {
+            p
+        } else if let (Some("point"), Some(p)) = (kind, r.get("at").and_then(json_pt)) {
+            p
+        } else if kind == Some("vertex") {
+            let faces: Vec<String> =
+                r.get("faces").and_then(|a| a.as_arr()).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default();
+            let at = r.get("at").and_then(json_pt).unwrap_or(Vec3::ZERO);
+            if faces.is_empty() {
+                return Err(bad_ref("endRef"));
+            }
+            vertex_of(body.ok_or_else(|| bad_ref("endRef"))?, &faces, at, extras).ok_or_else(|| bad_ref("endRef"))?
+        } else {
+            return Err(bad_ref("endRef"));
+        };
+        (pt, fr.z)
+    } else {
+        let body = body.ok_or_else(|| bad_ref("endRef"))?;
+        let (id, at) = match r {
+            Json::Str(s) => (s.clone(), None),
+            _ => (r.get("id").and_then(|v| v.as_str()).ok_or_else(|| bad_ref("endRef"))?.to_string(), r.get("at").and_then(json_pt)),
+        };
+        let (fid, relinked) = resolve_face(body, &id, at).ok_or_else(|| bad_ref("endRef").with("face", Json::Str(id.clone())))?;
+        if relinked {
+            extras.warnings.push(FeatureError::new(END_REF_RELINKED).with("from", Json::Str(id.clone())).with("to", Json::Str(body.face_id_str(fid))));
+        }
+        let fc = body.face(fid);
+        let ck_geom::surface::Surface::Plane { frame } = &fc.surface else {
+            return Err(FeatureError::new(UP_TO_FACE_UNSUPPORTED).with("face", Json::Str(id)));
+        };
+        let out = if fc.sense { frame.z } else { -frame.z };
+        let mut p0 = frame.o;
+        if end == End::OffsetFromFace {
+            p0 = p0 + out * state.num(f, "offset", 0.0)?;
+        }
+        face = Some(fid);
+        (p0, out)
+    };
+    let behind = || FeatureError::new(if end == End::UpToPoint { UP_TO_POINT_BEHIND } else { UP_TO_FACE_BEHIND });
+    let c = d.dot(mm);
+    if c.abs() < 1e-9 {
+        return Err(behind());
+    }
+    let ts: Vec<f64> = pts.iter().map(|q| (p0 - *q).dot(mm) / c).collect();
+    let (tmin, tmax) = ts.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |a, &t| (a.0.min(t), a.1.max(t)));
+    if tmin <= 1e-9 {
+        return Err(behind());
+    }
+    if let (End::UpToFace, Some(fid), Some(body)) = (end, face, body) {
+        for (q, t) in pts.iter().zip(&ts) {
+            if ck_ops::boolean::classify::point_in_face(body, fid, *q + d * *t, 1e-5) == ck_ops::boolean::classify::Where::Out {
+                return Err(FeatureError::new(UP_TO_FACE_OUTSIDE).with("face", Json::Str(body.face_id_str(fid))));
+            }
+        }
+    }
+    let slanted = tmax - tmin > 1e-7;
+    let clip = slanted.then(|| EndClip { p0, w: if c > 0.0 { mm } else { -mm } });
+    Ok(EndPlan { depth: tmax, clip })
+}
+
 /// upToNext found no face to stop at (oracle code).
 pub const UP_TO_NEXT_NONE: &str = "upToNextNone";
 /// upToNext add whose tool never meets the body (oracle code).

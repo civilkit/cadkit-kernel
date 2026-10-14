@@ -60,6 +60,9 @@ ck-topo / ck-ops. Depends on ck-core, ck-geom, ck-topo, ck-ops, ck-json.
   Error codes/precedence pinned: badExpression -> missingAxis (revolve) ->
   noClosedProfile -> unknownEnd{end} / invalidValue (angle 0) ->
   missingReference (upToFace/offsetFromFace/upToPoint) / nothingToCut.
+- `extrude` end conditions `upToFace` / `offsetFromFace` / `upToPoint` (`endRef`, `offset`): `extrude.rs` `plan_end` +
+  `Brep::extrude_to_reference` (slanted ends trimmed by a boolean); unreachable ends fall back to blind with an
+  `endConditionFallback` warning (docs/spec-agent-interface.md, "End references").
 - `refs::face_frame`: face sketch planes / plane bases (rule in refs.rs).
 - `features::body_wire`: wire `box/faces/edges` (edge `pts` = ck-topo
   `sample_edge` stand-in; box = exact bounds ∪ f32-rounded, GUESS for

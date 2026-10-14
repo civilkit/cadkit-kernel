@@ -771,6 +771,84 @@ impl Brep {
         Ok(tool)
     }
 
+    /// Trims a tool whose end plane is slanted against its sketch: cuts the half-space beyond the plane
+    /// off the long extrusion. The new end face takes the name of the far cap it replaces.
+    fn clip_tool(&mut self, f: &crate::Feature, mut tool: extrude::Tool, clip: extrude::EndClip) -> Result<extrude::Tool, crate::regen::FeatureError> {
+        use crate::regen::FeatureError;
+        use ck_core::linalg::Frame;
+        use ck_geom::curve2::Curve2;
+        use ck_geom::Vec2;
+        use ck_topo::body::Role;
+        use ck_topo::make::{extrude as make_extrude, ExtrudeOpts, Profile, ProfileLoop, ProfileRegion, ProfileSeg};
+        let fail = |why: &str| FeatureError::new(extrude::END_CLIP_FAILED).with("detail", Json::Str(why.into()));
+        let (lo, hi) = body_box(&tool.body);
+        let r = lo.dist(hi) * 2.0 + 10.0;
+        let c = (lo + hi) * 0.5;
+        let cp = c - clip.w * (c - clip.p0).dot(clip.w);
+        let fr = Frame::from_normal(cp, clip.w);
+        let corner = |a: f64, b: f64| Vec2::new(a * r, b * r);
+        let pts = [corner(-1.0, -1.0), corner(1.0, -1.0), corner(1.0, 1.0), corner(-1.0, 1.0)];
+        let segs: Vec<ProfileSeg> = (0..4)
+            .map(|i| {
+                let (a, b): (Vec2, Vec2) = (pts[i], pts[(i + 1) % 4]);
+                ProfileSeg { tag: format!("r{i}"), curve: Curve2::line_through(a, b), t0: 0.0, t1: (b - a).len(), rev: false }
+            })
+            .collect();
+        let prof = Profile::new(fr, vec![ProfileRegion { outer: ProfileLoop::new(segs), holes: vec![] }]).normalized();
+        let bid = format!("{}.E", f.id);
+        let block = make_extrude(&bid, &prof, ExtrudeOpts::blind(2.0 * r)).map_err(|e| fail(&e))?;
+        // the far cap of the long tool (most towards the removed side) is the face the new end replaces
+        let far = tool
+            .body
+            .face_ids()
+            .filter(|&x| matches!(tool.body.face(x).name.role, Role::Cap(_)))
+            .filter_map(|x| match &tool.body.face(x).surface {
+                ck_geom::surface::Surface::Plane { frame } => Some((frame.o.dot(clip.w), tool.body.face(x).name.clone())),
+                _ => None,
+            })
+            .max_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|x| x.1);
+        let res = ck_ops::boolean::boolean(&tool.body, &block, ck_ops::boolean::Op::Cut, TOL).map_err(|e| fail(&e))?;
+        if res.mismatch.is_some() || res.no_effect {
+            return Err(fail("trim"));
+        }
+        self.spans.push(boolean_span(ck_ops::boolean::Op::Cut, tool.body.num_faces(), block.num_faces(), res.body.num_faces()));
+        let mut out = res.body;
+        if let Some(far) = far {
+            for fc in out.faces.iter_mut().filter(|x| x.alive && x.name.feature == bid) {
+                let mut n = far.clone();
+                n.region = fc.name.region.or(far.region);
+                fc.name = n;
+            }
+        }
+        tool.body = out;
+        Ok(tool)
+    }
+
+    /// `extrude` up to a face / a face offset / a point (`upToFace`, `offsetFromFace`, `upToPoint`):
+    /// unreachable ends fall back to a blind extrude with an `endConditionFallback` warning.
+    fn extrude_to_reference(&mut self, state: &mut crate::regen::RegenState, f: &crate::Feature) -> Result<extrude::Tool, crate::regen::FeatureError> {
+        let mut extras = extrude::EndExtras::default();
+        let mut tool = extrude::exec_extrude_ex(state, f, self.body.as_ref(), &mut extras)?;
+        if let Some(clip) = extras.clip.take() {
+            match self.clip_tool(f, tool, clip) {
+                Ok(t) => tool = t,
+                Err(e) => {
+                    if matches!(f.raw.get("strictEnd"), Some(Json::Bool(true))) {
+                        return Err(e);
+                    }
+                    extras = extrude::EndExtras { force_fallback: Some(e), ..Default::default() };
+                    tool = extrude::exec_extrude_ex(state, f, self.body.as_ref(), &mut extras)?;
+                }
+            }
+        }
+        state.result.warnings.retain(|w| w.feature != f.id);
+        for w in extras.warnings {
+            state.result.warnings.push(crate::regen::RegenError { feature: f.id.clone(), error: w });
+        }
+        Ok(tool)
+    }
+
     fn apply(&mut self, id: &str, tool: extrude::Tool) -> Result<(), crate::regen::FeatureError> {
         let r = self.combine(&tool.body, tool.combine, true);
         // GUESS: the tool is remembered even when the combine fails.
@@ -1014,6 +1092,7 @@ impl crate::regen::FeatureExec for Brep {
                 let t = extrude::exec_extrude(state, f, self.body.as_ref())?;
                 self.up_to_next(t)?
             }
+            FeatureKind::Extrude { end: End::UpToFace | End::OffsetFromFace | End::UpToPoint, .. } => self.extrude_to_reference(state, f)?,
             FeatureKind::Extrude { .. } => extrude::exec_extrude(state, f, self.body.as_ref())?,
             FeatureKind::Revolve { .. } => extrude::exec_revolve(state, f, self.body.is_some())?,
             FeatureKind::Mirror { .. } => return pattern::exec_mirror(self, state, f),
