@@ -223,3 +223,38 @@ fn area(p: &[(f64, f64)]) -> f64 {
 
 
 
+
+/// The document a GUI user makes: a spline kidney extruded 4 mm, a sketch on its top face with the face outline projected as a
+/// 48 point fit through the tessellation (it follows the wall to about 0.01 mm, not exactly) and a 1 mm inward offset, then a cut.
+/// The tool wall is NEARLY coincident with the body wall: crossing it back and forth.
+fn near_doc(cut_tail: &str) -> String {
+    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/spline_ring_near.json")).unwrap();
+    // the fixture's last feature is the cut with all regions; `cut_tail` is spliced in as its extra fields
+    src.replace(r#""id":"F4""#, &format!(r#""id":"F4"{cut_tail}"#))
+}
+
+#[test]
+fn near_coincident_pocket_cuts() {
+    let r = run(&near_doc(r#","regions":["e2"]"#));
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    check_valid(&r, "pocket");
+}
+
+/// The ring cut with the outer loop only nearly on the wall fails; the error names the two walls and the gap (a precise hint
+/// instead of "check the tool and target overlap"). If a later kernel makes it succeed, the result must be valid instead.
+#[test]
+fn near_coincident_ring_cut_names_the_faces() {
+    let r = run(&near_doc(""));
+    match r.errors.first() {
+        None => check_valid(&r, "ring"),
+        Some(e) => {
+            assert_eq!(e.error.code, "booleanFailed");
+            let get = |k: &str| e.error.params.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+            let s = |k: &str| match get(k) { Some(ck_json::Json::Str(s)) => s, other => panic!("{k}: {other:?}") };
+            assert!(s("hostFace").starts_with("F2.S.e1"), "{e:?}");
+            assert!(s("toolFace").starts_with("F4.S.e1"), "{e:?}");
+            let gap = match get("gap") { Some(ck_json::Json::Num(g)) => g, other => panic!("gap {other:?}") };
+            assert!(gap > 1e-6 && gap < 5e-3, "gap {gap}");
+        }
+    }
+}

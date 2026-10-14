@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { verify, type KernelTransport } from './verify.js';
+import { verify, hintFor, type KernelTransport } from './verify.js';
 import { defaultWasmPath as wasmPath } from '../../kernel-client/src/worker.js';
 import type { KernelReply } from '../../kernel-client/src/protocol.js';
 import { emptyPart } from '../../part-model/src/index.js';
@@ -153,5 +153,15 @@ describe('verify document expectations', () => {
     const doc = { ...emptyPart('T'), expect: [{ kind: 'volume', min: 10 }] };
     await verify(k, doc, { expect: [{ kind: 'valid' }] });
     assert.deepEqual((seen.find((m) => m.type === 'check') as Record<string, unknown>).expect, [{ kind: 'valid' }]);
+  });
+});
+
+describe('booleanFailed hint', () => {
+  it('names the two nearly coincident walls when the kernel found them', () => {
+    const h = hintFor('F5', 'booleanFailed', { hostFace: 'F2.S.e1~2', toolFace: 'F4.S.e1~2', gap: 0.0008 });
+    assert.ok(h.hint.includes('F4.S.e1~2') && h.hint.includes('F2.S.e1~2') && h.hint.includes('0.0008'), h.hint);
+  });
+  it('keeps the general advice without them', () => {
+    assert.ok(hintFor('F5', 'booleanFailed', {}).hint.includes('overlap in a volume'));
   });
 });

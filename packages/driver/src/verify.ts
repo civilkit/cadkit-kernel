@@ -62,7 +62,10 @@ const FIX: Record<string, (feature: string, params: Record<string, unknown>) => 
   missingReference: (f) => `${f} references geometry that no longer exists — re-pick the face/edge by name (resolve) and update the ref`,
   nothingToCut: (f) => `${f} removes nothing — move the profile so it overlaps the body, or flip the cut direction`,
   cutNoEffect: (f) => `${f} cuts nothing — the tool misses the body: flip it or move it to overlap`,
-  booleanFailed: (f) => `${f}: boolean failed — check the tool and target overlap in a volume, not just a face`,
+  booleanFailed: (f, p) =>
+    typeof p.hostFace === 'string' && typeof p.toolFace === 'string'
+      ? `${f}: boolean failed — the tool wall ${p.toolFace} and the body wall ${p.hostFace} are nearly the same surface (${typeof p.gap === 'number' ? p.gap.toPrecision(2) : '?'} mm apart): make the tool outline exactly that wall (project the body edge of the sketch spline, not a re-fitted copy) or move it clear of the wall; cutting only the inner region leaves the wall out`
+      : `${f}: boolean failed — check the tool and target overlap in a volume, not just a face`,
   shellTooThick: (f, p) =>
     typeof p.detail === 'string' && typeof p.maxThickness === 'number'
       ? `${f}: ${p.detail} — reduce thickness to ${p.maxThickness} mm or less`

@@ -174,6 +174,15 @@ pub struct FeatureError {
 
 impl FeatureError {
     pub fn new(code: &str) -> FeatureError {
+        // a boolean that failed on two nearly coincident free-form walls: `booleanFailed;nearCoincident=<hostFace>|<toolFace>|<gap>`
+        if let Some((c, d)) = code.split_once(";nearCoincident=") {
+            let mut it = d.split('|');
+            let (h, t, g) = (it.next().unwrap_or(""), it.next().unwrap_or(""), it.next().and_then(|x| x.parse::<f64>().ok()).unwrap_or(0.0));
+            return FeatureError { code: c.to_string(), params: Vec::new() }
+                .with("hostFace", Json::Str(h.to_string()))
+                .with("toolFace", Json::Str(t.to_string()))
+                .with("gap", Json::Num(g));
+        }
         FeatureError { code: code.to_string(), params: Vec::new() }
     }
     pub fn with(mut self, k: &str, v: Json) -> FeatureError {

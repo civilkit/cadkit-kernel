@@ -43,6 +43,62 @@ pub struct BoolOut {
 /// (the vertex pool, edge de-duplication and trims all follow `tol`); the
 /// first result that assembles into a closed manifold wins.
 pub fn boolean(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> {
+    boolean_inner(a, b, op, tol).map_err(|e| {
+        if e != "booleanFailed" {
+            return e;
+        }
+        match near_coincident(a, b) {
+            Some((fa, fb, gap)) => format!("booleanFailed;nearCoincident={fa}|{fb}|{gap:.3e}"),
+            None => e,
+        }
+    })
+}
+
+/// The pair of free-form faces (one of `a`, one of `b`) that nearly coincide: every sampled edge point of the `b` face is
+/// within 0.1 of the `a` face's surface, yet the faces are not the same surface (gap beyond welding tolerance). Marched
+/// intersection of two such walls crosses back and forth along the whole outline, so the arrangement cannot close; the pair is
+/// the one to make exactly coincident (same curve) or to move apart. Smallest worst-case gap wins. Diagnosis only (after a failure).
+fn near_coincident(a: &Body, b: &Body) -> Option<(String, String, f64)> {
+    use ck_geom::surface::Surface;
+    let freeform = |bd: &Body, f| matches!(bd.face(f).surface, Surface::Extrusion { .. } | Surface::BSpline(_) | Surface::Offset { .. });
+    let fa: Vec<_> = a.face_ids().filter(|&f| freeform(a, f)).collect();
+    let fb: Vec<_> = b.face_ids().filter(|&f| freeform(b, f)).collect();
+    if fa.is_empty() || fb.is_empty() || fa.len() * fb.len() > 2000 {
+        return None;
+    }
+    let samples = |f| -> Vec<Vec3> {
+        let mut out = vec![];
+        for e in b.face_edges(f) {
+            let ed = b.edge(e);
+            for k in 0..=8 {
+                out.push(ed.curve.eval(ed.t0 + (ed.t1 - ed.t0) * k as f64 / 8.0));
+            }
+        }
+        out
+    };
+    let mut best: Option<(String, String, f64)> = None;
+    for &g in &fb {
+        let pts = samples(g);
+        for &f in &fa {
+            let mut worst = 0.0f64;
+            for &p in &pts {
+                worst = worst.max(a.face(f).surface.distance(p));
+                if worst > 0.1 {
+                    break;
+                }
+            }
+            if worst > 0.1 || worst < 1e-7 {
+                continue;
+            }
+            if best.as_ref().is_none_or(|x| worst < x.2) {
+                best = Some((a.face_id_str(f), b.face_id_str(g), worst));
+            }
+        }
+    }
+    best
+}
+
+fn boolean_inner(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> {
     // A free-form operand (B-spline or offset faces) meets the other solid along marched curves whose
     // ends agree with their neighbours only to ~1e-6 to 1e-5, so at the base welding tolerance the first
     // attempt of such a cut or union tends to leave the arrangement open (a full wasted attempt before the
