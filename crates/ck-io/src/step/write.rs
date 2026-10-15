@@ -770,7 +770,35 @@ fn pieces_of(body: &Body, f: FaceId, drop_seams: bool) -> Vec<Vec<CoedgeId>> {
                 runs.push(cur);
             }
         }
-        out.extend(runs);
+        out.extend(join_open_runs(body, runs));
+    }
+    out
+}
+
+/// A hole that straddles the seam of a periodic face (a cross hole through a
+/// cylinder at its reference angle) is cut by the dropped seam into runs that
+/// are open chains each; they close up with one another. Chain every open run
+/// to the open run that starts where it ends so the loop is written whole.
+fn join_open_runs(body: &Body, runs: Vec<Vec<CoedgeId>>) -> Vec<Vec<CoedgeId>> {
+    let closed = |r: &Vec<CoedgeId>| body.coedge_start(r[0]) == body.coedge_end(*r.last().unwrap());
+    if runs.iter().all(closed) {
+        return runs;
+    }
+    let mut used = vec![false; runs.len()];
+    let mut out = Vec::new();
+    for i in 0..runs.len() {
+        if used[i] {
+            continue;
+        }
+        used[i] = true;
+        let mut cur = runs[i].clone();
+        while !closed(&cur) {
+            let end = body.coedge_end(*cur.last().unwrap());
+            let Some(j) = (0..runs.len()).find(|&j| !used[j] && body.coedge_start(runs[j][0]) == end) else { break };
+            used[j] = true;
+            cur.extend(runs[j].iter().copied());
+        }
+        out.push(cur);
     }
     out
 }
