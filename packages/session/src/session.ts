@@ -111,6 +111,21 @@ function seqOf(id: string): number | null {
   return n ? +n[1] : null;
 }
 
+/** Make `doc.seq` a finite counter above every F<n> id in use. A document without `seq` (or with a
+ *  corrupt one) used to mint FNaN / Fnull / F0 and then duplicate F1. */
+export function normalizeSeq(doc: PartDoc): PartDoc {
+  let top = 0;
+  for (const f of doc.features ?? []) {
+    const n = typeof f?.id === 'string' ? seqOf(f.id) : null;
+    if (n !== null && n > top) top = n;
+  }
+  const cur = Number.isFinite(doc.seq) && Number.isInteger(doc.seq) ? doc.seq : 0;
+  doc.seq = Math.max(cur, top + 1, 1);
+  return doc;
+}
+
+const BAD_ID = /^F(NaN|null|undefined|Infinity)$/;
+
 function clone<T>(v: T): T {
   return JSON.parse(JSON.stringify(v)) as T;
 }
@@ -134,6 +149,7 @@ export function checkOp(doc: PartDoc, op: EditOp): string | null {
       }
       const id = (op.feature as { id?: unknown }).id;
       if (id !== undefined && !isId(id)) return `bad id ${JSON.stringify(id)}`;
+      if (typeof id === 'string' && BAD_ID.test(id)) return `bad id ${id}`;
       if (typeof id === 'string' && ids.has(id)) return `id ${id} already exists`;
       if (op.index !== undefined && (op.index < 0 || op.index > doc.features.length)) {
         return `index ${op.index} out of range`;
@@ -213,8 +229,12 @@ function applyOp(doc: PartDoc, op: EditOp): void {
   switch (op.op) {
     case 'add': {
       const f = clone(op.feature);
-      if (f.id === undefined) f.id = `F${doc.seq++}`;
-      else if (typeof f.id === 'string') {
+      if (f.id === undefined) {
+        normalizeSeq(doc);
+        const used = new Set(doc.features.map((x) => x.id));
+        while (used.has(`F${doc.seq}`)) doc.seq++;
+        f.id = `F${doc.seq++}`;
+      } else if (typeof f.id === 'string') {
         const n = seqOf(f.id);
         if (n !== null) doc.seq = Math.max(doc.seq, n + 1);
       }
@@ -283,7 +303,7 @@ export class Session {
   private editSeq = 1;
 
   constructor(doc: PartDoc, kernel: import('../../driver/src/verify.js').KernelTransport, author = 'agent', tag?: string) {
-    this.doc = clone(doc);
+    this.doc = normalizeSeq(clone(doc));
     this.kernel = kernel;
     this.author = author;
     this.tag = tag ?? `sess${sessionSeq++}`;
@@ -399,15 +419,15 @@ export class Session {
    *  only the first N features (the kernel's sketch-mode partial regen). */
   async preview(ops: EditOp[], opts?: { upTo?: number; sketchStatus?: boolean; solveSketches?: boolean }):Promise<PreviewResult> {
     const seq = ++this.previewSeq;
-    for (const op of ops) {
-      const problem = checkOp(this.doc, op);
-      if (problem) return { ok: false, errors: [], hints: [], body: null, schemaError: problem };
-    }
     const candidate = clone(this.doc);
-    try {
-      for (const op of ops) applyOp(candidate, op);
-    } catch (e) {
-      return { ok: false, errors: [], hints: [], body: null, schemaError: String((e as Error).message ?? e) };
+    for (const op of ops) {
+      const problem = checkOp(candidate, op);
+      if (problem) return { ok: false, errors: [], hints: [], body: null, schemaError: problem };
+      try {
+        applyOp(candidate, op);
+      } catch (e) {
+        return { ok: false, errors: [], hints: [], body: null, schemaError: String((e as Error).message ?? e) };
+      }
     }
     let regenRes: Awaited<ReturnType<Session['regen']>>;
     try {
@@ -456,16 +476,18 @@ export class Session {
   }
 
   async edit(ops: EditOp[], reason?: string): Promise<EditResult> {
-    for (const op of ops) {
-      const problem = checkOp(this.doc, op);
-      if (problem) return { ok: false, record: null, schemaError: problem };
-    }
     const before = clone(this.doc);
     const candidate = clone(this.doc);
-    try {
-      for (const op of ops) applyOp(candidate, op);
-    } catch (e) {
-      return { ok: false, record: null, schemaError: String((e as Error).message ?? e) };
+    // each op is checked against the document as the earlier ops of the batch leave it, so a batch
+    // cannot add the same id twice or reference a feature an earlier op removed
+    for (const op of ops) {
+      const problem = checkOp(candidate, op);
+      if (problem) return { ok: false, record: null, schemaError: problem };
+      try {
+        applyOp(candidate, op);
+      } catch (e) {
+        return { ok: false, record: null, schemaError: String((e as Error).message ?? e) };
+      }
     }
 
     const pre = await this.facts();
