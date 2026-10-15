@@ -370,14 +370,16 @@ and boolean machinery.
 A pattern (`lpattern`, `cpattern`) or `mirror` carries the threads of its seeds onto every
 instance, so the copies of a threaded hole, boss or shaft are threaded too.
 
-- Which threads: a `thread` feature that comes BEFORE the pattern in the history and whose `face`
-  was made by a seed (`thread.face` starts with the seed's id: `F4.S.h1` is a face of seed `F4`)
-  is carried automatically. A thread feature can also be listed in `seeds` (`["F4","F5"]`): that
+- Which threads: a `thread` feature whose `face` was made by a seed (`thread.face` starts with the
+  seed's id: `F4.S.h1` is a face of seed `F4`) is carried automatically, whether it comes before
+  the pattern in the history or after it (a thread added later to an already patterned hole is
+  copied onto the existing instances; patterns are walked in history order, so a pattern of a
+  pattern picks up the new copies). A thread feature can also be listed in `seeds` (`["F4","F5"]`): that
   copies exactly that thread, even with `carryThreads:false`; a thread seed that produced no
   entry (failed, suppressed) is a `threadNotCarried` warning. `carryThreads:false` on the
-  pattern / mirror switches the automatic part off (default true). A thread added AFTER the
-  pattern is not carried (put it on the instance face, `F4.S.h1@F7.2`, or move it before).
-  `mirror` with `body:true` copies every thread of the body.
+  pattern / mirror switches the automatic part off (default true). A thread can still be put on
+  one instance face by hand (`F4.S.h1@F7.2`). `mirror` with `body:true` copies every thread of
+  the body (only when the thread precedes the mirror).
 - Result: one `threads` entry per instance, named `<thread id>@<pattern id>.<k>` (`F5@F7.1`),
   with `face` the persistent instance face (`F4.S.h1@F7.1`), `start` / `dir` transformed by the
   instance transform, the same standard / size / class / length / hand (a mirrored right-hand

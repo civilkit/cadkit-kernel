@@ -157,6 +157,28 @@ fn carry_threads_false_and_explicit_seeds() {
 }
 
 #[test]
+fn a_thread_added_after_the_pattern_still_follows() {
+    // hole, pattern, THEN the thread: same entries as thread first
+    let first = run(&format!("{}{}{}", plate(TAP), thread(""), cpat("")));
+    let after = run(&format!("{}{}{}", plate(TAP), cpat(""), thread("")));
+    assert!(after.errors().is_empty(), "{:?}", after.errors());
+    assert_eq!(entry_ids(&after), entry_ids(&first));
+    for id in entry_ids(&first) {
+        assert_eq!(ck_json::to_string(first.thread(&id)), ck_json::to_string(after.thread(&id)), "{id}");
+    }
+    // with carryThreads:false on the pattern the late thread stays alone
+    let off = run(&format!("{}{}{}", plate(TAP), cpat(r#","carryThreads":false"#), thread("")));
+    assert_eq!(entry_ids(&off), vec!["F5"]);
+    // modeled, after the pattern: N grooves again
+    let base = run(&format!("{}{}", plate(TAP), cpat("")));
+    let m = run(&format!("{}{}{}", plate(TAP), cpat(""), thread(r#","modeled":true"#)));
+    assert!(m.errors().is_empty() && m.warning("threadModelFallback").is_none(), "{:?} {:?}", m.errors(), m.warnings());
+    let one = run(&format!("{}{}", plate(TAP), thread(r#","modeled":true"#)));
+    let g1 = run(&plate(TAP)).volume - one.volume;
+    assert!(((base.volume - m.volume) - 4.0 * g1).abs() <= 1e-3 * 4.0 * g1);
+}
+
+#[test]
 fn editing_the_source_thread_updates_every_instance() {
     let a = run(&format!("{}{}{}", plate(TAP), thread(""), cpat("")));
     let b = run(&format!("{}{}{}", plate(5.0), thread("").replace(r#""size":"M5""#, r#""size":"M6","hand":"left","length":6"#), cpat("")));

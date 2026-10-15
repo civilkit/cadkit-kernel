@@ -322,14 +322,9 @@ pub fn exec_mirror(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
     Ok(())
 }
 
-/// `lpattern` / `cpattern`.
-pub fn exec_pattern(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
-    if let FeatureKind::LPattern { seeds, .. } | FeatureKind::CPattern { seeds, .. } = &f.kind {
-        if seeds.is_empty() {
-            return Err(FeatureError::new(NO_SEEDS));
-        }
-    }
-    let (seeds, xs) = match &f.kind {
+/// Seeds and instance transforms of an `lpattern` / `cpattern` (`xs[k]` is instance `k + 1`).
+fn pattern_xforms<'f>(state: &RegenState, f: &'f Feature) -> Result<(&'f Vec<Ref>, Vec<Xform>), FeatureError> {
+    Ok(match &f.kind {
         FeatureKind::LPattern { seeds, dir, reverse, .. } => {
             let spacing = state.num(f, "spacing", 0.0)?;
             let count = state.num(f, "count", 0.0)?;
@@ -343,7 +338,58 @@ pub fn exec_pattern(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Resul
             (seeds, ck_ops::boolean::apply::circular_instances(o, d, angle, count_of(count)?, *equal, *reverse))
         }
         _ => unreachable!(),
-    };
+    })
+}
+
+/// A thread feature that comes AFTER a pattern / mirror of its host (the thread was added to a
+/// patterned hole): carry it onto that pattern's instances too, as if it had come first. The
+/// patterns run in history order, so a pattern of the pattern picks up the new instance threads.
+pub fn carry_into_earlier(br: &mut Brep, state: &mut RegenState, tf: &Feature) {
+    let part = state.part;
+    let Some(pos) = part.features.iter().position(|g| g.id == tf.id) else { return };
+    let mut fresh: Vec<String> = vec![tf.id.clone()];
+    for p in &part.features[..pos] {
+        if p.suppressed || !carry_threads(p) {
+            continue;
+        }
+        let (seeds, xs, mirror) = match &p.kind {
+            FeatureKind::LPattern { .. } | FeatureKind::CPattern { .. } => match pattern_xforms(state, p) {
+                Ok((s, xs)) => (s, xs, false),
+                Err(_) => continue,
+            },
+            FeatureKind::Mirror { seeds, plane, body: false } => {
+                let Some(fr) = plane.as_ref().and_then(|g| plane_frame(br, state, g)) else { continue };
+                (seeds, vec![Xform::mirror(&Plane::new(fr.o, fr.z))], true)
+            }
+            _ => continue,
+        };
+        let srcs: Vec<ck_json::Json> = state
+            .result
+            .threads
+            .iter()
+            .filter(|(id, j)| fresh.contains(id) && seeds.iter().any(|s| s.as_str() == j.get_str("face").map_or("", thread::host_of)))
+            .map(|t| t.1.clone())
+            .collect();
+        if srcs.is_empty() {
+            continue;
+        }
+        carry_all(br, state, p, &srcs, &xs, true, mirror);
+        for src in &srcs {
+            for k in 0..xs.len() {
+                fresh.push(format!("{}@{}.{}", src.get_str("id").unwrap_or(""), p.id, k + 1));
+            }
+        }
+    }
+}
+
+/// `lpattern` / `cpattern`.
+pub fn exec_pattern(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
+    if let FeatureKind::LPattern { seeds, .. } | FeatureKind::CPattern { seeds, .. } = &f.kind {
+        if seeds.is_empty() {
+            return Err(FeatureError::new(NO_SEEDS));
+        }
+    }
+    let (seeds, xs) = pattern_xforms(state, f)?;
     state.result.warnings.retain(|w| w.feature != f.id);
     let (geo, srcs) = thread_sources(state, f, seeds, carry_threads(f));
     let tools: Vec<(Body, Combine)> = if xs.is_empty() || geo.is_empty() { vec![] } else { seed_tools(br, &geo)?.into_iter().map(|(_, t)| (t.body.clone(), t.combine)).collect() };

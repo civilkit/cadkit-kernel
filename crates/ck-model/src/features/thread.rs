@@ -353,6 +353,8 @@ pub fn exec_thread(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
     for w in warnings {
         state.result.warnings.push(RegenError { feature: f.id.clone(), error: w });
     }
+    // a pattern / mirror of the host that ran before this thread copies it too
+    super::pattern::carry_into_earlier(br, state, f);
     Ok(())
 }
 
