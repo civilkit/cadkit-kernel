@@ -170,6 +170,45 @@ fn spline_params(curve: &Curve, t0: f64, t1: f64, tol: &Tol) -> Vec<f64> {
         }
     }
     *out.last_mut().unwrap() = t1;
+    coalesce(curve, out, tol)
+}
+
+/// Fraction of the chord tolerance a merged run may deviate by (the fine samples lie on the curve, so the merged chord's
+/// deviation from the curve is the largest fine-sample sag; half the tolerance keeps it well inside the old bound).
+const MERGE_SAG: f64 = 0.5;
+
+/// Thins a fine, tolerance-satisfying sample list (an interpolated intersection curve carries a knot every fraction of
+/// a millimetre, and one sample per knot span is far finer than the tolerance needs): greedily extends each run of
+/// samples while every dropped sample stays within `MERGE_SAG · chord` of the run's chord and the end tangents turn by
+/// less than the angle tolerance. The ends of the list are kept.
+fn coalesce(c: &Curve, fine: Vec<f64>, tol: &Tol) -> Vec<f64> {
+    let n = fine.len();
+    if n < 4 {
+        return fine;
+    }
+    let pts: Vec<Vec3> = fine.iter().map(|&t| c.eval(t)).collect();
+    let ders: Vec<Vec3> = fine.iter().map(|&t| c.deriv(t)).collect();
+    let lim = MERGE_SAG * tol.chord;
+    let mut out = vec![fine[0]];
+    let mut i = 0usize;
+    while i + 1 < n {
+        // longest run i..j that satisfies the bound (j = i + 1 always does)
+        let mut best = i + 1;
+        let mut j = i + 2;
+        while j < n {
+            if ders[i].angle(ders[j]) > tol.angle {
+                break;
+            }
+            let ok = (i + 1..j).all(|k| point_line_dist(pts[k], pts[i], pts[j]) <= lim);
+            if !ok {
+                break;
+            }
+            best = j;
+            j += 1;
+        }
+        out.push(fine[best]);
+        i = best;
+    }
     out
 }
 
