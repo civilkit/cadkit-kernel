@@ -3,7 +3,7 @@
 Source: Hugging Face `BenchCAD/BenchCAD`, config `code_gen`; dataset card says
 cc-by-4.0. Ground truth from CadQuery 2.8.0 (volume, area, centre of mass,
 bbox, STEP). Parameters translated by hand; no CadQuery source copied.
-Run: `node tools/bench/run.mjs`. Gate: `bench.benchcad` 29/30 (soft; see the per-batch figures below, now 46/50 regen),
+Run: `node tools/bench/run.mjs`. Gate: `bench.benchcad` 29/30 (soft; see the per-batch figures below; 48/50 regen, 47/50 step import as of 2026-10-15 after the propeller fix and the cable_routing_panel translation fix; was 46/50),
 `bench.benchcad.step` 27/30 (soft). Figures as of 2026-10-12 after the
 boolean-robustness fixes (i_beam, bellows, eyebolt, dome_cap now regen) and
 the curved/tangent chamfer fix (tapered_boss, u_channel).
