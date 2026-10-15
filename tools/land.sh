@@ -34,6 +34,7 @@ npm --prefix packages test --silent 2>&1 | tail -8 | grep -q "# fail 0" || { ech
 node tools/region_select_check.mjs >/dev/null || { echo "land: region select check failed"; exit 1; }
 node tools/thin_extrude_check.mjs >/dev/null || { echo "land: thin extrude check failed"; exit 1; }
 node tools/thread_check.mjs >/dev/null || { echo "land: thread check failed"; exit 1; }
+node tools/thread_pattern_check.mjs >/dev/null || { echo "land: thread pattern check failed"; exit 1; }
 node tools/end_reference_check.mjs >/dev/null || { echo "land: end reference check failed"; exit 1; }
 node tools/profile_check.mjs >/dev/null || { echo "land: profile check failed"; exit 1; }
 node tools/coincident_boolean_check.mjs >/dev/null || { echo "land: coincident boolean check failed"; exit 1; }
