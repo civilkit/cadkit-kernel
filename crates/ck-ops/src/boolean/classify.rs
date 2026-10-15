@@ -432,14 +432,34 @@ impl<'a> Solid<'a> {
             return Class::Out;
         }
         let near = crate::bvh::Aabb::new(q, q).padded(tol * 10.0);
+        let mut min_d = f64::INFINITY;
         for i in self.bvh.query_box(&near) {
             let g = self.faces[i];
             let (u, v, cp) = b.face(g).surface.closest_point(q);
+            min_d = min_d.min(cp.dist(q));
             if cp.dist(q) > tol * 10.0 || self.in_face(i, q) == Where::Out {
                 continue;
             }
             let ng = b.outward_normal(g, u, v);
             return if ng.dot(n) > 0.0 { Class::OnSame } else { Class::OnOpp };
+        }
+        // A sample within a sliver's width of the other solid's boundary (the fragment is a thin lens between
+        // two near-tangent surfaces, e.g. crossed blades touching at their tips) is neither clearly in nor out:
+        // single rays then disagree (their hits fall on face rims, in_face is off by the lens width). Take the
+        // majority of all rays, and the winding number when they split evenly.
+        if min_d <= (tol * 100.0).max(5e-4) {
+            let (mut ins, mut outs) = (0usize, 0usize);
+            for d in RAYS {
+                match self.ray_parity(q, Vec3::new(d[0], d[1], d[2])) {
+                    Some(true) => ins += 1,
+                    Some(false) => outs += 1,
+                    None => {}
+                }
+            }
+            if ins != outs && (ins == 0 || outs == 0 || ins.abs_diff(outs) >= 2) {
+                return if ins > outs { Class::In } else { Class::Out };
+            }
+            return if winding_number(b, &self.faces, q) > 0.5 { Class::In } else { Class::Out };
         }
         for d in RAYS {
             if let Some(inside) = self.ray_parity(q, Vec3::new(d[0], d[1], d[2])) {
