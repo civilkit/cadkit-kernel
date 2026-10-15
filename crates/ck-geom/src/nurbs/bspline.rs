@@ -155,6 +155,32 @@ impl<P: Pt> BSplineCurve<P> {
             }
             return ad;
         }
+        if p < 12 {
+            // rational, allocation-free (the same operations as `derivs`: A4.2 on stack arrays)
+            let (a, b) = self.domain();
+            let u = u.clamp(a, b);
+            let span = find_span(self.n(), p, u, &self.knots);
+            let nd = basis::ders_basis_funs2(span, u, p, d, &self.knots);
+            let mut ad = [P::default(); 3];
+            let mut wd = [0.0f64; 3];
+            for k in 0..=d.min(p) {
+                for j in 0..=p {
+                    let i = span - p + j;
+                    let w = self.weight(i);
+                    ad[k] = ad[k] + self.ctrl[i] * (nd[k][j] * w);
+                    wd[k] += nd[k][j] * w;
+                }
+            }
+            let mut ck = [P::default(); 3];
+            for k in 0..=d {
+                let mut v = ad[k];
+                for i in 1..=k {
+                    v = v - ck[k - i] * (basis::binomial(k, i) * wd[i]);
+                }
+                ck[k] = v / wd[0];
+            }
+            return ck;
+        }
         let v = self.derivs(u, d);
         let mut out = [P::default(); 3];
         for (o, x) in out.iter_mut().zip(v) {

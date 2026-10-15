@@ -196,7 +196,7 @@ impl Curve {
     pub fn derivs2_arr(&self, t: f64) -> [Vec3; 3] {
         match self {
             Curve::Line { o, d } => [*o + *d * t, *d, Vec3::ZERO],
-            Curve::BSpline(c) if c.weights.is_none() && c.degree < 12 => c.derivs_arr(t, 2),
+            Curve::BSpline(c) if c.degree < 12 => c.derivs_arr(t, 2),
             _ => {
                 let v = self.derivs(t, 2);
                 [v[0], v[1], v[2]]
@@ -209,7 +209,7 @@ impl Curve {
     pub fn derivs1_arr(&self, t: f64) -> [Vec3; 2] {
         match self {
             Curve::Line { o, d } => [*o + *d * t, *d],
-            Curve::BSpline(c) if c.weights.is_none() && c.degree < 12 => {
+            Curve::BSpline(c) if c.degree < 12 => {
                 let a = c.derivs_arr(t, 1);
                 [a[0], a[1]]
             }
@@ -221,7 +221,7 @@ impl Curve {
     }
 
     pub fn deriv(&self, t: f64) -> Vec3 {
-        self.derivs(t, 1)[1]
+        self.derivs1_arr(t)[1]
     }
 
     pub fn tangent(&self, t: f64) -> Vec3 {
