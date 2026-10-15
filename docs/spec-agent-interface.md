@@ -121,6 +121,48 @@ Rules:
 - Not covered: `sweep`, `loft`, `hole` and surface extrudes still use all regions.
   Check: `tools/region_select_check.mjs`, `crates/ck-model/tests/region_select.rs`.
 
+## Thin wall (`extrude` / `revolve` `thin`)
+
+`extrude` (add or cut) and `revolve` take an optional `thin` object: the profile CURVES are offset in the sketch plane
+and the band between them is swept instead of the sketch regions, so an OPEN curve (a C-shaped spline arc) gives a wall in
+one step and a closed loop gives a hollow wall. End conditions, `draft`, `flip`, `regions`, `angle` and the revolve axis
+rules are unchanged.
+
+```json
+{"type":"extrude","id":"F2","op":"add","sketch":"F1","end":"blind","depth":30,"thin":{"thickness":3,"side":"mid","ends":"flat","cornerStyle":"mitre"}}
+{"type":"revolve","id":"F4","op":"add","sketch":"F3","axis":"ax","angle":360,"thin":{"thickness":"=wall","side":"outside"}}
+```
+
+Fields (all but `thickness` optional): `thickness` (number or `=expression`, > 0); `side` `inside` (default) | `outside`
+| `both` | `mid`; `thickness2` (`both` only: the thickness on the second side, default `thickness`); `ends` `flat` (default) |
+`round` (open chains: half-disc caps); `cornerStyle` `mitre` (default) | `round`; `enabled:false` keeps the settings but
+switches the wall off (a `null` or `false` `thin` is off too).
+
+Rules:
+
+- Chains: the closed region loops of the sketch (outer and hole loops, each once), then the open chains made of entities
+  that bound no region (lines, arcs, circles, ellipses, splines and cv-splines, joined end to end, tangent-continuous or
+  with corners). `regions` (entity ids) picks chains the same way it picks regions, with the same errors.
+- Side: closed loops are oriented counter-clockwise, `inside` is the interior. Open chains are oriented so that they turn
+  counter-clockwise (a straight chain keeps the sketch direction); `inside` is the left of that direction, i.e. the inside
+  of the bend. `both` is `thickness` on that side plus `thickness2` on the other, `mid` is `thickness` centred on the curve.
+- Offsetting is exact for lines, arcs and circles; ellipses and splines are fitted (cubic B-spline, within 1e-5). Inner
+  corners are trimmed at the crossing of the offsets, outer corners are mitred (very sharp ones, over 4 thicknesses, are
+  bevelled) or rounded about the corner point.
+- Persistent face names (`<id>` = the feature): `Fn.S.<entity>.W0` the offset side (with `both`, the left offset),
+  `Fn.S.<entity>.W1` the original curve (with `both`, the right offset), `Fn.S.<entity>.E0` / `.E1` the end caps of an open
+  chain (at its first / last entity), `Fn.S.<entity>.W0r` / `.W0m` / `.W0b` round / mitre-connector / bevel pieces of a
+  corner, `Fn.C0` / `Fn.C1` the usual caps. The names follow the sketch entities, so they survive edits that keep the
+  entities.
+- Errors: `thinTooThick {limit, minRadius, maxThickness, thickness, face}`: the offset passes a centre of curvature, a short
+  segment is eaten by an inner corner or the wall overlaps itself. `limit` is `curvature` or `corner`, `minRadius` the
+  tightest radius on the offset side, `maxThickness` a thickness that works (found by bisection, 2% safety), `face` the first
+  entity of the chain. Never a panic. `invalidValue {field:"thin.thickness"|"thin.side"|"thin.ends"|"thin.cornerStyle"}`
+  for bad input; a sketch without curves is `noClosedProfile`.
+- Without `thin`, an open sketch is still `noClosedProfile` ("sketch profile is not closed").
+- Not covered: `thin` on `sweep`, `loft`, `hole` and surface extrudes; non-uniform thickness.
+  Check: `tools/thin_extrude_check.mjs` (wasm, run by `tools/land.sh`), `crates/ck-model/tests/thin_extrude.rs`.
+
 ## End references (`extrude` `upToFace`, `offsetFromFace`, `upToPoint`)
 
 `extrude` (add or cut) can stop at a face, at a face moved by a distance, or at a point's plane.
