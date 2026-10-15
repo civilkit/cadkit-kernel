@@ -346,6 +346,8 @@ export class Session {
   private massMemo: { key: string; val: { volume: number | null; solids: number } } | null = null;
   /** The reply of the last plain preview: committing the same ops asks the kernel only to move its tag (`noView`). */
   private memoPreview: { key: string; res: RegenRes } | null = null;
+  /** When the session last started a request of its own (the deferred reference check waits for it to go quiet). */
+  private lastActive = 0;
 
   constructor(doc: PartDoc, kernel: import('../../driver/src/verify.js').KernelTransport, author = 'agent', tag?: string) {
     this.doc = normalizeSeq(clone(doc));
@@ -374,6 +376,7 @@ export class Session {
   }
 
   private async regen(doc: PartDoc, tag = this.tag, opts?: { upTo?: number; sketchStatus?: boolean; solveSketches?: boolean }): Promise<RegenRes> {
+    this.lastActive = Date.now();
     const mainPlain = tag === this.tag && !opts;
     const key = mainPlain ? JSON.stringify(doc) : '';
     if (mainPlain && this.memoMain?.key === key) return this.memoMain.res;
@@ -492,6 +495,7 @@ export class Session {
    *  and no body, so it can never overwrite a newer result. `opts.upTo` regens
    *  only the first N features (the kernel's sketch-mode partial regen). */
   async preview(ops: EditOp[], opts?: { upTo?: number; sketchStatus?: boolean; solveSketches?: boolean }):Promise<PreviewResult> {
+    this.lastActive = Date.now();
     const seq = ++this.previewSeq;
     const problem = checkBatch(this.doc, ops);
     if (problem) return { ok: false, errors: [], hints: [], body: null, schemaError: problem };
@@ -554,6 +558,7 @@ export class Session {
    *  later as `refWarningsLater`. */
   async edit(ops: EditOp[], reason?: string, opts?: { lean?: boolean }): Promise<EditResult> {
     const lean = opts?.lean === true;
+    this.lastActive = Date.now();
     const problem = checkBatch(this.doc, ops);
     if (problem) return { ok: false, record: null, schemaError: problem };
     const before = clone(this.doc);
@@ -615,7 +620,15 @@ export class Session {
     // appending features re-points nothing that already existed
     const appendOnly = ops.every((o) => o.op === 'add' && (o.index === undefined || o.index >= before.features.length));
     if (!lean) refWarnings = await refDiff();
-    else if (!appendOnly) refWarningsLater = refDiff();
+    else if (!appendOnly) {
+      // the kernel is one thread: a reference check queued right behind an edit would delay the user's next action, so it
+      // waits until the session has been quiet for a moment (at most 10 s)
+      refWarningsLater = (async () => {
+        const t0 = Date.now();
+        while (Date.now() - this.lastActive < 800 && Date.now() - t0 < 10000) await new Promise((r) => setTimeout(r, 200));
+        return refDiff();
+      })();
+    }
 
     this.doc = candidate;
     const record: EditRecord = { id: `edit-${this.editSeq++}`, author: this.author, time: Date.now(), ops: clone(ops), reason };
@@ -662,6 +675,7 @@ export class Session {
 
   /** Revert the last n applied batches. The document is the source of truth;   *  the kernel tag is re-synced (resynced:false if that regen itself fails). */
   async undo(n = 1): Promise<{ records: EditRecord[]; resynced: boolean }> {
+    this.lastActive = Date.now();
     const popped = this.stack.splice(Math.max(0, this.stack.length - n), n);
     if (popped.length) this.doc = clone(popped[0].before);
     let resynced = true;
