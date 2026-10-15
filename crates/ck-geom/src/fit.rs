@@ -64,19 +64,32 @@ pub fn averaged_knots(u: &[f64], p: usize) -> Vec<f64> {
 /// Solve A·X = B (dense, partial pivoting) with vector-valued RHS.
 pub fn solve<P: Pt>(mut a: Vec<Vec<f64>>, mut b: Vec<P>) -> Result<Vec<P>, String> {
     let n = b.len();
-    // last non-zero column of each pivot row: the fit systems are banded, and
-    // adding f * 0 changes nothing, so the row operations stop there
+    // The fit systems are banded: below the diagonal nothing is non-zero farther than `lbw` rows, and row
+    // swaps among those rows keep that (they only move rows towards a higher index within the band), so the
+    // pivot search and the elimination stop there and the row operations stop at the last non-zero column
+    // (`last` is below `c + lbw + ubw`). The entries skipped are exactly zero: same results as a dense
+    // elimination, at O(n * band^2) instead of O(n^2) comparisons.
+    let (mut lbw, mut ubw) = (0usize, 0usize);
+    for (r, row) in a.iter().enumerate() {
+        if let Some(first) = row.iter().position(|&x| x != 0.0) {
+            lbw = lbw.max(r.saturating_sub(first));
+        }
+        if let Some(last) = row.iter().rposition(|&x| x != 0.0) {
+            ubw = ubw.max(last.saturating_sub(r));
+        }
+    }
     let mut hi = vec![0usize; n];
     for c in 0..n {
-        let piv = (c..n).max_by(|&i, &j| a[i][c].abs().partial_cmp(&a[j][c].abs()).unwrap()).unwrap();
+        let rend = (c + lbw + 1).min(n);
+        let piv = (c..rend).max_by(|&i, &j| a[i][c].abs().partial_cmp(&a[j][c].abs()).unwrap()).unwrap();
         if a[piv][c].abs() < 1e-300 {
             return Err("singular fit system".into());
         }
         a.swap(c, piv);
         b.swap(c, piv);
-        let last = (c..n).rev().find(|&k| a[c][k] != 0.0).unwrap_or(c);
+        let last = (c..(c + lbw + ubw + 1).min(n)).rev().find(|&k| a[c][k] != 0.0).unwrap_or(c);
         hi[c] = last;
-        for r in (c + 1)..n {
+        for r in (c + 1)..rend {
             let f = a[r][c] / a[c][c];
             if f != 0.0 {
                 // (split borrow: row c is read, row r written)
