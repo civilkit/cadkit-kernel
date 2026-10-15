@@ -289,6 +289,28 @@ pub fn exact_pcurve(surf: &Surface, c: &Curve, tol: f64) -> Option<Curve2> {
             let s = if cf.z.dot(frame.z) > 0.0 { 1.0 } else { -1.0 };
             Some(Curve2::Line { o: Vec2::new(u0, v0), d: Vec2::new(s, 0.0) })
         }
+        (Surface::Revolution { axis_o, axis, .. }, Curve::Circle { frame: cf, r: cr }) => {
+            // circle about the axis of revolution: u = ±t + phase on a profile parameter v0 (iso-v line)
+            if cf.z.cross(*axis).len() > tol || (cf.o - *axis_o).cross(*axis).len() > tol {
+                return None;
+            }
+            let p0 = cf.o + cf.x * *cr;
+            let (u0, v0) = surf.closest_param(p0);
+            if surf.eval(u0, v0).dist(p0) > tol.max(1e-9) * (1.0 + p0.len()) {
+                return None;
+            }
+            // a full-turn parameter speed of 1 per radian needs the surface's own u to be the angle about `axis`
+            let q = surf.eval(u0 + 0.5, v0);
+            let ang = (q - *axis_o).cross(p0 - *axis_o).dot(*axis);
+            let want = cf.z.dot(*axis);
+            if (q.dist(p0) - 2.0 * cr * 0.25f64.sin()).abs() > 1e-6 * (1.0 + cr) {
+                return None;
+            }
+            // direction: u increases counter-clockwise about +axis iff (p0 -> q) turns by +axis
+            let sgn_u = if ang < 0.0 { 1.0 } else { -1.0 };
+            let s = if want > 0.0 { sgn_u } else { -sgn_u };
+            Some(Curve2::Line { o: Vec2::new(u0, v0), d: Vec2::new(s, 0.0) })
+        }
         _ => None,
     }
 }

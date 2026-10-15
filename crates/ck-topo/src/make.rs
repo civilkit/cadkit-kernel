@@ -863,6 +863,23 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn mass_of_cylinder_without_pcurves_is_exact() {
+        // coedges without a pcurve (booleans leave many) used to be integrated over a 48-chord polyline of
+        // their image: a full circle cap lost 0.3 percent of its area
+        let prof = Profile::new(
+            top_frame(),
+            vec![ProfileRegion { outer: ProfileLoop::new(vec![ProfileSeg::circle("e7", Vec2::new(5.0, 3.0), 10.0)]), holes: vec![] }],
+        );
+        let mut b = extrude("F2", &prof, ExtrudeOpts::blind(10.0)).unwrap();
+        for c in b.coedges.iter_mut() {
+            c.pcurve = None;
+        }
+        let m = crate::mass::mass_props(&b);
+        assert!((m.volume - std::f64::consts::PI * 100.0 * 10.0).abs() < 1e-9 * m.volume, "{}", m.volume);
+        assert!((m.area - (2.0 * std::f64::consts::PI * 100.0 + 2.0 * std::f64::consts::PI * 10.0 * 10.0)).abs() < 1e-9 * m.area, "{}", m.area);
+    }
+
+    #[test]
     fn holes_and_regions_order() {
         // probe box3: front plane; outer e1..e4, holes [circle e5, rect h4,h3,h2,h1 (CW)]
         let fr = Frame::identity();
