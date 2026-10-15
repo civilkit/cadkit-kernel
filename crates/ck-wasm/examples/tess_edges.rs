@@ -53,4 +53,5 @@ fn main() {
         eprintln!("face {} {:.3}s tris {}", body.face_id_str(f), t.elapsed().as_secs_f64(), n);
     }
     eprintln!("total tris {tot}");
+    let _ = ck_tess::mesh::tessellate_memo(&body);
 }

@@ -9,6 +9,7 @@ use ck_model::{Part, Sketch};
 use ck_server::session::{regen_label, Cx, Hooks, State, SNAPSHOT_LABEL};
 use ck_server::trace::{SpanId, Trace};
 use crate::regen_cache;
+use crate::view_cache;
 use ck_topo::body::Body;
 
 pub fn install() {
@@ -135,6 +136,7 @@ fn regen_hook(part: &Json, cx: &mut Cx) -> Result<(Json, State), String> {
     let want_stats = flag("cacheStats");
     let run_n = regen::run_len(&part, &opts);
     let mut stats = (0usize, run_n); // (features reused, features in the run)
+    let mut final_key: Option<regen_cache::Key> = None;
     let (mut result, body) = cx.span(regen_label(n), |cx| {
         let mut ex = Exec { brep: Brep::new(), sink: TraceSink { trace: &mut *cx.trace, ids: vec![] }, auto_heal };
         let mut resume = None;
@@ -142,6 +144,7 @@ fn regen_hook(part: &Json, cx: &mut Cx) -> Result<(Json, State), String> {
         if use_cache && run_n > 0 {
             let ko = regen_cache::KeyOpts { sketch_status: opts.sketch_status, solve_sketches: opts.solve_sketches, auto_heal };
             let keys = regen_cache::chain_keys(part_json, &ko, run_n);
+            final_key = keys.last().copied();
             let hit = regen_cache::with(|c| c.lookup(&keys));
             let mut chained = None;
             if let Some(h) = hit {
@@ -163,24 +166,47 @@ fn regen_hook(part: &Json, cx: &mut Cx) -> Result<(Json, State), String> {
     });
     let (body, renorm, asm, surfs) = body;
     let mut out = result.to_json();
+    // the snapshot depends on the document only (see view_cache.rs), so the final chain key finds it again
+    let view_key = if use_cache && run_n > 0 { final_key } else { None };
+    let tess_before = ck_tess::mesh::face_cache_stats();
+    let mut view_hit = false;
     cx.span(SNAPSHOT_LABEL, |cx| {
+        let cached = view_key.and_then(|k| view_cache::with(|c| c.get(&k)));
+        if let Some(v) = cached {
+            view_hit = true;
+            if let Some(bv) = &v.body {
+                set_body(&mut out, attach_mesh(bv.json.clone(), &bv.mesh, cx));
+            }
+            let sj = v.surfaces.iter().map(|(id, bv)| Json::Arr(vec![Json::Str(id.clone()), attach_mesh(bv.json.clone(), &bv.mesh, cx)])).collect();
+            set_key(&mut out, "surfaces", Json::Arr(sj));
+            return;
+        }
+        let tess_of = |b: &Body| if use_cache { ck_tess::mesh::tessellate_memo(b) } else { ck_tess::mesh::tessellate(b) };
+        let mut keep = view_cache::View { body: None, surfaces: vec![] };
         if let Some(b) = &body {
             let t = cx.trace.begin(String::new());
-            let tess = ck_tess::mesh::tessellate(b);
+            let tess = tess_of(b);
             cx.trace.relabel(&t, format!("tessellate {} faces → {} triangles", b.num_faces(), tess.mesh.tri_face.len()));
             cx.trace.end(t);
-            set_body(&mut out, body_json(b, &tess, cx, &renorm));
+            let json = body_static(b, &tess, &renorm);
+            set_body(&mut out, attach_mesh(json.clone(), &tess.mesh, cx));
+            keep.body = Some(view_cache::BodyView { json, mesh: tess.mesh });
         }
         // surface bodies follow the solid body (buffer order is pinned)
         let mut sj = vec![];
         for (id, sb) in &surfs {
-            let t = ck_tess::mesh::tessellate(sb);
-            let mut bj = body_json(sb, &t, cx, &(vec![(0, sb.faces.len())], vec![]));
-            mark_surface_faces(&mut bj);
-            sj.push(Json::Arr(vec![Json::Str(id.clone()), bj]));
+            let t = tess_of(sb);
+            let mut json = body_static(sb, &t, &(vec![(0, sb.faces.len())], vec![]));
+            mark_surface_faces(&mut json);
+            sj.push(Json::Arr(vec![Json::Str(id.clone()), attach_mesh(json.clone(), &t.mesh, cx)]));
+            keep.surfaces.push((id.clone(), view_cache::BodyView { json, mesh: t.mesh }));
         }
         set_key(&mut out, "surfaces", Json::Arr(sj));
+        if let Some(k) = view_key {
+            view_cache::with(|c| c.put(k, keep));
+        }
     });
+    let tess_after = ck_tess::mesh::face_cache_stats();
     if want_stats {
         let (reused, total) = stats;
         let (entries, bytes, cap, st) = regen_cache::with(|c| (c.len(), c.bytes(), c.cap(), c.stats));
@@ -196,6 +222,13 @@ fn regen_hook(part: &Json, cx: &mut Cx) -> Result<(Json, State), String> {
             .put("hits", st.hits as f64)
             .put("stored", st.stored as f64)
             .put("evicted", st.evicted as f64)
+            .put("viewHit", view_hit)
+            .put("tessFaceLookups", (tess_after.lookups - tess_before.lookups) as f64)
+            .put("tessFaceHits", (tess_after.hits - tess_before.hits) as f64)
+            .put("tessEntries", tess_after.entries as f64)
+            .put("tessBytes", tess_after.bytes as f64)
+            .put("viewEntries", view_cache::with(|c| c.len()) as f64)
+            .put("viewBytes", view_cache::with(|c| c.bytes()) as f64)
             .build();
         if let Json::Obj(kv) = &mut out {
             kv.push(("cacheStats".into(), j));
@@ -328,12 +361,30 @@ fn set_key(result: &mut Json, key: &str, v: Json) {
 /// sends 3 f32 per vertex in positions/normals/mids and one i32 face index
 /// per triangle in triFace, non-indexed triangle soup).
 fn body_json(b: &Body, tess: &ck_tess::mesh::Tess, cx: &mut Cx, renorm: &(Vec<(usize, usize)>, Vec<(usize, usize)>)) -> Json {
-    let m = &tess.mesh;
+    attach_mesh(body_static(b, tess, renorm), &tess.mesh, cx)
+}
+
+/// The mesh buffers of a body: `silhouette` and `mesh`. Buffer creation order is pinned (positions, normals, mids,
+/// triFace, silhouette), and the `body` buffers come before the `surfaces` ones.
+fn attach_mesh(mut body: Json, m: &ck_tess::mesh::Mesh, cx: &mut Cx) -> Json {
     let positions = cx.bufs.f32(&m.positions);
     let normals = cx.bufs.f32(&m.normals);
     let mids = cx.bufs.f32(&m.mids);
     let tri_face = cx.bufs.i32(&m.tri_face);
     let silhouette = cx.bufs.f32(&m.silhouette);
+    if let Json::Obj(kv) = &mut body {
+        kv.push(("silhouette".into(), silhouette));
+        kv.push((
+            "mesh".into(),
+            Obj::new().put("positions", positions).put("normals", normals).put("mids", mids).put("triFace", tri_face).build(),
+        ));
+    }
+    body
+}
+
+/// Everything of the wire body except the mesh buffers.
+fn body_static(b: &Body, tess: &ck_tess::mesh::Tess, renorm: &(Vec<(usize, usize)>, Vec<(usize, usize)>)) -> Json {
+    let m = &tess.mesh;
     let mut kv = body_wire_with(b, &|f| renorm.0.iter().any(|r| (r.0..r.1).contains(&f.idx())));
     // The oracle box is the union of the f32 display-mesh positions and the
     // f64 edge polyline points (pinned: brep cyl/zeroDepth/rev90 boxes take
@@ -358,11 +409,6 @@ fn body_json(b: &Body, tess: &ck_tess::mesh::Tess, cx: &mut Cx, renorm: &(Vec<(u
         slot.1 = b.edges_json(&|b, e| tess.edge_polyline(b, e));
         ck_model::features::renorm_edges(b, &mut slot.1, &|e| renorm.1.iter().any(|r| (r.0..r.1).contains(&e.idx())));
     }
-    kv.push(("silhouette".into(), silhouette));
-    kv.push((
-        "mesh".into(),
-        Obj::new().put("positions", positions).put("normals", normals).put("mids", mids).put("triFace", tri_face).build(),
-    ));
     Json::Obj(kv)
 }
 
