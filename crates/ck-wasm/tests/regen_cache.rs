@@ -52,6 +52,7 @@ fn full_hit_and_edits_match_cold() {
         let st = stats(&regen(&a, r#"{"cacheStats":true}"#, "main"));
         assert_eq!(st.get_bool("fullHit"), Some(true));
         assert_eq!(st.get_f64("reusedFeatures"), Some(4.0));
+        assert_eq!(st.get_bool("viewHit"), Some(true), "an identical document replays the cached snapshot");
         // edits at the start, middle and end vs cold, and the undo
         for (w, d, w2, d2) in [(41.0, 10.0, 10.0, 5.0), (40.0, 11.0, 10.0, 5.0), (40.0, 10.0, 10.0, 6.0), (40.0, 10.0, 11.0, 5.0)] {
             let e = part(w, d, w2, d2, "");
@@ -127,6 +128,55 @@ fn tiny_cap_evicts_and_stays_identical() {
         }
         let st = stats(&regen(&docs[0], r#"{"cacheCap":6000,"cacheStats":true}"#, "main"));
         assert!(st.get_f64("evicted").unwrap() > 0.0, "{st:?}");
+    })
+    .join()
+    .unwrap();
+}
+
+/// The dome cap with a through hole: editing the hole re-meshes only the changed faces, reverting replays the cached
+/// snapshot, and every reply equals a cold one byte for byte.
+#[test]
+fn view_snapshot_and_face_cache_are_transparent() {
+    std::thread::spawn(|| {
+        let base = include_str!("fixtures/dome_cap.ckpart").trim().to_string();
+        let with_hole = |d: f64| {
+            let cut = base.rfind("]}").or_else(|| base.rfind(']')).unwrap();
+            format!(
+                r#"{},{{"type":"sketch","id":"F20","plane":{{"kind":"std","id":"top"}},"points":[{{"id":"O","x":0,"y":0,"fixed":true}},{{"id":"h1","x":20,"y":0}}],"entities":[{{"type":"point","id":"e1","p":"h1"}}],"constraints":[]}},{{"type":"hole","id":"F21","sketch":"F20","kind":"simple","diameter":{d},"end":"through"}}{}"#,
+                &base[..cut],
+                &base[cut..]
+            )
+        };
+        let (h12, h15) = (with_hole(12.0), with_hole(15.0));
+        let o = r#"{"cacheStats":true}"#;
+        let r12 = regen(&h12, o, "main");
+        assert_eq!(stats(&r12).get_bool("viewHit"), Some(false));
+        let r15 = regen(&h15, o, "main");
+        let st = stats(&r15);
+        assert_eq!(st.get_bool("viewHit"), Some(false));
+        assert!(st.get_f64("tessFaceHits").unwrap() >= 5.0, "unchanged faces keep their meshes: {}", ck_json::to_string(&st));
+        // undo: the snapshot of the 12 mm document is replayed whole
+        let back = regen(&h12, o, "main");
+        assert_eq!(stats(&back).get_bool("viewHit"), Some(true));
+        assert_eq!(stats(&back).get_f64("tessFaceLookups"), Some(0.0));
+        let strip = |r: &[u8]| {
+            // drop cacheStats from the reply JSON, keep the buffers
+            let jl = u32::from_le_bytes([r[0], r[1], r[2], r[3]]) as usize;
+            let mut j = ck_json::parse(std::str::from_utf8(&r[4..4 + jl]).unwrap()).unwrap();
+            if let Json::Obj(kv) = &mut j {
+                if let Some((_, Json::Obj(res))) = kv.iter_mut().find(|(k, _)| k == "result") {
+                    res.retain(|(k, _)| k != "cacheStats");
+                }
+                kv.retain(|(k, _)| k != "ms" && k != "buffers_ms");
+            }
+            (ck_json::to_string(&j), r[(4 + jl + 7) & !7..].to_vec())
+        };
+        let c12 = cold(&h12, o);
+        let c15 = cold(&h15, o);
+        assert!(strip(&back).1 == strip(&c12).1, "replayed buffers differ from cold");
+        assert!(strip(&r15).1 == strip(&c15).1, "partly cached buffers differ from cold");
+        assert!(strip(&r12).1 == strip(&c12).1);
+        assert_eq!(strip(&r12).0, strip(&c12).0.replace("\"viewHit\":false", "\"viewHit\":false"));
     })
     .join()
     .unwrap();

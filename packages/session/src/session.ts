@@ -53,6 +53,10 @@ export interface PreviewResult {
    *  (a first sketch, `upTo` cutting off the extrude) has `body: null` but still has its sketches. */
   sketches?: ViewBody['sketches'];
   schemaError?: string;
+  /** Surface bodies, cosmetic thread markers and warnings of the same regen (so a viewer needs no second request). */
+  surfaces?: unknown;
+  threads?: unknown[];
+  warnings?: unknown[];
   /** true when a newer preview superseded this one before it finished: the result is dropped. */
   stale?: boolean;
 }
@@ -96,6 +100,9 @@ export interface EditResult {
   added?: string[];
   diff?: BodyDiff | null;
   refWarnings?: RefWarning[];
+  /** With `edit(..., {lean: true})`: the reference warnings, when they could not be skipped, arrive here after the edit
+   *  has been applied (a refDiff regenerates both documents; a viewer does not need to wait for it). */
+  refWarningsLater?: Promise<RefWarning[]>;
   /** Document expectations check (present when the doc carries expect). */
   intent?: { passed: number; failed: number; results: CheckResultItem[] } | null;
 }
@@ -110,6 +117,21 @@ function seqOf(id: string): number | null {
   const n = /^F(\d+)$/.exec(id);
   return n ? +n[1] : null;
 }
+
+/** Make `doc.seq` a finite counter above every F<n> id in use. A document without `seq` (or with a
+ *  corrupt one) used to mint FNaN / Fnull / F0 and then duplicate F1. */
+export function normalizeSeq(doc: PartDoc): PartDoc {
+  let top = 0;
+  for (const f of doc.features ?? []) {
+    const n = typeof f?.id === 'string' ? seqOf(f.id) : null;
+    if (n !== null && n > top) top = n;
+  }
+  const cur = Number.isFinite(doc.seq) && Number.isInteger(doc.seq) ? doc.seq : 0;
+  doc.seq = Math.max(cur, top + 1, 1);
+  return doc;
+}
+
+const BAD_ID = /^F(NaN|null|undefined|Infinity)$/;
 
 function clone<T>(v: T): T {
   return JSON.parse(JSON.stringify(v)) as T;
@@ -134,6 +156,7 @@ export function checkOp(doc: PartDoc, op: EditOp): string | null {
       }
       const id = (op.feature as { id?: unknown }).id;
       if (id !== undefined && !isId(id)) return `bad id ${JSON.stringify(id)}`;
+      if (typeof id === 'string' && BAD_ID.test(id)) return `bad id ${id}`;
       if (typeof id === 'string' && ids.has(id)) return `id ${id} already exists`;
       if (op.index !== undefined && (op.index < 0 || op.index > doc.features.length)) {
         return `index ${op.index} out of range`;
@@ -189,6 +212,24 @@ export function checkOp(doc: PartDoc, op: EditOp): string | null {
   }
 }
 
+/** Check a batch the way it will be applied: every op against the document as it is (a cascading remove may be followed by
+ *  the removes of what it took along), plus ids added twice within the batch. Returns the first problem or null. */
+export function checkBatch(doc: PartDoc, ops: EditOp[]): string | null {
+  const added = new Set<string>();
+  for (const op of ops) {
+    const problem = checkOp(doc, op);
+    if (problem) return problem;
+    if (op.op === 'add') {
+      const id = (op.feature as { id?: unknown }).id;
+      if (typeof id === 'string') {
+        if (added.has(id)) return `id ${id} already exists`;
+        added.add(id);
+      }
+    }
+  }
+  return null;
+}
+
 function setPath(feature: Record<string, unknown>, path: string, value: unknown): boolean {
   const parts = path.split('.');
   let node: unknown = feature;
@@ -213,8 +254,12 @@ function applyOp(doc: PartDoc, op: EditOp): void {
   switch (op.op) {
     case 'add': {
       const f = clone(op.feature);
-      if (f.id === undefined) f.id = `F${doc.seq++}`;
-      else if (typeof f.id === 'string') {
+      if (f.id === undefined) {
+        normalizeSeq(doc);
+        const used = new Set(doc.features.map((x) => x.id));
+        while (used.has(`F${doc.seq}`)) doc.seq++;
+        f.id = `F${doc.seq++}`;
+      } else if (typeof f.id === 'string') {
         const n = seqOf(f.id);
         if (n !== null) doc.seq = Math.max(doc.seq, n + 1);
       }
@@ -273,6 +318,19 @@ export function diffFacts(before: BodyFacts, after: BodyFacts): BodyDiff {
 
 let sessionSeq = 1;
 
+/** The parts of a regen reply a Session keeps. */
+interface RegenRes {
+  errors: RegenError[];
+  body: Record<string, unknown> | null;
+  sketches: Array<[string, Record<string, unknown>]>;
+  curves: Array<[string, { pts: number[][] }]>;
+  planes: Array<[string, { o: number[]; x: number[]; y: number[]; z: number[] }]>;
+  markers: unknown[];
+  surfaces: unknown;
+  threads: unknown[];
+  warnings: unknown[];
+}
+
 export class Session {
   private kernel: import('../../driver/src/verify.js').KernelTransport;
   private worker?: import('../../kernel-client/src/worker.js').WorkerKernel;
@@ -281,9 +339,18 @@ export class Session {
   readonly author: string;
   private stack: Array<{ record: EditRecord; before: PartDoc }> = [];
   private editSeq = 1;
+  /** The reply of the last plain regen of the document on this session's tag, valid while the kernel's tag state is still
+   *  that document (any other regen on the tag drops it). Everything a viewer asks about the committed document after an
+   *  edit (body, surfaces, markers, status, mass) is answered from it instead of asking the kernel again. */
+  private memoMain: { key: string; res: RegenRes } | null = null;
+  private massMemo: { key: string; val: { volume: number | null; solids: number } } | null = null;
+  /** The reply of the last plain preview: committing the same ops asks the kernel only to move its tag (`noView`). */
+  private memoPreview: { key: string; res: RegenRes } | null = null;
+  /** When the session last started a request of its own (the deferred reference check waits for it to go quiet). */
+  private lastActive = 0;
 
   constructor(doc: PartDoc, kernel: import('../../driver/src/verify.js').KernelTransport, author = 'agent', tag?: string) {
-    this.doc = clone(doc);
+    this.doc = normalizeSeq(clone(doc));
     this.kernel = kernel;
     this.author = author;
     this.tag = tag ?? `sess${sessionSeq++}`;
@@ -308,14 +375,12 @@ export class Session {
     return this.stack.map((e) => e.record);
   }
 
-  private async regen(doc: PartDoc, tag = this.tag, opts?: { upTo?: number; sketchStatus?: boolean; solveSketches?: boolean }):Promise<{
-    errors: RegenError[];
-    body: Record<string, unknown> | null;
-    sketches: Array<[string, Record<string, unknown>]>;
-    curves: Array<[string, { pts: number[][] }]>;
-    planes: Array<[string, { o: number[]; x: number[]; y: number[]; z: number[] }]>;
-    markers: unknown[];
-  }> {
+  private async regen(doc: PartDoc, tag = this.tag, opts?: { upTo?: number; sketchStatus?: boolean; solveSketches?: boolean }): Promise<RegenRes> {
+    this.lastActive = Date.now();
+    const mainPlain = tag === this.tag && !opts;
+    const key = mainPlain ? JSON.stringify(doc) : '';
+    if (mainPlain && this.memoMain?.key === key) return this.memoMain.res;
+    if (tag === this.tag) { this.memoMain = null; this.massMemo = null; }   // the kernel's state of the tag is about to change
     const r = await this.kernel.request({ type: 'regen', tag, part: doc, ...(opts ? { opts } : {}) });
     if (r.trap || !r.ok || !r.result) throw new Error(r.trap ?? (typeof r.error === 'string' ? r.error : 'regen failed'));
     const res = r.result as {
@@ -325,18 +390,50 @@ export class Session {
       curves?: Array<[string, { pts: number[][] }]>;
       planes?: Array<[string, { o: number[]; x: number[]; y: number[]; z: number[] }]>;
       markers?: unknown[];
+      surfaces?: unknown;
+      threads?: unknown[];
+      warnings?: unknown[];
     };
-    return {
+    const out: RegenRes = {
       errors: res.errors ?? [],
       body: res.body ?? null,
       sketches: res.sketches ?? [],
       curves: res.curves ?? [],
       planes: res.planes ?? [],
       markers: res.markers ?? [],
+      surfaces: res.surfaces ?? [],
+      threads: res.threads ?? [],
+      warnings: res.warnings ?? [],
     };
+    if (mainPlain) this.memoMain = { key, res: out };
+    if (tag === `${this.tag}-preview`) this.memoPreview = opts ? null : { key: JSON.stringify(doc), res: out };
+    return out;
+  }
+
+  /** Drop the kept regen replies: the next ask goes to the kernel again (a viewer that wraps the transport after open()
+   *  and wants to see the first reply of the document). */
+  forgetReplies(): void {
+    this.memoMain = null;
+    this.massMemo = null;
+    this.memoPreview = null;
+  }
+
+  /** Errors with their repair hints, cosmetic thread markers, warnings and surface bodies of the current document: the
+   *  regen of the document itself (answered from the last one when the kernel already holds it). No validate / check. */
+  async regenReport(): Promise<{ errors: RegenError[]; hints: ReturnType<typeof hintFor>[]; threads: unknown[]; warnings: unknown[]; surfaces: unknown }> {
+    const r = await this.regen(this.doc);
+    return { errors: r.errors, hints: r.errors.map(([fid, err]) => hintFor(fid, err.code, err.params ?? {})), threads: r.threads, warnings: r.warnings, surfaces: r.surfaces };
   }
 
   private async mass(): Promise<{ volume: number | null; solids: number }> {
+    const key = this.memoMain?.key;
+    if (key && this.massMemo?.key === key) return this.massMemo.val;
+    const val = await this.massRaw();
+    if (key && this.memoMain?.key === key && val.volume !== null) this.massMemo = { key, val };
+    return val;
+  }
+
+  private async massRaw(): Promise<{ volume: number | null; solids: number }> {
     try {
       const r = await this.kernel.request({ type: 'massProps', tag: this.tag, bodies: true });
       if (r.trap || !r.ok || !r.result) return { volume: null, solids: 0 };
@@ -398,11 +495,10 @@ export class Session {
    *  and no body, so it can never overwrite a newer result. `opts.upTo` regens
    *  only the first N features (the kernel's sketch-mode partial regen). */
   async preview(ops: EditOp[], opts?: { upTo?: number; sketchStatus?: boolean; solveSketches?: boolean }):Promise<PreviewResult> {
+    this.lastActive = Date.now();
     const seq = ++this.previewSeq;
-    for (const op of ops) {
-      const problem = checkOp(this.doc, op);
-      if (problem) return { ok: false, errors: [], hints: [], body: null, schemaError: problem };
-    }
+    const problem = checkBatch(this.doc, ops);
+    if (problem) return { ok: false, errors: [], hints: [], body: null, schemaError: problem };
     const candidate = clone(this.doc);
     try {
       for (const op of ops) applyOp(candidate, op);
@@ -431,12 +527,14 @@ export class Session {
       sketch: e.sketch as import('../../part-model/src/index.js').SketchFeature,
       ...(e.status ? { status: e.status as import('../../part-model/src/index.js').SketchSolverStatus } : {}),
     }));
-    if (!body) return { ok: true, errors: [], hints: [], body: null, sketches: viewSketches };
+    const extras = { surfaces: regenRes.surfaces, threads: regenRes.threads, warnings: regenRes.warnings };
+    if (!body) return { ok: true, errors: [], hints: [], body: null, sketches: viewSketches, ...extras };
     const { meshFromBody } = await import('../../render/src/mesh.js');
     return {
       ok: true,
       errors: [],
       hints: [],
+      ...extras,
       body: {
         mesh: meshFromBody(body as Parameters<typeof meshFromBody>[0]),
         edges: (body.edges as Array<{ key?: string; pts: number[][] }> | undefined) ?? [],
@@ -455,11 +553,14 @@ export class Session {
     };
   }
 
-  async edit(ops: EditOp[], reason?: string): Promise<EditResult> {
-    for (const op of ops) {
-      const problem = checkOp(this.doc, op);
-      if (problem) return { ok: false, record: null, schemaError: problem };
-    }
+  /** Apply a batch atomically. `lean` is for an interactive viewer: no before / after body facts (`diff`), and the
+   *  reference check is skipped for a batch that only appends features (nothing earlier can be re-pointed) or delivered
+   *  later as `refWarningsLater`. */
+  async edit(ops: EditOp[], reason?: string, opts?: { lean?: boolean }): Promise<EditResult> {
+    const lean = opts?.lean === true;
+    this.lastActive = Date.now();
+    const problem = checkBatch(this.doc, ops);
+    if (problem) return { ok: false, record: null, schemaError: problem };
     const before = clone(this.doc);
     const candidate = clone(this.doc);
     try {
@@ -468,10 +569,22 @@ export class Session {
       return { ok: false, record: null, schemaError: String((e as Error).message ?? e) };
     }
 
-    const pre = await this.facts();
+    const pre = lean ? null : await this.facts();
     let regenRes: { errors: RegenError[]; body: Record<string, unknown> | null };
     try {
-      regenRes = await this.regen(candidate);
+      const key = JSON.stringify(candidate);
+      const pv = this.memoPreview;
+      if (pv && pv.key === key && pv.res.errors.length === 0) {
+        // the user is committing what the last preview showed: the kernel only has to adopt the document on its tag
+        this.memoMain = null; this.massMemo = null;
+        const r = await this.kernel.request({ type: 'regen', tag: this.tag, part: candidate, opts: { noView: true } });
+        if (r.trap || !r.ok || !r.result) throw new Error(r.trap ?? (typeof r.error === 'string' ? r.error : 'regen failed'));
+        const errors = ((r.result as { errors?: RegenError[] }).errors ?? []) as RegenError[];
+        regenRes = { ...pv.res, errors };
+        if (errors.length === 0) this.memoMain = { key, res: regenRes as RegenRes };
+      } else {
+        regenRes = await this.regen(candidate);
+      }
     } catch (e) {
       return { ok: false, record: null, errors: [], hints: [{ feature: '', code: 'trap', hint: String((e as Error).message ?? e) }] };
     }
@@ -489,16 +602,33 @@ export class Session {
     const faces = ((regenRes.body?.faces as Array<{ id: string }> | undefined) ?? []).map((f) => f.id);
     const edges = ((regenRes.body?.edges as Array<{ key: string }> | undefined) ?? []).map((e) => e.key);
     const box = (regenRes.body?.box as BodyFacts['box']) ?? null;
-    const { volume, solids } = await this.mass();
-    const post: BodyFacts = { faces, edges, solids, volume, box };
+    let post: BodyFacts | null = null;
+    if (!lean) {
+      const { volume, solids } = await this.mass();
+      post = { faces, edges, solids, volume, box };
+    }
 
     let refWarnings: RefWarning[] = [];
-    try {
-      const rd = await this.kernel.request({ type: 'refDiff', base: before, part: candidate });
-      if (!rd.trap && rd.ok && rd.result) {
-        refWarnings = ((rd.result as { warnings?: RefWarning[] }).warnings ?? []) as RefWarning[];
-      }
-    } catch { refWarnings = []; }
+    let refWarningsLater: Promise<RefWarning[]> | undefined;
+    const refDiff = async (): Promise<RefWarning[]> => {
+      try {
+        const rd = await this.kernel.request({ type: 'refDiff', base: before, part: candidate });
+        if (!rd.trap && rd.ok && rd.result) return ((rd.result as { warnings?: RefWarning[] }).warnings ?? []) as RefWarning[];
+      } catch { /* no warnings */ }
+      return [];
+    };
+    // appending features re-points nothing that already existed
+    const appendOnly = ops.every((o) => o.op === 'add' && (o.index === undefined || o.index >= before.features.length));
+    if (!lean) refWarnings = await refDiff();
+    else if (!appendOnly) {
+      // the kernel is one thread: a reference check queued right behind an edit would delay the user's next action, so it
+      // waits until the session has been quiet for a moment (at most 10 s)
+      refWarningsLater = (async () => {
+        const t0 = Date.now();
+        while (Date.now() - this.lastActive < 800 && Date.now() - t0 < 10000) await new Promise((r) => setTimeout(r, 200));
+        return refDiff();
+      })();
+    }
 
     this.doc = candidate;
     const record: EditRecord = { id: `edit-${this.editSeq++}`, author: this.author, time: Date.now(), ops: clone(ops), reason };
@@ -528,7 +658,7 @@ export class Session {
     }
     const had = new Set(before.features.map((f) => f.id));
     const added = candidate.features.map((f) => f.id).filter((id) => !had.has(id));
-    return { ok: true, record, added, diff: diffFacts(pre, post), refWarnings, intent, hints: hints.length ? hints : undefined };
+    return { ok: true, record, added, diff: pre && post ? diffFacts(pre, post) : null, refWarnings, ...(refWarningsLater ? { refWarningsLater } : {}), intent, hints: hints.length ? hints : undefined };
   }
 
   /** Set the document's intent expectations (check grammar). Recorded like an
@@ -545,6 +675,7 @@ export class Session {
 
   /** Revert the last n applied batches. The document is the source of truth;   *  the kernel tag is re-synced (resynced:false if that regen itself fails). */
   async undo(n = 1): Promise<{ records: EditRecord[]; resynced: boolean }> {
+    this.lastActive = Date.now();
     const popped = this.stack.splice(Math.max(0, this.stack.length - n), n);
     if (popped.length) this.doc = clone(popped[0].before);
     let resynced = true;
