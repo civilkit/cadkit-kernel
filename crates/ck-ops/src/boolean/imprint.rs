@@ -134,7 +134,7 @@ impl Arrangement {
             // samples of the new piece on the existing one
             let on = [0.31, 0.5, 0.73].iter().all(|&f| {
                 let p = curve.eval(t0 + (t1 - t0) * f);
-                near_in_range(&e.curve, (e.t0, e.t1), p, tol * SLIVER)
+                near_in_range(&e.curve, (e.t0, e.t1), p, tol * if super::robust() { SLIVER } else { 10.0 })
             });
             if !on {
                 super::bool_dbg!(
@@ -478,7 +478,7 @@ pub fn imprint_hooked(a: &Body, b: &Body, tol: f64, hook: Option<PairHook>) -> A
     // ---- 1b. crossings between two cut curves of the same face pair: two branches of one intersection
     // (equal-size tubes meeting symmetrically, e.g. crossed blades) cross each other in their interiors
     // at a singular point; both must be split there or the face walk sees one edge in four directions.
-    for i in 0..cuts.len() {
+    for i in 0..if super::robust() { cuts.len() } else { 0 } {
         for j in i + 1..cuts.len() {
             if cuts[i].faces == cuts[j].faces {
                 cut_crossings(&cuts[i], &cuts[j], tol, &mut extra);

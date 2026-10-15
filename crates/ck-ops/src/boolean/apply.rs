@@ -110,7 +110,25 @@ fn near_coincident(a: &Body, b: &Body) -> Option<(String, String, f64)> {
     best
 }
 
+/// The ordinary ladder, then (only when it failed to assemble) the robust one: the same attempts with the
+/// sliver-tolerant machinery of [`super::robust`] switched on. Results of operations that already succeed are
+/// therefore untouched (same bits, same speed); the robust mode only ever turns a `booleanFailed` into a result.
 fn boolean_inner(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> {
+    let r = boolean_plain(a, b, op, tol);
+    if !matches!(&r, Err(e) if e == "booleanFailed") {
+        return r;
+    }
+    let _guard = super::RobustGuard::new();
+    for t in [tol * 10.0, tol, tol * 100.0] {
+        super::bool_dbg!("robust retry at tolerance {:e}", t);
+        if let Ok(out) = boolean_at(a, b, op, t) {
+            return Ok(if out.no_effect { out } else { sanity(a, b, op, out) });
+        }
+    }
+    r
+}
+
+fn boolean_plain(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> {
     // A free-form operand (B-spline or offset faces) meets the other solid along marched curves whose
     // ends agree with their neighbours only to ~1e-6 to 1e-5, so at the base welding tolerance the first
     // attempt of such a cut or union tends to leave the arrangement open (a full wasted attempt before the
