@@ -5,7 +5,7 @@
 //   node tools/sample_sweep.mjs --wasm <wasm> --dir <samples dir> --out run.json [--only name,name]
 //   node tools/sample_sweep.mjs --compare before.json after.json [--slower 1.2] [--vol 1e-6]
 //
-// Compare exit code 1 when a sample errors (that did not before), its volume changes by more than --vol (relative),
+// Times are CPU seconds of the process (reliable on a loaded machine). Compare exit code 1 when a sample errors (that did not before), its volume changes by more than --vol (relative),
 // or it is more than --slower times slower (default 1.2) and slower by at least 0.3 s.
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -45,10 +45,12 @@ for (const f of readdirSync(dir).filter((x) => x.endsWith('.ckpart')).sort()) {
   try { part = JSON.parse(readFileSync(path.join(dir, f), 'utf8')); } catch { continue; }
   const k = new Kernel(mod);
   const q = (id, msg) => { const r = k.request(JSON.stringify({ id, msg })); return r.trap ? { trap: r.trap } : JSON.parse(r.json); };
-  const t0 = process.hrtime.bigint();
+  // CPU time of this process (the wasm is single threaded): immune to a loaded machine, wall time is kept beside it
+  const c0 = process.cpuUsage(), t0 = process.hrtime.bigint();
   const reg = q(1, { type: 'regen', tag: 'main', part });
-  const seconds = Number(process.hrtime.bigint() - t0) / 1e9;
-  const row = { seconds, errors: [], volume: NaN, valid: null };
+  const c1 = process.cpuUsage(c0);
+  const seconds = (c1.user + c1.system) / 1e6, wall = Number(process.hrtime.bigint() - t0) / 1e9;
+  const row = { seconds, wall, errors: [], volume: NaN, valid: null };
   if (reg.trap) row.errors = [`TRAP ${reg.trap.slice(0, 100)}`];
   else {
     row.errors = (reg.result?.errors ?? []).map(([id, e]) => `${id}:${e.code}`);
@@ -59,6 +61,6 @@ for (const f of readdirSync(dir).filter((x) => x.endsWith('.ckpart')).sort()) {
     }
   }
   res[name] = row;
-  console.log(`${name.padEnd(40)} ${seconds.toFixed(2).padStart(7)}s vol ${row.volume} ${row.valid === false ? 'INVALID ' : ''}${row.errors.join(',')}`);
+  console.log(`${name.padEnd(40)} ${seconds.toFixed(2).padStart(7)}s cpu (${wall.toFixed(1)}s wall) vol ${row.volume} ${row.valid === false ? 'INVALID ' : ''}${row.errors.join(',')}`);
 }
 if (out) writeFileSync(out, JSON.stringify(res, null, 1));
