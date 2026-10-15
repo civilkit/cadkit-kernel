@@ -1998,19 +1998,11 @@
  "known": {
   "pan_head_screw_000035": {
    "label": "ground-truth-mismatch",
-   "note": "everything but the thread is exact (unthreaded 1492.07 mm3). Our swept V-groove removes 24.07 mm3 (= groove area 0.0924 mm2 x centroid path length, the geometric truth); the dataset's sweep (isFrenet=False, profile plane not exactly normal to the helix) only removes 10.08 mm3 (cause not determined), so the ground truth is not the geometric groove and cannot be matched."
-  },
-  "cable_routing_panel_004961": {
-   "label": "ground-truth-mismatch",
-   "note": "regen has no feature error since the blend welding retry (B3-2 fixed), but the volume is 63176.6 vs 64258.7 (-1.68%): the reference STEP has 66 faces to our 54 (13 planes with normal +-y each against 9, 16 cylinders against 12), so the CadQuery program builds more or different cutouts than the translation (one slot of volume 1078 mm3 more material and a centre of mass shifted 1.49 mm). Our own volume checks out against closed forms (plate 73444.45, rim chamfer 272.8, corner fillets 1.7, eight 35.3 x 8.06 slots, four r 5.035 and four r 1.835 holes -> 63175)."
+   "note": "everything but the thread is exact (unthreaded 1492.07 mm3). Our swept V-groove removes 24.07 mm3 (= groove area 0.0924 mm2 x centroid path length, the geometric truth); CadQuery's own sweep solid of the groove has 25.45 mm3 with isFrenet=False (the dataset's setting) and 24.14 with isFrenet=True, the same as ours. The dataset program then cuts that groove from the shank with its outer edge lying exactly ON the shank cylinder (groove vertices at r = 3 = shank radius), and OCCT's cut removes only 10.31 mm3 from a bare shank cylinder (40 percent of its own tool volume: the tangent-touching groove is only partly cut; the dataset part removes 10.08), so the reference is not the geometric groove and cannot be matched without reproducing an OCCT boolean failure."
   },
   "rect_frame_008694": {
    "label": "kernel-bug",
    "note": "silent wrong fillet around the window: filleting the 12 edges of the back face (outer rectangle, 4-corner window, 4 holes) gives volume 43433.87 / area 28419.0 vs CadQuery 43446.95 / 28324.4 (area +0.33%, validate clean). Per group against CadQuery (same fillet r 1.07, run on the same face edges): outer rectangle alone 43591.530 / 28588.323 and holes alone 43730.228 / 28853.894 are identical to CadQuery, but the four window edges alone are blendFailed at r 0.5, 1.0, 1.07 and 1.5 (CadQuery: 43632.81 / 28668.54), and together with the other groups they remove 13.2 mm3 too much. The window corners are 270 degree material corners (concave vertical edge), where two filleted edges meet."
-  },
-  "propeller_000192": {
-   "label": "kernel-bug",
-   "note": "booleanFailed on the union of the second blade (the first blade is exact: hub 18679.4007 and hub + one blade 20113.6368 vs CadQuery 18679.4007 / 20113.6370; hub + blades 0 and 180 degrees 21540.32 vs CadQuery 21540.24). Any second blade that overlaps the first near the axis fails: cpattern of the blade loft with copies at 90, 100, 120, 135, 170 degrees (count 3 and 4 over 360 too) and a hand-built second blade turned 90 degrees (no pattern) are all booleanFailed; two blades 180 degrees apart union fine. Union of two lofts between ellipses (B-spline side faces) whose roots cross on the axis."
   }
  },
  "knownStep": {
@@ -2028,6 +2020,11 @@
   }
  },
  "tolerances": {
+  "propeller_000192": {
+   "volume": 0.0015,
+   "area": 0.002,
+   "note": "OCCT's own booleans of the crossed blades are imprecise: for blade 0 and blade 90 it reports a union of 2792.18 but an intersection of 143.52, and va + vb - union = 145.28, so its two operations disagree by 1.8 mm3; a Monte Carlo of the two solids with OCCT's point classifier (300k points) gives an overlap of 136.3 +- 1.1 mm3, ours is 134.70 (union 2802.77, intersection 134.70, they agree to 1e-7). Each of the four neighbouring pairs is ~9 mm3 too small a union in the reference, which is the 24 mm3 (0.10 percent) and the 12.7 mm2 (0.12 percent) by which ours exceeds it."
+  },
   "torsion_spring_000054": {
    "volume": 0.0015,
    "note": "the ground-truth coil is an OCC pipe approximation: every sampled point of its two sweep faces lies 0 to +4.2 um outside the ideal screw tube (mean +2.1 um, tests/multi_solid_step.rs torsion_spring_gt_coil_vs_ideal_tube), which inflates the coil volume by 0.12%. Ours is within 3e-5 mm of the ideal tube and equals the closed-form A*2*pi*R*N (N = height/pitch = 11.9977 revolutions): 165057.3. Volume therefore differs from the dataset by 0.11% while the geometry is the more exact one."

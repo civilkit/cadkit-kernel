@@ -47,8 +47,9 @@ Fixed causes, each with a test in `crates/ck-model/tests/` (`shell_thickness_edi
 
 ## Left
 
-- `propeller_000192` cpattern angle edits: union of lofted blade copies fails in the surface
-  intersection of tangent-touching loft surfaces (intersect/ss.rs). The document's own baseline
-  fails on the original too.
+- `propeller_000192` cpattern angle edits: the union of the lofted blade copies used to fail
+  (`booleanFailed`); fixed 2026-10-15 by the boolean robust mode (crossing cut curves, sliver edge pieces,
+  sliver classification; docs/spec-agent-interface.md "Boolean robustness"). Re-run the edit sweep to refresh
+  the numbers; angles that bring two blade tips together within ~1e-3 are the ones the robust mode exists for.
 - `twisted_drill_000546` partial revolve cut: ours vs original differ by 0.23 %, no ground truth.
 - `enclosure` depth edits: the original fillets an inner edge; ours is the consistent choice.

@@ -74,7 +74,7 @@ volume / area / centre of mass / bbox / STEP were produced by running the datase
 | gridfinity_bin_000166 | medium | pass | pass | |
 | cam_012392 | hard | pass | pass | |
 | motor_end_cap_000242 | hard | pass | FAIL | kernel-bug (step only): SHELL_ORIENTATION at the outer rim fillet |
-| cable_routing_panel_004961 | hard | FAIL | pass | kernel-bug: fillet after chamfer, `blendFailed` at one of four symmetric corners |
+| cable_routing_panel_004961 | hard | pass (2026-10-15) | pass | was: `blendFailed` (B3-2, fixed), then a 1.68 % volume gap that was a translation mistake: second slot row on y = 0 (B4-6) |
 | helical_gear_015542 | hard | pass | pass | |
 
 Translation mistake found and fixed on the way (not a failure): j_hook's base boss. The dataset's polyline
@@ -237,7 +237,7 @@ snap_clip and propeller are rejected by `edit`.
 | waffle_plate_010153 | medium | pass | pass | 69341.4467 vs 69341.4467 (1e-15) | |
 | rect_frame_008694 | hard | FAIL (area) | FAIL | 43433.87 vs 43446.95 (3.0e-4); area 28419.0 vs 28324.4 (+0.33%) | kernel-bug: window fillet; step: SHELL_ORIENTATION |
 | snap_clip_000052 | hard | FAIL | FAIL | no body (pre-chamfer body 4.381142 = CadQuery pre-chamfer 4.381142) | kernel-bug: chamfer; step: PARABOLA unsupported |
-| propeller_000192 | hard | FAIL | FAIL | 20113.64 (one blade) vs 23868.82 | kernel-bug: union of overlapping lofted blades; step: VERTEX_OFF_CURVE |
+| propeller_000192 | hard | pass (2026-10-15, tolerances volume 1.5e-3, area 2e-3) | FAIL | 23892.60 vs 23868.82 (+0.10 %) | FIXED B4-3 (crossing cut curves, sliver edges, sliver classification); the reference's own booleans are imprecise; step: VERTEX_OFF_CURVE |
 
 Nothing here is a translation mistake. Two corrections made on the way, both caught by comparing with CadQuery:
 (a) piston's cross hole: the program names a `cutThruAll` from the mid plane; CadQuery cuts both ways (volume only matches
@@ -265,17 +265,45 @@ whose two faces both border an earlier blend face of the feature is now done. Vo
 `chamfer_on_the_rims_of_a_split_clip`). Remaining: that margin (`r.max(len * 0.05) + 1.0` along a straight edge) also chamfers
 an UNSELECTED collinear edge within reach beyond a notch; not fixed, silent.
 
-B4-3. NOT FIXED. Union of two lofted ellipse blades that overlap near the axis (propeller): `booleanFailed`. Hub exact (18679.4007), hub plus
-one blade exact (20113.6368 vs 20113.6370), hub plus blades 180 degrees apart right (21540.32 vs 21540.24), any second blade turned by 90, 100, 120, 135 or 170 degrees `booleanFailed`, with `cpattern` and with a hand-built blade.
-What was learned (blade A united with blade B alone fails the same way): the blades are thin plates in the same x slab (thickness 3.4 along x, width 16.8)
-crossing like an X. The root of each blade sticks out of the hub (width 8.4 against hub radius 5.29), so the overlap is not hidden in the hub: applying the
-instances one by one to the body instead of uniting them first does not help (tried, reverted). The arrangement has the intersection curves of the lateral faces
-(two 45 degree diagonals through the point where the two seam lines cross, v11) and the root-plane sections, but at the vertex where blade A's root ellipse meets
-curve A0xB0 (the diagonal) and A0xB2 (blade A half with blade B's root plane) the walk's angular order (A0xB0 then A0xB2 clockwise from the root ellipse) contradicts the
-order of the other end vertices along the face boundary (the seam point v8 before v11), so the face walk closes one big cycle that uses curve A0xB0 in both directions
-(4 faces on an edge: NonManifoldEdge). So one of the pieces is attached to the wrong end: most likely the trimmed piece of the marched spline A0xB2 (`kept (0.862, 1.0)`;
-its mirror image A1xB2 is kept empty) or the join of the two A0xB0 branches at the seam crossing. Retries at 10x and 100x the tolerance give the identical arrangement.
-Next step: dump the uv polylines of the cut edges on A0 and check that curve 23 and the chain 22-24-25 do not cross; a missing crossing vertex there would be the bug.
+B4-3. FIXED (2026-10-15). Union of lofted ellipse blades that overlap near the axis (propeller) was `booleanFailed`. Three separate root causes, all in the
+arrangement of near-degenerate configurations (the blades are thin plates crossing like an X, equal size and symmetric, and the fourth blade touches the second
+tangentially at the root tips). They are fixed in a "robust mode" (`boolean::robust()`): the ordinary attempts run first, unchanged, and only when all of them
+fail to assemble do three more attempts (10x, 1x, 100x the welding tolerance) run with these steps switched on, so every operation that already worked keeps
+its bits and its speed.
+ 1. Two cut curves of ONE face pair that cross each other in their interiors (the two diagonals of the Steinmetz-like intersection of two equal tubes, meeting at
+    the point where the seam lines cross) were two edges with no vertex at the crossing, so the face walk met one edge from four directions (NonManifoldEdge). This
+    is the "missing crossing vertex" the first analysis suspected. `imprint::cut_crossings` finds interior crossings of the cut curves of a face pair (polyline
+    pre-selection, alternating closest-point refinement, accepted within 2 tol) and adds them to the vertex pool.
+ 2. The 4-blade union still failed at the root tips of blades 2 and 4: their lateral surfaces are tangent there, so the cut curve of blade 4's lateral face with
+    blade 2's root cap runs 7e-4 beside blade 2's root rim over 0.15 mm. That sliver lens (more than 10 tol wide at the 1e-5 rung) left two edges between the same two
+    vertices, one used by the cap and one by the lateral face. Edge pieces between the same two vertices that stay within 100 tol are now one edge.
+ 3. The lens fragment left on the lateral face has a sample point 1e-4 from the other solid's boundary, where single rays disagree (6 rays: F T F T T T, winding
+    number 0.5027, i.e. ON the boundary); the first ray won (Out) and the lens was kept on both sides of a cut (non-manifold). A sample within max(100 tol, 5e-4) of a
+    face of the other solid now takes the majority of all rays (winding number on a near tie).
+Result: hub + four blades 23892.60 (valid, 0 issues) against the reference 23868.82, +0.10 percent volume, +0.12 percent area. The reference itself is imprecise
+there: OCCT's union of blades 0 and 90 is 2792.18 but its intersection is 143.52 (va + vb - union = 145.28); a Monte Carlo of the two solids with OCCT's own point
+classifier (300k points) gives an overlap of 136.3 +- 1.1, ours is 134.70 (union 2802.77 and intersection 134.70 agree to 1e-7, test
+`blade_pair_union_and_intersection_agree`). Each neighbouring pair is ~9 mm3 short in the reference's union, which is the 24 mm3. The manifest therefore carries
+`tolerances` for the part (volume 1.5e-3, area 2e-3; `run.mjs` now reads an `area` tolerance too). Other subsets against OCCT: hub 18679.4007 (exact), hub +
+blade 0 20113.6368 vs 20113.6370, hub + 0 + 180 21540.32 vs 21540.24; blades only, 4 blades: ours 5336.45 (OCCT's own blades-only 4-blade union returns 4131.0, a lost
+blade: its result without the hub is wrong, with the hub it is right). Tests: crates/ck-model/tests/propeller_boolean.rs (two crossed blades, four blades without
+and with the hub, union/intersection identity, failure report). STEP import of the reference still shows `VERTEX_OFF_CURVE` (vertices up to 2.8e-2 off their edges:
+OCCT tolerances the STEP does not carry), B4-4 unchanged.
+
+B4-5. FIXED. The `booleanFailed` error said nothing about where. It now carries `faces` (the faces bordering the open / non-manifold edges of the assembled
+result, up to 8, for instance `F8.S.e1~1@F9.1`), `issue` (`openEdge` / `nonManifoldEdge` / `badPairing`), `at` (a point on the first bad edge) and a `hint`
+(`FeatureError::new` parses `booleanFailed;edgeFaces=..;issue=..;at=..`; the `nearCoincident` form with `hostFace` / `toolFace` / `gap` is kept and wins when two
+free-form walls nearly coincide). The driver hint (packages/driver/src/verify.ts `FIX.booleanFailed`) names them. Test `failed_union_reports_faces_and_point`.
+
+B4-6. cable_routing_panel was a TRANSLATION mistake, not a reference difference (the earlier label was wrong). The program centres its second row of slots with
+`center(0, -22.2)` on a workplane that is already at y = 22.2, so the row lands on y = 0 (over the four holes): CadQuery's reference has 8 slots at y = 22.2 and y = 0,
+66 faces; ours cut y = +-22.2 (54 faces). With the row on y = 0 the part passes every check (volume 64258.66, area, centre of mass, bbox, validate; the former gap was
+1.68 percent). gen3.mjs fixed, the `known` entry removed, `cable_panel_fillet_after_trapezoid_edit` expects the new volume 68835.28.
+
+B4-7. pan_head_screw stays a ground-truth mismatch, now with evidence. CadQuery's own groove solid has 25.45 mm3 (isFrenet=False, the dataset's setting) and 24.14
+(isFrenet=True), our geometric 24.07 matches the latter. The program then cuts the groove from the shank with the groove's outer edge lying exactly on the shank
+cylinder (vertices at r = 3 = shank radius): OCCT's cut removes 10.31 mm3 from a bare shank cylinder (40 percent of its own tool volume, the dataset part removes
+10.08), i.e. the reference is an OCCT boolean that only partly cut a tangent-touching groove. Reproducing it would mean reproducing the failure.
 
 B4-4. STEP import (all three failing parts): rect_frame SHELL_ORIENTATION on OCCT fillet faces (volume +0.33%, area -1.18%, same family
 as B3-3 / BJ-4), snap_clip `PARABOLA is not supported` (conic from the chamfer), propeller `VERTEX_OFF_CURVE` (volume -0.23%).

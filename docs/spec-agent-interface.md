@@ -440,6 +440,30 @@ offset profile placed in the plane (exact, no sampling).
   and then cut again on a pole-containing plane is not rotated. Splines whose section with a tilted plane is
   needed still march.
 
+## Boolean robustness: robust mode and the `booleanFailed` report
+
+- `boolean()` runs its ordinary attempts first (welding tolerance 10x, 1x, 100x as before). Only when every one of them
+  fails to assemble a closed manifold does it run three more attempts in **robust mode** (`boolean::robust()`, a
+  thread-local switch set by `RobustGuard`; 10x, 1x, 100x the tolerance) with three sliver-tolerant steps that would
+  change, and slow, operations that already work: `imprint::cut_crossings` splits two cut curves of one face pair where
+  they cross each other in their interiors (the branches of two equal tubes meeting symmetrically meet at a singular
+  point; without a vertex there one edge is met from four directions); edge pieces between the same two vertices that
+  stay within 100 tol of each other are one edge (a cut curve running 7e-4 beside a rim where two surfaces touch
+  tangentially); a fragment whose sample lies within max(100 tol, 5e-4) of a face of the other solid is classified by the
+  majority of all six rays (winding number on a near tie), because single rays disagree on a sliver lens. Operations that
+  succeed without it are bit-identical to before. BenchCAD propeller (four crossed lofted blades) went from
+  `booleanFailed` to a valid body (tools/bench/FINDINGS.md B4-3; `crates/ck-model/tests/propeller_boolean.rs`).
+- A boolean that still fails reports `booleanFailed` with params that say where. Free-form walls that nearly coincide:
+  `hostFace`, `toolFace`, `gap` (as before). Otherwise: `faces` (the faces bordering the open / non-manifold edges of the
+  assembled result, up to 8, for example `["F8.S.e1~1@F9.1", "F8.S.e1~1@F9.3"]`), `issue` (`openEdge`,
+  `nonManifoldEdge`, `badPairing`), `at` (`[x, y, z]`, a point on the first bad edge) and `hint` (a one-line remedy:
+  move the tool by about 0.01, unite the bodies that touch each other first, or make near-coincident faces exactly
+  coincident). The driver's fix hint (`packages/driver/src/verify.ts`) quotes them.
+- Reference tool: `node tools/sample_sweep.mjs --wasm <wasm> --dir <samples> --out run.json` regenerates every kit
+  sample (errors, volume, validity, CPU time) and `--compare before.json after.json` flags a sample that now errors, whose
+  volume moves by more than 1e-6 relative, or that is more than 20 percent (and 0.3 s) slower; run it before and after a
+  kernel change (a past change made swept-handle 79 s).
+
 ## Design rules: `profiles` and `checkProfile`
 
 A rule engine on top of `validate` / `check` (crates/ck-ops/src/profile). A
