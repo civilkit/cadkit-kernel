@@ -192,6 +192,29 @@ fn translate_curve(c: &Curve, t0: f64, t1: f64, disp: Vec3) -> (Curve, f64, f64)
     }
 }
 
+/// Rim edge of a cylinder patch moved onto the cylinder offset by `d` (radius r + d): a circle coaxial with the
+/// cylinder keeps its frame and gets radius + d; a line parallel to the axis slides radially outwards by d.
+fn offset_cylinder_rim(c: &Curve, t0: f64, t1: f64, cf: &Frame, _r: f64, d: f64, tol: f64) -> Option<(Curve, f64, f64)> {
+    match c {
+        Curve::Circle { frame, r } => {
+            let coaxial = frame.z.cross(cf.z).len() < 1e-9 && closest_axis_point(cf, frame.o).dist(frame.o) < tol.max(1e-9) * 10.0;
+            coaxial.then(|| (Curve::Circle { frame: frame.clone(), r: r + d }, t0, t1))
+        }
+        Curve::Line { o, d: dir } => {
+            if dir.cross(cf.z).len() > 1e-9 {
+                return None;
+            }
+            let radial = *o - closest_axis_point(cf, *o);
+            let l = radial.len();
+            if l < 1e-12 {
+                return None;
+            }
+            Some((Curve::Line { o: *o + radial.scale(d / l), d: *dir }, t0, t1))
+        }
+        _ => None,
+    }
+}
+
 fn closest_t(c: &Curve, q: Vec3) -> (f64, Vec3) {
     match c {
         Curve::Line { o, d } => {
@@ -574,6 +597,20 @@ fn extend_open_edge(
     tol: f64,
 ) -> Result<(), ThickenError> {
     let se = sheet.edge(e);
+    // A stand-alone cylinder patch (no neighbour sheet face): its rim offsets radially, so the offset
+    // face's boundary lies on the offset cylinder. A plain translation by the mid-patch normal leaves
+    // arcs and end lines off the surface (the display mesh then fills with sliver triangles).
+    if let Surface::Cylinder { frame, r } = &sheet.face(f).surface {
+        let stand_alone = sheet.face(f).loops.iter().filter(|&&l| sheet.lp(l).alive).all(|&l| {
+            sheet.lp(l).coedges.iter().all(|&c| !sheet.coedge(c).alive || sheet.edge_faces(sheet.coedge(c).edge).len() == 1)
+        });
+        if stand_alone {
+            if let Some(img) = offset_cylinder_rim(&se.curve, se.t0, se.t1, frame, *r, d, tol) {
+                images.insert(e, img);
+                return Ok(());
+            }
+        }
+    }
     let (curve, mut t0, mut t1) = translate_curve(&se.curve, se.t0, se.t1, nf.scale(d));
     for end in [0usize, 1] {
         let te = if end == 0 { se.t0 } else { se.t1 };
@@ -740,7 +777,19 @@ fn build_wall(
 
     let n1 = (p01 - p00).cross(p10 - p00);
     let n2 = (p01 - p00).cross(p11 - p00);
-    let surface = if n1.len2() > 1e-18 && n1.normalize().dist(n2.normalize()) < 1e-6 {
+    // two coplanar circle arcs (the rims of a cylinder patch): the wall is the planar ring sector they bound.
+    // Their end points can be collinear (half circles), so the plane comes from the circles, not the corners.
+    let arc_plane = match (&ca, &cb) {
+        (Curve::Circle { frame: fa, .. }, Curve::Circle { frame: fb, .. })
+            if fa.z.cross(fb.z).len() < 1e-9 && (fb.o - fa.o).dot(fa.z).abs() < 1e-9 =>
+        {
+            Some(Surface::Plane { frame: Frame { o: fa.o, x: fa.x, y: fa.y, z: fa.z } })
+        }
+        _ => None,
+    };
+    let surface = if let Some(pl) = arc_plane {
+        pl
+    } else if n1.len2() > 1e-18 && n1.normalize().dist(n2.normalize()) < 1e-6 {
         Surface::plane(p00, n1.normalize())
     } else {
         Surface::BSpline(Box::new(BSplineSurface::bilinear(p00, p01, p10, p11)))
@@ -1069,6 +1118,71 @@ mod tests {
         assert!((mp.volume - want).abs() < 1e-6, "volume {} want {want}", mp.volume);
         let want_area = 2.0 * std::f64::consts::PI * (6.5 + 5.0) * 10.0 + 2.0 * std::f64::consts::PI * 17.25;
         assert!((mp.area - want_area).abs() < 1e-6, "area {}", mp.area);
+    }
+
+    /// Half-cylinder patch (an open C-shaped sheet), axis Z, angles 0..pi.
+    fn half_cyl(feat: &str, r: f64, z0: f64, z1: f64) -> Body {
+        let mut b = Body::new();
+        let lump = b.add_lump();
+        let shell = b.add_shell(lump);
+        let f = b.add_face(
+            shell,
+            Surface::Cylinder { frame: Frame { o: Vec3::ZERO, x: Vec3::X, y: Vec3::Y, z: Vec3::Z }, r },
+            true,
+            FaceName::side(feat, "e1"),
+        );
+        let pi = std::f64::consts::PI;
+        let (a0, a1) = (Vec3::new(r, 0.0, z0), Vec3::new(-r, 0.0, z0));
+        let (b0, b1) = (Vec3::new(r, 0.0, z1), Vec3::new(-r, 0.0, z1));
+        let (va0, va1, vb0, vb1) = (b.add_vertex(a0), b.add_vertex(a1), b.add_vertex(b0), b.add_vertex(b1));
+        let ea = b.add_edge(Curve::circle_x(Vec3::new(0.0, 0.0, z0), Vec3::Z, Vec3::X, r), 0.0, pi, va0, va1);
+        let eb = b.add_edge(Curve::circle_x(Vec3::new(0.0, 0.0, z1), Vec3::Z, Vec3::X, r), 0.0, pi, vb0, vb1);
+        let e1 = b.add_edge(Curve::line_through(a1, b1), 0.0, (b1 - a1).len(), va1, vb1);
+        let e0 = b.add_edge(Curve::line_through(a0, b0), 0.0, (b0 - a0).len(), va0, vb0);
+        let l = b.add_loop(f);
+        b.add_coedge(l, ea, false, None);
+        b.add_coedge(l, e1, false, None);
+        b.add_coedge(l, eb, true, None);
+        b.add_coedge(l, e0, true, None);
+        b
+    }
+
+    #[test]
+    fn thicken_half_cylinder_stays_on_the_offset_surface() {
+        // an open C-shaped sheet thickened outwards: every rim edge of the offset layer must lie on the
+        // offset cylinder (radius r + t), and the display mesh must cover the exact areas.
+        let (r, t, h) = (30.0, 3.0, 20.0);
+        let sheet = half_cyl("F2", r, 0.0, h);
+        let b = thicken(&sheet, "F3", t, Side::Front, 1e-6).unwrap();
+        let pi = std::f64::consts::PI;
+        let want = pi * ((r + t) * (r + t) - r * r) / 2.0 * h;
+        let mp = ck_topo::mass::mass_props(&b);
+        assert!((mp.volume - want).abs() < 1e-3 * want, "volume {} want {want}", mp.volume);
+        for e in b.edge_ids() {
+            let ed = b.edge(e);
+            if matches!(&ed.curve, Curve::Line { d, .. } if d.cross(Vec3::Z).len() > 1e-9) {
+                continue; // the radial connectors between the layers
+            }
+            for p in ed.curve.sample(ed.t0, ed.t1, 9) {
+                let rad = (p.x * p.x + p.y * p.y).sqrt();
+                assert!((rad - r).abs() < 1e-9 || (rad - r - t).abs() < 1e-9, "edge point off both cylinders: radius {rad}");
+            }
+        }
+        let tess = ck_tess::mesh::tessellate(&b);
+        assert!(tess.mesh.failed.is_empty());
+        let mut area = vec![0.0f64; b.num_faces()];
+        let mut count = vec![0usize; b.num_faces()];
+        for (ti, &fi) in tess.mesh.tri_face.iter().enumerate() {
+            let p = &tess.mesh.positions[ti * 9..ti * 9 + 9];
+            let v = |k: usize| Vec3::new(p[k * 3] as f64, p[k * 3 + 1] as f64, p[k * 3 + 2] as f64);
+            area[fi as usize] += (v(1) - v(0)).cross(v(2) - v(0)).len() * 0.5;
+            count[fi as usize] += 1;
+        }
+        let want_area = [pi * r * h, pi * (r + t) * h, pi * ((r + t) * (r + t) - r * r) / 2.0, t * h, pi * ((r + t) * (r + t) - r * r) / 2.0, t * h];
+        let total: f64 = area.iter().sum();
+        let want_total: f64 = want_area.iter().sum();
+        assert!((total - want_total).abs() < 0.01 * want_total, "mesh area {total} want {want_total}: {area:?}");
+        assert!(count.iter().all(|&c| c < 2000), "sliver blow-up: {count:?}");
     }
 
     #[test]
