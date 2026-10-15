@@ -170,7 +170,13 @@ fn regen_hook(part: &Json, cx: &mut Cx) -> Result<(Json, State), String> {
     let view_key = if use_cache && run_n > 0 { final_key } else { None };
     let tess_before = ck_tess::mesh::face_cache_stats();
     let mut view_hit = false;
+    // `noView`: the caller already holds the view of this very document (a preview it is now committing) and only wants the
+    // kernel's tag state and the errors, so the snapshot (meshes, edges) is skipped and `body` / `surfaces` stay empty
+    let lite = flag("noView");
     cx.span(SNAPSHOT_LABEL, |cx| {
+        if lite {
+            return;
+        }
         let cached = view_key.and_then(|k| view_cache::with(|c| c.get(&k)));
         if let Some(v) = cached {
             view_hit = true;
