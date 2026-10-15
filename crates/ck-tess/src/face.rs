@@ -716,6 +716,35 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
         }
     }
 
+    // ---- 4c. surface-aware diagonals
+    // The Delaunay triangulation of a long thin strip (a cylinder wall between two trimmed ends) fans one end's points to a few
+    // points of the other end: its diagonals span half the circumference and fail the chord test, and the refinement below
+    // then subdivides them into thousands of triangles. Flip an edge whose midpoint deviates from the surface by more than the
+    // tolerance when the other diagonal of its quadrilateral deviates clearly less.
+    if !matches!(surf, Surface::Plane { .. }) {
+        let cpts = tri.cdt.pts.clone();
+        let dev_of = |a: u32, b: u32| -> f64 {
+            let at = |k: u32| -> (Vec2, Vec3) {
+                match vdata.get(&k) {
+                    Some(&d) => (d.0, off_surf.get(&k).copied().unwrap_or(d.1)),
+                    None => {
+                        let uv = from_c(cpts[k as usize]);
+                        let e = wrap_eval(uv);
+                        (uv, surf.eval(e.x, e.y))
+                    }
+                }
+            };
+            let (pa, pb) = (at(a), at(b));
+            let w = wrap_eval((pa.0 + pb.0) * 0.5);
+            surf.eval(w.x, w.y).dist((pa.1 + pb.1) * 0.5)
+        };
+        let mut want = |w: u32, u: u32, v: u32, x: u32| -> bool {
+            let cur = dev_of(u, v);
+            cur > tol.chord && dev_of(w, x) < 0.8 * cur
+        };
+        tri.cdt.optimize_edges(&mut want, 16);
+    }
+
     // ---- 5. refinement
     let budget = 20000 + 50 * b.pts.len();
     let mut inserted = 0usize;

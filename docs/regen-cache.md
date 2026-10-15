@@ -133,3 +133,30 @@ re-creates exactly it, and every later feature is a pure function of
 (state, feature JSON, variables). Thread-local geometry memos (content-keyed)
 persist across regens already; the check runs `noCache` regens in a used
 instance against fresh-instance cold replies to guard against them.
+
+## Display caches (view snapshot, face meshes)
+
+The reply's `body` / `surfaces` snapshot (wire JSON plus display meshes) and the tessellation behind it are
+cached too, because for a part like the dome cap they cost more than the features (4.5 s of 7.4 s cold).
+
+* **Snapshot** (`view_cache.rs`): keyed by the final chain key, so an identical document, or one reverted to
+  (undo / redo, slider back to a value seen before), replays the stored JSON and re-attaches the typed arrays to
+  the new reply's buffer area in the pinned order (`positions, normals, mids, triFace, silhouette`, body before
+  surfaces). The key covers everything the regen cache key covers, so the replay is byte-identical. Bypassed by
+  `noCache` and by debug (trace) requests. Cap 96 MB.
+* **Face meshes** (`ck_tess::mesh::tessellate_memo`): every face is keyed by the exact inputs of `mesh_face`
+  (surface, sense, each live coedge's edge curve, pcurve, parameter range, final edge samples, seam flag, end
+  vertices, periodic cut, tolerance) as a byte string compared exactly, so a hit is bit-identical to meshing.
+  Adding or editing a hole re-meshes only the faces whose geometry or samples changed. Cap 128 MB, LRU.
+  The body tolerance is rounded down to four significant figures (`body_tol`), because the box of a body with curved
+  faces moves in the last bits with every unrelated edit and the periodic cuts (ties between equal gaps) are
+  decided by that noise.
+* `cacheStats` adds `viewHit`, `tessFaceLookups`, `tessFaceHits`, `tessEntries`, `tessBytes`, `viewEntries`,
+  `viewBytes`. `cacheCap` scales the three caps together (regen states 1, faces 1/2, snapshots 3/8).
+* `opts.noView: true` skips the snapshot altogether (`body` stays empty): for a client that already holds the view
+  of this very document (a preview it is committing) and only needs the kernel's tag state and the errors.
+
+Spline edges with a knot every fraction of a millimetre (interpolated intersection curves) used to be sampled once
+per knot span; the sample list is now thinned to what the tolerance needs (`curvature::coalesce`), which cut the dome
+cap from 92k to 22k triangles at the same chordal bound, and unconstrained edges whose midpoint fails the chord test
+are flipped to the other diagonal before refinement (`Cdt::optimize_edges`).

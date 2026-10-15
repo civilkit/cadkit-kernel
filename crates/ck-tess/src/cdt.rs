@@ -758,6 +758,44 @@ impl Cdt {
         out
     }
 
+    /// Data-dependent edge flips. For every unconstrained edge between two INSIDE triangles whose quadrilateral is strictly
+    /// convex, `want(w, u, v, x)` is asked (the edge is `u-v`, the other diagonal would be `w-x`) and the edge is flipped when
+    /// it says so. Repeats until a pass flips nothing (at most `passes`). Returns the number of flips.
+    pub fn optimize_edges(&mut self, want: &mut dyn FnMut(u32, u32, u32, u32) -> bool, passes: usize) -> usize {
+        let mut total = 0;
+        for _ in 0..passes {
+            let mut flipped = 0;
+            for t in 0..self.tris.len() as u32 {
+                for k in 0..3 {
+                    let tr = self.tris[t as usize];
+                    if !tr.alive || tr.region != INSIDE || tr.c[k] {
+                        continue;
+                    }
+                    let s = tr.n[k];
+                    if s == NONE || self.tris[s as usize].region != INSIDE {
+                        continue;
+                    }
+                    let Some(j) = (0..3).find(|&j| self.tris[s as usize].n[j] == t) else { continue };
+                    let x = self.tris[s as usize].v[j];
+                    let (w, u, v) = (tr.v[k], tr.v[(k + 1) % 3], tr.v[(k + 2) % 3]);
+                    if self.orient(w, u, x) <= 0.0 || self.orient(w, x, v) <= 0.0 {
+                        continue;
+                    }
+                    if want(w, u, v, x) {
+                        self.flip(t, k);
+                        flipped += 1;
+                        break; // the triangle changed: its remaining edges are looked at in the next pass
+                    }
+                }
+            }
+            total += flipped;
+            if flipped == 0 {
+                break;
+            }
+        }
+        total
+    }
+
     /// Inserts a Steiner point inside or on an edge of an INSIDE triangle (original f3302). Returns the new vertex, or None when the
     /// point snaps to a vertex or lands in/beside only OUTSIDE triangles.
     pub fn insert_interior(&mut self, p: Pt) -> Option<u32> {

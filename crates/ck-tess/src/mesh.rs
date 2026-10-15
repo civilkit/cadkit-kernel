@@ -558,7 +558,7 @@ fn face_key(body: &Body, f: FaceId, edges: &EdgeSampling, tol: &Tol) -> Vec<u8> 
 }
 
 /// Byte cap of the per-thread face cache.
-pub const FACE_CACHE_CAP: usize = 192 << 20;
+pub const FACE_CACHE_CAP: usize = 128 << 20;
 
 #[derive(Default, Clone, Copy, Debug)]
 pub struct FaceCacheStats {

@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 /// Default cap of cached snapshot bytes.
-pub const DEFAULT_CAP: usize = 160 << 20;
+pub const DEFAULT_CAP: usize = 96 << 20;
 
 /// One body of a snapshot: its wire JSON without the `silhouette` / `mesh` buffers, and the mesh arrays.
 pub struct BodyView {

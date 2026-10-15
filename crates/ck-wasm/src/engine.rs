@@ -128,6 +128,9 @@ fn regen_hook(part: &Json, cx: &mut Cx) -> Result<(Json, State), String> {
     let auto_heal = o.filter(|o| o.get_bool("autoHeal") == Some(true)).map(|o| o.get_f64("healTol").unwrap_or(1e-5));
     if let Some(cap) = o.and_then(|o| o.get_f64("cacheCap")).filter(|c| *c >= 0.0) {
         regen_cache::with(|c| c.set_cap(cap as usize));
+        // the display caches scale with it (defaults 128 MB faces + 96 MB snapshots next to the 256 MB of regen states)
+        view_cache::with(|c| c.set_cap(cap as usize / 8 * 3));
+        ck_tess::mesh::set_face_cache_cap(cap as usize / 2);
     }
     // debug requests want the real per-feature spans, so they never replay
     let use_cache = !flag("noCache") && !cx.trace.enabled();
