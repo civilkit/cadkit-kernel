@@ -405,3 +405,28 @@ fn region_selection_picks_chains() {
     let o = run(&part(&sk, &extrude(r#"{"thickness":1,"side":"inside"}"#, 5.0)));
     assert!(rel(vol(&o), PI / 2.0 * 19.0 * 5.0 + PI * 9.0 * 5.0) < 1e-6, "{}", vol(&o));
 }
+
+#[test]
+fn two_half_rings_touching_along_a_line_take_a_boolean() {
+    // two open arcs (radii 20 and 25) thickened inwards give half rings that meet along two lines: the
+    // body has edges shared by four faces. A boolean elsewhere on the body must keep them, not fail
+    let sk = r#"{"type":"sketch","id":"F1","plane":{"kind":"std","id":"top"},"points":[{"id":"c","x":0,"y":0},{"id":"p1","x":0,"y":20},{"id":"p2","x":0,"y":-20},{"id":"p3","x":0,"y":25},{"id":"p4","x":0,"y":-25}],
+        "entities":[{"type":"arc","id":"e1","c":"c","p1":"p1","p2":"p2"},{"type":"arc","id":"e2","c":"c","p1":"p4","p2":"p3"}],"constraints":[]}"#;
+    let hole = r#"{"type":"sketch","id":"F4","plane":{"kind":"std","id":"top"},"points":[{"id":"q","x":22.5,"y":0}],"entities":[{"type":"circle","id":"h","c":"q","r":1.5}],"constraints":[]}"#;
+    let ext = extrude(r#"{"thickness":5,"side":"inside"}"#, 10.0);
+    let base = run(&part(sk, &ext));
+    assert!(base.errors.is_empty(), "{:?}", base.errors);
+    let v0 = vol(&base);
+    let mut cut_any = false;
+    for flip in ["false", "true"] {
+        let cut = format!(r#"{hole},{{"type":"extrude","id":"F5","op":"cut","sketch":"F4","end":"blind","depth":5,"flip":{flip}}}"#);
+        let o = run(&format!(r#"{{"format":"ck-part","version":1,"features":[{sk},{ext},{cut}]}}"#));
+        if o.errors.is_empty() {
+            cut_any = true;
+            assert!(rel(v0 - vol(&o), PI * 2.25 * 5.0) < 1e-4, "flip {flip}: {}", v0 - vol(&o));
+        } else {
+            assert_eq!(o.errors[0].error.code, "cutNoEffect", "flip {flip}: {:?}", o.errors);
+        }
+    }
+    assert!(cut_any, "one cut direction must remove the hole");
+}

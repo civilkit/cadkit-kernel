@@ -285,9 +285,44 @@ fn boolean_at(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> {
     }
     let body = build(&arr, &faces);
     let issues = check(&body, tol);
+    // two lumps of one operand touching along a line (the two half rings of a thin-wall extrude of two
+    // arcs) have distinct but coincident edges that the arrangement welds into one edge of four faces:
+    // that edge is the input's own contact, not a failure of the boolean (checked lazily, only when
+    // a four-face edge shows up)
+    let mut inherited: Option<Vec<Vec3>> = None;
+    let mut is_inherited = |m: Vec3| -> bool {
+        let list = inherited.get_or_insert_with(|| {
+            let mut out = vec![];
+            for x in [a, b] {
+                let mids: Vec<(Vec3, Vec3, Vec3)> = x
+                    .edge_ids()
+                    .map(|e| {
+                        let ed = x.edge(e);
+                        (ed.curve.eval(0.5 * (ed.t0 + ed.t1)), ed.curve.eval(ed.t0), ed.curve.eval(ed.t1))
+                    })
+                    .collect();
+                for (i, (m1, s1, e1)) in mids.iter().enumerate() {
+                    let t = 1e-6 * (1.0 + m1.len());
+                    if mids[i + 1..].iter().any(|(m2, s2, e2)| m1.dist(*m2) < t && ((s1.dist(*s2) < t && e1.dist(*e2) < t) || (s1.dist(*e2) < t && e1.dist(*s2) < t))) {
+                        out.push(*m1);
+                    }
+                }
+            }
+            out
+        });
+        list.iter().any(|p| p.dist(m) < 1e-6 * (1.0 + m.len()))
+    };
     let bad_issues: Vec<_> = issues
         .into_iter()
         .filter(|i| matches!(i, Issue::OpenEdge(_) | Issue::NonManifoldEdge(..) | Issue::BrokenLoop(..) | Issue::BadPairing(_)))
+        .filter(|i| match i {
+            Issue::NonManifoldEdge(e, 4) => {
+                let ed = body.edge(*e);
+                let m = ed.curve.eval(0.5 * (ed.t0 + ed.t1));
+                !is_inherited(m)
+            }
+            _ => true,
+        })
         .collect();
     if !bad_issues.is_empty() {
         super::bool_dbg!("arrangement:\n{}", arr.dump());
