@@ -81,6 +81,11 @@ struct CutSeg {
     faces: Vec<(usize, FaceId)>,
 }
 
+/// Two edge pieces between the same two vertices that stay within `SLIVER * tol` of each other are one edge: the
+/// lens between them is a sliver the arrangement cannot resolve anyway (a cut curve running 7e-4 beside a rim where
+/// two blade tips touch tangentially left a two-faced lens whose twin edges never paired up).
+const SLIVER: f64 = 100.0;
+
 impl Arrangement {
     /// Weld `p` into the pool.
     fn vertex(&mut self, p: Vec3) -> usize {
@@ -129,9 +134,13 @@ impl Arrangement {
             // samples of the new piece on the existing one
             let on = [0.31, 0.5, 0.73].iter().all(|&f| {
                 let p = curve.eval(t0 + (t1 - t0) * f);
-                near_in_range(&e.curve, (e.t0, e.t1), p, tol * 10.0)
+                near_in_range(&e.curve, (e.t0, e.t1), p, tol * if super::robust() { SLIVER } else { 10.0 })
             });
             if !on {
+                super::bool_dbg!(
+                    "edge pieces share vertices {key:?} but differ: deviations {:?}",
+                    [0.31, 0.5, 0.73].iter().map(|&f| dist_in_range(&e.curve, (e.t0, e.t1), curve.eval(t0 + (t1 - t0) * f)).1).collect::<Vec<_>>()
+                );
                 continue;
             }
             let same = if v0 != v1 {
@@ -192,6 +201,75 @@ pub fn dist_in_range(c: &Curve, r: (f64, f64), p: Vec3) -> (f64, f64) {
 /// control-polygon bound already puts `p` farther than `tol` from a spline.
 pub fn near_in_range(c: &Curve, r: (f64, f64), p: Vec3, tol: f64) -> bool {
     c.may_be_within(p, tol) && dist_in_range(c, r, p).1 <= tol
+}
+
+/// Interior crossings of two cut curves: pushes the crossing point (midpoint of the closest pair) to `out` when the curves
+/// meet within `2 tol` at a parameter strictly inside both ranges. Polyline pre-selection, then alternating closest-point
+/// refinement; only transversal-ish crossings converge, which is what a branch point is.
+fn cut_crossings(a: &CutSeg, b: &CutSeg, tol: f64, out: &mut Vec<Vec3>) {
+    const N: usize = 64;
+    let sample = |c: &CutSeg| -> Vec<(f64, Vec3)> {
+        (0..=N)
+            .map(|k| {
+                let t = c.t0 + (c.t1 - c.t0) * k as f64 / N as f64;
+                (t, c.curve.eval(t))
+            })
+            .collect()
+    };
+    let (pa, pb) = (sample(a), sample(b));
+    let box_of = |p: &[(f64, Vec3)]| p.iter().fold(Aabb::new(p[0].1, p[0].1), |bx, q| bx.union(&Aabb::new(q.1, q.1)));
+    let slack = 0.05 * (box_of(&pa).diagonal().min(box_of(&pb).diagonal())) + 4.0 * tol;
+    if !box_of(&pa).padded(slack).overlaps(&box_of(&pb)) {
+        return;
+    }
+    let mut found: Vec<Vec3> = vec![];
+    for wa in pa.windows(2) {
+        for wb in pb.windows(2) {
+            let (a0, a1, b0, b1) = (wa[0].1, wa[1].1, wb[0].1, wb[1].1);
+            let (da, db) = (a1 - a0, b1 - b0);
+            // closest points of two segments (clamped), good enough for a pre-selection
+            let w = a0 - b0;
+            let (aa, bb, cc, dd, ee) = (da.dot(da), da.dot(db), db.dot(db), da.dot(w), db.dot(w));
+            let den = aa * cc - bb * bb;
+            let (mut s, mut u) = if den > 1e-18 { ((bb * ee - cc * dd) / den, (aa * ee - bb * dd) / den) } else { (0.5, 0.5) };
+            s = s.clamp(0.0, 1.0);
+            u = u.clamp(0.0, 1.0);
+            let (qa, qb) = (a0 + da * s, b0 + db * u);
+            if qa.dist(qb) > slack.max(0.05 * (da.len() + db.len())) {
+                continue;
+            }
+            // refine on the true curves
+            let (mut ta, mut tb) = (wa[0].0 + (wa[1].0 - wa[0].0) * s, wb[0].0 + (wb[1].0 - wb[0].0) * u);
+            let mut ok = false;
+            for _ in 0..30 {
+                let pa_ = a.curve.eval(ta);
+                let (nb, _) = dist_in_range(&b.curve, (b.t0, b.t1), pa_);
+                let pb_ = b.curve.eval(nb);
+                let (na, _) = dist_in_range(&a.curve, (a.t0, a.t1), pb_);
+                let moved = (na - ta).abs() + (nb - tb).abs();
+                ta = na;
+                tb = nb;
+                if moved < 1e-13 {
+                    break;
+                }
+            }
+            let (ca, cb) = (a.curve.eval(ta), b.curve.eval(tb));
+            if ca.dist(cb) <= 2.0 * tol {
+                ok = true;
+            }
+            let inside = |c: &CutSeg, t: f64| {
+                let s = param_slack(&c.curve, t, tol);
+                t > c.t0 + s && t < c.t1 - s
+            };
+            if ok && (inside(a, ta) || inside(b, tb)) {
+                let m = (ca + cb) * 0.5;
+                if !found.iter().any(|f| f.dist(m) <= 10.0 * tol) {
+                    found.push(m);
+                }
+            }
+        }
+    }
+    out.extend(found);
 }
 
 /// Edge tolerance the original stores on every edge (face boxes grow by it:
@@ -395,6 +473,16 @@ pub fn imprint_hooked(a: &Body, b: &Body, tol: f64, hook: Option<PairHook>) -> A
         }
         if cuts.len() > before {
             arr.interacting_pairs += 1;
+        }
+    }
+    // ---- 1b. crossings between two cut curves of the same face pair: two branches of one intersection
+    // (equal-size tubes meeting symmetrically, e.g. crossed blades) cross each other in their interiors
+    // at a singular point; both must be split there or the face walk sees one edge in four directions.
+    for i in 0..if super::robust() { cuts.len() } else { 0 } {
+        for j in i + 1..cuts.len() {
+            if cuts[i].faces == cuts[j].faces {
+                cut_crossings(&cuts[i], &cuts[j], tol, &mut extra);
+            }
         }
     }
     // ---- 2. vertex pool: original vertices, then cut ends

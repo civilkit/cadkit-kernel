@@ -183,6 +183,24 @@ impl FeatureError {
                 .with("toolFace", Json::Str(t.to_string()))
                 .with("gap", Json::Num(g));
         }
+        // a boolean whose assembled result had open / non-manifold edges: `booleanFailed;edgeFaces=<f1>|<f2>;issue=<kind>;at=<x>|<y>|<z>`
+        if let Some((c, d)) = code.split_once(";edgeFaces=") {
+            let (faces, rest) = d.split_once(";issue=").unwrap_or((d, ""));
+            let (issue, at) = rest.split_once(";at=").unwrap_or((rest, ""));
+            let at: Vec<Json> = at.split('|').filter_map(|x| x.parse::<f64>().ok()).map(Json::Num).collect();
+            let mut e = FeatureError { code: c.to_string(), params: Vec::new() }
+                .with("faces", Json::Arr(faces.split('|').filter(|s| !s.is_empty()).map(|s| Json::Str(s.to_string())).collect()))
+                .with("issue", Json::Str(issue.to_string()));
+            if at.len() == 3 {
+                e = e.with("at", Json::Arr(at));
+            }
+            return e.with(
+                "hint",
+                Json::Str(
+                    "the intersection of these faces could not be closed into a valid solid (touching tangentially, a rim lying on the other surface, or a sliver thinner than ~1e-3); move the tool by a small amount (0.01), unite the bodies that touch each other first, or make the near-coincident faces exactly coincident".to_string(),
+                ),
+            );
+        }
         FeatureError { code: code.to_string(), params: Vec::new() }
     }
     pub fn with(mut self, k: &str, v: Json) -> FeatureError {

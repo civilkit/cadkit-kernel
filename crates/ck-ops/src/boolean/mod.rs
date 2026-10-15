@@ -37,6 +37,31 @@ macro_rules! bool_dbg {
 }
 pub(crate) use bool_dbg;
 
+thread_local! {
+    static ROBUST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Robust mode: set only for the last-resort attempts of a boolean whose ordinary attempts all failed to
+/// assemble. It switches on three sliver-tolerant steps that would change (and slow) results that already work:
+/// splitting two cut curves of one face pair where they cross each other (imprint), merging edge pieces that stay
+/// within 100 tol of each other between the same two vertices (imprint), and classifying a fragment sampled
+/// within a sliver's width of the other solid by a vote of all rays (classify).
+pub(crate) fn robust() -> bool {
+    ROBUST.with(|r| r.get())
+}
+
+pub(crate) struct RobustGuard(bool);
+impl RobustGuard {
+    pub(crate) fn new() -> RobustGuard {
+        RobustGuard(ROBUST.with(|r| r.replace(true)))
+    }
+}
+impl Drop for RobustGuard {
+    fn drop(&mut self) {
+        ROBUST.with(|r| r.set(self.0));
+    }
+}
+
 pub mod apply;
 pub mod assemble;
 pub mod classify;

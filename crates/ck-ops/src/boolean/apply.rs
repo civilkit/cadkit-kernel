@@ -43,15 +43,27 @@ pub struct BoolOut {
 /// (the vertex pool, edge de-duplication and trims all follow `tol`); the
 /// first result that assembles into a closed manifold wins.
 pub fn boolean(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> {
+    FAIL_DIAG.with(|d| d.borrow_mut().take());
     boolean_inner(a, b, op, tol).map_err(|e| {
         if e != "booleanFailed" {
             return e;
         }
+        let diag = FAIL_DIAG.with(|d| d.borrow_mut().take());
         match near_coincident(a, b) {
             Some((fa, fb, gap)) => format!("booleanFailed;nearCoincident={fa}|{fb}|{gap:.3e}"),
-            None => e,
+            None => match diag {
+                Some(d) => format!("booleanFailed;{d}"),
+                None => e,
+            },
         }
     })
+}
+
+thread_local! {
+    /// Where the last assembled body of a failed boolean was not closed: `edgeFaces=<f1>|<f2>..;issue=<kind>;at=<x>|<y>|<z>`
+    /// (the faces that border the offending edges, the first kind of defect, the point of the first one), taken by
+    /// [`boolean`] into the error so the caller can say which faces to look at.
+    static FAIL_DIAG: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
 }
 
 /// The pair of free-form faces (one of `a`, one of `b`) that nearly coincide: every sampled edge point of the `b` face is
@@ -98,7 +110,25 @@ fn near_coincident(a: &Body, b: &Body) -> Option<(String, String, f64)> {
     best
 }
 
+/// The ordinary ladder, then (only when it failed to assemble) the robust one: the same attempts with the
+/// sliver-tolerant machinery of [`super::robust`] switched on. Results of operations that already succeed are
+/// therefore untouched (same bits, same speed); the robust mode only ever turns a `booleanFailed` into a result.
 fn boolean_inner(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> {
+    let r = boolean_plain(a, b, op, tol);
+    if !matches!(&r, Err(e) if e == "booleanFailed") {
+        return r;
+    }
+    let _guard = super::RobustGuard::new();
+    for t in [tol * 10.0, tol, tol * 100.0] {
+        super::bool_dbg!("robust retry at tolerance {:e}", t);
+        if let Ok(out) = boolean_at(a, b, op, t) {
+            return Ok(if out.no_effect { out } else { sanity(a, b, op, out) });
+        }
+    }
+    r
+}
+
+fn boolean_plain(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> {
     // A free-form operand (B-spline or offset faces) meets the other solid along marched curves whose
     // ends agree with their neighbours only to ~1e-6 to 1e-5, so at the base welding tolerance the first
     // attempt of such a cut or union tends to leave the arrangement open (a full wasted attempt before the
@@ -269,6 +299,27 @@ fn boolean_at(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> {
             }
         }
         super::bool_dbg!("assembled body invalid: {} issues, first {:?}", bad_issues.len(), &bad_issues[..bad_issues.len().min(6)]);
+        let mut names: Vec<String> = vec![];
+        let mut first: Option<(&'static str, Vec3)> = None;
+        for i in &bad_issues {
+            let (e, kind) = match i {
+                Issue::OpenEdge(e) => (*e, "openEdge"),
+                Issue::NonManifoldEdge(e, _) => (*e, "nonManifoldEdge"),
+                Issue::BadPairing(e) => (*e, "badPairing"),
+                _ => continue,
+            };
+            let ed = body.edge(e);
+            first.get_or_insert((kind, ed.curve.eval(0.5 * (ed.t0 + ed.t1))));
+            for &c in body.edge_coedges(e).iter() {
+                let n = body.face_id_str(body.coedge_face(c));
+                if !names.contains(&n) && names.len() < 8 {
+                    names.push(n);
+                }
+            }
+        }
+        if let Some((kind, p)) = first {
+            FAIL_DIAG.with(|d| *d.borrow_mut() = Some(format!("edgeFaces={};issue={kind};at={:.4}|{:.4}|{:.4}", names.join("|"), p.x, p.y, p.z)));
+        }
         return Err("booleanFailed".into());
     }
     Ok(BoolOut { body, no_effect: false, mismatch: None })

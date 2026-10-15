@@ -20,11 +20,14 @@
 //!   a cylindrical HOLE has none (concave), planes none, sphere 11841 of
 //!   13293 edges (all convex ones). GUESS: cross-face smooth edges excluded.
 //! - `box` = bounds of the f32 positions (oracle boxes are f32-rounded).
-use crate::curvature::{self, Tol};
+use crate::curvature::{self, Tol, MIN_CHORD};
 use crate::face::{self, FaceCut, FaceMesh};
 use ck_geom::{Vec2, Vec3};
 use ck_topo::body::{Body, EdgeId, FaceId};
 use ck_core::fxhash::FxHashMap as HashMap;
+use std::cell::RefCell;
+use std::collections::BTreeMap;
+use std::rc::Rc;
 
 /// Shared edge samples: `params[e]` = sorted parameter list of edge `e`.
 #[derive(Debug, Clone, Default)]
@@ -79,7 +82,7 @@ pub struct Tess {
     pub edges: EdgeSampling,
     pub mesh: Mesh,
     /// Per wire face, the face triangulation (None when it failed).
-    pub faces: Vec<Option<FaceMesh>>,
+    pub faces: Vec<Option<Rc<FaceMesh>>>,
 }
 
 impl Tess {
@@ -111,7 +114,15 @@ fn polyline(body: &Body, e: EdgeId, ps: &[f64], virt: (bool, bool)) -> Vec<Vec3>
 /// Regen tolerance of a body (chord from its bbox, angle 0.3).
 pub fn body_tol(body: &Body) -> Tol {
     let (lo, hi) = body.bbox();
-    Tol::for_bbox(lo, hi)
+    let mut t = Tol::for_bbox(lo, hi);
+    // The box of a body with curved faces moves in the last bits when an unrelated feature changes, and with it every
+    // sample (ties between equal gaps in the periodic cuts are decided by rounding noise): round the chord DOWN to four
+    // significant figures so that unchanged faces mesh bit-identically (and the face cache can find them).
+    if t.chord.is_finite() && t.chord > 0.0 {
+        let q = 10f64.powi(t.chord.log10().floor() as i32 - 3);
+        t.chord = ((t.chord / q).floor() * q).max(MIN_CHORD.min(t.chord));
+    }
+    t
 }
 
 /// Samples every live edge: curve params, per-coedge uv refinement, per-face
@@ -335,17 +346,40 @@ pub fn tessellate(body: &Body) -> Tess {
 
 /// Tessellates the body with an explicit tolerance.
 pub fn tessellate_with(body: &Body, tol: &Tol) -> Tess {
+    tessellate_impl(body, tol, false)
+}
+
+/// Like [`tessellate`], but every face that was meshed before with identical inputs (surface, trim loops, edge samples,
+/// tolerance) comes out of the per-thread face cache ([`face_cache_stats`]) instead of being meshed again. The mesh is
+/// bit-identical to the uncached one.
+pub fn tessellate_memo(body: &Body) -> Tess {
+    tessellate_impl(body, &body_tol(body), true)
+}
+
+fn tessellate_impl(body: &Body, tol: &Tol, memo: bool) -> Tess {
     let edges = sample_edges(body, tol);
-    let mut faces = vec![];
+    let mut outs: Vec<Option<Rc<FaceOut>>> = vec![];
     for f in body.face_ids() {
+        let key = if memo { Some(face_key(body, f, &edges, tol)) } else { None };
+        if let Some(k) = &key {
+            if let Some(hit) = FACE_CACHE.with(|c| c.borrow_mut().get(k)) {
+                outs.push(hit);
+                continue;
+            }
+        }
         let r = face::mesh_face(body, f, &edges.params, &edges.virt, &edges.ssi, edges.cuts[f.idx()], tol);
         #[cfg(not(target_arch = "wasm32"))]
         if let (Err(e), true) = (&r, std::env::var("CK_TESS_DBG").is_ok()) {
             eprintln!("tessellate: face {} dropped: {e}", body.face_id_str(f));
         }
-        faces.push(r.ok());
+        let out = r.ok().map(|fm| Rc::new(assemble_face(body, f, fm)));
+        if let Some(k) = key {
+            FACE_CACHE.with(|c| c.borrow_mut().put(k, out.clone()));
+        }
+        outs.push(out);
     }
-    let mesh = assemble(body, &faces);
+    let mesh = assemble(&outs);
+    let faces = outs.iter().map(|o| o.as_ref().map(|o| o.mesh.clone())).collect();
     Tess { tol: Some(*tol), edges, mesh, faces }
 }
 
@@ -360,59 +394,95 @@ fn push3(v: &mut Vec<f32>, p: Vec3) {
     v.push(p.z as f32);
 }
 
-fn assemble(body: &Body, faces: &[Option<FaceMesh>]) -> Mesh {
+/// One face's contribution to the display mesh (everything but the wire face index): the triangulation and its
+/// f32 buffers. Depends only on the face's own geometry, so it is what the face cache stores.
+#[derive(Debug)]
+pub struct FaceOut {
+    pub mesh: Rc<FaceMesh>,
+    pub positions: Vec<f32>,
+    pub normals: Vec<f32>,
+    pub mids: Vec<f32>,
+    pub silhouette: Vec<f32>,
+}
+
+impl FaceOut {
+    pub fn num_tris(&self) -> usize {
+        self.mesh.tris.len()
+    }
+    fn bytes(&self) -> usize {
+        let fm = &self.mesh;
+        4 * (self.positions.len() + self.normals.len() + self.mids.len() + self.silhouette.len())
+            + fm.uv.len() * 16
+            + fm.pts.len() * 24
+            + fm.nrm.len() * 24
+            + fm.tris.len() * 12
+            + 256
+    }
+}
+
+fn assemble(outs: &[Option<Rc<FaceOut>>]) -> Mesh {
     let mut m = Mesh::default();
-    let fids: Vec<FaceId> = body.face_ids().collect();
-    for (wi, fm) in faces.iter().enumerate() {
-        let Some(fm) = fm else {
+    let n: usize = outs.iter().flatten().map(|o| o.num_tris()).sum();
+    m.positions.reserve(9 * n);
+    m.normals.reserve(9 * n);
+    m.mids.reserve(9 * n);
+    m.tri_face.reserve(n);
+    for (wi, o) in outs.iter().enumerate() {
+        let Some(o) = o else {
             m.failed.push(wi);
             continue;
         };
-        let face = body.face(fids[wi]);
-        let surf = &face.surface;
-        let planar = matches!(surf, ck_geom::surface::Surface::Plane { .. });
-        let cut = |uv: Vec2| -> Vec2 {
-            // the same wrap the vertex normals use: the far copy of a strip point evaluates at the near edge
-            let mut e = uv;
-            if let Some((c, p)) = fm.win[0] {
-                if e.x >= c + p {
-                    e.x -= p;
-                }
+        m.positions.extend_from_slice(&o.positions);
+        m.normals.extend_from_slice(&o.normals);
+        m.mids.extend_from_slice(&o.mids);
+        m.silhouette.extend_from_slice(&o.silhouette);
+        m.tri_face.resize(m.tri_face.len() + o.num_tris(), wi as i32);
+    }
+    m
+}
+
+fn assemble_face(body: &Body, f: FaceId, fm: FaceMesh) -> FaceOut {
+    let mut m = Mesh::default();
+    let face = body.face(f);
+    let surf = &face.surface;
+    let planar = matches!(surf, ck_geom::surface::Surface::Plane { .. });
+    let cut = |uv: Vec2| -> Vec2 {
+        // the same wrap the vertex normals use: the far copy of a strip point evaluates at the near edge
+        let mut e = uv;
+        if let Some((c, p)) = fm.win[0] {
+            if e.x >= c + p {
+                e.x -= p;
             }
-            if let Some((c, p)) = fm.win[1] {
-                if e.y >= c + p {
-                    e.y -= p;
-                }
-            }
-            e
-        };
-        let base_tri = m.tri_face.len();
-        let mut fnorm: Vec<Vec3> = Vec::with_capacity(fm.tris.len());
-        for t in &fm.tris {
-            let (a, b, c) = (t[0] as usize, t[1] as usize, t[2] as usize);
-            for &k in &[a, b, c] {
-                push3(&mut m.positions, fm.pts[k]);
-                push3(&mut m.normals, fm.nrm[k]);
-            }
-            for &(i, j) in &[(a, b), (b, c), (c, a)] {
-                let mid = if planar {
-                    Vec3::ZERO
-                } else {
-                    let uv = cut((fm.uv[i] + fm.uv[j]) * 0.5);
-                    let nm = FaceMesh::outward(surf, face.sense, uv);
-                    nm - (fm.nrm[i] + fm.nrm[j]) * 0.5
-                };
-                push3(&mut m.mids, mid);
-            }
-            m.tri_face.push(wi as i32);
-            // facet normals come from the f32 display positions (pinned: oracle silhouette normals)
-            let r = |p: Vec3| Vec3::new(p.x as f32 as f64, p.y as f32 as f64, p.z as f32 as f64);
-            fnorm.push((r(fm.pts[b]) - r(fm.pts[a])).cross(r(fm.pts[c]) - r(fm.pts[a])).normalize());
         }
-        let _ = base_tri;
-        if planar {
-            continue;
+        if let Some((c, p)) = fm.win[1] {
+            if e.y >= c + p {
+                e.y -= p;
+            }
         }
+        e
+    };
+    let mut fnorm: Vec<Vec3> = Vec::with_capacity(fm.tris.len());
+    for t in &fm.tris {
+        let (a, b, c) = (t[0] as usize, t[1] as usize, t[2] as usize);
+        for &k in &[a, b, c] {
+            push3(&mut m.positions, fm.pts[k]);
+            push3(&mut m.normals, fm.nrm[k]);
+        }
+        for &(i, j) in &[(a, b), (b, c), (c, a)] {
+            let mid = if planar {
+                Vec3::ZERO
+            } else {
+                let uv = cut((fm.uv[i] + fm.uv[j]) * 0.5);
+                let nm = FaceMesh::outward(surf, face.sense, uv);
+                nm - (fm.nrm[i] + fm.nrm[j]) * 0.5
+            };
+            push3(&mut m.mids, mid);
+        }
+        // facet normals come from the f32 display positions (pinned: oracle silhouette normals)
+        let r = |p: Vec3| Vec3::new(p.x as f32 as f64, p.y as f32 as f64, p.z as f32 as f64);
+        fnorm.push((r(fm.pts[b]) - r(fm.pts[a])).cross(r(fm.pts[c]) - r(fm.pts[a])).normalize());
+    }
+    if !planar {
         // silhouette candidates: same-face edges welded by position, strictly convex
         let key = |p: Vec3| (p.x.to_bits(), p.y.to_bits(), p.z.to_bits());
         let mut seen: HashMap<((u64, u64, u64), (u64, u64, u64)), usize> = HashMap::default();
@@ -442,7 +512,132 @@ fn assemble(body: &Body, faces: &[Option<FaceMesh>]) -> Mesh {
             }
         }
     }
-    m
+    FaceOut { mesh: Rc::new(fm), positions: m.positions, normals: m.normals, mids: m.mids, silhouette: m.silhouette }
+}
+
+// ------------------------------------------------------------------------------------------------ face cache
+
+/// Everything `mesh_face` reads for face `f`, as a byte string: equal keys mean an identical triangulation.
+/// (Debug output of f64 is the shortest string that round-trips, so equal text is equal bits.)
+fn face_key(body: &Body, f: FaceId, edges: &EdgeSampling, tol: &Tol) -> Vec<u8> {
+    use std::fmt::Write;
+    let mut s = String::with_capacity(512);
+    let face = body.face(f);
+    let _ = write!(s, "{:?}|{}|{:?}|{:?}|", face.surface, face.sense, edges.cuts[f.idx()], tol);
+    for &l in &face.loops {
+        let lp = body.lp(l);
+        if !lp.alive {
+            continue;
+        }
+        s.push('L');
+        for &c in &lp.coedges {
+            let ce = body.coedge(c);
+            if !ce.alive {
+                continue;
+            }
+            let e = ce.edge;
+            let ed = body.edge(e);
+            let _ = write!(
+                s,
+                "[{}{}{:?} {:?} {} {} {:?} {:?} {:?} {:?} {:?}]",
+                ce.rev as u8,
+                body.is_seam(e) as u8,
+                ed.curve,
+                ce.pcurve,
+                ed.t0,
+                ed.t1,
+                edges.params[e.idx()],
+                edges.virt[e.idx()],
+                edges.ssi[e.idx()],
+                body.vertex(body.coedge_start(c)).p,
+                body.vertex(body.coedge_end(c)).p,
+            );
+        }
+    }
+    s.into_bytes()
+}
+
+/// Byte cap of the per-thread face cache.
+pub const FACE_CACHE_CAP: usize = 128 << 20;
+
+#[derive(Default, Clone, Copy, Debug)]
+pub struct FaceCacheStats {
+    pub lookups: u64,
+    pub hits: u64,
+    pub entries: usize,
+    pub bytes: usize,
+    pub evicted: u64,
+}
+
+struct FaceCache {
+    map: HashMap<Vec<u8>, (Option<Rc<FaceOut>>, u64)>,
+    /// last_used tick -> key, oldest first
+    lru: BTreeMap<u64, Vec<u8>>,
+    tick: u64,
+    bytes: usize,
+    cap: usize,
+    stats: FaceCacheStats,
+}
+
+impl Default for FaceCache {
+    fn default() -> Self {
+        FaceCache { map: HashMap::default(), lru: BTreeMap::new(), tick: 0, bytes: 0, cap: FACE_CACHE_CAP, stats: FaceCacheStats::default() }
+    }
+}
+
+impl FaceCache {
+    fn get(&mut self, k: &Vec<u8>) -> Option<Option<Rc<FaceOut>>> {
+        self.stats.lookups += 1;
+        self.tick += 1;
+        let t = self.tick;
+        let e = self.map.get_mut(k)?;
+        self.lru.remove(&e.1);
+        e.1 = t;
+        self.lru.insert(t, k.clone());
+        self.stats.hits += 1;
+        Some(e.0.clone())
+    }
+    fn put(&mut self, k: Vec<u8>, v: Option<Rc<FaceOut>>) {
+        if self.map.contains_key(&k) {
+            return;
+        }
+        self.tick += 1;
+        self.bytes += k.len() + v.as_ref().map_or(64, |o| o.bytes());
+        self.lru.insert(self.tick, k.clone());
+        self.map.insert(k, (v, self.tick));
+        while self.bytes > self.cap && self.map.len() > 1 {
+            let Some((&t, _)) = self.lru.iter().next() else { break };
+            let key = self.lru.remove(&t).unwrap();
+            if let Some((o, _)) = self.map.remove(&key) {
+                self.bytes -= key.len() + o.as_ref().map_or(64, |o| o.bytes());
+                self.stats.evicted += 1;
+            }
+        }
+    }
+}
+
+thread_local! {
+    static FACE_CACHE: RefCell<FaceCache> = RefCell::new(FaceCache::default());
+}
+
+pub fn face_cache_stats() -> FaceCacheStats {
+    FACE_CACHE.with(|c| {
+        let c = c.borrow();
+        FaceCacheStats { entries: c.map.len(), bytes: c.bytes, ..c.stats }
+    })
+}
+
+pub fn set_face_cache_cap(cap: usize) {
+    FACE_CACHE.with(|c| c.borrow_mut().cap = cap);
+}
+
+pub fn clear_face_cache() {
+    FACE_CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        c.map.clear();
+        c.lru.clear();
+        c.bytes = 0;
+    });
 }
 
 #[cfg(test)]

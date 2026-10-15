@@ -47,8 +47,13 @@ Fixed causes, each with a test in `crates/ck-model/tests/` (`shell_thickness_edi
 
 ## Left
 
-- `propeller_000192` cpattern angle edits: union of lofted blade copies fails in the surface
-  intersection of tangent-touching loft surfaces (intersect/ss.rs). The document's own baseline
-  fails on the original too.
+- `propeller_000192` cpattern angle edits: the union of the lofted blade copies used to fail
+  (`booleanFailed`); fixed 2026-10-15 by the boolean robust mode (crossing cut curves, sliver edge pieces,
+  sliver classification; docs/spec-agent-interface.md "Boolean robustness"). Of 14 cpattern edits (release wasm)
+  10 now regenerate valid: two blades at 90, 100, 120, 135 degrees, three and four equal blades, 3 at 90, 4 at 80
+  and 90, six equal blades (49 s CPU); still `booleanFailed` with the new `faces` / `at` report: two blades 170
+  degrees apart, four at 100, five and eight equal over 360. Same family as the fixed ones (cut curve against a seam
+  ruling, rim pieces used by one face only, a cap fragment kept while the lateral fragment across the same rim is
+  dropped: the two samples of a sliver fragment disagree), not yet handled by the robust steps.
 - `twisted_drill_000546` partial revolve cut: ours vs original differ by 0.23 %, no ground truth.
 - `enclosure` depth edits: the original fillets an inner edge; ours is the consistent choice.

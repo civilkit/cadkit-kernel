@@ -401,6 +401,11 @@ impl<'a> Solid<'a> {
 
     /// Point `p` (near face `i`'s surface) inside / on / outside face `i`.
     fn in_face(&self, i: usize, p: Vec3) -> Where {
+        self.in_face_within(i, p, self.tol * 10.0)
+    }
+
+    /// [`Self::in_face`] for a point up to `lim` off the face's surface (its foot point decides).
+    fn in_face_within(&self, i: usize, p: Vec3, lim: f64) -> Where {
         let b = self.body;
         for &e in &self.edges[i] {
             let ed = b.edge(e);
@@ -409,7 +414,7 @@ impl<'a> Solid<'a> {
             }
         }
         let s = &b.face(self.faces[i]).surface;
-        if s.distance(p) > self.tol * 10.0 {
+        if s.distance(p) > lim {
             return Where::Out;
         }
         let loops = self.loops[i].get_or_init(|| face_loops_uv_fine(b, self.faces[i]));
@@ -432,14 +437,41 @@ impl<'a> Solid<'a> {
             return Class::Out;
         }
         let near = crate::bvh::Aabb::new(q, q).padded(tol * 10.0);
+        let band = (tol * 100.0).max(5e-4);
+        let robust = super::robust();
+        let mut sliver = false;
         for i in self.bvh.query_box(&near) {
             let g = self.faces[i];
             let (u, v, cp) = b.face(g).surface.closest_point(q);
-            if cp.dist(q) > tol * 10.0 || self.in_face(i, q) == Where::Out {
+            let d = cp.dist(q);
+            if d > tol * 10.0 {
+                // within a sliver's width of the face itself (not just of its surface extended beyond its edges)
+                sliver = sliver || (robust && d <= band && self.in_face_within(i, q, band) != Where::Out);
+                continue;
+            }
+            if self.in_face(i, q) == Where::Out {
                 continue;
             }
             let ng = b.outward_normal(g, u, v);
             return if ng.dot(n) > 0.0 { Class::OnSame } else { Class::OnOpp };
+        }
+        // A sample within a sliver's width of the other solid's boundary (the fragment is a thin lens between
+        // two near-tangent surfaces, e.g. crossed blades touching at their tips) is neither clearly in nor out:
+        // single rays then disagree (their hits fall on face rims, in_face is off by the lens width). Take the
+        // majority of all rays, and the winding number when they split evenly.
+        if sliver {
+            let (mut ins, mut outs) = (0usize, 0usize);
+            for d in RAYS {
+                match self.ray_parity(q, Vec3::new(d[0], d[1], d[2])) {
+                    Some(true) => ins += 1,
+                    Some(false) => outs += 1,
+                    None => {}
+                }
+            }
+            if ins != outs && (ins == 0 || outs == 0 || ins.abs_diff(outs) >= 2) {
+                return if ins > outs { Class::In } else { Class::Out };
+            }
+            return if winding_number(b, &self.faces, q) > 0.5 { Class::In } else { Class::Out };
         }
         for d in RAYS {
             if let Some(inside) = self.ray_parity(q, Vec3::new(d[0], d[1], d[2])) {

@@ -32,6 +32,7 @@ pub mod engine;
 pub mod profile_q;
 pub mod refdiff;
 pub mod regen_cache;
+pub mod view_cache;
 pub mod sketch_q;
 
 #[cfg(target_arch = "wasm32")]

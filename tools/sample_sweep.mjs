@@ -1,93 +1,66 @@
-// Regenerate every kit sample through a wasm build and compare two runs (regression sweep for speed work).
-//   node tools/sample_sweep.mjs run --wasm w.wasm --out a.json [--samples <dir>] [--only id,id] [--timeout 240]
-//   node tools/sample_sweep.mjs cmp old.json new.json     # volumes within 1e-6, no error, no sample >20 % slower
-// Each sample runs in a child process on a fresh instance (noCache, cold build), so a hang cannot stall the sweep.
-import { readFileSync, writeFileSync, readdirSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+// Regenerate every sample part of the kit (or any directory of .ckpart files) through a kernel wasm and record
+// time, feature errors, volume and validity. Run it before and after a kernel change and compare: a regression
+// that makes one sample error, change volume or run much slower is caught here (a past change made swept-handle 79 s).
+//
+//   node tools/sample_sweep.mjs --wasm <wasm> --dir <samples dir> --out run.json [--only name,name]
+//   node tools/sample_sweep.mjs --compare before.json after.json [--slower 1.2] [--vol 1e-6]
+//
+// Times are CPU seconds of the process (reliable on a loaded machine). Compare exit code 1 when a sample errors (that did not before), its volume changes by more than --vol (relative),
+// or it is more than --slower times slower (default 1.2) and slower by at least 0.3 s.
+import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { Kernel } from './kernel.mjs';
 
 const args = process.argv.slice(2);
-const opt = (f, d = null) => { const i = args.indexOf(f); if (i < 0) return d; const v = args[i + 1]; args.splice(i, 2); return v; };
-const DEF = '/path/to/work/kit/apps/cad/public/samples';
+const opt = (f, d = null) => { const i = args.indexOf(f); return i < 0 ? d : args[i + 1]; };
 
-if (args[0] === 'child') {
-  const [, wasm, file, repsArg] = args;
-  const B = new WebAssembly.Module(readFileSync(wasm));
-  const part = JSON.parse(readFileSync(file, 'utf8'));
-  // `reps` cold builds, each on a fresh instance of the compiled module; the minimum is reported (the
-  // dev machine is shared, so one sample is noisy); the last instance answers massProps / validate
-  let k, rep, o, build = Infinity, wall = Infinity;
-  for (let r = 0; r < +(repsArg ?? 1); r++) {
-    k = new Kernel(B, { now: () => performance.now(), unixMs: () => Date.now() });
-    const t0 = performance.now();
-    rep = k.request(JSON.stringify({ id: 1, msg: { type: 'regen', tag: 'main', part, debug: true, opts: { noCache: true } } }));
-    const w = performance.now() - t0;
-    if (rep.trap) { console.log(JSON.stringify({ trap: rep.trap.slice(0, 160), wall: w })); process.exit(0); }
-    o = JSON.parse(rep.json);
-    wall = Math.min(wall, w);
-    for (const s of o.trace ?? []) if (s.depth === 0 && s.label.startsWith('regenerate')) build = Math.min(build, s.ms);
-    if (w > 4000) break; // slow parts: fewer repeats
+if (args.includes('--compare')) {
+  const [fa, fb] = args.slice(args.indexOf('--compare') + 1, args.indexOf('--compare') + 3);
+  const A = JSON.parse(readFileSync(fa, 'utf8')), B = JSON.parse(readFileSync(fb, 'utf8'));
+  const slower = +opt('--slower', 1.2), volTol = +opt('--vol', 1e-6);
+  let bad = 0;
+  for (const name of Object.keys(B)) {
+    const a = A[name], b = B[name];
+    if (!a) { console.log(`${name}: new`); continue; }
+    const notes = [];
+    if (b.errors.length && JSON.stringify(b.errors) !== JSON.stringify(a.errors)) notes.push(`ERRORS ${JSON.stringify(b.errors)} (was ${JSON.stringify(a.errors)})`);
+    const dv = Math.abs(b.volume - a.volume) / Math.max(Math.abs(a.volume), 1e-12);
+    if (!(dv <= volTol)) notes.push(`VOLUME ${a.volume} -> ${b.volume} (${dv.toExponential(2)})`);
+    if (b.valid !== a.valid) notes.push(`VALID ${a.valid} -> ${b.valid}`);
+    if (b.seconds > a.seconds * slower && b.seconds - a.seconds > 0.3) notes.push(`SLOWER ${a.seconds.toFixed(2)}s -> ${b.seconds.toFixed(2)}s`);
+    if (notes.length) { bad++; console.log(`${name}: ${notes.join('; ')}`); }
   }
-  const q = (id, msg) => { const r = k.request(JSON.stringify({ id, msg })); return r.trap ? null : JSON.parse(r.json).result; };
-  const mp = q(2, { type: 'massProps', tag: 'main' });
-  const v = q(3, { type: 'validate', tag: 'main' });
-  console.log(JSON.stringify({ wall, build, errors: (o.result?.errors ?? []).map(([f, e]) => `${f}:${e.code}`).join(','),
-    body: !!o.result?.body, volume: mp?.volume ?? null, area: mp?.area ?? null, issues: v?.issues?.length ?? null }));
-  process.exit(0);
-}
-
-if (args[0] === 'run') {
-  args.shift();
-  const wasm = path.resolve(opt('--wasm')); const out = opt('--out'); const dir = opt('--samples', DEF);
-  const only = opt('--only'); const reps = opt('--reps', '3'); const timeout = +opt('--timeout', 240) * 1000;
-  const here = fileURLToPath(import.meta.url);
-  let files = readdirSync(dir).filter((f) => f.endsWith('.ckpart')).sort();
-  if (only) files = files.filter((f) => only.split(',').includes(f.replace(/\.ckpart$/, '')));
-  // `--wasm2 w2 --out2 o2` times a second build in the same pass, alternating per sample (load drift hits both)
-  const w2 = opt('--wasm2');
-  const wasm2 = w2 ? path.resolve(w2) : null;
-  const out2 = opt('--out2');
-  const one = (w, f) => {
-    const r = spawnSync('node', [here, 'child', w, path.join(dir, f), reps], { encoding: 'utf8', timeout, maxBuffer: 1 << 28 });
-    try { return JSON.parse(r.stdout.trim().split('\n').pop()); } catch { return { trap: r.error ? 'timeout' : 'crash ' + (r.stderr || '').slice(0, 100) }; }
-  };
-  const res = {}, res2 = {};
-  for (const f of files) {
-    const id = f.replace(/\.ckpart$/, '');
-    const x = (res[id] = one(wasm, f));
-    const y = wasm2 ? (res2[id] = one(wasm2, f)) : null;
-    const fm = (z) => (z.trap ? 'TRAP ' + z.trap : `${(z.build ?? z.wall).toFixed(0).padStart(7)} ms vol ${z.volume} ${z.errors || ''}`);
-    console.error(id.padEnd(40), fm(x), y ? ' | ' + fm(y) : '');
-  }
-  if (wasm2) writeFileSync(out2, JSON.stringify(res2, null, 1));
-  writeFileSync(out, JSON.stringify(res, null, 1));
-  process.exit(0);
-}
-
-if (args[0] === 'cmp') {
-  const a = JSON.parse(readFileSync(args[1], 'utf8')); const b = JSON.parse(readFileSync(args[2], 'utf8'));
-  let bad = 0, sa = 0, sb = 0;
-  for (const id of Object.keys(a)) {
-    const x = a[id], y = b[id]; if (!y) continue;
-    const msgs = [];
-    if (y.trap && !x.trap) msgs.push('NEW TRAP ' + y.trap);
-    if ((y.errors || '') !== (x.errors || '')) msgs.push(`errors ${x.errors || '-'} -> ${y.errors || '-'}`);
-    if (x.volume != null && y.volume != null) {
-      const rel = Math.abs(x.volume - y.volume) / Math.max(1e-9, Math.abs(x.volume));
-      if (rel > 1e-6) msgs.push(`volume ${x.volume} -> ${y.volume} (${rel.toExponential(2)})`);
-    } else if ((x.volume == null) !== (y.volume == null)) msgs.push('volume presence changed');
-    if ((y.issues ?? 0) > (x.issues ?? 0)) msgs.push(`issues ${x.issues} -> ${y.issues}`);
-    const ta = x.build ?? x.wall, tb = y.build ?? y.wall;
-    sa += ta; sb += tb;
-    const slow = tb > ta * 1.2 && tb - ta > 15;
-    if (slow) msgs.push('SLOWER');
-    console.log(`${id.padEnd(40)} ${ta.toFixed(0).padStart(7)} -> ${tb.toFixed(0).padStart(7)} ms  ${(tb / ta).toFixed(2)}x  ${msgs.join('; ')}`);
-    if (msgs.length) bad++;
-  }
-  console.log(`total ${sa.toFixed(0)} -> ${sb.toFixed(0)} ms; ${bad} flagged`);
+  const ta = Object.values(A).reduce((s, r) => s + r.seconds, 0), tb = Object.values(B).reduce((s, r) => s + r.seconds, 0);
+  console.log(`${Object.keys(B).length} samples, ${bad} regressions; total ${ta.toFixed(1)}s -> ${tb.toFixed(1)}s`);
   process.exit(bad ? 1 : 0);
 }
-console.error('usage: run|cmp');
-process.exit(2);
+
+const wasm = opt('--wasm'), dir = opt('--dir'), out = opt('--out'), only = opt('--only')?.split(',');
+const mod = new WebAssembly.Module(readFileSync(wasm));
+const res = {};
+for (const f of readdirSync(dir).filter((x) => x.endsWith('.ckpart')).sort()) {
+  const name = f.replace(/\.ckpart$/, '');
+  if (only && !only.includes(name)) continue;
+  let part;
+  try { part = JSON.parse(readFileSync(path.join(dir, f), 'utf8')); } catch { continue; }
+  const k = new Kernel(mod);
+  const q = (id, msg) => { const r = k.request(JSON.stringify({ id, msg })); return r.trap ? { trap: r.trap } : JSON.parse(r.json); };
+  // CPU time of this process (the wasm is single threaded): immune to a loaded machine, wall time is kept beside it
+  const c0 = process.cpuUsage(), t0 = process.hrtime.bigint();
+  const reg = q(1, { type: 'regen', tag: 'main', part });
+  const c1 = process.cpuUsage(c0);
+  const seconds = (c1.user + c1.system) / 1e6, wall = Number(process.hrtime.bigint() - t0) / 1e9;
+  const row = { seconds, wall, errors: [], volume: NaN, valid: null };
+  if (reg.trap) row.errors = [`TRAP ${reg.trap.slice(0, 100)}`];
+  else {
+    row.errors = (reg.result?.errors ?? []).map(([id, e]) => `${id}:${e.code}`);
+    if (reg.result?.body) {
+      const mp = q(2, { type: 'massProps', tag: 'main' }).result;
+      row.volume = mp?.volume ?? NaN;
+      row.valid = (q(3, { type: 'validate', tag: 'main' }).result?.issues?.length ?? -1) === 0;
+    }
+  }
+  res[name] = row;
+  console.log(`${name.padEnd(40)} ${seconds.toFixed(2).padStart(7)}s cpu (${wall.toFixed(1)}s wall) vol ${row.volume} ${row.valid === false ? 'INVALID ' : ''}${row.errors.join(',')}`);
+}
+if (out) writeFileSync(out, JSON.stringify(res, null, 1));

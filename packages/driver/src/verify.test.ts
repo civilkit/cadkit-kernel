@@ -161,6 +161,10 @@ describe('booleanFailed hint', () => {
     const h = hintFor('F5', 'booleanFailed', { hostFace: 'F2.S.e1~2', toolFace: 'F4.S.e1~2', gap: 0.0008 });
     assert.ok(h.hint.includes('F4.S.e1~2') && h.hint.includes('F2.S.e1~2') && h.hint.includes('0.0008'), h.hint);
   });
+  it('names the faces and the point where the result stayed open', () => {
+    const h = hintFor('F9', 'booleanFailed', { faces: ['F8.S.e1~1@F9.1', 'F8.S.e1~1@F9.3'], issue: 'nonManifoldEdge', at: [14.2105, 0, 8.2842], hint: 'x' });
+    assert.ok(h.hint.includes('F8.S.e1~1@F9.3') && h.hint.includes('nonManifoldEdge') && h.hint.includes('14.21'), h.hint);
+  });
   it('keeps the general advice without them', () => {
     assert.ok(hintFor('F5', 'booleanFailed', {}).hint.includes('overlap in a volume'));
   });

@@ -94,8 +94,8 @@ fn enclosure_fillet_pick_survives_renumbered_shell_faces() {
 
 /// Filleting the vertical edges of a chamfered plate whose sketch was edited into a trapezoid leaves a
 /// zero-length closed ellipse remnant (a conic cut at its seam parameter) in a blend face loop; it
-/// bounds nothing and made the result "open". Volume as the original (0.003 % apart).
+/// bounds nothing and made the result "open". Volume as the original (0.003 % apart); the translation puts the second slot row on y = 0 as the CadQuery program does (the reference was 1.68 % off with it on y = -22.2).
 #[test]
 fn cable_panel_fillet_after_trapezoid_edit() {
-    check(&edited("bench/benchcad/cable_routing_panel_004961.ckpart.json", 0, "points.0.x", -105.135, 1.25), 67753.20068524149);
+    check(&edited("bench/benchcad/cable_routing_panel_004961.ckpart.json", 0, "points.0.x", -105.135, 1.25), 68835.28005396153);
 }

@@ -27,10 +27,10 @@ const rot = (v) => [v[0], v[2], -v[1]];
 const rotBox = (b) => { const lo = [b[0], b[1], b[2]], hi = [b[3], b[4], b[5]]; const a = rot(lo), c = rot(hi); return { min: a.map((x, i) => Math.min(x, c[i])), max: a.map((x, i) => Math.max(x, c[i])) }; };
 const rel = (x, y) => Math.abs(x - y) / Math.max(Math.abs(y), 1e-12);
 
-function compare(got, want, diag, volTol = TOL) {
+function compare(got, want, diag, volTol = TOL, areaTol = TOL) {
   const bad = [];
   if (!(rel(got.volume, want.volume) <= volTol)) bad.push(`volume ${got.volume?.toPrecision(6)} vs ${want.volume.toPrecision(6)} (${(rel(got.volume, want.volume) * 100).toFixed(2)}%)`);
-  if (!(rel(got.area, want.area) <= TOL)) bad.push(`area ${got.area?.toPrecision(6)} vs ${want.area.toPrecision(6)} (${(rel(got.area, want.area) * 100).toFixed(2)}%)`);
+  if (!(rel(got.area, want.area) <= areaTol)) bad.push(`area ${got.area?.toPrecision(6)} vs ${want.area.toPrecision(6)} (${(rel(got.area, want.area) * 100).toFixed(2)}%)`);
   const dc = Math.max(...want.com.map((c, i) => Math.abs(got.com[i] - c))) / diag;
   if (!(dc <= TOL)) bad.push(`com ${got.com.map((x) => +x.toFixed(3))} vs ${want.com.map((x) => +x.toFixed(3))}`);
   const db = Math.max(...[0, 1, 2].flatMap((i) => [Math.abs(got.box.min[i] - want.box.min[i]), Math.abs(got.box.max[i] - want.box.max[i])])) / diag;
@@ -69,9 +69,9 @@ export function runBench({ wasm, only = null, set = 'benchcad', log = () => {} }
     const mp = q(2, { type: 'massProps', tag: 'main' }).result;
     const got = { volume: mp.volume, area: mp.area, com: mp.com, box: body.box };
     row.got = got; row.want = want;
-    const volTol = manifest.tolerances?.[m.id]?.volume ?? TOL;
-    if (volTol !== TOL) row.notes.push(`volume tolerance ${volTol} (${manifest.tolerances[m.id].note.slice(0, 60)}...)`);
-    if (!errs.length) row.bad.push(...compare(got, want, diag, volTol));
+    const volTol = manifest.tolerances?.[m.id]?.volume ?? TOL, areaTol = manifest.tolerances?.[m.id]?.area ?? TOL;
+    if (volTol !== TOL || areaTol !== TOL) row.notes.push(`volume tolerance ${volTol}, area tolerance ${areaTol} (${manifest.tolerances[m.id].note.slice(0, 60)}...)`);
+    if (!errs.length) row.bad.push(...compare(got, want, diag, volTol, areaTol));
     else row.bad.push(...compare(got, want, diag).map((s) => `(after errors) ${s}`));
     const v = q(3, { type: 'validate', tag: 'main' }).result;
     row.validate = v?.issues?.length ?? -1;

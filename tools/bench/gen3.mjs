@@ -136,12 +136,13 @@ const parts = {};
     h2.json(), cut('F13', 'F12', thru), { type: 'cpattern', id: 'F13p', seeds: ['F13'], axis: { kind: 'axis', axis: 'x' }, count: 8, angle: 360, equal: true }]);
 }
 
-// 9. cable_routing_panel: plate with chamfered top rim, filleted corners, two rows of four slots,
+// 9. cable_routing_panel: plate with chamfered top rim, filleted corners, two rows of four slots (y = 22.2 and y = 0:
+//    the program re-centres the second workplane from the first one's origin, so its center(0, -22.2) lands on y = 0),
 //    four bigger holes and four corner holes
 {
   const a = new Sk('F1', STD('top')); a.rect(-105.135, -46.08, 105.135, 46.08);
   const s = new Sk('F5', STD('top'));
-  for (const y of [22.2, -22.2]) for (let i = 0; i < 4; i++) { const x = (i - 1.5) * 43.89; s.rect(x - 17.65, y - 4.03, x + 17.65, y + 4.03); }
+  for (const y of [22.2, 0]) for (let i = 0; i < 4; i++) { const x = (i - 1.5) * 43.89; s.rect(x - 17.65, y - 4.03, x + 17.65, y + 4.03); }
   const h = new Sk('F7', STD('top'));
   for (let i = 0; i < 4; i++) h.circle((i - 1.5) * 22.14, 0, 5.035);
   const c = new Sk('F9', STD('top'));
