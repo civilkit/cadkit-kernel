@@ -50,6 +50,9 @@ pub struct FaceMesh {
     pub tris: Vec<[u32; 3]>,
     /// Cut windows `(start, period)` of the periodic directions (a strip point at `start + period` evaluates at `start`).
     pub win: [Option<(f64, f64)>; 2],
+    /// The boundary graph handed to the CDT had a vertex of odd degree (an unclosed loop: the CDT then fills
+    /// only part of the face). `mesh_face` retries a periodic face on the universal cover.
+    pub open: bool,
 }
 
 impl FaceMesh {
@@ -234,7 +237,39 @@ fn shift_into(x: f64, m: f64, c: f64, p: f64) -> f64 {
 /// retried in the universal cover: loops are unwrapped continuously through
 /// their seam coedges and triangulated as ordinary closed polygons.
 pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bool)], ssi: &[f64], cut: FaceCut, tol: &Tol) -> Result<FaceMesh, String> {
+    match mesh_face_strict(body, f, params, virt, ssi, cut, tol) {
+        Ok(m) => Ok(m),
+        Err(e) => {
+            // Coedge ends that miss each other by a few 1e-9 of the parameter range (fitted trim curves: a notch
+            // of a spline face closes 8e-9 apart) leave a sliver segment the CDT cannot take. Weld them at 1e-6
+            // and retry; every face that meshed before is untouched.
+            SAME_UV_REL.with(|c| c.set(1e-6));
+            let r = mesh_face_strict(body, f, params, virt, ssi, cut, tol);
+            SAME_UV_REL.with(|c| c.set(1e-9));
+            r.map_err(|e2| format!("{e}; welded: {e2}"))
+        }
+    }
+}
+
+thread_local! {
+    static SAME_UV_REL: std::cell::Cell<f64> = const { std::cell::Cell::new(1e-9) };
+}
+
+fn mesh_face_strict(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bool)], ssi: &[f64], cut: FaceCut, tol: &Tol) -> Result<FaceMesh, String> {
     match mesh_face_impl(body, f, params, virt, ssi, cut, tol, false) {
+        Ok(m) if m.open && body.face(f).surface.periods() != (None, None) => {
+            // an unclosed boundary (a rim edge cut by the window, its ends not meeting): the cut-open strip lost
+            // part of the face. Retry on the universal cover and keep the retry only when its area is within 5
+            // percent of the exact face area and closer to it than the strip's.
+            let area = |m: &FaceMesh| -> f64 {
+                m.tris.iter().map(|t| 0.5 * (m.pts[t[1] as usize] - m.pts[t[0] as usize]).cross(m.pts[t[2] as usize] - m.pts[t[0] as usize]).len()).sum()
+            };
+            let exact = ck_topo::mass::face_integral::<1>(body, f, 1, &|_, n| [n.len()])[0].abs();
+            match mesh_face_impl(body, f, params, virt, ssi, cut, tol, true) {
+                Ok(m2) if (area(&m2) - exact).abs() < 0.05 * exact && (area(&m2) - exact).abs() < (area(&m) - exact).abs() => Ok(m2),
+                _ => Ok(m),
+            }
+        }
         Ok(m) => Ok(m),
         Err(e) => {
             let periodic = body.face(f).surface.periods() != (None, None);
@@ -662,6 +697,16 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
     let to_c = |uv: Vec2| -> Pt { [(uv.x - cuv.x) * su, (uv.y - cuv.y) * sv] };
     let from_c = |p: Pt| -> Vec2 { Vec2::new(p[0] / su + cuv.x, p[1] / sv + cuv.y) };
     let cpts: Vec<Pt> = b.pts.iter().map(|q| to_c(q.uv)).collect();
+    let open = {
+        let mut deg: HashMap<usize, u32> = HashMap::default();
+        for &(a, c) in &b.segs {
+            if a != c {
+                *deg.entry(a).or_insert(0) += 1;
+                *deg.entry(c).or_insert(0) += 1;
+            }
+        }
+        deg.values().any(|d| d % 2 == 1)
+    };
     let mut tri = cdt::triangulate(&cpts, &b.segs)?;
     if std::env::var("CK_DBG").is_ok() {
         eprintln!("DBG face {:?} cu={:?} cv={:?} npts={} nsegs={} inside={} failed={}", f, cu, cv, b.pts.len(), b.segs.len(), tri.cdt.inside_tris().len(), tri.cdt.failed);
@@ -839,7 +884,7 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
     }
 
     // ---- 6. output
-    let mut out = FaceMesh { face: Some(f), win: [cu.zip(pu), cv.zip(pv)], ..Default::default() };
+    let mut out = FaceMesh { face: Some(f), win: [cu.zip(pu), cv.zip(pv)], open, ..Default::default() };
     let mut local: HashMap<u32, u32> = HashMap::default();
     for (_, v) in tri.cdt.inside_tris() {
         let mut ids = [0u32; 3];
@@ -953,7 +998,7 @@ fn weld_dangling_ends(segs: &mut [(BPt, BPt)], eps: f64) {
 }
 
 fn same_uv(a: Vec2, b: Vec2) -> bool {
-    a.dist(b) <= 1e-9 * (1.0 + a.x.abs() + a.y.abs())
+    a.dist(b) <= SAME_UV_REL.with(|c| c.get()) * (1.0 + a.x.abs() + a.y.abs())
 }
 
 /// Connects the end `a` of one coedge to the start `b` of the next: a pole
