@@ -121,6 +121,48 @@ Rules:
 - Not covered: `sweep`, `loft`, `hole` and surface extrudes still use all regions.
   Check: `tools/region_select_check.mjs`, `crates/ck-model/tests/region_select.rs`.
 
+## Thin wall (`extrude` / `revolve` `thin`)
+
+`extrude` (add or cut) and `revolve` take an optional `thin` object: the profile CURVES are offset in the sketch plane
+and the band between them is swept instead of the sketch regions, so an OPEN curve (a C-shaped spline arc) gives a wall in
+one step and a closed loop gives a hollow wall. End conditions, `draft`, `flip`, `regions`, `angle` and the revolve axis
+rules are unchanged.
+
+```json
+{"type":"extrude","id":"F2","op":"add","sketch":"F1","end":"blind","depth":30,"thin":{"thickness":3,"side":"mid","ends":"flat","cornerStyle":"mitre"}}
+{"type":"revolve","id":"F4","op":"add","sketch":"F3","axis":"ax","angle":360,"thin":{"thickness":"=wall","side":"outside"}}
+```
+
+Fields (all but `thickness` optional): `thickness` (number or `=expression`, > 0); `side` `inside` (default) | `outside`
+| `both` | `mid`; `thickness2` (`both` only: the thickness on the second side, default `thickness`); `ends` `flat` (default) |
+`round` (open chains: half-disc caps); `cornerStyle` `mitre` (default) | `round`; `enabled:false` keeps the settings but
+switches the wall off (a `null` or `false` `thin` is off too).
+
+Rules:
+
+- Chains: the closed region loops of the sketch (outer and hole loops, each once), then the open chains made of entities
+  that bound no region (lines, arcs, circles, ellipses, splines and cv-splines, joined end to end, tangent-continuous or
+  with corners). `regions` (entity ids) picks chains the same way it picks regions, with the same errors.
+- Side: closed loops are oriented counter-clockwise, `inside` is the interior. Open chains are oriented so that they turn
+  counter-clockwise (a straight chain keeps the sketch direction); `inside` is the left of that direction, i.e. the inside
+  of the bend. `both` is `thickness` on that side plus `thickness2` on the other, `mid` is `thickness` centred on the curve.
+- Offsetting is exact for lines, arcs and circles; ellipses and splines are fitted (cubic B-spline, within 1e-5). Inner
+  corners are trimmed at the crossing of the offsets, outer corners are mitred (very sharp ones, over 4 thicknesses, are
+  bevelled) or rounded about the corner point.
+- Persistent face names (`<id>` = the feature): `Fn.S.<entity>.W0` the offset side (with `both`, the left offset),
+  `Fn.S.<entity>.W1` the original curve (with `both`, the right offset), `Fn.S.<entity>.E0` / `.E1` the end caps of an open
+  chain (at its first / last entity), `Fn.S.<entity>.W0r` / `.W0m` / `.W0b` round / mitre-connector / bevel pieces of a
+  corner, `Fn.C0` / `Fn.C1` the usual caps. The names follow the sketch entities, so they survive edits that keep the
+  entities.
+- Errors: `thinTooThick {limit, minRadius, maxThickness, thickness, face}`: the offset passes a centre of curvature, a short
+  segment is eaten by an inner corner or the wall overlaps itself. `limit` is `curvature` or `corner`, `minRadius` the
+  tightest radius on the offset side, `maxThickness` a thickness that works (found by bisection, 2% safety), `face` the first
+  entity of the chain. Never a panic. `invalidValue {field:"thin.thickness"|"thin.side"|"thin.ends"|"thin.cornerStyle"}`
+  for bad input; a sketch without curves is `noClosedProfile`.
+- Without `thin`, an open sketch is still `noClosedProfile` ("sketch profile is not closed").
+- Not covered: `thin` on `sweep`, `loft`, `hole` and surface extrudes; non-uniform thickness.
+  Check: `tools/thin_extrude_check.mjs` (wasm, run by `tools/land.sh`), `crates/ck-model/tests/thin_extrude.rs`.
+
 ## End references (`extrude` `upToFace`, `offsetFromFace`, `upToPoint`)
 
 `extrude` (add or cut) can stop at a face, at a face moved by a distance, or at a point's plane.
@@ -322,6 +364,41 @@ and boolean machinery.
   tests check it to 5 percent for full-length threads and to 10 percent for partial
   lengths (the flat groove end).
 - Check: `tools/thread_check.mjs`, `crates/ck-model/tests/thread_feature.rs`.
+
+### Threads in patterns and mirrors
+
+A pattern (`lpattern`, `cpattern`) or `mirror` carries the threads of its seeds onto every
+instance, so the copies of a threaded hole, boss or shaft are threaded too.
+
+- Which threads: a `thread` feature whose `face` was made by a seed (`thread.face` starts with the
+  seed's id: `F4.S.h1` is a face of seed `F4`) is carried automatically, whether it comes before
+  the pattern in the history or after it (a thread added later to an already patterned hole is
+  copied onto the existing instances; patterns are walked in history order, so a pattern of a
+  pattern picks up the new copies). A thread feature can also be listed in `seeds` (`["F4","F5"]`): that
+  copies exactly that thread, even with `carryThreads:false`; a thread seed that produced no
+  entry (failed, suppressed) is a `threadNotCarried` warning. `carryThreads:false` on the
+  pattern / mirror switches the automatic part off (default true). A thread can still be put on
+  one instance face by hand (`F4.S.h1@F7.2`). `mirror` with `body:true` copies every thread of
+  the body (only when the thread precedes the mirror).
+- Result: one `threads` entry per instance, named `<thread id>@<pattern id>.<k>` (`F5@F7.1`),
+  with `face` the persistent instance face (`F4.S.h1@F7.1`), `start` / `dir` transformed by the
+  instance transform, the same standard / size / class / length / hand (a mirrored right-hand
+  thread is again right-hand), and the extra fields `instanceOf` (the source thread id),
+  `pattern` (the pattern id) and `instance` (`F7.1`). A pattern of a pattern chains the names
+  (`F5@F7.1@F8.2`) and `instanceOf` stays the root thread.
+- Modeled threads: the groove is cut again on each instance wall (the thread is rebuilt on the
+  instance face from the same request, so the same fallback rules apply, per instance). The
+  groove faces are named like the source's with the instance suffix: `F5.T1@F7.1`. Removed volume
+  is N x one groove (tests: 1e-3). `modelRequested:true` on an entry records that the groove was
+  asked for even where it fell back.
+- Warnings (`warnings`, keyed by the pattern id): `threadNotCarried {thread, face, reason, hint}`
+  when an instance face cannot carry the thread (the instance hole was cut away by another
+  feature, the face is no longer a cylinder, the size is unknown); the other instances still get
+  theirs. Modeled fallbacks of an instance appear as `threadModelFallback` with the extra param
+  `thread` (the instance entry id).
+- Editing the source thread (size, length, hand, modeled) or the hole regenerates the instances:
+  they are derived, not stored. Check: `tools/thread_pattern_check.mjs`,
+  `crates/ck-model/tests/thread_pattern.rs`.
 ## Direct manipulation: `moveFace` and `moveBody`
 
 Two ordinary features for GUI handles (drag a face arrow, drag the move / rotate gizmo of a

@@ -68,6 +68,7 @@ pub mod shell;
 pub mod surface_extrude;
 pub mod surfaces;
 pub mod sweep;
+pub mod thin;
 pub mod thread;
 
 use crate::sketch::jtruthy;

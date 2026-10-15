@@ -22,7 +22,7 @@
 //! low/high caps back).
 
 use super::extrude::{Combine, Recipe, Tool};
-use super::{Brep, FeatureKind};
+use super::{thread, Brep, FeatureKind};
 use crate::regen::{codes, FeatureError, RegenState};
 use crate::{Feature, GeomRef, Ref};
 use ck_core::linalg::{Frame, Plane, Vec3};
@@ -198,6 +198,59 @@ pub fn reflect_body(b: &Body, pl: &Plane) -> Result<Body, String> {
     Ok(out)
 }
 
+
+/// Does the pattern / mirror carry the threads of its seeds along (`carryThreads`, default true)?
+fn carry_threads(f: &Feature) -> bool {
+    !matches!(f.raw.get("carryThreads"), Some(ck_json::Json::Bool(false)))
+}
+
+/// Split `seeds` into the geometry seeds and the thread entries to carry: the explicit thread
+/// seeds, plus (with `auto`) the threads sitting on a faces of a geometry seed
+/// (`thread::host_of(face)` is the seed). Unknown thread ids give a warning.
+fn thread_sources(state: &mut RegenState, f: &Feature, seeds: &[Ref], auto: bool) -> (Vec<Ref>, Vec<ck_json::Json>) {
+    let is_thread = |id: &str| state.part.features.iter().any(|g| g.id == id && g.type_name == "thread");
+    let (mut geo, mut explicit) = (vec![], vec![]);
+    for s in seeds {
+        if is_thread(s.as_str()) {
+            explicit.push(s.as_str().to_string());
+        } else {
+            geo.push(s.clone());
+        }
+    }
+    let mut out: Vec<ck_json::Json> = vec![];
+    for (id, j) in &state.result.threads {
+        let host = j.get_str("face").map_or("", thread::host_of);
+        let hit = explicit.iter().any(|e| e == id) || (auto && geo.iter().any(|g| g.as_str() == host));
+        if hit {
+            out.push(j.clone());
+        }
+    }
+    for e in &explicit {
+        if !out.iter().any(|j| j.get_str("id") == Some(e.as_str())) {
+            state.result.warnings.push(crate::regen::RegenError {
+                feature: f.id.clone(),
+                error: FeatureError::new(thread::THREAD_NOT_CARRIED)
+                    .with("thread", ck_json::Json::Str(e.clone()))
+                    .with("reason", ck_json::Json::Str("the thread feature produced no entry (it failed or is suppressed)".into()))
+                    .with("hint", ck_json::Json::Str(format!("thread {e} is a seed of {} but has nothing to copy", f.id))),
+            });
+        }
+    }
+    (geo, out)
+}
+
+/// Carry every source thread onto every instance (`xs[k]` is instance `k + 1`).
+fn carry_all(br: &mut Brep, state: &mut RegenState, f: &Feature, srcs: &[ck_json::Json], xs: &[Xform], rebuild: bool, mirrored: bool) {
+    for (k, x) in xs.iter().enumerate() {
+        let label = format!("{}.{}", f.id, k + 1);
+        for src in srcs {
+            if let Err(e) = thread::carry(br, state, src, x, &label, &f.id, rebuild, mirrored) {
+                state.result.warnings.push(crate::regen::RegenError { feature: f.id.clone(), error: e });
+            }
+        }
+    }
+}
+
 fn seed_tools<'a>(br: &'a Brep, seeds: &[Ref]) -> Result<Vec<(&'a str, &'a Tool)>, FeatureError> {
     if seeds.is_empty() {
         return Err(FeatureError::new(NO_SEEDS));
@@ -220,6 +273,9 @@ pub fn exec_mirror(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
     let FeatureKind::Mirror { seeds, plane, body } = &f.kind else { unreachable!() };
     let fr = plane.as_ref().and_then(|p| plane_frame(br, state, p)).ok_or_else(|| FeatureError::new(codes::MISSING_REFERENCE))?;
     let pl = Plane::new(fr.o, fr.z);
+    state.result.warnings.retain(|w| w.feature != f.id);
+    let auto = carry_threads(f);
+    let mx = Xform::mirror(&pl);
     if *body {
         // Pinned (probe): the whole current body reflected, renamed
         // `@<feature>.1`, one `boolean Unite (n × n faces)`; seeds ignored.
@@ -227,6 +283,8 @@ pub fn exec_mirror(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
         let b = br.body.as_ref().ok_or_else(|| FeatureError::new(codes::MISSING_REFERENCE))?;
         let mut copy = reflect_body(b, &pl).map_err(|e| FeatureError::new(&e))?;
         copy.push_instance(&format!("{}.1", f.id));
+        // every thread of the body is mirrored with it (the copy's faces exist after the combine)
+        let srcs: Vec<ck_json::Json> = if auto { state.result.threads.iter().map(|t| t.1.clone()).collect() } else { vec![] };
         // Pinned: a copy clear of the body is appended with NO boolean span
         // (reflected cone 30 off the plane); touching copies are united.
         // GUESS: "clear" = disjoint bounding boxes (exact bounds ± tol).
@@ -238,12 +296,18 @@ pub fn exec_mirror(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
             let mut nb = b.clone();
             nb.append(&copy);
             br.body = Some(nb);
-            return Ok(());
+        } else {
+            br.combine(&copy, Combine::Add, false)?;
         }
-        return br.combine(&copy, Combine::Add, false);
+        carry_all(br, state, f, &srcs, &[mx], false, true);
+        return Ok(());
     }
+    if seeds.is_empty() {
+        return Err(FeatureError::new(NO_SEEDS));
+    }
+    let (geo, srcs) = thread_sources(state, f, seeds, auto);
     let mut copies = vec![];
-    for (id, t) in seed_tools(br, seeds)? {
+    for (id, t) in seed_tools(br, &geo).or_else(|e| if geo.is_empty() && !seeds.is_empty() { Ok(vec![]) } else { Err(e) })? {
         let recipe = t.recipe.as_ref().ok_or_else(|| FeatureError::new(&super::extrude::todo("mirror of a tool without a recipe")))?;
         let mut b = mirror_tool(id, recipe, &pl).map_err(|e| FeatureError::new(&e))?;
         // GUESS: every seed's copy is instance 1
@@ -254,17 +318,13 @@ pub fn exec_mirror(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
     for (b, c) in copies {
         br.combine(&b, c, false)?;
     }
+    carry_all(br, state, f, &srcs, &[mx], true, true);
     Ok(())
 }
 
-/// `lpattern` / `cpattern`.
-pub fn exec_pattern(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
-    if let FeatureKind::LPattern { seeds, .. } | FeatureKind::CPattern { seeds, .. } = &f.kind {
-        if seeds.is_empty() {
-            return Err(FeatureError::new(NO_SEEDS));
-        }
-    }
-    let (seeds, xs) = match &f.kind {
+/// Seeds and instance transforms of an `lpattern` / `cpattern` (`xs[k]` is instance `k + 1`).
+fn pattern_xforms<'f>(state: &RegenState, f: &'f Feature) -> Result<(&'f Vec<Ref>, Vec<Xform>), FeatureError> {
+    Ok(match &f.kind {
         FeatureKind::LPattern { seeds, dir, reverse, .. } => {
             let spacing = state.num(f, "spacing", 0.0)?;
             let count = state.num(f, "count", 0.0)?;
@@ -278,8 +338,61 @@ pub fn exec_pattern(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Resul
             (seeds, ck_ops::boolean::apply::circular_instances(o, d, angle, count_of(count)?, *equal, *reverse))
         }
         _ => unreachable!(),
-    };
-    let tools: Vec<(Body, Combine)> = if xs.is_empty() { vec![] } else { seed_tools(br, seeds)?.into_iter().map(|(_, t)| (t.body.clone(), t.combine)).collect() };
+    })
+}
+
+/// A thread feature that comes AFTER a pattern / mirror of its host (the thread was added to a
+/// patterned hole): carry it onto that pattern's instances too, as if it had come first. The
+/// patterns run in history order, so a pattern of the pattern picks up the new instance threads.
+pub fn carry_into_earlier(br: &mut Brep, state: &mut RegenState, tf: &Feature) {
+    let part = state.part;
+    let Some(pos) = part.features.iter().position(|g| g.id == tf.id) else { return };
+    let mut fresh: Vec<String> = vec![tf.id.clone()];
+    for p in &part.features[..pos] {
+        if p.suppressed || !carry_threads(p) {
+            continue;
+        }
+        let (seeds, xs, mirror) = match &p.kind {
+            FeatureKind::LPattern { .. } | FeatureKind::CPattern { .. } => match pattern_xforms(state, p) {
+                Ok((s, xs)) => (s, xs, false),
+                Err(_) => continue,
+            },
+            FeatureKind::Mirror { seeds, plane, body: false } => {
+                let Some(fr) = plane.as_ref().and_then(|g| plane_frame(br, state, g)) else { continue };
+                (seeds, vec![Xform::mirror(&Plane::new(fr.o, fr.z))], true)
+            }
+            _ => continue,
+        };
+        let srcs: Vec<ck_json::Json> = state
+            .result
+            .threads
+            .iter()
+            .filter(|(id, j)| fresh.contains(id) && seeds.iter().any(|s| s.as_str() == j.get_str("face").map_or("", thread::host_of)))
+            .map(|t| t.1.clone())
+            .collect();
+        if srcs.is_empty() {
+            continue;
+        }
+        carry_all(br, state, p, &srcs, &xs, true, mirror);
+        for src in &srcs {
+            for k in 0..xs.len() {
+                fresh.push(format!("{}@{}.{}", src.get_str("id").unwrap_or(""), p.id, k + 1));
+            }
+        }
+    }
+}
+
+/// `lpattern` / `cpattern`.
+pub fn exec_pattern(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
+    if let FeatureKind::LPattern { seeds, .. } | FeatureKind::CPattern { seeds, .. } = &f.kind {
+        if seeds.is_empty() {
+            return Err(FeatureError::new(NO_SEEDS));
+        }
+    }
+    let (seeds, xs) = pattern_xforms(state, f)?;
+    state.result.warnings.retain(|w| w.feature != f.id);
+    let (geo, srcs) = thread_sources(state, f, seeds, carry_threads(f));
+    let tools: Vec<(Body, Combine)> = if xs.is_empty() || geo.is_empty() { vec![] } else { seed_tools(br, &geo)?.into_iter().map(|(_, t)| (t.body.clone(), t.combine)).collect() };
     // Pinned: per seed ONE boolean with all its instances (`boolean Subtract
     // (7 × 6 faces)` for 2 copies of a 3-face hole), seeds in order.
     // Instances are appended while their box is clear of the tool so far,
@@ -305,6 +418,8 @@ pub fn exec_pattern(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Resul
     if !tools.is_empty() {
         br.tools.push((f.id.clone(), std::rc::Rc::new(Tool { body: all, combine: last, recipe: None })));
     }
+    // threads of the seeds follow onto every instance (cosmetic entries, modeled grooves again)
+    carry_all(br, state, f, &srcs, &xs, true, false);
     Ok(())
 }
 

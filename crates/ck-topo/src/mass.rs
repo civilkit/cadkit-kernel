@@ -54,19 +54,112 @@ enum Piece<'a> {
     Poly(Vec<Vec2>),
 }
 
-fn face_pieces(b: &Body, f: FaceId) -> Vec<Piece<'_>> {
+/// Pcurves for the coedges of `f` that carry none, where the 3D edge has an exact planar image: a line,
+/// circle, ellipse or B-spline lying in a planar face is a line, circle, ellipse or B-spline of the plane's
+/// own coordinates (the orthographic projection is linear, so a spline keeps its knots and weights and its
+/// control points are the projected ones; the parameter is the edge's). The 48-chord polyline used otherwise
+/// cuts 0.3 percent off a full circle and as much off a long spline edge. One entry per coedge in loop order.
+fn derived_pcurves(b: &Body, f: FaceId) -> Vec<Option<Curve2>> {
+    let surf = &b.face(f).surface;
+    let periods = surf.periods();
     let mut out = vec![];
+    for &l in &b.face(f).loops {
+        // end of the previous coedge in the loop (None where unknown)
+        let mut prev: Option<Vec2> = None;
+        for &c in &b.lp(l).coedges {
+            let co = b.coedge(c);
+            let (ta, tb) = b.coedge_params(c);
+            if let Some(pc) = &co.pcurve {
+                out.push(None);
+                prev = Some(pc.eval(tb));
+                continue;
+            }
+            let ed = b.edge(co.edge);
+            let planar = matches!(surf, Surface::Plane { .. });
+            let mut pc = ck_geom::pcurve::exact_pcurve(surf, &ed.curve, 1e-7);
+            if pc.is_none() {
+                if let (Surface::Plane { frame }, ck_geom::curve::Curve::BSpline(bs)) = (surf, &ed.curve) {
+                    let scale = 1.0 + bs.ctrl.iter().map(|p| p.len()).fold(0.0, f64::max);
+                    if bs.ctrl.iter().all(|p| (*p - frame.o).dot(frame.z).abs() <= 1e-7 * scale) {
+                        let ctrl = bs
+                            .ctrl
+                            .iter()
+                            .map(|p| {
+                                let q = frame.to_local(*p);
+                                Vec2::new(q.x, q.y)
+                            })
+                            .collect();
+                        pc = Some(Curve2::BSpline(ck_geom::nurbs::bspline::BSplineCurve { degree: bs.degree, knots: bs.knots.clone(), ctrl, weights: bs.weights.clone() }));
+                    }
+                }
+            }
+            // a periodic surface: the exact line must start where the previous coedge ended (modulo a period)
+            if !planar {
+                if let Some(Curve2::Line { o, d }) = &mut pc {
+                    match prev {
+                        Some(pv) => {
+                            let st = *o + *d * ta;
+                            if let Some(per) = periods.0 {
+                                o.x += per * ((pv.x - st.x) / per).round();
+                            }
+                            if let Some(per) = periods.1 {
+                                o.y += per * ((pv.y - st.y) / per).round();
+                            }
+                        }
+                        None if periods.0.is_some() || periods.1.is_some() => pc = None,
+                        None => {}
+                    }
+                }
+            }
+            prev = pc.as_ref().map(|q| q.eval(tb));
+            out.push(pc);
+        }
+    }
+    out
+}
+
+/// Segments for the polyline image of a coedge without a pcurve: 48, doubled until the 3D curve's chord
+/// sagitta over every segment is under 1e-5 of the edge's extent (a 48-chord circle is 0.3 percent short of
+/// its area; a long spline edge 1e-4). `fine` off (the post-boolean sanity tier, 1e-3 of the volume) keeps 48.
+fn poly_segments(b: &Body, c: crate::body::CoedgeId, fine: bool) -> usize {
+    let (ta, tb) = b.coedge_params(c);
+    if !fine {
+        return 48;
+    }
+    let cv = &b.edge(b.coedge(c).edge).curve;
+    let ext = (0..=8).map(|k| cv.eval(ta + (tb - ta) * k as f64 / 8.0)).collect::<Vec<_>>();
+    let len: f64 = ext.windows(2).map(|w| w[0].dist(w[1])).sum();
+    let tol = 1e-5 * len.max(1e-9);
+    let mut n = 48;
+    while n < 3072 {
+        let pts: Vec<Vec3> = (0..=n).map(|k| cv.eval(ta + (tb - ta) * k as f64 / n as f64)).collect();
+        let worst = (0..n)
+            .map(|k| cv.eval(ta + (tb - ta) * (k as f64 + 0.5) / n as f64).dist((pts[k] + pts[k + 1]) * 0.5))
+            .fold(0.0, f64::max);
+        if worst <= tol {
+            break;
+        }
+        n *= 2;
+    }
+    n
+}
+
+fn face_pieces<'a>(b: &'a Body, f: FaceId, derived: &'a [Option<Curve2>], fine: bool) -> Vec<Piece<'a>> {
+    let mut out = vec![];
+    let mut k_co = 0;
     for &l in &b.face(f).loops {
         let mut prev: Option<Vec2> = None;
         for &c in &b.lp(l).coedges {
             let (ta, tb) = b.coedge_params(c);
-            match &b.coedge(c).pcurve {
+            let pcurve = b.coedge(c).pcurve.as_ref().or(derived[k_co].as_ref());
+            k_co += 1;
+            match pcurve {
                 Some(pc) => {
                     prev = Some(pc.eval(tb));
                     out.push(Piece::Exact(pc, ta, tb));
                 }
                 None => {
-                    let n = 48;
+                    let n = poly_segments(b, c, fine);
                     let mut pts = vec![];
                     for k in 0..=n {
                         let t = ta + (tb - ta) * k as f64 / n as f64;
@@ -233,7 +326,8 @@ fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand
     let surf = &b.face(f).surface;
     let coarse = tab_key.is_some() && COARSE.with(|c| c.get());
     let tab_key = tab_key.map(|k| if coarse { k ^ 0xc0a2_5e00_0000_0001 } else { k });
-    let pieces = split_at_knots(surf, face_pieces(b, f));
+    let derived = derived_pcurves(b, f);
+    let pieces = split_at_knots(surf, face_pieces(b, f, &derived, tab_key.is_none()));
     let mut acc = [0.0; K];
     if pieces.is_empty() {
         return acc;

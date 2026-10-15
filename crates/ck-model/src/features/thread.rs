@@ -26,6 +26,7 @@ use crate::regen::{codes, FeatureError, RegenError, RegenState};
 use crate::threads::{self, ThreadSpec};
 use crate::Feature;
 use ck_core::linalg::Vec3;
+use ck_core::xform::Xform;
 use ck_geom::surface::Surface;
 use ck_json::{Json, Obj};
 use ck_topo::body::Body;
@@ -285,20 +286,22 @@ fn place(cf: &CylFace, req: &Req) -> Placement {
     Placement { start: cf.o + cf.up * s, dir, length, start_open, far_open }
 }
 
-/// `thread`.
-pub fn exec_thread(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
-    let req = parse(state, f)?;
-    let body = br.body.as_ref().ok_or_else(missing)?;
-    let cf = cyl_face(body, &req.face)?;
-    let spec = threads::find(&req.standard, &req.size).ok_or_else(|| size_unknown(&req))?;
-    let pl = place(&cf, &req);
+/// Build the thread on `cf` (cosmetic entry, plus the modeled groove when asked) and return the
+/// result entry and the warnings. `id` names the entry; the groove faces are named from the root
+/// feature id (up to the first `@`) with the instance suffix (the rest) pushed on.
+fn build(br: &mut Brep, state: &mut RegenState, id: &str, req: &Req, spec: &'static ThreadSpec, cf: &CylFace, extra: &[(&str, Json)]) -> (Json, Vec<FeatureError>) {
+    let pl = place(cf, req);
     let mut warnings = vec![];
-    if let Some(w) = diameter_warning(spec, &cf) {
+    if let Some(w) = diameter_warning(spec, cf) {
         warnings.push(w);
     }
     let mut modeled = false;
     if req.modeled {
-        match model::apply(br, state, f, spec, &cf, &pl, req.left) {
+        let (root, suffix) = match id.split_once('@') {
+            Some((r, s)) => (r, s),
+            None => (id, ""),
+        };
+        match model::apply(br, state, root, suffix, spec, cf, &pl, req.left) {
             Ok(()) => modeled = true,
             Err(why) => warnings.push(
                 FeatureError::new(THREAD_MODEL_FALLBACK)
@@ -309,8 +312,8 @@ pub fn exec_thread(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
     }
     let minor = if cf.internal { spec.minor_internal } else { spec.minor_external };
     let class = req.class.clone().unwrap_or_else(|| (if cf.internal { spec.class_internal } else { spec.class_external }).to_string());
-    let entry = Obj::new()
-        .put("id", f.id.as_str())
+    let mut entry = Obj::new()
+        .put("id", id)
         .put("face", req.face.as_str())
         .put("standard", spec.standard)
         .put("size", spec.designation.as_str())
@@ -327,12 +330,117 @@ pub fn exec_thread(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
         .put("tapered", spec.tapered)
         .put("diameter", round6(2.0 * cf.radius))
         .put("start", v3(pl.start))
-        .put("dir", v3(pl.dir))
-        .build();
+        .put("dir", v3(pl.dir));
+    if req.modeled {
+        // what was asked for (a pattern instance retries the groove even when the source fell back)
+        entry = entry.put("modelRequested", true);
+    }
+    for (k, v) in extra {
+        entry = entry.put(k, v.clone());
+    }
+    (entry.build(), warnings)
+}
+
+/// `thread`.
+pub fn exec_thread(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
+    let req = parse(state, f)?;
+    let body = br.body.as_ref().ok_or_else(missing)?;
+    let cf = cyl_face(body, &req.face)?;
+    let spec = threads::find(&req.standard, &req.size).ok_or_else(|| size_unknown(&req))?;
+    let (entry, warnings) = build(br, state, &f.id, &req, spec, &cf, &[]);
     state.result.put_thread(&f.id, entry);
     state.result.warnings.retain(|w| w.feature != f.id);
     for w in warnings {
         state.result.warnings.push(RegenError { feature: f.id.clone(), error: w });
+    }
+    // a pattern / mirror of the host that ran before this thread copies it too
+    super::pattern::carry_into_earlier(br, state, f);
+    Ok(())
+}
+
+pub const THREAD_NOT_CARRIED: &str = "threadNotCarried";
+
+/// The feature a thread entry hangs on: the pattern / mirror that made the instance face
+/// (`F4.S.h1@F7.2` -> `F7`), else the feature that made the face (`F4.S.h1` -> `F4`).
+pub fn host_of(face: &str) -> &str {
+    match face.rfind('@') {
+        Some(i) => face[i + 1..].split('.').next().unwrap_or(""),
+        None => face.split('.').next().unwrap_or(""),
+    }
+}
+
+fn pt(j: Option<&Json>) -> Option<Vec3> {
+    let a = j?.as_vec3()?;
+    Some(Vec3::new(a[0], a[1], a[2]))
+}
+
+fn not_carried(src: &Json, new_face: &str, reason: String) -> FeatureError {
+    let tid = src.get_str("id").unwrap_or("");
+    FeatureError::new(THREAD_NOT_CARRIED)
+        .with("thread", Json::Str(tid.to_string()))
+        .with("face", Json::Str(new_face.to_string()))
+        .with("reason", Json::Str(reason.clone()))
+        .with("hint", Json::Str(format!("the copy of thread {tid} on {new_face} was not made: {reason}")))
+}
+
+/// Carry the thread entry `src` onto the instance made by `x` (a pattern step or a mirror):
+/// the new entry is named `<id>@<label>` on the face `<face>@<label>` and flagged `instanceOf`.
+/// With `rebuild` the thread is rebuilt on the instance face in the current body (a cosmetic
+/// entry, or the groove again when it was asked modeled); without it only the entry is
+/// transformed (the instance geometry already exists, as in a whole-body mirror).
+/// The hand is kept (a mirrored right-hand thread is again right-hand) unless the geometry
+/// itself was mirrored (`!rebuild` and modeled).
+pub fn carry(br: &mut Brep, state: &mut RegenState, src: &Json, x: &Xform, label: &str, pattern: &str, rebuild: bool, mirrored: bool) -> Result<(), FeatureError> {
+    let face = src.get_str("face").unwrap_or("");
+    let new_face = format!("{face}@{label}");
+    let tid = src.get_str("id").unwrap_or("");
+    let new_id = format!("{tid}@{label}");
+    let (Some(start), Some(dir)) = (pt(src.get("start")), pt(src.get("dir"))) else {
+        return Err(not_carried(src, &new_face, "the source entry has no placement".into()));
+    };
+    let (start, dir) = (x.apply_point(start), x.apply_vec(dir));
+    let root = src.get_str("instanceOf").unwrap_or(tid).to_string();
+    let left = src.get_str("hand") == Some("left");
+    let extra = [("instanceOf", Json::Str(root)), ("pattern", Json::Str(pattern.to_string())), ("instance", Json::Str(label.to_string()))];
+    if !rebuild {
+        let mut j = src.clone();
+        j.set("id", new_id.as_str());
+        j.set("face", new_face.as_str());
+        j.set("start", v3(start));
+        j.set("dir", v3(dir));
+        if mirrored && src.get_bool("modeled") == Some(true) {
+            j.set("hand", if left { "right" } else { "left" });
+        }
+        for (k, v) in extra {
+            j.set(k, v);
+        }
+        state.result.put_thread(&new_id, j);
+        return Ok(());
+    }
+    let body = br.body.as_ref().ok_or_else(missing)?;
+    let cf = cyl_face(body, &new_face).map_err(|e| not_carried(src, &new_face, e.describe()))?;
+    let spec = threads::find(src.get_str("standard").unwrap_or(""), src.get_str("size").unwrap_or("")).ok_or_else(|| not_carried(src, &new_face, "unknown thread size".into()))?;
+    // the same physical end: the instance end nearest to the transformed start
+    let mid = 0.5 * (cf.lo + cf.hi);
+    let top = (start - cf.o).dot(cf.up) > mid;
+    let length = src.get_f64("length").filter(|l| *l > 0.0);
+    let req = Req {
+        face: new_face.clone(),
+        standard: spec.standard.to_string(),
+        size: spec.designation.clone(),
+        class: src.get_str("class").map(str::to_string),
+        length,
+        left,
+        start: Some(top),
+        modeled: src.get_bool("modelRequested") == Some(true) || src.get_bool("modeled") == Some(true),
+    };
+    let (entry, warnings) = build(br, state, &new_id, &req, spec, &cf, &extra);
+    state.result.put_thread(&new_id, entry);
+    for w in warnings {
+        if w.code == THREAD_DIAMETER_MISMATCH {
+            continue; // the source already says it
+        }
+        state.result.warnings.push(RegenError { feature: pattern.to_string(), error: w.with("thread", Json::Str(new_id.clone())) });
     }
     Ok(())
 }
@@ -483,13 +591,16 @@ pub mod model {
         Ok((body, gr))
     }
 
-    pub fn apply(br: &mut Brep, _state: &mut RegenState, f: &Feature, spec: &ThreadSpec, cf: &CylFace, pl: &Placement, left: bool) -> Result<(), String> {
+    pub fn apply(br: &mut Brep, _state: &mut RegenState, id: &str, suffix: &str, spec: &ThreadSpec, cf: &CylFace, pl: &Placement, left: bool) -> Result<(), String> {
         if spec.tapered {
             return Err(format!("{} is a tapered (1:16) thread; modeled tapered threads are not built", spec.designation));
         }
         let before = br.body.clone().ok_or("no solid")?;
         let v0 = ck_topo::mass::mass_props(&before).volume;
-        let (tool, gr) = tool(&f.id, spec, cf, pl, left)?;
+        let (mut tool, gr) = tool(id, spec, cf, pl, left)?;
+        if !suffix.is_empty() {
+            tool.push_instance(suffix);
+        }
         let r = br.combine(&tool, Combine::Cut, false);
         let fail = |br: &mut Brep, why: String| {
             br.body = Some(before.clone());
