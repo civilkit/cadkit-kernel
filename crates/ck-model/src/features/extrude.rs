@@ -249,7 +249,7 @@ pub fn exec_extrude_ex(state: &RegenState, f: &Feature, body: Option<&Body>, ext
     let sk = sketch_of(state, f)?;
     let depth = state.num(f, "depth", 0.0)?;
     let draft = state.num(f, "draft", 0.0)?;
-    let profile = selected_profile(sk, f)?;
+    let (profile, thin_on) = super::thin::feature_profile(state, sk, f)?;
     let depth = depth.max(MIN_DEPTH);
     let combine = if *op == Op::Cut { Combine::Cut } else { Combine::Add };
     let mut o = match end {
@@ -330,7 +330,7 @@ pub fn exec_extrude_ex(state: &RegenState, f: &Feature, body: Option<&Body>, ext
             extrude(&f.id, p, o).map_err(topo_err)
         }
     };
-    let body = match f.raw.get("regions").and_then(|_| split_islands(&profile)) {
+    let body = match f.raw.get("regions").filter(|_| !thin_on).and_then(|_| split_islands(&profile)) {
         // a selected region that fills a hole of another selected one: sweep the two apart and unite
         // them, so the shared wall disappears and the caps merge (one lump, not two touching ones)
         Some((base, islands)) => {
@@ -616,7 +616,7 @@ pub fn exec_revolve(state: &RegenState, f: &Feature, has_body: bool) -> Result<T
         .get("axis")
         .and_then(|a| sketch_axis(sk, a))
         .ok_or_else(|| FeatureError::new(MISSING_AXIS))?;
-    let profile = selected_profile(sk, f)?;
+    let (profile, _) = super::thin::feature_profile(state, sk, f)?;
     // pinned: a region on both sides of the axis -> profileCrossesAxis (no params)
     if super::surface_extrude::crosses_axis(&profile, o, d) {
         return Err(FeatureError::new(super::surface_extrude::PROFILE_CROSSES_AXIS));
