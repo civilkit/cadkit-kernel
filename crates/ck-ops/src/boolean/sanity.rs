@@ -24,7 +24,6 @@ use super::Op;
 use ck_geom::surface::Surface;
 use ck_geom::{Vec2, Vec3};
 use ck_topo::body::Body;
-use ck_topo::mass::face_signed_volume;
 
 /// A result outside the bounds that `op` allows.
 #[derive(Debug, Clone, PartialEq)]
@@ -37,8 +36,6 @@ pub struct VolumeMismatch {
 }
 
 thread_local! {
-    /// Per-face integrals by orientation-free face key (see `face_key`), one table per tier.
-    static MEMO: std::cell::RefCell<[std::collections::HashMap<u64, f64>; 2]> = std::cell::RefCell::new([Default::default(), Default::default()]);
     /// `[fine hits, fine misses, coarse hits, coarse misses]` (a miss is one face integral).
     static COUNTS: std::cell::Cell<[u64; 4]> = const { std::cell::Cell::new([0; 4]) };
 }
@@ -65,85 +62,15 @@ fn solid_volume(b: &Body, coarse: bool) -> Option<f64> {
     let tier = coarse as usize;
     let mut v = 0.0;
     for f in b.face_ids() {
-        let (key, sgn) = face_key(b, f);
-        let cached = MEMO.with(|m| m.borrow()[tier].get(&key).copied());
+        let (fv, hit) = ck_topo::mass::face_volume_memo(b, f, coarse);
         COUNTS.with(|c| {
             let mut a = c.get();
-            a[2 * tier + cached.is_none() as usize] += 1;
+            a[2 * tier + !hit as usize] += 1;
             c.set(a);
         });
-        let fv = match cached {
-            Some(x) => sgn * x,
-            None => {
-                let x = if coarse { ck_topo::mass::with_coarse(|| face_signed_volume(b, f)) } else { face_signed_volume(b, f) };
-                if x.is_finite() {
-                    MEMO.with(|m| {
-                        let mut m = m.borrow_mut();
-                        if m[tier].len() >= 8192 {
-                            m[tier].clear();
-                        }
-                        m[tier].insert(key, sgn * x);
-                    });
-                }
-                x
-            }
-        };
         v += fv;
     }
     v.is_finite().then_some(v)
-}
-
-/// Orientation-free key of everything one face's volume integral depends on, and the sign that maps
-/// this face's integral to the key's canonical traversal. The integral runs along the face's boundary
-/// as traversed (the face `sense` does not enter it), so the same face traversed the other way round
-/// (the tool's face of a cut, reversed) has the negated integral: both traversals get the same key,
-/// `+1` for the one whose forward hash is the smaller.
-fn face_key(b: &Body, f: ck_topo::body::FaceId) -> (u64, f64) {
-    let face = b.face(f);
-    // (rev flag, [start, middle, end] of the edge curve) of every coedge, loop by loop
-    let loops: Vec<Vec<(bool, [Vec3; 3])>> = face
-        .loops
-        .iter()
-        .map(|&l| {
-            b.lp(l)
-                .coedges
-                .iter()
-                .map(|&c| {
-                    let ed = b.edge(b.coedge(c).edge);
-                    (b.coedge(c).rev, [ed.t0, 0.5 * (ed.t0 + ed.t1), ed.t1].map(|t| ed.curve.eval(t)))
-                })
-                .collect()
-        })
-        .collect();
-    let sfp = face.surface.fingerprint();
-    let hash = |reversed: bool| -> u64 {
-        let mut h = 0xcbf29ce484222325u64;
-        let mut mix = |x: u64| {
-            h = (h ^ x).wrapping_mul(0x100000001b3);
-            h ^= h >> 29;
-        };
-        mix(sfp);
-        for cs in &loops {
-            mix(0xa5a5);
-            for i in 0..cs.len() {
-                let (rev, pts) = &cs[if reversed { cs.len() - 1 - i } else { i }];
-                mix((*rev != reversed) as u64);
-                for k in 0..3 {
-                    let p = pts[if reversed { 2 - k } else { k }];
-                    mix(p.x.to_bits());
-                    mix(p.y.to_bits());
-                    mix(p.z.to_bits());
-                }
-            }
-        }
-        h
-    };
-    let (fw, rv) = (hash(false), hash(true));
-    if fw <= rv {
-        (fw, 1.0)
-    } else {
-        (rv, -1.0)
-    }
 }
 
 /// Volume tolerance: face integrals of curved and spline faces are good to

@@ -409,13 +409,44 @@ pub fn general(c1: &Curve, r1: (f64, f64), c2: &Curve, r2: (f64, f64), tol: f64)
     let on2: Vec<bool> = p1
         .iter()
         .map(|&p| {
-            if n2 > 8
-                && boxes2
-                    .iter()
-                    .enumerate()
-                    .all(|(bi, &(lo, hi))| box_gap(p, p, lo, hi) > far || (bi * BLK..((bi + 1) * BLK).min(n2)).all(|j| point_seg_dist(p, p2[j], p2[j + 1]) > far))
-            {
-                return false;
+            let mut guess = None;
+            if n2 > 8 {
+                // nearest chord of c2 among the blocks within reach; none within `far` = not on c2
+                let mut best = (f64::INFINITY, 0usize, 0.0f64);
+                for (bi, &(lo, hi)) in boxes2.iter().enumerate() {
+                    if box_gap(p, p, lo, hi) > far {
+                        continue;
+                    }
+                    for j in bi * BLK..((bi + 1) * BLK).min(n2) {
+                        let (d, s) = point_seg(p, p2[j], p2[j + 1]);
+                        if d < best.0 {
+                            best = (d, j, s);
+                        }
+                    }
+                }
+                if best.0 > far {
+                    return false;
+                }
+                guess = Some(t2s[best.1] + (t2s[best.1 + 1] - t2s[best.1]) * best.2);
+            }
+            // a point on c2 is found by a few projection steps from the chord's foot point (a full
+            // closest-point search samples the whole curve first); anything else takes the global search
+            if let Some(mut t) = guess {
+                for _ in 0..8 {
+                    let d = c2.derivs1_arr(t);
+                    let dd = d[1].dot(d[1]);
+                    if dd < 1e-300 {
+                        break;
+                    }
+                    let dt = -(d[0] - p).dot(d[1]) / dd;
+                    t += dt;
+                    if dt.abs() < 1e-13 * (1.0 + t.abs()) {
+                        break;
+                    }
+                }
+                if t.is_finite() && c2.eval(t).dist(p) <= tol && fit_param(c2, t, r2, param_slack(c2, t, tol)).is_some() {
+                    return true;
+                }
             }
             let t = c2.closest_param(p);
             c2.eval(t).dist(p) <= tol && fit_param(c2, t, r2, param_slack(c2, t, tol)).is_some()
@@ -445,7 +476,18 @@ pub fn general(c1: &Curve, r1: (f64, f64), c2: &Curve, r2: (f64, f64), tol: f64)
     let long_pair = n1 >= 200 || n2 >= 200;
     let sag1 = sag1_c;
     let maxchord2 = (0..n2).map(|j| p2[j].dist(p2[j + 1])).fold(0.0f64, f64::max);
+    // Pass 0 keeps every Newton start within a few chords of its seed: a long curve running tangent to or
+    // along the other has dozens of chord pairs within reach, each of which would crawl (linear
+    // convergence at a double root) to the same contact; the contact's own chord pair finds it. If that
+    // pass finds nothing although starts were dropped, pass 1 repeats without the limit.
+    for pass in 0..2 {
+    let local = pass == 0;
+    let mut dropped = false;
     for i in 0..n1 {
+        // chords inside an overlap run cannot carry a hit (hits inside overlaps are discarded below)
+        if out.overlaps.iter().any(|o| t1s[i] >= o.a.0 - 1e-9 && t1s[i + 1] <= o.a.1 + 1e-9) {
+            continue;
+        }
         let (a0, a1) = (p1[i], p1[i + 1]);
         let (alo, ahi) = (a0.min(a1), a0.max(a1));
         let reach_max = if long_pair { 1.5 * (sag1 + sag2) + 4.0 * tol } else { 0.5 * (a0.dist(a1) + maxchord2) + tol };
@@ -470,7 +512,12 @@ pub fn general(c1: &Curve, r1: (f64, f64), c2: &Curve, r2: (f64, f64), tol: f64)
             if out.hits.iter().any(|h| (h.t1 - ta).abs() <= d1 && (h.t2 - tb).abs() <= d2) {
                 continue;
             }
-            if let Some((x, y)) = newton2(c1, c2, ta, tb, r1, r2) {
+            let lim = if local { Some((3.0 * d1, 3.0 * d2)) } else { None };
+            let nw = newton2(c1, c2, ta, tb, r1, r2, lim);
+            if nw.is_none() && local {
+                dropped = true;
+            }
+            if let Some((x, y)) = nw {
                 if c1.eval(x).dist(c2.eval(y)) <= tol {
                     if out.overlaps.iter().any(|o| x >= o.a.0 - 1e-9 && x <= o.a.1 + 1e-9) {
                         continue;
@@ -479,6 +526,10 @@ pub fn general(c1: &Curve, r1: (f64, f64), c2: &Curve, r2: (f64, f64), tol: f64)
                 }
             }
         }
+    }
+    if !(local && dropped && out.hits.is_empty()) {
+        break;
+    }
     }
     out
 }
@@ -558,6 +609,13 @@ fn samples_for(c: &Curve) -> usize {
 }
 
 /// Closest points of segments [a0,a1], [b0,b1]: (s, t, distance).
+fn point_seg(p: Vec3, a: Vec3, b: Vec3) -> (f64, f64) {
+    let d = b - a;
+    let l2 = d.dot(d);
+    let t = if l2 > 1e-300 { ((p - a).dot(d) / l2).clamp(0.0, 1.0) } else { 0.0 };
+    (p.dist(a + d * t), t)
+}
+
 fn point_seg_dist(p: Vec3, a: Vec3, b: Vec3) -> f64 {
     let d = b - a;
     let l2 = d.dot(d);
@@ -605,7 +663,8 @@ pub fn seg_seg(a0: Vec3, a1: Vec3, b0: Vec3, b1: Vec3) -> (f64, f64, f64) {
 
 /// Newton on F(s,t) = C1(s) − C2(t) (least squares, Gauss-Newton), params
 /// kept within a slightly widened range.
-pub fn newton2(c1: &Curve, c2: &Curve, mut s: f64, mut t: f64, r1: (f64, f64), r2: (f64, f64)) -> Option<(f64, f64)> {
+pub fn newton2(c1: &Curve, c2: &Curve, mut s: f64, mut t: f64, r1: (f64, f64), r2: (f64, f64), lim: Option<(f64, f64)>) -> Option<(f64, f64)> {
+    let (s0, t0) = (s, t);
     let w1 = (r1.1 - r1.0).abs() * 0.05 + 1e-9;
     let w2 = (r2.1 - r2.0).abs() * 0.05 + 1e-9;
     for _ in 0..40 {
@@ -629,6 +688,11 @@ pub fn newton2(c1: &Curve, c2: &Curve, mut s: f64, mut t: f64, r1: (f64, f64), r
         t += dt;
         if !(s.is_finite() && t.is_finite()) {
             return None;
+        }
+        if let Some((l1, l2)) = lim {
+            if (s - s0).abs() > l1 || (t - t0).abs() > l2 {
+                return None;
+            }
         }
         if c1.period().is_none() && (s < r1.0 - w1 || s > r1.1 + w1) {
             return None;

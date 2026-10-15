@@ -339,6 +339,21 @@ pub fn components(b: &Body) -> Vec<Vec<FaceId>> {
 /// shell; components with negative signed volume are voids and join the
 /// smallest positive shell that contains them. Lump order follows the
 /// lowest face id of each outer shell (keeps wire `lump` numbering stable).
+/// Signed volume of a component: sum of memoised per-face integrals (coarse tier, exact to rounding for
+/// polynomial faces) when the component is closed, the plain integral otherwise.
+fn shell_volume(b: &Body, faces: &[FaceId]) -> f64 {
+    let closed = faces.iter().all(|&f| b.face(f).loops.iter().all(|&l| b.lp(l).coedges.iter().all(|&c| b.edge_coedges(b.coedge(c).edge).len() == 2)));
+    if !closed {
+        return signed_volume(b, faces);
+    }
+    let v: f64 = faces.iter().map(|&f| crate::mass::face_volume_memo(b, f, true).0).sum();
+    if v.is_finite() {
+        v
+    } else {
+        signed_volume(b, faces)
+    }
+}
+
 pub fn rebuild_lumps(b: &mut Body) {
     let comps = components(b);
     for s in &mut b.shells {
@@ -351,7 +366,7 @@ pub fn rebuild_lumps(b: &mut Body) {
     }
     // a lone component gets its own lump whatever its orientation (a void
     // shell with no host also opens a fresh lump): skip the volume integral
-    let vols: Vec<f64> = if comps.len() == 1 { vec![0.0] } else { comps.iter().map(|c| signed_volume(b, c)).collect() };
+    let vols: Vec<f64> = if comps.len() == 1 { vec![0.0] } else { comps.iter().map(|c| shell_volume(b, c)).collect() };
     let mut shell_of: Vec<Option<ShellId>> = vec![None; comps.len()];
     let mut lump_of_shell: Vec<(ShellId, LumpId, f64, usize)> = vec![];
     for (i, c) in comps.iter().enumerate() {

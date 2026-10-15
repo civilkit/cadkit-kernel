@@ -861,6 +861,88 @@ pub fn face_signed_volume(b: &Body, f: FaceId) -> f64 {
     face_integral_poly_keyed::<1>(b, f, 1, b.face(f).surface.fingerprint() ^ 0x5eed_0001, &|p, n| [p.dot(n) / 3.0])[0]
 }
 
+
+thread_local! {
+    /// Per-face signed volumes by orientation-free face key (see `face_key`), one table per tier.
+    static FACE_VOL_MEMO: std::cell::RefCell<[std::collections::HashMap<u64, f64>; 2]> = std::cell::RefCell::new([Default::default(), Default::default()]);
+}
+
+/// One face's signed volume share (see `face_signed_volume`), memoised by a hash of the face's surface
+/// and trimming; a reversed traversal of the same face reuses the negated value. Boolean chains keep
+/// most faces from one result to the next, so the sum over a result is mostly lookups. `coarse` selects
+/// the cheap quadrature tier. Returns the value and whether it was a table hit.
+pub fn face_volume_memo(b: &Body, f: FaceId, coarse: bool) -> (f64, bool) {
+    let tier = coarse as usize;
+    let (key, sgn) = face_key(b, f);
+    if let Some(x) = FACE_VOL_MEMO.with(|m| m.borrow()[tier].get(&key).copied()) {
+        return (sgn * x, true);
+    }
+    let x = if coarse { with_coarse(|| face_signed_volume(b, f)) } else { face_signed_volume(b, f) };
+    if x.is_finite() {
+        FACE_VOL_MEMO.with(|m| {
+            let mut m = m.borrow_mut();
+            if m[tier].len() >= 8192 {
+                m[tier].clear();
+            }
+            m[tier].insert(key, sgn * x);
+        });
+    }
+    (x, false)
+}
+
+/// Orientation-free key of everything one face's volume integral depends on, and the sign that maps
+/// this face's integral to the key's canonical traversal. The integral runs along the face's boundary
+/// as traversed (the face `sense` does not enter it), so the same face traversed the other way round
+/// (the tool's face of a cut, reversed) has the negated integral: both traversals get the same key,
+/// `+1` for the one whose forward hash is the smaller.
+fn face_key(b: &Body, f: FaceId) -> (u64, f64) {
+    let face = b.face(f);
+    // (rev flag, [start, middle, end] of the edge curve) of every coedge, loop by loop
+    let loops: Vec<Vec<(bool, [Vec3; 3])>> = face
+        .loops
+        .iter()
+        .map(|&l| {
+            b.lp(l)
+                .coedges
+                .iter()
+                .map(|&c| {
+                    let ed = b.edge(b.coedge(c).edge);
+                    (b.coedge(c).rev, [ed.t0, 0.5 * (ed.t0 + ed.t1), ed.t1].map(|t| ed.curve.eval(t)))
+                })
+                .collect()
+        })
+        .collect();
+    let sfp = face.surface.fingerprint();
+    let hash = |reversed: bool| -> u64 {
+        let mut h = 0xcbf29ce484222325u64;
+        let mut mix = |x: u64| {
+            h = (h ^ x).wrapping_mul(0x100000001b3);
+            h ^= h >> 29;
+        };
+        mix(sfp);
+        for cs in &loops {
+            mix(0xa5a5);
+            for i in 0..cs.len() {
+                let (rev, pts) = &cs[if reversed { cs.len() - 1 - i } else { i }];
+                mix((*rev != reversed) as u64);
+                for k in 0..3 {
+                    let p = pts[if reversed { 2 - k } else { k }];
+                    mix(p.x.to_bits());
+                    mix(p.y.to_bits());
+                    mix(p.z.to_bits());
+                }
+            }
+        }
+        h
+    };
+    let (fw, rv) = (hash(false), hash(true));
+    if fw <= rv {
+        (fw, 1.0)
+    } else {
+        (rv, -1.0)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct MassProps {
     pub volume: f64,
