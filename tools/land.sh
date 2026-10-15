@@ -32,6 +32,7 @@ cargo build -q -p ck-wasm --target wasm32-unknown-unknown --release
 npm --prefix packages ci --silent 2>&1 | tail -2
 npm --prefix packages test --silent 2>&1 | tail -8 | grep -q "# fail 0" || { echo "land: packages failed"; exit 1; }
 node tools/region_select_check.mjs >/dev/null || { echo "land: region select check failed"; exit 1; }
+node tools/thin_extrude_check.mjs >/dev/null || { echo "land: thin extrude check failed"; exit 1; }
 node tools/thread_check.mjs >/dev/null || { echo "land: thread check failed"; exit 1; }
 node tools/end_reference_check.mjs >/dev/null || { echo "land: end reference check failed"; exit 1; }
 node tools/profile_check.mjs >/dev/null || { echo "land: profile check failed"; exit 1; }
