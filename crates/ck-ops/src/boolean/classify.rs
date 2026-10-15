@@ -154,12 +154,30 @@ pub fn loop_polygon(s: &Surface, pieces: &[(&Curve, f64, f64)]) -> Vec<Vec2> {
     loop_polygon_with(s, pieces, samples_fine)
 }
 
+/// `c` is a circle on the axis of the revolution surface `s` (cylinder, cone, torus): its uv image is a
+/// line of constant v.
+fn coaxial_circle(s: &Surface, c: &Curve) -> bool {
+    let Curve::Circle { frame: cf, .. } = c else { return false };
+    let sf = match s {
+        Surface::Cylinder { frame, .. } | Surface::Cone { frame, .. } | Surface::Torus { frame, .. } => frame,
+        _ => return false,
+    };
+    let d = cf.o - sf.o;
+    cf.z.cross(sf.z).len() < 1e-12 && d.cross(sf.z).len() < 1e-9 * (1.0 + d.len())
+}
+
 fn loop_polygon_with(s: &Surface, pieces: &[(&Curve, f64, f64)], nfun: impl Fn(&Curve, f64, f64) -> usize) -> Vec<Vec2> {
     let mut out = vec![];
     let mut prev: Option<Vec2> = None;
     let fp = spline_fp(s);
     for &(c, ta, tb) in pieces {
-        let n = nfun(c, ta, tb);
+        let mut n = nfun(c, ta, tb);
+        if coaxial_circle(s, c) {
+            // a circle coaxial with a cylinder / cone / torus is a straight iso-line in uv: the fine
+            // chords are collinear, a quarter-turn step keeps the u unwrapping unambiguous
+            let frac = ((tb - ta).abs() / std::f64::consts::TAU).min(1.0);
+            n = n.min(((16.0 * frac).ceil() as usize).max(2));
+        }
         for k in 0..n {
             let mut uv = uv_near_fp(s, fp, c.eval(ta + (tb - ta) * k as f64 / n as f64), prev);
             // u is arbitrary at a pole: carry the previous u through it so the
