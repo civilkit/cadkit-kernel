@@ -65,7 +65,9 @@ const FIX: Record<string, (feature: string, params: Record<string, unknown>) => 
   booleanFailed: (f, p) =>
     typeof p.hostFace === 'string' && typeof p.toolFace === 'string'
       ? `${f}: boolean failed — the tool wall ${p.toolFace} and the body wall ${p.hostFace} are nearly the same surface (${typeof p.gap === 'number' ? p.gap.toPrecision(2) : '?'} mm apart): make the tool outline exactly that wall (project the body edge of the sketch spline, not a re-fitted copy) or move it clear of the wall; cutting only the inner region leaves the wall out`
-      : `${f}: boolean failed — check the tool and target overlap in a volume, not just a face`,
+      : Array.isArray(p.faces) && p.faces.length
+        ? `${f}: boolean failed — the result could not be closed around ${p.faces.slice(0, 4).join(', ')}${Array.isArray(p.at) ? ` (near ${p.at.map((x) => (typeof x === 'number' ? +x.toFixed(2) : x)).join(', ')})` : ''}${typeof p.issue === 'string' ? ` [${p.issue}]` : ''}: those faces touch tangentially or lie within ~1e-3 of each other along a rim — move the tool by a small amount (0.01), unite the bodies that touch each other first, or make the near-coincident faces exactly coincident`
+        : `${f}: boolean failed — check the tool and target overlap in a volume, not just a face`,
   shellTooThick: (f, p) =>
     typeof p.detail === 'string' && typeof p.maxThickness === 'number'
       ? `${f}: ${p.detail} — reduce thickness to ${p.maxThickness} mm or less`
