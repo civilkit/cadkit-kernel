@@ -130,18 +130,52 @@ fn poly_segments(b: &Body, c: crate::body::CoedgeId, fine: bool) -> usize {
     let ext = (0..=8).map(|k| cv.eval(ta + (tb - ta) * k as f64 / 8.0)).collect::<Vec<_>>();
     let len: f64 = ext.windows(2).map(|w| w[0].dist(w[1])).sum();
     let tol = 1e-5 * len.max(1e-9);
-    let mut n = 48;
-    while n < 3072 {
+    // the same edge is asked for again by its other coedge and by every later mass call: memoise on the samples
+    let key = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        for p in &ext {
+            p.x.to_bits().hash(&mut h);
+            p.y.to_bits().hash(&mut h);
+            p.z.to_bits().hash(&mut h);
+        }
+        h.finish()
+    };
+    if let Some(n) = POLY_SEGS.with(|m| m.borrow().get(&key).copied()) {
+        return n;
+    }
+    let worst_at = |n: usize| -> f64 {
         let pts: Vec<Vec3> = (0..=n).map(|k| cv.eval(ta + (tb - ta) * k as f64 / n as f64)).collect();
-        let worst = (0..n)
-            .map(|k| cv.eval(ta + (tb - ta) * (k as f64 + 0.5) / n as f64).dist((pts[k] + pts[k + 1]) * 0.5))
-            .fold(0.0, f64::max);
-        if worst <= tol {
+        (0..n).map(|k| cv.eval(ta + (tb - ta) * (k as f64 + 0.5) / n as f64).dist((pts[k] + pts[k + 1]) * 0.5)).fold(0.0, f64::max)
+    };
+    // the sagitta falls as 1/n^2: from the 48-chord value jump to the level just below the expected answer
+    // (the doubling below still decides, so the result is the first passing power-of-two multiple of 48)
+    let mut n = 48;
+    let w48 = worst_at(48);
+    if w48 > tol {
+        let want = 48.0 * (w48 / tol).sqrt();
+        while n < 384 && (n * 2) as f64 * 1.0 < want * 0.5 {
+            n *= 2;
+        }
+    }
+    while n < 384 {
+        if worst_at(n) <= tol {
             break;
         }
         n *= 2;
     }
+    POLY_SEGS.with(|m| {
+        let mut m = m.borrow_mut();
+        if m.len() >= 8192 {
+            m.clear();
+        }
+        m.insert(key, n);
+    });
     n
+}
+
+thread_local! {
+    static POLY_SEGS: std::cell::RefCell<std::collections::HashMap<u64, usize>> = std::cell::RefCell::new(Default::default());
 }
 
 fn face_pieces<'a>(b: &'a Body, f: FaceId, derived: &'a [Option<Curve2>], fine: bool) -> Vec<Piece<'a>> {
