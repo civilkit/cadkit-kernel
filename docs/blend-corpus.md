@@ -74,6 +74,18 @@ kernel, exported with `step`, and read by OCCT, so both start from the same geom
    OCCT blends a patch, so the volume is within 2e-4 (convex), 6e-5 (concave), 5e-5 (mixed) and the feature gets
    `cornerNotTangent {deviation}` (53 degrees for the convex 3/4/5 corner, 28 for the concave 1/2/3 one).
 
+7. **Mixed vertex with different radii** (wall radius and rim radius): the same two-stage build with the wall radius in stage A and the
+   rim radius in stage B (torus of major radius `r_wall + r_rim`); exact against OCCT (`lbr_mixed_rim*_wall*`, `pocket_mixed_rim*_wall*`). Rims with
+   different radii fall back to the per-edge builder (valid, 1.6e-4 off).
+8. **Open display-mesh edges.** The corpus now counts mesh edges used by exactly one triangle (up to T-junctions of different tessellations,
+   tolerance 1e-3 of the box diagonal) and fails a case that has any: a face missing from the result while `validate` passes. No case in the
+   corpus (L bracket and pocket, same and different radii 1 to 4 mm) shows one; the half-disc hole seen in the app was not reproduced by
+   these configurations, so the cause there is still open (see below).
+9. **Rim loops of rounded rectangles** (4 lines + 4 tangent arcs, all edges picked): `blendOverflow` / `blendFailed` because a straight tool ran
+   on past the junction into the arc's band. A failed multi-edge selection is now retried with the ends of tangent-continuing edges stopping flush
+   (selections that worked are unchanged, so the gate is untouched); `propagate` does the same from one pick. R5 and R6 prisms, top and bottom loops,
+   with a unioned arm, fillet and chamfer, match OCCT to 1e-7.
+
 ## What remains
 
 * **Equal chamfer at a convex 3-edge corner** (`cube_ch_equal_corner3`): OCCT closes the corner with a triangular face through
@@ -84,6 +96,8 @@ kernel, exported with `step`, and read by OCCT, so both start from the same geom
   linear function but the section surface differs slightly (the kernel's is the pinned ruled cone, 7962.80235 for radii 1 -> 3
   on the 40 mm edge; OCCT gives 7962.09), plus the planar mitre. Conic, chord and curvature profiles at corners are still
   `blendUnsupported`; a variable edge ending at a concave corner is not mitred.
+* **Rounded rectangle with corner radius 2 and fillet 1.5** (`rrect2_fillet_*_loop_r1_5`): 1.6e-4 off (torus of major radius 0.5).
+* **The app's half-disc hole** at the foot of a concave/convex junction: not reproduced; the `lbr_mixed_*` and `pocket_mixed_*` cases pass the open-edge check.
 * **Unequal radii**: no blend patch (OCCT builds one); mixed vertices with unequal radii use the mitre.
 * **Face-face fillets** (two faces that share no edge) and **conic / curvature fillets at corners**: not started.
 * **Chamfers**: only equal chamfers are checked against OCCT at corners; asymmetric chamfers at a 3-edge corner follow the
@@ -131,6 +145,21 @@ signed volume difference to OCCT (relative).
 | `rounded_ch2_propagate` | 11565.4630 | unsupported | ok |
 | `rounded_chA_propagate` | 11515.2068 | unsupported | ok |
 | `rounded_fillet_propagate` | 11629.3641 | diff 46.4664 (4.0e-3) | ok |
+| `rrect5_fillet_top_loop_r1_5` | 9727.7885 | ok | ok |
+| `rrect5_fillet_bottom_loop_r1_5` | 9727.7885 | blendFailed | ok |
+| `rrect5_chamfer_top_loop_d1_5` | 9652.3395 | ok | ok |
+| `rrect2_fillet_top_loop_r1_5` | 9905.5671 | diff 1.5529 (1.6e-4) | diff 1.5529 (1.6e-4) |
+| `rrect2_fillet_bottom_loop_r1_5` | 9905.5671 | diff 1.5529 (1.6e-4) | diff 1.5529 (1.6e-4) |
+| `rrect2_chamfer_top_loop_d1_5` | 9826.8108 | missingEdge | ok |
+| `rrect6_fillet_top_loop_r1_5` | 9634.1926 | ok | ok |
+| `rrect6_fillet_bottom_loop_r1_5` | 9634.1926 | blendFailed | ok |
+| `rrect6_chamfer_top_loop_d1_5` | 9559.8461 | ok | ok |
+| `rrect5_fillet_top_loop_r2` | 9683.5833 | blendOverflow(F9.B4: spring leaves its face away from its ed | ok |
+| `rrect6_fillet_top_loop_r2` | 9590.6322 | ok | ok |
+| `rrect5_fillet_propagate_r2` | 9683.5833 | diff 72.9432 (7.5e-3) | ok |
+| `rrect6_fillet_propagate_r2` | 9590.6322 | diff 72.9460 (7.6e-3) | ok |
+| `rrectarm_fillet_top_loop_r2` | 10883.5833 | blendOverflow(F9.B4: spring leaves its face away from its ed | ok |
+| `rrectarm_fillet_top_loop_r1` | 10959.6433 | ok within band: diff 0.0247 (2.3e-06) | ok within band: diff 0.0247 (2.3e-06) |
 | `box_fillet_edge` | 7965.6637 | ok | ok |
 | `box_fillet_corner3` | 26701.6872 | ok | ok |
 | `box_fillet_ring_top` | 7900.0590 | ok | ok |
@@ -158,5 +187,19 @@ signed volume difference to OCCT (relative).
 | `pocket_unequal_concave3` | 28835.7954 | diff 52.3927 (1.8e-3) | ok within band: diff -1.7932 (6.2e-05) |
 | `pocket_unequal_mixed3` | 28794.5167 | diff -62.1163 (2.2e-3) | ok within band: diff -0.9570 (3.3e-05) |
 | `cube_unequal_two_edges` | 26786.4698 | diff -96.3887 (3.6e-3) | ok |
+| `lbr_mixed_r1` | 5991.4327 | invalid solid, vol 5991.4159 | ok |
+| `lbr_mixed_r2` | 5965.7982 | invalid solid, vol 5965.6637 | ok |
+| `lbr_mixed_r3` | 5923.1972 | invalid solid, vol 5922.7433 | ok |
+| `lbr_mixed_r4` | 5863.7308 | invalid solid, vol 5862.6548 | ok |
+| `lbr_mixed_outline_r2` | 5892.3764 | invalid solid, vol 5892.2419 | ok |
+| `lbr_mixed_rim1_wall3` | 6008.7851 | invalid solid, vol 5922.7433 | ok |
+| `lbr_mixed_rim3_wall1` | 5904.3712 | invalid solid, vol 5922.7433 | ok |
+| `lbr_mixed_rim2_wall4` | 5992.2873 | invalid solid, vol 5862.6548 | ok |
+| `lbr_mixed_rim4_wall2` | 5835.0311 | invalid solid, vol 5862.6548 | ok |
+| `lbr_mixed_rim1_wall4` | 6023.8993 | invalid solid, vol 5862.6548 | ok |
+| `lbr_mixed_rims_1_2_wall_3` | 5996.2335 | invalid solid, vol 5922.7433 | diff -0.9570 (1.6e-4) |
+| `pocket_mixed_rim1_wall3` | 28807.0683 | diff -74.6679 (2.6e-3) | ok |
+| `pocket_mixed_rim2_wall4` | 28794.0041 | diff -117.6148 (4.1e-3) | ok |
+| `pocket_mixed_rim4_wall2` | 28667.6506 | diff 8.7388 (3.0e-4) | ok |
 
-before 14/62 ok, after 61/62 ok
+before 20/91 ok, after 87/91 ok
