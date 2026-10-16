@@ -431,6 +431,15 @@ mod tests {
         assert!((v.x - 5.0).abs() < 1e-9 && (v.y - 30.0).abs() < 1e-9, "{v:?}");
     }
 
+    /// A guide with a non-finite point is an error, never a panic in the arc-length search.
+    #[test]
+    fn non_finite_guide_is_an_error() {
+        let bad = GuideIn { pts: vec![Vec3::new(10.0, 0.0, 0.0), Vec3::new(f64::NAN, 15.0, 0.0), Vec3::new(5.0, 30.0, 0.0)] };
+        let e = guided_stations(vec![square(0.0, 10.0), square(30.0, 5.0)], &[bad]).err().expect("error");
+        assert_eq!(e.code, GUIDE_INVALID);
+        assert!(guided_stations(vec![], &[]).is_err());
+    }
+
     #[test]
     fn miss_and_order_errors() {
         let miss = line_guide(Vec3::new(12.0, 0.0, 0.0), Vec3::new(7.0, 30.0, 0.0));

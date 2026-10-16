@@ -537,6 +537,45 @@ mod tests {
         assert!((s[4].0 - 2.5).abs() < 1e-12 && (s[4].1 + 4.330127018922193).abs() < 1e-12, "{s:?}");
     }
 
+    /// Retry strategies (validation gate): `split_even` shares the cuts out by length and keeps the loop closed;
+    /// every strategy gives a consistent station set; the default strategy is the pinned rule.
+    #[test]
+    fn strategies_stay_consistent() {
+        let sq = |y: f64, h: f64| poly(&[[-h, -h], [h, -h], [h, h], [-h, h]], y);
+        let tri = poly(&[[10.0, 0.0], [-5.0, 8.66], [-5.0, -8.66]], 30.0);
+        let mut c = sq(0.0, 4.0);
+        let len0: f64 = c.pieces.iter().map(|p| p.g.length()).sum();
+        c.split_even(7);
+        assert_eq!(c.pieces.len(), 7);
+        let len1: f64 = c.pieces.iter().map(|p| p.g.length()).sum();
+        assert!((len0 - len1).abs() < 1e-9);
+        for k in 0..c.pieces.len() {
+            assert!(c.pieces[k].g.end().dist(c.pieces[(k + 1) % 7].g.start()) < 1e-9);
+        }
+        for strat in [Strategy::default(), Strategy { shift: 1, flip: false, even: true }, Strategy { shift: 0, flip: true, even: false }, Strategy { shift: 2, flip: true, even: true }] {
+            let st = match_chains_strategy(vec![sq(0.0, 4.0), tri.clone(), sq(60.0, 3.0)], &[], strat);
+            assert!(st.is_consistent(), "{strat:?}");
+        }
+        let a = match_chains_with(vec![sq(0.0, 4.0), tri.clone()], &[]);
+        let b = match_chains_strategy(vec![sq(0.0, 4.0), tri], &[], Strategy::default());
+        assert_eq!(a.chains[1].pieces[0].g.start(), b.chains[1].pieces[0].g.start());
+    }
+
+    /// Degenerate chains never index out of range.
+    #[test]
+    fn empty_chain_is_harmless() {
+        let e = Chain { closed: true, pieces: vec![] };
+        assert!(!e.is_point());
+        let _ = e.centroid();
+        let _ = e.rotated(3);
+        let mut e2 = e.clone();
+        e2.split_to(4);
+        e2.split_even(4);
+        assert!(e2.pieces.is_empty());
+        let st = match_chains(vec![e.clone(), e]);
+        assert!(!st.is_consistent());
+    }
+
     #[test]
     fn circle_splits_in_two() {
         let g = Geom3::Conic { c: Vec3::new(0.0, 0.0, 0.0), u: Vec3::new(8.0, 0.0, 0.0), v: Vec3::new(0.0, 0.0, -8.0), t0: 0.0, t1: std::f64::consts::TAU };

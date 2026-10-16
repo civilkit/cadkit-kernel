@@ -191,6 +191,12 @@ Rules:
 - Structured error instead of an invalid solid: a section whose outline crosses itself is `loftProfileSelfIntersect
   {detail}`, or `loftSectionTooSmall {detail}` when it is also small against the loft length (under 1e-2); the hint says to
   make the section a simple closed curve or a point section. Previously such a loft returned `ok` with an invalid body.
+- Validation gate: a solid loft is checked with the same validity check as the `validate` query before it is returned. An
+  invalid result is rebuilt under alternative section matchings (even cut distribution, shifted start points, flipped
+  orientation); when none is valid the loft is `loftInvalidResult {detail, hint}`. An end section whose cap outline folds
+  back on itself at a scale the coarse crossing test misses (a spline with a double-clicked point) reports that in the
+  detail. Loft errors carry `hint` when they have one. `tools/loft_fuzz.mjs --strict [--mode guides|point|centre|tangent]`
+  asserts no trap and ok-implies-valid.
 - Display mesh: no cracks at the pole and unit normals (the limit normal is used at the apex). STEP export writes the faces as
   rational B-spline surfaces with a repeated control-point row; re-import (pcurves of edges that reach the pole stay on the
   iso-line) gives the same volume to 1e-6 and a clean `validate`.
