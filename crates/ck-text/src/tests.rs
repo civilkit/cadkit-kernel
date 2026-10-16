@@ -108,7 +108,7 @@ fn area_scales_with_height() {
     assert!((b / a - 4.0).abs() < 1e-9);
 }
 
-fn cross_free(poly: &[P]) -> bool {
+pub(crate) fn cross_free(poly: &[P]) -> bool {
     let n = poly.len();
     for i in 0..n {
         let (a, b) = (poly[i], poly[(i + 1) % n]);
@@ -136,7 +136,7 @@ fn glyph_contours_do_not_cross() {
         for cp in 0x21u32..0x100 {
             let Some(ch) = char::from_u32(cp) else { continue };
             let Some(g) = font.glyph_index(ch) else { continue };
-            let ls = glyph_loops(font, g, None, RUN_SPANS);
+            let ls = glyph_loops(&font, g, None, RUN_SPANS);
             let polys: Vec<Vec<P>> = ls.iter().map(|l| loop_polygon(l, 10)).collect();
             for (i, p) in polys.iter().enumerate() {
                 assert!(cross_free(p), "{f} {ch:?} self crossing");
@@ -162,7 +162,7 @@ fn glyph_contours_do_not_cross() {
 fn errors_and_warnings() {
     assert_eq!(layout(&Spec { string: "".into(), ..Spec::default() }).unwrap_err(), Error::Empty);
     assert_eq!(layout(&Spec { string: "   ".into(), ..Spec::default() }).unwrap_err(), Error::NothingToDraw);
-    assert!(matches!(layout(&Spec { string: "A".into(), font: "zz".into(), ..Spec::default() }), Err(Error::UnknownFont(_))));
+    assert!(matches!(layout(&Spec { string: "A".into(), font: "zz".into(), ..Spec::default() }), Err(Error::FontNotLoaded(_))));
     assert_eq!(layout(&Spec { string: "A".into(), height: 0.0, ..Spec::default() }).unwrap_err(), Error::BadHeight);
     let l = lay("A\u{65e5}B", "gauge", 5.0);
     assert!(l.warnings.iter().any(|w| w.code == "textMissingGlyph" && w.detail.contains('\u{65e5}')));
@@ -253,13 +253,13 @@ fn arc_text_sits_on_the_circle() {
 
 #[test]
 fn metrics_match_layout() {
-    let m = metrics("RPM x100", "gauge", 8.0, 1.0).unwrap();
+    let m = metrics("RPM x100", "gauge", None, 8.0, 1.0).unwrap();
     let l = layout(&Spec { string: "RPM x100".into(), height: 8.0, ..Spec::default() }).unwrap();
     assert!((l.bbox[2] - l.bbox[0] - (m.bbox[2] - m.bbox[0])).abs() < 1e-6);
     assert!(m.advance > m.bbox[2] - m.bbox[0]);
     assert_eq!(m.chars, 8);
     assert_eq!(m.advances.len(), 8);
-    let wide = metrics("RPM x100", "gauge", 8.0, 1.5).unwrap();
+    let wide = metrics("RPM x100", "gauge", None, 8.0, 1.5).unwrap();
     assert!((wide.advance / m.advance - 1.5).abs() < 1e-9);
 }
 

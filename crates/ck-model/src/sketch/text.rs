@@ -39,6 +39,7 @@ impl TextEntity {
         let mut spec = ck_text::Spec {
             string: jstr(j, "string"),
             font: j.get("font").and_then(|v| v.as_str()).unwrap_or("gauge").to_string(),
+            font_hash: j.get("fontHash").and_then(|v| v.as_str()).filter(|h| !h.is_empty()).map(str::to_string),
             height: jnum_opt(j.get("height")).unwrap_or(5.0),
             spacing: jnum_opt(j.get("spacing")).unwrap_or(1.0),
             at: pair(j.get("at")).unwrap_or([0.0, 0.0]),
@@ -169,7 +170,8 @@ pub fn metrics_reply(msg: &Json) -> Result<Json, String> {
     let font = msg.get("font").and_then(|v| v.as_str()).unwrap_or("gauge");
     let height = jnum_opt(msg.get("height")).unwrap_or(5.0);
     let spacing = jnum_opt(msg.get("spacing")).unwrap_or(1.0);
-    let m = ck_text::metrics(string, font, height, spacing).map_err(|e| err_text(&e))?;
+    let pin = msg.get("fontHash").and_then(|v| v.as_str());
+    let m = ck_text::metrics(string, font, pin, height, spacing).map_err(|e| err_text(&e))?;
     Ok(Json::Obj(vec![
         ("advance".into(), Json::Num(m.advance)),
         ("bbox".into(), Json::Arr(m.bbox.iter().map(|v| Json::Num(*v)).collect())),
@@ -240,6 +242,9 @@ pub fn info_json(sk: &Sketch, t: &TextLayout) -> Json {
     if let Some(s) = &spec {
         o.push(("string".into(), Json::Str(s.string.clone())));
         o.push(("font".into(), Json::Str(s.font.clone())));
+        if let Some(e) = ck_text::font_entry(&s.font) {
+            o.push(("fontHash".into(), Json::Str(ck_text::sha256_hex(&e.hash))));
+        }
         o.push(("height".into(), Json::Num(s.height)));
     }
     match l {
@@ -258,4 +263,85 @@ pub fn info_json(sk: &Sketch, t: &TextLayout) -> Json {
         }
     }
     Json::Obj(o)
+}
+
+// ---------------------------------------------------------------------------------------------
+// fonts: loadFont / unloadFont / listFonts / subsetFont
+
+fn font_err(e: &ck_text::FontError) -> String {
+    format!("{}: {}", e.code, e.message)
+}
+
+fn font_warn(w: &ck_text::FontWarn) -> Json {
+    Json::Obj(vec![("code".into(), Json::Str(w.code.into())), ("detail".into(), Json::Str(w.detail.clone()))])
+}
+
+fn font_info(i: &ck_text::FontInfo) -> Json {
+    let mut o = vec![
+        ("name".to_string(), Json::Str(i.name.clone())),
+        ("hash".into(), Json::Str(i.hash.clone())),
+        ("builtin".into(), Json::Bool(i.builtin)),
+        ("family".into(), i.family.clone().map_or(Json::Null, Json::Str)),
+        ("bytes".into(), Json::Num(i.bytes as f64)),
+        ("glyphs".into(), Json::Num(i.glyphs as f64)),
+        ("chars".into(), Json::Num(i.chars as f64)),
+        ("unitsPerEm".into(), Json::Num(i.units_per_em)),
+        ("capHeight".into(), Json::Num(i.cap_height)),
+        ("outlines".into(), Json::Str(i.outlines.into())),
+        ("supported".into(), Json::Arr(i.coverage.iter().map(|c| Json::Str(c.0.into())).collect())),
+        (
+            "coverage".into(),
+            Json::Arr(
+                i.coverage
+                    .iter()
+                    .map(|c| Json::Obj(vec![("block".into(), Json::Str(c.0.into())), ("mapped".into(), Json::Num(c.1 as f64)), ("of".into(), Json::Num(c.2 as f64))]))
+                    .collect(),
+            ),
+        ),
+        ("warnings".into(), Json::Arr(i.warnings.iter().map(font_warn).collect())),
+    ];
+    if !i.builtin {
+        o.push(("alreadyLoaded".into(), Json::Bool(i.already_loaded)));
+        o.push(("replaced".into(), Json::Bool(i.replaced)));
+    }
+    Json::Obj(o)
+}
+
+/// `{type:"loadFont", name, data:<base64 TTF/OTF>, replace?}`: register a font for the session.
+pub fn load_font_reply(msg: &Json) -> Result<Json, String> {
+    let name = msg.get("name").and_then(|v| v.as_str()).unwrap_or("");
+    let data = msg.get("data").and_then(|v| v.as_str()).ok_or("fontBadData: data must be the base64 text of a TTF or OTF file")?;
+    let bytes = ck_text::base64_decode(data).map_err(|m| format!("fontBadData: {m}"))?;
+    let info = ck_text::load_font(name, bytes, jtruthy(msg.get("replace"))).map_err(|e| font_err(&e))?;
+    Ok(font_info(&info))
+}
+
+/// `{type:"unloadFont", name}`: `{name, unloaded}`; built-in names are refused.
+pub fn unload_font_reply(msg: &Json) -> Result<Json, String> {
+    let name = msg.get("name").and_then(|v| v.as_str()).unwrap_or("");
+    let gone = ck_text::unload_font(name).map_err(|e| font_err(&e))?;
+    Ok(Json::Obj(vec![("name".into(), Json::Str(name.into())), ("unloaded".into(), Json::Bool(gone))]))
+}
+
+/// `{type:"listFonts"}`: `{fonts: [info..]}`, built-ins first.
+pub fn list_fonts_reply() -> Json {
+    Json::Obj(vec![("fonts".into(), Json::Arr(ck_text::list_fonts().iter().map(font_info).collect()))])
+}
+
+/// `{type:"subsetFont", name, text}`: `{name, hash, data:<base64 TTF>, bytes, glyphs, chars, warnings}`, a
+/// plain TrueType font with just the glyphs of `text` (plus `.notdef` and `H`).
+pub fn subset_font_reply(msg: &Json) -> Result<Json, String> {
+    let name = msg.get("name").and_then(|v| v.as_str()).unwrap_or("");
+    let text = msg.get("text").and_then(|v| v.as_str()).ok_or("subsetFont: text must be a string")?;
+    let (bytes, warnings) = ck_text::subset_font(name, text).map_err(|e| font_err(&e))?;
+    let hash = ck_text::sha256_hex(&ck_text::sha256(&[&bytes]));
+    let f = ck_text::Font::parse(std::sync::Arc::from(bytes.clone())).map_err(|m| format!("fontSubsetFailed: {m}"))?;
+    Ok(Json::Obj(vec![
+        ("name".into(), Json::Str(name.into())),
+        ("hash".into(), Json::Str(hash)),
+        ("bytes".into(), Json::Num(bytes.len() as f64)),
+        ("glyphs".into(), Json::Num(f.num_glyphs() as f64)),
+        ("data".into(), Json::Str(ck_text::base64_encode(&bytes))),
+        ("warnings".into(), Json::Arr(warnings.iter().map(font_warn).collect())),
+    ]))
 }
