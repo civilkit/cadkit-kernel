@@ -63,6 +63,14 @@ C('text past the plate edge', { texts: [T('EDGE RUN', { height: 14, at: [95, 30]
 C('twenty characters 0.2 deep', { texts: [T('OIL PSI TEMP 0123456', { height: 6 })], maxMs: 2000 });
 C('emboss text', { op: 'add', depth: 1, texts: [T('RAISED', { height: 12 })] });
 C('emboss digits', { op: 'add', depth: 0.5, texts: [T('0123456789', { height: 8 })] });
+// ---- every printable character of both fonts (8 per chunk, spacing 1.15 so touching letters are not what is tested)
+{
+  const chars = []; for (let c = 0x21; c < 0x7f; c++) chars.push(String.fromCharCode(c));
+  for (const c of [0xb0, 0xb1, 0xd7, 0xb7, 0xb5, 0xa7, 0xa9, 0xc5, 0xdf, 0xe9, 0xf8]) chars.push(String.fromCharCode(c));
+  for (const font of ['gauge', 'engrave'])
+    for (let i = 0; i < chars.length; i += 8)
+      C(`sweep ${font} ${chars.slice(i, i + 8).join('')}`, { plate: { kind: 'box', w: 100, h: 30, t: 5 }, texts: [T(chars.slice(i, i + 8).join(''), { font, height: 10, at: [50, 15], spacing: 1.15 })], depth: 0.4 });
+}
 // ---- errors and warnings
 C('empty string', { texts: [T('')], err: 'textEmpty' });
 C('blank string', { texts: [T('   ')], err: 'textNothingToDraw' });
@@ -172,6 +180,11 @@ function run(c, idx) {
   return { ok: true, detail, ms };
 }
 
+// ad hoc: node tools/text_corpus.mjs --text 'STRING' [--font gauge|engrave] [--height 10] [--depth 0.4] [--write dir]
+if (arg('--text')) {
+  cases.length = 0;
+  C(`text ${arg('--text')}`, { plate: { kind: 'box', w: 100, h: 60, t: 5 }, texts: [T(arg('--text'), { font: arg('--font') ?? 'gauge', height: Number(arg('--height') ?? 10), at: [50, 30], ...(process.argv.includes('--poly') ? { polyline: true } : {}), ...(arg('--runspans') ? { runSpans: Number(arg('--runspans')) } : {}) })], depth: Number(arg('--depth') ?? 0.4) });
+}
 let bad = 0, n = 0;
 cases.forEach((c, i) => {
   if (only && !c.name.includes(only)) return;

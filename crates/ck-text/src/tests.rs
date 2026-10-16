@@ -136,7 +136,7 @@ fn glyph_contours_do_not_cross() {
         for cp in 0x21u32..0x100 {
             let Some(ch) = char::from_u32(cp) else { continue };
             let Some(g) = font.glyph_index(ch) else { continue };
-            let ls = glyph_loops(font, g, None);
+            let ls = glyph_loops(font, g, None, RUN_SPANS);
             let polys: Vec<Vec<P>> = ls.iter().map(|l| loop_polygon(l, 10)).collect();
             for (i, p) in polys.iter().enumerate() {
                 assert!(cross_free(p), "{f} {ch:?} self crossing");

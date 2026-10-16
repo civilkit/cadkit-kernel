@@ -31,6 +31,8 @@ pub const MIN_HEIGHT: f64 = 0.8;
 const RUN_SPANS: usize = 4;
 /// Corner roundings below this fraction of the cap height are made sharp.
 const SHARP_FRAC: f64 = 0.03;
+/// A curved span whose largest deviation from its chord is below this fraction of the cap height is a line.
+const FLAT_FRAC: f64 = 0.003;
 
 static GAUGE: &[u8] = include_bytes!("../fonts/gauge.ttf");
 static ENGRAVE: &[u8] = include_bytes!("../fonts/engrave.ttf");
@@ -226,6 +228,8 @@ pub struct Spec {
     pub arc: Option<ArcSpec>,
     /// Lines within a chord tolerance instead of B-spline edges.
     pub polyline: bool,
+    /// Longest run of curve spans kept in one B-spline edge (1 to 16; default 4).
+    pub run_spans: usize,
 }
 
 impl Default for Spec {
@@ -242,6 +246,7 @@ impl Default for Spec {
             mirror: false,
             arc: None,
             polyline: false,
+            run_spans: RUN_SPANS,
         }
     }
 }
@@ -322,15 +327,16 @@ pub struct Metrics {
 // outlines
 
 /// Closed loops of one glyph, font units.
-fn glyph_loops(font: &Font, g: u16, polyline_tol: Option<f64>) -> Vec<Vec<Edge>> {
+fn glyph_loops(font: &Font, g: u16, polyline_tol: Option<f64>, run_spans: usize) -> Vec<Vec<Edge>> {
     let sharp = SHARP_FRAC * font.cap_height();
+    let flat = FLAT_FRAC * font.cap_height();
     let Some(contours) = font.contours(g) else { return vec![] };
     let mut out = vec![];
     for c in contours {
         if c.len() < 3 {
             continue;
         }
-        if let Some(l) = contour_edges(&c, sharp) {
+        if let Some(l) = contour_edges(&c, sharp, flat, run_spans) {
             let l = match polyline_tol {
                 Some(tol) => polylined(&l, tol),
                 None => l,
@@ -343,7 +349,7 @@ fn glyph_loops(font: &Font, g: u16, polyline_tol: Option<f64>) -> Vec<Vec<Edge>>
     out
 }
 
-fn contour_edges(c: &[ttf::Pt], sharp: f64) -> Option<Vec<Edge>> {
+fn contour_edges(c: &[ttf::Pt], sharp: f64, flat: f64, run_spans: usize) -> Option<Vec<Edge>> {
     // start at an on-curve point (a closed run of off-curve points starts at an implied one)
     let mut pts: Vec<(P, bool)> = c.iter().map(|p| ([p.x, p.y], p.on)).collect();
     let n = pts.len();
@@ -377,22 +383,33 @@ fn contour_edges(c: &[ttf::Pt], sharp: f64) -> Option<Vec<Edge>> {
                 edges.push(Edge::Line([start, end]));
             }
         } else {
-            // chunk long runs; chunk ends are the implied on-curve points between off-curve ones
+            // spans (start, control, end); span ends are the implied on-curve points between off-curve ones.
+            // A span that deviates from its chord by less than `flat` is a line (the tessellator samples such a
+            // near-straight B-spline edge differently in the wall and in the face it bounds: open display mesh).
+            // The others are grouped into runs of at most `run_spans` spans, one B-spline edge each.
             let m = offs.len();
-            let mut a = 0;
-            while a < m {
-                let b = (a + RUN_SPANS).min(m);
-                let s = if a == 0 { start } else { mid(offs[a - 1], offs[a]) };
-                let e = if b == m { end } else { mid(offs[b - 1], offs[b]) };
-                let mut q = vec![s];
-                q.extend_from_slice(&offs[a..b]);
-                q.push(e);
-                if q.len() == 3 && collinear(q[0], q[1], q[2]) {
-                    edges.push(Edge::Line([q[0], q[2]]));
-                } else {
-                    edges.push(Edge::Quad(q));
+            let span = |k: usize| -> (P, P, P) {
+                (if k == 0 { start } else { mid(offs[k - 1], offs[k]) }, offs[k], if k == m - 1 { end } else { mid(offs[k], offs[k + 1]) })
+            };
+            let mut k = 0;
+            while k < m {
+                let (s0, c0, e0) = span(k);
+                if sagitta(s0, c0, e0) <= flat {
+                    if s0 != e0 {
+                        edges.push(Edge::Line([s0, e0]));
+                    }
+                    k += 1;
+                    continue;
                 }
-                a = b;
+                let mut b = k + 1;
+                while b < m && b - k < run_spans && sagitta(span(b).0, span(b).1, span(b).2) > flat {
+                    b += 1;
+                }
+                let mut q = vec![s0];
+                q.extend_from_slice(&offs[k..b]);
+                q.push(span(b - 1).2);
+                edges.push(Edge::Quad(q));
+                k = b;
             }
         }
         i = j;
@@ -454,6 +471,16 @@ fn merge_lines(edges: Vec<Edge>) -> Vec<Edge> {
     out
 }
 
+/// Largest distance of the quadratic Bezier (a, c, b) from its chord: half the distance of `c` from the chord line.
+fn sagitta(a: P, c: P, b: P) -> f64 {
+    let (ux, uy, vx, vy) = (b[0] - a[0], b[1] - a[1], c[0] - a[0], c[1] - a[1]);
+    let l = ux.hypot(uy);
+    if l < 1e-12 {
+        return vx.hypot(vy) * 0.5;
+    }
+    (ux * vy - uy * vx).abs() / l * 0.5
+}
+
 fn collinear(a: P, c: P, b: P) -> bool {
     let (ux, uy, vx, vy) = (b[0] - a[0], b[1] - a[1], c[0] - a[0], c[1] - a[1]);
     let l = ux.hypot(uy);
@@ -500,7 +527,7 @@ struct Run {
     warnings: Vec<Warning>,
 }
 
-fn prepare(string: &str, font_name: &str, height: f64, spacing: f64, polyline: bool) -> Result<Run, Error> {
+fn prepare(string: &str, font_name: &str, height: f64, spacing: f64, polyline: bool, run_spans: usize) -> Result<Run, Error> {
     if string.is_empty() {
         return Err(Error::Empty);
     }
@@ -537,7 +564,7 @@ fn prepare(string: &str, font_name: &str, height: f64, spacing: f64, polyline: b
             continue;
         };
         let adv = font.advance(g);
-        let loops = glyph_loops(font, g, tol);
+        let loops = glyph_loops(font, g, tol, run_spans.clamp(1, 16));
         for l in &loops {
             for e in l {
                 let mut pts = vec![e.start()];
@@ -568,7 +595,7 @@ pub fn metrics(string: &str, font_name: &str, height: f64, spacing: f64) -> Resu
     if !(spacing.is_finite() && spacing > 0.0 && spacing < 20.0) {
         return Err(Error::BadValue);
     }
-    let r = match prepare(string, font_name, height, spacing, false) {
+    let r = match prepare(string, font_name, height, spacing, false, RUN_SPANS) {
         Ok(r) => r,
         Err(Error::NothingToDraw) => {
             // only blanks: still has an advance
@@ -592,7 +619,7 @@ pub fn metrics(string: &str, font_name: &str, height: f64, spacing: f64) -> Resu
 
 /// Lay a string out as regions.
 pub fn layout(spec: &Spec) -> Result<Layout, Error> {
-    let run = prepare(&spec.string, &spec.font, spec.height, spec.spacing, spec.polyline)?;
+    let run = prepare(&spec.string, &spec.font, spec.height, spec.spacing, spec.polyline, spec.run_spans)?;
     let fin = |v: f64| v.is_finite() && v.abs() < 1e9;
     if !(fin(spec.at[0]) && fin(spec.at[1]) && fin(spec.angle) && spec.spacing.is_finite() && spec.spacing > 0.0 && spec.spacing < 20.0) {
         return Err(Error::BadValue);

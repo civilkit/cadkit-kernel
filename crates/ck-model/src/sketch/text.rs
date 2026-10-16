@@ -45,6 +45,7 @@ impl TextEntity {
             angle: jnum(j.get("angle")),
             mirror: jtruthy(j.get("mirror")),
             polyline: jtruthy(j.get("polyline")),
+            run_spans: jnum_opt(j.get("runSpans")).map_or(ck_text::Spec::default().run_spans, |v| v.max(1.0).min(16.0) as usize),
             ..ck_text::Spec::default()
         };
         for w in words(j.get("anchor")).into_iter().chain(words(j.get("halign"))).chain(words(j.get("valign"))) {
@@ -186,11 +187,39 @@ pub fn outline_reply(msg: &Json) -> Result<Json, String> {
     let t = TextEntity::from_json(msg);
     let l = ck_text::layout(&t.spec).map_err(|e| err_text(&e))?;
     let poly = |lp: &Vec<ck_text::Edge>| Json::Arr(ck_text::loop_polygon(lp, 8).into_iter().map(jpt).collect());
-    let regions = l
+    let regions: Vec<Json> = l
         .regions
         .iter()
         .map(|r| Json::Obj(vec![("outer".into(), poly(&r.outer)), ("holes".into(), Json::Arr(r.holes.iter().map(poly).collect()))]))
         .collect();
+    // `edges: true`: the exact edges of every loop (`[[x,y],[x,y]]` for a line, the control points of a
+    // quadratic B-spline otherwise), for debugging and for drawing the exact outline
+    let edges_json = |lp: &Vec<ck_text::Edge>| {
+        Json::Arr(
+            lp.iter()
+                .map(|e| match e {
+                    ck_text::Edge::Line(l) => Json::Obj(vec![("line".into(), Json::Arr(l.iter().map(|p| jpt(*p)).collect()))]),
+                    ck_text::Edge::Quad(q) => Json::Obj(vec![("bspline2".into(), Json::Arr(q.iter().map(|p| jpt(*p)).collect()))]),
+                })
+                .collect(),
+        )
+    };
+    let with_edges = jtruthy(msg.get("edges"));
+    let regions = if with_edges {
+        l.regions
+            .iter()
+            .zip(regions)
+            .map(|(r, mut j)| {
+                if let Json::Obj(m) = &mut j {
+                    m.push(("outerEdges".into(), edges_json(&r.outer)));
+                    m.push(("holeEdges".into(), Json::Arr(r.holes.iter().map(edges_json).collect())));
+                }
+                j
+            })
+            .collect()
+    } else {
+        regions
+    };
     Ok(Json::Obj(vec![
         ("regions".into(), Json::Arr(regions)),
         ("bbox".into(), Json::Arr(l.bbox.iter().map(|v| Json::Num(*v)).collect())),
