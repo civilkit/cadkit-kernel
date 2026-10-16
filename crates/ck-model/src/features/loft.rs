@@ -168,12 +168,13 @@ fn tension(f: &Feature, key: &str) -> Option<f64> {
 }
 
 /// `centreLine`: a sketch chain that must cross every profile plane
-/// (`loftCentreLineReach`). Oracle: a STRAIGHT centre line leaves the loft
-/// unchanged (even slanted); a curved one reshapes it (probe
-/// `loftOffsetCentreCurved`, volume 6801 vs 7000), which is not
-/// reconstructed: refused with `loftFailed`.
-fn check_centre_line(state: &RegenState, f: &Feature, sks: &[SketchResult]) -> Result<(), FeatureError> {
-    let Some(c) = f.raw.get("centreLine").filter(|c| !matches!(c, Json::Null)) else { return Ok(()) };
+/// (`loftCentreLineReach`). A STRAIGHT centre line leaves the loft unchanged
+/// (even slanted); a gently curved one shifts intermediate stations along the
+/// lateral offset from the profile-centroid chord (ck-ops `loft::centre`).
+/// A corner is `loftCentreLineKink`; tighter than the sections allow is
+/// `loftCentreLineTight {detail}` (min radius, mm).
+fn check_centre_line(state: &RegenState, f: &Feature, sks: &[SketchResult], n_stations: usize) -> Result<Vec<Vec3>, FeatureError> {
+    let Some(c) = f.raw.get("centreLine").filter(|c| !matches!(c, Json::Null)) else { return Ok(vec![]) };
     let bad = |code: &str, detail: &str| FeatureError::new(code).with("detail", Json::Str(detail.into()));
     let Some(id) = c.get_str("sketch") else {
         return Err(bad("loftCentreLineInvalid", "only sketch centre lines are supported"));
@@ -181,10 +182,14 @@ fn check_centre_line(state: &RegenState, f: &Feature, sks: &[SketchResult]) -> R
     let sk = state.sketch(id).ok_or_else(|| FeatureError::new(codes::MISSING_SKETCH))?;
     let chain = open_chain(&sk.sketch).ok_or_else(|| bad("loftCentreLineInvalid", "the centre line is not one open chain of curves"))?;
     let mut pts: Vec<Vec3> = vec![];
+    let mut joints: Vec<usize> = vec![];
     for s in segs_in(sk, &chain)? {
         let Some(g) = ck_ops::loft::stations::geom_of(&s.curve, s.t0, s.t1, s.rev) else {
             return Err(bad("loftCentreLineInvalid", "unsupported centre line curve"));
         };
+        if !pts.is_empty() {
+            joints.push(pts.len().saturating_sub(1));
+        }
         for k in 0..=32 {
             if k == 0 && !pts.is_empty() {
                 continue;
@@ -200,12 +205,35 @@ fn check_centre_line(state: &RegenState, f: &Feature, sks: &[SketchResult]) -> R
         }
     }
     let (Some(&a), Some(&b)) = (pts.first(), pts.last()) else { return Err(bad("loftCentreLineInvalid", "the centre line has no curve")) };
-    let dir = (b - a).try_normalize();
-    let straight = dir.map_or(false, |dir| pts.iter().all(|q| (*q - a).cross(dir).len() < 1e-7 * (1.0 + a.dist(b))));
-    if !straight {
-        return Err(bad(ck_ops::loft::FAILED, "curved centre lines are not supported").with("hint", Json::Str("use a straight centre line (one line segment)".into())));
+    let plan = ck_ops::loft::centre::analyse(&ck_ops::loft::centre::CentreIn { pts, joints }, (a, b), n_stations);
+    if !plan.kinks.is_empty() {
+        return Err(bad("loftCentreLineKink", "the centre line has a corner: its pieces must run on tangentially"));
     }
-    Ok(())
+    // sections would cross when the centre line bends tighter than ~1.35× the
+    // larger profile half-extent (oracle: 40×40 profiles refuse below ~27 mm;
+    // the detail number tracks the line's own min radius, which falls as the
+    // bow grows — probe mx=5..15 → 26.83 .. 22.87)
+    let half = sks
+        .iter()
+        .map(|sk| {
+            let pts: Vec<[f64; 2]> = sk.sketch.points.iter().map(|p| [p.x, p.y]).collect();
+            let (mut x0, mut x1, mut y0, mut y1) = (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
+            for [x, y] in &pts {
+                x0 = x0.min(*x);
+                x1 = x1.max(*x);
+                y0 = y0.min(*y);
+                y1 = y1.max(*y);
+            }
+            0.5 * (x1 - x0).max(y1 - y0)
+        })
+        .fold(0.0f64, f64::max);
+    let min_r_ok = half * 1.35;
+    if let Some(r) = plan.min_radius {
+        if r < min_r_ok {
+            return Err(bad("loftCentreLineTight", &format!("{r:.2}")));
+        }
+    }
+    Ok(plan.offsets)
 }
 
 /// `tension[]` of the marker: one entry per end constraint (`p` the station centroid,
@@ -251,7 +279,7 @@ pub fn exec_loft(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(
     }
     let guides = guides_of(state, f)?;
     let guided = !guides.is_empty();
-    check_centre_line(state, f, &sks)?;
+    let centre_offsets = check_centre_line(state, f, &sks, profiles.len())?;
     // tangency to the adjacent faces needs profiles made of body edges
     for k in ["startTangent", "endTangent", "startContinuity", "endContinuity"] {
         if f.raw.get(k).map_or(false, |v| !matches!(v, Json::Null | Json::Bool(false))) {
@@ -264,7 +292,7 @@ pub fn exec_loft(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(
         .and_then(|c| c.as_arr())
         .map(|a| a.iter().map(|x| x.as_f64()).collect())
         .unwrap_or_default();
-    let opts = LoftOpts { surface: *surface, guides, start_normal: tension(f, "startNormal"), end_normal: tension(f, "endNormal"), connectors, apex_tangent: f.raw.get("apexTangent").and_then(|v| v.as_f64()).filter(|t| t.is_finite()) };
+    let opts = LoftOpts { surface: *surface, guides, start_normal: tension(f, "startNormal"), end_normal: tension(f, "endNormal"), connectors, apex_tangent: f.raw.get("apexTangent").and_then(|v| v.as_f64()).filter(|t| t.is_finite()), centre_offsets };
     let out = loft(&f.id, &profiles, &opts).map_err(err)?;
     let marker = Json::Obj(vec![
         ("loops".into(), Json::Arr(loops)),

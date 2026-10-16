@@ -65,6 +65,14 @@ impl Geom3 {
     pub fn is_line(&self) -> bool {
         matches!(self, Geom3::Line { .. })
     }
+    /// The same piece shifted by `d` (centre-line station offset).
+    pub fn translated(&self, d: Vec3) -> Geom3 {
+        match self {
+            Geom3::Line { a, b } => Geom3::Line { a: *a + d, b: *b + d },
+            Geom3::Conic { c, u, v, t0, t1 } => Geom3::Conic { c: *c + d, u: *u, v: *v, t0: *t0, t1: *t1 },
+            Geom3::Spline { curve, u0, u1 } => Geom3::Spline { curve: curve.clone().map(|p| p + d), u0: *u0, u1: *u1 },
+        }
+    }
     /// Arc length as the kernel measures it: one 8-point Gauss-Legendre
     /// panel per knot span of the piece's B-spline (`nurbs_length`). Pinned
     /// by the `f` marker bits of square profiles (a line of length 16 comes
@@ -249,6 +257,13 @@ impl Chain {
         Chain {
             closed: self.closed,
             pieces: self.pieces.iter().rev().map(|p| Piece { tag: p.tag.clone(), g: p.g.reversed() }).collect(),
+        }
+    }
+    /// Every piece shifted by `d` (centre-line station offset).
+    pub fn translated(&self, d: Vec3) -> Chain {
+        Chain {
+            closed: self.closed,
+            pieces: self.pieces.iter().map(|p| Piece { tag: p.tag.clone(), g: p.g.translated(d) }).collect(),
         }
     }
     /// Bisect the longest piece (first on ties) until there are `n`.

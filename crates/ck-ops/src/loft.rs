@@ -71,6 +71,9 @@ pub struct LoftOpts {
     /// `apexTangent` (0..2, default 1): speed of the rails arriving at a point (apex) end, as a multiple of
     /// the chord speed from the neighbouring station (1 = the straight cone taper, below 1 sharper, above 1 blunter).
     pub apex_tangent: Option<f64>,
+    /// Centre-line station offsets (one per station, from [`centre::analyse`]);
+    /// empty = no centre line / straight (no effect).
+    pub centre_offsets: Vec<Vec3>,
 }
 
 /// End tangents of the rails (derivative with respect to the loft parameter).
@@ -414,12 +417,28 @@ fn loft_once(feature: &str, profiles: &[ProfileIn], opts: &LoftOpts, strat: Stra
             return Err(LoftError::new(PROFILE_NOT_PLANAR));
         }
     }
-    let (st, grails) = if opts.guides.is_empty() {
+    let (mut st, grails) = if opts.guides.is_empty() {
         (stations::match_chains_strategy(chains, &opts.connectors, strat), vec![])
     } else {
         let g = guides::guided_stations(chains, &opts.guides)?;
         (g.st, g.rails)
     };
+    // centre-line deformation: shift intermediate stations along the lateral
+    // offset of a curved centre line from the profile-centroid chord
+    if !opts.centre_offsets.is_empty() && opts.centre_offsets.len() == st.chains.len() {
+        for (c, d) in st.chains.iter_mut().zip(opts.centre_offsets.iter()) {
+            if d.len() > 1e-15 {
+                *c = c.translated(*d);
+            }
+        }
+        // station parameters follow the shifted centroids
+        let cen: Vec<Vec3> = st.chains.iter().map(|c| c.centroid()).collect();
+        st.ts = vec![0.0];
+        for w in cen.windows(2) {
+            let last = *st.ts.last().unwrap();
+            st.ts.push(last + w[0].dist(w[1]));
+        }
+    }
     if !st.is_consistent() {
         return Err(LoftError::failed("the sections could not be brought to a common structure", "redraw the sections as simple closed curves with the same number of points"));
     }
