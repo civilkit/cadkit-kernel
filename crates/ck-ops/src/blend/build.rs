@@ -33,11 +33,27 @@ use ck_topo::make::{extrude, ExtrudeOpts, Profile, ProfileLoop, ProfileRegion, P
 
 /// Edge between the two named faces closest to `at` (fillet `edges[]` ref).
 pub fn find_edge(b: &Body, fa: &str, fb: &str, at: Vec3) -> Option<EdgeId> {
-    let (f, g) = (b.find_face(fa)?, b.find_face(fb)?);
+    // a face an earlier tool split into regions (`F4.S.e1~1`, `~2`) is still
+    // named by its base id in the selection
+    let named = |id: &str| -> Vec<FaceId> {
+        if let Some(f) = b.find_face(id) {
+            return vec![f];
+        }
+        let Some(mut want) = FaceName::parse(id) else { return vec![] };
+        want.region = None;
+        b.face_ids()
+            .filter(|&f| {
+                let mut n = b.face(f).name.clone();
+                n.region = None;
+                n == want
+            })
+            .collect()
+    };
+    let (fs_a, fs_b) = (named(fa), named(fb));
     b.edge_ids()
         .filter(|&e| {
             let fs = b.edge_faces(e);
-            fs.len() == 2 && fs.contains(&f) && fs.contains(&g)
+            fs.len() == 2 && ((fs_a.contains(&fs[0]) && fs_b.contains(&fs[1])) || (fs_a.contains(&fs[1]) && fs_b.contains(&fs[0])))
         })
         .min_by(|&x, &y| {
             let d = |e: EdgeId| {
@@ -404,7 +420,19 @@ fn blend_edges_at(
             dbg_fail(&format!("edge {k} ({fa} | {fb} at {at:?}) not found after earlier blends"));
             return Err(BlendError::code("missingEdge"));
         };
-        let (f1, f2) = (out.find_face(fa).unwrap(), out.find_face(fb).unwrap());
+        let (f1, f2) = match (out.find_face(fa), out.find_face(fb)) {
+            (Some(f1), Some(f2)) => (f1, f2),
+            _ => {
+                // a face split into regions by an earlier tool: the edge's own faces, in selection order
+                let fs = out.edge_faces(e);
+                let base = |f: FaceId| {
+                    let mut n = out.face(f).name.clone();
+                    n.region = None;
+                    n.id()
+                };
+                if base(fs[0]) == *fa || base(fs[1]) == *fb { (fs[0], fs[1]) } else { (fs[1], fs[0]) }
+            }
+        };
         let (body, hint) = blend_edge_hint(&out, e, [f1, f2], spec, feature, idx[k], tol, rings.get(k).copied().unwrap_or(false), &junc)?;
         // end faces at a junction with another selected edge are that
         // edge's own faces, not extra touches (oracle: the ring's face

@@ -151,3 +151,39 @@ fn two_concave_fillets_mitre_without_a_cap() {
     assert!((o.vol - 28833.56933115844).abs() < 1e-6 * 28833.0, "{}", o.vol);
     assert!(kinds_of(&o.body, "F5.").iter().all(|(_, k)| *k == "cylinder"));
 }
+
+fn ring_edges() -> Vec<String> {
+    vec![
+        edge("F4.C0", "F4.S.e4", [10., 12., -20.]),
+        edge("F4.C0", "F4.S.e1", [20., 12., -10.]),
+        edge("F4.C0", "F4.S.e2", [30., 12., -20.]),
+        edge("F4.C0", "F4.S.e3", [20., 12., -30.]),
+        edge("F4.S.e1", "F4.S.e4", [10., 16., -10.]),
+        edge("F4.S.e1", "F4.S.e2", [30., 16., -10.]),
+        edge("F4.S.e2", "F4.S.e3", [30., 16., -30.]),
+        edge("F4.S.e3", "F4.S.e4", [10., 16., -30.]),
+    ]
+}
+
+#[test]
+fn pocket_floor_and_corners_get_four_sphere_patches() {
+    for (r, want) in [(1.0, 28823.365788557858), (2.0, 28890.78468566495), (3.0, 28998.23898847153)] {
+        let o = fillet(r, &ring_edges());
+        assert!(o.errs.is_empty(), "{:?}", o.errs);
+        assert_eq!(o.issues, 0);
+        assert!((o.vol - want).abs() < 1e-6 * want, "r={r}: {} vs {want}", o.vol);
+        let blends = kinds_of(&o.body, "F5.");
+        assert_eq!(blends.iter().filter(|(_, k)| *k == "sphere").count(), 4, "{blends:?}");
+        assert_eq!(blends.iter().filter(|(_, k)| *k == "plane").count(), 0, "{blends:?}");
+    }
+}
+
+#[test]
+fn rim_fillets_with_a_corner_fillet_mixed_vertex() {
+    // two convex rim edges and the concave wall-wall edge meet at (10, 20, -10); OCCT r=2: 28772.665456976367
+    let e = [edge("F2.C1", "F4.S.e4", [10., 20., -20.]), edge("F2.C1", "F4.S.e1", [20., 20., -10.]), edge("F4.S.e1", "F4.S.e4", [10., 16., -10.])];
+    let o = fillet(2.0, &e);
+    assert!(o.errs.is_empty(), "{:?}", o.errs);
+    assert_eq!(o.issues, 0);
+    assert!((o.vol - 28772.665456976367).abs() < 1e-4 * 28772.0, "{}", o.vol);
+}
