@@ -297,3 +297,62 @@ impl ck_model::regen::FeatureExec for Ex {
         self.0.exec(s, f)
     }
 }
+
+impl P {
+    fn loft_with(&mut self, sks: &[String], extra: &str) -> String {
+        let id = self.id();
+        let s: Vec<String> = sks.iter().map(|s| format!(r#""{s}""#)).collect();
+        self.feats.push(format!(r#"{{"type":"loft","id":"{id}","op":"add","sketches":[{}]{extra}}}"#, s.join(",")));
+        id
+    }
+}
+
+fn section_area(tag: &str, x: f64) -> f64 {
+    let r = call(&format!(r#"{{"type":"section","tag":"{tag}","plane":{{"origin":[{x},0,0],"normal":[1,0,0]}}}}"#));
+    r.get("result").map_or(0.0, |s| num(s, "area"))
+}
+
+/// Circles of linearly falling radius through middle sections end in the exact cone (the apex rails are clamped to the chord).
+#[test]
+fn cone_through_middle_sections_is_exact() {
+    let mut p = P::new();
+    let sks = [p.circle(0.0, 8.0), p.circle(10.0, 16.0 / 3.0), p.circle(20.0, 8.0 / 3.0), p.point(30.0, 0.0, 0.0)];
+    p.loft(&sks);
+    let r = run(&p, "cone3");
+    let want = PI * 64.0 * 30.0 / 3.0;
+    assert!(r.errors.is_empty() && r.issues == 0 && close(r.volume, want, 1e-6), "{:?} {} {} want {want}", r.errors, r.volume, r.issues);
+}
+
+/// Sections that shrink fast towards a far apex: the cross-section area must fall monotonically along the last span (the natural
+/// rail end made it grow again, a fold), and `apexTangent` stays valid over its whole range.
+#[test]
+fn far_apex_taper_is_monotone_and_apex_tangent_is_valid() {
+    let hull_taper = |p: &mut P, extra: &str| {
+        let mut sks = vec![];
+        for (x, w, d, h) in [(-60.0, 18.0, 12.0, 5.0), (-30.0, 18.0, 12.0, 5.0), (0.0, 14.0, 10.0, 5.0), (30.0, 7.0, 6.0, 4.0)] {
+            sks.push(p.hull(x, w, d, h));
+        }
+        sks.push(p.point(150.0, 0.0, 2.0));
+        p.loft_with(&sks, extra);
+    };
+    let mut p = P::new();
+    hull_taper(&mut p, "");
+    let r = run(&p, "taper");
+    assert!(r.errors.is_empty() && r.issues == 0, "{:?} {}", r.errors, r.issues);
+    let mut prev = f64::INFINITY;
+    for k in 1..12 {
+        let a = section_area("taper", 30.0 + 120.0 * k as f64 / 12.0);
+        assert!(a <= prev * (1.0 + 1e-6) + 1e-9, "area grows along the last span: {a} after {prev} at step {k}");
+        prev = a;
+    }
+    let mut vols = vec![];
+    for (i, t) in ["0", "0.5", "1", "2"].iter().enumerate() {
+        let mut p = P::new();
+        hull_taper(&mut p, &format!(r#","apexTangent":{t}"#));
+        let tag = format!("taper{i}");
+        let r = run(&p, &tag);
+        assert!(r.errors.is_empty() && r.issues == 0, "apexTangent {t}: {:?} {}", r.errors, r.issues);
+        vols.push(r.volume);
+    }
+    assert!(vols.iter().all(|v| *v > 30000.0 && *v < 50000.0), "{vols:?}");
+}

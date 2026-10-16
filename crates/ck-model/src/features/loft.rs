@@ -264,7 +264,7 @@ pub fn exec_loft(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(
         .and_then(|c| c.as_arr())
         .map(|a| a.iter().map(|x| x.as_f64()).collect())
         .unwrap_or_default();
-    let opts = LoftOpts { surface: *surface, guides, start_normal: tension(f, "startNormal"), end_normal: tension(f, "endNormal"), connectors };
+    let opts = LoftOpts { surface: *surface, guides, start_normal: tension(f, "startNormal"), end_normal: tension(f, "endNormal"), connectors, apex_tangent: f.raw.get("apexTangent").and_then(|v| v.as_f64()).filter(|t| t.is_finite()) };
     let out = loft(&f.id, &profiles, &opts).map_err(err)?;
     let marker = Json::Obj(vec![
         ("loops".into(), Json::Arr(loops)),
