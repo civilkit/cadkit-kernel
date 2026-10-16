@@ -68,6 +68,9 @@ pub struct LoftOpts {
     pub end_normal: Option<f64>,
     /// `connectors[i]`: arc-length fraction at which profile `i` starts.
     pub connectors: Vec<Option<f64>>,
+    /// `apexTangent` (0..2, default 1): speed of the rails arriving at a point (apex) end, as a multiple of
+    /// the chord speed from the neighbouring station (1 = the straight cone taper, below 1 sharper, above 1 blunter).
+    pub apex_tangent: Option<f64>,
 }
 
 /// End tangents of the rails (derivative with respect to the loft parameter).
@@ -75,6 +78,10 @@ pub struct LoftOpts {
 pub struct Ends {
     pub d0: Option<Vec3>,
     pub d1: Option<Vec3>,
+    /// Apex rail speed factor (see `LoftOpts::apex_tangent`) for a point first / last station; the rails of a
+    /// point end are clamped to the chord direction from the neighbouring station instead of the natural
+    /// (zero second derivative) end, which lets the surface overshoot into a dent near the apex.
+    pub apex: [Option<f64>; 2],
 }
 
 impl Ends {
@@ -437,9 +444,11 @@ fn loft_once(feature: &str, profiles: &[ProfileIn], opts: &LoftOpts, strat: Stra
     }
     if st.chains[0].is_point() {
         ends.d0 = None;
+        ends.apex[0] = Some(opts.apex_tangent.unwrap_or(1.0).clamp(0.0, 2.0));
     }
     if st.chains[k - 1].is_point() {
         ends.d1 = None;
+        ends.apex[1] = Some(opts.apex_tangent.unwrap_or(1.0).clamp(0.0, 2.0));
     }
     let starts = st.chains.iter().filter_map(|c| c.pieces.first().map(|p| p.g.start())).collect();
     let body = build(feature, &st, profiles, opts.surface, &grails, ends)?;
@@ -611,7 +620,16 @@ fn side(st: &Stations, j: usize, ends: Ends) -> Result<Side, LoftError> {
             })
             .collect();
         let hd = |d: Option<Vec3>, c: &BSplineCurve| d.map(|v| [v.x * c.weight(i), v.y * c.weight(i), v.z * c.weight(i), 0.0]);
-        let (d, kn, q) = smooth::through_ends(&st.ts, &hp, hd(ends.d0, &cs[0]), hd(ends.d1, &cs[k - 1])).map_err(|_| failed_at("side",1))?;
+        let (mut d0, mut d1) = (hd(ends.d0, &cs[0]), hd(ends.d1, &cs[k - 1]));
+        if k > 2 {
+            if let Some(f) = ends.apex[0] {
+                d0 = Some(apex_rail(&hp[0], &hp[1], st.ts[1] - st.ts[0], f));
+            }
+            if let Some(f) = ends.apex[1] {
+                d1 = Some(apex_rail(&hp[k - 2], &hp[k - 1], st.ts[k - 1] - st.ts[k - 2], f));
+            }
+        }
+        let (d, kn, q) = smooth::through_ends(&st.ts, &hp, d0, d1).map_err(|_| failed_at("side",1))?;
         vdeg = d;
         vknots = kn;
         cols.push(q);
@@ -643,6 +661,19 @@ fn side(st: &Stations, j: usize, ends: Ends) -> Result<Side, LoftError> {
     Ok(Side { surface: Surface::BSpline(Box::new(surf)), cs, plane: None })
 }
 
+/// The rail derivative at a point (apex) end: the chord from the end to its neighbour station over the parameter
+/// span, times the factor `f` (`apexTangent`). Same sign convention as the end normals (derivative in increasing
+/// loft parameter), so for a point at the start pass `(apex, neighbour)` and for one at the end `(neighbour, apex)`.
+fn apex_rail<const N: usize>(a: &[f64; N], b: &[f64; N], dt: f64, f: f64) -> [f64; N] {
+    let mut d = [0.0; N];
+    if dt > 0.0 {
+        for c in 0..N {
+            d[c] = f * (b[c] - a[c]) / dt;
+        }
+    }
+    d
+}
+
 /// Side face of three or more stations whose profile pieces carry different
 /// rational weights (arcs of different sweep, arcs with lines).
 ///
@@ -665,7 +696,17 @@ fn blend_surface(cs: &[BSplineCurve], ts: &[f64], ends: Ends) -> Result<Surface,
     let mut q: Vec<Vec<Vec3>> = vec![]; // [a][j]
     for &u in &us {
         let pts: Vec<[f64; 3]> = cs.iter().map(|c| { let p = c.eval(u); [p.x, p.y, p.z] }).collect();
-        let (d, kn, c) = smooth::through_ends(ts, &pts, Ends::arr(ends.d0), Ends::arr(ends.d1)).map_err(|_| failed_at("blend_surface",2))?;
+        let kk = pts.len();
+        let (mut d0, mut d1) = (Ends::arr(ends.d0), Ends::arr(ends.d1));
+        if kk > 2 {
+            if let Some(f) = ends.apex[0] {
+                d0 = Some(apex_rail(&pts[0], &pts[1], ts[1] - ts[0], f));
+            }
+            if let Some(f) = ends.apex[1] {
+                d1 = Some(apex_rail(&pts[kk - 2], &pts[kk - 1], ts[kk - 1] - ts[kk - 2], f));
+            }
+        }
+        let (d, kn, c) = smooth::through_ends(ts, &pts, d0, d1).map_err(|_| failed_at("blend_surface",2))?;
         vdeg = d;
         vknots = kn;
         q.push(c.iter().map(|p| Vec3::new(p[0], p[1], p[2])).collect());
@@ -772,7 +813,17 @@ fn rail(ts: &[f64], pts: &[Vec3], ends: Ends) -> Result<(Curve, f64, f64), LoftE
         }
     }
     let q: Vec<[f64; 3]> = pts.iter().map(|p| [p.x, p.y, p.z]).collect();
-    let (deg, kn, c) = smooth::through_ends(ts, &q, Ends::arr(ends.d0), Ends::arr(ends.d1)).map_err(|_| failed_at("rail",1))?;
+    let (mut d0, mut d1) = (Ends::arr(ends.d0), Ends::arr(ends.d1));
+    let kk = q.len();
+    if kk > 2 {
+        if let Some(f) = ends.apex[0] {
+            d0 = Some(apex_rail(&q[0], &q[1], ts[1] - ts[0], f));
+        }
+        if let Some(f) = ends.apex[1] {
+            d1 = Some(apex_rail(&q[kk - 2], &q[kk - 1], ts[kk - 1] - ts[kk - 2], f));
+        }
+    }
+    let (deg, kn, c) = smooth::through_ends(ts, &q, d0, d1).map_err(|_| failed_at("rail",1))?;
     let cur = BSplineCurve::new(deg, kn, c.iter().map(|p| Vec3::new(p[0], p[1], p[2])).collect())
         .map_err(|_| failed_at("rail",2))?;
     let (a, b) = cur.domain();

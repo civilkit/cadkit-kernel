@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build the kernel wasm and run its checks on the CI box instead of this (busy) machine. See docs/remote-build.md.
-#   tools/remote_build.sh [--worktree DIR] [--checks gate,large sample,loft,fillet,section,spline,thin,suite,lint,all|none]
+#   tools/remote_build.sh [--worktree DIR] [--checks gate,large sample,loft,apex,fillet,section,spline,thin,suite,lint,all|none]
 #                         [--cargo-test CRATE|"-p a -p b"|all] [--out DIR] [--no-sync-back] [--jobs N] [--reset]
 #   tools/remote_build.sh --clean [--worktree DIR]     remove this worktree's directories on the box
 #   tools/remote_build.sh --prune                      remove worktree directories on the box unused for 3 days
@@ -110,7 +110,7 @@ fi
 flock -u 9; exec 9>&-    # checks are plain node: release the build lock
 
 CH=$(printf '%s' "$CHECKS" | tr ',' ' ')
-case " $CH " in *" all "*) CH="gate large sample loft fillet section spline thin suite lint";; esac
+case " $CH " in *" all "*) CH="gate large sample loft apex fillet section spline thin suite lint";; esac
 case " $CH " in *" none "*) CH="";; esac
 SUITE="region_select thin_extrude thread end_reference profile coincident_boolean hole_dims move spline_shell spline_boolean mate"
 pids=""
@@ -120,6 +120,7 @@ if [ -s "$W" ]; then
       gate) ( t=$SECONDS; nice -n 5 node tools/gate.mjs --fast --quiet --wasm "$W" > "$RUN/gate.out" 2>&1; echo $? > "$RUN/gate.rc"; echo $((SECONDS-t)) > "$RUN/gate.secs" ) & pids="$pids $!" ;;
       large sample) step large sample node tools/check_large sample.mjs --wasm "$W" ;;
       loft) step loft node tools/loft_point_check.mjs --wasm "$W" ;;
+      apex) step apex node tools/loft_apex_check.mjs --wasm "$W" ;;
       fillet) step fillet node tools/concave_fillet_check.mjs --wasm "$W" ;;
       section) step section node tools/section_check.mjs --wasm "$W" ;;
       spline) step spline_shell node tools/spline_shell_check.mjs --wasm "$W"; step spline_boolean node tools/spline_boolean_check.mjs --wasm "$W" ;;

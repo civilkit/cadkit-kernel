@@ -200,6 +200,12 @@ Rules:
 - Display mesh: no cracks at the pole and unit normals (the limit normal is used at the apex). STEP export writes the faces as
   rational B-spline surfaces with a repeated control-point row; re-import (pcurves of edges that reach the pole stay on the
   iso-line) gives the same volume to 1e-6 and a clean `validate`.
+- Rails at the apex: with three or more sections the rails arriving at the point are clamped to the chord from the neighbouring
+  section (speed `apexTangent` times the chord speed) instead of the natural spline end (zero second derivative), which let the
+  surface overshoot into a dent and, for sections that shrink quickly towards a far apex, made the cross-section area grow again
+  (a fold). `apexTangent` (0 to 2, default 1) is the loft option: 1 = the straight cone taper at the tip, smaller = a narrower
+  spike (fuller body), larger = a wider tip angle (slimmer body). With two sections the loft is the straight cone either way.
+  Check: `tools/loft_apex_check.mjs` (hull variants, far apex, `apexTangent`, exact cones).
 - Not covered: guide curves through the tip, `startTangent` / `endTangent` at a point, a surface (sheet) loft to a point,
   booleans whose intersection curve passes THROUGH the apex (a cut away from the tip works).
   Check: `tools/loft_point_check.mjs` (wasm), `crates/ck-wasm/tests/loft_point.rs`, unit tests in `crates/ck-ops/src/loft.rs`.
