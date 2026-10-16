@@ -1,8 +1,10 @@
 // Randomized robustness fuzz for loft over closed-spline sections (hull-like, perturbed sub-mm, as drawn with snap off).
 // Asserts: no wasm trap/panic; every result is an ok valid solid or a structured loft error.
-// usage: node tools/loft_fuzz.mjs [--wasm path] [--n 300] [--seeds a,b,c] [--verbose] [--strict] [--mode hull|guides|point|centre|tangent]
+// usage: node tools/loft_fuzz.mjs [--wasm path] [--n 300] [--seeds a,b,c] [--verbose] [--strict] [--mode hull|guides|point|centre|tangent|regular]
 // exit 1 on any failure. Modes: hull (default, the 5 perturbed hull splines), guides (guide lines / splines through polygon sections),
-// point (apex first/last section), centre (centre line sketch), tangent (end normals, connectors, tangency flags, surface lofts).
+// point (apex first/last section), centre (centre line sketch), tangent (end normals, connectors, tangency flags, surface lofts),
+// regular (closed splines through regular n-gons, n = 6..16, 2..5 sections of random radii: every seed must be ok and valid).
+// Every structured loft error must carry params.detail and params.hint (else status NODETAIL).
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,7 +16,7 @@ const wasm = arg('--wasm', path.join(here, '../target/wasm32-unknown-unknown/rel
 const N = +arg('--n', 300);
 const only = arg('--seeds', null)?.split(',').map(Number);
 const verbose = process.argv.includes('--verbose');
-const strict = process.argv.includes('--strict'); // also fail on ok:true results whose solid fails validate (known: LOOP_SELF_INTERSECT / EDGE_OFF_SURFACE on some dropped-point sections)
+const strict = process.argv.includes('--strict') || arg('--mode', 'hull') === 'regular'; // also fail on ok:true results whose solid fails validate (known: LOOP_SELF_INTERSECT / EDGE_OFF_SURFACE on some dropped-point sections)
 const mode = arg('--mode', 'hull');
 const mod = new WebAssembly.Module(readFileSync(wasm));
 
@@ -63,6 +65,22 @@ function section(R, kind, r, cx = 0, jitter = 0, a0fixed = false) {
   const a0 = kind === 'square' || a0fixed ? 0 : R() * 2;
   const P = Array.from({ length: nn }, (_, i) => { const a = a0 + (2 * Math.PI * i) / nn; return pt('p' + (i + 1), cx + r * Math.cos(a) + J(), r * Math.sin(a) + J()); });
   return { points: P, entities: P.map((_, i) => lineE('e' + (i + 1), 'p' + (i + 1), 'p' + ((i + 1) % nn + 1))) };
+}
+// closed splines through the vertices of a regular n-gon (n = 6..16), 2..5 sections of random radii 3..15 at spacing 30 on offset front planes
+export function makeRegularPart(seed) {
+  const R = rng(seed * 104729 + 7);
+  const n = 6 + Math.floor(R() * 11), ns = 2 + Math.floor(R() * 4);
+  const feats = []; const sks = [];
+  for (let i = 0; i < ns; i++) {
+    const r = 3 + R() * 12;
+    let base = { kind: 'std', id: 'front' };
+    if (i > 0) { feats.push({ type: 'plane', id: 'P' + i, mode: 'offset', base, offset: 30 * i }); base = { kind: 'feature', id: 'P' + i }; }
+    const P = Array.from({ length: n }, (_, k) => pt('p' + (k + 1), r * Math.cos((2 * Math.PI * k) / n), r * Math.sin((2 * Math.PI * k) / n)));
+    feats.push({ type: 'sketch', id: 'S' + i, plane: base, constraints: [], points: P, entities: [{ id: 'e1', type: 'spline', pts: P.map((p) => p.id), closed: true }] });
+    sks.push('S' + i);
+  }
+  feats.push({ type: 'loft', id: 'L', op: 'add', sketches: sks });
+  return { format: 'ck-part', version: 1, features: feats };
 }
 export function makeModePart(m, seed) {
   const R = rng(seed * 7919 + 13);
@@ -116,13 +134,17 @@ export function makeModePart(m, seed) {
 
 export function runSeed(seed) {
   const k = new Kernel(mod);
-  const part = mode === 'hull' ? makePart(seed) : makeModePart(mode, seed);
+  const part = mode === 'hull' ? makePart(seed) : mode === 'regular' ? makeRegularPart(seed) : makeModePart(mode, seed);
   const isSurface = part.features.some((f) => f.type === 'loft' && f.surface);
   const rr = k.request(JSON.stringify({ id: 1, msg: { type: 'regen', tag: 'main', part, opts: { solveSketches: true } } }));
   if (rr.trap) return { seed, status: 'TRAP', detail: rr.trap };
   const r = JSON.parse(rr.json);
   const errs = (r.result?.errors ?? []).map(([i, e]) => `${i}:${e.code}${verbose ? ' ' + JSON.stringify(e.params?.detail ?? e.detail ?? '') : ''}`);
   if (r.ok === false && !r.result) return { seed, status: 'HOSTERR', detail: JSON.stringify(r).slice(0, 200) };
+  const lofts = (r.result?.errors ?? []).filter(([, e]) => /^loft/i.test(e.code));
+  const bare = lofts.find(([, e]) => !e.params?.detail || !e.params?.hint);
+  if (bare) return { seed, status: 'NODETAIL', detail: JSON.stringify(bare[1]) };
+  if (errs.length && mode === 'regular') return { seed, status: 'REGULARFAIL', detail: errs.join(' ') + ' ' + JSON.stringify(lofts[0]?.[1]?.params?.detail ?? '') };
   if (errs.length) return errs.every((e) => /loft/i.test(e)) ? { seed, status: 'structured', detail: errs.join(' ') } : { seed, status: 'BADERR', detail: errs.join(' ') };
   const call = (msg) => { const x = k.request(JSON.stringify({ id: 2, msg: { ...msg, tag: 'main' } })); return x.trap ? { trap: x.trap } : JSON.parse(x.json); };
   if (isSurface) return { seed, status: 'ok', detail: 'surface' };

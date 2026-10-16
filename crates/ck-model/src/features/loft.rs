@@ -44,10 +44,14 @@ fn v3(p: Vec3) -> Json {
 
 fn err(e: LoftError) -> FeatureError {
     let mut fe = FeatureError::new(&e.code);
-    if let Some(d) = e.detail {
+    // `loftFailed` never leaves with empty params: a missing detail / hint gets a generic one
+    let failed = e.code == ck_ops::loft::FAILED;
+    let detail = e.detail.or_else(|| failed.then(|| "the loft could not be built from these sections".to_string()));
+    let hint = e.hint.or_else(|| failed.then(|| "simplify the sections (the same number of points in every section, no nearly-coincident points) or add intermediate sections".to_string()));
+    if let Some(d) = detail {
         fe = fe.with("detail", Json::Str(d));
     }
-    if let Some(h) = e.hint {
+    if let Some(h) = hint {
         fe = fe.with("hint", Json::Str(h));
     }
     fe

@@ -117,6 +117,14 @@ impl LoftError {
     }
 }
 
+/// `loftFailed` for an internal step that gave up: detail names the step, hint says what to change.
+fn failed_at(step: &str, n: usize) -> LoftError {
+    LoftError::failed(
+        &format!("the loft could not be built (internal step {step}#{n} failed)"),
+        "simplify the sections (fewer points, the same number of points in every section, no nearly-coincident points) or add intermediate sections",
+    )
+}
+
 pub const PROFILES: &str = "loftProfiles";
 pub const PROFILE_OPEN: &str = "loftProfileOpen";
 pub const PROFILE_NOT_PLANAR: &str = "loftProfileNotPlanar";
@@ -134,11 +142,11 @@ const TOL: f64 = 1e-9;
 fn chain_of(p: &ProfileIn) -> Result<Chain, LoftError> {
     let mut pieces = vec![];
     for s in &p.segs {
-        let g = geom_of(&s.curve, s.t0, s.t1, s.rev).ok_or_else(|| LoftError::new(FAILED))?;
+        let g = geom_of(&s.curve, s.t0, s.t1, s.rev).ok_or_else(|| failed_at("chain_of",1))?;
         pieces.push(Piece { tag: s.tag.clone(), g });
     }
     if pieces.is_empty() {
-        return Err(LoftError::new(FAILED));
+        return Err(failed_at("chain_of",2));
     }
     Ok(Chain { closed: p.closed, pieces })
 }
@@ -440,6 +448,39 @@ fn loft_once(feature: &str, profiles: &[ProfileIn], opts: &LoftOpts, strat: Stra
 
 // ------------------------------------------------------------------ faces
 
+/// Remove a zero-length end span: interior knots (multiplicity up to the degree) that sit within rounding
+/// (1e-12 of the domain length) of an end knot make a sliver span whose control points coincide with the end
+/// (a closed spline whose chord-length parameter sum rounds differently from its last knot). The curve is
+/// unchanged to rounding; the sliver knots and the control points they carry are dropped.
+fn drop_slivers(c: &mut BSplineCurve) {
+    let p = c.degree;
+    let n = c.ctrl.len();
+    if c.knots.len() != n + p + 1 || n < p + 2 {
+        return;
+    }
+    let (a, b) = (c.knots[0], c.knots[c.knots.len() - 1]);
+    let eps = 1e-12 * (b - a).abs();
+    // end: interior knots just below `b`
+    let m = c.knots[p + 1..n].iter().filter(|&&k| k < b && b - k <= eps).count();
+    if m > 0 && m <= p && c.knots[n..].iter().all(|&k| k == b) {
+        let first = n - m;
+        c.knots.drain(first..n);
+        c.ctrl.truncate(n - m);
+        if let Some(w) = c.weights.as_mut() {
+            w.truncate(n - m);
+        }
+    }
+    let n = c.ctrl.len();
+    let m = c.knots[p + 1..n].iter().filter(|&&k| k > a && k - a <= eps).count();
+    if m > 0 && m <= p && c.knots[..=p].iter().all(|&k| k == a) {
+        c.knots.drain(p + 1..p + 1 + m);
+        c.ctrl.drain(..m);
+        if let Some(w) = c.weights.as_mut() {
+            w.drain(..m);
+        }
+    }
+}
+
 /// Compatible rational B-splines of one piece over all stations: same
 /// degree and knot vector, weights present on all or none.
 /// Err (never a panic downstream) when the curves still do not agree on the control point count.
@@ -449,6 +490,9 @@ fn compat(mut cs: Vec<BSplineCurve>) -> Result<Vec<BSplineCurve>, LoftError> {
         return Err(mismatch());
     }
     let p = cs.iter().map(|c| c.degree).max().unwrap();
+    for c in cs.iter_mut() {
+        drop_slivers(c);
+    }
     for c in cs.iter_mut() {
         if c.degree < p {
             *c = c.elevate(p - c.degree);
@@ -566,7 +610,7 @@ fn side(st: &Stations, j: usize, ends: Ends) -> Result<Side, LoftError> {
             })
             .collect();
         let hd = |d: Option<Vec3>, c: &BSplineCurve| d.map(|v| [v.x * c.weight(i), v.y * c.weight(i), v.z * c.weight(i), 0.0]);
-        let (d, kn, q) = smooth::through_ends(&st.ts, &hp, hd(ends.d0, &cs[0]), hd(ends.d1, &cs[k - 1])).map_err(|_| LoftError::new(FAILED))?;
+        let (d, kn, q) = smooth::through_ends(&st.ts, &hp, hd(ends.d0, &cs[0]), hd(ends.d1, &cs[k - 1])).map_err(|_| failed_at("side",1))?;
         vdeg = d;
         vknots = kn;
         cols.push(q);
@@ -594,7 +638,7 @@ fn side(st: &Stations, j: usize, ends: Ends) -> Result<Side, LoftError> {
         ctrl,
         if rational { Some(wts) } else { None },
     )
-    .map_err(|_| LoftError::new(FAILED))?;
+    .map_err(|e| LoftError::failed(&format!("the loft side surface is inconsistent ({e}))"), "simplify the sections (fewer points, the same number of points in every section) or add intermediate sections"))?;
     Ok(Side { surface: Surface::BSpline(Box::new(surf)), cs, plane: None })
 }
 
@@ -610,7 +654,7 @@ fn side(st: &Stations, j: usize, ends: Ends) -> Result<Side, LoftError> {
 /// by a bicubic interpolant: exact (cubic) in `v`, interpolated at `U`
 /// parameter samples in `u` (error ~1e-8 for arcs).
 fn blend_surface(cs: &[BSplineCurve], ts: &[f64], ends: Ends) -> Result<Surface, LoftError> {
-    let Some(c0) = cs.first() else { return Err(LoftError::new(FAILED)) };
+    let Some(c0) = cs.first() else { return Err(failed_at("blend_surface",1)) };
     let spans = ck_geom::nurbs::basis::distinct_knots(&c0.knots).len().saturating_sub(1).max(1);
     let n = 24 * spans + 1;
     let us: Vec<f64> = (0..n).map(|a| a as f64 / (n - 1) as f64).collect();
@@ -620,26 +664,26 @@ fn blend_surface(cs: &[BSplineCurve], ts: &[f64], ends: Ends) -> Result<Surface,
     let mut q: Vec<Vec<Vec3>> = vec![]; // [a][j]
     for &u in &us {
         let pts: Vec<[f64; 3]> = cs.iter().map(|c| { let p = c.eval(u); [p.x, p.y, p.z] }).collect();
-        let (d, kn, c) = smooth::through_ends(ts, &pts, Ends::arr(ends.d0), Ends::arr(ends.d1)).map_err(|_| LoftError::new(FAILED))?;
+        let (d, kn, c) = smooth::through_ends(ts, &pts, Ends::arr(ends.d0), Ends::arr(ends.d1)).map_err(|_| failed_at("blend_surface",2))?;
         vdeg = d;
         vknots = kn;
         q.push(c.iter().map(|p| Vec3::new(p[0], p[1], p[2])).collect());
     }
     let nv = q.first().map_or(0, |r| r.len());
     if nv == 0 || q.iter().any(|r| r.len() != nv) {
-        return Err(LoftError::new(FAILED));
+        return Err(failed_at("blend_surface",3));
     }
     // u-direction: cubic interpolation through the samples of every row j
     let ku = ck_geom::fit::averaged_knots(&us, 3);
     let mut ctrl = vec![Vec3::new(0.0, 0.0, 0.0); n * nv];
     for j in 0..nv {
         let col: Vec<Vec3> = (0..n).map(|a| q[a][j]).collect();
-        let c = ck_geom::fit::interpolate_with(&col, 3, &us, ku.clone()).map_err(|_| LoftError::new(FAILED))?;
+        let c = ck_geom::fit::interpolate_with(&col, 3, &us, ku.clone()).map_err(|_| failed_at("blend_surface",4))?;
         for a in 0..n {
             ctrl[a * nv + j] = c.ctrl[a];
         }
     }
-    let surf = BSplineSurface::new(3, vdeg, ku, vknots, n, nv, ctrl, None).map_err(|_| LoftError::new(FAILED))?;
+    let surf = BSplineSurface::new(3, vdeg, ku, vknots, n, nv, ctrl, None).map_err(|_| failed_at("blend_surface",5))?;
     Ok(Surface::BSpline(Box::new(surf)))
 }
 
@@ -669,8 +713,8 @@ fn gordon_side(st: &Stations, j: usize, lf: &dyn Fn(f64) -> Vec3, rf: &dyn Fn(f6
     vs.push(ts[k - 1]);
     let spline = |xs: &[f64], pts: &[Vec3]| -> Result<BSplineCurve, LoftError> {
         let q: Vec<[f64; 3]> = pts.iter().map(|p| [p.x, p.y, p.z]).collect();
-        let (d, kn, c) = smooth::through_ends(xs, &q, Ends::arr(ends.d0), Ends::arr(ends.d1)).map_err(|_| LoftError::new(FAILED))?;
-        BSplineCurve::new(d, kn, c.iter().map(|p| Vec3::new(p[0], p[1], p[2])).collect()).map_err(|_| LoftError::new(FAILED))
+        let (d, kn, c) = smooth::through_ends(xs, &q, Ends::arr(ends.d0), Ends::arr(ends.d1)).map_err(|_| failed_at("gordon_side",1))?;
+        BSplineCurve::new(d, kn, c.iter().map(|p| Vec3::new(p[0], p[1], p[2])).collect()).map_err(|_| failed_at("gordon_side",2))
     };
     let mut vdeg = 3;
     let mut vknots = vec![];
@@ -681,25 +725,25 @@ fn gordon_side(st: &Stations, j: usize, lf: &dyn Fn(f64) -> Vec3, rf: &dyn Fn(f6
         let (cc, tc) = (spline(ts, &cp)?, spline(ts, &tp)?);
         let row: Vec<Vec3> = vs.iter().map(|&v| lf(v) * (1.0 - u) + rf(v) * u + cc.eval(v) - tc.eval(v)).collect();
         let r3: Vec<[f64; 3]> = row.iter().map(|p| [p.x, p.y, p.z]).collect();
-        let (d, kn, c) = smooth::through_ends(&vs, &r3, Ends::arr(ends.d0), Ends::arr(ends.d1)).map_err(|_| LoftError::new(FAILED))?;
+        let (d, kn, c) = smooth::through_ends(&vs, &r3, Ends::arr(ends.d0), Ends::arr(ends.d1)).map_err(|_| failed_at("gordon_side",3))?;
         vdeg = d;
         vknots = kn;
         q.push(c.iter().map(|p| Vec3::new(p[0], p[1], p[2])).collect());
     }
     let nv = q.first().map_or(0, |r| r.len());
     if nv == 0 || q.iter().any(|r| r.len() != nv) {
-        return Err(LoftError::new(FAILED));
+        return Err(failed_at("gordon_side",4));
     }
     let ku = ck_geom::fit::averaged_knots(&us, 3);
     let mut ctrl = vec![Vec3::new(0.0, 0.0, 0.0); n * nv];
     for jj in 0..nv {
         let col: Vec<Vec3> = (0..n).map(|a| q[a][jj]).collect();
-        let c = ck_geom::fit::interpolate_with(&col, 3, &us, ku.clone()).map_err(|_| LoftError::new(FAILED))?;
+        let c = ck_geom::fit::interpolate_with(&col, 3, &us, ku.clone()).map_err(|_| failed_at("gordon_side",5))?;
         for a in 0..n {
             ctrl[a * nv + jj] = c.ctrl[a];
         }
     }
-    let surf = BSplineSurface::new(3, vdeg, ku, vknots, n, nv, ctrl, None).map_err(|_| LoftError::new(FAILED))?;
+    let surf = BSplineSurface::new(3, vdeg, ku, vknots, n, nv, ctrl, None).map_err(|_| failed_at("gordon_side",6))?;
     Ok(Side { surface: Surface::BSpline(Box::new(surf)), cs, plane: None })
 }
 
@@ -727,9 +771,9 @@ fn rail(ts: &[f64], pts: &[Vec3], ends: Ends) -> Result<(Curve, f64, f64), LoftE
         }
     }
     let q: Vec<[f64; 3]> = pts.iter().map(|p| [p.x, p.y, p.z]).collect();
-    let (deg, kn, c) = smooth::through_ends(ts, &q, Ends::arr(ends.d0), Ends::arr(ends.d1)).map_err(|_| LoftError::new(FAILED))?;
+    let (deg, kn, c) = smooth::through_ends(ts, &q, Ends::arr(ends.d0), Ends::arr(ends.d1)).map_err(|_| failed_at("rail",1))?;
     let cur = BSplineCurve::new(deg, kn, c.iter().map(|p| Vec3::new(p[0], p[1], p[2])).collect())
-        .map_err(|_| LoftError::new(FAILED))?;
+        .map_err(|_| failed_at("rail",2))?;
     let (a, b) = cur.domain();
     Ok((Curve::BSpline(cur), a, b))
 }
