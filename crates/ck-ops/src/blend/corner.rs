@@ -33,6 +33,9 @@ pub struct Corner {
     pub vertex: VertexId,
     pub edges: [EdgeId; 3],
     pub faces: [FaceId; 3],
+    /// All three edges are concave (the void side of the vertex is a trihedral
+    /// octant): the corner is filled with material (union), not cut.
+    pub concave: bool,
 }
 
 /// Corner at the vertex shared by exactly the three `selected` edges, or
@@ -61,7 +64,21 @@ pub fn find_corner(b: &Body, selected: &[EdgeId]) -> Vec<Corner> {
         }
         let opposite = |e: EdgeId| faces.iter().copied().find(|f| !b.edge_faces(e).contains(f));
         let (Some(f0), Some(f1), Some(f2)) = (opposite(inc[0]), opposite(inc[1]), opposite(inc[2])) else { continue };
-        out.push(Corner { vertex: v, edges: [inc[0], inc[1], inc[2]], faces: [f0, f1, f2] });
+        // convexity: along edge i the face opposite to it leans toward the
+        // body (convex, n.u < 0) or toward the void (concave, n.u > 0)
+        let vp = b.vertex(v).p;
+        let mut sgn = [0i32; 3];
+        for (i, (&e, &f)) in inc.iter().zip([f0, f1, f2].iter()).enumerate() {
+            let ed = b.edge(e);
+            let other = if ed.v0 == v { b.vertex(ed.v1).p } else { b.vertex(ed.v0).p };
+            let d = b.planar_normal(f).dot((other - vp).normalize());
+            sgn[i] = if d > 1e-9 { 1 } else if d < -1e-9 { -1 } else { 0 };
+        }
+        let concave = sgn.iter().all(|&s| s > 0);
+        if !concave && !sgn.iter().all(|&s| s < 0) {
+            continue; // mixed or degenerate vertex: no spherical corner
+        }
+        out.push(Corner { vertex: v, edges: [inc[0], inc[1], inc[2]], faces: [f0, f1, f2], concave });
     }
     out
 }
@@ -72,14 +89,17 @@ pub fn sphere_corner_tool(b: &Body, corner: &Corner, r: f64, feature: &str, name
     let vp = b.vertex(corner.vertex).p;
     let n: Vec<Vec3> = corner.faces.iter().map(|&f| b.planar_normal(f)).collect();
     // ball centre: r below each of the three planes
-    let c = crate::intersect::solve3([n[0], n[1], n[2]], [-r, -r, -r]).map(|d| vp + d).ok_or_else(|| BlendError::code("blendUnsupported"))?;
+    // concave: the ball sits on the void side (r above each plane), the tool
+    // is the block MINUS the ball, added to the body
+    let sg = if corner.concave { 1.0 } else { -1.0 };
+    let c = crate::intersect::solve3([n[0], n[1], n[2]], [sg * r, sg * r, sg * r]).map(|d| vp + d).ok_or_else(|| BlendError::code("blendUnsupported"))?;
     // edge directions away from the vertex
     let mut u = [Vec3::ZERO; 3];
     for (i, &e) in corner.edges.iter().enumerate() {
         let ed = b.edge(e);
         let other = if ed.v0 == corner.vertex { b.vertex(ed.v1).p } else { b.vertex(ed.v0).p };
         u[i] = (other - vp).normalize();
-        // convex: the ball centre lies on the body side of every face of the edge
+        // the ball centre lies along every edge of the vertex
         if (c - vp).dot(u[i]) <= 0.0 {
             return Err(BlendError::code("blendUnsupported"));
         }
@@ -87,7 +107,8 @@ pub fn sphere_corner_tool(b: &Body, corner: &Corner, r: f64, feature: &str, name
     // the corner block: out(i) = plane of the face opposite to edge i, pushed
     // out by `m`; inn(i) = plane through c perpendicular to edge i
     let m = r + 1.0;
-    let out_pl = |i: usize| (n[i], vp + n[i] * m); // (outward normal, point)
+    // concave: the block is pushed into the material instead (normal -n)
+    let out_pl = |i: usize| (n[i] * -sg, vp - n[i] * (sg * m)); // (outward normal, point)
     let inn_pl = |i: usize| (u[i], c);
     let mut verts: Vec<Vec3> = vec![];
     for mask in 0..8usize {
@@ -110,8 +131,8 @@ pub fn sphere_corner_tool(b: &Body, corner: &Corner, r: f64, feature: &str, name
     // outer faces: the quads of the vertices with bit i clear
     for i in 0..3 {
         let quad: Vec<usize> = (0..8usize).filter(|mask| mask >> i & 1 == 0).map(|mask| ids_v[mask]).collect();
-        let segs = tb.cycle_by_angle(&quad, n[i]);
-        tb.plane_face(n[i], segs, FaceName::side(feature, &format!("k{}0", i)));
+        let segs = tb.cycle_by_angle(&quad, n[i] * -sg);
+        tb.plane_face(n[i] * -sg, segs, FaceName::side(feature, &format!("k{}0", i)));
     }
     // inner faces: A_j, mask_j, opposite, mask_k, A_k and the arc back
     for i in 0..3 {
