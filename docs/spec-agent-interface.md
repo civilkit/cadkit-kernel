@@ -357,6 +357,21 @@ face's actual diameter; `start` / `dir` are the point on the axis where the
 thread starts and the unit direction into the face. Drawings, a BOM and validation
 read this list.
 
+**Taper limits** (a `limits` list of `[featureId, {"maxHeight": h}]`, sorted by feature id, only when non-empty).
+An `extrude` with `draft` (inward) on a profile that is one circle without holes (the "Cone" shape) reports
+`maxHeight`: the extrude `depth` at which the taper closes to a point (`radius / tan(draft)`, less the start
+offset). A UI can clamp its height field to it without recomputing:
+
+```json
+"limits":[["F3",{"maxHeight":12.5}]]
+```
+
+A depth equal to `maxHeight` (within 1e-9 of the radius) builds a valid cone with one apex vertex and no top cap;
+a smaller one keeps the flat top; a larger one fails with `draftTooLarge {detail:"the taper closes to a point at
+height H", maxHeight:H}` (also for the `draft` feature on a cylinder wall, where `maxHeight` is measured from the
+neutral plane). Other profiles (a polygon whose edge collapses, several loops) keep the plain `draftTooLarge
+{detail}` with no `maxHeight` and no `limits` entry.
+
 **Warnings** (a `warnings` list of `[featureId, {code, params}]`, same shape as
 `errors`, only when non-empty; the document still regenerates and `ok` stays true):
 

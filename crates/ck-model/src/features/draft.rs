@@ -80,22 +80,73 @@ pub fn exec_draft(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<
     let face_sign = if matches!(neutral, Some(crate::GeomRef::Face(_))) { -1.0 } else { 1.0 };
     let sg = (if *flip { -1.0 } else { 1.0 }) * face_sign;
     let dir = ck_geom::Vec3::new(sg * fr.z.x, sg * fr.z.y, sg * fr.z.z);
-    let out = ck_ops::draft::draft(body, fr.o, dir, &ids, angle * 0.017453292519943295, super::TOL).map_err(|e| {
-        let fe = FeatureError::new(e.code);
-        match e.detail {
-            Some(d) => fe.with("detail", Json::Str(d)),
-            None => fe,
-        }
-    })?;
+    let out = ck_ops::draft::draft(body, fr.o, dir, &ids, angle * 0.017453292519943295, super::TOL)
+        .map_err(|e| draft_error(e, 0.0))?;
     br.body = Some(out);
     Ok(())
+}
+
+/// The feature error of a failed draft. `offset` is the distance from the neutral plane to where the
+/// material starts; a `draftTooLarge` from a closing cone carries `maxHeight` (measured from there).
+fn draft_error(e: ck_ops::draft::DraftError, offset: f64) -> FeatureError {
+    let fe = FeatureError::new(e.code);
+    if let Some(tip) = e.tip {
+        let h = tip - offset;
+        return fe
+            .with("detail", Json::Str(format!("the taper closes to a point at height {h}")))
+            .with("maxHeight", Json::Num(h));
+    }
+    match e.detail {
+        Some(d) => fe.with("detail", Json::Str(d)),
+        None => fe,
+    }
+}
+
+/// Distance from the sketch plane to where a drafted extrude starts (0 for a blind extrude).
+fn start_offset(o: &ck_topo::make::ExtrudeOpts) -> f64 {
+    let (s0, s1) = (o.s0.min(o.s1), o.s0.max(o.s1));
+    if s1 <= 1e-12 {
+        -s1
+    } else {
+        s0.max(0.0)
+    }
+}
+
+/// Largest extrude depth at which a drafted circular profile still has a rim: the taper closes to a point
+/// there. `None` unless the profile is one full circle (no holes), the taper goes inward and the extrude
+/// runs to one side of the sketch plane.
+pub fn tip_depth(profile: &ck_topo::make::Profile, o: &ck_topo::make::ExtrudeOpts) -> Option<f64> {
+    use ck_geom::curve2::Curve2;
+    if !(o.draft > 0.0) || (o.s0.min(o.s1) < -1e-12 && o.s0.max(o.s1) > 1e-12) {
+        return None;
+    }
+    let [reg] = profile.regions.as_slice() else { return None };
+    let [seg] = reg.outer.segs.as_slice() else { return None };
+    if !reg.holes.is_empty() || (seg.t1 - seg.t0 - std::f64::consts::TAU).abs() > 1e-9 {
+        return None;
+    }
+    let Curve2::Circle { r, .. } = &seg.curve else { return None };
+    let h = r / o.draft.tan() - start_offset(o);
+    (h > 0.0).then_some(h)
 }
 
 /// A drafted extrude as the oracle builds it: the straight extrude, then the
 /// draft operation on every side face about the sketch plane (the pull
 /// direction runs from the sketch plane into the material). `o.draft` is the
 /// signed angle in radians (negative = `draftOut`).
+///
+/// A circular profile whose taper closes exactly at the far end gives a cone with one apex. Past that the
+/// error is `draftTooLarge` with `maxHeight`, the largest depth that still builds. A polygon whose edge
+/// collapses keeps the oracle's `draftTooLarge {detail}` (no `maxHeight`).
 pub fn drafted_extrude(
+    feature: &str,
+    profile: &ck_topo::make::Profile,
+    o: ck_topo::make::ExtrudeOpts,
+) -> Result<Body, FeatureError> {
+    drafted_extrude_once(feature, profile, o)
+}
+
+fn drafted_extrude_once(
     feature: &str,
     profile: &ck_topo::make::Profile,
     o: ck_topo::make::ExtrudeOpts,
@@ -116,11 +167,5 @@ pub fn drafted_extrude(
     let sides: Vec<FaceId> =
         straight.face_ids().filter(|&f| matches!(straight.face(f).name.role, Role::Side(_))).collect();
     let pull = if s1 <= 1e-12 { -d } else { d };
-    ck_ops::draft::draft(&straight, fr.o, pull, &sides, o.draft, super::TOL).map_err(|e| {
-        let fe = FeatureError::new(e.code);
-        match e.detail {
-            Some(d) => fe.with("detail", Json::Str(d)),
-            None => fe,
-        }
-    })
+    ck_ops::draft::draft(&straight, fr.o, pull, &sides, o.draft, super::TOL).map_err(|e| draft_error(e, start_offset(&o)))
 }

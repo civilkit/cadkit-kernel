@@ -281,6 +281,9 @@ pub struct RegenResult {
     /// Assembly degrees-of-freedom report (docs/spec-agent-interface.md,
     /// "Mate kinds"). Only on the wire when set.
     pub assembly: Option<Json>,
+    /// Per-feature size limits, `[id, {"maxHeight": h}]` on the wire: a drafted extrude of one circle
+    /// reports the extrude depth at which its taper closes to a point. Only on the wire when non-empty.
+    pub limits: Vec<(String, Json)>,
 }
 
 fn upsert<T>(v: &mut Vec<T>, key: impl Fn(&T) -> &str, item: T) {
@@ -320,6 +323,17 @@ impl RegenResult {
         if let Json::Obj(m) = &mut out {
             if !self.threads.is_empty() {
                 m.push(("threads".into(), Json::Arr(sorted(&self.threads, |t| &t.0).into_iter().map(|t| t.1.clone()).collect())));
+            }
+            if !self.limits.is_empty() {
+                m.push((
+                    "limits".into(),
+                    Json::Arr(
+                        sorted(&self.limits, |t| &t.0)
+                            .into_iter()
+                            .map(|t| Json::Arr(vec![Json::Str(t.0.clone()), t.1.clone()]))
+                            .collect(),
+                    ),
+                ));
             }
             if let Some(a) = &self.assembly {
                 m.push(("assembly".into(), a.clone()));
