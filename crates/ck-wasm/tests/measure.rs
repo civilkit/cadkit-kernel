@@ -56,7 +56,7 @@ fn distances_between_tags_and_entities() {
     // the tall box sticks out 5 above the short one; both directions
     let r = call(r#"{"type":"maxDistance","tag":"m2","tagB":"m1","opts":{"samples":4000,"both":true}}"#);
     assert!((num(&r, "hausdorff") - 5.0).abs() < 1e-6, "{}", ck_json::to_string(&r));
-    assert!(num(r.get("bToA").unwrap(), "maxDistance") < 1e-9);
+    assert!((num(r.get("aToB").unwrap(), "maxDistance") - 5.0).abs() < 1e-6);
     let r = call(r#"{"type":"distance","tag":"m1","a":[0,100,0],"b":"body"}"#);
     assert!(num(&r, "distance") > 70.0);
     let r = call(r#"{"type":"distance","tag":"m1","a":"body","b":"body","tagB":"m2"}"#);

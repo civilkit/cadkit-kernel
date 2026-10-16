@@ -60,6 +60,10 @@ pub struct Ctx<'a> {
     keys: Vec<(String, Vec<EdgeId>)>,
     ekey: HashMap<EdgeId, usize>,
     pub diag: f64,
+    /// Per face: its display-mesh points and the longest triangle edge `h`. Every mesh point lies on the face, so
+    /// the nearest mesh point is an upper bound of the face distance and (nearest - h) a lower bound (up to the
+    /// mesh covering radius): used to order and prune the exact projections on bodies with many faces.
+    mesh: std::cell::OnceCell<HashMap<FaceId, (Vec<Vec3>, f64)>>,
 }
 
 impl<'a> Ctx<'a> {
@@ -89,7 +93,24 @@ impl<'a> Ctx<'a> {
         }
         let (lo, hi) = body.bbox();
         let diag = if lo.x.is_finite() && hi.x.is_finite() { (hi - lo).len().max(1e-9) } else { 1.0 };
-        Ctx { body, c, fidx, keys, ekey, diag }
+        Ctx { body, c, fidx, keys, ekey, diag, mesh: Default::default() }
+    }
+
+    fn mesh(&self) -> &HashMap<FaceId, (Vec<Vec3>, f64)> {
+        self.mesh.get_or_init(|| {
+            let tess = ck_tess::mesh::tessellate_memo(self.body);
+            let mut m = HashMap::new();
+            for fm in tess.faces.iter().flatten() {
+                let Some(f) = fm.face else { continue };
+                let mut h = 0.0f64;
+                for t in &fm.tris {
+                    let (a, b, c) = (fm.pts[t[0] as usize], fm.pts[t[1] as usize], fm.pts[t[2] as usize]);
+                    h = h.max(a.dist(b)).max(b.dist(c)).max(c.dist(a));
+                }
+                m.insert(f, (fm.pts.clone(), h));
+            }
+            m
+        })
     }
 
     fn edge_name(&self, e: EdgeId) -> String {
@@ -206,12 +227,12 @@ fn prim_samples(ctx: &Ctx, p: Prim, n: usize) -> Vec<Vec3> {
             ed.curve.sample(ed.t0, ed.t1, n.max(2) * 2)
         }
         Prim::Face(f) => {
-            let mut out = vec![];
+            // interior first: ties between equally good starts then resolve to interior points
+            let mut out: Vec<Vec3> = face_grid(ctx, f, n).into_iter().flatten().map(|g| g.2).collect();
             for e in ctx.body.face_edges(f) {
                 let ed = ctx.body.edge(e);
                 out.extend(ed.curve.sample(ed.t0, ed.t1, 8));
             }
-            out.extend(face_grid(ctx, f, n).into_iter().flatten().map(|g| g.2));
             out
         }
     }
@@ -360,11 +381,31 @@ impl<'a> Ent<'a> {
 
     /// Nearest point of the entity to `q`: `(distance, point, prim index)`.
     pub fn nearest(&self, q: Vec3) -> Option<(f64, Vec3, usize)> {
-        let mut order: Vec<(f64, usize)> = self.boxes.iter().enumerate().map(|(i, b)| (box_dist_pt(b, q), i)).collect();
-        order.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        // many faces: order and prune with the mesh bounds (see `Ctx::mesh`)
+        let use_mesh = self.prims.len() > 12 && self.prims.iter().all(|p| matches!(p, Prim::Face(_)));
+        let mesh = if use_mesh { Some(self.ctx.mesh()) } else { None };
+        let mut order: Vec<(f64, f64, usize)> = self
+            .boxes
+            .iter()
+            .enumerate()
+            .map(|(i, b)| {
+                let lb = box_dist_pt(b, q);
+                if let (Some(m), Prim::Face(f)) = (mesh, self.prims[i]) {
+                    if let Some((pts, h)) = m.get(&f) {
+                        let md = pts.iter().map(|p| p.dist(q)).fold(f64::INFINITY, f64::min);
+                        return (lb.max(md - h), md, i);
+                    }
+                }
+                (lb, lb, i)
+            })
+            .collect();
+        order.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         let mut best: Option<(f64, Vec3, usize)> = None;
-        for (lb, i) in order {
+        for (lb, _, i) in order {
             if best.map_or(false, |b| lb > b.0) {
+                if mesh.is_some() {
+                    continue;
+                }
                 break;
             }
             if let Some((d, p)) = prim_nearest(self.ctx, self.prims[i], q) {
@@ -381,6 +422,22 @@ impl<'a> Ent<'a> {
     }
 }
 
+/// Lower bound of the distance of two faces from their display meshes (0 when a mesh is missing or either is not a face).
+fn mesh_lb(ca: &Ctx, pa: Prim, cb: &Ctx, pb: Prim) -> f64 {
+    let (Prim::Face(fa), Prim::Face(fb)) = (pa, pb) else { return 0.0 };
+    let (Some((ma, ha)), Some((mb, hb))) = (ca.mesh().get(&fa), cb.mesh().get(&fb)) else { return 0.0 };
+    let mut best = f64::INFINITY;
+    for p in ma {
+        for q in mb {
+            let d = p.dist(*q);
+            if d < best {
+                best = d;
+            }
+        }
+    }
+    (best - ha - hb).max(0.0)
+}
+
 /// Minimum distance of two entities with the prims it is attained on.
 fn ent_min(a: &Ent, b: &Ent, n: usize) -> Option<(Hit, usize, usize)> {
     let mut pairs: Vec<(f64, usize, usize)> = vec![];
@@ -394,6 +451,12 @@ fn ent_min(a: &Ent, b: &Ent, n: usize) -> Option<(Hit, usize, usize)> {
     for (lb, i, j) in pairs {
         if best.map_or(false, |(h, _, _)| lb > h.d + 1e-12) {
             break;
+        }
+        if let Some((bh, _, _)) = best {
+            // faces of big bodies: skip pairs the meshes put farther than the best so far
+            if a.prims.len() * b.prims.len() > 16 && mesh_lb(a.ctx, a.prims[i], b.ctx, b.prims[j]) > bh.d {
+                continue;
+            }
         }
         if let Some(h) = pair_min(a.ctx, a.prims[i], b.ctx, b.prims[j], n) {
             if best.map_or(true, |(bh, _, _)| h.d < bh.d) {
@@ -509,11 +572,23 @@ pub fn distance_reply(body: &Body, other: Option<&Body>, msg: &Json) -> Result<J
     let mut kind: Option<&str> = None;
     if intersects {
         dist = 0.0;
-        // extent of the contact: how much of A's primitive lies within tol of B
-        let sm = prim_samples(&ca, ea.prims[i], n);
-        let near = sm.iter().filter(|&&s| eb.nearest(s).map_or(false, |(d, _, _)| d <= 1e-7)).count();
-        let f = near as f64 / sm.len().max(1) as f64;
-        kind = Some(if near <= 1 { "point" } else if f < 0.5 { "curve" } else { "area" });
+        // extent of the contact: the richest over all touching primitive pairs (a face resting on a face is an area,
+        // along an edge a curve, at a corner a point)
+        let mut rank = 1;
+        let mut checked = 0;
+        for (pi, bi) in ea.boxes.iter().enumerate() {
+            for (pj, bj) in eb.boxes.iter().enumerate() {
+                if rank == 3 || checked > 400 || box_dist(bi, bj) > 1e-7 {
+                    continue;
+                }
+                checked += 1;
+                let sm = prim_samples(&ca, ea.prims[pi], n);
+                let near = sm.iter().filter(|&&s| prim_nearest(cb, eb.prims[pj], s).map_or(false, |(d, _)| d <= 1e-7)).count();
+                let r = if near <= 1 { 1 } else if (near as f64) < 0.5 * sm.len() as f64 { 2 } else { 3 };
+                rank = rank.max(r);
+            }
+        }
+        kind = Some(["point", "point", "curve", "area"][rank]);
     } else if other.is_some() && ea.solid_like() && eb.solid_like() {
         // one solid inside the other: no boundary contact, but the solids intersect
         let sa0 = prim_samples(&ca, ea.prims[i], 3).first().copied();
@@ -577,7 +652,7 @@ fn body_samples(ctx: &Ctx, faces: &[FaceId], budget: usize) -> (Vec<(Vec3, FaceI
         }
     }
     // cell half-diagonal; boundary-adjacent cells that have no grid sample are within one more cell of an edge sample
-    (out, cover * std::f64::consts::FRAC_1_SQRT_2 * 1.0 + cover * 0.5)
+    (out, cover)
 }
 
 /// `{type:"maxDistance", tag, tagB?, a?, b?, opts?:{samples, both}}`: one-sided Hausdorff distance from `a` to `b`
@@ -737,7 +812,19 @@ pub fn thickness_reply(body: &Body, msg: &Json) -> Result<Json, String> {
         let k = opt_n(msg, "sphereSamples", 200, 5000).min(ths.len());
         for (v, i) in vals.iter_mut().take(k) {
             let t = &ths[*i];
-            *v = 2.0 * inscribed_radius(&ctx, t.p, t.n, t.t);
+            // a sample closer to its face's boundary than half its thickness is a corner: the ball is cut by the
+            // neighbouring face there (a sharp edge always dips to 0), not by a thin wall, so it keeps its ray value
+            let edge_d = body
+                .face_edges(t.face)
+                .into_iter()
+                .map(|e| {
+                    let ed = body.edge(e);
+                    dist_in_range(&ed.curve, (ed.t0, ed.t1), t.p).1
+                })
+                .fold(f64::INFINITY, f64::min);
+            if edge_d >= 0.5 * t.t * 0.999 {
+                *v = 2.0 * inscribed_radius(&ctx, t.p, t.n, t.t);
+            }
         }
         vals.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     }
@@ -1066,6 +1153,28 @@ pub fn angles_reply(body: &Body, msg: &Json) -> Result<Json, String> {
 
 // ---------------------------------------------------------------- clearance
 
+/// What lies at `mid`, the middle of the shortest segment between two faces: material (`wall`), air (`gap`).
+/// A midpoint on a boundary (the segment ends on a cap edge) is nudged towards the middle of the box.
+fn between(ctx: &Ctx, mid: Vec3) -> &'static str {
+    let verdict = |l: Loc| match l {
+        Loc::In => Some("wall"),
+        Loc::Out => Some("gap"),
+        Loc::On => None,
+    };
+    if let Some(v) = verdict(ctx.c.classify_point(mid, TOL)) {
+        return v;
+    }
+    let (lo, hi) = ctx.body.bbox();
+    let to_centre = (lo + hi) * 0.5 - mid;
+    let nudge = if to_centre.len() > 1e-12 { to_centre.normalize() } else { Vec3::Y };
+    for k in [1e-4, 1e-3, 1e-2] {
+        if let Some(v) = verdict(ctx.c.classify_point(mid + nudge * (ctx.diag * k), TOL)) {
+            return v;
+        }
+    }
+    "contact"
+}
+
 /// `{type:"clearance", tag, min, a?, b?, include?:"gap"|"wall"|"both", limit?}`: face pairs closer than `min`.
 pub fn clearance_reply(body: &Body, msg: &Json) -> Result<Json, String> {
     let min = msg.get_f64("min").or_else(|| opt(msg, "min").and_then(|j| j.as_f64())).filter(|m| *m > 0.0 && m.is_finite()).ok_or("clearance: min (a positive distance) is required")?;
@@ -1112,13 +1221,16 @@ pub fn clearance_reply(body: &Body, msg: &Json) -> Result<Json, String> {
             if vs[&a].iter().any(|v| vs[&b].contains(v)) {
                 continue; // adjacent faces touch by construction
             }
+            if fa.len().max(fb.len()) > 12 && mesh_lb(&ctx, Prim::Face(a), &ctx, Prim::Face(b)) >= min {
+                continue;
+            }
             tested += 1;
             let Some(h) = pair_min(&ctx, Prim::Face(a), &ctx, Prim::Face(b), 6) else { continue };
             if h.d >= min {
                 continue;
             }
             let mid = (h.a + h.b) * 0.5;
-            let kind = if h.d < 1e-9 { "contact" } else { match ctx.c.classify_point(mid, TOL) { Loc::In => "wall", Loc::Out => "gap", Loc::On => "contact" } };
+            let kind = if h.d < 1e-9 { "contact" } else { between(&ctx, mid) };
             if (include == "gap" && kind == "wall") || (include == "wall" && kind == "gap") {
                 continue;
             }

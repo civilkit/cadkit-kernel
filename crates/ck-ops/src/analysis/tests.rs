@@ -49,9 +49,8 @@ fn max_distance_between_bodies() {
     let a = box_body("F2", 0.0, 0.0, 10.0, 10.0, 0.0, 10.0);
     let c = box_body("F2", 0.0, 0.0, 10.0, 10.0, 0.0, 12.0);
     let r = max_distance_reply(&a, Some(&c), &j(r#"{"opts":{"samples":3000,"both":true}}"#)).unwrap();
+    // surface Hausdorff distance: the top of the short box is 2 below the top of the tall one
     assert!((num(&r, "hausdorff") - 2.0).abs() < 1e-6, "{r:?}");
-    let ab = r.get("aToB").unwrap();
-    assert!(num(ab, "maxDistance") < 1e-9, "{ab:?}");
 }
 
 #[test]
@@ -108,5 +107,6 @@ fn clearance_and_symmetry() {
     assert!(r.get("symmetric").unwrap().as_arr().unwrap().len() >= 3, "{r:?}");
     let b = two(cyl_body("F2", 0.0, 0.0, 5.0, 0.0, 10.0), cyl_body("F3", 20.0, 0.0, 3.0, 0.0, 10.0));
     let r = symmetry_reply(&b, &j(r#"{}"#)).unwrap();
-    assert!(num(r.get("best").unwrap(), "maxDeviation") > 0.1, "{r:?}");
+    // equal heights, both axes in the plane z = 0: the y and z mirrors, not the x mirror
+    assert_eq!(r.get("symmetric").unwrap().as_arr().unwrap().len(), 2, "{r:?}");
 }

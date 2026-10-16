@@ -61,7 +61,7 @@ def main():
     tol = float(arg('--tol', '1e-6'))
     parts = arg('--parts', 'mounting-plate,parametric-bracket,stepper-bracket,bench-pipe_elbow,large-sample').split(',')
     out = tempfile.mkdtemp(prefix='measure_occt_')
-    worst, total, bad = 0.0, 0, []
+    worst, total, bad, nonzero = 0.0, 0, [], 0
     for name in parts:
         f = os.path.join(samples, name + '.ckpart')
         if not os.path.exists(f):
@@ -90,10 +90,11 @@ def main():
             got = pr['ours']['distance']
             err = abs(got - want) / max(1.0, abs(want))
             total += 1
+            nonzero += want > 1e-9
             worst = max(worst, err)
             if err > tol:
                 bad.append((name, pr['a'], pr['b'], got, want))
-    print(f'{total} face pairs compared, worst error {worst:.3e}')
+    print(f'{total} face pairs compared ({nonzero} with a nonzero distance), worst error {worst:.3e}')
     for b in bad:
         print('MISMATCH %s %s %s ours %.9g occt %.9g' % b)
     sys.exit(1 if bad else 0)
