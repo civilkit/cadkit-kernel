@@ -240,18 +240,6 @@ fn shift_into(x: f64, m: f64, c: f64, p: f64) -> f64 {
 /// their seam coedges and triangulated as ordinary closed polygons.
 pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bool)], ssi: &[f64], cut: FaceCut, tol: &Tol) -> Result<FaceMesh, String> {
     match mesh_face_strict(body, f, params, virt, ssi, cut, tol) {
-        Ok(m) if m.open => {
-            // The boundary graph has an odd-degree vertex: two chains that should meet (the halves of a hole straddling the
-            // cut of a periodic face) end further apart than the exact-bits weld. A graph left unclosed leaves the parity
-            // flood inverted (the mesh covers the holes and not the wall): retry with the 1e-6 weld, keep it when it closes.
-            SAME_UV_REL.with(|c| c.set(1e-6));
-            let r = mesh_face_strict(body, f, params, virt, ssi, cut, tol);
-            SAME_UV_REL.with(|c| c.set(1e-9));
-            match r {
-                Ok(m2) if !m2.open => Ok(m2),
-                _ => Ok(m),
-            }
-        }
         Ok(m) => Ok(m),
         Err(e) => {
             // Coedge ends that miss each other by a few 1e-9 of the parameter range (fitted trim curves: a notch
@@ -569,7 +557,7 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
             seg_list.push((a, q));
         }
     }
-    weld_dangling_ends(&mut seg_list, if SAME_UV_REL.with(|c| c.get()) > 1e-8 { 1e-6 } else { 1e-8 });
+    weld_dangling_ends(&mut seg_list, 1e-8);
     for (a, q) in &seg_list {
         let ia = b.add(a.uv, a.p);
         let iq = b.add(q.uv, q.p);
