@@ -23,6 +23,7 @@ const wasm = opt('--wasm', path.join(here, '../target/wasm32-unknown-unknown/rel
 const kit = opt('--kit', '/path/to/work/kit');
 const only = opt('--only');
 const jsonOut = opt('--json');
+const skip = opt('--skip');
 const noSamples = flag('--no-samples');
 const detail = flag('--detail');
 const mod = new WebAssembly.Module(readFileSync(wasm));
@@ -88,7 +89,7 @@ function analyse(mesh, nFaces) {
     const L2 = ab[0] ** 2 + ab[1] ** 2 + ab[2] ** 2; let u = L2 > 0 ? (ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / L2 : 0; u = Math.max(0, Math.min(1, u));
     return Math.hypot(ap[0] - u * ab[0], ap[1] - u * ab[1], ap[2] - u * ab[2]);
   };
-  const crackTol = Math.max(hi * 2e-3, 0.05); let maxGap = 0;
+  const crackTol = Math.max(hi * 2e-3, 0.01); let maxGap = 0, maxGapAll = 0, bigGap = 0, holes = 0;
   const cls = { a: noTri.length, b1: 0, b2: 0, c: 0, c1: 0, d: 0 };
   const byFace = new Map(); // face -> {b1,b2,c,c1,d}
   const bump = (f, k) => { const o = byFace.get(f) ?? { b1: 0, b2: 0, c: 0, c1: 0, d: 0 }; o[k]++; byFace.set(f, o); cls[k]++; };
@@ -119,13 +120,14 @@ function analyse(mesh, nFaces) {
       return worst;
     };
     const g = gapTo(false), g1 = gapTo(true);
+    if (Number.isFinite(g)) { maxGapAll = Math.max(maxGapAll, g); if (g > crackTol) bigGap++; } else holes++;
     if (g <= 1e-6) bump(e.face, 'b1');
     else if (g <= crackTol) { bump(e.face, 'b2'); maxGap = Math.max(maxGap, g); }
     else if (g1 <= crackTol) bump(e.face, 'c1');
     else bump(e.face, 'c');
   }
   const sample = open.slice(0, 12).map((e) => ({ face: e.face, a: reps[e.a].map((x) => +x.toFixed(3)), b: reps[e.b].map((x) => +x.toFixed(3)) }));
-  return { cls, openEdges: open.length, noTri, byFace, fb, degTris, sample, maxGap };
+  return { cls, openEdges: open.length, noTri, byFace, fb, degTris, sample, maxGap, maxGapAll, bigGap, holes };
 }
 
 function runPart(name, part) {
@@ -146,7 +148,7 @@ function runPart(name, part) {
     return { face: f, id: body.faces?.[f]?.id ?? body.faces?.[f]?.name, centre: ctr, ...c };
   });
   const noTri = a.noTri.map((f) => ({ face: f, id: body.faces?.[f]?.id ?? body.faces?.[f]?.name, surf: body.faces?.[f]?.surface ?? body.faces?.[f]?.type }));
-  return { name, open: a.openEdges, cls: a.cls, maxGap: +a.maxGap.toFixed(4), degTris: a.degTris, noTri, faces: faceList, sample: a.sample, check: meshIssues.map((i) => `${i.entity}: ${i.detail}`), otherIssues, failed: j.result?.body?.mesh?.failed };
+  return { name, open: a.openEdges, cls: a.cls, maxGap: +a.maxGap.toFixed(4), maxGapAll: +a.maxGapAll.toFixed(4), bigGap: a.bigGap, holes: a.holes, degTris: a.degTris, noTri, faces: faceList, sample: a.sample, check: meshIssues.map((i) => `${i.entity}: ${i.detail}`), otherIssues, failed: j.result?.body?.mesh?.failed };
 }
 
 const items = Object.entries(brepParts).map(([n, p]) => ({ name: `brep:${n}`, part: p }));
@@ -157,6 +159,7 @@ if (!noSamples) {
 const results = [];
 for (const it of items) {
   if (only && !it.name.includes(only)) continue;
+  if (skip && it.name.includes(skip)) continue;
   if (process.env.TOR_PROGRESS) process.stderr.write(`${it.name}\n`);
   let r; try { r = runPart(it.name, it.part); } catch (e) { r = { name: it.name, error: String(e).slice(0, 200) }; }
   if (it.file) r.file = it.file;
@@ -169,7 +172,7 @@ console.log('part'.padEnd(46), 'open  a  b1  b2   c  c1   d  check');
 for (const r of bad) {
   if (r.trap || r.error) { console.log(r.name.padEnd(46), r.trap ?? r.error); continue; }
   for (const k of Object.keys(tot)) tot[k] += r.cls[k];
-  console.log(r.name.padEnd(46), String(r.open).padStart(4), ...['a', 'b1', 'b2', 'c', 'c1', 'd'].map((k) => String(r.cls[k]).padStart(3)), r.check.length ? 'FIRES' : '-');
+  console.log(r.name.padEnd(46), String(r.open).padStart(4), ...['a', 'b1', 'b2', 'c', 'c1', 'd'].map((k) => String(r.cls[k]).padStart(3)), r.check.length ? 'FIRES' : '-', `gap<=${r.maxGapAll}`, r.bigGap ? `wide:${r.bigGap}` : '', r.holes ? `NOPARTNER:${r.holes}` : '');
   for (const f of r.noTri) console.log('      no-tri face', JSON.stringify(f));
   for (const f of r.faces) console.log('      face', JSON.stringify(f));
   if (detail) for (const e of r.sample) console.log('      edge', JSON.stringify(e));

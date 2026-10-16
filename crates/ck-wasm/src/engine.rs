@@ -639,11 +639,14 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
             let cap = cx.msg.get_f64("healTolerance").unwrap_or(ck_check::DEFAULT_TOL_CAP);
             let body = &snapshot(cx)?.body;
             let mut iss = ck_check::validate_cap(body, tol, cap);
+            let mut mesh_notes: Vec<String> = vec![];
             // an independent witness that the B-rep claim holds: the display mesh of a valid solid is watertight (only in
             // the validate request with `mesh:true` (default off: a few existing bodies have faces the tessellator gives up on, which would flip their verdict), never in regen)
             if cx.msg.get_bool("mesh") == Some(true) {
                 let mesh = ck_tess::mesh::tessellate(body).mesh;
                 iss.extend(ck_check::tessellation::check_mesh_why(body, &mesh.positions, &mesh.tri_face, &mesh.failed, &mesh.failed_why));
+                let ids: Vec<_> = body.face_ids().collect();
+                mesh_notes = mesh.notes.iter().filter_map(|(i, t)| ids.get(*i).map(|&f| format!("{}: {}", body.face_id_str(f), t))).collect();
             }
             let arr = iss
                 .iter()
@@ -651,6 +654,9 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
                 .collect();
             let used = ck_check::tolerance_used(body);
             let mut o = Obj::new().put("ok", iss.is_empty()).put("issues", Json::Arr(arr)).put("toleranceUsed", used);
+            if !mesh_notes.is_empty() {
+                o = o.put("meshNotes", Json::Arr(mesh_notes.into_iter().map(Json::Str).collect()));
+            }
             if used > 0.0 {
                 let note = format!("body carries edge/vertex tolerances up to {used:.3e} mm (cap {cap:.3e})");
                 o = o.put("notes", Json::Arr(vec![Json::Str(note)]));

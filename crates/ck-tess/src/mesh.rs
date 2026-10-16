@@ -55,6 +55,8 @@ pub struct Mesh {
     pub failed: Vec<usize>,
     /// Why each entry of `failed` failed (same order; empty text when the failure came out of the face cache).
     pub failed_why: Vec<String>,
+    /// Faces whose triangulation is suspect: `(wire face index, text)` (unrecovered trim segments).
+    pub notes: Vec<(usize, String)>,
 }
 
 impl Mesh {
@@ -385,6 +387,13 @@ fn tessellate_impl(body: &Body, tol: &Tol, memo: bool) -> Tess {
         outs.push(out);
     }
     let mut mesh = assemble(&outs);
+    for (wi, o) in outs.iter().enumerate() {
+        if let Some(o) = o {
+            if o.mesh.unrecovered > 0 {
+                mesh.notes.push((wi, format!("{} trim segments not recovered", o.mesh.unrecovered)));
+            }
+        }
+    }
     mesh.failed_why = mesh.failed.iter().map(|i| why.get(i).cloned().unwrap_or_default()).collect();
     let faces = outs.iter().map(|o| o.as_ref().map(|o| o.mesh.clone())).collect();
     Tess { tol: Some(*tol), edges, mesh, faces }
