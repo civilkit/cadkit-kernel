@@ -36,7 +36,7 @@ use ck_geom::surface::Surface;
 use ck_geom::{Frame, Vec2, Vec3};
 use ck_topo::body::{Body, EdgeId, FaceId, FaceName, VertexId};
 use ck_topo::make::plane_line_pc;
-use stations::{geom_of, Chain, Geom3, Piece, Stations};
+use stations::{geom_of, Chain, Geom3, Piece, Stations, Strategy};
 
 /// One piece of an input profile: the sketch entity curve trimmed to
 /// `[t0, t1]`, travelled backwards when `rev`.
@@ -100,11 +100,20 @@ pub struct LoftOut {
 pub struct LoftError {
     pub code: String,
     pub detail: Option<String>,
+    /// What to change in the input (reported as `hint`).
+    pub hint: Option<String>,
 }
 
 impl LoftError {
     pub fn new(code: &str) -> LoftError {
-        LoftError { code: code.into(), detail: None }
+        LoftError { code: code.into(), detail: None, hint: None }
+    }
+    pub fn with(code: &str, detail: &str, hint: &str) -> LoftError {
+        LoftError { code: code.into(), detail: Some(detail.into()), hint: Some(hint.into()) }
+    }
+    /// `loftFailed` with a detail and a hint.
+    pub fn failed(detail: &str, hint: &str) -> LoftError {
+        LoftError::with(FAILED, detail, hint)
     }
 }
 
@@ -112,6 +121,8 @@ pub const PROFILES: &str = "loftProfiles";
 pub const PROFILE_OPEN: &str = "loftProfileOpen";
 pub const PROFILE_NOT_PLANAR: &str = "loftProfileNotPlanar";
 pub const FAILED: &str = "loftFailed";
+/// The solid built from the sections failed the kernel's validity check under every matching strategy.
+pub const INVALID_RESULT: &str = "loftInvalidResult";
 /// A section whose polygon crosses itself and is small against the loft length.
 pub const SECTION_TOO_SMALL: &str = "loftSectionTooSmall";
 pub const PROFILE_SELF_INTERSECT: &str = "loftProfileSelfIntersect";
@@ -177,7 +188,7 @@ pub fn is_point_profile(p: &ProfileIn) -> bool {
 fn chains_of(profiles: &[ProfileIn], opts: &LoftOpts) -> Result<Vec<Chain>, LoftError> {
     let k = profiles.len();
     let mut apex: Vec<Option<Vec3>> = profiles.iter().map(|p| is_point_profile(p).then_some(p.frame.o)).collect();
-    let fail = |d: &str| LoftError { code: FAILED.into(), detail: Some(d.into()) };
+    let fail = |d: &str| LoftError::failed(d, "check the section list: only the first and last section can be a point, and a point section needs a solid loft without guide curves");
     let any_point = apex.iter().any(|a| a.is_some());
     if any_point {
         if apex.iter().enumerate().any(|(i, a)| a.is_some() && i != 0 && i != k - 1) {
@@ -247,7 +258,7 @@ fn chains_of(profiles: &[ProfileIn], opts: &LoftOpts) -> Result<Vec<Chain>, Loft
         for c in out.iter().filter(|c| !c.is_point()) {
             if let Some(size) = self_intersection(c) {
                 let code = if size < 1e-2 * len { SECTION_TOO_SMALL } else { PROFILE_SELF_INTERSECT };
-                return Err(LoftError { code: code.into(), detail: Some("a section crosses itself; make it a simple closed curve (a section much smaller than the loft can be a point section: use a sketch with one point)".into()) });
+                return Err(LoftError::with(code, "a section crosses itself", "make it a simple closed curve (a section much smaller than the loft can be a point section: use a sketch with one point)"));
             }
         }
     }
@@ -310,7 +321,60 @@ fn self_intersection(c: &Chain) -> Option<f64> {
 
 /// Loft through `profiles` (see the module header). A profile with no
 /// `segs` is a point: the loft converges to `frame.o` (a pole; no cap).
+///
+/// Validation gate: a solid loft never returns a solid that fails the kernel's own validity check
+/// (`ck_check::validate`, the check behind the `validate` query). The default matching comes first
+/// (the pinned oracle rule, so every case that was valid keeps its exact result); when it is invalid the
+/// alternative matchings of [`RETRIES`] are tried in order, and when none is valid the result is the
+/// structured error `loftInvalidResult {detail, hint}`.
 pub fn loft(feature: &str, profiles: &[ProfileIn], opts: &LoftOpts) -> Result<LoftOut, LoftError> {
+    let out = loft_once(feature, profiles, opts, Strategy::default())?;
+    if opts.surface {
+        return Ok(out);
+    }
+    let first = ck_check::validate(&out.body, GATE_TOL);
+    if first.is_empty() {
+        return Ok(out);
+    }
+    // a bad end section (its cap loop crosses itself) is not a matching problem: report it as such
+    let cap_only = first.iter().all(|i| i.entity.contains(".C0") || i.entity.contains(".C1")) && first.iter().all(|i| i.code == "LOOP_SELF_INTERSECT");
+    if !cap_only {
+        for strat in RETRIES {
+            if let Ok(o) = loft_once(feature, profiles, opts, strat) {
+                if ck_check::validate(&o.body, GATE_TOL).is_empty() {
+                    return Ok(o);
+                }
+            }
+        }
+    }
+    let ents: Vec<String> = first.iter().take(3).map(|i| format!("{} at {}", i.code, i.entity)).collect();
+    let (detail, hint) = if cap_only {
+        (
+            format!("an end section is not a simple closed curve ({}): its outline folds back on itself", ents.join(", ")),
+            "redraw the first or last section without nearly-coincident points (no double clicks or tiny kinks), or use fewer spline points",
+        )
+    } else {
+        (
+            format!("the lofted solid is not valid under any section matching ({})", ents.join(", ")),
+            "use sections with the same number of points drawn in the same direction, add intermediate sections, or set the start points of the sections (connectors)",
+        )
+    };
+    Err(LoftError::with(INVALID_RESULT, &detail, hint))
+}
+
+/// Model tolerance of the validity gate (the `validate` query default).
+const GATE_TOL: f64 = 1e-6;
+
+/// Alternative matchings tried, in order, when the default matching gives an invalid solid.
+const RETRIES: [Strategy; 5] = [
+    Strategy { shift: 0, flip: false, even: true },
+    Strategy { shift: 1, flip: false, even: false },
+    Strategy { shift: 0, flip: true, even: false },
+    Strategy { shift: 0, flip: true, even: true },
+    Strategy { shift: 2, flip: false, even: true },
+];
+
+fn loft_once(feature: &str, profiles: &[ProfileIn], opts: &LoftOpts, strat: Strategy) -> Result<LoftOut, LoftError> {
     if profiles.len() < 2 {
         return Err(LoftError::new(PROFILES));
     }
@@ -334,15 +398,21 @@ pub fn loft(feature: &str, profiles: &[ProfileIn], opts: &LoftOpts) -> Result<Lo
         }
     }
     let (st, grails) = if opts.guides.is_empty() {
-        (stations::match_chains_with(chains, &opts.connectors), vec![])
+        (stations::match_chains_strategy(chains, &opts.connectors, strat), vec![])
     } else {
         let g = guides::guided_stations(chains, &opts.guides)?;
         (g.st, g.rails)
     };
+    if !st.is_consistent() {
+        return Err(LoftError::failed("the sections could not be brought to a common structure", "redraw the sections as simple closed curves with the same number of points"));
+    }
     // end constraints: the profile normal pointing into the loft
     let mut ends = Ends::default();
     let cen: Vec<Vec3> = st.chains.iter().map(|c| c.centroid()).collect();
     let k = cen.len();
+    if k < 2 || profiles.len() < 2 {
+        return Err(LoftError::failed("a loft needs at least two sections", "select two or more sections"));
+    }
     if let Some(t) = opts.start_normal {
         let mut n = profiles[0].frame.z;
         if n.dot(cen[1] - cen[0]) < 0.0 {
@@ -363,7 +433,7 @@ pub fn loft(feature: &str, profiles: &[ProfileIn], opts: &LoftOpts) -> Result<Lo
     if st.chains[k - 1].is_point() {
         ends.d1 = None;
     }
-    let starts = st.chains.iter().map(|c| c.pieces[0].g.start()).collect();
+    let starts = st.chains.iter().filter_map(|c| c.pieces.first().map(|p| p.g.start())).collect();
     let body = build(feature, &st, profiles, opts.surface, &grails, ends)?;
     Ok(LoftOut { body, starts, ends, end_centroids: [cen[0], cen[k - 1]] })
 }
@@ -374,7 +444,7 @@ pub fn loft(feature: &str, profiles: &[ProfileIn], opts: &LoftOpts) -> Result<Lo
 /// degree and knot vector, weights present on all or none.
 /// Err (never a panic downstream) when the curves still do not agree on the control point count.
 fn compat(mut cs: Vec<BSplineCurve>) -> Result<Vec<BSplineCurve>, LoftError> {
-    let mismatch = || LoftError { code: FAILED.into(), detail: Some("loft sections cannot be matched: their spline pieces have incompatible knots; redraw the sections with the same number of points, or simplify them".into()) };
+    let mismatch = || LoftError::failed("loft sections cannot be matched: their spline pieces have incompatible knots", "redraw the sections with the same number of points, or simplify them");
     if cs.is_empty() || cs.iter().any(|c| c.ctrl.is_empty() || c.knots.is_empty()) {
         return Err(mismatch());
     }
@@ -451,7 +521,10 @@ struct Side {
 
 fn side(st: &Stations, j: usize, ends: Ends) -> Result<Side, LoftError> {
     let k = st.chains.len();
-    let pieces: Vec<&Geom3> = st.chains.iter().map(|c| &c.pieces[j].g).collect();
+    let pieces: Vec<&Geom3> = st.chains.iter().filter_map(|c| c.pieces.get(j).map(|p| &p.g)).collect();
+    if k < 2 || pieces.len() != k {
+        return Err(LoftError::failed("a section has no piece to match", "redraw the sections with the same number of points"));
+    }
     let cs = compat(pieces.iter().map(|g| g.to_nurbs()).collect())?;
     // flat quad of straight pieces (every station's piece in one plane)
     if !ends.any() && pieces.iter().all(|g| g.is_line()) {
@@ -474,6 +547,9 @@ fn side(st: &Stations, j: usize, ends: Ends) -> Result<Side, LoftError> {
         return Ok(Side { surface: blend_surface(&cs, &st.ts, ends)?, cs, plane: None });
     }
     let nu = cs[0].ctrl.len();
+    if nu == 0 {
+        return Err(LoftError::failed("a section piece has no control points", "redraw the section"));
+    }
     // control points interpolated by the natural spline per control index
     // (weights agree, or there are only two stations: then the homogeneous
     // blend and this coincide)
@@ -495,7 +571,10 @@ fn side(st: &Stations, j: usize, ends: Ends) -> Result<Side, LoftError> {
         vknots = kn;
         cols.push(q);
     }
-    let nv = cols[0].len();
+    let nv = cols.first().map_or(0, |c| c.len());
+    if nv == 0 || cols.iter().any(|c| c.len() != nv) {
+        return Err(LoftError::failed("the loft surface could not be interpolated", "use fewer or evenly spaced sections"));
+    }
     let mut ctrl = Vec::with_capacity(nu * nv);
     let mut wts = Vec::with_capacity(nu * nv);
     for col in &cols {
@@ -531,7 +610,8 @@ fn side(st: &Stations, j: usize, ends: Ends) -> Result<Side, LoftError> {
 /// by a bicubic interpolant: exact (cubic) in `v`, interpolated at `U`
 /// parameter samples in `u` (error ~1e-8 for arcs).
 fn blend_surface(cs: &[BSplineCurve], ts: &[f64], ends: Ends) -> Result<Surface, LoftError> {
-    let spans = (ck_geom::nurbs::basis::distinct_knots(&cs[0].knots).len() - 1).max(1);
+    let Some(c0) = cs.first() else { return Err(LoftError::new(FAILED)) };
+    let spans = ck_geom::nurbs::basis::distinct_knots(&c0.knots).len().saturating_sub(1).max(1);
     let n = 24 * spans + 1;
     let us: Vec<f64> = (0..n).map(|a| a as f64 / (n - 1) as f64).collect();
     // v-direction: control points of the natural spline through C_k(u_a)
@@ -545,7 +625,10 @@ fn blend_surface(cs: &[BSplineCurve], ts: &[f64], ends: Ends) -> Result<Surface,
         vknots = kn;
         q.push(c.iter().map(|p| Vec3::new(p[0], p[1], p[2])).collect());
     }
-    let nv = q[0].len();
+    let nv = q.first().map_or(0, |r| r.len());
+    if nv == 0 || q.iter().any(|r| r.len() != nv) {
+        return Err(LoftError::new(FAILED));
+    }
     // u-direction: cubic interpolation through the samples of every row j
     let ku = ck_geom::fit::averaged_knots(&us, 3);
     let mut ctrl = vec![Vec3::new(0.0, 0.0, 0.0); n * nv];
@@ -567,10 +650,13 @@ fn blend_surface(cs: &[BSplineCurve], ts: &[f64], ends: Ends) -> Result<Surface,
 /// parameter `v`.
 fn gordon_side(st: &Stations, j: usize, lf: &dyn Fn(f64) -> Vec3, rf: &dyn Fn(f64) -> Vec3, ends: Ends) -> Result<Side, LoftError> {
     let k = st.chains.len();
-    let pieces: Vec<&Geom3> = st.chains.iter().map(|c| &c.pieces[j].g).collect();
+    let pieces: Vec<&Geom3> = st.chains.iter().filter_map(|c| c.pieces.get(j).map(|p| &p.g)).collect();
+    if k < 2 || pieces.len() != k || st.ts.len() != k {
+        return Err(LoftError::failed("a section has no piece to match", "redraw the sections with the same number of points"));
+    }
     let cs = compat(pieces.iter().map(|g| g.to_nurbs()).collect())?;
     let ts = &st.ts;
-    let spans = (ck_geom::nurbs::basis::distinct_knots(&cs[0].knots).len() - 1).max(1);
+    let spans = ck_geom::nurbs::basis::distinct_knots(&cs[0].knots).len().saturating_sub(1).max(1);
     let n = 24 * spans + 1;
     let us: Vec<f64> = (0..n).map(|a| a as f64 / (n - 1) as f64).collect();
     let per = 8;
@@ -600,7 +686,10 @@ fn gordon_side(st: &Stations, j: usize, lf: &dyn Fn(f64) -> Vec3, rf: &dyn Fn(f6
         vknots = kn;
         q.push(c.iter().map(|p| Vec3::new(p[0], p[1], p[2])).collect());
     }
-    let nv = q[0].len();
+    let nv = q.first().map_or(0, |r| r.len());
+    if nv == 0 || q.iter().any(|r| r.len() != nv) {
+        return Err(LoftError::new(FAILED));
+    }
     let ku = ck_geom::fit::averaged_knots(&us, 3);
     let mut ctrl = vec![Vec3::new(0.0, 0.0, 0.0); n * nv];
     for jj in 0..nv {
@@ -616,6 +705,9 @@ fn gordon_side(st: &Stations, j: usize, lf: &dyn Fn(f64) -> Vec3, rf: &dyn Fn(f6
 
 /// Rail through the matching vertices `pts` of the stations.
 fn rail(ts: &[f64], pts: &[Vec3], ends: Ends) -> Result<(Curve, f64, f64), LoftError> {
+    if pts.len() < 2 || pts.len() != ts.len() {
+        return Err(LoftError::failed("a loft rail needs one point per section", "redraw the sections with the same number of points"));
+    }
     if ts.len() == 2 && !ends.any() {
         let d = pts[0].dist(pts[1]);
         return Ok((Curve::line_through(pts[0], pts[1]), 0.0, d));
@@ -647,7 +739,12 @@ fn build(feature: &str, st: &Stations, profiles: &[ProfileIn], surface: bool, gr
     let n = st.tags.len();
     let closed = st.closed;
     let nv = if closed { n } else { n + 1 };
-    let total = *st.ts.last().unwrap();
+    let Some(&total) = st.ts.last() else {
+        return Err(LoftError::failed("the sections have no loft length", "move the sections apart"));
+    };
+    if k < 2 || n == 0 || st.chains.iter().any(|c| c.pieces.len() < n) || !total.is_finite() {
+        return Err(LoftError::failed("the sections could not be matched piece by piece", "redraw the sections as simple closed curves with the same number of points"));
+    }
     let mut b = Body::new();
     let lump = b.add_lump();
     let shell = b.add_shell(lump);

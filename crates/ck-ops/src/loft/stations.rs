@@ -236,7 +236,8 @@ impl Chain {
     }
     /// Every piece is collapsed to one point (a loft end that is an apex).
     pub fn is_point(&self) -> bool {
-        let p0 = self.pieces[0].g.start();
+        let Some(first) = self.pieces.first() else { return false };
+        let p0 = first.g.start();
         let tol = 1e-12 * (1.0 + p0.len());
         self.pieces.iter().all(|q| q.g.start().dist(p0) <= tol && q.g.end().dist(p0) <= tol && q.g.at(0.5).dist(p0) <= tol)
     }
@@ -252,7 +253,7 @@ impl Chain {
     }
     /// Bisect the longest piece (first on ties) until there are `n`.
     pub fn split_to(&mut self, n: usize) {
-        while self.pieces.len() < n {
+        while !self.pieces.is_empty() && self.pieces.len() < n {
             let mut bi = 0;
             let mut bl = -1.0;
             for (i, p) in self.pieces.iter().enumerate() {
@@ -267,8 +268,61 @@ impl Chain {
             self.pieces.splice(bi..=bi, [Piece { tag: p.tag.clone(), g: a }, Piece { tag: p.tag, g: b }]);
         }
     }
+    /// Alternative to [`Chain::split_to`] (retry strategy): the extra cuts are shared out over the pieces in
+    /// proportion to their length (largest remainder), each piece cut into equal parameter parts.
+    pub fn split_even(&mut self, n: usize) {
+        let m = self.pieces.len();
+        if m == 0 || m >= n {
+            return;
+        }
+        let lens: Vec<f64> = self.pieces.iter().map(|p| p.g.length()).collect();
+        let total: f64 = lens.iter().sum();
+        if !(total.is_finite() && total > 0.0) {
+            return self.split_to(n);
+        }
+        let want: Vec<f64> = lens.iter().map(|l| l / total * n as f64).collect();
+        let mut cnt: Vec<usize> = want.iter().map(|w| (w.floor() as usize).max(1)).collect();
+        let mut sum: usize = cnt.iter().sum();
+        while sum < n {
+            let mut bi = 0;
+            let mut br = f64::NEG_INFINITY;
+            for i in 0..m {
+                let r = want[i] - cnt[i] as f64;
+                if r > br {
+                    br = r;
+                    bi = i;
+                }
+            }
+            cnt[bi] += 1;
+            sum += 1;
+        }
+        while sum > n {
+            let mut bi = None;
+            let mut br = f64::INFINITY;
+            for i in 0..m {
+                let r = want[i] - cnt[i] as f64;
+                if cnt[i] > 1 && r < br {
+                    br = r;
+                    bi = Some(i);
+                }
+            }
+            let Some(bi) = bi else { break };
+            cnt[bi] -= 1;
+            sum -= 1;
+        }
+        let mut out = vec![];
+        for (p, c) in self.pieces.iter().zip(&cnt) {
+            for q in 0..*c {
+                out.push(Piece { tag: p.tag.clone(), g: p.g.sub(q as f64 / *c as f64, (q + 1) as f64 / *c as f64) });
+            }
+        }
+        self.pieces = out;
+    }
     pub fn rotated(&self, k: usize) -> Chain {
         let n = self.pieces.len();
+        if n == 0 {
+            return self.clone();
+        }
         Chain { closed: self.closed, pieces: (0..n).map(|j| self.pieces[(j + k) % n].clone()).collect() }
     }
     pub fn centroid(&self) -> Vec3 {
@@ -277,8 +331,13 @@ impl Chain {
             c = c + p.g.start();
         }
         let mut n = self.pieces.len();
+        if n == 0 {
+            return c;
+        }
         if !self.closed {
-            c = c + self.pieces[n - 1].g.end();
+            if let Some(l) = self.pieces.last() {
+                c = c + l.g.end();
+            }
             n += 1;
         }
         c / n as f64
@@ -298,7 +357,35 @@ pub struct Stations {
 
 fn cost(a: &Chain, b: &Chain, k: usize) -> f64 {
     let n = a.pieces.len();
+    if n == 0 || b.pieces.len() != n {
+        return f64::INFINITY;
+    }
     (0..n).map(|j| a.pieces[j].g.start().dist2(b.pieces[(j + k) % n].g.start())).sum()
+}
+
+/// Alternative matching rules used by the loft validation gate when the default result is not a valid solid.
+/// `Default` is the pinned oracle rule; the others change one decision each.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Strategy {
+    /// Added to the cost-chosen start offset of every matched closed profile.
+    pub shift: usize,
+    /// Invert the orientation decision of the profiles after the first.
+    pub flip: bool,
+    /// Share the cuts of a profile with fewer pieces over its pieces by length ([`Chain::split_even`]).
+    pub even: bool,
+}
+
+impl Stations {
+    /// The invariants the face construction indexes by: one common piece count, one tag per piece, one
+    /// parameter per station.
+    pub fn is_consistent(&self) -> bool {
+        let n = self.tags.len();
+        n > 0
+            && self.chains.len() >= 2
+            && self.ts.len() == self.chains.len()
+            && self.ts.iter().all(|t| t.is_finite())
+            && self.chains.iter().all(|c| c.pieces.len() == n)
+    }
 }
 
 /// Bring the chains to common piece count and matching order.
@@ -339,7 +426,15 @@ fn start_at_fraction(c: &Chain, f: f64) -> Chain {
 /// the cost rule). Oracle probes: square -> square with `[null, 0.25]` /
 /// `[0, 0.5]` give volumes 5000 / 3000 (the second profile starts one / two
 /// corners round).
-pub fn match_chains_with(mut chains: Vec<Chain>, connectors: &[Option<f64>]) -> Stations {
+pub fn match_chains_with(chains: Vec<Chain>, connectors: &[Option<f64>]) -> Stations {
+    match_chains_strategy(chains, connectors, Strategy::default())
+}
+
+/// [`match_chains_with`] under an alternative [`Strategy`] (`Strategy::default()` = the pinned rule).
+pub fn match_chains_strategy(mut chains: Vec<Chain>, connectors: &[Option<f64>], strat: Strategy) -> Stations {
+    if chains.is_empty() {
+        return Stations { closed: true, tags: vec![], chains, ts: vec![] };
+    }
     let closed = chains[0].closed;
     let mut n = chains.iter().map(|c| c.pieces.len()).max().unwrap_or(1);
     if closed && n < 2 {
@@ -348,7 +443,7 @@ pub fn match_chains_with(mut chains: Vec<Chain>, connectors: &[Option<f64>]) -> 
     // directions about the loft: reverse chains running against the first
     let n0 = chains.iter().find(|c| !c.is_point()).map_or(Vec3::new(0.0, 0.0, 0.0), |c| c.normal());
     for c in chains.iter_mut().skip(1) {
-        if closed && !c.is_point() && c.normal().dot(n0) < 0.0 {
+        if closed && !c.is_point() && (c.normal().dot(n0) < 0.0) != strat.flip {
             *c = c.reversed();
         }
     }
@@ -360,7 +455,11 @@ pub fn match_chains_with(mut chains: Vec<Chain>, connectors: &[Option<f64>]) -> 
         }
     }
     for c in chains.iter_mut() {
-        c.split_to(n);
+        if strat.even {
+            c.split_even(n);
+        } else {
+            c.split_to(n);
+        }
     }
     for i in 1..chains.len() {
         if conn(i).is_some() {
@@ -377,6 +476,9 @@ pub fn match_chains_with(mut chains: Vec<Chain>, connectors: &[Option<f64>]) -> 
                     bv = c;
                     best = k;
                 }
+            }
+            if !free && n > 0 {
+                best = (best + strat.shift) % n;
             }
             chains[i] = chains[i].rotated(best);
         } else {

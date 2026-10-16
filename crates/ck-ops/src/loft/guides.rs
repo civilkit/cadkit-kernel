@@ -47,7 +47,7 @@ pub struct GuideRail {
 }
 
 fn err(code: &str, detail: &str) -> LoftError {
-    LoftError { code: code.into(), detail: Some(detail.into()) }
+    LoftError { code: code.into(), detail: Some(detail.into()), hint: None }
 }
 
 /// Polyline with cumulative arc length.
@@ -60,22 +60,26 @@ impl Poly {
     fn new(p: Vec<Vec3>) -> Poly {
         let mut s = vec![0.0];
         for w in p.windows(2) {
-            s.push(s.last().unwrap() + w[0].dist(w[1]));
+            s.push(s.last().copied().unwrap_or(0.0) + w[0].dist(w[1]));
         }
         Poly { p, s }
     }
     fn len(&self) -> f64 {
-        *self.s.last().unwrap()
+        self.s.last().copied().unwrap_or(0.0)
     }
     fn reversed(&self) -> Poly {
         Poly::new(self.p.iter().rev().copied().collect())
     }
     /// Point at arc length `l`.
     fn at(&self, l: f64) -> Vec3 {
+        if self.p.len() < 2 {
+            return self.p.first().copied().unwrap_or(Vec3::new(0.0, 0.0, 0.0));
+        }
         let l = l.clamp(0.0, self.len());
-        let i = match self.s.binary_search_by(|x| x.partial_cmp(&l).unwrap()) {
-            Ok(i) => i.min(self.p.len() - 2),
-            Err(i) => (i - 1).min(self.p.len() - 2),
+        let last = self.p.len() - 2;
+        let i = match self.s.binary_search_by(|x| x.total_cmp(&l)) {
+            Ok(i) => i.min(last),
+            Err(i) => i.saturating_sub(1).min(last),
         };
         let d = self.s[i + 1] - self.s[i];
         let t = if d > 0.0 { (l - self.s[i]) / d } else { 0.0 };
@@ -84,7 +88,7 @@ impl Poly {
     /// (distance, arc length) of the closest polyline point to `q`.
     fn closest(&self, q: Vec3) -> (f64, f64) {
         let mut best = (f64::INFINITY, 0.0);
-        for i in 0..self.p.len() - 1 {
+        for i in 0..self.p.len().saturating_sub(1) {
             let (a, b) = (self.p[i], self.p[i + 1]);
             let ab = b - a;
             let l2 = ab.dot(ab);
@@ -153,8 +157,12 @@ pub struct Guided {
 /// Bring `chains` to a common piece structure in which every guide touches
 /// the same vertex index of every station.
 pub fn guided_stations(mut chains: Vec<Chain>, guides: &[GuideIn]) -> Result<Guided, LoftError> {
-    let closed = chains[0].closed;
+    let Some(first) = chains.first() else { return Err(err(GUIDE_INVALID, "no sections")) };
+    let closed = first.closed;
     let k = chains.len();
+    if k < 2 || chains.iter().any(|c| c.pieces.is_empty()) {
+        return Err(err(GUIDE_INVALID, "a guided loft needs two or more non-empty sections"));
+    }
     // profiles running against the first are reversed (as the unguided matching does)
     if closed {
         let n0 = chains[0].normal();
@@ -174,7 +182,7 @@ pub fn guided_stations(mut chains: Vec<Chain>, guides: &[GuideIn]) -> Result<Gui
     let mut polys: Vec<Poly> = vec![];
     let mut contacts: Vec<Vec<Contact>> = vec![];
     for g in guides {
-        if g.pts.len() < 2 {
+        if g.pts.len() < 2 || g.pts.iter().any(|p| !(p.x.is_finite() && p.y.is_finite() && p.z.is_finite())) {
             return Err(err(GUIDE_INVALID, "the guide is not a curve"));
         }
         let mut poly = Poly::new(g.pts.clone());
@@ -207,6 +215,9 @@ pub fn guided_stations(mut chains: Vec<Chain>, guides: &[GuideIn]) -> Result<Gui
         let mut at_vertex: Vec<(usize, usize)> = vec![]; // (guide, vertex index before splitting)
         for j in 0..ng {
             let c = &contacts[j][s];
+            if c.piece >= n {
+                return Err(err(GUIDE_INVALID, "the guide does not meet the profile"));
+            }
             let eps = 1e-7;
             if c.s < eps {
                 at_vertex.push((j, c.piece));
@@ -221,7 +232,7 @@ pub fn guided_stations(mut chains: Vec<Chain>, guides: &[GuideIn]) -> Result<Gui
         for (i, pc) in chain.pieces.iter().enumerate() {
             new_index_of_old.push(pieces.len());
             let mut cs = cuts[i].clone();
-            cs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+            cs.sort_by(|a, b| a.0.total_cmp(&b.0));
             let mut prev = 0.0;
             for &(t, j) in &cs {
                 if t - prev < 1e-9 {
@@ -259,7 +270,7 @@ pub fn guided_stations(mut chains: Vec<Chain>, guides: &[GuideIn]) -> Result<Gui
     // ---- rotate closed chains so guide 0 sits at vertex 0
     if closed {
         for s in 0..k {
-            let r = vidx[s][0];
+            let r = vidx.get(s).and_then(|v| v.first()).copied().unwrap_or(0);
             if r != 0 {
                 chains[s] = chains[s].rotated(r);
                 let m = chains[s].pieces.len();
@@ -299,12 +310,15 @@ pub fn guided_stations(mut chains: Vec<Chain>, guides: &[GuideIn]) -> Result<Gui
     for q in (0..segs).rev() {
         let n_of = |s: usize, bounds: &Vec<Vec<usize>>, chains: &Vec<Chain>| {
             let (a, b) = seg_range(s, q, bounds, chains[s].pieces.len());
-            b - a
+            b.saturating_sub(a)
         };
-        let want = (0..k).map(|s| n_of(s, &bounds, &chains)).max().unwrap();
+        let Some(want) = (0..k).map(|s| n_of(s, &bounds, &chains)).max() else { return Err(err(GUIDE_INVALID, "no sections")) };
         for s in 0..k {
             while n_of(s, &bounds, &chains) < want {
                 let (a, b) = seg_range(s, q, &bounds, chains[s].pieces.len());
+                if b <= a || b > chains[s].pieces.len() {
+                    return Err(err(GUIDE_ORDER, "the guides meet the profiles in an order that cannot be matched"));
+                }
                 // bisect the longest piece of the segment
                 let mut bi = a;
                 let mut bl = -1.0;
@@ -334,11 +348,17 @@ pub fn guided_stations(mut chains: Vec<Chain>, guides: &[GuideIn]) -> Result<Gui
         ts.push(ts[i - 1] + cs[i - 1].dist(cs[i]));
     }
     let n = chains[0].pieces.len();
+    if n == 0 || chains.iter().any(|c| c.pieces.len() != n) {
+        return Err(err(GUIDE_INVALID, "the guides could not be matched to the sections"));
+    }
     let nv = if closed { n } else { n + 1 };
     // ---- guide rails: v of the stations, arc length of the guide in between
     let mut rails: Vec<Option<GuideRail>> = vec![None; nv];
     for (gi, &j) in o0.iter().enumerate() {
-        let vi = bounds[0][gi];
+        let Some(&vi) = bounds.first().and_then(|b| b.get(gi)) else { return Err(err(GUIDE_INVALID, "the guides could not be matched to the sections")) };
+        if vi >= nv {
+            return Err(err(GUIDE_INVALID, "the guides could not be matched to the sections"));
+        }
         let vp = |s: usize| -> Vec3 {
             let c = &chains[s];
             if vi < n {

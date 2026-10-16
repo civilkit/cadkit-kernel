@@ -47,6 +47,9 @@ fn err(e: LoftError) -> FeatureError {
     if let Some(d) = e.detail {
         fe = fe.with("detail", Json::Str(d));
     }
+    if let Some(h) = e.hint {
+        fe = fe.with("hint", Json::Str(h));
+    }
     fe
 }
 
@@ -192,7 +195,7 @@ fn check_centre_line(state: &RegenState, f: &Feature, sks: &[SketchResult]) -> R
             return Err(bad("loftCentreLineReach", "the centre line does not reach every profile"));
         }
     }
-    let (a, b) = (pts[0], pts[pts.len() - 1]);
+    let (Some(&a), Some(&b)) = (pts.first(), pts.last()) else { return Err(bad("loftCentreLineInvalid", "the centre line has no curve")) };
     let dir = (b - a).try_normalize();
     let straight = dir.map_or(false, |dir| pts.iter().all(|q| (*q - a).cross(dir).len() < 1e-7 * (1.0 + a.dist(b))));
     if !straight {
