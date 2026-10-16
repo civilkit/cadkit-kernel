@@ -107,6 +107,41 @@ fn mixed_vertex_with_a_wall_radius_and_a_rim_radius() {
 }
 
 #[test]
+fn tower_on_a_wall_all_edges_one_fillet() {
+    // wall 80 x 4 x 60 with a tower 20 x 12 x 40 on its front face; all eight tower edges, r = 2: the concave-concave-convex
+    // corners at the wall get a torus patch round the end of the convex band (OCCT 28781.8077)
+    let base = format!(
+        "{},{},{},{}",
+        rect("F1", TOP, 0.0, 0.0, 80.0, 4.0),
+        extrude("F2", "F1", "add", 60.0),
+        rect("F3", TOP, 30.0, -12.0, 50.0, 0.0),
+        extrude("F4", "F3", "add", 40.0)
+    );
+    let edges = [
+        ([30, 20, 12], "F4.S.e1", "F4.S.e4"),
+        ([50, 20, 12], "F4.S.e1", "F4.S.e2"),
+        ([40, 40, 12], "F4.C1", "F4.S.e1"),
+        ([50, 40, 6], "F4.C1", "F4.S.e2"),
+        ([30, 40, 6], "F4.C1", "F4.S.e4"),
+        ([30, 20, 0], "F2.S.e1", "F4.S.e4"),
+        ([50, 20, 0], "F2.S.e1", "F4.S.e2"),
+        ([40, 40, 0], "F2.S.e1", "F4.C1"),
+    ];
+    let pick = |e: &([i32; 3], &str, &str)| format!(r#"{{"faces":["{}","{}"],"at":[{},{},{}]}}"#, e.1, e.2, e.0[0], e.0[1], e.0[2]);
+    let list: Vec<String> = edges.iter().map(pick).collect();
+    let mut rev = list.clone();
+    rev.reverse();
+    let want = 28781.807708129654;
+    for l in [list, rev] {
+        let f = format!(r#"{base},{{"type":"fillet","id":"F5","radius":2,"edges":[{}]}}"#, l.join(","));
+        let (errs, _, vol, issues) = run_all(&f);
+        assert!(errs.is_empty(), "{errs:?}");
+        assert_eq!(issues, 0);
+        assert!((vol - want).abs() < want * 1e-5, "{vol}");
+    }
+}
+
+#[test]
 fn tangent_chain_propagation() {
     // 40 x 30 x 10 plate with rounded vertical edges (r 6); one top edge picked, `propagate` takes the whole outline
     let plate = format!(

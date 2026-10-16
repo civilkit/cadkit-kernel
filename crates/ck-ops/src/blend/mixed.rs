@@ -78,7 +78,33 @@ pub fn fillet_mixed(b: &Body, edges: &[(String, String, Vec3)], radii: &[f64], f
         tops.push((w, common[0]));
     }
     if tops.is_empty() {
-        return None;
+        // concave-concave-convex: the foot of a tower on a wall. The convex edge is filleted first (with every other
+        // convex edge); its band ends on the wall W, and the wall edges of the tower plus that arc form a tangent chain
+        // of concave edges that is filleted next (torus of major radius r_convex + r_concave round the band's end)
+        for v in b.vertex_ids() {
+            let inc: Vec<EdgeId> = b.edge_ids().filter(|&e| b.edge(e).v0 == v || b.edge(e).v1 == v).collect();
+            if inc.len() != 3 {
+                continue;
+            }
+            let picks: Vec<usize> = (0..n).filter(|&i| inc.contains(&eids[i])).collect();
+            if picks.len() != 3 || picks.iter().filter(|&&i| conc[i]).count() != 2 {
+                continue;
+            }
+            let cx = picks.iter().copied().find(|&i| !conc[i])?;
+            let cc: Vec<usize> = picks.iter().copied().filter(|&i| conc[i]).collect();
+            let (f0, f1) = (b.edge_faces(eids[cc[0]]), b.edge_faces(eids[cc[1]]));
+            let common: Vec<FaceId> = f0.iter().copied().filter(|f| f1.contains(f)).collect();
+            if common.len() != 1 || b.edge_faces(eids[cx]).contains(&common[0]) {
+                continue;
+            }
+            tops.push((cx, common[0]));
+        }
+        if tops.is_empty() {
+            return None;
+        }
+        for i in 0..n {
+            wall[i] = !conc[i];
+        }
     }
     // a failure of the two-stage build is not final: the ordinary builder may still manage the selection
     // one radius for the concave edges of mixed vertices, one for everything else (the rim ball rolls round the

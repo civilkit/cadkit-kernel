@@ -449,10 +449,13 @@ fn mitre_pairs(b: &Body, sel: &[EdgeId]) -> Vec<(Vec3, Vec3, Vec3)> {
         }
         ends.len() == 1 && matches!(b.face(ends[0]).surface, Surface::Plane { .. }) && b.planar_normal(ends[0]).dot(-away(e, v)) < -1e-9
     };
+    let concave_line = |e: EdgeId| -> bool { super::mixed::line_edge_concave(b, e) == Some(true) };
     let mut out = vec![];
     for (i, &a) in sel.iter().enumerate() {
         for &c in &sel[i + 1..] {
-            if a == c || !convex_line(a) || !convex_line(c) {
+            let both_convex = convex_line(a) && convex_line(c);
+            let both_concave = concave_line(a) && concave_line(c);
+            if a == c || !(both_convex || both_concave) {
                 continue;
             }
             let (ea, ec) = (b.edge(a), b.edge(c));
@@ -461,8 +464,20 @@ fn mitre_pairs(b: &Body, sel: &[EdgeId]) -> Vec<(Vec3, Vec3, Vec3)> {
                     continue;
                 }
                 let (fa, fc) = (b.edge_faces(a), b.edge_faces(c));
-                if fa.iter().filter(|f| fc.contains(f)).count() != 1 || !leans(a, v) || !leans(c, v) {
+                if fa.iter().filter(|f| fc.contains(f)).count() != 1 {
                     continue;
+                }
+                if both_convex {
+                    if !leans(a, v) || !leans(c, v) {
+                        continue;
+                    }
+                } else {
+                    // two concave edges (a cove round the foot of a post) that meet at an OUTSIDE corner: the
+                    // third edge of the vertex, between the two walls, is convex and not filleted
+                    let others: Vec<EdgeId> = b.edge_ids().filter(|&x| x != a && x != c && (b.edge(x).v0 == v || b.edge(x).v1 == v)).collect();
+                    if others.len() != 1 || sel.contains(&others[0]) || !convex_line(others[0]) {
+                        continue;
+                    }
                 }
                 let (da, dc) = (away(a, v), away(c, v));
                 let p = b.vertex(v).p;
@@ -1454,19 +1469,59 @@ fn blend_edge_hint(
             m1 = 0.0;
         }
     }
+    // an end that runs into the blend faces of an earlier feature (the convex rim of a tower after its wall coves were rounded):
+    // the tool must not reach past the plane of the wall those blends are tangent to
+    if convex && circ.is_none() {
+        for (v, od, which) in [(ed.v0, -dir, 0usize), (ed.v1, dir, 1usize)] {
+            let cur = if which == 0 { m0 } else { m1 };
+            if cur == 0.0 {
+                continue;
+            }
+            let pv = b.vertex(v).p;
+            let mut end_faces: Vec<FaceId> = vec![];
+            for x in b.edge_ids().filter(|&x| b.edge(x).v0 == v || b.edge(x).v1 == v) {
+                for f in b.edge_faces(x) {
+                    if !faces.contains(&f) && !end_faces.contains(&f) {
+                        end_faces.push(f);
+                    }
+                }
+            }
+            if end_faces.is_empty() || !end_faces.iter().all(|&f| matches!(b.face(f).name.role, Role::Blend(_))) {
+                continue;
+            }
+            let mut best: Option<f64> = None;
+            for &f in &end_faces {
+                for g in b.face_neighbors(f) {
+                    if let Surface::Plane { frame } = &b.face(g).surface {
+                        let n = b.planar_normal(g);
+                        if n.cross(od).len() < 1e-6 {
+                            let t = (frame.o - pv).dot(od);
+                            if t > -1e-9 && t < cur && best.map_or(true, |x| t < x) {
+                                best = Some(t.max(0.0));
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(t) = best {
+                if which == 0 { m0 = t } else { m1 = t }
+            }
+        }
+    }
     // reflex corner shared with another selected edge: run on past the vertex, clip to the bisector plane
     let mut clips: Vec<(Vec3, Vec3)> = vec![];
-    if convex && circ.is_none() {
+    if circ.is_none() {
+        let mm = if convex { margin } else { r.max(len * 0.05) + 1.0 };
         for &(q, da, db) in &junc.mitre {
             let n = da - db;
             if n.len() < 1e-9 {
                 continue;
             }
             if q.dist(p0) < 1e-6 && (da - dir).len() < 1e-6 {
-                m0 = margin;
+                m0 = mm;
                 clips.push((q, n.normalize()));
             } else if q.dist(p1) < 1e-6 && (da + dir).len() < 1e-6 {
-                m1 = margin;
+                m1 = mm;
                 clips.push((q, n.normalize()));
             }
         }

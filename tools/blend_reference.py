@@ -129,8 +129,14 @@ def near_first(e, at):
 
 
 def run_case(c, shapes):
-    shape = shapes[c['base']]
-    edges = [(nearest_edge(shape, p['at']), p) for p in c['picks']]
+    out = run_step(c, shapes[c['base']], c['picks'])
+    if c.get('step2'):
+        out = run_step(c, out, c['step2'], shape_given=True)
+    return {'volume': volume(out), 'valid': bool(BRepCheck_Analyzer(out).IsValid())}
+
+
+def run_step(c, shape, picks, shape_given=False):
+    edges = [(nearest_edge(shape, p['at']), p) for p in picks]
     op = c['op']
     k = op['k']
     if k in ('chamfer', 'chamfer2', 'chamferA'):
@@ -158,8 +164,7 @@ def run_case(c, shapes):
     mk.Build()
     if not mk.IsDone():
         raise RuntimeError('Build failed')
-    out = mk.Shape()
-    return {'volume': volume(out), 'valid': bool(BRepCheck_Analyzer(out).IsValid())}
+    return mk.Shape()
 
 
 # OCCT's chamfer builder fails on these plane / cone edges; the volumes are the Pappus integral of the
