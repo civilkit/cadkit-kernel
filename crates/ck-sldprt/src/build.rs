@@ -105,7 +105,7 @@ struct EdgeInfo {
 struct B<'a> {
     ir: &'a Ir,
     body: Body,
-    curves: HashMap<usize, Rc<FwCurve>>,
+    curves: HashMap<(usize, Option<(u64, u64)>), Rc<FwCurve>>,
     surfaces: HashMap<usize, Rc<Surface>>,
     verts: HashMap<usize, (VertexId, Vec3)>,
     edges: HashMap<usize, EdgeInfo>,
@@ -254,7 +254,14 @@ impl<'a> B<'a> {
     }
 
     fn curve(&mut self, ci: usize) -> R<Rc<FwCurve>> {
-        if let Some(c) = self.curves.get(&ci) {
+        self.curve_t(ci, None)
+    }
+
+    /// The carrier of IR curve `ci`, restricted to the parameter range `trim` (of its own parameterisation) when the
+    /// curve is a B-spline or an SP-curve; analytic curves are bounded by their edge's vertices instead.
+    fn curve_t(&mut self, ci: usize, trim: Option<(f64, f64)>) -> R<Rc<FwCurve>> {
+        let key = (ci, trim.map(|(a, b)| (a.to_bits(), b.to_bits())));
+        if let Some(c) = self.curves.get(&key) {
             return Ok(c.clone());
         }
         let node = &self.ir.curves[ci];
@@ -280,18 +287,76 @@ impl<'a> B<'a> {
                 FwCurve { curve, period: Some(TAU), dir_inc: sense, closed_spline: false }
             }
             IrCurve::BCurve(nc) => {
-                let bs = self.bspline_curve(nc)?;
+                let mut bs = self.bspline_curve(nc)?;
+                if let Some((a, b)) = trim {
+                    let (d0, d1) = bs.domain();
+                    let (a, b) = (a.max(d0), b.min(d1));
+                    if b > a && (a > d0 + 1e-12 || b < d1 - 1e-12) {
+                        bs = bs.segment(a, b);
+                    }
+                }
                 let closed = Self::is_closed(&bs);
                 FwCurve { curve: Curve::BSpline(bs), period: None, dir_inc: sense, closed_spline: closed }
             }
             IrCurve::Trimmed { basis, t1, t2, .. } => {
                 let bi = basis.ok_or_else(|| gerr("trimmed curve without basis"))?;
-                let b = self.curve(bi)?;
+                let b = self.curve_t(bi, Some((t1.min(*t2), t1.max(*t2))))?;
                 FwCurve { curve: b.curve.clone(), period: b.period, dir_inc: sense == (t2 > t1), closed_spline: b.closed_spline }
             }
             IrCurve::Intersection { pts, surfaces } => {
-                let p: Vec<Vec3> = pts.iter().map(|q| pt(*q)).collect();
-                let bs = self.fit_points(&p)?;
+                let mut p: Vec<Vec3> = pts.iter().map(|q| pt(*q)).collect();
+                // chart points are put exactly on both supports and the fit is refined until it stays on them
+                let sups = match (surfaces[0], surfaces[1]) {
+                    (Some(a), Some(b)) => match (self.surface(a), self.surface(b)) {
+                        (Ok(sa), Ok(sb)) => Some([sa, sb]),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                let mut bs = self.fit_points(&p)?;
+                // refine only when the plain fit through the chart points strays from the supports
+                let strays = sups.as_ref().map_or(false, |sup| {
+                    let (a, b) = bs.domain();
+                    (0..48).any(|k| {
+                        let q = bs.eval(a + (b - a) * (k as f64 + 0.37) / 48.0);
+                        sup[0].distance(q) > 5e-4 || sup[1].distance(q) > 5e-4
+                    })
+                });
+                if let (Some(sup), true) = (&sups, strays) {
+                    for q in p.iter_mut() {
+                        if let Some(c) = Self::project_offsets(sup, [0.0, 0.0], *q) {
+                            if c.dist(*q) < 1e-2 {
+                                *q = c;
+                            }
+                        }
+                    }
+                    p.dedup_by(|a, b| a.dist(*b) <= 1e-9);
+                    bs = self.fit_points(&p)?;
+                    for _ in 0..3 {
+                        if p.len() > 2000 {
+                            break;
+                        }
+                        let params = fit::params(&p, Param::ChordLength);
+                        let (d0, d1) = bs.domain();
+                        let mut ins: Vec<(usize, Vec3)> = vec![];
+                        for i in 0..p.len() - 1 {
+                            let m = bs.eval(d0 + (d1 - d0) * 0.5 * (params[i] + params[i + 1]));
+                            if let Some(q) = Self::project_offsets(sup, [0.0, 0.0], m) {
+                                let e = q.dist(m);
+                                if e > 2e-5 && e < 0.5 * p[i].dist(p[i + 1]) && q.dist(p[i]) > 1e-9 && q.dist(p[i + 1]) > 1e-9 {
+                                    ins.push((i, q));
+                                }
+                            }
+                        }
+                        if ins.is_empty() {
+                            break;
+                        }
+                        for (i, q) in ins.into_iter().rev() {
+                            p.insert(i + 1, q);
+                        }
+                        bs = self.fit_points(&p)?;
+                    }
+                }
                 let closed = Self::is_closed(&bs);
                 let curve = Curve::BSpline(bs);
                 // deviation from the support surfaces at 48 samples
@@ -322,12 +387,24 @@ impl<'a> B<'a> {
                     None => BSplineCurve::<Vec2>::new(uv.degree, uv.knots.clone(), ctrl),
                 }
                 .map_err(|e| gerr(format!("bad SP-curve: {e}")))?;
-                let (t0, t1) = c2.domain();
+                let (mut t0, mut t1) = c2.domain();
+                if let Some((a, b)) = trim {
+                    if b.min(t1) > a.max(t0) {
+                        t0 = a.max(t0);
+                        t1 = b.min(t1);
+                    }
+                }
                 let n = (8 * uv.ctrl.len()).clamp(32, 400);
+                // the parameter curve is in the file's unit: lengths in (u, v) scale to mm, angles and spline parameters do not
+                let (su, sv) = match &*sf {
+                    Surface::Plane { .. } => (SCALE, SCALE),
+                    Surface::Cylinder { .. } | Surface::Cone { .. } | Surface::Extrusion { .. } => (1.0, SCALE),
+                    _ => (1.0, 1.0),
+                };
                 let pts: Vec<Vec3> = (0..=n)
                     .map(|i| {
                         let q = c2.eval(t0 + (t1 - t0) * i as f64 / n as f64);
-                        sf.eval(q.x, q.y)
+                        sf.eval(q.x * su, q.y * sv)
                     })
                     .collect();
                 let mut clean: Vec<Vec3> = vec![];
@@ -351,7 +428,7 @@ impl<'a> B<'a> {
             IrCurve::Unsupported(m) => return Err(uerr(format!("curve #{}: {m}", node.id))),
         };
         let rc = Rc::new(fc);
-        self.curves.insert(ci, rc.clone());
+        self.curves.insert(key, rc.clone());
         Ok(rc)
     }
 
@@ -419,12 +496,213 @@ impl<'a> B<'a> {
                 let b = self.surface(bi)?;
                 Surface::Offset { base: Box::new((*b).clone()), dist: dist * SCALE }
             }
-            IrSurface::Blend => return Err(uerr(format!("rolling-ball blend surface #{} (not evaluated)", node.id))),
+            IrSurface::Blend { .. } => self.blend_surface(si)?,
             IrSurface::Unsupported(m) => return Err(uerr(format!("surface #{}: {m}", node.id))),
         };
         let rc = Rc::new(s);
         self.surfaces.insert(si, rc.clone());
         Ok(rc)
+    }
+
+    // ------------------------------------------------------------ rolling-ball blends
+    /// Alternating projection of `p` onto the two support surfaces offset by `off` along their natural normals
+    /// (the locus of the rolling ball's centre).
+    fn project_offsets(sup: &[Rc<Surface>; 2], off: [f64; 2], p: Vec3) -> Option<Vec3> {
+        let mut c = p;
+        for _ in 0..60 {
+            let c0 = c;
+            for k in 0..2 {
+                let (u, v, foot) = sup[k].closest_point(c);
+                let n = sup[k].normal(u, v);
+                if n.len() < 1e-12 {
+                    return None;
+                }
+                c = foot + n.normalize() * off[k];
+            }
+            if c.dist(c0) < 1e-10 {
+                break;
+            }
+        }
+        for k in 0..2 {
+            let (u, v, foot) = sup[k].closest_point(c);
+            let n = sup[k].normal(u, v).normalize();
+            if ((c - foot).dot(n) - off[k]).abs() > 1e-5 * (1.0 + off[k].abs()) || (c - foot).len() > off[k].abs() * 1.05 + 1e-6 {
+                return None;
+            }
+        }
+        Some(c)
+    }
+
+    /// Cross-section arc points from `f0` to `f1` about `c` (n points, equal angle steps).
+    fn blend_row(c: Vec3, f0: Vec3, f1: Vec3, n: usize) -> Vec<Vec3> {
+        let r = 0.5 * (c.dist(f0) + c.dist(f1));
+        let xv = (f0 - c).normalize();
+        let d1 = f1 - c;
+        let yv = d1 - xv * d1.dot(xv);
+        if yv.len() < 1e-7 * r {
+            return vec![c + xv * r; n];
+        }
+        let yv = yv.normalize();
+        let ang = d1.dot(yv).atan2(d1.dot(xv));
+        if ang <= 1e-9 {
+            return vec![c + xv * r; n];
+        }
+        (0..n).map(|k| {
+            let a = ang * k as f64 / (n - 1) as f64;
+            c + xv * (r * a.cos()) + yv * (r * a.sin())
+        }).collect()
+    }
+
+    /// A rolling-ball blend as an interpolated B-spline surface: u along the spine, v along the circular
+    /// cross-section from the foot on support 0 to the foot on support 1 (swapped when the spine is reversed).
+    /// The maximum deviation from the exact cross-sections between the sections is recorded.
+    fn blend_surface(&mut self, si: usize) -> R<Surface> {
+        const NARC: usize = 9;
+        let node = &self.ir.surfaces[si];
+        let IrSurface::Blend { supports, support_plus, spine, spine_plus, range, limits } = &node.geom else { unreachable!() };
+        let nid = node.id;
+        let (Some(a), Some(b)) = (supports[0], supports[1]) else { return Err(uerr(format!("blend #{nid}: a support is a blend boundary or a cliff edge"))) };
+        let sup = [self.surface(a)?, self.surface(b)?];
+        let sg = |p: bool| if p { 1.0 } else { -1.0 };
+        let off = [range[0] * SCALE * sg(support_plus[0]), range[1] * SCALE * sg(support_plus[1])];
+        let expect = range[0].abs().max(range[1].abs()) * SCALE;
+        let sci = spine.ok_or_else(|| gerr(format!("blend #{nid} without spine")))?;
+        let swap = !*spine_plus;
+        // spine centres
+        let mut centres: Vec<Vec3> = vec![];
+        let mut analytic: Option<(Curve, f64, f64)> = None;
+        match &self.ir.curves[sci].geom {
+            IrCurve::Intersection { pts, .. } => {
+                for q in pts {
+                    if let Some(c) = Self::project_offsets(&sup, off, pt(*q)) {
+                        if centres.last().map_or(true, |l| l.dist(c) > 1e-9) {
+                            centres.push(c);
+                        }
+                    }
+                }
+            }
+            _ => {
+                let fc = self.curve(sci)?;
+                let curve = fc.curve.clone();
+                let (mut t0, mut t1) = curve.range();
+                if let (Some(l0), Some(l1)) = (limits[0], limits[1]) {
+                    let (ta, mut tb) = (curve.closest_param(pt(l0)), curve.closest_param(pt(l1)));
+                    if let Some(per) = fc.period {
+                        if tb <= ta {
+                            tb += per;
+                        }
+                    }
+                    t0 = ta;
+                    t1 = tb;
+                } else if !t0.is_finite() || !t1.is_finite() {
+                    t0 = -1000.0;
+                    t1 = 1000.0;
+                }
+                for i in 0..=64 {
+                    centres.push(curve.eval(t0 + (t1 - t0) * i as f64 / 64.0));
+                }
+                analytic = Some((curve, t0, t1));
+            }
+        }
+        if centres.len() < 2 {
+            return Err(gerr(format!("blend #{nid}: spine too short")));
+        }
+        let feet_of = |c: Vec3| -> Option<(Vec3, Vec3)> {
+            let f = [sup[0].closest_point(c).2, sup[1].closest_point(c).2];
+            let (f0, f1) = if swap { (f[1], f[0]) } else { (f[0], f[1]) };
+            let (r0, r1) = (c.dist(f0), c.dist(f1));
+            let ok = (r0 - r1).abs() <= 0.02 * r0.max(r1) + 1e-9 && (expect == 0.0 || ((r0 - expect).abs() <= 0.02 * expect && (r1 - expect).abs() <= 0.02 * expect));
+            ok.then_some((f0, f1))
+        };
+        // longest run of valid cross-sections
+        let flags: Vec<Option<(Vec3, Vec3)>> = centres.iter().map(|&c| feet_of(c)).collect();
+        let (mut best, mut i) = ((0usize, 0usize), 0usize);
+        while i < flags.len() {
+            if flags[i].is_some() {
+                let mut j = i;
+                while j < flags.len() && flags[j].is_some() {
+                    j += 1;
+                }
+                if j - i > best.1 - best.0 {
+                    best = (i, j);
+                }
+                i = j;
+            } else {
+                i += 1;
+            }
+        }
+        let nvalid = best.1 - best.0;
+        if nvalid < 2 || (nvalid as f64) < 0.5 * flags.len() as f64 {
+            return Err(gerr(format!("blend #{nid}: support feet are not at the blend radius along the spine ({nvalid} of {} cross-sections valid)", flags.len())));
+        }
+        // entries: (centre, row, spine fraction)
+        let nsamp = flags.len();
+        let mut entries: Vec<(Vec3, Vec<Vec3>, f64)> = (best.0..best.1).map(|i| {
+            let (f0, f1) = flags[i].unwrap();
+            (centres[i], Self::blend_row(centres[i], f0, f1, NARC), i as f64 / (nsamp - 1) as f64)
+        }).collect();
+        entries.dedup_by(|b, a| a.0.dist(b.0) <= 1e-10);
+        let build = |ents: &[(Vec3, Vec<Vec3>, f64)]| -> R<(BSplineSurface, Vec<f64>)> {
+            let mut u = vec![0.0];
+            for k in 1..ents.len() {
+                u.push(u[k - 1] + ents[k - 1].0.dist(ents[k].0));
+            }
+            let grid: Vec<Vec<Vec3>> = ents.iter().map(|e| e.1.clone()).collect();
+            let v: Vec<f64> = (0..NARC).map(|k| k as f64 / (NARC - 1) as f64).collect();
+            let s = fit::grid_surface(&grid, &u, &v, 3, 3).map_err(|e| gerr(format!("blend #{nid}: surface fit failed: {e}")))?;
+            Ok((s, u))
+        };
+        let (mut surf, mut params) = build(&entries)?;
+        let mut worst_final = 0.0f64;
+        let mut prev_worst = f64::INFINITY;
+        for round in 0..4 {
+            if entries.len() >= 240 {
+                break;
+            }
+            let mut inserts: Vec<(usize, f64, (Vec3, Vec<Vec3>, f64))> = vec![];
+            let mut round_worst = 0.0f64;
+            for i in 0..entries.len() - 1 {
+                let (ca, cb) = (entries[i].0, entries[i + 1].0);
+                if ca.dist(cb) < 1e-7 {
+                    continue;
+                }
+                let m = ca.lerp(cb, 0.5);
+                let tm = 0.5 * (entries[i].2 + entries[i + 1].2);
+                let q = match &analytic {
+                    Some((c, t0, t1)) => Some(c.eval(t0 + (t1 - t0) * tm)),
+                    None => Self::project_offsets(&sup, off, m),
+                };
+                let Some(q) = q else { continue };
+                if q.dist(m) > 0.5 * ca.dist(cb) || q.dist(ca) < 1e-9 || q.dist(cb) < 1e-9 {
+                    continue;
+                }
+                let Some((f0, f1)) = feet_of(q) else { continue };
+                let row = Self::blend_row(q, f0, f1, NARC);
+                let um = 0.5 * (params[i] + params[i + 1]);
+                let worst = (0..NARC).map(|k| surf.eval(um, k as f64 / (NARC - 1) as f64).dist(row[k])).fold(0.0f64, f64::max);
+                round_worst = round_worst.max(worst);
+                if worst > 1e-5 {
+                    inserts.push((i, worst, (q, row, tm)));
+                }
+            }
+            worst_final = round_worst;
+            if inserts.is_empty() || (round > 0 && round_worst > 0.75 * prev_worst) {
+                break;
+            }
+            prev_worst = round_worst;
+            inserts.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            let room = 240usize.saturating_sub(entries.len());
+            let mut chosen: Vec<_> = inserts.into_iter().take(room).collect();
+            chosen.sort_by_key(|c| c.0);
+            for (i, _, e) in chosen.into_iter().rev() {
+                entries.insert(i + 1, e);
+            }
+            let (s, p) = build(&entries)?;
+            surf = s;
+            params = p;
+        }
+        self.approx.push(Approx { what: format!("rolling-ball blend #{nid} ({} sections x {NARC} arc points, cubic interpolation)", entries.len()), max_err_mm: worst_final });
+        Ok(Surface::BSpline(Box::new(surf)))
     }
 
     // ------------------------------------------------------------ vertices / edges
@@ -582,7 +860,7 @@ impl<'a> B<'a> {
     fn face(&mut self, shell: ShellId, f: &IrFace) -> R<Vec<Vec3>> {
         let fid = f.id;
         let si = f.surface.ok_or_else(|| terr(format!("face #{fid} has no surface")))?;
-        let surface = (*self.surface(si)?).clone();
+        let mut surface = (*self.surface(si)?).clone();
         let mut loops: Vec<Vec<Ce>> = vec![];
         let mut pts: Vec<Vec3> = vec![];
         for lp in &f.loops {
@@ -613,7 +891,10 @@ impl<'a> B<'a> {
 
         // every vertex must lie on the surface
         let is_spline = matches!(surface, Surface::BSpline(_));
-        for p in &pts {
+        let mut checked: Vec<Vec3> = pts.clone();
+        checked.sort_by(|a, b| a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y)).then(a.z.total_cmp(&b.z)));
+        checked.dedup_by(|a, b| a.x == b.x && a.y == b.y && a.z == b.z);
+        for p in &checked {
             let d = surface.distance(*p);
             let tol = if is_spline { 20.0 * geo_tol(*p) } else { 5.0 * geo_tol(*p) };
             if d > tol {
@@ -629,7 +910,7 @@ impl<'a> B<'a> {
             }
         }
 
-        let loops = self.seam_wrapping(fid, &surface, sense, loops)?;
+        let loops = self.seam_wrapping(fid, &mut surface, sense, loops)?;
         let loops = self.order_loops(fid, &surface, sense, loops)?;
 
         let name = FaceName::other("sldprt", &format!("F{fid}"));
@@ -774,8 +1055,13 @@ impl<'a> B<'a> {
             }
             d
         };
+        let on_axis = |p: Vec3| {
+            let d = p - frame.o;
+            d.dot(frame.x).hypot(d.dot(frame.y)) < 1e-9 * (1.0 + d.len())
+        };
         for (k, ce) in ring.iter().enumerate() {
-            if wrap(ang(self.vpos(self.ce_start(ce))) - ua).abs() < 1e-6 {
+            let p = self.vpos(self.ce_start(ce));
+            if !on_axis(p) && wrap(ang(p) - ua).abs() < 1e-6 {
                 return Some(k);
             }
         }
@@ -814,7 +1100,7 @@ impl<'a> B<'a> {
 
     /// Parasolid periodic faces have no seam edge: the boundary loops of a cylinder / cone / torus each wrap the axis.
     /// Join two of them with a seam. A cone or sphere cap with a single wrapping loop gets a seam to the apex / pole.
-    fn seam_wrapping(&mut self, fid: i64, surface: &Surface, sense: bool, mut loops: Vec<Vec<Ce>>) -> R<Vec<Vec<Ce>>> {
+    fn seam_wrapping(&mut self, fid: i64, surface: &mut Surface, sense: bool, mut loops: Vec<Vec<Ce>>) -> R<Vec<Vec<Ce>>> {
         if surface.periods().0.is_none() {
             return Ok(loops);
         }
@@ -831,8 +1117,8 @@ impl<'a> B<'a> {
             _ => return Err(uerr(format!("face #{fid}: {} face with a loop wrapping its axis (needs poles/seams)", surface.kind()))),
         };
         if wrap.len() == 1 {
-            if let Surface::Cone { r, semi_angle, .. } = surface {
-                return self.cone_cap_seam(fid, surface, loops, wrap[0], *r, *semi_angle);
+            if let Surface::Cone { r, semi_angle, .. } = surface.clone() {
+                return self.cone_cap_seam(fid, surface, loops, wrap[0], r, semi_angle);
             }
         }
         if wrap.len() != 2 || w[wrap[0]].abs() != 1 || w[wrap[1]].abs() != 1 {
@@ -910,8 +1196,19 @@ impl<'a> B<'a> {
     }
 
     /// A cone face bounded by one loop around the axis reaches the apex: seam out to the apex and back.
-    fn cone_cap_seam(&mut self, fid: i64, surface: &Surface, loops: Vec<Vec<Ce>>, wi: usize, r: f64, semi: f64) -> R<Vec<Vec<Ce>>> {
-        let Surface::Cone { frame, .. } = surface else { unreachable!() };
+    fn cone_cap_seam(&mut self, fid: i64, surface: &mut Surface, loops: Vec<Vec<Ce>>, wi: usize, r: f64, semi: f64) -> R<Vec<Vec<Ce>>> {
+        // Same cone, expressed with the axis pointing towards the apex (negative semi-angle, apex at v > 0): the
+        // layout the kernel's own revolved cones have (u and v both reverse, so the natural normal is unchanged).
+        let (r, semi) = if semi > 0.0 {
+            if let Surface::Cone { frame, semi_angle, .. } = surface {
+                *frame = ck_geom::Frame { o: frame.o, x: frame.x, y: -frame.y, z: -frame.z };
+                *semi_angle = -*semi_angle;
+            }
+            (r, -semi)
+        } else {
+            (r, semi)
+        };
+        let Surface::Cone { frame, .. } = &*surface else { unreachable!() };
         let tan = semi.tan();
         if tan.abs() < 1e-9 {
             return Err(gerr(format!("face #{fid}: cone without taper")));
@@ -948,13 +1245,23 @@ impl<'a> B<'a> {
             let d = p - c;
             let h = d - axis * d.dot(axis);
             if h.len() < 1e-9 * r.max(1.0) {
-                return Err(gerr(format!("face #{fid}: sphere loop vertex sits on the pole axis")));
+                return Err(uerr(format!("face #{fid}: sphere face bounded by a great circle through the poles")));
             }
             Ok(h.normalize())
         };
         let mut out: Vec<Vec<Ce>> = vec![];
+        let azimuth_ok = |p: Vec3| {
+            let d = p - c;
+            (d - axis * d.dot(axis)).len() >= 1e-9 * r.max(1.0)
+        };
+        let off_axis = |this: &Self, ring: &mut Vec<Ce>| {
+            if let Some(k) = (0..ring.len()).find(|&k| azimuth_ok(this.vpos(this.ce_start(&ring[k])))) {
+                ring.rotate_left(k);
+            }
+        };
         if wrap.len() == 1 {
-            let ring = loops[wrap[0]].clone();
+            let mut ring = loops[wrap[0]].clone();
+            off_axis(self, &mut ring);
             let va = self.ce_start(&ring[0]);
             let pa = self.vpos(va);
             let pts = self.ce_points(&ring[0], 8);
@@ -977,20 +1284,19 @@ impl<'a> B<'a> {
             if w[wrap[0]] == w[wrap[1]] {
                 return Err(SldprtError::new("topology.orientation", format!("face #{fid}: both wrapping loops run the same way round the axis")));
             }
-            let a = loops[wrap[0]].clone();
+            let mut a = loops[wrap[0]].clone();
+            off_axis(self, &mut a);
             let mut bl = loops[wrap[1]].clone();
             let va = self.ce_start(&a[0]);
             let pa = self.vpos(va);
             let ea = azimuth(pa)?;
-            let mut k = None;
-            for i in 0..bl.len() {
-                let p = self.vpos(self.ce_start(&bl[i]));
-                if azimuth(p)?.dist(ea) < 1e-6 {
-                    k = Some(i);
-                    break;
+            let ua = (pa - c).dot(frame.y).atan2((pa - c).dot(frame.x));
+            let Some(k) = self.vertex_at_azimuth(&bl, frame, ua) else {
+                if self.need_split.is_empty() {
+                    return Err(uerr(format!("face #{fid}: sphere band whose two loops have no vertices at a common azimuth")));
                 }
-            }
-            let k = k.ok_or_else(|| uerr(format!("face #{fid}: sphere band whose two loops have no vertices at a common azimuth")))?;
+                return Ok(loops);
+            };
             bl.rotate_left(k);
             let vb = self.ce_start(&bl[0]);
             let pb = self.vpos(vb);

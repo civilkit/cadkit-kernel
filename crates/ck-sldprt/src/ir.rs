@@ -52,8 +52,8 @@ pub enum IrSurface {
     /// Profile spun about an axis.
     Spun { profile: Option<usize>, base: V3, axis: V3 },
     Offset { base: Option<usize>, dist: f64 },
-    /// Rolling-ball blend: not evaluated (reported).
-    Blend,
+    /// Rolling-ball blend: the ball of the radius `range` rolls on the two supports along the spine.
+    Blend { supports: [Option<usize>; 2], support_plus: [bool; 2], spine: Option<usize>, spine_plus: bool, range: [f64; 2], limits: [Option<V3>; 2] },
     Unsupported(String),
 }
 
@@ -303,7 +303,27 @@ impl<'a> Ex<'a> {
                     }
                     IrSurface::Offset { base, dist }
                 }
-                56 => IrSurface::Blend,
+                56 => {
+                    let sv = n.ai("surface").to_vec();
+                    let (mut supports, mut support_plus) = ([None, None], [true, true]);
+                    for k in 0..2 {
+                        if let Some(sn) = sv.get(k).and_then(|&s| self.xt.get(s)) {
+                            support_plus[k] = sn.plus("sense");
+                            // blend boundaries (59) and cliff-edge blends (56) are not evaluable supports
+                            if sn.ty != 59 && sn.ty != 56 {
+                                supports[k] = self.surface(sn.index, depth + 1);
+                            }
+                        }
+                    }
+                    let sp = n.i("spine");
+                    let spine_plus = self.xt.get(sp).map_or(true, |c| c.plus("sense"));
+                    let spine = self.curve(sp, depth + 1);
+                    let r = n.af("range");
+                    let range = if r.len() >= 2 { [r[0], r[1]] } else { [0.0, 0.0] };
+                    let lim = |k: &str| self.xt.deref(n, k).and_then(|l| l.av("hvec").first().copied());
+                    let limits = [lim("start"), lim("end")];
+                    IrSurface::Blend { supports, support_plus, spine, spine_plus, range, limits }
+                }
                 t => IrSurface::Unsupported(format!("surface node type {} ({})", t, n.name())),
             }
         };

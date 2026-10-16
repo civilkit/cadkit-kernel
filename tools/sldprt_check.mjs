@@ -36,6 +36,8 @@ const TABLE = {
   nist_ftc_08: 5.036e5, nist_ftc_09: 1.364e5, nist_ftc_10: 1.879e5, nist_ftc_11: 5129, 'pend_small_motor_385': 2.356e4, pend_bearing_holder: 1.529e4,
   pend_encoder: 4.165e4, pend_pole: 3393, pend_table_mount: 5.261e4, 'user_M6-MV': 530.6, user_joint__L_90: 2.262e4, user_motor_stepper_40mm: 7.13e4,
 };
+// closed-form volumes where the kernel's own STEP import of SolidWorks' reference is known to be wrong (cone with an apex: half the volume)
+const ANALYTIC = { SW2011_C13_cone: Math.PI * 25 * 10 / 3, SW2022_C13_cone: Math.PI * 25 * 10 / 3 };
 const SPLINE_HEAVY = /loft|spline|small_motor|wheel|bolt|nist_ctc_0[1245]|nist_ftc_0[7-9]|nist_ftc_10/i;
 
 function walk(d, out = []) {
@@ -99,14 +101,22 @@ for (const f of files) {
     const cands = [path.join(path.dirname(f), 'model.step'), path.join(path.dirname(f), 'ref.step'), f.replace(/\.sldprt$/i, '.step')];
     const own = cands.find((c) => existsSync(c));
     const s2s = path.join(refsDir, sname, 's2s.step');
-    let ref = null, src = '';
-    if (own) { ref = stepVolume(own); src = 'step'; }
-    if (!ref?.volume && existsSync(s2s)) { ref = stepVolume(s2s); src = 's2s'; }
-    if (!ref?.volume && TABLE[sname] !== undefined) { ref = { volume: TABLE[sname], valid: true }; src = 'table'; }
-    if (ref?.volume) {
-      row.refVolume = ref.volume; row.refSrc = src;
-      row.rel = Math.abs(row.volume - ref.volume) / Math.abs(ref.volume);
-      const tol = src === 'table' ? 5e-4 : SPLINE_HEAVY.test(sname) ? 1e-3 : 1e-4;
+    // expected volume: the sldprt2step-derived STEP when it imports valid, else the part's own reference STEP, else the table
+    const sw = own ? stepVolume(own) : null;
+    const s2 = existsSync(s2s) ? stepVolume(s2s) : null;
+    // candidates in priority order; the first is the headline reference, MATCH when any valid-importing candidate is within tolerance
+    const cand = [];
+    if (ANALYTIC[sname] !== undefined) cand.push({ src: 'analytic', v: ANALYTIC[sname] });
+    if (s2?.volume && s2.valid) cand.push({ src: 's2s', v: s2.volume });
+    if (sw?.volume && sw.valid !== false) cand.push({ src: 'sw', v: sw.volume });
+    if (!cand.length && s2?.volume) cand.push({ src: 's2s*', v: s2.volume });
+    if (!cand.length && sw?.volume) cand.push({ src: 'sw*', v: sw.volume });
+    if (!cand.length && TABLE[sname] !== undefined) cand.push({ src: 'table', v: TABLE[sname] });
+    if (cand.length) {
+      row.refs = cand.map((c) => ({ src: c.src, volume: c.v, rel: Math.abs(row.volume - c.v) / Math.abs(c.v) }));
+      const best = row.refs.reduce((a, b) => (b.rel < a.rel ? b : a));
+      row.refVolume = best.volume; row.refSrc = best.src; row.rel = best.rel;
+      const tol = best.src === 'table' ? 5e-4 : SPLINE_HEAVY.test(sname) ? 1e-3 : 1e-4;
       row.match = row.rel <= tol;
       if (!row.match || row.valid === false) bad++;
     }
@@ -123,7 +133,7 @@ else {
     console.log([
       r.name.padEnd(32), String(r.faces).padStart(5), f(r.volume).padStart(11), f(r.area).padStart(11), (r.bbox ?? []).join('x').padEnd(28),
       (r.valid === null ? '?' : r.valid ? 'ok' : 'INVALID(' + r.issues + ')').padEnd(5), String(r.ms).padStart(5),
-      r.refVolume !== undefined ? `${r.refSrc}:${f(r.refVolume)}` : '-', r.rel !== undefined ? (r.match ? 'MATCH ' : 'DIFF  ') + r.rel.toExponential(2) : '',
+      r.refVolume !== undefined ? `${r.refSrc}:${f(r.refVolume)}${r.refs?.length > 1 ? " (also " + r.refs.filter((x) => x.src !== r.refSrc).map((x) => x.src + ":" + f(x.volume)).join(" ") + ")" : ""}` : '-', r.rel !== undefined ? (r.match ? 'MATCH ' : 'DIFF  ') + r.rel.toExponential(2) : '',
       r.approx?.length ? `approx(max ${Math.max(...r.approx).toExponential(2)} mm, ${r.approx.length})` : '',
     ].join('  '));
   }

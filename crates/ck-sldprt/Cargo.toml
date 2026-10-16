@@ -9,3 +9,4 @@ ck-topo = { path = "../ck-topo" }
 
 [dev-dependencies]
 ck-check = { path = "../ck-check" }
+ck-tess = { path = "../ck-tess" }
