@@ -303,8 +303,8 @@ fn boolean_at(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> {
     if op == Op::Cut && untouched_a == a_faces && faces.iter().all(|f| whole_a(f)) {
         return Ok(BoolOut { body: a0.clone(), no_effect: true, mismatch: None });
     }
-    let body = build(&arr, &faces);
-    let issues = check(&body, tol);
+    let mut body = build(&arr, &faces);
+    let mut issues = check(&body, tol);
     // two lumps of one operand touching along a line (the two half rings of a thin-wall extrude of two
     // arcs) have distinct but coincident edges that the arrangement welds into one edge of four faces:
     // that edge is the input's own contact, not a failure of the boolean (checked lazily, only when
@@ -332,6 +332,26 @@ fn boolean_at(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> {
         });
         list.iter().any(|p| p.dist(m) < 1e-6 * (1.0 + m.len()))
     };
+    // parts of the result that touch along an edge: split the four-face edge into one per material wedge
+    // (the contacts the operands already had as two coincident edges are split too, with CK_SPLIT_INHERITED unset: no)
+    let split_inherited = true;
+    {
+        let contact: Vec<_> = issues
+            .iter()
+            .filter_map(|i| match i {
+                Issue::NonManifoldEdge(e, 4) => Some(*e),
+                _ => None,
+            })
+            .filter(|&e| {
+                let ed = body.edge(e);
+                split_inherited || !is_inherited(ed.curve.eval(0.5 * (ed.t0 + ed.t1)))
+            })
+            .collect();
+        if !contact.is_empty() && super::contact::split_contact_edges(&mut body, &contact) > 0 {
+            ck_topo::region::rebuild_lumps(&mut body);
+            issues = check(&body, tol);
+        }
+    }
     let bad_issues: Vec<_> = issues
         .into_iter()
         .filter(|i| matches!(i, Issue::OpenEdge(_) | Issue::NonManifoldEdge(..) | Issue::BrokenLoop(..) | Issue::BadPairing(_)))

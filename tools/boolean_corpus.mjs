@@ -186,6 +186,12 @@ C('cylindrical void strictly inside a box, cut', 'contained', [add(bx(0, 0, 20, 
 C('two overlapping spheres, fuse', 'tangent', [add(sp(0, 0, 0, 5)), add(sp(5, 0, 0, 5))], 2 * sphV(5) - PI * 25 * 25 / 12, { lumps: 1 });
 C('two overlapping spheres, cut', 'tangent', [add(sp(0, 0, 0, 5)), cut(sp(5, 0, 0, 5))], sphV(5) - PI * 25 * 25 / 12, { lumps: 1 });
 C('napkin ring: sphere bored by a cylinder', 'tangent', [add(sp(0, 0, 0, 5)), cut(cy(0, 0, 3, -10, 10))], PI * 512 / 6, { lumps: 1 });
+// bicylinder volume of radii R >= r (axes crossing at right angles): 8 * integral_0^r sqrt(R^2-x^2) sqrt(r^2-x^2) dx
+const bicyl = (R, r) => { let t = 0; const n = 200000; for (let i = 0; i < n; i++) { const x = r * (i + 0.5) / n; t += Math.sqrt(R * R - x * x) * Math.sqrt(r * r - x * x); } return 8 * t * r / n; };
+C('tube with a cross hole of the bore radius', 'coaxial', [add(cy(0, 0, 10, 0, 20)), cut(cy(0, 0, 6, -1, 21)), cut(cy(0, -10, 6, -15, 15, 'top'))], cylV(10, 20) - cylV(6, 20) - (bicyl(10, 6) - 16 / 3 * 216), { lumps: 1, relTol: 2e-4 });
+C('countersunk hole (cone ends on the top face)', 'coaxial', [add(bx(-20, -20, 20, 20, 0, 10, 'top')), cut(rev([[0, -1], [3, -1], [3, 7], [6, 10], [6, 11], [0, 11]]))], 40 * 40 * 10 - cylV(3, 7) - PI * 3 / 3 * (36 + 18 + 9), { lumps: 1 });
+C('three holes tangent to each other in a row, cut', 'tangent', [add(bx(0, 0, 18, 12, 0, 10)), cut(cy(3, 6, 3, -1, 11)), cut(cy(9, 6, 3, -1, 11)), cut(cy(15, 6, 3, -1, 11))], 18 * 12 * 10 - 3 * cylV(3, 10), {});
+C('slot whose side is tangent to a hole, cut', 'tangent', [add(bx(0, 0, 30, 20, 0, 10)), cut(cy(10, 10, 3, -1, 11)), cut(bx(13, 0, 20, 20, -1, 11))], 30 * 20 * 10 - cylV(3, 10) - 7 * 20 * 10, {});
 
 // --- body-level (combine) cases; unsupported (and not counted) on a wasm without the feature
 
@@ -264,6 +270,33 @@ function run(c) {
   const lumps = m.result?.bodies?.length ?? null;
   if (c.lumps != null && lumps != null && lumps !== c.lumps && !(c.gap && lumps >= 1)) return { cls: 'wrongLumps', detail: `${lumps} want ${c.lumps}`, ms };
   return { cls: sawNoEffect ? 'okNoEffect' : 'ok', detail: vol.toPrecision(9) + (warns.includes('booleanFuzzy') ? ' fuzzy' : ''), ms };
+}
+
+
+// ---------------------------------------------------------------- grid fuzz (--fuzz N [--seed S] [--ops K] [--grid G])
+// Random add / cut sequences of integer-grid boxes: planes coincide constantly, and the exact volume is the count of unit cells.
+if (arg('--fuzz')) {
+  let seed = Number(arg('--seed') ?? 1);
+  const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+  const G = Number(arg('--grid') ?? 5), K = Number(arg('--ops') ?? 4), N = Number(arg('--fuzz'));
+  let bad = 0;
+  for (let t = 0; t < N; t++) {
+    const cells = new Set();
+    const steps = [];
+    const ri = (lo, hi) => lo + Math.floor(rnd() * (hi - lo + 1));
+    for (let k = 0; k < K; k++) {
+      const x0 = ri(0, G - 1), y0 = ri(0, G - 1), z0 = ri(0, G - 1);
+      const x1 = ri(x0 + 1, G), y1 = ri(y0 + 1, G), z1 = ri(z0 + 1, G);
+      const isCut = k > 0 && rnd() < 0.45;
+      steps.push(isCut ? cut(bx(x0, y0, x1, y1, z0, z1)) : add(bx(x0, y0, x1, y1, z0, z1)));
+      for (let x = x0; x < x1; x++) for (let y = y0; y < y1; y++) for (let z = z0; z < z1; z++) { const key = `${x},${y},${z}`; if (isCut) cells.delete(key); else cells.add(key); }
+    }
+    const c = { name: `fuzz ${t}`, group: 'fuzz', steps, want: cells.size, noEffectOk: true, emptyOk: cells.size === 0 };
+    const r = run(c);
+    if (!r.cls.startsWith('ok')) { bad++; console.log(`FAIL fuzz ${t}: ${r.cls} ${r.detail}\n   ${JSON.stringify(steps.map((s) => [s.op, s.p.u0, s.p.v0, s.p.w0, s.p.u1, s.p.v1, s.p.w1]))}`); }
+  }
+  console.log(`boolean_corpus fuzz: ${N - bad}/${N} ok`);
+  process.exit(bad ? 1 : 0);
 }
 
 const rows = [];
