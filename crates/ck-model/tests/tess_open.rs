@@ -37,6 +37,45 @@ fn sliver_cap_meshes() {
     assert!(issues.is_empty(), "{issues:?}");
 }
 
+/// A bore wall cut by a branch hole (a tee): the rim of the wall is walked backwards after the strip is opened, which
+/// used to leave one segment a period away and the wall 9 percent covered.
+#[test]
+fn bore_wall_with_a_branch_hole_is_covered() {
+    let issues = open_issues(include_str!("fixtures/tess_tee_bore.json"));
+    assert!(issues.is_empty(), "{issues:?}");
+}
+
+/// Torus bands that span a full period in v (a funnel rim): the band needs cut lines in both directions, and an edge on
+/// the lower window edge belongs to the top of the window.
+#[test]
+fn torus_band_spanning_a_period_is_covered() {
+    let issues = open_issues(include_str!("fixtures/tess_funnel_torus.json"));
+    assert!(issues.is_empty(), "{issues:?}");
+}
+
+/// A sphere zone and a half torus whose circle junction sits on the cut line.
+#[test]
+fn ring_junction_on_the_cut_line_is_kept() {
+    for json in [include_str!("fixtures/tess_hose_sphere.json"), include_str!("fixtures/tess_battery_torus.json")] {
+        let issues = open_issues(json);
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+}
+
+/// Flange rings with slits and bolt holes on the slit line: the chains either side of the slit connect over the dropped junction.
+#[test]
+fn slit_ring_with_bolt_holes_on_the_slit_is_closed() {
+    let issues = open_issues(include_str!("fixtures/tess_coupling_slit.json"));
+    assert!(issues.is_empty(), "{issues:?}");
+}
+
+/// Spline faces meeting at a cusp whose trim tail crosses the shared edge: no empty face, and the one-edge hairline is not a hole.
+#[test]
+fn spline_cusp_faces_mesh_without_holes() {
+    let issues = open_issues(include_str!("fixtures/tess_large sample_cusp.json"));
+    assert!(issues.is_empty(), "{issues:?}");
+}
+
 /// Debug probe (set `CK_PART=<part json>`): one line per face whose mesh is suspect (no triangles, open boundary graph,
 /// unrecovered trims, or mesh area outside 99..101 percent of the exact area).
 #[test]
