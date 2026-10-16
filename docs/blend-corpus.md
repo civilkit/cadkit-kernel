@@ -203,3 +203,15 @@ signed volume difference to OCCT (relative).
 | `pocket_mixed_rim4_wall2` | 28667.6506 | diff 8.7388 (3.0e-4) | ok |
 
 before 20/91 ok, after 87/91 ok
+
+## Gate note: `vol.brep` and the three chamfer cases
+
+`distanceDistance` / `angleDistance` (and `chamferCylTopDD`, a two-distance chamfer on a cylinder rim) are refused by the original
+(`unsupported`, body unchanged) and built by the kernel now, so `chamferDD` (7880 against the original's unchanged 8000),
+`chamferAD` (7953.81 against 8000) and `chamferCylTopDD` (3080.86 against 3141.59) differed from the original's volume by more
+than 1e-3. The values are the analytic ones (`8000 - d1 d2 L / 2`, `8000 - d1 d1 tan(a) L / 2`, OCCT 7880 / 7953.81198).
+`tools/gate.mjs` no longer counts a case in `vol.*` as a regression when the original reports feature errors and ours reports
+none (it prints `VOL MISMATCH` lines for every differing case and `JSON DIFF` lines for the soft metric). Result: vol.brep
+319/319, valid.brep 280/319, wire 280/280. The soft `regen.brep.json` / `.mesh` drops that remain (-5 / -4 against the
+committed baseline) are those three cases plus two json and one mesh case that already differed before the blend work
+(pre-merge main: -2 / -1).
