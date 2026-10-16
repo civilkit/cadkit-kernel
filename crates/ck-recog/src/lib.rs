@@ -71,11 +71,16 @@ pub fn recognize(body: &Body) -> Recognition {
         }
     }
     let prism_clean = best.as_ref().map_or(false, |p| p.leftover.is_empty());
+    let rev = revolve::analyze(&m);
     let mut tree = Tree::default();
     let mut items: Vec<Item> = vec![];
     let mut explained: HashSet<FaceId> = HashSet::new();
-    if prism_clean || (best.is_some() && revolve::analyze(&m).is_none()) {
-        let p = best.unwrap();
+    // a turned part is a revolve even when its stacked circles also read as a layered prism
+    let prefer_revolve = rev.is_some() && best.as_ref().map_or(true, |p| !prism_clean || p.slabs > 1);
+    if let (true, Some(r)) = (prefer_revolve, &rev) {
+        rec.strategy = "revolve";
+        emit_revolve(&mut tree, r, &mut items, &mut explained);
+    } else if let Some(p) = best {
         rec.strategy = "prism";
         let names = emit_prism(&mut tree, &p, &mut items, &mut explained);
         for f in &p.steps {
@@ -83,9 +88,6 @@ pub fn recognize(body: &Body) -> Recognition {
         }
         emit_holes(&mut tree, &m, &hs, &mut items, &mut explained);
         emit_blends(&mut tree, &p, &names, &mut items, &mut explained);
-    } else if let Some(r) = revolve::analyze(&m) {
-        rec.strategy = "revolve";
-        emit_revolve(&mut tree, &r, &mut items, &mut explained);
     } else {
         rec.note = Some(format!("no dominant extrusion or revolution ({})", prism::WHY.with(|w| w.borrow().clone())));
     }

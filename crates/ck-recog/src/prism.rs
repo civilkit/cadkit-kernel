@@ -261,8 +261,8 @@ pub fn analyze(m: &Model, claimed: &HashSet<FaceId>, ai: usize) -> Option<Prism>
                 .filter(|&e| {
                     vertical(e)
                         && m.across(e, w).map_or(false, |g| active.contains(&g))
-                        && m.p0(e).dot(nv).min(m.p1(e).dot(nv)) <= zlo + 1e-6
-                        && m.p0(e).dot(nv).max(m.p1(e).dot(nv)) >= zhi - 1e-6
+                        && m.p0(e).dot(nv).min(m.p1(e).dot(nv)) < zhi - 1e-6
+                        && m.p0(e).dot(nv).max(m.p1(e).dot(nv)) > zlo + 1e-6
                 })
                 .collect()
         };
