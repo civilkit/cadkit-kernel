@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { check, describe as describeNames, heal, importSat, importStep, massProps, resolveDescriptions, validate } from './queries.js';
+import { check, describe as describeNames, heal, importSat, importStep, massProps, probe, resolveDescriptions, section, sections, validate } from './queries.js';
 import { defaultWasmPath as wasmPath } from '../../kernel-client/src/worker.js';
 import type { KernelReply } from '../../kernel-client/src/protocol.js';
 import type { KernelTransport } from '../../driver/src/verify.js';
@@ -63,6 +63,18 @@ describe('queries', () => {
     assert.deepEqual(is.errors, []);
   });
 
+  it('section / sections / probe send the documented messages', async () => {
+    const seen: Record<string, unknown>[] = [];
+    await section(fake({ loops: [], area: 0 }, seen), { origin: [0, 0, 1], normal: [0, 0, 1] }, { tag: 't' });
+    await sections(fake({ areas: [] }, seen), { axis: 'z', n: 5 });
+    await probe(fake({ points: [] }, seen), { points: [[0, 0, 0]] });
+    assert.deepEqual(seen, [
+      { type: 'section', tag: 't', plane: { origin: [0, 0, 1], normal: [0, 0, 1] } },
+      { type: 'sections', tag: 'main', axis: 'z', n: 5 },
+      { type: 'probe', tag: 'main', points: [[0, 0, 0]] },
+    ]);
+  });
+
   it('throws on trap, envelope error and null result', async () => {
     await assert.rejects(check(failing('trap'), []), /trap: boom/);
     await assert.rejects(check(failing('error'), []), /nope/);
@@ -88,6 +100,25 @@ describe('queries live', { skip: !existsSync(wasmPath()) && 'no wasm built' }, (
       assert.equal(r[0].status, 'unique');
       assert.equal((await s.heal()).remaining.length, 0);
       assert.ok(Math.abs(((await s.massProps()).volume ?? 0) - 100) < 1e-6);
+      // verification requests: 10 x 5 x 2 plate, volume 100
+      const st = await s.sections({ axis: 'x', n: 21 });
+      assert.equal(st.areas.length, 21);
+      assert.ok(st.volumeError < 1e-6, `volumeError ${st.volumeError}`);
+      assert.ok(Math.abs(st.areas[10] - 10) < 1e-6);
+      const sec = await s.section({ origin: [5, 2.5, 0], normal: [1, 0, 0] });
+      assert.ok(Math.abs(sec.area - 10) < 1e-6);
+      assert.equal(sec.loops.length, 1);
+      assert.equal(sec.loops[0].kind, 'outer');
+      assert.ok(sec.loops[0].edges.every((e) => e.type === 'line'));
+      const empty = await s.section({ origin: [500, 0, 0], normal: [1, 0, 0] });
+      assert.equal(empty.loops.length, 0);
+      assert.equal(empty.area, 0);
+      const pr = await s.probe({ points: [[5, 2.5, -1], [50, 2.5, 0]], rays: [{ origin: [-5, 2.5, -1], dir: [1, 0, 0] }] });
+      assert.equal(pr.points?.[0].inside, true);
+      assert.ok((pr.points?.[0].distance ?? 0) < 0);
+      assert.equal(pr.points?.[1].inside, false);
+      assert.equal(pr.rays?.[0].hits.length, 2);
+      assert.equal(pr.rays?.[0].hits[0].entering, true);
       // STEP round-trip through a fresh tag
       const kernel = (s as unknown as { kernel: KernelTransport }).kernel;
       const text = await s.step();

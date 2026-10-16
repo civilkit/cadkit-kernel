@@ -211,6 +211,92 @@ export async function massProps(
   return call<MassReport>(kernel, msg);
 }
 
+export type SectionEdge =
+  | { type: 'line'; from: [number, number]; to: [number, number]; face: string }
+  | { type: 'arc'; centre: [number, number]; radius: number; start: [number, number]; end: [number, number]; startAngle: number; sweep: number; ccw: boolean; face: string }
+  | { type: 'polyline'; pts: Array<[number, number]>; face: string };
+
+export interface SectionLoop {
+  kind: 'outer' | 'inner';
+  closed: true;
+  area: number;
+  edges: SectionEdge[];
+  pts: Array<[number, number]>;
+}
+
+export interface SectionReport {
+  loops: SectionLoop[];
+  frame: { o: number[]; x: number[]; y: number[]; z: number[] };
+  /** Signed sum of the loop areas: outer minus inner. */
+  area: number;
+  bbox2d: [number, number, number, number];
+  openChains?: number;
+}
+
+/** Exact cross-section loops of the tag's body at a plane. */
+export async function section(
+  kernel: KernelTransport,
+  plane: { origin: number[]; normal: number[] },
+  opts: QueryOpts = {},
+): Promise<SectionReport> {
+  return call<SectionReport>(kernel, { type: 'section', tag: opts.tag ?? 'main', plane });
+}
+
+export interface SectionsReport {
+  axis: number[];
+  range: [number, number];
+  rule: 'midpoint' | 'trapezoid';
+  positions: number[];
+  areas: number[];
+  loops: number[];
+  /** Volume integrated from the areas, the exact massProps volume and their relative difference. */
+  volume: number;
+  exactVolume: number;
+  volumeError: number;
+}
+
+/** A stack of sections along an axis (default 21 cell centres) and the volume they integrate to. */
+export async function sections(
+  kernel: KernelTransport,
+  opts: QueryOpts & { axis?: 'x' | 'y' | 'z' | number[]; n?: number; positions?: number[] } = {},
+): Promise<SectionsReport> {
+  const msg: Record<string, unknown> = { type: 'sections', tag: opts.tag ?? 'main' };
+  if (opts.axis !== undefined) msg.axis = opts.axis;
+  if (opts.n !== undefined) msg.n = opts.n;
+  if (opts.positions !== undefined) msg.positions = opts.positions;
+  return call<SectionsReport>(kernel, msg);
+}
+
+export interface ProbePointResult {
+  inside: boolean | 'boundary';
+  /** Signed distance to the nearest face (negative inside). */
+  distance: number | null;
+  face: string | null;
+  nearest: number[] | null;
+}
+
+export interface ProbeRayHit {
+  t: number;
+  point: number[];
+  face: string;
+  entering: boolean;
+  tangent?: boolean;
+}
+
+export interface ProbeReport {
+  points?: ProbePointResult[];
+  rays?: Array<{ hits: ProbeRayHit[] }>;
+}
+
+/** Point containment / signed distance and ray hit lists (at most 2000 of each per call). */
+export async function probe(
+  kernel: KernelTransport,
+  q: { points?: number[][]; rays?: Array<{ origin: number[]; dir: number[] }> },
+  opts: QueryOpts = {},
+): Promise<ProbeReport> {
+  return call<ProbeReport>(kernel, { type: 'probe', tag: opts.tag ?? 'main', ...q });
+}
+
 export interface ImportReport {
   errors: Array<[string, { code: string; params: Record<string, unknown> }]>;
   body?: { faces?: unknown[]; edges?: unknown[]; box?: { min: number[]; max: number[] } } | null;

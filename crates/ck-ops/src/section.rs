@@ -52,11 +52,20 @@ impl Frame {
     }
 }
 
+type Uv = (f64, f64);
+
 struct Seg {
     a: Vec3,
     b: Vec3,
     face: usize,
+    /// face parameters at a and b (strip coordinates of the mesh: only used as Newton hints)
+    ua: Uv,
+    ub: Uv,
 }
+
+/// A chain point: position, face of the outgoing segment, hint of that face at the point and hint of the same
+/// segment's face at its far end.
+type CPt = (Vec3, usize, Uv, Uv);
 
 /// One run of a loop: consecutive points on one face (the last point is the next run's first).
 struct Run {
@@ -72,7 +81,7 @@ pub struct Section {
     pub frame: Frame,
     loops: Vec<LoopOut>,
     pub area: f64,
-    pub open: usize,
+    pub open: Vec<[Vec3; 2]>,
     pub bbox2d: [f64; 4],
 }
 
@@ -93,10 +102,10 @@ fn lex_less(a: Vec3, b: Vec3) -> bool {
 }
 
 /// Crossing of edge (a, b) with the plane, computed from the canonically ordered endpoints so that neighbours agree bitwise.
-fn cross_pt(a: Vec3, da: f64, b: Vec3, db: f64) -> Vec3 {
-    let (a, da, b, db) = if lex_less(b, a) { (b, db, a, da) } else { (a, da, b, db) };
+fn cross_pt(a: Vec3, da: f64, ua: Uv, b: Vec3, db: f64, ub: Uv) -> (Vec3, Uv) {
+    let (a, da, ua, b, db, ub) = if lex_less(b, a) { (b, db, ub, a, da, ua) } else { (a, da, ua, b, db, ub) };
     let t = da / (da - db);
-    a + (b - a) * t
+    (a + (b - a) * t, (ua.0 + (ub.0 - ua.0) * t, ua.1 + (ub.1 - ua.1) * t))
 }
 
 fn cut_segments(body: &Body, tess: &Tess, fr: &Frame) -> Vec<Seg> {
@@ -112,40 +121,41 @@ fn cut_segments(body: &Body, tess: &Tess, fr: &Frame) -> Vec<Seg> {
                 continue;
             }
             let v = [i, j, k];
-            let mut c: Vec<Vec3> = vec![];
+            let mut c: Vec<(Vec3, Uv)> = vec![];
             for e in 0..3 {
                 let (u, w) = (v[e], v[(e + 1) % 3]);
                 if pos[e] != pos[(e + 1) % 3] {
-                    c.push(cross_pt(fm.pts[u], d[u], fm.pts[w], d[w]));
+                    let (uu, uw) = (fm.uv[u], fm.uv[w]);
+                    c.push(cross_pt(fm.pts[u], d[u], (uu.x, uu.y), fm.pts[w], d[w], (uw.x, uw.y)));
                 }
             }
-            if c.len() != 2 || key(c[0]) == key(c[1]) {
+            if c.len() != 2 || key(c[0].0) == key(c[1].0) {
                 continue;
             }
             let n = (fm.pts[j] - fm.pts[i]).cross(fm.pts[k] - fm.pts[i]);
             let dir = fr.z.cross(n);
-            let (a, b) = if (c[1] - c[0]).dot(dir) >= 0.0 { (c[0], c[1]) } else { (c[1], c[0]) };
-            segs.push(Seg { a, b, face: fi });
+            let (a, b) = if (c[1].0 - c[0].0).dot(dir) >= 0.0 { (c[0], c[1]) } else { (c[1], c[0]) };
+            segs.push(Seg { a: a.0, b: b.0, face: fi, ua: a.1, ub: b.1 });
         }
     }
     segs
 }
 
 /// Chains oriented segments into loops of `(point, face of the outgoing segment)`; returns (closed loops, open chain count).
-fn chain(segs: &[Seg], diag: f64) -> (Vec<Vec<(Vec3, usize)>>, usize) {
+fn chain(segs: &[Seg], diag: f64) -> (Vec<Vec<CPt>>, Vec<[Vec3; 2]>) {
     let mut start: HashMap<[u64; 3], Vec<usize>> = HashMap::new();
     for (i, s) in segs.iter().enumerate() {
         start.entry(key(s.a)).or_default().push(i);
     }
     let mut used = vec![false; segs.len()];
     let mut closed = vec![];
-    let mut open: Vec<Vec<(Vec3, usize)>> = vec![];
+    let mut open: Vec<Vec<CPt>> = vec![];
     for s0 in 0..segs.len() {
         if used[s0] {
             continue;
         }
         used[s0] = true;
-        let mut ch = vec![(segs[s0].a, segs[s0].face)];
+        let mut ch: Vec<CPt> = vec![(segs[s0].a, segs[s0].face, segs[s0].ua, segs[s0].ub)];
         let mut end = segs[s0].b;
         let first = key(segs[s0].a);
         loop {
@@ -157,11 +167,11 @@ fn chain(segs: &[Seg], diag: f64) -> (Vec<Vec<(Vec3, usize)>>, usize) {
             match nx {
                 Some(i) => {
                     used[i] = true;
-                    ch.push((segs[i].a, segs[i].face));
+                    ch.push((segs[i].a, segs[i].face, segs[i].ua, segs[i].ub));
                     end = segs[i].b;
                 }
                 None => {
-                    ch.push((end, usize::MAX));
+                    ch.push((end, usize::MAX, (0.0, 0.0), (0.0, 0.0)));
                     open.push(ch);
                     break;
                 }
@@ -170,7 +180,7 @@ fn chain(segs: &[Seg], diag: f64) -> (Vec<Vec<(Vec3, usize)>>, usize) {
     }
     // join open chains whose ends meet within a small gap (mesh vertices that differ in the last bits)
     let gap = 1e-6 * diag;
-    let mut n_open = 0;
+    let mut n_open: Vec<[Vec3; 2]> = vec![];
     while let Some(mut c) = open.pop() {
         loop {
             let end = c.last().unwrap().0;
@@ -189,7 +199,7 @@ fn chain(segs: &[Seg], diag: f64) -> (Vec<Vec<(Vec3, usize)>>, usize) {
                     c.extend(o);
                 }
                 None => {
-                    n_open += 1;
+                    n_open.push([c[0].0, c.last().unwrap().0]);
                     break;
                 }
             }
@@ -204,20 +214,19 @@ fn chain(segs: &[Seg], diag: f64) -> (Vec<Vec<(Vec3, usize)>>, usize) {
     (closed, n_open)
 }
 
-fn plane_gradient(s: &Surface, q: Vec3, hint: Option<(f64, f64)>) -> (f64, Vec3) {
-    let (u, v, cp) = match (s, hint) {
-        (Surface::BSpline(_), Some(h)) => s.closest_point_near(q, h),
-        _ => s.closest_point(q),
-    };
+fn plane_gradient(s: &Surface, q: Vec3, hint: &mut Uv) -> (f64, Vec3) {
+    let (u, v, cp) = s.closest_point_near(q, *hint);
+    *hint = (u, v);
     let n = s.normal(u, v);
     ((q - cp).dot(n), n)
 }
 
 /// In-plane Newton: move `p` along the plane until it lies on surface `a` (and `b` when given).
-fn snap(a: &Surface, b: Option<&Surface>, p: Vec3, fr: &Frame, lim: f64) -> Vec3 {
+fn snap(a: &Surface, b: Option<&Surface>, p: Vec3, fr: &Frame, lim: f64, ha_: Uv, hb_: Uv) -> Vec3 {
     let mut q = p;
+    let (mut ia, mut ib) = (ha_, hb_);
     for _ in 0..8 {
-        let (ha, na) = plane_gradient(a, q, None);
+        let (ha, na) = plane_gradient(a, q, &mut ia);
         let ga = na - fr.z * na.dot(fr.z);
         match b {
             None => {
@@ -231,7 +240,7 @@ fn snap(a: &Surface, b: Option<&Surface>, p: Vec3, fr: &Frame, lim: f64) -> Vec3
                 q = q - ga * (ha / l2);
             }
             Some(b) => {
-                let (hb, nb) = plane_gradient(b, q, None);
+                let (hb, nb) = plane_gradient(b, q, &mut ib);
                 if ha.abs().max(hb.abs()) < 1e-11 * lim.max(1.0) {
                     break;
                 }
@@ -239,7 +248,7 @@ fn snap(a: &Surface, b: Option<&Surface>, p: Vec3, fr: &Frame, lim: f64) -> Vec3
                 let (a11, a12, a21, a22) = (ga.dot(fr.x), ga.dot(fr.y), gb.dot(fr.x), gb.dot(fr.y));
                 let det = a11 * a22 - a12 * a21;
                 if det.abs() < 1e-4 {
-                    return snap(a, None, p, fr, lim);
+                    return snap(a, None, p, fr, lim, ha_, hb_);
                 }
                 let (dx, dy) = ((-ha * a22 + hb * a12) / det, (-hb * a11 + ha * a21) / det);
                 q = q + fr.x * dx + fr.y * dy;
@@ -258,12 +267,13 @@ fn is_plane(s: &Surface) -> bool {
 }
 
 /// Bisect the segment (p, q) on a curved surface until the midpoint deviation is below `tol`; pushes interior points.
-fn refine(s: &Surface, p: Vec3, q: Vec3, fr: &Frame, lim: f64, tol: f64, depth: u32, out: &mut Vec<Vec3>) {
+fn refine(s: &Surface, p: Vec3, q: Vec3, hp: Uv, hq: Uv, fr: &Frame, lim: f64, tol: f64, depth: u32, out: &mut Vec<Vec3>) {
     if depth == 0 {
         return;
     }
     let m = (p + q) * 0.5;
-    let ms = snap(s, None, m, fr, lim);
+    let hm = ((hp.0 + hq.0) * 0.5, (hp.1 + hq.1) * 0.5);
+    let ms = snap(s, None, m, fr, lim, hm, hm);
     let dev = ms.dist(m);
     if dev <= tol {
         return;
@@ -271,9 +281,9 @@ fn refine(s: &Surface, p: Vec3, q: Vec3, fr: &Frame, lim: f64, tol: f64, depth: 
     if dev > 0.3 * p.dist(q) + tol {
         return; // the snap jumped to another part of the surface
     }
-    refine(s, p, ms, fr, lim, tol, depth - 1, out);
+    refine(s, p, ms, hp, hm, fr, lim, tol, depth - 1, out);
     out.push(ms);
-    refine(s, ms, q, fr, lim, tol, depth - 1, out);
+    refine(s, ms, q, hm, hq, fr, lim, tol, depth - 1, out);
 }
 
 fn circle_fit(p: [[f64; 2]; 3]) -> Option<([f64; 2], f64)> {
@@ -321,11 +331,11 @@ pub fn section(body: &Body, tess: &Tess, o: Vec3, n: Vec3) -> Section {
             let (sa, sb) = (&body.face(faces[fin]).surface, &body.face(faces[fout]).surface);
             let p = ch[k].0;
             let q = if fin == fout {
-                if is_plane(sa) { p } else { snap(sa, None, p, &fr, diag) }
+                if is_plane(sa) { p } else { snap(sa, None, p, &fr, diag, ch[k].2, ch[k].2) }
             } else if is_plane(sa) && is_plane(sb) {
                 p
             } else {
-                snap(sa, Some(sb), p, &fr, diag)
+                snap(sa, Some(sb), p, &fr, diag, ch[(k + m - 1) % m].3, ch[k].2)
             };
             pts.push(q);
         }
@@ -337,7 +347,7 @@ pub fn section(body: &Body, tess: &Tess, o: Vec3, n: Vec3) -> Section {
             let s = &body.face(faces[f]).surface;
             if !is_plane(s) {
                 let mut mid = vec![];
-                refine(s, pts[k], pts[(k + 1) % m], &fr, diag, tol, 7, &mut mid);
+                refine(s, pts[k], pts[(k + 1) % m], ch[k].2, ch[k].3, &fr, diag, tol, 7, &mut mid);
                 for q in mid {
                     rp.push((q, f));
                 }
@@ -473,8 +483,9 @@ impl Section {
             .put("frame", Obj::new().put("o", v3(f.o)).put("x", v3(f.x)).put("y", v3(f.y)).put("z", v3(f.z)).build())
             .put("area", self.area)
             .put("bbox2d", Json::Arr(self.bbox2d.iter().map(|&x| Json::Num(x)).collect()));
-        if self.open > 0 {
-            o = o.put("openChains", self.open as f64);
+        if !self.open.is_empty() {
+            o = o.put("openChains", self.open.len() as f64);
+            o = o.put("openEnds", Json::Arr(self.open.iter().map(|e| Json::Arr(vec![v3(e[0]), v3(e[1])])).collect()));
         }
         o.build()
     }

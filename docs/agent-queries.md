@@ -1,4 +1,4 @@
-# Agent queries: check, resolve, describe, refDiff
+# Agent queries: check, resolve, describe, refDiff, section, sections, probe
 
 Kernel-side pieces of `spec-agent-interface.md` (ADR 0002 items 3-4, ADR 0003
 item 5). New request types, extensions to the 21 existing ones (which are
@@ -89,6 +89,47 @@ Reply `{ok, checked, warnings:[{code, feature, ref, reason, before, after}], fea
 `referenceLost` (no longer resolves). Ordinary parameter edits do not warn.
 The `regen` reply is deliberately unchanged (wire-pinned); a front end calls
 `refDiff` with the pre-edit document when applying edit, delete or move ops.
+
+## section `{tag?, plane:{origin, normal}}` (verification)
+
+Read-only. The cross-section of the body (or tagged state) at a plane. Reply
+`{loops:[{kind:"outer"|"inner", closed:true, area, edges:[...], pts:[[x,y]..]}], frame:{o,x,y,z}, area, bbox2d:[minx,miny,maxx,maxy]}`;
+coordinates are in the plane frame (`z` = the normalised normal, `x` = Z cross normal, or world X when the normal is
+within 2.5 degrees of Z). Loops run counter-clockwise around material (`outer`, positive area) and clockwise around
+holes (`inner`); `area` is the signed sum, i.e. outer minus inner; each loop's `area` is positive. Edge records:
+`{type:"line", from, to, face}`, `{type:"arc", centre, radius, start, end, startAngle, sweep (signed), ccw, face}`,
+`{type:"polyline", pts, face}`; `face` is the persistent face id. Several lumps give several outer loops. A plane that
+misses the body gives `loops:[]`, `area:0` (not an error). No body: `null`. A plane exactly through a planar face
+treats on-plane vertices as lying on the positive side, so it returns that face outline for one orientation and nothing
+for the other.
+
+How exact: the tessellation is cut by the plane, chained into loops, every loop vertex is Newton-snapped onto the exact
+surfaces meeting there, and curved segments are bisected until the sagitta is below 2e-5 of the body diagonal. Planar
+faces give exact `line`s; a run of one curved face lying on one circle (cylinder / cone / torus cut perpendicular to the
+axis, any sphere cut) becomes an exact `arc` and its area uses the exact circular segment; everything else (oblique cuts
+of cylinders and cones, tori through the axis, spline and swept surfaces) is a `polyline` on the exact surface with the
+sagitta bound. Loops with area below 1e-9 of the squared diagonal (tangent slivers) are dropped. `openChains` appears
+when the mesh left an unclosed chain (a face that failed to tessellate); those pieces are omitted.
+
+## sections `{tag?, axis:"x"|"y"|"z"|[nx,ny,nz], n | positions}` (verification)
+
+Read-only. A stack of sections along an axis through the origin direction: `n` cell centres (default 21) between the
+mesh extent of the body along the axis, or explicit `positions` (signed distance along the unit axis; at most 1000).
+Reply `{axis, range:[lo,hi], rule, positions, areas, loops:[count per position], volume, exactVolume, volumeError}`.
+`volume` is the midpoint rule over cell centres (rule `midpoint`) or the trapezoid rule over explicit positions
+(`trapezoid`, covering only the span between the first and last); `exactVolume` is `massProps` and `volumeError` the
+relative difference, an independent cross-check of the volume and an area profile. The integration error of the rule
+itself is about 1e-3 at n=41 across curved profiles; use more sections for a tighter bound.
+
+## probe `{tag?, points?:[[x,y,z]], rays?:[{origin, dir}]}` (verification)
+
+Read-only; at most 2000 points and 2000 rays per request (an error beyond). `points` reply
+`[{inside:true|false|"boundary", distance, face, nearest:[x,y,z]}]`: `distance` is the signed distance to the nearest face
+(negative inside, 0 on the boundary), `face` its persistent id, `nearest` the foot point (face interiors and boundary
+edges are both searched). `rays` reply `[{hits:[{t, point, face, entering, tangent?}]}]` sorted by `t` (direction is
+normalised, `t` is the distance); `entering` is true when the ray goes from outside to inside; a hit on a shared edge
+is reported once; a ray lying in a face skips that face; `tangent:true` marks grazing hits. Containment uses the
+existing seven-ray parity classifier of `ck-ops::contain`.
 
 ## Not done
 

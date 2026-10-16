@@ -6,9 +6,9 @@
 import { emptyPart, FEATURE_TYPES, type PartDoc } from '../../part-model/src/index.js';
 import { hintFor, verify, type CheckResultItem, type KernelTransport, type RegenError, type VerifyReport } from '../../driver/src/verify.js';
 import {
-  check, checkProfile, describe, heal, importSat, importStep, massProps, profiles, resolveDescriptions, step, threadData, validate,
-  type CheckReport, type DescribeItem, type HealReport, type ImportReport, type MassReport,
-  type ResolveMatch, type ValidateIssue,
+  check, checkProfile, describe, heal, importSat, importStep, massProps, probe, profiles, resolveDescriptions, section, sections, step, threadData, validate,
+  type CheckReport, type DescribeItem, type HealReport, type ImportReport, type MassReport, type ProbeReport,
+  type ResolveMatch, type SectionReport, type SectionsReport, type ValidateIssue,
 } from './queries.js';
 export type EditOp =
   | { op: 'add'; feature: Record<string, unknown>; index?: number }
@@ -766,6 +766,21 @@ export class Session {
 
   massProps(opts?: { bodies?: boolean; densities?: number[] }): Promise<MassReport> {
     return massProps(this.kernel, { tag: this.tag, ...opts });
+  }
+
+  /** Exact cross-section loops at a plane. */
+  section(plane: { origin: number[]; normal: number[] }): Promise<SectionReport> {
+    return section(this.kernel, plane, { tag: this.tag });
+  }
+
+  /** Section stack along an axis with the integrated volume checked against massProps. */
+  sections(opts?: { axis?: 'x' | 'y' | 'z' | number[]; n?: number; positions?: number[] }): Promise<SectionsReport> {
+    return sections(this.kernel, { tag: this.tag, ...opts });
+  }
+
+  /** Inside / signed distance of points and hit lists of rays. */
+  probe(q: { points?: number[][]; rays?: Array<{ origin: number[]; dir: number[] }> }): Promise<ProbeReport> {
+    return probe(this.kernel, q, { tag: this.tag });
   }
 
   step(name?: string): Promise<string> {
