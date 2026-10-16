@@ -234,7 +234,13 @@ pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featu
             }
         };
         // junction vertices of the whole selection (an earlier round shortens the edges that follow)
-        let junc = if matches!(spec, Spec::Fillet(..)) { junction_vertices(b, &eids, tol) } else { Junc::default() };
+        let junc = if matches!(spec, Spec::Fillet(..)) {
+            junction_vertices(b, &eids, tol)
+        } else if TANGENT_FLUSH.with(|c| c.get()) {
+            Junc { ext: vec![], flush: tangent_flush_vertices(b, &eids) }
+        } else {
+            Junc::default()
+        };
         let mut out = b.clone();
         let mut earlier: Vec<String> = vec![];
         // chamfer: arcs of one split ring (a lofted cap rim cut in two at the
@@ -362,6 +368,22 @@ thread_local! {
     pub(super) static TANGENT_FLUSH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+/// Sets [`TANGENT_FLUSH`] for its lifetime (a selection that is a chain of tangent edges).
+pub struct TangentChainGuard(bool);
+
+impl TangentChainGuard {
+    pub fn new(on: bool) -> TangentChainGuard {
+        let old = TANGENT_FLUSH.with(|c| c.replace(on || c.get()));
+        TangentChainGuard(old)
+    }
+}
+
+impl Drop for TangentChainGuard {
+    fn drop(&mut self) {
+        TANGENT_FLUSH.with(|c| c.set(self.0));
+    }
+}
+
 /// [`blend_edges`] with the ends of tangent-continuing selected edges stopping flush (a selection that is
 /// a chain of tangent edges: the rolling ball runs on from one edge into the next, so no tool may reach
 /// past the junction).
@@ -379,6 +401,38 @@ struct Junc {
     ext: Vec<(Vec3, bool)>,
     /// end vertices whose end face leans toward the material: a convex tool stops flush there
     flush: Vec<Vec3>,
+}
+
+/// Vertices where two of the selected edges continue each other tangentially (see [`TANGENT_FLUSH`]).
+fn tangent_flush_vertices(b: &Body, sel: &[EdgeId]) -> Vec<Vec3> {
+    let mut flush: Vec<Vec3> = vec![];
+    {
+        for &e in sel {
+            let ed = b.edge(e);
+            if ed.v0 == ed.v1 {
+                continue;
+            }
+            for v in [ed.v0, ed.v1] {
+                let d = ed.curve.tangent(if ed.v0 == v { ed.t0 } else { ed.t1 });
+                if d.len() < 1e-12 {
+                    continue;
+                }
+                let tangent_mate = sel.iter().copied().filter(|&x| x != e).any(|x| {
+                    let ex = b.edge(x);
+                    if ex.v0 != v && ex.v1 != v {
+                        return false;
+                    }
+                    let dx = ex.curve.tangent(if ex.v0 == v { ex.t0 } else { ex.t1 });
+                    dx.len() > 1e-12 && d.normalize().cross(dx.normalize()).len() < 1e-6
+                });
+                let p = b.vertex(v).p;
+                if tangent_mate && !flush.iter().any(|q| q.dist(p) < 1e-9) {
+                    flush.push(p);
+                }
+            }
+        }
+    }
+    flush
 }
 
 /// The original vertices (with `true` when material lies behind the end face, so
@@ -404,30 +458,7 @@ fn junction_vertices(b: &Body, sel: &[EdgeId], tol: f64) -> Junc {
     let mut out: Vec<(Vec3, bool)> = vec![];
     let mut flush: Vec<Vec3> = vec![];
     if TANGENT_FLUSH.with(|c| c.get()) {
-        for &e in sel {
-            let ed = b.edge(e);
-            if ed.v0 == ed.v1 {
-                continue;
-            }
-            for v in [ed.v0, ed.v1] {
-                let d = ed.curve.tangent(if ed.v0 == v { ed.t0 } else { ed.t1 });
-                if d.len() < 1e-12 {
-                    continue;
-                }
-                let tangent_mate = sel.iter().copied().filter(|&x| x != e).any(|x| {
-                    let ex = b.edge(x);
-                    if ex.v0 != v && ex.v1 != v {
-                        return false;
-                    }
-                    let dx = ex.curve.tangent(if ex.v0 == v { ex.t0 } else { ex.t1 });
-                    dx.len() > 1e-12 && d.normalize().cross(dx.normalize()).len() < 1e-6
-                });
-                let p = b.vertex(v).p;
-                if tangent_mate && !flush.iter().any(|q| q.dist(p) < 1e-9) {
-                    flush.push(p);
-                }
-            }
-        }
+        flush = tangent_flush_vertices(b, sel);
     }
     for &e in sel {
         let ed = b.edge(e);
@@ -1304,6 +1335,15 @@ fn blend_edge_hint(
             m0 = 0.0;
         }
         if flush_end(ed.v1, dir) || junc.flush.iter().any(|&q| near(q, p1, p0)) {
+            m1 = 0.0;
+        }
+    } else if convex && circ.is_none() && !junc.flush.is_empty() {
+        // chamfer: only the ends where a tangent chain goes on stop flush
+        let near = |q: Vec3, p: Vec3, o: Vec3| (q - p).cross(dir).len() <= 1e-6 && q.dist(p) < q.dist(o);
+        if junc.flush.iter().any(|&q| near(q, p0, p1)) {
+            m0 = 0.0;
+        }
+        if junc.flush.iter().any(|&q| near(q, p1, p0)) {
             m1 = 0.0;
         }
     }

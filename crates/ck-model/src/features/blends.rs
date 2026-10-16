@@ -238,6 +238,7 @@ pub fn exec_chamfer(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Resul
     }
     let sel = select_edges(br, edges)?;
     let sel = if propagates(f) { propagate_tangent(br.body.as_ref().ok_or_else(|| FeatureError::new("missingEdge"))?, sel) } else { sel };
+    let _chain = ck_ops::blend::build::TangentChainGuard::new(propagates(f));
     br.spans.push(Span::leaf(chamfer_label(&f.id, d, sel.len())));
     let body = br.body.as_ref().ok_or_else(|| FeatureError::new("missingEdge"))?;
     let out = ck_ops::blend::build::chamfer(body, &sel, d, &f.id, super::TOL).map_err(blend_error)?;
@@ -286,6 +287,7 @@ fn exec_chamfer_legs(br: &mut Brep, state: &mut RegenState, f: &Feature, edges: 
     } else {
         sel
     };
+    let _chain = ck_ops::blend::build::TangentChainGuard::new(propagates(f));
     if let Some(ff) = &first_face {
         // every pick must border the named face (by the family name, `~k` pieces ignored)
         let base = super::lip::base_id(ff);
