@@ -216,6 +216,9 @@ fn sections_volume_matches_mass_props() {
     assert_eq!(r.get_str("rule"), Some("trapezoid"));
     let r = call(r#"{"type":"sections","tag":"vo"}"#);
     assert_eq!(r.get_arr("areas").unwrap().len(), 21);
+    // exact:false skips massProps
+    let r = call(r#"{"type":"sections","tag":"vo","exact":false}"#);
+    assert!(r.get("volumeError").is_none() && r.get_f64("volume").unwrap() > 0.0);
 }
 
 #[test]

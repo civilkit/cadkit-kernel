@@ -103,7 +103,7 @@ describe('queries live', { skip: !existsSync(wasmPath()) && 'no wasm built' }, (
       // verification requests: 10 x 5 x 2 plate, volume 100
       const st = await s.sections({ axis: 'x', n: 21 });
       assert.equal(st.areas.length, 21);
-      assert.ok(st.volumeError < 1e-6, `volumeError ${st.volumeError}`);
+      assert.ok((st.volumeError ?? 1) < 1e-6, `volumeError ${st.volumeError}`);
       assert.ok(Math.abs(st.areas[10] - 10) < 1e-6);
       const sec = await s.section({ origin: [5, 2.5, 0], normal: [1, 0, 0] });
       assert.ok(Math.abs(sec.area - 10) < 1e-6);
@@ -113,10 +113,13 @@ describe('queries live', { skip: !existsSync(wasmPath()) && 'no wasm built' }, (
       const empty = await s.section({ origin: [500, 0, 0], normal: [1, 0, 0] });
       assert.equal(empty.loops.length, 0);
       assert.equal(empty.area, 0);
-      const pr = await s.probe({ points: [[5, 2.5, -1], [50, 2.5, 0]], rays: [{ origin: [-5, 2.5, -1], dir: [1, 0, 0] }] });
-      assert.equal(pr.points?.[0].inside, true);
-      assert.ok((pr.points?.[0].distance ?? 0) < 0);
-      assert.equal(pr.points?.[1].inside, false);
+      // the plate extrudes to one side of the sketch plane: exactly one of the two mirror points is inside
+      const pr = await s.probe({ points: [[5, 2.5, 1], [5, 2.5, -1], [50, 2.5, 0]], rays: [{ origin: [5, 2.5, -10], dir: [0, 0, 1] }] });
+      const ins = [pr.points?.[0].inside, pr.points?.[1].inside];
+      assert.equal(ins.filter((x) => x === true).length, 1, JSON.stringify(ins));
+      const dIn = pr.points?.[ins[0] === true ? 0 : 1].distance ?? 0;
+      assert.ok(Math.abs(dIn + 1) < 1e-6, `distance ${dIn}`);
+      assert.equal(pr.points?.[2].inside, false);
       assert.equal(pr.rays?.[0].hits.length, 2);
       assert.equal(pr.rays?.[0].hits[0].entering, true);
       // STEP round-trip through a fresh tag
