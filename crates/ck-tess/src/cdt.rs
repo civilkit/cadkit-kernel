@@ -769,6 +769,11 @@ impl Cdt {
         }
     }
 
+    /// Debug: every live triangle that does not touch the super triangle.
+    pub fn all_tris_dbg(&self) -> Vec<(u32, [u32; 3])> {
+        self.tris.iter().enumerate().filter(|(_, t)| t.alive && t.v.iter().all(|&v| v >= 3)).map(|(i, t)| (i as u32, t.v)).collect()
+    }
+
     /// Live triangles with `region == INSIDE`, as vertex index triples (super vertices excluded, indices are into `pts`).
     pub fn inside_tris(&self) -> Vec<(u32, [u32; 3])> {
         let mut out = vec![];

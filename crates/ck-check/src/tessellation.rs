@@ -77,6 +77,11 @@ pub fn open_mesh_edges_tol(positions: &[f32], tri_face: &[i32], q: f64, crack: f
         .filter(|(_, u)| u.0 == 1)
         .map(|(k, u)| (u.1, reps[k.0 as usize], reps[k.1 as usize]))
         .collect();
+    if crack > 0.0 && std::env::var("CK_OPEN_DBG").map_or(false, |v| v == "2") {
+        for (f, a, b) in &open_edges {
+            eprintln!("RAWOPEN face {f} {:.4?} -> {:.4?}", a, b);
+        }
+    }
     if crack > 0.0 && !open_edges.is_empty() {
         // grid of the open edges (every cell an edge passes through), then test each end against the other faces' edges
         let cs = (crack * 4.0).max(1e-6);

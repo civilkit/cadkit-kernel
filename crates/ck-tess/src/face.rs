@@ -869,7 +869,7 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
     let mut tri = cdt::triangulate(&cpts, &b.segs)?;
     if std::env::var("CK_DBG").map_or(false, |v| v == "1" || v == body.face_id_str(f)) {
         eprintln!("DBG face {:?} {} cu={:?} cv={:?} npts={} nsegs={} inside={} failed={}", f, body.face_id_str(f), cu, cv, b.pts.len(), b.segs.len(), tri.cdt.inside_tris().len(), tri.cdt.failed);
-        for (i, q) in b.pts.iter().enumerate().take(400) { eprintln!("DBGPT {} {:?}", i, q.uv); }
+        for (i, q) in b.pts.iter().enumerate().take(400) { eprintln!("DBGPT {} {:?} P {:.5} {:.5} {:.5}", i, q.uv, q.p.x, q.p.y, q.p.z); }
         eprintln!("DBGSEGS {:?}", b.segs);
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -1053,6 +1053,16 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
     // across a bolt hole of a flange face). On a plane the trim polygon is exact in uv, so drop every triangle whose
     // centroid the segments say is outside.
     let strict_plane = matches!(surf, Surface::Plane { .. }) && !seg_list.is_empty() && tri.cdt.tris.len() * seg_list.len() <= 50_000_000;
+    if std::env::var("CK_DBG_TRI").map_or(false, |v| v == body.face_id_str(f)) {
+        let at: Vec<f64> = std::env::var("CK_DBG_AT").unwrap_or_default().split(',').filter_map(|x| x.parse().ok()).collect();
+        let near = |uv: Vec2| at.len() == 3 && (uv.x - at[0]).abs() < at[2] && (uv.y - at[1]).abs() < at[2];
+        for (ti, v) in tri.cdt.all_tris_dbg() {
+            let uvs: Vec<Vec2> = (0..3).map(|k| from_c(tri.cdt.pts[v[k] as usize])).collect();
+            if uvs.iter().any(|&u| near(u)) {
+                eprintln!("DBGTRI {} inside={} {:?} ids {:?}", ti, tri.cdt.inside_tris().iter().any(|x| x.0 == ti), uvs.iter().map(|u| ((u.x * 1e5).round() / 1e5, (u.y * 1e5).round() / 1e5)).collect::<Vec<_>>(), v);
+            }
+        }
+    }
     for (_, v) in tri.cdt.inside_tris() {
         if strict_plane {
             let c = (0..3).fold(Vec2::ZERO, |acc, k| acc + from_c(tri.cdt.pts[v[k] as usize]) * (1.0 / 3.0));

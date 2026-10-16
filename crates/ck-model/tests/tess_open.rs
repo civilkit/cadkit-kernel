@@ -76,6 +76,15 @@ fn probe_part() {
             eprintln!("PROBE {} {} tris={} area={:.4} exact={:.4} ratio={:.3} {:?}", body.face_id_str(f), sk.split(|c: char| !c.is_alphanumeric()).next().unwrap_or(""), nt[i], area[i], exact, ratio, notes);
         }
     }
+    if let Ok(near) = std::env::var("CK_NEAR") {
+        let c: Vec<f64> = near.split(',').map(|x| x.parse().unwrap()).collect();
+        for (k, &fi) in t.mesh.tri_face.iter().enumerate() {
+            let p = &t.mesh.positions[9 * k..9 * k + 9];
+            if (0..3).any(|j| (0..3).all(|d| (p[3 * j + d] as f64 - c[d]).abs() < 2e-3)) {
+                eprintln!("PROBE NEAR tri {} face {} {:?}", k, body.face_id_str(ids[fi as usize]), p.iter().map(|x| (*x * 1e4).round() / 1e4).collect::<Vec<_>>());
+            }
+        }
+    }
     for i in check_mesh_why(&body, &t.mesh.positions, &t.mesh.tri_face, &t.mesh.failed, &t.mesh.failed_why) {
         eprintln!("PROBE ISSUE {}: {}", i.entity, i.detail);
     }
