@@ -250,18 +250,22 @@ large sample part (125 faces, mostly B-spline), default options, dev machine, me
 
 | request | before this change | now (default options) |
 |---|---|---|
-| `thickness` | 10.2 s (4548 samples) | 3.4 s (1492 samples), min 0.069 mm |
-| `maxDistance` (body to itself) | 10.3 s | 7.6 s, `truncated:false`, `coverage:1` |
-| `symmetry` | 131.6 s | 4.7 s, `truncated:false` |
-| `clearance` `min:3` | 115.9 s | 8.0 s, `truncated:true` (279 pairs refined, 185 found; list is partial) |
-| `closestPoint` (3 points) | 0.24 s | 0.24 s |
-| `angles` (all edges) | 0.52 s | 0.56 s |
-| `distance` point to body | 55 ms | 58 ms |
+| `thickness` | 10.2 s (4548 samples) | 3.3 s (1492 samples), min 0.069 mm |
+| `maxDistance` (body to itself) | 10.3 s | 7.3 s, `truncated:false`, `coverage:1` (4487 samples) |
+| `symmetry` | 131.6 s | 4.6 s, `truncated:false` (2987 samples) |
+| `clearance` `min:3` | 115.9 s | 8.0 s, `truncated:true` (364 pairs refined, 259 found; list is partial) |
+| `closestPoint` (3 points) | 0.24 s | 0.22 s |
+| `angles` (all edges) | 0.52 s | 0.52 s |
+| `distance` point to body | 55 ms | 56 ms |
 
 `maxDistance` and `symmetry` cost about 1.5 ms per sample point (exact B-spline projections), `thickness` about 2 ms
 per ray; the earlier "7 ms" figures were wrong. `clearance` costs about 25 ms per refined face pair on this part, so
 the full set at `min:3` needs a longer `opts.timeMs`.
 
+Sweep (`node tools/measure_check.mjs --sample 30`, 29 parts measured, 1 skipped for regen errors, 117 s, 0 violations): every
+reply has `elapsedMs` / `truncated`; `maxDistance` of a body to itself is under 1e-6 on all of them, and `distance`
+agrees with `probe` to 1e-6. Replies cut by the 8 s budget: `maxDistance` on the pan-head screw, twisted drill and
+flange coupling; `clearance` on the spline hub, knuckle hinge, flange coupling, stepper motor and speedboat dash.
 `tools/measure_check.mjs` runs everything on sample parts (`--sample N` for an evenly spaced subset; no trap, finite
 output, `elapsedMs` / `truncated` present, sane ranges, `distance` agrees with `probe`, timings).
 
