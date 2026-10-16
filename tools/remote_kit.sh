@@ -90,7 +90,7 @@ if [ -n "$WREM" ]; then WASMP="$RUN/kernel.wasm"; else WASMP="$HOME/ci-cad/artif
 [ -s "$WASMP" ] || { echo "no kernel wasm for CK_WASM"; exit 1; }
 echo "CK_WASM: $(if [ -n "$WREM" ]; then echo uploaded; else echo box CI kernel-main artifact; fi)"
 [ "$TSC" = 1 ] && step tsc nice -n 5 npx tsc --noEmit -p tsconfig.json
-step vitest env CK_REBUILD="$K" CK_WASM="$WASMP" nice -n 5 npx vitest run "$@" --exclude '**/node_modules/**' --reporter=default --poolOptions.forks.maxForks=8
+step vitest env CK_REBUILD="$K" CK_WASM="$WASMP" nice -n 5 npx vitest run "$@" --exclude '**/node_modules/**' --reporter=default --poolOptions.forks.maxForks=8 --poolOptions.forks.minForks=1
 echo "box load after: $(cut -d' ' -f1-3 /proc/loadavg)"
 [ "$FAILS" = 0 ]
 RSCRIPT
