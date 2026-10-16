@@ -303,6 +303,22 @@ pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featu
     Ok(in_place_layout(b, &raw, &refs, tol))
 }
 
+thread_local! {
+    /// While set, the ends of selected edges that continue each other tangentially stop flush (see
+    /// [`junction_vertices`]); used by [`super::mixed`] for the chain rim - arc - rim.
+    pub(super) static TANGENT_FLUSH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// [`blend_edges`] with the ends of tangent-continuing selected edges stopping flush (a selection that is
+/// a chain of tangent edges: the rolling ball runs on from one edge into the next, so no tool may reach
+/// past the junction).
+pub fn blend_edges_tangent_chain(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, feature: &str, tol: f64) -> Result<Body, BlendError> {
+    TANGENT_FLUSH.with(|c| c.set(true));
+    let r = blend_edges(b, edges, spec, feature, tol);
+    TANGENT_FLUSH.with(|c| c.set(false));
+    r
+}
+
 /// Per-selection end information gathered on the original body.
 #[derive(Default)]
 struct Junc {
@@ -334,6 +350,32 @@ fn junction_vertices(b: &Body, sel: &[EdgeId], tol: f64) -> Junc {
     };
     let mut out: Vec<(Vec3, bool)> = vec![];
     let mut flush: Vec<Vec3> = vec![];
+    if TANGENT_FLUSH.with(|c| c.get()) {
+        for &e in sel {
+            let ed = b.edge(e);
+            if ed.v0 == ed.v1 {
+                continue;
+            }
+            for v in [ed.v0, ed.v1] {
+                let d = ed.curve.tangent(if ed.v0 == v { ed.t0 } else { ed.t1 });
+                if d.len() < 1e-12 {
+                    continue;
+                }
+                let tangent_mate = sel.iter().copied().filter(|&x| x != e).any(|x| {
+                    let ex = b.edge(x);
+                    if ex.v0 != v && ex.v1 != v {
+                        return false;
+                    }
+                    let dx = ex.curve.tangent(if ex.v0 == v { ex.t0 } else { ex.t1 });
+                    dx.len() > 1e-12 && d.normalize().cross(dx.normalize()).len() < 1e-6
+                });
+                let p = b.vertex(v).p;
+                if tangent_mate && !flush.iter().any(|q| q.dist(p) < 1e-9) {
+                    flush.push(p);
+                }
+            }
+        }
+    }
     for &e in sel {
         let ed = b.edge(e);
         if matches!(ed.curve, Curve::Line { .. }) {
@@ -1271,7 +1313,7 @@ fn blend_edge_hint(
                 // an end that runs on into another arc of the same circle (a
                 // split ring) stops flush: that arc is cut by its own tool
                 let ends = [p0, ed.curve.eval(ed.t0.max(ed.t1))];
-                let flush = |q: Vec3| ext && (continues_circle(b, e, q, c, axis, rad) || meets_own_blend(b, e, q, feature, tol));
+                let flush = |q: Vec3| (ext && (continues_circle(b, e, q, c, axis, rad) || meets_own_blend(b, e, q, feature, tol))) || junc.flush.iter().any(|f| f.dist(q) < 1e-6 * (1.0 + rad));
                 let (m0, m1) = (if flush(ends[0]) { 0.0 } else { m }, if flush(ends[1]) { 0.0 } else { m });
                 if span + m0 + m1 >= TAU { (0.0, TAU) } else { (-m0, span + m1) }
             };

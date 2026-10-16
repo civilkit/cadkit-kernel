@@ -499,7 +499,13 @@ pub fn exec_fillet(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
             return Ok(());
         }
     }
-    let out = ck_ops::blend::build::blend_edges(body, &sel, ck_ops::blend::build::Spec::Fillet(r, profile), &f.id, super::TOL).map_err(blend_error)?;
+    let spec = ck_ops::blend::build::Spec::Fillet(r, profile);
+    let out = if propagates(f) {
+        ck_ops::blend::build::blend_edges_tangent_chain(body, &sel, spec, &f.id, super::TOL)
+    } else {
+        ck_ops::blend::build::blend_edges(body, &sel, spec, &f.id, super::TOL)
+    }
+    .map_err(blend_error)?;
     br.body = Some(out);
     Ok(())
 }

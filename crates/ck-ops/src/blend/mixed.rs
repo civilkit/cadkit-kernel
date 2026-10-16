@@ -80,7 +80,8 @@ pub fn fillet_mixed(b: &Body, edges: &[(String, String, Vec3)], r: f64, feature:
     if tops.is_empty() {
         return None;
     }
-    Some(run(b, edges, &wall, &tops, r, feature, tol))
+    // a failure of the two-stage build is not final: the ordinary builder may still manage the selection
+    run(b, edges, &wall, &tops, r, feature, tol).ok().map(Ok)
 }
 
 fn run(b: &Body, edges: &[(String, String, Vec3)], wall: &[bool], tops: &[(usize, FaceId)], r: f64, feature: &str, tol: f64) -> Result<Body, BlendError> {
@@ -113,7 +114,7 @@ fn run(b: &Body, edges: &[(String, String, Vec3)], wall: &[bool], tops: &[(usize
         b_idx.push(next);
         next += 1;
     }
-    let mut out = blend_edges(&body1, &sel_b, spec, feature, tol)?;
+    let mut out = super::build::blend_edges_tangent_chain(&body1, &sel_b, spec, feature, tol)?;
     // blend names follow the selection: stage A's `B<j>` is pick `a_idx[j]`, stage B's `B<j>` is `b_idx[j]`
     let renames: Vec<(usize, u32)> = out
         .face_ids()
