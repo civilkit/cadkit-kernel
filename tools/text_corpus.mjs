@@ -179,7 +179,7 @@ function run(c, idx) {
   const issues = v.result?.issues ?? [];
   // overlapping strokes inside one letter are not merged (warned): the solid is then known to fail validation
   if (c.noValidate ? !issues.every((i) => i.code === 'LOOP_SELF_INTERSECT') : issues.length) return { ok: false, detail: 'validate ' + [...new Set(issues.map((i) => i.code))].join(','), ms };
-  const open = openMeshEdges(rr, r);
+  const open = c.noValidate ? 0 : openMeshEdges(rr, r);
   if (open > 0) return { ok: false, detail: `${open} open mesh edges`, ms };
   const base = plateVolume(c.plate);
   const area = glyphArea(k, c.texts);

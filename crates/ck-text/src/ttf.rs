@@ -225,13 +225,21 @@ impl Font {
                 let starts = ends + sc * 2 + 2;
                 let deltas = starts + sc * 2;
                 let ranges = deltas + sc * 2;
+                // segments are sorted by end code: the first one that ends at or after cp
+                let (mut lo, mut hi) = (0usize, sc);
+                while lo < hi {
+                    let mid = (lo + hi) / 2;
+                    if u16_at(d, ends + mid * 2)? as u32 >= cp {
+                        hi = mid;
+                    } else {
+                        lo = mid + 1;
+                    }
+                }
                 let mut found = None;
-                for s in 0..sc {
-                    if cp <= u16_at(d, ends + s * 2)? as u32 {
-                        let start = u16_at(d, starts + s * 2)? as u32;
-                        if cp < start {
-                            break;
-                        }
+                if lo < sc {
+                    let s = lo;
+                    let start = u16_at(d, starts + s * 2)? as u32;
+                    if cp >= start {
                         let delta = u16_at(d, deltas + s * 2)?;
                         let ro = u16_at(d, ranges + s * 2)? as usize;
                         let g = if ro == 0 {
@@ -246,7 +254,6 @@ impl Font {
                             }
                         };
                         found = Some(g);
-                        break;
                     }
                 }
                 found?
@@ -307,7 +314,8 @@ impl Font {
         for (a, b) in ranges {
             for cp in a..=b {
                 if let Some(c) = char::from_u32(cp) {
-                    if self.glyph_index(c).is_some() {
+                    // cmap segments are ascending; a damaged one that is not just loses the out-of-order characters
+                    if out.last().map_or(true, |&l| c > l) && self.glyph_index(c).is_some() {
                         out.push(c);
                     }
                 }
@@ -316,8 +324,6 @@ impl Font {
                 break;
             }
         }
-        out.sort_unstable();
-        out.dedup();
         out
     }
 
@@ -515,19 +521,19 @@ impl Font {
         let mut want: Vec<(char, u16)> = vec![];
         for &c in chars.iter().chain(&['H']) {
             if let Some(g) = self.glyph_index(c) {
-                if !want.iter().any(|w| w.0 == c) {
-                    want.push((c, g));
+                let at = want.partition_point(|w| w.0 < c);
+                if want.get(at).map_or(true, |w| w.0 != c) {
+                    want.insert(at, (c, g));
                 }
             }
         }
-        want.sort_by_key(|w| w.0);
         let mut gids: Vec<u16> = vec![0];
         for w in &want {
-            if !gids.contains(&w.1) {
-                gids.push(w.1);
+            let at = 1 + gids[1..].partition_point(|&g| g < w.1);
+            if gids.get(at) != Some(&w.1) {
+                gids.insert(at, w.1);
             }
         }
-        gids[1..].sort_unstable();
         let n = gids.len();
         let (mut glyf, mut loca, mut hmtx) = (vec![], vec![0u8; 0], vec![]);
         let (mut max_pts, mut max_cont) = (0usize, 0usize);
@@ -636,7 +642,14 @@ impl Font {
                 tabs.push((*t, r));
             }
         }
-        tabs.sort_by_key(|t| t.0);
+        // directory order: ascending tags (ten entries)
+        for i in 1..tabs.len() {
+            let mut j = i;
+            while j > 0 && tabs[j].0 < tabs[j - 1].0 {
+                tabs.swap(j, j - 1);
+                j -= 1;
+            }
+        }
         Ok(write_sfnt(tabs))
     }
 }
@@ -644,9 +657,7 @@ impl Font {
 fn cmap_format4(map: &[(u32, u16)]) -> Vec<u8> {
     // one segment per run of consecutive characters with consecutive glyphs (idDelta), plus the 0xFFFF sentinel
     let mut segs: Vec<(u16, u16, u16)> = vec![];
-    let mut m = map.to_vec();
-    m.sort_unstable();
-    for (c, g) in m {
+    for &(c, g) in map {
         let c = c as u16;
         match segs.last_mut() {
             Some(s) if s.1.wrapping_add(1) == c && c != 0 && (g.wrapping_sub(c) == s.2) => s.1 = c,
@@ -687,9 +698,7 @@ fn cmap_format4(map: &[(u32, u16)]) -> Vec<u8> {
 
 fn cmap_format12(map: &[(u32, u16)]) -> Vec<u8> {
     let mut groups: Vec<(u32, u32, u32)> = vec![];
-    let mut m = map.to_vec();
-    m.sort_unstable();
-    for (c, g) in m {
+    for &(c, g) in map {
         match groups.last_mut() {
             Some(s) if s.1 + 1 == c && s.2 + (s.1 - s.0) + 1 == g as u32 => s.1 = c,
             _ => groups.push((c, c, g as u32)),
