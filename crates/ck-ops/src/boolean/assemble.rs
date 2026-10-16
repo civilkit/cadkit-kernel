@@ -739,11 +739,13 @@ pub fn select_with(
             }
             // only when it changes something: a seam edge of the family shared by two different fragments (it would be
             // cancelled otherwise, leaving the band without a seam)
-            let shared = best.1.iter().any(|&e| {
+            let across = |e: usize| {
                 let m0 = tagged.iter().find(|x| x.1 == (e, false)).map(|x| x.0);
                 let m1 = tagged.iter().find(|x| x.1 == (e, true)).map(|x| x.0);
                 matches!((m0, m1), (Some(a), Some(b)) if a != b)
-            });
+            };
+            // ... and only when the lead face's own seam is one of those cancelled edges (otherwise the ordinary path keeps it)
+            let shared = best.1.iter().any(|&e| across(e)) && lead_bound.iter().any(|&e| across(e));
             if shared && best.1 != lead_bound {
                 seam_set = best.1;
                 seam_face = Some(best.2);
