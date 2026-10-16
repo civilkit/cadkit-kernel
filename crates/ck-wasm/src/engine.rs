@@ -636,7 +636,13 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
             let tol = cx.msg.get_f64("tol").unwrap_or(1e-6);
             let cap = cx.msg.get_f64("healTolerance").unwrap_or(ck_check::DEFAULT_TOL_CAP);
             let body = &snapshot(cx)?.body;
-            let iss = ck_check::validate_cap(body, tol, cap);
+            let mut iss = ck_check::validate_cap(body, tol, cap);
+            // an independent witness that the B-rep claim holds: the display mesh of a valid solid is watertight (only in
+            // this request, never in regen; `mesh:false` skips it)
+            if cx.msg.get_bool("mesh") != Some(false) {
+                let mesh = ck_tess::mesh::tessellate_memo(body).mesh;
+                iss.extend(ck_check::tessellation::check_mesh(body, &mesh.positions, &mesh.tri_face, &mesh.failed));
+            }
             let arr = iss
                 .iter()
                 .map(|i| Obj::new().put("code", i.code).put("entity", i.entity.as_str()).put("detail", i.detail.as_str()).build())

@@ -6,6 +6,7 @@ mod edge;
 pub use edge::{face_deviation, vertex_deviation};
 mod shell;
 mod solid;
+pub mod tessellation;
 mod wire;
 
 use ck_topo::body::{Body, EdgeId, FaceId};

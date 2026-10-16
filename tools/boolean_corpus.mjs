@@ -193,6 +193,21 @@ C('countersunk hole (cone ends on the top face)', 'coaxial', [add(bx(-20, -20, 2
 C('three holes tangent to each other in a row, cut', 'tangent', [add(bx(0, 0, 18, 12, 0, 10)), cut(cy(3, 6, 3, -1, 11)), cut(cy(9, 6, 3, -1, 11)), cut(cy(15, 6, 3, -1, 11))], 18 * 12 * 10 - 3 * cylV(3, 10), {});
 C('slot whose side is tangent to a hole, cut', 'tangent', [add(bx(0, 0, 30, 20, 0, 10)), cut(cy(10, 10, 3, -1, 11)), cut(bx(13, 0, 20, 20, -1, 11))], 30 * 20 * 10 - cylV(3, 10) - 7 * 20 * 10, {});
 
+// --- re-drilled hole after a pad was fused under it (matx-corner-bug): the second cut coincides with the first hole's wall
+const rd = (r, name, steps, want, o = {}) => C(name, 'redrill', steps, want, { meshClosed: true, ...o });
+const plate = add(bx(0, 0, 40, 40, 0, 4)), pad = add(bx(5, 5, 30, 30, -3, 0));
+rd(3.15, 'redrill A: plate, hole, pad under it, same drill again (ends on plate top)', [plate, cut(cy(10, 10, 3.15, -1, 5)), pad, cut(cy(10, 10, 3.15, -6, 4))], 1600 * 4 + 625 * 3 - cylV(3.15, 7));
+rd(3.15, 'redrill B: plate, pad, one drill (control)', [plate, pad, cut(cy(10, 10, 3.15, -6, 4))], 1600 * 4 + 625 * 3 - cylV(3.15, 7));
+rd(3.15, 'redrill C: plate, hole, pad, no second drill (control)', [plate, cut(cy(10, 10, 3.15, -1, 5)), pad], 1600 * 4 + 625 * 3 - cylV(3.15, 4));
+rd(3.1, 'redrill D: as A, second drill r=3.1', [plate, cut(cy(10, 10, 3.15, -1, 5)), pad, cut(cy(10, 10, 3.1, -6, 4))], 1600 * 4 + 625 * 3 - cylV(3.15, 4) - cylV(3.1, 3));
+rd(0, 'redrill: second drill passes the plate top (-6..6)', [plate, cut(cy(10, 10, 3.15, -1, 5)), pad, cut(cy(10, 10, 3.15, -6, 6))], 1600 * 4 + 625 * 3 - cylV(3.15, 7));
+rd(0, 'redrill: second drill of a larger radius', [plate, cut(cy(10, 10, 3.15, -1, 5)), pad, cut(cy(10, 10, 4, -6, 6))], 1600 * 4 + 625 * 3 - cylV(4, 7));
+rd(0, 'redrill: second drill of a smaller radius (0.5)', [plate, cut(cy(10, 10, 3.15, -1, 5)), pad, cut(cy(10, 10, 2.65, -6, 6))], 1600 * 4 + 625 * 3 - cylV(3.15, 4) - cylV(2.65, 3));
+rd(0, 'redrill: coaxial blind hole re-drilled after the pad (pad only)', [plate, cut(cy(10, 10, 3.15, 1, 5)), pad, cut(cy(10, 10, 3.15, -2, 4))], 1600 * 4 + 625 * 3 - cylV(3.15, 6));
+rd(0, 'redrill: blind hole re-drilled, same blind depth', [plate, cut(cy(10, 10, 3.15, 1, 5)), pad, cut(cy(10, 10, 3.15, 1, 4))], 1600 * 4 + 625 * 3 - cylV(3.15, 3), { noEffectOk: true });
+rd(0, 'redrill: boss re-cut (cylinder fused onto the plate, then cut by the same cylinder)', [plate, add(cy(30, 30, 3.15, 4, 9)), cut(cy(30, 30, 3.15, 3, 9))], 1600 * 4 - cylV(3.15, 1));
+rd(0, 'redrill: boss on a plate re-cut after a pad', [plate, add(cy(30, 30, 3.15, 4, 9)), pad, cut(cy(30, 30, 3.15, 4, 9))], 1600 * 4 + 625 * 3);
+
 // --- body-level (combine) cases; unsupported (and not counted) on a wasm without the feature
 
 
@@ -231,13 +246,31 @@ function rq(k, msg) {
   try { return JSON.parse(r.json); } catch { return { trap: 'unparsable reply' }; }
 }
 
+// mesh edges used by exactly one triangle in the regen display mesh (0 for a watertight tessellation); -1 when there is no mesh
+function openMeshEdges(rr, r) {
+  const mesh = r.result?.body?.mesh;
+  if (!mesh || !rr.bytes) return -1;
+  const jl = new DataView(rr.bytes.buffer, rr.bytes.byteOffset).getUint32(0, true);
+  const base = (4 + jl + 7) & ~7;
+  const v = mesh.positions ?? mesh.pos;
+  const pos = new Float32Array(rr.bytes.buffer.slice(rr.bytes.byteOffset + base + v.offset, rr.bytes.byteOffset + base + v.offset + v.len * 4));
+  const key = (i) => [0, 1, 2].map((q) => Math.round(pos[i * 3 + q] / 1e-4)).join(',');
+  const uses = new Map();
+  for (let t = 0; t < pos.length / 9; t++) {
+    const vs = [3 * t, 3 * t + 1, 3 * t + 2].map(key);
+    for (let e = 0; e < 3; e++) { const a = vs[e], b = vs[(e + 1) % 3]; if (a === b) continue; const kk = a < b ? a + '|' + b : b + '|' + a; uses.set(kk, (uses.get(kk) ?? 0) + 1); }
+  }
+  return [...uses.values()].filter((x) => x === 1).length;
+}
+
 function run(c) {
   if (TOL && c.gap && c.gap <= TOL * 1.0001) c = { ...c, noEffectOk: true, emptyOk: true }; // a gap within the fuzzy value is coincident by definition
   const k = new Kernel(mod);
   const part = c.part ?? { format: 'ck-part', version: 1, features: features(c.steps) };
   if (arg('--dump') && c.name.includes(arg('--dump'))) writeFileSync(arg('--dumpto') ?? '/dev/stdout', JSON.stringify(part));
   const t0 = Date.now();
-  const r = rq(k, { type: 'regen', tag: 'main', part });
+  const rr = k.request(JSON.stringify({ id: 1, msg: { type: 'regen', tag: 'main', part } }));
+  let r; if (rr.trap) r = { trap: rr.trap }; else { try { r = JSON.parse(rr.json); } catch { r = { trap: 'unparsable reply' }; } }
   const ms = Date.now() - t0;
   if (r.trap) return { cls: 'trap', detail: r.trap, ms };
   const errs = (r.result?.errors ?? []).map(([id, e]) => ({ id, code: e.code, ...e }));
@@ -267,6 +300,7 @@ function run(c) {
   const slack = (c.gap ? c.gap * 400 : 0) + ((TOL || AUTO) ? (TOL || 1e-3) * 500 : 0);
   if (Math.abs(vol - c.want) > tolV + slack) return { cls: 'wrongVolume', detail: `${vol.toPrecision(9)} want ${c.want.toPrecision(9)} (${((vol - c.want) / c.want).toExponential(1)})`, ms };
   if (issues.length) return { cls: 'invalid', detail: [...new Set(issues.map((i) => i.code))].join(','), ms };
+  if (c.meshClosed) { const o = openMeshEdges(rr, r); if (o !== 0) return { cls: 'openMesh', detail: `${o} open mesh edges (vol ${vol.toPrecision(9)})`, ms }; }
   const lumps = m.result?.bodies?.length ?? null;
   if (c.lumps != null && lumps != null && lumps !== c.lumps && !(c.gap && lumps >= 1)) return { cls: 'wrongLumps', detail: `${lumps} want ${c.lumps}`, ms };
   return { cls: sawNoEffect ? 'okNoEffect' : 'ok', detail: vol.toPrecision(9) + (warns.includes('booleanFuzzy') ? ' fuzzy' : ''), ms };

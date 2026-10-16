@@ -697,6 +697,68 @@ pub fn select_with(
         // connected (a ribbon wrapping a cylinder cut by a helical groove)
         let same_face = members.iter().all(|&m| kept[m].0.af == kept[lead].0.af);
         let periodic = af.surface.periods().0.is_some();
+        // Fragments of DIFFERENT faces of one periodic surface (a wall re-cut by a coincident cylinder: the hole wall of the
+        // plate and the drill's wall, whose seams sit at different angles) fuse into one face that needs ONE seam running
+        // the whole height of the merged region. The seam of a single member face covers only its own part (the drill's
+        // seam spans the pad, the hole wall's spans the plate): take the member face whose seam edges cover the most
+        // length, keep them (both coedges) and let the walk use that face's surface, so the fused band is closed by it.
+        // seam families: per member face, its own boundary seam (the coedges its boundary walks twice: where relocate_seams
+        // put it) and the parametric seam of its surface (u = 0); the first family of maximal length wins
+        let mut seam_set: Vec<usize> = vec![];
+        let mut seam_face: Option<usize> = None;
+        if periodic && !same_face {
+            let mut faces_of: Vec<usize> = vec![kept[lead].0.af];
+            faces_of.extend(members.iter().map(|&m| kept[m].0.af));
+            faces_of.dedup();
+            let mut all: Vec<usize> = tagged.iter().map(|x| x.1 .0).collect();
+            all.sort_unstable();
+            all.dedup();
+            let mut best: (f64, Vec<usize>, usize) = (0.0, vec![], kept[lead].0.af);
+            let mut lead_bound: Vec<usize> = vec![];
+            let mut seen_faces: Vec<usize> = vec![];
+            for &fa in &faces_of {
+                if seen_faces.contains(&fa) {
+                    continue;
+                }
+                seen_faces.push(fa);
+                for param in [false, true] {
+                    let es: Vec<usize> = all
+                        .iter()
+                        .copied()
+                        .filter(|&e| if param { is_seam_edge(arr, &arr.faces[fa].surface, e) } else { bound_twice(&arr.faces[fa], e) })
+                        .collect();
+                    let cov: f64 = es.iter().map(|&e| (arr.verts[arr.edges[e].v1] - arr.verts[arr.edges[e].v0]).len()).sum();
+                    super::bool_dbg!("  seam family of face {fa} (param {param}): {cov:.3} over {es:?}");
+                    if fa == kept[lead].0.af && !param {
+                        lead_bound = es.clone();
+                    }
+                    if cov > best.0 * (1.0 + 1e-9) + 1e-12 {
+                        best = (cov, es, fa);
+                    }
+                }
+            }
+            // only when it changes something: a seam edge of the family shared by two different fragments (it would be
+            // cancelled otherwise, leaving the band without a seam)
+            let shared = best.1.iter().any(|&e| {
+                let m0 = tagged.iter().find(|x| x.1 == (e, false)).map(|x| x.0);
+                let m1 = tagged.iter().find(|x| x.1 == (e, true)).map(|x| x.0);
+                matches!((m0, m1), (Some(a), Some(b)) if a != b)
+            });
+            if shared && best.1 != lead_bound {
+                seam_set = best.1;
+                seam_face = Some(best.2);
+            }
+        }
+        let seam_of = |_fa: usize, e: usize| seam_set.contains(&e);
+        let sense = match seam_face {
+            Some(fa) if fa != kept[lead].0.af => arr.faces[fa].sense ^ members.iter().find(|&&m| kept[m].0.af == fa).map_or(kept[lead].1, |&m| kept[m].1),
+            _ => sense,
+        };
+        let lead_name = af.name.clone();
+        let af = match seam_face {
+            Some(fa) => &arr.faces[fa],
+            None => af,
+        };
         let mut comp: Vec<usize> = (0..members.len()).collect();
         let mut cancelled: Vec<usize> = vec![];
         // Seam edges are decided after every other shared edge: whether the
@@ -717,6 +779,9 @@ pub fn select_with(
                 if mi == mj && periodic {
                     continue;
                 }
+                if seam_face.is_some_and(|fa| seam_of(fa, h.0)) {
+                    continue; // the chosen seam of the fused face
+                }
                 let seam = same_face && periodic && (is_seam_edge(arr, &af.surface, h.0) || bound_twice(af, h.0));
                 if seam != seam_pass {
                     continue;
@@ -731,6 +796,19 @@ pub fn select_with(
         }
         let hes: Vec<He> = tagged.iter().map(|x| x.1).filter(|h| !cancelled.contains(&h.0)).collect();
         let cycles = walk(arr, &af.surface, sense, &hes);
+        super::bool_dbg!(
+            "merged face {}: members {:?} (faces {:?}), cancelled edges {:?}, remaining {:?}, {} cycles",
+            af.name.id(),
+            members,
+            members.iter().map(|&m| kept[m].0.af).collect::<Vec<_>>(),
+            cancelled,
+            hes,
+            cycles.len()
+        );
+        for h in &hes {
+            let (a, b) = (arr.verts[he_start(arr, *h)], arr.verts[he_end(arr, *h)]);
+            super::bool_dbg!("  he {:?}: ({:.3},{:.3},{:.3}) -> ({:.3},{:.3},{:.3}) member {}", h, a.x, a.y, a.z, b.x, b.y, b.z, tagged.iter().find(|x| x.1 == *h).map_or(99, |x| x.0));
+        }
         let walk_items: Vec<_> = members
             .iter()
             .map(|&m| {
@@ -751,7 +829,7 @@ pub fn select_with(
             out.push(OutFace {
                 surface: af.surface.clone(),
                 sense,
-                name: af.name.clone(),
+                name: lead_name.clone(),
                 loops,
                 group: grp,
                 key: (grp, kept[lead].0.af, ord + k),
