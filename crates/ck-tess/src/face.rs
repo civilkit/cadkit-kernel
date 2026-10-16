@@ -775,9 +775,16 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
                 for &pv0 in &poles {
                     iso(&mut b, Vec2::new(c, pv0), Vec2::new(c + p, pv0), Vec2::ZERO);
                 }
+                // The pole line is a boundary of the strip: the parity test (a ray towards -v) must count it, or a pole
+                // below the loop (a sphere cap whose pole is at v = -pi/2) leaves the strip's side lines out.
+                let mut with_poles = seg_list.clone();
+                for &pv0 in &poles {
+                    let pt = |x: f64| BPt { uv: Vec2::new(x, pv0), p: Vec3::ZERO, virt: false };
+                    with_poles.push((pt(c), pt(c + p)));
+                }
                 for w in on.windows(2) {
                     let vm = 0.5 * (w[0] + w[1]);
-                    if inside_parity(&seg_list, Vec2::new(c + 0.5 * p * 1e-6, vm)) {
+                    if inside_parity(&with_poles, Vec2::new(c + 0.5 * p * 1e-6, vm)) {
                         iso(&mut b, Vec2::new(c, w[0]), Vec2::new(c, w[1]), Vec2::ZERO);
                         iso(&mut b, Vec2::new(c + p, w[0]), Vec2::new(c + p, w[1]), Vec2::new(p, 0.0));
                     }

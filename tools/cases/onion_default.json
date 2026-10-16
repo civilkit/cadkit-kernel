@@ -1,0 +1,67 @@
+{
+ "format": "ck-part",
+ "version": 1,
+ "name": "onion",
+ "features": [
+  {
+   "type": "sketch",
+   "id": "F1",
+   "plane": {
+    "kind": "std",
+    "id": "front"
+   },
+   "points": [
+    {
+     "id": "c",
+     "x": 0,
+     "y": 0
+    },
+    {
+     "id": "s",
+     "x": 0,
+     "y": -15
+    },
+    {
+     "id": "t",
+     "x": 10.606601717798213,
+     "y": 10.606601717798211
+    },
+    {
+     "id": "k",
+     "x": 0,
+     "y": 21.213203435596427
+    }
+   ],
+   "entities": [
+    {
+     "type": "arc",
+     "id": "e1",
+     "c": "c",
+     "p1": "s",
+     "p2": "t"
+    },
+    {
+     "type": "line",
+     "id": "e2",
+     "p1": "t",
+     "p2": "k"
+    },
+    {
+     "type": "line",
+     "id": "ax",
+     "p1": "k",
+     "p2": "s"
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "revolve",
+   "id": "F2",
+   "op": "add",
+   "sketch": "F1",
+   "axis": "ax",
+   "angle": 360
+  }
+ ]
+}
