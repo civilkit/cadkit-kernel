@@ -210,6 +210,26 @@ fn unpole(a: Body, other: &Body) -> Body {
     let f = a.face_ids().next().unwrap();
     let Surface::Sphere { frame, r } = &a.face(f).surface else { return a };
     let (o, z, r) = (frame.o, frame.z, *r);
+    // Two whole spheres meet in a circle in the plane normal to the line of their centres. Turned so its axis lies
+    // along that line, each sphere sees the circle as a latitude circle (it crosses the seam once, the case the
+    // face walk handles); with the axis across the line the circle crosses the seam twice, the seam splits into
+    // three pieces inside the cap and the cap's two halves are walked as separate cycles.
+    if other.num_faces() == 1 {
+        let g = other.face_ids().next().unwrap();
+        if let Surface::Sphere { frame: fo, .. } = &other.face(g).surface {
+            let d = fo.o - o;
+            if d.len() > 1e-9 {
+                let n = d.normalize();
+                let ax = z.cross(n);
+                if ax.len() > 1e-9 {
+                    let mut c = a.clone();
+                    c.transform(&Xform::rotation(o, ax.normalize(), z.dot(n).clamp(-1.0, 1.0).acos()));
+                    return c;
+                }
+                return a;
+            }
+        }
+    }
     let near = |p: Vec3| other.face_ids().any(|g| other.face(g).surface.distance(p) < 1e-3 * r.max(1.0));
     if !near(o + z * r) && !near(o - z * r) {
         return a;

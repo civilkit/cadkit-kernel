@@ -1064,6 +1064,15 @@ fn face_key(b: &Body, f: FaceId) -> (u64, f64) {
         h
     };
     let (fw, rv) = (hash(false), hash(true));
+    // a face bounded only by seam twins (a whole sphere): the loop reads the same flipped or not, the orientation
+    // lives in the pcurve placement, which follows the sense: the sense is part of the key
+    let seam_only = face.loops.iter().all(|&l| {
+        let cs = &b.lp(l).coedges;
+        !cs.is_empty() && cs.iter().all(|&c| cs.iter().any(|&d| b.coedge(d).edge == b.coedge(c).edge && b.coedge(d).rev != b.coedge(c).rev))
+    });
+    if seam_only {
+        return (if face.sense { fw.min(rv) } else { fw.min(rv) ^ 0x9e37_79b9_7f4a_7c15 }, 1.0);
+    }
     if fw <= rv {
         (fw, 1.0)
     } else {

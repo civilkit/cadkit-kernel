@@ -21,6 +21,7 @@ const PI = Math.PI;
 let n = 0;
 const bx = (u0, v0, u1, v1, w0, w1, pl = 'front') => ({ k: 'box', u0, v0, u1, v1, w0, w1, pl });
 const cy = (cu, cv, r, w0, w1, pl = 'front') => ({ k: 'cyl', cu, cv, r, w0, w1, pl });
+const rev = (pts, cz = 0) => ({ k: 'rev', pts, cz });
 const sp = (cx, cyy, cz, r) => ({ k: 'sph', cx, cy: cyy, cz, r });
 const add = (p, tag = null) => ({ op: 'add', p, tag });
 const cut = (p) => ({ op: 'cut', p });
@@ -46,8 +47,8 @@ function features(steps) {
     }
     if (s.tag) ids[s.tag] = `F${n}`;
     const p = s.p;
-    const w0 = p.k === 'sph' ? p.cz : p.w0;
-    const pl = p.k === 'sph' ? 'front' : p.pl;
+    const w0 = p.k === 'sph' || p.k === 'rev' ? p.cz : p.w0;
+    const pl = p.k === 'sph' || p.k === 'rev' ? 'front' : p.pl;
     let plane = { kind: 'std', id: pl };
     if (w0 !== 0) {
       f.push({ type: 'plane', id: `P${n}`, mode: 'offset', base: { kind: 'std', id: pl }, offset: w0 });
@@ -63,6 +64,11 @@ function features(steps) {
     } else if (p.k === 'cyl') {
       f.push({ type: 'sketch', id: sid, plane, points: [{ id: 'c', x: p.cu, y: p.cv }], entities: [{ type: 'circle', id: 'e1', c: 'c', r: p.r }], constraints: [] });
       f.push({ type: 'extrude', id: `F${n}`, op: s.op, sketch: sid, end: 'blind', depth: p.w1 - p.w0, ...(s.op === 'cut' ? { flip: true } : {}), ...(TOL ? { tolerance: TOL } : {}), ...(AUTO ? { autoFuzzy: true } : {}) });
+    } else if (p.k === 'rev') {
+      const points = p.pts.map(([x, y], i) => ({ id: `p${i}`, x, y }));
+      const entities = p.pts.map((_, i) => ({ type: 'line', id: `e${i + 1}`, p1: `p${i}`, p2: `p${(i + 1) % p.pts.length}` }));
+      f.push({ type: 'sketch', id: sid, plane, points, entities, constraints: [] });
+      f.push({ type: 'revolve', id: `F${n}`, op: s.op, sketch: sid, axis: `e${p.pts.length}`, angle: 360, ...(TOL ? { tolerance: TOL } : {}), ...(AUTO ? { autoFuzzy: true } : {}) });
     } else {
       f.push({ type: 'sketch', id: sid, plane,
         points: [{ id: 'c', x: p.cx, y: p.cy }, { id: 'a', x: p.cx, y: p.cy - p.r }, { id: 'b', x: p.cx, y: p.cy + p.r }],
@@ -161,6 +167,26 @@ C('hole centred on a box corner (quarter hole), cut', 'tangent', [add(bx(0, 0, 2
 C('nested tubes sharing the r5 surface (opposite normals), fuse', 'coaxial', [add(cy(0, 0, 10, 0, 10)), cut(cy(0, 0, 5, -1, 11)), add(cy(0, 0, 5, 0, 10)), cut(cy(0, 0, 2, -1, 11))], cylV(10, 10) - cylV(2, 10), { lumps: 1 });
 C('rib of equal height on a plate, flush ends', 'coincident', [add(bx(0, 0, 40, 40, 0, 5)), add(bx(0, 18, 40, 22, 5, 25))], 8000 + 40 * 4 * 20, { lumps: 1 });
 C('bar cut by equal width bar offset along (shared side walls)', 'coincident', [add(bx(0, 0, 40, 10, 0, 10)), cut(bx(-5, 0, 20, 10, 0, 10))], 20 * 100, { lumps: 1 });
+// --- more adversarial families
+C('lying cylinder groove centred on the top face (half cylinder), cut', 'tangent', [add(bx(0, 0, 20, 20, 0, 10)), cut(cy(10, -10, 3, -1, 21, 'top'))], 4000 - cylV(3, 20) / 2, { lumps: 1 });
+C('lying cylinder tangent to top and bottom faces, cut', 'tangent', [add(bx(0, 0, 20, 20, 0, 10)), cut(cy(10, -5, 5, -1, 21, 'top'))], 4000 - cylV(5, 20), {});
+C('hemisphere dome on a box top, fuse', 'tangent', [add(bx(0, 0, 20, 20, 0, 10)), add(sp(10, 10, 10, 5))], 4000 + sphV(5) / 2, { lumps: 1 });
+C('spherical dimple centred on the top face, cut', 'tangent', [add(bx(0, 0, 20, 20, 0, 10)), cut(sp(10, 10, 10, 5))], 4000 - sphV(5) / 2, { lumps: 1 });
+C('frustum on an equal-radius cylinder, fuse', 'coaxial', [add(cy(0, 0, 5, -10, 0, 'top')), add(rev([[0, 0], [5, 0], [2, 10], [0, 10]]))], cylV(5, 10) + PI * 10 / 3 * (25 + 10 + 4), { lumps: 1 });
+C('cylinder tangent to a cylinder at a point (crossed axes), fuse', 'tangent', [add(cy(0, 0, 5, -10, 10)), add(cy(8, 0, 3, -10, 10, 'top'))], cylV(5, 20) + cylV(3, 20), { lumps: 2 });
+C('six stacked boxes, fuse one after the other', 'coincident', [0, 1, 2, 3, 4, 5].map((i) => add(bx(0, 0, 10, 10, 2 * i, 2 * i + 2))), 1200, { lumps: 1 });
+C('cut contained in an existing pocket (floor coplanar)', 'coincident', [add(bx(0, 0, 10, 10, 0, 10)), cut(bx(2, 2, 8, 8, 5, 10)), cut(bx(4, 4, 6, 6, 5, 10))], 1000 - 36 * 5, { noEffectOk: true, lumps: 1 });
+C('boss half over a hole of equal radius, fuse', 'coaxial', [add(bx(-20, -20, 20, 20, 0, 10)), cut(cy(0, 0, 5, -1, 11)), add(cy(5, 0, 5, 10, 20))], 16000 - cylV(5, 10) + cylV(5, 10), { lumps: 1 });
+C('concentric spheres, cut (hollow)', 'coaxial', [add(sp(0, 0, 0, 5)), cut(sp(0, 0, 0, 3))], sphV(5) - sphV(3), {});
+C('concentric spheres, fuse', 'coaxial', [add(sp(0, 0, 0, 5)), add(sp(0, 0, 0, 3))], sphV(5), { lumps: 1, noEffectOk: true });
+C('sphere cut by a cylinder of its own radius (tangent along the equator)', 'tangent', [add(sp(0, 0, 0, 5)), cut(cy(0, 0, 5, -10, 10))], 0, { emptyOk: true });
+C('sphere fused with an equal-radius cylinder across its middle', 'tangent', [add(sp(0, 0, 0, 5)), add(cy(0, 0, 5, -3, 3))], sphV(5) + cylV(5, 6) - 132 * PI, { lumps: 1 });
+C('spherical void strictly inside a box, cut', 'contained', [add(bx(0, 0, 20, 20, 0, 20)), cut(sp(10, 10, 10, 4))], 8000 - sphV(4), { lumps: 1 });
+C('cylindrical void strictly inside a box, cut', 'contained', [add(bx(0, 0, 20, 20, 0, 20)), cut(cy(10, 10, 3, 5, 15))], 8000 - cylV(3, 10), { lumps: 1 });
+C('two overlapping spheres, fuse', 'tangent', [add(sp(0, 0, 0, 5)), add(sp(5, 0, 0, 5))], 2 * sphV(5) - PI * 25 * 25 / 12, { lumps: 1 });
+C('two overlapping spheres, cut', 'tangent', [add(sp(0, 0, 0, 5)), cut(sp(5, 0, 0, 5))], sphV(5) - PI * 25 * 25 / 12, { lumps: 1 });
+C('napkin ring: sphere bored by a cylinder', 'tangent', [add(sp(0, 0, 0, 5)), cut(cy(0, 0, 3, -10, 10))], PI * 512 / 6, { lumps: 1 });
+
 // --- body-level (combine) cases; unsupported (and not counted) on a wasm without the feature
 
 
@@ -221,7 +247,7 @@ function run(c) {
   if (fail) return { cls: 'booleanFailed', detail: `${fail.id} ${JSON.stringify(Object.fromEntries(Object.entries(fail).filter(([k]) => !['id', 'code'].includes(k))))}`, ms };
   if (bad.length) {
     if (c.emptyOk && bad.every((e) => ['nothingToCut', 'emptyResult', 'cutEmpty', 'booleanEmpty'].includes(e.code))) return { cls: 'ok', detail: `empty (${bad[0].code})`, ms };
-    return { cls: `error:${bad.map((e) => e.code).join(',')}`, detail: bad.map((e) => `${e.id}:${e.code}`).join(' '), ms };
+    return { cls: `error:${bad.map((e) => e.code).join(',')}`, detail: bad.map((e) => `${e.id}:${e.code}${e.params && e.code === 'booleanVolumeMismatch' ? ' ' + JSON.stringify({ what: e.params.what, min: e.params.expected_min, max: e.params.expected_max, got: e.params.got }) : ''}`).join(' '), ms };
   }
   if (vol == null || vol === 0) {
     if (c.emptyOk || c.want === 0) return { cls: 'ok', detail: 'empty', ms };
