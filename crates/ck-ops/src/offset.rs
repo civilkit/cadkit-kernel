@@ -159,7 +159,7 @@ fn face_uv_box(src: &Body, f: FaceId) -> Option<((f64, f64), (f64, f64))> {
 
 /// Tensor-product cubic interpolation of a rectangular point grid, returning
 /// the surface and the (averaged chord-length) parameters of the grid lines.
-fn fit_grid(grid: &[Vec<Vec3>]) -> Result<(ck_geom::nurbs::bsurf::BSplineSurface, Vec<f64>, Vec<f64>), OffsetError> {
+pub(crate) fn fit_grid(grid: &[Vec<Vec3>]) -> Result<(ck_geom::nurbs::bsurf::BSplineSurface, Vec<f64>, Vec<f64>), OffsetError> {
     use ck_geom::fit::{averaged_knots, interpolate_with, params, Param};
     let bad = |e: String| OffsetError::new("offsetUnsupported", format!("fit: {e}"));
     let (nu, nv) = (grid.len(), grid[0].len());
@@ -356,21 +356,14 @@ fn fit_offset_surface_inner(s: &Surface, d: f64, uvbox: ((f64, f64), (f64, f64))
         let (pu, pv) = (reach / lu, reach / lv);
         // periodic directions wrap; an unbounded direction (extrusion height) still has to
         // reach `reach` past the face, the 3 % margin of the box is not enough
+        // (towards a pole the pad stops at the apex: the surface does not continue past it)
         if s.periods().0.is_none() {
-            if !pole_side[0] {
-                u0 -= pu;
-            }
-            if !pole_side[1] {
-                u1 += pu;
-            }
+            u0 = if pole_side[0] { (u0 - pu).max(du0) } else { u0 - pu };
+            u1 = if pole_side[1] { (u1 + pu).min(du1) } else { u1 + pu };
         }
         if s.periods().1.is_none() {
-            if !pole_side[2] {
-                v0 -= pv;
-            }
-            if !pole_side[3] {
-                v1 += pv;
-            }
+            v0 = if pole_side[2] { (v0 - pv).max(dv0) } else { v0 - pv };
+            v1 = if pole_side[3] { (v1 + pv).min(dv1) } else { v1 + pv };
         }
     }
     let (per_u, per_v) = s.periods();
@@ -429,6 +422,18 @@ fn fit_offset_surface_inner(s: &Surface, d: f64, uvbox: ((f64, f64), (f64, f64))
         Surface::BSpline(bs) => (Some(bs.knots_u.clone()), Some(bs.knots_v.clone())),
         _ => (None, None),
     };
+    // sample points are kept between refinement rounds (a refined grid reuses every old node and
+    // the span midpoints the deviation was measured at)
+    let mut cache: std::collections::HashMap<(u64, u64), Vec3> = std::collections::HashMap::new();
+    let mut cached = |u: f64, v: f64| -> Result<Vec3, OffsetError> {
+        let key = (u.to_bits(), v.to_bits());
+        if let Some(p) = cache.get(&key) {
+            return Ok(*p);
+        }
+        let p = point(u, v)?;
+        cache.insert(key, p);
+        Ok(p)
+    };
     let mut us = seed(u0, u1, ku.as_deref());
     let mut vs = seed(v0, v1, kv.as_deref());
     let mut last_dev = f64::INFINITY;
@@ -436,7 +441,7 @@ fn fit_offset_surface_inner(s: &Surface, d: f64, uvbox: ((f64, f64), (f64, f64))
         let mut grid = vec![vec![Vec3::ZERO; vs.len()]; us.len()];
         for (i, &u) in us.iter().enumerate() {
             for (j, &v) in vs.iter().enumerate() {
-                grid[i][j] = point(u, v)?;
+                grid[i][j] = cached(u, v)?;
             }
         }
         let (fit, uk, vk) = fit_grid(&grid)?;
@@ -456,7 +461,7 @@ fn fit_offset_surface_inner(s: &Surface, d: f64, uvbox: ((f64, f64), (f64, f64))
                 if at_pole(s.eval(um.clamp(du0, du1), vs[j].clamp(dv0, dv1))) {
                     continue;
                 }
-                let e = point(um, vs[j])?;
+                let e = cached(um, vs[j])?;
                 let hint = (0.5 * (uk[i] + uk[i + 1]), vk[j]);
                 worst = worst.max(fs.closest_point_near(e, hint).2.dist(e));
             }
@@ -478,7 +483,7 @@ fn fit_offset_surface_inner(s: &Surface, d: f64, uvbox: ((f64, f64), (f64, f64))
                 if at_pole(s.eval(us[i].clamp(du0, du1), vm.clamp(dv0, dv1))) {
                     continue;
                 }
-                let e = point(us[i], vm)?;
+                let e = cached(us[i], vm)?;
                 let hint = (uk[i], 0.5 * (vk[j] + vk[j + 1]));
                 worst = worst.max(fs.closest_point_near(e, hint).2.dist(e));
             }

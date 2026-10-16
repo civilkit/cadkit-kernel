@@ -126,39 +126,79 @@ fn blunt_hull_shell() {
     }
 }
 
-/// A hull ended by a point section: the shell is refused with a reason and a way out, both when
-/// the apex stays in the body and when the deck cut leaves the rim a little way short of it.
+/// A hull ended by a point section, the deck cut leaving the rim a little way short of the apex.
+/// Wall volumes of an independent construction (inner offset of the closed hull cut at the deck
+/// line, subtracted from the open hull): 4393.9 at 1.0 and 3684.9 at 0.8.
 #[test]
-fn pointy_hull_shell_is_refused_with_a_hint() {
-    let o = run(&hull(&BOAT, Some(62.0), Some(1.0)));
-    assert_eq!(o.errors.len(), 1, "{:?}", o.errors);
-    assert_eq!(o.errors[0].error.code, "offsetUnsupported");
-    let detail = format!("{:?}", o.errors[0].error.params);
-    assert!(detail.contains("apex") && detail.contains("closed section"), "{detail}");
-    // the apex kept: shell the stern cap
+fn pointy_hull_shell() {
+    for (t, want) in [(1.0, 4393.9), (0.8, 3684.9)] {
+        let (v0, v) = check_shell("pointy", &BOAT, Some(62.0), t);
+        assert!(v0 > 20000.0);
+        assert!((v - want).abs() < 0.01 * want, "t={t}: wall volume {v} against {want}");
+    }
+}
+
+/// The apex kept in the body (the stern cap shelled away): valid, a plausible wall.
+#[test]
+fn pointy_hull_with_its_apex_shells() {
     let mut f = hull(&BOAT, Some(62.0), None);
     let cut = f.find(r#",{"type":"plane","id":"F90""#).unwrap();
     f.truncate(cut);
+    let solid = vol(&run(&f));
     f.push_str(r#",{"type":"shell","id":"F93","faces":["F50.C0"],"thickness":1.0}"#);
     let o = run(&f);
-    assert_eq!(o.errors.len(), 1, "{:?}", o.errors);
-    assert_eq!(o.errors[0].error.code, "offsetUnsupported");
+    assert!(o.errors.is_empty(), "{:?}", o.errors);
+    let iss = ck_check::validate(o.brep.body.as_ref().unwrap(), 1e-6);
+    assert!(iss.is_empty(), "{iss:?}");
+    let wall = vol(&o);
+    eprintln!("pointy hull, apex kept: solid {solid:.1} wall {wall:.1}");
+    assert!(wall > 0.05 * solid && wall < 0.25 * solid, "wall {wall} of {solid}");
 }
 
-/// A cone made by lofting a circle to a point: its shell is refused (pole), with the hint.
+/// A cone made by lofting a circle to a point, its base shelled away: the wall is the cone minus
+/// the inner cone, which closes at an apex t / sin(a) short of the outer one.
 #[test]
-fn cone_loft_shell_is_refused_with_a_hint() {
-    let circle = r#"{"type":"sketch","id":"S0","plane":{"kind":"feature","id":"P0"},"points":[{"id":"c","x":0,"y":0}],"entities":[{"type":"circle","id":"e1","c":"c","r":8}],"constraints":[]}"#;
-    let f = [
-        station_plane("P0", 0.0),
-        circle.to_string(),
-        station_plane("PT", 20.0),
-        point_section("ST", "PT", 0.0),
-        r#"{"type":"loft","id":"F50","op":"add","sketches":["S0","ST"]}"#.to_string(),
-        r#"{"type":"shell","id":"F93","faces":["F50.C0"],"thickness":1.0}"#.to_string(),
-    ]
-    .join(",");
-    let o = run(&f);
+fn cone_loft_shell_is_analytic() {
+    let (r, h) = (8.0f64, 20.0f64);
+    let circle = format!(r#"{{"type":"sketch","id":"S0","plane":{{"kind":"feature","id":"P0"}},"points":[{{"id":"c","x":0,"y":0}}],"entities":[{{"type":"circle","id":"e1","c":"c","r":{r}}}],"constraints":[]}}"#);
+    for t in [1.0f64, 0.6] {
+        let f = [
+            station_plane("P0", 0.0),
+            circle.clone(),
+            station_plane("PT", h),
+            point_section("ST", "PT", 0.0),
+            r#"{"type":"loft","id":"F50","op":"add","sketches":["S0","ST"]}"#.to_string(),
+            format!(r#"{{"type":"shell","id":"F93","faces":["F50.C0"],"thickness":{t}}}"#),
+        ]
+        .join(",");
+        let o = run(&f);
+        assert!(o.errors.is_empty(), "t={t}: {:?}", o.errors);
+        let iss = ck_check::validate(o.brep.body.as_ref().unwrap(), 1e-6);
+        assert!(iss.is_empty(), "t={t}: {iss:?}");
+        let a = (r / h).atan();
+        let (r_in, h_in) = (r - t / a.cos(), h - t / a.sin());
+        let want = std::f64::consts::PI / 3.0 * (r * r * h - r_in * r_in * h_in);
+        let v = vol(&o);
+        eprintln!("cone t={t}: wall {v:.2} analytic {want:.2}");
+        assert!((v - want).abs() < 0.01 * want, "t={t}: wall volume {v} against {want}");
+    }
+}
+
+/// Shell failures that are about the wall being too thick for the shape carry the thickness that
+/// would work.
+#[test]
+fn too_thick_shell_suggests_a_thickness() {
+    let o = run(&hull(&BLUNT, None, Some(6.0)));
     assert_eq!(o.errors.len(), 1, "{:?}", o.errors);
-    assert_eq!(o.errors[0].error.code, "offsetUnsupported");
+    let p = format!("{:?}", o.errors[0].error.params);
+    assert!(p.contains("maxThickness"), "{p}");
+    let max = o.errors[0].error.params.iter().find(|(k, _)| k == "maxThickness").and_then(|(_, v)| match v {
+        ck_json::Json::Num(n) => Some(*n),
+        _ => None,
+    });
+    let max = max.expect("numeric maxThickness");
+    assert!(max > 0.0 && max < 6.0, "{max}");
+    // and that thickness works
+    let ok = run(&hull(&BLUNT, None, Some(max)));
+    assert!(ok.errors.is_empty(), "t={max}: {:?}", ok.errors);
 }

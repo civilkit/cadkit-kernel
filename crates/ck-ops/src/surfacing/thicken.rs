@@ -63,14 +63,16 @@ impl Side {
 pub struct ThickenError {
     pub code: &'static str,
     pub detail: String,
+    /// Why the offset is impossible, in numbers (`maxThickness` is the thickness that would work).
+    pub limit: Option<crate::offset::OffsetLimit>,
 }
 
 impl ThickenError {
     fn code(code: &'static str) -> ThickenError {
-        ThickenError { code, detail: String::new() }
+        ThickenError { code, detail: String::new(), limit: None }
     }
     fn detail(code: &'static str, detail: impl Into<String>) -> ThickenError {
-        ThickenError { code, detail: detail.into() }
+        ThickenError { code, detail: detail.into(), limit: None }
     }
 }
 
@@ -282,6 +284,9 @@ pub fn thicken(sheet: &Body, feature: &str, thickness: f64, side: Side, tol: f64
     let faces: Vec<FaceId> = sheet.face_ids().collect();
     if faces.is_empty() {
         return Err(ThickenError::code("missingReference"));
+    }
+    if faces.iter().any(|&f| !matches!(sheet.face(f).surface, Surface::Plane { .. } | Surface::Cylinder { .. } | Surface::Cone { .. } | Surface::Sphere { .. } | Surface::Torus { .. })) {
+        return freeform::thicken_freeform(sheet, feature, thickness, side, tol);
     }
     let normals: Vec<Vec3> = faces.iter().map(|&f| natural_normal(&sheet.face(f).surface)).collect();
     let rims = sheet_rims(sheet, &faces);
@@ -862,6 +867,8 @@ fn connector(out: &mut Body, l: LoopId, a: Vec3, b: Vec3, rev: bool) {
     };
     out.add_coedge(l, ce, rev, None);
 }
+
+mod freeform;
 
 #[cfg(test)]
 mod tests {
