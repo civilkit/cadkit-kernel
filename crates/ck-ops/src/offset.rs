@@ -272,7 +272,22 @@ fn fit_offset_surface_inner(s: &Surface, d: f64, uvbox: ((f64, f64), (f64, f64))
     if reach > 0.0 {
         let (mid_u, mid_v) = ((0.5 * (u0 + u1)).clamp(du0, du1), (0.5 * (v0 + v1)).clamp(dv0, dv1));
         let sd = s.derivs2(mid_u, mid_v);
-        let (lu, lv) = (sd.du.len().max(1e-9), sd.dv.len().max(1e-9));
+        let (mut lu, mut lv) = (sd.du.len().max(1e-9), sd.dv.len().max(1e-9));
+        // A loft narrows towards its ends: the parameter speed at the mid point overstates the
+        // speed there, so a pad of `reach` (mm) there is far too short in parameters. Take the
+        // slowest speed over the box (not below 5 % of the fastest, a pole collapses it to zero).
+        let (mut fu, mut fv) = (lu, lv);
+        for i in 0..=6 {
+            for j in 0..=6 {
+                let (a, b) = ((u0 + (u1 - u0) * i as f64 / 6.0).clamp(du0, du1), (v0 + (v1 - v0) * j as f64 / 6.0).clamp(dv0, dv1));
+                let q = s.derivs2(a, b);
+                fu = fu.max(q.du.len());
+                fv = fv.max(q.dv.len());
+                lu = lu.min(q.du.len().max(1e-9));
+                lv = lv.min(q.dv.len().max(1e-9));
+            }
+        }
+        let (lu, lv) = (lu.max(0.05 * fu), lv.max(0.05 * fv));
         let (pu, pv) = (reach / lu, reach / lv);
         // periodic directions wrap; an unbounded direction (extrusion height) still has to
         // reach `reach` past the face, the 3 % margin of the box is not enough
@@ -297,7 +312,11 @@ fn fit_offset_surface_inner(s: &Surface, d: f64, uvbox: ((f64, f64), (f64, f64))
         let inside = ea == 0.0 && eb == 0.0;
         let sd = s.derivs2(uc, vc);
         let (su, sv) = (sd.du + sd.duu * ea + sd.duv * eb, sd.dv + sd.duv * ea + sd.dvv * eb);
-        let n = su.cross(sv).try_normalize().ok_or_else(|| OffsetError::new("offsetUnsupported", "degenerate surface point"))?;
+        // at a pole (collapsed row of a loft's point end) S_u x S_v vanishes: use the limit normal
+        let n = match su.cross(sv) {
+            c if c.len() > 1e-9 * su.len().max(sv.len()).powi(2) => c.normalize(),
+            _ => s.normal(uc, vc).try_normalize().ok_or_else(|| OffsetError::new("offsetUnsupported", "degenerate surface point"))?,
+        };
         let base_p = sd.p + sd.du * ea + sd.dv * eb + (sd.duu * (ea * ea) + sd.duv * (2.0 * ea * eb) + sd.dvv * (eb * eb)) * 0.5;
         if !inside {
             return Ok(base_p + n * d);
@@ -804,7 +823,7 @@ fn offset_spline_edge(src: &Body, e: EdgeId, moved: &[Option<Surface>], dnat: &d
             return Ok((Curve::BSpline(c), a, b));
         }
         n *= 2;
-        if n > 800 {
+        if n > if std::env::var_os("CK_OFFSET_DEBUG").is_some() { 96 } else { 800 } {
             return Err(OffsetError::new("offsetUnsupported", format!("edge offset fit tolerance ({dev:.1e})")));
         }
     }
@@ -1096,6 +1115,12 @@ pub fn move_faces_body(src: &Body, mv: &dyn Fn(FaceId) -> FaceMove) -> Result<Bo
             let q = newp[v.idx()];
             let res = surfs.iter().map(|m| m.closest_point(q).2.dist(q)).fold(0.0f64, f64::max);
             eprintln!("vertex {:?} {:?} -> moved {:.3} residual {:.2e} faces {:?}", v, src.vertex(v).p, q.dist(src.vertex(v).p), res, vfaces[v.idx()].iter().map(|&f| src.face_id_str(f)).collect::<Vec<_>>());
+            for (k, m) in surfs.iter().enumerate() {
+                let (u, w, c) = m.closest_point(q);
+                let (bu, bv, bp) = src.face(vfaces[v.idx()][k]).surface.closest_point(src.vertex(v).p);
+                eprintln!("   base uv ({bu:.4},{bv:.4}) dist {:.2e} dom {:?}", bp.dist(src.vertex(v).p), src.face(vfaces[v.idx()][k]).surface.domain());
+                eprintln!("   surf {} dist {:.3e} at uv ({u:.4},{w:.4}) domain {:?}", src.face_id_str(vfaces[v.idx()][k]), c.dist(q), m.domain());
+            }
         }
     }
 
