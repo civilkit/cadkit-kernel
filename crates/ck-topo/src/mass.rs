@@ -987,7 +987,14 @@ pub fn signed_volume(b: &Body, faces: &[FaceId]) -> f64 {
 /// the coarse quadrature tier with per-face memoisation, which is several times cheaper than
 /// [`signed_volume`] on free-form faces and shared between calls on the same faces.
 pub fn signed_volume_quick(b: &Body, faces: &[FaceId]) -> f64 {
-    faces.iter().map(|&f| face_volume_memo(b, f, true).0).sum()
+    let parts: Vec<f64> = faces.iter().map(|&f| face_volume_memo(b, f, true).0).collect();
+    let (total, scale) = (parts.iter().sum::<f64>(), parts.iter().map(|x| x.abs()).sum::<f64>());
+    // a total lost in cancellation (or a non-finite share, e.g. a pole-closed cone) is not a sign to trust
+    if total.is_finite() && total.abs() > 1e-6 * scale && scale > 0.0 {
+        total
+    } else {
+        signed_volume(b, faces)
+    }
 }
 
 /// One face's share of the signed volume, measured from the origin (so it depends on the face
