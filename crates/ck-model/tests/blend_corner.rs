@@ -94,6 +94,19 @@ fn unequal_radii_make_a_valid_solid_and_warn() {
 }
 
 #[test]
+fn mixed_vertex_with_a_wall_radius_and_a_rim_radius() {
+    // OCCT: rims r = 2, wall edge r = 4 on the same pocket corner
+    let want = 28794.004096462584;
+    let pick = |e: &str, r: f64| e.replacen('}', &format!(r#","radius":{r}}}"#), 1);
+    let f = format!(r#"{},{{"type":"fillet","id":"F5","radius":2,"edges":[{},{},{}]}}"#, pocket(), pick(RIM1, 2.0), pick(RIM2, 2.0), pick(WALL, 4.0));
+    let (errs, warns, vol, issues) = run_all(&f);
+    assert!(errs.is_empty(), "{errs:?}");
+    assert_eq!(issues, 0);
+    assert!(warns.is_empty(), "{warns:?}");
+    assert!((vol - want).abs() < want * 1e-5, "{vol}");
+}
+
+#[test]
 fn tangent_chain_propagation() {
     // 40 x 30 x 10 plate with rounded vertical edges (r 6); one top edge picked, `propagate` takes the whole outline
     let plate = format!(

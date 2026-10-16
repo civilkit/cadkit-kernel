@@ -493,7 +493,12 @@ pub fn exec_fillet(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
             }
             let body = br.body.as_ref().ok_or_else(|| FeatureError::new("missingEdge"))?;
             br.spans.push(Span::leaf(fillet_label(&f.id, radii.iter().cloned().fold(0.0, f64::max), sel.len())));
-            let out = ck_ops::blend::build::fillet_unequal(body, &sel, &radii, &f.id, super::TOL).map_err(blend_error)?;
+            // mixed vertices first (a wall radius and a rim radius), else the per-edge builder
+            let mixed = if profile == ck_ops::blend::build::FilletProfile::Circular { ck_ops::blend::mixed::fillet_mixed(body, &sel, &radii, &f.id, super::TOL) } else { None };
+            let out = match mixed {
+                Some(res) => res.map_err(blend_error)?,
+                None => ck_ops::blend::build::fillet_unequal(body, &sel, &radii, &f.id, super::TOL).map_err(blend_error)?,
+            };
             corner_warnings(state, &f.id, &out);
             br.body = Some(out);
             return Ok(());
@@ -504,7 +509,7 @@ pub fn exec_fillet(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
     br.spans.push(Span::leaf(fillet_label(&f.id, r, sel.len())));
     // two convex edges and a concave one at a vertex: the concave corner is filled first, the rim rolls round it
     if profile == ck_ops::blend::build::FilletProfile::Circular {
-        if let Some(res) = ck_ops::blend::mixed::fillet_mixed(body, &sel, r, &f.id, super::TOL) {
+        if let Some(res) = ck_ops::blend::mixed::fillet_mixed(body, &sel, &vec![r; sel.len()], &f.id, super::TOL) {
             br.body = Some(res.map_err(blend_error)?);
             return Ok(());
         }

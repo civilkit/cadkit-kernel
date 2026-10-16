@@ -172,6 +172,50 @@
   "valid": true,
   "volume": 5882.890822203942
  },
+ "lbr_mixed_outline_r2": {
+  "valid": true,
+  "volume": 5892.376350453277
+ },
+ "lbr_mixed_r1": {
+  "valid": true,
+  "volume": 5991.432738043586
+ },
+ "lbr_mixed_r2": {
+  "valid": true,
+  "volume": 5965.798198205086
+ },
+ "lbr_mixed_r3": {
+  "valid": true,
+  "volume": 5923.197249530625
+ },
+ "lbr_mixed_r4": {
+  "valid": true,
+  "volume": 5863.730761066321
+ },
+ "lbr_mixed_rim1_wall3": {
+  "valid": true,
+  "volume": 6008.785100764882
+ },
+ "lbr_mixed_rim1_wall4": {
+  "valid": true,
+  "volume": 6023.899337223606
+ },
+ "lbr_mixed_rim2_wall4": {
+  "valid": true,
+  "volume": 5992.287281769763
+ },
+ "lbr_mixed_rim3_wall1": {
+  "valid": true,
+  "volume": 5904.371160464587
+ },
+ "lbr_mixed_rim4_wall2": {
+  "valid": true,
+  "volume": 5835.031087984532
+ },
+ "lbr_mixed_rims_1_2_wall_3": {
+  "valid": true,
+  "volume": 5996.23352580421
+ },
  "pocket_mixed_r1": {
   "valid": true,
   "volume": 28793.149552736402
@@ -187,6 +231,18 @@
  "pocket_mixed_r3": {
   "valid": true,
   "volume": 28738.648581766007
+ },
+ "pocket_mixed_rim1_wall3": {
+  "valid": true,
+  "volume": 28807.068286072063
+ },
+ "pocket_mixed_rim2_wall4": {
+  "valid": true,
+  "volume": 28794.004096462584
+ },
+ "pocket_mixed_rim4_wall2": {
+  "valid": true,
+  "volume": 28667.650567148125
  },
  "pocket_mixed_wall_first": {
   "valid": true,

@@ -48,7 +48,7 @@ pub(super) fn line_edge_concave(b: &Body, e: EdgeId) -> Option<bool> {
 
 /// Fillet of `edges` (radius `r`) when the selection holds mixed vertices (see the module doc);
 /// `None` when it does not (the caller uses the ordinary path).
-pub fn fillet_mixed(b: &Body, edges: &[(String, String, Vec3)], r: f64, feature: &str, tol: f64) -> Option<Result<Body, BlendError>> {
+pub fn fillet_mixed(b: &Body, edges: &[(String, String, Vec3)], radii: &[f64], feature: &str, tol: f64) -> Option<Result<Body, BlendError>> {
     let n = edges.len();
     let eids: Vec<EdgeId> = edges.iter().map(|(fa, fb, at)| find_edge(b, fa, fb, *at)).collect::<Option<_>>()?;
     let conc: Vec<bool> = eids.iter().map(|&e| line_edge_concave(b, e)).collect::<Option<_>>()?;
@@ -81,17 +81,23 @@ pub fn fillet_mixed(b: &Body, edges: &[(String, String, Vec3)], r: f64, feature:
         return None;
     }
     // a failure of the two-stage build is not final: the ordinary builder may still manage the selection
-    run(b, edges, &wall, &tops, r, feature, tol).ok().map(Ok)
+    // one radius for the concave edges of mixed vertices, one for everything else (the rim ball rolls round the
+    // corner cylinder: torus of major radius r_wall + r_rim)
+    let same = |v: Vec<f64>| v.first().copied().filter(|x| v.iter().all(|y| (y - x).abs() <= 1e-12 * (1.0 + x.abs())));
+    let rw = same((0..n).filter(|&i| wall[i]).map(|i| radii[i]).collect())?;
+    let rr = same((0..n).filter(|&i| !wall[i]).map(|i| radii[i]).collect())?;
+    run(b, edges, &wall, &tops, [rw, rr], feature, tol).ok().map(Ok)
 }
 
-fn run(b: &Body, edges: &[(String, String, Vec3)], wall: &[bool], tops: &[(usize, FaceId)], r: f64, feature: &str, tol: f64) -> Result<Body, BlendError> {
+fn run(b: &Body, edges: &[(String, String, Vec3)], wall: &[bool], tops: &[(usize, FaceId)], r: [f64; 2], feature: &str, tol: f64) -> Result<Body, BlendError> {
     let n = edges.len();
-    let spec = Spec::Fillet(r, FilletProfile::Circular);
+    let spec_a = Spec::Fillet(r[0], FilletProfile::Circular);
+    let spec_b = Spec::Fillet(r[1], FilletProfile::Circular);
     // stage A: the concave edges of mixed vertices
     let a_idx: Vec<usize> = (0..n).filter(|&i| wall[i]).collect();
     let pre = format!("{feature}_a");
     let sel_a: Vec<(String, String, Vec3)> = a_idx.iter().map(|&i| edges[i].clone()).collect();
-    let body1 = blend_edges(b, &sel_a, spec, &pre, tol)?;
+    let body1 = blend_edges(b, &sel_a, spec_a, &pre, tol)?;
     // stage B: everything else, plus the arc where the corner cylinder meets the top face
     let mut b_idx: Vec<usize> = (0..n).filter(|&i| !wall[i]).collect();
     let mut sel_b: Vec<(String, String, Vec3)> = b_idx.iter().map(|&i| edges[i].clone()).collect();
@@ -114,7 +120,7 @@ fn run(b: &Body, edges: &[(String, String, Vec3)], wall: &[bool], tops: &[(usize
         b_idx.push(next);
         next += 1;
     }
-    let mut out = super::build::blend_edges_tangent_chain(&body1, &sel_b, spec, feature, tol)?;
+    let mut out = super::build::blend_edges_tangent_chain(&body1, &sel_b, spec_b, feature, tol)?;
     // blend names follow the selection: stage A's `B<j>` is pick `a_idx[j]`, stage B's `B<j>` is `b_idx[j]`
     let renames: Vec<(usize, u32)> = out
         .face_ids()

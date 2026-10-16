@@ -152,6 +152,20 @@ add('pocket_unequal_concave3', 'pocket', { k: 'fillet', r: 0 }, [{ at: [10, 12, 
 add('pocket_unequal_mixed3', 'pocket', { k: 'fillet', r: 0 }, [{ at: PR1, r: 1 }, { at: PR2, r: 2 }, { at: PW, r: 3 }]);
 add('cube_unequal_two_edges', 'cube', { k: 'fillet', r: 0 }, [{ at: [15, 30, 0], r: 3 }, { at: [30, 30, -15], r: 5 }]);
 
+// 6. an inner (concave) vertical fillet meeting the outer (convex) fillets of the rim: L bracket (inner corner at x=10, z=-10),
+// the vertex at the top has two convex rim edges and the concave edge. Same and different radii, 1 to 4 mm. Every case is also
+// checked for open display-mesh edges (a face missing while `validate` passes).
+const LW = [10, 5, -10], LR1 = [25, 10, -10], LR2 = [10, 10, -20];
+for (const r of [1, 2, 3, 4]) add(`lbr_mixed_r${r}`, 'lbr', { k: 'fillet', r }, [LR1, LR2, LW]);
+add('lbr_mixed_outline_r2', 'lbr', { k: 'fillet', r: 2 }, [...LTOP, LW]);
+for (const [rim, wall] of [[1, 3], [3, 1], [2, 4], [4, 2], [1, 4]]) {
+  add(`lbr_mixed_rim${rim}_wall${wall}`, 'lbr', { k: 'fillet', r: 0 }, [{ at: LR1, r: rim }, { at: LR2, r: rim }, { at: LW, r: wall }]);
+}
+add('lbr_mixed_rims_1_2_wall_3', 'lbr', { k: 'fillet', r: 0 }, [{ at: LR1, r: 1 }, { at: LR2, r: 2 }, { at: LW, r: 3 }]);
+for (const [rim, wall] of [[1, 3], [2, 4], [4, 2]]) {
+  add(`pocket_mixed_rim${rim}_wall${wall}`, 'pocket', { k: 'fillet', r: 0 }, [{ at: PR1, r: rim }, { at: PR2, r: rim }, { at: PW, r: wall }]);
+}
+
 // ---------------------------------------------------------------- engine
 function req(k, id, msg) {
   const r = k.request(JSON.stringify({ id, msg }));
@@ -220,18 +234,62 @@ function feature(k, c, body) {
   }
   throw new Error('op');
 }
+// Mesh edges used by exactly one triangle (a missing face the validator does not see: the black hole in the viewport).
+// The display mesh is per face, so a face edge may be split differently on its neighbour (T-junction): an unmatched edge only
+// counts as open when sample points along it are not covered by other unmatched edges.
+function openMeshEdges(raw, res) {
+  const m = res.result?.body?.mesh;
+  if (!m || !raw.bytes) return null;
+  const jl = new DataView(raw.bytes.buffer).getUint32(0, true);
+  const base = (4 + jl + 7) & ~7;
+  const pos = new Float32Array(raw.bytes.buffer.slice(base + m.positions.offset, base + m.positions.offset + m.positions.len * 4));
+  const q = (i) => `${Math.round(pos[i] * 2000)},${Math.round(pos[i + 1] * 2000)},${Math.round(pos[i + 2] * 2000)}`;
+  const count = new Map();
+  const segs = [];
+  for (let t = 0; t + 8 < pos.length; t += 9) {
+    for (let e = 0; e < 3; e++) {
+      const a = t + 3 * e, b = t + 3 * ((e + 1) % 3);
+      const ka = q(a), kb = q(b);
+      if (ka === kb) continue;
+      const key = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+      const c = count.get(key);
+      if (c) c.n++; else count.set(key, { n: 1, a: [pos[a], pos[a + 1], pos[a + 2]], b: [pos[b], pos[b + 1], pos[b + 2]] });
+    }
+  }
+  const bx = res.result.body.box;
+  const covTol = 1e-3 * Math.hypot(bx.max[0] - bx.min[0], bx.max[1] - bx.min[1], bx.max[2] - bx.min[2]);
+  const un = [...count.values()].filter((c) => c.n === 1);
+  for (const c of un) segs.push(c);
+  let open = 0;
+  for (const c of un) {
+    let ok = true;
+    for (const f of [0.2, 0.4, 0.6, 0.8]) {
+      const p = [0, 1, 2].map((i) => c.a[i] + (c.b[i] - c.a[i]) * f);
+      let hit = false;
+      for (const o of segs) {
+        if (o === c) continue;
+        if (distSeg(p, o.a, o.b) < covTol) { hit = true; break; }
+      }
+      if (!hit) { ok = false; break; }
+    }
+    if (!ok) { open++; if (process.env.OPENDBG) console.log("  open", c.a.map((x) => x.toFixed(2)).join(","), "->", c.b.map((x) => x.toFixed(2)).join(",")); }
+  }
+  return open;
+}
+
 function run(c) {
   const k = new Kernel(mod);
   const body = baseBody(k, c.base);
   const part = { format: 'ck-part', version: 1, features: [...BASES[c.base], feature(k, c, body)] };
   const t0 = Date.now();
-  const res = req(k, 2, { type: 'regen', tag: 'main', part });
+  const raw = k.request(JSON.stringify({ id: 2, msg: { type: 'regen', tag: 'main', part } }));
+  const res = raw.json ? JSON.parse(raw.json) : { ok: false, trap: raw.trap };
   const errs = (res.result?.errors ?? []).map(([id, e]) => e.code + (e.params?.detail ? `(${String(e.params.detail).slice(0, 60)})` : ''));
   const ms = Date.now() - t0;
   if (res.trap || (!res.ok && !res.result)) return { errs: [`trap ${res.trap ?? ''}`], ms };
   const m = req(k, 3, { type: 'massProps', tag: 'main' });
   const v = req(k, 4, { type: 'validate', tag: 'main' });
-  return { errs, vol: m.ok ? m.result?.volume : null, valid: !!(v.ok && v.result?.ok), ms, faces: res.result?.body?.faces?.length };
+  return { errs, vol: m.ok ? m.result?.volume : null, valid: !!(v.ok && v.result?.ok), ms, faces: res.result?.body?.faces?.length, open: openMeshEdges(raw, res) };
 }
 
 if (argv.includes('--edges')) {
@@ -298,6 +356,8 @@ for (const c of cases) {
     status = 'FAIL'; note = r.errs.join();
   } else if (!r.valid) {
     status = 'FAIL'; note = `invalid solid, vol ${r.vol?.toFixed(4)}`;
+  } else if (r.open) {
+    status = 'FAIL'; note = `${r.open} open mesh edge(s) (a face is missing in the display mesh), vol ${r.vol?.toFixed(4)}`;
   } else if (!rf || rf.volume == null) {
     status = 'NOREF'; note = `vol ${r.vol?.toFixed(4)} (no OCCT reference${rf?.error ? ': ' + rf.error : ''})`;
   } else {
