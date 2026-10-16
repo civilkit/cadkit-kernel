@@ -264,6 +264,8 @@ pub enum Error {
     BadHeight,
     /// `textBadArc`
     BadArc,
+    /// `textBadValue`: a position / angle / spacing that is not a finite number
+    BadValue,
 }
 
 impl Error {
@@ -274,6 +276,7 @@ impl Error {
             Error::UnknownFont(_) => "textBadFont",
             Error::BadHeight => "textBadHeight",
             Error::BadArc => "textBadArc",
+            Error::BadValue => "textBadValue",
         }
     }
     pub fn message(&self) -> String {
@@ -283,6 +286,7 @@ impl Error {
             Error::UnknownFont(f) => format!("unknown font {f:?}; use one of gauge, engrave"),
             Error::BadHeight => "text height must be a positive number".into(),
             Error::BadArc => "text on an arc needs a positive radius".into(),
+            Error::BadValue => "text position, angle and spacing must be finite numbers (spacing 0.2 to 5)".into(),
         }
     }
 }
@@ -500,8 +504,11 @@ fn prepare(string: &str, font_name: &str, height: f64, spacing: f64, polyline: b
     if string.is_empty() {
         return Err(Error::Empty);
     }
-    if !(height.is_finite() && height > 0.0) {
+    if !(height.is_finite() && height > 0.0 && height < 1e5) {
         return Err(Error::BadHeight);
+    }
+    if !(spacing.is_finite() && spacing > 0.0 && spacing < 20.0) {
+        return Err(Error::BadValue);
     }
     let font = font(font_name).ok_or_else(|| Error::UnknownFont(font_name.to_string()))?;
     let scale = height / font.cap_height();
@@ -518,7 +525,6 @@ fn prepare(string: &str, font_name: &str, height: f64, spacing: f64, polyline: b
         chars.truncate(MAX_CHARS);
     }
     let tol = polyline.then_some(0.005 * font.cap_height());
-    let spacing = if spacing.is_finite() { spacing } else { 1.0 };
     let (mut pen, mut missing) = (0.0, String::new());
     let mut glyphs = vec![];
     let mut advances = vec![];
@@ -559,6 +565,9 @@ fn prepare(string: &str, font_name: &str, height: f64, spacing: f64, polyline: b
 
 /// Advance width and ink box of a string (no placement).
 pub fn metrics(string: &str, font_name: &str, height: f64, spacing: f64) -> Result<Metrics, Error> {
+    if !(spacing.is_finite() && spacing > 0.0 && spacing < 20.0) {
+        return Err(Error::BadValue);
+    }
     let r = match prepare(string, font_name, height, spacing, false) {
         Ok(r) => r,
         Err(Error::NothingToDraw) => {
@@ -584,8 +593,15 @@ pub fn metrics(string: &str, font_name: &str, height: f64, spacing: f64) -> Resu
 /// Lay a string out as regions.
 pub fn layout(spec: &Spec) -> Result<Layout, Error> {
     let run = prepare(&spec.string, &spec.font, spec.height, spec.spacing, spec.polyline)?;
+    let fin = |v: f64| v.is_finite() && v.abs() < 1e9;
+    if !(fin(spec.at[0]) && fin(spec.at[1]) && fin(spec.angle) && spec.spacing.is_finite() && spec.spacing > 0.0 && spec.spacing < 20.0) {
+        return Err(Error::BadValue);
+    }
     if let Some(a) = &spec.arc {
-        if !(a.radius.is_finite() && a.radius > 0.0) {
+        if !(fin(a.centre[0]) && fin(a.centre[1]) && fin(a.angle_centre)) {
+            return Err(Error::BadValue);
+        }
+        if !(a.radius.is_finite() && a.radius > 0.0 && a.radius < 1e9) {
             return Err(Error::BadArc);
         }
     }

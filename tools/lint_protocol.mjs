@@ -63,9 +63,10 @@ if (isMainThread) {
     section: { plane: { origin: [0, 0, 0], normal: [0, 0, 1] } }, sections: { n: 3 }, bodyBoolean: { op: 'cut', target: 'F2.C1', tools: ['F2.C0'] }, probe: { points: [[0, 0, 0]], rays: [{ origin: [0, 0, 0], dir: [0, 0, 1] }] },
     distance: { a: [0, 0, 0], b: 'body' }, maxDistance: { opts: { samples: 200 } }, thickness: { opts: { samples: 200 } }, thicknessAt: { point: [0, 0, 0] },
     closestPoint: { points: [[0, 0, 0]] }, angles: { edges: 'all' }, clearance: { min: 1 }, symmetry: { opts: { samples: 200 } },
+    textMetrics: { string: 'RPM x100', font: 'gauge', height: 5 }, textOutline: { string: 'RPM x100', font: 'gauge', height: 5, at: [1, 2], anchor: ['center', 'middle'] },
   };
-  const MUST_OK = new Set(['ping', 'regen', 'massProps', 'validate', 'interference', 'step', 'check', 'resolve', 'describe', 'refDiff', 'section', 'sections', 'probe', 'distance', 'maxDistance', 'thickness', 'closestPoint', 'angles', 'clearance', 'symmetry']); // minimal body must succeed once a body exists
-  const FIELDS = ['part', 'tag', 'opts', 'ref', 'refs', 'ids', 'sketch', 'distance', 'name', 'upTo', 'densities', 'bodies', 'dir', 'tol', 'a', 'b', 'u', 'at', 'expect', 'descriptions', 'description', 'names', 'base', 'plane', 'axis', 'n', 'positions', 'points', 'rays', 'min', 'on', 'edges', 'faces', 'pull', 'tagB', 'planes', 'draft', 'point', 'k'];
+  const MUST_OK = new Set(['ping', 'regen', 'massProps', 'validate', 'interference', 'step', 'check', 'resolve', 'describe', 'refDiff', 'section', 'sections', 'probe', 'distance', 'maxDistance', 'thickness', 'closestPoint', 'angles', 'clearance', 'symmetry', 'textMetrics', 'textOutline']); // minimal body must succeed once a body exists
+  const FIELDS = ['part', 'tag', 'opts', 'ref', 'refs', 'ids', 'sketch', 'distance', 'name', 'upTo', 'densities', 'bodies', 'dir', 'tol', 'a', 'b', 'u', 'at', 'expect', 'descriptions', 'description', 'names', 'base', 'plane', 'axis', 'n', 'positions', 'points', 'rays', 'min', 'on', 'edges', 'faces', 'pull', 'tagB', 'planes', 'draft', 'point', 'k', 'string', 'font', 'height', 'spacing', 'angle', 'arc', 'anchor', 'mirror'];
   const VALUES = [null, 'x', 'NaN', '-1e999', 1e308, -1e308, -1, 0, [], {}, [[]], [null], true, { kind: 'face', id: 'nope' }, { kind: 5 }, [1, 2, 3]];
 
   function check(label, k, body) {
@@ -135,7 +136,16 @@ if (isMainThread) {
     if (val === undefined) { if (Array.isArray(t)) t.splice(last, 1); else delete t[last]; } else t[last] = val;
     return c;
   };
-  const targets = ['box', 'rev90', 'cutHole', 'shellBoxOpen', 'sweepLine', 'lpatternCut', 'filletOne'];
+  // an engraved plate with a straight and an arc text entity (lettering, docs/text.md)
+  parts.textEngrave = { format: 'ck-part', version: 1, features: [
+    { type: 'sketch', id: 'S1', plane: { kind: 'std', id: 'front' }, points: [{ id: 'a', x: 0, y: 0 }, { id: 'b', x: 60, y: 0 }, { id: 'c', x: 60, y: 30 }, { id: 'd', x: 0, y: 30 }], entities: [['a', 'b'], ['b', 'c'], ['c', 'd'], ['d', 'a']].map((q, i) => ({ type: 'line', id: 'e' + i, p1: q[0], p2: q[1] })), constraints: [] },
+    { type: 'extrude', id: 'F1', op: 'add', sketch: 'S1', end: 'blind', depth: 4 },
+    { type: 'plane', id: 'P1', mode: 'offset', base: { kind: 'std', id: 'front' }, offset: 4 },
+    { type: 'sketch', id: 'S2', plane: { kind: 'feature', id: 'P1' }, points: [{ id: 'q', x: 30, y: 12 }], entities: [
+      { type: 'text', id: 't1', string: 'RPM x100', font: 'gauge', height: 5, p: 'q', anchor: ['center', 'middle'], angle: 10, spacing: 1.1 },
+      { type: 'text', id: 't2', string: 'KNOTS', font: 'engrave', height: 3, at: [30, 15], anchor: ['center', 'baseline'], arc: { centre: [30, 15], radius: 9, angleCentre: 90, side: 'outside' } }], constraints: [] },
+    { type: 'extrude', id: 'F2', op: 'cut', sketch: 'S2', end: 'blind', depth: 0.3 }] };
+  const targets = ['box', 'rev90', 'cutHole', 'shellBoxOpen', 'sweepLine', 'lpatternCut', 'filletOne', 'textEngrave'];
   const k = new Kernel(mod);
   for (const name of targets) {
     const part = parts[name];
