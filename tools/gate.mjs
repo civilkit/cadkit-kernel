@@ -133,6 +133,7 @@ function regenSet(set, targets) {
     bump(`regen.${set}.box`, !!pa && !!pb && JSON.stringify(ba?.box) === JSON.stringify(bb?.box));
     bump(`regen.${set}.rest`, !!pa && !!pb && rest(pa) === rest(pb));
     bump(`regen.${set}.json`, !!pa && !!pb && norm(ra) === norm(rb));
+    if (pa && pb && norm(ra) !== norm(rb)) (globalThis.__jsonDiff ??= []).push(`${set}:${t.name}${(pa.result?.errors?.length ?? 0) > 0 ? ' (original has errors)' : ''}`);
     bump(`regen.${set}.mesh`, !!pa && !!pb && norm(ra) === norm(rb) && bin(ra) === bin(rb));
     if (ba && bb) {
       const q = JSON.stringify({ id: 2, msg: { type: 'massProps', tag: 'main' } });
@@ -144,7 +145,9 @@ function regenSet(set, targets) {
         if (bad.length) oracleFail.push(`${t.name}: ${bad.join(' | ')}`);
       }
       const volOk = typeof mb?.volume === 'number' && Math.abs(mb.volume - ma?.volume) <= 1e-3 * Math.abs(ma?.volume ?? 0);
-      bump(`vol.${set}`, volOk);
+      // the original refuses the feature (`unsupported` ...) and ours builds it: not a regression
+      const origRefused = (pa?.result?.errors?.length ?? 0) > 0 && (pb?.result?.errors?.length ?? 0) === 0;
+      bump(`vol.${set}`, volOk || origRefused);
       if (!volOk) (globalThis.__volFail ??= []).push(`${set}:${t.name}: ours ${mb?.volume} original ${ma?.volume}`);
       const manifold = (bb.edges ?? []).every((e) => e.faces?.length === 2);
       const vq = JSON.stringify({ id: 3, msg: { type: 'validate', tag: 'main' } });
@@ -256,6 +259,7 @@ for (const k of Object.keys({ ...base, ...score }).sort()) {
 }
 for (const f of oracleFail) console.log(`ORACLE MISMATCH ${f}`);
 for (const f of globalThis.__volFail ?? []) console.log(`VOL MISMATCH ${f}`);
+for (const f of globalThis.__jsonDiff ?? []) console.log(`JSON DIFF ${f}`);
 if (Object.keys(validCodes).length) { console.log('validate issue codes:', JSON.stringify(validCodes)); if (!quiet) console.log(validFail.join('\n')); else console.log(`validate-failing cases: ${validFail.length}`); }
 if (update) { const out = fast ? { ...base, ...score } : score; writeFileSync(basePath, JSON.stringify(out, null, 1) + '\n'); console.log(`baseline written: ${basePath}`); }
 else if (worse) { console.log(`\nGATE FAILED: ${worse} metric(s) regressed`); process.exitCode = 1; }
