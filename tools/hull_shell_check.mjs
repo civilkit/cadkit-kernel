@@ -1,7 +1,7 @@
 // Open-top hollow hulls through the wasm: a loft through closed free-form spline stations, the deck
 // cut off (face F92.C0), shell of that face. Wall volumes against an independent construction (inner
 // offset of the closed hull, cut at the deck line, subtracted from the open hull), validity, and the
-// refusal (with a hint) for a hull that ends in a point section.
+// refusal (with a hint) when the apex of a point-ended hull stays in the body.
 // usage: node tools/hull_shell_check.mjs [--wasm path]     exit 1 on any mismatch
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -64,9 +64,18 @@ for (const [t, want] of [[1.0, 4383.0], [0.6, 2683.5]]) {
     `errors ${JSON.stringify(r.errors).slice(0, 160)} vol ${r.vol?.toFixed(1)} want ${want} valid ${r.valid} ${r.ms} ms ${JSON.stringify(r.issues).slice(0, 160)}`);
 }
 {
+  // a point-ended hull: the deck cut leaves the rim 1.25 mm short of the apex: refused with a hint
   const r = regen(hull(BOAT, 62, 1.0));
   const d = JSON.stringify(r.errors);
-  check('pointy hull shell refused with a hint', r.errors.length === 1 && r.errors[0].code === 'offsetUnsupported' && /point/.test(d) && /blunt/.test(d), d.slice(0, 200));
+  check('pointy hull (tip cut short of the apex) refused with a hint', r.errors.length === 1 && r.errors[0].code === 'offsetUnsupported' && /apex/.test(d), d.slice(0, 200));
+}
+{
+  // the apex stays in the body: refused with a hint
+  const f = hull(BOAT, 62, 0).filter((x) => !['F90', 'F91', 'F92'].includes(x.id));
+  f.push({ type: 'shell', id: 'F93', faces: ['F50.C0'], thickness: 1.0 });
+  const r = regen(f);
+  const d = JSON.stringify(r.errors);
+  check('pointy hull with its apex refused with a hint', r.errors.length === 1 && r.errors[0].code === 'offsetUnsupported' && /apex/.test(d), d.slice(0, 200));
 }
 if (bad) { console.log(`${bad} failed`); process.exit(1); }
 console.log('all ok');

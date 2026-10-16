@@ -133,17 +133,26 @@ pub fn shell(body: &Body, open: &[FaceId], thickness: f64, outward: bool, tol: f
     }
     // A loft ended by a point section has a pole: the surface collapses to the apex, where its
     // offset is not a surface of the same kind (the offset folds over itself and the inner
-    // surfaces only close at a new apex). That corner is not solved yet: say so, with the way out.
+    // surfaces only close at a new apex), and the offset edges running into the tip cannot be
+    // fitted. Not solved yet: a body that keeps the apex, or comes within a few wall thicknesses
+    // of it, is refused with the way out. Further away the offset only needs the limit normal.
+    let reach_of_pole = 6.0 * thickness;
     for f in body.face_ids() {
         let face = body.face(f);
-        if matches!(face.surface, Surface::BSpline(_)) && !crate::offset::pole_points(&face.surface).is_empty() {
-            return Err(ShellError::detail(
-                "offsetUnsupported",
-                format!(
-                    "{} comes to a point (a loft ended by a point section): the offset of an apex is not supported, so this body cannot be shelled. End the loft with a small closed section instead of a point (a blunt end shells and thickens normally)",
-                    body.face_id_str(f)
-                ),
-            ));
+        if !matches!(face.surface, Surface::BSpline(_)) {
+            continue;
+        }
+        for q in crate::offset::pole_points(&face.surface) {
+            let nearest = body.vertex_ids().map(|v| body.vertex(v).p.dist(q)).fold(f64::INFINITY, f64::min);
+            if nearest < reach_of_pole {
+                return Err(ShellError::detail(
+                    "offsetUnsupported",
+                    format!(
+                        "{} runs into the apex of a point-ended loft ({nearest:.2} mm from the nearest corner of the body): the offset of an apex is not supported. Cut the tip off further away (more than {reach_of_pole:.1} mm from the apex for this wall) or end the loft with a small closed section instead of a point",
+                        body.face_id_str(f)
+                    ),
+                ));
+            }
         }
     }
     let is_open = |f: FaceId| open.contains(&f);

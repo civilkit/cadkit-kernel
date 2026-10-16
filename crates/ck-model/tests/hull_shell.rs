@@ -126,17 +126,23 @@ fn blunt_hull_shell() {
     }
 }
 
-/// A hull ended by a point section has a pole; its shell is refused with a reason and a way out.
+/// A hull ended by a point section: the shell is refused with a reason and a way out, both when
+/// the apex stays in the body and when the deck cut leaves the rim a little way short of it.
 #[test]
 fn pointy_hull_shell_is_refused_with_a_hint() {
-    let base = run(&hull(&BOAT, Some(62.0), None));
-    assert!(base.errors.is_empty(), "{:?}", base.errors);
     let o = run(&hull(&BOAT, Some(62.0), Some(1.0)));
-    assert_eq!(o.errors.len(), 1);
-    let e = &o.errors[0].error;
-    assert_eq!(e.code, "offsetUnsupported");
-    let detail = format!("{:?}", e.params);
-    assert!(detail.contains("point") && detail.contains("blunt"), "{detail}");
+    assert_eq!(o.errors.len(), 1, "{:?}", o.errors);
+    assert_eq!(o.errors[0].error.code, "offsetUnsupported");
+    let detail = format!("{:?}", o.errors[0].error.params);
+    assert!(detail.contains("apex") && detail.contains("closed section"), "{detail}");
+    // the apex kept: shell the stern cap
+    let mut f = hull(&BOAT, Some(62.0), None);
+    let cut = f.find(r#",{"type":"plane","id":"F90""#).unwrap();
+    f.truncate(cut);
+    f.push_str(r#",{"type":"shell","id":"F93","faces":["F50.C0"],"thickness":1.0}"#);
+    let o = run(&f);
+    assert_eq!(o.errors.len(), 1, "{:?}", o.errors);
+    assert_eq!(o.errors[0].error.code, "offsetUnsupported");
 }
 
 /// A cone made by lofting a circle to a point: its shell is refused (pole), with the hint.
