@@ -53,6 +53,9 @@ id_type!(VertexId, EdgeId, CoedgeId, LoopId, FaceId, ShellId, LumpId);
 #[derive(Debug, Clone, PartialEq)]
 pub struct Vertex {
     pub p: Vec3,
+    /// Tolerance (mm): how far the vertex may lie from its incident edge
+    /// curves. 0 = exact. Set by the healing pass, never by modelling ops.
+    pub tol: f64,
     pub alive: bool,
 }
 
@@ -65,6 +68,11 @@ pub struct Edge {
     pub v0: VertexId,
     pub v1: VertexId,
     pub coedges: Vec<CoedgeId>,
+    /// Tolerance (mm): how far the curve may lie from the faces it bounds
+    /// (the exporter's fitted curves and free-form faces disagree by a few
+    /// 1e-3). 0 = exact. Set by the healing pass; `ck_check::validate`
+    /// accepts a deviation up to `max(model tol, tol)`.
+    pub tol: f64,
     pub alive: bool,
 }
 
@@ -367,11 +375,11 @@ impl Body {
         s
     }
     pub fn add_vertex(&mut self, p: Vec3) -> VertexId {
-        self.vertices.push(Vertex { p, alive: true });
+        self.vertices.push(Vertex { p, tol: 0.0, alive: true });
         VertexId(self.vertices.len() as u32 - 1)
     }
     pub fn add_edge(&mut self, curve: Curve, t0: f64, t1: f64, v0: VertexId, v1: VertexId) -> EdgeId {
-        self.edges.push(Edge { curve, t0, t1, v0, v1, coedges: vec![], alive: true });
+        self.edges.push(Edge { curve, t0, t1, v0, v1, coedges: vec![], tol: 0.0, alive: true });
         EdgeId(self.edges.len() as u32 - 1)
     }
     pub fn add_face(&mut self, shell: ShellId, surface: Surface, sense: bool, name: FaceName) -> FaceId {

@@ -23,6 +23,9 @@ pub fn split_edge(b: &mut Body, e: EdgeId, t: f64) -> (VertexId, EdgeId) {
     b.edges[e.idx()].t1 = t;
     b.edges[e.idx()].v1 = v;
     let ne = b.add_edge(curve, t, t1, v, v1);
+    let et = b.edge(e).tol;
+    b.edges[ne.idx()].tol = et;
+    b.vertices[v.idx()].tol = et;
     for c in b.edge_coedges(e) {
         let ce = b.coedge(c).clone();
         b.coedges.push(Coedge { edge: ne, rev: ce.rev, lp: ce.lp, pcurve: ce.pcurve.clone(), alive: true });

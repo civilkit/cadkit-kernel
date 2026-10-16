@@ -29,7 +29,7 @@ pub fn check(b: &Body, tol: f64, out: &mut Vec<Issue>) {
             for i in 0..cs.len() {
                 let (c, n) = (cs[i], cs[(i + 1) % cs.len()]);
                 let (ve, vs) = (b.coedge_end(c), b.coedge_start(n));
-                if ve != vs && b.vertex(ve).p.dist(b.vertex(vs).p) > tol {
+                if ve != vs && b.vertex(ve).p.dist(b.vertex(vs).p) > tol.max(b.vertex(ve).tol).max(b.vertex(vs).tol) {
                     out.push(Issue {
                         code: "LOOP_OPEN",
                         entity: face_ent(b, f),
