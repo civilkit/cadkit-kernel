@@ -127,6 +127,7 @@ fn normal_at(m: &Model, f: FaceId, p: Vec3) -> Vec3 {
 }
 
 pub fn analyze(m: &Model, claimed: &HashSet<FaceId>, ai: usize) -> Option<Prism> {
+    AXIS.with(|a| a.set(ai));
     let spec = PlaneSpec::for_axis(ai);
     let nv = spec.zs;
     let (mut zmin, mut zmax) = (f64::INFINITY, f64::NEG_INFINITY);
@@ -371,11 +372,13 @@ pub struct Iv {
 }
 
 thread_local! {
-    pub static WHY: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+    pub static WHY: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    static AXIS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 fn why<T>(s: &str) -> Option<T> {
-    WHY.with(|w| *w.borrow_mut() = s.to_string());
+    let a = ["x", "y", "z"][AXIS.with(|a| a.get())];
+    WHY.with(|w| w.borrow_mut().push(format!("{a}: {s}")));
     None
 }
 

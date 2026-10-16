@@ -47,10 +47,7 @@ pub fn recognize(body: &Body) -> Recognition {
     let m = Model::new(body);
     let all: Vec<FaceId> = m.faces.clone();
     let mut rec = Recognition { features: vec![], items: vec![], unexplained: all.clone(), strategy: "none", note: None };
-    if body.num_lumps() != 1 {
-        rec.note = Some("more than one lump".into());
-        return rec;
-    }
+    prism::WHY.with(|w| w.borrow_mut().clear());
     let mut claimed: HashSet<FaceId> = HashSet::new();
     let hs = holes::find_holes(&m, &mut claimed);
     // best prism over the three principal axes
@@ -89,7 +86,7 @@ pub fn recognize(body: &Body) -> Recognition {
         emit_holes(&mut tree, &m, &hs, &mut items, &mut explained);
         emit_blends(&mut tree, &p, &names, &mut items, &mut explained);
     } else {
-        rec.note = Some(format!("no dominant extrusion or revolution ({})", prism::WHY.with(|w| w.borrow().clone())));
+        rec.note = Some(format!("no dominant extrusion or revolution ({})", prism::WHY.with(|w| w.borrow().join("; "))));
     }
     rec.unexplained = all.into_iter().filter(|f| !explained.contains(f)).collect();
     rec.features = tree.feats;
@@ -533,7 +530,12 @@ pub fn report(body: &Body, rec: &Recognition) -> Json {
     let un: Vec<Json> = rec
         .unexplained
         .iter()
-        .map(|f| Obj::new().put("face", body.face_id_str(*f)).put("kind", m.kind(*f).name()).put("area", m.area(*f)).build())
+        .enumerate()
+        .map(|(i, f)| {
+            // areas of free-form faces are expensive: only the first few are integrated
+            let area = if i < 24 { m.area(*f) } else { 0.0 };
+            Obj::new().put("face", body.face_id_str(*f)).put("kind", m.kind(*f).name()).put("area", area).build()
+        })
         .collect();
     let total = m.faces.len().max(1);
     Obj::new()
