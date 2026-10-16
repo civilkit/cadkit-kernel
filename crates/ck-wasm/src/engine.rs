@@ -531,7 +531,9 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
         "section" => ck_ops::section::section_reply(&snapshot(cx)?.body, cx.msg),
         "sections" => {
             let body = &snapshot(cx)?.body;
-            ck_ops::section::sections_reply(body, cx.msg, ck_topo::mass::mass_props(body).volume)
+            // `exact:false` skips the (slow on big bodies) massProps cross-check
+            let exact = (cx.msg.get_bool("exact") != Some(false)).then(|| ck_topo::mass::mass_props(body).volume);
+            ck_ops::section::sections_reply(body, cx.msg, exact)
         }
         "probe" => ck_ops::section::probe_reply(&snapshot(cx)?.body, cx.msg),
         "resolve" => Ok(ck_ops::agent::resolve(&snapshot(cx)?.body, &cx.msg)),

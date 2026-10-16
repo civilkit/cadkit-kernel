@@ -115,11 +115,14 @@ when the mesh left an unclosed chain (a face that failed to tessellate); those p
 
 Read-only. A stack of sections along an axis through the origin direction: `n` cell centres (default 21) between the
 mesh extent of the body along the axis, or explicit `positions` (signed distance along the unit axis; at most 1000).
-Reply `{axis, range:[lo,hi], rule, positions, areas, loops:[count per position], volume, exactVolume, volumeError}`.
+Reply `{axis, range:[lo,hi], rule, positions, areas, loops:[count per position], volume, exactVolume, volumeError}`;
+`exact:false` skips the `massProps` computation (seconds on a large body) and omits `exactVolume` / `volumeError`.
 `volume` is the midpoint rule over cell centres (rule `midpoint`) or the trapezoid rule over explicit positions
 (`trapezoid`, covering only the span between the first and last); `exactVolume` is `massProps` and `volumeError` the
 relative difference, an independent cross-check of the volume and an area profile. The integration error of the rule
-itself is about 1e-3 at n=41 across curved profiles; use more sections for a tighter bound.
+itself is about 1e-3 at n=41 for smooth profiles (box 1e-9, cylinder along its axis 1e-9, sphere 3e-4); a profile with
+steps (large sample: head / handle junction) needs about 800 sections for 1e-4, while the section areas themselves stay
+exact; use more sections for a tighter bound.
 
 ## probe `{tag?, points?:[[x,y,z]], rays?:[{origin, dir}]}` (verification)
 

@@ -54,6 +54,22 @@ impl Frame {
 
 type Uv = (f64, f64);
 
+/// An unclosed chain of the cut (a gap in the display mesh).
+pub struct Bridge {
+    pub from: Vec3,
+    pub to: Vec3,
+    pub length: f64,
+    pub face: usize,
+}
+
+/// A chain that could not be closed within the bridging limit.
+pub struct OpenEnd {
+    pub start: Vec3,
+    pub end: Vec3,
+    pub start_face: usize,
+    pub end_face: usize,
+}
+
 struct Seg {
     a: Vec3,
     b: Vec3,
@@ -81,7 +97,11 @@ pub struct Section {
     pub frame: Frame,
     loops: Vec<LoopOut>,
     pub area: f64,
-    pub open: Vec<[Vec3; 2]>,
+    pub open: Vec<OpenEnd>,
+    pub bridged: Vec<Bridge>,
+    /// Signed area of the raw tessellation cut (no chaining, no snapping): a cross-check of `area`.
+    pub mesh_area: f64,
+    pub face_names: Vec<String>,
     pub bbox2d: [f64; 4],
 }
 
@@ -142,7 +162,7 @@ fn cut_segments(body: &Body, tess: &Tess, fr: &Frame) -> Vec<Seg> {
 }
 
 /// Chains oriented segments into loops of `(point, face of the outgoing segment)`; returns (closed loops, open chain count).
-fn chain(segs: &[Seg], diag: f64) -> (Vec<Vec<CPt>>, Vec<[Vec3; 2]>) {
+fn chain(segs: &[Seg], diag: f64) -> (Vec<Vec<CPt>>, Vec<OpenEnd>, Vec<Bridge>) {
     let mut start: HashMap<[u64; 3], Vec<usize>> = HashMap::new();
     for (i, s) in segs.iter().enumerate() {
         start.entry(key(s.a)).or_default().push(i);
@@ -178,40 +198,61 @@ fn chain(segs: &[Seg], diag: f64) -> (Vec<Vec<CPt>>, Vec<[Vec3; 2]>) {
             }
         }
     }
-    // join open chains whose ends meet within a small gap (mesh vertices that differ in the last bits)
+    // Join open chains. A gap within 1e-6 of the diagonal is a bitwise mismatch of mesh vertices; a larger one (up to 10 % of
+    // the diagonal) is a hole in the display mesh (a face whose triangulation does not reach its boundary): it is bridged by
+    // a chord and reported in `bridged`, so the loop and its area are approximate by at most that gap.
     let gap = 1e-6 * diag;
-    let mut n_open: Vec<[Vec3; 2]> = vec![];
+    let big = 0.1 * diag;
+    let mut n_open: Vec<OpenEnd> = vec![];
+    let mut bridged: Vec<Bridge> = vec![];
     while let Some(mut c) = open.pop() {
         loop {
             let end = c.last().unwrap().0;
-            if end.dist(c[0].0) <= gap {
-                c.pop();
-                let f = c.last().map(|x| x.1).unwrap_or(0);
-                let _ = f;
-                closed.push(c);
+            // nearest start: own (None) or another open chain
+            let mut best: (f64, Option<usize>) = (end.dist(c[0].0), None);
+            for (j, o) in open.iter().enumerate() {
+                let d = o[0].0.dist(end);
+                if d < best.0 {
+                    best = (d, Some(j));
+                }
+            }
+            if best.0 > big {
+                n_open.push(OpenEnd { start: c[0].0, end, start_face: c[0].1, end_face: c[c.len().saturating_sub(2)].1 });
                 break;
             }
-            let j = open.iter().position(|o| o[0].0.dist(end) <= gap);
-            match j {
+            let tiny = best.0 <= gap;
+            let next_face = match best.1 {
+                Some(j) => open[j][0].1,
+                None => c[0].1,
+            };
+            if tiny {
+                c.pop();
+            } else {
+                let last = c.len() - 1;
+                bridged.push(Bridge { from: end, to: match best.1 { Some(j) => open[j][0].0, None => c[0].0 }, length: best.0, face: c[last.saturating_sub(1)].1 });
+                c[last].1 = next_face;
+                c[last].2 = (0.0, 0.0);
+                c[last].3 = (0.0, 0.0);
+            }
+            match best.1 {
                 Some(j) => {
                     let o = open.remove(j);
-                    c.pop();
                     c.extend(o);
                 }
                 None => {
-                    n_open.push([c[0].0, c.last().unwrap().0]);
+                    closed.push(c);
                     break;
                 }
             }
         }
     }
-    // the last point of a closed chain is the closing duplicate (never pushed), faces of open-joined chains are in place
+    // the last point of a closed chain is the closing duplicate (never pushed)
     for c in closed.iter_mut() {
         if c.last().map_or(false, |l| l.1 == usize::MAX) {
             c.pop();
         }
     }
-    (closed, n_open)
+    (closed, n_open, bridged)
 }
 
 fn plane_gradient(s: &Surface, q: Vec3, hint: &mut Uv) -> (f64, Vec3) {
@@ -314,7 +355,15 @@ pub fn section(body: &Body, tess: &Tess, o: Vec3, n: Vec3) -> Section {
     let faces: Vec<FaceId> = body.face_ids().collect();
     let name = |fi: usize| body.face_id_str(faces[fi]);
     let segs = cut_segments(body, tess, &fr);
-    let (chains, n_open) = chain(&segs, diag);
+    let mesh_area = segs
+        .iter()
+        .map(|g| {
+            let (a, b) = (fr.p2(g.a), fr.p2(g.b));
+            a[0] * b[1] - b[0] * a[1]
+        })
+        .sum::<f64>()
+        * 0.5;
+    let (chains, n_open, bridged) = chain(&segs, diag);
     let tol = SAG * diag;
     let mut loops: Vec<LoopOut> = vec![];
     let mut bb = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
@@ -452,7 +501,7 @@ pub fn section(body: &Body, tess: &Tess, o: Vec3, n: Vec3) -> Section {
     if loops.is_empty() {
         bb = [0.0; 4];
     }
-    Section { frame: fr, loops, area, open: n_open, bbox2d: bb }
+    Section { frame: fr, loops, area, open: n_open, bridged, mesh_area, face_names: faces.iter().map(|&f| body.face_id_str(f)).collect(), bbox2d: bb }
 }
 
 fn v3(v: Vec3) -> Json {
@@ -482,10 +531,19 @@ impl Section {
             .put("loops", Json::Arr(loops))
             .put("frame", Obj::new().put("o", v3(f.o)).put("x", v3(f.x)).put("y", v3(f.y)).put("z", v3(f.z)).build())
             .put("area", self.area)
+            .put("meshArea", self.mesh_area)
             .put("bbox2d", Json::Arr(self.bbox2d.iter().map(|&x| Json::Num(x)).collect()));
+        if !self.bridged.is_empty() {
+            let gaps = self
+                .bridged
+                .iter()
+                .map(|b| Obj::new().put("from", v3(b.from)).put("to", v3(b.to)).put("length", b.length).put("face", self.face_names.get(b.face).cloned().unwrap_or_default()).build())
+                .collect();
+            o = o.put("bridgedGaps", Json::Arr(gaps));
+        }
         if !self.open.is_empty() {
             o = o.put("openChains", self.open.len() as f64);
-            o = o.put("openEnds", Json::Arr(self.open.iter().map(|e| Json::Arr(vec![v3(e[0]), v3(e[1])])).collect()));
+            o = o.put("openEnds", Json::Arr(self.open.iter().map(|e| Obj::new().put("start", v3(e.start)).put("end", v3(e.end)).put("startFace", self.face_names.get(e.start_face).cloned().unwrap_or_default()).put("endFace", self.face_names.get(e.end_face).cloned().unwrap_or_default()).build()).collect()));
         }
         o.build()
     }
@@ -512,7 +570,7 @@ pub fn section_reply(body: &Body, msg: &Json) -> Result<Json, String> {
 }
 
 /// `{type:"sections", axis, n | positions}` reply.
-pub fn sections_reply(body: &Body, msg: &Json, exact_volume: f64) -> Result<Json, String> {
+pub fn sections_reply(body: &Body, msg: &Json, exact_volume: Option<f64>) -> Result<Json, String> {
     let axis = match msg.get("axis") {
         None => Vec3::Z,
         Some(Json::Str(s)) => match s.as_str() {
@@ -576,7 +634,7 @@ pub fn sections_reply(body: &Body, msg: &Json, exact_volume: f64) -> Result<Json
     } else {
         positions.windows(2).zip(areas.windows(2)).map(|(p, a)| (p[1] - p[0]) * 0.5 * (a[0] + a[1])).sum()
     };
-    let err = if exact_volume.abs() > 0.0 { (vol - exact_volume).abs() / exact_volume.abs() } else { 0.0 };
+    let err = exact_volume.map(|e| if e.abs() > 0.0 { (vol - e).abs() / e.abs() } else { 0.0 });
     Ok(Obj::new()
         .put("axis", v3(axis))
         .put("range", Json::Arr(vec![Json::Num(lo), Json::Num(hi)]))
@@ -585,8 +643,8 @@ pub fn sections_reply(body: &Body, msg: &Json, exact_volume: f64) -> Result<Json
         .put("areas", Json::Arr(areas.iter().map(|&x| Json::Num(x)).collect()))
         .put("loops", Json::Arr(counts.iter().map(|&x| Json::Num(x)).collect()))
         .put("volume", vol)
-        .put("exactVolume", exact_volume)
-        .put("volumeError", err)
+        .put_opt("exactVolume", exact_volume)
+        .put_opt("volumeError", err)
         .build())
 }
 

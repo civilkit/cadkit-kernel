@@ -80,11 +80,13 @@ if (!quick) {
   console.log(`large sample regen ${((now() - t0) / 1000).toFixed(1)}s`);
   const m = q({ type: 'massProps' }).result;
   const bb = q({ type: 'sections', axis: 'x', n: 1 }).result.range;
+  // the large sample area profile has steps (head / handle junction), so the midpoint rule only converges at ~800 sections
   for (const axis of ['x', 'y', 'z']) {
-    const st = q({ type: 'sections', axis, n: 21 });
-    const r = st.result;
-    ok(r.volumeError < 1e-3 && near(r.exactVolume, m.volume, 1e-12), `large sample sections ${axis} n=21 vs massProps`, `err ${r.volumeError.toExponential(2)}, ${st.wall} ms`);
-    ok(r.areas.every(Number.isFinite), `large sample section areas finite along ${axis}`);
+    const coarse = q({ type: 'sections', axis, n: 21 });
+    ok(coarse.result.areas.every(Number.isFinite) && coarse.result.volumeError < 0.1, `large sample sections ${axis} n=21 (coarse)`, `err ${coarse.result.volumeError.toExponential(2)}, ${coarse.wall} ms`);
+    const fine = q({ type: 'sections', axis, n: 801 });
+    const r = fine.result;
+    ok(r.volumeError < 1e-3 && near(r.exactVolume, m.volume, 1e-12), `large sample sections ${axis} n=801 vs massProps`, `err ${r.volumeError.toExponential(2)}, ${fine.wall} ms (incl. massProps)`);
   }
   for (const [name, plane] of [
     ['x mid', { origin: [(bb[0] + bb[1]) / 2, 0, 0], normal: [1, 0, 0] }],

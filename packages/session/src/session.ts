@@ -774,7 +774,7 @@ export class Session {
   }
 
   /** Section stack along an axis with the integrated volume checked against massProps. */
-  sections(opts?: { axis?: 'x' | 'y' | 'z' | number[]; n?: number; positions?: number[] }): Promise<SectionsReport> {
+  sections(opts?: { axis?: 'x' | 'y' | 'z' | number[]; n?: number; positions?: number[]; exact?: boolean }): Promise<SectionsReport> {
     return sections(this.kernel, { tag: this.tag, ...opts });
   }
 

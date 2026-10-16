@@ -251,19 +251,21 @@ export interface SectionsReport {
   loops: number[];
   /** Volume integrated from the areas, the exact massProps volume and their relative difference. */
   volume: number;
-  exactVolume: number;
-  volumeError: number;
+  /** Absent with `exact: false` (massProps skipped). */
+  exactVolume?: number;
+  volumeError?: number;
 }
 
 /** A stack of sections along an axis (default 21 cell centres) and the volume they integrate to. */
 export async function sections(
   kernel: KernelTransport,
-  opts: QueryOpts & { axis?: 'x' | 'y' | 'z' | number[]; n?: number; positions?: number[] } = {},
+  opts: QueryOpts & { axis?: 'x' | 'y' | 'z' | number[]; n?: number; positions?: number[]; exact?: boolean } = {},
 ): Promise<SectionsReport> {
   const msg: Record<string, unknown> = { type: 'sections', tag: opts.tag ?? 'main' };
   if (opts.axis !== undefined) msg.axis = opts.axis;
   if (opts.n !== undefined) msg.n = opts.n;
   if (opts.positions !== undefined) msg.positions = opts.positions;
+  if (opts.exact !== undefined) msg.exact = opts.exact;
   return call<SectionsReport>(kernel, msg);
 }
 
