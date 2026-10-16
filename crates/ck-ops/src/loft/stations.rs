@@ -85,6 +85,18 @@ impl Geom3 {
             }
         }
     }
+    /// The same piece shrunk to the single point `p` (same degree, knots and
+    /// weights, so it is a compatible station of a loft that ends in a point).
+    pub fn collapsed(&self, p: Vec3) -> Geom3 {
+        match self {
+            Geom3::Line { .. } => Geom3::Line { a: p, b: p },
+            _ => {
+                let c = self.to_nurbs();
+                let (u0, u1) = c.domain();
+                Geom3::Spline { curve: c.map(|_| p), u0, u1 }
+            }
+        }
+    }
     pub fn reversed(&self) -> Geom3 {
         match self {
             Geom3::Line { a, b } => Geom3::Line { a: *b, b: *a },
@@ -222,6 +234,15 @@ impl Chain {
         }
         n
     }
+    /// Every piece is collapsed to one point (a loft end that is an apex).
+    pub fn is_point(&self) -> bool {
+        let p0 = self.pieces[0].g.start();
+        self.pieces.iter().all(|q| q.g.start() == p0 && q.g.end() == p0 && q.g.at(0.5) == p0)
+    }
+    /// This chain shrunk to the point `p`, with the same pieces and names.
+    pub fn collapsed(&self, p: Vec3) -> Chain {
+        Chain { closed: self.closed, pieces: self.pieces.iter().map(|q| Piece { tag: q.tag.clone(), g: q.g.collapsed(p) }).collect() }
+    }
     pub fn reversed(&self) -> Chain {
         Chain {
             closed: self.closed,
@@ -324,9 +345,9 @@ pub fn match_chains_with(mut chains: Vec<Chain>, connectors: &[Option<f64>]) -> 
         n = 2;
     }
     // directions about the loft: reverse chains running against the first
-    let n0 = chains[0].normal();
+    let n0 = chains.iter().find(|c| !c.is_point()).map_or(Vec3::new(0.0, 0.0, 0.0), |c| c.normal());
     for c in chains.iter_mut().skip(1) {
-        if closed && c.normal().dot(n0) < 0.0 {
+        if closed && !c.is_point() && c.normal().dot(n0) < 0.0 {
             *c = c.reversed();
         }
     }
@@ -347,7 +368,9 @@ pub fn match_chains_with(mut chains: Vec<Chain>, connectors: &[Option<f64>]) -> 
         if closed {
             let mut best = 0;
             let mut bv = f64::INFINITY;
-            for k in 0..n {
+            // a point station is matched to any start: keep the order
+            let free = chains[i - 1].is_point() || chains[i].is_point();
+            for k in (0..n).take(if free { 1 } else { n }) {
                 let c = cost(&chains[i - 1], &chains[i], k);
                 if c < bv {
                     bv = c;
