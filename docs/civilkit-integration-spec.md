@@ -55,7 +55,7 @@ Message types you will use:
 | `regen` | `{tag, part, opts?: {upTo?}}` rebuild a part from its feature list. Result has `body` (box, faces, edges, mesh), `errors[]` (per-feature, structured `{code, params}`), `components`, `markers`, etc. |
 | `massProps` | `{tag}` volume, area, centre of mass, principal moments/axes of the current body. Exact B-rep integrals, not mesh estimates. |
 | `step` | `{tag, name}` STEP text of the body for fabrication/detailing hand-off. |
-| `validate` | `{tag, tol?, mesh?}` independent closed-solid check (`mesh:true` also tessellates and reports `TESSELLATION_OPEN` for faces without triangles and mesh edges used by one triangle): `{ok, issues[{code, entity, detail}]}`. Run it on every generated solid. |
+| `validate` | `{tag, tol?, mesh?}` independent closed-solid check (`mesh:true` also tessellates and reports `TESSELLATION_OPEN` for faces without triangles (with the tessellator's reason), faces whose mesh area differs from the exact area by more than 10 percent, and mesh edges used by one triangle that are not a hairline crack between two faces' samples of a shared edge; `meshNotes` lists faces whose trim segments the triangulator could not recover; `tools/tess_open_report.mjs` classifies the open edges over the corpus): `{ok, issues[{code, entity, detail}]}`. Run it on every generated solid. |
 | `inspect`, `measure`, `interference` | face/edge details, distances, solid-vs-solid clash. |
 | `importStep`, `importSat`, `heal` | **in progress** (landing soon after this doc): bring in outside geometry; repair near-valid solids. Check the kernel `README.md` status section before relying on them. |
 | `drawing` | 2D view extraction. **Not implemented yet.** |
