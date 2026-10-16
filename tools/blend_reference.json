@@ -7,11 +7,15 @@
   "holed": 14869.026644707672,
   "lbr": 6000.0,
   "pocket": 28800.0,
+  "post0": 30000.0,
+  "post2": 29896.99111843077,
+  "post4": 29587.964473723103,
   "rounded": 11690.973355292324,
   "rrect2": 9965.66370614359,
   "rrect5": 9785.398163397449,
   "rrect6": 9690.973355292323,
-  "rrectarm": 10985.398163397445
+  "rrectarm": 10985.398163397445,
+  "tower": 28799.999999999993
  },
  "boss_ch2_base_rim": {
   "valid": true,
@@ -220,6 +224,54 @@
   "valid": true,
   "volume": 5996.23352580421
  },
+ "pocket_cove2_r1": {
+  "valid": true,
+  "volume": 28808.488203128036
+ },
+ "pocket_cove2_r2": {
+  "valid": true,
+  "volume": 28833.569331158353
+ },
+ "pocket_cove2_r3": {
+  "valid": true,
+  "volume": 28874.668162060792
+ },
+ "pocket_cove2_vert_r1": {
+  "valid": true,
+  "volume": 28810.133483871512
+ },
+ "pocket_cove2_vert_r2": {
+  "valid": true,
+  "volume": 28839.86431834444
+ },
+ "pocket_cove2_vert_r3": {
+  "valid": true,
+  "volume": 28888.188077706345
+ },
+ "pocket_cove_ring_r1": {
+  "valid": true,
+  "volume": 28816.784665584742
+ },
+ "pocket_cove_ring_r2": {
+  "valid": true,
+  "volume": 28865.604736946447
+ },
+ "pocket_cove_ring_r3": {
+  "valid": true,
+  "volume": 28944.159325960583
+ },
+ "pocket_cove_ring_verts_r1": {
+  "valid": true,
+  "volume": 28823.36578855786
+ },
+ "pocket_cove_ring_verts_r2": {
+  "valid": true,
+  "volume": 28890.78468566495
+ },
+ "pocket_cove_ring_verts_r3": {
+  "valid": true,
+  "volume": 28998.23898847153
+ },
  "pocket_mixed_r1": {
   "valid": true,
   "volume": 28793.149552736402
@@ -267,6 +319,66 @@
  "pocket_walls_concave3_r2": {
   "valid": true,
   "volume": 28839.86431834444
+ },
+ "post0_cove_r1": {
+  "valid": true,
+  "volume": 30017.551628294277
+ },
+ "post0_cove_r2": {
+  "valid": true,
+  "volume": 30071.74043872861
+ },
+ "post0_cove_r3": {
+  "valid": true,
+  "volume": 30164.867319494704
+ },
+ "post2_cove_r1": {
+  "valid": true,
+  "volume": 29913.723587742046
+ },
+ "post2_cove_r1_propagate": {
+  "valid": true,
+  "volume": 29913.723587742046
+ },
+ "post2_cove_r2": {
+  "valid": true,
+  "volume": 29965.125737897615
+ },
+ "post2_cove_r2_propagate": {
+  "valid": true,
+  "volume": 29965.125737897615
+ },
+ "post2_cove_r3": {
+  "valid": true,
+  "volume": 30053.0046822301
+ },
+ "post2_cove_r3_propagate": {
+  "valid": true,
+  "volume": 30053.0046822301
+ },
+ "post4_cove_r1": {
+  "valid": true,
+  "volume": 29603.960079862
+ },
+ "post4_cove_r1_propagate": {
+  "valid": true,
+  "volume": 29603.960079862
+ },
+ "post4_cove_r2": {
+  "valid": true,
+  "volume": 29653.15164050046
+ },
+ "post4_cove_r2_propagate": {
+  "valid": true,
+  "volume": 29653.15164050046
+ },
+ "post4_cove_r3": {
+  "valid": true,
+  "volume": 29737.34626897109
+ },
+ "post4_cove_r3_propagate": {
+  "valid": true,
+  "volume": 29737.34626897109
  },
  "rounded_ch2_propagate": {
   "valid": true,
@@ -343,6 +455,70 @@
  "rrectarm_fillet_top_loop_r2": {
   "valid": true,
   "volume": 10883.583324531339
+ },
+ "tower_all_r1": {
+  "valid": true,
+  "volume": 28795.15074147698
+ },
+ "tower_all_r1_5": {
+  "valid": true,
+  "volume": 28789.428002073077
+ },
+ "tower_all_r1_5_reversed": {
+  "valid": true,
+  "volume": 28789.428002073062
+ },
+ "tower_all_r1_reversed": {
+  "valid": true,
+  "volume": 28795.150741476977
+ },
+ "tower_all_r2": {
+  "valid": true,
+  "volume": 28781.807708129654
+ },
+ "tower_all_r2_propagate": {
+  "valid": true,
+  "volume": 28781.807708129654
+ },
+ "tower_all_r2_reversed": {
+  "valid": true,
+  "volume": 28781.807708129654
+ },
+ "tower_all_r3": {
+  "valid": true,
+  "volume": 28761.77801329067
+ },
+ "tower_all_r3_reversed": {
+  "valid": true,
+  "volume": 28761.778013290677
+ },
+ "tower_concave_only_r2": {
+  "valid": true,
+  "volume": 28887.374660182824
+ },
+ "tower_convex_only_r2": {
+  "valid": true,
+  "volume": 28696.23595761163
+ },
+ "tower_top_rim_r2": {
+  "valid": true,
+  "volume": 28779.457271009935
+ },
+ "tower_two_step_r1": {
+  "valid": true,
+  "volume": 28795.539967346496
+ },
+ "tower_two_step_r1_5": {
+  "valid": true,
+  "volume": 28790.741637738756
+ },
+ "tower_two_step_r2": {
+  "valid": true,
+  "volume": 28784.92150924073
+ },
+ "tower_two_step_r3": {
+  "valid": true,
+  "volume": 28772.2870854649
  },
  "var_concave_isolated": {
   "valid": true,
