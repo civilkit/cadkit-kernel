@@ -168,6 +168,35 @@ impl<'a> Rd<'a> {
         let mut ids: Vec<&u32> = self.f.ents.keys().collect();
         ids.sort();
         let (mut got_len, mut got_ang) = (false, false);
+        // Prefer the units named by the geometric representation context
+        // (GLOBAL_UNIT_ASSIGNED_CONTEXT): files also hold the SI base units
+        // (radian) that a CONVERSION_BASED_UNIT (degree) is defined against, and
+        // the lowest entity id is not necessarily the unit the geometry uses.
+        for id in &ids {
+            let e = &self.f.ents[*id];
+            if !e.has("GEOMETRIC_REPRESENTATION_CONTEXT") {
+                continue;
+            }
+            let Some(g) = e.part("GLOBAL_UNIT_ASSIGNED_CONTEXT") else { continue };
+            let Some(units) = g.args.first().and_then(Val::as_list) else { continue };
+            for u in units.iter().filter_map(Val::as_ref) {
+                let Some(ue) = self.f.ents.get(&u) else { continue };
+                if !got_len && ue.has("LENGTH_UNIT") {
+                    if let Some(s) = self.unit_si(u, 0) {
+                        self.len = s * 1000.0;
+                        got_len = true;
+                    }
+                } else if !got_ang && ue.has("PLANE_ANGLE_UNIT") {
+                    if let Some(s) = self.unit_si(u, 0) {
+                        self.ang = s;
+                        got_ang = true;
+                    }
+                }
+            }
+            if got_len || got_ang {
+                break;
+            }
+        }
         for id in ids {
             let e = &self.f.ents[id];
             if !got_len && e.has("LENGTH_UNIT") {
@@ -253,6 +282,20 @@ impl<'a> Rd<'a> {
 
     fn surface(&self, id: u32) -> R<Surface> {
         self.nested(id, || self.surface_inner(id))
+    }
+
+    /// True when the surface entity's own normal is the reverse of the `Surface`
+    /// built from it: a TOROIDAL_SURFACE with exactly one negative radius
+    /// (P = (R + r cos v) radial + r sin v axis, so the sign of R*r flips the
+    /// cross product dP/du x dP/dv relative to the outward normal).
+    fn torus_flips(&self, id: u32) -> bool {
+        let Some(e) = self.f.ents.get(&id) else { return false };
+        if e.parts.len() != 1 || e.parts[0].name != "TOROIDAL_SURFACE" {
+            return false;
+        }
+        let a = &e.parts[0].args;
+        let g = |i: usize| a.get(i).and_then(Val::as_f64).unwrap_or(1.0);
+        (g(2) < 0.0) != (g(3) < 0.0)
     }
 
     fn curve_inner(&self, id: u32) -> R<Curve> {
@@ -414,8 +457,11 @@ impl<'a> Rd<'a> {
             }
             "TOROIDAL_SURFACE" => {
                 let (m, n) = (self.real(id, a.get(2), "major radius")? * self.len, self.real(id, a.get(3), "minor radius")? * self.len);
-                if m <= 0.0 || n <= 0.0 {
-                    return Err(bad(id, "non-positive torus radius"));
+                // A negative radius describes the same torus with the opposite
+                // normal (see `torus_flips`); the face sense is flipped by the caller.
+                let (m, n) = (m.abs(), n.abs());
+                if m <= 1e-12 || n <= 1e-12 {
+                    return Err(bad(id, "zero torus radius"));
                 }
                 Ok(Surface::Torus { frame: ax(1)?, major: m, minor: n })
             }
@@ -652,7 +698,8 @@ impl<'a> Rd<'a> {
         let a = self.simple(id, &["ADVANCED_FACE", "FACE_SURFACE"])?;
         let bounds = self.refs_list(id, a.get(1), "bounds")?;
         let surface = self.surface(a.get(2).and_then(Val::as_ref).ok_or_else(|| bad(id, "face without surface"))?)?;
-        let sense = a.get(3).and_then(Val::as_bool).unwrap_or(true);
+        let sid = a.get(2).and_then(Val::as_ref).unwrap_or(0);
+        let sense = a.get(3).and_then(Val::as_bool).unwrap_or(true) != self.torus_flips(sid);
         let mut loops = Vec::new();
         let mut flagged: Vec<bool> = Vec::new();
         let mut vertex_loop = false;
@@ -1504,7 +1551,7 @@ impl Rd<'_> {
                 // a loop that already runs into the pole and out again (the
                 // seam spike OCC writes, with no degenerate edge) is closed
                 // in 3D by the pole jump in uv: nothing to add
-                if self.has_pole_jump(&la, d, per) {
+                if self.has_pole_jump(surf, &la, d, per) {
                     return Ok(loops);
                 }
                 let joined = self.close_at_pole(id, surf, sense, d, per, la, wind[0].2)?;
@@ -1517,12 +1564,23 @@ impl Rd<'_> {
 
     /// Consecutive coedges whose uv ends differ by a whole period along `d`
     /// only: a jump across a pole.
-    fn has_pole_jump(&self, l: &[Co], d: usize, per: f64) -> bool {
+    fn has_pole_jump(&self, surf: &Surface, l: &[Co], d: usize, per: f64) -> bool {
         let n = l.len();
         (0..n).any(|i| {
             let (Some(a), Some(b)) = (self.co_uv(&l[i], false), self.co_uv(&l[(i + 1) % n], true)) else { return false };
             let (dd, od) = (comp(b, d) - comp(a, d), comp(b, 1 - d) - comp(a, 1 - d));
-            od.abs() < 1e-6 && dd.abs() > 0.5 * per
+            if !(od.abs() < 1e-6 && dd.abs() > 0.5 * per) {
+                return false;
+            }
+            // the closing jump of a loop that winds once (one circle round a
+            // cone / sphere) is a whole period too: it is a pole jump only
+            // where the surface degenerates (the u-partial vanishes)
+            if i + 1 < n {
+                return true;
+            }
+            let (du, dv) = surf.partials(a.x, a.y);
+            let g = if d == 0 { du } else { dv };
+            g.len() < 1e-9 * (1.0 + surf.eval(a.x, a.y).len())
         })
     }
 
