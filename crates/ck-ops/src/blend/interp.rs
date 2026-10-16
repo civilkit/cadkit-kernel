@@ -49,16 +49,6 @@ pub fn variable_fillet(b: &Body, edges: &[(String, String, Vec3)], v: VarSpec, f
     variable_fillet_picks(b, edges, &radii, v, feature, tol)
 }
 
-/// Constant-radius circular fillets with a radius per edge (`radii[i]` for `edges[i]`; the radii at
-/// a shared vertex may differ). Same construction as [`variable_fillet_picks`]: tools from the input
-/// body, applied in turn, so edges that meet at a vertex end in a mitre (the intersection of the two
-/// blend surfaces), which is not tangent-continuous where the radii differ.
-pub fn unequal_fillet(b: &Body, edges: &[(String, String, Vec3)], radii: &[f64], feature: &str, tol: f64) -> Result<Body, BlendError> {
-    let pairs: Vec<[f64; 2]> = radii.iter().map(|&r| [r, r]).collect();
-    let v = VarSpec { radii: [1.0, 1.0], profile: FilletProfile::Circular, rhos: [0.5, 0.5] };
-    variable_picks_core(b, edges, &pairs, v, feature, tol, false)
-}
-
 /// As [`variable_fillet`] with a radius pair `[near, far]` per pick (`near` is the end of the picked
 /// edge nearer its pick point). Edges that meet at a vertex must agree on the radius there
 /// (`variableRadiusMismatch` otherwise). Every blend's tool is built on the INPUT body and applied
@@ -72,7 +62,7 @@ pub fn variable_fillet_picks(
     feature: &str,
     tol: f64,
 ) -> Result<Body, BlendError> {
-    variable_picks_core(b, edges, radii, v, feature, tol, true)
+    variable_picks_core(b, edges, radii, v, feature, tol)
 }
 
 fn variable_picks_core(
@@ -82,7 +72,6 @@ fn variable_picks_core(
     v: VarSpec,
     feature: &str,
     tol: f64,
-    check_vertices: bool,
 ) -> Result<Body, BlendError> {
     if radii.len() != edges.len() || !radii.iter().flatten().all(|r| *r > 0.0 && r.is_finite()) {
         return Err(BlendError::code("invalidValue"));
@@ -103,7 +92,7 @@ fn variable_picks_core(
         for (vx, r) in [(near_v, rr[0]), (far_v, rr[1])] {
             ends.push((vx, r));
             match at_vertex.iter().find(|x| x.0 == vx) {
-                Some(&(_, r0)) if check_vertices && (r0 - r).abs() > 1e-9 * (1.0 + r0.abs()) => {
+                Some(&(_, r0)) if (r0 - r).abs() > 1e-9 * (1.0 + r0.abs()) => {
                     let p = b.vertex(vx).p;
                     return Err(BlendError::detail(
                         "variableRadiusMismatch",
@@ -115,11 +104,30 @@ fn variable_picks_core(
             }
         }
     }
+    // mitre planes: at a vertex shared with another pick, the plane through it with normal d_i - d_j
+    // (d = unit direction away from the vertex along the edge); pick i keeps the side of its own edge
+    let away = |e: ck_topo::body::EdgeId, vx: ck_topo::body::VertexId| -> Vec3 {
+        let ed = b.edge(e);
+        let other = if ed.v0 == vx { ed.v1 } else { ed.v0 };
+        (b.vertex(other).p - b.vertex(vx).p).normalize()
+    };
     let mut cur = b.clone();
     for (k, ((fa, fb, at), rr)) in edges.iter().zip(radii).enumerate() {
         let mut vk = v;
         vk.radii = *rr;
-        cur = blend_one(b, &cur, fa, fb, *at, vk, feature, k as u32, tol)?;
+        let ed = b.edge(eids[k]);
+        let mut mitres: Vec<(Vec3, Vec3)> = vec![];
+        for vx in [ed.v0, ed.v1] {
+            for (j, &ej) in eids.iter().enumerate() {
+                if j != k && ej != eids[k] && (b.edge(ej).v0 == vx || b.edge(ej).v1 == vx) {
+                    let n = away(eids[k], vx) - away(ej, vx);
+                    if n.len() > 1e-9 {
+                        mitres.push((b.vertex(vx).p, n.normalize()));
+                    }
+                }
+            }
+        }
+        cur = blend_one(b, &cur, fa, fb, *at, vk, feature, k as u32, tol, &mitres)?;
     }
     // three convex edges that meet with one radius at the vertex: the rolling ball's sphere patch `V<k>`
     // replaces the mitre (circular sections only; the cones are not exactly tangent to the ball)
@@ -144,11 +152,43 @@ fn variable_picks_core(
     Ok(cur)
 }
 
+/// `tool` cut down to the half-space `(p - o) . n >= 0`.
+fn clip_halfspace(tool: &Body, o: Vec3, n: Vec3, tol: f64) -> Result<Body, BlendError> {
+    let (lo, hi) = tool.bbox();
+    let big = 4.0 * (hi - lo).len() + 10.0;
+    let u = if n.x.abs() < 0.9 { Vec3::X.cross(n) } else { Vec3::Y.cross(n) }.normalize();
+    let w = n.cross(u);
+    let pt = |a: f64, b: f64, c: f64| o + n * (a * big) + u * (b * big) + w * (c * big);
+    // (corner loop, outward normal)
+    let quads: [([Vec3; 4], Vec3); 6] = [
+        ([pt(0., -1., -1.), pt(0., 1., -1.), pt(0., 1., 1.), pt(0., -1., 1.)], -n),
+        ([pt(1., -1., -1.), pt(1., 1., -1.), pt(1., 1., 1.), pt(1., -1., 1.)], n),
+        ([pt(0., -1., -1.), pt(1., -1., -1.), pt(1., -1., 1.), pt(0., -1., 1.)], -u),
+        ([pt(0., 1., -1.), pt(1., 1., -1.), pt(1., 1., 1.), pt(0., 1., 1.)], u),
+        ([pt(0., -1., -1.), pt(1., -1., -1.), pt(1., 1., -1.), pt(0., 1., -1.)], -w),
+        ([pt(0., -1., 1.), pt(1., -1., 1.), pt(1., 1., 1.), pt(0., 1., 1.)], w),
+    ];
+    let polys: Vec<(Vec<Vec3>, FaceName)> = quads
+        .iter()
+        .enumerate()
+        .map(|(i, (q, out))| {
+            let nw = (q[1] - q[0]).cross(q[2] - q[0]);
+            let mut v = q.to_vec();
+            if nw.dot(*out) < 0.0 {
+                v.reverse();
+            }
+            (v, FaceName::other("clip", &format!("k{i}")))
+        })
+        .collect();
+    let block = super::vertex::polyhedron(&polys);
+    crate::boolean::boolean(tool, &block, Op::Intersect, tol).map(|r| r.body).map_err(|_| BlendError::code("blendFailed"))
+}
+
 fn unsupported() -> BlendError {
     BlendError::code("blendUnsupported")
 }
 
-fn blend_one(b: &Body, cur: &Body, fa: &str, fb: &str, at: Vec3, v: VarSpec, feature: &str, k: u32, tol: f64) -> Result<Body, BlendError> {
+fn blend_one(b: &Body, cur: &Body, fa: &str, fb: &str, at: Vec3, v: VarSpec, feature: &str, k: u32, tol: f64, mitres: &[(Vec3, Vec3)]) -> Result<Body, BlendError> {
     let e = find_edge(b, fa, fb, at).ok_or_else(|| BlendError::code("missingEdge"))?;
     let ed = b.edge(e).clone();
     if !matches!(ed.curve, Curve::Line { .. }) {
@@ -257,6 +297,13 @@ fn blend_one(b: &Body, cur: &Body, fa: &str, fb: &str, at: Vec3, v: VarSpec, fea
             f.name = name.clone();
         }
     }
+    // edges that meet at a vertex: each convex tool keeps its own side of the mitre plane there, so the
+    // cuts meet in a crease without an intersection of the two (oblique, tangent-singular) blend surfaces
+    if convex {
+        for &(o, n) in mitres {
+            tool = clip_halfspace(&tool, o, n, tol)?;
+        }
+    }
     let op = if convex { Op::Cut } else { Op::Union };
     // order: untouched; edge faces (ref order), end faces (start, end); other touched faces; blend
     let ends: Vec<FaceId> = [ed.v0, ed.v1]
@@ -280,7 +327,13 @@ fn blend_one(b: &Body, cur: &Body, fa: &str, fb: &str, at: Vec3, v: VarSpec, fea
     // the two faces of the edge in the running body (earlier tools may have rebuilt the ids)
     let cur_faces: Vec<FaceId> = [fa, fb].iter().filter_map(|n| cur.find_face(n)).collect();
     let hook = |f: FaceId, g: FaceId| -> Option<Vec<Curve>> { (Some(g) == blend_f && cur_faces.contains(&f)).then(Vec::new) };
-    apply_tool_hooked(cur, &tool, op, &name, hint, tol, Some(&hook)).map(|x| x.0)
+    apply_tool_hooked(cur, &tool, op, &name, hint, tol, Some(&hook)).map(|x| x.0).map_err(|e| {
+        if e.code == "blendFailed" && e.detail.is_none() {
+            BlendError::detail("blendFailed", &format!("{}: {}", name.id(), super::build::last_fail()))
+        } else {
+            e
+        }
+    })
 }
 
 #[cfg(test)]

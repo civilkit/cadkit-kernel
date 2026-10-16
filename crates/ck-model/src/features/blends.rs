@@ -294,6 +294,14 @@ fn exec_chamfer_legs(br: &mut Brep, state: &mut RegenState, f: &Feature, edges: 
         }
     }
     let flip = f.raw.get("flip").and_then(|v| v.as_bool()).unwrap_or(false);
+    if let Some(ff) = &first_face {
+        // a named face: each edge decides on its own which of its sides is the first
+        let body = br.body.as_ref().ok_or_else(|| FeatureError::new("missingEdge"))?;
+        br.spans.push(Span::leaf(chamfer_label(&f.id, d1, sel.len())));
+        let out = ck_ops::blend::build::chamfer_legs_on_face(body, &sel, d1, leg, ff, flip, &f.id, super::TOL).map_err(blend_error)?;
+        br.body = Some(out);
+        return Ok(());
+    }
     let swapped: Vec<bool> = sel
         .iter()
         .enumerate()
@@ -483,7 +491,7 @@ pub fn exec_fillet(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
             }
             let body = br.body.as_ref().ok_or_else(|| FeatureError::new("missingEdge"))?;
             br.spans.push(Span::leaf(fillet_label(&f.id, radii.iter().cloned().fold(0.0, f64::max), sel.len())));
-            let out = ck_ops::blend::interp::unequal_fillet(body, &sel, &radii, &f.id, super::TOL).map_err(blend_error)?;
+            let out = ck_ops::blend::build::fillet_unequal(body, &sel, &radii, &f.id, super::TOL).map_err(blend_error)?;
             corner_warnings(state, &f.id, &out);
             br.body = Some(out);
             return Ok(());

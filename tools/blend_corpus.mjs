@@ -241,6 +241,18 @@ if (argv.includes('--edges')) {
   process.exit(0);
 }
 
+if (argv.includes('--debug')) {
+  // one case with regen debug on: the feature, errors, warnings and the trace labels
+  const c = cases.find((x) => x.name === opt('--debug'));
+  const k = new Kernel(mod);
+  const f = feature(k, c, baseBody(k, c.base));
+  console.log(JSON.stringify(f));
+  const r = req(k, 2, { type: 'regen', tag: 'main', part: { format: 'ck-part', version: 1, features: [...BASES[c.base], f] }, debug: true });
+  console.log('errors', JSON.stringify(r.result?.errors), 'warnings', JSON.stringify(r.result?.warnings));
+  console.log(JSON.stringify(r.trace ?? r.debug ?? Object.keys(r)).slice(0, 4000));
+  process.exit(0);
+}
+
 if (argv.includes('--emit')) {
   const dir = opt('--emit');
   mkdirSync(dir, { recursive: true });

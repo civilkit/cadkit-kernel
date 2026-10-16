@@ -270,6 +270,18 @@ pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featu
             // ball's sphere patch `V<k>` replaces the miter
             let mut corners: Vec<Vec3> = vec![];
             for corner in super::corner::find_corner(b, &eids) {
+                // per-edge radii: the ball patch needs one radius at the corner
+                let rc = EDGE_RADII.with(|c| {
+                    c.borrow().as_ref().map(|v| {
+                        let rs: Vec<f64> = corner.edges.iter().filter_map(|e| eids.iter().position(|x| x == e)).map(|i| v[i]).collect();
+                        if rs.len() == 3 && rs.iter().all(|x| (x - rs[0]).abs() <= 1e-12 * (1.0 + rs[0])) { Some(rs[0]) } else { None }
+                    })
+                });
+                let r = match rc {
+                    Some(Some(x)) => x,
+                    Some(None) => continue,
+                    None => r,
+                };
                 let name = FaceName::other(feature, &format!("V{}", corners.len()));
                 let Ok(tool) = super::corner::sphere_corner_tool(b, &corner, r, feature, &name, tol) else { continue };
                 let op = if corner.concave { Op::Union } else { Op::Cut };
@@ -301,6 +313,47 @@ pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featu
     let idx: Vec<u32> = (0..edges.len() as u32).collect();
     let (raw, refs, _) = blend_edges_at(b, edges, spec, feature, tol, &idx, &[], &[], &Junc::default())?;
     Ok(in_place_layout(b, &raw, &refs, tol))
+}
+
+thread_local! {
+    /// Radius of the fillet of selection index `k` (see [`fillet_unequal`]).
+    static EDGE_RADII: std::cell::RefCell<Option<Vec<f64>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Circular fillets with a radius per edge (`radii[k]` for `edges[k]`). Every edge is built as the
+/// ordinary constant-radius blend (analytic cylinders, the same rounds and junction rules); where
+/// edges of different radii meet, the blend faces end in a mitre, which is not tangent-continuous.
+/// Three convex or concave edges that share a radius at their vertex still get the sphere patch.
+pub fn fillet_unequal(b: &Body, edges: &[(String, String, Vec3)], radii: &[f64], feature: &str, tol: f64) -> Result<Body, BlendError> {
+    if radii.len() != edges.len() || !radii.iter().all(|r| *r > 0.0 && r.is_finite()) {
+        return Err(BlendError::code("invalidValue"));
+    }
+    let rmax = radii.iter().cloned().fold(0.0, f64::max);
+    EDGE_RADII.with(|c| *c.borrow_mut() = Some(radii.to_vec()));
+    let r = blend_edges(b, edges, Spec::Fillet(rmax, FilletProfile::Circular), feature, tol);
+    EDGE_RADII.with(|c| *c.borrow_mut() = None);
+    r
+}
+
+thread_local! {
+    /// The face a chamfer's first leg lies on (and whether to take the other one instead), see
+    /// [`chamfer_legs_on_face`].
+    static CHAMFER_FIRST: std::cell::RefCell<Option<(FaceName, bool)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// [`chamfer_legs`] with the first leg (`d1`, or the distance of the angle form) on the face named
+/// `first` for every edge, whichever side of the pick it is on; `flip` takes the other face of each
+/// edge instead. `first` is a face id, `~k` region suffix ignored.
+pub fn chamfer_legs_on_face(b: &Body, edges: &[(String, String, Vec3)], d1: f64, leg: ChamferLeg, first: &str, flip: bool, feature: &str, tol: f64) -> Result<Body, BlendError> {
+    let name = FaceName::parse(first).map(|mut n| {
+        n.region = None;
+        n
+    });
+    let Some(name) = name else { return Err(BlendError::code("missingEdge")) };
+    CHAMFER_FIRST.with(|c| *c.borrow_mut() = Some((name, flip)));
+    let r = blend_edges(b, edges, Spec::Chamfer(d1, leg), feature, tol);
+    CHAMFER_FIRST.with(|c| *c.borrow_mut() = None);
+    r
 }
 
 thread_local! {
@@ -524,7 +577,11 @@ fn blend_edges_at(
                 if base(fs[0]) == *fa || base(fs[1]) == *fb { (fs[0], fs[1]) } else { (fs[1], fs[0]) }
             }
         };
-        let (body, hint) = blend_edge_hint(&out, e, [f1, f2], spec, feature, idx[k], tol, rings.get(k).copied().unwrap_or(false), junc)?;
+        let spec_k = match spec {
+            Spec::Fillet(_, p) => EDGE_RADII.with(|c| c.borrow().as_ref().and_then(|v| v.get(idx[k] as usize).copied())).map_or(spec, |r| Spec::Fillet(r, p)),
+            _ => spec,
+        };
+        let (body, hint) = blend_edge_hint(&out, e, [f1, f2], spec_k, feature, idx[k], tol, rings.get(k).copied().unwrap_or(false), junc)?;
         // end faces at a junction with another selected edge are that
         // edge's own faces, not extra touches (oracle: the ring's face
         // order is e1 e2 e3 e4, the open chain's C1 e1 e4 e2 e3)
@@ -918,8 +975,18 @@ pub fn in_place_layout_opts(input: &Body, out: &Body, refs: &[BlendRef], tol: f6
     res
 }
 
+thread_local! {
+    static LAST_FAIL: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+/// The reason the last blend step gave up (see [`dbg_fail`]); empty when none did.
+pub(super) fn last_fail() -> String {
+    LAST_FAIL.with(|c| c.borrow().clone())
+}
+
 /// `CK_BLEND_DEBUG=1` prints why a blend gave up (native runs only).
 fn dbg_fail(m: &str) {
+    LAST_FAIL.with(|c| *c.borrow_mut() = m.chars().take(400).collect());
     if std::env::var_os("CK_BLEND_DEBUG").is_some() {
         eprintln!("blend fail: {m}");
     }
@@ -1089,9 +1156,20 @@ fn blend_edge_hint(
         }
         _ => (spec, r),
     };
+    // `chamfer_legs_on_face`: the first leg belongs to the named face, whichever side of the pick it is on
+    let swap_first = CHAMFER_FIRST.with(|c| {
+        c.borrow().as_ref().map_or(false, |(name, flip)| {
+            let base = |f: FaceId| {
+                let mut n = b.face(f).name.clone();
+                n.region = None;
+                n
+            };
+            (base(faces[1]) == *name) ^ *flip
+        })
+    });
     // chamfer legs on the first / second face
     let (ch1, ch2) = match spec {
-        Spec::Chamfer(a, ChamferLeg::Dist(b)) => (a, b),
+        Spec::Chamfer(a, ChamferLeg::Dist(b)) => if swap_first { (b, a) } else { (a, b) },
         Spec::Chamfer(a, ChamferLeg::Angle(al) | ChamferLeg::AngleRev(al)) => {
             // triangle corner / first contact / second contact: law of sines with the interior angle
             let psi = std::f64::consts::PI - phi;
@@ -1103,7 +1181,7 @@ fn blend_edge_hint(
                 return Err(BlendError::detail("blendSize", &format!("{}: no blend fits between the faces", FaceName::blend(feature, k).id())));
             }
             let x = a * al.sin() / den;
-            if matches!(spec, Spec::Chamfer(_, ChamferLeg::AngleRev(_))) {
+            if matches!(spec, Spec::Chamfer(_, ChamferLeg::AngleRev(_))) != swap_first {
                 (x, a)
             } else {
                 (a, x)
