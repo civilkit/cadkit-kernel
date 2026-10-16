@@ -452,6 +452,7 @@ fn loft_once(feature: &str, profiles: &[ProfileIn], opts: &LoftOpts, strat: Stra
     if st.chains[k - 1].is_point() {
         ends.d1 = None;
         ends.apex[1] = Some(opts.apex_tangent.unwrap_or(1.0).clamp(0.0, 2.0));
+        ends.auto = opts.apex_tangent.is_none();
     }
     let starts = st.chains.iter().filter_map(|c| c.pieces.first().map(|p| p.g.start())).collect();
     let body = build(feature, &st, profiles, opts.surface, &grails, ends)?;
@@ -687,12 +688,14 @@ fn apex_natural_is_bad(st: &Stations, nv: usize) -> bool {
             let d = p - cen;
             (d - u * d.dot(u)).len()
         };
+        // tolerances scale with the section, not with the rail (a rail near the axis has a tiny lateral distance)
+        let size = (0..nv).map(|i| lat(vp(nb, i))).fold(0.0, f64::max);
+        if size < 1e-9 * len.max(1.0) {
+            continue;
+        }
         for i in 0..nv {
             let pts: Vec<Vec3> = (0..k).map(|s| vp(s, i)).collect();
             let lat0 = lat(pts[nb]);
-            if lat0 < 1e-9 * len.max(1.0) {
-                continue;
-            }
             let q: Vec<[f64; 3]> = pts.iter().map(|p| [p.x, p.y, p.z]).collect();
             let Ok((deg, kn, c)) = smooth::through(&st.ts, &q) else { continue };
             let Ok(cur) = BSplineCurve::new(deg, kn, c.iter().map(|p| Vec3::new(p[0], p[1], p[2])).collect()) else { continue };
@@ -702,7 +705,7 @@ fn apex_natural_is_bad(st: &Stations, nv: usize) -> bool {
                 let p = cur.eval(t0 + (t1 - t0) * m as f64 / 32.0);
                 let s = ((p - cen).dot(u) / len).clamp(0.0, 1.0);
                 let l = lat(p);
-                if l > prev * (1.0 + 1e-6) + 1e-9 * len || l < lat0 * (1.0 - s) - 0.03 * lat0 {
+                if l > prev + 0.01 * size || l < lat0 * (1.0 - s) - 0.02 * size {
                     return true;
                 }
                 prev = l;
