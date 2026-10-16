@@ -269,3 +269,20 @@ fn twenty_characters_are_quick_and_small() {
     let edges: usize = l.regions.iter().flat_map(|r| r.loops()).map(|lp| lp.len()).sum();
     assert!(edges < 400, "{edges} edges");
 }
+
+#[test]
+fn tight_arc_widens_and_tight_spacing_warns() {
+    let spec = Spec {
+        string: "OIL PSI".into(),
+        height: 5.0,
+        h: HAnchor::Center,
+        arc: Some(ArcSpec { centre: [0.0, 0.0], radius: 24.0, angle_centre: 270.0, side: Side::Inside }),
+        ..Spec::default()
+    };
+    let l = layout(&spec).unwrap();
+    assert!(!overlapping(&l.regions), "{:?}", l.warnings);
+    let l = layout(&Spec { string: "HIM".into(), height: 10.0, spacing: 0.1, ..Spec::default() }).unwrap();
+    assert!(l.warnings.iter().any(|w| w.code == "textOverlap"));
+    let l = layout(&Spec { string: "HIM".into(), height: 10.0, ..Spec::default() }).unwrap();
+    assert!(!l.warnings.iter().any(|w| w.code == "textOverlap"));
+}

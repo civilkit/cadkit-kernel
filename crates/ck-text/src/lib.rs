@@ -589,6 +589,66 @@ pub fn layout(spec: &Spec) -> Result<Layout, Error> {
             return Err(Error::BadArc);
         }
     }
+    let mut warnings = run.warnings.clone();
+    let (mut regions, mut bbox) = place(spec, &run, 1.0)?;
+    let mut over = overlapping(&regions);
+    if over && spec.arc.is_some() {
+        // letters on a tight circle lean towards each other (inside) or their feet do (outside): open the pitch
+        for step in 1..=15 {
+            let pitch = 1.0 + 0.04 * step as f64;
+            (regions, bbox) = place(spec, &run, pitch)?;
+            if !overlapping(&regions) {
+                over = false;
+                warnings.push(Warning { code: "textSpacingAdjusted", detail: format!("letters on a radius-{} arc would overlap; the pitch was widened by {:.0} %", spec.arc.as_ref().map_or(0.0, |a| a.radius), (pitch - 1.0) * 100.0) });
+                break;
+            }
+        }
+    }
+    if over {
+        warnings.push(Warning { code: "textOverlap", detail: "neighbouring letters overlap (spacing too tight or radius too small), which the booleans cannot merge; increase the spacing, the radius or reduce the height".into() });
+    }
+    Ok(Layout { regions, warnings, bbox })
+}
+
+fn overlapping(regions: &[Region]) -> bool {
+    let polys: Vec<(usize, [f64; 4], Vec<Vec<P>>)> = regions
+        .iter()
+        .map(|r| {
+            let ls: Vec<Vec<P>> = std::iter::once(&r.outer).map(|l| loop_polygon(l, 6)).collect();
+            let mut b = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+            for p in ls.iter().flatten() {
+                b = [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])];
+            }
+            (r.glyph, b, ls)
+        })
+        .collect();
+    for i in 0..polys.len() {
+        for j in i + 1..polys.len() {
+            let (a, b) = (&polys[i], &polys[j]);
+            if a.0 == b.0 || a.1[0] > b.1[2] || b.1[0] > a.1[2] || a.1[1] > b.1[3] || b.1[1] > a.1[3] {
+                continue;
+            }
+            let (pa, pb) = (&a.2[0], &b.2[0]);
+            if inside(pa, pb[0]) || inside(pb, pa[0]) {
+                return true;
+            }
+            for x in 0..pa.len() {
+                let (p0, p1) = (pa[x], pa[(x + 1) % pa.len()]);
+                for y in 0..pb.len() {
+                    let (q0, q1) = (pb[y], pb[(y + 1) % pb.len()]);
+                    let o = |p: P, q: P, r: P| (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+                    if o(p0, p1, q0) * o(p0, p1, q1) < 0.0 && o(q0, q1, p0) * o(q0, q1, p1) < 0.0 {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Put the glyphs of a run in place (`pitch` widens the arc layout's letter pitch).
+fn place(spec: &Spec, run: &Run, pitch: f64) -> Result<(Vec<Region>, [f64; 4]), Error> {
     let s = run.scale;
     let m = if spec.mirror { -1.0 } else { 1.0 };
     let ax = match spec.h {
@@ -601,11 +661,9 @@ pub fn layout(spec: &Spec) -> Result<Layout, Error> {
         VAnchor::Middle => spec.height * 0.5,
         VAnchor::Top => spec.height,
     };
-    let mut warnings = run.warnings.clone();
     let mut regions = vec![];
     let mut bbox = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
     let (ca, sa) = (spec.angle.to_radians().cos(), spec.angle.to_radians().sin());
-    let mut spacing_overlap = false;
     for (gi, g) in run.glyphs.iter().enumerate() {
         // world = o + ex * (x0 + m * s * p.x) + ey * (y0 + s * p.y)
         let (o, ex, ey, x0, y0);
@@ -618,7 +676,7 @@ pub fn layout(spec: &Spec) -> Result<Layout, Error> {
                 y0 = -ay;
             }
             Some(a) => {
-                let gx = m * ((g.pen + g.adv * 0.5) * s - ax);
+                let gx = pitch * m * ((g.pen + g.adv * 0.5) * s - ax);
                 let (rb, th, e1, e2);
                 match a.side {
                     Side::Outside => {
@@ -661,14 +719,8 @@ pub fn layout(spec: &Spec) -> Result<Layout, Error> {
             }
         }
         regions.extend(rs);
-        if spec.spacing < 0.6 {
-            spacing_overlap = true;
-        }
     }
-    if spacing_overlap {
-        warnings.push(Warning { code: "textTightSpacing", detail: "spacing below 0.6 can make neighbouring letters overlap, which the booleans cannot merge".into() });
-    }
-    Ok(Layout { regions, warnings, bbox })
+    Ok((regions, bbox))
 }
 
 /// Group the loops of one glyph into regions by nesting; outer boundaries CCW, holes CW.
