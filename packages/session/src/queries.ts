@@ -113,6 +113,35 @@ export async function threadData(kernel: KernelTransport, standard?: string, siz
   return call(kernel, msg);
 }
 
+export interface TextMetrics {
+  /** pen advance of the whole string */
+  advance: number;
+  /** ink box relative to the pen start on the baseline: [xmin, ymin, xmax, ymax] */
+  bbox: [number, number, number, number];
+  width: number;
+  capHeight: number;
+  chars: number;
+  advances: number[];
+  warnings: Array<{ code: string; detail: string }>;
+}
+
+/** Advance width and ink box of a string, to centre and size lettering (stateless; docs/text.md). */
+export async function textMetrics(kernel: KernelTransport, string: string, opts: { font?: string; height: number; spacing?: number }): Promise<TextMetrics> {
+  return call(kernel, { type: 'textMetrics', string, ...opts });
+}
+
+export interface TextOutline {
+  regions: Array<{ outer: Array<[number, number]>; holes: Array<Array<[number, number]>> }>;
+  bbox: [number, number, number, number];
+  area: number;
+  warnings: Array<{ code: string; detail: string }>;
+}
+
+/** The loops of a text entity as polylines, for a viewport preview (stateless; docs/text.md). `spec` = the entity fields. */
+export async function textOutline(kernel: KernelTransport, spec: Record<string, unknown>): Promise<TextOutline> {
+  return call(kernel, { type: 'textOutline', ...spec });
+}
+
 export interface ProfileIssue {
   rule: string;
   severity: 'error' | 'warn' | 'info';

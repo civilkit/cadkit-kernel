@@ -20,7 +20,33 @@ export type SketchEntity =
   | { id: string; type: 'ellipse'; c: string; p: string; r: number }
   | { id: string; type: 'point'; p: string }
   | { id: string; type: 'spline'; pts: string[]; closed?: boolean }
-  | { id: string; type: 'cvspline'; pts: string[]; degree?: number; knots?: number[]; closed?: boolean };
+  | { id: string; type: 'cvspline'; pts: string[]; degree?: number; knots?: number[]; closed?: boolean }
+  | SketchText;
+
+/** Lettering (docs/text.md): fixed geometry, outlines of a baked-in font as closed loops. */
+export interface SketchText {
+  id: string;
+  type: 'text';
+  string: string;
+  /** 'gauge' (condensed sans, default) or 'engrave' (serif) */
+  font?: 'gauge' | 'engrave';
+  /** cap height in sketch units (mm) */
+  height: number;
+  /** anchor position; `p` (a sketch point id) wins when given so the position can be constrained */
+  at?: [number, number];
+  p?: string;
+  /** [horizontal, vertical]; horizontal refers to the ink box. Default ['left','baseline'] */
+  anchor?: [('left' | 'center' | 'right')?, ('baseline' | 'middle' | 'top')?];
+  /** degrees, counter-clockwise about the anchor */
+  angle?: number;
+  /** letter pitch factor (default 1) */
+  spacing?: number;
+  mirror?: boolean;
+  /** lines within a chord tolerance instead of B-spline edges */
+  polyline?: boolean;
+  /** lay the letters along a circle: outside = tops away from the centre, reads clockwise */
+  arc?: { centre?: [number, number]; c?: string; radius: number; angleCentre?: number; side?: 'outside' | 'inside' };
+}
 
 export interface SketchConstraint {
   id: string;

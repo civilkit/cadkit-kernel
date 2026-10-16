@@ -17,6 +17,7 @@ import {
   type SketchConstraint,
   type SketchEntity,
   type SketchPlane,
+  type SketchText,
   type SketchPoint,
 } from '../../part-model/src/index.js';
 
@@ -43,6 +44,13 @@ export class Sketch {
     const c = this.pt(cx, cy);
     const id = this.id('e');
     this.entities.push({ id, type: 'circle', c, r });
+    return id;
+  }
+  /** lettering (docs/text.md); the anchor point is a sketch point, so it can be constrained */
+  text(string: string, x: number, y: number, o: Omit<SketchText, 'id' | 'type' | 'string' | 'p' | 'at'> = { height: 5 }): string {
+    const p = this.pt(x, y);
+    const id = this.id('t');
+    this.entities.push({ id, type: 'text', string, p, ...o });
     return id;
   }
   /** hole centre: a point entity over a new point (what the hole feature reads) */

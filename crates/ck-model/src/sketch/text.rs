@@ -198,3 +198,35 @@ pub fn outline_reply(msg: &Json) -> Result<Json, String> {
         ("warnings".into(), Json::Arr(l.warnings.iter().map(warn_json).collect())),
     ]))
 }
+
+/// `inspect` entry of one text entity: `{id, string, font, height, ok, bbox, area, glyphs, error?}`.
+pub fn info_json(sk: &Sketch, t: &TextLayout) -> Json {
+    let (id, l) = t;
+    let e = sk.entity(id);
+    let spec = match e {
+        Some(super::SketchEntity::Text { text, .. }) => Some(text.resolved(sk)),
+        _ => None,
+    };
+    let mut o = vec![("id".to_string(), Json::Str(id.clone()))];
+    if let Some(s) = &spec {
+        o.push(("string".into(), Json::Str(s.string.clone())));
+        o.push(("font".into(), Json::Str(s.font.clone())));
+        o.push(("height".into(), Json::Num(s.height)));
+    }
+    match l {
+        Ok(l) => {
+            o.push(("ok".into(), Json::Bool(true)));
+            o.push(("bbox".into(), Json::Arr(l.bbox.iter().map(|v| Json::Num(*v)).collect())));
+            o.push(("area".into(), Json::Num(l.area())));
+            o.push(("glyphs".into(), Json::Num(l.regions.iter().map(|r| r.glyph + 1).max().unwrap_or(0) as f64)));
+            if !l.warnings.is_empty() {
+                o.push(("warnings".into(), Json::Arr(l.warnings.iter().map(warn_json).collect())));
+            }
+        }
+        Err(e) => {
+            o.push(("ok".into(), Json::Bool(false)));
+            o.push(("error".into(), Json::Str(e.code().into())));
+        }
+    }
+    Json::Obj(o)
+}

@@ -6,7 +6,7 @@
 import { emptyPart, FEATURE_TYPES, type PartDoc } from '../../part-model/src/index.js';
 import { hintFor, verify, type CheckResultItem, type KernelTransport, type RegenError, type VerifyReport } from '../../driver/src/verify.js';
 import {
-  angles, check, checkProfile, clearance, closestPoint, describe, distance, maxDistance, symmetry, thickness, thicknessAt, heal, importSat, importSldprt, importStep, massProps, probe, profiles, resolveDescriptions, section, sections, step, threadData, validate,
+  angles, check, checkProfile, clearance, closestPoint, describe, distance, maxDistance, symmetry, thickness, thicknessAt, heal, importSat, importSldprt, importStep, massProps, probe, profiles, resolveDescriptions, section, sections, step, textMetrics, textOutline, threadData, validate,
   type CheckReport, type DescribeItem, type HealReport, type ImportReport, type MassReport, type ProbeReport,
   type AnglesReport, type ClearanceReport, type ClosestPointReport, type DistanceReport, type HausdorffReport, type MaxDistanceReport, type MeasureEntity,
   type SymmetryReport, type ThicknessAtReport, type ThicknessReport,
@@ -741,6 +741,16 @@ export class Session {
 
   describe(names: unknown[]): Promise<DescribeItem[]> {
     return describe(this.kernel, names, { tag: this.tag });
+  }
+
+  /** Advance width and ink box of a string (stateless; docs/text.md). */
+  textMetrics(string: string, opts: { font?: string; height: number; spacing?: number }) {
+    return textMetrics(this.kernel, string, opts);
+  }
+
+  /** Loops of a text entity as polylines (stateless; docs/text.md). */
+  textOutline(spec: Record<string, unknown>) {
+    return textOutline(this.kernel, spec);
   }
 
   /** Thread standards and sizes (stateless; see docs/spec-agent-interface.md). */
