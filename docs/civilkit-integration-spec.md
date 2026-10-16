@@ -55,7 +55,7 @@ Message types you will use:
 | `regen` | `{tag, part, opts?: {upTo?}}` rebuild a part from its feature list. Result has `body` (box, faces, edges, mesh), `errors[]` (per-feature, structured `{code, params}`), `components`, `markers`, etc. |
 | `massProps` | `{tag}` volume, area, centre of mass, principal moments/axes of the current body. Exact B-rep integrals, not mesh estimates. |
 | `step` | `{tag, name}` STEP text of the body for fabrication/detailing hand-off. |
-| `validate` | `{tag, tol?}` independent closed-solid check: `{ok, issues[{code, entity, detail}]}`. Run it on every generated solid. |
+| `validate` | `{tag, tol?, mesh?}` independent closed-solid check (`mesh:true` also tessellates and reports `TESSELLATION_OPEN` for faces without triangles and mesh edges used by one triangle): `{ok, issues[{code, entity, detail}]}`. Run it on every generated solid. |
 | `inspect`, `measure`, `interference` | face/edge details, distances, solid-vs-solid clash. |
 | `importStep`, `importSat`, `heal` | **in progress** (landing soon after this doc): bring in outside geometry; repair near-valid solids. Check the kernel `README.md` status section before relying on them. |
 | `drawing` | 2D view extraction. **Not implemented yet.** |

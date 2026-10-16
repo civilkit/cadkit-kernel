@@ -118,3 +118,6 @@ pub(crate) mod tests {
         extrude(feature, &prof, ExtrudeOpts { s0, s1, dir: None, draft: 0.0 }).unwrap()
     }
 }
+
+#[cfg(test)]
+mod redrill;
