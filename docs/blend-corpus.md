@@ -215,3 +215,28 @@ none (it prints `VOL MISMATCH` lines for every differing case and `JSON DIFF` li
 319/319, valid.brep 280/319, wire 280/280. The soft `regen.brep.json` / `.mesh` drops that remain (-5 / -4 against the
 committed baseline) are those three cases plus two json and one mesh case that already differed before the blend work
 (pre-merge main: -2 / -1).
+
+## Tower on a wall, coves and posts (Onshape comparison)
+
+Cases `tower_*`, `pocket_cove*`, `lwall_*`, `post{0,2,4}_cove_*` (all with OCCT volumes, zero open mesh edges, and a G1 /
+leftover-tool-face check: `g1Defect` in `tools/blend_corpus.mjs` compares the display-mesh normals of the two faces of every
+blend|blend edge, except where the mitre of two cylinders is the right answer, and fails any case whose result still contains a
+face of the blend tool, i.e. a flat cut where a band ends). Images in `docs/blend-corpus-img/`.
+
+* **Tower, all eight tower edges in one fillet** (`tower_all_r{1,1.5,2,3}`, also reversed order and `propagate`): the wall-side
+  vertices are concave-concave-convex (side-wall, top-wall, side-top). Before: `invalid solid` and tool faces left (the flat
+  vertical cut and the shoulder at the corner), see `tower_r2_before.png`. Now exact against OCCT (1e-16) and independent of the
+  order, `tower_r2_after.png`. The fix (`blend/mixed.rs`) mirrors the mixed vertex: the convex edges are filleted first (their
+  band ends on the wall); the tower's wall edges together with the arc where the band meets the wall form a tangent chain of
+  concave edges that is filleted next; the ball rolls round the end of the band (torus of major radius `r_convex + r_concave`,
+  OCCT's structure: cylinders, a torus at each wall corner and a sphere at each front corner).
+* **Cove round the foot of a post or an L wall** (`post0_cove_*`, `lwall_floor_loop_*`): two concave edges meeting at an OUTSIDE
+  corner (third edge convex, not filleted) ran flush and left a gap and flat cuts (`post0_before.png`). They now run on past the
+  vertex and are cut by the bisector plane (`Junc::mitre`, concave pairs), the intersection of the two cylinders:
+  `post0_after.png`, exact. Rounded posts (`post2`, `post4`: a tangent line-arc chain) and the inside corner of two walls
+  (`pocket_cove*`, `lwall_inside_*`, with and without the vertical edge) were already exact.
+* **Two steps** (concave edges first, then the convex ones: `tower_two_step_*`): still differs. The convex band now stops at the
+  wall plane but the result keeps a flat face (`ts_before.png`) and has 3 mm3 less material than OCCT's second step. Open.
+  Selecting all edges in one feature gives the exact result.
+* `tower_top_rim` (top rim edges and only the concave top-wall edge) is not in the corpus: OCCT carries the cove down the
+  tangent continuation of the rim.
