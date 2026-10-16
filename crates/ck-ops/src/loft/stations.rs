@@ -237,7 +237,8 @@ impl Chain {
     /// Every piece is collapsed to one point (a loft end that is an apex).
     pub fn is_point(&self) -> bool {
         let p0 = self.pieces[0].g.start();
-        self.pieces.iter().all(|q| q.g.start() == p0 && q.g.end() == p0 && q.g.at(0.5) == p0)
+        let tol = 1e-12 * (1.0 + p0.len());
+        self.pieces.iter().all(|q| q.g.start().dist(p0) <= tol && q.g.end().dist(p0) <= tol && q.g.at(0.5).dist(p0) <= tol)
     }
     /// This chain shrunk to the point `p`, with the same pieces and names.
     pub fn collapsed(&self, p: Vec3) -> Chain {

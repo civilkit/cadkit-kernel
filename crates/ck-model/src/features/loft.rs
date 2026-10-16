@@ -16,6 +16,11 @@
 //! `op` is ignored for `surface: true`. A solid loft joins the body like an
 //! extrude (`op: "cut"` subtracts).
 //!
+//! A sketch holding exactly ONE point entity (no other non-construction
+//! entity) is a point (apex) section: only the first and/or last sketch may
+//! be one; the loft converges to that point (no cap there; guides, surface
+//! lofts and a point in the middle are `loftFailed`).
+//!
 //! Wire: `markers[] = [id, {loops, starts, guided, tension}]` with `loops`
 //! = per sketch, 16 samples per profile piece in sketch order
 //! (`{p: [x,y,z], f: arc fraction}`), `starts` = the matched start point of
@@ -26,7 +31,7 @@ use super::{Brep, FeatureKind, Op};
 use crate::regen::{codes, FeatureError, RegenState, SketchResult};
 use crate::sketch::profile::{open_chain, Seg};
 use crate::Feature;
-use ck_geom::Vec3;
+use ck_geom::{Frame, Vec3};
 use ck_json::Json;
 use ck_ops::loft::{loft, LoftError, LoftOpts, ProfileIn, SegIn};
 use ck_topo::make::curve2_to_3d;
@@ -56,11 +61,34 @@ fn segs_in(sk: &SketchResult, segs: &[Seg]) -> Result<Vec<SegIn>, FeatureError> 
     Ok(out)
 }
 
+/// A sketch that holds exactly one point entity (and no other real curve) is a
+/// point (apex) section: its world position.
+fn point_of(sk: &SketchResult) -> Option<Vec3> {
+    use crate::sketch::SketchEntity;
+    let mut pts = sk.sketch.entities.iter().filter_map(|e| match e {
+        SketchEntity::Point { p, .. } => Some(Some(p)),
+        e if e.construction() => None,
+        _ => Some(None),
+    });
+    let first = pts.next()??;
+    if pts.next().is_some() {
+        return None;
+    }
+    let [x, y] = sk.sketch.point_xy(first)?;
+    Some(sk.frame.o + sk.frame.x * x + sk.frame.y * y)
+}
+
 /// The profile of one sketch (see the module header for the rules).
 fn profile_of(sk: &SketchResult, surface: bool) -> Result<(ProfileIn, Vec<Seg>), FeatureError> {
     let regions = &sk.profiles.regions;
     if regions.len() > 1 {
         return Err(FeatureError::new(LOFT_PROFILE));
+    }
+    if regions.is_empty() {
+        if let Some(apex) = point_of(sk) {
+            // a point section: no pieces, the apex is the frame origin (see ck_ops::loft)
+            return Ok((ProfileIn { frame: Frame { o: apex, ..sk.frame }, closed: true, segs: vec![] }, vec![]));
+        }
     }
     if let Some(r) = regions.first() {
         let segs = &r.outer;
@@ -75,6 +103,9 @@ fn profile_of(sk: &SketchResult, surface: bool) -> Result<(ProfileIn, Vec<Seg>),
 
 /// `{p, f}` samples of one profile (see [`ck_ops::loft::marker_samples`]).
 fn loop_samples(p: &ProfileIn) -> Json {
+    if ck_ops::loft::is_point_profile(p) {
+        return Json::Arr(vec![Json::Obj(vec![("p".into(), v3(p.frame.o)), ("f".into(), Json::Num(0.0))])]);
+    }
     Json::Arr(
         ck_ops::loft::marker_samples(p)
             .into_iter()

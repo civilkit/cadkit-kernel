@@ -128,6 +128,16 @@ pub fn project_points(surf: &Surface, pts: &[Vec3]) -> Vec<Vec2> {
             (Surface::BSpline(bs), Some(fp)) => bs.closest_param_fp(fp, p),
             _ => surf.closest_param(p),
         });
+        // the closest-point search only locates a point of a free-form surface to its own
+        // resolution (a point of the surface must be hit exactly): polish by Newton from
+        // the found parameter, else from the previous sample
+        if fp.is_some() && surf.eval(u, v).dist(p) > 1e-9 * (1.0 + p.len()) {
+            let polished = warm_project(surf, u, v, p).or_else(|| out.last().and_then(|q| warm_project(surf, q.x, q.y, p)));
+            if let Some((pu2, pv2)) = polished {
+                u = pu2;
+                v = pv2;
+            }
+        }
         if let Some(prev) = out.last() {
             if let Some(per) = pu {
                 u = unwrap_near(u, prev.x, per);
@@ -171,6 +181,60 @@ pub fn project_points(surf: &Surface, pts: &[Vec3]) -> Vec<Vec2> {
                     } else {
                         q.y += sh;
                     }
+                }
+            }
+        }
+    }
+    // a B-spline surface with a collapsed boundary isoline (a loft ending in a
+    // point): the free parameter of a sample AT the pole is arbitrary; hold the
+    // fixed one on the collapsed isoline and carry the free one from the path
+    if let Surface::BSpline(bs) = surf {
+        let ((u0, u1), (v0, v1)) = bs.domain();
+        let scale = 1.0 + bs.eval(u0, v0).len();
+        let (um, vm) = (0.5 * (u0 + u1), 0.5 * (v0 + v1));
+        // (fixed axis is v?, fixed value, pole point)
+        let cands = [
+            (true, v0, [bs.eval(u0, v0), bs.eval(um, v0), bs.eval(u1, v0)]),
+            (true, v1, [bs.eval(u0, v1), bs.eval(um, v1), bs.eval(u1, v1)]),
+            (false, u0, [bs.eval(u0, v0), bs.eval(u0, vm), bs.eval(u0, v1)]),
+            (false, u1, [bs.eval(u1, v0), bs.eval(u1, vm), bs.eval(u1, v1)]),
+        ];
+        for (fix_v, val, c) in cands {
+            if !(c[0].dist(c[1]) < 1e-9 * scale && c[0].dist(c[2]) < 1e-9 * scale) {
+                continue;
+            }
+            let d: Vec<f64> = pts.iter().map(|q| q.dist(c[0])).collect();
+            if !d.iter().any(|&x| x < 1e-7 * scale) {
+                continue;
+            }
+            // the free parameter of the sample farthest from the pole is reliable; samples
+            // nearer the pole (ill-conditioned projection) take it when it reproduces them
+            let far = (0..d.len()).fold(0, |m, i| if d[i] > d[m] { i } else { m });
+            let free = |q: Vec2| if fix_v { q.x } else { q.y };
+            let fref = free(out[far]);
+            for i in 0..out.len() {
+                if i == far || d[i] >= 0.5 * d[far] {
+                    continue;
+                }
+                if d[i] < 1e-7 * scale {
+                    out[i] = if fix_v { Vec2::new(fref, val) } else { Vec2::new(val, fref) };
+                    continue;
+                }
+                // 1-D Newton along the iso-line of the free parameter
+                let mut t = if fix_v { out[i].y } else { out[i].x };
+                let at = |t: f64| if fix_v { bs.eval(fref, t) } else { bs.eval(t, fref) };
+                for _ in 0..30 {
+                    let h = 1e-6;
+                    let (p0, p1) = (at(t), at(t + h));
+                    let dd = (p1 - p0) / h;
+                    let den = dd.dot(dd);
+                    if den < 1e-30 {
+                        break;
+                    }
+                    t += (pts[i] - p0).dot(dd) / den;
+                }
+                if at(t).dist(pts[i]) <= 1e-9 * scale {
+                    out[i] = if fix_v { Vec2::new(fref, t) } else { Vec2::new(t, fref) };
                 }
             }
         }

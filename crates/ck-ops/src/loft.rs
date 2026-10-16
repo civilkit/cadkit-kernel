@@ -112,6 +112,11 @@ pub const PROFILES: &str = "loftProfiles";
 pub const PROFILE_OPEN: &str = "loftProfileOpen";
 pub const PROFILE_NOT_PLANAR: &str = "loftProfileNotPlanar";
 pub const FAILED: &str = "loftFailed";
+/// A section whose polygon crosses itself and is small against the loft length.
+pub const SECTION_TOO_SMALL: &str = "loftSectionTooSmall";
+pub const PROFILE_SELF_INTERSECT: &str = "loftProfileSelfIntersect";
+/// An end section whose size is below this fraction of the loft length becomes a point section.
+pub const SNAP_REL: f64 = 1e-3;
 
 const TOL: f64 = 1e-9;
 
@@ -171,41 +176,136 @@ pub fn is_point_profile(p: &ProfileIn) -> bool {
 /// shrunk to the apex (same pieces, degree, knots and weights).
 fn chains_of(profiles: &[ProfileIn], opts: &LoftOpts) -> Result<Vec<Chain>, LoftError> {
     let k = profiles.len();
-    let pt: Vec<bool> = profiles.iter().map(is_point_profile).collect();
-    if !pt.iter().any(|&x| x) {
-        return profiles.iter().map(chain_of).collect();
-    }
+    let mut apex: Vec<Option<Vec3>> = profiles.iter().map(|p| is_point_profile(p).then_some(p.frame.o)).collect();
     let fail = |d: &str| LoftError { code: FAILED.into(), detail: Some(d.into()) };
-    if pt.iter().enumerate().any(|(i, &x)| x && i != 0 && i != k - 1) {
-        return Err(fail("only the first and the last section can be a point"));
-    }
-    if pt.iter().all(|&x| x) {
-        return Err(LoftError::new(PROFILES));
-    }
-    if opts.surface {
-        return Err(fail("a point section needs a solid loft"));
-    }
-    if !opts.guides.is_empty() {
-        return Err(fail("guide curves are not supported with a point section"));
+    let any_point = apex.iter().any(|a| a.is_some());
+    if any_point {
+        if apex.iter().enumerate().any(|(i, a)| a.is_some() && i != 0 && i != k - 1) {
+            return Err(fail("only the first and the last section can be a point"));
+        }
+        if apex.iter().all(|a| a.is_some()) {
+            return Err(LoftError::new(PROFILES));
+        }
+        if opts.surface {
+            return Err(fail("a point section needs a solid loft"));
+        }
+        if !opts.guides.is_empty() {
+            return Err(fail("guide curves are not supported with a point section"));
+        }
     }
     let mut chains: Vec<Option<Chain>> = vec![];
-    for (p, &isp) in profiles.iter().zip(&pt) {
-        chains.push(if isp { None } else { Some(chain_of(p)?) });
+    for (p, a) in profiles.iter().zip(&apex) {
+        chains.push(if a.is_some() { None } else { Some(chain_of(p)?) });
+    }
+    // a tiny end section (below SNAP_REL of the loft length) is a point in
+    // practice: its cap loop would be degenerate. Snap it to its centroid.
+    if !opts.surface && opts.guides.is_empty() && k >= 2 {
+        let cen = |i: usize| chains[i].as_ref().map(|c| c.centroid());
+        let (c0, c1) = (cen(0).or(apex[0]), cen(k - 1).or(apex[k - 1]));
+        if let (Some(c0), Some(c1)) = (c0, c1) {
+            let length = c0.dist(c1);
+            for i in [0, k - 1] {
+                let Some(c) = &chains[i] else { continue };
+                let pts: Vec<Vec3> = marker_samples_of(c);
+                let (mut lo, mut hi) = (pts[0], pts[0]);
+                for q in &pts {
+                    lo = Vec3::new(lo.x.min(q.x), lo.y.min(q.y), lo.z.min(q.z));
+                    hi = Vec3::new(hi.x.max(q.x), hi.y.max(q.y), hi.z.max(q.z));
+                }
+                if lo.dist(hi) < SNAP_REL * length {
+                    let others = (0..k).filter(|&j| j != i).all(|j| apex[j].is_some());
+                    if !others {
+                        apex[i] = Some(c.centroid());
+                    }
+                }
+            }
+        }
+    }
+    for i in 0..k {
+        if apex[i].is_some() {
+            chains[i] = None;
+        }
     }
     let n = chains.iter().flatten().map(|c| c.pieces.len()).max().unwrap_or(1).max(2);
     let mut out = vec![];
     for i in 0..k {
-        out.push(match &chains[i] {
-            Some(c) => c.clone(),
-            None => {
+        out.push(match (&chains[i], apex[i]) {
+            (Some(c), _) => c.clone(),
+            (None, a) => {
                 let nb = if i == 0 { 1 } else { k - 2 };
-                let mut c = chains[nb].clone().ok_or_else(|| fail("a point section needs a profile next to it"))?;
+                let mut c = match &chains[nb] {
+                    Some(c) => c.clone(),
+                    None => chain_of(&profiles[nb])?,
+                };
                 c.split_to(n);
-                c.collapsed(profiles[i].frame.o)
+                c.collapsed(a.unwrap_or(profiles[i].frame.o))
             }
         });
     }
+    if !opts.surface {
+        let len = out[0].centroid().dist(out[k - 1].centroid());
+        for c in out.iter().filter(|c| !c.is_point()) {
+            if let Some(size) = self_intersection(c) {
+                let code = if size < 1e-2 * len { SECTION_TOO_SMALL } else { PROFILE_SELF_INTERSECT };
+                return Err(LoftError { code: code.into(), detail: Some("a section crosses itself; make it a simple closed curve (a section much smaller than the loft can be a point section: use a sketch with one point)".into()) });
+            }
+        }
+    }
     Ok(out)
+}
+
+fn marker_samples_of(c: &Chain) -> Vec<Vec3> {
+    let mut v = vec![];
+    for p in &c.pieces {
+        for k in 0..=8 {
+            v.push(p.g.at(k as f64 / 8.0));
+        }
+    }
+    v
+}
+
+/// Does the closed sample polygon of `c` cross itself? Returns the section size
+/// (bounding-box diagonal) when it does.
+fn self_intersection(c: &Chain) -> Option<f64> {
+    let pts = marker_samples_of(c);
+    let n = c.normal().try_normalize()?;
+    let (ax, ay) = {
+        let a = if n.x.abs() < 0.9 { Vec3::new(1.0, 0.0, 0.0) } else { Vec3::new(0.0, 1.0, 0.0) };
+        let x = n.cross(a).try_normalize()?;
+        (x, n.cross(x))
+    };
+    // drop the duplicated piece joins
+    let mut p2: Vec<(f64, f64)> = vec![];
+    for (i, q) in pts.iter().enumerate() {
+        if i % 9 == 8 && i + 1 < pts.len() {
+            continue;
+        }
+        p2.push((q.dot(ax), q.dot(ay)));
+    }
+    p2.pop();
+    let m = p2.len();
+    let (mut lo, mut hi) = ((f64::INFINITY, f64::INFINITY), (f64::NEG_INFINITY, f64::NEG_INFINITY));
+    for q in &p2 {
+        lo = (lo.0.min(q.0), lo.1.min(q.1));
+        hi = (hi.0.max(q.0), hi.1.max(q.1));
+    }
+    let size = ((hi.0 - lo.0).powi(2) + (hi.1 - lo.1).powi(2)).sqrt();
+    let cross = |o: (f64, f64), a: (f64, f64), b: (f64, f64)| (a.0 - o.0) * (b.1 - o.1) - (a.1 - o.1) * (b.0 - o.0);
+    let eps = 1e-9 * size * size;
+    for i in 0..m {
+        let (a, b) = (p2[i], p2[(i + 1) % m]);
+        for j in i + 2..m {
+            if i == 0 && j == m - 1 {
+                continue;
+            }
+            let (c0, d) = (p2[j], p2[(j + 1) % m]);
+            let (d1, d2, d3, d4) = (cross(a, b, c0), cross(a, b, d), cross(c0, d, a), cross(c0, d, b));
+            if ((d1 > eps && d2 < -eps) || (d1 < -eps && d2 > eps)) && ((d3 > eps && d4 < -eps) || (d3 < -eps && d4 > eps)) {
+                return Some(size);
+            }
+        }
+    }
+    None
 }
 
 /// Loft through `profiles` (see the module header). A profile with no
