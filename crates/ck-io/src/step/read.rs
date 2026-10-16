@@ -168,6 +168,35 @@ impl<'a> Rd<'a> {
         let mut ids: Vec<&u32> = self.f.ents.keys().collect();
         ids.sort();
         let (mut got_len, mut got_ang) = (false, false);
+        // Prefer the units named by the geometric representation context
+        // (GLOBAL_UNIT_ASSIGNED_CONTEXT): files also hold the SI base units
+        // (radian) that a CONVERSION_BASED_UNIT (degree) is defined against, and
+        // the lowest entity id is not necessarily the unit the geometry uses.
+        for id in &ids {
+            let e = &self.f.ents[*id];
+            if !e.has("GEOMETRIC_REPRESENTATION_CONTEXT") {
+                continue;
+            }
+            let Some(g) = e.part("GLOBAL_UNIT_ASSIGNED_CONTEXT") else { continue };
+            let Some(units) = g.args.first().and_then(Val::as_list) else { continue };
+            for u in units.iter().filter_map(Val::as_ref) {
+                let Some(ue) = self.f.ents.get(&u) else { continue };
+                if !got_len && ue.has("LENGTH_UNIT") {
+                    if let Some(s) = self.unit_si(u, 0) {
+                        self.len = s * 1000.0;
+                        got_len = true;
+                    }
+                } else if !got_ang && ue.has("PLANE_ANGLE_UNIT") {
+                    if let Some(s) = self.unit_si(u, 0) {
+                        self.ang = s;
+                        got_ang = true;
+                    }
+                }
+            }
+            if got_len || got_ang {
+                break;
+            }
+        }
         for id in ids {
             let e = &self.f.ents[id];
             if !got_len && e.has("LENGTH_UNIT") {
@@ -253,6 +282,20 @@ impl<'a> Rd<'a> {
 
     fn surface(&self, id: u32) -> R<Surface> {
         self.nested(id, || self.surface_inner(id))
+    }
+
+    /// True when the surface entity's own normal is the reverse of the `Surface`
+    /// built from it: a TOROIDAL_SURFACE with exactly one negative radius
+    /// (P = (R + r cos v) radial + r sin v axis, so the sign of R*r flips the
+    /// cross product dP/du x dP/dv relative to the outward normal).
+    fn torus_flips(&self, id: u32) -> bool {
+        let Some(e) = self.f.ents.get(&id) else { return false };
+        if e.parts.len() != 1 || e.parts[0].name != "TOROIDAL_SURFACE" {
+            return false;
+        }
+        let a = &e.parts[0].args;
+        let g = |i: usize| a.get(i).and_then(Val::as_f64).unwrap_or(1.0);
+        (g(2) < 0.0) != (g(3) < 0.0)
     }
 
     fn curve_inner(&self, id: u32) -> R<Curve> {
@@ -414,8 +457,11 @@ impl<'a> Rd<'a> {
             }
             "TOROIDAL_SURFACE" => {
                 let (m, n) = (self.real(id, a.get(2), "major radius")? * self.len, self.real(id, a.get(3), "minor radius")? * self.len);
-                if m <= 0.0 || n <= 0.0 {
-                    return Err(bad(id, "non-positive torus radius"));
+                // A negative radius describes the same torus with the opposite
+                // normal (see `torus_flips`); the face sense is flipped by the caller.
+                let (m, n) = (m.abs(), n.abs());
+                if m <= 1e-12 || n <= 1e-12 {
+                    return Err(bad(id, "zero torus radius"));
                 }
                 Ok(Surface::Torus { frame: ax(1)?, major: m, minor: n })
             }
@@ -652,7 +698,8 @@ impl<'a> Rd<'a> {
         let a = self.simple(id, &["ADVANCED_FACE", "FACE_SURFACE"])?;
         let bounds = self.refs_list(id, a.get(1), "bounds")?;
         let surface = self.surface(a.get(2).and_then(Val::as_ref).ok_or_else(|| bad(id, "face without surface"))?)?;
-        let sense = a.get(3).and_then(Val::as_bool).unwrap_or(true);
+        let sid = a.get(2).and_then(Val::as_ref).unwrap_or(0);
+        let sense = a.get(3).and_then(Val::as_bool).unwrap_or(true) != self.torus_flips(sid);
         let mut loops = Vec::new();
         let mut flagged: Vec<bool> = Vec::new();
         let mut vertex_loop = false;
@@ -762,6 +809,7 @@ impl<'a> Rd<'a> {
                 specs.push(self.face_spec(fid)?);
             }
             self.unflip_inconsistent_bounds(&mut specs);
+            self.snap_edges_to_surfaces(&specs);
             self.merge_full_periodic(&mut specs);
             queue.extend(specs.into_iter().map(|s| Some((shell, s))));
             shell_ids.push((shell, flipped));
@@ -774,6 +822,83 @@ impl<'a> Rd<'a> {
         }
         self.orient_shells(lump, &shell_ids);
         Ok(())
+    }
+
+    /// STEP exporters write intersection edges as fitted splines (and sometimes
+    /// as conics) that follow the two faces only to the writer's tolerance, a few
+    /// 1e-3 for a part of 100s of mm. This kernel's edges must lie on both faces,
+    /// so an edge shared by two faces whose curve is off either surface by more
+    /// than rounding but less than a file-tolerance sized amount is replaced by an
+    /// interpolating spline through points refined onto the intersection of the
+    /// two surfaces (end points stay at the vertices).
+    fn snap_edges_to_surfaces(&mut self, specs: &[FaceSpec]) {
+        let mut uses: HashMap<EdgeId, Vec<usize>> = HashMap::new();
+        for (fi, s) in specs.iter().enumerate() {
+            for l in &s.loops {
+                for c in l {
+                    uses.entry(c.edge).or_default().push(fi);
+                }
+            }
+        }
+        let mut todo: Vec<(EdgeId, usize, usize)> = uses.iter().filter(|(_, u)| u.len() == 2 && u[0] != u[1]).map(|(e, u)| (*e, u[0], u[1])).collect();
+        todo.sort_by_key(|t| t.0.idx());
+        let mut spline_budget = 250;
+        for (e, fa, fb) in todo {
+            let (sa, sb) = (&specs[fa].surface, &specs[fb].surface);
+            if matches!(sa, Surface::Offset { .. } | Surface::Screw { .. }) || matches!(sb, Surface::Offset { .. } | Surface::Screw { .. }) {
+                continue;
+            }
+            // free-form surfaces are costly to project onto: bound the work
+            if matches!(sa, Surface::BSpline(_)) || matches!(sb, Surface::BSpline(_)) {
+                if spline_budget == 0 {
+                    continue;
+                }
+                spline_budget -= 1;
+            }
+            let ed = self.b.edge(e).clone();
+            let n = if matches!(sa, Surface::BSpline(_)) || matches!(sb, Surface::BSpline(_)) { 8 } else { 16 };
+            let scale = 1.0 + ed.curve.eval(ed.t0).len();
+            let mut dev: f64 = 0.0;
+            for k in 0..=n {
+                let p = ed.curve.eval(ed.t0 + (ed.t1 - ed.t0) * k as f64 / n as f64);
+                for sf in [sa, sb] {
+                    dev = dev.max(p.dist(sf.closest_point(p).2));
+                }
+            }
+            if dev <= 2e-7 * scale || dev > 5e-3 * scale {
+                continue;
+            }
+            let free_form = matches!(sa, Surface::BSpline(_)) || matches!(sb, Surface::BSpline(_));
+            let m = if free_form { 96 } else { 160 };
+            let mut pts: Vec<Vec3> = Vec::with_capacity(m + 1);
+            let mut ok = true;
+            let mut hint: Option<[f64; 4]> = None;
+            for k in 0..=m {
+                let p = ed.curve.eval(ed.t0 + (ed.t1 - ed.t0) * k as f64 / m as f64);
+                if k == 0 || k == m {
+                    pts.push(p);
+                    continue;
+                }
+                match snap_point_proj(sa, sb, p, 5e-3 * scale).or_else(|| snap_point(sa, sb, p, 5e-3 * scale, &mut hint)) {
+                    Some(q) => pts.push(q),
+                    None => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if !ok {
+                self.warnings.push(ImportError::new("skipped", None, format!("edge #{} lies {dev:.2e} off its faces and could not be moved onto their intersection", e.idx())));
+                continue;
+            }
+            // a closed edge or a tangent-continuous start keeps the old ends
+            if let Ok(bs) = ck_geom::fit::interpolate(&pts, 3, ck_geom::fit::Param::ChordLength) {
+                let edge = &mut self.b.edges[e.idx()];
+                edge.curve = Curve::BSpline(bs);
+                edge.t0 = 0.0;
+                edge.t1 = 1.0;
+            }
+        }
     }
 
     /// Some writers (OpenCASCADE, on faces of reversed-axis tori) give a
@@ -1271,7 +1396,7 @@ impl Rd<'_> {
     }
 
     fn finalize_face(&mut self, shell: ShellId, spec: FaceSpec, name: FaceName, rest: &mut [Option<(ShellId, FaceSpec)>]) -> R<()> {
-        let FaceSpec { id, surface, sense, mut loops, .. } = spec;
+        let FaceSpec { id, surface, mut sense, mut loops, .. } = spec;
         let (pu, pv) = periods_of(&surface);
         let periodic = pu.is_some() || pv.is_some();
         // pcurves
@@ -1279,6 +1404,42 @@ impl Rd<'_> {
             for c in l.iter_mut() {
                 if c.pc.is_none() {
                     c.pc = edge_pcurve(&self.b, c.edge, &surface);
+                }
+            }
+        }
+        if matches!(surface, Surface::Sphere { .. }) {
+            // a hemisphere bounded by one great circle through the poles
+            for li in 0..loops.len() {
+                if loops[li].len() == 1 && self.is_full_meridian(&loops[li][0]) {
+                    let mut l = std::mem::take(&mut loops[li]);
+                    for s in [FRAC_PI_2, -FRAC_PI_2] {
+                        for _ in 0..3 {
+                            if !self.split_loop_at(&mut l, 1, s, TAU, rest) {
+                                break;
+                            }
+                        }
+                    }
+                    for c in &mut l {
+                        self.fold_sphere_meridian(c);
+                    }
+                    // two meridian arcs, joined by jumps across the poles: put the
+                    // second half a half turn to the side that makes the loop run
+                    // the way the face sense asks for
+                    if l.len() == 2 {
+                        let want = if sense { 1.0 } else { -1.0 };
+                        if let (Some(e0), Some(s1), Some(Curve2::Line { o, d })) = (self.co_uv(&l[0], false), self.co_uv(&l[1], true), l[1].pc.clone()) {
+                            for sigma in [1.0, -1.0] {
+                                let dx = e0.x + sigma * PI - s1.x;
+                                let mut trial = l.clone();
+                                trial[1].pc = Some(Curve2::Line { o: Vec2::new(o.x + dx, o.y), d });
+                                if self.loop_area(&trial) * want > 0.0 {
+                                    l = trial;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    loops[li] = l;
                 }
             }
         }
@@ -1296,6 +1457,16 @@ impl Rd<'_> {
                 self.fix_seam_pair(l, &surface, sense, pu, pv);
             }
             loops = self.complete_periodic(id, &surface, sense, loops, pu, pv, rest)?;
+            // A cone face whose outer loop runs against the face sense in uv
+            // (SolidWorks writes FACE_OUTER_BOUND .F. with sense .F. on the half
+            // cones of a drill point): the edge directions agree with the
+            // neighbouring faces, so the normal is the one the loop is CCW about.
+            if matches!(surface, Surface::Cone { .. }) && !loops.is_empty() && loops[0].iter().all(|c| c.pc.is_some()) {
+                let a = self.loop_area(&loops[0]);
+                if a.abs() > 1e-9 && (a > 0.0) != sense {
+                    sense = a > 0.0;
+                }
+            }
         }
         let f = self.b.add_face(shell, surface.clone(), sense, name);
         for l in loops {
@@ -1396,7 +1567,9 @@ impl Rd<'_> {
                 let s = pc.eval(a);
                 let mut d = Vec2::new(0.0, 0.0);
                 if let Some(per) = pu {
-                    d.x = ((p.x - s.x) / per).round() * per;
+                    // (a jump of exactly half a period stays: a pole jump)
+                    let r = (p.x - s.x) / per;
+                    d.x = if r.abs() <= 0.5 + 1e-9 { 0.0 } else { r.round() * per };
                 }
                 if let Some(per) = pv {
                     d.y = ((p.y - s.y) / per).round() * per;
@@ -1504,7 +1677,7 @@ impl Rd<'_> {
                 // a loop that already runs into the pole and out again (the
                 // seam spike OCC writes, with no degenerate edge) is closed
                 // in 3D by the pole jump in uv: nothing to add
-                if self.has_pole_jump(&la, d, per) {
+                if self.has_pole_jump(surf, &la, d, per) {
                     return Ok(loops);
                 }
                 let joined = self.close_at_pole(id, surf, sense, d, per, la, wind[0].2)?;
@@ -1515,14 +1688,58 @@ impl Rd<'_> {
         }
     }
 
+    /// A coedge whose pcurve is a v-line (constant u) running a full turn
+    /// round a sphere: a great circle through both poles.
+    fn is_full_meridian(&self, c: &Co) -> bool {
+        let Some(Curve2::Line { d, .. }) = &c.pc else { return false };
+        let ed = self.b.edge(c.edge);
+        d.x.abs() < 1e-12 && d.y.abs() * (ed.t1 - ed.t0) >= TAU - 1e-6
+    }
+
+    /// Bring a v-line that runs past a sphere pole back to the v in
+    /// [-pi/2, pi/2] band: the point (u, v) of the far side is (u + pi, pi - v).
+    fn fold_sphere_meridian(&self, c: &mut Co) {
+        let Some(Curve2::Line { o, d }) = c.pc.clone() else { return };
+        if d.x.abs() > 1e-12 {
+            return;
+        }
+        let ed = self.b.edge(c.edge);
+        let tm = 0.5 * (ed.t0 + ed.t1);
+        let vm = o.y + d.y * tm;
+        let m = (vm / TAU).round();
+        let (mut ox, mut oy, mut dy) = (o.x, o.y - m * TAU, d.y);
+        let v0 = vm - m * TAU;
+        if v0 > FRAC_PI_2 {
+            ox += PI;
+            oy = PI - oy;
+            dy = -dy;
+        } else if v0 < -FRAC_PI_2 {
+            ox += PI;
+            oy = -PI - oy;
+            dy = -dy;
+        }
+        c.pc = Some(Curve2::Line { o: Vec2::new(ox, oy), d: Vec2::new(0.0, dy) });
+    }
+
     /// Consecutive coedges whose uv ends differ by a whole period along `d`
     /// only: a jump across a pole.
-    fn has_pole_jump(&self, l: &[Co], d: usize, per: f64) -> bool {
+    fn has_pole_jump(&self, surf: &Surface, l: &[Co], d: usize, per: f64) -> bool {
         let n = l.len();
         (0..n).any(|i| {
             let (Some(a), Some(b)) = (self.co_uv(&l[i], false), self.co_uv(&l[(i + 1) % n], true)) else { return false };
             let (dd, od) = (comp(b, d) - comp(a, d), comp(b, 1 - d) - comp(a, 1 - d));
-            od.abs() < 1e-6 && dd.abs() > 0.5 * per
+            if !(od.abs() < 1e-6 && dd.abs() > 0.5 * per) {
+                return false;
+            }
+            // the closing jump of a loop that winds once (one circle round a
+            // cone / sphere) is a whole period too: it is a pole jump only
+            // where the surface degenerates (the u-partial vanishes)
+            if i + 1 < n {
+                return true;
+            }
+            let (du, dv) = surf.partials(a.x, a.y);
+            let g = if d == 0 { du } else { dv };
+            g.len() < 1e-9 * (1.0 + surf.eval(a.x, a.y).len())
         })
     }
 
@@ -1791,6 +2008,117 @@ impl Rd<'_> {
         out.push(Co { edge: e, rev: !rev, pc: Some(pc_at(s)) });
         Ok(out)
     }
+}
+
+/// Refine `p` onto the intersection of two surfaces: Gauss-Newton on
+/// S_a(u1, v1) - S_b(u2, v2) = 0 (three equations, four unknowns; the minimum-norm
+/// step keeps the point near where it started), from the feet of `p`. `None`
+/// when it does not converge or moves more than `cap`.
+fn snap_point(sa: &Surface, sb: &Surface, p0: Vec3, cap: f64, hint: &mut Option<[f64; 4]>) -> Option<Vec3> {
+    let scale = 1.0 + p0.len();
+    // (the feet of the previous sample start the search: far cheaper than a global
+    // closest-point search on a free-form surface)
+    let ((mut u1, mut v1, _), (mut u2, mut v2, _)) = match *hint {
+        Some(h) => (sa.closest_point_near(p0, (h[0], h[1])), sb.closest_point_near(p0, (h[2], h[3]))),
+        None => (sa.closest_point(p0), sb.closest_point(p0)),
+    };
+    for _ in 0..30 {
+        let (a, b) = (sa.eval(u1, v1), sb.eval(u2, v2));
+        let r = a - b;
+        if r.len() < 1e-10 * scale {
+            let p = (a + b) * 0.5;
+            *hint = Some([u1, v1, u2, v2]);
+            return (p.dist(p0) <= cap).then_some(p);
+        }
+        let (a_u, a_v) = sa.partials(u1, v1);
+        let (b_u, b_v) = sb.partials(u2, v2);
+        let cols = [a_u, a_v, -b_u, -b_v];
+        // (J J^T + lambda I) y = r, then step = -J^T y
+        let mut m = [[0.0f64; 3]; 3];
+        for c in &cols {
+            let c = [c.x, c.y, c.z];
+            for i in 0..3 {
+                for j in 0..3 {
+                    m[i][j] += c[i] * c[j];
+                }
+            }
+        }
+        let lam = 1e-12 * (m[0][0] + m[1][1] + m[2][2]).max(1e-300);
+        for i in 0..3 {
+            m[i][i] += lam;
+        }
+        let y = solve3(m, [r.x, r.y, r.z])?;
+        let y = Vec3::new(y[0], y[1], y[2]);
+        u1 -= cols[0].dot(y);
+        v1 -= cols[1].dot(y);
+        u2 -= cols[2].dot(y);
+        v2 -= cols[3].dot(y);
+        // a curve lying on the boundary of a free-form patch: stay on the patch
+        if matches!(sa, Surface::BSpline(_)) {
+            let d = sa.domain();
+            u1 = u1.clamp(d.0 .0, d.0 .1);
+            v1 = v1.clamp(d.1 .0, d.1 .1);
+        }
+        if matches!(sb, Surface::BSpline(_)) {
+            let d = sb.domain();
+            u2 = u2.clamp(d.0 .0, d.0 .1);
+            v2 = v2.clamp(d.1 .0, d.1 .1);
+        }
+        if !(u1.is_finite() && v1.is_finite() && u2.is_finite() && v2.is_finite()) {
+            return None;
+        }
+        if sa.eval(u1, v1).dist(p0) > 4.0 * cap {
+            return None;
+        }
+    }
+    None
+}
+
+/// Alternating normal projections (Gauss-Newton on the two signed distances):
+/// robust for analytic faces, tangent faces fall back to the mean of the two feet.
+fn snap_point_proj(sa: &Surface, sb: &Surface, p0: Vec3, cap: f64) -> Option<Vec3> {
+    let mut p = p0;
+    let scale = 1.0 + p0.len();
+    for _ in 0..16 {
+        let (u1, v1, q1) = sa.closest_point(p);
+        let (u2, v2, q2) = sb.closest_point(p);
+        let (n1, n2) = (sa.normal(u1, v1), sb.normal(u2, v2));
+        let (d1, d2) = ((p - q1).dot(n1), (p - q2).dot(n2));
+        if d1.abs().max(d2.abs()) < 1e-10 * scale && (p - q1).len().max((p - q2).len()) < 1e-9 * scale {
+            return Some(p);
+        }
+        let c = n1.dot(n2);
+        let det = 1.0 - c * c;
+        if det < 1e-6 {
+            p = (q1 + q2) * 0.5;
+        } else {
+            let (a, b) = ((c * d2 - d1) / det, (c * d1 - d2) / det);
+            p = p + n1 * a + n2 * b;
+        }
+        if p.dist(p0) > cap {
+            return None;
+        }
+    }
+    let res = p.dist(sa.closest_point(p).2).max(p.dist(sb.closest_point(p).2));
+    (res < 1e-6 * scale).then_some(p)
+}
+
+fn solve3(m: [[f64; 3]; 3], r: [f64; 3]) -> Option<[f64; 3]> {
+    let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+    if !(det.abs() > 1e-300) {
+        return None;
+    }
+    let cof = |i: usize, j: usize| {
+        let (r0, r1) = ((i + 1) % 3, (i + 2) % 3);
+        let (c0, c1) = ((j + 1) % 3, (j + 2) % 3);
+        m[r0][c0] * m[r1][c1] - m[r0][c1] * m[r1][c0]
+    };
+    let mut out = [0.0; 3];
+    for j in 0..3 {
+        // x_j = sum_i adj[j][i] r_i / det, adj[j][i] = cofactor(i, j)
+        out[j] = (0..3).map(|i| cof(i, j) * r[i]).sum::<f64>() / det;
+    }
+    Some(out)
 }
 
 /// A circle revolved about an axis through (almost) its centre, lying in a plane
