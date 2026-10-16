@@ -324,6 +324,18 @@ fn boolean_at(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> {
             _ => true,
         })
         .collect();
+    // two solids that touch only along an edge (or a line of tangency): every face is kept whole and the
+    // contact edge carries four faces. The union is the two lumps side by side, not a failure.
+    if op == Op::Union
+        && !bad_issues.is_empty()
+        && bad_issues.iter().all(|i| matches!(i, Issue::NonManifoldEdge(_, 4)))
+        && faces.iter().all(|f| f.group == 0 || f.group == 2)
+        && faces.len() == a.num_faces() + b.num_faces()
+    {
+        let mut out = a0.clone();
+        out.append(b0);
+        return Ok(BoolOut { body: out, no_effect: false, mismatch: None });
+    }
     if !bad_issues.is_empty() {
         super::bool_dbg!("arrangement:\n{}", arr.dump());
         for i in &bad_issues {

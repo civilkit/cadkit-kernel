@@ -41,6 +41,12 @@ pub fn validate(cx: &mut Cx) -> Result<Json, String> {
     null_or_query(cx, "validate")
 }
 
+/// `{type:"bodyBoolean", tag, op, target, tools, keepTools?, tolerance?, autoFuzzy?}`: the `combine` feature's
+/// operation on a copy of the current body; the reply says what the result would be, nothing is committed.
+pub fn body_boolean(cx: &mut Cx) -> Result<Json, String> {
+    null_or_query(cx, "bodyBoolean")
+}
+
 pub fn heal(cx: &mut Cx) -> Result<Json, String> {
     null_or_query(cx, "heal")
 }

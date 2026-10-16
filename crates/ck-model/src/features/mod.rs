@@ -44,6 +44,7 @@
 //! | thread          | face, standard, size, class, length, hand, start, modeled (parsed from the raw DOM, see thread.rs) |
 
 pub mod blends;
+pub mod combine;
 pub mod convert;
 pub mod curve_plane;
 pub mod curve_ref;
@@ -648,6 +649,12 @@ pub struct Brep {
     pub helices: Vec<(String, ck_ops::helix::Helix)>,
     /// Surface bodies by feature id (see `surfaces.rs`).
     pub surfs: Vec<(String, ck_topo::body::Body)>,
+    /// Fuzzy value of the feature being executed (`tolerance`, mm; 0 = exact booleans) and the `autoFuzzy`
+    /// retry switch; set by [`Brep::exec`], read by [`Brep::combine_at`].
+    pub fuzz: f64,
+    pub auto_fuzz: bool,
+    /// The fuzzy value that decided the last boolean of the feature (reported as the `booleanFuzzy` warning).
+    pub fuzz_used: Option<f64>,
 }
 
 /// Everything a [`Brep`] has accumulated, as cheaply shareable pieces: the
@@ -660,6 +667,50 @@ pub struct BrepSnap {
     pub asm: std::rc::Rc<mate::Assembly>,
     pub helices: std::rc::Rc<Vec<(String, ck_ops::helix::Helix)>>,
     pub surfs: std::rc::Rc<Vec<(String, ck_topo::body::Body)>>,
+}
+
+/// `a op b` under the feature's fuzzy value `fuzz` (0 = exact). With `auto`, a boolean that fails, comes out
+/// implausible (volume / box check) or comes out invalid is retried with the fuzzy value 1e-7, 1e-5, 1e-3
+/// (those above `fuzz`); the first retry that gives a plausible, valid result wins. Returns the value that
+/// decided the result (`Some` only when it changed the geometry or a retry was needed). A result that fails
+/// the sanity check is never accepted silently: it stays in the returned `Ok` with its `mismatch` set.
+pub(crate) fn fuzzy_boolean(
+    a: &ck_topo::body::Body,
+    b: &ck_topo::body::Body,
+    op: ck_ops::boolean::Op,
+    tol: f64,
+    fuzz: f64,
+    auto: bool,
+) -> (Result<ck_ops::boolean::BoolOut, String>, Option<f64>) {
+    use ck_ops::boolean::fuzzy::{boolean_fuzzy, last_snapped};
+    let mut r = boolean_fuzzy(a, b, op, tol, fuzz);
+    let mut used = (fuzz > 0.0 && last_snapped() > 0).then_some(fuzz);
+    if !auto {
+        return (r, used);
+    }
+    let base_issues = std::cell::OnceCell::new();
+    let invalid = |o: &ck_ops::boolean::BoolOut| {
+        let base = *base_issues.get_or_init(|| ck_topo::check::check(a, TOL).len() + ck_topo::check::check(b, TOL).len());
+        !o.no_effect && ck_topo::check::check(&o.body, TOL).len() > base
+    };
+    let bad = |r: &Result<ck_ops::boolean::BoolOut, String>| match r {
+        Err(e) => e.starts_with("booleanFailed"),
+        Ok(o) => o.mismatch.is_some() || invalid(o),
+    };
+    if bad(&r) {
+        for z in [1e-7, 1e-5, 1e-3] {
+            if z <= fuzz {
+                continue;
+            }
+            let r2 = boolean_fuzzy(a, b, op, tol, z);
+            if !bad(&r2) {
+                r = r2;
+                used = Some(z);
+                break;
+            }
+        }
+    }
+    (r, used)
 }
 
 impl Brep {
@@ -734,7 +785,10 @@ impl Brep {
             (None, extrude::Combine::Cut) => Err(FeatureError::new(crate::regen::codes::NOTHING_TO_CUT)),
             (Some(b), c) => {
                 let op = if c == extrude::Combine::Cut { BOp::Cut } else { BOp::Union };
-                let r = ck_ops::boolean::boolean(b, tool, op, tol);
+                let (r, used) = fuzzy_boolean(b, tool, op, tol, self.fuzz, self.auto_fuzz);
+                if used.is_some() {
+                    self.fuzz_used = used;
+                }
                 match r {
                     Ok(out) => {
                         self.spans.push(boolean_span(op, b.num_faces(), tool.num_faces(), out.body.num_faces()));
@@ -1145,6 +1199,22 @@ impl crate::regen::FeatureExec for Brep {
         })
     }
     fn exec(&mut self, state: &mut crate::regen::RegenState, f: &crate::Feature) -> Result<(), crate::regen::FeatureError> {
+        self.fuzz = if f.type_name == "editCurve" { 0.0 } else { crate::expr::eval_field(f.raw.get("tolerance"), &state.vars, 0.0).ok().filter(|t| t.is_finite() && *t > 0.0).unwrap_or(0.0) };
+        self.auto_fuzz = crate::sketch::jtruthy(f.raw.get("autoFuzzy"));
+        self.fuzz_used = None;
+        let r = self.exec_feature(state, f);
+        if let (Some(t), true) = (self.fuzz_used.take(), r.is_ok()) {
+            let w = crate::regen::FeatureError::new("booleanFuzzy").with("tolerance", Json::Num(t));
+            state.result.warnings.push(crate::regen::RegenError { feature: f.id.clone(), error: w });
+        }
+        self.fuzz = 0.0;
+        self.auto_fuzz = false;
+        r
+    }
+}
+
+impl Brep {
+    fn exec_feature(&mut self, state: &mut crate::regen::RegenState, f: &crate::Feature) -> Result<(), crate::regen::FeatureError> {
         let tool = match &f.kind {
             FeatureKind::Extrude { end: End::UpToNext, .. } if self.body.is_some() => {
                 let t = extrude::exec_extrude(state, f, self.body.as_ref())?;
@@ -1172,6 +1242,7 @@ impl crate::regen::FeatureExec for Brep {
             FeatureKind::Draft { .. } => return draft::exec_draft(self, state, f),
             FeatureKind::Loft { .. } => return loft::exec_loft(self, state, f),
             _ if f.type_name == "thread" => return thread::exec_thread(self, state, f),
+            _ if f.type_name == "combine" || f.type_name == "bodyBoolean" => return combine::exec_combine(self, state, f),
             _ if f.type_name == "moveBody" => return move_body::exec_move_body(self, state, f),
             _ if f.type_name == "moveFace" => return move_face::exec_move_face(self, state, f),
             _ if f.type_name == "pipeCut" => return pipecut::exec_pipecut(self, state, f),

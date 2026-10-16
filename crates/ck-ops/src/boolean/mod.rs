@@ -65,6 +65,7 @@ impl Drop for RobustGuard {
 pub mod apply;
 pub mod assemble;
 pub mod classify;
+pub mod fuzzy;
 pub mod imprint;
 pub mod sanity;
 
