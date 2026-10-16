@@ -558,7 +558,7 @@ fn prepare(string: &str, font_name: &str, font_hash: Option<&str>, height: f64, 
         chars.truncate(MAX_CHARS);
     }
     let tol = polyline.then_some(0.005 * font.cap_height());
-    let (mut pen, mut missing) = (0.0, String::new());
+    let (mut pen, mut missing, mut overlapping) = (0.0, String::new(), String::new());
     let mut glyphs = vec![];
     let mut advances = vec![];
     let mut ink = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
@@ -571,6 +571,9 @@ fn prepare(string: &str, font_name: &str, font_hash: Option<&str>, height: f64, 
         };
         let adv = font.advance(g);
         let loops = glyph_loops(&font, g, tol, run_spans.clamp(1, 16));
+        if glyph_overlaps(&loops) && !overlapping.contains(ch) {
+            overlapping.push(ch);
+        }
         for l in &loops {
             for e in l {
                 let mut pts = vec![e.start()];
@@ -589,6 +592,12 @@ fn prepare(string: &str, font_name: &str, font_hash: Option<&str>, height: f64, 
     }
     if !missing.is_empty() {
         warnings.push(Warning { code: "textMissingGlyph", detail: format!("no glyph for {missing:?} in font {font_name}; skipped") });
+    }
+    if !overlapping.is_empty() {
+        warnings.push(Warning {
+            code: "textOverlappingContours",
+            detail: format!("the outlines of {overlapping:?} in font {font_name} cross themselves (overlapping strokes); overlaps are not merged, so the engraved or embossed solid can be invalid (LOOP_SELF_INTERSECT); pick another font"),
+        });
     }
     if ink[0] > ink[2] {
         return Err(Error::NothingToDraw);
@@ -682,50 +691,35 @@ pub fn layout(spec: &Spec) -> Result<Layout, Error> {
 /// contours, typical for variable fonts). The nesting rule cannot tell such a glyph from two letters, and
 /// overlapping loops are not merged.
 pub(crate) fn overlapping_glyphs(font: &Font) -> Vec<char> {
-    let mut out = vec![];
-    for ch in ('A'..='Z').chain('a'..='z').chain('0'..='9') {
-        let Some(g) = font.glyph_index(ch) else { continue };
-        let polys: Vec<Vec<P>> = glyph_loops(font, g, None, RUN_SPANS).iter().map(|l| loop_polygon(l, 6)).collect();
-        let o = |p: P, q: P, r: P| (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
-        let mut cross = false;
+    ('A'..='Z').chain('a'..='z').chain('0'..='9').filter(|&ch| font.glyph_index(ch).map_or(false, |g| glyph_overlaps(&glyph_loops(font, g, None, RUN_SPANS)))).collect()
+}
+
+/// Some loop of the glyph crosses itself or another loop of it.
+fn glyph_overlaps(loops: &[Vec<Edge>]) -> bool {
+    let polys: Vec<Vec<P>> = loops.iter().map(|l| loop_polygon(l, 6)).collect();
+    let o = |p: P, q: P, r: P| (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+    let cross = |a0: P, a1: P, b0: P, b1: P| o(a0, a1, b0) * o(a0, a1, b1) < 0.0 && o(b0, b1, a0) * o(b0, b1, a1) < 0.0;
+    for (i, p) in polys.iter().enumerate() {
+        let n = p.len();
         // a contour that crosses itself
-        'g: for p in &polys {
-            let n = p.len();
+        for a in 0..n {
+            for b in a + 2..n {
+                if !(a == 0 && b == n - 1) && cross(p[a], p[(a + 1) % n], p[b], p[(b + 1) % n]) {
+                    return true;
+                }
+            }
+        }
+        for q in &polys[i + 1..] {
             for a in 0..n {
-                for b in a + 2..n {
-                    if a == 0 && b == n - 1 {
-                        continue;
-                    }
-                    let (a0, a1, b0, b1) = (p[a], p[(a + 1) % n], p[b], p[(b + 1) % n]);
-                    if o(a0, a1, b0) * o(a0, a1, b1) < 0.0 && o(b0, b1, a0) * o(b0, b1, a1) < 0.0 {
-                        cross = true;
-                        break 'g;
+                for b in 0..q.len() {
+                    if cross(p[a], p[(a + 1) % n], q[b], q[(b + 1) % q.len()]) {
+                        return true;
                     }
                 }
             }
-        }
-        'g: for (i, p) in polys.iter().enumerate() {
-            if cross {
-                break;
-            }
-            for q in &polys[i + 1..] {
-                for a in 0..p.len() {
-                    let (a0, a1) = (p[a], p[(a + 1) % p.len()]);
-                    for b in 0..q.len() {
-                        let (b0, b1) = (q[b], q[(b + 1) % q.len()]);
-                        if o(a0, a1, b0) * o(a0, a1, b1) < 0.0 && o(b0, b1, a0) * o(b0, b1, a1) < 0.0 {
-                            cross = true;
-                            break 'g;
-                        }
-                    }
-                }
-            }
-        }
-        if cross {
-            out.push(ch);
         }
     }
-    out
+    false
 }
 
 /// The first pair of glyphs (indices in the run, `i < j`) whose outer outlines cross, nest or come closer than `gap`.

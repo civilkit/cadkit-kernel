@@ -327,6 +327,11 @@ fn variable_font_reads_its_default_instance() {
     let l = layout(&spec("HOe\u{e9}", "t-var", 10.0)).unwrap();
     assert!(closed(&l));
     assert!(l.regions.len() >= 4);
+    // overlapping strokes are reported per entity, with the letters named
+    let l = layout(&spec("AMR", "t-var", 10.0)).unwrap();
+    let w = l.warnings.iter().find(|w| w.code == "textOverlappingContours").expect("warning");
+    assert!(w.detail.contains("t-var"));
+    assert!(layout(&spec("HO", "t-var", 10.0)).unwrap().warnings.iter().all(|w| w.code != "textOverlappingContours"));
     unload_font("t-var").unwrap();
 }
 
