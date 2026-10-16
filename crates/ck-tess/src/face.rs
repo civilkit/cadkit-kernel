@@ -53,6 +53,8 @@ pub struct FaceMesh {
     /// The boundary graph handed to the CDT had a vertex of odd degree (an unclosed loop: the CDT then fills
     /// only part of the face). `mesh_face` retries a periodic face on the universal cover.
     pub open: bool,
+    /// Boundary segments the CDT could not recover (the parity flood may then leak across them).
+    pub unrecovered: u32,
 }
 
 impl FaceMesh {
@@ -713,6 +715,10 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
         for (i, q) in b.pts.iter().enumerate().take(400) { eprintln!("DBGPT {} {:?}", i, q.uv); }
         eprintln!("DBGSEGS {:?}", b.segs);
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    if tri.cdt.failed > 0 && std::env::var("CK_TESS_DBG").is_ok() {
+        eprintln!("tessellate: face {} has {} unrecovered trim segments ({} points, {} segments)", body.face_id_str(f), tri.cdt.failed, b.pts.len(), b.segs.len());
+    }
     // vertex data indexed by CDT vertex
     let mut vdata: HashMap<u32, (Vec2, Vec3)> = HashMap::default();
     // Boundary vertices keep the edge curve's 3D point (the neighbours share it), but an edge curve can lie
@@ -884,9 +890,19 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
     }
 
     // ---- 6. output
-    let mut out = FaceMesh { face: Some(f), win: [cu.zip(pu), cv.zip(pv)], open, ..Default::default() };
+    let mut out = FaceMesh { face: Some(f), win: [cu.zip(pu), cv.zip(pv)], open, unrecovered: tri.cdt.failed, ..Default::default() };
     let mut local: HashMap<u32, u32> = HashMap::default();
+    // The parity flood can leak across a boundary segment: triangles bridge a hole or spill outside the trims (a sliver
+    // across a bolt hole of a flange face). On a plane the trim polygon is exact in uv, so drop every triangle whose
+    // centroid the segments say is outside.
+    let strict_plane = matches!(surf, Surface::Plane { .. }) && !seg_list.is_empty() && tri.cdt.tris.len() * seg_list.len() <= 50_000_000;
     for (_, v) in tri.cdt.inside_tris() {
+        if strict_plane {
+            let c = (0..3).fold(Vec2::ZERO, |acc, k| acc + from_c(tri.cdt.pts[v[k] as usize]) * (1.0 / 3.0));
+            if !inside_parity(&seg_list, c) {
+                continue;
+            }
+        }
         let mut ids = [0u32; 3];
         for k in 0..3 {
             let cv = v[k];
@@ -914,9 +930,102 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
         out.tris.push(if sense { ids } else { [ids[0], ids[2], ids[1]] });
     }
     if out.tris.is_empty() {
-        return Err("face produced no triangles".into());
+        // The CDT classified nothing as inside: a sliver face (a crescent a tenth of a millimetre wide between a circle
+        // and an intersection curve that touch at both ends) whose boundary polylines cross by a few 1e-6. A single simple
+        // cycle of a plane is still a polygon: clip its ears.
+        if matches!(surf, Surface::Plane { .. }) {
+            if let Some(ring) = single_cycle(&b.segs) {
+                let uv: Vec<Vec2> = ring.iter().map(|&i| b.pts[i].uv).collect();
+                let clip = ear_clip(&uv);
+                // the ring of a sliver whose polylines cross is not a simple polygon: its ears can fill the wrong region
+                // (a whole disc for a crescent). Keep the clip only when it covers the exact face area.
+                let area: f64 = clip.iter().map(|t| 0.5 * (b.pts[ring[t[1]]].p - b.pts[ring[t[0]]].p).cross(b.pts[ring[t[2]]].p - b.pts[ring[t[0]]].p).len()).sum();
+                let exact = ck_topo::mass::face_integral::<1>(body, f, 1, &|_, n| [n.len()])[0].abs();
+                if exact > 0.0 && area >= 0.8 * exact && area <= 1.25 * exact {
+                    for t in clip {
+                        let mut ids = [0u32; 3];
+                        for k in 0..3 {
+                            let q = &b.pts[ring[t[k]]];
+                            out.uv.push(q.uv);
+                            out.pts.push(q.p);
+                            out.nrm.push(FaceMesh::outward(surf, sense, q.uv));
+                            ids[k] = (out.pts.len() - 1) as u32;
+                        }
+                        out.tris.push(if sense { ids } else { [ids[0], ids[2], ids[1]] });
+                    }
+                }
+            }
+        }
+        if out.tris.is_empty() {
+            return Err("face produced no triangles".into());
+        }
     }
     Ok(out)
+}
+
+/// The vertex order of `segs` when they form exactly one simple closed cycle (every vertex used twice), else `None`.
+fn single_cycle(segs: &[(usize, usize)]) -> Option<Vec<usize>> {
+    let mut adj: HashMap<usize, Vec<usize>> = HashMap::default();
+    for &(a, c) in segs {
+        if a == c {
+            continue;
+        }
+        adj.entry(a).or_default().push(c);
+        adj.entry(c).or_default().push(a);
+    }
+    if adj.len() < 3 || adj.values().any(|v| v.len() != 2) {
+        return None;
+    }
+    let start = *adj.keys().min()?;
+    let mut ring = vec![start];
+    let (mut prev, mut cur) = (start, adj[&start][0]);
+    while cur != start {
+        ring.push(cur);
+        let n = &adj[&cur];
+        let next = if n[0] != prev { n[0] } else { n[1] };
+        prev = cur;
+        cur = next;
+        if ring.len() > adj.len() {
+            return None;
+        }
+    }
+    (ring.len() == adj.len()).then_some(ring)
+}
+
+/// Ear clipping of the polygon `p` (either orientation); triangles come out counter-clockwise as index triples into `p`.
+/// An ear that another vertex blocks is clipped anyway when nothing else is left, so a sliver always gets covered.
+fn ear_clip(p: &[Vec2]) -> Vec<[usize; 3]> {
+    let cross = |a: Vec2, b: Vec2, c: Vec2| (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+    let area2: f64 = (0..p.len()).map(|i| cross(Vec2::ZERO, p[i], p[(i + 1) % p.len()])).sum();
+    let mut idx: Vec<usize> = (0..p.len()).collect();
+    if area2 < 0.0 {
+        idx.reverse();
+    }
+    let mut out = vec![];
+    while idx.len() > 3 {
+        let n = idx.len();
+        let ear = |strict: bool| -> Option<usize> {
+            (0..n).find(|&i| {
+                let (a, b, c) = (p[idx[(i + n - 1) % n]], p[idx[i]], p[idx[(i + 1) % n]]);
+                if cross(a, b, c) <= 0.0 {
+                    return false;
+                }
+                !strict
+                    || !idx.iter().any(|&j| {
+                        let q = p[j];
+                        q != a && q != b && q != c && cross(a, b, q) >= 0.0 && cross(b, c, q) >= 0.0 && cross(c, a, q) >= 0.0
+                    })
+            })
+        };
+        let i = ear(true).or_else(|| ear(false)).unwrap_or(0);
+        out.push([idx[(i + n - 1) % n], idx[i], idx[(i + 1) % n]]);
+        idx.remove(i);
+    }
+    if idx.len() == 3 {
+        out.push([idx[0], idx[1], idx[2]]);
+    }
+    out.retain(|t| cross(p[t[0]], p[t[1]], p[t[2]]).abs() > 0.0);
+    out
 }
 
 /// Per-axis scale of the centred CDT frame (original f3573, with the cone special case of f3325):
