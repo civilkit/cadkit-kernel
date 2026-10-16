@@ -29,7 +29,7 @@ function collect(p, depth = 0) {
 }
 const roots = args.length ? args : [DEFAULT_DIR];
 const files = roots.flatMap((r) => (existsSync(r) ? collect(r) : (console.error(`no such path: ${r}`), [])));
-const key = (f) => (/^ref\.step$/i.test(basename(f)) ? basename(dirname(f)) : basename(f).replace(/\.(step|stp)$/i, ''));
+const key = (f) => (/^(ref|model|part)\.(step|stp)$/i.test(basename(f)) ? basename(dirname(f)) : basename(f).replace(/\.(step|stp)$/i, ''));
 const mod = await WebAssembly.compile(readFileSync(wasmPath));
 
 function run(text, heal) {
