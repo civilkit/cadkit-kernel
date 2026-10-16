@@ -254,7 +254,8 @@ pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featu
             for corner in super::corner::find_corner(b, &eids) {
                 let name = FaceName::other(feature, &format!("V{}", corners.len()));
                 let Ok(tool) = super::corner::sphere_corner_tool(b, &corner, r, feature, &name, tol) else { continue };
-                let Ok((mut cut, _)) = apply_tool(&out, &tool, Op::Cut, &name, vec![], tol) else { continue };
+                let op = if corner.concave { Op::Union } else { Op::Cut };
+                let Ok((mut cut, _)) = apply_tool(&out, &tool, op, &name, vec![], tol) else { continue };
                 super::corner::fix_sphere_pcurves(&mut cut, &name.id());
                 // faces: the input order, then the new vertex blends
                 let order: Vec<FaceId> = {
