@@ -879,7 +879,7 @@ impl<'a> Rd<'a> {
                     pts.push(p);
                     continue;
                 }
-                match (if free_form { None } else { snap_point_proj(sa, sb, p, 5e-3 * scale) }).or_else(|| snap_point(sa, sb, p, 5e-3 * scale, &mut hint)) {
+                match snap_point_proj(sa, sb, p, 5e-3 * scale).or_else(|| snap_point(sa, sb, p, 5e-3 * scale, &mut hint)) {
                     Some(q) => pts.push(q),
                     None => {
                         ok = false;
