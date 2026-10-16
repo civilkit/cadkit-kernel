@@ -136,3 +136,21 @@ fn bolt_hole_is_not_bridged() {
     let issues = open_issues(include_str!("fixtures/tess_hole_sliver.json"));
     assert!(issues.is_empty(), "{issues:?}");
 }
+
+/// A teardrop (BOSL2 onion): a sphere cap whose pole is at the low v end, and a cone to an apex on the axis. The strip's side
+/// lines were left out when the pole lay below the loop.
+#[test]
+fn onion_sphere_and_cone_mesh() {
+    let issues = open_issues(include_str!("fixtures/tess_onion.json"));
+    assert!(issues.is_empty(), "{issues:?}");
+}
+
+/// Lofts through closed splines with a near-duplicate point (loft_fuzz hull mode, seeds 196 and 223): the section spline has a
+/// micro-kink, and the lattice put a fan of nodes a few 1e-4 apart there, which a welded copy of the mesh collapsed unevenly.
+#[test]
+fn hull_lofts_mesh_without_holes() {
+    for json in [include_str!("fixtures/tess_loft_hull196.json"), include_str!("fixtures/tess_loft_hull223.json")] {
+        let issues = open_issues(json);
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+}

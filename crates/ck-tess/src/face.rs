@@ -1406,7 +1406,11 @@ fn lattice_fractions(surf: &Surface, rng: (f64, f64), other: (f64, f64), along_u
             let t = th[k].max(th[k + 1]);
             let l = len[k].max(1e-300);
             let kappa = t / l;
-            let n = (l * (kappa / (8.0 * tol.chord)).sqrt()).max(t / tol.angle);
+            // A micro-kink (a spline pulled through two points 1e-4 apart) turns by an angle inside one sampling step of a
+            // length far below the chord tolerance: `t / angle` nodes there are a fan of slivers a few 1e-4 wide that no
+            // display can show, and that a welded copy of the mesh collapses unevenly (open edges). No node closer than a
+            // tenth of the display chord tolerance (the lattice tolerance is a third of it).
+            let n = (l * (kappa / (8.0 * tol.chord)).sqrt()).max(t / tol.angle).min(l / (0.3 * tol.chord));
             if n > need[k] {
                 need[k] = n;
             }
