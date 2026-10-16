@@ -203,7 +203,7 @@ fn check_centre_line(state: &RegenState, f: &Feature, sks: &[SketchResult]) -> R
     let dir = (b - a).try_normalize();
     let straight = dir.map_or(false, |dir| pts.iter().all(|q| (*q - a).cross(dir).len() < 1e-7 * (1.0 + a.dist(b))));
     if !straight {
-        return Err(bad(ck_ops::loft::FAILED, "curved centre lines are not supported"));
+        return Err(bad(ck_ops::loft::FAILED, "curved centre lines are not supported").with("hint", Json::Str("use a straight centre line (one line segment)".into())));
     }
     Ok(())
 }
