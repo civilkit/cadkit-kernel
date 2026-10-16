@@ -1469,6 +1469,45 @@ fn blend_edge_hint(
             m1 = 0.0;
         }
     }
+    // an end that runs into the blend faces of an earlier feature (the convex rim of a tower after its wall coves were rounded):
+    // the tool must not reach past the plane of the wall those blends are tangent to
+    if convex && circ.is_none() {
+        for (v, od, which) in [(ed.v0, -dir, 0usize), (ed.v1, dir, 1usize)] {
+            let cur = if which == 0 { m0 } else { m1 };
+            if cur == 0.0 {
+                continue;
+            }
+            let pv = b.vertex(v).p;
+            let mut end_faces: Vec<FaceId> = vec![];
+            for x in b.edge_ids().filter(|&x| b.edge(x).v0 == v || b.edge(x).v1 == v) {
+                for f in b.edge_faces(x) {
+                    if !faces.contains(&f) && !end_faces.contains(&f) {
+                        end_faces.push(f);
+                    }
+                }
+            }
+            if end_faces.is_empty() || !end_faces.iter().all(|&f| matches!(b.face(f).name.role, Role::Blend(_))) {
+                continue;
+            }
+            let mut best: Option<f64> = None;
+            for &f in &end_faces {
+                for g in b.face_neighbors(f) {
+                    if let Surface::Plane { frame } = &b.face(g).surface {
+                        let n = b.planar_normal(g);
+                        if n.cross(od).len() < 1e-6 {
+                            let t = (frame.o - pv).dot(od);
+                            if t > -1e-9 && t < cur && best.map_or(true, |x| t < x) {
+                                best = Some(t.max(0.0));
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(t) = best {
+                if which == 0 { m0 = t } else { m1 = t }
+            }
+        }
+    }
     // reflex corner shared with another selected edge: run on past the vertex, clip to the bisector plane
     let mut clips: Vec<(Vec3, Vec3)> = vec![];
     if circ.is_none() {

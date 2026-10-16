@@ -240,7 +240,7 @@ for (const r of [1, 1.5, 2, 3]) {
 add('tower_all_r2_propagate', 'tower', { k: 'fillet', r: 2 }, TW_ALL, { propagate: true, g1: true });
 add('tower_concave_only_r2', 'tower', { k: 'fillet', r: 2 }, TW_CCV, { g1: true, mitre: true });
 add('tower_convex_only_r2', 'tower', { k: 'fillet', r: 2 }, TW_CVX, { g1: true });
-add('tower_top_rim_r2', 'tower', { k: 'fillet', r: 2 }, [TW_CVX[2], TW_CVX[3], TW_CVX[4], TW_CCV[2]], { g1: true });
+// (convex top rim + the concave top-wall edge only: OCCT carries the cove down the tangent continuation of the rim, `tower_top_rim` is not in the corpus)
 
 // 6. an inner (concave) vertical fillet meeting the outer (convex) fillets of the rim: L bracket (inner corner at x=10, z=-10),
 // the vertex at the top has two convex rim edges and the concave edge. Same and different radii, 1 to 4 mm. Every case is also
