@@ -389,6 +389,9 @@ fn tessellate_impl(body: &Body, tol: &Tol, memo: bool) -> Tess {
     let mut mesh = assemble(&outs);
     for (wi, o) in outs.iter().enumerate() {
         if let Some(o) = o {
+            if o.mesh.open {
+                mesh.notes.push((wi, "boundary graph has an unclosed loop (odd-degree vertex)".to_string()));
+            }
             if o.mesh.unrecovered > 0 {
                 mesh.notes.push((wi, format!("{} trim segments not recovered", o.mesh.unrecovered)));
             }
