@@ -138,3 +138,21 @@ fn pointy_hull_shell_is_refused_with_a_hint() {
     let detail = format!("{:?}", e.params);
     assert!(detail.contains("point") && detail.contains("blunt"), "{detail}");
 }
+
+/// A cone made by lofting a circle to a point: its shell is refused (pole), with the hint.
+#[test]
+fn cone_loft_shell_is_refused_with_a_hint() {
+    let circle = r#"{"type":"sketch","id":"S0","plane":{"kind":"feature","id":"P0"},"points":[{"id":"c","x":0,"y":0}],"entities":[{"type":"circle","id":"e1","c":"c","r":8}],"constraints":[]}"#;
+    let f = [
+        station_plane("P0", 0.0),
+        circle.to_string(),
+        station_plane("PT", 20.0),
+        point_section("ST", "PT", 0.0),
+        r#"{"type":"loft","id":"F50","op":"add","sketches":["S0","ST"]}"#.to_string(),
+        r#"{"type":"shell","id":"F93","faces":["F50.C0"],"thickness":1.0}"#.to_string(),
+    ]
+    .join(",");
+    let o = run(&f);
+    assert_eq!(o.errors.len(), 1, "{:?}", o.errors);
+    assert_eq!(o.errors[0].error.code, "offsetUnsupported");
+}
