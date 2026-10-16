@@ -137,7 +137,7 @@ fn guides_of(state: &RegenState, f: &Feature) -> Result<Vec<ck_ops::loft::guides
         };
         if let Some(inf) = g.get_str("influence") {
             if inf != "next" {
-                return Err(FeatureError::new(ck_ops::loft::FAILED).with("detail", Json::Str(format!("guide influence '{inf}' is not supported"))));
+                return Err(FeatureError::new(ck_ops::loft::FAILED).with("detail", Json::Str(format!("guide influence '{inf}' is not supported"))).with("hint", Json::Str("use influence 'next' (the default)".into())));
             }
         }
         let Some(id) = id else { return Err(bad("only sketch guides are supported")) };
