@@ -10,7 +10,7 @@
 
 use crate::Issue;
 use ck_topo::body::{Body, FaceId};
-use ck_topo::mass::{lump_faces, signed_volume};
+use ck_topo::mass::{lump_faces, signed_volume_quick as signed_volume};
 
 pub fn check(b: &Body, out: &mut Vec<Issue>) {
     let comps = ck_topo::region::components(b);
@@ -20,18 +20,22 @@ pub fn check(b: &Body, out: &mut Vec<Issue>) {
             continue;
         }
         let ent = format!("lump#{}", b.lump_index(l));
-        let v = signed_volume(b, &fs);
+        // one quadrature per connected component: the lump's volume is their sum
+        // (a free-form face costs ~10 ms to integrate, a big import has hundreds)
+        let mine: Vec<(&Vec<FaceId>, f64)> = comps.iter().filter(|c| b.face_lump(c[0]) == l).map(|c| (c, signed_volume(b, c))).collect();
+        let covered: usize = mine.iter().map(|(c, _)| c.len()).sum();
+        let v = if covered == fs.len() { mine.iter().map(|m| m.1).sum() } else { signed_volume(b, &fs) };
         if !(v > 0.0) {
             out.push(Issue { code: "VOLUME_NONPOSITIVE", entity: ent.clone(), detail: format!("signed volume {v:.6e} (inside-out or degenerate)") });
             continue;
         }
         // closed components of this lump with a positive volume = outer shells
         let mut outers = 0;
-        for c in comps.iter().filter(|c| b.face_lump(c[0]) == l) {
+        for (c, cv) in &mine {
             if c.len() < 2 || !closed(b, c) {
                 continue;
             }
-            if signed_volume(b, c) > 0.0 {
+            if *cv > 0.0 {
                 outers += 1;
             }
         }

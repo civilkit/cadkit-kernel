@@ -106,6 +106,12 @@ function importRoundtrip(t, kb, pb, mb) {
       else if (body.faces.length !== ob.faces.length) why = `faces ${body.faces.length} vs ${ob.faces.length}`;
       else if (body.edges.length !== ob.edges.length) why = `edges ${body.edges.length} vs ${ob.edges.length}`;
       else if (!v || v.issues.length) why = `validate ${JSON.stringify(v?.issues?.slice(0, 2))}`;
+      // import.heal.noop: healing a valid body changes nothing (no fix recorded, volume identical to 1e-12)
+      if (why === null) {
+        const h = JSON.parse(kb.request(JSON.stringify({ id: 8, msg: { type: 'heal', tag: 'imp', dryRun: true, tol: 1e-4 } })).json || 'null')?.result;
+        const hv = h?.volume;
+        bump('import.heal.noop', !!h && h.fixed.length === 0 && Math.abs(hv.after - hv.before) <= 1e-12 * (1 + Math.abs(hv.before)));
+      }
     }
   } catch (e) { why = String(e); }
   bump('import.roundtrip', why === null);

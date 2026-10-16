@@ -254,6 +254,26 @@ fn regen_hook(part: &Json, cx: &mut Cx) -> Result<(Json, State), String> {
     Ok((out, state))
 }
 
+/// Healing options of an import / heal request: `heal: "off"` disables it;
+/// `heal: {tol, sew, fixSmall, fixOrientation, tolerant, cap}` or the flat
+/// `healTolerance` (cap on edge / vertex tolerances, mm) tune it. `None` = off.
+fn heal_opts(msg: &Json) -> Option<ck_heal::HealOpts> {
+    let h = msg.get("heal");
+    if matches!(h, Some(Json::Bool(false))) || h.and_then(Json::as_str) == Some("off") {
+        return None;
+    }
+    let o = h.filter(|h| h.is_obj());
+    let f = |k: &str| o.and_then(|o| o.get_f64(k));
+    let b = |k: &str| o.and_then(|o| o.get_bool(k)).unwrap_or(true);
+    let mut ho = ck_heal::HealOpts::new(f("tol").unwrap_or(1e-4));
+    ho.sew = b("sew");
+    ho.fix_small = b("fixSmall");
+    ho.fix_orientation = b("fixOrientation");
+    ho.tolerant = b("tolerant");
+    ho.cap = f("cap").or_else(|| msg.get_f64("healTolerance")).unwrap_or(ck_check::DEFAULT_TOL_CAP);
+    Some(ho)
+}
+
 /// `importStep`: STEP text -> the tag's body (regen-style result: `body`,
 /// `errors` as `["import", {code, params:{entity, message}}]`, plus
 /// `import:{solids, faces, unitScale, warnings}`).
@@ -274,6 +294,15 @@ fn import_hook(cx: &mut Cx, _name: &str, data: &str) -> Result<(Json, Option<Sta
         Ok(imp) => {
             let mut body = imp.body;
             ck_topo::region::rebuild_lumps(&mut body);
+            let heal_info = heal_opts(cx.msg).map(|ho| {
+                let rep = ck_heal::heal_with(&mut body, &ho);
+                ck_topo::region::rebuild_lumps(&mut body);
+                Obj::new()
+                    .put("fixed", rep.fixed.len() as f64)
+                    .put("remaining", rep.remaining.len() as f64)
+                    .put("toleranceUsed", ck_check::tolerance_used(&body))
+                    .build()
+            });
             let tess = ck_tess::mesh::tessellate(&body);
             set_body(&mut out, body_json(&body, &tess, cx, &(vec![], vec![])));
             let info = Obj::new()
@@ -282,6 +311,10 @@ fn import_hook(cx: &mut Cx, _name: &str, data: &str) -> Result<(Json, Option<Sta
                 .put("unitScale", imp.length_scale)
                 .put("warnings", Json::Arr(imp.warnings.iter().map(err_json).collect()))
                 .build();
+            let mut info = info;
+            if let (Json::Obj(kv), Some(h)) = (&mut info, heal_info) {
+                kv.push(("heal".into(), h));
+            }
             if let Json::Obj(kv) = &mut out {
                 kv.push(("import".into(), info));
             }
@@ -548,7 +581,13 @@ fn heal_query(cx: &mut Cx) -> Result<Json, String> {
     };
     // self-test only on bodies that are healthy at the healing tolerance
     let applied = damage.as_deref().map(|k| healthy && ck_heal::damage::apply(&mut b, k, 2e-6));
-    let rep = ck_heal::heal(&mut b, tol);
+    let mut ho = heal_opts(cx.msg).unwrap_or_else(|| ck_heal::HealOpts::new(tol));
+    if cx.msg.get_f64("tol").is_some() || cx.msg.get("heal").and_then(|h| h.get_f64("tol")).is_none() {
+        ho.tol = tol;
+    }
+    let tol = ho.tol;
+    ho.tolerant = ho.tolerant && damage.is_none();
+    let rep = ck_heal::heal_with(&mut b, &ho);
     let v1 = ck_topo::mass::mass_props(&b).volume;
     let obj = |i: &ck_check::Issue| Obj::new().put("code", i.code).put("entity", i.entity.as_str()).put("detail", i.detail.as_str()).build();
     let fixed = rep.fixed.iter().map(|x| Obj::new().put("code", x.code).put("entity", x.entity.as_str()).put("detail", x.detail.as_str()).build()).collect();
@@ -595,12 +634,20 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
         }
         "validate" => {
             let tol = cx.msg.get_f64("tol").unwrap_or(1e-6);
-            let iss = ck_check::validate(&snapshot(cx)?.body, tol);
+            let cap = cx.msg.get_f64("healTolerance").unwrap_or(ck_check::DEFAULT_TOL_CAP);
+            let body = &snapshot(cx)?.body;
+            let iss = ck_check::validate_cap(body, tol, cap);
             let arr = iss
                 .iter()
                 .map(|i| Obj::new().put("code", i.code).put("entity", i.entity.as_str()).put("detail", i.detail.as_str()).build())
                 .collect();
-            Ok(Obj::new().put("ok", iss.is_empty()).put("issues", Json::Arr(arr)).build())
+            let used = ck_check::tolerance_used(body);
+            let mut o = Obj::new().put("ok", iss.is_empty()).put("issues", Json::Arr(arr)).put("toleranceUsed", used);
+            if used > 0.0 {
+                let note = format!("body carries edge/vertex tolerances up to {used:.3e} mm (cap {cap:.3e})");
+                o = o.put("notes", Json::Arr(vec![Json::Str(note)]));
+            }
+            Ok(o.build())
         }
         "heal" => heal_query(cx),
         "check" => {

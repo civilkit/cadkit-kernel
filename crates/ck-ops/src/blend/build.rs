@@ -448,6 +448,10 @@ fn blend_edges_at(
         let e = find_edge(b, fa, fb, *at).ok_or_else(|| BlendError::code("missingEdge"))?;
         sel_edges.push(e);
         let ed = b.edge(e);
+        // a tolerant edge (imported geometry that did not fit exactly) has no exact face intersection to roll along
+        if ed.tol > 0.0 {
+            return Err(BlendError::detail("blendTolerantEdge", &format!("edge#{} between {fa} and {fb} carries a tolerance of {:.3e} mm (imported geometry); the blend needs an exact edge", e.idx(), ed.tol)));
+        }
         refs.push(BlendRef {
             name: FaceName::blend(feature, idx[k]).id(),
             faces: [fa.clone(), fb.clone()],

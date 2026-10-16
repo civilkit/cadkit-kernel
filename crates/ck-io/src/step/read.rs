@@ -859,10 +859,13 @@ impl<'a> Rd<'a> {
             let n = if matches!(sa, Surface::BSpline(_)) || matches!(sb, Surface::BSpline(_)) { 8 } else { 16 };
             let scale = 1.0 + ed.curve.eval(ed.t0).len();
             let mut dev: f64 = 0.0;
+            let mut feet: [Option<(f64, f64)>; 2] = [None, None];
             for k in 0..=n {
                 let p = ed.curve.eval(ed.t0 + (ed.t1 - ed.t0) * k as f64 / n as f64);
-                for sf in [sa, sb] {
-                    dev = dev.max(p.dist(sf.closest_point(p).2));
+                for (i, sf) in [sa, sb].into_iter().enumerate() {
+                    let (u, v, q) = foot(sf, p, feet[i]);
+                    feet[i] = Some((u, v));
+                    dev = dev.max(p.dist(q));
                 }
             }
             if dev <= 2e-7 * scale || dev > 5e-3 * scale {
@@ -873,13 +876,14 @@ impl<'a> Rd<'a> {
             let mut pts: Vec<Vec3> = Vec::with_capacity(m + 1);
             let mut ok = true;
             let mut hint: Option<[f64; 4]> = None;
+            let mut feet: [Option<(f64, f64)>; 2] = [None, None];
             for k in 0..=m {
                 let p = ed.curve.eval(ed.t0 + (ed.t1 - ed.t0) * k as f64 / m as f64);
                 if k == 0 || k == m {
                     pts.push(p);
                     continue;
                 }
-                match snap_point_proj(sa, sb, p, 5e-3 * scale).or_else(|| snap_point(sa, sb, p, 5e-3 * scale, &mut hint)) {
+                match snap_point_proj(sa, sb, p, 5e-3 * scale, &mut feet).or_else(|| snap_point(sa, sb, p, 5e-3 * scale, &mut hint)) {
                     Some(q) => pts.push(q),
                     None => {
                         ok = false;
@@ -957,7 +961,8 @@ impl<'a> Rd<'a> {
                     ck_topo::orient::flip_face(&mut self.b, f);
                 }
             }
-            let vol = ck_topo::mass::signed_volume(&self.b, &faces);
+            // (sign only: the quick, memoised quadrature; the validator reuses its per-face values)
+            let vol = ck_topo::mass::signed_volume_quick(&self.b, &faces);
             let want_pos = i == 0;
             if vol.is_finite() && (vol > 0.0) != want_pos && vol.abs() > 1e-12 {
                 for &f in &faces {
@@ -2076,12 +2081,14 @@ fn snap_point(sa: &Surface, sb: &Surface, p0: Vec3, cap: f64, hint: &mut Option<
 
 /// Alternating normal projections (Gauss-Newton on the two signed distances):
 /// robust for analytic faces, tangent faces fall back to the mean of the two feet.
-fn snap_point_proj(sa: &Surface, sb: &Surface, p0: Vec3, cap: f64) -> Option<Vec3> {
+fn snap_point_proj(sa: &Surface, sb: &Surface, p0: Vec3, cap: f64, feet: &mut [Option<(f64, f64)>; 2]) -> Option<Vec3> {
     let mut p = p0;
     let scale = 1.0 + p0.len();
     for _ in 0..16 {
-        let (u1, v1, q1) = sa.closest_point(p);
-        let (u2, v2, q2) = sb.closest_point(p);
+        let (u1, v1, q1) = foot(sa, p, feet[0]);
+        let (u2, v2, q2) = foot(sb, p, feet[1]);
+        feet[0] = Some((u1, v1));
+        feet[1] = Some((u2, v2));
         let (n1, n2) = (sa.normal(u1, v1), sb.normal(u2, v2));
         let (d1, d2) = ((p - q1).dot(n1), (p - q2).dot(n2));
         if d1.abs().max(d2.abs()) < 1e-10 * scale && (p - q1).len().max((p - q2).len()) < 1e-9 * scale {
@@ -2099,8 +2106,17 @@ fn snap_point_proj(sa: &Surface, sb: &Surface, p0: Vec3, cap: f64) -> Option<Vec
             return None;
         }
     }
-    let res = p.dist(sa.closest_point(p).2).max(p.dist(sb.closest_point(p).2));
+    let res = p.dist(foot(sa, p, feet[0]).2).max(p.dist(foot(sb, p, feet[1]).2));
     (res < 1e-6 * scale).then_some(p)
+}
+
+/// Closest point on `s` to `p`: Newton from the previous station's foot when
+/// there is one (a march along an edge), the global search otherwise.
+fn foot(s: &Surface, p: Vec3, hint: Option<(f64, f64)>) -> (f64, f64, Vec3) {
+    match hint {
+        Some(h) => s.closest_point_near(p, h),
+        None => s.closest_point(p),
+    }
 }
 
 fn solve3(m: [[f64; 3]; 3], r: [f64; 3]) -> Option<[f64; 3]> {

@@ -12,6 +12,7 @@ pub mod damage;
 mod orient;
 mod sew;
 mod small;
+mod tolerance;
 mod vertex;
 mod wire;
 
@@ -33,26 +34,77 @@ pub struct HealReport {
     pub remaining: Vec<Issue>,
 }
 
-/// Heal `b` in place with model tolerance `tol` (mm).
+/// What `heal_with` may do.
+#[derive(Debug, Clone, Copy)]
+pub struct HealOpts {
+    /// Model tolerance (mm) used by the structural fixes (merge, sew, small).
+    pub tol: f64,
+    /// Merge near vertices, close gaps and sew free edges.
+    pub sew: bool,
+    /// Drop degenerate edges and sliver faces.
+    pub fix_small: bool,
+    /// Make loop senses and shell orientation consistent.
+    pub fix_orientation: bool,
+    /// Give edges / vertices that deviate from their faces a tolerance.
+    pub tolerant: bool,
+    /// Largest edge / vertex tolerance (mm) that may be set (default 0.05).
+    pub cap: f64,
+}
+
+impl HealOpts {
+    pub fn new(tol: f64) -> HealOpts {
+        HealOpts { tol, sew: true, fix_small: true, fix_orientation: true, tolerant: false, cap: ck_check::DEFAULT_TOL_CAP }
+    }
+}
+
+/// Heal `b` in place with model tolerance `tol` (mm). No tolerant-edge pass.
 pub fn heal(b: &mut Body, tol: f64) -> HealReport {
+    heal_with(b, &HealOpts::new(tol))
+}
+
+/// `heal` with every fixer switchable and the tolerant-geometry pass.
+pub fn heal_with(b: &mut Body, o: &HealOpts) -> HealReport {
+    let mut report = heal_structure(b, o);
+    if o.tolerant {
+        // tolerances are measured against the strict validation tolerance, not
+        // the (looser) structural one, so `validate` agrees afterwards
+        let strict = o.tol.min(1e-6);
+        let mut fixed = std::mem::take(&mut report.fixed);
+        let (set, over) = tolerance::set_tolerances(b, strict, o.cap, &mut fixed);
+        if set + over > 0 {
+            // the structural checks already ran at the strict tolerance: only the
+            // edge / vertex deviation findings can have changed
+            const EDGE_CODES: [&str; 4] = ["EDGE_OFF_SURFACE", "VERTEX_OFF_CURVE", "EDGE_TOLERANCE_EXCEEDED", "VERTEX_TOLERANCE_EXCEEDED"];
+            report.remaining.retain(|i| !EDGE_CODES.contains(&i.code));
+            report.remaining.extend(ck_check::validate_edges(b, strict, o.cap).into_iter().filter(|i| EDGE_CODES.contains(&i.code)));
+        }
+        report.fixed = fixed;
+    }
+    report
+}
+
+fn heal_structure(b: &mut Body, o: &HealOpts) -> HealReport {
+    let tol = o.tol;
+    // problems are detected at the strict tolerance and repaired within `tol`
+    let chk = tol.min(1e-6);
     let mut fixed: Vec<Fixed> = vec![];
-    let mut issues = ck_check::validate(b, tol);
+    let mut issues = ck_check::validate_cap(b, chk, o.cap);
     for _ in 0..4 {
         if issues.is_empty() {
             break;
         }
         let has = |c: &str| issues.iter().any(|i| i.code == c);
         let n0 = fixed.len();
-        if has("SHELL_OPEN") || has("LOOP_OPEN") || has("EDGE_DEGENERATE") || has("EDGE_UNUSED") {
+        if o.sew && (has("SHELL_OPEN") || has("LOOP_OPEN") || has("EDGE_DEGENERATE") || has("EDGE_UNUSED")) {
             vertex::merge_near_vertices(b, tol, &mut fixed);
         }
-        if has("EDGE_DEGENERATE") {
+        if o.fix_small && has("EDGE_DEGENERATE") {
             small::remove_degenerate(b, tol, &mut fixed);
         }
-        if has("LOOP_OPEN") {
+        if o.sew && has("LOOP_OPEN") {
             wire::fix_loops(b, &mut fixed);
         }
-        if has("SHELL_OPEN") || has("EDGE_UNUSED") || has("SHELL_EMPTY") {
+        if o.sew && (has("SHELL_OPEN") || has("EDGE_UNUSED") || has("SHELL_EMPTY")) {
             let joined = sew::sew_free_edges(b, tol, &mut fixed);
             sew::merge_shells(b, &joined, &mut fixed);
         }
@@ -60,18 +112,18 @@ pub fn heal(b: &mut Body, tol: f64) -> HealReport {
             break;
         }
         // sewing can introduce orientation conflicts: re-check, then orient
-        issues = ck_check::validate(b, tol);
-        if issues.iter().any(|i| matches!(i.code, "SHELL_ORIENTATION" | "VOLUME_NONPOSITIVE")) {
+        issues = ck_check::validate_cap(b, chk, o.cap);
+        if o.fix_orientation && issues.iter().any(|i| matches!(i.code, "SHELL_ORIENTATION" | "VOLUME_NONPOSITIVE")) {
             orient::fix_loop_senses(b, &mut fixed);
             orient::fix_orientation(b, &mut fixed);
-            issues = ck_check::validate(b, tol);
+            issues = ck_check::validate_cap(b, chk, o.cap);
         }
     }
     // orientation-only damage never reaches the structural fixes above
-    if issues.iter().any(|i| matches!(i.code, "SHELL_ORIENTATION" | "VOLUME_NONPOSITIVE")) {
+    if o.fix_orientation && issues.iter().any(|i| matches!(i.code, "SHELL_ORIENTATION" | "VOLUME_NONPOSITIVE")) {
         orient::fix_loop_senses(b, &mut fixed);
         orient::fix_orientation(b, &mut fixed);
-        issues = ck_check::validate(b, tol);
+        issues = ck_check::validate_cap(b, chk, o.cap);
     }
     HealReport { fixed, remaining: issues }
 }

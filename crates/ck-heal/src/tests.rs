@@ -219,3 +219,94 @@ fn every_damage_on_every_shape() {
         }
     }
 }
+
+// ------------------------------------------------------------ tolerant geometry
+
+fn tolerant(tol: f64) -> HealOpts {
+    let mut o = HealOpts::new(tol);
+    o.tolerant = true;
+    o
+}
+
+/// Face with outward normal along +Y (the box extrudes along +Y).
+fn top_face(b: &Body) -> FaceId {
+    b.face_ids().find(|&f| b.outward_normal(f, 0.0, 0.0).dist(Vec3::Y) < 1e-9 && matches!(b.face(f).surface, ck_geom::surface::Surface::Plane { .. })).unwrap()
+}
+
+fn shift_plane(b: &mut Body, f: FaceId, d: f64) {
+    if let ck_geom::surface::Surface::Plane { frame } = &mut b.faces[f.idx()].surface {
+        frame.o = frame.o + Vec3::Y * d;
+    } else {
+        panic!("not a plane");
+    }
+}
+
+#[test]
+fn face_shifted_gets_edge_tolerance() {
+    let mut b = box_body();
+    let v0 = vol(&b);
+    let f = top_face(&b);
+    shift_plane(&mut b, f, 3e-3);
+    let issues = ck_check::validate(&b, 1e-6);
+    assert!(issues.iter().any(|i| i.code == "EDGE_OFF_SURFACE"), "{issues:?}");
+    // without the tolerant pass nothing changes
+    let mut c = b.clone();
+    assert!(!heal_with(&mut c, &HealOpts::new(1e-5)).remaining.is_empty());
+    let r = heal_with(&mut b, &tolerant(1e-5));
+    assert!(r.remaining.is_empty(), "{:?}", r.remaining);
+    assert!(has(&r, "EDGE_TOLERANCE"));
+    let used = ck_check::tolerance_used(&b);
+    assert!(used >= 3e-3 && used < 4e-3, "{used}");
+    assert!((vol(&b) - v0).abs() <= 1e-3 * v0);
+    // a tight cap turns the same deviation into an error
+    let mut o = tolerant(1e-5);
+    o.cap = 1e-3;
+    let r = heal_with(&mut c, &o);
+    assert!(r.remaining.iter().any(|i| i.code == "EDGE_OFF_SURFACE"));
+    assert_eq!(ck_check::tolerance_used(&c), 0.0);
+}
+
+#[test]
+fn cylinder_edge_off_its_surface() {
+    let mut b = cyl_body();
+    let e = b.edge_ids().find(|&e| matches!(b.edge(e).curve, ck_geom::curve::Curve::Circle { .. })).unwrap();
+    if let ck_geom::curve::Curve::Circle { r, .. } = &mut b.edges[e.idx()].curve {
+        *r += 4e-3;
+    }
+    assert!(!ck_check::validate(&b, 1e-6).is_empty());
+    let r = heal_with(&mut b, &tolerant(1e-5));
+    assert!(r.remaining.is_empty(), "{:?}", r.remaining);
+    assert!(b.edge(e).tol >= 4e-3 && b.edge(e).tol < 5e-3);
+}
+
+#[test]
+fn gap_of_1e4_is_sewn_with_tolerance() {
+    let mut b = box_body();
+    let v0 = vol(&b);
+    assert!(damage::detach_faces(&mut b, &[FaceId(1)], 1e-4, false));
+    assert!(ck_check::validate(&b, 1e-6).iter().any(|i| i.code == "SHELL_OPEN"));
+    let r = heal_with(&mut b, &tolerant(1e-3));
+    assert!(r.remaining.is_empty(), "{:?} after {:?}", r.remaining, r.fixed);
+    assert!(has(&r, "EDGE_SEWN"));
+    assert!((vol(&b) - v0).abs() <= 1e-4 * v0);
+}
+
+#[test]
+fn switches_disable_fixers() {
+    let mut b = box_body();
+    ck_topo::orient::flip_face(&mut b, FaceId(2));
+    let mut o = HealOpts::new(TOL);
+    o.fix_orientation = false;
+    assert!(!heal_with(&mut b.clone(), &o).remaining.is_empty());
+    assert!(heal_with(&mut b, &HealOpts::new(TOL)).remaining.is_empty());
+}
+
+#[test]
+fn tolerant_pass_is_a_noop_on_valid_bodies() {
+    for mut b in [box_body(), cyl_body()] {
+        let before = b.clone();
+        let r = heal_with(&mut b, &tolerant(1e-4));
+        assert!(r.fixed.is_empty() && r.remaining.is_empty());
+        assert_eq!(b, before);
+    }
+}
