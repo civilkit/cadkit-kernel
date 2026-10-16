@@ -115,19 +115,26 @@ fn check_shell(name: &str, stations: &[[f64; 4]], tip: Option<f64>, t: f64) -> (
     (v0, v)
 }
 
+/// Wall volumes of an independent construction (inner offset of the closed hull, cut at the deck
+/// line, subtracted from the open hull), made from the same sections: 4383.0 at 1.0, 2683.5 at 0.6.
 #[test]
 fn blunt_hull_shell() {
-    let (v0, v) = check_shell("blunt", &BLUNT, None, 1.0);
-    assert!(v > 0.0 && v < 0.35 * v0, "{v} of {v0}");
+    for (t, want) in [(1.0, 4383.0), (0.6, 2683.5)] {
+        let (v0, v) = check_shell("blunt", &BLUNT, None, t);
+        assert!(v0 > 20000.0);
+        assert!((v - want).abs() < 0.04 * want, "t={t}: wall volume {v} against {want}");
+    }
 }
 
+/// A hull ended by a point section has a pole; its shell is refused with a reason and a way out.
 #[test]
-fn pointy_hull_shell() {
-    let (v0, v) = check_shell("pointy", &BOAT, Some(62.0), 1.0);
-    assert!(v > 0.0 && v < 0.35 * v0, "{v} of {v0}");
-}
-
-#[test]
-fn pointy_hull_shell_thin() {
-    check_shell("pointy", &BOAT, Some(62.0), 0.6);
+fn pointy_hull_shell_is_refused_with_a_hint() {
+    let base = run(&hull(&BOAT, Some(62.0), None));
+    assert!(base.errors.is_empty(), "{:?}", base.errors);
+    let o = run(&hull(&BOAT, Some(62.0), Some(1.0)));
+    assert_eq!(o.errors.len(), 1);
+    let e = &o.errors[0].error;
+    assert_eq!(e.code, "offsetUnsupported");
+    let detail = format!("{:?}", e.params);
+    assert!(detail.contains("point") && detail.contains("blunt"), "{detail}");
 }

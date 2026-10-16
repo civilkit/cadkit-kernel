@@ -131,6 +131,21 @@ pub fn shell(body: &Body, open: &[FaceId], thickness: f64, outward: bool, tol: f
             return Err(ShellError::detail("shellUnsupported", format!("opened face {} is not planar", body.face_id_str(f))));
         }
     }
+    // A loft ended by a point section has a pole: the surface collapses to the apex, where its
+    // offset is not a surface of the same kind (the offset folds over itself and the inner
+    // surfaces only close at a new apex). That corner is not solved yet: say so, with the way out.
+    for f in body.face_ids() {
+        let face = body.face(f);
+        if matches!(face.surface, Surface::BSpline(_)) && !crate::offset::pole_points(&face.surface).is_empty() {
+            return Err(ShellError::detail(
+                "offsetUnsupported",
+                format!(
+                    "{} comes to a point (a loft ended by a point section): the offset of an apex is not supported, so this body cannot be shelled. End the loft with a small closed section instead of a point (a blunt end shells and thickens normally)",
+                    body.face_id_str(f)
+                ),
+            ));
+        }
+    }
     let is_open = |f: FaceId| open.contains(&f);
     let t = thickness;
     // closed-spline walls carry a two-lap profile: cut it to one lap per face / edge first

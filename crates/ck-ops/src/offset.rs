@@ -105,6 +105,8 @@ const FIT_TOL: f64 = 1e-5;
 const EDGE_FIT_TOL: f64 = 3e-3;
 /// As [`EDGE_FIT_TOL`] for edges between grazing (G1) neighbours.
 const GRAZE_TOL: f64 = 1e-1;
+/// Offset edge curves are refined until they follow both offset surfaces this closely (mm).
+const GOOD_EDGE_TOL: f64 = 5e-5;
 /// Sample spans shorter than this (mm) are not refined further.
 const MIN_SPAN: f64 = 0.04;
 
@@ -251,6 +253,34 @@ pub fn grid_min_radius(s: &Surface, d: f64, uvbox: ((f64, f64), (f64, f64))) -> 
     best
 }
 
+/// Points where the surface collapses (a boundary row or column of control points is one point:
+/// the apex of a loft ended by a point section).
+pub fn pole_points(s: &Surface) -> Vec<Vec3> {
+    let ((u0, u1), (v0, v1)) = s.domain();
+    if !(u0.is_finite() && u1.is_finite() && v0.is_finite() && v1.is_finite()) {
+        return vec![];
+    }
+    let mut out: Vec<Vec3> = vec![];
+    for edge in 0..4 {
+        let pts: Vec<Vec3> = (0..=6)
+            .map(|k| {
+                let t = k as f64 / 6.0;
+                match edge {
+                    0 => s.eval(u0, v0 + (v1 - v0) * t),
+                    1 => s.eval(u1, v0 + (v1 - v0) * t),
+                    2 => s.eval(u0 + (u1 - u0) * t, v0),
+                    _ => s.eval(u0 + (u1 - u0) * t, v1),
+                }
+            })
+            .collect();
+        let scale = 1.0 + pts[0].len();
+        if pts.iter().all(|q| q.dist(pts[0]) < 1e-7 * scale) && !out.iter().any(|q| q.dist(pts[0]) < 1e-7 * scale) {
+            out.push(pts[0]);
+        }
+    }
+    out
+}
+
 fn fit_offset_surface_inner(s: &Surface, d: f64, uvbox: ((f64, f64), (f64, f64)), reach: f64) -> Result<Surface, OffsetError> {
     let big = || OffsetError::new("offsetTooLarge", CENTRE);
     if let Surface::Revolution { profile, axis_o, axis } = s {
@@ -265,6 +295,7 @@ fn fit_offset_surface_inner(s: &Surface, d: f64, uvbox: ((f64, f64), (f64, f64))
     }
     let off = Surface::Offset { base: Box::new(s.clone()), dist: d };
     let ((du0, du1), (dv0, dv1)) = s.domain();
+
     // The cavity of a shell runs `reach` past an opened face, so its
     // neighbours' offsets must extend beyond the original surface: pad the box
     // by that distance (in parameters) and continue the surface past its
@@ -819,11 +850,17 @@ fn offset_spline_edge(src: &Body, e: EdgeId, moved: &[Option<Surface>], dnat: &d
         }
         // grazing neighbours (G1 seams) leave a gap of ~ d x (normal mismatch)
         // between their offsets that no edge can close
-        if dev <= if grazing.get() { GRAZE_TOL } else { EDGE_FIT_TOL.max((1.5 * end_gap).min(GRAZE_TOL)) } {
+        let limit = if grazing.get() { GRAZE_TOL } else { EDGE_FIT_TOL.max((1.5 * end_gap).min(GRAZE_TOL)) };
+        // Refine for quality, not just for the limit: a coarse fit that merely passes the limit
+        // leaves the cut solid's edges off their faces by up to the limit (the validator and the
+        // downstream booleans see that). Refine to `GOOD_EDGE_TOL`, accept the limit only once
+        // refinement has stopped paying.
+        let good = if grazing.get() { limit } else { limit.min(GOOD_EDGE_TOL) };
+        if dev <= good || (dev <= limit && n >= 192) {
             return Ok((Curve::BSpline(c), a, b));
         }
         n *= 2;
-        if n > if std::env::var_os("CK_OFFSET_DEBUG").is_some() { 96 } else { 800 } {
+        if n > 800 {
             return Err(OffsetError::new("offsetUnsupported", format!("edge offset fit tolerance ({dev:.1e})")));
         }
     }
