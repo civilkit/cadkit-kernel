@@ -49,6 +49,110 @@ fn deg(r: f64) -> f64 {
     r.to_degrees()
 }
 
+
+// ---------------------------------------------------------------- time budget
+
+type Clock = fn() -> f64;
+
+thread_local! {
+    static CLOCK: std::cell::Cell<Option<Clock>> = const { std::cell::Cell::new(None) };
+    /// (start ms, limit ms, truncated)
+    static BUDGET: std::cell::Cell<(f64, f64, bool)> = const { std::cell::Cell::new((0.0, f64::INFINITY, false)) };
+}
+
+/// Install the monotonic clock (ms); without one (native tests) no request is ever cut short.
+pub fn set_clock(f: Clock) {
+    CLOCK.with(|c| c.set(Some(f)));
+}
+
+fn clock_now() -> f64 {
+    CLOCK.with(|c| c.get()).map_or(0.0, |f| f())
+}
+
+/// Start a request: `opts.timeMs` (default 8000) is the wall-clock budget after which loops stop and the reply is
+/// marked `truncated`.
+fn begin(msg: &Json) {
+    let limit = opt_f(msg, "timeMs", 8000.0).max(1.0);
+    BUDGET.with(|b| b.set((clock_now(), limit, false)));
+}
+
+/// Has the budget run out? (marks the reply truncated)
+fn over() -> bool {
+    if CLOCK.with(|c| c.get()).is_none() {
+        return false;
+    }
+    BUDGET.with(|b| {
+        let (s, l, t) = b.get();
+        if t {
+            return true;
+        }
+        let out = clock_now() - s > l;
+        if out {
+            b.set((s, l, true));
+        }
+        out
+    })
+}
+
+/// Mark the reply partial for a reason other than time (sample / pair caps).
+fn mark_truncated() {
+    BUDGET.with(|b| {
+        let (s, l, _) = b.get();
+        b.set((s, l, true));
+    });
+}
+
+/// Add `elapsedMs` and `truncated` to an object reply.
+fn stamp(mut j: Json) -> Json {
+    let (s, _, t) = BUDGET.with(|b| b.get());
+    if let Json::Obj(m) = &mut j {
+        m.retain(|(k, _)| k != "truncated");
+        m.push(("elapsedMs".into(), Json::Num((clock_now() - s).max(0.0).round())));
+        m.push(("truncated".into(), Json::Bool(t)));
+    }
+    j
+}
+
+pub fn distance_reply(body: &Body, other: Option<&Body>, msg: &Json) -> Result<Json, String> {
+    begin(msg);
+    distance_inner(body, other, msg).map(stamp)
+}
+
+pub fn max_distance_reply(body: &Body, other: Option<&Body>, msg: &Json) -> Result<Json, String> {
+    begin(msg);
+    max_distance_inner(body, other, msg).map(stamp)
+}
+
+pub fn thickness_reply(body: &Body, msg: &Json) -> Result<Json, String> {
+    begin(msg);
+    thickness_inner(body, msg).map(stamp)
+}
+
+pub fn thickness_at_reply(body: &Body, msg: &Json) -> Result<Json, String> {
+    begin(msg);
+    thickness_at_inner(body, msg).map(stamp)
+}
+
+pub fn closest_point_reply(body: &Body, msg: &Json) -> Result<Json, String> {
+    begin(msg);
+    closest_point_inner(body, msg).map(stamp)
+}
+
+pub fn angles_reply(body: &Body, msg: &Json) -> Result<Json, String> {
+    begin(msg);
+    angles_inner(body, msg).map(stamp)
+}
+
+pub fn clearance_reply(body: &Body, msg: &Json) -> Result<Json, String> {
+    begin(msg);
+    clearance_inner(body, msg).map(stamp)
+}
+
+pub fn symmetry_reply(body: &Body, msg: &Json) -> Result<Json, String> {
+    begin(msg);
+    symmetry_inner(body, msg).map(stamp)
+}
+
 // ---------------------------------------------------------------- context
 
 /// A body with its containment structure, edge keys and face index.
@@ -248,10 +352,14 @@ pub struct Hit {
 }
 
 fn refine(ca: &Ctx, pa: Prim, cb: &Ctx, pb: Prim, start: Vec3) -> Option<Hit> {
+    refine_n(ca, pa, cb, pb, start, 400)
+}
+
+fn refine_n(ca: &Ctx, pa: Prim, cb: &Ctx, pb: Prim, start: Vec3, iters: usize) -> Option<Hit> {
     let mut x = start;
     let mut best: Option<Hit> = None;
     let mut prev = f64::INFINITY;
-    for _ in 0..400 {
+    for _ in 0..iters {
         let (_, y) = prim_nearest(cb, pb, x)?;
         let (d, x2) = prim_nearest(ca, pa, y)?;
         x = x2;
@@ -422,6 +530,23 @@ impl<'a> Ent<'a> {
     }
 }
 
+/// Closest pair of display-mesh points of two faces: `(distance, point on A, slack)`; the true distance lies in
+/// `[distance - slack, distance]` (up to the mesh covering radius).
+fn mesh_pair(ca: &Ctx, pa: Prim, cb: &Ctx, pb: Prim) -> Option<(f64, Vec3, f64)> {
+    let (Prim::Face(fa), Prim::Face(fb)) = (pa, pb) else { return None };
+    let ((ma, ha), (mb, hb)) = (ca.mesh().get(&fa)?, cb.mesh().get(&fb)?);
+    let mut best = (f64::INFINITY, Vec3::ZERO);
+    for p in ma {
+        for q in mb {
+            let d = p.dist(*q);
+            if d < best.0 {
+                best = (d, *p);
+            }
+        }
+    }
+    best.0.is_finite().then_some((best.0, best.1, ha + hb))
+}
+
 /// Lower bound of the distance of two faces from their display meshes (0 when a mesh is missing or either is not a face).
 fn mesh_lb(ca: &Ctx, pa: Prim, cb: &Ctx, pb: Prim) -> f64 {
     let (Prim::Face(fa), Prim::Face(fb)) = (pa, pb) else { return 0.0 };
@@ -449,6 +574,9 @@ fn ent_min(a: &Ent, b: &Ent, n: usize) -> Option<(Hit, usize, usize)> {
     pairs.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap_or(std::cmp::Ordering::Equal));
     let mut best: Option<(Hit, usize, usize)> = None;
     for (lb, i, j) in pairs {
+        if over() {
+            break;
+        }
         if best.map_or(false, |(h, _, _)| lb > h.d + 1e-12) {
             break;
         }
@@ -549,7 +677,7 @@ fn other_ctx_body<'a>(body: &'a Body, other: Option<&'a Body>) -> &'a Body {
 }
 
 /// `{type:"distance", tag, tagB?, a, b, opts?:{samples}}`.
-pub fn distance_reply(body: &Body, other: Option<&Body>, msg: &Json) -> Result<Json, String> {
+fn distance_inner(body: &Body, other: Option<&Body>, msg: &Json) -> Result<Json, String> {
     let ca = Ctx::new(body);
     let cb_owned;
     let cb: &Ctx = if other.is_some() {
@@ -658,9 +786,29 @@ fn body_samples(ctx: &Ctx, faces: &[FaceId], budget: usize) -> (Vec<(Vec3, FaceI
     (out, cover)
 }
 
+/// A permutation of `0..n` that visits the range evenly (stride walk), so a run cut short still covers every face.
+fn stride_order(n: usize) -> Vec<usize> {
+    if n < 3 {
+        return (0..n).collect();
+    }
+    let mut k = (n as f64 * 0.6180339887) as usize | 1;
+    while gcd(k, n) != 1 {
+        k += 2;
+    }
+    (0..n).map(|i| i * k % n).collect()
+}
+
+fn gcd(a: usize, b: usize) -> usize {
+    if b == 0 {
+        a
+    } else {
+        gcd(b, a % b)
+    }
+}
+
 /// `{type:"maxDistance", tag, tagB?, a?, b?, opts?:{samples, both}}`: one-sided Hausdorff distance from `a` to `b`
 /// (both default to the whole body), sampled densely with an error bound.
-pub fn max_distance_reply(body: &Body, other: Option<&Body>, msg: &Json) -> Result<Json, String> {
+fn max_distance_inner(body: &Body, other: Option<&Body>, msg: &Json) -> Result<Json, String> {
     let ca = Ctx::new(body);
     let cb_owned;
     let cb: &Ctx = if other.is_some() {
@@ -669,7 +817,7 @@ pub fn max_distance_reply(body: &Body, other: Option<&Body>, msg: &Json) -> Resu
     } else {
         &ca
     };
-    let budget = opt_n(msg, "samples", 5000, 400000);
+    let budget = opt_n(msg, "samples", 3000, 400000);
     let both = matches!(opt(msg, "both"), Some(Json::Bool(true)));
     let default = Json::Str("body".into());
     let pa = parse_entity(&ca, msg.get("a").unwrap_or(&default), "maxDistance: a")?;
@@ -698,7 +846,13 @@ pub fn max_distance_reply(body: &Body, other: Option<&Body>, msg: &Json) -> Resu
         }
         let (mut mx, mut at, mut near, mut af) = (-1.0f64, Vec3::ZERO, Vec3::ZERO, None);
         let (mut sum2, mut cnt) = (0.0, 0usize);
-        for (p, f) in &pts {
+        let total_pts = pts.len();
+        let order = stride_order(total_pts);
+        for oi in order {
+            if over() {
+                break;
+            }
+            let (p, f) = &pts[oi];
             if let Some((d, q, _)) = eb.nearest(*p) {
                 sum2 += d * d;
                 cnt += 1;
@@ -717,7 +871,8 @@ pub fn max_distance_reply(body: &Body, other: Option<&Body>, msg: &Json) -> Resu
             .put("errorBound", bound)
             .put("upperBound", mx + bound)
             .put("rms", (sum2 / cnt as f64).sqrt())
-            .put("samples", cnt as f64);
+            .put("samples", cnt as f64)
+            .put("coverage", cnt as f64 / total_pts.max(1) as f64);
         if let Some(f) = af {
             o = o.put("face", xa.body.face_id_str(f));
         }
@@ -786,9 +941,9 @@ fn th_json(ctx: &Ctx, t: &Th, thickness: f64) -> Json {
 }
 
 /// `{type:"thickness", tag, opts?:{samples, top, radius, below, method:"ray"|"sphere", sphereSamples}}`.
-pub fn thickness_reply(body: &Body, msg: &Json) -> Result<Json, String> {
+fn thickness_inner(body: &Body, msg: &Json) -> Result<Json, String> {
     let ctx = Ctx::new(body);
-    let budget = opt_n(msg, "samples", 6000, 200000);
+    let budget = opt_n(msg, "samples", 2500, 200000);
     let top = opt_n(msg, "top", 10, 200);
     let below = opt_f(msg, "below", f64::INFINITY);
     let sphere = opt_s(msg, "method") == Some("sphere");
@@ -801,6 +956,9 @@ pub fn thickness_reply(body: &Body, msg: &Json) -> Result<Json, String> {
     let (mut total, mut noexit) = (0usize, 0usize);
     for &f in &faces {
         for c in face_grid(&ctx, f, g).into_iter().flatten() {
+            if over() {
+                break;
+            }
             total += 1;
             match ray_thickness(&ctx, f, c.0, c.1) {
                 Some(t) => ths.push(t),
@@ -814,6 +972,9 @@ pub fn thickness_reply(body: &Body, msg: &Json) -> Result<Json, String> {
     if sphere {
         let k = opt_n(msg, "sphereSamples", 200, 5000).min(ths.len());
         for (v, i) in vals.iter_mut().take(k) {
+            if over() {
+                break;
+            }
             let t = &ths[*i];
             // a sample closer to its face's boundary than half its thickness is a corner: the ball is cut by the
             // neighbouring face there (a sharp edge always dips to 0), not by a thin wall, so it keeps its ray value
@@ -858,7 +1019,7 @@ pub fn thickness_reply(body: &Body, msg: &Json) -> Result<Json, String> {
 
 /// `{type:"thicknessAt", tag, point | face}`: wall thickness along the inward normal at the surface point nearest to
 /// `point`, or the min / max / mean over `face`.
-pub fn thickness_at_reply(body: &Body, msg: &Json) -> Result<Json, String> {
+fn thickness_at_inner(body: &Body, msg: &Json) -> Result<Json, String> {
     let ctx = Ctx::new(body);
     if let Some(p) = msg.get("point") {
         let q = vec3_of(Some(p), "thicknessAt: point")?;
@@ -917,7 +1078,7 @@ fn locate(ctx: &Ctx, f: FaceId, p: Vec3) -> Json {
 }
 
 /// `{type:"closestPoint", tag, points:[[x,y,z]], on?:"body"|"face"|"edge"|"vertex", ids?:[..], k?}`.
-pub fn closest_point_reply(body: &Body, msg: &Json) -> Result<Json, String> {
+fn closest_point_inner(body: &Body, msg: &Json) -> Result<Json, String> {
     let pts = msg.get("points").and_then(|p| p.as_arr()).ok_or("closestPoint: points [[x, y, z], ...] is required")?;
     if pts.len() > MAX_POINTS {
         return Err(format!("closestPoint: at most {MAX_POINTS} points per request"));
@@ -942,6 +1103,10 @@ pub fn closest_point_reply(body: &Body, msg: &Json) -> Result<Json, String> {
     let mut out = vec![];
     for q in pts {
         let q = vec3_of(Some(q), "closestPoint: each point")?;
+        if over() {
+            out.push(Json::Null);
+            continue;
+        }
         let mut cands: Vec<(f64, Vec3, Prim)> = if k == 1 {
             // box-pruned search
             ent.nearest(q).map(|(d, x, i)| vec![(d, x, universe[i])]).unwrap_or_default()
@@ -1037,7 +1202,7 @@ fn dihedral(ctx: &Ctx, e: EdgeId, f1: FaceId, f2: FaceId, t: f64) -> Option<(f64
 }
 
 /// `{type:"angles", tag, edges?:"all"|[keys], faces?:[a, b], draft?:{pull, faces?, min?}}`.
-pub fn angles_reply(body: &Body, msg: &Json) -> Result<Json, String> {
+fn angles_inner(body: &Body, msg: &Json) -> Result<Json, String> {
     let ctx = Ctx::new(body);
     let mut o = Obj::new();
     let mut any = false;
@@ -1049,6 +1214,9 @@ pub fn angles_reply(body: &Body, msg: &Json) -> Result<Json, String> {
         };
         let mut out = vec![];
         for p in prims {
+            if over() {
+                break;
+            }
             let Prim::Edge(e) = p else { return Err("angles: edges must name edges".into()) };
             let fs = body.edge_faces(e);
             if fs.len() != 2 {
@@ -1179,7 +1347,7 @@ fn between(ctx: &Ctx, mid: Vec3) -> &'static str {
 }
 
 /// `{type:"clearance", tag, min, a?, b?, include?:"gap"|"wall"|"both", limit?}`: face pairs closer than `min`.
-pub fn clearance_reply(body: &Body, msg: &Json) -> Result<Json, String> {
+fn clearance_inner(body: &Body, msg: &Json) -> Result<Json, String> {
     let min = msg.get_f64("min").or_else(|| opt(msg, "min").and_then(|j| j.as_f64())).filter(|m| *m > 0.0 && m.is_finite()).ok_or("clearance: min (a positive distance) is required")?;
     let ctx = Ctx::new(body);
     let include = opt_s(msg, "include").unwrap_or("both");
@@ -1208,40 +1376,67 @@ pub fn clearance_reply(body: &Body, msg: &Json) -> Result<Json, String> {
     let boxes: HashMap<FaceId, Aabb> = fa.iter().chain(fb.iter()).map(|&f| (f, face_box(body, f))).collect();
     let same_set = msg.get("a").is_none() && msg.get("b").is_none();
     let (mut tested, mut hits) = (0usize, vec![]);
+    let max_pairs = opt_n(msg, "maxPairs", 4000, 200000);
+    // candidate pairs: box distance under `min`, not touching; closest boxes first so a cut run keeps the worst
     let mut seen: std::collections::HashSet<(usize, usize)> = Default::default();
+    let mut cand: Vec<(f64, FaceId, FaceId)> = vec![];
     for &a in &fa {
         for &b in &fb {
             if a == b || (same_set && a.idx() > b.idx()) {
                 continue;
             }
             let key = (a.idx().min(b.idx()), a.idx().max(b.idx()));
-            if !seen.insert(key) {
+            let bd = box_dist(&boxes[&a], &boxes[&b]);
+            if bd >= min || !seen.insert(key) || vs[&a].iter().any(|v| vs[&b].contains(v)) {
                 continue;
             }
-            if box_dist(&boxes[&a], &boxes[&b]) >= min {
-                continue;
-            }
-            if vs[&a].iter().any(|v| vs[&b].contains(v)) {
-                continue; // adjacent faces touch by construction
-            }
-            if fa.len().max(fb.len()) > 12 && mesh_lb(&ctx, Prim::Face(a), &ctx, Prim::Face(b)) >= min {
-                continue;
-            }
-            tested += 1;
-            let Some(h) = pair_min(&ctx, Prim::Face(a), &ctx, Prim::Face(b), 6) else { continue };
-            if h.d >= min {
-                continue;
-            }
-            let mid = (h.a + h.b) * 0.5;
-            let kind = if h.d < 1e-9 { "contact" } else { between(&ctx, mid) };
-            if (include == "gap" && kind == "wall") || (include == "wall" && kind == "gap") {
-                continue;
-            }
-            hits.push((h, a, b, kind));
+            cand.push((bd, a, b));
         }
+    }
+    cand.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap_or(std::cmp::Ordering::Equal));
+    if cand.len() > max_pairs {
+        cand.truncate(max_pairs);
+        mark_truncated();
+    }
+    for (_, a, b) in cand {
+        if over() {
+            break;
+        }
+        // the display meshes bound the distance; one refinement from the closest mesh pair gives the exact value
+        let h = match mesh_pair(&ctx, Prim::Face(a), &ctx, Prim::Face(b)) {
+            Some((md, pa, slack)) => {
+                if md - slack >= min {
+                    continue;
+                }
+                tested += 1;
+                match refine_n(&ctx, Prim::Face(a), &ctx, Prim::Face(b), pa, 60) {
+                    Some(h) => h,
+                    None => continue,
+                }
+            }
+            None => {
+                tested += 1;
+                match pair_min(&ctx, Prim::Face(a), &ctx, Prim::Face(b), 6) {
+                    Some(h) => h,
+                    None => continue,
+                }
+            }
+        };
+        if h.d >= min {
+            continue;
+        }
+        let mid = (h.a + h.b) * 0.5;
+        let kind = if h.d < 1e-9 { "contact" } else { between(&ctx, mid) };
+        if (include == "gap" && kind == "wall") || (include == "wall" && kind == "gap") {
+            continue;
+        }
+        hits.push((h, a, b, kind));
     }
     hits.sort_by(|x, y| x.0.d.partial_cmp(&y.0.d).unwrap_or(std::cmp::Ordering::Equal));
     let total = hits.len();
+    if total > limit {
+        mark_truncated();
+    }
     let pairs = hits
         .iter()
         .take(limit)
@@ -1256,19 +1451,19 @@ pub fn clearance_reply(body: &Body, msg: &Json) -> Result<Json, String> {
                 .build()
         })
         .collect();
-    Ok(Obj::new().put("min", min).put("count", total as f64).put("pairsTested", tested as f64).put("truncated", total > limit).put("pairs", Json::Arr(pairs)).build())
+    Ok(Obj::new().put("min", min).put("count", total as f64).put("pairsTested", tested as f64).put("listedAll", total <= limit).put("pairs", Json::Arr(pairs)).build())
 }
 
 // ---------------------------------------------------------------- symmetry
 
 /// `{type:"symmetry", tag, planes?:[{origin, normal}], opts?:{samples, tol}}`.
-pub fn symmetry_reply(body: &Body, msg: &Json) -> Result<Json, String> {
+fn symmetry_inner(body: &Body, msg: &Json) -> Result<Json, String> {
     let ctx = Ctx::new(body);
     let mp = ck_topo::mass::mass_props(body);
     let com = mp.com;
     let (lo, hi) = body.bbox();
     let centre = (lo + hi) * 0.5;
-    let budget = opt_n(msg, "samples", 1000, 100000);
+    let budget = opt_n(msg, "samples", 600, 100000);
     let tol = opt_f(msg, "tol", 1e-4 * ctx.diag);
     let mut cands: Vec<(Vec3, Vec3, String)> = vec![];
     let add = |o: Vec3, n: Vec3, why: &str, c: &mut Vec<(Vec3, Vec3, String)>| {
@@ -1307,7 +1502,11 @@ pub fn symmetry_reply(body: &Body, msg: &Json) -> Result<Json, String> {
     let mut res: Vec<(f64, Json)> = vec![];
     for (o, n, why) in cands {
         let (mut mx, mut s2, mut cnt, mut worst) = (0.0f64, 0.0, 0usize, Vec3::ZERO);
-        for (p, _) in &pts {
+        for oi in stride_order(pts.len()) {
+            if over() {
+                break;
+            }
+            let p = &pts[oi].0;
             let q = *p - n * (2.0 * n.dot(*p - o));
             if let Some((d, _, _)) = all.nearest(q) {
                 s2 += d * d;
