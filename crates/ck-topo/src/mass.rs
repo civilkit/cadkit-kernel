@@ -983,6 +983,13 @@ pub fn signed_volume(b: &Body, faces: &[FaceId]) -> f64 {
         .sum()
 }
 
+/// Signed volume of a set of faces to about 1e-3, for sign tests (orientation, `VOLUME_NONPOSITIVE`):
+/// the coarse quadrature tier with per-face memoisation, which is several times cheaper than
+/// [`signed_volume`] on free-form faces and shared between calls on the same faces.
+pub fn signed_volume_quick(b: &Body, faces: &[FaceId]) -> f64 {
+    faces.iter().map(|&f| face_volume_memo(b, f, true).0).sum()
+}
+
 /// One face's share of the signed volume, measured from the origin (so it depends on the face
 /// alone and can be cached per face; the sum over a closed shell does not depend on the origin).
 pub fn face_signed_volume(b: &Body, f: FaceId) -> f64 {

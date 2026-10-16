@@ -42,6 +42,14 @@ pub fn validate(b: &Body, tol: f64) -> Vec<Issue> {
     validate_cap(b, tol, DEFAULT_TOL_CAP)
 }
 
+/// Only the edge / vertex deviation checks of `validate_cap` (cheap next to the
+/// loop and solid checks): used to re-judge a body after tolerances were set.
+pub fn validate_edges(b: &Body, tol: f64, cap: f64) -> Vec<Issue> {
+    let mut out = vec![];
+    edge::check(b, tol, cap, &mut out);
+    out
+}
+
 /// `validate` with an explicit cap on edge / vertex tolerances.
 pub fn validate_cap(b: &Body, tol: f64, cap: f64) -> Vec<Issue> {
     let mut out = vec![];

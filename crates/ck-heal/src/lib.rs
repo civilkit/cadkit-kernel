@@ -72,19 +72,23 @@ pub fn heal_with(b: &mut Body, o: &HealOpts) -> HealReport {
         let mut fixed = std::mem::take(&mut report.fixed);
         let (set, over) = tolerance::set_tolerances(b, strict, o.cap, &mut fixed);
         if set + over > 0 {
-            report.remaining = ck_check::validate_cap(b, strict, o.cap);
+            // the structural checks already ran at the strict tolerance: only the
+            // edge / vertex deviation findings can have changed
+            const EDGE_CODES: [&str; 4] = ["EDGE_OFF_SURFACE", "VERTEX_OFF_CURVE", "EDGE_TOLERANCE_EXCEEDED", "VERTEX_TOLERANCE_EXCEEDED"];
+            report.remaining.retain(|i| !EDGE_CODES.contains(&i.code));
+            report.remaining.extend(ck_check::validate_edges(b, strict, o.cap).into_iter().filter(|i| EDGE_CODES.contains(&i.code)));
         }
         report.fixed = fixed;
-    } else if !report.fixed.is_empty() {
-        report.remaining = ck_check::validate_cap(b, o.tol, o.cap);
     }
     report
 }
 
 fn heal_structure(b: &mut Body, o: &HealOpts) -> HealReport {
     let tol = o.tol;
+    // problems are detected at the strict tolerance and repaired within `tol`
+    let chk = tol.min(1e-6);
     let mut fixed: Vec<Fixed> = vec![];
-    let mut issues = ck_check::validate_cap(b, tol, o.cap);
+    let mut issues = ck_check::validate_cap(b, chk, o.cap);
     for _ in 0..4 {
         if issues.is_empty() {
             break;
@@ -108,18 +112,18 @@ fn heal_structure(b: &mut Body, o: &HealOpts) -> HealReport {
             break;
         }
         // sewing can introduce orientation conflicts: re-check, then orient
-        issues = ck_check::validate_cap(b, tol, o.cap);
+        issues = ck_check::validate_cap(b, chk, o.cap);
         if o.fix_orientation && issues.iter().any(|i| matches!(i.code, "SHELL_ORIENTATION" | "VOLUME_NONPOSITIVE")) {
             orient::fix_loop_senses(b, &mut fixed);
             orient::fix_orientation(b, &mut fixed);
-            issues = ck_check::validate_cap(b, tol, o.cap);
+            issues = ck_check::validate_cap(b, chk, o.cap);
         }
     }
     // orientation-only damage never reaches the structural fixes above
     if o.fix_orientation && issues.iter().any(|i| matches!(i.code, "SHELL_ORIENTATION" | "VOLUME_NONPOSITIVE")) {
         orient::fix_loop_senses(b, &mut fixed);
         orient::fix_orientation(b, &mut fixed);
-        issues = ck_check::validate_cap(b, tol, o.cap);
+        issues = ck_check::validate_cap(b, chk, o.cap);
     }
     HealReport { fixed, remaining: issues }
 }
