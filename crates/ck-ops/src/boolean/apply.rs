@@ -210,6 +210,26 @@ fn unpole(a: Body, other: &Body) -> Body {
     let f = a.face_ids().next().unwrap();
     let Surface::Sphere { frame, r } = &a.face(f).surface else { return a };
     let (o, z, r) = (frame.o, frame.z, *r);
+    // Two whole spheres meet in a circle in the plane normal to the line of their centres. Turned so its axis lies
+    // along that line, each sphere sees the circle as a latitude circle (it crosses the seam once, the case the
+    // face walk handles); with the axis across the line the circle crosses the seam twice, the seam splits into
+    // three pieces inside the cap and the cap's two halves are walked as separate cycles.
+    if other.num_faces() == 1 {
+        let g = other.face_ids().next().unwrap();
+        if let Surface::Sphere { frame: fo, .. } = &other.face(g).surface {
+            let d = fo.o - o;
+            if d.len() > 1e-9 {
+                let n = d.normalize();
+                let ax = z.cross(n);
+                if ax.len() > 1e-9 {
+                    let mut c = a.clone();
+                    c.transform(&Xform::rotation(o, ax.normalize(), z.dot(n).clamp(-1.0, 1.0).acos()));
+                    return c;
+                }
+                return a;
+            }
+        }
+    }
     let near = |p: Vec3| other.face_ids().any(|g| other.face(g).surface.distance(p) < 1e-3 * r.max(1.0));
     if !near(o + z * r) && !near(o - z * r) {
         return a;
@@ -283,8 +303,8 @@ fn boolean_at(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> {
     if op == Op::Cut && untouched_a == a_faces && faces.iter().all(|f| whole_a(f)) {
         return Ok(BoolOut { body: a0.clone(), no_effect: true, mismatch: None });
     }
-    let body = build(&arr, &faces);
-    let issues = check(&body, tol);
+    let mut body = build(&arr, &faces);
+    let mut issues = check(&body, tol);
     // two lumps of one operand touching along a line (the two half rings of a thin-wall extrude of two
     // arcs) have distinct but coincident edges that the arrangement welds into one edge of four faces:
     // that edge is the input's own contact, not a failure of the boolean (checked lazily, only when
@@ -312,6 +332,26 @@ fn boolean_at(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> {
         });
         list.iter().any(|p| p.dist(m) < 1e-6 * (1.0 + m.len()))
     };
+    // parts of the result that touch along an edge: split the four-face edge into one per material wedge
+    // (the contacts the operands already had as two coincident edges are split too, with CK_SPLIT_INHERITED unset: no)
+    let split_inherited = true;
+    {
+        let contact: Vec<_> = issues
+            .iter()
+            .filter_map(|i| match i {
+                Issue::NonManifoldEdge(e, 4) => Some(*e),
+                _ => None,
+            })
+            .filter(|&e| {
+                let ed = body.edge(e);
+                split_inherited || !is_inherited(ed.curve.eval(0.5 * (ed.t0 + ed.t1)))
+            })
+            .collect();
+        if !contact.is_empty() && super::contact::split_contact_edges(&mut body, &contact) > 0 {
+            ck_topo::region::rebuild_lumps(&mut body);
+            issues = check(&body, tol);
+        }
+    }
     let bad_issues: Vec<_> = issues
         .into_iter()
         .filter(|i| matches!(i, Issue::OpenEdge(_) | Issue::NonManifoldEdge(..) | Issue::BrokenLoop(..) | Issue::BadPairing(_)))
@@ -324,6 +364,18 @@ fn boolean_at(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> {
             _ => true,
         })
         .collect();
+    // two solids that touch only along an edge (or a line of tangency): every face is kept whole and the
+    // contact edge carries four faces. The union is the two lumps side by side, not a failure.
+    if op == Op::Union
+        && !bad_issues.is_empty()
+        && bad_issues.iter().all(|i| matches!(i, Issue::NonManifoldEdge(_, 4)))
+        && faces.iter().all(|f| f.group == 0 || f.group == 2)
+        && faces.len() == a.num_faces() + b.num_faces()
+    {
+        let mut out = a0.clone();
+        out.append(b0);
+        return Ok(BoolOut { body: out, no_effect: false, mismatch: None });
+    }
     if !bad_issues.is_empty() {
         super::bool_dbg!("arrangement:\n{}", arr.dump());
         for i in &bad_issues {

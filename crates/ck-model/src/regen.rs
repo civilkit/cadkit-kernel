@@ -109,7 +109,7 @@ pub const KNOWN_TYPES: &[&str] = &[
     "lip", "dome", "splitLine", "draft", "moveFace", "hole", "lpattern", "cpattern", "mirror", "spattern",
     "fillpattern", "curvepattern", "moveBody", "mate", "insertPart", "scale", "surfaceExtrude", "surfaceRevolve",
     "surfacePlanar", "surfaceOffset", "deleteFace", "fill", "knit", "extend", "freeform", "trimSurface", "thicken",
-    "cutWithSurface", "pipeCut", "deleteBody", "editCurve", "projectCurve", "helix", "thread",
+    "cutWithSurface", "pipeCut", "deleteBody", "editCurve", "projectCurve", "helix", "thread", "combine", "bodyBoolean",
 ];
 
 /// The error the oracle reports for each known type when the payload is
@@ -138,6 +138,8 @@ pub const EMPTY_FEATURE_ERRORS: &[(&str, &str)] = &[
     ("fillpattern", "nothingToCut"),
     ("curvepattern", "missingPath"),
     ("moveBody", "nothingToCut"),
+    ("combine", "nothingToCut"),
+    ("bodyBoolean", "nothingToCut"),
     ("scale", "nothingToCut"),
     ("mate", "nothingToCut"),
     ("insertPart", "insertPartMissing"),
@@ -197,7 +199,7 @@ impl FeatureError {
             return e.with(
                 "hint",
                 Json::Str(
-                    "the intersection of these faces could not be closed into a valid solid (touching tangentially, a rim lying on the other surface, or a sliver thinner than ~1e-3); move the tool by a small amount (0.01), unite the bodies that touch each other first, or make the near-coincident faces exactly coincident".to_string(),
+                    "the intersection of these faces could not be closed into a valid solid (touching tangentially, a rim lying on the other surface, or a sliver thinner than ~1e-3); move the tool by a small amount (0.01), unite the bodies that touch each other first, make the near-coincident faces exactly coincident, or give the feature a fuzzy `tolerance` (1e-5 to 1e-3 mm) / `autoFuzzy: true` so nearly coincident faces are treated as coincident".to_string(),
                 ),
             );
         }

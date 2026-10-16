@@ -690,6 +690,7 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
             Ok(crate::drag::reply(&s.body, &s.asm, &cx.msg))
         }
         "interference" => Ok(ck_ops::interference::reply(&snapshot(cx)?.body)),
+        "bodyBoolean" => Ok(ck_model::features::combine::preview(&snapshot(cx)?.body, cx.msg)),
         "comb" => Ok(comb(&snapshot(cx)?.body, &cx.msg)),
         "curvatureMap" => {
             let body = &snapshot(cx)?.body;

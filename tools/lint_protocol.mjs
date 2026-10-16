@@ -60,7 +60,7 @@ if (isMainThread) {
     curvatureMap: {}, comb: { refs: [{ kind: 'face', id: 'F2.C1' }] }, drawing: {},
     check: { expect: [{ kind: 'volume', min: 0 }] }, resolve: { descriptions: [{ kind: 'face', surface: 'plane' }] }, describe: { names: ['F2.C1'] },
     refDiff: { base: parts.box, part: parts.box },
-    section: { plane: { origin: [0, 0, 0], normal: [0, 0, 1] } }, sections: { n: 3 }, probe: { points: [[0, 0, 0]], rays: [{ origin: [0, 0, 0], dir: [0, 0, 1] }] },
+    section: { plane: { origin: [0, 0, 0], normal: [0, 0, 1] } }, sections: { n: 3 }, bodyBoolean: { op: 'cut', target: 'F2.C1', tools: ['F2.C0'] }, probe: { points: [[0, 0, 0]], rays: [{ origin: [0, 0, 0], dir: [0, 0, 1] }] },
   };
   const MUST_OK = new Set(['ping', 'regen', 'massProps', 'validate', 'interference', 'step', 'check', 'resolve', 'describe', 'refDiff', 'section', 'sections', 'probe']); // minimal body must succeed once a body exists
   const FIELDS = ['part', 'tag', 'opts', 'ref', 'refs', 'ids', 'sketch', 'distance', 'name', 'upTo', 'densities', 'bodies', 'dir', 'tol', 'a', 'b', 'u', 'at', 'expect', 'descriptions', 'description', 'names', 'base', 'plane', 'axis', 'n', 'positions', 'points', 'rays'];

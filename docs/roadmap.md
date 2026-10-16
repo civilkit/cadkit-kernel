@@ -19,8 +19,8 @@ a week, L is several weeks. "Needs" lists what has to exist first. Items move be
 |---|---|---|
 | Post-boolean sanity check (catch a result that lost most of an operand) | S | Silent wrong results are the worst failure for an LLM driver: `j_hook`, `rect_frame`, the window fillet. A volume and bounding-box check after each boolean, reported as a warning or error |
 | Remaining open `ck-ops` items | M | Adjacent conic or curvature fillets, curved loft centre line, loft `influence` modes, pipeCut on spline edges. See `docs/ck-ops-stubs.md` |
-| Boolean robustness batch | M | Wall-tangent holes (BJ-8), fillet of plane/cylinder line edges (BJ-3), chamfer on slightly non-radial arcs, overlapping lofted blades |
-| Body-level boolean (tool is "A minus B") and overlapping solids in one document | M | Needed for several brepjs examples |
+| Boolean robustness batch | M | Corpus and fuzzy tolerance done (`docs/boolean-corpus.md`: ~140 coincidence cases, `tolerance` / `autoFuzzy`, edge-contact unions, whole-sphere operands). Open: fillet of plane/cylinder line edges (BJ-3), chamfer on slightly non-radial arcs. Done earlier: wall-tangent holes (BJ-8), fillet of plane/cylinder line edges (BJ-3), chamfer on slightly non-radial arcs, overlapping lofted blades |
+| Body-level boolean (tool is "A minus B") and overlapping solids in one document | M | Done: `combine` feature / `bodyBoolean` request (union, cut, intersect, split between lumps, `keepTools`), see `docs/spec-agent-interface.md` "Fuzzy tolerance and body-level booleans". Left: a true n-ary single-pass union (sequential for now), kit UI wiring |
 | Missing outline (silhouette) lines in the `drawing` request | M | The original emits them, ours does not. Affects drawings and prints |
 | STEP import gaps | M | HYPERBOLA and PARABOLA curves, torus-fillet shell orientation, sphere pole boundary |
 | Ignored fields become errors or warnings | S | A field the kernel does not understand must say so, not be skipped |
