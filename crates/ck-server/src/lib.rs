@@ -79,6 +79,8 @@ pub const REQUEST_TYPES: &[(&str, Handler)] = &[
     // Extensions: agent interface (docs/agent-queries.md).
     ("check", agent::check),
     ("resolve", agent::resolve),
+    // Extension: feature recognition (ck-recog) of an imported solid.
+    ("recognize", agent::recognize),
     ("describe", agent::describe),
     ("refDiff", agent::ref_diff),
     // Extensions: verification (docs/agent-queries.md "section / sections / probe"), read-only.

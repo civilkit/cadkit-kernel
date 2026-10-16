@@ -616,6 +616,7 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
             ck_ops::section::sections_reply(body, cx.msg, exact)
         }
         "probe" => ck_ops::section::probe_reply(&snapshot(cx)?.body, cx.msg),
+        "recognize" => recognize_query(cx),
         "resolve" => Ok(ck_ops::agent::resolve(&snapshot(cx)?.body, &cx.msg)),
         "describe" => Ok(ck_ops::agent::describe(&snapshot(cx)?.body, &cx.msg)),
         "refDiff" => crate::refdiff::reply(cx),
@@ -809,4 +810,15 @@ fn match_edges_hook(part: &Json, cx: &mut Cx) -> Result<Json, String> {
         Some(b) => ck_ops::match_edges::reply(&b, &cx.msg),
         None => Json::Arr(vec![]),
     })
+}
+
+/// `recognize`: feature recognition of the tag's body; `apply` stores the rebuilt body under `<tag>.rebuilt`.
+fn recognize_query(cx: &mut Cx) -> Result<Json, String> {
+    let (out, rebuilt) = ck_recog::request::run(&snapshot(cx)?.body, cx.msg);
+    if let Some(b) = rebuilt {
+        let tag = format!("{}.rebuilt", cx.tag());
+        let snap = Snapshot { body: b, sketches: vec![], asm: Default::default(), heal_base: None };
+        cx.session.put(&tag, State { has_body: true, data: Some(Box::new(snap)) });
+    }
+    Ok(out)
 }

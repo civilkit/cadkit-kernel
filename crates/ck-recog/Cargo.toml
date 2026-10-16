@@ -1,0 +1,15 @@
+[package]
+name = "ck-recog"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ck-core = { path = "../ck-core" }
+ck-geom = { path = "../ck-geom" }
+ck-json = { path = "../ck-json" }
+ck-topo = { path = "../ck-topo" }
+ck-model = { path = "../ck-model" }
+ck-ops = { path = "../ck-ops" }
+
+[dev-dependencies]
+ck-io = { path = "../ck-io" }
