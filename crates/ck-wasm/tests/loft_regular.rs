@@ -70,3 +70,11 @@ fn regular_splines_of_many_sizes_loft() {
         assert!(vol > 0.8 * want && vol < 1.2 * want && issues == 0, "n={n} volume {vol} vs {want}, issues {issues}");
     }
 }
+
+/// Seeds of `loft_fuzz --mode regular` that left a repeated clamped end knot (an extra end span of zero length).
+#[test]
+fn regular_splines_with_repeated_end_knot_loft() {
+    let (errors, vol, issues) = loft_regular(6, &[7.90463846269995, 5.314652932807803, 7.629190561361611], 30.0, "rep");
+    assert!(errors.is_empty(), "{errors:?}");
+    assert!(vol > 0.8 * frustum_sum(&[7.90463846269995, 5.314652932807803, 7.629190561361611], 30.0) && issues == 0, "{vol} {issues}");
+}

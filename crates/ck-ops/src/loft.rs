@@ -450,7 +450,8 @@ fn loft_once(feature: &str, profiles: &[ProfileIn], opts: &LoftOpts, strat: Stra
 
 /// Remove a zero-length end span: interior knots (multiplicity up to the degree) that sit within rounding
 /// (1e-12 of the domain length) of an end knot make a sliver span whose control points coincide with the end
-/// (a closed spline whose chord-length parameter sum rounds differently from its last knot). The curve is
+/// (a closed spline whose chord-length parameter sum rounds differently from its last knot, or an extra
+/// clamped end knot). The curve is
 /// unchanged to rounding; the sliver knots and the control points they carry are dropped.
 fn drop_slivers(c: &mut BSplineCurve) {
     let p = c.degree;
@@ -461,7 +462,7 @@ fn drop_slivers(c: &mut BSplineCurve) {
     let (a, b) = (c.knots[0], c.knots[c.knots.len() - 1]);
     let eps = 1e-12 * (b - a).abs();
     // end: interior knots just below `b`
-    let m = c.knots[p + 1..n].iter().filter(|&&k| k < b && b - k <= eps).count();
+    let m = c.knots[p + 1..n].iter().filter(|&&k| b - k <= eps).count();
     if m > 0 && m <= p && c.knots[n..].iter().all(|&k| k == b) {
         let first = n - m;
         c.knots.drain(first..n);
@@ -471,7 +472,7 @@ fn drop_slivers(c: &mut BSplineCurve) {
         }
     }
     let n = c.ctrl.len();
-    let m = c.knots[p + 1..n].iter().filter(|&&k| k > a && k - a <= eps).count();
+    let m = c.knots[p + 1..n].iter().filter(|&&k| k - a <= eps).count();
     if m > 0 && m <= p && c.knots[..=p].iter().all(|&k| k == a) {
         c.knots.drain(p + 1..p + 1 + m);
         c.ctrl.drain(..m);

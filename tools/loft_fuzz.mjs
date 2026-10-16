@@ -4,7 +4,7 @@
 // exit 1 on any failure. Modes: hull (default, the 5 perturbed hull splines), guides (guide lines / splines through polygon sections),
 // point (apex first/last section), centre (centre line sketch), tangent (end normals, connectors, tangency flags, surface lofts),
 // regular (closed splines through regular n-gons, n = 6..16, 2..5 sections of random radii: every seed must be ok and valid).
-// Every structured loft error must carry params.detail and params.hint (else status NODETAIL).
+// Every loftFailed / loftInvalidResult error must carry params.detail and params.hint (else status NODETAIL).
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -141,7 +141,7 @@ export function runSeed(seed) {
   const r = JSON.parse(rr.json);
   const errs = (r.result?.errors ?? []).map(([i, e]) => `${i}:${e.code}${verbose ? ' ' + JSON.stringify(e.params?.detail ?? e.detail ?? '') : ''}`);
   if (r.ok === false && !r.result) return { seed, status: 'HOSTERR', detail: JSON.stringify(r).slice(0, 200) };
-  const lofts = (r.result?.errors ?? []).filter(([, e]) => /^loft/i.test(e.code));
+  const lofts = (r.result?.errors ?? []).filter(([, e]) => e.code === 'loftFailed' || e.code === 'loftInvalidResult');
   const bare = lofts.find(([, e]) => !e.params?.detail || !e.params?.hint);
   if (bare) return { seed, status: 'NODETAIL', detail: JSON.stringify(bare[1]) };
   if (errs.length && mode === 'regular') return { seed, status: 'REGULARFAIL', detail: errs.join(' ') + ' ' + JSON.stringify(lofts[0]?.[1]?.params?.detail ?? '') };
