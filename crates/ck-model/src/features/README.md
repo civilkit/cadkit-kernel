@@ -46,7 +46,9 @@ strings from kernel.strings, and dispatch to ck-ops/ck-topo.
   loftGuideOrder, loftGuideTangency, loftCentreLineInvalid/Tight/Reach/Kink, loftFailed, loftInvalidResult
 - shell: shellTooThick, shellUnsupported, shellFailed, offsetUnsupported (shellTooThick / shellFailed / moveFace* carry `limit`, `minRadius`, `maxThickness`, `face` when known)
 - draft: draftParallelFace, draftAxisNotParallel, draftUnsupported,
-  draftTangentFaces, draftTooLarge, draftFailed
+  draftTangentFaces, draftTooLarge, draftFailed (draftTooLarge from a closing taper carries `maxHeight`; a
+  drafted circle extruded exactly to its tip builds a one-apex cone; the regen result lists `limits`
+  `[[id, {maxHeight}]]` for such extrudes, see docs/spec-agent-interface.md "Taper limits")
 - hole: holeNoPoints, holeInvalid, holeClose/Loose (fit)
 - rib: ribNeedsOpenSketch, ribNoContact
 - knit: knitNotClosed, knitNearMiss, knitFailed, knitted
