@@ -68,6 +68,8 @@ pub const REQUEST_TYPES: &[(&str, Handler)] = &[
     ("importStep", geometry::import_step),
     // Extension: ACIS SAT import -> a body in the tag's state.
     ("importSat", geometry::import_sat),
+    // Extension: SolidWorks part (.SLDPRT, base64) import -> a body in the tag's state.
+    ("importSldprt", geometry::import_sldprt),
     ("inspect", query::inspect),
     ("continuity", query::continuity),
     ("curvatureAt", curvature::curvature_at),

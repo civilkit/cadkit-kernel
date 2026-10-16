@@ -17,6 +17,7 @@ ck-check = { path = "../ck-check" }
 ck-heal = { path = "../ck-heal" }
 ck-ops = { path = "../ck-ops" }
 ck-io = { path = "../ck-io" }
+ck-sldprt = { path = "../ck-sldprt" }
 ck-tess = { path = "../ck-tess" }
 
 [features]
