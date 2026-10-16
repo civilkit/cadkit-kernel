@@ -257,7 +257,8 @@ pub fn analyze(m: &Model, claimed: &HashSet<FaceId>, ai: usize) -> Option<Prism>
         slabs.push((zlo, zhi));
         let active: HashSet<FaceId> = walls.iter().copied().filter(|w| zr[w].0 <= zlo + 1e-6 && zr[w].1 >= zhi - 1e-6).collect();
         let vedges = |w: FaceId| -> Vec<EdgeId> {
-            m.edges(w)
+            let all: Vec<EdgeId> = m
+                .edges(w)
                 .into_iter()
                 .filter(|&e| {
                     vertical(e)
@@ -265,7 +266,19 @@ pub fn analyze(m: &Model, claimed: &HashSet<FaceId>, ai: usize) -> Option<Prism>
                         && m.p0(e).dot(nv).min(m.p1(e).dot(nv)) < zhi - 1e-6
                         && m.p0(e).dot(nv).max(m.p1(e).dot(nv)) > zlo + 1e-6
                 })
-                .collect()
+                .collect();
+            // collinear pieces of one vertical edge count once
+            let mut out: Vec<EdgeId> = vec![];
+            for e in all {
+                let pe = pos(e);
+                if !out.iter().any(|&o| {
+                    let po = pos(o);
+                    (po.0 - pe.0).abs() < 1e-6 && (po.1 - pe.1).abs() < 1e-6
+                }) {
+                    out.push(e);
+                }
+            }
+            out
         };
         let mut visited: HashSet<FaceId> = HashSet::new();
         let mut order: Vec<FaceId> = active.iter().copied().collect();
@@ -302,15 +315,20 @@ pub fn analyze(m: &Model, claimed: &HashSet<FaceId>, ai: usize) -> Option<Prism>
                         Kind::Plane { .. } => Geom::Line,
                         Kind::Cyl { o, .. } => {
                             let c = spec.xy(*o);
-                            let mid = m.edges(cur).into_iter().find_map(|e| match m.curve(e) {
-                                Curve::Circle { frame, .. } if par(frame.z, nv) && !vertical(e) => {
-                                    let ed = m.b.edge(e);
-                                    Some(spec.xy(m.curve(e).eval(0.5 * (ed.t0 + ed.t1))))
-                                }
-                                _ => None,
+                            let (ta, tb) = (ang(c, a), ang(c, b));
+                            let sep = |t: f64, u: f64| {
+                                let d = wrap(t - u);
+                                d.min(TAU - d)
+                            };
+                            // any non-vertical boundary edge of the wall samples the arc between its vertical edges
+                            let mid = m.edges(cur).into_iter().filter(|&e| !vertical(e)).find_map(|e| {
+                                let ed = m.b.edge(e);
+                                let q = spec.xy(m.curve(e).eval(0.5 * (ed.t0 + ed.t1)));
+                                let t = ang(c, q);
+                                (sep(t, ta) > 1e-6 && sep(t, tb) > 1e-6).then_some(q)
                             });
                             let Some(mid) = mid else { return why("arc wall without a horizontal edge") };
-                            let (ta, tb, tm) = (ang(c, a), ang(c, b), ang(c, mid));
+                            let tm = ang(c, mid);
                             Geom::Arc { c, ccw: wrap(tm - ta) < wrap(tb - ta) }
                         }
                         _ => return why("curved wall"),

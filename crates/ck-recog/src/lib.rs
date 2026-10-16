@@ -43,55 +43,84 @@ fn letter(i: usize) -> &'static str {
     ["x", "y", "z"][i]
 }
 
+/// The first (preferred) recognition.
 pub fn recognize(body: &Body) -> Recognition {
+    let mut c = candidates(body);
+    c.remove(0)
+}
+
+/// Every plausible recognition, preferred first: the prism over each principal axis that has a wall cycle structure,
+/// and the revolve. Never empty (a failed analysis is a recognition with no features and a note).
+pub fn candidates(body: &Body) -> Vec<Recognition> {
     let m = Model::new(body);
     let all: Vec<FaceId> = m.faces.clone();
-    let mut rec = Recognition { features: vec![], items: vec![], unexplained: all.clone(), strategy: "none", note: None };
     prism::WHY.with(|w| w.borrow_mut().clear());
     let mut claimed: HashSet<FaceId> = HashSet::new();
     let hs = holes::find_holes(&m, &mut claimed);
-    // best prism over the three principal axes
-    let mut best: Option<Prism> = None;
+    let mut prisms: Vec<Prism> = (0..3).filter_map(|ai| prism::analyze(&m, &claimed, ai)).collect();
     // fewest unexplained faces, then the simplest sketch (fewest profile segments), then the most blends
     let score = |p: &Prism| {
-        let segs: usize = p.cycles.iter().map(|c| match c {
-            Cycle::Poly(s) => s.len(),
-            Cycle::Circle { .. } => 1,
-        }).sum();
+        let segs: usize = p
+            .cycles
+            .iter()
+            .map(|c| match c {
+                Cycle::Poly(s) => s.len(),
+                Cycle::Circle { .. } => 1,
+            })
+            .sum();
         (p.leftover.len(), segs, usize::MAX - p.blends.len())
     };
-    for ai in 0..3 {
-        if let Some(p) = prism::analyze(&m, &claimed, ai) {
-            if best.as_ref().map_or(true, |b| score(&p) < score(b)) {
-                best = Some(p);
-            }
-        }
-    }
-    let prism_clean = best.as_ref().map_or(false, |p| p.leftover.is_empty());
+    prisms.sort_by_key(|p| score(p));
     let rev = revolve::analyze(&m);
-    let mut tree = Tree::default();
-    let mut items: Vec<Item> = vec![];
-    let mut explained: HashSet<FaceId> = HashSet::new();
+    let prism_clean = prisms.first().map_or(false, |p| p.leftover.is_empty());
     // a turned part is a revolve even when its stacked circles also read as a layered prism
-    let prefer_revolve = rev.is_some() && best.as_ref().map_or(true, |p| !prism_clean || p.slabs > 1);
-    if let (true, Some(r)) = (prefer_revolve, &rev) {
-        rec.strategy = "revolve";
+    let prefer_revolve = rev.is_some() && prisms.first().map_or(true, |p| !prism_clean || p.slabs > 1);
+    let from_rev = |r: &revolve::Rev| {
+        let mut tree = Tree::default();
+        let mut items = vec![];
+        let mut explained = HashSet::new();
         emit_revolve(&mut tree, r, &mut items, &mut explained);
-    } else if let Some(p) = best {
-        rec.strategy = "prism";
-        let names = emit_prism(&mut tree, &p, &mut items, &mut explained);
+        finish(&all, tree, items, explained, "revolve", None)
+    };
+    let from_prism = |p: &Prism| {
+        let mut tree = Tree::default();
+        let mut items = vec![];
+        let mut explained = HashSet::new();
+        let names = emit_prism(&mut tree, p, &mut items, &mut explained);
         for f in &p.steps {
             explained.insert(*f);
         }
         emit_holes(&mut tree, &m, &hs, &mut items, &mut explained);
-        emit_blends(&mut tree, &p, &names, &mut items, &mut explained);
-    } else {
-        rec.note = Some(format!("no dominant extrusion or revolution ({})", prism::WHY.with(|w| w.borrow().join("; "))));
+        emit_blends(&mut tree, p, &names, &mut items, &mut explained);
+        finish(&all, tree, items, explained, "prism", None)
+    };
+    let mut out: Vec<Recognition> = vec![];
+    if prefer_revolve {
+        out.push(from_rev(rev.as_ref().unwrap()));
     }
-    rec.unexplained = all.into_iter().filter(|f| !explained.contains(f)).collect();
-    rec.features = tree.feats;
-    rec.items = items;
-    rec
+    for (i, p) in prisms.iter().enumerate() {
+        out.push(from_prism(p));
+        if i == 0 && !prefer_revolve {
+            if let Some(r) = &rev {
+                out.push(from_rev(r));
+            }
+        }
+    }
+    if out.is_empty() {
+        let note = format!("no dominant extrusion or revolution ({})", prism::WHY.with(|w| w.borrow().join("; ")));
+        out.push(finish(&all, Tree::default(), vec![], HashSet::new(), "none", Some(note)));
+    }
+    out
+}
+
+fn finish(all: &[FaceId], tree: Tree, items: Vec<Item>, explained: HashSet<FaceId>, strategy: &'static str, note: Option<String>) -> Recognition {
+    Recognition {
+        unexplained: all.iter().copied().filter(|f| !explained.contains(f)).collect(),
+        features: tree.feats,
+        items,
+        strategy,
+        note,
+    }
 }
 
 // ---------------------------------------------------------------- prism
