@@ -163,6 +163,41 @@ Rules:
 - Not covered: `thin` on `sweep`, `loft`, `hole` and surface extrudes; non-uniform thickness.
   Check: `tools/thin_extrude_check.mjs` (wasm, run by `tools/land.sh`), `crates/ck-model/tests/thin_extrude.rs`.
 
+## Loft point sections (`loft` apex ends)
+
+The first and/or last section of a solid `loft` can be a single POINT, so a hull bow, a cone-like body or a sail tip tapers to
+a true point. A point section is a sketch that holds exactly ONE `point` entity and no other (non-construction) entity; the
+point's position in the sketch plane is the apex. There is no extra field.
+
+```json
+{"type":"sketch","id":"F2","plane":{"kind":"feature","id":"P2"},"points":[{"id":"p","x":0,"y":0}],"entities":[{"type":"point","id":"e1","p":"p"}],"constraints":[]}
+{"type":"loft","id":"F3","op":"add","sketches":["F1","F2"]}
+```
+
+Rules:
+
+- Only the first and the last section can be a point (not both: that is `loftProfiles`). A point section in the middle,
+  guide curves with a point section and a `surface` loft with a point section are `loftFailed {detail}`.
+- Geometry: the lateral surface of each piece of the neighbouring section converges to the apex (the B-spline loft surface
+  with its last control-point row collapsed to the apex, same degree, knots and weights as the neighbour, so a circle to a
+  point is an exact cone and a polygon to a point is a pyramid of planar triangles). `startNormal` / `endNormal` are ignored
+  at the point end. Several stations (a hull) are interpolated as usual and end in the apex.
+- Topology: one vertex for the apex shared by every rail, NO cap face and NO end edges at a point end; each lateral face has
+  a pole in its loop (the loop closes in 3D, in uv it jumps along the collapsed iso-line, the same convention as a cone apex
+  or a sphere pole). A circle to a point is 3 faces (two lateral halves + the cap), a square to a point is 5. Face names are
+  the usual `Fn.S.<entity>[~k]`, `Fn.C0` / `Fn.C1` only for the end that has a cap.
+- Automatic snap: a non-point END section whose bounding box is smaller than 1e-3 of the loft length (end-to-end centroid
+  distance) is treated as a point at its centroid, so shrinking a section to nothing does not leave a degenerate cap.
+- Structured error instead of an invalid solid: a section whose outline crosses itself is `loftProfileSelfIntersect
+  {detail}`, or `loftSectionTooSmall {detail}` when it is also small against the loft length (under 1e-2); the hint says to
+  make the section a simple closed curve or a point section. Previously such a loft returned `ok` with an invalid body.
+- Display mesh: no cracks at the pole and unit normals (the limit normal is used at the apex). STEP export writes the faces as
+  rational B-spline surfaces with a repeated control-point row; re-import (pcurves of edges that reach the pole stay on the
+  iso-line) gives the same volume to 1e-6 and a clean `validate`.
+- Not covered: guide curves through the tip, `startTangent` / `endTangent` at a point, a surface (sheet) loft to a point,
+  booleans whose intersection curve passes THROUGH the apex (a cut away from the tip works).
+  Check: `tools/loft_point_check.mjs` (wasm), `crates/ck-wasm/tests/loft_point.rs`, unit tests in `crates/ck-ops/src/loft.rs`.
+
 ## End references (`extrude` `upToFace`, `offsetFromFace`, `upToPoint`)
 
 `extrude` (add or cut) can stop at a face, at a face moved by a distance, or at a point's plane.

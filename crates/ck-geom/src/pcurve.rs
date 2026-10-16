@@ -199,8 +199,10 @@ pub fn project_points(surf: &Surface, pts: &[Vec3]) -> Vec<Vec2> {
             (false, u0, [bs.eval(u0, v0), bs.eval(u0, vm), bs.eval(u0, v1)]),
             (false, u1, [bs.eval(u1, v0), bs.eval(u1, vm), bs.eval(u1, v1)]),
         ];
+        let degenerate = |c: &[Vec3; 3]| c[0].dist(c[1]) < 1e-9 * scale && c[0].dist(c[2]) < 1e-9 * scale;
+        let poles: Vec<Vec3> = cands.iter().filter(|c| degenerate(&c.2)).map(|c| c.2[0]).collect();
         for (fix_v, val, c) in cands {
-            if !(c[0].dist(c[1]) < 1e-9 * scale && c[0].dist(c[2]) < 1e-9 * scale) {
+            if !degenerate(&c) {
                 continue;
             }
             let d: Vec<f64> = pts.iter().map(|q| q.dist(c[0])).collect();
@@ -209,7 +211,9 @@ pub fn project_points(surf: &Surface, pts: &[Vec3]) -> Vec<Vec2> {
             }
             // the free parameter of the sample farthest from the pole is reliable; samples
             // nearer the pole (ill-conditioned projection) take it when it reproduces them
-            let far = (0..d.len()).fold(0, |m, i| if d[i] > d[m] { i } else { m });
+            // (the reference is far from EVERY pole: a rail from one pole to another)
+            let clear = |i: usize| poles.iter().map(|p| pts[i].dist(*p)).fold(f64::INFINITY, f64::min);
+            let far = (0..d.len()).fold(0, |m, i| if clear(i) > clear(m) { i } else { m });
             let free = |q: Vec2| if fix_v { q.x } else { q.y };
             let fref = free(out[far]);
             for i in 0..out.len() {
