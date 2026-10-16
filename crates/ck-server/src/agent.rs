@@ -95,6 +95,17 @@ pub fn ref_diff(cx: &mut Cx) -> Result<Json, String> {
     cx.query("refDiff")
 }
 
+/// `{type:"textMetrics", string, font?, height, spacing?}`: advance width and ink box of a string (stateless).
+pub fn text_metrics(cx: &mut Cx) -> Result<Json, String> {
+    cx.query("textMetrics")
+}
+
+/// `{type:"textOutline", string, font?, height, at?, anchor?, angle?, spacing?, mirror?, arc?}`: the loops of a
+/// text entity as polylines (stateless, for the viewport preview).
+pub fn text_outline(cx: &mut Cx) -> Result<Json, String> {
+    cx.query("textOutline")
+}
+
 /// `{type:"threadData", standard?, size?}`: the thread tables (stateless).
 /// No `standard`: the list of standards with their size designations; with
 /// it: that standard's sizes with all numbers (mm); with `size` too: the one

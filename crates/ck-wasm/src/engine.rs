@@ -709,6 +709,8 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
                 crate::profile_q::check_profile(cx, Some(&snapshot(cx)?.body))
             }
         }
+        "textMetrics" => ck_model::sketch::text::metrics_reply(cx.msg),
+        "textOutline" => ck_model::sketch::text::outline_reply(cx.msg),
         "threadData" => {
             let get = |k: &str| match cx.msg.get(k) {
                 Some(Json::Str(s)) if !s.is_empty() => Ok(Some(s.as_str())),

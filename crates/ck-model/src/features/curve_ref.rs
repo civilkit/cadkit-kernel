@@ -105,7 +105,7 @@ pub fn sketch_entity_samples(sk: &SketchResult, id: &str) -> Option<Vec<Vec3>> {
             let len = sp.length();
             Some(sample(CURVED, &|t| sp.eval(len * t)))
         }
-        SketchEntity::Point { .. } => None,
+        SketchEntity::Point { .. } | SketchEntity::Text { .. } => None,
     }
 }
 

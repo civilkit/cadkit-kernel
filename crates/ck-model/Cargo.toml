@@ -10,6 +10,7 @@ ck-json = { path = "../ck-json" }
 ck-topo = { path = "../ck-topo" }
 ck-ops = { path = "../ck-ops" }
 ck-check = { path = "../ck-check" }
+ck-text = { path = "../ck-text" }
 
 [dev-dependencies]
 ck-io = { path = "../ck-io" }
