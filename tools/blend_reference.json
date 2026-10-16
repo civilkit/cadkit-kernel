@@ -7,7 +7,11 @@
   "holed": 14869.026644707672,
   "lbr": 6000.0,
   "pocket": 28800.0,
-  "rounded": 11690.973355292324
+  "rounded": 11690.973355292324,
+  "rrect2": 9965.66370614359,
+  "rrect5": 9785.398163397449,
+  "rrect6": 9690.973355292323,
+  "rrectarm": 10985.398163397445
  },
  "boss_ch2_base_rim": {
   "valid": true,
@@ -279,6 +283,66 @@
  "rounded_fillet_propagate": {
   "valid": true,
   "volume": 11629.36410442563
+ },
+ "rrect2_chamfer_top_loop_d1_5": {
+  "valid": true,
+  "volume": 9826.810830937728
+ },
+ "rrect2_fillet_bottom_loop_r1_5": {
+  "valid": true,
+  "volume": 9905.567112324785
+ },
+ "rrect2_fillet_top_loop_r1_5": {
+  "valid": true,
+  "volume": 9905.567112324785
+ },
+ "rrect5_chamfer_top_loop_d1_5": {
+  "valid": true,
+  "volume": 9652.339537779852
+ },
+ "rrect5_fillet_bottom_loop_r1_5": {
+  "valid": true,
+  "volume": 9727.788482785392
+ },
+ "rrect5_fillet_propagate_r2": {
+  "valid": true,
+  "volume": 9683.583324531337
+ },
+ "rrect5_fillet_top_loop_r1_5": {
+  "valid": true,
+  "volume": 9727.788482785392
+ },
+ "rrect5_fillet_top_loop_r2": {
+  "valid": true,
+  "volume": 9683.583324531337
+ },
+ "rrect6_chamfer_top_loop_d1_5": {
+  "valid": true,
+  "volume": 9559.846146204152
+ },
+ "rrect6_fillet_bottom_loop_r1_5": {
+  "valid": true,
+  "volume": 9634.192645749188
+ },
+ "rrect6_fillet_propagate_r2": {
+  "valid": true,
+  "volume": 9590.632242770957
+ },
+ "rrect6_fillet_top_loop_r1_5": {
+  "valid": true,
+  "volume": 9634.192645749188
+ },
+ "rrect6_fillet_top_loop_r2": {
+  "valid": true,
+  "volume": 9590.632242770957
+ },
+ "rrectarm_fillet_top_loop_r1": {
+  "valid": true,
+  "volume": 10959.64326812548
+ },
+ "rrectarm_fillet_top_loop_r2": {
+  "valid": true,
+  "volume": 10883.583324531339
  },
  "var_concave_isolated": {
   "valid": true,

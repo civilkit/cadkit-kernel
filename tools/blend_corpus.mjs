@@ -35,6 +35,16 @@ const circ = (id, plane, cx, cy, r) => ({ type: 'sketch', id, plane, points: [{ 
 const ext = (id, sketch, depth, op = 'add') => ({ type: 'extrude', id, op, sketch, end: 'blind', depth });
 const TOP = STD('top');
 
+// rounded rectangle x 0..w, sketch y 0..h (z = -y), corner radius R: four lines and four arcs
+const rrectSketch = (id, plane, w, h, R) => {
+  const P = { a: [R, 0], b: [w - R, 0], c: [w, R], d: [w, h - R], e: [w - R, h], f: [R, h], g: [0, h - R], i: [0, R] };
+  const C = { c1: [w - R, R], c2: [w - R, h - R], c3: [R, h - R], c4: [R, R] };
+  const points = [...Object.entries(P), ...Object.entries(C)].map(([k, [x, y]]) => ({ id: k, x, y }));
+  const L = (n, a, b) => ({ type: 'line', id: n, p1: a, p2: b });
+  const A = (n, c, a, b) => ({ type: 'arc', id: n, c, p1: a, p2: b });
+  return { type: 'sketch', id, plane, points, constraints: [], entities: [L('e1', 'a', 'b'), A('e2', 'c1', 'b', 'c'), L('e3', 'c', 'd'), A('e4', 'c2', 'd', 'e'), L('e5', 'e', 'f'), A('e6', 'c3', 'f', 'g'), L('e7', 'g', 'i'), A('e8', 'c4', 'i', 'a')] };
+};
+
 const BASES = {
   // 40 x 20 x 10 block: x 0..40, y 0..10, z -20..0
   box: [rect('F1', TOP, 0, 0, 40, 20), ext('F2', 'F1', 10)],
@@ -55,6 +65,11 @@ const BASES = {
     points: [{ id: 'p1', x: 8, y: 0 }, { id: 'p2', x: 15, y: 0 }, { id: 'p3', x: 10, y: 20 }, { id: 'p4', x: 8, y: 20 }, { id: 'a1', x: 0, y: 0 }, { id: 'a2', x: 0, y: 20 }],
     entities: [['p1', 'p2'], ['p2', 'p3'], ['p3', 'p4'], ['p4', 'p1']].map(([a, b], i) => ({ type: 'line', id: `e${i + 1}`, p1: a, p2: b })).concat([{ type: 'line', id: 'ax', p1: 'a1', p2: 'a2', construction: true }]) },
     { type: 'revolve', id: 'F2', op: 'add', sketch: 'F1', axis: 'ax', angle: 360 }],
+  // rounded rectangle prisms 40 x 25 x 10 (corner radius 5, 2, 6) and one with an arm unioned on top (x 5..15, z -5..-20, 8 high)
+  rrect5: [rrectSketch('F1', TOP, 40, 25, 5), ext('F2', 'F1', 10)],
+  rrect2: [rrectSketch('F1', TOP, 40, 25, 2), ext('F2', 'F1', 10)],
+  rrect6: [rrectSketch('F1', TOP, 40, 25, 6), ext('F2', 'F1', 10)],
+  rrectarm: [rrectSketch('F1', TOP, 40, 25, 5), ext('F2', 'F1', 10), rect('F3', FACE('F2.C1'), 5, 5, 15, 20), ext('F4', 'F3', 8)],
   // 30 cube
   cube: [rect('F1', TOP, 0, 0, 30, 30), ext('F2', 'F1', 30)],
   // tall block 20 x 20 x 40 (long vertical edges)
@@ -111,6 +126,23 @@ add('rounded_ch_propagate', 'rounded', { k: 'chamfer', d: 1.5 }, [[20, 10, 0]], 
 add('rounded_ch2_propagate', 'rounded', { k: 'chamfer2', d1: 2, d2: 1, face: UP }, [[20, 10, 0]], { propagate: true });
 add('rounded_chA_propagate', 'rounded', { k: 'chamferA', d: 2, a: 35, face: UP }, [[20, 10, 0]], { propagate: true });
 add('rounded_fillet_propagate', 'rounded', { k: 'fillet', r: 1.5 }, [[20, 10, 0]], { propagate: true });
+
+// rim loop of a rounded-rectangle prism (four lines and four tangent arcs): all eight edges picked, or one pick with `propagate`
+const rloop = (w, h, R, y) => {
+  const m = R * (1 - Math.SQRT1_2);
+  return [[w / 2, y, 0], [w, y, -h / 2], [w / 2, y, -h], [0, y, -h / 2], [w - m, y, -m], [w - m, y, -(h - m)], [m, y, -(h - m)], [m, y, -m]];
+};
+for (const [base, R] of [['rrect5', 5], ['rrect2', 2], ['rrect6', 6]]) {
+  add(`${base}_fillet_top_loop_r1_5`, base, { k: 'fillet', r: 1.5 }, rloop(40, 25, R, 10));
+  add(`${base}_fillet_bottom_loop_r1_5`, base, { k: 'fillet', r: 1.5 }, rloop(40, 25, R, 0));
+  add(`${base}_chamfer_top_loop_d1_5`, base, { k: 'chamfer', d: 1.5 }, rloop(40, 25, R, 10));
+}
+add('rrect5_fillet_top_loop_r2', 'rrect5', { k: 'fillet', r: 2 }, rloop(40, 25, 5, 10));
+add('rrect6_fillet_top_loop_r2', 'rrect6', { k: 'fillet', r: 2 }, rloop(40, 25, 6, 10));
+add('rrect5_fillet_propagate_r2', 'rrect5', { k: 'fillet', r: 2 }, [[20, 10, 0]], { propagate: true });
+add('rrect6_fillet_propagate_r2', 'rrect6', { k: 'fillet', r: 2 }, [[20, 10, 0]], { propagate: true });
+add('rrectarm_fillet_top_loop_r2', 'rrectarm', { k: 'fillet', r: 2 }, rloop(40, 25, 5, 10));
+add('rrectarm_fillet_top_loop_r1', 'rrectarm', { k: 'fillet', r: 1 }, rloop(40, 25, 5, 10));
 
 // 2. constant fillets (baseline of what works)
 add('box_fillet_edge', 'box', { k: 'fillet', r: 2 }, [TOPE.f]);
@@ -344,7 +376,7 @@ for (const c of cases) {
   const rf = ref[c.name];
   let r;
   try { r = run(c); } catch (e) { r = { errs: [`script: ${e.message}`], ms: 0 }; }
-  const curved = ['boss', 'holed', 'rounded'].includes(c.base) || c.name.startsWith('var_') || c.curved;
+  const curved = ['boss', 'holed', 'rounded', 'rrect5', 'rrect2', 'rrect6', 'rrectarm'].includes(c.base) || c.name.startsWith('var_') || c.curved;
   // variable radius: the radius law differs from OCCT's by about 1e-4 on an isolated edge (docs/blend-corpus.md), corners add a mitre
   // approximation; unequal radii at one vertex end in a mitre where OCCT blends a patch
   const tol = c.name.startsWith('var_corner') || c.name.startsWith('var_ring') ? 5e-4 : c.name.includes('unequal') ? 3e-4 : curved ? 1e-4 : 1e-5;

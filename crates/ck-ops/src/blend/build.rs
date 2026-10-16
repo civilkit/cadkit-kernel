@@ -131,6 +131,22 @@ impl Spec {
 
 /// Shared fillet / chamfer driver (see [`fillet`]).
 pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, feature: &str, tol: f64) -> Result<Body, BlendError> {
+    let first = blend_edges_inner(b, edges, spec, feature, tol);
+    // A selection that is a chain of tangent edges (a rounded outline picked edge by edge) fails when a tool runs on past
+    // the junction into the arc's band: retry with the ends of tangent-continuing edges stopping flush. Selections that
+    // worked keep their result.
+    if first.is_err() && edges.len() > 1 && !TANGENT_FLUSH.with(|c| c.get()) {
+        TANGENT_FLUSH.with(|c| c.set(true));
+        let second = blend_edges_inner(b, edges, spec, feature, tol);
+        TANGENT_FLUSH.with(|c| c.set(false));
+        if second.is_ok() {
+            return second;
+        }
+    }
+    first
+}
+
+fn blend_edges_inner(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, feature: &str, tol: f64) -> Result<Body, BlendError> {
     let r = spec.size();
     if !(r > 0.0) || !r.is_finite() {
         return Err(BlendError::code("invalidValue"));
