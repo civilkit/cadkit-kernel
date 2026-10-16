@@ -202,3 +202,44 @@ fn rim_fillets_with_a_corner_fillet_mixed_vertex() {
     assert_eq!(rim2.issues, 0);
     assert!((rim2.vol - 28764.896743388403).abs() < 1.5, "{}", rim2.vol);
 }
+
+fn unmatched_mesh_edges(body: &Body) -> (usize, usize) {
+    let t = ck_tess::mesh::tessellate(body);
+    assert!(t.mesh.failed.is_empty(), "{:?}", t.mesh.failed);
+    let q = |i: usize| -> (i64, i64, i64) {
+        let p = &t.mesh.positions;
+        ((p[i * 3] as f64 * 1e3).round() as i64, (p[i * 3 + 1] as f64 * 1e3).round() as i64, (p[i * 3 + 2] as f64 * 1e3).round() as i64)
+    };
+    let mut count: std::collections::HashMap<((i64, i64, i64), (i64, i64, i64)), i32> = Default::default();
+    for k in 0..t.mesh.positions.len() / 9 {
+        for j in 0..3 {
+            let (a, b) = (q(k * 3 + j), q(k * 3 + (j + 1) % 3));
+            if a == b {
+                continue;
+            }
+            // directed edge a->b counts +1, b->a -1: a closed mesh nets to zero on every edge
+            let (key, s) = if a < b { ((a, b), 1) } else { ((b, a), -1) };
+            *count.entry(key).or_insert(0) += s;
+        }
+    }
+    if std::env::var_os("SHOW_OPEN").is_some() {
+        for (k, c) in count.iter().filter(|(_, &c)| c != 0) {
+            eprintln!("open {:?} {c}", k);
+        }
+    }
+    (count.values().filter(|&&c| c != 0).count(), count.len())
+}
+
+#[test]
+fn the_convex_corner_patch_tessellates_watertight() {
+    // reference: the convex sphere corner (outside corner of the block) closes
+    let convex = fillet(2.0, &[edge("F2.C1", "F2.S.e1", [20., 20., 0.]), edge("F2.C1", "F2.S.e2", [40., 20., -20.]), edge("F2.S.e1", "F2.S.e2", [40., 10., 0.])]);
+    assert_eq!(unmatched_mesh_edges(&convex.body).0, 0);
+}
+
+#[test]
+#[ignore = "known: the sphere patch's seam with the vertical fillet (the y = centre arc) is sampled finer than the cylinder's end arc: 30 mesh edges of 462 are T-junctions (chord sag < 0.04 mm at r=2)"]
+fn the_concave_corner_patch_tessellates_watertight() {
+    let three = fillet(2.0, &concave_edges());
+    assert_eq!(unmatched_mesh_edges(&three.body).0, 0);
+}

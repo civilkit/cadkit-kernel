@@ -53,4 +53,22 @@ run('2 concave edges r=3 (mitre)', 3, corner.slice(0, 2), 28874.668162060, 0);
 run('floor ring + 4 corners r=1', 1, ring, 28823.365788557858, 4);
 run('floor ring + 4 corners r=2', 2, ring, 28890.78468566495, 4);
 run('floor ring + 4 corners r=3', 3, ring, 28998.23898847153, 4);
+// rim edges of the pocket (convex) next to the concave wall-wall edge: ends flush at the wall, mixed vertices stay close to the reference
+function runVol(name, r, edges, want, tol) {
+  const k = new Kernel(mod);
+  const part = { format: 'ck-part', version: 1, features: [...pocket, { type: 'fillet', id: 'F5', radius: r, edges }] };
+  const res = JSON.parse(k.request(JSON.stringify({ id: 1, msg: { type: 'regen', tag: 'main', part } })).json);
+  const errs = (res.result?.errors ?? []).map(([id, e]) => `${id}:${e.code}`);
+  const m = JSON.parse(k.request(JSON.stringify({ id: 2, msg: { type: 'massProps', tag: 'main' } })).json);
+  const v = JSON.parse(k.request(JSON.stringify({ id: 3, msg: { type: 'validate', tag: 'main' } })).json);
+  const vol = m.ok ? m.result?.volume : null;
+  const ok = errs.length === 0 && v.ok && v.result?.ok && vol != null && Math.abs(vol - want) <= tol;
+  if (!ok) bad++;
+  console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${errs.join() || vol?.toFixed(6)} (want ${want.toFixed(6)} +- ${tol}) valid ${v.result?.ok}`);
+}
+const rim1 = E('F2.C1', 'F4.S.e4', [10, 20, -20]);
+const rim2 = E('F2.C1', 'F4.S.e1', [20, 20, -10]);
+runVol('one rim edge r=2', 2, [rim1], 28782.83185307179, 1e-3);
+runVol('two rim edges at the reflex corner r=2', 2, [rim1, rim2], 28764.896743388403, 1.5);
+runVol('mixed vertex: 2 rim + wall edge r=2', 2, [rim1, rim2, corner[2]], 28772.665456976367, 2.5);
 process.exit(bad ? 1 : 0);
