@@ -143,7 +143,9 @@ function regenSet(set, targets) {
         bump('oracle.brep', bad.length === 0);
         if (bad.length) oracleFail.push(`${t.name}: ${bad.join(' | ')}`);
       }
-      bump(`vol.${set}`, typeof mb?.volume === 'number' && Math.abs(mb.volume - ma?.volume) <= 1e-3 * Math.abs(ma?.volume ?? 0));
+      const volOk = typeof mb?.volume === 'number' && Math.abs(mb.volume - ma?.volume) <= 1e-3 * Math.abs(ma?.volume ?? 0);
+      bump(`vol.${set}`, volOk);
+      if (!volOk) (globalThis.__volFail ??= []).push(`${set}:${t.name}: ours ${mb?.volume} original ${ma?.volume}`);
       const manifold = (bb.edges ?? []).every((e) => e.faces?.length === 2);
       const vq = JSON.stringify({ id: 3, msg: { type: 'validate', tag: 'main' } });
       const vr = JSON.parse(kb.request(vq).json || 'null')?.result;
@@ -253,6 +255,7 @@ for (const k of Object.keys({ ...base, ...score }).sort()) {
   console.log(`${k.padEnd(40)} ${String(m).padStart(4)}/${String(n).padEnd(4)}${d}`);
 }
 for (const f of oracleFail) console.log(`ORACLE MISMATCH ${f}`);
+for (const f of globalThis.__volFail ?? []) console.log(`VOL MISMATCH ${f}`);
 if (Object.keys(validCodes).length) { console.log('validate issue codes:', JSON.stringify(validCodes)); if (!quiet) console.log(validFail.join('\n')); else console.log(`validate-failing cases: ${validFail.length}`); }
 if (update) { const out = fast ? { ...base, ...score } : score; writeFileSync(basePath, JSON.stringify(out, null, 1) + '\n'); console.log(`baseline written: ${basePath}`); }
 else if (worse) { console.log(`\nGATE FAILED: ${worse} metric(s) regressed`); process.exitCode = 1; }
