@@ -340,6 +340,15 @@ impl Cdt {
         }
     }
 
+    fn unmark_edge(&mut self, t: u32, k: usize) {
+        self.tris[t as usize].c[k] = false;
+        let nb = self.tris[t as usize].n[k];
+        if nb != NONE {
+            let j = (0..3).find(|&j| self.tris[nb as usize].n[j] == t);
+            if let Some(j) = j { self.tris[nb as usize].c[j] = false; }
+        }
+    }
+
     fn mark_segment(&mut self, a: u32, b: u32) {
         if let Some((t, k)) = self.find_edge(a, b) { self.mark_edge(t, k); }
     }
@@ -543,6 +552,14 @@ impl Cdt {
             }
             match self.segment_walk(a, b) {
                 Walk::Split(m) => { work.push((m, b)); work.push((a, m)); }
+                Walk::Touch(p, q, v) => {
+                    // the segment ends (within rounding) on the constrained edge p-q: split that edge at the vertex `v`
+                    // (a or b) and retry both halves and the segment
+                    if let Some((t, k)) = self.find_edge(p, q) { self.unmark_edge(t, k); }
+                    work.push((a, b));
+                    work.push((v, q));
+                    work.push((p, v));
+                }
                 Walk::Fail => { self.failed += 1; }
                 Walk::Recovered => {}
             }
@@ -584,7 +601,7 @@ impl Cdt {
                 if nxt != NONE && nxt != start && cnt < 0xfff { cnt += 1; cur = nxt; } else { break; }
             }
         }
-        let (mut cur, mut k) = match wedge { Some(w) => w, None => return Walk::Fail };
+        let (mut cur, mut k) = match wedge { Some(w) => w, None => { if std::env::var("CK_CDTDBG").is_ok() { eprintln!("CDTFAIL nowedge a={:?} b={:?}", self.pts[a as usize], self.pts[b as usize]); } return Walk::Fail } };
 
         // --- 2. walk across the triangles the segment crosses, recording the crossed edges
         let mut crossed: Vec<(u32, u32)> = vec![];
@@ -601,12 +618,15 @@ impl Cdt {
                 s = if s <= 1.0 { s } else { 1.0 };
                 let pt = [pa[0] + (pb[0] - pa[0]) * s, pa[1] + (pb[1] - pa[1]) * s];
                 let m = self.insert_point(pt);
-                if m == a || m == b { return Walk::Fail; }
+                if m == a || m == b {
+                    if p == m || q == m || p == a || p == b || q == a || q == b { return Walk::Fail; }
+                    return Walk::Touch(p, q, m);
+                }
                 return Walk::Split(m);
             }
             crossed.push((p, q));
             let nb = tr.n[k];
-            if nb == NONE { return Walk::Fail; }
+            if nb == NONE { if std::env::var("CK_CDTDBG").is_ok() { eprintln!("CDTFAIL hull a={:?} b={:?}", self.pts[a as usize], self.pts[b as usize]); } return Walk::Fail; }
             let j = (0..3).find(|&j| self.tris[nb as usize].n[j] == cur).expect("segment walk: neighbour does not point back");
             let r = self.tris[nb as usize].v[j];
             if r == b { break; }
@@ -680,6 +700,8 @@ impl Cdt {
 
 enum Walk {
     Recovered,
+    /// The segment touches the constrained edge `(p, q)` at its own end vertex `v`.
+    Touch(u32, u32, u32),
     /// Re-queue the segment as `(a, m)` and `(m, b)`.
     Split(u32),
     Fail,
@@ -745,6 +767,11 @@ impl Cdt {
             let has_super = t.v.iter().any(|&v| v < 3);
             t.region = if depth[i] != u32::MAX && depth[i] % 2 == 1 && !has_super { INSIDE } else { OUTSIDE };
         }
+    }
+
+    /// Debug: every live triangle that does not touch the super triangle.
+    pub fn all_tris_dbg(&self) -> Vec<(u32, [u32; 3])> {
+        self.tris.iter().enumerate().filter(|(_, t)| t.alive && t.v.iter().all(|&v| v >= 3)).map(|(i, t)| (i as u32, t.v)).collect()
     }
 
     /// Live triangles with `region == INSIDE`, as vertex index triples (super vertices excluded, indices are into `pts`).
