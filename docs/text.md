@@ -17,7 +17,8 @@ Crate `ck-text` (outlines, layout), `ck-model/src/sketch/text.rs` (the entity an
 | Field | Meaning |
 |---|---|
 | `string` | the text; at most 500 characters (more: `textTruncated`); `\n` is not a line break (one entity per line) |
-| `font` | `gauge` (condensed DIN-like sans, default) or `engrave` (classic serif); aliases `sans`, `serif`, `default` |
+| `font` | `gauge` (condensed DIN-like sans, default) or `engrave` (classic serif); aliases `sans`, `serif`, `default`; or the name of a font loaded with `loadFont` (below) |
+| `fontHash` | optional: a prefix (any length) of the SHA-256 of the font file the document was made with; a different file loaded under the name is `textFontMismatch` |
 | `height` | **cap height** (height of `H`) in sketch units (mm). Default 5 |
 | `at` `[x, y]` | anchor position. `p` (a sketch point id) overrides `at`, so the position can be constrained, dragged or driven by a parametric point; the text itself takes no constraints |
 | `anchor` | `[horizontal, vertical]` (or a string `"center middle"`): `left` `center` `right` x `baseline` `middle` `top`. Default `["left", "baseline"]`. Horizontal refers to the **ink box** of the string (left edge of the first letter, right edge of the last), vertical: baseline = 0, middle = height / 2, top = height |
@@ -73,7 +74,7 @@ for the sketch's text entities, and the usual `regions` / `areas` include the le
 ## Errors and warnings
 
 Regen of the sketch fails (feature error, `detail` has the message) with: `textEmpty` (empty string), `textNothingToDraw`
-(only blanks / unknown letters), `textBadFont`, `textBadHeight` (not a number in (0, 1e5)), `textBadArc` (radius <= 0),
+(only blanks / unknown letters), `textFontNotLoaded` (the font is not `gauge` / `engrave` and nothing is loaded under that name; the message names the font and says how to load it), `textFontMismatch` (`fontHash` does not match the loaded file), `textBadHeight` (not a number in (0, 1e5)), `textBadArc` (radius <= 0),
 `textBadValue` (a position, angle or spacing is not finite, spacing outside (0, 20)).
 
 Warnings (the sketch still regenerates; `warnings` of the regen result, params `entity` and `detail`):
@@ -83,8 +84,75 @@ Warnings (the sketch still regenerates; `warnings` of the regen result, params `
 | `textTooSmall` | cap height below 0.8 mm: strokes thinner than about 0.1 mm do not engrave or print |
 | `textMissingGlyph` | characters the font has no glyph for are skipped (the characters are listed) |
 | `textTruncated` | more than 500 characters |
+| `textOverlappingContours` | a loaded font's letter has outlines that cross themselves (overlapping strokes, variable and distressed fonts): not merged, the solid can fail validation (`LOOP_SELF_INTERSECT`); the characters are listed |
 | `textOverlap` | neighbouring letters still overlap after the adjustment below (radius too small): the booleans cannot merge them |
 | `textSpacingAdjusted` | neighbouring letters would have touched or overlapped (closer than max(1.2 % of the height, 0.03)): on a straight line the later letters were pushed right in steps of 1 % of the height (serif fonts: the serifs of `vv`, `VV`, `rr` touch at small sizes; `spacing` below 1 on purpose), on an arc the pitch was widened in 4 % steps (tight radius: letters lean into each other), at most 60 % |
+
+## Loading fonts: `loadFont`, `unloadFont`, `listFonts`, `subsetFont`
+
+The wasm carries only the two built-in fonts. Any other TTF / OTF is registered for the session (the kernel
+instance) from bytes; the kit hosts the font files and fetches them on demand, or a document carries its own
+(subsetted) font. The registry is process-wide because regen has no other handle on a request: one kernel instance
+= one font table.
+
+`loadFont {name, data, replace?}` (`data` = base64 of the file, a `data:...;base64,` prefix is accepted):
+
+```json
+{ "name": "plate-sans", "hash": "9c1f...64 hex", "builtin": false, "family": "Barlow Regular", "bytes": 104068,
+  "glyphs": 694, "chars": 525, "unitsPerEm": 1000, "capHeight": 700, "outlines": "glyf",
+  "supported": ["Basic Latin", "Latin-1 Supplement", "Latin Extended-A"],
+  "coverage": [{ "block": "Basic Latin", "mapped": 95, "of": 95 }],
+  "warnings": [{ "code": "fontKerningIgnored", "detail": "..." }],
+  "alreadyLoaded": false, "replaced": false }
+```
+
+`supported` lists the Unicode blocks (Basic Latin, Latin-1 Supplement, Latin Extended-A / B, Greek, Cyrillic, General
+Punctuation, Currency Symbols, Letterlike Symbols, Arrows, Mathematical Operators, Hiragana, Katakana, CJK Unified
+Ideographs, Hangul Syllables) in which the font maps at least one character; `coverage` has the counts. `chars` is the
+number of mapped characters. Characters a font lacks are `textMissingGlyph` as before.
+
+* Fonts are keyed by **name and content hash**. The hash is the SHA-256 of the file. The same name with the same file
+  again is a no-op (`alreadyLoaded: true`). The same name with a different file is the error `fontNameConflict`
+  unless `replace: true`, which swaps it (`replaced: true`). The same file under two names is two fonts.
+* The built-in names (`gauge`, `engrave`, `sans`, `serif`, `default`) cannot be loaded over or unloaded
+  (`fontReserved`). A name is 1 to 64 characters without control characters or leading / trailing blanks (`fontBadName`).
+  At most 64 fonts, 24 MB per file (`fontTooMany`, `fontTooLarge`).
+* A file that is not a usable TTF / OTF is `fontBadData` with the reason (not a font, WOFF / WOFF2 (give the TTF or
+  OTF), missing tables, CFF2, truncated, no Unicode cmap of format 4 or 12). Nothing panics on damaged files
+  (fuzzed in `font_tests`).
+* The **regen cache key** of a feature includes `name=<sha256 | missing>[^fontHash]` of every font its text entities
+  name, so replacing, unloading or loading a font invalidates exactly the features that use it (and what follows).
+* A text entity whose font is not loaded makes the sketch fail with `textFontNotLoaded`:
+  `font "plate-sans" is not loaded; built-in fonts are gauge and engrave, any other font must be loaded first with
+  {type:"loadFont", name:"plate-sans", data:<base64 TTF/OTF>}`. There is no substitution. The same error answers
+  `textMetrics` / `textOutline` / `subsetFont` for such a name.
+
+Load warnings (`warnings` of the reply; the font still loads):
+
+| Code | Meaning |
+|---|---|
+| `fontKerningIgnored` | the file has `kern` or GPOS: letters use plain advance widths |
+| `fontLigaturesIgnored` | the file has GSUB: no ligatures or other substitutions |
+| `fontVariableDefaultOnly` | variable font (`fvar`): the default instance is read, no axes |
+| `fontCollectionFirstFace` | TTC / OTC: the first face is used |
+| `fontCffApproximated` | OpenType / CFF: cubic curves are converted to quadratic B-splines within 0.05 % of the em |
+| `fontNoCapHeight` | no letter `H`: the cap height is OS/2 `sCapHeight`, else 0.7 em |
+| `fontOverlappingContours` | outlines of letters or digits cross themselves or each other (overlapping strokes; typical of variable fonts and distressed typewriter faces); the overlaps are not merged |
+| `fontEmbeddingRestricted`, `fontNoSubsetting` | the OS/2 `fsType` licence flags forbid embedding / subsetting |
+| `fontNoLatin` | no Latin letters mapped |
+
+`unloadFont {name}` -> `{name, unloaded}` (`false` when nothing was loaded under the name). `listFonts {}` ->
+`{fonts: [<loadFont reply without alreadyLoaded / replaced>..]}`, the built-in fonts first, then the loaded ones in
+load order.
+
+`subsetFont {name, text}` -> `{name, hash, bytes, glyphs, data, warnings}`: a plain TrueType font (base64 in `data`,
+`hash` = its SHA-256) with only the glyphs of `text`, plus `.notdef` and `H` (which carries the cap height). Same
+unitsPerEm, same cmap entries for those characters, same advances, composites flattened, hinting and OpenType layout
+tables dropped, `name` / `OS/2` copied (so `fsType` stays). A CFF font comes out as TrueType (quadratic
+outlines, rounded to font units). The result loads with `loadFont` and gives the same loops as the source for the
+characters in `text` (exactly for TrueType sources, within 0.2 % of the area for CFF; tested). Characters the font
+lacks are listed in a `textMissingGlyph` warning. The kit embeds this in the document; `fontHash` in the entity then
+pins the embedded bytes.
 
 ## Fonts, licences, determinism
 
@@ -98,10 +166,10 @@ the same entity gives the same geometry everywhere.
 
 Both were subset with fontTools (`pyftsubset`, unhinted, layout tables and names dropped, unicodes
 `U+0020-007E,U+00A0-00FF,U+2022,U+2212,U+2013,U+2014,U+2018,U+2019,U+201C,U+201D`) and renamed `gauge.ttf` /
-`engrave.ttf` (the PT Serif reserved font name is not reused). The TrueType reader is ours (`ck-text/src/ttf.rs`:
-head, maxp, hhea, hmtx, loca, glyf with composites, cmap formats 4 and 12), no external crate. The wasm grows by about
+`engrave.ttf` (the PT Serif reserved font name is not reused). The font reader is ours (`ck-text/src/ttf.rs`:
+head, maxp, hhea, hmtx, loca + glyf with composites, `CFF ` Type 2 charstrings, cmap formats 4 and 12, name, OS/2), no external crate. The wasm grows by about
 108 KB. Characters outside the subset (CJK, Cyrillic, Greek) give `textMissingGlyph`. A script wanting a different
-face has to wait for font upload (not built).
+face loads one with `loadFont` (above). Licences of the fonts the kit may host: THIRD_PARTY.md ("Curated fonts").
 
 ## How the outlines become loops
 
@@ -127,7 +195,9 @@ on `textOutline` adds `outerEdges` / `holeEdges` (the exact line / B-spline cont
 ## Limits
 
 * Planar only (as every sketch). No text on a curved face: project or wrap is not built.
-* No kerning, no ligatures, no bold / italic, no right-to-left or complex scripts; single line per entity.
+* No kerning, no ligatures, no bold / italic (pick the bold file), no right-to-left or complex scripts; single line per entity. Variable fonts give their default instance only.
+* Connected script faces (Great Vibes, Pacifico, Satisfy): the letters overlap by design; overlapping letters are not merged, so the spacing adjustment pushes them apart (`textSpacingAdjusted`) or reports `textOverlap`, and a 35-character string can take 0.5 to 2 s to lay out. Use them for short names.
+* Fonts whose strokes overlap inside one letter (`fontOverlappingContours`): not merged.
 * Text is not trimmed against, merged with or made holes of other curves of its sketch (see "Text is its own sketch").
 * Letters of one entity are kept at least max(1.2 % of the height, 0.03) apart (see `textSpacingAdjusted`); letters of
   different entities that overlap are not merged and not checked.
@@ -139,7 +209,7 @@ on `textOutline` adds `outerEdges` / `holeEdges` (the exact line / B-spline cont
 
 ## Checks
 
-* `cargo test -p ck-text` (area / nesting / orientation / anchors / arc / metrics / contour crossing, polyline vs
+* `cargo test -p ck-text` (`font_tests`: eleven fixture fonts (subsets of the curated list, `crates/ck-text/tests/fixtures`) load and lay out; CFF areas against fontTools; loaded copy of `gauge` identical to the built-in; missing font; name + hash keying; subsets; 900 damaged files; TTC; variable) (area / nesting / orientation / anchors / arc / metrics / contour crossing, polyline vs
   B-spline area within 1 %).
 * `node tools/text_corpus.mjs [--only substr] [--write dir]`: 54 cases built through the wasm: engraving and
   embossing of gauge texts, every glyph with holes, accents, rotation, mirror, three standard planes plus feature
@@ -151,6 +221,7 @@ on `textOutline` adds `outerEdges` / `holeEdges` (the exact line / B-spline cont
   20 mm, 0.1 to 2 mm deep, rotated, all anchors, embossed or engraved; 2000+ cases over ten seeds, one display-mesh
   crack (above), no `booleanFailed`, volume within 1 % of glyph area x depth (cases where the text leaves the plate
   only bounds). `--text STRING [--font f --height h --depth d --at x,y --poly --runspans n]` runs one case.
+* `tools/text_corpus.mjs` also runs the loaded-font cases (every fixture font engraved, emboss, on an arc, hash pin, not loaded) and the font scenarios (replace under the same name with the regen cache on, unload, built-in refusal, subset round trip, instance isolation).
 * `tools/lint_protocol.mjs` fuzzes `textMetrics`, `textOutline` and mutates an engraved plate (every text field).
 
 ## Renders

@@ -898,8 +898,13 @@ side?:"outside"|"inside"}}` is fixed geometry (no constraints; the anchor point 
 are closed profile loops (letters with holes and islands are regions with holes) for `extrude` add / cut and the other
 profile consumers. Stateless requests `textMetrics {string, font?, height, spacing?}` (advance, ink box) and
 `textOutline {<entity fields>}` (polylines for a preview) size and preview it; `inspect` of a sketch lists its `texts`.
-Errors `textEmpty`, `textNothingToDraw`, `textBadFont`, `textBadHeight`, `textBadArc`, `textBadValue`; warnings
-`textTooSmall`, `textMissingGlyph`, `textTruncated`, `textOverlap`, `textSpacingAdjusted`. Fonts are compiled in (OFL).
+Errors `textEmpty`, `textNothingToDraw`, `textFontNotLoaded`, `textFontMismatch`, `textBadHeight`, `textBadArc`, `textBadValue`;
+warnings `textTooSmall`, `textMissingGlyph`, `textTruncated`, `textOverlap`, `textSpacingAdjusted`. Two OFL fonts (`gauge`,
+`engrave`) are compiled in; any other TTF / OTF is registered for the session with `loadFont {name, data:<base64>, replace?}`
+(reply `{name, hash, glyphs, supported:[blocks], coverage, warnings, ..}`; errors `fontNameConflict`, `fontReserved`,
+`fontBadName`, `fontBadData`, `fontTooLarge`, `fontTooMany`), `unloadFont {name}`, `listFonts {}` and
+`subsetFont {name, text}` (TTF bytes with just those glyphs). Fonts are keyed by name and file hash; the hash is part of the regen
+cache key and an entity may pin it with `fontHash`.
 Details, limits and checks: `docs/text.md`; corpus `tools/text_corpus.mjs`.
 
 ## Acceptance

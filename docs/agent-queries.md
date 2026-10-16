@@ -290,3 +290,16 @@ output, `elapsedMs` / `truncated` present, sane ranges, `distance` agrees with `
   ids must be stable across the edit (a re-minted id looks like add+remove).
 - No successor tracking for split faces (`~1`, `~2`), no tolerance on
   `near` other than strictly-nearest.
+
+## Fonts for lettering: loadFont, unloadFont, listFonts, subsetFont (session state)
+
+These four are the only requests of this file that change kernel state outside a tag: the font table of the kernel
+instance (docs/text.md, "Loading fonts"). The text sketch entity uses a loaded font by name.
+
+* `loadFont {name, data:<base64 TTF/OTF>, replace?}` -> `{name, hash, glyphs, chars, supported:[..], coverage:[..],
+  outlines:"glyf"|"cff", warnings:[{code, detail}], alreadyLoaded, replaced, ..}`. Errors: `fontBadData`, `fontBadName`,
+  `fontReserved`, `fontNameConflict` (same name, other file, no `replace`), `fontTooLarge`, `fontTooMany`.
+* `unloadFont {name}` -> `{name, unloaded}`.
+* `listFonts {}` -> `{fonts:[..]}` (built-ins first).
+* `subsetFont {name, text}` -> `{name, hash, bytes, glyphs, data:<base64 TTF>, warnings}`; `textFontNotLoaded` for an unknown name.
+* A document naming a font that is not loaded fails the sketch with `textFontNotLoaded` (names the font, tells how to load it).
