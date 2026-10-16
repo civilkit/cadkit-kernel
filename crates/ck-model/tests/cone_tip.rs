@@ -166,8 +166,8 @@ fn draft_feature_on_a_cylinder_wall_reaches_the_tip() {
 }
 
 #[test]
-fn polygon_taper_past_collapse_reports_max_height() {
-    // a 20 x 20 square collapses at height 10 / tan(draft); the deepest build is just below it
+fn polygon_taper_past_collapse_keeps_the_plain_error() {
+    // a 20 x 20 square collapses at height 10 / tan(draft): still draftTooLarge with the oracle's detail
     let doc = |depth: f64| {
         format!(
             r#"{{"format":"ck-part","version":1,"features":[
@@ -179,9 +179,9 @@ fn polygon_taper_past_collapse_reports_max_height() {
         )
     };
     let tip = 10.0 / 10f64.to_radians().tan();
+    assert_valid(&run(&doc(tip * 0.9)), "below the collapse");
     let o = run(&doc(tip * 1.2));
     assert_eq!(o.errors.first().expect("fails").error.code, "draftTooLarge");
-    let max = param(&o, "maxHeight").and_then(|j| j.as_f64()).expect("maxHeight");
-    assert!(max < tip && max > tip * 0.999, "maxHeight {max} vs {tip}");
-    assert_valid(&run(&doc(max)), "at maxHeight");
+    assert!(param(&o, "maxHeight").is_none());
+    assert!(limit(&o, "F2").is_none());
 }

@@ -369,8 +369,8 @@ offset). A UI can clamp its height field to it without recomputing:
 A depth equal to `maxHeight` (within 1e-9 of the radius) builds a valid cone with one apex vertex and no top cap;
 a smaller one keeps the flat top; a larger one fails with `draftTooLarge {detail:"the taper closes to a point at
 height H", maxHeight:H}` (also for the `draft` feature on a cylinder wall, where `maxHeight` is measured from the
-neutral plane). For other profiles a taper that collapses an edge fails with `draftTooLarge {maxHeight}` too, the
-deepest extrude that still builds (found by bisection); no `limits` entry is reported for them.
+neutral plane). Other profiles (a polygon whose edge collapses, several loops) keep the plain `draftTooLarge
+{detail}` with no `maxHeight` and no `limits` entry.
 
 **Warnings** (a `warnings` list of `[featureId, {code, params}]`, same shape as
 `errors`, only when non-empty; the document still regenerates and `ok` stays true):

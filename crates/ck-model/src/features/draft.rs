@@ -135,53 +135,15 @@ pub fn tip_depth(profile: &ck_topo::make::Profile, o: &ck_topo::make::ExtrudeOpt
 /// direction runs from the sketch plane into the material). `o.draft` is the
 /// signed angle in radians (negative = `draftOut`).
 ///
-/// A circular profile whose taper closes exactly at the far end gives a cone with one apex. Past that
-/// (or when a polygon's edge collapses) the error is `draftTooLarge` with `maxHeight`, the largest depth
-/// that still builds.
+/// A circular profile whose taper closes exactly at the far end gives a cone with one apex. Past that the
+/// error is `draftTooLarge` with `maxHeight`, the largest depth that still builds. A polygon whose edge
+/// collapses keeps the oracle's `draftTooLarge {detail}` (no `maxHeight`).
 pub fn drafted_extrude(
     feature: &str,
     profile: &ck_topo::make::Profile,
     o: ck_topo::make::ExtrudeOpts,
 ) -> Result<Body, FeatureError> {
-    let err = match drafted_extrude_once(feature, profile, o) {
-        Ok(b) => return Ok(b),
-        Err(e) => e,
-    };
-    if err.code != "draftTooLarge" || err.params.iter().any(|(k, _)| k == "maxHeight") {
-        return Err(err);
-    }
-    // not a closing cone: find the deepest extrude that still builds
-    let offset = start_offset(&o);
-    let at = |x: f64| {
-        let mut q = o;
-        if o.s0.max(o.s1) > 1e-12 {
-            q.s1 = x;
-        } else {
-            q.s0 = -x;
-        }
-        // a body with a sliver edge is not a usable answer: the height must leave every edge visible
-        drafted_extrude_once(feature, profile, q).is_ok_and(|b| b.edge_ids().all(|e| b.edge_length(e) > 1e-5))
-    };
-    let (mut lo, mut hi) = (offset, o.s0.abs().max(o.s1.abs()));
-    for _ in 0..48 {
-        let mid = 0.5 * (lo + hi);
-        if at(mid) {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    let h = lo - offset;
-    if !(h > 0.0) {
-        return Err(err);
-    }
-    let orig = err.params.iter().find(|(k, _)| k == "detail").and_then(|(_, v)| v.as_str().map(str::to_string));
-    Err(FeatureError::new("draftTooLarge")
-        .with(
-            "detail",
-            Json::Str(format!("the taper collapses the profile at height {h}{}", orig.map(|d| format!(" ({d})")).unwrap_or_default())),
-        )
-        .with("maxHeight", Json::Num(h)))
+    drafted_extrude_once(feature, profile, o)
 }
 
 fn drafted_extrude_once(
