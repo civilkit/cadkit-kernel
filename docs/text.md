@@ -83,8 +83,8 @@ Warnings (the sketch still regenerates; `warnings` of the regen result, params `
 | `textTooSmall` | cap height below 0.8 mm: strokes thinner than about 0.1 mm do not engrave or print |
 | `textMissingGlyph` | characters the font has no glyph for are skipped (the characters are listed) |
 | `textTruncated` | more than 500 characters |
-| `textOverlap` | neighbouring letters overlap (spacing too tight, radius too small): the booleans cannot merge them |
-| `textSpacingAdjusted` | on an arc, letters would have overlapped (tight radius: letters lean into each other) and the pitch was widened (by 4 % steps, at most 60 %) |
+| `textOverlap` | neighbouring letters still overlap after the adjustment below (radius too small): the booleans cannot merge them |
+| `textSpacingAdjusted` | neighbouring letters would have touched or overlapped (closer than max(1.2 % of the height, 0.03)): on a straight line the later letters were pushed right in steps of 1 % of the height (serif fonts: the serifs of `vv`, `VV`, `rr` touch at small sizes; `spacing` below 1 on purpose), on an arc the pitch was widened in 4 % steps (tight radius: letters lean into each other), at most 60 % |
 
 ## Fonts, licences, determinism
 
@@ -109,6 +109,9 @@ face has to wait for font upload (not built).
   knots `0,0,0,1,2,..,m,m,m`), exact, not flattened. Runs are cut every 4 spans, so a letter is a few edges (`O` =
   2 loops of 4 to 8 edges), the extruded walls are B-spline surfaces, not hundreds of facets. Straight parts are lines,
   collinear lines are merged.
+* A curved span that deviates from its chord by less than 0.3 % of the cap height becomes a line: the tessellator
+  samples such a near-straight B-spline edge differently in the wall and in the face it bounds (open display mesh,
+  found with the corpus sweep).
 * Barlow rounds every stroke corner by 1.4 % of the cap height. These slivers (single-span curves under 3 % of the cap
   height between two lines) are made sharp: a face 0.1 mm wide cannot be engraved and only hurts the booleans.
 * Loops are grouped per letter by nesting depth (even = outer boundary, odd = hole of the loop one level up): `O 0 8 6
@@ -118,12 +121,19 @@ face has to wait for font upload (not built).
 * The region's segments carry the entity id as `tag`; the side faces of an extrusion are named `<feature>.S.<id>#n`
   like those of any sketch entity.
 
+Debug fields: `runSpans` (1 to 16, default 4) is the longest run of curve spans in one B-spline edge; `edges: true`
+on `textOutline` adds `outerEdges` / `holeEdges` (the exact line / B-spline control points of every loop).
+
 ## Limits
 
 * Planar only (as every sketch). No text on a curved face: project or wrap is not built.
 * No kerning, no ligatures, no bold / italic, no right-to-left or complex scripts; single line per entity.
 * Text is not trimmed against, merged with or made holes of other curves of its sketch (see "Text is its own sketch").
-* Letters of one entity that overlap (spacing < 0.6, tight arc) are reported (`textOverlap`) and not merged.
+* Letters of one entity are kept at least max(1.2 % of the height, 0.03) apart (see `textSpacingAdjusted`); letters of
+  different entities that overlap are not merged and not checked.
+* Rare display-mesh crack: one case in about 1500 random strings (`gauge`, 3 mm, 2 mm deep, rotated) reports
+  `TESSELLATION_OPEN` from `validate {mesh:true}` between two neighbouring walls (the B-rep is valid, the volume is
+  right); engraving depth under the cap height never showed it.
 * Tiny features: below 0.8 mm cap height `textTooSmall`; engraving depth is the caller's choice (0.1 to 0.5 mm typical).
 * 500 characters per entity.
 
@@ -137,6 +147,10 @@ face has to wait for font upload (not built).
   error and warning cases. Each checks: no error, no `booleanFailed`, `validate {mesh:true}` clean (watertight
   mesh), volume change = glyph area (shoelace over the `textOutline` loops) x depth within 1 % (the measured
   deviation is under 0.1 %; bounds only for the cases where the text leaves the plate or crosses a hole), time.
+* `node tools/text_corpus.mjs --fuzz N --seed S`: random strings (printable ASCII and a few Latin-1), both fonts, 3 to
+  20 mm, 0.1 to 2 mm deep, rotated, all anchors, embossed or engraved; 2000+ cases over ten seeds, one display-mesh
+  crack (above), no `booleanFailed`, volume within 1 % of glyph area x depth (cases where the text leaves the plate
+  only bounds). `--text STRING [--font f --height h --depth d --at x,y --poly --runspans n]` runs one case.
 * `tools/lint_protocol.mjs` fuzzes `textMetrics`, `textOutline` and mutates an engraved plate (every text field).
 
 ## Renders

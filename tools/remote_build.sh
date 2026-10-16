@@ -125,7 +125,7 @@ if [ -s "$W" ]; then
       section) step section node tools/section_check.mjs --wasm "$W" ;;
       spline) step spline_shell node tools/spline_shell_check.mjs --wasm "$W"; step spline_boolean node tools/spline_boolean_check.mjs --wasm "$W" ;;
       thin) step thin_extrude node tools/thin_extrude_check.mjs --wasm "$W" ;;
-      lint) step lint-protocol node tools/lint_protocol.mjs --quiet ;;
+      lint) step lint-protocol node tools/lint_protocol.mjs --wasm "$W" --quiet ;;
       suite) for s in $SUITE; do step "check-$s" node "tools/${s}_check.mjs" --wasm "$W"; done ;;
       *) echo "unknown check $c"; rec "check-$c" 64 0 ;;
     esac
