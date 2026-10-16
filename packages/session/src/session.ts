@@ -6,7 +6,7 @@
 import { emptyPart, FEATURE_TYPES, type PartDoc } from '../../part-model/src/index.js';
 import { hintFor, verify, type CheckResultItem, type KernelTransport, type RegenError, type VerifyReport } from '../../driver/src/verify.js';
 import {
-  check, checkProfile, describe, heal, importSat, importStep, massProps, probe, profiles, resolveDescriptions, section, sections, step, threadData, validate,
+  check, checkProfile, describe, heal, importSat, importSldprt, importStep, massProps, probe, profiles, resolveDescriptions, section, sections, step, threadData, validate,
   type CheckReport, type DescribeItem, type HealReport, type ImportReport, type MassReport, type ProbeReport,
   type ResolveMatch, type SectionReport, type SectionsReport, type ValidateIssue,
 } from './queries.js';
@@ -789,6 +789,11 @@ export class Session {
 
   importStep(data: string, name?: string): Promise<ImportReport> {
     return importStep(this.kernel, data, { name });
+  }
+
+  /** A SolidWorks .SLDPRT part: `data` is the file bytes as base64. */
+  importSldprt(data: string, name?: string): Promise<ImportReport> {
+    return importSldprt(this.kernel, data, { name });
   }
 
   importSat(data: string, name?: string): Promise<ImportReport> {

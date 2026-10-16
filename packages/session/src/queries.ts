@@ -321,6 +321,16 @@ export async function step(kernel: KernelTransport, name: string, opts: QueryOpt
   return { ...res, errors: res.errors ?? [] };
 }
 
+/** Import a SolidWorks .SLDPRT part (base64 of the file bytes) into a fresh tag; reply is regen-shaped like importStep. */
+export async function importSldprt(
+  kernel: KernelTransport,
+  data: string,
+  opts: { name?: string; tag?: string } = {},
+): Promise<ImportReport> {
+  const res = await call<ImportReport>(kernel, { type: 'importSldprt', tag: opts.tag ?? 'imp', name: opts.name ?? 'import', data });
+  return { ...res, errors: res.errors ?? [] };
+}
+
 export async function importSat(
   kernel: KernelTransport,
   data: string,
