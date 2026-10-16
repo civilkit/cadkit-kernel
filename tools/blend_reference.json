@@ -2,10 +2,12 @@
  "_base": {
   "boss": 19015.9289474462,
   "box": 7999.999999999998,
+  "cone": 5927.138139772744,
   "cube": 27000.0,
   "holed": 14869.026644707672,
   "lbr": 6000.0,
-  "pocket": 28800.0
+  "pocket": 28800.0,
+  "rounded": 11690.973355292324
  },
  "boss_ch2_base_rim": {
   "valid": true,
@@ -95,6 +97,29 @@
   "valid": true,
   "volume": 7900.058969153037
  },
+ "cone_ch2_bore_rim": {
+  "valid": true,
+  "volume": 5874.778262212913
+ },
+ "cone_ch2_top_rim": {
+  "source": "analytic (OCCT: Build failed)",
+  "valid": true,
+  "volume": 5882.390749073987
+ },
+ "cone_ch2_top_rim_cone_first": {
+  "source": "analytic (OCCT: Build failed)",
+  "valid": true,
+  "volume": 5882.390749073987
+ },
+ "cone_chA_bottom_rim": {
+  "source": "analytic (OCCT: Build failed)",
+  "valid": true,
+  "volume": 5729.224758826028
+ },
+ "cone_fillet_top_rim": {
+  "valid": true,
+  "volume": 5910.794539687955
+ },
  "cube_ch_equal_corner3": {
   "valid": true,
   "volume": 26322.666666666668
@@ -131,9 +156,21 @@
   "valid": true,
   "volume": 5862.666666666668
  },
+ "lbr_ch2_two_edges_reflex": {
+  "valid": true,
+  "volume": 5949.333333333334
+ },
+ "lbr_ch_equal_top_outline": {
+  "valid": true,
+  "volume": 5847.000000000001
+ },
  "lbr_fillet_concave": {
   "valid": true,
   "volume": 6008.584073464101
+ },
+ "lbr_fillet_top_outline": {
+  "valid": true,
+  "volume": 5882.890822203942
  },
  "pocket_mixed_r1": {
   "valid": true,
@@ -170,6 +207,22 @@
  "pocket_walls_concave3_r2": {
   "valid": true,
   "volume": 28839.86431834444
+ },
+ "rounded_ch2_propagate": {
+  "valid": true,
+  "volume": 11565.46303365403
+ },
+ "rounded_chA_propagate": {
+  "valid": true,
+  "volume": 11515.206808623812
+ },
+ "rounded_ch_propagate": {
+  "valid": true,
+  "volume": 11548.596146204154
+ },
+ "rounded_fillet_propagate": {
+  "valid": true,
+  "volume": 11629.36410442563
  },
  "var_concave_isolated": {
   "valid": true,

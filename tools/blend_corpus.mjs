@@ -46,6 +46,15 @@ const BASES = {
   boss: [rect('F1', TOP, 0, 0, 40, 40), ext('F2', 'F1', 10), circ('F3', FACE('F2.C1'), 20, 20, 8), ext('F4', 'F3', 15)],
   // 40 x 40 x 10 plate with a through hole, radius 6, at x=20, z=-20
   holed: [rect('F1', TOP, 0, 0, 40, 40), ext('F2', 'F1', 10), circ('F3', FACE('F2.C1'), 20, 20, 6), ext('F4', 'F3', 10, 'cut')],
+  // 40 x 30 x 10 plate with its vertical edges rounded (r 6): the top outline is a tangent chain of 4 lines and 4 arcs
+  rounded: [rect('F1', TOP, 0, 0, 40, 30), ext('F2', 'F1', 10), { type: 'fillet', id: 'F3', radius: 6, edges: [
+    { faces: ['F2.S.e1', 'F2.S.e4'], at: [0, 5, 0] }, { faces: ['F2.S.e1', 'F2.S.e2'], at: [40, 5, 0] },
+    { faces: ['F2.S.e2', 'F2.S.e3'], at: [40, 5, -30] }, { faces: ['F2.S.e3', 'F2.S.e4'], at: [0, 5, -30] }] }],
+  // hollow frustum: outer cone radius 15 (y 0) to 10 (y 20), bore radius 8, axis +y through the origin
+  cone: [{ ...poly('F1', STD('front'), [[8, 0], [15, 0], [10, 20], [8, 20]]),
+    points: [{ id: 'p1', x: 8, y: 0 }, { id: 'p2', x: 15, y: 0 }, { id: 'p3', x: 10, y: 20 }, { id: 'p4', x: 8, y: 20 }, { id: 'a1', x: 0, y: 0 }, { id: 'a2', x: 0, y: 20 }],
+    entities: [['p1', 'p2'], ['p2', 'p3'], ['p3', 'p4'], ['p4', 'p1']].map(([a, b], i) => ({ type: 'line', id: `e${i + 1}`, p1: a, p2: b })).concat([{ type: 'line', id: 'ax', p1: 'a1', p2: 'a2', construction: true }]) },
+    { type: 'revolve', id: 'F2', op: 'add', sketch: 'F1', axis: 'ax', angle: 360 }],
   // 30 cube
   cube: [rect('F1', TOP, 0, 0, 30, 30), ext('F2', 'F1', 30)],
   // tall block 20 x 20 x 40 (long vertical edges)
@@ -78,6 +87,10 @@ add('box_chA_ring_top', 'box', { k: 'chamferA', d: 3, a: 50, face: UP }, [TOPE.f
 add('box_chA_vertical', 'box', { k: 'chamferA', d: 2, a: 45, face: RIGHT }, [VERT.fr]);
 add('lbr_ch2_concave_edge', 'lbr', { k: 'chamfer2', d1: 2, d2: 3, face: [0, 0, -1] }, [[10, 5, -10]]);
 add('lbr_ch2_top_outline', 'lbr', { k: 'chamfer2', d1: 1, d2: 2, face: UP }, [[20, 10, 0], [40, 10, -5], [25, 10, -10], [10, 10, -20], [5, 10, -30], [0, 10, -15]]);
+const LTOP = [[20, 10, 0], [40, 10, -5], [25, 10, -10], [10, 10, -20], [5, 10, -30], [0, 10, -15]];
+add('lbr_ch_equal_top_outline', 'lbr', { k: 'chamfer', d: 1.5 }, LTOP);
+add('lbr_fillet_top_outline', 'lbr', { k: 'fillet', r: 2 }, LTOP);
+add('lbr_ch2_two_edges_reflex', 'lbr', { k: 'chamfer2', d1: 1, d2: 2, face: UP }, [[25, 10, -10], [10, 10, -20]]);
 add('cube_ch_equal_corner3', 'cube', { k: 'chamfer', d: 4 }, [[15, 30, 0], [30, 30, -15], [30, 15, 0]]);
 // plane / cylinder neighbours
 add('boss_ch2_top_rim', 'boss', { k: 'chamfer2', d1: 2, d2: 1, face: UP }, [[28, 25, -20]]);
@@ -86,7 +99,18 @@ add('boss_chA_top_rim', 'boss', { k: 'chamferA', d: 2, a: 30, face: UP }, [[28, 
 add('boss_ch2_base_rim', 'boss', { k: 'chamfer2', d1: 1.5, d2: 2.5, face: UP }, [[28, 10, -20]]);
 add('holed_ch2_rim', 'holed', { k: 'chamfer2', d1: 1.5, d2: 2.5, face: UP }, [[26, 10, -20]]);
 add('holed_chA_rim', 'holed', { k: 'chamferA', d: 2, a: 40, face: UP }, [[26, 10, -20]]);
+add('cone_ch2_top_rim', 'cone', { k: 'chamfer2', d1: 1, d2: 1.5, face: UP }, [[10, 20, 0]]);
+add('cone_ch2_top_rim_cone_first', 'cone', { k: 'chamfer2', d1: 1.5, d2: 1, face: 'cone' }, [[10, 20, 0]]);
+add('cone_chA_bottom_rim', 'cone', { k: 'chamferA', d: 3, a: 30, face: DN }, [[15, 0, 0]]);
+add('cone_ch2_bore_rim', 'cone', { k: 'chamfer2', d1: 1, d2: 2, face: UP }, [[8, 20, 0]]);
+add('cone_fillet_top_rim', 'cone', { k: 'fillet', r: 1.5 }, [[10, 20, 0]]);
 add('holed_ch2_bottom_rim', 'holed', { k: 'chamfer2', d1: 1, d2: 2, face: DN }, [[26, 0, -20]]);
+
+// chains of tangent edges: one pick, `propagate: true` (OCCT always propagates along tangent edges)
+add('rounded_ch_propagate', 'rounded', { k: 'chamfer', d: 1.5 }, [[20, 10, 0]], { propagate: true });
+add('rounded_ch2_propagate', 'rounded', { k: 'chamfer2', d1: 2, d2: 1, face: UP }, [[20, 10, 0]], { propagate: true });
+add('rounded_chA_propagate', 'rounded', { k: 'chamferA', d: 2, a: 35, face: UP }, [[20, 10, 0]], { propagate: true });
+add('rounded_fillet_propagate', 'rounded', { k: 'fillet', r: 1.5 }, [[20, 10, 0]], { propagate: true });
 
 // 2. constant fillets (baseline of what works)
 add('box_fillet_edge', 'box', { k: 'fillet', r: 2 }, [TOPE.f]);
@@ -158,7 +182,7 @@ function findEdge(body, at) {
 }
 // the base face of an edge whose normal is closest to `n` (planar faces), or the cylinder face
 function faceByNormal(body, edge, n) {
-  if (n === 'cyl') return edge.faces.find((f) => body.faces.find((x) => x.id === f)?.kind === 'cylinder');
+  if (n === 'cyl' || n === 'cone') return edge.faces.find((f) => body.faces.find((x) => x.id === f)?.kind === (n === 'cyl' ? 'cylinder' : 'cone'));
   let best = null;
   for (const id of edge.faces) {
     const f = body.faces.find((x) => x.id === id);
@@ -179,18 +203,19 @@ function feature(k, c, body) {
   });
   const id = 'F9';
   const o = c.op;
+  const pr = c.propagate ? { propagate: true } : {};
   switch (o.k) {
-    case 'fillet': return o.r > 0 ? { type: 'fillet', id, radius: o.r, edges } : { type: 'fillet', id, radius: Math.max(...c.picks.map((p) => p.r)), edges };
+    case 'fillet': return o.r > 0 ? { type: 'fillet', id, radius: o.r, edges, ...pr } : { type: 'fillet', id, radius: Math.max(...c.picks.map((p) => p.r)), edges };
     case 'varfillet': return { type: 'fillet', id, filletType: 'variable', radii: o.radii, edges };
-    case 'chamfer': return { type: 'chamfer', id, chamferType: 'equal', distance: o.d, edges };
+    case 'chamfer': return { type: 'chamfer', id, chamferType: 'equal', distance: o.d, edges, ...pr };
     case 'chamfer2':
     case 'chamferA': {
       const e0 = findEdge(body, c.picks[0].at);
       const face = faceByNormal(body, e0, o.face);
       if (!face) throw new Error(`${c.name}: no face with normal ${o.face}`);
       return o.k === 'chamfer2'
-        ? { type: 'chamfer', id, chamferType: 'distanceDistance', distance: o.d1, distance2: o.d2, face, edges }
-        : { type: 'chamfer', id, chamferType: 'angleDistance', distance: o.d, angle: o.a, face, edges };
+        ? { type: 'chamfer', id, chamferType: 'distanceDistance', distance: o.d1, distance2: o.d2, face, edges, ...pr }
+        : { type: 'chamfer', id, chamferType: 'angleDistance', distance: o.d, angle: o.a, face, edges, ...pr };
     }
   }
   throw new Error('op');
@@ -249,7 +274,7 @@ for (const c of cases) {
   const rf = ref[c.name];
   let r;
   try { r = run(c); } catch (e) { r = { errs: [`script: ${e.message}`], ms: 0 }; }
-  const curved = ['boss', 'holed'].includes(c.base) || c.curved;
+  const curved = ['boss', 'holed', 'rounded'].includes(c.base) || c.name.startsWith('var_') || c.curved;
   const tol = curved ? 1e-4 : 1e-5;
   let status, note = '';
   if (c.expect) {

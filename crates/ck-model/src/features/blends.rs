@@ -169,6 +169,12 @@ fn exec_variable_fillet(br: &mut Brep, state: &mut RegenState, f: &Feature, edge
             }
         })
         .collect();
+    // several edges with one constant radius: the constant-radius builder (sphere patches at corners)
+    if sel.len() > 1 && profile == P::Circular && per_pick.iter().all(|p| (p[0] - p[1]).abs() < 1e-12 && (p[0] - per_pick[0][0]).abs() < 1e-12) {
+        let out = ck_ops::blend::build::blend_edges(body, &sel, ck_ops::blend::build::Spec::Fillet(per_pick[0][0], profile), &f.id, super::TOL).map_err(blend_error)?;
+        br.body = Some(out);
+        return Ok(());
+    }
     let out = ck_ops::blend::interp::variable_fillet_picks(body, &sel, &per_pick, spec, &f.id, super::TOL).map_err(blend_error)?;
     corner_warnings(state, &f.id, &out);
     br.body = Some(out);
@@ -231,6 +237,7 @@ pub fn exec_chamfer(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Resul
         return Err(FeatureError::new("invalidValue"));
     }
     let sel = select_edges(br, edges)?;
+    let sel = if propagates(f) { propagate_tangent(br.body.as_ref().ok_or_else(|| FeatureError::new("missingEdge"))?, sel) } else { sel };
     br.spans.push(Span::leaf(chamfer_label(&f.id, d, sel.len())));
     let body = br.body.as_ref().ok_or_else(|| FeatureError::new("missingEdge"))?;
     let out = ck_ops::blend::build::chamfer(body, &sel, d, &f.id, super::TOL).map_err(blend_error)?;
@@ -269,7 +276,16 @@ fn exec_chamfer_legs(br: &mut Brep, state: &mut RegenState, f: &Feature, edges: 
         ChamferLeg::Angle(a)
     };
     let sel = select_edges(br, edges)?;
-    let first_face: Option<String> = f.raw.get("face").and_then(|v| v.as_str().map(str::to_string).or_else(|| v.get("id").and_then(|i| i.as_str()).map(str::to_string)));
+    let mut first_face: Option<String> = f.raw.get("face").and_then(|v| v.as_str().map(str::to_string).or_else(|| v.get("id").and_then(|i| i.as_str()).map(str::to_string)));
+    let sel = if propagates(f) {
+        // the chain shares one face: without `face`, the first face of the first pick is the first face of all
+        if first_face.is_none() {
+            first_face = edges.first().and_then(|e| e.faces.first().cloned());
+        }
+        propagate_tangent(br.body.as_ref().ok_or_else(|| FeatureError::new("missingEdge"))?, sel)
+    } else {
+        sel
+    };
     if let Some(ff) = &first_face {
         // every pick must border the named face (by the family name, `~k` pieces ignored)
         let base = super::lip::base_id(ff);
@@ -280,11 +296,11 @@ fn exec_chamfer_legs(br: &mut Brep, state: &mut RegenState, f: &Feature, edges: 
     let flip = f.raw.get("flip").and_then(|v| v.as_bool()).unwrap_or(false);
     let swapped: Vec<bool> = sel
         .iter()
-        .zip(edges)
-        .map(|(s, e)| {
+        .enumerate()
+        .map(|(i, s)| {
             let first = match &first_face {
                 Some(ff) => Some(ff.as_str()),
-                None => e.faces.first().map(|a| a.as_str()),
+                None => edges.get(i).and_then(|e| e.faces.first()).map(|a| a.as_str()),
             };
             first.map_or(false, |a| super::lip::base_id(a) != super::lip::base_id(&s.0)) ^ flip
         })
@@ -449,6 +465,7 @@ pub fn exec_fillet(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
     }
     let profile = fillet_profile(state, f)?;
     let sel = select_edges(br, edges)?;
+    let sel = if propagates(f) { propagate_tangent(br.body.as_ref().ok_or_else(|| FeatureError::new("missingEdge"))?, sel) } else { sel };
     // a pick may carry its own `radius`; the feature's radius is the default
     let own: Vec<Option<f64>> = (0..sel.len())
         .map(|i| {
@@ -475,6 +492,13 @@ pub fn exec_fillet(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
     let r = radii.first().copied().unwrap_or(r);
     let body = br.body.as_ref().ok_or_else(|| FeatureError::new("missingEdge"))?;
     br.spans.push(Span::leaf(fillet_label(&f.id, r, sel.len())));
+    // two convex edges and a concave one at a vertex: the concave corner is filled first, the rim rolls round it
+    if profile == ck_ops::blend::build::FilletProfile::Circular {
+        if let Some(res) = ck_ops::blend::mixed::fillet_mixed(body, &sel, r, &f.id, super::TOL) {
+            br.body = Some(res.map_err(blend_error)?);
+            return Ok(());
+        }
+    }
     let out = ck_ops::blend::build::blend_edges(body, &sel, ck_ops::blend::build::Spec::Fillet(r, profile), &f.id, super::TOL).map_err(blend_error)?;
     br.body = Some(out);
     Ok(())
@@ -557,4 +581,54 @@ fn exec_vertex_chamfer(br: &mut Brep, state: &mut RegenState, f: &Feature, edges
     let out = ck_ops::blend::vertex::chamfer_vertex(body, at, [d1, d2, d3], &f.id, super::TOL).map_err(blend_error)?;
     br.body = Some(out);
     Ok(())
+}
+
+/// `propagate: true` on a fillet or chamfer: the selection grows along edges that continue the picked
+/// ones tangentially (OCCT does this for every selected edge).
+fn propagates(f: &Feature) -> bool {
+    f.raw.get("propagate").and_then(|v| v.as_bool()).unwrap_or(false)
+}
+
+/// Close `sel` under tangent continuation: at a vertex of a selected edge, an unselected edge that
+/// shares exactly one face with it and leaves in the same direction (parallel tangents) joins the
+/// selection. New picks are `(face a, face b, midpoint)` in the order the edge lists its faces.
+fn propagate_tangent(body: &ck_topo::body::Body, sel: Vec<(String, String, Vec3)>) -> Vec<(String, String, Vec3)> {
+    use ck_topo::body::EdgeId;
+    let mut out = sel.clone();
+    let mut chain: Vec<EdgeId> = sel.iter().filter_map(|(a, b, at)| ck_ops::blend::build::find_edge(body, a, b, *at)).collect();
+    let tangent_at = |e: EdgeId, v: ck_topo::body::VertexId| -> Option<Vec3> {
+        let ed = body.edge(e);
+        if ed.v0 == ed.v1 {
+            return None;
+        }
+        let t = if ed.v0 == v { ed.t0 } else { ed.t1 };
+        let d = ed.curve.tangent(t);
+        (d.len() > 1e-12).then(|| d.normalize())
+    };
+    let mut i = 0;
+    while i < chain.len() {
+        let e = chain[i];
+        i += 1;
+        let ed = body.edge(e);
+        let fe = body.edge_faces(e);
+        for v in [ed.v0, ed.v1] {
+            let Some(t0) = tangent_at(e, v) else { continue };
+            let cands: Vec<EdgeId> = body.edge_ids().filter(|&x| x != e && !chain.contains(&x) && (body.edge(x).v0 == v || body.edge(x).v1 == v)).collect();
+            for e2 in cands {
+                let f2 = body.edge_faces(e2);
+                if f2.len() != 2 || f2.iter().filter(|f| fe.contains(f)).count() != 1 {
+                    continue;
+                }
+                let Some(t1) = tangent_at(e2, v) else { continue };
+                if t0.cross(t1).len() > 1e-6 {
+                    continue;
+                }
+                let ed2 = body.edge(e2);
+                let mid = ed2.curve.eval(0.5 * (ed2.t0 + ed2.t1));
+                out.push((body.face_id_str(f2[0]), body.face_id_str(f2[1]), mid));
+                chain.push(e2);
+            }
+        }
+    }
+    out
 }

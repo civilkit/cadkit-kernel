@@ -109,8 +109,9 @@ ck-topo / ck-ops. Depends on ck-core, ck-geom, ck-topo, ck-ops, ck-json.
   `@<feature>.1`, united — or appended with no boolean span when the copy's
   box is clear of the body (oracle; GUESS: box test).
 - chamfer -> `ck_ops::blend::build::chamfer` (`equal`, also the default);
-  span `"F3: Chamfer(2.0, 2.0) of 1 edge"`; `distanceDistance` /
-  `angleDistance` / unknown types fail `unsupported {what:"chamfer <type>"}`
+  span `"F3: Chamfer(2.0, 2.0) of 1 edge"`; `distances` (alias `distanceDistance`) and
+  `angle` (alias `angleDistance`) take `distance` on the first face of the pick (or on `face`; `flip` swaps),
+  `distance2` / `angle` on the other; unknown types fail `unsupported {what:"chamfer <type>"}`
   (oracle, before anything else); `distance <= 0` -> `invalidValue` (no
   span); `chamferType:"vertex"` -> `ck_ops::blend::vertex::chamfer_vertex`
   (no span; `at` or the first edge's pick point, `distance`/`distance2`/
