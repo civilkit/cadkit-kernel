@@ -750,10 +750,10 @@ fn distance_inner(body: &Body, other: Option<&Body>, msg: &Json) -> Result<Json,
 /// Surface samples of a set of faces: `(point, face)`, about `budget` in total, plus the covering radius bound.
 fn body_samples(ctx: &Ctx, faces: &[FaceId], budget: usize) -> (Vec<(Vec3, FaceId)>, f64) {
     let nf = faces.len().max(1);
-    let g = (((budget as f64 / nf as f64).sqrt()).round() as usize).clamp(4, 80);
+    let g = (((budget as f64 / nf as f64).sqrt()).round() as usize).clamp(3, 80);
     // boundary samples per edge: a quarter of the budget over all face-edge incidences
     let incid: usize = faces.iter().map(|&f| ctx.body.face_edges(f).len()).sum::<usize>().max(1);
-    let ne = (budget / 4 / incid).clamp(3, 24);
+    let ne = (budget / 4 / incid).clamp(2, 24);
     let mut out = vec![];
     let mut cover = 0.0f64;
     for &f in faces {
@@ -1499,11 +1499,19 @@ fn symmetry_inner(body: &Body, msg: &Json) -> Result<Json, String> {
     let faces: Vec<FaceId> = body.face_ids().collect();
     let (pts, _) = body_samples(&ctx, &faces, budget);
     let all = Ent::new(&ctx, faces.iter().map(|&f| Prim::Face(f)).collect());
+    let full = matches!(opt(msg, "full"), Some(Json::Bool(true)));
     let mut res: Vec<(f64, Json)> = vec![];
     for (o, n, why) in cands {
         let (mut mx, mut s2, mut cnt, mut worst) = (0.0f64, 0.0, 0usize, Vec3::ZERO);
+        let mut exact = true;
         for oi in stride_order(pts.len()) {
             if over() {
+                break;
+            }
+            // one point farther than `tol` from the body disproves the plane: stop after a few dozen points, the
+            // reported deviation is then a lower bound (`exact:false`)
+            if mx > tol && cnt >= 40 && !full {
+                exact = false;
                 break;
             }
             let p = &pts[oi].0;
@@ -1526,6 +1534,7 @@ fn symmetry_inner(body: &Body, msg: &Json) -> Result<Json, String> {
                 .put("maxDeviation", mx)
                 .put("rmsDeviation", rms)
                 .put("symmetric", mx <= tol)
+                .put("exact", exact)
                 .put("worstPoint", v3(worst))
                 .build(),
         ));

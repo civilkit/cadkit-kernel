@@ -1,7 +1,7 @@
 // Measurement requests (distance, maxDistance, thickness, thicknessAt, closestPoint, angles, clearance, symmetry)
 // on every sample part: no trap, no error, sane ranges, internal consistency, timings.
 // usage: node tools/measure_check.mjs [--wasm path] [--samples dir] [--only substr] [--large sample] [--max N]
-//        [--budget-ms N]     exit 1 on any violation
+//        [--sample N] [--budget-ms N]     exit 1 on any violation
 // Per sample: regen (parts with feature errors or no body are skipped and listed), then
 //   thickness {samples:1500}      0 < min <= bbox diagonal, thinnest cluster list sorted, the min point lies on the body
 //   clearance {min: 1% diag}      pairs sorted ascending, all < min, kinds in {gap, wall, contact}
@@ -20,12 +20,14 @@ const wasm = opt('--wasm', path.join(here, '../target/wasm32-unknown-unknown/rel
 const dir = opt('--samples', '/path/to/work/kit/apps/cad/public/samples');
 const only = opt('--only', '');
 const maxN = Number(opt('--max', '1000'));
-const budget = Number(opt('--budget-ms', '60000')); // per request
+const budget = Number(opt('--budget-ms', '12000')); // per request (the kernel's own limit is 8 s, opts.timeMs)
+const sampleN = Number(opt('--sample', '0')); // evenly spaced subset of N parts
 const mod = new WebAssembly.Module(readFileSync(wasm));
 const now = () => Date.now();
 
 const viol = [];
 const skipped = [];
+const truncs = [];
 const rows = [];
 const finite = (v) => JSON.stringify(v, (k, x) => (typeof x === 'number' && !Number.isFinite(x) ? '__nonfinite__' : x)).indexOf('__nonfinite__') < 0;
 
@@ -51,6 +53,8 @@ function sample(file) {
     if (!j.ok) { bad(`error ${String(j.error).slice(0, 160)}`); return { ms }; }
     if (j.result === null) return { ms, none: true };
     if (!finite(j.result)) bad('non-finite number in the reply');
+    if (msg.type !== 'regen' && msg.type !== 'massProps' && msg.type !== 'sections' && msg.type !== 'probe' && (typeof j.result.elapsedMs !== 'number' || typeof j.result.truncated !== 'boolean')) bad('reply lacks elapsedMs / truncated');
+    if (j.result.truncated) truncs.push(`${name} ${msg.type}`);
     if (ms > budget) bad(`${ms} ms over the ${budget} ms budget`);
     return { res: j.result, ms };
   };
@@ -114,6 +118,7 @@ function sample(file) {
 
 let files = readdirSync(dir).filter((f) => f.endsWith('.ckpart') && f.includes(only)).sort();
 if (args.includes('--large sample')) files.push(path.resolve(here, 'cases/largeSampleFull.ckpart'));
+if (sampleN > 0 && files.length > sampleN) files = Array.from({ length: sampleN }, (_, i) => files[Math.floor((i * files.length) / sampleN)]);
 files = files.slice(0, maxN);
 const T0 = now();
 for (const f of files) {
@@ -123,6 +128,7 @@ for (const f of files) {
 }
 console.table(rows);
 if (skipped.length) console.log(`skipped (${skipped.length}): ${skipped.join('; ')}`);
+if (truncs.length) console.log(`truncated replies (${truncs.length}): ${truncs.join('; ')}`);
 console.log(`${rows.length} parts measured in ${((now() - T0) / 1000).toFixed(1)}s`);
 if (viol.length) { console.log(`${viol.length} violations`); for (const v of viol.slice(0, 60)) console.log('  ' + v); process.exit(1); }
 console.log('measure_check: ok');
