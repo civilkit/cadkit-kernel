@@ -234,13 +234,14 @@ pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featu
             }
         };
         // junction vertices of the whole selection (an earlier round shortens the edges that follow)
-        let junc = if matches!(spec, Spec::Fillet(..)) {
+        let mut junc = if matches!(spec, Spec::Fillet(..)) {
             junction_vertices(b, &eids, tol)
         } else if TANGENT_FLUSH.with(|c| c.get()) {
-            Junc { ext: vec![], flush: tangent_flush_vertices(b, &eids) }
+            Junc { ext: vec![], flush: tangent_flush_vertices(b, &eids), mitre: vec![] }
         } else {
             Junc::default()
         };
+        junc.mitre = mitre_pairs(b, &eids);
         let mut out = b.clone();
         let mut earlier: Vec<String> = vec![];
         // chamfer: arcs of one split ring (a lofted cap rim cut in two at the
@@ -401,6 +402,92 @@ struct Junc {
     ext: Vec<(Vec3, bool)>,
     /// end vertices whose end face leans toward the material: a convex tool stops flush there
     flush: Vec<Vec3>,
+    /// `(vertex, direction away from it along this edge, along the partner edge)`: two selected convex
+    /// edges that meet at a reflex corner of their common face. Both tools run on past the vertex and
+    /// each keeps its own side of the bisector plane.
+    mitre: Vec<(Vec3, Vec3, Vec3)>,
+}
+
+/// Reflex-corner pairs of the selection, see [`Junc::mitre`]: two selected straight convex edges of
+/// planar faces that share a vertex and exactly one face, each of whose end face at the vertex leans
+/// toward the material (the other edge's wall).
+fn mitre_pairs(b: &Body, sel: &[EdgeId]) -> Vec<(Vec3, Vec3, Vec3)> {
+    let convex_line = |e: EdgeId| -> bool {
+        super::mixed::line_edge_concave(b, e) == Some(false)
+    };
+    let away = |e: EdgeId, v: ck_topo::body::VertexId| -> Vec3 {
+        let ed = b.edge(e);
+        let other = if ed.v0 == v { ed.v1 } else { ed.v0 };
+        (b.vertex(other).p - b.vertex(v).p).normalize()
+    };
+    // the end face of `e` at `v`: the one face at the vertex not on the edge; it must lean toward the material
+    let leans = |e: EdgeId, v: ck_topo::body::VertexId| -> bool {
+        let efs = b.edge_faces(e);
+        let mut ends: Vec<FaceId> = vec![];
+        for x in b.edge_ids().filter(|&x| b.edge(x).v0 == v || b.edge(x).v1 == v) {
+            for f in b.edge_faces(x) {
+                if !efs.contains(&f) && !ends.contains(&f) {
+                    ends.push(f);
+                }
+            }
+        }
+        ends.len() == 1 && matches!(b.face(ends[0]).surface, Surface::Plane { .. }) && b.planar_normal(ends[0]).dot(-away(e, v)) < -1e-9
+    };
+    let mut out = vec![];
+    for (i, &a) in sel.iter().enumerate() {
+        for &c in &sel[i + 1..] {
+            if a == c || !convex_line(a) || !convex_line(c) {
+                continue;
+            }
+            let (ea, ec) = (b.edge(a), b.edge(c));
+            for v in [ea.v0, ea.v1] {
+                if ea.v0 == ea.v1 || !(ec.v0 == v || ec.v1 == v) {
+                    continue;
+                }
+                let (fa, fc) = (b.edge_faces(a), b.edge_faces(c));
+                if fa.iter().filter(|f| fc.contains(f)).count() != 1 || !leans(a, v) || !leans(c, v) {
+                    continue;
+                }
+                let (da, dc) = (away(a, v), away(c, v));
+                let p = b.vertex(v).p;
+                out.push((p, da, dc));
+                out.push((p, dc, da));
+            }
+        }
+    }
+    out
+}
+
+/// `tool` cut down to the half-space `(p - o) . n >= 0`.
+pub(super) fn clip_halfspace(tool: &Body, o: Vec3, n: Vec3, tol: f64) -> Result<Body, BlendError> {
+    let (lo, hi) = tool.bbox();
+    let big = 4.0 * (hi - lo).len() + 10.0;
+    let u = if n.x.abs() < 0.9 { Vec3::X.cross(n) } else { Vec3::Y.cross(n) }.normalize();
+    let w = n.cross(u);
+    let pt = |a: f64, b: f64, c: f64| o + n * (a * big) + u * (b * big) + w * (c * big);
+    // (corner loop, outward normal)
+    let quads: [([Vec3; 4], Vec3); 6] = [
+        ([pt(0., -1., -1.), pt(0., 1., -1.), pt(0., 1., 1.), pt(0., -1., 1.)], -n),
+        ([pt(1., -1., -1.), pt(1., 1., -1.), pt(1., 1., 1.), pt(1., -1., 1.)], n),
+        ([pt(0., -1., -1.), pt(1., -1., -1.), pt(1., -1., 1.), pt(0., -1., 1.)], -u),
+        ([pt(0., 1., -1.), pt(1., 1., -1.), pt(1., 1., 1.), pt(0., 1., 1.)], u),
+        ([pt(0., -1., -1.), pt(1., -1., -1.), pt(1., 1., -1.), pt(0., 1., -1.)], -w),
+        ([pt(0., -1., 1.), pt(1., -1., 1.), pt(1., 1., 1.), pt(0., 1., 1.)], w),
+    ];
+    let polys: Vec<(Vec<Vec3>, FaceName)> = quads
+        .iter()
+        .enumerate()
+        .map(|(i, (q, out))| {
+            let nw = (q[1] - q[0]).cross(q[2] - q[0]);
+            let mut v = q.to_vec();
+            if nw.dot(*out) < 0.0 {
+                v.reverse();
+            }
+            (v, FaceName::other("clip", &format!("k{i}")))
+        })
+        .collect();
+    let block = super::vertex::polyhedron(&polys);
+    crate::boolean::boolean(tool, &block, Op::Intersect, tol).map(|r| r.body).map_err(|_| BlendError::code("blendFailed"))
 }
 
 /// Vertices where two of the selected edges continue each other tangentially (see [`TANGENT_FLUSH`]).
@@ -507,7 +594,7 @@ fn junction_vertices(b: &Body, sel: &[EdgeId], tol: f64) -> Junc {
             out.push((p, behind));
         }
     }
-    Junc { ext: out, flush }
+    Junc { ext: out, flush, mitre: vec![] }
 }
 
 /// Both faces border a blend face of `feature` in `b` (their shared edge was
@@ -1347,6 +1434,23 @@ fn blend_edge_hint(
             m1 = 0.0;
         }
     }
+    // reflex corner shared with another selected edge: run on past the vertex, clip to the bisector plane
+    let mut clips: Vec<(Vec3, Vec3)> = vec![];
+    if convex && circ.is_none() {
+        for &(q, da, db) in &junc.mitre {
+            let n = da - db;
+            if n.len() < 1e-9 {
+                continue;
+            }
+            if q.dist(p0) < 1e-6 && (da - dir).len() < 1e-6 {
+                m0 = margin;
+                clips.push((q, n.normalize()));
+            } else if q.dist(p1) < 1e-6 && (da + dir).len() < 1e-6 {
+                m1 = margin;
+                clips.push((q, n.normalize()));
+            }
+        }
+    }
     if !convex && circ.is_none() && !chamfer {
         for &(q, behind) in &junc.ext {
             if (q - p0).cross(dir).len() > 1e-6 {
@@ -1446,6 +1550,9 @@ fn blend_edge_hint(
         if f.name.role == Role::Side("arc".into()) {
             f.name = name.clone();
         }
+    }
+    for (o, n) in clips {
+        tool = clip_halfspace(&tool, o, n, tol)?;
     }
     let op = if convex { Op::Cut } else { Op::Union };
     // order: untouched; edge faces (ref order), end faces (start, end);

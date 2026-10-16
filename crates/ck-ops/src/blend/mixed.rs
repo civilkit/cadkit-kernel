@@ -27,7 +27,7 @@ use ck_geom::Vec3;
 use ck_topo::body::{Body, EdgeId, FaceId, Role};
 
 /// `Some(true)` for a concave straight edge between two planar faces, `Some(false)` for a convex one.
-fn line_edge_concave(b: &Body, e: EdgeId) -> Option<bool> {
+pub(super) fn line_edge_concave(b: &Body, e: EdgeId) -> Option<bool> {
     let ed = b.edge(e);
     if !matches!(ed.curve, Curve::Line { .. }) {
         return None;

@@ -152,38 +152,6 @@ fn variable_picks_core(
     Ok(cur)
 }
 
-/// `tool` cut down to the half-space `(p - o) . n >= 0`.
-fn clip_halfspace(tool: &Body, o: Vec3, n: Vec3, tol: f64) -> Result<Body, BlendError> {
-    let (lo, hi) = tool.bbox();
-    let big = 4.0 * (hi - lo).len() + 10.0;
-    let u = if n.x.abs() < 0.9 { Vec3::X.cross(n) } else { Vec3::Y.cross(n) }.normalize();
-    let w = n.cross(u);
-    let pt = |a: f64, b: f64, c: f64| o + n * (a * big) + u * (b * big) + w * (c * big);
-    // (corner loop, outward normal)
-    let quads: [([Vec3; 4], Vec3); 6] = [
-        ([pt(0., -1., -1.), pt(0., 1., -1.), pt(0., 1., 1.), pt(0., -1., 1.)], -n),
-        ([pt(1., -1., -1.), pt(1., 1., -1.), pt(1., 1., 1.), pt(1., -1., 1.)], n),
-        ([pt(0., -1., -1.), pt(1., -1., -1.), pt(1., -1., 1.), pt(0., -1., 1.)], -u),
-        ([pt(0., 1., -1.), pt(1., 1., -1.), pt(1., 1., 1.), pt(0., 1., 1.)], u),
-        ([pt(0., -1., -1.), pt(1., -1., -1.), pt(1., 1., -1.), pt(0., 1., -1.)], -w),
-        ([pt(0., -1., 1.), pt(1., -1., 1.), pt(1., 1., 1.), pt(0., 1., 1.)], w),
-    ];
-    let polys: Vec<(Vec<Vec3>, FaceName)> = quads
-        .iter()
-        .enumerate()
-        .map(|(i, (q, out))| {
-            let nw = (q[1] - q[0]).cross(q[2] - q[0]);
-            let mut v = q.to_vec();
-            if nw.dot(*out) < 0.0 {
-                v.reverse();
-            }
-            (v, FaceName::other("clip", &format!("k{i}")))
-        })
-        .collect();
-    let block = super::vertex::polyhedron(&polys);
-    crate::boolean::boolean(tool, &block, Op::Intersect, tol).map(|r| r.body).map_err(|_| BlendError::code("blendFailed"))
-}
-
 fn unsupported() -> BlendError {
     BlendError::code("blendUnsupported")
 }
@@ -301,7 +269,7 @@ fn blend_one(b: &Body, cur: &Body, fa: &str, fb: &str, at: Vec3, v: VarSpec, fea
     // cuts meet in a crease without an intersection of the two (oblique, tangent-singular) blend surfaces
     if convex {
         for &(o, n) in mitres {
-            tool = clip_halfspace(&tool, o, n, tol)?;
+            tool = super::build::clip_halfspace(&tool, o, n, tol)?;
         }
     }
     let op = if convex { Op::Cut } else { Op::Union };
