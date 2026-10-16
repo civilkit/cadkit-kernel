@@ -53,6 +53,8 @@ pub struct Mesh {
     pub silhouette: Vec<f32>,
     /// Wire face indices whose triangulation failed (not in the arrays).
     pub failed: Vec<usize>,
+    /// Why each entry of `failed` failed (same order; empty text when the failure came out of the face cache).
+    pub failed_why: Vec<String>,
 }
 
 impl Mesh {
@@ -359,6 +361,7 @@ pub fn tessellate_memo(body: &Body) -> Tess {
 fn tessellate_impl(body: &Body, tol: &Tol, memo: bool) -> Tess {
     let edges = sample_edges(body, tol);
     let mut outs: Vec<Option<Rc<FaceOut>>> = vec![];
+    let mut why: HashMap<usize, String> = HashMap::default();
     for f in body.face_ids() {
         let key = if memo { Some(face_key(body, f, &edges, tol)) } else { None };
         if let Some(k) = &key {
@@ -372,13 +375,17 @@ fn tessellate_impl(body: &Body, tol: &Tol, memo: bool) -> Tess {
         if let (Err(e), true) = (&r, std::env::var("CK_TESS_DBG").is_ok()) {
             eprintln!("tessellate: face {} dropped: {e}", body.face_id_str(f));
         }
+        if let Err(e) = &r {
+            why.insert(outs.len(), e.clone());
+        }
         let out = r.ok().map(|fm| Rc::new(assemble_face(body, f, fm)));
         if let Some(k) = key {
             FACE_CACHE.with(|c| c.borrow_mut().put(k, out.clone()));
         }
         outs.push(out);
     }
-    let mesh = assemble(&outs);
+    let mut mesh = assemble(&outs);
+    mesh.failed_why = mesh.failed.iter().map(|i| why.get(i).cloned().unwrap_or_default()).collect();
     let faces = outs.iter().map(|o| o.as_ref().map(|o| o.mesh.clone())).collect();
     Tess { tol: Some(*tol), edges, mesh, faces }
 }

@@ -67,6 +67,11 @@ pub fn open_mesh_edges(positions: &[f32], tri_face: &[i32], q: f64) -> (usize, V
 /// `TESSELLATION_OPEN` issues: one per face of `b` that has no triangle (`failed` = faces the tessellator gave up on, from
 /// the mesh), and one for the mesh edges used by a single triangle (entity = the first bordering faces).
 pub fn check_mesh(b: &Body, positions: &[f32], tri_face: &[i32], failed: &[usize]) -> Vec<Issue> {
+    check_mesh_why(b, positions, tri_face, failed, &[])
+}
+
+/// [`check_mesh`] with the tessellator's reason for each failed face (`why[i]` belongs to `failed[i]`).
+pub fn check_mesh_why(b: &Body, positions: &[f32], tri_face: &[i32], failed: &[usize], why: &[String]) -> Vec<Issue> {
     let mut out = vec![];
     let ids: Vec<_> = b.face_ids().collect();
     let mut has = vec![false; ids.len()];
@@ -77,8 +82,14 @@ pub fn check_mesh(b: &Body, positions: &[f32], tri_face: &[i32], failed: &[usize
     }
     for (i, &f) in ids.iter().enumerate() {
         if !has[i] {
-            let why = if failed.contains(&i) { "tessellation failed" } else { "no triangles" };
-            out.push(Issue { code: "TESSELLATION_OPEN", entity: b.face_id_str(f), detail: format!("face has no mesh triangles ({why})") });
+            let reason = match failed.iter().position(|&x| x == i) {
+                Some(k) => match why.get(k).filter(|w| !w.is_empty()) {
+                    Some(w) => format!("tessellation failed: {w}"),
+                    None => "tessellation failed".to_string(),
+                },
+                None => "no triangles".to_string(),
+            };
+            out.push(Issue { code: "TESSELLATION_OPEN", entity: b.face_id_str(f), detail: format!("face has no mesh triangles ({reason})") });
         }
     }
     // vertex merge distance: well below the mesh feature size, above f32 rounding of the coordinates

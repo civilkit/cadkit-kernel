@@ -642,8 +642,8 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
             // an independent witness that the B-rep claim holds: the display mesh of a valid solid is watertight (only in
             // the validate request with `mesh:true` (default off: a few existing bodies have faces the tessellator gives up on, which would flip their verdict), never in regen)
             if cx.msg.get_bool("mesh") == Some(true) {
-                let mesh = ck_tess::mesh::tessellate_memo(body).mesh;
-                iss.extend(ck_check::tessellation::check_mesh(body, &mesh.positions, &mesh.tri_face, &mesh.failed));
+                let mesh = ck_tess::mesh::tessellate(body).mesh;
+                iss.extend(ck_check::tessellation::check_mesh_why(body, &mesh.positions, &mesh.tri_face, &mesh.failed, &mesh.failed_why));
             }
             let arr = iss
                 .iter()
