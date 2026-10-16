@@ -1,0 +1,33 @@
+ck-sldprt: attribution
+
+This crate reads SolidWorks part files. It is original Rust code that follows the file-format knowledge published by
+the open projects below (facts about container layouts, the Parasolid XT node/field layouts and the surface/curve
+conventions). Where tables or algorithms were ported, the source file is named here (changes: rewritten in Rust,
+adapted to ck-topo / ck-geom, extended).
+
+1. BlinkingSun/sldprt2step (Apache-2.0; a port of Jozo132/open-sld-to-step, Apache-2.0)
+   - src/xt.rs: the XT neutral-binary reader structure (header, embedded schema edit scripts C/D/I/A/Z, pointer
+     encoding) and the SCH_13006 base field tables, from sldprt2step_lib/xt/reader.py and xt/schema.py.
+   - src/container.rs: the GUID-wrapped transmit blob layout and the OLE2 stream walk, from
+     sldprt2step_lib/container/{blobs,container,sw3d,ole_cfb}.py.
+   - src/ir.rs, src/build.rs: which XT nodes carry which surfaces / curves, the fin/edge/vertex conventions
+     (fin.vertex is the end vertex; the '+' fin gives the edge direction), the solid-region rule (void regions
+     skipped), the imported-body fallback to free-standing part transmits and the surface-sense rule
+     (face.sense == surface.sense), from sldprt2step_lib/step/{convert,mapper}.py.
+   Its NOTICE is kept in NOTICE-sldprt2step and the licence in LICENSE-APACHE.
+
+2. blussyya/sldprt-format-research (MIT, see LICENSE-MIT-sldprt-format-research)
+   - src/container.rs: the modern block container description (marker, header fields, CRC-32 of the inflated
+     payload, nibble-swapped names) and the OLE2 / modern version detection rules.
+   - tests/fixtures/*.sldprt: four controlled test parts (cube, cube with a hole, cone, OLE2 cube) from the
+     author's research-dump repository, folder "test files new" (MIT).
+
+3. cadmpeg/cadmpeg (code Apache-2.0, documentation CC-BY-4.0), docs/formats/sldprt.md
+   - src/container.rs: block frame layout and cache-cell remarks; the notion that blocks must validate by size and
+     CRC so that false marker hits are dropped. No code was copied.
+
+Not used: dsandall/sld2step (AGPL-3.0) was neither read nor ported. The Siemens "Parasolid XT Format Reference" was not
+copied; only the structure visible in the open implementations and in sample files was used.
+
+SolidWorks is a registered trademark of Dassault Systemes SolidWorks Corporation and Parasolid a registered trademark
+of Siemens Industry Software Inc.; the names are used only to say which file formats are read.

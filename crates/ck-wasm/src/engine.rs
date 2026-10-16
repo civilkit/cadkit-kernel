@@ -15,6 +15,7 @@ use ck_topo::body::Body;
 pub fn install() {
     ck_server::set_hooks(Hooks {
         import_sat: Some(import_sat_hook),
+        import_sldprt: Some(import_sldprt_hook),
         regen: Some(regen_hook),
         import_step: Some(import_hook),
         query: Some(query_hook),
@@ -280,6 +281,85 @@ fn import_hook(cx: &mut Cx, _name: &str, data: &str) -> Result<(Json, Option<Sta
                 .put("faces", body.num_faces() as f64)
                 .put("unitScale", imp.length_scale)
                 .put("warnings", Json::Arr(imp.warnings.iter().map(err_json).collect()))
+                .build();
+            if let Json::Obj(kv) = &mut out {
+                kv.push(("import".into(), info));
+            }
+            let snap = Snapshot { body, sketches: vec![], asm: Default::default(), heal_base: None };
+            Ok((out, Some(State { has_body: true, data: Some(Box::new(snap)) })))
+        }
+    }
+}
+
+/// Standard base64 (also accepts url-safe letters, whitespace and a `data:...;base64,` prefix).
+fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
+    let s = s.find("base64,").map_or(s, |i| &s[i + 7..]);
+    let mut out = Vec::with_capacity(s.len() / 4 * 3);
+    let (mut acc, mut nb) = (0u32, 0u32);
+    for c in s.bytes() {
+        let v = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' | b'-' => 62,
+            b'/' | b'_' => 63,
+            b'=' | b' ' | b'\n' | b'\r' | b'\t' => continue,
+            _ => return Err(format!("importSldprt: data is not base64 (byte 0x{c:02x})")),
+        };
+        acc = (acc << 6) | v as u32;
+        nb += 6;
+        if nb >= 8 {
+            nb -= 8;
+            out.push((acc >> nb) as u8);
+            acc &= (1 << nb) - 1;
+        }
+    }
+    Ok(out)
+}
+
+/// `importSldprt`: base64 of a SolidWorks part file -> the tag's body (result shaped like `importStep`: `body`,
+/// `errors` as `["import", {code, params:{message}}]`, plus `import:{format, solids, faces, unitScale, container,
+/// schema, approximations, notes}`).
+fn import_sldprt_hook(cx: &mut Cx) -> Result<(Json, Option<State>), String> {
+    let data = cx.msg.get_str("data").unwrap_or("").to_string();
+    let name = cx.msg.get_str("name").unwrap_or("part").to_string();
+    let mut out = ck_server::session::empty_regen_result();
+    let bytes = base64_decode(&data)?;
+    match ck_sldprt::import_sldprt(&bytes) {
+        Err(e) => {
+            let err = Json::Arr(vec![Json::Str("import".into()), Obj::new().put("code", e.code).put("params", Obj::new().put("message", e.message.as_str()).build()).build()]);
+            set_key(&mut out, "errors", Json::Arr(vec![err]));
+            Ok((out, None))
+        }
+        Ok(imp) => {
+            let mut body = imp.body;
+            ck_topo::region::rebuild_lumps(&mut body);
+            let tess = ck_tess::mesh::tessellate(&body);
+            set_body(&mut out, body_json(&body, &tess, cx, &(vec![], vec![])));
+            let approx = imp.approx.iter().map(|a| Obj::new().put("what", a.what.as_str()).put("maxErrorMm", a.max_err_mm).build()).collect();
+            // the mass properties SolidWorks stored in the file (mm^3, mm^2, kg), an independent check of the body
+            let sw = match &imp.sw_mass {
+                Some(m) => Obj::new()
+                    .put("volumeMm3", m.volume_m3 * 1e9)
+                    .put("areaMm2", m.area_m2 * 1e6)
+                    .put("massKg", m.mass_kg)
+                    .put("comMm", Json::Arr(m.com_m.iter().map(|x| Json::Num(x * 1e3)).collect()))
+                    .build(),
+                None => Json::Null,
+            };
+            let info = Obj::new()
+                .put("swMassProps", sw)
+                .put("format", "sldprt")
+                .put("name", name.as_str())
+                .put("solids", imp.solids as f64)
+                .put("faces", body.num_faces() as f64)
+                .put("unitScale", imp.unit_scale)
+                .put("container", if imp.container == ck_sldprt::Kind::Modern { "modern" } else { "ole2" })
+                .put("schema", imp.schema.as_str())
+                .put("stream", imp.stream.as_str())
+                .put("nodes", imp.nodes as f64)
+                .put("approximations", Json::Arr(approx))
+                .put("notes", Json::Arr(imp.notes.iter().map(|n| Json::Str(n.clone())).collect()))
                 .build();
             if let Json::Obj(kv) = &mut out {
                 kv.push(("import".into(), info));

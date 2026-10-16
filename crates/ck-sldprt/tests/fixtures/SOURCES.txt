@@ -1,0 +1,11 @@
+Test parts (SolidWorks part files), all from github.com/blussyya/sldprt-research-dump, folder "test files new"
+(controlled models authored by that project, with SolidWorks' own STEP/STL exports; licence MIT, see
+../../LICENSE-MIT-sldprt-format-research). Copied unchanged, renamed:
+
+sw2022_cube_10mm.sldprt       SW2022_C00 cube 10 mm            (modern container)
+sw2022_cube_hole_5mm.sldprt   SW2022_C04 cube with a 5 mm hole (modern container; cylinder + seam)
+sw2022_cone.sldprt            SW2022_C13 cone                  (modern container; cone apex)
+sw2011_cube_10mm_ole2.sldprt  SW2011_C00 cube 10 mm            (OLE2 / CFB container)
+
+Expected values (mm, mm^3; from SolidWorks' own STEP of the same part): cube volume 1000 area 600; cube with a 5 mm
+through hole volume 803.6505 (= 1000 - pi*2.5^2*10); cone (radius 5, height 10) volume 261.7994.

@@ -90,9 +90,14 @@ pub type ImportHook = fn(cx: &mut Cx, name: &str, data: &str) -> Result<(Json, O
 /// tag's previous state).
 pub type ImportSatHook = fn(cx: &mut Cx) -> Result<(Json, Option<State>), String>;
 
+/// Engine hook for `importSldprt`: parses `msg.data` (base64 of a SolidWorks part file) into a body.
+/// Same contract as [`ImportSatHook`].
+pub type ImportSldprtHook = fn(cx: &mut Cx) -> Result<(Json, Option<State>), String>;
+
 #[derive(Default, Clone, Copy)]
 pub struct Hooks {
     pub import_sat: Option<ImportSatHook>,
+    pub import_sldprt: Option<ImportSldprtHook>,
     pub import_step: Option<ImportHook>,
     pub regen: Option<RegenHook>,
     pub query: Option<QueryHook>,

@@ -61,6 +61,22 @@ pub fn import_sat(cx: &mut Cx) -> Result<Json, String> {
     Ok(reply)
 }
 
+/// `{"type":"importSldprt","tag":t,"name":n?,"data":"<base64 of a .SLDPRT file>"}` -> regen-shaped result like
+/// `importStep` (`body`, `errors`, plus `import`). A failed import answers `body:null` with a structured error and
+/// leaves the tag's state alone.
+pub fn import_sldprt(cx: &mut Cx) -> Result<Json, String> {
+    if cx.msg.get_str("data").is_none() {
+        return Err("importSldprt: data (the .SLDPRT file as base64) is required".to_string());
+    }
+    let tag = cx.tag();
+    let Some(h) = cx.hooks.import_sldprt else { return Err(crate::session::todo("importSldprt")) };
+    let (reply, state) = h(cx)?;
+    if let Some(s) = state {
+        cx.session.put(&tag, s);
+    }
+    Ok(reply)
+}
+
 pub fn step(cx: &mut Cx) -> Result<Json, String> {
     null_or_query(cx, "step")
 }
