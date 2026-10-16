@@ -164,6 +164,7 @@ function run(c, idx) {
   if (open > 0) return { ok: false, detail: `${open} open mesh edges`, ms };
   const base = plateVolume(c.plate);
   const area = glyphArea(k, c.texts);
+  if (c.area == null && c.texts.some((t) => { const o = rqk(k, { type: 'textOutline', ...t }); const b = o.result?.bbox; return b && (b[0] < 0.01 || b[1] < 0.01 || b[2] > c.plate.w - 0.01 || b[3] > c.plate.h - 0.01); })) c = { ...c, area: 'bounds' }; // leaves the plate: only bounds
   const sign = c.op === 'add' ? 1 : -1;
   const removed = sign * (vol - base); // positive = |change|
   let detail = `vol ${vol.toFixed(3)} change ${(vol - base).toFixed(3)}`;
@@ -183,7 +184,24 @@ function run(c, idx) {
 // ad hoc: node tools/text_corpus.mjs --text 'STRING' [--font gauge|engrave] [--height 10] [--depth 0.4] [--write dir]
 if (arg('--text')) {
   cases.length = 0;
-  C(`text ${arg('--text')}`, { plate: { kind: 'box', w: 100, h: 60, t: 5 }, texts: [T(arg('--text'), { font: arg('--font') ?? 'gauge', height: Number(arg('--height') ?? 10), at: [50, 30], ...(process.argv.includes('--poly') ? { polyline: true } : {}), ...(arg('--runspans') ? { runSpans: Number(arg('--runspans')) } : {}) })], depth: Number(arg('--depth') ?? 0.4) });
+  C(`text ${arg('--text')}`, { plate: { kind: 'box', w: Number(arg('--pw') ?? 100), h: 60, t: 5 }, texts: [T(arg('--text'), { font: arg('--font') ?? 'gauge', height: Number(arg('--height') ?? 10), at: (arg('--at') ?? '50,30').split(',').map(Number), anchor: [arg('--ah') ?? 'center', arg('--av') ?? 'middle'], ...(process.argv.includes('--poly') ? { polyline: true } : {}), ...(arg('--runspans') ? { runSpans: Number(arg('--runspans')) } : {}) })], depth: Number(arg('--depth') ?? 0.4) });
+}
+// random strings / sizes / depths / positions / fonts (seeded): node tools/text_corpus.mjs --fuzz 200 [--seed 1]
+if (arg('--fuzz')) {
+  cases.length = 0;
+  let seed = Number(arg('--seed') ?? 1);
+  const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+  const pick = (a) => a[Math.floor(rnd() * a.length)];
+  const set = [];
+  for (let c = 0x21; c < 0x7f; c++) set.push(String.fromCharCode(c));
+  set.push('\u00b0', '\u00b1', '\u00d7', '\u00e9', '\u00fc', '\u00d8');
+  for (let i = 0; i < Number(arg('--fuzz')); i++) {
+    const len = 1 + Math.floor(rnd() * 6);
+    let str = ''; for (let k = 0; k < len; k++) str += pick(set);
+    const h = pick([3, 4, 6, 9, 14, 20]);
+    C(`fuzz ${i} ${JSON.stringify(str)} h${h}`, { plate: { kind: 'box', w: 120, h: 60, t: 5 }, depth: pick([0.1, 0.2, 0.4, 0.8, 2]), op: rnd() < 0.2 ? 'add' : 'cut',
+      texts: [T(str, { font: pick(['gauge', 'engrave']), height: h, at: [60 + (rnd() - 0.5) * 20, 30 + (rnd() - 0.5) * 12], angle: rnd() < 0.3 ? Math.floor(rnd() * 360) : 0, anchor: [pick(['left', 'center', 'right']), pick(['baseline', 'middle', 'top'])], spacing: pick([1, 1, 1.2]), ...(rnd() < 0.1 ? { polyline: true } : {}) })] });
+  }
 }
 let bad = 0, n = 0;
 cases.forEach((c, i) => {

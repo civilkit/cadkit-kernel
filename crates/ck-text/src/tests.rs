@@ -280,9 +280,14 @@ fn tight_arc_widens_and_tight_spacing_warns() {
         ..Spec::default()
     };
     let l = layout(&spec).unwrap();
-    assert!(!overlapping(&l.regions), "{:?}", l.warnings);
+    assert!(collision(&l.regions, 0.0).is_none(), "{:?}", l.warnings);
     let l = layout(&Spec { string: "HIM".into(), height: 10.0, spacing: 0.1, ..Spec::default() }).unwrap();
-    assert!(l.warnings.iter().any(|w| w.code == "textOverlap"));
+    // letters that would overlap are pushed apart
+    assert!(l.warnings.iter().any(|w| w.code == "textSpacingAdjusted"), "{:?}", l.warnings);
+    assert!(collision(&l.regions, 0.03).is_none());
     let l = layout(&Spec { string: "HIM".into(), height: 10.0, ..Spec::default() }).unwrap();
-    assert!(!l.warnings.iter().any(|w| w.code == "textOverlap"));
+    assert!(l.warnings.is_empty());
+    // the serif font's touching serifs
+    let l = layout(&Spec { string: "vvVV".into(), font: "engrave".into(), height: 3.0, ..Spec::default() }).unwrap();
+    assert!(collision(&l.regions, 0.03).is_none());
 }

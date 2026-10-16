@@ -33,6 +33,9 @@ const RUN_SPANS: usize = 4;
 const SHARP_FRAC: f64 = 0.03;
 /// A curved span whose largest deviation from its chord is below this fraction of the cap height is a line.
 const FLAT_FRAC: f64 = 0.003;
+/// Neighbouring letters closer than this fraction of the height (at least `MIN_GAP`) are pushed apart.
+const GAP_FRAC: f64 = 0.012;
+const MIN_GAP: f64 = 0.03;
 
 static GAUGE: &[u8] = include_bytes!("../fonts/gauge.ttf");
 static ENGRAVE: &[u8] = include_bytes!("../fonts/engrave.ttf");
@@ -633,72 +636,108 @@ pub fn layout(spec: &Spec) -> Result<Layout, Error> {
         }
     }
     let mut warnings = run.warnings.clone();
-    let (mut regions, mut bbox) = place(spec, &run, 1.0)?;
-    let mut over = overlapping(&regions);
-    if over && spec.arc.is_some() {
+    // letters closer than this cannot be engraved apart (serifs of neighbouring letters touch in the serif font)
+    let gap = (GAP_FRAC * spec.height).max(MIN_GAP);
+    let mut shifts = vec![0.0; run.glyphs.len()];
+    let (mut regions, mut bbox) = place(spec, &run, 1.0, &shifts)?;
+    let mut coll = collision(&regions, gap);
+    if coll.is_some() && spec.arc.is_some() {
         // letters on a tight circle lean towards each other (inside) or their feet do (outside): open the pitch
         for step in 1..=15 {
             let pitch = 1.0 + 0.04 * step as f64;
-            (regions, bbox) = place(spec, &run, pitch)?;
-            if !overlapping(&regions) {
-                over = false;
-                warnings.push(Warning { code: "textSpacingAdjusted", detail: format!("letters on a radius-{} arc would overlap; the pitch was widened by {:.0} %", spec.arc.as_ref().map_or(0.0, |a| a.radius), (pitch - 1.0) * 100.0) });
+            (regions, bbox) = place(spec, &run, pitch, &shifts)?;
+            if collision(&regions, gap).is_none() {
+                coll = None;
+                warnings.push(Warning { code: "textSpacingAdjusted", detail: format!("letters on a radius-{} arc would touch; the pitch was widened by {:.0} %", spec.arc.as_ref().map_or(0.0, |a| a.radius), (pitch - 1.0) * 100.0) });
                 break;
             }
         }
+    } else if coll.is_some() {
+        // push the later letters of a touching pair to the right (along the text) until they clear
+        let step = 0.01 * spec.height;
+        let mut moved = 0.0f64;
+        for _ in 0..80 {
+            let Some((_, j)) = coll else { break };
+            for sh in shifts.iter_mut().skip(j) {
+                *sh += step;
+            }
+            moved = moved.max(shifts[j]);
+            (regions, bbox) = place(spec, &run, 1.0, &shifts)?;
+            coll = collision(&regions, gap);
+        }
+        if coll.is_none() {
+            warnings.push(Warning { code: "textSpacingAdjusted", detail: format!("touching letters were pushed apart by up to {moved:.3} (letters closer than {gap:.3} cannot be engraved apart)") });
+        }
     }
-    if over {
-        warnings.push(Warning { code: "textOverlap", detail: "neighbouring letters overlap (spacing too tight or radius too small), which the booleans cannot merge; increase the spacing, the radius or reduce the height".into() });
+    if coll.is_some() {
+        warnings.push(Warning { code: "textOverlap", detail: "neighbouring letters overlap (radius too small), which the booleans cannot merge; increase the radius or reduce the height".into() });
     }
     Ok(Layout { regions, warnings, bbox })
 }
 
-fn overlapping(regions: &[Region]) -> bool {
-    let polys: Vec<(usize, [f64; 4], Vec<Vec<P>>)> = regions
+/// The first pair of glyphs (indices in the run, `i < j`) whose outer outlines cross, nest or come closer than `gap`.
+fn collision(regions: &[Region], gap: f64) -> Option<(usize, usize)> {
+    let polys: Vec<(usize, [f64; 4], Vec<P>)> = regions
         .iter()
         .map(|r| {
-            let ls: Vec<Vec<P>> = std::iter::once(&r.outer).map(|l| loop_polygon(l, 6)).collect();
+            let l = loop_polygon(&r.outer, 6);
             let mut b = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
-            for p in ls.iter().flatten() {
+            for p in &l {
                 b = [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])];
             }
-            (r.glyph, b, ls)
+            (r.glyph, b, l)
         })
         .collect();
+    let seg_dist = |p: P, a: P, b: P| {
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let t = (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / (dx * dx + dy * dy).max(1e-300)).clamp(0.0, 1.0);
+        (p[0] - a[0] - t * dx).hypot(p[1] - a[1] - t * dy)
+    };
+    let mut hit: Option<(usize, usize)> = None;
     for i in 0..polys.len() {
         for j in i + 1..polys.len() {
             let (a, b) = (&polys[i], &polys[j]);
-            if a.0 == b.0 || a.1[0] > b.1[2] || b.1[0] > a.1[2] || a.1[1] > b.1[3] || b.1[1] > a.1[3] {
+            if a.0 == b.0 || a.1[0] > b.1[2] + gap || b.1[0] > a.1[2] + gap || a.1[1] > b.1[3] + gap || b.1[1] > a.1[3] + gap {
                 continue;
             }
-            let (pa, pb) = (&a.2[0], &b.2[0]);
-            if inside(pa, pb[0]) || inside(pb, pa[0]) {
-                return true;
-            }
-            for x in 0..pa.len() {
-                let (p0, p1) = (pa[x], pa[(x + 1) % pa.len()]);
-                for y in 0..pb.len() {
-                    let (q0, q1) = (pb[y], pb[(y + 1) % pb.len()]);
-                    let o = |p: P, q: P, r: P| (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
-                    if o(p0, p1, q0) * o(p0, p1, q1) < 0.0 && o(q0, q1, p0) * o(q0, q1, p1) < 0.0 {
-                        return true;
+            let (pa, pb) = (&a.2, &b.2);
+            let mut bad = inside(pa, pb[0]) || inside(pb, pa[0]);
+            if !bad {
+                'x: for x in 0..pa.len() {
+                    let (p0, p1) = (pa[x], pa[(x + 1) % pa.len()]);
+                    for y in 0..pb.len() {
+                        let (q0, q1) = (pb[y], pb[(y + 1) % pb.len()]);
+                        let o = |p: P, q: P, r: P| (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+                        if (o(p0, p1, q0) * o(p0, p1, q1) < 0.0 && o(q0, q1, p0) * o(q0, q1, p1) < 0.0) || seg_dist(q0, p0, p1) < gap || seg_dist(p0, q0, q1) < gap {
+                            bad = true;
+                            break 'x;
+                        }
                     }
+                }
+            }
+            if bad {
+                let pair = (a.0.min(b.0), a.0.max(b.0));
+                // the pair with the smallest later index first (the letters to the left are fixed first)
+                if hit.map_or(true, |h| pair.1 < h.1) {
+                    hit = Some(pair);
                 }
             }
         }
     }
-    false
+    hit
 }
 
-/// Put the glyphs of a run in place (`pitch` widens the arc layout's letter pitch).
-fn place(spec: &Spec, run: &Run, pitch: f64) -> Result<(Vec<Region>, [f64; 4]), Error> {
+/// Put the glyphs of a run in place (`pitch` widens the arc layout's letter pitch, `shifts` moves glyph i along
+/// the text by `shifts[i]` sketch units).
+fn place(spec: &Spec, run: &Run, pitch: f64, shifts: &[f64]) -> Result<(Vec<Region>, [f64; 4]), Error> {
     let s = run.scale;
     let m = if spec.mirror { -1.0 } else { 1.0 };
+    let (ink0, ink1) = (run.ink[0] * s, run.ink[2] * s + shifts.last().copied().unwrap_or(0.0));
     let ax = match spec.h {
-        HAnchor::Left => run.ink[0],
-        HAnchor::Center => (run.ink[0] + run.ink[2]) * 0.5,
-        HAnchor::Right => run.ink[2],
-    } * s;
+        HAnchor::Left => ink0,
+        HAnchor::Center => (ink0 + ink1) * 0.5,
+        HAnchor::Right => ink1,
+    };
     let ay = match spec.v {
         VAnchor::Baseline => 0.0,
         VAnchor::Middle => spec.height * 0.5,
@@ -715,11 +754,11 @@ fn place(spec: &Spec, run: &Run, pitch: f64) -> Result<(Vec<Region>, [f64; 4]), 
                 o = spec.at;
                 ex = [ca, sa];
                 ey = [-sa, ca];
-                x0 = m * (g.pen * s - ax);
+                x0 = m * (g.pen * s + shifts[gi] - ax);
                 y0 = -ay;
             }
             Some(a) => {
-                let gx = pitch * m * ((g.pen + g.adv * 0.5) * s - ax);
+                let gx = pitch * m * ((g.pen + g.adv * 0.5) * s + shifts[gi] - ax);
                 let (rb, th, e1, e2);
                 match a.side {
                     Side::Outside => {
