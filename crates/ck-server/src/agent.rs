@@ -17,6 +17,11 @@ pub fn check(cx: &mut Cx) -> Result<Json, String> {
     null_or_query(cx, "check")
 }
 
+/// `{type:"recognize", tag, opts?:{apply?}}`: feature recognition of an imported body (ck-recog).
+pub fn recognize(cx: &mut Cx) -> Result<Json, String> {
+    null_or_query(cx, "recognize")
+}
+
 /// `{type:"resolve", tag, descriptions:[{kind:"face", ...}]}`
 pub fn resolve(cx: &mut Cx) -> Result<Json, String> {
     null_or_query(cx, "resolve")

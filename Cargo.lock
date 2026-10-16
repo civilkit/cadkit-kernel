@@ -77,6 +77,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ck-recog"
+version = "0.1.0"
+dependencies = [
+ "ck-core",
+ "ck-geom",
+ "ck-io",
+ "ck-json",
+ "ck-model",
+ "ck-ops",
+ "ck-topo",
+]
+
+[[package]]
 name = "ck-server"
 version = "0.1.0"
 dependencies = [
@@ -124,6 +137,7 @@ dependencies = [
  "ck-json",
  "ck-model",
  "ck-ops",
+ "ck-recog",
  "ck-server",
  "ck-sldprt",
  "ck-tess",
