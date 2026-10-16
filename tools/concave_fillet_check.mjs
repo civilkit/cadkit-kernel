@@ -53,7 +53,7 @@ run('2 concave edges r=3 (mitre)', 3, corner.slice(0, 2), 28874.668162060, 0);
 run('floor ring + 4 corners r=1', 1, ring, 28823.365788557858, 4);
 run('floor ring + 4 corners r=2', 2, ring, 28890.78468566495, 4);
 run('floor ring + 4 corners r=3', 3, ring, 28998.23898847153, 4);
-// rim edges of the pocket (convex) next to the concave wall-wall edge: ends flush at the wall, mixed vertices stay close to the reference
+// rim edges of the pocket (convex) next to the concave wall-wall edge: the two rim edges end in a mitre plane at the reflex corner, the mixed vertex (2 rim + wall edge) fills the corner first and rolls the rim round it: both exact
 function runVol(name, r, edges, want, tol) {
   const k = new Kernel(mod);
   const part = { format: 'ck-part', version: 1, features: [...pocket, { type: 'fillet', id: 'F5', radius: r, edges }] };
@@ -69,6 +69,6 @@ function runVol(name, r, edges, want, tol) {
 const rim1 = E('F2.C1', 'F4.S.e4', [10, 20, -20]);
 const rim2 = E('F2.C1', 'F4.S.e1', [20, 20, -10]);
 runVol('one rim edge r=2', 2, [rim1], 28782.83185307179, 1e-3);
-runVol('two rim edges at the reflex corner r=2', 2, [rim1, rim2], 28764.896743388403, 1.5);
-runVol('mixed vertex: 2 rim + wall edge r=2', 2, [rim1, rim2, corner[2]], 28772.665456976367, 2.5);
+runVol('two rim edges at the reflex corner r=2', 2, [rim1, rim2], 28764.896743388403, 1e-3);
+runVol('mixed vertex: 2 rim + wall edge r=2', 2, [rim1, rim2, corner[2]], 28772.665456976367, 1e-3);
 process.exit(bad ? 1 : 0);

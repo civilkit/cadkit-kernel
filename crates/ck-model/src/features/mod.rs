@@ -19,8 +19,8 @@
 //! | revolve         | op, sketch, axis ("e14"), end, angle, flip, regions |
 //! | sweep           | op, sketch, path ({kind:curve}), surface |
 //! | loft            | op, sketches, surface |
-//! | fillet          | radius, edges[{faces,at}] |
-//! | chamfer         | chamferType, distance, distance2, angle, flip, edges |
+//! | fillet          | radius, edges[{faces,at,radius?,radii?}], filletType, radii, propagate |
+//! | chamfer         | chamferType, distance, distance2, angle, face, flip, propagate, edges |
 //! | draft           | neutral ({kind:face/std}), faces, angle, flip |
 //! | shell           | faces, thickness, outward |
 //! | hole            | sketch, standard, size, fit, kind, diameter, end, depth, tip, flip, cbore*/csk* |

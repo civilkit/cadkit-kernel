@@ -1,0 +1,383 @@
+{
+ "_base": {
+  "boss": 19015.9289474462,
+  "box": 7999.999999999998,
+  "cone": 5927.138139772744,
+  "cube": 27000.0,
+  "holed": 14869.026644707672,
+  "lbr": 6000.0,
+  "pocket": 28800.0,
+  "rounded": 11690.973355292324,
+  "rrect2": 9965.66370614359,
+  "rrect5": 9785.398163397449,
+  "rrect6": 9690.973355292323,
+  "rrectarm": 10985.398163397445
+ },
+ "boss_ch2_base_rim": {
+  "valid": true,
+  "volume": 19116.067213279373
+ },
+ "boss_ch2_top_rim": {
+  "valid": true,
+  "volume": 18969.85225519355
+ },
+ "boss_ch2_top_rim_cyl_first": {
+  "valid": true,
+  "volume": 18967.757860091155
+ },
+ "boss_chA_top_rim": {
+  "valid": true,
+  "volume": 18962.72416609533
+ },
+ "boss_fillet_base": {
+  "valid": true,
+  "volume": 19061.48669130202
+ },
+ "boss_fillet_top": {
+  "valid": true,
+  "volume": 18975.19017247739
+ },
+ "box_ch2_big": {
+  "valid": true,
+  "volume": 7679.999999999999
+ },
+ "box_ch2_ring_bottom": {
+  "valid": true,
+  "volume": 7765.333333333333
+ },
+ "box_ch2_ring_top": {
+  "valid": true,
+  "volume": 7655.999999999999
+ },
+ "box_ch2_side_edge": {
+  "valid": true,
+  "volume": 7879.999999999999
+ },
+ "box_ch2_top_edge": {
+  "valid": true,
+  "volume": 7880.0
+ },
+ "box_ch2_two_adjacent": {
+  "valid": true,
+  "volume": 7824.0
+ },
+ "box_ch2_two_opposite": {
+  "valid": true,
+  "volume": 7879.999999999999
+ },
+ "box_ch2_vertical_edge": {
+  "valid": true,
+  "volume": 7970.000000000001
+ },
+ "box_chA_ring_top": {
+  "valid": true,
+  "volume": 7399.356189332518
+ },
+ "box_chA_side_edge": {
+  "valid": true,
+  "volume": 7688.2308546376025
+ },
+ "box_chA_top_edge": {
+  "valid": true,
+  "volume": 7953.81197846483
+ },
+ "box_chA_vertical": {
+  "valid": true,
+  "volume": 7980.0
+ },
+ "box_ch_equal_edge": {
+  "valid": true,
+  "volume": 7919.999999999999
+ },
+ "box_fillet_corner3": {
+  "valid": true,
+  "volume": 26701.68722955831
+ },
+ "box_fillet_edge": {
+  "valid": true,
+  "volume": 7965.66370614359
+ },
+ "box_fillet_ring_top": {
+  "valid": true,
+  "volume": 7900.058969153037
+ },
+ "cone_ch2_bore_rim": {
+  "valid": true,
+  "volume": 5874.778262212913
+ },
+ "cone_ch2_top_rim": {
+  "source": "analytic (OCCT: Build failed)",
+  "valid": true,
+  "volume": 5882.390749073987
+ },
+ "cone_ch2_top_rim_cone_first": {
+  "source": "analytic (OCCT: Build failed)",
+  "valid": true,
+  "volume": 5882.390749073987
+ },
+ "cone_chA_bottom_rim": {
+  "source": "analytic (OCCT: Build failed)",
+  "valid": true,
+  "volume": 5729.224758826028
+ },
+ "cone_fillet_top_rim": {
+  "valid": true,
+  "volume": 5910.794539687955
+ },
+ "cube_ch_equal_corner3": {
+  "valid": true,
+  "volume": 26322.666666666668
+ },
+ "cube_unequal_corner3": {
+  "valid": true,
+  "volume": 26687.395028594998
+ },
+ "cube_unequal_two_edges": {
+  "valid": true,
+  "volume": 26786.469785536647
+ },
+ "holed_ch2_bottom_rim": {
+  "valid": true,
+  "volume": 14829.233137762203
+ },
+ "holed_ch2_rim": {
+  "valid": true,
+  "volume": 14792.450323776424
+ },
+ "holed_chA_rim": {
+  "valid": true,
+  "volume": 14798.730398389365
+ },
+ "holed_fillet_rim": {
+  "valid": true,
+  "volume": 14849.8069715185
+ },
+ "lbr_ch2_concave_edge": {
+  "valid": true,
+  "volume": 6030.0
+ },
+ "lbr_ch2_top_outline": {
+  "valid": true,
+  "volume": 5862.666666666668
+ },
+ "lbr_ch2_two_edges_reflex": {
+  "valid": true,
+  "volume": 5949.333333333334
+ },
+ "lbr_ch_equal_top_outline": {
+  "valid": true,
+  "volume": 5847.000000000001
+ },
+ "lbr_fillet_concave": {
+  "valid": true,
+  "volume": 6008.584073464101
+ },
+ "lbr_fillet_top_outline": {
+  "valid": true,
+  "volume": 5882.890822203942
+ },
+ "lbr_mixed_outline_r2": {
+  "valid": true,
+  "volume": 5892.376350453277
+ },
+ "lbr_mixed_r1": {
+  "valid": true,
+  "volume": 5991.432738043586
+ },
+ "lbr_mixed_r2": {
+  "valid": true,
+  "volume": 5965.798198205086
+ },
+ "lbr_mixed_r3": {
+  "valid": true,
+  "volume": 5923.197249530625
+ },
+ "lbr_mixed_r4": {
+  "valid": true,
+  "volume": 5863.730761066321
+ },
+ "lbr_mixed_rim1_wall3": {
+  "valid": true,
+  "volume": 6008.785100764882
+ },
+ "lbr_mixed_rim1_wall4": {
+  "valid": true,
+  "volume": 6023.899337223606
+ },
+ "lbr_mixed_rim2_wall4": {
+  "valid": true,
+  "volume": 5992.287281769763
+ },
+ "lbr_mixed_rim3_wall1": {
+  "valid": true,
+  "volume": 5904.371160464587
+ },
+ "lbr_mixed_rim4_wall2": {
+  "valid": true,
+  "volume": 5835.031087984532
+ },
+ "lbr_mixed_rims_1_2_wall_3": {
+  "valid": true,
+  "volume": 5996.23352580421
+ },
+ "pocket_mixed_r1": {
+  "valid": true,
+  "volume": 28793.149552736402
+ },
+ "pocket_mixed_r2": {
+  "valid": true,
+  "volume": 28772.665456976367
+ },
+ "pocket_mixed_r2_reversed_order": {
+  "valid": true,
+  "volume": 28772.665456976367
+ },
+ "pocket_mixed_r3": {
+  "valid": true,
+  "volume": 28738.648581766007
+ },
+ "pocket_mixed_rim1_wall3": {
+  "valid": true,
+  "volume": 28807.068286072063
+ },
+ "pocket_mixed_rim2_wall4": {
+  "valid": true,
+  "volume": 28794.004096462584
+ },
+ "pocket_mixed_rim4_wall2": {
+  "valid": true,
+  "volume": 28667.650567148125
+ },
+ "pocket_mixed_wall_first": {
+  "valid": true,
+  "volume": 28772.665456976367
+ },
+ "pocket_rim_ring_r2": {
+  "valid": true,
+  "volume": 28728.2595612719
+ },
+ "pocket_unequal_concave3": {
+  "valid": true,
+  "volume": 28835.795414590386
+ },
+ "pocket_unequal_mixed3": {
+  "valid": true,
+  "volume": 28794.516711112672
+ },
+ "pocket_walls_concave3_r2": {
+  "valid": true,
+  "volume": 28839.86431834444
+ },
+ "rounded_ch2_propagate": {
+  "valid": true,
+  "volume": 11565.46303365403
+ },
+ "rounded_chA_propagate": {
+  "valid": true,
+  "volume": 11515.206808623812
+ },
+ "rounded_ch_propagate": {
+  "valid": true,
+  "volume": 11548.596146204154
+ },
+ "rounded_fillet_propagate": {
+  "valid": true,
+  "volume": 11629.36410442563
+ },
+ "rrect2_chamfer_top_loop_d1_5": {
+  "valid": true,
+  "volume": 9826.810830937728
+ },
+ "rrect2_fillet_bottom_loop_r1_5": {
+  "valid": true,
+  "volume": 9905.567112324785
+ },
+ "rrect2_fillet_top_loop_r1_5": {
+  "valid": true,
+  "volume": 9905.567112324785
+ },
+ "rrect5_chamfer_top_loop_d1_5": {
+  "valid": true,
+  "volume": 9652.339537779852
+ },
+ "rrect5_fillet_bottom_loop_r1_5": {
+  "valid": true,
+  "volume": 9727.788482785392
+ },
+ "rrect5_fillet_propagate_r2": {
+  "valid": true,
+  "volume": 9683.583324531337
+ },
+ "rrect5_fillet_top_loop_r1_5": {
+  "valid": true,
+  "volume": 9727.788482785392
+ },
+ "rrect5_fillet_top_loop_r2": {
+  "valid": true,
+  "volume": 9683.583324531337
+ },
+ "rrect6_chamfer_top_loop_d1_5": {
+  "valid": true,
+  "volume": 9559.846146204152
+ },
+ "rrect6_fillet_bottom_loop_r1_5": {
+  "valid": true,
+  "volume": 9634.192645749188
+ },
+ "rrect6_fillet_propagate_r2": {
+  "valid": true,
+  "volume": 9590.632242770957
+ },
+ "rrect6_fillet_top_loop_r1_5": {
+  "valid": true,
+  "volume": 9634.192645749188
+ },
+ "rrect6_fillet_top_loop_r2": {
+  "valid": true,
+  "volume": 9590.632242770957
+ },
+ "rrectarm_fillet_top_loop_r1": {
+  "valid": true,
+  "volume": 10959.64326812548
+ },
+ "rrectarm_fillet_top_loop_r2": {
+  "valid": true,
+  "volume": 10883.583324531339
+ },
+ "var_concave_isolated": {
+  "valid": true,
+  "volume": 6009.476262419348
+ },
+ "var_corner2": {
+  "valid": true,
+  "volume": 7944.878041500547
+ },
+ "var_corner2_equal_ends": {
+  "valid": true,
+  "volume": 7949.2625219137
+ },
+ "var_corner2_mismatch": {
+  "valid": true,
+  "volume": 7942.459301790234
+ },
+ "var_corner3": {
+  "valid": true,
+  "volume": 7934.461916950838
+ },
+ "var_corner3_equal_ends": {
+  "valid": true,
+  "volume": 26830.69242805789
+ },
+ "var_isolated": {
+  "valid": true,
+  "volume": 7962.094933779306
+ },
+ "var_ring_top": {
+  "valid": true,
+  "volume": 7891.254796187091
+ },
+ "var_two_vertical_far": {
+  "valid": true,
+  "volume": 7981.047450460085
+ }
+}

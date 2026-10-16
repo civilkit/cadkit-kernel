@@ -131,6 +131,22 @@ impl Spec {
 
 /// Shared fillet / chamfer driver (see [`fillet`]).
 pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, feature: &str, tol: f64) -> Result<Body, BlendError> {
+    let first = blend_edges_inner(b, edges, spec, feature, tol);
+    // A selection that is a chain of tangent edges (a rounded outline picked edge by edge) fails when a tool runs on past
+    // the junction into the arc's band: retry with the ends of tangent-continuing edges stopping flush. Selections that
+    // worked keep their result.
+    if first.is_err() && edges.len() > 1 && !TANGENT_FLUSH.with(|c| c.get()) {
+        TANGENT_FLUSH.with(|c| c.set(true));
+        let second = blend_edges_inner(b, edges, spec, feature, tol);
+        TANGENT_FLUSH.with(|c| c.set(false));
+        if second.is_ok() {
+            return second;
+        }
+    }
+    first
+}
+
+fn blend_edges_inner(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, feature: &str, tol: f64) -> Result<Body, BlendError> {
     let r = spec.size();
     if !(r > 0.0) || !r.is_finite() {
         return Err(BlendError::code("invalidValue"));
@@ -234,7 +250,14 @@ pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featu
             }
         };
         // junction vertices of the whole selection (an earlier round shortens the edges that follow)
-        let junc = if matches!(spec, Spec::Fillet(..)) { junction_vertices(b, &eids, tol) } else { Junc::default() };
+        let mut junc = if matches!(spec, Spec::Fillet(..)) {
+            junction_vertices(b, &eids, tol)
+        } else if TANGENT_FLUSH.with(|c| c.get()) {
+            Junc { ext: vec![], flush: tangent_flush_vertices(b, &eids), mitre: vec![] }
+        } else {
+            Junc::default()
+        };
+        junc.mitre = mitre_pairs(b, &eids);
         let mut out = b.clone();
         let mut earlier: Vec<String> = vec![];
         // chamfer: arcs of one split ring (a lofted cap rim cut in two at the
@@ -270,6 +293,18 @@ pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featu
             // ball's sphere patch `V<k>` replaces the miter
             let mut corners: Vec<Vec3> = vec![];
             for corner in super::corner::find_corner(b, &eids) {
+                // per-edge radii: the ball patch needs one radius at the corner
+                let rc = EDGE_RADII.with(|c| {
+                    c.borrow().as_ref().map(|v| {
+                        let rs: Vec<f64> = corner.edges.iter().filter_map(|e| eids.iter().position(|x| x == e)).map(|i| v[i]).collect();
+                        if rs.len() == 3 && rs.iter().all(|x| (x - rs[0]).abs() <= 1e-12 * (1.0 + rs[0])) { Some(rs[0]) } else { None }
+                    })
+                });
+                let r = match rc {
+                    Some(Some(x)) => x,
+                    Some(None) => continue,
+                    None => r,
+                };
                 let name = FaceName::other(feature, &format!("V{}", corners.len()));
                 let Ok(tool) = super::corner::sphere_corner_tool(b, &corner, r, feature, &name, tol) else { continue };
                 let op = if corner.concave { Op::Union } else { Op::Cut };
@@ -303,6 +338,79 @@ pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featu
     Ok(in_place_layout(b, &raw, &refs, tol))
 }
 
+thread_local! {
+    /// Radius of the fillet of selection index `k` (see [`fillet_unequal`]).
+    static EDGE_RADII: std::cell::RefCell<Option<Vec<f64>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Circular fillets with a radius per edge (`radii[k]` for `edges[k]`). Every edge is built as the
+/// ordinary constant-radius blend (analytic cylinders, the same rounds and junction rules); where
+/// edges of different radii meet, the blend faces end in a mitre, which is not tangent-continuous.
+/// Three convex or concave edges that share a radius at their vertex still get the sphere patch.
+pub fn fillet_unequal(b: &Body, edges: &[(String, String, Vec3)], radii: &[f64], feature: &str, tol: f64) -> Result<Body, BlendError> {
+    if radii.len() != edges.len() || !radii.iter().all(|r| *r > 0.0 && r.is_finite()) {
+        return Err(BlendError::code("invalidValue"));
+    }
+    let rmax = radii.iter().cloned().fold(0.0, f64::max);
+    EDGE_RADII.with(|c| *c.borrow_mut() = Some(radii.to_vec()));
+    let r = blend_edges(b, edges, Spec::Fillet(rmax, FilletProfile::Circular), feature, tol);
+    EDGE_RADII.with(|c| *c.borrow_mut() = None);
+    r
+}
+
+thread_local! {
+    /// The face a chamfer's first leg lies on (and whether to take the other one instead), see
+    /// [`chamfer_legs_on_face`].
+    static CHAMFER_FIRST: std::cell::RefCell<Option<(FaceName, bool)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// [`chamfer_legs`] with the first leg (`d1`, or the distance of the angle form) on the face named
+/// `first` for every edge, whichever side of the pick it is on; `flip` takes the other face of each
+/// edge instead. `first` is a face id, `~k` region suffix ignored.
+pub fn chamfer_legs_on_face(b: &Body, edges: &[(String, String, Vec3)], d1: f64, leg: ChamferLeg, first: &str, flip: bool, feature: &str, tol: f64) -> Result<Body, BlendError> {
+    let name = FaceName::parse(first).map(|mut n| {
+        n.region = None;
+        n
+    });
+    let Some(name) = name else { return Err(BlendError::code("missingEdge")) };
+    CHAMFER_FIRST.with(|c| *c.borrow_mut() = Some((name, flip)));
+    let r = blend_edges(b, edges, Spec::Chamfer(d1, leg), feature, tol);
+    CHAMFER_FIRST.with(|c| *c.borrow_mut() = None);
+    r
+}
+
+thread_local! {
+    /// While set, the ends of selected edges that continue each other tangentially stop flush (see
+    /// [`junction_vertices`]); used by [`super::mixed`] for the chain rim - arc - rim.
+    pub(super) static TANGENT_FLUSH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Sets [`TANGENT_FLUSH`] for its lifetime (a selection that is a chain of tangent edges).
+pub struct TangentChainGuard(bool);
+
+impl TangentChainGuard {
+    pub fn new(on: bool) -> TangentChainGuard {
+        let old = TANGENT_FLUSH.with(|c| c.replace(on || c.get()));
+        TangentChainGuard(old)
+    }
+}
+
+impl Drop for TangentChainGuard {
+    fn drop(&mut self) {
+        TANGENT_FLUSH.with(|c| c.set(self.0));
+    }
+}
+
+/// [`blend_edges`] with the ends of tangent-continuing selected edges stopping flush (a selection that is
+/// a chain of tangent edges: the rolling ball runs on from one edge into the next, so no tool may reach
+/// past the junction).
+pub fn blend_edges_tangent_chain(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, feature: &str, tol: f64) -> Result<Body, BlendError> {
+    TANGENT_FLUSH.with(|c| c.set(true));
+    let r = blend_edges(b, edges, spec, feature, tol);
+    TANGENT_FLUSH.with(|c| c.set(false));
+    r
+}
+
 /// Per-selection end information gathered on the original body.
 #[derive(Default)]
 struct Junc {
@@ -310,6 +418,124 @@ struct Junc {
     ext: Vec<(Vec3, bool)>,
     /// end vertices whose end face leans toward the material: a convex tool stops flush there
     flush: Vec<Vec3>,
+    /// `(vertex, direction away from it along this edge, along the partner edge)`: two selected convex
+    /// edges that meet at a reflex corner of their common face. Both tools run on past the vertex and
+    /// each keeps its own side of the bisector plane.
+    mitre: Vec<(Vec3, Vec3, Vec3)>,
+}
+
+/// Reflex-corner pairs of the selection, see [`Junc::mitre`]: two selected straight convex edges of
+/// planar faces that share a vertex and exactly one face, each of whose end face at the vertex leans
+/// toward the material (the other edge's wall).
+fn mitre_pairs(b: &Body, sel: &[EdgeId]) -> Vec<(Vec3, Vec3, Vec3)> {
+    let convex_line = |e: EdgeId| -> bool {
+        super::mixed::line_edge_concave(b, e) == Some(false)
+    };
+    let away = |e: EdgeId, v: ck_topo::body::VertexId| -> Vec3 {
+        let ed = b.edge(e);
+        let other = if ed.v0 == v { ed.v1 } else { ed.v0 };
+        (b.vertex(other).p - b.vertex(v).p).normalize()
+    };
+    // the end face of `e` at `v`: the one face at the vertex not on the edge; it must lean toward the material
+    let leans = |e: EdgeId, v: ck_topo::body::VertexId| -> bool {
+        let efs = b.edge_faces(e);
+        let mut ends: Vec<FaceId> = vec![];
+        for x in b.edge_ids().filter(|&x| b.edge(x).v0 == v || b.edge(x).v1 == v) {
+            for f in b.edge_faces(x) {
+                if !efs.contains(&f) && !ends.contains(&f) {
+                    ends.push(f);
+                }
+            }
+        }
+        ends.len() == 1 && matches!(b.face(ends[0]).surface, Surface::Plane { .. }) && b.planar_normal(ends[0]).dot(-away(e, v)) < -1e-9
+    };
+    let mut out = vec![];
+    for (i, &a) in sel.iter().enumerate() {
+        for &c in &sel[i + 1..] {
+            if a == c || !convex_line(a) || !convex_line(c) {
+                continue;
+            }
+            let (ea, ec) = (b.edge(a), b.edge(c));
+            for v in [ea.v0, ea.v1] {
+                if ea.v0 == ea.v1 || !(ec.v0 == v || ec.v1 == v) {
+                    continue;
+                }
+                let (fa, fc) = (b.edge_faces(a), b.edge_faces(c));
+                if fa.iter().filter(|f| fc.contains(f)).count() != 1 || !leans(a, v) || !leans(c, v) {
+                    continue;
+                }
+                let (da, dc) = (away(a, v), away(c, v));
+                let p = b.vertex(v).p;
+                out.push((p, da, dc));
+                out.push((p, dc, da));
+            }
+        }
+    }
+    out
+}
+
+/// `tool` cut down to the half-space `(p - o) . n >= 0`.
+pub(super) fn clip_halfspace(tool: &Body, o: Vec3, n: Vec3, tol: f64) -> Result<Body, BlendError> {
+    let (lo, hi) = tool.bbox();
+    let big = 4.0 * (hi - lo).len() + 10.0;
+    let u = if n.x.abs() < 0.9 { Vec3::X.cross(n) } else { Vec3::Y.cross(n) }.normalize();
+    let w = n.cross(u);
+    let pt = |a: f64, b: f64, c: f64| o + n * (a * big) + u * (b * big) + w * (c * big);
+    // (corner loop, outward normal)
+    let quads: [([Vec3; 4], Vec3); 6] = [
+        ([pt(0., -1., -1.), pt(0., 1., -1.), pt(0., 1., 1.), pt(0., -1., 1.)], -n),
+        ([pt(1., -1., -1.), pt(1., 1., -1.), pt(1., 1., 1.), pt(1., -1., 1.)], n),
+        ([pt(0., -1., -1.), pt(1., -1., -1.), pt(1., -1., 1.), pt(0., -1., 1.)], -u),
+        ([pt(0., 1., -1.), pt(1., 1., -1.), pt(1., 1., 1.), pt(0., 1., 1.)], u),
+        ([pt(0., -1., -1.), pt(1., -1., -1.), pt(1., 1., -1.), pt(0., 1., -1.)], -w),
+        ([pt(0., -1., 1.), pt(1., -1., 1.), pt(1., 1., 1.), pt(0., 1., 1.)], w),
+    ];
+    let polys: Vec<(Vec<Vec3>, FaceName)> = quads
+        .iter()
+        .enumerate()
+        .map(|(i, (q, out))| {
+            let nw = (q[1] - q[0]).cross(q[2] - q[0]);
+            let mut v = q.to_vec();
+            if nw.dot(*out) < 0.0 {
+                v.reverse();
+            }
+            (v, FaceName::other("clip", &format!("k{i}")))
+        })
+        .collect();
+    let block = super::vertex::polyhedron(&polys);
+    crate::boolean::boolean(tool, &block, Op::Intersect, tol).map(|r| r.body).map_err(|_| BlendError::code("blendFailed"))
+}
+
+/// Vertices where two of the selected edges continue each other tangentially (see [`TANGENT_FLUSH`]).
+fn tangent_flush_vertices(b: &Body, sel: &[EdgeId]) -> Vec<Vec3> {
+    let mut flush: Vec<Vec3> = vec![];
+    {
+        for &e in sel {
+            let ed = b.edge(e);
+            if ed.v0 == ed.v1 {
+                continue;
+            }
+            for v in [ed.v0, ed.v1] {
+                let d = ed.curve.tangent(if ed.v0 == v { ed.t0 } else { ed.t1 });
+                if d.len() < 1e-12 {
+                    continue;
+                }
+                let tangent_mate = sel.iter().copied().filter(|&x| x != e).any(|x| {
+                    let ex = b.edge(x);
+                    if ex.v0 != v && ex.v1 != v {
+                        return false;
+                    }
+                    let dx = ex.curve.tangent(if ex.v0 == v { ex.t0 } else { ex.t1 });
+                    dx.len() > 1e-12 && d.normalize().cross(dx.normalize()).len() < 1e-6
+                });
+                let p = b.vertex(v).p;
+                if tangent_mate && !flush.iter().any(|q| q.dist(p) < 1e-9) {
+                    flush.push(p);
+                }
+            }
+        }
+    }
+    flush
 }
 
 /// The original vertices (with `true` when material lies behind the end face, so
@@ -334,6 +560,9 @@ fn junction_vertices(b: &Body, sel: &[EdgeId], tol: f64) -> Junc {
     };
     let mut out: Vec<(Vec3, bool)> = vec![];
     let mut flush: Vec<Vec3> = vec![];
+    if TANGENT_FLUSH.with(|c| c.get()) {
+        flush = tangent_flush_vertices(b, sel);
+    }
     for &e in sel {
         let ed = b.edge(e);
         if matches!(ed.curve, Curve::Line { .. }) {
@@ -381,7 +610,7 @@ fn junction_vertices(b: &Body, sel: &[EdgeId], tol: f64) -> Junc {
             out.push((p, behind));
         }
     }
-    Junc { ext: out, flush }
+    Junc { ext: out, flush, mitre: vec![] }
 }
 
 /// Both faces border a blend face of `feature` in `b` (their shared edge was
@@ -486,7 +715,11 @@ fn blend_edges_at(
                 if base(fs[0]) == *fa || base(fs[1]) == *fb { (fs[0], fs[1]) } else { (fs[1], fs[0]) }
             }
         };
-        let (body, hint) = blend_edge_hint(&out, e, [f1, f2], spec, feature, idx[k], tol, rings.get(k).copied().unwrap_or(false), junc)?;
+        let spec_k = match spec {
+            Spec::Fillet(_, p) => EDGE_RADII.with(|c| c.borrow().as_ref().and_then(|v| v.get(idx[k] as usize).copied())).map_or(spec, |r| Spec::Fillet(r, p)),
+            _ => spec,
+        };
+        let (body, hint) = blend_edge_hint(&out, e, [f1, f2], spec_k, feature, idx[k], tol, rings.get(k).copied().unwrap_or(false), junc)?;
         // end faces at a junction with another selected edge are that
         // edge's own faces, not extra touches (oracle: the ring's face
         // order is e1 e2 e3 e4, the open chain's C1 e1 e4 e2 e3)
@@ -880,8 +1113,18 @@ pub fn in_place_layout_opts(input: &Body, out: &Body, refs: &[BlendRef], tol: f6
     res
 }
 
+thread_local! {
+    static LAST_FAIL: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+/// The reason the last blend step gave up (see [`dbg_fail`]); empty when none did.
+pub(super) fn last_fail() -> String {
+    LAST_FAIL.with(|c| c.borrow().clone())
+}
+
 /// `CK_BLEND_DEBUG=1` prints why a blend gave up (native runs only).
 fn dbg_fail(m: &str) {
+    LAST_FAIL.with(|c| *c.borrow_mut() = m.chars().take(400).collect());
     if std::env::var_os("CK_BLEND_DEBUG").is_some() {
         eprintln!("blend fail: {m}");
     }
@@ -1051,9 +1294,20 @@ fn blend_edge_hint(
         }
         _ => (spec, r),
     };
+    // `chamfer_legs_on_face`: the first leg belongs to the named face, whichever side of the pick it is on
+    let swap_first = CHAMFER_FIRST.with(|c| {
+        c.borrow().as_ref().map_or(false, |(name, flip)| {
+            let base = |f: FaceId| {
+                let mut n = b.face(f).name.clone();
+                n.region = None;
+                n
+            };
+            (base(faces[1]) == *name) ^ *flip
+        })
+    });
     // chamfer legs on the first / second face
     let (ch1, ch2) = match spec {
-        Spec::Chamfer(a, ChamferLeg::Dist(b)) => (a, b),
+        Spec::Chamfer(a, ChamferLeg::Dist(b)) => if swap_first { (b, a) } else { (a, b) },
         Spec::Chamfer(a, ChamferLeg::Angle(al) | ChamferLeg::AngleRev(al)) => {
             // triangle corner / first contact / second contact: law of sines with the interior angle
             let psi = std::f64::consts::PI - phi;
@@ -1065,7 +1319,7 @@ fn blend_edge_hint(
                 return Err(BlendError::detail("blendSize", &format!("{}: no blend fits between the faces", FaceName::blend(feature, k).id())));
             }
             let x = a * al.sin() / den;
-            if matches!(spec, Spec::Chamfer(_, ChamferLeg::AngleRev(_))) {
+            if matches!(spec, Spec::Chamfer(_, ChamferLeg::AngleRev(_))) != swap_first {
                 (x, a)
             } else {
                 (a, x)
@@ -1190,6 +1444,32 @@ fn blend_edge_hint(
         if flush_end(ed.v1, dir) || junc.flush.iter().any(|&q| near(q, p1, p0)) {
             m1 = 0.0;
         }
+    } else if convex && circ.is_none() && !junc.flush.is_empty() {
+        // chamfer: only the ends where a tangent chain goes on stop flush
+        let near = |q: Vec3, p: Vec3, o: Vec3| (q - p).cross(dir).len() <= 1e-6 && q.dist(p) < q.dist(o);
+        if junc.flush.iter().any(|&q| near(q, p0, p1)) {
+            m0 = 0.0;
+        }
+        if junc.flush.iter().any(|&q| near(q, p1, p0)) {
+            m1 = 0.0;
+        }
+    }
+    // reflex corner shared with another selected edge: run on past the vertex, clip to the bisector plane
+    let mut clips: Vec<(Vec3, Vec3)> = vec![];
+    if convex && circ.is_none() {
+        for &(q, da, db) in &junc.mitre {
+            let n = da - db;
+            if n.len() < 1e-9 {
+                continue;
+            }
+            if q.dist(p0) < 1e-6 && (da - dir).len() < 1e-6 {
+                m0 = margin;
+                clips.push((q, n.normalize()));
+            } else if q.dist(p1) < 1e-6 && (da + dir).len() < 1e-6 {
+                m1 = margin;
+                clips.push((q, n.normalize()));
+            }
+        }
     }
     if !convex && circ.is_none() && !chamfer {
         for &(q, behind) in &junc.ext {
@@ -1275,7 +1555,7 @@ fn blend_edge_hint(
                 // an end that runs on into another arc of the same circle (a
                 // split ring) stops flush: that arc is cut by its own tool
                 let ends = [p0, ed.curve.eval(ed.t0.max(ed.t1))];
-                let flush = |q: Vec3| ext && (continues_circle(b, e, q, c, axis, rad) || meets_own_blend(b, e, q, feature, tol));
+                let flush = |q: Vec3| (ext && (continues_circle(b, e, q, c, axis, rad) || meets_own_blend(b, e, q, feature, tol))) || junc.flush.iter().any(|f| f.dist(q) < 1e-6 * (1.0 + rad));
                 let (m0, m1) = (if flush(ends[0]) { 0.0 } else { m }, if flush(ends[1]) { 0.0 } else { m });
                 if span + m0 + m1 >= TAU { (0.0, TAU) } else { (-m0, span + m1) }
             };
@@ -1290,6 +1570,9 @@ fn blend_edge_hint(
         if f.name.role == Role::Side("arc".into()) {
             f.name = name.clone();
         }
+    }
+    for (o, n) in clips {
+        tool = clip_halfspace(&tool, o, n, tol)?;
     }
     let op = if convex { Op::Cut } else { Op::Union };
     // order: untouched; edge faces (ref order), end faces (start, end);
