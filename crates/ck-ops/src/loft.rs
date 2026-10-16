@@ -372,19 +372,48 @@ pub fn loft(feature: &str, profiles: &[ProfileIn], opts: &LoftOpts) -> Result<Lo
 
 /// Compatible rational B-splines of one piece over all stations: same
 /// degree and knot vector, weights present on all or none.
-fn compat(mut cs: Vec<BSplineCurve>) -> Vec<BSplineCurve> {
+/// Err (never a panic downstream) when the curves still do not agree on the control point count.
+fn compat(mut cs: Vec<BSplineCurve>) -> Result<Vec<BSplineCurve>, LoftError> {
+    let mismatch = || LoftError { code: FAILED.into(), detail: Some("loft sections cannot be matched: their spline pieces have incompatible knots; redraw the sections with the same number of points, or simplify them".into()) };
+    if cs.is_empty() || cs.iter().any(|c| c.ctrl.is_empty() || c.knots.is_empty()) {
+        return Err(mismatch());
+    }
     let p = cs.iter().map(|c| c.degree).max().unwrap();
     for c in cs.iter_mut() {
         if c.degree < p {
             *c = c.elevate(p - c.degree);
         }
     }
-    // union of knots (max multiplicity)
+    // knots that agree to rounding (1e-12) are made bit-equal where no curve holds two distinct values
+    // inside the group, so rounding noise does not become near-zero spans
+    {
+        let mut vals: Vec<f64> = cs.iter().flat_map(|c| c.knots.iter().copied()).collect();
+        vals.sort_by(|a, b| a.total_cmp(b));
+        let mut groups: Vec<(f64, f64)> = vec![];
+        for v in vals {
+            match groups.last_mut() {
+                Some(g) if v - g.1 <= 1e-12 => g.1 = v,
+                _ => groups.push((v, v)),
+            }
+        }
+        for (lo, hi) in groups.into_iter().filter(|g| g.0 != g.1) {
+            for c in cs.iter_mut() {
+                let inside: Vec<f64> = ck_geom::nurbs::basis::distinct_knots(&c.knots).into_iter().filter(|&k| k >= lo && k <= hi).collect();
+                if inside.len() == 1 {
+                    for k in c.knots.iter_mut().filter(|k| **k >= lo && **k <= hi) {
+                        *k = lo;
+                    }
+                }
+            }
+        }
+    }
+    // union of knots, by exact value: a tolerance would merge near-equal knots of one curve into a
+    // multiplicity above the degree (knot insertion is capped there), so the curves could not agree
     let mut all: Vec<(f64, usize)> = vec![];
     for c in &cs {
         for k in ck_geom::nurbs::basis::distinct_knots(&c.knots) {
             let m = ck_geom::nurbs::basis::multiplicity(&c.knots, k, 0.0);
-            match all.iter_mut().find(|(x, _)| (*x - k).abs() < 1e-12) {
+            match all.iter_mut().find(|(x, _)| *x == k) {
                 Some(e) => e.1 = e.1.max(m),
                 None => all.push((k, m)),
             }
@@ -392,7 +421,7 @@ fn compat(mut cs: Vec<BSplineCurve>) -> Vec<BSplineCurve> {
     }
     for c in cs.iter_mut() {
         for &(k, m) in &all {
-            let have = ck_geom::nurbs::basis::multiplicity(&c.knots, k, 1e-12);
+            let have = ck_geom::nurbs::basis::multiplicity(&c.knots, k, 0.0);
             if have < m {
                 *c = c.insert_knot(k, m - have);
             }
@@ -405,7 +434,11 @@ fn compat(mut cs: Vec<BSplineCurve>) -> Vec<BSplineCurve> {
             }
         }
     }
-    cs
+    let n = cs[0].ctrl.len();
+    if cs.iter().any(|c| c.ctrl.len() != n || c.degree != p || c.knots.len() != cs[0].knots.len() || c.weights.as_ref().is_some_and(|w| w.len() != n)) {
+        return Err(mismatch());
+    }
+    Ok(cs)
 }
 
 struct Side {
@@ -419,7 +452,7 @@ struct Side {
 fn side(st: &Stations, j: usize, ends: Ends) -> Result<Side, LoftError> {
     let k = st.chains.len();
     let pieces: Vec<&Geom3> = st.chains.iter().map(|c| &c.pieces[j].g).collect();
-    let cs = compat(pieces.iter().map(|g| g.to_nurbs()).collect());
+    let cs = compat(pieces.iter().map(|g| g.to_nurbs()).collect())?;
     // flat quad of straight pieces (every station's piece in one plane)
     if !ends.any() && pieces.iter().all(|g| g.is_line()) {
         let (a0, b0, a1, b1) = (pieces[0].start(), pieces[0].end(), pieces[k - 1].start(), pieces[k - 1].end());
@@ -535,7 +568,7 @@ fn blend_surface(cs: &[BSplineCurve], ts: &[f64], ends: Ends) -> Result<Surface,
 fn gordon_side(st: &Stations, j: usize, lf: &dyn Fn(f64) -> Vec3, rf: &dyn Fn(f64) -> Vec3, ends: Ends) -> Result<Side, LoftError> {
     let k = st.chains.len();
     let pieces: Vec<&Geom3> = st.chains.iter().map(|c| &c.pieces[j].g).collect();
-    let cs = compat(pieces.iter().map(|g| g.to_nurbs()).collect());
+    let cs = compat(pieces.iter().map(|g| g.to_nurbs()).collect())?;
     let ts = &st.ts;
     let spans = (ck_geom::nurbs::basis::distinct_knots(&cs[0].knots).len() - 1).max(1);
     let n = 24 * spans + 1;
