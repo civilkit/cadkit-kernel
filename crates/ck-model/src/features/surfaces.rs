@@ -374,7 +374,13 @@ pub fn exec_thicken(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Resul
     let i = br.surface_ref(r).ok_or_else(missing)?;
     let t = state.num(f, "thickness", 2.0)?;
     let side = f.raw.get("side").and_then(|s| s.as_str()).and_then(sf::thicken::Side::parse).unwrap_or(sf::thicken::Side::Front);
-    let out = sf::thicken::thicken(&br.surfs[i].1, &f.id, t, side, super::TOL).map_err(|e| coded(e.code, &e.detail))?;
+    let out = sf::thicken::thicken(&br.surfs[i].1, &f.id, t, side, super::TOL).map_err(|e| {
+        let fe = coded(e.code, &e.detail);
+        match &e.limit {
+            Some(l) => super::offset_limit_params(fe, l),
+            None => fe,
+        }
+    })?;
     // pinned: the thickened surface is consumed
     br.drop_surfaces(vec![i]);
     join_solid(br, &f.id, out)
