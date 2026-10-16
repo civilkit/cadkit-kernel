@@ -82,6 +82,8 @@ pub struct Ends {
     /// point end are clamped to the chord direction from the neighbouring station instead of the natural
     /// (zero second derivative) end, which lets the surface overshoot into a dent near the apex.
     pub apex: [Option<f64>; 2],
+    /// `apexTangent` was not given: the natural rails are kept unless they dent or fold (see `apex_natural_is_bad`).
+    pub auto: bool,
 }
 
 impl Ends {
@@ -445,6 +447,7 @@ fn loft_once(feature: &str, profiles: &[ProfileIn], opts: &LoftOpts, strat: Stra
     if st.chains[0].is_point() {
         ends.d0 = None;
         ends.apex[0] = Some(opts.apex_tangent.unwrap_or(1.0).clamp(0.0, 2.0));
+        ends.auto = opts.apex_tangent.is_none();
     }
     if st.chains[k - 1].is_point() {
         ends.d1 = None;
@@ -661,6 +664,54 @@ fn side(st: &Stations, j: usize, ends: Ends) -> Result<Side, LoftError> {
     Ok(Side { surface: Surface::BSpline(Box::new(surf)), cs, plane: None })
 }
 
+/// Do the natural rails (zero second derivative at the apex, the original kernel's behaviour) of a point-ended loft dent
+/// or fold? Every rail's distance from the loft axis (last real section centroid to the apex) must fall monotonically
+/// along the apex span and stay above the straight line to the apex (within 3 percent of its start): a rail below that
+/// line is an indented tip, one that grows again is a fold. Only then are the rails clamped to the chord.
+fn apex_natural_is_bad(st: &Stations, nv: usize) -> bool {
+    let k = st.chains.len();
+    let vp = |s: usize, i: usize| -> Vec3 {
+        let c = &st.chains[s];
+        let n = c.pieces.len();
+        if i < n { c.pieces[i].g.start() } else { c.pieces[n - 1].g.end() }
+    };
+    for (a, nb) in [(0usize, 1usize), (k - 1, k.wrapping_sub(2))] {
+        if k < 3 || !st.chains[a].is_point() || nb >= k {
+            continue;
+        }
+        let apex = st.chains[a].centroid();
+        let cen = st.chains[nb].centroid();
+        let Some(u) = (apex - cen).try_normalize() else { continue };
+        let len = apex.dist(cen);
+        let lat = |p: Vec3| {
+            let d = p - cen;
+            (d - u * d.dot(u)).len()
+        };
+        for i in 0..nv {
+            let pts: Vec<Vec3> = (0..k).map(|s| vp(s, i)).collect();
+            let lat0 = lat(pts[nb]);
+            if lat0 < 1e-9 * len.max(1.0) {
+                continue;
+            }
+            let q: Vec<[f64; 3]> = pts.iter().map(|p| [p.x, p.y, p.z]).collect();
+            let Ok((deg, kn, c)) = smooth::through(&st.ts, &q) else { continue };
+            let Ok(cur) = BSplineCurve::new(deg, kn, c.iter().map(|p| Vec3::new(p[0], p[1], p[2])).collect()) else { continue };
+            let (t0, t1) = (st.ts[nb], st.ts[a]);
+            let mut prev = lat0;
+            for m in 1..32 {
+                let p = cur.eval(t0 + (t1 - t0) * m as f64 / 32.0);
+                let s = ((p - cen).dot(u) / len).clamp(0.0, 1.0);
+                let l = lat(p);
+                if l > prev * (1.0 + 1e-6) + 1e-9 * len || l < lat0 * (1.0 - s) - 0.03 * lat0 {
+                    return true;
+                }
+                prev = l;
+            }
+        }
+    }
+    false
+}
+
 /// The rail derivative at a point (apex) end: the chord from the end to its neighbour station over the parameter
 /// span, times the factor `f` (`apexTangent`). Same sign convention as the end normals (derivative in increasing
 /// loft parameter), so for a point at the start pass `(apex, neighbour)` and for one at the end `(neighbour, apex)`.
@@ -835,6 +886,10 @@ fn build(feature: &str, st: &Stations, profiles: &[ProfileIn], surface: bool, gr
     let n = st.tags.len();
     let closed = st.closed;
     let nv = if closed { n } else { n + 1 };
+    let mut ends = ends;
+    if ends.auto && (ends.apex[0].is_some() || ends.apex[1].is_some()) && !apex_natural_is_bad(st, nv) {
+        ends.apex = [None, None];
+    }
     let Some(&total) = st.ts.last() else {
         return Err(LoftError::failed("the sections have no loft length", "move the sections apart"));
     };
