@@ -112,6 +112,11 @@ pub const PROFILES: &str = "loftProfiles";
 pub const PROFILE_OPEN: &str = "loftProfileOpen";
 pub const PROFILE_NOT_PLANAR: &str = "loftProfileNotPlanar";
 pub const FAILED: &str = "loftFailed";
+/// A section whose polygon crosses itself and is small against the loft length.
+pub const SECTION_TOO_SMALL: &str = "loftSectionTooSmall";
+pub const PROFILE_SELF_INTERSECT: &str = "loftProfileSelfIntersect";
+/// An end section whose size is below this fraction of the loft length becomes a point section.
+pub const SNAP_REL: f64 = 1e-3;
 
 const TOL: f64 = 1e-9;
 
@@ -162,12 +167,154 @@ pub fn marker_samples(p: &ProfileIn) -> Vec<(Vec3, f64)> {
     out
 }
 
-/// Loft through `profiles` (see the module header).
+/// A profile without pieces is a point (apex) end: the point is `frame.o`.
+pub fn is_point_profile(p: &ProfileIn) -> bool {
+    p.segs.is_empty()
+}
+
+/// The station chains; a point profile becomes the chain of its neighbour
+/// shrunk to the apex (same pieces, degree, knots and weights).
+fn chains_of(profiles: &[ProfileIn], opts: &LoftOpts) -> Result<Vec<Chain>, LoftError> {
+    let k = profiles.len();
+    let mut apex: Vec<Option<Vec3>> = profiles.iter().map(|p| is_point_profile(p).then_some(p.frame.o)).collect();
+    let fail = |d: &str| LoftError { code: FAILED.into(), detail: Some(d.into()) };
+    let any_point = apex.iter().any(|a| a.is_some());
+    if any_point {
+        if apex.iter().enumerate().any(|(i, a)| a.is_some() && i != 0 && i != k - 1) {
+            return Err(fail("only the first and the last section can be a point"));
+        }
+        if apex.iter().all(|a| a.is_some()) {
+            return Err(LoftError::new(PROFILES));
+        }
+        if opts.surface {
+            return Err(fail("a point section needs a solid loft"));
+        }
+        if !opts.guides.is_empty() {
+            return Err(fail("guide curves are not supported with a point section"));
+        }
+    }
+    let mut chains: Vec<Option<Chain>> = vec![];
+    for (p, a) in profiles.iter().zip(&apex) {
+        chains.push(if a.is_some() { None } else { Some(chain_of(p)?) });
+    }
+    // a tiny end section (below SNAP_REL of the loft length) is a point in
+    // practice: its cap loop would be degenerate. Snap it to its centroid.
+    if !opts.surface && opts.guides.is_empty() && k >= 2 {
+        let cen = |i: usize| chains[i].as_ref().map(|c| c.centroid());
+        let (c0, c1) = (cen(0).or(apex[0]), cen(k - 1).or(apex[k - 1]));
+        if let (Some(c0), Some(c1)) = (c0, c1) {
+            let length = c0.dist(c1);
+            for i in [0, k - 1] {
+                let Some(c) = &chains[i] else { continue };
+                let pts: Vec<Vec3> = marker_samples_of(c);
+                let (mut lo, mut hi) = (pts[0], pts[0]);
+                for q in &pts {
+                    lo = Vec3::new(lo.x.min(q.x), lo.y.min(q.y), lo.z.min(q.z));
+                    hi = Vec3::new(hi.x.max(q.x), hi.y.max(q.y), hi.z.max(q.z));
+                }
+                if lo.dist(hi) < SNAP_REL * length {
+                    let others = (0..k).filter(|&j| j != i).all(|j| apex[j].is_some());
+                    if !others {
+                        apex[i] = Some(c.centroid());
+                    }
+                }
+            }
+        }
+    }
+    for i in 0..k {
+        if apex[i].is_some() {
+            chains[i] = None;
+        }
+    }
+    let n = chains.iter().flatten().map(|c| c.pieces.len()).max().unwrap_or(1).max(2);
+    let mut out = vec![];
+    for i in 0..k {
+        out.push(match (&chains[i], apex[i]) {
+            (Some(c), _) => c.clone(),
+            (None, a) => {
+                let nb = if i == 0 { 1 } else { k - 2 };
+                let mut c = match &chains[nb] {
+                    Some(c) => c.clone(),
+                    None => chain_of(&profiles[nb])?,
+                };
+                c.split_to(n);
+                c.collapsed(a.unwrap_or(profiles[i].frame.o))
+            }
+        });
+    }
+    if !opts.surface {
+        let len = out[0].centroid().dist(out[k - 1].centroid());
+        for c in out.iter().filter(|c| !c.is_point()) {
+            if let Some(size) = self_intersection(c) {
+                let code = if size < 1e-2 * len { SECTION_TOO_SMALL } else { PROFILE_SELF_INTERSECT };
+                return Err(LoftError { code: code.into(), detail: Some("a section crosses itself; make it a simple closed curve (a section much smaller than the loft can be a point section: use a sketch with one point)".into()) });
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn marker_samples_of(c: &Chain) -> Vec<Vec3> {
+    let mut v = vec![];
+    for p in &c.pieces {
+        for k in 0..=8 {
+            v.push(p.g.at(k as f64 / 8.0));
+        }
+    }
+    v
+}
+
+/// Does the closed sample polygon of `c` cross itself? Returns the section size
+/// (bounding-box diagonal) when it does.
+fn self_intersection(c: &Chain) -> Option<f64> {
+    let pts = marker_samples_of(c);
+    let n = c.normal().try_normalize()?;
+    let (ax, ay) = {
+        let a = if n.x.abs() < 0.9 { Vec3::new(1.0, 0.0, 0.0) } else { Vec3::new(0.0, 1.0, 0.0) };
+        let x = n.cross(a).try_normalize()?;
+        (x, n.cross(x))
+    };
+    // drop the duplicated piece joins
+    let mut p2: Vec<(f64, f64)> = vec![];
+    for (i, q) in pts.iter().enumerate() {
+        if i % 9 == 8 && i + 1 < pts.len() {
+            continue;
+        }
+        p2.push((q.dot(ax), q.dot(ay)));
+    }
+    p2.pop();
+    let m = p2.len();
+    let (mut lo, mut hi) = ((f64::INFINITY, f64::INFINITY), (f64::NEG_INFINITY, f64::NEG_INFINITY));
+    for q in &p2 {
+        lo = (lo.0.min(q.0), lo.1.min(q.1));
+        hi = (hi.0.max(q.0), hi.1.max(q.1));
+    }
+    let size = ((hi.0 - lo.0).powi(2) + (hi.1 - lo.1).powi(2)).sqrt();
+    let cross = |o: (f64, f64), a: (f64, f64), b: (f64, f64)| (a.0 - o.0) * (b.1 - o.1) - (a.1 - o.1) * (b.0 - o.0);
+    let eps = 1e-9 * size * size;
+    for i in 0..m {
+        let (a, b) = (p2[i], p2[(i + 1) % m]);
+        for j in i + 2..m {
+            if i == 0 && j == m - 1 {
+                continue;
+            }
+            let (c0, d) = (p2[j], p2[(j + 1) % m]);
+            let (d1, d2, d3, d4) = (cross(a, b, c0), cross(a, b, d), cross(c0, d, a), cross(c0, d, b));
+            if ((d1 > eps && d2 < -eps) || (d1 < -eps && d2 > eps)) && ((d3 > eps && d4 < -eps) || (d3 < -eps && d4 > eps)) {
+                return Some(size);
+            }
+        }
+    }
+    None
+}
+
+/// Loft through `profiles` (see the module header). A profile with no
+/// `segs` is a point: the loft converges to `frame.o` (a pole; no cap).
 pub fn loft(feature: &str, profiles: &[ProfileIn], opts: &LoftOpts) -> Result<LoftOut, LoftError> {
     if profiles.len() < 2 {
         return Err(LoftError::new(PROFILES));
     }
-    let chains: Vec<Chain> = profiles.iter().map(chain_of).collect::<Result<_, _>>()?;
+    let chains = chains_of(profiles, opts)?;
     // different planes: the profile frames must not all coincide
     let f0 = &profiles[0].frame;
     let same_plane = profiles.iter().all(|p| {
@@ -209,6 +356,12 @@ pub fn loft(feature: &str, profiles: &[ProfileIn], opts: &LoftOpts) -> Result<Lo
             n = -n;
         }
         ends.d1 = Some(n * t);
+    }
+    if st.chains[0].is_point() {
+        ends.d0 = None;
+    }
+    if st.chains[k - 1].is_point() {
+        ends.d1 = None;
     }
     let starts = st.chains.iter().map(|c| c.pieces[0].g.start()).collect();
     let body = build(feature, &st, profiles, opts.surface, &grails, ends)?;
@@ -511,17 +664,27 @@ fn build(feature: &str, st: &Stations, profiles: &[ProfileIn], surface: bool, gr
     let faces: Vec<FaceId> = (0..n)
         .map(|j| b.add_face(shell, sides[j].surface.clone(), true, FaceName::side(feature, &st.tags[j])))
         .collect();
+    // a point end (apex) has no cap, no end edges, and one shared vertex
+    let (pt0, pt1) = (st.chains[0].is_point(), st.chains[k - 1].is_point());
     let caps = if surface {
         None
     } else {
         let fr0 = profiles[0].frame;
         let fr1 = profiles[profiles.len() - 1].frame;
-        let f0 = b.add_face(shell, Surface::Plane { frame: fr0 }, true, FaceName::cap(feature, 0, None));
-        let f1 = b.add_face(shell, Surface::Plane { frame: fr1 }, true, FaceName::cap(feature, 1, None));
+        let f0 = (!pt0).then(|| b.add_face(shell, Surface::Plane { frame: fr0 }, true, FaceName::cap(feature, 0, None)));
+        let f1 = (!pt1).then(|| b.add_face(shell, Surface::Plane { frame: fr1 }, true, FaceName::cap(feature, 1, None)));
         Some((f0, f1, fr0, fr1))
     };
-    let v0: Vec<VertexId> = (0..nv).map(|i| b.add_vertex(vp(0, i))).collect();
-    let v1: Vec<VertexId> = (0..nv).map(|i| b.add_vertex(vp(k - 1, i))).collect();
+    let ends_of = |b: &mut Body, s: usize, pt: bool| -> Vec<VertexId> {
+        if pt {
+            let v = b.add_vertex(vp(s, 0));
+            vec![v; nv]
+        } else {
+            (0..nv).map(|i| b.add_vertex(vp(s, i))).collect()
+        }
+    };
+    let v0: Vec<VertexId> = ends_of(&mut b, 0, pt0);
+    let v1: Vec<VertexId> = ends_of(&mut b, k - 1, pt1);
     // rails
     let mut rails: Vec<(EdgeId, bool)> = vec![];
     for i in 0..nv {
@@ -545,11 +708,11 @@ fn build(feature: &str, st: &Stations, profiles: &[ProfileIn], surface: bool, gr
     };
     let mut e0 = vec![];
     for j in 0..n {
-        e0.push(cap_edge(&mut b, 0, j, v0[j], v0[(j + 1) % nv.max(1)]));
+        e0.push((!pt0).then(|| cap_edge(&mut b, 0, j, v0[j], v0[(j + 1) % nv.max(1)])));
     }
     let mut e1 = vec![];
     for j in 0..n {
-        e1.push(cap_edge(&mut b, k - 1, j, v1[j], v1[(j + 1) % nv.max(1)]));
+        e1.push((!pt1).then(|| cap_edge(&mut b, k - 1, j, v1[j], v1[(j + 1) % nv.max(1)])));
     }
     // side loops
     for j in 0..n {
@@ -557,16 +720,16 @@ fn build(feature: &str, st: &Stations, profiles: &[ProfileIn], surface: bool, gr
         let f = faces[j];
         let jn = if closed { (j + 1) % n } else { j + 1 };
         let lp = b.add_loop(f);
-        let len0 = e0[j].3 - e0[j].2;
-        let len1 = e1[j].3 - e1[j].2;
-        let (pc_c0, pc_c1, pc_r0, pc_r1): (Curve2, Curve2, Curve2, Curve2);
+        let len0 = e0[j].as_ref().map_or(1.0, |e| e.3 - e.2);
+        let len1 = e1[j].as_ref().map_or(1.0, |e| e.3 - e.2);
+        let (pc_c0, pc_c1, pc_r0, pc_r1): (Option<Curve2>, Option<Curve2>, Curve2, Curve2);
         if let Some(fr) = sd.plane {
             let line_pc = |c: &Curve| match c {
                 Curve::Line { o, d } => plane_line_pc(&fr, *o, *d),
                 _ => unreachable!(),
             };
-            pc_c0 = line_pc(&e0[j].1);
-            pc_c1 = line_pc(&e1[j].1);
+            pc_c0 = e0[j].as_ref().map(|e| line_pc(&e.1));
+            pc_c1 = e1[j].as_ref().map(|e| line_pc(&e.1));
             let rc = |i: usize| -> Curve2 {
                 let (e, _) = rails[i];
                 match &b.edge(e).curve {
@@ -578,10 +741,10 @@ fn build(feature: &str, st: &Stations, profiles: &[ProfileIn], surface: bool, gr
             pc_r1 = rc(jn);
         } else {
             let (vlo, vhi) = (0.0, total);
-            let du0 = if matches!(e0[j].1, Curve::Line { .. }) { 1.0 / len0 } else { 1.0 };
-            let du1 = if matches!(e1[j].1, Curve::Line { .. }) { 1.0 / len1 } else { 1.0 };
-            pc_c0 = Curve2::Line { o: Vec2::new(0.0, vlo), d: Vec2::new(du0, 0.0) };
-            pc_c1 = Curve2::Line { o: Vec2::new(0.0, vhi), d: Vec2::new(du1, 0.0) };
+            let du0 = if e0[j].as_ref().map_or(false, |e| matches!(e.1, Curve::Line { .. })) { 1.0 / len0 } else { 1.0 };
+            let du1 = if e1[j].as_ref().map_or(false, |e| matches!(e.1, Curve::Line { .. })) { 1.0 / len1 } else { 1.0 };
+            pc_c0 = Some(Curve2::Line { o: Vec2::new(0.0, vlo), d: Vec2::new(du0, 0.0) });
+            pc_c1 = Some(Curve2::Line { o: Vec2::new(0.0, vhi), d: Vec2::new(du1, 0.0) });
             let rpc = |u: f64, i: usize, b: &Body| -> Curve2 {
                 let (e, is_line) = rails[i];
                 let ed = b.edge(e);
@@ -591,9 +754,13 @@ fn build(feature: &str, st: &Stations, profiles: &[ProfileIn], surface: bool, gr
             pc_r0 = rpc(0.0, j, &b);
             pc_r1 = rpc(1.0, jn, &b);
         }
-        b.add_coedge(lp, e0[j].0, false, Some(pc_c0));
+        if let Some(e) = &e0[j] {
+            b.add_coedge(lp, e.0, false, pc_c0);
+        }
         b.add_coedge(lp, rails[jn].0, false, Some(pc_r1));
-        b.add_coedge(lp, e1[j].0, true, Some(pc_c1));
+        if let Some(e) = &e1[j] {
+            b.add_coedge(lp, e.0, true, pc_c1);
+        }
         b.add_coedge(lp, rails[j].0, true, Some(pc_r0));
     }
     // caps
@@ -603,17 +770,23 @@ fn build(feature: &str, st: &Stations, profiles: &[ProfileIn], surface: bool, gr
             Curve::BSpline(bs) => Some(Curve2::BSpline(bs.map(|p| Vec2::new((p - fr.o).dot(fr.x), (p - fr.o).dot(fr.y))))),
             _ => ck_topo::make::plane_pcurve(fr, c),
         };
-        let l0 = b.add_loop(f0);
-        for j in (0..n).rev() {
-            b.add_coedge(l0, e0[j].0, true, pc(&fr0, &e0[j].1));
+        if let Some(f0) = f0 {
+            let l0 = b.add_loop(f0);
+            for j in (0..n).rev() {
+                let e = e0[j].as_ref().unwrap();
+                b.add_coedge(l0, e.0, true, pc(&fr0, &e.1));
+            }
+            let a = ck_topo::orient::loop_uv_area(&b, l0);
+            b.faces[f0.idx()].sense = a >= 0.0;
         }
-        let l1 = b.add_loop(f1);
-        for j in 0..n {
-            b.add_coedge(l1, e1[j].0, false, pc(&fr1, &e1[j].1));
-        }
-        for (f, l) in [(f0, l0), (f1, l1)] {
-            let a = ck_topo::orient::loop_uv_area(&b, l);
-            b.faces[f.idx()].sense = a >= 0.0;
+        if let Some(f1) = f1 {
+            let l1 = b.add_loop(f1);
+            for j in 0..n {
+                let e = e1[j].as_ref().unwrap();
+                b.add_coedge(l1, e.0, false, pc(&fr1, &e.1));
+            }
+            let a = ck_topo::orient::loop_uv_area(&b, l1);
+            b.faces[f1.idx()].sense = a >= 0.0;
         }
     }
     // sheets keep one name for all pieces of an entity (oracle: four
@@ -656,6 +829,54 @@ mod tests {
             })
             .collect();
         ProfileIn { frame: fr, closed: true, segs }
+    }
+
+    fn point_profile(y: f64) -> ProfileIn {
+        let mut fr = frame_at(y);
+        fr.o = Vec3::new(0.0, y, 0.0);
+        ProfileIn { frame: fr, closed: true, segs: vec![] }
+    }
+
+    fn check_closed(b: &Body) {
+        assert!(ck_topo::check::check(b, 1e-6).is_empty(), "{:?}", ck_topo::check::check(b, 1e-6));
+    }
+
+    /// Circle -> point is a cone: V = pi r^2 h / 3; two faces (lateral halves) + base cap.
+    #[test]
+    fn circle_to_point_is_a_cone() {
+        for flip in [false, true] {
+            let ps = if flip { [point_profile(0.0), circle_profile(30.0, 0.0, 8.0)] } else { [circle_profile(0.0, 0.0, 8.0), point_profile(30.0)] };
+            let out = loft("F4", &ps, &LoftOpts::default()).unwrap();
+            check_closed(&out.body);
+            let m = ck_topo::mass::mass_props(&out.body);
+            let want = std::f64::consts::PI * 64.0 * 30.0 / 3.0;
+            assert!((m.volume - want).abs() < 1e-6 * want, "{} vs {}", m.volume, want);
+            assert_eq!(out.body.num_faces(), 3);
+        }
+    }
+
+    /// Square -> point is a pyramid: V = a^2 h / 3, 4 planar triangles + base.
+    #[test]
+    fn square_to_point_is_a_pyramid() {
+        let out = loft("F4", &[square_profile(0.0, 5.0), point_profile(12.0)], &LoftOpts::default()).unwrap();
+        check_closed(&out.body);
+        let m = ck_topo::mass::mass_props(&out.body);
+        let want = 100.0 * 12.0 / 3.0;
+        assert!((m.volume - want).abs() < 1e-6 * want, "{} vs {}", m.volume, want);
+        assert_eq!(out.body.num_faces(), 5);
+        assert_eq!(out.body.edge_ids().count(), 8);
+    }
+
+    /// Point -> circle -> point (a spindle through three stations) stays closed.
+    #[test]
+    fn point_both_ends() {
+        let ps = [point_profile(0.0), circle_profile(10.0, 0.0, 6.0), point_profile(20.0)];
+        let out = loft("F4", &ps, &LoftOpts::default()).unwrap();
+        check_closed(&out.body);
+        let m = ck_topo::mass::mass_props(&out.body);
+        assert!(m.volume > 0.0 && m.volume < std::f64::consts::PI * 36.0 * 20.0, "{}", m.volume);
+        let e = loft("F4", &[point_profile(0.0), circle_profile(10.0, 0.0, 6.0), point_profile(20.0), circle_profile(30.0, 0.0, 6.0)], &LoftOpts::default());
+        assert!(e.is_err());
     }
 
     /// Guided loft (oracle `loftGuideLine`: 7 faces / 15 edges, volume 7000 for a straight
