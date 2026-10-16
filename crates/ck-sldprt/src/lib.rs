@@ -63,23 +63,48 @@ pub fn import_sldprt_with(bytes: &[u8], limits: &Limits) -> Result<SldprtImport,
     ts.retain(|t| rank(t) < 9);
     ts.sort_by(|a, b| rank(a).cmp(&rank(b)).then(b.data.len().cmp(&a.data.len())));
     let mut first_err: Option<SldprtError> = None;
+    let note_err = |e: SldprtError, first_err: &mut Option<SldprtError>| {
+        if first_err.is_none() {
+            *first_err = Some(e);
+        }
+    };
+    // 1. the live partition (most faces wins; the others only if it fails)
+    let mut parts: Vec<(ir::Ir, usize, String)> = vec![];
     for t in &ts {
         let attempt = (|| {
             let x = xt::read_xt(&t.data, limits)?;
             let ir = ir::extract(&x, limits)?;
-            let built = build::build(&ir, limits)?;
-            Ok::<_, SldprtError>((built, ir.schema.clone(), x.nodes.len()))
+            Ok::<_, SldprtError>((ir, x.nodes.len()))
         })();
         match attempt {
-            Ok((built, schema, nodes)) => {
-                return Ok(SldprtImport { body: built.body, solids: built.solids, container: c.kind, schema, stream: t.stream.clone(), unit_scale: build::SCALE, approx: built.approx, notes: built.notes, nodes });
-            }
-            Err(e) => {
-                // an empty partition (no solid) is not an error worth reporting if a later transmit works
-                if first_err.is_none() || (first_err.as_ref().map_or(false, |f| f.code == "unsupported.body" || f.code == "xt.empty") && e.code != "unsupported.body" && e.code != "xt.empty") {
-                    first_err = Some(e);
+            Ok((ir, n)) => {
+                if t.kind == TransmitKind::Part {
+                    parts.push((ir, n, t.stream.clone()));
+                    continue;
+                }
+                if ir.solid_faces() == 0 {
+                    continue;
+                }
+                match build::build(&[&ir], limits) {
+                    Ok(built) => {
+                        return Ok(SldprtImport { body: built.body, solids: built.solids, container: c.kind, schema: ir.schema.clone(), stream: t.stream.clone(), unit_scale: build::SCALE, approx: built.approx, notes: built.notes, nodes: n });
+                    }
+                    Err(e) => note_err(e, &mut first_err),
                 }
             }
+            Err(e) => note_err(e, &mut first_err),
+        }
+    }
+    // 2. an empty partition: solid bodies of the free-standing part transmits (imported bodies)
+    let irs: Vec<&ir::Ir> = parts.iter().filter(|p| p.0.solid_faces() > 0).map(|p| &p.0).collect();
+    if !irs.is_empty() {
+        match build::build(&irs, limits) {
+            Ok(mut built) => {
+                built.notes.push(format!("live partition is empty; {} solid feature body transmit(s) taken", irs.len()));
+                let n = parts.iter().map(|p| p.1).sum();
+                return Ok(SldprtImport { body: built.body, solids: built.solids, container: c.kind, schema: irs[0].schema.clone(), stream: parts[0].2.clone(), unit_scale: build::SCALE, approx: built.approx, notes: built.notes, nodes: n });
+            }
+            Err(e) => note_err(e, &mut first_err),
         }
     }
     Err(first_err.unwrap_or_else(|| SldprtError::new("container.no_parasolid", "no usable Parasolid transmit")))

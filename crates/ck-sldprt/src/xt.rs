@@ -438,7 +438,7 @@ fn read_value(r: &mut Rd, fld: &Field, count: usize) -> R<Val> {
             if scalar { Val::F(r.f64()?) } else { Val::AF((0..n).map(|_| r.f64()).collect::<R<_>>()?) }
         }
         b'v' | b'h' => {
-            let mut one = |r: &mut Rd| -> R<[f64; 3]> { Ok([r.f64()?, r.f64()?, r.f64()?]) };
+            let one = |r: &mut Rd| -> R<[f64; 3]> { Ok([r.f64()?, r.f64()?, r.f64()?]) };
             if scalar { Val::V3(one(r)?) } else { Val::AV((0..n).map(|_| one(r)).collect::<R<_>>()?) }
         }
         b'i' => {

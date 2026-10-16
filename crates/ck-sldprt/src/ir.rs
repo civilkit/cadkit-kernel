@@ -169,6 +169,13 @@ pub struct Ir {
     pub notes: Vec<String>,
 }
 
+impl Ir {
+    /// Faces in solid regions of solid bodies.
+    pub fn solid_faces(&self) -> usize {
+        self.bodies.iter().filter(|b| b.kind == BodyKind::Solid).flat_map(|b| &b.regions).filter(|r| r.solid).flat_map(|r| &r.shells).map(|s| s.faces.len()).sum()
+    }
+}
+
 struct Ex<'a> {
     xt: &'a XtFile,
     ir: Ir,

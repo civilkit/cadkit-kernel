@@ -5,8 +5,10 @@
 //! derived from the vertices on the carrier curve and the fin senses are mapped to coedge reversals.
 //!
 //! Extra passes: void-region skip (done in the IR: only solid regions' shells are read), shell orientation (outer
-//! shell outward, cavity shells inward), unit scaling (file metres -> mm), approximated carriers recorded with their
-//! maximum deviation.
+//! shell outward, cavity shells inward), unit scaling (file metres -> mm), edge splitting where a periodic face
+//! needs a seam between two loops that have no vertex at a common angle (a first pass records the split points,
+//! the second pass builds with them), full sphere / torus faces, cone apex seams, approximated carriers reported
+//! with their maximum deviation.
 
 use crate::error::{Limits, SldprtError, R};
 use crate::ir::*;
@@ -20,7 +22,7 @@ use ck_geom::surface::Surface;
 use ck_geom::{frame_from, Vec2, Vec3};
 use ck_topo::body::{Body, EdgeId, FaceId, FaceName, ShellId, VertexId};
 use std::collections::HashMap;
-use std::f64::consts::{PI, TAU};
+use std::f64::consts::{FRAC_PI_2, PI, TAU};
 use std::rc::Rc;
 
 /// Metres -> millimetres.
@@ -75,8 +77,29 @@ struct FwCurve {
 #[derive(Clone)]
 struct Ce {
     edge: EdgeId,
+    /// IR edge this coedge came from (`usize::MAX` for synthesised seams).
+    ir_edge: usize,
     rev: bool,
     pole_jump: bool,
+    /// Explicit pcurve (synthesised periodic loops).
+    pc: Option<Curve2>,
+}
+
+impl Ce {
+    fn new(edge: EdgeId, rev: bool) -> Ce {
+        Ce { edge, ir_edge: usize::MAX, rev, pole_jump: false, pc: None }
+    }
+    fn jump(edge: EdgeId, rev: bool) -> Ce {
+        Ce { edge, ir_edge: usize::MAX, rev, pole_jump: true, pc: None }
+    }
+}
+
+/// An IR edge as built: kernel edges in increasing parameter order (several when split).
+#[derive(Clone)]
+struct EdgeInfo {
+    segs: Vec<EdgeId>,
+    /// The XT edge direction is opposite to our increasing parameter.
+    flip: bool,
 }
 
 struct B<'a> {
@@ -85,56 +108,109 @@ struct B<'a> {
     curves: HashMap<usize, Rc<FwCurve>>,
     surfaces: HashMap<usize, Rc<Surface>>,
     verts: HashMap<usize, (VertexId, Vec3)>,
-    edges: HashMap<usize, (EdgeId, bool)>,
+    edges: HashMap<usize, EdgeInfo>,
     approx: Vec<Approx>,
     notes: Vec<String>,
-    nface: usize,
+    /// Split points (mm) per IR edge, from the previous pass.
+    splits: HashMap<usize, Vec<Vec3>>,
+    /// Split points this pass needed.
+    need_split: Vec<(usize, Vec3)>,
 }
 
-pub fn build(ir: &Ir, limits: &Limits) -> R<Built> {
+/// Build the kernel body of one or more IRs (all solid bodies end up as lumps of one body).
+pub fn build(irs: &[&Ir], limits: &Limits) -> R<Built> {
     let _ = limits;
-    let mut b = B { ir, body: Body::new(), curves: HashMap::new(), surfaces: HashMap::new(), verts: HashMap::new(), edges: HashMap::new(), approx: vec![], notes: vec![], nface: 0 };
-    let mut solids = 0usize;
-    let mut skipped_kinds: Vec<String> = vec![];
-    for body in &ir.bodies {
-        if body.kind != BodyKind::Solid {
-            skipped_kinds.push(format!("body #{} is a {:?} body (not imported)", body.id, body.kind));
-            continue;
-        }
-        for reg in &body.regions {
-            if !reg.solid || reg.shells.iter().all(|s| s.faces.is_empty()) {
-                continue; // void region: the infinite outside
+    let mut splits: HashMap<usize, Vec<Vec3>> = HashMap::new();
+    let mut last_err = None;
+    for pass in 0..3 {
+        // every IR keeps its own split table (edge indices are per IR)
+        let mut need_all: Vec<Vec<(usize, Vec3)>> = vec![];
+        let mut body = Body::new();
+        let (mut solids, mut approx, mut notes) = (0usize, vec![], vec![]);
+        let mut err: Option<SldprtError> = None;
+        for (k, ir) in irs.iter().enumerate() {
+            let mut b = B { ir, body, curves: HashMap::new(), surfaces: HashMap::new(), verts: HashMap::new(), edges: HashMap::new(), approx: vec![], notes: vec![], splits: filter_splits(&splits, k), need_split: vec![] };
+            let r = b.run(&mut solids);
+            need_all.push(std::mem::take(&mut b.need_split));
+            approx.extend(b.approx);
+            notes.extend(b.notes);
+            body = b.body;
+            if let Err(e) = r {
+                err = Some(e);
+                break;
             }
-            let lump = b.body.add_lump();
-            let mut shells: Vec<(ShellId, f64)> = vec![];
-            for sh in &reg.shells {
-                if sh.faces.is_empty() {
-                    continue;
-                }
-                let s = b.body.add_shell(lump);
-                let mut lo = Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
-                let mut hi = Vec3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
-                for f in &sh.faces {
-                    let pts = b.face(s, f)?;
-                    for p in pts {
-                        lo = Vec3::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z));
-                        hi = Vec3::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z));
-                    }
-                }
-                shells.push((s, if lo.x <= hi.x { lo.dist(hi) } else { 0.0 }));
-            }
-            b.orient_shells(&shells);
-            solids += 1;
         }
+        let any_need = need_all.iter().any(|n| !n.is_empty());
+        if !any_need {
+            if let Some(e) = err {
+                return Err(e);
+            }
+            if body.num_faces() == 0 {
+                return Err(SldprtError::new("unsupported.body", format!("no solid faces imported ({})", notes.join("; "))));
+            }
+            return Ok(Built { body, solids, approx, notes });
+        }
+        for (k, need) in need_all.into_iter().enumerate() {
+            for (e, p) in need {
+                let v = splits.entry(k * 1_000_000_000 + e).or_default();
+                if !v.iter().any(|q| q.dist(p) < 1e-6) {
+                    v.push(p);
+                }
+            }
+        }
+        last_err = err;
+        let _ = pass;
     }
-    b.notes.extend(skipped_kinds);
-    if b.body.num_faces() == 0 {
-        return Err(SldprtError::new("unsupported.body", format!("no solid faces imported ({})", b.notes.join("; "))));
+    Err(last_err.unwrap_or_else(|| uerr("edge splitting for periodic faces did not converge")))
+}
+
+fn filter_splits(all: &HashMap<usize, Vec<Vec3>>, k: usize) -> HashMap<usize, Vec<Vec3>> {
+    all.iter().filter(|(e, _)| **e / 1_000_000_000 == k).map(|(e, v)| (*e % 1_000_000_000, v.clone())).collect()
+}
+
+fn bbox_of(pts: &[Vec3]) -> (Vec3, Vec3) {
+    let mut lo = Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
+    let mut hi = Vec3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for p in pts {
+        lo = Vec3::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z));
+        hi = Vec3::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z));
     }
-    Ok(Built { body: b.body, solids, approx: b.approx, notes: b.notes })
+    (lo, hi)
 }
 
 impl<'a> B<'a> {
+    fn run(&mut self, solids: &mut usize) -> R<()> {
+        let ir = self.ir;
+        for body in &ir.bodies {
+            if body.kind != BodyKind::Solid {
+                self.notes.push(format!("body #{} is a {:?} body (not imported)", body.id, body.kind));
+                continue;
+            }
+            for reg in &body.regions {
+                if !reg.solid || reg.shells.iter().all(|s| s.faces.is_empty()) {
+                    continue; // void region: the infinite outside
+                }
+                let lump = self.body.add_lump();
+                let mut shells: Vec<(ShellId, f64)> = vec![];
+                for sh in &reg.shells {
+                    if sh.faces.is_empty() {
+                        continue;
+                    }
+                    let s = self.body.add_shell(lump);
+                    let mut all: Vec<Vec3> = vec![];
+                    for f in &sh.faces {
+                        all.extend(self.face(s, f)?);
+                    }
+                    let (lo, hi) = bbox_of(&all);
+                    shells.push((s, if lo.x <= hi.x { lo.dist(hi) } else { 0.0 }));
+                }
+                self.orient_shells(&shells);
+                *solids += 1;
+            }
+        }
+        Ok(())
+    }
+
     // ------------------------------------------------------------ orientation
     /// Largest shell outward (positive volume), the others (cavities) inward.
     fn orient_shells(&mut self, shells: &[(ShellId, f64)]) {
@@ -173,6 +249,10 @@ impl<'a> B<'a> {
         fit::interpolate(pts, deg, Param::ChordLength).map_err(|e| gerr(format!("curve fit failed: {e}")))
     }
 
+    fn is_closed(bs: &BSplineCurve) -> bool {
+        bs.start().dist(bs.end()) < 1e-6 * (1.0 + bs.start().len())
+    }
+
     fn curve(&mut self, ci: usize) -> R<Rc<FwCurve>> {
         if let Some(c) = self.curves.get(&ci) {
             return Ok(c.clone());
@@ -201,7 +281,7 @@ impl<'a> B<'a> {
             }
             IrCurve::BCurve(nc) => {
                 let bs = self.bspline_curve(nc)?;
-                let closed = bs.start().dist(bs.end()) < 1e-6 * (1.0 + bs.start().len());
+                let closed = Self::is_closed(&bs);
                 FwCurve { curve: Curve::BSpline(bs), period: None, dir_inc: sense, closed_spline: closed }
             }
             IrCurve::Trimmed { basis, t1, t2, .. } => {
@@ -212,8 +292,9 @@ impl<'a> B<'a> {
             IrCurve::Intersection { pts, surfaces } => {
                 let p: Vec<Vec3> = pts.iter().map(|q| pt(*q)).collect();
                 let bs = self.fit_points(&p)?;
+                let closed = Self::is_closed(&bs);
                 let curve = Curve::BSpline(bs);
-                // deviation from the two surfaces at 48 samples
+                // deviation from the support surfaces at 48 samples
                 let mut worst = 0.0f64;
                 let mut checked = 0;
                 for s in surfaces.iter().flatten() {
@@ -227,7 +308,7 @@ impl<'a> B<'a> {
                     }
                 }
                 self.approx.push(Approx { what: format!("intersection curve #{} ({} chart points, {} support surfaces checked)", node.id, pts.len(), checked), max_err_mm: worst });
-                FwCurve { curve, period: None, dir_inc: true, closed_spline: false }
+                FwCurve { curve, period: None, dir_inc: true, closed_spline: closed }
             }
             IrCurve::Sp { surface, uv } => {
                 let (Some(si), Some(uv)) = (surface, uv) else { return Err(gerr("SP-curve without surface or parameter curve")) };
@@ -243,11 +324,9 @@ impl<'a> B<'a> {
                 .map_err(|e| gerr(format!("bad SP-curve: {e}")))?;
                 let (t0, t1) = c2.domain();
                 let n = (8 * uv.ctrl.len()).clamp(32, 400);
-                let ts: Vec<f64> = (0..=n).map(|i| t0 + (t1 - t0) * i as f64 / n as f64).collect();
-                let pts: Vec<Vec3> = ts
-                    .iter()
-                    .map(|&t| {
-                        let q = c2.eval(t);
+                let pts: Vec<Vec3> = (0..=n)
+                    .map(|i| {
+                        let q = c2.eval(t0 + (t1 - t0) * i as f64 / n as f64);
                         sf.eval(q.x, q.y)
                     })
                     .collect();
@@ -258,6 +337,7 @@ impl<'a> B<'a> {
                     }
                 }
                 let bs = self.fit_points(&clean)?;
+                let closed = Self::is_closed(&bs);
                 let curve = Curve::BSpline(bs);
                 let mut worst = 0.0f64;
                 let (a, b) = curve.range();
@@ -266,7 +346,7 @@ impl<'a> B<'a> {
                     worst = worst.max(sf.distance(curve.eval(t)));
                 }
                 self.approx.push(Approx { what: format!("SP-curve #{} sampled through {} points", node.id, clean.len()), max_err_mm: worst });
-                FwCurve { curve, period: None, dir_inc: true, closed_spline: false }
+                FwCurve { curve, period: None, dir_inc: true, closed_spline: closed }
             }
             IrCurve::Unsupported(m) => return Err(uerr(format!("curve #{}: {m}", node.id))),
         };
@@ -358,17 +438,18 @@ impl<'a> B<'a> {
         (id, p)
     }
 
-    /// (our edge, flip): `flip` = the XT edge direction is opposite to our increasing parameter.
-    fn edge(&mut self, ei: usize) -> R<(EdgeId, bool)> {
+    /// Build an IR edge (split where the previous pass asked for it).
+    fn edge(&mut self, ei: usize) -> R<EdgeInfo> {
         if let Some(e) = self.edges.get(&ei) {
-            return Ok(*e);
+            return Ok(e.clone());
         }
         let e = &self.ir.edges[ei];
         let eid = e.id;
         let ci = e.curve.or(e.fin_curve).ok_or_else(|| terr(format!("edge #{eid} has neither a curve nor fin curves")))?;
         let fc = self.curve(ci)?;
         let curve = &fc.curve;
-        let res = match (e.start, e.end) {
+        // (lo, hi, vertex at lo, vertex at hi, flip)
+        let (lo, hi, v_lo, v_hi, flip): (f64, f64, VertexId, VertexId, bool) = match (e.start, e.end) {
             (Some(sv), Some(ev)) => {
                 let (vs, ps) = self.vertex(sv);
                 let (ve, pe) = self.vertex(ev);
@@ -387,24 +468,24 @@ impl<'a> B<'a> {
                         while end <= a + 1e-9 {
                             end += per;
                         }
-                        (self.body.add_edge(curve.clone(), a, end, vs, ve), false)
+                        (a, end, vs, ve, false)
                     } else {
                         let mut end = a;
                         while end <= b + 1e-9 {
                             end += per;
                         }
-                        (self.body.add_edge(curve.clone(), b, end, ve, vs), true)
+                        (b, end, ve, vs, true)
                     }
                 } else if tie {
                     if !fc.closed_spline {
                         return Err(terr(format!("edge #{eid}: both ends at one vertex on an open curve")));
                     }
                     let (d0, d1) = curve.range();
-                    (self.body.add_edge(curve.clone(), d0, d1, vs, ve), !fc.dir_inc)
+                    (d0, d1, vs, ve, !fc.dir_inc)
                 } else if ta <= tb {
-                    (self.body.add_edge(curve.clone(), ta, tb, vs, ve), false)
+                    (ta, tb, vs, ve, false)
                 } else {
-                    (self.body.add_edge(curve.clone(), tb, ta, ve, vs), true)
+                    (tb, ta, ve, vs, true)
                 }
             }
             (None, None) => {
@@ -418,19 +499,47 @@ impl<'a> B<'a> {
                         curve.range()
                     }
                 };
-                let p0 = curve.eval(d0);
-                let v = self.body.add_vertex(p0);
-                (self.body.add_edge(curve.clone(), d0, d1, v, v), !fc.dir_inc)
+                let v = self.body.add_vertex(curve.eval(d0));
+                (d0, d1, v, v, !fc.dir_inc)
             }
             _ => return Err(terr(format!("edge #{eid} has only one vertex"))),
         };
-        let (id, flip) = res;
-        let (t0, t1) = (self.body.edge(id).t0, self.body.edge(id).t1);
-        if !(t1 - t0 > 1e-12) {
+        if !(hi - lo > 1e-12) {
             return Err(terr(format!("edge #{eid} has zero extent")));
         }
-        self.edges.insert(ei, (id, flip));
-        Ok((id, flip))
+        // split points inside (lo, hi)
+        let mut ts: Vec<f64> = vec![];
+        if let Some(pts) = self.splits.get(&ei) {
+            for p in pts {
+                let mut t = curve.closest_param(*p);
+                if let Some(per) = fc.period {
+                    while t < lo - 1e-9 {
+                        t += per;
+                    }
+                    while t > hi + 1e-9 {
+                        t -= per;
+                    }
+                }
+                if curve.eval(t).dist(*p) < 10.0 * geo_tol(*p) && t > lo + 1e-7 && t < hi - 1e-7 {
+                    ts.push(t);
+                }
+            }
+        }
+        ts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        ts.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+        let mut segs = vec![];
+        let mut bounds = vec![lo];
+        bounds.extend(ts.iter().copied());
+        bounds.push(hi);
+        let mut vprev = v_lo;
+        for k in 0..bounds.len() - 1 {
+            let vnext = if k + 2 == bounds.len() { v_hi } else { self.body.add_vertex(curve.eval(bounds[k + 1])) };
+            segs.push(self.body.add_edge(curve.clone(), bounds[k], bounds[k + 1], vprev, vnext));
+            vprev = vnext;
+        }
+        let info = EdgeInfo { segs, flip };
+        self.edges.insert(ei, info.clone());
+        Ok(info)
     }
 
     // ------------------------------------------------------------ faces
@@ -456,9 +565,21 @@ impl<'a> B<'a> {
         }
     }
 
+    fn vpos(&self, v: VertexId) -> Vec3 {
+        self.body.vertices[v.idx()].p
+    }
+
+    fn vertex_at(&mut self, p: Vec3) -> VertexId {
+        for (i, v) in self.body.vertices.iter().enumerate() {
+            if v.p.dist(p) < 1e-7 {
+                return VertexId(i as u32);
+            }
+        }
+        self.body.add_vertex(p)
+    }
+
     /// Build one face; returns the vertex positions seen (shell extent).
     fn face(&mut self, shell: ShellId, f: &IrFace) -> R<Vec<Vec3>> {
-        self.nface += 1;
         let fid = f.id;
         let si = f.surface.ok_or_else(|| terr(format!("face #{fid} has no surface")))?;
         let surface = (*self.surface(si)?).clone();
@@ -470,11 +591,15 @@ impl<'a> B<'a> {
             }
             let mut ring = vec![];
             for fin in &lp.fins {
-                let (id, flip) = self.edge(fin.edge)?;
-                ring.push(Ce { edge: id, rev: (!fin.forward) ^ flip, pole_jump: false });
-                let e = self.body.edge(id);
-                pts.push(self.body.vertices[e.v0.idx()].p);
-                pts.push(self.body.vertices[e.v1.idx()].p);
+                let info = self.edge(fin.edge)?;
+                let rev = (!fin.forward) ^ info.flip;
+                let order: Vec<EdgeId> = if rev { info.segs.iter().rev().copied().collect() } else { info.segs.clone() };
+                for id in order {
+                    ring.push(Ce { edge: id, ir_edge: fin.edge, rev, pole_jump: false, pc: None });
+                    let e = self.body.edge(id);
+                    pts.push(self.vpos(e.v0));
+                    pts.push(self.vpos(e.v1));
+                }
             }
             if f.back {
                 ring.reverse();
@@ -485,8 +610,6 @@ impl<'a> B<'a> {
             loops.push(ring);
         }
         let sense = f.same_sense ^ f.back;
-        let sface = self.ir.surfaces[si].sense_plus;
-        let _ = sface;
 
         // every vertex must lie on the surface
         let is_spline = matches!(surface, Surface::BSpline(_));
@@ -497,8 +620,13 @@ impl<'a> B<'a> {
                 return Err(gerr(format!("face #{fid}: vertex ({:.4}, {:.4}, {:.4}) is {d:.3e} mm off its {} surface", p.x, p.y, p.z, surface.kind())));
             }
         }
-        if loops.is_empty() && !matches!(surface, Surface::Sphere { .. } | Surface::Torus { .. }) {
-            return Err(terr(format!("face #{fid} has no loop on a non-closed {} surface", surface.kind())));
+        if loops.is_empty() {
+            match &surface {
+                Surface::Sphere { .. } | Surface::Torus { .. } => {
+                    loops.push(self.full_periodic_loop(&surface, sense).ok_or_else(|| gerr(format!("face #{fid}: cannot build the loop of a full {}", surface.kind())))?);
+                }
+                _ => return Err(terr(format!("face #{fid} has no loop on a non-closed {} surface", surface.kind()))),
+            }
         }
 
         let loops = self.seam_wrapping(fid, &surface, sense, loops)?;
@@ -514,9 +642,13 @@ impl<'a> B<'a> {
             for ce in ring {
                 let e = self.body.edge(ce.edge);
                 let (t0, t1, curve) = (e.t0, e.t1, e.curve.clone());
-                let mut pc = pcurve_of(&surface, &curve, t0, t1, 1e-6).ok();
                 let (ts, te) = if ce.rev { (t1, t0) } else { (t0, t1) };
-                if let Some(c) = pc.as_mut() {
+                let explicit = ce.pc.is_some();
+                let mut pc = match ce.pc.clone() {
+                    Some(p) => Some(p),
+                    None => pcurve_of(&surface, &curve, t0, t1, 1e-6).ok(),
+                };
+                if let (Some(c), false) = (pc.as_mut(), explicit) {
                     if ce.pole_jump {
                         if let Some(ls) = loop_start {
                             let s = c.eval(te);
@@ -533,6 +665,8 @@ impl<'a> B<'a> {
                             *c = shift_pc(c, du, dv);
                         }
                     }
+                }
+                if let Some(c) = pc.as_ref() {
                     if loop_start.is_none() {
                         loop_start = Some(c.eval(ts));
                     }
@@ -544,6 +678,46 @@ impl<'a> B<'a> {
         Ok(pts)
     }
 
+    /// Loop of a full sphere (`[S, S^-1]`, pole-to-pole meridian) or torus (`[R, S, R^-1, S^-1]`, both seams) with
+    /// explicit pcurves, counter-clockwise in uv for `sense`.
+    fn full_periodic_loop(&mut self, surf: &Surface, sense: bool) -> Option<Vec<Ce>> {
+        let line = |o: Vec2, d: Vec2| Curve2::Line { o, d };
+        let mut l = match surf {
+            Surface::Sphere { frame, r } => {
+                let c = Curve::Circle { frame: ck_geom::Frame { o: frame.o, x: frame.x, y: frame.z, z: frame.x.cross(frame.z) }, r: *r };
+                let (s, n) = (frame.o - frame.z * *r, frame.o + frame.z * *r);
+                let (vs, vn) = (self.vertex_at(s), self.vertex_at(n));
+                let e = self.body.add_edge(c, -FRAC_PI_2, FRAC_PI_2, vs, vn);
+                vec![
+                    Ce { pc: Some(line(Vec2::new(TAU, 0.0), Vec2::new(0.0, 1.0))), ..Ce::new(e, false) },
+                    Ce { pc: Some(line(Vec2::new(0.0, 0.0), Vec2::new(0.0, 1.0))), ..Ce::new(e, true) },
+                ]
+            }
+            Surface::Torus { frame, major, minor } => {
+                // seam S: meridian circle at u = 0; ring R: circle of radius major + minor at v = 0
+                let sc = Curve::Circle { frame: ck_geom::Frame { o: frame.o + frame.x * *major, x: frame.x, y: frame.z, z: frame.x.cross(frame.z) }, r: *minor };
+                let rc = Curve::Circle { frame: ck_geom::Frame { o: frame.o, x: frame.x, y: frame.y, z: frame.z }, r: major + minor };
+                let v = self.vertex_at(sc.eval(0.0));
+                let es = self.body.add_edge(sc, 0.0, TAU, v, v);
+                let er = self.body.add_edge(rc, 0.0, TAU, v, v);
+                vec![
+                    Ce { pc: Some(line(Vec2::new(0.0, 0.0), Vec2::new(1.0, 0.0))), ..Ce::new(er, false) },
+                    Ce { pc: Some(line(Vec2::new(TAU, 0.0), Vec2::new(0.0, 1.0))), ..Ce::new(es, false) },
+                    Ce { pc: Some(line(Vec2::new(0.0, TAU), Vec2::new(1.0, 0.0))), ..Ce::new(er, true) },
+                    Ce { pc: Some(line(Vec2::new(0.0, 0.0), Vec2::new(0.0, 1.0))), ..Ce::new(es, true) },
+                ]
+            }
+            _ => return None,
+        };
+        if !sense {
+            l.reverse();
+            for c in &mut l {
+                c.rev = !c.rev;
+            }
+        }
+        Some(l)
+    }
+
     /// Total u-winding (in turns) of each loop on a u-periodic surface.
     fn windings(&self, surface: &Surface, loops: &[Vec<Ce>]) -> Vec<i32> {
         let frame = match surface {
@@ -553,6 +727,9 @@ impl<'a> B<'a> {
         loops
             .iter()
             .map(|ring| {
+                if ring.iter().any(|c| c.pc.is_some()) {
+                    return 0;
+                }
                 let mut total = 0.0;
                 let mut last: Option<f64> = None;
                 for ce in ring {
@@ -580,8 +757,63 @@ impl<'a> B<'a> {
             .collect()
     }
 
-    /// Parasolid periodic faces have no seam edge: the boundary loops of a cylinder / cone each wrap the axis.
-    /// Join two of them with a seam line.
+    /// Find a vertex of `ring` at azimuth `ua` (about `frame`); if none, record a split of the coedge that passes
+    /// through that azimuth and return `None`.
+    fn vertex_at_azimuth(&mut self, ring: &[Ce], frame: &ck_geom::Frame, ua: f64) -> Option<usize> {
+        let ang = |p: Vec3| {
+            let d = p - frame.o;
+            d.dot(frame.y).atan2(d.dot(frame.x))
+        };
+        let wrap = |x: f64| {
+            let mut d = x % TAU;
+            if d > PI {
+                d -= TAU;
+            }
+            if d < -PI {
+                d += TAU;
+            }
+            d
+        };
+        for (k, ce) in ring.iter().enumerate() {
+            if wrap(ang(self.vpos(self.ce_start(ce))) - ua).abs() < 1e-6 {
+                return Some(k);
+            }
+        }
+        // no vertex there: look for the coedge whose interior passes through the azimuth
+        for ce in ring {
+            if ce.ir_edge == usize::MAX {
+                continue;
+            }
+            let e = self.body.edge(ce.edge);
+            let n = 720;
+            let at = |i: usize| e.curve.eval(e.t0 + (e.t1 - e.t0) * i as f64 / n as f64);
+            let mut prev = wrap(ang(at(0)) - ua);
+            for i in 1..=n {
+                let cur = wrap(ang(at(i)) - ua);
+                if prev.signum() != cur.signum() && prev.abs() + cur.abs() < 1.0 {
+                    // bisect
+                    let (mut a, mut b) = (e.t0 + (e.t1 - e.t0) * (i - 1) as f64 / n as f64, e.t0 + (e.t1 - e.t0) * i as f64 / n as f64);
+                    let sa = wrap(ang(e.curve.eval(a)) - ua).signum();
+                    for _ in 0..60 {
+                        let m = 0.5 * (a + b);
+                        if wrap(ang(e.curve.eval(m)) - ua).signum() == sa {
+                            a = m;
+                        } else {
+                            b = m;
+                        }
+                    }
+                    let p = e.curve.eval(0.5 * (a + b));
+                    self.need_split.push((ce.ir_edge, p));
+                    return None;
+                }
+                prev = cur;
+            }
+        }
+        None
+    }
+
+    /// Parasolid periodic faces have no seam edge: the boundary loops of a cylinder / cone / torus each wrap the axis.
+    /// Join two of them with a seam. A cone or sphere cap with a single wrapping loop gets a seam to the apex / pole.
     fn seam_wrapping(&mut self, fid: i64, surface: &Surface, sense: bool, mut loops: Vec<Vec<Ce>>) -> R<Vec<Vec<Ce>>> {
         if surface.periods().0.is_none() {
             return Ok(loops);
@@ -595,9 +827,14 @@ impl<'a> B<'a> {
             return self.sphere_seam(fid, surface, sense, loops, &wrap, &w);
         }
         let frame = match surface {
-            Surface::Cylinder { frame, .. } | Surface::Cone { frame, .. } => frame.clone(),
+            Surface::Cylinder { frame, .. } | Surface::Cone { frame, .. } | Surface::Torus { frame, .. } => frame.clone(),
             _ => return Err(uerr(format!("face #{fid}: {} face with a loop wrapping its axis (needs poles/seams)", surface.kind()))),
         };
+        if wrap.len() == 1 {
+            if let Surface::Cone { r, semi_angle, .. } = surface {
+                return self.cone_cap_seam(fid, surface, loops, wrap[0], *r, *semi_angle);
+            }
+        }
         if wrap.len() != 2 || w[wrap[0]].abs() != 1 || w[wrap[1]].abs() != 1 {
             return Err(uerr(format!("face #{fid}: {} face with {} wrapping loops (a seam needs exactly two)", surface.kind(), wrap.len())));
         }
@@ -611,33 +848,90 @@ impl<'a> B<'a> {
         let a = loops[wrap[0]].clone();
         let mut bl = loops[wrap[1]].clone();
         let va = self.ce_start(&a[0]);
-        let pa = self.body.vertices[va.idx()].p;
+        let pa = self.vpos(va);
         let ua = ang(pa);
-        let k = (0..bl.len())
-            .find(|&k| {
-                let p = self.body.vertices[self.ce_start(&bl[k]).idx()].p;
-                let mut du = (ang(p) - ua).abs() % TAU;
-                if du > PI {
-                    du = TAU - du;
-                }
-                du < 1e-6
-            })
-            .ok_or_else(|| uerr(format!("face #{fid}: periodic face whose two loops have no vertices at a common angle (seam needs an edge split)")))?;
+        let Some(k) = self.vertex_at_azimuth(&bl, &frame, ua) else {
+            if self.need_split.is_empty() {
+                return Err(uerr(format!("face #{fid}: periodic face whose two loops have no vertices at a common angle (seam needs an edge split)")));
+            }
+            // first pass: the split is recorded, the face is built in the next pass
+            return Ok(loops);
+        };
         bl.rotate_left(k);
         let vb = self.ce_start(&bl[0]);
-        let pb = self.body.vertices[vb.idx()].p;
+        let pb = self.vpos(vb);
         let len = pa.dist(pb);
         if !(len > 1e-9) {
             return Err(gerr(format!("face #{fid}: zero-length seam")));
         }
-        let seam = self.body.add_edge(Curve::line_through(pa, pb), 0.0, len, va, vb);
+        let seam = if let Surface::Torus { major, minor, .. } = surface {
+            // meridian circle at azimuth ua; the shorter arc between the two loops
+            let radial = frame.x * ua.cos() + frame.y * ua.sin();
+            let cc = frame.o + radial * *major;
+            let n = radial.cross(frame.z);
+            let _ = minor;
+            let tv = |p: Vec3| (p - cc).dot(frame.z).atan2((p - cc).dot(radial));
+            let (ta, mut tb) = (tv(pa), tv(pb));
+            while tb - ta > PI {
+                tb -= TAU;
+            }
+            while ta - tb > PI {
+                tb += TAU;
+            }
+            let curve = Curve::circle_x(cc, n, radial, (pa - cc).len());
+            let (lo, hi, vlo, vhi) = if ta < tb { (ta, tb, va, vb) } else { (tb, ta, vb, va) };
+            let e = self.body.add_edge(curve, lo, hi, vlo, vhi);
+            let fwd_rev = ta > tb;
+            let mut joined = a;
+            joined.push(Ce::new(e, fwd_rev));
+            joined.extend(bl);
+            joined.push(Ce::new(e, !fwd_rev));
+            let mut out = vec![joined];
+            for (i, l) in loops.drain(..).enumerate() {
+                if i != wrap[0] && i != wrap[1] {
+                    out.push(l);
+                }
+            }
+            return Ok(out);
+        } else {
+            self.body.add_edge(Curve::line_through(pa, pb), 0.0, len, va, vb)
+        };
         let mut joined = a;
-        joined.push(Ce { edge: seam, rev: false, pole_jump: false });
+        joined.push(Ce::new(seam, false));
         joined.extend(bl);
-        joined.push(Ce { edge: seam, rev: true, pole_jump: false });
+        joined.push(Ce::new(seam, true));
         let mut out = vec![joined];
         for (i, l) in loops.drain(..).enumerate() {
             if i != wrap[0] && i != wrap[1] {
+                out.push(l);
+            }
+        }
+        Ok(out)
+    }
+
+    /// A cone face bounded by one loop around the axis reaches the apex: seam out to the apex and back.
+    fn cone_cap_seam(&mut self, fid: i64, surface: &Surface, loops: Vec<Vec<Ce>>, wi: usize, r: f64, semi: f64) -> R<Vec<Vec<Ce>>> {
+        let Surface::Cone { frame, .. } = surface else { unreachable!() };
+        let tan = semi.tan();
+        if tan.abs() < 1e-9 {
+            return Err(gerr(format!("face #{fid}: cone without taper")));
+        }
+        let apex = frame.o + frame.z * (-r / tan);
+        let ring = loops[wi].clone();
+        let va = self.ce_start(&ring[0]);
+        let pa = self.vpos(va);
+        let len = pa.dist(apex);
+        if !(len > 1e-9) {
+            return Err(gerr(format!("face #{fid}: cone loop lies on the apex")));
+        }
+        let vapex = self.vertex_at(apex);
+        let seam = self.body.add_edge(Curve::line_through(apex, pa), 0.0, len, vapex, va);
+        let mut joined = ring;
+        joined.push(Ce::new(seam, true));
+        joined.push(Ce::jump(seam, false));
+        let mut out = vec![joined];
+        for (i, l) in loops.into_iter().enumerate() {
+            if i != wi {
                 out.push(l);
             }
         }
@@ -662,7 +956,7 @@ impl<'a> B<'a> {
         if wrap.len() == 1 {
             let ring = loops[wrap[0]].clone();
             let va = self.ce_start(&ring[0]);
-            let pa = self.body.vertices[va.idx()].p;
+            let pa = self.vpos(va);
             let pts = self.ce_points(&ring[0], 8);
             let tan = pts[1] - pts[0];
             let nrm = if sense { (pa - c).normalize() } else { -(pa - c).normalize() };
@@ -676,8 +970,8 @@ impl<'a> B<'a> {
             let pole = self.body.add_vertex(c + xdir * *r);
             let seam = self.body.add_edge(Curve::circle_x(c, xdir.cross(e), xdir, *r), 0.0, t0, pole, va);
             let mut joined = ring;
-            joined.push(Ce { edge: seam, rev: true, pole_jump: false });
-            joined.push(Ce { edge: seam, rev: false, pole_jump: true });
+            joined.push(Ce::new(seam, true));
+            joined.push(Ce::jump(seam, false));
             out.push(joined);
         } else {
             if w[wrap[0]] == w[wrap[1]] {
@@ -686,11 +980,11 @@ impl<'a> B<'a> {
             let a = loops[wrap[0]].clone();
             let mut bl = loops[wrap[1]].clone();
             let va = self.ce_start(&a[0]);
-            let pa = self.body.vertices[va.idx()].p;
+            let pa = self.vpos(va);
             let ea = azimuth(pa)?;
             let mut k = None;
             for i in 0..bl.len() {
-                let p = self.body.vertices[self.ce_start(&bl[i]).idx()].p;
+                let p = self.vpos(self.ce_start(&bl[i]));
                 if azimuth(p)?.dist(ea) < 1e-6 {
                     k = Some(i);
                     break;
@@ -699,7 +993,7 @@ impl<'a> B<'a> {
             let k = k.ok_or_else(|| uerr(format!("face #{fid}: sphere band whose two loops have no vertices at a common azimuth")))?;
             bl.rotate_left(k);
             let vb = self.ce_start(&bl[0]);
-            let pb = self.body.vertices[vb.idx()].p;
+            let pb = self.vpos(vb);
             let ang = |p: Vec3| (p - c).dot(ea).atan2((p - c).dot(axis));
             let (ta, tb) = (ang(pa), ang(pb));
             if (ta - tb).abs() < 1e-9 {
@@ -710,9 +1004,9 @@ impl<'a> B<'a> {
             let seam = self.body.add_edge(curve, lo, hi, vlo, vhi);
             let fwd_rev = ta > tb;
             let mut joined = a;
-            joined.push(Ce { edge: seam, rev: fwd_rev, pole_jump: false });
+            joined.push(Ce::new(seam, fwd_rev));
             joined.extend(bl);
-            joined.push(Ce { edge: seam, rev: !fwd_rev, pole_jump: false });
+            joined.push(Ce::new(seam, !fwd_rev));
             out.push(joined);
         }
         for (i, l) in loops.into_iter().enumerate() {
@@ -726,13 +1020,6 @@ impl<'a> B<'a> {
     /// Outer loop first. Planar faces: by signed area about the outward normal (a negative outer area is an
     /// orientation error); other faces: by extent of the loop's bounding box.
     fn order_loops(&self, fid: i64, surface: &Surface, sense: bool, loops: Vec<Vec<Ce>>) -> R<Vec<Vec<Ce>>> {
-        if loops.len() < 2 {
-            if let (Surface::Plane { .. }, Some(_)) = (surface, loops.first()) {
-                // fallthrough to the area check below
-            } else {
-                return Ok(loops);
-            }
-        }
         if let Surface::Plane { frame } = surface {
             let n = if sense { frame.z } else { -frame.z };
             let mut areas: Vec<(f64, Vec<Ce>)> = loops
@@ -759,16 +1046,14 @@ impl<'a> B<'a> {
             }
             return Ok(areas.into_iter().map(|(_, r)| r).collect());
         }
+        if loops.len() < 2 {
+            return Ok(loops);
+        }
         let mut ext: Vec<(f64, Vec<Ce>)> = loops
             .into_iter()
             .map(|ring| {
-                let (mut lo, mut hi) = (Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY), Vec3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY));
-                for ce in &ring {
-                    for p in self.ce_points(ce, 8) {
-                        lo = Vec3::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z));
-                        hi = Vec3::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z));
-                    }
-                }
+                let pts: Vec<Vec3> = ring.iter().flat_map(|ce| self.ce_points(ce, 8)).collect();
+                let (lo, hi) = bbox_of(&pts);
                 (lo.dist(hi), ring)
             })
             .collect();
