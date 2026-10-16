@@ -8,7 +8,7 @@
 
 use super::classify::outward;
 use ck_geom::Vec3;
-use ck_topo::body::{Body, CoedgeId, EdgeId};
+use ck_topo::body::{Body, CoedgeId, EdgeId, FaceId, VertexId};
 
 /// Split every listed 4-face edge into two 2-face edges where the material wedges can be told apart.
 /// Returns how many edges were split.
@@ -64,12 +64,69 @@ pub fn split_contact_edges(b: &mut Body, edges: &[EdgeId]) -> usize {
         // the pair (i + 2, i + 3) moves to a twin edge
         let moved = [ws[order[(i + 2) % 4]].c, ws[order[(i + 3) % 4]].c];
         let e2 = b.add_edge(ed.curve.clone(), ed.t0, ed.t1, ed.v0, ed.v1);
+        let moved_faces = [b.coedge_face(moved[0]), b.coedge_face(moved[1])];
         for c in moved {
             b.coedges[c.idx()].edge = e2;
             b.edges[e.idx()].coedges.retain(|&x| x != c);
             b.edges[e2.idx()].coedges.push(c);
         }
+        for v in [ed.v0, ed.v1] {
+            split_vertex(b, v, moved_faces);
+        }
         n_split += 1;
     }
     n_split
+}
+
+/// After a contact edge was split, the vertex at its end is still shared by both sheets. Give the moved sheet a
+/// vertex of its own when the faces around `v` fall into two groups (faces joined through the edges at `v`, the two
+/// twin edges counting separately): the edges of the moved group are re-pointed to the copy.
+fn split_vertex(b: &mut Body, v: VertexId, moved: [FaceId; 2]) {
+    let edges: Vec<EdgeId> = b.edge_ids().filter(|&e| b.edge(e).v0 == v || b.edge(e).v1 == v).collect();
+    if edges.iter().any(|&e| b.edge(e).v0 == b.edge(e).v1) {
+        return;
+    }
+    // union-find over faces joined by an edge at v
+    let mut parent: std::collections::HashMap<FaceId, FaceId> = Default::default();
+    fn find(p: &mut std::collections::HashMap<FaceId, FaceId>, f: FaceId) -> FaceId {
+        let q = *p.entry(f).or_insert(f);
+        if q == f {
+            return f;
+        }
+        let r = find(p, q);
+        p.insert(f, r);
+        r
+    }
+    for &e in &edges {
+        let fs = b.edge_faces(e);
+        for w in fs.windows(2) {
+            let (x, y) = (find(&mut parent, w[0]), find(&mut parent, w[1]));
+            if x != y {
+                parent.insert(x, y);
+            }
+        }
+        if let Some(&f) = fs.first() {
+            find(&mut parent, f);
+        }
+    }
+    let root = find(&mut parent, moved[0]);
+    if find(&mut parent, moved[1]) != root {
+        return;
+    }
+    let roots: std::collections::HashSet<FaceId> = parent.keys().copied().collect::<Vec<_>>().into_iter().map(|f| find(&mut parent, f)).collect();
+    if roots.len() < 2 {
+        return;
+    }
+    let nv = b.add_vertex(b.vertex(v).p);
+    for &e in &edges {
+        let Some(&f) = b.edge_faces(e).first() else { continue };
+        if find(&mut parent, f) == root {
+            if b.edge(e).v0 == v {
+                b.edges[e.idx()].v0 = nv;
+            }
+            if b.edge(e).v1 == v {
+                b.edges[e.idx()].v1 = nv;
+            }
+        }
+    }
 }

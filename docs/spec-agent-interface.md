@@ -582,6 +582,90 @@ offset profile placed in the plane (exact, no sampling).
   volume moves by more than 1e-6 relative, or that is more than 20 percent (and 0.3 s) slower; run it before and after a
   kernel change (a past change made swept-handle 79 s).
 
+## Fuzzy tolerance and body-level booleans
+
+Three additions to the boolean machinery. The coincidence corpus that measures them is `tools/boolean_corpus.mjs`
+(`docs/boolean-corpus.md`).
+
+### Fuzzy `tolerance` and `autoFuzzy` (every boolean-capable feature)
+
+Any feature that combines a tool with the body (`extrude`, `revolve`, `sweep`, `loft`, `hole`, `thread`, patterns,
+`combine`) reads two optional fields:
+
+```json
+{"type":"extrude","id":"F5","op":"add","sketch":"S4","end":"blind","depth":10,"tolerance":1e-5,"autoFuzzy":false}
+```
+
+- `tolerance` (mm, number or `"=expr"`, default 0 = exact booleans exactly as before): geometry of the tool that lies
+  closer than `tolerance` to the body's geometry is treated as coincident. Mechanism (`ck-ops/src/boolean/fuzzy.rs`):
+  before the boolean, every planar, cylindrical or spherical face of the tool whose surface is within `tolerance` of an
+  equal-kind surface of the body (parallel plane, same axis and a radius within `tolerance`, same sphere centre) is moved
+  onto that surface exactly with the move-face offset machinery (vertices and edges re-solved, pcurves rebuilt). The
+  boolean then sees exactly coincident faces and its coincident-face merging (identical surfaces, orientation voting,
+  the `touch` classification) applies. Nothing else changes. A snap that fails, makes the tool invalid or changes its
+  volume by more than 4 x `tolerance` x area is discarded and the plain boolean runs.
+- Suggested values: 1e-6 .. 1e-3 mm. The result differs from the exact boolean of the unsnapped inputs by at most
+  `tolerance` in position; a cut whose remaining sliver is thinner than `tolerance` is removed entirely, a gap thinner
+  than `tolerance` is closed.
+- `autoFuzzy: true`: if the boolean fails (`booleanFailed`), comes out implausible (the post-boolean volume / box check)
+  or comes out with more validity issues than its operands had, it is retried with `tolerance` 1e-7, 1e-5, 1e-3 (those
+  above the given `tolerance`); the first retry that is plausible and valid wins. A result that fails the sanity check is
+  never accepted: if no retry passes, the original error (`booleanFailed`, `booleanVolumeMismatch`) stands.
+- Warning `booleanFuzzy {tolerance}` (in `warnings`, on the feature) says which fuzzy value decided the result, whenever
+  the fuzzy value moved at least one face or a retry was needed. No warning: the boolean was exact.
+- The `booleanFailed` hint now names these fields.
+
+### `combine` feature (alias `bodyBoolean`): booleans between lumps of one document
+
+A document can hold several lumps (separate bodies: a feature that does not touch the existing body adds a lump;
+`moveBody` can leave lumps overlapping). `combine` operates on whole lumps:
+
+```json
+{"type":"combine","id":"F9","op":"cut","target":{"face":"F2.C1"},"tools":[{"face":"F4.C1"},{"lump":2}],
+ "keepTools":false,"tolerance":1e-5,"autoFuzzy":true}
+```
+
+- `op`: `union` (`add`, `join`), `cut` (`subtract`), `intersect` (`common`), `split`.
+- `target` (also `a`): exactly one lump, as a face name (bare string or `{face}`: the lump holding that face) or
+  `{lump: n}` (index in `massProps {bodies:true}` order). `tools` (also `tool`, `b`): one or more lumps, same selectors;
+  a tool may not be the target.
+- `union`: target united with each tool in turn (the arrangement is binary, so the n-ary union is sequential in the listed
+  order; tools that overlap each other still end up in one lump). `cut`: target minus each tool. `intersect`: target inside
+  every tool. `split`: the target cut into the part outside all tools and the part inside them (two lumps; the tools are
+  united first).
+- `keepTools` (default false): tool lumps stay as they were next to the result; otherwise they are consumed.
+- Persistent names: result faces keep the names of the faces they come from (target faces and tool faces keep their own
+  feature ids; a face split by the operation gets the usual `~k` suffix), so references on both operands survive. Lumps not
+  involved stay untouched and first in lump order; the result lumps follow.
+- Errors: `nothingToCut` (no body), `missingReference`, `invalidValue {detail}` (unknown op, not exactly one target, no
+  tools, tool is the target), `booleanFailed`, `booleanVolumeMismatch`, `cutNoEffect` (cut / split changed nothing),
+  `combineEmpty` (intersect of lumps that do not overlap). An error leaves the body as it was.
+- Kit-facing JSON shape: exactly the object above; the kit builds it from the selected lumps' face names or lump indices.
+
+### `bodyBoolean` request (preview, nothing committed)
+
+`{"type":"bodyBoolean","tag":"main","op":"intersect","target":"F2.C1","tools":["F4.C1"],"tolerance":1e-5,"autoFuzzy":true}`
+runs the same operation on a copy of the current body and answers
+`{"ok":true,"lumps":n,"volume":v,"area":a,"faces":[...],"toleranceUsed"?:t}` or
+`{"ok":false,"error":{"code":..,"params":{..}}}`. The state is not changed; to keep the result, add the `combine` feature.
+
+### Edge contact in results
+
+Two solids (or two parts of one result) that touch along an edge used to make a four-face edge: a union of two boxes
+sharing only an edge was `booleanFailed`, and a later boolean on a body with such a contact could return an invalid body.
+Now the union of two solids whose faces are all kept whole is the two lumps side by side, and any other four-face edge of
+a result is split into two coincident two-face edges, one per material wedge (`ck-ops/src/boolean/contact.rs`: the faces
+around the edge are sorted by angle, the consecutive pairs that bound material keep the edge and its twin). The pieces
+stay joined at the end vertices only; the edge-contact corpus cases and 600 random grid sequences
+(`crates/ck-ops/tests/boolean_grid_fuzz.rs`) give valid bodies of exactly the cell-count volume.
+
+### Whole-sphere operands
+
+Two whole spheres meet in a circle that crosses the seam of a sphere once only when its axis lies along the line of
+centres; the sphere is turned to that axis before the boolean (face names unchanged), which makes overlapping balls
+unite / cut. The post-boolean volume check no longer confuses a flipped whole sphere (a spherical void) with the
+unflipped one (face-volume memo key includes the sense for seam-only faces), so a ball void in a block is accepted.
+
 ## Design rules: `profiles` and `checkProfile`
 
 A rule engine on top of `validate` / `check` (crates/ck-ops/src/profile). A
