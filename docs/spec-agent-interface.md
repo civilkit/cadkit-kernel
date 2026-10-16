@@ -869,6 +869,18 @@ Native checks: `crates/ck-model/tests/mates_ext.rs` (hinge leaves one rotation, 
 half, screw advance, rack travel, tangent distances, limits clamping, conflicts and redundancy named, structured
 errors); wasm: `tools/mate_check.mjs` (run by `tools/land.sh`).
 
+## Lettering: the sketch `text` entity, `textMetrics`, `textOutline`
+
+Engraved / embossed text on parts. A sketch entity `{type:"text", string, font?:"gauge"|"engrave", height (cap height),
+at:[x,y] | p:<point id>, anchor?:[h, v], angle?, spacing?, mirror?, polyline?, arc?:{centre|c, radius, angleCentre?,
+side?:"outside"|"inside"}}` is fixed geometry (no constraints; the anchor point `p` may be constrained) whose outlines
+are closed profile loops (letters with holes and islands are regions with holes) for `extrude` add / cut and the other
+profile consumers. Stateless requests `textMetrics {string, font?, height, spacing?}` (advance, ink box) and
+`textOutline {<entity fields>}` (polylines for a preview) size and preview it; `inspect` of a sketch lists its `texts`.
+Errors `textEmpty`, `textNothingToDraw`, `textBadFont`, `textBadHeight`, `textBadArc`, `textBadValue`; warnings
+`textTooSmall`, `textMissingGlyph`, `textTruncated`, `textOverlap`, `textSpacingAdjusted`. Fonts are compiled in (OFL).
+Details, limits and checks: `docs/text.md`; corpus `tools/text_corpus.mjs`.
+
 ## Acceptance
 
 - A scripted agent session (no human) builds the benchmark parts in
