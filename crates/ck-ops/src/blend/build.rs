@@ -285,6 +285,37 @@ pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featu
     Ok(in_place_layout(b, &raw, &refs, tol))
 }
 
+/// Positions of the vertices where exactly two of the `sel` edges meet, both
+/// straight and concave (planar faces), and no other selected edge.
+fn concave_pair_vertices(b: &Body, sel: &[EdgeId], tol: f64) -> Vec<Vec3> {
+    let concave = |e: EdgeId| -> bool {
+        let ed = b.edge(e);
+        if !matches!(ed.curve, Curve::Line { .. }) {
+            return false;
+        }
+        let fs = b.edge_faces(e);
+        if fs.len() != 2 || fs.iter().any(|&f| !matches!(b.face(f).surface, Surface::Plane { .. })) {
+            return false;
+        }
+        let d = (b.vertex(ed.v1).p - b.vertex(ed.v0).p).normalize();
+        let Some(co) = b.edge_coedges(e).into_iter().find(|&c| b.coedge_face(c) == fs[0]) else { return false };
+        let tdir = if b.coedge(co).rev { -d } else { d };
+        b.planar_normal(fs[0]).cross(tdir).dot(b.planar_normal(fs[1])) > 1e-9
+    };
+    let mut out: Vec<Vec3> = vec![];
+    for &e in sel {
+        let ed = b.edge(e);
+        for v in [ed.v0, ed.v1] {
+            let at: Vec<EdgeId> = sel.iter().copied().filter(|&x| b.edge(x).v0 == v || b.edge(x).v1 == v).collect();
+            let p = b.vertex(v).p;
+            if at.len() == 2 && at[0] != at[1] && at.iter().all(|&x| concave(x)) && !out.iter().any(|q| q.dist(p) <= tol) {
+                out.push(p);
+            }
+        }
+    }
+    out
+}
+
 /// Both faces border a blend face of `feature` in `b` (their shared edge was
 /// consumed by a tool of this feature).
 fn blended_by_earlier_tool(b: &Body, fa: &str, fb: &str, feature: &str) -> bool {
@@ -354,6 +385,10 @@ fn blend_edges_at(
             ends: [b.vertex(ed.v0).p, b.vertex(ed.v1).p],
         });
     }
+    // vertices of the ORIGINAL body where exactly two selected concave straight
+    // edges meet (the third edge unselected): an earlier tool's cylinder shortens
+    // the later edge, so its tool must run on to the original vertex to mitre
+    let junc: Vec<Vec3> = if matches!(spec, Spec::Fillet(..)) { concave_pair_vertices(b, &sel_edges, tol) } else { vec![] };
     let mut out = b.clone();
     let mut touched: Vec<String> = vec![];
     for (k, (fa, fb, at)) in edges.iter().enumerate() {
@@ -370,7 +405,7 @@ fn blend_edges_at(
             return Err(BlendError::code("missingEdge"));
         };
         let (f1, f2) = (out.find_face(fa).unwrap(), out.find_face(fb).unwrap());
-        let (body, hint) = blend_edge_hint(&out, e, [f1, f2], spec, feature, idx[k], tol, rings.get(k).copied().unwrap_or(false))?;
+        let (body, hint) = blend_edge_hint(&out, e, [f1, f2], spec, feature, idx[k], tol, rings.get(k).copied().unwrap_or(false), &junc)?;
         // end faces at a junction with another selected edge are that
         // edge's own faces, not extra touches (oracle: the ring's face
         // order is e1 e2 e3 e4, the open chain's C1 e1 e4 e2 e3)
@@ -825,7 +860,7 @@ fn split_rings(b: &Body, eids: &[EdgeId]) -> (Vec<bool>, Vec<bool>) {
 
 /// One straight edge between two planar faces.
 pub fn fillet_line_edge(b: &Body, e: EdgeId, faces: [FaceId; 2], r: f64, feature: &str, k: u32, tol: f64) -> Result<Body, BlendError> {
-    blend_edge_hint(b, e, faces, Spec::Fillet(r, FilletProfile::Circular), feature, k, tol, false).map(|x| x.0)
+    blend_edge_hint(b, e, faces, Spec::Fillet(r, FilletProfile::Circular), feature, k, tol, false, &[]).map(|x| x.0)
 }
 
 /// As [`fillet_line_edge`], also returning the touched-face order hint
@@ -839,6 +874,7 @@ fn blend_edge_hint(
     k: u32,
     tol: f64,
     ring: bool,
+    junc: &[Vec3],
 ) -> Result<(Body, Vec<String>), BlendError> {
     let ed = b.edge(e).clone();
     let r = spec.size();
@@ -1048,7 +1084,24 @@ fn blend_edge_hint(
     // concave: GUESS end faces perpendicular to the edge, the tool ends
     // flush with them
     let margin = if convex && circ.is_none() { r.max(len * 0.05) + 1.0 } else { 0.0 };
-    let o = p0 - dir * margin;
+    // concave: an end at a junction vertex runs on past the shortened edge end
+    // to just inside the wall behind the original vertex
+    let (mut m0, mut m1) = (margin, margin);
+    if !convex && circ.is_none() && !chamfer {
+        for &q in junc {
+            if (q - p0).cross(dir).len() > 1e-6 {
+                continue;
+            }
+            let (t0, t1) = ((p0 - q).dot(dir), (q - p1).dot(dir));
+            if t0 > 1e-6 {
+                m0 = m0.max(t0 + 0.25 * r);
+            }
+            if t1 > 1e-6 {
+                m1 = m1.max(t1 + 0.25 * r);
+            }
+        }
+    }
+    let o = p0 - dir * m0;
     let fr = match circ {
         None => Frame::from_normal(o, dir),
         Some((c, axis)) => {
@@ -1102,7 +1155,7 @@ fn blend_edge_hint(
     };
     let prof = Profile::new(fr, vec![ProfileRegion { outer: lp, holes: vec![] }]).normalized();
     let made = match circ {
-        None => extrude(feature, &prof, ExtrudeOpts { s0: 0.0, s1: len + 2.0 * margin, dir: None, draft: 0.0 }),
+        None => extrude(feature, &prof, ExtrudeOpts { s0: 0.0, s1: len + m0 + m1, dir: None, draft: 0.0 }),
         Some((c, axis)) => {
             // a partial arc sweeps only its own angle (convex: a margin more at
             // both ends so the tool pierces the adjacent faces; concave:
