@@ -64,7 +64,7 @@ function section(R, kind, r, cx = 0, jitter = 0, a0fixed = false) {
   const P = Array.from({ length: nn }, (_, i) => { const a = a0 + (2 * Math.PI * i) / nn; return pt('p' + (i + 1), cx + r * Math.cos(a) + J(), r * Math.sin(a) + J()); });
   return { points: P, entities: P.map((_, i) => lineE('e' + (i + 1), 'p' + (i + 1), 'p' + ((i + 1) % nn + 1))) };
 }
-function makeModePart(m, seed) {
+export function makeModePart(m, seed) {
   const R = rng(seed * 7919 + 13);
   const ns = m === 'point' ? 2 + Math.floor(R() * 3) : 2 + Math.floor(R() * 2);
   const H = 20 + R() * 40;
