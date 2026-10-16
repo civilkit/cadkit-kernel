@@ -162,7 +162,7 @@ fn cut_segments(body: &Body, tess: &Tess, fr: &Frame) -> Vec<Seg> {
 }
 
 /// Chains oriented segments into loops of `(point, face of the outgoing segment)`; returns (closed loops, open chain count).
-fn chain(segs: &[Seg], diag: f64) -> (Vec<Vec<CPt>>, Vec<OpenEnd>, Vec<Bridge>) {
+fn chain(segs: &[Seg], diag: f64, owner: &dyn Fn(Vec3, Vec3) -> Option<usize>) -> (Vec<Vec<CPt>>, Vec<OpenEnd>, Vec<Bridge>) {
     let mut start: HashMap<[u64; 3], Vec<usize>> = HashMap::new();
     for (i, s) in segs.iter().enumerate() {
         start.entry(key(s.a)).or_default().push(i);
@@ -229,8 +229,14 @@ fn chain(segs: &[Seg], diag: f64) -> (Vec<Vec<CPt>>, Vec<OpenEnd>, Vec<Bridge>) 
                 c.pop();
             } else {
                 let last = c.len() - 1;
-                bridged.push(Bridge { from: end, to: match best.1 { Some(j) => open[j][0].0, None => c[0].0 }, length: best.0, face: c[last.saturating_sub(1)].1 });
-                c[last].1 = next_face;
+                let to = match best.1 {
+                    Some(j) => open[j][0].0,
+                    None => c[0].0,
+                };
+                // the face whose surface holds both ends is the one with the hole in its mesh: bisect the chord on it
+                let gap_face = owner(end, to).unwrap_or(next_face);
+                bridged.push(Bridge { from: end, to, length: best.0, face: gap_face });
+                c[last].1 = gap_face;
                 c[last].2 = (0.0, 0.0);
                 c[last].3 = (0.0, 0.0);
             }
@@ -363,7 +369,28 @@ pub fn section(body: &Body, tess: &Tess, o: Vec3, n: Vec3) -> Section {
         })
         .sum::<f64>()
         * 0.5;
-    let (chains, n_open, bridged) = chain(&segs, diag);
+    let boxes: std::cell::OnceCell<Vec<(Vec3, Vec3)>> = std::cell::OnceCell::new();
+    let owner = |a: Vec3, b: Vec3| -> Option<usize> {
+        let boxes = boxes.get_or_init(|| faces.iter().map(|&f| body.face_ctrl_box(f)).collect());
+        let pad = Vec3::new(1e-2 * diag, 1e-2 * diag, 1e-2 * diag);
+        let inside = |bx: &(Vec3, Vec3), p: Vec3| {
+            let (lo, hi) = (bx.0 - pad, bx.1 + pad);
+            p.x >= lo.x && p.y >= lo.y && p.z >= lo.z && p.x <= hi.x && p.y <= hi.y && p.z <= hi.z
+        };
+        let mut best: Option<(f64, usize)> = None;
+        for (i, &f) in faces.iter().enumerate() {
+            let s = &body.face(f).surface;
+            if is_plane(s) || !inside(&boxes[i], a) || !inside(&boxes[i], b) {
+                continue;
+            }
+            let d = s.closest_point(a).2.dist(a) + s.closest_point(b).2.dist(b);
+            if d < 2e-4 * diag && best.map_or(true, |x| d < x.0) {
+                best = Some((d, i));
+            }
+        }
+        best.map(|x| x.1)
+    };
+    let (chains, n_open, bridged) = chain(&segs, diag, &owner);
     let tol = SAG * diag;
     let mut loops: Vec<LoopOut> = vec![];
     let mut bb = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
