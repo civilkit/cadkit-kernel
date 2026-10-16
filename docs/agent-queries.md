@@ -170,7 +170,7 @@ interior of both faces (sphere / sphere, cylinder / cylinder) are found from the
 
 One-sided Hausdorff distance: the maximum over the surface of `a` (default whole body) of the minimum distance to `b`
 (default whole body, `tagB` for another tag). Samples a grid inside every face plus its edges (`opts.samples`, default
-20000 over the body). Reply `{maxDistance, location, nearest, errorBound, upperBound, rms, samples, face}`: the
+5000 over the body). Reply `{maxDistance, location, nearest, errorBound, upperBound, rms, samples, face}`: the
 distance function is 1-Lipschitz, so the true maximum lies in `[maxDistance, maxDistance + errorBound]` where
 `errorBound` is the covering radius of the sample grid. `both:true` adds the other direction:
 `{hausdorff, errorBound, aToB, bToA}`.
@@ -220,7 +220,7 @@ most `limit` (default 200) listed. Box-pruned, at most 4000 faces per side.
 ### symmetry `{planes?:[{origin, normal}], opts?:{samples, tol}}`
 
 Candidate mirror planes: the coordinate axes and the principal axes through the centre of mass (and the coordinate
-axes through the box centre), or the given `planes`. For each, the surface is sampled (`samples`, default 3000),
+axes through the box centre), or the given `planes`. For each, the surface is sampled (`samples`, default 1000),
 mirrored and measured against the body: `maxDeviation` and `rmsDeviation` of the mirrored surface from the original
 (the mirror is an involution, so one direction is the whole Hausdorff distance). `symmetric` lists the planes with
 `maxDeviation <= tol` (default 1e-4 of the diagonal); `best` is the least deviating; `planes` has all, sorted. The

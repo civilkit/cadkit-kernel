@@ -623,6 +623,9 @@ pub fn distance_reply(body: &Body, other: Option<&Body>, msg: &Json) -> Result<J
 fn body_samples(ctx: &Ctx, faces: &[FaceId], budget: usize) -> (Vec<(Vec3, FaceId)>, f64) {
     let nf = faces.len().max(1);
     let g = (((budget as f64 / nf as f64).sqrt()).round() as usize).clamp(4, 80);
+    // boundary samples per edge: a quarter of the budget over all face-edge incidences
+    let incid: usize = faces.iter().map(|&f| ctx.body.face_edges(f).len()).sum::<usize>().max(1);
+    let ne = (budget / 4 / incid).clamp(3, 24);
     let mut out = vec![];
     let mut cover = 0.0f64;
     for &f in faces {
@@ -644,7 +647,7 @@ fn body_samples(ctx: &Ctx, faces: &[FaceId], budget: usize) -> (Vec<(Vec3, FaceI
         }
         for e in ctx.body.face_edges(f) {
             let ed = ctx.body.edge(e);
-            let pts = ed.curve.sample(ed.t0, ed.t1, 24);
+            let pts = ed.curve.sample(ed.t0, ed.t1, ne);
             for w in pts.windows(2) {
                 cover = cover.max(w[0].dist(w[1]));
             }
@@ -666,7 +669,7 @@ pub fn max_distance_reply(body: &Body, other: Option<&Body>, msg: &Json) -> Resu
     } else {
         &ca
     };
-    let budget = opt_n(msg, "samples", 20000, 400000);
+    let budget = opt_n(msg, "samples", 5000, 400000);
     let both = matches!(opt(msg, "both"), Some(Json::Bool(true)));
     let default = Json::Str("body".into());
     let pa = parse_entity(&ca, msg.get("a").unwrap_or(&default), "maxDistance: a")?;
@@ -1265,7 +1268,7 @@ pub fn symmetry_reply(body: &Body, msg: &Json) -> Result<Json, String> {
     let com = mp.com;
     let (lo, hi) = body.bbox();
     let centre = (lo + hi) * 0.5;
-    let budget = opt_n(msg, "samples", 3000, 100000);
+    let budget = opt_n(msg, "samples", 1000, 100000);
     let tol = opt_f(msg, "tol", 1e-4 * ctx.diag);
     let mut cands: Vec<(Vec3, Vec3, String)> = vec![];
     let add = |o: Vec3, n: Vec3, why: &str, c: &mut Vec<(Vec3, Vec3, String)>| {
