@@ -165,8 +165,8 @@ fn positive_axis_sign(n: Vec3) -> f64 {
 fn layer_suffix(layers: &[(f64, bool)], li: usize, n: Vec3) -> u32 {
     let s = positive_axis_sign(n);
     let mut keyed: Vec<(f64, usize)> = layers.iter().enumerate().map(|(i, &(d, _))| (d * s, i)).collect();
-    keyed.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-    keyed.iter().position(|&(_, i)| i == li).unwrap() as u32 + 1
+    keyed.sort_by(|a, b| a.0.total_cmp(&b.0));
+    keyed.iter().position(|&(_, i)| i == li).map_or(1, |p| p as u32 + 1)
 }
 
 struct Layer {
@@ -303,7 +303,7 @@ pub fn thicken(sheet: &Body, feature: &str, thickness: f64, side: Side, tol: f64
     // build the smaller-d (material-facing, flipped) layer first
     let order: Vec<usize> = {
         let mut o: Vec<usize> = (0..layers.len()).collect();
-        o.sort_by(|&a, &b| layers[a].0.partial_cmp(&layers[b].0).unwrap());
+        o.sort_by(|&a, &b| layers[a].0.total_cmp(&layers[b].0));
         o
     };
     let mut ls: Vec<Layer> = layers
@@ -384,8 +384,9 @@ fn build_layer(
             if fs.len() != 2 {
                 continue;
             }
-            let fi = faces.iter().position(|&x| x == fs[0]).unwrap();
-            let gi = faces.iter().position(|&x| x == fs[1]).unwrap();
+            let (Some(fi), Some(gi)) = (faces.iter().position(|&x| x == fs[0]), faces.iter().position(|&x| x == fs[1])) else {
+                return Err(ThickenError::code("thickenFailed"));
+            };
             let (nf, ng) = (normals[fi], normals[gi]);
             let Some(disp) = miter_disp(nf, ng, d) else {
                 return Err(ThickenError::code("thickenReach"));
@@ -483,8 +484,12 @@ fn build_layer(
             // seam rail between the rings' start vertices
             let p0 = out.edges[ring_edges[0].idx()].curve.eval(out.edges[ring_edges[0].idx()].t0);
             let p1 = out.edges[ring_edges[1].idx()].curve.eval(out.edges[ring_edges[1].idx()].t0);
-            let v0 = out.vertex_ids().find(|&v| out.vertex(v).p.dist(p0) <= 1e-9).unwrap();
-            let v1 = out.vertex_ids().find(|&v| out.vertex(v).p.dist(p1) <= 1e-9).unwrap();
+            let (Some(v0), Some(v1)) = (
+                out.vertex_ids().find(|&v| out.vertex(v).p.dist(p0) <= 1e-9),
+                out.vertex_ids().find(|&v| out.vertex(v).p.dist(p1) <= 1e-9),
+            ) else {
+                return Err(ThickenError::code("thickenFailed"));
+            };
             let seam = out.add_edge(Curve::line_through(p0, p1), 0.0, (p1 - p0).len(), v0, v1);
             let up_pc = ck_geom::curve2::Curve2::Line { o: ck_geom::Vec2::new(tau, vs[0]), d: ck_geom::Vec2::new(0.0, 1.0) };
             let down_pc = ck_geom::curve2::Curve2::Line { o: ck_geom::Vec2::new(0.0, vs[0]), d: ck_geom::Vec2::new(0.0, 1.0) };
@@ -554,10 +559,9 @@ fn build_layer(
                 }
                 while !remaining.is_empty() {
                     let tail = edge_end(out, *used.last().unwrap());
-                    let nxt = remaining
-                        .iter()
-                        .position(|&x| out.edge(x).v0 == tail || out.edge(x).v1 == tail)
-                        .expect("offset loop chains");
+                    let Some(nxt) = remaining.iter().position(|&x| out.edge(x).v0 == tail || out.edge(x).v1 == tail) else {
+                        return Err(ThickenError::code("thickenFailed"));
+                    };
                     let ne = remaining.swap_remove(nxt);
                     let fwd = out.edge(ne).v0 == tail;
                     used.push((ne, !fwd));

@@ -370,6 +370,9 @@ fn orbit_deg(sc: &Screw, p: Vec3, phis: &[f64], deg: usize) -> Result<BSplineCur
 
 /// Surface through `grid[i][j]` (i along φ, j along the profile parameter).
 fn grid_surface(grid: &[Vec<Vec3>], u: &[f64], v: &[f64], pu: usize, pv: usize) -> Result<BSplineSurface, String> {
+    if grid.len() < 2 || grid[0].len() < 2 {
+        return Err("sweep surface grid too small".into());
+    }
     let (nu, nv) = (grid.len(), grid[0].len());
     let (pu, pv) = (pu.min(nu - 1), pv.min(nv - 1));
     let ku = scaled_knots(u, pu);
@@ -536,9 +539,12 @@ fn spline_rows(sp: &SplinePath, rev: bool) -> Vec<(f64, Xform)> {
 /// split into `~1` / `~2` halves, caps `C0` at the profile and `C1` carried to the path end).
 fn sweep_spline(feature: &str, profile: &Profile, sp: &SplinePath, rev: bool) -> Result<Body, String> {
     let rows = spline_rows(sp, rev);
+    if rows.len() < 2 {
+        return Err(PATH_INVALID.into());
+    }
     let phis: Vec<f64> = rows.iter().map(|r| r.0).collect();
-    let angle = *phis.last().unwrap();
-    let xf_end = rows.last().unwrap().1;
+    let angle = phis[phis.len() - 1];
+    let xf_end = rows[rows.len() - 1].1;
     let split = split_closed(profile, &|_| false);
     let profile = &split;
     let pf = &profile.frame;
@@ -806,6 +812,9 @@ pub(crate) fn rmf_rows(pts: &[Vec3], tans: &[Vec3]) -> Vec<Xform> {
 /// into `~1` / `~2`, the end cap `C1` is the plane through the image of the profile (its edges
 /// are the last-row iso-curves of the side faces).
 pub(crate) fn sweep_rows_general(feature: &str, profile: &Profile, phis: &[f64], pt: &dyn Fn(usize, Vec3) -> Vec3) -> Result<Body, String> {
+    if phis.len() < 2 {
+        return Err(PATH_INVALID.into());
+    }
     let split = split_closed(profile, &|_| false);
     let profile = &split;
     let pf = &profile.frame;
