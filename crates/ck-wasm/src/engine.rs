@@ -640,9 +640,10 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
             let body = &snapshot(cx)?.body;
             let mut iss = ck_check::validate_cap(body, tol, cap);
             let mut mesh_notes: Vec<String> = vec![];
-            // an independent witness that the B-rep claim holds: the display mesh of a valid solid is watertight (only in
-            // the validate request with `mesh:true` (default off: a few existing bodies have faces the tessellator gives up on, which would flip their verdict), never in regen)
-            if cx.msg.get_bool("mesh") == Some(true) {
+            // an independent witness that the B-rep claim holds: the display mesh of a valid solid is watertight (the
+            // validate request only, never regen; `mesh:false` skips it). Since the tessellator's periodic-face and
+            // unclosed-loop fixes no gate-corpus part or kit sample fires it.
+            if cx.msg.get_bool("mesh") != Some(false) {
                 let mesh = ck_tess::mesh::tessellate(body).mesh;
                 iss.extend(ck_check::tessellation::check_mesh_why(body, &mesh.positions, &mesh.tri_face, &mesh.failed, &mesh.failed_why));
                 let ids: Vec<_> = body.face_ids().collect();
