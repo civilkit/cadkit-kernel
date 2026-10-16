@@ -43,7 +43,7 @@ strings from kernel.strings, and dispatch to ck-ops/ck-topo.
 - sweep: sweepPathInvalid, sweepProfileNotNormal, sweepGuideMissing,
   sweepGuidesTwist, sweepGuideShort, sweepGuideStretchTwo, sweepSelfIntersects, sweepFailed
 - loft: loftProfileOpen, loftProfileChains, loftGuideInvalid, loftGuideMiss,
-  loftGuideOrder, loftGuideTangency, loftCentreLineInvalid/Tight/Reach/Kink, loftFailed
+  loftGuideOrder, loftGuideTangency, loftCentreLineInvalid/Tight/Reach/Kink, loftFailed, loftInvalidResult
 - shell: shellTooThick, shellUnsupported, shellFailed, offsetUnsupported (shellTooThick / shellFailed / moveFace* carry `limit`, `minRadius`, `maxThickness`, `face` when known)
 - draft: draftParallelFace, draftAxisNotParallel, draftUnsupported,
   draftTangentFaces, draftTooLarge, draftFailed
