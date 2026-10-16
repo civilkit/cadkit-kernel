@@ -79,6 +79,10 @@ pub const REQUEST_TYPES: &[(&str, Handler)] = &[
     ("resolve", agent::resolve),
     ("describe", agent::describe),
     ("refDiff", agent::ref_diff),
+    // Extensions: verification (docs/agent-queries.md "section / sections / probe"), read-only.
+    ("section", agent::section),
+    ("sections", agent::sections),
+    ("probe", agent::probe),
     // Extension: thread standards as data (stateless, read-only).
     ("threadData", agent::thread_data),
     // Extension: design-rule profiles (read-only).

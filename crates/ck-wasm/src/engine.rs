@@ -528,6 +528,12 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
             let tol = cx.msg.get_f64("tol").unwrap_or(1e-6);
             Ok(ck_ops::agent::check(body, &cx.msg, &|| ck_check::validate(body, tol).len()))
         }
+        "section" => ck_ops::section::section_reply(&snapshot(cx)?.body, cx.msg),
+        "sections" => {
+            let body = &snapshot(cx)?.body;
+            ck_ops::section::sections_reply(body, cx.msg, ck_topo::mass::mass_props(body).volume)
+        }
+        "probe" => ck_ops::section::probe_reply(&snapshot(cx)?.body, cx.msg),
         "resolve" => Ok(ck_ops::agent::resolve(&snapshot(cx)?.body, &cx.msg)),
         "describe" => Ok(ck_ops::agent::describe(&snapshot(cx)?.body, &cx.msg)),
         "refDiff" => crate::refdiff::reply(cx),

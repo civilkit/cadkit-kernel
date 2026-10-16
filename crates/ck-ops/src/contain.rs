@@ -35,6 +35,16 @@ pub enum Loc {
     On,
 }
 
+/// One ray/face crossing ([`Containment::ray_hits`]).
+#[derive(Debug, Clone, Copy)]
+pub struct RayHit {
+    pub t: f64,
+    pub point: Vec3,
+    pub face: FaceId,
+    pub entering: bool,
+    pub tangent: bool,
+}
+
 /// The seven ray directions (kernel.wasm data at 0x80f4d8).
 pub const RAYS: [[f64; 3]; 7] = [
     [0.5773502691896258, 0.5773502691896257, 0.577350269189626],
@@ -124,6 +134,75 @@ impl<'a> Containment<'a> {
         } else {
             Where::Out
         }
+    }
+
+    /// Every crossing of the ray `o + t d` (t in [0, tmax]) with the faces, sorted by t. Hits on a shared edge (two faces
+    /// within 1e-7 in t) are merged. Faces the ray runs inside are skipped.
+    pub fn ray_hits(&self, o: Vec3, d: Vec3, tmax: f64, tol: f64) -> Vec<RayHit> {
+        let line = Curve::line(o, d);
+        let mut out: Vec<RayHit> = vec![];
+        for (fi, _) in self.bvh.query_ray(o, d, -tol, tmax) {
+            let f = self.faces[fi];
+            let surf = &self.body.face(f).surface;
+            let res = cs::intersect(&line, (-tol, tmax), surf, tol);
+            if !res.on.is_empty() {
+                continue;
+            }
+            for h in &res.hits {
+                if h.t < -tol || h.t > tmax || self.point_in_face(fi, h.uv.0, h.uv.1, tol) == Where::Out {
+                    continue;
+                }
+                let n = self.body.outward_normal(f, h.uv.0, h.uv.1);
+                let nd = n.dot(d);
+                out.push(RayHit { t: h.t.max(0.0), point: h.p, face: f, entering: nd < 0.0, tangent: nd.abs() < 1e-9 });
+            }
+        }
+        out.sort_by(|a, b| a.t.partial_cmp(&b.t).unwrap_or(std::cmp::Ordering::Equal));
+        let mut merged: Vec<RayHit> = vec![];
+        for h in out {
+            if let Some(l) = merged.last() {
+                if (h.t - l.t).abs() < 1e-7 && h.entering == l.entering {
+                    continue;
+                }
+            }
+            merged.push(h);
+        }
+        merged
+    }
+
+    /// Nearest point of the boundary to `q`: `(distance, face, point)`. Face interiors (closest point inside the trim)
+    /// and every boundary edge are searched; faces are visited by box distance so far faces are never touched.
+    pub fn nearest(&self, q: Vec3) -> Option<(f64, FaceId, Vec3)> {
+        let mut order: Vec<(f64, usize)> = (0..self.faces.len())
+            .map(|i| {
+                let b = self.bvh.item_box(i);
+                let c = |v: f64, lo: f64, hi: f64| if v < lo { lo - v } else if v > hi { v - hi } else { 0.0 };
+                let (dx, dy, dz) = (c(q.x, b.min.x, b.max.x), c(q.y, b.min.y, b.max.y), c(q.z, b.min.z, b.max.z));
+                ((dx * dx + dy * dy + dz * dz).sqrt(), i)
+            })
+            .collect();
+        order.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        let mut best: Option<(f64, FaceId, Vec3)> = None;
+        for (lb, i) in order {
+            if best.map_or(false, |b| lb > b.0) {
+                break;
+            }
+            let f = self.faces[i];
+            let surf = &self.body.face(f).surface;
+            let (u, v, p) = surf.closest_point(q);
+            let dist = p.dist(q);
+            if dist.is_finite() && best.map_or(true, |b| dist < b.0) && self.point_in_face(i, u, v, self.tol) != Where::Out {
+                best = Some((dist, f, p));
+            }
+            for e in self.body.face_edges(f) {
+                let ed = self.body.edge(e);
+                let (t, dd) = dist_in_range(&ed.curve, (ed.t0, ed.t1), q);
+                if dd.is_finite() && best.map_or(true, |b| dd < b.0) {
+                    best = Some((dd, f, ed.curve.eval(t)));
+                }
+            }
+        }
+        best
     }
 
     /// f2670: where is `q` relative to the solid?

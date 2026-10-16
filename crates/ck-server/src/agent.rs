@@ -27,6 +27,21 @@ pub fn describe(cx: &mut Cx) -> Result<Json, String> {
     null_or_query(cx, "describe")
 }
 
+/// `{type:"section", tag?, plane:{origin, normal}}`: exact cross-section loops of the body.
+pub fn section(cx: &mut Cx) -> Result<Json, String> {
+    null_or_query(cx, "section")
+}
+
+/// `{type:"sections", tag?, axis, n | positions}`: a stack of sections and the volume integrated from it.
+pub fn sections(cx: &mut Cx) -> Result<Json, String> {
+    null_or_query(cx, "sections")
+}
+
+/// `{type:"probe", tag?, points?, rays?}`: inside / signed distance of points, hit lists of rays.
+pub fn probe(cx: &mut Cx) -> Result<Json, String> {
+    null_or_query(cx, "probe")
+}
+
 /// `{type:"refDiff", base:<part>, part:<part>}`: regenerates both privately
 /// and reports references that now point at a different entity.
 pub fn ref_diff(cx: &mut Cx) -> Result<Json, String> {
