@@ -837,6 +837,26 @@ mod tests {
     use super::*;
     use std::f64::consts::TAU;
 
+    fn cubic(knots: Vec<f64>) -> BSplineCurve {
+        let n = knots.len() - 4;
+        BSplineCurve::new(3, knots, (0..n).map(|i| Vec3::new(i as f64, (i * i % 5) as f64, 0.0)).collect()).unwrap()
+    }
+
+    /// Regression: sections drawn off-grid gave pieces with knots equal to rounding (or two knots 1e-13 apart
+    /// in one piece); the curves ended with different control point counts and the rail loop indexed past
+    /// the shorter one (kernel panic). `compat` now agrees on the counts or reports a structured error.
+    #[test]
+    fn compat_near_equal_knots_agree() {
+        let a = cubic(vec![0.0, 0.0, 0.0, 0.0, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0]);
+        let b = cubic(vec![0.0, 0.0, 0.0, 0.0, 0.5, 0.5, 0.5, 0.5 + 5e-13, 0.5 + 5e-13, 0.5 + 5e-13, 1.0, 1.0, 1.0, 1.0]);
+        let c = cubic(vec![0.0, 0.0, 0.0, 0.0, 0.5 + 3e-14, 0.5 + 3e-14, 0.5 + 3e-14, 1.0, 1.0, 1.0, 1.0]);
+        for order in [[0, 1, 2], [2, 1, 0], [1, 0, 2]] {
+            let all = [a.clone(), b.clone(), c.clone()];
+            let cs = compat(order.iter().map(|&i| all[i].clone()).collect()).expect("compatible");
+            assert!(cs.iter().all(|c| c.ctrl.len() == cs[0].ctrl.len() && c.knots.len() == cs[0].knots.len()));
+        }
+    }
+
     fn frame_at(y: f64) -> Frame {
         Frame { o: Vec3::new(0.0, y, 0.0), x: Vec3::new(1.0, 0.0, 0.0), y: Vec3::new(0.0, 0.0, -1.0), z: Vec3::new(0.0, 1.0, 0.0) }
     }

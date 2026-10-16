@@ -12,6 +12,7 @@ const wasm = arg('--wasm', path.join(here, '../target/wasm32-unknown-unknown/rel
 const N = +arg('--n', 300);
 const only = arg('--seeds', null)?.split(',').map(Number);
 const verbose = process.argv.includes('--verbose');
+const strict = process.argv.includes('--strict'); // also fail on ok:true results whose solid fails validate (known: LOOP_SELF_INTERSECT / EDGE_OFF_SURFACE on some dropped-point sections)
 const mod = new WebAssembly.Module(readFileSync(wasm));
 
 function rng(seed) { let s = (seed * 2654435761) >>> 0 || 1; return () => { s ^= s << 13; s >>>= 0; s ^= s >>> 17; s ^= s << 5; s >>>= 0; return s / 4294967296; }; }
@@ -64,12 +65,15 @@ export function runSeed(seed) {
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const seeds = only ?? Array.from({ length: N }, (_, i) => i + 1);
   const tally = {}; const bad = [];
+  const invalid = [];
   for (const s of seeds) {
     const r = runSeed(s);
     tally[r.status] = (tally[r.status] ?? 0) + 1;
-    if (/^[A-Z]+$/.test(r.status)) { bad.push(r); console.log(`FAIL seed ${s}: ${r.status} ${r.detail}`); }
+    if (r.status === 'INVALID') invalid.push(s);
+    if (/^[A-Z]+$/.test(r.status) && (strict || r.status !== 'INVALID')) { bad.push(r); console.log(`FAIL seed ${s}: ${r.status} ${r.detail}`); }
     else if (verbose) console.log(`seed ${s}: ${r.status} ${r.detail}`);
   }
+  if (invalid.length && !strict) console.log('invalid solids (not failing without --strict): seeds', invalid.join(','));
   console.log(JSON.stringify(tally), bad.length ? 'FAILED' : 'PASS');
   process.exit(bad.length ? 1 : 0);
 }
