@@ -170,6 +170,30 @@ impl<'a> Containment<'a> {
         merged
     }
 
+    /// Index of face `f` in [`Containment::faces`].
+    pub fn face_index(&self, f: FaceId) -> Option<usize> {
+        self.faces.iter().position(|&g| g == f)
+    }
+
+    /// Nearest point of face `i` (interior or boundary edge) to `q`: `(distance, point)`.
+    pub fn face_nearest(&self, i: usize, q: Vec3) -> Option<(f64, Vec3)> {
+        let f = self.faces[i];
+        let mut best: Option<(f64, Vec3)> = None;
+        let (u, v, p) = self.body.face(f).surface.closest_point(q);
+        let dist = p.dist(q);
+        if dist.is_finite() && self.point_in_face(i, u, v, self.tol) != Where::Out {
+            best = Some((dist, p));
+        }
+        for e in self.body.face_edges(f) {
+            let ed = self.body.edge(e);
+            let (t, dd) = dist_in_range(&ed.curve, (ed.t0, ed.t1), q);
+            if dd.is_finite() && best.map_or(true, |b| dd < b.0) {
+                best = Some((dd, ed.curve.eval(t)));
+            }
+        }
+        best
+    }
+
     /// Nearest point of the boundary to `q`: `(distance, face, point)`. Face interiors (closest point inside the trim)
     /// and every boundary edge are searched; faces are visited by box distance so far faces are never touched.
     pub fn nearest(&self, q: Vec3) -> Option<(f64, FaceId, Vec3)> {

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { check, describe as describeNames, heal, importSat, importStep, massProps, probe, resolveDescriptions, section, sections, validate } from './queries.js';
+import { angles, check, clearance, closestPoint, describe as describeNames, distance, heal, importSat, importStep, massProps, maxDistance, probe, resolveDescriptions, section, sections, symmetry, thickness, thicknessAt, validate } from './queries.js';
 import { defaultWasmPath as wasmPath } from '../../kernel-client/src/worker.js';
 import type { KernelReply } from '../../kernel-client/src/protocol.js';
 import type { KernelTransport } from '../../driver/src/verify.js';
@@ -75,6 +75,28 @@ describe('queries', () => {
     ]);
   });
 
+  it('measurement wrappers send the documented messages', async () => {
+    const seen: Record<string, unknown>[] = [];
+    await distance(fake({ distance: 0 }, seen), 'F2.C0', [1, 2, 3], { tagB: 'o', samples: 9 });
+    await maxDistance(fake({ maxDistance: 0 }, seen), { tagB: 'o', both: true, samples: 100 }, { tag: 't' });
+    await thickness(fake({ thin: [] }, seen), { method: 'sphere', top: 3 });
+    await thicknessAt(fake({}, seen), { point: [0, 0, 0] });
+    await closestPoint(fake({ results: [] }, seen), [[0, 0, 0]], { on: 'edge', k: 2 });
+    await angles(fake({}, seen), { edges: 'all', draft: { pull: [0, 0, 1], min: 1 } });
+    await clearance(fake({ pairs: [] }, seen), { min: 2, include: 'gap', limit: 5 });
+    await symmetry(fake({ planes: [] }, seen), { samples: 500 });
+    assert.deepEqual(seen, [
+      { type: 'distance', tag: 'main', a: 'F2.C0', b: [1, 2, 3], tagB: 'o', opts: { samples: 9 } },
+      { type: 'maxDistance', tag: 't', tagB: 'o', opts: { samples: 100, both: true } },
+      { type: 'thickness', tag: 'main', opts: { method: 'sphere', top: 3 } },
+      { type: 'thicknessAt', tag: 'main', point: [0, 0, 0] },
+      { type: 'closestPoint', tag: 'main', points: [[0, 0, 0]], on: 'edge', k: 2 },
+      { type: 'angles', tag: 'main', edges: 'all', draft: { pull: [0, 0, 1], min: 1 } },
+      { type: 'clearance', tag: 'main', min: 2, opts: { include: 'gap', limit: 5 } },
+      { type: 'symmetry', tag: 'main', opts: { samples: 500 } },
+    ]);
+  });
+
   it('throws on trap, envelope error and null result', async () => {
     await assert.rejects(check(failing('trap'), []), /trap: boom/);
     await assert.rejects(check(failing('error'), []), /nope/);
@@ -122,6 +144,24 @@ describe('queries live', { skip: !existsSync(wasmPath()) && 'no wasm built' }, (
       assert.equal(pr.points?.[2].inside, false);
       assert.equal(pr.rays?.[0].hits.length, 2);
       assert.equal(pr.rays?.[0].hits[0].entering, true);
+      // measurement requests on the 10 x 5 x 2 plate
+      const th = await s.thickness();
+      assert.ok(Math.abs((th.minThickness ?? 0) - 2) < 1e-6, `thickness ${th.minThickness}`);
+      const tsph = await s.thickness({ method: 'sphere' });
+      assert.ok(Math.abs((tsph.minThickness ?? 0) - 2) < 1e-5);
+      const an = await s.angles({ edges: 'all' });
+      assert.equal(an.edges?.length, 12);
+      assert.ok(an.edges?.every((e) => Math.abs(e.angle - 90) < 1e-6));
+      const ds = await s.distance([5, 2.5, 20], 'body');
+      assert.ok(Math.abs(ds.distance - 18) < 1e-9 || Math.abs(ds.distance - 22) < 1e-9, `distance ${ds.distance}`);
+      const cl = await s.clearance({ min: 3 });
+      assert.equal(cl.pairs.filter((x) => x.kind === 'wall').length, 1);
+      const mx = await s.maxDistance();
+      assert.ok(mx.maxDistance < 1e-9);
+      const sy = await s.symmetry();
+      assert.ok(sy.symmetric.length >= 3);
+      const cp = await s.closestPoint([[100, 100, 100]], { on: 'vertex' });
+      assert.equal(cp.results.length, 1);
       // STEP round-trip through a fresh tag
       const kernel = (s as unknown as { kernel: KernelTransport }).kernel;
       const text = await s.step();

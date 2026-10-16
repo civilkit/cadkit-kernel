@@ -47,6 +47,46 @@ pub fn probe(cx: &mut Cx) -> Result<Json, String> {
     null_or_query(cx, "probe")
 }
 
+/// `{type:"distance", tag?, ...}`: minimum distance of two entities (face | edge | vertex | point | lump | body).
+pub fn distance(cx: &mut Cx) -> Result<Json, String> {
+    null_or_query(cx, "distance")
+}
+
+/// `{type:"maxDistance", tag?, ...}`: one-sided Hausdorff distance a -> b with an error bound.
+pub fn max_distance(cx: &mut Cx) -> Result<Json, String> {
+    null_or_query(cx, "maxDistance")
+}
+
+/// `{type:"thickness", tag?, ...}`: minimum wall thickness and the thinnest regions.
+pub fn thickness(cx: &mut Cx) -> Result<Json, String> {
+    null_or_query(cx, "thickness")
+}
+
+/// `{type:"thicknessAt", tag?, ...}`: wall thickness at a point or over a face.
+pub fn thickness_at(cx: &mut Cx) -> Result<Json, String> {
+    null_or_query(cx, "thicknessAt")
+}
+
+/// `{type:"closestPoint", tag?, ...}`: closest entity of the body to many points.
+pub fn closest_point(cx: &mut Cx) -> Result<Json, String> {
+    null_or_query(cx, "closestPoint")
+}
+
+/// `{type:"angles", tag?, ...}`: dihedral angles of edges / faces and draft angles against a pull direction.
+pub fn angles(cx: &mut Cx) -> Result<Json, String> {
+    null_or_query(cx, "angles")
+}
+
+/// `{type:"clearance", tag?, ...}`: face pairs closer than `min`.
+pub fn clearance(cx: &mut Cx) -> Result<Json, String> {
+    null_or_query(cx, "clearance")
+}
+
+/// `{type:"symmetry", tag?, ...}`: mirror-symmetry planes and the deviation of the mirrored body.
+pub fn symmetry(cx: &mut Cx) -> Result<Json, String> {
+    null_or_query(cx, "symmetry")
+}
+
 /// `{type:"refDiff", base:<part>, part:<part>}`: regenerates both privately
 /// and reports references that now point at a different entity.
 pub fn ref_diff(cx: &mut Cx) -> Result<Json, String> {

@@ -87,6 +87,15 @@ pub const REQUEST_TYPES: &[(&str, Handler)] = &[
     ("section", agent::section),
     ("sections", agent::sections),
     ("probe", agent::probe),
+    // Extensions: measurement and analysis (docs/agent-queries.md "Measurement"), read-only.
+    ("distance", agent::distance),
+    ("maxDistance", agent::max_distance),
+    ("thickness", agent::thickness),
+    ("thicknessAt", agent::thickness_at),
+    ("closestPoint", agent::closest_point),
+    ("angles", agent::angles),
+    ("clearance", agent::clearance),
+    ("symmetry", agent::symmetry),
     // Extension: thread standards as data (stateless, read-only).
     ("threadData", agent::thread_data),
     // Extension: design-rule profiles (read-only).

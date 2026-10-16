@@ -19,9 +19,9 @@ No allocation-heavy types live here. This crate is the FIRST rebuild target:
 it is small, mechanically decompilable (f64 arithmetic), and everything
 depends on it.
 
-## Rebuild notes
+## Build notes
 
-- The original is f64 throughout (wasm doubles). Match NaN/inf semantics.
+- f64 throughout (wasm doubles). Match NaN/inf semantics.
 - Cross-check against the oracle: transformed placements in
   `oracle-flange.json` (components[].place) must reproduce bit-for-bit-ish
   (1e-15 relative) once linalg is right.

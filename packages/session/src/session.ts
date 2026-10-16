@@ -6,8 +6,10 @@
 import { emptyPart, FEATURE_TYPES, type PartDoc } from '../../part-model/src/index.js';
 import { hintFor, verify, type CheckResultItem, type KernelTransport, type RegenError, type VerifyReport } from '../../driver/src/verify.js';
 import {
-  check, checkProfile, describe, heal, importSat, importSldprt, importStep, massProps, probe, profiles, resolveDescriptions, section, sections, step, threadData, validate,
+  angles, check, checkProfile, clearance, closestPoint, describe, distance, maxDistance, symmetry, thickness, thicknessAt, heal, importSat, importSldprt, importStep, massProps, probe, profiles, resolveDescriptions, section, sections, step, threadData, validate,
   type CheckReport, type DescribeItem, type HealReport, type ImportReport, type MassReport, type ProbeReport,
+  type AnglesReport, type ClearanceReport, type ClosestPointReport, type DistanceReport, type HausdorffReport, type MaxDistanceReport, type MeasureEntity,
+  type SymmetryReport, type ThicknessAtReport, type ThicknessReport,
   type ResolveMatch, type SectionReport, type SectionsReport, type ValidateIssue,
 } from './queries.js';
 export type EditOp =
@@ -781,6 +783,47 @@ export class Session {
   /** Inside / signed distance of points and hit lists of rays. */
   probe(q: { points?: number[][]; rays?: Array<{ origin: number[]; dir: number[] }> }): Promise<ProbeReport> {
     return probe(this.kernel, q, { tag: this.tag });
+  }
+
+  /** Minimum distance of two entities (face id | edge key | V<n> | lump:<n> | body | [x, y, z]); `tagB` measures to another tag's body. */
+  distance(a: MeasureEntity, b: MeasureEntity, o?: { tagB?: string; samples?: number }): Promise<DistanceReport> {
+    return distance(this.kernel, a, b, { tag: this.tag, ...o });
+  }
+
+  /** One-sided Hausdorff distance a to b (default whole bodies) with an error bound. */
+  maxDistance(q?: { a?: MeasureEntity; b?: MeasureEntity; tagB?: string; samples?: number; both?: false }): Promise<MaxDistanceReport>;
+  maxDistance(q: { a?: MeasureEntity; b?: MeasureEntity; tagB?: string; samples?: number; both: true }): Promise<HausdorffReport>;
+  maxDistance(q: { a?: MeasureEntity; b?: MeasureEntity; tagB?: string; samples?: number; both?: boolean } = {}): Promise<MaxDistanceReport | HausdorffReport> {
+    return maxDistance(this.kernel, q as { both: true }, { tag: this.tag });
+  }
+
+  /** Minimum wall thickness and the thinnest places. */
+  thickness(q?: Parameters<typeof thickness>[1]): Promise<ThicknessReport> {
+    return thickness(this.kernel, q, { tag: this.tag });
+  }
+
+  thicknessAt(q: { point: number[] } | { face: string; samples?: number }): Promise<ThicknessAtReport> {
+    return thicknessAt(this.kernel, q, { tag: this.tag });
+  }
+
+  /** Closest face / edge / vertex to many points. */
+  closestPoint(points: number[][], q?: Parameters<typeof closestPoint>[2]): Promise<ClosestPointReport> {
+    return closestPoint(this.kernel, points, q, { tag: this.tag });
+  }
+
+  /** Dihedral angles of edges / faces and draft angles. */
+  angles(q: Parameters<typeof angles>[1]): Promise<AnglesReport> {
+    return angles(this.kernel, q, { tag: this.tag });
+  }
+
+  /** Face pairs closer than `min`. */
+  clearance(q: Parameters<typeof clearance>[1]): Promise<ClearanceReport> {
+    return clearance(this.kernel, q, { tag: this.tag });
+  }
+
+  /** Mirror-symmetry planes with the sampled deviation. */
+  symmetry(q?: Parameters<typeof symmetry>[1]): Promise<SymmetryReport> {
+    return symmetry(this.kernel, q, { tag: this.tag });
   }
 
   step(name?: string): Promise<string> {

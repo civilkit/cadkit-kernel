@@ -20,6 +20,7 @@ pub mod offset;
 pub mod ref_curve;
 pub mod pipecut;
 pub mod profile;
+pub mod analysis;
 pub mod section;
 pub mod shell;
 pub mod simplify;

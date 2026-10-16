@@ -1,4 +1,4 @@
-# Agent queries: check, resolve, describe, refDiff, section, sections, probe
+# Agent queries: check, resolve, describe, refDiff, section, sections, probe, distance, thickness and the measurement set
 
 Kernel-side pieces of `spec-agent-interface.md` (ADR 0002 items 3-4, ADR 0003
 item 5). New request types, extensions to the 21 existing ones (which are
@@ -133,6 +133,124 @@ edges are both searched). `rays` reply `[{hits:[{t, point, face, entering, tange
 normalised, `t` is the distance); `entering` is true when the ray goes from outside to inside; a hit on a shared edge
 is reported once; a ray lying in a face skips that face; `tangent:true` marks grazing hits. Containment uses the
 existing seven-ray parity classifier of `ck-ops::contain`.
+
+## Measurement and analysis (read-only)
+
+`distance`, `maxDistance`, `thickness`, `thicknessAt`, `closestPoint`, `angles`, `clearance`, `symmetry`
+(`crates/ck-ops/src/analysis.rs`; tests: its unit tests, `crates/ck-wasm/tests/measure.rs`, `tools/measure_check.mjs`,
+`tools/measure_occt_check.py`). All take `tag` (default `main`), answer `null` on a tag with no body, return
+`{ok:false,error}` with the field named for bad input, and never change the body. Options may sit in `opts` or at the
+top level of the request.
+
+**Entities** (`a`, `b`, `ids`): a face id as in `describe` (a duplicated id selects every face with it), an edge key
+as in `describe` (`F2.C1|F2.S.e1#3`) or `e<n>`, a vertex `V<n>`, a point `[x,y,z]`, `lump:<n>` (the faces of one
+lump), `"body"`, an array of any of these, or an object `{face|edge|vertex|lump|point|faces|edges}`.
+Replies name the face / edge / vertex a point lies on as `{kind, id}` (`point` has no id).
+
+### distance `{a, b, tagB?, opts?:{samples}}`
+
+Minimum distance of two entities. `tagB` takes `b` from the body of another tag (a rebuilt part against the original).
+
+```
+-> {"type":"distance","tag":"main","a":"lump:0","b":"lump:1"}
+<- {"distance":5,"pointA":[10,0,-5],"pointB":[15,0,-5],"a":{"kind":"face","id":"F2.C2"},"b":{"kind":"face","id":"F3.C0"},
+    "intersects":false,"direction":[1,0,0],"aLabel":"lump:0","bLabel":"lump:1"}
+```
+
+`intersects:true` with `distance:0` and `intersection:{kind:"point"|"curve"|"area"}` when the entities touch (the
+extent is the share of A's samples within 1e-7 of B); `kind:"containment"` (with `boundaryDistance`) when, across two
+tags, one solid lies inside the other. Method: exact point-to-face / point-to-edge projections (the surface's own
+closest point, trimmed by the face loops), closed form for two line segments, and for everything else a multi-start
+alternating projection (sample A and B, best four starts, project back and forth until the gain is under 1e-15
+relative, 400 iterations at most). Sets of faces are pruned by box distance. Pairs whose minimum lies in the
+interior of both faces (sphere / sphere, cylinder / cylinder) are found from the grid starts: grids are
+`opts.samples` x `opts.samples` per face (default 7).
+
+### maxDistance `{a?, b?, tagB?, opts?:{samples, both}}`
+
+One-sided Hausdorff distance: the maximum over the surface of `a` (default whole body) of the minimum distance to `b`
+(default whole body, `tagB` for another tag). Samples a grid inside every face plus its edges (`opts.samples`, default
+5000 over the body). Reply `{maxDistance, location, nearest, errorBound, upperBound, rms, samples, face}`: the
+distance function is 1-Lipschitz, so the true maximum lies in `[maxDistance, maxDistance + errorBound]` where
+`errorBound` is the covering radius of the sample grid. `both:true` adds the other direction:
+`{hausdorff, errorBound, aToB, bToA}`.
+
+### thickness `{opts?:{samples, top, radius, below, method:"ray"|"sphere", sphereSamples}}`
+
+Wall thickness of a solid. Each face is sampled on a uv grid (about `samples` in total, default 6000); from each
+sample a ray goes along the inward normal and the first exit (`contain.rs` ray hits, `entering:false`) gives the
+thickness there. `method:"sphere"` refines the thinnest `sphereSamples` (default 200) with the largest inscribed ball
+tangent at the sample (thickness = 2 r, never above the ray value; needs more time). Reply
+`{method, samples, noExit, minThickness, location:{thickness, point, farPoint, face, farFace, direction},
+meanThickness, clusterRadius, thin:[...]}`; `thin` lists the `top` (default 10) thinnest places, thinnest first,
+clustered greedily so that two entries are at least `radius` apart (default max(2 x min, 2 % of the diagonal));
+`below` drops entries thicker than it. `noExit` counts samples without an exit (open shells, ray lost).
+
+### thicknessAt `{point}` or `{face, opts?:{samples}}`
+
+`point`: the thickness along the inward normal at the surface point nearest to it
+(`{distanceToSurface, result:{...}}`). `face`: min (with its location) / max / mean over the face.
+
+### closestPoint `{points:[[x,y,z]], on?:"body"|"face"|"edge"|"vertex", ids?, k?}`
+
+At most 2000 points per call. `on:"body"` (default): the nearest boundary point with what it is on
+(`entity:{kind:"vertex"|"edge"|"face", id}`, `face`, the inside flag and `signedDistance`, negative inside, like
+`probe`). `face` / `edge` / `vertex`: the nearest entity of that kind (restricted to `ids` if given) with `uv` (face) or
+curve parameter `t` (edge). `k > 1` returns the k nearest entities per point as a list.
+
+### angles `{edges?:"all"|[keys], faces?:[a,b], draft?:{pull, faces?, min?}}`
+
+`edges`: per two-faced edge `{edge, faces, angle, normalAngle, type, min, max, at}`: `angle` is the interior dihedral
+angle through the material in degrees (a box edge is 90, a re-entrant edge of an L is 270), `type` is `convex`,
+`concave` or `smooth` (normals within 0.5 degrees), `min`/`max` over five points along the edge (curved edges and
+faces vary). `faces`: `between` for two faces: with a shared edge its dihedral angle; otherwise the angle between the
+normals at their closest points (`angle`, `normalAngle`, `distance`, `parallel`). `draft`: for each face (or `faces`)
+the draft angle against the pull direction, `asin(n . pull)` in degrees over a 5 x 5 grid (`draft`, `min`, `max`,
+`class`: `vertical` (|d| < 0.01), `undercut` (negative), `parting` (|d| > 89.99), `ok`); with `min` the walls (not
+the parting faces) under that angle are listed in `violations`.
+
+### clearance `{min, a?, b?, opts?:{include:"gap"|"wall"|"both", limit}}`
+
+Face pairs closer than `min` (default pairs: every face of the body with every other, skipping pairs that share a
+vertex since they touch by construction). `kind` says what lies between them: `gap` (air between two features),
+`wall` (material between them, e.g. a hole to the part edge: the same number `thickness` reports) or `contact`.
+Reply `{min, count, pairsTested, truncated, pairs:[{a, b, distance, kind, pointA, pointB}]}` sorted by distance, at
+most `limit` (default 200) listed. Box-pruned, at most 4000 faces per side.
+
+### symmetry `{planes?:[{origin, normal}], opts?:{samples, tol}}`
+
+Candidate mirror planes: the coordinate axes and the principal axes through the centre of mass (and the coordinate
+axes through the box centre), or the given `planes`. For each, the surface is sampled (`samples`, default 1000),
+mirrored and measured against the body: `maxDeviation` and `rmsDeviation` of the mirrored surface from the original
+(the mirror is an involution, so one direction is the whole Hausdorff distance). `symmetric` lists the planes with
+`maxDeviation <= tol` (default 1e-4 of the diagonal); `best` is the least deviating; `planes` has all, sorted. The
+symmetric-difference volume of the booleans is not computed.
+
+### Accuracy and timing
+
+`tools/measure_occt_check.py` (python3.12 + OCP) compares `distance` of random face pairs of sample parts with
+`BRepExtrema_DistShapeShape` on the exported STEP (faces matched through an interior point): 80 pairs on four
+plane / cylinder / cone parts (mounting plate, bracket, motor bracket, pipe elbow) agree to 4e-15 (57 with nonzero
+distance); 60 pairs on the large sample shell, swept handle, loft bottle and surface patch (B-spline faces) agree to
+2.6e-8. On the full large sample part (125 faces, B-spline; regen 11-15 s on the dev machine): `thickness` 2.6 s
+(about 850 samples, min 0.38 mm), `closestPoint` 0.13 s per point, `angles` all edges 0.8 s, `distance` of a point to
+the body about 7 ms; `maxDistance` / `symmetry` cost about 7 ms per sample point (the exact B-spline projections), so
+their defaults are 5000 / 1000 samples and the boundary samples are capped to a quarter of the budget.
+`tools/measure_check.mjs` runs everything on the sample parts (no trap, finite output, sane ranges, `distance`
+agrees with `probe`, timings).
+
+### Limits
+
+- Distance is exact for the pairs where the projections are exact; the multi-start can miss a minimum that lies in
+  the interior of two doubly curved faces and is far from every grid sample (raise `opts.samples`). Near-parallel
+  curved pairs converge linearly (400 iterations then stop at the best seen).
+- `distance` to a lump inside another lump of the same body is the boundary distance (containment is only tested
+  across two tags).
+- `thickness` is a sampled minimum: a feature thinner than the sample spacing between two samples can be missed
+  (raise `opts.samples`; the thin list shows where the samples are densest). Edges and vertices are not sampled.
+  `method:"ray"` measures along the normal, which overestimates in wedges and at corners; `sphere` does not.
+- `clearance` skips faces that share a vertex, so two faces of a tight V groove are not reported.
+- Only same-session tags can be compared (`tagB`).
 
 ## Not done
 
