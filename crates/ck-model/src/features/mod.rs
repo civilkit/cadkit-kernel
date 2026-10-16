@@ -1249,6 +1249,12 @@ impl Brep {
             _ if f.type_name == "editCurve" => return edit_curve::exec_edit_curve(self, state, f),
             _ => return Err(crate::regen::FeatureError::new(&extrude::todo(&f.type_name))),
         };
+        if let Some(extrude::Recipe::Extrude { profile, opts }) = &tool.recipe {
+            if let Some(h) = draft::tip_depth(profile, opts) {
+                state.result.limits.retain(|l| l.0 != f.id);
+                state.result.limits.push((f.id.clone(), Json::Obj(vec![("maxHeight".into(), Json::Num(h))])));
+            }
+        }
         self.apply(&f.id, tool)
     }
 }

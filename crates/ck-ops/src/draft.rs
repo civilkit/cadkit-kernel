@@ -38,10 +38,14 @@ use ck_topo::make::plane_pcurve;
 pub struct DraftError {
     pub code: &'static str,
     pub detail: Option<String>,
+    /// `draftTooLarge` only: distance from the neutral plane, along the pull
+    /// direction, at which a drafted circular wall closes to a point (the
+    /// largest height a cone can have). None when not known.
+    pub tip: Option<f64>,
 }
 
 fn err(code: &'static str, detail: impl Into<String>) -> DraftError {
-    DraftError { code, detail: Some(detail.into()) }
+    DraftError { code, detail: Some(detail.into()), tip: None }
 }
 
 /// Smallest angle (rad) that still counts as a draft; the largest is just
@@ -234,7 +238,7 @@ struct Edit {
 pub fn draft(body: &Body, neutral: Vec3, dir: Vec3, faces: &[FaceId], angle: f64, tol: f64) -> Result<Body, DraftError> {
     let a = angle.abs();
     if !(a > ANGLE_MIN && a < ANGLE_MAX) {
-        return Err(DraftError { code: "invalidValue", detail: None });
+        return Err(DraftError { code: "invalidValue", detail: None, tip: None });
     }
     let d = dir.normalize();
 
@@ -281,7 +285,8 @@ pub fn draft(body: &Body, neutral: Vec3, dir: Vec3, faces: &[FaceId], angle: f64
             None => edits.push(edit),
         }
     }
-    rebuild(body, &edits)
+    let tips = tip_scan(body, &edits)?;
+    rebuild(body, &edits, &tips)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -303,9 +308,75 @@ fn cyl_to_cone(
         return Err(err("draftAxisNotParallel", name));
     }
     let Some(inside) = interior_point(body, f, tol) else {
-        return Err(DraftError { code: "draftFailed", detail: Some("no interior point".into()) });
+        return Err(DraftError { code: "draftFailed", detail: Some("no interior point".into()), tip: None });
     };
     Ok(cone_from_cylinder(r, fr, d, neutral, angle, inside))
+}
+
+// ------------------------------------------------------------------ taper tip
+
+/// A drafted circular wall whose rim shrank to a point: the cap face `cap`
+/// (a plane with the single rim edge `edge`) disappears and `apex` becomes
+/// the end of the seam on `cone`.
+struct Tip {
+    cap: FaceId,
+    cone: FaceId,
+    edge: EdgeId,
+    apex: Vec3,
+}
+
+/// Looks at every full circle that bounds a new cone. A rim that reaches radius
+/// zero (within 1e-9 of the radius) is a tip; one past the apex is `draftTooLarge`
+/// carrying the tip distance in `tip`.
+fn tip_scan(b: &Body, edits: &[Edit]) -> Result<Vec<Tip>, DraftError> {
+    let mut tips: Vec<Tip> = vec![];
+    for ed in edits {
+        let Surface::Cone { frame, r, semi_angle } = &ed.surface else { continue };
+        let t = semi_angle.tan();
+        if !(r.abs() > 0.0) || t.abs() < 1e-12 {
+            continue;
+        }
+        let v_tip = -r / t;
+        for e in b.face_edges(ed.face) {
+            let edge = b.edge(e);
+            let Curve::Circle { frame: cf, .. } = &edge.curve else { continue };
+            if b.is_seam(e) || edge.v0 != edge.v1 || cf.z.dot(frame.z).abs() < 1.0 - 1e-9 {
+                continue;
+            }
+            let v_e = (cf.o - frame.o).dot(frame.z);
+            let rho = r + v_e * t;
+            let eps = 1e-9 * r.abs();
+            let too_large = || DraftError {
+                code: "draftTooLarge",
+                detail: Some(format!("the taper closes to a point at height {}", v_tip.abs())),
+                tip: Some(v_tip.abs()),
+            };
+            if rho < -eps {
+                return Err(too_large());
+            }
+            if rho > eps {
+                continue;
+            }
+            let faces = b.edge_faces(e);
+            let cap = faces.iter().copied().find(|&f| f != ed.face);
+            let single = |f: FaceId| {
+                let loops = &b.face(f).loops;
+                loops.len() == 1 && b.lp(loops[0]).coedges.len() == 1
+            };
+            match cap {
+                Some(c)
+                    if faces.len() == 2
+                        && !edits.iter().any(|x| x.face == c)
+                        && matches!(b.face(c).surface, Surface::Plane { .. })
+                        && single(c) =>
+                {
+                    tips.push(Tip { cap: c, cone: ed.face, edge: e, apex: frame.o + frame.z * v_tip });
+                }
+                _ => return Err(too_large()),
+            }
+        }
+    }
+    Ok(tips)
 }
 
 // ------------------------------------------------------------------ rebuild
@@ -453,7 +524,7 @@ fn pair_name(b: &Body, fs: &[FaceId]) -> String {
 
 /// Stand-in for the offset engine (f2871): replace the face surfaces and
 /// re-derive every touched edge and vertex. Ids and arena order are kept.
-fn rebuild(b: &Body, edits: &[Edit]) -> Result<Body, DraftError> {
+fn rebuild(b: &Body, edits: &[Edit], tips: &[Tip]) -> Result<Body, DraftError> {
     let mut nb = b.clone();
     let changed: Vec<FaceId> = edits.iter().map(|e| e.face).collect();
     for e in edits {
@@ -461,8 +532,10 @@ fn rebuild(b: &Body, edits: &[Edit]) -> Result<Body, DraftError> {
         f.surface = e.surface.clone();
         f.sense = e.sense;
     }
-    let touched: Vec<EdgeId> =
-        b.edge_ids().filter(|&e| b.edge_faces(e).iter().any(|f| changed.contains(f))).collect();
+    let touched: Vec<EdgeId> = b
+        .edge_ids()
+        .filter(|&e| b.edge_faces(e).iter().any(|f| changed.contains(f)) && !tips.iter().any(|t| t.edge == e))
+        .collect();
     let failed = |m: &str| err("draftFailed", m);
 
     // vertices of the touched edges, solved against all their faces
@@ -487,6 +560,10 @@ fn rebuild(b: &Body, edits: &[Edit]) -> Result<Body, DraftError> {
                     }
                 }
             }
+        }
+        if let Some(t) = tips.iter().find(|t| b.edge(t.edge).v0 == v) {
+            newp.push((v, t.apex));
+            continue;
         }
         let surfs: Vec<&Surface> = fs.iter().map(|&f| &nb.faces[f.idx()].surface).collect();
         let p = solve_vertex(b.vertex(v).p, &surfs)
@@ -595,6 +672,17 @@ fn rebuild(b: &Body, edits: &[Edit]) -> Result<Body, DraftError> {
     }
     for (v, p) in &newp {
         nb.vertices[v.idx()].p = *p;
+    }
+    // a wall that closed to a point: its cap and the rim edge go, the seam ends at the apex
+    for t in tips {
+        for c in nb.edge_coedges(t.edge) {
+            if nb.coedge_face(c) == t.cone {
+                let lp = nb.coedges[c.idx()].lp;
+                nb.loops[lp.idx()].coedges.retain(|&x| x != c);
+                nb.coedges[c.idx()].alive = false;
+            }
+        }
+        ck_topo::edit::delete_face(&mut nb, t.cap);
     }
     // edges that keep their curve but end at a moved vertex slide along it
     for e in b.edge_ids() {
