@@ -235,7 +235,7 @@ partial, a lower bound for a maximum (`maxDistance`, `thickness` samples, `symme
 when `clearance` finds more pairs than `limit` (`listedAll:false`) or more candidate pairs than `opts.maxPairs`
 (default 4000, closest boxes first). `symmetry` stops testing a plane after a few dozen points once one is farther
 than `tol` from the body: that plane has `exact:false` and its `maxDeviation` is a lower bound (`opts.full:true` measures
-every sample). `clearance` seeds each pair from the closest display-mesh points and refines once (at most 60
+every sample). `clearance` skips a face pair when its display meshes are farther apart than `min` plus twice the mesh spacing (a face whose mesh failed or is incomplete can therefore hide a pair), and seeds each pair from the closest display-mesh points and refines once (at most 60
 projections), so for doubly curved pairs the distance is a local minimum near the mesh minimum.
 
 ### Accuracy and timing

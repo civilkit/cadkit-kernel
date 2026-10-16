@@ -489,9 +489,12 @@ impl<'a> Ent<'a> {
 
     /// Nearest point of the entity to `q`: `(distance, point, prim index)`.
     pub fn nearest(&self, q: Vec3) -> Option<(f64, Vec3, usize)> {
-        // many faces: order and prune with the mesh bounds (see `Ctx::mesh`)
+        // many faces: visit them by their nearest display-mesh point (a sound upper bound of the face distance, since
+        // mesh points lie on the face) and prune with the box distance only: a mesh can be incomplete, so it is never
+        // used as a lower bound
         let use_mesh = self.prims.len() > 12 && self.prims.iter().all(|p| matches!(p, Prim::Face(_)));
         let mesh = if use_mesh { Some(self.ctx.mesh()) } else { None };
+        let mut ub = f64::INFINITY;
         let mut order: Vec<(f64, f64, usize)> = self
             .boxes
             .iter()
@@ -499,9 +502,10 @@ impl<'a> Ent<'a> {
             .map(|(i, b)| {
                 let lb = box_dist_pt(b, q);
                 if let (Some(m), Prim::Face(f)) = (mesh, self.prims[i]) {
-                    if let Some((pts, h)) = m.get(&f) {
+                    if let Some((pts, _)) = m.get(&f) {
                         let md = pts.iter().map(|p| p.dist(q)).fold(f64::INFINITY, f64::min);
-                        return (lb.max(md - h), md, i);
+                        ub = ub.min(md);
+                        return (lb, md, i);
                     }
                 }
                 (lb, lb, i)
@@ -510,7 +514,8 @@ impl<'a> Ent<'a> {
         order.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         let mut best: Option<(f64, Vec3, usize)> = None;
         for (lb, _, i) in order {
-            if best.map_or(false, |b| lb > b.0) {
+            let bound = best.map_or(ub, |b| b.0.min(ub));
+            if lb > bound + 1e-12 {
                 if mesh.is_some() {
                     continue;
                 }
@@ -547,22 +552,6 @@ fn mesh_pair(ca: &Ctx, pa: Prim, cb: &Ctx, pb: Prim) -> Option<(f64, Vec3, f64)>
     best.0.is_finite().then_some((best.0, best.1, ha + hb))
 }
 
-/// Lower bound of the distance of two faces from their display meshes (0 when a mesh is missing or either is not a face).
-fn mesh_lb(ca: &Ctx, pa: Prim, cb: &Ctx, pb: Prim) -> f64 {
-    let (Prim::Face(fa), Prim::Face(fb)) = (pa, pb) else { return 0.0 };
-    let (Some((ma, ha)), Some((mb, hb))) = (ca.mesh().get(&fa), cb.mesh().get(&fb)) else { return 0.0 };
-    let mut best = f64::INFINITY;
-    for p in ma {
-        for q in mb {
-            let d = p.dist(*q);
-            if d < best {
-                best = d;
-            }
-        }
-    }
-    (best - ha - hb).max(0.0)
-}
-
 /// Minimum distance of two entities with the prims it is attained on.
 fn ent_min(a: &Ent, b: &Ent, n: usize) -> Option<(Hit, usize, usize)> {
     let mut pairs: Vec<(f64, usize, usize)> = vec![];
@@ -579,12 +568,6 @@ fn ent_min(a: &Ent, b: &Ent, n: usize) -> Option<(Hit, usize, usize)> {
         }
         if best.map_or(false, |(h, _, _)| lb > h.d + 1e-12) {
             break;
-        }
-        if let Some((bh, _, _)) = best {
-            // faces of big bodies: skip pairs the meshes put farther than the best so far
-            if a.prims.len() * b.prims.len() > 16 && mesh_lb(a.ctx, a.prims[i], b.ctx, b.prims[j]) > bh.d {
-                continue;
-            }
         }
         if let Some(h) = pair_min(a.ctx, a.prims[i], b.ctx, b.prims[j], n) {
             if best.map_or(true, |(bh, _, _)| h.d < bh.d) {
@@ -1405,7 +1388,7 @@ fn clearance_inner(body: &Body, msg: &Json) -> Result<Json, String> {
         // the display meshes bound the distance; one refinement from the closest mesh pair gives the exact value
         let h = match mesh_pair(&ctx, Prim::Face(a), &ctx, Prim::Face(b)) {
             Some((md, pa, slack)) => {
-                if md - slack >= min {
+                if md - 2.0 * slack >= min {
                     continue;
                 }
                 tested += 1;
