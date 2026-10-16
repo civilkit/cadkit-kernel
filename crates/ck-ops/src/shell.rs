@@ -128,7 +128,11 @@ fn diagnose_cut_failure(body: &Body, is_open: &dyn Fn(FaceId) -> bool, t: f64, o
 /// not name one it is found by halving the wall until the shell succeeds.
 pub fn shell(body: &Body, open: &[FaceId], thickness: f64, outward: bool, tol: f64) -> Result<Body, ShellError> {
     match shell_once(body, open, thickness, outward, tol) {
-        Err(mut e) if matches!(e.code.as_str(), "shellTooThick" | "shellFailed" | "offsetTooLarge") && e.limit.as_ref().map_or(true, |l| l.max_thickness <= 0.0) => {
+        Err(mut e)
+            if matches!(e.code.as_str(), "shellTooThick" | "shellFailed" | "offsetTooLarge")
+                && e.limit.as_ref().map_or(true, |l| l.max_thickness <= 0.0)
+                && (outward || near_pole_cuts(body, thickness, 6.0 * thickness).is_empty()) =>
+        {
             if let Some(ok) = largest_working(body, open, thickness, outward, tol) {
                 let l = e.limit.take();
                 let max = floor_hundredth(0.95 * ok);
@@ -166,20 +170,34 @@ fn largest_working(body: &Body, open: &[FaceId], thickness: f64, outward: bool, 
 }
 
 fn shell_once(body: &Body, open: &[FaceId], thickness: f64, outward: bool, tol: f64) -> Result<Body, ShellError> {
-    if outward || near_pole_cuts(body, 6.0 * thickness, 6.0 * thickness).is_empty() {
+    let cuts = if outward { vec![] } else { near_pole_cuts(body, thickness, 6.0 * thickness) };
+    if cuts.is_empty() {
         return shell_try(body, open, thickness, outward, tol, 6.0);
     }
+
     // The cavity of a point-ended loft is cut off by a plane some wall thicknesses short of the
     // apex. The nearer the plane, the less cavity is lost, but the cut-off front must still have
     // room for the wall (a hull section thinner than twice the wall has no cavity): try planes
     // from near to far.
     let mut first: Option<ShellError> = None;
-    for factor in [4.0, 5.0, 6.0, 8.0, 11.0, 16.0] {
+    for factor in [4.0, 6.0, 8.0, 10.0, 12.0] {
         match shell_try(body, open, thickness, outward, tol, factor) {
-            Ok(b) => return Ok(b),
+            Ok(b) => {
+                if std::env::var_os("CK_OFFSET_DEBUG").is_some() {
+                    eprintln!("shell: pole cut at {factor} wall thicknesses worked");
+                }
+                return Ok(b);
+            }
             Err(e) if matches!(e.code.as_str(), "invalidValue" | "shellUnsupported") => return Err(e),
             Err(e) => {
-                first.get_or_insert(e);
+                if std::env::var_os("CK_OFFSET_DEBUG").is_some() {
+                    eprintln!("shell: pole cut at {factor} wall thicknesses failed: {} {:?}", e.code, e.detail);
+                }
+                // report the failure that names the largest wall that works (a curvature limit), else the first
+                let better = |a: &ShellError| if a.detail.as_deref().is_some_and(|d| d.contains("too blunt")) { 1e6 } else { a.limit.as_ref().map_or(0.0, |l| l.max_thickness) };
+                if first.as_ref().map_or(true, |f| better(&e) > better(f)) {
+                    first = Some(e);
+                }
             }
         }
     }
@@ -201,7 +219,7 @@ fn shell_try(body: &Body, open: &[FaceId], thickness: f64, outward: bool, tol: f
     // loft, `reach_of_pole` short of the apex: the wall stays solid beyond it (the cavity there
     // is a sliver narrower than the wall), and the cavity ends flush on that plane.
     let reach_of_pole = cut_factor * thickness;
-    let near_poles = near_pole_cuts(body, 6.0 * thickness, reach_of_pole);
+    let near_poles = near_pole_cuts(body, thickness, reach_of_pole);
     if outward && !near_poles.is_empty() {
         return Err(ShellError::detail(
             "offsetUnsupported",
@@ -227,6 +245,8 @@ fn shell_try(body: &Body, open: &[FaceId], thickness: f64, outward: bool, tol: f
     // (second-order, so neighbouring fillets and walls drift apart with the
     // square of the distance) inside the fit tolerance for thick walls.
     let ov = (0.25 * t).max(t.min(10.0 * tol));
+    // volume of the body beyond the cutting plane(s): the cavity lost to the cut is part of it
+    let mut tail_vol = 0.0;
     let (base, cavity, trim_pairs) = if outward {
         let base = offset_body(body, &|f| if is_open(f) { 0.0 } else { t }).map_err(from_offset)?;
         let cav = offset_body(body, &|f| if is_open(f) { ov } else { 0.0 }).map_err(from_offset)?;
@@ -241,13 +261,21 @@ fn shell_try(body: &Body, open: &[FaceId], thickness: f64, outward: bool, tol: f
             .filter_map(|&f| plane_of(body, f))
             .collect();
         let mut front = body.clone();
+        if std::env::var_os("CK_OFFSET_DEBUG").is_some() {
+            eprintln!("shell: {} pole cut(s): {:?}", near_poles.len(), near_poles.iter().map(|c| (c.n, c.p)).collect::<Vec<_>>());
+        }
         let mut caps: Vec<(Vec3, f64)> = vec![];
         for c in &near_poles {
-            front = trim_behind(&front, c.p, c.n, tol).map_err(|e| {
+            let (b, n) = trim_behind(&front, c.p, c.n, tol).map_err(|e| {
                 ShellError::detail("shellFailed", format!("the tip of the point-ended loft could not be cut off for the cavity: {e}"))
             })?;
-            caps.push((c.n, c.p.dot(c.n)));
+            front = b;
+            caps.push((n, c.p.dot(n)));
+            if std::env::var_os("CK_OFFSET_DEBUG").is_some() {
+                eprintln!("shell: trimmed front has {} faces, {} vertices, bbox {:?}", front.num_faces(), front.vertex_ids().count(), front.bbox());
+            }
         }
+        tail_vol = ck_topo::mass::mass_props(body).volume - ck_topo::mass::mass_props(&front).volume;
         let find = |pl: &(Vec3, f64)| front.face_ids().find(|&f| plane_of(&front, f).is_some_and(|q| q.0.dot(pl.0) > 1.0 - 1e-9 && (q.1 - pl.1).abs() < 1e-6 * (1.0 + pl.1.abs())));
         let open_f: Vec<FaceId> = planes.iter().filter_map(find).collect();
         let cap_f: Vec<FaceId> = caps.iter().filter_map(find).collect();
@@ -286,6 +314,23 @@ fn shell_try(body: &Body, open: &[FaceId], thickness: f64, outward: bool, tol: f
     }
     let mut b = out.body;
     b.number_split_faces();
+    if !near_poles.is_empty() {
+        // a cavity cut off short of an apex has to come out clean, else a plane further away is tried
+        let wall = ck_topo::mass::mass_props(&b).volume;
+        if tail_vol > 0.05 * wall {
+            return Err(ShellError::detail(
+                "offsetUnsupported",
+                format!(
+                    "the apex of the point-ended loft is too blunt to shell: the cavity can only be built up to {cut_factor:.0} wall thicknesses short of it, which would leave {tail_vol:.0} mm3 of solid in place of cavity. Cut the tip off (so that the body stays more than {:.0} mm from the apex) or end the loft with a small closed section instead of a point",
+                    6.0 * thickness
+                ),
+            ));
+        }
+        let issues = ck_check::validate(&b, 1e-6);
+        if !issues.is_empty() {
+            return Err(ShellError::detail("shellFailed", format!("the cavity cut off short of the apex left an invalid wall: {} {}", issues[0].code, issues[0].detail)));
+        }
+    }
     Ok(b)
 }
 
@@ -311,8 +356,11 @@ fn plane_of(body: &Body, f: FaceId) -> Option<(Vec3, f64)> {
 
 /// The apexes of point-ended lofts that lie within `trigger` of a corner of the body (or inside it),
 /// each with the plane that cuts it off `reach` before the apex.
-fn near_pole_cuts(body: &Body, trigger: f64, reach: f64) -> Vec<PoleCut> {
-    let mut out: Vec<PoleCut> = vec![];
+fn near_pole_cuts(body: &Body, t: f64, reach: f64) -> Vec<PoleCut> {
+    let trigger = 6.0 * t;
+    // (apex, face name, sum of apex - ring centre over the faces meeting there): a cone split into
+    // halves has an off-axis centre per half, the sum of both is on the axis
+    let mut found: Vec<(Vec3, String, Vec3)> = vec![];
     for f in body.face_ids() {
         let face = body.face(f);
         let Surface::BSpline(_) = &face.surface else { continue };
@@ -343,35 +391,58 @@ fn near_pole_cuts(body: &Body, trigger: f64, reach: f64) -> Vec<PoleCut> {
                 2 => s.eval(0.5 * (u0 + u1), v0),
                 _ => s.eval(0.5 * (u0 + u1), v1),
             };
-            if out.iter().any(|c| c.p.dist(apex) < reach + 1e-6 && (apex - c.p).normalize().dot(c.n) > 0.99) {
-                continue;
-            }
             let nearest = body.vertex_ids().map(|v| body.vertex(v).p.dist(apex)).fold(f64::INFINITY, f64::min);
             if nearest >= trigger {
                 continue;
             }
             let Some(centre) = [0.01, 0.02, 0.04, 0.08, 0.16, 0.32, 0.5, 0.8].into_iter().map(ring).find(|c| c.dist(apex) >= reach) else { continue };
-            let n = (apex - centre).normalize();
-            out.push(PoleCut { face: body.face_id_str(f), n, p: apex - n * reach });
+            let dir = (apex - centre).normalize();
+            match found.iter_mut().find(|e| e.0.dist(apex) < 1e-6 * (1.0 + apex.len())) {
+                Some(e) => e.2 = e.2 + dir,
+                None => found.push((apex, body.face_id_str(f), dir)),
+            }
         }
     }
-    out
+    found
+        .into_iter()
+        .filter_map(|(apex, face, sum)| {
+            let n = sum.try_normalize()?;
+            Some(PoleCut { face, n, p: apex - n * reach })
+        })
+        .collect()
 }
 
 /// `body` with everything on the apex side of the plane (through `p`, normal `n`) cut away.
-fn trim_behind(body: &Body, p: Vec3, n: Vec3, tol: f64) -> Result<Body, String> {
+fn trim_behind(body: &Body, p: Vec3, n0: Vec3, tol: f64) -> Result<(Body, Vec3), String> {
+    // a plane square across the axis of a cone coincides with the iso-lines of its fitted surface
+    // and the intersection can come out empty: a slightly tilted plane is the same cut for our purpose
+    let a = if n0.x.abs() < 0.9 { Vec3::X } else { Vec3::Y };
+    let side = n0.cross(a).normalize();
+    let mut last = String::new();
+    for deg in [0.0f64, 3.0, -3.0, 7.0] {
+        let r = deg.to_radians();
+        let n = (n0 * r.cos() + side * r.sin()).normalize();
+        match trim_plane(body, p, n, tol) {
+            Ok(b) => return Ok((b, n)),
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
+}
+
+fn trim_plane(body: &Body, p: Vec3, n: Vec3, tol: f64) -> Result<Body, String> {
     use ck_topo::make::{extrude, ExtrudeOpts, Profile, ProfileLoop, ProfileRegion, ProfileSeg};
     let (lo, hi) = body.bbox();
     let half = 2.0 * (hi - lo).len() + 10.0;
     let a = if n.x.abs() < 0.9 { Vec3::X } else { Vec3::Y };
     let x = (a - n * a.dot(n)).normalize();
-    let frame = ck_geom::Frame { o: p, x, y: (-n).cross(x), z: -n };
+    let frame = ck_geom::Frame { o: p, x, y: n.cross(x), z: n };
     let c = [ck_geom::Vec2::new(-half, -half), ck_geom::Vec2::new(half, -half), ck_geom::Vec2::new(half, half), ck_geom::Vec2::new(-half, half)];
     let tags = ["t1", "t2", "t3", "t4"];
     let outer = ProfileLoop::new((0..4).map(|i| ProfileSeg::line(tags[i], c[i], c[(i + 1) % 4])).collect());
     let slab = extrude("shellTrim", &Profile::new(frame, vec![ProfileRegion { outer, holes: vec![] }]), ExtrudeOpts::blind(2.0 * half))?;
-    let r = boolean(body, &slab, Op::Intersect, tol)?;
-    if r.no_effect || r.body.num_faces() == 0 {
+    let r = boolean(body, &slab, Op::Cut, tol)?;
+    if r.no_effect || r.body.num_faces() == 0 || r.body.num_faces() <= body.num_faces() {
         return Err("the cutting plane does not cross the body".into());
     }
     Ok(r.body)

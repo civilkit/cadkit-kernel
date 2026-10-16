@@ -412,7 +412,16 @@ fn fit_offset_surface_inner(s: &Surface, d: f64, uvbox: ((f64, f64), (f64, f64))
                 }
                 x.sort_by(f64::total_cmp);
                 x.dedup_by(|a, b| (*a - *b).abs() <= 1e-9 * (hi - lo));
-                // pad the extension (past the domain) with an interior sample
+                // a cubic fit needs at least four samples: a surface without interior knots in this
+                // direction (a linear loft span) gets a uniform start
+                while x.len() < 5 {
+                    let mut y = x.clone();
+                    for w in x.windows(2) {
+                        y.push(0.5 * (w[0] + w[1]));
+                    }
+                    y.sort_by(f64::total_cmp);
+                    x = y;
+                }
                 x
             }
             None => (0..=8).map(|i| lo + (hi - lo) * i as f64 / 8.0).collect(),
@@ -1141,6 +1150,7 @@ pub fn move_faces_body(src: &Body, mv: &dyn Fn(FaceId) -> FaceMove) -> Result<Bo
     // new surfaces (free-form offsets extend `reach` past their faces: the
     // cavity of a shell overshoots an opened face by the wall thickness)
     let reach = 1.5 * src.face_ids().map(|f| dist(f).abs()).fold(0.0f64, f64::max);
+    let dbg_clock = std::env::var_os("CK_OFFSET_DEBUG").is_some().then(std::time::Instant::now);
     let mut moved: Vec<Option<Surface>> = vec![None; src.faces.len()];
     for f in src.face_ids() {
         let face = src.face(f);
@@ -1173,6 +1183,9 @@ pub fn move_faces_body(src: &Body, mv: &dyn Fn(FaceId) -> FaceMove) -> Result<Bo
         })?);
     }
 
+    if let Some(t) = dbg_clock {
+        eprintln!("offset_body: surfaces {:.2}s", t.elapsed().as_secs_f64());
+    }
     // incident faces per vertex
     let mut vfaces: Vec<Vec<FaceId>> = vec![vec![]; src.vertices.len()];
     for f in src.face_ids() {
@@ -1214,6 +1227,9 @@ pub fn move_faces_body(src: &Body, mv: &dyn Fn(FaceId) -> FaceMove) -> Result<Bo
         }
     }
 
+    if let Some(t) = dbg_clock {
+        eprintln!("offset_body: vertices {:.2}s", t.elapsed().as_secs_f64());
+    }
     // edges follow their vertices
     for e in src.edge_ids() {
         let ed = src.edge(e);
@@ -1286,6 +1302,9 @@ pub fn move_faces_body(src: &Body, mv: &dyn Fn(FaceId) -> FaceMove) -> Result<Bo
         o.curve = curve;
         o.t0 = t0;
         o.t1 = t1;
+    }
+    if let Some(t) = dbg_clock {
+        eprintln!("offset_body: edges {:.2}s", t.elapsed().as_secs_f64());
     }
     for v in src.vertex_ids() {
         out.vertices[v.idx()].p = newp[v.idx()];
