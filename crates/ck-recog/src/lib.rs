@@ -55,13 +55,17 @@ pub fn recognize(body: &Body) -> Recognition {
     let hs = holes::find_holes(&m, &mut claimed);
     // best prism over the three principal axes
     let mut best: Option<Prism> = None;
+    // fewest unexplained faces, then the simplest sketch (fewest profile segments), then the most blends
+    let score = |p: &Prism| {
+        let segs: usize = p.cycles.iter().map(|c| match c {
+            Cycle::Poly(s) => s.len(),
+            Cycle::Circle { .. } => 1,
+        }).sum();
+        (p.leftover.len(), segs, usize::MAX - p.blends.len())
+    };
     for ai in 0..3 {
         if let Some(p) = prism::analyze(&m, &claimed, ai) {
-            let better = match &best {
-                None => true,
-                Some(b) => p.leftover.len() < b.leftover.len(),
-            };
-            if better {
+            if best.as_ref().map_or(true, |b| score(&p) < score(b)) {
                 best = Some(p);
             }
         }
@@ -282,7 +286,7 @@ fn emit_holes(tree: &mut Tree, m: &Model, hs: &[Hole], items: &mut Vec<Item>, ex
             }
             tree.push(sk2.json());
             let eid = tree.ids.next();
-            tree.push(extrude(&eid, &sid2, "cut", ch, key.sign < 0, false));
+            tree.push(extrude(&eid, &sid2, "cut", ch, key.sign > 0, false));
             seed_ids.push(eid);
         }
         if let Some((hd, _ang, cd)) = h0.csk {
