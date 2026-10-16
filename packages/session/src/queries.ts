@@ -299,6 +299,262 @@ export async function probe(
   return call<ProbeReport>(kernel, { type: 'probe', tag: opts.tag ?? 'main', ...q });
 }
 
+// ---------------------------------------------------------------- measurement and analysis (read-only)
+
+/** An entity: face id | edge key | `V<n>` | `lump:<n>` | `body` | [x, y, z] | `{face|edge|vertex|lump|point}`. */
+export type MeasureEntity = string | number[] | Record<string, unknown> | Array<string | number[] | Record<string, unknown>>;
+
+export interface EntityRef {
+  kind: 'face' | 'edge' | 'vertex' | 'point';
+  id?: string;
+}
+
+export interface DistanceReport {
+  /** Minimum distance (0 when the entities touch or one solid lies inside the other). */
+  distance: number;
+  pointA: number[];
+  pointB: number[];
+  /** The face / edge / vertex the closest point lies on. */
+  a: EntityRef;
+  b: EntityRef;
+  intersects: boolean;
+  intersection?: { kind: 'point' | 'curve' | 'area' | 'containment' };
+  /** Unit vector A to B, null when the distance is 0. */
+  direction: number[] | null;
+  boundaryDistance?: number;
+}
+
+/** Minimum distance of two entities of the tag's body (or `b` in another tag via `tagB`). */
+export async function distance(
+  kernel: KernelTransport,
+  a: MeasureEntity,
+  b: MeasureEntity,
+  opts: QueryOpts & { tagB?: string; samples?: number } = {},
+): Promise<DistanceReport> {
+  const msg: Record<string, unknown> = { type: 'distance', tag: opts.tag ?? 'main', a, b };
+  if (opts.tagB !== undefined) msg.tagB = opts.tagB;
+  if (opts.samples !== undefined) msg.opts = { samples: opts.samples };
+  return call<DistanceReport>(kernel, msg);
+}
+
+export interface MaxDistanceReport {
+  maxDistance: number;
+  location: number[];
+  nearest: number[];
+  /** The true one-sided distance is at most `maxDistance + errorBound`. */
+  errorBound: number;
+  upperBound: number;
+  rms: number;
+  samples: number;
+  face?: string;
+}
+
+export interface HausdorffReport {
+  hausdorff: number;
+  errorBound: number;
+  aToB: MaxDistanceReport;
+  bToA: MaxDistanceReport;
+}
+
+/** One-sided maximum of the minimum distance from `a` to `b` (default: whole bodies), by dense sampling. */
+export async function maxDistance(
+  kernel: KernelTransport,
+  q: { a?: MeasureEntity; b?: MeasureEntity; tagB?: string; samples?: number; both?: false },
+  opts?: QueryOpts,
+): Promise<MaxDistanceReport>;
+export async function maxDistance(
+  kernel: KernelTransport,
+  q: { a?: MeasureEntity; b?: MeasureEntity; tagB?: string; samples?: number; both: true },
+  opts?: QueryOpts,
+): Promise<HausdorffReport>;
+export async function maxDistance(
+  kernel: KernelTransport,
+  q: { a?: MeasureEntity; b?: MeasureEntity; tagB?: string; samples?: number; both?: boolean } = {},
+  opts: QueryOpts = {},
+): Promise<MaxDistanceReport | HausdorffReport> {
+  const msg: Record<string, unknown> = { type: 'maxDistance', tag: opts.tag ?? 'main' };
+  if (q.a !== undefined) msg.a = q.a;
+  if (q.b !== undefined) msg.b = q.b;
+  if (q.tagB !== undefined) msg.tagB = q.tagB;
+  const o: Record<string, unknown> = {};
+  if (q.samples !== undefined) o.samples = q.samples;
+  if (q.both !== undefined) o.both = q.both;
+  if (Object.keys(o).length) msg.opts = o;
+  return call<MaxDistanceReport | HausdorffReport>(kernel, msg);
+}
+
+export interface ThicknessSample {
+  thickness: number;
+  point: number[];
+  farPoint: number[];
+  face: string;
+  farFace: string;
+  direction: number[];
+}
+
+export interface ThicknessReport {
+  method: 'ray' | 'sphere';
+  samples: number;
+  noExit: number;
+  minThickness: number | null;
+  location?: ThicknessSample;
+  meanThickness?: number;
+  clusterRadius?: number;
+  /** The thinnest places, thinnest first, at least `clusterRadius` apart. */
+  thin: ThicknessSample[];
+}
+
+/** Minimum wall thickness (ray cast along the inward normal; `method: 'sphere'` refines with inscribed balls). */
+export async function thickness(
+  kernel: KernelTransport,
+  q: { samples?: number; top?: number; radius?: number; below?: number; method?: 'ray' | 'sphere'; sphereSamples?: number } = {},
+  opts: QueryOpts = {},
+): Promise<ThicknessReport> {
+  return call<ThicknessReport>(kernel, { type: 'thickness', tag: opts.tag ?? 'main', opts: q });
+}
+
+export type ThicknessAtReport =
+  | { distanceToSurface: number; result: ThicknessSample }
+  | { min: ThicknessSample; max: number; mean: number; samples: number };
+
+/** Thickness at the surface point nearest to `point`, or min / max / mean over a face. */
+export async function thicknessAt(
+  kernel: KernelTransport,
+  q: { point: number[] } | { face: string; samples?: number },
+  opts: QueryOpts = {},
+): Promise<ThicknessAtReport> {
+  return call<ThicknessAtReport>(kernel, { type: 'thicknessAt', tag: opts.tag ?? 'main', ...q });
+}
+
+export interface ClosestPointResult {
+  distance: number;
+  point: number[];
+  entity: EntityRef & { face?: string };
+  uv?: number[];
+  t?: number;
+  /** `on: 'body'` only: signed distance (negative inside) and the unwrapped nearest hit. */
+  signedDistance?: number;
+  inside?: boolean;
+  nearest?: ClosestPointResult;
+}
+
+export interface ClosestPointReport {
+  on: 'body' | 'face' | 'edge' | 'vertex';
+  results: Array<ClosestPointResult | ClosestPointResult[] | null>;
+}
+
+/** Closest face / edge / vertex of the body to many points (at most 2000). `k` > 1 lists the k nearest entities. */
+export async function closestPoint(
+  kernel: KernelTransport,
+  points: number[][],
+  q: { on?: 'body' | 'face' | 'edge' | 'vertex'; ids?: MeasureEntity; k?: number } = {},
+  opts: QueryOpts = {},
+): Promise<ClosestPointReport> {
+  return call<ClosestPointReport>(kernel, { type: 'closestPoint', tag: opts.tag ?? 'main', points, ...q });
+}
+
+export interface EdgeAngle {
+  edge: string;
+  faces: string[];
+  /** Interior dihedral angle in degrees, through the material (90 for a box edge, 270 for a re-entrant one). */
+  angle: number;
+  normalAngle: number;
+  type: 'convex' | 'concave' | 'smooth';
+  min: number;
+  max: number;
+  at: number[];
+}
+
+export interface DraftFace {
+  face: string;
+  draft: number;
+  min: number;
+  max: number;
+  class: 'ok' | 'vertical' | 'undercut' | 'parting';
+}
+
+export interface AnglesReport {
+  edges?: EdgeAngle[];
+  between?: { angle?: number; normalAngle: number; type?: string; sharedEdge?: string; distance?: number; parallel?: boolean };
+  draft?: DraftFace[];
+  violations?: string[];
+}
+
+/** Dihedral angles of edges (`'all'` or keys), the angle between two faces, and draft angles against a pull direction. */
+export async function angles(
+  kernel: KernelTransport,
+  q: { edges?: 'all' | string[]; faces?: [string, string]; draft?: { pull: number[]; faces?: 'all' | string[]; min?: number } },
+  opts: QueryOpts = {},
+): Promise<AnglesReport> {
+  return call<AnglesReport>(kernel, { type: 'angles', tag: opts.tag ?? 'main', ...q });
+}
+
+export interface ClearancePair {
+  a: string;
+  b: string;
+  distance: number;
+  /** `gap`: air between the faces; `wall`: material between them (a thin wall); `contact`. */
+  kind: 'gap' | 'wall' | 'contact';
+  pointA: number[];
+  pointB: number[];
+}
+
+export interface ClearanceReport {
+  min: number;
+  count: number;
+  pairsTested: number;
+  truncated: boolean;
+  pairs: ClearancePair[];
+}
+
+/** Face pairs closer than `min` (non-adjacent), sorted by distance. */
+export async function clearance(
+  kernel: KernelTransport,
+  q: { min: number; a?: MeasureEntity; b?: MeasureEntity; include?: 'gap' | 'wall' | 'both'; limit?: number },
+  opts: QueryOpts = {},
+): Promise<ClearanceReport> {
+  const { include, limit, ...rest } = q;
+  const msg: Record<string, unknown> = { type: 'clearance', tag: opts.tag ?? 'main', ...rest };
+  const o: Record<string, unknown> = {};
+  if (include !== undefined) o.include = include;
+  if (limit !== undefined) o.limit = limit;
+  if (Object.keys(o).length) msg.opts = o;
+  return call<ClearanceReport>(kernel, msg);
+}
+
+export interface SymmetryPlane {
+  origin: number[];
+  normal: number[];
+  basis: string;
+  maxDeviation: number;
+  rmsDeviation: number;
+  symmetric: boolean;
+  worstPoint: number[];
+}
+
+export interface SymmetryReport {
+  tol: number;
+  samples: number;
+  symmetric: SymmetryPlane[];
+  best: SymmetryPlane | null;
+  planes: SymmetryPlane[];
+}
+
+/** Mirror symmetry: candidate planes (coordinate and principal axes through the centre of mass, or `planes`) with the sampled deviation of the mirrored surface. */
+export async function symmetry(
+  kernel: KernelTransport,
+  q: { planes?: Array<{ origin: number[]; normal: number[] }>; samples?: number; tol?: number } = {},
+  opts: QueryOpts = {},
+): Promise<SymmetryReport> {
+  const msg: Record<string, unknown> = { type: 'symmetry', tag: opts.tag ?? 'main' };
+  if (q.planes !== undefined) msg.planes = q.planes;
+  const o: Record<string, unknown> = {};
+  if (q.samples !== undefined) o.samples = q.samples;
+  if (q.tol !== undefined) o.tol = q.tol;
+  if (Object.keys(o).length) msg.opts = o;
+  return call<SymmetryReport>(kernel, msg);
+}
+
 export interface ImportReport {
   errors: Array<[string, { code: string; params: Record<string, unknown> }]>;
   body?: { faces?: unknown[]; edges?: unknown[]; box?: { min: number[]; max: number[] } } | null;

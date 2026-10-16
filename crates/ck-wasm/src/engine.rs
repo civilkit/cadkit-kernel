@@ -616,6 +616,32 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
             ck_ops::section::sections_reply(body, cx.msg, exact)
         }
         "probe" => ck_ops::section::probe_reply(&snapshot(cx)?.body, cx.msg),
+        "distance" | "maxDistance" => {
+            let body = &snapshot(cx)?.body;
+            // `tagB`: measure against the body of another tag (a rebuilt part against the original)
+            let other = match cx.msg.get_str("tagB") {
+                Some(t) => Some(
+                    &cx.session
+                        .get(t)
+                        .and_then(|s| s.data.as_ref())
+                        .and_then(|d| d.downcast_ref::<Snapshot>())
+                        .ok_or_else(|| format!("{ty}: tagB {t:?} has no body"))?
+                        .body,
+                ),
+                None => None,
+            };
+            if ty == "distance" {
+                ck_ops::analysis::distance_reply(body, other, cx.msg)
+            } else {
+                ck_ops::analysis::max_distance_reply(body, other, cx.msg)
+            }
+        }
+        "thickness" => ck_ops::analysis::thickness_reply(&snapshot(cx)?.body, cx.msg),
+        "thicknessAt" => ck_ops::analysis::thickness_at_reply(&snapshot(cx)?.body, cx.msg),
+        "closestPoint" => ck_ops::analysis::closest_point_reply(&snapshot(cx)?.body, cx.msg),
+        "angles" => ck_ops::analysis::angles_reply(&snapshot(cx)?.body, cx.msg),
+        "clearance" => ck_ops::analysis::clearance_reply(&snapshot(cx)?.body, cx.msg),
+        "symmetry" => ck_ops::analysis::symmetry_reply(&snapshot(cx)?.body, cx.msg),
         "resolve" => Ok(ck_ops::agent::resolve(&snapshot(cx)?.body, &cx.msg)),
         "describe" => Ok(ck_ops::agent::describe(&snapshot(cx)?.body, &cx.msg)),
         "refDiff" => crate::refdiff::reply(cx),
