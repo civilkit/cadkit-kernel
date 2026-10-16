@@ -71,7 +71,7 @@ fn s_range(m: &Model, f: FaceId, o: Vec3, a: Vec3) -> (f64, f64) {
     (lo, hi)
 }
 
-fn plane_is_hole_structure(m: &Model, g: FaceId, via: FaceId, o: Vec3, a: Vec3) -> bool {
+fn plane_is_hole_structure(m: &Model, g: FaceId, o: Vec3, a: Vec3) -> bool {
     let Kind::Plane { n, .. } = m.kind(g) else { return false };
     if !par(*n, a) {
         return false;
@@ -90,16 +90,20 @@ fn plane_is_hole_structure(m: &Model, g: FaceId, via: FaceId, o: Vec3, a: Vec3) 
             _ => return false,
         }
     }
-    // concave edge with `via`: the wall extends from the edge in the direction of the plane's outward normal
-    let (lo, hi) = s_range(m, via, o, a);
-    let mid = 0.5 * (lo + hi);
+    // a concave edge with any coaxial concave wall: the wall extends from the edge in the direction of the plane's
+    // outward normal
     for &e in &es {
-        if m.across(e, g) == Some(via) {
-            let s_e = (m.p0(e) - o).dot(a);
-            let dir = if mid > s_e { a } else { -a };
-            if n.dot(dir) > 0.5 {
-                return true;
-            }
+        let Some(via) = m.across(e, g) else { continue };
+        let Some((o2, a2)) = axis_of(m.kind(via)) else { continue };
+        if !coaxial(o, a, o2, a2) {
+            continue;
+        }
+        let (lo, hi) = s_range(m, via, o, a);
+        let mid = 0.5 * (lo + hi);
+        let s_e = (m.p0(e) - o).dot(a);
+        let dir = if mid > s_e { a } else { -a };
+        if n.dot(dir) > 0.5 {
+            return true;
         }
     }
     false
@@ -125,7 +129,7 @@ pub fn find_holes(m: &Model, claimed: &mut HashSet<FaceId>) -> Vec<Hole> {
                 }
                 let ok = match axis_of(m.kind(g)) {
                     Some((o2, a2)) => coaxial(o, a, o2, a2),
-                    None => plane_is_hole_structure(m, g, f, o, a),
+                    None => plane_is_hole_structure(m, g, o, a),
                 };
                 // a plane may be reached from a cone only through the cylinder test above
                 if ok {

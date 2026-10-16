@@ -20,6 +20,7 @@ struct Res {
     close: bool,
     rel: f64,
     unexplained: usize,
+    debug: String,
 }
 
 fn run(src: &str) -> Res {
@@ -33,7 +34,8 @@ fn run(src: &str) -> Res {
     assert!(errs.is_empty(), "rebuild errors {errs:?} in {}", ck_json::to_string(&Json::Arr(rec.features.clone())));
     let nb = nb.expect("rebuilt body");
     let v = rebuild::verify(&body, &nb);
-    Res { types, strategy: rec.strategy, exact: v.exact, close: v.close, rel: v.rel, unexplained: rec.unexplained.len() }
+    let debug = ck_json::to_string(&ck_recog::report(&body, &rec));
+    Res { debug, types, strategy: rec.strategy, exact: v.exact, close: v.close, rel: v.rel, unexplained: rec.unexplained.len() }
 }
 
 fn has(r: &Res, t: &str) -> bool {
@@ -66,7 +68,7 @@ fn box_with_blind_hole() {
         {{"type":"hole","id":"F4","sketch":"F3","kind":"simple","diameter":6,"end":"blind","depth":4}}]"#
     ));
     assert!(has(&r, "hole"));
-    assert!(r.close, "rel {}", r.rel);
+    assert!(r.close, "rel {} {}", r.rel, r.debug);
 }
 
 #[test]
@@ -78,7 +80,7 @@ fn box_with_counterbore() {
         {{"type":"extrude","id":"F6","op":"cut","sketch":"F5","end":"blind","depth":4}}]"#
     ));
     assert!(has(&r, "hole"));
-    assert!(r.close, "rel {}", r.rel);
+    assert!(r.close, "rel {} {}", r.rel, r.debug);
 }
 
 #[test]
@@ -86,8 +88,8 @@ fn plate_with_fillets() {
     let r = run(&format!(
         r#"[{RECT},{{"type":"fillet","id":"F3","radius":2,"edges":[{{"faces":["F2.C1","F2.S.e1"],"at":[0,-20,10]}},{{"faces":["F2.C1","F2.S.e3"],"at":[0,20,10]}}]}}]"#
     ));
-    assert!(has(&r, "fillet"));
-    assert!(r.close, "rel {}", r.rel);
+    assert!(has(&r, "fillet"), "{}", r.debug);
+    assert!(r.close, "rel {} {}", r.rel, r.debug);
 }
 
 #[test]
@@ -95,8 +97,8 @@ fn plate_with_chamfer() {
     let r = run(&format!(
         r#"[{RECT},{{"type":"chamfer","id":"F3","chamferType":"equal","distance":2,"edges":[{{"faces":["F2.C1","F2.S.e1"],"at":[0,-20,10]}}]}}]"#
     ));
-    assert!(has(&r, "chamfer"));
-    assert!(r.close, "rel {}", r.rel);
+    assert!(has(&r, "chamfer"), "{}", r.debug);
+    assert!(r.close, "rel {} {}", r.rel, r.debug);
 }
 
 #[test]
@@ -130,5 +132,5 @@ fn bolt_circle_of_six_holes_is_a_pattern() {
         {"type":"cpattern","id":"F7","seeds":["F4"],"axis":{"kind":"axis","axis":"y"},"count":6,"angle":360,"equal":true}]"#,
     );
     assert!(has(&r, "cpattern"), "{:?}", r.types);
-    assert!(r.close, "rel {}", r.rel);
+    assert!(r.close, "rel {} {}", r.rel, r.debug);
 }
