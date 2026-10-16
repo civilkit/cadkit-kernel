@@ -49,8 +49,9 @@ prismatic subset (samples made only of sketch/extrude/revolve/plane/hole/fillet/
 
 ## Not recognised yet
 
-Stacked bodies (pockets and bosses at intermediate heights), obliquely oriented bases or holes, cross holes in curved
-walls, B-spline / extruded-spline walls, lofts, sweeps, shells, variable and asymmetric blends, mirrored halves.
+Obliquely oriented bases or holes, holes whose mouth is on a curved wall, B-spline / extruded-spline walls, lofts, sweeps,
+shells, variable and asymmetric blends, mirrored halves. Pockets, bosses and islands are recovered from the height
+intervals of the wall cycles (each cycle becomes an add or cut extrude; nesting level orders them).
 
 ## Results (first run, kit corpus + SolidWorks samples)
 
