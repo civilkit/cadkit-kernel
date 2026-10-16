@@ -127,11 +127,16 @@ pub fn open_mesh_edges_tol(positions: &[f32], tri_face: &[i32], q: f64, crack: f
 /// `TESSELLATION_OPEN` issues: one per face of `b` that has no triangle (`failed` = faces the tessellator gave up on, from
 /// the mesh), and one for the mesh edges used by a single triangle (entity = the first bordering faces).
 pub fn check_mesh(b: &Body, positions: &[f32], tri_face: &[i32], failed: &[usize]) -> Vec<Issue> {
-    check_mesh_why(b, positions, tri_face, failed, &[])
+    check_mesh_inner(b, positions, tri_face, failed, &[], false)
 }
 
-/// [`check_mesh`] with the tessellator's reason for each failed face (`why[i]` belongs to `failed[i]`).
+/// [`check_mesh`] with the tessellator's reason for each failed face (`why[i]` belongs to `failed[i]`), and the per-face
+/// mesh-area witness (costs an exact area integral per face: the opt-in `validate` path only, not the boolean's rim check).
 pub fn check_mesh_why(b: &Body, positions: &[f32], tri_face: &[i32], failed: &[usize], why: &[String]) -> Vec<Issue> {
+    check_mesh_inner(b, positions, tri_face, failed, why, true)
+}
+
+fn check_mesh_inner(b: &Body, positions: &[f32], tri_face: &[i32], failed: &[usize], why: &[String], area: bool) -> Vec<Issue> {
     let mut out = vec![];
     let ids: Vec<_> = b.face_ids().collect();
     let mut has = vec![false; ids.len()];
@@ -150,6 +155,29 @@ pub fn check_mesh_why(b: &Body, positions: &[f32], tri_face: &[i32], failed: &[u
                 None => "no triangles".to_string(),
             };
             out.push(Issue { code: "TESSELLATION_OPEN", entity: b.face_id_str(f), detail: format!("face has no mesh triangles ({reason})") });
+        }
+    }
+    // A face whose mesh covers only part of it (a cylinder wall meshed around its cut-outs but not along its length) shows no
+    // open edge of its own, only the rim edges of its neighbours: compare the mesh area with the exact face area.
+    let mut mesh_area = vec![0.0f64; ids.len()];
+    for (t, &fi) in tri_face.iter().enumerate() {
+        if let (Some(a), Some(p)) = (mesh_area.get_mut(fi as usize), positions.get(9 * t..9 * t + 9)) {
+            let u = [(p[3] - p[0]) as f64, (p[4] - p[1]) as f64, (p[5] - p[2]) as f64];
+            let w = [(p[6] - p[0]) as f64, (p[7] - p[1]) as f64, (p[8] - p[2]) as f64];
+            *a += 0.5 * ((u[1] * w[2] - u[2] * w[1]).powi(2) + (u[2] * w[0] - u[0] * w[2]).powi(2) + (u[0] * w[1] - u[1] * w[0]).powi(2)).sqrt();
+        }
+    }
+    for (i, &f) in ids.iter().enumerate() {
+        if !area || !has[i] {
+            continue;
+        }
+        let exact = ck_topo::mass::face_integral::<1>(b, f, 1, &|_, n| [n.len()])[0].abs();
+        if exact.is_finite() && exact > 0.0 && (mesh_area[i] < 0.9 * exact || mesh_area[i] > 1.1 * exact) {
+            out.push(Issue {
+                code: "TESSELLATION_OPEN",
+                entity: b.face_id_str(f),
+                detail: format!("the mesh covers {:.0}% of the face area ({:.4e} of {:.4e})", 100.0 * mesh_area[i] / exact, mesh_area[i], exact),
+            });
         }
     }
     // vertex merge distance: well below the mesh feature size, above f32 rounding of the coordinates
