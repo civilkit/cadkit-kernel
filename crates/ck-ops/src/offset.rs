@@ -105,6 +105,8 @@ const FIT_TOL: f64 = 1e-5;
 const EDGE_FIT_TOL: f64 = 3e-3;
 /// As [`EDGE_FIT_TOL`] for edges between grazing (G1) neighbours.
 const GRAZE_TOL: f64 = 1e-1;
+/// Offset edge curves are refined until they follow both offset surfaces this closely (mm).
+const GOOD_EDGE_TOL: f64 = 5e-5;
 /// Sample spans shorter than this (mm) are not refined further.
 const MIN_SPAN: f64 = 0.04;
 
@@ -251,6 +253,59 @@ pub fn grid_min_radius(s: &Surface, d: f64, uvbox: ((f64, f64), (f64, f64))) -> 
     best
 }
 
+/// Points where the surface collapses (a boundary row or column of control points is one point:
+/// the apex of a loft ended by a point section).
+/// Which boundary rows / columns of the parameter domain collapse to a point: (u min, u max, v min, v max).
+pub fn pole_sides(s: &Surface) -> [bool; 4] {
+    let ((u0, u1), (v0, v1)) = s.domain();
+    let mut out = [false; 4];
+    if !(u0.is_finite() && u1.is_finite() && v0.is_finite() && v1.is_finite()) {
+        return out;
+    }
+    for (edge, flag) in out.iter_mut().enumerate() {
+        let pts: Vec<Vec3> = (0..=6)
+            .map(|k| {
+                let t = k as f64 / 6.0;
+                match edge {
+                    0 => s.eval(u0, v0 + (v1 - v0) * t),
+                    1 => s.eval(u1, v0 + (v1 - v0) * t),
+                    2 => s.eval(u0 + (u1 - u0) * t, v0),
+                    _ => s.eval(u0 + (u1 - u0) * t, v1),
+                }
+            })
+            .collect();
+        let scale = 1.0 + pts[0].len();
+        *flag = pts.iter().all(|q| q.dist(pts[0]) < 1e-7 * scale);
+    }
+    out
+}
+
+pub fn pole_points(s: &Surface) -> Vec<Vec3> {
+    let ((u0, u1), (v0, v1)) = s.domain();
+    if !(u0.is_finite() && u1.is_finite() && v0.is_finite() && v1.is_finite()) {
+        return vec![];
+    }
+    let mut out: Vec<Vec3> = vec![];
+    for edge in 0..4 {
+        let pts: Vec<Vec3> = (0..=6)
+            .map(|k| {
+                let t = k as f64 / 6.0;
+                match edge {
+                    0 => s.eval(u0, v0 + (v1 - v0) * t),
+                    1 => s.eval(u1, v0 + (v1 - v0) * t),
+                    2 => s.eval(u0 + (u1 - u0) * t, v0),
+                    _ => s.eval(u0 + (u1 - u0) * t, v1),
+                }
+            })
+            .collect();
+        let scale = 1.0 + pts[0].len();
+        if pts.iter().all(|q| q.dist(pts[0]) < 1e-7 * scale) && !out.iter().any(|q| q.dist(pts[0]) < 1e-7 * scale) {
+            out.push(pts[0]);
+        }
+    }
+    out
+}
+
 fn fit_offset_surface_inner(s: &Surface, d: f64, uvbox: ((f64, f64), (f64, f64)), reach: f64) -> Result<Surface, OffsetError> {
     let big = || OffsetError::new("offsetTooLarge", CENTRE);
     if let Surface::Revolution { profile, axis_o, axis } = s {
@@ -265,6 +320,16 @@ fn fit_offset_surface_inner(s: &Surface, d: f64, uvbox: ((f64, f64), (f64, f64))
     }
     let off = Surface::Offset { base: Box::new(s.clone()), dist: d };
     let ((du0, du1), (dv0, dv1)) = s.domain();
+    // An inward offset of a pole folds over itself near the apex (the offset cone's other nappe):
+    // that fold is where the inner apex closes, not a failure. The curvature and fold checks skip
+    // the neighbourhood of a pole, and the surface is not continued past it.
+    let poles = pole_points(s);
+    let pole_side = pole_sides(s);
+    let near_pole = |p: Vec3| poles.iter().any(|q| q.dist(p) < 10.0 * d.abs());
+    // the fit is judged right up to the apex, except in the last sliver where the normal field turns
+    // over faster than any sampling can follow (and nothing of the solid is)
+    let at_pole = |p: Vec3| poles.iter().any(|q| q.dist(p) < MIN_SPAN);
+
     // The cavity of a shell runs `reach` past an opened face, so its
     // neighbours' offsets must extend beyond the original surface: pad the box
     // by that distance (in parameters) and continue the surface past its
@@ -272,17 +337,40 @@ fn fit_offset_surface_inner(s: &Surface, d: f64, uvbox: ((f64, f64), (f64, f64))
     if reach > 0.0 {
         let (mid_u, mid_v) = ((0.5 * (u0 + u1)).clamp(du0, du1), (0.5 * (v0 + v1)).clamp(dv0, dv1));
         let sd = s.derivs2(mid_u, mid_v);
-        let (lu, lv) = (sd.du.len().max(1e-9), sd.dv.len().max(1e-9));
+        let (mut lu, mut lv) = (sd.du.len().max(1e-9), sd.dv.len().max(1e-9));
+        // A loft narrows towards its ends: the parameter speed at the mid point overstates the
+        // speed there, so a pad of `reach` (mm) there is far too short in parameters. Take the
+        // slowest speed over the box (not below 5 % of the fastest, a pole collapses it to zero).
+        let (mut fu, mut fv) = (lu, lv);
+        for i in 0..=6 {
+            for j in 0..=6 {
+                let (a, b) = ((u0 + (u1 - u0) * i as f64 / 6.0).clamp(du0, du1), (v0 + (v1 - v0) * j as f64 / 6.0).clamp(dv0, dv1));
+                let q = s.derivs2(a, b);
+                fu = fu.max(q.du.len());
+                fv = fv.max(q.dv.len());
+                lu = lu.min(q.du.len().max(1e-9));
+                lv = lv.min(q.dv.len().max(1e-9));
+            }
+        }
+        let (lu, lv) = (lu.max(0.05 * fu), lv.max(0.05 * fv));
         let (pu, pv) = (reach / lu, reach / lv);
         // periodic directions wrap; an unbounded direction (extrusion height) still has to
         // reach `reach` past the face, the 3 % margin of the box is not enough
         if s.periods().0.is_none() {
-            u0 -= pu;
-            u1 += pu;
+            if !pole_side[0] {
+                u0 -= pu;
+            }
+            if !pole_side[1] {
+                u1 += pu;
+            }
         }
         if s.periods().1.is_none() {
-            v0 -= pv;
-            v1 += pv;
+            if !pole_side[2] {
+                v0 -= pv;
+            }
+            if !pole_side[3] {
+                v1 += pv;
+            }
         }
     }
     let (per_u, per_v) = s.periods();
@@ -297,7 +385,11 @@ fn fit_offset_surface_inner(s: &Surface, d: f64, uvbox: ((f64, f64), (f64, f64))
         let inside = ea == 0.0 && eb == 0.0;
         let sd = s.derivs2(uc, vc);
         let (su, sv) = (sd.du + sd.duu * ea + sd.duv * eb, sd.dv + sd.duv * ea + sd.dvv * eb);
-        let n = su.cross(sv).try_normalize().ok_or_else(|| OffsetError::new("offsetUnsupported", "degenerate surface point"))?;
+        // at a pole (collapsed row of a loft's point end) S_u x S_v vanishes: use the limit normal
+        let n = match su.cross(sv) {
+            c if c.len() > 1e-9 * su.len().max(sv.len()).powi(2) => c.normalize(),
+            _ => s.normal(uc, vc).try_normalize().ok_or_else(|| OffsetError::new("offsetUnsupported", "degenerate surface point"))?,
+        };
         let base_p = sd.p + sd.du * ea + sd.dv * eb + (sd.duu * (ea * ea) + sd.duv * (2.0 * ea * eb) + sd.dvv * (eb * eb)) * 0.5;
         if !inside {
             return Ok(base_p + n * d);
@@ -309,7 +401,7 @@ fn fit_offset_surface_inner(s: &Surface, d: f64, uvbox: ((f64, f64), (f64, f64))
         let (g00, g01, g11) = (sd.du.dot(sd.du), sd.du.dot(sd.dv), sd.dv.dot(sd.dv));
         let (j00, j01, j11) = (od.du.dot(sd.du), 0.5 * (od.du.dot(sd.dv) + od.dv.dot(sd.du)), od.dv.dot(sd.dv));
         let (det_g, det_j) = (g00 * g11 - g01 * g01, j00 * j11 - j01 * j01);
-        if det_g > 1e-24 && (j00 < 0.05 * g00 || j11 < 0.05 * g11 || det_j < 0.0025 * det_g) {
+        if det_g > 1e-24 && !near_pole(sd.p) && (j00 < 0.05 * g00 || j11 < 0.05 * g11 || det_j < 0.0025 * det_g) {
             return Err(big());
         }
         Ok(base_p + n * d)
@@ -361,6 +453,9 @@ fn fit_offset_surface_inner(s: &Surface, d: f64, uvbox: ((f64, f64), (f64, f64))
             let um = 0.5 * (us[i] + us[i + 1]);
             let mut worst = 0.0f64;
             for &j in &pick(vs.len()) {
+                if at_pole(s.eval(um.clamp(du0, du1), vs[j].clamp(dv0, dv1))) {
+                    continue;
+                }
                 let e = point(um, vs[j])?;
                 let hint = (0.5 * (uk[i] + uk[i + 1]), vk[j]);
                 worst = worst.max(fs.closest_point_near(e, hint).2.dist(e));
@@ -380,6 +475,9 @@ fn fit_offset_surface_inner(s: &Surface, d: f64, uvbox: ((f64, f64), (f64, f64))
             let vm = 0.5 * (vs[j] + vs[j + 1]);
             let mut worst = 0.0f64;
             for &i in &pick(us.len()) {
+                if at_pole(s.eval(us[i].clamp(du0, du1), vm.clamp(dv0, dv1))) {
+                    continue;
+                }
                 let e = point(us[i], vm)?;
                 let hint = (uk[i], 0.5 * (vk[j] + vk[j + 1]));
                 worst = worst.max(fs.closest_point_near(e, hint).2.dist(e));
@@ -410,7 +508,7 @@ fn fit_offset_surface_inner(s: &Surface, d: f64, uvbox: ((f64, f64), (f64, f64))
                     let (u, v) = (u0 + (u1 - u0) * i as f64 / m as f64, v0 + (v1 - v0) * j as f64 / m as f64);
                     let q = point(u, v)?;
                     let interior = u >= du0 && u <= du1 && v >= dv0 && v <= dv1;
-                    if interior && s.closest_point(q).2.dist(q) < d.abs() * (1.0 - 1e-3) - 1e-6 {
+                    if interior && !near_pole(s.eval(u, v)) && s.closest_point(q).2.dist(q) < d.abs() * (1.0 - 1e-3) - 1e-6 {
                         return Err(big());
                     }
                 }
@@ -800,7 +898,13 @@ fn offset_spline_edge(src: &Body, e: EdgeId, moved: &[Option<Surface>], dnat: &d
         }
         // grazing neighbours (G1 seams) leave a gap of ~ d x (normal mismatch)
         // between their offsets that no edge can close
-        if dev <= if grazing.get() { GRAZE_TOL } else { EDGE_FIT_TOL.max((1.5 * end_gap).min(GRAZE_TOL)) } {
+        let limit = if grazing.get() { GRAZE_TOL } else { EDGE_FIT_TOL.max((1.5 * end_gap).min(GRAZE_TOL)) };
+        // Refine for quality, not just for the limit: a coarse fit that merely passes the limit
+        // leaves the cut solid's edges off their faces by up to the limit (the validator and the
+        // downstream booleans see that). Refine to `GOOD_EDGE_TOL`, accept the limit only once
+        // refinement has stopped paying.
+        let good = if grazing.get() { limit } else { limit.min(GOOD_EDGE_TOL) };
+        if dev <= good || (dev <= limit && n >= 192) {
             return Ok((Curve::BSpline(c), a, b));
         }
         n *= 2;
@@ -1096,6 +1200,12 @@ pub fn move_faces_body(src: &Body, mv: &dyn Fn(FaceId) -> FaceMove) -> Result<Bo
             let q = newp[v.idx()];
             let res = surfs.iter().map(|m| m.closest_point(q).2.dist(q)).fold(0.0f64, f64::max);
             eprintln!("vertex {:?} {:?} -> moved {:.3} residual {:.2e} faces {:?}", v, src.vertex(v).p, q.dist(src.vertex(v).p), res, vfaces[v.idx()].iter().map(|&f| src.face_id_str(f)).collect::<Vec<_>>());
+            for (k, m) in surfs.iter().enumerate() {
+                let (u, w, c) = m.closest_point(q);
+                let (bu, bv, bp) = src.face(vfaces[v.idx()][k]).surface.closest_point(src.vertex(v).p);
+                eprintln!("   base uv ({bu:.4},{bv:.4}) dist {:.2e} dom {:?}", bp.dist(src.vertex(v).p), src.face(vfaces[v.idx()][k]).surface.domain());
+                eprintln!("   surf {} dist {:.3e} at uv ({u:.4},{w:.4}) domain {:?}", src.face_id_str(vfaces[v.idx()][k]), c.dist(q), m.domain());
+            }
         }
     }
 

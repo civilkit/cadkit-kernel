@@ -439,6 +439,17 @@ fn build_layer(
         } else {
             match offset_surface(&sheet.face(f).surface, d) {
                 Some(s) => s,
+                None if !matches!(sheet.face(f).surface, Surface::Plane { .. } | Surface::Cylinder { .. } | Surface::Cone { .. } | Surface::Sphere { .. } | Surface::Torus { .. }) => {
+                    // not a curvature failure: thicken only offsets analytic sheets, a free-form
+                    // (B-spline) sheet has no offset here at any thickness
+                    return Err(ThickenError::detail(
+                        "offsetUnsupported",
+                        format!(
+                            "{}: thicken does not offset free-form (B-spline) sheets yet, at any thickness; close the surface into a solid (cap the ends, or loft closed sections) and use shell",
+                            sheet.face_id_str(f)
+                        ),
+                    ));
+                }
                 None => {
                     return Err(ThickenError::detail(
                         "offsetTooLarge",

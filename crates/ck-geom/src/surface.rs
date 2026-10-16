@@ -510,6 +510,7 @@ impl Surface {
             }
             // offsets keep the base's normal field
             Surface::Offset { base, .. } => offset_collapse(base).0.normal(u, v),
+            Surface::BSpline(b) => b.normal(u, v),
             _ => self.derivs2(u, v).normal(),
         }
     }

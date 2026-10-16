@@ -373,7 +373,34 @@ impl BSplineSurface {
 
     /// Unit normal Su × Sv (zero vector at degenerate points).
     pub fn normal(&self, u: f64, v: f64) -> Vec3 {
-        self.derivs2(u, v).normal()
+        let d = self.derivs2(u, v);
+        let c = d.du.cross(d.dv);
+        let (a, b) = (d.du.len(), d.dv.len());
+        let sc = a.max(b);
+        // a regular point, or a degenerate one with nothing better to offer
+        if c.len() > 1e-9 * sc * sc || !(sc > 0.0) {
+            return c.normalize();
+        }
+        self.pole_normal(u, v, &d)
+    }
+
+    /// Limit of the unit normal at a pole (a collapsed row or column of control points: one of
+    /// `S_u`, `S_v` vanishes along the edge). Approaching the edge from the interior,
+    /// `S_u ~ S_uv (v - v_pole)` (or the same with u and v swapped), so the limit direction is
+    /// `S_uv x S_v` with the sign of the step towards the interior.
+    fn pole_normal(&self, u: f64, v: f64, d: &SurfDerivs) -> Vec3 {
+        let ((u0, u1), (v0, v1)) = self.domain();
+        let hu = if u < 0.5 * (u0 + u1) { 1.0 } else { -1.0 };
+        let hv = if v < 0.5 * (v0 + v1) { 1.0 } else { -1.0 };
+        let (a, b) = (d.du.len(), d.dv.len());
+        let c = if a <= b { d.duv.cross(d.dv) * hv } else { d.du.cross(d.duv) * hu };
+        if c.len() > 1e-9 * a.max(b).max(d.duv.len()).powi(2) {
+            return c.normalize();
+        }
+        // the corner of a doubly collapsed patch: step into the interior
+        let (su, sv) = (1e-4 * (u1 - u0) * hu, 1e-4 * (v1 - v0) * hv);
+        let n = self.derivs2(u + su, v + sv);
+        n.du.cross(n.dv).normalize()
     }
 
     fn column(&self, j: usize) -> BSplineCurve {
