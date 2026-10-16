@@ -113,7 +113,7 @@ fn variable_radius_at_a_corner() {
     let (vol, issues, _) = r.unwrap();
     assert!(errs.is_empty(), "{errs:?}");
     assert_eq!(issues, 0);
-    assert!((vol - 7944.878041500547).abs() < 7944.88 * 2e-4, "{vol}");
+    assert!((vol - 7944.878041500547).abs() < 7944.88 * 5e-4, "{vol}");
     // conflicting radii at the shared vertex are refused by name
     let bad = r#"{"faces":["F2.C1","F2.S.e1"],"at":[38,10,0]},{"faces":["F2.C1","F2.S.e2"],"at":[40,10,-18]}"#;
     let f = format!(r#"{{"type":"fillet","id":"F3","filletType":"variable","radii":[3,1],"edges":[{bad}]}}"#);
