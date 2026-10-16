@@ -98,6 +98,9 @@ pub const REQUEST_TYPES: &[(&str, Handler)] = &[
     ("symmetry", agent::symmetry),
     // Extension: thread standards as data (stateless, read-only).
     ("threadData", agent::thread_data),
+    // Extension: lettering (ck-text), stateless.
+    ("textMetrics", agent::text_metrics),
+    ("textOutline", agent::text_outline),
     // Extension: design-rule profiles (read-only).
     ("checkProfile", agent::check_profile),
     ("profiles", agent::profiles),

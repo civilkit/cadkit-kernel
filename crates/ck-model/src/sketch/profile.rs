@@ -305,7 +305,7 @@ fn curves_of(sk: &Sketch) -> (Vec<Curve>, bool) {
                 let (t0, t1) = (k[p], k[cv.len()]);
                 Curve { tag, kind: "spline", geom: Geom::BSpline { cv, degree: p, knots: k }, t0, t1, closed: *closed }
             }
-            SketchEntity::Point { .. } => continue,
+            SketchEntity::Point { .. } | SketchEntity::Text { .. } => continue,
         };
         any = true;
         out.push(c);
@@ -686,6 +686,11 @@ fn seg_of(curves: &[Curve], pcs: &[Piece], h: usize) -> Seg {
 
 /// Compute the closed profiles of a sketch.
 pub fn profiles(sk: &Sketch) -> Profiles {
+    profiles_with(sk, &super::text::layout_all(sk))
+}
+
+/// [`profiles`] with the text entities already laid out (their regions follow the arrangement's).
+pub fn profiles_with(sk: &Sketch, texts: &[super::text::TextLayout]) -> Profiles {
     let (curves, any) = curves_of(sk);
     let n = curves.len();
     // split parameters
@@ -903,7 +908,8 @@ pub fn profiles(sk: &Sketch) -> Profiles {
         ));
     }
     regions.sort_by_key(|r| r.0);
-    let regions: Vec<Region> = regions.into_iter().map(|r| r.1).collect();
+    let mut regions: Vec<Region> = regions.into_iter().map(|r| r.1).collect();
+    regions.extend(super::text::regions(texts));
     Profiles { open: regions.is_empty() && any, regions }
 }
 

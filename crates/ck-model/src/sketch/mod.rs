@@ -25,6 +25,7 @@ pub mod smooth;
 pub mod solver;
 pub mod status;
 pub mod spline;
+pub mod text;
 
 use crate::{GeomRef, Plane};
 use ck_json::Json;
@@ -76,6 +77,8 @@ pub enum SketchEntity {
     Spline { id: String, pts: Vec<String>, closed: bool, construction: bool },
     /// Control-point spline.
     CvSpline { id: String, pts: Vec<String>, degree: u32, knots: Option<Vec<f64>>, closed: bool, construction: bool },
+    /// Lettering (fixed geometry, see `text`).
+    Text { id: String, text: Box<text::TextEntity>, construction: bool },
 }
 
 impl SketchEntity {
@@ -87,7 +90,8 @@ impl SketchEntity {
             | SketchEntity::Ellipse { id, .. }
             | SketchEntity::Point { id, .. }
             | SketchEntity::Spline { id, .. }
-            | SketchEntity::CvSpline { id, .. } => id,
+            | SketchEntity::CvSpline { id, .. }
+            | SketchEntity::Text { id, .. } => id,
         }
     }
 
@@ -100,6 +104,7 @@ impl SketchEntity {
             SketchEntity::Point { .. } => "point",
             SketchEntity::Spline { .. } => "spline",
             SketchEntity::CvSpline { .. } => "cvspline",
+            SketchEntity::Text { .. } => "text",
         }
     }
 
@@ -110,7 +115,8 @@ impl SketchEntity {
             | SketchEntity::Arc { construction, .. }
             | SketchEntity::Ellipse { construction, .. }
             | SketchEntity::Spline { construction, .. }
-            | SketchEntity::CvSpline { construction, .. } => *construction,
+            | SketchEntity::CvSpline { construction, .. }
+            | SketchEntity::Text { construction, .. } => *construction,
             SketchEntity::Point { .. } => false,
         }
     }
@@ -126,6 +132,7 @@ impl SketchEntity {
             SketchEntity::Spline { pts, .. } | SketchEntity::CvSpline { pts, .. } => {
                 pts.iter().map(|s| s.as_str()).collect()
             }
+            SketchEntity::Text { text, .. } => text.p.iter().chain(text.arc_c.iter()).map(|s| s.as_str()).collect(),
         }
     }
 }
@@ -263,6 +270,7 @@ impl SketchEntity {
                 closed: jtruthy(j.get("closed")),
                 construction: cons,
             },
+            "text" => SketchEntity::Text { id, text: Box::new(text::TextEntity::from_json(j)), construction: cons },
             _ => return None,
         })
     }
@@ -303,6 +311,7 @@ impl SketchEntity {
                 obj_set(&mut o, "pts", Json::Arr(pts.iter().map(|p| Json::Str(p.clone())).collect()));
                 obj_set(&mut o, "degree", Json::Num(*degree as f64));
             }
+            SketchEntity::Text { .. } => ensure_str(&mut o, "string"),
         }
         o
     }

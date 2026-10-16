@@ -79,7 +79,7 @@ pub fn entity_curve(sk: &Sketch, frame: &Frame, id: &str) -> Option<(Curve, f64,
             let (t0, t1) = b.domain();
             (Curve::BSpline(b), t0, t1, false)
         }
-        SketchEntity::Spline { .. } | SketchEntity::Point { .. } => return None,
+        SketchEntity::Spline { .. } | SketchEntity::Point { .. } | SketchEntity::Text { .. } => return None,
     })
 }
 

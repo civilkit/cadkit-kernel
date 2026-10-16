@@ -715,6 +715,8 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
                 crate::profile_q::check_profile(cx, Some(&snapshot(cx)?.body))
             }
         }
+        "textMetrics" => ck_model::sketch::text::metrics_reply(cx.msg),
+        "textOutline" => ck_model::sketch::text::outline_reply(cx.msg),
         "threadData" => {
             let get = |k: &str| match cx.msg.get(k) {
                 Some(Json::Str(s)) if !s.is_empty() => Ok(Some(s.as_str())),
@@ -792,13 +794,18 @@ fn inspect(cx: &mut Cx) -> Result<Json, String> {
             let id = r.and_then(|r| r.get_str("id")).unwrap_or("");
             let sk = s.sketches.iter().find(|k| k.id == id).ok_or_else(|| "sketch not found".to_string())?;
             let areas: Vec<Json> = sk.profiles.regions.iter().map(|g| Json::Num(region_area(g))).collect();
-            Ok(Obj::new()
+            let mut o = Obj::new()
                 .put("type", "sketch")
                 .put("frame", regen::frame_json(&sk.frame))
                 .put("regions", sk.profiles.regions.len())
                 .put("areas", Json::Arr(areas))
-                .put("open", sk.profiles.open)
-                .build())
+                .put("open", sk.profiles.open);
+            // lettering: one entry per text entity (ink box in sketch coordinates, filled area)
+            let texts = ck_model::sketch::text::layout_all(&sk.sketch);
+            if !texts.is_empty() {
+                o = o.put("texts", Json::Arr(texts.iter().map(|t| ck_model::sketch::text::info_json(&sk.sketch, t)).collect()));
+            }
+            Ok(o.build())
         }
         k => Err(ck_server::session::todo(&format!("inspect {k}"))),
     }

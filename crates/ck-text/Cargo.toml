@@ -1,0 +1,7 @@
+[package]
+name = "ck-text"
+version = "0.1.0"
+edition = "2021"
+description = "Lettering: TrueType outlines of two baked-in OFL fonts laid out as closed sketch loops"
+
+[dependencies]

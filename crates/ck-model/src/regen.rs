@@ -29,7 +29,7 @@
 
 use crate::expr::{self, Vars};
 use crate::features::FeatureKind;
-use crate::sketch::profile::{profiles, Profiles};
+use crate::sketch::profile::{profiles_with, Profiles};
 use crate::sketch::solver::{solve_sketch, SolveOpts};
 use crate::{Feature, GeomRef, Part, Sketch};
 use ck_core::linalg::{Frame, Vec3};
@@ -538,8 +538,17 @@ fn regen_sketch(state: &mut RegenState, exec: &mut dyn FeatureExec, f: &Feature,
             }
         }
     }
-    let profiles = profiles(&sk);
-    let _ = f;
+    let texts = crate::sketch::text::layout_all(&sk);
+    if let Some((_, e)) = crate::sketch::text::first_error(&texts) {
+        return Err(FeatureError::new(e.code()).with("detail", Json::Str(e.message())));
+    }
+    for (eid, w) in crate::sketch::text::warnings(&texts) {
+        state.result.warnings.push(RegenError {
+            feature: f.id.clone(),
+            error: FeatureError::new(w.code).with("entity", Json::Str(eid.to_string())).with("detail", Json::Str(w.detail.clone())),
+        });
+    }
+    let profiles = profiles_with(&sk, &texts);
     let status = state.sketch_status.then(|| crate::sketch::status::sketch_status(&sk));
     state.result.put_sketch(SketchResult { id: sk.id.clone(), frame, profiles, sketch: sk, status });
     Ok(())
