@@ -117,6 +117,11 @@ pub fn open_mesh_edges_tol(positions: &[f32], tri_face: &[i32], q: f64, crack: f
         let mut k = keep.iter();
         open_edges.retain(|_| *k.next().unwrap());
     }
+    if crack > 0.0 && std::env::var("CK_OPEN_DBG").is_ok() {
+        for (f, a, b) in &open_edges {
+            eprintln!("OPENEDGE face {f} {:.4?} -> {:.4?}", a, b);
+        }
+    }
     let mut faces: Vec<i32> = open_edges.iter().map(|e| e.0).collect();
     let open = faces.len();
     faces.sort_unstable();

@@ -239,17 +239,84 @@ fn shift_into(x: f64, m: f64, c: f64, p: f64) -> f64 {
 /// retried in the universal cover: loops are unwrapped continuously through
 /// their seam coedges and triangulated as ordinary closed polygons.
 pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bool)], ssi: &[f64], cut: FaceCut, tol: &Tol) -> Result<FaceMesh, String> {
-    match mesh_face_strict(body, f, params, virt, ssi, cut, tol) {
+    let first = match mesh_face_strict(body, f, params, virt, ssi, cut, tol) {
         Ok(m) => Ok(m),
         Err(e) => {
             // Coedge ends that miss each other by a few 1e-9 of the parameter range (fitted trim curves: a notch
             // of a spline face closes 8e-9 apart) leave a sliver segment the CDT cannot take. Weld them at 1e-6
             // and retry; every face that meshed before is untouched.
-            SAME_UV_REL.with(|c| c.set(1e-6));
-            let r = mesh_face_strict(body, f, params, virt, ssi, cut, tol);
-            SAME_UV_REL.with(|c| c.set(1e-9));
+            let r = with_same_uv(1e-6, || mesh_face_strict(body, f, params, virt, ssi, cut, tol));
             r.map_err(|e2| format!("{e}; welded: {e2}"))
         }
+    };
+    // A face that meshed cleanly is done (no exact-area integral: it costs more than the tessellation itself).
+    if matches!(&first, Ok(m) if !m.open && m.unrecovered == 0 && !m.tris.is_empty()) {
+        return first;
+    }
+    escalate(body, f, params, virt, ssi, cut, tol, first)
+}
+
+/// Runs `g` with trim ends welded within `rel` of the parameter range.
+fn with_same_uv<T>(rel: f64, g: impl FnOnce() -> T) -> T {
+    SAME_UV_REL.with(|c| c.set(rel));
+    let r = g();
+    SAME_UV_REL.with(|c| c.set(1e-9));
+    r
+}
+
+fn mesh_area(m: &FaceMesh) -> f64 {
+    m.tris.iter().map(|t| 0.5 * (m.pts[t[1] as usize] - m.pts[t[0] as usize]).cross(m.pts[t[2] as usize] - m.pts[t[0] as usize]).len()).sum()
+}
+
+/// The first attempt left the face open, with unrecovered trims, or empty. Try every other way the face can be meshed (the
+/// strip with welded trim ends, the universal cover with and without the weld), judge each by the exact face area, and keep
+/// the one that covers it best: a face is never dropped while any attempt produced triangles.
+#[allow(clippy::too_many_arguments)]
+fn escalate(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bool)], ssi: &[f64], cut: FaceCut, tol: &Tol, first: Result<FaceMesh, String>) -> Result<FaceMesh, String> {
+    let exact = ck_topo::mass::face_integral::<1>(body, f, 1, &|_, n| [n.len()])[0].abs();
+    let periodic = body.face(f).surface.periods() != (None, None);
+    let score = |m: &FaceMesh| -> f64 {
+        if m.tris.is_empty() || !(exact > 0.0) {
+            return f64::INFINITY;
+        }
+        // |log ratio|: an over-covering mesh is as bad as an under-covering one
+        (mesh_area(m) / exact).ln().abs() + if m.unrecovered > 0 { 0.02 } else { 0.0 }
+    };
+    let good = |m: &FaceMesh| -> bool { score(m) < 0.05 };
+    let mut best: Option<FaceMesh> = None;
+    let mut err = String::new();
+    let mut offer = |r: Result<FaceMesh, String>, best: &mut Option<FaceMesh>, err: &mut String| {
+        match r {
+            Ok(m) => {
+                if best.as_ref().map_or(true, |b| score(&m) < score(b)) {
+                    *best = Some(m);
+                }
+            }
+            Err(e) => {
+                if !err.is_empty() {
+                    err.push_str("; ");
+                }
+                err.push_str(&e);
+            }
+        }
+    };
+    offer(first, &mut best, &mut err);
+    if !best.as_ref().map_or(false, |m| good(m)) {
+        let tries: [(bool, f64); 3] = [(false, 1e-6), (true, 1e-9), (true, 1e-6)];
+        for (cover, rel) in tries {
+            if cover && !periodic {
+                continue;
+            }
+            let r = with_same_uv(rel, || mesh_face_impl(body, f, params, virt, ssi, cut, tol, cover));
+            offer(r, &mut best, &mut err);
+            if best.as_ref().map_or(false, |m| good(m)) {
+                break;
+            }
+        }
+    }
+    match best {
+        Some(m) => Ok(m),
+        None => Err(err),
     }
 }
 
@@ -472,22 +539,55 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
         }
     }
     // drop the junction points of merged circle chains; a chain that began and ended on one closes over it
+    //
+    // A face without a period (a flange ring with a slit) is cut into open chains at the slit edges, which are dropped
+    // as seams: a dropped junction at a chain end is where the chain on the other side of the slit attaches. Remember
+    // those junctions, and connect the new chain ends over them once the points are dropped (the chord the neighbouring
+    // faces, which drop the same junction, have too).
+    let flat = pu.is_none() && pv.is_none();
+    let mut junctions: HashMap<(u64, u64), Vec<(usize, bool)>> = HashMap::default();
+    if flat {
+        for (ci, (ch, closed)) in chains.iter().enumerate() {
+            if !*closed && ch.len() >= 2 {
+                if ch[0].virt {
+                    junctions.entry((ch[0].uv.x.to_bits(), ch[0].uv.y.to_bits())).or_default().push((ci, true));
+                }
+                if ch[ch.len() - 1].virt {
+                    junctions.entry((ch[ch.len() - 1].uv.x.to_bits(), ch[ch.len() - 1].uv.y.to_bits())).or_default().push((ci, false));
+                }
+            }
+        }
+    }
     for (ch, closed) in chains.iter_mut() {
         if ch.iter().any(|q| q.virt) {
-            let ends = !*closed && ch.len() >= 2 && ch[0].virt && ch[ch.len() - 1].virt;
-            if !*closed && pu.is_none() && pv.is_none() {
-                // a face without a period (a flange ring with a slit): the ends of an open chain are where the slit
-                // edges attach, and the chain on the other side of the slit meets it there. Dropping them tears the loop.
-                let (first, last) = (ch[0], ch[ch.len() - 1]);
-                ch.retain(|q| !q.virt);
-                ch.insert(0, first);
-                ch.push(last);
-                ch.dedup_by(|a, b| a.uv == b.uv);
-                continue;
-            }
+            // (both ends are the same junction: the same point in space. A chain between two different junctions
+            // of a slit face stays open: the chains on the far side of the slits close it.)
+            let ends = !*closed && ch.len() >= 2 && ch[0].virt && ch[ch.len() - 1].virt && ch[0].p.dist(ch[ch.len() - 1].p) <= 1e-9 * (1.0 + ch[0].p.len());
+            // a ring over a junction that sits on the cut line keeps the junction: the chord that would replace it
+            // straddles the window edge and cannot be mapped into the strip
+            let on_cut = |x: f64, c: Option<f64>, p: Option<f64>| match (c, p) {
+                (Some(c), Some(p)) => ((x - c) / p - ((x - c) / p).round()).abs() <= 1e-9,
+                _ => false,
+            };
+            let keep = if ends && (on_cut(ch[0].uv.x, cu, pu) || on_cut(ch[0].uv.y, cv, pv)) { Some(ch[0]) } else { None };
             ch.retain(|q| !q.virt);
+            if let Some(mut j) = keep {
+                j.virt = false;
+                ch.insert(0, j);
+            }
             if ends && ch.len() >= 3 {
                 *closed = true;
+            }
+        }
+    }
+    for (_, group) in junctions {
+        if let [(ci, si), (cj, sj)] = group[..] {
+            if ci != cj && !chains[ci].1 && !chains[cj].1 && !chains[ci].0.is_empty() && !chains[cj].0.is_empty() {
+                let end = |c: &(Vec<BPt>, bool), at_start: bool| if at_start { c.0[0] } else { c.0[c.0.len() - 1] };
+                let (p, q) = (end(&chains[ci], si), end(&chains[cj], sj));
+                if !same_uv(p.uv, q.uv) {
+                    chains.push((vec![p, q], false));
+                }
             }
         }
     }
@@ -534,6 +634,13 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
         let eps = 1e-9 * (1.0 + p);
         (ya - c).abs() <= eps && (yb - c).abs() <= eps && (hi - c).abs() <= eps && lo < c - eps
     };
+    if std::env::var("CK_DBG").map_or(false, |v| v == body.face_id_str(f)) {
+        for (ch, closed) in &chains {
+            let xs: Vec<f64> = ch.iter().map(|q| (q.uv.x * 1e4).round() / 1e4).collect();
+            let n = xs.len();
+            eprintln!("DBGCHAIN closed={} n={} head={:?} tail={:?} cu={:?} u_lo={} u_hi={}", closed, n, &xs[..n.min(4)], &xs[n.saturating_sub(4)..], cu, u_lo, u_hi);
+        }
+    }
     let mut seg_list: Vec<(BPt, BPt)> = vec![];
     for (chain, closed) in &chains {
         let n = chain.len();
@@ -983,7 +1090,7 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
         // The CDT classified nothing as inside: a sliver face (a crescent a tenth of a millimetre wide between a circle
         // and an intersection curve that touch at both ends) whose boundary polylines cross by a few 1e-6. A single simple
         // cycle of a plane is still a polygon: clip its ears.
-        if matches!(surf, Surface::Plane { .. }) {
+        {
             if let Some(ring) = single_cycle(&b.segs) {
                 let uv: Vec<Vec2> = ring.iter().map(|&i| b.pts[i].uv).collect();
                 let clip = ear_clip(&uv);

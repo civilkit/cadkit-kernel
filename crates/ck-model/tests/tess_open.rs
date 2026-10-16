@@ -51,8 +51,11 @@ fn probe_part() {
         eprintln!("regen error: {}", e.error.describe());
     }
     let body = ex.0.body.clone().unwrap();
+    let t0 = std::time::Instant::now();
     let t = ck_tess::mesh::tessellate(&body);
+    let t_tess = t0.elapsed();
     let ids: Vec<_> = body.face_ids().collect();
+    eprintln!("PROBE timing tessellate {:?}", t_tess);
     let mut area = vec![0.0f64; ids.len()];
     let mut nt = vec![0usize; ids.len()];
     for (k, &fi) in t.mesh.tri_face.iter().enumerate() {
@@ -72,6 +75,9 @@ fn probe_part() {
             let sk = format!("{:?}", body.face(f).surface);
             eprintln!("PROBE {} {} tris={} area={:.4} exact={:.4} ratio={:.3} {:?}", body.face_id_str(f), sk.split(|c: char| !c.is_alphanumeric()).next().unwrap_or(""), nt[i], area[i], exact, ratio, notes);
         }
+    }
+    for i in check_mesh_why(&body, &t.mesh.positions, &t.mesh.tri_face, &t.mesh.failed, &t.mesh.failed_why) {
+        eprintln!("PROBE ISSUE {}: {}", i.entity, i.detail);
     }
     eprintln!("PROBE total faces {} suspect {} tris {}", ids.len(), bad, t.mesh.tri_face.len());
 }
