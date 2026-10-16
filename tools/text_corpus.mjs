@@ -71,10 +71,22 @@ C('emboss digits', { op: 'add', depth: 0.5, texts: [T('0123456789', { height: 8 
     for (let i = 0; i < chars.length; i += 8)
       C(`sweep ${font} ${chars.slice(i, i + 8).join('')}`, { plate: { kind: 'box', w: 100, h: 30, t: 5 }, texts: [T(chars.slice(i, i + 8).join(''), { font, height: 10, at: [50, 15], spacing: 1.15 })], depth: 0.4 });
 }
+// ---- fonts loaded from bytes (loadFont): the curated fonts as small subsets (crates/ck-text/tests/fixtures)
+const FX = path.join(here, '../crates/ck-text/tests/fixtures');
+const fx = (n, ext = 'ttf') => ({ name: 'fx-' + n, file: path.join(FX, `fx-${n}.${ext}`) });
+const fxText = 'BOSS 0689 &-.';
+for (const [n, ext, extra] of [['sans-barlow', 'ttf', {}], ['sans-source-otf', 'otf', {}], ['condensed-barlow', 'ttf', {}], ['condensed-bebas', 'ttf', {}], ['serif-ptserif', 'ttf', {}],
+  ['mono-plex', 'ttf', {}], ['display-anton', 'ttf', {}], ['slab-specialelite', 'ttf', { area: 'any', warn: 'textOverlappingContours', noValidate: true }], ['script-greatvibes', 'ttf', { area: 'any' }], ['script-satisfy', 'ttf', { area: 'any' }], ['variable-inter', 'ttf', { area: 'any', warn: 'textOverlappingContours', noValidate: true }]])
+  C(`loaded font ${n}`, { load: [fx(n, ext)], texts: [T(fxText, { font: 'fx-' + n, height: 9 })], ...extra });
+C('loaded font emboss', { load: [fx('sans-source-otf', 'otf')], op: 'add', depth: 0.6, texts: [T('BOSS 689', { font: 'fx-sans-source-otf', height: 10 })] });
+C('loaded font on an arc', { load: [fx('condensed-bebas')], plate: { kind: 'disk', r: 50, t: 3 }, texts: [T('BOSS 689', { font: 'fx-condensed-bebas', height: 5, at: [0, 0], anchor: ['center', 'baseline'], arc: { centre: [0, 0], radius: 28, angleCentre: 90, side: 'outside' } })] });
+C('font not loaded', { texts: [T('A', { font: 'fx-never-loaded' })], err: 'textFontNotLoaded' });
+C('font hash pin mismatch', { load: [fx('sans-barlow')], texts: [T('BOSS', { font: 'fx-sans-barlow', fontHash: '00000000' })], err: 'textFontMismatch' });
+C('font hash pin matches', { load: [fx('sans-barlow')], pin: 'fx-sans-barlow', texts: [T('BOSS', { font: 'fx-sans-barlow', height: 9 })] });
 // ---- errors and warnings
 C('empty string', { texts: [T('')], err: 'textEmpty' });
 C('blank string', { texts: [T('   ')], err: 'textNothingToDraw' });
-C('unknown font', { texts: [T('A', { font: 'comic' })], err: 'textBadFont' });
+C('unknown font', { texts: [T('A', { font: 'comic' })], err: 'textFontNotLoaded' });
 C('tiny text warns', { texts: [T('AB', { height: 0.5 })], warn: 'textTooSmall', noBoolean: true });
 C('missing glyph warns', { texts: [T('A日B', { height: 8 })], warn: 'textMissingGlyph', area: 'any' });
 C('long string capped', { texts: [T('A'.repeat(600), { height: 1 })], warn: 'textTruncated', noBoolean: true });
@@ -136,8 +148,14 @@ function glyphArea(k, texts) {
   return a;
 }
 
+const b64 = (f) => readFileSync(f).toString('base64');
 function run(c, idx) {
   const k = new Kernel(mod);
+  for (const f of c.load ?? []) {
+    const l = rqk(k, { type: 'loadFont', name: f.name, data: b64(f.file) });
+    if (!l.ok) return { ok: false, detail: 'loadFont ' + JSON.stringify(l.error ?? l), ms: 0 };
+    if (c.pin === f.name) for (const t of c.texts) t.fontHash = l.result.hash.slice(0, 16);
+  }
   const p = part(c);
   if (outDir) { mkdirSync(outDir, { recursive: true }); writeFileSync(path.join(outDir, `${String(idx).padStart(2, '0')}-${c.name.replace(/[^A-Za-z0-9]+/g, '_')}.ckpart`), JSON.stringify(p)); }
   const t0 = Date.now();
@@ -159,8 +177,9 @@ function run(c, idx) {
   if (!(vol > 0)) return { ok: false, detail: 'no body', ms };
   const v = rqk(k, { type: 'validate', tag: 'main', mesh: true });
   const issues = v.result?.issues ?? [];
-  if (issues.length) return { ok: false, detail: 'validate ' + [...new Set(issues.map((i) => i.code))].join(','), ms };
-  const open = openMeshEdges(rr, r);
+  // overlapping strokes inside one letter are not merged (warned): the solid is then known to fail validation
+  if (c.noValidate ? !issues.every((i) => i.code === 'LOOP_SELF_INTERSECT') : issues.length) return { ok: false, detail: 'validate ' + [...new Set(issues.map((i) => i.code))].join(','), ms };
+  const open = c.noValidate ? 0 : openMeshEdges(rr, r);
   if (open > 0) return { ok: false, detail: `${open} open mesh edges`, ms };
   const base = plateVolume(c.plate);
   const area = glyphArea(k, c.texts);
@@ -203,7 +222,61 @@ if (arg('--fuzz')) {
       texts: [T(str, { font: pick(['gauge', 'engrave']), height: h, at: [60 + (rnd() - 0.5) * 20, 30 + (rnd() - 0.5) * 12], angle: rnd() < 0.3 ? Math.floor(rnd() * 360) : 0, anchor: [pick(['left', 'center', 'right']), pick(['baseline', 'middle', 'top'])], spacing: pick([1, 1, 1.2]), ...(rnd() < 0.1 ? { polyline: true } : {}) })] });
   }
 }
+// ---- scenarios: replace / unload / subset through the request interface, with the regen cache on
+function fontScenarios() {
+  const out = [];
+  const ok = (name, good, detail) => out.push({ name, ok: !!good, detail });
+  const k = new Kernel(mod);
+  const part1 = part({ plane: 'front', plate: { kind: 'box', w: 100, h: 60, t: 5 }, depth: 0.3, op: 'cut', texts: [T('BOSS 689', { font: 'swap', height: 10 })] });
+  const regen = () => { const r = rqk(k, { type: 'regen', tag: 'main', part: part1, opts: { cacheStats: true } }); return r; };
+  const vol = () => rqk(k, { type: 'massProps', tag: 'main' }).result?.volume;
+  const err = (r) => (r.result?.errors ?? []).map(([id, e]) => e.code).join(',');
+  const a = rqk(k, { type: 'loadFont', name: 'swap', data: b64(fx('sans-barlow').file) });
+  ok('loadFont reply', a.ok && a.result.glyphs > 20 && a.result.supported.includes('Basic Latin') && Array.isArray(a.result.warnings) && /^[0-9a-f]{64}$/.test(a.result.hash), JSON.stringify(a.result ?? a).slice(0, 200));
+  let r = regen(); const vA = vol();
+  ok('regen with font A', !err(r), err(r));
+  const again = regen();
+  ok('second regen is a cache hit', again.result?.cacheStats?.fullHit === true || again.result?.cache?.fullHit === true || JSON.stringify(again.result).includes('"fullHit":true'), JSON.stringify(again.result?.cacheStats ?? again.result?.cache ?? '').slice(0, 160));
+  const conflict = rqk(k, { type: 'loadFont', name: 'swap', data: b64(fx('serif-ptserif').file) });
+  ok('same name, other file: fontNameConflict', !conflict.ok && String(conflict.error).includes('fontNameConflict'), JSON.stringify(conflict).slice(0, 200));
+  r = regen();
+  ok('conflict left font A in place', vol() === vA, `${vol()} vs ${vA}`);
+  const b = rqk(k, { type: 'loadFont', name: 'swap', data: b64(fx('serif-ptserif').file), replace: true });
+  ok('replace:true', b.ok && b.result.replaced === true && b.result.hash !== a.result.hash, JSON.stringify(b).slice(0, 160));
+  r = regen(); const vB = vol();
+  ok('regen after replace is not served from the cache', !err(r) && Math.abs(vB - vA) > 1e-6, `${vA} -> ${vB}`);
+  const ol = rqk(k, { type: 'textOutline', ...T('BOSS 689', { font: 'swap', height: 10 }) });
+  ok('textOutline uses the replaced font', ol.ok && Math.abs(vB - (100 * 60 * 5 - 0.3 * glyphArea(k, [T('BOSS 689', { font: 'swap', height: 10 })]))) < 0.02 * 0.3 * glyphArea(k, [T('BOSS 689', { font: 'swap', height: 10 })]), '');
+  const list = rqk(k, { type: 'listFonts' });
+  ok('listFonts', list.ok && list.result.fonts[0].name === 'gauge' && list.result.fonts[1].name === 'engrave' && list.result.fonts.some((f) => f.name === 'swap' && f.hash === b.result.hash), JSON.stringify(list.result?.fonts?.map((f) => f.name)));
+  const un = rqk(k, { type: 'unloadFont', name: 'swap' });
+  ok('unloadFont', un.ok && un.result.unloaded === true, JSON.stringify(un));
+  r = regen();
+  ok('regen after unload: textFontNotLoaded naming the font', err(r).includes('textFontNotLoaded') && JSON.stringify(r.result.errors).includes('swap') && JSON.stringify(r.result.errors).includes('loadFont'), JSON.stringify(r.result?.errors).slice(0, 300));
+  const un2 = rqk(k, { type: 'unloadFont', name: 'gauge' });
+  ok('built-in cannot be unloaded', !un2.ok && String(un2.error).includes('fontReserved'), JSON.stringify(un2));
+  ok('built-in name cannot be loaded over', !rqk(k, { type: 'loadFont', name: 'gauge', data: b64(fx('sans-barlow').file) }).ok, '');
+  ok('bad base64', String(rqk(k, { type: 'loadFont', name: 'x', data: '***' }).error).includes('fontBadData'), '');
+  ok('not a font', String(rqk(k, { type: 'loadFont', name: 'x', data: Buffer.from('hello world, not a font').toString('base64') }).error).includes('fontBadData'), '');
+  // subset: the glyphs of the string only, same geometry as the full font
+  const sub = rqk(k, { type: 'subsetFont', name: 'gauge', text: 'RPM x100' });
+  ok('subsetFont reply', sub.ok && sub.result.data.length > 100 && sub.result.bytes < 8000 && sub.result.glyphs <= 10, JSON.stringify({ bytes: sub.result?.bytes, glyphs: sub.result?.glyphs }));
+  rqk(k, { type: 'loadFont', name: 'gsub', data: sub.result.data });
+  const o1 = rqk(k, { type: 'textOutline', ...T('RPM x100', { font: 'gauge', height: 8 }) });
+  const o2 = rqk(k, { type: 'textOutline', ...T('RPM x100', { font: 'gsub', height: 8 }) });
+  ok('subset gives the same outline as the built-in font', o1.ok && o2.ok && JSON.stringify(o1.result.regions) === JSON.stringify(o2.result.regions), '');
+  const m1 = rqk(k, { type: 'textMetrics', string: 'RPM x100', font: 'gauge', height: 8 });
+  const m2 = rqk(k, { type: 'textMetrics', string: 'RPM x100', font: 'gsub', height: 8 });
+  ok('subset gives the same metrics', JSON.stringify(m1.result) === JSON.stringify(m2.result.warnings ? m2.result : m2.result), '');
+  const miss = rqk(k, { type: 'textMetrics', string: 'RPM', font: 'nothere', height: 8 });
+  ok('textMetrics with a font that is not loaded', !miss.ok && String(miss.error).includes('textFontNotLoaded') && String(miss.error).includes('nothere'), JSON.stringify(miss).slice(0, 200));
+  // two kernels do not share fonts
+  const k2 = new Kernel(mod);
+  ok('fonts belong to the kernel instance', !rqk(k2, { type: 'textMetrics', string: 'A', font: 'gsub', height: 8 }).ok, '');
+  return out;
+}
 let bad = 0, n = 0;
+if (!only || 'font scenarios'.includes(only)) for (const r of fontScenarios()) { n++; if (!r.ok) bad++; if (!r.ok || !process.argv.includes('--quiet')) console.log(`${r.ok ? 'ok  ' : 'FAIL'} font scenario: ${r.name}${r.ok ? '' : ': ' + r.detail}`); }
 cases.forEach((c, i) => {
   if (only && !c.name.includes(only)) return;
   n++;

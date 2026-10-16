@@ -20,6 +20,7 @@ ck-io = { path = "../ck-io" }
 ck-sldprt = { path = "../ck-sldprt" }
 ck-tess = { path = "../ck-tess" }
 ck-recog = { path = "../ck-recog" }
+ck-text = { path = "../ck-text" }
 
 [features]
 sanity-shadow = ["ck-ops/sanity-shadow"]

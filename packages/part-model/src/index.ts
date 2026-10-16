@@ -28,8 +28,10 @@ export interface SketchText {
   id: string;
   type: 'text';
   string: string;
-  /** 'gauge' (condensed sans, default) or 'engrave' (serif) */
-  font?: 'gauge' | 'engrave';
+  /** 'gauge' (condensed sans, default) or 'engrave' (serif), or the name of a font registered with `loadFont`; not loaded: `textFontNotLoaded` */
+  font?: 'gauge' | 'engrave' | (string & {});
+  /** pins a loaded font by content: a prefix of the SHA-256 of its file (`loadFont` reply `hash`); another file under the name: `textFontMismatch` */
+  fontHash?: string;
   /** cap height in sketch units (mm) */
   height: number;
   /** anchor position; `p` (a sketch point id) wins when given so the position can be constrained */

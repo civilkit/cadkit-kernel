@@ -2,7 +2,7 @@
 # One command to make the whole stack current: TypeScript packages, kernel wasm and the copies the
 # frontend uses.
 #
-# usage: tools/sync_stack.sh [--wasm] [--kit <kit dir>]
+# usage: tools/sync_stack.sh [--wasm] [--force-copy] [--kit <kit dir>]
 #   (default)  compile packages/, report whether the wasm is older than the Rust sources, copy the wasm
 #              into the kit (and kit-film when present)
 #   --wasm     also rebuild the kernel wasm on the CI box (tools/remote_build.sh --checks large sample) first
@@ -11,9 +11,11 @@ cd "$(dirname "$0")/.."
 ROOT="$PWD"
 KIT="$ROOT/../kit"
 REBUILD_WASM=0
+FORCE_COPY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --wasm) REBUILD_WASM=1 ;;
+    --force-copy) FORCE_COPY=1 ;;
     --kit) KIT="$2"; shift ;;
     *) echo "unknown option $1" >&2; exit 2 ;;
   esac
@@ -43,12 +45,22 @@ else
   STALE=0
 fi
 
-for dest in "$KIT/apps/cad/public/kernel" "$ROOT/../kit-film/apps/cad/public/kernel"; do
-  if [ -d "$dest" ]; then
-    cp "$WASM" "$dest/ck_wasm.wasm"
-    echo "== copied wasm -> $dest"
-  fi
-done
+# Never overwrite the kit's wasm with one built from a checkout that is behind `main`: it would silently drop
+# features that landed on main (this happened once with fonts). Merge main first, or pass --force-copy.
+BEHIND=0
+if git rev-parse --verify -q main >/dev/null && ! git merge-base --is-ancestor main HEAD; then
+  BEHIND=1
+fi
+if [ "$BEHIND" = 1 ] && [ "$FORCE_COPY" != 1 ]; then
+  echo "== NOT copying the wasm into the kit: this checkout ($(git rev-parse --abbrev-ref HEAD)) is behind main; merge main first (or use --force-copy)" >&2
+else
+  for dest in "$KIT/apps/cad/public/kernel" "$ROOT/../kit-film/apps/cad/public/kernel"; do
+    if [ -d "$dest" ]; then
+      cp "$WASM" "$dest/ck_wasm.wasm"
+      echo "== copied wasm -> $dest"
+    fi
+  done
+fi
 
 echo "== stack: kernel $(git rev-parse --short HEAD), wasm $(date -r "$WASM" '+%F %T'), $(wc -c < "$WASM") bytes"
 exit $STALE

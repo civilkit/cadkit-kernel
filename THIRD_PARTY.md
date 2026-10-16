@@ -18,4 +18,30 @@ Vendored or adapted code and its licence. Only permissively licensed sources.
 | crates/ck-sldprt/tests/fixtures/*.sldprt (4 files, 260 KB), SOURCES.txt | blussyya/sldprt-research-dump, folder "test files new": SW2022_C00 cube, SW2022_C04 cube with hole, SW2022_C13 cone, SW2011_C00 cube (OLE2); copied unchanged | MIT |
 | crates/ck-text/fonts/gauge.ttf, crates/ck-text/fonts/OFL-BarlowCondensed.txt | Barlow Condensed Medium, Copyright 2017 The Barlow Project Authors (the jpt/barlow project); subset to Basic Latin + Latin-1 + a few punctuation marks with fontTools (unhinted, layout tables and name table dropped), renamed `gauge.ttf`. Baked into the wasm with `include_bytes!` (docs/text.md) | SIL Open Font License 1.1 |
 | crates/ck-text/fonts/engrave.ttf, crates/ck-text/fonts/OFL-PTSerif.txt | PT Serif Regular, Copyright 2010 ParaType Ltd. (reserved font names "PT Sans", "PT Serif", "ParaType"); same subset, renamed `engrave.ttf` so the reserved name is not used by the modified font. Baked into the wasm | SIL Open Font License 1.1 |
-| crates/ck-text/src/ttf.rs | written from the OpenType / TrueType specification (head, maxp, hhea, hmtx, loca, glyf, cmap); no third-party code, no crate dependency | n/a |
+| crates/ck-text/src/ttf.rs | written from the OpenType / TrueType and Adobe CFF / Type 2 charstring specifications (head, maxp, hhea, hmtx, loca, glyf, cmap, name, OS/2, CFF); no third-party code, no crate dependency | n/a |
+| crates/ck-text/src/sha256.rs | SHA-256 per FIPS 180-4 (moved from the regen cache; the author's own) | n/a |
+| crates/ck-text/tests/fixtures/fx-*.ttf, fx-sans-source-otf.otf (11 files, 3 to 19 KB each), the OFL-*.txt / LICENSE-Apache-2.0.txt next to them | Subsets (the letters and digits of the tests, `pyftsubset`, unhinted, name table dropped) of the curated fonts listed below plus Inter (variable-font test); test inputs only, not compiled into the wasm. The name tables are dropped so no reserved font name is carried by a modified font | SIL Open Font License 1.1 (all but the two Apache 2.0 ones, see the table) |
+
+## Curated fonts (hosted by the kit, not in this repository)
+
+Fonts the kit may host and hand to `loadFont` (docs/text.md, "Loading fonts"). The kernel repository holds none of
+these files; only the tiny test subsets above. Files were taken from the Google Fonts repository
+(github.com/google/fonts, commit 47d54ca) except Source Sans 3 (github.com/adobe-fonts/source-sans, branch `release`,
+`OTF/SourceSans3-Regular.otf`, commit 87b37a2). Each licence text must travel with the hosted file. Only SIL OFL 1.1 and
+Apache 2.0 fonts are listed; no AGPL / GPL fonts.
+
+| Role | Font (file) | Copyright | Licence | Upstream | sha256 of the file checked |
+|---|---|---|---|---|---|
+| sans | Barlow Regular (`ofl/barlow/Barlow-Regular.ttf`) | Copyright 2017 The Barlow Project Authors | SIL OFL 1.1 | https://github.com/jpt/barlow | 95aa02c7c43096e0dd44d787ba6216864a67157e402adab59b35572e0c1577ea |
+| sans, humanist (OpenType / CFF) | Source Sans 3 Regular (`OTF/SourceSans3-Regular.otf`) | (c) 2023 Adobe, Reserved Font Name "Source" | SIL OFL 1.1 | https://github.com/adobe-fonts/source-sans | 08df266400933d3178d081a45f94a08814c3e55b4b7dd2e0ff69cb1329f13ab6 |
+| condensed | Barlow Condensed Medium (`ofl/barlowcondensed/BarlowCondensed-Medium.ttf`; the built-in `gauge` is a subset of it) | Copyright 2017 The Barlow Project Authors | SIL OFL 1.1 | https://github.com/jpt/barlow | 262bd143292ce479ee0cd09a42b47ab173fca8e9c6eb5ed0b5c8a845bc371d17 |
+| condensed capitals, display | Bebas Neue Regular (`ofl/bebasneue/BebasNeue-Regular.ttf`) | Copyright 2019 The Bebas Neue Project Authors | SIL OFL 1.1 | https://github.com/dharmatype/Bebas-Neue | 08e4623805102d819f58601e46e345648846075e363b2ceb23313c2d1c83ec73 |
+| serif | PT Serif Regular (`ofl/ptserif/PT_Serif-Web-Regular.ttf`; the built-in `engrave` is a subset of it) | Copyright (c) 2010 ParaType Ltd., Reserved Font Names "PT Sans", "PT Serif", "ParaType" | SIL OFL 1.1 | https://www.paratype.com/fonts/pt/pt-serif | a4951fade06ff8f09b7673aa81ffb65a8cd409e24d3289a6dc670bc4dda2557a |
+| slab / typewriter | Special Elite Regular (`apache/specialelite/SpecialElite-Regular.ttf`) | Copyright (c) 2010 Brian J. Bonislawsky DBA Astigmatic (AOETI) | Apache 2.0 | https://fonts.google.com/specimen/Special+Elite | a776fcb4ceb8bdf03e2967688ebdad42680de5b91a7e62c17e718ae212d14bc4 |
+| mono | IBM Plex Mono Regular (`ofl/ibmplexmono/IBMPlexMono-Regular.ttf`) | Copyright 2017 IBM Corp., Reserved Font Name "Plex" | SIL OFL 1.1 | https://github.com/IBM/plex | 6a3412f058c7d8dfd9170c41e85ade48e5156ecb89356110ca57a0a27734af46 |
+| script / nameplate | Great Vibes Regular (`ofl/greatvibes/GreatVibes-Regular.ttf`) | Copyright 2010 The Great Vibes Pro Project Authors | SIL OFL 1.1 | https://github.com/googlefonts/great-vibes | 8d509802186f1b51572531ecf313e8098f9a5bfdfaca93f0c9b34467f9982d15 |
+| script (brush) | Satisfy Regular (`apache/satisfy/Satisfy-Regular.ttf`) | Copyright (c) 2011 Font Diner, Inc. | Apache 2.0 | https://fonts.google.com/specimen/Satisfy | 55bb141a0a23a32278d5fa7fd2e853824faa173b94774660ebeddb106be07c80 |
+| bold display | Anton Regular (`ofl/anton/Anton-Regular.ttf`) | Copyright 2020 The Anton Project Authors | SIL OFL 1.1 | https://github.com/googlefonts/AntonFont | a4ba3a92350ebb031da0cb47630ac49eb265082ca1bc0450442f4a83ab947cab |
+
+Also read without problems in the exploratory run (whole files, not part of the list): Cousine, Fira Sans, Lato, Tinos,
+Pacifico, Inter (variable), Source Code Pro (variable). Their licences are checked per font before any of them is hosted.

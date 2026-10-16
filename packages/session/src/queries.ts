@@ -142,6 +142,47 @@ export async function textOutline(kernel: KernelTransport, spec: Record<string, 
   return call(kernel, { type: 'textOutline', ...spec });
 }
 
+export interface FontInfo {
+  name: string;
+  /** SHA-256 of the file (hex); an entity may pin a prefix of it as `fontHash` */
+  hash: string;
+  builtin: boolean;
+  family: string | null;
+  bytes: number;
+  glyphs: number;
+  /** number of mapped characters */
+  chars: number;
+  unitsPerEm: number;
+  capHeight: number;
+  outlines: 'glyf' | 'cff';
+  /** Unicode blocks with at least one mapped character */
+  supported: string[];
+  coverage: Array<{ block: string; mapped: number; of: number }>;
+  warnings: Array<{ code: string; detail: string }>;
+  /** loaded fonts only: the same name already held the same file / another file that was replaced */
+  alreadyLoaded?: boolean;
+  replaced?: boolean;
+}
+
+/** Register a TTF / OTF (base64) under `name` for the session; docs/text.md "Loading fonts". Errors: fontNameConflict, fontReserved, fontBadName, fontBadData, fontTooLarge, fontTooMany. */
+export async function loadFont(kernel: KernelTransport, name: string, data: string, opts: { replace?: boolean } = {}): Promise<FontInfo> {
+  return call(kernel, { type: 'loadFont', name, data, ...opts });
+}
+
+export async function unloadFont(kernel: KernelTransport, name: string): Promise<{ name: string; unloaded: boolean }> {
+  return call(kernel, { type: 'unloadFont', name });
+}
+
+/** The built-in fonts, then the loaded ones. */
+export async function listFonts(kernel: KernelTransport): Promise<{ fonts: FontInfo[] }> {
+  return call(kernel, { type: 'listFonts' });
+}
+
+/** A plain TrueType font (base64 in `data`) with just the glyphs of `text` (for embedding in a document). */
+export async function subsetFont(kernel: KernelTransport, name: string, text: string): Promise<{ name: string; hash: string; bytes: number; glyphs: number; data: string; warnings: Array<{ code: string; detail: string }> }> {
+  return call(kernel, { type: 'subsetFont', name, text });
+}
+
 export interface ProfileIssue {
   rule: string;
   severity: 'error' | 'warn' | 'info';

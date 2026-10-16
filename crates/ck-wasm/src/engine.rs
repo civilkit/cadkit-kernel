@@ -718,6 +718,10 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
         }
         "textMetrics" => ck_model::sketch::text::metrics_reply(cx.msg),
         "textOutline" => ck_model::sketch::text::outline_reply(cx.msg),
+        "loadFont" => ck_model::sketch::text::load_font_reply(cx.msg),
+        "unloadFont" => ck_model::sketch::text::unload_font_reply(cx.msg),
+        "listFonts" => Ok(ck_model::sketch::text::list_fonts_reply()),
+        "subsetFont" => ck_model::sketch::text::subset_font_reply(cx.msg),
         "threadData" => {
             let get = |k: &str| match cx.msg.get(k) {
                 Some(Json::Str(s)) if !s.is_empty() => Ok(Some(s.as_str())),

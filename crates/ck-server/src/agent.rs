@@ -106,6 +106,27 @@ pub fn text_outline(cx: &mut Cx) -> Result<Json, String> {
     cx.query("textOutline")
 }
 
+/// `{type:"loadFont", name, data:<base64 TTF/OTF>, replace?}`: register a font for the session; reply `{name, hash,
+/// glyphs, supported, coverage, warnings, ..}`. Stateless w.r.t. tags (the registry is the kernel's).
+pub fn load_font(cx: &mut Cx) -> Result<Json, String> {
+    cx.query("loadFont")
+}
+
+/// `{type:"unloadFont", name}`: `{name, unloaded}`.
+pub fn unload_font(cx: &mut Cx) -> Result<Json, String> {
+    cx.query("unloadFont")
+}
+
+/// `{type:"listFonts"}`: `{fonts:[..]}`, the built-in fonts then the loaded ones.
+pub fn list_fonts(cx: &mut Cx) -> Result<Json, String> {
+    cx.query("listFonts")
+}
+
+/// `{type:"subsetFont", name, text}`: `{name, hash, data:<base64 TTF>, bytes, glyphs, warnings}`.
+pub fn subset_font(cx: &mut Cx) -> Result<Json, String> {
+    cx.query("subsetFont")
+}
+
 /// `{type:"threadData", standard?, size?}`: the thread tables (stateless).
 /// No `standard`: the list of standards with their size designations; with
 /// it: that standard's sizes with all numbers (mm); with `size` too: the one

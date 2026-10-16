@@ -6,7 +6,7 @@
 import { emptyPart, FEATURE_TYPES, type PartDoc } from '../../part-model/src/index.js';
 import { hintFor, verify, type CheckResultItem, type KernelTransport, type RegenError, type VerifyReport } from '../../driver/src/verify.js';
 import {
-  angles, check, checkProfile, clearance, closestPoint, describe, distance, maxDistance, symmetry, thickness, thicknessAt, heal, importSat, importSldprt, importStep, massProps, probe, profiles, resolveDescriptions, section, sections, step, textMetrics, textOutline, threadData, validate,
+  angles, check, checkProfile, clearance, closestPoint, describe, distance, maxDistance, symmetry, thickness, thicknessAt, heal, importSat, importSldprt, importStep, massProps, probe, profiles, resolveDescriptions, section, sections, step, textMetrics, textOutline, loadFont, unloadFont, listFonts, subsetFont, threadData, validate,
   type CheckReport, type DescribeItem, type HealReport, type ImportReport, type MassReport, type ProbeReport,
   type AnglesReport, type ClearanceReport, type ClosestPointReport, type DistanceReport, type HausdorffReport, type MaxDistanceReport, type MeasureEntity,
   type SymmetryReport, type ThicknessAtReport, type ThicknessReport,
@@ -751,6 +751,24 @@ export class Session {
   /** Loops of a text entity as polylines (stateless; docs/text.md). */
   textOutline(spec: Record<string, unknown>) {
     return textOutline(this.kernel, spec);
+  }
+
+  /** Register a TTF / OTF (base64) for lettering under `name`; the `text` entity's `font` then accepts the name (docs/text.md). */
+  loadFont(name: string, data: string, opts: { replace?: boolean } = {}) {
+    return loadFont(this.kernel, name, data, opts);
+  }
+
+  unloadFont(name: string) {
+    return unloadFont(this.kernel, name);
+  }
+
+  listFonts() {
+    return listFonts(this.kernel);
+  }
+
+  /** TrueType bytes (base64) of a loaded font reduced to the glyphs of `text`. */
+  subsetFont(name: string, text: string) {
+    return subsetFont(this.kernel, name, text);
   }
 
   /** Thread standards and sizes (stateless; see docs/spec-agent-interface.md). */

@@ -17,10 +17,17 @@
 //!   tops point away from the centre and the text reads clockwise (a title over a dial);
 //!   `inside` = tops point at the centre and the text reads counter-clockwise (a title under a dial).
 
+mod fonts;
+mod sha256;
 mod ttf;
 
-pub use ttf::Font;
-use std::sync::OnceLock;
+pub use fonts::{
+    base64_decode, base64_encode, entry as font_entry, fingerprint as font_fingerprint, font, list as list_fonts, load as load_font, resolve as resolve_font,
+    subset as subset_font, unload as unload_font, FontError, Info as FontInfo, Warn as FontWarn, FONT_NAMES, MAX_FONTS, MAX_FONT_BYTES,
+};
+pub use fonts::hex as sha256_hex;
+pub use sha256::sha256;
+pub use ttf::{Font, OutlineKind};
 
 pub type P = [f64; 2];
 
@@ -36,22 +43,6 @@ const FLAT_FRAC: f64 = 0.003;
 /// Neighbouring letters closer than this fraction of the height (at least `MIN_GAP`) are pushed apart.
 const GAP_FRAC: f64 = 0.012;
 const MIN_GAP: f64 = 0.03;
-
-static GAUGE: &[u8] = include_bytes!("../fonts/gauge.ttf");
-static ENGRAVE: &[u8] = include_bytes!("../fonts/engrave.ttf");
-
-/// The font behind a name (`gauge`, `engrave`; aliases `sans`, `default`, `serif`).
-pub fn font(name: &str) -> Option<&'static Font> {
-    static F: OnceLock<[Option<Font>; 2]> = OnceLock::new();
-    let f = F.get_or_init(|| [Font::parse(GAUGE), Font::parse(ENGRAVE)]);
-    match name {
-        "" | "gauge" | "sans" | "default" => f[0].as_ref(),
-        "engrave" | "serif" => f[1].as_ref(),
-        _ => None,
-    }
-}
-
-pub const FONT_NAMES: [&str; 2] = ["gauge", "engrave"];
 
 // ---------------------------------------------------------------------------------------------
 // edges
@@ -221,6 +212,8 @@ pub struct ArcSpec {
 pub struct Spec {
     pub string: String,
     pub font: String,
+    /// Pins the loaded font by content: a prefix (any length) of its SHA-256; a different file is `textFontMismatch`.
+    pub font_hash: Option<String>,
     pub height: f64,
     pub spacing: f64,
     pub at: P,
@@ -240,6 +233,7 @@ impl Default for Spec {
         Spec {
             string: String::new(),
             font: "gauge".into(),
+            font_hash: None,
             height: 5.0,
             spacing: 1.0,
             at: [0.0, 0.0],
@@ -266,8 +260,10 @@ pub enum Error {
     Empty,
     /// `textNothingToDraw`: only spaces / unknown characters
     NothingToDraw,
-    /// `textBadFont`
-    UnknownFont(String),
+    /// `textFontNotLoaded`: not a built-in name and nothing loaded under it
+    FontNotLoaded(String),
+    /// `textFontMismatch`: the loaded font's hash does not start with the pinned `fontHash`
+    FontMismatch { name: String, pinned: String, loaded: String },
     /// `textBadHeight`
     BadHeight,
     /// `textBadArc`
@@ -281,7 +277,8 @@ impl Error {
         match self {
             Error::Empty => "textEmpty",
             Error::NothingToDraw => "textNothingToDraw",
-            Error::UnknownFont(_) => "textBadFont",
+            Error::FontNotLoaded(_) => "textFontNotLoaded",
+            Error::FontMismatch { .. } => "textFontMismatch",
             Error::BadHeight => "textBadHeight",
             Error::BadArc => "textBadArc",
             Error::BadValue => "textBadValue",
@@ -291,7 +288,13 @@ impl Error {
         match self {
             Error::Empty => "the text string is empty".into(),
             Error::NothingToDraw => "the text has no visible characters".into(),
-            Error::UnknownFont(f) => format!("unknown font {f:?}; use one of gauge, engrave"),
+            Error::FontNotLoaded(f) => format!(
+                "font {f:?} is not loaded; built-in fonts are gauge and engrave, any other font must be loaded first with {{type:\"loadFont\", name:{f:?}, data:<base64 TTF/OTF>}}"
+            ),
+            Error::FontMismatch { name, pinned, loaded } => format!(
+                "font {name:?} is loaded with sha256 {}..., but the entity pins fontHash {pinned:?}; load the document's font under that name (loadFont with replace:true)",
+                &loaded[..16.min(loaded.len())]
+            ),
             Error::BadHeight => "text height must be a positive number".into(),
             Error::BadArc => "text on an arc needs a positive radius".into(),
             Error::BadValue => "text position, angle and spacing must be finite numbers (spacing 0.2 to 5)".into(),
@@ -530,7 +533,7 @@ struct Run {
     warnings: Vec<Warning>,
 }
 
-fn prepare(string: &str, font_name: &str, height: f64, spacing: f64, polyline: bool, run_spans: usize) -> Result<Run, Error> {
+fn prepare(string: &str, font_name: &str, font_hash: Option<&str>, height: f64, spacing: f64, polyline: bool, run_spans: usize) -> Result<Run, Error> {
     if string.is_empty() {
         return Err(Error::Empty);
     }
@@ -540,7 +543,7 @@ fn prepare(string: &str, font_name: &str, height: f64, spacing: f64, polyline: b
     if !(spacing.is_finite() && spacing > 0.0 && spacing < 20.0) {
         return Err(Error::BadValue);
     }
-    let font = font(font_name).ok_or_else(|| Error::UnknownFont(font_name.to_string()))?;
+    let font = resolve_font(font_name, font_hash)?;
     let scale = height / font.cap_height();
     let mut warnings = vec![];
     if height < MIN_HEIGHT {
@@ -555,7 +558,7 @@ fn prepare(string: &str, font_name: &str, height: f64, spacing: f64, polyline: b
         chars.truncate(MAX_CHARS);
     }
     let tol = polyline.then_some(0.005 * font.cap_height());
-    let (mut pen, mut missing) = (0.0, String::new());
+    let (mut pen, mut missing, mut overlapping) = (0.0, String::new(), String::new());
     let mut glyphs = vec![];
     let mut advances = vec![];
     let mut ink = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
@@ -567,7 +570,10 @@ fn prepare(string: &str, font_name: &str, height: f64, spacing: f64, polyline: b
             continue;
         };
         let adv = font.advance(g);
-        let loops = glyph_loops(font, g, tol, run_spans.clamp(1, 16));
+        let loops = glyph_loops(&font, g, tol, run_spans.clamp(1, 16));
+        if glyph_overlaps(&loops) && !overlapping.contains(ch) {
+            overlapping.push(ch);
+        }
         for l in &loops {
             for e in l {
                 let mut pts = vec![e.start()];
@@ -587,6 +593,12 @@ fn prepare(string: &str, font_name: &str, height: f64, spacing: f64, polyline: b
     if !missing.is_empty() {
         warnings.push(Warning { code: "textMissingGlyph", detail: format!("no glyph for {missing:?} in font {font_name}; skipped") });
     }
+    if !overlapping.is_empty() {
+        warnings.push(Warning {
+            code: "textOverlappingContours",
+            detail: format!("the outlines of {overlapping:?} in font {font_name} cross themselves (overlapping strokes); overlaps are not merged, so the engraved or embossed solid can be invalid (LOOP_SELF_INTERSECT); pick another font"),
+        });
+    }
     if ink[0] > ink[2] {
         return Err(Error::NothingToDraw);
     }
@@ -594,15 +606,15 @@ fn prepare(string: &str, font_name: &str, height: f64, spacing: f64, polyline: b
 }
 
 /// Advance width and ink box of a string (no placement).
-pub fn metrics(string: &str, font_name: &str, height: f64, spacing: f64) -> Result<Metrics, Error> {
+pub fn metrics(string: &str, font_name: &str, font_hash: Option<&str>, height: f64, spacing: f64) -> Result<Metrics, Error> {
     if !(spacing.is_finite() && spacing > 0.0 && spacing < 20.0) {
         return Err(Error::BadValue);
     }
-    let r = match prepare(string, font_name, height, spacing, false, RUN_SPANS) {
+    let r = match prepare(string, font_name, font_hash, height, spacing, false, RUN_SPANS) {
         Ok(r) => r,
         Err(Error::NothingToDraw) => {
             // only blanks: still has an advance
-            let font = font(font_name).ok_or_else(|| Error::UnknownFont(font_name.to_string()))?;
+            let font = resolve_font(font_name, font_hash)?;
             let s = height / font.cap_height();
             let adv: Vec<f64> = string.chars().filter_map(|c| font.glyph_index(c)).map(|g| font.advance(g) * spacing * s).collect();
             return Ok(Metrics { advance: adv.iter().sum(), bbox: [0.0; 4], cap_height: height, chars: adv.len(), advances: adv, warnings: vec![] });
@@ -622,7 +634,7 @@ pub fn metrics(string: &str, font_name: &str, height: f64, spacing: f64) -> Resu
 
 /// Lay a string out as regions.
 pub fn layout(spec: &Spec) -> Result<Layout, Error> {
-    let run = prepare(&spec.string, &spec.font, spec.height, spec.spacing, spec.polyline, spec.run_spans)?;
+    let run = prepare(&spec.string, &spec.font, spec.font_hash.as_deref(), spec.height, spec.spacing, spec.polyline, spec.run_spans)?;
     let fin = |v: f64| v.is_finite() && v.abs() < 1e9;
     if !(fin(spec.at[0]) && fin(spec.at[1]) && fin(spec.angle) && spec.spacing.is_finite() && spec.spacing > 0.0 && spec.spacing < 20.0) {
         return Err(Error::BadValue);
@@ -673,6 +685,41 @@ pub fn layout(spec: &Spec) -> Result<Layout, Error> {
         warnings.push(Warning { code: "textOverlap", detail: "neighbouring letters overlap (radius too small), which the booleans cannot merge; increase the radius or reduce the height".into() });
     }
     Ok(Layout { regions, warnings, bbox })
+}
+
+/// Letters and digits of the font whose contours cross each other (overlapping strokes drawn as separate
+/// contours, typical for variable fonts). The nesting rule cannot tell such a glyph from two letters, and
+/// overlapping loops are not merged.
+pub(crate) fn overlapping_glyphs(font: &Font) -> Vec<char> {
+    ('A'..='Z').chain('a'..='z').chain('0'..='9').filter(|&ch| font.glyph_index(ch).map_or(false, |g| glyph_overlaps(&glyph_loops(font, g, None, RUN_SPANS)))).collect()
+}
+
+/// Some loop of the glyph crosses itself or another loop of it.
+fn glyph_overlaps(loops: &[Vec<Edge>]) -> bool {
+    let polys: Vec<Vec<P>> = loops.iter().map(|l| loop_polygon(l, 6)).collect();
+    let o = |p: P, q: P, r: P| (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+    let cross = |a0: P, a1: P, b0: P, b1: P| o(a0, a1, b0) * o(a0, a1, b1) < 0.0 && o(b0, b1, a0) * o(b0, b1, a1) < 0.0;
+    for (i, p) in polys.iter().enumerate() {
+        let n = p.len();
+        // a contour that crosses itself
+        for a in 0..n {
+            for b in a + 2..n {
+                if !(a == 0 && b == n - 1) && cross(p[a], p[(a + 1) % n], p[b], p[(b + 1) % n]) {
+                    return true;
+                }
+            }
+        }
+        for q in &polys[i + 1..] {
+            for a in 0..n {
+                for b in 0..q.len() {
+                    if cross(p[a], p[(a + 1) % n], q[b], q[(b + 1) % q.len()]) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
 }
 
 /// The first pair of glyphs (indices in the run, `i < j`) whose outer outlines cross, nest or come closer than `gap`.
@@ -846,3 +893,5 @@ fn classify(loops: Vec<Vec<Edge>>, glyph: usize) -> Vec<Region> {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod font_tests;
