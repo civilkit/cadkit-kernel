@@ -226,6 +226,19 @@ mirrored and measured against the body: `maxDeviation` and `rmsDeviation` of the
 `maxDeviation <= tol` (default 1e-4 of the diagonal); `best` is the least deviating; `planes` has all, sorted. The
 symmetric-difference volume of the booleans is not computed.
 
+### Accuracy and timing
+
+`tools/measure_occt_check.py` (python3.12 + OCP) compares `distance` of random face pairs of sample parts with
+`BRepExtrema_DistShapeShape` on the exported STEP (faces matched through an interior point): 80 pairs on four
+plane / cylinder / cone parts (mounting plate, bracket, motor bracket, pipe elbow) agree to 4e-15 (57 with nonzero
+distance); 60 pairs on the large sample shell, swept handle, loft bottle and surface patch (B-spline faces) agree to
+2.6e-8. On the full large sample part (125 faces, B-spline; regen 11-15 s on the dev machine): `thickness` 2.6 s
+(about 850 samples, min 0.38 mm), `closestPoint` 0.13 s per point, `angles` all edges 0.8 s, `distance` of a point to
+the body about 7 ms; `maxDistance` / `symmetry` cost about 7 ms per sample point (the exact B-spline projections), so
+their defaults are 5000 / 1000 samples and the boundary samples are capped to a quarter of the budget.
+`tools/measure_check.mjs` runs everything on the sample parts (no trap, finite output, sane ranges, `distance`
+agrees with `probe`, timings).
+
 ### Limits
 
 - Distance is exact for the pairs where the projections are exact; the multi-start can miss a minimum that lies in
