@@ -78,13 +78,16 @@ pub fn recognize(body: &Body) -> Recognition {
         let p = best.unwrap();
         rec.strategy = "prism";
         let names = emit_prism(&mut tree, &p, &mut items, &mut explained);
+        for f in &p.steps {
+            explained.insert(*f);
+        }
         emit_holes(&mut tree, &m, &hs, &mut items, &mut explained);
         emit_blends(&mut tree, &p, &names, &mut items, &mut explained);
     } else if let Some(r) = revolve::analyze(&m) {
         rec.strategy = "revolve";
         emit_revolve(&mut tree, &r, &mut items, &mut explained);
     } else {
-        rec.note = Some("no dominant extrusion or revolution".into());
+        rec.note = Some(format!("no dominant extrusion or revolution ({})", prism::WHY.with(|w| w.borrow().clone())));
     }
     rec.unexplained = all.into_iter().filter(|f| !explained.contains(f)).collect();
     rec.features = tree.feats;
@@ -94,67 +97,118 @@ pub fn recognize(body: &Body) -> Recognition {
 
 // ---------------------------------------------------------------- prism
 
-fn emit_prism(tree: &mut Tree, p: &Prism, items: &mut Vec<Item>, explained: &mut HashSet<FaceId>) -> HashMap<FaceId, String> {
-    let plane = tree.plane(&p.spec, p.zmin);
-    let sid = tree.ids.next();
-    let mut sk = Sk::new(sid.clone(), plane);
-    let mut ents: HashMap<FaceId, String> = HashMap::new();
-    for c in &p.cycles {
-        match c {
-            Cycle::Circle { c, r, face } => {
-                let pc = sk.point(c.0, c.1);
-                let e = sk.circle(&pc, *r);
-                ents.insert(*face, e);
-            }
-            Cycle::Poly(segs) => {
-                let pts: Vec<String> = segs.iter().map(|s| sk.point(s.a.0, s.a.1)).collect();
-                for (i, s) in segs.iter().enumerate() {
-                    let (pa, pb) = (&pts[i], &pts[(i + 1) % pts.len()]);
-                    let e = match &s.g {
-                        Geom::Line => sk.line(pa, pb, false),
-                        Geom::Arc { c, ccw } => {
-                            let pc = sk.point(c.0, c.1);
-                            if *ccw {
-                                sk.arc(&pc, pa, pb)
-                            } else {
-                                sk.arc(&pc, pb, pa)
-                            }
+fn emit_cycle(sk: &mut Sk, c: &Cycle, ents: &mut HashMap<FaceId, String>) {
+    match c {
+        Cycle::Circle { c, r, face } => {
+            let pc = sk.point(c.0, c.1);
+            let e = sk.circle(&pc, *r);
+            ents.insert(*face, e);
+        }
+        Cycle::Poly(segs) => {
+            let pts: Vec<String> = segs.iter().map(|s| sk.point(s.a.0, s.a.1)).collect();
+            for (i, s) in segs.iter().enumerate() {
+                let (pa, pb) = (&pts[i], &pts[(i + 1) % pts.len()]);
+                let e = match &s.g {
+                    Geom::Line => sk.line(pa, pb, false),
+                    Geom::Arc { c, ccw } => {
+                        let pc = sk.point(c.0, c.1);
+                        if *ccw {
+                            sk.arc(&pc, pa, pb)
+                        } else {
+                            sk.arc(&pc, pb, pa)
                         }
-                    };
-                    ents.insert(s.face, e);
-                }
+                    }
+                };
+                ents.insert(s.face, e);
             }
         }
     }
-    tree.push(sk.json());
-    let eid = tree.ids.next();
-    let depth = p.zmax - p.zmin;
-    tree.push(extrude(&eid, &sid, "add", depth, false, false));
+}
+
+fn emit_prism(tree: &mut Tree, p: &Prism, items: &mut Vec<Item>, explained: &mut HashSet<FaceId>) -> HashMap<FaceId, String> {
     let mut names: HashMap<FaceId, String> = HashMap::new();
     let mut faces: Vec<FaceId> = vec![];
-    for (f, e) in &ents {
-        names.insert(*f, format!("{eid}.S.{e}"));
-        faces.push(*f);
+    if p.slabs <= 1 {
+        let plane = tree.plane(&p.spec, p.zmin);
+        let sid = tree.ids.next();
+        let mut sk = Sk::new(sid.clone(), plane);
+        let mut ents: HashMap<FaceId, String> = HashMap::new();
+        for c in &p.cycles {
+            emit_cycle(&mut sk, c, &mut ents);
+        }
+        tree.push(sk.json());
+        let eid = tree.ids.next();
+        let depth = p.zmax - p.zmin;
+        tree.push(extrude(&eid, &sid, "add", depth, false, false));
+        for (f, e) in &ents {
+            names.insert(*f, format!("{eid}.S.{e}"));
+            faces.push(*f);
+        }
+        if let Some(t) = p.top {
+            names.insert(t, format!("{eid}.C1"));
+            faces.push(t);
+        }
+        if let Some(b) = p.bottom {
+            names.insert(b, format!("{eid}.C0"));
+            faces.push(b);
+        }
+        faces.sort();
+        for f in &faces {
+            explained.insert(*f);
+        }
+        let params = Obj::new().put("axis", letter(p.ai)).put("depth", depth).put("level", p.zmin).put("profileLoops", p.cycles.len() as f64).build();
+        items.push(Item { id: eid, ty: "extrude", kind: "base".into(), faces, confidence: 0.95, params });
+        return names;
     }
-    if let Some(t) = p.top {
-        names.insert(t, format!("{eid}.C1"));
-        faces.push(t);
+    // layered: every wall cycle is an extrude over the heights it spans; nested ones alternate add / cut
+    let mut order: Vec<usize> = (0..p.ivs.len()).collect();
+    order.sort_by(|&a, &b| {
+        let (x, y) = (&p.ivs[a], &p.ivs[b]);
+        x.level.cmp(&y.level).then(x.za.partial_cmp(&y.za).unwrap()).then(y.outer.cmp(&x.outer))
+    });
+    let mut top_named = false;
+    let mut bottom_named = false;
+    for i in order {
+        let iv = &p.ivs[i];
+        let plane_level = if iv.outer { iv.za } else { iv.zb };
+        let plane = tree.plane(&p.spec, plane_level);
+        let sid = tree.ids.next();
+        let mut sk = Sk::new(sid.clone(), plane);
+        let mut ents: HashMap<FaceId, String> = HashMap::new();
+        emit_cycle(&mut sk, &iv.cycle, &mut ents);
+        tree.push(sk.json());
+        let eid = tree.ids.next();
+        let depth = iv.zb - iv.za;
+        tree.push(extrude(&eid, &sid, if iv.outer { "add" } else { "cut" }, depth, false, false));
+        let mut fs: Vec<FaceId> = vec![];
+        for (f, e) in &ents {
+            names.insert(*f, format!("{eid}.S.{e}"));
+            fs.push(*f);
+        }
+        if iv.outer {
+            if !top_named && (iv.zb - p.zmax).abs() < 1e-6 {
+                if let Some(t) = p.top {
+                    names.insert(t, format!("{eid}.C1"));
+                    fs.push(t);
+                    top_named = true;
+                }
+            }
+            if !bottom_named && (iv.za - p.zmin).abs() < 1e-6 {
+                if let Some(b) = p.bottom {
+                    names.insert(b, format!("{eid}.C0"));
+                    fs.push(b);
+                    bottom_named = true;
+                }
+            }
+        }
+        fs.sort();
+        for f in &fs {
+            explained.insert(*f);
+        }
+        let kind = if !iv.outer { "pocket" } else if iv.level == 0 && iv.za <= p.zmin + 1e-6 { "base" } else { "boss" };
+        let params = Obj::new().put("axis", letter(p.ai)).put("from", iv.za).put("to", iv.zb).put("depth", depth).put("nesting", iv.level as f64).build();
+        items.push(Item { id: eid, ty: "extrude", kind: kind.into(), faces: fs, confidence: 0.85, params });
     }
-    if let Some(b) = p.bottom {
-        names.insert(b, format!("{eid}.C0"));
-        faces.push(b);
-    }
-    faces.sort();
-    for f in &faces {
-        explained.insert(*f);
-    }
-    let params = Obj::new()
-        .put("axis", letter(p.ai))
-        .put("depth", depth)
-        .put("level", p.zmin)
-        .put("profileLoops", p.cycles.len() as f64)
-        .build();
-    items.push(Item { id: eid, ty: "extrude", kind: "base".into(), faces, confidence: 0.95, params });
     names
 }
 

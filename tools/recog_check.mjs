@@ -27,7 +27,7 @@ const baselinePath = path.join(here, 'recog_baseline.json');
 
 const { Kernel } = await import(path.join(here, 'kernel.mjs'));
 const mod = await WebAssembly.compile(readFileSync(wasmPath));
-const k = new Kernel(mod);
+const k = new Kernel(mod, { now: () => performance.now() });
 const call = (msg) => {
   const r = k.request(JSON.stringify({ id: 1, msg }));
   if (r.trap) return { ok: false, error: 'trap ' + r.trap };
@@ -61,7 +61,7 @@ function runOne(name, importMsg, sub) {
     strategy: r?.report?.strategy, features: r ? r.features.map((f) => f.type).join(',') : '',
     rel: r?.verify?.relativeError, explained: r?.report?.explainedFraction,
     unexplained: r ? r.report.unexplained.map((u) => `${u.kind}:${u.area.toFixed(1)}`).slice(0, 4).join(' ') : '',
-    why: rec.ok ? (r.errors.length ? r.errors.join(';') : '') : rec.error,
+    why: rec.ok ? (r.errors.length ? r.errors.join(';') : (r.report.note || '')) : rec.error,
   };
 }
 

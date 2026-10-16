@@ -56,6 +56,9 @@ pub struct Prism {
     pub walls: Vec<FaceId>,
     pub blends: Vec<Blend>,
     pub leftover: Vec<FaceId>,
+    pub ivs: Vec<Iv>,
+    pub slabs: usize,
+    pub steps: Vec<FaceId>,
 }
 
 fn ang(c: (f64, f64), p: (f64, f64)) -> f64 {
@@ -194,97 +197,252 @@ pub fn analyze(m: &Model, claimed: &HashSet<FaceId>, ai: usize) -> Option<Prism>
             }
         }
     }
-    let leftover: Vec<FaceId> = m
-        .faces
-        .iter()
-        .copied()
-        .filter(|f| !claimed.contains(f) && !role.contains_key(f) && !blended.contains(f))
-        .collect();
-
-    // wall cycles
-    let vertical = |e: EdgeId| matches!(m.curve(e), Curve::Line { d, .. } if par(*d, nv));
-    let vedges = |w: FaceId| -> Vec<EdgeId> {
-        m.edges(w)
-            .into_iter()
-            .filter(|&e| vertical(e) && m.across(e, w).map_or(false, |g| role.get(&g) == Some(&1)))
-            .collect()
-    };
-    let pos = |e: EdgeId| spec.xy(m.p0(e));
-    let mut visited: HashSet<FaceId> = HashSet::new();
-    let mut cycles: Vec<Cycle> = vec![];
+    // planes normal to the axis that are neither cap nor claimed: slab boundaries (floors, tops), explained by the layering
+    let mut steps: Vec<FaceId> = vec![];
+    let mut leftover: Vec<FaceId> = vec![];
+    for &f in &m.faces {
+        if claimed.contains(&f) || role.contains_key(&f) || blended.contains(&f) {
+            continue;
+        }
+        match m.kind(f) {
+            Kind::Plane { n, .. } if par(*n, nv) => steps.push(f),
+            _ => leftover.push(f),
+        }
+    }
+    // z range of every wall (blends at a cap extend the wall to it)
+    let mut zr: HashMap<FaceId, (f64, f64)> = HashMap::new();
     for &w in &walls {
-        if visited.contains(&w) {
-            continue;
-        }
-        let ves = vedges(w);
-        if ves.is_empty() {
-            let Kind::Cyl { o, r, .. } = m.kind(w) else { return None };
-            visited.insert(w);
-            cycles.push(Cycle::Circle { c: spec.xy(*o), r: *r, face: w });
-            continue;
-        }
-        if ves.len() != 2 {
-            return None;
-        }
-        let mut segs: Vec<Seg> = vec![];
-        let mut cur = w;
-        let mut enter = ves[0];
-        loop {
-            visited.insert(cur);
-            let v = vedges(cur);
-            if v.len() != 2 {
-                return None;
+        let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+        for e in m.b.face_edges(w) {
+            for p in [m.p0(e), m.p1(e)] {
+                lo = lo.min(p.dot(nv));
+                hi = hi.max(p.dot(nv));
             }
-            let exit = if v[0] == enter { v[1] } else { v[0] };
-            let (a, b) = (pos(enter), pos(exit));
-            let g = match m.kind(cur) {
-                Kind::Plane { .. } => Geom::Line,
-                Kind::Cyl { o, .. } => {
-                    let c = spec.xy(*o);
-                    // a horizontal arc edge of the wall tells which side of the chord the arc is on
-                    let mid = m.edges(cur).into_iter().find_map(|e| match m.curve(e) {
-                        Curve::Circle { frame, .. } if par(frame.z, nv) && !vertical(e) => {
-                            let ed = m.b.edge(e);
-                            Some(spec.xy(m.curve(e).eval(0.5 * (ed.t0 + ed.t1))))
-                        }
-                        _ => None,
-                    })?;
-                    let (ta, tb, tm) = (ang(c, a), ang(c, b), ang(c, mid));
-                    let ccw = wrap(tm - ta) < wrap(tb - ta);
-                    Geom::Arc { c, ccw }
+        }
+        for b in &blends {
+            if b.wall == w {
+                if role.get(&b.cap) == Some(&2) {
+                    hi = zmax;
+                } else {
+                    lo = zmin;
                 }
-                _ => return None,
+            }
+        }
+        zr.insert(w, (lo, hi));
+    }
+    let mut levels: Vec<f64> = vec![zmin, zmax];
+    for &f in &steps {
+        if let Kind::Plane { n, d } = m.kind(f) {
+            levels.push(d * n.dot(nv));
+        }
+    }
+    for (lo, hi) in zr.values() {
+        levels.push(*lo);
+        levels.push(*hi);
+    }
+    levels.retain(|z| *z >= zmin - 1e-9 && *z <= zmax + 1e-9);
+    levels.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    levels.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
+
+    let vertical = |e: EdgeId| matches!(m.curve(e), Curve::Line { d, .. } if par(*d, nv));
+    let pos = |e: EdgeId| spec.xy(m.p0(e));
+    let mut ivs: Vec<Iv> = vec![];
+    let mut slabs: Vec<(f64, f64)> = vec![];
+    for wnd in levels.windows(2) {
+        let (zlo, zhi) = (wnd[0], wnd[1]);
+        if zhi - zlo < 1e-6 {
+            continue;
+        }
+        slabs.push((zlo, zhi));
+        let active: HashSet<FaceId> = walls.iter().copied().filter(|w| zr[w].0 <= zlo + 1e-6 && zr[w].1 >= zhi - 1e-6).collect();
+        let vedges = |w: FaceId| -> Vec<EdgeId> {
+            m.edges(w)
+                .into_iter()
+                .filter(|&e| {
+                    vertical(e)
+                        && m.across(e, w).map_or(false, |g| active.contains(&g))
+                        && m.p0(e).dot(nv).min(m.p1(e).dot(nv)) <= zlo + 1e-6
+                        && m.p0(e).dot(nv).max(m.p1(e).dot(nv)) >= zhi - 1e-6
+                })
+                .collect()
+        };
+        let mut visited: HashSet<FaceId> = HashSet::new();
+        let mut order: Vec<FaceId> = active.iter().copied().collect();
+        order.sort();
+        for &w in &order {
+            if visited.contains(&w) {
+                continue;
+            }
+            let ves = vedges(w);
+            let cyc: Cycle;
+            let mut key: Vec<FaceId> = vec![];
+            if ves.is_empty() {
+                let Kind::Cyl { o, r, .. } = m.kind(w) else { return why("wall without vertical neighbours") };
+                visited.insert(w);
+                key.push(w);
+                cyc = Cycle::Circle { c: spec.xy(*o), r: *r, face: w };
+            } else {
+                if ves.len() != 2 {
+                    return why("wall with other than two vertical neighbours");
+                }
+                let mut segs: Vec<Seg> = vec![];
+                let mut cur = w;
+                let mut enter = ves[0];
+                loop {
+                    visited.insert(cur);
+                    key.push(cur);
+                    let v = vedges(cur);
+                    if v.len() != 2 {
+                        return why("wall cycle broken");
+                    }
+                    let exit = if v[0] == enter { v[1] } else { v[0] };
+                    let (a, b) = (pos(enter), pos(exit));
+                    let g = match m.kind(cur) {
+                        Kind::Plane { .. } => Geom::Line,
+                        Kind::Cyl { o, .. } => {
+                            let c = spec.xy(*o);
+                            let mid = m.edges(cur).into_iter().find_map(|e| match m.curve(e) {
+                                Curve::Circle { frame, .. } if par(frame.z, nv) && !vertical(e) => {
+                                    let ed = m.b.edge(e);
+                                    Some(spec.xy(m.curve(e).eval(0.5 * (ed.t0 + ed.t1))))
+                                }
+                                _ => None,
+                            });
+                            let Some(mid) = mid else { return why("arc wall without a horizontal edge") };
+                            let (ta, tb, tm) = (ang(c, a), ang(c, b), ang(c, mid));
+                            Geom::Arc { c, ccw: wrap(tm - ta) < wrap(tb - ta) }
+                        }
+                        _ => return why("curved wall"),
+                    };
+                    segs.push(Seg { a, b, g, face: cur });
+                    let Some(next) = m.across(exit, cur) else { return why("open wall edge") };
+                    enter = exit;
+                    cur = next;
+                    if cur == w {
+                        break;
+                    }
+                    if visited.contains(&cur) || segs.len() > walls.len() {
+                        return why("wall cycle does not close");
+                    }
+                }
+                cyc = Cycle::Poly(segs);
+            }
+            key.sort();
+            let key: Vec<u32> = key.iter().map(|f| f.0).collect();
+            // extend the interval of the same cycle in the previous slab
+            if let Some(iv) = ivs.iter_mut().find(|iv| iv.key == key && (iv.zb - zlo).abs() < 1e-6) {
+                iv.zb = zhi;
+                continue;
+            }
+            let (cyc, outer, poly) = orient(m, &spec, cyc);
+            ivs.push(Iv { cycle: cyc, za: zlo, zb: zhi, outer, level: 0, key, poly });
+        }
+    }
+    if ivs.is_empty() {
+        return why("no wall cycle");
+    }
+    // nesting level: the most cycles that enclose it in any slab it spans
+    let samples: Vec<(f64, f64)> = ivs.iter().map(sample_point).collect();
+    for i in 0..ivs.len() {
+        let mut lvl = 0;
+        for &(zlo, zhi) in &slabs {
+            if !(ivs[i].za <= zlo + 1e-6 && ivs[i].zb >= zhi - 1e-6) {
+                continue;
+            }
+            let c = (0..ivs.len())
+                .filter(|&j| j != i && ivs[j].za <= zlo + 1e-6 && ivs[j].zb >= zhi - 1e-6 && inside(&ivs[j].poly, samples[i]))
+                .count();
+            lvl = lvl.max(c);
+        }
+        ivs[i].level = lvl;
+    }
+    let cycles: Vec<Cycle> = ivs.iter().map(|iv| iv.cycle.clone()).collect();
+    Some(Prism { ai, spec, zmin, zmax, cycles, ivs, slabs: slabs.len(), top, bottom, walls, blends, leftover, steps })
+}
+
+pub struct Iv {
+    pub cycle: Cycle,
+    pub za: f64,
+    pub zb: f64,
+    pub outer: bool,
+    pub level: usize,
+    pub key: Vec<u32>,
+    pub poly: Vec<(f64, f64)>,
+}
+
+thread_local! {
+    pub static WHY: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+fn why<T>(s: &str) -> Option<T> {
+    WHY.with(|w| *w.borrow_mut() = s.to_string());
+    None
+}
+
+fn sample_point(iv: &Iv) -> (f64, f64) {
+    match &iv.cycle {
+        Cycle::Circle { c, r, .. } => (c.0 + r, c.1),
+        Cycle::Poly(_) => ((iv.poly[0].0 + iv.poly[1].0) / 2.0, (iv.poly[0].1 + iv.poly[1].1) / 2.0),
+    }
+}
+
+fn inside(poly: &[(f64, f64)], p: (f64, f64)) -> bool {
+    let mut c = false;
+    let n = poly.len();
+    let mut j = n - 1;
+    for i in 0..n {
+        let (a, b) = (poly[i], poly[j]);
+        if (a.1 > p.1) != (b.1 > p.1) && p.0 < (b.0 - a.0) * (p.1 - a.1) / (b.1 - a.1) + a.0 {
+            c = !c;
+        }
+        j = i;
+    }
+    c
+}
+
+/// Orient the cycle so that the outward wall normals are on its right: counter-clockwise = outer boundary (material
+/// inside), clockwise = window. Returns the cycle, the outer flag and a sampled polygon.
+fn orient(m: &Model, spec: &PlaneSpec, cyc: Cycle) -> (Cycle, bool, Vec<(f64, f64)>) {
+    match cyc {
+        Cycle::Circle { c, r, face } => {
+            let convex = matches!(m.kind(face), Kind::Cyl { convex: true, .. });
+            let poly: Vec<(f64, f64)> = (0..24)
+                .map(|i| {
+                    let t = std::f64::consts::TAU * i as f64 / 24.0;
+                    (c.0 + r * t.cos(), c.1 + r * t.sin())
+                })
+                .collect();
+            (Cycle::Circle { c, r, face }, convex, poly)
+        }
+        Cycle::Poly(mut segs) => {
+            let s0 = &segs[0];
+            let reverse_needed = match &s0.g {
+                Geom::Line => {
+                    let n = match m.kind(s0.face) {
+                        Kind::Plane { n, .. } => *n,
+                        _ => Vec3::ZERO,
+                    };
+                    let o = spec.xy(n);
+                    let t = (s0.b.0 - s0.a.0, s0.b.1 - s0.a.1);
+                    // outward on the right of the travel direction <=> cross(t, o) < 0
+                    t.0 * o.1 - t.1 * o.0 > 0.0
+                }
+                Geom::Arc { ccw, .. } => {
+                    let convex = matches!(m.kind(s0.face), Kind::Cyl { convex: true, .. });
+                    *ccw != convex
+                }
             };
-            segs.push(Seg { a, b, g, face: cur });
-            let Some(next) = m.across(exit, cur) else { return None };
-            enter = exit;
-            cur = next;
-            if cur == w {
-                break;
+            if reverse_needed {
+                reverse(&mut segs);
             }
-            if visited.contains(&cur) || segs.len() > walls.len() {
-                return None;
+            let a = area(&segs);
+            let mut poly = vec![];
+            for s in &segs {
+                seg_points(s, &mut poly);
             }
-        }
-        cycles.push(Cycle::Poly(segs));
-    }
-    // orientation: largest cycle counter-clockwise, the others clockwise
-    let area_of = |c: &Cycle| match c {
-        Cycle::Poly(s) => area(s),
-        Cycle::Circle { r, .. } => std::f64::consts::PI * r * r,
-    };
-    let big = (0..cycles.len()).max_by(|&i, &j| area_of(&cycles[i]).abs().partial_cmp(&area_of(&cycles[j]).abs()).unwrap())?;
-    for (i, c) in cycles.iter_mut().enumerate() {
-        if let Cycle::Poly(s) = c {
-            let a = area(s);
-            if (i == big && a < 0.0) || (i != big && a > 0.0) {
-                reverse(s);
-            }
+            (Cycle::Poly(segs), a > 0.0, poly)
         }
     }
-    // the outer cycle first
-    cycles.swap(0, big);
-    Some(Prism { ai, spec, zmin, zmax, cycles, top, bottom, walls, blends, leftover })
 }
 
 fn detect_blend(m: &Model, f: FaceId, nv: Vec3, zmax: f64, zmin: f64, role: &HashMap<FaceId, u8>) -> Option<Blend> {
@@ -328,10 +486,23 @@ fn detect_blend(m: &Model, f: FaceId, nv: Vec3, zmax: f64, zmin: f64, role: &Has
             for &e in &all {
                 if let Curve::Line { .. } = m.curve(e) {
                     let g = m.across(e, f)?;
-                    match role.get(&g) {
-                        Some(2) | Some(3) => cap = cap.or(Some((g, e))),
-                        Some(1) if matches!(m.kind(g), Kind::Plane { .. }) => wall = wall.or(Some((g, e))),
-                        _ => {}
+                    if matches!(role.get(&g), Some(2) | Some(3)) {
+                        cap = cap.or(Some((g, e)));
+                    }
+                }
+            }
+            // the wall rail is the wall edge parallel to the cap rail (the end edges meet the side walls)
+            if let Some((_, ce)) = cap {
+                if let Curve::Line { d: dc, .. } = m.curve(ce) {
+                    for &e in &all {
+                        if let Curve::Line { d, .. } = m.curve(e) {
+                            if par(*d, *dc) && e != ce {
+                                let g = m.across(e, f)?;
+                                if role.get(&g) == Some(&1) && matches!(m.kind(g), Kind::Plane { .. }) {
+                                    wall = wall.or(Some((g, e)));
+                                }
+                            }
+                        }
                     }
                 }
             }
