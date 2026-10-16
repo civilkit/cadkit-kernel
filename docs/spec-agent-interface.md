@@ -204,7 +204,7 @@ Rules:
   section (speed `apexTangent` times the chord speed) instead of the natural spline end (zero second derivative), which let the
   surface overshoot into a dent and, for sections that shrink quickly towards a far apex, made the cross-section area grow again
   (a fold). `apexTangent` (0 to 2, default 1) is the loft option: 1 = the straight cone taper at the tip, smaller = a narrower
-  spike (fuller body), larger = a wider tip angle (slimmer body). With two sections the loft is the straight cone either way.
+  spike, larger = a wider tip angle (for a hull that tapers to its bow the body gets slimmer as the factor grows). With two sections the loft is the straight cone either way.
   Check: `tools/loft_apex_check.mjs` (hull variants, far apex, `apexTangent`, exact cones).
 - Not covered: guide curves through the tip, `startTangent` / `endTangent` at a point, a surface (sheet) loft to a point,
   booleans whose intersection curve passes THROUGH the apex (a cut away from the tip works).
