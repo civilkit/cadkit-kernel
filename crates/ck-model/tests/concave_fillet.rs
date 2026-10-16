@@ -179,11 +179,26 @@ fn pocket_floor_and_corners_get_four_sphere_patches() {
 }
 
 #[test]
+fn a_pocket_rim_fillet_ends_flush_at_the_wall() {
+    // the rim edge runs into the pocket wall; the material behind that wall must not be cut
+    // OCCT r=2: 28782.83185307179 (removed 17.168 = (1 - pi/4) r^2 x 20)
+    let o = fillet(2.0, &[edge("F2.C1", "F4.S.e4", [10., 20., -20.])]);
+    assert!(o.errs.is_empty(), "{:?}", o.errs);
+    assert_eq!(o.issues, 0);
+    assert!((o.vol - 28782.83185307179).abs() < 1e-6 * 28782.0, "{}", o.vol);
+}
+
+#[test]
 fn rim_fillets_with_a_corner_fillet_mixed_vertex() {
     // two convex rim edges and the concave wall-wall edge meet at (10, 20, -10); OCCT r=2: 28772.665456976367
+    // (before: 38.7 removed against 27.3). The rolling-ball corner patch of a mixed vertex is not built: the
+    // result stays within 2.5 mm^3 of it and valid.
     let e = [edge("F2.C1", "F4.S.e4", [10., 20., -20.]), edge("F2.C1", "F4.S.e1", [20., 20., -10.]), edge("F4.S.e1", "F4.S.e4", [10., 16., -10.])];
     let o = fillet(2.0, &e);
     assert!(o.errs.is_empty(), "{:?}", o.errs);
     assert_eq!(o.issues, 0);
-    assert!((o.vol - 28772.665456976367).abs() < 1e-4 * 28772.0, "{}", o.vol);
+    assert!((o.vol - 28772.665456976367).abs() < 2.5, "{}", o.vol);
+    let rim2 = fillet(2.0, &e[..2]);
+    assert_eq!(rim2.issues, 0);
+    assert!((rim2.vol - 28764.896743388403).abs() < 1.5, "{}", rim2.vol);
 }

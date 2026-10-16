@@ -233,6 +233,8 @@ pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featu
                 rounds
             }
         };
+        // junction vertices of the whole selection (an earlier round shortens the edges that follow)
+        let junc = if matches!(spec, Spec::Fillet(..)) { junction_vertices(b, &eids, tol) } else { Junc::default() };
         let mut out = b.clone();
         let mut earlier: Vec<String> = vec![];
         // chamfer: arcs of one split ring (a lofted cap rim cut in two at the
@@ -246,7 +248,7 @@ pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featu
             let rings: Vec<bool> = round.iter().map(|&i| ring_lead[i]).collect();
             let idx: Vec<u32> = round.iter().map(|&i| i as u32).collect();
             let sel: Vec<(String, String, Vec3)> = round.iter().map(|&i| fwd[i].clone()).collect();
-            let (raw, round_refs, touched) = blend_edges_at(&out, &sel, spec, feature, tol, &idx, &earlier, &rings)?;
+            let (raw, round_refs, touched) = blend_edges_at(&out, &sel, spec, feature, tol, &idx, &earlier, &rings, &junc)?;
             if std::env::var_os("CK_BLEND_DEBUG").is_some() {
                 eprintln!("round {:?}: touched {:?} -> faces {:?}", round, touched, raw.face_ids().map(|f| raw.face_id_str(f)).collect::<Vec<_>>());
             }
@@ -297,13 +299,25 @@ pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featu
         return Ok(out);
     }
     let idx: Vec<u32> = (0..edges.len() as u32).collect();
-    let (raw, refs, _) = blend_edges_at(b, edges, spec, feature, tol, &idx, &[], &[])?;
+    let (raw, refs, _) = blend_edges_at(b, edges, spec, feature, tol, &idx, &[], &[], &Junc::default())?;
     Ok(in_place_layout(b, &raw, &refs, tol))
 }
 
-/// Positions of the vertices where exactly two of the `sel` edges meet, both
-/// straight and concave (planar faces), and no other selected edge.
-fn concave_pair_vertices(b: &Body, sel: &[EdgeId], tol: f64) -> Vec<Vec3> {
+/// Per-selection end information gathered on the original body.
+#[derive(Default)]
+struct Junc {
+    /// vertices where a concave tool runs on to (`true`: material behind the end face)
+    ext: Vec<(Vec3, bool)>,
+    /// end vertices whose end face leans toward the material: a convex tool stops flush there
+    flush: Vec<Vec3>,
+}
+
+/// The original vertices (with `true` when material lies behind the end face, so
+/// a tool may run on past it) where two or more of the `sel` edges meet and not
+/// all of them are concave straight edges of planar faces (three of those get the
+/// sphere patch). An earlier tool of the feature shortens the later edge there; a
+/// concave tool runs on to the original vertex.
+fn junction_vertices(b: &Body, sel: &[EdgeId], tol: f64) -> Junc {
     let concave = |e: EdgeId| -> bool {
         let ed = b.edge(e);
         if !matches!(ed.curve, Curve::Line { .. }) {
@@ -318,18 +332,56 @@ fn concave_pair_vertices(b: &Body, sel: &[EdgeId], tol: f64) -> Vec<Vec3> {
         let tdir = if b.coedge(co).rev { -d } else { d };
         b.planar_normal(fs[0]).cross(tdir).dot(b.planar_normal(fs[1])) > 1e-9
     };
-    let mut out: Vec<Vec3> = vec![];
+    let mut out: Vec<(Vec3, bool)> = vec![];
+    let mut flush: Vec<Vec3> = vec![];
     for &e in sel {
         let ed = b.edge(e);
+        if matches!(ed.curve, Curve::Line { .. }) {
+            let efs = b.edge_faces(e);
+            for (v, other) in [(ed.v0, ed.v1), (ed.v1, ed.v0)] {
+                let outd = (b.vertex(v).p - b.vertex(other).p).normalize();
+                let mut ends: Vec<FaceId> = vec![];
+                for x in b.edge_ids().filter(|&x| b.edge(x).v0 == v || b.edge(x).v1 == v) {
+                    for f in b.edge_faces(x) {
+                        if !efs.contains(&f) && !ends.contains(&f) {
+                            ends.push(f);
+                        }
+                    }
+                }
+                if ends.len() == 1 && matches!(b.face(ends[0]).surface, Surface::Plane { .. }) && b.planar_normal(ends[0]).dot(outd) < -1e-9 {
+                    flush.push(b.vertex(v).p);
+                }
+            }
+        }
         for v in [ed.v0, ed.v1] {
             let at: Vec<EdgeId> = sel.iter().copied().filter(|&x| b.edge(x).v0 == v || b.edge(x).v1 == v).collect();
             let p = b.vertex(v).p;
-            if at.len() == 2 && at[0] != at[1] && at.iter().all(|&x| concave(x)) && !out.iter().any(|q| q.dist(p) <= tol) {
-                out.push(p);
+            if at.len() < 2 || (at.len() == 3 && at.iter().all(|&x| concave(x))) || out.iter().any(|(q, _)| q.dist(p) <= tol) {
+                continue;
             }
+            // the end face of the concave edge here: the face at the vertex not on the edge
+            let Some(&ce) = at.iter().find(|&&x| concave(x)) else { continue };
+            let cd = b.edge(ce);
+            let other = if cd.v0 == v { b.vertex(cd.v1).p } else { b.vertex(cd.v0).p };
+            let out_dir = (p - other).normalize();
+            let on_edge = b.edge_faces(ce);
+            let mut ends: Vec<FaceId> = vec![];
+            for x in b.edge_ids().filter(|&x| b.edge(x).v0 == v || b.edge(x).v1 == v) {
+                for f in b.edge_faces(x) {
+                    if !on_edge.contains(&f) && !ends.contains(&f) {
+                        ends.push(f);
+                    }
+                }
+            }
+            // the faces other than the concave edge's own: the plane perpendicular to it decides
+            let behind = ends.iter().filter(|&&f| matches!(b.face(f).surface, Surface::Plane { .. })).any(|&f| {
+                let n = b.planar_normal(f);
+                n.cross(out_dir).len() < 1e-6 && n.dot(out_dir) < 0.0
+            });
+            out.push((p, behind));
         }
     }
-    out
+    Junc { ext: out, flush }
 }
 
 /// Both faces border a blend face of `feature` in `b` (their shared edge was
@@ -386,6 +438,7 @@ fn blend_edges_at(
     idx: &[u32],
     skip_end: &[String],
     rings: &[bool],
+    junc: &Junc,
 ) -> Result<(Body, Vec<BlendRef>, Vec<String>), BlendError> {
     let edges: Vec<(String, String, Vec3)> = edges.iter().map(|(fa, fb, at)| forward_first(b, fa, fb, *at)).collect();
     // blend references on the INPUT body (for the in-place numbering)
@@ -401,10 +454,6 @@ fn blend_edges_at(
             ends: [b.vertex(ed.v0).p, b.vertex(ed.v1).p],
         });
     }
-    // vertices of the ORIGINAL body where exactly two selected concave straight
-    // edges meet (the third edge unselected): an earlier tool's cylinder shortens
-    // the later edge, so its tool must run on to the original vertex to mitre
-    let junc: Vec<Vec3> = if matches!(spec, Spec::Fillet(..)) { concave_pair_vertices(b, &sel_edges, tol) } else { vec![] };
     let mut out = b.clone();
     let mut touched: Vec<String> = vec![];
     for (k, (fa, fb, at)) in edges.iter().enumerate() {
@@ -433,7 +482,7 @@ fn blend_edges_at(
                 if base(fs[0]) == *fa || base(fs[1]) == *fb { (fs[0], fs[1]) } else { (fs[1], fs[0]) }
             }
         };
-        let (body, hint) = blend_edge_hint(&out, e, [f1, f2], spec, feature, idx[k], tol, rings.get(k).copied().unwrap_or(false), &junc)?;
+        let (body, hint) = blend_edge_hint(&out, e, [f1, f2], spec, feature, idx[k], tol, rings.get(k).copied().unwrap_or(false), junc)?;
         // end faces at a junction with another selected edge are that
         // edge's own faces, not extra touches (oracle: the ring's face
         // order is e1 e2 e3 e4, the open chain's C1 e1 e4 e2 e3)
@@ -888,7 +937,7 @@ fn split_rings(b: &Body, eids: &[EdgeId]) -> (Vec<bool>, Vec<bool>) {
 
 /// One straight edge between two planar faces.
 pub fn fillet_line_edge(b: &Body, e: EdgeId, faces: [FaceId; 2], r: f64, feature: &str, k: u32, tol: f64) -> Result<Body, BlendError> {
-    blend_edge_hint(b, e, faces, Spec::Fillet(r, FilletProfile::Circular), feature, k, tol, false, &[]).map(|x| x.0)
+    blend_edge_hint(b, e, faces, Spec::Fillet(r, FilletProfile::Circular), feature, k, tol, false, &Junc::default()).map(|x| x.0)
 }
 
 /// As [`fillet_line_edge`], also returning the touched-face order hint
@@ -902,7 +951,7 @@ fn blend_edge_hint(
     k: u32,
     tol: f64,
     ring: bool,
-    junc: &[Vec3],
+    junc: &Junc,
 ) -> Result<(Body, Vec<String>), BlendError> {
     let ed = b.edge(e).clone();
     let r = spec.size();
@@ -1115,17 +1164,41 @@ fn blend_edge_hint(
     // concave: an end at a junction vertex runs on past the shortened edge end
     // to just inside the wall behind the original vertex
     let (mut m0, mut m1) = (margin, margin);
+    if convex && circ.is_none() && !chamfer {
+        // the tool pierces an end only if the body ends there; an end face that
+        // leans toward the material (the edge runs into a reflex corner, e.g. a
+        // pocket rim edge into the pocket wall) bounds the tool flush
+        let flush_end = |v: ck_topo::body::VertexId, out: Vec3| -> bool {
+            let mut ends: Vec<FaceId> = vec![];
+            for x in b.edge_ids().filter(|&x| b.edge(x).v0 == v || b.edge(x).v1 == v) {
+                for f in b.edge_faces(x) {
+                    if !faces.contains(&f) && !ends.contains(&f) {
+                        ends.push(f);
+                    }
+                }
+            }
+            ends.len() == 1 && matches!(b.face(ends[0]).surface, Surface::Plane { .. }) && b.planar_normal(ends[0]).dot(out) < -1e-9
+        };
+        let near = |q: Vec3, p: Vec3, o: Vec3| (q - p).cross(dir).len() <= 1e-6 && q.dist(p) < q.dist(o);
+        if flush_end(ed.v0, -dir) || junc.flush.iter().any(|&q| near(q, p0, p1)) {
+            m0 = 0.0;
+        }
+        if flush_end(ed.v1, dir) || junc.flush.iter().any(|&q| near(q, p1, p0)) {
+            m1 = 0.0;
+        }
+    }
     if !convex && circ.is_none() && !chamfer {
-        for &q in junc {
+        for &(q, behind) in &junc.ext {
             if (q - p0).cross(dir).len() > 1e-6 {
                 continue;
             }
             let (t0, t1) = ((p0 - q).dot(dir), (q - p1).dot(dir));
+            let more = if behind { 0.25 * r } else { 0.0 };
             if t0 > 1e-6 {
-                m0 = m0.max(t0 + 0.25 * r);
+                m0 = m0.max(t0 + more);
             }
             if t1 > 1e-6 {
-                m1 = m1.max(t1 + 0.25 * r);
+                m1 = m1.max(t1 + more);
             }
         }
     }
