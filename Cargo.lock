@@ -141,5 +141,6 @@ dependencies = [
  "ck-server",
  "ck-sldprt",
  "ck-tess",
+ "ck-text",
  "ck-topo",
 ]

@@ -101,6 +101,11 @@ pub const REQUEST_TYPES: &[(&str, Handler)] = &[
     // Extension: lettering (ck-text), stateless.
     ("textMetrics", agent::text_metrics),
     ("textOutline", agent::text_outline),
+    // Extension: fonts for lettering, kept for the session (load from bytes, unload, list, subset to a string).
+    ("loadFont", agent::load_font),
+    ("unloadFont", agent::unload_font),
+    ("listFonts", agent::list_fonts),
+    ("subsetFont", agent::subset_font),
     // Extension: design-rule profiles (read-only).
     ("checkProfile", agent::check_profile),
     ("profiles", agent::profiles),

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build the kernel wasm and run its checks on the CI box instead of this (busy) machine. See docs/remote-build.md.
-#   tools/remote_build.sh [--worktree DIR] [--checks gate,large sample,loft,apex,fillet,section,spline,thin,suite,lint,all|none]
+#   tools/remote_build.sh [--worktree DIR] [--checks gate,large sample,loft,apex,fillet,section,spline,thin,suite,lint,text,all|none]
 #                         [--cargo-test CRATE|"-p a -p b"|all] [--out DIR] [--no-sync-back] [--no-wasm] [--jobs N] [--reset]
 #   tools/remote_build.sh --clean [--worktree DIR]     remove this worktree's directories on the box
 #   tools/remote_build.sh --prune                      remove worktree directories on the box unused for 3 days
@@ -111,7 +111,7 @@ fi
 flock -u 9; exec 9>&-    # checks are plain node: release the build lock
 
 CH=$(printf '%s' "$CHECKS" | tr ',' ' ')
-case " $CH " in *" all "*) CH="gate large sample loft apex fillet section spline thin suite lint";; esac
+case " $CH " in *" all "*) CH="gate large sample loft apex fillet section spline thin suite lint text";; esac
 case " $CH " in *" none "*) CH="";; esac
 SUITE="region_select thin_extrude thread end_reference profile coincident_boolean hole_dims move spline_shell spline_boolean mate"
 pids=""
@@ -127,6 +127,7 @@ if [ -s "$W" ]; then
       spline) step spline_shell node tools/spline_shell_check.mjs --wasm "$W"; step spline_boolean node tools/spline_boolean_check.mjs --wasm "$W" ;;
       thin) step thin_extrude node tools/thin_extrude_check.mjs --wasm "$W" ;;
       lint) step lint-protocol node tools/lint_protocol.mjs --wasm "$W" --quiet ;;
+      text) step text-corpus node tools/text_corpus.mjs --wasm "$W" --quiet ;;
       suite) for s in $SUITE; do step "check-$s" node "tools/${s}_check.mjs" --wasm "$W"; done ;;
       *) echo "unknown check $c"; rec "check-$c" 64 0 ;;
     esac
