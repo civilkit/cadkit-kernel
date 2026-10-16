@@ -936,16 +936,23 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
         if matches!(surf, Surface::Plane { .. }) {
             if let Some(ring) = single_cycle(&b.segs) {
                 let uv: Vec<Vec2> = ring.iter().map(|&i| b.pts[i].uv).collect();
-                for t in ear_clip(&uv) {
-                    let mut ids = [0u32; 3];
-                    for k in 0..3 {
-                        let q = &b.pts[ring[t[k]]];
-                        out.uv.push(q.uv);
-                        out.pts.push(q.p);
-                        out.nrm.push(FaceMesh::outward(surf, sense, q.uv));
-                        ids[k] = (out.pts.len() - 1) as u32;
+                let clip = ear_clip(&uv);
+                // the ring of a sliver whose polylines cross is not a simple polygon: its ears can fill the wrong region
+                // (a whole disc for a crescent). Keep the clip only when it covers the exact face area.
+                let area: f64 = clip.iter().map(|t| 0.5 * (b.pts[ring[t[1]]].p - b.pts[ring[t[0]]].p).cross(b.pts[ring[t[2]]].p - b.pts[ring[t[0]]].p).len()).sum();
+                let exact = ck_topo::mass::face_integral::<1>(body, f, 1, &|_, n| [n.len()])[0].abs();
+                if exact > 0.0 && area >= 0.8 * exact && area <= 1.25 * exact {
+                    for t in clip {
+                        let mut ids = [0u32; 3];
+                        for k in 0..3 {
+                            let q = &b.pts[ring[t[k]]];
+                            out.uv.push(q.uv);
+                            out.pts.push(q.p);
+                            out.nrm.push(FaceMesh::outward(surf, sense, q.uv));
+                            ids[k] = (out.pts.len() - 1) as u32;
+                        }
+                        out.tris.push(if sense { ids } else { [ids[0], ids[2], ids[1]] });
                     }
-                    out.tris.push(if sense { ids } else { [ids[0], ids[2], ids[1]] });
                 }
             }
         }
