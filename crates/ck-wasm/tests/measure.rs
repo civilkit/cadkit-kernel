@@ -74,6 +74,11 @@ fn l_bracket_thickness_and_angles() {
     let r = call(r#"{"type":"thickness","tag":"l"}"#);
     assert!((num(&r, "minThickness") - 3.0).abs() < 1e-6, "{}", ck_json::to_string(&r));
     assert!(r.get_arr("thin").unwrap().len() >= 1);
+    // every measurement reply says how long it took and whether it is partial
+    assert!(r.get("elapsedMs").is_some());
+    assert_eq!(r.get("truncated"), Some(&Json::Bool(false)));
+    let c = call(r#"{"type":"clearance","tag":"l","min":5,"opts":{"limit":1}}"#);
+    assert!(c.get("elapsedMs").is_some() && c.get("truncated").is_some());
     let r = call(r#"{"type":"angles","tag":"l","edges":"all"}"#);
     let es = r.get_arr("edges").unwrap();
     let concave = es.iter().filter(|e| e.get_str("type") == Some("concave")).count();

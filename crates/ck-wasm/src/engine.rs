@@ -13,6 +13,8 @@ use crate::view_cache;
 use ck_topo::body::Body;
 
 pub fn install() {
+    // wall-clock budget of the measurement requests (`elapsedMs`, `truncated`)
+    ck_ops::analysis::set_clock(ck_server::clock::now);
     ck_server::set_hooks(Hooks {
         import_sat: Some(import_sat_hook),
         import_sldprt: Some(import_sldprt_hook),

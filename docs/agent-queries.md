@@ -170,14 +170,14 @@ interior of both faces (sphere / sphere, cylinder / cylinder) are found from the
 
 One-sided Hausdorff distance: the maximum over the surface of `a` (default whole body) of the minimum distance to `b`
 (default whole body, `tagB` for another tag). Samples a grid inside every face plus its edges (`opts.samples`, default
-5000 over the body). Reply `{maxDistance, location, nearest, errorBound, upperBound, rms, samples, face}`: the
+3000 over the body, visited in a stride order so a cut run still covers every face). Reply `{maxDistance, location, nearest, errorBound, upperBound, rms, samples, coverage, face}`: the
 distance function is 1-Lipschitz, so the true maximum lies in `[maxDistance, maxDistance + errorBound]` where
 `errorBound` is the covering radius of the sample grid. `both:true` adds the other direction:
 `{hausdorff, errorBound, aToB, bToA}`.
 
 ### thickness `{opts?:{samples, top, radius, below, method:"ray"|"sphere", sphereSamples}}`
 
-Wall thickness of a solid. Each face is sampled on a uv grid (about `samples` in total, default 6000); from each
+Wall thickness of a solid. Each face is sampled on a uv grid (about `samples` in total, default 2500); from each
 sample a ray goes along the inward normal and the first exit (`contain.rs` ray hits, `entering:false`) gives the
 thickness there. `method:"sphere"` refines the thinnest `sphereSamples` (default 200) with the largest inscribed ball
 tangent at the sample (thickness = 2 r, never above the ray value; needs more time). Reply
@@ -220,11 +220,23 @@ most `limit` (default 200) listed. Box-pruned, at most 4000 faces per side.
 ### symmetry `{planes?:[{origin, normal}], opts?:{samples, tol}}`
 
 Candidate mirror planes: the coordinate axes and the principal axes through the centre of mass (and the coordinate
-axes through the box centre), or the given `planes`. For each, the surface is sampled (`samples`, default 1000),
+axes through the box centre), or the given `planes`. For each, the surface is sampled (`samples`, default 600),
 mirrored and measured against the body: `maxDeviation` and `rmsDeviation` of the mirrored surface from the original
 (the mirror is an involution, so one direction is the whole Hausdorff distance). `symmetric` lists the planes with
 `maxDeviation <= tol` (default 1e-4 of the diagonal); `best` is the least deviating; `planes` has all, sorted. The
 symmetric-difference volume of the booleans is not computed.
+
+### Budget: `elapsedMs`, `truncated`
+
+Every measurement reply carries `elapsedMs` (wall time inside the request) and `truncated`. The requests stop their
+loops after `opts.timeMs` (default 8000 ms) and answer with what they have: `truncated:true` means the result is
+partial, a lower bound for a maximum (`maxDistance`, `thickness` samples, `symmetry` deviation) or an incomplete list
+(`clearance`). `maxDistance` adds `coverage` (the share of its sample points that were measured). `truncated` is also set
+when `clearance` finds more pairs than `limit` (`listedAll:false`) or more candidate pairs than `opts.maxPairs`
+(default 4000, closest boxes first). `symmetry` stops testing a plane after a few dozen points once one is farther
+than `tol` from the body: that plane has `exact:false` and its `maxDeviation` is a lower bound (`opts.full:true` measures
+every sample). `clearance` skips a face pair when its display meshes are farther apart than `min` plus twice the mesh spacing (a face whose mesh failed or is incomplete can therefore hide a pair), and seeds each pair from the closest display-mesh points and refines once (at most 60
+projections), so for doubly curved pairs the distance is a local minimum near the mesh minimum.
 
 ### Accuracy and timing
 
@@ -232,12 +244,30 @@ symmetric-difference volume of the booleans is not computed.
 `BRepExtrema_DistShapeShape` on the exported STEP (faces matched through an interior point): 80 pairs on four
 plane / cylinder / cone parts (mounting plate, bracket, motor bracket, pipe elbow) agree to 4e-15 (57 with nonzero
 distance); 60 pairs on the large sample shell, swept handle, loft bottle and surface patch (B-spline faces) agree to
-2.6e-8. On the full large sample part (125 faces, B-spline; regen 11-15 s on the dev machine): `thickness` 2.6 s
-(about 850 samples, min 0.38 mm), `closestPoint` 0.13 s per point, `angles` all edges 0.8 s, `distance` of a point to
-the body about 7 ms; `maxDistance` / `symmetry` cost about 7 ms per sample point (the exact B-spline projections), so
-their defaults are 5000 / 1000 samples and the boundary samples are capped to a quarter of the budget.
-`tools/measure_check.mjs` runs everything on the sample parts (no trap, finite output, sane ranges, `distance`
-agrees with `probe`, timings).
+2.6e-8.
+
+large sample part (125 faces, mostly B-spline), default options, dev machine, measured through the wasm:
+
+| request | before this change | now (default options) |
+|---|---|---|
+| `thickness` | 10.2 s (4548 samples) | 3.3 s (1492 samples), min 0.069 mm |
+| `maxDistance` (body to itself) | 10.3 s | 7.3 s, `truncated:false`, `coverage:1` (4487 samples) |
+| `symmetry` | 131.6 s | 4.6 s, `truncated:false` (2987 samples) |
+| `clearance` `min:3` | 115.9 s | 8.0 s, `truncated:true` (364 pairs refined, 259 found; list is partial) |
+| `closestPoint` (3 points) | 0.24 s | 0.22 s |
+| `angles` (all edges) | 0.52 s | 0.52 s |
+| `distance` point to body | 55 ms | 56 ms |
+
+`maxDistance` and `symmetry` cost about 1.5 ms per sample point (exact B-spline projections), `thickness` about 2 ms
+per ray; the earlier "7 ms" figures were wrong. `clearance` costs about 25 ms per refined face pair on this part, so
+the full set at `min:3` needs a longer `opts.timeMs`.
+
+Sweep (`node tools/measure_check.mjs --sample 30`, 29 parts measured, 1 skipped for regen errors, 117 s, 0 violations): every
+reply has `elapsedMs` / `truncated`; `maxDistance` of a body to itself is under 1e-6 on all of them, and `distance`
+agrees with `probe` to 1e-6. Replies cut by the 8 s budget: `maxDistance` on the pan-head screw, twisted drill and
+flange coupling; `clearance` on the spline hub, knuckle hinge, flange coupling, stepper motor and speedboat dash.
+`tools/measure_check.mjs` runs everything on sample parts (`--sample N` for an evenly spaced subset; no trap, finite
+output, `elapsedMs` / `truncated` present, sane ranges, `distance` agrees with `probe`, timings).
 
 ### Limits
 
