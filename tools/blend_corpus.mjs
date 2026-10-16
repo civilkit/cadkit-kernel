@@ -80,6 +80,8 @@ const BASES = {
   post4: [rect('F1', TOP, 0, 0, 60, 60), ext('F2', 'F1', 5), rect('F3', FACE('F2.C1'), 20, 20, 40, 40), ext('F4', 'F3', 30), { type: 'fillet', id: 'F5', radius: 4, edges: [
     { faces: ['F4.S.e1', 'F4.S.e2'], at: [40, 20, -20] }, { faces: ['F4.S.e2', 'F4.S.e3'], at: [40, 20, -40] },
     { faces: ['F4.S.e3', 'F4.S.e4'], at: [20, 20, -40] }, { faces: ['F4.S.e4', 'F4.S.e1'], at: [20, 20, -20] }] }],
+  // 60 x 60 x 5 floor with an L-shaped wall, 6 thick, 30 high: the inside corner of two walls and the floor is at x 16, z -16
+  lwall: [rect('F1', TOP, 0, 0, 60, 60), ext('F2', 'F1', 5), poly('F3', FACE('F2.C1'), [[10, 10], [50, 10], [50, 16], [16, 16], [16, 50], [10, 50]]), ext('F4', 'F3', 30)],
   // 30 cube
   cube: [rect('F1', TOP, 0, 0, 30, 30), ext('F2', 'F1', 30)],
   // tall block 20 x 20 x 40 (long vertical edges)
@@ -199,10 +201,18 @@ add('cube_unequal_two_edges', 'cube', { k: 'fillet', r: 0 }, [{ at: [15, 30, 0],
 const CV1 = [10, 12, -20], CV2 = [20, 12, -10], CV3 = [30, 12, -20], CV4 = [20, 12, -30];
 const VS = [[10, 16, -10], [30, 16, -10], [30, 16, -30], [10, 16, -30]];
 for (const r of [1, 2, 3]) {
-  add(`pocket_cove2_r${r}`, 'pocket', { k: 'fillet', r }, [CV1, CV2], { g1: true });
-  add(`pocket_cove_ring_r${r}`, 'pocket', { k: 'fillet', r }, [CV1, CV2, CV3, CV4], { g1: true });
+  add(`pocket_cove2_r${r}`, 'pocket', { k: 'fillet', r }, [CV1, CV2], { g1: true, mitre: true });
+  add(`pocket_cove_ring_r${r}`, 'pocket', { k: 'fillet', r }, [CV1, CV2, CV3, CV4], { g1: true, mitre: true });
   add(`pocket_cove_ring_verts_r${r}`, 'pocket', { k: 'fillet', r }, [CV1, CV2, CV3, CV4, ...VS], { g1: true });
   add(`pocket_cove2_vert_r${r}`, 'pocket', { k: 'fillet', r }, [CV1, CV2, VS[0]], { g1: true });
+}
+// the inside corner of an L-shaped wall on a floor (floor edges e3, e4 of the wall, vertical edge between them) and the whole floor loop
+const LI = [[33, 5, -16], [16, 5, -33]], LV = [16, 20, -16];
+const LLOOP = [[30, 5, -10], [10, 5, -30], [13, 5, -50], [16, 5, -33], [33, 5, -16], [50, 5, -13]];
+for (const r of [1, 2, 3]) {
+  add(`lwall_inside_r${r}`, 'lwall', { k: 'fillet', r }, LI, { g1: true, mitre: true });
+  add(`lwall_inside_vert_r${r}`, 'lwall', { k: 'fillet', r }, [...LI, LV], { g1: true });
+  add(`lwall_floor_loop_r${r}`, 'lwall', { k: 'fillet', r }, LLOOP, { g1: true, mitre: true });
 }
 const ploop = (R) => {
   const m = R * (1 - Math.SQRT1_2);
@@ -211,7 +221,7 @@ const ploop = (R) => {
 };
 for (const [base, R] of [['post0', 0], ['post2', 2], ['post4', 4]]) {
   for (const r of [1, 2, 3]) {
-    add(`${base}_cove_r${r}`, base, { k: 'fillet', r }, ploop(R), { g1: true });
+    add(`${base}_cove_r${r}`, base, { k: 'fillet', r }, ploop(R), { g1: true, mitre: R === 0 });
     if (R) add(`${base}_cove_r${r}_propagate`, base, { k: 'fillet', r }, [ploop(R)[0]], { propagate: true, g1: true });
   }
 }
@@ -228,7 +238,7 @@ for (const r of [1, 1.5, 2, 3]) {
   add(`tower_two_step_r${nm}`, 'tower', { k: 'fillet', r }, TW_CCV, { step2: TW_CVX, g1: true });
 }
 add('tower_all_r2_propagate', 'tower', { k: 'fillet', r: 2 }, TW_ALL, { propagate: true, g1: true });
-add('tower_concave_only_r2', 'tower', { k: 'fillet', r: 2 }, TW_CCV, { g1: true });
+add('tower_concave_only_r2', 'tower', { k: 'fillet', r: 2 }, TW_CCV, { g1: true, mitre: true });
 add('tower_convex_only_r2', 'tower', { k: 'fillet', r: 2 }, TW_CVX, { g1: true });
 add('tower_top_rim_r2', 'tower', { k: 'fillet', r: 2 }, [TW_CVX[2], TW_CVX[3], TW_CVX[4], TW_CCV[2]], { g1: true });
 
@@ -359,7 +369,7 @@ function openMeshEdges(raw, res) {
 // G1 across blend faces: for every edge of the result that borders a face named `F*.B*` / `F*.V*` (a fillet, chamfer-free), the display-mesh
 // normals of the two faces at the edge points must agree (fillets are tangent to the faces they join; corner patches to the bands).
 // Chamfer faces are planar facets and meet their neighbours at an angle by design, so cases with chamfers skip the check.
-function g1Defect(raw, res) {
+function g1Defect(raw, res, mitre = false) {
   const body = res.result?.body, m = body?.mesh;
   if (!m || !raw.bytes) return null;
   const jl = new DataView(raw.bytes.buffer).getUint32(0, true);
@@ -381,7 +391,7 @@ function g1Defect(raw, res) {
   };
   let max = 0, where = '';
   for (const e of body.edges) {
-    if (e.faces.length !== 2 || !e.faces.every(isBlend)) continue;
+    if (mitre || e.faces.length !== 2 || !e.faces.every(isBlend)) continue;
     const [a, b] = e.faces.map((f) => idx.get(f));
     for (const p of e.pts ?? []) {
       const va = nearest(a, p), vb = nearest(b, p);
@@ -416,7 +426,7 @@ function run(c) {
   if (res.trap || (!res.ok && !res.result)) return { errs: [`trap ${res.trap ?? ''}`], ms };
   const m = req(k, 3, { type: 'massProps', tag: 'main' });
   const v = req(k, 4, { type: 'validate', tag: 'main' });
-  return { errs, vol: m.ok ? m.result?.volume : null, valid: !!(v.ok && v.result?.ok), ms, faces: res.result?.body?.faces?.length, open: openMeshEdges(raw, res), g1: g1Defect(raw, res) };
+  return { errs, vol: m.ok ? m.result?.volume : null, valid: !!(v.ok && v.result?.ok), ms, faces: res.result?.body?.faces?.length, open: openMeshEdges(raw, res), g1: g1Defect(raw, res, c.mitre) };
 }
 
 if (argv.includes('--edges')) {

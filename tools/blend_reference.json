@@ -6,6 +6,7 @@
   "cube": 27000.0,
   "holed": 14869.026644707672,
   "lbr": 6000.0,
+  "lwall": 31320.0,
   "pocket": 28800.0,
   "post0": 30000.0,
   "post2": 29896.99111843077,
@@ -223,6 +224,42 @@
  "lbr_mixed_rims_1_2_wall_3": {
   "valid": true,
   "volume": 5996.23352580421
+ },
+ "lwall_floor_loop_r1": {
+  "valid": true,
+  "volume": 31354.71977523502
+ },
+ "lwall_floor_loop_r2": {
+  "valid": true,
+  "volume": 31460.413026524944
+ },
+ "lwall_floor_loop_r3": {
+  "valid": true,
+  "volume": 31639.380642082804
+ },
+ "lwall_inside_r1": {
+  "valid": true,
+  "volume": 31334.497054555526
+ },
+ "lwall_inside_r2": {
+  "valid": true,
+  "volume": 31377.604736862777
+ },
+ "lwall_inside_r3": {
+  "valid": true,
+  "volume": 31448.747824894657
+ },
+ "lwall_inside_vert_r1": {
+  "valid": true,
+  "volume": 31340.863575701645
+ },
+ "lwall_inside_vert_r2": {
+  "valid": true,
+  "volume": 31402.784685664952
+ },
+ "lwall_inside_vert_r3": {
+  "valid": true,
+  "volume": 31504.758904177488
  },
  "pocket_cove2_r1": {
   "valid": true,
