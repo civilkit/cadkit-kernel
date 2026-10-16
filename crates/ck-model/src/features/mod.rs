@@ -52,7 +52,6 @@ pub mod delete_body;
 pub mod draft;
 pub mod edit_curve;
 pub mod extrude;
-pub mod freeform;
 pub mod hole;
 pub mod lip;
 pub mod loft;

@@ -15,7 +15,6 @@
 
 pub mod expr;
 pub mod features;
-pub mod interference;
 pub mod planes;
 pub mod refs;
 pub mod regen;
