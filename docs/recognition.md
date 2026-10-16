@@ -51,3 +51,40 @@ prismatic subset (samples made only of sketch/extrude/revolve/plane/hole/fillet/
 
 Stacked bodies (pockets and bosses at intermediate heights), obliquely oriented bases or holes, cross holes in curved
 walls, B-spline / extruded-spline walls, lofts, sweeps, shells, variable and asymmetric blends, mirrored halves.
+
+## Results (first run, kit corpus + SolidWorks samples)
+
+`node tools/recog_check.mjs`: 102 parts, 2 skipped (the original does not regenerate). exact 34, close 0, partial 29, failed 37.
+Prismatic subset (gated): 27 of 66 exact or close (41 %; target was 70 %).
+
+Exact: bench-bolt, bucket, enclosure, fan_shroud, hex_nut, hinge, motor_end_cap, pulley, ratchet_sector, round_flange,
+snap_clip, spur_gear, vented_panel, venturi_tube, washer, brepjs button_top_battery_cell, fan_guard,
+l_angle_gusset_bracket, linear_bearing_block, nema_stepper, rubber_foot, tripod_rc2_plate, v_groove_slider_rail,
+vented_louvre_case, mounting-plate, parametric-bracket, patterned-threaded-holes, surface-patch, threaded-bolt; the
+SolidWorks single-feature parts cube, cube with a 1 mm fillet, cube with a 5 mm hole, cone and cylinder with a fillet.
+Not recognised: SolidWorks sphere, torus, crossed cylinders (whole-body sphere / torus and cross-bores are not handled).
+
+Timing: below 200 faces almost every part is under 0.5 s; the slow ones are free-form (springs, propeller, large sample:
+the area integration of spline faces and the verification booleans) and the gear bodies (2 to 10 s, many layered extrudes).
+
+Failure analysis (prismatic subset, not exact):
+
+- Wall structure the cycle walker rejects ("wall cycle broken", "more than two vertical neighbours") on 14 parts with
+  slanted faces, tapered walls or ribs: the walls are not all parallel to one principal axis, or the same wall meets
+  neighbours at several heights (clevis, dovetail, u_channel, heat_sink, pipe_flange, rect_frame, gridfinity_bin).
+- Holes whose mouth lies on a curved wall (radial bores in a collar, pulley or hinge): the mouth edges are not circles
+  on a plane, so the hole group is left unexplained (shaft_collar, gt2_pulley, pull_handle, knuckle_hinge, piston).
+- Cone / sphere / torus bodies that are neither pure revolves nor prisms (bellows, dome_cap, nozzle, funnel, hose, torus
+  link): need a revolve with a prismatic cut on top.
+- Free-form walls (extruded splines in gears, twisted drill) are `Other` faces.
+- Several layered rebuilds are close but not exact (cam, hobby_rc_servo, i_beam: 1e-3 to 3e-3): blend edges named across
+  several extrudes (`missingEdge`), and a boolean failure on an island in a pocket.
+
+## Phase 2 (recommended)
+
+1. Kit "Convert to editable": replace the view-only import by the `recognize` result (features + `<tag>.rebuilt`), keep the
+   original as a reference body and show `verify` and the unexplained faces.
+2. LLM-assisted repair of unexplained faces through the MCP tools: hand over `report.unexplained` with the surface data
+   and the rebuilt tree, let the agent add features, and re-check with `refDiff` / `recognize`'s verify.
+3. Robustness: radial holes (mouths on cylinders), a base axis that is not principal (plane from three points), revolve
+   plus cut, fillet naming across several extrudes by geometric `resolve` descriptions, mirrored halves.
