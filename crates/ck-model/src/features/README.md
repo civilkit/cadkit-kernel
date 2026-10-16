@@ -56,8 +56,9 @@ strings from kernel.strings, and dispatch to ck-ops/ck-topo.
 - thicken: thickenFailed, thickenPointedPole, thickenReach
 - thread: threadSizeUnknown, threadFaceNotCylinder (warnings: threadDiameterMismatch, threadModelFallback)
 - pipeCut: pipeCutRadius, pipeCutFailed, pipeCutNothingLeft, alignPipeCutOneBody
-- project: projectCurveNoFaces, projectCurveMisses, projectCurveSeverals,
-  projectCurveFailed, projectCurveTolerance, projectCurvePlane/Line/Curve
+- projectCurve: projectCurveNoInput, projectCurveNoFaces, projectCurveMisses,
+  projectCurveSeveral, projectCurveFailed, projectCurvePlane
+  (payload: sketch|curve, faces[], degree, tolerance, direction both/forward/reverse)
 - extend: extendNotBoundary, extendTargetSelf, extendOneSurface,
   extendUnsupported, extendReflectTooFar, extendPointBehind, extendFolds
 - blends: filletChamfer, chamferVertexEdges(two/points), chamferType+filletType,

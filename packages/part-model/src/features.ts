@@ -479,9 +479,11 @@ export interface ProjectCurveFeature {
   id: string;
   name?: string;
   sketch?: string | null;
+  curve?: string | null;
   faces: string[];
   degree?: Expr;
   tolerance?: Expr;
+  direction?: 'both' | 'forward' | 'reverse';
   [key: string]: unknown;
 }
 
