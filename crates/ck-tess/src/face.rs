@@ -475,6 +475,16 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
     for (ch, closed) in chains.iter_mut() {
         if ch.iter().any(|q| q.virt) {
             let ends = !*closed && ch.len() >= 2 && ch[0].virt && ch[ch.len() - 1].virt;
+            if !*closed && pu.is_none() && pv.is_none() {
+                // a face without a period (a flange ring with a slit): the ends of an open chain are where the slit
+                // edges attach, and the chain on the other side of the slit meets it there. Dropping them tears the loop.
+                let (first, last) = (ch[0], ch[ch.len() - 1]);
+                ch.retain(|q| !q.virt);
+                ch.insert(0, first);
+                ch.push(last);
+                ch.dedup_by(|a, b| a.uv == b.uv);
+                continue;
+            }
             ch.retain(|q| !q.virt);
             if ends && ch.len() >= 3 {
                 *closed = true;
@@ -518,19 +528,31 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
         let top = c + p;
         (ya - top).abs() <= eps && (yb - top).abs() <= eps && (hi - top).abs() <= eps && lo > c + eps
     };
+    // The mirror case: a segment lying exactly on the window's lower edge `c` when the whole face sits below it (a torus
+    // band ending on its outer equator, opened at a window above it) is that edge's boundary a period up.
+    let on_floor = |ya: f64, yb: f64, lo: f64, hi: f64, c: f64, p: f64| -> bool {
+        let eps = 1e-9 * (1.0 + p);
+        (ya - c).abs() <= eps && (yb - c).abs() <= eps && (hi - c).abs() <= eps && lo < c - eps
+    };
     let mut seg_list: Vec<(BPt, BPt)> = vec![];
     for (chain, closed) in &chains {
         let n = chain.len();
         let m = if *closed { n } else { n - 1 };
         for i in 0..m {
             let (mut a, mut q) = (chain[i], chain[(i + 1) % n]);
-            if *closed && i + 1 == n {
-                // the closing segment of a ring: the first point is the period copy nearest the last one
+            if *closed {
+                // the closing segment of a ring: the first point is the period copy nearest the last one. A ring that was
+                // walked backwards (first vertex kept, the rest reversed) has that jump at its first segment instead, so
+                // any step of more than half a period is a wrap.
                 if let Some(per) = pu {
-                    q.uv.x = ck_geom::pcurve::unwrap_near(q.uv.x, a.uv.x, per);
+                    if i + 1 == n || (q.uv.x - a.uv.x).abs() > 0.5 * per {
+                        q.uv.x = ck_geom::pcurve::unwrap_near(q.uv.x, a.uv.x, per);
+                    }
                 }
                 if let Some(per) = pv {
-                    q.uv.y = ck_geom::pcurve::unwrap_near(q.uv.y, a.uv.y, per);
+                    if i + 1 == n || (q.uv.y - a.uv.y).abs() > 0.5 * per {
+                        q.uv.y = ck_geom::pcurve::unwrap_near(q.uv.y, a.uv.y, per);
+                    }
                 }
             }
             if a.uv.dist(q.uv) == 0.0 {
@@ -538,14 +560,20 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
             }
             if let (Some(c), Some(p)) = (cu, pu) {
                 let mid = 0.5 * (a.uv.x + q.uv.x);
-                if !on_top(a.uv.x, q.uv.x, u_lo, u_hi, c, p) {
+                if on_floor(a.uv.x, q.uv.x, u_lo, u_hi, c, p) {
+                    a.uv.x += p;
+                    q.uv.x += p;
+                } else if !on_top(a.uv.x, q.uv.x, u_lo, u_hi, c, p) {
                     a.uv.x = shift_into(a.uv.x, mid, c, p);
                     q.uv.x = shift_into(q.uv.x, mid, c, p);
                 }
             }
             if let (Some(c), Some(p)) = (cv, pv) {
                 let mid = 0.5 * (a.uv.y + q.uv.y);
-                if !on_top(a.uv.y, q.uv.y, v_lo, v_hi, c, p) {
+                if on_floor(a.uv.y, q.uv.y, v_lo, v_hi, c, p) {
+                    a.uv.y += p;
+                    q.uv.y += p;
+                } else if !on_top(a.uv.y, q.uv.y, v_lo, v_hi, c, p) {
                     a.uv.y = shift_into(a.uv.y, mid, c, p);
                     q.uv.y = shift_into(q.uv.y, mid, c, p);
                 }
@@ -558,6 +586,7 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
         }
     }
     weld_dangling_ends(&mut seg_list, 1e-8);
+    weld_close_points(&mut seg_list);
     for (a, q) in &seg_list {
         let ia = b.add(a.uv, a.p);
         let iq = b.add(q.uv, q.p);
@@ -646,6 +675,20 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
                         iso(&mut b, Vec2::new(c + p, w[0]), Vec2::new(c + p, w[1]), Vec2::new(p, 0.0));
                     }
                 }
+                // a torus fragment is cut open in v as well: boundary points on its v cut lines bound inside intervals there
+                if let (Some(cv1), Some(qv1)) = (cv, pv) {
+                    let mut onv: Vec<f64> = b.pts.iter().filter(|q| q.uv.y == cv1).map(|q| q.uv.x).collect();
+                    onv.extend(b.pts.iter().filter(|q| q.uv.y == cv1 + qv1).map(|q| q.uv.x));
+                    onv.sort_by(|x, y| x.total_cmp(y));
+                    onv.dedup();
+                    for w in onv.windows(2) {
+                        let um = 0.5 * (w[0] + w[1]);
+                        if inside_parity_v(&seg_list, Vec2::new(um, cv1 + 0.5 * qv1 * 1e-6)) {
+                            iso(&mut b, Vec2::new(w[0], cv1), Vec2::new(w[1], cv1), Vec2::ZERO);
+                            iso(&mut b, Vec2::new(w[0], cv1 + qv1), Vec2::new(w[1], cv1 + qv1), Vec2::new(0.0, qv1));
+                        }
+                    }
+                }
             }
         }
         (None, None, Some(c), Some(p)) if has_loops => {
@@ -707,11 +750,18 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
                 *deg.entry(c).or_insert(0) += 1;
             }
         }
+        if std::env::var("CK_DBG").map_or(false, |v| v == body.face_id_str(f)) {
+            for (k, d) in &deg {
+                if d % 2 == 1 {
+                    eprintln!("DBGODD pt {} {:?} p={:?} deg {}", k, b.pts[*k].uv, b.pts[*k].p, d);
+                }
+            }
+        }
         deg.values().any(|d| d % 2 == 1)
     };
     let mut tri = cdt::triangulate(&cpts, &b.segs)?;
-    if std::env::var("CK_DBG").is_ok() {
-        eprintln!("DBG face {:?} cu={:?} cv={:?} npts={} nsegs={} inside={} failed={}", f, cu, cv, b.pts.len(), b.segs.len(), tri.cdt.inside_tris().len(), tri.cdt.failed);
+    if std::env::var("CK_DBG").map_or(false, |v| v == "1" || v == body.face_id_str(f)) {
+        eprintln!("DBG face {:?} {} cu={:?} cv={:?} npts={} nsegs={} inside={} failed={}", f, body.face_id_str(f), cu, cv, b.pts.len(), b.segs.len(), tri.cdt.inside_tris().len(), tri.cdt.failed);
         for (i, q) in b.pts.iter().enumerate().take(400) { eprintln!("DBGPT {} {:?}", i, q.uv); }
         eprintln!("DBGSEGS {:?}", b.segs);
     }
@@ -1101,6 +1151,44 @@ fn weld_dangling_ends(segs: &mut [(BPt, BPt)], eps: f64) {
             a.uv = v;
         }
         if let Some(&v) = snap.get(&key(q.uv)) {
+            q.uv = v;
+        }
+    }
+}
+
+/// Snaps trim points that differ by a few ulps (the same vertex reached through two coedges, or two samples of a closing
+/// curve) onto one point, so no zero-length constraint or sub-ulp sliver reaches the CDT.
+fn weld_close_points(segs: &mut [(BPt, BPt)]) {
+    let mut pts: Vec<(f64, f64)> = Vec::with_capacity(segs.len() * 2);
+    for (a, q) in segs.iter() {
+        pts.push((a.uv.x, a.uv.y));
+        pts.push((q.uv.x, q.uv.y));
+    }
+    pts.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let tol = |p: (f64, f64)| 4e-15 * (1.0 + p.0.abs() + p.1.abs());
+    let mut snap: HashMap<(u64, u64), Vec2> = HashMap::default();
+    for i in 0..pts.len() {
+        let key_i = (pts[i].0.to_bits(), pts[i].1.to_bits());
+        if snap.contains_key(&key_i) {
+            continue;
+        }
+        let mut j = i + 1;
+        while j < pts.len() && pts[j].0 - pts[i].0 <= tol(pts[i]) {
+            let key_j = (pts[j].0.to_bits(), pts[j].1.to_bits());
+            if key_j != key_i && (pts[j].1 - pts[i].1).abs() <= tol(pts[i]) && !snap.contains_key(&key_j) {
+                snap.insert(key_j, Vec2::new(pts[i].0, pts[i].1));
+            }
+            j += 1;
+        }
+    }
+    if snap.is_empty() {
+        return;
+    }
+    for (a, q) in segs.iter_mut() {
+        if let Some(&v) = snap.get(&(a.uv.x.to_bits(), a.uv.y.to_bits())) {
+            a.uv = v;
+        }
+        if let Some(&v) = snap.get(&(q.uv.x.to_bits(), q.uv.y.to_bits())) {
             q.uv = v;
         }
     }

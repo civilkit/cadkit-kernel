@@ -167,12 +167,16 @@ fn check_mesh_inner(b: &Body, positions: &[f32], tri_face: &[i32], failed: &[usi
             *a += 0.5 * ((u[1] * w[2] - u[2] * w[1]).powi(2) + (u[2] * w[0] - u[0] * w[2]).powi(2) + (u[0] * w[1] - u[1] * w[0]).powi(2)).sqrt();
         }
     }
+    // a face whose area is off by less than 5e-4 of the squared part size is a sliver or a speck: its chord error
+    // (a polygon inscribed in a thin crescent loses a fifth of it) cannot be seen, and is not a hole
+    let hi_all = positions.iter().fold(0.0f64, |m, &x| m.max((x as f64).abs()));
+    let floor = 5e-4 * hi_all * hi_all;
     for (i, &f) in ids.iter().enumerate() {
         if !area || !has[i] {
             continue;
         }
         let exact = ck_topo::mass::face_integral::<1>(b, f, 1, &|_, n| [n.len()])[0].abs();
-        if exact.is_finite() && exact > 0.0 && (mesh_area[i] < 0.9 * exact || mesh_area[i] > 1.1 * exact) {
+        if exact.is_finite() && exact > 0.0 && (mesh_area[i] < 0.9 * exact || mesh_area[i] > 1.1 * exact) && (mesh_area[i] - exact).abs() > floor {
             out.push(Issue {
                 code: "TESSELLATION_OPEN",
                 entity: b.face_id_str(f),
