@@ -155,7 +155,22 @@ fn exec_variable_fillet(br: &mut Brep, state: &mut RegenState, f: &Feature, edge
     let body = br.body.as_ref().ok_or_else(|| FeatureError::new("missingEdge"))?;
     br.spans.push(Span::leaf(fillet_label(&f.id, radii[0], sel.len())));
     let spec = ck_ops::blend::interp::VarSpec { radii: [radii[0], radii[1]], profile, rhos };
-    let out = ck_ops::blend::interp::variable_fillet(body, &sel, spec, &f.id, super::TOL).map_err(blend_error)?;
+    // a pick may carry its own `radii: [near, far]`; the feature's pair is the default
+    let picks = f.raw.get("edges").and_then(|a| a.as_arr());
+    let per_pick: Vec<[f64; 2]> = (0..sel.len())
+        .map(|i| {
+            let own = picks.and_then(|a| a.get(i)).and_then(|p| p.get("radii")).and_then(|r| r.as_arr()).filter(|r| r.len() == 2);
+            match own {
+                Some(r) => {
+                    let g = |x: &Json| crate::expr::eval_field(Some(x), &state.vars, f64::NAN).unwrap_or(f64::NAN);
+                    [g(&r[0]), g(&r[1])]
+                }
+                None => [radii[0], radii[1]],
+            }
+        })
+        .collect();
+    let out = ck_ops::blend::interp::variable_fillet_picks(body, &sel, &per_pick, spec, &f.id, super::TOL).map_err(blend_error)?;
+    corner_warnings(state, &f.id, &out);
     br.body = Some(out);
     Ok(())
 }
@@ -197,6 +212,12 @@ pub fn chamfer_label(id: &str, d: f64, n: usize) -> String {
 pub fn exec_chamfer(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
     let FeatureKind::Chamfer { chamfer_type, edges, .. } = &f.kind else { unreachable!() };
     let ty = f.raw.get("chamferType").and_then(|v| v.as_str()).unwrap_or("equal").to_string();
+    // `distanceDistance` / `angleDistance` are the long names of `distances` / `angle`
+    let ty = match ty.as_str() {
+        "distanceDistance" => "distances".to_string(),
+        "angleDistance" => "angle".to_string(),
+        _ => ty,
+    };
     if matches!(ty.as_str(), "distances" | "angle") {
         return exec_chamfer_legs(br, state, f, edges, &ty);
     }
@@ -221,8 +242,13 @@ pub fn exec_chamfer(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Resul
 /// or `"angle"` (`distance` on the first face, `angle` degrees between the chamfer and that face).
 /// Oracle (box probes): `distance` 2 / `distance2` 3 cuts 2 on the first face and 3 on the second
 /// (volume 7880); `distance` 2, `angle` 30 cuts 2 and 2 tan 30 (7953.81). The first face is the first
-/// of the pick's `faces`; picks whose faces the kernel lists the other way round are not supported
-/// must all agree (mixed orders are `unsupported`).
+/// of the pick's `faces`, unless the feature names a `face` (a face id, or `{kind:"face", id}`):
+/// then `distance` is measured on that face for every pick (each pick must border it, else
+/// `missingEdge`), whatever order the pick lists its faces in. `flip: true` swaps the two legs
+/// (distance on the other face; for `angle` the angle is then taken to the other face). The long
+/// names `distanceDistance` / `angleDistance` are accepted for `distances` / `angle`. The picks of
+/// one feature must agree on which of their faces is the first (mixed orders are `unsupported`;
+/// `face` makes a ring of edges around one face agree).
 fn exec_chamfer_legs(br: &mut Brep, state: &mut RegenState, f: &Feature, edges: &[crate::EdgeRef], ty: &str) -> Result<(), FeatureError> {
     use ck_ops::blend::build::ChamferLeg;
     let d1 = state.num(f, "distance", 0.0)?;
@@ -243,7 +269,26 @@ fn exec_chamfer_legs(br: &mut Brep, state: &mut RegenState, f: &Feature, edges: 
         ChamferLeg::Angle(a)
     };
     let sel = select_edges(br, edges)?;
-    let swapped: Vec<bool> = sel.iter().zip(edges).map(|(s, e)| e.faces.first().map_or(false, |a| *a != s.0)).collect();
+    let first_face: Option<String> = f.raw.get("face").and_then(|v| v.as_str().map(str::to_string).or_else(|| v.get("id").and_then(|i| i.as_str()).map(str::to_string)));
+    if let Some(ff) = &first_face {
+        // every pick must border the named face (by the family name, `~k` pieces ignored)
+        let base = super::lip::base_id(ff);
+        if !sel.iter().all(|s| super::lip::base_id(&s.0) == base || super::lip::base_id(&s.1) == base) {
+            return Err(FeatureError::new("missingEdge"));
+        }
+    }
+    let flip = f.raw.get("flip").and_then(|v| v.as_bool()).unwrap_or(false);
+    let swapped: Vec<bool> = sel
+        .iter()
+        .zip(edges)
+        .map(|(s, e)| {
+            let first = match &first_face {
+                Some(ff) => Some(ff.as_str()),
+                None => e.faces.first().map(|a| a.as_str()),
+            };
+            first.map_or(false, |a| super::lip::base_id(a) != super::lip::base_id(&s.0)) ^ flip
+        })
+        .collect();
     let (d1, leg) = if swapped.iter().all(|x| !x) {
         (d1, leg)
     } else if swapped.iter().all(|x| *x) {
@@ -404,11 +449,66 @@ pub fn exec_fillet(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
     }
     let profile = fillet_profile(state, f)?;
     let sel = select_edges(br, edges)?;
+    // a pick may carry its own `radius`; the feature's radius is the default
+    let own: Vec<Option<f64>> = (0..sel.len())
+        .map(|i| {
+            f.raw.get("edges").and_then(|a| a.as_arr()).and_then(|a| a.get(i)).and_then(|p| p.get("radius")).map(|x| crate::expr::eval_field(Some(x), &state.vars, f64::NAN).unwrap_or(f64::NAN))
+        })
+        .collect();
+    let radii: Vec<f64> = own.iter().map(|o| o.unwrap_or(r)).collect();
+    if own.iter().any(Option::is_some) {
+        if radii.iter().any(|x| !(*x > 0.0) || !x.is_finite()) {
+            return Err(FeatureError::new("invalidValue"));
+        }
+        if radii.iter().any(|x| (x - radii[0]).abs() > 1e-12 * (1.0 + x.abs())) {
+            if profile != ck_ops::blend::build::FilletProfile::Circular {
+                return Err(FeatureError::new("unsupported").with("what", Json::Str("unequal radii with a fillet profile".into())));
+            }
+            let body = br.body.as_ref().ok_or_else(|| FeatureError::new("missingEdge"))?;
+            br.spans.push(Span::leaf(fillet_label(&f.id, radii.iter().cloned().fold(0.0, f64::max), sel.len())));
+            let out = ck_ops::blend::interp::unequal_fillet(body, &sel, &radii, &f.id, super::TOL).map_err(blend_error)?;
+            corner_warnings(state, &f.id, &out);
+            br.body = Some(out);
+            return Ok(());
+        }
+    }
+    let r = radii.first().copied().unwrap_or(r);
     let body = br.body.as_ref().ok_or_else(|| FeatureError::new("missingEdge"))?;
     br.spans.push(Span::leaf(fillet_label(&f.id, r, sel.len())));
     let out = ck_ops::blend::build::blend_edges(body, &sel, ck_ops::blend::build::Spec::Fillet(r, profile), &f.id, super::TOL).map_err(blend_error)?;
     br.body = Some(out);
     Ok(())
+}
+
+/// `cornerNotTangent` warning: two blend faces of feature `id` that meet along an edge (the mitre of
+/// blends that end at a shared vertex with different radii) with a normal jump of more than half a
+/// degree; `deviation` is the largest jump in degrees.
+fn corner_warnings(state: &mut RegenState, id: &str, out: &ck_topo::body::Body) {
+    let prefix = format!("{id}.B");
+    let mut worst = 0.0f64;
+    for e in out.edge_ids() {
+        let fs = out.edge_faces(e);
+        if fs.len() != 2 || !fs.iter().all(|&x| out.face_id_str(x).starts_with(&prefix)) {
+            continue;
+        }
+        let ed = out.edge(e);
+        for t in [0.25, 0.5, 0.75] {
+            let p = ed.curve.eval(ed.t0 + (ed.t1 - ed.t0) * t);
+            let n: Vec<Vec3> = fs
+                .iter()
+                .map(|&x| {
+                    let (u, v) = out.face(x).surface.closest_param(p);
+                    out.outward_normal(x, u, v).normalize()
+                })
+                .collect();
+            worst = worst.max(n[0].dot(n[1]).clamp(-1.0, 1.0).acos().to_degrees());
+        }
+    }
+    state.result.warnings.retain(|w| !(w.feature == id && w.error.code == "cornerNotTangent"));
+    if worst > 0.5 {
+        let e = FeatureError::new("cornerNotTangent").with("deviation", Json::Num((worst * 100.0).round() / 100.0));
+        state.result.warnings.push(crate::regen::RegenError { feature: id.to_string(), error: e });
+    }
 }
 
 /// Oracle (box probes, bracket F12): the blend's touched faces list the

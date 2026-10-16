@@ -1,0 +1,210 @@
+{
+ "_base": {
+  "boss": 19015.9289474462,
+  "box": 7999.999999999998,
+  "cube": 27000.0,
+  "holed": 14869.026644707672,
+  "lbr": 6000.0,
+  "pocket": 28800.0
+ },
+ "boss_ch2_base_rim": {
+  "valid": true,
+  "volume": 19116.067213279373
+ },
+ "boss_ch2_top_rim": {
+  "valid": true,
+  "volume": 18969.85225519355
+ },
+ "boss_ch2_top_rim_cyl_first": {
+  "valid": true,
+  "volume": 18967.757860091155
+ },
+ "boss_chA_top_rim": {
+  "valid": true,
+  "volume": 18962.72416609533
+ },
+ "boss_fillet_base": {
+  "valid": true,
+  "volume": 19061.48669130202
+ },
+ "boss_fillet_top": {
+  "valid": true,
+  "volume": 18975.19017247739
+ },
+ "box_ch2_big": {
+  "valid": true,
+  "volume": 7679.999999999999
+ },
+ "box_ch2_ring_bottom": {
+  "valid": true,
+  "volume": 7765.333333333333
+ },
+ "box_ch2_ring_top": {
+  "valid": true,
+  "volume": 7655.999999999999
+ },
+ "box_ch2_side_edge": {
+  "valid": true,
+  "volume": 7879.999999999999
+ },
+ "box_ch2_top_edge": {
+  "valid": true,
+  "volume": 7880.0
+ },
+ "box_ch2_two_adjacent": {
+  "valid": true,
+  "volume": 7824.0
+ },
+ "box_ch2_two_opposite": {
+  "valid": true,
+  "volume": 7879.999999999999
+ },
+ "box_ch2_vertical_edge": {
+  "valid": true,
+  "volume": 7970.000000000001
+ },
+ "box_chA_ring_top": {
+  "valid": true,
+  "volume": 7399.356189332518
+ },
+ "box_chA_side_edge": {
+  "valid": true,
+  "volume": 7688.2308546376025
+ },
+ "box_chA_top_edge": {
+  "valid": true,
+  "volume": 7953.81197846483
+ },
+ "box_chA_vertical": {
+  "valid": true,
+  "volume": 7980.0
+ },
+ "box_ch_equal_edge": {
+  "valid": true,
+  "volume": 7919.999999999999
+ },
+ "box_fillet_corner3": {
+  "valid": true,
+  "volume": 26701.68722955831
+ },
+ "box_fillet_edge": {
+  "valid": true,
+  "volume": 7965.66370614359
+ },
+ "box_fillet_ring_top": {
+  "valid": true,
+  "volume": 7900.058969153037
+ },
+ "cube_ch_equal_corner3": {
+  "valid": true,
+  "volume": 26322.666666666668
+ },
+ "cube_unequal_corner3": {
+  "valid": true,
+  "volume": 26687.395028594998
+ },
+ "cube_unequal_two_edges": {
+  "valid": true,
+  "volume": 26786.469785536647
+ },
+ "holed_ch2_bottom_rim": {
+  "valid": true,
+  "volume": 14829.233137762203
+ },
+ "holed_ch2_rim": {
+  "valid": true,
+  "volume": 14792.450323776424
+ },
+ "holed_chA_rim": {
+  "valid": true,
+  "volume": 14798.730398389365
+ },
+ "holed_fillet_rim": {
+  "valid": true,
+  "volume": 14849.8069715185
+ },
+ "lbr_ch2_concave_edge": {
+  "valid": true,
+  "volume": 6030.0
+ },
+ "lbr_ch2_top_outline": {
+  "valid": true,
+  "volume": 5862.666666666668
+ },
+ "lbr_fillet_concave": {
+  "valid": true,
+  "volume": 6008.584073464101
+ },
+ "pocket_mixed_r1": {
+  "valid": true,
+  "volume": 28793.149552736402
+ },
+ "pocket_mixed_r2": {
+  "valid": true,
+  "volume": 28772.665456976367
+ },
+ "pocket_mixed_r2_reversed_order": {
+  "valid": true,
+  "volume": 28772.665456976367
+ },
+ "pocket_mixed_r3": {
+  "valid": true,
+  "volume": 28738.648581766007
+ },
+ "pocket_mixed_wall_first": {
+  "valid": true,
+  "volume": 28772.665456976367
+ },
+ "pocket_rim_ring_r2": {
+  "valid": true,
+  "volume": 28728.2595612719
+ },
+ "pocket_unequal_concave3": {
+  "valid": true,
+  "volume": 28835.795414590386
+ },
+ "pocket_unequal_mixed3": {
+  "valid": true,
+  "volume": 28794.516711112672
+ },
+ "pocket_walls_concave3_r2": {
+  "valid": true,
+  "volume": 28839.86431834444
+ },
+ "var_concave_isolated": {
+  "valid": true,
+  "volume": 6009.476262419348
+ },
+ "var_corner2": {
+  "valid": true,
+  "volume": 7944.878041500547
+ },
+ "var_corner2_equal_ends": {
+  "valid": true,
+  "volume": 7949.2625219137
+ },
+ "var_corner2_mismatch": {
+  "valid": true,
+  "volume": 7942.459301790234
+ },
+ "var_corner3": {
+  "valid": true,
+  "volume": 7934.461916950838
+ },
+ "var_corner3_equal_ends": {
+  "valid": true,
+  "volume": 26830.69242805789
+ },
+ "var_isolated": {
+  "valid": true,
+  "volume": 7962.094933779306
+ },
+ "var_ring_top": {
+  "valid": true,
+  "volume": 7891.254796187091
+ },
+ "var_two_vertical_far": {
+  "valid": true,
+  "volume": 7981.047450460085
+ }
+}
