@@ -337,7 +337,18 @@ fn import_sldprt_hook(cx: &mut Cx) -> Result<(Json, Option<State>), String> {
             let tess = ck_tess::mesh::tessellate(&body);
             set_body(&mut out, body_json(&body, &tess, cx, &(vec![], vec![])));
             let approx = imp.approx.iter().map(|a| Obj::new().put("what", a.what.as_str()).put("maxErrorMm", a.max_err_mm).build()).collect();
+            // the mass properties SolidWorks stored in the file (mm^3, mm^2, kg), an independent check of the body
+            let sw = match &imp.sw_mass {
+                Some(m) => Obj::new()
+                    .put("volumeMm3", m.volume_m3 * 1e9)
+                    .put("areaMm2", m.area_m2 * 1e6)
+                    .put("massKg", m.mass_kg)
+                    .put("comMm", Json::Arr(m.com_m.iter().map(|x| Json::Num(x * 1e3)).collect()))
+                    .build(),
+                None => Json::Null,
+            };
             let info = Obj::new()
+                .put("swMassProps", sw)
                 .put("format", "sldprt")
                 .put("name", name.as_str())
                 .put("solids", imp.solids as f64)

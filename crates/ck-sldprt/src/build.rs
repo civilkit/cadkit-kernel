@@ -28,6 +28,10 @@ use std::rc::Rc;
 /// Metres -> millimetres.
 pub const SCALE: f64 = 1000.0;
 
+/// An approximated carrier that stays further than this from the exact geometry is refused (an error, not a silently wrong
+/// body).
+pub const MAX_APPROX_MM: f64 = 0.05;
+
 /// A carrier that is an approximation of the exact curve in the file.
 #[derive(Debug, Clone)]
 pub struct Approx {
@@ -372,6 +376,9 @@ impl<'a> B<'a> {
                         checked += 1;
                     }
                 }
+                if worst > MAX_APPROX_MM {
+                    return Err(gerr(format!("intersection curve #{}: the fit stays {worst:.3e} mm from its support surfaces", node.id)));
+                }
                 self.approx.push(Approx { what: format!("intersection curve #{} ({} chart points, {} support surfaces checked)", node.id, pts.len(), checked), max_err_mm: worst });
                 FwCurve { curve, period: None, dir_inc: true, closed_spline: closed }
             }
@@ -401,19 +408,45 @@ impl<'a> B<'a> {
                     Surface::Cylinder { .. } | Surface::Cone { .. } | Surface::Extrusion { .. } => (1.0, SCALE),
                     _ => (1.0, 1.0),
                 };
-                let pts: Vec<Vec3> = (0..=n)
-                    .map(|i| {
-                        let q = c2.eval(t0 + (t1 - t0) * i as f64 / n as f64);
-                        sf.eval(q.x * su, q.y * sv)
-                    })
-                    .collect();
-                let mut clean: Vec<Vec3> = vec![];
-                for p in pts {
-                    if clean.last().map_or(true, |l| l.dist(p) > 1e-9) {
-                        clean.push(p);
+                let eval_t = |t: f64| {
+                    let q = c2.eval(t);
+                    sf.eval(q.x * su, q.y * sv)
+                };
+                // sample, fit, and add samples where the fit strays from the surface curve
+                let mut tp: Vec<(f64, Vec3)> = vec![];
+                for i in 0..=n {
+                    let t = t0 + (t1 - t0) * i as f64 / n as f64;
+                    let p = eval_t(t);
+                    if tp.last().map_or(true, |l| l.1.dist(p) > 1e-9) {
+                        tp.push((t, p));
                     }
                 }
-                let bs = self.fit_points(&clean)?;
+                let mut clean: Vec<Vec3> = tp.iter().map(|x| x.1).collect();
+                let mut bs = self.fit_points(&clean)?;
+                for _ in 0..5 {
+                    if tp.len() > 3000 {
+                        break;
+                    }
+                    let mut ins: Vec<(usize, (f64, Vec3))> = vec![];
+                    for i in 0..tp.len() - 1 {
+                        if tp[i].1.dist(tp[i + 1].1) < 1e-7 {
+                            continue;
+                        }
+                        let tm = 0.5 * (tp[i].0 + tp[i + 1].0);
+                        let pm = eval_t(tm);
+                        if bs.closest_point(pm).1.dist(pm) > 1e-4 && pm.dist(tp[i].1) > 1e-9 && pm.dist(tp[i + 1].1) > 1e-9 {
+                            ins.push((i, (tm, pm)));
+                        }
+                    }
+                    if ins.is_empty() {
+                        break;
+                    }
+                    for (i, e) in ins.into_iter().rev() {
+                        tp.insert(i + 1, e);
+                    }
+                    clean = tp.iter().map(|x| x.1).collect();
+                    bs = self.fit_points(&clean)?;
+                }
                 let closed = Self::is_closed(&bs);
                 let curve = Curve::BSpline(bs);
                 let mut worst = 0.0f64;
@@ -421,6 +454,9 @@ impl<'a> B<'a> {
                 for k in 0..48 {
                     let t = a + (b - a) * (k as f64 + 0.37) / 48.0;
                     worst = worst.max(sf.distance(curve.eval(t)));
+                }
+                if worst > MAX_APPROX_MM {
+                    return Err(gerr(format!("SP-curve #{}: the sampled curve stays {worst:.3e} mm from its surface", node.id)));
                 }
                 self.approx.push(Approx { what: format!("SP-curve #{} sampled through {} points", node.id, clean.len()), max_err_mm: worst });
                 FwCurve { curve, period: None, dir_inc: true, closed_spline: closed }
@@ -557,7 +593,7 @@ impl<'a> B<'a> {
     /// cross-section from the foot on support 0 to the foot on support 1 (swapped when the spine is reversed).
     /// The maximum deviation from the exact cross-sections between the sections is recorded.
     fn blend_surface(&mut self, si: usize) -> R<Surface> {
-        const NARC: usize = 9;
+        const NARC: usize = 13;
         let node = &self.ir.surfaces[si];
         let IrSurface::Blend { supports, support_plus, spine, spine_plus, range, limits } = &node.geom else { unreachable!() };
         let nid = node.id;
@@ -655,8 +691,8 @@ impl<'a> B<'a> {
         let (mut surf, mut params) = build(&entries)?;
         let mut worst_final = 0.0f64;
         let mut prev_worst = f64::INFINITY;
-        for round in 0..4 {
-            if entries.len() >= 240 {
+        for round in 0..6 {
+            if entries.len() >= 400 {
                 break;
             }
             let mut inserts: Vec<(usize, f64, (Vec3, Vec<Vec3>, f64))> = vec![];
@@ -681,7 +717,7 @@ impl<'a> B<'a> {
                 let um = 0.5 * (params[i] + params[i + 1]);
                 let worst = (0..NARC).map(|k| surf.eval(um, k as f64 / (NARC - 1) as f64).dist(row[k])).fold(0.0f64, f64::max);
                 round_worst = round_worst.max(worst);
-                if worst > 1e-5 {
+                if worst > 2e-6 {
                     inserts.push((i, worst, (q, row, tm)));
                 }
             }
@@ -691,7 +727,7 @@ impl<'a> B<'a> {
             }
             prev_worst = round_worst;
             inserts.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-            let room = 240usize.saturating_sub(entries.len());
+            let room = 400usize.saturating_sub(entries.len());
             let mut chosen: Vec<_> = inserts.into_iter().take(room).collect();
             chosen.sort_by_key(|c| c.0);
             for (i, _, e) in chosen.into_iter().rev() {
@@ -700,6 +736,9 @@ impl<'a> B<'a> {
             let (s, p) = build(&entries)?;
             surf = s;
             params = p;
+        }
+        if worst_final > MAX_APPROX_MM {
+            return Err(gerr(format!("blend #{nid}: the rolling-ball surface could not be reproduced within {MAX_APPROX_MM} mm (best {worst_final:.3e} mm)")));
         }
         self.approx.push(Approx { what: format!("rolling-ball blend #{nid} ({} sections x {NARC} arc points, cubic interpolation)", entries.len()), max_err_mm: worst_final });
         Ok(Surface::BSpline(Box::new(surf)))
@@ -910,6 +949,7 @@ impl<'a> B<'a> {
             }
         }
 
+        self.reaxis_sphere(&mut surface, &loops);
         let loops = self.seam_wrapping(fid, &mut surface, sense, loops)?;
         let loops = self.order_loops(fid, &surface, sense, loops)?;
 
@@ -997,6 +1037,52 @@ impl<'a> B<'a> {
             }
         }
         Some(l)
+    }
+
+    /// A spherical patch that does not wrap the sphere's axis but touches (or nearly touches) a pole gets a new axis away
+    /// from its points: the pole of the file's frame would make the uv boundary jump. The surface is the same sphere (the
+    /// outward normal does not depend on the axis).
+    fn reaxis_sphere(&self, surface: &mut Surface, loops: &[Vec<Ce>]) {
+        if !matches!(surface, Surface::Sphere { .. }) {
+            return;
+        }
+        if loops.is_empty() || loops.iter().flatten().any(|c| c.pc.is_some()) {
+            return; // nothing to do, or a synthesised loop whose pcurves belong to this frame
+        }
+        let wraps = self.windings(&*surface, loops).iter().any(|&w| w != 0);
+        let Surface::Sphere { frame, r } = &*surface else { return };
+        let dirs: Vec<Vec3> = loops.iter().flatten().flat_map(|ce| self.ce_points(ce, 16)).map(|p| (p - frame.o).normalize()).collect();
+        // normals of the great circles among the boundary arcs: an axis in such a plane makes the arc a meridian whose
+        // pcurve may run over the pole
+        let normals: Vec<Vec3> = loops
+            .iter()
+            .flatten()
+            .filter_map(|ce| match &self.body.edge(ce.edge).curve {
+                Curve::Circle { frame: cf, r: cr } if (cr - r).abs() < 1e-6 * r && cf.o.dist(frame.o) < 1e-6 * r => Some(cf.z),
+                _ => None,
+            })
+            .collect();
+        let near_pole = |a: Vec3| dirs.iter().map(|d| d.dot(a).abs()).fold(0.0f64, f64::max);
+        let meridian = |a: Vec3| normals.iter().map(|n| n.dot(a).abs()).fold(f64::INFINITY, f64::min);
+        let need = (!wraps && near_pole(frame.z) >= 0.9) || meridian(frame.z) <= 0.05;
+        if dirs.is_empty() || !need {
+            return;
+        }
+        // best of a fixed spread of candidate axes: far from the patch's points and from every great-circle plane
+        let n = 96;
+        let best = (0..n)
+            .map(|i| {
+                let z = 1.0 - 2.0 * (i as f64 + 0.5) / n as f64;
+                let rr = (1.0 - z * z).sqrt();
+                let ph = i as f64 * 2.399_963_229_728_653;
+                Vec3::new(rr * ph.cos(), rr * ph.sin(), z)
+            })
+            .map(|a| ((if wraps { 1.0 } else { 0.97 - near_pole(a) }).min(meridian(a).min(1.0) - 0.1), a))
+            .fold((f64::NEG_INFINITY, Vec3::ZERO), |b, c| if c.0 > b.0 { c } else { b });
+        if best.0 > 0.0 {
+            let (o, r) = (frame.o, *r);
+            *surface = Surface::Sphere { frame: frame_from(o, best.1, ck_geom::any_perp(best.1)), r };
+        }
     }
 
     /// Total u-winding (in turns) of each loop on a u-periodic surface.

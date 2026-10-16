@@ -173,3 +173,40 @@ fn fuzz_no_panic() {
     }
     assert!(errors > 100, "fuzz produced only {errors} errors ({oks} ok)");
 }
+
+/// A hand-made modern container: one stored-DEFLATE block with a nibble-swapped name; a flipped payload byte must drop
+/// the block (CRC mismatch), not yield a stream.
+#[test]
+fn synthetic_modern_container() {
+    fn block(name: &str, payload: &[u8]) -> Vec<u8> {
+        let mut deflate = vec![0x01];
+        deflate.extend((payload.len() as u16).to_le_bytes());
+        deflate.extend((!(payload.len() as u16)).to_le_bytes());
+        deflate.extend(payload);
+        let swapped: Vec<u8> = name.bytes().map(|b| (b << 4) | (b >> 4)).collect();
+        let mut v = container::MARKER.to_vec();
+        v.extend(7u32.to_le_bytes());
+        v.extend(ck_sldprt::inflate::crc32(payload).to_le_bytes());
+        v.extend((deflate.len() as u32).to_le_bytes());
+        v.extend((payload.len() as u32).to_le_bytes());
+        v.extend((swapped.len() as u32).to_le_bytes());
+        v.extend(swapped);
+        v.extend(deflate);
+        v
+    }
+    let mut file = vec![0, 0, 0, 0, 0, 0, 0, 4];
+    file.extend(block("Contents/Test", b"hello world"));
+    let c = container::open(&file, &Limits::default()).unwrap();
+    assert_eq!(c.kind, Kind::Modern);
+    assert_eq!(c.streams.len(), 1);
+    assert_eq!(c.streams[0].name, "Contents/Test");
+    assert_eq!(c.streams[0].data, b"hello world");
+    let n = file.len();
+    file[n - 3] ^= 0x40;
+    assert_eq!(container::open(&file, &Limits::default()).unwrap_err().code, "container.empty");
+    // a bomb: a stored block cannot expand, but the declared size is checked against the limit
+    let lim = Limits { max_stream: 4, ..Limits::default() };
+    let mut ok = vec![0, 0, 0, 0, 0, 0, 0, 4];
+    ok.extend(block("Contents/Test", b"hello world"));
+    assert!(container::open(&ok, &lim).is_err());
+}

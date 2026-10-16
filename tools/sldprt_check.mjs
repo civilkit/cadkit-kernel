@@ -97,10 +97,12 @@ for (const f of files) {
     row.issues = v && !v.ok ? [...new Set(v.issues.map((i) => i.code))].join(',') : '';
     row.approx = (res.import?.approximations ?? []).map((a) => a.maxErrorMm);
     row.container = res.import?.container;
+    const swm = res.import?.swMassProps;
+    if (swm) { row.swArea = swm.areaMm2; row.areaRel = Math.abs(row.area - swm.areaMm2) / swm.areaMm2; row.swVolume3 = swm.volumeMm3; row.swVolRel = Math.abs(row.volume - swm.volumeMm3) / swm.volumeMm3; }
     // reference
     const cands = [path.join(path.dirname(f), 'model.step'), path.join(path.dirname(f), 'ref.step'), f.replace(/\.sldprt$/i, '.step')];
     const own = cands.find((c) => existsSync(c));
-    const s2s = path.join(refsDir, sname, 's2s.step');
+    const s2s = [sname, 'user_' + sname].map((n) => path.join(refsDir, n, 's2s.step')).find((x) => existsSync(x)) ?? path.join(refsDir, sname, 's2s.step');
     // expected volume: the sldprt2step-derived STEP when it imports valid, else the part's own reference STEP, else the table
     const sw = own ? stepVolume(own) : null;
     const s2 = existsSync(s2s) ? stepVolume(s2s) : null;
@@ -111,7 +113,7 @@ for (const f of files) {
     if (sw?.volume && sw.valid !== false) cand.push({ src: 'sw', v: sw.volume });
     if (!cand.length && s2?.volume) cand.push({ src: 's2s*', v: s2.volume });
     if (!cand.length && sw?.volume) cand.push({ src: 'sw*', v: sw.volume });
-    if (!cand.length && TABLE[sname] !== undefined) cand.push({ src: 'table', v: TABLE[sname] });
+    if (!cand.length && (TABLE[sname] ?? TABLE['user_' + sname]) !== undefined) cand.push({ src: 'table', v: TABLE[sname] ?? TABLE['user_' + sname] });
     if (cand.length) {
       row.refs = cand.map((c) => ({ src: c.src, volume: c.v, rel: Math.abs(row.volume - c.v) / Math.abs(c.v) }));
       const best = row.refs.reduce((a, b) => (b.rel < a.rel ? b : a));
@@ -134,6 +136,7 @@ else {
       r.name.padEnd(32), String(r.faces).padStart(5), f(r.volume).padStart(11), f(r.area).padStart(11), (r.bbox ?? []).join('x').padEnd(28),
       (r.valid === null ? '?' : r.valid ? 'ok' : 'INVALID(' + r.issues + ')').padEnd(5), String(r.ms).padStart(5),
       r.refVolume !== undefined ? `${r.refSrc}:${f(r.refVolume)}${r.refs?.length > 1 ? " (also " + r.refs.filter((x) => x.src !== r.refSrc).map((x) => x.src + ":" + f(x.volume)).join(" ") + ")" : ""}` : '-', r.rel !== undefined ? (r.match ? 'MATCH ' : 'DIFF  ') + r.rel.toExponential(2) : '',
+      r.areaRel !== undefined ? `swArea ${r.areaRel.toExponential(1)} swVol(3 digits) ${r.swVolRel.toExponential(1)}` : '',
       r.approx?.length ? `approx(max ${Math.max(...r.approx).toExponential(2)} mm, ${r.approx.length})` : '',
     ].join('  '));
   }
