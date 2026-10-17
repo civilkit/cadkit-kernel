@@ -99,6 +99,9 @@ add('longLine', { profiles: S2, centre: ctr(C.line([0, -10], [0, 40])) });
 add('longArc', { profiles: S2, centre: ctr(C.arc3([0, -10], [5, 15], [0, 40])) });
 add('startsAt5', { profiles: S2, centre: ctr(C.arc3([0, 5], [4, 17], [0, 30])) });
 // ---- errors
+add('reachNear', { profiles: S2, centre: ctr(C.arc3([0, 0], [3, 12.5], [0, 25])) }); // 5 short of the last plane: within its circumradius
+add('reachFar', { profiles: S2, centre: ctr(C.arc3([0, 0], [2, 7.5], [0, 15])) });
+add('tightWide', { profiles: [[0, sq(20)], [4, sq(20)]], centre: ctr(C.arc3([0, -2], [5, 2], [0, 6])) });
 add('kink', { profiles: S2, centre: ctr(C.twoLines([0, 0], [6, 15], [0, 30])) });
 add('tight', { profiles: S2, centre: ctr(C.arc3([0, 0], [20, 15], [0, 30])) });
 add('wiggle', { profiles: S2, centre: ctr(C.spline([[0, 0], [8, 4], [-8, 10], [8, 18], [-8, 26], [0, 30]])) });
@@ -118,11 +121,13 @@ add('mid3_offsetStraight', { profiles: [[0, sq(8)], [30, sq(8, 6, 0)], [60, sq(8
 // ---- 4 profiles (bottle)
 add('bottle4', { profiles: [[0, circ(10)], [20, circ(14)], [40, circ(6)], [60, circ(8)]], centre: ctr(C.arc3(...arcPts(8, 0, 60))) });
 add('bottle4Plain', { profiles: [[0, circ(10)], [20, circ(14)], [40, circ(6)], [60, circ(8)]] });
-// ---- profiles not perpendicular to the spine: second profile on a plane tilted 20 degrees about the x axis
+// ---- profiles not perpendicular to the spine: the second profile on a plane tilted 20 degrees about a line along x
+// (a sketch line at y = 30 is the axis), so the plane normal leaves the bending plane
 const tilt = (z, deg) => ({
   feats: [
     { type: 'plane', id: 'T0', mode: 'offset', base: STD('top'), offset: z },
-    { type: 'plane', id: 'T1', mode: 'angle', base: { kind: 'feature', id: 'T0' }, axis: { kind: 'axis', axis: 'x' }, angle: deg },
+    { type: 'sketch', id: 'TA', plane: { kind: 'feature', id: 'T0' }, points: [pt('a1', -10, 0), pt('a2', 10, 0)], entities: [{ type: 'line', id: 'e1', p1: 'a1', p2: 'a2', construction: true }], constraints: [] },
+    { type: 'plane', id: 'T1', mode: 'angle', base: { kind: 'feature', id: 'T0' }, axis: { kind: 'sketchLine', sketch: 'TA', entity: 'e1' }, angle: deg },
   ],
   ref: { kind: 'feature', id: 'T1' },
 });
@@ -138,11 +143,11 @@ const open1 = openPoly([[-10, -5], [0, 5], [10, -5]]), open2 = openPoly([[-6, -3
 add('surfPlain', { profiles: [[0, open1], [30, open2]], extra: { surface: true } });
 add('surfBow', { profiles: [[0, open1], [30, open2]], extra: { surface: true }, centre: ctr(C.arc3(...arcPts(5))) });
 // ---- apex (point) ends
-add('apexPlain', { profiles: [[0, sq(10)], [30, apexPt()]] });
-add('apexStraight', { profiles: [[0, sq(10)], [30, apexPt()]], centre: ctr(C.line([0, 0], [0, 30])) });
-add('apexBow', { profiles: [[0, sq(10)], [30, apexPt()]], centre: ctr(C.arc3(...arcPts(5))) });
-add('apexPlain3', { profiles: [[0, sq(10)], [30, sq(8)], [60, apexPt()]] });
-add('apexBow3', { profiles: [[0, sq(10)], [30, sq(8)], [60, apexPt()]], centre: ctr(C.arc3(...arcPts(5, 0, 60))) });
+add('apexPlain', { profiles: [[0, sq(10)], [30, apexPt()]] }, { noOracle: 'the oracle has no point (apex) sections: noClosedProfile' });
+add('apexStraight', { profiles: [[0, sq(10)], [30, apexPt()]], centre: ctr(C.line([0, 0], [0, 30])) }, { noOracle: 'the oracle has no point (apex) sections: noClosedProfile' });
+add('apexBow', { profiles: [[0, sq(10)], [30, apexPt()]], centre: ctr(C.arc3(...arcPts(5))) }, { noOracle: 'the oracle has no point (apex) sections: noClosedProfile' });
+add('apexPlain3', { profiles: [[0, sq(10)], [30, sq(8)], [60, apexPt()]] }, { noOracle: 'the oracle has no point (apex) sections: noClosedProfile' });
+add('apexBow3', { profiles: [[0, sq(10)], [30, sq(8)], [60, apexPt()]], centre: ctr(C.arc3(...arcPts(5, 0, 60))) }, { noOracle: 'the oracle has no point (apex) sections: noClosedProfile' });
 // ---- with guides
 add('guidePlain', { profiles: S2, guides: [C.line([10, 0], [5, 30])] });
 add('guideBow', { profiles: S2, guides: [C.line([10, 0], [5, 30])], centre: ctr(C.arc3(...arcPts(5))) });

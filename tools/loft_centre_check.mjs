@@ -85,8 +85,9 @@ export function summarize(mod, part, meta = {}, ys = [3, 9, 15, 21, 27, 33, 45, 
   return out;
 }
 
-export function agree(a, b, tol) {
+export function agree(a, b, tol, meta = {}) {
   if (a.trap || b.trap) return 'trap';
+  if (meta.noOracle && a.errors.length) return 'n/a'; // not comparable
   const code = (e) => e.split('(')[0];
   if (a.errors.map(code).join() !== b.errors.map(code).join()) return `errors differ (${a.errors} vs ${b.errors})`;
   if (a.errors.length) return null;
@@ -104,7 +105,7 @@ export function agree(a, b, tol) {
 }
 
 if (isMain) {
-  let n = 0, ok = 0;
+  let n = 0, ok = 0, na = 0;
   for (const [name, c] of Object.entries(cases)) {
     if (args.length && !args.some((f) => name.includes(f))) continue;
     const a = summarize(orig, c.part, c.meta);
@@ -115,10 +116,11 @@ if (isMain) {
     console.log(`${name.padEnd(20)} ORIG ${fmt(a)}`);
     if (secs(a)) console.log(secs(a));
     if (b) {
-      const d = agree(a, b, tol); n++; if (!d) ok++;
-      console.log(`${''.padEnd(20)} ${d ? 'DIFF ' + d : 'AGREE'}  OURS ${fmt(b)}`);
-      if (d && secs(b)) console.log(secs(b));
+      const d = agree(a, b, tol, c.meta);
+      if (d === 'n/a') na++; else { n++; if (!d) ok++; }
+      console.log(`${''.padEnd(20)} ${d === 'n/a' ? 'N/A  ' + c.meta.noOracle : d ? 'DIFF ' + d : 'AGREE'}  OURS ${fmt(b)}`);
+      if (d && d !== 'n/a' && secs(b)) console.log(secs(b));
     }
   }
-  if (ours) console.log(`\n${ok}/${n} cases agree (volume tol ${tol})`);
+  if (ours) console.log(`\n${ok}/${n} cases agree (volume tol ${tol}); ${na} not comparable (the oracle has no such feature)`);
 }
