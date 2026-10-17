@@ -28,7 +28,8 @@ const FIELD_TABLE = `| type | key fields |
 | moveBody | bodies[]({face}/{surface}, default whole solid), translate [x,y,z], rotate {axis, origin, angle deg}, copy |
 | dome/splitLine/scale/axis/mate/deleteBody/deleteFace | see @ck-cad/part-model |
 | sheet features | surfaceExtrude/Revolve/Planar/Offset, trimSurface, knit, fill, thicken, extend |
-| freeform/editCurve/projectCurve/pipeCut/cutWithSurface | see @ck-cad/part-model |
+| projectCurve | sketch \| curve (earlier curve feature), faces[] (empty = all), degree 2..9 (3), tolerance (0.001 mm), direction both/forward/reverse. One fitted curve in `curves[]`; several pieces = projectCurveSeveral |
+| freeform/editCurve/pipeCut/cutWithSurface | see @ck-cad/part-model |
 | insertPart/patterns | nested part, placement dx/dy/dz/axis/angle |`;
 
 const RECIPES = `### plate with hole pattern
