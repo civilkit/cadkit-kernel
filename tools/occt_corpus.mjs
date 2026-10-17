@@ -32,6 +32,7 @@ const only = opt('--only');
 const PI = Math.PI;
 const picksFile = opt('--picks', path.join(here, 'occt_picks.json'));
 const writePicksFile = opt('--write-picks');
+const autoHeal = argv.includes('--auto-heal') ? Number(opt('--heal-tol') ?? 1e-5) : null;
 let pickCache = existsSync(picksFile) ? JSON.parse(readFileSync(picksFile, 'utf8')) : {};
 
 if (!existsSync(path.join(occt, 'tests'))) {
@@ -107,6 +108,9 @@ function buildPrimitive(name, kind, args) {
     let [x0, y0, z0] = [0, 0, 0];
     if (args.length === 6) { [x0, y0, z0, dx, dy, dz] = args; }
     else if (args.length !== 3) return unsupportedAt(`${name}: box needs 3 or 6 numbers`);
+    if (dx < 0) { x0 += dx; dx = -dx; }
+    if (dy < 0) { y0 += dy; dy = -dy; }
+    if (dz < 0) { z0 += dz; dz = -dz; }
     const { plane, prefix } = planeFor(z0);
     prefix.forEach(addFeature);
     const sid = `S${n}`;
@@ -137,12 +141,11 @@ function buildPrimitive(name, kind, args) {
     prefix.forEach(addFeature);
     const sid = `S${n}`;
     // profile touching the axis; the last edge is the axis used by `revolve`
-    const part = args.length === 4;
-    const pts = part
-      ? [[park, 0], [park + r1, 0], [park + r2, -h], [park, -h]]
-      : [[park, 0], [park + r1, 0], [park + r2, h], [park, h]];
-    addFeature(polygonSketch(sid, part ? { kind: 'std', id: 'top' } : plane, pts));
-    const fid = addFeature({ type: 'revolve', id, op: 'add', sketch: sid, axis: `e${pts.length}`, angle: part ? -ang : 360 });
+    // OCCT's pcone is about world +Z; the `top` sketch plane has v = -Z, so
+    // the profile is (u, -z) and the revolve angle is negated.
+    const pts = [[park, 0], [park + r1, 0], [park + r2, -h], [park, -h]];
+    addFeature(polygonSketch(sid, { kind: 'std', id: 'top' }, pts));
+    const fid = addFeature({ type: 'revolve', id, op: 'add', sketch: sid, axis: `e${pts.length}`, angle: args.length === 4 ? -ang : -360 });
     post.push({ type: 'moveBody', id: `M${++n}`, bodies: [{ face: `${fid}.S.e1` }], translate: [-park, 0, 0] });
   } else if (kind === 'sphere') {
     const [r] = args;
@@ -175,10 +178,11 @@ function buildPrimitive(name, kind, args) {
 function translate(file, caseName) {
   f.length = 0; n = 0; seen.clear(); unsupported = null;
   const lines = readScript(file);
-  let wantArea = null;
+  let wantArea = null, wantVolume = null;
   const bools = [];
   const cutTools = [];
   const blends = [];
+  let pendingBop = null;
   const vars = {};
   const evalNum = (x) => {
     if (Object.prototype.hasOwnProperty.call(vars, x)) return vars[x];
@@ -186,8 +190,9 @@ function translate(file, caseName) {
     if (Number.isFinite(n)) return n;
     try {
       const names = Object.keys(vars);
-      return new Function(...names, 'sqrt', 'pi', 'PI', `return (${String(x).replace(/\^/g, '**')});`)(
-        ...names.map((k) => vars[k]), Math.sqrt, Math.PI, Math.PI);
+      const fns = ['sqrt', 'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'atan2', 'abs', 'pow', 'exp', 'log'];
+      return new Function(...names, ...fns, 'pi', 'PI', `return (${String(x).replace(/\^/g, '**')});`)(
+        ...names.map((k) => vars[k]), ...fns.map((f) => Math[f]), Math.PI, Math.PI);
     } catch { return NaN; }
   };
 
@@ -236,6 +241,25 @@ function translate(file, caseName) {
       addFeature({ type: 'moveBody', id: `M${++n}`, bodies: [{ face: e.face }], translate: [0, 0, 0], copy: true });
       return { unsupported: 'copy (instance naming not pinned for booleans)', lines };
     }
+    if (c === 'bop') {
+      if (w.length !== 3) return { unsupported: 'bop: expected two operands', lines };
+      pendingBop = [w[1], w[2]];
+      continue;
+    }
+    if (['bopcut', 'boptuc', 'bopfuse', 'bopcommon'].includes(c)) {
+      if (!pendingBop) return { unsupported: `${c}: no bop operands`, lines };
+      const [a, b] = pendingBop;
+      const target = c === 'boptuc' ? b : a;
+      const tool = c === 'boptuc' ? a : b;
+      const op = c === 'bopfuse' ? 'union' : c === 'bopcommon' ? 'intersect' : 'cut';
+      if (!seen.has(target) || !seen.has(tool)) return { unsupported: `${c}: operand not built (${target} ${tool})`, lines };
+      const id = `C${++n}`;
+      addFeature({ type: 'combine', id, op, target: { face: seen.get(target).face }, tools: [{ face: seen.get(tool).face }] });
+      if (op === 'cut') cutTools.push({ id, toolFace: seen.get(tool).face });
+      seen.set(w[1], { face: seen.get(target).face, lump: 0, feature: id, kind: 'boolean' });
+      pendingBop = null;
+      continue;
+    }
     if (c === 'blend') {
       const rest = w.slice(3);
       if (rest.length % 2) return { unsupported: 'blend: odd argument count', lines };
@@ -243,11 +267,23 @@ function translate(file, caseName) {
       continue;
     }
     if (c === 'checkprops') {
-      const i = w.indexOf('-s');
-      if (i < 0) return { unsupported: 'checkprops without -s', lines };
-      if (w[i + 1] === 'empty') { wantArea = 0; continue; }
-      wantArea = Number(w[i + 1]);
-      if (!Number.isFinite(wantArea)) return { unsupported: 'checkprops area not a number', lines };
+      const si = w.indexOf('-s');
+      const vi = w.indexOf('-v');
+      if (si < 0 && vi < 0) return { unsupported: 'checkprops without -s/-v', lines };
+      if (si >= 0) {
+        if (w[si + 1] === 'empty') wantArea = 0;
+        else {
+          wantArea = evalNum(w[si + 1]);
+          if (!Number.isFinite(wantArea)) return { unsupported: 'checkprops area not a number', lines };
+        }
+      }
+      if (vi >= 0) {
+        if (w[vi + 1] === 'empty') wantVolume = 0;
+        else {
+          wantVolume = evalNum(w[vi + 1]);
+          if (!Number.isFinite(wantVolume)) return { unsupported: 'checkprops volume not a number', lines };
+        }
+      }
       continue;
     }
     if (c === 'dset') { if (w[1]) vars[w[1]] = evalNum(w[2]); continue; }
@@ -272,7 +308,7 @@ function translate(file, caseName) {
     const result = { face: A.face, lump: 0, feature: id, kind: 'boolean' };
     seen.set(b.result, result);
   }
-  if (wantArea == null) return { unsupported: 'no checkprops expected area', lines };
+  if (wantArea == null && wantVolume == null) return { unsupported: 'no checkprops expected value', lines };
   if (blends.length) {
     let picks = pickCache[caseName];
     if (!picks && writePicksFile) {
@@ -286,9 +322,9 @@ function translate(file, caseName) {
     if (!picks) return { unsupported: 'no cached edge picks (run --write-picks)', lines };
     if (!picks.ok) return { unsupported: `edge picks: ${picks.why}`, lines };
     if (!picks.picks.length) return { unsupported: 'blend without picks', lines };
-    return { features: f.slice(), wantArea, lines, booleans: bools.length, cutTools, blendPicks: picks.picks };
+    return { features: f.slice(), wantArea, wantVolume, lines, booleans: bools.length, cutTools, blendPicks: picks.picks };
   }
-  return { features: f.slice(), wantArea, lines, booleans: bools.length, cutTools };
+  return { features: f.slice(), wantArea, wantVolume, lines, booleans: bools.length, cutTools };
 }
 
 // ---------------------------------------------------------------- selection
@@ -299,10 +335,14 @@ function listDir(dir) {
   return readdirSync(dir).filter((x) => !x.startsWith('.')).sort();
 }
 
+const BOP_FAMILY = new Set(['bop', 'bopcut', 'boptuc', 'bopfuse', 'bopcommon']);
+
 function select() {
   const out = [];
-  for (const g of BOOL_GRIDS) {
-    const dir = path.join(occt, 'tests/boolean', g);
+  const boolRoot = path.join(occt, 'tests/boolean');
+  for (const g of listDir(boolRoot)) {
+    const dir = path.join(boolRoot, g);
+    if (!statSync(dir).isDirectory()) continue;
     for (const name of listDir(dir)) {
       const p = path.join(dir, name);
       if (!statSync(p).isFile()) continue;
@@ -310,10 +350,10 @@ function select() {
       const cmds = new Set(ls.map((l) => l.split(/\s+/)[0]));
       // the exported n-ary/2D/vertex/profile cases need commands the wire
       // protocol has no equivalent for; keep the corpus to the translatable
-      // solid primitive/boolean grid
-      const allowed = new Set([...PRIMS, ...BOOLS, ...XFORMS, ...IGNORE, ...CHECKS]);
+      // solid primitive/boolean grids
+      const allowed = new Set([...PRIMS, ...BOOLS, ...BOP_FAMILY, ...XFORMS, ...IGNORE, ...CHECKS]);
       if ([...cmds].some((x) => !allowed.has(x))) continue;
-      if (!cmds.has('checkprops') || ![...BOOLS].some((b) => cmds.has(b))) continue;
+      if (!cmds.has('checkprops') || !([...BOOLS].some((b) => cmds.has(b)) || [...BOP_FAMILY].some((b) => cmds.has(b)))) continue;
       out.push({ group: `boolean/${g}`, name: `${g}/${name}`, file: p });
     }
   }
@@ -430,7 +470,9 @@ function edgeProbe(e, at, dir) {
 function execPart(k, features) {
   const part = { format: 'ck-part', version: 1, features };
   const t0 = Date.now();
-  const rr = k.request(JSON.stringify({ id: 1, msg: { type: 'regen', tag: 'main', part } }));
+  const msg = { type: 'regen', tag: 'main', part };
+  if (autoHeal != null) msg.opts = { autoHeal: true, healTol: autoHeal };
+  const rr = k.request(JSON.stringify({ id: 1, msg }));
   const ms = Date.now() - t0;
   let r; try { r = JSON.parse(rr.json); } catch { r = { trap: 'unparsable reply' }; }
   return { r, ms };
@@ -455,14 +497,13 @@ function runWithCutFallback(k, tr, features) {
   return { r, ms, features };
 }
 
-function runCase(c) {
+function runCase(c, k) {
   const tr = translate(c.file, c.name);
   if (tr.unsupported) return { ...c, cls: 'unsupported', detail: tr.unsupported, ms: 0 };
   if (opt('--dump') && c.name.includes(opt('--dump'))) {
-    console.log(JSON.stringify({ name: c.name, wantArea: tr.wantArea, features: tr.features }, null, 1));
+    console.log(JSON.stringify({ name: c.name, wantArea: tr.wantArea, wantVolume: tr.wantVolume, features: tr.features, blendPicks: tr.blendPicks ?? null }, null, 1));
     process.exit(0);
   }
-  const k = new Kernel(mod);
   let { r, ms, features } = runWithCutFallback(k, tr, tr.features);
   if (r.trap) return { ...c, cls: 'trap', detail: r.trap, ms };
   if (!r.ok) return { ...c, cls: 'requestError', detail: r.error, ms };
@@ -503,26 +544,32 @@ function runCase(c) {
   const fatal = errs.filter((e) => !harmless.has(e.code));
   if (fatal.length) {
     const empty = fatal.every((e) => ['emptyResult', 'combineEmpty', 'cutEmpty', 'booleanEmpty', 'nothingToCut'].includes(e.code));
-    if (empty && tr.wantArea <= 1e-6) return { ...c, cls: 'ok', detail: 'empty', ms, want: tr.wantArea, got: 0 };
+    if (empty && (tr.wantArea ?? 0) <= 1e-6 && (tr.wantVolume ?? 0) <= 1e-6) return { ...c, cls: 'ok', detail: 'empty', ms, want: tr.wantArea, got: 0 };
     return { ...c, cls: fatal[0].code, detail: `${fatal[0].id}: ${fatal[0].code}`, ms };
   }
   const m = rq(k, { type: 'massProps', tag: 'main', bodies: true });
   const area = m.ok ? m.result?.area ?? null : null;
   const vol = m.ok ? m.result?.volume ?? null : null;
   if (area == null) {
-    if (tr.wantArea <= 1e-6) return { ...c, cls: 'ok', detail: 'empty', ms, want: tr.wantArea, got: 0 };
+    if ((tr.wantArea ?? 0) <= 1e-6 && (tr.wantVolume ?? 0) <= 1e-6) return { ...c, cls: 'ok', detail: 'empty', ms, want: tr.wantArea, got: 0 };
     return { ...c, cls: 'noArea', detail: 'massProps gave no area', ms };
   }
   const v = rq(k, { type: 'validate', tag: 'main' });
   const issues = v.result?.issues ?? [];
-  const rel = Math.abs(area - tr.wantArea) / Math.max(Math.abs(tr.wantArea), 1e-9);
   const tol = c.group.startsWith('blend') ? 2e-3 : 1e-4;
-  if (rel > tol) return { ...c, cls: 'wrongArea', detail: `${area.toPrecision(9)} want ${tr.wantArea} (${(rel).toExponential(1)}) vol ${vol?.toPrecision(7)}`, ms, want: tr.wantArea, got: area, rel };
-  if (issues.length) return { ...c, cls: 'invalid', detail: [...new Set(issues.map((i) => i.code))].join(','), ms, want: tr.wantArea, got: area, rel };
-  return { ...c, cls: 'ok', detail: `${area.toPrecision(9)} (${rel.toExponential(1)})`, ms, want: tr.wantArea, got: area, rel, ...(pickChecks ? { pickChecks } : {}) };
+  const relOf = (got, want) => Math.abs(got - want) / Math.max(Math.abs(want), 1e-9);
+  const areaRel = tr.wantArea == null ? null : relOf(area, tr.wantArea);
+  const volRel = tr.wantVolume == null ? null : relOf(vol ?? 0, tr.wantVolume);
+  const worst = Math.max(areaRel ?? 0, volRel ?? 0);
+  const values = `area ${area.toPrecision(9)}${tr.wantArea == null ? '' : ` want ${tr.wantArea} (${areaRel.toExponential(1)})`}`
+    + (tr.wantVolume == null ? '' : `; vol ${(vol ?? 0).toPrecision(9)} want ${tr.wantVolume} (${volRel.toExponential(1)})`);
+  if (worst > tol) return { ...c, cls: 'wrongArea', detail: values, ms, want: tr.wantArea, got: area, rel: areaRel, wantVol: tr.wantVolume, gotVol: vol, relVol: volRel };
+  if (issues.length) return { ...c, cls: 'invalid', detail: [...new Set(issues.map((i) => i.code))].join(','), ms, want: tr.wantArea, got: area, rel: areaRel, wantVol: tr.wantVolume, gotVol: vol, relVol: volRel };
+  return { ...c, cls: 'ok', detail: values.replace(/ want .*?\)/g, ''), ms, want: tr.wantArea, got: area, rel: areaRel, wantVol: tr.wantVolume, gotVol: vol, relVol: volRel, ...(pickChecks ? { pickChecks } : {}) };
 }
 
 const cases = select().filter((c) => !only || c.name.includes(only));
+const sharedKernel = new Kernel(mod);
 if (writePicksFile) {
   let n = 0;
   for (const c of cases) {
@@ -535,7 +582,7 @@ if (writePicksFile) {
 }
 const rows = [];
 for (const c of cases) {
-  const r = runCase(c);
+  const r = runCase(c, sharedKernel);
   rows.push(r);
   if (!argv.includes('--quiet')) {
     const tag = r.cls === 'ok' ? 'ok  ' : r.cls === 'unsupported' ? 'n/a ' : 'FAIL';
@@ -547,6 +594,34 @@ const okN = counted.filter((r) => r.cls === 'ok').length;
 const by = {};
 for (const r of counted) by[r.cls] = (by[r.cls] ?? 0) + 1;
 console.log(`\nocct_corpus: ${okN}/${counted.length} ok  ${JSON.stringify(by)}  (${rows.length - counted.length} unsupported of ${rows.length})`);
+
+const baselineFile = opt('--baseline', path.join(here, 'occt_baseline.json'));
+if (writePicksFile) { /* handled above */ }
+if (argv.includes('--update-baseline')) {
+  const cases = {};
+  for (const r of rows) cases[r.name] = { cls: r.cls, rel: r.rel ?? null, relVol: r.relVol ?? null };
+  writeFileSync(baselineFile, JSON.stringify({ version: 1, wasm: wasmPath, cases }, null, 1) + '\n');
+  console.log(`occt_corpus: wrote baseline ${baselineFile} (${rows.length} cases)`);
+}
+if (argv.includes('--check')) {
+  if (!existsSync(baselineFile)) {
+    console.error(`occt_corpus: no baseline at ${baselineFile}; run --update-baseline first`);
+    process.exit(2);
+  }
+  const base = JSON.parse(readFileSync(baselineFile, 'utf8')).cases ?? {};
+  const regressions = [], newPasses = [], added = [];
+  for (const r of rows) {
+    const b = base[r.name];
+    if (!b) { added.push(r.name); continue; }
+    if (b.cls === 'ok' && r.cls !== 'ok') regressions.push(r);
+    else if (b.cls !== 'ok' && r.cls === 'ok') newPasses.push(r);
+  }
+  const gone = Object.keys(base).filter((n) => !rows.some((r) => r.name === n));
+  console.log(`\nocct_corpus check: ${regressions.length} regressions, ${newPasses.length} new passes, ${added.length} added, ${gone.length} no longer selected`);
+  for (const r of regressions) console.log(`REGRESSION ${r.name}: ${r.cls} ${r.detail ?? ''}`);
+  for (const r of newPasses) console.log(`new pass   ${r.name}: ${r.cls}`);
+  if (regressions.length) process.exit(1);
+}
 if (argv.includes('--verify-picks')) {
   // The box-fillet cases have a known checkprops area and a cached OCCT pick;
   // passing them proves the edge our kernel selected is the edge OCCT filleted.
