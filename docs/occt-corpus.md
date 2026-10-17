@@ -106,7 +106,7 @@ cone-orientation fix the whole corpus has 76. Distinct groups:
 |---|---|---|---|---|---|
 | 1 | sphere r1 at origin vs box [0,1]^3 | 12 (bfuse/bcut/bcommon A1,A2,A3,D3-D6) | `booleanFailed`; `EDGE_OFF_SURFACE` | area 14.6394 fuse, 13.3518 sphere-box cut, 5.2146 box-sphere cut | sphere seam/poles and the box corner; the arrangement is not closed or the edge is off-surface |
 | 2 | cross-cylinder cut / rotated box tangent to a cylinder | 9 (`bopcut_simple/ZE7-9,ZF1,W7,Y2,Z4,Z6,ZB5`) | `invalid` `EULER`, `VERTEX_OFF_CURVE` | ZE7 33.8759; W7 18.5364 | non-manifold vertex or endpoint off the intersection curve |
-| 3 | cylinder r9 h3 + cone r7-6 h4, cut by cylinder r1 at (5,0,-2) | 2 (`bcut_simple/G9,H3`) | `invalidValue` on the second `combine` | area 727.481 | chained boolean: the first result's lump selector is stale |
+| 3 | cylinder r9 h3 + cone r7-6 h4, cut by cylinder r1 at (5,0,-2) | 2 (`bcut_simple/G9,H3`) | `booleanFailed` on the second `combine` | area 727.481 | chained boolean: the first result's lump selector is stale |
 | 4 | perpendicular cylinders r1 and r0.5, intersect | 7 (`bopcommon_simple/ZE7-9,ZF1`; `boptuc_simple/ZE8,ZE9,ZF1`) | `booleanFailed` / `combineEmpty` | area 33.8757..33.8759 | cross-cylinder intersect does not assemble; ZF1 reports no overlap |
 | 5 | cylinder + cone stacked (shared rim) | 6 (`bopfuse_simple/ZD5-7`, ...) | `booleanVolumeMismatch` | e.g. 348.192 | union sanity rejects a result whose volume is just outside the operand bound |
 | 6 | cone/cylinder near-tangent | 5 (`bopcommon_simple/ZK5,ZK7,ZK8,ZK9,ZL1`) | `wrongArea` 1.7e-4..2.9e-4 | 216.554..228.558 | marching intersection on the cone seam, just over the 1e-4 band |

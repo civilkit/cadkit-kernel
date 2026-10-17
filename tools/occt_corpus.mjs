@@ -183,6 +183,7 @@ function translate(file, caseName) {
   const cutTools = [];
   const blends = [];
   let pendingBop = null;
+  let lumpCount = 0;
   const vars = {};
   const evalNum = (x) => {
     if (Object.prototype.hasOwnProperty.call(vars, x)) return vars[x];
@@ -205,6 +206,7 @@ function translate(file, caseName) {
       if (nums.some((x) => !Number.isFinite(x))) return { unsupported: `${c}: non-numeric arguments`, lines };
       const why = buildPrimitive(w[1], kind, nums);
       if (unsupported) return { unsupported, lines };
+      lumpCount++;
       continue;
     }
     if (BOOLS.has(c)) {
@@ -254,9 +256,12 @@ function translate(file, caseName) {
       const op = c === 'bopfuse' ? 'union' : c === 'bopcommon' ? 'intersect' : 'cut';
       if (!seen.has(target) || !seen.has(tool)) return { unsupported: `${c}: operand not built (${target} ${tool})`, lines };
       const id = `C${++n}`;
-      addFeature({ type: 'combine', id, op, target: { face: seen.get(target).face }, tools: [{ face: seen.get(tool).face }] });
-      if (op === 'cut') cutTools.push({ id, toolFace: seen.get(tool).face });
-      seen.set(w[1], { face: seen.get(target).face, lump: 0, feature: id, kind: 'boolean' });
+      const resultLump = lumpCount - 2;
+      const A = seen.get(target), B = seen.get(tool);
+      addFeature({ type: 'combine', id, op, target: A.lump != null ? { lump: A.lump } : { face: A.face }, tools: [B.lump != null ? { lump: B.lump } : { face: B.face }] });
+      if (op === 'cut') cutTools.push({ id, toolFace: B.face });
+      seen.set(w[1], { face: A.face, lump: resultLump, feature: id, kind: 'boolean' });
+      lumpCount = resultLump + 1;
       pendingBop = null;
       continue;
     }
@@ -300,13 +305,15 @@ function translate(file, caseName) {
     if (!A || !B) return { unsupported: `boolean operand not built (${b.a} ${b.b})`, lines };
     const op = b.op === 'bfuse' ? 'union' : b.op === 'bcut' ? 'cut' : 'intersect';
     const id = `C${++n}`;
-    // a second boolean targets the lump produced by the first; its face
-    // names may have changed, but the result is lump 0
+    // a boolean creates its result lump after the untouched lumps (see
+    // combine.rs "untouched lumps first, then the result pieces")
+    const resultLump = lumpCount - 2;
     const target = A.lump != null ? { lump: A.lump } : { face: A.face };
     addFeature({ type: 'combine', id, op, target, tools: [B.lump != null ? { lump: B.lump } : { face: B.face }] });
     if (op === 'cut') cutTools.push({ id, toolFace: B.face });
-    const result = { face: A.face, lump: 0, feature: id, kind: 'boolean' };
+    const result = { face: A.face, lump: resultLump, feature: id, kind: 'boolean' };
     seen.set(b.result, result);
+    lumpCount = resultLump + 1;
   }
   if (wantArea == null && wantVolume == null) return { unsupported: 'no checkprops expected value', lines };
   if (blends.length) {
