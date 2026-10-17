@@ -64,7 +64,12 @@ where the tangent turns by more than 1 degree, `closed` = the ends meet).
 
 ## Consumers
 
-The curve is in `curves[]` like an `editCurve` result, so a later feature takes it as `{kind:"curve", id}` where that form
-is accepted: `editCurve` (`curves[]` refs) and `projectCurve` itself (`curve`). `sweep` (path) takes `curve` ids only for helices
-(`helices` list) and sketches, and `splitLine`, `cutWithSurface`, `trimSurface` take no curves: a projected curve cannot drive
-them yet.
+The curve is in `curves[]` like an `editCurve` or `helix` result and is taken as `{kind:"curve", id}` by:
+
+* `editCurve` (`curves[]`) and `projectCurve` itself (`curve`, planar curves only);
+* `sweep`: as `guides[]` (via `ref_samples`) and as `path` (a spline through at most 120 of its display points);
+* `plane` with `mode: "curve"` (`curves[]`; a planar projected curve gives its plane).
+
+Not consumers (they take sketches, edges or faces only): `loft` guides / centre line, `splitLine`, `trimSurface`,
+`cutWithSurface`, `curvepattern`, `fillpattern`. The corpus pins editCurve, the sweep path, the sweep guide and the plane
+against the oracle (`consumer-*` cases).
