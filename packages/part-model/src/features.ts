@@ -474,14 +474,26 @@ export interface EditCurveFeature {
   [key: string]: unknown;
 }
 
+/**
+ * Project a sketch (its non-construction curves) or a planar curve feature perpendicular to its plane onto faces:
+ * one fitted B-spline on the surface, result in `curves[]` with a marker {degree, count, deviation, length,
+ * pieces, corners, closed}. `curve` wins over `sketch` when both are given. `faces` empty or missing = every face
+ * of the solid and of the surface bodies. `direction`: along (`forward`), against (`reverse`) or both ways from
+ * the plane normal (for a `curve` input the normal is the plane's with its largest component positive).
+ * A projection that does not form one connected curve is `projectCurveSeveral`.
+ */
 export interface ProjectCurveFeature {
   type: 'projectCurve';
   id: string;
   name?: string;
   sketch?: string | null;
-  faces: string[];
+  curve?: string | null;
+  faces?: string[];
+  /** B-spline degree, 2..9 (default 3). */
   degree?: Expr;
+  /** Largest distance of the fit from the projected data, mm (default 0.001); more control points (up to 400) until met. */
   tolerance?: Expr;
+  direction?: 'both' | 'forward' | 'reverse';
   [key: string]: unknown;
 }
 

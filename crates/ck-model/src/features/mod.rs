@@ -42,6 +42,7 @@
 //! | moveFace        | faces, mode (offset / translate), distance, translate, flip (parsed from the raw DOM, see move_face.rs) |
 //! | moveBody        | bodies, translate, rotate{axis,origin,angle}, copy (see move_body.rs) |
 //! | thread          | face, standard, size, class, length, hand, start, modeled (parsed from the raw DOM, see thread.rs) |
+//! | projectCurve    | sketch \| curve, faces, degree, tolerance, direction (see project_curve.rs) |
 
 pub mod blends;
 pub mod combine;
@@ -52,7 +53,6 @@ pub mod delete_body;
 pub mod draft;
 pub mod edit_curve;
 pub mod extrude;
-pub mod freeform;
 pub mod hole;
 pub mod lip;
 pub mod loft;
@@ -1247,6 +1247,7 @@ impl Brep {
             _ if f.type_name == "moveFace" => return move_face::exec_move_face(self, state, f),
             _ if f.type_name == "pipeCut" => return pipecut::exec_pipecut(self, state, f),
             _ if f.type_name == "editCurve" => return edit_curve::exec_edit_curve(self, state, f),
+            _ if f.type_name == "projectCurve" => return project_curve::exec_project_curve(self, state, f),
             _ => return Err(crate::regen::FeatureError::new(&extrude::todo(&f.type_name))),
         };
         if let Some(extrude::Recipe::Extrude { profile, opts }) = &tool.recipe {

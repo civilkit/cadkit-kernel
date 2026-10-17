@@ -13,6 +13,33 @@ use ck_geom::curve::Curve;
 use ck_json::Json;
 use std::f64::consts::TAU;
 
+/// The display polyline of the curve feature `id` (`curves[]`: helix, editCurve, projectCurve, ...).
+pub fn curve_pts(state: &RegenState, id: &str) -> Option<Vec<Vec3>> {
+    let c = state.result.curves.iter().find(|c| c.as_arr().and_then(|a| a.first()).and_then(|x| x.as_str()) == Some(id))?;
+    let pts = c.as_arr()?.get(1)?.get("pts")?.as_arr()?;
+    let v: Vec<Vec3> = pts
+        .iter()
+        .filter_map(|p| {
+            let a = p.as_arr()?;
+            Some(Vec3::new(a.first()?.as_f64()?, a.get(1)?.as_f64()?, a.get(2)?.as_f64()?))
+        })
+        .collect();
+    (v.len() >= 2).then_some(v)
+}
+
+/// A curve feature as a sweep path / plane curve: a natural cubic spline through at most 120 of its display points.
+pub fn curve_path(state: &RegenState, id: &str) -> Option<ck_ops::sweep::PathSeg> {
+    let pts = curve_pts(state, id)?;
+    let step = pts.len().div_ceil(120).max(1);
+    let mut p: Vec<Vec3> = pts.iter().step_by(step).copied().collect();
+    let last = *pts.last()?;
+    if p.last().map_or(true, |q| q.dist(last) > 1e-9) {
+        p.push(last);
+    }
+    let sp = ck_ops::spline_path::SplinePath::new(&p, None, None)?;
+    Some(ck_ops::sweep::PathSeg::Spline { sp: std::sync::Arc::new(sp), rev: false })
+}
+
 /// Samples of a curved piece (a line needs only its ends).
 const CURVED: usize = 1024;
 const LINE: usize = 16;
@@ -128,19 +155,7 @@ pub fn ref_samples(br: &Brep, state: &RegenState, r: &Json) -> Option<Vec<Vec3>>
             let n = if matches!(ed.curve, Curve::Line { .. }) { LINE } else { CURVED };
             Some((0..=n).map(|i| ed.curve.eval(ed.t0 + (ed.t1 - ed.t0) * i as f64 / n as f64)).collect())
         }
-        "curve" => {
-            let id = r.get_str("id")?;
-            let c = state.result.curves.iter().find(|c| c.as_arr().and_then(|a| a.first()).and_then(|x| x.as_str()) == Some(id))?;
-            let pts = c.as_arr()?.get(1)?.get("pts")?.as_arr()?;
-            let v: Vec<Vec3> = pts
-                .iter()
-                .filter_map(|p| {
-                    let a = p.as_arr()?;
-                    Some(Vec3::new(a.first()?.as_f64()?, a.get(1)?.as_f64()?, a.get(2)?.as_f64()?))
-                })
-                .collect();
-            (v.len() >= 2).then_some(v)
-        }
+        "curve" => curve_pts(state, r.get_str("id")?),
         _ => None,
     }
 }

@@ -139,6 +139,10 @@ fn resolve_curve(state: &RegenState, exec: &mut dyn FeatureExec, j: &Json) -> Op
             let sk = state.sketch(j.get("sketch")?.as_str()?)?;
             Some(vec![entity_piece(sk, j.get("entity")?.as_str()?)?])
         }
+        "curve" => {
+            let seg = crate::features::curve_ref::curve_path(state, j.get("id")?.as_str()?)?;
+            Some(vec![Piece { seg, hint: None, circle: false, cap_normal: None }])
+        }
         "edge" => {
             let seg = exec.edge_seg(state, &faces_of(j), j.get("at").and_then(vec3_of))?;
             let circle = matches!(&seg, PathSeg::Arc { a0, a1, .. } if (a1 - a0).abs() > TAU - 1e-9);
@@ -224,6 +228,7 @@ fn seg_len(seg: &PathSeg) -> f64 {
     match seg {
         PathSeg::Line { a, b } => a.dist(*b),
         PathSeg::Arc { r, a0, a1, .. } => r * (a1 - a0).abs(),
+        PathSeg::Spline { sp, .. } => sp.length(),
         _ => 0.0,
     }
 }
@@ -232,6 +237,7 @@ fn seg_samples(seg: &PathSeg) -> Vec<Vec3> {
     match seg {
         PathSeg::Line { a, b } => vec![*a, a.lerp(*b, 0.5), *b],
         PathSeg::Arc { frame, r, a0, a1 } => (0..=16).map(|i| arc_pt(frame, *r, a0 + (a1 - a0) * i as f64 / 16.0)).collect(),
+        PathSeg::Spline { sp, .. } => (0..=64).map(|i| sp.eval(sp.length() * i as f64 / 64.0)).collect(),
         _ => vec![],
     }
 }
@@ -240,6 +246,7 @@ fn seg_mid(seg: &PathSeg) -> Vec3 {
     match seg {
         PathSeg::Line { a, b } => a.lerp(*b, 0.5),
         PathSeg::Arc { frame, r, a0, a1 } => arc_pt(frame, *r, 0.5 * (a0 + a1)),
+        PathSeg::Spline { sp, .. } => sp.eval(0.5 * sp.length()),
         _ => Vec3::ZERO,
     }
 }

@@ -227,8 +227,11 @@ pub fn exec_sweep(br: &Brep, state: &mut RegenState, f: &Feature) -> Result<Tool
     let missing = || FeatureError::new(MISSING_PATH);
     let segs = match path.as_ref().ok_or_else(missing)? {
         GeomRef::Curve(id) => {
-            let h = br.helices.iter().rev().find(|(i, _)| i == id).map(|(_, h)| *h).ok_or_else(missing)?;
-            vec![PathSeg::Helix { h, rev: false }]
+            match br.helices.iter().rev().find(|(i, _)| i == id).map(|(_, h)| *h) {
+                Some(h) => vec![PathSeg::Helix { h, rev: false }],
+                // any other curve feature (editCurve, projectCurve): swept along a spline through its points
+                None => vec![super::curve_ref::curve_path(state, id).ok_or_else(missing)?],
+            }
         }
         GeomRef::Other(j) if j.get("kind").and_then(|k| k.as_str()) == Some("sketch") => {
             let id = j.get("id").and_then(|v| v.as_str()).ok_or_else(missing)?;

@@ -114,7 +114,9 @@ pub const KNOWN_TYPES: &[&str] = &[
 
 /// The error the oracle reports for each known type when the payload is
 /// empty (no references at all, no body yet) — a checklist for the geometry
-/// implementations of [`FeatureExec`].
+/// implementations of [`FeatureExec`]. (`projectCurve`: with no body it is
+/// `projectCurveNoFaces`; once a body exists an empty payload is
+/// `projectCurveNoInput`, see tests/project_curve.rs.)
 pub const EMPTY_FEATURE_ERRORS: &[(&str, &str)] = &[
     ("axis", "missingReference"),
     ("extrude", "missingSketch"),

@@ -18,6 +18,7 @@ strings from kernel.strings, and dispatch to ck-ops/ck-topo.
 | draft | neutral, faces[], angle(expr), flip |
 | shell | faces[], thickness(expr) |
 | hole | sketch, standard(iso), size, diameter (simple holes only: plain diameter instead of size), fit(normal/tap), kind(simple/cbore/csink), end, depth, tip, flip |
+| projectCurve | sketch \| curve (an earlier curve feature; wins over sketch), faces[] (empty/missing = every face of the solid and the surface bodies), degree(2..9, 3), tolerance(>0, 0.001), direction(both/forward/reverse); see project_curve.rs and docs/project-curve.md |
 | helix | sketch, definedBy(pitchRevs/heightRevs/heightPitch), pitch, revolutions, height, startAngle, leftHand, reverse |
 | rib | sketch, thickness(expr) |
 | lip | kind(material/move/offset/linear/turn/tension), faces[], edges[], width, height |
@@ -56,8 +57,10 @@ strings from kernel.strings, and dispatch to ck-ops/ck-topo.
 - thicken: thickenFailed, thickenPointedPole, thickenReach
 - thread: threadSizeUnknown, threadFaceNotCylinder (warnings: threadDiameterMismatch, threadModelFallback)
 - pipeCut: pipeCutRadius, pipeCutFailed, pipeCutNothingLeft, alignPipeCutOneBody
-- project: projectCurveNoFaces, projectCurveMisses, projectCurveSeverals,
-  projectCurveFailed, projectCurveTolerance, projectCurvePlane/Line/Curve
+- projectCurve: projectCurveNoInput, projectCurveNoFaces, projectCurveMisses,
+  projectCurveSeveral, projectCurveFailed, projectCurvePlane
+  (payload: sketch|curve, faces[], degree, tolerance, direction both/forward/reverse); also editCurveDegree {min, max}
+  and invalidValue (tolerance <= 0, unknown direction), missingSketch / missingReference; order in docs/project-curve.md
 - extend: extendNotBoundary, extendTargetSelf, extendOneSurface,
   extendUnsupported, extendReflectTooFar, extendPointBehind, extendFolds
 - blends: filletChamfer, chamferVertexEdges(two/points), chamferType+filletType,
