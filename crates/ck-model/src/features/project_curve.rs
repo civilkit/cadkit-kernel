@@ -52,6 +52,7 @@ use ck_core::linalg::{Frame, Vec3};
 use ck_geom::curve::Curve;
 use ck_json::Json;
 use ck_ops::boolean::classify::{point_in_face_cached, LoopCache, Where};
+use ck_ops::bvh::{face_box, Aabb};
 use ck_ops::curve_edit::{edit_curve, EditError, EditOpts, PieceIn};
 use ck_ops::intersect::cs;
 use ck_topo::body::{Body, FaceId};
@@ -59,9 +60,10 @@ use ck_topo::body::{Body, FaceId};
 /// Runs whose ends are closer than this form one chain (oracle: a gap of
 /// 0.0009 joins, 0.001 does not, whatever `tolerance` is).
 const JOIN: f64 = 1e-3;
-/// Samples per source entity after densifying / thinning.
-const DENSE_MIN: usize = 400;
-const DENSE_MAX: usize = 520;
+/// Samples per source entity after densifying / thinning. The chord of a sample pair is off the true curve by
+/// h^2 k / 8: with 800..1040 samples that is ~3e-5 on a curve of curvature 1 (the floor of the reachable tolerance).
+const DENSE_MIN: usize = 800;
+const DENSE_MAX: usize = 1040;
 /// A ray whose direction has less than this component along the surface normal only grazes it.
 const GRAZE: f64 = 1e-7;
 
@@ -80,6 +82,14 @@ enum Mode {
 struct Target<'a> {
     body: &'a Body,
     face: FaceId,
+    /// Box of the trimmed face (padded): rays that miss it are not intersected with the surface.
+    bbox: Aabb,
+}
+
+impl<'a> Target<'a> {
+    fn new(body: &'a Body, face: FaceId) -> Target<'a> {
+        Target { body, face, bbox: face_box(body, face).padded(1e-4) }
+    }
 }
 
 struct Caster<'a> {
@@ -104,6 +114,9 @@ impl Caster<'_> {
             Mode::Reverse => (-self.big, 1e-7),
             Mode::Both => (-self.big, self.big),
         };
+        if self.targets[ti].bbox.ray_hit(p, self.normal, lo, hi).is_none() {
+            return;
+        }
         let line = Curve::line(p, self.normal);
         let (body, face) = (self.targets[ti].body, self.targets[ti].face);
         let surf = &body.face(face).surface;
@@ -266,10 +279,58 @@ fn project_entity(c: &mut Caster, src: &[Vec3]) -> Vec<Track> {
         }
     }
     tracks.retain(|t| t.pts.len() >= 2 && poly_len(&t.pts) > 1e-7);
+    merge_folds(&mut tracks, n, src[0].dist(src[n - 1]) < 1e-9);
     for t in tracks.iter_mut() {
         refine_track(c, src, t);
     }
     tracks
+}
+
+/// Two runs of one face that meet in the same point at the same source parameter, strictly inside the entity, are
+/// one stretch of the curve (two sheets passing a fold / silhouette inside the entity, or a run the sampling broke):
+/// one piece. Where the meeting sits at an end of the entity the two stay two (the oracle counts them so), and a
+/// closed entity (circle) keeps its sheets apart as the oracle does.
+fn merge_folds(tracks: &mut Vec<Track>, n: usize, closed: bool) {
+    if closed {
+        return;
+    }
+    let interior = |s: f64| s > 1e-9 && s < (n - 1) as f64 - 1e-9;
+    'again: loop {
+        for i in 0..tracks.len() {
+            for j in i + 1..tracks.len() {
+                if tracks[i].face != tracks[j].face {
+                    continue;
+                }
+                // (end of i, end of j): false = the first point, true = the last
+                for (ei, ej) in [(true, false), (true, true), (false, false), (false, true)] {
+                    let at = |t: &Track, last: bool| if last { (*t.s.last().unwrap(), *t.pts.last().unwrap()) } else { (t.s[0], t.pts[0]) };
+                    let ((si, pi), (sj, pj)) = (at(&tracks[i], ei), at(&tracks[j], ej));
+                    if !((si - sj).abs() < 1e-6 && interior(si) && pi.dist(pj) < JOIN) {
+                        continue;
+                    }
+                    // result: i ending at its meeting end, then j starting at its meeting end
+                    let b = tracks.remove(j);
+                    let a = &mut tracks[i];
+                    let (mut pts, mut ss) = (std::mem::take(&mut a.pts), std::mem::take(&mut a.s));
+                    if !ei {
+                        pts.reverse();
+                        ss.reverse();
+                    }
+                    let (mut bp, mut bs) = (b.pts, b.s);
+                    if ej {
+                        bp.reverse();
+                        bs.reverse();
+                    }
+                    pts.extend(bp.into_iter().skip(1));
+                    ss.extend(bs.into_iter().skip(1));
+                    a.pts = pts;
+                    a.s = ss;
+                    continue 'again;
+                }
+            }
+        }
+        break;
+    }
 }
 
 /// Point of the source polyline at the (fractional) sample index `s`; indices past the end wrap (closed entities).
@@ -397,7 +458,7 @@ fn poly_len(pts: &[Vec3]) -> f64 {
     pts.windows(2).map(|w| w[0].dist(w[1])).sum()
 }
 
-/// Bring a sample polyline to 400..520 samples: dense enough for the face tests and the fit, small enough to cast.
+/// Bring a sample polyline to 800..1040 samples: dense enough for the face tests and the fit, small enough to cast.
 fn normalise_samples(pts: Vec<Vec3>) -> Vec<Vec3> {
     let mut v: Vec<Vec3> = Vec::with_capacity(pts.len());
     for p in pts {
@@ -493,6 +554,27 @@ fn plane_normal(pts: &[Vec3]) -> Option<Vec3> {
     let m = [n.x.abs(), n.y.abs(), n.z.abs()];
     let big = if m[0] >= m[1] && m[0] >= m[2] { n.x } else if m[1] >= m[2] { n.y } else { n.z };
     Some(if big < 0.0 { -n } else { n })
+}
+
+/// Largest distance from 3000 points of `c` to the data polylines.
+fn curve_to_data(c: &ck_geom::nurbs::bspline::BSplineCurve, data: &[PieceIn]) -> f64 {
+    let (u0, u1) = c.domain();
+    let n = 3000;
+    let mut worst = 0.0f64;
+    for i in 0..=n {
+        let q = c.eval(u0 + (u1 - u0) * i as f64 / n as f64);
+        let mut best = f64::INFINITY;
+        for piece in data {
+            for w in piece.pts.windows(2) {
+                let ab = w[1] - w[0];
+                let l2 = ab.dot(ab);
+                let t = if l2 > 0.0 { ((q - w[0]).dot(ab) / l2).clamp(0.0, 1.0) } else { 0.0 };
+                best = best.min((w[0] + ab * t).dist(q));
+            }
+        }
+        worst = worst.max(best);
+    }
+    worst
 }
 
 /// A numeric payload field: number, `=expression`, numeric string; anything else (absent, null, text that is not
@@ -603,14 +685,14 @@ pub fn exec_project_curve(br: &mut Brep, state: &mut RegenState, f: &Feature) ->
     let mut targets: Vec<Target> = vec![];
     if face_names.is_empty() {
         for body in br.body.iter().chain(br.surfs.iter().map(|s| &s.1)) {
-            targets.extend(body.face_ids().map(|face| Target { body, face }));
+            targets.extend(body.face_ids().map(|face| Target::new(body, face)));
         }
     } else {
         for name in face_names {
             let slot = br.slot_of_face(name).ok_or_else(|| FeatureError::new(codes::MISSING_REFERENCE))?;
             let body = br.slot_body(slot).ok_or_else(|| FeatureError::new(codes::MISSING_REFERENCE))?;
             let face = body.find_face(name).ok_or_else(|| FeatureError::new(codes::MISSING_REFERENCE))?;
-            targets.push(Target { body, face });
+            targets.push(Target::new(body, face));
         }
     }
     if targets.is_empty() {
@@ -620,7 +702,7 @@ pub fn exec_project_curve(br: &mut Brep, state: &mut RegenState, f: &Feature) ->
     // a ray long enough to cross everything from any source point
     let (mut lo, mut hi) = (Vec3::new(f64::MAX, f64::MAX, f64::MAX), Vec3::new(f64::MIN, f64::MIN, f64::MIN));
     for t in &targets {
-        let (a, b) = t.body.bbox();
+        let (a, b) = (t.bbox.min, t.bbox.max);
         lo = Vec3::new(lo.x.min(a.x), lo.y.min(a.y), lo.z.min(a.z));
         hi = Vec3::new(hi.x.max(b.x), hi.y.max(b.y), hi.z.max(b.z));
     }
@@ -667,7 +749,21 @@ pub fn exec_project_curve(br: &mut Brep, state: &mut RegenState, f: &Feature) ->
         planar: false,
     };
     let pieces_in: Vec<PieceIn> = runs.into_iter().map(|pts| PieceIn { pts }).collect();
-    let out = edit_curve(&pieces_in, &opts).map_err(edit_err)?;
+    let mut opts = opts;
+    let mut out = edit_curve(&pieces_in, &opts).map_err(edit_err)?;
+    // editCurve measures the deviation at 201 places of the data; a long curve with few control points can swing
+    // wider between them. Tighten the fit's tolerance (up to three times) until the curve itself, densely sampled,
+    // stays within the requested tolerance of the data.
+    for _ in 0..3 {
+        if out.cvs.len() >= 400 || curve_to_data(&out.curve, &pieces_in) <= tolerance {
+            break;
+        }
+        opts.tolerance *= 0.4;
+        match edit_curve(&pieces_in, &opts) {
+            Ok(o) => out = o,
+            Err(_) => break,
+        }
+    }
     // display polyline: every knot span (a corner is a knot of full multiplicity) sampled on its own
     let mut ks: Vec<f64> = out.knots.clone();
     ks.dedup_by(|a, b| (*a - *b).abs() < 1e-14);
