@@ -65,6 +65,14 @@ impl Geom3 {
     pub fn is_line(&self) -> bool {
         matches!(self, Geom3::Line { .. })
     }
+    /// The same piece shifted by `d` (centre-line station offset).
+    pub fn translated(&self, d: Vec3) -> Geom3 {
+        match self {
+            Geom3::Line { a, b } => Geom3::Line { a: *a + d, b: *b + d },
+            Geom3::Conic { c, u, v, t0, t1 } => Geom3::Conic { c: *c + d, u: *u, v: *v, t0: *t0, t1: *t1 },
+            Geom3::Spline { curve, u0, u1 } => Geom3::Spline { curve: curve.clone().map(|p| p + d), u0: *u0, u1: *u1 },
+        }
+    }
     /// Arc length as the kernel measures it: one 8-point Gauss-Legendre
     /// panel per knot span of the piece's B-spline (`nurbs_length`). Pinned
     /// by the `f` marker bits of square profiles (a line of length 16 comes
@@ -251,6 +259,13 @@ impl Chain {
             pieces: self.pieces.iter().rev().map(|p| Piece { tag: p.tag.clone(), g: p.g.reversed() }).collect(),
         }
     }
+    /// Every piece shifted by `d` (centre-line station offset).
+    pub fn translated(&self, d: Vec3) -> Chain {
+        Chain {
+            closed: self.closed,
+            pieces: self.pieces.iter().map(|p| Piece { tag: p.tag.clone(), g: p.g.translated(d) }).collect(),
+        }
+    }
     /// Bisect the longest piece (first on ties) until there are `n`.
     pub fn split_to(&mut self, n: usize) {
         while !self.pieces.is_empty() && self.pieces.len() < n {
@@ -353,6 +368,9 @@ pub struct Stations {
     pub chains: Vec<Chain>,
     /// Station parameters (cumulative centroid chord lengths).
     pub ts: Vec<f64>,
+    /// `dense[i]`: station `i` is an intermediate station inserted along a centre line (not a profile).
+    /// Empty = every station is a profile.
+    pub dense: Vec<bool>,
 }
 
 fn cost(a: &Chain, b: &Chain, k: usize) -> f64 {
@@ -385,6 +403,11 @@ impl Stations {
             && self.ts.len() == self.chains.len()
             && self.ts.iter().all(|t| t.is_finite())
             && self.chains.iter().all(|c| c.pieces.len() == n)
+            && (self.dense.is_empty() || self.dense.len() == self.chains.len())
+    }
+    /// Station `i` was inserted along a centre line (it is not one of the profiles).
+    pub fn is_dense(&self, i: usize) -> bool {
+        self.dense.get(i).copied().unwrap_or(false)
     }
 }
 
@@ -433,7 +456,7 @@ pub fn match_chains_with(chains: Vec<Chain>, connectors: &[Option<f64>]) -> Stat
 /// [`match_chains_with`] under an alternative [`Strategy`] (`Strategy::default()` = the pinned rule).
 pub fn match_chains_strategy(mut chains: Vec<Chain>, connectors: &[Option<f64>], strat: Strategy) -> Stations {
     if chains.is_empty() {
-        return Stations { closed: true, tags: vec![], chains, ts: vec![] };
+        return Stations { closed: true, tags: vec![], chains, ts: vec![], dense: vec![] };
     }
     let closed = chains[0].closed;
     let mut n = chains.iter().map(|c| c.pieces.len()).max().unwrap_or(1);
@@ -496,7 +519,7 @@ pub fn match_chains_strategy(mut chains: Vec<Chain>, connectors: &[Option<f64>],
         let t = ts[i - 1] + cs[i - 1].dist(cs[i]);
         ts.push(t);
     }
-    Stations { closed, tags, chains, ts }
+    Stations { closed, tags, chains, ts, dense: vec![] }
 }
 
 #[cfg(test)]
