@@ -493,12 +493,12 @@
    "relVol": null
   },
   "bcut_simple/G9": {
-   "cls": "invalidValue",
+   "cls": "booleanFailed",
    "rel": null,
    "relVol": null
   },
   "bcut_simple/H3": {
-   "cls": "invalidValue",
+   "cls": "booleanFailed",
    "rel": null,
    "relVol": null
   },
