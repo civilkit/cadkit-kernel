@@ -12,7 +12,7 @@ strings from kernel.strings, and dispatch to ck-ops/ck-topo.
 | extrude | op(add/cut), sketch, end(blind/through/throughBoth/upToNext/mid), depth(expr), flip, draft(expr), draftOut, twist(expr, deg), twistCentre([x,y]), regions([entity ids], optional) |
 | revolve | op, sketch, axis, end, angle(expr), flip, regions([entity ids], optional) |
 | sweep | op, sketch, path ({kind: curve or sketch, id}; a `sketch` id may name a `sketch3d` holding one `spline`, tangent-constrained end lines allowed), twist (deg), (+guides, guideMode, surface: not reconstructed) |
-| loft | op, sketches[], surface, guides[{sketch, influence next only}], centreLine ({sketch}, straight no-op; 3+ profiles + gentle curve = station offset, 2 profiles unchanged; kink -> loftCentreLineKink, tight -> loftCentreLineTight), startNormal / endNormal (tension; `true` = 1), connectors[null\|fraction]; startTangent / *Continuity -> `loftTangentEdges` (sketch profiles) |
+| loft | op, sketches[], surface, guides[{sketch, influence next only}], centreLine ({sketch}: a planar open chain the loft follows, a moving frame carries the sections (ck-ops `loft/centre.rs`); a straight one is a no-op; errors loftCentreLineInvalid / Kink / Reach / Tight / Apex / Guides, each with detail + hint), startNormal / endNormal (tension; `true` = 1), connectors[null\|fraction]; startTangent / *Continuity -> `loftTangentEdges` (sketch profiles) |
 | fillet | radius(expr), edges[] (a pick may carry radius, or radii [near, far] with filletType "variable"), propagate; see docs/blend-corpus.md |
 | chamfer | chamferType(equal/distances=distanceDistance/angle=angleDistance/vertex), distance, angle, distance2, face, flip, propagate, edges[]; see docs/blend-corpus.md |
 | draft | neutral, faces[], angle(expr), flip |
@@ -43,7 +43,7 @@ strings from kernel.strings, and dispatch to ck-ops/ck-topo.
 - sweep: sweepPathInvalid, sweepProfileNotNormal, sweepGuideMissing,
   sweepGuidesTwist, sweepGuideShort, sweepGuideStretchTwo, sweepSelfIntersects, sweepFailed
 - loft: loftProfileOpen, loftProfileChains, loftGuideInvalid, loftGuideMiss,
-  loftGuideOrder, loftGuideTangency, loftCentreLineInvalid/Tight/Reach/Kink, loftFailed, loftInvalidResult
+  loftGuideOrder, loftGuideTangency, loftCentreLineInvalid/Tight/Reach/Kink/Apex/Guides, loftFailed, loftInvalidResult
 - shell: shellTooThick, shellUnsupported, shellFailed, offsetUnsupported (shellTooThick / shellFailed / moveFace* carry `limit`, `minRadius`, `maxThickness`, `face` when known)
 - draft: draftParallelFace, draftAxisNotParallel, draftUnsupported,
   draftTangentFaces, draftTooLarge, draftFailed (draftTooLarge from a closing taper carries `maxHeight`; a
