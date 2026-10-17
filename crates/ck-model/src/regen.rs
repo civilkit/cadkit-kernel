@@ -1083,6 +1083,11 @@ mod tests {
         assert_eq!(ck_json::to_string(&frame_json(&f7.frame)), r#"{"o":[26,0,0],"x":[0,0,-1],"y":[0,1,0],"z":[1,0,0]}"#);
         assert!(r.errors.is_empty(), "{:?}", r.errors);
         let b = ex.body.unwrap();
-        assert!(b.find_face("F8.C0").is_some() && b.find_face("F8.C1").is_none(), "F8.C1 merges into F2.C1");
+        // F8.C1 merged into F2.C1 during the union; its name survives as an
+        // absorbed alias, so a later feature referring to it resolves to the
+        // merged face instead of erroring (the Task 5 disjoint-lump regression).
+        assert!(b.find_face("F8.C0").is_some(), "F8.C0 stays its own face");
+        let merged = b.find_face("F8.C1").expect("F8.C1 resolves through absorbed");
+        assert_eq!(Some(merged), b.find_face("F2.C1"), "F8.C1 resolves to the face it merged into");
     }
 }

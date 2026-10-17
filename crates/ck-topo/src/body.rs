@@ -99,6 +99,10 @@ pub struct Face {
     pub loops: Vec<LoopId>,
     pub shell: ShellId,
     pub name: FaceName,
+    /// Face ids of other bodies' faces that merged into this one (coincident
+    /// union); `find_face` resolves them after an exact match fails, so a
+    /// later feature still finds the name its document refers to.
+    pub absorbed: Vec<String>,
     pub alive: bool,
 }
 
@@ -306,6 +310,7 @@ impl Body {
                     + f.loops.len() * size_of::<LoopId>()
                     + f.name.feature.len()
                     + f.name.suffix.len()
+                    + f.absorbed.iter().map(|a| a.len()).sum::<usize>()
                     + match &f.name.role {
                         Role::Side(s) | Role::Other(s) => s.len(),
                         _ => 0,
@@ -383,7 +388,7 @@ impl Body {
         EdgeId(self.edges.len() as u32 - 1)
     }
     pub fn add_face(&mut self, shell: ShellId, surface: Surface, sense: bool, name: FaceName) -> FaceId {
-        self.faces.push(Face { surface, sense, loops: vec![], shell, name, alive: true });
+        self.faces.push(Face { surface, sense, loops: vec![], shell, name, absorbed: vec![], alive: true });
         let f = FaceId(self.faces.len() as u32 - 1);
         self.shells[shell.idx()].faces.push(f);
         f
@@ -504,7 +509,9 @@ impl Body {
         self.lump_ids().position(|x| x == l).unwrap_or(0)
     }
     pub fn find_face(&self, id: &str) -> Option<FaceId> {
-        self.face_ids().find(|&f| self.faces[f.idx()].name.id() == id)
+        self.face_ids().find(|&f| self.faces[f.idx()].name.id() == id).or_else(|| {
+            self.face_ids().find(|&f| self.faces[f.idx()].absorbed.iter().any(|a| a == id))
+        })
     }
     pub fn face_id_str(&self, f: FaceId) -> String {
         self.faces[f.idx()].name.id()
@@ -712,6 +719,10 @@ impl Body {
     pub fn push_instance(&mut self, inst: &str) {
         for f in &mut self.faces {
             f.name.push_instance(inst);
+            for a in &mut f.absorbed {
+                a.push('@');
+                a.push_str(inst);
+            }
         }
     }
 

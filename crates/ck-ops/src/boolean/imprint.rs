@@ -43,6 +43,8 @@ pub struct ArrFace {
     pub surface: Surface,
     pub sense: bool,
     pub name: FaceName,
+    /// [`Face::absorbed`] of the source face (carried through the arrangement).
+    pub absorbed: Vec<String>,
     /// Per original loop: boundary pieces in traversal order (edge, rev).
     pub bound: Vec<Vec<(usize, bool)>>,
     /// Cut edges strictly inside the face (both directions are used).
@@ -609,6 +611,7 @@ pub fn imprint_hooked(a: &Body, b: &Body, tol: f64, hook: Option<PairHook>) -> A
                 surface: face.surface.clone(),
                 sense: face.sense,
                 name: face.name.clone(),
+                absorbed: face.absorbed.clone(),
                 bound,
                 inner,
                 n_coedges: n_co,

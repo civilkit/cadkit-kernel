@@ -411,6 +411,9 @@ pub struct OutFace {
     pub surface: Surface,
     pub sense: bool,
     pub name: FaceName,
+    /// [`ck_topo::body::Face::absorbed`] carried forward (member names merged
+    /// into this face plus whatever the members had absorbed).
+    pub absorbed: Vec<String>,
     pub loops: Vec<Vec<He>>,
     /// output group (0 A untouched, 1 A modified, 2 B untouched, 3 B modified, 4 merged)
     pub group: usize,
@@ -648,6 +651,7 @@ pub fn select_with(
             surface: af.surface.clone(),
             sense: af.sense ^ flip,
             name,
+            absorbed: af.absorbed.clone(),
             loops: loops_of(fr, *flip),
             group,
             key: (group, fr.af, fr.order),
@@ -680,6 +684,7 @@ pub fn select_with(
                 surface: af.surface.clone(),
                 sense,
                 name: af.name.clone(),
+                absorbed: af.absorbed.clone(),
                 loops: loops_of(&whole, flip),
                 group: 4,
                 key: (4, whole.af, 0),
@@ -697,70 +702,7 @@ pub fn select_with(
         // connected (a ribbon wrapping a cylinder cut by a helical groove)
         let same_face = members.iter().all(|&m| kept[m].0.af == kept[lead].0.af);
         let periodic = af.surface.periods().0.is_some();
-        // Fragments of DIFFERENT faces of one periodic surface (a wall re-cut by a coincident cylinder: the hole wall of the
-        // plate and the drill's wall, whose seams sit at different angles) fuse into one face that needs ONE seam running
-        // the whole height of the merged region. The seam of a single member face covers only its own part (the drill's
-        // seam spans the pad, the hole wall's spans the plate): take the member face whose seam edges cover the most
-        // length, keep them (both coedges) and let the walk use that face's surface, so the fused band is closed by it.
-        // seam families: per member face, its own boundary seam (the coedges its boundary walks twice: where relocate_seams
-        // put it) and the parametric seam of its surface (u = 0); the first family of maximal length wins
-        let mut seam_set: Vec<usize> = vec![];
-        let mut seam_face: Option<usize> = None;
-        if periodic && !same_face {
-            let mut faces_of: Vec<usize> = vec![kept[lead].0.af];
-            faces_of.extend(members.iter().map(|&m| kept[m].0.af));
-            faces_of.dedup();
-            let mut all: Vec<usize> = tagged.iter().map(|x| x.1 .0).collect();
-            all.sort_unstable();
-            all.dedup();
-            let mut best: (f64, Vec<usize>, usize) = (0.0, vec![], kept[lead].0.af);
-            let mut lead_bound: Vec<usize> = vec![];
-            let mut seen_faces: Vec<usize> = vec![];
-            for &fa in &faces_of {
-                if seen_faces.contains(&fa) {
-                    continue;
-                }
-                seen_faces.push(fa);
-                for param in [false, true] {
-                    let es: Vec<usize> = all
-                        .iter()
-                        .copied()
-                        .filter(|&e| if param { is_seam_edge(arr, &arr.faces[fa].surface, e) } else { bound_twice(&arr.faces[fa], e) })
-                        .collect();
-                    let cov: f64 = es.iter().map(|&e| (arr.verts[arr.edges[e].v1] - arr.verts[arr.edges[e].v0]).len()).sum();
-                    super::bool_dbg!("  seam family of face {fa} (param {param}): {cov:.3} over {es:?}");
-                    if fa == kept[lead].0.af && !param {
-                        lead_bound = es.clone();
-                    }
-                    if cov > best.0 * (1.0 + 1e-9) + 1e-12 {
-                        best = (cov, es, fa);
-                    }
-                }
-            }
-            // only when it changes something: a seam edge of the family shared by two different fragments (it would be
-            // cancelled otherwise, leaving the band without a seam)
-            let across = |e: usize| {
-                let m0 = tagged.iter().find(|x| x.1 == (e, false)).map(|x| x.0);
-                let m1 = tagged.iter().find(|x| x.1 == (e, true)).map(|x| x.0);
-                matches!((m0, m1), (Some(a), Some(b)) if a != b)
-            };
-            // ... and only when the lead face's own seam is one of those cancelled edges (otherwise the ordinary path keeps it)
-            let shared = best.1.iter().any(|&e| across(e)) && lead_bound.iter().any(|&e| across(e));
-            if shared && best.1 != lead_bound {
-                seam_set = best.1;
-                seam_face = Some(best.2);
-            }
-        }
-        let seam_of = |_fa: usize, e: usize| seam_set.contains(&e);
-        let sense = match seam_face {
-            Some(fa) if fa != kept[lead].0.af => arr.faces[fa].sense ^ members.iter().find(|&&m| kept[m].0.af == fa).map_or(kept[lead].1, |&m| kept[m].1),
-            _ => sense,
-        };
         let lead_name = af.name.clone();
-        let af = match seam_face {
-            Some(fa) => &arr.faces[fa],
-            None => af,
-        };
         let mut comp: Vec<usize> = (0..members.len()).collect();
         let mut cancelled: Vec<usize> = vec![];
         // Seam edges are decided after every other shared edge: whether the
@@ -781,10 +723,13 @@ pub fn select_with(
                 if mi == mj && periodic {
                     continue;
                 }
-                if seam_face.is_some_and(|fa| seam_of(fa, h.0)) {
-                    continue; // the chosen seam of the fused face
-                }
-                let seam = same_face && periodic && (is_seam_edge(arr, &af.surface, h.0) || bound_twice(af, h.0));
+                // `is_seam_edge` stays ungated: a cross-face merge of two thread walls
+                // (motor+motor F20/F25) needs its parametric seam kept even though the
+                // members come from different faces. `bound_twice` stays `same_face`-gated:
+                // a near-coincident cut double-edge (re-drill, `redrill A`) bounds one
+                // merged face twice without being a seam - keeping it splits the wall's
+                // uv domain open and the tessellator leaves a hole.
+                let seam = periodic && (is_seam_edge(arr, &af.surface, h.0) || (same_face && bound_twice(af, h.0)));
                 if seam != seam_pass {
                     continue;
                 }
@@ -827,11 +772,25 @@ pub fn select_with(
         } else {
             (4, 0)
         };
+        let mut absorbed: Vec<String> = arr.faces[kept[lead].0.af].absorbed.clone();
+        for &m in &members {
+            let maf = &arr.faces[kept[m].0.af];
+            let id = maf.name.id();
+            if id != lead_name.id() && !absorbed.contains(&id) {
+                absorbed.push(id);
+            }
+            for a in &maf.absorbed {
+                if !absorbed.contains(a) {
+                    absorbed.push(a.clone());
+                }
+            }
+        }
         for (k, loops) in group(arr, &af.surface, sense, cycles).into_iter().enumerate() {
             out.push(OutFace {
                 surface: af.surface.clone(),
                 sense,
                 name: lead_name.clone(),
+                absorbed: absorbed.clone(),
                 loops,
                 group: grp,
                 key: (grp, kept[lead].0.af, ord + k),
@@ -992,6 +951,9 @@ pub fn build(arr: &Arrangement, faces: &[OutFace]) -> Body {
     }
     for of in faces {
         let f = b.add_face(shell, of.surface.clone(), of.sense, of.name.clone());
+        if !of.absorbed.is_empty() {
+            b.faces[f.idx()].absorbed = of.absorbed.clone();
+        }
         let (pu, pv) = of.surface.periods();
         for l in &of.loops {
             let lp = b.add_loop(f);
@@ -1132,6 +1094,7 @@ pub fn rebuild_in_order(b: &Body, order: &[ck_topo::body::FaceId]) -> Body {
     for &f in order {
         let face = b.face(f);
         let nf = out.add_face(shell, face.surface.clone(), face.sense, face.name.clone());
+        out.faces[nf.idx()].absorbed = face.absorbed.clone();
         for &l in &face.loops {
             let nl = out.add_loop(nf);
             for &c in &b.lp(l).coedges {
