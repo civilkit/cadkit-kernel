@@ -1,0 +1,222 @@
+{
+ "format": "ck-part",
+ "version": 1,
+ "name": "Dial",
+ "features": [
+  {
+   "type": "sketch",
+   "id": "F1",
+   "plane": {
+    "kind": "std",
+    "id": "front"
+   },
+   "points": [
+    {
+     "id": "O",
+     "x": 0,
+     "y": 0,
+     "fixed": true
+    },
+    {
+     "id": "p1",
+     "x": 0,
+     "y": 0
+    }
+   ],
+   "entities": [
+    {
+     "id": "e1",
+     "type": "circle",
+     "c": "p1",
+     "r": 26
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F2",
+   "op": "add",
+   "sketch": "F1",
+   "end": "blind",
+   "depth": 1.9
+  },
+  {
+   "type": "sketch",
+   "id": "F3",
+   "plane": {
+    "kind": "std",
+    "id": "top"
+   },
+   "points": [
+    {
+     "id": "O",
+     "x": 0,
+     "y": 0,
+     "fixed": true
+    },
+    {
+     "id": "p1",
+     "x": 0,
+     "y": -8.8
+    },
+    {
+     "id": "p2",
+     "x": 0,
+     "y": -10.3
+    },
+    {
+     "id": "p3",
+     "x": 0,
+     "y": 295.55
+    },
+    {
+     "id": "p4",
+     "x": 0,
+     "y": -10.3
+    },
+    {
+     "id": "p5",
+     "x": 27,
+     "y": -9.1059083622
+    },
+    {
+     "id": "p6",
+     "x": 27,
+     "y": -9.1059083622
+    },
+    {
+     "id": "p7",
+     "x": 27,
+     "y": -7.6
+    },
+    {
+     "id": "p8",
+     "x": 0,
+     "y": 295.55
+    },
+    {
+     "id": "p9",
+     "x": 27,
+     "y": -7.6
+    },
+    {
+     "id": "p10",
+     "x": 0,
+     "y": -8.8
+    },
+    {
+     "id": "p11",
+     "x": 0,
+     "y": 0
+    },
+    {
+     "id": "p12",
+     "x": 0,
+     "y": -1
+    }
+   ],
+   "entities": [
+    {
+     "id": "e1",
+     "type": "line",
+     "p1": "p1",
+     "p2": "p2"
+    },
+    {
+     "id": "e2",
+     "type": "arc",
+     "c": "p3",
+     "p1": "p4",
+     "p2": "p5"
+    },
+    {
+     "id": "e3",
+     "type": "line",
+     "p1": "p6",
+     "p2": "p7"
+    },
+    {
+     "id": "e4",
+     "type": "arc",
+     "c": "p8",
+     "p1": "p10",
+     "p2": "p9"
+    },
+    {
+     "id": "e5",
+     "type": "line",
+     "p1": "p11",
+     "p2": "p12",
+     "construction": true
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "revolve",
+   "id": "F4",
+   "op": "add",
+   "sketch": "F3",
+   "axis": "e5",
+   "angle": 360
+  },
+  {
+   "type": "plane",
+   "id": "F5",
+   "mode": "offset",
+   "base": {
+    "kind": "std",
+    "id": "front"
+   },
+   "offset": 1.7999999999999998
+  },
+  {
+   "type": "sketch",
+   "id": "F6",
+   "plane": {
+    "kind": "feature",
+    "id": "F5"
+   },
+   "points": [
+    {
+     "id": "O",
+     "x": 0,
+     "y": 0,
+     "fixed": true
+    },
+    {
+     "id": "p1",
+     "x": -9.8995,
+     "y": -9.8995
+    }
+   ],
+   "entities": [
+    {
+     "id": "e1",
+     "type": "text",
+     "string": "0",
+     "font": "gauge",
+     "height": 2.4,
+     "p": "p1",
+     "anchor": [
+      "center",
+      "middle"
+     ]
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F7",
+   "op": "add",
+   "sketch": "F6",
+   "end": "blind",
+   "depth": 0.25
+  }
+ ],
+ "seq": 8,
+ "rollback": null,
+ "script": "\nconst P = part('Dial');\nP.sketch('front', (s) => s.circle(26)).extrude(1.9);\n\nconst f = (q) => [q[0], -q[1]];   // 'top' plane: sketch y = -z\nP.sketch('top', (s) => {\n  s.line(f([0, 8.799999999999999]), f([0, 10.300000000000011]));\n  s.arc3(f([0, 10.300000000000011]), f([13.513195910289436, 10.001331262506767]), f([27, 9.105908362204616]));\n  s.line(f([27, 9.105908362204616]), f([27, 7.6]));\n  s.arc3(f([27, 7.6]), f([13.513326755466268, 8.499851997990618]), f([0, 8.799999999999999]));\n}); P.revolve(360, { axis: { from: [0, 0], to: [0, -1] } });\nP.sketch(at('front', 1.7999999999999998), (s) => s.text('0', [-9.8995, -9.8995], { height: 2.4, anchor: ['center', 'middle'] })).extrude(0.25);\n"
+}

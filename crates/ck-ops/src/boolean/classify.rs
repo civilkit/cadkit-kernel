@@ -216,6 +216,15 @@ fn close_pole_spikes(s: &Surface, poly: &mut Vec<Vec2>, end_u: Option<f64>) {
     if n < 4 {
         return;
     }
+    // a loop that starts on a pole and returns to it a full period around
+    // (seam down, circle, seam up): the samples stop one chord short of the
+    // pole, so without the pole line the closing edge cuts a diagonal across
+    // the strip and hides its corner — points near the pole then classify
+    // by the sampling (In / Out flips with the circle's chord count)
+    if s.is_pole(poly[0].x, poly[0].y) {
+        poly.push(Vec2::new(poly[n - 1].x, poly[0].y));
+        return;
+    }
     let adv = end_u.unwrap_or(poly[n - 1].x) - poly[0].x;
     if (adv.abs() - per).abs() > 1e-6 * per {
         return;
