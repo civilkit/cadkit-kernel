@@ -1,124 +1,135 @@
-# OCCT-derived corpus (top ~200)
+# OCCT-derived corpus
 
-`tools/occt_corpus.mjs` translates the simple OCCT `tests/` scripts to the
-kernel's feature tree and checks each result against OCCT's own `checkprops`
-value. It is a frontier corpus: OCCT passes its own checks, so an `ok` here is
+`tools/occt_corpus.mjs` translates OCCT `tests/` scripts into the kernel's
+feature tree and checks the result against OCCT's own `checkprops` values.
+It is a frontier corpus: OCCT passes its own checks, so an `ok` here is
 agreement with an independent kernel and a failure is a real gap.
 
-Selection is exactly 200 cases:
+## Selection and coverage
 
-| group | selected | what it covers |
-|---|---|---|
-| `tests/boolean/{bfuse,bcut,bcommon}_simple` | 141 | solid primitive booleans (box, full sphere, cylinder/sector, cone/sector), transforms, copies |
-| `tests/blend/simple` | 49 | primitive-based fillets; 30 have cached edge picks and are runnable |
-| `tests/draft/angle` | 10 | primitive draft scripts (reported `unsupported`: no draft-face pick format yet) |
+1653 cases are selected, all from a checkout of OCCT's public test scripts:
 
-The boolean grids were filtered to scripts whose commands are all in the
-translatable subset (primitives, boolean, transforms, `checkprops`); the
-2D/vertex/profile cases are not silently dropped, they are simply not in the
-selection. The remaining blend entries (partial spheres, tori, wedges, staged
-blends) stay in the 200 and are counted as `unsupported` with the reason.
+| group | selected | ok | unsupported | failing |
+|---|---|---|---|---|
+| boolean/bopcut_simple | 367 | 355 | 0 | 12 |
+| boolean/bopcommon_simple | 367 | 358 | 0 | 9 |
+| boolean/bopfuse_simple | 367 | 355 | 0 | 12 |
+| boolean/boptuc_simple | 367 | 360 | 0 | 7 |
+| boolean/bcut_simple | 65 | 54 | 2 | 9 |
+| boolean/bfuse_simple | 38 | 30 | 1 | 7 |
+| boolean/bcommon_simple | 38 | 30 | 1 | 7 |
+| boolean/bfuse_complex | 2 | 1 | 0 | 1 |
+| blend/simple | 32 | 18 | 2 | 12 |
+| draft/angle | 10 | 0 | 10 | 0 |
+| **all** | **1653** | **1561** | **16** | **76** |
+
+The boolean selection is every script in `tests/boolean` whose commands are in
+the translated subset (primitives, `bop`/`bopcut`/`boptuc`/`bopfuse`/
+`bopcommon`/`bfuse`/`bcut`/`bcommon`, transforms, `dset`, `checkprops`). The
+2D/vertex/profile grids are excluded, not silently dropped. Blend is the
+primitive-based `tests/blend/simple` set with cached edge picks; draft is
+selected but untranslated (`needs-depouille`), so it is counted `unsupported`.
+
+### Translation subset
+
+* `box n dx dy dz` / `box n x y z dx dy dz` (negative extents normalised).
+* `pcylinder n r h [angle]`, `pcone n r1 r2 h [angle]`, `psphere n r`
+  (full sphere). `pcone` is built about world +Z via the `top` plane; this
+  fixed 148 cases after an earlier version revolved it about Y.
+* `trotate`, `ttranslate`, `dset` expressions (`sqrt`, `atan2`, `pi`, ...).
+* `bfuse`/`bcut`/`bcommon` and the `bop` family: `bop a b` selects the pair,
+  `bopcut` = `a - b`, `boptuc` = `b - a`, `bopfuse` = union,
+  `bopcommon` = intersect.
+* `blend result base r edge ...` -> `fillet` with cached midpoint + tangent.
+
+Not translated (counted `unsupported` or excluded): `vertex`, `edge`, `wire`,
+`mkplane`, `mkface`, `profile`, `prism`, `revol`, `wedge`, `ptorus`, partial
+spheres, `tscale`, `copy`, `depouille`, and every command needing data files.
+
+## `needs-data`
+
+The fetched groups contain 7739 scripts; 4734 use `restore`/`locate_data_file`
+and are counted `needs-data` (not selected). By group: boolean 2078, blend 292,
+offset 1786, pipe 272, thrusection 248, mkface 44, draft 13, chamfer 1. The
+separate OCCT test-data download is not vendored or fetched.
+
+Chamfer (93 scripts) and offset (2030) were checked: none of their scripts use
+only the translated command set. Chamfer scripts are driver files
+(`chamf_shape` + `.draw`/`.rle` data), offset scripts need `OFFSETSHAPE`,
+`offsetonface`, `offsetparameter`, etc. They are therefore not translated
+yet; thickness lives in the offset group.
 
 ## Run
 
 ```sh
-tools/occt_fetch.sh                 # sparse checkout -> /tmp/occt (~40 MB)
-node tools/occt_corpus.mjs --occt /tmp/occt
-node tools/occt_corpus.mjs --occt /tmp/occt --only blend --quiet --json out.json
+tools/occt_fetch.sh                  # sparse checkout -> /tmp/occt
+node tools/occt_corpus.mjs --occt /tmp/occt \
+  --wasm /path/to/kit/apps/cad/public/kernel/ck_wasm.wasm
+node tools/occt_corpus.mjs --occt /tmp/occt --only bopcut_simple --quiet --json out.json
 node tools/occt_corpus.mjs --occt /tmp/occt --verify-picks
+
+# baseline / regression gate (one wasm instance, ~35 s for the full run)
+node tools/occt_corpus.mjs --occt /tmp/occt --update-baseline tools/occt_baseline.json
+node tools/occt_corpus.mjs --occt /tmp/occt --check tools/occt_baseline.json
 ```
 
-A normal run needs no Python or OCP. Edge picks are cached in
-`tools/occt_picks.json`; only regenerating them needs OCP:
+`--check` exits non-zero only when a case that was `ok` in the baseline now
+fails; new passes are printed but are not errors. `tools/occt_baseline.json`
+holds `{case: {cls, rel, relVol}}`. When `checkprops` gives both `-s` and
+`-v`, the larger relative error is used.
+
+A normal run needs no Python or OCP; `tools/occt_picks.json` is the committed
+edge-pick cache. Regenerate it only when the blend selection changes:
 
 ```sh
-python3.12 -c 'import OCP'          # cadquery-ocp / OCP 7.9.x
+python3.12 -c 'import OCP'
 node tools/occt_corpus.mjs --occt /tmp/occt --write-picks tools/occt_picks.json
 ```
-
-## What is translated
-
-* `box n dx dy dz` and `box n x y z dx dy dz` -> sketch + extrude (offset
-  plane when `z != 0`).
-* `pcylinder n r h [angle]` -> extrude, or a `top`-plane revolve sector about
-  world +Z (the sector start matches OCCT's).
-* `pcone n r1 r2 h [angle]` -> revolve of the axis-touching trapezoid.
-* `psphere n r` (full sphere only) -> revolve of a half arc.
-* `trotate`, `ttranslate`, `dset` expressions (`sqrt(2)`, `r/2`) -> `moveBody`
-  and evaluated feature parameters.
-* `bfuse` / `bcut` / `bcommon` -> `combine` union / cut / intersect on separate
-  lumps. A cut that only touches the host (`cutNoEffect`) is followed by a
-  `deleteBody` of the tool, matching OCCT consuming the tool.
-* `blend result base r edge ...` -> `fillet` with the edge resolved by cached
-  midpoint + tangent (below).
-
-Not translated (counted `unsupported`): `wedge`, `ptorus`, partial spheres,
-`tscale` (no non-uniform scale in the wire protocol), `copy` instances,
-`profile` / `pipe` / `revol` construction, and `depouille`.
 
 ## Edge picks: midpoint + direction
 
 DRAW's `explode` numbers sub-shapes in `TopExp_Explorer` order, skipping
-duplicates (`DBRep.cxx`). `tools/occt_picks.py` rebuilds the same base shape
-with OCP, finds the requested edge, snaps to the corresponding edge of the
-final body, and records its **midpoint and unit tangent**. A corner point lies
-on up to three edges, so the corpus resolves the kernel edge with both
-distance and direction, not nearest-point alone. The cache carries the OCCT
-provenance too (`occt_point`, `occt_dir`).
+duplicates (`DBRep.cxx`). `tools/occt_picks.py` rebuilds the base with OCP,
+snaps to the corresponding edge of the final body, and records its **midpoint
+and unit tangent**. A corner point lies on up to three edges, so the corpus
+resolves the kernel edge with both distance and direction. `--verify-picks`
+runs the box-fillet cases (`A1`, `A2`, `A3`, `P8`, `P9`) and requires the
+selected edge to match the cached midpoint/tangent and the area to agree.
 
-`--verify-picks` is the edge-identity check. It runs the box-fillet cases
-(`A1`, `A2`, `A3`, `P8`, `P9`), where the checkprops area is known, and fails
-unless each selected edge is within 2e-3 of the cached midpoint, the tangent
-dot is at least 0.95, and the resulting area matches:
+## Failure triage
 
-```
-ok   verify-pick blend/simple/A1: ok 59527.8760 (4.0e-7)
-ok   verify-pick blend/simple/A2: ok 58633.8492 (8.4e-7)
-ok   verify-pick blend/simple/A3: ok 23914.1593 (1.7e-6)
-ok   verify-pick blend/simple/P8: ok 145.137167 (1.2e-6)
-ok   verify-pick blend/simple/P9: ok 146.392864 (9.3e-7)
-```
+The failures group by operand geometry, not by test case. The original
+three-grid selection had 35 failures from about 24 distinct scripts; after the
+cone-orientation fix the whole corpus has 76. Distinct groups:
 
-## Result (2026-10-18, release wasm)
+| # | geometry | cases | our class | expected | cause guess |
+|---|---|---|---|---|---|
+| 1 | sphere r1 at origin vs box [0,1]^3 | 12 (bfuse/bcut/bcommon A1,A2,A3,D3-D6) | `booleanFailed`; `EDGE_OFF_SURFACE` | area 14.6394 fuse, 13.3518 sphere-box cut, 5.2146 box-sphere cut | sphere seam/poles and the box corner; the arrangement is not closed or the edge is off-surface |
+| 2 | cross-cylinder cut / rotated box tangent to a cylinder | 9 (`bopcut_simple/ZE7-9,ZF1,W7,Y2,Z4,Z6,ZB5`) | `invalid` `EULER`, `VERTEX_OFF_CURVE` | ZE7 33.8759; W7 18.5364 | non-manifold vertex or endpoint off the intersection curve |
+| 3 | cylinder r9 h3 + cone r7-6 h4, cut by cylinder r1 at (5,0,-2) | 2 (`bcut_simple/G9,H3`) | `invalidValue` on the second `combine` | area 727.481 | chained boolean: the first result's lump selector is stale |
+| 4 | perpendicular cylinders r1 and r0.5, intersect | 7 (`bopcommon_simple/ZE7-9,ZF1`; `boptuc_simple/ZE8,ZE9,ZF1`) | `booleanFailed` / `combineEmpty` | area 33.8757..33.8759 | cross-cylinder intersect does not assemble; ZF1 reports no overlap |
+| 5 | cylinder + cone stacked (shared rim) | 6 (`bopfuse_simple/ZD5-7`, ...) | `booleanVolumeMismatch` | e.g. 348.192 | union sanity rejects a result whose volume is just outside the operand bound |
+| 6 | cone/cylinder near-tangent | 5 (`bopcommon_simple/ZK5,ZK7,ZK8,ZK9,ZL1`) | `wrongArea` 1.7e-4..2.9e-4 | 216.554..228.558 | marching intersection on the cone seam, just over the 1e-4 band |
+| 7 | box 100x100x10 with three mixed-radius fillets | 1 (`blend/simple/A4`) | `blendFailed` | area 23480.7 | three-edge corner with radii 10/5/5 |
+| 8 | partial cylinder sector fillets | 3 (`blend/B3,B6,B7`) | `blendUnsupported` | 20559.5, 44713.9, 43467.9 | fillet on a sector seam / cap rim |
+| 9 | partial cone sector fillets | 4 (`blend/C2,C6,C7,C8`) | `blendUnsupported` / `invalid` | 40663.6, 89366.1, 12471.9, 9640.68 | fillet across cone seam and sector caps |
+| 10 | box with tiny cylindrical cut, 3-edge r0.2 fillet | 1 (`blend/Q2`) | `blendFailed` | 11.4579 | three edges meeting at the cut rim |
+| 11 | staged blend then union | 1 (`blend/Q4`) | `missingEdge` | 192.343 | the first blend is not represented in the translated tree |
+| 12 | two cylinders union, bottom rim fillet | 1 (`blend/Z1`) | `invalid EULER` | 2485.86 | union leaves an ambiguous seam vertex on the rim |
 
-`checkprops -s` is **surface area** (not volume). Tolerance: 1e-4 relative for
-booleans, 2e-3 for blends.
-
-```
-occt_corpus: 132/167 ok  {"booleanFailed":9,"invalid":14,"ok":132,
-  "invalidValue":2,"blendFailed":2,"blendUnsupported":7,"missingEdge":1}
-  (33 unsupported of 200)
-```
-
-| group | selected | ok | unsupported | failing |
-|---|---|---|---|---|
-| boolean/bcut_simple | 65 | 54 | 2 | 9 |
-| boolean/bfuse_simple | 38 | 30 | 1 | 7 |
-| boolean/bcommon_simple | 38 | 30 | 1 | 7 |
-| blend/simple | 49 | 18 | 19 | 12 |
-| draft/angle | 10 | 0 | 10 | 0 |
-
-The failures cluster exactly on the roadmap weak spots:
-
-* **Sphere/box booleans** (`*.A1`-`A3`, `*.D3`-`D6`): `booleanFailed`, or a valid
-  volume with `validate` reporting `EDGE_OFF_SURFACE`. These are the same
-  sphere/box combinations already known from the BenchCAD corpus.
-* **`bcut_simple/F9`, `G1`, `G2`, `G3`**: boolean failures on mixed
-  cylinder/box/cone contact.
-* **`bcut_simple/G9`, `H3`**: chained boolean; the second `combine` gets
-  `invalidValue` (lump selector after the first combine).
-* **Blend partial sectors** (`B3/B6/B7/C2/C6/C8/D1`): `blendUnsupported` on a
-  seam edge of a sector or a cone rim; `A4` and `Q2` `blendFailed` on
-  multi-edge corners; `C7` invalid; `Z1` `EULER` after a union; `Q4` a staged
-  blend whose first blend is not represented.
+Representative scripts and translated features are in
+`docs/mimo-brief-occt.md`, which ranks the kernel tasks by how many cases
+each fixes and gives ready repro commands.
 
 ## Files
 
-* `tools/occt_corpus.mjs` — selection, translator, runner.
-* `tools/occt_picks.py` — OCP edge-pick generator (only needed for the cache).
-* `tools/occt_picks.json` — committed picks, keyed by `blend/simple/<case>`.
+* `tools/occt_corpus.mjs` — selection, translator, runner, baseline/check.
+* `tools/occt_picks.py` — OCP edge-pick generator (cache regeneration only).
+* `tools/occt_picks.json` — committed picks, keyed by case.
+* `tools/occt_baseline.json` — current pass/fail baseline.
 * `tools/occt_fetch.sh` — sparse OCCT test checkout.
 
 OCCT is LGPL-2.1 with an exception. This repository does not vendor OCCT
-source: the runner reads a checkout, and the committed cache stores derived
-edge points and directions only. See `THIRD_PARTY.md`.
+source: the runner reads a checkout, and the committed files store derived
+geometry facts (edge points, expected values, classes) only. See
+`THIRD_PARTY.md`.
