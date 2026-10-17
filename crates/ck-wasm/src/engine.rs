@@ -627,11 +627,21 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
     match ty {
         "massProps" => {
             let s = snapshot(cx)?;
-            let bodies = cx.msg.get("bodies").map_or(false, |b| matches!(b, Json::Bool(true)));
-            let ds: Option<Vec<f64>> =
-                cx.msg.get_arr("densities").map(|a| a.iter().map(|d| d.as_f64().unwrap_or(1.0)).collect());
-            // Pinned: `byMass` only with `bodies:true` AND one density per lump.
-            let ds = ds.filter(|d| bodies && d.len() == s.body.num_lumps());
+            let mut bodies = cx.msg.get("bodies").map_or(false, |b| matches!(b, Json::Bool(true)));
+            let n = s.body.num_lumps();
+            // `densities` implies `bodies:true`; a length that is not one per
+            // lump is an error naming the expected count (was: silently dropped).
+            let ds: Option<Vec<f64>> = match cx.msg.get_arr("densities") {
+                None => None,
+                Some(a) => {
+                    let d: Vec<f64> = a.iter().map(|x| x.as_f64().unwrap_or(1.0)).collect();
+                    if d.len() != n {
+                        return Err(format!("massProps: densities has {} entries but the body has {n} lump(s) (expected {n})", d.len()));
+                    }
+                    bodies = true;
+                    Some(d)
+                }
+            };
             Ok(ck_topo::mass::mass_props_json(&s.body, bodies, ds.as_deref()))
         }
         "validate" => {

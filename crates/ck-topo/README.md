@@ -106,8 +106,13 @@ revolution).
 ## massProps (pinned)
 
 Request `{type:"massProps", tag, bodies:true, densities:[per lump]}`.
+With `densities` every `bodies[]` entry also carries `mass` (= volume ×
+density); without, the reply is the oracle-pinned shape (no `mass`). At the
+request level (`ck-wasm` `query_hook`): `densities` alone implies
+`bodies:true`, and a length that is not one entry per lump is an error
+naming the expected count.
 Reply `{volume, area, com, principal(asc), axes(rows)[, bodies[{volume,
-area,com}]][, byMass{mass, com, principal, axes}]}`. Exact integration
+area,com[, mass]}]][, byMass{mass, com, principal, axes}]}`. Exact integration
 matches the oracle to 1e-12..1e-13 relative on box / cylinder / holed
 block / draft / revolves / sphere / torus / cone / two-lump bodies.
 

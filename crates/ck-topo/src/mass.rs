@@ -8,11 +8,15 @@
 //!
 //! Wire shape (pinned by oracle probes, `{type:"massProps", tag, bodies:
 //! true, densities:[..]}`):
-//! `{volume, area, com, principal, axes[, bodies:[{volume,area,com}]]
+//! `{volume, area, com, principal, axes[, bodies:[{volume,area,com[, mass]}]]
 //!   [, byMass:{mass, com, principal, axes}]}` — principal moments
 //! ascending (volume-weighted, density 1), `axes[i]` = unit eigenvector of
 //! `principal[i]`; `bodies` per lump (wire lump order), `byMass` uses
-//! `densities[lump]` (g/mm³, client table Xt).
+//! `densities[lump]` (g/mm³, client table Xt). With `densities` every
+//! `bodies[]` entry also carries `mass` (= volume × density); without, the
+//! reply is the oracle-pinned shape (no `mass`). The request-level rule
+//! (`densities` implies `bodies:true`, length must match the lump count)
+//! lives in ck-wasm `query_hook`.
 
 use crate::body::{Body, FaceId, LumpId};
 use ck_geom::curve2::Curve2;
@@ -1116,7 +1120,9 @@ pub fn mass_props(b: &Body) -> MassProps {
     MassProps::from_moments(&total)
 }
 
-/// The `massProps` reply `result` object.
+/// The `massProps` reply `result` object. With `densities`, every `bodies[]`
+/// entry also carries `mass` (= volume × density); without, the reply is the
+/// oracle-pinned shape (no `mass` field). `byMass` totals are unchanged.
 pub fn mass_props_json(b: &Body, bodies: bool, densities: Option<&[f64]>) -> Json {
     let ms = lump_moments(b);
     let total = ms.iter().skip(1).fold(ms.first().copied().unwrap_or_default(), |a, m| a.add(m));
@@ -1132,7 +1138,14 @@ pub fn mass_props_json(b: &Body, bodies: bool, densities: Option<&[f64]>) -> Jso
     if bodies {
         let arr = ms
             .iter()
-            .map(|m| Obj::new().put("volume", m.volume).put("area", m.area).put("com", v3(m.com())).build())
+            .enumerate()
+            .map(|(i, m)| {
+                let mut e = Obj::new().put("volume", m.volume).put("area", m.area).put("com", v3(m.com()));
+                if let Some(ds) = densities {
+                    e = e.put("mass", m.volume * ds.get(i).copied().unwrap_or(1.0));
+                }
+                e.build()
+            })
             .collect();
         o = o.put("bodies", Json::Arr(arr));
     }
@@ -1414,14 +1427,27 @@ mod tests {
             ],
         );
         let b = extrude("F2", &prof2, ExtrudeOpts::blind(5.0)).unwrap();
+        // no densities: oracle-pinned shape, no `mass` on bodies[]
+        let j0 = mass_props_json(&b, true, None);
+        let bodies0 = j0.get_arr("bodies").unwrap();
+        assert_eq!(bodies0.len(), 2);
+        assert!(bodies0[0].get("mass").is_none());
+        assert!(j0.get("byMass").is_none());
         let j = mass_props_json(&b, true, Some(&[1.0, 2.0]));
         // oracle byMass mass 1500, com x 18.33333333333334, principal [15625, 148958.33, 158333.33]
         let bm = j.get("byMass").unwrap();
         assert!(close(bm.get_f64("mass").unwrap(), 1500.0, 1e-13));
         assert!((bm.get("com").unwrap().as_vec3().unwrap()[0] - 18.33333333333334).abs() < 1e-11);
         assert!(close(bm.get_arr("principal").unwrap()[1].as_f64().unwrap(), 148958.33333333308, 1e-12));
-        assert_eq!(j.get_arr("bodies").unwrap().len(), 2);
-        assert!(close(j.get_arr("bodies").unwrap()[1].get_f64("volume").unwrap(), 500.0, 1e-13));
+        let bodies = j.get_arr("bodies").unwrap();
+        assert_eq!(bodies.len(), 2);
+        assert!(close(bodies[1].get_f64("volume").unwrap(), 500.0, 1e-13));
+        // per-body mass = volume × density (hand: 500×1 and 500×2)
+        assert!(close(bodies[0].get_f64("mass").unwrap(), 500.0, 1e-13));
+        assert!(close(bodies[1].get_f64("mass").unwrap(), 1000.0, 1e-13));
+        // mass-weighted CG x: (500·5 + 1000·25) / 1500 = 55/3
+        let cx = bm.get("com").unwrap().as_vec3().unwrap()[0];
+        assert!((cx - 55.0 / 3.0).abs() < 1e-11, "{cx}");
     }
 
     #[test]

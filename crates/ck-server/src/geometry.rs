@@ -4,7 +4,9 @@
 //! Frontend messages (app.pretty.js):
 //! - `{type:"measure", tag, refs:[{kind:"face",id}|{kind:"edge",faces,at}]}`
 //!   -> `{items:[{area|wedge|...}]}`
-//! - `{type:"massProps", tag:"main", bodies:true, densities:[...]}`
+//! - `{type:"massProps", tag:"main", bodies:true, densities:[...]}` — with
+//!   `densities` every `bodies[]` entry also carries `mass`; `densities`
+//!   alone implies `bodies:true` and must have one entry per lump.
 //! - `{type:"interference", tag:"main"}` -> `{bodies:n, pairs:[...]}`
 //! - `{type:"step", tag:"main", name}` -> STEP text (ck-io)
 //!

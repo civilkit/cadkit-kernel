@@ -53,7 +53,7 @@ Message types you will use:
 | type | purpose |
 |---|---|
 | `regen` | `{tag, part, opts?: {upTo?}}` rebuild a part from its feature list. Result has `body` (box, faces, edges, mesh), `errors[]` (per-feature, structured `{code, params}`), `components`, `markers`, etc. |
-| `massProps` | `{tag}` volume, area, centre of mass, principal moments/axes of the current body. Exact B-rep integrals, not mesh estimates. |
+| `massProps` | `{tag}` volume, area, centre of mass, principal moments/axes of the current body. Exact B-rep integrals, not mesh estimates. Optional `bodies:true` lists per-lump volume/area/com; optional `densities:[per lump]` adds per-body `mass` and a `byMass` total (implies `bodies:true`; length must match the lump count). |
 | `step` | `{tag, name}` STEP text of the body for fabrication/detailing hand-off. |
 | `validate` | `{tag, tol?, mesh?}` independent closed-solid check (it also tessellates, unless `mesh:false`, and reports `TESSELLATION_OPEN` for faces without triangles (with the tessellator's reason), analytic faces (plane, cylinder, cone, sphere, torus) whose mesh area differs from the exact area by more than 10 percent and by more than 5e-4 of the squared part size, and mesh edges used by one triangle that no other face's triangles cover to within the chord deviation (a hairline crack between two faces' samples of a shared edge is not reported); `meshNotes` lists faces whose trim segments the triangulator could not recover; `tools/tess_open_report.mjs` classifies the open edges over the corpus): `{ok, issues[{code, entity, detail}]}`. Run it on every generated solid. |
 | `inspect`, `measure`, `interference` | face/edge details, distances, solid-vs-solid clash. |
