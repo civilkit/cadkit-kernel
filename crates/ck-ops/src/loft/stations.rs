@@ -368,6 +368,9 @@ pub struct Stations {
     pub chains: Vec<Chain>,
     /// Station parameters (cumulative centroid chord lengths).
     pub ts: Vec<f64>,
+    /// `dense[i]`: station `i` is an intermediate station inserted along a centre line (not a profile).
+    /// Empty = every station is a profile.
+    pub dense: Vec<bool>,
 }
 
 fn cost(a: &Chain, b: &Chain, k: usize) -> f64 {
@@ -400,6 +403,11 @@ impl Stations {
             && self.ts.len() == self.chains.len()
             && self.ts.iter().all(|t| t.is_finite())
             && self.chains.iter().all(|c| c.pieces.len() == n)
+            && (self.dense.is_empty() || self.dense.len() == self.chains.len())
+    }
+    /// Station `i` was inserted along a centre line (it is not one of the profiles).
+    pub fn is_dense(&self, i: usize) -> bool {
+        self.dense.get(i).copied().unwrap_or(false)
     }
 }
 
@@ -448,7 +456,7 @@ pub fn match_chains_with(chains: Vec<Chain>, connectors: &[Option<f64>]) -> Stat
 /// [`match_chains_with`] under an alternative [`Strategy`] (`Strategy::default()` = the pinned rule).
 pub fn match_chains_strategy(mut chains: Vec<Chain>, connectors: &[Option<f64>], strat: Strategy) -> Stations {
     if chains.is_empty() {
-        return Stations { closed: true, tags: vec![], chains, ts: vec![] };
+        return Stations { closed: true, tags: vec![], chains, ts: vec![], dense: vec![] };
     }
     let closed = chains[0].closed;
     let mut n = chains.iter().map(|c| c.pieces.len()).max().unwrap_or(1);
@@ -511,7 +519,7 @@ pub fn match_chains_strategy(mut chains: Vec<Chain>, connectors: &[Option<f64>],
         let t = ts[i - 1] + cs[i - 1].dist(cs[i]);
         ts.push(t);
     }
-    Stations { closed, tags, chains, ts }
+    Stations { closed, tags, chains, ts, dense: vec![] }
 }
 
 #[cfg(test)]

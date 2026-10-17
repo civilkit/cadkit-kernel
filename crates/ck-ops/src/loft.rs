@@ -20,8 +20,12 @@
 //!   control points of the stations, so the profile curves are exact
 //!   iso-curves of the faces.
 //!
+//! * a centre line ([`centre`]) makes the sections between the profiles follow a curved spine: dense
+//!   intermediate stations (a moving frame carrying the profiles' local coordinates) feed the same
+//!   rails / side face construction;
+//!
 //! Errors (codes): `loftProfiles`, `loftProfileOpen`, `loftProfileNotPlanar`,
-//! `loftFailed`.
+//! `loftFailed`, and with a centre line `loftCentreLineReach` / `Tight` / `Apex` / `Guides`.
 
 pub mod centre;
 pub mod guides;
@@ -71,9 +75,9 @@ pub struct LoftOpts {
     /// `apexTangent` (0..2, default 1): speed of the rails arriving at a point (apex) end, as a multiple of
     /// the chord speed from the neighbouring station (1 = the straight cone taper, below 1 sharper, above 1 blunter).
     pub apex_tangent: Option<f64>,
-    /// Centre-line station offsets (one per station, from [`centre::analyse`]);
-    /// empty = no centre line / straight (no effect).
-    pub centre_offsets: Vec<Vec3>,
+    /// The centre line (spine) the loft follows, see [`centre`]; `None` = no centre line. A straight spine
+    /// changes nothing.
+    pub centre: Option<centre::Spine>,
 }
 
 /// End tangents of the rails (derivative with respect to the loft parameter).
@@ -106,6 +110,8 @@ pub struct LoftOut {
     /// The end tangents used (`d0`, `d1`) and the first / last station centroid.
     pub ends: Ends,
     pub end_centroids: [Vec3; 2],
+    /// With a curved centre line: the largest distance of a profile point from it (mm).
+    pub centre_radial: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -356,6 +362,11 @@ pub fn loft(feature: &str, profiles: &[ProfileIn], opts: &LoftOpts) -> Result<Lo
     if first.is_empty() {
         return Ok(out);
     }
+    // a curved centre line: the sections folded over each other. Another matching of the profiles would build a
+    // different shape, so there is no retry.
+    if let Some(r) = out.centre_radial {
+        return Err(centre::tight_error(r));
+    }
     // a bad end section (its cap loop crosses itself) is not a matching problem: report it as such
     let cap_only = first.iter().all(|i| i.entity.contains(".C0") || i.entity.contains(".C1")) && first.iter().all(|i| i.code == "LOOP_SELF_INTERSECT");
     if !cap_only {
@@ -423,25 +434,11 @@ fn loft_once(feature: &str, profiles: &[ProfileIn], opts: &LoftOpts, strat: Stra
         let g = guides::guided_stations(chains, &opts.guides)?;
         (g.st, g.rails)
     };
-    // centre-line deformation: shift intermediate stations along the lateral
-    // offset of a curved centre line from the profile-centroid chord
-    if !opts.centre_offsets.is_empty() && opts.centre_offsets.len() == st.chains.len() {
-        for (c, d) in st.chains.iter_mut().zip(opts.centre_offsets.iter()) {
-            if d.len() > 1e-15 {
-                *c = c.translated(*d);
-            }
-        }
-        // station parameters follow the shifted centroids
-        let cen: Vec<Vec3> = st.chains.iter().map(|c| c.centroid()).collect();
-        st.ts = vec![0.0];
-        for w in cen.windows(2) {
-            let last = *st.ts.last().unwrap();
-            st.ts.push(last + w[0].dist(w[1]));
-        }
-    }
     if !st.is_consistent() {
         return Err(LoftError::failed("the sections could not be brought to a common structure", "redraw the sections as simple closed curves with the same number of points"));
     }
+    // the profile stations (before a centre line adds intermediate ones)
+    let starts: Vec<Vec3> = st.chains.iter().filter_map(|c| c.pieces.first().map(|p| p.g.start())).collect();
     // end constraints: the profile normal pointing into the loft
     let mut ends = Ends::default();
     let cen: Vec<Vec3> = st.chains.iter().map(|c| c.centroid()).collect();
@@ -463,6 +460,41 @@ fn loft_once(feature: &str, profiles: &[ProfileIn], opts: &LoftOpts, strat: Stra
         }
         ends.d1 = Some(n * t);
     }
+    // centre line: the sections between the profiles follow the spine (ck-ops/src/loft/centre.rs)
+    let mut centre_radial = None;
+    if let Some(sp) = opts.centre.as_ref() {
+        let curved = !sp.straight;
+        if curved && !opts.guides.is_empty() {
+            return Err(LoftError::with(
+                centre::GUIDES,
+                "a curved centre line cannot be combined with guides",
+                "remove the guides, or use a straight centre line",
+            ));
+        }
+        if curved && st.chains.iter().any(|c| c.is_point()) {
+            return Err(LoftError::with(
+                centre::APEX,
+                "a curved centre line cannot be combined with a point (apex) end section",
+                "remove the centre line, or end the loft with a closed profile",
+            ));
+        }
+        let planes: Vec<(Vec3, Vec3, f64)> = profiles.iter().zip(st.chains.iter()).map(|(p, c)| (p.frame.o, p.frame.z, centre::circumradius(c))).collect();
+        let mut sp = sp.clone();
+        let s = sp.locate(&planes).map_err(|i| {
+            LoftError::with(
+                centre::REACH,
+                &format!("the centre line does not reach profile {}", i + 1),
+                "extend the centre line so that it crosses the plane of every profile (or stops within the profile's size of it)",
+            )
+        })?;
+        if curved {
+            let (dense, radial) = centre::expand(&st, &sp, &s, ends.d0, ends.d1)?;
+            st = dense;
+            centre_radial = Some(radial);
+        }
+    }
+    let cen: Vec<Vec3> = st.chains.iter().map(|c| c.centroid()).collect();
+    let k = cen.len();
     if st.chains[0].is_point() {
         ends.d0 = None;
         ends.apex[0] = Some(opts.apex_tangent.unwrap_or(1.0).clamp(0.0, 2.0));
@@ -473,9 +505,11 @@ fn loft_once(feature: &str, profiles: &[ProfileIn], opts: &LoftOpts, strat: Stra
         ends.apex[1] = Some(opts.apex_tangent.unwrap_or(1.0).clamp(0.0, 2.0));
         ends.auto = opts.apex_tangent.is_none();
     }
-    let starts = st.chains.iter().filter_map(|c| c.pieces.first().map(|p| p.g.start())).collect();
-    let body = build(feature, &st, profiles, opts.surface, &grails, ends)?;
-    Ok(LoftOut { body, starts, ends, end_centroids: [cen[0], cen[k - 1]] })
+    // with a centre line the end tangents are already part of the dense stations (centre::expand): the rails
+    // through them take no end derivative of their own
+    let build_ends = if centre_radial.is_some() { Ends { d0: None, d1: None, ..ends } } else { ends };
+    let body = build(feature, &st, profiles, opts.surface, &grails, build_ends)?;
+    Ok(LoftOut { body, starts, ends, end_centroids: [cen[0], cen[k - 1]], centre_radial })
 }
 
 // ------------------------------------------------------------------ faces
@@ -611,7 +645,12 @@ fn side(st: &Stations, j: usize, ends: Ends) -> Result<Side, LoftError> {
         if let (Some(x), Some(z)) = (x, z) {
             let size = a0.dist(b0).max(a0.dist(a1)).max(1.0);
             let flat = pieces.iter().all(|g| (g.start() - a0).dot(z).abs() <= 1e-9 * size && (g.end() - a0).dot(z).abs() <= 1e-9 * size);
-            if flat {
+            // more than two stations: the rails through the piece's two vertices must be straight too (a middle
+            // station shifted sideways in the plane gives curved rails and a free-form face)
+            let starts: Vec<Vec3> = pieces.iter().map(|g| g.start()).collect();
+            let ends_v: Vec<Vec3> = pieces.iter().map(|g| g.end()).collect();
+            let straight = k == 2 || (rail_is_straight(&st.ts, &starts) && rail_is_straight(&st.ts, &ends_v));
+            if flat && straight {
                 let frame = Frame { o: a0, x, y: z.cross(x), z };
                 return Ok(Side { surface: Surface::Plane { frame }, cs, plane: Some(frame) });
             }
@@ -862,6 +901,19 @@ fn gordon_side(st: &Stations, j: usize, lf: &dyn Fn(f64) -> Vec3, rf: &dyn Fn(f6
     Ok(Side { surface: Surface::BSpline(Box::new(surf)), cs, plane: None })
 }
 
+/// The matching vertices `pts` of the stations lie on a line, at positions proportional to the station parameters
+/// `ts`: the natural rail through them is that straight line.
+fn rail_is_straight(ts: &[f64], pts: &[Vec3]) -> bool {
+    let total = pts[0].dist(pts[pts.len() - 1]);
+    let d = (pts[pts.len() - 1] - pts[0]).try_normalize();
+    let span = ts[ts.len() - 1] - ts[0];
+    let (Some(d), true) = (d, total > 0.0 && span > 0.0) else { return false };
+    pts.iter().zip(ts).all(|(p, t)| {
+        let along = (*p - pts[0]).dot(d);
+        (*p - pts[0] - d * along).len() <= 1e-9 * total && (along - total * (t - ts[0]) / span).abs() <= 1e-9 * total
+    })
+}
+
 /// Rail through the matching vertices `pts` of the stations.
 fn rail(ts: &[f64], pts: &[Vec3], ends: Ends) -> Result<(Curve, f64, f64), LoftError> {
     if pts.len() < 2 || pts.len() != ts.len() {
@@ -871,19 +923,8 @@ fn rail(ts: &[f64], pts: &[Vec3], ends: Ends) -> Result<(Curve, f64, f64), LoftE
         let d = pts[0].dist(pts[1]);
         return Ok((Curve::line_through(pts[0], pts[1]), 0.0, d));
     }
-    if !ends.any() && ts.len() > 2 {
-        let total = pts[0].dist(pts[pts.len() - 1]);
-        let d = (pts[pts.len() - 1] - pts[0]).try_normalize();
-        let span = ts[ts.len() - 1] - ts[0];
-        if let (Some(d), true) = (d, total > 0.0 && span > 0.0) {
-            let straight = pts.iter().zip(ts).all(|(p, t)| {
-                let along = (*p - pts[0]).dot(d);
-                (*p - pts[0] - d * along).len() <= 1e-9 * total && (along - total * (t - ts[0]) / span).abs() <= 1e-9 * total
-            });
-            if straight {
-                return Ok((Curve::line_through(pts[0], pts[pts.len() - 1]), 0.0, total));
-            }
-        }
+    if !ends.any() && ts.len() > 2 && rail_is_straight(ts, pts) {
+        return Ok((Curve::line_through(pts[0], pts[pts.len() - 1]), 0.0, pts[0].dist(pts[pts.len() - 1])));
     }
     let q: Vec<[f64; 3]> = pts.iter().map(|p| [p.x, p.y, p.z]).collect();
     let (mut d0, mut d1) = (Ends::arr(ends.d0), Ends::arr(ends.d1));
@@ -1000,7 +1041,7 @@ fn build(feature: &str, st: &Stations, profiles: &[ProfileIn], surface: bool, gr
         let g = &st.chains[s].pieces[j].g;
         // a face with any curved station piece keeps ALL its station edges as
         // (elevated) B-splines, lines included (oracle: `pts 4`, no `line`)
-        let all_lines = (0..k).all(|q| st.chains[q].pieces[j].g.is_line());
+        let all_lines = (0..k).all(|q| st.is_dense(q) || st.chains[q].pieces[j].g.is_line());
         let (curve, t0, t1) = if all_lines {
             let d = g.start().dist(g.end());
             (Curve::line_through(g.start(), g.end()), 0.0, d)
@@ -1287,5 +1328,198 @@ mod tests {
         let full = std::f64::consts::PI * 10.0 * 112.0;
         let got = ck_topo::mass::mass_props(&out.body).volume;
         assert!((got - (full - removed)).abs() < 3e-3 * full, "{got} vs {}", full - removed);
+    }
+
+    // ------------------------------------------------------------------ centre line (loft/centre.rs)
+
+    use centre::{CentreIn, Spine};
+
+    /// Circular arc of the x-y plane (sketch plane normal z) from `a` through `m` to `b`.
+    fn arc_spine(a: [f64; 2], m: [f64; 2], b: [f64; 2]) -> Spine {
+        let (ax, ay, bx, by, cx, cy) = (a[0], a[1], m[0], m[1], b[0], b[1]);
+        let d = 2.0 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by));
+        let ux = ((ax * ax + ay * ay) * (by - cy) + (bx * bx + by * by) * (cy - ay) + (cx * cx + cy * cy) * (ay - by)) / d;
+        let uy = ((ax * ax + ay * ay) * (cx - bx) + (bx * bx + by * by) * (ax - cx) + (cx * cx + cy * cy) * (bx - ax)) / d;
+        let r = ((ax - ux).powi(2) + (ay - uy).powi(2)).sqrt();
+        let ang = |p: [f64; 2]| (p[1] - uy).atan2(p[0] - ux);
+        let (a0, am, a1) = (ang(a), ang(m), ang(b));
+        let ccw = (am - a0).rem_euclid(TAU) < (a1 - a0).rem_euclid(TAU);
+        let sweep = if ccw { (a1 - a0).rem_euclid(TAU) } else { -(a0 - a1).rem_euclid(TAU) };
+        let pts = (0..=256).map(|i| {
+            let t = a0 + sweep * i as f64 / 256.0;
+            Vec3::new(ux + r * t.cos(), uy + r * t.sin(), 0.0)
+        });
+        Spine::new(&CentreIn { pts: pts.collect(), joints: vec![], normal: Vec3::new(0.0, 0.0, 1.0) }).unwrap()
+    }
+
+    fn line_spine(a: [f64; 2], b: [f64; 2]) -> Spine {
+        let pts = (0..=32).map(|i| Vec3::new(a[0] + (b[0] - a[0]) * i as f64 / 32.0, a[1] + (b[1] - a[1]) * i as f64 / 32.0, 0.0)).collect();
+        Spine::new(&CentreIn { pts, joints: vec![], normal: Vec3::new(0.0, 0.0, 1.0) }).unwrap()
+    }
+
+    /// Square of half size `h` centred at x = `cx` on the plane y.
+    fn square_at(y: f64, h: f64, cx: f64) -> ProfileIn {
+        let mut p = square_profile(y, h);
+        let d = Vec3::new(cx, 0.0, 0.0);
+        p.frame.o = p.frame.o + d;
+        for sg in p.segs.iter_mut() {
+            if let Curve::Line { o, .. } = &mut sg.curve {
+                *o = *o + d;
+            }
+        }
+        p
+    }
+
+    fn with_centre(sp: Spine) -> LoftOpts {
+        LoftOpts { centre: Some(sp), ..Default::default() }
+    }
+
+    fn vol(out: &LoftOut) -> f64 {
+        ck_topo::mass::mass_props(&out.body).volume
+    }
+
+    fn xmax(out: &LoftOut) -> f64 {
+        let t = ck_tess::mesh::tessellate(&out.body);
+        t.mesh.positions.chunks(3).map(|p| p[0] as f64).fold(f64::NEG_INFINITY, f64::max)
+    }
+
+    fn mesh_area(out: &LoftOut) -> f64 {
+        let t = ck_tess::mesh::tessellate(&out.body);
+        let p = &t.mesh.positions;
+        let v = |i: usize| Vec3::new(p[i] as f64, p[i + 1] as f64, p[i + 2] as f64);
+        (0..p.len() / 9).map(|k| 0.5 * (v(9 * k + 3) - v(9 * k)).cross(v(9 * k + 6) - v(9 * k)).len()).sum()
+    }
+
+    /// Oracle volumes (tools/loft_centre_check.mjs, 1e-3 relative): the loft follows a curved centre line.
+    /// Cases: arc bow 5 over a 30 span (`bow2_s5`), the arc leaving the profile centres
+    /// (`shiftArc`, `offsetArc`), a spine longer than the span (`longArc`) and one that stops 5 short of the
+    /// first plane (`startsAt5`), and three profiles (`bow3_s10`, `asym3`).
+    #[test]
+    fn centre_line_volumes_match_the_oracle() {
+        let sq = |y, h| square_at(y, h, 0.0);
+        let cases: Vec<(&str, Vec<ProfileIn>, Spine, f64)> = vec![
+            ("bow2_s5", vec![sq(0.0, 10.0), sq(30.0, 5.0)], arc_spine([0.0, 0.0], [5.0, 15.0], [0.0, 30.0]), 6006.0109),
+            ("bow2_neg5", vec![sq(0.0, 10.0), sq(30.0, 5.0)], arc_spine([0.0, 0.0], [-5.0, 15.0], [0.0, 30.0]), 6006.0109),
+            ("reversed spine", vec![sq(0.0, 10.0), sq(30.0, 5.0)], arc_spine([0.0, 30.0], [5.0, 15.0], [0.0, 0.0]), 6006.0109),
+            ("shiftArc", vec![sq(0.0, 10.0), sq(30.0, 5.0)], arc_spine([3.0, 0.0], [8.0, 15.0], [3.0, 30.0]), 5985.6037),
+            ("offsetArc", vec![sq(0.0, 10.0), square_at(30.0, 5.0, 8.0)], arc_spine([0.0, 0.0], [5.0, 15.0], [8.0, 30.0]), 6864.3967),
+            ("longArc", vec![sq(0.0, 10.0), sq(30.0, 5.0)], arc_spine([0.0, -10.0], [5.0, 15.0], [0.0, 40.0]), 6872.471),
+            ("startsAt5", vec![sq(0.0, 10.0), sq(30.0, 5.0)], arc_spine([0.0, 5.0], [4.0, 17.0], [0.0, 30.0]), 6153.4935),
+            ("bow3_s10", vec![sq(0.0, 10.0), sq(30.0, 8.0), sq(60.0, 5.0)], arc_spine([0.0, 0.0], [10.0, 30.0], [0.0, 60.0]), 14929.5907),
+            ("asym3", vec![sq(0.0, 10.0), sq(20.0, 8.0), sq(60.0, 5.0)], arc_spine([0.0, 0.0], [8.0, 30.0], [0.0, 60.0]), 13091.0353),
+        ];
+        for (name, profiles, sp, want) in cases {
+            let out = loft("F4", &profiles, &with_centre(sp)).unwrap_or_else(|e| panic!("{name}: {e:?}"));
+            check_closed(&out.body);
+            assert!((vol(&out) - want).abs() < 1e-3 * want, "{name}: {} vs {want}", vol(&out));
+        }
+        // circle sections follow the spine too (oracle bow2_circ: 5175.3435, 4 faces)
+        let out = loft("F4", &[circle_profile(0.0, 0.0, 8.0), circle_profile(30.0, 0.0, 8.0)], &with_centre(arc_spine([0.0, 0.0], [5.0, 15.0], [0.0, 30.0]))).unwrap();
+        check_closed(&out.body);
+        assert!((vol(&out) - 5175.3435).abs() < 1e-3 * 5175.3435, "{}", vol(&out));
+    }
+
+    /// The bounding box and the pinned ends: the end profiles stay exactly where they are (flat caps) and the
+    /// body bulges toward the bow (oracle `bow2_s5`: x max 11.592); the topology is that of the plain loft.
+    #[test]
+    fn centre_line_pins_the_ends_and_bows_the_body() {
+        let sq = |y, h| square_at(y, h, 0.0);
+        let out = loft("F4", &[sq(0.0, 10.0), sq(30.0, 5.0)], &with_centre(arc_spine([0.0, 0.0], [5.0, 15.0], [0.0, 30.0]))).unwrap();
+        assert!((xmax(&out) - 11.592).abs() < 0.02, "{}", xmax(&out));
+        let c0 = out.body.face_ids().find(|&f| out.body.face_id_str(f) == "F4.C0").expect("cap C0");
+        assert!(matches!(out.body.face(c0).surface, ck_geom::surface::Surface::Plane { .. }));
+        assert_eq!(out.starts.len(), 2, "one start per profile, not per intermediate station");
+        assert_eq!(out.body.num_faces(), 6);
+        assert_eq!(out.body.edge_ids().count(), 12);
+    }
+
+    /// A straight centre line (also a slanted or a longer one) is a strict no-op: the same solid as without one.
+    #[test]
+    fn straight_centre_line_is_a_no_op() {
+        let sq = |y, h| square_at(y, h, 0.0);
+        let profiles = [sq(0.0, 10.0), sq(30.0, 5.0)];
+        let plain = loft("F4", &profiles, &LoftOpts::default()).unwrap();
+        for sp in [line_spine([0.0, 0.0], [0.0, 30.0]), line_spine([0.0, 0.0], [8.0, 30.0]), line_spine([0.0, -10.0], [0.0, 40.0])] {
+            let out = loft("F4", &profiles, &with_centre(sp)).unwrap();
+            assert_eq!(out.body.num_faces(), plain.body.num_faces());
+            assert_eq!(out.body.edge_ids().count(), plain.body.edge_ids().count());
+            assert!((vol(&out) - vol(&plain)).abs() < 1e-12, "{}", vol(&out));
+        }
+        let p3 = [sq(0.0, 10.0), sq(30.0, 8.0), sq(60.0, 5.0)];
+        let plain3 = loft("F4", &p3, &LoftOpts::default()).unwrap();
+        let out3 = loft("F4", &p3, &with_centre(line_spine([0.0, 0.0], [0.0, 60.0]))).unwrap();
+        assert!((vol(&out3) - vol(&plain3)).abs() < 1e-12);
+    }
+
+    /// Error paths: out of reach, too tight, a point end, guides (each with a code, a detail and a hint).
+    #[test]
+    fn centre_line_errors() {
+        let sq = |y, h| square_at(y, h, 0.0);
+        let profiles = [sq(0.0, 10.0), sq(30.0, 5.0)];
+        // stops 15 short of the last plane (circumradius 7.07); a straight one too
+        let e = loft("F4", &profiles, &with_centre(arc_spine([0.0, 0.0], [2.0, 7.5], [0.0, 15.0]))).unwrap_err();
+        assert_eq!(e.code, centre::REACH);
+        assert!(e.detail.is_some() && e.hint.is_some());
+        assert_eq!(loft("F4", &profiles, &with_centre(line_spine([0.0, 0.0], [0.0, 15.0]))).unwrap_err().code, centre::REACH);
+        // 5 short of the last plane is fine
+        assert!(loft("F4", &profiles, &with_centre(arc_spine([0.0, 0.0], [3.0, 12.5], [0.0, 25.0]))).is_ok());
+        // a 40 wide section on a bend of radius 5: the neighbouring sections would cross
+        let wide = [sq(0.0, 20.0), sq(4.0, 20.0)];
+        let e = loft("F4", &wide, &with_centre(arc_spine([0.0, -2.0], [5.0, 2.0], [0.0, 6.0]))).unwrap_err();
+        assert_eq!(e.code, centre::TIGHT, "{e:?}");
+        assert!(e.detail.is_some() && e.hint.is_some());
+        // a point end section
+        let e = loft("F4", &[sq(0.0, 10.0), point_profile(30.0)], &with_centre(arc_spine([0.0, 0.0], [5.0, 15.0], [0.0, 30.0]))).unwrap_err();
+        assert_eq!(e.code, centre::APEX);
+        // guides
+        let line = guides::GuideIn { pts: (0..=8).map(|i| Vec3::new(10.0 - 5.0 * i as f64 / 8.0, 30.0 * i as f64 / 8.0, 0.0)).collect() };
+        let e = loft("F4", &profiles, &LoftOpts { guides: vec![line.clone()], ..with_centre(arc_spine([0.0, 0.0], [5.0, 15.0], [0.0, 30.0])) }).unwrap_err();
+        assert_eq!(e.code, centre::GUIDES);
+        // a straight centre line with guides is the guided loft
+        let ok = loft("F4", &profiles, &LoftOpts { guides: vec![line], ..with_centre(line_spine([0.0, 0.0], [0.0, 30.0])) }).unwrap();
+        assert!((vol(&ok) - 7000.0).abs() < 1e-6);
+    }
+
+    /// Surface lofts follow the centre line as well (open profiles): same faces, a bent (longer) sheet.
+    #[test]
+    fn centre_line_surface_loft() {
+        let open = |y: f64, h: f64| {
+            let mut p = square_profile(y, h);
+            p.closed = false;
+            p.segs.truncate(2);
+            p
+        };
+        let plain = loft("F4", &[open(0.0, 10.0), open(30.0, 5.0)], &LoftOpts { surface: true, ..Default::default() }).unwrap();
+        let bent = loft("F4", &[open(0.0, 10.0), open(30.0, 5.0)], &LoftOpts { surface: true, centre: Some(arc_spine([0.0, 0.0], [5.0, 15.0], [0.0, 30.0])), ..Default::default() }).unwrap();
+        assert_eq!(bent.body.num_faces(), plain.body.num_faces());
+        assert!((mesh_area(&bent) - mesh_area(&plain)).abs() > 0.02 * mesh_area(&plain), "{} vs {}", mesh_area(&bent), mesh_area(&plain));
+        // the right corner rail is that of the closed solid (oracle bow2_s5: x max 11.592)
+        assert!((xmax(&bent) - 11.592).abs() < 0.02, "{}", xmax(&bent));
+    }
+
+    /// `startNormal` together with a centre line: the end tangent constrains the local coordinates (oracle
+    /// `bowStartNormal`: 7041.7017, x max 12.692).
+    #[test]
+    fn centre_line_with_a_start_normal() {
+        let sq = |y, h| square_at(y, h, 0.0);
+        let profiles = [sq(0.0, 10.0), sq(30.0, 5.0)];
+        let opts = LoftOpts { start_normal: Some(1.0), ..with_centre(arc_spine([0.0, 0.0], [5.0, 15.0], [0.0, 30.0])) };
+        let out = loft("F4", &profiles, &opts).unwrap();
+        check_closed(&out.body);
+        assert!((vol(&out) - 7041.7017).abs() < 2e-3 * 7041.7017, "{}", vol(&out));
+        assert!((xmax(&out) - 12.692).abs() < 0.05, "{}", xmax(&out));
+        assert!(out.ends.d0.is_some(), "the marker keeps the end tangent");
+    }
+
+    /// A plain three-profile loft whose middle section is shifted sideways: the side faces that contain all
+    /// three edges are flat but their rails are curved (the plane path used to hit `unreachable!`).
+    /// Oracle: 15360, x from -8 to 14.
+    #[test]
+    fn shifted_middle_section_keeps_flat_faces_with_curved_rails() {
+        let p = [square_at(0.0, 8.0, 0.0), square_at(30.0, 8.0, 6.0), square_at(60.0, 8.0, 0.0)];
+        let out = loft("F4", &p, &LoftOpts::default()).unwrap();
+        check_closed(&out.body);
+        assert!((vol(&out) - 15360.0).abs() < 1e-6 * 15360.0, "{}", vol(&out));
+        assert!((xmax(&out) - 14.0).abs() < 0.05, "{}", xmax(&out));
     }
 }

@@ -387,7 +387,7 @@ pub fn guided_stations(mut chains: Vec<Chain>, guides: &[GuideIn]) -> Result<Gui
             .map_err(|_| err("loftFailed", "guide rail fit"))?;
         rails[vi] = Some(GuideRail { curve });
     }
-    Ok(Guided { st: Stations { closed, tags, chains, ts }, rails })
+    Ok(Guided { st: Stations { closed, tags, chains, ts, dense: vec![] }, rails })
 }
 
 /// Silence "unused" for the curve type used by callers.
