@@ -1,0 +1,4 @@
+{
+  "box-seam-between-faces": "the oracle also projects a source point at x = 40 exactly along its ray that then lies inside the side face x = 40 (a vertical segment down the face, joined to the top run); ours skips a ray lying in a face",
+  "curve-editCurve-planar": "the input curve is an editCurve rebuild whose fit differs from the oracle's (docs/ck-ops-stubs.md), so the projected shapes differ by about 1e-2"
+}
