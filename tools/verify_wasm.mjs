@@ -109,7 +109,7 @@ results.push(...(await mapLimit(SWEEPS, quick ? 1 : 2, runSweep)));
 {
   const out = path.join(tmp, 'crashfuzz.json');
   const cases = quick ? 200 : 5000;
-  const r = await run('node', [path.join(root, 'tools/crash_fuzz.mjs'), '--wasm', wasm, '--cases', String(cases), '--seed', '7', '--no-shrink', '--workers', '8', '--json', out], (quick ? 90 : 360) * 1000);
+  const r = await run('node', [path.join(root, 'tools/crash_fuzz.mjs'), '--wasm', wasm, '--cases', String(cases), '--seed', '7', '--no-shrink', '--workers', '8', '--timeout', '2500', '--json', out], (quick ? 90 : 360) * 1000);
   const d = readJson(out);
   if (d?.results) results.push({ name: 'crashfuzz', status: 'ok', sec: r.sec, rows: d.results, ...compare(d.results, baseline('tools/crash_fuzz_baseline.json'), 'id') });
   else results.push({ name: 'crashfuzz', status: 'error', sec: r.sec, reason: (r.detail || r.status) });
