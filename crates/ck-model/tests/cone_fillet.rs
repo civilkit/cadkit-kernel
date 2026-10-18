@@ -27,6 +27,8 @@ struct Built {
     issues: usize,
     cones: usize,
     freeform: usize,
+    /// Faces of the fillet feature F9.
+    blends: usize,
 }
 
 /// Regen a fixture.
@@ -44,7 +46,8 @@ fn build(src: &str) -> Built {
             _ => {}
         }
     }
-    Built { errors, volume: ck_topo::mass::mass_props(b).volume, issues: ck_topo::check::check(b, 1e-6).len(), cones, freeform }
+    let blends = b.face_ids().filter(|&f| b.face(f).name.feature == "F9" && matches!(b.face(f).name.role, ck_topo::body::Role::Blend(_))).count();
+    Built { errors, volume: ck_topo::mass::mass_props(b).volume, issues: ck_topo::check::check(b, 1e-6).len(), cones, freeform, blends }
 }
 
 /// 55 x 55 x 3 plate with R6 corners.
@@ -131,4 +134,95 @@ fn r3_fillet_at_the_foot_adds_material() {
     assert!(b.errors.is_empty(), "{:?}", b.errors);
     assert_eq!((b.issues, b.freeform), (0, 0));
     assert!(b.volume > base, "{} vs base {}", b.volume, base);
+}
+
+// ---- the rim / foot circle is two arcs (the loft splits a circle at a seam): one smooth ring ----
+
+/// Fillet fixture result that must be valid, analytic and ONE blend face all the way round the circle.
+fn ring(src: &str) -> Built {
+    let b = build(src);
+    assert!(b.errors.is_empty(), "{:?}", b.errors);
+    assert_eq!((b.issues, b.freeform), (0, 0));
+    assert_eq!(b.blends, 1, "the fillet is one face around the whole ring, no step at the seam");
+    b
+}
+
+fn near(a: f64, want: f64) {
+    assert!((a - want).abs() < 1e-6 * want, "{a} vs {want}");
+}
+
+/// Selecting either one arc of a split ring or both fillets the whole circle, the same way.
+#[test]
+fn one_arc_of_the_split_ring_fillets_the_whole_circle() {
+    let both = ring(include_str!("../../../tools/cases/cone_fillet/fillet_rim.json")).volume;
+    near(both, 13211.8785);
+    near(ring(include_str!("../../../tools/cases/cone_fillet/fillet_rim_one_arc.json")).volume, both);
+    let outer = ring(include_str!("../../../tools/cases/cone_fillet/fillet_rim_outer.json")).volume;
+    near(outer, 13209.9017);
+    near(ring(include_str!("../../../tools/cases/cone_fillet/fillet_rim_outer_one_arc.json")).volume, outer);
+    let foot = ring(include_str!("../../../tools/cases/cone_fillet/fillet_foot.json")).volume;
+    near(foot, 13670.2993);
+    near(ring(include_str!("../../../tools/cases/cone_fillet/fillet_foot_one_arc.json")).volume, foot);
+}
+
+/// The convex round-over of the wall's outer base edge is a ring too.
+#[test]
+fn round_over_of_the_wall_base_is_one_ring() {
+    near(ring(include_str!("../../../tools/cases/cone_fillet/fillet_foot_outer_round.json")).volume, 13200.6620);
+}
+
+/// The seam of the arcs does not depend on the cone's orientation in space.
+#[test]
+fn fillets_do_not_depend_on_where_the_seam_is() {
+    for src in [
+        include_str!("../../../tools/cases/cone_fillet/fillet_rim_axis_top.json"),
+        include_str!("../../../tools/cases/cone_fillet/fillet_rim_axis_right.json"),
+    ] {
+        near(ring(src).volume, 13211.8785);
+    }
+    for src in [
+        include_str!("../../../tools/cases/cone_fillet/fillet_foot_axis_top.json"),
+        include_str!("../../../tools/cases/cone_fillet/fillet_foot_axis_right.json"),
+    ] {
+        near(ring(src).volume, 13670.2993);
+    }
+}
+
+/// A cone that flares upward (R8 -> R11.5): rims and foot.
+#[test]
+fn flaring_cone_fillets_are_rings() {
+    let base = build(include_str!("../../../tools/cases/cone_fillet/thicken_flare.json"));
+    assert!(base.errors.is_empty(), "{:?}", base.errors);
+    let r = ring(include_str!("../../../tools/cases/cone_fillet/fillet_flare_rim_inner.json")).volume;
+    near(r, 11685.0246);
+    let o = ring(include_str!("../../../tools/cases/cone_fillet/fillet_flare_rim_outer_one_arc.json")).volume;
+    near(o, 11682.9615);
+    // concave foot: adds material to the unfilleted 11700.7757
+    let f = ring(include_str!("../../../tools/cases/cone_fillet/fillet_flare_foot.json")).volume;
+    near(f, 11721.4683);
+    assert!(r < 11700.7757 && o < 11700.7757 && f > 11700.7757);
+}
+
+/// Equal radii: the loft is an exact cylinder. Wall = 2 pi r L t + pi t^2 L outward; the fillets follow Pappus
+/// (the section of a corner fillet has area (1 - pi/4) r^2 and its centroid lies 0.2232 r from the corner).
+#[test]
+fn cylinder_wall_and_its_fillets() {
+    let base = 55.0 * 55.0 * 3.0 - 4.0 * (1.0 - PI / 4.0) * 36.0 * 3.0 + 2.0 * PI * 18.5 * 20.0 * 2.0 + PI * 4.0 * 20.0;
+    let t = build(include_str!("../../../tools/cases/cone_fillet/thicken_cylinder.json"));
+    assert!(t.errors.is_empty(), "{:?}", t.errors);
+    assert_eq!((t.issues, t.freeform), (0, 0));
+    near(t.volume, base);
+    let corner = |r: f64| (1.0 - PI / 4.0) * r * r;
+    let c = 0.2232;
+    // R1 on the inner top rim (convex, removes)
+    let v = ring(include_str!("../../../tools/cases/cone_fillet/fillet_cylinder_rim_inner.json")).volume;
+    assert!((v - (base - corner(1.0) * 2.0 * PI * (18.5 + c))).abs() < 2e-3 * (base - v), "{v}");
+    // R1 on the outer top rim, one arc picked
+    let v = ring(include_str!("../../../tools/cases/cone_fillet/fillet_cylinder_rim_outer_one_arc.json")).volume;
+    assert!((v - (base - corner(1.0) * 2.0 * PI * (20.5 - c))).abs() < 2e-3 * (base - v), "{v}");
+    // R3 at the foot, outside and (one arc picked) inside (concave, adds)
+    let v = ring(include_str!("../../../tools/cases/cone_fillet/fillet_cylinder_foot_outer.json")).volume;
+    assert!((v - (base + corner(3.0) * 2.0 * PI * (20.5 + c * 3.0))).abs() < 2e-3 * (v - base), "{v}");
+    let v = ring(include_str!("../../../tools/cases/cone_fillet/fillet_cylinder_foot_inner_one_arc.json")).volume;
+    assert!((v - (base + corner(3.0) * 2.0 * PI * (18.5 - c * 3.0))).abs() < 2e-3 * (v - base), "{v}");
 }

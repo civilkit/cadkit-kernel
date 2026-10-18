@@ -135,6 +135,37 @@ fn cone_sign(sheet: &Body, f: FaceId) -> f64 {
     }
 }
 
+/// A face on a cone, or on a cylinder that shares an edge with another face of the same cylinder (a loft's two
+/// half-cylinders): the frame and semi-angle (0 for a cylinder) whose generator normal turns with the angle, so the
+/// per-point normal of [`normal_at`] is needed.
+fn cone_like(sheet: &Body, f: FaceId) -> Option<(Frame, f64)> {
+    match &sheet.face(f).surface {
+        Surface::Cone { frame, semi_angle, .. } => Some((frame.clone(), *semi_angle)),
+        Surface::Cylinder { frame, r } => {
+            let mine = &sheet.face(f).surface;
+            let split = sheet.face(f).loops.iter().filter(|&&l| sheet.lp(l).alive).any(|&l| {
+                sheet.lp(l).coedges.iter().any(|&c| {
+                    let co = sheet.coedge(c);
+                    co.alive && sheet.edge_faces(co.edge).iter().any(|&g| g != f && same_cylinder(mine, &sheet.face(g).surface))
+                })
+            });
+            let _ = r;
+            split.then(|| (frame.clone(), 0.0))
+        }
+        _ => None,
+    }
+}
+
+fn same_cylinder(a: &Surface, b: &Surface) -> bool {
+    match (a, b) {
+        (Surface::Cylinder { frame: fa, r: ra }, Surface::Cylinder { frame: fb, r: rb }) => {
+            let scale = 1.0 + ra.abs().max(rb.abs());
+            fa.z.cross(fb.z).len() < 1e-9 && (fb.o - fa.o).cross(fa.z).len() < 1e-9 * scale && (ra - rb).abs() < 1e-9 * scale
+        }
+        _ => false,
+    }
+}
+
 /// Mid angle (about the cone axis) of the points a face's boundary covers; a full ring has no mid.
 fn face_mid_radial(sheet: &Body, f: FaceId, frame: &Frame) -> Vec3 {
     let mut acc = Vec3::ZERO;
@@ -161,25 +192,25 @@ fn face_mid_radial(sheet: &Body, f: FaceId, frame: &Frame) -> Vec3 {
 /// middle of the patch (the cone's normal turns with the angle, one fixed direction is wrong for a patch that
 /// spans a large angle).
 fn face_normal(sheet: &Body, f: FaceId) -> Vec3 {
-    match &sheet.face(f).surface {
-        Surface::Cone { frame, semi_angle, .. } => cone_normal_dir(frame, *semi_angle, face_mid_radial(sheet, f, frame)).scale(cone_sign(sheet, f)),
-        s => natural_normal(s),
+    match cone_like(sheet, f) {
+        Some((frame, semi)) => cone_normal_dir(&frame, semi, face_mid_radial(sheet, f, &frame)).scale(cone_sign(sheet, f)),
+        None => natural_normal(&sheet.face(f).surface),
     }
 }
 
 /// The face's normal at the point `p` of its boundary (`fallback` for a surface whose normal is constant).
 fn normal_at(sheet: &Body, f: FaceId, p: Vec3, fallback: Vec3) -> Vec3 {
-    match &sheet.face(f).surface {
-        Surface::Cone { frame, semi_angle, .. } => cone_normal_dir(frame, *semi_angle, radial_of(frame, p)).scale(cone_sign(sheet, f)),
-        _ => fallback,
+    match cone_like(sheet, f) {
+        Some((frame, semi)) => cone_normal_dir(&frame, semi, radial_of(&frame, p)).scale(cone_sign(sheet, f)),
+        None => fallback,
     }
 }
 
 /// Signed offset along the surface's own normal (`d` along the face's oriented normal).
 fn surface_offset(sheet: &Body, f: FaceId, d: f64) -> f64 {
-    match &sheet.face(f).surface {
-        Surface::Cone { .. } => d * cone_sign(sheet, f),
-        _ => d,
+    match cone_like(sheet, f) {
+        Some(_) => d * cone_sign(sheet, f),
+        None => d,
     }
 }
 
@@ -423,7 +454,7 @@ pub fn thicken(sheet: &Body, feature: &str, thickness: f64, side: Side, tol: f64
     // normal: the face keeps the sense that makes its outer loop run CCW about the outward normal (planes were
     // repaired above by reordering their loops)
     for fi in out.face_ids().collect::<Vec<_>>() {
-        if matches!(out.face(fi).surface, Surface::Cone { .. }) && !ck_topo::orient::loops_consistent(&out, fi) {
+        if matches!(out.face(fi).surface, Surface::Cone { .. } | Surface::Cylinder { .. }) && !ck_topo::orient::loops_consistent(&out, fi) {
             let sense = out.face(fi).sense;
             out.faces[fi.idx()].sense = !sense;
         }
@@ -731,7 +762,8 @@ fn extend_open_edge(
     // A rim circle of a cone patch moves onto the offset cone: the centre slides along the axis and the radius
     // changes by the normal's components (the patch's other boundary edges are generators of the same cone, which
     // end exactly on the offset circles, so there is no corner to extend).
-    if let (Surface::Cone { frame, .. }, Curve::Circle { frame: cf, r: rc }) = (&sheet.face(f).surface, &se.curve) {
+    if let (Some((frame, _)), Curve::Circle { frame: cf, r: rc }) = (cone_like(sheet, f), &se.curve) {
+        let frame = &frame;
         let coaxial = cf.z.cross(frame.z).len() < 1e-9 && (cf.o - frame.o).cross(frame.z).len() < 1e-7 * (1.0 + rc);
         let neighbours_same = [se.t0, se.t1].iter().all(|&t| {
             let p = se.curve.eval(t);
@@ -743,7 +775,7 @@ fn extend_open_edge(
                     }
                     let e2 = sheet.edge(co.edge);
                     let near = e2.curve.eval(e2.t0).dist(p) <= tol || e2.curve.eval(e2.t1).dist(p) <= tol;
-                    !near || sheet.edge_faces(co.edge).iter().all(|&g| g == f || same_cone(&sheet.face(f).surface, &sheet.face(g).surface))
+                    !near || sheet.edge_faces(co.edge).iter().all(|&g| g == f || same_cone(&sheet.face(f).surface, &sheet.face(g).surface) || same_cylinder(&sheet.face(f).surface, &sheet.face(g).surface))
                 })
             })
         });
