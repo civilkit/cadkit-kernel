@@ -19,9 +19,9 @@ from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
 from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeWire
 from OCP.BRepGProp import BRepGProp
 from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
-from OCP.GC import GC_MakeCircle
+from OCP.GC import GC_MakeArcOfCircle, GC_MakeCircle
 from OCP.GProp import GProp_GProps
-from OCP.gp import gp_Dir, gp_Pnt, gp_Vec
+from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt, gp_Vec
 from OCP.ShapeExtend import ShapeExtend_WireData
 from OCP.ShapeFix import ShapeFix_Wire
 from OCP.ShapeFix import ShapeFix_Shape
@@ -60,6 +60,13 @@ def world(t, p):
     y = vec(t.get("y_axis", {}))
     z = vec(t.get("z_axis", {}))
     return addp(o, addp(addp(mul(x, p[0]), mul(y, p[1])), mul(z, p[2])))
+
+
+def rot_vec(t, v):
+    x = vec(t.get("x_axis", {"x": 1, "y": 0, "z": 0}))
+    y = vec(t.get("y_axis", {"x": 0, "y": 1, "z": 0}))
+    z = vec(t.get("z_axis", {"x": 0, "y": 0, "z": 1}))
+    return addp(addp(mul(x, v[0]), mul(y, v[1])), mul(z, v[2]))
 
 
 def axis(v):
@@ -266,6 +273,24 @@ def build_occt(j):
     return cur, None
 
 
+def loop_is_cw(loop, t):
+    pts = []
+    for c in loop["profile_curves"]:
+        if c["type"] == "Line3D":
+            pts.append(world(t, vec(c["start_point"])))
+        elif c["type"] == "Arc3D":
+            pts.append(world(t, vec(c["start_point"])))
+        else:
+            return None
+    if len(pts) < 3:
+        return None
+    a = 0.0
+    for i in range(len(pts)):
+        p, q = pts[i], pts[(i + 1) % len(pts)]
+        a += p[0] * q[1] - q[0] * p[1]
+    return a < 0
+
+
 def emit_sketch(sk, profile, ctx):
     key = (id(sk), profile)
     if key in ctx["sketch_ids"]:
@@ -304,7 +329,9 @@ def emit_sketch(sk, profile, ctx):
     n = 0
     for loop in sk["profiles"][profile]["loops"]:
         prev = None
-        for c in loop["profile_curves"]:
+        loop_cw = loop_is_cw(loop, t)
+        curves = list(reversed(loop["profile_curves"])) if loop_cw else loop["profile_curves"]
+        for c in curves:
             n += 1
             if c["type"] == "Line3D":
                 p1 = to2(world(t, vec(c["start_point"]))); p2 = to2(world(t, vec(c["end_point"])))
@@ -319,10 +346,32 @@ def emit_sketch(sk, profile, ctx):
                 entities.append({"type": "circle", "id": f"e{n}", "c": pid(ctr), "r": float(c["radius"])})
                 prev = None
             elif c["type"] == "Arc3D":
-                ctr = to2(world(t, vec(c["center_point"])))
-                p1 = to2(world(t, vec(c["start_point"]))); p2 = to2(world(t, vec(c["end_point"])))
-                if prev is not None and math.hypot(prev[0] - p1[0], prev[1] - p1[1]) > math.hypot(prev[0] - p2[0], prev[1] - p2[1]):
-                    p1, p2 = p2, p1
+                cw = world(t, vec(c["center_point"]))
+                ctr = to2(cw)
+                nrm = unit(rot_vec(t, vec(c.get("normal", {"x": 0, "y": 0, "z": 1}))))
+                ref = rot_vec(t, vec(c.get("reference_vector", {"x": 1, "y": 0, "z": 0})))
+                ref = unit(addp(ref, mul(nrm, -dot(ref, nrm))))
+                if norm(ref) < 1e-9:
+                    ref = unit(cross(nrm, (0, 0, 1)))
+                yv = unit(cross(nrm, ref))
+                r = float(c["radius"])
+                a0, a1 = float(c["start_angle"]), float(c["end_angle"])
+                if a1 <= a0:
+                    a1 += TAU
+                am = 0.5 * (a0 + a1)
+                intended = to2(addp(cw, addp(mul(ref, r * math.cos(am)), mul(yv, r * math.sin(am)))))
+                S = to2(world(t, vec(c["start_point"]))); E = to2(world(t, vec(c["end_point"])))
+                # midpoint of the CCW arc from S to E
+                as_ = math.atan2(S[1] - ctr[1], S[0] - ctr[0])
+                ae_ = math.atan2(E[1] - ctr[1], E[0] - ctr[0])
+                if ae_ <= as_:
+                    ae_ += TAU
+                mm = 0.5 * (as_ + ae_)
+                ccw_mid = (ctr[0] + r * math.cos(mm), ctr[1] + r * math.sin(mm))
+                if (intended[0] - ctr[0]) * (ccw_mid[0] - ctr[0]) + (intended[1] - ctr[1]) * (ccw_mid[1] - ctr[1]) >= 0:
+                    p1, p2 = S, E
+                else:
+                    p1, p2 = E, S
                 entities.append({"type": "arc", "id": f"e{n}", "c": pid(ctr), "p1": pid(p1), "p2": pid(p2)})
                 prev = p2
             else:
@@ -425,28 +474,35 @@ def main():
             skips[bad] = skips.get(bad, 0) + 1
             continue
         try:
-            solid, err = build_occt(j)
-            if solid is None or solid.IsNull():
-                skips[f"occt: {err}"] = skips.get(f"occt: {err}", 0) + 1
-                continue
-            p = GProp_GProps(); BRepGProp.VolumeProperties_s(solid, p); vol = p.Mass()
-            reference = "ok"
-            if vol < 0:
-                vol = abs(vol); reference = "reversed"
-            if not (vol > 0) or not math.isfinite(vol):
-                try:
-                    fix = ShapeFix_Shape(solid); fix.Perform(); fixed = fix.Shape()
-                    p = GProp_GProps(); BRepGProp.VolumeProperties_s(fixed, p); vol = abs(p.Mass())
-                    solid = fixed
-                    reference = "fixed" if vol > 0 else "unusable"
-                except Exception:
-                    reference = "unusable"
-            a = GProp_GProps(); BRepGProp.SurfaceProperties_s(solid, a); area = a.Mass()
             part, err = build_part(j)
             if part is None:
                 skips[f"wire: {err}"] = skips.get(f"wire: {err}", 0) + 1
                 continue
-            cases[os.path.basename(f)] = {"part": part, "occt": {"volume": vol, "area": area, "reference": reference}}
+            vol, area, reference, oerr = 0.0, 0.0, "unusable", None
+            try:
+                solid, err = build_occt(j)
+                if solid is None or solid.IsNull():
+                    oerr = err
+                else:
+                    p = GProp_GProps(); BRepGProp.VolumeProperties_s(solid, p); vol = p.Mass()
+                    reference = "ok"
+                    if vol < 0:
+                        vol = abs(vol); reference = "reversed"
+                    if not (vol > 0) or not math.isfinite(vol):
+                        try:
+                            fix = ShapeFix_Shape(solid); fix.Perform(); fixed = fix.Shape()
+                            p = GProp_GProps(); BRepGProp.VolumeProperties_s(fixed, p); vol = abs(p.Mass())
+                            solid = fixed
+                            reference = "fixed" if vol > 0 else "unusable"
+                        except Exception:
+                            reference = "unusable"
+                    a = GProp_GProps(); BRepGProp.SurfaceProperties_s(solid, a); area = a.Mass()
+            except Exception as e:
+                oerr = type(e).__name__
+            occt = {"volume": vol, "area": area, "reference": reference}
+            if oerr:
+                occt["error"] = oerr
+            cases[os.path.basename(f)] = {"part": part, "occt": occt}
         except Exception as e:
             skips[f"exception: {type(e).__name__}"] = skips.get(f"exception: {type(e).__name__}", 0) + 1
     json.dump(cases, open(args.out, "w"), indent=1)
