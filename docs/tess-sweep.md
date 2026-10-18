@@ -36,3 +36,11 @@ every case. The worst surface is the torus (0.8 % volume), then the cylinder
 height at the default tolerance is the cause.
 
 See `docs/mimo-brief-tess.md`.
+
+## Exact-cone wasm (`c917f6ac`)
+`loft2` now carries a true `cone` face. Ten cases fail: volume 7.9e-4 ..
+1.71e-3, area up to 1.12e-3, cone face 1706 .. 4592 triangles, chord
+deviation 0.017 .. 0.022 mm. The old B-spline version of the same shapes had
+576 triangles/face and 5.55e-4 volume error. The plain cone primitive behaves
+the same (9/20, max 1.51e-3), so the exact cone face needs finer
+triangulation; the 0.1 % threshold is not the problem.

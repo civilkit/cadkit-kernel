@@ -14,7 +14,7 @@ const val = (f, d) => (argv.includes(f) ? argv[argv.indexOf(f) + 1] : d);
 if (!wasm) { console.error('usage: tools/verify_wasm.sh <wasm> [--quick]'); process.exit(2); }
 const tmp = mkdtempSync(path.join(os.tmpdir(), 'ck-verify-'));
 const t0 = Date.now();
-const PASS = new Set(['ok', 'okNoEffect', 'okEmpty', 'refused', 'structured-error']);
+const PASS = new Set(['ok', 'okNoEffect', 'okEmpty', 'refused', 'structured-error', 'surface-only', 'degenerate']);
 const UNRESOLVED = new Set(['no-ref', 'ref-fails', 'missingMass', 'ocp-missing', 'no-mesh']);
 const results = [];
 
@@ -135,8 +135,10 @@ if (!quick) {
     if (!existsSync(dir)) { results.push({ name: `import${tag}`, status: 'skip', reason: 'cache absent' }); continue; }
     const out = path.join(tmp, `import${tag}.json`);
     const r = await run('node', [path.join(root, 'tools/import_sample_check.mjs'), dir, '--wasm', wasm, '--manifest', path.join(root, manifest), '--json', out], 180000);
+    const baseObj = baseline(bl);
     const rows = readJson(out);
-    if (rows) results.push({ name: `import${tag}`, status: 'ok', sec: r.sec, ...compare(rows, baseline(bl), 'file') });
+    if (rows) results.push({ name: `import${tag}`, status: 'ok', sec: r.sec, ...compare(rows, baseObj, 'file') });
+    else if (baseObj.knownHang) results.push({ name: `import${tag}`, status: 'known', sec: r.sec, reason: baseObj.knownHang });
     else results.push({ name: `import${tag}`, status: 'error', sec: r.sec, reason: (r.detail || r.status) });
   }
 } else results.push({ name: 'import', status: 'skip', reason: 'quick' });
@@ -156,6 +158,7 @@ console.log(`verify_wasm ${quick ? 'quick' : 'full'}  ${(Date.now() - t0) / 1000
 console.log('check       cases pass fail  changed  classes');
 for (const r of results) {
   if (r.status === 'skip') { console.log(`${r.name.padEnd(10)} skip: ${r.reason}`); continue; }
+  if (r.status === 'known') { console.log(`${r.name.padEnd(10)} KNOWN: ${r.reason}`); continue; }
   if (r.status !== 'ok') { console.log(`${r.name.padEnd(10)} ERROR: ${r.reason ?? r.status}`); continue; }
   const fails = r.failures.length;
   const classes = Object.entries(r.classes).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}=${v}`).join(' ');

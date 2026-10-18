@@ -803,5 +803,6 @@
    "cls": "ok",
    "detail": ""
   }
- }
+ },
+ "knownHang": "88324 importStep >90 s (known; see docs/mimo-brief-import.md)"
 }

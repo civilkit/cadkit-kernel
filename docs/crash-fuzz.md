@@ -81,3 +81,12 @@ Every minimal document is in `tools/crash_fuzz_baseline.json` (`minimal`),
 with its full feature list. The tables above are the 23 distinct groups;
 `case_104` (57 cases) is the largest: a circular `surfaceExtrude` followed by
 `thicken` panics at `thicken.rs:550`.
+
+## Cone wasm (`c917f6ac`)
+5000-case replay: 647 ok, 4037 structured-error, 238 trap, 39 hang, 24
+invalid, 15 surface-only/degenerate (pass classes). Traps remain the same
+`thicken.rs` root (line shifted to 647). 35 former hangs became structured
+errors: `extrude` 9, `fillet` 8, `lpattern` 5, `mirror` 4, `thicken` 3,
+`draft` 2, `shell` 2, `chamfer` 2. The 15 former `wrong-answer` cases replay
+identically on the previous gated wasm and this one; they are surface-only or
+degenerate documents, not a cone regression.

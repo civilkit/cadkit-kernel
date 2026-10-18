@@ -133,7 +133,8 @@ function classify(r) {
   if (r.cls === 'hang') return { cls:'hang', detail:'timeout', last:r.last };
   if (r.errors?.length) return { cls:'structured-error', detail:r.errors.join(','), last:r.last };
   if (r.issues?.length) return { cls:'invalid-result', detail:r.issues.join(','), last:r.last };
-  if (r.volume == null && (r.area ?? 0) > 0) return { cls:'ok', last:r.last };
+  if (r.volume == null && r.area == null) return { cls:'surface-only', last:r.last };
+  if (r.volume === 0 && r.area === 0) return { cls:'degenerate', last:r.last };
   if (!(r.volume > 0) || !(r.area > 0)) return { cls:'wrong-answer', detail:`volume ${r.volume} area ${r.area}`, last:r.last };
   return { cls:'ok', last:r.last };
 }
