@@ -100,6 +100,17 @@ Invalid codes (some files carry two): `TESSELLATION_OPEN` 12,
 display-mesh robustness signal, separate from the modeling corpus. The tool
 is `tools/import_sample_check.mjs`.
 
+### Import regression check (opt-in, research-only)
+
+`tools/import_sample_check.mjs` reads a manifest of fixed ids and classifies
+each file as `ok` / `invalid` / `import-failed` / `missing`. `--check`
+compares against a baseline; `--update-baseline` rewrites it. Baselines:
+`tools/import_baseline_1234.json`, `tools/import_baseline_5678.json`
+(185 ok / 15 invalid each). The sample ids are in
+`tools/fusion_sample_1234.json` / `_5678.json`; `tools/fusion_fetch.sh`
+recreates only those files in `~/.cache`. Failure triage is in
+`docs/mimo-brief-import.md`.
+
 ## 3. Other kernels
 
 | project | licence | test corpus? |
