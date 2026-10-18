@@ -98,7 +98,7 @@ async function runSweep(s) {
   if (hang) return { name: s.name, status: 'error', sec, reason: 'hang' };
   return { name: s.name, status: 'ok', sec, ...compare(all, base) };
 }
-results.push(...(await mapLimit(SWEEPS, 2, runSweep)));
+results.push(...(await mapLimit(SWEEPS, quick ? 1 : 2, runSweep)));
 
 // OCCT corpus
 const occt = '/tmp/occt';
