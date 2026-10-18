@@ -18,8 +18,8 @@ sample count, so a new wasm can be compared without mixing kernels.
 
 ## Result (kit wasm, seed 7, 40 samples/template)
 
-**600 cases: 537 ok, 32 `blendOverflow`, 28 `wrongVolume`, 3 `blendFailed`,
-0 `ref-fails`.** OCP built every reference, so all failures are ours.
+**640 cases: 575 ok, 32 `blendOverflow`, 28 `wrongVolume`, 3 `blendFailed`,
+2 `kernel-null`, 0 `ref-fails`.** OCP built every reference, so all failures are ours.
 
 | template | n | ok | blendOverflow | wrongVolume | blendFailed |
 |---|---|---|---|---|---|
@@ -38,6 +38,7 @@ sample count, so a new wasm can be compared without mixing kernels.
 | chamfer2_box | 40 | 40 | 0 | 0 | 0 |
 | chamferA_box | 40 | 40 | 0 | 0 | 0 |
 | var_box | 40 | 9 | 0 | 28 | 3 |
+| rrect_loop | 40 | 38 | 0 | 0 | 0 |
 
 ## Failure boundaries
 
@@ -48,19 +49,25 @@ sample count, so a new wasm can be compared without mixing kernels.
 | cyl_top | blendOverflow | radius 6.29 .. 24.42 | radius 0.55 .. 28.54 |
 | cyl_bot | blendOverflow | radius 6.29 .. 24.42 | radius 0.55 .. 28.54 |
 | var_box | wrongVolume/blendFailed | r1 0.21 .. 6.96; r2 4.29 .. 18.41 | r1 0.21 .. 6.96; r2 3.18 .. 18.41 |
+| rrect_loop | kernel-null | cr 6.44 / 3.84; fillet 0.617 / 0.609 | cr 2.01 .. 15.92; fillet 0.21 .. 4.42 |
 
 The box failures start when the radius approaches half the shortest side
 (the four parallel edges meet); the cylinder failures start when the rim
 radius approaches half the height. OCCT succeeds on all of them, so these are
 genuine large-radius gaps, not bad references.
 
+The rounded-rectangle tangent loop (`w`, `d`, `cr`, `h`; top-loop fillet
+with `propagate`) passes 38/40. The two failures are `kernel-null` — the wasm
+stopped responding for that request (first two rrect cases in seed 7; three in
+seed 11). OCP completes the same fillets, so the reference is not the problem.
+
 See `docs/mimo-brief-fillets.md` for the ranked kernel tasks and exact repro
 ids.
 
 ## Second seed (seed 11)
 
-Same 600 cases, different parameters: **554 ok, 30 `wrongVolume`, 16
-`blendOverflow`, 0 `blendFailed`, 0 `ref-fails`.**
+Same 640 cases, different parameters: **591 ok, 30 `wrongVolume`, 16
+`blendOverflow`, 0 `blendFailed`, 3 `kernel-null`, 0 `ref-fails`.**
 
 | template | n | ok | blendOverflow | wrongVolume |
 |---|---|---|---|---|
@@ -71,6 +78,7 @@ Same 600 cases, different parameters: **554 ok, 30 `wrongVolume`, 16
 | chamferA_box | 40 | 39 | 1 | 0 |
 | var_box | 40 | 10 | 0 | 30 |
 | all other templates | 280 | 280 | 0 | 0 |
+| rrect_loop | 40 | 37 | 0 | 0 (3 `kernel-null`) |
 
 The large-radius boundary moves with the random sizes (seed 7 had more
 parallel/all-edge failures; seed 11 hits tube rims and one distance-angle

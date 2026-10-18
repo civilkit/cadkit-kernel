@@ -109,7 +109,7 @@ def base(spec):
         p = BRepPrimAPI_MakeBox(spec['w'], spec['d'], spec['pt']).Shape()
         b = BRepPrimAPI_MakeCylinder(spec['br'], spec['bh']).Shape()
         from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
-        from OCP.gp import gp_Trsf, gp_Vec
+        from OCP.gp import gp_Trsf
         tr = gp_Trsf(); tr.SetTranslation(gp_Vec(spec['bx'], spec['by'], spec['pt']))
         b = BRepBuilderAPI_Transform(b, tr, True).Shape()
         f = BRepAlgoAPI_Fuse(p, b); f.Build(); return f.Shape()
@@ -117,7 +117,7 @@ def base(spec):
         p = BRepPrimAPI_MakeBox(spec['w'], spec['d'], spec['h']).Shape()
         c = BRepPrimAPI_MakeCylinder(spec['r'], spec['h'] + 2).Shape()
         from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
-        from OCP.gp import gp_Trsf, gp_Vec
+        from OCP.gp import gp_Trsf
         tr = gp_Trsf(); tr.SetTranslation(gp_Vec(spec['cx'], spec['cy'], -1))
         c = BRepBuilderAPI_Transform(c, tr, True).Shape()
         f = BRepAlgoAPI_Cut(p, c); f.Build(); return f.Shape()
@@ -133,7 +133,7 @@ def base(spec):
             d=(u[0]/lu+v[0]/lv,u[1]/lu+v[1]/lv); ld=_m.hypot(*d) or 1.0
             r=lu
             mid=(c[0]+d[0]/ld*r,c[1]+d[1]/ld*r)
-            return BRepBuilderAPI_MakeEdge(GC_MakeArcOfCircle(gp_Pnt(a[0],a[1],0),gp_Pnt(b[0],b[1],0),gp_Pnt(mid[0],mid[1],0)).Value()).Edge()
+            return BRepBuilderAPI_MakeEdge(GC_MakeArcOfCircle(gp_Pnt(a[0],a[1],0),gp_Pnt(mid[0],mid[1],0),gp_Pnt(b[0],b[1],0)).Value()).Edge()
         mk.Add(BRepBuilderAPI_MakeEdge(gp_Pnt(P[0][0],P[0][1],0),gp_Pnt(P[1][0],P[1][1],0)).Edge())
         mk.Add(arc(P[1],P[2],C[0]))
         mk.Add(BRepBuilderAPI_MakeEdge(gp_Pnt(P[2][0],P[2][1],0),gp_Pnt(P[3][0],P[3][1],0)).Edge())

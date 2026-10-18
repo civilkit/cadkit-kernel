@@ -81,6 +81,7 @@ const baseFns = {
   tube: (p) => [...cyl(p.ro, p.h), ...cyl(p.ri, p.h + 2, 0, 0, -1, 'cut')],
   boss: (p) => [...box(p.w, p.d, p.pt), ...cyl(p.br, p.bh, p.bx, p.by, p.pt)],
   hole: (p) => [...box(p.w, p.d, p.h), ...cyl(p.r, p.h + 2, p.cx, p.cy, -1, 'cut')],
+  rrect: (p) => rrectBase(p),
 
 };
 
@@ -151,6 +152,11 @@ function generate() {
     const r1 = rr(0.02, 0.2) * Math.min(w, d, h), r2 = rr(0.25, 0.6) * Math.min(w, d, h);
     addCase(`var_box_${i}`, 'var_box', p, { kind: 'varfillet', r1, r2 }, boxPicks(p, 'edge1'));
   }
+  for (let i = 0; i < N; i++) {
+    const rw = rr(20, 60), rd = rr(20, 60), rcr = rr(2, Math.min(rw, rd) * 0.3), rh = rr(10, 40), rf = rr(0.05, 0.5) * Math.min(rcr, rh);
+    const rp = { w: rw, d: rd, cr: rcr, h: rh };
+    addCase(`rrect_loop_${i}`, 'rrect_loop', rp, { kind: 'fillet', radius: rf, propagate: true }, [{ at: [rw / 2, 0, rh], dir: [1, 0, 0] }]);
+  }
 }
 generate();
 const selected = only ? cases.filter((c) => c.id.includes(only)) : cases;
@@ -183,7 +189,7 @@ for (const c of selected) {
     : c.template.startsWith('tube') ? 'tube'
     : c.template.startsWith('boss') ? 'boss'
     : c.template.startsWith('hole') ? 'hole'
-    : 'box';
+    : c.template.startsWith('rrect') ? 'rrect' : 'box';
   const baseFeats = baseFns[kind](c.base);
   const r = regen(baseFeats);
   if (!r.ok || r.result?.errors?.length) { rows.push({ id: c.id, template: c.template, cls: 'base-error', detail: JSON.stringify(r.result?.errors ?? r.error).slice(0, 120) }); continue; }
@@ -200,6 +206,7 @@ for (const c of selected) {
     if (best && best.d > 0.99) feat.face = { kind: 'face', id: best.id }; else { rows.push({ id: c.id, template: c.template, cls: 'pick-error', detail: 'no face normal' }); continue; }
   }
   const r2 = regen([...baseFeats, feat]);
+  if (!r2) { rows.push({ id: c.id, template: c.template, cls: 'kernel-null', detail: 'no response' }); continue; }
   const errs = (r2.result?.errors ?? []).map(([, e]) => e.code);
   if (errs.length) { rows.push({ id: c.id, template: c.template, cls: errs[0], detail: errs.join(',') }); continue; }
   const m = mass();
