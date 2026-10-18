@@ -6,8 +6,9 @@ use super::tests::cross_free;
 use super::*;
 use std::sync::Arc;
 
-const FIXTURES: [(&str, &[u8]); 11] = [
+const FIXTURES: [(&str, &[u8]); 12] = [
     ("sans-barlow", include_bytes!("../tests/fixtures/fx-sans-barlow.ttf")),
+    ("liga-barlow", include_bytes!("../tests/fixtures/fx-liga-barlow.ttf")),
     ("sans-source-otf", include_bytes!("../tests/fixtures/fx-sans-source-otf.otf")),
     ("condensed-barlow", include_bytes!("../tests/fixtures/fx-condensed-barlow.ttf")),
     ("condensed-bebas", include_bytes!("../tests/fixtures/fx-condensed-bebas.ttf")),
@@ -145,8 +146,8 @@ fn loaded_font_gives_the_same_geometry_as_the_builtin() {
             let b = layout(&Spec { polyline: poly, ..spec(s, "t-gauge-copy", h) }).unwrap();
             same_layout(&a, &b);
         }
-        let ma = metrics(s, "gauge", None, h, 1.0).unwrap();
-        let mb = metrics(s, "t-gauge-copy", None, h, 1.0).unwrap();
+        let ma = metrics(s, "gauge", None, h, 1.0, false, false).unwrap();
+        let mb = metrics(s, "t-gauge-copy", None, h, 1.0, false, false).unwrap();
         assert_eq!(ma.advances, mb.advances);
         assert_eq!(ma.bbox, mb.bbox);
     }
@@ -162,7 +163,7 @@ fn missing_font_is_a_clear_error() {
     assert_eq!(e.code(), "textFontNotLoaded");
     let m = e.message();
     assert!(m.contains("\"t-not-there\"") && m.contains("loadFont"), "{m}");
-    assert_eq!(metrics("A", "t-not-there", None, 5.0, 1.0).unwrap_err().code(), "textFontNotLoaded");
+    assert_eq!(metrics("A", "t-not-there", None, 5.0, 1.0, false, false).unwrap_err().code(), "textFontNotLoaded");
     // unloading takes the font away again, no silent substitution
     load_font("t-gone", GAUGE.to_vec(), false).unwrap();
     assert!(layout(&spec("A", "t-gone", 5.0)).is_ok());
@@ -462,3 +463,105 @@ fn full_fonts_report() {
     }
 }
 const SHOW_REPORT: bool = false;
+
+
+// ---- Task 2: opt-in kerning, ligatures, merge of crossing contours ----
+
+/// `kern: true` adds the font's pair kerning between neighbours; the default is unchanged.
+#[test]
+fn kern_table_pairs_apply_only_when_opted_in() {
+    let name = "t-task2-sat";
+    load_font(name, fixture("script-satisfy").to_vec(), true).unwrap();
+    let font = resolve_font(name, None).unwrap();
+    // hand-decoded from the fixture's kern format-0 table: P+. = -82, B+B = -31, P+M = -51
+    assert_eq!(font.kern.value(16, 5), -82, "P + .");
+    assert_eq!(font.kern.value(12, 12), -31, "B + B");
+    assert_eq!(font.kern.value(16, 14), -51, "P + M");
+    assert_eq!(font.kern.value(11, 16), 0, "A + P is not a kern pair");
+    let scale = 10.0 / font.cap_height();
+    let plain = metrics("P.", name, None, 10.0, 1.0, false, false).unwrap();
+    let kerned = metrics("P.", name, None, 10.0, 1.0, true, false).unwrap();
+    assert!((kerned.advance - (plain.advance - 82.0 * scale)).abs() < 1e-9, "advance {} vs {}", kerned.advance, plain.advance);
+    assert!(kerned.bbox[2] - kerned.bbox[0] < plain.bbox[2] - plain.bbox[0], "the run must get narrower");
+    // liga is independent: the satisfy fixture has no GSUB
+    let also = metrics("P.", name, None, 10.0, 1.0, true, true).unwrap();
+    assert_eq!(also.advance, kerned.advance);
+    unload_font(name).unwrap();
+}
+
+/// GPOS PairPos: format 1 pairs and the class-based lookups, summed across subtables.
+#[test]
+fn gpos_kern_pairs_apply_when_opted_in() {
+    let name = "t-task2-gpos";
+    load_font(name, fixture("sans-barlow").to_vec(), true).unwrap();
+    let font = resolve_font(name, None).unwrap();
+    // hand-decoded from the fixture's GPOS kern lookups (subtable sums):
+    // x+e = -21 (fmt1) + -13 (class) + -21 (class) = -55; i+0 = -34 (class)
+    assert_eq!(font.kern.value(17, 11), -55, "x + e");
+    assert_eq!(font.kern.value(14, 18), -34, "i + 0");
+    assert_eq!(font.kern.value(7, 7), 0, "O + O is not kerned");
+    let scale = 10.0 / font.cap_height();
+    let plain = metrics("xe", name, None, 10.0, 1.0, false, false).unwrap();
+    let kerned = metrics("xe", name, None, 10.0, 1.0, true, false).unwrap();
+    assert!((kerned.advance - (plain.advance - 55.0 * scale)).abs() < 1e-9, "advance {} vs {}", kerned.advance, plain.advance);
+    unload_font(name).unwrap();
+}
+
+/// `liga: true` substitutes a GSUB ligature (fx-liga-barlow: e + e -> g).
+#[test]
+fn liga_substitutes_when_opted_in() {
+    let name = "t-task2-liga";
+    load_font(name, fixture("liga-barlow").to_vec(), true).unwrap();
+    let font = resolve_font(name, None).unwrap();
+    // the fixture's rule: glyph 11 (e) + glyph 11 -> glyph 13 (g)
+    assert_eq!(font.liga.ligature(&[11, 11], 0), Some((2, 13)));
+    assert_eq!(font.liga.ligature(&[11, 14], 0), None, "e + i is not a ligature");
+    assert_eq!(font.liga.ligature(&[11], 0), None, "a lone e stays");
+    let scale = 10.0 / font.cap_height();
+    let plain = metrics("ee", name, None, 10.0, 1.0, false, false).unwrap();
+    let lig = metrics("ee", name, None, 10.0, 1.0, false, true).unwrap();
+    assert_eq!(plain.chars, 2, "without liga two glyphs");
+    assert_eq!(lig.chars, 1, "with liga one glyph");
+    assert!((lig.advance - font.advance(13) * scale).abs() < 1e-9, "advance {}", lig.advance);
+    // the substituted glyph lays out and closes
+    let mut sp = spec("ee", name, 10.0);
+    sp.liga = true;
+    let l = layout(&sp).unwrap();
+    assert!(closed(&l));
+    assert!(l.regions.iter().flat_map(|r| r.loops()).all(|lp| !lp.is_empty()));
+    // default off: two separate glyphs, two regions
+    let l0 = layout(&spec("ee", name, 10.0)).unwrap();
+    assert_eq!(l0.regions.len(), 2, "without liga each e is its own region");
+    assert!(l.regions.len() < l0.regions.len(), "the ligature replaces both");
+    unload_font(name).unwrap();
+}
+
+/// `merge: true` unions a glyph whose contours cross; the default keeps them separate and warns.
+#[test]
+fn merge_unions_crossing_contours_when_opted_in() {
+    let name = "t-task2-merge";
+    load_font(name, fixture("variable-inter").to_vec(), true).unwrap();
+    let font = resolve_font(name, None).unwrap();
+    let crossing: Vec<char> = crate::overlapping_glyphs(&font);
+    assert!(!crossing.is_empty(), "the fixture must have a crossing glyph");
+    let ch = crossing[0];
+    let g = font.glyph_index(ch).unwrap();
+    let loops = glyph_loops(&font, g, None, RUN_SPANS);
+    assert!(glyph_overlaps(&loops), "the glyph crosses itself");
+    let tol = 0.005 * font.cap_height();
+    let merged = union_loops(&loops, tol).expect("the union closes");
+    assert!(!glyph_overlaps(&merged), "the union must not cross");
+    assert!(merged.iter().all(|l| l.len() >= 3));
+    // layout: default warns, merge:true does not
+    let mut off = spec(&ch.to_string(), name, 10.0);
+    let l0 = layout(&off).unwrap();
+    assert!(l0.warnings.iter().any(|w| w.code == "textOverlappingContours"), "{:?}", l0.warnings);
+    off.merge = true;
+    let l1 = layout(&off).unwrap();
+    assert!(!l1.warnings.iter().any(|w| w.code == "textOverlappingContours"), "{:?}", l1.warnings);
+    assert!(closed(&l1));
+    assert!(l1.area() > 0.0);
+    unload_font(name).unwrap();
+}
+
+
