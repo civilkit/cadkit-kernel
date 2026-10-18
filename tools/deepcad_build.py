@@ -22,6 +22,9 @@ from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
 from OCP.GC import GC_MakeCircle
 from OCP.GProp import GProp_GProps
 from OCP.gp import gp_Dir, gp_Pnt, gp_Vec
+from OCP.ShapeExtend import ShapeExtend_WireData
+from OCP.ShapeFix import ShapeFix_Wire
+from OCP.ShapeFix import ShapeFix_Shape
 
 TAU = 2 * math.pi
 
@@ -125,18 +128,52 @@ def loop_points(c, t):
     return []
 
 
+def loop_tol(loops, t):
+    pts = []
+    for loop in loops:
+        for c in loop["profile_curves"]:
+            if c["type"] == "Line3D":
+                pts += [world(t, vec(c["start_point"])), world(t, vec(c["end_point"]))]
+            elif c["type"] in ("Circle3D", "Arc3D"):
+                pts.append(world(t, vec(c["center_point"])))
+    if not pts:
+        return 1e-9
+    lo = [min(p[i] for p in pts) for i in range(3)]
+    hi = [max(p[i] for p in pts) for i in range(3)]
+    diag = math.sqrt(sum((hi[i] - lo[i]) ** 2 for i in range(3)))
+    return max(1e-3 * diag, 1e-9)
+
+
 def make_faces(loops, t):
     wires = []
+    tol = loop_tol(loops, t)
     for loop in loops:
-        mk = BRepBuilderAPI_MakeWire()
+        edges = []
         for c in loop["profile_curves"]:
             e = ocp_edge(c, t)
             if e is None:
                 return None, f"bad edge {c['type']}"
+            edges.append(e)
+        mk = BRepBuilderAPI_MakeWire()
+        for e in edges:
             mk.Add(e)
-        if not mk.IsDone():
+        if mk.IsDone():
+            wires.append(mk.Wire())
+            continue
+        # relative-tolerance fallback for small gaps in normalised DeepCAD data
+        wd = ShapeExtend_WireData()
+        for e in edges:
+            wd.Add(e)
+        fix = ShapeFix_Wire()
+        fix.Load(wd)
+        fix.SetPrecision(tol)
+        fix.FixReorder()
+        fix.FixConnected()
+        fix.FixClosed()
+        w = fix.Wire()
+        if w.IsNull():
             return None, "wire not closed"
-        wires.append(mk.Wire())
+        wires.append(w)
     if not wires:
         return None, "no wires"
     faces = []
@@ -196,6 +233,8 @@ def build_occt(j):
         ex = es.get(step.get("entity"))
         if not ex:
             continue
+        if not ex.get("profiles"):
+            return None, "no profiles"
         sk = es.get(ex["profiles"][0]["sketch"])
         if not sk:
             return None, "missing sketch"
@@ -305,9 +344,25 @@ def emit_extrude(ctx, sid, op, depth, sign):
 def build_part(j):
     es = j["entities"]
     ctx = {"feats": [], "nextS": 1, "nextF": 1, "nextP": 1, "sketch_ids": {}}
-    for step in j.get("sequence", []):
-        if step.get("type") != "ExtrudeFeature":
+    steps = [s for s in j.get("sequence", []) if s.get("type") == "ExtrudeFeature"]
+    # first emit every sketch referenced by any extrude, so no extrude can name
+    # a sketch feature that appears later in the tree
+    for step in steps:
+        ex = es.get(step.get("entity"))
+        if not ex:
             continue
+        if not ex.get("profiles"):
+            return None, "no profiles"
+        for p in ex["profiles"]:
+            sk = es.get(p.get("sketch"))
+            if not sk:
+                return None, "missing sketch"
+            if p.get("profile") not in sk.get("profiles", {}):
+                return None, f"missing profile {p.get('profile')}"
+            sid, err = emit_sketch(sk, p["profile"], ctx)
+            if sid is None:
+                return None, err
+    for step in steps:
         ex = es.get(step.get("entity"))
         if not ex:
             continue
@@ -320,13 +375,9 @@ def build_part(j):
             dirs = [(abs(d1), 1 if d1 >= 0 else -1), (abs(d2), 1 if d2 >= 0 else -1)]
         else:
             dirs = [(abs(d1), 1), (abs(d1), -1)]
-        for p in ex.get("profiles", []):
+        for p in ex["profiles"]:
             sk = es.get(p["sketch"])
-            if not sk:
-                return None, "missing sketch"
-            sid, err = emit_sketch(sk, p["profile"], ctx)
-            if sid is None:
-                return None, err
+            sid = ctx["sketch_ids"][(id(sk), p["profile"])]
             for depth, sign in dirs:
                 emit_extrude(ctx, sid, ex.get("operation"), depth, sign)
     if not ctx["feats"]:
@@ -379,12 +430,23 @@ def main():
                 skips[f"occt: {err}"] = skips.get(f"occt: {err}", 0) + 1
                 continue
             p = GProp_GProps(); BRepGProp.VolumeProperties_s(solid, p); vol = p.Mass()
+            reference = "ok"
+            if vol < 0:
+                vol = abs(vol); reference = "reversed"
+            if not (vol > 0) or not math.isfinite(vol):
+                try:
+                    fix = ShapeFix_Shape(solid); fix.Perform(); fixed = fix.Shape()
+                    p = GProp_GProps(); BRepGProp.VolumeProperties_s(fixed, p); vol = abs(p.Mass())
+                    solid = fixed
+                    reference = "fixed" if vol > 0 else "unusable"
+                except Exception:
+                    reference = "unusable"
             a = GProp_GProps(); BRepGProp.SurfaceProperties_s(solid, a); area = a.Mass()
             part, err = build_part(j)
             if part is None:
                 skips[f"wire: {err}"] = skips.get(f"wire: {err}", 0) + 1
                 continue
-            cases[os.path.basename(f)] = {"part": part, "occt": {"volume": vol, "area": area}}
+            cases[os.path.basename(f)] = {"part": part, "occt": {"volume": vol, "area": area, "reference": reference}}
         except Exception as e:
             skips[f"exception: {type(e).__name__}"] = skips.get(f"exception: {type(e).__name__}", 0) + 1
     json.dump(cases, open(args.out, "w"), indent=1)
