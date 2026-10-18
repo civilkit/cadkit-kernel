@@ -1865,7 +1865,10 @@ pub(super) fn apply_tool_hooked(
     hook: Option<crate::boolean::imprint::PairHook>,
 ) -> Result<(Body, Vec<String>), BlendError> {
     let mut first = None;
-    for k in [1.0, 10.0, 100.0] {
+    // a tangent-contact (hooked) tool also gets a last try with a tight weld: a body with sliver faces thinner than the
+    // loose weld (bands stacked a few thousandths apart) collapses them and does not assemble
+    let ks: &[f64] = if hook.is_some() { &[1.0, 10.0, 100.0, 0.1] } else { &[1.0, 10.0, 100.0] };
+    for &k in ks {
         match apply_tool_once(b, tool, op, name, hint.clone(), tol * k, hook) {
             Ok(r) => match crate::boolean::sanity::check_result(b, tool, op, &r.0) {
                 None => return Ok(r),
@@ -1891,13 +1894,16 @@ fn apply_tool_once(
     tol: f64,
     hook: Option<crate::boolean::imprint::PairHook>,
 ) -> Result<(Body, Vec<String>), BlendError> {
+    let hook_given = hook.is_some();
     let dbg_t = std::env::var_os("CK_BLEND_DEBUG").is_some().then(std::time::Instant::now);
     let arr = crate::boolean::imprint::imprint_hooked(b, tool, tol, hook);
     if let Some(t) = dbg_t {
         eprintln!("apply_tool: imprint {:.1}s", t.elapsed().as_secs_f64());
     }
     let dbg_t = std::env::var_os("CK_BLEND_DEBUG").is_some().then(std::time::Instant::now);
-    let mut faces_out = select(&arr, [b, tool], op).map_err(|e| {
+    // a hooked (tangent contact) tool is imprinted at a loose welding tolerance; classify against it tightly
+    let class_tol = if hook_given { tol.min(1e-5) } else { tol };
+    let mut faces_out = crate::boolean::assemble::select_class_tol(&arr, [b, tool], op, class_tol).map_err(|e| {
         dbg_fail(&format!("select: {e:?}"));
         BlendError::code("blendFailed")
     })?;
