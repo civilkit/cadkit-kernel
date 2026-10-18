@@ -181,7 +181,8 @@ function translate(file, caseName) {
   let wantArea = null, wantVolume = null;
   const bools = [];
   const cutTools = [];
-  const blends = [];
+  const blendStages = [];
+  const draftStages = [];
   let pendingBop = null;
   let lumpCount = 0;
   const vars = {};
@@ -210,7 +211,15 @@ function translate(file, caseName) {
       continue;
     }
     if (BOOLS.has(c)) {
-      bools.push({ op: c, result: w[1], a: w[2], b: w[3] });
+      const A = seen.get(w[2]), B = seen.get(w[3]);
+      if (!A || !B) { bools.push({ op: c, result: w[1], a: w[2], b: w[3] }); continue; }
+      const op = c === 'bfuse' ? 'union' : c === 'bcut' ? 'cut' : 'intersect';
+      const id = `C${++n}`;
+      const resultLump = lumpCount - 2;
+      addFeature({ type: 'combine', id, op, target: A.lump != null ? { lump: A.lump } : { face: A.face }, tools: [B.lump != null ? { lump: B.lump } : { face: B.face }] });
+      if (op === 'cut') cutTools.push({ id, toolFace: B.face });
+      seen.set(w[1], { face: A.face, lump: resultLump, feature: id, kind: 'boolean' });
+      lumpCount = resultLump + 1;
       continue;
     }
     if (c === 'trotate') {
@@ -268,7 +277,28 @@ function translate(file, caseName) {
     if (c === 'blend') {
       const rest = w.slice(3);
       if (rest.length % 2) return { unsupported: 'blend: odd argument count', lines };
-      blends.push({ result: w[1], base: w[2] });
+      blendStages.push({ insertAt: f.length, result: w[1], base: w[2], rest });
+      continue;
+    }
+    if (c === 'depouille') {
+      if (w.length < 14) return { unsupported: 'depouille: short command', lines };
+      const np = [evalNum(w[8]), evalNum(w[9]), evalNum(w[10])];
+      const nn = [evalNum(w[11]), evalNum(w[12]), evalNum(w[13])];
+      if (np.some((x) => !Number.isFinite(x)) || nn.some((x) => !Number.isFinite(x))) {
+        return { unsupported: 'depouille: non-numeric neutral plane', lines };
+      }
+      const axis = nn.map((x) => Math.abs(x) > 0.999);
+      if (axis.filter(Boolean).length !== 1) return { unsupported: 'depouille: diagonal neutral plane', lines };
+      let base = 'front', offset = np[2];
+      if (axis[0]) { base = 'right'; offset = np[0]; }
+      else if (axis[1]) { base = 'top'; offset = np[1]; }
+      const pid = `P${++n}`;
+      addFeature({ type: 'plane', id: pid, mode: 'offset', base: { kind: 'std', id: base }, offset, visible: false });
+      draftStages.push({
+        insertAt: f.length, face: w[6], angle: evalNum(w[7]),
+        neutralPoint: np, neutralNormal: nn, neutral: { kind: 'feature', id: pid },
+      });
+      seen.set(w[1], seen.get(w[2]));
       continue;
     }
     if (c === 'checkprops') {
@@ -316,7 +346,7 @@ function translate(file, caseName) {
     lumpCount = resultLump + 1;
   }
   if (wantArea == null && wantVolume == null) return { unsupported: 'no checkprops expected value', lines };
-  if (blends.length) {
+  if (blendStages.length || draftStages.length) {
     let picks = pickCache[caseName];
     if (!picks && writePicksFile) {
       try {
@@ -326,12 +356,15 @@ function translate(file, caseName) {
       }
       if (picks.ok) pickCache[caseName] = picks;
     }
-    if (!picks) return { unsupported: 'no cached edge picks (run --write-picks)', lines };
-    if (!picks.ok) return { unsupported: `edge picks: ${picks.why}`, lines };
-    if (!picks.picks.length) return { unsupported: 'blend without picks', lines };
-    return { features: f.slice(), wantArea, wantVolume, lines, booleans: bools.length, cutTools, blendPicks: picks.picks };
+    if (!picks) return { unsupported: 'no cached picks (run --write-picks)', lines };
+    if (!picks.ok) return { unsupported: `picks: ${picks.why}`, lines };
+    if ((picks.stages ?? []).length !== blendStages.length) return { unsupported: 'cached blend stages mismatch', lines };
+    blendStages.forEach((s, i) => { s.picks = picks.stages[i].picks; });
+    if ((picks.face_picks ?? []).length !== draftStages.length) return { unsupported: 'cached draft faces mismatch', lines };
+    draftStages.forEach((d, i) => { d.pick = picks.face_picks[i]; });
+    return { features: f.slice(), wantArea, wantVolume, lines, cutTools, stages: blendStages, draftStages };
   }
-  return { features: f.slice(), wantArea, wantVolume, lines, booleans: bools.length, cutTools };
+  return { features: f.slice(), wantArea, wantVolume, lines, cutTools };
 }
 
 // ---------------------------------------------------------------- selection
@@ -399,6 +432,25 @@ function select() {
     if ([...cmds].some((x) => !allowed.has(x))) continue;
     if (!cmds.has('depouille') || !cmds.has('checkprops')) continue;
     out.push({ group: 'draft/angle', name: `draft/angle/${name}`, file: p });
+  }
+
+  // tests/bugs: the few primitive/boolean scripts that need no data file
+  const bugsRoot = path.join(occt, 'tests/bugs');
+  if (existsSync(bugsRoot)) {
+    for (const g of listDir(bugsRoot)) {
+      const dir = path.join(bugsRoot, g);
+      if (!statSync(dir).isDirectory()) continue;
+      for (const name of listDir(dir)) {
+        const p = path.join(dir, name);
+        if (!statSync(p).isFile()) continue;
+        const ls = readScript(p);
+        const cmds = new Set(ls.map((l) => l.split(/\s+/)[0]));
+        const allowed = new Set([...PRIMS, ...BOOLS, ...BOP_FAMILY, ...XFORMS, ...IGNORE, ...CHECKS]);
+        if ([...cmds].some((x) => !allowed.has(x))) continue;
+        if (!cmds.has('checkprops') || !([...BOOLS].some((b) => cmds.has(b)) || [...BOP_FAMILY].some((b) => cmds.has(b)))) continue;
+        out.push({ group: `bugs/${g}`, name: `bugs/${g}/${name}`, file: p });
+      }
+    }
   }
 
   // fill the ~200 selection with the remaining simple blend scripts (partial
@@ -482,15 +534,15 @@ function execPart(k, features) {
   const rr = k.request(JSON.stringify({ id: 1, msg }));
   const ms = Date.now() - t0;
   let r; try { r = JSON.parse(rr.json); } catch { r = { trap: 'unparsable reply' }; }
-  return { r, ms };
+  return { r, rr, ms };
 }
 
 // A cut whose tool only touches the host answers `cutNoEffect` and leaves
 // the (separate) tool lump in the body. OCCT consumes the tool and leaves
 // the host; express that by deleting the tool lumps and re-running.
 function runWithCutFallback(k, tr, features) {
-  let { r, ms } = execPart(k, features);
-  if (r.trap || !r.ok) return { r, ms, features };
+  let { r, rr, ms } = execPart(k, features);
+  if (r.trap || !r.ok) return { r, rr, ms, features };
   let errs = (r.result?.errors ?? []).map(([id, e]) => ({ id, code: e.code, ...e }));
   const noEffect = errs.filter((e) => e.code === 'cutNoEffect');
   if (noEffect.length) {
@@ -498,51 +550,111 @@ function runWithCutFallback(k, tr, features) {
     if (drop.length) {
       const extra = drop.map((t, i) => ({ type: 'deleteBody', id: `D${i + 1}`, bodies: [{ face: t.toolFace }] }));
       const retry = execPart(k, [...features, ...extra]);
-      if (!retry.r.trap && retry.r.ok) { r = retry.r; ms += retry.ms; features = [...features, ...extra]; }
+      if (!retry.r.trap && retry.r.ok) { r = retry.r; rr = retry.rr; ms += retry.ms; features = [...features, ...extra]; }
     }
   }
-  return { r, ms, features };
+  return { r, rr, ms, features };
+}
+
+// Decode a `$buf` view from the binary area after the JSON envelope.
+function bufferView(rr, spec, Ctor) {
+  if (!rr?.bytes || !spec) return null;
+  const jl = new DataView(rr.bytes.buffer, rr.bytes.byteOffset, rr.bytes.byteLength).getUint32(0, true);
+  const base = (4 + jl + 7) & ~7;
+  const start = rr.bytes.byteOffset + base + spec.offset;
+  return new Ctor(rr.bytes.buffer.slice(start, start + spec.len * Ctor.BYTES_PER_ELEMENT));
+}
+
+// The kernel face whose display triangle is nearest the cached OCCT face
+// midpoint. The triangle normal disambiguates coplanar faces at a corner.
+function findFace(rr, r, point, normal) {
+  const mesh = r.result?.body?.mesh;
+  const pos = bufferView(rr, mesh?.positions, Float32Array);
+  const nor = bufferView(rr, mesh?.normals, Float32Array);
+  const tri = bufferView(rr, mesh?.triFace, Int32Array);
+  if (!pos || !tri) return null;
+  const nTri = Math.min(tri.length, Math.floor(pos.length / 9));
+  let best = null;
+  for (let t = 0; t < nTri; t++) {
+    const i = 9 * t;
+    const c = [(pos[i] + pos[i + 3] + pos[i + 6]) / 3, (pos[i + 1] + pos[i + 4] + pos[i + 7]) / 3, (pos[i + 2] + pos[i + 5] + pos[i + 8]) / 3];
+    const d = Math.hypot(...sub(c, point));
+    let pen = 0;
+    if (nor && normal) {
+      const n = [(nor[i] + nor[i + 3] + nor[i + 6]) / 3, (nor[i + 1] + nor[i + 4] + nor[i + 7]) / 3, (nor[i + 2] + nor[i + 5] + nor[i + 8]) / 3];
+      const l = Math.hypot(...n);
+      if (l > 0) pen = (1 - Math.abs(dot(normal, [n[0] / l, n[1] / l, n[2] / l]))) * 0.05;
+    }
+    const score = d + pen;
+    if (!best || score < best.score) best = { score, dist: d, idx: tri[t] };
+  }
+  if (!best) return null;
+  const faces = r.result?.body?.faces ?? [];
+  const f = faces[best.idx];
+  return f?.id ?? null;
+}
+
+// Build a part that may contain staged blends and drafts. Each stage is
+// inserted at the feature index where the OCCT script ran it; the body is
+// regenerated at that point so the pick resolves against the same geometry.
+function buildPart(k, tr) {
+  let features = [];
+  let pos = 0;
+  let ms = 0;
+  const pickChecks = [];
+  const inserts = [
+    ...(tr.stages ?? []).map((s) => ({ ...s, kind: 'blend' })),
+    ...(tr.draftStages ?? []).map((d) => ({ ...d, kind: 'draft' })),
+  ].sort((a, b) => a.insertAt - b.insertAt);
+  for (const ins of inserts) {
+    features.push(...tr.features.slice(pos, ins.insertAt));
+    pos = ins.insertAt;
+    const pre = runWithCutFallback(k, tr, features);
+    ms += pre.ms;
+    if (pre.r.trap || !pre.r.ok) return { ...pre, ms, features };
+    const body = pre.r.result?.body;
+    if (!body) return { r: pre.r, rr: pre.rr, ms, features, missing: 'noBase', detail: 'stage has no body' };
+    if (ins.kind === 'blend') {
+      const edges = [];
+      for (const p of ins.picks) {
+        const e = findEdge(body, p.point, p.dir);
+        if (!e) return { r: pre.r, rr: pre.rr, ms, features, missing: 'missingEdge', detail: `no edge near ${p.point}` };
+        const pr = edgeProbe(e, p.point, p.dir);
+        if (pr.dist > 2e-3 || (pr.dot != null && pr.dot < 0.95)) {
+          return { r: pre.r, rr: pre.rr, ms, features, missing: 'pickMismatch', detail: `edge ${p.edge}: dist ${pr.dist.toExponential(1)} dot ${pr.dot?.toFixed(3)}` };
+        }
+        pickChecks.push({ edge: p.edge, dist: pr.dist, dot: pr.dot, mid: e.mid, dir: p.dir });
+        const ref = { faces: [...e.faces], at: p.point };
+        if (p.radius !== ins.picks[0].radius) ref.radius = p.radius;
+        edges.push(ref);
+      }
+      features.push({ type: 'fillet', id: `B${features.length + 1}`, radius: ins.picks[0].radius, edges });
+    } else {
+      const id = findFace(pre.rr, pre.r, ins.pick.point, ins.pick.normal);
+      if (!id) return { r: pre.r, rr: pre.rr, ms, features, missing: 'missingFace', detail: `no face near ${ins.pick.point}` };
+      // OCCT drafts away from the material side of the neutral plane; our
+      // draft feature's flip follows the body side, not the script's normal.
+      features.push({ type: 'draft', id: `D${features.length + 1}`, neutral: ins.neutral, faces: [id], angle: ins.angle, flip: false });
+    }
+  }
+  features.push(...tr.features.slice(pos));
+  const final = runWithCutFallback(k, tr, features);
+  return { ...final, ms: ms + final.ms, features, pickChecks };
 }
 
 function runCase(c, k) {
   const tr = translate(c.file, c.name);
   if (tr.unsupported) return { ...c, cls: 'unsupported', detail: tr.unsupported, ms: 0 };
   if (opt('--dump') && c.name.includes(opt('--dump'))) {
-    console.log(JSON.stringify({ name: c.name, wantArea: tr.wantArea, wantVolume: tr.wantVolume, features: tr.features, blendPicks: tr.blendPicks ?? null }, null, 1));
+    console.log(JSON.stringify({ name: c.name, wantArea: tr.wantArea, wantVolume: tr.wantVolume, features: tr.features, stages: tr.stages ?? null, draftStages: tr.draftStages ?? null }, null, 1));
     process.exit(0);
   }
-  let { r, ms, features } = runWithCutFallback(k, tr, tr.features);
+  const built = buildPart(k, tr);
+  if (built.missing) return { ...c, cls: built.missing, detail: built.detail, ms: built.ms };
+  let { r, ms } = built;
+  const pickChecks = built.pickChecks?.length ? built.pickChecks : null;
   if (r.trap) return { ...c, cls: 'trap', detail: r.trap, ms };
   if (!r.ok) return { ...c, cls: 'requestError', detail: r.error, ms };
-
-  // A fillet pick is a point on an edge of the base body; the feature also
-  // needs the two faces, which are only known after the base is built.
-  let pickChecks = null;
-  if (tr.blendPicks) {
-    const body = r.result?.body;
-    if (!body) return { ...c, cls: 'noBase', detail: 'blend base has no body', ms };
-    const edges = [];
-    pickChecks = [];
-    for (const p of tr.blendPicks) {
-      const e = findEdge(body, p.point, p.dir);
-      if (!e) return { ...c, cls: 'missingEdge', detail: `no edge near ${p.point}`, ms };
-      // the cached pick carries OCCT's midpoint and tangent; confirm the edge
-      // our kernel selected is the same one (distance and direction)
-      const pr = edgeProbe(e, p.point, p.dir);
-      if (pr.dist > 2e-3 || (pr.dot != null && pr.dot < 0.95)) {
-        return { ...c, cls: 'pickMismatch', detail: `edge ${p.edge}: dist ${pr.dist.toExponential(1)} dot ${pr.dot?.toFixed(3)}`, ms };
-      }
-      pickChecks.push({ edge: p.edge, dist: pr.dist, dot: pr.dot, mid: e.mid, dir: p.dir });
-      const ref = { faces: [...e.faces], at: p.point };
-      if (p.radius !== tr.blendPicks[0].radius) ref.radius = p.radius;
-      edges.push(ref);
-    }
-    const fillet = { type: 'fillet', id: `B${features.length + 1}`, radius: tr.blendPicks[0].radius, edges };
-    const retry = runWithCutFallback(k, tr, [...features, fillet]);
-    r = retry.r; ms += retry.ms; features = retry.features;
-    if (r.trap) return { ...c, cls: 'trap', detail: r.trap, ms };
-    if (!r.ok) return { ...c, cls: 'requestError', detail: r.error, ms };
-  }
   let errs = (r.result?.errors ?? []).map(([id, e]) => ({ id, code: e.code, ...e }));
 
   // cutNoEffect is the right answer when the tool only touches the host;
@@ -578,10 +690,18 @@ function runCase(c, k) {
 const cases = select().filter((c) => !only || c.name.includes(only));
 const sharedKernel = new Kernel(mod);
 if (writePicksFile) {
+  pickCache = {};
   let n = 0;
   for (const c of cases) {
     const tr = translate(c.file, c.name);
-    if (tr.blendPicks) { pickCache[c.name] = { ok: true, picks: tr.blendPicks, base: c.name }; n++; }
+    if (tr.stages || tr.draftStages) {
+      pickCache[c.name] = {
+        ok: true,
+        stages: (tr.stages ?? []).map((s) => ({ picks: s.picks })),
+        face_picks: (tr.draftStages ?? []).map((d) => d.pick),
+      };
+      n++;
+    }
   }
   writeFileSync(writePicksFile, JSON.stringify(pickCache, null, 1) + '\n');
   console.log(`occt_corpus: wrote ${n} blend pick sets to ${writePicksFile}`);
