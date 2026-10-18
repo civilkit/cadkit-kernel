@@ -190,6 +190,7 @@ replay, a class-only baseline and a ranked Mimo brief.
 | shell / thicken | 480 | 324 ok, 97 `wrongVolume`, 42 `refused`, 15 `shellFailed`, 2 `draftTooLarge` | `docs/shell-sweep.md` |
 | boolean | 320 | 146 ok, 22 `wrongVolume`, 5 `invalid`, 2 `booleanFailed`, plus expected `okNoEffect` / `okEmpty` | `docs/boolean-sweep.md` |
 | sweep / loft / revolve | 240 | 223 ok, 16 `wrongVolume`, 1 `ref-fails` | `docs/shape-sweep.md` |
+| mass properties | 240 | 220 ok, 20 `wrongVolume` (all `loft3`) | `docs/massprops-sweep.md` |
 | mass properties | 240 | 220 ok, 20 `wrongVolume` (all three-section loft) | `docs/massprops-sweep.md` |
 
 The baselines are `tools/fillet_sweep_baseline.json`,
