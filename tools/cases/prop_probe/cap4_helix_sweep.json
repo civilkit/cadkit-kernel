@@ -1,0 +1,76 @@
+{
+ "id": "cap4_helix_sweep",
+ "cap": 4,
+ "features": [
+  {
+   "type": "sketch",
+   "id": "H1",
+   "plane": {
+    "kind": "std",
+    "id": "front"
+   },
+   "points": [
+    {
+     "id": "c",
+     "x": 0,
+     "y": 0
+    }
+   ],
+   "entities": [
+    {
+     "type": "circle",
+     "id": "e1",
+     "c": "c",
+     "r": 4
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "helix",
+   "id": "H2",
+   "sketch": "H1",
+   "definedBy": "pitchRevs",
+   "pitch": 30,
+   "revolutions": 3,
+   "height": 90,
+   "startAngle": 0,
+   "leftHand": false,
+   "reverse": false
+  },
+  {
+   "type": "sketch",
+   "id": "S1",
+   "plane": {
+    "kind": "std",
+    "id": "top"
+   },
+   "points": [
+    {
+     "id": "c",
+     "x": 4,
+     "y": 0
+    }
+   ],
+   "entities": [
+    {
+     "type": "circle",
+     "id": "e1",
+     "c": "c",
+     "r": 1
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "sweep",
+   "id": "W1",
+   "op": "add",
+   "sketch": "S1",
+   "path": {
+    "kind": "curve",
+    "id": "H2"
+   }
+  }
+ ]
+}

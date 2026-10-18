@@ -1,0 +1,173 @@
+{
+ "id": "cap3_loft_guides_valid",
+ "cap": 3,
+ "features": [
+  {
+   "type": "sketch",
+   "id": "S0",
+   "plane": {
+    "kind": "std",
+    "id": "top"
+   },
+   "points": [
+    {
+     "id": "p0",
+     "x": -10,
+     "y": -10
+    },
+    {
+     "id": "p1",
+     "x": 10,
+     "y": -10
+    },
+    {
+     "id": "p2",
+     "x": 10,
+     "y": 10
+    },
+    {
+     "id": "p3",
+     "x": -10,
+     "y": 10
+    }
+   ],
+   "entities": [
+    {
+     "type": "line",
+     "id": "e0",
+     "p1": "p0",
+     "p2": "p1"
+    },
+    {
+     "type": "line",
+     "id": "e1",
+     "p1": "p1",
+     "p2": "p2"
+    },
+    {
+     "type": "line",
+     "id": "e2",
+     "p1": "p2",
+     "p2": "p3"
+    },
+    {
+     "type": "line",
+     "id": "e3",
+     "p1": "p3",
+     "p2": "p0"
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "plane",
+   "id": "P1",
+   "mode": "offset",
+   "base": {
+    "kind": "std",
+    "id": "top"
+   },
+   "offset": 30
+  },
+  {
+   "type": "sketch",
+   "id": "S1",
+   "plane": {
+    "kind": "feature",
+    "id": "P1"
+   },
+   "points": [
+    {
+     "id": "q0",
+     "x": -5,
+     "y": -5
+    },
+    {
+     "id": "q1",
+     "x": 5,
+     "y": -5
+    },
+    {
+     "id": "q2",
+     "x": 5,
+     "y": 5
+    },
+    {
+     "id": "q3",
+     "x": -5,
+     "y": 5
+    }
+   ],
+   "entities": [
+    {
+     "type": "line",
+     "id": "f0",
+     "p1": "q0",
+     "p2": "q1"
+    },
+    {
+     "type": "line",
+     "id": "f1",
+     "p1": "q1",
+     "p2": "q2"
+    },
+    {
+     "type": "line",
+     "id": "f2",
+     "p1": "q2",
+     "p2": "q3"
+    },
+    {
+     "type": "line",
+     "id": "f3",
+     "p1": "q3",
+     "p2": "q0"
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "sketch",
+   "id": "G1",
+   "plane": {
+    "kind": "std",
+    "id": "front"
+   },
+   "points": [
+    {
+     "id": "a",
+     "x": 10,
+     "y": 0
+    },
+    {
+     "id": "b",
+     "x": 5,
+     "y": 30
+    }
+   ],
+   "entities": [
+    {
+     "type": "line",
+     "id": "e1",
+     "p1": "a",
+     "p2": "b"
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "loft",
+   "id": "F5",
+   "op": "add",
+   "sketches": [
+    "S0",
+    "S1"
+   ],
+   "guides": [
+    {
+     "sketch": "G1"
+    }
+   ]
+  }
+ ]
+}
