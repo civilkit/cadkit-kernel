@@ -88,6 +88,23 @@ fn thickened_wide_base_cone_r21_5_to_r13_5_matches_area_times_thickness() {
     assert!((b.volume - want).abs() < 1e-3 * want, "{} vs {}", b.volume, want);
 }
 
+/// A cone that opens upward (R12.5 -> R15, 14 high, 1 thick) fuses onto the plate too. Its offset wall dips into the
+/// plate, and a loft in the other direction thickens to the other side: wall volume as the original kernel
+/// (10247.5, and plate + lateral area x t - pi t^2 h for the reversed one).
+#[test]
+fn thickened_flaring_cone_fuses_in_both_loft_directions() {
+    let b = build(include_str!("../../../tools/cases/cone_fillet/thicken_flare.json"));
+    assert!(b.errors.is_empty(), "{:?}", b.errors);
+    assert_eq!((b.issues, b.freeform), (0, 0));
+    assert!((b.volume - 10247.53).abs() < 1e-3 * 10247.53, "{}", b.volume);
+    let r = build(include_str!("../../../tools/cases/cone_fillet/thicken_flare_reversed.json"));
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!((r.issues, r.freeform), (0, 0));
+    let l = (14.0f64 * 14.0 + 2.5 * 2.5).sqrt();
+    let want = plate_volume() + PI * (12.5 + 15.0) * l - PI * 14.0;
+    assert!((r.volume - want).abs() < 1e-3 * want, "{} vs {}", r.volume, want);
+}
+
 fn base_volume() -> f64 {
     let b = build(include_str!("../../../tools/cases/cone_fillet/thicken_cone.json"));
     assert!(b.errors.is_empty(), "{:?}", b.errors);

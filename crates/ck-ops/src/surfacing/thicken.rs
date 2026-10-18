@@ -419,6 +419,15 @@ pub fn thicken(sheet: &Body, feature: &str, thickness: f64, side: Side, tol: f64
             ck_topo::orient::fix_planar_loops(&mut out, fi);
         }
     }
+    // a cone's loops are built from the sheet's and the rim walks, with no promise about their turn about the cone's own
+    // normal: the face keeps the sense that makes its outer loop run CCW about the outward normal (planes were
+    // repaired above by reordering their loops)
+    for fi in out.face_ids().collect::<Vec<_>>() {
+        if matches!(out.face(fi).surface, Surface::Cone { .. }) && !ck_topo::orient::loops_consistent(&out, fi) {
+            let sense = out.face(fi).sense;
+            out.faces[fi.idx()].sense = !sense;
+        }
+    }
     ck_topo::orient::orient_body(&mut out);
     for e in out.edge_ids() {
         if out.edge_coedges(e).len() != 2 {
@@ -931,7 +940,15 @@ fn build_wall(
     let arc_cone = match (&ca, &cb) {
         (Curve::Circle { frame: fa, r: ra }, Curve::Circle { frame: fb, r: rb }) if arc_plane.is_none() && fa.z.cross(fb.z).len() < 1e-9 && (fb.o - fa.o).cross(fa.z).len() < 1e-7 * (1.0 + ra) => {
             let vb = (fb.o - fa.o).dot(fa.z);
-            (vb.abs() > 1e-9).then(|| Surface::Cone { frame: Frame { o: fa.o, x: fa.x, y: fa.y, z: fa.z }, r: *ra, semi_angle: ((rb - ra) / vb).atan() })
+            // the cone opens along +z: a ring that grows against the circle's axis uses the flipped frame
+            (vb.abs() > 1e-9).then(|| {
+                let semi = ((rb - ra) / vb).atan();
+                if semi >= 0.0 {
+                    Surface::Cone { frame: Frame { o: fa.o, x: fa.x, y: fa.y, z: fa.z }, r: *ra, semi_angle: semi }
+                } else {
+                    Surface::Cone { frame: Frame { o: fa.o, x: fa.x, y: fa.y.scale(-1.0), z: fa.z.scale(-1.0) }, r: *ra, semi_angle: -semi }
+                }
+            })
         }
         _ => None,
     };
