@@ -56,3 +56,23 @@ genuine large-radius gaps, not bad references.
 
 See `docs/mimo-brief-fillets.md` for the ranked kernel tasks and exact repro
 ids.
+
+## Second seed (seed 11)
+
+Same 600 cases, different parameters: **554 ok, 30 `wrongVolume`, 16
+`blendOverflow`, 0 `blendFailed`, 0 `ref-fails`.**
+
+| template | n | ok | blendOverflow | wrongVolume |
+|---|---|---|---|---|
+| box_parallel4 | 40 | 37 | 3 | 0 |
+| box_all12 | 40 | 36 | 4 | 0 |
+| cyl_top / cyl_bot | 80 | 74 | 6 | 0 |
+| tube_outer / tube_inner | 80 | 78 | 2 | 0 |
+| chamferA_box | 40 | 39 | 1 | 0 |
+| var_box | 40 | 10 | 0 | 30 |
+| all other templates | 280 | 280 | 0 | 0 |
+
+The large-radius boundary moves with the random sizes (seed 7 had more
+parallel/all-edge failures; seed 11 hits tube rims and one distance-angle
+chamfer). `var_box` remains the only volume-law group. Baseline:
+`tools/fillet_sweep_baseline_seed11.json`; `--check` 0 regressions.

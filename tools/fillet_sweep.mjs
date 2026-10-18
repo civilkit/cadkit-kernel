@@ -51,12 +51,37 @@ function cyl(r, h, cx = 0, cy = 0, z0 = 0, op = 'add') {
   const sid = `S${++n}`;
   return [...pre, { type: 'sketch', id: sid, ...circSketch(sid, pl, cx, cy, r) }, { type: 'extrude', id: `F${++n}`, op, sketch: sid, end: 'blind', depth: h, ...(op === 'cut' ? { flip: true } : {}) }];
 }
+function rrectBase(p) {
+  const { w, d, cr, h } = p;
+  const pts = [
+    ['p1', cr, 0], ['p2', w - cr, 0], ['p3', w, cr], ['p4', w, d - cr],
+    ['p5', w - cr, d], ['p6', cr, d], ['p7', 0, d - cr], ['p8', 0, cr],
+    ['c1', w - cr, cr], ['c2', w - cr, d - cr], ['c3', cr, d - cr], ['c4', cr, cr],
+  ];
+  const ents = [
+    { type: 'line', id: 'e1', p1: 'p1', p2: 'p2' },
+    { type: 'arc', id: 'e2', c: 'c1', p1: 'p2', p2: 'p3' },
+    { type: 'line', id: 'e3', p1: 'p3', p2: 'p4' },
+    { type: 'arc', id: 'e4', c: 'c2', p1: 'p4', p2: 'p5' },
+    { type: 'line', id: 'e5', p1: 'p5', p2: 'p6' },
+    { type: 'arc', id: 'e6', c: 'c3', p1: 'p6', p2: 'p7' },
+    { type: 'line', id: 'e7', p1: 'p7', p2: 'p8' },
+    { type: 'arc', id: 'e8', c: 'c4', p1: 'p8', p2: 'p1' },
+  ];
+  const sid = `S${++n}`;
+  return [
+    { type: 'sketch', id: sid, plane: { kind: 'std', id: 'front' }, points: pts.map(([id, x, y]) => ({ id, x, y })), entities: ents, constraints: [] },
+    { type: 'extrude', id: `F${++n}`, op: 'add', sketch: sid, end: 'blind', depth: h },
+  ];
+}
+
 const baseFns = {
   box: (p) => box(p.w, p.d, p.h),
   cyl: (p) => cyl(p.r, p.h),
   tube: (p) => [...cyl(p.ro, p.h), ...cyl(p.ri, p.h + 2, 0, 0, -1, 'cut')],
   boss: (p) => [...box(p.w, p.d, p.pt), ...cyl(p.br, p.bh, p.bx, p.by, p.pt)],
   hole: (p) => [...box(p.w, p.d, p.h), ...cyl(p.r, p.h + 2, p.cx, p.cy, -1, 'cut')],
+
 };
 
 // ---------------------------------------------------------------- edge selection
@@ -138,7 +163,7 @@ function featureFor(body, c) {
     return { faces: [...e.faces], at: p.at };
   });
   const o = c.op;
-  if (o.kind === 'fillet') return { type: 'fillet', id: `B${++n}`, radius: o.radius, edges };
+  if (o.kind === 'fillet') return { type: 'fillet', id: `B${++n}`, radius: o.radius, edges, ...(o.propagate ? { propagate: true } : {}) };
   if (o.kind === 'varfillet') return { type: 'fillet', id: `B${++n}`, filletType: 'variable', radii: [o.r1, o.r2], edges };
   if (o.kind === 'chamfer') {
     const f = { type: 'chamfer', id: `B${++n}`, chamferType: o.type === 'two' ? 'distanceDistance' : o.type === 'angle' ? 'angleDistance' : 'equal', distance: o.d ?? o.d1, edges };
@@ -157,7 +182,8 @@ for (const c of selected) {
     : c.template.startsWith('cyl') ? 'cyl'
     : c.template.startsWith('tube') ? 'tube'
     : c.template.startsWith('boss') ? 'boss'
-    : c.template.startsWith('hole') ? 'hole' : 'box';
+    : c.template.startsWith('hole') ? 'hole'
+    : 'box';
   const baseFeats = baseFns[kind](c.base);
   const r = regen(baseFeats);
   if (!r.ok || r.result?.errors?.length) { rows.push({ id: c.id, template: c.template, cls: 'base-error', detail: JSON.stringify(r.result?.errors ?? r.error).slice(0, 120) }); continue; }

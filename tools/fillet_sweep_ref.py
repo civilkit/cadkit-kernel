@@ -7,7 +7,10 @@ is applied with BRepFilletAPI, and the volume is returned (absolute value for
 reversed solids).
 """
 import json, math, sys
-from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder
+from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakePrism
+from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeWire, BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeEdge
+from OCP.GC import GC_MakeArcOfCircle
+from OCP.gp import gp_Vec
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
 from OCP.BRepFilletAPI import BRepFilletAPI_MakeFillet, BRepFilletAPI_MakeChamfer
 from OCP.GProp import GProp_GProps
@@ -118,6 +121,29 @@ def base(spec):
         tr = gp_Trsf(); tr.SetTranslation(gp_Vec(spec['cx'], spec['cy'], -1))
         c = BRepBuilderAPI_Transform(c, tr, True).Shape()
         f = BRepAlgoAPI_Cut(p, c); f.Build(); return f.Shape()
+    if k == 'rrect':
+        w, d, cr, h = spec['w'], spec['d'], spec['cr'], spec['h']
+        P = [(cr,0),(w-cr,0),(w,cr),(w,d-cr),(w-cr,d),(cr,d),(0,d-cr),(0,cr)]
+        C = [(w-cr,cr),(w-cr,d-cr),(cr,d-cr),(cr,cr)]
+        mk = BRepBuilderAPI_MakeWire()
+        def arc(a,b,c):
+            import math as _m
+            u=(a[0]-c[0],a[1]-c[1]); v=(b[0]-c[0],b[1]-c[1])
+            lu=_m.hypot(*u) or 1.0; lv=_m.hypot(*v) or 1.0
+            d=(u[0]/lu+v[0]/lv,u[1]/lu+v[1]/lv); ld=_m.hypot(*d) or 1.0
+            r=lu
+            mid=(c[0]+d[0]/ld*r,c[1]+d[1]/ld*r)
+            return BRepBuilderAPI_MakeEdge(GC_MakeArcOfCircle(gp_Pnt(a[0],a[1],0),gp_Pnt(b[0],b[1],0),gp_Pnt(mid[0],mid[1],0)).Value()).Edge()
+        mk.Add(BRepBuilderAPI_MakeEdge(gp_Pnt(P[0][0],P[0][1],0),gp_Pnt(P[1][0],P[1][1],0)).Edge())
+        mk.Add(arc(P[1],P[2],C[0]))
+        mk.Add(BRepBuilderAPI_MakeEdge(gp_Pnt(P[2][0],P[2][1],0),gp_Pnt(P[3][0],P[3][1],0)).Edge())
+        mk.Add(arc(P[3],P[4],C[1]))
+        mk.Add(BRepBuilderAPI_MakeEdge(gp_Pnt(P[4][0],P[4][1],0),gp_Pnt(P[5][0],P[5][1],0)).Edge())
+        mk.Add(arc(P[5],P[6],C[2]))
+        mk.Add(BRepBuilderAPI_MakeEdge(gp_Pnt(P[6][0],P[6][1],0),gp_Pnt(P[7][0],P[7][1],0)).Edge())
+        mk.Add(arc(P[7],P[0],C[3]))
+        face = BRepBuilderAPI_MakeFace(mk.Wire()).Face()
+        return BRepPrimAPI_MakePrism(face, gp_Vec(0,0,h)).Shape()
     raise RuntimeError('unknown base')
 
 
@@ -125,12 +151,18 @@ def apply(c):
     s = base(c['base']); op = c['op']
     if op['kind'] == 'fillet':
         mk = BRepFilletAPI_MakeFillet(s)
-        for p in c['picks']:
-            e = nearest_edge(s, p['at'])
-            if 'radius' in p:
-                mk.Add(p['radius'], e)
-            else:
-                mk.Add(op['radius'], e)
+        if op.get('propagate'):
+            top = c['base']['h']
+            for e in edges_of(s):
+                if abs(edge_mid(e).Z() - top) < 1e-6:
+                    mk.Add(op['radius'], e)
+        else:
+            for p in c['picks']:
+                e = nearest_edge(s, p['at'])
+                if 'radius' in p:
+                    mk.Add(p['radius'], e)
+                else:
+                    mk.Add(op['radius'], e)
     elif op['kind'] == 'chamfer':
         mk = BRepFilletAPI_MakeChamfer(s)
         for p in c['picks']:
