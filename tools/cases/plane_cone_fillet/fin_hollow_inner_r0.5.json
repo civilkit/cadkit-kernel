@@ -1,0 +1,187 @@
+{
+ "format": "ck-part",
+ "version": 1,
+ "name": "F",
+ "features": [
+  {
+   "type": "sketch",
+   "id": "F1",
+   "plane": {
+    "kind": "std",
+    "id": "top"
+   },
+   "points": [
+    {
+     "id": "O",
+     "x": 0,
+     "y": 0,
+     "fixed": true
+    },
+    {
+     "id": "p1",
+     "x": 15.9448249798,
+     "y": 0
+    },
+    {
+     "id": "p2",
+     "x": 20,
+     "y": 0
+    },
+    {
+     "id": "p3",
+     "x": 15,
+     "y": -30
+    },
+    {
+     "id": "p4",
+     "x": 10.9448249798,
+     "y": -30
+    },
+    {
+     "id": "p5",
+     "x": 0,
+     "y": 0
+    },
+    {
+     "id": "p6",
+     "x": 0,
+     "y": 10
+    }
+   ],
+   "entities": [
+    {
+     "id": "e1",
+     "type": "line",
+     "p1": "p1",
+     "p2": "p2"
+    },
+    {
+     "id": "e2",
+     "type": "line",
+     "p1": "p2",
+     "p2": "p3"
+    },
+    {
+     "id": "e3",
+     "type": "line",
+     "p1": "p3",
+     "p2": "p4"
+    },
+    {
+     "id": "e4",
+     "type": "line",
+     "p1": "p4",
+     "p2": "p1"
+    },
+    {
+     "id": "e5",
+     "type": "line",
+     "p1": "p5",
+     "p2": "p6",
+     "construction": true
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "revolve",
+   "id": "F2",
+   "op": "add",
+   "sketch": "F1",
+   "axis": "e5",
+   "angle": 360
+  },
+  {
+   "type": "sketch",
+   "id": "F3",
+   "plane": {
+    "kind": "std",
+    "id": "front"
+   },
+   "points": [
+    {
+     "id": "O",
+     "x": 0,
+     "y": 0,
+     "fixed": true
+    },
+    {
+     "id": "p1",
+     "x": -1,
+     "y": 0
+    },
+    {
+     "id": "p2",
+     "x": 1,
+     "y": 0
+    },
+    {
+     "id": "p3",
+     "x": 1,
+     "y": 16.9448249798
+    },
+    {
+     "id": "p4",
+     "x": -1,
+     "y": 16.9448249798
+    }
+   ],
+   "entities": [
+    {
+     "id": "e1",
+     "type": "line",
+     "p1": "p1",
+     "p2": "p2"
+    },
+    {
+     "id": "e2",
+     "type": "line",
+     "p1": "p2",
+     "p2": "p3"
+    },
+    {
+     "id": "e3",
+     "type": "line",
+     "p1": "p3",
+     "p2": "p4"
+    },
+    {
+     "id": "e4",
+     "type": "line",
+     "p1": "p4",
+     "p2": "p1"
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F4",
+   "op": "add",
+   "sketch": "F3",
+   "end": "blind",
+   "depth": 30
+  },
+  {
+   "type": "fillet",
+   "id": "F5",
+   "edges": [
+    {
+     "faces": [
+      "F2.S.e4",
+      "F4.S.e2~1"
+     ],
+     "at": [
+      1.0000000000000022,
+      13.40754785752909,
+      15.000218490183398
+     ]
+    }
+   ],
+   "radius": 0.5
+  }
+ ],
+ "seq": 6,
+ "rollback": null,
+ "script": "const P=(r,z)=>[r,-z];\nconst p=part('F');\np.sketch('top',(s)=>s.polygon([P(15.944824979801187,0),P(20,0),P(15,30),P(10.944824979801187,30)])).revolve(360);\np.sketch('front',(s)=>s.polygon([[-1,0],[1,0],[1,16.944824979801187],[-1,16.944824979801187]])).extrude(30);\np.fillet(edges({near:[1,13.407584373685141,15],within:1.5}),0.5);\n"
+}
