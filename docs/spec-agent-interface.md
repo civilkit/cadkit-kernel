@@ -513,6 +513,11 @@ body). Both fail with a structured error and leave the model unchanged.
 - Motion: the rotation first (`rotate.axis` a vector, `"x"|"y"|"z"` or `{kind:"axis",axis:"x"}`;
   `origin` default the world origin; `angle` in degrees), then `translate`. Numbers or
   `"=expr"`. The older `dx/dy/dz` + `axis` + `angle` keys still read. No motion is a no-op.
+- Placement of a library part: one `moveBody` at the end of the inserted group rotates and
+  translates everything built so far as one rigid body (`rotate.axis` through `rotate.origin`,
+  90-degree steps or any angle). Select only the inserted group with `bodies` when the document
+  already holds other solids. Names are unchanged, so references made after it still resolve
+  (`crates/ck-model/tests/move_features.rs`, `bldc_rotates_*`, `face_references_after_a_bldc_transform`).
 - `copy: true` leaves the original and appends a moved copy whose face names get the
   instance suffix `@<id>.1`; otherwise the entities move in place and all names are unchanged.
 - Moved bodies are not united with what they touch or cross: the result may hold overlapping

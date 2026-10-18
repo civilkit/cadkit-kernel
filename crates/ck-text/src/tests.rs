@@ -253,13 +253,13 @@ fn arc_text_sits_on_the_circle() {
 
 #[test]
 fn metrics_match_layout() {
-    let m = metrics("RPM x100", "gauge", None, 8.0, 1.0).unwrap();
+    let m = metrics("RPM x100", "gauge", None, 8.0, 1.0, false, false).unwrap();
     let l = layout(&Spec { string: "RPM x100".into(), height: 8.0, ..Spec::default() }).unwrap();
     assert!((l.bbox[2] - l.bbox[0] - (m.bbox[2] - m.bbox[0])).abs() < 1e-6);
     assert!(m.advance > m.bbox[2] - m.bbox[0]);
     assert_eq!(m.chars, 8);
     assert_eq!(m.advances.len(), 8);
-    let wide = metrics("RPM x100", "gauge", None, 8.0, 1.5).unwrap();
+    let wide = metrics("RPM x100", "gauge", None, 8.0, 1.5, false, false).unwrap();
     assert!((wide.advance / m.advance - 1.5).abs() < 1e-9);
 }
 
