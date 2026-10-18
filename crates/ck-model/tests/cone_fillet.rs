@@ -87,3 +87,31 @@ fn thickened_wide_base_cone_r21_5_to_r13_5_matches_area_times_thickness() {
     let want = plate_volume() + cone_wall_volume(21.5, 13.5, 27.0, 1.0);
     assert!((b.volume - want).abs() < 1e-3 * want, "{} vs {}", b.volume, want);
 }
+
+fn base_volume() -> f64 {
+    let b = build(include_str!("../../../tools/cases/cone_fillet/thicken_cone.json"));
+    assert!(b.errors.is_empty(), "{:?}", b.errors);
+    b.volume
+}
+
+/// R1 on the top rim of the thickened cone: a convex round-over, removes material (the original kernel agrees to
+/// 13211.8785).
+#[test]
+fn r1_fillet_on_the_top_rim_removes_material() {
+    let base = base_volume();
+    let b = build(include_str!("../../../tools/cases/cone_fillet/fillet_rim.json"));
+    assert!(b.errors.is_empty(), "{:?}", b.errors);
+    assert_eq!((b.issues, b.freeform), (0, 0));
+    assert!(b.volume < base && b.volume > base - 100.0, "{} vs base {}", b.volume, base);
+}
+
+/// R3 where the cone meets the plate: a concave fillet tangent to the cone and the plate top, ADDS material
+/// (the original kernel rounds the wall base over instead and loses 180).
+#[test]
+fn r3_fillet_at_the_foot_adds_material() {
+    let base = base_volume();
+    let b = build(include_str!("../../../tools/cases/cone_fillet/fillet_foot.json"));
+    assert!(b.errors.is_empty(), "{:?}", b.errors);
+    assert_eq!((b.issues, b.freeform), (0, 0));
+    assert!(b.volume > base, "{} vs base {}", b.volume, base);
+}

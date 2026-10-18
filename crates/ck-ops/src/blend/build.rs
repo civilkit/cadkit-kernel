@@ -31,9 +31,8 @@ use ck_geom::{Frame, Vec2, Vec3};
 use ck_topo::body::{Body, EdgeId, FaceId, FaceName, Role};
 use ck_topo::make::{extrude, ExtrudeOpts, Profile, ProfileLoop, ProfileRegion, ProfileSeg};
 
-/// Faces named `id`; a face an earlier tool split into regions (`F4.S.e1~1`, `~2`) is still
-/// named by its base id in the selection, and regions that a later boolean merged back into one
-/// face (the same cone or cylinder) answer to every region id.
+/// Faces named `id`; a face an earlier tool split into regions (`F4.C1~1`, `~2`) is still
+/// named by its base id in the selection.
 fn faces_named(b: &Body, id: &str) -> Vec<FaceId> {
     if let Some(f) = b.find_face(id) {
         return vec![f];
@@ -50,8 +49,63 @@ fn faces_named(b: &Body, id: &str) -> Vec<FaceId> {
 }
 
 /// Edge between the two named faces closest to `at` (fillet `edges[]` ref).
+///
+/// A selection whose face names no longer fit the geometry (a saved document naming a wall that is now the
+/// other half of a split rim, so the numbers shifted) falls back, when the named pair does border an edge but
+/// not near `at`, to the edge through `at` between faces of the same two features.
 pub fn find_edge(b: &Body, fa: &str, fb: &str, at: Vec3) -> Option<EdgeId> {
     let named = |id: &str| faces_named(b, id);
+    let best = find_edge_named(b, fa, fb, at, &named);
+    let dist = |e: EdgeId| {
+        let ed = b.edge(e);
+        crate::boolean::imprint::dist_in_range(&ed.curve, (ed.t0, ed.t1), at).1
+    };
+    if best.is_some_and(|e| dist(e) > 1e-4 * (1.0 + at.len())) {
+        if let Some(e) = find_edge_by_position(b, fa, fb, at) {
+            return Some(e);
+        }
+    }
+    best
+}
+
+/// The id without its region suffix (`F4.S.e1~2` -> `F4.S.e1`).
+fn family_id(id: &str) -> &str {
+    match id.rfind('~') {
+        Some(i) if i + 1 < id.len() && id[i + 1..].bytes().all(|c| c.is_ascii_digit()) && !id.contains('@') => &id[..i],
+        _ => id,
+    }
+}
+
+/// The edge through `at` between faces of the two features the names belong to. For a saved selection whose
+/// face names no longer fit (the `~k` or wall numbers shifted when a boolean merged the pieces of a cone, or an
+/// earlier kernel numbered them differently) but whose pick point still sits on the edge. Both names must still
+/// belong to a face (or a face's family, or an absorbed name), so a misspelt face stays `missingEdge`.
+pub fn find_edge_by_position(b: &Body, fa: &str, fb: &str, at: Vec3) -> Option<EdgeId> {
+    let exists = |id: &str| {
+        b.find_face(id).is_some()
+            || b.face_ids().any(|f| family_id(&b.face_id_str(f)) == family_id(id) || b.face(f).absorbed.iter().any(|a| family_id(a) == family_id(id)))
+    };
+    if !exists(fa) || !exists(fb) {
+        return None;
+    }
+    let (ha, hb) = (FaceName::parse(fa)?, FaceName::parse(fb)?);
+    let scale = 1.0 + at.len();
+    let by_feature = |f: FaceId, feat: &str| b.face(f).name.feature == feat;
+    let dist = |e: EdgeId| {
+        let ed = b.edge(e);
+        crate::boolean::imprint::dist_in_range(&ed.curve, (ed.t0, ed.t1), at).1
+    };
+    b.edge_ids()
+        .filter(|&e| {
+            let fs = b.edge_faces(e);
+            fs.len() == 2
+                && ((by_feature(fs[0], &ha.feature) && by_feature(fs[1], &hb.feature)) || (by_feature(fs[1], &ha.feature) && by_feature(fs[0], &hb.feature)))
+                && dist(e) <= 1e-6 * scale
+        })
+        .min_by(|&x, &y| dist(x).partial_cmp(&dist(y)).unwrap())
+}
+
+fn find_edge_named(b: &Body, fa: &str, fb: &str, at: Vec3, named: &dyn Fn(&str) -> Vec<FaceId>) -> Option<EdgeId> {
     let (fs_a, fs_b) = (named(fa), named(fb));
     b.edge_ids()
         .filter(|&e| {
@@ -634,15 +688,12 @@ fn junction_vertices(b: &Body, sel: &[EdgeId], tol: f64) -> Junc {
 /// Both faces border a blend face of `feature` in `b` (their shared edge was
 /// consumed by a tool of this feature).
 fn blended_by_earlier_tool(b: &Body, fa: &str, fb: &str, feature: &str) -> bool {
-    let (fs1, fs2) = (faces_named(b, fa), faces_named(b, fb));
-    if fs1.is_empty() || fs2.is_empty() {
-        return false;
-    }
+    let (Some(f1), Some(f2)) = (b.find_face(fa), b.find_face(fb)) else { return false };
     b.face_ids().any(|g| {
         let n = &b.face(g).name;
         n.feature == feature && matches!(n.role, Role::Blend(_)) && {
             let nb = b.face_neighbors(g);
-            fs1.iter().any(|f| nb.contains(f)) && fs2.iter().any(|f| nb.contains(f))
+            nb.contains(&f1) && nb.contains(&f2)
         }
     })
 }
@@ -723,8 +774,11 @@ fn blend_edges_at(
             dbg_fail(&format!("edge {k} ({fa} | {fb} at {at:?}) not found after earlier blends"));
             return Err(BlendError::code("missingEdge"));
         };
+        let own = out.edge_faces(e);
         let (f1, f2) = match (out.find_face(fa), out.find_face(fb)) {
-            (Some(f1), Some(f2)) => (f1, f2),
+            // the names must still be the edge's faces (a saved selection can name a face the edge found by
+            // position no longer borders)
+            (Some(f1), Some(f2)) if own.len() == 2 && own.contains(&f1) && own.contains(&f2) => (f1, f2),
             _ => {
                 // a face split into regions by an earlier tool: the edge's own faces, in selection order
                 let fs = out.edge_faces(e);
@@ -1211,9 +1265,65 @@ pub fn fillet_line_edge(b: &Body, e: EdgeId, faces: [FaceId; 2], r: f64, feature
     blend_edge_hint(b, e, faces, Spec::Fillet(r, FilletProfile::Circular), feature, k, tol, false, &Junc::default()).map(|x| x.0)
 }
 
+/// A planar face the circle edge `e` stands on: the plane contains the circle, is normal to its axis, and the
+/// face covers the edge's start point in its interior (a wall that only touches a plate along a line: the edge
+/// is the foot of the wall, not a free rim). Not one of the edge's own faces.
+fn foot_plane(b: &Body, e: EdgeId, faces: [FaceId; 2], tol: f64) -> Option<FaceId> {
+    let ed = b.edge(e);
+    let (c, axis, rad) = ed.curve.circle_info()?;
+    let axis = axis.normalize();
+    let p0 = ed.curve.eval(ed.t0.min(ed.t1));
+    b.face_ids().find(|&g| {
+        if faces.contains(&g) {
+            return false;
+        }
+        let Surface::Plane { frame } = &b.face(g).surface else { return false };
+        frame.z.cross(axis).len() < 1e-9
+            && (p0 - frame.o).dot(frame.z).abs() <= 1e-7 * (1.0 + rad)
+            && (c - p0).dot(frame.z).abs() <= 1e-7 * (1.0 + rad)
+            && point_in_face(b, g, p0, tol) != Where::Out
+    })
+}
+
 /// As [`fillet_line_edge`], also returning the touched-face order hint
 /// (edge faces, then end faces).
+///
+/// A circular fillet on the foot of a wall that stands on a plane is the concave fillet between the wall and that
+/// plane (tangent to both, adding material), not a round-over of the wall's own base edge: tried first with each of
+/// the edge's faces in turn; the ordinary blend of the edge's two faces is the fallback.
 fn blend_edge_hint(
+    b: &Body,
+    e: EdgeId,
+    faces: [FaceId; 2],
+    spec: Spec,
+    feature: &str,
+    k: u32,
+    tol: f64,
+    ring: bool,
+    junc: &Junc,
+) -> Result<(Body, Vec<String>), BlendError> {
+    if matches!(spec, Spec::Fillet(_, FilletProfile::Circular)) {
+        if let Some(plane) = foot_plane(b, e, faces, tol) {
+            for cand in [faces[0], faces[1]] {
+                if !matches!(b.face(cand).surface, Surface::Cone { .. } | Surface::Cylinder { .. }) {
+                    continue;
+                }
+                match blend_edge_hint_inner(b, e, [cand, plane], spec, feature, k, tol, ring, junc) {
+                    Ok(x) => {
+                        if std::env::var_os("CK_BLEND_DEBUG").is_some() {
+                            eprintln!("foot blend on {} and {} ok", b.face_id_str(cand), b.face_id_str(plane));
+                        }
+                        return Ok(x);
+                    }
+                    Err(err) => dbg_fail(&format!("foot blend on {} and {} failed: {}", b.face_id_str(cand), b.face_id_str(plane), err.code)),
+                }
+            }
+        }
+    }
+    blend_edge_hint_inner(b, e, faces, spec, feature, k, tol, ring, junc)
+}
+
+fn blend_edge_hint_inner(
     b: &Body,
     e: EdgeId,
     faces: [FaceId; 2],
