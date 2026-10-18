@@ -11,6 +11,9 @@
 //!
 //! * `bodies` (also `body` / `target`; an object, a string or an array of either):
 //!   `{face: "<face id>"}` (or the bare string) selects the lump holding that face,
+//!   `{feature: "<feature id>"}` (or a bare id that is not a face name) selects every
+//!   lump holding a face made by that feature (`F17.*`, instance and patterned copies
+//!   `F17.*@...` too; several entries add up, none found: `missingReference`),
 //!   `{surface: "<feature id>"}` a surface body. Missing or empty: every lump of the
 //!   solid body.
 //! * Motion: rotation first (about `rotate.axis` through `rotate.origin`, `angle` in
@@ -157,6 +160,26 @@ fn entries(raw: &Json) -> Vec<&Json> {
     vec![]
 }
 
+/// The feature that made a face name (`"F17.S.e1~1@F4.2"` -> `F17`): the id up to
+/// the first `.` (face ids always carry one; a bare feature id does not).
+fn owner_of(name: &str) -> &str {
+    name.split('.').next().unwrap_or(name)
+}
+
+/// Does this face belong to feature `fid`? Its own name's feature, any absorbed
+/// alias's, or an instance level (`@F17.1` = a pattern / insert copy of `F17`).
+fn face_has_feature(b: &Body, f: FaceId, fid: &str) -> bool {
+    let face = b.face(f);
+    let own = |n: &str| owner_of(n) == fid || n.split(|c| c == '.' || c == '@').any(|seg| seg == fid);
+    own(&face.name.id()) || face.absorbed.iter().any(|a| own(a))
+}
+
+/// Faces of the solid body made by `fid` (direct names and instance copies).
+fn faces_of_feature(b: &Body, fid: &str) -> Option<Vec<FaceId>> {
+    let fs: Vec<FaceId> = b.face_ids().filter(|&f| face_has_feature(b, f, fid)).collect();
+    (!fs.is_empty()).then_some(fs)
+}
+
 pub fn exec_move_body(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
     if br.body.is_none() && br.surfs.is_empty() {
         return Err(FeatureError::new(codes::NOTHING_TO_CUT));
@@ -168,7 +191,9 @@ pub fn exec_move_body(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Res
     let mut surf_hit: Vec<usize> = vec![];
     let sel = entries(&f.raw);
     for r in &sel {
-        let face = r.as_str().or_else(|| r.get_str("face"));
+        // `{face}` / a bare string that names a face; a bare id without `.`
+        // falls through to the feature selection below.
+        let face = r.get_str("face").or_else(|| r.as_str().filter(|s| s.contains('.')));
         if let Some(face) = face {
             match br.slot_of_face(face).ok_or_else(missing)? {
                 Slot::Surf(i) => surf_hit.push(i),
@@ -181,6 +206,17 @@ pub fn exec_move_body(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Res
             }
         } else if let Some(s) = r.get_str("surface") {
             surf_hit.push(br.surface_ref(s).ok_or_else(missing)?);
+        } else if let Some(fid) = r.get_str("feature").or_else(|| r.as_str()) {
+            // `{feature: "F17"}` / a bare feature id: every lump holding a face
+            // made by that feature (`F17.*`, instance / patterned copies too)
+            let b = br.body.as_ref().ok_or_else(missing)?;
+            let hit = faces_of_feature(b, fid).ok_or_else(missing)?;
+            let mut lumps: Vec<ck_topo::body::LumpId> = hit.iter().map(|&g| b.face_lump(g)).collect();
+            lumps.sort_unstable();
+            lumps.dedup();
+            for l in lumps {
+                solid_faces.extend(ck_topo::mass::lump_faces(b, l));
+            }
         } else {
             return Err(missing());
         }

@@ -61,6 +61,7 @@ dependencies = [
  "ck-json",
  "ck-ops",
  "ck-tess",
+ "ck-text",
  "ck-topo",
 ]
 
@@ -115,6 +116,10 @@ dependencies = [
  "ck-json",
  "ck-topo",
 ]
+
+[[package]]
+name = "ck-text"
+version = "0.1.0"
 
 [[package]]
 name = "ck-topo"

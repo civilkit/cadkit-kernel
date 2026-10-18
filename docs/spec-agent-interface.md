@@ -508,8 +508,12 @@ body). Both fail with a structured error and leave the model unchanged.
 ```
 
 - `bodies` (also `body` / `target`; an array, an object or a string): `{"face": name}` or the
-  bare name selects the lump holding that face, `{"surface": featureId}` a surface body.
-  Missing or empty: every lump of the solid.
+  bare name selects the lump holding that face, `{"feature": id}` (or a bare id that is not a
+  face name, i.e. has no `.`) selects every lump holding a face made by that feature — the face
+  names `F17.*` (caps, walls, blends alike, so the GUI need not know which) including instance
+  and patterned copies (`F17.*@F9.1`, an `insertPart` component `@F17.1`, a patterned row
+  `F17.*@F2.3`); several entries add up; a feature with no such face is `missingReference`.
+  `{"surface": featureId}` a surface body. Missing or empty: every lump of the solid.
 - Motion: the rotation first (`rotate.axis` a vector, `"x"|"y"|"z"` or `{kind:"axis",axis:"x"}`;
   `origin` default the world origin; `angle` in degrees), then `translate`. Numbers or
   `"=expr"`. The older `dx/dy/dz` + `axis` + `angle` keys still read. No motion is a no-op.

@@ -507,3 +507,94 @@ fn face_references_after_a_bldc_transform() {
     let r = run(&format!("{base},{rot},{sk}"));
     assert!(r.errors().is_empty(), "sketch on face: {:?}", r.errors());
 }
+
+/// Task 6b: `bodies` selects by FEATURE id (`{"feature":"F4"}` / a bare id
+/// that is not a face name) — the lumps holding any face made by that feature.
+/// Two disjoint solids; only the second (F4's) lump rotates about +Z, the
+/// first is untouched, volumes and centres of gravity match the rotation.
+#[test]
+fn move_body_selects_the_lumps_of_a_feature() {
+    let two = format!(
+        r#"{BLOCK},
+ {{"type":"sketch","id":"F3","plane":{{"kind":"std","id":"top"}},"points":[{{"id":"a","x":100,"y":0}},{{"id":"b","x":110,"y":0}},{{"id":"c","x":110,"y":10}},{{"id":"d","x":100,"y":10}}],
+   "entities":[{{"type":"line","id":"e1","p1":"a","p2":"b"}},{{"type":"line","id":"e2","p1":"b","p2":"c"}},{{"type":"line","id":"e3","p1":"c","p2":"d"}},{{"type":"line","id":"e4","p1":"d","p2":"a"}}],"constraints":[]}},
+ {{"type":"extrude","id":"F4","op":"add","sketch":"F3","end":"blind","depth":10}}"#
+    );
+    let r0 = run(&two);
+    assert!(r0.errors().is_empty(), "{:?}", r0.errors());
+    let b0 = r0.body.as_ref().unwrap();
+    assert_eq!(b0.num_lumps(), 2, "two disjoint solids");
+    let first = |b: &ck_topo::body::Body, face_prefix: &str| -> ck_topo::mass::Moments {
+        let f = b.face_ids().find(|&g| b.face_id_str(g).starts_with(face_prefix)).expect(face_prefix);
+        let l = b.face_lump(f);
+        ck_topo::mass::lump_moments(b).into_iter().nth(b.lump_index(l)).unwrap()
+    };
+    let (m_f2a, m_f4a) = (first(b0, "F2."), first(b0, "F4."));
+    assert!(close(m_f2a.volume, 8000.0, 1e-9) && close(m_f4a.volume, 1000.0, 1e-9), "{} {}", m_f2a.volume, m_f4a.volume);
+    // rotate only the F4 lump 90 degrees about +Z through the origin
+    let mb = r#"{"type":"moveBody","id":"M1","bodies":[{"feature":"F4"}],"rotate":{"axis":[0,0,1],"origin":[0,0,0],"angle":90}}"#;
+    let r = with(&two, mb);
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    assert!(r.valid());
+    let b = r.body.as_ref().unwrap();
+    assert_eq!(b.num_lumps(), 2);
+    assert!(close(r.volume, r0.volume, 1e-9), "{} vs {}", r.volume, r0.volume);
+    assert_eq!(r.faces(), r0.faces(), "names unchanged");
+    let (m_f2b, m_f4b) = (first(b, "F2."), first(b, "F4."));
+    // first lump untouched
+    assert!((m_f2b.com() - m_f2a.com()).len() < 1e-9, "first moved: {:?} vs {:?}", m_f2b.com(), m_f2a.com());
+    assert!(close(m_f2b.volume, m_f2a.volume, 1e-9));
+    // second lump is the exact rotation of its old one
+    assert!(close(m_f4b.volume, m_f4a.volume, 1e-9));
+    let want = rot_z(m_f4a.com(), 90.0, Vec3::ZERO);
+    assert!((m_f4b.com() - want).len() < 1e-9, "second CG {:?} vs {want:?}", m_f4b.com());
+    // the bare id form selects the same lump
+    let r2 = with(&two, r#"{"type":"moveBody","id":"M1","body":"F4","rotate":{"axis":[0,0,1],"origin":[0,0,0],"angle":90}}"#);
+    assert!(r2.errors().is_empty(), "{:?}", r2.errors());
+    let m2 = first(r2.body.as_ref().unwrap(), "F4.");
+    assert!((m2.com() - want).len() < 1e-9, "bare id: {:?} vs {want:?}", m2.com());
+    // an unknown feature id is a structured miss
+    let e = with(&two, r#"{"type":"moveBody","id":"M1","bodies":[{"feature":"F9"}],"translate":[1,0,0]}"#);
+    assert!(e.errors()[0].starts_with("M1:missingReference"), "{:?}", e.errors());
+    let e2 = with(&two, r#"{"type":"moveBody","id":"M1","bodies":["F9"],"translate":[1,0,0]}"#);
+    assert!(e2.errors()[0].starts_with("M1:missingReference"), "{:?}", e2.errors());
+}
+
+/// Task 6b (patterned copies): the feature id also selects the lumps of the
+/// `lpattern` copies (`F4.*@F5.k`), so a row of disjoint bodies moves together.
+#[test]
+fn move_body_selects_patterned_copies_by_feature() {
+    let two = format!(
+        r#"{BLOCK},
+ {{"type":"sketch","id":"F3","plane":{{"kind":"std","id":"top"}},"points":[{{"id":"a","x":100,"y":0}},{{"id":"b","x":110,"y":0}},{{"id":"c","x":110,"y":10}},{{"id":"d","x":100,"y":10}}],
+   "entities":[{{"type":"line","id":"e1","p1":"a","p2":"b"}},{{"type":"line","id":"e2","p1":"b","p2":"c"}},{{"type":"line","id":"e3","p1":"c","p2":"d"}},{{"type":"line","id":"e4","p1":"d","p2":"a"}}],"constraints":[]}},
+ {{"type":"extrude","id":"F4","op":"add","sketch":"F3","end":"blind","depth":10}},
+ {{"type":"lpattern","id":"F5","seeds":["F4"],"dir":{{"kind":"axis","axis":"y"}},"spacing":30,"count":3}}"#
+    );
+    let r0 = run(&two);
+    assert!(r0.errors().is_empty(), "{:?}", r0.errors());
+    assert_eq!(r0.body.as_ref().unwrap().num_lumps(), 4, "F2 + F4 + two copies");
+    let faces0 = r0.faces();
+    assert!(faces0.iter().any(|n| n.contains("@F5.1")) && faces0.iter().any(|n| n.contains("@F5.2")), "{faces0:?}");
+    // by the PATTERN feature: only the copies (and their lumps) move
+    let r = with(&two, r#"{"type":"moveBody","id":"M1","bodies":[{"feature":"F5"}],"translate":[0,0,25]}"#);
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    assert!(r.valid());
+    assert!(close(r.volume, r0.volume, 1e-9));
+    assert_eq!(r.faces(), faces0, "names unchanged");
+    let b = r.body.as_ref().unwrap();
+    let lump_of = |bd: &ck_topo::body::Body, prefix: &str| {
+        let f = bd.face_ids().find(|&g| bd.face_id_str(g).contains(prefix)).unwrap();
+        let l = bd.face_lump(f);
+        ck_topo::mass::lump_moments(bd).into_iter().nth(bd.lump_index(l)).unwrap().com()
+    };
+    let (f2, f4) = (lump_of(b, "F2."), lump_of(b, "F4."));
+    let (c1, c2) = (lump_of(b, "@F5.1"), lump_of(b, "@F5.2"));
+    // F2 and the seed F4 stay where they were (top plane extrudes toward -Z);
+    // only the two copies moved +25 in Z
+    let r0b = r0.body.as_ref().unwrap();
+    assert!((f2 - lump_of(r0b, "F2.")).len() < 1e-9, "F2 moved: {f2:?}");
+    assert!((f4 - lump_of(r0b, "F4.")).len() < 1e-9, "seed moved: {f4:?}");
+    assert!((c1 - lump_of(r0b, "@F5.1") - Vec3::new(0.0, 0.0, 25.0)).len() < 1e-9, "copy1: {c1:?}");
+    assert!((c2 - lump_of(r0b, "@F5.2") - Vec3::new(0.0, 0.0, 25.0)).len() < 1e-9, "copy2: {c2:?}");
+}
