@@ -151,13 +151,82 @@ def loop_tol(loops, t):
     return max(1e-3 * diag, 1e-9)
 
 
+def conditioned_curves(loop, t):
+    """Snap near-coincident endpoints and rebuild arc endpoints on the mean
+    radius. Returns curve dicts in world coordinates with shared endpoints."""
+    raw = []
+    for c in loop["profile_curves"]:
+        if c["type"] == "Line3D":
+            raw.append({"type": "line", "a": world(t, vec(c["start_point"])), "b": world(t, vec(c["end_point"]))})
+        elif c["type"] == "Circle3D":
+            raw.append({"type": "circle", "c": world(t, vec(c["center_point"])), "r": abs(float(c["radius"])), "n": unit(vec(c.get("normal", {"x": 0, "y": 0, "z": 1})))})
+        elif c["type"] == "Arc3D":
+            ctr = world(t, vec(c["center_point"]))
+            n = unit(rot_vec(t, vec(c.get("normal", {"x": 0, "y": 0, "z": 1}))))
+            ref = rot_vec(t, vec(c.get("reference_vector", {"x": 1, "y": 0, "z": 0})))
+            ref = unit(addp(ref, mul(n, -dot(ref, n))))
+            if norm(ref) < 1e-9:
+                ref = unit(cross(n, (0, 0, 1)))
+            # reference vectors that are within ~0.03 rad of a world axis are
+            # data noise on a normalised model; snap them to the axis
+            for ax in ((1, 0, 0), (0, 1, 0), (0, 0, 1)):
+                d = dot(ref, ax)
+                if abs(d) > 0.9995:
+                    ref = mul(ax, 1.0 if d > 0 else -1.0)
+                    break
+            yv = unit(cross(n, ref))
+            a0, a1 = float(c["start_angle"]), float(c["end_angle"])
+            if a1 <= a0:
+                a1 += TAU
+            S = world(t, vec(c["start_point"])); E = world(t, vec(c["end_point"]))
+            r = 0.5 * (norm((S[0] - ctr[0], S[1] - ctr[1], S[2] - ctr[2])) + norm((E[0] - ctr[0], E[1] - ctr[1], E[2] - ctr[2])))
+            A = addp(ctr, addp(mul(ref, r * math.cos(a0)), mul(yv, r * math.sin(a0))))
+            B = addp(ctr, addp(mul(ref, r * math.cos(a1)), mul(yv, r * math.sin(a1))))
+            raw.append({"type": "arc", "c": ctr, "r": r, "a": A, "b": B, "a0": a0, "a1": a1, "ref": ref, "n": n, "yv": yv})
+    pts = [p for e in raw for p in ([e["a"], e["b"]] if e["type"] in ("line", "arc") else [])]
+    if not pts:
+        return raw
+    lo = [min(p[i] for p in pts) for i in range(3)]
+    hi = [max(p[i] for p in pts) for i in range(3)]
+    diag = math.sqrt(sum((hi[i] - lo[i]) ** 2 for i in range(3)))
+    tol = max(1e-3 * diag, 1e-9)
+    canon = []
+    def snap(p):
+        for q in canon:
+            if norm((p[0] - q[0], p[1] - q[1], p[2] - q[2])) <= tol:
+                return q
+        canon.append(p)
+        return p
+    for e in raw:
+        if e["type"] in ("line", "arc"):
+            e["a"] = snap(e["a"]); e["b"] = snap(e["b"])
+    return raw
+
+
+def ocp_edge_cond(e):
+    if e["type"] == "line":
+        return BRepBuilderAPI_MakeEdge(gp_Pnt(*e["a"]), gp_Pnt(*e["b"])).Edge()
+    if e["type"] == "circle":
+        circ = GC_MakeCircle(gp_Pnt(*e["c"]), gp_Dir(*e["n"]), e["r"]).Value()
+        return BRepBuilderAPI_MakeEdge(circ).Edge()
+    if e["type"] == "arc":
+        am = 0.5 * (e["a0"] + e["a1"])
+        mid = addp(e["c"], addp(mul(e["ref"], e["r"] * math.cos(am)), mul(e["yv"], e["r"] * math.sin(am))))
+        try:
+            return BRepBuilderAPI_MakeEdge(GC_MakeArcOfCircle(gp_Pnt(*e["a"]), gp_Pnt(*e["b"]), gp_Pnt(*mid)).Value()).Edge()
+        except Exception:
+            circ = GC_MakeCircle(gp_Pnt(*e["c"]), gp_Dir(*e["n"]), e["r"]).Value()
+            return BRepBuilderAPI_MakeEdge(circ, e["a0"], e["a1"]).Edge()
+    return None
+
+
 def make_faces(loops, t):
     wires = []
     tol = loop_tol(loops, t)
     for loop in loops:
         edges = []
-        for c in loop["profile_curves"]:
-            e = ocp_edge(c, t)
+        for c in conditioned_curves(loop, t):
+            e = ocp_edge_cond(c)
             if e is None:
                 return None, f"bad edge {c['type']}"
             edges.append(e)
@@ -328,52 +397,20 @@ def emit_sketch(sk, profile, ctx):
 
     n = 0
     for loop in sk["profiles"][profile]["loops"]:
-        prev = None
-        loop_cw = loop_is_cw(loop, t)
-        curves = list(reversed(loop["profile_curves"])) if loop_cw else loop["profile_curves"]
-        for c in curves:
+        for c in conditioned_curves(loop, t):
             n += 1
-            if c["type"] == "Line3D":
-                p1 = to2(world(t, vec(c["start_point"]))); p2 = to2(world(t, vec(c["end_point"])))
-                if prev is not None and math.hypot(prev[0] - p1[0], prev[1] - p1[1]) > math.hypot(prev[0] - p2[0], prev[1] - p2[1]):
-                    p1, p2 = p2, p1
+            if c["type"] == "line":
+                p1 = to2(c["a"]); p2 = to2(c["b"])
                 if math.hypot(p2[0] - p1[0], p2[1] - p1[1]) < 1e-12:
                     continue
                 entities.append({"type": "line", "id": f"e{n}", "p1": pid(p1), "p2": pid(p2)})
-                prev = p2
-            elif c["type"] == "Circle3D":
-                ctr = to2(world(t, vec(c["center_point"])))
-                entities.append({"type": "circle", "id": f"e{n}", "c": pid(ctr), "r": float(c["radius"])})
-                prev = None
-            elif c["type"] == "Arc3D":
-                cw = world(t, vec(c["center_point"]))
-                ctr = to2(cw)
-                nrm = unit(rot_vec(t, vec(c.get("normal", {"x": 0, "y": 0, "z": 1}))))
-                ref = rot_vec(t, vec(c.get("reference_vector", {"x": 1, "y": 0, "z": 0})))
-                ref = unit(addp(ref, mul(nrm, -dot(ref, nrm))))
-                if norm(ref) < 1e-9:
-                    ref = unit(cross(nrm, (0, 0, 1)))
-                yv = unit(cross(nrm, ref))
-                r = float(c["radius"])
-                a0, a1 = float(c["start_angle"]), float(c["end_angle"])
-                if a1 <= a0:
-                    a1 += TAU
-                am = 0.5 * (a0 + a1)
-                intended = to2(addp(cw, addp(mul(ref, r * math.cos(am)), mul(yv, r * math.sin(am)))))
-                S = to2(world(t, vec(c["start_point"]))); E = to2(world(t, vec(c["end_point"])))
-                # midpoint of the CCW arc from S to E
-                as_ = math.atan2(S[1] - ctr[1], S[0] - ctr[0])
-                ae_ = math.atan2(E[1] - ctr[1], E[0] - ctr[0])
-                if ae_ <= as_:
-                    ae_ += TAU
-                mm = 0.5 * (as_ + ae_)
-                ccw_mid = (ctr[0] + r * math.cos(mm), ctr[1] + r * math.sin(mm))
-                if (intended[0] - ctr[0]) * (ccw_mid[0] - ctr[0]) + (intended[1] - ctr[1]) * (ccw_mid[1] - ctr[1]) >= 0:
-                    p1, p2 = S, E
-                else:
-                    p1, p2 = E, S
+            elif c["type"] == "circle":
+                ctr = to2(c["c"])
+                entities.append({"type": "circle", "id": f"e{n}", "c": pid(ctr), "r": c["r"]})
+            elif c["type"] == "arc":
+                ctr = to2(c["c"])
+                p1 = to2(c["a"]); p2 = to2(c["b"])
                 entities.append({"type": "arc", "id": f"e{n}", "c": pid(ctr), "p1": pid(p1), "p2": pid(p2)})
-                prev = p2
             else:
                 return None, f"curve {c['type']}"
     if not entities:

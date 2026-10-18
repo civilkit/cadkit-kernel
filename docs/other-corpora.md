@@ -120,13 +120,15 @@ negative), Line3D/Circle3D/Arc3D only, OneSide extent, no taper,
 NewBody/Join/Cut.
 
 * 1,000 random sequences: **951 translated** (multi-feature, multi-profile,
-  OneSide/TwoSides/Symmetric). At the best scale (x100): **707 ok**, 13
-  `okNoEffect`, 2 `ok-loose`, 86 wrong, 21 `reference-suspect`, 87 feature
-  errors, 35 unusable OCP references.
+  OneSide/TwoSides/Symmetric). After the conditioning pass, at x100: **698
+  ok**, 12 `okNoEffect`, 1 `ok-loose`, 69 wrong, 13 `reference-suspect`, 93
+  feature errors, 65 unusable OCP references.
 * Scale x1/x10/x100/x1000 changes only a small tail (10 new passes at x100,
   2 lost); most failures are logic/reference, not absolute tolerance.
-* Feature errors: `noClosedProfile` 114 (66 cases, all with arcs),
-  `booleanFailed` 21, `booleanVolumeMismatch` 4, `nothingToCut` 1.
+* Feature errors: `noClosedProfile` 95 occurrences / 54 cases (all with
+  arcs), plus `booleanFailed` and `booleanVolumeMismatch` cases. Conditioning
+  reduced noClosedProfile from 114/66 but did not eliminate the multi-arc
+  remainder.
 * The old 163 unclosed-wire skips are gone after a 1e-3 relative
   `ShapeFix_Wire` fallback. Remaining skips: 33 no-profile parser gaps, 23
   OCP `Standard_Failure`, 7 `ValueError`, 2 non-axis-aligned, 5 no extrude,
