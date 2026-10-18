@@ -163,8 +163,8 @@ Representative scripts, translated features and repro commands are in
 
 `tools/verify_wasm.sh <wasm> [--quick]` runs every check built here against one
 wasm and prints one page: the OCCT corpus (when `/tmp/occt` exists), the
-fillet, shell, boolean, shape, mass-properties, STEP round-trip and
-tessellation sweeps, the two Fusion import samples (when their cache exists)
+fillet, shell, boolean, shape, mass-properties, STEP round-trip,
+tessellation, holes/patterns/mirror/draft sweeps, the 200-case crash fuzz, the two Fusion import samples (when their cache exists)
 and the DeepCAD check (when `cases1000.json` exists).
 
 ```sh
@@ -197,12 +197,16 @@ replay, a class-only baseline and a ranked Mimo brief.
 | mass properties | 240 | 220 ok, 20 `wrongVolume` (all `loft3`) | `docs/massprops-sweep.md` |
 | STEP round trip | 120 | 100 ok, 20 `ocp-wrongArea` (lofts) | `docs/step-roundtrip-sweep.md` |
 | tessellation | 180 | 96 ok, 84 `meshVolume` (torus, cylinder, cone, loft3) | `docs/tess-sweep.md` |
+| holes / patterns / mirror / draft | 120 | 120 ok | `docs/feature-sweep.md` |
+| crash fuzz | 5000 | 662 ok, 4002 structured, 238 trap, 74 hang, 24 invalid | `docs/crash-fuzz.md` |
+| Fusion import (rounds 1-3) | 800 | 745 ok, 55 invalid | `docs/mimo-brief-import.md` |
 
 The baselines are `tools/fillet_sweep_baseline.json`,
 `tools/fillet_sweep_baseline_seed11.json`, `tools/shell_sweep_baseline.json`,
 `tools/boolean_sweep_baseline.json`, `tools/shape_sweep_baseline.json`,
 `tools/massprops_sweep_baseline.json`, `tools/step_roundtrip_baseline.json`
-and `tools/tess_sweep_baseline.json`.
+and `tools/tess_sweep_baseline.json`, `tools/feature_sweep_baseline.json` and
+`tools/crash_fuzz_baseline.json`.
 Each stores the kit wasm hash (`18fcb4d451b97049` on this run), seed and
 sample count; `--check` reports 0 regressions on the current wasm.
 

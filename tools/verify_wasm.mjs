@@ -79,6 +79,7 @@ const SWEEPS = [
   { name: 'massprops', file: 'tools/massprops_sweep.mjs', base: 'tools/massprops_sweep_baseline.json', timeout: 120 },
   { name: 'step', file: 'tools/step_roundtrip_sweep.mjs', base: 'tools/step_roundtrip_baseline.json', timeout: 120 },
   { name: 'tess', file: 'tools/tess_sweep.mjs', base: 'tools/tess_sweep_baseline.json', timeout: 120 },
+  { name: 'features', file: 'tools/feature_sweep.mjs', base: 'tools/feature_sweep_baseline.json', timeout: 120 },
 ];
 
 async function runSweep(s) {
@@ -127,6 +128,8 @@ if (!quick) {
   const sets = [
     ['1234', path.join(os.homedir(), '.cache/b-rep-corpora/fusion360/sample'), 'tools/fusion_sample_1234.json', 'tools/import_baseline_1234.json'],
     ['5678', path.join(os.homedir(), '.cache/b-rep-corpora/fusion360/sample2'), 'tools/fusion_sample_5678.json', 'tools/import_baseline_5678.json'],
+    ['4242', path.join(os.homedir(), '.cache/b-rep-corpora/fusion360/sample4242'), 'tools/fusion_sample_4242.json', 'tools/import_baseline_4242.json'],
+    ['9001', path.join(os.homedir(), '.cache/b-rep-corpora/fusion360/sample9001'), 'tools/fusion_sample_9001.json', 'tools/import_baseline_9001.json'],
   ];
   for (const [tag, dir, manifest, bl] of sets) {
     if (!existsSync(dir)) { results.push({ name: `import${tag}`, status: 'skip', reason: 'cache absent' }); continue; }

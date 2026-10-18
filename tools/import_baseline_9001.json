@@ -1,0 +1,807 @@
+{
+ "version": 1,
+ "wasm": "18fcb4d451b97049",
+ "date": "2026-10-18",
+ "cases": {
+  "115603_50901239_54.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "24886_ecf7fcaa_1.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "23083_fdb942ac_0.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "126770_0f5a87bf_6.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "56924_9c70a720_1.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "23018_63087a41_25.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "60760_f95d00ad_23.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "77687_cbb18594_16.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "51883_d97df863_10.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "121174_1345e289_0.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "23637_32cddf1d_0.stp": {
+   "cls": "invalid",
+   "detail": "EDGE_OFF_SURFACE,TESSELLATION_OPEN"
+  },
+  "80662_4f8800cf_0.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "86897_b6585cb8_15.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "54657_2a66e0de_23.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "87757_eb92dadf_5.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "31349_f3ddd5e0_18.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "24360_bb83adc0_8.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "69488_233a012a_0.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "51916_fa226b15_7.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "128367_1483fb5d_0.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "54791_b49c72c2_2.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "41774_88a7a483_10.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "21815_7090778f_1.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "78404_fb8c1a85_0.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "42811_4dd8622f_0.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "34581_e34981d3_3.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "21858_f1409ea2_4.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "22761_ca309655_1.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "50047_54241fe3_14.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "137098_0a45d1c8_25.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "25165_8f18ab00_10.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "21822_7d3db422_7.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "143309_c7a044ee_0.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "34582_55b310a1_2.stp": {
+   "cls": "invalid",
+   "detail": "TESSELLATION_OPEN"
+  },
+  "88235_86095bbb_13.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "33413_060ce192_52.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "53113_0ced6c87_2.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "52449_3da8c6e5_8.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "23910_316134bd_80.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "144711_ea9bd20b_43.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "24904_6a007751_6.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "50692_e7ff2668_10.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "136936_b4f0c062_3.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "34917_61633e20_12.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "88307_9ab5641a_0.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "51914_fb924efa_14.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "101190_cfdcb477_8.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "21681_cbbaafd2_1.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "86897_b6585cb8_19.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "102525_06a3094b_3.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "49218_e04c713b_22.stp": {
+   "cls": "invalid",
+   "detail": "EDGE_OFF_SURFACE"
+  },
+  "80762_4cacac24_0.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "51336_33ff2eba_15.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "23954_a8c09819_11.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "116566_96702ebb_2.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "40589_2673464e_12.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "55811_bc667b2d_4.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "30904_54099e05_24.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "135790_a27f9deb_44.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "60886_b27faf73_7.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "22369_481ab478_15.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "31640_96c29ce2_2.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "52012_77070fda_44.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "24244_8228e075_3.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "24409_62adef9c_0.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "32454_e959e3cf_1.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "105561_87765abe_32.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "51795_850e53f3_8.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "24300_ed2686dc_7.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "41211_11f6b8a0_6.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "122918_3dd34d27_0.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "25338_2a285026_19.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "39707_358f88df_10.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "71853_86a83b06_0.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "41681_bab3a334_0.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "136044_001ceb08_1.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "147439_ae74b7ef_0.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "50711_05fbe39a_2.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "93103_fdb9fcb7_17.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "135230_c38e50b2_0.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "112099_2c7f567f_0.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "52890_acb7832e_11.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "129422_621d0a90_34.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "139117_958365f6_31.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "31360_a1accb4b_38.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "26942_279de65e_22.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "33615_7bab1106_13.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "22225_a3ce4d29_40.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "53605_d1b120df_0.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "25203_1cc0cb3c_11.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "137094_e2d0f72d_1.stp": {
+   "cls": "invalid",
+   "detail": "EDGE_OFF_SURFACE"
+  },
+  "23179_729dc326_19.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "132967_a037d0dc_0.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "38198_7c60c095_2.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "40807_58058731_7.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "51860_32540fd4_42.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "40487_62383461_5.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "146227_2a11403a_1.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "86303_87045e9c_9.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "144146_91fc1d56_4.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "48332_fb679f90_22.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "21503_34f299ca_1.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "139222_2c10ca9a_12.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "147009_977ee378_3.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "143378_13971c5a_1.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "22100_7eb0592c_2.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "104823_730d4473_11.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "23320_e0711ae9_0.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "48332_fb679f90_12.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "21240_f3652cd7_4.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "32325_10e5ff31_1.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "92055_78df0e52_0.stp": {
+   "cls": "invalid",
+   "detail": "EDGE_OFF_SURFACE,TESSELLATION_OPEN"
+  },
+  "22247_1484e60d_3.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "141388_89f11b4a_0.stp": {
+   "cls": "invalid",
+   "detail": "EDGE_OFF_SURFACE"
+  },
+  "123499_6a009716_5.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "138149_65733dac_0.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "133389_0938a905_3.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "135261_6d210d2a_4.stp": {
+   "cls": "invalid",
+   "detail": "EULER,EDGE_OFF_SURFACE,TESSELLATION_OPEN"
+  },
+  "52883_e518d3f4_27.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "143549_c6cb1934_2.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "47984_7b774ba1_3.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "56568_d3018fcb_12.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "28471_7682956d_0.stp": {
+   "cls": "invalid",
+   "detail": "EDGE_OFF_SURFACE,TESSELLATION_OPEN"
+  },
+  "22211_b1ee53f0_22.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "25845_e9c6813d_10.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "22442_7d5c5d5f_0.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "42429_967ff817_0.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "35143_6bdef095_1.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "51091_4629260c_27.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "22496_d153c758_8.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "55508_7370fa91_0.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "53461_a5942665_1.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "78856_75985df5_1.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "20697_d3e106b4_3.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "37145_f47c9529_10.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "53107_1097d480_4.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "40936_6de8f4f4_6.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "132987_ba18d2eb_0.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "56040_9b1307eb_4.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "23554_a0845d54_7.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "104283_e5646f96_2.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "69337_2c778611_10.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "22604_7063d5c9_54.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "52230_60438ea5_17.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "21256_433456a3_26.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "133295_5be86240_3.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "79010_9940eb64_1.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "22492_047b125b_21.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "40519_55a097c6_3.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "23156_7788f78a_1.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "52229_996054ef_11.stp": {
+   "cls": "invalid",
+   "detail": "TESSELLATION_OPEN"
+  },
+  "138752_b26935c0_0.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "35145_a3d7363c_40.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "95528_33aa06e6_0.stp": {
+   "cls": "invalid",
+   "detail": "EDGE_OFF_SURFACE,TESSELLATION_OPEN"
+  },
+  "119612_019d097e_3.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "47436_844e4fd7_2.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "109857_1d24326e_58.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "39124_28e99e62_3.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "139587_d848a56e_0.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "24573_f09c67f3_2.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "83378_2dc861a1_1.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "33529_756075a0_19.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "110525_35e43459_0.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "31741_4c3fa12b_5.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "51603_034939eb_8.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "40176_01ed49ea_5.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "23252_ef165bed_0.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "134072_a64e5fc0_5.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "86278_1e55d036_2.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "124567_64283868_1.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "145464_12051557_14.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "55587_221e9ffc_0.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "111769_a573f182_0.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "21941_1a683ec2_1.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "37145_f47c9529_14.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "43938_418421a7_58.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "137694_8612f611_4.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "25285_31ea8727_5.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "137107_05ebe0bd_2.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "82190_24b1b0fe_4.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "86904_d242299a_0.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "30713_06b3d0ec_148.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "37145_f47c9529_13.stp": {
+   "cls": "invalid",
+   "detail": "TESSELLATION_OPEN"
+  },
+  "115615_d06fa061_18.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "36671_e4a64b8c_0.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "65842_de75838b_9.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "41671_58b36663_12.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "41117_1b3271f2_0.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "130996_b842b511_29.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "56480_dcc89e9a_51.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "33176_fe782a57_1.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "25380_17436b5e_35.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "45285_dc1f2b6f_2.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "22652_564979ff_13.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "54516_ac9e2ef4_14.stp": {
+   "cls": "invalid",
+   "detail": "EDGE_OFF_SURFACE,TESSELLATION_OPEN"
+  },
+  "105913_93f730c4_22.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "44016_ec992a42_12.stp": {
+   "cls": "invalid",
+   "detail": "EDGE_OFF_SURFACE,TESSELLATION_OPEN"
+  },
+  "26395_53ccf21b_62.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "145117_78f63de3_1.stp": {
+   "cls": "ok",
+   "detail": ""
+  },
+  "22604_0b4ffb43_25.stp": {
+   "cls": "ok",
+   "detail": ""
+  }
+ }
+}
