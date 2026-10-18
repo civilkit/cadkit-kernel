@@ -195,7 +195,6 @@ if (accept) {
   const f11 = await runSweep({ name: 'fillet11', file: 'tools/fillet_sweep.mjs', base: 'tools/fillet_sweep_baseline_seed11.json', timeout: 180 });
   if (f11.status === 'ok') writeFileSync(path.join(root, 'tools/fillet_sweep_baseline_seed11.json'), JSON.stringify({ version: 1, wasm, wasmHash, seed: 11, samples: f11.samples, cases: Object.fromEntries(f11.rows.map((x) => [x.id, x.cls])) }, null, 1) + '\n');
   console.log(`accepted baselines for wasm ${wasmHash}`);
-  bad = 0;
 }
 
 let bad = 0;
@@ -215,6 +214,7 @@ for (const r of results) {
   if (r.passes.length > 6) console.log(`  ... ${r.passes.length - 6} more new passes`);
   bad += fails;
 }
+if (accept) bad = 0;
 console.log(bad ? `VERDICT: FAIL (${bad} regressions)` : 'VERDICT: OK');
 rmSync(tmp, { recursive: true, force: true });
 process.exit(bad ? 1 : 0);
