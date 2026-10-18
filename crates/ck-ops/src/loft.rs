@@ -944,7 +944,152 @@ fn rail(ts: &[f64], pts: &[Vec3], ends: Ends) -> Result<(Curve, f64, f64), LoftE
     Ok((Curve::BSpline(cur), a, b))
 }
 
+/// An exact cone (or cylinder) lateral surface of a straight two-station loft between full coaxial circles.
+struct ConeLoft {
+    surface: Surface,
+    /// Cone `u` runs the same way as the pieces (+1) or against them (-1).
+    u_dir: f64,
+    /// Start angle (cone `u`) of every piece at the first station, and its unsigned sweep.
+    th: Vec<f64>,
+    sw: Vec<f64>,
+    /// Axial coordinate (cone `v`) of the last station; the first is 0.
+    v1: f64,
+    /// Station circles per piece: `circles[station][piece]`, parameter 0..sweep along the piece.
+    circles: [Vec<Curve>; 2],
+    /// The cone's `(u, v)` frame has the same handedness as the loft's `(piece, loft)` frame.
+    sense: bool,
+}
+
+/// `coaxial_circle_cone`: a two-station loft (no guides, end tangents, centre line, twist or point end) whose
+/// sections are full circles about one axis, in parallel planes normal to it, with every piece starting at the same
+/// angle on both: the lateral faces are pieces of one exact cone (a cylinder for equal radii). Tolerance 1e-9
+/// relative; anything else stays free-form.
+fn coaxial_circle_cone(st: &Stations, ends: &Ends) -> Option<ConeLoft> {
+    use std::f64::consts::TAU;
+    if st.chains.len() != 2 || !st.closed || ends.any() || ends.apex.iter().any(|a| a.is_some()) || st.dense.iter().any(|d| *d) {
+        return None;
+    }
+    let n = st.tags.len();
+    if n == 0 || st.chains.iter().any(|c| !c.closed || c.pieces.len() != n) {
+        return None;
+    }
+    // station circles
+    struct Arc {
+        c: Vec3,
+        u: Vec3,
+        v: Vec3,
+        t0: f64,
+        t1: f64,
+    }
+    let mut arcs: Vec<Vec<Arc>> = vec![];
+    for ch in &st.chains {
+        let mut row = vec![];
+        for p in &ch.pieces {
+            let Geom3::Conic { c, u, v, t0, t1 } = &p.g else { return None };
+            row.push(Arc { c: *c, u: *u, v: *v, t0: *t0, t1: *t1 });
+        }
+        arcs.push(row);
+    }
+    let (c0, c1) = (arcs[0][0].c, arcs[1][0].c);
+    let h = c0.dist(c1);
+    let r0 = arcs[0][0].u.len();
+    let r1 = arcs[1][0].u.len();
+    let size = r0.max(r1).max(h);
+    if !(h > 1e-9 * size.max(1e-300)) || !(r0 > 0.0) || !(r1 > 0.0) {
+        return None;
+    }
+    let tol = 1e-9 * size;
+    let a = (c1 - c0) * (1.0 / h);
+    for (s, row) in arcs.iter().enumerate() {
+        let r = if s == 0 { r0 } else { r1 };
+        let cs = if s == 0 { c0 } else { c1 };
+        let mut total = 0.0;
+        for q in row {
+            if q.c.dist(cs) > tol || (q.u.len() - r).abs() > tol || (q.v.len() - r).abs() > tol || q.u.dot(q.v).abs() > 1e-9 * r * r {
+                return None;
+            }
+            // plane normal to the axis
+            if q.u.dot(a).abs() > 1e-9 * r || q.v.dot(a).abs() > 1e-9 * r {
+                return None;
+            }
+            total += (q.t1 - q.t0).abs();
+        }
+        if (total - TAU).abs() > 1e-9 {
+            return None;
+        }
+    }
+    // cone frame: z toward the larger radius (a cylinder: along the loft)
+    let dr = r1 - r0;
+    let cyl = dr.abs() <= 1e-9 * size;
+    let fz = if !cyl && dr < 0.0 { -a } else { a };
+    let v1 = fz.dot(c1 - c0);
+    let ex = {
+        let p = arcs[0][0].c + arcs[0][0].u * arcs[0][0].t0.cos() + arcs[0][0].v * arcs[0][0].t0.sin();
+        (p - c0).try_normalize()?
+    };
+    let ey = fz.cross(ex);
+    let frame = Frame { o: c0, x: ex, y: ey, z: fz };
+    let theta = |p: Vec3, c: Vec3| (p - c).dot(ey).atan2((p - c).dot(ex));
+    let wrap = |d: f64| d - TAU * (d / TAU).round();
+    let pt = |q: &Arc, t: f64| q.c + q.u * t.cos() + q.v * t.sin();
+    let mut u_dir = 0.0;
+    let (mut th, mut sw) = (vec![], vec![]);
+    let mut circles = [vec![], vec![]];
+    for j in 0..n {
+        let (q0, q1) = (&arcs[0][j], &arcs[1][j]);
+        // direction of the piece about fz; both stations must agree
+        let dir = |q: &Arc| {
+            let d = q.u.cross(q.v).dot(fz) * (q.t1 - q.t0);
+            if d > 0.0 { 1.0 } else { -1.0 }
+        };
+        let (d0, d1) = (dir(q0), dir(q1));
+        if d0 != d1 || (u_dir != 0.0 && d0 != u_dir) {
+            return None;
+        }
+        u_dir = d0;
+        let (s0, s1) = ((q0.t1 - q0.t0).abs(), (q1.t1 - q1.t0).abs());
+        if (s0 - s1).abs() > 1e-9 {
+            return None;
+        }
+        let (ps0, ps1) = (pt(q0, q0.t0), pt(q1, q1.t0));
+        let (pe0, pe1) = (pt(q0, q0.t1), pt(q1, q1.t1));
+        let (ta, tb) = (theta(ps0, c0), theta(ps1, c1));
+        let (te0, te1) = (theta(pe0, c0), theta(pe1, c1));
+        if wrap(ta - tb).abs() > 1e-9 || wrap(te0 - te1).abs() > 1e-9 {
+            return None;
+        }
+        // the end of the piece lies at start + dir * sweep
+        if wrap(te0 - (ta + u_dir * s0)).abs() > 1e-9 {
+            return None;
+        }
+        th.push(ta);
+        sw.push(s0);
+        for (s, (q, rr, c)) in [(q0, r0, c0), (q1, r1, c1)].into_iter().enumerate() {
+            let p = pt(q, q.t0);
+            let x = (p - c).try_normalize()?;
+            let z = fz * u_dir;
+            let y = z.cross(x);
+            circles[s].push(Curve::Circle { frame: Frame { o: c, x, y, z }, r: rr });
+        }
+    }
+    // pieces chain end to start
+    for j in 0..n {
+        let jn = (j + 1) % n;
+        if wrap(th[j] + u_dir * sw[j] - th[jn]).abs() > 1e-9 {
+            return None;
+        }
+    }
+    let surface = if cyl {
+        Surface::Cylinder { frame, r: r0 }
+    } else {
+        Surface::Cone { frame, r: r0, semi_angle: (dr / v1).atan() }
+    };
+    let v_dir = if fz.dot(a) > 0.0 { 1.0 } else { -1.0 };
+    Some(ConeLoft { surface, u_dir, th, sw, v1, circles, sense: u_dir * v_dir > 0.0 })
+}
+
 fn build(feature: &str, st: &Stations, profiles: &[ProfileIn], surface: bool, grails: &[Option<guides::GuideRail>], ends: Ends) -> Result<Body, LoftError> {
+    let cone = if grails.is_empty() { coaxial_circle_cone(st, &ends) } else { None };
     let k = st.chains.len();
     let n = st.tags.len();
     let closed = st.closed;
@@ -1006,7 +1151,13 @@ fn build(feature: &str, st: &Stations, profiles: &[ProfileIn], surface: bool, gr
         })
         .collect::<Result<_, _>>()?;
     let faces: Vec<FaceId> = (0..n)
-        .map(|j| b.add_face(shell, sides[j].surface.clone(), true, FaceName::side(feature, &st.tags[j])))
+        .map(|j| {
+            let f = b.add_face(shell, cone.as_ref().map_or_else(|| sides[j].surface.clone(), |c| c.surface.clone()), true, FaceName::side(feature, &st.tags[j]));
+            if let Some(c) = &cone {
+                b.faces[f.idx()].sense = c.sense;
+            }
+            f
+        })
         .collect();
     // a point end (apex) has no cap, no end edges, and one shared vertex
     let (pt0, pt1) = (st.chains[0].is_point(), st.chains[k - 1].is_point());
@@ -1037,6 +1188,10 @@ fn build(feature: &str, st: &Stations, profiles: &[ProfileIn], surface: bool, gr
     }
     // cap edges
     let cap_edge = |b: &mut Body, s: usize, j: usize, va: VertexId, vb: VertexId| -> (EdgeId, Curve, f64, f64) {
+        if let Some(cn) = &cone {
+            let c = cn.circles[if s == 0 { 0 } else { 1 }][j].clone();
+            return (b.add_edge(c.clone(), 0.0, cn.sw[j], va, vb), c, 0.0, cn.sw[j]);
+        }
         let c = &sides[j].cs[s];
         let g = &st.chains[s].pieces[j].g;
         // a face with any curved station piece keeps ALL its station edges as
@@ -1083,6 +1238,17 @@ fn build(feature: &str, st: &Stations, profiles: &[ProfileIn], surface: bool, gr
             };
             pc_r0 = rc(j);
             pc_r1 = rc(jn);
+        } else if let Some(cn) = &cone {
+            let dir = Curve2::Line { o: Vec2::new(cn.th[j], 0.0), d: Vec2::new(cn.u_dir, 0.0) };
+            pc_c0 = Some(dir);
+            pc_c1 = Some(Curve2::Line { o: Vec2::new(cn.th[j], cn.v1), d: Vec2::new(cn.u_dir, 0.0) });
+            let rpc = |u: f64, i: usize, b: &Body| -> Curve2 {
+                let (e, _) = rails[i];
+                let ed = b.edge(e);
+                Curve2::Line { o: Vec2::new(u, 0.0), d: Vec2::new(0.0, cn.v1 / (ed.t1 - ed.t0)) }
+            };
+            pc_r0 = rpc(cn.th[j], j, &b);
+            pc_r1 = rpc(cn.th[j] + cn.u_dir * cn.sw[j], jn, &b);
         } else {
             let (vlo, vhi) = (0.0, total);
             let du0 = if e0[j].as_ref().map_or(false, |e| matches!(e.1, Curve::Line { .. })) { 1.0 / len0 } else { 1.0 };
@@ -1217,6 +1383,39 @@ mod tests {
             assert!((m.volume - want).abs() < 1e-6 * want, "{} vs {}", m.volume, want);
             assert_eq!(out.body.num_faces(), 3);
         }
+    }
+
+    /// Two coaxial circles loft to exact cone / cylinder faces (names and topology as before), either order.
+    #[test]
+    fn coaxial_circles_loft_to_a_cone() {
+        use ck_geom::surface::Surface as S;
+        for (ra, rb) in [(8.0, 5.0), (5.0, 8.0), (6.0, 6.0)] {
+            for surface in [false, true] {
+                let ps = [circle_profile(0.0, 0.0, ra), circle_profile(30.0, 0.0, rb)];
+                let out = loft("F4", &ps, &LoftOpts { surface, ..Default::default() }).unwrap();
+                let b = &out.body;
+                let mut sides = 0;
+                for f in b.face_ids() {
+                    match &b.face(f).surface {
+                        S::Cone { .. } if ra != rb => sides += 1,
+                        S::Cylinder { .. } if ra == rb => sides += 1,
+                        S::Plane { .. } => {}
+                        other => panic!("unexpected surface {other:?}"),
+                    }
+                }
+                assert_eq!(sides, 2);
+                assert_eq!(b.num_faces(), if surface { 2 } else { 4 });
+                if !surface {
+                    check_closed(b);
+                    let m = ck_topo::mass::mass_props(b);
+                    let want = std::f64::consts::PI * 30.0 / 3.0 * (ra * ra + ra * rb + rb * rb);
+                    assert!((m.volume - want).abs() < 1e-6 * want, "{} vs {}", m.volume, want);
+                }
+            }
+        }
+        // different axes (a sheared frustum) stay free-form
+        let out = loft("F4", &[circle_profile(0.0, 0.0, 8.0), circle_profile(30.0, 4.0, 5.0)], &LoftOpts::default()).unwrap();
+        assert!(out.body.face_ids().any(|f| matches!(out.body.face(f).surface, S::BSpline(_))));
     }
 
     /// Square -> point is a pyramid: V = a^2 h / 3, 4 planar triangles + base.

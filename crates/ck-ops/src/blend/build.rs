@@ -31,24 +31,27 @@ use ck_geom::{Frame, Vec2, Vec3};
 use ck_topo::body::{Body, EdgeId, FaceId, FaceName, Role};
 use ck_topo::make::{extrude, ExtrudeOpts, Profile, ProfileLoop, ProfileRegion, ProfileSeg};
 
+/// Faces named `id`; a face an earlier tool split into regions (`F4.S.e1~1`, `~2`) is still
+/// named by its base id in the selection, and regions that a later boolean merged back into one
+/// face (the same cone or cylinder) answer to every region id.
+fn faces_named(b: &Body, id: &str) -> Vec<FaceId> {
+    if let Some(f) = b.find_face(id) {
+        return vec![f];
+    }
+    let Some(mut want) = FaceName::parse(id) else { return vec![] };
+    want.region = None;
+    b.face_ids()
+        .filter(|&f| {
+            let mut n = b.face(f).name.clone();
+            n.region = None;
+            n == want
+        })
+        .collect()
+}
+
 /// Edge between the two named faces closest to `at` (fillet `edges[]` ref).
 pub fn find_edge(b: &Body, fa: &str, fb: &str, at: Vec3) -> Option<EdgeId> {
-    // a face an earlier tool split into regions (`F4.S.e1~1`, `~2`) is still
-    // named by its base id in the selection
-    let named = |id: &str| -> Vec<FaceId> {
-        if let Some(f) = b.find_face(id) {
-            return vec![f];
-        }
-        let Some(mut want) = FaceName::parse(id) else { return vec![] };
-        want.region = None;
-        b.face_ids()
-            .filter(|&f| {
-                let mut n = b.face(f).name.clone();
-                n.region = None;
-                n == want
-            })
-            .collect()
-    };
+    let named = |id: &str| faces_named(b, id);
     let (fs_a, fs_b) = (named(fa), named(fb));
     b.edge_ids()
         .filter(|&e| {
@@ -631,12 +634,15 @@ fn junction_vertices(b: &Body, sel: &[EdgeId], tol: f64) -> Junc {
 /// Both faces border a blend face of `feature` in `b` (their shared edge was
 /// consumed by a tool of this feature).
 fn blended_by_earlier_tool(b: &Body, fa: &str, fb: &str, feature: &str) -> bool {
-    let (Some(f1), Some(f2)) = (b.find_face(fa), b.find_face(fb)) else { return false };
+    let (fs1, fs2) = (faces_named(b, fa), faces_named(b, fb));
+    if fs1.is_empty() || fs2.is_empty() {
+        return false;
+    }
     b.face_ids().any(|g| {
         let n = &b.face(g).name;
         n.feature == feature && matches!(n.role, Role::Blend(_)) && {
             let nb = b.face_neighbors(g);
-            nb.contains(&f1) && nb.contains(&f2)
+            fs1.iter().any(|f| nb.contains(f)) && fs2.iter().any(|f| nb.contains(f))
         }
     })
 }
@@ -1149,7 +1155,7 @@ fn chamfer_only(spec: Spec) -> bool {
     matches!(spec, Spec::Chamfer(..))
 }
 
-/// Split rings in a chamfer selection: arcs (non-`Circle` curves, e.g. the
+/// Split rings in a chamfer selection: partial arcs (circle edges, or spline arcs, e.g. the
 /// halves of a lofted cap rim) on one circle sharing a face
 /// whose spans add up to a full turn. Returns `(leader, skipped)` flags per
 /// selected edge: the first arc cuts the whole ring, the rest are absorbed.
@@ -1160,10 +1166,13 @@ fn split_rings(b: &Body, eids: &[EdgeId]) -> (Vec<bool>, Vec<bool>) {
         .iter()
         .map(|&e| {
             let ed = b.edge(e);
-            if matches!(ed.curve, Curve::Circle { .. } | Curve::Line { .. }) {
+            if matches!(ed.curve, Curve::Line { .. }) {
                 return None;
             }
-            let (c, a, r, sp) = fit_circle(&ed.curve, ed.t0.min(ed.t1), ed.t0.max(ed.t1))?;
+            let (c, a, r, sp) = match &ed.curve {
+                Curve::Circle { frame, r } => (frame.o, frame.z.normalize(), *r, (ed.t1 - ed.t0).abs()),
+                other => fit_circle(other, ed.t0.min(ed.t1), ed.t0.max(ed.t1))?,
+            };
             let mut fs = b.edge_faces(e);
             fs.sort_by_key(|f| f.idx());
             Some((c, a, r, sp, fs))
