@@ -199,6 +199,7 @@ replay, a class-only baseline and a ranked Mimo brief.
 | tessellation | 180 | 96 ok, 84 `meshVolume` (torus, cylinder, cone, loft3) | `docs/tess-sweep.md` |
 | holes / patterns / mirror / draft | 120 | 120 ok | `docs/feature-sweep.md` |
 | crash fuzz | 5000 | 662 ok, 4002 structured, 238 trap, 74 hang, 24 invalid | `docs/crash-fuzz.md` |
+| Fusion import (rounds 1-3) | 800 | 745 ok, 55 invalid | `docs/mimo-brief-import.md` |
 
 The baselines are `tools/fillet_sweep_baseline.json`,
 `tools/fillet_sweep_baseline_seed11.json`, `tools/shell_sweep_baseline.json`,
