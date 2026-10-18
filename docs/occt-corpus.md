@@ -183,7 +183,7 @@ baseline and now fails). A check that cannot run or times out is printed as
 `--accept` is a full run that rewrites every baseline in one go with the
 new wasm hash and the observed classes (the known 88324 import hang stays
 `knownHang` in the 1234 baseline). The quick form
-takes about 40 s here; the full form skips external corpora that are not
+takes under 2 minutes; the full form skips external corpora that are not
 cached. Regression baselines are the ones listed under Sweeps and Files.
 
 ## Sweeps
