@@ -197,7 +197,6 @@ replay, a class-only baseline and a ranked Mimo brief.
 | mass properties | 240 | 220 ok, 20 `wrongVolume` (all `loft3`) | `docs/massprops-sweep.md` |
 | STEP round trip | 120 | 100 ok, 20 `ocp-wrongArea` (lofts) | `docs/step-roundtrip-sweep.md` |
 | tessellation | 180 | 96 ok, 84 `meshVolume` (torus, cylinder, cone, loft3) | `docs/tess-sweep.md` |
-| mass properties | 240 | 220 ok, 20 `wrongVolume` (all three-section loft) | `docs/massprops-sweep.md` |
 
 The baselines are `tools/fillet_sweep_baseline.json`,
 `tools/fillet_sweep_baseline_seed11.json`, `tools/shell_sweep_baseline.json`,
