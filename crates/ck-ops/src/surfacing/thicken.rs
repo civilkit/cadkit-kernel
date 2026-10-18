@@ -106,7 +106,9 @@ pub(crate) fn natural_normal(s: &Surface) -> Vec3 {
         }
         _ => {
             let ((u0, u1), (v0, v1)) = s.domain();
-            s.normal((u0 + u1) * 0.5, (v0 + v1) * 0.5).normalize()
+            // an infinite v-domain (cone) has no midpoint: sample the reference v = 0
+            let v = if v0.is_finite() && v1.is_finite() { (v0 + v1) * 0.5 } else { 0.0 };
+            s.normal((u0 + u1) * 0.5, v).normalize()
         }
     };
     n
@@ -243,7 +245,9 @@ fn plane_const(s: &Surface, n: Vec3) -> f64 {
         Surface::Plane { frame } => n.dot(frame.o),
         _ => {
             let ((u0, u1), (v0, v1)) = s.domain();
-            n.dot(s.eval((u0 + u1) * 0.5, (v0 + v1) * 0.5))
+            // an infinite v-domain (cone) has no midpoint: sample the reference v = 0
+            let v = if v0.is_finite() && v1.is_finite() { (v0 + v1) * 0.5 } else { 0.0 };
+            n.dot(s.eval((u0 + u1) * 0.5, v))
         }
     }
 }
