@@ -4,15 +4,19 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
+import crypto from 'node:crypto';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(here, '..');
 const argv = process.argv.slice(2);
 const wasm = argv.find((a) => !a.startsWith('--'));
 const quick = argv.includes('--quick');
+const accept = argv.includes('--accept');
+if (accept && quick) { console.error('--accept requires a full run'); process.exit(2); }
 const val = (f, d) => (argv.includes(f) ? argv[argv.indexOf(f) + 1] : d);
 if (!wasm) { console.error('usage: tools/verify_wasm.sh <wasm> [--quick]'); process.exit(2); }
 const tmp = mkdtempSync(path.join(os.tmpdir(), 'ck-verify-'));
+const wasmHash = crypto.createHash('sha256').update(readFileSync(wasm)).digest('hex').slice(0, 16);
 const t0 = Date.now();
 const PASS = new Set(['ok', 'okNoEffect', 'okEmpty', 'refused', 'structured-error', 'surface-only', 'degenerate']);
 const UNRESOLVED = new Set(['no-ref', 'ref-fails', 'missingMass', 'ocp-missing', 'no-mesh']);
@@ -97,7 +101,7 @@ async function runSweep(s) {
     all.push(...JSON.parse(readFileSync(out, 'utf8')));
   }
   if (hang) return { name: s.name, status: 'error', sec, reason: 'hang' };
-  return { name: s.name, status: 'ok', sec, ...compare(all, base) };
+  return { name: s.name, status: 'ok', sec, rows: all, samples, seed: base.seed ?? 7, ...compare(all, base) };
 }
 results.push(...(await mapLimit(SWEEPS, quick ? 1 : 2, runSweep)));
 
@@ -107,7 +111,7 @@ results.push(...(await mapLimit(SWEEPS, quick ? 1 : 2, runSweep)));
   const cases = quick ? 200 : 5000;
   const r = await run('node', [path.join(root, 'tools/crash_fuzz.mjs'), '--wasm', wasm, '--cases', String(cases), '--seed', '7', '--no-shrink', '--workers', '8', '--json', out], (quick ? 90 : 360) * 1000);
   const d = readJson(out);
-  if (d?.results) results.push({ name: 'crashfuzz', status: 'ok', sec: r.sec, ...compare(d.results, baseline('tools/crash_fuzz_baseline.json'), 'id') });
+  if (d?.results) results.push({ name: 'crashfuzz', status: 'ok', sec: r.sec, rows: d.results, ...compare(d.results, baseline('tools/crash_fuzz_baseline.json'), 'id') });
   else results.push({ name: 'crashfuzz', status: 'error', sec: r.sec, reason: (r.detail || r.status) });
 }
 
@@ -119,7 +123,7 @@ if (existsSync(occt)) {
   if (quick) args.push('--only', 'bopcut_simple');
   const r = await run('node', args, (quick ? 120 : Number(val('--occt-timeout', '360'))) * 1000);
   const rows = readJson(out);
-  if (rows) results.push({ name: 'occt', status: 'ok', sec: r.sec, ...compare(rows, baseline('tools/occt_baseline.json'), 'name') });
+  if (rows) results.push({ name: 'occt', status: 'ok', sec: r.sec, rows, ...compare(rows, baseline('tools/occt_baseline.json'), 'name') });
   else results.push({ name: 'occt', status: 'error', sec: r.sec, reason: (r.detail || r.status) });
 } else results.push({ name: 'occt', status: 'skip', reason: '/tmp/occt absent' });
 
@@ -137,7 +141,7 @@ if (!quick) {
     const r = await run('node', [path.join(root, 'tools/import_sample_check.mjs'), dir, '--wasm', wasm, '--manifest', path.join(root, manifest), '--json', out], 180000);
     const baseObj = baseline(bl);
     const rows = readJson(out);
-    if (rows) results.push({ name: `import${tag}`, status: 'ok', sec: r.sec, ...compare(rows, baseObj, 'file') });
+    if (rows) results.push({ name: `import${tag}`, status: 'ok', sec: r.sec, rows, ...compare(rows, baseObj, 'file') });
     else if (baseObj.knownHang) results.push({ name: `import${tag}`, status: 'known', sec: r.sec, reason: baseObj.knownHang });
     else results.push({ name: `import${tag}`, status: 'error', sec: r.sec, reason: (r.detail || r.status) });
   }
@@ -149,9 +153,49 @@ if (!quick && existsSync(dc)) {
   const out = path.join(tmp, 'deepcad.json');
   const r = await run('node', [path.join(root, 'tools/deepcad_check.mjs'), '--cases', dc, '--wasm', wasm, '--scale', '100', '--json', out], 240000);
   const rows = readJson(out);
-  if (rows) results.push({ name: 'deepcad', status: 'ok', sec: r.sec, ...compare(rows, baseline('tools/deepcad_baseline.json'), 'name') });
+  if (rows) results.push({ name: 'deepcad', status: 'ok', sec: r.sec, rows, ...compare(rows, baseline('tools/deepcad_baseline.json'), 'name') });
   else results.push({ name: 'deepcad', status: 'error', sec: r.sec, reason: (r.detail || r.status) });
 } else results.push({ name: 'deepcad', status: 'skip', reason: quick ? 'quick' : 'cases absent' });
+
+if (accept) {
+  const sweepBase = {
+    fillet: 'tools/fillet_sweep_baseline.json', shell: 'tools/shell_sweep_baseline.json',
+    boolean: 'tools/boolean_sweep_baseline.json', shape: 'tools/shape_sweep_baseline.json',
+    massprops: 'tools/massprops_sweep_baseline.json', step: 'tools/step_roundtrip_baseline.json',
+    tess: 'tools/tess_sweep_baseline.json', features: 'tools/feature_sweep_baseline.json',
+  };
+  for (const r of results) {
+    if (r.status !== 'ok' || !r.rows) continue;
+    if (sweepBase[r.name]) {
+      const cases = Object.fromEntries(r.rows.map((x) => [x.id, x.cls]));
+      writeFileSync(path.join(root, sweepBase[r.name]), JSON.stringify({ version: 1, wasm, wasmHash, seed: r.seed, samples: r.samples, cases }, null, 1) + '\n');
+    }
+  }
+  const occt = results.find((r) => r.name === 'occt' && r.rows);
+  if (occt) {
+    const cases = Object.fromEntries(occt.rows.map((x) => [x.name, { cls: x.cls, rel: x.rel ?? null, relVol: x.relVol ?? null }]));
+    writeFileSync(path.join(root, 'tools/occt_baseline.json'), JSON.stringify({ version: 1, wasm, wasmHash, cases }, null, 1) + '\n');
+  }
+  const importFiles = { import1234: ['tools/import_baseline_1234.json'], import5678: ['tools/import_baseline_5678.json'], import4242: ['tools/import_baseline_4242.json'], import9001: ['tools/import_baseline_9001.json'] };
+  for (const [name, [file]] of Object.entries(importFiles)) {
+    const r = results.find((x) => x.name === name && x.rows);
+    if (!r) continue;
+    const old = baseline(file);
+    const cases = Object.fromEntries(r.rows.map((x) => [x.file, { cls: x.cls, detail: x.detail }]));
+    writeFileSync(path.join(root, file), JSON.stringify({ version: 1, wasm, wasmHash, date: new Date().toISOString().slice(0, 10), ...(old.knownHang ? { knownHang: old.knownHang } : {}), cases }, null, 1) + '\n');
+  }
+  const dc = results.find((r) => r.name === 'deepcad' && r.rows);
+  if (dc) writeFileSync(path.join(root, 'tools/deepcad_baseline.json'), JSON.stringify({ version: 1, scale: 100, wasmHash, cases: Object.fromEntries(dc.rows.map((x) => [x.name, x.cls])) }, null, 1) + '\n');
+  const cf = results.find((r) => r.name === 'crashfuzz' && r.rows);
+  if (cf) {
+    const old = baseline('tools/crash_fuzz_baseline.json');
+    writeFileSync(path.join(root, 'tools/crash_fuzz_baseline.json'), JSON.stringify({ version: 1, wasm, wasmHash, seed: 7, n: cf.rows.length, cases: Object.fromEntries(cf.rows.map((x) => [x.id, x.cls])), minimal: old.minimal ?? [] }, null, 1) + '\n');
+  }
+  // fillet second seed (not part of the normal page)
+  const f11 = await runSweep({ name: 'fillet11', file: 'tools/fillet_sweep.mjs', base: 'tools/fillet_sweep_baseline_seed11.json', timeout: 180 });
+  if (f11.status === 'ok') writeFileSync(path.join(root, 'tools/fillet_sweep_baseline_seed11.json'), JSON.stringify({ version: 1, wasm, wasmHash, seed: 11, samples: f11.samples, cases: Object.fromEntries(f11.rows.map((x) => [x.id, x.cls])) }, null, 1) + '\n');
+  console.log(`accepted baselines for wasm ${wasmHash}`);
+}
 
 let bad = 0;
 console.log(`verify_wasm ${quick ? 'quick' : 'full'}  ${(Date.now() - t0) / 1000}s`);

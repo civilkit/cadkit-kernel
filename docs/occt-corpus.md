@@ -170,6 +170,7 @@ and the DeepCAD check (when `cases1000.json` exists).
 ```sh
 tools/verify_wasm.sh /path/to/ck_wasm.wasm --quick   # 1 seed, 4 templates/sweep
 tools/verify_wasm.sh /path/to/ck_wasm.wasm           # every template
+tools/verify_wasm.sh /path/to/ck_wasm.wasm --accept  # full run, rewrite all baselines
 ```
 
 Each sweep template runs in its own process and has a hard per-template
@@ -178,8 +179,10 @@ hang` and never blocks the run. Checks that produce no result are errors, not
 regressions. The page shows counts per class, new passes and regressions with case ids,
 and exits non-zero only on a real regression (a case that passed in the
 baseline and now fails). A check that cannot run or times out is printed as
-`ERROR` with its reason and does not count as a regression. The OCCT corpus
-timeout defaults to 6 minutes (`--occt-timeout <seconds>`). The quick form
+`ERROR` with its reason and does not count as a regression. The OCCT corpus timeout defaults to 6 minutes (`--occt-timeout <seconds>`).
+`--accept` is a full run that rewrites every baseline in one go with the
+new wasm hash and the observed classes (the known 88324 import hang stays
+`knownHang` in the 1234 baseline). The quick form
 takes about 40 s here; the full form skips external corpora that are not
 cached. Regression baselines are the ones listed under Sweeps and Files.
 
