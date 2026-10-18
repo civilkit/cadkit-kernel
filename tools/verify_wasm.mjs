@@ -74,6 +74,7 @@ const SWEEPS = [
   { name: 'boolean', file: 'tools/boolean_sweep.mjs', base: 'tools/boolean_sweep_baseline.json', timeout: 120 },
   { name: 'shape', file: 'tools/shape_sweep.mjs', base: 'tools/shape_sweep_baseline.json', timeout: 120 },
   { name: 'massprops', file: 'tools/massprops_sweep.mjs', base: 'tools/massprops_sweep_baseline.json', timeout: 120 },
+  { name: 'step', file: 'tools/step_roundtrip_sweep.mjs', base: 'tools/step_roundtrip_baseline.json', timeout: 120 },
 ];
 
 async function runSweep(s) {

@@ -191,12 +191,13 @@ replay, a class-only baseline and a ranked Mimo brief.
 | boolean | 320 | 146 ok, 22 `wrongVolume`, 5 `invalid`, 2 `booleanFailed`, plus expected `okNoEffect` / `okEmpty` | `docs/boolean-sweep.md` |
 | sweep / loft / revolve | 240 | 223 ok, 16 `wrongVolume`, 1 `ref-fails` | `docs/shape-sweep.md` |
 | mass properties | 240 | 220 ok, 20 `wrongVolume` (all `loft3`) | `docs/massprops-sweep.md` |
+| STEP round trip | 120 | 100 ok, 20 `ocp-wrongArea` (lofts) | `docs/step-roundtrip-sweep.md` |
 | mass properties | 240 | 220 ok, 20 `wrongVolume` (all three-section loft) | `docs/massprops-sweep.md` |
 
 The baselines are `tools/fillet_sweep_baseline.json`,
 `tools/fillet_sweep_baseline_seed11.json`, `tools/shell_sweep_baseline.json`,
-`tools/boolean_sweep_baseline.json`, `tools/shape_sweep_baseline.json` and
-`tools/massprops_sweep_baseline.json`.
+`tools/boolean_sweep_baseline.json`, `tools/shape_sweep_baseline.json`,
+`tools/massprops_sweep_baseline.json` and `tools/step_roundtrip_baseline.json`.
 Each stores the kit wasm hash (`18fcb4d451b97049` on this run), seed and
 sample count; `--check` reports 0 regressions on the current wasm.
 
