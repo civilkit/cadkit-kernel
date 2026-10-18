@@ -79,6 +79,7 @@ const SWEEPS = [
   { name: 'massprops', file: 'tools/massprops_sweep.mjs', base: 'tools/massprops_sweep_baseline.json', timeout: 120 },
   { name: 'step', file: 'tools/step_roundtrip_sweep.mjs', base: 'tools/step_roundtrip_baseline.json', timeout: 120 },
   { name: 'tess', file: 'tools/tess_sweep.mjs', base: 'tools/tess_sweep_baseline.json', timeout: 120 },
+  { name: 'features', file: 'tools/feature_sweep.mjs', base: 'tools/feature_sweep_baseline.json', timeout: 120 },
 ];
 
 async function runSweep(s) {
