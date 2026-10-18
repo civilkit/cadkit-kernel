@@ -159,6 +159,24 @@ scripts; the whole corpus now has 86. Distinct groups (new groups marked):
 Representative scripts, translated features and repro commands are in
 `docs/mimo-brief-occt.md`, ranked by case count.
 
+## Sweeps
+
+Seeded parametric sweeps supplement the translated corpus. Each has an OCP
+replay, a class-only baseline and a ranked Mimo brief.
+
+| sweep | cases | result (kit wasm, seed 7) | docs |
+|---|---|---|---|
+| fillet / chamfer | 640 | 575 ok, 32 `blendOverflow`, 28 `wrongVolume`, 3 `blendFailed`, 2 `kernel-null` | `docs/fillet-sweep.md` |
+| shell / thicken | 480 | 324 ok, 97 `wrongVolume`, 42 `refused`, 15 `shellFailed`, 2 `draftTooLarge` | `docs/shell-sweep.md` |
+| boolean | 320 | 146 ok, 22 `wrongVolume`, 5 `invalid`, 2 `booleanFailed`, plus expected `okNoEffect` / `okEmpty` | `docs/boolean-sweep.md` |
+| sweep / loft / revolve | 240 | 223 ok, 16 `wrongVolume`, 1 `ref-fails` | `docs/shape-sweep.md` |
+
+The baselines are `tools/fillet_sweep_baseline.json`,
+`tools/fillet_sweep_baseline_seed11.json`, `tools/shell_sweep_baseline.json`,
+`tools/boolean_sweep_baseline.json` and `tools/shape_sweep_baseline.json`.
+Each stores the kit wasm hash (`18fcb4d451b97049` on this run), seed and
+sample count; `--check` reports 0 regressions on the current wasm.
+
 ## Files
 
 * `tools/occt_corpus.mjs` — selection, translator, runner, baseline/check.
