@@ -217,6 +217,15 @@ fn blend_edges_inner(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, fea
             return super::freeform::fillet_freeform(b, edges, r, feature, tol);
         }
     }
+    // a circle split in arcs by a seam (a lofted cone's rim is two arcs on one surface) is one smooth edge: selecting
+    // one arc selects the whole ring, so the blend runs all the way round instead of stopping at the seam vertex
+    let expanded;
+    let edges = if matches!(spec, Spec::Fillet(_, FilletProfile::Circular)) && EDGE_RADII.with(|c| c.borrow().is_none()) {
+        expanded = with_ring_siblings(b, edges);
+        &expanded[..]
+    } else {
+        edges
+    };
     if edges.len() > 1 {
         // Oracle (box probes): the selection runs in ROUNDS, each round one
         // blend op (untouched faces, touched in first-touch order, new
@@ -319,7 +328,7 @@ fn blend_edges_inner(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, fea
         let mut earlier: Vec<String> = vec![];
         // chamfer: arcs of one split ring (a lofted cap rim cut in two at the
         // seam) are ONE revolved cut, named for the first arc
-        let (ring_lead, ring_skip) = if chamfer_only(spec) { split_rings(b, &eids) } else { (vec![false; n], vec![false; n]) };
+        let (ring_lead, ring_skip) = if chamfer_only(spec) || matches!(spec, Spec::Fillet(_, FilletProfile::Circular)) { split_rings(b, &eids) } else { (vec![false; n], vec![false; n]) };
         for round in rounds {
             let round: Vec<usize> = round.into_iter().filter(|&i| !ring_skip[i]).collect();
             if round.is_empty() {
@@ -1258,6 +1267,58 @@ fn split_rings(b: &Body, eids: &[EdgeId]) -> (Vec<bool>, Vec<bool>) {
         }
     }
     (lead, skip)
+}
+
+/// The other arcs of a split ring: edges on the circle of `e` that share a face with it, when together they close
+/// the circle (spans add up to a full turn). Empty for a single edge or an open arc.
+fn ring_siblings(b: &Body, e: EdgeId) -> Vec<EdgeId> {
+    let circle_of = |x: EdgeId| -> Option<(Vec3, Vec3, f64, f64)> {
+        let ed = b.edge(x);
+        if matches!(ed.curve, Curve::Line { .. }) {
+            return None;
+        }
+        match &ed.curve {
+            Curve::Circle { frame, r } => Some((frame.o, frame.z.normalize(), *r, (ed.t1 - ed.t0).abs())),
+            other => fit_circle(other, ed.t0.min(ed.t1), ed.t0.max(ed.t1)),
+        }
+    };
+    let Some((c, a, r, sp)) = circle_of(e) else { return vec![] };
+    let fs = b.edge_faces(e);
+    let mut group = vec![];
+    let mut total = sp;
+    for x in b.edge_ids().filter(|&x| x != e) {
+        let Some((c2, a2, r2, sp2)) = circle_of(x) else { continue };
+        if (c2 - c).len() < 1e-7 * (1.0 + r) && a2.cross(a).len() < 1e-7 && (r2 - r).abs() < 1e-7 * (1.0 + r) && b.edge_faces(x).iter().any(|f| fs.contains(f)) {
+            group.push(x);
+            total += sp2;
+        }
+    }
+    if !group.is_empty() && (total - std::f64::consts::TAU).abs() < 1e-6 { group } else { vec![] }
+}
+
+/// `edges` plus, for every selected arc of a split ring, the rest of its arcs (picked at their midpoints).
+fn with_ring_siblings(b: &Body, edges: &[(String, String, Vec3)]) -> Vec<(String, String, Vec3)> {
+    let mut out = edges.to_vec();
+    let mut have: Vec<EdgeId> = edges.iter().filter_map(|(fa, fb, at)| find_edge(b, fa, fb, *at)).collect();
+    for e in have.clone() {
+        for s in ring_siblings(b, e) {
+            if have.contains(&s) {
+                continue;
+            }
+            let fs = b.edge_faces(s);
+            if fs.len() != 2 {
+                continue;
+            }
+            let ed = b.edge(s);
+            let at = ed.curve.eval(0.5 * (ed.t0 + ed.t1));
+            let (fa, fb) = (b.face_id_str(fs[0]), b.face_id_str(fs[1]));
+            if find_edge(b, &fa, &fb, at) == Some(s) {
+                have.push(s);
+                out.push((fa, fb, at));
+            }
+        }
+    }
+    out
 }
 
 /// One straight edge between two planar faces.
