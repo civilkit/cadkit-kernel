@@ -464,16 +464,12 @@ impl<'a> Solid<'a> {
             return Class::Out;
         }
         let near = crate::bvh::Aabb::new(q, q).padded(tol * 10.0);
-        let band = (tol * 100.0).max(5e-4);
         let robust = super::robust();
-        let mut sliver = false;
         for i in self.bvh.query_box(&near) {
             let g = self.faces[i];
             let (u, v, cp) = b.face(g).surface.closest_point(q);
             let d = cp.dist(q);
             if d > tol * 10.0 {
-                // within a sliver's width of the face itself (not just of its surface extended beyond its edges)
-                sliver = sliver || (robust && d <= band && self.in_face_within(i, q, band) != Where::Out);
                 continue;
             }
             if self.in_face(i, q) == Where::Out {
@@ -482,11 +478,13 @@ impl<'a> Solid<'a> {
             let ng = b.outward_normal(g, u, v);
             return if ng.dot(n) > 0.0 { Class::OnSame } else { Class::OnOpp };
         }
-        // A sample within a sliver's width of the other solid's boundary (the fragment is a thin lens between
-        // two near-tangent surfaces, e.g. crossed blades touching at their tips) is neither clearly in nor out:
-        // single rays then disagree (their hits fall on face rims, in_face is off by the lens width). Take the
-        // majority of all rays, and the winding number when they split evenly.
-        if sliver {
+        // Not on any face: In/Out by ray parity. In a robust retry take the majority of all rays and the
+        // winding number on a tie, rather than trusting the first decisive ray: a single ray can miss a
+        // crossing on a spline face (iterative `line_bspline`), which flips the parity of a point far from
+        // the body — the thickened wide cone onto a plate drops the plate caps because the inner cone
+        // wall's second crossing is missed and a cap far outside the tool is read as In. Sliver fragments
+        // (a thin lens between near-tangent surfaces) hit the same vote because their single rays disagree.
+        if robust {
             let (mut ins, mut outs) = (0usize, 0usize);
             for d in RAYS {
                 match self.ray_parity(q, Vec3::new(d[0], d[1], d[2])) {
