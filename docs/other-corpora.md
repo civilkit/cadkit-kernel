@@ -64,6 +64,14 @@ Cost is the blocker on macOS (source build). On Linux CI the wheel makes it
 cheap. The 20-case cross-check (10 cases where OCCT and we disagree) is
 deferred until either the CI box is approved or a macOS build is approved.
 
+
+> **Licence gate:** the Fusion 360 Gallery data is **non-commercial research
+> only**, must not be committed, redistributed, or used as a release/CI gate
+> for a commercial product. It currently lives only in
+> `~/.cache/b-rep-corpora/fusion360/` and is **not** in git. If the kernel may
+> be sold, drop this sample and use synthetic, NIST (public domain) or OCCT
+> self-generated geometry instead.
+
 ## 2. Public B-rep corpora
 
 | corpus | licence / terms | size | format | sample |
