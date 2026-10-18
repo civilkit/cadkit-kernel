@@ -372,7 +372,12 @@ fn select_edges(br: &Brep, edges: &[crate::EdgeRef]) -> Result<Vec<(String, Stri
                 })
                 .collect();
             if cands.is_empty() {
-                return Err(missing());
+                // no edge between the two families: the pick point may still sit on an edge of the same two
+                // features (a wall number that shifted when a boolean merged the halves of a cone)
+                let Some(e) = ck_ops::blend::build::find_edge_by_position(body, a, b, at) else { return Err(missing()) };
+                let fs = body.edge_faces(e);
+                picks.push(Pick::Exact(body.face_id_str(fs[0]), body.face_id_str(fs[1]), at));
+                continue;
             }
             picks.push(Pick::Family(at, cands));
         }

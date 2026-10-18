@@ -106,10 +106,95 @@ pub(crate) fn natural_normal(s: &Surface) -> Vec3 {
         }
         _ => {
             let ((u0, u1), (v0, v1)) = s.domain();
-            s.normal((u0 + u1) * 0.5, (v0 + v1) * 0.5).normalize()
+            // an infinite v-domain (cone) has no midpoint: sample the reference v = 0
+            let v = if v0.is_finite() && v1.is_finite() { (v0 + v1) * 0.5 } else { 0.0 };
+            s.normal((u0 + u1) * 0.5, v).normalize()
         }
     };
     n
+}
+
+/// Unit radial direction of `p` about the axis of `frame`.
+fn radial_of(frame: &Frame, p: Vec3) -> Vec3 {
+    let q = p - frame.o;
+    (q - frame.z.scale(q.dot(frame.z))).try_normalize().unwrap_or(frame.x)
+}
+
+/// Unit normal of a cone along the generator through the radial direction `rad`: constant along the generator.
+fn cone_normal_dir(frame: &Frame, semi_angle: f64, rad: Vec3) -> Vec3 {
+    rad.scale(semi_angle.cos()) - frame.z.scale(semi_angle.sin())
+}
+
+/// +1 when the face's oriented normal is the cone's outward normal (sense true), else -1. A cone patch built by a
+/// loft whose section runs clockwise about the loft direction keeps the orientation the free-form surface had.
+fn cone_sign(sheet: &Body, f: FaceId) -> f64 {
+    if sheet.face(f).sense {
+        1.0
+    } else {
+        -1.0
+    }
+}
+
+/// Mid angle (about the cone axis) of the points a face's boundary covers; a full ring has no mid.
+fn face_mid_radial(sheet: &Body, f: FaceId, frame: &Frame) -> Vec3 {
+    let mut acc = Vec3::ZERO;
+    for &l in &sheet.face(f).loops {
+        if !sheet.lp(l).alive {
+            continue;
+        }
+        for &c in &sheet.lp(l).coedges {
+            let co = sheet.coedge(c);
+            if !co.alive {
+                continue;
+            }
+            let e = sheet.edge(co.edge);
+            for k in 0..=8 {
+                let t = e.t0 + (e.t1 - e.t0) * k as f64 / 8.0;
+                acc = acc + radial_of(frame, e.curve.eval(t));
+            }
+        }
+    }
+    acc.try_normalize().unwrap_or(frame.x)
+}
+
+/// The face's normal as thicken uses it: the surface's natural normal; for a cone, the oriented normal at the
+/// middle of the patch (the cone's normal turns with the angle, one fixed direction is wrong for a patch that
+/// spans a large angle).
+fn face_normal(sheet: &Body, f: FaceId) -> Vec3 {
+    match &sheet.face(f).surface {
+        Surface::Cone { frame, semi_angle, .. } => cone_normal_dir(frame, *semi_angle, face_mid_radial(sheet, f, frame)).scale(cone_sign(sheet, f)),
+        s => natural_normal(s),
+    }
+}
+
+/// The face's normal at the point `p` of its boundary (`fallback` for a surface whose normal is constant).
+fn normal_at(sheet: &Body, f: FaceId, p: Vec3, fallback: Vec3) -> Vec3 {
+    match &sheet.face(f).surface {
+        Surface::Cone { frame, semi_angle, .. } => cone_normal_dir(frame, *semi_angle, radial_of(frame, p)).scale(cone_sign(sheet, f)),
+        _ => fallback,
+    }
+}
+
+/// Signed offset along the surface's own normal (`d` along the face's oriented normal).
+fn surface_offset(sheet: &Body, f: FaceId, d: f64) -> f64 {
+    match &sheet.face(f).surface {
+        Surface::Cone { .. } => d * cone_sign(sheet, f),
+        _ => d,
+    }
+}
+
+fn same_cone(a: &Surface, b: &Surface) -> bool {
+    match (a, b) {
+        (Surface::Cone { frame: fa, r: ra, semi_angle: sa }, Surface::Cone { frame: fb, r: rb, semi_angle: sb }) => {
+            let scale = 1.0 + ra.abs().max(rb.abs());
+            fa.z.cross(fb.z).len() < 1e-9
+                && fa.z.dot(fb.z) > 0.0
+                && (fb.o - fa.o).cross(fa.z).len() < 1e-9 * scale
+                && (sa - sb).abs() < 1e-9
+                && ((fb.o - fa.o).dot(fa.z) * sa.tan() + rb - ra).abs() < 1e-9 * scale
+        }
+        _ => false,
+    }
 }
 
 /// Closest point on the cylinder axis through `frame.o` along `frame.z`.
@@ -243,7 +328,9 @@ fn plane_const(s: &Surface, n: Vec3) -> f64 {
         Surface::Plane { frame } => n.dot(frame.o),
         _ => {
             let ((u0, u1), (v0, v1)) = s.domain();
-            n.dot(s.eval((u0 + u1) * 0.5, (v0 + v1) * 0.5))
+            // an infinite v-domain (cone) has no midpoint: sample the reference v = 0
+            let v = if v0.is_finite() && v1.is_finite() { (v0 + v1) * 0.5 } else { 0.0 };
+            n.dot(s.eval((u0 + u1) * 0.5, v))
         }
     }
 }
@@ -288,7 +375,7 @@ pub fn thicken(sheet: &Body, feature: &str, thickness: f64, side: Side, tol: f64
     if faces.iter().any(|&f| !matches!(sheet.face(f).surface, Surface::Plane { .. } | Surface::Cylinder { .. } | Surface::Cone { .. } | Surface::Sphere { .. } | Surface::Torus { .. })) {
         return freeform::thicken_freeform(sheet, feature, thickness, side, tol);
     }
-    let normals: Vec<Vec3> = faces.iter().map(|&f| natural_normal(&sheet.face(f).surface)).collect();
+    let normals: Vec<Vec3> = faces.iter().map(|&f| face_normal(sheet, f)).collect();
     let rims = sheet_rims(sheet, &faces);
     if rims.is_empty() {
         return Err(ThickenError::detail("thickenFailed", "the thickened body is not closed"));
@@ -330,6 +417,15 @@ pub fn thicken(sheet: &Body, feature: &str, thickness: f64, side: Side, tol: f64
     for fi in out.face_ids().collect::<Vec<_>>() {
         if matches!(out.face(fi).surface, Surface::Plane { .. }) {
             ck_topo::orient::fix_planar_loops(&mut out, fi);
+        }
+    }
+    // a cone's loops are built from the sheet's and the rim walks, with no promise about their turn about the cone's own
+    // normal: the face keeps the sense that makes its outer loop run CCW about the outward normal (planes were
+    // repaired above by reordering their loops)
+    for fi in out.face_ids().collect::<Vec<_>>() {
+        if matches!(out.face(fi).surface, Surface::Cone { .. }) && !ck_topo::orient::loops_consistent(&out, fi) {
+            let sense = out.face(fi).sense;
+            out.faces[fi.idx()].sense = !sense;
         }
     }
     ck_topo::orient::orient_body(&mut out);
@@ -392,11 +488,12 @@ fn build_layer(
             let (Some(fi), Some(gi)) = (faces.iter().position(|&x| x == fs[0]), faces.iter().position(|&x| x == fs[1])) else {
                 return Err(ThickenError::code("thickenFailed"));
             };
-            let (nf, ng) = (normals[fi], normals[gi]);
+            let se = sheet.edge(e);
+            let pm = se.curve.eval(0.5 * (se.t0 + se.t1));
+            let (nf, ng) = (normal_at(sheet, fs[0], pm, normals[fi]), normal_at(sheet, fs[1], pm, normals[gi]));
             let Some(disp) = miter_disp(nf, ng, d) else {
                 return Err(ThickenError::code("thickenReach"));
             };
-            let se = sheet.edge(e);
             let a = se.curve.eval(se.t0) + disp;
             let b = se.curve.eval(se.t1) + disp;
             shared_miter.insert(e, (a, b));
@@ -443,7 +540,7 @@ fn build_layer(
         let surface = if ls[li].original {
             sheet.face(f).surface.clone()
         } else {
-            match offset_surface(&sheet.face(f).surface, d) {
+            match offset_surface(&sheet.face(f).surface, surface_offset(sheet, f, d)) {
                 Some(s) => s,
                 None if !matches!(sheet.face(f).surface, Surface::Plane { .. } | Surface::Cylinder { .. } | Surface::Cone { .. } | Surface::Sphere { .. } | Surface::Torus { .. }) => {
                     // not a curvature failure: thicken only offsets analytic sheets, a free-form
@@ -631,6 +728,38 @@ fn extend_open_edge(
             }
         }
     }
+    // A rim circle of a cone patch moves onto the offset cone: the centre slides along the axis and the radius
+    // changes by the normal's components (the patch's other boundary edges are generators of the same cone, which
+    // end exactly on the offset circles, so there is no corner to extend).
+    if let (Surface::Cone { frame, .. }, Curve::Circle { frame: cf, r: rc }) = (&sheet.face(f).surface, &se.curve) {
+        let coaxial = cf.z.cross(frame.z).len() < 1e-9 && (cf.o - frame.o).cross(frame.z).len() < 1e-7 * (1.0 + rc);
+        let neighbours_same = [se.t0, se.t1].iter().all(|&t| {
+            let p = se.curve.eval(t);
+            sheet.face(f).loops.iter().filter(|&&l| sheet.lp(l).alive).all(|&l| {
+                sheet.lp(l).coedges.iter().all(|&c| {
+                    let co = sheet.coedge(c);
+                    if !co.alive || co.edge == e {
+                        return true;
+                    }
+                    let e2 = sheet.edge(co.edge);
+                    let near = e2.curve.eval(e2.t0).dist(p) <= tol || e2.curve.eval(e2.t1).dist(p) <= tol;
+                    !near || sheet.edge_faces(co.edge).iter().all(|&g| g == f || same_cone(&sheet.face(f).surface, &sheet.face(g).surface))
+                })
+            })
+        });
+        if coaxial && neighbours_same {
+            let p = se.curve.eval(se.t0);
+            let n = normal_at(sheet, f, p, nf);
+            let rad = radial_of(frame, p);
+            let r2 = rc + d * n.dot(rad);
+            if !(r2 > 1e-9) {
+                return Err(ThickenError::detail("offsetTooLarge", "the offset passes the surface's centre of curvature"));
+            }
+            let nf_ = Frame { o: cf.o + frame.z.scale(d * n.dot(frame.z)), ..cf.clone() };
+            images.insert(e, (Curve::Circle { frame: nf_, r: r2 }, se.t0, se.t1));
+            return Ok(());
+        }
+    }
     let (curve, mut t0, mut t1) = translate_curve(&se.curve, se.t0, se.t1, nf.scale(d));
     for end in [0usize, 1] {
         let te = if end == 0 { se.t0 } else { se.t1 };
@@ -807,8 +936,26 @@ fn build_wall(
         }
         _ => None,
     };
+    // two coaxial arcs in different planes (the rims of a cone patch): the wall is the cone through both
+    let arc_cone = match (&ca, &cb) {
+        (Curve::Circle { frame: fa, r: ra }, Curve::Circle { frame: fb, r: rb }) if arc_plane.is_none() && fa.z.cross(fb.z).len() < 1e-9 && (fb.o - fa.o).cross(fa.z).len() < 1e-7 * (1.0 + ra) => {
+            let vb = (fb.o - fa.o).dot(fa.z);
+            // the cone opens along +z: a ring that grows against the circle's axis uses the flipped frame
+            (vb.abs() > 1e-9).then(|| {
+                let semi = ((rb - ra) / vb).atan();
+                if semi >= 0.0 {
+                    Surface::Cone { frame: Frame { o: fa.o, x: fa.x, y: fa.y, z: fa.z }, r: *ra, semi_angle: semi }
+                } else {
+                    Surface::Cone { frame: Frame { o: fa.o, x: fa.x, y: fa.y.scale(-1.0), z: fa.z.scale(-1.0) }, r: *ra, semi_angle: -semi }
+                }
+            })
+        }
+        _ => None,
+    };
     let surface = if let Some(pl) = arc_plane {
         pl
+    } else if let Some(c) = arc_cone {
+        c
     } else if n1.len2() > 1e-18 && n1.normalize().dist(n2.normalize()) < 1e-6 {
         Surface::plane(p00, n1.normalize())
     } else {
