@@ -159,6 +159,26 @@ scripts; the whole corpus now has 86. Distinct groups (new groups marked):
 Representative scripts, translated features and repro commands are in
 `docs/mimo-brief-occt.md`, ranked by case count.
 
+## One-command verifier
+
+`tools/verify_wasm.sh <wasm> [--quick]` runs every check built here against one
+wasm and prints one page: the OCCT corpus (when `/tmp/occt` exists), the
+fillet, shell, boolean and shape sweeps, the two Fusion import samples (when
+their cache exists) and the DeepCAD check (when `cases1000.json` exists).
+
+```sh
+tools/verify_wasm.sh /path/to/ck_wasm.wasm --quick   # 1 seed, 4 templates/sweep
+tools/verify_wasm.sh /path/to/ck_wasm.wasm           # every template
+```
+
+Each sweep template runs in its own process and has a hard per-template
+timeout (`alarm` plus a kill), so a wasm hang is reported as `HANG` for that
+template and never blocks the run. The page shows counts per class, new
+passes and regressions with case ids, and exits non-zero on any regression
+(a case that passed in the baseline and now fails or hangs). The quick form
+takes about 15 s here; the full form skips external corpora that are not
+cached. Regression baselines are the ones listed under Sweeps and Files.
+
 ## Sweeps
 
 Seeded parametric sweeps supplement the translated corpus. Each has an OCP
