@@ -9,7 +9,10 @@
 //!
 //! Layout rules (sketch units, y up):
 //! * `height` is the cap height (the height of `H`); glyph scale = height / cap height of the font.
-//! * advances come from `hmtx` times `spacing`; no kerning.
+//! * advances come from `hmtx` times `spacing`; with `kern: true` the font's pair kerning
+//!   (`kern` table / GPOS `kern` feature) is added between neighbours, with `liga: true`
+//!   standard ligatures substitute whole runs, with `merge: true` a glyph whose contours
+//!   cross is unioned into one outline. All three are opt-in (default off).
 //! * horizontal anchor refers to the INK box of the string (left edge of the first glyph, right
 //!   edge of the last); vertical anchor: `baseline` = 0, `middle` = height / 2, `top` = height.
 //! * `angle` rotates counter-clockwise about the anchor point `at`. `mirror` flips x about the anchor.
@@ -226,6 +229,12 @@ pub struct Spec {
     pub polyline: bool,
     /// Longest run of curve spans kept in one B-spline edge (1 to 16; default 4).
     pub run_spans: usize,
+    /// Pair kerning from the font's `kern` table / GPOS `kern` feature (default off).
+    pub kern: bool,
+    /// Standard ligatures from GSUB `liga` (default off).
+    pub liga: bool,
+    /// Union a glyph's crossing contours into one outline (default off).
+    pub merge: bool,
 }
 
 impl Default for Spec {
@@ -244,6 +253,9 @@ impl Default for Spec {
             arc: None,
             polyline: false,
             run_spans: RUN_SPANS,
+            kern: false,
+            liga: false,
+            merge: false,
         }
     }
 }
@@ -487,6 +499,259 @@ fn sagitta(a: P, c: P, b: P) -> f64 {
     (ux * vy - uy * vx).abs() / l * 0.5
 }
 
+/// Nonzero winding number of all `polys` at `p` (ray towards +x).
+fn winding(polys: &[Vec<P>], p: P) -> i32 {
+    let mut w = 0;
+    for poly in polys {
+        let n = poly.len();
+        for i in 0..n {
+            let (a, b) = (poly[i], poly[(i + 1) % n]);
+            if (a[1] > p[1]) != (b[1] > p[1]) {
+                let xint = a[0] + (p[1] - a[1]) * (b[0] - a[0]) / (b[1] - a[1]);
+                if xint > p[0] {
+                    w += if b[1] > a[1] { 1 } else { -1 };
+                }
+            }
+        }
+    }
+    w
+}
+
+/// Intersection points of two segments (proper crossings, endpoints on the other segment,
+/// collinear overlaps as their shared endpoints).
+fn seg_hits(a0: P, a1: P, b0: P, b1: P) -> Vec<P> {
+    let cr = |p: P, q: P, r: P| (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+    let on_seg = |p: P, q: P, x: P| {
+        let l2 = (q[0] - p[0]).hypot(q[1] - p[1]);
+        l2 > 0.0 && (cr(p, q, x)).abs() <= 1e-6 * l2 && x[0] >= p[0].min(q[0]) - 1e-6 && x[0] <= p[0].max(q[0]) + 1e-6 && x[1] >= p[1].min(q[1]) - 1e-6 && x[1] <= p[1].max(q[1]) + 1e-6
+    };
+    let d = (a1[0] - a0[0]) * (b1[1] - b0[1]) - (a1[1] - a0[1]) * (b1[0] - b0[0]);
+    let mut out = vec![];
+    if d.abs() > 1e-14 {
+        let t = ((b0[0] - a0[0]) * (b1[1] - b0[1]) - (b0[1] - a0[1]) * (b1[0] - b0[0])) / d;
+        let u = ((b0[0] - a0[0]) * (a1[1] - a0[1]) - (b0[1] - a0[1]) * (a1[0] - a0[0])) / d;
+        if t >= -1e-9 && t <= 1.0 + 1e-9 && u >= -1e-9 && u <= 1.0 + 1e-9 {
+            out.push([a0[0] + t * (a1[0] - a0[0]), a0[1] + t * (a1[1] - a0[1])]);
+        }
+        return out;
+    }
+    // parallel: endpoints lying on the other line count (touching or collinear overlap)
+    for x in [a0, a1] {
+        if on_seg(b0, b1, x) {
+            out.push(x);
+        }
+    }
+    for x in [b0, b1] {
+        if on_seg(a0, a1, x) {
+            out.push(x);
+        }
+    }
+    out
+}
+
+/// Union of crossing closed loops under the nonzero rule, on flattened polylines. `None` when the
+/// arrangement does not close (the caller keeps the original loops then).
+fn union_loops(loops: &[Vec<Edge>], tol: f64) -> Option<Vec<Vec<Edge>>> {
+    // flatten every loop to a closed polyline
+    let mut polys: Vec<Vec<P>> = vec![];
+    for l in loops {
+        let flat = polylined(l, tol);
+        if flat.len() < 2 {
+            return None;
+        }
+        let mut poly = vec![flat[0].start()];
+        for e in &flat {
+            e.flatten(8, &mut poly);
+        }
+        // drop consecutive duplicates (flatten may re-emit a shared point)
+        poly.dedup_by(|a, b| a[0] == b[0] && a[1] == b[1]);
+        if poly.len() >= 3 {
+            polys.push(poly);
+        }
+    }
+    if polys.is_empty() {
+        return None;
+    }
+    // split every segment at every intersection
+    let mut segs: Vec<(P, P)> = vec![];
+    for poly in &polys {
+        let n = poly.len();
+        for i in 0..n {
+            segs.push((poly[i], poly[(i + 1) % n]));
+        }
+    }
+    let mut splits: Vec<Vec<(f64, P)>> = vec![vec![]; segs.len()];
+    for i in 0..segs.len() {
+        for j in i + 1..segs.len() {
+            let (a0, a1) = segs[i];
+            let (b0, b1) = segs[j];
+            for h in seg_hits(a0, a1, b0, b1) {
+                let la = (a1[0] - a0[0]).hypot(a1[1] - a0[1]);
+                let lb = (b1[0] - b0[0]).hypot(b1[1] - b0[1]);
+                if la > 0.0 {
+                    let t = ((h[0] - a0[0]) * (a1[0] - a0[0]) + (h[1] - a0[1]) * (a1[1] - a0[1])) / (la * la);
+                    splits[i].push((t.clamp(0.0, 1.0), h));
+                }
+                if lb > 0.0 {
+                    let t = ((h[0] - b0[0]) * (b1[0] - b0[0]) + (h[1] - b0[1]) * (b1[1] - b0[1])) / (lb * lb);
+                    splits[j].push((t.clamp(0.0, 1.0), h));
+                }
+            }
+        }
+    }
+    // global snapped point table
+    let mut pts: Vec<P> = vec![];
+    let mut key_of: std::collections::HashMap<(i64, i64), usize> = std::collections::HashMap::new();
+    let ensure = |p: P, pts: &mut Vec<P>, key_of: &mut std::collections::HashMap<(i64, i64), usize>| -> usize {
+        let k = ((p[0] * 1000.0).round() as i64, (p[1] * 1000.0).round() as i64);
+        if let Some(&i) = key_of.get(&k) {
+            return i;
+        }
+        let i = pts.len();
+        pts.push(p);
+        key_of.insert(k, i);
+        i
+    };
+    // atomic pieces with weights: canonical (min,max) -> sum of directions
+    let mut weight: std::collections::HashMap<(usize, usize), i32> = std::collections::HashMap::new();
+    for (si, (a0, a1)) in segs.iter().enumerate() {
+        let mut sp = splits[si].clone();
+        sp.push((0.0, *a0));
+        sp.push((1.0, *a1));
+        sp.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap_or(std::cmp::Ordering::Equal));
+        let mut prev: Option<usize> = None;
+        for (_, p) in sp {
+            let idx = ensure(p, &mut pts, &mut key_of);
+            if let Some(u) = prev {
+                if u != idx {
+                    let key = if u < idx { (u, idx) } else { (idx, u) };
+                    *weight.entry(key).or_insert(0) += if u < idx { 1 } else { -1 };
+                }
+            }
+            prev = Some(idx);
+        }
+    }
+    // keep the pieces where exactly one side has winding != 0, oriented with the interior left
+    // (the map is walked in sorted order: HashMap order must not change the result)
+    let eps = 0.01;
+    let mut pieces: Vec<((usize, usize), i32)> = weight.into_iter().collect();
+    pieces.sort_unstable();
+    let mut directed: Vec<(usize, usize)> = vec![];
+    for ((u, v), w) in pieces {
+        if w == 0 {
+            continue;
+        }
+        let (pu, pv) = (pts[u], pts[v]);
+        let dx = pv[0] - pu[0];
+        let dy = pv[1] - pu[1];
+        let len = dx.hypot(dy);
+        if len < 1e-12 {
+            continue;
+        }
+        let mid = [(pu[0] + pv[0]) * 0.5, (pu[1] + pv[1]) * 0.5];
+        let nl = [-dy / len, dx / len];
+        let wl = winding(&polys, [mid[0] + nl[0] * eps, mid[1] + nl[1] * eps]);
+        let wr = winding(&polys, [mid[0] - nl[0] * eps, mid[1] - nl[1] * eps]);
+        if (wl != 0) == (wr != 0) {
+            continue;
+        }
+        if wl != 0 {
+            directed.push((u, v));
+        } else {
+            directed.push((v, u));
+        }
+    }
+    if directed.is_empty() {
+        return None;
+    }
+    // trace closed loops; at a junction continue along the straightest unused edge
+    let mut adj: Vec<Vec<usize>> = vec![vec![]; pts.len()];
+    for (i, &(u, v)) in directed.iter().enumerate() {
+        adj[u].push(i);
+        adj[v].push(i);
+    }
+    let mut used = vec![false; directed.len()];
+    let mut chains: Vec<Vec<usize>> = vec![];
+    for e0 in 0..directed.len() {
+        if used[e0] {
+            continue;
+        }
+        let start = directed[e0].0;
+        let mut chain: Vec<usize> = vec![start];
+        let mut node = start;
+        let mut edge = Some(e0);
+        loop {
+            let Some(e) = edge else { return None };
+            used[e] = true;
+            let (a, b) = directed[e];
+            debug_assert!(a == node || b == node);
+            let next = if a == node { b } else { a };
+            let prev_pt = pts[node];
+            chain.push(next);
+            node = next;
+            if node == start {
+                break;
+            }
+            // straightest unused continuation
+            let in_ang = (pts[node][1] - prev_pt[1]).atan2(pts[node][0] - prev_pt[0]);
+            let mut best: Option<(f64, usize)> = None;
+            for &c in &adj[node] {
+                if used[c] {
+                    continue;
+                }
+                let (x, y) = directed[c];
+                let other = if x == node { y } else { x };
+                let out_ang = (pts[other][1] - pts[node][1]).atan2(pts[other][0] - pts[node][0]);
+                let dev = (out_ang - in_ang + std::f64::consts::PI).rem_euclid(2.0 * std::f64::consts::PI) - std::f64::consts::PI;
+                let dev = dev.abs();
+                if best.map_or(true, |(d, _)| dev < d - 1e-12) {
+                    best = Some((dev, c));
+                }
+            }
+            match best {
+                Some((_, c)) => edge = Some(c),
+                None => return None, // open chain: not a union
+            }
+        }
+        chain.pop(); // the repeated start
+        if chain.len() >= 3 {
+            chains.push(chain);
+        }
+    }
+    if chains.is_empty() {
+        return None;
+    }
+    // separate point-contacts: a vertex two passes share (degree 4) makes the solid
+    // self-touch, which the booleans cannot close; push each copy into its own wedge,
+    // clamped to the wedge and verified (halved until the loops stay simple)
+    // a vertex two passes share is a point-contact (some distressed faces touch there);
+    // the booleans cannot close a solid that self-touches, so fall back to the original loops
+    let mut occ: std::collections::HashMap<usize, u32> = std::collections::HashMap::new();
+    for ch in &chains {
+        for &idx in ch {
+            *occ.entry(idx).or_default() += 1;
+        }
+    }
+    if occ.values().any(|&c| c > 1) {
+        return None;
+    }
+    let mut out: Vec<Vec<Edge>> = vec![];
+    for ch in &chains {
+        let n = ch.len();
+        let loop_edges: Vec<Edge> = (0..n)
+            .map(|i| Edge::Line([pts[ch[i]], pts[ch[(i + 1) % n]]]))
+            .filter(|e| e.start() != e.end())
+            .collect();
+        if loop_edges.len() >= 3 {
+            out.push(loop_edges);
+        }
+    }
+    if out.is_empty() {
+        return None;
+    }
+    Some(out)
+}
+
 fn collinear(a: P, c: P, b: P) -> bool {
     let (ux, uy, vx, vy) = (b[0] - a[0], b[1] - a[1], c[0] - a[0], c[1] - a[1]);
     let l = ux.hypot(uy);
@@ -533,7 +798,18 @@ struct Run {
     warnings: Vec<Warning>,
 }
 
-fn prepare(string: &str, font_name: &str, font_hash: Option<&str>, height: f64, spacing: f64, polyline: bool, run_spans: usize) -> Result<Run, Error> {
+fn prepare(
+    string: &str,
+    font_name: &str,
+    font_hash: Option<&str>,
+    height: f64,
+    spacing: f64,
+    polyline: bool,
+    run_spans: usize,
+    kern: bool,
+    liga: bool,
+    merge: bool,
+) -> Result<Run, Error> {
     if string.is_empty() {
         return Err(Error::Empty);
     }
@@ -558,21 +834,63 @@ fn prepare(string: &str, font_name: &str, font_hash: Option<&str>, height: f64, 
         chars.truncate(MAX_CHARS);
     }
     let tol = polyline.then_some(0.005 * font.cap_height());
-    let (mut pen, mut missing, mut overlapping) = (0.0, String::new(), String::new());
+    let mut missing = String::new();
+    let mut items: Vec<(u16, char)> = vec![];
+    for ch in chars {
+        match font.glyph_index(ch) {
+            Some(g) => items.push((g, ch)),
+            None => {
+                if !missing.contains(ch) {
+                    missing.push(ch);
+                }
+            }
+        }
+    }
+    if !missing.is_empty() {
+        warnings.push(Warning { code: "textMissingGlyph", detail: format!("no glyph for {missing:?} in font {font_name}; skipped") });
+    }
+    if liga {
+        let gids: Vec<u16> = items.iter().map(|i| i.0).collect();
+        let mut folded: Vec<(u16, char)> = vec![];
+        let mut i = 0;
+        while i < items.len() {
+            match font.liga.ligature(&gids, i) {
+                Some((len, lig)) => {
+                    folded.push((lig, items[i].1));
+                    i += len;
+                }
+                None => {
+                    folded.push(items[i]);
+                    i += 1;
+                }
+            }
+        }
+        items = folded;
+    }
+    let (mut pen, mut overlapping) = (0.0f64, String::new());
     let mut glyphs = vec![];
     let mut advances = vec![];
     let mut ink = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
-    for ch in chars {
-        let Some(g) = font.glyph_index(ch) else {
-            if !missing.contains(ch) {
-                missing.push(ch);
+    let mut prev_gid: Option<u16> = None;
+    for (g, ch) in items {
+        if kern {
+            if let Some(pg) = prev_gid {
+                pen += font.kern.value(pg, g) as f64;
             }
-            continue;
-        };
+        }
+        prev_gid = Some(g);
         let adv = font.advance(g);
-        let loops = glyph_loops(&font, g, tol, run_spans.clamp(1, 16));
-        if glyph_overlaps(&loops) && !overlapping.contains(ch) {
-            overlapping.push(ch);
+        let mut loops = glyph_loops(&font, g, tol, run_spans.clamp(1, 16));
+        if glyph_overlaps(&loops) {
+            let merged = merge.then(|| union_loops(&loops, tol.unwrap_or(0.005 * font.cap_height()))).flatten();
+            match merged {
+                Some(m) => loops = m,
+                None => {
+                    if !overlapping.contains(ch) {
+                        overlapping.push(ch);
+                    }
+                }
+            }
         }
         for l in &loops {
             for e in l {
@@ -590,13 +908,10 @@ fn prepare(string: &str, font_name: &str, font_hash: Option<&str>, height: f64, 
         advances.push(adv * spacing * scale);
         pen += adv * spacing;
     }
-    if !missing.is_empty() {
-        warnings.push(Warning { code: "textMissingGlyph", detail: format!("no glyph for {missing:?} in font {font_name}; skipped") });
-    }
     if !overlapping.is_empty() {
         warnings.push(Warning {
             code: "textOverlappingContours",
-            detail: format!("the outlines of {overlapping:?} in font {font_name} cross themselves (overlapping strokes); overlaps are not merged, so the engraved or embossed solid can be invalid (LOOP_SELF_INTERSECT); pick another font"),
+            detail: format!("the outlines of {overlapping:?} in font {font_name} cross themselves (overlapping strokes); set merge: true on the text to union them, or pick another font: unmerged overlaps can make the solid invalid (LOOP_SELF_INTERSECT)"),
         });
     }
     if ink[0] > ink[2] {
@@ -605,12 +920,13 @@ fn prepare(string: &str, font_name: &str, font_hash: Option<&str>, height: f64, 
     Ok(Run { glyphs, advances, total: pen, ink, scale, warnings })
 }
 
-/// Advance width and ink box of a string (no placement).
-pub fn metrics(string: &str, font_name: &str, font_hash: Option<&str>, height: f64, spacing: f64) -> Result<Metrics, Error> {
+/// Advance width and ink box of a string (no placement). `kern` and `liga` mirror the text
+/// entity's opt-in flags so the metrics match the laid-out geometry.
+pub fn metrics(string: &str, font_name: &str, font_hash: Option<&str>, height: f64, spacing: f64, kern: bool, liga: bool) -> Result<Metrics, Error> {
     if !(spacing.is_finite() && spacing > 0.0 && spacing < 20.0) {
         return Err(Error::BadValue);
     }
-    let r = match prepare(string, font_name, font_hash, height, spacing, false, RUN_SPANS) {
+    let r = match prepare(string, font_name, font_hash, height, spacing, false, RUN_SPANS, kern, liga, false) {
         Ok(r) => r,
         Err(Error::NothingToDraw) => {
             // only blanks: still has an advance
@@ -634,7 +950,7 @@ pub fn metrics(string: &str, font_name: &str, font_hash: Option<&str>, height: f
 
 /// Lay a string out as regions.
 pub fn layout(spec: &Spec) -> Result<Layout, Error> {
-    let run = prepare(&spec.string, &spec.font, spec.font_hash.as_deref(), spec.height, spec.spacing, spec.polyline, spec.run_spans)?;
+    let run = prepare(&spec.string, &spec.font, spec.font_hash.as_deref(), spec.height, spec.spacing, spec.polyline, spec.run_spans, spec.kern, spec.liga, spec.merge)?;
     let fin = |v: f64| v.is_finite() && v.abs() < 1e9;
     if !(fin(spec.at[0]) && fin(spec.at[1]) && fin(spec.angle) && spec.spacing.is_finite() && spec.spacing > 0.0 && spec.spacing < 20.0) {
         return Err(Error::BadValue);

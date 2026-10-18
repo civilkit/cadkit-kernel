@@ -160,10 +160,10 @@ fn info_of(e: &Entry) -> Info {
         warnings.push(Warn { code: "fontVariableDefaultOnly", detail: "variable font: only the default instance is read (no weight / width axes)".into() });
     }
     if nt.kerning {
-        warnings.push(Warn { code: "fontKerningIgnored", detail: "kerning (kern / GPOS) is not applied; letters use plain advance widths".into() });
+        warnings.push(Warn { code: "fontKerningIgnored", detail: "the font carries pair kerning (kern / GPOS): applied only when the text sets kern: true; plain advance widths otherwise".into() });
     }
     if nt.substitution {
-        warnings.push(Warn { code: "fontLigaturesIgnored", detail: "ligatures and other substitutions (GSUB) are not applied".into() });
+        warnings.push(Warn { code: "fontLigaturesIgnored", detail: "the font carries GSUB: standard ligatures apply only when the text sets liga: true; other substitutions are ignored".into() });
     }
     if nt.collection {
         warnings.push(Warn { code: "fontCollectionFirstFace", detail: "font collection: only the first face is used".into() });
@@ -186,7 +186,7 @@ fn info_of(e: &Entry) -> Info {
         warnings.push(Warn {
             code: "fontOverlappingContours",
             detail: format!(
-                "the outlines of some letters cross themselves ({}); overlapping strokes are not merged, so engraved or embossed letters may show seams or boolean failures",
+                "the outlines of some letters cross themselves ({}); set merge: true on the text to union them, or expect seams or boolean failures on engraved or embossed letters",
                 ov.iter().collect::<String>()
             ),
         });

@@ -47,6 +47,9 @@ impl TextEntity {
             mirror: jtruthy(j.get("mirror")),
             polyline: jtruthy(j.get("polyline")),
             run_spans: jnum_opt(j.get("runSpans")).map_or(ck_text::Spec::default().run_spans, |v| v.max(1.0).min(16.0) as usize),
+            kern: jtruthy(j.get("kern")),
+            liga: jtruthy(j.get("liga")),
+            merge: jtruthy(j.get("merge")),
             ..ck_text::Spec::default()
         };
         for w in words(j.get("anchor")).into_iter().chain(words(j.get("halign"))).chain(words(j.get("valign"))) {
@@ -163,15 +166,18 @@ fn err_text(e: &ck_text::Error) -> String {
     format!("{}: {}", e.code(), e.message())
 }
 
-/// `{type:"textMetrics", string, font?, height, spacing?}`: advance width and ink box (relative to the
-/// pen start on the baseline) so a script can centre and size text. Stateless.
+/// `{type:"textMetrics", string, font?, height, spacing?, kern?, liga?}`: advance width and ink box
+/// (relative to the pen start on the baseline) so a script can centre and size text. `kern` and
+/// `liga` mirror the text entity's opt-in flags. Stateless.
 pub fn metrics_reply(msg: &Json) -> Result<Json, String> {
     let string = msg.get("string").and_then(|v| v.as_str()).unwrap_or("");
     let font = msg.get("font").and_then(|v| v.as_str()).unwrap_or("gauge");
     let height = jnum_opt(msg.get("height")).unwrap_or(5.0);
     let spacing = jnum_opt(msg.get("spacing")).unwrap_or(1.0);
     let pin = msg.get("fontHash").and_then(|v| v.as_str());
-    let m = ck_text::metrics(string, font, pin, height, spacing).map_err(|e| err_text(&e))?;
+    let kern = jtruthy(msg.get("kern"));
+    let liga = jtruthy(msg.get("liga"));
+    let m = ck_text::metrics(string, font, pin, height, spacing, kern, liga).map_err(|e| err_text(&e))?;
     Ok(Json::Obj(vec![
         ("advance".into(), Json::Num(m.advance)),
         ("bbox".into(), Json::Arr(m.bbox.iter().map(|v| Json::Num(*v)).collect())),

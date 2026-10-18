@@ -4,8 +4,11 @@
 //! (cap height fallback) and the outlines either from `loca` + `glyf` (TrueType, simple and composite
 //! glyphs) or from `CFF ` (Type 2 charstrings, cubic curves approximated by quadratics within
 //! 0.05 % of the em). Collections (`ttcf`) read their first font; variable fonts read their default
-//! instance. Kerning (`kern`, GPOS), ligatures and other substitutions (GSUB), hinting and colour
-//! tables are ignored. `Font::subset` writes a plain TrueType font with just the glyphs of a string.
+//! instance. Pair kerning (`kern` format 0, GPOS PairPos formats 1 and 2 for the `kern` feature)
+//! and standard ligatures (GSUB `liga`, LigatureSubst) are read and used only when the text entity
+//! opts in (`kern: true` / `liga: true`); other lookups, hinting and colour tables are ignored.
+//! `Font::subset` writes a plain TrueType font with just the glyphs of a string (layout tables are
+//! dropped, so subsets kern and ligate as no-ops).
 
 use std::sync::Arc;
 
@@ -29,7 +32,8 @@ pub enum OutlineKind {
     Cff,
 }
 
-/// What the file contains that the reader does not use (reported by `loadFont`).
+/// What the file contains (reported by `loadFont`; kerning and ligatures are used when the
+/// text entity opts in with `kern: true` / `liga: true`).
 #[derive(Clone, Debug, Default)]
 pub struct Notes {
     pub variable: bool,
@@ -37,6 +41,421 @@ pub struct Notes {
     pub substitution: bool,
     pub collection: bool,
     pub cap_height_estimated: bool,
+}
+
+/// GPOS/GSUB class definition (formats 1 and 2); glyphs not listed are class 0.
+#[derive(Clone, Debug, Default)]
+pub struct ClassDef {
+    ranges: Vec<(u16, u16, u16)>,
+}
+
+impl ClassDef {
+    fn parse(d: &[u8], o: usize) -> ClassDef {
+        let mut ranges = vec![];
+        match u16_at(d, o) {
+            Some(1) => {
+                if let (Some(start), Some(count)) = (u16_at(d, o + 2), u16_at(d, o + 4)) {
+                    for i in 0..count {
+                        if let Some(c) = u16_at(d, o + 6 + i as usize * 2) {
+                            if c != 0 {
+                                ranges.push((start + i, start + i, c));
+                            }
+                        }
+                    }
+                }
+            }
+            Some(2) => {
+                if let Some(rc) = u16_at(d, o + 2) {
+                    for i in 0..rc {
+                        let r = o + 4 + i as usize * 6;
+                        if let (Some(a), Some(b), Some(c)) = (u16_at(d, r), u16_at(d, r + 2), u16_at(d, r + 4)) {
+                            if c != 0 && a <= b {
+                                ranges.push((a, b, c));
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        ranges.sort_by_key(|r| r.0);
+        ClassDef { ranges }
+    }
+    fn class(&self, g: u16) -> u16 {
+        // binary search of the sorted ranges
+        let (mut lo, mut hi) = (0usize, self.ranges.len());
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            let (a, b, c) = self.ranges[mid];
+            if g < a {
+                hi = mid;
+            } else if g > b {
+                lo = mid + 1;
+            } else {
+                return c;
+            }
+        }
+        0
+    }
+}
+
+/// One GPOS PairPos format 2 lookup: `class(g1) * n2 + class(g2)` indexes `values`.
+#[derive(Clone, Debug)]
+struct ClassPair {
+    c1: ClassDef,
+    c2: ClassDef,
+    n2: usize,
+    values: Vec<i16>,
+}
+
+/// Pair kerning: `kern` format-0 pairs and GPOS `kern`-feature PairPos lookups (format 1 pairs,
+/// format 2 class pairs). Values are font units, summed across lookups like the OpenType
+/// lookup order prescribes. `valueFormat2` (an adjustment to the *second* glyph's own advance)
+/// is not read: every font in the set uses `valueFormat2 = 0`.
+#[derive(Clone, Debug, Default)]
+pub struct Kern {
+    /// `(left << 16 | right, adjustment)`, sorted by key, duplicates summed.
+    pairs: Vec<(u32, i16)>,
+    class: Vec<ClassPair>,
+}
+
+impl Kern {
+    pub(crate) fn value(&self, l: u16, r: u16) -> i16 {
+        let key = (l as u32) << 16 | r as u32;
+        let (mut lo, mut hi) = (0usize, self.pairs.len());
+        let mut v = 0i16;
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            match self.pairs[mid].0.cmp(&key) {
+                std::cmp::Ordering::Less => lo = mid + 1,
+                std::cmp::Ordering::Greater => hi = mid,
+                std::cmp::Ordering::Equal => {
+                    v += self.pairs[mid].1;
+                    break;
+                }
+            }
+        }
+        for cp in &self.class {
+            let (a, b) = (cp.c1.class(l) as usize, cp.c2.class(r) as usize);
+            if a * cp.n2 + b < cp.values.len() {
+                v = v.wrapping_add(cp.values[a * cp.n2 + b]);
+            }
+        }
+        v
+    }
+    /// Record an exact pair (summing a repeated key).
+    fn insert(&mut self, key: u32, val: i16) {
+        if val == 0 {
+            return;
+        }
+        let mut at = self.pairs.len();
+        for (i, p) in self.pairs.iter().enumerate() {
+            if p.0 >= key {
+                at = i;
+                break;
+            }
+        }
+        if at < self.pairs.len() && self.pairs[at].0 == key {
+            self.pairs[at].1 = self.pairs[at].1.wrapping_add(val);
+        } else {
+            self.pairs.insert(at, (key, val));
+        }
+    }
+    /// `kern` table, format 0, horizontal non-cross-stream subtables.
+    fn load_kern(&mut self, d: &[u8], at: Option<(usize, usize)>) {
+        let Some((o, len)) = at else { return };
+        let end = o + len;
+        let Some(version) = u16_at(d, o) else { return };
+        if version != 0 {
+            return; // Apple extended format: not in any font of the set
+        }
+        let Some(n) = u16_at(d, o + 2) else { return };
+        let mut p = o + 4;
+        for _ in 0..n {
+            let Some(sub_len) = u16_at(d, p + 2) else { return };
+            let Some(cov) = u16_at(d, p + 4) else { return };
+            let fmt = cov >> 8;
+            let horizontal = cov & 1 != 0;
+            let cross_stream = cov & 4 != 0;
+            let minimum = cov & 2 != 0;
+            if fmt == 0 && horizontal && !cross_stream && !minimum {
+                if let Some(np) = u16_at(d, p + 6) {
+                    for i in 0..np {
+                        let r = p + 14 + i as usize * 6;
+                        if r + 6 > end {
+                            break;
+                        }
+                        if let (Some(l), Some(rt), Some(v)) = (u16_at(d, r), u16_at(d, r + 2), i16_at(d, r + 4)) {
+                            self.insert((l as u32) << 16 | rt as u32, v);
+                        }
+                    }
+                }
+            }
+            if sub_len < 6 {
+                return;
+            }
+            p = p.saturating_add(sub_len as usize);
+            if p > end {
+                return;
+            }
+        }
+    }
+    /// GPOS `kern` feature: PairPos lookups (including extension lookups).
+    fn load_gpos(&mut self, d: &[u8], at: Option<(usize, usize)>) {
+        let Some((o, _)) = at else { return };
+        let Some(fl) = u16_at(d, o + 6) else { return };
+        let Some(ll) = u16_at(d, o + 8) else { return };
+        let feature_list = o + fl as usize;
+        let lookup_list = o + ll as usize;
+        let Some(fc) = u16_at(d, feature_list) else { return };
+        let mut wanted: Vec<u16> = vec![];
+        for i in 0..fc {
+            let r = feature_list + 2 + i as usize * 6;
+            if d.get(r..r + 4) != Some(b"kern") {
+                continue;
+            }
+            let Some(fo) = u16_at(d, r + 4) else { continue };
+            let ft = feature_list + fo as usize;
+            let Some(lic) = u16_at(d, ft + 2) else { continue };
+            for j in 0..lic {
+                if let Some(li) = u16_at(d, ft + 4 + j as usize * 2) {
+                    if !wanted.contains(&li) {
+                        wanted.push(li);
+                    }
+                }
+            }
+        }
+        for li in wanted {
+            let Some(lt_off) = u16_at(d, lookup_list + 2 + li as usize * 2) else { continue };
+            let lt = lookup_list + lt_off as usize;
+            let Some(ltype) = u16_at(d, lt) else { continue };
+            let Some(stc) = u16_at(d, lt + 4) else { continue };
+            for st in 0..stc {
+                let Some(st_off) = u16_at(d, lt + 6 + st as usize * 2) else { continue };
+                let mut so = lt + st_off as usize;
+                let mut typ = ltype;
+                if typ == 9 {
+                    // ExtensionPos: uint16 posFormat, uint16 extensionLookupType, uint32 extensionOffset
+                    typ = match u16_at(d, so + 2) {
+                        Some(t) => t,
+                        None => continue,
+                    };
+                    so += match u32_at(d, so + 4) {
+                        Some(off) => off as usize,
+                        None => continue,
+                    };
+                }
+                if typ != 2 {
+                    continue;
+                }
+                self.load_pair_pos(d, so);
+            }
+        }
+    }
+    fn load_pair_pos(&mut self, d: &[u8], so: usize) {
+        let Some(fmt) = u16_at(d, so) else { return };
+        let Some(cov_off) = u16_at(d, so + 2) else { return };
+        let Some(vf1) = u16_at(d, so + 4) else { return };
+        let vf2 = u16_at(d, so + 6).unwrap_or(0);
+        let _ = vf2; // valueFormat2 not read (see struct doc)
+        let cov = coverage_glyphs(d, so + cov_off as usize);
+        match fmt {
+            1 => {
+                let Some(psc) = u16_at(d, so + 8) else { return };
+                let rec = 2 + vf_size(vf1) + vf_size(vf2);
+                for (i, &left) in cov.iter().enumerate().take(psc as usize) {
+                    let Some(pso) = u16_at(d, so + 10 + i * 2) else { continue };
+                    let ps = so + pso as usize;
+                    let Some(pvc) = u16_at(d, ps) else { continue };
+                    for k in 0..pvc {
+                        let rp = ps + 2 + k as usize * rec;
+                        let Some(right) = u16_at(d, rp) else { continue };
+                        self.insert((left as u32) << 16 | right as u32, x_advance(d, rp + 2, vf1));
+                    }
+                }
+            }
+            2 => {
+                let Some(cd1o) = u16_at(d, so + 8) else { return };
+                let Some(cd2o) = u16_at(d, so + 10) else { return };
+                let Some(n1) = u16_at(d, so + 12) else { return };
+                let Some(n2) = u16_at(d, so + 14) else { return };
+                let rec = vf_size(vf1) + vf_size(vf2);
+                let mut values = Vec::with_capacity(n1 as usize * n2 as usize);
+                for a in 0..n1 as usize {
+                    for b in 0..n2 as usize {
+                        values.push(x_advance(d, so + 16 + (a * n2 as usize + b) * rec, vf1));
+                    }
+                }
+                self.class.push(ClassPair {
+                    c1: ClassDef::parse(d, so + cd1o as usize),
+                    c2: ClassDef::parse(d, so + cd2o as usize),
+                    n2: n2 as usize,
+                    values,
+                });
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Size in bytes of one value record for `vf`.
+fn vf_size(vf: u16) -> usize {
+    vf.count_ones() as usize * 2
+}
+
+/// The `XAdvance` field of a value record (0 when the format has none).
+fn x_advance(d: &[u8], base: usize, vf: u16) -> i16 {
+    if vf & 0x0004 == 0 {
+        return 0;
+    }
+    let mut o = base;
+    if vf & 0x0001 != 0 {
+        o += 2;
+    }
+    if vf & 0x0002 != 0 {
+        o += 2;
+    }
+    i16_at(d, o).unwrap_or(0)
+}
+
+/// Every glyph of a coverage table (formats 1 and 2), capped against runaway counts.
+fn coverage_glyphs(d: &[u8], o: usize) -> Vec<u16> {
+    let mut out = vec![];
+    let Some(fmt) = u16_at(d, o) else { return out };
+    let Some(n) = u16_at(d, o + 2) else { return out };
+    match fmt {
+        1 => {
+            for i in 0..n {
+                match u16_at(d, o + 4 + i as usize * 2) {
+                    Some(g) => out.push(g),
+                    None => break,
+                }
+            }
+        }
+        2 => {
+            for i in 0..n {
+                let r = o + 4 + i as usize * 6;
+                match (u16_at(d, r), u16_at(d, r + 2)) {
+                    (Some(a), Some(b)) if a <= b => {
+                        for g in a..=b {
+                            out.push(g);
+                            if out.len() > 65_535 {
+                                return out;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+/// Standard ligatures (GSUB `liga` feature, LigatureSubst including extension lookups), keyed by
+/// the first component glyph. Applied greedily, longest match first, only when the entity opts in.
+#[derive(Clone, Debug, Default)]
+pub struct Liga {
+    rules: Vec<(u16, Vec<u16>, u16)>,
+}
+
+impl Liga {
+    /// The ligature starting at `gids[i]`: total number of glyphs it consumes and the result glyph.
+    pub(crate) fn ligature(&self, gids: &[u16], i: usize) -> Option<(usize, u16)> {
+        let mut best: Option<(usize, u16)> = None;
+        for (first, rest, lig) in &self.rules {
+            if *first != gids[i] || i + 1 + rest.len() > gids.len() {
+                continue;
+            }
+            if gids[i + 1..i + 1 + rest.len()] == rest[..] {
+                let len = 1 + rest.len();
+                if best.map_or(true, |(b, _)| len > b) {
+                    best = Some((len, *lig));
+                }
+            }
+        }
+        best
+    }
+    fn load(&mut self, d: &[u8], at: Option<(usize, usize)>) {
+        let Some((o, _)) = at else { return };
+        let Some(fl) = u16_at(d, o + 6) else { return };
+        let Some(ll) = u16_at(d, o + 8) else { return };
+        let feature_list = o + fl as usize;
+        let lookup_list = o + ll as usize;
+        let Some(fc) = u16_at(d, feature_list) else { return };
+        let mut wanted: Vec<u16> = vec![];
+        for i in 0..fc {
+            let r = feature_list + 2 + i as usize * 6;
+            if d.get(r..r + 4) != Some(b"liga") {
+                continue;
+            }
+            let Some(fo) = u16_at(d, r + 4) else { continue };
+            let ft = feature_list + fo as usize;
+            let Some(lic) = u16_at(d, ft + 2) else { continue };
+            for j in 0..lic {
+                if let Some(li) = u16_at(d, ft + 4 + j as usize * 2) {
+                    if !wanted.contains(&li) {
+                        wanted.push(li);
+                    }
+                }
+            }
+        }
+        for li in wanted {
+            let Some(lt_off) = u16_at(d, lookup_list + 2 + li as usize * 2) else { continue };
+            let lt = lookup_list + lt_off as usize;
+            let Some(ltype) = u16_at(d, lt) else { continue };
+            let Some(stc) = u16_at(d, lt + 4) else { continue };
+            for st in 0..stc {
+                let Some(st_off) = u16_at(d, lt + 6 + st as usize * 2) else { continue };
+                let mut so = lt + st_off as usize;
+                let mut typ = ltype;
+                if typ == 7 {
+                    typ = match u16_at(d, so + 2) {
+                        Some(t) => t,
+                        None => continue,
+                    };
+                    so += match u32_at(d, so + 4) {
+                        Some(off) => off as usize,
+                        None => continue,
+                    };
+                }
+                if typ != 4 {
+                    continue;
+                }
+                self.load_ligature_subst(d, so);
+            }
+        }
+    }
+    fn load_ligature_subst(&mut self, d: &[u8], so: usize) {
+        let Some(cov_off) = u16_at(d, so + 2) else { return };
+        let Some(lsc) = u16_at(d, so + 4) else { return };
+        let cov = coverage_glyphs(d, so + cov_off as usize);
+        for (i, &first) in cov.iter().enumerate().take(lsc as usize) {
+            let Some(lso) = u16_at(d, so + 6 + i * 2) else { continue };
+            let ls = so + lso as usize;
+            let Some(lc) = u16_at(d, ls) else { continue };
+            for k in 0..lc {
+                let lp = ls + 2 + k as usize * 2;
+                let Some(loff) = u16_at(d, lp) else { continue };
+                let lt = ls + loff as usize;
+                let (Some(lig), Some(cc)) = (u16_at(d, lt), u16_at(d, lt + 2)) else { continue };
+                if cc == 0 {
+                    continue;
+                }
+                let mut rest = Vec::with_capacity(cc as usize - 1);
+                for z in 0..cc - 1 {
+                    match u16_at(d, lt + 4 + z as usize * 2) {
+                        Some(g) => rest.push(g),
+                        None => rest.clear(),
+                    }
+                }
+                if rest.len() == cc as usize - 1 {
+                    self.rules.push((first, rest, lig));
+                }
+            }
+        }
+    }
 }
 
 pub struct Font {
@@ -55,6 +474,8 @@ pub struct Font {
     cff: Option<Cff>,
     tables: Vec<([u8; 4], usize, usize)>,
     pub notes: Notes,
+    pub(crate) kern: Kern,
+    pub(crate) liga: Liga,
 }
 
 fn u16_at(d: &[u8], o: usize) -> Option<u16> {
@@ -123,6 +544,8 @@ impl Font {
                 collection,
                 cap_height_estimated: false,
             },
+            kern: Kern::default(),
+            liga: Liga::default(),
         };
         if f.num_hmetrics == 0 {
             return Err("font has no horizontal metrics".into());
@@ -153,6 +576,10 @@ impl Font {
                 .filter(|&c| c > 0)
                 .map_or(0.7 * f.units_per_em, |c| c as f64);
         }
+        let full = |tag: &[u8; 4]| tables.iter().find(|t| &t.0 == tag).map(|t| (t.1, t.2));
+        f.kern.load_kern(d, full(b"kern"));
+        f.kern.load_gpos(d, full(b"GPOS"));
+        f.liga.load(d, full(b"GSUB"));
         Ok(f)
     }
 
