@@ -130,6 +130,21 @@ results.push(...(await mapLimit(SWEEPS, quick ? 1 : 2, runSweep)));
   } else results.push({ name: 'origdiff', status: 'error', sec: r.sec, reason: (r.detail || r.status) });
 }
 
+// Propeller foundation probe
+{
+  const out = path.join(tmp, 'propprobe.json');
+  const r = await run('node', [path.join(root, 'tools/prop_probe.mjs'), '--wasm', wasm, '--orig', '/path/to/work/kernel.wasm', '--json', out], 120000);
+  const rows = readJson(out);
+  const base = baseline('tools/prop_probe_baseline.json');
+  if (Array.isArray(rows)) {
+    const gaps = rows.filter((x) => x.outcome === 'orig-only' || x.outcome === 'volume');
+    const known = new Set(base.knownGaps ?? []);
+    const failures = gaps.filter((x) => !known.has(x.id));
+    const classes = {}; for (const x of rows) classes[x.outcome] = (classes[x.outcome] ?? 0) + 1;
+    results.push({ name: 'propprobe', status: 'ok', sec: r.sec, n: rows.length, passN: rows.length - gaps.length, failN: gaps.length, classes, failures, passes: [], unresolved: [], rows });
+  } else results.push({ name: 'propprobe', status: 'error', sec: r.sec, reason: (r.detail || r.status) });
+}
+
 // OCCT corpus
 const occt = '/tmp/occt';
 if (existsSync(occt)) {
@@ -210,6 +225,11 @@ if (accept) {
   if (od) {
     const knownGaps = od.rows.filter((x) => x.cls === 'orig-only' || x.cls === 'volume').map((x) => x.id);
     writeFileSync(path.join(root, 'tools/original_gaps_baseline.json'), JSON.stringify({ version: 1, wasmHash, origHash: '867fff6c4308f135', seed: 7, cases: Object.fromEntries(od.rows.map((x) => [x.id, x.cls])), knownGaps }, null, 1) + '\n');
+  }
+  const pp = results.find((r) => r.name === 'propprobe' && r.rows);
+  if (pp) {
+    const knownGaps = pp.rows.filter((x) => x.outcome === 'orig-only' || x.outcome === 'volume').map((x) => x.id);
+    writeFileSync(path.join(root, 'tools/prop_probe_baseline.json'), JSON.stringify({ version: 1, wasmHash, origHash: '867fff6c4308f135', cases: Object.fromEntries(pp.rows.map((x) => [x.id, x.outcome])), knownGaps }, null, 1) + '\n');
   }
   // fillet second seed (not part of the normal page)
   const f11 = await runSweep({ name: 'fillet11', file: 'tools/fillet_sweep.mjs', base: 'tools/fillet_sweep_baseline_seed11.json', timeout: 180 });
