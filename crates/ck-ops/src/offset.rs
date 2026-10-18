@@ -111,7 +111,7 @@ const MIN_SPAN: f64 = 0.04;
 
 /// How far (mm) past a free-form face its offset surface is continued as a margin.
 fn margin_cap(d: f64) -> f64 {
-    (8.0 * d.abs()).max(1.0)
+    (12.0 * d.abs()).max(1.0)
 }
 
 /// Fit the offset of free-form face `f`, continued past the face by a margin. The continuation of a
@@ -124,7 +124,12 @@ fn fit_face_with_margin(src: &Body, f: FaceId, d: f64, reach: f64) -> Result<Sur
     for k in 0..5 {
         let bx = face_uv_box(src, f, cap0 / f64::from(1u32 << (2 * k).min(8))).ok_or_else(|| OffsetError::new("offsetUnsupported", "face extent"))?;
         match fit_offset_surface(&src.face(f).surface, d, bx, reach) {
-            Err(e) if e.code == "offsetUnsupported" && e.detail.as_deref().is_some_and(|m| m.contains("fit tolerance")) => last = Some(e),
+            Err(e) if e.code == "offsetUnsupported" && e.detail.as_deref().is_some_and(|m| m.contains("fit tolerance")) => {
+                if std::env::var_os("CK_OFFSET_DEBUG").is_some() {
+                    eprintln!("margin retry: {} d={d} margin cap {:.2} mm failed: {:?}", src.face_id_str(f), cap0 / f64::from(1u32 << (2 * k).min(8)), e.detail);
+                }
+                last = Some(e)
+            }
             r => return r,
         }
     }
@@ -173,32 +178,44 @@ fn face_uv_box(src: &Body, f: FaceId, cap_mm: f64) -> Option<((f64, f64), (f64, 
     if !(u0.is_finite() && u1.is_finite() && v0.is_finite() && v1.is_finite()) {
         return None;
     }
-    let (mut mu, mut mv) = (0.03 * (u1 - u0) + 1e-9, 0.03 * (v1 - v0) + 1e-9);
+    let (mut mu, mut mv) = ((0.03 * (u1 - u0) + 1e-9, 0.03 * (u1 - u0) + 1e-9), (0.03 * (v1 - v0) + 1e-9, 0.03 * (v1 - v0) + 1e-9));
     // On a long free-form face 3 % is many wall thicknesses: the second-order continuation of the
     // surface used there folds over (a loft whose last span turns quickly), so the margin is capped
-    // to a few thicknesses in mm.
+    // to a few thicknesses in mm, measured by the surface speed at the edge the margin is added to.
     if cap_mm.is_finite() && matches!(s, Surface::BSpline(_)) {
         let ((du0, du1), (dv0, dv1)) = s.domain();
-        let (mut su, mut sv) = (1e-9f64, 1e-9f64);
-        for i in 0..=4 {
-            for j in 0..=4 {
-                let (a, b) = ((u0 + (u1 - u0) * i as f64 / 4.0).clamp(du0, du1), (v0 + (v1 - v0) * j as f64 / 4.0).clamp(dv0, dv1));
-                let q = s.derivs2(a, b);
-                su = su.max(q.du.len());
-                sv = sv.max(q.dv.len());
-            }
+        let speed = |a: f64, b: f64, along_u: bool| {
+            let q = s.derivs2(a.clamp(du0, du1), b.clamp(dv0, dv1));
+            (if along_u { q.du } else { q.dv }).len().max(1e-9)
+        };
+        let (mut su, mut sv) = ((0.0f64, 0.0f64), (0.0f64, 0.0f64));
+        let (mut lu, mut lv) = ((f64::INFINITY, f64::INFINITY), (f64::INFINITY, f64::INFINITY));
+        for k in 0..=4 {
+            let (fu, fv) = (u0 + (u1 - u0) * k as f64 / 4.0, v0 + (v1 - v0) * k as f64 / 4.0);
+            let (a, b, c, e) = (speed(u0, fv, true), speed(u1, fv, true), speed(fu, v0, false), speed(fu, v1, false));
+            su = (su.0.max(a), su.1.max(b));
+            sv = (sv.0.max(c), sv.1.max(e));
+            lu = (lu.0.min(a), lu.1.min(b));
+            lv = (lv.0.min(c), lv.1.min(e));
         }
-        mu = mu.min(cap_mm / su + 1e-9);
-        mv = mv.min(cap_mm / sv + 1e-9);
+        let (deg_u, deg_v) = match s {
+            Surface::BSpline(bs) => (bs.deg_u, bs.deg_v),
+            _ => (3, 3),
+        };
+        // A direction of degree 1 (a ruled loft face) continues exactly, so its margin may be as wide as the
+        // narrowest end needs (a face that tapers to a few millimetres still has to reach its neighbours' miters)
+        let wide = |l: f64, cap: f64, ext: f64| (cap / l.max(1e-3 * cap)).min(ext);
+        mu = if deg_u == 1 { (mu.0.max(wide(lu.0, cap_mm, u1 - u0)), mu.1.max(wide(lu.1, cap_mm, u1 - u0))) } else { (mu.0.min(cap_mm / su.0 + 1e-9), mu.1.min(cap_mm / su.1 + 1e-9)) };
+        mv = if deg_v == 1 { (mv.0.max(wide(lv.0, cap_mm, v1 - v0)), mv.1.max(wide(lv.1, cap_mm, v1 - v0))) } else { (mv.0.min(cap_mm / sv.0 + 1e-9), mv.1.min(cap_mm / sv.1 + 1e-9)) };
     }
-    let (a, b, c, d) = (u0 - mu, u1 + mu, v0 - mv, v1 + mv);
+    let (a, b, c, d) = (u0 - mu.0, u1 + mu.1, v0 - mv.0, v1 + mv.1);
     Some(((a, b), (c, d)))
 }
 
 /// Tensor-product cubic interpolation of a rectangular point grid, returning
 /// the surface and the (averaged chord-length) parameters of the grid lines.
 pub(crate) fn fit_grid(grid: &[Vec<Vec3>]) -> Result<(ck_geom::nurbs::bsurf::BSplineSurface, Vec<f64>, Vec<f64>), OffsetError> {
-    use ck_geom::fit::{averaged_knots, interpolate_with, params, Param};
+    use ck_geom::fit::{params, Param};
     let bad = |e: String| OffsetError::new("offsetUnsupported", format!("fit: {e}"));
     let (nu, nv) = (grid.len(), grid[0].len());
     if nu < 4 || nv < 4 {
@@ -216,6 +233,14 @@ pub(crate) fn fit_grid(grid: &[Vec<Vec3>]) -> Result<(ck_geom::nurbs::bsurf::BSp
     };
     let uk = avg((0..nv).map(|j| (0..nu).map(|i| grid[i][j]).collect()).collect());
     let vl = avg(grid.to_vec());
+    fit_grid_with(grid, uk, vl)
+}
+
+/// Tensor-product cubic interpolation of a point grid at the given parameters of the grid lines.
+pub(crate) fn fit_grid_with(grid: &[Vec<Vec3>], uk: Vec<f64>, vl: Vec<f64>) -> Result<(ck_geom::nurbs::bsurf::BSplineSurface, Vec<f64>, Vec<f64>), OffsetError> {
+    use ck_geom::fit::{averaged_knots, interpolate_with};
+    let bad = |e: String| OffsetError::new("offsetUnsupported", format!("fit: {e}"));
+    let (nu, nv) = (grid.len(), grid[0].len());
     let ku = averaged_knots(&uk, 3);
     let kv = averaged_knots(&vl, 3);
     let mut r = vec![vec![Vec3::ZERO; nv]; nu];
@@ -828,7 +853,7 @@ fn offset_revolution(s: &Surface, profile: &Curve, axis_o: Vec3, axis: Vec3, d: 
 
 /// Signed distance residual of `q` to `s` and the unit normal at the foot
 /// (the foot from `hint` when given).
-fn foot_n(s: &Surface, q: Vec3) -> Option<(Vec3, Vec3)> {
+pub(crate) fn foot_n(s: &Surface, q: Vec3) -> Option<(Vec3, Vec3)> {
     let (u, v, p) = s.closest_point(q);
     Some((p, s.normal(u, v).try_normalize()?))
 }
@@ -836,7 +861,7 @@ fn foot_n(s: &Surface, q: Vec3) -> Option<(Vec3, Vec3)> {
 /// The curve where two offset faces meet, replacing a spline edge: points
 /// found per sample in the plane normal to the old edge, interpolated by a
 /// cubic B-spline and verified against both offset surfaces.
-fn offset_spline_edge(src: &Body, e: EdgeId, moved: &[Option<Surface>], dnat: &dyn Fn(FaceId) -> f64, p0: Vec3, p1: Vec3, end_gap: f64) -> Result<(Curve, f64, f64), OffsetError> {
+pub(crate) fn offset_spline_edge(src: &Body, e: EdgeId, moved: &[Option<Surface>], dnat: &dyn Fn(FaceId) -> f64, p0: Vec3, p1: Vec3, end_gap: f64) -> Result<(Curve, f64, f64), OffsetError> {
     let ed = src.edge(e);
     let fs = src.edge_faces(e);
     if fs.len() != 2 || ed.v0 == ed.v1 {
@@ -1030,7 +1055,7 @@ fn solve3(mut m: [[f64; 3]; 3], mut b: [f64; 3]) -> Option<[f64; 3]> {
 /// Point near `p0` at zero signed distance from every surface in `surfs`
 /// (Newton on the stacked distance residuals; minimum-norm when the
 /// constraints leave a free direction, e.g. a seam vertex).
-fn solve_point(p0: Vec3, surfs: &[&Surface]) -> Option<Vec3> {
+pub(crate) fn solve_point(p0: Vec3, surfs: &[&Surface]) -> Option<Vec3> {
     // Levenberg-Marquardt: grazing (G1) neighbours make the system rank
     // deficient, so a damped step keeps the corner near where the faces
     // meet instead of flying along their common tangent. The damping fades
