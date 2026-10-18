@@ -119,14 +119,19 @@ single Sketch + single ExtrudeFeature, axis-aligned sketch plane (positive or
 negative), Line3D/Circle3D/Arc3D only, OneSide extent, no taper,
 NewBody/Join/Cut.
 
-* 1,000 random sequences: **789 translated** (multi-feature, multi-profile,
-  OneSide/TwoSides/Symmetric), **680 ok**, 52 feature errors, 56 wrong
-  (23 of those have a negative/zero OCP reference and are not usable as
-  ground truth), 1 `ok-loose`.
-* Feature errors: `missingSketch` 42, `cutNoEffect` 28, `booleanFailed` 11,
-  `noClosedProfile` 4. These are mostly translator sequencing/direction
-  issues, not yet reduced.
-* Minimal arc-loop repros and the 6x case are in
+* 1,000 random sequences: **927 translated** (multi-feature, multi-profile,
+  OneSide/TwoSides/Symmetric). At the best scale (x100): **705 ok**, 13
+  `okNoEffect`, 1 `ok-loose`, 111 wrong, 80 feature errors, 17 unusable OCP
+  references.
+* Scale x1/x10/x100/x1000 changes only a small tail (10 new passes at x100,
+  2 lost); most failures are logic/reference, not absolute tolerance.
+* Feature errors: `noClosedProfile` 114, `booleanFailed` 22, `cutNoEffect` 5,
+  `booleanVolumeMismatch` 1, `nothingToCut` 1.
+* The old 163 unclosed-wire skips are gone after a 1e-3 relative
+  `ShapeFix_Wire` fallback. Remaining skips: 33 no-profile parser gaps, 23
+  OCP `Standard_Failure`, 7 `ValueError`, 2 non-axis-aligned, 5 no extrude,
+  2 operation, 1 OCP boolean failure.
+* Minimal arc-loop repros and the scale table are in
   `docs/mimo-brief-deepcad.md`.
 
 Reproduce (data and translated cases stay in the cache, not git):
