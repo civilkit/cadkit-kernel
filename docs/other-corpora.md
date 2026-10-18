@@ -119,14 +119,15 @@ single Sketch + single ExtrudeFeature, axis-aligned sketch plane (positive or
 negative), Line3D/Circle3D/Arc3D only, OneSide extent, no taper,
 NewBody/Join/Cut.
 
-* translated: **61 / 200**
-* volume/area within 1e-4 of the OCP replay: **54 / 61**
-* mismatches: 7. Three have a negative OCP volume (the reference face
-  orientation is bad, so they are not usable as ground truth); four are real
-  mismatches: `00100420` and `00891360` give a near-zero region, `00230634`
-  is 15 % off, `00031620` is 6x high.
-* skipped: 107 multi-feature sequences, 16 multi-profile extrudes, 9
-  non-OneSide extents, 7 profiles whose OCP wire did not close.
+* 1,000 random sequences: **789 translated** (multi-feature, multi-profile,
+  OneSide/TwoSides/Symmetric), **680 ok**, 52 feature errors, 56 wrong
+  (23 of those have a negative/zero OCP reference and are not usable as
+  ground truth), 1 `ok-loose`.
+* Feature errors: `missingSketch` 42, `cutNoEffect` 28, `booleanFailed` 11,
+  `noClosedProfile` 4. These are mostly translator sequencing/direction
+  issues, not yet reduced.
+* Minimal arc-loop repros and the 6x case are in
+  `docs/mimo-brief-deepcad.md`.
 
 Reproduce (data and translated cases stay in the cache, not git):
 
