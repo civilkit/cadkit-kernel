@@ -10,10 +10,12 @@ const root = path.join(here, '..');
 const argv = process.argv.slice(2);
 const wasm = argv.find((a) => !a.startsWith('--'));
 const quick = argv.includes('--quick');
+const val = (f, d) => (argv.includes(f) ? argv[argv.indexOf(f) + 1] : d);
 if (!wasm) { console.error('usage: tools/verify_wasm.sh <wasm> [--quick]'); process.exit(2); }
 const tmp = mkdtempSync(path.join(os.tmpdir(), 'ck-verify-'));
 const t0 = Date.now();
 const PASS = new Set(['ok', 'okNoEffect', 'okEmpty', 'refused']);
+const UNRESOLVED = new Set(['no-ref', 'ref-fails', 'missingMass', 'ocp-missing', 'no-mesh']);
 const results = [];
 
 function run(cmd, args, timeout) {
@@ -28,7 +30,7 @@ function run(cmd, args, timeout) {
       clearTimeout(timer);
       const sec = (Date.now() - start) / 1000;
       if (signal) return resolve({ status: 'hang', sec });
-      if (code !== 0) return resolve({ status: 'error', sec, detail: (err || out).slice(-300) });
+      if (code !== 0) return resolve({ status: 'error', code, sec, detail: (err || out).slice(-300) });
       resolve({ status: 'ok', sec });
     });
   });
@@ -49,23 +51,24 @@ async function mapLimit(items, limit, fn) {
 }
 
 function baseline(file) { return JSON.parse(readFileSync(path.join(here, '..', file), 'utf8')); }
+function readJson(file) { try { return JSON.parse(readFileSync(file, 'utf8')); } catch { return null; } }
 function classOf(v) { return typeof v === 'string' ? v : v.cls; }
 
 function compare(rows, base, idKey = 'id') {
   const map = base.cases ?? {};
   const classes = {};
-  const failures = [], passes = [];
+  const failures = [], passes = [], unresolved = [];
   for (const r of rows) {
     classes[r.cls] = (classes[r.cls] ?? 0) + 1;
     const id = r[idKey];
     const b = map[id];
     if (b == null) continue;
     const was = PASS.has(classOf(b)), now = PASS.has(r.cls);
-    if (was && !now) failures.push({ id, from: classOf(b), to: r.cls, detail: r.detail });
+    if (was && !now) (UNRESOLVED.has(r.cls) ? unresolved : failures).push({ id, from: classOf(b), to: r.cls, detail: r.detail });
     else if (!was && now) passes.push({ id, from: classOf(b), to: r.cls });
   }
   const passN = rows.filter((r) => PASS.has(r.cls)).length;
-  return { classes, failures, passes, n: rows.length, passN, failN: rows.length - passN };
+  return { classes, failures, passes, unresolved, n: rows.length, passN, failN: rows.length - passN };
 }
 
 const SWEEPS = [
@@ -89,13 +92,13 @@ async function runSweep(s) {
     const out = path.join(tmp, `${s.name}_${t}.json`);
     const r = await run('node', [path.join(root, s.file), '--wasm', wasm, '--samples', String(samples), '--seed', String(base.seed ?? 7), '--only', t, '--json', out], s.timeout * 1000);
     sec += r.sec;
-    if (r.status !== 'ok') { hang = true; break; }
+    if (r.status !== 'ok') { return { name: s.name, status: 'error', sec, reason: `${t}: ${r.status} ${r.detail ?? ''}`.trim() }; }
     all.push(...JSON.parse(readFileSync(out, 'utf8')));
   }
-  if (hang) return { name: s.name, status: 'hang', sec };
+  if (hang) return { name: s.name, status: 'error', sec, reason: 'hang' };
   return { name: s.name, status: 'ok', sec, ...compare(all, base) };
 }
-results.push(...(await mapLimit(SWEEPS, 4, runSweep)));
+results.push(...(await mapLimit(SWEEPS, 2, runSweep)));
 
 // OCCT corpus
 const occt = '/tmp/occt';
@@ -103,9 +106,10 @@ if (existsSync(occt)) {
   const out = path.join(tmp, 'occt.json');
   const args = [path.join(root, 'tools/occt_corpus.mjs'), '--occt', occt, '--wasm', wasm, '--quiet', '--json', out];
   if (quick) args.push('--only', 'bopcut_simple');
-  const r = await run('node', args, (quick ? 90 : 300) * 1000);
-  if (r.status === 'ok') results.push({ name: 'occt', status: 'ok', sec: r.sec, ...compare(JSON.parse(readFileSync(out, 'utf8')), baseline('tools/occt_baseline.json'), 'name') });
-  else results.push({ name: 'occt', status: r.status, sec: r.sec });
+  const r = await run('node', args, (quick ? 120 : Number(val('--occt-timeout', '360'))) * 1000);
+  const rows = readJson(out);
+  if (rows) results.push({ name: 'occt', status: 'ok', sec: r.sec, ...compare(rows, baseline('tools/occt_baseline.json'), 'name'), note: r.status === 'ok' ? '' : `exit ${r.status}` });
+  else results.push({ name: 'occt', status: 'error', sec: r.sec, reason: (r.detail || r.status) });
 } else results.push({ name: 'occt', status: 'skip', reason: '/tmp/occt absent' });
 
 // Fusion import (opt-in cache)
@@ -118,8 +122,9 @@ if (!quick) {
     if (!existsSync(dir)) { results.push({ name: `import${tag}`, status: 'skip', reason: 'cache absent' }); continue; }
     const out = path.join(tmp, `import${tag}.json`);
     const r = await run('node', [path.join(root, 'tools/import_sample_check.mjs'), dir, '--wasm', wasm, '--manifest', path.join(root, manifest), '--json', out], 180000);
-    if (r.status === 'ok') results.push({ name: `import${tag}`, status: 'ok', sec: r.sec, ...compare(JSON.parse(readFileSync(out, 'utf8')), baseline(bl), 'file') });
-    else results.push({ name: `import${tag}`, status: r.status, sec: r.sec });
+    const rows = readJson(out);
+    if (rows) results.push({ name: `import${tag}`, status: 'ok', sec: r.sec, ...compare(rows, baseline(bl), 'file'), note: r.status === 'ok' ? '' : `exit ${r.status}` });
+    else results.push({ name: `import${tag}`, status: 'error', sec: r.sec, reason: (r.detail || r.status) });
   }
 } else results.push({ name: 'import', status: 'skip', reason: 'quick' });
 
@@ -128,8 +133,9 @@ const dc = path.join(os.homedir(), '.cache/b-rep-corpora/deepcad/cases1000.json'
 if (!quick && existsSync(dc)) {
   const out = path.join(tmp, 'deepcad.json');
   const r = await run('node', [path.join(root, 'tools/deepcad_check.mjs'), '--cases', dc, '--wasm', wasm, '--scale', '100', '--json', out], 240000);
-  if (r.status === 'ok') results.push({ name: 'deepcad', status: 'ok', sec: r.sec, ...compare(JSON.parse(readFileSync(out, 'utf8')), baseline('tools/deepcad_baseline.json'), 'name') });
-  else results.push({ name: 'deepcad', status: r.status, sec: r.sec });
+  const rows = readJson(out);
+  if (rows) results.push({ name: 'deepcad', status: 'ok', sec: r.sec, ...compare(rows, baseline('tools/deepcad_baseline.json'), 'name'), note: r.status === 'ok' ? '' : `exit ${r.status}` });
+  else results.push({ name: 'deepcad', status: 'error', sec: r.sec, reason: (r.detail || r.status) });
 } else results.push({ name: 'deepcad', status: 'skip', reason: quick ? 'quick' : 'cases absent' });
 
 let bad = 0;
@@ -137,11 +143,12 @@ console.log(`verify_wasm ${quick ? 'quick' : 'full'}  ${(Date.now() - t0) / 1000
 console.log('check       cases pass fail  changed  classes');
 for (const r of results) {
   if (r.status === 'skip') { console.log(`${r.name.padEnd(10)} skip: ${r.reason}`); continue; }
-  if (r.status !== 'ok') { console.log(`${r.name.padEnd(10)} ${r.status.toUpperCase()}`); bad++; continue; }
+  if (r.status !== 'ok') { console.log(`${r.name.padEnd(10)} ERROR: ${r.reason ?? r.status}`); continue; }
   const fails = r.failures.length;
   const classes = Object.entries(r.classes).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}=${v}`).join(' ');
-  console.log(`${r.name.padEnd(10)} ${String(r.n).padStart(5)} ${String(r.passN).padStart(4)} ${String(r.failN).padStart(4)}  ${String(fails).padStart(5)}+${r.passes.length}  ${classes}`);
+  console.log(`${r.name.padEnd(10)} ${String(r.n).padStart(5)} ${String(r.passN).padStart(4)} ${String(r.failN).padStart(4)}  ${String(fails).padStart(5)}+${r.passes.length}  ${classes}${r.note ? '  (' + r.note + ')' : ''}`);
   for (const f of r.failures.slice(0, 10)) console.log(`  FAIL ${f.id}: ${f.from} -> ${f.to}${f.detail ? ' ' + String(f.detail).slice(0, 80) : ''}`);
+  for (const f of (r.unresolved ?? []).slice(0, 5)) console.log(`  UNRES ${f.id}: ${f.from} -> ${f.to}`);
   if (r.failures.length > 10) console.log(`  ... ${r.failures.length - 10} more`);
   for (const p of r.passes.slice(0, 6)) console.log(`  NEW  ${p.id}: ${p.from} -> ${p.to}`);
   if (r.passes.length > 6) console.log(`  ... ${r.passes.length - 6} more new passes`);

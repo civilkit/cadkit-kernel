@@ -47,8 +47,8 @@ const templates = ['box','cyl','cone','sphere','torus','tube','loft2','loft3','r
 const rows = [];
 for (let i = 0; i < samples; i++) for (const t of templates) {
   const id = `${t}_${i}`;
-  if (only && !id.includes(only)) continue;
   const features = build(t);
+  if (only && !id.includes(only)) continue;
   let r;
   try { r = k.request(JSON.stringify({ id:1, msg:{ type:'regen', tag:'main', part:{ format:'ck-part', version:1, features }, opts:{ solveSketches:true } } })); } catch { rows.push({ id, template:t, cls:'trap' }); continue; }
   if (r.trap) { rows.push({ id, template:t, cls:'trap', detail:r.trap }); continue; }
