@@ -76,10 +76,18 @@ const FX = path.join(here, '../crates/ck-text/tests/fixtures');
 const fx = (n, ext = 'ttf') => ({ name: 'fx-' + n, file: path.join(FX, `fx-${n}.${ext}`) });
 const fxText = 'BOSS 0689 &-.';
 for (const [n, ext, extra] of [['sans-barlow', 'ttf', {}], ['sans-source-otf', 'otf', {}], ['condensed-barlow', 'ttf', {}], ['condensed-bebas', 'ttf', {}], ['serif-ptserif', 'ttf', {}],
-  ['mono-plex', 'ttf', {}], ['display-anton', 'ttf', {}], ['slab-specialelite', 'ttf', { area: 'any', warn: 'textOverlappingContours', noValidate: true }], ['script-greatvibes', 'ttf', { area: 'any' }], ['script-satisfy', 'ttf', { area: 'any' }], ['variable-inter', 'ttf', { area: 'any', warn: 'textOverlappingContours', noValidate: true }]])
+  ['mono-plex', 'ttf', {}], ['display-anton', 'ttf', {}], ['liga-barlow', 'ttf', {}], ['slab-specialelite', 'ttf', { area: 'any', warn: 'textOverlappingContours', noValidate: true }], ['script-greatvibes', 'ttf', { area: 'any' }], ['script-satisfy', 'ttf', { area: 'any' }], ['variable-inter', 'ttf', { area: 'any', warn: 'textOverlappingContours', noValidate: true }]])
   C(`loaded font ${n}`, { load: [fx(n, ext)], texts: [T(fxText, { font: 'fx-' + n, height: 9 })], ...extra });
 C('loaded font emboss', { load: [fx('sans-source-otf', 'otf')], op: 'add', depth: 0.6, texts: [T('BOSS 689', { font: 'fx-sans-source-otf', height: 10 })] });
 C('loaded font on an arc', { load: [fx('condensed-bebas')], plate: { kind: 'disk', r: 50, t: 3 }, texts: [T('BOSS 689', { font: 'fx-condensed-bebas', height: 5, at: [0, 0], anchor: ['center', 'baseline'], arc: { centre: [0, 0], radius: 28, angleCentre: 90, side: 'outside' } })] });
+// ---- Task 2: opt-in kerning / ligatures / merge ----
+C('kern on satisfy kern table', { load: [fx('script-satisfy')], texts: [T('P.BB PM OB', { font: 'fx-script-satisfy', height: 9, kern: true })] });
+C('kern on gpos pairs', { load: [fx('sans-barlow')], texts: [T('xe i0 ov', { font: 'fx-sans-barlow', height: 9, kern: true })] });
+C('liga on substitutes ee', { load: [fx('liga-barlow')], texts: [T('ee', { font: 'fx-liga-barlow', height: 14, liga: true })] });
+C('liga off keeps two glyphs', { load: [fx('liga-barlow')], texts: [T('ee', { font: 'fx-liga-barlow', height: 14 })] });
+C('merge on variable-inter', { load: [fx('variable-inter')], texts: [T(fxText, { font: 'fx-variable-inter', height: 9, merge: true })], noWarn: 'textOverlappingContours' });
+C('merge on specialelite', { load: [fx('slab-specialelite')], texts: [T('BOSS 0689 -.', { font: 'fx-slab-specialelite', height: 9, merge: true })], noWarn: 'textOverlappingContours' });
+C('merge falls back on a point-touch glyph', { load: [fx('slab-specialelite')], texts: [T('&', { font: 'fx-slab-specialelite', height: 14, merge: true })], warn: 'textOverlappingContours', noValidate: true, area: 'any' });
 C('font not loaded', { texts: [T('A', { font: 'fx-never-loaded' })], err: 'textFontNotLoaded' });
 C('font hash pin mismatch', { load: [fx('sans-barlow')], texts: [T('BOSS', { font: 'fx-sans-barlow', fontHash: '00000000' })], err: 'textFontMismatch' });
 C('font hash pin matches', { load: [fx('sans-barlow')], pin: 'fx-sans-barlow', texts: [T('BOSS', { font: 'fx-sans-barlow', height: 9 })] });
@@ -168,6 +176,7 @@ function run(c, idx) {
   if (c.err) return errs.some((e) => e.code === c.err) ? { ok: true, detail: `error ${c.err}`, ms } : { ok: false, detail: `want error ${c.err}, got ${JSON.stringify(errs)}`, ms };
   if (errs.length) return { ok: false, detail: 'errors ' + JSON.stringify(errs), ms };
   if (c.warn && !warns.some((w) => w.code === c.warn)) return { ok: false, detail: `want warning ${c.warn}, got ${JSON.stringify(warns)}`, ms };
+  if (c.noWarn && warns.some((w) => w.code === c.noWarn)) return { ok: false, detail: `unexpected ${c.noWarn}: ${JSON.stringify(warns)}`, ms };
   if (c.noBoolean) {
     const sk = r.result.sketches?.find((s) => s[0] === 'S2');
     return { ok: true, detail: `${c.warn ?? 'sketch'} ok` + (sk ? '' : ''), ms };

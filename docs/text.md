@@ -26,6 +26,9 @@ Crate `ck-text` (outlines, layout), `ck-model/src/sketch/text.rs` (the entity an
 | `spacing` | letter pitch factor (advance widths times this), default 1, allowed 0 to 20 exclusive |
 | `mirror` | mirror about the vertical line through the anchor (text on the back of a clear part) |
 | `polyline` | lines within a chord tolerance (0.005 x height) instead of B-spline edges |
+| `kern` | pair kerning from the font (`kern` table and GPOS `kern` feature) between neighbouring letters; default false, so existing documents keep plain advance widths |
+| `liga` | standard ligatures from GSUB (`liga`): a run like `ff` / `fi` (whatever the font defines) becomes one glyph with one advance; default false |
+| `merge` | union a glyph whose contours cross itself (overlapping strokes) into one outline before layout; default false, so existing documents keep the crossing loops and the `textOverlappingContours` warning |
 | `arc` | lay the letters along a circle (below) |
 | `construction` | true: ignored (not laid out, no profile) |
 
@@ -53,7 +56,7 @@ overlapping pitch are not merged (below).
 
 ## Requests
 
-`textMetrics {string, font?, height, spacing?}` (stateless):
+`textMetrics {string, font?, height, spacing?, kern?, liga?}` (stateless; `kern` / `liga` mirror the entity's opt-in flags so the metrics match the laid-out geometry):
 
 ```json
 { "advance": 22.8, "bbox": [0.44, -0.07, 22.49, 5.07], "width": 22.04, "capHeight": 5, "chars": 8,
@@ -84,7 +87,7 @@ Warnings (the sketch still regenerates; `warnings` of the regen result, params `
 | `textTooSmall` | cap height below 0.8 mm: strokes thinner than about 0.1 mm do not engrave or print |
 | `textMissingGlyph` | characters the font has no glyph for are skipped (the characters are listed) |
 | `textTruncated` | more than 500 characters |
-| `textOverlappingContours` | a loaded font's letter has outlines that cross themselves (overlapping strokes, variable and distressed fonts): not merged, the solid can fail validation (`LOOP_SELF_INTERSECT`); the characters are listed |
+| `textOverlappingContours` | a loaded font's letter has outlines that cross themselves (overlapping strokes, variable and distressed fonts): not merged (set `merge: true` on the text to union them), the solid can fail validation (`LOOP_SELF_INTERSECT`); the characters are listed |
 | `textOverlap` | neighbouring letters still overlap after the adjustment below (radius too small): the booleans cannot merge them |
 | `textSpacingAdjusted` | neighbouring letters would have touched or overlapped (closer than max(1.2 % of the height, 0.03)): on a straight line the later letters were pushed right in steps of 1 % of the height (serif fonts: the serifs of `vv`, `VV`, `rr` touch at small sizes; `spacing` below 1 on purpose), on an arc the pitch was widened in 4 % steps (tight radius: letters lean into each other), at most 60 % |
 
@@ -131,13 +134,13 @@ Load warnings (`warnings` of the reply; the font still loads):
 
 | Code | Meaning |
 |---|---|
-| `fontKerningIgnored` | the file has `kern` or GPOS: letters use plain advance widths |
-| `fontLigaturesIgnored` | the file has GSUB: no ligatures or other substitutions |
+| `fontKerningIgnored` | the file has `kern` or GPOS `kern`: applied only when the text sets `kern: true`, plain advance widths otherwise |
+| `fontLigaturesIgnored` | the file has GSUB: standard ligatures apply only when the text sets `liga: true`; other substitutions are never applied |
 | `fontVariableDefaultOnly` | variable font (`fvar`): the default instance is read, no axes |
 | `fontCollectionFirstFace` | TTC / OTC: the first face is used |
 | `fontCffApproximated` | OpenType / CFF: cubic curves are converted to quadratic B-splines within 0.05 % of the em |
 | `fontNoCapHeight` | no letter `H`: the cap height is OS/2 `sCapHeight`, else 0.7 em |
-| `fontOverlappingContours` | outlines of letters or digits cross themselves or each other (overlapping strokes; typical of variable fonts and distressed typewriter faces); the overlaps are not merged |
+| `fontOverlappingContours` | outlines of letters or digits cross themselves or each other (overlapping strokes; typical of variable fonts and distressed typewriter faces); a text entity with `merge: true` unions them |
 | `fontEmbeddingRestricted`, `fontNoSubsetting` | the OS/2 `fsType` licence flags forbid embedding / subsetting |
 | `fontNoLatin` | no Latin letters mapped |
 
@@ -195,9 +198,15 @@ on `textOutline` adds `outerEdges` / `holeEdges` (the exact line / B-spline cont
 ## Limits
 
 * Planar only (as every sketch). No text on a curved face: project or wrap is not built.
-* No kerning, no ligatures, no bold / italic (pick the bold file), no right-to-left or complex scripts; single line per entity. Variable fonts give their default instance only.
+* Kerning (`kern` / GPOS `kern`) and standard ligatures (`liga`) only when the entity sets `kern: true` / `liga: true`
+  (default off, so existing documents are unchanged); no contextual alternates, no bold / italic (pick the bold file),
+  no right-to-left or complex scripts; single line per entity. Variable fonts give their default instance only.
+  Subsetting (`subsetFont`) drops the layout tables, so a subset kerns and ligates as a no-op.
 * Connected script faces (Great Vibes, Pacifico, Satisfy): the letters overlap by design; overlapping letters are not merged, so the spacing adjustment pushes them apart (`textSpacingAdjusted`) or reports `textOverlap`, and a 35-character string can take 0.5 to 2 s to lay out. Use them for short names.
-* Fonts whose strokes overlap inside one letter (`fontOverlappingContours`): not merged.
+* Fonts whose strokes overlap inside one letter (`fontOverlappingContours`): not merged unless the entity sets `merge: true`.
+  A glyph whose boundary only *touches itself at a point* (some distressed faces: the ampersand of Special Elite)
+  falls back to the unmerged loops with the `textOverlappingContours` warning: a solid that self-touches at a point
+  cannot be closed by the booleans, so merging it would trade a warning for a `booleanFailed`.
 * Text is not trimmed against, merged with or made holes of other curves of its sketch (see "Text is its own sketch").
 * Letters of one entity are kept at least max(1.2 % of the height, 0.03) apart (see `textSpacingAdjusted`); letters of
   different entities that overlap are not merged and not checked.
@@ -209,12 +218,15 @@ on `textOutline` adds `outerEdges` / `holeEdges` (the exact line / B-spline cont
 
 ## Checks
 
-* `cargo test -p ck-text` (`font_tests`: eleven fixture fonts (subsets of the curated list, `crates/ck-text/tests/fixtures`) load and lay out; CFF areas against fontTools; loaded copy of `gauge` identical to the built-in; missing font; name + hash keying; subsets; 900 damaged files; TTC; variable) (area / nesting / orientation / anchors / arc / metrics / contour crossing, polyline vs
+* `cargo test -p ck-text` (`font_tests`: twelve fixture fonts (subsets of the curated list, `crates/ck-text/tests/fixtures`) load and lay out;
+  opt-in kerning (hand-decoded `kern` and GPOS pairs), ligatures and contour merge); CFF areas against fontTools; loaded copy of `gauge` identical to the built-in; missing font; name + hash keying; subsets; 900 damaged files; TTC; variable) (area / nesting / orientation / anchors / arc / metrics / contour crossing, polyline vs
   B-spline area within 1 %).
-* `node tools/text_corpus.mjs [--only substr] [--write dir]`: 54 cases built through the wasm: engraving and
+* `node tools/text_corpus.mjs [--only substr] [--write dir]`: 126 cases built through the wasm: engraving and
   embossing of gauge texts, every glyph with holes, accents, rotation, mirror, three standard planes plus feature
   planes, dial numerals `0` to `80`, arc text outside and inside, text over a through hole, text past the plate edge,
-  error and warning cases. Each checks: no error, no `booleanFailed`, `validate {mesh:true}` clean (watertight
+  error and warning cases, plus the opt-in `kern` (satisfy `kern` table and Barlow GPOS pairs), `liga` (the
+  `fx-liga-barlow` fixture: `e + e -> g`) and `merge` (variable-inter / Special Elite unioned, validating clean).
+  Each checks: no error, no `booleanFailed`, `validate {mesh:true}` clean (watertight
   mesh), volume change = glyph area (shoelace over the `textOutline` loops) x depth within 1 % (the measured
   deviation is under 0.1 %; bounds only for the cases where the text leaves the plate or crosses a hole), time.
 * `node tools/text_corpus.mjs --fuzz N --seed S`: random strings (printable ASCII and a few Latin-1), both fonts, 3 to
