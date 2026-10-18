@@ -108,7 +108,7 @@ if (existsSync(occt)) {
   if (quick) args.push('--only', 'bopcut_simple');
   const r = await run('node', args, (quick ? 120 : Number(val('--occt-timeout', '360'))) * 1000);
   const rows = readJson(out);
-  if (rows) results.push({ name: 'occt', status: 'ok', sec: r.sec, ...compare(rows, baseline('tools/occt_baseline.json'), 'name'), note: r.status === 'ok' ? '' : `exit ${r.status}` });
+  if (rows) results.push({ name: 'occt', status: 'ok', sec: r.sec, ...compare(rows, baseline('tools/occt_baseline.json'), 'name') });
   else results.push({ name: 'occt', status: 'error', sec: r.sec, reason: (r.detail || r.status) });
 } else results.push({ name: 'occt', status: 'skip', reason: '/tmp/occt absent' });
 
@@ -123,7 +123,7 @@ if (!quick) {
     const out = path.join(tmp, `import${tag}.json`);
     const r = await run('node', [path.join(root, 'tools/import_sample_check.mjs'), dir, '--wasm', wasm, '--manifest', path.join(root, manifest), '--json', out], 180000);
     const rows = readJson(out);
-    if (rows) results.push({ name: `import${tag}`, status: 'ok', sec: r.sec, ...compare(rows, baseline(bl), 'file'), note: r.status === 'ok' ? '' : `exit ${r.status}` });
+    if (rows) results.push({ name: `import${tag}`, status: 'ok', sec: r.sec, ...compare(rows, baseline(bl), 'file') });
     else results.push({ name: `import${tag}`, status: 'error', sec: r.sec, reason: (r.detail || r.status) });
   }
 } else results.push({ name: 'import', status: 'skip', reason: 'quick' });
@@ -134,7 +134,7 @@ if (!quick && existsSync(dc)) {
   const out = path.join(tmp, 'deepcad.json');
   const r = await run('node', [path.join(root, 'tools/deepcad_check.mjs'), '--cases', dc, '--wasm', wasm, '--scale', '100', '--json', out], 240000);
   const rows = readJson(out);
-  if (rows) results.push({ name: 'deepcad', status: 'ok', sec: r.sec, ...compare(rows, baseline('tools/deepcad_baseline.json'), 'name'), note: r.status === 'ok' ? '' : `exit ${r.status}` });
+  if (rows) results.push({ name: 'deepcad', status: 'ok', sec: r.sec, ...compare(rows, baseline('tools/deepcad_baseline.json'), 'name') });
   else results.push({ name: 'deepcad', status: 'error', sec: r.sec, reason: (r.detail || r.status) });
 } else results.push({ name: 'deepcad', status: 'skip', reason: quick ? 'quick' : 'cases absent' });
 
