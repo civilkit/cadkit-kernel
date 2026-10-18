@@ -15,6 +15,7 @@ const dir = argv[0];
 const opt = (f, d) => (argv.includes(f) ? argv[argv.indexOf(f) + 1] : d);
 const wasm = opt('--wasm', '/path/to/work/kit/apps/cad/public/kernel/ck_wasm.wasm');
 const only = opt('--only');
+const importOnly = argv.includes('--import-only');
 const manifestFile = opt('--manifest');
 const mod = new WebAssembly.Module(readFileSync(wasm));
 const wasmHash = crypto.createHash('sha256').update(readFileSync(wasm)).digest('hex').slice(0, 16);
@@ -33,18 +34,19 @@ const rows = [];
 for (const f of ids) {
   const p = path.join(dir, f);
   let cls = 'ok', detail = '';
+  const t0 = Date.now();
   if (!existsSync(p)) { cls = 'missing'; detail = 'not in the local sample cache'; }
   else try {
     const rr = k.request(JSON.stringify({ id: 1, msg: { type: 'importStep', tag: 'm', name: 'p', data: readFileSync(p, 'utf8') } }));
     const r = JSON.parse(rr.json);
     if (!r.ok || !r.result?.body) { cls = 'import-failed'; detail = r.error ?? (r.result?.errors?.[0]?.[1]?.code ?? 'no body'); }
-    else {
+    else if (!importOnly) {
       const v = JSON.parse(k.request(JSON.stringify({ id: 2, msg: { type: 'validate', tag: 'm' } })).json);
       const issues = v.result?.issues ?? [];
       if (issues.length) { cls = 'invalid'; detail = [...new Set(issues.map((i) => i.code))].join(','); }
     }
   } catch (e) { cls = 'import-failed'; detail = String(e.message ?? e); }
-  rows.push({ file: f, cls, detail });
+  rows.push({ file: f, cls, detail, ms: Date.now() - t0 });
   if (rows.length % 10 === 0) process.stderr.write(`  ${rows.length}/${ids.length}\n`);
 }
 
