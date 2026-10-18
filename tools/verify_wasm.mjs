@@ -14,7 +14,7 @@ const val = (f, d) => (argv.includes(f) ? argv[argv.indexOf(f) + 1] : d);
 if (!wasm) { console.error('usage: tools/verify_wasm.sh <wasm> [--quick]'); process.exit(2); }
 const tmp = mkdtempSync(path.join(os.tmpdir(), 'ck-verify-'));
 const t0 = Date.now();
-const PASS = new Set(['ok', 'okNoEffect', 'okEmpty', 'refused']);
+const PASS = new Set(['ok', 'okNoEffect', 'okEmpty', 'refused', 'structured-error']);
 const UNRESOLVED = new Set(['no-ref', 'ref-fails', 'missingMass', 'ocp-missing', 'no-mesh']);
 const results = [];
 
@@ -99,6 +99,16 @@ async function runSweep(s) {
   return { name: s.name, status: 'ok', sec, ...compare(all, base) };
 }
 results.push(...(await mapLimit(SWEEPS, quick ? 1 : 2, runSweep)));
+
+// Crash / hang fuzz
+{
+  const out = path.join(tmp, 'crashfuzz.json');
+  const cases = quick ? 200 : 5000;
+  const r = await run('node', [path.join(root, 'tools/crash_fuzz.mjs'), '--wasm', wasm, '--cases', String(cases), '--seed', '7', '--no-shrink', '--workers', '8', '--json', out], (quick ? 90 : 360) * 1000);
+  const d = readJson(out);
+  if (d?.results) results.push({ name: 'crashfuzz', status: 'ok', sec: r.sec, ...compare(d.results, baseline('tools/crash_fuzz_baseline.json'), 'id') });
+  else results.push({ name: 'crashfuzz', status: 'error', sec: r.sec, reason: (r.detail || r.status) });
+}
 
 // OCCT corpus
 const occt = '/tmp/occt';
