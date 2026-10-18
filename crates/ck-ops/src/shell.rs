@@ -209,7 +209,7 @@ fn shell_try(body: &Body, open: &[FaceId], thickness: f64, outward: bool, tol: f
         return Err(ShellError::code("invalidValue"));
     }
     for &f in open {
-        if !matches!(body.face(f).surface, Surface::Plane { .. }) {
+        if !matches!(body.face(f).surface, Surface::Plane { .. } | Surface::BSpline(_)) {
             return Err(ShellError::detail("shellUnsupported", format!("opened face {} is not planar", body.face_id_str(f))));
         }
     }
