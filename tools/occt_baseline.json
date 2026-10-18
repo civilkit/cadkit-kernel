@@ -8203,12 +8203,12 @@
    "relVol": null
   },
   "blend/simple/Q7": {
-   "cls": "unsupported",
-   "rel": null,
+   "cls": "wrongArea",
+   "rel": 0.19841747857442996,
    "relVol": null
   },
   "blend/simple/X1": {
-   "cls": "unsupported",
+   "cls": "blendFailed",
    "rel": null,
    "relVol": null
   },
@@ -8218,23 +8218,23 @@
    "relVol": null
   },
   "draft/angle/A1": {
-   "cls": "unsupported",
-   "rel": null,
+   "cls": "ok",
+   "rel": 0.0000020988956154626293,
    "relVol": null
   },
   "draft/angle/A5": {
-   "cls": "unsupported",
-   "rel": null,
+   "cls": "wrongArea",
+   "rel": 0.17261874802516058,
    "relVol": null
   },
   "draft/angle/A7": {
-   "cls": "unsupported",
-   "rel": null,
+   "cls": "ok",
+   "rel": 0.0000013008097064529589,
    "relVol": null
   },
   "draft/angle/A8": {
-   "cls": "unsupported",
-   "rel": null,
+   "cls": "ok",
+   "rel": 0.0000014617775807957958,
    "relVol": null
   },
   "draft/angle/A9": {
@@ -8243,18 +8243,18 @@
    "relVol": null
   },
   "draft/angle/B2": {
-   "cls": "unsupported",
+   "cls": "draftUnsupported",
    "rel": null,
    "relVol": null
   },
   "draft/angle/B3": {
-   "cls": "unsupported",
+   "cls": "invalidValue",
    "rel": null,
    "relVol": null
   },
   "draft/angle/D1": {
-   "cls": "unsupported",
-   "rel": null,
+   "cls": "ok",
+   "rel": 8.76041916760593e-7,
    "relVol": null
   },
   "draft/angle/K1": {
@@ -8263,8 +8263,63 @@
    "relVol": null
   },
   "draft/angle/L3": {
+   "cls": "ok",
+   "rel": 5.534113828422674e-7,
+   "relVol": null
+  },
+  "bugs/modalg_1/buc60801": {
+   "cls": "wrongArea",
+   "rel": 0.06250000000000028,
+   "relVol": null
+  },
+  "bugs/modalg_1/bug13538": {
    "cls": "unsupported",
    "rel": null,
+   "relVol": null
+  },
+  "bugs/modalg_2/bug407_1": {
+   "cls": "ok",
+   "rel": 9.967396671326353e-7,
+   "relVol": null
+  },
+  "bugs/modalg_2/bug407_2": {
+   "cls": "ok",
+   "rel": 8.446628832972919e-7,
+   "relVol": null
+  },
+  "bugs/modalg_4/bug7626_1": {
+   "cls": "booleanFailed",
+   "rel": null,
+   "relVol": null
+  },
+  "bugs/modalg_4/bug7626_2": {
+   "cls": "booleanFailed",
+   "rel": null,
+   "relVol": null
+  },
+  "bugs/modalg_5/bug24359": {
+   "cls": "unsupported",
+   "rel": null,
+   "relVol": null
+  },
+  "bugs/modalg_7/bug25968": {
+   "cls": "missingReference",
+   "rel": null,
+   "relVol": null
+  },
+  "bugs/modalg_7/bug32470": {
+   "cls": "invalid",
+   "rel": 0.0000025720542858881746,
+   "relVol": 6.949265166051356e-7
+  },
+  "bugs/moddata_1/bug217": {
+   "cls": "ok",
+   "rel": 8.615244266063387e-7,
+   "relVol": null
+  },
+  "bugs/moddata_2/bug259": {
+   "cls": "ok",
+   "rel": 0.0000023384295277297007,
    "relVol": null
   }
  }
