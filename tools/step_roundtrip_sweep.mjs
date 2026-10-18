@@ -114,7 +114,7 @@ for (const c of selected) {
 }
 const rp = '/tmp/step_roundtrip_cases.json', ro = '/tmp/step_roundtrip_ref.json';
 writeFileSync(rp, JSON.stringify(Object.entries(paths).map(([id, file]) => ({ id, file })), null, 1));
-try { execFileSync('python3.12', [path.join(here, 'step_roundtrip_ref.py'), '--cases', rp, '--out', ro], { stdio:'pipe', timeout:120000 }); } catch (e) { console.error('ref failed', e.message); }
+try { execFileSync('python3.12', [path.join(here, 'step_roundtrip_ref.py'), '--cases', rp, '--out', ro], { stdio:'pipe', timeout:180000 }); } catch (e) { console.error('ref failed', e.message); }
 const ref = existsSync(ro) ? JSON.parse(readFileSync(ro, 'utf8')) : {};
 const rel = (a, b) => Math.abs(a - b) / Math.max(Math.abs(b), 1e-12);
 for (const row of rows) {

@@ -138,7 +138,7 @@ for (const c of selected) {
 
 const rp = '/tmp/shape_sweep_cases.json', ro = '/tmp/shape_sweep_ref.json';
 writeFileSync(rp, JSON.stringify(refCases, null, 1));
-try { execFileSync('python3.12', [path.join(here, 'shape_sweep_ref.py'), '--cases', rp, '--out', ro], { stdio: 'pipe', timeout: 60000 }); } catch (e) { console.error('ref failed', e.message); }
+try { execFileSync('python3.12', [path.join(here, 'shape_sweep_ref.py'), '--cases', rp, '--out', ro], { stdio: 'pipe', timeout: 180000 }); } catch (e) { console.error('ref failed', e.message); }
 const ref = existsSync(ro) ? JSON.parse(readFileSync(ro, 'utf8')) : {};
 for (const row of rows) {
   const rf = ref[row.id];
