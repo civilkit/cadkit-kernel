@@ -1,0 +1,309 @@
+{
+ "id": "hull_thicken_7",
+ "family": "hull_thicken",
+ "ours": "offsetUnsupported",
+ "orig": "ok",
+ "detail": "F8.S.e0_0 and F8.S.e0_2 meet at a crease or face opposite ways: thicken offsets free-form sheets whose faces join tangentially. Thicken the faces separately or blend the crease first",
+ "features": [
+  {
+   "type": "plane",
+   "id": "P0",
+   "mode": "offset",
+   "base": {
+    "kind": "std",
+    "id": "right"
+   },
+   "offset": 0
+  },
+  {
+   "type": "sketch",
+   "id": "S0",
+   "plane": {
+    "kind": "feature",
+    "id": "P0"
+   },
+   "points": [
+    {
+     "id": "p0_0",
+     "x": -144.2929647733464,
+     "y": 45.762005732394755
+    },
+    {
+     "id": "p0_1",
+     "x": 144.2929647733464,
+     "y": 45.762005732394755
+    },
+    {
+     "id": "p0_2",
+     "x": 198.18892802111804,
+     "y": 333.58613135060295
+    }
+   ],
+   "entities": [
+    {
+     "type": "line",
+     "id": "e0_0",
+     "p1": "p0_0",
+     "p2": "p0_1"
+    },
+    {
+     "type": "line",
+     "id": "e0_1",
+     "p1": "p0_1",
+     "p2": "p0_2"
+    },
+    {
+     "type": "line",
+     "id": "e0_2",
+     "p1": "p0_2",
+     "p2": "p0_0"
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "plane",
+   "id": "P1",
+   "mode": "offset",
+   "base": {
+    "kind": "std",
+    "id": "right"
+   },
+   "offset": 261.29766553640366
+  },
+  {
+   "type": "sketch",
+   "id": "S1",
+   "plane": {
+    "kind": "feature",
+    "id": "P1"
+   },
+   "points": [
+    {
+     "id": "p1_0",
+     "x": -305.5819621253648,
+     "y": 106.2975536333397
+    },
+    {
+     "id": "p1_1",
+     "x": 305.5819621253648,
+     "y": 106.2975536333397
+    },
+    {
+     "id": "p1_2",
+     "x": 359.9620914366096,
+     "y": 333.58613135060295
+    }
+   ],
+   "entities": [
+    {
+     "type": "line",
+     "id": "e1_0",
+     "p1": "p1_0",
+     "p2": "p1_1"
+    },
+    {
+     "type": "line",
+     "id": "e1_1",
+     "p1": "p1_1",
+     "p2": "p1_2"
+    },
+    {
+     "type": "line",
+     "id": "e1_2",
+     "p1": "p1_2",
+     "p2": "p1_0"
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "plane",
+   "id": "P2",
+   "mode": "offset",
+   "base": {
+    "kind": "std",
+    "id": "right"
+   },
+   "offset": 551.1949319392443
+  },
+  {
+   "type": "sketch",
+   "id": "S2",
+   "plane": {
+    "kind": "feature",
+    "id": "P2"
+   },
+   "points": [
+    {
+     "id": "p2_0",
+     "x": -155.27122540484788,
+     "y": 37.160765253938735
+    },
+    {
+     "id": "p2_1",
+     "x": 155.27122540484788,
+     "y": 37.160765253938735
+    },
+    {
+     "id": "p2_2",
+     "x": 276.0368415992707,
+     "y": 333.58613135060295
+    }
+   ],
+   "entities": [
+    {
+     "type": "line",
+     "id": "e2_0",
+     "p1": "p2_0",
+     "p2": "p2_1"
+    },
+    {
+     "type": "line",
+     "id": "e2_1",
+     "p1": "p2_1",
+     "p2": "p2_2"
+    },
+    {
+     "type": "line",
+     "id": "e2_2",
+     "p1": "p2_2",
+     "p2": "p2_0"
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "plane",
+   "id": "P3",
+   "mode": "offset",
+   "base": {
+    "kind": "std",
+    "id": "right"
+   },
+   "offset": 901.8094819039106
+  },
+  {
+   "type": "sketch",
+   "id": "S3",
+   "plane": {
+    "kind": "feature",
+    "id": "P3"
+   },
+   "points": [
+    {
+     "id": "p3_0",
+     "x": -527.0304138522421,
+     "y": 153.37022293824703
+    },
+    {
+     "id": "p3_1",
+     "x": 527.0304138522421,
+     "y": 153.37022293824703
+    },
+    {
+     "id": "p3_2",
+     "x": 677.9521132167429,
+     "y": 333.58613135060295
+    }
+   ],
+   "entities": [
+    {
+     "type": "line",
+     "id": "e3_0",
+     "p1": "p3_0",
+     "p2": "p3_1"
+    },
+    {
+     "type": "line",
+     "id": "e3_1",
+     "p1": "p3_1",
+     "p2": "p3_2"
+    },
+    {
+     "type": "line",
+     "id": "e3_2",
+     "p1": "p3_2",
+     "p2": "p3_0"
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "plane",
+   "id": "P4",
+   "mode": "offset",
+   "base": {
+    "kind": "std",
+    "id": "right"
+   },
+   "offset": 1180.3173057734966
+  },
+  {
+   "type": "sketch",
+   "id": "S4",
+   "plane": {
+    "kind": "feature",
+    "id": "P4"
+   },
+   "points": [
+    {
+     "id": "p4_0",
+     "x": -29.39313837746224,
+     "y": 6.818364621140063
+    },
+    {
+     "id": "p4_1",
+     "x": 29.39313837746224,
+     "y": 6.818364621140063
+    },
+    {
+     "id": "p4_2",
+     "x": 38.388196498621255,
+     "y": 333.58613135060295
+    }
+   ],
+   "entities": [
+    {
+     "type": "line",
+     "id": "e4_0",
+     "p1": "p4_0",
+     "p2": "p4_1"
+    },
+    {
+     "type": "line",
+     "id": "e4_1",
+     "p1": "p4_1",
+     "p2": "p4_2"
+    },
+    {
+     "type": "line",
+     "id": "e4_2",
+     "p1": "p4_2",
+     "p2": "p4_0"
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "loft",
+   "id": "F8",
+   "op": "add",
+   "sketches": [
+    "S0",
+    "S1",
+    "S2",
+    "S3",
+    "S4"
+   ],
+   "surface": true
+  },
+  {
+   "type": "thicken",
+   "id": "F9",
+   "surface": "F8",
+   "thickness": 1.22885368950665,
+   "side": "back"
+  }
+ ]
+}

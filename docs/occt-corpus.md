@@ -203,6 +203,7 @@ replay, a class-only baseline and a ranked Mimo brief.
 | holes / patterns / mirror / draft | 120 | 120 ok | `docs/feature-sweep.md` |
 | crash fuzz | 5000 | 662 ok, 4002 structured, 238 trap, 74 hang, 24 invalid | `docs/crash-fuzz.md` |
 | Fusion import (rounds 1-3) | 800 | 745 ok, 55 invalid | `docs/mimo-brief-import.md` |
+| original vs ours | 91 | 57 both ok, 19 both fail, 15 original-only gaps | `docs/original-gaps.md` |
 
 The baselines are `tools/fillet_sweep_baseline.json`,
 `tools/fillet_sweep_baseline_seed11.json`, `tools/shell_sweep_baseline.json`,

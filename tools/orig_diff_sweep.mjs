@@ -63,6 +63,10 @@ for (let i = 0; i < samples; i++) {
   // fillet
   const w=rr(15,50),d=rr(15,50),h=rr(10,40),r=rr(0.5,Math.min(w,d)*0.4);
   add(`fillet_${i}`, 'fillet', [...box(w,d,h), {type:'fillet',id:'F3',radius:r,edges:[{faces:['F2.S.e1','F2.S.e2'],at:[w,0,h/2]}]}]);
+  // chamfer
+  add(`chamfer_${i}`, 'chamfer', [...box(w,d,h), {type:'chamfer',id:'F3',distance:rr(0.5,Math.min(w,d)*0.3),edges:[{faces:['F2.S.e1','F2.S.e2'],at:[w,0,h/2]}]}]);
+  // revolve
+  { const rh=rr(10,40), w0=rr(2,12), w1=rr(2,12), ang=rr(90,360); add(`revolve_${i}`, 'revolve', [{type:'sketch',id:'S1',plane:{kind:'std',id:'front'},points:[pt('p0',w0,0),pt('p1',w1,rh),pt('p2',0,rh),pt('p3',0,0),pt('a1',0,0),pt('a2',0,rh)],entities:[line('e1','p0','p1'),line('e2','p1','p2'),line('e3','p2','p3'),line('e4','p3','p0'),{type:'line',id:'ax',p1:'a1',p2:'a2',construction:true}],constraints:[]},{type:'revolve',id:'F2',op:'add',sketch:'S1',axis:'ax',angle:ang}]); }
   // boolean
   const A=box(rr(10,40),rr(10,40),rr(10,40)); const B=box(rr(10,40),rr(10,40),rr(10,40)).map((f)=>f.type==='sketch'?{...f,id:'S2'}:{...f,id:'F4',sketch:'S2'});
   add(`boolean_${i}`, 'boolean', [...A,...B,{type:'moveBody',id:'M1',bodies:[{face:'F4.C1'}],translate:[rr(-10,10),rr(-10,10),rr(-10,10)]},{type:'combine',id:'C1',op:pick(['union','cut','intersect']),target:{face:'F2.C1'},tools:[{face:'F4.C1'}]}]);
@@ -73,7 +77,7 @@ for (let i = 0; i < samples; i++) {
   // extrude variants
   add(`extrude_${i}`, 'extrude', [{type:'sketch',id:'S1',plane:{kind:'std',id:'front'},points:[[0,0],[30,0],[30,20],[0,20]].map(([x,y],j)=>pt(`p${j}`,x,y)),entities:[0,1,2,3].map(j=>line(`e${j+1}`,`p${j}`,`p${(j+1)%4}`)),constraints:[]},{type:'extrude',id:'F2',op:'add',sketch:'S1',end:pick(['blind','through']),depth:rr(1,40),...(rnd()<0.4?{draft:rr(0,15)}:{})}]);
 }
-const selected = only ? cases.filter((c)=>c.id.includes(only)) : (quick ? cases.filter((c)=>['hull_seed_shell3','hull_shell_0','hull_thicken_0','fillet_0','boolean_0','shape_0','draft_0','extrude_0'].includes(c.id)) : cases);
+const selected = only ? cases.filter((c)=>c.id.includes(only)) : (quick ? cases.filter((c)=>['hull_seed_shell3','hull_shell_0','hull_thicken_0','fillet_0','boolean_0','shape_0','draft_0','extrude_0','chamfer_0','revolve_0'].includes(c.id)) : cases);
 
 function runK(k, features) {
   const r = JSON.parse(k.request(JSON.stringify({ id:1, msg:{ type:'regen', tag:'m', part:{ format:'ck-part', version:1, features }, opts:{ solveSketches:true } } })).json);
