@@ -1,0 +1,186 @@
+{
+ "format": "ck-part",
+ "version": 1,
+ "name": "Fan",
+ "features": [
+  {
+   "type": "sketch",
+   "id": "F1",
+   "plane": {
+    "kind": "std",
+    "id": "top"
+   },
+   "points": [
+    {
+     "id": "O",
+     "x": 0,
+     "y": 0,
+     "fixed": true
+    },
+    {
+     "id": "p1",
+     "x": 11.8621524548,
+     "y": 0
+    },
+    {
+     "id": "p2",
+     "x": 23.553921947,
+     "y": 0
+    },
+    {
+     "id": "p3",
+     "x": 21.1764103409,
+     "y": -34
+    },
+    {
+     "id": "p4",
+     "x": 16.6405408347,
+     "y": -34
+    },
+    {
+     "id": "p5",
+     "x": 0,
+     "y": 0
+    },
+    {
+     "id": "p6",
+     "x": 0,
+     "y": 10
+    }
+   ],
+   "entities": [
+    {
+     "id": "e1",
+     "type": "line",
+     "p1": "p1",
+     "p2": "p2"
+    },
+    {
+     "id": "e2",
+     "type": "line",
+     "p1": "p2",
+     "p2": "p3"
+    },
+    {
+     "id": "e3",
+     "type": "line",
+     "p1": "p3",
+     "p2": "p4"
+    },
+    {
+     "id": "e4",
+     "type": "line",
+     "p1": "p4",
+     "p2": "p1"
+    },
+    {
+     "id": "e5",
+     "type": "line",
+     "p1": "p5",
+     "p2": "p6",
+     "construction": true
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "revolve",
+   "id": "F2",
+   "op": "add",
+   "sketch": "F1",
+   "axis": "e5",
+   "angle": 360
+  },
+  {
+   "type": "sketch",
+   "id": "F3",
+   "plane": {
+    "kind": "std",
+    "id": "top"
+   },
+   "points": [
+    {
+     "id": "O",
+     "x": 0,
+     "y": 0,
+     "fixed": true
+    },
+    {
+     "id": "p1",
+     "x": -5.0699268119,
+     "y": -34
+    },
+    {
+     "id": "p2",
+     "x": -3.2518297014,
+     "y": -8
+    },
+    {
+     "id": "p3",
+     "x": 20,
+     "y": -8
+    },
+    {
+     "id": "p4",
+     "x": 20,
+     "y": -34
+    }
+   ],
+   "entities": [
+    {
+     "id": "e1",
+     "type": "line",
+     "p1": "p1",
+     "p2": "p2"
+    },
+    {
+     "id": "e2",
+     "type": "line",
+     "p1": "p2",
+     "p2": "p3"
+    },
+    {
+     "id": "e3",
+     "type": "line",
+     "p1": "p3",
+     "p2": "p4"
+    },
+    {
+     "id": "e4",
+     "type": "line",
+     "p1": "p4",
+     "p2": "p1"
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F4",
+   "op": "cut",
+   "sketch": "F3",
+   "end": "throughBoth"
+  },
+  {
+   "type": "fillet",
+   "id": "F5",
+   "edges": [
+    {
+     "faces": [
+      "F2.S.e2",
+      "F4.S.e1~2"
+     ],
+     "at": [
+      -4.161042171743304,
+      21.689766768899908,
+      21.002344095043803
+     ]
+    }
+   ],
+   "radius": 0.5
+  }
+ ],
+ "seq": 6,
+ "rollback": null,
+ "script": "// Fan shroud (CAD vs CAD 25-SPO-20). ABS 1020 kg/m3. Second reading: pillar side walls follow the notch curve (1.5 wall).\nconst t4 = Math.tan(4 * Math.PI / 180), t8 = Math.tan(8 * Math.PI / 180);\nconst rOut = (z) => 22 + (33 - z) * t4;\nconst rWall = (z) => rOut(z) - 1.5 / Math.cos(4 * Math.PI / 180);\nconst rIn = (z) => 15 - (33 - z) * t8;\nconst rBowl = (z) => rIn(z) + 1.5;\nconst P = (r, z) => [r, -z];                       // 'top' plane: sketch y = -world z\n\n// fillet drawn as an arc inside a revolve profile: round the corner C between P0 and P1 (all [r, z]) with radius R\nconst round = (P0, C, P1, R, n = 48) => {\n  const nrm = (v) => { const l = Math.hypot(v[0], v[1]); return [v[0] / l, v[1] / l]; };\n  const u0 = nrm([P0[0] - C[0], P0[1] - C[1]]), u1 = nrm([P1[0] - C[0], P1[1] - C[1]]);\n  const phi = Math.acos(u0[0] * u1[0] + u0[1] * u1[1]), d = R / Math.tan(phi / 2);\n  const T0 = [C[0] + u0[0] * d, C[1] + u0[1] * d], T1 = [C[0] + u1[0] * d, C[1] + u1[1] * d];\n  const b = nrm([u0[0] + u1[0], u0[1] + u1[1]]), k = R / Math.sin(phi / 2), O = [C[0] + b[0] * k, C[1] + b[1] * k];\n  let a0 = Math.atan2(T0[1] - O[1], T0[0] - O[0]), a1 = Math.atan2(T1[1] - O[1], T1[0] - O[0]);\n  let da = a1 - a0; while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI;\n  return Array.from({ length: n + 1 }, (_, i) => [O[0] + R * Math.cos(a0 + da * i / n), O[1] + R * Math.sin(a0 + da * i / n)]);\n};\nconst rt = (pts) => pts.map(([r, z]) => P(r, z));\n\n// notch outline in the front view (x, z): left edge a straight 4 deg line, right edge an R42 arc, 10 wide at z = 33, 25 deep\nconst bot = [-5 + 25 * t4, 8], tp = [5, 33];\nconst arc = (() => {\n  const L = Math.hypot(tp[0] - bot[0], tp[1] - bot[1]), u = [(tp[0] - bot[0]) / L, (tp[1] - bot[1]) / L];\n  let n = [-u[1], u[0]]; if (n[0] > 0) n = [-n[0], -n[1]];\n  const d = Math.sqrt(42 * 42 - (L / 2) ** 2), m = [(tp[0] + bot[0]) / 2, (tp[1] + bot[1]) / 2], c = [m[0] + n[0] * d, m[1] + n[1] * d];\n  const a0 = Math.atan2(bot[1] - c[1], bot[0] - c[0]), a1 = Math.atan2(tp[1] - c[1], tp[0] - c[0]);\n  return Array.from({ length: 17 }, (_, i) => { const a = a0 + (a1 - a0) * i / 16; return [c[0] + 42 * Math.cos(a), c[1] + 42 * Math.sin(a)]; });\n})();\nconst W = 1.5;                                      // pillar side wall beside the notch\n\n// x of the notch edges at height z (left: 4 deg line, right: the R42 arc), grown by W for the pillar walls\nconst xl = (z) => (z >= 8 ? -5 + (33 - z) * t4 : bot[0]) - W;\nconst xr = (z) => {\n  if (z <= 8) return bot[0] + W;\n  for (let i = 1; i < arc.length; i++) if (arc[i][1] >= z) { const [x0, z0] = arc[i - 1], [x1, z1] = arc[i]; return x0 + (x1 - x0) * (z - z0) / (z1 - z0) + W; }\n  return tp[0] + W;\n};\nconst band = (z0, z1) => { const zs = Array.from({ length: 9 }, (_, i) => z0 + (z1 - z0) * i / 8);\n  return [...zs.map((z) => [xl(z), -z]), ...zs.slice().reverse().map((z) => [xr(z), -z])]; };\n\n\nconst p = part('Fan');\np.sketch('top', (s) => s.polygon([P(rBowl(0)-0, 0), P(rWall(0)+0.75, 0), P(rWall(34)+0.75, 34), P(rBowl(34), 34)])).revolve(360);\np.sketch('top', (s) => s.polygon([[-5 - t4, -34], [bot[0], -bot[1]], [20, -bot[1]], [20, -34]])).cut(through(), { mid: true });\np.fillet(edges({ near:[-4.13,21.7,20.5], within:1 }), 0.5);\n"
+}

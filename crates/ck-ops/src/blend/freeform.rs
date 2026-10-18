@@ -79,6 +79,11 @@ pub fn needs_freeform(b: &Body, e: EdgeId) -> bool {
     if !matches!(ed.curve, Curve::Line { .. } | Curve::Circle { .. }) {
         return true;
     }
+    // a straight edge needs a plane on both sides for the analytic extruded tool (a plane meeting a cylinder or cone along
+    // a generator has no analytic section in the line builder)
+    if matches!(ed.curve, Curve::Line { .. }) && b.edge_faces(e).iter().any(|&f| !matches!(b.face(f).surface, Surface::Plane { .. })) {
+        return true;
+    }
     b.edge_faces(e).iter().any(|&f| !matches!(b.face(f).surface, Surface::Plane { .. } | Surface::Cylinder { .. } | Surface::Cone { .. }))
 }
 
@@ -537,30 +542,72 @@ fn blend_chain(b: &Body, links: Vec<Link>, r: f64, feature: &str, k: u32, tol: f
             .collect();
         (v, fs)
     };
+    // planes that trim the finished tool (a convex chain that ends in a concave corner), stations put before the chain
+    let mut trims: Vec<(Vec3, Vec3)> = vec![];
+    let mut pre = 0usize;
+    // ends whose cap lies in the end face's plane
+    let mut plane_caps = [false; 2];
     if convex {
         let m = 0.5 * r;
-        let first = secs[0].clone();
-        let last = secs[secs.len() - 1].clone();
-        let t0 = -nodes[0].st.t * m;
-        let t1 = nodes[nodes.len() - 1].st.t * m;
         let shift = |s: &Sec, d: Vec3| Sec { pts: s.pts.map(|p| p + d), d0: s.d0, d1: s.d1 };
-        secs.insert(0, shift(&first, t0));
-        ps.insert(0, nodes[0].st.p + t0);
-        secs.push(shift(&last, t1));
-        ps.push(nodes[nodes.len() - 1].st.p + t1);
+        for end in [0usize, 1] {
+            let last = nodes.len() - 1;
+            let nd = nodes[if end == 0 { 0 } else { last }].clone();
+            let t_out = if end == 0 { -nd.st.t } else { nd.st.t };
+            // A neighbouring plane whose material lies behind the chain end (the edge runs down into a floor, a concave
+            // corner): a prism past the end would cut into that material. The tool then continues along the faces past
+            // the plane and is trimmed to it, its cap flush with the plane.
+            let (_, fs) = end_info(end);
+            let floor = fs
+                .iter()
+                .filter_map(|&f| match &b.face(f).surface {
+                    Surface::Plane { frame } => Some((b.planar_normal(f).dot(t_out), frame.o, b.planar_normal(f))),
+                    _ => None,
+                })
+                .filter(|x| x.0 < -0.1)
+                .min_by(|a, c| a.0.total_cmp(&c.0));
+            let idx = if end == 0 { 0 } else { secs.len() - 1 };
+            if let Some((_, o, n)) = floor {
+                let out = extend_beyond(&ctx, &nd, t_out, o, n, -1.0, r, sg, kk)?;
+                for (sc, p) in out {
+                    if end == 0 {
+                        secs.insert(0, sc);
+                        ps.insert(0, p);
+                        pre += 1;
+                    } else {
+                        secs.push(sc);
+                        ps.push(p);
+                    }
+                }
+                trims.push((o, n));
+            } else {
+                let d = t_out * m;
+                let sh = shift(&secs[idx], d);
+                if end == 0 {
+                    secs.insert(0, sh);
+                    ps.insert(0, nd.st.p + d);
+                    pre += 1;
+                } else {
+                    secs.push(sh);
+                    ps.push(nd.st.p + d);
+                }
+            }
+        }
     } else {
         for end in [0usize, 1] {
             let (_, fs) = end_info(end);
             let plane = fs.iter().find_map(|&f| match &b.face(f).surface {
-                Surface::Plane { frame } => Some((frame.o, frame.z)),
+                Surface::Plane { frame } => Some((frame.o, b.planar_normal(f))),
                 _ => None,
             });
             let Some((o, n)) = plane else { return Err(unsupported("concave chain end is not on a planar face")) };
             let idx = if end == 0 { 0 } else { secs.len() - 1 };
+            let before = (secs[idx].clone(), ps[idx]);
+            let ni = if end == 0 { 0 } else { nodes.len() - 1 };
             // the end station with its centre IN the end plane (its section
             // then lies in that plane, so the cap coincides with the face)
             {
-                let nd = &nodes[idx];
+                let nd = &nodes[ni];
                 let st = ctx.solve_with(nd.li, nd.s, Some(nd.st.c), Some((o, n)))?;
                 secs[idx] = section(&st, sg, r, kk)?;
                 ps[idx] = st.p;
@@ -579,24 +626,48 @@ fn blend_chain(b: &Body, links: Vec<Link>, r: f64, feature: &str, k: u32, tol: f
                 }
             }
             let mut moved = 0.0f64;
-            for p in secs[idx].pts.iter_mut() {
+            let mut flat = secs[idx].clone();
+            for p in flat.pts.iter_mut() {
                 let d = (*p - o).dot(n);
                 moved = moved.max(d.abs());
                 *p = *p - n * d;
             }
-            ps[idx] = ps[idx] - n * (ps[idx] - o).dot(n);
-            if moved > 0.02 * r {
-                return Err(unsupported("concave chain end is not perpendicular to its end face"));
+            if moved <= 0.02 * r {
+                secs[idx] = flat;
+                ps[idx] = ps[idx] - n * (ps[idx] - o).dot(n);
+                plane_caps[end] = true;
+                continue;
             }
+            // The faces meet the end plane at an angle (a tapered wall running into a flat end): the section cannot lie
+            // in the plane. The tool runs on past the plane along the faces and is trimmed to it.
+            secs[idx] = before.0;
+            ps[idx] = before.1;
+            let nd = nodes[ni].clone();
+            let t_out = if end == 0 { -nd.st.t } else { nd.st.t };
+            let out = extend_beyond(&ctx, &nd, t_out, o, n, 1.0, r, sg, kk)?;
+            for (sc, p) in out {
+                if end == 0 {
+                    secs.insert(0, sc);
+                    ps.insert(0, p);
+                    pre += 1;
+                } else {
+                    secs.push(sc);
+                    ps.push(p);
+                }
+            }
+            trims.push((o, -n));
         }
     }
     let fit = fit_cols(&secs, &ps)?;
     // chain parameter of every link junction (a blend face per link, like
     // one fillet per edge): the last station of link L-1
     let junction_u: Vec<f64> = (1..ctx.links.len())
-        .filter_map(|l| nodes.iter().rposition(|n| n.li == l - 1).map(|i| fit.u[i + usize::from(convex)]))
+        .filter_map(|l| nodes.iter().rposition(|n| n.li == l - 1).map(|i| fit.u[i + pre]))
         .collect();
-    let tool = build_tool(&fit, &secs, feature, k, convex, b, &ctx.links, &end_info, tol)?;
+    let mut tool = build_tool(&fit, &secs, feature, k, plane_caps, b, &ctx.links, &end_info, tol)?;
+    for &(o, n) in &trims {
+        tool = trim_tool(&tool, o, n, &FaceName::blend(feature, k))?;
+    }
     if std::env::var("CK_FF_STOP").as_deref() == Ok("3") {
         return Err(failed("stopped after tool"));
     }
@@ -659,13 +730,132 @@ fn blend_chain(b: &Body, links: Vec<Link>, r: f64, feature: &str, k: u32, tol: f
     Ok(out)
 }
 
+/// Stations of the chain end `nd` carried on along the faces (the ball centre solved on planes normal to the edge,
+/// `t_out` away from the chain) until the whole section lies on the far side of the plane `(o, n)`: `beyond` = -1.0
+/// behind it (the material side of a face with outward normal `n`), +1.0 in front of it.
+#[allow(clippy::too_many_arguments)]
+fn extend_beyond(ctx: &Ctx, nd: &Node, t_out: Vec3, o: Vec3, n: Vec3, beyond: f64, r: f64, sg: f64, kk: f64) -> Result<Vec<(Sec, Vec3)>, BlendError> {
+    let mut mult = 2.0;
+    while mult <= 32.0 {
+        let mut out: Vec<(Sec, Vec3)> = vec![];
+        let mut prev_c = nd.st.c;
+        let mut prev_d = 0.0;
+        let mut ok = true;
+        for frac in [0.5, 1.0] {
+            let d = mult * r * frac;
+            let shifted = nd.st.p + t_out * d;
+            let guess = prev_c + t_out * (d - prev_d);
+            match ctx.solve_with(nd.li, nd.s, Some(guess), Some((shifted, t_out))).and_then(|st| section(&st, sg, r, kk).map(|sc| (st, sc))) {
+                Ok((st, sc)) => {
+                    prev_c = st.c;
+                    prev_d = d;
+                    out.push((sc, shifted));
+                }
+                Err(e) => {
+                    dbg(&format!("extension at {d:.3} fails: {}", e.code));
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        if ok && out.last().is_some_and(|(sc, _)| sc.pts.iter().all(|p| beyond * (*p - o).dot(n) > 1e-3)) {
+            return Ok(out);
+        }
+        mult *= 2.0;
+    }
+    Err(unsupported("chain end: the section does not clear the end plane"))
+}
+
+/// `tool` cut back to the side of the plane `(o, n)` that `n` points to (the air side of a face with outward normal
+/// `n`: the tool ran on into the material behind it); the tool's faces keep their names, the new cap is the plane.
+/// The curves where the plane meets the tool's strips are handed to the imprint directly (the generic marcher misses
+/// them on strips this thin).
+fn trim_tool(tool: &Body, o: Vec3, n: Vec3, blend: &FaceName) -> Result<Body, BlendError> {
+    use ck_core::linalg::Frame;
+    use ck_geom::Vec2;
+    use ck_topo::make::{extrude, ExtrudeOpts, Profile, ProfileLoop, ProfileRegion, ProfileSeg};
+    let z = n;
+    let axis = if z.x.abs() < 0.6 { Vec3::X } else { Vec3::Y };
+    let x = axis.cross(z).normalize();
+    let y = z.cross(x);
+    let size = 1e3;
+    let p = [Vec2::new(-size, -size), Vec2::new(size, -size), Vec2::new(size, size), Vec2::new(-size, size)];
+    let lp = ProfileLoop::new((0..4).map(|i| ProfileSeg::line(&format!("e{}", i + 1), p[i], p[(i + 1) % 4])).collect());
+    let prof = Profile::new(Frame { o, x, y, z }, vec![ProfileRegion { outer: lp, holes: vec![] }]);
+    let half = extrude("Fh", &prof, ExtrudeOpts { s0: 0.0, s1: size, dir: None, draft: 0.0 }).map_err(|e| failed(&format!("half space: {e}")))?;
+    let cap = half.face_ids().find(|&f| half.face_id_str(f) == "Fh.C0").ok_or_else(|| failed("half space cap"))?;
+    // plane x strip: for samples across v, the u where the strip crosses the plane, joined into a curve
+    let cut_of = |f: FaceId| -> Vec<Curve> {
+        let Surface::BSpline(bs) = &tool.face(f).surface else { return vec![] };
+        let ((u0, u1), (v0, v1)) = bs.domain();
+        let nvs = 24;
+        let mut pts: Vec<Vec3> = vec![];
+        for j in 0..=nvs {
+            let v = v0 + (v1 - v0) * j as f64 / nvs as f64;
+            let g = |u: f64| (bs.eval(u, v) - o).dot(n);
+            let nus = 96;
+            let mut found = None;
+            let mut prev = (u0, g(u0));
+            for i in 1..=nus {
+                let u = u0 + (u1 - u0) * i as f64 / nus as f64;
+                let gu = g(u);
+                if prev.1 == 0.0 || prev.1 * gu < 0.0 {
+                    let (mut lo, mut hi) = (prev.0, u);
+                    let mut glo = prev.1;
+                    for _ in 0..80 {
+                        let mid = 0.5 * (lo + hi);
+                        let gm = g(mid);
+                        if glo * gm <= 0.0 {
+                            hi = mid;
+                        } else {
+                            lo = mid;
+                            glo = gm;
+                        }
+                    }
+                    found = Some(0.5 * (lo + hi));
+                    break;
+                }
+                prev = (u, gu);
+            }
+            match found {
+                Some(u) => pts.push(bs.eval(u, v)),
+                None => return vec![],
+            }
+        }
+        let mut t = vec![0.0; pts.len()];
+        for i in 1..pts.len() {
+            t[i] = t[i - 1] + pts[i].dist(pts[i - 1]).max(1e-9);
+        }
+        let tot = t[pts.len() - 1];
+        for x in &mut t {
+            *x /= tot;
+        }
+        let last = t.len() - 1;
+        t[last] = 1.0;
+        let ku = averaged_knots(&t, 3);
+        match interpolate_with(&pts, 3, &t, ku) {
+            Ok(c) => vec![Curve::BSpline(c)],
+            Err(_) => vec![],
+        }
+    };
+    let hook = |f: FaceId, g: FaceId| -> Option<Vec<Curve>> {
+        if g == cap {
+            Some(cut_of(f))
+        } else {
+            Some(vec![])
+        }
+    };
+    let (out, _) = apply_tool_hooked(tool, &half, Op::Intersect, blend, vec![], FF_TOL, Some(&hook))?;
+    Ok(out)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_tool(
     fit: &Fit,
     secs: &[Sec],
     feature: &str,
     k: u32,
-    convex: bool,
+    plane_caps: [bool; 2],
     b: &Body,
     links: &[Link],
     end_info: &dyn Fn(usize) -> (ck_topo::body::VertexId, Vec<FaceId>),
@@ -738,7 +928,7 @@ fn build_tool(
         let n = area.try_normalize().ok_or_else(|| failed("degenerate cap"))?;
         let mut frame_n = n;
         let mut frame_o = pts[0];
-        if !convex {
+        if plane_caps[end] {
             // flush with the end face: use its exact plane
             let (_, fs) = end_info(end);
             if let Some((o, nn)) = fs.iter().find_map(|&f| match &b.face(f).surface {

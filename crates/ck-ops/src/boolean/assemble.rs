@@ -445,7 +445,14 @@ fn is_seam_edge(arr: &Arrangement, s: &Surface, e: usize) -> bool {
 
 /// Classify fragments against the other body and select/flip them.
 pub fn select(arr: &Arrangement, bodies: [&Body; 2], op: Op) -> Result<Vec<OutFace>, String> {
-    let tol = arr.tol;
+    select_class_tol(arr, bodies, op, arr.tol)
+}
+
+/// [`select`] classifying fragments with `tol` as the "on the other body's surface" band instead of the
+/// arrangement's welding tolerance. A blend tool built at a loose welding tolerance whose rolling-ball surface
+/// is tangent to the body's faces along the contact curves (the free-form fillet) would otherwise read every
+/// sliver fragment near a contact as lying ON the tool.
+pub fn select_class_tol(arr: &Arrangement, bodies: [&Body; 2], op: Op, tol: f64) -> Result<Vec<OutFace>, String> {
     let solids = [Solid::new(bodies[0], tol), Solid::new(bodies[1], tol)];
     select_with(arr, true, None, |side, _fi, q, n| {
         let c = solids[1 - side].classify(q, n);
@@ -477,7 +484,7 @@ pub fn select_with(
                 continue;
             }
             let (q, n) = sample_point(arr, &fr).ok_or_else(|| {
-                super::bool_dbg!("no sample point for a fragment of face {fi} (side {side}, {} loops)", fr.loops.len());
+                super::bool_dbg!("no sample point for a fragment of face {fi} (side {side}, {}, {} loops)", arr.faces[fi].name.id(), fr.loops.len());
                 "booleanFailed".to_string()
             })?;
             let (c, k) = decide(side, fi, q, n);
