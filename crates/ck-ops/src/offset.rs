@@ -90,8 +90,7 @@ fn offset_surface(s: &Surface, d: f64) -> Result<Surface, OffsetError> {
 pub fn offset_face_surface(src: &Body, f: FaceId, d: f64, reach: f64) -> Result<Surface, OffsetError> {
     let face = src.face(f);
     if is_freeform(&face.surface) {
-        let bx = face_uv_box(src, f).ok_or_else(|| OffsetError::new("offsetUnsupported", "face extent"))?;
-        fit_offset_surface(&face.surface, d, bx, reach)
+        fit_face_with_margin(src, f, d, reach)
     } else {
         offset_surface(&face.surface, d)
     }
@@ -110,6 +109,28 @@ const GOOD_EDGE_TOL: f64 = 5e-5;
 /// Sample spans shorter than this (mm) are not refined further.
 const MIN_SPAN: f64 = 0.04;
 
+/// How far (mm) past a free-form face its offset surface is continued as a margin.
+fn margin_cap(d: f64) -> f64 {
+    (8.0 * d.abs()).max(1.0)
+}
+
+/// Fit the offset of free-form face `f`, continued past the face by a margin. The continuation of a
+/// quickly turning surface (a loft's tapering last span) folds over a few thicknesses out, which the fit
+/// reports as a tolerance failure: retry with a smaller margin (the margin is only slack for the edge
+/// curves, which need the offset surfaces a little beyond the face).
+fn fit_face_with_margin(src: &Body, f: FaceId, d: f64, reach: f64) -> Result<Surface, OffsetError> {
+    let cap0 = margin_cap(d);
+    let mut last = None;
+    for k in 0..5 {
+        let bx = face_uv_box(src, f, cap0 / f64::from(1u32 << (2 * k).min(8))).ok_or_else(|| OffsetError::new("offsetUnsupported", "face extent"))?;
+        match fit_offset_surface(&src.face(f).surface, d, bx, reach) {
+            Err(e) if e.code == "offsetUnsupported" && e.detail.as_deref().is_some_and(|m| m.contains("fit tolerance")) => last = Some(e),
+            r => return r,
+        }
+    }
+    Err(last.unwrap())
+}
+
 fn is_freeform(s: &Surface) -> bool {
     matches!(s, Surface::BSpline(_) | Surface::Screw { .. } | Surface::Revolution { .. } | Surface::Extrusion { .. } | Surface::Offset { .. })
 }
@@ -117,7 +138,7 @@ fn is_freeform(s: &Surface) -> bool {
 /// (u, v) bounding box of the face's loops on its surface (periodic
 /// parameters unwrapped along the loop), grown by a margin and clamped to a
 /// finite domain.
-fn face_uv_box(src: &Body, f: FaceId) -> Option<((f64, f64), (f64, f64))> {
+fn face_uv_box(src: &Body, f: FaceId, cap_mm: f64) -> Option<((f64, f64), (f64, f64))> {
     let s = &src.face(f).surface;
     let (mut u0, mut u1, mut v0, mut v1) = (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
     let mut prev: Option<ck_geom::Vec2> = None;
@@ -152,7 +173,24 @@ fn face_uv_box(src: &Body, f: FaceId) -> Option<((f64, f64), (f64, f64))> {
     if !(u0.is_finite() && u1.is_finite() && v0.is_finite() && v1.is_finite()) {
         return None;
     }
-    let (mu, mv) = (0.03 * (u1 - u0) + 1e-9, 0.03 * (v1 - v0) + 1e-9);
+    let (mut mu, mut mv) = (0.03 * (u1 - u0) + 1e-9, 0.03 * (v1 - v0) + 1e-9);
+    // On a long free-form face 3 % is many wall thicknesses: the second-order continuation of the
+    // surface used there folds over (a loft whose last span turns quickly), so the margin is capped
+    // to a few thicknesses in mm.
+    if cap_mm.is_finite() && matches!(s, Surface::BSpline(_)) {
+        let ((du0, du1), (dv0, dv1)) = s.domain();
+        let (mut su, mut sv) = (1e-9f64, 1e-9f64);
+        for i in 0..=4 {
+            for j in 0..=4 {
+                let (a, b) = ((u0 + (u1 - u0) * i as f64 / 4.0).clamp(du0, du1), (v0 + (v1 - v0) * j as f64 / 4.0).clamp(dv0, dv1));
+                let q = s.derivs2(a, b);
+                su = su.max(q.du.len());
+                sv = sv.max(q.dv.len());
+            }
+        }
+        mu = mu.min(cap_mm / su + 1e-9);
+        mv = mv.min(cap_mm / sv + 1e-9);
+    }
     let (a, b, c, d) = (u0 - mu, u1 + mu, v0 - mv, v1 + mv);
     Some(((a, b), (c, d)))
 }
@@ -446,7 +484,7 @@ fn fit_offset_surface_inner(s: &Surface, d: f64, uvbox: ((f64, f64), (f64, f64))
     let mut us = seed(u0, u1, ku.as_deref());
     let mut vs = seed(v0, v1, kv.as_deref());
     let mut last_dev = f64::INFINITY;
-    for _round in 0..14 {
+    for _round in 0..24 {
         let mut grid = vec![vec![Vec3::ZERO; vs.len()]; us.len()];
         for (i, &u) in us.iter().enumerate() {
             for (j, &v) in vs.iter().enumerate() {
@@ -547,7 +585,7 @@ fn fit_offset_surface_inner(s: &Surface, d: f64, uvbox: ((f64, f64), (f64, f64))
 /// the plain quadrics are handled by their exact offset).
 pub fn face_min_radius(src: &Body, f: FaceId, d: f64) -> Option<f64> {
     let face = src.face(f);
-    let bx = face_uv_box(src, f)?;
+    let bx = face_uv_box(src, f, f64::INFINITY)?;
     match &face.surface {
         Surface::Extrusion { profile, dir } => {
             let (r0, r1) = profile.range();
@@ -1159,10 +1197,7 @@ pub fn move_faces_body(src: &Body, mv: &dyn Fn(FaceId) -> FaceMove) -> Result<Bo
         let r = if let Some(s) = shift_of(f) {
             Ok(ck_topo::body::transform_surface(&face.surface, &ck_core::xform::Xform::translation(s)))
         } else if is_freeform(&face.surface) {
-            match face_uv_box(src, f) {
-                Some(bx) => fit_offset_surface(&face.surface, nat, bx, reach),
-                None => Err(OffsetError::new("offsetUnsupported", "face extent")),
-            }
+            fit_face_with_margin(src, f, nat, reach)
         } else {
             offset_surface(&face.surface, nat)
         };
@@ -1239,6 +1274,7 @@ pub fn move_faces_body(src: &Body, mv: &dyn Fn(FaceId) -> FaceMove) -> Result<Bo
         let shrink = || OffsetError::new("offsetDegenerate", format!("edge between {} and {} shrinks to nothing", name(0), name(1)));
         let reverses = || OffsetError::new("offsetDegenerate", "an edge reverses");
         let closed = ed.v0 == ed.v1;
+        let mut return_edge: Option<(Curve, f64, f64)> = None;
         let (curve, t0, t1) = match &ed.curve {
             Curve::Line { d, .. } => {
                 let len = (p1 - p0).dot(*d);
@@ -1248,7 +1284,37 @@ pub fn move_faces_body(src: &Body, mv: &dyn Fn(FaceId) -> FaceMove) -> Result<Bo
                 if len < 0.0 {
                     return Err(reverses());
                 }
-                (Curve::Line { o: p0 - d.scale(ed.t0), d: *d }, ed.t0, ed.t0 + len)
+                let line = Curve::Line { o: p0 - d.scale(ed.t0), d: *d };
+                // A straight edge of a plane and a free-form face (the rim of a loft's end cap) stays
+                // straight only when the free-form offset is a ruled continuation of it; in general
+                // the offsets meet in a curve. Where the straight line misses the offset surfaces or
+                // the far vertex, sample the true meeting curve instead.
+                let freeform_nb = fs.len() == 2 && fs.iter().any(|&f| is_freeform(&src.face(f).surface));
+                if freeform_nb {
+                    let end = line.eval(ed.t0 + len);
+                    let miss = (0..=8)
+                        .map(|k| line.eval(ed.t0 + len * k as f64 / 8.0))
+                        .map(|q| fs.iter().map(|&f| moved[f.idx()].as_ref().map_or(0.0, |m| m.closest_point(q).2.dist(q))).fold(0.0f64, f64::max))
+                        .fold(end.dist(p1), f64::max);
+                    if miss > 1e-5 {
+                        let dn = |f: FaceId| {
+                            let d = dist(f);
+                            if src.face(f).sense { d } else { -d }
+                        };
+                        let gap = [ed.v0, ed.v1]
+                            .iter()
+                            .map(|&v| {
+                                let q = newp[v.idx()];
+                                vfaces[v.idx()].iter().map(|&f| moved[f.idx()].as_ref().map_or(0.0, |m| m.closest_point(q).2.dist(q))).fold(0.0f64, f64::max)
+                            })
+                            .fold(0.0f64, f64::max);
+                        return_edge = Some(offset_spline_edge(src, e, &moved, &dn, p0, p1, gap)?);
+                    }
+                }
+                match return_edge.take() {
+                    Some(r) => r,
+                    None => (line, ed.t0, ed.t0 + len),
+                }
             }
             Curve::Circle { frame, r } => {
                 let z = frame.z;
