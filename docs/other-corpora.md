@@ -111,6 +111,41 @@ compares against a baseline; `--update-baseline` rewrites it. Baselines:
 recreates only those files in `~/.cache`. Failure triage is in
 `docs/mimo-brief-import.md`.
 
+### DeepCAD sample (first pass)
+
+Downloaded `data.tar` (198 MB; contains `cad_json.tar.gz` 185 MB) and picked
+200 random `cad_json` sequences (seed 1234). A strict subset was translated:
+single Sketch + single ExtrudeFeature, axis-aligned sketch plane (positive or
+negative), Line3D/Circle3D/Arc3D only, OneSide extent, no taper,
+NewBody/Join/Cut.
+
+* translated: **61 / 200**
+* volume/area within 1e-4 of the OCP replay: **54 / 61**
+* mismatches: 7. Three have a negative OCP volume (the reference face
+  orientation is bad, so they are not usable as ground truth); four are real
+  mismatches: `00100420` and `00891360` give a near-zero region, `00230634`
+  is 15 % off, `00031620` is 6x high.
+* skipped: 107 multi-feature sequences, 16 multi-profile extrudes, 9
+  non-OneSide extents, 7 profiles whose OCP wire did not close.
+
+Reproduce (data and translated cases stay in the cache, not git):
+
+```sh
+mkdir -p ~/.cache/b-rep-corpora/deepcad
+curl -L -o ~/.cache/b-rep-corpora/deepcad/data.tar \
+  http://www.cs.columbia.edu/cg/deepcad/data.tar
+# extract data/cad_json.tar.gz, pick 200 random cad_json/*.json, then:
+python3.12 tools/deepcad_build.py \
+  --sample ~/.cache/b-rep-corpora/deepcad/sample \
+  --out ~/.cache/b-rep-corpora/deepcad/cases.json
+node tools/deepcad_check.mjs \
+  --cases ~/.cache/b-rep-corpora/deepcad/cases.json
+```
+
+Licence: DeepCAD has no repository licence file; the sequences were parsed
+from Onshape public documents via ABC, so the Onshape/ABC terms apply. Treat
+the sample as research-only and do not commit the translated geometry.
+
 ## 3. Other kernels
 
 | project | licence | test corpus? |
