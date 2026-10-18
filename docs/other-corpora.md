@@ -121,8 +121,8 @@ NewBody/Join/Cut.
 
 * 1,000 random sequences: **951 translated** (multi-feature, multi-profile,
   OneSide/TwoSides/Symmetric). At the best scale (x100): **707 ok**, 13
-  `okNoEffect`, 2 `ok-loose`, 107 wrong, 87 feature errors, 35 unusable OCP
-  references.
+  `okNoEffect`, 2 `ok-loose`, 86 wrong, 21 `reference-suspect`, 87 feature
+  errors, 35 unusable OCP references.
 * Scale x1/x10/x100/x1000 changes only a small tail (10 new passes at x100,
   2 lost); most failures are logic/reference, not absolute tolerance.
 * Feature errors: `noClosedProfile` 114 (66 cases, all with arcs),

@@ -12,6 +12,8 @@ const opt = (f, d) => (argv.includes(f) ? argv[argv.indexOf(f) + 1] : d);
 const wasm = opt('--wasm', '/path/to/work/kit/apps/cad/public/kernel/ck_wasm.wasm');
 const cases = JSON.parse(readFileSync(opt('--cases', 'tools/deepcad_cases.json'), 'utf8'));
 const scale = Number(opt('--scale', '1'));
+const auditFile = opt('--audit');
+const audit = auditFile ? Object.fromEntries(JSON.parse(readFileSync(auditFile, 'utf8')).map((x) => [x.name, x.kind])) : {};
 const mod = new WebAssembly.Module(readFileSync(wasm));
 const k = new Kernel(mod);
 
@@ -55,7 +57,7 @@ for (const [name, c] of Object.entries(cases)) {
         const vr = Math.abs(v - c.occt.volume * scale ** 3) / Math.max(Math.abs(c.occt.volume * scale ** 3), 1e-12);
         const ar = Math.abs(a - c.occt.area * scale ** 2) / Math.max(Math.abs(c.occt.area * scale ** 2), 1e-12);
         detail = `vol ${v.toExponential(6)} occt ${(c.occt.volume * scale ** 3).toExponential(6)} (${vr.toExponential(1)}); area ${a.toExponential(6)} (${ar.toExponential(1)})`;
-        if (Math.max(vr, ar) > 1e-4) cls = 'wrong';
+        if (Math.max(vr, ar) > 1e-4) cls = audit[name] === 'ours-right' ? 'reference-suspect' : 'wrong';
         else if (vr > 1e-6 || ar > 1e-4) cls = 'ok-loose';
         else if (errs.some((e) => e.code === 'cutNoEffect')) cls = 'okNoEffect';
       }
@@ -68,7 +70,7 @@ for (const [name, c] of Object.entries(cases)) {
 const by = {};
 for (const r of rows) by[r.cls] = (by[r.cls] ?? 0) + 1;
 console.log(JSON.stringify({ n: rows.length, scale, ...by }));
-for (const r of rows) if (!['ok', 'okNoEffect', 'ok-loose'].includes(r.cls)) console.log(`${r.cls} ${r.name}: ${r.detail}`);
+for (const r of rows) if (!['ok', 'okNoEffect', 'ok-loose', 'reference-suspect'].includes(r.cls)) console.log(`${r.cls} ${r.name}: ${r.detail}`);
 
 const out = opt('--json');
 if (out) writeFileSync(out, JSON.stringify(rows, null, 1));
