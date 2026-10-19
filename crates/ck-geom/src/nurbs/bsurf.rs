@@ -294,6 +294,37 @@ impl BSplineSurface {
         rat_surface_derivs(&a, &w, d)
     }
 
+    /// The four third partials `(S_uuu, S_uuv, S_uvv, S_vvv)` of a non-rational surface of degrees 1 to 5, the
+    /// entries `derivs(u, v, 3)` gives for them, bit for bit, without allocating. `None` for any other surface.
+    pub fn thirds_nr(&self, u: f64, v: f64) -> Option<[Vec3; 4]> {
+        let (p, q) = (self.deg_u, self.deg_v);
+        if self.weights.is_some() || p == 0 || q == 0 || p >= 6 || q >= 6 {
+            return None;
+        }
+        let ((u0, u1), (v0, v1)) = self.domain();
+        let u = u.clamp(u0, u1);
+        let v = v.clamp(v0, v1);
+        let su = find_span(self.nu - 1, p, u, &self.knots_u);
+        let sv = find_span(self.nv - 1, q, v, &self.knots_v);
+        let nu = basis::ders_basis_funs3(su, u, p, 3, &self.knots_u);
+        let nv = basis::ders_basis_funs3(sv, v, q, 3, &self.knots_v);
+        let mut a = [[Vec3::ZERO; 4]; 4];
+        for k in 0..=3usize.min(p) {
+            let mut tp = [Vec3::ZERO; 6];
+            for s in 0..=q {
+                for r in 0..=p {
+                    tp[s] = tp[s] + self.cp(su - p + r, sv - q + s) * (nu[k][r] * 1.0);
+                }
+            }
+            for l in 0..=(3 - k).min(q) {
+                for s in 0..=q {
+                    a[k][l] = a[k][l] + tp[s] * nv[l][s];
+                }
+            }
+        }
+        Some([a[3][0], a[2][1], a[1][2], a[0][3]])
+    }
+
     /// `(S, S_u, S_v)` of a non-rational surface (degrees 1 to 11 in both directions), the entries
     /// `derivs(u, v, 1)` gives for them, bit for bit, without allocating. `None` for any other surface.
     pub fn derivs1_nr(&self, u: f64, v: f64) -> Option<(Vec3, Vec3, Vec3)> {
@@ -1466,6 +1497,37 @@ mod tests {
             let d = s.derivs(u, v, 1);
             let (p, du, dv) = s.derivs1_nr(u, v).unwrap();
             assert_eq!((bits(p), bits(du), bits(dv)), (bits(d[0][0]), bits(d[1][0]), bits(d[0][1])), "{u} {v}");
+        }
+    }
+
+    /// `thirds_nr` is the third-order `derivs` bit for bit, for several degree pairs (also at knots and outside).
+    #[test]
+    fn thirds_nr_is_bit_identical() {
+        let bits = |v: Vec3| (v.x.to_bits(), v.y.to_bits(), v.z.to_bits());
+        for (p, q) in [(1usize, 1usize), (2, 3), (3, 3), (3, 2), (4, 5), (5, 4)] {
+            let (nu, nv) = (p + 4, q + 3);
+            let mut ctrl = vec![];
+            for i in 0..nu {
+                for j in 0..nv {
+                    let (x, y) = (i as f64, j as f64);
+                    ctrl.push(Vec3::new(x + 0.1 * y * y, y, (x * 0.7).sin() * (y * 0.5).cos() + 0.1 * x * y));
+                }
+            }
+            let mut ku = basis::clamped_uniform(nu, p);
+            // a repeated interior knot
+            if nu > p + 2 {
+                let k = p + 1;
+                ku[k + 1] = ku[k];
+            }
+            let s = BSplineSurface::new(p, q, ku, basis::clamped_uniform(nv, q), nu, nv, ctrl, None).unwrap();
+            for i in 0..=30 {
+                for j in 0..=30 {
+                    let (u, v) = (-0.1 + 1.2 * i as f64 / 30.0, -0.1 + 1.2 * j as f64 / 30.0);
+                    let d = s.derivs(u, v, 3);
+                    let t = s.thirds_nr(u, v).unwrap();
+                    assert_eq!([bits(t[0]), bits(t[1]), bits(t[2]), bits(t[3])], [bits(d[3][0]), bits(d[2][1]), bits(d[1][2]), bits(d[0][3])], "{p} {q} {u} {v}");
+                }
+            }
         }
     }
 

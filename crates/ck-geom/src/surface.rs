@@ -524,6 +524,9 @@ impl Surface {
                 SurfThirds { duuu: c[3], ..Default::default() }
             }
             Surface::BSpline(s) => {
+                if let Some(t) = s.thirds_nr(u, v) {
+                    return SurfThirds { duuu: t[0], duuv: t[1], duvv: t[2], dvvv: t[3] };
+                }
                 let skl = s.derivs(u, v, 3);
                 SurfThirds { duuu: skl[3][0], duuv: skl[2][1], duvv: skl[1][2], dvvv: skl[0][3] }
             }

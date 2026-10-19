@@ -162,6 +162,70 @@ fn basis_funs2_n<const N: usize>(span: usize, u: f64, p: usize, knots: &[f64]) -
     out
 }
 
+/// Allocation-free `ders_basis_funs` for nd <= 3, p < 6 (the very arithmetic of A2.3 as written there, on
+/// stack tables): `ders[k][j]` is the k-th derivative of the j-th function.
+pub fn ders_basis_funs3(span: usize, u: f64, p: usize, nd: usize, knots: &[f64]) -> [[f64; 6]; 4] {
+    debug_assert!(p < 6 && nd <= 3);
+    let mut ndu = [[0.0f64; 6]; 6];
+    let (mut left, mut right) = ([0.0f64; 6], [0.0f64; 6]);
+    ndu[0][0] = 1.0;
+    for j in 1..=p {
+        left[j] = u - knots[span + 1 - j];
+        right[j] = knots[span + j] - u;
+        let mut saved = 0.0;
+        for r in 0..j {
+            ndu[j][r] = right[r + 1] + left[j - r];
+            let temp = if ndu[j][r] != 0.0 { ndu[r][j - 1] / ndu[j][r] } else { 0.0 };
+            ndu[r][j] = saved + right[r + 1] * temp;
+            saved = left[j - r] * temp;
+        }
+        ndu[j][j] = saved;
+    }
+    let mut ders = [[0.0f64; 6]; 4];
+    for j in 0..=p {
+        ders[0][j] = ndu[j][p];
+    }
+    let mut a = [[0.0f64; 6]; 2];
+    for r in 0..=p as isize {
+        let (mut s1, mut s2) = (0usize, 1usize);
+        a[0][0] = 1.0;
+        for k in 1..=(nd.min(p)) as isize {
+            let mut d = 0.0;
+            let rk = r - k;
+            let pk = p as isize - k;
+            if r >= k {
+                let den = ndu[(pk + 1) as usize][rk as usize];
+                a[s2][0] = if den != 0.0 { a[s1][0] / den } else { 0.0 };
+                d = a[s2][0] * ndu[rk as usize][pk as usize];
+            }
+            let j1 = if rk >= -1 { 1 } else { -rk };
+            let j2 = if r - 1 <= pk { k - 1 } else { p as isize - r };
+            let mut j = j1;
+            while j <= j2 {
+                let den = ndu[(pk + 1) as usize][(rk + j) as usize];
+                a[s2][j as usize] = if den != 0.0 { (a[s1][j as usize] - a[s1][(j - 1) as usize]) / den } else { 0.0 };
+                d += a[s2][j as usize] * ndu[(rk + j) as usize][pk as usize];
+                j += 1;
+            }
+            if r <= pk {
+                let den = ndu[(pk + 1) as usize][r as usize];
+                a[s2][k as usize] = if den != 0.0 { -a[s1][(k - 1) as usize] / den } else { 0.0 };
+                d += a[s2][k as usize] * ndu[r as usize][pk as usize];
+            }
+            ders[k as usize][r as usize] = d;
+            std::mem::swap(&mut s1, &mut s2);
+        }
+    }
+    let mut f = p as f64;
+    for k in 1..=nd.min(p) {
+        for j in 0..=p {
+            ders[k][j] *= f;
+        }
+        f *= (p - k) as f64;
+    }
+    ders
+}
+
 /// Allocation-free `ders_basis_funs` for nd <= 2, p < 12 (same arithmetic).
 pub fn ders_basis_funs2(span: usize, u: f64, p: usize, nd: usize, knots: &[f64]) -> [[f64; 12]; 3] {
     // (small working arrays for the usual degrees: the zero-fill of a 12x12
