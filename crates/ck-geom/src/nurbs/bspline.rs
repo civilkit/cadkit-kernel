@@ -887,7 +887,7 @@ impl BSplineCurve<Vec3> {
         use std::cell::RefCell;
         use std::collections::HashMap;
         thread_local! {
-            static TABLE: RefCell<HashMap<u64, CurveScan>> = RefCell::new(HashMap::new());
+            static TABLE: RefCell<(HashMap<u64, CurveScan>, usize)> = RefCell::new((HashMap::new(), 0));
         }
         let mut h = 0xcbf29ce484222325u64;
         let mut mix = |x: u64| {
@@ -918,17 +918,20 @@ impl BSplineCurve<Vec3> {
                 (spans * (self.degree + 1) * 4).max(16) + 1
             }
         };
-        if slots > 1 << 16 {
+        // (bounded memory: a long curve is not kept, and the table is dropped when its slots pass ~1M, 24 MB)
+        if slots > 1 << 14 {
             return self.closest_param(q);
         }
         TABLE.with(|t| {
-            let mut t = t.borrow_mut();
-            if t.len() >= 512 {
+            let (t, used) = &mut *t.borrow_mut();
+            if *used + slots > 1 << 20 {
                 t.clear();
+                *used = 0;
             }
             let nan = Vec3::new(f64::NAN, 0.0, 0.0);
             let e = t.entry(h).or_insert_with(|| CurveScan { samples: vec![], balls: vec![], blocks: vec![], speeds: vec![], flat: f64::NAN });
             if e.samples.len() != slots {
+                *used += slots;
                 *e = CurveScan {
                     samples: vec![nan; slots],
                     balls: vec![(nan, f64::NAN); ns],
