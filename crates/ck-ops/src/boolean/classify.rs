@@ -72,10 +72,7 @@ pub fn uv_near_fp(s: &Surface, fp: Option<u64>, p: Vec3, prev: Option<Vec2>) -> 
             return Vec2::new(u, v);
         }
     }
-    let (mut u, mut v) = match (s, fp) {
-        (Surface::BSpline(bs), Some(fp)) => bs.closest_param_fp(fp, p),
-        _ => s.closest_param(p),
-    };
+    let (mut u, mut v) = s.closest_param_keyed(p, fp);
     if let Some(q) = prev {
         let (pu, pv) = s.periods();
         if let Some(per) = pu {
@@ -97,7 +94,10 @@ fn local_project(bs: &ck_geom::nurbs::bsurf::BSplineSurface, p: Vec3, q: Vec2) -
     let (mut u, mut v) = (q.x.clamp(u0, u1), q.y.clamp(v0, v1));
     let mut converged = false;
     for _ in 0..12 {
-        let d = bs.derivs2(u, v);
+        let d = match bs.derivs1_nr(u, v) {
+            Some((p, du, dv)) => ck_geom::surface::SurfDerivs { p, du, dv, ..Default::default() },
+            None => bs.derivs2(u, v),
+        };
         let r = d.p - p;
         if r.len() < 1e-9 {
             return Some(Vec2::new(u, v));
@@ -232,7 +232,7 @@ pub(crate) fn seam_spike_u(s: &Surface, pieces: &[(&Curve, f64, f64)], sense: bo
 fn loop_polygon_with(s: &Surface, pieces: &[(&Curve, f64, f64)], sense: bool, nfun: impl Fn(&Curve, f64, f64) -> usize) -> Vec<Vec2> {
     let mut out = vec![];
     let mut prev: Option<Vec2> = None;
-    let fp = spline_fp(s);
+    let fp = s.foot_key();
     // A seam edge walked both ways in this loop (a seam spike) bounds a region
     // that wraps the periodic seam: sampled naively both traversals sit on
     // u = 0, the polygon is a zero-width spike, and its shoelace area is the
@@ -487,14 +487,16 @@ pub fn point_in_face_cached(b: &Body, f: FaceId, p: Vec3, tol: f64, cache: &mut 
         }
     }
     let face = b.face(f);
-    if face.surface.distance(p) > tol * 10.0 {
+    // (one closest-point search with the surface hash taken once: the distance and the parameters are those of
+    // the same foot point)
+    let (u, v, foot) = face.surface.closest_point_fp(p, spline_fp(&face.surface));
+    if foot.dist(p) > tol * 10.0 {
         return Where::Out;
     }
     let loops = cache.entry((b as *const Body as usize, f.idx() as u32)).or_insert_with(|| face_loops_uv_fine(b, f));
     if loops.iter().all(|l| l.len() < 3) {
         return Where::In; // closed surface without boundary (full sphere/torus)
     }
-    let (u, v) = face.surface.closest_param(p);
     if in_loops(&face.surface, Vec2::new(u, v), loops) {
         Where::In
     } else {

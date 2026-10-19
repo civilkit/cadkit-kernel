@@ -95,11 +95,12 @@ fn loose_box(b: &Body) -> (Vec3, Vec3) {
             continue;
         }
         let (mut a, mut z) = (Vec2::new(f64::INFINITY, f64::INFINITY), Vec2::new(f64::NEG_INFINITY, f64::NEG_INFINITY));
+        let fp = if face.loops.iter().any(|&l| b.lp(l).coedges.iter().any(|&c| b.coedge(c).pcurve.is_none())) { super::classify::spline_fp(&face.surface) } else { None };
         for &l in &face.loops {
             for &c in &b.lp(l).coedges {
                 let (t0, t1) = b.coedge_params(c);
                 for k in 0..=8 {
-                    let uv = b.coedge_uv(c, t0 + (t1 - t0) * k as f64 / 8.0, None);
+                    let uv = b.coedge_uv_fp(c, t0 + (t1 - t0) * k as f64 / 8.0, None, fp);
                     a = Vec2::new(a.x.min(uv.x), a.y.min(uv.y));
                     z = Vec2::new(z.x.max(uv.x), z.y.max(uv.y));
                 }

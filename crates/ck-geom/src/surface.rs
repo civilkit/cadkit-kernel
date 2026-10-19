@@ -311,6 +311,34 @@ impl Surface {
     }
 
     /// Point + first/second partials.
+    /// `derivs2` for a caller that reads only the point and the first partials: those three are `derivs2`'s
+    /// bit for bit (the second partials are left zero where the first-order evaluation is cheaper: spline
+    /// surfaces, and extrusions and revolutions of a line or spline profile).
+    pub fn derivs1(&self, u: f64, v: f64) -> SurfDerivs {
+        match self {
+            Surface::BSpline(b) => {
+                if let Some((p, du, dv)) = b.derivs1_nr(u, v) {
+                    return SurfDerivs { p, du, dv, ..Default::default() };
+                }
+            }
+            Surface::Extrusion { profile, dir } if matches!(**profile, Curve::Line { .. } | Curve::BSpline(_)) => {
+                let c = profile.derivs1_arr(u);
+                return SurfDerivs { p: c[0] + *dir * v, du: c[1], dv: *dir, ..Default::default() };
+            }
+            Surface::Revolution { profile, axis_o, axis } if matches!(**profile, Curve::Line { .. } | Curve::BSpline(_)) => {
+                let c = profile.derivs1_arr(v);
+                let (su, cu) = u.sin_cos();
+                let z = *axis;
+                let rot = |w: Vec3| w * cu + z * (z.dot(w) * (1.0 - cu)) + z.cross(w) * su;
+                let rot_u = |w: Vec3| w * (-su) + z * (z.dot(w) * su) + z.cross(w) * cu;
+                let w = c[0] - *axis_o;
+                return SurfDerivs { p: *axis_o + rot(w), du: rot_u(w), dv: rot(c[1]), ..Default::default() };
+            }
+            _ => {}
+        }
+        self.derivs2(u, v)
+    }
+
     pub fn derivs2(&self, u: f64, v: f64) -> SurfDerivs {        match self {
             Surface::Plane { frame } => SurfDerivs {
                 p: frame.o + frame.x * u + frame.y * v,
@@ -524,6 +552,9 @@ impl Surface {
                 SurfThirds { duuu: c[3], ..Default::default() }
             }
             Surface::BSpline(s) => {
+                if let Some(t) = s.thirds_nr(u, v) {
+                    return SurfThirds { duuu: t[0], duuv: t[1], duvv: t[2], dvvv: t[3] };
+                }
                 let skl = s.derivs(u, v, 3);
                 SurfThirds { duuu: skl[3][0], duuv: skl[2][1], duvv: skl[1][2], dvvv: skl[0][3] }
             }
@@ -629,35 +660,61 @@ impl Surface {
                 let dom = self.domain();
                 newton_surface(|u, v| self.derivs2(u, v), q, (best.1, best.2), dom)
             }
-            Surface::Revolution { profile, axis_o, axis } => {
-                if let Some(r) = revolution_foot(profile, *axis_o, *axis, q) {
-                    return r;
+            Surface::Revolution { profile, axis_o, axis } => self.revolution_closest(profile, *axis_o, *axis, q, None),
+        }
+    }
+
+    /// `closest_param` for a surface of revolution with the profile's content hash (`revolution_key`) taken by
+    /// the caller, for a loop of queries on one surface: the same answers, bit for bit (`None`: taken per call).
+    fn revolution_closest(&self, profile: &Curve, axis_o: Vec3, axis: Vec3, q: Vec3, key: Option<Option<u64>>) -> (f64, f64) {
+        let (axis_o, axis) = (&axis_o, &axis);
+        if let Some(r) = revolution_foot_keyed(profile, *axis_o, *axis, q, key.unwrap_or_else(|| revolution_key(profile, *axis_o, *axis))) {
+            return r;
+        }
+        let (a, b) = finite_range(profile.range(), q, profile);
+        let nu = 36;
+        let nv = 48;
+        let mut best = (INF, 0.0, a);
+        // the profile points once per v (the same values `eval` rotates)
+        let ws: Vec<Vec3> = (0..=nv).map(|j| profile.derivs2_arr(a + (b - a) * j as f64 / nv as f64)[0] - *axis_o).collect();
+        let z = *axis;
+        for i in 0..nu {
+            let u = TAU * i as f64 / nu as f64;
+            let (su, cu) = u.sin_cos();
+            for (j, &w) in ws.iter().enumerate() {
+                let v = a + (b - a) * j as f64 / nv as f64;
+                // Rodrigues, as in `derivs2`
+                let p = *axis_o + (w * cu + z * (z.dot(w) * (1.0 - cu)) + z.cross(w) * su);
+                let d = p.dist(q);
+                if d < best.0 {
+                    best = (d, u, v);
                 }
-                let (a, b) = finite_range(profile.range(), q, profile);
-                let nu = 36;
-                let nv = 48;
-                let mut best = (INF, 0.0, a);
-                // the profile points once per v (the same values `eval` rotates)
-                let ws: Vec<Vec3> = (0..=nv).map(|j| profile.derivs2_arr(a + (b - a) * j as f64 / nv as f64)[0] - *axis_o).collect();
-                let z = *axis;
-                for i in 0..nu {
-                    let u = TAU * i as f64 / nu as f64;
-                    let (su, cu) = u.sin_cos();
-                    for (j, &w) in ws.iter().enumerate() {
-                        let v = a + (b - a) * j as f64 / nv as f64;
-                        // Rodrigues, as in `derivs2`
-                        let p = *axis_o + (w * cu + z * (z.dot(w) * (1.0 - cu)) + z.cross(w) * su);
-                        let d = p.dist(q);
-                        if d < best.0 {
-                            best = (d, u, v);
-                        }
-                    }
-                }
-                let _ = (axis_o, axis);
-                let ((_, _), (v0, v1)) = self.domain();
-                let (u, v) = newton_surface(|u, v| self.derivs2(u, v), q, (best.1, best.2), ((-INF, INF), (v0, v1)));
-                (wrap_angle(u), v)
             }
+        }
+        let _ = (axis_o, axis);
+        let ((_, _), (v0, v1)) = self.domain();
+        let (u, v) = newton_surface(|u, v| self.derivs2(u, v), q, (best.1, best.2), ((-INF, INF), (v0, v1)));
+        (wrap_angle(u), v)
+    }
+
+    /// A content hash that [`closest_param_keyed`](Self::closest_param_keyed) can reuse for many points: the
+    /// fingerprint of a B-spline surface, the profile hash of a surface of revolution with a spline profile,
+    /// `None` for the rest.
+    pub fn foot_key(&self) -> Option<u64> {
+        match self {
+            Surface::BSpline(bs) => Some(bs.fingerprint()),
+            Surface::Revolution { profile, axis_o, axis } => revolution_key(profile, *axis_o, *axis),
+            _ => None,
+        }
+    }
+
+    /// [`closest_param`](Self::closest_param) with the [`foot_key`](Self::foot_key) taken by the caller
+    /// (`None` = none for this surface): the same answers, bit for bit.
+    pub fn closest_param_keyed(&self, q: Vec3, key: Option<u64>) -> (f64, f64) {
+        match (self, key) {
+            (Surface::BSpline(bs), Some(k)) => bs.closest_param_fp(k, q),
+            (Surface::Revolution { profile, axis_o, axis }, Some(_)) => self.revolution_closest(profile, *axis_o, *axis, q, Some(key)),
+            _ => self.closest_param(q),
         }
     }
 
@@ -710,6 +767,52 @@ impl Surface {
             }
         }
         self.closest_point_fp(q, fp)
+    }
+
+    /// Distance from `q` to the surface, for a caller that only needs it exactly when it exceeds `ok`:
+    /// [`closest_point_near_fp`](Self::closest_point_near_fp)`.2.dist(q)` whenever that Newton foot is a
+    /// stationary point or the distance is more than `ok`; else (a foot pinned on the domain boundary that is
+    /// within `ok` of `q`) the distance of that foot, an upper bound of the true one that is itself at most
+    /// `ok`, in place of the global search that would only confirm it.
+    pub fn distance_near_fp(&self, q: Vec3, hint: (f64, f64), fp: Option<u64>, ok: f64) -> f64 {
+        if matches!(self, Surface::BSpline(_) | Surface::Revolution { .. } | Surface::Extrusion { .. } | Surface::Screw { .. }) {
+            let dom = match self {
+                Surface::Revolution { .. } => {
+                    let (_, (v0, v1)) = self.domain();
+                    ((-INF, INF), (v0, v1))
+                }
+                _ => self.domain(),
+            };
+            let (u, v) = newton_surface(|u, v| self.derivs2(u, v), q, hint, dom);
+            let s = self.derivs2(u, v);
+            let r = s.p - q;
+            let (nu, nv) = (s.du.len().max(1e-300), s.dv.len().max(1e-300));
+            if (s.du.dot(r) / nu).abs() < 1e-9 && (s.dv.dot(r) / nv).abs() < 1e-9 {
+                return s.p.dist(q);
+            }
+            let d = s.p.dist(q);
+            if d <= ok {
+                return d;
+            }
+        }
+        self.closest_point_fp(q, fp).2.dist(q)
+    }
+
+    /// Distance from `q` to the surface for a caller that only needs it exactly when it exceeds `ok`, and the
+    /// parameters of the foot (a hint for the next, nearby query). A B-spline surface is first tried by Newton
+    /// from `hint`: a foot within `ok` of `q` proves the distance is at most that, which is all the caller can
+    /// tell from the exact value; anything else (and every other surface kind, and no hint) is the global
+    /// closest point, so a distance above `ok` is always the exact one.
+    pub fn dist_hinted_fp(&self, q: Vec3, hint: Option<(f64, f64)>, fp: Option<u64>, ok: f64) -> (f64, (f64, f64)) {
+        if let (Surface::BSpline(_), Some(h)) = (self, hint) {
+            let (u, v) = newton_surface(|u, v| self.derivs2(u, v), q, h, self.domain());
+            let d = self.eval(u, v).dist(q);
+            if d <= ok {
+                return (d, (u, v));
+            }
+        }
+        let (u, v, p) = self.closest_point_fp(q, fp);
+        (p.dist(q), (u, v))
     }
 
     /// As [`closest_point_within`](Self::closest_point_within), many queries
@@ -894,32 +997,10 @@ fn points_coplanar(pts: &[Vec3], tol: f64) -> bool {
     pts.iter().all(|&p| (p - p0).dot(n).abs() <= tol)
 }
 
-/// Foot of `q` on a surface of revolution whose profile lies in one
-/// half-plane through the axis (the usual case): the foot is in `q`'s own
-/// meridian plane, so `u` is `q`'s angle and `v` is a 1D closest-point search
-/// on the profile (scan + Newton). `None` when the profile is not such a
-/// one-sided planar curve (the general search takes over).
-fn revolution_foot(profile: &Curve, axis_o: Vec3, axis: Vec3, q: Vec3) -> Option<(f64, f64)> {
-    let a = axis.try_normalize()?;
-    let (p0, p1) = profile.range();
-    if !(p0.is_finite() && p1.is_finite()) || p1 <= p0 {
-        return None;
-    }
-    const N: usize = 160;
-    // the 161 profile samples depend on the surface only: cached for a B-spline
-    // profile (the foot is asked for thousands of times per surface)
-    struct RevPrep {
-        scale: f64,
-        er: Vec3,
-        et: Vec3,
-        ras: Vec<f64>,
-        zs: Vec<f64>,
-        ok: bool,
-    }
-    thread_local! {
-        static CACHE: std::cell::RefCell<Vec<(u64, std::rc::Rc<RevPrep>)>> = const { std::cell::RefCell::new(Vec::new()) };
-    }
-    let key = if let Curve::BSpline(bs) = profile {
+/// Content hash of a spline profile with its axis, the key of the cached samples of [`revolution_foot`]
+/// (`None` for any other profile).
+pub fn revolution_key(profile: &Curve, axis_o: Vec3, axis: Vec3) -> Option<u64> {
+    if let Curve::BSpline(bs) = profile {
         let mut h: u64 = 0xcbf29ce484222325;
         let mut mix = |x: u64| {
             h = (h ^ x).wrapping_mul(0x100000001b3);
@@ -947,7 +1028,50 @@ fn revolution_foot(profile: &Curve, axis_o: Vec3, axis: Vec3, q: Vec3) -> Option
         Some(h)
     } else {
         None
+    }
+}
+
+/// Foot of `q` on a surface of revolution whose profile lies in one
+/// half-plane through the axis (the usual case): the foot is in `q`'s own
+/// meridian plane, so `u` is `q`'s angle and `v` is a 1D closest-point search
+/// on the profile (scan + Newton). `None` when the profile is not such a
+/// one-sided planar curve (the general search takes over).
+fn revolution_foot_keyed(profile: &Curve, axis_o: Vec3, axis: Vec3, q: Vec3, key: Option<u64>) -> Option<(f64, f64)> {
+    let a = axis.try_normalize()?;
+    let (p0, p1) = profile.range();
+    if !(p0.is_finite() && p1.is_finite()) || p1 <= p0 {
+        return None;
+    }
+    const N: usize = 160;
+    // the 161 profile samples depend on the surface only: cached for a B-spline
+    // profile (the foot is asked for thousands of times per surface)
+    struct RevPrep {
+        scale: f64,
+        er: Vec3,
+        et: Vec3,
+        ras: Vec<f64>,
+        zs: Vec<f64>,
+        /// per block of 8 samples: (min r, max r, min z, max z)
+        blocks: Vec<(f64, f64, f64, f64)>,
+        ok: bool,
+    }
+    const BLOCK: usize = 8;
+    let block_boxes = |ras: &[f64], zs: &[f64]| -> Vec<(f64, f64, f64, f64)> {
+        ras.chunks(BLOCK)
+            .zip(zs.chunks(BLOCK))
+            .map(|(r, z)| {
+                (
+                    r.iter().copied().fold(f64::INFINITY, f64::min),
+                    r.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+                    z.iter().copied().fold(f64::INFINITY, f64::min),
+                    z.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+                )
+            })
+            .collect()
     };
+    thread_local! {
+        static CACHE: std::cell::RefCell<Vec<(u64, std::rc::Rc<RevPrep>)>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
     let cached = key.and_then(|k| CACHE.with(|c| c.borrow().iter().find(|e| e.0 == k).map(|e| e.1.clone())));
     let prep = match cached {
         Some(p) => p,
@@ -963,13 +1087,14 @@ fn revolution_foot(profile: &Curve, axis_o: Vec3, axis: Vec3, q: Vec3) -> Option
             let scale = perp.iter().map(|w| w.len()).fold(0.0f64, f64::max).max(zs.iter().fold(0.0f64, |m, z| m.max(z.abs())));
             let er = perp.iter().copied().max_by(|x, y| x.len().total_cmp(&y.len())).and_then(|e| e.try_normalize());
             let prep = match er {
-                None => RevPrep { scale, er: Vec3::ZERO, et: Vec3::ZERO, ras: vec![], zs, ok: false },
+                None => RevPrep { scale, er: Vec3::ZERO, et: Vec3::ZERO, ras: vec![], zs, blocks: vec![], ok: false },
                 Some(er) => {
                     let et = a.cross(er);
                     let ras: Vec<f64> = perp.iter().map(|w| w.dot(er)).collect();
                     // one-sided and planar through the axis
                     let ok = !(ras.iter().any(|&r| r < -1e-9 * (1.0 + scale)) || perp.iter().any(|w| w.dot(et).abs() > 1e-7 * (1.0 + scale)));
-                    RevPrep { scale, er, et, ras, zs, ok }
+                    let blocks = block_boxes(&ras, &zs);
+                    RevPrep { scale, er, et, ras, zs, blocks, ok }
                 }
             };
             let prep = std::rc::Rc::new(prep);
@@ -994,10 +1119,19 @@ fn revolution_foot(profile: &Curve, axis_o: Vec3, axis: Vec3, q: Vec3) -> Option
     let qp = qw - a * qz;
     let (rho, phi) = (qp.len(), if qp.len() > 1e-12 * (1.0 + scale) { qp.dot(et).atan2(qp.dot(er)) } else { 0.0 });
     let mut best = (f64::INFINITY, 0usize);
-    for k in 0..=N {
-        let d = (ras[k] - rho).powi(2) + (zs[k] - qz).powi(2);
-        if d < best.0 {
-            best = (d, k);
+    // (a block of samples whose box is farther than the best sample so far holds no nearer sample: the
+    // squared distance to the box is, step by step, no larger than that of any sample inside it)
+    for (bi, bx) in prep.blocks.iter().enumerate() {
+        let gr = (bx.0 - rho).max(rho - bx.1).max(0.0);
+        let gz = (bx.2 - qz).max(qz - bx.3).max(0.0);
+        if gr.powi(2) + gz.powi(2) > best.0 {
+            continue;
+        }
+        for k in bi * BLOCK..((bi + 1) * BLOCK).min(N + 1) {
+            let d = (ras[k] - rho).powi(2) + (zs[k] - qz).powi(2);
+            if d < best.0 {
+                best = (d, k);
+            }
         }
     }
     let mut v = p0 + (p1 - p0) * best.1 as f64 / N as f64;
@@ -1428,6 +1562,60 @@ mod tests {
                 assert_eq!(bits(s.closest_point_fp(q, fp)), bits(s.closest_point(q)), "{}", s.kind());
                 let hint = (u0 + (u1 - u0) * 0.5, v0 + (v1 - v0) * 0.5);
                 assert_eq!(bits(s.closest_point_near_fp(q, hint, fp)), bits(s.closest_point_near(q, hint)), "{}", s.kind());
+            }
+        }
+    }
+
+    /// `distance_near_fp` is the distance of `closest_point_near_fp` bit for bit whenever that is more than `ok`;
+    /// else it is an upper bound of the true distance that is at most `ok`.
+    #[test]
+    fn distance_near_fp_agrees_beyond_ok() {
+        let s = Surface::BSpline(Box::new(spline_patch()));
+        let ((u0, u1), (v0, v1)) = s.domain();
+        let fp = match &s {
+            Surface::BSpline(b) => Some(b.fingerprint()),
+            _ => None,
+        };
+        for k in 0..400 {
+            let (u, v) = (u0 + (u1 - u0) * ((k * 7) % 23) as f64 / 22.0, v0 + (v1 - v0) * ((k * 11) % 17) as f64 / 16.0);
+            let q = s.eval(u, v) + Vec3::new(0.3, -0.2, 0.45) * ((k % 9) as f64 - 4.0) * 1e-3 * (1 + k % 3) as f64;
+            let hint = (u0 + (u1 - u0) * ((k * 3) % 5) as f64 / 4.0, v0 + (v1 - v0) * ((k * 5) % 7) as f64 / 6.0);
+            let exact = s.closest_point_near_fp(q, hint, fp).2.dist(q);
+            for ok in [0.0, 1e-3, 3e-3, 1e-2, 1.0] {
+                let d = s.distance_near_fp(q, hint, fp, ok);
+                let truth = s.closest_point_fp(q, fp).2.dist(q);
+                if exact > ok {
+                    assert_eq!(d.to_bits(), exact.to_bits());
+                } else {
+                    assert!(d <= ok && d >= truth - 1e-12, "{d} {truth} {ok}");
+                }
+            }
+        }
+    }
+
+    /// `derivs1` has the point and the first partials of `derivs2`, bit for bit, on every surface kind.
+    #[test]
+    fn derivs1_matches_derivs2() {
+        let prof_bs = {
+            let pts: Vec<Vec3> = (0..9).map(|i| Vec3::new(3.0 + (i as f64 * 0.4).sin(), 0.0, i as f64 * 0.5)).collect();
+            Curve::BSpline(crate::fit::interpolate(&pts, 3, crate::fit::Param::ChordLength).unwrap())
+        };
+        let mut all_s = all();
+        all_s.push(Surface::BSpline(Box::new(spline_patch())));
+        all_s.push(Surface::Revolution { profile: Box::new(prof_bs.clone()), axis_o: Vec3::new(0.1, -0.2, 0.3), axis: Vec3::Z });
+        all_s.push(Surface::Extrusion { profile: Box::new(prof_bs), dir: Vec3::new(0.2, 0.1, 2.0) });
+        all_s.push(Surface::Revolution { profile: Box::new(Curve::Line { o: Vec3::new(2.0, 0.0, 0.0), d: Vec3::new(0.3, 0.0, 1.0) }), axis_o: Vec3::ZERO, axis: Vec3::Z });
+        let bits = |v: Vec3| (v.x.to_bits(), v.y.to_bits(), v.z.to_bits());
+        for s in &all_s {
+            let ((u0, u1), (v0, v1)) = s.domain();
+            let (u0, u1) = if u0.is_finite() && u1.is_finite() { (u0, u1) } else { (-1.0, 3.0) };
+            let (v0, v1) = if v0.is_finite() && v1.is_finite() { (v0, v1) } else { (-1.0, 3.0) };
+            for i in 0..=12 {
+                for j in 0..=12 {
+                    let (u, v) = (u0 + (u1 - u0) * i as f64 / 12.0, v0 + (v1 - v0) * j as f64 / 12.0);
+                    let (a, b) = (s.derivs1(u, v), s.derivs2(u, v));
+                    assert_eq!((bits(a.p), bits(a.du), bits(a.dv)), (bits(b.p), bits(b.du), bits(b.dv)), "{} {u} {v}", s.kind());
+                }
             }
         }
     }

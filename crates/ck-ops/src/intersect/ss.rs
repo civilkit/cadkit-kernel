@@ -1035,10 +1035,12 @@ fn uv_box(s: &Surface, b: &Bounds) -> ((f64, f64), (f64, f64)) {
     let ((du0, du1), (dv0, dv1)) = s.domain();
     let (pu, pv) = s.periods();
     let (mut u0, mut u1, mut v0, mut v1) = (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
+    // (the spline's content hash once, not once per lattice point)
+    let fp = s.foot_key();
     for i in 0..27 {
         let f = |k: usize, a: f64, c: f64| a + (c - a) * 0.5 * k as f64;
         let p = Vec3::new(f(i % 3, b.lo.x, b.hi.x), f((i / 3) % 3, b.lo.y, b.hi.y), f(i / 9, b.lo.z, b.hi.z));
-        let (u, v) = s.closest_param(p);
+        let (u, v) = s.closest_param_keyed(p, fp);
         u0 = u0.min(u);
         u1 = u1.max(u);
         v0 = v0.min(v);
@@ -1068,7 +1070,7 @@ pub(super) fn wrap_uv(s: &Surface, u: f64, v: f64) -> (f64, f64) {
 /// Gauss-Newton projection of `t` onto `s` from a warm start.
 pub(super) fn refine_uv(s: &Surface, mut u: f64, mut v: f64, t: Vec3) -> (f64, f64) {
     for _ in 0..3 {
-        let d = s.derivs2(u, v);
+        let d = s.derivs1(u, v);
         let r = t - d.p;
         let (a, b, c) = (d.du.dot(d.du), d.du.dot(d.dv), d.dv.dot(d.dv));
         let det = a * c - b * b;
@@ -1128,8 +1130,8 @@ fn correct_uv_d(s1: &Surface, s2: &Surface, pred: Vec3, dir: Vec3, uv: Uv4, tol:
     let (mut u2, mut v2) = refine_uv(s2, uv[2], uv[3], pred);
     let eps = tol * 1e-4;
     for _ in 0..30 {
-        let d1 = s1.derivs2(u1, v1);
-        let d2 = s2.derivs2(u2, v2);
+        let d1 = s1.derivs1(u1, v1);
+        let d2 = s2.derivs1(u2, v2);
         let f = d1.p - d2.p;
         let g = (d1.p - pred).dot(dir);
         if f.x.abs() < eps && f.y.abs() < eps && f.z.abs() < eps && g.abs() < eps {
@@ -1317,8 +1319,8 @@ fn extend_to_domain_edge(s1: &Surface, s2: &Surface, last: &MPt, before: &MPt, b
                 x[k] = bound;
                 let mut ok = false;
                 for _ in 0..30 {
-                    let d1 = s1.derivs2(x[0], x[1]);
-                    let d2 = s2.derivs2(x[2], x[3]);
+                    let d1 = s1.derivs1(x[0], x[1]);
+                    let d2 = s2.derivs1(x[2], x[3]);
                     let f = d1.p - d2.p;
                     let g = x[k] - bound;
                     if f.len() < tol * 1e-4 && g.abs() < 1e-12 {

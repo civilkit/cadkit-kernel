@@ -27,6 +27,14 @@ pub struct BSplineSurface {
     pub weights: Option<Vec<f64>>,
 }
 
+/// The span and basis rows (value and two derivatives) of the last u and last v of
+/// [`BSplineSurface::derivs2_cached`] (cubic surfaces).
+#[derive(Default)]
+pub struct Basis2Cache {
+    u: Option<(u64, usize, [[f64; 4]; 3])>,
+    v: Option<(u64, usize, [[f64; 4]; 3])>,
+}
+
 pub struct CpPrep {
     nu: usize,
     cv: usize,
@@ -44,7 +52,11 @@ pub struct CpPrep {
     /// box of each (u column, v span) row `[a * cv + iv]`, computed once with
     /// the very expressions the query scan used per call (the scan is then a
     /// distance lookup; results are bit-identical).
-    grid: Option<(Vec<Vec3>, Vec<(Vec3, Vec3)>)>,
+    grid: std::cell::OnceCell<(Vec<Vec3>, Vec<(Vec3, Vec3)>)>,
+    /// the grid is wanted (non-rational, not too big); it is built by the query that finds the surface asked
+    /// for often enough to repay it (`BSplineSurface::grid_for`)
+    grid_ok: bool,
+    uses: std::cell::Cell<u32>,
     /// Tiles of up to 4 x 4 neighbouring cells: the box of their cell boxes, and their indices into
     /// `cells` (`tile_cells[tile_start[t]..tile_start[t + 1]]`). A tile's box distance is no larger than
     /// any of its cells' (the same expression on smaller / larger corners), so a far tile is skipped
@@ -294,44 +306,153 @@ impl BSplineSurface {
         rat_surface_derivs(&a, &w, d)
     }
 
+    /// The four third partials `(S_uuu, S_uuv, S_uvv, S_vvv)` of a non-rational surface of degrees 1 to 5, the
+    /// entries `derivs(u, v, 3)` gives for them, bit for bit, without allocating. `None` for any other surface.
+    pub fn thirds_nr(&self, u: f64, v: f64) -> Option<[Vec3; 4]> {
+        let (p, q) = (self.deg_u, self.deg_v);
+        if self.weights.is_some() || p == 0 || q == 0 || p >= 6 || q >= 6 {
+            return None;
+        }
+        let ((u0, u1), (v0, v1)) = self.domain();
+        let u = u.clamp(u0, u1);
+        let v = v.clamp(v0, v1);
+        let su = find_span(self.nu - 1, p, u, &self.knots_u);
+        let sv = find_span(self.nv - 1, q, v, &self.knots_v);
+        let nu = basis::ders_basis_funs3(su, u, p, 3, &self.knots_u);
+        let nv = basis::ders_basis_funs3(sv, v, q, 3, &self.knots_v);
+        let mut a = [[Vec3::ZERO; 4]; 4];
+        for k in 0..=3usize.min(p) {
+            let mut tp = [Vec3::ZERO; 6];
+            for s in 0..=q {
+                for r in 0..=p {
+                    tp[s] = tp[s] + self.cp(su - p + r, sv - q + s) * (nu[k][r] * 1.0);
+                }
+            }
+            for l in 0..=(3 - k).min(q) {
+                for s in 0..=q {
+                    a[k][l] = a[k][l] + tp[s] * nv[l][s];
+                }
+            }
+        }
+        Some([a[3][0], a[2][1], a[1][2], a[0][3]])
+    }
+
+    /// `(S, S_u, S_v)` of a non-rational surface (degrees 1 to 11 in both directions), the entries
+    /// `derivs(u, v, 1)` gives for them, bit for bit, without allocating. `None` for any other surface.
+    pub fn derivs1_nr(&self, u: f64, v: f64) -> Option<(Vec3, Vec3, Vec3)> {
+        let (p, q) = (self.deg_u, self.deg_v);
+        if self.weights.is_some() || p == 0 || q == 0 || p >= 12 || q >= 12 {
+            return None;
+        }
+        let ((u0, u1), (v0, v1)) = self.domain();
+        let u = u.clamp(u0, u1);
+        let v = v.clamp(v0, v1);
+        let su = find_span(self.nu - 1, p, u, &self.knots_u);
+        let sv = find_span(self.nv - 1, q, v, &self.knots_v);
+        if p == 3 && q == 3 {
+            // (the cubic case on 4-wide tables with literal degrees: the loops unroll)
+            let nu = basis::ders_basis_funs2_p3(su, u, 1, &self.knots_u);
+            let nv = basis::ders_basis_funs2_p3(sv, v, 1, &self.knots_v);
+            return Some(self.accumulate1(su, sv, &nu, &nv, 3, 3));
+        }
+        let nu = basis::ders_basis_funs2(su, u, p, 1, &self.knots_u);
+        let nv = basis::ders_basis_funs2(sv, v, q, 1, &self.knots_v);
+        Some(self.accumulate1(su, sv, &nu, &nv, p, q))
+    }
+
+    /// The control point sums of `derivs1_nr` from the spans and basis rows.
+    #[inline(always)]
+    fn accumulate1<const W: usize>(&self, su: usize, sv: usize, nu: &[[f64; W]; 3], nv: &[[f64; W]; 3], p: usize, q: usize) -> (Vec3, Vec3, Vec3) {
+        let mut tp = [[Vec3::ZERO; W]; 2];
+        for s in 0..=q {
+            let row = &self.ctrl[(sv - q + s)..];
+            for r in 0..=p {
+                let c = row[(su - p + r) * self.nv];
+                tp[0][s] = tp[0][s] + c * (nu[0][r] * 1.0);
+                tp[1][s] = tp[1][s] + c * (nu[1][r] * 1.0);
+            }
+        }
+        let (mut a00, mut a01, mut a10) = (Vec3::ZERO, Vec3::ZERO, Vec3::ZERO);
+        for s in 0..=q {
+            a00 = a00 + tp[0][s] * nv[0][s];
+            a01 = a01 + tp[0][s] * nv[1][s];
+            a10 = a10 + tp[1][s] * nv[0][s];
+        }
+        (a00, a10, a01)
+    }
+
     /// Non-rational second derivatives (allocation free, same arithmetic as `derivs`).
     #[inline(always)]
     fn derivs2_nr(&self, u: f64, v: f64, p: usize, q: usize) -> SurfDerivs {
-            // allocation-free non-rational path (same arithmetic as `derivs`)
-            let ((u0, u1), (v0, v1)) = self.domain();
-            let u = u.clamp(u0, u1);
-            let v = v.clamp(v0, v1);
-            let su = find_span(self.nu - 1, p, u, &self.knots_u);
-            let sv = find_span(self.nv - 1, q, v, &self.knots_v);
-            let nu = basis::ders_basis_funs2(su, u, p, 2, &self.knots_u);
-            let nv = basis::ders_basis_funs2(sv, v, q, 2, &self.knots_v);
-            let mut a = [[Vec3::ZERO; 3]; 3];
-            // one pass over the control points for the three u orders (each
-            // accumulator sees the same operations in the same order as a
-            // pass per order: bit-identical)
-            let ku = 2usize.min(p);
-            let mut tp = [[Vec3::ZERO; 12]; 3];
-            for s in 0..=q {
-                let row = &self.ctrl[(sv - q + s)..];
-                for r in 0..=p {
-                    let c = row[(su - p + r) * self.nv];
-                    tp[0][s] = tp[0][s] + c * (nu[0][r] * 1.0);
-                    if ku >= 1 {
-                        tp[1][s] = tp[1][s] + c * (nu[1][r] * 1.0);
-                    }
-                    if ku >= 2 {
-                        tp[2][s] = tp[2][s] + c * (nu[2][r] * 1.0);
-                    }
+        // allocation-free non-rational path (same arithmetic as `derivs`)
+        let ((u0, u1), (v0, v1)) = self.domain();
+        let u = u.clamp(u0, u1);
+        let v = v.clamp(v0, v1);
+        let su = find_span(self.nu - 1, p, u, &self.knots_u);
+        let sv = find_span(self.nv - 1, q, v, &self.knots_v);
+        if p == 3 && q == 3 {
+            let nu = basis::ders_basis_funs2_p3(su, u, 2, &self.knots_u);
+            let nv = basis::ders_basis_funs2_p3(sv, v, 2, &self.knots_v);
+            return self.accumulate2(su, sv, &nu, &nv, 3, 3);
+        }
+        let nu = basis::ders_basis_funs2(su, u, p, 2, &self.knots_u);
+        let nv = basis::ders_basis_funs2(sv, v, q, 2, &self.knots_v);
+        self.accumulate2(su, sv, &nu, &nv, p, q)
+    }
+
+    /// The control point sums of `derivs2_nr` from the spans and basis rows.
+    #[inline(always)]
+    fn accumulate2<const W: usize>(&self, su: usize, sv: usize, nu: &[[f64; W]; 3], nv: &[[f64; W]; 3], p: usize, q: usize) -> SurfDerivs {
+        let mut a = [[Vec3::ZERO; 3]; 3];
+        // one pass over the control points for the three u orders (each
+        // accumulator sees the same operations in the same order as a
+        // pass per order: bit-identical)
+        let ku = 2usize.min(p);
+        let mut tp = [[Vec3::ZERO; W]; 3];
+        for s in 0..=q {
+            let row = &self.ctrl[(sv - q + s)..];
+            for r in 0..=p {
+                let c = row[(su - p + r) * self.nv];
+                tp[0][s] = tp[0][s] + c * (nu[0][r] * 1.0);
+                if ku >= 1 {
+                    tp[1][s] = tp[1][s] + c * (nu[1][r] * 1.0);
+                }
+                if ku >= 2 {
+                    tp[2][s] = tp[2][s] + c * (nu[2][r] * 1.0);
                 }
             }
-            for k in 0..=ku {
-                for l in 0..=(2 - k).min(q) {
-                    for s in 0..=q {
-                        a[k][l] = a[k][l] + tp[k][s] * nv[l][s];
-                    }
+        }
+        for k in 0..=ku {
+            for l in 0..=(2 - k).min(q) {
+                for s in 0..=q {
+                    a[k][l] = a[k][l] + tp[k][s] * nv[l][s];
                 }
             }
-            return SurfDerivs { p: a[0][0], du: a[1][0], dv: a[0][1], duu: a[2][0], duv: a[1][1], dvv: a[0][2] };
+        }
+        SurfDerivs { p: a[0][0], du: a[1][0], dv: a[0][1], duu: a[2][0], duv: a[1][1], dvv: a[0][2] }
+    }
+
+    /// [`derivs2`](Self::derivs2) for a run of evaluations (a Newton iteration) that often repeats one of the
+    /// two parameters: the span and basis rows of the last `u` and of the last `v` are kept in `cache`. The
+    /// same numbers, bit for bit.
+    pub fn derivs2_cached(&self, u: f64, v: f64, cache: &mut Basis2Cache) -> SurfDerivs {
+        let (p, q) = (self.deg_u, self.deg_v);
+        if self.weights.is_some() || p != 3 || q != 3 {
+            return self.derivs2(u, v);
+        }
+        let ((u0, u1), (v0, v1)) = self.domain();
+        let u = u.clamp(u0, u1);
+        let v = v.clamp(v0, v1);
+        if cache.u.as_ref().map_or(true, |c| c.0 != u.to_bits()) {
+            let su = find_span(self.nu - 1, 3, u, &self.knots_u);
+            cache.u = Some((u.to_bits(), su, basis::ders_basis_funs2_p3(su, u, 2, &self.knots_u)));
+        }
+        if cache.v.as_ref().map_or(true, |c| c.0 != v.to_bits()) {
+            let sv = find_span(self.nv - 1, 3, v, &self.knots_v);
+            cache.v = Some((v.to_bits(), sv, basis::ders_basis_funs2_p3(sv, v, 2, &self.knots_v)));
+        }
+        let (cu, cv) = (cache.u.as_ref().unwrap(), cache.v.as_ref().unwrap());
+        self.accumulate2(cu.1, cv.1, &cu.2, &cv.2, 3, 3)
     }
 
     /// Point + first + second partials.
@@ -806,7 +927,7 @@ impl BSplineSurface {
         // best grid sample of every visited cell (multi-start seeds)
         cell_best.clear();
         let cell_best: std::cell::RefCell<&mut Vec<(f64, f64, f64, f64)>> = std::cell::RefCell::new(cell_best);
-        let grid = prep.grid.as_ref();
+        let grid = self.grid_for(prep);
         let nv1 = vs.len();
         let visit = |c: &(f64, usize, usize, usize, usize, usize), best: &mut (f64, f64, f64)| {
             let (clb, su, _iu, iv, alo, ahi) = *c;
@@ -814,6 +935,8 @@ impl BSplineSurface {
                 return;
             }
             let mut local = (f64::INFINITY, 0.0, 0.0);
+            // (one buffer per cell: a row overwrites the entries it reads)
+            let mut tcol = [Vec3::ZERO; 16];
             for a in alo..=ahi {
                 let u = u_at(a);
                 if ubas[a].0 != su {
@@ -822,7 +945,6 @@ impl BSplineSurface {
                 let bu = &ubas[a].1;
                 // non-rational: collapse the u direction once per (u, cell)
                 // (every v sample of the cell lies in the same v span)
-                let mut tcol = [Vec3::ZERO; 16];
                 if fast && pv < 16 && grid.is_none() {
                     if let Some(&k0) = cols[iv].first() {
                         let sv = bv[k0].0;
@@ -854,6 +976,31 @@ impl BSplineSurface {
                     if g.len() >= best.0 {
                         continue;
                     }
+                }
+                // the common case, on the precomputed grid: the same test and updates as below, with the
+                // bound of the skip test kept between samples (it changes only when `best` or `local` does)
+                if let (true, Some((pts, _))) = (fast && pv < 16, grid) {
+                    let bound = |best: &(f64, f64, f64), local: &(f64, f64, f64)| {
+                        let lim = best.0.max(local.0);
+                        lim * lim * (1.0 + 1e-9)
+                    };
+                    let mut lim2 = bound(best, &local);
+                    for &k in &cols[iv] {
+                        let d2 = (pts[a * nv1 + k] - q).len2();
+                        if d2 > lim2 {
+                            continue;
+                        }
+                        let (d, v) = (d2.sqrt(), vs[k].0);
+                        if d < local.0 {
+                            local = (d, u, v);
+                        }
+                        if d < best.0 {
+                            *best = (d, u, v);
+                            found_flag.set(true);
+                        }
+                        lim2 = bound(best, &local);
+                    }
+                    continue;
                 }
                 for &k in &cols[iv] {
                     let v = vs[k].0;
@@ -962,7 +1109,19 @@ impl BSplineSurface {
         if !found {
             return Ok(None);
         }
-        let newton0 = |seed: (f64, f64)| crate::surface::newton_surface(|u, v| self.derivs2(u, v), q, seed, ((u0, u1), (v0, v1)));
+        // (the polish is a function of the seed alone: the nearest cells' best samples, the restarts from the
+        // opposite edge of a pinned foot, repeat starts within one query)
+        let done: std::cell::RefCell<Vec<((u64, u64), (f64, f64))>> = Default::default();
+        let newton0 = |seed: (f64, f64)| {
+            let key = (seed.0.to_bits(), seed.1.to_bits());
+            if let Some(r) = done.borrow().iter().find(|e| e.0 == key) {
+                return r.1;
+            }
+            let bc = std::cell::RefCell::new(Basis2Cache::default());
+            let r = crate::surface::newton_surface(|u, v| self.derivs2_cached(u, v, &mut bc.borrow_mut()), q, seed, ((u0, u1), (v0, v1)));
+            done.borrow_mut().push((key, r));
+            r
+        };
         // a surface closed on itself (a tube: u = 0 and u = 2 pi are one
         // curve): a foot point just across the closing isoline is reached
         // by restarting from the opposite domain edge
@@ -1034,6 +1193,63 @@ impl BSplineSurface {
             return Ok(in_range(res.1).then_some(res.1));
         }
         Ok(in_range(first).then_some(first))
+    }
+
+    /// The seed grid points and row boxes of `prep`, once the surface has been asked for often enough that
+    /// they repay building (the scan computes the very same numbers on the fly, bit for bit, without them).
+    fn grid_for<'a>(&self, prep: &'a CpPrep) -> Option<&'a (Vec<Vec3>, Vec<(Vec3, Vec3)>)> {
+        if !prep.grid_ok {
+            return None;
+        }
+        if let Some(g) = prep.grid.get() {
+            return Some(g);
+        }
+        let n = prep.uses.get().saturating_add(1);
+        prep.uses.set(n);
+        // (the grid costs about as many point evaluations as it has points; a query visits a few hundred)
+        let after = 16 + ((prep.nu + 1) * (prep.vs.len())) as u32 / 1000;
+        if n < after {
+            return None;
+        }
+        Some(prep.grid.get_or_init(|| self.build_grid(prep)))
+    }
+
+    /// The seed grid points `[a * (nv + 1) + k]` and the box of each (u column, v span) row `[a * cv + iv]`.
+    fn build_grid(&self, prep: &CpPrep) -> (Vec<Vec3>, Vec<(Vec3, Vec3)>) {
+        let (nu, cv, bv, cols, ubas) = (prep.nu, prep.cv, &prep.bv, &prep.cols, &prep.ubas);
+        let nv = prep.vs.len() - 1;
+        let (pu, pv) = (self.deg_u, self.deg_v);
+        let mut pts = vec![Vec3::ZERO; (nu + 1) * (nv + 1)];
+        let mut rows = vec![(Vec3::ZERO, Vec3::ZERO); (nu + 1) * cv.max(1)];
+        for a in 0..=nu {
+            let (su, ref bu) = ubas[a];
+            for (iv, col) in cols.iter().enumerate() {
+                let Some(&k0) = col.first() else { continue };
+                let sv = bv[k0].0;
+                let mut tcol = [Vec3::ZERO; 16];
+                for j in 0..=pv {
+                    let mut t = Vec3::ZERO;
+                    for (i, &wu) in bu.iter().enumerate() {
+                        t = t + self.cp(su - pu + i, sv - pv + j) * wu;
+                    }
+                    tcol[j] = t;
+                }
+                let (mut lo, mut hi) = (tcol[0], tcol[0]);
+                for t in &tcol[1..=pv] {
+                    lo = lo.min(*t);
+                    hi = hi.max(*t);
+                }
+                rows[a * cv + iv] = (lo, hi);
+                for &k in col {
+                    let mut p = Vec3::ZERO;
+                    for (j, &wv) in bv[k].1.iter().enumerate() {
+                        p = p + tcol[j] * wv;
+                    }
+                    pts[a * (nv + 1) + k] = p;
+                }
+            }
+        }
+        (pts, rows)
     }
 
     /// Per-surface constants of the closest-point seed grid (spans, cell
@@ -1116,42 +1332,7 @@ impl BSplineSurface {
             })
             .collect();
         let hull = boxes.iter().filter(|b| b.0.x <= b.1.x).fold((Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY), Vec3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY)), |a, b| (a.0.min(b.0), a.1.max(b.1)));
-        // the seed grid points and row boxes, with the expressions of the query scan
-        let grid = if fast && pv < 16 && (nu + 1) * (nv + 1) <= 1 << 18 {
-            let mut pts = vec![Vec3::ZERO; (nu + 1) * (nv + 1)];
-            let mut rows = vec![(Vec3::ZERO, Vec3::ZERO); (nu + 1) * cv.max(1)];
-            for a in 0..=nu {
-                let (su, ref bu) = ubas[a];
-                for (iv, col) in cols.iter().enumerate() {
-                    let Some(&k0) = col.first() else { continue };
-                    let sv = bv[k0].0;
-                    let mut tcol = [Vec3::ZERO; 16];
-                    for j in 0..=pv {
-                        let mut t = Vec3::ZERO;
-                        for (i, &wu) in bu.iter().enumerate() {
-                            t = t + self.cp(su - pu + i, sv - pv + j) * wu;
-                        }
-                        tcol[j] = t;
-                    }
-                    let (mut lo, mut hi) = (tcol[0], tcol[0]);
-                    for t in &tcol[1..=pv] {
-                        lo = lo.min(*t);
-                        hi = hi.max(*t);
-                    }
-                    rows[a * cv + iv] = (lo, hi);
-                    for &k in col {
-                        let mut p = Vec3::ZERO;
-                        for (j, &wv) in bv[k].1.iter().enumerate() {
-                            p = p + tcol[j] * wv;
-                        }
-                        pts[a * (nv + 1) + k] = p;
-                    }
-                }
-            }
-            Some((pts, rows))
-        } else {
-            None
-        };
+        let grid_ok = fast && pv < 16 && (nu + 1) * (nv + 1) <= 1 << 18;
         // tiles of 4 x 4 cells (by span index) for `nearest_cells`
         let (tu, tv) = (cu.div_ceil(4).max(1), cv.div_ceil(4).max(1));
         let mut members: Vec<Vec<u32>> = vec![vec![]; tu * tv];
@@ -1174,7 +1355,7 @@ impl BSplineSurface {
             tile_cells.extend(m);
             tile_start.push(tile_cells.len() as u32);
         }
-        let prep = Rc::new(CpPrep { nu, cv, boxes: (*boxes).clone(), vs, bv, cols, cells, ubas, cell_scale: self.cell_scale(), hull, grid, tiles, tile_start, tile_cells });
+        let prep = Rc::new(CpPrep { nu, cv, boxes: (*boxes).clone(), vs, bv, cols, cells, ubas, cell_scale: self.cell_scale(), hull, grid: Default::default(), grid_ok, uses: Default::default(), tiles, tile_start, tile_cells });
         CACHE.with(|c| {
             let mut c = c.borrow_mut();
             if c.len() >= 24 {
@@ -1280,6 +1461,7 @@ impl BSplineSurface {
 /// Homogeneous evaluation: returns (Euclidean point, weight) — used to
 /// build exact iso curves of rational surfaces.
 /// See [`BSplineSurface::vline`].
+#[derive(Clone, Copy)]
 pub struct VLine<'a> {
     s: &'a BSplineSurface,
     sv: usize,
@@ -1326,9 +1508,20 @@ impl VSegment<'_> {
     /// (point, S_u, S_v) at `u` (within the segment's span).
     #[inline]
     pub fn eval1(&self, u: f64) -> (Vec3, Vec3, Vec3) {
-        let s = self.s;
-        let p = s.deg_u;
-        let b = basis::ders_basis_funs2(self.su, u, p, 1, &s.knots_u);
+        self.eval1_basis(&self.basis(u))
+    }
+
+    /// The u basis functions and first derivatives `eval1` uses at `u` (the same for every segment of
+    /// this knot span, whatever the v line: a caller evaluating many v lines at the same `u` takes it once).
+    #[inline]
+    pub fn basis(&self, u: f64) -> [[f64; 12]; 3] {
+        basis::ders_basis_funs2(self.su, u, self.s.deg_u, 1, &self.s.knots_u)
+    }
+
+    /// `eval1` with the u basis of [`basis`](Self::basis) given.
+    #[inline]
+    pub fn eval1_basis(&self, b: &[[f64; 12]; 3]) -> (Vec3, Vec3, Vec3) {
+        let p = self.s.deg_u;
         let (mut pt, mut du, mut dv) = (Vec3::ZERO, Vec3::ZERO, Vec3::ZERO);
         for r in 0..=p {
             pt = pt + self.c[r] * b[0][r];
@@ -1390,6 +1583,87 @@ mod tests {
             if rational { Some(ws) } else { None },
         )
         .unwrap()
+    }
+
+    /// `derivs1_nr` is the first-order `derivs` bit for bit (also at knots and outside the domain).
+    #[test]
+    fn derivs1_nr_is_bit_identical() {
+        let s = surf(false);
+        assert!(surf(true).derivs1_nr(0.3, 0.3).is_none());
+        let bits = |v: Vec3| (v.x.to_bits(), v.y.to_bits(), v.z.to_bits());
+        for i in 0..=40 {
+            for j in 0..=40 {
+                let (u, v) = (-0.1 + 1.2 * i as f64 / 40.0, -0.1 + 1.2 * j as f64 / 40.0);
+                let d = s.derivs(u, v, 1);
+                let (p, du, dv) = s.derivs1_nr(u, v).unwrap();
+                assert_eq!((bits(p), bits(du), bits(dv)), (bits(d[0][0]), bits(d[1][0]), bits(d[0][1])), "{u} {v}");
+            }
+        }
+        for (u, v) in [(0.3, 0.6), (0.0, 1.0), (0.5, 0.3), (1.0, 0.0)] {
+            let d = s.derivs(u, v, 1);
+            let (p, du, dv) = s.derivs1_nr(u, v).unwrap();
+            assert_eq!((bits(p), bits(du), bits(dv)), (bits(d[0][0]), bits(d[1][0]), bits(d[0][1])), "{u} {v}");
+        }
+    }
+
+    /// `thirds_nr` is the third-order `derivs` bit for bit, for several degree pairs (also at knots and outside).
+    #[test]
+    fn thirds_nr_is_bit_identical() {
+        let bits = |v: Vec3| (v.x.to_bits(), v.y.to_bits(), v.z.to_bits());
+        for (p, q) in [(1usize, 1usize), (2, 3), (3, 3), (3, 2), (4, 5), (5, 4)] {
+            let (nu, nv) = (p + 4, q + 3);
+            let mut ctrl = vec![];
+            for i in 0..nu {
+                for j in 0..nv {
+                    let (x, y) = (i as f64, j as f64);
+                    ctrl.push(Vec3::new(x + 0.1 * y * y, y, (x * 0.7).sin() * (y * 0.5).cos() + 0.1 * x * y));
+                }
+            }
+            let mut ku = basis::clamped_uniform(nu, p);
+            // a repeated interior knot
+            if nu > p + 2 {
+                let k = p + 1;
+                ku[k + 1] = ku[k];
+            }
+            let s = BSplineSurface::new(p, q, ku, basis::clamped_uniform(nv, q), nu, nv, ctrl, None).unwrap();
+            for i in 0..=30 {
+                for j in 0..=30 {
+                    let (u, v) = (-0.1 + 1.2 * i as f64 / 30.0, -0.1 + 1.2 * j as f64 / 30.0);
+                    let d = s.derivs(u, v, 3);
+                    let t = s.thirds_nr(u, v).unwrap();
+                    assert_eq!([bits(t[0]), bits(t[1]), bits(t[2]), bits(t[3])], [bits(d[3][0]), bits(d[2][1]), bits(d[1][2]), bits(d[0][3])], "{p} {q} {u} {v}");
+                }
+            }
+        }
+    }
+
+    /// `derivs2_cached` is `derivs2` bit for bit along runs that repeat one parameter, repeat both, and jump.
+    #[test]
+    fn derivs2_cached_is_bit_identical() {
+        let bits = |d: &SurfDerivs| [d.p, d.du, d.dv, d.duu, d.duv, d.dvv].map(|v| (v.x.to_bits(), v.y.to_bits(), v.z.to_bits()));
+        for rational in [false, true] {
+            let s = surf(rational);
+            let mut cache = Basis2Cache::default();
+            let mut seed = 5u64;
+            let mut rnd = || {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                (seed >> 11) as f64 / (1u64 << 53) as f64
+            };
+            let (mut u, mut v) = (0.4, 0.4);
+            for k in 0..2000 {
+                match k % 5 {
+                    0 => u = rnd() * 1.2 - 0.1,
+                    1 => v = rnd() * 1.2 - 0.1,
+                    2 => {}
+                    3 => u = 1.5,
+                    _ => {
+                        u = rnd();
+                        v = rnd();
+                    }
+                }
+                assert_eq!(bits(&s.derivs2_cached(u, v, &mut cache)), bits(&s.derivs2(u, v)), "{u} {v}");
+            }
+        }
     }
 
     #[test]

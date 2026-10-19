@@ -53,8 +53,10 @@ pub fn check(b: &Body, tol: f64) -> Vec<Issue> {
                 out.push(Issue::VertexOffCurve(e, v, d));
             }
         }
-        let len = ed.curve.length_between(ed.t0, ed.t1);
-        if len < tol {
+        // (an edge whose end points are 10 tolerances apart is longer than a tolerance, whatever the quadrature
+        // would say of its length: only the short and the closed ones are measured)
+        let chord = ed.curve.eval(ed.t0).dist(ed.curve.eval(ed.t1));
+        if !(chord >= 10.0 * tol) && ed.curve.length_between(ed.t0, ed.t1) < tol {
             out.push(Issue::DegenerateEdge(e));
         }
         for &c in &cs {
@@ -169,6 +171,18 @@ mod tests {
         assert!(check(&b, 1e-9).is_empty());
         assert!(is_closed_manifold(&b));
         assert_eq!(euler(&b), 2);
+    }
+
+    /// The degenerate-edge test (the arc length under the tolerance) is the same with and without the
+    /// end-to-end shortcut, for tolerances below, around and above the edge lengths.
+    #[test]
+    fn degenerate_edges_match_the_plain_length_test() {
+        let b = box_body();
+        for tol in [1e-9, 0.01, 0.5, 1.0, 2.0, 5.0, 9.99, 10.01, 15.0, 100.0, 1000.0] {
+            let got: Vec<_> = check(&b, tol).into_iter().filter(|i| matches!(i, Issue::DegenerateEdge(_))).collect();
+            let want: Vec<_> = b.edge_ids().filter(|&e| b.edge(e).curve.length_between(b.edge(e).t0, b.edge(e).t1) < tol).map(Issue::DegenerateEdge).collect();
+            assert_eq!(got, want, "tol {tol}");
+        }
     }
 
     #[test]

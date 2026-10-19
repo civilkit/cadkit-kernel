@@ -95,14 +95,40 @@ pub fn reverse_loop(b: &mut Body, l: LoopId) {
 /// Make all faces of a shell consistently oriented (each manifold edge
 /// traversed oppositely by its two coedges) and outward (positive signed
 /// volume). Returns the number of faces flipped.
+/// `signed_volume(b, faces) < 0.0`, decided by the cheap quick volume when the faces close up (every edge of
+/// them has its two coedges among them, so the volume does not depend on the reference point) and that volume
+/// is clearly away from zero; else by the full integral.
+fn volume_is_negative(b: &Body, faces: &[FaceId]) -> bool {
+    let mut inset = vec![false; b.faces.len()];
+    for &f in faces {
+        inset[f.idx()] = true;
+    }
+    let closed = faces.iter().all(|&f| {
+        b.face_edges(f).into_iter().all(|e| {
+            let cs = b.edge_coedges(e);
+            cs.len() == 2 && cs.iter().all(|&c| inset[b.coedge_face(c).idx()])
+        })
+    });
+    if closed {
+        if let Some(v) = ck_topo_mass_quick(b, faces) {
+            return v < 0.0;
+        }
+    }
+    signed_volume(b, faces) < 0.0
+}
+
+fn ck_topo_mass_quick(b: &Body, faces: &[FaceId]) -> Option<f64> {
+    crate::mass::signed_volume_quick_margin(b, faces)
+}
+
 pub fn orient_shell(b: &mut Body, s: ShellId) -> usize {
-    orient_shell_volume(b, s).0
+    orient_shell_with(b, s, false, false).0
 }
 
 /// As [`orient_shell`], also returning the shell's signed volume after orienting (the integral the outward test
 /// computed anyway, negated when the shell was flipped).
 pub fn orient_shell_volume(b: &mut Body, s: ShellId) -> (usize, f64) {
-    orient_shell_with(b, s, false)
+    orient_shell_with(b, s, false, true)
 }
 
 /// [`orient_shell_volume`] with the outward test (and the returned volume) taken from [`signed_volume_quick`]:
@@ -111,10 +137,10 @@ pub fn orient_shell_volume(b: &mut Body, s: ShellId) -> (usize, f64) {
 /// every time and whose volume is only tested for sign.
 pub fn orient_body_volume_quick(b: &mut Body) -> (usize, f64) {
     let shells: Vec<ShellId> = b.shell_ids().collect();
-    shells.into_iter().map(|s| orient_shell_with(b, s, true)).fold((0, 0.0), |a, x| (a.0 + x.0, a.1 + x.1))
+    shells.into_iter().map(|s| orient_shell_with(b, s, true, true)).fold((0, 0.0), |a, x| (a.0 + x.0, a.1 + x.1))
 }
 
-fn orient_shell_with(b: &mut Body, s: ShellId, quick: bool) -> (usize, f64) {
+fn orient_shell_with(b: &mut Body, s: ShellId, quick: bool, need_vol: bool) -> (usize, f64) {
     let faces: Vec<FaceId> = b.shell(s).faces.iter().copied().filter(|&f| b.face(f).alive).collect();
     let mut flips = 0;
     let mut seen = vec![false; b.faces.len()];
@@ -148,8 +174,17 @@ fn orient_shell_with(b: &mut Body, s: ShellId, quick: bool) -> (usize, f64) {
             }
         }
     }
-    let mut vol = if quick { crate::mass::signed_volume_quick(b, &faces) } else { signed_volume(b, &faces) };
-    if vol < 0.0 {
+    // (a caller that only wants the flip count decides the sign by the cheap volume when it is clearly away from zero)
+    let (mut vol, negative) = if quick {
+        let v = crate::mass::signed_volume_quick(b, &faces);
+        (v, v < 0.0)
+    } else if need_vol {
+        let v = signed_volume(b, &faces);
+        (v, v < 0.0)
+    } else {
+        (0.0, volume_is_negative(b, &faces))
+    };
+    if negative {
         for &f in &faces {
             flip_face(b, f);
         }

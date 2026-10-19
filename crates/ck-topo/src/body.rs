@@ -540,13 +540,23 @@ impl Body {
     /// (u,v) of coedge `c` at edge parameter `t`: pcurve if present, else
     /// projection of the 3D point (`near` disambiguates periodic params).
     pub fn coedge_uv(&self, c: CoedgeId, t: f64, near: Option<Vec2>) -> Vec2 {
+        self.coedge_uv_fp(c, t, near, None)
+    }
+
+    /// [`Self::coedge_uv`] with the face's B-spline surface hash (`ck_geom::nurbs::bsurf::BSplineSurface::fingerprint`)
+    /// taken by the caller: a loop of samples pays the pass over the control net once, not once per point. The
+    /// same answers, bit for bit (`None` = taken per call).
+    pub fn coedge_uv_fp(&self, c: CoedgeId, t: f64, near: Option<Vec2>, fp: Option<u64>) -> Vec2 {
         let ce = &self.coedges[c.idx()];
         if let Some(pc) = &ce.pcurve {
             return pc.eval(t);
         }
         let face = &self.faces[self.coedge_face(c).idx()];
         let p = self.edges[ce.edge.idx()].curve.eval(t);
-        let (mut u, mut v) = face.surface.closest_param(p);
+        let (mut u, mut v) = match (&face.surface, fp) {
+            (ck_geom::surface::Surface::BSpline(bs), Some(fp)) => bs.closest_param_fp(fp, p),
+            _ => face.surface.closest_param(p),
+        };
         if let Some(n) = near {
             let (pu, pv) = face.surface.periods();
             if let Some(per) = pu {
