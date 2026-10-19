@@ -188,6 +188,18 @@ impl Spec {
 
 /// Shared fillet / chamfer driver (see [`fillet`]).
 pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, feature: &str, tol: f64) -> Result<Body, BlendError> {
+    // A fillet along a chain of edges that continue each other tangentially (a line into an arc of a rounded outline) must
+    // stop every tool flush at the tangent vertex: a tool that runs on past it (a straight prism into the arc, a revolved
+    // tool into the straight run) leaves a planar step between the two blend faces. Tried first; the ordinary ends are the
+    // fallback.
+    if matches!(spec, Spec::Fillet(..)) && edges.len() > 1 && !TANGENT_FLUSH.with(|c| c.get()) && has_tangent_mates(b, edges) {
+        TANGENT_FLUSH.with(|c| c.set(true));
+        let flush = blend_edges_inner(b, edges, spec, feature, tol);
+        TANGENT_FLUSH.with(|c| c.set(false));
+        if flush.is_ok() {
+            return flush;
+        }
+    }
     let first = blend_edges_inner(b, edges, spec, feature, tol);
     // A selection that is a chain of tangent edges (a rounded outline picked edge by edge) fails when a tool runs on past
     // the junction into the arc's band: retry with the ends of tangent-continuing edges stopping flush. Selections that
@@ -201,6 +213,12 @@ pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featu
         }
     }
     first
+}
+
+/// Two of the selected edges continue each other tangentially at a shared vertex.
+fn has_tangent_mates(b: &Body, edges: &[(String, String, Vec3)]) -> bool {
+    let eids: Vec<EdgeId> = edges.iter().filter_map(|(fa, fb, at)| find_edge(b, fa, fb, *at)).collect();
+    eids.len() > 1 && !tangent_flush_vertices(b, &eids).is_empty()
 }
 
 fn blend_edges_inner(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, feature: &str, tol: f64) -> Result<Body, BlendError> {

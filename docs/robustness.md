@@ -32,8 +32,15 @@ and tools without a clock are never cut short, so unit tests stay deterministic)
 
 | option (regen `opts`) | default | meaning |
 |---|---|---|
-| `featureTimeMs` | 30000 | one feature; `0` = unlimited |
+| `featureTimeMs` | 120000 | one feature; `0` = unlimited |
 | `regenTimeMs` | none | the whole document; `0`/absent = unlimited |
+
+The feature default is 120 s so that a result does not depend on machine load: the same pattern that takes 5 s on a
+quiet machine took over 30 s on a busy one and made the edit fail with `featureBudgetExceeded`. The whole-document limit
+has no default (it is only ever as large as the caller chooses; pick it larger than `featureTimeMs`, for example
+`featureTimeMs * 2` as `tools/crash_fuzz.mjs --budget-ms` does). A kit that wants a tighter or looser limit passes
+`opts: {featureTimeMs, regenTimeMs}` on its `regen` request (milliseconds; `0` = no limit); `Session` sends no options,
+so it runs with these defaults. The budget stays: a feature that really runs away still ends in a structured error.
 
 Loops poll `ck_core::budget::poll()` (cheap: reads the clock every 16th call) or `expired()` and stop when it
 returns true. Polled today: every boolean attempt and the retry ladder, the imprint face-pair loop, the pattern
@@ -77,8 +84,8 @@ cross the 6 s mark with 8 workers sharing the machine. Remaining slow cases, by 
 * `case_34` (thin revolve, mirror, chamfers, thicken) and `case_644`, `case_2668`: the sliver-heavy display mesh of
   the final body; regen is 0.7 to 1.1 s, validate (tessellation and mesh check) 1.2 to 2.2 s in wasm. Near
   degenerate bodies (a 5e-4 high disc of radius 3) tessellate into ten thousands of triangles.
-* with the default budget (30 s per feature) a linear pattern with count 100 of a revolve or cylinder, followed by
-  fillet/chamfer on the result, still takes 5 to 30 s; it ends in `featureBudgetExceeded` or a result, never a trap.
+* with the default budget (120 s per feature) a linear pattern with count 100 of a revolve or cylinder, followed by
+  fillet/chamfer on the result, still takes 5 to 30 s on a quiet machine; it ends in `featureBudgetExceeded` or a result, never a trap.
   The cost is the boolean of a 100-instance tool, a matter of speed, not of a missing bound.
 * `invalid-result` (24): `TESSELLATION_OPEN` / `VOLUME_NONPOSITIVE` / `EDGE_OFF_SURFACE` on mirrored or revolved
   near-degenerate bodies; not crashes, unchanged by this work.

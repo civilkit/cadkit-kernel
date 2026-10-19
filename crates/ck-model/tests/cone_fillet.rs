@@ -62,6 +62,29 @@ fn cone_wall_volume(rb: f64, rt: f64, h: f64, t: f64) -> f64 {
     PI * (rb + rt) * l * t + PI * t * t * h
 }
 
+/// The wall's base is a ring normal to the sheet, so where the sheet starts on the plate it hovers over it by a thin
+/// wedge (inner circle on the plate, outer edge `t sin(a)` above it). Thicken sinks the wall into the body it is added
+/// to: the wedge, bounded by the base ring, the plate and the wall's cone continued down to the plate, is added. Volume
+/// of that wedge (outward thickening of a frustum `rb` -> `rt`, height `h`, thickness `t`): Pappus on the triangle.
+fn sunk_wedge(rb: f64, rt: f64, h: f64, t: f64) -> f64 {
+    let l = (h * h + (rb - rt) * (rb - rt)).sqrt();
+    let (nr, nh) = (h / l, (rb - rt) / l);
+    let e = (rb + t * nr, t * nh);
+    let c = e.0 + e.1 * l / h * (rb - rt) / l;
+    let area = 0.5 * (c - rb) * e.1;
+    2.0 * PI * (rb + e.0 + c) / 3.0 * area
+}
+
+/// The wedge of the R18.5 -> R11.5, 20 high, 2 thick wall of most fixtures.
+fn sunk() -> f64 {
+    sunk_wedge(18.5, 11.5, 20.0, 2.0)
+}
+
+/// What the R3 fillet of the inner foot adds and the R1 fillet of the outer foot adds to that wall (Pappus: area of the
+/// corner region times 2 pi times its centroid radius, 4.1017 at 17.171 and 0.09242 at 20.721).
+const R3_INNER_FOOT: f64 = 442.5339;
+const R1_OUTER_FOOT: f64 = 12.0324;
+
 #[test]
 fn loft_of_coaxial_circles_is_an_analytic_cone() {
     // solid loft R22 -> R17 on the plate: the two lateral halves fuse into the plate as cone faces
@@ -77,7 +100,7 @@ fn thickened_cone_sheet_on_plate_matches_area_times_thickness() {
     assert!(b.errors.is_empty(), "{:?}", b.errors);
     assert_eq!(b.issues, 0);
     assert_eq!(b.freeform, 0, "no free-form face is left");
-    let want = plate_volume() + cone_wall_volume(18.5, 11.5, 20.0, 2.0);
+    let want = plate_volume() + cone_wall_volume(18.5, 11.5, 20.0, 2.0) + sunk();
     assert!((b.volume - want).abs() < 1e-3 * want, "{} vs {}", b.volume, want);
 }
 
@@ -87,7 +110,7 @@ fn thickened_wide_base_cone_r21_5_to_r13_5_matches_area_times_thickness() {
     assert!(b.errors.is_empty(), "{:?}", b.errors);
     assert_eq!(b.issues, 0);
     assert_eq!(b.freeform, 0);
-    let want = plate_volume() + cone_wall_volume(21.5, 13.5, 27.0, 1.0);
+    let want = plate_volume() + cone_wall_volume(21.5, 13.5, 27.0, 1.0) + sunk_wedge(21.5, 13.5, 27.0, 1.0);
     assert!((b.volume - want).abs() < 1e-3 * want, "{} vs {}", b.volume, want);
 }
 
@@ -155,20 +178,22 @@ fn near(a: f64, want: f64) {
 #[test]
 fn one_arc_of_the_split_ring_fillets_the_whole_circle() {
     let both = ring(include_str!("../../../tools/cases/cone_fillet/fillet_rim.json")).volume;
-    near(both, 13211.8785);
+    near(both, 13211.8785 + sunk());
     near(ring(include_str!("../../../tools/cases/cone_fillet/fillet_rim_one_arc.json")).volume, both);
     let outer = ring(include_str!("../../../tools/cases/cone_fillet/fillet_rim_outer.json")).volume;
-    near(outer, 13209.9017);
+    near(outer, 13209.9017 + sunk());
     near(ring(include_str!("../../../tools/cases/cone_fillet/fillet_rim_outer_one_arc.json")).volume, outer);
     let foot = ring(include_str!("../../../tools/cases/cone_fillet/fillet_foot.json")).volume;
-    near(foot, 13670.2993);
+    near(foot, 13227.7687 + sunk() + R3_INNER_FOOT);
     near(ring(include_str!("../../../tools/cases/cone_fillet/fillet_foot_one_arc.json")).volume, foot);
 }
 
-/// The convex round-over of the wall's outer base edge is a ring too.
+/// The outer foot is an ordinary concave cone / plane edge (the wedge under the wall base is closed): a fillet there is
+/// the concave fillet tangent to the cone and the plate top, one ring, adding material. The original kernel rounds the
+/// hovering base corner over instead (13200.66, a loss of 27).
 #[test]
-fn round_over_of_the_wall_base_is_one_ring() {
-    near(ring(include_str!("../../../tools/cases/cone_fillet/fillet_foot_outer_round.json")).volume, 13200.6620);
+fn outer_foot_fillet_is_a_concave_ring() {
+    near(ring(include_str!("../../../tools/cases/cone_fillet/fillet_foot_outer.json")).volume, 13227.7687 + sunk() + R1_OUTER_FOOT);
 }
 
 /// The seam of the arcs does not depend on the cone's orientation in space.
@@ -178,13 +203,13 @@ fn fillets_do_not_depend_on_where_the_seam_is() {
         include_str!("../../../tools/cases/cone_fillet/fillet_rim_axis_top.json"),
         include_str!("../../../tools/cases/cone_fillet/fillet_rim_axis_right.json"),
     ] {
-        near(ring(src).volume, 13211.8785);
+        near(ring(src).volume, 13211.8785 + sunk());
     }
     for src in [
         include_str!("../../../tools/cases/cone_fillet/fillet_foot_axis_top.json"),
         include_str!("../../../tools/cases/cone_fillet/fillet_foot_axis_right.json"),
     ] {
-        near(ring(src).volume, 13670.2993);
+        near(ring(src).volume, 13227.7687 + sunk() + R3_INNER_FOOT);
     }
 }
 

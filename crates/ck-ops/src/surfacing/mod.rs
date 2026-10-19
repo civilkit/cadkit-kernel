@@ -2,6 +2,7 @@ pub mod boundary;
 pub mod extend;
 pub mod fair;
 pub mod fill;
+pub mod foot;
 pub mod knit;
 pub mod rebuild;
 pub mod sheet;
