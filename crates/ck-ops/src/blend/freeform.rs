@@ -951,11 +951,16 @@ fn build_tool(
     }
     let _ = links;
     orient_body(&mut tool);
-    let vol = ck_topo::mass::mass_props(&tool).volume;
+    // a sign test only (the shell was just oriented outward): the coarse tier is enough
+    let tool_faces: Vec<_> = tool.face_ids().collect();
+    let vol = ck_topo::mass::signed_volume_quick(&tool, &tool_faces);
     if !(vol > 0.0) {
         return Err(failed(&format!("tool volume {vol}")));
     }
-    dbg(&format!("tool built: {nu} stations, volume {vol:.3}, issues {:?}", ck_topo::check::check(&tool, 1e-5).len()));
+    if std::env::var_os("CK_BLEND_DEBUG").is_some() {
+        let vol = ck_topo::mass::mass_props(&tool).volume;
+        dbg(&format!("tool built: {nu} stations, volume {vol:.3}, issues {:?}", ck_topo::check::check(&tool, 1e-5).len()));
+    }
     Ok(tool)
 }
 
