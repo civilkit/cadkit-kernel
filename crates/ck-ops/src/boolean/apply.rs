@@ -438,7 +438,77 @@ fn boolean_at(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> {
         }
         return Err("booleanFailed".into());
     }
+    // A shell whose Euler characteristic is odd (V-E+F-(L-F)) cannot be a closed
+    // orientable boundary: an exact tangency leaves the result non-manifold at the
+    // contact (three sheets meet along a line, or two loops meet at a point). The
+    // geometry is assembled, but the body is not valid; refuse it structurally
+    // rather than return an invalid solid with a plausible volume.
+    if let Some(chi) = odd_shell(&body) {
+        return Err(format!(
+            "booleanTangent;euler={chi};hint=the operands touch tangentially (a wall grazes the other with no crossing); move one operand or widen the model tolerance"
+        ));
+    }
     Ok(BoolOut { body, no_effect: false, mismatch: None })
+}
+
+/// The Euler characteristic of the first shell component for which
+/// `V - E + F - (L - F)` is odd or above 2 (`None` when every component is
+/// consistent). Seam edges are one edge with two coedges of one face.
+fn odd_shell(b: &Body) -> Option<i64> {
+    use std::collections::{HashMap, HashSet};
+    let faces: Vec<_> = b.face_ids().collect();
+    let mut by_edge: HashMap<usize, Vec<usize>> = HashMap::default();
+    for (i, &f) in faces.iter().enumerate() {
+        for e in b.face_edges(f) {
+            by_edge.entry(e.idx()).or_default().push(i);
+        }
+    }
+    let mut seen = vec![false; faces.len()];
+    for start in 0..faces.len() {
+        if seen[start] {
+            continue;
+        }
+        let mut comp = vec![start];
+        seen[start] = true;
+        let mut k = 0;
+        while k < comp.len() {
+            let i = comp[k];
+            k += 1;
+            for e in b.face_edges(faces[i]) {
+                for &j in by_edge.get(&e.idx()).map_or(&[][..], |v| v) {
+                    if !seen[j] {
+                        seen[j] = true;
+                        comp.push(j);
+                    }
+                }
+            }
+        }
+        let (mut es, mut vs, mut loops) = (HashSet::new(), HashSet::new(), 0i64);
+        let mut curved = false;
+        for &i in &comp {
+            let f = faces[i];
+            curved |= !matches!(b.face(f).surface, ck_geom::surface::Surface::Plane { .. });
+            loops += b.face(f).loops.len() as i64;
+            for e in b.face_edges(f) {
+                if es.insert(e.idx()) {
+                    let ed = b.edge(e);
+                    vs.insert(ed.v0.idx());
+                    vs.insert(ed.v1.idx());
+                }
+            }
+        }
+        // only a smooth (curved) tangency: two flat pieces touching along an edge or a
+        // point is a separate contact case, not a wall grazing another wall
+        if !curved {
+            continue;
+        }
+        let f = comp.len() as i64;
+        let chi = vs.len() as i64 - es.len() as i64 + f - (loops - f);
+        if chi % 2 != 0 || chi > 2 {
+            return Some(chi);
+        }
+    }
+    None
 }
 
 /// The class of the other body's region whose faces `op` discards on side
