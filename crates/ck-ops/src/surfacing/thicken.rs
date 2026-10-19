@@ -333,25 +333,6 @@ fn offset_cylinder_rim(c: &Curve, t0: f64, t1: f64, cf: &Frame, _r: f64, d: f64,
     }
 }
 
-fn closest_t(c: &Curve, q: Vec3) -> (f64, Vec3) {
-    match c {
-        Curve::Line { o, d } => {
-            let t = (q - *o).dot(*d);
-            (t, *o + d.scale(t))
-        }
-        Curve::Circle { frame, r } => {
-            let u = q - frame.o;
-            let t = u.y.atan2(u.x);
-            let p = frame.o + frame.x.scale(r * t.cos()) + frame.y.scale(r * t.sin());
-            (t, p)
-        }
-        _ => {
-            let t = c.closest_param(q);
-            (t, c.eval(t))
-        }
-    }
-}
-
 /// Plane constant `n·p = c` of a face (planes exactly, others at their
 /// domain middle).
 fn plane_const(s: &Surface, n: Vec3) -> f64 {
@@ -729,8 +710,9 @@ fn edge_end(b: &Body, (e, rev): (EdgeId, bool)) -> VertexId {
     }
 }
 
-/// Image of one open rim edge: translated by `d·nf`, extended at each end
-/// that touches a shared edge, to that corner's miter line.
+/// Image of one open rim edge: translated by `d·nf`, its ends carried onto the layer's corners —
+/// the miter image of a crease the end sits on (shared with the crease's own image, so the three
+/// edges meet in one vertex), the plain normal offset where there is no crease.
 #[allow(clippy::too_many_arguments)]
 fn extend_open_edge(
     sheet: &Body,
@@ -792,7 +774,11 @@ fn extend_open_edge(
             return Ok(());
         }
     }
-    let (curve, mut t0, mut t1) = translate_curve(&se.curve, se.t0, se.t1, nf.scale(d));
+    let (translated, t0x, t1x) = translate_curve(&se.curve, se.t0, se.t1, nf.scale(d));
+    // the layer's corners at the rim's ends: the plain normal offset of the sheet's corner until a
+    // crease's miter says otherwise (the image must share its vertex with the crease's image)
+    let mut corners = [translated.eval(t0x), translated.eval(t1x)];
+    let mut cornered = [false, false];
     for end in [0usize, 1] {
         let te = if end == 0 { se.t0 } else { se.t1 };
         let p = se.curve.eval(te);
@@ -826,29 +812,82 @@ fn extend_open_edge(
         let g = *sheet.edge_faces(se2).iter().find(|&&g| g != f).unwrap();
         let gi = faces.iter().position(|&x| x == g).unwrap();
         let ng = normals[gi];
-        let denom = u.dot(ng);
-        if denom.abs() < 1e-9 {
-            return Err(ThickenError::code("thickenReach"));
-        }
-        let s = (plane_const(&sheet.face(g).surface, ng) + d - ng.dot(p)) / denom;
-        let q = p + nf.scale(d) + u.scale(s);
-        // q must lie within the neighbour pair's miter segment
         let (ma, mb) = shared_miter[&se2];
-        let along = (mb - ma).normalize();
-        let sq = (q - ma).dot(along);
-        let len = (mb - ma).len();
-        if sq < -tol || sq > len + tol {
-            return Err(ThickenError::detail("thickenReach", "the offset reaches past a face"));
-        }
-        let (tq, _) = closest_t(&curve, q);
-        if end == 0 {
-            t0 = tq;
+        // The rim's end sitting on an end of the shared edge: its corner is that end's miter
+        // image, so the rim's image, the crease's image and the neighbour's rim image all carry
+        // the same sheet corner. Solving the two offset planes for the corner misses that vertex
+        // by the shift along the crease (the corner of a sheet whose sections are not perpendicular
+        // to their rails), which is what the original reports as `thickenReach`.
+        let s2 = sheet.edge(se2);
+        let d0 = s2.curve.eval(s2.t0).dist(p);
+        let d1 = s2.curve.eval(s2.t1).dist(p);
+        let q = if d0 <= tol || d1 <= tol {
+            if d0 <= d1 { ma } else { mb }
         } else {
-            t1 = tq;
-        }
+            let denom = u.dot(ng);
+            if denom.abs() < 1e-9 {
+                return Err(ThickenError::code("thickenReach"));
+            }
+            // the translated rim meets the neighbour's offset plane (the start point is already
+            // offset by nf·d, which contributes ng·nf·d there)
+            let s = (plane_const(&sheet.face(g).surface, ng) + d - ng.dot(p) - d * ng.dot(nf)) / denom;
+            let q = p + nf.scale(d) + u.scale(s);
+            // q must lie within the neighbour pair's miter segment
+            let along = (mb - ma).normalize();
+            let sq = (q - ma).dot(along);
+            let len = (mb - ma).len();
+            if sq < -tol || sq > len + tol {
+                return Err(ThickenError::detail("thickenReach", "the offset reaches past a face"));
+            }
+            q
+        };
+        corners[end] = q;
+        cornered[end] = true;
     }
+    // the image: the translated rim when its corners are the plain offsets (the usual case), else
+    // the straight edge between the two corners (a straight rim) or the corrections blended along
+    // a curved one, so the rim's ends land exactly on the crease's miter corners
+    let (curve, t0, t1) = if !cornered[0] && !cornered[1] {
+        (translated, t0x, t1x)
+    } else {
+        let e0 = corners[0] - translated.eval(t0x);
+        let e1 = corners[1] - translated.eval(t1x);
+        if e0.len() <= tol && e1.len() <= tol {
+            (translated, t0x, t1x)
+        } else if matches!(translated, Curve::Line { .. }) {
+            let (a, b) = (corners[0], corners[1]);
+            if (b - a).len() < 1e-9 {
+                return Err(ThickenError::detail("thickenTooThick", "an edge vanishes"));
+            }
+            (Curve::line_through(a, b), 0.0, (b - a).len())
+        } else {
+            blend_rim(&translated, t0x, t1x, e0, e1, tol)?
+        }
+    };
     images.insert(e, (curve, t0, t1));
     Ok(())
+}
+
+/// A curved rim edge whose ends are shifted onto their miter corners: the corrections `e0`, `e1`
+/// blended linearly along the translated curve, refit until the interpolant follows the points.
+fn blend_rim(c: &Curve, t0: f64, t1: f64, e0: Vec3, e1: Vec3, tol: f64) -> Result<(Curve, f64, f64), ThickenError> {
+    let point = |s: f64| c.eval(t0 + (t1 - t0) * s) + e0.scale(1.0 - s) + e1.scale(s);
+    let mut n = 16usize;
+    loop {
+        let pts: Vec<Vec3> = (0..=n).map(|k| point(k as f64 / n as f64)).collect();
+        let fitted = ck_geom::fit::interpolate(&pts, 3, ck_geom::fit::Param::ChordLength)
+            .map_err(|m| ThickenError::detail("offsetUnsupported", format!("rim fit: {m}")))?;
+        let (a, b) = fitted.domain();
+        let mut dev = 0.0f64;
+        for k in 0..n {
+            let exact = point((k as f64 + 0.5) / n as f64);
+            dev = dev.max(fitted.eval(fitted.closest_param(exact)).dist(exact));
+        }
+        if dev <= tol.max(2e-6) || n >= 512 {
+            return Ok((Curve::BSpline(fitted), a, b));
+        }
+        n *= 2;
+    }
 }
 
 /// Merge coincident vertices (miter corners) and kill leftovers.
