@@ -32,7 +32,7 @@ use ck_geom::curve2::Curve2;
 use ck_geom::pcurve::{exact_pcurve, pcurve_of, pcurve_of_dense};
 use ck_geom::surface::Surface;
 use ck_geom::{Vec2, Vec3};
-use ck_topo::body::{Body, FaceName};
+use ck_topo::body::{Body, FaceName, VertexId};
 use std::f64::consts::TAU;
 
 /// Directed arrangement edge.
@@ -1069,8 +1069,107 @@ pub fn build(arr: &Arrangement, faces: &[OutFace]) -> Body {
             }
         }
     }
+    split_pinch_vertices(&mut b);
     ck_topo::region::rebuild_lumps(&mut b);
     b
+}
+
+/// A vertex where the face loops pair only part of its incident edges is a pinch:
+/// two boundary branches touch at one point (an exact tangency, e.g. a tool wall
+/// grazing the host wall and opening two holes that meet at the tangent point).
+/// Split it into one coincident vertex per pairing component, so each loop is
+/// manifold again; the geometry is unchanged, only the incidence.
+fn split_pinch_vertices(b: &mut Body) {
+    use std::collections::HashMap;
+    let nv = b.vertices.len();
+    let mut inc: HashMap<usize, Vec<usize>> = HashMap::default();
+    for e in b.edge_ids() {
+        let ed = b.edge(e);
+        inc.entry(ed.v0.idx()).or_default().push(e.idx());
+        if ed.v1.idx() != ed.v0.idx() {
+            inc.entry(ed.v1.idx()).or_default().push(e.idx());
+        }
+    }
+    fn find(up: &mut HashMap<usize, usize>, x: usize) -> usize {
+        let p = up[&x];
+        if p == x {
+            x
+        } else {
+            let r = find(up, p);
+            up.insert(x, r);
+            r
+        }
+    }
+    // edges that consecutive loop coedges join at a vertex must keep one vertex:
+    // collect those pairs per vertex in one pass over the loops
+    let mut joins: HashMap<usize, Vec<(usize, usize)>> = HashMap::default();
+    for f in b.face_ids() {
+        for &l in &b.face(f).loops {
+            let cs = &b.lp(l).coedges;
+            let n = cs.len();
+            for i in 0..n {
+                let (c, d) = (cs[i], cs[(i + 1) % n]);
+                let v = b.coedge_end(c).idx();
+                joins.entry(v).or_default().push((b.coedge(c).edge.idx(), b.coedge(d).edge.idx()));
+            }
+        }
+    }
+    for v in 0..nv {
+        let Some(es) = inc.get(&v) else { continue };
+        if es.len() < 2 {
+            continue;
+        }
+        let mut up: HashMap<usize, usize> = es.iter().map(|&e| (e, e)).collect();
+        if let Some(js) = joins.get(&v) {
+            for &(e1, e2) in js {
+                if !up.contains_key(&e1) || !up.contains_key(&e2) {
+                    continue;
+                }
+                let (r1, r2) = (find(&mut up, e1), find(&mut up, e2));
+                if r1 != r2 {
+                    up.insert(r1.max(r2), r1.min(r2));
+                }
+            }
+        }
+        let mut groups: HashMap<usize, Vec<usize>> = HashMap::default();
+        for &e in es {
+            let r = find(&mut up, e);
+            groups.entry(r).or_default().push(e);
+        }
+        if groups.len() < 2 {
+            continue;
+        }
+        let p = b.vertices[v].p;
+        let mut gs: Vec<Vec<usize>> = groups.into_values().collect();
+        gs.sort();
+        let mut rest = gs.into_iter();
+        // the edge curve ends of a component do not meet exactly at the pinched point
+        // (the SSI is numerically fuzzy there): give the vertex the gap as its tolerance
+        let gap = |b: &Body, g: &[usize]| -> f64 {
+            g.iter()
+                .map(|&e| {
+                    let ed = &b.edges[e];
+                    let t = if ed.v0.idx() == v { ed.t0 } else { ed.t1 };
+                    p.dist(ed.curve.eval(t))
+                })
+                .fold(0.0, f64::max)
+        };
+        if let Some(g) = rest.next() {
+            b.vertices[v].tol = b.vertices[v].tol.max(gap(b, &g)); // the first component keeps `v`
+        }
+        for g in rest {
+            let nvid: VertexId = b.add_vertex(p);
+            b.vertices[nvid.idx()].tol = gap(b, &g);
+            for e in g {
+                if b.edges[e].v0.idx() == v {
+                    b.edges[e].v0 = nvid;
+                }
+                if b.edges[e].v1.idx() == v {
+                    b.edges[e].v1 = nvid;
+                }
+            }
+        }
+    }
 }
 
 /// A loop through a pole of a periodic surface (a sphere cap bounded by one
