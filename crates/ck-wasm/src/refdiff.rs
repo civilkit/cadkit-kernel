@@ -8,6 +8,7 @@
 //! dimension edits that keep the topology do not warn.
 
 use crate::engine::{Exec, TraceSink};
+use crate::regen_cache;
 use ck_core::linalg::Vec3;
 use ck_json::{Json, Obj};
 use ck_model::regen::{self, FeatureError, FeatureExec, RegenOpts, RegenState};
@@ -139,14 +140,20 @@ struct Run {
     ids: Vec<String>,
 }
 
-fn run(part: &Part) -> Run {
+/// Regenerate `part` privately and record its references. `hit`: a cached state of a prefix of `part` to continue from
+/// (the features before it are not run, so their references are not recorded: both documents share them unchanged).
+fn run(part: &Part, hit: Option<regen_cache::Hit>) -> Run {
     let mut trace = Trace::off();
     let mut rec = Recorder {
         inner: Exec { brep: ck_model::features::Brep::new(), sink: TraceSink::new(&mut trace), auto_heal: None },
         refs: vec![],
         frames: vec![],
     };
-    let res = regen::regen(part, &RegenOpts::default(), &mut rec);
+    let resume = hit.map(|h| {
+        rec.inner.brep.load(&h.snap);
+        regen::Resume { next: h.next, result: h.result, axes: h.axes }
+    });
+    let res = regen::regen_from(part, &RegenOpts::default(), &mut rec, resume, None);
     // sketch / plane features reach faces through face_frame, not exec
     for f in &part.features {
         if f.suppressed || rec.refs.iter().any(|(id, _)| *id == f.id) {
@@ -169,10 +176,36 @@ fn run(part: &Part) -> Run {
     }
 }
 
+/// The cached state of the prefix both documents share (so neither has to rebuild it), when there is one.
+/// `None` (a cold or evicted prefix, `noCache`): both are regenerated from the start.
+fn shared_prefix(base: &Part, base_json: &Json, part: &Part, part_json: &Json) -> Option<(usize, regen_cache::Hit, regen_cache::Hit)> {
+    let ko = regen_cache::KeyOpts { sketch_status: false, solve_sketches: false, auto_heal: None };
+    let o = RegenOpts::default();
+    let (na, nb) = (regen::run_len(base, &o), regen::run_len(part, &o));
+    let (ka, kb) = (regen_cache::chain_keys(base_json, &ko, na), regen_cache::chain_keys(part_json, &ko, nb));
+    // keys[i] covers the document level and features[..i]: the longest i where both agree
+    let p = (0..ka.len().min(kb.len())).take_while(|&i| ka[i] == kb[i]).count().saturating_sub(1);
+    if p == 0 {
+        return None;
+    }
+    let ha = regen_cache::with(|c| c.lookup(&ka[..=p]))?;
+    let hb = regen_cache::with(|c| c.lookup(&kb[..=p]))?;
+    Some((p, ha, hb))
+}
+
 pub fn reply(cx: &mut Cx) -> Result<Json, String> {
-    let base = Part::from_json(cx.msg.get("base").unwrap_or(&Json::Null))?;
-    let part = Part::from_json(cx.msg.get("part").unwrap_or(&Json::Null))?;
-    let (a, b) = (run(&base), run(&part));
+    let (base_json, part_json) = (cx.msg.get("base").unwrap_or(&Json::Null), cx.msg.get("part").unwrap_or(&Json::Null));
+    let base = Part::from_json(base_json)?;
+    let part = Part::from_json(part_json)?;
+    // Everything before the first changed feature is identical in both documents, so a reference there cannot have been
+    // re-pointed: both runs continue from the cached state of that prefix and only the rest is rebuilt. `noCache: true`
+    // regenerates both from the start (the reference behaviour).
+    let shared = if cx.msg.get_bool("noCache") == Some(true) { None } else { shared_prefix(&base, base_json, &part, part_json) };
+    let (resumed_at, (ha, hb)) = match shared {
+        Some((_, ha, hb)) => (ha.next, (Some(ha), Some(hb))),
+        None => (0, (None, None)),
+    };
+    let (a, b) = (run(&base, ha), run(&part, hb));
     let mut warnings = vec![];
     let mut checked = 0usize;
     let mut new_runs: Vec<&(String, Vec<Recorded>)> = b.refs.iter().collect();
@@ -207,11 +240,15 @@ pub fn reply(cx: &mut Cx) -> Result<Json, String> {
     let common_a: Vec<&String> = a.ids.iter().filter(|i| b.ids.contains(i)).collect();
     let common_b: Vec<&String> = b.ids.iter().filter(|i| a.ids.contains(i)).collect();
     let errs = b.errors.iter().map(|(f, c)| Json::Arr(vec![Json::from(f.as_str()), Json::from(c.as_str())])).collect();
-    Ok(Obj::new()
+    let mut out = Obj::new()
         .put("ok", warnings.is_empty())
         .put("checked", checked as f64)
         .put("warnings", Json::Arr(warnings))
         .put("features", Obj::new().put("removed", Json::Arr(removed)).put("added", Json::Arr(added)).put("reordered", common_a != common_b))
-        .put("errors", Json::Arr(errs))
-        .build())
+        .put("errors", Json::Arr(errs));
+    // which features were skipped: `checked` then counts only the references from the first changed feature on
+    if cx.msg.get_bool("cacheStats") == Some(true) {
+        out = out.put("cacheStats", Obj::new().put("resumedAt", resumed_at as f64).build());
+    }
+    Ok(out.build())
 }
