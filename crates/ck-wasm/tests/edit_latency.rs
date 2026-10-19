@@ -65,22 +65,40 @@ fn fan_edit_latency() {
             }
             return;
         }
-        let edits: [(&str, &str, &str); 3] = [
-            ("last (F49)", r#""radius": 0.5"#, r#""radius": 0.6"#),
-            ("F48", r#""radius": 2"#, r#""radius": 1.9"#),
-            ("F42", r#""angle": 360"#, r#""angle": 359"#),
+        // CK_EDITS="F50:angle:1:0.9;F43:depth:14:13" edits other documents: feature id, numeric key, old and new value
+        let custom: Vec<(String, String, String)> = std::env::var("CK_EDITS")
+            .map(|v| {
+                v.split(';')
+                    .map(|e| {
+                        let p: Vec<&str> = e.split(':').collect();
+                        (format!("{} (edit {}:{})", p[0], p[1], p[3]), format!("\"{}\": {}", p[1], p[2]), format!("\"{}\": {}", p[1], p[3]))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let custom_ids: Vec<String> = std::env::var("CK_EDITS").map(|v| v.split(';').map(|e| e.split(':').next().unwrap().to_string()).collect()).unwrap_or_default();
+        let defaults = [
+            ("last (F49)".to_string(), r#""radius": 0.5"#.to_string(), r#""radius": 0.6"#.to_string()),
+            ("F48".to_string(), r#""radius": 2"#.to_string(), r#""radius": 1.9"#.to_string()),
+            ("F42".to_string(), r#""angle": 360"#.to_string(), r#""angle": 359"#.to_string()),
         ];
-        for (name, a, b) in edits {
+        let edits = if custom.is_empty() { defaults.to_vec() } else { custom };
+        for (k, (name, a, b)) in edits.iter().enumerate() {
+            let (a, b) = (a.as_str(), b.as_str());
             assert!(base.contains(a), "{name}");
             // replace the first occurrence after the feature id
-            let id = if name.starts_with("last") { "\"F49\"" } else if name == "F48" { "\"F48\"" } else { "\"F42\"" };
-            let at = base.find(&format!("\"id\": {id}")).unwrap();
-            let rel = base[at..].find(a).unwrap();
+            let id = if custom_ids.is_empty() { (if name.starts_with("last") { "F49" } else if name == "F48" { "F48" } else { "F42" }).to_string() } else { custom_ids[k].clone() };
+            let at = base.find(&format!("\"id\": \"{id}\"")).unwrap();
+            // (the key sits after the id in some documents and before it in others)
+            let pos = match base[at..].find(a) {
+                Some(r) => at + r,
+                _ => base[..at].rfind(a).unwrap(),
+            };
             let mut e = base.clone();
-            e.replace_range(at + rel..at + rel + a.len(), b);
+            e.replace_range(pos..pos + a.len(), b);
             let (r, t, i) = regen(&e, "main");
             let st = parse(&r).get("result").unwrap().get("cacheStats").unwrap().clone();
-            println!("edit {name:10} {t:6.2}s {i:7.2} G  reply {} KB  digest {:016x} reused {} ran {} tessLookups {} hits {}", r.len() / 1024, digest(&r),
+            println!("edit {name:24} {t:6.2}s {i:7.2} G  reply {} KB  digest {:016x} reused {} ran {} tessLookups {} hits {}", r.len() / 1024, digest(&r),
                 st.get_f64("reusedFeatures").unwrap(), st.get_f64("ranFeatures").unwrap(), st.get_f64("tessFaceLookups").unwrap(), st.get_f64("tessFaceHits").unwrap());
             let (_, t2, i2) = regen(&base, "main");
             println!("  back to base  {t2:6.2}s {i2:7.2} G");
