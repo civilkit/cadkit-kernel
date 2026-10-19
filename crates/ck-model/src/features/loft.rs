@@ -3,7 +3,9 @@
 //! Check order (oracle probes):
 //! 1. every `sketches` entry names a regenerated sketch (`missingSketch`);
 //! 2. fewer than two sketches -> `loftProfiles`;
-//! 3. per sketch, in order: a solid loft needs a region (none ->
+//! 3. per sketch, in order: a solid loft needs a region (a non-finite point
+//!    is `invalidValue {point, detail, hint}` first, see
+//!    [`crate::features::extrude::finite_points`]; none ->
 //!    `noClosedProfile`, several -> `loftProfile`; islands are ignored);
 //!    a surface loft takes one region (closed profile) or, with no region,
 //!    the sketch's curves as ONE open chain (anything else ->
@@ -91,6 +93,7 @@ fn point_of(sk: &SketchResult) -> Option<Vec3> {
 
 /// The profile of one sketch (see the module header for the rules).
 fn profile_of(sk: &SketchResult, surface: bool) -> Result<(ProfileIn, Vec<Seg>), FeatureError> {
+    super::extrude::finite_points(sk)?;
     let regions = &sk.profiles.regions;
     if regions.len() > 1 {
         return Err(FeatureError::new(LOFT_PROFILE));
