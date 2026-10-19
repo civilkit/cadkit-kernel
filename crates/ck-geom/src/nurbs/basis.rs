@@ -24,6 +24,45 @@ pub fn find_span(n: usize, p: usize, u: f64, knots: &[f64]) -> usize {
         return p;
     }
     let (mut lo, mut hi) = (p, n + 1);
+    // The answer is the one span with `knots[s] <= u < knots[s + 1]` (p < ... <= n here). Guess it from the
+    // position of `u` in the domain (the knots of a fitted surface are nearly uniform), try the guess and its
+    // neighbours, and bisect only inside the bracket that the failed tries leave; every step keeps
+    // `knots[lo] <= u < knots[hi]`, so the result is the bisection's.
+    if hi - lo > 4 {
+        let (k0, k1) = (knots[p], knots[n + 1]);
+        let t = (u - k0) / (k1 - k0);
+        if t >= 0.0 && t < 1.0 {
+            let g = (p + (t * (n + 1 - p) as f64) as usize).min(n);
+            if knots[g] <= u {
+                if u < knots[g + 1] {
+                    return g;
+                }
+                lo = g + 1;
+                if lo <= n && u < knots[lo + 1] {
+                    return lo;
+                }
+                if lo + 1 <= n && knots[lo + 1] <= u {
+                    lo += 1;
+                    if u < knots[lo + 1] {
+                        return lo;
+                    }
+                    lo += 1;
+                }
+            } else {
+                hi = g;
+                if hi > p && knots[hi - 1] <= u {
+                    return hi - 1;
+                }
+                if hi - 1 > p {
+                    hi -= 1;
+                    if hi > p && knots[hi - 1] <= u {
+                        return hi - 1;
+                    }
+                    hi -= 1;
+                }
+            }
+        }
+    }
     while hi - lo > 1 {
         let mid = (lo + hi) >> 1;
         if u < knots[mid] {
@@ -418,6 +457,59 @@ pub fn binomial(n: usize, k: usize) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The bisection `find_span` used to be.
+    fn find_span_bisect(n: usize, p: usize, u: f64, knots: &[f64]) -> usize {
+        if u >= knots[n + 1] {
+            let mut o = n;
+            while o > p && knots[o] >= knots[n + 1] {
+                o -= 1;
+            }
+            return o;
+        }
+        if u <= knots[p] {
+            return p;
+        }
+        let (mut lo, mut hi) = (p, n + 1);
+        while hi - lo > 1 {
+            let mid = (lo + hi) >> 1;
+            if u < knots[mid] {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        }
+        lo
+    }
+
+    /// The guessed `find_span` answers what the bisection did, on uniform, skewed and repeated knots.
+    #[test]
+    fn find_span_matches_the_bisection() {
+        let mut seed = 99u64;
+        let mut rnd = || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for case in 0..400 {
+            let p = 1 + case % 5;
+            let spans = 3 + (rnd() * 60.0) as usize;
+            // interior knots: uniform, skewed or with repeats
+            let mut inner: Vec<f64> = (1..spans).map(|i| match case % 3 { 0 => i as f64 / spans as f64, 1 => (i as f64 / spans as f64).powi(3), _ => ((rnd() * spans as f64).floor()) / spans as f64 }).collect();
+            inner.sort_by(f64::total_cmp);
+            let mut k = vec![0.0; p + 1];
+            k.extend(inner);
+            k.extend(std::iter::repeat(1.0).take(p + 1));
+            let n = k.len() - p - 2;
+            let mut us: Vec<f64> = (0..300).map(|_| rnd() * 1.2 - 0.1).collect();
+            us.extend(k.iter().copied());
+            us.extend(k.iter().map(|x| f64::from_bits(x.to_bits() + 1)));
+            us.extend(k.iter().map(|x| f64::from_bits(x.to_bits().wrapping_sub(1))));
+            for u in us {
+                assert_eq!(find_span(n, p, u, &k), find_span_bisect(n, p, u, &k), "p {p} n {n} u {u} knots {k:?}");
+            }
+        }
+    }
+
 
     // P&T Ex2.3: U = {0,0,0,1,2,3,4,4,5,5,5}, p=2, u=5/2
     const U: [f64; 11] = [0., 0., 0., 1., 2., 3., 4., 4., 5., 5., 5.];
