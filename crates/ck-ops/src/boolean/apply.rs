@@ -21,7 +21,9 @@ use super::Op;
 use ck_core::xform::Xform;
 use ck_geom::Vec3;
 use ck_topo::body::Body;
-use ck_topo::check::{check, Issue};
+use ck_topo::check::Issue;
+#[cfg(test)]
+use ck_topo::check::check;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BoolOut {
@@ -352,7 +354,8 @@ fn boolean_at_merge(a: &Body, b: &Body, op: Op, tol: f64, merge: bool) -> Result
         return Ok(BoolOut { body: a0.clone(), no_effect: true, mismatch: None });
     }
     let mut body = build(&arr, &faces);
-    let mut issues = check(&body, tol);
+    // (only the connectivity issues are used below)
+    let mut issues = ck_topo::check::check_topology(&body, tol);
     // two lumps of one operand touching along a line (the two half rings of a thin-wall extrude of two
     // arcs) have distinct but coincident edges that the arrangement welds into one edge of four faces:
     // that edge is the input's own contact, not a failure of the boolean (checked lazily, only when
@@ -397,7 +400,7 @@ fn boolean_at_merge(a: &Body, b: &Body, op: Op, tol: f64, merge: bool) -> Result
             .collect();
         if !contact.is_empty() && super::contact::split_contact_edges(&mut body, &contact) > 0 {
             ck_topo::region::rebuild_lumps(&mut body);
-            issues = check(&body, tol);
+            issues = ck_topo::check::check_topology(&body, tol);
         }
     }
     let bad_issues: Vec<_> = issues

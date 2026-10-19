@@ -1956,9 +1956,7 @@ fn apply_tool_once(
     }
     let mut body = build(&arr, &faces_out);
     super::freeform::drop_zero_edges(&mut body, 1e-4);
-    let bad = ck_topo::check::check(&body, tol)
-        .into_iter()
-        .any(|i| matches!(i, ck_topo::check::Issue::OpenEdge(_) | ck_topo::check::Issue::BrokenLoop(..)));
+    let bad = ck_topo::check::has_open_or_broken(&body, tol);
     if bad {
         dbg_fail(&format!("check: {:?}", ck_topo::check::check(&body, tol)));
         if std::env::var_os("CK_BLEND_DEBUG").is_some() {

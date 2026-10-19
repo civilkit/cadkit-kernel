@@ -55,11 +55,19 @@ fn fan_edit_latency() {
         println!("cold            {t:6.2}s {i:7.2} G  reply {} KB  digest {:016x}", r.len() / 1024, digest(&r));
         // CK_LOOP=n: n edits of the last feature's radius (distinct values), for a sampling profiler
         if let Some(n) = std::env::var("CK_LOOP").ok().and_then(|v| v.parse::<usize>().ok()) {
+            // the first CK_EDITS entry (default: the last fan fillet's radius) with a different new value each time
+            let e = std::env::var("CK_EDITS").unwrap_or_else(|_| "F49:radius:0.5:0.51".into());
+            let p: Vec<&str> = e.split(';').next().unwrap().split(':').collect();
+            let new0: f64 = p[3].parse().unwrap();
             for k in 0..n {
-                let at = base.find("\"id\": \"F49\"").unwrap();
-                let rel = base[at..].find("\"radius\": 0.5").unwrap();
+                let at = base.find(&format!("\"id\": \"{}\"", p[0])).unwrap();
+                let a = format!("\"{}\": {}", p[1], p[2]);
+                let pos = match base[at..].find(&a) {
+                    Some(r) => at + r,
+                    _ => base[..at].rfind(&a).unwrap(),
+                };
                 let mut e = base.clone();
-                e.replace_range(at + rel..at + rel + 13, &format!("\"radius\": 0.{}", 51 + k));
+                e.replace_range(pos..pos + a.len(), &format!("\"{}\": {}", p[1], new0 + 0.0021 * k as f64));
                 let (_, t, i) = regen(&e, "main");
                 println!("loop {k} {t:6.2}s {i:7.2} G");
             }

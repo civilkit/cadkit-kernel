@@ -91,6 +91,58 @@ pub fn check(b: &Body, tol: f64) -> Vec<Issue> {
     out
 }
 
+/// The connectivity issues of [`check`], in its order: `OpenEdge`, `BadPairing`, `NonManifoldEdge`, `BrokenLoop`. The
+/// geometric checks (edge lengths, vertex and pcurve deviation) are skipped; they dominate `check` on a big body.
+pub fn check_topology(b: &Body, tol: f64) -> Vec<Issue> {
+    let mut out = vec![];
+    for e in b.edge_ids() {
+        let cs = b.edge_coedges(e);
+        match cs.len() {
+            0 => {}
+            1 => out.push(Issue::OpenEdge(e)),
+            2 => {
+                if b.coedge(cs[0]).rev == b.coedge(cs[1]).rev {
+                    out.push(Issue::BadPairing(e));
+                }
+            }
+            n => out.push(Issue::NonManifoldEdge(e, n)),
+        }
+    }
+    for f in b.face_ids() {
+        for &l in &b.face(f).loops {
+            let cs = &b.lp(l).coedges;
+            for i in 0..cs.len() {
+                let (c, n) = (cs[i], cs[(i + 1) % cs.len()]);
+                let (pe, ps) = (b.vertex(b.coedge_end(c)).p, b.vertex(b.coedge_start(n)).p);
+                if b.coedge_end(c) != b.coedge_start(n) && pe.dist(ps) > tol {
+                    out.push(Issue::BrokenLoop(l, c));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// `check(b, tol)` contains an [`Issue::OpenEdge`] or [`Issue::BrokenLoop`], without the geometric checks (edge lengths,
+/// pcurve deviation) that dominate `check` on a big body.
+pub fn has_open_or_broken(b: &Body, tol: f64) -> bool {
+    if b.edge_ids().any(|e| b.edge_coedges(e).len() == 1) {
+        return true;
+    }
+    for f in b.face_ids() {
+        for &l in &b.face(f).loops {
+            let cs = &b.lp(l).coedges;
+            for i in 0..cs.len() {
+                let (c, n) = (cs[i], cs[(i + 1) % cs.len()]);
+                if b.coedge_end(c) != b.coedge_start(n) && b.vertex(b.coedge_end(c)).p.dist(b.vertex(b.coedge_start(n)).p) > tol {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 /// Euler-Poincaré characteristic V - E + F - (L - F) per body (= 2·(S - G)
 /// for closed manifold shells). Seams and pole vertices count as usual.
 pub fn euler(b: &Body) -> i64 {
@@ -117,6 +169,27 @@ mod tests {
         assert!(check(&b, 1e-9).is_empty());
         assert!(is_closed_manifold(&b));
         assert_eq!(euler(&b), 2);
+    }
+
+    #[test]
+    fn topology_issues_are_the_connectivity_part_of_check() {
+        let mut b = box_body();
+        crate::edit::delete_face(&mut b, crate::body::FaceId(0));
+        let conn = |i: &&Issue| matches!(i, Issue::OpenEdge(_) | Issue::BadPairing(_) | Issue::NonManifoldEdge(..) | Issue::BrokenLoop(..));
+        let full = check(&b, 1e-9);
+        let want: Vec<&Issue> = full.iter().filter(conn).collect();
+        assert_eq!(check_topology(&b, 1e-9).iter().collect::<Vec<_>>(), want);
+        assert!(!want.is_empty());
+    }
+
+    #[test]
+    fn open_or_broken_agrees_with_check() {
+        let mut b = box_body();
+        assert!(!has_open_or_broken(&b, 1e-9));
+        crate::edit::delete_face(&mut b, crate::body::FaceId(0));
+        assert!(has_open_or_broken(&b, 1e-9));
+        let full = check(&b, 1e-9).iter().any(|i| matches!(i, Issue::OpenEdge(_) | Issue::BrokenLoop(..)));
+        assert_eq!(full, has_open_or_broken(&b, 1e-9));
     }
 
     #[test]
