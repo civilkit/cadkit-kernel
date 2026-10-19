@@ -48,4 +48,4 @@ lens, a crescent). Tests: `crates/ck-model/tests/overlap_regions.rs` (the repro,
 chain, tangent circles, a circle crossing the plate edge, add and cut, nested circles, rectangles + circle,
 a seeded sweep of random 2-4 circle clusters against a numeric union area); corpus case
 `tools/cases/overlap_regions/crossing_circles_cut.json`. If you still see the wrong volume, pin the kernel at or
-after 7145139 (kernel commit with these tests: see the branch `sketch-overlap-regions`).
+after 7145139 (tests landed in 0cbeb65 on branch `sketch-overlap-regions`).
