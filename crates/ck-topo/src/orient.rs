@@ -102,6 +102,19 @@ pub fn orient_shell(b: &mut Body, s: ShellId) -> usize {
 /// As [`orient_shell`], also returning the shell's signed volume after orienting (the integral the outward test
 /// computed anyway, negated when the shell was flipped).
 pub fn orient_shell_volume(b: &mut Body, s: ShellId) -> (usize, f64) {
+    orient_shell_with(b, s, false)
+}
+
+/// [`orient_shell_volume`] with the outward test (and the returned volume) taken from [`signed_volume_quick`]:
+/// the per-face memoised coarse tier, exact to rounding on non-rational spline faces and falling back to the
+/// full integral when the total is lost in cancellation. For the tool bodies a blend builds, whose faces are new
+/// every time and whose volume is only tested for sign.
+pub fn orient_body_volume_quick(b: &mut Body) -> (usize, f64) {
+    let shells: Vec<ShellId> = b.shell_ids().collect();
+    shells.into_iter().map(|s| orient_shell_with(b, s, true)).fold((0, 0.0), |a, x| (a.0 + x.0, a.1 + x.1))
+}
+
+fn orient_shell_with(b: &mut Body, s: ShellId, quick: bool) -> (usize, f64) {
     let faces: Vec<FaceId> = b.shell(s).faces.iter().copied().filter(|&f| b.face(f).alive).collect();
     let mut flips = 0;
     let mut seen = vec![false; b.faces.len()];
@@ -135,7 +148,7 @@ pub fn orient_shell_volume(b: &mut Body, s: ShellId) -> (usize, f64) {
             }
         }
     }
-    let mut vol = signed_volume(b, &faces);
+    let mut vol = if quick { crate::mass::signed_volume_quick(b, &faces) } else { signed_volume(b, &faces) };
     if vol < 0.0 {
         for &f in &faces {
             flip_face(b, f);

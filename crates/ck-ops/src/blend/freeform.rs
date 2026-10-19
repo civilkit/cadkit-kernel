@@ -950,7 +950,7 @@ fn build_tool(
     }
     let _ = links;
     // (the outward test of the orienting already integrated the volume: no second pass of moments over the same faces)
-    let (_, vol) = ck_topo::orient::orient_body_volume(&mut tool);
+    let (_, vol) = ck_topo::orient::orient_body_volume_quick(&mut tool);
     if !(vol > 0.0) {
         return Err(failed(&format!("tool volume {vol}")));
     }

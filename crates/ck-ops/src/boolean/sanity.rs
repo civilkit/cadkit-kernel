@@ -183,7 +183,10 @@ fn coarse_passes(a: &Body, b: &Body, op: Op, result: &Body, box_ov: f64) -> bool
         let va = solid_volume(a, true)?;
         let vb = solid_volume(b, true)?;
         let guard = GUARD * tolerance(va, vb);
-        if !(va > guard && vb > guard) {
+        // (an operand far smaller than the other, a tool against a big trimming box, still counts: the exact rule skips
+        // a non-positive operand with no verdict, so a coarse pass over a positive one can only agree with it, and the
+        // window below sits `tol` around volumes the coarse tier gets right to about a millionth)
+        if !(va > 0.0 && vb > 0.0) {
             return None;
         }
         let vr = solid_volume(result, true)?;
