@@ -271,18 +271,24 @@ pub fn ders_basis_funs2(span: usize, u: f64, p: usize, nd: usize, knots: &[f64])
     // table dominated the cost of a cubic evaluation)
     // (literal degrees: the loops unroll)
     if p == 3 {
-        ders_basis_funs2_n::<4>(span, u, 3, nd, knots)
+        ders_basis_funs2_n::<4, 12>(span, u, 3, nd, knots)
     } else if p == 2 {
-        ders_basis_funs2_n::<3>(span, u, 2, nd, knots)
+        ders_basis_funs2_n::<3, 12>(span, u, 2, nd, knots)
     } else if p < 6 {
-        ders_basis_funs2_n::<6>(span, u, p, nd, knots)
+        ders_basis_funs2_n::<6, 12>(span, u, p, nd, knots)
     } else {
-        ders_basis_funs2_n::<12>(span, u, p, nd, knots)
+        ders_basis_funs2_n::<12, 12>(span, u, p, nd, knots)
     }
 }
 
+/// [`ders_basis_funs2`] for a cubic, in rows of the 4 values that matter (a third of the zero-fill and copy).
+#[inline]
+pub fn ders_basis_funs2_p3(span: usize, u: f64, nd: usize, knots: &[f64]) -> [[f64; 4]; 3] {
+    ders_basis_funs2_n::<4, 4>(span, u, 3, nd, knots)
+}
+
 #[inline(always)]
-fn ders_basis_funs2_n<const N: usize>(span: usize, u: f64, p: usize, nd: usize, knots: &[f64]) -> [[f64; 12]; 3] {
+fn ders_basis_funs2_n<const N: usize, const W: usize>(span: usize, u: f64, p: usize, nd: usize, knots: &[f64]) -> [[f64; W]; 3] {
     // The triangular table of A2.3: `ndu[r][j]` = N_{span-j+r, j}(u),
     // `ndu[j][r]` (j > r) = the knot difference u_{i+j} - u_i of that function.
     let mut ndu = [[0.0f64; N]; N];
@@ -300,7 +306,7 @@ fn ders_basis_funs2_n<const N: usize>(span: usize, u: f64, p: usize, nd: usize, 
         }
         ndu[j][j] = saved;
     }
-    let mut ders = [[0.0f64; 12]; 3];
+    let mut ders = [[0.0f64; W]; 3];
     for j in 0..=p {
         ders[0][j] = ndu[j][p];
     }

@@ -28,11 +28,11 @@ pub struct BSplineSurface {
 }
 
 /// The span and basis rows (value and two derivatives) of the last u and last v of
-/// [`BSplineSurface::derivs2_cached`].
+/// [`BSplineSurface::derivs2_cached`] (cubic surfaces).
 #[derive(Default)]
 pub struct Basis2Cache {
-    u: Option<(u64, usize, [[f64; 12]; 3])>,
-    v: Option<(u64, usize, [[f64; 12]; 3])>,
+    u: Option<(u64, usize, [[f64; 4]; 3])>,
+    v: Option<(u64, usize, [[f64; 4]; 3])>,
 }
 
 pub struct CpPrep {
@@ -378,6 +378,11 @@ impl BSplineSurface {
         let v = v.clamp(v0, v1);
         let su = find_span(self.nu - 1, p, u, &self.knots_u);
         let sv = find_span(self.nv - 1, q, v, &self.knots_v);
+        if p == 3 && q == 3 {
+            let nu = basis::ders_basis_funs2_p3(su, u, 2, &self.knots_u);
+            let nv = basis::ders_basis_funs2_p3(sv, v, 2, &self.knots_v);
+            return self.accumulate2(su, sv, &nu, &nv, 3, 3);
+        }
         let nu = basis::ders_basis_funs2(su, u, p, 2, &self.knots_u);
         let nv = basis::ders_basis_funs2(sv, v, q, 2, &self.knots_v);
         self.accumulate2(su, sv, &nu, &nv, p, q)
@@ -385,13 +390,13 @@ impl BSplineSurface {
 
     /// The control point sums of `derivs2_nr` from the spans and basis rows.
     #[inline(always)]
-    fn accumulate2(&self, su: usize, sv: usize, nu: &[[f64; 12]; 3], nv: &[[f64; 12]; 3], p: usize, q: usize) -> SurfDerivs {
+    fn accumulate2<const W: usize>(&self, su: usize, sv: usize, nu: &[[f64; W]; 3], nv: &[[f64; W]; 3], p: usize, q: usize) -> SurfDerivs {
         let mut a = [[Vec3::ZERO; 3]; 3];
         // one pass over the control points for the three u orders (each
         // accumulator sees the same operations in the same order as a
         // pass per order: bit-identical)
         let ku = 2usize.min(p);
-        let mut tp = [[Vec3::ZERO; 12]; 3];
+        let mut tp = [[Vec3::ZERO; W]; 3];
         for s in 0..=q {
             let row = &self.ctrl[(sv - q + s)..];
             for r in 0..=p {
@@ -420,26 +425,22 @@ impl BSplineSurface {
     /// same numbers, bit for bit.
     pub fn derivs2_cached(&self, u: f64, v: f64, cache: &mut Basis2Cache) -> SurfDerivs {
         let (p, q) = (self.deg_u, self.deg_v);
-        if self.weights.is_some() || p >= 12 || q >= 12 {
+        if self.weights.is_some() || p != 3 || q != 3 {
             return self.derivs2(u, v);
         }
         let ((u0, u1), (v0, v1)) = self.domain();
         let u = u.clamp(u0, u1);
         let v = v.clamp(v0, v1);
         if cache.u.as_ref().map_or(true, |c| c.0 != u.to_bits()) {
-            let su = find_span(self.nu - 1, p, u, &self.knots_u);
-            cache.u = Some((u.to_bits(), su, basis::ders_basis_funs2(su, u, p, 2, &self.knots_u)));
+            let su = find_span(self.nu - 1, 3, u, &self.knots_u);
+            cache.u = Some((u.to_bits(), su, basis::ders_basis_funs2_p3(su, u, 2, &self.knots_u)));
         }
         if cache.v.as_ref().map_or(true, |c| c.0 != v.to_bits()) {
-            let sv = find_span(self.nv - 1, q, v, &self.knots_v);
-            cache.v = Some((v.to_bits(), sv, basis::ders_basis_funs2(sv, v, q, 2, &self.knots_v)));
+            let sv = find_span(self.nv - 1, 3, v, &self.knots_v);
+            cache.v = Some((v.to_bits(), sv, basis::ders_basis_funs2_p3(sv, v, 2, &self.knots_v)));
         }
         let (cu, cv) = (cache.u.as_ref().unwrap(), cache.v.as_ref().unwrap());
-        if p == 3 && q == 3 {
-            self.accumulate2(cu.1, cv.1, &cu.2, &cv.2, 3, 3)
-        } else {
-            self.accumulate2(cu.1, cv.1, &cu.2, &cv.2, p, q)
-        }
+        self.accumulate2(cu.1, cv.1, &cu.2, &cv.2, 3, 3)
     }
 
     /// Point + first + second partials.
