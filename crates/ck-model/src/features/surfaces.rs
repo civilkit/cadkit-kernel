@@ -381,6 +381,12 @@ pub fn exec_thicken(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Resul
             None => fe,
         }
     })?;
+    // a wall that starts on a plane of the body it is added to is sunk into it: the wedge between its normal-offset base
+    // and the plane is closed, so the foot is an ordinary concave cone / plane edge
+    let out = match br.body.as_ref() {
+        Some(host) => sf::foot::sink_feet(&out, host, &f.id, super::TOL),
+        None => out,
+    };
     // pinned: the thickened surface is consumed
     br.drop_surfaces(vec![i]);
     join_solid(br, &f.id, out)
