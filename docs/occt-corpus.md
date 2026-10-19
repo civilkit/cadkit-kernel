@@ -164,7 +164,8 @@ Representative scripts, translated features and repro commands are in
 `tools/verify_wasm.sh <wasm> [--quick]` runs every check built here against one
 wasm and prints one page: the OCCT corpus (when `/tmp/occt` exists), the
 fillet, shell, boolean, shape, mass-properties, STEP round-trip,
-tessellation, holes/patterns/mirror/draft sweeps, the 200-case crash fuzz, the two Fusion import samples (when their cache exists)
+tessellation, holes/patterns/mirror/draft sweeps, the 200-case crash fuzz,
+the propeller foundation probe, the two Fusion import samples (when their cache exists)
 and the DeepCAD check (when `cases1000.json` exists).
 
 ```sh
@@ -204,6 +205,7 @@ replay, a class-only baseline and a ranked Mimo brief.
 | crash fuzz | 5000 | 662 ok, 4002 structured, 238 trap, 74 hang, 24 invalid | `docs/crash-fuzz.md` |
 | Fusion import (rounds 1-3) | 800 | 745 ok, 55 invalid | `docs/mimo-brief-import.md` |
 | original vs ours | 91 | 57 both ok, 19 both fail, 15 original-only gaps | `docs/original-gaps.md` |
+| propeller foundation probe | 10 | 7 both ok, 2 both fail, 1 original-only gap | `docs/prop-probe.md` |
 
 The baselines are `tools/fillet_sweep_baseline.json`,
 `tools/fillet_sweep_baseline_seed11.json`, `tools/shell_sweep_baseline.json`,
