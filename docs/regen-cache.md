@@ -173,3 +173,40 @@ Spline edges with a knot every fraction of a millimetre (interpolated intersecti
 per knot span; the sample list is now thinned to what the tolerance needs (`curvature::coalesce`), which cut the dome
 cap from 92k to 22k triangles at the same chordal bound, and unconstrained edges whose midpoint fails the chord test
 are flipped to the other diagonal before refinement (`Cdt::optimize_edges`).
+
+## Where an edit's time goes (edit-latency bench)
+
+`cargo test --profile fast -p ck-wasm --test edit_latency -- --ignored --nocapture` regens the fan shroud cold, then
+edits the last fillet, F48 and F42 with the cache warm, printing wall time, instructions retired (macOS), reply size,
+a digest of the reply without `cacheStats` (compare two builds with it) and the reuse counters. `CK_PART=<file>
+CK_EDITS="F50:angle:1:0.9;..."` edits another document (feature id, numeric key, old value, new value);
+`CK_LOOP=n` repeats the first edit with distinct values for a sampling profiler (`sample`).
+
+The cache itself is not the problem: an edit of the last feature restores the previous state (one body clone) and runs one
+feature. What an edit costs is the features after the first changed one (a prefix key cannot reuse a later feature, whose
+input body changed) plus the reply. Before the tuning below, an F49 edit of the fan spent about 20 % outside the fillet
+(face-cache keys built by formatting every surface and curve with `Debug`, the wire box and edge polylines recomputed for
+every face, tessellation) and about 40 % of the fillet itself on validation of its own tool and result:
+
+* `build_tool` integrated the tool's volume twice (the outward test of the orienting, then `mass_props` only to test
+  `volume > 0`); it now takes the memoised coarse tier of `signed_volume_quick` once (exact to rounding on non-rational
+  spline faces, exact fallback when the total cancels).
+* the post-boolean volume check (`boolean::sanity`) integrated the operands first and then found that the result was not a
+  closed solid (no verdict in both tiers); it now tests closedness first. Its coarse tier also accepts an operand much smaller
+  than the other (a tool against the big trimming box), which used to fall through to the exact integrals.
+* `boolean::apply` and the blend's validity test ran the full `check` (edge lengths, vertex and pcurve deviation of every
+  edge of the whole result) and then kept only open / non-manifold / mispaired edges and broken loops; `check_topology`
+  returns exactly those.
+* the face-mesh cache key is a word list of f64 bits hashed once, the wire box of each curved face and the polyline of each
+  free-form edge are memoised by content (`ck_topo::facekey`).
+
+Results are unchanged (reply digests of the fan and large sample edits are identical before and after).
+Native instructions (G) before -> after: fan edit F49 3.61 -> 1.83, F48 10.95 -> 6.94, F42 20.35 -> 16.08, cold 44.6 -> 38.2;
+large sample edit F50 1.75 -> 0.82, F43 9.55 -> 8.15. What is left of an F42 edit is the features themselves
+(curve-curve intersection in `imprint::trim`, edge splitting in `imprint`, pcurve fits of new cut edges).
+
+Content keys instead of prefix keys: a feature after the first changed one is rerun even when its inputs are unchanged
+only if the body it receives differs, and then it must run. The one case a prefix key misses is an edit that leaves the body
+identical (renaming a feature, a UI-only field): every later key changes with the JSON although the states are equal. Chaining
+keys from a state fingerprint would catch that, but the stored state also holds JSON-derived parts (errors, sketches, planes)
+so it needs a full-state comparison; not done.
