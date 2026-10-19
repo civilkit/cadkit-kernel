@@ -1000,33 +1000,50 @@ pub const EDGE_SAG: f64 = 3.74e-4;
 /// Bounds of vertices, edges and a uv grid over each face's pcurve box
 /// (ck-topo's `bbox` only sees edges, which misses e.g. a revolved sphere).
 pub fn body_box(b: &ck_topo::body::Body) -> (ck_core::linalg::Vec3, ck_core::linalg::Vec3) {
+    use ck_core::linalg::Vec3;
     use ck_geom::Vec2;
+    thread_local! {
+        /// Per curved face: the box of its 33 x 33 surface grid over the uv extent of its trim (`None`: no finite extent).
+        /// A pure function of the face's surface and trim (see `ck_topo::facekey`), so the faces an edit leaves alone are lookups.
+        static MEMO: std::cell::RefCell<ck_core::memo::Memo<Option<(Vec3, Vec3)>>> = std::cell::RefCell::new(ck_core::memo::Memo::new(1 << 22));
+    }
     let (mut lo, mut hi) = b.bbox();
     for f in b.face_ids() {
         let face = b.face(f);
         if matches!(face.surface, ck_geom::surface::Surface::Plane { .. }) {
             continue;
         }
-        let (mut a, mut z) = (Vec2::new(f64::INFINITY, f64::INFINITY), Vec2::new(f64::NEG_INFINITY, f64::NEG_INFINITY));
-        for &l in &face.loops {
-            for &c in &b.lp(l).coedges {
-                let (t0, t1) = b.coedge_params(c);
-                for k in 0..=8 {
-                    let uv = b.coedge_uv(c, t0 + (t1 - t0) * k as f64 / 8.0, None);
-                    a = Vec2::new(a.x.min(uv.x), a.y.min(uv.y));
-                    z = Vec2::new(z.x.max(uv.x), z.y.max(uv.y));
+        let mut key = Vec::with_capacity(256);
+        ck_topo::facekey::push_face_trim(b, f, &mut key);
+        let fb = ck_core::memo::cached(&MEMO, key, || {
+            let (mut a, mut z) = (Vec2::new(f64::INFINITY, f64::INFINITY), Vec2::new(f64::NEG_INFINITY, f64::NEG_INFINITY));
+            for &l in &face.loops {
+                for &c in &b.lp(l).coedges {
+                    let (t0, t1) = b.coedge_params(c);
+                    for k in 0..=8 {
+                        let uv = b.coedge_uv(c, t0 + (t1 - t0) * k as f64 / 8.0, None);
+                        a = Vec2::new(a.x.min(uv.x), a.y.min(uv.y));
+                        z = Vec2::new(z.x.max(uv.x), z.y.max(uv.y));
+                    }
                 }
             }
-        }
-        if !(a.x.is_finite() && z.x.is_finite()) {
-            continue;
-        }
-        let n = 32;
-        let us: Vec<f64> = (0..=n).map(|i| a.x + (z.x - a.x) * i as f64 / n as f64).collect();
-        let vs: Vec<f64> = (0..=n).map(|j| a.y + (z.y - a.y) * j as f64 / n as f64).collect();
-        for p in face.surface.eval_grid(&us, &vs) {
-            lo = lo.min(p);
-            hi = hi.max(p);
+            if !(a.x.is_finite() && z.x.is_finite()) {
+                return None;
+            }
+            let n = 32;
+            let us: Vec<f64> = (0..=n).map(|i| a.x + (z.x - a.x) * i as f64 / n as f64).collect();
+            let vs: Vec<f64> = (0..=n).map(|j| a.y + (z.y - a.y) * j as f64 / n as f64).collect();
+            let inf = Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
+            let (mut flo, mut fhi) = (inf, -inf);
+            for p in face.surface.eval_grid(&us, &vs) {
+                flo = flo.min(p);
+                fhi = fhi.max(p);
+            }
+            Some((flo, fhi))
+        });
+        if let Some((flo, fhi)) = fb {
+            lo = lo.min(flo);
+            hi = hi.max(fhi);
         }
     }
     // Oracle (drafted box): the wire box is the union of the exact bounds

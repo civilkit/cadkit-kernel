@@ -1,6 +1,7 @@
 pub mod body;
 pub mod check;
 pub mod edit;
+pub mod facekey;
 pub mod make;
 pub mod mass;
 pub mod orient;

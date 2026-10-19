@@ -1039,19 +1039,37 @@ impl Body {
     pub fn sample_edge(&self, e: EdgeId, tol: f64) -> Vec<Vec3> {
         let ed = &self.edges[e.idx()];
         let (a, b) = (self.vertices[ed.v0.idx()].p, self.vertices[ed.v1.idx()].p);
-        let n = match &ed.curve {
-            Curve::Line { .. } => 1,
-            Curve::Circle { r, .. } => arc_segments(*r, ed.t1 - ed.t0, tol),
-            Curve::Ellipse { a, b, .. } => arc_segments(a.max(*b), ed.t1 - ed.t0, tol),
-            Curve::BSpline(_) | Curve::Conic { .. } | Curve::Sinusoid { .. } => {
-                let len = ed.curve.length_between(ed.t0, ed.t1);
-                ((len / (8.0 * tol).sqrt().max(1e-9)).ceil() as usize).clamp(2, 512)
-            }
+        let sample = || {
+            let n = match &ed.curve {
+                Curve::Line { .. } => 1,
+                Curve::Circle { r, .. } => arc_segments(*r, ed.t1 - ed.t0, tol),
+                Curve::Ellipse { a, b, .. } => arc_segments(a.max(*b), ed.t1 - ed.t0, tol),
+                Curve::BSpline(_) | Curve::Conic { .. } | Curve::Sinusoid { .. } => {
+                    let len = ed.curve.length_between(ed.t0, ed.t1);
+                    ((len / (8.0 * tol).sqrt().max(1e-9)).ceil() as usize).clamp(2, 512)
+                }
+            };
+            let mut pts = ed.curve.sample(ed.t0, ed.t1, n);
+            pts[0] = a;
+            *pts.last_mut().unwrap() = b;
+            pts
         };
-        let mut pts = ed.curve.sample(ed.t0, ed.t1, n);
-        pts[0] = a;
-        *pts.last_mut().unwrap() = b;
-        pts
+        if matches!(ed.curve, Curve::Line { .. } | Curve::Circle { .. } | Curve::Ellipse { .. }) {
+            return sample();
+        }
+        // a free-form edge costs an arc-length integral and its samples: pure in the curve, range, ends and tolerance,
+        // so an edge an edit leaves alone is a lookup (content-keyed, bit-identical)
+        thread_local! {
+            static MEMO: std::cell::RefCell<ck_core::memo::Memo<std::rc::Rc<Vec<Vec3>>>> = std::cell::RefCell::new(ck_core::memo::Memo::new(1 << 22));
+        }
+        let mut key = Vec::with_capacity(64);
+        ed.curve.push_key(&mut key);
+        key.extend([ed.t0.to_bits(), ed.t1.to_bits(), tol.to_bits()]);
+        for p in [a, b] {
+            key.extend([p.x.to_bits(), p.y.to_bits(), p.z.to_bits()]);
+        }
+        let v = ck_core::memo::cached_sized(&MEMO, key, || std::rc::Rc::new(sample()), |v| 3 * v.len());
+        (*v).clone()
     }
 }
 
