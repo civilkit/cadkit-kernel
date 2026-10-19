@@ -138,6 +138,23 @@ impl<P: Pt> BSplineCurve<P> {
             let (a, b) = self.domain();
             let u = u.clamp(a, b);
             let span = find_span(self.n(), p, u, &self.knots);
+            if p == 3 {
+                // (cubic: 4-wide basis rows and literal degree)
+                let nd = basis::ders_basis_funs2_p3(span, u, d, &self.knots);
+                let mut ad = [P::default(); 3];
+                let kd = d.min(3);
+                for j in 0..=3 {
+                    let c = self.ctrl[span - 3 + j];
+                    ad[0] = ad[0] + c * (nd[0][j] * 1.0);
+                    if kd >= 1 {
+                        ad[1] = ad[1] + c * (nd[1][j] * 1.0);
+                    }
+                    if kd >= 2 {
+                        ad[2] = ad[2] + c * (nd[2][j] * 1.0);
+                    }
+                }
+                return ad;
+            }
             let nd = basis::ders_basis_funs2(span, u, p, d, &self.knots);
             let mut ad = [P::default(); 3];
             // one pass over the control points for every order (bit-identical
