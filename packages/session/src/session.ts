@@ -335,7 +335,7 @@ interface RegenRes {
 
 export class Session {
   private kernel: import('../../driver/src/verify.js').KernelTransport;
-  private worker?: import('../../kernel-client/src/worker.js').WorkerKernel;
+  private worker?: { close(): Promise<void> | void };
   private doc: PartDoc;
   private tag: string;
   readonly author: string;
@@ -358,9 +358,21 @@ export class Session {
     this.tag = tag ?? `sess${sessionSeq++}`;
   }
 
-  static async open(doc?: PartDoc, opts?: { wasmPath?: string; author?: string }): Promise<Session> {
+  /** The kernel for a new session: a local native service when `kernelUrl` is given or CK_KERNEL_URL (+ CK_KERNEL_TOKEN) is set and
+   *  no `wasmPath` is passed; otherwise the wasm kernel in a worker (CK_WASM or `wasmPath`). This is how the whole kernel test suite
+   *  runs against a service. A service that is unreachable or from another build is an error here, never a silent wasm. */
+  private static async openKernel(opts?: { wasmPath?: string; kernelUrl?: string; kernelToken?: string }): Promise<KernelTransport & { close(): Promise<void> | void }> {
+    const url = opts?.kernelUrl ?? (opts?.wasmPath ? undefined : process.env.CK_KERNEL_URL);
+    if (url) {
+      const { NativeKernel } = await import('../../kernel-client/src/native.js');
+      return NativeKernel.connect({ url, token: opts?.kernelToken ?? process.env.CK_KERNEL_TOKEN ?? '' });
+    }
     const { createWorkerKernel } = await import('../../kernel-client/src/worker.js');
-    const worker = await createWorkerKernel(opts?.wasmPath);
+    return createWorkerKernel(opts?.wasmPath);
+  }
+
+  static async open(doc?: PartDoc, opts?: { wasmPath?: string; author?: string; kernelUrl?: string; kernelToken?: string }): Promise<Session> {
+    const worker = await Session.openKernel(opts);
     const s = new Session(doc ?? emptyPart('Part'), worker, opts?.author ?? 'agent');
     s.worker = worker;
     // Warm the session tag so body queries work immediately (best effort:
@@ -712,7 +724,7 @@ export class Session {
   }
 
   /** Reopen a saved session: document, records and undo states restored. */
-  static async openSaved(dir: string, name: string, opts?: { wasmPath?: string }): Promise<Session> {
+  static async openSaved(dir: string, name: string, opts?: { wasmPath?: string; kernelUrl?: string; kernelToken?: string }): Promise<Session> {
     const { readFileSync } = await import('node:fs');
     const { default: path } = await import('node:path');
     const doc = JSON.parse(readFileSync(path.join(dir, `${name}.ckpart`), 'utf8')) as PartDoc;
@@ -720,8 +732,7 @@ export class Session {
       format: string; version: number; entries: Array<{ record: EditRecord; before: PartDoc }>;
     };
     if (log.format !== 'ck-edit-log' || log.version !== 1) throw new Error(`unreadable edit log ${name}`);
-    const { createWorkerKernel } = await import('../../kernel-client/src/worker.js');
-    const worker = await createWorkerKernel(opts?.wasmPath);
+    const worker = await Session.openKernel(opts);
     const s = new Session(doc, worker, log.entries.at(-1)?.record.author ?? 'agent');
     s.worker = worker;
     s.editSeq = log.entries.length + 1;
