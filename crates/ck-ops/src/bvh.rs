@@ -584,12 +584,16 @@ pub fn face_box(b: &Body, f: FaceId) -> Aabb {
     if !matches!(face.surface, ck_geom::surface::Surface::Plane { .. }) {
         // uv bounds from the loops
         let (mut ulo, mut uhi, mut vlo, mut vhi) = (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
+        let fp = match &face.surface {
+            ck_geom::surface::Surface::BSpline(bs) => Some(bs.fingerprint()),
+            _ => None,
+        };
         for &l in &face.loops {
             let mut prev = None;
             for &c in &b.lp(l).coedges {
                 let (ta, tb) = b.coedge_params(c);
                 for k in 0..=8 {
-                    let uv = b.coedge_uv(c, ta + (tb - ta) * k as f64 / 8.0, prev);
+                    let uv = b.coedge_uv_fp(c, ta + (tb - ta) * k as f64 / 8.0, prev, fp);
                     prev = Some(uv);
                     ulo = ulo.min(uv.x);
                     uhi = uhi.max(uv.x);

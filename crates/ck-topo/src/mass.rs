@@ -185,6 +185,11 @@ thread_local! {
 fn face_pieces<'a>(b: &'a Body, f: FaceId, derived: &'a [Option<Curve2>], fine: bool) -> Vec<Piece<'a>> {
     let mut out = vec![];
     let mut k_co = 0;
+    // (the spline's content hash once per face, not once per sample)
+    let fp = match &b.face(f).surface {
+        Surface::BSpline(bs) if b.face(f).loops.iter().any(|&l| b.lp(l).coedges.iter().any(|&c| b.coedge(c).pcurve.is_none())) => Some(bs.fingerprint()),
+        _ => None,
+    };
     for &l in &b.face(f).loops {
         let mut prev: Option<Vec2> = None;
         for &c in &b.lp(l).coedges {
@@ -201,7 +206,7 @@ fn face_pieces<'a>(b: &'a Body, f: FaceId, derived: &'a [Option<Curve2>], fine: 
                     let mut pts = vec![];
                     for k in 0..=n {
                         let t = ta + (tb - ta) * k as f64 / n as f64;
-                        let uv = b.coedge_uv(c, t, prev);
+                        let uv = b.coedge_uv_fp(c, t, prev, fp);
                         prev = Some(uv);
                         pts.push(uv);
                     }
