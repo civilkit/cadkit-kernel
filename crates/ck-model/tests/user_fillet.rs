@@ -32,6 +32,8 @@ struct Built {
     bad_mesh_edges: Vec<String>,
     /// faces of the last feature that are planar (a step between blend faces)
     planar_blend_faces: usize,
+    /// blend faces of the last feature
+    blends: usize,
 }
 
 /// Regen `src` (optionally without its last feature); `near` are the points around which the mesh must be closed.
@@ -48,7 +50,8 @@ fn build_with(src: &str, drop_last: bool, feature: &str, near: &[[f64; 3]]) -> B
     let mesh_issues = check_mesh_why(&b, &m.positions, &m.tri_face, &m.failed, &m.failed_why).into_iter().map(|i| format!("{}: {}", i.entity, i.detail)).collect();
     let issues = ck_topo::check::check(&b, 1e-6).iter().map(|i| format!("{i:?}")).collect();
     let planar_blend_faces = b.face_ids().filter(|&f| b.face(f).name.feature == feature && matches!(b.face(f).surface, Surface::Plane { .. })).count();
-    Built { errors, volume: ck_topo::mass::mass_props(&b).volume, issues, mesh_issues, bad_mesh_edges: bad_edges(&m.positions, near), planar_blend_faces }
+    let blends = b.face_ids().filter(|&f| b.face(f).name.feature == feature && matches!(b.face(f).name.role, ck_topo::body::Role::Blend(_))).count();
+    Built { blends, errors, volume: ck_topo::mass::mass_props(&b).volume, issues, mesh_issues, bad_mesh_edges: bad_edges(&m.positions, near), planar_blend_faces }
 }
 
 /// Undirected mesh edges near the given points that are not shared by exactly two triangles.
@@ -115,4 +118,69 @@ fn user_document_plate_fillet_removes_the_analytic_volume() {
     let removed = (plate_r1_volume() - (55.0 * 55.0 - (4.0 - PI) * 25.0) * 5.0).abs();
     let got = base.volume - b.volume;
     assert!((got - removed).abs() < 2e-2 * removed, "removed {got} vs {removed}");
+}
+
+
+// ---- the foot of the thickened cone (R12 -> R8 over 30, wall 3 outward) on the plate ----
+
+/// Document F10 with its rim fillets F11, F12 and the plate fillet F13 (the user's document).
+const DOC: &str = include_str!("../../../tools/cases/user_fillet/fillet_issue.ckpart");
+
+/// Volume of the wedge between the wall base ring and the plate that the thicken now closes (Pappus on the triangle
+/// inner foot circle, base ring outer edge, wall line at the plate; 52.7790).
+const WEDGE: f64 = 52.7790;
+/// Added by the concave R1, R2 fillet of the outer foot and by R2 at the inner foot (Pappus on the corner region:
+/// 0.15639 at radius 15.1931, 0.62558 at 15.3597, 1.16204 at 11.4104).
+const OUTER_R1: f64 = 14.9296;
+const OUTER_R2: f64 = 60.3732;
+const INNER_R2: f64 = 83.3104;
+
+fn foot(src: &str) -> (Built, Built) {
+    let base = build_with(DOC, false, "F99", &[]);
+    let b = build_with(src, false, "F99", &[]);
+    assert!(b.errors.is_empty() && base.errors == b.errors, "{:?}", b.errors);
+    assert!(b.issues.is_empty(), "{:?}", b.issues);
+    assert!(b.mesh_issues.is_empty(), "{:?}", b.mesh_issues);
+    assert!(b.bad_mesh_edges.is_empty(), "{:?}", b.bad_mesh_edges);
+    // the ring is split in arcs by the sheet's seam; the fillet still goes all the way round as one face
+    assert_eq!(b.blends, 1, "one blend face all the way round");
+    (base, b)
+}
+
+fn close(got: f64, want: f64) {
+    assert!((got - want).abs() < 2e-3 * want.max(10.0), "{got} vs {want}");
+}
+
+/// The unfilleted document closes the wedge: the wall meets the plate in a cone / plane edge, no hovering base ring.
+#[test]
+fn thickened_wall_is_sunk_into_the_plate() {
+    let base = build_with(DOC, false, "F99", &[]);
+    // F13 plate fillet, volume of the document without the wedge: 20028.2713 (before the thicken was sunk)
+    assert!((base.volume - (20028.2713 + WEDGE)).abs() < 1e-3 * WEDGE * 20.0, "{}", base.volume);
+}
+
+/// The outer foot edge: a fillet adds material (concave, tangent to the cone and the plate top) where it used to round
+/// the hovering base corner over and remove 20 to 78.
+#[test]
+fn outer_foot_fillet_adds_material() {
+    let (base, r1) = foot(include_str!("../../../tools/cases/user_fillet/outer_foot_r1_sunk.ckpart"));
+    close(r1.volume - base.volume, OUTER_R1);
+    let (base, r2) = foot(include_str!("../../../tools/cases/user_fillet/outer_foot_r2_sunk.ckpart"));
+    close(r2.volume - base.volume, OUTER_R2);
+}
+
+/// The inner foot edge fillets the corner inside the bore (between the sheet cone and the plate top annulus): 83 mm3
+/// of material in the bore, out of sight from outside.
+#[test]
+fn inner_foot_fillet_lies_inside_the_bore() {
+    let (base, r2) = foot(include_str!("../../../tools/cases/user_fillet/inner_foot_r2_sunk.ckpart"));
+    close(r2.volume - base.volume, INNER_R2);
+}
+
+/// A saved selection that names the old base ring (`F10.W0`) no longer names an edge: a structured `missingEdge`, never
+/// a different blend.
+#[test]
+fn selection_of_the_old_base_ring_is_a_missing_edge() {
+    let b = build_with(include_str!("../../../tools/cases/user_fillet/outer_foot_r2.ckpart"), false, "F99", &[]);
+    assert!(b.errors.iter().any(|e| e.starts_with("F99: ") && e.contains("missingEdge")), "{:?}", b.errors);
 }
