@@ -80,6 +80,8 @@ struct Recorder<'a> {
     refs: Vec<(String, Vec<Recorded>)>,
     /// signatures captured when a sketch/plane asked for a face frame
     frames: Vec<(String, Option<Sig>)>,
+    /// gather the facts of the referenced entities only (the reference path gathers the whole body)
+    light: bool,
 }
 
 impl Recorder<'_> {
@@ -90,7 +92,16 @@ impl Recorder<'_> {
             return vec![];
         }
         let Some(body) = self.inner.brep.body.as_ref() else { return vec![] };
-        let facts = agent::gather(body);
+        let pairs: Vec<Vec<String>> = edges
+            .iter()
+            .map(|(names, _)| {
+                let mut k = names.clone();
+                k.sort();
+                k.dedup();
+                k
+            })
+            .collect();
+        let facts = if self.light { agent::gather_for(body, &agent::Want { faces: &faces, pairs: &pairs }) } else { agent::gather(body) };
         let mut out: Vec<Recorded> = faces.into_iter().map(|id| {
             let sig = agent::face_sig(&facts, &id);
             (RefKey::Face(id), None, sig)
@@ -117,7 +128,12 @@ impl FeatureExec for Recorder<'_> {
     }
     fn face_frame(&mut self, state: &RegenState, face: &str) -> Option<ck_core::linalg::Frame> {
         if !self.frames.iter().any(|(f, _)| f == face) {
-            let sig = self.inner.brep.body.as_ref().and_then(|b| agent::face_sig(&agent::gather(b), face));
+            let light = self.light;
+            let sig = self.inner.brep.body.as_ref().and_then(|b| {
+                let want = [face.to_string()];
+                let facts = if light { agent::gather_for(b, &agent::Want { faces: &want, pairs: &[] }) } else { agent::gather(b) };
+                agent::face_sig(&facts, face)
+            });
             self.frames.push((face.to_string(), sig));
         }
         self.inner.face_frame(state, face)
@@ -142,12 +158,13 @@ struct Run {
 
 /// Regenerate `part` privately and record its references. `hit`: a cached state of a prefix of `part` to continue from
 /// (the features before it are not run, so their references are not recorded: both documents share them unchanged).
-fn run(part: &Part, hit: Option<regen_cache::Hit>) -> Run {
+fn run(part: &Part, hit: Option<regen_cache::Hit>, light: bool) -> Run {
     let mut trace = Trace::off();
     let mut rec = Recorder {
         inner: Exec { brep: ck_model::features::Brep::new(), sink: TraceSink::new(&mut trace), auto_heal: None },
         refs: vec![],
         frames: vec![],
+        light,
     };
     let resume = hit.map(|h| {
         rec.inner.brep.load(&h.snap);
@@ -200,12 +217,14 @@ pub fn reply(cx: &mut Cx) -> Result<Json, String> {
     // Everything before the first changed feature is identical in both documents, so a reference there cannot have been
     // re-pointed: both runs continue from the cached state of that prefix and only the rest is rebuilt. `noCache: true`
     // regenerates both from the start (the reference behaviour).
-    let shared = if cx.msg.get_bool("noCache") == Some(true) { None } else { shared_prefix(&base, base_json, &part, part_json) };
+    let shared_allowed = cx.msg.get_bool("noCache") != Some(true);
+    let shared = if shared_allowed { shared_prefix(&base, base_json, &part, part_json) } else { None };
     let (resumed_at, (ha, hb)) = match shared {
         Some((_, ha, hb)) => (ha.next, (Some(ha), Some(hb))),
         None => (0, (None, None)),
     };
-    let (a, b) = (run(&base, ha), run(&part, hb));
+    let light = shared_allowed;
+    let (a, b) = (run(&base, ha, light), run(&part, hb, light));
     let mut warnings = vec![];
     let mut checked = 0usize;
     let mut new_runs: Vec<&(String, Vec<Recorded>)> = b.refs.iter().collect();

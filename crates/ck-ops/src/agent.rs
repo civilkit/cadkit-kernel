@@ -110,8 +110,31 @@ pub struct Facts {
     pub diag: f64,
 }
 
-fn face_fact(body: &Body, f: FaceId) -> FaceFact {
+fn face_fact(body: &Body, f: FaceId, light: bool) -> FaceFact {
     let face = body.face(f);
+    if light {
+        // only the name and the surface kind (what the neighbours' and the duplicate checks read); no integration
+        return FaceFact {
+            id: face.name.id(),
+            kind: face.surface.kind(),
+            area: 0.0,
+            centroid: Vec3::ZERO,
+            normal: None,
+            axis: None,
+            radius: None,
+            major: None,
+            concave: false,
+            hole: false,
+            feature: String::new(),
+            role: "other",
+            entity: None,
+            index: None,
+            adj: vec![],
+            adj_kinds: String::new(),
+            dup: 1,
+            inner_loops: 0,
+        };
+    }
     let sg = if face.sense { 1.0 } else { -1.0 };
     let m = ck_topo::mass::face_integral::<4>(body, f, 1, &|p, n| {
         let w = n.len();
@@ -258,7 +281,34 @@ pub fn exact_bbox(body: &Body, mesh: bool) -> (Vec3, Vec3) {
 }
 
 pub fn gather(body: &Body) -> Facts {
-    let mut faces: Vec<FaceFact> = body.face_ids().map(|f| face_fact(body, f)).collect();
+    gather_with(body, None)
+}
+
+/// The faces (by name) and edges (by sorted pair of face names) whose facts a caller reads.
+pub struct Want<'a> {
+    pub faces: &'a [String],
+    pub pairs: &'a [Vec<String>],
+}
+
+/// [`gather`] for a few faces / edges only: the facts of those are exactly those of `gather`, every other face and edge
+/// is left out of the expensive part (face integrals, edge lengths), so `face_sig` / `edge_sig` of the wanted entities
+/// give the same signatures at a fraction of the cost on a big body. Other faces carry only their name and surface kind;
+/// do not read anything else from them.
+pub fn gather_for(body: &Body, want: &Want) -> Facts {
+    gather_with(body, Some(want))
+}
+
+fn gather_with(body: &Body, want: Option<&Want>) -> Facts {
+    let mut faces: Vec<FaceFact> = body
+        .face_ids()
+        .map(|f| {
+            let light = want.is_some_and(|w| {
+                let id = body.face(f).name.id();
+                !w.faces.iter().any(|x| *x == id)
+            });
+            face_fact(body, f, light)
+        })
+        .collect();
     let mut counts: HashMap<String, usize> = HashMap::new();
     for f in &faces {
         *counts.entry(f.id.clone()).or_default() += 1;
@@ -281,6 +331,9 @@ pub fn gather(body: &Body) -> Facts {
         names.sort();
         names.dedup();
         if names.is_empty() {
+            continue;
+        }
+        if want.is_some_and(|w| !w.pairs.contains(&names)) {
             continue;
         }
         let key = if names.len() >= 2 {
