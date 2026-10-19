@@ -23,8 +23,8 @@ impl Hash for Key {
     }
 }
 
-/// One memo table in two generations: entries go into the current one; when its keys pass half of `cap_words`
-/// words it becomes the old one (the previous old one is dropped), and a hit in the old generation moves the
+/// One memo table in two generations: entries go into the current one; when its keys (and the sizes the caller
+/// gives its values, see [`cached_sized`]) pass half of `cap_words` words it becomes the old one (the previous old one is dropped), and a hit in the old generation moves the
 /// entry back into the current one. Entries in use survive a turnover, so a long chain of operations does not
 /// lose its working set all at once (a bound on memory, never on correctness).
 pub struct Memo<V> {
@@ -39,12 +39,13 @@ impl<V> Memo<V> {
         Memo { cur: Default::default(), old: Default::default(), words: 0, cap_words }
     }
 
-    fn insert(&mut self, key: Key, v: V) {
-        if self.words + key.0.len() > self.cap_words / 2 {
+    fn insert(&mut self, key: Key, v: V, w: usize) {
+        let w = w + key.0.len();
+        if self.words + w > self.cap_words / 2 {
             self.old = std::mem::take(&mut self.cur);
             self.words = 0;
         }
-        self.words += key.0.len();
+        self.words += w;
         self.cur.insert(key, v);
     }
 }
@@ -61,6 +62,16 @@ pub fn counts() -> [u64; 2] {
 /// `f()` memoised in `table` under `key`. The computation runs outside the table's borrow (it may use other
 /// memos, or this one).
 pub fn cached<V: Clone + 'static>(table: &'static LocalKey<RefCell<Memo<V>>>, key: Vec<u64>, f: impl FnOnce() -> V) -> V {
+    cached_sized(table, key, f, |_| 0)
+}
+
+/// [`cached`] for values that own heap data: `size(v)` (in words) counts toward the table's cap with the key.
+pub fn cached_sized<V: Clone + 'static>(
+    table: &'static LocalKey<RefCell<Memo<V>>>,
+    key: Vec<u64>,
+    f: impl FnOnce() -> V,
+    size: impl Fn(&V) -> usize,
+) -> V {
     let key = Key(key.into_boxed_slice());
     let hit = table.with(|t| {
         let mut t = t.borrow_mut();
@@ -68,7 +79,8 @@ pub fn cached<V: Clone + 'static>(table: &'static LocalKey<RefCell<Memo<V>>>, ke
             return Some(v.clone());
         }
         let (k, v) = t.old.remove_entry(&key)?;
-        t.insert(k, v.clone());
+        let w = size(&v);
+        t.insert(k, v.clone(), w);
         Some(v)
     });
     if let Some(v) = hit {
@@ -77,7 +89,7 @@ pub fn cached<V: Clone + 'static>(table: &'static LocalKey<RefCell<Memo<V>>>, ke
     }
     COUNTS.with(|c| c.set([c.get()[0], c.get()[1] + 1]));
     let v = f();
-    table.with(|t| t.borrow_mut().insert(key, v.clone()));
+    table.with(|t| t.borrow_mut().insert(key, v.clone(), size(&v)));
     v
 }
 

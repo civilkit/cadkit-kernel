@@ -445,7 +445,7 @@ pub fn curve_range_box(curve: &ck_geom::curve::Curve, t0: f64, t1: f64) -> Aabb 
     }
     // (every boolean boxes every edge of both operands, most of them unchanged since the last one)
     thread_local! {
-        static MEMO: std::cell::RefCell<ck_core::memo::Memo<Aabb>> = std::cell::RefCell::new(ck_core::memo::Memo::new(1 << 21));
+        static MEMO: std::cell::RefCell<ck_core::memo::Memo<Aabb>> = std::cell::RefCell::new(ck_core::memo::Memo::new(1 << 20));
     }
     let mut key = Vec::with_capacity(32);
     curve.push_key(&mut key);
@@ -623,7 +623,7 @@ pub fn face_box(b: &Body, f: FaceId) -> Aabb {
 /// the previous result's faces.
 pub fn surface_grid_box(s: &ck_geom::surface::Surface, (u0, u1): (f64, f64), (v0, v1): (f64, f64), n: usize, finite_only: bool) -> Aabb {
     thread_local! {
-        static MEMO: std::cell::RefCell<ck_core::memo::Memo<Aabb>> = std::cell::RefCell::new(ck_core::memo::Memo::new(1 << 20));
+        static MEMO: std::cell::RefCell<ck_core::memo::Memo<Aabb>> = std::cell::RefCell::new(ck_core::memo::Memo::new(1 << 19));
     }
     let mut key = Vec::with_capacity(24);
     s.push_key(&mut key);

@@ -299,7 +299,7 @@ fn sample_point_whole(arr: &Arrangement, f: &Fragment) -> Option<(Vec3, Vec3)> {
         return sample_point(arr, f);
     }
     thread_local! {
-        static MEMO: std::cell::RefCell<ck_core::memo::Memo<Option<(Vec3, Vec3)>>> = std::cell::RefCell::new(ck_core::memo::Memo::new(1 << 21));
+        static MEMO: std::cell::RefCell<ck_core::memo::Memo<Option<(Vec3, Vec3)>>> = std::cell::RefCell::new(ck_core::memo::Memo::new(1 << 20));
     }
     let af = &arr.faces[f.af];
     let mut key = Vec::with_capacity(64);
@@ -1101,13 +1101,13 @@ pub fn build(arr: &Arrangement, faces: &[OutFace]) -> Body {
 /// touch were the bulk of `build` (a pure function of these inputs, so a repeat returns the same curve).
 fn edge_pcurve(s: &Surface, c: &Curve, t0: f64, t1: f64, tol: f64) -> Option<Curve2> {
     thread_local! {
-        static MEMO: std::cell::RefCell<ck_core::memo::Memo<Option<Curve2>>> = std::cell::RefCell::new(ck_core::memo::Memo::new(1 << 21));
+        static MEMO: std::cell::RefCell<ck_core::memo::Memo<Option<Curve2>>> = std::cell::RefCell::new(ck_core::memo::Memo::new(1 << 20));
     }
     let mut key = Vec::with_capacity(48);
     s.push_key(&mut key);
     c.push_key(&mut key);
     key.extend([t0.to_bits(), t1.to_bits(), tol.to_bits()]);
-    ck_core::memo::cached(&MEMO, key, || {
+    let fit = || {
         exact_pcurve(s, c, tol * 10.0).or_else(|| {
             let conic = matches!(c, Curve::Circle { .. } | Curve::Ellipse { .. });
             if matches!(s, Surface::BSpline(_) | Surface::Screw { .. } | Surface::Plane { .. }) && matches!(c, Curve::BSpline(_)) {
@@ -1123,7 +1123,12 @@ fn edge_pcurve(s: &Surface, c: &Curve, t0: f64, t1: f64, tol: f64) -> Option<Cur
                 pcurve_of(s, c, t0, t1, tol).ok()
             }
         })
-    })
+    };
+    let words = |pc: &Option<Curve2>| match pc {
+        Some(Curve2::BSpline(b)) => 2 * b.ctrl.len() + b.knots.len() + b.weights.as_ref().map_or(0, |w| w.len()),
+        _ => 8,
+    };
+    ck_core::memo::cached_sized(&MEMO, key, fit, words)
 }
 
 /// A vertex where the face loops pair only part of its incident edges is a pinch:

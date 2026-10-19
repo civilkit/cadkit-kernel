@@ -1236,7 +1236,7 @@ mod tests {
 /// range: a boolean measures the boxes of both operands and of its result, mostly the same edges each time.
 fn sampled_box(c: &Curve, t0: f64, t1: f64) -> (Vec3, Vec3) {
     thread_local! {
-        static MEMO: std::cell::RefCell<ck_core::memo::Memo<(Vec3, Vec3)>> = std::cell::RefCell::new(ck_core::memo::Memo::new(1 << 20));
+        static MEMO: std::cell::RefCell<ck_core::memo::Memo<(Vec3, Vec3)>> = std::cell::RefCell::new(ck_core::memo::Memo::new(1 << 19));
     }
     let mut key = Vec::with_capacity(32);
     c.push_key(&mut key);
