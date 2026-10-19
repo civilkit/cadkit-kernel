@@ -233,12 +233,22 @@ export class NativeKernel {
     const tok = { ac: new AbortController(), why: null as 'cancel' | 'timeout' | null };
     this.inflight.add(tok);
     const timer = this.timeoutMs > 0 ? setTimeout(() => { tok.why = 'timeout'; tok.ac.abort(); }, this.timeoutMs) : null;
+    const before = this.lastUse;
     this.lastUse = Date.now();
     try {
-      const res = await this.f(`${this.url}/session/${encodeURIComponent(sid)}/rpc`, {
+      const body = encodeRequest(this.nextId++, msg);
+      const post = () => this.f(`${this.url}/session/${encodeURIComponent(sid)}/rpc`, {
         ...baseInit(this.url, this.token, { 'Content-Type': 'application/json' }),
-        method: 'POST', body: encodeRequest(this.nextId++, msg), signal: tok.ac.signal,
+        method: 'POST', body, signal: tok.ac.signal,
       });
+      const idleFor = Date.now() - before;
+      let res: Response;
+      try { res = await post(); } catch (e) {
+        // A connection the service closed while it sat idle fails on first use, before the service saw the request. If we were idle for a
+        // while and the service still answers, send the request once more; a service that is really gone fails the check and is reported.
+        if (tok.why !== null || idleFor < 1000 || !(await this.alive())) throw e;
+        res = await post();
+      }
       if (res.status === 401 || res.status === 403) return this.fail('unauthorized', 'the service refused the token');
       if (res.status === 404) return this.fail('expired', 'the service no longer has this session (restarted or timed out)');
       const bytes = new Uint8Array(await res.arrayBuffer());
@@ -261,6 +271,11 @@ export class NativeKernel {
       if (timer) clearTimeout(timer);
       this.inflight.delete(tok);
     }
+  }
+
+  /** Whether the service answers a plain request (used to tell a stale idle connection from a service that is gone). */
+  private async alive(): Promise<boolean> {
+    try { return (await this.f(this.url + '/version', { ...baseInit(this.url, this.token), signal: AbortSignal.timeout(3000) })).ok; } catch { return false; }
   }
 
   private startKeepAlive(): void {

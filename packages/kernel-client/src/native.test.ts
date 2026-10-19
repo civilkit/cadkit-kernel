@@ -171,6 +171,22 @@ describe('NativeKernel transport', () => {
     } finally { await svc.stop(); }
   });
 
+  it('survives an idle gap longer than the server keep-alive, and reports a service that is gone', async () => {
+    const svc = await startMockService({ keepAliveMs: 100 });
+    const failures: NativeFailure[] = [];
+    const k = await NativeKernel.connect({ url: svc.url, token: svc.token, onFailure: (f) => failures.push(f), ...quiet });
+    try {
+      assert.equal((await k.request({ type: 'a' })).ok, true);
+      await new Promise((r) => setTimeout(r, 1300));   // the server drops the idle connection
+      assert.equal((await k.request({ type: 'b' })).ok, true);
+      assert.equal(failures.length, 0);
+      await new Promise((r) => setTimeout(r, 1300));
+      await svc.stop();
+      assert.equal((await k.request({ type: 'c' })).ok, false);
+      assert.deepEqual(failures.map((f) => f.kind), ['unreachable']);
+    } finally { await k.close(); await svc.stop(); }
+  });
+
   it('pings while idle so the service does not expire the session', async () => {
     const svc = await startMockService();
     const k = await NativeKernel.connect({ url: svc.url, token: svc.token, keepAliveMs: 40 });

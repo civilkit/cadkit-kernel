@@ -27,6 +27,8 @@ export interface MockOptions {
   /** run the real kernel for each session */
   wasmPath?: string;
   port?: number;
+  /** how long the server keeps an idle connection open (default 2 minutes; the real service must keep it above the client's idle ping) */
+  keepAliveMs?: number;
   /** decide the answer to an rpc by hand (return undefined to let the kernel / fake answer) */
   onRpc?(body: string, session: string, n: number): RpcOverride | undefined | Promise<RpcOverride | undefined>;
 }
@@ -109,6 +111,7 @@ export async function startMockService(o: MockOptions = {}): Promise<MockService
       return send(404, 'not found', 'text/plain');
     });
   });
+  server.keepAliveTimeout = o.keepAliveMs ?? 120_000;
   server.on('connection', (s) => { sockets.add(s); s.on('close', () => sockets.delete(s)); });
   await new Promise<void>((r) => server.listen(o.port ?? 0, '127.0.0.1', r));
   const port = (server.address() as AddressInfo).port;
