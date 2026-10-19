@@ -1,0 +1,18 @@
+[package]
+name = "ck-native"
+version = "0.1.0"
+edition = "2021"
+description = "Local HTTP service around the kernel protocol (ck_server::handle), one worker thread per session"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "ck-native"
+path = "src/main.rs"
+
+[dependencies]
+ck-server = { path = "../ck-server" }
+ck-wasm = { path = "../ck-wasm" }
+ck-ops = { path = "../ck-ops" }
+ck-core = { path = "../ck-core" }

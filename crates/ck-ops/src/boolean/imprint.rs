@@ -14,7 +14,7 @@
 //! other's boundary edges instead of an SSI curve.
 
 use super::classify::{point_in_face_cached, LoopCache, Where};
-use crate::bvh::{curve_range_box, face_box, Aabb, Bvh};
+use crate::bvh::{curve_hull_box, curve_range_box, curve_span_boxes, face_box, Aabb, Bvh};
 use crate::intersect::ss::{self, Bounds, SsResult};
 use crate::intersect::{cc, fit_param, param_slack};
 use ck_geom::curve::Curve;
@@ -278,6 +278,10 @@ fn cut_crossings(a: &CutSeg, b: &CutSeg, tol: f64, out: &mut Vec<Vec3>) {
 /// a cap disk's box is 2e-5 + 2·1e-6 thick in the oracle's BVH dump).
 const EDGE_TOL: f64 = 1e-5;
 
+/// Box padding (in units of the welding tolerance) of the lossless hull-box rejections of [`trim`] and the
+/// edge splitting: well past the 2 tol (plus parameter slack) within which a crossing or a pool point counts.
+const REJECT_PAD: f64 = 16.0;
+
 /// Parameter range of a CLOSED intersection conic that no boundary cuts:
 /// [−0.38·2π − 1e-9, +2π] of its frame, i.e. it starts at 0.62·2π (oracle:
 /// box C0 ∩ through hole r2 at (5,5) starts at (3.542062743788083, 0,
@@ -319,6 +323,130 @@ impl Drop for SkipGuard {
 pub fn skip_pairs(pairs: Vec<(FaceId, FaceId)>) -> SkipGuard {
     SKIP_PAIRS.with(|s| *s.borrow_mut() = pairs);
     SkipGuard
+}
+
+/// True when a plane face and a cone face surely share no point (so their intersection curves would all be trimmed
+/// away): every point of the plane face inside the cone face's axial slab stays radially farther than a margin from
+/// the cone face's radius band. In the cone's frame (z = v along the axis, rho = distance from the axis):
+/// - the cone face's v range is that of its boundary edges' hull boxes (v has no interior extremum on a cone face;
+///   one reaching the apex has its seam ending there), its rho is |r + v tan a| over that range;
+/// - a point of the plane face at height z lies on a chord of constant z whose ends are on the face's boundary, and
+///   rho along that chord is convex: over the face's part inside the slab, rho is bounded by its values at boundary
+///   points inside the slab (lines clipped exactly, other edges by their span hull boxes) and, where a chord's foot
+///   point (closest to the axis) may lie inside the face, by the foot segment's rho. The foot segment is left out
+///   only when no boundary box comes near it and its midpoint classifies Out.
+/// A face with no boundary inside the slab does not reach it. The margin covers the trim's tolerance and the chord
+/// sag of the uv polygons the trim classifies with (1e-4 for circles): a kept curve piece's midpoint lies within it
+/// of both faces. Plane x cone pairs whose section is a hyperbola or parabola are marched otherwise, and on the
+/// fan shroud's cavity cut nearly all of them (blade walls against the cavity's thin bands) keep nothing.
+fn plane_cone_apart(pb: &Body, pf: FaceId, cb: &Body, cf: FaceId, tol: f64, cache: &mut LoopCache) -> bool {
+    plane_cone_apart_opt(pb, pf, cb, cf, tol, cache) == Some(true)
+}
+
+fn plane_cone_apart_opt(pb: &Body, pf: FaceId, cb: &Body, cf: FaceId, tol: f64, cache: &mut LoopCache) -> Option<bool> {
+    let Surface::Plane { frame: pfr } = &pb.face(pf).surface else { return None };
+    let Surface::Cone { frame, r, semi_angle } = &cb.face(cf).surface else { return None };
+    let k = semi_angle.tan();
+    let loc_box = |bb: &Aabb| -> Aabb {
+        let mut out = Aabb::EMPTY;
+        for i in 0..8 {
+            let p = Vec3::new(if i & 1 == 0 { bb.min.x } else { bb.max.x }, if i & 2 == 0 { bb.min.y } else { bb.max.y }, if i & 4 == 0 { bb.min.z } else { bb.max.z });
+            out.add_point(frame.to_local(p));
+        }
+        out
+    };
+    // cone face v range
+    let (mut v0, mut v1) = (f64::INFINITY, f64::NEG_INFINITY);
+    for e in cb.face_edges(cf) {
+        let ed = cb.edge(e);
+        let lb = loc_box(&curve_hull_box(&ed.curve, ed.t0, ed.t1)?);
+        v0 = v0.min(lb.min.z);
+        v1 = v1.max(lb.max.z);
+    }
+    if !(v0.is_finite() && v1.is_finite()) {
+        return None;
+    }
+    let (ra, rb) = (r + k * v0, r + k * v1);
+    let (rc0, rc1) = if ra * rb <= 0.0 { (0.0, ra.abs().max(rb.abs())) } else { (ra.abs().min(rb.abs()), ra.abs().max(rb.abs())) };
+    let m = REJECT_PAD * tol + 1e-9 + 1e-3 * (1.0 + rc1);
+    let (z0, z1) = (v0 - m, v1 + m);
+    // plane face rho bounds over the slab
+    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    let mut boxes: Vec<Aabb> = vec![];
+    let rho_rect = |b: &Aabb| -> (f64, f64) {
+        let dx = if b.min.x > 0.0 { b.min.x } else if b.max.x < 0.0 { -b.max.x } else { 0.0 };
+        let dy = if b.min.y > 0.0 { b.min.y } else if b.max.y < 0.0 { -b.max.y } else { 0.0 };
+        let mx = b.min.x.abs().max(b.max.x.abs());
+        let my = b.min.y.abs().max(b.max.y.abs());
+        ((dx * dx + dy * dy).sqrt(), (mx * mx + my * my).sqrt())
+    };
+    for e in pb.face_edges(pf) {
+        let ed = pb.edge(e);
+        if let Curve::Line { .. } = ed.curve {
+            let (a, b) = (frame.to_local(ed.curve.eval(ed.t0)), frame.to_local(ed.curve.eval(ed.t1)));
+            boxes.push(Aabb::from_points(&[a, b]));
+            // clip to the slab
+            let (mut s0, mut s1) = (0.0f64, 1.0f64);
+            let dz = b.z - a.z;
+            if dz.abs() < 1e-300 {
+                if a.z < z0 || a.z > z1 {
+                    continue;
+                }
+            } else {
+                let (ta, tb) = ((z0 - a.z) / dz, (z1 - a.z) / dz);
+                s0 = s0.max(ta.min(tb));
+                s1 = s1.min(ta.max(tb));
+                if s0 > s1 {
+                    continue;
+                }
+            }
+            let (p, q) = (a + (b - a) * s0, a + (b - a) * s1);
+            let (p2, q2) = (Vec3::new(p.x, p.y, 0.0), Vec3::new(q.x, q.y, 0.0));
+            let d = q2 - p2;
+            let l2 = d.dot(d);
+            let t = if l2 > 1e-300 { (-p2.dot(d) / l2).clamp(0.0, 1.0) } else { 0.0 };
+            lo = lo.min((p2 + d * t).len());
+            hi = hi.max(p2.len()).max(q2.len());
+        } else {
+            for bb in curve_span_boxes(&ed.curve, ed.t0, ed.t1)? {
+                let lb = loc_box(&bb);
+                boxes.push(lb);
+                if lb.max.z < z0 || lb.min.z > z1 {
+                    continue;
+                }
+                let (a, b) = rho_rect(&lb);
+                lo = lo.min(a);
+                hi = hi.max(b);
+            }
+        }
+    }
+    if !hi.is_finite() {
+        return Some(true); // no boundary in the slab: the face does not reach it
+    }
+    // foot segment: on the line of constant z, the point closest to the axis
+    let nl = frame.to_local(pfr.o + pfr.z) - frame.to_local(pfr.o);
+    let dl = nl.dot(frame.to_local(pfr.o));
+    let h2 = nl.x * nl.x + nl.y * nl.y;
+    if h2 < 1e-24 {
+        return None; // plane across the axis (circle case)
+    }
+    let foot = |z: f64| {
+        let s = (dl - nl.z * z) / h2;
+        Vec3::new(nl.x * s, nl.y * s, z)
+    };
+    let (fa, fb) = (foot(z0), foot(z1));
+    let fbox = Aabb::from_points(&[fa, fb]).padded(m);
+    let mut use_foot = boxes.iter().any(|b| b.overlaps(&fbox));
+    if !use_foot {
+        let mid = frame.o + frame.vec_to_world((fa + fb) * 0.5);
+        use_foot = point_in_face_cached(pb, pf, mid, m, cache) != Where::Out;
+    }
+    if use_foot {
+        let (ra, rb) = (Vec3::new(fa.x, fa.y, 0.0).len(), Vec3::new(fb.x, fb.y, 0.0).len());
+        let crosses = (dl - nl.z * z0) * (dl - nl.z * z1) <= 0.0;
+        lo = lo.min(if crosses { 0.0 } else { ra.min(rb) });
+    }
+    Some(lo - rc1 > m || rc0 - hi > m)
 }
 
 /// Build the arrangement of `a` (side 0) and `b` (side 1).
@@ -364,6 +492,12 @@ pub fn imprint_hooked(a: &Body, b: &Body, tol: f64, hook: Option<PairHook>) -> A
     let mut cuts: Vec<CutSeg> = vec![];
     let mut loop_cache = LoopCache::new();
     let mut extra: Vec<Vec3> = vec![];
+    // plane x cone pairs that surely share no point (see `plane_cone_apart`)
+    let apart = |f: FaceId, g: FaceId, cache: &mut LoopCache| match (&a.face(f).surface, &b.face(g).surface) {
+        (Surface::Plane { .. }, Surface::Cone { .. }) => plane_cone_apart(a, f, b, g, tol, cache),
+        (Surface::Cone { .. }, Surface::Plane { .. }) => plane_cone_apart(b, g, a, f, tol, cache),
+        _ => false,
+    };
     for (i, j) in ta.overlap_pairs_ordered(&tb, pad) {
         // out of time: the caller (boolean_at) sees the expiry and discards this partial arrangement
         if ck_core::budget::poll() {
@@ -384,6 +518,7 @@ pub fn imprint_hooked(a: &Body, b: &Body, tol: f64, hook: Option<PairHook>) -> A
             _ if skipped => SsResult::Disjoint,
             Some(cs) if cs.is_empty() => SsResult::Disjoint,
             Some(cs) => SsResult::Curves(cs.into_iter().map(ss::SsCurve::Exact).collect()),
+            None if apart(f, g, &mut loop_cache) => SsResult::Disjoint,
             None => ss::intersect(sf, sg, Some(bounds), tol),
         };
         match ssi {
@@ -524,7 +659,14 @@ pub fn imprint_hooked(a: &Body, b: &Body, tol: f64, hook: Option<PairHook>) -> A
                     Some(pool_bvh.query_box(&bb.padded(4.0 * tol + 1e-9)))
                 }
             }
-            _ => None,
+            // splines: the pool points within reach of the control-point hull of a span in range (a point
+            // farther than `tol` from the curve can never split it)
+            _ => curve_span_boxes(c, t0, t1).map(|bs| {
+                let mut v: Vec<usize> = bs.iter().flat_map(|bb| pool_bvh.query_box(&bb.padded(REJECT_PAD * tol + 1e-9))).collect();
+                v.sort_unstable();
+                v.dedup();
+                v
+            }),
         };
         let n_cand = cand.as_ref().map_or(pool.len(), |c| c.len());
         for k in 0..n_cand {
@@ -635,9 +777,25 @@ fn trim(c: &Curve, r: (f64, f64), faces: &[(&Body, FaceId)], bx: &Aabb, tol: f64
         return vec![];
     }
     let mut ts = vec![r.0, r.1];
+    // an edge whose hull box stays clear of the curve's cannot meet it (every hit and overlap of cc::intersect lies
+    // within 2 tol of both curves, a parameter slack past the range ends included): skip the intersection
+    let hull = curve_hull_box(c, r.0, r.1).map(|b| b.padded(REJECT_PAD * tol + 1e-9));
+    // (then span by span: the boxes of the curve's knot spans / arcs, built on first use, against the edge's)
+    let mut spans: Option<Option<Bvh>> = None;
     for &(body, f) in faces {
         for e in body.face_edges(f) {
             let ed = body.edge(e);
+            if let (Some(h), Some(eb)) = (&hull, curve_hull_box(&ed.curve, ed.t0, ed.t1)) {
+                if !h.overlaps(&eb) {
+                    continue;
+                }
+                let sb = spans.get_or_insert_with(|| curve_span_boxes(c, r.0, r.1).map(|v| Bvh::build(&v.iter().map(|b| b.padded(REJECT_PAD * tol + 1e-9)).collect::<Vec<_>>())));
+                if let (Some(sb), Some(es)) = (sb.as_ref(), curve_span_boxes(&ed.curve, ed.t0, ed.t1)) {
+                    if !es.iter().any(|b| sb.any_overlap(b)) {
+                        continue;
+                    }
+                }
+            }
             let res = cc::intersect(c, r, &ed.curve, (ed.t0, ed.t1), tol);
             ts.extend(res.hits.iter().map(|h| h.t1));
             for o in res.overlaps {
@@ -697,6 +855,55 @@ mod tests {
         assert!(side.touched());
         let s1 = arr.faces.iter().find(|f| f.side == 0 && f.name.id() == "F2.S.e1").unwrap();
         assert!(!s1.touched());
+    }
+
+    /// `plane_cone_apart` against the SSI + trim it stands in for: every pair it calls apart keeps no curve, and the
+    /// walls that do cross the cone band are not called apart (a wall across the band whose boundary lies far
+    /// outside it, with the band's section in the middle of the face, needs the foot segment).
+    #[test]
+    fn plane_cone_apart_is_lossless() {
+        use crate::boolean::tests::top;
+        use ck_geom::Vec2;
+        use ck_topo::make::{extrude, ExtrudeOpts, Profile, ProfileLoop, ProfileRegion, ProfileSeg};
+        let tol = 1e-6;
+        // drafted circle: a cone band about the y axis, radius 5 at y = 0, height 2
+        let lp = ProfileLoop::new(vec![ProfileSeg::circle("e1", Vec2::new(0.0, 0.0), 5.0)]);
+        let prof = Profile::new(top(), vec![ProfileRegion { outer: lp, holes: vec![] }]);
+        let cone = extrude("K", &prof, ExtrudeOpts { s0: 0.0, s1: 2.0, dir: None, draft: 0.2 }).unwrap();
+        let cf = cone.face_ids().find(|&f| matches!(cone.face(f).surface, Surface::Cone { .. })).expect("cone face");
+        let cases: [(&str, f64, f64, f64, f64, bool); 4] = [
+            // (name, x0, y0, x1, y1, some wall crosses the band)
+            ("far", 9.0, -1.0, 10.0, 1.0, false),  // radially outside the band
+            ("core", -1.0, -1.0, 1.0, 1.0, false), // around the axis, inside the band
+            ("cross", 4.0, -1.0, 6.0, 1.0, true),  // walls across the band
+            ("chord", 3.0, -10.0, 4.0, 10.0, true), // x = 3 and 4 cut the band away from their boundary
+        ];
+        for (name, x0, y0, x1, y1, crosses) in cases {
+            let bx = box_body(name, x0, y0, x1, y1, -1.0, 3.0);
+            let mut cache = LoopCache::new();
+            let mut any_kept = false;
+            for f in bx.face_ids() {
+                if !matches!(bx.face(f).surface, Surface::Plane { .. }) {
+                    continue;
+                }
+                let apart = plane_cone_apart(&bx, f, &cone, cf, tol, &mut cache);
+                let (b0, b1) = (face_box(&bx, f).padded(1e-3), face_box(&cone, cf).padded(1e-3));
+                let un = b0.union(&b1);
+                let mut kept = 0;
+                if let SsResult::Curves(cs) = ss::intersect(&bx.face(f).surface, &cone.face(cf).surface, Some(Bounds { lo: un.min, hi: un.max }), tol) {
+                    for c in cs {
+                        let cu = c.curve();
+                        kept += trim(cu, cu.range(), &[(&bx, f), (&cone, cf)], &un, tol, false, &mut cache).len();
+                    }
+                }
+                assert!(!(apart && kept > 0), "{name}: face {} called apart but keeps {kept} pieces", bx.face(f).name.id());
+                any_kept |= kept > 0;
+                if !crosses && !matches!(bx.face(f).name.id().as_str(), s if s.ends_with("C0") || s.ends_with("C1")) {
+                    assert!(apart, "{name}: wall {} not called apart", bx.face(f).name.id());
+                }
+            }
+            assert_eq!(any_kept, crosses, "{name}");
+        }
     }
 }
 

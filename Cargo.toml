@@ -10,6 +10,12 @@ panic = "abort"
 # (docs/perf-large sample.md, round 5)
 codegen-units = 1
 
+# The native service (crates/ck-native) must survive a kernel panic (catch_unwind), which
+# panic=abort forbids. Same optimisation as release; build with --profile service.
+[profile.service]
+inherits = "release"
+panic = "unwind"
+
 # Fast iteration: release speed without LTO (cargo test --profile fast;
 # wasm: cargo build -p ck-wasm --target wasm32-unknown-unknown --profile fast,
 # then node tools/gate.mjs --wasm target/wasm32-unknown-unknown/fast/ck_wasm.wasm)

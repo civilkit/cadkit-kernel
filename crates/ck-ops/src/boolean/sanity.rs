@@ -103,15 +103,9 @@ fn loose_box(b: &Body) -> (Vec3, Vec3) {
         if !(a.x.is_finite() && z.x.is_finite()) {
             continue;
         }
-        let n = 32;
-        let us: Vec<f64> = (0..=n).map(|i| a.x + (z.x - a.x) * i as f64 / n as f64).collect();
-        let vs: Vec<f64> = (0..=n).map(|j| a.y + (z.y - a.y) * j as f64 / n as f64).collect();
-        for p in face.surface.eval_grid(&us, &vs) {
-            if p.is_finite() {
-                lo = lo.min(p);
-                hi = hi.max(p);
-            }
-        }
+        let g = crate::bvh::surface_grid_box(&face.surface, (a.x, z.x), (a.y, z.y), 32, true);
+        lo = lo.min(g.min);
+        hi = hi.max(g.max);
     }
     let pad = 0.005 * (hi - lo).len();
     (lo - Vec3::new(pad, pad, pad), hi + Vec3::new(pad, pad, pad))

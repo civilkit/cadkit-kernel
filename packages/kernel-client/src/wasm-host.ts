@@ -34,7 +34,8 @@ export class WasmHost {
     );
   }
 
-  call(body: string): KernelReply {
+  /** One request; returns the raw framed reply bytes (what a native service sends over the wire). Throws on a trap (the instance is rebooted first). */
+  callRaw(body: string): Uint8Array {
     const b = new TextEncoder().encode(body);
     this.panic = null;
     try {
@@ -43,12 +44,19 @@ export class WasmHost {
       new Uint8Array(x.memory.buffer, p, b.length).set(b);
       const total = x.ck_request(p, b.length);
       const o = x.ck_reply();
-      const bytes = new Uint8Array(x.memory.buffer).slice(o, o + total);
-      return toKernelReply(decodeReply(bytes).value as { ok?: unknown; result?: unknown; error?: unknown });
+      return new Uint8Array(x.memory.buffer).slice(o, o + total);
     } catch (e) {
       const trap = `${(e as Error).message}${this.panic ? ' panic=' + this.panic : ''}`;
       try { this.boot(); } catch { /* leave the old instance; next call traps again */ }
-      return { ok: false, trap };
+      throw new Error(trap);
+    }
+  }
+
+  call(body: string): KernelReply {
+    try {
+      return toKernelReply(decodeReply(this.callRaw(body)).value as { ok?: unknown; result?: unknown; error?: unknown });
+    } catch (e) {
+      return { ok: false, trap: (e as Error).message };
     }
   }
 }

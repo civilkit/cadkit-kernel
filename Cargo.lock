@@ -66,6 +66,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ck-native"
+version = "0.1.0"
+dependencies = [
+ "ck-core",
+ "ck-ops",
+ "ck-server",
+ "ck-wasm",
+]
+
+[[package]]
 name = "ck-ops"
 version = "0.1.0"
 dependencies = [

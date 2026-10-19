@@ -290,6 +290,42 @@ pub fn fragments(arr: &Arrangement, fi: usize) -> Vec<Fragment> {
     out
 }
 
+/// [`sample_point`] of a whole (untouched) face, memoised by the exact content of everything it reads: the
+/// surface and sense, and per loop the directed pieces (curve, range, end vertices; repeated edges by their
+/// first position). An untouched face reaches the next boolean of a chain with the same edges, so it is
+/// sampled once (its uv polygons are the costly part); a split fragment is sampled as before.
+fn sample_point_whole(arr: &Arrangement, f: &Fragment) -> Option<(Vec3, Vec3)> {
+    if !f.whole {
+        return sample_point(arr, f);
+    }
+    thread_local! {
+        static MEMO: std::cell::RefCell<ck_core::memo::Memo<Option<(Vec3, Vec3)>>> = std::cell::RefCell::new(ck_core::memo::Memo::new(1 << 20));
+    }
+    let af = &arr.faces[f.af];
+    let mut key = Vec::with_capacity(64);
+    af.surface.push_key(&mut key);
+    key.extend([af.sense as u64, f.loops.len() as u64]);
+    let mut seen: Vec<usize> = vec![];
+    for l in &f.loops {
+        key.push(l.len() as u64);
+        for &(e, rev) in l {
+            match seen.iter().position(|&x| x == e) {
+                Some(i) => key.push((i as u64) << 2 | 2 | rev as u64),
+                None => {
+                    key.push((seen.len() as u64) << 2 | rev as u64);
+                    seen.push(e);
+                    let ed = &arr.edges[e];
+                    ed.curve.push_key(&mut key);
+                    key.extend([ed.t0.to_bits(), ed.t1.to_bits()]);
+                    ck_geom::curve::push_vec3(&mut key, arr.verts[ed.v0]);
+                    ck_geom::curve::push_vec3(&mut key, arr.verts[ed.v1]);
+                }
+            }
+        }
+    }
+    ck_core::memo::cached(&MEMO, key, || sample_point(arr, f))
+}
+
 /// An interior point of the fragment (on its surface) and the outward
 /// normal there.
 #[inline(never)]
@@ -483,7 +519,7 @@ pub fn select_with(
             if skip_side == Some(side) {
                 continue;
             }
-            let (q, n) = sample_point(arr, &fr).ok_or_else(|| {
+            let (q, n) = sample_point_whole(arr, &fr).ok_or_else(|| {
                 super::bool_dbg!("no sample point for a fragment of face {fi} (side {side}, {}, {} loops)", arr.faces[fi].name.id(), fr.loops.len());
                 "booleanFailed".to_string()
             })?;
@@ -992,21 +1028,7 @@ pub fn build(arr: &Arrangement, faces: &[OutFace]) -> Body {
                         e
                     }
                 };
-                let pc = exact_pcurve(&of.surface, &ae.curve, tol * 10.0).or_else(|| {
-                    let conic = matches!(ae.curve, ck_geom::curve::Curve::Circle { .. } | ck_geom::curve::Curve::Ellipse { .. });
-                    if matches!(of.surface, ck_geom::surface::Surface::BSpline(_) | ck_geom::surface::Surface::Screw { .. } | ck_geom::surface::Surface::Plane { .. }) && matches!(ae.curve, ck_geom::curve::Curve::BSpline(_)) {
-                        // (a long cut curve turning round inside a sweep face is ~1 mm off its
-                        // 32-sample cubic fit at the tip: refine until it reproduces the curve)
-                        pcurve_of_dense(&of.surface, &ae.curve, ae.t0, ae.t1, tol, 1e-5).ok()
-                    } else if conic && !matches!(of.surface, ck_geom::surface::Surface::Plane { .. }) {
-                        // a great circle on a sphere that does not pass through its poles (a
-                        // rotated sphere cut by an axis plane) has no exact uv line: the
-                        // 32-sample fit deviates ~1e-4, more than the validator's tolerance
-                        pcurve_of_dense(&of.surface, &ae.curve, ae.t0, ae.t1, tol, 1e-6).ok()
-                    } else {
-                        pcurve_of(&of.surface, &ae.curve, ae.t0, ae.t1, tol).ok()
-                    }
-                });
+                let pc = edge_pcurve(&of.surface, &ae.curve, ae.t0, ae.t1, tol);
                 let pc = pc.map(|pc| {
                     let (ta, tb) = if rev { (ae.t1, ae.t0) } else { (ae.t0, ae.t1) };
                     let mut pc = pc;
@@ -1072,6 +1094,41 @@ pub fn build(arr: &Arrangement, faces: &[OutFace]) -> Body {
     split_pinch_vertices(&mut b);
     ck_topo::region::rebuild_lumps(&mut b);
     b
+}
+
+/// The pcurve of edge curve `c` over `[t0, t1]` on surface `s` (before any period shift), memoised by the exact
+/// inputs: a boolean chain rebuilds every coedge of every result, and the pcurve fits of the edges it did not
+/// touch were the bulk of `build` (a pure function of these inputs, so a repeat returns the same curve).
+fn edge_pcurve(s: &Surface, c: &Curve, t0: f64, t1: f64, tol: f64) -> Option<Curve2> {
+    thread_local! {
+        static MEMO: std::cell::RefCell<ck_core::memo::Memo<Option<Curve2>>> = std::cell::RefCell::new(ck_core::memo::Memo::new(1 << 20));
+    }
+    let mut key = Vec::with_capacity(48);
+    s.push_key(&mut key);
+    c.push_key(&mut key);
+    key.extend([t0.to_bits(), t1.to_bits(), tol.to_bits()]);
+    let fit = || {
+        exact_pcurve(s, c, tol * 10.0).or_else(|| {
+            let conic = matches!(c, Curve::Circle { .. } | Curve::Ellipse { .. });
+            if matches!(s, Surface::BSpline(_) | Surface::Screw { .. } | Surface::Plane { .. }) && matches!(c, Curve::BSpline(_)) {
+                // (a long cut curve turning round inside a sweep face is ~1 mm off its
+                // 32-sample cubic fit at the tip: refine until it reproduces the curve)
+                pcurve_of_dense(s, c, t0, t1, tol, 1e-5).ok()
+            } else if conic && !matches!(s, Surface::Plane { .. }) {
+                // a great circle on a sphere that does not pass through its poles (a
+                // rotated sphere cut by an axis plane) has no exact uv line: the
+                // 32-sample fit deviates ~1e-4, more than the validator's tolerance
+                pcurve_of_dense(s, c, t0, t1, tol, 1e-6).ok()
+            } else {
+                pcurve_of(s, c, t0, t1, tol).ok()
+            }
+        })
+    };
+    let words = |pc: &Option<Curve2>| match pc {
+        Some(Curve2::BSpline(b)) => 2 * b.ctrl.len() + b.knots.len() + b.weights.as_ref().map_or(0, |w| w.len()),
+        _ => 8,
+    };
+    ck_core::memo::cached_sized(&MEMO, key, fit, words)
 }
 
 /// A vertex where the face loops pair only part of its incident edges is a pinch:

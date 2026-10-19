@@ -908,13 +908,25 @@ fn comb(body: &Body, msg: &Json) -> Json {
 
 /// `matchEdges` on a part with features: a private regen (span
 /// "regenerate N features", nothing stored), then the edge matcher.
-fn match_edges_hook(part: &Json, cx: &mut Cx) -> Result<Json, String> {
-    let part = Part::from_json(part)?;
+fn match_edges_hook(part_json: &Json, cx: &mut Cx) -> Result<Json, String> {
+    let part = Part::from_json(part_json)?;
     let opts = RegenOpts { up_to: cx.msg.get_f64("upTo").filter(|v| *v >= 0.0).map(|v| v as u32), ..RegenOpts::default() };
     let n = opts.up_to.map_or(part.features.len(), |u| part.features.len().min(u as usize));
+    let use_cache = cx.msg.get_bool("noCache") != Some(true) && !cx.trace.enabled();
     let body = cx.span(regen_label(n), |cx| {
         let mut ex = Exec { brep: Brep::new(), sink: TraceSink { trace: &mut *cx.trace, ids: vec![] }, auto_heal: None };
-        regen::regen(&part, &opts, &mut ex);
+        // continue from the longest cached prefix (read only: this private regen stores nothing)
+        let mut resume = None;
+        let run_n = regen::run_len(&part, &opts);
+        if use_cache && run_n > 0 {
+            let ko = regen_cache::KeyOpts { sketch_status: false, solve_sketches: false, auto_heal: None };
+            let keys = regen_cache::chain_keys(part_json, &ko, run_n);
+            if let Some(h) = regen_cache::with(|c| c.lookup(&keys)) {
+                ex.brep.load(&h.snap);
+                resume = Some(regen::Resume { next: h.next, result: h.result, axes: h.axes });
+            }
+        }
+        regen::regen_from(&part, &opts, &mut ex, resume, None);
         ex.brep.body
     });
     Ok(match body {

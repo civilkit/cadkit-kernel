@@ -573,10 +573,9 @@ impl Body {
             if matches!(ed.curve, Curve::Line { .. }) {
                 continue;
             }
-            for p in ed.curve.sample(ed.t0, ed.t1, 64) {
-                lo = lo.min(p);
-                hi = hi.max(p);
-            }
+            let (a, b) = sampled_box(&ed.curve, ed.t0, ed.t1);
+            lo = lo.min(a);
+            hi = hi.max(b);
         }
         (lo, hi)
     }
@@ -1231,4 +1230,24 @@ mod tests {
         n.push_instance("F1.1");
         assert_eq!(n.id(), "F8.S.h1@F9.1@F1.1");
     }
+}
+
+/// Box of 65 samples of `c` over `[t0, t1]` (the edge part of [`Body::bbox`]), memoised by the exact curve and
+/// range: a boolean measures the boxes of both operands and of its result, mostly the same edges each time.
+fn sampled_box(c: &Curve, t0: f64, t1: f64) -> (Vec3, Vec3) {
+    thread_local! {
+        static MEMO: std::cell::RefCell<ck_core::memo::Memo<(Vec3, Vec3)>> = std::cell::RefCell::new(ck_core::memo::Memo::new(1 << 19));
+    }
+    let mut key = Vec::with_capacity(32);
+    c.push_key(&mut key);
+    key.extend([t0.to_bits(), t1.to_bits()]);
+    ck_core::memo::cached(&MEMO, key, || {
+        let mut lo = Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
+        let mut hi = -lo;
+        for p in c.sample(t0, t1, 64) {
+            lo = lo.min(p);
+            hi = hi.max(p);
+        }
+        (lo, hi)
+    })
 }

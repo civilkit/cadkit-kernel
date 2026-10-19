@@ -399,9 +399,37 @@ pub fn face_loops_uv(b: &Body, f: FaceId) -> Vec<Vec<Vec2>> {
     face_loops_uv_with(b, f, |c, _, _| samples_for(c))
 }
 
-/// As [`face_loops_uv`] with the finer circle sampling of [`Solid`].
+/// As [`face_loops_uv`] with the finer circle sampling of [`Solid`], memoised by the exact content of the face
+/// (surface, sense, per loop the coedges' curves, ranges and directions; repeated edges by first position): the
+/// faces a boolean leaves alone are probed again by the next one.
 fn face_loops_uv_fine(b: &Body, f: FaceId) -> Vec<Vec<Vec2>> {
-    face_loops_uv_with(b, f, samples_fine)
+    thread_local! {
+        static MEMO: std::cell::RefCell<ck_core::memo::Memo<std::rc::Rc<Vec<Vec<Vec2>>>>> = std::cell::RefCell::new(ck_core::memo::Memo::new(1 << 20));
+    }
+    let face = b.face(f);
+    let mut key = Vec::with_capacity(64);
+    face.surface.push_key(&mut key);
+    key.extend([face.sense as u64, face.loops.len() as u64]);
+    let mut seen: Vec<ck_topo::body::EdgeId> = vec![];
+    for &l in &face.loops {
+        let cs = &b.lp(l).coedges;
+        key.push(cs.len() as u64);
+        for &c in cs {
+            let ce = b.coedge(c);
+            match seen.iter().position(|&x| x == ce.edge) {
+                Some(i) => key.push((i as u64) << 2 | 2 | ce.rev as u64),
+                None => {
+                    key.push((seen.len() as u64) << 2 | ce.rev as u64);
+                    seen.push(ce.edge);
+                    let ed = b.edge(ce.edge);
+                    ed.curve.push_key(&mut key);
+                    key.extend([ed.t0.to_bits(), ed.t1.to_bits()]);
+                }
+            }
+        }
+    }
+    let v = ck_core::memo::cached_sized(&MEMO, key, || std::rc::Rc::new(face_loops_uv_with(b, f, samples_fine)), |v| 2 * v.iter().map(|l| l.len()).sum::<usize>());
+    (*v).clone()
 }
 
 fn face_loops_uv_with(b: &Body, f: FaceId, nfun: impl Fn(&Curve, f64, f64) -> usize + Copy) -> Vec<Vec<Vec2>> {
@@ -429,6 +457,14 @@ fn face_loops_uv_with(b: &Body, f: FaceId, nfun: impl Fn(&Curve, f64, f64) -> us
         .collect()
 }
 
+/// False only when `p` is surely farther than `tol` from the spline or ellipse `c` over `r` (outside the
+/// control-point hull box of the spans in range, or the ellipse arc's exact box): the closest-point search of
+/// [`super::imprint::near_in_range`] (iterative for both) can be skipped. Other curves (closed-form closest points)
+/// always answer true.
+fn near_hull(c: &Curve, r: (f64, f64), p: Vec3, tol: f64) -> bool {
+    !matches!(c, Curve::BSpline(_) | Curve::Ellipse { .. }) || crate::bvh::curve_hull_box(c, r.0, r.1).map_or(true, |bb| bb.padded(tol + 1e-9).contains(p))
+}
+
 /// Is `p` (assumed near the face's surface) inside / on the boundary of /
 /// outside face `f`?
 pub fn point_in_face(b: &Body, f: FaceId, p: Vec3, tol: f64) -> Where {
@@ -443,6 +479,9 @@ pub type LoopCache = std::collections::HashMap<(usize, u32), Vec<Vec<Vec2>>>;
 pub fn point_in_face_cached(b: &Body, f: FaceId, p: Vec3, tol: f64, cache: &mut LoopCache) -> Where {
     for e in b.face_edges(f) {
         let ed = b.edge(e);
+        if !near_hull(&ed.curve, (ed.t0, ed.t1), p, tol) {
+            continue;
+        }
         if super::imprint::near_in_range(&ed.curve, (ed.t0, ed.t1), p, tol) {
             return Where::On;
         }
@@ -520,6 +559,9 @@ impl<'a> Solid<'a> {
         let b = self.body;
         for &e in &self.edges[i] {
             let ed = b.edge(e);
+            if !near_hull(&ed.curve, (ed.t0, ed.t1), p, self.tol) {
+                continue;
+            }
             if super::imprint::near_in_range(&ed.curve, (ed.t0, ed.t1), p, self.tol) {
                 return Where::On;
             }
@@ -548,6 +590,12 @@ impl<'a> Solid<'a> {
             return Class::Out;
         }
         let near = crate::bvh::Aabb::new(q, q).padded(tol * 10.0);
+        // outside the box of all (padded) face boxes by more than the on-surface band: no face is near and
+        // the point is outside the solid (its rays would cross the solid an even number of times, each
+        // crossing a closest-point search on a free-form face)
+        if !near.overlaps(&self.bvh.bbox()) {
+            return Class::Out;
+        }
         let robust = super::robust();
         for i in self.bvh.query_box(&near) {
             let g = self.faces[i];
@@ -683,6 +731,43 @@ mod tests {
             assert_eq!(point_in_face(&c, s, p, 1e-6), Where::In, "{ang}");
         }
         assert_eq!(point_in_face(&c, s, Vec3::new(25.0, 12.0, -10.0), 1e-6), Where::Out);
+    }
+
+    /// `near_hull` only rejects points that the closest-point test rejects too (an ellipse arc).
+    #[test]
+    fn near_hull_is_lossless_on_an_ellipse() {
+        let e = Curve::Ellipse { frame: ck_geom::Frame { o: Vec3::new(1.0, 2.0, 3.0), x: Vec3::X, y: Vec3::new(0.0, 0.6, 0.8), z: Vec3::new(0.0, -0.8, 0.6) }, a: 5.0, b: 2.0 };
+        let r = (0.3, 2.4);
+        let tol = 1e-3;
+        let mut rejected = 0;
+        for i in 0..400 {
+            let t = i as f64 * 0.37;
+            let p = Vec3::new(1.0 + 7.0 * t.sin(), 2.0 + 4.0 * (1.3 * t).cos(), 3.0 + 4.0 * (0.7 * t).sin());
+            for q in [p, e.eval(r.0 + (r.1 - r.0) * (i as f64 / 400.0)) + Vec3::new(0.0, 0.0, 1e-4)] {
+                if !near_hull(&e, r, q, tol) {
+                    rejected += 1;
+                    assert!(!super::super::imprint::near_in_range(&e, r, q, tol), "{q:?}");
+                }
+            }
+        }
+        assert!(rejected > 100);
+    }
+
+    /// Points outside the solid's box answer Out by the box alone, the same as the rays answer them; points
+    /// just inside the box (within the faces' padding) still go through the rays.
+    #[test]
+    fn outside_the_box_is_out() {
+        let c = cyl_body("F4", 20.0, 10.0, 5.0, -1.0, 11.0);
+        let solid = Solid::new(&c, 1e-6);
+        let bb = solid.bvh.bbox();
+        for p in [Vec3::new(bb.max.x + 1.0, 5.0, -10.0), Vec3::new(20.0, bb.min.y - 1e-3, -10.0), Vec3::new(-100.0, 50.0, 70.0)] {
+            assert!(!bb.contains(p));
+            assert_eq!(solid.classify(p, Vec3::X), Class::Out, "{p:?}");
+        }
+        // the box's corner region: outside the cylinder but inside the padded box
+        assert!(bb.contains(Vec3::new(15.5, 5.0, -5.5)));
+        assert_eq!(solid.classify(Vec3::new(15.5, 5.0, -5.5), Vec3::X), Class::Out);
+        assert_eq!(solid.classify(Vec3::new(20.0, 5.0, -10.0), Vec3::X), Class::In);
     }
 
     /// `uv_near_fp` with the surface hash taken once answers exactly what `uv_near` does per point.

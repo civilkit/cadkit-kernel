@@ -63,9 +63,22 @@ Not cached / bypassed:
 
 * `opts.noCache: true` bypasses lookup and storage (the cache is untouched);
 * `debug: true` requests (they want the real per-feature spans) bypass it;
-* `matchEdges`, `refDiff` and nested `insertPart` regens call the regen driver
-  directly and do not use the cache (a nested part is memoised inside the
-  assembly state as before).
+* nested `insertPart` regens call the regen driver directly and do not use the
+  cache (a nested part is memoised inside the assembly state as before).
+
+`refDiff {base, part}` and `matchEdges {part}` do read the cache (they store
+nothing). `matchEdges` continues from the longest cached prefix of its part.
+`refDiff` finds the longest prefix the two documents share (the first changed
+feature), takes the cached state just before it and rebuilds both documents
+from there only, so a reference check after an edit of the last feature builds
+one feature per side instead of two cold documents. The warnings are exactly
+those of the full path; `checked` counts only the references from the first
+changed feature on (an earlier reference is identical on both sides and cannot
+warn). `noCache: true` on the request runs the reference path (both documents
+from the start); `cacheStats: true` adds `cacheStats.resumedAt` (the number of
+features that were not rebuilt). `tests/refdiff_cache.rs` compares the two
+paths on edits, removals and moves. With a cold or evicted prefix it falls
+back to the full path.
 
 ## Sharing and the cap
 

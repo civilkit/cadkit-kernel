@@ -51,7 +51,65 @@ pub enum Curve {
     BSpline(BSplineCurve),
 }
 
+/// Pushes the bits of a point (exact content keys, see [`Curve::push_key`]).
+pub fn push_vec3(out: &mut Vec<u64>, p: Vec3) {
+    out.extend([p.x.to_bits(), p.y.to_bits(), p.z.to_bits()]);
+}
+
+/// Pushes the bits of a frame (exact content keys).
+pub fn push_frame(out: &mut Vec<u64>, f: &Frame) {
+    for p in [f.o, f.x, f.y, f.z] {
+        push_vec3(out, p);
+    }
+}
+
 impl Curve {
+    /// Exact content key: the kind and the bits of every field, so two curves push the same words only when
+    /// they are bit-for-bit the same curve (for memoising pure functions of curves without hash collisions).
+    pub fn push_key(&self, out: &mut Vec<u64>) {
+        match self {
+            Curve::Line { o, d } => {
+                out.push(1);
+                push_vec3(out, *o);
+                push_vec3(out, *d);
+            }
+            Curve::Circle { frame, r } => {
+                out.push(2);
+                push_frame(out, frame);
+                out.push(r.to_bits());
+            }
+            Curve::Ellipse { frame, a, b } => {
+                out.push(3);
+                push_frame(out, frame);
+                out.extend([a.to_bits(), b.to_bits()]);
+            }
+            Curve::Conic { frame, p, e } => {
+                out.push(4);
+                push_frame(out, frame);
+                out.extend([p.to_bits(), e.to_bits()]);
+            }
+            Curve::Sinusoid { frame, amp, freq, phase } => {
+                out.push(5);
+                push_frame(out, frame);
+                out.extend([amp.to_bits(), freq.to_bits(), phase.to_bits()]);
+            }
+            Curve::BSpline(b) => {
+                out.extend([6, b.degree as u64, b.knots.len() as u64, b.ctrl.len() as u64]);
+                out.extend(b.knots.iter().map(|k| k.to_bits()));
+                for &p in &b.ctrl {
+                    push_vec3(out, p);
+                }
+                match &b.weights {
+                    None => out.push(0),
+                    Some(w) => {
+                        out.push(w.len() as u64 + 1);
+                        out.extend(w.iter().map(|x| x.to_bits()));
+                    }
+                }
+            }
+        }
+    }
+
     /// Line through `o` with direction `d` (normalised).
     pub fn line(o: Vec3, d: Vec3) -> Curve {
         Curve::Line { o, d: d.normalize() }

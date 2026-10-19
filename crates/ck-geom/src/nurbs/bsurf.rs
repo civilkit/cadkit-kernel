@@ -45,6 +45,33 @@ pub struct CpPrep {
     /// the very expressions the query scan used per call (the scan is then a
     /// distance lookup; results are bit-identical).
     grid: Option<(Vec<Vec3>, Vec<(Vec3, Vec3)>)>,
+    /// Tiles of up to 4 x 4 neighbouring cells: the box of their cell boxes, and their indices into
+    /// `cells` (`tile_cells[tile_start[t]..tile_start[t + 1]]`). A tile's box distance is no larger than
+    /// any of its cells' (the same expression on smaller / larger corners), so a far tile is skipped
+    /// whole when the nearest cells are picked (see `nearest_cells`).
+    tiles: Vec<(Vec3, Vec3)>,
+    tile_start: Vec<u32>,
+    tile_cells: Vec<u32>,
+}
+
+/// Distance from `q` to the box `(lo, hi)`, infinite for an empty box (lo > hi): the lower bound of
+/// the closest-point scan.
+#[inline]
+fn box_dist(lo: Vec3, hi: Vec3, q: Vec3) -> f64 {
+    if lo.x > hi.x {
+        return f64::INFINITY;
+    }
+    Vec3::new((lo.x - q.x).max(q.x - hi.x).max(0.0), (lo.y - q.y).max(q.y - hi.y).max(0.0), (lo.z - q.z).max(q.z - hi.z).max(0.0)).len()
+}
+
+/// Cells the scan visits first: the 8 nearest by box distance (ties by cell index).
+const FIRST_CELLS: usize = 8;
+
+/// The nearest cells of an unbounded query (`nearest_cells`): their indices into `CpPrep::cells`,
+/// nearest first, and the box distance of the next nearest cell.
+struct Nearest {
+    chosen: [usize; FIRST_CELLS],
+    lb9: f64,
 }
 
 /// Working storage of one bounded closest-point query (see `SCRATCH`).
@@ -512,24 +539,37 @@ impl BSplineSurface {
         // the same edges): memoised per (surface, point)
         use std::cell::RefCell;
         use std::collections::HashMap;
+        // (two generations of 2^16 entries: when the current one is full it becomes the old one, and an old
+        // entry asked for again moves back, so a turnover keeps the points still in use; clearing the whole
+        // table at once made the next operation re-project every point of its faces)
+        type Gen = HashMap<(u64, u64, u64, u64), (f64, f64)>;
         thread_local! {
-            static MEMO: RefCell<HashMap<(u64, u64, u64, u64), (f64, f64)>> = RefCell::new(HashMap::new());
+            static MEMO: RefCell<(Gen, Gen)> = RefCell::new((HashMap::new(), HashMap::new()));
+        }
+        fn insert(m: &mut (Gen, Gen), key: (u64, u64, u64, u64), r: (f64, f64)) {
+            if m.0.len() >= 1 << 16 {
+                m.1 = std::mem::take(&mut m.0);
+            }
+            m.0.insert(key, r);
         }
         let key = (fp, q.x.to_bits(), q.y.to_bits(), q.z.to_bits());
-        if let Some(r) = MEMO.with(|m| m.borrow().get(&key).copied()) {
+        let hit = MEMO.with(|m| {
+            let mut m = m.borrow_mut();
+            if let Some(r) = m.0.get(&key) {
+                return Some(*r);
+            }
+            let r = m.1.remove(&key)?;
+            insert(&mut m, key, r);
+            Some(r)
+        });
+        if let Some(r) = hit {
             return r;
         }
         let r = self.closest_param_within_with(&self.cp_prep(fp), q, f64::INFINITY).unwrap_or_else(|| {
             let ((u0, _), (v0, _)) = self.domain();
             (u0, v0)
         });
-        MEMO.with(|m| {
-            let mut m = m.borrow_mut();
-            if m.len() >= 1 << 16 {
-                m.clear();
-            }
-            m.insert(key, r);
-        });
+        MEMO.with(|m| insert(&mut m.borrow_mut(), key, r));
         r
     }
 
@@ -650,19 +690,100 @@ impl BSplineSurface {
         // thousands of bounded queries per surface: no allocation per query;
         // taken out of the slot for the call so a nested query gets its own)
         let mut sc = SCRATCH.with(|s| std::mem::take(&mut *s.borrow_mut()));
-        sc.lb.clear();
-        sc.lb.extend(boxes.iter().map(|&(lo, hi)| {
-            if lo.x > hi.x {
-                return f64::INFINITY;
+        // An unbounded query visits the nearest cells first, then every other cell whose box is
+        // nearer than the best sample so far. When the 9th nearest box is no nearer than the best
+        // sample of the first 8 cells, every later visit does nothing: the first 8 cells (found
+        // through the tiles, without the distance of every cell) give the very same result.
+        if maxd.is_infinite() && prep.tiles.len() > 1 {
+            if let Some(near) = self.nearest_cells(prep, q, &mut sc) {
+                if let Ok(r) = self.closest_param_within_scan(prep, q, maxd, &mut sc, best, Some(&near)) {
+                    SCRATCH.with(|s| *s.borrow_mut() = sc);
+                    return r;
+                }
             }
-            Vec3::new((lo.x - q.x).max(q.x - hi.x).max(0.0), (lo.y - q.y).max(q.y - hi.y).max(0.0), (lo.z - q.z).max(q.z - hi.z).max(0.0)).len()
-        }));
-        let r = self.closest_param_within_scan(prep, q, maxd, &mut sc, best);
+        }
+        sc.lb.clear();
+        sc.lb.extend(boxes.iter().map(|&(lo, hi)| box_dist(lo, hi, q)));
+        let r = self.closest_param_within_scan(prep, q, maxd, &mut sc, best, None).unwrap_or(None);
         SCRATCH.with(|s| *s.borrow_mut() = sc);
         r
     }
 
-    fn closest_param_within_scan(&self, prep: &CpPrep, q: Vec3, maxd: f64, sc: &mut CpScratch, mut best: (f64, f64, f64)) -> Option<(f64, f64)> {
+    /// The unbounded query by the full scan only (what `closest_param_within_with` must reproduce),
+    /// and whether the nearest-cells path would have answered it.
+    #[cfg(test)]
+    fn closest_param_full_scan(&self, q: Vec3) -> (Option<(f64, f64)>, bool) {
+        let prep = self.closest_prep();
+        let ((u0, _), (v0, _)) = self.domain();
+        let best = (f64::INFINITY + prep.cell_scale, u0, v0);
+        let mut sc = CpScratch::default();
+        let quick = self.nearest_cells(&prep, q, &mut sc).is_some_and(|near| self.closest_param_within_scan(&prep, q, f64::INFINITY, &mut sc, best, Some(&near)).is_ok());
+        sc.lb.clear();
+        sc.lb.extend(prep.boxes.iter().map(|&(lo, hi)| box_dist(lo, hi, q)));
+        (self.closest_param_within_scan(&prep, q, f64::INFINITY, &mut sc, best, None).unwrap(), quick)
+    }
+
+    /// The `FIRST_CELLS` nearest cells to `q` by (box distance, cell index), in that order, into
+    /// `sc.cells` (as the scan builds its cell list), and the distance of the next one; the box
+    /// distance of every tile stays in `sc.lb`. Tiles whose box is farther than the current last
+    /// candidate are skipped (exact: a cell is no nearer than its tile). `None` when the surface has
+    /// too few cells or a distance is NaN.
+    fn nearest_cells(&self, prep: &CpPrep, q: Vec3, sc: &mut CpScratch) -> Option<Nearest> {
+        const N: usize = FIRST_CELLS + 1;
+        if prep.cells.len() < 256 {
+            return None;
+        }
+        let cv = prep.cv;
+        sc.lb.clear();
+        sc.lb.extend(prep.tiles.iter().map(|&(lo, hi)| box_dist(lo, hi, q)));
+        if sc.lb.iter().any(|d| d.is_nan()) {
+            return None;
+        }
+        // the nearest tile first (a tight candidate bound early), then the rest in order
+        let first = (0..sc.lb.len()).fold(0, |b, t| if sc.lb[t] < sc.lb[b] { t } else { b });
+        let mut top = [(f64::INFINITY, usize::MAX); N];
+        let mut n = 0usize;
+        for t in std::iter::once(first).chain((0..prep.tiles.len()).filter(|&t| t != first)) {
+            if n == N && sc.lb[t] > top[N - 1].0 {
+                continue;
+            }
+            for &ci in &prep.tile_cells[prep.tile_start[t] as usize..prep.tile_start[t + 1] as usize] {
+                let ci = ci as usize;
+                let (_, iu, iv, _, _) = prep.cells[ci];
+                let (lo, hi) = prep.boxes[iu * cv + iv];
+                let d = box_dist(lo, hi, q);
+                if d.is_nan() {
+                    return None;
+                }
+                let less = |a: (f64, usize), b: (f64, usize)| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)).is_lt();
+                if n == N && !less((d, ci), top[N - 1]) {
+                    continue;
+                }
+                let mut j = n.min(N - 1);
+                while j > 0 && less((d, ci), top[j - 1]) {
+                    top[j] = top[j - 1];
+                    j -= 1;
+                }
+                top[j] = (d, ci);
+                n = (n + 1).min(N);
+            }
+        }
+        if n < N {
+            return None;
+        }
+        sc.cells.clear();
+        sc.cells.extend(top[..FIRST_CELLS].iter().map(|&(d, ci)| {
+            let (su, iu, iv, alo, ahi) = prep.cells[ci];
+            (d, su, iu, iv, alo, ahi)
+        }));
+        Some(Nearest { chosen: std::array::from_fn(|j| top[j].1), lb9: top[N - 1].0 })
+    }
+
+    /// The seed scan and Newton polish. `pre`: `sc.cells` holds only the nearest cells and `sc.lb`
+    /// the tile distances (`nearest_cells`): the later cells are visited only when the outcome does
+    /// not depend on the order the full scan would visit them in, else `Err` (the caller then runs
+    /// the full scan).
+    fn closest_param_within_scan(&self, prep: &CpPrep, q: Vec3, maxd: f64, sc: &mut CpScratch, mut best: (f64, f64, f64), pre: Option<&Nearest>) -> Result<Option<(f64, f64)>, ()> {
         let ((u0, u1), (v0, v1)) = self.domain();
         let (pu, pv) = (self.deg_u, self.deg_v);
         let (nu, cv, vs, bv, cols, ubas) = (prep.nu, prep.cv, &prep.vs, &prep.bv, &prep.cols, &prep.ubas);
@@ -670,13 +791,15 @@ impl BSplineSurface {
         let CpScratch { lb, cells, order, cell_best } = sc;
         // (exact) no cell's control-net box within `maxd`: the surface lies in
         // the union of the boxes, so no point of it is that near
-        if maxd.is_finite() && lb.iter().all(|&d| d > maxd) {
-            return None;
+        if pre.is_none() && maxd.is_finite() && lb.iter().all(|&d| d > maxd) {
+            return Ok(None);
         }
         // grid evaluation without the derivative machinery (non-rational)
         let fast = self.weights.is_none();
-        cells.clear();
-        cells.extend(prep.cells.iter().map(|&(su, iu, iv, alo, ahi)| (lb[iu * cv + iv], su, iu, iv, alo, ahi)));
+        if pre.is_none() {
+            cells.clear();
+            cells.extend(prep.cells.iter().map(|&(su, iu, iv, alo, ahi)| (lb[iu * cv + iv], su, iu, iv, alo, ahi)));
+        }
         let cells: &[(f64, usize, usize, usize, usize, usize)] = cells;
         let u_at = |a: usize| u0 + (u1 - u0) * a as f64 / nu as f64;
         let found_flag = std::cell::Cell::new(false);
@@ -791,9 +914,53 @@ impl BSplineSurface {
         for &i in order.iter() {
             visit(&cells[i], &mut best);
         }
+        if let Some(near) = pre {
+            if !(near.lb9 >= best.0) {
+                // The full scan visits the other cells in the order of its partial sort, each one only
+                // while its box is nearer than the best sample so far. That order does not matter when
+                // every cell nearer than the best sample of the nearest cells (set T) is also nearer
+                // than the final best sample (so all of T is visited whatever the order), and no two
+                // cells of T share their best sample distance (the same best sample, and the same order
+                // of their multi-start seeds after the stable sort by distance). Then visit T in any
+                // order; else the full scan decides.
+                if !best.0.is_finite() {
+                    return Err(());
+                }
+                let b8 = best.0;
+                let n8 = cell_best.borrow().len();
+                let mut t_lbs: Vec<f64> = vec![];
+                for t in 0..prep.tiles.len() {
+                    if !(lb[t] < b8) {
+                        continue;
+                    }
+                    for &ci in &prep.tile_cells[prep.tile_start[t] as usize..prep.tile_start[t + 1] as usize] {
+                        let ci = ci as usize;
+                        let (su, iu, iv, alo, ahi) = prep.cells[ci];
+                        let (lo, hi) = prep.boxes[iu * cv + iv];
+                        let clb = box_dist(lo, hi, q);
+                        if !(clb < b8) || cols[iv].is_empty() || near.chosen.contains(&ci) {
+                            continue;
+                        }
+                        // (with an infinite bound the visit records the cell's own best sample)
+                        visit(&(clb, su, iu, iv, alo, ahi), &mut (f64::INFINITY, 0.0, 0.0));
+                        t_lbs.push(clb);
+                    }
+                }
+                let cb = cell_best.borrow();
+                let extra = &cb[n8..];
+                let fin = extra.iter().fold(best, |b, e| if e.0 < b.0 { (e.0, e.1, e.2) } else { b });
+                let mut ds: Vec<f64> = extra.iter().map(|e| e.0).collect();
+                ds.sort_by(f64::total_cmp);
+                if t_lbs.iter().any(|&l| !(l < fin.0)) || ds.windows(2).any(|w| w[0] == w[1]) {
+                    return Err(());
+                }
+                drop(cb);
+                best = fin;
+            }
+        }
         found = found || found_flag.get();
         if !found {
-            return None;
+            return Ok(None);
         }
         let newton0 = |seed: (f64, f64)| crate::surface::newton_surface(|u, v| self.derivs2(u, v), q, seed, ((u0, u1), (v0, v1)));
         // a surface closed on itself (a tube: u = 0 and u = 2 pi are one
@@ -864,9 +1031,9 @@ impl BSplineSurface {
                     break;
                 }
             }
-            return in_range(res.1).then_some(res.1);
+            return Ok(in_range(res.1).then_some(res.1));
         }
-        in_range(first).then_some(first)
+        Ok(in_range(first).then_some(first))
     }
 
     /// Per-surface constants of the closest-point seed grid (spans, cell
@@ -985,7 +1152,29 @@ impl BSplineSurface {
         } else {
             None
         };
-        let prep = Rc::new(CpPrep { nu, cv, boxes: (*boxes).clone(), vs, bv, cols, cells, ubas, cell_scale: self.cell_scale(), hull, grid });
+        // tiles of 4 x 4 cells (by span index) for `nearest_cells`
+        let (tu, tv) = (cu.div_ceil(4).max(1), cv.div_ceil(4).max(1));
+        let mut members: Vec<Vec<u32>> = vec![vec![]; tu * tv];
+        for (ci, &(_, iu, iv, _, _)) in cells.iter().enumerate() {
+            members[(iu / 4) * tv + iv / 4].push(ci as u32);
+        }
+        let (mut tiles, mut tile_start, mut tile_cells) = (vec![], vec![0u32], vec![]);
+        for m in members.into_iter().filter(|m| !m.is_empty()) {
+            let inf = Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
+            let (mut lo, mut hi) = (inf, -inf);
+            for &ci in &m {
+                let (_, iu, iv, _, _) = cells[ci as usize];
+                let b = boxes[iu * cv + iv];
+                if b.0.x <= b.1.x {
+                    lo = lo.min(b.0);
+                    hi = hi.max(b.1);
+                }
+            }
+            tiles.push((lo, hi));
+            tile_cells.extend(m);
+            tile_start.push(tile_cells.len() as u32);
+        }
+        let prep = Rc::new(CpPrep { nu, cv, boxes: (*boxes).clone(), vs, bv, cols, cells, ubas, cell_scale: self.cell_scale(), hull, grid, tiles, tile_start, tile_cells });
         CACHE.with(|c| {
             let mut c = c.borrow_mut();
             if c.len() >= 24 {
@@ -1327,6 +1516,52 @@ mod tests {
                     assert_eq!((x.x.to_bits(), x.y.to_bits(), x.z.to_bits()), (y.x.to_bits(), y.y.to_bits(), y.z.to_bits()));
                 }
             }
+        }
+    }
+
+    /// The nearest-cells shortcut of the unbounded query gives the full scan's answer bit for bit,
+    /// both where it answers and where it hands over to the full scan (points on, near, beyond the
+    /// edge of and far from a wavy many-span surface, plain and rational).
+    #[test]
+    fn nearest_cells_path_matches_the_full_scan() {
+        let (nu, nv) = (23, 19);
+        for rational in [false, true] {
+            let mut ctrl = Vec::new();
+            let mut ws = Vec::new();
+            for i in 0..nu {
+                for j in 0..nv {
+                    let (x, y) = (i as f64 * 0.7, j as f64 * 0.9);
+                    ctrl.push(Vec3::new(x + 0.2 * (y * 0.8).sin(), y, 2.0 * (x * 0.6).sin() * (y * 0.45).cos() + 0.05 * x * y));
+                    ws.push(1.0 + 0.4 * ((i * 7 + j * 3) % 5) as f64 / 4.0);
+                }
+            }
+            let s = BSplineSurface::new(3, 3, basis::clamped_uniform(nu, 3), basis::clamped_uniform(nv, 3), nu, nv, ctrl, rational.then_some(ws)).unwrap();
+            let ((u0, u1), (v0, v1)) = s.domain();
+            let (mut quick, mut full) = (0, 0);
+            let mut seed = 12345u64;
+            let mut rnd = || {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                (seed >> 11) as f64 / (1u64 << 53) as f64
+            };
+            for k in 0..3000 {
+                let (u, v) = (u0 - 0.1 + 1.2 * (u1 - u0) * rnd(), v0 - 0.1 + 1.2 * (v1 - v0) * rnd());
+                let (uc, vc) = (u.clamp(u0, u1), v.clamp(v0, v1));
+                let p = s.eval(uc, vc);
+                let n = s.normal(uc, vc).normalize();
+                let off = [0.0, 1e-5, -3e-3, 0.4, -2.0, 15.0][k % 6];
+                let q = p + n * off + Vec3::new(u - uc, v - vc, 0.0) * 3.0;
+                let got = s.closest_param_within_with(&s.closest_prep(), q, f64::INFINITY);
+                let (want, qk) = s.closest_param_full_scan(q);
+                let bits = |r: Option<(f64, f64)>| r.map(|(a, b)| (a.to_bits(), b.to_bits()));
+                assert_eq!(bits(got), bits(want), "query {k} at {q:?} (rational {rational})");
+                if qk {
+                    quick += 1;
+                } else {
+                    full += 1;
+                }
+            }
+            // both paths ran
+            assert!(quick > 300 && full > 30, "quick {quick} full {full}");
         }
     }
 
