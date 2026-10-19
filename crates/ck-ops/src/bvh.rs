@@ -584,8 +584,9 @@ pub fn face_box(b: &Body, f: FaceId) -> Aabb {
     if !matches!(face.surface, ck_geom::surface::Surface::Plane { .. }) {
         // uv bounds from the loops
         let (mut ulo, mut uhi, mut vlo, mut vhi) = (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
+        // (only a coedge without a pcurve is projected onto the surface)
         let fp = match &face.surface {
-            ck_geom::surface::Surface::BSpline(bs) => Some(bs.fingerprint()),
+            ck_geom::surface::Surface::BSpline(bs) if face.loops.iter().any(|&l| b.lp(l).coedges.iter().any(|&c| b.coedge(c).pcurve.is_none())) => Some(bs.fingerprint()),
             _ => None,
         };
         for &l in &face.loops {

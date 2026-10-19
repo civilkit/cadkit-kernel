@@ -487,14 +487,16 @@ pub fn point_in_face_cached(b: &Body, f: FaceId, p: Vec3, tol: f64, cache: &mut 
         }
     }
     let face = b.face(f);
-    if face.surface.distance(p) > tol * 10.0 {
+    // (one closest-point search with the surface hash taken once: the distance and the parameters are those of
+    // the same foot point)
+    let (u, v, foot) = face.surface.closest_point_fp(p, spline_fp(&face.surface));
+    if foot.dist(p) > tol * 10.0 {
         return Where::Out;
     }
     let loops = cache.entry((b as *const Body as usize, f.idx() as u32)).or_insert_with(|| face_loops_uv_fine(b, f));
     if loops.iter().all(|l| l.len() < 3) {
         return Where::In; // closed surface without boundary (full sphere/torus)
     }
-    let (u, v) = face.surface.closest_param(p);
     if in_loops(&face.surface, Vec2::new(u, v), loops) {
         Where::In
     } else {
