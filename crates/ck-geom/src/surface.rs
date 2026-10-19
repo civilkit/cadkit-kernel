@@ -1023,8 +1023,24 @@ fn revolution_foot_keyed(profile: &Curve, axis_o: Vec3, axis: Vec3, q: Vec3, key
         et: Vec3,
         ras: Vec<f64>,
         zs: Vec<f64>,
+        /// per block of 8 samples: (min r, max r, min z, max z)
+        blocks: Vec<(f64, f64, f64, f64)>,
         ok: bool,
     }
+    const BLOCK: usize = 8;
+    let block_boxes = |ras: &[f64], zs: &[f64]| -> Vec<(f64, f64, f64, f64)> {
+        ras.chunks(BLOCK)
+            .zip(zs.chunks(BLOCK))
+            .map(|(r, z)| {
+                (
+                    r.iter().copied().fold(f64::INFINITY, f64::min),
+                    r.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+                    z.iter().copied().fold(f64::INFINITY, f64::min),
+                    z.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+                )
+            })
+            .collect()
+    };
     thread_local! {
         static CACHE: std::cell::RefCell<Vec<(u64, std::rc::Rc<RevPrep>)>> = const { std::cell::RefCell::new(Vec::new()) };
     }
@@ -1043,13 +1059,14 @@ fn revolution_foot_keyed(profile: &Curve, axis_o: Vec3, axis: Vec3, q: Vec3, key
             let scale = perp.iter().map(|w| w.len()).fold(0.0f64, f64::max).max(zs.iter().fold(0.0f64, |m, z| m.max(z.abs())));
             let er = perp.iter().copied().max_by(|x, y| x.len().total_cmp(&y.len())).and_then(|e| e.try_normalize());
             let prep = match er {
-                None => RevPrep { scale, er: Vec3::ZERO, et: Vec3::ZERO, ras: vec![], zs, ok: false },
+                None => RevPrep { scale, er: Vec3::ZERO, et: Vec3::ZERO, ras: vec![], zs, blocks: vec![], ok: false },
                 Some(er) => {
                     let et = a.cross(er);
                     let ras: Vec<f64> = perp.iter().map(|w| w.dot(er)).collect();
                     // one-sided and planar through the axis
                     let ok = !(ras.iter().any(|&r| r < -1e-9 * (1.0 + scale)) || perp.iter().any(|w| w.dot(et).abs() > 1e-7 * (1.0 + scale)));
-                    RevPrep { scale, er, et, ras, zs, ok }
+                    let blocks = block_boxes(&ras, &zs);
+                    RevPrep { scale, er, et, ras, zs, blocks, ok }
                 }
             };
             let prep = std::rc::Rc::new(prep);
@@ -1074,10 +1091,19 @@ fn revolution_foot_keyed(profile: &Curve, axis_o: Vec3, axis: Vec3, q: Vec3, key
     let qp = qw - a * qz;
     let (rho, phi) = (qp.len(), if qp.len() > 1e-12 * (1.0 + scale) { qp.dot(et).atan2(qp.dot(er)) } else { 0.0 });
     let mut best = (f64::INFINITY, 0usize);
-    for k in 0..=N {
-        let d = (ras[k] - rho).powi(2) + (zs[k] - qz).powi(2);
-        if d < best.0 {
-            best = (d, k);
+    // (a block of samples whose box is farther than the best sample so far holds no nearer sample: the
+    // squared distance to the box is, step by step, no larger than that of any sample inside it)
+    for (bi, bx) in prep.blocks.iter().enumerate() {
+        let gr = (bx.0 - rho).max(rho - bx.1).max(0.0);
+        let gz = (bx.2 - qz).max(qz - bx.3).max(0.0);
+        if gr.powi(2) + gz.powi(2) > best.0 {
+            continue;
+        }
+        for k in bi * BLOCK..((bi + 1) * BLOCK).min(N + 1) {
+            let d = (ras[k] - rho).powi(2) + (zs[k] - qz).powi(2);
+            if d < best.0 {
+                best = (d, k);
+            }
         }
     }
     let mut v = p0 + (p1 - p0) * best.1 as f64 / N as f64;
