@@ -512,24 +512,37 @@ impl BSplineSurface {
         // the same edges): memoised per (surface, point)
         use std::cell::RefCell;
         use std::collections::HashMap;
+        // (two generations of 2^16 entries: when the current one is full it becomes the old one, and an old
+        // entry asked for again moves back, so a turnover keeps the points still in use; clearing the whole
+        // table at once made the next operation re-project every point of its faces)
+        type Gen = HashMap<(u64, u64, u64, u64), (f64, f64)>;
         thread_local! {
-            static MEMO: RefCell<HashMap<(u64, u64, u64, u64), (f64, f64)>> = RefCell::new(HashMap::new());
+            static MEMO: RefCell<(Gen, Gen)> = RefCell::new((HashMap::new(), HashMap::new()));
+        }
+        fn insert(m: &mut (Gen, Gen), key: (u64, u64, u64, u64), r: (f64, f64)) {
+            if m.0.len() >= 1 << 16 {
+                m.1 = std::mem::take(&mut m.0);
+            }
+            m.0.insert(key, r);
         }
         let key = (fp, q.x.to_bits(), q.y.to_bits(), q.z.to_bits());
-        if let Some(r) = MEMO.with(|m| m.borrow().get(&key).copied()) {
+        let hit = MEMO.with(|m| {
+            let mut m = m.borrow_mut();
+            if let Some(r) = m.0.get(&key) {
+                return Some(*r);
+            }
+            let r = m.1.remove(&key)?;
+            insert(&mut m, key, r);
+            Some(r)
+        });
+        if let Some(r) = hit {
             return r;
         }
         let r = self.closest_param_within_with(&self.cp_prep(fp), q, f64::INFINITY).unwrap_or_else(|| {
             let ((u0, _), (v0, _)) = self.domain();
             (u0, v0)
         });
-        MEMO.with(|m| {
-            let mut m = m.borrow_mut();
-            if m.len() >= 1 << 16 {
-                m.clear();
-            }
-            m.insert(key, r);
-        });
+        MEMO.with(|m| insert(&mut m.borrow_mut(), key, r));
         r
     }
 

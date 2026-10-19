@@ -23,16 +23,29 @@ impl Hash for Key {
     }
 }
 
-/// One memo table; cleared whole when its keys pass `cap_words` words (a bound on memory, not a policy).
+/// One memo table in two generations: entries go into the current one; when its keys pass half of `cap_words`
+/// words it becomes the old one (the previous old one is dropped), and a hit in the old generation moves the
+/// entry back into the current one. Entries in use survive a turnover, so a long chain of operations does not
+/// lose its working set all at once (a bound on memory, never on correctness).
 pub struct Memo<V> {
-    map: crate::fxhash::FxHashMap<Key, V>,
+    cur: crate::fxhash::FxHashMap<Key, V>,
+    old: crate::fxhash::FxHashMap<Key, V>,
     words: usize,
     cap_words: usize,
 }
 
 impl<V> Memo<V> {
     pub fn new(cap_words: usize) -> Memo<V> {
-        Memo { map: Default::default(), words: 0, cap_words }
+        Memo { cur: Default::default(), old: Default::default(), words: 0, cap_words }
+    }
+
+    fn insert(&mut self, key: Key, v: V) {
+        if self.words + key.0.len() > self.cap_words / 2 {
+            self.old = std::mem::take(&mut self.cur);
+            self.words = 0;
+        }
+        self.words += key.0.len();
+        self.cur.insert(key, v);
     }
 }
 
@@ -49,21 +62,22 @@ pub fn counts() -> [u64; 2] {
 /// memos, or this one).
 pub fn cached<V: Clone + 'static>(table: &'static LocalKey<RefCell<Memo<V>>>, key: Vec<u64>, f: impl FnOnce() -> V) -> V {
     let key = Key(key.into_boxed_slice());
-    if let Some(v) = table.with(|t| t.borrow().map.get(&key).cloned()) {
+    let hit = table.with(|t| {
+        let mut t = t.borrow_mut();
+        if let Some(v) = t.cur.get(&key) {
+            return Some(v.clone());
+        }
+        let (k, v) = t.old.remove_entry(&key)?;
+        t.insert(k, v.clone());
+        Some(v)
+    });
+    if let Some(v) = hit {
         COUNTS.with(|c| c.set([c.get()[0] + 1, c.get()[1]]));
         return v;
     }
     COUNTS.with(|c| c.set([c.get()[0], c.get()[1] + 1]));
     let v = f();
-    table.with(|t| {
-        let mut t = t.borrow_mut();
-        if t.words + key.0.len() > t.cap_words {
-            t.map.clear();
-            t.words = 0;
-        }
-        t.words += key.0.len();
-        t.map.insert(key, v.clone());
-    });
+    table.with(|t| t.borrow_mut().insert(key, v.clone()));
     v
 }
 
@@ -76,18 +90,26 @@ mod tests {
     }
 
     #[test]
-    fn hits_misses_and_cap() {
+    fn hits_misses_and_generations() {
         let mut calls = 0;
-        let mut get = |k: Vec<u64>| cached(&T, k, || {
-            calls += 1;
-            7
-        });
+        let mut get = |k: Vec<u64>| {
+            cached(&T, k, || {
+                calls += 1;
+                7
+            })
+        };
+        // cap 8 words: a generation holds 4
         assert_eq!(get(vec![1, 2, 3]), 7);
         assert_eq!(get(vec![1, 2, 3]), 7);
-        assert_eq!(get(vec![1, 2]), 7);
-        // over the cap: the table is cleared, the next lookup recomputes
-        assert_eq!(get(vec![4, 5, 6, 7]), 7);
+        // [9, 9] does not fit: the current generation becomes the old one
+        assert_eq!(get(vec![9, 9]), 7);
+        // a hit in the old generation (moved back: [9, 9] turns old)
         assert_eq!(get(vec![1, 2, 3]), 7);
-        assert_eq!(calls, 4);
+        assert_eq!(get(vec![9, 9]), 7);
+        // two turnovers later an entry not used meanwhile is gone
+        assert_eq!(get(vec![5, 5, 5, 5]), 7);
+        assert_eq!(get(vec![6, 6, 6, 6]), 7);
+        assert_eq!(get(vec![1, 2, 3]), 7);
+        assert_eq!(calls, 5);
     }
 }
