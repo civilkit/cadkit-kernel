@@ -382,7 +382,7 @@ impl Curve {
                 }
                 best.1
             }
-            Curve::BSpline(c) => c.closest_param(q),
+            Curve::BSpline(c) => c.closest_param_cached(q),
         }
     }
 

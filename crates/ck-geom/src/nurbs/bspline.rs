@@ -579,6 +579,12 @@ impl<P: Pt> BSplineCurve<P> {
 
     /// [`Self::closest_param`]; `skip = false` evaluates every sample (the reference the skipping must match).
     fn closest_param_with(&self, q: P, skip: bool) -> f64 {
+        self.closest_param_impl(q, skip, &mut |_, u| self.eval(u))
+    }
+
+    /// The search of [`Self::closest_param`], taking its sample points from `smp(slot, u)` (= `self.eval(u)`; the
+    /// slot numbers the sample within this curve's scan, so a caller can keep them across queries).
+    fn closest_param_impl(&self, q: P, skip: bool, smp: &mut dyn FnMut(usize, f64) -> P) -> f64 {
         let skippable = |gap: f64, step: f64| if skip { skippable(gap, step) } else { 0 };
         let (a, b) = self.domain();
         let spans = basis::distinct_count(&self.knots).max(2) - 1;
@@ -600,7 +606,7 @@ impl<P: Pt> BSplineCurve<P> {
                 let r = pts.iter().map(|&x| x.dist(c)).fold(0.0f64, f64::max);
                 (q.dist(c) - r).max(0.0)
             };
-            let sample = |s: usize, best: &mut (f64, f64)| {
+            let mut sample = |s: usize, best: &mut (f64, f64)| {
                 let (k0, k1) = (self.knots[s].max(a), self.knots[s + 1].min(b));
                 // a sample farther from q than `best` by more than the curve can travel to the next one cannot
                 // replace it (strict <): skip it unevaluated; the sampled points that remain are the same
@@ -608,7 +614,7 @@ impl<P: Pt> BSplineCurve<P> {
                 let mut j = 0;
                 while j <= m {
                     let u = k0 + (k1 - k0) * j as f64 / m as f64;
-                    let d = self.eval(u).dist(q);
+                    let d = smp(s * (m + 1) + j, u).dist(q);
                     if d < best.0 {
                         *best = (d, u);
                     }
@@ -657,7 +663,7 @@ impl<P: Pt> BSplineCurve<P> {
         let mut i = 0;
         while i <= n {
             let u = a + (b - a) * i as f64 / n as f64;
-            let d = self.eval(u).dist(q);
+            let d = smp(i, u).dist(q);
             if d < best.0 {
                 best = (d, u);
             }
@@ -775,6 +781,69 @@ pub(crate) fn elevate_bezier<P: Pt>(c: &[Hom<P>], t: usize) -> Vec<Hom<P>> {
         cur = nx;
     }
     cur
+}
+
+impl BSplineCurve<Vec3> {
+    /// [`Self::closest_param`] keeping the sample points of the scan across queries (a boolean asks one edge for
+    /// the closest parameter of hundreds of points): the samples are the very `eval` results, so the answer is
+    /// bit-identical. Keyed by a hash of the whole curve (every knot, control point and weight).
+    pub fn closest_param_cached(&self, q: Vec3) -> f64 {
+        use std::cell::RefCell;
+        use std::collections::HashMap;
+        // slot -> sample point (NaN x = not computed yet)
+        type Samples = Vec<Vec3>;
+        thread_local! {
+            static TABLE: RefCell<HashMap<u64, Samples>> = RefCell::new(HashMap::new());
+        }
+        let mut h = 0xcbf29ce484222325u64;
+        let mut mix = |x: u64| {
+            h = (h ^ x).wrapping_mul(0x100000001b3);
+            h ^= h >> 29;
+        };
+        mix(self.degree as u64 ^ (self.ctrl.len() as u64) << 8);
+        for k in &self.knots {
+            mix(k.to_bits());
+        }
+        for c in &self.ctrl {
+            mix(c.x.to_bits());
+            mix(c.y.to_bits());
+            mix(c.z.to_bits());
+        }
+        if let Some(w) = &self.weights {
+            mix(w.len() as u64 + 1);
+            for x in w {
+                mix(x.to_bits());
+            }
+        }
+        let slots = {
+            let spans = basis::distinct_count(&self.knots).max(2) - 1;
+            if spans > 6 {
+                self.ctrl.len() * ((self.degree + 1) * 4 + 1)
+            } else {
+                (spans * (self.degree + 1) * 4).max(16) + 1
+            }
+        };
+        if slots > 1 << 16 {
+            return self.closest_param(q);
+        }
+        TABLE.with(|t| {
+            let mut t = t.borrow_mut();
+            if t.len() >= 512 {
+                t.clear();
+            }
+            let samples = t.entry(h).or_insert_with(Vec::new);
+            if samples.len() != slots {
+                *samples = vec![Vec3::new(f64::NAN, 0.0, 0.0); slots];
+            }
+            self.closest_param_impl(q, true, &mut |slot, u| {
+                let c = &mut samples[slot];
+                if c.x.is_nan() {
+                    *c = self.eval(u);
+                }
+                *c
+            })
+        })
+    }
 }
 
 #[cfg(test)]
@@ -942,6 +1011,12 @@ mod tests {
                 let off = Vec3::new(rnd() * 25.0 - 3.0, rnd() * 8.0 - 2.0, rnd() * 6.0 - 2.0);
                 for q in [on, on + Vec3::new(0.01, -0.02, 0.0) * rnd(), off] {
                     assert_eq!(c.closest_param(q).to_bits(), c.closest_param_with(q, false).to_bits(), "case {case} q {q:?}");
+                    if c.weights.is_none() || case % 2 == 0 {
+                        // (twice: the second query reads the kept samples)
+                        for _ in 0..2 {
+                            assert_eq!(c.closest_param_cached(q).to_bits(), c.closest_param_with(q, false).to_bits(), "cached, case {case} q {q:?}");
+                        }
+                    }
                 }
             }
         }
