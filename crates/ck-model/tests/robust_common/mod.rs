@@ -62,7 +62,9 @@ pub fn regen_codes_bounded(src: String, secs: u64) -> Vec<(String, String, Strin
 
 /// tools/cases/crash/<id>.json -> part JSON text (the file holds {"features":[...]}).
 pub fn crash_case(id: &str) -> String {
-    let p = format!("{}/../../tools/cases/crash/{id}.json", env!("CARGO_MANIFEST_DIR"));
+    // ROBUST_CASE_DIR overrides the directory (to try a fuzz case before it is committed)
+    let dir = std::env::var("ROBUST_CASE_DIR").unwrap_or_else(|_| format!("{}/../../tools/cases/crash", env!("CARGO_MANIFEST_DIR")));
+    let p = format!("{dir}/{id}.json");
     let j = ck_json::parse(&std::fs::read_to_string(&p).unwrap()).unwrap();
     let feats = ck_json::to_string(j.get("features").unwrap());
     format!(r#"{{"format":"ck-part","version":1,"features":{feats}}}"#)

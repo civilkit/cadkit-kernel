@@ -113,18 +113,95 @@ pub fn solve<P: Pt>(mut a: Vec<Vec<f64>>, mut b: Vec<P>) -> Result<Vec<P>, Strin
     Ok(x)
 }
 
+/// A matrix row stored as the window of columns `s .. s + v.len()`; everything outside is zero.
+struct BandRow {
+    s: usize,
+    v: Vec<f64>,
+}
+
+impl BandRow {
+    fn get(&self, c: usize) -> f64 {
+        if c >= self.s && c < self.s + self.v.len() {
+            self.v[c - self.s]
+        } else {
+            0.0
+        }
+    }
+    /// Grow the window so it covers columns `lo ..= hi`.
+    fn cover(&mut self, lo: usize, hi: usize) {
+        if lo < self.s {
+            let mut v = vec![0.0; self.s - lo];
+            v.extend_from_slice(&self.v);
+            self.v = v;
+            self.s = lo;
+        }
+        let end = self.s + self.v.len();
+        if hi + 1 > end {
+            self.v.resize(hi + 1 - self.s, 0.0);
+        }
+    }
+}
+
+/// [`solve`] for a system given as row windows: the same pivoting and row operations in the same order (so
+/// the same bits), without ever forming the dense `n x n` matrix (the interpolation systems of long curves
+/// have thousands of unknowns; the dense matrix then costs gigabytes and most of the fit time).
+fn solve_band<P: Pt>(mut a: Vec<BandRow>, mut b: Vec<P>) -> Result<Vec<P>, String> {
+    let n = b.len();
+    let (mut lbw, mut ubw) = (0usize, 0usize);
+    for (r, row) in a.iter().enumerate() {
+        if let Some(first) = row.v.iter().position(|&x| x != 0.0) {
+            lbw = lbw.max(r.saturating_sub(row.s + first));
+        }
+        if let Some(last) = row.v.iter().rposition(|&x| x != 0.0) {
+            ubw = ubw.max((row.s + last).saturating_sub(r));
+        }
+    }
+    let mut hi = vec![0usize; n];
+    for c in 0..n {
+        let rend = (c + lbw + 1).min(n);
+        let piv = (c..rend).max_by(|&i, &j| a[i].get(c).abs().partial_cmp(&a[j].get(c).abs()).unwrap()).unwrap();
+        if a[piv].get(c).abs() < 1e-300 {
+            return Err("singular fit system".into());
+        }
+        a.swap(c, piv);
+        b.swap(c, piv);
+        let last = (c..(c + lbw + ubw + 1).min(n)).rev().find(|&k| a[c].get(k) != 0.0).unwrap_or(c);
+        hi[c] = last;
+        for r in (c + 1)..rend {
+            let f = a[r].get(c) / a[c].get(c);
+            if f != 0.0 {
+                let (top, bot) = a.split_at_mut(r);
+                let (rc, rr) = (&top[c], &mut bot[0]);
+                rr.cover(c, last);
+                for k in c..=last {
+                    let i = k - rr.s;
+                    rr.v[i] -= f * rc.get(k);
+                }
+                b[r] = b[r] - b[c] * f;
+            }
+        }
+    }
+    let mut x = vec![P::default(); n];
+    for r in (0..n).rev() {
+        let mut s = b[r];
+        for k in (r + 1)..=hi[r] {
+            s = s - x[k] * a[r].get(k);
+        }
+        x[r] = s / a[r].get(r);
+    }
+    Ok(x)
+}
+
 /// Global interpolation through `pts` (A9.1) with given params/knots.
 pub fn interpolate_with<P: Pt>(pts: &[P], p: usize, u: &[f64], knots: Vec<f64>) -> Result<BSplineCurve<P>, String> {
     let n = pts.len() - 1;
-    let mut a = vec![vec![0.0; n + 1]; n + 1];
+    let mut rows: Vec<BandRow> = (0..=n).map(|_| BandRow { s: 0, v: Vec::new() }).collect();
     for (k, &uk) in u.iter().enumerate() {
         let s = find_span(n, p, uk, &knots);
         let b = basis_funs(s, uk, p, &knots);
-        for j in 0..=p {
-            a[k][s - p + j] = b[j];
-        }
+        rows[k] = BandRow { s: s - p, v: b[..=p].to_vec() };
     }
-    let ctrl = solve(a, pts.to_vec())?;
+    let ctrl = solve_band(rows, pts.to_vec())?;
     BSplineCurve::new(p, knots, ctrl)
 }
 
@@ -433,6 +510,33 @@ mod tests {
             for &p in row {
                 let (u, v) = s.closest_param(p);
                 assert!(s.eval(u, v).dist(p) < 1e-8);
+            }
+        }
+    }
+
+    #[test]
+    fn banded_interpolation_matches_dense_bit_for_bit() {
+        // the dense elimination (`solve`) and the windowed one used by `interpolate_with` do the same operations
+        for n in [4usize, 9, 40, 300] {
+            let pts: Vec<Vec3> = (0..n).map(|i| Vec3::new(i as f64 * 0.7, ((i * i) as f64 * 0.37).sin(), (i as f64 * 0.11).cos())).collect();
+            for p in [1usize, 2, 3] {
+                let u = params(&pts, Param::ChordLength);
+                let knots = averaged_knots(&u, p);
+                let fast = interpolate_with(&pts, p, &u, knots.clone()).unwrap();
+                let nn = pts.len() - 1;
+                let mut a = vec![vec![0.0; nn + 1]; nn + 1];
+                for (k, &uk) in u.iter().enumerate() {
+                    let s = find_span(nn, p, uk, &knots);
+                    let b = basis_funs(s, uk, p, &knots);
+                    for j in 0..=p {
+                        a[k][s - p + j] = b[j];
+                    }
+                }
+                let dense = solve(a, pts.clone()).unwrap();
+                assert_eq!(fast.ctrl.len(), dense.len());
+                for (x, y) in fast.ctrl.iter().zip(&dense) {
+                    assert!(x.x.to_bits() == y.x.to_bits() && x.y.to_bits() == y.y.to_bits() && x.z.to_bits() == y.z.to_bits());
+                }
             }
         }
     }
