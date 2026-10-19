@@ -31,6 +31,55 @@ pub(crate) const GL8: [(f64, f64); 8] = [
     (0.9602898564975363, 0.1012285362903763),
 ];
 
+/// Blocks of knot spans of the long-curve scan of `closest_param`.
+const BLK: usize = 8;
+
+/// What the closest-point scan of a curve takes from the curve alone (never from the query point): sample points
+/// and the bounds that order and prune the spans. [`Direct`] computes them on the spot; a cache may keep them.
+trait ScanAux<P: Pt> {
+    /// Sample `slot` of the scan, at parameter `u` (= `eval(u)`).
+    fn sample(&mut self, slot: usize, u: f64) -> P;
+    /// Centre and radius of the control points of span `s` (their mean and the farthest of them).
+    fn ball(&mut self, s: usize) -> (P, f64);
+    /// Centre and radius of the control points of the block of spans `s0..=s1`.
+    fn block(&mut self, s0: usize, s1: usize) -> (P, f64);
+    /// Bound of the curve speed on span `s` (see `span_speed_bound`).
+    fn speed(&mut self, s: usize) -> f64;
+    /// Largest speed bound over all spans.
+    fn flat_speed(&mut self) -> f64;
+}
+
+struct Direct<'a, P: Pt>(&'a BSplineCurve<P>);
+
+impl<P: Pt> ScanAux<P> for Direct<'_, P> {
+    fn sample(&mut self, _: usize, u: f64) -> P {
+        self.0.eval(u)
+    }
+    fn ball(&mut self, s: usize) -> (P, f64) {
+        let pts = &self.0.ctrl[s - self.0.degree..=s];
+        let mut c = pts[0];
+        for &x in &pts[1..] {
+            c = c + x;
+        }
+        let c = c / pts.len() as f64;
+        let r = pts.iter().map(|&x| x.dist(c)).fold(0.0f64, f64::max);
+        (c, r)
+    }
+    fn block(&mut self, s0: usize, s1: usize) -> (P, f64) {
+        let pts = &self.0.ctrl[s0 - self.0.degree..=s1];
+        let c = (pts[0] + pts[pts.len() - 1]) * 0.5;
+        let r2 = pts.iter().map(|&x| (x - c).dot(x - c)).fold(0.0f64, f64::max);
+        (c, r2.sqrt())
+    }
+    fn speed(&mut self, s: usize) -> f64 {
+        self.0.span_speed_bound(s)
+    }
+    fn flat_speed(&mut self) -> f64 {
+        let c = self.0;
+        (c.degree..c.ctrl.len()).filter(|&s| c.knots[s] < c.knots[s + 1]).map(|s| c.span_speed_bound(s)).fold(0.0f64, f64::max)
+    }
+}
+
 /// How many following samples, `step` of curve speed apart, are surely farther from the query point than the
 /// best so far, given that this one is `gap` farther (sample k is at least `gap - k*step` away from beating it).
 /// The 1e-9 relative margin covers the rounding of the evaluated distances.
@@ -579,12 +628,12 @@ impl<P: Pt> BSplineCurve<P> {
 
     /// [`Self::closest_param`]; `skip = false` evaluates every sample (the reference the skipping must match).
     fn closest_param_with(&self, q: P, skip: bool) -> f64 {
-        self.closest_param_impl(q, skip, &mut |_, u| self.eval(u))
+        self.closest_param_impl(q, skip, &mut Direct(self))
     }
 
-    /// The search of [`Self::closest_param`], taking its sample points from `smp(slot, u)` (= `self.eval(u)`; the
-    /// slot numbers the sample within this curve's scan, so a caller can keep them across queries).
-    fn closest_param_impl(&self, q: P, skip: bool, smp: &mut dyn FnMut(usize, f64) -> P) -> f64 {
+    /// The search of [`Self::closest_param`]; `aux` supplies the sample points and the query-independent bounds
+    /// (the same values whether computed on the spot or kept from an earlier query of the same curve).
+    fn closest_param_impl(&self, q: P, skip: bool, aux: &mut dyn ScanAux<P>) -> f64 {
         let skippable = |gap: f64, step: f64| if skip { skippable(gap, step) } else { 0 };
         let (a, b) = self.domain();
         let spans = basis::distinct_count(&self.knots).max(2) - 1;
@@ -596,25 +645,15 @@ impl<P: Pt> BSplineCurve<P> {
             // (convex hull) of the remaining ones is farther than the best
             let p = self.degree;
             let m = (p + 1) * 4;
-            let ball = |s: usize| -> f64 {
-                let pts = &self.ctrl[s - p..=s];
-                let mut c = pts[0];
-                for &x in &pts[1..] {
-                    c = c + x;
-                }
-                let c = c / pts.len() as f64;
-                let r = pts.iter().map(|&x| x.dist(c)).fold(0.0f64, f64::max);
-                (q.dist(c) - r).max(0.0)
-            };
-            let mut sample = |s: usize, best: &mut (f64, f64)| {
+            let mut sample = |s: usize, best: &mut (f64, f64), aux: &mut dyn ScanAux<P>| {
                 let (k0, k1) = (self.knots[s].max(a), self.knots[s + 1].min(b));
                 // a sample farther from q than `best` by more than the curve can travel to the next one cannot
                 // replace it (strict <): skip it unevaluated; the sampled points that remain are the same
-                let step = self.span_speed_bound(s) * (k1 - k0) / m as f64;
+                let step = aux.speed(s) * (k1 - k0) / m as f64;
                 let mut j = 0;
                 while j <= m {
                     let u = k0 + (k1 - k0) * j as f64 / m as f64;
-                    let d = smp(s * (m + 1) + j, u).dist(q);
+                    let d = aux.sample(s * (m + 1) + j, u).dist(q);
                     if d < best.0 {
                         *best = (d, u);
                     }
@@ -625,16 +664,13 @@ impl<P: Pt> BSplineCurve<P> {
             // the control polygon) are visited nearest first; inside a block
             // the nearest span seeds `best` and every span whose own ball can
             // still beat it is sampled. Same sampled-set rule as a flat scan.
-            const BLK: usize = 8;
             let ns = self.ctrl.len();
             let mut blocks: Vec<(f64, usize, usize)> = (p..ns)
                 .step_by(BLK)
                 .map(|s0| {
                     let s1 = (s0 + BLK).min(ns) - 1;
-                    let pts = &self.ctrl[s0 - p..=s1];
-                    let c = (pts[0] + pts[pts.len() - 1]) * 0.5;
-                    let r2 = pts.iter().map(|&x| (x - c).dot(x - c)).fold(0.0f64, f64::max);
-                    ((q.dist(c) - r2.sqrt()).max(0.0), s0, s1)
+                    let (c, r) = aux.block(s0, s1);
+                    ((q.dist(c) - r).max(0.0), s0, s1)
                 })
                 .collect();
             blocks.sort_by(|x, y| x.0.total_cmp(&y.0).then(x.1.cmp(&y.1)));
@@ -642,10 +678,16 @@ impl<P: Pt> BSplineCurve<P> {
                 if lb >= best.0 {
                     break;
                 }
-                let mut cells: Vec<(f64, usize)> = (s0..=s1).filter(|&s| self.knots[s] < self.knots[s + 1]).map(|s| (ball(s), s)).collect();
+                let mut cells: Vec<(f64, usize)> = (s0..=s1)
+                    .filter(|&s| self.knots[s] < self.knots[s + 1])
+                    .map(|s| {
+                        let (c, r) = aux.ball(s);
+                        ((q.dist(c) - r).max(0.0), s)
+                    })
+                    .collect();
                 if best.0.is_infinite() {
                     if let Some(&(_, sn)) = cells.iter().min_by(|x, y| x.0.total_cmp(&y.0)) {
-                        sample(sn, &mut best);
+                        sample(sn, &mut best, aux);
                     }
                 }
                 cells.sort_by(|x, y| x.0.total_cmp(&y.0));
@@ -653,17 +695,16 @@ impl<P: Pt> BSplineCurve<P> {
                     if l >= best.0 {
                         break;
                     }
-                    sample(s, &mut best);
+                    sample(s, &mut best, aux);
                 }
             }
             return newton_closest(|u| self.derivs_arr(u, 2), q, best.1, a, b);
         }
-        let speed = (self.degree..self.ctrl.len()).filter(|&s| self.knots[s] < self.knots[s + 1]).map(|s| self.span_speed_bound(s)).fold(0.0f64, f64::max);
-        let step = speed * (b - a) / n as f64;
+        let step = aux.flat_speed() * (b - a) / n as f64;
         let mut i = 0;
         while i <= n {
             let u = a + (b - a) * i as f64 / n as f64;
-            let d = smp(i, u).dist(q);
+            let d = aux.sample(i, u).dist(q);
             if d < best.0 {
                 best = (d, u);
             }
@@ -783,17 +824,70 @@ pub(crate) fn elevate_bezier<P: Pt>(c: &[Hom<P>], t: usize) -> Vec<Hom<P>> {
     cur
 }
 
+/// [`ScanAux`] keeping everything it computes (NaN marks a value not computed yet).
+struct Kept<'a> {
+    curve: &'a BSplineCurve<Vec3>,
+    samples: &'a mut Vec<Vec3>,
+    balls: &'a mut Vec<(Vec3, f64)>,
+    blocks: &'a mut Vec<(Vec3, f64)>,
+    speeds: &'a mut Vec<f64>,
+    flat: &'a mut f64,
+}
+
+impl ScanAux<Vec3> for Kept<'_> {
+    fn sample(&mut self, slot: usize, u: f64) -> Vec3 {
+        let c = &mut self.samples[slot];
+        if c.x.is_nan() {
+            *c = self.curve.eval(u);
+        }
+        *c
+    }
+    fn ball(&mut self, s: usize) -> (Vec3, f64) {
+        if self.balls[s].1.is_nan() {
+            self.balls[s] = Direct(self.curve).ball(s);
+        }
+        self.balls[s]
+    }
+    fn block(&mut self, s0: usize, s1: usize) -> (Vec3, f64) {
+        let i = (s0 - self.curve.degree) / BLK;
+        if self.blocks[i].1.is_nan() {
+            self.blocks[i] = Direct(self.curve).block(s0, s1);
+        }
+        self.blocks[i]
+    }
+    fn speed(&mut self, s: usize) -> f64 {
+        if self.speeds[s].is_nan() {
+            self.speeds[s] = self.curve.span_speed_bound(s);
+        }
+        self.speeds[s]
+    }
+    fn flat_speed(&mut self) -> f64 {
+        if self.flat.is_nan() {
+            *self.flat = Direct(self.curve).flat_speed();
+        }
+        *self.flat
+    }
+}
+
+/// Everything [`Kept`] keeps for one curve.
+struct CurveScan {
+    samples: Vec<Vec3>,
+    balls: Vec<(Vec3, f64)>,
+    blocks: Vec<(Vec3, f64)>,
+    speeds: Vec<f64>,
+    flat: f64,
+}
+
 impl BSplineCurve<Vec3> {
-    /// [`Self::closest_param`] keeping the sample points of the scan across queries (a boolean asks one edge for
-    /// the closest parameter of hundreds of points): the samples are the very `eval` results, so the answer is
-    /// bit-identical. Keyed by a hash of the whole curve (every knot, control point and weight).
+    /// [`Self::closest_param`] keeping the sample points and span bounds of the scan across queries (a boolean
+    /// asks one edge for the closest parameter of hundreds of points): the values are the ones the plain search
+    /// computes, so the answer is bit-identical. Keyed by a hash of the whole curve (every knot, control point
+    /// and weight).
     pub fn closest_param_cached(&self, q: Vec3) -> f64 {
         use std::cell::RefCell;
         use std::collections::HashMap;
-        // slot -> sample point (NaN x = not computed yet)
-        type Samples = Vec<Vec3>;
         thread_local! {
-            static TABLE: RefCell<HashMap<u64, Samples>> = RefCell::new(HashMap::new());
+            static TABLE: RefCell<HashMap<u64, CurveScan>> = RefCell::new(HashMap::new());
         }
         let mut h = 0xcbf29ce484222325u64;
         let mut mix = |x: u64| {
@@ -815,10 +909,11 @@ impl BSplineCurve<Vec3> {
                 mix(x.to_bits());
             }
         }
+        let ns = self.ctrl.len();
         let slots = {
             let spans = basis::distinct_count(&self.knots).max(2) - 1;
             if spans > 6 {
-                self.ctrl.len() * ((self.degree + 1) * 4 + 1)
+                ns * ((self.degree + 1) * 4 + 1)
             } else {
                 (spans * (self.degree + 1) * 4).max(16) + 1
             }
@@ -831,17 +926,19 @@ impl BSplineCurve<Vec3> {
             if t.len() >= 512 {
                 t.clear();
             }
-            let samples = t.entry(h).or_insert_with(Vec::new);
-            if samples.len() != slots {
-                *samples = vec![Vec3::new(f64::NAN, 0.0, 0.0); slots];
+            let nan = Vec3::new(f64::NAN, 0.0, 0.0);
+            let e = t.entry(h).or_insert_with(|| CurveScan { samples: vec![], balls: vec![], blocks: vec![], speeds: vec![], flat: f64::NAN });
+            if e.samples.len() != slots {
+                *e = CurveScan {
+                    samples: vec![nan; slots],
+                    balls: vec![(nan, f64::NAN); ns],
+                    blocks: vec![(nan, f64::NAN); ns / BLK + 1],
+                    speeds: vec![f64::NAN; ns],
+                    flat: f64::NAN,
+                };
             }
-            self.closest_param_impl(q, true, &mut |slot, u| {
-                let c = &mut samples[slot];
-                if c.x.is_nan() {
-                    *c = self.eval(u);
-                }
-                *c
-            })
+            let CurveScan { samples, balls, blocks, speeds, flat } = e;
+            self.closest_param_impl(q, true, &mut Kept { curve: self, samples, balls, blocks, speeds, flat })
         })
     }
 }
