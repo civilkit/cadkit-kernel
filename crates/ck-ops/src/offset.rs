@@ -136,6 +136,33 @@ fn fit_face_with_margin(src: &Body, f: FaceId, d: f64, reach: f64) -> Result<Sur
     Err(last.unwrap())
 }
 
+/// [`offset_face_surface`] for a thickness that varies over the face: the offset of a point `p`
+/// is `d_at(p)` along the natural normal (a blade's tapering `thicken`). The analytic shortcuts
+/// (exact quadric offsets) do not apply to a varying distance — the grid fit covers every
+/// surface kind, a plane included. `d_rep` is a representative thickness (margin, messages).
+pub fn offset_face_surface_by(src: &Body, f: FaceId, d_at: &dyn Fn(Vec3) -> f64, d_rep: f64, reach: f64) -> Result<Surface, OffsetError> {
+    fit_face_with_margin_by(src, f, d_at, d_rep, reach)
+}
+
+/// [`fit_face_with_margin`] for a varying distance (`d_rep` measures the margin).
+fn fit_face_with_margin_by(src: &Body, f: FaceId, d_at: &dyn Fn(Vec3) -> f64, d_rep: f64, reach: f64) -> Result<Surface, OffsetError> {
+    let cap0 = margin_cap(d_rep);
+    let mut last = None;
+    for k in 0..5 {
+        let bx = face_uv_box(src, f, cap0 / f64::from(1u32 << (2 * k).min(8))).ok_or_else(|| OffsetError::new("offsetUnsupported", "face extent"))?;
+        match fit_offset_surface_by(&src.face(f).surface, d_at, d_rep, bx, reach) {
+            Err(e) if e.code == "offsetUnsupported" && e.detail.as_deref().is_some_and(|m| m.contains("fit tolerance")) => {
+                if std::env::var_os("CK_OFFSET_DEBUG").is_some() {
+                    eprintln!("margin retry (varying): {} margin cap {:.2} mm failed: {:?}", src.face_id_str(f), cap0 / f64::from(1u32 << (2 * k).min(8)), e.detail);
+                }
+                last = Some(e)
+            }
+            r => return r,
+        }
+    }
+    Err(last.unwrap())
+}
+
 fn is_freeform(s: &Surface) -> bool {
     matches!(s, Surface::BSpline(_) | Surface::Screw { .. } | Surface::Revolution { .. } | Surface::Extrusion { .. } | Surface::Offset { .. })
 }
@@ -182,7 +209,8 @@ fn face_uv_box(src: &Body, f: FaceId, cap_mm: f64) -> Option<((f64, f64), (f64, 
     // On a long free-form face 3 % is many wall thicknesses: the second-order continuation of the
     // surface used there folds over (a loft whose last span turns quickly), so the margin is capped
     // to a few thicknesses in mm, measured by the surface speed at the edge the margin is added to.
-    if cap_mm.is_finite() && matches!(s, Surface::BSpline(_)) {
+    // A plane continues exactly (like a ruled loft face), so it may take the same wide margin.
+    if cap_mm.is_finite() && matches!(s, Surface::BSpline(_) | Surface::Plane { .. }) {
         let ((du0, du1), (dv0, dv1)) = s.domain();
         let speed = |a: f64, b: f64, along_u: bool| {
             let q = s.derivs2(a.clamp(du0, du1), b.clamp(dv0, dv1));
@@ -200,6 +228,7 @@ fn face_uv_box(src: &Body, f: FaceId, cap_mm: f64) -> Option<((f64, f64), (f64, 
         }
         let (deg_u, deg_v) = match s {
             Surface::BSpline(bs) => (bs.deg_u, bs.deg_v),
+            Surface::Plane { .. } => (1, 1),
             _ => (3, 3),
         };
         // A direction of degree 1 (a ruled loft face) continues exactly, so its margin may be as wide as the
@@ -605,6 +634,254 @@ fn fit_offset_surface_inner(s: &Surface, d: f64, uvbox: ((f64, f64), (f64, f64))
     Err(OffsetError::new("offsetUnsupported", format!("surface offset fit tolerance ({last_dev:.1e})")))
 }
 
+/// [`fit_offset_surface_inner`] for a distance that varies over the surface: the offset of the
+/// point at `(u, v)` is `d_at(p)` along the natural normal. The regular-offset check is the
+/// constant path's, evaluated per sample with the local distance: a sample whose local thickness
+/// reaches its local radius of curvature is `offsetTooLarge` with that radius and the largest
+/// thickness that works there (a plane, whose radius is infinite, never trips it). Extrusions and
+/// revolutions have no exact varying offset and are fitted like any other surface.
+fn fit_offset_surface_by(s: &Surface, d_at: &dyn Fn(Vec3) -> f64, d_rep: f64, uvbox: ((f64, f64), (f64, f64)), reach: f64) -> Result<Surface, OffsetError> {
+    let big = || OffsetError::new("offsetTooLarge", CENTRE);
+    let ((mut u0, mut u1), (mut v0, mut v1)) = uvbox;
+    if !(u1 > u0 && v1 > v0) {
+        return Err(OffsetError::new("offsetUnsupported", "empty parameter range"));
+    }
+    let ((du0, du1), (dv0, dv1)) = s.domain();
+    // An inward offset of a pole folds over itself near the apex (the offset cone's other
+    // nappe): that fold is where the inner apex closes, not a failure. The curvature and fold
+    // checks skip the neighbourhood of a pole, and the surface is not continued past it.
+    let poles = pole_points(s);
+    let pole_side = pole_sides(s);
+    let near_pole = |p: Vec3| poles.iter().any(|q| q.dist(p) < 10.0 * d_rep.abs());
+    // the fit is judged right up to the apex, except in the last sliver where the normal field
+    // turns over faster than any sampling can follow (and nothing of the solid is)
+    let at_pole = |p: Vec3| poles.iter().any(|q| q.dist(p) < MIN_SPAN);
+
+    // The cavity of a shell runs `reach` past an opened face, so its
+    // neighbours' offsets must extend beyond the original surface: pad the box
+    // by that distance (in parameters) and continue the surface past its
+    // domain with its second-order Taylor polynomial.
+    if reach > 0.0 {
+        let (mid_u, mid_v) = ((0.5 * (u0 + u1)).clamp(du0, du1), (0.5 * (v0 + v1)).clamp(dv0, dv1));
+        let sd = s.derivs2(mid_u, mid_v);
+        let (mut lu, mut lv) = (sd.du.len().max(1e-9), sd.dv.len().max(1e-9));
+        // A loft narrows towards its ends: the parameter speed at the mid point overstates the
+        // speed there, so a pad of `reach` (mm) there is far too short in parameters. Take the
+        // slowest speed over the box (not below 5 % of the fastest, a pole collapses it to zero).
+        let (mut fu, mut fv) = (lu, lv);
+        for i in 0..=6 {
+            for j in 0..=6 {
+                let (a, b) = ((u0 + (u1 - u0) * i as f64 / 6.0).clamp(du0, du1), (v0 + (v1 - v0) * j as f64 / 6.0).clamp(dv0, dv1));
+                let q = s.derivs2(a, b);
+                fu = fu.max(q.du.len());
+                fv = fv.max(q.dv.len());
+                lu = lu.min(q.du.len().max(1e-9));
+                lv = lv.min(q.dv.len().max(1e-9));
+            }
+        }
+        let (lu, lv) = (lu.max(0.05 * fu), lv.max(0.05 * fv));
+        let (pu, pv) = (reach / lu, reach / lv);
+        // periodic directions wrap; an unbounded direction (extrusion height) still has to
+        // reach `reach` past the face, the 3 % margin of the box is not enough
+        // (towards a pole the pad stops at the apex: the surface does not continue past it)
+        if s.periods().0.is_none() {
+            u0 = if pole_side[0] { (u0 - pu).max(du0) } else { u0 - pu };
+            u1 = if pole_side[1] { (u1 + pu).min(du1) } else { u1 + pu };
+        }
+        if s.periods().1.is_none() {
+            v0 = if pole_side[2] { (v0 - pv).max(dv0) } else { v0 - pv };
+            v1 = if pole_side[3] { (v1 + pv).min(dv1) } else { v1 + pv };
+        }
+    }
+    let (per_u, per_v) = s.periods();
+    let wrap = |x: f64, lo: f64, hi: f64, per: Option<f64>| match per {
+        Some(p) if lo.is_finite() && hi.is_finite() && p > 0.0 && (x < lo || x > hi) => lo + (x - lo).rem_euclid(p),
+        _ => x,
+    };
+    let point = |u: f64, v: f64| -> Result<Vec3, OffsetError> {
+        let (u, v) = (wrap(u, du0, du1, per_u), wrap(v, dv0, dv1, per_v));
+        let (uc, vc) = (u.clamp(du0, du1), v.clamp(dv0, dv1));
+        let (ea, eb) = (u - uc, v - vc);
+        let inside = ea == 0.0 && eb == 0.0;
+        let sd = s.derivs2(uc, vc);
+        let (su, sv) = (sd.du + sd.duu * ea + sd.duv * eb, sd.dv + sd.duv * ea + sd.dvv * eb);
+        // at a pole (collapsed row of a loft's point end) S_u x S_v vanishes: use the limit normal
+        let n = match su.cross(sv) {
+            c if c.len() > 1e-9 * su.len().max(sv.len()).powi(2) => c.normalize(),
+            _ => s.normal(uc, vc).try_normalize().ok_or_else(|| OffsetError::new("offsetUnsupported", "degenerate surface point"))?,
+        };
+        let base_p = sd.p + sd.du * ea + sd.dv * eb + (sd.duu * (ea * ea) + sd.duv * (2.0 * ea * eb) + sd.dvv * (eb * eb)) * 0.5;
+        let dd = d_at(base_p);
+        if inside {
+            // regular offset at the LOCAL distance: I - dd W must stay positive definite (both
+            // principal factors 1 - dd kappa > 0); the shape operator's eigenvalues are the
+            // principal curvatures (the same math as `grid_min_radius`)
+            let (e, f, g) = (sd.du.dot(sd.du), sd.du.dot(sd.dv), sd.dv.dot(sd.dv));
+            let (l, m, nv) = (n.dot(sd.duu), n.dot(sd.duv), n.dot(sd.dvv));
+            let det = e * g - f * f;
+            if det > 1e-24 && !near_pole(sd.p) {
+                let (a, b, c, dm) = ((g * l - f * m) / det, (g * m - f * nv) / det, (e * m - f * l) / det, (e * nv - f * m) / det);
+                let mean = 0.5 * (a + dm);
+                let disc = (0.25 * (a - dm) * (a - dm) + b * c).max(0.0).sqrt();
+                for k in [mean + disc, mean - disc] {
+                    if dd * k >= LIMIT_SAFETY && dd * k > 0.0 {
+                        let r = 1.0 / k.abs();
+                        return Err(OffsetError::new("offsetTooLarge", CENTRE).with_limit(OffsetLimit {
+                            kind: "curvature",
+                            min_radius: r,
+                            max_thickness: floor_hundredth(LIMIT_SAFETY * r),
+                            face: None,
+                        }));
+                    }
+                }
+            }
+        }
+        Ok(base_p + n * dd)
+    };
+    // Sample sets per direction: the base's own knots (a spline offset keeps
+    // its kinks there) or a uniform start, refined where the fit misses.
+    let seed = |lo: f64, hi: f64, knots: Option<&[f64]>| -> Vec<f64> {
+        let mut x: Vec<f64> = vec![lo, hi];
+        match knots {
+            Some(k) => {
+                for &t in k {
+                    if t > lo + 1e-9 * (hi - lo) && t < hi - 1e-9 * (hi - lo) {
+                        x.push(t);
+                    }
+                }
+                x.sort_by(f64::total_cmp);
+                x.dedup_by(|a, b| (*a - *b).abs() <= 1e-9 * (hi - lo));
+                // a cubic fit needs at least four samples: a surface without interior knots in
+                // this direction (a linear loft span) gets a uniform start
+                while x.len() < 5 {
+                    let mut y = x.clone();
+                    for w in x.windows(2) {
+                        y.push(0.5 * (w[0] + w[1]));
+                    }
+                    y.sort_by(f64::total_cmp);
+                    x = y;
+                }
+                x
+            }
+            None => (0..=8).map(|i| lo + (hi - lo) * i as f64 / 8.0).collect(),
+        }
+    };
+    let (ku, kv) = match s {
+        Surface::BSpline(bs) => (Some(bs.knots_u.clone()), Some(bs.knots_v.clone())),
+        _ => (None, None),
+    };
+    // sample points are kept between refinement rounds (a refined grid reuses every old node
+    // and the span midpoints the deviation was measured at)
+    let mut cache: std::collections::HashMap<(u64, u64), Vec3> = std::collections::HashMap::new();
+    let mut cached = |u: f64, v: f64| -> Result<Vec3, OffsetError> {
+        let key = (u.to_bits(), v.to_bits());
+        if let Some(p) = cache.get(&key) {
+            return Ok(*p);
+        }
+        let p = point(u, v)?;
+        cache.insert(key, p);
+        Ok(p)
+    };
+    let mut us = seed(u0, u1, ku.as_deref());
+    let mut vs = seed(v0, v1, kv.as_deref());
+    let mut last_dev = f64::INFINITY;
+    for _round in 0..24 {
+        let mut grid = vec![vec![Vec3::ZERO; vs.len()]; us.len()];
+        for (i, &u) in us.iter().enumerate() {
+            for (j, &v) in vs.iter().enumerate() {
+                grid[i][j] = cached(u, v)?;
+            }
+        }
+        let (fit, uk, vk) = fit_grid(&grid)?;
+        let fs = Surface::BSpline(Box::new(fit));
+        // deviation of the exact offset from the fit at span midpoints, along a
+        // spread of lines of the other direction
+        let mut dev = 0.0f64;
+        let (mut bad_u, mut bad_v) = (vec![], vec![]);
+        let pick = |n: usize| -> Vec<usize> {
+            let k = 6.min(n);
+            (0..k).map(|t| t * (n - 1) / (k - 1).max(1)).collect()
+        };
+        for i in 0..us.len() - 1 {
+            let um = 0.5 * (us[i] + us[i + 1]);
+            let mut worst = 0.0f64;
+            for &j in &pick(vs.len()) {
+                if at_pole(s.eval(um.clamp(du0, du1), vs[j].clamp(dv0, dv1))) {
+                    continue;
+                }
+                let e = cached(um, vs[j])?;
+                let hint = (0.5 * (uk[i] + uk[i + 1]), vk[j]);
+                worst = worst.max(fs.closest_point_near(e, hint).2.dist(e));
+            }
+            // spans shorter than MIN_SPAN (a normal kink of the base smeared over
+            // one sample) cannot be resolved further and are tolerated
+            let span = grid[i][vs.len() / 2].dist(grid[i + 1][vs.len() / 2]);
+            if span < MIN_SPAN {
+                continue;
+            }
+            dev = dev.max(worst);
+            if worst > FIT_TOL {
+                bad_u.push((i, worst));
+            }
+        }
+        for j in 0..vs.len() - 1 {
+            let vm = 0.5 * (vs[j] + vs[j + 1]);
+            let mut worst = 0.0f64;
+            for &i in &pick(us.len()) {
+                if at_pole(s.eval(us[i].clamp(du0, du1), vm.clamp(dv0, dv1))) {
+                    continue;
+                }
+                let e = cached(us[i], vm)?;
+                let hint = (uk[i], 0.5 * (vk[j] + vk[j + 1]));
+                worst = worst.max(fs.closest_point_near(e, hint).2.dist(e));
+            }
+            let span = grid[us.len() / 2][j].dist(grid[us.len() / 2][j + 1]);
+            if span < MIN_SPAN {
+                continue;
+            }
+            dev = dev.max(worst);
+            if worst > FIT_TOL {
+                bad_v.push((j, worst));
+            }
+        }
+        last_dev = dev;
+        if std::env::var_os("CK_OFFSET_DEBUG").is_some() {
+            let wu = bad_u.iter().cloned().fold((0usize, 0.0f64), |a, b| if b.1 > a.1 { b } else { a });
+            let wv = bad_v.iter().cloned().fold((0usize, 0.0f64), |a, b| if b.1 > a.1 { b } else { a });
+            eprintln!(
+                "offset fit (varying): {} d~{d_rep:.3} grid {}x{} dev={dev:.2e} worst u-span {} ({:.4},{:.4}) {:.1e}, v-span {} ({:.4},{:.4}) {:.1e}; domain {:?} box ({u0:.3},{u1:.3}) ({v0:.3},{v1:.3})",
+                s.kind(), us.len(), vs.len(), wu.0, us[wu.0], us[(wu.0 + 1).min(us.len() - 1)], wu.1, wv.0, vs[wv.0], vs[(wv.0 + 1).min(vs.len() - 1)], wv.1, s.domain()
+            );
+        }
+        if bad_u.is_empty() && bad_v.is_empty() {
+            // folds: the offset must stay its local distance from the base everywhere
+            let m = 12;
+            for i in 0..=m {
+                for j in 0..=m {
+                    let (u, v) = (u0 + (u1 - u0) * i as f64 / m as f64, v0 + (v1 - v0) * j as f64 / m as f64);
+                    let q = point(u, v)?;
+                    let interior = u >= du0 && u <= du1 && v >= dv0 && v <= dv1;
+                    let dd = d_at(s.eval(u.clamp(du0, du1), v.clamp(dv0, dv1)));
+                    if interior && !near_pole(s.eval(u, v)) && s.closest_point(q).2.dist(q) < dd.abs() * (1.0 - 1e-3) - 1e-6 {
+                        return Err(big());
+                    }
+                }
+            }
+            return Ok(fs);
+        }
+        if us.len() + bad_u.len() > 500 || vs.len() + bad_v.len() > 500 {
+            break;
+        }
+        for &(i, _) in bad_u.iter().rev() {
+            us.insert(i + 1, 0.5 * (us[i] + us[i + 1]));
+        }
+        for &(j, _) in bad_v.iter().rev() {
+            vs.insert(j + 1, 0.5 * (vs[j] + vs[j + 1]));
+        }
+    }
+    Err(OffsetError::new("offsetUnsupported", format!("surface offset fit tolerance ({last_dev:.1e})")))
+}
+
 /// Smallest radius of curvature of face `f` on the side an offset by `d` (along its natural
 /// normal) moves to; `None` when the face does not curve that way (or is analytic: planes and
 /// the plain quadrics are handled by their exact offset).
@@ -861,7 +1138,7 @@ pub(crate) fn foot_n(s: &Surface, q: Vec3) -> Option<(Vec3, Vec3)> {
 /// The curve where two offset faces meet, replacing a spline edge: points
 /// found per sample in the plane normal to the old edge, interpolated by a
 /// cubic B-spline and verified against both offset surfaces.
-pub(crate) fn offset_spline_edge(src: &Body, e: EdgeId, moved: &[Option<Surface>], dnat: &dyn Fn(FaceId) -> f64, p0: Vec3, p1: Vec3, end_gap: f64) -> Result<(Curve, f64, f64), OffsetError> {
+pub(crate) fn offset_spline_edge(src: &Body, e: EdgeId, moved: &[Option<Surface>], dnat: &dyn Fn(FaceId, Vec3) -> f64, p0: Vec3, p1: Vec3, end_gap: f64) -> Result<(Curve, f64, f64), OffsetError> {
     let ed = src.edge(e);
     let fs = src.edge_faces(e);
     if fs.len() != 2 || ed.v0 == ed.v1 {
@@ -884,7 +1161,7 @@ pub(crate) fn offset_spline_edge(src: &Body, e: EdgeId, moved: &[Option<Surface>
         if n[0].cross(n[1]).len() < 0.02 {
             // compare along the OUTWARD normals (the natural ones may be flipped)
             let sg = |f: FaceId| if src.face(f).sense { 1.0 } else { -1.0 };
-            let (d0, d1) = (dnat(fs[0]) * sg(fs[0]), dnat(fs[1]) * sg(fs[1]));
+            let (d0, d1) = (dnat(fs[0], p) * sg(fs[0]), dnat(fs[1], p) * sg(fs[1]));
             if (d0 - d1).abs() > 1e-9 {
                 if std::env::var_os("CK_OFFSET_DEBUG").is_some() {
                     eprintln!("grazing edge with unequal offsets: {} | {} d {d0} {d1}", src.face_id_str(fs[0]), src.face_id_str(fs[1]));
@@ -894,7 +1171,7 @@ pub(crate) fn offset_spline_edge(src: &Body, e: EdgeId, moved: &[Option<Surface>
             grazing.set(true);
             return Ok(p + (n[0] * sg(fs[0]) + n[1] * sg(fs[1])) * (0.5 * d0));
         }
-        let mut q = p + crate::intersect::solve3([n[0], n[1], tn], [dnat(fs[0]), dnat(fs[1]), 0.0]).ok_or_else(|| {
+        let mut q = p + crate::intersect::solve3([n[0], n[1], tn], [dnat(fs[0], p), dnat(fs[1], p), 0.0]).ok_or_else(|| {
             if std::env::var_os("CK_OFFSET_DEBUG").is_some() {
                 eprintln!("edge start system singular: {} | {} t={t}", src.face_id_str(fs[0]), src.face_id_str(fs[1]));
             }
@@ -920,7 +1197,10 @@ pub(crate) fn offset_spline_edge(src: &Body, e: EdgeId, moved: &[Option<Surface>
     // the curve is sampled between its own end vertices instead (planes
     // through points of the chord p0-p1, normal to it).
     let _ = sample(0.5 * (ed.t0 + ed.t1))?; // sets `grazing` for the edge
-    let dmax = fs.iter().map(|&f| dnat(f).abs()).fold(0.0f64, f64::max);
+    let dmax = {
+        let pm = ed.curve.eval(0.5 * (ed.t0 + ed.t1));
+        fs.iter().map(|&f| dnat(f, pm).abs()).fold(0.0f64, f64::max)
+    };
     let chord_sampling = !grazing.get() && src.edge_length(e) < 3.0 * dmax + 1e-9 && p0.dist(p1) > 1e-9;
     let sample_chord = |s: f64| -> Result<Vec3, OffsetError> {
         let x = p0 + (p1 - p0) * s;
@@ -1322,7 +1602,7 @@ pub fn move_faces_body(src: &Body, mv: &dyn Fn(FaceId) -> FaceMove) -> Result<Bo
                         .map(|q| fs.iter().map(|&f| moved[f.idx()].as_ref().map_or(0.0, |m| m.closest_point(q).2.dist(q))).fold(0.0f64, f64::max))
                         .fold(end.dist(p1), f64::max);
                     if miss > 1e-5 {
-                        let dn = |f: FaceId| {
+                        let dn = |f: FaceId, _p: Vec3| {
                             let d = dist(f);
                             if src.face(f).sense { d } else { -d }
                         };
@@ -1368,7 +1648,7 @@ pub fn move_faces_body(src: &Body, mv: &dyn Fn(FaceId) -> FaceMove) -> Result<Bo
                 if fs.iter().any(|&f| shift_of(f).is_some()) {
                     return Err(OffsetError::new("offsetUnsupported", "free-form edge of a translated face"));
                 }
-                let dn = |f: FaceId| {
+                let dn = |f: FaceId, _p: Vec3| {
                     let d = dist(f);
                     if src.face(f).sense { d } else { -d }
                 };

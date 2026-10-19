@@ -1,7 +1,7 @@
 //! Thicken of sheets with free-form (B-spline and other non-quadric) faces.
 //!
 //! Both layers of the wall are faces: the sheet itself (or its offset) and its offset along the
-//! natural normal, fitted by [`crate::offset::offset_face_surface`] (sampled normals, fit error
+//! natural normal, fitted by [`crate::offset::offset_face_surface_by`] (sampled normals, fit error
 //! controlled, a vanishing area element is `offsetTooLarge` with the radius and the thickness
 //! that would work). The rim edges of the offset layer are the sheet's edges moved along the
 //! surface normal (adaptive samples, refined until the cubic fit follows the exact offset), and
@@ -10,7 +10,7 @@
 //! split of one loft into spans); a kink between free-form faces is `offsetUnsupported`.
 
 use super::{sheet_rims, Side, ThickenError};
-use crate::offset::{fit_grid, fit_grid_with, offset_face_surface, OffsetLimit};
+use crate::offset::{fit_grid, fit_grid_with, offset_face_surface_by, OffsetLimit};
 use ck_geom::curve::Curve;
 use ck_geom::fit::{interpolate, Param};
 use ck_geom::surface::Surface;
@@ -55,14 +55,15 @@ fn samples(sheet: &Body, e: EdgeId, f: FaceId, n: usize) -> Result<(Vec<f64>, Ve
     Ok((ts, ps, ns))
 }
 
-/// Edge curve moved by `d` along the normal of `f`: refined until the cubic interpolant follows
-/// the exact offset at span midpoints. Returns the curve with its domain and the sample count.
-fn offset_edge(sheet: &Body, e: EdgeId, f: FaceId, d: f64) -> Result<(Curve, f64, f64, usize), ThickenError> {
+/// Edge curve moved along the normal of `f` by the local distance `d_at` of each sample point:
+/// refined until the cubic interpolant follows the exact offset at span midpoints. Returns the
+/// curve with its domain and the sample count.
+fn offset_edge(sheet: &Body, e: EdgeId, f: FaceId, d_at: &dyn Fn(Vec3) -> f64) -> Result<(Curve, f64, f64, usize), ThickenError> {
     let ed = sheet.edge(e);
     let mut n = 24usize;
     loop {
         let (_, ps, ns) = samples(sheet, e, f, n)?;
-        let pts: Vec<Vec3> = ps.iter().zip(&ns).map(|(p, nn)| *p + *nn * d).collect();
+        let pts: Vec<Vec3> = ps.iter().zip(&ns).map(|(p, nn)| *p + *nn * d_at(*p)).collect();
         let c = interpolate(&pts, 3, Param::ChordLength).map_err(|m| unsupported(format!("edge fit: {m}")))?;
         let (a, b) = c.domain();
         let mut dev = 0.0f64;
@@ -70,7 +71,7 @@ fn offset_edge(sheet: &Body, e: EdgeId, f: FaceId, d: f64) -> Result<(Curve, f64
             let t = ed.t0 + (ed.t1 - ed.t0) * (k as f64 + 0.5) / n as f64;
             let p = ed.curve.eval(t);
             let Some(nn) = normal_at(sheet, f, p) else { continue };
-            let exact = p + nn * d;
+            let exact = p + nn * d_at(p);
             dev = dev.max(c.eval(c.closest_param(exact)).dist(exact));
         }
         if dev <= EDGE_TOL || n >= 768 {
@@ -80,20 +81,44 @@ fn offset_edge(sheet: &Body, e: EdgeId, f: FaceId, d: f64) -> Result<(Curve, f64
     }
 }
 
-/// Thicken a sheet that has free-form faces.
+/// Thicken a sheet that has free-form faces, at a constant thickness.
 pub fn thicken_freeform(sheet: &Body, feature: &str, thickness: f64, side: Side, tol: f64) -> Result<Body, ThickenError> {
+    thicken_freeform_by(sheet, feature, &|_| thickness, thickness, side, tol)
+}
+
+/// One offset layer of a free-form thicken: its distance at a sheet point, a representative
+/// distance (messages, margins) and whether the layer is the sheet itself (`side` front's
+/// lower layer).
+pub(crate) type LayerD<'a> = (&'a dyn Fn(Vec3) -> f64, f64, bool);
+
+/// Thicken a sheet that has free-form faces at a thickness that varies over the sheet:
+/// every point of the sheet (surfaces, edges, miters and walls alike) moves along its face
+/// normal by its own local distance, so a blade tapers root to tip. `t_rep` is a
+/// representative thickness, phrasing the offset limits and messages.
+pub fn thicken_freeform_by(
+    sheet: &Body,
+    feature: &str,
+    t_at: &dyn Fn(Vec3) -> f64,
+    t_rep: f64,
+    side: Side,
+    tol: f64,
+) -> Result<Body, ThickenError> {
     let faces: Vec<FaceId> = sheet.face_ids().collect();
     let rims = sheet_rims(sheet, &faces);
     if rims.is_empty() {
         return Err(ThickenError::detail("thickenFailed", "the thickened body is not closed"));
     }
     // layer offsets along the natural normal; `Both` is half the thickness each way
-    let (d_lo, d_hi, scale) = match side {
-        Side::Front => (0.0, thickness, 1.0),
-        Side::Back => (-thickness, 0.0, 1.0),
-        Side::Both => (-0.5 * thickness, 0.5 * thickness, 2.0),
+    let (scale_lo, scale_hi) = match side {
+        Side::Front => (0.0, 1.0),
+        Side::Back => (-1.0, 0.0),
+        Side::Both => (-0.5, 0.5),
     };
-    let layers = [d_lo, d_hi];
+    let d_lo = move |p: Vec3| scale_lo * t_at(p);
+    let d_hi = move |p: Vec3| scale_hi * t_at(p);
+    let layers: [LayerD<'_>; 2] = [(&d_lo, scale_lo * t_rep, scale_lo == 0.0), (&d_hi, scale_hi * t_rep, scale_hi == 0.0)];
+    // a limit found for a layer's offset, in terms of the thickness
+    let scale = 1.0 / scale_hi.abs().max(scale_lo.abs());
 
     // faces of the sheet must agree on their natural side; edges shared by two faces that are not tangent
     // are creases, offset by mitering (see `thicken_creased`)
@@ -129,29 +154,29 @@ pub fn thicken_freeform(sheet: &Body, feature: &str, thickness: f64, side: Side,
 
     // offset surfaces of each layer
     let mut surfaces: Vec<Vec<Surface>> = vec![vec![]; 2];
-    for (li, &d) in layers.iter().enumerate() {
+    for (li, &(_, d_rep, zero)) in layers.iter().enumerate() {
         for &f in &faces {
-            if d == 0.0 {
+            if zero {
                 surfaces[li].push(sheet.face(f).surface.clone());
                 continue;
             }
-            let s = offset_face_surface(sheet, f, d, 0.0).map_err(|e| {
+            let d_at = layers[li].0;
+            let s = offset_face_surface_by(sheet, f, d_at, d_rep, 0.0).map_err(|e| {
                 let name = sheet.face_id_str(f);
                 if e.code == "offsetTooLarge" {
                     let limit = e.limit.clone().map(|l| OffsetLimit {
-                        // a limit found for the offset `d` of this layer, in terms of the thickness
                         max_thickness: (l.max_thickness * scale * 100.0).floor() / 100.0,
                         face: Some(name.clone()),
                         ..l
                     });
                     let detail = match &limit {
                         Some(l) => format!(
-                            "{name} curves too tightly for a thickness of {thickness:.2} mm: its smallest radius of curvature is {:.2} mm, use at most {:.2} mm",
+                            "{name} curves too tightly for a thickness of {t_rep:.2} mm: its smallest radius of curvature is {:.2} mm, use at most {:.2} mm",
                             l.min_radius, l.max_thickness
                         ),
-                        None => format!("{name} collapses under an offset of {thickness:.2} mm"),
+                        None => format!("{name} collapses under an offset of {t_rep:.2} mm"),
                     };
-                    ThickenError { code: "offsetTooLarge", detail, limit }
+                    ThickenError { code: "offsetTooLarge", detail, hint: None, limit }
                 } else {
                     ThickenError::detail(e.code, format!("{name}: {}", e.detail.unwrap_or_default()))
                 }
@@ -182,11 +207,11 @@ pub fn thicken_freeform(sheet: &Body, feature: &str, thickness: f64, side: Side,
             continue;
         }
         let ed = sheet.edge(e);
-        for (li, &d) in layers.iter().enumerate() {
-            let (curve, t0, t1) = if d == 0.0 {
+        for (li, &(_, _, zero)) in layers.iter().enumerate() {
+            let (curve, t0, t1) = if zero {
                 (ed.curve.clone(), ed.t0, ed.t1)
             } else {
-                let (c, a, b, n) = offset_edge(sheet, e, fs[0], d)?;
+                let (c, a, b, n) = offset_edge(sheet, e, fs[0], layers[li].0)?;
                 rim_samples.insert(e, n);
                 (c, a, b)
             };
@@ -210,11 +235,15 @@ pub fn thicken_freeform(sheet: &Body, feature: &str, thickness: f64, side: Side,
         let rev = sheet.coedge(co).rev;
         let n = *rim_samples.get(&e).unwrap_or(&48);
         // wall surface through the samples: four rows from the lower to the upper layer
+        // (each sample moves along the normal by its own local distances)
         let (_, ps, ns) = samples(sheet, e, f, n)?;
         let grid: Vec<Vec<Vec3>> = ps
             .iter()
             .zip(&ns)
-            .map(|(p, nn)| (0..4).map(|j| *p + *nn * (d_lo + (d_hi - d_lo) * j as f64 / 3.0)).collect())
+            .map(|(p, nn)| {
+                let (dl, dh) = (layers[0].0(*p), layers[1].0(*p));
+                (0..4).map(|j| *p + *nn * (dl + (dh - dl) * j as f64 / 3.0)).collect()
+            })
             .collect();
         let (bs, _, _) = fit_grid(&grid).map_err(|e| unsupported(format!("wall fit: {}", e.detail.unwrap_or_default())))?;
         let wname = FaceName { feature: feature.into(), role: Role::Other(format!("W{w}")), region: None, suffix: String::new() };
@@ -327,12 +356,12 @@ fn edge_tangent_at(sheet: &Body, e: EdgeId, v: VertexId) -> Option<Vec3> {
 /// straight rim it is the straight edge joining them. Refined until the cubic interpolant follows the
 /// exact points.
 #[allow(clippy::too_many_arguments)]
-fn rim_curve(sheet: &Body, e: EdgeId, f: FaceId, moved: &Surface, d: f64, q0: Vec3, q1: Vec3) -> Result<(Curve, f64, f64), ThickenError> {
+fn rim_curve(sheet: &Body, e: EdgeId, f: FaceId, moved: &Surface, d_at: &dyn Fn(Vec3) -> f64, q0: Vec3, q1: Vec3) -> Result<(Curve, f64, f64), ThickenError> {
     let ed = sheet.edge(e);
     let plain = |t: f64| -> Result<Vec3, ThickenError> {
         let p = ed.curve.eval(t);
         let nn = normal_at(sheet, f, p).ok_or_else(|| unsupported("degenerate surface normal on an edge"))?;
-        Ok(p + nn * d)
+        Ok(p + nn * d_at(p))
     };
     let (e0, e1) = (q0 - plain(ed.t0)?, q1 - plain(ed.t1)?);
     let point = |s: f64| -> Result<Vec3, ThickenError> {
@@ -387,8 +416,10 @@ fn ruled_wall(lo: &Curve, (a0, b0): (f64, f64), hi: &Curve, (a1, b1): (f64, f64)
     Ok(Surface::BSpline(Box::new(bs)))
 }
 
-/// Thicken a sheet whose free-form faces meet in creases.
-fn thicken_creased(sheet: &Body, feature: &str, faces: &[FaceId], rims: &[(EdgeId, FaceId)], surfaces: &[Vec<Surface>], layers: [f64; 2], tol: f64) -> Result<Body, ThickenError> {
+/// Thicken a sheet whose free-form faces meet in creases, at layer distances that vary over the
+/// sheet (each layer is its own local distance along the face normal; a layer may be the sheet
+/// itself).
+fn thicken_creased(sheet: &Body, feature: &str, faces: &[FaceId], rims: &[(EdgeId, FaceId)], surfaces: &[Vec<Surface>], layers: [LayerD<'_>; 2], tol: f64) -> Result<Body, ThickenError> {
     let moved: Vec<Vec<Option<Surface>>> = (0..2)
         .map(|li| {
             let mut v: Vec<Option<Surface>> = vec![None; sheet.faces.len()];
@@ -431,10 +462,10 @@ fn thicken_creased(sheet: &Body, feature: &str, faces: &[FaceId], rims: &[(EdgeI
 
     // layer vertices: the miter points
     let mut vpos: [HashMap<VertexId, Vec3>; 2] = [HashMap::new(), HashMap::new()];
-    for (li, &d) in layers.iter().enumerate() {
+    for (li, &(d_at, _, zero)) in layers.iter().enumerate() {
         for (&v, es) in &vedges {
             let p = sheet.vertex(v).p;
-            if d == 0.0 {
+            if zero {
                 vpos[li].insert(v, p);
                 continue;
             }
@@ -455,12 +486,25 @@ fn thicken_creased(sheet: &Body, feature: &str, faces: &[FaceId], rims: &[(EdgeI
                 }
             }
             let refs: Vec<&Surface> = surfs.iter().collect();
-            let q = crate::offset::solve_point(p + nrm * d, &refs).ok_or_else(|| ThickenError::detail("thickenReach", REACH_MSG))?;
+            let dp = d_at(p);
+            // a shallow crease's miter point lies many thicknesses from the corner (its two
+            // offset faces meet far past `p + n·d`, and a varying thickness tilts them further):
+            // seed it where `offset_spline_edge` seeds its edge samples — the point at distance
+            // dp from both original faces along their normals, none along the crease
+            let mut seed = p + nrm * dp;
+            if crease.is_some() {
+                if let (Some(tn), Some(n1)) = (tang, fs.get(1).and_then(|&f| normal_at(sheet, f, p))) {
+                    if let Some(x) = crate::intersect::solve3([nrm, n1, tn], [dp, dp, 0.0]) {
+                        seed = p + x;
+                    }
+                }
+            }
+            let q = crate::offset::solve_point(seed, &refs).ok_or_else(|| ThickenError::detail("thickenReach", REACH_MSG))?;
             let res = surfs.iter().map(|s| s.closest_point(q).2.dist(q)).fold(0.0f64, f64::max);
             if std::env::var("CK_THICKEN_DEBUG").is_ok() {
-                eprintln!("corner {:?} at {:?} d={d}: miter {:?} residual {res:.2e} moved {:.3}; per surface {:?}", v, p, q, q.dist(p), surfs.iter().map(|s| (s.kind(), s.closest_point(q).2.dist(q))).collect::<Vec<_>>());
+                eprintln!("corner {:?} at {:?} d={dp}: miter {:?} residual {res:.2e} moved {:.3}; per surface {:?}", v, p, q, q.dist(p), surfs.iter().map(|s| (s.kind(), s.closest_point(q).2.dist(q))).collect::<Vec<_>>());
             }
-            if res > 1e-6 * (1.0 + p.len()) || q.dist(p) > 50.0 * d.abs() + 1e-9 {
+            if res > 1e-6 * (1.0 + p.len()) || q.dist(p) > 50.0 * dp.abs() + 1e-9 {
                 return Err(ThickenError::detail("thickenReach", REACH_MSG));
             }
             vpos[li].insert(v, q);
@@ -477,9 +521,9 @@ fn thicken_creased(sheet: &Body, feature: &str, faces: &[FaceId], rims: &[(EdgeI
     for &e in &live_edges {
         let ed = sheet.edge(e);
         let fs = sheet.edge_faces(e);
-        for (li, &d) in layers.iter().enumerate() {
+        for (li, &(d_at, _, zero)) in layers.iter().enumerate() {
             let (p0, p1) = (*need(&vpos[li], &ed.v0, "vertex")?, *need(&vpos[li], &ed.v1, "vertex")?);
-            let (curve, t0, t1) = if d == 0.0 {
+            let (curve, t0, t1) = if zero {
                 (ed.curve.clone(), ed.t0, ed.t1)
             } else if fs.len() == 2 {
                 let gap = [ed.v0, ed.v1]
@@ -489,12 +533,12 @@ fn thicken_creased(sheet: &Body, feature: &str, faces: &[FaceId], rims: &[(EdgeI
                         vfaces.get(v).into_iter().flatten().map(|&f| moved[li][f.idx()].as_ref().map_or(0.0, |m| m.closest_point(q).2.dist(q))).fold(0.0f64, f64::max)
                     })
                     .fold(0.0f64, f64::max);
-                crate::offset::offset_spline_edge(sheet, e, &moved[li], &|_f| d, p0, p1, gap).map_err(|err| match err.code {
+                crate::offset::offset_spline_edge(sheet, e, &moved[li], &|_f, p| d_at(p), p0, p1, gap).map_err(|err| match err.code {
                     "offsetDegenerate" => ThickenError::detail("thickenReach", REACH_MSG),
                     c => ThickenError::detail(c, err.detail.unwrap_or_default()),
                 })?
             } else {
-                rim_curve(sheet, e, fs[0], moved[li][fs[0].idx()].as_ref().ok_or_else(|| ThickenError::code("thickenFailed"))?, d, p0, p1)?
+                rim_curve(sheet, e, fs[0], moved[li][fs[0].idx()].as_ref().ok_or_else(|| ThickenError::code("thickenFailed"))?, d_at, p0, p1)?
             };
             let v0 = *vmap[li].entry(ed.v0).or_insert_with(|| out.add_vertex(p0));
             let v1 = *vmap[li].entry(ed.v1).or_insert_with(|| out.add_vertex(p1));

@@ -374,16 +374,73 @@ pub fn exec_thicken(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Resul
     let i = br.surface_ref(r).ok_or_else(missing)?;
     let t = state.num(f, "thickness", 2.0)?;
     let side = f.raw.get("side").and_then(|s| s.as_str()).and_then(sf::thicken::Side::parse).unwrap_or(sf::thicken::Side::Front);
-    let out = sf::thicken::thicken(&br.surfs[i].1, &f.id, t, side, super::TOL).map_err(|e| {
-        let fe = coded(e.code, &e.detail);
+    let map = |e: sf::thicken::ThickenError| {
+        let mut fe = coded(e.code, &e.detail);
+        if let Some(h) = &e.hint {
+            fe = fe.with("hint", Json::Str(h.clone()));
+        }
         match &e.limit {
             Some(l) => super::offset_limit_params(fe, l),
             None => fe,
         }
-    })?;
+    };
+    let out = match thickness_at(f)? {
+        None => sf::thicken::thicken(&br.surfs[i].1, &f.id, t, side, super::TOL).map_err(map)?,
+        Some(ramp) => sf::thicken::thicken_variable(&br.surfs[i].1, &f.id, &ramp, side, super::TOL).map_err(map)?,
+    };
     // pinned: the thickened surface is consumed
     br.drop_surfaces(vec![i]);
     join_solid(br, &f.id, out)
+}
+
+/// `thicknessAt {along: [x, y, z], stops: [[s, t], ...]}`: variable thickness, linear between
+/// 2..=6 stops along `along` (a blade's taper root to tip). `None` without the field; a
+/// constant stop list is the plain `thickness` body. A stop list the kernel cannot use is
+/// `invalidValue {detail, hint}`.
+fn thickness_at(f: &Feature) -> Result<Option<sf::thicken::ThicknessRamp>, FeatureError> {
+    let Some(j) = f.raw.get("thicknessAt") else {
+        return Ok(None);
+    };
+    let bad = |detail: String, hint: &str| {
+        Err(FeatureError::new(codes::INVALID_VALUE)
+            .with("detail", Json::Str(detail))
+            .with("hint", Json::Str(hint.to_string())))
+    };
+    if !j.is_obj() {
+        return bad(
+            "thicknessAt must be an object {along: [x,y,z], stops: [[s,t],...]}".into(),
+            "along is the direction the thickness varies along, stops the [s, thickness] pairs along it",
+        );
+    }
+    let Some([x, y, z]) = j.get("along").and_then(Json::as_vec3) else {
+        return bad(
+            "thicknessAt.along must be [x, y, z]".into(),
+            "the direction the thickness varies along, for example [0,0,1] for a blade lofted along z",
+        );
+    };
+    let Some(s) = j.get_arr("stops") else {
+        return bad("thicknessAt.stops must be [[s, thickness], ...]".into(), "2 to 6 [s, thickness] pairs ascending in s: two for a linear ramp (root and tip)");
+    };
+    let mut stops = Vec::with_capacity(s.len());
+    for pair in s {
+        let Some(p) = pair.as_arr() else {
+            return bad("each thicknessAt stop must be [s, thickness]".into(), "2 to 6 [s, thickness] pairs ascending in s");
+        };
+        let Some([sv, tv]) = <&[ck_json::Json; 2]>::try_from(p).ok() else {
+            return bad("each thicknessAt stop must be [s, thickness]".into(), "2 to 6 [s, thickness] pairs ascending in s");
+        };
+        let (Some(sv), Some(tv)) = (sv.as_f64(), tv.as_f64()) else {
+            return bad("a thicknessAt stop holds a value that is not a number".into(), "every stop is [s, thickness] with finite numbers");
+        };
+        stops.push((sv, tv));
+    }
+    sf::thicken::ThicknessRamp::new(Vec3::new(x, y, z), stops).map(Some).map_err(|e| {
+        let mut fe = coded(e.code, &e.detail);
+        if let Some(h) = &e.hint {
+            fe = fe.with("hint", Json::Str(h.clone()));
+        }
+        fe
+    })
 }
 
 // ---------------------------------------------------------------- extend

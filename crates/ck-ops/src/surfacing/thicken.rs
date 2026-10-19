@@ -31,7 +31,12 @@
 //! side: front|back|both}` → resolve the surface body (`missingReference`),
 //! then `thicken::thicken(&sheet, &feat_id, thickness, side, 1e-6)`; map
 //! `ThickenError {code, detail}` onto the FeatureError (strings are
-//! kernel-verbatim). The solid is registered under the feature id.
+//! kernel-verbatim). The solid is registered under the feature id. The
+//! optional `thicknessAt {along: [x,y,z], stops: [[s,t], ...]}` (2..=6 stops,
+//! linear between them) thickens with a thickness that varies along `along`:
+//! parse it with `thicken::ThicknessRamp::new` and call
+//! `thicken::thicken_variable`; its `hint` is surfaced as the error's `hint`
+//! param, and a constant ramp is the constant-thickness body itself.
 
 use crate::surfacing::knit::BodyExt;
 use ck_geom::curve::Curve;
@@ -63,16 +68,21 @@ impl Side {
 pub struct ThickenError {
     pub code: &'static str,
     pub detail: String,
+    /// What to do about it, in words (surfaced as the error's `hint` param).
+    pub hint: Option<String>,
     /// Why the offset is impossible, in numbers (`maxThickness` is the thickness that would work).
     pub limit: Option<crate::offset::OffsetLimit>,
 }
 
 impl ThickenError {
     fn code(code: &'static str) -> ThickenError {
-        ThickenError { code, detail: String::new(), limit: None }
+        ThickenError { code, detail: String::new(), hint: None, limit: None }
     }
     fn detail(code: &'static str, detail: impl Into<String>) -> ThickenError {
-        ThickenError { code, detail: detail.into(), limit: None }
+        ThickenError { code, detail: detail.into(), hint: None, limit: None }
+    }
+    fn hint(code: &'static str, detail: impl Into<String>, hint: impl Into<String>) -> ThickenError {
+        ThickenError { code, detail: detail.into(), hint: Some(hint.into()), limit: None }
     }
 }
 
@@ -466,6 +476,213 @@ pub fn thicken(sheet: &Body, feature: &str, thickness: f64, side: Side, tol: f64
         ));
     }
     Ok(out)
+}
+
+/// Variable thickness along a world direction: linear between 2..=6 stops.
+///
+/// The wire form is `thicknessAt {along: [x, y, z], stops: [[s, t], ...]}`: the
+/// thickness at a sheet point `p` is the stop list interpolated at `s = p·â`
+/// (`â` the unit `along`), clamped to the first and last stop — a margin sample
+/// past the sheet keeps the end thickness. A blade lofted along `z` tapers root
+/// to tip with `along: [0, 0, 1]` and stops `[[z0, t0], [z1, t1]]`. A stop list
+/// whose stops all share one thickness is [`ThicknessRamp::const_value`], and
+/// the thickened body is then exactly the constant-thickness one.
+#[derive(Debug, Clone)]
+pub struct ThicknessRamp {
+    along: Vec3,
+    stops: Vec<(f64, f64)>,
+}
+
+impl ThicknessRamp {
+    /// `invalidValue` (with a hint) for a stop list the kernel cannot use: not
+    /// 2..=6 stops, a zero direction, a non-finite number, a non-positive
+    /// thickness, or stops that do not ascend.
+    pub fn new(along: Vec3, stops: Vec<(f64, f64)>) -> Result<Self, ThickenError> {
+        let bad = |detail: String, hint: &str| ThickenError::hint("invalidValue", detail, hint);
+        let Some(dir) = along.try_normalize() else {
+            return Err(bad(
+                "thicknessAt.along must be a non-zero direction".into(),
+                "give the direction the thickness varies along, for example [0,0,1] for a ramp along z (root to tip of a blade lofted along z)",
+            ));
+        };
+        if !(2..=6).contains(&stops.len()) {
+            return Err(bad(
+                format!("thicknessAt has {} stop(s); a ramp needs 2 to 6", stops.len()),
+                "list [s, thickness] pairs ascending in s: two for a linear ramp (root and tip), up to six for a shaped one",
+            ));
+        }
+        for &(s, t) in &stops {
+            if !s.is_finite() || !t.is_finite() {
+                return Err(bad(
+                    format!("thicknessAt stop [{s}, {t}] is not finite"),
+                    "every stop is [s, thickness] with finite numbers",
+                ));
+            }
+            if !(t > 0.0) {
+                return Err(bad(
+                    format!("thicknessAt stop at s={s} has thickness {t}; thickness must be positive"),
+                    "use a positive thickness at every stop: a wall cannot be zero or negative",
+                ));
+            }
+        }
+        for w in stops.windows(2) {
+            if w[1].0 <= w[0].0 {
+                return Err(bad(
+                    "thicknessAt stops must ascend along `along`".into(),
+                    "sort the stops by s ascending and do not repeat an s",
+                ));
+            }
+        }
+        Ok(ThicknessRamp { along: dir, stops })
+    }
+
+    /// The stop parameter of a point (`p·â`).
+    pub fn project(&self, p: Vec3) -> f64 {
+        p.dot(self.along)
+    }
+
+    /// The thickness at a point: the stops interpolated at `p·â`, clamped to
+    /// the first and last stop (the sheet's extent is refused separately).
+    pub fn at(&self, p: Vec3) -> f64 {
+        let s = self.project(p);
+        let st = &self.stops;
+        if s <= st[0].0 {
+            return st[0].1;
+        }
+        if s >= st[st.len() - 1].0 {
+            return st[st.len() - 1].1;
+        }
+        for w in st.windows(2) {
+            if s <= w[1].0 {
+                return w[0].1 + (s - w[0].0) / (w[1].0 - w[0].0) * (w[1].1 - w[0].1);
+            }
+        }
+        st[st.len() - 1].1
+    }
+
+    /// `Some(t)` when every stop shares one thickness: the result is then the
+    /// constant-thickness body, bit for bit.
+    pub fn const_value(&self) -> Option<f64> {
+        self.stops.windows(2).all(|w| w[0].1 == w[1].1).then_some(self.stops[0].1)
+    }
+
+    /// The largest stop thickness (messages and limits are phrased in it).
+    pub fn max(&self) -> f64 {
+        self.stops.iter().map(|x| x.1).fold(0.0f64, f64::max)
+    }
+
+    /// The covered range of `p·â`.
+    pub fn span(&self) -> (f64, f64) {
+        (self.stops[0].0, self.stops[self.stops.len() - 1].0)
+    }
+
+    /// The unit direction the thickness varies along.
+    pub fn along(&self) -> Vec3 {
+        self.along
+    }
+}
+
+/// Thicken a sheet whose thickness varies along a world direction, linear
+/// between the ramp's stops. The offset of every point of the sheet (edges,
+/// rim walls and the layer surfaces alike) is its own local thickness along
+/// the face normal, so a blade tapers root to tip; creases miter at the local
+/// thickness and the walls run along the varying normals. A constant ramp is
+/// [`thicken`] itself, bit-identical. The stops must cover the sheet.
+pub fn thicken_variable(sheet: &Body, feature: &str, ramp: &ThicknessRamp, side: Side, tol: f64) -> Result<Body, ThickenError> {
+    let faces: Vec<FaceId> = sheet.face_ids().collect();
+    if faces.is_empty() {
+        return Err(ThickenError::code("missingReference"));
+    }
+    if let Some(t) = ramp.const_value() {
+        return thicken(sheet, feature, t, side, tol);
+    }
+    let (s0, s1) = ramp.span();
+    let (lo, hi) = sheet_s_range(sheet, &faces, ramp);
+    let eps = 1e-6 * (s1 - s0).max(1.0);
+    if lo < s0 - eps || hi > s1 + eps {
+        let a = ramp.along();
+        return Err(ThickenError::hint(
+            "invalidValue",
+            format!(
+                "the thicknessAt stops cover {:.6}..{:.6} along [{}, {}, {}], but the sheet spans {:.6}..{:.6}",
+                s0, s1, a.x, a.y, a.z, lo, hi
+            ),
+            "the ramp must cover the whole sheet: add a stop at each end of the sheet along the direction",
+        ));
+    }
+    freeform::thicken_freeform_by(sheet, feature, &|p| ramp.at(p), ramp.max(), side, tol).map_err(|mut e| {
+        if e.code == "offsetTooLarge" && e.hint.is_none() {
+            e.hint = Some(match &e.limit {
+                Some(l) => format!(
+                    "reduce the thicknessAt stops to at most {:.2} mm on this side, or thicken the other way",
+                    l.max_thickness
+                ),
+                None => "reduce the thicknessAt stops on this side, or thicken the other way".into(),
+            });
+        }
+        e
+    })
+}
+
+/// The range of `p·ramp.along()` over the sheet: its vertices, samples along
+/// every edge, and a coarse grid over every face (a curved face's interior can
+/// reach past its own boundary along the direction).
+fn sheet_s_range(sheet: &Body, faces: &[FaceId], ramp: &ThicknessRamp) -> (f64, f64) {
+    let mut lo = f64::INFINITY;
+    let mut hi = f64::NEG_INFINITY;
+    let mut see = |p: Vec3| {
+        let s = ramp.project(p);
+        lo = lo.min(s);
+        hi = hi.max(s);
+    };
+    for v in sheet.vertex_ids() {
+        see(sheet.vertex(v).p);
+    }
+    for e in sheet.edge_ids().collect::<Vec<_>>() {
+        let ed = sheet.edge(e);
+        for k in 0..=16 {
+            see(ed.curve.eval(ed.t0 + (ed.t1 - ed.t0) * k as f64 / 16.0));
+        }
+    }
+    for &f in faces {
+        let s = &sheet.face(f).surface;
+        // the (u, v) box of the face's own boundary samples, then a coarse grid over it
+        let mut bu = (f64::INFINITY, f64::NEG_INFINITY);
+        let mut bv = (f64::INFINITY, f64::NEG_INFINITY);
+        for &l in &sheet.face(f).loops {
+            if !sheet.lp(l).alive {
+                continue;
+            }
+            for &c in &sheet.lp(l).coedges {
+                if !sheet.coedge(c).alive {
+                    continue;
+                }
+                let ed = sheet.edge(sheet.coedge(c).edge);
+                for k in 0..=8 {
+                    let t = ed.t0 + (ed.t1 - ed.t0) * k as f64 / 8.0;
+                    let (u, v, _) = s.closest_point(ed.curve.eval(t));
+                    bu = (bu.0.min(u), bu.1.max(u));
+                    bv = (bv.0.min(v), bv.1.max(v));
+                }
+            }
+        }
+        if !bu.0.is_finite() || !bv.0.is_finite() {
+            continue;
+        }
+        let ((du0, du1), (dv0, dv1)) = s.domain();
+        let (u0, u1) = (bu.0.max(du0).min(du1), bu.1.max(du0).min(du1));
+        let (v0, v1) = (bv.0.max(dv0).min(dv1), bv.1.max(dv0).min(dv1));
+        if !(u1 > u0 && v1 > v0) {
+            continue;
+        }
+        for i in 0..=4 {
+            for j in 0..=4 {
+                let p = s.eval(u0 + (u1 - u0) * i as f64 / 4.0, v0 + (v1 - v0) * j as f64 / 4.0);
+                see(p);
+            }
+        }
+    }
+    (lo, hi)
 }
 
 /// Build one layer: edges in sheet edge order, then faces with loops.
@@ -1510,5 +1727,55 @@ mod tests {
         let e = thicken(&cyl, "F3", 6.0, Side::Back, 1e-6).unwrap_err();
         assert_eq!(e.code, "offsetTooLarge");
         assert!(e.detail.contains("centre of curvature"), "{}", e.detail);
+    }
+
+    #[test]
+    fn thickness_ramp_rejects_bad_stop_lists() {
+        let bad = |along: Vec3, stops: Vec<(f64, f64)>| {
+            let e = ThicknessRamp::new(along, stops).unwrap_err();
+            assert_eq!(e.code, "invalidValue", "{}", e.detail);
+            assert!(e.hint.is_some(), "hint on {}", e.detail);
+            e
+        };
+        bad(Vec3::X, vec![(0.0, 1.0)]);
+        bad(Vec3::X, (0..7).map(|i| (i as f64, 1.0)).collect());
+        bad(Vec3::ZERO, vec![(0.0, 1.0), (1.0, 2.0)]);
+        bad(Vec3::X, vec![(0.0, 1.0), (1.0, 0.0)]);
+        bad(Vec3::X, vec![(0.0, 1.0), (1.0, -2.0)]);
+        bad(Vec3::X, vec![(1.0, 2.0), (0.0, 1.0)]);
+        bad(Vec3::X, vec![(0.0, 1.0), (0.0, 2.0)]);
+        // linear between stops, clamped outside them
+        let r = ThicknessRamp::new(Vec3::X, vec![(0.0, 4.0), (10.0, 1.0), (20.0, 2.0)]).unwrap();
+        assert_eq!(r.at(Vec3::new(-5.0, 0.0, 0.0)), 4.0);
+        assert!((r.at(Vec3::new(5.0, 0.0, 0.0)) - 2.5).abs() < 1e-12, "{}", r.at(Vec3::new(5.0, 0.0, 0.0)));
+        assert_eq!(r.at(Vec3::new(30.0, 0.0, 0.0)), 2.0);
+        assert_eq!(ThicknessRamp::new(Vec3::X, vec![(0.0, 2.0), (10.0, 2.0)]).unwrap().const_value(), Some(2.0));
+        assert_eq!(r.const_value(), None);
+    }
+
+    #[test]
+    fn ramp_stops_must_cover_the_sheet() {
+        let sheet = sheet_square("F2", Vec3::ZERO, Vec3::new(100.0, 0.0, 0.0), Vec3::new(0.0, 50.0, 0.0));
+        // the sheet spans 0..100 along x; the stops only reach 50
+        let ramp = ThicknessRamp::new(Vec3::X, vec![(0.0, 1.0), (50.0, 3.0)]).unwrap();
+        let e = thicken_variable(&sheet, "F3", &ramp, Side::Front, 1e-6).unwrap_err();
+        assert_eq!(e.code, "invalidValue");
+        assert!(e.detail.contains("cover") && e.detail.contains("100"), "{}", e.detail);
+        assert!(e.hint.is_some(), "{}", e.detail);
+    }
+
+    #[test]
+    fn ramp_beyond_the_cylinder_radius_is_refused_with_a_limit() {
+        // same refusal as the constant path (r=5, back, t=6 above), reached from the ramp: the
+        // stop at z=10 asks for 6 mm against a radius of 5
+        let cyl = tube_cyl("F2", 5.0, 0.0, 10.0);
+        let ramp = ThicknessRamp::new(Vec3::Z, vec![(0.0, 1.0), (10.0, 6.0)]).unwrap();
+        let e = thicken_variable(&cyl, "F3", &ramp, Side::Back, 1e-6).unwrap_err();
+        assert_eq!(e.code, "offsetTooLarge");
+        let l = e.limit.expect("a curvature limit");
+        assert_eq!(l.kind, "curvature");
+        assert!((l.min_radius - 5.0).abs() < 1e-6, "minRadius {}", l.min_radius);
+        assert!(l.max_thickness > 0.0 && l.max_thickness < 6.0, "maxThickness {}", l.max_thickness);
+        assert!(e.hint.is_some(), "{}", e.detail);
     }
 }
