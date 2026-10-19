@@ -290,6 +290,42 @@ pub fn fragments(arr: &Arrangement, fi: usize) -> Vec<Fragment> {
     out
 }
 
+/// [`sample_point`] of a whole (untouched) face, memoised by the exact content of everything it reads: the
+/// surface and sense, and per loop the directed pieces (curve, range, end vertices; repeated edges by their
+/// first position). An untouched face reaches the next boolean of a chain with the same edges, so it is
+/// sampled once (its uv polygons are the costly part); a split fragment is sampled as before.
+fn sample_point_whole(arr: &Arrangement, f: &Fragment) -> Option<(Vec3, Vec3)> {
+    if !f.whole {
+        return sample_point(arr, f);
+    }
+    thread_local! {
+        static MEMO: std::cell::RefCell<ck_core::memo::Memo<Option<(Vec3, Vec3)>>> = std::cell::RefCell::new(ck_core::memo::Memo::new(1 << 21));
+    }
+    let af = &arr.faces[f.af];
+    let mut key = Vec::with_capacity(64);
+    af.surface.push_key(&mut key);
+    key.extend([af.sense as u64, f.loops.len() as u64]);
+    let mut seen: Vec<usize> = vec![];
+    for l in &f.loops {
+        key.push(l.len() as u64);
+        for &(e, rev) in l {
+            match seen.iter().position(|&x| x == e) {
+                Some(i) => key.push((i as u64) << 2 | 2 | rev as u64),
+                None => {
+                    key.push((seen.len() as u64) << 2 | rev as u64);
+                    seen.push(e);
+                    let ed = &arr.edges[e];
+                    ed.curve.push_key(&mut key);
+                    key.extend([ed.t0.to_bits(), ed.t1.to_bits()]);
+                    ck_geom::curve::push_vec3(&mut key, arr.verts[ed.v0]);
+                    ck_geom::curve::push_vec3(&mut key, arr.verts[ed.v1]);
+                }
+            }
+        }
+    }
+    ck_core::memo::cached(&MEMO, key, || sample_point(arr, f))
+}
+
 /// An interior point of the fragment (on its surface) and the outward
 /// normal there.
 #[inline(never)]
@@ -483,7 +519,7 @@ pub fn select_with(
             if skip_side == Some(side) {
                 continue;
             }
-            let (q, n) = sample_point(arr, &fr).ok_or_else(|| {
+            let (q, n) = sample_point_whole(arr, &fr).ok_or_else(|| {
                 super::bool_dbg!("no sample point for a fragment of face {fi} (side {side}, {}, {} loops)", arr.faces[fi].name.id(), fr.loops.len());
                 "booleanFailed".to_string()
             })?;
