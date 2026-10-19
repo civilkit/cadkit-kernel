@@ -969,25 +969,6 @@ pub(crate) fn offset_spline_edge(src: &Body, e: EdgeId, moved: &[Option<Surface>
         }
         let c = ck_geom::fit::interpolate(&pts, 3, ck_geom::fit::Param::ChordLength).map_err(|e| OffsetError::new("offsetUnsupported", format!("edge fit: {e}")))?;
         let (a, b) = c.domain();
-        let devs: Vec<(f64, Vec3)> = (0..4 * n)
-            .map(|k| {
-                let q = c.eval(a + (b - a) * (k as f64 + 0.5) / (4 * n) as f64);
-                (m1.closest_point_fp(q, fp1).2.dist(q).max(m2.closest_point_fp(q, fp2).2.dist(q)), q)
-            })
-            .collect();
-        let dev = devs.iter().map(|x| x.0).fold(0.0f64, f64::max);
-        if std::env::var_os("CK_OFFSET_DEBUG").is_some() && dev > 1e-2 {
-            let w = devs.iter().cloned().fold((0.0, Vec3::ZERO), |a, b| if b.0 > a.0 { b } else { a });
-            let k = devs.iter().position(|x| x.0 == w.0).unwrap();
-            eprintln!(
-                "  worst at {:?} (sample {}/{}) p0 {:?} p1 {:?} orig edge {:?}->{:?}; dev to m1 {:.2e} m2 {:.2e}",
-                w.1, k, devs.len(), p0, p1, ed.curve.eval(ed.t0), ed.curve.eval(ed.t1),
-                m1.closest_point(w.1).2.dist(w.1), m2.closest_point(w.1).2.dist(w.1)
-            );
-        }
-        if std::env::var_os("CK_OFFSET_DEBUG").is_some() {
-            eprintln!("offset edge fit: {} | {} n={n} dev={dev:.2e} grazing={}", src.face_id_str(fs[0]), src.face_id_str(fs[1]), grazing.get());
-        }
         // grazing neighbours (G1 seams) leave a gap of ~ d x (normal mismatch)
         // between their offsets that no edge can close
         let limit = if grazing.get() { GRAZE_TOL } else { EDGE_FIT_TOL.max((1.5 * end_gap).min(GRAZE_TOL)) };
@@ -996,6 +977,51 @@ pub(crate) fn offset_spline_edge(src: &Body, e: EdgeId, moved: &[Option<Surface>
         // downstream booleans see that). Refine to `GOOD_EDGE_TOL`, accept the limit only once
         // refinement has stopped paying.
         let good = if grazing.get() { limit } else { limit.min(GOOD_EDGE_TOL) };
+        let debug = std::env::var_os("CK_OFFSET_DEBUG").is_some();
+        let at = |k: usize| c.eval(a + (b - a) * (k as f64 + 0.5) / (4 * n) as f64);
+        let dev = if debug || 2 * n > 800 {
+            // every deviation: the debug output, or the failure message of the last round
+            let devs: Vec<(f64, Vec3)> = (0..4 * n)
+                .map(|k| {
+                    let q = at(k);
+                    (m1.closest_point_fp(q, fp1).2.dist(q).max(m2.closest_point_fp(q, fp2).2.dist(q)), q)
+                })
+                .collect();
+            let dev = devs.iter().map(|x| x.0).fold(0.0f64, f64::max);
+            if debug && dev > 1e-2 {
+                let w = devs.iter().cloned().fold((0.0, Vec3::ZERO), |a, b| if b.0 > a.0 { b } else { a });
+                let k = devs.iter().position(|x| x.0 == w.0).unwrap();
+                eprintln!(
+                    "  worst at {:?} (sample {}/{}) p0 {:?} p1 {:?} orig edge {:?}->{:?}; dev to m1 {:.2e} m2 {:.2e}",
+                    w.1, k, devs.len(), p0, p1, ed.curve.eval(ed.t0), ed.curve.eval(ed.t1),
+                    m1.closest_point(w.1).2.dist(w.1), m2.closest_point(w.1).2.dist(w.1)
+                );
+            }
+            if debug {
+                eprintln!("offset edge fit: {} | {} n={n} dev={dev:.2e} grazing={}", src.face_id_str(fs[0]), src.face_id_str(fs[1]), grazing.get());
+            }
+            dev
+        } else {
+            // only whether the largest deviation passes decides (accept or refine): stop at the
+            // first sample past the bound of this round, which refines either way
+            let bound = if n >= 192 { limit.max(good) } else { good };
+            let mut dev = 0.0f64;
+            // (from both ends inwards: the worst deviation is usually next to an end vertex)
+            for i in 0..4 * n {
+                let k = if i % 2 == 0 { i / 2 } else { 4 * n - 1 - i / 2 };
+                let q = at(k);
+                let d1 = m1.closest_point_fp(q, fp1).2.dist(q);
+                if d1 > bound {
+                    dev = dev.max(d1);
+                    break;
+                }
+                dev = dev.max(d1.max(m2.closest_point_fp(q, fp2).2.dist(q)));
+                if dev > bound {
+                    break;
+                }
+            }
+            dev
+        };
         if dev <= good || (dev <= limit && n >= 192) {
             return Ok((Curve::BSpline(c), a, b));
         }
