@@ -294,6 +294,38 @@ impl BSplineSurface {
         rat_surface_derivs(&a, &w, d)
     }
 
+    /// `(S, S_u, S_v)` of a non-rational surface (degrees 1 to 11 in both directions), the entries
+    /// `derivs(u, v, 1)` gives for them, bit for bit, without allocating. `None` for any other surface.
+    pub fn derivs1_nr(&self, u: f64, v: f64) -> Option<(Vec3, Vec3, Vec3)> {
+        let (p, q) = (self.deg_u, self.deg_v);
+        if self.weights.is_some() || p == 0 || q == 0 || p >= 12 || q >= 12 {
+            return None;
+        }
+        let ((u0, u1), (v0, v1)) = self.domain();
+        let u = u.clamp(u0, u1);
+        let v = v.clamp(v0, v1);
+        let su = find_span(self.nu - 1, p, u, &self.knots_u);
+        let sv = find_span(self.nv - 1, q, v, &self.knots_v);
+        let nu = basis::ders_basis_funs2(su, u, p, 1, &self.knots_u);
+        let nv = basis::ders_basis_funs2(sv, v, q, 1, &self.knots_v);
+        let mut tp = [[Vec3::ZERO; 12]; 2];
+        for s in 0..=q {
+            let row = &self.ctrl[(sv - q + s)..];
+            for r in 0..=p {
+                let c = row[(su - p + r) * self.nv];
+                tp[0][s] = tp[0][s] + c * (nu[0][r] * 1.0);
+                tp[1][s] = tp[1][s] + c * (nu[1][r] * 1.0);
+            }
+        }
+        let (mut a00, mut a01, mut a10) = (Vec3::ZERO, Vec3::ZERO, Vec3::ZERO);
+        for s in 0..=q {
+            a00 = a00 + tp[0][s] * nv[0][s];
+            a01 = a01 + tp[0][s] * nv[1][s];
+            a10 = a10 + tp[1][s] * nv[0][s];
+        }
+        Some((a00, a10, a01))
+    }
+
     /// Non-rational second derivatives (allocation free, same arithmetic as `derivs`).
     #[inline(always)]
     fn derivs2_nr(&self, u: f64, v: f64, p: usize, q: usize) -> SurfDerivs {
@@ -1402,6 +1434,27 @@ mod tests {
             if rational { Some(ws) } else { None },
         )
         .unwrap()
+    }
+
+    /// `derivs1_nr` is the first-order `derivs` bit for bit (also at knots and outside the domain).
+    #[test]
+    fn derivs1_nr_is_bit_identical() {
+        let s = surf(false);
+        assert!(surf(true).derivs1_nr(0.3, 0.3).is_none());
+        let bits = |v: Vec3| (v.x.to_bits(), v.y.to_bits(), v.z.to_bits());
+        for i in 0..=40 {
+            for j in 0..=40 {
+                let (u, v) = (-0.1 + 1.2 * i as f64 / 40.0, -0.1 + 1.2 * j as f64 / 40.0);
+                let d = s.derivs(u, v, 1);
+                let (p, du, dv) = s.derivs1_nr(u, v).unwrap();
+                assert_eq!((bits(p), bits(du), bits(dv)), (bits(d[0][0]), bits(d[1][0]), bits(d[0][1])), "{u} {v}");
+            }
+        }
+        for (u, v) in [(0.3, 0.6), (0.0, 1.0), (0.5, 0.3), (1.0, 0.0)] {
+            let d = s.derivs(u, v, 1);
+            let (p, du, dv) = s.derivs1_nr(u, v).unwrap();
+            assert_eq!((bits(p), bits(du), bits(dv)), (bits(d[0][0]), bits(d[1][0]), bits(d[0][1])), "{u} {v}");
+        }
     }
 
     #[test]
