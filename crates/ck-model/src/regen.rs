@@ -222,6 +222,14 @@ impl FeatureError {
                 ),
             );
         }
+        // an exact tangency whose result has an odd Euler characteristic:
+        // `booleanTangent;euler=<n>;hint=<text>`
+        if let Some((c, d)) = code.split_once(";euler=") {
+            let (n, hint) = d.split_once(";hint=").unwrap_or((d, ""));
+            return FeatureError { code: c.to_string(), params: Vec::new() }
+                .with("euler", Json::Num(n.parse::<f64>().unwrap_or(0.0)))
+                .with("hint", Json::Str(hint.to_string()));
+        }
         // a boolean that stopped retrying after a long time: `booleanBudgetExceeded;elapsedMs=<n>;budgetMs=<n>`
         if let Some((c, d)) = code.split_once(";elapsedMs=") {
             let (elapsed, budget) = d.split_once(";budgetMs=").unwrap_or((d, "0"));
