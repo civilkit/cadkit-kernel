@@ -538,7 +538,33 @@ fn assemble_face(body: &Body, f: FaceId, fm: FaceMesh) -> FaceOut {
 
 /// Everything `mesh_face` reads for face `f`, as the exact bits of its inputs: equal keys mean an identical triangulation.
 /// Every variable-length part is prefixed with its length, so two different inputs never give the same words.
-type FaceKey = Rc<[u64]>;
+#[derive(Clone)]
+struct FaceKey {
+    /// hash of `words`, computed once (the std slice hash feeds the map's hasher byte by byte)
+    h: u64,
+    words: Rc<[u64]>,
+}
+
+impl PartialEq for FaceKey {
+    fn eq(&self, o: &FaceKey) -> bool {
+        self.h == o.h && (Rc::ptr_eq(&self.words, &o.words) || self.words == o.words)
+    }
+}
+impl Eq for FaceKey {}
+impl std::hash::Hash for FaceKey {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        state.write_u64(self.h);
+    }
+}
+impl FaceKey {
+    fn new(words: Vec<u64>) -> FaceKey {
+        let mut h = 0x9e37_79b9_7f4a_7c15u64 ^ words.len() as u64;
+        for &w in &words {
+            h = (h.rotate_left(5) ^ w).wrapping_mul(0x517c_c1b7_2722_0a95);
+        }
+        FaceKey { h, words: words.into() }
+    }
+}
 
 fn key_f64s(out: &mut Vec<u64>, v: &[f64]) {
     out.push(v.len() as u64);
@@ -650,7 +676,7 @@ fn face_key(body: &Body, f: FaceId, edges: &EdgeSampling, tol: &Tol) -> FaceKey 
             }
         }
     }
-    k.into()
+    FaceKey::new(k)
 }
 
 /// Byte cap of the per-thread face cache.
@@ -698,14 +724,14 @@ impl FaceCache {
             return;
         }
         self.tick += 1;
-        self.bytes += k.len() * 8 + v.as_ref().map_or(64, |o| o.bytes());
+        self.bytes += k.words.len() * 8 + v.as_ref().map_or(64, |o| o.bytes());
         self.lru.insert(self.tick, k.clone());
         self.map.insert(k, (v, self.tick));
         while self.bytes > self.cap && self.map.len() > 1 {
             let Some((&t, _)) = self.lru.iter().next() else { break };
             let key = self.lru.remove(&t).unwrap();
             if let Some((o, _)) = self.map.remove(&key) {
-                self.bytes -= key.len() * 8 + o.as_ref().map_or(64, |o| o.bytes());
+                self.bytes -= key.words.len() * 8 + o.as_ref().map_or(64, |o| o.bytes());
                 self.stats.evicted += 1;
             }
         }
