@@ -271,7 +271,15 @@ pub fn project_points(surf: &Surface, pts: &[Vec3]) -> Vec<Vec2> {
 fn warm_project(surf: &Surface, mut u: f64, mut v: f64, p: Vec3) -> Option<(f64, f64)> {
     let ((u0, u1), (v0, v1)) = surf.domain();
     let scale = 1.0 + p.len();
-    for _ in 0..12 {
+    // (the step is a function of the state alone: a state met before has already failed the residual test,
+    // and the iteration would only go round that cycle until it gives up)
+    let mut seen = [(0u64, 0u64); 12];
+    for it in 0..12 {
+        let state = (u.to_bits(), v.to_bits());
+        if seen[..it].contains(&state) {
+            return None;
+        }
+        seen[it] = state;
         let d = surf.derivs1(u, v);
         let r = p - d.p;
         if r.len() < 1e-10 * scale {
