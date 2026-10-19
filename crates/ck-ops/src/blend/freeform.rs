@@ -62,14 +62,17 @@ fn dbg(m: &str) {
     }
 }
 
+/// A free-form blend refusal: the message is the `detail` of the structured
+/// error (`blendUnsupported` / `blendFailed` carry `params.detail`), so a
+/// rejected edit says which chain / face pair / end condition failed.
 fn unsupported(m: &str) -> BlendError {
     dbg(m);
-    BlendError::code("blendUnsupported")
+    BlendError::detail("blendUnsupported", m)
 }
 
 fn failed(m: &str) -> BlendError {
     dbg(m);
-    BlendError::code("blendFailed")
+    BlendError::detail("blendFailed", m)
 }
 
 /// Does the (face, face, edge) combination fall outside the analytic fillet
