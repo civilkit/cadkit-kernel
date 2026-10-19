@@ -12,7 +12,7 @@
 use std::cell::Cell;
 
 /// Default per-feature budget (ms) when the host has a clock.
-pub const DEFAULT_FEATURE_MS: f64 = 30_000.0;
+pub const DEFAULT_FEATURE_MS: f64 = 120_000.0;
 /// The clock is read on every `STRIDE`-th poll.
 const STRIDE: u32 = 16;
 
