@@ -349,9 +349,21 @@ impl BSplineSurface {
         let v = v.clamp(v0, v1);
         let su = find_span(self.nu - 1, p, u, &self.knots_u);
         let sv = find_span(self.nv - 1, q, v, &self.knots_v);
+        if p == 3 && q == 3 {
+            // (the cubic case on 4-wide tables with literal degrees: the loops unroll)
+            let nu = basis::ders_basis_funs2_p3(su, u, 1, &self.knots_u);
+            let nv = basis::ders_basis_funs2_p3(sv, v, 1, &self.knots_v);
+            return Some(self.accumulate1(su, sv, &nu, &nv, 3, 3));
+        }
         let nu = basis::ders_basis_funs2(su, u, p, 1, &self.knots_u);
         let nv = basis::ders_basis_funs2(sv, v, q, 1, &self.knots_v);
-        let mut tp = [[Vec3::ZERO; 12]; 2];
+        Some(self.accumulate1(su, sv, &nu, &nv, p, q))
+    }
+
+    /// The control point sums of `derivs1_nr` from the spans and basis rows.
+    #[inline(always)]
+    fn accumulate1<const W: usize>(&self, su: usize, sv: usize, nu: &[[f64; W]; 3], nv: &[[f64; W]; 3], p: usize, q: usize) -> (Vec3, Vec3, Vec3) {
+        let mut tp = [[Vec3::ZERO; W]; 2];
         for s in 0..=q {
             let row = &self.ctrl[(sv - q + s)..];
             for r in 0..=p {
@@ -366,7 +378,7 @@ impl BSplineSurface {
             a01 = a01 + tp[0][s] * nv[1][s];
             a10 = a10 + tp[1][s] * nv[0][s];
         }
-        Some((a00, a10, a01))
+        (a00, a10, a01)
     }
 
     /// Non-rational second derivatives (allocation free, same arithmetic as `derivs`).
