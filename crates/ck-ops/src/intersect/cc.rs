@@ -357,8 +357,8 @@ pub fn general(c1: &Curve, r1: (f64, f64), c2: &Curve, r2: (f64, f64), tol: f64)
     let n1 = samples_for(c1);
     let n2 = samples_for(c2);
     let (s1, s2) = (sampled(c1, r1, n1), sampled(c2, r2, n2));
-    let (p1, sag1_c) = (&s1.0, s1.1);
-    let (p2, sag2_c) = (&s2.0, s2.1);
+    let (p1, sag1_c) = (&s1.pts, s1.sag);
+    let (p2, sag2_c) = (&s2.pts, s2.sag);
     // sample boxes (padded by the longest chord, the reach the segment test
     // below allows) that do not meet cannot intersect: skips the closest-
     // point overlap scan over a spline, the slow part of most misses
@@ -391,29 +391,40 @@ pub fn general(c1: &Curve, r1: (f64, f64), c2: &Curve, r2: (f64, f64), tol: f64)
     // boxes of blocks of c2's chords: lossless culling of the chord scans
     // (a chord within r of a point/segment has its block box within r on
     // every axis)
-    const BLK: usize = 16;
-    let boxes2: Vec<(Vec3, Vec3)> = (0..n2.div_ceil(BLK))
-        .map(|b| {
-            let (s, e) = (b * BLK, ((b + 1) * BLK).min(n2));
-            let (mut lo, mut hi) = (p2[s], p2[s]);
-            for &q in &p2[s..=e] {
-                lo = lo.min(q);
-                hi = hi.max(q);
-            }
-            (lo, hi)
-        })
-        .collect();
+    let boxes2 = &s2.blocks;
     let box_gap = |alo: Vec3, ahi: Vec3, blo: Vec3, bhi: Vec3| -> f64 {
         (alo.x - bhi.x).max(blo.x - ahi.x).max(alo.y - bhi.y).max(blo.y - ahi.y).max(alo.z - bhi.z).max(blo.z - ahi.z)
     };
+    // the same blocks of c1: a sample or chord of c1 lies in its block's box, so a c2 block farther from that box
+    // than the reach is farther from each of its samples / chords too; the scans below visit only the c2 blocks
+    // left by this block-pair test (in the same order, under the same per-sample / per-chord tests: lossless)
+    let blk1 = |i: usize| (i / BLK).min(s1.blocks.len() - 1);
+    let near_blocks = |reach: &dyn Fn(usize) -> f64, keep_nan: bool| -> Vec<Vec<usize>> {
+        s1.blocks
+            .iter()
+            .enumerate()
+            .map(|(a, &(alo, ahi))| {
+                let r = reach(a);
+                (0..boxes2.len())
+                    .filter(|&bi| {
+                        let g = box_gap(alo, ahi, boxes2[bi].0, boxes2[bi].1);
+                        if keep_nan { !(g > r) } else { g <= r }
+                    })
+                    .collect()
+            })
+            .collect()
+    };
+    let near_far = if n2 > 8 { near_blocks(&|_| far, true) } else { vec![] };
     let on2: Vec<bool> = p1
         .iter()
-        .map(|&p| {
+        .enumerate()
+        .map(|(i, &p)| {
             let mut guess = None;
             if n2 > 8 {
                 // nearest chord of c2 among the blocks within reach; none within `far` = not on c2
                 let mut best = (f64::INFINITY, 0usize, 0.0f64);
-                for (bi, &(lo, hi)) in boxes2.iter().enumerate() {
+                for &bi in &near_far[blk1(i)] {
+                    let (lo, hi) = boxes2[bi];
                     if box_gap(p, p, lo, hi) > far {
                         continue;
                     }
@@ -476,6 +487,11 @@ pub fn general(c1: &Curve, r1: (f64, f64), c2: &Curve, r2: (f64, f64), tol: f64)
     let long_pair = n1 >= 200 || n2 >= 200;
     let sag1 = sag1_c;
     let maxchord2 = (0..n2).map(|j| p2[j].dist(p2[j + 1])).fold(0.0f64, f64::max);
+    // (a chord's reach is at most its block's: the longest chord of the block)
+    let near_reach = near_blocks(
+        &|a| if long_pair { 1.5 * (sag1 + sag2) + 4.0 * tol } else { 0.5 * (s1.chord[a] + maxchord2) + tol },
+        false,
+    );
     // Pass 0 keeps every Newton start within a few chords of its seed: a long curve running tangent to or
     // along the other has dozens of chord pairs within reach, each of which would crawl (linear
     // convergence at a double root) to the same contact; the contact's own chord pair finds it. If that
@@ -492,11 +508,10 @@ pub fn general(c1: &Curve, r1: (f64, f64), c2: &Curve, r2: (f64, f64), tol: f64)
         let (alo, ahi) = (a0.min(a1), a0.max(a1));
         let reach_max = if long_pair { 1.5 * (sag1 + sag2) + 4.0 * tol } else { 0.5 * (a0.dist(a1) + maxchord2) + tol };
         // only chord blocks whose box is within reach of this chord
-        let cand = boxes2
+        let cand = near_reach[blk1(i)]
             .iter()
-            .enumerate()
-            .filter(|&(_, &(blo, bhi))| box_gap(alo, ahi, blo, bhi) <= reach_max)
-            .flat_map(|(bi, _)| bi * BLK..((bi + 1) * BLK).min(n2));
+            .filter(|&&bi| box_gap(alo, ahi, boxes2[bi].0, boxes2[bi].1) <= reach_max)
+            .flat_map(|&bi| bi * BLK..((bi + 1) * BLK).min(n2));
         for j in cand {
             let (b0, b1) = (p2[j], p2[j + 1]);
             let (s, t, d) = seg_seg(a0, a1, b0, b1);
@@ -534,21 +549,46 @@ pub fn general(c1: &Curve, r1: (f64, f64), c2: &Curve, r2: (f64, f64), tol: f64)
     out
 }
 
-/// `n + 1` samples of `c` over `r` and the largest chord sag (distance of a
-/// chord's midpoint to the curve at the parameter midpoint). A B-spline's
+/// Samples per chord block of [`general`]'s scans.
+const BLK: usize = 16;
+
+/// A curve sampled for [`general`].
+struct Sampled {
+    /// `n + 1` samples over the range
+    pts: Vec<Vec3>,
+    /// largest chord sag (distance of a chord's midpoint to the curve at the parameter midpoint)
+    sag: f64,
+    /// per block of `BLK` chords (samples `b BLK ..= (b + 1) BLK`): box of its samples
+    blocks: Vec<(Vec3, Vec3)>,
+    /// per block: its longest chord
+    chord: Vec<f64>,
+}
+
+/// `n + 1` samples of `c` over `r`, the largest chord sag and the chord blocks' boxes. A B-spline's
 /// are memoised by content: a fitted intersection curve is crossed with
 /// every boundary edge of both faces, and every edge with every curve.
-fn sampled(c: &Curve, r: (f64, f64), n: usize) -> std::rc::Rc<(Vec<Vec3>, f64)> {
+fn sampled(c: &Curve, r: (f64, f64), n: usize) -> std::rc::Rc<Sampled> {
     use std::cell::RefCell;
     use std::rc::Rc;
     thread_local! {
-        static MEMO: RefCell<std::collections::HashMap<(u64, u64, u64, usize), Rc<(Vec<Vec3>, f64)>>> = RefCell::new(std::collections::HashMap::new());
+        static MEMO: RefCell<std::collections::HashMap<(u64, u64, u64, usize), Rc<Sampled>>> = RefCell::new(std::collections::HashMap::new());
     }
     let compute = || {
         let ts: Vec<f64> = (0..=n).map(|i| r.0 + (r.1 - r.0) * i as f64 / n as f64).collect();
         let pts: Vec<Vec3> = ts.iter().map(|&t| c.eval(t)).collect();
         let sag = (0..n).map(|j| c.eval(0.5 * (ts[j] + ts[j + 1])).dist((pts[j] + pts[j + 1]) * 0.5)).fold(0.0f64, f64::max);
-        Rc::new((pts, sag))
+        let (mut blocks, mut chord) = (vec![], vec![]);
+        for b in 0..n.div_ceil(BLK) {
+            let (s, e) = (b * BLK, ((b + 1) * BLK).min(n));
+            let (mut lo, mut hi) = (pts[s], pts[s]);
+            for &q in &pts[s..=e] {
+                lo = lo.min(q);
+                hi = hi.max(q);
+            }
+            blocks.push((lo, hi));
+            chord.push((s..e).map(|j| pts[j].dist(pts[j + 1])).fold(0.0f64, f64::max));
+        }
+        Rc::new(Sampled { pts, sag, blocks, chord })
     };
     let Curve::BSpline(b) = c else { return compute() };
     let mut h: u64 = 0xcbf29ce484222325;
@@ -804,5 +844,44 @@ mod tests {
         for h in &r.hits {
             assert!((h.p.len() - 2.0).abs() < 1e-9);
         }
+    }
+
+    /// Long splines (many chord blocks on both sides, block-pair culling of the scans): every crossing of a wavy
+    /// spline with a line and with its mirror image is found, and a copy lifted off the plane meets nothing.
+    #[test]
+    fn general_long_splines() {
+        let n = 40;
+        let ctrl: Vec<Vec3> = (0..n).map(|i| Vec3::new(i as f64, 2.0 * (0.7 * i as f64).sin(), 0.0)).collect();
+        let knots = |n: usize| {
+            let mut k = vec![0.0; 4];
+            k.extend((1..n - 3).map(|i| i as f64 / (n - 3) as f64));
+            k.extend([1.0; 4]);
+            k
+        };
+        let c = Curve::BSpline(BSplineCurve::new(3, knots(n), ctrl.clone()).unwrap());
+        let m = Curve::BSpline(BSplineCurve::new(3, knots(n), ctrl.iter().map(|p| Vec3::new(p.x, -p.y, 0.0)).collect()).unwrap());
+        let up = Curve::BSpline(BSplineCurve::new(3, knots(n), ctrl.iter().map(|p| Vec3::new(p.x, -p.y, 1.0)).collect()).unwrap());
+        // the crossings: sign changes of y - h along the curve (dense samples)
+        let crossings = |h: f64| {
+            let ys: Vec<f64> = (0..=20000).map(|i| c.eval(i as f64 / 20000.0).y - h).collect();
+            ys.windows(2).filter(|w| (w[0] < 0.0) != (w[1] < 0.0)).count()
+        };
+        let l = Curve::line(Vec3::new(-1.0, 0.3, 0.0), Vec3::X);
+        let r = intersect(&c, (0.0, 1.0), &l, (0.0, 50.0), 1e-9);
+        assert_eq!(r.hits.len(), crossings(0.3), "{r:?}");
+        for h in &r.hits {
+            assert!((h.p.y - 0.3).abs() < 1e-8);
+        }
+        // (+ the shared start point)
+        let r = intersect(&c, (0.0, 1.0), &m, (0.0, 1.0), 1e-9);
+        assert_eq!(r.hits.len(), crossings(0.0) + 1, "{r:?}");
+        for h in &r.hits {
+            assert!(h.p.y.abs() < 1e-8 && c.eval(h.t1).dist(m.eval(h.t2)) < 1e-8);
+        }
+        let r = intersect(&c, (0.0, 1.0), &up, (0.0, 1.0), 1e-9);
+        assert!(r.hits.is_empty() && r.overlaps.is_empty(), "{r:?}");
+        // a spline on itself: one overlap over the whole range
+        let r = intersect(&c, (0.0, 1.0), &c, (0.0, 1.0), 1e-9);
+        assert_eq!(r.overlaps.len(), 1, "{r:?}");
     }
 }
