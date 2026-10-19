@@ -995,7 +995,18 @@ impl BSplineSurface {
         if !found {
             return Ok(None);
         }
-        let newton0 = |seed: (f64, f64)| crate::surface::newton_surface(|u, v| self.derivs2(u, v), q, seed, ((u0, u1), (v0, v1)));
+        // (the polish is a function of the seed alone: the nearest cells' best samples, the restarts from the
+        // opposite edge of a pinned foot, repeat starts within one query)
+        let done: std::cell::RefCell<Vec<((u64, u64), (f64, f64))>> = Default::default();
+        let newton0 = |seed: (f64, f64)| {
+            let key = (seed.0.to_bits(), seed.1.to_bits());
+            if let Some(r) = done.borrow().iter().find(|e| e.0 == key) {
+                return r.1;
+            }
+            let r = crate::surface::newton_surface(|u, v| self.derivs2(u, v), q, seed, ((u0, u1), (v0, v1)));
+            done.borrow_mut().push((key, r));
+            r
+        };
         // a surface closed on itself (a tube: u = 0 and u = 2 pi are one
         // curve): a foot point just across the closing isoline is reached
         // by restarting from the opposite domain edge
