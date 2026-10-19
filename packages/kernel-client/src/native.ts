@@ -170,7 +170,8 @@ export class NativeKernel {
   constructor(o: NativeOptions) {
     this.url = normalizeServiceUrl(o.url);
     this.token = o.token;
-    this.f = o.fetch ?? fetch;
+    // browsers refuse window.fetch called as a method of another object ("Illegal invocation"); node does not, so wrap it
+    this.f = o.fetch ?? ((input, init) => fetch(input, init));
     this.timeoutMs = o.timeoutMs ?? 5 * 60_000;
     this.keepAliveMs = o.keepAliveMs ?? 30_000;
     this.onFailure = o.onFailure;
