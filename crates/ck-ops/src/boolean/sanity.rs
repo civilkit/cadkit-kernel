@@ -52,7 +52,7 @@ fn solid_volume(b: &Body, coarse: bool) -> Option<f64> {
     if b.num_faces() == 0 {
         return Some(0.0);
     }
-    if b.edge_ids().any(|e| b.edge_coedges(e).len() != 2) {
+    if !closed(b) {
         return None;
     }
     // Boolean chains keep most faces from one result to the next (a cut through a shell wall
@@ -71,6 +71,11 @@ fn solid_volume(b: &Body, coarse: bool) -> Option<f64> {
         v += fv;
     }
     v.is_finite().then_some(v)
+}
+
+/// Every edge has exactly two coedges (what `solid_volume` requires before it integrates anything).
+fn closed(b: &Body) -> bool {
+    b.num_faces() == 0 || !b.edge_ids().any(|e| b.edge_coedges(e).len() != 2)
 }
 
 /// Volume tolerance: face integrals of curved and spline faces are good to
@@ -150,6 +155,12 @@ fn window(op: Op, va: f64, vb: f64, box_ov: f64) -> (f64, f64) {
 /// the box test) is final. Everything else, every failure included, is decided by the exact rule.
 pub fn check_result(a: &Body, b: &Body, op: Op, result: &Body) -> Option<VolumeMismatch> {
     if a.num_faces() == 0 || b.num_faces() == 0 {
+        return None;
+    }
+    // an operand or result that is not a closed solid is not checkable: both tiers end in `None` without
+    // a volume, so skip the integrals the tiers would otherwise do on the other bodies first
+    if !closed(a) || !closed(b) || !closed(result) {
+        log_verdict(op, true, &None);
         return None;
     }
     let (ba, bb) = (loose_box(a), loose_box(b));
