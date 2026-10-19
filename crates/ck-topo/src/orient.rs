@@ -96,6 +96,12 @@ pub fn reverse_loop(b: &mut Body, l: LoopId) {
 /// traversed oppositely by its two coedges) and outward (positive signed
 /// volume). Returns the number of faces flipped.
 pub fn orient_shell(b: &mut Body, s: ShellId) -> usize {
+    orient_shell_volume(b, s).0
+}
+
+/// As [`orient_shell`], also returning the shell's signed volume after orienting (the integral the outward test
+/// computed anyway, negated when the shell was flipped).
+pub fn orient_shell_volume(b: &mut Body, s: ShellId) -> (usize, f64) {
     let faces: Vec<FaceId> = b.shell(s).faces.iter().copied().filter(|&f| b.face(f).alive).collect();
     let mut flips = 0;
     let mut seen = vec![false; b.faces.len()];
@@ -129,13 +135,21 @@ pub fn orient_shell(b: &mut Body, s: ShellId) -> usize {
             }
         }
     }
-    if signed_volume(b, &faces) < 0.0 {
+    let mut vol = signed_volume(b, &faces);
+    if vol < 0.0 {
         for &f in &faces {
             flip_face(b, f);
         }
         flips += faces.len();
+        vol = -vol;
     }
-    flips
+    (flips, vol)
+}
+
+/// Total signed volume of the shells after [`orient_body`]'s orienting (no further integration), and the flips.
+pub fn orient_body_volume(b: &mut Body) -> (usize, f64) {
+    let shells: Vec<ShellId> = b.shell_ids().collect();
+    shells.into_iter().map(|s| orient_shell_volume(b, s)).fold((0, 0.0), |a, x| (a.0 + x.0, a.1 + x.1))
 }
 
 /// Orient every live shell; returns total face flips.

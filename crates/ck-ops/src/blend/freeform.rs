@@ -864,7 +864,6 @@ fn build_tool(
     end_info: &dyn Fn(usize) -> (ck_topo::body::VertexId, Vec<FaceId>),
     _tol: f64,
 ) -> Result<Body, BlendError> {
-    use ck_topo::orient::orient_body;
     let nu = secs.len();
     let mut tool = Body::new();
     let lump = tool.add_lump();
@@ -950,12 +949,15 @@ fn build_tool(
         }
     }
     let _ = links;
-    orient_body(&mut tool);
-    let vol = ck_topo::mass::mass_props(&tool).volume;
+    // (the outward test of the orienting already integrated the volume: no second pass of moments over the same faces)
+    let (_, vol) = ck_topo::orient::orient_body_volume(&mut tool);
     if !(vol > 0.0) {
         return Err(failed(&format!("tool volume {vol}")));
     }
-    dbg(&format!("tool built: {nu} stations, volume {vol:.3}, issues {:?}", ck_topo::check::check(&tool, 1e-5).len()));
+    if std::env::var_os("CK_BLEND_DEBUG").is_some() {
+        // (the validation pass only runs when its line is printed)
+        dbg(&format!("tool built: {nu} stations, volume {vol:.3}, issues {:?}", ck_topo::check::check(&tool, 1e-5).len()));
+    }
     Ok(tool)
 }
 
