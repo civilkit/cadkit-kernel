@@ -21,6 +21,11 @@ use std::collections::HashMap;
 
 const EDGE_TOL: f64 = 2e-6;
 
+/// Map lookup that fails with a structured error instead of panicking on a key the bookkeeping lost.
+fn need<'a, K: std::hash::Hash + Eq, V>(m: &'a HashMap<K, V>, k: &K, what: &str) -> Result<&'a V, ThickenError> {
+    m.get(k).ok_or_else(|| ThickenError::detail("thickenFailed", format!("a {what} of the sheet has no counterpart in the offset layers; the sheet's topology is not supported by thicken")))
+}
+
 fn unsupported(detail: impl Into<String>) -> ThickenError {
     ThickenError::detail("offsetUnsupported", detail)
 }
@@ -194,14 +199,14 @@ pub fn thicken_freeform(sheet: &Body, feature: &str, thickness: f64, side: Side,
     }
 
     // faces of both layers; the lower layer faces away from the material
-    add_layer_faces(&mut out, shell, sheet, &faces, &surfaces, &emap);
+    add_layer_faces(&mut out, shell, sheet, &faces, &surfaces, &emap)?;
 
     // connectors between the layers at the rim corners, walls along the rim edges
     let mut connectors: HashMap<VertexId, EdgeId> = HashMap::new();
     let mut w = 0u32;
     for &(e, f) in &rims {
         let ed = sheet.edge(e);
-        let co = sheet.edge_coedges(e)[0];
+        let co = *sheet.edge_coedges(e).first().ok_or_else(|| ThickenError::code("thickenFailed"))?;
         let rev = sheet.coedge(co).rev;
         let n = *rim_samples.get(&e).unwrap_or(&48);
         // wall surface through the samples: four rows from the lower to the upper layer
@@ -219,7 +224,7 @@ pub fn thicken_freeform(sheet: &Body, feature: &str, thickness: f64, side: Side,
         // lower layer edge as the lower face walks it reversed, then up the connector, the upper edge, down
         let (rev_lo, rev_hi) = (!(rev != true), !(rev != false));
         let end_of = |v: (VertexId, VertexId), r: bool| if r { v.0 } else { v.1 };
-        let (lo, hi) = (emap[0][&e], emap[1][&e]);
+        let (lo, hi) = (*need(&emap[0], &e, "edge")?, *need(&emap[1], &e, "edge")?);
         let lo_end = end_of((out.edge(lo).v0, out.edge(lo).v1), rev_lo);
         let lo_start = end_of((out.edge(lo).v0, out.edge(lo).v1), !rev_lo);
         let to_hi = |lv: VertexId, sv: VertexId, out: &mut Body, connectors: &mut HashMap<VertexId, EdgeId>| -> EdgeId {
@@ -231,6 +236,8 @@ pub fn thicken_freeform(sheet: &Body, feature: &str, thickness: f64, side: Side,
         };
         let sv_of = |lv: VertexId| vmap[0].iter().find(|(_, &x)| x == lv).map(|(&k, _)| k);
         let (s_end, s_start) = (sv_of(lo_end).ok_or_else(|| ThickenError::code("thickenFailed"))?, sv_of(lo_start).ok_or_else(|| ThickenError::code("thickenFailed"))?);
+        need(&vmap[1], &s_end, "vertex")?;
+        need(&vmap[1], &s_start, "vertex")?;
         out.add_coedge(wl, lo, rev_lo, None);
         let c_end = to_hi(lo_end, s_end, &mut out, &mut connectors);
         out.add_coedge(wl, c_end, false, None);
@@ -244,7 +251,7 @@ pub fn thicken_freeform(sheet: &Body, feature: &str, thickness: f64, side: Side,
 }
 
 /// Faces of both layers: the lower layer faces away from the material.
-fn add_layer_faces(out: &mut Body, shell: ck_topo::body::ShellId, sheet: &Body, faces: &[FaceId], surfaces: &[Vec<Surface>], emap: &[HashMap<EdgeId, EdgeId>; 2]) {
+fn add_layer_faces(out: &mut Body, shell: ck_topo::body::ShellId, sheet: &Body, faces: &[FaceId], surfaces: &[Vec<Surface>], emap: &[HashMap<EdgeId, EdgeId>; 2]) -> Result<(), ThickenError> {
     for li in 0..2 {
         let flipped = li == 0;
         for (fi, &f) in faces.iter().enumerate() {
@@ -261,11 +268,12 @@ fn add_layer_faces(out: &mut Body, shell: ck_topo::body::ShellId, sheet: &Body, 
                 let nloop = out.add_loop(nf);
                 for cid in ordered {
                     let co = sheet.coedge(cid);
-                    out.add_coedge(nloop, emap[li][&co.edge], co.rev != flipped, None);
+                    out.add_coedge(nloop, *need(&emap[li], &co.edge, "edge")?, co.rev != flipped, None);
                 }
             }
         }
     }
+    Ok(())
 }
 
 /// Weld, orient and check that the thickened body is closed with positive volume.
@@ -430,9 +438,12 @@ fn thicken_creased(sheet: &Body, feature: &str, faces: &[FaceId], rims: &[(EdgeI
                 vpos[li].insert(v, p);
                 continue;
             }
-            let fs = &vfaces[&v];
+            let fs = need(&vfaces, &v, "vertex")?;
+            if fs.is_empty() {
+                return Err(ThickenError::code("thickenFailed"));
+            }
             let crease = es.iter().copied().find(|&e| is_crease(e));
-            let mut surfs: Vec<Surface> = if crease.is_some() { fs.iter().map(|&f| moved[li][f.idx()].clone().unwrap()).collect() } else { vec![moved[li][fs[0].idx()].clone().unwrap()] };
+            let mut surfs: Vec<Surface> = if crease.is_some() { fs.iter().map(|&f| moved[li][f.idx()].clone().ok_or_else(|| ThickenError::code("thickenFailed"))).collect::<Result<_, _>>()? } else { vec![moved[li][fs[0].idx()].clone().ok_or_else(|| ThickenError::code("thickenFailed"))?] };
             let nrm = normal_at(sheet, fs[0], p).ok_or_else(|| unsupported("degenerate surface normal at a corner"))?;
             let tang = crease.or_else(|| es.iter().copied().find(|e| rim_set.contains(e))).or_else(|| es.first().copied()).and_then(|e| edge_tangent_at(sheet, e, v));
             if surfs.len() < 3 {
@@ -467,15 +478,15 @@ fn thicken_creased(sheet: &Body, feature: &str, faces: &[FaceId], rims: &[(EdgeI
         let ed = sheet.edge(e);
         let fs = sheet.edge_faces(e);
         for (li, &d) in layers.iter().enumerate() {
-            let (p0, p1) = (vpos[li][&ed.v0], vpos[li][&ed.v1]);
+            let (p0, p1) = (*need(&vpos[li], &ed.v0, "vertex")?, *need(&vpos[li], &ed.v1, "vertex")?);
             let (curve, t0, t1) = if d == 0.0 {
                 (ed.curve.clone(), ed.t0, ed.t1)
             } else if fs.len() == 2 {
                 let gap = [ed.v0, ed.v1]
                     .iter()
                     .map(|v| {
-                        let q = vpos[li][v];
-                        vfaces[v].iter().map(|&f| moved[li][f.idx()].as_ref().map_or(0.0, |m| m.closest_point(q).2.dist(q))).fold(0.0f64, f64::max)
+                        let Some(&q) = vpos[li].get(v) else { return 0.0 };
+                        vfaces.get(v).into_iter().flatten().map(|&f| moved[li][f.idx()].as_ref().map_or(0.0, |m| m.closest_point(q).2.dist(q))).fold(0.0f64, f64::max)
                     })
                     .fold(0.0f64, f64::max);
                 crate::offset::offset_spline_edge(sheet, e, &moved[li], &|_f| d, p0, p1, gap).map_err(|err| match err.code {
@@ -483,7 +494,7 @@ fn thicken_creased(sheet: &Body, feature: &str, faces: &[FaceId], rims: &[(EdgeI
                     c => ThickenError::detail(c, err.detail.unwrap_or_default()),
                 })?
             } else {
-                rim_curve(sheet, e, fs[0], moved[li][fs[0].idx()].as_ref().unwrap(), d, p0, p1)?
+                rim_curve(sheet, e, fs[0], moved[li][fs[0].idx()].as_ref().ok_or_else(|| ThickenError::code("thickenFailed"))?, d, p0, p1)?
             };
             let v0 = *vmap[li].entry(ed.v0).or_insert_with(|| out.add_vertex(p0));
             let v1 = *vmap[li].entry(ed.v1).or_insert_with(|| out.add_vertex(p1));
@@ -492,23 +503,23 @@ fn thicken_creased(sheet: &Body, feature: &str, faces: &[FaceId], rims: &[(EdgeI
             ecurve[li].insert(e, (curve, t0, t1));
         }
     }
-    add_layer_faces(&mut out, shell, sheet, faces, surfaces, &emap);
+    add_layer_faces(&mut out, shell, sheet, faces, surfaces, &emap)?;
 
     // walls along the rim edges, ruled between the two layers' rim edges
     let mut connectors: HashMap<VertexId, EdgeId> = HashMap::new();
     let mut w = 0u32;
     for &(e, _f) in rims {
         let ed = sheet.edge(e);
-        let co = sheet.edge_coedges(e)[0];
+        let co = *sheet.edge_coedges(e).first().ok_or_else(|| ThickenError::code("thickenFailed"))?;
         let rev = sheet.coedge(co).rev;
-        let (lo_c, hi_c) = (&ecurve[0][&e], &ecurve[1][&e]);
+        let (lo_c, hi_c) = (need(&ecurve[0], &e, "edge")?, need(&ecurve[1], &e, "edge")?);
         let surf = ruled_wall(&lo_c.0, (lo_c.1, lo_c.2), &hi_c.0, (hi_c.1, hi_c.2), 96)?;
         let wname = FaceName { feature: feature.into(), role: Role::Other(format!("W{w}")), region: None, suffix: String::new() };
         w += 1;
         let wf = out.add_face(shell, surf, true, wname);
         let wl = out.add_loop(wf);
         let (rev_lo, rev_hi) = (!(rev != true), !(rev != false));
-        let (lo, hi) = (emap[0][&e], emap[1][&e]);
+        let (lo, hi) = (*need(&emap[0], &e, "edge")?, *need(&emap[1], &e, "edge")?);
         // sheet vertices at the end / start of the lower layer's edge as the wall walks it
         let (s_end, s_start) = if rev_lo { (ed.v0, ed.v1) } else { (ed.v1, ed.v0) };
         let mut connector = |sv: VertexId, out: &mut Body| -> EdgeId {
@@ -529,6 +540,10 @@ fn thicken_creased(sheet: &Body, feature: &str, faces: &[FaceId], rims: &[(EdgeI
         };
         // the wall walks the lower edge, up the connector at its end, back along the upper edge, down the connector at its start
         let (u_end, u_start) = if rev_lo { (0.0, 1.0) } else { (1.0, 0.0) };
+        for sv in [s_end, s_start] {
+            need(&vmap[0], &sv, "vertex")?;
+            need(&vmap[1], &sv, "vertex")?;
+        }
         out.add_coedge(wl, lo, rev_lo, Some(frac(lo_c, 0.0)));
         let c_end = connector(s_end, &mut out);
         let pc = ruling(c_end, u_end, &out);
