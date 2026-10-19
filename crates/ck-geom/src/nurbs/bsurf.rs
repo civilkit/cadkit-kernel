@@ -965,6 +965,31 @@ impl BSplineSurface {
                         continue;
                     }
                 }
+                // the common case, on the precomputed grid: the same test and updates as below, with the
+                // bound of the skip test kept between samples (it changes only when `best` or `local` does)
+                if let (true, Some((pts, _))) = (fast && pv < 16, grid) {
+                    let bound = |best: &(f64, f64, f64), local: &(f64, f64, f64)| {
+                        let lim = best.0.max(local.0);
+                        lim * lim * (1.0 + 1e-9)
+                    };
+                    let mut lim2 = bound(best, &local);
+                    for &k in &cols[iv] {
+                        let d2 = (pts[a * nv1 + k] - q).len2();
+                        if d2 > lim2 {
+                            continue;
+                        }
+                        let (d, v) = (d2.sqrt(), vs[k].0);
+                        if d < local.0 {
+                            local = (d, u, v);
+                        }
+                        if d < best.0 {
+                            *best = (d, u, v);
+                            found_flag.set(true);
+                        }
+                        lim2 = bound(best, &local);
+                    }
+                    continue;
+                }
                 for &k in &cols[iv] {
                     let v = vs[k].0;
                     let d = if fast && pv < 16 {
