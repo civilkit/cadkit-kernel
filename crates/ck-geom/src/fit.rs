@@ -145,8 +145,18 @@ impl BandRow {
 /// [`solve`] for a system given as row windows: the same pivoting and row operations in the same order (so
 /// the same bits), without ever forming the dense `n x n` matrix (the interpolation systems of long curves
 /// have thousands of unknowns; the dense matrix then costs gigabytes and most of the fit time).
-fn solve_band<P: Pt>(mut a: Vec<BandRow>, mut b: Vec<P>) -> Result<Vec<P>, String> {
-    let n = b.len();
+fn solve_band<P: Pt>(a: Vec<BandRow>, b: Vec<P>) -> Result<Vec<P>, String> {
+    let mut bs = [b];
+    solve_band_many(a, &mut bs)?;
+    let [x] = bs;
+    Ok(x)
+}
+
+/// [`solve_band`] for several right-hand sides of one matrix: the matrix is reduced once, and every
+/// right-hand side sees exactly the operations a single solve would apply to it (the same bits).
+/// The solutions replace the right-hand sides.
+fn solve_band_many<P: Pt>(mut a: Vec<BandRow>, bs: &mut [Vec<P>]) -> Result<(), String> {
+    let n = a.len();
     let (mut lbw, mut ubw) = (0usize, 0usize);
     for (r, row) in a.iter().enumerate() {
         if let Some(first) = row.v.iter().position(|&x| x != 0.0) {
@@ -164,7 +174,9 @@ fn solve_band<P: Pt>(mut a: Vec<BandRow>, mut b: Vec<P>) -> Result<Vec<P>, Strin
             return Err("singular fit system".into());
         }
         a.swap(c, piv);
-        b.swap(c, piv);
+        for b in bs.iter_mut() {
+            b.swap(c, piv);
+        }
         let last = (c..(c + lbw + ubw + 1).min(n)).rev().find(|&k| a[c].get(k) != 0.0).unwrap_or(c);
         hi[c] = last;
         for r in (c + 1)..rend {
@@ -177,19 +189,24 @@ fn solve_band<P: Pt>(mut a: Vec<BandRow>, mut b: Vec<P>) -> Result<Vec<P>, Strin
                     let i = k - rr.s;
                     rr.v[i] -= f * rc.get(k);
                 }
-                b[r] = b[r] - b[c] * f;
+                for b in bs.iter_mut() {
+                    b[r] = b[r] - b[c] * f;
+                }
             }
         }
     }
-    let mut x = vec![P::default(); n];
-    for r in (0..n).rev() {
-        let mut s = b[r];
-        for k in (r + 1)..=hi[r] {
-            s = s - x[k] * a[r].get(k);
+    for b in bs.iter_mut() {
+        let mut x = vec![P::default(); n];
+        for r in (0..n).rev() {
+            let mut s = b[r];
+            for k in (r + 1)..=hi[r] {
+                s = s - x[k] * a[r].get(k);
+            }
+            x[r] = s / a[r].get(r);
         }
-        x[r] = s / a[r].get(r);
+        *b = x;
     }
-    Ok(x)
+    Ok(())
 }
 
 /// Global interpolation through `pts` (A9.1) with given params/knots.
@@ -203,6 +220,28 @@ pub fn interpolate_with<P: Pt>(pts: &[P], p: usize, u: &[f64], knots: Vec<f64>) 
     }
     let ctrl = solve_band(rows, pts.to_vec())?;
     BSplineCurve::new(p, knots, ctrl)
+}
+
+/// [`interpolate_with`] for several point rows at the same parameters and knots (the rows of a
+/// surface fit): the control points of each, bit for bit as one `interpolate_with` per row gives
+/// them, with the interpolation matrix reduced once.
+pub fn interpolate_with_many<P: Pt>(rows_pts: &[Vec<P>], p: usize, u: &[f64], knots: &[f64]) -> Result<Vec<Vec<P>>, String> {
+    let Some(first) = rows_pts.first() else { return Ok(vec![]) };
+    let n = first.len() - 1;
+    if rows_pts.iter().any(|r| r.len() != n + 1) {
+        return Err("rows of different lengths".into());
+    }
+    let mut rows: Vec<BandRow> = (0..=n).map(|_| BandRow { s: 0, v: Vec::new() }).collect();
+    for (k, &uk) in u.iter().enumerate() {
+        let s = find_span(n, p, uk, knots);
+        let b = basis_funs(s, uk, p, knots);
+        rows[k] = BandRow { s: s - p, v: b[..=p].to_vec() };
+    }
+    let mut bs: Vec<Vec<P>> = rows_pts.to_vec();
+    solve_band_many(rows, &mut bs)?;
+    // (the knot check of `BSplineCurve::new`, which depends on the sizes only)
+    crate::nurbs::basis::validate(knots, n + 1, p)?;
+    Ok(bs)
 }
 
 /// Interpolating B-spline of degree `p` (clamped to n-1) through `pts`.
@@ -418,6 +457,22 @@ pub fn uniform_knots(n_ctrl: usize, p: usize) -> Vec<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Several rows through one reduction give each row's `interpolate_with` control points, bit for bit.
+    #[test]
+    fn interpolate_with_many_is_bit_identical() {
+        let rows: Vec<Vec<Vec3>> = (0..7)
+            .map(|r| (0..23).map(|k| Vec3::new(k as f64 * 0.7 + 0.1 * r as f64, (k as f64 * 0.31 + r as f64).sin() * 3.0, (k * k) as f64 * 0.013 - r as f64)).collect())
+            .collect();
+        let u = params(&rows[0], Param::ChordLength);
+        let knots = averaged_knots(&u, 3);
+        let many = interpolate_with_many(&rows, 3, &u, &knots).unwrap();
+        for (row, got) in rows.iter().zip(&many) {
+            let one = interpolate_with(row, 3, &u, knots.clone()).unwrap();
+            let bits = |v: &[Vec3]| v.iter().map(|p| [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()]).collect::<Vec<_>>();
+            assert_eq!(bits(got), bits(&one.ctrl));
+        }
+    }
     use crate::testutil::*;
     use crate::Vec2;
 

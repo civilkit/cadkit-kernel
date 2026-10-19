@@ -238,22 +238,19 @@ pub(crate) fn fit_grid(grid: &[Vec<Vec3>]) -> Result<(ck_geom::nurbs::bsurf::BSp
 
 /// Tensor-product cubic interpolation of a point grid at the given parameters of the grid lines.
 pub(crate) fn fit_grid_with(grid: &[Vec<Vec3>], uk: Vec<f64>, vl: Vec<f64>) -> Result<(ck_geom::nurbs::bsurf::BSplineSurface, Vec<f64>, Vec<f64>), OffsetError> {
-    use ck_geom::fit::{averaged_knots, interpolate_with};
+    use ck_geom::fit::{averaged_knots, interpolate_with_many};
     let bad = |e: String| OffsetError::new("offsetUnsupported", format!("fit: {e}"));
     let (nu, nv) = (grid.len(), grid[0].len());
     let ku = averaged_knots(&uk, 3);
     let kv = averaged_knots(&vl, 3);
-    let mut r = vec![vec![Vec3::ZERO; nv]; nu];
-    for j in 0..nv {
-        let col: Vec<Vec3> = (0..nu).map(|i| grid[i][j]).collect();
-        let c = interpolate_with(&col, 3, &uk, ku.clone()).map_err(bad)?;
-        for i in 0..nu {
-            r[i][j] = c.ctrl[i];
-        }
-    }
+    // every column, then every row of the column fits, interpolated at the same parameters: one
+    // matrix reduction per direction (the same control points as one interpolation per line)
+    let cols: Vec<Vec<Vec3>> = (0..nv).map(|j| (0..nu).map(|i| grid[i][j]).collect()).collect();
+    let cc = interpolate_with_many(&cols, 3, &uk, &ku).map_err(bad)?;
+    let r: Vec<Vec<Vec3>> = (0..nu).map(|i| (0..nv).map(|j| cc[j][i]).collect()).collect();
     let mut ctrl = Vec::with_capacity(nu * nv);
-    for i in 0..nu {
-        ctrl.extend(interpolate_with(&r[i], 3, &vl, kv.clone()).map_err(bad)?.ctrl);
+    for row in interpolate_with_many(&r, 3, &vl, &kv).map_err(bad)? {
+        ctrl.extend(row);
     }
     let s = ck_geom::nurbs::bsurf::BSplineSurface::new(3, 3, ku, kv, nu, nv, ctrl, None).map_err(bad)?;
     Ok((s, uk, vl))
@@ -518,6 +515,8 @@ fn fit_offset_surface_inner(s: &Surface, d: f64, uvbox: ((f64, f64), (f64, f64))
         }
         let (fit, uk, vk) = fit_grid(&grid)?;
         let fs = Surface::BSpline(Box::new(fit));
+        // (the fit's content hash once per round, not once per query)
+        let fs_fp = spline_fp(&fs);
         // deviation of the exact offset from the fit at span midpoints, along a
         // spread of lines of the other direction
         let mut dev = 0.0f64;
@@ -535,7 +534,7 @@ fn fit_offset_surface_inner(s: &Surface, d: f64, uvbox: ((f64, f64), (f64, f64))
                 }
                 let e = cached(um, vs[j])?;
                 let hint = (0.5 * (uk[i] + uk[i + 1]), vk[j]);
-                worst = worst.max(fs.closest_point_near(e, hint).2.dist(e));
+                worst = worst.max(fs.closest_point_near_fp(e, hint, fs_fp).2.dist(e));
             }
             // spans shorter than MIN_SPAN (a normal kink of the base smeared over
             // one sample) cannot be resolved further and are tolerated
@@ -557,7 +556,7 @@ fn fit_offset_surface_inner(s: &Surface, d: f64, uvbox: ((f64, f64), (f64, f64))
                 }
                 let e = cached(us[i], vm)?;
                 let hint = (uk[i], 0.5 * (vk[j] + vk[j + 1]));
-                worst = worst.max(fs.closest_point_near(e, hint).2.dist(e));
+                worst = worst.max(fs.closest_point_near_fp(e, hint, fs_fp).2.dist(e));
             }
             let span = grid[us.len() / 2][j].dist(grid[us.len() / 2][j + 1]);
             if span < MIN_SPAN {
@@ -580,12 +579,13 @@ fn fit_offset_surface_inner(s: &Surface, d: f64, uvbox: ((f64, f64), (f64, f64))
         if bad_u.is_empty() && bad_v.is_empty() {
             // folds: the offset must stay |d| from the base everywhere
             let m = 12;
+            let s_fp = spline_fp(s);
             for i in 0..=m {
                 for j in 0..=m {
                     let (u, v) = (u0 + (u1 - u0) * i as f64 / m as f64, v0 + (v1 - v0) * j as f64 / m as f64);
                     let q = point(u, v)?;
                     let interior = u >= du0 && u <= du1 && v >= dv0 && v <= dv1;
-                    if interior && !near_pole(s.eval(u, v)) && s.closest_point(q).2.dist(q) < d.abs() * (1.0 - 1e-3) - 1e-6 {
+                    if interior && !near_pole(s.eval(u, v)) && s.closest_point_fp(q, s_fp).2.dist(q) < d.abs() * (1.0 - 1e-3) - 1e-6 {
                         return Err(big());
                     }
                 }
@@ -854,8 +854,18 @@ fn offset_revolution(s: &Surface, profile: &Curve, axis_o: Vec3, axis: Vec3, d: 
 /// Signed distance residual of `q` to `s` and the unit normal at the foot
 /// (the foot from `hint` when given).
 pub(crate) fn foot_n(s: &Surface, q: Vec3) -> Option<(Vec3, Vec3)> {
-    let (u, v, p) = s.closest_point(q);
+    foot_n_fp(s, spline_fp(s), q)
+}
+
+/// [`foot_n`] with the surface's [`spline_fp`] taken by the caller.
+fn foot_n_fp(s: &Surface, fp: Option<u64>, q: Vec3) -> Option<(Vec3, Vec3)> {
+    let (u, v, p) = s.closest_point_fp(q, fp);
     Some((p, s.normal(u, v).try_normalize()?))
+}
+
+/// Content hash of a B-spline surface for the `_fp` closest-point queries (`None` otherwise).
+fn spline_fp(s: &Surface) -> Option<u64> {
+    crate::boolean::classify::spline_fp(s)
 }
 
 /// The curve where two offset faces meet, replacing a spline edge: points
@@ -868,6 +878,8 @@ pub(crate) fn offset_spline_edge(src: &Body, e: EdgeId, moved: &[Option<Surface>
         return Err(OffsetError::new("offsetUnsupported", "edge curve type"));
     }
     let (m1, m2) = (moved[fs[0].idx()].as_ref().unwrap(), moved[fs[1].idx()].as_ref().unwrap());
+    let (fp1, fp2) = (spline_fp(m1), spline_fp(m2));
+    let src_fp = [spline_fp(&src.face(fs[0]).surface), spline_fp(&src.face(fs[1]).surface)];
     let grazing = std::cell::Cell::new(false);
     let sample = |t: f64| -> Result<Vec3, OffsetError> {
         let p = ed.curve.eval(t);
@@ -875,7 +887,7 @@ pub(crate) fn offset_spline_edge(src: &Body, e: EdgeId, moved: &[Option<Surface>
         let mut n = [Vec3::ZERO; 2];
         for (k, &f) in fs.iter().enumerate() {
             let sf = &src.face(f).surface;
-            let (u, v, _) = sf.closest_point(p);
+            let (u, v, _) = sf.closest_point_fp(p, src_fp[k]);
             n[k] = sf.normal(u, v).try_normalize().ok_or_else(|| OffsetError::new("offsetUnsupported", "degenerate normal"))?;
         }
         // (nearly) tangent faces (a blend meeting its neighbour): the offset
@@ -901,8 +913,8 @@ pub(crate) fn offset_spline_edge(src: &Body, e: EdgeId, moved: &[Option<Surface>
             OffsetError::new("offsetDegenerate", "the offset faces do not meet at an edge")
         })?;
         for _ in 0..40 {
-            let (q1, n1) = foot_n(m1, q).ok_or_else(|| OffsetError::new("offsetUnsupported", "degenerate normal"))?;
-            let (q2, n2) = foot_n(m2, q).ok_or_else(|| OffsetError::new("offsetUnsupported", "degenerate normal"))?;
+            let (q1, n1) = foot_n_fp(m1, fp1, q).ok_or_else(|| OffsetError::new("offsetUnsupported", "degenerate normal"))?;
+            let (q2, n2) = foot_n_fp(m2, fp2, q).ok_or_else(|| OffsetError::new("offsetUnsupported", "degenerate normal"))?;
             let g = [(q - q1).dot(n1), (q - q2).dot(n2), (q - p).dot(tn)];
             if g.iter().all(|x| x.abs() < 1e-11) {
                 return Ok(q);
@@ -927,8 +939,8 @@ pub(crate) fn offset_spline_edge(src: &Body, e: EdgeId, moved: &[Option<Surface>
         let dir = (p1 - p0).normalize();
         let mut q = x;
         for _ in 0..40 {
-            let (q1, n1) = foot_n(m1, q).ok_or_else(|| OffsetError::new("offsetUnsupported", "degenerate normal"))?;
-            let (q2, n2) = foot_n(m2, q).ok_or_else(|| OffsetError::new("offsetUnsupported", "degenerate normal"))?;
+            let (q1, n1) = foot_n_fp(m1, fp1, q).ok_or_else(|| OffsetError::new("offsetUnsupported", "degenerate normal"))?;
+            let (q2, n2) = foot_n_fp(m2, fp2, q).ok_or_else(|| OffsetError::new("offsetUnsupported", "degenerate normal"))?;
             let g = [(q - q1).dot(n1), (q - q2).dot(n2), (q - x).dot(dir)];
             if g.iter().all(|v| v.abs() < 1e-11) {
                 return Ok(q);
@@ -954,25 +966,6 @@ pub(crate) fn offset_spline_edge(src: &Body, e: EdgeId, moved: &[Option<Surface>
         }
         let c = ck_geom::fit::interpolate(&pts, 3, ck_geom::fit::Param::ChordLength).map_err(|e| OffsetError::new("offsetUnsupported", format!("edge fit: {e}")))?;
         let (a, b) = c.domain();
-        let devs: Vec<(f64, Vec3)> = (0..4 * n)
-            .map(|k| {
-                let q = c.eval(a + (b - a) * (k as f64 + 0.5) / (4 * n) as f64);
-                (m1.closest_point(q).2.dist(q).max(m2.closest_point(q).2.dist(q)), q)
-            })
-            .collect();
-        let dev = devs.iter().map(|x| x.0).fold(0.0f64, f64::max);
-        if std::env::var_os("CK_OFFSET_DEBUG").is_some() && dev > 1e-2 {
-            let w = devs.iter().cloned().fold((0.0, Vec3::ZERO), |a, b| if b.0 > a.0 { b } else { a });
-            let k = devs.iter().position(|x| x.0 == w.0).unwrap();
-            eprintln!(
-                "  worst at {:?} (sample {}/{}) p0 {:?} p1 {:?} orig edge {:?}->{:?}; dev to m1 {:.2e} m2 {:.2e}",
-                w.1, k, devs.len(), p0, p1, ed.curve.eval(ed.t0), ed.curve.eval(ed.t1),
-                m1.closest_point(w.1).2.dist(w.1), m2.closest_point(w.1).2.dist(w.1)
-            );
-        }
-        if std::env::var_os("CK_OFFSET_DEBUG").is_some() {
-            eprintln!("offset edge fit: {} | {} n={n} dev={dev:.2e} grazing={}", src.face_id_str(fs[0]), src.face_id_str(fs[1]), grazing.get());
-        }
         // grazing neighbours (G1 seams) leave a gap of ~ d x (normal mismatch)
         // between their offsets that no edge can close
         let limit = if grazing.get() { GRAZE_TOL } else { EDGE_FIT_TOL.max((1.5 * end_gap).min(GRAZE_TOL)) };
@@ -981,6 +974,51 @@ pub(crate) fn offset_spline_edge(src: &Body, e: EdgeId, moved: &[Option<Surface>
         // downstream booleans see that). Refine to `GOOD_EDGE_TOL`, accept the limit only once
         // refinement has stopped paying.
         let good = if grazing.get() { limit } else { limit.min(GOOD_EDGE_TOL) };
+        let debug = std::env::var_os("CK_OFFSET_DEBUG").is_some();
+        let at = |k: usize| c.eval(a + (b - a) * (k as f64 + 0.5) / (4 * n) as f64);
+        let dev = if debug || 2 * n > 800 {
+            // every deviation: the debug output, or the failure message of the last round
+            let devs: Vec<(f64, Vec3)> = (0..4 * n)
+                .map(|k| {
+                    let q = at(k);
+                    (m1.closest_point_fp(q, fp1).2.dist(q).max(m2.closest_point_fp(q, fp2).2.dist(q)), q)
+                })
+                .collect();
+            let dev = devs.iter().map(|x| x.0).fold(0.0f64, f64::max);
+            if debug && dev > 1e-2 {
+                let w = devs.iter().cloned().fold((0.0, Vec3::ZERO), |a, b| if b.0 > a.0 { b } else { a });
+                let k = devs.iter().position(|x| x.0 == w.0).unwrap();
+                eprintln!(
+                    "  worst at {:?} (sample {}/{}) p0 {:?} p1 {:?} orig edge {:?}->{:?}; dev to m1 {:.2e} m2 {:.2e}",
+                    w.1, k, devs.len(), p0, p1, ed.curve.eval(ed.t0), ed.curve.eval(ed.t1),
+                    m1.closest_point(w.1).2.dist(w.1), m2.closest_point(w.1).2.dist(w.1)
+                );
+            }
+            if debug {
+                eprintln!("offset edge fit: {} | {} n={n} dev={dev:.2e} grazing={}", src.face_id_str(fs[0]), src.face_id_str(fs[1]), grazing.get());
+            }
+            dev
+        } else {
+            // only whether the largest deviation passes decides (accept or refine): stop at the
+            // first sample past the bound of this round, which refines either way
+            let bound = if n >= 192 { limit.max(good) } else { good };
+            let mut dev = 0.0f64;
+            // (from both ends inwards: the worst deviation is usually next to an end vertex)
+            for i in 0..4 * n {
+                let k = if i % 2 == 0 { i / 2 } else { 4 * n - 1 - i / 2 };
+                let q = at(k);
+                let d1 = m1.closest_point_fp(q, fp1).2.dist(q);
+                if d1 > bound {
+                    dev = dev.max(d1);
+                    break;
+                }
+                dev = dev.max(d1.max(m2.closest_point_fp(q, fp2).2.dist(q)));
+                if dev > bound {
+                    break;
+                }
+            }
+            dev
+        };
         if dev <= good || (dev <= limit && n >= 192) {
             return Ok((Curve::BSpline(c), a, b));
         }
@@ -1061,8 +1099,7 @@ pub(crate) fn solve_point(p0: Vec3, surfs: &[&Surface]) -> Option<Vec3> {
     // meet instead of flying along their common tangent. The damping fades
     // out once the residual is small (regular corners converge quadratically).
     let mut p = p0;
-    let reach: f64 = surfs.iter().map(|s| s.closest_point(p0).2.dist(p0)).fold(0.0, f64::max);
-    let _ = reach;
+    let fps: Vec<Option<u64>> = surfs.iter().map(|s| spline_fp(s)).collect();
     let mut lambda: f64 = 1e-6;
     let mut last = f64::INFINITY;
     for _ in 0..80 {
@@ -1070,8 +1107,8 @@ pub(crate) fn solve_point(p0: Vec3, surfs: &[&Surface]) -> Option<Vec3> {
         let mut jtr = [0.0f64; 3];
         let mut worst = 0.0f64;
         let mut sq = 0.0f64;
-        for s in surfs {
-            let (u, v, q) = s.closest_point(p);
+        for (s, &fp) in surfs.iter().zip(&fps) {
+            let (u, v, q) = s.closest_point_fp(p, fp);
             let n = s.normal(u, v).try_normalize()?;
             let r = (p - q).dot(n);
             worst = worst.max(r.abs());

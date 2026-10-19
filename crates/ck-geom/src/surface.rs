@@ -672,6 +672,24 @@ impl Surface {
     /// march); falls back to the global search when the Newton foot is not a
     /// stationary point of the distance.
     pub fn closest_point_near(&self, q: Vec3, hint: (f64, f64)) -> (f64, f64, Vec3) {
+        self.closest_point_near_fp(q, hint, None)
+    }
+
+    /// [`Self::closest_point`] with the B-spline's [`fingerprint`](crate::nurbs::bsurf::BSplineSurface::fingerprint)
+    /// taken by the caller (`None`: computed per call, one pass over the control net). Same answers,
+    /// bit for bit, for many queries against one big surface.
+    pub fn closest_point_fp(&self, q: Vec3, fp: Option<u64>) -> (f64, f64, Vec3) {
+        match (self, fp) {
+            (Surface::BSpline(bs), Some(fp)) => {
+                let (u, v) = bs.closest_param_fp(fp, q);
+                (u, v, self.eval(u, v))
+            }
+            _ => self.closest_point(q),
+        }
+    }
+
+    /// [`Self::closest_point_near`] with the fingerprint taken by the caller (see [`Self::closest_point_fp`]).
+    pub fn closest_point_near_fp(&self, q: Vec3, hint: (f64, f64), fp: Option<u64>) -> (f64, f64, Vec3) {
         if matches!(self, Surface::BSpline(_) | Surface::Revolution { .. } | Surface::Extrusion { .. } | Surface::Screw { .. }) {
             let dom = match self {
                 Surface::Revolution { .. } => {
@@ -691,7 +709,7 @@ impl Surface {
                 return (u, v, s.p);
             }
         }
-        self.closest_point(q)
+        self.closest_point_fp(q, fp)
     }
 
     /// As [`closest_point_within`](Self::closest_point_within), many queries
@@ -1387,6 +1405,30 @@ mod tests {
         match s {
             Surface::Offset { base, .. } => offset_collapse(base).0.derivs2(u, v).du,
             _ => Vec3::ZERO,
+        }
+    }
+
+    /// The `_fp` closest-point queries (fingerprint taken once by the caller) answer exactly as the
+    /// plain ones, on and off the surface and with a hint (the near query's Newton or its fallback).
+    #[test]
+    fn closest_point_fp_is_bit_identical() {
+        let mut surfs = all();
+        surfs.push(Surface::BSpline(Box::new(spline_patch())));
+        for s in &surfs {
+            let fp = match s {
+                Surface::BSpline(b) => Some(b.fingerprint()),
+                _ => None,
+            };
+            let ((u0, u1), (v0, v1)) = s.domain();
+            let (u0, u1, v0, v1) = (u0.max(-3.0), u1.min(3.0), v0.max(-3.0), v1.min(3.0));
+            for k in 0..40 {
+                let (u, v) = (u0 + (u1 - u0) * (k as f64 * 0.37).fract(), v0 + (v1 - v0) * (k as f64 * 0.61).fract());
+                let q = s.eval(u, v) + Vec3::new(0.3, -0.2, 0.45) * ((k % 5) as f64 - 1.5);
+                let bits = |r: (f64, f64, Vec3)| (r.0.to_bits(), r.1.to_bits(), r.2.x.to_bits(), r.2.y.to_bits(), r.2.z.to_bits());
+                assert_eq!(bits(s.closest_point_fp(q, fp)), bits(s.closest_point(q)), "{}", s.kind());
+                let hint = (u0 + (u1 - u0) * 0.5, v0 + (v1 - v0) * 0.5);
+                assert_eq!(bits(s.closest_point_near_fp(q, hint, fp)), bits(s.closest_point_near(q, hint)), "{}", s.kind());
+            }
         }
     }
 
