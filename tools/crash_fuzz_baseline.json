@@ -1,17 +1,19 @@
 {
  "version": 1,
- "wasm": "kit",
- "wasmHash": "18fcb4d451b97049",
+ "wasm": "robust-traps",
+ "wasmHash": "fbcf8e21066819a7",
  "seed": 7,
  "n": 5000,
+ "budgetMs": 400,
+ "timeout": 6000,
  "cases": {
   "case_0": "ok",
-  "case_1": "trap",
+  "case_1": "structured-error",
   "case_2": "structured-error",
   "case_3": "structured-error",
   "case_4": "ok",
   "case_5": "structured-error",
-  "case_6": "trap",
+  "case_6": "structured-error",
   "case_7": "structured-error",
   "case_8": "structured-error",
   "case_9": "structured-error",
@@ -33,7 +35,7 @@
   "case_25": "structured-error",
   "case_26": "structured-error",
   "case_27": "structured-error",
-  "case_28": "trap",
+  "case_28": "structured-error",
   "case_29": "structured-error",
   "case_30": "structured-error",
   "case_31": "structured-error",
@@ -50,11 +52,11 @@
   "case_42": "structured-error",
   "case_43": "structured-error",
   "case_44": "structured-error",
-  "case_45": "trap",
+  "case_45": "structured-error",
   "case_46": "structured-error",
   "case_47": "structured-error",
   "case_48": "structured-error",
-  "case_49": "hang",
+  "case_49": "structured-error",
   "case_50": "structured-error",
   "case_51": "structured-error",
   "case_52": "structured-error",
@@ -80,8 +82,8 @@
   "case_72": "ok",
   "case_73": "structured-error",
   "case_74": "structured-error",
-  "case_75": "trap",
-  "case_76": "hang",
+  "case_75": "structured-error",
+  "case_76": "structured-error",
   "case_77": "structured-error",
   "case_78": "structured-error",
   "case_79": "structured-error",
@@ -101,7 +103,7 @@
   "case_93": "ok",
   "case_94": "structured-error",
   "case_95": "structured-error",
-  "case_96": "hang",
+  "case_96": "structured-error",
   "case_97": "structured-error",
   "case_98": "structured-error",
   "case_99": "structured-error",
@@ -109,7 +111,7 @@
   "case_101": "structured-error",
   "case_102": "structured-error",
   "case_103": "structured-error",
-  "case_104": "trap",
+  "case_104": "ok",
   "case_105": "structured-error",
   "case_106": "structured-error",
   "case_107": "structured-error",
@@ -180,7 +182,7 @@
   "case_172": "structured-error",
   "case_173": "structured-error",
   "case_174": "structured-error",
-  "case_175": "trap",
+  "case_175": "structured-error",
   "case_176": "structured-error",
   "case_177": "structured-error",
   "case_178": "structured-error",
@@ -195,8 +197,8 @@
   "case_187": "structured-error",
   "case_188": "structured-error",
   "case_189": "structured-error",
-  "case_190": "hang",
-  "case_191": "trap",
+  "case_190": "structured-error",
+  "case_191": "structured-error",
   "case_192": "structured-error",
   "case_193": "structured-error",
   "case_194": "ok",
@@ -228,20 +230,20 @@
   "case_220": "structured-error",
   "case_221": "structured-error",
   "case_222": "structured-error",
-  "case_223": "trap",
+  "case_223": "structured-error",
   "case_224": "structured-error",
   "case_225": "ok",
   "case_226": "structured-error",
   "case_227": "structured-error",
   "case_228": "structured-error",
   "case_229": "structured-error",
-  "case_230": "trap",
+  "case_230": "structured-error",
   "case_231": "ok",
   "case_232": "structured-error",
   "case_233": "structured-error",
   "case_234": "ok",
   "case_235": "structured-error",
-  "case_236": "trap",
+  "case_236": "structured-error",
   "case_237": "structured-error",
   "case_238": "structured-error",
   "case_239": "structured-error",
@@ -252,7 +254,7 @@
   "case_244": "invalid-result",
   "case_245": "ok",
   "case_246": "structured-error",
-  "case_247": "trap",
+  "case_247": "structured-error",
   "case_248": "structured-error",
   "case_249": "structured-error",
   "case_250": "structured-error",
@@ -260,11 +262,11 @@
   "case_252": "structured-error",
   "case_253": "structured-error",
   "case_254": "structured-error",
-  "case_255": "trap",
+  "case_255": "structured-error",
   "case_256": "structured-error",
   "case_257": "structured-error",
   "case_258": "structured-error",
-  "case_259": "trap",
+  "case_259": "structured-error",
   "case_260": "structured-error",
   "case_261": "ok",
   "case_262": "structured-error",
@@ -281,7 +283,7 @@
   "case_273": "structured-error",
   "case_274": "structured-error",
   "case_275": "structured-error",
-  "case_276": "trap",
+  "case_276": "structured-error",
   "case_277": "structured-error",
   "case_278": "structured-error",
   "case_279": "structured-error",
@@ -307,13 +309,13 @@
   "case_299": "ok",
   "case_300": "structured-error",
   "case_301": "structured-error",
-  "case_302": "trap",
+  "case_302": "structured-error",
   "case_303": "structured-error",
   "case_304": "structured-error",
   "case_305": "structured-error",
   "case_306": "structured-error",
   "case_307": "structured-error",
-  "case_308": "trap",
+  "case_308": "structured-error",
   "case_309": "structured-error",
   "case_310": "structured-error",
   "case_311": "structured-error",
@@ -356,7 +358,7 @@
   "case_348": "structured-error",
   "case_349": "ok",
   "case_350": "structured-error",
-  "case_351": "hang",
+  "case_351": "structured-error",
   "case_352": "structured-error",
   "case_353": "structured-error",
   "case_354": "structured-error",
@@ -365,9 +367,9 @@
   "case_357": "structured-error",
   "case_358": "structured-error",
   "case_359": "structured-error",
-  "case_360": "hang",
+  "case_360": "structured-error",
   "case_361": "structured-error",
-  "case_362": "trap",
+  "case_362": "structured-error",
   "case_363": "structured-error",
   "case_364": "ok",
   "case_365": "structured-error",
@@ -395,7 +397,7 @@
   "case_387": "structured-error",
   "case_388": "structured-error",
   "case_389": "structured-error",
-  "case_390": "trap",
+  "case_390": "structured-error",
   "case_391": "structured-error",
   "case_392": "structured-error",
   "case_393": "structured-error",
@@ -407,7 +409,7 @@
   "case_399": "structured-error",
   "case_400": "structured-error",
   "case_401": "structured-error",
-  "case_402": "trap",
+  "case_402": "structured-error",
   "case_403": "ok",
   "case_404": "structured-error",
   "case_405": "structured-error",
@@ -429,9 +431,9 @@
   "case_421": "structured-error",
   "case_422": "structured-error",
   "case_423": "ok",
-  "case_424": "hang",
+  "case_424": "structured-error",
   "case_425": "structured-error",
-  "case_426": "trap",
+  "case_426": "structured-error",
   "case_427": "structured-error",
   "case_428": "ok",
   "case_429": "structured-error",
@@ -460,9 +462,9 @@
   "case_452": "structured-error",
   "case_453": "structured-error",
   "case_454": "structured-error",
-  "case_455": "trap",
-  "case_456": "trap",
-  "case_457": "trap",
+  "case_455": "structured-error",
+  "case_456": "structured-error",
+  "case_457": "structured-error",
   "case_458": "structured-error",
   "case_459": "ok",
   "case_460": "structured-error",
@@ -503,9 +505,9 @@
   "case_495": "structured-error",
   "case_496": "structured-error",
   "case_497": "structured-error",
-  "case_498": "trap",
+  "case_498": "structured-error",
   "case_499": "structured-error",
-  "case_500": "trap",
+  "case_500": "structured-error",
   "case_501": "ok",
   "case_502": "structured-error",
   "case_503": "structured-error",
@@ -521,11 +523,11 @@
   "case_513": "structured-error",
   "case_514": "ok",
   "case_515": "structured-error",
-  "case_516": "trap",
+  "case_516": "structured-error",
   "case_517": "structured-error",
   "case_518": "ok",
   "case_519": "structured-error",
-  "case_520": "trap",
+  "case_520": "structured-error",
   "case_521": "structured-error",
   "case_522": "structured-error",
   "case_523": "structured-error",
@@ -562,11 +564,11 @@
   "case_554": "ok",
   "case_555": "structured-error",
   "case_556": "structured-error",
-  "case_557": "trap",
+  "case_557": "structured-error",
   "case_558": "ok",
   "case_559": "structured-error",
   "case_560": "structured-error",
-  "case_561": "hang",
+  "case_561": "structured-error",
   "case_562": "structured-error",
   "case_563": "structured-error",
   "case_564": "structured-error",
@@ -593,7 +595,7 @@
   "case_585": "structured-error",
   "case_586": "structured-error",
   "case_587": "structured-error",
-  "case_588": "trap",
+  "case_588": "structured-error",
   "case_589": "structured-error",
   "case_590": "ok",
   "case_591": "structured-error",
@@ -601,7 +603,7 @@
   "case_593": "structured-error",
   "case_594": "structured-error",
   "case_595": "structured-error",
-  "case_596": "trap",
+  "case_596": "structured-error",
   "case_597": "ok",
   "case_598": "structured-error",
   "case_599": "structured-error",
@@ -619,10 +621,10 @@
   "case_611": "structured-error",
   "case_612": "structured-error",
   "case_613": "structured-error",
-  "case_614": "trap",
+  "case_614": "structured-error",
   "case_615": "structured-error",
   "case_616": "structured-error",
-  "case_617": "trap",
+  "case_617": "structured-error",
   "case_618": "structured-error",
   "case_619": "structured-error",
   "case_620": "structured-error",
@@ -649,9 +651,9 @@
   "case_641": "structured-error",
   "case_642": "structured-error",
   "case_643": "structured-error",
-  "case_644": "hang",
+  "case_644": "structured-error",
   "case_645": "structured-error",
-  "case_646": "hang",
+  "case_646": "structured-error",
   "case_647": "structured-error",
   "case_648": "ok",
   "case_649": "structured-error",
@@ -666,7 +668,7 @@
   "case_658": "structured-error",
   "case_659": "structured-error",
   "case_660": "structured-error",
-  "case_661": "trap",
+  "case_661": "structured-error",
   "case_662": "structured-error",
   "case_663": "ok",
   "case_664": "ok",
@@ -681,7 +683,7 @@
   "case_673": "structured-error",
   "case_674": "structured-error",
   "case_675": "structured-error",
-  "case_676": "trap",
+  "case_676": "structured-error",
   "case_677": "structured-error",
   "case_678": "structured-error",
   "case_679": "structured-error",
@@ -689,17 +691,17 @@
   "case_681": "structured-error",
   "case_682": "structured-error",
   "case_683": "structured-error",
-  "case_684": "trap",
+  "case_684": "structured-error",
   "case_685": "structured-error",
   "case_686": "structured-error",
   "case_687": "ok",
   "case_688": "structured-error",
-  "case_689": "hang",
+  "case_689": "structured-error",
   "case_690": "structured-error",
   "case_691": "structured-error",
   "case_692": "structured-error",
   "case_693": "structured-error",
-  "case_694": "trap",
+  "case_694": "structured-error",
   "case_695": "structured-error",
   "case_696": "structured-error",
   "case_697": "structured-error",
@@ -711,7 +713,7 @@
   "case_703": "structured-error",
   "case_704": "structured-error",
   "case_705": "structured-error",
-  "case_706": "trap",
+  "case_706": "structured-error",
   "case_707": "structured-error",
   "case_708": "ok",
   "case_709": "structured-error",
@@ -730,7 +732,7 @@
   "case_722": "structured-error",
   "case_723": "ok",
   "case_724": "structured-error",
-  "case_725": "trap",
+  "case_725": "ok",
   "case_726": "structured-error",
   "case_727": "structured-error",
   "case_728": "structured-error",
@@ -741,7 +743,7 @@
   "case_733": "structured-error",
   "case_734": "ok",
   "case_735": "ok",
-  "case_736": "trap",
+  "case_736": "structured-error",
   "case_737": "structured-error",
   "case_738": "ok",
   "case_739": "ok",
@@ -804,7 +806,7 @@
   "case_796": "invalid-result",
   "case_797": "structured-error",
   "case_798": "structured-error",
-  "case_799": "hang",
+  "case_799": "structured-error",
   "case_800": "ok",
   "case_801": "ok",
   "case_802": "structured-error",
@@ -820,7 +822,7 @@
   "case_812": "structured-error",
   "case_813": "structured-error",
   "case_814": "structured-error",
-  "case_815": "trap",
+  "case_815": "structured-error",
   "case_816": "structured-error",
   "case_817": "structured-error",
   "case_818": "structured-error",
@@ -833,20 +835,20 @@
   "case_825": "structured-error",
   "case_826": "structured-error",
   "case_827": "structured-error",
-  "case_828": "trap",
+  "case_828": "structured-error",
   "case_829": "structured-error",
   "case_830": "structured-error",
   "case_831": "structured-error",
   "case_832": "structured-error",
   "case_833": "structured-error",
   "case_834": "structured-error",
-  "case_835": "trap",
+  "case_835": "structured-error",
   "case_836": "ok",
   "case_837": "structured-error",
   "case_838": "structured-error",
   "case_839": "structured-error",
   "case_840": "ok",
-  "case_841": "hang",
+  "case_841": "structured-error",
   "case_842": "structured-error",
   "case_843": "ok",
   "case_844": "structured-error",
@@ -858,9 +860,9 @@
   "case_850": "structured-error",
   "case_851": "structured-error",
   "case_852": "structured-error",
-  "case_853": "hang",
+  "case_853": "structured-error",
   "case_854": "structured-error",
-  "case_855": "trap",
+  "case_855": "structured-error",
   "case_856": "structured-error",
   "case_857": "structured-error",
   "case_858": "structured-error",
@@ -891,25 +893,25 @@
   "case_883": "structured-error",
   "case_884": "structured-error",
   "case_885": "structured-error",
-  "case_886": "hang",
+  "case_886": "structured-error",
   "case_887": "structured-error",
   "case_888": "structured-error",
-  "case_889": "trap",
+  "case_889": "structured-error",
   "case_890": "structured-error",
   "case_891": "structured-error",
-  "case_892": "trap",
+  "case_892": "structured-error",
   "case_893": "structured-error",
   "case_894": "structured-error",
   "case_895": "ok",
-  "case_896": "hang",
+  "case_896": "structured-error",
   "case_897": "ok",
   "case_898": "structured-error",
-  "case_899": "trap",
+  "case_899": "structured-error",
   "case_900": "ok",
   "case_901": "structured-error",
   "case_902": "structured-error",
   "case_903": "structured-error",
-  "case_904": "trap",
+  "case_904": "structured-error",
   "case_905": "structured-error",
   "case_906": "structured-error",
   "case_907": "structured-error",
@@ -942,7 +944,7 @@
   "case_934": "structured-error",
   "case_935": "structured-error",
   "case_936": "structured-error",
-  "case_937": "hang",
+  "case_937": "structured-error",
   "case_938": "structured-error",
   "case_939": "structured-error",
   "case_940": "structured-error",
@@ -964,7 +966,7 @@
   "case_956": "ok",
   "case_957": "ok",
   "case_958": "structured-error",
-  "case_959": "trap",
+  "case_959": "structured-error",
   "case_960": "structured-error",
   "case_961": "ok",
   "case_962": "ok",
@@ -987,19 +989,19 @@
   "case_979": "ok",
   "case_980": "structured-error",
   "case_981": "structured-error",
-  "case_982": "trap",
+  "case_982": "structured-error",
   "case_983": "structured-error",
   "case_984": "structured-error",
   "case_985": "structured-error",
   "case_986": "ok",
   "case_987": "structured-error",
   "case_988": "structured-error",
-  "case_989": "hang",
+  "case_989": "structured-error",
   "case_990": "ok",
   "case_991": "ok",
   "case_992": "structured-error",
   "case_993": "structured-error",
-  "case_994": "hang",
+  "case_994": "structured-error",
   "case_995": "structured-error",
   "case_996": "structured-error",
   "case_997": "structured-error",
@@ -1016,9 +1018,9 @@
   "case_1008": "structured-error",
   "case_1009": "ok",
   "case_1010": "structured-error",
-  "case_1011": "trap",
+  "case_1011": "ok",
   "case_1012": "structured-error",
-  "case_1013": "trap",
+  "case_1013": "structured-error",
   "case_1014": "structured-error",
   "case_1015": "ok",
   "case_1016": "structured-error",
@@ -1031,13 +1033,13 @@
   "case_1023": "structured-error",
   "case_1024": "structured-error",
   "case_1025": "structured-error",
-  "case_1026": "trap",
-  "case_1027": "trap",
+  "case_1026": "structured-error",
+  "case_1027": "structured-error",
   "case_1028": "structured-error",
   "case_1029": "structured-error",
   "case_1030": "ok",
   "case_1031": "ok",
-  "case_1032": "hang",
+  "case_1032": "structured-error",
   "case_1033": "structured-error",
   "case_1034": "structured-error",
   "case_1035": "structured-error",
@@ -1079,7 +1081,7 @@
   "case_1071": "structured-error",
   "case_1072": "structured-error",
   "case_1073": "structured-error",
-  "case_1074": "trap",
+  "case_1074": "structured-error",
   "case_1075": "structured-error",
   "case_1076": "ok",
   "case_1077": "structured-error",
@@ -1094,7 +1096,7 @@
   "case_1086": "structured-error",
   "case_1087": "structured-error",
   "case_1088": "structured-error",
-  "case_1089": "trap",
+  "case_1089": "ok",
   "case_1090": "structured-error",
   "case_1091": "structured-error",
   "case_1092": "structured-error",
@@ -1102,7 +1104,7 @@
   "case_1094": "structured-error",
   "case_1095": "structured-error",
   "case_1096": "structured-error",
-  "case_1097": "trap",
+  "case_1097": "structured-error",
   "case_1098": "structured-error",
   "case_1099": "ok",
   "case_1100": "structured-error",
@@ -1141,15 +1143,15 @@
   "case_1133": "structured-error",
   "case_1134": "structured-error",
   "case_1135": "structured-error",
-  "case_1136": "hang",
-  "case_1137": "trap",
+  "case_1136": "structured-error",
+  "case_1137": "structured-error",
   "case_1138": "structured-error",
   "case_1139": "structured-error",
   "case_1140": "structured-error",
   "case_1141": "ok",
   "case_1142": "structured-error",
-  "case_1143": "trap",
-  "case_1144": "trap",
+  "case_1143": "structured-error",
+  "case_1144": "structured-error",
   "case_1145": "structured-error",
   "case_1146": "ok",
   "case_1147": "structured-error",
@@ -1159,7 +1161,7 @@
   "case_1151": "structured-error",
   "case_1152": "structured-error",
   "case_1153": "ok",
-  "case_1154": "hang",
+  "case_1154": "structured-error",
   "case_1155": "structured-error",
   "case_1156": "structured-error",
   "case_1157": "ok",
@@ -1173,7 +1175,7 @@
   "case_1165": "structured-error",
   "case_1166": "structured-error",
   "case_1167": "structured-error",
-  "case_1168": "trap",
+  "case_1168": "structured-error",
   "case_1169": "structured-error",
   "case_1170": "structured-error",
   "case_1171": "structured-error",
@@ -1191,7 +1193,7 @@
   "case_1183": "structured-error",
   "case_1184": "structured-error",
   "case_1185": "structured-error",
-  "case_1186": "hang",
+  "case_1186": "structured-error",
   "case_1187": "structured-error",
   "case_1188": "ok",
   "case_1189": "structured-error",
@@ -1200,7 +1202,7 @@
   "case_1192": "structured-error",
   "case_1193": "structured-error",
   "case_1194": "structured-error",
-  "case_1195": "trap",
+  "case_1195": "structured-error",
   "case_1196": "structured-error",
   "case_1197": "structured-error",
   "case_1198": "structured-error",
@@ -1224,7 +1226,7 @@
   "case_1216": "structured-error",
   "case_1217": "structured-error",
   "case_1218": "structured-error",
-  "case_1219": "hang",
+  "case_1219": "structured-error",
   "case_1220": "structured-error",
   "case_1221": "structured-error",
   "case_1222": "structured-error",
@@ -1237,12 +1239,12 @@
   "case_1229": "structured-error",
   "case_1230": "structured-error",
   "case_1231": "structured-error",
-  "case_1232": "hang",
+  "case_1232": "structured-error",
   "case_1233": "structured-error",
   "case_1234": "structured-error",
   "case_1235": "structured-error",
   "case_1236": "structured-error",
-  "case_1237": "trap",
+  "case_1237": "structured-error",
   "case_1238": "structured-error",
   "case_1239": "structured-error",
   "case_1240": "structured-error",
@@ -1264,7 +1266,7 @@
   "case_1256": "structured-error",
   "case_1257": "ok",
   "case_1258": "structured-error",
-  "case_1259": "hang",
+  "case_1259": "structured-error",
   "case_1260": "ok",
   "case_1261": "structured-error",
   "case_1262": "structured-error",
@@ -1282,7 +1284,7 @@
   "case_1274": "structured-error",
   "case_1275": "structured-error",
   "case_1276": "ok",
-  "case_1277": "hang",
+  "case_1277": "structured-error",
   "case_1278": "structured-error",
   "case_1279": "structured-error",
   "case_1280": "structured-error",
@@ -1294,7 +1296,7 @@
   "case_1286": "structured-error",
   "case_1287": "structured-error",
   "case_1288": "structured-error",
-  "case_1289": "trap",
+  "case_1289": "ok",
   "case_1290": "ok",
   "case_1291": "ok",
   "case_1292": "structured-error",
@@ -1303,9 +1305,9 @@
   "case_1295": "structured-error",
   "case_1296": "structured-error",
   "case_1297": "structured-error",
-  "case_1298": "trap",
+  "case_1298": "structured-error",
   "case_1299": "structured-error",
-  "case_1300": "trap",
+  "case_1300": "structured-error",
   "case_1301": "structured-error",
   "case_1302": "structured-error",
   "case_1303": "structured-error",
@@ -1341,7 +1343,7 @@
   "case_1333": "structured-error",
   "case_1334": "structured-error",
   "case_1335": "structured-error",
-  "case_1336": "trap",
+  "case_1336": "structured-error",
   "case_1337": "structured-error",
   "case_1338": "structured-error",
   "case_1339": "structured-error",
@@ -1365,7 +1367,7 @@
   "case_1357": "structured-error",
   "case_1358": "structured-error",
   "case_1359": "structured-error",
-  "case_1360": "trap",
+  "case_1360": "structured-error",
   "case_1361": "structured-error",
   "case_1362": "structured-error",
   "case_1363": "structured-error",
@@ -1377,7 +1379,7 @@
   "case_1369": "structured-error",
   "case_1370": "structured-error",
   "case_1371": "structured-error",
-  "case_1372": "trap",
+  "case_1372": "structured-error",
   "case_1373": "structured-error",
   "case_1374": "ok",
   "case_1375": "structured-error",
@@ -1398,7 +1400,7 @@
   "case_1390": "structured-error",
   "case_1391": "structured-error",
   "case_1392": "structured-error",
-  "case_1393": "hang",
+  "case_1393": "structured-error",
   "case_1394": "ok",
   "case_1395": "structured-error",
   "case_1396": "structured-error",
@@ -1413,7 +1415,7 @@
   "case_1405": "structured-error",
   "case_1406": "structured-error",
   "case_1407": "structured-error",
-  "case_1408": "trap",
+  "case_1408": "structured-error",
   "case_1409": "structured-error",
   "case_1410": "structured-error",
   "case_1411": "structured-error",
@@ -1423,16 +1425,16 @@
   "case_1415": "ok",
   "case_1416": "structured-error",
   "case_1417": "ok",
-  "case_1418": "hang",
+  "case_1418": "structured-error",
   "case_1419": "structured-error",
   "case_1420": "structured-error",
-  "case_1421": "trap",
+  "case_1421": "structured-error",
   "case_1422": "structured-error",
   "case_1423": "structured-error",
   "case_1424": "structured-error",
   "case_1425": "structured-error",
   "case_1426": "structured-error",
-  "case_1427": "hang",
+  "case_1427": "structured-error",
   "case_1428": "structured-error",
   "case_1429": "structured-error",
   "case_1430": "ok",
@@ -1468,7 +1470,7 @@
   "case_1460": "structured-error",
   "case_1461": "structured-error",
   "case_1462": "structured-error",
-  "case_1463": "trap",
+  "case_1463": "structured-error",
   "case_1464": "structured-error",
   "case_1465": "structured-error",
   "case_1466": "structured-error",
@@ -1480,7 +1482,7 @@
   "case_1472": "structured-error",
   "case_1473": "structured-error",
   "case_1474": "structured-error",
-  "case_1475": "trap",
+  "case_1475": "structured-error",
   "case_1476": "structured-error",
   "case_1477": "structured-error",
   "case_1478": "structured-error",
@@ -1498,13 +1500,13 @@
   "case_1490": "structured-error",
   "case_1491": "structured-error",
   "case_1492": "structured-error",
-  "case_1493": "trap",
+  "case_1493": "structured-error",
   "case_1494": "structured-error",
   "case_1495": "structured-error",
   "case_1496": "structured-error",
   "case_1497": "structured-error",
-  "case_1498": "trap",
-  "case_1499": "trap",
+  "case_1498": "structured-error",
+  "case_1499": "structured-error",
   "case_1500": "structured-error",
   "case_1501": "structured-error",
   "case_1502": "structured-error",
@@ -1524,7 +1526,7 @@
   "case_1516": "ok",
   "case_1517": "invalid-result",
   "case_1518": "structured-error",
-  "case_1519": "hang",
+  "case_1519": "structured-error",
   "case_1520": "structured-error",
   "case_1521": "structured-error",
   "case_1522": "structured-error",
@@ -1557,7 +1559,7 @@
   "case_1549": "ok",
   "case_1550": "ok",
   "case_1551": "structured-error",
-  "case_1552": "hang",
+  "case_1552": "structured-error",
   "case_1553": "structured-error",
   "case_1554": "structured-error",
   "case_1555": "structured-error",
@@ -1576,7 +1578,7 @@
   "case_1568": "structured-error",
   "case_1569": "structured-error",
   "case_1570": "structured-error",
-  "case_1571": "trap",
+  "case_1571": "structured-error",
   "case_1572": "structured-error",
   "case_1573": "structured-error",
   "case_1574": "structured-error",
@@ -1598,7 +1600,7 @@
   "case_1590": "structured-error",
   "case_1591": "structured-error",
   "case_1592": "ok",
-  "case_1593": "hang",
+  "case_1593": "structured-error",
   "case_1594": "structured-error",
   "case_1595": "structured-error",
   "case_1596": "structured-error",
@@ -1614,7 +1616,7 @@
   "case_1606": "structured-error",
   "case_1607": "structured-error",
   "case_1608": "structured-error",
-  "case_1609": "trap",
+  "case_1609": "structured-error",
   "case_1610": "structured-error",
   "case_1611": "ok",
   "case_1612": "structured-error",
@@ -1635,7 +1637,7 @@
   "case_1627": "structured-error",
   "case_1628": "ok",
   "case_1629": "structured-error",
-  "case_1630": "trap",
+  "case_1630": "ok",
   "case_1631": "structured-error",
   "case_1632": "structured-error",
   "case_1633": "structured-error",
@@ -1653,11 +1655,11 @@
   "case_1645": "structured-error",
   "case_1646": "structured-error",
   "case_1647": "structured-error",
-  "case_1648": "trap",
+  "case_1648": "structured-error",
   "case_1649": "structured-error",
   "case_1650": "structured-error",
   "case_1651": "structured-error",
-  "case_1652": "trap",
+  "case_1652": "structured-error",
   "case_1653": "ok",
   "case_1654": "structured-error",
   "case_1655": "structured-error",
@@ -1684,12 +1686,12 @@
   "case_1676": "structured-error",
   "case_1677": "ok",
   "case_1678": "structured-error",
-  "case_1679": "hang",
+  "case_1679": "structured-error",
   "case_1680": "structured-error",
   "case_1681": "structured-error",
   "case_1682": "structured-error",
   "case_1683": "structured-error",
-  "case_1684": "trap",
+  "case_1684": "structured-error",
   "case_1685": "structured-error",
   "case_1686": "structured-error",
   "case_1687": "ok",
@@ -1709,9 +1711,9 @@
   "case_1701": "structured-error",
   "case_1702": "structured-error",
   "case_1703": "structured-error",
-  "case_1704": "trap",
+  "case_1704": "structured-error",
   "case_1705": "structured-error",
-  "case_1706": "trap",
+  "case_1706": "structured-error",
   "case_1707": "structured-error",
   "case_1708": "structured-error",
   "case_1709": "structured-error",
@@ -1740,7 +1742,7 @@
   "case_1732": "structured-error",
   "case_1733": "structured-error",
   "case_1734": "structured-error",
-  "case_1735": "trap",
+  "case_1735": "ok",
   "case_1736": "structured-error",
   "case_1737": "ok",
   "case_1738": "structured-error",
@@ -1753,7 +1755,7 @@
   "case_1745": "structured-error",
   "case_1746": "structured-error",
   "case_1747": "structured-error",
-  "case_1748": "trap",
+  "case_1748": "structured-error",
   "case_1749": "structured-error",
   "case_1750": "structured-error",
   "case_1751": "structured-error",
@@ -1814,7 +1816,7 @@
   "case_1806": "structured-error",
   "case_1807": "structured-error",
   "case_1808": "structured-error",
-  "case_1809": "trap",
+  "case_1809": "structured-error",
   "case_1810": "structured-error",
   "case_1811": "ok",
   "case_1812": "structured-error",
@@ -1853,15 +1855,15 @@
   "case_1845": "structured-error",
   "case_1846": "ok",
   "case_1847": "structured-error",
-  "case_1848": "hang",
+  "case_1848": "structured-error",
   "case_1849": "structured-error",
   "case_1850": "structured-error",
   "case_1851": "ok",
-  "case_1852": "trap",
+  "case_1852": "structured-error",
   "case_1853": "structured-error",
   "case_1854": "ok",
   "case_1855": "structured-error",
-  "case_1856": "trap",
+  "case_1856": "structured-error",
   "case_1857": "structured-error",
   "case_1858": "structured-error",
   "case_1859": "structured-error",
@@ -1894,11 +1896,11 @@
   "case_1886": "structured-error",
   "case_1887": "structured-error",
   "case_1888": "structured-error",
-  "case_1889": "trap",
+  "case_1889": "structured-error",
   "case_1890": "structured-error",
   "case_1891": "structured-error",
   "case_1892": "structured-error",
-  "case_1893": "hang",
+  "case_1893": "structured-error",
   "case_1894": "structured-error",
   "case_1895": "structured-error",
   "case_1896": "ok",
@@ -1906,7 +1908,7 @@
   "case_1898": "structured-error",
   "case_1899": "ok",
   "case_1900": "ok",
-  "case_1901": "hang",
+  "case_1901": "structured-error",
   "case_1902": "structured-error",
   "case_1903": "structured-error",
   "case_1904": "structured-error",
@@ -1924,7 +1926,7 @@
   "case_1916": "structured-error",
   "case_1917": "structured-error",
   "case_1918": "structured-error",
-  "case_1919": "trap",
+  "case_1919": "structured-error",
   "case_1920": "structured-error",
   "case_1921": "structured-error",
   "case_1922": "ok",
@@ -1937,7 +1939,7 @@
   "case_1929": "structured-error",
   "case_1930": "structured-error",
   "case_1931": "structured-error",
-  "case_1932": "hang",
+  "case_1932": "structured-error",
   "case_1933": "structured-error",
   "case_1934": "structured-error",
   "case_1935": "structured-error",
@@ -1946,7 +1948,7 @@
   "case_1938": "structured-error",
   "case_1939": "structured-error",
   "case_1940": "structured-error",
-  "case_1941": "trap",
+  "case_1941": "structured-error",
   "case_1942": "structured-error",
   "case_1943": "structured-error",
   "case_1944": "structured-error",
@@ -1958,7 +1960,7 @@
   "case_1950": "structured-error",
   "case_1951": "structured-error",
   "case_1952": "structured-error",
-  "case_1953": "trap",
+  "case_1953": "ok",
   "case_1954": "structured-error",
   "case_1955": "ok",
   "case_1956": "structured-error",
@@ -1977,11 +1979,11 @@
   "case_1969": "structured-error",
   "case_1970": "structured-error",
   "case_1971": "structured-error",
-  "case_1972": "trap",
+  "case_1972": "structured-error",
   "case_1973": "structured-error",
   "case_1974": "structured-error",
   "case_1975": "structured-error",
-  "case_1976": "trap",
+  "case_1976": "structured-error",
   "case_1977": "structured-error",
   "case_1978": "structured-error",
   "case_1979": "structured-error",
@@ -2002,15 +2004,15 @@
   "case_1994": "structured-error",
   "case_1995": "structured-error",
   "case_1996": "structured-error",
-  "case_1997": "trap",
+  "case_1997": "structured-error",
   "case_1998": "structured-error",
-  "case_1999": "trap",
+  "case_1999": "structured-error",
   "case_2000": "structured-error",
   "case_2001": "structured-error",
   "case_2002": "structured-error",
   "case_2003": "structured-error",
   "case_2004": "structured-error",
-  "case_2005": "trap",
+  "case_2005": "structured-error",
   "case_2006": "structured-error",
   "case_2007": "structured-error",
   "case_2008": "structured-error",
@@ -2054,7 +2056,7 @@
   "case_2046": "structured-error",
   "case_2047": "ok",
   "case_2048": "structured-error",
-  "case_2049": "trap",
+  "case_2049": "ok",
   "case_2050": "structured-error",
   "case_2051": "structured-error",
   "case_2052": "structured-error",
@@ -2064,7 +2066,7 @@
   "case_2056": "structured-error",
   "case_2057": "structured-error",
   "case_2058": "structured-error",
-  "case_2059": "trap",
+  "case_2059": "structured-error",
   "case_2060": "structured-error",
   "case_2061": "structured-error",
   "case_2062": "structured-error",
@@ -2093,7 +2095,7 @@
   "case_2085": "structured-error",
   "case_2086": "ok",
   "case_2087": "structured-error",
-  "case_2088": "trap",
+  "case_2088": "structured-error",
   "case_2089": "structured-error",
   "case_2090": "structured-error",
   "case_2091": "structured-error",
@@ -2115,7 +2117,7 @@
   "case_2107": "structured-error",
   "case_2108": "structured-error",
   "case_2109": "ok",
-  "case_2110": "trap",
+  "case_2110": "structured-error",
   "case_2111": "structured-error",
   "case_2112": "ok",
   "case_2113": "structured-error",
@@ -2136,7 +2138,7 @@
   "case_2128": "structured-error",
   "case_2129": "structured-error",
   "case_2130": "ok",
-  "case_2131": "hang",
+  "case_2131": "structured-error",
   "case_2132": "structured-error",
   "case_2133": "structured-error",
   "case_2134": "structured-error",
@@ -2147,7 +2149,7 @@
   "case_2139": "structured-error",
   "case_2140": "invalid-result",
   "case_2141": "surface-only",
-  "case_2142": "trap",
+  "case_2142": "structured-error",
   "case_2143": "structured-error",
   "case_2144": "structured-error",
   "case_2145": "structured-error",
@@ -2159,10 +2161,10 @@
   "case_2151": "structured-error",
   "case_2152": "structured-error",
   "case_2153": "structured-error",
-  "case_2154": "trap",
+  "case_2154": "ok",
   "case_2155": "structured-error",
   "case_2156": "structured-error",
-  "case_2157": "trap",
+  "case_2157": "ok",
   "case_2158": "structured-error",
   "case_2159": "ok",
   "case_2160": "ok",
@@ -2182,12 +2184,12 @@
   "case_2174": "structured-error",
   "case_2175": "structured-error",
   "case_2176": "structured-error",
-  "case_2177": "trap",
-  "case_2178": "trap",
+  "case_2177": "structured-error",
+  "case_2178": "structured-error",
   "case_2179": "structured-error",
   "case_2180": "structured-error",
   "case_2181": "ok",
-  "case_2182": "trap",
+  "case_2182": "structured-error",
   "case_2183": "structured-error",
   "case_2184": "ok",
   "case_2185": "structured-error",
@@ -2197,13 +2199,13 @@
   "case_2189": "structured-error",
   "case_2190": "structured-error",
   "case_2191": "ok",
-  "case_2192": "trap",
+  "case_2192": "structured-error",
   "case_2193": "structured-error",
   "case_2194": "structured-error",
   "case_2195": "structured-error",
   "case_2196": "structured-error",
   "case_2197": "structured-error",
-  "case_2198": "trap",
+  "case_2198": "structured-error",
   "case_2199": "structured-error",
   "case_2200": "ok",
   "case_2201": "ok",
@@ -2219,7 +2221,7 @@
   "case_2211": "structured-error",
   "case_2212": "structured-error",
   "case_2213": "structured-error",
-  "case_2214": "trap",
+  "case_2214": "structured-error",
   "case_2215": "structured-error",
   "case_2216": "structured-error",
   "case_2217": "structured-error",
@@ -2239,7 +2241,7 @@
   "case_2231": "structured-error",
   "case_2232": "structured-error",
   "case_2233": "structured-error",
-  "case_2234": "trap",
+  "case_2234": "ok",
   "case_2235": "structured-error",
   "case_2236": "structured-error",
   "case_2237": "structured-error",
@@ -2262,13 +2264,13 @@
   "case_2254": "structured-error",
   "case_2255": "structured-error",
   "case_2256": "structured-error",
-  "case_2257": "trap",
+  "case_2257": "structured-error",
   "case_2258": "structured-error",
   "case_2259": "structured-error",
   "case_2260": "structured-error",
   "case_2261": "structured-error",
   "case_2262": "structured-error",
-  "case_2263": "trap",
+  "case_2263": "structured-error",
   "case_2264": "structured-error",
   "case_2265": "ok",
   "case_2266": "structured-error",
@@ -2276,10 +2278,10 @@
   "case_2268": "structured-error",
   "case_2269": "structured-error",
   "case_2270": "structured-error",
-  "case_2271": "trap",
+  "case_2271": "structured-error",
   "case_2272": "structured-error",
-  "case_2273": "trap",
-  "case_2274": "trap",
+  "case_2273": "structured-error",
+  "case_2274": "structured-error",
   "case_2275": "structured-error",
   "case_2276": "structured-error",
   "case_2277": "structured-error",
@@ -2309,7 +2311,7 @@
   "case_2301": "structured-error",
   "case_2302": "structured-error",
   "case_2303": "structured-error",
-  "case_2304": "trap",
+  "case_2304": "structured-error",
   "case_2305": "structured-error",
   "case_2306": "structured-error",
   "case_2307": "structured-error",
@@ -2327,7 +2329,7 @@
   "case_2319": "structured-error",
   "case_2320": "structured-error",
   "case_2321": "structured-error",
-  "case_2322": "trap",
+  "case_2322": "structured-error",
   "case_2323": "structured-error",
   "case_2324": "structured-error",
   "case_2325": "structured-error",
@@ -2337,7 +2339,7 @@
   "case_2329": "structured-error",
   "case_2330": "structured-error",
   "case_2331": "structured-error",
-  "case_2332": "hang",
+  "case_2332": "structured-error",
   "case_2333": "structured-error",
   "case_2334": "structured-error",
   "case_2335": "structured-error",
@@ -2400,11 +2402,11 @@
   "case_2392": "ok",
   "case_2393": "structured-error",
   "case_2394": "structured-error",
-  "case_2395": "trap",
+  "case_2395": "structured-error",
   "case_2396": "structured-error",
   "case_2397": "ok",
   "case_2398": "structured-error",
-  "case_2399": "trap",
+  "case_2399": "structured-error",
   "case_2400": "structured-error",
   "case_2401": "ok",
   "case_2402": "structured-error",
@@ -2418,7 +2420,7 @@
   "case_2410": "structured-error",
   "case_2411": "structured-error",
   "case_2412": "structured-error",
-  "case_2413": "trap",
+  "case_2413": "structured-error",
   "case_2414": "structured-error",
   "case_2415": "ok",
   "case_2416": "structured-error",
@@ -2436,12 +2438,12 @@
   "case_2428": "structured-error",
   "case_2429": "structured-error",
   "case_2430": "ok",
-  "case_2431": "trap",
+  "case_2431": "structured-error",
   "case_2432": "structured-error",
-  "case_2433": "trap",
+  "case_2433": "structured-error",
   "case_2434": "structured-error",
   "case_2435": "structured-error",
-  "case_2436": "trap",
+  "case_2436": "ok",
   "case_2437": "structured-error",
   "case_2438": "structured-error",
   "case_2439": "surface-only",
@@ -2465,14 +2467,14 @@
   "case_2457": "structured-error",
   "case_2458": "structured-error",
   "case_2459": "structured-error",
-  "case_2460": "trap",
+  "case_2460": "structured-error",
   "case_2461": "structured-error",
   "case_2462": "ok",
   "case_2463": "structured-error",
   "case_2464": "ok",
   "case_2465": "structured-error",
   "case_2466": "structured-error",
-  "case_2467": "trap",
+  "case_2467": "structured-error",
   "case_2468": "structured-error",
   "case_2469": "ok",
   "case_2470": "ok",
@@ -2494,7 +2496,7 @@
   "case_2486": "structured-error",
   "case_2487": "structured-error",
   "case_2488": "structured-error",
-  "case_2489": "hang",
+  "case_2489": "structured-error",
   "case_2490": "ok",
   "case_2491": "structured-error",
   "case_2492": "structured-error",
@@ -2515,7 +2517,7 @@
   "case_2507": "ok",
   "case_2508": "structured-error",
   "case_2509": "structured-error",
-  "case_2510": "trap",
+  "case_2510": "structured-error",
   "case_2511": "structured-error",
   "case_2512": "structured-error",
   "case_2513": "structured-error",
@@ -2554,7 +2556,7 @@
   "case_2546": "structured-error",
   "case_2547": "ok",
   "case_2548": "structured-error",
-  "case_2549": "trap",
+  "case_2549": "structured-error",
   "case_2550": "structured-error",
   "case_2551": "ok",
   "case_2552": "structured-error",
@@ -2603,10 +2605,10 @@
   "case_2595": "structured-error",
   "case_2596": "ok",
   "case_2597": "structured-error",
-  "case_2598": "trap",
+  "case_2598": "structured-error",
   "case_2599": "structured-error",
   "case_2600": "structured-error",
-  "case_2601": "hang",
+  "case_2601": "structured-error",
   "case_2602": "structured-error",
   "case_2603": "structured-error",
   "case_2604": "ok",
@@ -2621,7 +2623,7 @@
   "case_2613": "structured-error",
   "case_2614": "structured-error",
   "case_2615": "structured-error",
-  "case_2616": "trap",
+  "case_2616": "ok",
   "case_2617": "structured-error",
   "case_2618": "ok",
   "case_2619": "structured-error",
@@ -2634,7 +2636,7 @@
   "case_2626": "structured-error",
   "case_2627": "structured-error",
   "case_2628": "structured-error",
-  "case_2629": "hang",
+  "case_2629": "structured-error",
   "case_2630": "ok",
   "case_2631": "structured-error",
   "case_2632": "structured-error",
@@ -2673,8 +2675,8 @@
   "case_2665": "structured-error",
   "case_2666": "structured-error",
   "case_2667": "structured-error",
-  "case_2668": "hang",
-  "case_2669": "trap",
+  "case_2668": "structured-error",
+  "case_2669": "structured-error",
   "case_2670": "structured-error",
   "case_2671": "structured-error",
   "case_2672": "structured-error",
@@ -2697,7 +2699,7 @@
   "case_2689": "structured-error",
   "case_2690": "structured-error",
   "case_2691": "ok",
-  "case_2692": "trap",
+  "case_2692": "structured-error",
   "case_2693": "structured-error",
   "case_2694": "structured-error",
   "case_2695": "ok",
@@ -2731,7 +2733,7 @@
   "case_2723": "structured-error",
   "case_2724": "ok",
   "case_2725": "structured-error",
-  "case_2726": "trap",
+  "case_2726": "structured-error",
   "case_2727": "structured-error",
   "case_2728": "structured-error",
   "case_2729": "structured-error",
@@ -2759,7 +2761,7 @@
   "case_2751": "structured-error",
   "case_2752": "structured-error",
   "case_2753": "structured-error",
-  "case_2754": "trap",
+  "case_2754": "structured-error",
   "case_2755": "structured-error",
   "case_2756": "ok",
   "case_2757": "ok",
@@ -2777,7 +2779,7 @@
   "case_2769": "structured-error",
   "case_2770": "structured-error",
   "case_2771": "structured-error",
-  "case_2772": "hang",
+  "case_2772": "structured-error",
   "case_2773": "structured-error",
   "case_2774": "structured-error",
   "case_2775": "structured-error",
@@ -2800,15 +2802,15 @@
   "case_2792": "structured-error",
   "case_2793": "structured-error",
   "case_2794": "structured-error",
-  "case_2795": "trap",
+  "case_2795": "structured-error",
   "case_2796": "structured-error",
   "case_2797": "ok",
   "case_2798": "structured-error",
   "case_2799": "structured-error",
   "case_2800": "structured-error",
   "case_2801": "ok",
-  "case_2802": "trap",
-  "case_2803": "trap",
+  "case_2802": "structured-error",
+  "case_2803": "structured-error",
   "case_2804": "structured-error",
   "case_2805": "structured-error",
   "case_2806": "structured-error",
@@ -2823,9 +2825,9 @@
   "case_2815": "structured-error",
   "case_2816": "structured-error",
   "case_2817": "ok",
-  "case_2818": "trap",
+  "case_2818": "structured-error",
   "case_2819": "structured-error",
-  "case_2820": "trap",
+  "case_2820": "structured-error",
   "case_2821": "structured-error",
   "case_2822": "structured-error",
   "case_2823": "structured-error",
@@ -2837,7 +2839,7 @@
   "case_2829": "structured-error",
   "case_2830": "structured-error",
   "case_2831": "structured-error",
-  "case_2832": "trap",
+  "case_2832": "structured-error",
   "case_2833": "structured-error",
   "case_2834": "structured-error",
   "case_2835": "structured-error",
@@ -2867,17 +2869,17 @@
   "case_2859": "structured-error",
   "case_2860": "structured-error",
   "case_2861": "structured-error",
-  "case_2862": "trap",
+  "case_2862": "structured-error",
   "case_2863": "structured-error",
   "case_2864": "ok",
   "case_2865": "structured-error",
   "case_2866": "structured-error",
   "case_2867": "structured-error",
   "case_2868": "structured-error",
-  "case_2869": "trap",
+  "case_2869": "structured-error",
   "case_2870": "structured-error",
   "case_2871": "structured-error",
-  "case_2872": "hang",
+  "case_2872": "structured-error",
   "case_2873": "structured-error",
   "case_2874": "structured-error",
   "case_2875": "structured-error",
@@ -2902,7 +2904,7 @@
   "case_2894": "structured-error",
   "case_2895": "structured-error",
   "case_2896": "structured-error",
-  "case_2897": "trap",
+  "case_2897": "ok",
   "case_2898": "structured-error",
   "case_2899": "structured-error",
   "case_2900": "structured-error",
@@ -2945,7 +2947,7 @@
   "case_2937": "structured-error",
   "case_2938": "structured-error",
   "case_2939": "structured-error",
-  "case_2940": "hang",
+  "case_2940": "structured-error",
   "case_2941": "structured-error",
   "case_2942": "structured-error",
   "case_2943": "structured-error",
@@ -2965,7 +2967,7 @@
   "case_2957": "structured-error",
   "case_2958": "structured-error",
   "case_2959": "structured-error",
-  "case_2960": "trap",
+  "case_2960": "structured-error",
   "case_2961": "ok",
   "case_2962": "structured-error",
   "case_2963": "ok",
@@ -2984,7 +2986,7 @@
   "case_2976": "structured-error",
   "case_2977": "structured-error",
   "case_2978": "ok",
-  "case_2979": "hang",
+  "case_2979": "structured-error",
   "case_2980": "structured-error",
   "case_2981": "structured-error",
   "case_2982": "structured-error",
@@ -2996,7 +2998,7 @@
   "case_2988": "structured-error",
   "case_2989": "structured-error",
   "case_2990": "structured-error",
-  "case_2991": "hang",
+  "case_2991": "structured-error",
   "case_2992": "structured-error",
   "case_2993": "structured-error",
   "case_2994": "structured-error",
@@ -3035,7 +3037,7 @@
   "case_3027": "structured-error",
   "case_3028": "structured-error",
   "case_3029": "structured-error",
-  "case_3030": "trap",
+  "case_3030": "structured-error",
   "case_3031": "structured-error",
   "case_3032": "ok",
   "case_3033": "structured-error",
@@ -3050,7 +3052,7 @@
   "case_3042": "structured-error",
   "case_3043": "structured-error",
   "case_3044": "structured-error",
-  "case_3045": "trap",
+  "case_3045": "ok",
   "case_3046": "structured-error",
   "case_3047": "structured-error",
   "case_3048": "structured-error",
@@ -3071,14 +3073,14 @@
   "case_3063": "structured-error",
   "case_3064": "structured-error",
   "case_3065": "structured-error",
-  "case_3066": "hang",
+  "case_3066": "structured-error",
   "case_3067": "structured-error",
   "case_3068": "structured-error",
   "case_3069": "structured-error",
   "case_3070": "structured-error",
   "case_3071": "structured-error",
   "case_3072": "structured-error",
-  "case_3073": "hang",
+  "case_3073": "structured-error",
   "case_3074": "structured-error",
   "case_3075": "structured-error",
   "case_3076": "structured-error",
@@ -3095,14 +3097,14 @@
   "case_3087": "structured-error",
   "case_3088": "structured-error",
   "case_3089": "structured-error",
-  "case_3090": "hang",
+  "case_3090": "structured-error",
   "case_3091": "structured-error",
   "case_3092": "structured-error",
   "case_3093": "structured-error",
   "case_3094": "structured-error",
   "case_3095": "structured-error",
   "case_3096": "structured-error",
-  "case_3097": "trap",
+  "case_3097": "structured-error",
   "case_3098": "ok",
   "case_3099": "structured-error",
   "case_3100": "structured-error",
@@ -3112,7 +3114,7 @@
   "case_3104": "ok",
   "case_3105": "structured-error",
   "case_3106": "structured-error",
-  "case_3107": "trap",
+  "case_3107": "structured-error",
   "case_3108": "structured-error",
   "case_3109": "structured-error",
   "case_3110": "ok",
@@ -3138,7 +3140,7 @@
   "case_3130": "ok",
   "case_3131": "structured-error",
   "case_3132": "structured-error",
-  "case_3133": "trap",
+  "case_3133": "structured-error",
   "case_3134": "structured-error",
   "case_3135": "structured-error",
   "case_3136": "structured-error",
@@ -3150,7 +3152,7 @@
   "case_3142": "structured-error",
   "case_3143": "structured-error",
   "case_3144": "structured-error",
-  "case_3145": "trap",
+  "case_3145": "structured-error",
   "case_3146": "structured-error",
   "case_3147": "ok",
   "case_3148": "structured-error",
@@ -3169,17 +3171,17 @@
   "case_3161": "ok",
   "case_3162": "structured-error",
   "case_3163": "structured-error",
-  "case_3164": "trap",
+  "case_3164": "structured-error",
   "case_3165": "structured-error",
   "case_3166": "structured-error",
   "case_3167": "structured-error",
-  "case_3168": "hang",
+  "case_3168": "structured-error",
   "case_3169": "structured-error",
   "case_3170": "structured-error",
   "case_3171": "structured-error",
   "case_3172": "structured-error",
   "case_3173": "ok",
-  "case_3174": "trap",
+  "case_3174": "structured-error",
   "case_3175": "structured-error",
   "case_3176": "structured-error",
   "case_3177": "structured-error",
@@ -3236,7 +3238,7 @@
   "case_3228": "ok",
   "case_3229": "structured-error",
   "case_3230": "structured-error",
-  "case_3231": "trap",
+  "case_3231": "ok",
   "case_3232": "structured-error",
   "case_3233": "structured-error",
   "case_3234": "structured-error",
@@ -3256,7 +3258,7 @@
   "case_3248": "structured-error",
   "case_3249": "structured-error",
   "case_3250": "structured-error",
-  "case_3251": "trap",
+  "case_3251": "structured-error",
   "case_3252": "structured-error",
   "case_3253": "structured-error",
   "case_3254": "structured-error",
@@ -3280,7 +3282,7 @@
   "case_3272": "structured-error",
   "case_3273": "structured-error",
   "case_3274": "structured-error",
-  "case_3275": "trap",
+  "case_3275": "ok",
   "case_3276": "ok",
   "case_3277": "structured-error",
   "case_3278": "structured-error",
@@ -3317,7 +3319,7 @@
   "case_3309": "structured-error",
   "case_3310": "structured-error",
   "case_3311": "structured-error",
-  "case_3312": "trap",
+  "case_3312": "structured-error",
   "case_3313": "structured-error",
   "case_3314": "structured-error",
   "case_3315": "structured-error",
@@ -3329,12 +3331,12 @@
   "case_3321": "structured-error",
   "case_3322": "ok",
   "case_3323": "ok",
-  "case_3324": "trap",
+  "case_3324": "structured-error",
   "case_3325": "structured-error",
   "case_3326": "structured-error",
   "case_3327": "structured-error",
   "case_3328": "structured-error",
-  "case_3329": "trap",
+  "case_3329": "structured-error",
   "case_3330": "structured-error",
   "case_3331": "ok",
   "case_3332": "structured-error",
@@ -3347,16 +3349,16 @@
   "case_3339": "structured-error",
   "case_3340": "structured-error",
   "case_3341": "ok",
-  "case_3342": "trap",
+  "case_3342": "structured-error",
   "case_3343": "structured-error",
-  "case_3344": "trap",
+  "case_3344": "structured-error",
   "case_3345": "structured-error",
   "case_3346": "structured-error",
   "case_3347": "structured-error",
   "case_3348": "structured-error",
   "case_3349": "structured-error",
   "case_3350": "ok",
-  "case_3351": "hang",
+  "case_3351": "structured-error",
   "case_3352": "structured-error",
   "case_3353": "structured-error",
   "case_3354": "structured-error",
@@ -3364,7 +3366,7 @@
   "case_3356": "structured-error",
   "case_3357": "structured-error",
   "case_3358": "structured-error",
-  "case_3359": "hang",
+  "case_3359": "structured-error",
   "case_3360": "structured-error",
   "case_3361": "structured-error",
   "case_3362": "structured-error",
@@ -3414,8 +3416,8 @@
   "case_3406": "structured-error",
   "case_3407": "structured-error",
   "case_3408": "structured-error",
-  "case_3409": "hang",
-  "case_3410": "trap",
+  "case_3409": "structured-error",
+  "case_3410": "structured-error",
   "case_3411": "structured-error",
   "case_3412": "ok",
   "case_3413": "structured-error",
@@ -3423,9 +3425,9 @@
   "case_3415": "structured-error",
   "case_3416": "structured-error",
   "case_3417": "structured-error",
-  "case_3418": "trap",
+  "case_3418": "structured-error",
   "case_3419": "structured-error",
-  "case_3420": "trap",
+  "case_3420": "structured-error",
   "case_3421": "structured-error",
   "case_3422": "structured-error",
   "case_3423": "ok",
@@ -3444,7 +3446,7 @@
   "case_3436": "structured-error",
   "case_3437": "structured-error",
   "case_3438": "structured-error",
-  "case_3439": "trap",
+  "case_3439": "structured-error",
   "case_3440": "structured-error",
   "case_3441": "structured-error",
   "case_3442": "structured-error",
@@ -3452,7 +3454,7 @@
   "case_3444": "ok",
   "case_3445": "surface-only",
   "case_3446": "structured-error",
-  "case_3447": "trap",
+  "case_3447": "structured-error",
   "case_3448": "structured-error",
   "case_3449": "ok",
   "case_3450": "structured-error",
@@ -3484,14 +3486,14 @@
   "case_3476": "structured-error",
   "case_3477": "structured-error",
   "case_3478": "structured-error",
-  "case_3479": "trap",
+  "case_3479": "structured-error",
   "case_3480": "structured-error",
   "case_3481": "ok",
   "case_3482": "ok",
   "case_3483": "ok",
   "case_3484": "structured-error",
   "case_3485": "structured-error",
-  "case_3486": "trap",
+  "case_3486": "ok",
   "case_3487": "ok",
   "case_3488": "structured-error",
   "case_3489": "ok",
@@ -3500,7 +3502,7 @@
   "case_3492": "structured-error",
   "case_3493": "structured-error",
   "case_3494": "structured-error",
-  "case_3495": "trap",
+  "case_3495": "structured-error",
   "case_3496": "structured-error",
   "case_3497": "ok",
   "case_3498": "structured-error",
@@ -3520,13 +3522,13 @@
   "case_3512": "structured-error",
   "case_3513": "structured-error",
   "case_3514": "structured-error",
-  "case_3515": "trap",
+  "case_3515": "structured-error",
   "case_3516": "structured-error",
   "case_3517": "structured-error",
   "case_3518": "structured-error",
   "case_3519": "structured-error",
   "case_3520": "structured-error",
-  "case_3521": "trap",
+  "case_3521": "structured-error",
   "case_3522": "structured-error",
   "case_3523": "ok",
   "case_3524": "structured-error",
@@ -3540,7 +3542,7 @@
   "case_3532": "structured-error",
   "case_3533": "structured-error",
   "case_3534": "structured-error",
-  "case_3535": "trap",
+  "case_3535": "ok",
   "case_3536": "structured-error",
   "case_3537": "structured-error",
   "case_3538": "structured-error",
@@ -3557,7 +3559,7 @@
   "case_3549": "structured-error",
   "case_3550": "structured-error",
   "case_3551": "ok",
-  "case_3552": "trap",
+  "case_3552": "structured-error",
   "case_3553": "structured-error",
   "case_3554": "structured-error",
   "case_3555": "structured-error",
@@ -3568,10 +3570,10 @@
   "case_3560": "structured-error",
   "case_3561": "structured-error",
   "case_3562": "structured-error",
-  "case_3563": "trap",
+  "case_3563": "structured-error",
   "case_3564": "structured-error",
   "case_3565": "structured-error",
-  "case_3566": "trap",
+  "case_3566": "structured-error",
   "case_3567": "structured-error",
   "case_3568": "structured-error",
   "case_3569": "ok",
@@ -3614,13 +3616,13 @@
   "case_3606": "ok",
   "case_3607": "structured-error",
   "case_3608": "structured-error",
-  "case_3609": "hang",
+  "case_3609": "structured-error",
   "case_3610": "structured-error",
   "case_3611": "structured-error",
   "case_3612": "structured-error",
   "case_3613": "ok",
   "case_3614": "structured-error",
-  "case_3615": "trap",
+  "case_3615": "ok",
   "case_3616": "structured-error",
   "case_3617": "structured-error",
   "case_3618": "structured-error",
@@ -3638,7 +3640,7 @@
   "case_3630": "structured-error",
   "case_3631": "structured-error",
   "case_3632": "structured-error",
-  "case_3633": "trap",
+  "case_3633": "structured-error",
   "case_3634": "structured-error",
   "case_3635": "structured-error",
   "case_3636": "structured-error",
@@ -3651,7 +3653,7 @@
   "case_3643": "structured-error",
   "case_3644": "structured-error",
   "case_3645": "ok",
-  "case_3646": "trap",
+  "case_3646": "structured-error",
   "case_3647": "structured-error",
   "case_3648": "structured-error",
   "case_3649": "structured-error",
@@ -3669,13 +3671,13 @@
   "case_3661": "structured-error",
   "case_3662": "structured-error",
   "case_3663": "structured-error",
-  "case_3664": "trap",
+  "case_3664": "structured-error",
   "case_3665": "structured-error",
   "case_3666": "structured-error",
-  "case_3667": "trap",
+  "case_3667": "structured-error",
   "case_3668": "structured-error",
   "case_3669": "structured-error",
-  "case_3670": "trap",
+  "case_3670": "ok",
   "case_3671": "structured-error",
   "case_3672": "structured-error",
   "case_3673": "structured-error",
@@ -3706,14 +3708,14 @@
   "case_3698": "structured-error",
   "case_3699": "structured-error",
   "case_3700": "ok",
-  "case_3701": "trap",
+  "case_3701": "ok",
   "case_3702": "structured-error",
   "case_3703": "structured-error",
   "case_3704": "structured-error",
   "case_3705": "structured-error",
   "case_3706": "ok",
   "case_3707": "ok",
-  "case_3708": "trap",
+  "case_3708": "structured-error",
   "case_3709": "structured-error",
   "case_3710": "structured-error",
   "case_3711": "structured-error",
@@ -3736,7 +3738,7 @@
   "case_3728": "structured-error",
   "case_3729": "structured-error",
   "case_3730": "structured-error",
-  "case_3731": "trap",
+  "case_3731": "structured-error",
   "case_3732": "structured-error",
   "case_3733": "structured-error",
   "case_3734": "structured-error",
@@ -3756,7 +3758,7 @@
   "case_3748": "structured-error",
   "case_3749": "structured-error",
   "case_3750": "structured-error",
-  "case_3751": "trap",
+  "case_3751": "structured-error",
   "case_3752": "structured-error",
   "case_3753": "structured-error",
   "case_3754": "structured-error",
@@ -3766,7 +3768,7 @@
   "case_3758": "structured-error",
   "case_3759": "structured-error",
   "case_3760": "structured-error",
-  "case_3761": "trap",
+  "case_3761": "structured-error",
   "case_3762": "structured-error",
   "case_3763": "structured-error",
   "case_3764": "structured-error",
@@ -3784,7 +3786,7 @@
   "case_3776": "structured-error",
   "case_3777": "structured-error",
   "case_3778": "structured-error",
-  "case_3779": "trap",
+  "case_3779": "structured-error",
   "case_3780": "structured-error",
   "case_3781": "structured-error",
   "case_3782": "structured-error",
@@ -3796,7 +3798,7 @@
   "case_3788": "structured-error",
   "case_3789": "structured-error",
   "case_3790": "structured-error",
-  "case_3791": "hang",
+  "case_3791": "structured-error",
   "case_3792": "structured-error",
   "case_3793": "structured-error",
   "case_3794": "structured-error",
@@ -3807,7 +3809,7 @@
   "case_3799": "structured-error",
   "case_3800": "structured-error",
   "case_3801": "structured-error",
-  "case_3802": "trap",
+  "case_3802": "structured-error",
   "case_3803": "structured-error",
   "case_3804": "structured-error",
   "case_3805": "structured-error",
@@ -3817,13 +3819,13 @@
   "case_3809": "structured-error",
   "case_3810": "ok",
   "case_3811": "invalid-result",
-  "case_3812": "trap",
-  "case_3813": "trap",
+  "case_3812": "structured-error",
+  "case_3813": "structured-error",
   "case_3814": "structured-error",
   "case_3815": "structured-error",
   "case_3816": "structured-error",
   "case_3817": "structured-error",
-  "case_3818": "trap",
+  "case_3818": "structured-error",
   "case_3819": "structured-error",
   "case_3820": "structured-error",
   "case_3821": "structured-error",
@@ -3832,10 +3834,10 @@
   "case_3824": "structured-error",
   "case_3825": "structured-error",
   "case_3826": "structured-error",
-  "case_3827": "trap",
+  "case_3827": "structured-error",
   "case_3828": "structured-error",
   "case_3829": "structured-error",
-  "case_3830": "trap",
+  "case_3830": "ok",
   "case_3831": "structured-error",
   "case_3832": "structured-error",
   "case_3833": "structured-error",
@@ -3882,7 +3884,7 @@
   "case_3874": "structured-error",
   "case_3875": "structured-error",
   "case_3876": "structured-error",
-  "case_3877": "trap",
+  "case_3877": "structured-error",
   "case_3878": "structured-error",
   "case_3879": "structured-error",
   "case_3880": "structured-error",
@@ -3893,7 +3895,7 @@
   "case_3885": "structured-error",
   "case_3886": "ok",
   "case_3887": "structured-error",
-  "case_3888": "trap",
+  "case_3888": "structured-error",
   "case_3889": "ok",
   "case_3890": "structured-error",
   "case_3891": "structured-error",
@@ -3936,7 +3938,7 @@
   "case_3928": "structured-error",
   "case_3929": "structured-error",
   "case_3930": "structured-error",
-  "case_3931": "trap",
+  "case_3931": "structured-error",
   "case_3932": "structured-error",
   "case_3933": "structured-error",
   "case_3934": "structured-error",
@@ -3990,7 +3992,7 @@
   "case_3982": "structured-error",
   "case_3983": "ok",
   "case_3984": "structured-error",
-  "case_3985": "trap",
+  "case_3985": "structured-error",
   "case_3986": "structured-error",
   "case_3987": "structured-error",
   "case_3988": "structured-error",
@@ -4015,9 +4017,9 @@
   "case_4007": "structured-error",
   "case_4008": "structured-error",
   "case_4009": "structured-error",
-  "case_4010": "trap",
+  "case_4010": "structured-error",
   "case_4011": "structured-error",
-  "case_4012": "hang",
+  "case_4012": "structured-error",
   "case_4013": "structured-error",
   "case_4014": "structured-error",
   "case_4015": "structured-error",
@@ -4032,7 +4034,7 @@
   "case_4024": "structured-error",
   "case_4025": "structured-error",
   "case_4026": "structured-error",
-  "case_4027": "trap",
+  "case_4027": "ok",
   "case_4028": "structured-error",
   "case_4029": "structured-error",
   "case_4030": "structured-error",
@@ -4040,7 +4042,7 @@
   "case_4032": "structured-error",
   "case_4033": "ok",
   "case_4034": "ok",
-  "case_4035": "trap",
+  "case_4035": "structured-error",
   "case_4036": "structured-error",
   "case_4037": "structured-error",
   "case_4038": "structured-error",
@@ -4073,7 +4075,7 @@
   "case_4065": "structured-error",
   "case_4066": "ok",
   "case_4067": "structured-error",
-  "case_4068": "trap",
+  "case_4068": "structured-error",
   "case_4069": "structured-error",
   "case_4070": "structured-error",
   "case_4071": "structured-error",
@@ -4081,7 +4083,7 @@
   "case_4073": "structured-error",
   "case_4074": "structured-error",
   "case_4075": "structured-error",
-  "case_4076": "trap",
+  "case_4076": "structured-error",
   "case_4077": "structured-error",
   "case_4078": "invalid-result",
   "case_4079": "structured-error",
@@ -4091,10 +4093,10 @@
   "case_4083": "structured-error",
   "case_4084": "ok",
   "case_4085": "structured-error",
-  "case_4086": "trap",
+  "case_4086": "structured-error",
   "case_4087": "structured-error",
   "case_4088": "ok",
-  "case_4089": "trap",
+  "case_4089": "ok",
   "case_4090": "structured-error",
   "case_4091": "structured-error",
   "case_4092": "structured-error",
@@ -4115,7 +4117,7 @@
   "case_4107": "structured-error",
   "case_4108": "structured-error",
   "case_4109": "structured-error",
-  "case_4110": "trap",
+  "case_4110": "structured-error",
   "case_4111": "structured-error",
   "case_4112": "structured-error",
   "case_4113": "structured-error",
@@ -4212,14 +4214,14 @@
   "case_4204": "structured-error",
   "case_4205": "structured-error",
   "case_4206": "structured-error",
-  "case_4207": "trap",
+  "case_4207": "structured-error",
   "case_4208": "structured-error",
   "case_4209": "structured-error",
   "case_4210": "structured-error",
-  "case_4211": "hang",
+  "case_4211": "structured-error",
   "case_4212": "structured-error",
   "case_4213": "structured-error",
-  "case_4214": "trap",
+  "case_4214": "structured-error",
   "case_4215": "structured-error",
   "case_4216": "structured-error",
   "case_4217": "structured-error",
@@ -4249,7 +4251,7 @@
   "case_4241": "structured-error",
   "case_4242": "structured-error",
   "case_4243": "structured-error",
-  "case_4244": "hang",
+  "case_4244": "structured-error",
   "case_4245": "structured-error",
   "case_4246": "ok",
   "case_4247": "structured-error",
@@ -4264,7 +4266,7 @@
   "case_4256": "structured-error",
   "case_4257": "structured-error",
   "case_4258": "structured-error",
-  "case_4259": "hang",
+  "case_4259": "structured-error",
   "case_4260": "structured-error",
   "case_4261": "structured-error",
   "case_4262": "structured-error",
@@ -4273,7 +4275,7 @@
   "case_4265": "structured-error",
   "case_4266": "structured-error",
   "case_4267": "ok",
-  "case_4268": "trap",
+  "case_4268": "structured-error",
   "case_4269": "structured-error",
   "case_4270": "structured-error",
   "case_4271": "structured-error",
@@ -4284,12 +4286,12 @@
   "case_4276": "structured-error",
   "case_4277": "structured-error",
   "case_4278": "structured-error",
-  "case_4279": "hang",
+  "case_4279": "structured-error",
   "case_4280": "structured-error",
   "case_4281": "structured-error",
   "case_4282": "structured-error",
   "case_4283": "structured-error",
-  "case_4284": "trap",
+  "case_4284": "structured-error",
   "case_4285": "structured-error",
   "case_4286": "structured-error",
   "case_4287": "structured-error",
@@ -4302,7 +4304,7 @@
   "case_4294": "structured-error",
   "case_4295": "structured-error",
   "case_4296": "structured-error",
-  "case_4297": "trap",
+  "case_4297": "structured-error",
   "case_4298": "ok",
   "case_4299": "structured-error",
   "case_4300": "structured-error",
@@ -4360,7 +4362,7 @@
   "case_4352": "structured-error",
   "case_4353": "structured-error",
   "case_4354": "structured-error",
-  "case_4355": "trap",
+  "case_4355": "structured-error",
   "case_4356": "ok",
   "case_4357": "structured-error",
   "case_4358": "structured-error",
@@ -4396,7 +4398,7 @@
   "case_4388": "structured-error",
   "case_4389": "structured-error",
   "case_4390": "structured-error",
-  "case_4391": "trap",
+  "case_4391": "structured-error",
   "case_4392": "structured-error",
   "case_4393": "structured-error",
   "case_4394": "structured-error",
@@ -4404,9 +4406,9 @@
   "case_4396": "structured-error",
   "case_4397": "structured-error",
   "case_4398": "structured-error",
-  "case_4399": "trap",
+  "case_4399": "structured-error",
   "case_4400": "structured-error",
-  "case_4401": "trap",
+  "case_4401": "structured-error",
   "case_4402": "structured-error",
   "case_4403": "structured-error",
   "case_4404": "structured-error",
@@ -4426,7 +4428,7 @@
   "case_4418": "ok",
   "case_4419": "structured-error",
   "case_4420": "structured-error",
-  "case_4421": "trap",
+  "case_4421": "structured-error",
   "case_4422": "structured-error",
   "case_4423": "ok",
   "case_4424": "ok",
@@ -4456,7 +4458,7 @@
   "case_4448": "structured-error",
   "case_4449": "ok",
   "case_4450": "ok",
-  "case_4451": "hang",
+  "case_4451": "structured-error",
   "case_4452": "structured-error",
   "case_4453": "ok",
   "case_4454": "ok",
@@ -4467,7 +4469,7 @@
   "case_4459": "structured-error",
   "case_4460": "structured-error",
   "case_4461": "structured-error",
-  "case_4462": "trap",
+  "case_4462": "structured-error",
   "case_4463": "structured-error",
   "case_4464": "structured-error",
   "case_4465": "structured-error",
@@ -4493,19 +4495,19 @@
   "case_4485": "ok",
   "case_4486": "structured-error",
   "case_4487": "structured-error",
-  "case_4488": "hang",
+  "case_4488": "structured-error",
   "case_4489": "structured-error",
   "case_4490": "ok",
   "case_4491": "structured-error",
   "case_4492": "ok",
   "case_4493": "structured-error",
-  "case_4494": "trap",
+  "case_4494": "structured-error",
   "case_4495": "structured-error",
   "case_4496": "ok",
   "case_4497": "structured-error",
   "case_4498": "ok",
   "case_4499": "structured-error",
-  "case_4500": "hang",
+  "case_4500": "structured-error",
   "case_4501": "structured-error",
   "case_4502": "structured-error",
   "case_4503": "structured-error",
@@ -4530,13 +4532,13 @@
   "case_4522": "structured-error",
   "case_4523": "structured-error",
   "case_4524": "structured-error",
-  "case_4525": "trap",
+  "case_4525": "structured-error",
   "case_4526": "ok",
   "case_4527": "structured-error",
   "case_4528": "structured-error",
   "case_4529": "structured-error",
   "case_4530": "structured-error",
-  "case_4531": "hang",
+  "case_4531": "structured-error",
   "case_4532": "structured-error",
   "case_4533": "ok",
   "case_4534": "ok",
@@ -4561,12 +4563,12 @@
   "case_4553": "ok",
   "case_4554": "structured-error",
   "case_4555": "structured-error",
-  "case_4556": "trap",
+  "case_4556": "structured-error",
   "case_4557": "structured-error",
   "case_4558": "structured-error",
   "case_4559": "structured-error",
   "case_4560": "structured-error",
-  "case_4561": "trap",
+  "case_4561": "structured-error",
   "case_4562": "structured-error",
   "case_4563": "ok",
   "case_4564": "ok",
@@ -4588,7 +4590,7 @@
   "case_4580": "structured-error",
   "case_4581": "structured-error",
   "case_4582": "structured-error",
-  "case_4583": "trap",
+  "case_4583": "structured-error",
   "case_4584": "structured-error",
   "case_4585": "structured-error",
   "case_4586": "structured-error",
@@ -4597,17 +4599,17 @@
   "case_4589": "structured-error",
   "case_4590": "structured-error",
   "case_4591": "structured-error",
-  "case_4592": "trap",
+  "case_4592": "structured-error",
   "case_4593": "structured-error",
   "case_4594": "structured-error",
   "case_4595": "ok",
   "case_4596": "structured-error",
   "case_4597": "structured-error",
   "case_4598": "structured-error",
-  "case_4599": "hang",
+  "case_4599": "structured-error",
   "case_4600": "structured-error",
   "case_4601": "structured-error",
-  "case_4602": "trap",
+  "case_4602": "structured-error",
   "case_4603": "ok",
   "case_4604": "structured-error",
   "case_4605": "structured-error",
@@ -4621,12 +4623,12 @@
   "case_4613": "structured-error",
   "case_4614": "ok",
   "case_4615": "structured-error",
-  "case_4616": "hang",
+  "case_4616": "structured-error",
   "case_4617": "structured-error",
   "case_4618": "structured-error",
   "case_4619": "structured-error",
   "case_4620": "structured-error",
-  "case_4621": "hang",
+  "case_4621": "structured-error",
   "case_4622": "surface-only",
   "case_4623": "structured-error",
   "case_4624": "structured-error",
@@ -4638,7 +4640,7 @@
   "case_4630": "ok",
   "case_4631": "structured-error",
   "case_4632": "structured-error",
-  "case_4633": "trap",
+  "case_4633": "structured-error",
   "case_4634": "structured-error",
   "case_4635": "structured-error",
   "case_4636": "structured-error",
@@ -4673,9 +4675,9 @@
   "case_4665": "structured-error",
   "case_4666": "structured-error",
   "case_4667": "structured-error",
-  "case_4668": "trap",
-  "case_4669": "trap",
-  "case_4670": "trap",
+  "case_4668": "structured-error",
+  "case_4669": "structured-error",
+  "case_4670": "structured-error",
   "case_4671": "structured-error",
   "case_4672": "structured-error",
   "case_4673": "structured-error",
@@ -4684,11 +4686,11 @@
   "case_4676": "structured-error",
   "case_4677": "structured-error",
   "case_4678": "ok",
-  "case_4679": "trap",
+  "case_4679": "structured-error",
   "case_4680": "structured-error",
   "case_4681": "ok",
   "case_4682": "structured-error",
-  "case_4683": "hang",
+  "case_4683": "structured-error",
   "case_4684": "ok",
   "case_4685": "ok",
   "case_4686": "structured-error",
@@ -4727,7 +4729,7 @@
   "case_4719": "structured-error",
   "case_4720": "structured-error",
   "case_4721": "structured-error",
-  "case_4722": "trap",
+  "case_4722": "structured-error",
   "case_4723": "structured-error",
   "case_4724": "structured-error",
   "case_4725": "structured-error",
@@ -4774,19 +4776,19 @@
   "case_4766": "ok",
   "case_4767": "structured-error",
   "case_4768": "structured-error",
-  "case_4769": "hang",
+  "case_4769": "structured-error",
   "case_4770": "structured-error",
   "case_4771": "invalid-result",
   "case_4772": "ok",
   "case_4773": "structured-error",
   "case_4774": "ok",
   "case_4775": "structured-error",
-  "case_4776": "trap",
+  "case_4776": "structured-error",
   "case_4777": "ok",
   "case_4778": "structured-error",
   "case_4779": "structured-error",
   "case_4780": "structured-error",
-  "case_4781": "hang",
+  "case_4781": "structured-error",
   "case_4782": "structured-error",
   "case_4783": "structured-error",
   "case_4784": "structured-error",
@@ -4798,7 +4800,7 @@
   "case_4790": "structured-error",
   "case_4791": "structured-error",
   "case_4792": "structured-error",
-  "case_4793": "trap",
+  "case_4793": "structured-error",
   "case_4794": "structured-error",
   "case_4795": "ok",
   "case_4796": "ok",
@@ -4862,7 +4864,7 @@
   "case_4854": "structured-error",
   "case_4855": "structured-error",
   "case_4856": "structured-error",
-  "case_4857": "trap",
+  "case_4857": "structured-error",
   "case_4858": "ok",
   "case_4859": "ok",
   "case_4860": "structured-error",
@@ -4904,7 +4906,7 @@
   "case_4896": "surface-only",
   "case_4897": "ok",
   "case_4898": "structured-error",
-  "case_4899": "trap",
+  "case_4899": "structured-error",
   "case_4900": "structured-error",
   "case_4901": "structured-error",
   "case_4902": "structured-error",
@@ -4942,14 +4944,14 @@
   "case_4934": "ok",
   "case_4935": "invalid-result",
   "case_4936": "structured-error",
-  "case_4937": "trap",
+  "case_4937": "structured-error",
   "case_4938": "ok",
   "case_4939": "structured-error",
   "case_4940": "structured-error",
   "case_4941": "structured-error",
   "case_4942": "structured-error",
   "case_4943": "structured-error",
-  "case_4944": "trap",
+  "case_4944": "structured-error",
   "case_4945": "structured-error",
   "case_4946": "structured-error",
   "case_4947": "structured-error",
@@ -4973,7 +4975,7 @@
   "case_4965": "structured-error",
   "case_4966": "structured-error",
   "case_4967": "structured-error",
-  "case_4968": "trap",
+  "case_4968": "structured-error",
   "case_4969": "ok",
   "case_4970": "structured-error",
   "case_4971": "structured-error",
@@ -4995,12 +4997,12 @@
   "case_4987": "ok",
   "case_4988": "structured-error",
   "case_4989": "structured-error",
-  "case_4990": "trap",
+  "case_4990": "structured-error",
   "case_4991": "structured-error",
   "case_4992": "structured-error",
   "case_4993": "structured-error",
   "case_4994": "structured-error",
-  "case_4995": "trap",
+  "case_4995": "structured-error",
   "case_4996": "structured-error",
   "case_4997": "structured-error",
   "case_4998": "structured-error",
@@ -5008,179 +5010,8 @@
  },
  "minimal": [
   {
-   "key": "trap:unreachable panic=panicked at crates/ck-ops/src/surfacing/thicken.rs:550:56:\nno entry found for key:chamfer",
-   "count": 25,
-   "id": "case_1",
-   "kind": "surface",
-   "features": [
-    {
-     "type": "sketch",
-     "id": "S1",
-     "plane": {
-      "kind": "std",
-      "id": "front"
-     },
-     "points": [
-      {
-       "id": "c",
-       "x": 0,
-       "y": 0
-      }
-     ],
-     "entities": [
-      {
-       "type": "circle",
-       "id": "e1",
-       "c": "c",
-       "r": 20.962060875142924
-      }
-     ],
-     "constraints": []
-    },
-    {
-     "type": "surfaceExtrude",
-     "id": "F2",
-     "sketch": "S1",
-     "end": "blind",
-     "depth": 10
-    },
-    {
-     "type": "thicken",
-     "id": "F3",
-     "surface": "F2",
-     "thickness": 1,
-     "side": "both"
-    },
-    {
-     "type": "chamfer",
-     "id": "F4",
-     "distance": 0.001,
-     "edges": [
-      {
-       "faces": [
-        "F2.S.e1",
-        "F2.S.e2"
-       ],
-       "at": [
-        20,
-        0,
-        20
-       ]
-      }
-     ]
-    },
-    {
-     "type": "draft",
-     "id": "F5",
-     "neutral": {
-      "kind": "face",
-      "id": "F2.C0"
-     },
-     "faces": [
-      "F2.S.e1",
-      "F2.S.e2",
-      "F2.S.e3",
-      "F2.S.e4"
-     ],
-     "angle": 10
-    }
-   ]
-  },
-  {
-   "key": "trap:unreachable panic=panicked at crates/ck-ops/src/surfacing/thicken.rs:550:56:\nno entry found for key:lpattern",
-   "count": 20,
-   "id": "case_6",
-   "kind": "surface",
-   "features": [
-    {
-     "type": "sketch",
-     "id": "S1",
-     "plane": {
-      "kind": "std",
-      "id": "front"
-     },
-     "points": [
-      {
-       "id": "c",
-       "x": 0,
-       "y": 0
-      }
-     ],
-     "entities": [
-      {
-       "type": "circle",
-       "id": "e1",
-       "c": "c",
-       "r": 1.2812851174761613e-06
-      }
-     ],
-     "constraints": []
-    },
-    {
-     "type": "surfaceExtrude",
-     "id": "F2",
-     "sketch": "S1",
-     "end": "blind",
-     "depth": 0.001
-    },
-    {
-     "type": "thicken",
-     "id": "F3",
-     "surface": "F2",
-     "thickness": 10,
-     "side": "front"
-    }
-   ]
-  },
-  {
-   "key": "trap:unreachable panic=panicked at crates/ck-ops/src/surfacing/thicken.rs:550:56:\nno entry found for key:fillet",
-   "count": 20,
-   "id": "case_28",
-   "kind": "surface",
-   "features": [
-    {
-     "type": "sketch",
-     "id": "S1",
-     "plane": {
-      "kind": "std",
-      "id": "front"
-     },
-     "points": [
-      {
-       "id": "c",
-       "x": 0,
-       "y": 0
-      }
-     ],
-     "entities": [
-      {
-       "type": "circle",
-       "id": "e1",
-       "c": "c",
-       "r": 37.910824672318995
-      }
-     ],
-     "constraints": []
-    },
-    {
-     "type": "surfaceExtrude",
-     "id": "F2",
-     "sketch": "S1",
-     "end": "blind",
-     "depth": 0
-    },
-    {
-     "type": "thicken",
-     "id": "F3",
-     "surface": "F2",
-     "thickness": 10,
-     "side": "back"
-    }
-   ]
-  },
-  {
    "key": "hang:timeout:thicken",
-   "count": 7,
+   "count": 1,
    "id": "case_34",
    "kind": "revolve",
    "features": [
@@ -5276,1555 +5107,6 @@
       "kind": "std",
       "id": "right"
      }
-    }
-   ]
-  },
-  {
-   "key": "hang:timeout:fillet",
-   "count": 9,
-   "id": "case_49",
-   "kind": "revolve",
-   "features": [
-    {
-     "type": "sketch",
-     "id": "S1",
-     "plane": {
-      "kind": "std",
-      "id": "front"
-     },
-     "points": [
-      {
-       "id": "p0",
-       "x": 37769117.07814589,
-       "y": 0
-      },
-      {
-       "id": "p1",
-       "x": 19.89187144099269,
-       "y": 12.765936130075715
-      },
-      {
-       "id": "p2",
-       "x": 0,
-       "y": 12.765936130075715
-      },
-      {
-       "id": "p3",
-       "x": 0,
-       "y": 0
-      },
-      {
-       "id": "a1",
-       "x": 0,
-       "y": 0
-      },
-      {
-       "id": "a2",
-       "x": 0,
-       "y": 12.765936130075715
-      }
-     ],
-     "entities": [
-      {
-       "type": "line",
-       "id": "e1",
-       "p1": "p0",
-       "p2": "p1"
-      },
-      {
-       "type": "line",
-       "id": "e2",
-       "p1": "p1",
-       "p2": "p2"
-      },
-      {
-       "type": "line",
-       "id": "e3",
-       "p1": "p2",
-       "p2": "p3"
-      },
-      {
-       "type": "line",
-       "id": "e4",
-       "p1": "p3",
-       "p2": "p0"
-      },
-      {
-       "type": "line",
-       "id": "ax",
-       "p1": "a1",
-       "p2": "a2",
-       "construction": true
-      }
-     ],
-     "constraints": []
-    },
-    {
-     "type": "revolve",
-     "id": "F2",
-     "op": "add",
-     "sketch": "S1",
-     "axis": "ax",
-     "angle": 100
-    },
-    {
-     "type": "lpattern",
-     "id": "F3",
-     "seeds": [
-      "F2"
-     ],
-     "dir": {
-      "kind": "axis",
-      "axis": "z"
-     },
-     "spacing": 42.76454163887538,
-     "count": 3
-    }
-   ]
-  },
-  {
-   "key": "hang:timeout:mirror",
-   "count": 7,
-   "id": "case_96",
-   "kind": "cyl",
-   "features": [
-    {
-     "type": "sketch",
-     "id": "S1",
-     "plane": {
-      "kind": "std",
-      "id": "front"
-     },
-     "points": [
-      {
-       "id": "c",
-       "x": 0,
-       "y": 0
-      }
-     ],
-     "entities": [
-      {
-       "type": "circle",
-       "id": "e1",
-       "c": "c",
-       "r": 2.3306778290774672
-      }
-     ],
-     "constraints": []
-    },
-    {
-     "type": "extrude",
-     "id": "F2",
-     "op": "add",
-     "sketch": "S1",
-     "end": "blind",
-     "depth": 1e-06
-    },
-    {
-     "type": "lpattern",
-     "id": "F4",
-     "seeds": [
-      "F2"
-     ],
-     "dir": {
-      "kind": "axis",
-      "axis": "z"
-     },
-     "spacing": 10,
-     "count": 100
-    }
-   ]
-  },
-  {
-   "key": "trap:unreachable panic=panicked at crates/ck-ops/src/surfacing/thicken.rs:550:56:\nno entry found for key:thicken",
-   "count": 57,
-   "id": "case_104",
-   "kind": "surface",
-   "features": [
-    {
-     "type": "sketch",
-     "id": "S1",
-     "plane": {
-      "kind": "std",
-      "id": "front"
-     },
-     "points": [
-      {
-       "id": "c",
-       "x": 0,
-       "y": 0
-      }
-     ],
-     "entities": [
-      {
-       "type": "circle",
-       "id": "e1",
-       "c": "c",
-       "r": 30.244073981116525
-      }
-     ],
-     "constraints": []
-    },
-    {
-     "type": "surfaceExtrude",
-     "id": "F2",
-     "sketch": "S1",
-     "end": "blind",
-     "depth": 10
-    },
-    {
-     "type": "thicken",
-     "id": "F3",
-     "surface": "F2",
-     "thickness": 10,
-     "side": "front"
-    }
-   ]
-  },
-  {
-   "key": "trap:unreachable panic=panicked at crates/ck-ops/src/surfacing/thicken.rs:568:43:\nno entry found for key:extrude",
-   "count": 2,
-   "id": "case_191",
-   "kind": "surface",
-   "features": [
-    {
-     "type": "sketch",
-     "id": "S1",
-     "plane": {
-      "kind": "std",
-      "id": "front"
-     },
-     "points": [
-      {
-       "id": "c",
-       "x": 0,
-       "y": 0
-      }
-     ],
-     "entities": [
-      {
-       "type": "circle",
-       "id": "e1",
-       "c": "c",
-       "r": 93761645.3960838
-      }
-     ],
-     "constraints": []
-    },
-    {
-     "type": "surfaceExtrude",
-     "id": "F2",
-     "sketch": "S1",
-     "end": "blind",
-     "depth": 10000000
-    },
-    {
-     "type": "thicken",
-     "id": "F3",
-     "surface": "F2",
-     "thickness": 10,
-     "side": "front"
-    }
-   ]
-  },
-  {
-   "key": "trap:unreachable panic=panicked at crates/ck-ops/src/surfacing/thicken.rs:550:56:\nno entry found for key:draft",
-   "count": 28,
-   "id": "case_247",
-   "kind": "surface",
-   "features": [
-    {
-     "type": "sketch",
-     "id": "S1",
-     "plane": {
-      "kind": "std",
-      "id": "front"
-     },
-     "points": [
-      {
-       "id": "c",
-       "x": 0,
-       "y": 0
-      }
-     ],
-     "entities": [
-      {
-       "type": "circle",
-       "id": "e1",
-       "c": "c",
-       "r": 39.04432666292414
-      }
-     ],
-     "constraints": []
-    },
-    {
-     "type": "surfaceExtrude",
-     "id": "F2",
-     "sketch": "S1",
-     "end": "blind",
-     "depth": 10
-    },
-    {
-     "type": "thicken",
-     "id": "F3",
-     "surface": "F2",
-     "thickness": 10,
-     "side": "both"
-    },
-    {
-     "type": "mirror",
-     "id": "F4",
-     "seeds": [
-      "F2"
-     ],
-     "plane": {
-      "kind": "std",
-      "id": "top"
-     }
-    },
-    {
-     "type": "sketch",
-     "id": "S6",
-     "plane": {
-      "kind": "std",
-      "id": "top"
-     },
-     "points": [
-      {
-       "id": "c",
-       "x": 0,
-       "y": 0
-      }
-     ],
-     "entities": [
-      {
-       "type": "circle",
-       "id": "e1",
-       "c": "c",
-       "r": 38.69401428438723
-      }
-     ],
-     "constraints": []
-    },
-    {
-     "type": "extrude",
-     "id": "F5",
-     "op": "cut",
-     "sketch": "S6",
-     "end": "blind",
-     "depth": 0,
-     "flip": true
-    }
-   ]
-  },
-  {
-   "key": "trap:unreachable panic=panicked at crates/ck-ops/src/surfacing/thicken.rs:568:43:\nno entry found for key:fillet",
-   "count": 2,
-   "id": "case_255",
-   "kind": "surface",
-   "features": [
-    {
-     "type": "sketch",
-     "id": "S1",
-     "plane": {
-      "kind": "std",
-      "id": "front"
-     },
-     "points": [
-      {
-       "id": "c",
-       "x": 0,
-       "y": 0
-      }
-     ],
-     "entities": [
-      {
-       "type": "circle",
-       "id": "e1",
-       "c": "c",
-       "r": 39.76896996581927
-      }
-     ],
-     "constraints": []
-    },
-    {
-     "type": "surfaceExtrude",
-     "id": "F2",
-     "sketch": "S1",
-     "end": "blind",
-     "depth": 10
-    },
-    {
-     "type": "thicken",
-     "id": "F3",
-     "surface": "F2",
-     "thickness": 1000000,
-     "side": "front"
-    },
-    {
-     "type": "draft",
-     "id": "F4",
-     "neutral": {
-      "kind": "face",
-      "id": "F2.C0"
-     },
-     "faces": [
-      "F2.S.e1",
-      "F2.S.e2",
-      "F2.S.e3",
-      "F2.S.e4"
-     ],
-     "angle": -100
-    },
-    {
-     "type": "chamfer",
-     "id": "F5",
-     "distance": 10000,
-     "edges": [
-      {
-       "faces": [
-        "F2.S.e1",
-        "F2.S.e2"
-       ],
-       "at": [
-        20,
-        0,
-        20
-       ]
-      }
-     ]
-    },
-    {
-     "type": "mirror",
-     "id": "F6",
-     "seeds": [
-      "F2"
-     ],
-     "plane": {
-      "kind": "std",
-      "id": "front"
-     }
-    }
-   ]
-  },
-  {
-   "key": "hang:timeout:extrude",
-   "count": 13,
-   "id": "case_351",
-   "kind": "loft",
-   "features": [
-    {
-     "type": "sketch",
-     "id": "S1",
-     "plane": {
-      "kind": "std",
-      "id": "front"
-     },
-     "points": [
-      {
-       "id": "c",
-       "x": 0,
-       "y": 0
-      }
-     ],
-     "entities": [
-      {
-       "type": "circle",
-       "id": "e1",
-       "c": "c",
-       "r": 42.56328620316926
-      }
-     ],
-     "constraints": []
-    },
-    {
-     "type": "plane",
-     "id": "P1",
-     "mode": "offset",
-     "base": {
-      "kind": "std",
-      "id": "front"
-     },
-     "offset": 38.218403584845596
-    },
-    {
-     "type": "sketch",
-     "id": "S2",
-     "plane": {
-      "kind": "feature",
-      "id": "P1"
-     },
-     "points": [
-      {
-       "id": "c",
-       "x": 0,
-       "y": 0
-      }
-     ],
-     "entities": [
-      {
-       "type": "circle",
-       "id": "e1",
-       "c": "c",
-       "r": -1.715716810015871e-05
-      }
-     ],
-     "constraints": []
-    },
-    {
-     "type": "loft",
-     "id": "F3",
-     "op": "add",
-     "sketches": [
-      "S1",
-      "S2"
-     ]
-    },
-    {
-     "type": "lpattern",
-     "id": "F4",
-     "seeds": [
-      "F2"
-     ],
-     "dir": {
-      "kind": "axis",
-      "axis": "z"
-     },
-     "spacing": 36.1389172967989,
-     "count": 0
-    },
-    {
-     "type": "shell",
-     "id": "F5",
-     "faces": [
-      "F2.S.e1"
-     ],
-     "thickness": 1.2818802521331236
-    },
-    {
-     "type": "thicken",
-     "id": "F6",
-     "surface": "F2",
-     "thickness": 32.5639911401784,
-     "side": "back"
-    },
-    {
-     "type": "sketch",
-     "id": "S8",
-     "plane": {
-      "kind": "std",
-      "id": "top"
-     },
-     "points": [
-      {
-       "id": "c",
-       "x": 0,
-       "y": 0
-      }
-     ],
-     "entities": [
-      {
-       "type": "circle",
-       "id": "e1",
-       "c": "c",
-       "r": 32.439964053663424
-      }
-     ],
-     "constraints": []
-    },
-    {
-     "type": "extrude",
-     "id": "F7",
-     "op": "cut",
-     "sketch": "S8",
-     "end": "blind",
-     "depth": 1,
-     "flip": true
-    }
-   ]
-  },
-  {
-   "key": "trap:unreachable panic=panicked at crates/ck-ops/src/surfacing/thicken.rs:550:56:\nno entry found for key:mirror",
-   "count": 24,
-   "id": "case_362",
-   "kind": "surface",
-   "features": [
-    {
-     "type": "sketch",
-     "id": "S1",
-     "plane": {
-      "kind": "std",
-      "id": "front"
-     },
-     "points": [
-      {
-       "id": "c",
-       "x": 0,
-       "y": 0
-      }
-     ],
-     "entities": [
-      {
-       "type": "circle",
-       "id": "e1",
-       "c": "c",
-       "r": 9.044065135368145
-      }
-     ],
-     "constraints": []
-    },
-    {
-     "type": "surfaceExtrude",
-     "id": "F2",
-     "sketch": "S1",
-     "end": "blind",
-     "depth": 10
-    },
-    {
-     "type": "thicken",
-     "id": "F3",
-     "surface": "F2",
-     "thickness": 1,
-     "side": "both"
-    }
-   ]
-  },
-  {
-   "key": "hang:timeout:draft",
-   "count": 6,
-   "id": "case_424",
-   "kind": "loft",
-   "features": [
-    {
-     "type": "sketch",
-     "id": "S1",
-     "plane": {
-      "kind": "std",
-      "id": "front"
-     },
-     "points": [
-      {
-       "id": "c",
-       "x": 0,
-       "y": 0
-      }
-     ],
-     "entities": [
-      {
-       "type": "circle",
-       "id": "e1",
-       "c": "c",
-       "r": 34.208360568573696
-      }
-     ],
-     "constraints": []
-    },
-    {
-     "type": "plane",
-     "id": "P1",
-     "mode": "offset",
-     "base": {
-      "kind": "std",
-      "id": "front"
-     },
-     "offset": 39.78989312439645
-    },
-    {
-     "type": "sketch",
-     "id": "S2",
-     "plane": {
-      "kind": "feature",
-      "id": "P1"
-     },
-     "points": [
-      {
-       "id": "c",
-       "x": 0,
-       "y": 0
-      }
-     ],
-     "entities": [
-      {
-       "type": "circle",
-       "id": "e1",
-       "c": "c",
-       "r": 1.8846060313773389e-06
-      }
-     ],
-     "constraints": []
-    },
-    {
-     "type": "loft",
-     "id": "F3",
-     "op": "add",
-     "sketches": [
-      "S1",
-      "S2"
-     ]
-    },
-    {
-     "type": "chamfer",
-     "id": "F4",
-     "distance": 0,
-     "edges": [
-      {
-       "faces": [
-        "F2.S.e1",
-        "F2.S.e2"
-       ],
-       "at": [
-        20,
-        0,
-        20
-       ]
-      }
-     ]
-    },
-    {
-     "type": "sketch",
-     "id": "S6",
-     "plane": {
-      "kind": "std",
-      "id": "top"
-     },
-     "points": [
-      {
-       "id": "c",
-       "x": 0,
-       "y": 0
-      }
-     ],
-     "entities": [
-      {
-       "type": "circle",
-       "id": "e1",
-       "c": "c",
-       "r": 18.813591325376184
-      }
-     ],
-     "constraints": []
-    },
-    {
-     "type": "extrude",
-     "id": "F5",
-     "op": "cut",
-     "sketch": "S6",
-     "end": "blind",
-     "depth": 32.01784728229977,
-     "flip": true
-    }
-   ]
-  },
-  {
-   "key": "trap:unreachable panic=panicked at crates/ck-ops/src/surfacing/thicken.rs:550:56:\nno entry found for key:extrude",
-   "count": 28,
-   "id": "case_456",
-   "kind": "surface",
-   "features": [
-    {
-     "type": "sketch",
-     "id": "S1",
-     "plane": {
-      "kind": "std",
-      "id": "front"
-     },
-     "points": [
-      {
-       "id": "c",
-       "x": 0,
-       "y": 0
-      }
-     ],
-     "entities": [
-      {
-       "type": "circle",
-       "id": "e1",
-       "c": "c",
-       "r": 10.949293220764957
-      }
-     ],
-     "constraints": []
-    },
-    {
-     "type": "surfaceExtrude",
-     "id": "F2",
-     "sketch": "S1",
-     "end": "blind",
-     "depth": 10
-    },
-    {
-     "type": "thicken",
-     "id": "F3",
-     "surface": "F2",
-     "thickness": 10,
-     "side": "front"
-    },
-    {
-     "type": "lpattern",
-     "id": "F4",
-     "seeds": [
-      "F2"
-     ],
-     "dir": {
-      "kind": "axis",
-      "axis": "z"
-     },
-     "spacing": 10000000,
-     "count": 1
-    },
-    {
-     "type": "sketch",
-     "id": "S6",
-     "plane": {
-      "kind": "std",
-      "id": "top"
-     },
-     "points": [
-      {
-       "id": "c",
-       "x": 0,
-       "y": 0
-      }
-     ],
-     "entities": [
-      {
-       "type": "circle",
-       "id": "e1",
-       "c": "c",
-       "r": 14.957136438274755
-      }
-     ],
-     "constraints": []
-    }
-   ]
-  },
-  {
-   "key": "trap:unreachable panic=panicked at crates/ck-ops/src/surfacing/thicken.rs:550:56:\nno entry found for key:shell",
-   "count": 21,
-   "id": "case_498",
-   "kind": "surface",
-   "features": [
-    {
-     "type": "sketch",
-     "id": "S1",
-     "plane": {
-      "kind": "std",
-      "id": "front"
-     },
-     "points": [
-      {
-       "id": "c",
-       "x": 0,
-       "y": 0
-      }
-     ],
-     "entities": [
-      {
-       "type": "circle",
-       "id": "e1",
-       "c": "c",
-       "r": 1.869055420672521
-      }
-     ],
-     "constraints": []
-    },
-    {
-     "type": "surfaceExtrude",
-     "id": "F2",
-     "sketch": "S1",
-     "end": "blind",
-     "depth": 10
-    },
-    {
-     "type": "thicken",
-     "id": "F3",
-     "surface": "F2",
-     "thickness": 1000,
-     "side": "both"
-    },
-    {
-     "type": "lpattern",
-     "id": "F4",
-     "seeds": [
-      "F2"
-     ],
-     "dir": {
-      "kind": "axis",
-      "axis": "y"
-     },
-     "spacing": 10,
-     "count": 0
-    },
-    {
-     "type": "sketch",
-     "id": "S6",
-     "plane": {
-      "kind": "std",
-      "id": "top"
-     },
-     "points": [
-      {
-       "id": "c",
-       "x": 0,
-       "y": 0
-      }
-     ],
-     "entities": [
-      {
-       "type": "circle",
-       "id": "e1",
-       "c": "c",
-       "r": 14.07981438927818
-      }
-     ],
-     "constraints": []
-    },
-    {
-     "type": "extrude",
-     "id": "F5",
-     "op": "cut",
-     "sketch": "S6",
-     "end": "blind",
-     "depth": 10,
-     "flip": true
-    },
-    {
-     "type": "thicken",
-     "id": "F8",
-     "surface": "F2",
-     "thickness": 1e-06,
-     "side": "back"
-    }
-   ]
-  },
-  {
-   "key": "hang:timeout:lpattern",
-   "count": 18,
-   "id": "case_646",
-   "kind": "cyl",
-   "features": [
-    {
-     "type": "sketch",
-     "id": "S1",
-     "plane": {
-      "kind": "std",
-      "id": "front"
-     },
-     "points": [
-      {
-       "id": "c",
-       "x": 0,
-       "y": 0
-      }
-     ],
-     "entities": [
-      {
-       "type": "circle",
-       "id": "e1",
-       "c": "c",
-       "r": -0.007592510149913421
-      }
-     ],
-     "constraints": []
-    },
-    {
-     "type": "extrude",
-     "id": "F2",
-     "op": "add",
-     "sketch": "S1",
-     "end": "blind",
-     "depth": 10
-    },
-    {
-     "type": "lpattern",
-     "id": "F4",
-     "seeds": [
-      "F2"
-     ],
-     "dir": {
-      "kind": "axis",
-      "axis": "y"
-     },
-     "spacing": 10,
-     "count": 100
-    }
-   ]
-  },
-  {
-   "key": "hang:timeout:shell",
-   "count": 4,
-   "id": "case_799",
-   "kind": "cyl",
-   "features": [
-    {
-     "type": "sketch",
-     "id": "S1",
-     "plane": {
-      "kind": "std",
-      "id": "front"
-     },
-     "points": [
-      {
-       "id": "c",
-       "x": 0,
-       "y": 0
-      }
-     ],
-     "entities": [
-      {
-       "type": "circle",
-       "id": "e1",
-       "c": "c",
-       "r": -1.382930174015969e-06
-      }
-     ],
-     "constraints": []
-    },
-    {
-     "type": "extrude",
-     "id": "F2",
-     "op": "add",
-     "sketch": "S1",
-     "end": "blind",
-     "depth": 0
-    },
-    {
-     "type": "lpattern",
-     "id": "F3",
-     "seeds": [
-      "F2"
-     ],
-     "dir": {
-      "kind": "axis",
-      "axis": "y"
-     },
-     "spacing": 10,
-     "count": 100
-    }
-   ]
-  },
-  {
-   "key": "trap:unreachable panic=panicked at crates/ck-ops/src/surfacing/thicken.rs:568:43:\nno entry found for key:shell",
-   "count": 3,
-   "id": "case_828",
-   "kind": "surface",
-   "features": [
-    {
-     "type": "sketch",
-     "id": "S1",
-     "plane": {
-      "kind": "std",
-      "id": "front"
-     },
-     "points": [
-      {
-       "id": "c",
-       "x": 0,
-       "y": 0
-      }
-     ],
-     "entities": [
-      {
-       "type": "circle",
-       "id": "e1",
-       "c": "c",
-       "r": 7513591.022258483
-      }
-     ],
-     "constraints": []
-    },
-    {
-     "type": "surfaceExtrude",
-     "id": "F2",
-     "sketch": "S1",
-     "end": "blind",
-     "depth": 1000000
-    },
-    {
-     "type": "thicken",
-     "id": "F3",
-     "surface": "F2",
-     "thickness": 10,
-     "side": "front"
-    },
-    {
-     "type": "shell",
-     "id": "F4",
-     "faces": [
-      "F2.C1"
-     ],
-     "thickness": 10000,
-     "outward": true
-    },
-    {
-     "type": "lpattern",
-     "id": "F5",
-     "seeds": [
-      "F2"
-     ],
-     "dir": {
-      "kind": "axis",
-      "axis": "y"
-     },
-     "spacing": 10,
-     "count": 1
-    },
-    {
-     "type": "sketch",
-     "id": "S7",
-     "plane": {
-      "kind": "std",
-      "id": "top"
-     },
-     "points": [
-      {
-       "id": "c",
-       "x": 0,
-       "y": 0
-      }
-     ],
-     "entities": [
-      {
-       "type": "circle",
-       "id": "e1",
-       "c": "c",
-       "r": 14.054973329510538
-      }
-     ],
-     "constraints": []
-    },
-    {
-     "type": "extrude",
-     "id": "F6",
-     "op": "cut",
-     "sketch": "S7",
-     "end": "blind",
-     "depth": 10000,
-     "flip": true
-    },
-    {
-     "type": "mirror",
-     "id": "F8",
-     "seeds": [
-      "F2"
-     ],
-     "plane": {
-      "kind": "std",
-      "id": "top"
-     }
-    }
-   ]
-  },
-  {
-   "key": "trap:unreachable panic=panicked at crates/ck-ops/src/surfacing/thicken.rs:568:43:\nno entry found for key:mirror",
-   "count": 2,
-   "id": "case_835",
-   "kind": "surface",
-   "features": [
-    {
-     "type": "sketch",
-     "id": "S1",
-     "plane": {
-      "kind": "std",
-      "id": "front"
-     },
-     "points": [
-      {
-       "id": "c",
-       "x": 0,
-       "y": 0
-      }
-     ],
-     "entities": [
-      {
-       "type": "circle",
-       "id": "e1",
-       "c": "c",
-       "r": 23.22799278241582
-      }
-     ],
-     "constraints": []
-    },
-    {
-     "type": "surfaceExtrude",
-     "id": "F2",
-     "sketch": "S1",
-     "end": "blind",
-     "depth": 10
-    },
-    {
-     "type": "thicken",
-     "id": "F3",
-     "surface": "F2",
-     "thickness": 10000000,
-     "side": "front"
-    },
-    {
-     "type": "lpattern",
-     "id": "F4",
-     "seeds": [
-      "F2"
-     ],
-     "dir": {
-      "kind": "axis",
-      "axis": "z"
-     },
-     "spacing": -1e-06,
-     "count": 1
-    }
-   ]
-  },
-  {
-   "key": "hang:timeout:chamfer",
-   "count": 10,
-   "id": "case_886",
-   "kind": "revolve",
-   "features": [
-    {
-     "type": "sketch",
-     "id": "S1",
-     "plane": {
-      "kind": "std",
-      "id": "front"
-     },
-     "points": [
-      {
-       "id": "p0",
-       "x": 33.48618903656025,
-       "y": 0
-      },
-      {
-       "id": "p1",
-       "x": 2.9474975411547346,
-       "y": 34.69636412861291
-      },
-      {
-       "id": "p2",
-       "x": 0,
-       "y": 34.69636412861291
-      },
-      {
-       "id": "p3",
-       "x": 0,
-       "y": 0
-      },
-      {
-       "id": "a1",
-       "x": 0,
-       "y": 0
-      },
-      {
-       "id": "a2",
-       "x": 0,
-       "y": 34.69636412861291
-      }
-     ],
-     "entities": [
-      {
-       "type": "line",
-       "id": "e1",
-       "p1": "p0",
-       "p2": "p1"
-      },
-      {
-       "type": "line",
-       "id": "e2",
-       "p1": "p1",
-       "p2": "p2"
-      },
-      {
-       "type": "line",
-       "id": "e3",
-       "p1": "p2",
-       "p2": "p3"
-      },
-      {
-       "type": "line",
-       "id": "e4",
-       "p1": "p3",
-       "p2": "p0"
-      },
-      {
-       "type": "line",
-       "id": "ax",
-       "p1": "a1",
-       "p2": "a2",
-       "construction": true
-      }
-     ],
-     "constraints": []
-    },
-    {
-     "type": "revolve",
-     "id": "F2",
-     "op": "add",
-     "sketch": "S1",
-     "axis": "ax",
-     "angle": 100
-    },
-    {
-     "type": "sketch",
-     "id": "S4",
-     "plane": {
-      "kind": "std",
-      "id": "top"
-     },
-     "points": [
-      {
-       "id": "c",
-       "x": 0,
-       "y": 0
-      }
-     ],
-     "entities": [
-      {
-       "type": "circle",
-       "id": "e1",
-       "c": "c",
-       "r": 7.0853394741890945
-      }
-     ],
-     "constraints": []
-    },
-    {
-     "type": "extrude",
-     "id": "F3",
-     "op": "cut",
-     "sketch": "S4",
-     "end": "blind",
-     "depth": 10,
-     "flip": true
-    },
-    {
-     "type": "lpattern",
-     "id": "F5",
-     "seeds": [
-      "F2"
-     ],
-     "dir": {
-      "kind": "axis",
-      "axis": "y"
-     },
-     "spacing": 10,
-     "count": 100
-    }
-   ]
-  },
-  {
-   "key": "trap:unreachable panic=panicked at crates/ck-ops/src/surfacing/thicken.rs:568:43:\nno entry found for key:draft",
-   "count": 2,
-   "id": "case_892",
-   "kind": "surface",
-   "features": [
-    {
-     "type": "sketch",
-     "id": "S1",
-     "plane": {
-      "kind": "std",
-      "id": "front"
-     },
-     "points": [
-      {
-       "id": "c",
-       "x": 0,
-       "y": 0
-      }
-     ],
-     "entities": [
-      {
-       "type": "circle",
-       "id": "e1",
-       "c": "c",
-       "r": 4963486.666991372
-      }
-     ],
-     "constraints": []
-    },
-    {
-     "type": "surfaceExtrude",
-     "id": "F2",
-     "sketch": "S1",
-     "end": "blind",
-     "depth": 9.999999999999999e-05
-    },
-    {
-     "type": "thicken",
-     "id": "F3",
-     "surface": "F2",
-     "thickness": 10,
-     "side": "back"
-    },
-    {
-     "type": "shell",
-     "id": "F4",
-     "faces": [
-      "F2.S.e1"
-     ],
-     "thickness": 10
-    }
-   ]
-  },
-  {
-   "key": "trap:unreachable panic=panicked at crates/ck-ops/src/surfacing/thicken.rs:568:43:\nno entry found for key:lpattern",
-   "count": 1,
-   "id": "case_2273",
-   "kind": "surface",
-   "features": [
-    {
-     "type": "sketch",
-     "id": "S1",
-     "plane": {
-      "kind": "std",
-      "id": "front"
-     },
-     "points": [
-      {
-       "id": "c",
-       "x": 0,
-       "y": 0
-      }
-     ],
-     "entities": [
-      {
-       "type": "circle",
-       "id": "e1",
-       "c": "c",
-       "r": 10.310765356360934
-      }
-     ],
-     "constraints": []
-    },
-    {
-     "type": "surfaceExtrude",
-     "id": "F2",
-     "sketch": "S1",
-     "end": "blind",
-     "depth": 10
-    },
-    {
-     "type": "thicken",
-     "id": "F3",
-     "surface": "F2",
-     "thickness": 10000000,
-     "side": "front"
-    },
-    {
-     "type": "shell",
-     "id": "F4",
-     "faces": [
-      "F2.C1"
-     ],
-     "thickness": 10,
-     "outward": true
-    },
-    {
-     "type": "draft",
-     "id": "F5",
-     "neutral": {
-      "kind": "face",
-      "id": "F2.C0"
-     },
-     "faces": [
-      "F2.S.e1",
-      "F2.S.e2",
-      "F2.S.e3",
-      "F2.S.e4"
-     ],
-     "angle": 1000
-    },
-    {
-     "type": "chamfer",
-     "id": "F6",
-     "distance": 1000000,
-     "edges": [
-      {
-       "faces": [
-        "F2.S.e1",
-        "F2.S.e2"
-       ],
-       "at": [
-        20,
-        0,
-        20
-       ]
-      }
-     ]
-    }
-   ]
-  },
-  {
-   "key": "trap:unreachable panic=panicked at crates/ck-ops/src/surfacing/thicken.rs:568:43:\nno entry found for key:thicken",
-   "count": 3,
-   "id": "case_2960",
-   "kind": "surface",
-   "features": [
-    {
-     "type": "sketch",
-     "id": "S1",
-     "plane": {
-      "kind": "std",
-      "id": "front"
-     },
-     "points": [
-      {
-       "id": "c",
-       "x": 0,
-       "y": 0
-      }
-     ],
-     "entities": [
-      {
-       "type": "circle",
-       "id": "e1",
-       "c": "c",
-       "r": 38.321655162796375
-      }
-     ],
-     "constraints": []
-    },
-    {
-     "type": "surfaceExtrude",
-     "id": "F2",
-     "sketch": "S1",
-     "end": "blind",
-     "depth": 9.999999999999999e-06
-    },
-    {
-     "type": "thicken",
-     "id": "F3",
-     "surface": "F2",
-     "thickness": -1e-06,
-     "side": "front"
-    },
-    {
-     "type": "shell",
-     "id": "F4",
-     "faces": [
-      "F2.S.e1"
-     ],
-     "thickness": 10
-    },
-    {
-     "type": "draft",
-     "id": "F5",
-     "neutral": {
-      "kind": "face",
-      "id": "F2.C0"
-     },
-     "faces": [
-      "F2.S.e1",
-      "F2.S.e2",
-      "F2.S.e3",
-      "F2.S.e4"
-     ],
-     "angle": 100
-    },
-    {
-     "type": "thicken",
-     "id": "F7",
-     "surface": "F2",
-     "thickness": 10000000,
-     "side": "front"
     }
    ]
   }

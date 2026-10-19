@@ -53,7 +53,12 @@ pub fn regen_validate(src: &str) -> (Vec<String>, Option<f64>) {
                 if std::env::var_os("ROBUST_TIMING").is_some() {
                     eprintln!("  tessellate {:.2}s ({} triangles)", t.elapsed().as_secs_f64(), mesh.tri_face.len());
                 }
-                Vec::<String>::new()
+                let t = std::time::Instant::now();
+                let w = ck_check::tessellation::check_mesh_why(b, &mesh.positions, &mesh.tri_face, &mesh.failed, &mesh.failed_why);
+                if std::env::var_os("ROBUST_TIMING").is_some() {
+                    eprintln!("  mesh check {:.2}s ({} issues, {} positions)", t.elapsed().as_secs_f64(), w.len(), mesh.positions.len() / 3);
+                }
+                w.iter().map(|i| format!("{}: {}", i.code, i.detail)).collect::<Vec<String>>()
             }
             .into_iter()
             .chain(

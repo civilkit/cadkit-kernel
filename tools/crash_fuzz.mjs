@@ -214,6 +214,6 @@ if (minimal.length) console.log('minimal:', JSON.stringify(minimal.map((m)=>({ke
 const out = opt('--json'); if (out) writeFileSync(out, JSON.stringify({ results, minimal }, null, 1));
 if (baselineFile && (opt('--update-baseline') || opt('--check'))) {
   const casesOut = Object.fromEntries(results.map((r)=>[r.id, r.cls]));
-  if (opt('--update-baseline')) { writeFileSync(baselineFile, JSON.stringify({ version:1, wasm:opt('--wasm','kit'), wasmHash, seed, n, cases:casesOut, minimal }, null, 1)+'\n'); console.log(`wrote ${baselineFile}`); }
+  if (opt('--update-baseline')) { writeFileSync(baselineFile, JSON.stringify({ version:1, wasm:opt('--wasm-label','kit'), wasmHash, seed, n, budgetMs, timeout, cases:casesOut, minimal }, null, 1)+'\n'); console.log(`wrote ${baselineFile}`); }
   else { const base = JSON.parse(readFileSync(baselineFile,'utf8')).cases ?? {}; const pass = (c)=>c==='ok'||c==='structured-error'; const reg = results.filter((r)=>pass(base[r.id]) && !pass(r.cls)); console.log(`crash_fuzz check: ${reg.length} regressions`); for (const r of reg) console.log(`  ${r.id}: ${base[r.id]} -> ${r.cls} ${r.detail??''}`); if (reg.length) process.exit(1); }
 }
