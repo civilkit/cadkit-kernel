@@ -100,7 +100,19 @@ impl<P: Pt> BSplineCurve<P> {
         let (a, b) = self.domain();
         let u = u.clamp(a, b);
         let span = find_span(self.n(), p, u, &self.knots);
-        let (mut n, mut left, mut right) = ([0.0f64; 12], [0.0f64; 12], [0.0f64; 12]);
+        if p == 3 {
+            // (cubic: 4-wide table and literal degree)
+            let n = self.basis_a22::<4>(span, u, 3);
+            return self.dot_basis(span, 3, &n);
+        }
+        let n = self.basis_a22::<12>(span, u, p);
+        self.dot_basis(span, p, &n)
+    }
+
+    /// The non-vanishing basis functions at `u` (A2.2) in a table of `N >= p + 1`.
+    #[inline(always)]
+    fn basis_a22<const N: usize>(&self, span: usize, u: f64, p: usize) -> [f64; N] {
+        let (mut n, mut left, mut right) = ([0.0f64; N], [0.0f64; N], [0.0f64; N]);
         n[0] = 1.0;
         for j in 1..=p {
             left[j] = u - self.knots[span + 1 - j];
@@ -114,6 +126,12 @@ impl<P: Pt> BSplineCurve<P> {
             }
             n[j] = saved;
         }
+        n
+    }
+
+    /// The point from the basis functions of `span` (rational: homogeneous sum, then the quotient).
+    #[inline(always)]
+    fn dot_basis<const N: usize>(&self, span: usize, p: usize, n: &[f64; N]) -> P {
         if let Some(w) = &self.weights {
             let (mut acc, mut wd) = (P::default(), 0.0);
             for j in 0..=p {
