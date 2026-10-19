@@ -238,22 +238,19 @@ pub(crate) fn fit_grid(grid: &[Vec<Vec3>]) -> Result<(ck_geom::nurbs::bsurf::BSp
 
 /// Tensor-product cubic interpolation of a point grid at the given parameters of the grid lines.
 pub(crate) fn fit_grid_with(grid: &[Vec<Vec3>], uk: Vec<f64>, vl: Vec<f64>) -> Result<(ck_geom::nurbs::bsurf::BSplineSurface, Vec<f64>, Vec<f64>), OffsetError> {
-    use ck_geom::fit::{averaged_knots, interpolate_with};
+    use ck_geom::fit::{averaged_knots, interpolate_with_many};
     let bad = |e: String| OffsetError::new("offsetUnsupported", format!("fit: {e}"));
     let (nu, nv) = (grid.len(), grid[0].len());
     let ku = averaged_knots(&uk, 3);
     let kv = averaged_knots(&vl, 3);
-    let mut r = vec![vec![Vec3::ZERO; nv]; nu];
-    for j in 0..nv {
-        let col: Vec<Vec3> = (0..nu).map(|i| grid[i][j]).collect();
-        let c = interpolate_with(&col, 3, &uk, ku.clone()).map_err(bad)?;
-        for i in 0..nu {
-            r[i][j] = c.ctrl[i];
-        }
-    }
+    // every column, then every row of the column fits, interpolated at the same parameters: one
+    // matrix reduction per direction (the same control points as one interpolation per line)
+    let cols: Vec<Vec<Vec3>> = (0..nv).map(|j| (0..nu).map(|i| grid[i][j]).collect()).collect();
+    let cc = interpolate_with_many(&cols, 3, &uk, &ku).map_err(bad)?;
+    let r: Vec<Vec<Vec3>> = (0..nu).map(|i| (0..nv).map(|j| cc[j][i]).collect()).collect();
     let mut ctrl = Vec::with_capacity(nu * nv);
-    for i in 0..nu {
-        ctrl.extend(interpolate_with(&r[i], 3, &vl, kv.clone()).map_err(bad)?.ctrl);
+    for row in interpolate_with_many(&r, 3, &vl, &kv).map_err(bad)? {
+        ctrl.extend(row);
     }
     let s = ck_geom::nurbs::bsurf::BSplineSurface::new(3, 3, ku, kv, nu, nv, ctrl, None).map_err(bad)?;
     Ok((s, uk, vl))
