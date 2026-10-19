@@ -32,6 +32,21 @@ impl FeatureExec for Exec {
     }
 }
 
+/// Validation issues (`code: detail`) and volume of the final body, if any.
+pub fn regen_validate(src: &str) -> (Vec<String>, Option<f64>) {
+    let part = Part::from_json(&ck_json::parse(src).unwrap()).unwrap();
+    let mut ex = Exec { brep: Brep::new(), labels: Noop };
+    let opts = RegenOpts::from_json(Some(&ck_json::parse(r#"{"solveSketches":true}"#).unwrap()));
+    let _ = regen::regen(&part, &opts, &mut ex);
+    match ex.brep.body.as_ref() {
+        None => (vec![], None),
+        Some(b) => (
+            ck_check::validate(b, 1e-6).iter().map(|i| format!("{}: {}", i.code, i.detail)).collect(),
+            Some(ck_topo::mass::mass_props(b).volume),
+        ),
+    }
+}
+
 /// Regenerate a part JSON; returns (feature id, error code, message) per failed feature.
 pub fn regen_codes(src: &str) -> Vec<(String, String, String)> {
     let part = Part::from_json(&ck_json::parse(src).unwrap()).unwrap();
@@ -68,4 +83,22 @@ pub fn crash_case(id: &str) -> String {
     let j = ck_json::parse(&std::fs::read_to_string(&p).unwrap()).unwrap();
     let feats = ck_json::to_string(j.get("features").unwrap());
     format!(r#"{{"format":"ck-part","version":1,"features":{feats}}}"#)
+}
+
+/// Debug dump of the final body's loops (face, surface kind, coedge edge ids with direction).
+#[allow(dead_code)]
+pub fn dump(src: &str) {
+    let part = Part::from_json(&ck_json::parse(src).unwrap()).unwrap();
+    let mut ex = Exec { brep: Brep::new(), labels: Noop };
+    let opts = RegenOpts::from_json(Some(&ck_json::parse(r#"{"solveSketches":true}"#).unwrap()));
+    let _ = regen::regen(&part, &opts, &mut ex);
+    let b = ex.brep.body.as_ref().unwrap();
+    for f in b.face_ids() {
+        let fc = b.face(f);
+        eprintln!("face {} {:?} sense={}", b.face_id_str(f), std::mem::discriminant(&fc.surface), fc.sense);
+        for &l in &fc.loops {
+            let cs: Vec<String> = b.lp(l).coedges.iter().map(|&c| { let co = b.coedge(c); let e = b.edge(co.edge); format!("e{}{}({}->{})", co.edge.idx(), if co.rev { "-" } else { "+" }, e.v0.idx(), e.v1.idx()) }).collect();
+            eprintln!("   loop {}", cs.join(" "));
+        }
+    }
 }

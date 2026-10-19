@@ -697,7 +697,10 @@ fn build_layer(
                 nf = Some(out.add_face(shell, surface.clone(), sheet.face(f).sense != flipped, name));
             }
             let nloop = out.add_loop(nf.unwrap());
-            if ls[li].original {
+            // a loop holding a cylinder seam keeps the sheet's own order and directions: the seam is walked twice
+            // and the closed rings have no end vertices to chain by, so head-to-tail chaining cannot orient them
+            let has_seam = sheet.lp(lid).coedges.iter().any(|&c| sheet.coedge(c).alive && sheet.is_seam(sheet.coedge(c).edge));
+            if ls[li].original || has_seam {
                 // a flipped layer runs the loop backwards: reverse the coedge
                 // order as well as each direction so the loop still chains
                 let cl = &sheet.lp(lid).coedges;

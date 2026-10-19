@@ -23,3 +23,12 @@ fn thicken_of_unrepresentable_sheet_is_a_structured_error() {
     // the offset passes the centre of curvature
     assert_eq!(codes("case_498").first().map(String::as_str), Some("offsetTooLarge"));
 }
+
+#[test]
+fn thickened_cylinder_sheet_is_a_valid_solid() {
+    for id in ["case_104", "case_6"] {
+        let (issues, vol) = common::regen_validate(&common::crash_case(id));
+        assert!(issues.is_empty(), "{id}: {issues:?}");
+        assert!(vol.unwrap() > 0.0, "{id}: volume {vol:?}");
+    }
+}
