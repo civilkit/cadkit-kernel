@@ -951,11 +951,20 @@ fn build_tool(
     }
     let _ = links;
     orient_body(&mut tool);
-    let vol = ck_topo::mass::mass_props(&tool).volume;
-    if !(vol > 0.0) {
-        return Err(failed(&format!("tool volume {vol}")));
+    // (the tool is positive when its quick volume is clearly so; anything else, the message of a failure
+    // included, is the full figure)
+    let all_faces: Vec<FaceId> = tool.face_ids().collect();
+    let quick = ck_topo::mass::signed_volume_quick_margin(&tool, &all_faces);
+    if !quick.is_some_and(|q| q > 0.0) {
+        let vol = ck_topo::mass::mass_props(&tool).volume;
+        if !(vol > 0.0) {
+            return Err(failed(&format!("tool volume {vol}")));
+        }
     }
-    dbg(&format!("tool built: {nu} stations, volume {vol:.3}, issues {:?}", ck_topo::check::check(&tool, 1e-5).len()));
+    if std::env::var_os("CK_BLEND_DEBUG").is_some() {
+        let vol = ck_topo::mass::mass_props(&tool).volume;
+        dbg(&format!("tool built: {nu} stations, volume {vol:.3}, issues {:?}", ck_topo::check::check(&tool, 1e-5).len()));
+    }
     Ok(tool)
 }
 

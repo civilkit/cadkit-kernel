@@ -1052,6 +1052,15 @@ pub fn signed_volume_quick(b: &Body, faces: &[FaceId]) -> f64 {
     }
 }
 
+/// The quick signed volume of a set of faces when it is far from zero against the faces' shares (its sign is
+/// then that of the exact volume of a closed shell: the quadrature is good to about 1e-6 of the shares), else
+/// `None` (the caller measures exactly).
+pub fn signed_volume_quick_margin(b: &Body, faces: &[FaceId]) -> Option<f64> {
+    let parts: Vec<f64> = faces.iter().map(|&f| face_volume_memo(b, f, true).0).collect();
+    let (total, scale) = (parts.iter().sum::<f64>(), parts.iter().map(|x| x.abs()).sum::<f64>());
+    (total.is_finite() && scale > 0.0 && total.abs() > 1e-3 * scale).then_some(total)
+}
+
 /// One face's share of the signed volume, measured from the origin (so it depends on the face
 /// alone and can be cached per face; the sum over a closed shell does not depend on the origin).
 pub fn face_signed_volume(b: &Body, f: FaceId) -> f64 {

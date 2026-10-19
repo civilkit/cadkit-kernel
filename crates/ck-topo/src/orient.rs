@@ -95,6 +95,32 @@ pub fn reverse_loop(b: &mut Body, l: LoopId) {
 /// Make all faces of a shell consistently oriented (each manifold edge
 /// traversed oppositely by its two coedges) and outward (positive signed
 /// volume). Returns the number of faces flipped.
+/// `signed_volume(b, faces) < 0.0`, decided by the cheap quick volume when the faces close up (every edge of
+/// them has its two coedges among them, so the volume does not depend on the reference point) and that volume
+/// is clearly away from zero; else by the full integral.
+fn volume_is_negative(b: &Body, faces: &[FaceId]) -> bool {
+    let mut inset = vec![false; b.faces.len()];
+    for &f in faces {
+        inset[f.idx()] = true;
+    }
+    let closed = faces.iter().all(|&f| {
+        b.face_edges(f).into_iter().all(|e| {
+            let cs = b.edge_coedges(e);
+            cs.len() == 2 && cs.iter().all(|&c| inset[b.coedge_face(c).idx()])
+        })
+    });
+    if closed {
+        if let Some(v) = ck_topo_mass_quick(b, faces) {
+            return v < 0.0;
+        }
+    }
+    signed_volume(b, faces) < 0.0
+}
+
+fn ck_topo_mass_quick(b: &Body, faces: &[FaceId]) -> Option<f64> {
+    crate::mass::signed_volume_quick_margin(b, faces)
+}
+
 pub fn orient_shell(b: &mut Body, s: ShellId) -> usize {
     let faces: Vec<FaceId> = b.shell(s).faces.iter().copied().filter(|&f| b.face(f).alive).collect();
     let mut flips = 0;
@@ -129,7 +155,7 @@ pub fn orient_shell(b: &mut Body, s: ShellId) -> usize {
             }
         }
     }
-    if signed_volume(b, &faces) < 0.0 {
+    if volume_is_negative(b, &faces) {
         for &f in &faces {
             flip_face(b, f);
         }
