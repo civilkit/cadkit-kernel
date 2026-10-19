@@ -14,7 +14,7 @@
 //!   face-walk edge order even for disjoint copies: `F2.S.e1|F2.S.e4` is
 //!   #9 / #21 / #33 (12 edges per box, walk C0, C1, S.e1 → 4+4+2).
 
-use super::assemble::{build, select};
+use super::assemble::{build, select, select_split};
 use super::imprint::imprint;
 use super::classify::{Class, Solid};
 use super::Op;
@@ -194,6 +194,15 @@ fn boolean_ladder(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, Strin
                     }
                 }
             }
+            // the re-fusing of two coincident same-surface fragments (two cone bands on
+            // one cone surface, seams at different angles) can leave a degenerate face
+            // and drop material: retry as a split-only pass, which keeps both faces
+            if let Ok(r) = boolean_at_merge(a, b, op, tol, false) {
+                let r = sanity(a, b, op, r);
+                if r.mismatch.is_none() {
+                    return Ok(r);
+                }
+            }
             Ok(out)
         }
         _ => first,
@@ -281,6 +290,12 @@ const ROBUST_RETRY_MS: f64 = 12_000.0;
 pub const BUDGET_EXCEEDED: &str = "booleanBudgetExceeded";
 
 fn boolean_at(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> {
+    boolean_at_merge(a, b, op, tol, true)
+}
+
+/// [`boolean_at`] with the re-fusing of coincident same-facing fragments switchable off
+/// (the split-only pass: every fragment stays a face of its own).
+fn boolean_at_merge(a: &Body, b: &Body, op: Op, tol: f64, merge: bool) -> Result<BoolOut, String> {
     if ck_core::budget::expired() {
         return Err(BUDGET_EXCEEDED.into());
     }
@@ -319,7 +334,11 @@ fn boolean_at(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> {
             _ => {} // nested: the general path (void shells / swallowed bodies)
         }
     }
-    let faces = select(&arr, [a, b], op)?;
+    let faces = if merge {
+        select(&arr, [a, b], op)?
+    } else {
+        select_split(&arr, [a, b], op)?
+    };
     if ck_core::budget::expired() {
         return Err(BUDGET_EXCEEDED.into());
     }

@@ -460,6 +460,17 @@ pub fn select_class_tol(arr: &Arrangement, bodies: [&Body; 2], op: Op, tol: f64)
     })
 }
 
+/// [`select`] as a split-only pass: coincident same-facing fragments are not re-fused
+/// (two cone bands on one cone surface whose seams are at different angles must stay
+/// two faces; re-fusing them leaves a degenerate face and drops material).
+pub(crate) fn select_split(arr: &Arrangement, bodies: [&Body; 2], op: Op) -> Result<Vec<OutFace>, String> {
+    let solids = [Solid::new(bodies[0], arr.tol), Solid::new(bodies[1], arr.tol)];
+    select_with(arr, false, None, |side, _fi, q, n| {
+        let c = solids[1 - side].classify(q, n);
+        (c, keep(op, side, c))
+    })
+}
+
 /// [`select`] with the decision supplied by the caller: `decide(side, face
 /// index in the arrangement, interior sample point, outward normal)` returns
 /// the fragment's class (diagnostics only) and `Some(flip)` to keep it.
