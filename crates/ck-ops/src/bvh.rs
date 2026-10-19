@@ -440,6 +440,20 @@ pub fn edge_box(b: &Body, e: EdgeId) -> Aabb {
 /// Box of the curve over `[t0, t1]`: samples plus (conics) the exact
 /// per-axis extreme points inside the range.
 pub fn curve_range_box(curve: &ck_geom::curve::Curve, t0: f64, t1: f64) -> Aabb {
+    if matches!(curve, ck_geom::curve::Curve::Line { .. }) {
+        return curve_range_box_uncached(curve, t0, t1);
+    }
+    // (every boolean boxes every edge of both operands, most of them unchanged since the last one)
+    thread_local! {
+        static MEMO: std::cell::RefCell<ck_core::memo::Memo<Aabb>> = std::cell::RefCell::new(ck_core::memo::Memo::new(1 << 21));
+    }
+    let mut key = Vec::with_capacity(32);
+    curve.push_key(&mut key);
+    key.extend([t0.to_bits(), t1.to_bits()]);
+    ck_core::memo::cached(&MEMO, key, || curve_range_box_uncached(curve, t0, t1))
+}
+
+fn curve_range_box_uncached(curve: &ck_geom::curve::Curve, t0: f64, t1: f64) -> Aabb {
     let n = match curve {
         ck_geom::curve::Curve::Line { .. } => 1,
         _ => 32,
@@ -598,15 +612,33 @@ pub fn face_box(b: &Body, f: FaceId) -> Aabb {
                     vhi = vlo + per;
                 }
             }
-            let n = 12;
-            let us: Vec<f64> = (0..=n).map(|i| ulo + (uhi - ulo) * i as f64 / n as f64).collect();
-            let vs: Vec<f64> = (0..=n).map(|j| vlo + (vhi - vlo) * j as f64 / n as f64).collect();
-            for p in face.surface.eval_grid(&us, &vs) {
-                bb.add_point(p);
-            }
+            bb = bb.union(&surface_grid_box(&face.surface, (ulo, uhi), (vlo, vhi), 12, false));
         }
     }
     bb
+}
+
+/// Box of the `(n + 1) x (n + 1)` grid of surface points evenly spaced over `[u0, u1] x [v0, v1]` (only the finite
+/// points when `finite_only`), memoised by the exact inputs: the boxes of a boolean's operands are mostly those of
+/// the previous result's faces.
+pub fn surface_grid_box(s: &ck_geom::surface::Surface, (u0, u1): (f64, f64), (v0, v1): (f64, f64), n: usize, finite_only: bool) -> Aabb {
+    thread_local! {
+        static MEMO: std::cell::RefCell<ck_core::memo::Memo<Aabb>> = std::cell::RefCell::new(ck_core::memo::Memo::new(1 << 20));
+    }
+    let mut key = Vec::with_capacity(24);
+    s.push_key(&mut key);
+    key.extend([u0.to_bits(), u1.to_bits(), v0.to_bits(), v1.to_bits(), n as u64, finite_only as u64]);
+    ck_core::memo::cached(&MEMO, key, || {
+        let us: Vec<f64> = (0..=n).map(|i| u0 + (u1 - u0) * i as f64 / n as f64).collect();
+        let vs: Vec<f64> = (0..=n).map(|j| v0 + (v1 - v0) * j as f64 / n as f64).collect();
+        let mut bb = Aabb::EMPTY;
+        for p in s.eval_grid(&us, &vs) {
+            if !finite_only || p.is_finite() {
+                bb.add_point(p);
+            }
+        }
+        bb
+    })
 }
 
 /// BVH over the live faces of a body; returns (tree, face id per item).

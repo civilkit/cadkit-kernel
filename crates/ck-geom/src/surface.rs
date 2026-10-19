@@ -114,6 +114,62 @@ impl ScrewVLine {
 }
 
 impl Surface {
+    /// Content key for memoising pure functions of surfaces: the bits of every field of an analytic surface
+    /// (exact), the [`Self::fingerprint`] hash of a B-spline net (its control net is too big to copy per query).
+    pub fn push_key(&self, out: &mut Vec<u64>) {
+        use crate::curve::{push_frame, push_vec3};
+        match self {
+            Surface::Plane { frame } => {
+                out.push(11);
+                push_frame(out, frame);
+            }
+            Surface::Cylinder { frame, r } => {
+                out.push(12);
+                push_frame(out, frame);
+                out.push(r.to_bits());
+            }
+            Surface::Cone { frame, r, semi_angle } => {
+                out.push(13);
+                push_frame(out, frame);
+                out.extend([r.to_bits(), semi_angle.to_bits()]);
+            }
+            Surface::Sphere { frame, r } => {
+                out.push(14);
+                push_frame(out, frame);
+                out.push(r.to_bits());
+            }
+            Surface::Torus { frame, major, minor } => {
+                out.push(15);
+                push_frame(out, frame);
+                out.extend([major.to_bits(), minor.to_bits()]);
+            }
+            Surface::Revolution { profile, axis_o, axis } => {
+                out.push(16);
+                profile.push_key(out);
+                push_vec3(out, *axis_o);
+                push_vec3(out, *axis);
+            }
+            Surface::Extrusion { profile, dir } => {
+                out.push(17);
+                profile.push_key(out);
+                push_vec3(out, *dir);
+            }
+            Surface::BSpline(b) => out.extend([18, b.fingerprint()]),
+            Surface::Screw { profile, axis_o, axis, rise, urange, vrange } => {
+                out.push(19);
+                profile.push_key(out);
+                push_vec3(out, *axis_o);
+                push_vec3(out, *axis);
+                out.extend([rise.to_bits(), urange.0.to_bits(), urange.1.to_bits(), vrange.0.to_bits(), vrange.1.to_bits()]);
+            }
+            Surface::Offset { base, dist } => {
+                out.push(20);
+                base.push_key(out);
+                out.push(dist.to_bits());
+            }
+        }
+    }
+
     /// Hash identifying the surface's geometry (equal surfaces hash equal;
     /// for memoising pure functions of surfaces).
     pub fn fingerprint(&self) -> u64 {

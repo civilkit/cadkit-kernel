@@ -992,21 +992,7 @@ pub fn build(arr: &Arrangement, faces: &[OutFace]) -> Body {
                         e
                     }
                 };
-                let pc = exact_pcurve(&of.surface, &ae.curve, tol * 10.0).or_else(|| {
-                    let conic = matches!(ae.curve, ck_geom::curve::Curve::Circle { .. } | ck_geom::curve::Curve::Ellipse { .. });
-                    if matches!(of.surface, ck_geom::surface::Surface::BSpline(_) | ck_geom::surface::Surface::Screw { .. } | ck_geom::surface::Surface::Plane { .. }) && matches!(ae.curve, ck_geom::curve::Curve::BSpline(_)) {
-                        // (a long cut curve turning round inside a sweep face is ~1 mm off its
-                        // 32-sample cubic fit at the tip: refine until it reproduces the curve)
-                        pcurve_of_dense(&of.surface, &ae.curve, ae.t0, ae.t1, tol, 1e-5).ok()
-                    } else if conic && !matches!(of.surface, ck_geom::surface::Surface::Plane { .. }) {
-                        // a great circle on a sphere that does not pass through its poles (a
-                        // rotated sphere cut by an axis plane) has no exact uv line: the
-                        // 32-sample fit deviates ~1e-4, more than the validator's tolerance
-                        pcurve_of_dense(&of.surface, &ae.curve, ae.t0, ae.t1, tol, 1e-6).ok()
-                    } else {
-                        pcurve_of(&of.surface, &ae.curve, ae.t0, ae.t1, tol).ok()
-                    }
-                });
+                let pc = edge_pcurve(&of.surface, &ae.curve, ae.t0, ae.t1, tol);
                 let pc = pc.map(|pc| {
                     let (ta, tb) = if rev { (ae.t1, ae.t0) } else { (ae.t0, ae.t1) };
                     let mut pc = pc;
@@ -1072,6 +1058,36 @@ pub fn build(arr: &Arrangement, faces: &[OutFace]) -> Body {
     split_pinch_vertices(&mut b);
     ck_topo::region::rebuild_lumps(&mut b);
     b
+}
+
+/// The pcurve of edge curve `c` over `[t0, t1]` on surface `s` (before any period shift), memoised by the exact
+/// inputs: a boolean chain rebuilds every coedge of every result, and the pcurve fits of the edges it did not
+/// touch were the bulk of `build` (a pure function of these inputs, so a repeat returns the same curve).
+fn edge_pcurve(s: &Surface, c: &Curve, t0: f64, t1: f64, tol: f64) -> Option<Curve2> {
+    thread_local! {
+        static MEMO: std::cell::RefCell<ck_core::memo::Memo<Option<Curve2>>> = std::cell::RefCell::new(ck_core::memo::Memo::new(1 << 21));
+    }
+    let mut key = Vec::with_capacity(48);
+    s.push_key(&mut key);
+    c.push_key(&mut key);
+    key.extend([t0.to_bits(), t1.to_bits(), tol.to_bits()]);
+    ck_core::memo::cached(&MEMO, key, || {
+        exact_pcurve(s, c, tol * 10.0).or_else(|| {
+            let conic = matches!(c, Curve::Circle { .. } | Curve::Ellipse { .. });
+            if matches!(s, Surface::BSpline(_) | Surface::Screw { .. } | Surface::Plane { .. }) && matches!(c, Curve::BSpline(_)) {
+                // (a long cut curve turning round inside a sweep face is ~1 mm off its
+                // 32-sample cubic fit at the tip: refine until it reproduces the curve)
+                pcurve_of_dense(s, c, t0, t1, tol, 1e-5).ok()
+            } else if conic && !matches!(s, Surface::Plane { .. }) {
+                // a great circle on a sphere that does not pass through its poles (a
+                // rotated sphere cut by an axis plane) has no exact uv line: the
+                // 32-sample fit deviates ~1e-4, more than the validator's tolerance
+                pcurve_of_dense(s, c, t0, t1, tol, 1e-6).ok()
+            } else {
+                pcurve_of(s, c, t0, t1, tol).ok()
+            }
+        })
+    })
 }
 
 /// A vertex where the face loops pair only part of its incident edges is a pinch:

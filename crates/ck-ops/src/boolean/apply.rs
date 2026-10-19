@@ -720,6 +720,22 @@ mod tests {
         box_body("F2", 0.0, 0.0, 40.0, 20.0, 0.0, 10.0)
     }
 
+    /// The content-keyed memos (edge boxes, pcurves, surface grids) return what the computation returns: a
+    /// boolean run with warm tables gives the same bits as the first, cold run, and the repeat hits them.
+    #[test]
+    fn warm_memos_give_the_same_body() {
+        let tool = cyl_body("F4", 20.0, 10.0, 5.0, -1.0, 11.0);
+        let first = boolean(&the_box(), &tool, Op::Cut, 1e-6).unwrap().body;
+        let second_tool = cyl_body("F5", 8.0, 10.0, 3.0, -1.0, 11.0);
+        let chained = boolean(&first, &second_tool, Op::Cut, 1e-6).unwrap().body;
+        let [hits, _] = ck_core::memo::counts();
+        let again = boolean(&the_box(), &tool, Op::Cut, 1e-6).unwrap().body;
+        let again_chained = boolean(&again, &second_tool, Op::Cut, 1e-6).unwrap().body;
+        assert!(ck_core::memo::counts()[0] > hits);
+        assert_eq!(format!("{first:?}"), format!("{again:?}"));
+        assert_eq!(format!("{chained:?}"), format!("{again_chained:?}"));
+    }
+
     #[test]
     fn oracle_box_minus_through_cylinder() {
         // probe box_cyl: extrude cut throughBoth of circle (20,10) r5
