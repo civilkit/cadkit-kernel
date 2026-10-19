@@ -1036,14 +1036,11 @@ fn uv_box(s: &Surface, b: &Bounds) -> ((f64, f64), (f64, f64)) {
     let (pu, pv) = s.periods();
     let (mut u0, mut u1, mut v0, mut v1) = (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
     // (the spline's content hash once, not once per lattice point)
-    let fp = crate::boolean::classify::spline_fp(s);
+    let fp = s.foot_key();
     for i in 0..27 {
         let f = |k: usize, a: f64, c: f64| a + (c - a) * 0.5 * k as f64;
         let p = Vec3::new(f(i % 3, b.lo.x, b.hi.x), f((i / 3) % 3, b.lo.y, b.hi.y), f(i / 9, b.lo.z, b.hi.z));
-        let (u, v) = match (s, fp) {
-            (Surface::BSpline(bs), Some(fp)) => bs.closest_param_fp(fp, p),
-            _ => s.closest_param(p),
-        };
+        let (u, v) = s.closest_param_keyed(p, fp);
         u0 = u0.min(u);
         u1 = u1.max(u);
         v0 = v0.min(v);

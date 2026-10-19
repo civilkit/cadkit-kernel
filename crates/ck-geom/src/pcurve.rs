@@ -119,15 +119,14 @@ pub fn project_points(surf: &Surface, pts: &[Vec3]) -> Vec<Vec2> {
         Surface::BSpline(bs) => Some(bs.fingerprint()),
         _ => None,
     };
+    // (a surface of revolution with a spline profile hashes the profile once as well)
+    let key = if fp.is_some() { fp } else { surf.foot_key() };
     for &p in pts {
         let warm = match (surf, out.last()) {
             (Surface::BSpline(_) | Surface::Screw { .. }, Some(prev)) => warm_project(surf, prev.x, prev.y, p),
             _ => None,
         };
-        let (mut u, mut v) = warm.unwrap_or_else(|| match (surf, fp) {
-            (Surface::BSpline(bs), Some(fp)) => bs.closest_param_fp(fp, p),
-            _ => surf.closest_param(p),
-        });
+        let (mut u, mut v) = warm.unwrap_or_else(|| surf.closest_param_keyed(p, key));
         // the closest-point search only locates a point of a free-form surface to its own
         // resolution (a point of the surface must be hit exactly): polish by Newton from
         // the found parameter, else from the previous sample
