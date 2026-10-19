@@ -485,7 +485,9 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
                 // pole line, which `join` samples. Any other uv gap means the chain does not close.
                 let winds = |d: f64, p: Option<f64>| match p {
                     Some(p) => ((d / p) - (d / p).round()).abs() <= 1e-9,
-                    None => d.abs() <= 1e-6,
+                    // a non-periodic direction cannot wind: a small gap is a tangency
+                    // closure error (the pcurves meet at one vertex but their fits differ)
+                    None => d.abs() <= 1e-3 * (1.0 + d.abs()),
                 };
                 let whole = winds(first.uv.x - last.uv.x, pu) && winds(first.uv.y - last.uv.y, pv);
                 join(&mut poly, last, first, tol);
