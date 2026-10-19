@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Session, checkOp, referencers } from './session.js';
+import { Session, checkOp, referencers, refCheckNeeded, hasNameRefs } from './session.js';
 import { defaultWasmPath as wasmPath } from '../../kernel-client/src/worker.js';
 import type { KernelReply } from '../../kernel-client/src/protocol.js';
 import { emptyPart } from '../../part-model/src/index.js';
@@ -464,3 +464,153 @@ describe('session intent', () => {
     assert.equal(r.hints, undefined);
   });
 });
+
+/** A plate, a sketch and a fillet that name faces of it, a second block on its cap and a last fillet: references at several
+ *  depths of the history (the Rust test refdiff_cache has the same part). */
+function refDoc(): ReturnType<typeof emptyPart> {
+  const sk = (id: string, pts: Array<[string, number, number]>, ents: unknown[], plane: unknown) => ({ type: 'sketch', id, plane, points: pts.map(([i, x, y]) => ({ id: i, x, y })), entities: ents, constraints: [] });
+  const rect = [{ type: 'line', id: 'e1', p1: 'p1', p2: 'p2' }, { type: 'line', id: 'e2', p1: 'p2', p2: 'p3' }, { type: 'line', id: 'e3', p1: 'p3', p2: 'p4' }, { type: 'line', id: 'e4', p1: 'p4', p2: 'p1' }];
+  return {
+    ...emptyPart('R'),
+    features: [
+      sk('F1', [['p1', 0, 0], ['p2', 40, 0], ['p3', 40, 20], ['p4', 0, 20]], rect, { kind: 'std', id: 'top' }),
+      { type: 'extrude', id: 'F2', op: 'add', sketch: 'F1', end: 'blind', depth: 10 },
+      sk('F3', [['a', 10, 10]], [{ type: 'circle', id: 'e1', c: 'a', r: 3 }], { kind: 'face', id: 'F2.C1' }),
+      { type: 'fillet', id: 'F4', radius: 1, edges: [{ faces: ['F2.C1', 'F2.S.e1'], at: [20, 0, 0] }] },
+      sk('F5', [['b', 30, 10]], [{ type: 'circle', id: 'e1', c: 'b', r: 4 }], { kind: 'face', id: 'F2.C1' }),
+      { type: 'extrude', id: 'F6', op: 'add', sketch: 'F5', end: 'blind', depth: 5 },
+      { type: 'fillet', id: 'F7', radius: 0.5, edges: [{ faces: ['F2.C1', 'F2.S.e3'], at: [20, 20, 0] }] },
+    ],
+    seq: 8,
+  } as unknown as ReturnType<typeof emptyPart>;
+}
+
+describe('deferred reference check', () => {
+  it('knows which features name faces and edges', () => {
+    assert.equal(hasNameRefs({ plane: { kind: 'face', id: 'F2.C1' } }), true);
+    assert.equal(hasNameRefs({ edges: [{ faces: ['a', 'b'], at: [1, 2, 3] }] }), true);
+    assert.equal(hasNameRefs({ sketch: 'F1', depth: 10, id: 'F2' }), false);
+  });
+
+  it('is skipped when no later feature names a face or edge, and when only appending', () => {
+    const d = refDoc();
+    const set = (id: string, path: string, value: unknown) => [{ op: 'set', id, path, value }] as never;
+    const same = (ops: never) => refCheckNeeded(d, d, ops);
+    assert.equal(same(set('F7', 'radius', 0.6)), false, 'last feature');
+    assert.equal(same(set('F6', 'depth', 6)), true, 'F7 names faces after it');
+    assert.equal(same(set('F2', 'depth', 12)), true);
+    assert.equal(same([{ op: 'remove', id: 'F6' }] as never), true);
+    assert.equal(same([{ op: 'move', id: 'F7', to: 2 }] as never), true);
+    assert.equal(same([{ op: 'add', feature: { type: 'fillet' } }] as never), false, 'append');
+    assert.equal(same([{ op: 'add', feature: { type: 'fillet' }, index: 2 }] as never), true);
+  });
+
+  function spy(): { k: KernelTransport; log: string[]; refDiffs: Array<{ base: unknown; part: unknown }> } {
+    const log: string[] = [];
+    const refDiffs: Array<{ base: unknown; part: unknown }> = [];
+    const inner = fake();
+    return { log, refDiffs, k: { request: async (m) => { log.push(m.type as string); if (m.type === 'refDiff') refDiffs.push({ base: m.base, part: m.part }); return inner.request(m); } } };
+  }
+  const lean = { lean: true };
+  const edit6 = [{ op: 'set', id: 'F6', path: 'depth', value: 6 }] as never;
+
+  it('does not run for an edit it cannot say anything about', async () => {
+    const t = spy();
+    const s = new Session(refDoc(), t.k);
+    const r = await s.edit([{ op: 'set', id: 'F7', path: 'radius', value: 0.6 }], undefined, lean);
+    assert.equal(r.refWarningsLater, undefined);
+    assert.equal(t.refDiffs.length, 0);
+  });
+
+  it('waits for the session to be idle, then runs once', async () => {
+    const t = spy();
+    const s = new Session(refDoc(), t.k);
+    s.refCheckIdleMs = 400;
+    const r = await s.edit(edit6, undefined, lean);
+    assert.ok(r.refWarningsLater);
+    await new Promise((x) => setTimeout(x, 150));
+    assert.equal(t.refDiffs.length, 0, 'not before the idle time');
+    assert.deepEqual(await r.refWarningsLater, []);
+    assert.equal(t.refDiffs.length, 1);
+  });
+
+  it('is dropped when anything reaches the kernel while it waits', async () => {
+    const t = spy();
+    const s = new Session(refDoc(), t.k);
+    s.refCheckIdleMs = 400;
+    const r = await s.edit(edit6, undefined, lean);
+    await new Promise((x) => setTimeout(x, 100));
+    await s.preview([{ op: 'set', id: 'F2', path: 'depth', value: 11 }]);
+    assert.deepEqual(await r.refWarningsLater, []);
+    await new Promise((x) => setTimeout(x, 600));
+    assert.equal(t.refDiffs.length, 0, 'never started behind new work');
+  });
+
+  it('can be asked for on demand, and a non-lean edit still returns it', async () => {
+    const t = spy();
+    const s = new Session(refDoc(), t.k);
+    await s.edit(edit6, undefined, lean);
+    assert.deepEqual(await s.refWarnings(), []);
+    assert.equal(t.refDiffs.length, 1);
+    assert.equal((t.refDiffs[0].base as { features: Array<{ depth?: number }> }).features[5].depth, 5);
+    assert.equal((t.refDiffs[0].part as { features: Array<{ depth?: number }> }).features[5].depth, 6);
+    const t2 = spy();
+    const s2 = new Session(refDoc(), t2.k);
+    const r = await s2.edit([{ op: 'set', id: 'F7', path: 'radius', value: 0.6 }]);
+    assert.equal(t2.refDiffs.length, 1, 'non-lean: always, in the edit');
+    assert.deepEqual(r.refWarnings, []);
+    const t3 = spy();
+    const r3 = await new Session(refDoc(), t3.k).edit(edit6, undefined, { refCheck: 'none' });
+    assert.equal(t3.refDiffs.length, 0);
+    assert.deepEqual(r3.refWarnings, []);
+  });
+});
+
+describe('skipped reference checks have no warnings', { skip: !existsSync(wasmPath()) && 'no wasm built' }, () => {
+  it('matches the full path on edits, removals and moves', async () => {
+    const { createWorkerKernel } = await import('../../kernel-client/src/worker.js');
+    const k = await createWorkerKernel();
+    try {
+      const base = refDoc();
+      const warnings = async (b: unknown, p: unknown, noCache: boolean) => {
+        const r = await k.request({ type: 'refDiff', base: b, part: p, ...(noCache ? { noCache: true } : {}) });
+        assert.equal(r.ok, true);
+        return (r.result as { warnings: unknown[] }).warnings;
+      };
+      const cases: Array<[string, EditOpT[]]> = [
+        ['last radius', [{ op: 'set', id: 'F7', path: 'radius', value: 0.6 }]],
+        ['F6 depth', [{ op: 'set', id: 'F6', path: 'depth', value: 7 }]],
+        ['F4 radius', [{ op: 'set', id: 'F4', path: 'radius', value: 1.4 }]],
+        ['F2 depth', [{ op: 'set', id: 'F2', path: 'depth', value: 14 }]],
+        ['F5 circle', [{ op: 'set', id: 'F5', path: 'points', value: [{ id: 'b', x: 25, y: 10 }] }]],
+        ['plane', [{ op: 'set', id: 'F1', path: 'plane', value: { kind: 'std', id: 'front' } }]],
+        ['suppress F6', [{ op: 'set', id: 'F6', path: 'suppressed', value: true }]],
+        ['remove F2', [{ op: 'remove', id: 'F2', cascade: false }]],
+        ['move F7', [{ op: 'move', id: 'F7', to: 2 }]],
+        ['two sets', [{ op: 'set', id: 'F7', path: 'radius', value: 0.7 }, { op: 'set', id: 'F4', path: 'radius', value: 1.2 }]],
+      ];
+      let skipped = 0, needed = 0;
+      for (const [name, ops] of cases) {
+        const s = new Session(base, { request: async () => ({ ok: true, result: { errors: [], body: cleanBody } }) } as KernelTransport);
+        const before = s.document;
+        const applied = await s.edit(ops as never).catch(() => null);
+        if (!applied?.ok) continue;
+        const part = s.document;
+        await k.request({ type: 'regen', tag: 'a', part: before });
+        await k.request({ type: 'regen', tag: 'a', part });
+        const full = await warnings(before, part, true);
+        if (!refCheckNeeded(before, part, ops as never)) {
+          skipped++;
+          assert.deepEqual(full, [], `${name}: skipped but the full path warns`);
+        } else {
+          needed++;
+          assert.deepEqual(await warnings(before, part, false), full, `${name}: cached path differs`);
+        }
+      }
+      assert.ok(skipped >= 1 && needed >= 5, `${skipped} skipped, ${needed} checked`);
+    } finally {
+      await k.close();
+    }
+  });
+});
+type EditOpT = import('./session.js').EditOp;
