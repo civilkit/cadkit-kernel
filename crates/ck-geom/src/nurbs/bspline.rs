@@ -31,6 +31,21 @@ pub(crate) const GL8: [(f64, f64); 8] = [
     (0.9602898564975363, 0.1012285362903763),
 ];
 
+/// How many following samples, `step` of curve speed apart, are surely farther from the query point than the
+/// best so far, given that this one is `gap` farther (sample k is at least `gap - k*step` away from beating it).
+/// The 1e-9 relative margin covers the rounding of the evaluated distances.
+fn skippable(gap: f64, step: f64) -> usize {
+    if !(gap > 0.0) || !(step >= 0.0) || !step.is_finite() {
+        return 0;
+    }
+    let k = (gap * (1.0 - 1e-9) / step).floor() - 1.0;
+    if k >= 1.0 {
+        (k as usize).min(1 << 20)
+    } else {
+        0
+    }
+}
+
 impl<P: Pt> BSplineCurve<P> {
     /// Non-rational curve. Validates knot count / ordering.
     pub fn new(degree: usize, knots: Vec<f64>, ctrl: Vec<P>) -> Result<Self, String> {
@@ -538,8 +553,33 @@ impl<P: Pt> BSplineCurve<P> {
         self.length_between(a, b)
     }
 
+    /// Upper bound of |C'(u)| on knot span `s` (`knots[s] < knots[s+1]`): the derivative is a convex combination
+    /// of the hodograph control points `p (P[i+1] - P[i]) / (t[i+p+1] - t[i+1])`, i = s-p..s-1. Infinite for a
+    /// rational curve (no skipping then). Padded so that rounding in the bound never makes it too small.
+    fn span_speed_bound(&self, s: usize) -> f64 {
+        if self.weights.is_some() || self.degree == 0 {
+            return f64::INFINITY;
+        }
+        let p = self.degree;
+        let mut m = 0.0f64;
+        for i in s + 1 - p..s + 1 {
+            let den = self.knots[i + p] - self.knots[i];
+            if !(den > 0.0) {
+                return f64::INFINITY;
+            }
+            m = m.max((self.ctrl[i] - self.ctrl[i - 1]).len() * p as f64 / den);
+        }
+        m * (1.0 + 1e-9)
+    }
+
     /// Parameter of the closest point to `q` (sampling seed + Newton).
     pub fn closest_param(&self, q: P) -> f64 {
+        self.closest_param_with(q, true)
+    }
+
+    /// [`Self::closest_param`]; `skip = false` evaluates every sample (the reference the skipping must match).
+    fn closest_param_with(&self, q: P, skip: bool) -> f64 {
+        let skippable = |gap: f64, step: f64| if skip { skippable(gap, step) } else { 0 };
         let (a, b) = self.domain();
         let spans = basis::distinct_count(&self.knots).max(2) - 1;
         let n = (spans * (self.degree + 1) * 4).max(16);
@@ -562,12 +602,17 @@ impl<P: Pt> BSplineCurve<P> {
             };
             let sample = |s: usize, best: &mut (f64, f64)| {
                 let (k0, k1) = (self.knots[s].max(a), self.knots[s + 1].min(b));
-                for j in 0..=m {
+                // a sample farther from q than `best` by more than the curve can travel to the next one cannot
+                // replace it (strict <): skip it unevaluated; the sampled points that remain are the same
+                let step = self.span_speed_bound(s) * (k1 - k0) / m as f64;
+                let mut j = 0;
+                while j <= m {
                     let u = k0 + (k1 - k0) * j as f64 / m as f64;
                     let d = self.eval(u).dist(q);
                     if d < best.0 {
                         *best = (d, u);
                     }
+                    j += 1 + skippable(d - best.0, step);
                 }
             };
             // two levels: blocks of BLK spans (one cheap ball per block, from
@@ -607,12 +652,16 @@ impl<P: Pt> BSplineCurve<P> {
             }
             return newton_closest(|u| self.derivs_arr(u, 2), q, best.1, a, b);
         }
-        for i in 0..=n {
+        let speed = (self.degree..self.ctrl.len()).filter(|&s| self.knots[s] < self.knots[s + 1]).map(|s| self.span_speed_bound(s)).fold(0.0f64, f64::max);
+        let step = speed * (b - a) / n as f64;
+        let mut i = 0;
+        while i <= n {
             let u = a + (b - a) * i as f64 / n as f64;
             let d = self.eval(u).dist(q);
             if d < best.0 {
                 best = (d, u);
             }
+            i += 1 + skippable(d - best.0, step);
         }
         newton_closest(|u| self.derivs_arr(u, 2), q, best.1, a, b)
     }
@@ -850,5 +899,51 @@ mod tests {
         let c = sample_curve();
         let q = c.eval(0.63) + Vec3::new(0.0, 0.0, 0.0);
         assert!(close(c.closest_param(q), 0.63, 1e-9));
+    }
+
+    /// Skipping samples that cannot replace the best must give the very parameter of the full scan: random curves
+    /// (degree 1..4, 1..30 spans, repeated knots, rational) and query points near and far.
+    #[test]
+    fn closest_param_skipping_matches_full_scan() {
+        let mut st = 0x9e3779b97f4a7c15u64;
+        let mut rnd = move || {
+            st ^= st << 13;
+            st ^= st >> 7;
+            st ^= st << 17;
+            (st >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for case in 0..400 {
+            let p = 1 + (rnd() * 4.0) as usize;
+            let spans = 1 + (rnd() * 30.0) as usize;
+            let n = spans + p;
+            let mut knots = vec![0.0; p + 1];
+            let mut t = 0.0;
+            for _ in 0..spans - 1 {
+                t += 0.2 + rnd();
+                // sometimes a doubled interior knot
+                knots.push(t);
+                if p > 1 && rnd() < 0.15 {
+                    knots.push(t);
+                }
+            }
+            t += 0.2 + rnd();
+            knots.extend(vec![t; p + 1]);
+            let nc = knots.len() - p - 1;
+            let _ = n;
+            let ctrl: Vec<Vec3> = (0..nc).map(|i| Vec3::new(i as f64 * 0.7 + rnd(), rnd() * 3.0, rnd() * 2.0)).collect();
+            let c = if case % 5 == 0 {
+                BSplineCurve::new_rational(p, knots, ctrl, (0..nc).map(|_| 0.5 + rnd()).collect()).unwrap()
+            } else {
+                BSplineCurve::new(p, knots, ctrl).unwrap()
+            };
+            let (a, b) = c.domain();
+            for _ in 0..12 {
+                let on = c.eval(a + (b - a) * rnd());
+                let off = Vec3::new(rnd() * 25.0 - 3.0, rnd() * 8.0 - 2.0, rnd() * 6.0 - 2.0);
+                for q in [on, on + Vec3::new(0.01, -0.02, 0.0) * rnd(), off] {
+                    assert_eq!(c.closest_param(q).to_bits(), c.closest_param_with(q, false).to_bits(), "case {case} q {q:?}");
+                }
+            }
+        }
     }
 }
