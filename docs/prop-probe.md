@@ -15,6 +15,7 @@ original kernel (`867fff6c`) and ours (`67a1fee2`) by
 | 5 | ruled helicoid sheet | ok | ok | `cap5_ruled_helicoid.json` | radial line sections (radius 20, pitch 20) rotated by the pitch angle and lofted `surface: true` |
 | 6 | project closed outline + trim | ok | ok | `cap6_helicoid_project_trim.json` | `projectCurve` of a 12×12 outline onto the sheet (`faces: []` = every face), then `surfaceExtrude` of the outline as the prism tool and `trimSurface`; both kernels keep the trimmed sheet |
 | 7 | thicken open free-form loft sheet | **ok, 3145.851** | **ok, 3145.863** | `cap7_thicken_open_loft.json` | was `thickenReach` (rim corner solved off the crease's miter image); fixed, rel 3.8e-6 |
+| 7 | same sheet, variable thickness 4→1 mm along z | **ok, 3932.323** | `invalidValue` | `cap7_variable_thicken.json` | new `thicknessAt {along, stops}` field (original kernel rejects the unknown parameter); 1.25 × the constant t=2 volume — the ramp averages 2.5 mm, as the linear integral requires |
 | 8 | blade-to-hub root fillet | `blendFailed` | `blendFailed` | `cap8_fillet_blade_hub.json` | the 12 blade-root edges (blade faces × hub cylinder) at r=2: both kernels fail the blend (ours: `detail` “foot 1”, the ball-centre foot solve; original: “the spring does not leave its face at the chain's end”). A single root edge is `blendUnsupported` on ours with `detail` “concave chain end is not on a planar face” (r=1 and r=2) and `blendFailed` on the original; at r=1 on the 12-edge loop the original kernel did not return within 3 min |
 
 ## Findings

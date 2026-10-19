@@ -133,6 +133,8 @@ const rs12 = [9, 13, 17, 21, 25, 30, 35, 40, 44, 48, 52, 55];
   f.push({ type:'loft', id:'F8', op:'add', surface:true, sketches:['S0','S1','S2','S3','S4'] });
   f.push({ type:'thicken', id:'F9', surface:'F8', thickness:2, side:'both' });
   add('cap7_thicken_open_loft', 7, f);
+  // the same sheet with the new variable thickness: 4 mm at the root (z=0), 1 mm at the tip
+  add('cap7_variable_thicken', 7, [...f.slice(0,-1), { type:'thicken', id:'F9', surface:'F8', thicknessAt:{ along:[0,0,1], stops:[[0,4],[48,1]] }, side:'both' }]);
 }
 {
   // root fillet: hub + blade + the blade-root outline (12 edges where the loft meets the

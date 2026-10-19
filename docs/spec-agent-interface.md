@@ -163,6 +163,41 @@ Rules:
 - Not covered: `thin` on `sweep`, `loft`, `hole` and surface extrudes; non-uniform thickness.
   Check: `tools/thin_extrude_check.mjs` (wasm, run by `tools/land.sh`), `crates/ck-model/tests/thin_extrude.rs`.
 
+## Variable thickness (`thicken` `thicknessAt`)
+
+A surface `thicken` may taper instead of standing at one thickness: `thicknessAt` replaces `thickness` with a field that is
+sampled per point of the sheet (each point moves along its own face normal by its own thickness), so a blade tapers root to
+tip in one step. Both layers of the wall follow the ramp: a `both` body is the sheet moved by half the local thickness each
+way.
+
+```json
+{"type":"thicken","id":"F2","surface":"F1","thicknessAt":{"along":[0,0,1],"stops":[[0,4],[48,1]]},"side":"both"}
+```
+
+Fields: `along` a non-zero direction (the ramp axis); `stops` two to six `[s, t]` pairs, `s` ascending, each `t` > 0 and
+finite. The thickness at a sheet point `p` is the linear interpolation of the stops at `s = p·â` (`â` the unit `along`),
+clamped to the first and last stop; `side` is as for `thickness` (`front` default).
+
+Rules:
+
+- `thickness` and `thicknessAt` are alternatives. `thickness` keeps its constant behaviour exactly (bodies and face names
+  bit-identical); a `thicknessAt` whose stops all hold one thickness is routed to the same path.
+- The stops must cover the sheet along `â`: a sheet point outside the stops' range is refused before any geometry runs
+  (`invalidValue {detail: "the thicknessAt stops cover ... but the sheet spans ...", hint}`), with a hint to add a stop at
+  each end. A stop list that is not 2..=6 ascending pairs of finite numbers, or a non-positive stop thickness, is
+  `invalidValue {detail, hint}` at parse time.
+- Thickness limits are per point: wherever a local thickness reaches its local radius of curvature the offset is
+  `offsetTooLarge {limit: {minRadius, maxThickness, ...}, detail, hint}` on the tightest face (`maxThickness` a thickness
+  that works there, in terms of the feature's thickness; the hint suggests reducing the stops or thickening the other
+  way). Creases miter per point (`thickenReach` when an offset face cannot meet its neighbour, as for a constant
+  thicken).
+- Geometry: a variable thicken always runs the free-form offset machinery with per-point distances — surfaces, rim edges,
+  crease miters and walls alike — so even an analytic sheet (plane, cylinder) is fitted (cubic, within 1e-5) and the face
+  names follow the free-form convention. The constant path's exact quadric offsets do not apply.
+- Not covered: variable `thin` walls, `moveFace`. Check: `crates/ck-model/tests/variable_thicken.rs`,
+  `crates/ck-ops/src/surfacing/thicken.rs` (`surfacing::thicken::tests`), `tools/prop_probe.mjs`
+  (`cap7_variable_thicken`, `ours-only` against the original kernel).
+
 ## Loft point sections (`loft` apex ends)
 
 The first and/or last section of a solid `loft` can be a single POINT, so a hull bow, a cone-like body or a sail tip tapers to

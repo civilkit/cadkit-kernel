@@ -14,6 +14,7 @@
   "cap5_ruled_helicoid": "both-ok",
   "cap6_helicoid_project_trim": "both-ok",
   "cap7_thicken_open_loft": "both-ok",
+  "cap7_variable_thicken": "ours-only",
   "cap8_fillet_blade_hub": "both-fail"
  },
  "knownGaps": []
