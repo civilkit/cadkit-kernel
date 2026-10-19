@@ -712,6 +712,35 @@ impl Surface {
         self.closest_point_fp(q, fp)
     }
 
+    /// Distance from `q` to the surface, for a caller that only needs it exactly when it exceeds `ok`:
+    /// [`closest_point_near_fp`](Self::closest_point_near_fp)`.2.dist(q)` whenever that Newton foot is a
+    /// stationary point or the distance is more than `ok`; else (a foot pinned on the domain boundary that is
+    /// within `ok` of `q`) the distance of that foot, an upper bound of the true one that is itself at most
+    /// `ok`, in place of the global search that would only confirm it.
+    pub fn distance_near_fp(&self, q: Vec3, hint: (f64, f64), fp: Option<u64>, ok: f64) -> f64 {
+        if matches!(self, Surface::BSpline(_) | Surface::Revolution { .. } | Surface::Extrusion { .. } | Surface::Screw { .. }) {
+            let dom = match self {
+                Surface::Revolution { .. } => {
+                    let (_, (v0, v1)) = self.domain();
+                    ((-INF, INF), (v0, v1))
+                }
+                _ => self.domain(),
+            };
+            let (u, v) = newton_surface(|u, v| self.derivs2(u, v), q, hint, dom);
+            let s = self.derivs2(u, v);
+            let r = s.p - q;
+            let (nu, nv) = (s.du.len().max(1e-300), s.dv.len().max(1e-300));
+            if (s.du.dot(r) / nu).abs() < 1e-9 && (s.dv.dot(r) / nv).abs() < 1e-9 {
+                return s.p.dist(q);
+            }
+            let d = s.p.dist(q);
+            if d <= ok {
+                return d;
+            }
+        }
+        self.closest_point_fp(q, fp).2.dist(q)
+    }
+
     /// As [`closest_point_within`](Self::closest_point_within), many queries
     /// against one surface: `prep` is `closest_prep()` of the B-spline (None
     /// for other surfaces).
@@ -1428,6 +1457,33 @@ mod tests {
                 assert_eq!(bits(s.closest_point_fp(q, fp)), bits(s.closest_point(q)), "{}", s.kind());
                 let hint = (u0 + (u1 - u0) * 0.5, v0 + (v1 - v0) * 0.5);
                 assert_eq!(bits(s.closest_point_near_fp(q, hint, fp)), bits(s.closest_point_near(q, hint)), "{}", s.kind());
+            }
+        }
+    }
+
+    /// `distance_near_fp` is the distance of `closest_point_near_fp` bit for bit whenever that is more than `ok`;
+    /// else it is an upper bound of the true distance that is at most `ok`.
+    #[test]
+    fn distance_near_fp_agrees_beyond_ok() {
+        let s = Surface::BSpline(Box::new(spline_patch()));
+        let ((u0, u1), (v0, v1)) = s.domain();
+        let fp = match &s {
+            Surface::BSpline(b) => Some(b.fingerprint()),
+            _ => None,
+        };
+        for k in 0..400 {
+            let (u, v) = (u0 + (u1 - u0) * ((k * 7) % 23) as f64 / 22.0, v0 + (v1 - v0) * ((k * 11) % 17) as f64 / 16.0);
+            let q = s.eval(u, v) + Vec3::new(0.3, -0.2, 0.45) * ((k % 9) as f64 - 4.0) * 1e-3 * (1 + k % 3) as f64;
+            let hint = (u0 + (u1 - u0) * ((k * 3) % 5) as f64 / 4.0, v0 + (v1 - v0) * ((k * 5) % 7) as f64 / 6.0);
+            let exact = s.closest_point_near_fp(q, hint, fp).2.dist(q);
+            for ok in [0.0, 1e-3, 3e-3, 1e-2, 1.0] {
+                let d = s.distance_near_fp(q, hint, fp, ok);
+                let truth = s.closest_point_fp(q, fp).2.dist(q);
+                if exact > ok {
+                    assert_eq!(d.to_bits(), exact.to_bits());
+                } else {
+                    assert!(d <= ok && d >= truth - 1e-12, "{d} {truth} {ok}");
+                }
             }
         }
     }

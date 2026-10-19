@@ -563,7 +563,7 @@ fn fit_offset_surface_inner(s: &Surface, d: f64, uvbox: ((f64, f64), (f64, f64))
                 }
                 let e = cached(um, vs[j])?;
                 let hint = (0.5 * (uk[i] + uk[i + 1]), vk[j]);
-                worst = worst.max(fs.closest_point_near_fp(e, hint, fs_fp).2.dist(e));
+                worst = worst.max(fs.distance_near_fp(e, hint, fs_fp, FIT_TOL));
             }
             // spans shorter than MIN_SPAN (a normal kink of the base smeared over
             // one sample) cannot be resolved further and are tolerated
@@ -585,7 +585,7 @@ fn fit_offset_surface_inner(s: &Surface, d: f64, uvbox: ((f64, f64), (f64, f64))
                 }
                 let e = cached(us[i], vm)?;
                 let hint = (uk[i], 0.5 * (vk[j] + vk[j + 1]));
-                worst = worst.max(fs.closest_point_near_fp(e, hint, fs_fp).2.dist(e));
+                worst = worst.max(fs.distance_near_fp(e, hint, fs_fp, FIT_TOL));
             }
             let span = grid[us.len() / 2][j].dist(grid[us.len() / 2][j + 1]);
             if span < MIN_SPAN {
@@ -811,7 +811,7 @@ fn fit_offset_surface_by(s: &Surface, d_at: &dyn Fn(Vec3) -> f64, d_rep: f64, uv
                 }
                 let e = cached(um, vs[j])?;
                 let hint = (0.5 * (uk[i] + uk[i + 1]), vk[j]);
-                worst = worst.max(fs.closest_point_near(e, hint).2.dist(e));
+                worst = worst.max(fs.distance_near_fp(e, hint, None, FIT_TOL));
             }
             // spans shorter than MIN_SPAN (a normal kink of the base smeared over
             // one sample) cannot be resolved further and are tolerated
@@ -833,7 +833,7 @@ fn fit_offset_surface_by(s: &Surface, d_at: &dyn Fn(Vec3) -> f64, d_rep: f64, uv
                 }
                 let e = cached(us[i], vm)?;
                 let hint = (uk[i], 0.5 * (vk[j] + vk[j + 1]));
-                worst = worst.max(fs.closest_point_near(e, hint).2.dist(e));
+                worst = worst.max(fs.distance_near_fp(e, hint, None, FIT_TOL));
             }
             let span = grid[us.len() / 2][j].dist(grid[us.len() / 2][j + 1]);
             if span < MIN_SPAN {
