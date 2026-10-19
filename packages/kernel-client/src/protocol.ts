@@ -73,3 +73,8 @@ export type HostResponse =
   | { kind: 'ready'; commit: string }
   | { kind: 'fail'; error: string }
   | { kind: 'done'; id: number; reply: KernelReply };
+
+/** The wire-protocol version this client was built against. A local native kernel service reports its own in `GET /version`;
+ *  the app refuses a service whose number differs, so two kernels never mix inside one document. Bump together with the
+ *  server's constant whenever a message or reply changes shape. */
+export const KERNEL_PROTOCOL = 1;

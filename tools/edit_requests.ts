@@ -1,6 +1,7 @@
 // Per kernel request type counts and seconds for Session.edit on a live session (one kernel instance, as in the GUI).
 // Run from the kit repo (vite-node harness): CK_REBUILD=<this worktree> CK_WASM=<wasm> REPRO_DOC=<doc.ckpart> \
 //   REPRO_TS=<this worktree>/tools/edit_requests.ts node tools/repro_union_corner.mjs
+// FULL_ONLY=1 runs the non-lean edits only (steady state: the before-mass is the previous after-mass).
 // EDITS=last,f48,f42,early selects the cases (default last,f48,f42); LEAN_ONLY=1 skips the non-lean variants.
 import { readFileSync } from 'node:fs';
 import { Session } from '@ck/session';
@@ -32,13 +33,13 @@ await s.regenReport(); rows = new Map();
 let bump = 0;
 for (const name of (process.env.EDITS ?? 'last,f48,f42').split(',')) {
   const [id, path, , v] = cases[name];
-  for (const lean of process.env.LEAN_ONLY ? [true] : [true, false]) {
+  for (const lean of process.env.LEAN_ONLY ? [true] : process.env.FULL_ONLY ? [false] : [true, false]) {
     bump += 0.01;
     const t0 = performance.now();
     const r = await s.edit([{ op: 'set', id, path, value: v + bump }], undefined, { lean });
     const wall = (performance.now() - t0) / 1000;
     const later = r.refWarningsLater ? await r.refWarningsLater.then(() => (performance.now() - t0) / 1000 - wall) : undefined;
-    dump(`${name} ${lean ? 'lean' : 'full'} ok=${r.ok}`, wall, later);
+    dump(`${name} ${lean ? 'lean' : 'full'} ok=${r.ok}${lean && !r.refWarningsLater ? ' (reference check skipped)' : ''}`, wall, later);
   }
 }
 await s.close().catch(() => {});
