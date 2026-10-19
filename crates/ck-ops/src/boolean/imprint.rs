@@ -14,7 +14,7 @@
 //! other's boundary edges instead of an SSI curve.
 
 use super::classify::{point_in_face_cached, LoopCache, Where};
-use crate::bvh::{curve_range_box, face_box, Aabb, Bvh};
+use crate::bvh::{curve_hull_box, curve_range_box, face_box, Aabb, Bvh};
 use crate::intersect::ss::{self, Bounds, SsResult};
 use crate::intersect::{cc, fit_param, param_slack};
 use ck_geom::curve::Curve;
@@ -278,6 +278,10 @@ fn cut_crossings(a: &CutSeg, b: &CutSeg, tol: f64, out: &mut Vec<Vec3>) {
 /// a cap disk's box is 2e-5 + 2·1e-6 thick in the oracle's BVH dump).
 const EDGE_TOL: f64 = 1e-5;
 
+/// Box padding (in units of the welding tolerance) of the lossless hull-box rejections of [`trim`] and the
+/// edge splitting: well past the 2 tol (plus parameter slack) within which a crossing or a pool point counts.
+const REJECT_PAD: f64 = 16.0;
+
 /// Parameter range of a CLOSED intersection conic that no boundary cuts:
 /// [−0.38·2π − 1e-9, +2π] of its frame, i.e. it starts at 0.62·2π (oracle:
 /// box C0 ∩ through hole r2 at (5,5) starts at (3.542062743788083, 0,
@@ -524,7 +528,9 @@ pub fn imprint_hooked(a: &Body, b: &Body, tol: f64, hook: Option<PairHook>) -> A
                     Some(pool_bvh.query_box(&bb.padded(4.0 * tol + 1e-9)))
                 }
             }
-            _ => None,
+            // splines: the pool points within reach of the control-point hull of the spans in range (a point
+            // farther than `tol` from the curve can never split it)
+            _ => curve_hull_box(c, t0, t1).map(|bb| pool_bvh.query_box(&bb.padded(REJECT_PAD * tol + 1e-9))),
         };
         let n_cand = cand.as_ref().map_or(pool.len(), |c| c.len());
         for k in 0..n_cand {
@@ -635,9 +641,17 @@ fn trim(c: &Curve, r: (f64, f64), faces: &[(&Body, FaceId)], bx: &Aabb, tol: f64
         return vec![];
     }
     let mut ts = vec![r.0, r.1];
+    // an edge whose hull box stays clear of the curve's cannot meet it (every hit and overlap of cc::intersect lies
+    // within 2 tol of both curves, a parameter slack past the range ends included): skip the intersection
+    let hull = curve_hull_box(c, r.0, r.1).map(|b| b.padded(REJECT_PAD * tol + 1e-9));
     for &(body, f) in faces {
         for e in body.face_edges(f) {
             let ed = body.edge(e);
+            if let (Some(h), Some(eb)) = (&hull, curve_hull_box(&ed.curve, ed.t0, ed.t1)) {
+                if !h.overlaps(&eb) {
+                    continue;
+                }
+            }
             let res = cc::intersect(c, r, &ed.curve, (ed.t0, ed.t1), tol);
             ts.extend(res.hits.iter().map(|h| h.t1));
             for o in res.overlaps {

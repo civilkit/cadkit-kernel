@@ -442,6 +442,69 @@ pub fn curve_range_box(curve: &ck_geom::curve::Curve, t0: f64, t1: f64) -> Aabb 
     bb
 }
 
+/// A box sure to hold `curve` over [t0, t1], for lossless rejection (no point of the curve lies outside it; the
+/// sampled [`curve_range_box`] can miss a bulge between samples). Lines from the end points, circles and ellipses
+/// from the end points and the per-axis extrema inside the range (the whole conic for a range past two turns),
+/// B-splines from the control points of the knot spans the range touches (convex hull property, positive weights
+/// only). `None` when no cheap bound exists (other curves, non-finite ranges).
+pub fn curve_hull_box(curve: &ck_geom::curve::Curve, t0: f64, t1: f64) -> Option<Aabb> {
+    use ck_geom::curve::Curve;
+    let (lo, hi) = (t0.min(t1), t0.max(t1));
+    if !(lo.is_finite() && hi.is_finite()) {
+        return None;
+    }
+    let bb = match curve {
+        Curve::Line { .. } => Aabb::from_points(&[curve.eval(lo), curve.eval(hi)]),
+        Curve::Circle { .. } | Curve::Ellipse { .. } => {
+            let (frame, a, b) = match curve {
+                Curve::Circle { frame, r } => (frame, *r, *r),
+                Curve::Ellipse { frame, a, b } => (frame, *a, *b),
+                _ => unreachable!(),
+            };
+            let mut bb = Aabb::from_points(&[curve.eval(lo), curve.eval(hi)]);
+            if hi - lo >= std::f64::consts::TAU || lo < -std::f64::consts::TAU || hi > 2.0 * std::f64::consts::TAU {
+                let e = Vec3::new(frame.x.x.abs() * a + frame.y.x.abs() * b, frame.x.y.abs() * a + frame.y.y.abs() * b, frame.x.z.abs() * a + frame.y.z.abs() * b);
+                bb = Aabb::new(frame.o - e, frame.o + e);
+            } else {
+                // coordinate i is extreme where tan t = (y_i b) / (x_i a): every such t in the range, all branches
+                for i in 0..3 {
+                    let t = (frame.y.get(i) * b).atan2(frame.x.get(i) * a);
+                    for k in -4..=4 {
+                        let tt = t + k as f64 * std::f64::consts::PI;
+                        if tt >= lo && tt <= hi {
+                            bb.add_point(curve.eval(tt));
+                        }
+                    }
+                }
+            }
+            bb
+        }
+        Curve::BSpline(s) => {
+            if s.weights.as_ref().is_some_and(|w| w.iter().any(|&x| !(x > 0.0))) || s.ctrl.len() <= s.degree {
+                return None;
+            }
+            let p = s.degree;
+            let mut bb = Aabb::EMPTY;
+            for k in p..s.ctrl.len() {
+                let (a, b) = (s.knots[k], s.knots[k + 1]);
+                if a < b && b >= lo && a <= hi {
+                    for &q in &s.ctrl[k - p..=k] {
+                        bb.add_point(q);
+                    }
+                }
+            }
+            if bb.is_empty() {
+                // a range outside the knot vector: the whole control polygon
+                bb = Aabb::from_points(&s.ctrl);
+            }
+            bb
+        }
+        _ => return None,
+    };
+    let finite = |v: Vec3| v.x.is_finite() && v.y.is_finite() && v.z.is_finite();
+    (finite(bb.min) && finite(bb.max)).then_some(bb)
+}
+
 /// Box of a face: union of its edge boxes, plus surface samples over the
 /// uv box of its boundary (catches bulging analytic / spline faces whose
 /// interior leaves the boundary hull, e.g. a sphere cap).
@@ -545,6 +608,32 @@ pub fn ray_triangle(o: Vec3, d: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<f64> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hull_box_holds_the_curve() {
+        use ck_geom::curve::Curve;
+        let n = Vec3::new(0.3, -0.5, 0.8).normalize();
+        let x = n.cross(Vec3::new(1.0, 0.2, 0.0)).normalize();
+        let pts: Vec<Vec3> = (0..9).map(|i| { let t = i as f64; Vec3::new(t, (t * 1.3).sin() * 4.0, (t * 0.7).cos() * 3.0) }).collect();
+        let spline = Curve::BSpline(ck_geom::fit::interpolate(&pts, 3, ck_geom::fit::Param::ChordLength).unwrap());
+        let (s0, s1) = spline.range();
+        let cases = [
+            (Curve::Line { o: Vec3::new(1.0, 2.0, 3.0), d: n }, -2.0, 5.0),
+            (Curve::circle_x(Vec3::new(1.0, -2.0, 0.5), n, x, 3.0), -1.0, 2.5),
+            (Curve::circle_x(Vec3::new(1.0, -2.0, 0.5), n, x, 3.0), 4.0, 9.0),
+            (Curve::circle_x(Vec3::new(0.0, 0.0, 0.0), n, x, 2.0), -20.0, 20.0),
+            (Curve::ellipse(Vec3::new(2.0, 1.0, -1.0), n, x, 5.0, 2.0), 0.3, 5.9),
+            (spline.clone(), s0, s1),
+            (spline.clone(), s0 + 0.31 * (s1 - s0), s0 + 0.47 * (s1 - s0)),
+        ];
+        for (c, t0, t1) in cases {
+            let bb = curve_hull_box(&c, t0, t1).unwrap().padded(1e-12);
+            for k in 0..=4000 {
+                let p = c.eval(t0 + (t1 - t0) * k as f64 / 4000.0);
+                assert!(bb.contains(p), "{} {t0} {t1}: {p:?} outside {bb:?}", c.kind());
+            }
+        }
+    }
 
     fn unit_box(c: Vec3, h: f64) -> Aabb {
         Aabb::new(c - Vec3::new(h, h, h), c + Vec3::new(h, h, h))
