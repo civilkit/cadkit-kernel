@@ -174,7 +174,7 @@ pub fn group(arr: &Arrangement, s: &Surface, sense: bool, cycles: Vec<Vec<He>>) 
             if seam_cycle(c) {
                 vec![Vec2::new(du0, dv0), Vec2::new(du1, dv0), Vec2::new(du1, dv1), Vec2::new(du0, dv1)]
             } else {
-                loop_polygon(s, &pieces(arr, c))
+                loop_polygon(s, &pieces(arr, c), sense)
             }
         })
         .collect();
@@ -319,7 +319,7 @@ pub fn sample_point(arr: &Arrangement, f: &Fragment) -> Option<(Vec3, Vec3)> {
             if whole && !l.is_empty() && seam_only(l) {
                 vec![Vec2::new(du0, dv0), Vec2::new(du1, dv0), Vec2::new(du1, dv1), Vec2::new(du0, dv1)]
             } else {
-                loop_polygon(s, &pieces(arr, l))
+                loop_polygon(s, &pieces(arr, l), af.sense)
             }
         })
         .collect();
@@ -967,7 +967,12 @@ pub fn build(arr: &Arrangement, faces: &[OutFace]) -> Body {
             let mut prev_end: Option<Vec2> = None;
             // (start, end) uv of every coedge's pcurve, for the pole fix below
             let mut ends: Vec<Option<(Vec2, Vec2)>> = vec![];
-            for &(ei, rev) in l {
+            // seam edges walked both ways here must have their pcurves one period apart (the copies
+            // `loop_polygon` chose); chaining by continuity would collapse the spike. A loop made
+            // only of seam twins is the whole parameter boundary and is handled below.
+            let twin_only = !l.is_empty() && l.iter().all(|&(e, r)| l.contains(&(e, !r)));
+            let forced = if twin_only { vec![] } else { super::classify::seam_spike_u(&of.surface, &pieces(arr, l), of.sense) };
+            for (k, &(ei, rev)) in l.iter().enumerate() {
                 let ae = &arr.edges[ei];
                 let eid = match emap[ei] {
                     Some(e) => e,
@@ -988,10 +993,16 @@ pub fn build(arr: &Arrangement, faces: &[OutFace]) -> Body {
                     }
                 };
                 let pc = exact_pcurve(&of.surface, &ae.curve, tol * 10.0).or_else(|| {
+                    let conic = matches!(ae.curve, ck_geom::curve::Curve::Circle { .. } | ck_geom::curve::Curve::Ellipse { .. });
                     if matches!(of.surface, ck_geom::surface::Surface::BSpline(_) | ck_geom::surface::Surface::Screw { .. } | ck_geom::surface::Surface::Plane { .. }) && matches!(ae.curve, ck_geom::curve::Curve::BSpline(_)) {
                         // (a long cut curve turning round inside a sweep face is ~1 mm off its
                         // 32-sample cubic fit at the tip: refine until it reproduces the curve)
                         pcurve_of_dense(&of.surface, &ae.curve, ae.t0, ae.t1, tol, 1e-5).ok()
+                    } else if conic && !matches!(of.surface, ck_geom::surface::Surface::Plane { .. }) {
+                        // a great circle on a sphere that does not pass through its poles (a
+                        // rotated sphere cut by an axis plane) has no exact uv line: the
+                        // 32-sample fit deviates ~1e-4, more than the validator's tolerance
+                        pcurve_of_dense(&of.surface, &ae.curve, ae.t0, ae.t1, tol, 1e-6).ok()
                     } else {
                         pcurve_of(&of.surface, &ae.curve, ae.t0, ae.t1, tol).ok()
                     }
@@ -999,7 +1010,12 @@ pub fn build(arr: &Arrangement, faces: &[OutFace]) -> Body {
                 let pc = pc.map(|pc| {
                     let (ta, tb) = if rev { (ae.t1, ae.t0) } else { (ae.t0, ae.t1) };
                     let mut pc = pc;
-                    if let Some(prev) = prev_end {
+                    if let Some(target) = forced.get(k).copied().flatten() {
+                        let du = pu.map_or(0.0, |p| ((target - pc.eval(ta).x) / p).round() * p);
+                        if du != 0.0 {
+                            pc = shift2(&pc, Vec2::new(du, 0.0));
+                        }
+                    } else if let Some(prev) = prev_end {
                         let s = pc.eval(ta);
                         let du = pu.map_or(0.0, |p| ((prev.x - s.x) / p).round() * p);
                         let dv = pv.map_or(0.0, |p| ((prev.y - s.y) / p).round() * p);
@@ -1016,7 +1032,10 @@ pub fn build(arr: &Arrangement, faces: &[OutFace]) -> Body {
                 }
                 b.add_coedge(lp, eid, rev, pc);
             }
-            fix_pole_jump(&mut b, lp, &of.surface, &ends);
+            // the forced copies already close the loop across the pole line
+            if !forced.iter().any(|x| x.is_some()) {
+                fix_pole_jump(&mut b, lp, &of.surface, &ends);
+            }
             // a loop made only of seam twins (revolve sphere meridian): the
             // twins' pcurves must lie one period apart, the loop CCW about
             // the outward normal (positive uv area when sense)

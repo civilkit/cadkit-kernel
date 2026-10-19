@@ -148,10 +148,12 @@ fn samples_fine(c: &Curve, ta: f64, tb: f64) -> usize {
 }
 
 /// uv polygon of a loop given as directed curve pieces `(curve, ta, tb)`.
-pub fn loop_polygon(s: &Surface, pieces: &[(&Curve, f64, f64)]) -> Vec<Vec2> {
+/// `sense` is the face's sense: the loop bounds the face region on its left in
+/// uv when `sense` (right-handed parameterization), on its right otherwise.
+pub fn loop_polygon(s: &Surface, pieces: &[(&Curve, f64, f64)], sense: bool) -> Vec<Vec2> {
     // fine circle sampling: a chord sag of 0.9% of the radius (24 chords)
     // misclassifies points near a large rim (flange annulus holes)
-    loop_polygon_with(s, pieces, samples_fine)
+    loop_polygon_with(s, pieces, sense, samples_fine)
 }
 
 /// `c` is a circle on the axis of the revolution surface `s` (cylinder, cone, torus): its uv image is a
@@ -166,11 +168,81 @@ fn coaxial_circle(s: &Surface, c: &Curve) -> bool {
     cf.z.cross(sf.z).len() < 1e-12 && d.cross(sf.z).len() < 1e-9 * (1.0 + d.len())
 }
 
-fn loop_polygon_with(s: &Surface, pieces: &[(&Curve, f64, f64)], nfun: impl Fn(&Curve, f64, f64) -> usize) -> Vec<Vec2> {
+/// For each piece of a loop that is a seam edge walked both ways ("a seam
+/// spike"), the u its samples must be pinned to: one period for the traversal
+/// whose region side is the far copy, zero for the other. `None` for every
+/// other piece.
+///
+/// A seam edge is an iso-u line of a periodic surface (`u = 0 mod period`). A
+/// spike on it means the loop bounds a region that wraps the seam, and its two
+/// traversals must be one period apart or the uv polygon is a zero-width spike
+/// (see [`loop_polygon_with`]).
+pub(crate) fn seam_spike_u(s: &Surface, pieces: &[(&Curve, f64, f64)], sense: bool) -> Vec<Option<f64>> {
+    let mut forced = vec![None; pieces.len()];
+    // a surface periodic in both directions (a torus) may wrap either seam, and the
+    // copy choice differs per direction: leave those to the existing trim handling
+    if s.periods().1.is_some() {
+        return forced;
+    }
+    let Some(per) = s.periods().0 else { return forced };
+    // v delta of the traversal when the whole piece is on the seam line
+    let seam_dv = |c: &Curve, ta: f64, tb: f64| -> Option<f64> {
+        let mut checked = false;
+        for t in [ta, 0.5 * (ta + tb), tb] {
+            let (u, v) = s.closest_param(c.eval(t));
+            // u is arbitrary at a pole: there the seam test says nothing
+            if s.is_pole(u, v) {
+                continue;
+            }
+            checked = true;
+            let m = u.rem_euclid(per);
+            if m.min(per - m) > 1e-6 * per {
+                return None;
+            }
+        }
+        if !checked {
+            return None;
+        }
+        Some(s.closest_param(c.eval(ta)).1 - s.closest_param(c.eval(tb)).1)
+    };
+    for (i, &(c, ta, tb)) in pieces.iter().enumerate() {
+        let Some(dv) = seam_dv(c, ta, tb) else { continue };
+        if dv.abs() < 1e-12 {
+            continue;
+        }
+        // the edge walked out and straight back: only a consecutive pair of half-edges is a
+        // spike (a seam whose two traversals are apart in the loop bounds the whole parameter
+        // strip and the continuity chain already places them one period apart)
+        let n = pieces.len();
+        let twin = [((i + 1) % n), ((i + n - 1) % n)].iter().any(|&j| {
+            j != i && {
+                let (d, a, b) = pieces[j];
+                std::ptr::eq(c as *const Curve, d as *const Curve) && (ta - b).abs() < 1e-9 && (tb - a).abs() < 1e-9
+            }
+        });
+        if twin {
+            // up the seam with the region on its left puts the region at -u, so
+            // the piece belongs on the far copy; a CW loop (sense false) swaps
+            forced[i] = Some(if (dv < 0.0) == sense { per } else { 0.0 });
+        }
+    }
+    forced
+}
+
+fn loop_polygon_with(s: &Surface, pieces: &[(&Curve, f64, f64)], sense: bool, nfun: impl Fn(&Curve, f64, f64) -> usize) -> Vec<Vec2> {
     let mut out = vec![];
     let mut prev: Option<Vec2> = None;
     let fp = spline_fp(s);
-    for &(c, ta, tb) in pieces {
+    // A seam edge walked both ways in this loop (a seam spike) bounds a region
+    // that wraps the periodic seam: sampled naively both traversals sit on
+    // u = 0, the polygon is a zero-width spike, and its shoelace area is the
+    // complement of the region, negated. `group` then reads the whole
+    // complement as a hole of one small fragment and `sample_point` finds no
+    // interior point. Place the two traversals one period apart instead, each
+    // on the copy that keeps the face's region on its left (see
+    // `seam_spike_u`).
+    let forced = seam_spike_u(s, pieces, sense);
+    for (i, &(c, ta, tb)) in pieces.iter().enumerate() {
         let mut n = nfun(c, ta, tb);
         if coaxial_circle(s, c) {
             // a circle coaxial with a cylinder / cone / torus is a straight iso-line in uv: the fine
@@ -178,6 +250,7 @@ fn loop_polygon_with(s: &Surface, pieces: &[(&Curve, f64, f64)], nfun: impl Fn(&
             let frac = ((tb - ta).abs() / std::f64::consts::TAU).min(1.0);
             n = n.min(((16.0 * frac).ceil() as usize).max(2));
         }
+        let start = out.len();
         for k in 0..n {
             let mut uv = uv_near_fp(s, fp, c.eval(ta + (tb - ta) * k as f64 / n as f64), prev);
             // u is arbitrary at a pole: carry the previous u through it so the
@@ -189,6 +262,17 @@ fn loop_polygon_with(s: &Surface, pieces: &[(&Curve, f64, f64)], nfun: impl Fn(&
             }
             prev = Some(uv);
             out.push(uv);
+        }
+        if let Some(target) = forced[i] {
+            // snap the piece to the chosen copy by whole periods (the seam's own
+            // u is 0 mod period; poles have no u of their own)
+            if let Some(q) = out[start..].iter().find(|q| !s.is_pole(q.x, q.y)).copied() {
+                let d = target - q.x;
+                for p in &mut out[start..] {
+                    p.x += d;
+                }
+                prev = out.last().copied();
+            }
         }
     }
     // the loop's true end point (the samples stop one chord short of it): the
@@ -340,7 +424,7 @@ fn face_loops_uv_with(b: &Body, f: FaceId, nfun: impl Fn(&Curve, f64, f64) -> us
                     (&b.edge(b.coedge(c).edge).curve, ta, tb)
                 })
                 .collect();
-            loop_polygon_with(&face.surface, &pieces, nfun)
+            loop_polygon_with(&face.surface, &pieces, face.sense, nfun)
         })
         .collect()
 }

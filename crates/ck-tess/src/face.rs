@@ -421,8 +421,13 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
             let mut pl: Vec<BPt> = Vec::with_capacity(ps.len());
             for (i, &t) in ps.iter().enumerate() {
                 let mut uv = body.coedge_uv(c, t, prev);
-                if let (Some(per), Some(pr)) = (pu, prev) {
-                    uv.x = ck_geom::pcurve::unwrap_near(uv.x, pr.x, per);
+                // A seam edge's pcurve copy is deliberate: the face's two sides of the seam sit
+                // one period apart (a wrapping trim loop). Unwrapping it against the previous
+                // point would collapse the pair onto one copy and lose the face's trim.
+                if !seam {
+                    if let (Some(per), Some(pr)) = (pu, prev) {
+                        uv.x = ck_geom::pcurve::unwrap_near(uv.x, pr.x, per);
+                    }
                 }
                 if let (Some(per), Some(pr)) = (pv, prev) {
                     uv.y = ck_geom::pcurve::unwrap_near(uv.y, pr.y, per);
@@ -474,9 +479,17 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
             if same_uv(first.uv, last.uv) {
                 poly.pop();
             } else {
+                // A gap that is a whole number of periods is not a failure on the cover: a face
+                // whose trim wraps the seam (a sphere minus a patch: the seam edge is walked both
+                // ways) closes in 3D one period over in uv, and its closing segment is the seam /
+                // pole line, which `join` samples. Any other uv gap means the chain does not close.
+                let winds = |d: f64, p: Option<f64>| match p {
+                    Some(p) => ((d / p) - (d / p).round()).abs() <= 1e-9,
+                    None => d.abs() <= 1e-6,
+                };
+                let whole = winds(first.uv.x - last.uv.x, pu) && winds(first.uv.y - last.uv.y, pv);
                 join(&mut poly, last, first, tol);
-                // universal cover: the loop must close in uv itself (not one period away)
-                if cover && first.uv.dist(poly.last().unwrap().uv) > 1e-6 && first.p.dist(poly.last().unwrap().p) <= 1e-6 * (1.0 + first.p.len()) {
+                if cover && !whole && first.uv.dist(poly.last().unwrap().uv) > 1e-6 && first.p.dist(poly.last().unwrap().p) <= 1e-6 * (1.0 + first.p.len()) {
                     return Err("loop winds a period".into());
                 }
             }
@@ -570,7 +583,32 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
                 _ => false,
             };
             let keep = if ends && (on_cut(ch[0].uv.x, cu, pu) || on_cut(ch[0].uv.y, cv, pv)) { Some(ch[0]) } else { None };
-            ch.retain(|q| !q.virt);
+            // Drop a junction only where the boundary continues smoothly along one carrier arc (the
+            // pieces of an arc split at the seam). A seam that is itself part of the trim loop turns at
+            // the junction (a sphere face whose trim wraps the seam): dropping it leaves the seam's two
+            // copies with different ends and the display mesh gets a hole.
+            let n = ch.len();
+            let mut keep_corner = vec![false; n];
+            if *closed {
+                for i in 0..n {
+                    if !ch[i].virt {
+                        continue;
+                    }
+                    let (a, b) = (ch[(i + n - 1) % n].uv, ch[(i + 1) % n].uv);
+                    let (d1, d2) = (ch[i].uv - a, b - ch[i].uv);
+                    keep_corner[i] = !(d1.len() > 1e-12 && d2.len() > 1e-12 && d1.dot(d2) > 0.9 * d1.len() * d2.len());
+                }
+            }
+            let mut kept: Vec<BPt> = Vec::with_capacity(n);
+            for (i, &q) in ch.iter().enumerate() {
+                if q.virt && !keep_corner[i] {
+                    continue;
+                }
+                let mut q = q;
+                q.virt = false;
+                kept.push(q);
+            }
+            *ch = kept;
             if let Some(mut j) = keep {
                 j.virt = false;
                 ch.insert(0, j);
