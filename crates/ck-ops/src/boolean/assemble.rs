@@ -1100,30 +1100,34 @@ fn split_pinch_vertices(b: &mut Body) {
             r
         }
     }
+    // edges that consecutive loop coedges join at a vertex must keep one vertex:
+    // collect those pairs per vertex in one pass over the loops
+    let mut joins: HashMap<usize, Vec<(usize, usize)>> = HashMap::default();
+    for f in b.face_ids() {
+        for &l in &b.face(f).loops {
+            let cs = &b.lp(l).coedges;
+            let n = cs.len();
+            for i in 0..n {
+                let (c, d) = (cs[i], cs[(i + 1) % n]);
+                let v = b.coedge_end(c).idx();
+                joins.entry(v).or_default().push((b.coedge(c).edge.idx(), b.coedge(d).edge.idx()));
+            }
+        }
+    }
     for v in 0..nv {
         let Some(es) = inc.get(&v) else { continue };
         if es.len() < 2 {
             continue;
         }
-        // edges that consecutive loop coedges join at `v` must keep one vertex
         let mut up: HashMap<usize, usize> = es.iter().map(|&e| (e, e)).collect();
-        for f in b.face_ids() {
-            for &l in &b.face(f).loops {
-                let cs = &b.lp(l).coedges;
-                let n = cs.len();
-                for i in 0..n {
-                    let (c, d) = (cs[i], cs[(i + 1) % n]);
-                    if b.coedge_end(c).idx() != v {
-                        continue;
-                    }
-                    let (e1, e2) = (b.coedge(c).edge.idx(), b.coedge(d).edge.idx());
-                    if !up.contains_key(&e1) || !up.contains_key(&e2) {
-                        continue;
-                    }
-                    let (r1, r2) = (find(&mut up, e1), find(&mut up, e2));
-                    if r1 != r2 {
-                        up.insert(r1.max(r2), r1.min(r2));
-                    }
+        if let Some(js) = joins.get(&v) {
+            for &(e1, e2) in js {
+                if !up.contains_key(&e1) || !up.contains_key(&e2) {
+                    continue;
+                }
+                let (r1, r2) = (find(&mut up, e1), find(&mut up, e2));
+                if r1 != r2 {
+                    up.insert(r1.max(r2), r1.min(r2));
                 }
             }
         }
