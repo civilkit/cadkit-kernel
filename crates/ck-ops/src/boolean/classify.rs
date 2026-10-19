@@ -429,11 +429,12 @@ fn face_loops_uv_with(b: &Body, f: FaceId, nfun: impl Fn(&Curve, f64, f64) -> us
         .collect()
 }
 
-/// False only when `p` is surely farther than `tol` from the spline `c` over `r` (outside the control-point hull
-/// box of the spans in range): the closest-point search of [`super::imprint::near_in_range`] can be skipped. Other
-/// curves (cheap closed forms) always answer true.
+/// False only when `p` is surely farther than `tol` from the spline or ellipse `c` over `r` (outside the
+/// control-point hull box of the spans in range, or the ellipse arc's exact box): the closest-point search of
+/// [`super::imprint::near_in_range`] (iterative for both) can be skipped. Other curves (closed-form closest points)
+/// always answer true.
 fn near_hull(c: &Curve, r: (f64, f64), p: Vec3, tol: f64) -> bool {
-    !matches!(c, Curve::BSpline(_)) || crate::bvh::curve_hull_box(c, r.0, r.1).map_or(true, |bb| bb.padded(tol + 1e-9).contains(p))
+    !matches!(c, Curve::BSpline(_) | Curve::Ellipse { .. }) || crate::bvh::curve_hull_box(c, r.0, r.1).map_or(true, |bb| bb.padded(tol + 1e-9).contains(p))
 }
 
 /// Is `p` (assumed near the face's surface) inside / on the boundary of /
@@ -702,6 +703,26 @@ mod tests {
             assert_eq!(point_in_face(&c, s, p, 1e-6), Where::In, "{ang}");
         }
         assert_eq!(point_in_face(&c, s, Vec3::new(25.0, 12.0, -10.0), 1e-6), Where::Out);
+    }
+
+    /// `near_hull` only rejects points that the closest-point test rejects too (an ellipse arc).
+    #[test]
+    fn near_hull_is_lossless_on_an_ellipse() {
+        let e = Curve::Ellipse { frame: ck_geom::Frame { o: Vec3::new(1.0, 2.0, 3.0), x: Vec3::X, y: Vec3::new(0.0, 0.6, 0.8), z: Vec3::new(0.0, -0.8, 0.6) }, a: 5.0, b: 2.0 };
+        let r = (0.3, 2.4);
+        let tol = 1e-3;
+        let mut rejected = 0;
+        for i in 0..400 {
+            let t = i as f64 * 0.37;
+            let p = Vec3::new(1.0 + 7.0 * t.sin(), 2.0 + 4.0 * (1.3 * t).cos(), 3.0 + 4.0 * (0.7 * t).sin());
+            for q in [p, e.eval(r.0 + (r.1 - r.0) * (i as f64 / 400.0)) + Vec3::new(0.0, 0.0, 1e-4)] {
+                if !near_hull(&e, r, q, tol) {
+                    rejected += 1;
+                    assert!(!super::super::imprint::near_in_range(&e, r, q, tol), "{q:?}");
+                }
+            }
+        }
+        assert!(rejected > 100);
     }
 
     /// Points outside the solid's box answer Out by the box alone, the same as the rays answer them; points
