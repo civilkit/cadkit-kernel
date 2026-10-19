@@ -5,7 +5,8 @@
 //!
 //! Pinned by oracle probes (one sketch + one feature on an empty body):
 //! * extrude check order: `depth`/`draft` expressions (`badExpression`) ->
-//!   closed profile (`noClosedProfile`) -> `end` (`unknownEnd {end}`) ->
+//!   non-finite sketch point (`invalidValue {point, detail, hint}`, see
+//!   [`finite_points`]) -> closed profile (`noClosedProfile`) -> `end` (`unknownEnd {end}`) ->
 //!   references / body (`missingReference` for upToFace / offsetFromFace /
 //!   upToPoint, `nothingToCut` for upToNext and for `op:"cut"`);
 //! * `depth <= 0` is clamped to `1e-6` (box max `1e-06`); `flip` extrudes
@@ -110,9 +111,26 @@ pub fn profile_seg(s: &Seg) -> Result<ProfileSeg, FeatureError> {
     Ok(ProfileSeg { tag: s.tag.clone(), curve, t0, t1, rev })
 }
 
+/// `invalidValue {point, detail, hint}`: a sketch point holds a non-finite
+/// coordinate (NaN / infinity, e.g. a kit script computing a fractional power
+/// of a negative number). A loop of such points finds no region, which would
+/// otherwise surface as a misleading `noClosedProfile` (loft: `loftProfile`).
+pub fn finite_points(sk: &SketchResult) -> Result<(), FeatureError> {
+    let Some(p) = sk.sketch.points.iter().find(|p| !p.x.is_finite() || !p.y.is_finite()) else { return Ok(()) };
+    let (axis, v) = if !p.x.is_finite() { ("x", p.x) } else { ("y", p.y) };
+    let shown = if v.is_nan() { "NaN".to_string() } else { v.to_string() };
+    Err(FeatureError::new(codes::INVALID_VALUE)
+        .with("point", Json::Str(p.id.clone()))
+        .with("detail", Json::Str(format!("sketch point {} has a non-finite {} ({})", p.id, axis, shown)))
+        .with("hint", Json::Str(
+            "a sketch coordinate must be finite; check the script or expression that places this point (for example a fractional power of a negative number yields NaN)".into(),
+        )))
+}
+
 /// The ck-topo profile of a regenerated sketch (`noClosedProfile` when the
 /// sketch has no region).
 pub fn sketch_profile(sk: &SketchResult) -> Result<Profile, FeatureError> {
+    finite_points(sk)?;
     if sk.profiles.regions.is_empty() {
         return Err(FeatureError::new(codes::NO_CLOSED_PROFILE));
     }
