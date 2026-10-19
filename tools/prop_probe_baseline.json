@@ -1,6 +1,6 @@
 {
  "version": 1,
- "wasmHash": "96b5e2d8505f9bc8",
+ "wasmHash": "67a1fee2976ab8e7",
  "origHash": "867fff6c4308f135",
  "cases": {
   "cap1_loft_spline12": "both-ok",
@@ -11,10 +11,10 @@
   "cap3_loft_guides": "both-fail",
   "cap3_loft_guides_valid": "both-ok",
   "cap4_helix_sweep": "both-ok",
-  "cap7_thicken_open_loft": "orig-only",
+  "cap5_ruled_helicoid": "both-ok",
+  "cap6_helicoid_project_trim": "both-ok",
+  "cap7_thicken_open_loft": "both-ok",
   "cap8_fillet_blade_hub": "both-fail"
  },
- "knownGaps": [
-  "cap7_thicken_open_loft"
- ]
+ "knownGaps": []
 }

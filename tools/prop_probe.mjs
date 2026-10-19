@@ -101,6 +101,27 @@ const rs12 = [9, 13, 17, 21, 25, 30, 35, 40, 44, 48, 52, 55];
   add('cap4_helix_sweep', 4, f);
 }
 {
+  // a ruled helicoid sheet: radial line sections, each rotated by the pitch angle, lofted
+  // as a surface (capabilities 5 and 6 share it)
+  const R = 20, PITCH = 20, N = 8, H = PITCH * 2;
+  const f = [];
+  for (let k = 0; k <= N; k++) {
+    const z = H * k / N, th = 2 * Math.PI * z / PITCH;
+    f.push({ type:'plane', id:`P${k}`, mode:'offset', base:{kind:'std',id:'front'}, offset:z });
+    f.push({ type:'sketch', id:`S${k}`, plane:{kind:'feature',id:`P${k}`},
+      points:[pt('a',0,0), pt('b', R*Math.cos(th), R*Math.sin(th))], entities:[line('e0','a','b')], constraints:[] });
+  }
+  f.push({ type:'loft', id:'F9', surface:true, sketches: Array.from({length:N+1},(_,k)=>`S${k}`) });
+  add('cap5_ruled_helicoid', 5, f, { radius:R, pitch:PITCH, stations:N+1 });
+  const o = [[-6,-6],[6,-6],[6,6],[-6,6]].map(([x,y],i)=>pt(`o${i}`,x,y));
+  const g = [...f,
+    { type:'sketch', id:'O1', plane:{kind:'std',id:'front'}, points:o, entities:o.map((_,i)=>line(`l${i}`,`o${i}`,`o${(i+1)%4}`)), constraints:[] },
+    { type:'projectCurve', id:'PC1', sketch:'O1', faces:[], degree:3, tolerance:0.01, direction:'both' },
+    { type:'surfaceExtrude', id:'SE1', sketch:'O1', end:'blind', depth:2*H, direction:'auto' },
+    { type:'trimSurface', id:'T1', surface:'F9', toolSurface:'SE1', deleteTool:true }];
+  add('cap6_helicoid_project_trim', 6, g);
+}
+{
   // open-section loft sheet + thicken
   const f = [];
   for (let i = 0; i < 5; i++) {
@@ -125,27 +146,6 @@ const rs12 = [9, 13, 17, 21, 25, 30, 35, 40, 44, 48, 52, 55];
     ['F8.S.e4', [11.95, 1.14, 3.31]], ['F8.S.e5', [11.63, 2.97, 1.86]], ['F8.S.e6', [11.16, 4.41, 0.55]]];
   add('cap8_fillet_blade_hub', 8, [...hub(), ...d.features,
     { type:'fillet', id:'F9', radius:2, edges: root.map(([faces, at]) => ({ faces: [faces, 'H2.S.e1'], at })) }]);
-}
-{
-  // a ruled helicoid sheet: radial line sections, each rotated by the pitch angle, lofted
-  // as a surface (capabilities 5 and 6 share it)
-  const R = 20, PITCH = 20, N = 8, H = PITCH * 2;
-  const f = [];
-  for (let k = 0; k <= N; k++) {
-    const z = H * k / N, th = 2 * Math.PI * z / PITCH;
-    f.push({ type:'plane', id:`P${k}`, mode:'offset', base:{kind:'std',id:'front'}, offset:z });
-    f.push({ type:'sketch', id:`S${k}`, plane:{kind:'feature',id:`P${k}`},
-      points:[pt('a',0,0), pt('b', R*Math.cos(th), R*Math.sin(th))], entities:[line('e0','a','b')], constraints:[] });
-  }
-  f.push({ type:'loft', id:'F9', surface:true, sketches: Array.from({length:N+1},(_,k)=>`S${k}`) });
-  add('cap5_ruled_helicoid', 5, f, { radius:R, pitch:PITCH, stations:N+1 });
-  const o = [[-6,-6],[6,-6],[6,6],[-6,6]].map(([x,y],i)=>pt(`o${i}`,x,y));
-  const g = [...f,
-    { type:'sketch', id:'O1', plane:{kind:'std',id:'front'}, points:o, entities:o.map((_,i)=>line(`l${i}`,`o${i}`,`o${(i+1)%4}`)), constraints:[] },
-    { type:'projectCurve', id:'PC1', sketch:'O1', faces:[], degree:3, tolerance:0.01, direction:'both' },
-    { type:'surfaceExtrude', id:'SE1', sketch:'O1', end:'blind', depth:2*H, direction:'auto' },
-    { type:'trimSurface', id:'T1', surface:'F9', toolSurface:'SE1', deleteTool:true }];
-  add('cap6_helicoid_project_trim', 6, g);
 }
 for (const c of cases) { const p = path.join(outDir, `${c.id}.json`); writeFileSync(p, JSON.stringify({ id:c.id, cap:c.cap, features:c.features, ...(c.numeric?{numeric:c.numeric}:{}), ...(c.rootHub?{rootHub:true}:{}) }, null, 1)); }
 
