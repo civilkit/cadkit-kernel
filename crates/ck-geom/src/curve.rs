@@ -255,6 +255,8 @@ impl Curve {
         match self {
             Curve::Line { o, d } => [*o + *d * t, *d, Vec3::ZERO],
             Curve::BSpline(c) if c.degree < 12 => c.derivs_arr(t, 2),
+            Curve::Circle { frame, r } => conic_derivs_arr(frame, *r, *r, t),
+            Curve::Ellipse { frame, a, b } => conic_derivs_arr(frame, *a, *b, t),
             _ => {
                 let v = self.derivs(t, 2);
                 [v[0], v[1], v[2]]
@@ -270,6 +272,14 @@ impl Curve {
             Curve::BSpline(c) if c.degree < 12 => {
                 let a = c.derivs_arr(t, 1);
                 [a[0], a[1]]
+            }
+            Curve::Circle { frame, r } => {
+                let d = conic_derivs_arr(frame, *r, *r, t);
+                [d[0], d[1]]
+            }
+            Curve::Ellipse { frame, a, b } => {
+                let d = conic_derivs_arr(frame, *a, *b, t);
+                [d[0], d[1]]
             }
             _ => {
                 let v = self.derivs(t, 1);
@@ -372,7 +382,7 @@ impl Curve {
                 }
                 best.1
             }
-            Curve::BSpline(c) => c.closest_param(q),
+            Curve::BSpline(c) => c.closest_param_cached(q),
         }
     }
 
@@ -487,6 +497,18 @@ pub fn wrap_angle(t: f64) -> f64 {
     }
 }
 
+/// [`conic_derivs`] to second order without allocating (the same arithmetic per entry).
+#[inline]
+fn conic_derivs_arr(frame: &Frame, a: f64, b: f64, t: f64) -> [Vec3; 3] {
+    let (s, c) = t.sin_cos();
+    let cyc = [(c, s), (-s, c), (-c, -s), (s, -c)];
+    let at = |k: usize| {
+        let (cx, sy) = cyc[k];
+        frame.x * (a * cx) + frame.y * (b * sy)
+    };
+    [frame.o + at(0), at(1), at(2)]
+}
+
 fn conic_derivs(frame: &Frame, a: f64, b: f64, t: f64, n: usize) -> Vec<Vec3> {
     let (s, c) = t.sin_cos();
     // k-th derivative of (cos t, sin t) cycles with period 4
@@ -580,6 +602,25 @@ fn sinusoid_derivs(frame: &Frame, amp: f64, freq: f64, phase: f64, t: f64, n: us
 mod tests {
     use super::*;
     use crate::testutil::*;
+
+    /// The allocation-free conic derivatives are the `derivs` entries bit for bit.
+    #[test]
+    fn conic_derivs_arr_matches_derivs() {
+        let cs = [
+            Curve::circle_x(Vec3::new(3., 1., -2.), Vec3::new(-1., 0.3, 0.2), Vec3::new(0., 0., 1.), 25.0),
+            Curve::Ellipse { frame: frame_from(Vec3::new(1., 2., 3.), Vec3::new(0.2, 0.5, 1.0).normalize(), Vec3::new(1., 0., 0.)), a: 4.0, b: 2.5 },
+        ];
+        for c in &cs {
+            for k in 0..40 {
+                let t = -3.0 + 0.37 * k as f64;
+                let (v, a1, a2) = (c.derivs(t, 2), c.derivs1_arr(t), c.derivs2_arr(t));
+                for i in 0..3 {
+                    assert_eq!(v[i], a2[i]);
+                }
+                assert_eq!([v[0], v[1]], a1);
+            }
+        }
+    }
 
     #[test]
     fn oracle_flange_circle_samples() {
