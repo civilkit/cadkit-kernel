@@ -76,7 +76,9 @@ function headers(token: string, extra?: Record<string, string>): Record<string, 
 /** fetch options common to every call: cors, no cookies, no cache, and the hint Chrome's Local Network Access check wants. */
 function baseInit(url: string, token: string, extra?: Record<string, string>): RequestInit {
   const init: Record<string, unknown> = { mode: 'cors', credentials: 'omit', cache: 'no-store', headers: headers(token, extra) };
-  if (isLoopback(url)) init.targetAddressSpace = 'local';
+  // the hint is for a page on a public address calling the local machine; a page that is itself on localhost is already in that address space
+  const pageLocal = typeof location !== 'undefined' && /^(127\.|localhost$|\[::1\]$)/.test(location.hostname);
+  if (isLoopback(url) && !pageLocal) init.targetAddressSpace = 'local';
   return init as RequestInit;
 }
 
@@ -128,7 +130,9 @@ export async function probeService(o: Pick<NativeOptions, 'url' | 'token' | 'exp
   let res: Response;
   try {
     res = await f(base + '/version', { ...baseInit(base, o.token), signal: AbortSignal.timeout(5000) });
-  } catch {
+  } catch (e) {
+    // the browser gives a bare "Failed to fetch" for blocked and refused alike: keep the cause for the console
+    if (typeof console !== 'undefined') console.warn('local kernel service: no answer from ' + base + ': ' + String((e as Error)?.message ?? e));
     return { ok: false, kind: 'unreachable', message: 'no answer from the service' };
   }
   if (res.status === 401 || res.status === 403) return { ok: false, kind: 'unauthorized', message: 'the service refused the token' };
