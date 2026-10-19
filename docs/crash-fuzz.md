@@ -90,3 +90,9 @@ errors: `extrude` 9, `fillet` 8, `lpattern` 5, `mirror` 4, `thicken` 3,
 `draft` 2, `shell` 2, `chamfer` 2. The 15 former `wrong-answer` cases replay
 identically on the previous gated wasm and this one; they are surface-only or
 degenerate documents, not a cone regression.
+
+## After the robustness work
+
+Traps 238 to 0, hangs mostly bounded by time budgets and a faster curve fit; see `docs/robustness.md` (results,
+error codes, the rule, how to add a case). Minimal cases live in `tools/cases/crash/` and run in
+`crates/ck-model/tests/robust_cases.rs`. New options: `--budget-ms N`, `--wasm-label`.

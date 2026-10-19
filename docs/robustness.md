@@ -61,6 +61,30 @@ instance loop. A feature that fails while a limit is running out reports the lim
   `interpolate_cubic_tangents` and `approximate_with`; they are not on a failing path yet.
 * Time budgets, above.
 
+## Results (seed 7, 5000 cases, release wasm)
+
+| class | before (kit wasm) | after, `--budget-ms 400 --timeout 6000` | after, default budgets, `--timeout 10000` |
+|---|---:|---:|---:|
+| ok | 647 | 668 | 675 |
+| structured-error | ~4018 | 4290 | 4270 |
+| trap | 238 | 0 | 0 |
+| hang | 58 (1.5 s timeout) | 3 | 16 |
+| invalid-result | 24 | 24 | 24 |
+
+A second seed (13, 6000 cases) found 0 traps. The 3 budgeted "hangs" run in 2 to 3.5 s when run alone; they only
+cross the 6 s mark with 8 workers sharing the machine. Remaining slow cases, by cause:
+
+* `case_34` (thin revolve, mirror, chamfers, thicken) and `case_644`, `case_2668`: the sliver-heavy display mesh of
+  the final body; regen is 0.7 to 1.1 s, validate (tessellation and mesh check) 1.2 to 2.2 s in wasm. Near
+  degenerate bodies (a 5e-4 high disc of radius 3) tessellate into ten thousands of triangles.
+* with the default budget (30 s per feature) a linear pattern with count 100 of a revolve or cylinder, followed by
+  fillet/chamfer on the result, still takes 5 to 30 s; it ends in `featureBudgetExceeded` or a result, never a trap.
+  The cost is the boolean of a 100-instance tool, a matter of speed, not of a missing bound.
+* `invalid-result` (24): `TESSELLATION_OPEN` / `VOLUME_NONPOSITIVE` / `EDGE_OFF_SURFACE` on mirrored or revolved
+  near-degenerate bodies; not crashes, unchanged by this work.
+* `wrong-answer` (seed 13, one case): extrude then extrude with volume 1.8e-19 and area -9.7e-21 (noise on a
+  zero-size body).
+
 ## Tests
 
 `crates/ck-model/tests/robust_*.rs`; the shared runner is `tests/robust_common/mod.rs` (runs a regen on a worker
