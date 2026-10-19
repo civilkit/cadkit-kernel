@@ -399,9 +399,37 @@ pub fn face_loops_uv(b: &Body, f: FaceId) -> Vec<Vec<Vec2>> {
     face_loops_uv_with(b, f, |c, _, _| samples_for(c))
 }
 
-/// As [`face_loops_uv`] with the finer circle sampling of [`Solid`].
+/// As [`face_loops_uv`] with the finer circle sampling of [`Solid`], memoised by the exact content of the face
+/// (surface, sense, per loop the coedges' curves, ranges and directions; repeated edges by first position): the
+/// faces a boolean leaves alone are probed again by the next one.
 fn face_loops_uv_fine(b: &Body, f: FaceId) -> Vec<Vec<Vec2>> {
-    face_loops_uv_with(b, f, samples_fine)
+    thread_local! {
+        static MEMO: std::cell::RefCell<ck_core::memo::Memo<std::rc::Rc<Vec<Vec<Vec2>>>>> = std::cell::RefCell::new(ck_core::memo::Memo::new(1 << 20));
+    }
+    let face = b.face(f);
+    let mut key = Vec::with_capacity(64);
+    face.surface.push_key(&mut key);
+    key.extend([face.sense as u64, face.loops.len() as u64]);
+    let mut seen: Vec<ck_topo::body::EdgeId> = vec![];
+    for &l in &face.loops {
+        let cs = &b.lp(l).coedges;
+        key.push(cs.len() as u64);
+        for &c in cs {
+            let ce = b.coedge(c);
+            match seen.iter().position(|&x| x == ce.edge) {
+                Some(i) => key.push((i as u64) << 2 | 2 | ce.rev as u64),
+                None => {
+                    key.push((seen.len() as u64) << 2 | ce.rev as u64);
+                    seen.push(ce.edge);
+                    let ed = b.edge(ce.edge);
+                    ed.curve.push_key(&mut key);
+                    key.extend([ed.t0.to_bits(), ed.t1.to_bits()]);
+                }
+            }
+        }
+    }
+    let v = ck_core::memo::cached_sized(&MEMO, key, || std::rc::Rc::new(face_loops_uv_with(b, f, samples_fine)), |v| 2 * v.iter().map(|l| l.len()).sum::<usize>());
+    (*v).clone()
 }
 
 fn face_loops_uv_with(b: &Body, f: FaceId, nfun: impl Fn(&Curve, f64, f64) -> usize + Copy) -> Vec<Vec<Vec2>> {
