@@ -540,4 +540,17 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn interpolating_tens_of_thousands_of_points_needs_no_dense_matrix() {
+        // a dense system of this size is 30000^2 floats (7 GB): it used to run out of memory
+        let n = 30_000;
+        let pts: Vec<Vec3> = (0..n).map(|i| Vec3::new(i as f64 * 0.01, (i as f64 * 0.003).sin(), 0.0)).collect();
+        let c = interpolate(&pts, 3, Param::ChordLength).unwrap();
+        for k in [0, 1, n / 2, n - 1] {
+            let (u, _) = (k as f64 / (n - 1) as f64, 0);
+            let q = c.eval(c.knots[0] + u * (c.knots[c.knots.len() - 1] - c.knots[0]));
+            assert!(q.dist(pts[k]) < 0.05, "k={k}");
+        }
+    }
 }
