@@ -846,6 +846,8 @@ impl BSplineSurface {
                 return;
             }
             let mut local = (f64::INFINITY, 0.0, 0.0);
+            // (one buffer per cell: a row overwrites the entries it reads)
+            let mut tcol = [Vec3::ZERO; 16];
             for a in alo..=ahi {
                 let u = u_at(a);
                 if ubas[a].0 != su {
@@ -854,7 +856,6 @@ impl BSplineSurface {
                 let bu = &ubas[a].1;
                 // non-rational: collapse the u direction once per (u, cell)
                 // (every v sample of the cell lies in the same v span)
-                let mut tcol = [Vec3::ZERO; 16];
                 if fast && pv < 16 && grid.is_none() {
                     if let Some(&k0) = cols[iv].first() {
                         let sv = bv[k0].0;
