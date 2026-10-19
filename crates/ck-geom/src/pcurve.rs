@@ -272,7 +272,7 @@ fn warm_project(surf: &Surface, mut u: f64, mut v: f64, p: Vec3) -> Option<(f64,
     let ((u0, u1), (v0, v1)) = surf.domain();
     let scale = 1.0 + p.len();
     for _ in 0..12 {
-        let d = surf.derivs2(u, v);
+        let d = surf.derivs1(u, v);
         let r = p - d.p;
         if r.len() < 1e-10 * scale {
             return Some((u, v));

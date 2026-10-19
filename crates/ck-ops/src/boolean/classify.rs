@@ -94,7 +94,10 @@ fn local_project(bs: &ck_geom::nurbs::bsurf::BSplineSurface, p: Vec3, q: Vec2) -
     let (mut u, mut v) = (q.x.clamp(u0, u1), q.y.clamp(v0, v1));
     let mut converged = false;
     for _ in 0..12 {
-        let d = bs.derivs2(u, v);
+        let d = match bs.derivs1_nr(u, v) {
+            Some((p, du, dv)) => ck_geom::surface::SurfDerivs { p, du, dv, ..Default::default() },
+            None => bs.derivs2(u, v),
+        };
         let r = d.p - p;
         if r.len() < 1e-9 {
             return Some(Vec2::new(u, v));

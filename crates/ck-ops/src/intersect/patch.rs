@@ -161,8 +161,8 @@ pub(super) fn newton_pinned(s1: &Surface, s2: &Surface, mut x: Uv4, k: usize, bo
     let eps = tol * 1e-4;
     let mut last = f64::INFINITY;
     for _ in 0..30 {
-        let d1 = s1.derivs2(x[0], x[1]);
-        let d2 = s2.derivs2(x[2], x[3]);
+        let d1 = s1.derivs1(x[0], x[1]);
+        let d2 = s2.derivs1(x[2], x[3]);
         let f = d1.p - d2.p;
         let fl = f.len();
         if fl < eps {

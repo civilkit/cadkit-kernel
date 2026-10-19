@@ -311,6 +311,34 @@ impl Surface {
     }
 
     /// Point + first/second partials.
+    /// `derivs2` for a caller that reads only the point and the first partials: those three are `derivs2`'s
+    /// bit for bit (the second partials are left zero where the first-order evaluation is cheaper: spline
+    /// surfaces, and extrusions and revolutions of a line or spline profile).
+    pub fn derivs1(&self, u: f64, v: f64) -> SurfDerivs {
+        match self {
+            Surface::BSpline(b) => {
+                if let Some((p, du, dv)) = b.derivs1_nr(u, v) {
+                    return SurfDerivs { p, du, dv, ..Default::default() };
+                }
+            }
+            Surface::Extrusion { profile, dir } if matches!(**profile, Curve::Line { .. } | Curve::BSpline(_)) => {
+                let c = profile.derivs1_arr(u);
+                return SurfDerivs { p: c[0] + *dir * v, du: c[1], dv: *dir, ..Default::default() };
+            }
+            Surface::Revolution { profile, axis_o, axis } if matches!(**profile, Curve::Line { .. } | Curve::BSpline(_)) => {
+                let c = profile.derivs1_arr(v);
+                let (su, cu) = u.sin_cos();
+                let z = *axis;
+                let rot = |w: Vec3| w * cu + z * (z.dot(w) * (1.0 - cu)) + z.cross(w) * su;
+                let rot_u = |w: Vec3| w * (-su) + z * (z.dot(w) * su) + z.cross(w) * cu;
+                let w = c[0] - *axis_o;
+                return SurfDerivs { p: *axis_o + rot(w), du: rot_u(w), dv: rot(c[1]), ..Default::default() };
+            }
+            _ => {}
+        }
+        self.derivs2(u, v)
+    }
+
     pub fn derivs2(&self, u: f64, v: f64) -> SurfDerivs {        match self {
             Surface::Plane { frame } => SurfDerivs {
                 p: frame.o + frame.x * u + frame.y * v,
@@ -1560,6 +1588,33 @@ mod tests {
                     assert_eq!(d.to_bits(), exact.to_bits());
                 } else {
                     assert!(d <= ok && d >= truth - 1e-12, "{d} {truth} {ok}");
+                }
+            }
+        }
+    }
+
+    /// `derivs1` has the point and the first partials of `derivs2`, bit for bit, on every surface kind.
+    #[test]
+    fn derivs1_matches_derivs2() {
+        let prof_bs = {
+            let pts: Vec<Vec3> = (0..9).map(|i| Vec3::new(3.0 + (i as f64 * 0.4).sin(), 0.0, i as f64 * 0.5)).collect();
+            Curve::BSpline(crate::fit::interpolate(&pts, 3, crate::fit::Param::ChordLength).unwrap())
+        };
+        let mut all_s = all();
+        all_s.push(Surface::BSpline(Box::new(spline_patch())));
+        all_s.push(Surface::Revolution { profile: Box::new(prof_bs.clone()), axis_o: Vec3::new(0.1, -0.2, 0.3), axis: Vec3::Z });
+        all_s.push(Surface::Extrusion { profile: Box::new(prof_bs), dir: Vec3::new(0.2, 0.1, 2.0) });
+        all_s.push(Surface::Revolution { profile: Box::new(Curve::Line { o: Vec3::new(2.0, 0.0, 0.0), d: Vec3::new(0.3, 0.0, 1.0) }), axis_o: Vec3::ZERO, axis: Vec3::Z });
+        let bits = |v: Vec3| (v.x.to_bits(), v.y.to_bits(), v.z.to_bits());
+        for s in &all_s {
+            let ((u0, u1), (v0, v1)) = s.domain();
+            let (u0, u1) = if u0.is_finite() && u1.is_finite() { (u0, u1) } else { (-1.0, 3.0) };
+            let (v0, v1) = if v0.is_finite() && v1.is_finite() { (v0, v1) } else { (-1.0, 3.0) };
+            for i in 0..=12 {
+                for j in 0..=12 {
+                    let (u, v) = (u0 + (u1 - u0) * i as f64 / 12.0, v0 + (v1 - v0) * j as f64 / 12.0);
+                    let (a, b) = (s.derivs1(u, v), s.derivs2(u, v));
+                    assert_eq!((bits(a.p), bits(a.du), bits(a.dv)), (bits(b.p), bits(b.du), bits(b.dv)), "{} {u} {v}", s.kind());
                 }
             }
         }
