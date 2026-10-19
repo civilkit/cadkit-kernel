@@ -52,7 +52,11 @@ pub struct CpPrep {
     /// box of each (u column, v span) row `[a * cv + iv]`, computed once with
     /// the very expressions the query scan used per call (the scan is then a
     /// distance lookup; results are bit-identical).
-    grid: Option<(Vec<Vec3>, Vec<(Vec3, Vec3)>)>,
+    grid: std::cell::OnceCell<(Vec<Vec3>, Vec<(Vec3, Vec3)>)>,
+    /// the grid is wanted (non-rational, not too big); it is built by the query that finds the surface asked
+    /// for often enough to repay it (`BSplineSurface::grid_for`)
+    grid_ok: bool,
+    uses: std::cell::Cell<u32>,
     /// Tiles of up to 4 x 4 neighbouring cells: the box of their cell boxes, and their indices into
     /// `cells` (`tile_cells[tile_start[t]..tile_start[t + 1]]`). A tile's box distance is no larger than
     /// any of its cells' (the same expression on smaller / larger corners), so a far tile is skipped
@@ -910,7 +914,7 @@ impl BSplineSurface {
         // best grid sample of every visited cell (multi-start seeds)
         cell_best.clear();
         let cell_best: std::cell::RefCell<&mut Vec<(f64, f64, f64, f64)>> = std::cell::RefCell::new(cell_best);
-        let grid = prep.grid.as_ref();
+        let grid = self.grid_for(prep);
         let nv1 = vs.len();
         let visit = |c: &(f64, usize, usize, usize, usize, usize), best: &mut (f64, f64, f64)| {
             let (clb, su, _iu, iv, alo, ahi) = *c;
@@ -1153,6 +1157,63 @@ impl BSplineSurface {
         Ok(in_range(first).then_some(first))
     }
 
+    /// The seed grid points and row boxes of `prep`, once the surface has been asked for often enough that
+    /// they repay building (the scan computes the very same numbers on the fly, bit for bit, without them).
+    fn grid_for<'a>(&self, prep: &'a CpPrep) -> Option<&'a (Vec<Vec3>, Vec<(Vec3, Vec3)>)> {
+        if !prep.grid_ok {
+            return None;
+        }
+        if let Some(g) = prep.grid.get() {
+            return Some(g);
+        }
+        let n = prep.uses.get().saturating_add(1);
+        prep.uses.set(n);
+        // (the grid costs about as many point evaluations as it has points; a query visits a few hundred)
+        let after = 16 + ((prep.nu + 1) * (prep.vs.len())) as u32 / 1000;
+        if n < after {
+            return None;
+        }
+        Some(prep.grid.get_or_init(|| self.build_grid(prep)))
+    }
+
+    /// The seed grid points `[a * (nv + 1) + k]` and the box of each (u column, v span) row `[a * cv + iv]`.
+    fn build_grid(&self, prep: &CpPrep) -> (Vec<Vec3>, Vec<(Vec3, Vec3)>) {
+        let (nu, cv, bv, cols, ubas) = (prep.nu, prep.cv, &prep.bv, &prep.cols, &prep.ubas);
+        let nv = prep.vs.len() - 1;
+        let (pu, pv) = (self.deg_u, self.deg_v);
+        let mut pts = vec![Vec3::ZERO; (nu + 1) * (nv + 1)];
+        let mut rows = vec![(Vec3::ZERO, Vec3::ZERO); (nu + 1) * cv.max(1)];
+        for a in 0..=nu {
+            let (su, ref bu) = ubas[a];
+            for (iv, col) in cols.iter().enumerate() {
+                let Some(&k0) = col.first() else { continue };
+                let sv = bv[k0].0;
+                let mut tcol = [Vec3::ZERO; 16];
+                for j in 0..=pv {
+                    let mut t = Vec3::ZERO;
+                    for (i, &wu) in bu.iter().enumerate() {
+                        t = t + self.cp(su - pu + i, sv - pv + j) * wu;
+                    }
+                    tcol[j] = t;
+                }
+                let (mut lo, mut hi) = (tcol[0], tcol[0]);
+                for t in &tcol[1..=pv] {
+                    lo = lo.min(*t);
+                    hi = hi.max(*t);
+                }
+                rows[a * cv + iv] = (lo, hi);
+                for &k in col {
+                    let mut p = Vec3::ZERO;
+                    for (j, &wv) in bv[k].1.iter().enumerate() {
+                        p = p + tcol[j] * wv;
+                    }
+                    pts[a * (nv + 1) + k] = p;
+                }
+            }
+        }
+        (pts, rows)
+    }
+
     /// Per-surface constants of the closest-point seed grid (spans, cell
     /// boxes, v-sample bases, per-u bases), cached by a hash of the surface:
     /// a query then allocates nothing per sample.
@@ -1233,42 +1294,7 @@ impl BSplineSurface {
             })
             .collect();
         let hull = boxes.iter().filter(|b| b.0.x <= b.1.x).fold((Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY), Vec3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY)), |a, b| (a.0.min(b.0), a.1.max(b.1)));
-        // the seed grid points and row boxes, with the expressions of the query scan
-        let grid = if fast && pv < 16 && (nu + 1) * (nv + 1) <= 1 << 18 {
-            let mut pts = vec![Vec3::ZERO; (nu + 1) * (nv + 1)];
-            let mut rows = vec![(Vec3::ZERO, Vec3::ZERO); (nu + 1) * cv.max(1)];
-            for a in 0..=nu {
-                let (su, ref bu) = ubas[a];
-                for (iv, col) in cols.iter().enumerate() {
-                    let Some(&k0) = col.first() else { continue };
-                    let sv = bv[k0].0;
-                    let mut tcol = [Vec3::ZERO; 16];
-                    for j in 0..=pv {
-                        let mut t = Vec3::ZERO;
-                        for (i, &wu) in bu.iter().enumerate() {
-                            t = t + self.cp(su - pu + i, sv - pv + j) * wu;
-                        }
-                        tcol[j] = t;
-                    }
-                    let (mut lo, mut hi) = (tcol[0], tcol[0]);
-                    for t in &tcol[1..=pv] {
-                        lo = lo.min(*t);
-                        hi = hi.max(*t);
-                    }
-                    rows[a * cv + iv] = (lo, hi);
-                    for &k in col {
-                        let mut p = Vec3::ZERO;
-                        for (j, &wv) in bv[k].1.iter().enumerate() {
-                            p = p + tcol[j] * wv;
-                        }
-                        pts[a * (nv + 1) + k] = p;
-                    }
-                }
-            }
-            Some((pts, rows))
-        } else {
-            None
-        };
+        let grid_ok = fast && pv < 16 && (nu + 1) * (nv + 1) <= 1 << 18;
         // tiles of 4 x 4 cells (by span index) for `nearest_cells`
         let (tu, tv) = (cu.div_ceil(4).max(1), cv.div_ceil(4).max(1));
         let mut members: Vec<Vec<u32>> = vec![vec![]; tu * tv];
@@ -1291,7 +1317,7 @@ impl BSplineSurface {
             tile_cells.extend(m);
             tile_start.push(tile_cells.len() as u32);
         }
-        let prep = Rc::new(CpPrep { nu, cv, boxes: (*boxes).clone(), vs, bv, cols, cells, ubas, cell_scale: self.cell_scale(), hull, grid, tiles, tile_start, tile_cells });
+        let prep = Rc::new(CpPrep { nu, cv, boxes: (*boxes).clone(), vs, bv, cols, cells, ubas, cell_scale: self.cell_scale(), hull, grid: Default::default(), grid_ok, uses: Default::default(), tiles, tile_start, tile_cells });
         CACHE.with(|c| {
             let mut c = c.borrow_mut();
             if c.len() >= 24 {
