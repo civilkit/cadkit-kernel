@@ -536,19 +536,103 @@ fn assemble_face(body: &Body, f: FaceId, fm: FaceMesh) -> FaceOut {
 
 // ------------------------------------------------------------------------------------------------ face cache
 
-/// Everything `mesh_face` reads for face `f`, as a byte string: equal keys mean an identical triangulation.
-/// (Debug output of f64 is the shortest string that round-trips, so equal text is equal bits.)
-fn face_key(body: &Body, f: FaceId, edges: &EdgeSampling, tol: &Tol) -> Vec<u8> {
-    use std::fmt::Write;
-    let mut s = String::with_capacity(512);
+/// Everything `mesh_face` reads for face `f`, as the exact bits of its inputs: equal keys mean an identical triangulation.
+/// Every variable-length part is prefixed with its length, so two different inputs never give the same words.
+type FaceKey = Rc<[u64]>;
+
+fn key_f64s(out: &mut Vec<u64>, v: &[f64]) {
+    out.push(v.len() as u64);
+    out.extend(v.iter().map(|x| x.to_bits()));
+}
+
+/// Exact content of a surface (unlike `Surface::push_key`, which stands a B-spline net in by its hash).
+fn key_surface(out: &mut Vec<u64>, s: &ck_geom::surface::Surface) {
+    use ck_geom::surface::Surface;
+    match s {
+        Surface::BSpline(b) => {
+            out.extend([18, b.deg_u as u64, b.deg_v as u64, b.nu as u64, b.nv as u64]);
+            key_f64s(out, &b.knots_u);
+            key_f64s(out, &b.knots_v);
+            out.push(b.ctrl.len() as u64);
+            for c in &b.ctrl {
+                out.extend([c.x.to_bits(), c.y.to_bits(), c.z.to_bits()]);
+            }
+            match &b.weights {
+                None => out.push(0),
+                Some(w) => {
+                    out.push(1);
+                    key_f64s(out, w);
+                }
+            }
+        }
+        Surface::Offset { base, dist } => {
+            out.push(20);
+            key_surface(out, base);
+            out.push(dist.to_bits());
+        }
+        other => other.push_key(out),
+    }
+}
+
+fn key_vec2(out: &mut Vec<u64>, p: Vec2) {
+    out.extend([p.x.to_bits(), p.y.to_bits()]);
+}
+
+fn key_curve2(out: &mut Vec<u64>, c: &Option<ck_geom::curve2::Curve2>) {
+    use ck_geom::curve2::Curve2;
+    match c {
+        None => out.push(0),
+        Some(Curve2::Line { o, d }) => {
+            out.push(1);
+            key_vec2(out, *o);
+            key_vec2(out, *d);
+        }
+        Some(Curve2::Circle { c, x, r, ccw }) => {
+            out.push(2);
+            key_vec2(out, *c);
+            key_vec2(out, *x);
+            out.extend([r.to_bits(), *ccw as u64]);
+        }
+        Some(Curve2::Ellipse { c, x, a, b, ccw }) => {
+            out.push(3);
+            key_vec2(out, *c);
+            key_vec2(out, *x);
+            out.extend([a.to_bits(), b.to_bits(), *ccw as u64]);
+        }
+        Some(Curve2::BSpline(b)) => {
+            out.extend([4, b.degree as u64]);
+            key_f64s(out, &b.knots);
+            out.push(b.ctrl.len() as u64);
+            for p in &b.ctrl {
+                key_vec2(out, *p);
+            }
+            match &b.weights {
+                None => out.push(0),
+                Some(w) => {
+                    out.push(1);
+                    key_f64s(out, w);
+                }
+            }
+        }
+    }
+}
+
+fn face_key(body: &Body, f: FaceId, edges: &EdgeSampling, tol: &Tol) -> FaceKey {
+    let mut k: Vec<u64> = Vec::with_capacity(256);
     let face = body.face(f);
-    let _ = write!(s, "{:?}|{}|{:?}|{:?}|", face.surface, face.sense, edges.cuts[f.idx()], tol);
+    key_surface(&mut k, &face.surface);
+    let cuts = edges.cuts[f.idx()];
+    let cut = |c: Option<f64>| [c.is_some() as u64, c.map_or(0, f64::to_bits)];
+    k.push(face.sense as u64);
+    k.extend(cut(cuts.u));
+    k.extend(cut(cuts.v));
+    k.extend([tol.chord.to_bits(), tol.angle.to_bits()]);
     for &l in &face.loops {
         let lp = body.lp(l);
         if !lp.alive {
             continue;
         }
-        s.push('L');
+        k.push(u64::MAX);
         for &c in &lp.coedges {
             let ce = body.coedge(c);
             if !ce.alive {
@@ -556,24 +640,17 @@ fn face_key(body: &Body, f: FaceId, edges: &EdgeSampling, tol: &Tol) -> Vec<u8> 
             }
             let e = ce.edge;
             let ed = body.edge(e);
-            let _ = write!(
-                s,
-                "[{}{}{:?} {:?} {} {} {:?} {:?} {:?} {:?} {:?}]",
-                ce.rev as u8,
-                body.is_seam(e) as u8,
-                ed.curve,
-                ce.pcurve,
-                ed.t0,
-                ed.t1,
-                edges.params[e.idx()],
-                edges.virt[e.idx()],
-                edges.ssi[e.idx()],
-                body.vertex(body.coedge_start(c)).p,
-                body.vertex(body.coedge_end(c)).p,
-            );
+            k.extend([ce.rev as u64 | (body.is_seam(e) as u64) << 1, edges.virt[e.idx()].0 as u64 | (edges.virt[e.idx()].1 as u64) << 1]);
+            ed.curve.push_key(&mut k);
+            key_curve2(&mut k, &ce.pcurve);
+            k.extend([ed.t0.to_bits(), ed.t1.to_bits(), edges.ssi[e.idx()].to_bits()]);
+            key_f64s(&mut k, &edges.params[e.idx()]);
+            for p in [body.vertex(body.coedge_start(c)).p, body.vertex(body.coedge_end(c)).p] {
+                k.extend([p.x.to_bits(), p.y.to_bits(), p.z.to_bits()]);
+            }
         }
     }
-    s.into_bytes()
+    k.into()
 }
 
 /// Byte cap of the per-thread face cache.
@@ -589,9 +666,9 @@ pub struct FaceCacheStats {
 }
 
 struct FaceCache {
-    map: HashMap<Vec<u8>, (Option<Rc<FaceOut>>, u64)>,
+    map: HashMap<FaceKey, (Option<Rc<FaceOut>>, u64)>,
     /// last_used tick -> key, oldest first
-    lru: BTreeMap<u64, Vec<u8>>,
+    lru: BTreeMap<u64, FaceKey>,
     tick: u64,
     bytes: usize,
     cap: usize,
@@ -605,7 +682,7 @@ impl Default for FaceCache {
 }
 
 impl FaceCache {
-    fn get(&mut self, k: &Vec<u8>) -> Option<Option<Rc<FaceOut>>> {
+    fn get(&mut self, k: &FaceKey) -> Option<Option<Rc<FaceOut>>> {
         self.stats.lookups += 1;
         self.tick += 1;
         let t = self.tick;
@@ -616,19 +693,19 @@ impl FaceCache {
         self.stats.hits += 1;
         Some(e.0.clone())
     }
-    fn put(&mut self, k: Vec<u8>, v: Option<Rc<FaceOut>>) {
+    fn put(&mut self, k: FaceKey, v: Option<Rc<FaceOut>>) {
         if self.map.contains_key(&k) {
             return;
         }
         self.tick += 1;
-        self.bytes += k.len() + v.as_ref().map_or(64, |o| o.bytes());
+        self.bytes += k.len() * 8 + v.as_ref().map_or(64, |o| o.bytes());
         self.lru.insert(self.tick, k.clone());
         self.map.insert(k, (v, self.tick));
         while self.bytes > self.cap && self.map.len() > 1 {
             let Some((&t, _)) = self.lru.iter().next() else { break };
             let key = self.lru.remove(&t).unwrap();
             if let Some((o, _)) = self.map.remove(&key) {
-                self.bytes -= key.len() + o.as_ref().map_or(64, |o| o.bytes());
+                self.bytes -= key.len() * 8 + o.as_ref().map_or(64, |o| o.bytes());
                 self.stats.evicted += 1;
             }
         }
