@@ -632,35 +632,61 @@ impl Surface {
                 let dom = self.domain();
                 newton_surface(|u, v| self.derivs2(u, v), q, (best.1, best.2), dom)
             }
-            Surface::Revolution { profile, axis_o, axis } => {
-                if let Some(r) = revolution_foot(profile, *axis_o, *axis, q) {
-                    return r;
+            Surface::Revolution { profile, axis_o, axis } => self.revolution_closest(profile, *axis_o, *axis, q, None),
+        }
+    }
+
+    /// `closest_param` for a surface of revolution with the profile's content hash (`revolution_key`) taken by
+    /// the caller, for a loop of queries on one surface: the same answers, bit for bit (`None`: taken per call).
+    fn revolution_closest(&self, profile: &Curve, axis_o: Vec3, axis: Vec3, q: Vec3, key: Option<Option<u64>>) -> (f64, f64) {
+        let (axis_o, axis) = (&axis_o, &axis);
+        if let Some(r) = revolution_foot_keyed(profile, *axis_o, *axis, q, key.unwrap_or_else(|| revolution_key(profile, *axis_o, *axis))) {
+            return r;
+        }
+        let (a, b) = finite_range(profile.range(), q, profile);
+        let nu = 36;
+        let nv = 48;
+        let mut best = (INF, 0.0, a);
+        // the profile points once per v (the same values `eval` rotates)
+        let ws: Vec<Vec3> = (0..=nv).map(|j| profile.derivs2_arr(a + (b - a) * j as f64 / nv as f64)[0] - *axis_o).collect();
+        let z = *axis;
+        for i in 0..nu {
+            let u = TAU * i as f64 / nu as f64;
+            let (su, cu) = u.sin_cos();
+            for (j, &w) in ws.iter().enumerate() {
+                let v = a + (b - a) * j as f64 / nv as f64;
+                // Rodrigues, as in `derivs2`
+                let p = *axis_o + (w * cu + z * (z.dot(w) * (1.0 - cu)) + z.cross(w) * su);
+                let d = p.dist(q);
+                if d < best.0 {
+                    best = (d, u, v);
                 }
-                let (a, b) = finite_range(profile.range(), q, profile);
-                let nu = 36;
-                let nv = 48;
-                let mut best = (INF, 0.0, a);
-                // the profile points once per v (the same values `eval` rotates)
-                let ws: Vec<Vec3> = (0..=nv).map(|j| profile.derivs2_arr(a + (b - a) * j as f64 / nv as f64)[0] - *axis_o).collect();
-                let z = *axis;
-                for i in 0..nu {
-                    let u = TAU * i as f64 / nu as f64;
-                    let (su, cu) = u.sin_cos();
-                    for (j, &w) in ws.iter().enumerate() {
-                        let v = a + (b - a) * j as f64 / nv as f64;
-                        // Rodrigues, as in `derivs2`
-                        let p = *axis_o + (w * cu + z * (z.dot(w) * (1.0 - cu)) + z.cross(w) * su);
-                        let d = p.dist(q);
-                        if d < best.0 {
-                            best = (d, u, v);
-                        }
-                    }
-                }
-                let _ = (axis_o, axis);
-                let ((_, _), (v0, v1)) = self.domain();
-                let (u, v) = newton_surface(|u, v| self.derivs2(u, v), q, (best.1, best.2), ((-INF, INF), (v0, v1)));
-                (wrap_angle(u), v)
             }
+        }
+        let _ = (axis_o, axis);
+        let ((_, _), (v0, v1)) = self.domain();
+        let (u, v) = newton_surface(|u, v| self.derivs2(u, v), q, (best.1, best.2), ((-INF, INF), (v0, v1)));
+        (wrap_angle(u), v)
+    }
+
+    /// A content hash that [`closest_param_keyed`](Self::closest_param_keyed) can reuse for many points: the
+    /// fingerprint of a B-spline surface, the profile hash of a surface of revolution with a spline profile,
+    /// `None` for the rest.
+    pub fn foot_key(&self) -> Option<u64> {
+        match self {
+            Surface::BSpline(bs) => Some(bs.fingerprint()),
+            Surface::Revolution { profile, axis_o, axis } => revolution_key(profile, *axis_o, *axis),
+            _ => None,
+        }
+    }
+
+    /// [`closest_param`](Self::closest_param) with the [`foot_key`](Self::foot_key) taken by the caller
+    /// (`None` = none for this surface): the same answers, bit for bit.
+    pub fn closest_param_keyed(&self, q: Vec3, key: Option<u64>) -> (f64, f64) {
+        match (self, key) {
+            (Surface::BSpline(bs), Some(k)) => bs.closest_param_fp(k, q),
+            (Surface::Revolution { profile, axis_o, axis }, Some(_)) => self.revolution_closest(profile, *axis_o, *axis, q, Some(key)),
+            _ => self.closest_param(q),
         }
     }
 
@@ -943,32 +969,10 @@ fn points_coplanar(pts: &[Vec3], tol: f64) -> bool {
     pts.iter().all(|&p| (p - p0).dot(n).abs() <= tol)
 }
 
-/// Foot of `q` on a surface of revolution whose profile lies in one
-/// half-plane through the axis (the usual case): the foot is in `q`'s own
-/// meridian plane, so `u` is `q`'s angle and `v` is a 1D closest-point search
-/// on the profile (scan + Newton). `None` when the profile is not such a
-/// one-sided planar curve (the general search takes over).
-fn revolution_foot(profile: &Curve, axis_o: Vec3, axis: Vec3, q: Vec3) -> Option<(f64, f64)> {
-    let a = axis.try_normalize()?;
-    let (p0, p1) = profile.range();
-    if !(p0.is_finite() && p1.is_finite()) || p1 <= p0 {
-        return None;
-    }
-    const N: usize = 160;
-    // the 161 profile samples depend on the surface only: cached for a B-spline
-    // profile (the foot is asked for thousands of times per surface)
-    struct RevPrep {
-        scale: f64,
-        er: Vec3,
-        et: Vec3,
-        ras: Vec<f64>,
-        zs: Vec<f64>,
-        ok: bool,
-    }
-    thread_local! {
-        static CACHE: std::cell::RefCell<Vec<(u64, std::rc::Rc<RevPrep>)>> = const { std::cell::RefCell::new(Vec::new()) };
-    }
-    let key = if let Curve::BSpline(bs) = profile {
+/// Content hash of a spline profile with its axis, the key of the cached samples of [`revolution_foot`]
+/// (`None` for any other profile).
+pub fn revolution_key(profile: &Curve, axis_o: Vec3, axis: Vec3) -> Option<u64> {
+    if let Curve::BSpline(bs) = profile {
         let mut h: u64 = 0xcbf29ce484222325;
         let mut mix = |x: u64| {
             h = (h ^ x).wrapping_mul(0x100000001b3);
@@ -996,7 +1000,34 @@ fn revolution_foot(profile: &Curve, axis_o: Vec3, axis: Vec3, q: Vec3) -> Option
         Some(h)
     } else {
         None
-    };
+    }
+}
+
+/// Foot of `q` on a surface of revolution whose profile lies in one
+/// half-plane through the axis (the usual case): the foot is in `q`'s own
+/// meridian plane, so `u` is `q`'s angle and `v` is a 1D closest-point search
+/// on the profile (scan + Newton). `None` when the profile is not such a
+/// one-sided planar curve (the general search takes over).
+fn revolution_foot_keyed(profile: &Curve, axis_o: Vec3, axis: Vec3, q: Vec3, key: Option<u64>) -> Option<(f64, f64)> {
+    let a = axis.try_normalize()?;
+    let (p0, p1) = profile.range();
+    if !(p0.is_finite() && p1.is_finite()) || p1 <= p0 {
+        return None;
+    }
+    const N: usize = 160;
+    // the 161 profile samples depend on the surface only: cached for a B-spline
+    // profile (the foot is asked for thousands of times per surface)
+    struct RevPrep {
+        scale: f64,
+        er: Vec3,
+        et: Vec3,
+        ras: Vec<f64>,
+        zs: Vec<f64>,
+        ok: bool,
+    }
+    thread_local! {
+        static CACHE: std::cell::RefCell<Vec<(u64, std::rc::Rc<RevPrep>)>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
     let cached = key.and_then(|k| CACHE.with(|c| c.borrow().iter().find(|e| e.0 == k).map(|e| e.1.clone())));
     let prep = match cached {
         Some(p) => p,

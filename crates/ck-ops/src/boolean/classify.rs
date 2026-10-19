@@ -72,10 +72,7 @@ pub fn uv_near_fp(s: &Surface, fp: Option<u64>, p: Vec3, prev: Option<Vec2>) -> 
             return Vec2::new(u, v);
         }
     }
-    let (mut u, mut v) = match (s, fp) {
-        (Surface::BSpline(bs), Some(fp)) => bs.closest_param_fp(fp, p),
-        _ => s.closest_param(p),
-    };
+    let (mut u, mut v) = s.closest_param_keyed(p, fp);
     if let Some(q) = prev {
         let (pu, pv) = s.periods();
         if let Some(per) = pu {
@@ -232,7 +229,7 @@ pub(crate) fn seam_spike_u(s: &Surface, pieces: &[(&Curve, f64, f64)], sense: bo
 fn loop_polygon_with(s: &Surface, pieces: &[(&Curve, f64, f64)], sense: bool, nfun: impl Fn(&Curve, f64, f64) -> usize) -> Vec<Vec2> {
     let mut out = vec![];
     let mut prev: Option<Vec2> = None;
-    let fp = spline_fp(s);
+    let fp = s.foot_key();
     // A seam edge walked both ways in this loop (a seam spike) bounds a region
     // that wraps the periodic seam: sampled naively both traversals sit on
     // u = 0, the polygon is a zero-width spike, and its shoelace area is the
