@@ -22,11 +22,18 @@ def shape(s):
     if k == 'sphere':
         return BRepPrimAPI_MakeSphere(s['r']).Shape()
     if k == 'cone':
-        # kernel draft on an extruded circle shrinks the far end
+        # the kernel's extruded circle keeps r1 at the sketch (z = 0) and the draft shrinks
+        # the far end; OCCT's MakeCone takes (base radius, top radius, height)
         rt = max(s['r1'] - s['h'] * math.tan(math.radians(s.get('draft', 0))), 0.01)
-        return BRepPrimAPI_MakeCone(rt, s['r1'], s['h']).Shape()
+        return BRepPrimAPI_MakeCone(s['r1'], rt, s['h']).Shape()
     if k == 'torus':
-        return BRepPrimAPI_MakeTorus(s['R'], s['r']).Shape()
+        # the kernel's front-plane sketch revolves about the sketch's y axis (world Y);
+        # OCCT's torus axis is Z, so rotate it into the same orientation (the solid is
+        # symmetric through its plane, so either 90-degree sign is the same shape)
+        t = BRepPrimAPI_MakeTorus(s['R'], s['r']).Shape()
+        tr = gp_Trsf()
+        tr.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(1, 0, 0)), math.pi / 2)
+        return BRepBuilderAPI_Transform(t, tr, True).Shape()
     raise RuntimeError('unknown ' + k)
 
 
@@ -57,7 +64,7 @@ def main():
             b = moved(shape(c['B']), c['move'])
             x = op(a, b, c['op'])
             if c.get('C'):
-                cc = moved(shape(c['C']), {'translate': [0, 0, 0]})
+                cc = moved(shape(c['C']), c.get('Cmove') or {'translate': [0, 0, 0]})
                 x = op(x, cc, c['op2'])
             p = GProp_GProps(); BRepGProp.VolumeProperties_s(x, p)
             out[name] = {'volume': abs(p.Mass())}
