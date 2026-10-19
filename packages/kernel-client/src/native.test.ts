@@ -25,6 +25,9 @@ describe('service address and version', () => {
     assert.equal(versionMismatch(v, { protocol: 1, build: 'b1' }), null);
     assert.match(versionMismatch(v, { protocol: 2 })!, /protocol 1/);
     assert.match(versionMismatch(v, { protocol: 1, build: 'other' })!, /build b1/);
+    const w = { ...v, build: '0123456789ab', git: '0123456789ab' };
+    assert.equal(versionMismatch(w, { protocol: 1, build: 'class-a-surfacing 0123456789abcdef0123456789abcdef01234567' }), null, 'short hash of the same commit');
+    assert.match(versionMismatch(w, { protocol: 1, build: 'class-a-surfacing fedcba9876540000000000000000000000000000' })!, /build 0123456789ab/);
   });
 });
 

@@ -98,13 +98,24 @@ export function readVersion(j: unknown): ServiceVersion | null {
   };
 }
 
+const lastToken = (s: string): string => s.trim().split(/\s+/).pop() ?? '';
+
+/** Whether a build id the service reports names the same build as the wasm's commit string ("<branch> <40-hex sha>"): equal, or
+ *  hashes where one is a prefix of the other (the service may report a short hash). */
+export function sameBuild(id: string, commit: string): boolean {
+  if (id === commit) return true;
+  const a = lastToken(id), b = lastToken(commit);
+  return a.length >= 7 && b.length >= 7 && /^[0-9a-f]+$/i.test(a) && /^[0-9a-f]+$/i.test(b) && (a.toLowerCase().startsWith(b.toLowerCase()) || b.toLowerCase().startsWith(a.toLowerCase()));
+}
+
 /** null when the service may be used, otherwise why not. */
 export function versionMismatch(v: ServiceVersion, expected: ExpectedVersion): string | null {
   if (v.protocol !== expected.protocol) {
     return `protocol ${v.protocol} (this app speaks ${expected.protocol})`;
   }
-  if (expected.build && v.build && v.build !== expected.build) {
-    return `kernel build ${v.build} (this app was built with ${expected.build})`;
+  const ids = [v.build, v.git].filter(Boolean);
+  if (expected.build && ids.length && !ids.some((id) => sameBuild(id, expected.build!))) {
+    return `kernel build ${v.build || v.git} (this app was built with ${lastToken(expected.build).slice(0, 12)})`;
   }
   return null;
 }
