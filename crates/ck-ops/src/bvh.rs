@@ -282,6 +282,29 @@ impl Bvh {
     }
 
     /// Items whose box overlaps `q` (ascending ids).
+    /// Whether any item box overlaps `q` (the early-exit form of [`Bvh::query_box`]).
+    pub fn any_overlap(&self, q: &Aabb) -> bool {
+        if self.nodes.is_empty() {
+            return false;
+        }
+        let mut stack = vec![0];
+        while let Some(n) = stack.pop() {
+            let node = &self.nodes[n];
+            if !node.bbox.overlaps(q) {
+                continue;
+            }
+            if self.is_leaf(n) {
+                if self.items[node.start..node.start + node.count].iter().any(|&i| self.boxes[i].overlaps(q)) {
+                    return true;
+                }
+            } else {
+                stack.push(node.left);
+                stack.push(node.right);
+            }
+        }
+        false
+    }
+
     pub fn query_box(&self, q: &Aabb) -> Vec<usize> {
         let mut out = vec![];
         if self.nodes.is_empty() {
@@ -505,6 +528,36 @@ pub fn curve_hull_box(curve: &ck_geom::curve::Curve, t0: f64, t1: f64) -> Option
     (finite(bb.min) && finite(bb.max)).then_some(bb)
 }
 
+/// Finer boxes that together hold `curve` over [t0, t1] (same guarantee as [`curve_hull_box`]): one per knot span
+/// the range touches for a B-spline (the control points of that span), arcs of at most an eighth of a turn for
+/// circles and ellipses, the one box of a line. `None` when no cheap bound exists.
+pub fn curve_span_boxes(curve: &ck_geom::curve::Curve, t0: f64, t1: f64) -> Option<Vec<Aabb>> {
+    use ck_geom::curve::Curve;
+    let (lo, hi) = (t0.min(t1), t0.max(t1));
+    match curve {
+        Curve::BSpline(s) => {
+            curve_hull_box(curve, lo, hi)?;
+            let p = s.degree;
+            let mut out = vec![];
+            for k in p..s.ctrl.len() {
+                let (a, b) = (s.knots[k], s.knots[k + 1]);
+                if a < b && b >= lo && a <= hi {
+                    out.push(Aabb::from_points(&s.ctrl[k - p..=k]));
+                }
+            }
+            if out.is_empty() {
+                out.push(Aabb::from_points(&s.ctrl));
+            }
+            Some(out)
+        }
+        Curve::Circle { .. } | Curve::Ellipse { .. } if hi - lo < std::f64::consts::TAU && lo >= -std::f64::consts::TAU && hi <= 2.0 * std::f64::consts::TAU => {
+            let n = ((hi - lo) / std::f64::consts::FRAC_PI_4).ceil().max(1.0) as usize;
+            (0..n).map(|i| curve_hull_box(curve, lo + (hi - lo) * i as f64 / n as f64, if i + 1 == n { hi } else { lo + (hi - lo) * (i + 1) as f64 / n as f64 })).collect()
+        }
+        _ => curve_hull_box(curve, lo, hi).map(|b| vec![b]),
+    }
+}
+
 /// Box of a face: union of its edge boxes, plus surface samples over the
 /// uv box of its boundary (catches bulging analytic / spline faces whose
 /// interior leaves the boundary hull, e.g. a sphere cap).
@@ -628,9 +681,11 @@ mod tests {
         ];
         for (c, t0, t1) in cases {
             let bb = curve_hull_box(&c, t0, t1).unwrap().padded(1e-12);
+            let spans: Vec<Aabb> = curve_span_boxes(&c, t0, t1).unwrap().iter().map(|b| b.padded(1e-12)).collect();
             for k in 0..=4000 {
                 let p = c.eval(t0 + (t1 - t0) * k as f64 / 4000.0);
                 assert!(bb.contains(p), "{} {t0} {t1}: {p:?} outside {bb:?}", c.kind());
+                assert!(spans.iter().any(|b| b.contains(p)), "{} {t0} {t1}: {p:?} outside the span boxes", c.kind());
             }
         }
     }

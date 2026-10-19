@@ -429,6 +429,13 @@ fn face_loops_uv_with(b: &Body, f: FaceId, nfun: impl Fn(&Curve, f64, f64) -> us
         .collect()
 }
 
+/// False only when `p` is surely farther than `tol` from the spline `c` over `r` (outside the control-point hull
+/// box of the spans in range): the closest-point search of [`super::imprint::near_in_range`] can be skipped. Other
+/// curves (cheap closed forms) always answer true.
+fn near_hull(c: &Curve, r: (f64, f64), p: Vec3, tol: f64) -> bool {
+    !matches!(c, Curve::BSpline(_)) || crate::bvh::curve_hull_box(c, r.0, r.1).map_or(true, |bb| bb.padded(tol + 1e-9).contains(p))
+}
+
 /// Is `p` (assumed near the face's surface) inside / on the boundary of /
 /// outside face `f`?
 pub fn point_in_face(b: &Body, f: FaceId, p: Vec3, tol: f64) -> Where {
@@ -443,6 +450,9 @@ pub type LoopCache = std::collections::HashMap<(usize, u32), Vec<Vec<Vec2>>>;
 pub fn point_in_face_cached(b: &Body, f: FaceId, p: Vec3, tol: f64, cache: &mut LoopCache) -> Where {
     for e in b.face_edges(f) {
         let ed = b.edge(e);
+        if !near_hull(&ed.curve, (ed.t0, ed.t1), p, tol) {
+            continue;
+        }
         if super::imprint::near_in_range(&ed.curve, (ed.t0, ed.t1), p, tol) {
             return Where::On;
         }
@@ -520,6 +530,9 @@ impl<'a> Solid<'a> {
         let b = self.body;
         for &e in &self.edges[i] {
             let ed = b.edge(e);
+            if !near_hull(&ed.curve, (ed.t0, ed.t1), p, self.tol) {
+                continue;
+            }
             if super::imprint::near_in_range(&ed.curve, (ed.t0, ed.t1), p, self.tol) {
                 return Where::On;
             }

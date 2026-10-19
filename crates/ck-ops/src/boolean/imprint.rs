@@ -14,7 +14,7 @@
 //! other's boundary edges instead of an SSI curve.
 
 use super::classify::{point_in_face_cached, LoopCache, Where};
-use crate::bvh::{curve_hull_box, curve_range_box, face_box, Aabb, Bvh};
+use crate::bvh::{curve_hull_box, curve_range_box, curve_span_boxes, face_box, Aabb, Bvh};
 use crate::intersect::ss::{self, Bounds, SsResult};
 use crate::intersect::{cc, fit_param, param_slack};
 use ck_geom::curve::Curve;
@@ -528,9 +528,14 @@ pub fn imprint_hooked(a: &Body, b: &Body, tol: f64, hook: Option<PairHook>) -> A
                     Some(pool_bvh.query_box(&bb.padded(4.0 * tol + 1e-9)))
                 }
             }
-            // splines: the pool points within reach of the control-point hull of the spans in range (a point
+            // splines: the pool points within reach of the control-point hull of a span in range (a point
             // farther than `tol` from the curve can never split it)
-            _ => curve_hull_box(c, t0, t1).map(|bb| pool_bvh.query_box(&bb.padded(REJECT_PAD * tol + 1e-9))),
+            _ => curve_span_boxes(c, t0, t1).map(|bs| {
+                let mut v: Vec<usize> = bs.iter().flat_map(|bb| pool_bvh.query_box(&bb.padded(REJECT_PAD * tol + 1e-9))).collect();
+                v.sort_unstable();
+                v.dedup();
+                v
+            }),
         };
         let n_cand = cand.as_ref().map_or(pool.len(), |c| c.len());
         for k in 0..n_cand {
@@ -644,12 +649,20 @@ fn trim(c: &Curve, r: (f64, f64), faces: &[(&Body, FaceId)], bx: &Aabb, tol: f64
     // an edge whose hull box stays clear of the curve's cannot meet it (every hit and overlap of cc::intersect lies
     // within 2 tol of both curves, a parameter slack past the range ends included): skip the intersection
     let hull = curve_hull_box(c, r.0, r.1).map(|b| b.padded(REJECT_PAD * tol + 1e-9));
+    // (then span by span: the boxes of the curve's knot spans / arcs, built on first use, against the edge's)
+    let mut spans: Option<Option<Bvh>> = None;
     for &(body, f) in faces {
         for e in body.face_edges(f) {
             let ed = body.edge(e);
             if let (Some(h), Some(eb)) = (&hull, curve_hull_box(&ed.curve, ed.t0, ed.t1)) {
                 if !h.overlaps(&eb) {
                     continue;
+                }
+                let sb = spans.get_or_insert_with(|| curve_span_boxes(c, r.0, r.1).map(|v| Bvh::build(&v.iter().map(|b| b.padded(REJECT_PAD * tol + 1e-9)).collect::<Vec<_>>())));
+                if let (Some(sb), Some(es)) = (sb.as_ref(), curve_span_boxes(&ed.curve, ed.t0, ed.t1)) {
+                    if !es.iter().any(|b| sb.any_overlap(b)) {
+                        continue;
+                    }
                 }
             }
             let res = cc::intersect(c, r, &ed.curve, (ed.t0, ed.t1), tol);
