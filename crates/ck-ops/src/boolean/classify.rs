@@ -561,6 +561,12 @@ impl<'a> Solid<'a> {
             return Class::Out;
         }
         let near = crate::bvh::Aabb::new(q, q).padded(tol * 10.0);
+        // outside the box of all (padded) face boxes by more than the on-surface band: no face is near and
+        // the point is outside the solid (its rays would cross the solid an even number of times, each
+        // crossing a closest-point search on a free-form face)
+        if !near.overlaps(&self.bvh.bbox()) {
+            return Class::Out;
+        }
         let robust = super::robust();
         for i in self.bvh.query_box(&near) {
             let g = self.faces[i];
@@ -696,6 +702,23 @@ mod tests {
             assert_eq!(point_in_face(&c, s, p, 1e-6), Where::In, "{ang}");
         }
         assert_eq!(point_in_face(&c, s, Vec3::new(25.0, 12.0, -10.0), 1e-6), Where::Out);
+    }
+
+    /// Points outside the solid's box answer Out by the box alone, the same as the rays answer them; points
+    /// just inside the box (within the faces' padding) still go through the rays.
+    #[test]
+    fn outside_the_box_is_out() {
+        let c = cyl_body("F4", 20.0, 10.0, 5.0, -1.0, 11.0);
+        let solid = Solid::new(&c, 1e-6);
+        let bb = solid.bvh.bbox();
+        for p in [Vec3::new(bb.max.x + 1.0, 5.0, -10.0), Vec3::new(20.0, bb.min.y - 1e-3, -10.0), Vec3::new(-100.0, 50.0, 70.0)] {
+            assert!(!bb.contains(p));
+            assert_eq!(solid.classify(p, Vec3::X), Class::Out, "{p:?}");
+        }
+        // the box's corner region: outside the cylinder but inside the padded box
+        assert!(bb.contains(Vec3::new(15.5, 5.0, -5.5)));
+        assert_eq!(solid.classify(Vec3::new(15.5, 5.0, -5.5), Vec3::X), Class::Out);
+        assert_eq!(solid.classify(Vec3::new(20.0, 5.0, -10.0), Vec3::X), Class::In);
     }
 
     /// `uv_near_fp` with the surface hash taken once answers exactly what `uv_near` does per point.
