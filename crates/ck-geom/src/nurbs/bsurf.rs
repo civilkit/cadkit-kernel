@@ -27,6 +27,14 @@ pub struct BSplineSurface {
     pub weights: Option<Vec<f64>>,
 }
 
+/// The span and basis rows (value and two derivatives) of the last u and last v of
+/// [`BSplineSurface::derivs2_cached`].
+#[derive(Default)]
+pub struct Basis2Cache {
+    u: Option<(u64, usize, [[f64; 12]; 3])>,
+    v: Option<(u64, usize, [[f64; 12]; 3])>,
+}
+
 pub struct CpPrep {
     nu: usize,
     cv: usize,
@@ -360,41 +368,74 @@ impl BSplineSurface {
     /// Non-rational second derivatives (allocation free, same arithmetic as `derivs`).
     #[inline(always)]
     fn derivs2_nr(&self, u: f64, v: f64, p: usize, q: usize) -> SurfDerivs {
-            // allocation-free non-rational path (same arithmetic as `derivs`)
-            let ((u0, u1), (v0, v1)) = self.domain();
-            let u = u.clamp(u0, u1);
-            let v = v.clamp(v0, v1);
+        // allocation-free non-rational path (same arithmetic as `derivs`)
+        let ((u0, u1), (v0, v1)) = self.domain();
+        let u = u.clamp(u0, u1);
+        let v = v.clamp(v0, v1);
+        let su = find_span(self.nu - 1, p, u, &self.knots_u);
+        let sv = find_span(self.nv - 1, q, v, &self.knots_v);
+        let nu = basis::ders_basis_funs2(su, u, p, 2, &self.knots_u);
+        let nv = basis::ders_basis_funs2(sv, v, q, 2, &self.knots_v);
+        self.accumulate2(su, sv, &nu, &nv, p, q)
+    }
+
+    /// The control point sums of `derivs2_nr` from the spans and basis rows.
+    #[inline(always)]
+    fn accumulate2(&self, su: usize, sv: usize, nu: &[[f64; 12]; 3], nv: &[[f64; 12]; 3], p: usize, q: usize) -> SurfDerivs {
+        let mut a = [[Vec3::ZERO; 3]; 3];
+        // one pass over the control points for the three u orders (each
+        // accumulator sees the same operations in the same order as a
+        // pass per order: bit-identical)
+        let ku = 2usize.min(p);
+        let mut tp = [[Vec3::ZERO; 12]; 3];
+        for s in 0..=q {
+            let row = &self.ctrl[(sv - q + s)..];
+            for r in 0..=p {
+                let c = row[(su - p + r) * self.nv];
+                tp[0][s] = tp[0][s] + c * (nu[0][r] * 1.0);
+                if ku >= 1 {
+                    tp[1][s] = tp[1][s] + c * (nu[1][r] * 1.0);
+                }
+                if ku >= 2 {
+                    tp[2][s] = tp[2][s] + c * (nu[2][r] * 1.0);
+                }
+            }
+        }
+        for k in 0..=ku {
+            for l in 0..=(2 - k).min(q) {
+                for s in 0..=q {
+                    a[k][l] = a[k][l] + tp[k][s] * nv[l][s];
+                }
+            }
+        }
+        SurfDerivs { p: a[0][0], du: a[1][0], dv: a[0][1], duu: a[2][0], duv: a[1][1], dvv: a[0][2] }
+    }
+
+    /// [`derivs2`](Self::derivs2) for a run of evaluations (a Newton iteration) that often repeats one of the
+    /// two parameters: the span and basis rows of the last `u` and of the last `v` are kept in `cache`. The
+    /// same numbers, bit for bit.
+    pub fn derivs2_cached(&self, u: f64, v: f64, cache: &mut Basis2Cache) -> SurfDerivs {
+        let (p, q) = (self.deg_u, self.deg_v);
+        if self.weights.is_some() || p >= 12 || q >= 12 {
+            return self.derivs2(u, v);
+        }
+        let ((u0, u1), (v0, v1)) = self.domain();
+        let u = u.clamp(u0, u1);
+        let v = v.clamp(v0, v1);
+        if cache.u.as_ref().map_or(true, |c| c.0 != u.to_bits()) {
             let su = find_span(self.nu - 1, p, u, &self.knots_u);
+            cache.u = Some((u.to_bits(), su, basis::ders_basis_funs2(su, u, p, 2, &self.knots_u)));
+        }
+        if cache.v.as_ref().map_or(true, |c| c.0 != v.to_bits()) {
             let sv = find_span(self.nv - 1, q, v, &self.knots_v);
-            let nu = basis::ders_basis_funs2(su, u, p, 2, &self.knots_u);
-            let nv = basis::ders_basis_funs2(sv, v, q, 2, &self.knots_v);
-            let mut a = [[Vec3::ZERO; 3]; 3];
-            // one pass over the control points for the three u orders (each
-            // accumulator sees the same operations in the same order as a
-            // pass per order: bit-identical)
-            let ku = 2usize.min(p);
-            let mut tp = [[Vec3::ZERO; 12]; 3];
-            for s in 0..=q {
-                let row = &self.ctrl[(sv - q + s)..];
-                for r in 0..=p {
-                    let c = row[(su - p + r) * self.nv];
-                    tp[0][s] = tp[0][s] + c * (nu[0][r] * 1.0);
-                    if ku >= 1 {
-                        tp[1][s] = tp[1][s] + c * (nu[1][r] * 1.0);
-                    }
-                    if ku >= 2 {
-                        tp[2][s] = tp[2][s] + c * (nu[2][r] * 1.0);
-                    }
-                }
-            }
-            for k in 0..=ku {
-                for l in 0..=(2 - k).min(q) {
-                    for s in 0..=q {
-                        a[k][l] = a[k][l] + tp[k][s] * nv[l][s];
-                    }
-                }
-            }
-            return SurfDerivs { p: a[0][0], du: a[1][0], dv: a[0][1], duu: a[2][0], duv: a[1][1], dvv: a[0][2] };
+            cache.v = Some((v.to_bits(), sv, basis::ders_basis_funs2(sv, v, q, 2, &self.knots_v)));
+        }
+        let (cu, cv) = (cache.u.as_ref().unwrap(), cache.v.as_ref().unwrap());
+        if p == 3 && q == 3 {
+            self.accumulate2(cu.1, cv.1, &cu.2, &cv.2, 3, 3)
+        } else {
+            self.accumulate2(cu.1, cv.1, &cu.2, &cv.2, p, q)
+        }
     }
 
     /// Point + first + second partials.
@@ -1034,7 +1075,8 @@ impl BSplineSurface {
             if let Some(r) = done.borrow().iter().find(|e| e.0 == key) {
                 return r.1;
             }
-            let r = crate::surface::newton_surface(|u, v| self.derivs2(u, v), q, seed, ((u0, u1), (v0, v1)));
+            let bc = std::cell::RefCell::new(Basis2Cache::default());
+            let r = crate::surface::newton_surface(|u, v| self.derivs2_cached(u, v, &mut bc.borrow_mut()), q, seed, ((u0, u1), (v0, v1)));
             done.borrow_mut().push((key, r));
             r
         };
@@ -1527,6 +1569,35 @@ mod tests {
                     let t = s.thirds_nr(u, v).unwrap();
                     assert_eq!([bits(t[0]), bits(t[1]), bits(t[2]), bits(t[3])], [bits(d[3][0]), bits(d[2][1]), bits(d[1][2]), bits(d[0][3])], "{p} {q} {u} {v}");
                 }
+            }
+        }
+    }
+
+    /// `derivs2_cached` is `derivs2` bit for bit along runs that repeat one parameter, repeat both, and jump.
+    #[test]
+    fn derivs2_cached_is_bit_identical() {
+        let bits = |d: &SurfDerivs| [d.p, d.du, d.dv, d.duu, d.duv, d.dvv].map(|v| (v.x.to_bits(), v.y.to_bits(), v.z.to_bits()));
+        for rational in [false, true] {
+            let s = surf(rational);
+            let mut cache = Basis2Cache::default();
+            let mut seed = 5u64;
+            let mut rnd = || {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                (seed >> 11) as f64 / (1u64 << 53) as f64
+            };
+            let (mut u, mut v) = (0.4, 0.4);
+            for k in 0..2000 {
+                match k % 5 {
+                    0 => u = rnd() * 1.2 - 0.1,
+                    1 => v = rnd() * 1.2 - 0.1,
+                    2 => {}
+                    3 => u = 1.5,
+                    _ => {
+                        u = rnd();
+                        v = rnd();
+                    }
+                }
+                assert_eq!(bits(&s.derivs2_cached(u, v, &mut cache)), bits(&s.derivs2(u, v)), "{u} {v}");
             }
         }
     }
