@@ -28,7 +28,12 @@ impl FeatureExec for Exec {
         self.brep.face_frame(s, face)
     }
     fn exec(&mut self, s: &mut regen::RegenState, f: &ck_model::Feature) -> Result<(), regen::FeatureError> {
-        self.brep.exec(s, f)
+        let t = std::time::Instant::now();
+        let r = self.brep.exec(s, f);
+        if std::env::var_os("ROBUST_TIMING").is_some() && t.elapsed().as_secs_f64() > 0.3 {
+            eprintln!("  feature {} took {:.2}s ({})", f.id, t.elapsed().as_secs_f64(), if r.is_ok() { "ok" } else { "err" });
+        }
+        r
     }
 }
 
@@ -41,7 +46,19 @@ pub fn regen_validate(src: &str) -> (Vec<String>, Option<f64>) {
     match ex.brep.body.as_ref() {
         None => (vec![], None),
         Some(b) => (
-            ck_check::validate(b, 1e-6).iter().map(|i| format!("{}: {}", i.code, i.detail)).collect(),
+            {
+                // the validate request also tessellates (a watertight display mesh is part of the check)
+                let t = std::time::Instant::now();
+                let mesh = ck_tess::mesh::tessellate(b).mesh;
+                if std::env::var_os("ROBUST_TIMING").is_some() {
+                    eprintln!("  tessellate {:.2}s ({} triangles)", t.elapsed().as_secs_f64(), mesh.tri_face.len());
+                }
+                Vec::<String>::new()
+            }
+            .into_iter()
+            .chain(
+            ck_check::validate(b, 1e-6).iter().map(|i| format!("{}: {}", i.code, i.detail)))
+            .collect(),
             Some(ck_topo::mass::mass_props(b).volume),
         ),
     }
@@ -49,9 +66,14 @@ pub fn regen_validate(src: &str) -> (Vec<String>, Option<f64>) {
 
 /// Regenerate a part JSON; returns (feature id, error code, message) per failed feature.
 pub fn regen_codes(src: &str) -> Vec<(String, String, String)> {
+    regen_codes_opts(src, r#"{"solveSketches":true}"#)
+}
+
+/// [`regen_codes`] with explicit regen options (JSON).
+pub fn regen_codes_opts(src: &str, opts: &str) -> Vec<(String, String, String)> {
     let part = Part::from_json(&ck_json::parse(src).unwrap()).unwrap();
     let mut ex = Exec { brep: Brep::new(), labels: Noop };
-    let opts = RegenOpts::from_json(Some(&ck_json::parse(r#"{"solveSketches":true}"#).unwrap()));
+    let opts = RegenOpts::from_json(Some(&ck_json::parse(opts).unwrap()));
     let r = regen::regen(&part, &opts, &mut ex);
     r.errors.iter().map(|e| (e.feature.clone(), e.error.code.clone(), e.error.params.iter().map(|(k, v)| format!("{k}={}", ck_json::to_string(v))).collect::<Vec<_>>().join(";"))).collect()
 }

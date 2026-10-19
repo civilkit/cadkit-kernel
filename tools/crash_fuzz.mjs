@@ -16,6 +16,9 @@ const onlyShrink = argv.includes('--no-shrink');
 const baselineFile = opt('--update-baseline', opt('--check', path.join(here, 'crash_fuzz_baseline.json')));
 const timeout = Number(opt('--timeout', '1500'));
 const workers = Number(opt('--workers', '8'));
+// --budget-ms N: regen with opts.featureTimeMs = N and regenTimeMs = 2N (the kernel's time budgets); a hang is then a case
+// that runs past --timeout anyway (set it above 2N plus the unchecked remainder)
+const budgetMs = Number(opt('--budget-ms', '0'));
 const wasmHash = crypto.createHash('sha256').update(readFileSync(wasm)).digest('hex').slice(0, 16);
 let s = seed >>> 0;
 const rnd = () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
@@ -28,7 +31,7 @@ const circ = (id, c, r) => ({ type: 'circle', id, c, r });
 
 function runOne(features, t = timeout) {
   return new Promise((resolve) => {
-    const w = new Worker(new URL('./crash_fuzz_worker.mjs', import.meta.url), { workerData: { wasm, features } });
+    const w = new Worker(new URL('./crash_fuzz_worker.mjs', import.meta.url), { workerData: { wasm, features, budgetMs } });
     let done = false;
     const finish = (x) => { if (done) return; done = true; clearTimeout(timer); w.terminate().catch(() => {}); resolve(x); };
     const timer = setTimeout(() => finish({ cls: 'hang', last: features[features.length - 1]?.type ?? 'none' }), t);

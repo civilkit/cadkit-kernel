@@ -15,6 +15,10 @@ fn crash_cases_do_not_panic_or_hang() {
     for id in ids {
         let t = std::time::Instant::now();
         let errs = common::regen_codes_bounded(common::crash_case(&id), 120);
+        if std::env::var_os("ROBUST_VALIDATE").is_some() {
+            let (issues, vol) = common::regen_validate(&common::crash_case(&id));
+            eprintln!("{id}: validate {issues:?} volume {vol:?}");
+        }
         eprintln!("{id}: {:.2}s {:?}", t.elapsed().as_secs_f64(), errs.iter().map(|e| format!("{}:{} {}", e.0, e.1, e.2)).collect::<Vec<_>>());
         for (feat, code, msg) in &errs {
             assert!(!code.is_empty(), "{id}: feature {feat} failed with an empty code ({msg})");

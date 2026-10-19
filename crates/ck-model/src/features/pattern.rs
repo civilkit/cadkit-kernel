@@ -403,6 +403,9 @@ pub fn exec_pattern(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Resul
     for (seed, c) in &tools {
         let mut tool: Option<Body> = None;
         for (k, x) in xs.iter().enumerate() {
+            if ck_core::budget::expired() {
+                return Err(FeatureError::new(crate::regen::codes::FEATURE_BUDGET));
+            }
             let inst = ck_ops::boolean::apply::instance(seed, x, &f.id, k + 1);
             tool = Some(match tool {
                 None => inst,

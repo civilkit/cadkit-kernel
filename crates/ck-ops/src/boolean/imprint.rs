@@ -365,6 +365,10 @@ pub fn imprint_hooked(a: &Body, b: &Body, tol: f64, hook: Option<PairHook>) -> A
     let mut loop_cache = LoopCache::new();
     let mut extra: Vec<Vec3> = vec![];
     for (i, j) in ta.overlap_pairs_ordered(&tb, pad) {
+        // out of time: the caller (boolean_at) sees the expiry and discards this partial arrangement
+        if ck_core::budget::poll() {
+            break;
+        }
         // the SSI / trim bounds keep the old, wider slack
         let (bi, bj) = (boxes_a[i], boxes_b[j]);
         let (f, g) = (fa[i], fb[j]);
