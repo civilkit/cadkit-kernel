@@ -1283,16 +1283,23 @@ pub(crate) fn offset_spline_edge(src: &Body, e: EdgeId, moved: &[Option<Surface>
             // first sample past the bound of this round, which refines either way
             let bound = if n >= 192 { limit.max(good) } else { good };
             let mut dev = 0.0f64;
+            // (the feet of the previous sample from the same end are the hints: a sample within the bound is
+            // proved so by a Newton foot from there, only a sample past it needs the exact distance)
+            let mut hints: [[Option<(f64, f64)>; 2]; 2] = [[None; 2]; 2];
             // (from both ends inwards: the worst deviation is usually next to an end vertex)
             for i in 0..4 * n {
                 let k = if i % 2 == 0 { i / 2 } else { 4 * n - 1 - i / 2 };
                 let q = at(k);
-                let d1 = m1.closest_point_fp(q, fp1).2.dist(q);
+                let h = &mut hints[i % 2];
+                let (d1, f1) = m1.dist_hinted_fp(q, h[0], fp1, bound);
+                h[0] = Some(f1);
                 if d1 > bound {
                     dev = dev.max(d1);
                     break;
                 }
-                dev = dev.max(d1.max(m2.closest_point_fp(q, fp2).2.dist(q)));
+                let (d2, f2) = m2.dist_hinted_fp(q, h[1], fp2, bound);
+                h[1] = Some(f2);
+                dev = dev.max(d1.max(d2));
                 if dev > bound {
                     break;
                 }

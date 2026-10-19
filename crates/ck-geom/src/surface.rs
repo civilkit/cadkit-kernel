@@ -741,6 +741,23 @@ impl Surface {
         self.closest_point_fp(q, fp).2.dist(q)
     }
 
+    /// Distance from `q` to the surface for a caller that only needs it exactly when it exceeds `ok`, and the
+    /// parameters of the foot (a hint for the next, nearby query). A B-spline surface is first tried by Newton
+    /// from `hint`: a foot within `ok` of `q` proves the distance is at most that, which is all the caller can
+    /// tell from the exact value; anything else (and every other surface kind, and no hint) is the global
+    /// closest point, so a distance above `ok` is always the exact one.
+    pub fn dist_hinted_fp(&self, q: Vec3, hint: Option<(f64, f64)>, fp: Option<u64>, ok: f64) -> (f64, (f64, f64)) {
+        if let (Surface::BSpline(_), Some(h)) = (self, hint) {
+            let (u, v) = newton_surface(|u, v| self.derivs2(u, v), q, h, self.domain());
+            let d = self.eval(u, v).dist(q);
+            if d <= ok {
+                return (d, (u, v));
+            }
+        }
+        let (u, v, p) = self.closest_point_fp(q, fp);
+        (p.dist(q), (u, v))
+    }
+
     /// As [`closest_point_within`](Self::closest_point_within), many queries
     /// against one surface: `prep` is `closest_prep()` of the B-spline (None
     /// for other surfaces).
