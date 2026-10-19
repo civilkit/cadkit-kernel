@@ -147,6 +147,32 @@ export function referencers(doc: PartDoc, id: string): string[] {
     .map((f) => f.id);
 }
 
+/** Face / edge name references inside a feature's JSON, the way the kernel's reference check (refDiff) reads them: a
+ *  face-name string (`F12.C1`, `F3.S.e2`) or an edge reference `{faces: [a, b], at: [x, y, z]}`. */
+export function hasNameRefs(j: unknown): boolean {
+  if (typeof j === 'string') return /^F\d+\.[A-Za-z]/.test(j);
+  if (Array.isArray(j)) return j.some(hasNameRefs);
+  if (j && typeof j === 'object') {
+    const o = j as Record<string, unknown>;
+    if (Array.isArray(o.faces) && o.faces.length === 2 && o.faces.every((x) => typeof x === 'string') && Array.isArray(o.at) && o.at.length === 3 && o.at.every((x) => typeof x === 'number')) return true;
+    return Object.values(o).some(hasNameRefs);
+  }
+  return false;
+}
+
+/** Can the reference check say anything about this batch? Not when it only appends features, and not when it only `set`s
+ *  parameters of features at or after which no feature carries a face / edge name reference: a reference is compared
+ *  against the body just before the feature that holds it, and that body only changes for features after the first
+ *  edited one. (`remove`, `move`, `add` in the middle and `replace` always need the check.) */
+export function refCheckNeeded(before: PartDoc, candidate: PartDoc, ops: EditOp[]): boolean {
+  if (ops.every((o) => o.op === 'add' && (o.index === undefined || o.index >= before.features.length))) return false;
+  if (!ops.every((o) => o.op === 'set')) return true;
+  const first = Math.min(...ops.map((o) => before.features.findIndex((f) => f.id === (o as { id: string }).id)));
+  if (!Number.isFinite(first) || first < 0) return true;
+  const later = (d: PartDoc) => d.features.slice(first + 1).some(hasNameRefs);
+  return later(before) || later(candidate);
+}
+
 /** Structural check of one op against the document. Returns an error or null. */
 export function checkOp(doc: PartDoc, op: EditOp): string | null {
   const ids = new Set(doc.features.map((f) => f.id));
@@ -350,10 +376,25 @@ export class Session {
   private memoPreview: { key: string; res: RegenRes } | null = null;
   /** When the session last started a request of its own (the deferred reference check waits for it to go quiet). */
   private lastActive = 0;
+  /** Counts every request that reaches the kernel (the session's own and a viewer's, through `session.kernel`) except the
+   *  reference check: a deferred check that sees it change has been overtaken by user work and is dropped. */
+  private activity = 0;
+  /** How long the session must have been idle before a deferred reference check (`edit(..., {lean: true})`) starts, ms.
+   *  The kernel is one thread, so a check that starts runs to the end before the next request is answered. */
+  refCheckIdleMs = 3000;
 
   constructor(doc: PartDoc, kernel: import('../../driver/src/verify.js').KernelTransport, author = 'agent', tag?: string) {
     this.doc = normalizeSeq(clone(doc));
-    this.kernel = kernel;
+    this.kernel = new Proxy(kernel, {
+      get: (t, k, r) => {
+        const v = Reflect.get(t, k, r);
+        if (k !== 'request' || typeof v !== 'function') return v;
+        return (msg: Record<string, unknown>) => {
+          if (msg?.type !== 'refDiff') { this.activity++; this.lastActive = Date.now(); }
+          return (v as (m: Record<string, unknown>) => Promise<unknown>).call(t, msg);
+        };
+      },
+    });
     this.author = author;
     this.tag = tag ?? `sess${sessionSeq++}`;
   }
@@ -572,8 +613,9 @@ export class Session {
   /** Apply a batch atomically. `lean` is for an interactive viewer: no before / after body facts (`diff`), and the
    *  reference check is skipped for a batch that only appends features (nothing earlier can be re-pointed) or delivered
    *  later as `refWarningsLater`. */
-  async edit(ops: EditOp[], reason?: string, opts?: { lean?: boolean }): Promise<EditResult> {
+  async edit(ops: EditOp[], reason?: string, opts?: { lean?: boolean; refCheck?: 'auto' | 'none' }): Promise<EditResult> {
     const lean = opts?.lean === true;
+    const refCheckOpt = opts?.refCheck ?? 'auto';
     this.lastActive = Date.now();
     const problem = checkBatch(this.doc, ops);
     if (problem) return { ok: false, record: null, schemaError: problem };
@@ -626,25 +668,8 @@ export class Session {
 
     let refWarnings: RefWarning[] = [];
     let refWarningsLater: Promise<RefWarning[]> | undefined;
-    const refDiff = async (): Promise<RefWarning[]> => {
-      try {
-        const rd = await this.kernel.request({ type: 'refDiff', base: before, part: candidate });
-        if (!rd.trap && rd.ok && rd.result) return ((rd.result as { warnings?: RefWarning[] }).warnings ?? []) as RefWarning[];
-      } catch { /* no warnings */ }
-      return [];
-    };
-    // appending features re-points nothing that already existed
-    const appendOnly = ops.every((o) => o.op === 'add' && (o.index === undefined || o.index >= before.features.length));
-    if (!lean) refWarnings = await refDiff();
-    else if (!appendOnly) {
-      // the kernel is one thread: a reference check queued right behind an edit would delay the user's next action, so it
-      // waits until the session has been quiet for a moment (at most 10 s)
-      refWarningsLater = (async () => {
-        const t0 = Date.now();
-        while (Date.now() - this.lastActive < 800 && Date.now() - t0 < 10000) await new Promise((r) => setTimeout(r, 200));
-        return refDiff();
-      })();
-    }
+    const needLater = lean && refCheckOpt === 'auto' && refCheckNeeded(before, candidate, ops);
+    if (!lean && refCheckOpt !== 'none') refWarnings = await this.refDiffOf(before, candidate);
 
     this.doc = candidate;
     const record: EditRecord = { id: `edit-${this.editSeq++}`, author: this.author, time: Date.now(), ops: clone(ops), reason };
@@ -674,7 +699,39 @@ export class Session {
     }
     const had = new Set(before.features.map((f) => f.id));
     const added = candidate.features.map((f) => f.id).filter((id) => !had.has(id));
+    if (needLater) {
+      // Advisory and slow: it starts only after the session has been idle for refCheckIdleMs and is dropped (resolves to
+      // []) when anything else reached the kernel meanwhile; `refWarnings()` asks for it on demand.
+      const seen = this.activity;
+      refWarningsLater = (async () => {
+        while (Date.now() - this.lastActive < this.refCheckIdleMs) {
+          if (this.activity !== seen || this.closed) return [];
+          await new Promise((r) => setTimeout(r, 200));
+        }
+        if (this.activity !== seen || this.closed) return [];
+        return this.refDiffOf(before, candidate);
+      })();
+    }
     return { ok: true, record, added, diff: pre && post ? diffFacts(pre, post) : null, refWarnings, ...(refWarningsLater ? { refWarningsLater } : {}), intent, hints: hints.length ? hints : undefined };
+  }
+
+  private closed = false;
+
+  private async refDiffOf(base: PartDoc, part: PartDoc): Promise<RefWarning[]> {
+    try {
+      const rd = await this.kernel.request({ type: 'refDiff', base, part });
+      if (!rd.trap && rd.ok && rd.result) return ((rd.result as { warnings?: RefWarning[] }).warnings ?? []) as RefWarning[];
+    } catch { /* no warnings */ }
+    return [];
+  }
+
+  /** The reference check on demand: warnings for references that the last `n` applied batches re-pointed or lost (what a
+   *  non-lean `edit` returns as `refWarnings`). It rebuilds the part from the first changed feature on, so it takes as long
+   *  as that part of a regen; ask when the user is not waiting. */
+  async refWarnings(n = 1): Promise<RefWarning[]> {
+    const e = this.stack[this.stack.length - n];
+    if (!e || n < 1) return [];
+    return this.refDiffOf(e.before, this.doc);
   }
 
   /** Set the document's intent expectations (check grammar). Recorded like an
@@ -885,6 +942,7 @@ export class Session {
   }
 
   async close(): Promise<void> {
+    this.closed = true;
     await this.worker?.close();
   }
 }
