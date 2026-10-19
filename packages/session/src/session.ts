@@ -358,14 +358,16 @@ export class Session {
     this.tag = tag ?? `sess${sessionSeq++}`;
   }
 
-  /** The kernel for a new session: a local native service when `kernelUrl` is given or CK_KERNEL_URL (+ CK_KERNEL_TOKEN) is set and
-   *  no `wasmPath` is passed; otherwise the wasm kernel in a worker (CK_WASM or `wasmPath`). This is how the whole kernel test suite
-   *  runs against a service. A service that is unreachable or from another build is an error here, never a silent wasm. */
+  /** The kernel for a new session: a local native service when `kernelUrl` is given or CK_KERNEL_URL (+ CK_KERNEL_TOKEN) is set
+   *  (the environment wins over `wasmPath`, so suites that pass CK_WASM explicitly follow it too); otherwise the wasm kernel in a
+   *  worker (CK_WASM or `wasmPath`). This is how the whole kernel test suite runs against a service. A service that is unreachable
+   *  or from another build is an error here, never a silent wasm. */
   private static async openKernel(opts?: { wasmPath?: string; kernelUrl?: string; kernelToken?: string }): Promise<KernelTransport & { close(): Promise<void> | void }> {
-    const url = opts?.kernelUrl ?? (opts?.wasmPath ? undefined : process.env.CK_KERNEL_URL);
+    const env = typeof process !== 'undefined' ? process.env : ({} as Record<string, string | undefined>);
+    const url = opts?.kernelUrl ?? env.CK_KERNEL_URL;
     if (url) {
       const { NativeKernel } = await import('../../kernel-client/src/native.js');
-      return NativeKernel.connect({ url, token: opts?.kernelToken ?? process.env.CK_KERNEL_TOKEN ?? '' });
+      return NativeKernel.connect({ url, token: opts?.kernelToken ?? env.CK_KERNEL_TOKEN ?? '' });
     }
     const { createWorkerKernel } = await import('../../kernel-client/src/worker.js');
     return createWorkerKernel(opts?.wasmPath);
