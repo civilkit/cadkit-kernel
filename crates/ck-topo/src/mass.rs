@@ -470,7 +470,13 @@ fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand
         _ => vec![],
     };
     // ∫ from u = a to u = c at fixed v, cut at the interior knots
-    let seg_integral = |a0: f64, u: f64, v: f64| -> [f64; K] {
+    // (the iso-v evaluator of the last v asked for: the table build and `h_diff` ask for many segments at the
+    // same v; and the u basis of a cut segment, which does not depend on v: a table node of every v span
+    // integrates the same knot spans at the same Gauss points. Both give the very numbers recomputing would.)
+    type BasisPts = std::rc::Rc<Vec<[[f64; 12]; 3]>>;
+    let vline_last: std::cell::RefCell<Option<(u64, Option<ck_geom::nurbs::bsurf::VLine<'_>>)>> = Default::default();
+    let basis_memo: std::cell::RefCell<std::collections::HashMap<(u64, u64), BasisPts>> = Default::default();
+    let seg_integral = |a0: f64, u: f64, v: f64, memo: bool| -> [f64; K] {
         let mut g = [0.0; K];
         if a0 == u {
             return g;
@@ -496,7 +502,17 @@ fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand
         // span, where two GL8 panels are exact for the area-element
         // polynomials and ~1e-13 for |Su x Sv|
         let vl = match surf {
-            Surface::BSpline(bs) => bs.vline(v),
+            Surface::BSpline(bs) => {
+                let mut last = vline_last.borrow_mut();
+                match &*last {
+                    Some((k, l)) if *k == v.to_bits() => *l,
+                    _ => {
+                        let l = bs.vline(v);
+                        *last = Some((v.to_bits(), l));
+                        l
+                    }
+                }
+            }
             _ => None,
         };
         let sl = surf.screw_vline(v);
@@ -513,13 +529,43 @@ fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand
                 Some(r) if fast.is_some() => r,
                 _ => &GL,
             };
+            let bas: Option<BasisPts> = match (&fast, memo) {
+                (Some(sg), true) => {
+                    let mut m = basis_memo.borrow_mut();
+                    if m.len() >= 8192 {
+                        m.clear();
+                    }
+                    Some(
+                        m.entry((a.to_bits(), c.to_bits()))
+                            .or_insert_with(|| {
+                                let mut v = Vec::with_capacity(n * rule.len());
+                                for i in 0..n {
+                                    let mid = a + h * (i as f64 + 0.5);
+                                    for &(x, _) in rule.iter() {
+                                        v.push(sg.basis(mid + 0.5 * h * x));
+                                    }
+                                }
+                                std::rc::Rc::new(v)
+                            })
+                            .clone(),
+                    )
+                }
+                _ => None,
+            };
+            let mut at = 0usize;
             for i in 0..n {
                 let m = a + h * (i as f64 + 0.5);
                 for &(x, w) in rule.iter() {
                     let s = m + 0.5 * h * x;
                     let (pt, nrm) = match &fast {
                         Some(sg) => {
-                            let (p, du, dv) = sg.eval1(s);
+                            let (p, du, dv) = match &bas {
+                                Some(b) => {
+                                    at += 1;
+                                    sg.eval1_basis(&b[at - 1])
+                                }
+                                None => sg.eval1(s),
+                            };
                             (p, du.cross(dv))
                         }
                         None if sl.is_some() => {
@@ -589,7 +635,7 @@ fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand
                     .map(|&v| {
                         let mut c = vec![[0.0; K]];
                         for w in ks.windows(2) {
-                            let d = seg_integral(w[0], w[1], v);
+                            let d = seg_integral(w[0], w[1], v, true);
                             let mut g = *c.last().unwrap();
                             for k in 0..K {
                                 g[k] += d[k];
@@ -684,7 +730,7 @@ fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand
                 g[i] += wj * (cum[j][k][i] - cum[j][k0][i]);
             }
         }
-        let (part, part0) = (seg_integral(ks[k], u, v), seg_integral(ks[k0], ustar, v));
+        let (part, part0) = (seg_integral(ks[k], u, v, false), seg_integral(ks[k0], ustar, v, true));
         for i in 0..K {
             g[i] += part[i] - part0[i];
         }
@@ -693,7 +739,7 @@ fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand
     let period_tab: Option<(Vec<f64>, Vec<[f64; K]>)> = match (surf, surf.periods().0) {
         (Surface::Cylinder { .. } | Surface::Cone { .. }, Some(per)) if umax - umin > 1.5 * per && vmax > vmin => {
             let vn: Vec<f64> = (0..6).map(|j| vmin + (vmax - vmin) * j as f64 / 5.0).collect();
-            let tab = vn.iter().map(|&v| seg_integral(ustar, ustar + per, v)).collect();
+            let tab = vn.iter().map(|&v| seg_integral(ustar, ustar + per, v, false)).collect();
             Some((vn, tab))
         }
         _ => None,
@@ -722,7 +768,7 @@ fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand
             if uc == u {
                 return gc;
             }
-            let d = seg_integral(uc, u, v);
+            let d = seg_integral(uc, u, v, false);
             let mut g = gc;
             for k in 0..K {
                 g[k] += d[k];
@@ -748,14 +794,14 @@ fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand
                         full[i] += w * tab[j][i];
                     }
                 }
-                let mut g = seg_integral(ustar, u - k * per, v);
+                let mut g = seg_integral(ustar, u - k * per, v, false);
                 for i in 0..K {
                     g[i] += k * full[i];
                 }
                 return g;
             }
         }
-        seg_integral(ustar, u, v)
+        seg_integral(ustar, u, v, false)
     };
     let mut add = |uv: Vec2, dvdt: f64, wt: f64| {
         if dvdt == 0.0 {

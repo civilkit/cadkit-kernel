@@ -1280,6 +1280,7 @@ impl BSplineSurface {
 /// Homogeneous evaluation: returns (Euclidean point, weight) — used to
 /// build exact iso curves of rational surfaces.
 /// See [`BSplineSurface::vline`].
+#[derive(Clone, Copy)]
 pub struct VLine<'a> {
     s: &'a BSplineSurface,
     sv: usize,
@@ -1326,9 +1327,20 @@ impl VSegment<'_> {
     /// (point, S_u, S_v) at `u` (within the segment's span).
     #[inline]
     pub fn eval1(&self, u: f64) -> (Vec3, Vec3, Vec3) {
-        let s = self.s;
-        let p = s.deg_u;
-        let b = basis::ders_basis_funs2(self.su, u, p, 1, &s.knots_u);
+        self.eval1_basis(&self.basis(u))
+    }
+
+    /// The u basis functions and first derivatives `eval1` uses at `u` (the same for every segment of
+    /// this knot span, whatever the v line: a caller evaluating many v lines at the same `u` takes it once).
+    #[inline]
+    pub fn basis(&self, u: f64) -> [[f64; 12]; 3] {
+        basis::ders_basis_funs2(self.su, u, self.s.deg_u, 1, &self.s.knots_u)
+    }
+
+    /// `eval1` with the u basis of [`basis`](Self::basis) given.
+    #[inline]
+    pub fn eval1_basis(&self, b: &[[f64; 12]; 3]) -> (Vec3, Vec3, Vec3) {
+        let p = self.s.deg_u;
         let (mut pt, mut du, mut dv) = (Vec3::ZERO, Vec3::ZERO, Vec3::ZERO);
         for r in 0..=p {
             pt = pt + self.c[r] * b[0][r];
