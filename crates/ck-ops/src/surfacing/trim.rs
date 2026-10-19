@@ -1062,7 +1062,8 @@ fn discarded(out: &Body, c: CoedgeId, opposing: &[FaceId], snaps: &HashMap<FaceI
             let s = &out.face(of).surface;
             let (_u, _v, cp) = s.closest_point(p);
             let d = cp.dist(p);
-            let cap = 0.14 * (snaps[&of].hi - snaps[&of].lo).len().max(1.0);
+            let Some(sn) = snaps.get(&of) else { return false };
+            let cap = 0.14 * (sn.hi - sn.lo).len().max(1.0);
             d <= cap && snap_contains(out, snaps, of, p)
         })
     } else {
@@ -1098,7 +1099,7 @@ struct FaceSnap {
 }
 
 fn snap_contains(b: &Body, snaps: &HashMap<FaceId, FaceSnap>, f: FaceId, p: Vec3) -> bool {
-    match &snaps[&f].poly {
+    match snaps.get(&f).and_then(|s| s.poly.as_ref()) {
         Some(poly) => face_contains_poly(b, f, poly, p),
         None => false,
     }

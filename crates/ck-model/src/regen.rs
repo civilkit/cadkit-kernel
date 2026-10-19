@@ -49,6 +49,11 @@ pub struct RegenOpts {
     /// coordinates with all constraints and use the solved coordinates (reply
     /// and downstream profiles). Implies `sketch_status`. Off by default.
     pub solve_sketches: bool,
+    /// `opts.featureTimeMs`: wall-clock budget of one feature in ms (`None`: the default,
+    /// `ck_core::budget::DEFAULT_FEATURE_MS`; `<= 0`: unlimited). Only enforced where the host installed a clock.
+    pub feature_time_ms: Option<f64>,
+    /// `opts.regenTimeMs`: wall-clock budget of the whole regen in ms (`None` or `<= 0`: unlimited).
+    pub regen_time_ms: Option<f64>,
 }
 
 impl RegenOpts {
@@ -57,7 +62,15 @@ impl RegenOpts {
         let up_to = j.and_then(|o| o.get("upTo")).and_then(|v| v.as_f64()).filter(|v| *v >= 0.0).map(|v| v as u32);
         let sketch_status = j.and_then(|o| o.get("sketchStatus")).map_or(false, |v| matches!(v, Json::Bool(true)));
         let solve_sketches = j.and_then(|o| o.get("solveSketches")).map_or(false, |v| matches!(v, Json::Bool(true)));
-        RegenOpts { up_to, ignore_rollback: false, sketch_status: sketch_status || solve_sketches, solve_sketches }
+        let ms = |k: &str| j.and_then(|o| o.get(k)).and_then(|v| v.as_f64()).filter(|v| v.is_finite());
+        RegenOpts {
+            up_to,
+            ignore_rollback: false,
+            sketch_status: sketch_status || solve_sketches,
+            solve_sketches,
+            feature_time_ms: ms("featureTimeMs"),
+            regen_time_ms: ms("regenTimeMs"),
+        }
     }
 }
 
@@ -99,6 +112,10 @@ pub mod codes {
     pub const NO_CLOSED_PROFILE: &str = "noClosedProfile";
     pub const NOTHING_TO_CUT: &str = "nothingToCut";
     pub const INVALID_VALUE: &str = "invalidValue";
+    /// One feature used up `opts.featureTimeMs`.
+    pub const FEATURE_BUDGET: &str = "featureBudgetExceeded";
+    /// The whole regen used up `opts.regenTimeMs`; later features are not run.
+    pub const REGEN_BUDGET: &str = "regenBudgetExceeded";
 }
 
 /// Feature types the kernel's regen knows (anything else -> `unknownFeature`).
@@ -204,6 +221,17 @@ impl FeatureError {
                     "the intersection of these faces could not be closed into a valid solid (touching tangentially, a rim lying on the other surface, or a sliver thinner than ~1e-3); move the tool by a small amount (0.01), unite the bodies that touch each other first, make the near-coincident faces exactly coincident, or give the feature a fuzzy `tolerance` (1e-5 to 1e-3 mm) / `autoFuzzy: true` so nearly coincident faces are treated as coincident".to_string(),
                 ),
             );
+        }
+        // a boolean that stopped retrying after a long time: `booleanBudgetExceeded;elapsedMs=<n>;budgetMs=<n>`
+        if let Some((c, d)) = code.split_once(";elapsedMs=") {
+            let (elapsed, budget) = d.split_once(";budgetMs=").unwrap_or((d, "0"));
+            return FeatureError { code: c.to_string(), params: Vec::new() }
+                .with("budgetMs", Json::Num(budget.parse::<f64>().unwrap_or(0.0)))
+                .with("elapsedMs", Json::Num(elapsed.parse::<f64>().unwrap_or(0.0)))
+                .with(
+                    "hint",
+                    Json::Str("the boolean did not assemble and the retries at looser tolerances were not started because it had already run long; the operands probably touch tangentially or nearly coincide over a large area. Move the tool by a small amount (0.01), unite the bodies that touch first, make near-coincident faces exactly coincident, or give the feature a fuzzy `tolerance`".to_string()),
+                );
         }
         FeatureError { code: code.to_string(), params: Vec::new() }
     }
@@ -706,6 +734,34 @@ fn sketch3d_echo(raw: &Json) -> Json {
     o
 }
 
+/// A feature that failed while a time limit was running out reports the limit, whatever its own code was (the
+/// loop that noticed the limit stopped early, so its own failure is a consequence). Adds the numbers and a hint.
+fn budget_error(e: FeatureError) -> FeatureError {
+    use ck_core::budget::{report, Which};
+    let Some((which, limit, elapsed)) = report() else {
+        return e;
+    };
+    let code = match which {
+        Which::Regen => codes::REGEN_BUDGET,
+        Which::Feature => {
+            if e.code.ends_with("BudgetExceeded") {
+                e.code.as_str()
+            } else {
+                codes::FEATURE_BUDGET
+            }
+        }
+    };
+    let mut out = FeatureError::new(code);
+    if e.code != code && !e.code.ends_with("BudgetExceeded") {
+        out = out.with("cause", Json::Str(e.code.clone()));
+    }
+    let hint = match which {
+        Which::Regen => "the whole document used up its time budget (opts.regenTimeMs); this feature was not run. Simplify the model, reduce pattern counts, or raise regenTimeMs",
+        Which::Feature => "this feature used up its time budget (opts.featureTimeMs) and was stopped; its result is not applied. Reduce the amount of geometry it works on (pattern count, number of edges or faces), split it into steps, or raise featureTimeMs",
+    };
+    out.with("budgetMs", Json::Num(limit.round())).with("elapsedMs", Json::Num(elapsed.round())).with("hint", Json::Str(hint.to_string()))
+}
+
 fn run_feature(state: &mut RegenState, exec: &mut dyn FeatureExec, f: &Feature) -> Result<(), FeatureError> {
     if !KNOWN_TYPES.contains(&f.type_name.as_str()) {
         return Err(FeatureError::new(codes::UNKNOWN_FEATURE).with("type", Json::Str(f.type_name.clone())));
@@ -772,6 +828,12 @@ pub fn regen_from(part: &Part, opts: &RegenOpts, exec: &mut dyn FeatureExec, res
     let n = run_len(part, opts);
     let run: Vec<&Feature> = part.features[..n].iter().filter(|f| !f.suppressed).collect();
     exec.prepare(&state, &run);
+    let _regen_budget = ck_core::budget::Scope::start(ck_core::budget::Which::Regen, opts.regen_time_ms);
+    let feature_ms = match opts.feature_time_ms {
+        None => Some(ck_core::budget::DEFAULT_FEATURE_MS),
+        Some(ms) if ms > 0.0 => Some(ms),
+        Some(_) => None,
+    };
     for (i, f) in part.features[..n].iter().enumerate().skip(start) {
         if f.suppressed {
             if let Some(c) = ck.as_deref_mut() {
@@ -781,7 +843,12 @@ pub fn regen_from(part: &Part, opts: &RegenOpts, exec: &mut dyn FeatureExec, res
         }
         let label = format!("{} {}", f.id, f.type_name);
         let span = exec.tracer().map(|t| t.begin(&label));
-        let r = run_feature(&mut state, exec, f);
+        let r = {
+            let _feature_budget = ck_core::budget::Scope::start(ck_core::budget::Which::Feature, feature_ms);
+            // the regen budget ran out in an earlier feature: do not start this one
+            let r = if ck_core::budget::expired() { Err(FeatureError::new(codes::REGEN_BUDGET)) } else { run_feature(&mut state, exec, f) };
+            r.map_err(budget_error)
+        };
         let faces = exec.face_count();
         if let (Some(id), Some(t)) = (span, exec.tracer()) {
             match &r {

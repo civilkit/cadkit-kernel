@@ -45,6 +45,10 @@ pub struct BoolOut {
 pub fn boolean(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> {
     FAIL_DIAG.with(|d| d.borrow_mut().take());
     boolean_inner(a, b, op, tol).map_err(|e| {
+        // a failure after the time budget ran out is the budget's, not the geometry's
+        if ck_core::budget::expired() {
+            return BUDGET_EXCEEDED.to_string();
+        }
         if e != "booleanFailed" {
             return e;
         }
@@ -114,12 +118,22 @@ fn near_coincident(a: &Body, b: &Body) -> Option<(String, String, f64)> {
 /// sliver-tolerant machinery of [`super::robust`] switched on. Results of operations that already succeed are
 /// therefore untouched (same bits, same speed); the robust mode only ever turns a `booleanFailed` into a result.
 fn boolean_inner(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> {
+    let started = ck_core::budget::mark();
     let r = boolean_plain(a, b, op, tol);
     if !matches!(&r, Err(e) if e == "booleanFailed") {
         return r;
     }
     let _guard = super::RobustGuard::new();
     for t in [tol * 10.0, tol, tol * 100.0] {
+        if ck_core::budget::expired() {
+            return Err(BUDGET_EXCEEDED.into());
+        }
+        // A boolean that has already ground on for ROBUST_RETRY_MS without assembling is not going to be rescued
+        // by three more full attempts (a failing fuse of two large bodies took minutes to report): say so.
+        let spent = ck_core::budget::since(started);
+        if spent > ROBUST_RETRY_MS {
+            return Err(format!("{BUDGET_EXCEEDED};elapsedMs={spent:.0};budgetMs={ROBUST_RETRY_MS:.0}"));
+        }
         super::bool_dbg!("robust retry at tolerance {:e}", t);
         if let Ok(out) = boolean_at(a, b, op, t) {
             return Ok(if out.no_effect { out } else { sanity(a, b, op, out) });
@@ -138,7 +152,7 @@ fn boolean_plain(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String
     let free_form = |b: &Body| b.face_ids().any(|f| matches!(b.face(f).surface, ck_geom::surface::Surface::BSpline(_) | ck_geom::surface::Surface::Offset { .. }));
     if tol <= 1.5e-6 && (free_form(a) || free_form(b)) {
         let r = boolean_ladder(a, b, op, tol * 10.0);
-        if r.is_ok() {
+        if r.is_ok() || ck_core::budget::expired() {
             return r;
         }
         return boolean_ladder(a, b, op, tol);
@@ -260,7 +274,16 @@ fn unpole(a: Body, other: &Body) -> Body {
     a
 }
 
+/// Wall-clock ms after which the robust retries of a failed boolean are not started (only measurable with a host clock).
+const ROBUST_RETRY_MS: f64 = 12_000.0;
+
+/// Error code of a boolean stopped by the time budget (`ck_core::budget`).
+pub const BUDGET_EXCEEDED: &str = "booleanBudgetExceeded";
+
 fn boolean_at(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> {
+    if ck_core::budget::expired() {
+        return Err(BUDGET_EXCEEDED.into());
+    }
     if b.num_faces() == 0 {
         return Ok(BoolOut { body: a.clone(), no_effect: op != Op::Union, mismatch: None });
     }
@@ -281,6 +304,9 @@ fn boolean_at(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> {
     let (a1, b1) = (unpole(a1.clone(), &b1), unpole(b1.clone(), &a1));
     let (a, b) = (&a1, &b1);
     let arr = imprint(a, b, tol);
+    if ck_core::budget::expired() {
+        return Err(BUDGET_EXCEEDED.into());
+    }
     if arr.interacting_pairs == 0 {
         // no face interaction: containment decides
         let pa = first_point(a);
@@ -294,6 +320,9 @@ fn boolean_at(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> {
         }
     }
     let faces = select(&arr, [a, b], op)?;
+    if ck_core::budget::expired() {
+        return Err(BUDGET_EXCEEDED.into());
+    }
     // nothing removed from A and nothing added from B → unchanged
     let a_faces = a.num_faces();
     // (a face split by an imprint and rejoined is listed with the merged

@@ -7,7 +7,7 @@
 //! `validate` request) tessellates.
 use crate::Issue;
 use ck_topo::body::Body;
-use std::collections::HashMap;
+use ck_core::fxhash::FxHashMap;
 
 /// Number of mesh edges used by exactly one triangle, with the wire faces they border (ascending, deduplicated).
 /// Vertices closer than `q` are the same vertex.
@@ -95,13 +95,25 @@ fn uncovered_edges(positions: &[f32], tri_face: &[i32], edges: &[(i32, [f64; 3],
     }
     let cs = (ext / 48.0).max(crack * 2.0);
     let cell = |p: [f64; 3]| [((p[0] - lo[0]) / cs).floor() as i64, ((p[1] - lo[1]) / cs).floor() as i64, ((p[2] - lo[2]) / cs).floor() as i64];
-    let mut grid: HashMap<[i64; 3], Vec<u32>> = HashMap::new();
+    let mut grid: FxHashMap<[i64; 3], Vec<u32>> = FxHashMap::default();
+    // each triangle's box grown by `crack`: a point farther than that from the box is farther than `crack` from the triangle
+    let mut boxes: Vec<([f64; 3], [f64; 3])> = Vec::with_capacity(nt);
+    let mut big: Vec<u32> = vec![];
+    const BIG_SPAN: i64 = 256;
     for t in 0..nt {
         let (a, b, c) = (pt(t, 0), pt(t, 1), pt(t, 2));
         let mn = [a[0].min(b[0]).min(c[0]) - crack, a[1].min(b[1]).min(c[1]) - crack, a[2].min(b[2]).min(c[2]) - crack];
         let mx = [a[0].max(b[0]).max(c[0]) + crack, a[1].max(b[1]).max(c[1]) + crack, a[2].max(b[2]).max(c[2]) + crack];
+        boxes.push((mn, mx));
         let (c0, c1) = (cell(mn), cell(mx));
-        if (c1[0] - c0[0] + 1) * (c1[1] - c0[1] + 1) * (c1[2] - c0[2] + 1) > 200_000 {
+        let span = (c1[0] - c0[0] + 1) * (c1[1] - c0[1] + 1) * (c1[2] - c0[2] + 1);
+        if span > 200_000 {
+            continue;
+        }
+        // a long thin triangle (a sliver spanning the part) would be listed in thousands of cells: keep those apart and test
+        // them for every query instead (same answer, linear in the few such triangles)
+        if span > BIG_SPAN {
+            big.push(t as u32);
             continue;
         }
         for x in c0[0]..=c1[0] {
@@ -118,11 +130,12 @@ fn uncovered_edges(positions: &[f32], tri_face: &[i32], edges: &[(i32, [f64; 3],
             let covered = (0..=8).all(|k| {
                 let u = k as f64 / 8.0;
                 let p = [a[0] + u * (b[0] - a[0]), a[1] + u * (b[1] - a[1]), a[2] + u * (b[2] - a[2])];
-                grid.get(&cell(p)).map_or(false, |v| {
-                    v.iter().any(|&t| {
-                        let t = t as usize;
-                        tri_face.get(t).copied().unwrap_or(-1) != *face && point_tri_dist(p, pt(t, 0), pt(t, 1), pt(t, 2)) <= crack
-                    })
+                grid.get(&cell(p)).map_or(&[][..], |v| &v[..]).iter().chain(big.iter()).any(|&t| {
+                    let t = t as usize;
+                    let (mn, mx) = &boxes[t];
+                    tri_face.get(t).copied().unwrap_or(-1) != *face
+                        && (0..3).all(|d| p[d] >= mn[d] && p[d] <= mx[d])
+                        && point_tri_dist(p, pt(t, 0), pt(t, 1), pt(t, 2)) <= crack
                 })
             });
             !covered
@@ -137,7 +150,7 @@ pub fn open_mesh_edges_tol(positions: &[f32], tri_face: &[i32], q: f64, crack: f
     let n = positions.len() / 3;
     let cell = |p: [f64; 3]| [(p[0] / q).floor() as i64, (p[1] / q).floor() as i64, (p[2] / q).floor() as i64];
     let mut reps: Vec<[f64; 3]> = vec![];
-    let mut grid: HashMap<[i64; 3], Vec<u32>> = HashMap::new();
+    let mut grid: FxHashMap<[i64; 3], Vec<u32>> = FxHashMap::default();
     let mut ids: Vec<u32> = Vec::with_capacity(n);
     for i in 0..n {
         let p = [positions[3 * i] as f64, positions[3 * i + 1] as f64, positions[3 * i + 2] as f64];
@@ -166,7 +179,7 @@ pub fn open_mesh_edges_tol(positions: &[f32], tri_face: &[i32], q: f64, crack: f
         });
         ids.push(id);
     }
-    let mut uses: HashMap<(u32, u32), (u32, i32)> = HashMap::new();
+    let mut uses: FxHashMap<(u32, u32), (u32, i32)> = FxHashMap::default();
     for t in 0..n / 3 {
         let v = [ids[3 * t], ids[3 * t + 1], ids[3 * t + 2]];
         for e in 0..3 {
@@ -193,7 +206,7 @@ pub fn open_mesh_edges_tol(positions: &[f32], tri_face: &[i32], q: f64, crack: f
         // grid of the open edges (every cell an edge passes through), then test each end against the other faces' edges
         let cs = (crack * 4.0).max(1e-6);
         let cell = |p: [f64; 3]| [(p[0] / cs).floor() as i64, (p[1] / cs).floor() as i64, (p[2] / cs).floor() as i64];
-        let mut grid: HashMap<[i64; 3], Vec<u32>> = HashMap::new();
+        let mut grid: FxHashMap<[i64; 3], Vec<u32>> = FxHashMap::default();
         for (i, (_, a, b)) in open_edges.iter().enumerate() {
             let len = ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2)).sqrt();
             let n = ((len / (cs * 0.5)).ceil() as usize).clamp(1, 4096);

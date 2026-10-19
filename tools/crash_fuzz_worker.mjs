@@ -2,9 +2,9 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import { readFileSync } from 'node:fs';
 import { Kernel } from './kernel.mjs';
-const { wasm, features } = workerData;
+const { wasm, features, budgetMs } = workerData;
 const mod = new WebAssembly.Module(readFileSync(wasm));
-const k = new Kernel(mod);
+const k = new Kernel(mod, { now: () => performance.now(), unixMs: () => Date.now() }); // a real clock: the kernel time budgets need one
 const ask = (id, msg) => {
   const r = k.request(JSON.stringify({ id, msg }));
   if (r.trap) return { trap: r.trap };
@@ -13,7 +13,7 @@ const ask = (id, msg) => {
 const part = { format: 'ck-part', version: 1, features };
 const last = features[features.length - 1]?.type ?? 'none';
 try {
-  const r = ask(1, { type: 'regen', tag: 'main', part, opts: { solveSketches: true } });
+  const r = ask(1, { type: 'regen', tag: 'main', part, opts: { solveSketches: true, ...(budgetMs ? { featureTimeMs: budgetMs, regenTimeMs: budgetMs * 2 } : {}) } });
   if (r.trap) parentPort.postMessage({ cls: 'trap', trap: r.trap, last });
   else {
     const m = ask(2, { type: 'massProps', tag: 'main', bodies: true });

@@ -465,7 +465,13 @@ pub fn thicken(sheet: &Body, feature: &str, thickness: f64, side: Side, tol: f64
             if std::env::var("CK_THICKEN_DEBUG").is_ok() {
                 eprintln!("DBG open edge {} coedges {:?}", e.idx(), out.edge_coedges(e).iter().map(|&c| (c.idx(), out.coedge_face(c).idx())).collect::<Vec<_>>());
             }
-            return Err(ThickenError::detail("thickenFailed", "the thickened body is not closed"));
+            return Err(ThickenError::detail(
+                "thickenFailed",
+                format!(
+                    "the thickened body is not closed: an edge is used by {} face(s) instead of 2 (offset boundary vertices did not weld within tolerance {tol:e}); hint: this happens for sheets that are extremely large or small, or thicknesses extremely small, relative to the model tolerance: rescale the sheet or use a thickness of at least a few tolerances",
+                    out.edge_coedges(e).len()
+                ),
+            ));
         }
     }
     let vol = ck_topo::mass::signed_volume(&out, &out.face_ids().collect::<Vec<_>>());
@@ -473,7 +479,10 @@ pub fn thicken(sheet: &Body, feature: &str, thickness: f64, side: Side, tol: f64
         eprintln!("DBG vol={vol} faces={}", out.num_faces());
     }
     if (!vol.is_finite() || vol <= 0.0) && std::env::var("CK_THICKEN_DEBUG").is_err() {
-        return Err(ThickenError::detail("thickenFailed", "the thickened body is not closed"));
+        return Err(ThickenError::detail(
+            "thickenFailed",
+            format!("the thickened body has no positive volume ({vol:e}); hint: reduce the thickness, or flip `side`, so the offset does not pass through the sheet's own geometry"),
+        ));
     }
     Ok(out)
 }
@@ -548,7 +557,30 @@ fn build_layer(
                     _ => {}
                 }
             }
-            extend_open_edge(sheet, f, e, normals[faces.iter().position(|&x| x == f).unwrap()], d, faces, normals, &shared_miter, &mut images, tol)?;
+            let Some(fi) = faces.iter().position(|&x| x == f) else {
+                return Err(ThickenError::code("thickenFailed"));
+            };
+            extend_open_edge(sheet, f, e, normals[fi], d, faces, normals, &shared_miter, &mut images, tol)?;
+        }
+        // a cylinder's seam (two coedges, one face) moves radially with the surface
+        for e in sheet.edge_ids().collect::<Vec<_>>() {
+            if !sheet.edge(e).alive || images.contains_key(&e) || !sheet.is_seam(e) {
+                continue;
+            }
+            let Some(&f) = sheet.edge_faces(e).first() else { continue };
+            let Surface::Cylinder { frame, .. } = &sheet.face(f).surface else { continue };
+            let se = sheet.edge(e);
+            let delta = surface_offset(sheet, f, d);
+            let radial = |p: Vec3| {
+                let v = p - closest_axis_point(frame, p);
+                if v.len() < 1e-12 { v } else { v.normalize().scale(delta) }
+            };
+            let (p0, p1) = (se.curve.eval(se.t0), se.curve.eval(se.t1));
+            let (a, b) = (p0 + radial(p0), p1 + radial(p1));
+            if (b - a).len() < 1e-12 {
+                return Err(ThickenError::detail("offsetTooLarge", "the offset collapses the cylinder's seam edge"));
+            }
+            images.insert(e, (Curve::line_through(a, b), 0.0, (b - a).len()));
         }
     }
 
@@ -557,7 +589,18 @@ fn build_layer(
         if !sheet.edge(e).alive {
             continue;
         }
-        let Some(&(ref curve, t0, t1)) = images.get(&e) else { continue };
+        let Some(&(ref curve, t0, t1)) = images.get(&e) else {
+            // every live sheet edge must have an image (shared miter, rim, or cylinder seam)
+            return Err(ThickenError::detail(
+                "thickenFailed",
+                format!(
+                    "a sheet edge of {} has no offset image ({} face(s), {} coedge(s)): the sheet has a non-manifold or dangling edge; thicken needs a manifold open sheet",
+                    sheet.edge_faces(e).first().map(|&f| sheet.face_id_str(f)).unwrap_or_else(|| "the sheet".into()),
+                    sheet.edge_faces(e).len(),
+                    sheet.edge_coedges(e).len()
+                ),
+            ));
+        };
         let v0 = out.add_vertex(curve.eval(t0));
         let v1 = out.add_vertex(curve.eval(t1));
         let ne = out.add_edge(curve.clone(), t0, t1, v0, v1);
@@ -602,8 +645,10 @@ fn build_layer(
             && loops.iter().all(|&l| {
                 let cs: Vec<_> = sheet.lp(l).coedges.iter().filter(|&&c| sheet.coedge(c).alive).collect();
                 cs.len() == 1 && {
-                    let e = &out.edges[ls[li].edges[&sheet.coedge(*cs[0]).edge].idx()];
-                    e.curve.eval(e.t0).dist(e.curve.eval(e.t1)) < 1e-9
+                    ls[li].edges.get(&sheet.coedge(*cs[0]).edge).is_some_and(|ne| {
+                        let e = &out.edges[ne.idx()];
+                        e.curve.eval(e.t0).dist(e.curve.eval(e.t1)) < 1e-9
+                    })
                 }
             });
         let mut nf: Option<FaceId> = None;
@@ -615,10 +660,10 @@ fn build_layer(
             let ring_edges: Vec<EdgeId> = loops
                 .iter()
                 .map(|&l| {
-                    let c = sheet.lp(l).coedges.iter().find(|&&c| sheet.coedge(c).alive).unwrap();
-                    ls[li].edges[&sheet.coedge(*c).edge]
+                    let c = sheet.lp(l).coedges.iter().find(|&&c| sheet.coedge(c).alive).ok_or_else(|| ThickenError::code("thickenFailed"))?;
+                    layer_edge(ls, li, sheet, sheet.coedge(*c).edge)
                 })
-                .collect();
+                .collect::<Result<_, _>>()?;
             let tau = std::f64::consts::TAU;
             let vs: Vec<f64> = ring_edges
                 .iter()
@@ -652,7 +697,10 @@ fn build_layer(
                 nf = Some(out.add_face(shell, surface.clone(), sheet.face(f).sense != flipped, name));
             }
             let nloop = out.add_loop(nf.unwrap());
-            if ls[li].original {
+            // a loop holding a cylinder seam keeps the sheet's own order and directions: the seam is walked twice
+            // and the closed rings have no end vertices to chain by, so head-to-tail chaining cannot orient them
+            let has_seam = sheet.lp(lid).coedges.iter().any(|&c| sheet.coedge(c).alive && sheet.is_seam(sheet.coedge(c).edge));
+            if ls[li].original || has_seam {
                 // a flipped layer runs the loop backwards: reverse the coedge
                 // order as well as each direction so the loop still chains
                 let cl = &sheet.lp(lid).coedges;
@@ -662,7 +710,7 @@ fn build_layer(
                     if !co.alive {
                         continue;
                     }
-                    let ne = ls[li].edges[&co.edge];
+                    let ne = layer_edge(ls, li, sheet, co.edge)?;
                     out.add_coedge(nloop, ne, co.rev != flipped, co.pcurve.clone());
                 }
             } else {
@@ -675,14 +723,16 @@ fn build_layer(
                     .iter()
                     .filter(|&&c| sheet.coedge(c).alive)
                     .all(|&c| {
-                        let e = &out.edges[ls[li].edges[&sheet.coedge(c).edge].idx()];
-                        e.curve.eval(e.t0).dist(e.curve.eval(e.t1)) < 1e-9
+                        ls[li].edges.get(&sheet.coedge(c).edge).is_some_and(|ne| {
+                            let e = &out.edges[ne.idx()];
+                            e.curve.eval(e.t0).dist(e.curve.eval(e.t1)) < 1e-9
+                        })
                     });
                 if all_closed {
                     let loop_i = out.face(nf.unwrap()).loops.len() - 1;
                     for &c in &sheet.lp(lid).coedges {
                         if sheet.coedge(c).alive {
-                            out.add_coedge(nloop, ls[li].edges[&sheet.coedge(c).edge], (loop_i % 2 == 1) != flipped, None);
+                            out.add_coedge(nloop, layer_edge(ls, li, sheet, sheet.coedge(c).edge)?, (loop_i % 2 == 1) != flipped, None);
                         }
                     }
                     continue;
@@ -693,8 +743,11 @@ fn build_layer(
                     .coedges
                     .iter()
                     .filter(|&&c| sheet.coedge(c).alive)
-                    .map(|&c| ls[li].edges[&sheet.coedge(c).edge])
-                    .collect();
+                    .map(|&c| layer_edge(ls, li, sheet, sheet.coedge(c).edge))
+                    .collect::<Result<_, _>>()?;
+                if remaining.is_empty() {
+                    continue;
+                }
                 let first = remaining.swap_remove(0);
                 used.push((first, false));
                 // the first edge may need to run reversed for the chain
@@ -703,8 +756,14 @@ fn build_layer(
                 }
                 while !remaining.is_empty() {
                     let tail = edge_end(out, *used.last().unwrap());
-                    let Some(nxt) = remaining.iter().position(|&x| out.edge(x).v0 == tail || out.edge(x).v1 == tail) else {
-                        return Err(ThickenError::code("thickenFailed"));
+                    // a seam is walked twice: after walking it, do not walk straight back along it
+                    let last = used.last().map(|u| u.0);
+                    let touches = |x: EdgeId| out.edge(x).v0 == tail || out.edge(x).v1 == tail;
+                    let Some(nxt) = remaining.iter().position(|&x| touches(x) && Some(x) != last).or_else(|| remaining.iter().position(|&x| touches(x))) else {
+                        return Err(ThickenError::detail(
+                            "thickenFailed",
+                            "the offset boundary of a sheet face does not chain into a closed loop; the sheet's boundary edges are not connected end to end (hint: thicken needs a face whose boundary is a single closed loop per hole)",
+                        ));
                     };
                     let ne = remaining.swap_remove(nxt);
                     let fwd = out.edge(ne).v0 == tail;
@@ -718,6 +777,14 @@ fn build_layer(
     }
 
     Ok(())
+}
+
+/// The layer's image of a sheet edge, or a structured error when the layer has none.
+fn layer_edge(ls: &[Layer], li: usize, sheet: &Body, e: EdgeId) -> Result<EdgeId, ThickenError> {
+    ls[li].edges.get(&e).copied().ok_or_else(|| {
+        let face = sheet.edge_faces(e).first().map(|&f| sheet.face_id_str(f)).unwrap_or_else(|| "the sheet".into());
+        ThickenError::detail("thickenFailed", format!("{face}: a boundary edge has no offset image in this layer; the sheet topology is not supported by thicken"))
+    })
 }
 
 /// Walk-end vertex of an edge traversed `rev` (false = v0→v1).
@@ -823,8 +890,12 @@ fn extend_open_edge(
             }
         }
         let Some(se2) = other_shared else { continue };
-        let g = *sheet.edge_faces(se2).iter().find(|&&g| g != f).unwrap();
-        let gi = faces.iter().position(|&x| x == g).unwrap();
+        let Some(g) = sheet.edge_faces(se2).iter().copied().find(|&g| g != f) else {
+            return Err(ThickenError::code("thickenFailed"));
+        };
+        let Some(gi) = faces.iter().position(|&x| x == g) else {
+            return Err(ThickenError::code("thickenFailed"));
+        };
         let ng = normals[gi];
         let denom = u.dot(ng);
         if denom.abs() < 1e-9 {
@@ -914,7 +985,7 @@ fn build_wall(
     w: &mut u32,
     feature: &str,
 ) -> Result<(), ThickenError> {
-    let img: Vec<EdgeId> = ls.iter().map(|l| *l.edges.get(&e).unwrap()).collect();
+    let img: Vec<EdgeId> = (0..ls.len()).map(|li| layer_edge(ls, li, sheet, e)).collect::<Result<_, _>>()?;
     let (ca, cb, ta0, ta1, tb0, tb1) = {
         let (ea, eb) = (&out.edges[img[0].idx()], &out.edges[img[1].idx()]);
         (ea.curve.clone(), eb.curve.clone(), ea.t0, ea.t1, eb.t0, eb.t1)
@@ -995,7 +1066,9 @@ fn build_wall(
     };
     let wf = out.add_face(shell, surface, true, name);
 
-    let fi = faces.iter().position(|&x| x == f).unwrap();
+    let Some(fi) = faces.iter().position(|&x| x == f) else {
+        return Err(ThickenError::code("thickenFailed"));
+    };
     let nf = normals[fi];
     let se = sheet.edge(e);
     let u = (se.curve.eval(se.t1) - se.curve.eval(se.t0)).normalize();

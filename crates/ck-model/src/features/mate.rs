@@ -151,7 +151,7 @@ impl regen::FeatureExec for NestedExec {
 pub fn regen_nested(part: &Part) -> (super::Span, Nested) {
     let mut ex = NestedExec { brep: Brep::new(), sink: SpanSink::default() };
     // pinned: the nested `rollback` is ignored
-    let opts = RegenOpts { up_to: None, ignore_rollback: true, sketch_status: false, solve_sketches: false };
+    let opts = RegenOpts { ignore_rollback: true, ..RegenOpts::default() };
     let r = regen::regen(part, &opts, &mut ex);
     let n = part.features.len();
     let span = super::Span { label: format!("regenerate {n} features"), children: ex.sink.roots };
