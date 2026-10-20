@@ -156,6 +156,17 @@ pub fn build_body(scene: &Scene, opt: &BodyOptions) -> R<SkpBody> {
             n = nw * (1.0 / nwl);
         } else {
             n = n * (1.0 / n.len());
+            // The stored normal is only used for its side. A normal that is not the normal of the polygon (a baked
+            // instance under a non-uniform scale, a hand edited file) would give a plane the corners do not lie on, and
+            // the tessellator then refines the face into thousands of triangles (tens of seconds for a few hundred
+            // faces): the plane follows the polygon.
+            if nwl >= 1e-12 {
+                let nu = nw * (1.0 / nwl);
+                let d = dot(n, nu);
+                if d.abs() < 1.0 - 1e-9 {
+                    n = if d < 0.0 { nu * -1.0 } else { nu };
+                }
+            }
         }
         // orient: outer counter-clockwise about n, holes clockwise
         let mut fixed: Vec<Vec<u32>> = vec![];

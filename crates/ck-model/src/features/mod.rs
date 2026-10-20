@@ -796,6 +796,22 @@ impl Brep {
                             // wrong but valid: do not commit it, report it
                             return Err(volume_mismatch(m));
                         }
+                        // a hollow tool that envelops the body (the body sits in the tool's
+                        // cavity) and removes nothing is a valid no-op: the body is unchanged.
+                        // `cutNoEffect` stays for a tool that reaches the body (grazes, touches
+                        // or splits faces) yet removes nothing, and for one that simply misses
+                        // it from outside (the oracle's cutMiss).
+                        if out.no_effect && out.disjoint && op == BOp::Cut {
+                            let (blo, bhi) = body_box(b);
+                            let (tlo, thi) = body_box(tool);
+                            let eps = 1e-6 * (1.0 + (thi - tlo).len());
+                            let envelops = blo.x >= tlo.x - eps && bhi.x <= thi.x + eps
+                                && blo.y >= tlo.y - eps && bhi.y <= thi.y + eps
+                                && blo.z >= tlo.z - eps && bhi.z <= thi.z + eps;
+                            if envelops {
+                                return Ok(());
+                            }
+                        }
                         if out.no_effect && op == BOp::Cut && warn_no_effect {
                             // pinned: body unchanged (original edge order)
                             return Err(FeatureError::new(CUT_NO_EFFECT));

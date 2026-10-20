@@ -14,7 +14,21 @@ fn boolean_failed_params_name_faces_and_point() {
 }
 
 #[test]
-fn plain_boolean_failed_is_unchanged() {
+fn plain_boolean_failed_carries_a_hint() {
     let e = FeatureError::new("booleanFailed");
-    assert!(e.params.is_empty());
+    assert_eq!(e.code, "booleanFailed");
+    let hint = e.params.iter().find(|(n, _)| n == "hint").map(|(_, v)| ck_json::to_string(v)).expect("hint");
+    // the causes a bare failure can point at: tangency / coincidence / a sliver, and the knobs
+    assert!(hint.contains("tangentially") && hint.contains("tolerance"), "{hint}");
+}
+
+#[test]
+fn near_coincident_boolean_failed_names_the_faces_and_a_hint() {
+    let e = FeatureError::new("booleanFailed;nearCoincident=F2.S.e1|F5.F1|2.5e-4");
+    assert_eq!(e.code, "booleanFailed");
+    let get = |k: &str| e.params.iter().find(|(n, _)| n == k).map(|(_, v)| ck_json::to_string(v)).unwrap_or_else(|| panic!("param {k}"));
+    assert_eq!(get("hostFace"), "\"F2.S.e1\"");
+    assert_eq!(get("toolFace"), "\"F5.F1\"");
+    assert_eq!(get("gap"), "0.00025");
+    assert!(get("hint").contains("nearly coincident"), "{}", get("hint"));
 }

@@ -120,7 +120,7 @@ pub fn exec_hole(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(
         _ => row[2],
     };
     if d <= 0.0 {
-        return Err(FeatureError::new(HOLE_INVALID));
+        return Err(hint(FeatureError::new(HOLE_INVALID), "the hole diameter must be greater than zero (a standard `size`, or a positive `diameter`)"));
     }
     let pts: Vec<[f64; 2]> = sk
         .sketch
