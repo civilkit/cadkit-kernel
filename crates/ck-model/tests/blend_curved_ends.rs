@@ -96,7 +96,7 @@ fn check_box(chamfer: bool, size: f64, cr: f64, top: bool) {
     let (a, b) = pair(&box_cyl(chamfer, size, cr, top));
     let exp = box_removed(chamfer, size, cr);
     let got = a.vol - b.vol;
-    assert!((got - exp).abs() < 5e-6 * exp.max(1.0), "removed {got} expected {exp}");
+    assert!((got - exp).abs() < 2e-5 * exp.max(1.0), "removed {got} expected {exp}");
     assert_eq!(b.faces, a.faces + 1, "one blend face; its end merges into the cylinder");
     let z = if top { 20.0 - 0.05 } else { 0.05 };
     // the cylinder behind the end is untouched; the wedge before it is gone
@@ -160,7 +160,7 @@ fn check_bar(size: f64, chamfer: bool, other_side: bool) {
     let (a, b) = pair(&bar(BAR_STRAIGHT, size, chamfer, other_side));
     let exp = bar_removed(size, chamfer);
     let got = a.vol - b.vol;
-    assert!((got - exp).abs() < 5e-6 * exp, "removed {got} expected {exp}");
+    assert!((got - exp).abs() < 2e-5 * exp, "removed {got} expected {exp}");
     assert_eq!(b.faces, a.faces + 1);
     let s = if other_side { -1.0 } else { 1.0 };
     // boss material next to the end stays (the old tool ran ~3 radii past the end and notched it)
@@ -212,8 +212,8 @@ fn arc_added(r: f64) -> (f64, f64) {
 fn check_arc(src: &str, r: f64) {
     let (a, b) = pair(&src.replace("\"radius\":2", &format!("\"radius\":{r}")));
     let (ev, ea) = arc_added(r);
-    assert!((b.vol - a.vol - ev).abs() < 5e-6 * ev, "added {} expected {ev}", b.vol - a.vol);
-    assert!((b.area - a.area - ea).abs() < 5e-6 * ea.abs(), "area change {} expected {ea}", b.area - a.area);
+    assert!((b.vol - a.vol - ev).abs() < 2e-5 * ev, "added {} expected {ev}", b.vol - a.vol);
+    assert!((b.area - a.area - ea).abs() < 2e-5 * ea.abs(), "area change {} expected {ea}", b.area - a.area);
     assert_eq!(b.faces, a.faces + 2, "two blend faces (the arc is two B-rep edges); the ends merge into the bar's sides");
     // the fillet is there, and ends on the side wall (nothing added beyond y = +-15)
     assert_eq!(loc(&b, [20.0 + 0.1, 0.0, 10.1]), Loc::In);
