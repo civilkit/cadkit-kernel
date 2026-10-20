@@ -19,8 +19,14 @@ panic = "unwind"
 # Fast iteration: release speed without LTO (cargo test --profile fast;
 # wasm: cargo build -p ck-wasm --target wasm32-unknown-unknown --profile fast,
 # then node tools/gate.mjs --wasm target/wasm32-unknown-unknown/fast/ck_wasm.wasm)
+# panic=unwind (not the release abort): test targets are unwind-only anyway, and abort
+# here makes cargo build every dep twice — ck-wasm's cdylib+rlib outputs carry no hash
+# suffix, so the two variants collide on fast/deps/libck_wasm.rlib and
+# `cargo test -p ck-native` (the only crate consuming host ck-wasm) fails with
+# E0463 / undefined `ck_wasm::engine::install`.
 [profile.fast]
 inherits = "release"
+panic = "unwind"
 lto = false
 incremental = true
 codegen-units = 16
