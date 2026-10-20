@@ -167,6 +167,19 @@ pub fn rotate_vec(m: &[f64; 13], p: [f64; 3]) -> [f64; 3] {
     [m[0] * p[0] + m[1] * p[1] + m[2] * p[2], m[3] * p[0] + m[4] * p[1] + m[5] * p[2], m[6] * p[0] + m[7] * p[1] + m[8] * p[2]]
 }
 
+/// A surface normal under the affine map `m`: the inverse transpose applied to `n` (as the cofactor matrix times the sign
+/// of the determinant, so a mirror keeps the side: the same as `rotate_vec` for rotations, mirrors and uniform scales). `rotate_vec` is only right for rotations and uniform scales;
+/// under a non-uniform scale it tilts the normal off the transformed face plane.
+pub fn transform_normal(m: &[f64; 13], n: [f64; 3]) -> [f64; 3] {
+    let (r0, r1, r2) = ([m[0], m[1], m[2]], [m[3], m[4], m[5]], [m[6], m[7], m[8]]);
+    let cr = |a: [f64; 3], b: [f64; 3]| [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    // rows of the cofactor matrix are the cross products of the other two rows
+    let (c0, c1, c2) = (cr(r1, r2), cr(r2, r0), cr(r0, r1));
+    let d = |c: [f64; 3]| c[0] * n[0] + c[1] * n[1] + c[2] * n[2];
+    let sg = if det3(m) < 0.0 { -1.0 } else { 1.0 };
+    [sg * d(c0), sg * d(c1), sg * d(c2)]
+}
+
 /// `parent * child` (the child is applied first).
 pub fn multiply(parent: &[f64; 13], child: &[f64; 13]) -> [f64; 13] {
     let (pr0, pr1, pr2) = ([parent[0], parent[1], parent[2], parent[9]], [parent[3], parent[4], parent[5], parent[10]], [parent[6], parent[7], parent[8], parent[11]]);
@@ -563,7 +576,7 @@ impl<'m> Baker<'m> {
                     loops.push(pts);
                 }
                 if okp && !loops.is_empty() {
-                    let mut n = rotate_vec(matrix, f.normal);
+                    let mut n = transform_normal(matrix, f.normal);
                     let l = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
                     if l > 1e-12 {
                         n = [n[0] / l, n[1] / l, n[2] / l];
