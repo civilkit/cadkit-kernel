@@ -771,8 +771,8 @@ pub fn imprint_hooked(a: &Body, b: &Body, tol: f64, hook: Option<PairHook>) -> A
 /// crossings with every boundary edge of every face (+ overlap ends).
 /// Kept: intervals whose midpoint is not Out of any face and (unless
 /// `allow_all_on`) not On the boundary of all of them.
-/// Distance within which a tangent-contact breakpoint yields to an exact crossing (see [`trim`]).
-const SOFT_SNAP: f64 = 2e-3;
+/// Relative distance within which a tangent-contact breakpoint yields to an exact crossing (see [`trim`]).
+const SOFT_SNAP: f64 = 2e-5; // x the size of the pair's box
 
 fn trim(c: &Curve, r: (f64, f64), faces: &[(&Body, FaceId)], bx: &Aabb, tol: f64, allow_all_on: bool, cache: &mut LoopCache) -> Vec<(f64, f64)> {
     let r = crate::intersect::finite_range(c, r, bx.min, bx.max);
@@ -822,8 +822,9 @@ fn trim(c: &Curve, r: (f64, f64), faces: &[(&Body, FaceId)], bx: &Aabb, tol: f64
     // transversal crossing of the tool's own edge at the same place: only the exact one stays
     if !soft.is_empty() {
         let is_soft = |t: f64| soft.iter().any(|&s| (s - t).abs() <= 1e-12);
+        let snap = SOFT_SNAP * (bx.max - bx.min).len();
         let hard: Vec<Vec3> = ts.iter().filter(|&&t| !is_soft(t)).map(|&t| c.eval(t)).collect();
-        ts.retain(|&t| !is_soft(t) || { let p = c.eval(t); !hard.iter().any(|q| q.dist(p) > tol && q.dist(p) < SOFT_SNAP) });
+        ts.retain(|&t| !is_soft(t) || { let p = c.eval(t); !hard.iter().any(|q| q.dist(p) > tol && q.dist(p) < snap) });
     }
     let mut out: Vec<(f64, f64)> = vec![];
     super::bool_dbg!("  trim breakpoints {:?}", ts);
