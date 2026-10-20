@@ -96,3 +96,63 @@ fn refuses_too_many_faces_and_empty_scenes() {
     let s = bake(&m, &Limits::default(), &BakeOptions { keep_polygons: true, ..Default::default() }).unwrap();
     assert_eq!(build_body(&s, &BodyOptions::default()).unwrap_err().code, "body.empty");
 }
+
+/// Regression: a face whose stored normal is not the normal of its corners (what an instance under a non-uniform scale used
+/// to produce) made the plane miss the corners, and the kernel mesher refined each quad into thousands of triangles
+/// (75 s for 864 faces of a real file). The plane now follows the polygon; the budget is generous for a debug build.
+#[test]
+fn faces_with_a_tilted_stored_normal_stay_cheap_to_tessellate() {
+    use ck_skp::scene::{PolyFace, Scene, SceneMaterial};
+    let mut s = Scene::default();
+    s.materials.push(SceneMaterial { rgb: [200, 200, 200], opacity: 1.0, double_sided: false, texture: None });
+    let n_faces = 200;
+    for i in 0..n_faces {
+        let (x, y) = ((i % 20) as f64 * 100.0, (i / 20) as f64 * 400.0);
+        // a 60 x 250 quad tilted about the x axis; the stored normal is 5.4 degrees off the true one
+        let (c, sn) = (0.4793_f64.hypot(0.8786).recip() * 0.8786, 0.4793_f64.hypot(0.8786).recip() * 0.4793);
+        let quad = vec![[x, y, 0.0], [x + 60.0, y, 0.0], [x + 60.0, y + 250.0 * c, 250.0 * sn], [x, y + 250.0 * c, 250.0 * sn]];
+        let a = 5.4_f64.to_radians();
+        let (ct, st) = (a.cos(), a.sin());
+        // true normal (0, -sn, c) tilted by `a` about x
+        let normal = [0.0, -sn * ct - c * st, c * ct - sn * st];
+        s.polygons.push(PolyFace { loops: vec![quad], normal, material: 0, layer: String::new(), path: String::new() });
+    }
+    let b = build_body(&s, &BodyOptions::default()).unwrap();
+    assert_eq!(b.body.num_faces(), n_faces);
+    let t0 = std::time::Instant::now();
+    let tess = ck_tess::mesh::tessellate(&b.body);
+    let dt = t0.elapsed();
+    assert_eq!(tess.mesh.tri_face.len(), 2 * n_faces, "one quad is two triangles");
+    assert!(dt.as_secs_f64() < 5.0, "tessellation took {dt:?}");
+}
+
+/// The cofactor transform keeps normals perpendicular to the transformed plane under a non-uniform scale.
+#[test]
+fn transform_normal_stays_perpendicular_under_non_uniform_scale() {
+    use ck_skp::scene::{transform_normal, transform_point};
+    let m = [2.0, 0.3, 0.0, 0.0, 0.5, 0.1, 0.2, 0.0, 3.0, 5.0, -2.0, 1.0, 1.0];
+    let (a, b, c) = ([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 1.0]);
+    let (ta, tb, tc) = (transform_point(&m, a), transform_point(&m, b), transform_point(&m, c));
+    let (u, v) = ([tb[0] - ta[0], tb[1] - ta[1], tb[2] - ta[2]], [tc[0] - ta[0], tc[1] - ta[1], tc[2] - ta[2]]);
+    // (0,1,-1) is the normal of the plane through a, b, c
+    let n = transform_normal(&m, [0.0, 1.0, -1.0]);
+    let d = |p: [f64; 3], q: [f64; 3]| p[0] * q[0] + p[1] * q[1] + p[2] * q[2];
+    assert!(d(n, u).abs() < 1e-12 && d(n, v).abs() < 1e-12, "{n:?}");
+}
+
+/// The three files that took 10 to 75 s before the fix (licensed, so not committed): `SKP_PERF_FILES` is a list of paths
+/// separated by `:`; each must import (parse, bake, body, tessellate) in under 2 s.
+#[test]
+fn slow_corpus_files_import_fast() {
+    let Ok(list) = std::env::var("SKP_PERF_FILES") else { return };
+    for f in list.split(':').filter(|f| !f.is_empty()) {
+        let data = std::fs::read(f).unwrap();
+        let t0 = std::time::Instant::now();
+        let m = parse(&data).unwrap();
+        let s = bake(&m, &Limits::default(), &BakeOptions { keep_polygons: true, ..Default::default() }).unwrap();
+        let b = build_body(&s, &BodyOptions::default()).unwrap();
+        let _ = ck_tess::mesh::tessellate(&b.body);
+        let dt = t0.elapsed().as_secs_f64();
+        assert!(dt < 2.0, "{f}: {dt:.2}s");
+    }
+}
