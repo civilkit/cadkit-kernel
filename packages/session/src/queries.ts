@@ -662,15 +662,19 @@ export async function importSldprt(
  * The body is a surface model of planar faces (holes kept); `import.faceMaterials[n]` is the index into `import.materials`
  * (colour, opacity) of face `skp.F<n>`. Hidden geometry is skipped unless `opts.hidden`.
  */
+/** Orientation of an imported SketchUp model: 'z' as in the file (Z up, kernel default), 'y' Z becomes Y, (x,y,z) -> (x,z,-y), 'yFlip' upside down variant of 'y', (x,y,z) -> (-x,-z,-y). */
+export type SkpUp = 'z' | 'y' | 'yFlip';
+
 export async function importSkp(
   kernel: KernelTransport,
   data: string,
-  opts: { name?: string; tag?: string; hidden?: boolean; maxFaces?: number } = {},
+  opts: { name?: string; tag?: string; hidden?: boolean; maxFaces?: number; up?: SkpUp } = {},
 ): Promise<ImportReport> {
   const msg: Record<string, unknown> = { type: 'importSkp', tag: opts.tag ?? 'imp', name: opts.name ?? 'import', data };
   const o: Record<string, unknown> = {};
   if (opts.hidden !== undefined) o.hidden = opts.hidden;
   if (opts.maxFaces !== undefined) o.maxFaces = opts.maxFaces;
+  if (opts.up !== undefined) o.up = opts.up;
   if (Object.keys(o).length) msg.opts = o;
   const res = await call<ImportReport>(kernel, msg);
   return { ...res, errors: res.errors ?? [] };

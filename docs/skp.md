@@ -4,12 +4,12 @@
 which reverse engineered both containers (attribution: `crates/ck-skp/NOTICE`, `THIRD_PARTY.md`). No SketchUp SDK is used.
 
 ```
-{type:"importSkp", tag:"t", name:"model", data:"<base64 of the .skp file>", opts:{hidden?:bool, maxFaces?:n}}
+{type:"importSkp", tag:"t", name:"model", data:"<base64 of the .skp file>", opts:{hidden?:bool, maxFaces?:n, up?:"z"|"y"|"yFlip"}}
 ```
 
 The reply is regen-shaped like `importStep` / `importSldprt` (`body`, `errors`, plus `import`). A refused file answers
 `body:null` and `errors:[["import",{code,params:{message,offset?}}]]` and leaves the tag alone. The kit session method is
-`session.importSkp(base64, name?, {hidden?, maxFaces?})` (`packages/session`).
+`session.importSkp(base64, name?, {hidden?, maxFaces?, up?})` (`packages/session`).
 
 ## Wiring
 
@@ -28,12 +28,29 @@ the usual "not implemented" error; every other request is unchanged.
 
 A SketchUp model is a surface model. The body has one planar face per SketchUp face (outer loop plus holes, outer
 counter-clockwise about the front normal), vertices welded within 1e-4 mm, edges shared between neighbouring faces, instance
-transforms flattened (nesting capped at 32), units converted from inches to millimetres, Z up as in SketchUp. One lump with
+transforms flattened (nesting capped at 32), units converted from inches to millimetres, Z up as in SketchUp unless `opts.up` says otherwise (below). One lump with
 one shell per connected piece. It is closed only where the model is: `import.openEdges` / `nonManifoldEdges` say how much is
 not. Faces are named `skp.F<n>`; `import.faceMaterials[n]` indexes `import.materials` (`color`, `opacity`, `doubleSided`,
 `textured`). Texture image bytes are read (`Material.texture.data`, GLB export embeds them) but not sent over the wire.
 Hidden faces, instances and tags are skipped unless `opts.hidden`. More than `maxFaces` (default 50,000) faces is refused
 with `limit.faces`.
+
+## Orientation (`opts.up`)
+
+SketchUp is Z up and right-handed; the kit and its planes are Y up. `opts.up` rotates the whole model, applied to the finished
+scene (after instance flattening and the inch to mm scale, so instance transforms and units are already resolved):
+
+| `up` | (x, y, z) maps to | meaning |
+|---|---|---|
+| `"z"` (default) | (x, y, z) | as in the file |
+| `"y"` | (x, z, -y) | -90 degrees about X: SketchUp Z becomes Y, SketchUp's front (-Y) faces +Z |
+| `"yFlip"` | (-x, -z, -y) | `"y"` then 180 degrees about Z: the upside-down fix |
+
+Matrix of `"y"` (row major, column vectors): `[1 0 0; 0 0 1; 0 -1 0]`; of `"yFlip"`: `[-1 0 0; 0 0 -1; 0 -1 0]`. Both have determinant +1, so
+winding, face order and names (`skp.F<n>`), areas, volumes, open and non-manifold counts are unchanged, normals and plane frames
+rotate with the geometry and `import.bboxMm` is the box of the rotated body. The kernel default stays `"z"` (additive, old callers
+see no change); the kit asks for `"y"`. The reply's `import` carries `up` and `upMatrix` (the nine numbers, row major). Any other
+value is a request error (`ok:false`). In the library: `BakeOptions { up: Up::Y, .. }`.
 
 ## Library use
 

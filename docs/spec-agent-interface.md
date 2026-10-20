@@ -951,6 +951,14 @@ warnings `textTooSmall`, `textMissingGlyph`, `textTruncated`, `textOverlap`, `te
 cache key and an entity may pin it with `fontHash`.
 Details, limits and checks: `docs/text.md`; corpus `tools/text_corpus.mjs`.
 
+## `importSkp` orientation: `opts.up`
+
+`{type:"importSkp", data, opts:{up?:"z"|"y"|"yFlip"}}` (additive; absent means `"z"`, the file's own Z-up axes, so existing callers are
+unchanged). `"y"` maps (x, y, z) -> (x, z, -y) (SketchUp Z becomes our Y, right-handed, SketchUp's front faces +Z), `"yFlip"` maps
+(x, y, z) -> (-x, -z, -y) (upside-down fix). Face names, areas, normals relative to the geometry and edge counts are unchanged. The
+reply's `import` gains `up` (the applied value) and `upMatrix` (row-major 3x3, nine numbers). Any other `up` is an error reply.
+Details in `docs/skp.md`.
+
 ## Acceptance
 
 - A scripted agent session (no human) builds the benchmark parts in

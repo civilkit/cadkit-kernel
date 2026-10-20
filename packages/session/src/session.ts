@@ -7,7 +7,7 @@ import { emptyPart, FEATURE_TYPES, type PartDoc } from '../../part-model/src/ind
 import { hintFor, verify, type CheckResultItem, type KernelTransport, type RegenError, type VerifyReport } from '../../driver/src/verify.js';
 import {
   angles, check, checkProfile, clearance, closestPoint, describe, distance, maxDistance, symmetry, thickness, thicknessAt, heal, importSat, importSkp, importSldprt, importStep, massProps, probe, profiles, resolveDescriptions, section, sections, step, textMetrics, textOutline, loadFont, unloadFont, listFonts, subsetFont, threadData, validate,
-  type CheckReport, type DescribeItem, type HealReport, type ImportReport, type MassReport, type ProbeReport,
+  type CheckReport, type DescribeItem, type HealReport, type ImportReport, type SkpUp, type MassReport, type ProbeReport,
   type AnglesReport, type ClearanceReport, type ClosestPointReport, type DistanceReport, type HausdorffReport, type MaxDistanceReport, type MeasureEntity,
   type SymmetryReport, type ThicknessAtReport, type ThicknessReport,
   type ResolveMatch, type SectionReport, type SectionsReport, type ValidateIssue,
@@ -954,7 +954,7 @@ export class Session {
   }
 
   /** A SketchUp .skp file: `data` is the file bytes as base64; hidden geometry is skipped unless `hidden`. */
-  importSkp(data: string, name?: string, opts: { hidden?: boolean; maxFaces?: number } = {}): Promise<ImportReport> {
+  importSkp(data: string, name?: string, opts: { hidden?: boolean; maxFaces?: number; up?: SkpUp } = {}): Promise<ImportReport> {
     return importSkp(this.kernel, data, { name, ...opts });
   }
 

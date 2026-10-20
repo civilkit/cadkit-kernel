@@ -413,11 +413,17 @@ fn import_sldprt_hook(cx: &mut Cx) -> Result<(Json, Option<State>), String> {
 /// `importSkp`: base64 of a SketchUp file -> the tag's body (planar faces with holes, shared edges). Result shaped like
 /// `importStep`: `body`, `errors` as `["import", {code, params:{message, offset?}}]`, plus `import:{format, container,
 /// version, units, faces, lumps, materials, faceMaterials, ...}`. Hidden geometry is skipped unless `opts.hidden`.
+/// `opts.up` ('z' default | 'y' | 'yFlip') rotates the model, see docs/skp.md.
 fn import_skp_hook(cx: &mut Cx) -> Result<(Json, Option<State>), String> {
     let data = cx.msg.get_str("data").unwrap_or("").to_string();
     let name = cx.msg.get_str("name").unwrap_or("model").to_string();
     let hidden = cx.msg.get("opts").and_then(|o| o.get_bool("hidden")).unwrap_or(false);
     let max_faces = cx.msg.get("opts").and_then(|o| o.get_f64("maxFaces")).filter(|v| *v >= 1.0).map(|v| v as usize);
+    // opts.up: 'z' (default, as in the file), 'y' or 'yFlip'; anything else is a request error
+    let up = match cx.msg.get("opts").and_then(|o| o.get_str("up")) {
+        None => ck_skp::Up::Z,
+        Some(u) => ck_skp::Up::parse(u).ok_or_else(|| format!("importSkp: opts.up must be \"z\", \"y\" or \"yFlip\", got {u:?}"))?,
+    };
     let mut out = ck_server::session::empty_regen_result();
     let bytes = base64_decode(&data, "importSkp")?;
     let fail = |out: &mut Json, e: &ck_skp::SkpError| {
@@ -436,7 +442,7 @@ fn import_skp_hook(cx: &mut Cx) -> Result<(Json, Option<State>), String> {
             return Ok((out, None));
         }
     };
-    let opt = ck_skp::BakeOptions { include_hidden: hidden, keep_polygons: true, ..Default::default() };
+    let opt = ck_skp::BakeOptions { include_hidden: hidden, keep_polygons: true, up, ..Default::default() };
     let scene = match ck_skp::bake(&model, &lim, &opt) {
         Ok(s) => s,
         Err(e) => {
@@ -479,6 +485,8 @@ fn import_skp_hook(cx: &mut Cx) -> Result<(Json, Option<State>), String> {
         .put("version", model.version.as_str())
         .put("units", model.units.as_deref().map_or(Json::Null, |u| Json::Str(u.to_string())))
         .put("unitScale", ck_skp::scene::INCHES_TO_MM)
+        .put("up", up.name())
+        .put("upMatrix", Json::Arr(up.matrix().iter().flatten().map(|v| Json::Num(*v)).collect()))
         .put("faces", body.num_faces() as f64)
         .put("lumps", body.num_lumps() as f64)
         .put("openEdges", sb.open_edges as f64)
