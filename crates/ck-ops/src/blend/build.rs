@@ -605,6 +605,58 @@ pub(super) fn clip_halfspace(tool: &Body, o: Vec3, n: Vec3, tol: f64) -> Result<
     crate::boolean::boolean(tool, &block, Op::Intersect, tol).map(|r| r.body).map_err(|_| BlendError::code("blendFailed"))
 }
 
+/// The planar face that ends an edge at vertex `v` (the edge runs on in direction `out` past it), when it is the only
+/// other face there, the body ends at it (its outward normal points along `out`) and its plane is not
+/// perpendicular to the edge: (a point on the plane, outward normal).
+fn oblique_end_plane(b: &Body, v: ck_topo::body::VertexId, faces: &[FaceId], out: Vec3) -> Option<(Vec3, Vec3)> {
+    let mut ends: Vec<FaceId> = vec![];
+    for x in b.edge_ids().filter(|&x| b.edge(x).v0 == v || b.edge(x).v1 == v) {
+        for f in b.edge_faces(x) {
+            if !faces.contains(&f) && !ends.contains(&f) {
+                ends.push(f);
+            }
+        }
+    }
+    if ends.len() != 1 || !matches!(b.face(ends[0]).surface, Surface::Plane { .. }) {
+        return None;
+    }
+    let n = b.planar_normal(ends[0]).normalize();
+    (n.dot(out) > 1e-6 && n.cross(out).len() > 1e-6).then(|| (b.vertex(v).p, n))
+}
+
+/// The solid of the cylinder that bounds an edge at its end vertex `v` (the edge runs
+/// on in direction `od` past `v`), when that end meets exactly one more face, a
+/// cylinder whose material lies inside it and ahead of the edge (a boss the edge runs
+/// into): the tool must not cut into it, so it is cut by this solid.
+fn end_cylinder_solid(b: &Body, v: ck_topo::body::VertexId, od: Vec3, faces: &[FaceId], bb: (Vec3, Vec3)) -> Option<Body> {
+    let mut ends: Vec<FaceId> = vec![];
+    for x in b.edge_ids().filter(|&x| b.edge(x).v0 == v || b.edge(x).v1 == v) {
+        for f in b.edge_faces(x) {
+            if !faces.contains(&f) && !ends.contains(&f) {
+                ends.push(f);
+            }
+        }
+    }
+    if ends.len() != 1 {
+        return None;
+    }
+    let Surface::Cylinder { frame, r } = &b.face(ends[0]).surface else { return None };
+    let pv = b.vertex(v).p;
+    let (u, w) = b.face(ends[0]).surface.closest_param(pv);
+    let n = b.outward_normal(ends[0], u, w).normalize();
+    let rel = pv - frame.o;
+    let rad = rel - frame.z * rel.dot(frame.z);
+    // material is ahead of the edge (the face leans toward it) and inside the cylinder (normal points away from the axis)
+    if n.dot(od) > -1e-9 || n.dot(rad) <= 0.0 {
+        return None;
+    }
+    let big = 4.0 * (bb.1 - bb.0).len() + 4.0 * rad.len() + 10.0;
+    let t = rel.dot(frame.z);
+    let lp = ProfileLoop::new(vec![ProfileSeg::circle("e1", Vec2::new(0.0, 0.0), *r)]);
+    let prof = Profile::new(*frame, vec![ProfileRegion { outer: lp, holes: vec![] }]);
+    extrude("clip", &prof, ExtrudeOpts { s0: t - big, s1: t + big, dir: None, draft: 0.0 }).ok()
+}
+
 /// Vertices where two of the selected edges continue each other tangentially (see [`TANGENT_FLUSH`]).
 fn tangent_flush_vertices(b: &Body, sel: &[EdgeId]) -> Vec<Vec3> {
     let mut flush: Vec<Vec3> = vec![];
@@ -1314,12 +1366,52 @@ fn ring_siblings(b: &Body, e: EdgeId) -> Vec<EdgeId> {
     if !group.is_empty() && (total - std::f64::consts::TAU).abs() < 1e-6 { group } else { vec![] }
 }
 
+/// The arcs that continue edge `e` along the same circle between the same two faces: one smooth edge that a seam of
+/// the cylinder (or cone) it lies on split in several B-rep edges, though together they do not close the circle.
+fn arc_chain_siblings(b: &Body, e: EdgeId) -> Vec<EdgeId> {
+    let circle_of = |x: EdgeId| -> Option<(Vec3, Vec3, f64)> {
+        let ed = b.edge(x);
+        match &ed.curve {
+            Curve::Line { .. } => None,
+            Curve::Circle { frame, r } => Some((frame.o, frame.z.normalize(), *r)),
+            other => fit_circle(other, ed.t0.min(ed.t1), ed.t0.max(ed.t1)).map(|(c, a, r, _)| (c, a, r)),
+        }
+    };
+    let Some((c, a, r)) = circle_of(e) else { return vec![] };
+    let mut fs = b.edge_faces(e);
+    fs.sort_by_key(|f| f.idx());
+    let mut chain = vec![e];
+    loop {
+        let before = chain.len();
+        for x in b.edge_ids().filter(|x| !chain.contains(x)).collect::<Vec<_>>() {
+            let Some((c2, a2, r2)) = circle_of(x) else { continue };
+            let mut f2 = b.edge_faces(x);
+            f2.sort_by_key(|f| f.idx());
+            let same = f2 == fs && (c2 - c).len() < 1e-7 * (1.0 + r) && a2.cross(a).len() < 1e-7 && (r2 - r).abs() < 1e-7 * (1.0 + r);
+            let (xv0, xv1) = (b.edge(x).v0, b.edge(x).v1);
+            if same && xv0 != xv1 && chain.iter().any(|&m| [b.edge(m).v0, b.edge(m).v1].iter().any(|v| *v == xv0 || *v == xv1)) {
+                chain.push(x);
+            }
+        }
+        if chain.len() == before {
+            break;
+        }
+    }
+    chain.into_iter().skip(1).collect()
+}
+
 /// `edges` plus, for every selected arc of a split ring, the rest of its arcs (picked at their midpoints).
 fn with_ring_siblings(b: &Body, edges: &[(String, String, Vec3)]) -> Vec<(String, String, Vec3)> {
     let mut out = edges.to_vec();
     let mut have: Vec<EdgeId> = edges.iter().filter_map(|(fa, fb, at)| find_edge(b, fa, fb, *at)).collect();
     for e in have.clone() {
-        for s in ring_siblings(b, e) {
+        let mut sibs = ring_siblings(b, e);
+        for x in arc_chain_siblings(b, e) {
+            if !sibs.contains(&x) {
+                sibs.push(x);
+            }
+        }
+        for s in sibs {
             if have.contains(&s) {
                 continue;
             }
@@ -1588,6 +1680,32 @@ fn blend_edge_hint_inner(
         Spec::Fillet(..) => (pm + off - n1 * (s * r), pm + off - n2 * (s * r)),
         Spec::Chamfer(..) => (up(faces[0], pm + leg1 * ch1), up(faces[1], pm + leg2 * ch2)),
     };
+    // a concave arc that runs into a planar wall which is not radial (its plane does not contain the axis, e.g. the
+    // side of a bar a boss joins at an angle): the swept tool runs on past that end and is clipped by the wall's
+    // plane, so the blend ends on the wall instead of stopping short of it
+    let mut circ_clips: Vec<(Vec3, Vec3)> = vec![];
+    let mut circ_oblique = [false; 2];
+    if !convex && sweep > 0.0 && sweep < std::f64::consts::TAU - 1e-9 {
+        if let Some((_, _)) = circ {
+            let (t_lo, t_hi) = (ed.t0.min(ed.t1), ed.t0.max(ed.t1));
+            let (vs, ve) = if ed.t0 <= ed.t1 { (ed.v0, ed.v1) } else { (ed.v1, ed.v0) };
+            for (i, (v, out)) in [(vs, -ed.curve.tangent(t_lo).normalize()), (ve, ed.curve.tangent(t_hi).normalize())].into_iter().enumerate() {
+                if let Some((pv, n)) = oblique_end_plane(b, v, &faces, out) {
+                    circ_clips.push((pv, -n));
+                    circ_oblique[i] = true;
+                }
+            }
+        }
+    }
+    // which end of the edge meets a curved face or an oblique wall (named in the hint of a refusal)
+    let cyl_end = |v, od| convex && circ.is_none() && end_cylinder_solid(b, v, od, &faces, (Vec3::ZERO, Vec3::ZERO)).is_some();
+    let ends_curved = if circ.is_some() { circ_oblique } else { [cyl_end(ed.v0, -dir), cyl_end(ed.v1, dir)] };
+    let curved_end = match ends_curved {
+        [true, true] => Some("both"),
+        [true, false] => Some("start"),
+        [false, true] => Some("end"),
+        _ => None,
+    };
     // contact (spring) lines must stay on their faces
     let name = FaceName::blend(feature, k);
     // (a contact point that runs along an end face which is perpendicular to the
@@ -1595,7 +1713,19 @@ fn blend_edge_hint_inner(
     // "exactly radial" end line of a clip is off by 1e-5 -- lies on that face's
     // boundary line within `ptol`, not outside the face)
     let ptol = (10.0 * tol).max(2e-5 * (b.bbox().1 - b.bbox().0).len()).min(0.25 * r);
-    for (f, t) in [(faces[0], ta), (faces[1], tb)] {
+    // (a section whose start end is clipped by an oblique wall is checked half way along the arc: its contact on the
+    // face the wall bounds leaves that face through the wall by design)
+    let rot = |p: Vec3| -> Vec3 {
+        match circ {
+            Some((c, axis)) if circ_oblique[0] => {
+                let (v, al) = (p - c, 0.5 * sweep);
+                c + v * al.cos() + axis.cross(v) * al.sin() + axis * (axis.dot(v) * (1.0 - al.cos()))
+            }
+            _ => p,
+        }
+    };
+    let (pm_c, ta_c, tb_c) = (rot(pm), rot(ta), rot(tb));
+    for (f, t) in [(faces[0], ta_c), (faces[1], tb_c)] {
         let on_boundary = || {
             b.face_edges(f).into_iter().any(|e2| {
                 let x = b.edge(e2);
@@ -1623,7 +1753,31 @@ fn blend_edge_hint_inner(
                 return Err(e);
             }
             dbg_fail(&format!("spring leaves face {} at {:?} (edge {:?} t=({:.4},{:.4}) corev {}, p0 {:?}, dir {:?}, leg1 {:?} leg2 {:?}, circ {})", b.face_id_str(f), t, e, ed.t0, ed.t1, b.coedge(co).rev, p0, dir, leg1, leg2, circ.is_some()));
-            return Err(BlendError::detail("blendOverflow", &format!("{}: spring leaves its face away from its edges", name.id())));
+            // the largest size whose contact points (linear in the size about the section's edge point) still lie on
+            // their faces, and where along the edge the failing section is
+            let fits = |rr: f64| -> bool {
+                [(faces[0], ta_c), (faces[1], tb_c)].iter().all(|&(f, t)| {
+                    let q = up(f, pm_c + (t - pm_c) * (rr / r));
+                    point_in_face(b, f, q, tol) != Where::Out
+                })
+            };
+            let mut err = BlendError::detail("blendOverflow", &format!("{}: spring leaves its face away from its edges", name.id()));
+            if curved_end.is_some() && r > 0.0 && fits(r * 1e-3) {
+                let (mut lo, mut hi) = (r * 1e-3, r);
+                for _ in 0..40 {
+                    let mid = 0.5 * (lo + hi);
+                    if fits(mid) {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                err.params.push(("max".into(), format!("{:.4}", lo * 0.999)));
+            }
+            if let Some(end) = curved_end {
+                err.params.push(("curvedEnd".into(), end.into()));
+            }
+            return Err(err);
         }
     }
     // tool profile in the plane perpendicular to dir through p0 - dir*margin
@@ -1828,11 +1982,15 @@ fn blend_edge_hint_inner(
                 (0.0, TAU)
             } else {
                 let m = if convex { (r.max(span * rad * 0.05) + 1.0) / rad } else { 0.0 };
+                let mo = (r.max(span * rad * 0.05) + 1.0) / rad;
                 // an end that runs on into another arc of the same circle (a
                 // split ring) stops flush: that arc is cut by its own tool
                 let ends = [p0, ed.curve.eval(ed.t0.max(ed.t1))];
                 let flush = |q: Vec3| (ext && (continues_circle(b, e, q, c, axis, rad) || meets_own_blend(b, e, q, feature, tol))) || junc.flush.iter().any(|f| f.dist(q) < 1e-6 * (1.0 + rad));
-                let (m0, m1) = (if flush(ends[0]) { 0.0 } else { m }, if flush(ends[1]) { 0.0 } else { m });
+                let (m0, m1) = (
+                    if circ_oblique[0] { mo } else if flush(ends[0]) { 0.0 } else { m },
+                    if circ_oblique[1] { mo } else if flush(ends[1]) { 0.0 } else { m },
+                );
                 if span + m0 + m1 >= TAU { (0.0, TAU) } else { (-m0, span + m1) }
             };
             ck_topo::make::revolve::revolve(feature, &prof, c, axis, a0, a1)
@@ -1849,6 +2007,19 @@ fn blend_edge_hint_inner(
     }
     for (o, n) in clips {
         tool = clip_halfspace(&tool, o, n, tol)?;
+    }
+    for (o, n) in circ_clips {
+        tool = clip_halfspace(&tool, o, n, tol)?;
+    }
+    // an end that runs into a convex cylinder (a joined boss): the tool ends on its surface
+    if convex && circ.is_none() {
+        for (v, od, m) in [(ed.v0, -dir, m0), (ed.v1, dir, m1)] {
+            if m > 0.0 {
+                if let Some(cyl) = end_cylinder_solid(b, v, od, &faces, tool.bbox()) {
+                    tool = crate::boolean::boolean(&tool, &cyl, Op::Cut, tol).map(|r| r.body).map_err(|_| BlendError::code("blendFailed"))?;
+                }
+            }
+        }
     }
     let op = if convex { Op::Cut } else { Op::Union };
     // order: untouched; edge faces (ref order), end faces (start, end);
