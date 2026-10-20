@@ -46,7 +46,26 @@ pub struct BoolOut {
 /// first result that assembles into a closed manifold wins.
 pub fn boolean(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> {
     FAIL_DIAG.with(|d| d.borrow_mut().take());
-    boolean_inner(a, b, op, tol).map_err(|e| {
+    // Operands far from the origin (a part at 1e6 mm) lose precision to the absolute
+    // tolerances: welding and closest-point tests compare distances of ~1e-6 while f64
+    // squared distances near 1e12 resolve only ~1e-4. Move such operands to a local
+    // origin for the computation and move the result back. A part whose offset is small
+    // against its own size keeps the direct path (bit-identical results at normal offsets).
+    let local = local_origin(a, b);
+    let out = match local {
+        Some(o) => {
+            let mut al = a.clone();
+            let mut bl = b.clone();
+            al.transform(&Xform::translation(-o));
+            bl.transform(&Xform::translation(-o));
+            boolean_inner(&al, &bl, op, tol).map(|mut r| {
+                r.body.transform(&Xform::translation(o));
+                r
+            })
+        }
+        None => boolean_inner(a, b, op, tol),
+    };
+    out.map_err(|e| {
         // a failure after the time budget ran out is the budget's, not the geometry's
         if ck_core::budget::expired() {
             return BUDGET_EXCEEDED.to_string();
@@ -63,6 +82,17 @@ pub fn boolean(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> 
             },
         }
     })
+}
+
+/// Centre of the operands' combined box when it is far from the origin relative to their
+/// size (the offset a part at 1e6 mm has against a 30 mm body); `None` for ordinary parts.
+fn local_origin(a: &Body, b: &Body) -> Option<Vec3> {
+    let (alo, ahi) = a.bbox();
+    let (blo, bhi) = b.bbox();
+    let (lo, hi) = (alo.min(blo), ahi.max(bhi));
+    let c = (lo + hi) * 0.5;
+    let diag = (hi - lo).len().max(1.0);
+    (c.len() > 1e4 * diag).then_some(c)
 }
 
 thread_local! {
