@@ -160,12 +160,28 @@ export function hasNameRefs(j: unknown): boolean {
   return false;
 }
 
+/** Feature keys that only label a feature in the tree; the kernel leaves them out of its regen cache key and never reads
+ *  them (docs/regen-cache.md, "Cosmetic fields"). */
+export const COSMETIC_KEYS: readonly string[] = ['group', 'name', 'autoName', 'visible', 'userHidden'];
+
+/** Does this op change nothing but cosmetic keys of the features it names? A `set` of one (path head), or a `replace` whose
+ *  feature equals the current one but for them. */
+export function isCosmeticOp(doc: PartDoc, op: EditOp): boolean {
+  if (op.op === 'set') return COSMETIC_KEYS.includes(op.path.split('.')[0]);
+  if (op.op !== 'replace') return false;
+  const cur = doc.features.find((f) => f.id === op.id) as unknown as Record<string, unknown> | undefined;
+  if (!cur) return false;
+  const strip = (f: Record<string, unknown>) => JSON.stringify(Object.fromEntries(Object.entries(f).filter(([k]) => !COSMETIC_KEYS.includes(k))));
+  return strip(cur) === strip(op.feature as unknown as Record<string, unknown>);
+}
+
 /** Can the reference check say anything about this batch? Not when it only appends features, and not when it only `set`s
  *  parameters of features at or after which no feature carries a face / edge name reference: a reference is compared
  *  against the body just before the feature that holds it, and that body only changes for features after the first
  *  edited one. (`remove`, `move`, `add` in the middle and `replace` always need the check.) */
 export function refCheckNeeded(before: PartDoc, candidate: PartDoc, ops: EditOp[]): boolean {
   if (ops.every((o) => o.op === 'add' && (o.index === undefined || o.index >= before.features.length))) return false;
+  if (ops.every((o) => isCosmeticOp(before, o))) return false;   // a label cannot re-point a reference
   if (!ops.every((o) => o.op === 'set')) return true;
   const first = Math.min(...ops.map((o) => before.features.findIndex((f) => f.id === (o as { id: string }).id)));
   if (!Number.isFinite(first) || first < 0) return true;
