@@ -1651,10 +1651,33 @@ fn blend_edge_hint_inner(
             ends.len() == 1 && matches!(b.face(ends[0]).surface, Surface::Plane { .. }) && b.planar_normal(ends[0]).dot(out) < -1e-9
         };
         let near = |q: Vec3, p: Vec3, o: Vec3| (q - p).cross(dir).len() <= 1e-6 && q.dist(p) < q.dist(o);
-        if flush_end(ed.v0, -dir) || junc.flush.iter().any(|&q| near(q, p0, p1)) {
+        // the edge goes on past the vertex as a smooth (G1) edge of the same
+        // line: nothing there to round, so the tool stops at the vertex
+        // (e.g. a slot cut through a rounded end leaves the rim edge between
+        // the slot walls, continued by the tangent rim of the round)
+        let smooth_run_on = |v: ck_topo::body::VertexId, out: Vec3| -> bool {
+            let pv = b.vertex(v).p;
+            b.edge_ids().filter(|&x| x != e && (b.edge(x).v0 == v || b.edge(x).v1 == v)).any(|x| {
+                let ex = b.edge(x);
+                let away = if ex.v0 == v { ex.curve.tangent(ex.t0) } else { -ex.curve.tangent(ex.t1) };
+                if away.len() < 1e-12 || away.normalize().cross(out).len() > 1e-6 || away.normalize().dot(out) < 0.5 {
+                    return false;
+                }
+                let fs = b.edge_faces(x);
+                if fs.len() != 2 {
+                    return false;
+                }
+                let nrm = |f: FaceId| {
+                    let (u, w) = b.face(f).surface.closest_param(pv);
+                    b.outward_normal(f, u, w).normalize()
+                };
+                (1.0 - nrm(fs[0]).dot(nrm(fs[1]))).abs() < 1e-9
+            })
+        };
+        if flush_end(ed.v0, -dir) || smooth_run_on(ed.v0, -dir) || junc.flush.iter().any(|&q| near(q, p0, p1)) {
             m0 = 0.0;
         }
-        if flush_end(ed.v1, dir) || junc.flush.iter().any(|&q| near(q, p1, p0)) {
+        if flush_end(ed.v1, dir) || smooth_run_on(ed.v1, dir) || junc.flush.iter().any(|&q| near(q, p1, p0)) {
             m1 = 0.0;
         }
     } else if convex && circ.is_none() && !junc.flush.is_empty() {
