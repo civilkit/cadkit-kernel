@@ -80,8 +80,8 @@ fn norm(v: &[f64]) -> f64 {
 }
 
 /// Incremental row-space basis (orthonormal rows).
-struct Basis {
-    q: Vec<Vec<f64>>,
+pub(crate) struct Basis {
+    pub(crate) q: Vec<Vec<f64>>,
 }
 
 impl Basis {
@@ -113,6 +113,50 @@ impl Basis {
     }
 }
 
+/// Solve at the sketch's coordinates (or converge from them): the
+/// coordinates the Jacobian is taken at, whether they satisfy the
+/// constraints, the residuals there, and the largest residual the drawn
+/// coordinates had (`SketchStatus::residual`).
+pub(crate) struct Converge {
+    pub x: Vec<f64>,
+    pub solved: bool,
+    pub res: Vec<f64>,
+    pub residual: f64,
+}
+
+pub(crate) fn converge(sys: &super::solver::System) -> Converge {
+    let mut x = sys.x.clone();
+    let res0 = residuals(sys, &x);
+    let residual = res0.iter().fold(0.0f64, |m, v| if v.is_nan() || m.is_nan() { f64::NAN } else { m.max(v.abs()) });
+    let mut res = res0;
+    let mut solved = residual <= SOLVED_TOL;
+    if !solved {
+        let t = solve(sys, &SolveOpts::default());
+        if t.ok {
+            solved = true;
+            x = t.x;
+            res = residuals(sys, &x);
+        }
+    }
+    Converge { x, solved, res, residual }
+}
+
+/// Orthonormal row basis plus per-equation dependence flags: equations are
+/// taken in solver order, the later dependent one is flagged.
+pub(crate) fn row_basis(jac: &[Vec<(usize, f64)>], n: usize) -> (Basis, Vec<bool>) {
+    let mut basis = Basis { q: Vec::new() };
+    let mut dependent = vec![false; jac.len()];
+    let mut row = vec![0.0; n];
+    for (i, sparse) in jac.iter().enumerate() {
+        row.iter_mut().for_each(|a| *a = 0.0);
+        for &(c, v) in sparse {
+            row[c] = v;
+        }
+        dependent[i] = !basis.add(&row);
+    }
+    (basis, dependent)
+}
+
 pub fn sketch_status(sk: &Sketch) -> SketchStatus {
     let sys = match build(sk) {
         Ok(s) => s,
@@ -122,30 +166,9 @@ pub fn sketch_status(sk: &Sketch) -> SketchStatus {
         }
     };
     let n = sys.x.len();
-    let mut x = sys.x.clone();
-    let res0 = residuals(&sys, &x);
-    let residual = res0.iter().fold(0.0f64, |m, v| if v.is_nan() || m.is_nan() { f64::NAN } else { m.max(v.abs()) });
-    let mut res = res0;
-    let mut solved = residual <= SOLVED_TOL;
-    if !solved {
-        let t = solve(&sys, &SolveOpts::default());
-        if t.ok {
-            solved = true;
-            x = t.x;
-            res = residuals(&sys, &x);
-        }
-    }
+    let Converge { mut x, solved, res, residual } = converge(&sys);
     let jac = jacobian(&sys, &mut x);
-    let mut basis = Basis { q: Vec::new() };
-    let mut dependent = vec![false; sys.eqs.len()];
-    let mut row = vec![0.0; n];
-    for (i, sparse) in jac.iter().enumerate() {
-        row.iter_mut().for_each(|a| *a = 0.0);
-        for &(c, v) in sparse {
-            row[c] = v;
-        }
-        dependent[i] = !basis.add(&row);
-    }
+    let (basis, dependent) = row_basis(&jac, n);
     let rank = basis.q.len();
     let mut conflicts: Vec<String> = Vec::new();
     let mut redundant: Vec<String> = Vec::new();

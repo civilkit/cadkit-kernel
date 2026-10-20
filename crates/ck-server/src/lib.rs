@@ -111,6 +111,7 @@ pub const REQUEST_TYPES: &[(&str, Handler)] = &[
     ("profiles", agent::profiles),
     // Extension: read-only sketch analysis (findings, chains, profile reason).
     ("sketchAnalyze", agent::sketch_analyze),
+    ("sketchFreedoms", agent::sketch_freedoms),
     // Extension: body-level boolean between lumps of the current body (preview, nothing committed).
     ("bodyBoolean", geometry::body_boolean),
 ];

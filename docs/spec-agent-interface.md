@@ -1018,6 +1018,55 @@ with a 0.02 mm gap, duplicate line, overlapping collinear lines, tee
 junction, zero-length line, self-crossing bow-tie, a clean square (no
 findings).
 
+## Sketch freedoms: `sketchFreedoms`
+
+What the solver can still move in one sketch — per point, per radius and
+per entity — from the null space of the Jacobian at the solution. The
+build, convergence and rank are the regen `status` block's
+(`opts.sketchStatus: true`), so `dof` is exactly its `dof`.
+
+```json
+{"type":"sketchFreedoms","featureId":"F1"}
+{"type":"sketchFreedoms","part":<part json>,"featureId":"F1"}
+```
+
+```json
+-> {"dof":1,"solved":true,
+    "points":[{"id":"o","free":0},{"id":"p","free":1,"dir":[0,1]}],
+    "radii":[{"id":"e1","free":false}],
+    "entities":[{"id":"e1","kind":"circle","free":0}]}
+```
+
+* `points` (every sketch point, document order): `free` is the rank of the
+  point's projected motions in the null space — `0` fixed or fully
+  determined, `1` exactly `dir` (unit sketch direction, sign-normalised:
+  the larger component positive, ties to x), `2` any direction in the
+  plane. A pinned point of a rigid body reports `free: 0`; a point moving
+  only along one line of a wider null space reports `1`.
+* `radii` (circles, ellipses, arcs): `free` when some null-space motion
+  changes the radius — circles/ellipses through their `r` unknown (an
+  `ext`/`from` driven radius has no unknown and is never free), arcs
+  through `dr = u·(motion of p1 - motion of c)` at the solved coordinates
+  (arcs carry no radius unknown).
+* `entities` (every entity, document order): `free` = the sum of the
+  referenced points' `free` plus 1 for its own free radius — a free circle
+  counts 3 (centre 2 + radius 1); a point shared by two lines counts in
+  both.
+* `dof` = unknowns - rank; `solved` as in `status`. If the system cannot
+  be built every non-fixed point counts 2, no radius is free and `solved`
+  is false (the `status` fallback).
+
+Errors carry the `sketchFreedoms:` prefix with the `sketchAnalyze` texts;
+null without a body or `part` behaves like `sketchAnalyze`.
+
+Fixtures (unit tests in `crates/ck-model/src/sketch/analyze.rs`): a free
+point (2), a horizontal line pinned at one end (the free end moves in x),
+a fully defined rectangle (0), a corner-pinned rectangle (width and
+height modes), a circle (centre 2 + radius) against the same circle with
+a radius constraint (radius not free), a point on a radius-constrained
+circle (tangent direction), an arc whose centre and end are fixed
+(radius not free), and an unbuildable sketch (fallback).
+
 ## Acceptance
 
 - A scripted agent session (no human) builds the benchmark parts in

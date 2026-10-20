@@ -157,11 +157,10 @@ fn ref_diff_is_quiet_for_dimension_edits_and_flags_repoints() {
     assert!(r.get_arr("warnings").unwrap().iter().any(|w| w.get_str("code") == Some("referenceLost")), "{}", ck_json::to_string(&r));
 }
 
-/// One open chain with a 0.0206 gap: `sketchAnalyze` through the full
-/// server path — inline `part`, then the tag's snapshot, then the errors.
-#[test]
-fn sketch_analyze_replies_findings_chains_and_profile_reason() {
-    const PART: &str = r#"{"format":"ck-part","version":1,"features":[
+/// One open sketch (F1: four lines, six points, a 0.0206 gap, one
+/// dangling line) plus a closed square (F2) extruded to a body (F3) so a
+/// tag query has state.
+const SA_PART: &str = r#"{"format":"ck-part","version":1,"features":[
 {"type":"sketch","id":"F1","plane":{"kind":"std","id":"top"},
 "points":[{"id":"p1","x":0,"y":0},{"id":"p2","x":10,"y":0},{"id":"p3","x":4,"y":0.005},{"id":"p4","x":10.02,"y":0.005},{"id":"p5","x":20,"y":0},{"id":"p6","x":20.1,"y":0}],
 "entities":[{"type":"line","id":"e1","p1":"p1","p2":"p2"},{"type":"line","id":"e3","p1":"p1","p2":"p3"},{"type":"line","id":"e2","p1":"p3","p2":"p4"},{"type":"line","id":"e4","p1":"p5","p2":"p6"}],
@@ -172,8 +171,13 @@ fn sketch_analyze_replies_findings_chains_and_profile_reason() {
 {"type":"line","id":"f3","p1":"q3","p2":"q4"},{"type":"line","id":"f4","p1":"q4","p2":"q1"}],
 "constraints":[]},
 {"type":"extrude","id":"F3","op":"add","sketch":"F2","end":"blind","depth":5}]}"#;
+
+/// One open chain with a 0.0206 gap: `sketchAnalyze` through the full
+/// server path — inline `part`, then the tag's snapshot, then the errors.
+#[test]
+fn sketch_analyze_replies_findings_chains_and_profile_reason() {
     let gap = 0.02f64.hypot(0.005);
-    let r = call(&format!(r#"{{"type":"sketchAnalyze","featureId":"F1","part":{PART}}}"#));
+    let r = call(&format!(r#"{{"type":"sketchAnalyze","featureId":"F1","part":{SA_PART}}}"#));
     assert_eq!(r.get_f64("tolerance"), Some(0.01));
     assert_eq!(r.get_f64("tiny"), Some(0.001));
     let fs = r.get_arr("findings").unwrap();
@@ -201,7 +205,7 @@ fn sketch_analyze_replies_findings_chains_and_profile_reason() {
     assert!((why.get_f64("gap").unwrap() - 0.1).abs() < 1e-9);
 
     // tolerance: 0.03 admits the near pair the default rejects
-    let r2 = call(&format!(r#"{{"type":"sketchAnalyze","featureId":"F1","tolerance":0.03,"part":{PART}}}"#));
+    let r2 = call(&format!(r#"{{"type":"sketchAnalyze","featureId":"F1","tolerance":0.03,"part":{SA_PART}}}"#));
     let fs2 = r2.get_arr("findings").unwrap();
     let nc: Vec<&Json> = fs2.iter().filter(|f| f.get_str("kind") == Some("nearCoincident")).collect();
     assert_eq!(nc.len(), 1, "{}", ck_json::to_string(&r2));
@@ -211,7 +215,7 @@ fn sketch_analyze_replies_findings_chains_and_profile_reason() {
     assert!((nc[0].get_f64("distance").unwrap() - gap).abs() < 1e-12);
 
     // the same reply from the tag's snapshot (no inline part)
-    call(&format!(r#"{{"type":"regen","tag":"sa","part":{PART}}}"#));
+    call(&format!(r#"{{"type":"regen","tag":"sa","part":{SA_PART}}}"#));
     let r3 = call(r#"{"type":"sketchAnalyze","tag":"sa","featureId":"F1"}"#);
     assert_eq!(r3.get_arr("findings").unwrap().iter().filter(|f| f.get_str("kind") == Some("openEnd")).count(), 4);
 
@@ -222,4 +226,39 @@ fn sketch_analyze_replies_findings_chains_and_profile_reason() {
     let e = call_raw(r#"{"type":"sketchAnalyze","tag":"sa","featureId":"F9"}"#);
     assert_eq!(e.get("ok"), Some(&Json::Bool(false)));
     assert_eq!(e.get_str("error"), Some("sketchAnalyze: sketch F9 not found"));
+}
+
+/// `sketchFreedoms` through the full server path: F1's six unconstrained
+/// points (12 dof), the snapshot path, and the error strings.
+#[test]
+fn sketch_freedoms_replies_points_radii_and_entities() {
+    let r = call(&format!(r#"{{"type":"sketchFreedoms","featureId":"F1","part":{SA_PART}}}"#));
+    assert_eq!(r.get_f64("dof"), Some(12.0), "{}", ck_json::to_string(&r));
+    assert_eq!(r.get("solved"), Some(&Json::Bool(true)));
+    let pts = r.get_arr("points").unwrap();
+    assert_eq!(pts.len(), 6, "{}", ck_json::to_string(&r));
+    for p in pts {
+        assert_eq!(p.get_f64("free"), Some(2.0), "{p:?}");
+        assert!(p.get("dir").is_none());
+    }
+    assert_eq!(r.get_arr("radii").unwrap().len(), 0);
+    let ents = r.get_arr("entities").unwrap();
+    assert_eq!(ents.len(), 4, "{}", ck_json::to_string(&r));
+    for e in ents {
+        assert_eq!(e.get_str("kind"), Some("line"));
+        assert_eq!(e.get_f64("free"), Some(4.0), "{e:?}"); // both ends free in 2
+    }
+
+    // the same reply from the tag's snapshot
+    call(&format!(r#"{{"type":"regen","tag":"sf","part":{SA_PART}}}"#));
+    let r2 = call(r#"{"type":"sketchFreedoms","tag":"sf","featureId":"F1"}"#);
+    assert_eq!(r2.get_f64("dof"), Some(12.0), "{}", ck_json::to_string(&r2));
+
+    // error strings, never a trap
+    let e = call_raw(r#"{"type":"sketchFreedoms","tag":"sf"}"#);
+    assert_eq!(e.get("ok"), Some(&Json::Bool(false)));
+    assert_eq!(e.get_str("error"), Some("sketchFreedoms: featureId must be a string"));
+    let e = call_raw(r#"{"type":"sketchFreedoms","tag":"sf","featureId":"F9"}"#);
+    assert_eq!(e.get("ok"), Some(&Json::Bool(false)));
+    assert_eq!(e.get_str("error"), Some("sketchFreedoms: sketch F9 not found"));
 }

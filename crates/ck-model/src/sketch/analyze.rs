@@ -1,6 +1,7 @@
-//! Read-only sketch analysis (`sketchAnalyze`): structural findings, chains
+//! Read-only sketch analysis: `sketchAnalyze` (structural findings, chains
 //! and the profile reason, so an agent gets exact, structured feedback
-//! instead of a bare `noClosedProfile`.
+//! instead of a bare `noClosedProfile`) and `sketchFreedoms` (what the
+//! solver can still move: per point, per radius, per entity).
 //!
 //! Additive: the oracle kernel carries no sketch-analysis query or finding
 //! names (searched: `strings` of `kernel.wasm` and the wasm2c dump
@@ -11,8 +12,12 @@
 //! names below are ours.
 //!
 //! Nothing here builds regions or touches `profile`; the analysis reads the
-//! sketch document only.
+//! sketch document only. `freedoms` shares `status::sketch_status`'s build,
+//! convergence and rank (same `dof`), and adds the null-space completion.
+//!
 
+use super::solver::{build, jacobian};
+use super::status::{converge, row_basis, Converge};
 use super::{Sketch, SketchEntity};
 use ck_json::{Json, Obj};
 
@@ -152,6 +157,239 @@ impl Analysis {
             .put("profile", profile.build())
             .build()
     }
+}
+
+
+/// One point's freedom: how many independent directions remain for it in
+/// the null space of the Jacobian (0 = fixed or fully determined, 1 =
+/// exactly `dir`, 2 = any direction in the sketch plane). A point with no
+/// unknowns (fixed) and a point the constraints pin are both `free: 0`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PointFreedom {
+    pub id: String,
+    pub free: usize,
+    /// Only for `free == 1`: a unit direction, sign-normalised (the larger
+    /// component positive, ties to x).
+    pub dir: Option<[f64; 2]>,
+}
+
+/// One circle/ellipse/arc radius: free when some null-space motion still
+/// changes it (arcs have no radius unknown — derived from their endpoints).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RadiusFreedom {
+    pub id: String,
+    pub free: bool,
+}
+
+/// Per-entity summary: the freedoms of its referenced points plus one when
+/// its own radius is free (a free circle counts centre 2 + radius 1 = 3).
+/// Shared points count in every entity that references them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EntityFreedom {
+    pub id: String,
+    pub kind: &'static str,
+    pub free: usize,
+}
+
+/// The `sketchFreedoms` reply: solver degrees of freedom and what they mean
+/// per point, radius and entity.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Freedoms {
+    /// Unknowns - rank, exactly `status::sketch_status().dof`.
+    pub dof: usize,
+    /// The drawn coordinates satisfy every constraint, or converge.
+    pub solved: bool,
+    pub points: Vec<PointFreedom>,
+    pub radii: Vec<RadiusFreedom>,
+    pub entities: Vec<EntityFreedom>,
+}
+
+impl Freedoms {
+    pub fn to_json(&self) -> Json {
+        let arr = |v: Vec<Json>| Json::Arr(v);
+        Obj::new()
+            .put("dof", self.dof as f64)
+            .put("solved", self.solved)
+            .put(
+                "points",
+                arr(
+                    self.points
+                        .iter()
+                        .map(|p| {
+                            let mut o = Obj::new().put("id", p.id.as_str()).put("free", p.free as f64);
+                            if let Some(d) = p.dir {
+                                o = o.put("dir", Json::Arr(vec![Json::Num(d[0]), Json::Num(d[1])]));
+                            }
+                            o.build()
+                        })
+                        .collect(),
+                ),
+            )
+            .put(
+                "radii",
+                arr(self.radii.iter().map(|r| Obj::new().put("id", r.id.as_str()).put("free", r.free).build()).collect()),
+            )
+            .put(
+                "entities",
+                arr(
+                    self.entities
+                        .iter()
+                        .map(|e| Obj::new().put("id", e.id.as_str()).put("kind", e.kind).put("free", e.free as f64).build())
+                        .collect(),
+                ),
+            )
+            .build()
+    }
+}
+
+/// Sign-normalise a direction: unit length, the larger component positive,
+/// x wins a tie, `-0.0` folded to `0.0`.
+fn sign_norm(v: [f64; 2]) -> [f64; 2] {
+    let l = v[0].hypot(v[1]);
+    let [a, b] = [v[0] / l, v[1] / l];
+    let flip = if a.abs() >= b.abs() { a < 0.0 } else { b < 0.0 };
+    let [a, b] = if flip { [-a, -b] } else { [a, b] };
+    [a + 0.0, b + 0.0]
+}
+
+fn entity_freedoms(sk: &Sketch, points: &[PointFreedom], radii: &[RadiusFreedom]) -> Vec<EntityFreedom> {
+    sk.entities
+        .iter()
+        .map(|e| {
+            let mut free: usize = e.point_ids().into_iter().map(|pid| points.iter().find(|p| p.id == pid).map_or(0, |p| p.free)).sum();
+            if matches!(e, SketchEntity::Circle { .. } | SketchEntity::Ellipse { .. } | SketchEntity::Arc { .. }) {
+                free += radii.iter().find(|r| r.id == e.id()).map_or(0, |r| usize::from(r.free));
+            }
+            EntityFreedom { id: e.id().to_string(), kind: e.type_name(), free }
+        })
+        .collect()
+}
+
+/// Solver freedoms (`sketchFreedoms`): build + converge exactly like
+/// `status::sketch_status` (so `dof` agrees with it), then complete the row
+/// basis to a basis of the Jacobian's null space and project it onto each
+/// point's `x`/`y` unknowns (rank 0/1/2 = `free`, the sole direction when
+/// 1) and onto each radius (circles/ellipses via their `r` unknown, arcs
+/// via `dr = u·(motion of p1 - motion of c)` at the solved coordinates).
+/// If the system cannot be built every non-fixed point counts 2 and no
+/// radius is free — `sketch_status`'s fallback.
+pub fn freedoms(sk: &Sketch) -> Freedoms {
+    let Ok(sys) = build(sk) else {
+        let points = sk
+            .points
+            .iter()
+            .map(|p| PointFreedom { id: p.id.clone(), free: if p.fixed { 0 } else { 2 }, dir: None })
+            .collect::<Vec<_>>();
+        let radii = sk
+            .entities
+            .iter()
+            .filter(|e| matches!(e, SketchEntity::Circle { .. } | SketchEntity::Ellipse { .. } | SketchEntity::Arc { .. }))
+            .map(|e| RadiusFreedom { id: e.id().to_string(), free: false })
+            .collect::<Vec<_>>();
+        let dof = sk.points.iter().filter(|p| !p.fixed).count() * 2;
+        let entities = entity_freedoms(sk, &points, &radii);
+        return Freedoms { dof, solved: false, points, radii, entities };
+    };
+    let n = sys.x.len();
+    let Converge { mut x, solved, .. } = converge(&sys);
+    let jac = jacobian(&sys, &mut x);
+    let (basis, _) = row_basis(&jac, n);
+    let dof = n - basis.q.len();
+    // Null space: each unit vector projected off the row space, then
+    // Gram-Schmidt — the projected units span exactly the null space.
+    let mut nulls: Vec<Vec<f64>> = Vec::new();
+    for i in 0..n {
+        let mut z = vec![0.0; n];
+        z[i] = 1.0;
+        for q in &basis.q {
+            let d = q[i];
+            for (a, b) in z.iter_mut().zip(q) {
+                *a -= d * b;
+            }
+        }
+        for g in &nulls {
+            let d: f64 = z.iter().zip(g).map(|(a, b)| a * b).sum();
+            for (a, b) in z.iter_mut().zip(g) {
+                *a -= d * b;
+            }
+        }
+        let l = z.iter().map(|a| a * a).sum::<f64>().sqrt();
+        if l > 1e-9 {
+            for a in z.iter_mut() {
+                *a /= l;
+            }
+            nulls.push(z);
+        }
+    }
+    // every point's projected motion in its own x/y plane
+    let mut points = Vec::new();
+    for p in &sk.points {
+        let (Some(cx), Some(cy)) = (
+            sys.key_idx.get(&format!("{}.x", p.id)).copied(),
+            sys.key_idx.get(&format!("{}.y", p.id)).copied(),
+        ) else {
+            points.push(PointFreedom { id: p.id.clone(), free: 0, dir: None });
+            continue;
+        };
+        let mut base: Option<[f64; 2]> = None;
+        let mut two = false;
+        for z in &nulls {
+            let v = [z[cx], z[cy]];
+            if v[0].abs() <= 1e-9 && v[1].abs() <= 1e-9 {
+                continue;
+            }
+            match base {
+                None => base = Some(v),
+                Some(b) if !two => {
+                    let cr = (b[0] * v[1] - b[1] * v[0]).abs();
+                    let scale = (b[0] * b[0] + b[1] * b[1]).sqrt() * (v[0] * v[0] + v[1] * v[1]).sqrt();
+                    if cr > 1e-9 * scale {
+                        two = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let free = if two { 2 } else { base.is_some() as usize };
+        let dir = if free == 1 { base.map(sign_norm) } else { None };
+        points.push(PointFreedom { id: p.id.clone(), free, dir });
+    }
+    // radii
+    let pos_of = |pid: &str| -> [f64; 2] {
+        match (sys.key_idx.get(&format!("{pid}.x")), sys.key_idx.get(&format!("{pid}.y"))) {
+            (Some(&i), Some(&j)) => [x[i], x[j]],
+            _ => sk.point_xy(pid).unwrap_or([0.0, 0.0]),
+        }
+    };
+    let mut radii = Vec::new();
+    for e in &sk.entities {
+        let (id, free) = match e {
+            SketchEntity::Circle { id, .. } | SketchEntity::Ellipse { id, .. } => {
+                let free = sys.key_idx.get(&format!("{id}.r")).is_some_and(|&k| nulls.iter().any(|z| z[k].abs() > 1e-9));
+                (id.clone(), free)
+            }
+            SketchEntity::Arc { id, c, p1, .. } => {
+                let (cp, a) = (pos_of(c), pos_of(p1));
+                let r = (a[0] - cp[0]).hypot(a[1] - cp[1]);
+                let u = if r > 1e-12 { [(a[0] - cp[0]) / r, (a[1] - cp[1]) / r] } else { [0.0, 0.0] };
+                let free = nulls.iter().any(|z| {
+                    let d = |pid: &str| -> [f64; 2] {
+                        match (sys.key_idx.get(&format!("{pid}.x")), sys.key_idx.get(&format!("{pid}.y"))) {
+                            (Some(&i), Some(&j)) => [z[i], z[j]],
+                            _ => [0.0, 0.0],
+                        }
+                    };
+                    let (ma, mc) = (d(p1), d(c));
+                    (u[0] * (ma[0] - mc[0]) + u[1] * (ma[1] - mc[1])).abs() > 1e-9
+                });
+                (id.clone(), free)
+            }
+            _ => continue,
+        };
+        radii.push(RadiusFreedom { id, free });
+    }
+    let entities = entity_freedoms(sk, &points, &radii);
+    Freedoms { dof, solved, points, radii, entities }
 }
 
 fn pos(sk: &Sketch, id: &str) -> Option<[f64; 2]> {
@@ -880,5 +1118,160 @@ mod tests {
         assert_eq!(clean.closed_chains, 1);
         let s2 = ck_json::to_string(&clean.to_json());
         assert!(!s2.contains("reason"), "{s2}");
+    }
+    // ---- sketchFreedoms fixtures
+
+    use crate::sketch::status::sketch_status;
+
+    fn status_dof(sk: &Sketch) -> usize {
+        sketch_status(sk).dof
+    }
+
+    #[test]
+    fn free_point_has_two_directions() {
+        let k = sk(r#"{"id":"p1","x":1,"y":2}"#, "", "");
+        let f = freedoms(&k);
+        assert_eq!((f.dof, f.solved), (2, true), "{f:?}");
+        assert_eq!(f.points, vec![PointFreedom { id: "p1".into(), free: 2, dir: None }]);
+        assert!(f.radii.is_empty() && f.entities.is_empty());
+        assert_eq!(f.dof, status_dof(&k));
+    }
+
+    #[test]
+    fn half_determined_line_is_one_direction() {
+        let k = sk(
+            r#"{"id":"p1","x":0,"y":0,"fixed":true},{"id":"p2","x":10,"y":0}"#,
+            r#"{"type":"line","id":"e1","p1":"p1","p2":"p2"}"#,
+            r#"{"type":"horizontal","id":"c1","refs":["e1"]}"#,
+        );
+        let f = freedoms(&k);
+        assert_eq!((f.dof, f.solved), (1, true), "{f:?}");
+        assert_eq!(f.dof, status_dof(&k));
+        assert_eq!(f.points[0], PointFreedom { id: "p1".into(), free: 0, dir: None });
+        assert_eq!(f.points[1], PointFreedom { id: "p2".into(), free: 1, dir: Some([1.0, 0.0]) });
+        assert_eq!(f.entities, vec![EntityFreedom { id: "e1".into(), kind: "line", free: 1 }]);
+    }
+
+    const RECT_PTS: &str = r#"{"id":"p1","x":0,"y":0},{"id":"p2","x":10,"y":0},{"id":"p3","x":10,"y":5},{"id":"p4","x":0,"y":5}"#;
+    const RECT_ENTS: &str = r#"{"type":"line","id":"e1","p1":"p1","p2":"p2"},{"type":"line","id":"e2","p1":"p2","p2":"p3"},
+        {"type":"line","id":"e3","p1":"p3","p2":"p4"},{"type":"line","id":"e4","p1":"p4","p2":"p1"}"#;
+    const HV: &str = r#"{"type":"horizontal","id":"c1","refs":["e1"]},{"type":"vertical","id":"c2","refs":["e2"]},
+        {"type":"horizontal","id":"c3","refs":["e3"]},{"type":"vertical","id":"c4","refs":["e4"]}"#;
+
+    #[test]
+    fn fully_defined_rectangle_has_no_freedoms() {
+        let cons = format!(
+            r#"{HV},{{"type":"fix","id":"c5","refs":["p1"],"value":[0,0]}},{{"type":"distance","id":"c6","refs":["p1","p2"],"value":10,"offset":null}},{{"type":"distance","id":"c7","refs":["p2","p3"],"value":5,"offset":null}}"#
+        );
+        let k = sk(RECT_PTS, RECT_ENTS, &cons);
+        let f = freedoms(&k);
+        assert_eq!((f.dof, f.solved), (0, true), "{f:?}");
+        assert_eq!(f.dof, status_dof(&k));
+        assert!(f.points.iter().all(|p| p.free == 0 && p.dir.is_none()), "{f:?}");
+        assert!(f.entities.iter().all(|e| e.free == 0), "{f:?}");
+    }
+
+    #[test]
+    fn rectangle_pinned_at_one_corner_keeps_its_two_shape_modes() {
+        let cons = format!(r#"{HV},{{"type":"fix","id":"c5","refs":["p1"],"value":[0,0]}}"#);
+        let k = sk(RECT_PTS, RECT_ENTS, &cons);
+        let f = freedoms(&k);
+        // H/V against a fixed corner pins p2.y and p4.x, leaving width and
+        // height: p2 slides in x, p4 slides in y, p3 is the corner of both
+        assert_eq!(f.dof, 2, "{f:?}");
+        assert_eq!(f.dof, status_dof(&k));
+        assert_eq!(f.points[0], PointFreedom { id: "p1".into(), free: 0, dir: None });
+        assert_eq!(f.points[1], PointFreedom { id: "p2".into(), free: 1, dir: Some([1.0, 0.0]) });
+        assert_eq!(f.points[2], PointFreedom { id: "p3".into(), free: 2, dir: None });
+        assert_eq!(f.points[3], PointFreedom { id: "p4".into(), free: 1, dir: Some([0.0, 1.0]) });
+        assert_eq!(f.entities, vec![
+            EntityFreedom { id: "e1".into(), kind: "line", free: 1 },
+            EntityFreedom { id: "e2".into(), kind: "line", free: 3 },
+            EntityFreedom { id: "e3".into(), kind: "line", free: 3 },
+            EntityFreedom { id: "e4".into(), kind: "line", free: 1 },
+        ]);
+    }
+
+    #[test]
+    fn circle_centre_and_radius_are_free_until_constrained() {
+        let k = sk(r#"{"id":"c","x":0,"y":0}"#, r#"{"type":"circle","id":"e1","c":"c","r":5}"#, "");
+        let f = freedoms(&k);
+        assert_eq!((f.dof, f.solved), (3, true), "{f:?}");
+        assert_eq!(f.dof, status_dof(&k));
+        assert_eq!(f.points[0], PointFreedom { id: "c".into(), free: 2, dir: None });
+        assert_eq!(f.radii, vec![RadiusFreedom { id: "e1".into(), free: true }]);
+        assert_eq!(f.entities, vec![EntityFreedom { id: "e1".into(), kind: "circle", free: 3 }]);
+        // a radius constraint pins the radius, not the centre
+        let k2 = sk(
+            r#"{"id":"c","x":0,"y":0}"#,
+            r#"{"type":"circle","id":"e1","c":"c","r":5}"#,
+            r#"{"type":"radius","id":"k1","refs":["e1"],"value":5}"#,
+        );
+        let f2 = freedoms(&k2);
+        assert_eq!((f2.dof, f2.solved), (2, true), "{f2:?}");
+        assert_eq!(f2.dof, status_dof(&k2));
+        assert_eq!(f2.points[0].free, 2);
+        assert_eq!(f2.radii, vec![RadiusFreedom { id: "e1".into(), free: false }]);
+        assert_eq!(f2.entities[0].free, 2);
+    }
+
+    #[test]
+    fn point_on_circle_frees_tangentially() {
+        let k = sk(
+            r#"{"id":"o","x":0,"y":0,"fixed":true},{"id":"p","x":5,"y":0}"#,
+            r#"{"type":"circle","id":"e1","c":"o","r":5}"#,
+            r#"{"type":"radius","id":"k1","refs":["e1"],"value":5},{"type":"pointOnCircle","id":"k2","refs":["p","e1"]}"#,
+        );
+        let f = freedoms(&k);
+        assert_eq!((f.dof, f.solved), (1, true), "{f:?}");
+        assert_eq!(f.dof, status_dof(&k));
+        assert_eq!(f.points[0], PointFreedom { id: "o".into(), free: 0, dir: None });
+        // tangent at (5,0): y only, sign-normalised positive
+        assert_eq!(f.points[1], PointFreedom { id: "p".into(), free: 1, dir: Some([0.0, 1.0]) });
+        assert_eq!(f.radii, vec![RadiusFreedom { id: "e1".into(), free: false }]);
+    }
+
+    #[test]
+    fn arc_radius_follows_its_fixed_end_and_centre() {
+        // centre and p1 fixed: the arc equation keeps |p2 - c|, so only p2
+        // moves (tangent), and no motion changes the radius
+        let k = sk(
+            r#"{"id":"c0","x":0,"y":0,"fixed":true},{"id":"a","x":10,"y":0,"fixed":true},{"id":"b","x":0,"y":10}"#,
+            r#"{"type":"arc","id":"e1","c":"c0","p1":"a","p2":"b"}"#,
+            "",
+        );
+        let f = freedoms(&k);
+        assert_eq!((f.dof, f.solved), (1, true), "{f:?}");
+        assert_eq!(f.dof, status_dof(&k));
+        assert_eq!(f.points[1], PointFreedom { id: "a".into(), free: 0, dir: None });
+        assert_eq!(f.points[2], PointFreedom { id: "b".into(), free: 1, dir: Some([1.0, 0.0]) });
+        assert_eq!(f.radii, vec![RadiusFreedom { id: "e1".into(), free: false }]);
+        assert_eq!(f.entities, vec![EntityFreedom { id: "e1".into(), kind: "arc", free: 1 }]);
+    }
+
+    #[test]
+    fn unbuildable_sketch_falls_back_to_two_per_free_point() {
+        // a constraint on a missing point makes the build fail (entities
+        // alone never do), so the status fallback applies
+        let k = sk(
+            r#"{"id":"p1","x":0,"y":0}"#,
+            r#"{"type":"line","id":"e1","p1":"p1","p2":"p2"}"#,
+            r#"{"type":"distance","id":"c1","refs":["p1","p9"],"value":5,"offset":null}"#,
+        );
+        let f = freedoms(&k);
+        assert_eq!((f.dof, f.solved), (2, false), "{f:?}");
+        assert_eq!(f.points, vec![PointFreedom { id: "p1".into(), free: 2, dir: None }]);
+        assert_eq!(f.entities, vec![EntityFreedom { id: "e1".into(), kind: "line", free: 2 }]);
+        assert_eq!(f.dof, status_dof(&k));
+    }
+
+    #[test]
+    fn freedoms_reply_shape() {
+        let f = freedoms(&sk(r#"{"id":"p1","x":1,"y":2}"#, "", ""));
+        let s = ck_json::to_string(&f.to_json());
+        assert!(s.contains("\"dof\":2"), "{s}");
+        assert!(s.contains("\"solved\":true"), "{s}");
+        assert!(s.contains("\"id\":\"p1\""), "{s}");
+        assert!(s.contains("\"free\":2"), "{s}");
     }
 }

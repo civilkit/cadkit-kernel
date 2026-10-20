@@ -139,6 +139,14 @@ pub fn analyze_q(cx: &Cx) -> Result<Json, String> {
     Ok(analyze::analyze(&sk, tol, tiny).to_json())
 }
 
+/// `{type:"sketchFreedoms", featureId, part?}`: what the solver can still
+/// move — per point 0/1/2 directions, per radius, per entity (see
+/// `analyze::freedoms`; the `dof` matches the regen `status` block).
+pub fn freedoms_q(cx: &Cx) -> Result<Json, String> {
+    let sk = sketch_for(cx, "sketchFreedoms")?;
+    Ok(analyze::freedoms(&sk).to_json())
+}
+
 /// `convert` with `{kind:"sketchCurve", sketch, entity}`: the entity
 /// re-projected into the target frame.
 pub fn convert(sketches: &[SketchResult], msg: &ck_json::Json) -> ck_json::Json {

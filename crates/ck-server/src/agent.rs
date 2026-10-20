@@ -166,3 +166,16 @@ pub fn sketch_analyze(cx: &mut Cx) -> Result<Json, String> {
     }
     null_or_query(cx, "sketchAnalyze")
 }
+
+/// `{type:"sketchFreedoms", featureId, tag? | part?}`: degrees of freedom
+/// of one sketch per point (0 / 1 with a direction / 2), per radius and
+/// per entity — the same build and rank as the regen `status` block
+/// (`dof` agrees with it). Read-only; `part` and null semantics exactly as
+/// `sketchAnalyze`.
+pub fn sketch_freedoms(cx: &mut Cx) -> Result<Json, String> {
+    if cx.msg.get("part").is_some() {
+        check_part(cx.msg.get("part"))?;
+        return cx.query("sketchFreedoms");
+    }
+    null_or_query(cx, "sketchFreedoms")
+}

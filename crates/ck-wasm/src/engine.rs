@@ -729,6 +729,7 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
         }
         // Extension: read-only sketch findings (ck-model sketch::analyze).
         "sketchAnalyze" => crate::sketch_q::analyze_q(cx),
+        "sketchFreedoms" => crate::sketch_q::freedoms_q(cx),
         "textMetrics" => ck_model::sketch::text::metrics_reply(cx.msg),
         "textOutline" => ck_model::sketch::text::outline_reply(cx.msg),
         "loadFont" => ck_model::sketch::text::load_font_reply(cx.msg),
