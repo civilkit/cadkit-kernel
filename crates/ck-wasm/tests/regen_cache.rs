@@ -181,3 +181,185 @@ fn view_snapshot_and_face_cache_are_transparent() {
     .join()
     .unwrap();
 }
+
+// ---------------------------------------------------------------- cosmetic fields (docs/regen-cache.md)
+
+const COSMETIC: [&str; 5] = ["group", "name", "autoName", "visible", "userHidden"];
+
+fn doc(extra_features: bool) -> Json {
+    let mut j = ck_json::parse(include_str!("fixtures/dome_cap.ckpart").trim()).unwrap();
+    if extra_features {
+        if let Some(Json::Arr(fs)) = j.get_mut("features") {
+            fs.push(ck_json::parse(r#"{"type":"plane","id":"P1","mode":"offset","base":{"kind":"std","id":"top"},"offset":30}"#).unwrap());
+            fs.push(ck_json::parse(r#"{"type":"sketch3d","id":"S3","points":[],"entities":[],"constraints":[]}"#).unwrap());
+        }
+    }
+    j
+}
+
+fn feats(j: &mut Json) -> &mut Vec<Json> {
+    match j.get_mut("features") {
+        Some(Json::Arr(a)) => a,
+        _ => panic!("no features"),
+    }
+}
+
+fn set_key(f: &mut Json, k: &str, v: Option<Json>) {
+    if let Json::Obj(m) = f {
+        m.retain(|(kk, _)| kk != k);
+        if let Some(v) = v {
+            m.push((k.to_string(), v));
+        }
+    }
+}
+
+/// The reply without the stats and timing, with the buffer area, for byte comparison.
+fn norm(r: &[u8]) -> (String, Vec<u8>) {
+    let jl = u32::from_le_bytes([r[0], r[1], r[2], r[3]]) as usize;
+    let mut j = ck_json::parse(std::str::from_utf8(&r[4..4 + jl]).unwrap()).unwrap();
+    if let Json::Obj(kv) = &mut j {
+        if let Some((_, Json::Obj(res))) = kv.iter_mut().find(|(k, _)| k == "result") {
+            res.retain(|(k, _)| k != "cacheStats");
+        }
+        kv.retain(|(k, _)| k != "ms" && k != "buffers_ms");
+    }
+    (ck_json::to_string(&j), r[(4 + jl + 7) & !7..].to_vec())
+}
+
+const STATS: &str = r#"{"cacheStats":true}"#;
+
+#[test]
+fn cosmetic_edits_keep_every_state_and_reply_like_cold() {
+    std::thread::spawn(|| {
+        let base = doc(true);
+        let n = base.get("features").and_then(|f| f.as_arr()).unwrap().len();
+        let base_s = ck_json::to_string(&base);
+        let warm = regen(&base_s, STATS, "main");
+        assert_eq!(stats(&warm).get_f64("ranFeatures"), Some(n as f64));
+        // group the first features (rows 0..3 into one folder), rename a sketch, hide the plane: nothing may run
+        let mut edited = base.clone();
+        for (i, f) in feats(&mut edited).iter_mut().enumerate() {
+            if i < 4 {
+                set_key(f, "group", Some(Json::Str("Folder".into())));
+            }
+        }
+        set_key(&mut feats(&mut edited)[0], "name", Some(Json::Str("Renamed sketch".into())));
+        set_key(&mut feats(&mut edited)[0], "autoName", Some(Json::Bool(false)));
+        set_key(&mut feats(&mut edited)[7], "visible", Some(Json::Bool(false)));
+        set_key(&mut feats(&mut edited)[7], "userHidden", Some(Json::Bool(true)));
+        set_key(&mut feats(&mut edited)[8], "group", Some(Json::Str("Folder".into())));
+        let es = ck_json::to_string(&edited);
+        let r = regen(&es, STATS, "main");
+        let st = stats(&r);
+        assert_eq!(st.get_bool("fullHit"), Some(true), "{}", ck_json::to_string(&st));
+        assert_eq!(st.get_f64("ranFeatures"), Some(0.0));
+        assert_eq!(st.get_f64("reusedFeatures"), Some(n as f64));
+        assert_eq!(st.get_bool("viewHit"), Some(true));
+        // ... and the reply is the one of a cold run of the edited document (the sketch echoes carry the new keys)
+        let c = cold(&es, STATS);
+        assert_eq!(norm(&r), norm(&c), "hit differs from cold");
+        assert!(ck_json::to_string(&parse(&r)).contains("Renamed sketch"), "the echo of the sketch shows the new name");
+        // the stored state was not corrupted: the original, the edited one, ungrouped, regrouped differently
+        let mut ungrouped = edited.clone();
+        for f in feats(&mut ungrouped).iter_mut() {
+            set_key(f, "group", None);
+        }
+        let mut regrouped = ungrouped.clone();
+        for f in feats(&mut regrouped).iter_mut().skip(2).take(3) {
+            set_key(f, "group", Some(Json::Str("B".into())));
+        }
+        for d in [&base, &ungrouped, &regrouped, &edited, &base] {
+            let ds = ck_json::to_string(d);
+            let r = regen(&ds, STATS, "main");
+            assert_eq!(stats(&r).get_f64("ranFeatures"), Some(0.0));
+            assert_eq!(norm(&r), norm(&cold(&ds, STATS)));
+        }
+        // a cosmetic edit after a real edit at the end reruns only that feature
+        let mut tail = base.clone();
+        set_key(&mut feats(&mut tail)[6], "radius", Some(Json::Num(1.5)));
+        regen(&ck_json::to_string(&tail), "{}", "main");
+        for f in feats(&mut tail).iter_mut().take(3) {
+            set_key(f, "group", Some(Json::Str("G".into())));
+        }
+        let ts = ck_json::to_string(&tail);
+        let r = regen(&ts, STATS, "main");
+        assert_eq!(stats(&r).get_f64("ranFeatures"), Some(0.0));
+        assert_eq!(norm(&r), norm(&cold(&ts, STATS)));
+    })
+    .join()
+    .unwrap();
+}
+
+/// A cosmetic key can only reach a reply through the echo of a sketch / sketch3d: with every key set on every feature,
+/// the cold reply equals the plain one once those keys are removed from the echoes.
+#[test]
+fn cosmetic_keys_reach_the_reply_only_through_sketch_echoes() {
+    std::thread::spawn(|| {
+        let base = doc(true);
+        let mut all = base.clone();
+        for (i, f) in feats(&mut all).iter_mut().enumerate() {
+            set_key(f, "group", Some(Json::Str(format!("G{}", i / 3))));
+            set_key(f, "name", Some(Json::Str(format!("Name {i}"))));
+            set_key(f, "autoName", Some(Json::Bool(i % 2 == 0)));
+            set_key(f, "visible", Some(Json::Bool(i % 2 == 1)));
+            set_key(f, "userHidden", Some(Json::Bool(i % 3 == 0)));
+        }
+        let strip_echo = |r: &[u8]| {
+            let mut j = parse(r);
+            if let Some(Json::Obj(res)) = j.get_mut("result") {
+                for (k, v) in res.iter_mut() {
+                    if k == "sketches" || k == "sketches3" {
+                        if let Json::Arr(items) = v {
+                            for it in items {
+                                if let Json::Arr(pair) = it {
+                                    if let Some(Json::Obj(o)) = pair.get_mut(1) {
+                                        if let Some((_, Json::Obj(sk))) = o.iter_mut().find(|(k, _)| k == "sketch") {
+                                            sk.retain(|(k, _)| !COSMETIC.contains(&k.as_str()));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            ck_json::to_string(&j)
+        };
+        let a = cold(&ck_json::to_string(&base), "{}");
+        let b = cold(&ck_json::to_string(&all), "{}");
+        assert_ne!(a, b, "the echo shows the keys");
+        assert_eq!(strip_echo(&a), strip_echo(&b));
+        let ja = a[(4 + u32::from_le_bytes([a[0], a[1], a[2], a[3]]) as usize + 7) & !7..].to_vec();
+        let jb = b[(4 + u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize + 7) & !7..].to_vec();
+        assert_eq!(ja, jb, "buffers (meshes) do not depend on them");
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn other_keys_still_rerun() {
+    std::thread::spawn(|| {
+        let base = doc(false);
+        let regen_stats = |j: &Json| stats(&regen(&ck_json::to_string(j), STATS, "main"));
+        regen_stats(&base);
+        let mut sup = base.clone();
+        set_key(&mut feats(&mut sup)[1], "suppressed", Some(Json::Bool(true)));
+        let st = regen_stats(&sup);
+        assert_eq!(st.get_f64("reusedFeatures"), Some(1.0), "suppressed is not cosmetic");
+        let mut note = base.clone();
+        set_key(&mut feats(&mut note)[2], "note", Some(Json::Str("x".into())));
+        assert_eq!(regen_stats(&note).get_f64("reusedFeatures"), Some(2.0), "unknown keys stay in the key");
+        let mut dep = base.clone();
+        set_key(&mut feats(&mut dep)[3], "depth", Some(Json::Num(3.0)));
+        assert_eq!(regen_stats(&dep).get_f64("reusedFeatures"), Some(3.0));
+        // a `name` nested in a feature (a profile, an inserted part) is not a feature label
+        let mut nested = base.clone();
+        set_key(&mut feats(&mut nested)[4], "meta", Some(ck_json::parse(r#"{"name":"a"}"#).unwrap()));
+        regen_stats(&nested);
+        set_key(&mut feats(&mut nested)[4], "meta", Some(ck_json::parse(r#"{"name":"b"}"#).unwrap()));
+        assert_eq!(regen_stats(&nested).get_f64("reusedFeatures"), Some(4.0));
+    })
+    .join()
+    .unwrap();
+}

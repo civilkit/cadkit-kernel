@@ -54,10 +54,49 @@ on. The regen tag (`main`, `preview`, ...) is NOT part of the key: a
   feature counters keeps the cache warm.
 
 `keys[i+1] = SHA256(keys[i] || json(feature i))` where `json` is the feature
-object exactly as received (key order and all UI fields included, so any
-edit of a feature, even a rename, invalidates that feature and everything
-after it; this is conservative on purpose). Hash equality therefore means an
+object exactly as received (key order included) minus the cosmetic keys below.
+Any other edit of a feature invalidates that feature and everything after it;
+this is conservative on purpose (an unknown key stays in the hash). Hash equality therefore means an
 identical prefix, and the hash is 256 bits, so collisions are not a concern.
+
+### Cosmetic fields
+
+`group`, `name`, `autoName`, `visible` and `userHidden` (top-level keys of a
+feature object) are left out of the hash. They only label a feature in the
+tree: putting rows in a folder (a folder is the `group` string), renaming,
+hiding a plane. Editing them therefore keeps every key, a regen of the edited
+document is a full hit (`cacheStats.fullHit`, `ranFeatures: 0`), and so is the
+view snapshot (`viewHit`).
+
+Evidence that nothing reads them (grep and compiler): no source file of
+`ck-model`, `ck-ops` or `ck-wasm` names `"group"`, `"autoName"`, `"userHidden"`
+or the key `"color"`; `"name"` and `"visible"` appear only in the parsers of
+`Feature`, `Sketch`, `Sketch3` and the plane variant, and renaming those
+fields makes no non-test code fail to compile (they are never read); the
+expression evaluator only sees `variables`; refs are by feature id. Not
+cosmetic: `suppressed`, `num`, `seq`, `rollback` and every unknown key (kept in
+the hash on purpose; `tests/regen_cache.rs::other_keys_still_rerun`). Keys
+nested inside a feature (`part`, `meta`, ...) are not touched, only the top
+level of the feature object.
+
+One place echoes them: the reply's `sketches[..].sketch` and
+`sketches3[..].sketch` are the feature object (solved / normalised), so a
+cached state carries the cosmetic keys of the document that built it. On every
+hit `regen_cache::refresh_cosmetic` rewrites those echoes from the current
+document (its key order, its cosmetic values, the normalisation's appended
+arrays after them), so a hit replies byte for byte like a cold run
+(`cosmetic_edits_keep_every_state_and_reply_like_cold`;
+`cosmetic_keys_reach_the_reply_only_through_sketch_echoes` shows by diffing cold
+replies that the echoes are the only place). Nothing else (errors, planes, body,
+surfaces, threads, components) contains a feature label.
+
+Keys of a document that has none of these keys are unchanged. For a document
+that has them the keys differ from those of the previous build, which only
+costs one cold run per kernel build (the key already contains the crate
+version).
+
+To add a cosmetic key: prove no code reads it, add it to `COSMETIC_KEYS`, and
+if a reply could echo it extend `refresh_cosmetic`.
 
 Not cached / bypassed:
 

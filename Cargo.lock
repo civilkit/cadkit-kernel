@@ -108,6 +108,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ck-skp"
+version = "0.1.0"
+dependencies = [
+ "ck-check",
+ "ck-geom",
+ "ck-tess",
+ "ck-topo",
+]
+
+[[package]]
 name = "ck-sldprt"
 version = "0.1.0"
 dependencies = [
@@ -154,6 +164,7 @@ dependencies = [
  "ck-ops",
  "ck-recog",
  "ck-server",
+ "ck-skp",
  "ck-sldprt",
  "ck-tess",
  "ck-text",

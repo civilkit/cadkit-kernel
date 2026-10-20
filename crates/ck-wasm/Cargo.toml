@@ -18,9 +18,12 @@ ck-heal = { path = "../ck-heal" }
 ck-ops = { path = "../ck-ops" }
 ck-io = { path = "../ck-io" }
 ck-sldprt = { path = "../ck-sldprt" }
+ck-skp = { path = "../ck-skp", optional = true }
 ck-tess = { path = "../ck-tess" }
 ck-recog = { path = "../ck-recog" }
 ck-text = { path = "../ck-text" }
 
 [features]
+# SketchUp (.skp) import (`importSkp`), +320 KB of wasm (+4.6 %): opt-in, see docs/skp.md
+skp = ["dep:ck-skp"]
 sanity-shadow = ["ck-ops/sanity-shadow"]

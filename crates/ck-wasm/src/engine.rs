@@ -19,6 +19,8 @@ pub fn install() {
     ck_server::set_hooks(Hooks {
         import_sat: Some(import_sat_hook),
         import_sldprt: Some(import_sldprt_hook),
+        #[cfg(feature = "skp")]
+        import_skp: Some(import_skp_hook),
         regen: Some(regen_hook),
         import_step: Some(import_hook),
         query: Some(query_hook),
@@ -154,7 +156,8 @@ fn regen_hook(part: &Json, cx: &mut Cx) -> Result<(Json, State), String> {
             final_key = keys.last().copied();
             let hit = regen_cache::with(|c| c.lookup(&keys));
             let mut chained = None;
-            if let Some(h) = hit {
+            if let Some(mut h) = hit {
+                regen_cache::refresh_cosmetic(&mut h.result, &part.features);
                 ex.brep.load(&h.snap);
                 stats.0 = h.next;
                 chained = Some((h.result.clone(), h.snap));
@@ -328,7 +331,7 @@ fn import_hook(cx: &mut Cx, _name: &str, data: &str) -> Result<(Json, Option<Sta
 }
 
 /// Standard base64 (also accepts url-safe letters, whitespace and a `data:...;base64,` prefix).
-fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
+fn base64_decode(s: &str, what: &str) -> Result<Vec<u8>, String> {
     let s = s.find("base64,").map_or(s, |i| &s[i + 7..]);
     let mut out = Vec::with_capacity(s.len() / 4 * 3);
     let (mut acc, mut nb) = (0u32, 0u32);
@@ -340,7 +343,7 @@ fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
             b'+' | b'-' => 62,
             b'/' | b'_' => 63,
             b'=' | b' ' | b'\n' | b'\r' | b'\t' => continue,
-            _ => return Err(format!("importSldprt: data is not base64 (byte 0x{c:02x})")),
+            _ => return Err(format!("{what}: data is not base64 (byte 0x{c:02x})")),
         };
         acc = (acc << 6) | v as u32;
         nb += 6;
@@ -360,7 +363,7 @@ fn import_sldprt_hook(cx: &mut Cx) -> Result<(Json, Option<State>), String> {
     let data = cx.msg.get_str("data").unwrap_or("").to_string();
     let name = cx.msg.get_str("name").unwrap_or("part").to_string();
     let mut out = ck_server::session::empty_regen_result();
-    let bytes = base64_decode(&data)?;
+    let bytes = base64_decode(&data, "importSldprt")?;
     match ck_sldprt::import_sldprt(&bytes) {
         Err(e) => {
             let err = Json::Arr(vec![Json::Str("import".into()), Obj::new().put("code", e.code).put("params", Obj::new().put("message", e.message.as_str()).build()).build()]);
@@ -404,6 +407,96 @@ fn import_sldprt_hook(cx: &mut Cx) -> Result<(Json, Option<State>), String> {
             Ok((out, Some(State { has_body: true, data: Some(Box::new(snap)) })))
         }
     }
+}
+
+#[cfg(feature = "skp")]
+/// `importSkp`: base64 of a SketchUp file -> the tag's body (planar faces with holes, shared edges). Result shaped like
+/// `importStep`: `body`, `errors` as `["import", {code, params:{message, offset?}}]`, plus `import:{format, container,
+/// version, units, faces, lumps, materials, faceMaterials, ...}`. Hidden geometry is skipped unless `opts.hidden`.
+fn import_skp_hook(cx: &mut Cx) -> Result<(Json, Option<State>), String> {
+    let data = cx.msg.get_str("data").unwrap_or("").to_string();
+    let name = cx.msg.get_str("name").unwrap_or("model").to_string();
+    let hidden = cx.msg.get("opts").and_then(|o| o.get_bool("hidden")).unwrap_or(false);
+    let max_faces = cx.msg.get("opts").and_then(|o| o.get_f64("maxFaces")).filter(|v| *v >= 1.0).map(|v| v as usize);
+    let mut out = ck_server::session::empty_regen_result();
+    let bytes = base64_decode(&data, "importSkp")?;
+    let fail = |out: &mut Json, e: &ck_skp::SkpError| {
+        let mut p = Obj::new().put("message", e.message.as_str());
+        if let Some(o) = e.offset {
+            p = p.put("offset", o as f64);
+        }
+        let err = Json::Arr(vec![Json::Str("import".into()), Obj::new().put("code", e.code).put("params", p.build()).build()]);
+        set_key(out, "errors", Json::Arr(vec![err]));
+    };
+    let lim = ck_skp::Limits::default();
+    let model = match ck_skp::parse_with(&bytes, &lim) {
+        Ok(m) => m,
+        Err(e) => {
+            fail(&mut out, &e);
+            return Ok((out, None));
+        }
+    };
+    let opt = ck_skp::BakeOptions { include_hidden: hidden, keep_polygons: true, ..Default::default() };
+    let scene = match ck_skp::bake(&model, &lim, &opt) {
+        Ok(s) => s,
+        Err(e) => {
+            fail(&mut out, &e);
+            return Ok((out, None));
+        }
+    };
+    let mut bopt = ck_skp::body::BodyOptions::default();
+    if let Some(m) = max_faces {
+        bopt.max_faces = m;
+    }
+    let sb = match ck_skp::body::build_body(&scene, &bopt) {
+        Ok(b) => b,
+        Err(e) => {
+            fail(&mut out, &e);
+            return Ok((out, None));
+        }
+    };
+    let body = sb.body;
+    let tess = ck_tess::mesh::tessellate(&body);
+    set_body(&mut out, body_json(&body, &tess, cx, &(vec![], vec![])));
+    let materials = Json::Arr(
+        sb.materials
+            .iter()
+            .map(|m| {
+                Obj::new()
+                    .put("color", Json::Arr(m.rgb.iter().map(|c| Json::Num(*c as f64)).collect()))
+                    .put("opacity", m.opacity as f64)
+                    .put("doubleSided", m.double_sided)
+                    .put("textured", m.texture.is_some())
+                    .build()
+            })
+            .collect(),
+    );
+    let (lo, hi) = body.bbox();
+    let info = Obj::new()
+        .put("format", "skp")
+        .put("name", name.as_str())
+        .put("container", if model.container == ck_skp::Container::Vff { "modern" } else { "classic" })
+        .put("version", model.version.as_str())
+        .put("units", model.units.as_deref().map_or(Json::Null, |u| Json::Str(u.to_string())))
+        .put("unitScale", ck_skp::scene::INCHES_TO_MM)
+        .put("faces", body.num_faces() as f64)
+        .put("lumps", body.num_lumps() as f64)
+        .put("openEdges", sb.open_edges as f64)
+        .put("nonManifoldEdges", sb.non_manifold_edges as f64)
+        .put("skippedFaces", sb.skipped_faces as f64)
+        .put("hiddenSkipped", scene.stats.skipped_hidden as f64)
+        .put("definitions", model.definitions.len() as f64)
+        .put("instances", scene.stats.instances as f64)
+        .put("materials", materials)
+        .put("faceMaterials", Json::Arr(sb.face_materials.iter().map(|m| Json::Num(*m as f64)).collect()))
+        .put("bboxMm", Json::Arr([lo.x, lo.y, lo.z, hi.x, hi.y, hi.z].iter().map(|v| Json::Num(*v)).collect()))
+        .put("warnings", Json::Arr(model.warnings.iter().map(|w| Json::Str(format!("{}: {}", w.code, w.message))).chain(scene.warnings.iter().map(|w| Json::Str(w.clone()))).collect()))
+        .build();
+    if let Json::Obj(kv) = &mut out {
+        kv.push(("import".into(), info));
+    }
+    let snap = Snapshot { body, sketches: vec![], asm: Default::default(), heal_base: None };
+    Ok((out, Some(State { has_body: true, data: Some(Box::new(snap)) })))
 }
 
 /// `importSat`: ACIS SAT text -> body snapshot. Reply = regen-shaped result

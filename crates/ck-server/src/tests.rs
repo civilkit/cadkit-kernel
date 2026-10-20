@@ -36,7 +36,7 @@ fn wire_golden() {
 
 #[test]
 fn all_types_dispatch() {
-    assert_eq!(REQUEST_TYPES.len(), 50); // loadFont/unloadFont/listFonts/subsetFont + importSldprt + bodyBoolean + recognize + 8 measurement (distance/maxDistance/thickness/thicknessAt/closestPoint/angles/clearance/symmetry) + 17 original + validate/importSat/importStep/heal + check/resolve/describe/refDiff/threadData/checkProfile/profiles + section/sections/probe extensions + sketchAnalyze + sketchFreedoms
+    assert_eq!(REQUEST_TYPES.len(), 51); // loadFont/unloadFont/listFonts/subsetFont + importSldprt + importSkp + bodyBoolean + recognize + 8 measurement (distance/maxDistance/thickness/thicknessAt/closestPoint/angles/clearance/symmetry) + 17 original + validate/importSat/importStep/heal + check/resolve/describe/refDiff/threadData/checkProfile/profiles + section/sections/probe extensions + sketchAnalyze + sketchFreedoms
     for (t, _) in REQUEST_TYPES {
         let (j, _) = run(&mut Server::new(), &format!(r#"{{"msg":{{"type":"{t}"}}}}"#));
         assert!(!j.contains("unknown request"), "{t}");

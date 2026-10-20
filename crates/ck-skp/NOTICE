@@ -1,0 +1,35 @@
+ck-skp: attribution
+
+This crate reads SketchUp (.skp) files. It is a reimplementation in Rust of the reader half of OpenSKP, an MIT-licensed
+project that reverse engineered both SketchUp file containers:
+
+  OpenSKP, https://github.com/iamahsanmehmood/openskp
+  Copyright (c) 2024-2026 Ahsan Mehmood, MIT licence (LICENSE-MIT-openskp)
+
+What was taken from OpenSKP (format knowledge and decoding rules; no source file was copied, the code is written afresh
+in Rust, with different data structures, bounds-checked reads and limits):
+
+  - src/vff.rs, src/tlv.rs, src/zip.rs, src/xml.rs: the modern (SketchUp 2021+) container: header and version layout,
+    embedded ZIP with model.dat / materials / styles / meta, the TLV tag set (container tags, vertex / edge / face /
+    loop / coedge / definition / instance / layer / material tags, face texture-matrix path, entity id forms), the F901
+    definition-list wrapper, the material.xml attributes (colour, useTrans/trans, colorize, texture, image path
+    fallbacks), style.xml face colours, meta.dat units. From docs/BINARY_FORMAT.md and packages/python/src/openskp/_core.py,
+    packages/cpp/src/{core,vff,tlv}.cpp.
+  - src/legacy.rs, src/legacy_ar.rs: the classic (SketchUp 3 to 2020) MFC CArchive container: store-map numbering and
+    slot-base calibration, per-class record layouts (CVertex, CEdge, CEdgeUse, CLoop, CFace, CLayer, CMaterial with
+    texture block, CDib, CAttributeContainer / CAttributeNamed, CFaceTextureCoords, CComponentDefinition,
+    CComponentInstance / CGroup, CImage, annotation records walked for alignment), the version gates (v3 / v4 / v7 / v14
+    / v17 / v20) and the recovery heuristics (burned store-map indices, the SketchUp 2020 filler record, definition tail
+    re-anchoring). From packages/python/src/openskp/legacy.py and packages/cpp/src/legacy.cpp.
+  - src/scene.rs, src/tri.rs: the scene baking rules (instance transform composition, material / colour / layer
+    resolution, front / back faces, UV projection and per-face texture matrices, grouping by material) from
+    packages/python/src/openskp/{scene,_face_groups,_core}.py. The ear-clipping triangulator is written for this crate.
+  - tools/openskp_ref.py runs OpenSKP's own Python package (read only, from a clone) to produce reference numbers for the
+    parity test; it contains no OpenSKP code.
+  - tests/fixtures/*.skp (17 files, 1.5 MB): test files from OpenSKP's packages/*/tests/fixtures and
+    examples/web-viewer/samples, copied unchanged (MIT, same licence). See tests/fixtures/SOURCES.txt for the list and
+    checksums.
+
+Not used: the SketchUp SDK, any file or code from Trimble / SketchUp, or any other proprietary material. Only the byte
+layouts found by OpenSKP and by inspecting sample files were used. SketchUp is a trademark of its owner and is used here
+only to name the file format.

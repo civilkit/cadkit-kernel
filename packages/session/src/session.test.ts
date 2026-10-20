@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Session, checkOp, referencers, refCheckNeeded, hasNameRefs } from './session.js';
+import { Session, checkOp, referencers, refCheckNeeded, hasNameRefs, isCosmeticOp } from './session.js';
 import { defaultWasmPath as wasmPath } from '../../kernel-client/src/worker.js';
 import type { KernelReply } from '../../kernel-client/src/protocol.js';
 import { emptyPart } from '../../part-model/src/index.js';
@@ -503,6 +503,20 @@ describe('deferred reference check', () => {
     assert.equal(same([{ op: 'move', id: 'F7', to: 2 }] as never), true);
     assert.equal(same([{ op: 'add', feature: { type: 'fillet' } }] as never), false, 'append');
     assert.equal(same([{ op: 'add', feature: { type: 'fillet' }, index: 2 }] as never), true);
+  });
+
+  it('is skipped for edits of labels only (folders, names)', () => {
+    const d = refDoc();
+    const f2 = d.features.find((f) => f.id === 'F2') as unknown as Record<string, unknown>;
+    const same = (ops: never) => refCheckNeeded(d, d, ops);
+    assert.equal(same([{ op: 'set', id: 'F2', path: 'group', value: 'Folder' }, { op: 'set', id: 'F3', path: 'group', value: 'Folder' }] as never), false);
+    assert.equal(same([{ op: 'set', id: 'F2', path: 'name', value: 'Base' }, { op: 'set', id: 'F2', path: 'autoName', value: false }] as never), false);
+    const { group: _g, ...rest } = { ...f2, group: 'Folder' };
+    assert.equal(same([{ op: 'replace', id: 'F2', feature: rest }] as never), false, 'ungroup is a replace without the key');
+    assert.equal(same([{ op: 'replace', id: 'F2', feature: { ...rest, depth: 99 } }] as never), true, 'a replace that changes more');
+    assert.equal(same([{ op: 'set', id: 'F2', path: 'group', value: 'F' }, { op: 'set', id: 'F2', path: 'depth', value: 3 }] as never), true, 'mixed');
+    assert.equal(same([{ op: 'set', id: 'F2', path: 'suppressed', value: true }] as never), true, 'suppressed is not a label');
+    assert.equal(isCosmeticOp(d, { op: 'remove', id: 'F2' } as never), false);
   });
 
   function spy(): { k: KernelTransport; log: string[]; refDiffs: Array<{ base: unknown; part: unknown }> } {

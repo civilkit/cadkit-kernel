@@ -1,0 +1,30 @@
+Test files for ck-skp, copied unchanged from OpenSKP (https://github.com/iamahsanmehmood/openskp, MIT, (c) Ahsan Mehmood).
+Container: V = modern (2021+, ZIP/TLV), L = classic (MFC archive). sha256 of each file:
+
+809a1ab73a20a192ab13aaff197afb1c67d0e9352f6a353a9cd8030919f8a6c3  blank_v17.skp  (5796 bytes)
+5974c5f416ae32aaf12093b2808bdeff662efed7ee85565bab3caf7ddbd9f98e  capilla_quiroz_v17.skp  (217563 bytes)
+43365586dd95e2cc4373d68e3567e61f6145ea0764872031a41977f50f24d954  chair_and_table.skp  (30748 bytes)
+850492b0b4ad4ad85a60c20930b08ca80f0e12fe5dcbbc204641c071b5cb8c37  circle.skp  (6763 bytes)
+181f5ee604aa0fc115eed42240571099a65817bf4e49ef39f87577554d319d92  gondola_v20.skp  (773396 bytes)
+08c746273f794f7047cf01fc31f9745438e01ad5b708deb845efe9eca3a70d6f  holes.skp  (6398 bytes)
+64ff0b1904be905436dd31316444752da2da0d915ac5490574c7fbe0b4bea25f  legacy_annotations.skp  (6635 bytes)
+63964a5fe8337812aa682f209fa92b8b835101be704dddbd092c347ae4fbebcb  legacy_v2014_synthetic.skp  (11977 bytes)
+7c57eb11cc1638496b4bfc15fa3aee3a3978262a5b31d123b1ba398b40ad9f65  legacy_v3_synthetic.skp  (8157 bytes)
+f68a36f4578ffb8533eae9a29c1b3dc2f6b5683bacc3e53c52fc5406b1375688  legacy_v3_textured.skp  (4121 bytes)
+c2dcce6aa93c222eb03bfca6ea27409256362ad56d62f0167160735c9dcd9be5  legacy_v6_synthetic.skp  (11385 bytes)
+ba39ae2e6d5e6a9be861a2366f16ba9c5135e99d278fe04b761ac615e189db5e  legacy_v7_synthetic.skp  (11668 bytes)
+1cc2471930c7e68513fdbe20123d83137d115f967c9181d6eeb8683bd75adeb2  multi_face_shared_edge.skp  (6374 bytes)
+8a4619b39eaaa41725ef5dde415c61c116369fff4c190e88b8d63176b097e5a4  single_material_v17.skp  (5858 bytes)
+c0d6ec9f52688deff40b04e069a1bfd039a8b69c83bda119beaeb58bdd35b7c9  SU_File.skp  (16708 bytes)
+382d66f54c59f82a176d10c535b0731653bf3949a3057121cb32bac3799c7aff  Untitled.skp  (415694 bytes)
+48c85a5b02bd03767f0bc7ef1c2fee907d355698b0d5bb572ff4e41cb3926585  zero_material_custom_layer_v18.skp  (8475 bytes)
+
+Origins in the OpenSKP repository:
+  blank_v17, single_material_v17, zero_material_custom_layer_v18, legacy_v3_textured, legacy_v3_synthetic,
+  legacy_v6_synthetic, legacy_annotations, SU_File, gondola_v20, capilla_quiroz_v17, Untitled: packages/cpp/tests/fixtures/
+  legacy_v7_synthetic, legacy_v2014_synthetic: packages/python/tests/fixtures/
+  holes, circle, multi_face_shared_edge: packages/dart/test/fixtures/create_reference/
+  chair_and_table: examples/web-viewer/samples/
+Modern container (V): SU_File, Untitled. All others are classic (L).
+The other fixtures of the OpenSKP clone are byte-identical copies of these or larger; the whole set (80 files, 26 distinct)
+is checked locally with OPENSKP_FIXTURES, see tests/openskp_parity.rs.

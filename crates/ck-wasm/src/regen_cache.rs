@@ -54,6 +54,71 @@ fn text_fonts(j: &Json, out: &mut Vec<String>) {
     }
 }
 
+/// Feature keys that no regen code path reads: they only label a feature in the tree (docs/regen-cache.md,
+/// "Cosmetic fields"). They are left out of the hash of a feature, so editing one (grouping into a folder, a rename,
+/// hiding a plane) keeps every key and the cached states valid. The only place they reach a reply is the echo of a
+/// sketch / sketch3d feature, which [`refresh_cosmetic`] rewrites from the current document on every hit.
+pub const COSMETIC_KEYS: [&str; 5] = ["group", "name", "autoName", "visible", "userHidden"];
+
+fn is_cosmetic(k: &str) -> bool {
+    COSMETIC_KEYS.contains(&k)
+}
+
+/// The feature as hashed: the object without its cosmetic keys (the same bytes as before when it has none).
+fn hashed_form(f: &Json) -> String {
+    match f {
+        Json::Obj(m) if m.iter().any(|(k, _)| is_cosmetic(k)) => {
+            ck_json::to_string(&Json::Obj(m.iter().filter(|(k, _)| !is_cosmetic(k)).cloned().collect()))
+        }
+        _ => ck_json::to_string(f),
+    }
+}
+
+/// `stored` is a cached echo of a feature (its object as received, normalised by appending missing arrays); `current`
+/// is the same feature in the document now, equal in every non-cosmetic key. The echo of the current document:
+/// the keys of `current` in its order (cosmetic ones from `current`, the rest from `stored`), then whatever the
+/// normalisation appended. `None` when `stored` already is that.
+fn refresh_echo(stored: &Json, current: &Json) -> Option<Json> {
+    let (Json::Obj(sm), Json::Obj(cm)) = (stored, current) else { return None };
+    let mut out: Vec<(String, Json)> = Vec::with_capacity(sm.len() + 1);
+    for (k, v) in cm {
+        if is_cosmetic(k) {
+            out.push((k.clone(), v.clone()));
+        } else if let Some(sv) = stored.get(k) {
+            out.push((k.clone(), sv.clone()));
+        }
+    }
+    for (k, v) in sm {
+        if !is_cosmetic(k) && !cm.iter().any(|(ck, _)| ck == k) {
+            out.push((k.clone(), v.clone()));
+        }
+    }
+    let same = out.len() == sm.len() && out.iter().zip(sm).all(|(a, b)| a.0 == b.0 && a.1 == b.1);
+    if same {
+        None
+    } else {
+        Some(Json::Obj(out))
+    }
+}
+
+/// A restored state echoes the cosmetic keys of the document that built it (inside the `sketch` of every sketch and
+/// sketch3d entry). Make the echoes those of `feats`, so a hit replies exactly as a cold run of this document.
+pub fn refresh_cosmetic(r: &mut RegenResult, feats: &[ck_model::Feature]) {
+    let cur = |id: &str| feats.iter().rev().find(|f| f.id == id).map(|f| &f.raw);
+    for s in r.sketches.iter_mut() {
+        if let Some(c) = cur(&s.id) {
+            if let Some(j) = refresh_echo(&s.sketch.raw, c) {
+                s.sketch.set_cosmetic_raw(j);
+            }
+        }
+    }
+    for (id, j) in r.sketches3.iter_mut() {
+        if let Some(n) = cur(id).and_then(|c| refresh_echo(j, c)) {
+            *j = n;
+        }
+    }
+}
+
 /// `keys[i]` = key of the state after `features[..i]` (`keys[0]` is the
 /// document key; `keys.len() == n + 1`). Each key chains the previous one
 /// with the full JSON of one more feature, so equal keys mean equal
@@ -82,7 +147,7 @@ pub fn chain_keys(part: &Json, o: &KeyOpts, n: usize) -> Vec<Key> {
     keys.push(sha256(&[head.as_bytes()]));
     let feats = part.get("features").and_then(|f| f.as_arr()).unwrap_or(&[]);
     for f in feats.iter().take(n) {
-        let mut s = ck_json::to_string(f);
+        let mut s = hashed_form(f);
         // lettering: the content hash of every font the feature names (a loaded font can change under its name)
         let mut fonts = vec![];
         text_fonts(f, &mut fonts);

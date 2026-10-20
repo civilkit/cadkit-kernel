@@ -70,6 +70,8 @@ pub const REQUEST_TYPES: &[(&str, Handler)] = &[
     ("importSat", geometry::import_sat),
     // Extension: SolidWorks part (.SLDPRT, base64) import -> a body in the tag's state.
     ("importSldprt", geometry::import_sldprt),
+    // Extension: SketchUp (.skp, base64) import -> a surface body of planar faces in the tag's state.
+    ("importSkp", geometry::import_skp),
     ("inspect", query::inspect),
     ("continuity", query::continuity),
     ("curvatureAt", curvature::curvature_at),
