@@ -6,7 +6,7 @@
 import { emptyPart, FEATURE_TYPES, type PartDoc } from '../../part-model/src/index.js';
 import { hintFor, verify, type CheckResultItem, type KernelTransport, type RegenError, type VerifyReport } from '../../driver/src/verify.js';
 import {
-  angles, check, checkProfile, clearance, closestPoint, describe, distance, maxDistance, symmetry, thickness, thicknessAt, heal, importSat, importSldprt, importStep, massProps, probe, profiles, resolveDescriptions, section, sections, step, textMetrics, textOutline, loadFont, unloadFont, listFonts, subsetFont, threadData, validate,
+  angles, check, checkProfile, clearance, closestPoint, describe, distance, maxDistance, symmetry, thickness, thicknessAt, heal, importSat, importSkp, importSldprt, importStep, massProps, probe, profiles, resolveDescriptions, section, sections, step, textMetrics, textOutline, loadFont, unloadFont, listFonts, subsetFont, threadData, validate,
   type CheckReport, type DescribeItem, type HealReport, type ImportReport, type MassReport, type ProbeReport,
   type AnglesReport, type ClearanceReport, type ClosestPointReport, type DistanceReport, type HausdorffReport, type MaxDistanceReport, type MeasureEntity,
   type SymmetryReport, type ThicknessAtReport, type ThicknessReport,
@@ -951,6 +951,11 @@ export class Session {
   /** A SolidWorks .SLDPRT part: `data` is the file bytes as base64. */
   importSldprt(data: string, name?: string): Promise<ImportReport> {
     return importSldprt(this.kernel, data, { name });
+  }
+
+  /** A SketchUp .skp file: `data` is the file bytes as base64; hidden geometry is skipped unless `hidden`. */
+  importSkp(data: string, name?: string, opts: { hidden?: boolean; maxFaces?: number } = {}): Promise<ImportReport> {
+    return importSkp(this.kernel, data, { name, ...opts });
   }
 
   importSat(data: string, name?: string): Promise<ImportReport> {

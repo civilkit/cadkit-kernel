@@ -657,6 +657,25 @@ export async function importSldprt(
   return { ...res, errors: res.errors ?? [] };
 }
 
+/**
+ * Import a SketchUp .skp file (base64 of the file bytes; both the 2021+ and the classic containers) into a fresh tag.
+ * The body is a surface model of planar faces (holes kept); `import.faceMaterials[n]` is the index into `import.materials`
+ * (colour, opacity) of face `skp.F<n>`. Hidden geometry is skipped unless `opts.hidden`.
+ */
+export async function importSkp(
+  kernel: KernelTransport,
+  data: string,
+  opts: { name?: string; tag?: string; hidden?: boolean; maxFaces?: number } = {},
+): Promise<ImportReport> {
+  const msg: Record<string, unknown> = { type: 'importSkp', tag: opts.tag ?? 'imp', name: opts.name ?? 'import', data };
+  const o: Record<string, unknown> = {};
+  if (opts.hidden !== undefined) o.hidden = opts.hidden;
+  if (opts.maxFaces !== undefined) o.maxFaces = opts.maxFaces;
+  if (Object.keys(o).length) msg.opts = o;
+  const res = await call<ImportReport>(kernel, msg);
+  return { ...res, errors: res.errors ?? [] };
+}
+
 export async function importSat(
   kernel: KernelTransport,
   data: string,

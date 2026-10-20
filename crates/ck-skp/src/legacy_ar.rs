@@ -972,7 +972,9 @@ impl<'a> Ar<'a> {
         let name = self.utf16()?;
         let mut mid: Vec<u8> = vec![];
         while mid.len() < 8 && self.peek(3) != STR_MARKER {
-            mid.extend_from_slice(self.raw(1));
+            // OpenSKP loops forever here at the end of the data; this is an error
+            let b = self.u8()?;
+            mid.push(b);
         }
         self.utf16()?;
         let flags = self.u16()?;

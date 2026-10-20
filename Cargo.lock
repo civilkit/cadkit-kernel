@@ -164,6 +164,7 @@ dependencies = [
  "ck-ops",
  "ck-recog",
  "ck-server",
+ "ck-skp",
  "ck-sldprt",
  "ck-tess",
  "ck-text",

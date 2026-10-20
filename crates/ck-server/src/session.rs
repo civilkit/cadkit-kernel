@@ -94,9 +94,14 @@ pub type ImportSatHook = fn(cx: &mut Cx) -> Result<(Json, Option<State>), String
 /// Same contract as [`ImportSatHook`].
 pub type ImportSldprtHook = fn(cx: &mut Cx) -> Result<(Json, Option<State>), String>;
 
+/// Engine hook for `importSkp`: parses `msg.data` (base64 of a SketchUp file) into a body of planar faces.
+/// Same contract as [`ImportSatHook`].
+pub type ImportSkpHook = fn(cx: &mut Cx) -> Result<(Json, Option<State>), String>;
+
 #[derive(Default, Clone, Copy)]
 pub struct Hooks {
     pub import_sat: Option<ImportSatHook>,
+    pub import_skp: Option<ImportSkpHook>,
     pub import_sldprt: Option<ImportSldprtHook>,
     pub import_step: Option<ImportHook>,
     pub regen: Option<RegenHook>,

@@ -94,24 +94,22 @@ fn signed_area_about(pts: &[[f64; 3]], n: Vec3) -> f64 {
 pub fn build_body(scene: &Scene, opt: &BodyOptions) -> R<SkpBody> {
     let polys: &[PolyFace] = &scene.polygons;
     if polys.is_empty() {
-        return Err(SkpError::new("body.empty", "the scene has no faces (was it baked with keep_polygons?)"));
+        return Err(SkpError::new("body.empty", "the model has no visible faces to import (empty, edges only, or everything hidden; polygons are kept only when baked with keep_polygons)"));
     }
     if polys.len() > opt.max_faces {
         return Err(SkpError::new("limit.faces", format!("{} faces exceed the import limit of {}; hide or delete parts of the model, or raise the limit", polys.len(), opt.max_faces)));
     }
     let mut weld = Weld { tol: opt.weld_tol_mm.max(1e-9), cells: HashMap::new(), pts: vec![] };
-    let mut body = Body::new();
-    let lump = body.add_lump();
-    let shell = body.add_shell(lump);
-    let mut verts: HashMap<u32, ck_topo::body::VertexId> = HashMap::new();
-    let mut edges: HashMap<(u32, u32), ck_topo::body::EdgeId> = HashMap::new();
-    let mut edge_uses: HashMap<(u32, u32), u32> = HashMap::new();
-    let mut face_ids = vec![];
-    let mut face_materials = vec![];
+    // pass 1: weld, clean and orient every face
+    struct Rec {
+        rings: Vec<Vec<u32>>,
+        normal: Vec3,
+        origin: Vec3,
+        material: usize,
+    }
+    let mut recs: Vec<Rec> = vec![];
     let mut skipped = 0usize;
-
     for pf in polys {
-        // weld and clean the loops
         let mut rings: Vec<Vec<u32>> = vec![];
         for l in &pf.loops {
             let mut r: Vec<u32> = Vec::with_capacity(l.len());
@@ -169,15 +167,64 @@ pub fn build_body(scene: &Scene, opt: &BodyOptions) -> R<SkpBody> {
             }
             fixed.push(r);
         }
-        let o = Vec3::new(outer_pts[0][0], outer_pts[0][1], outer_pts[0][2]);
+        recs.push(Rec { rings: fixed, normal: n, origin: Vec3::new(outer_pts[0][0], outer_pts[0][1], outer_pts[0][2]), material: pf.material });
+    }
+    if recs.is_empty() {
+        return Err(SkpError::new("body.empty", "no usable face (all were degenerate)"));
+    }
+    // pass 2: connected components over shared edges (a surface model is not a solid: no containment guessing, one
+    // lump with one shell per connected piece)
+    let mut parent: Vec<usize> = (0..recs.len()).collect();
+    fn find(p: &mut Vec<usize>, mut x: usize) -> usize {
+        while p[x] != x {
+            p[x] = p[p[x]];
+            x = p[x];
+        }
+        x
+    }
+    let mut edge_uses: HashMap<(u32, u32), u32> = HashMap::new();
+    let mut edge_first: HashMap<(u32, u32), usize> = HashMap::new();
+    for (fi, r) in recs.iter().enumerate() {
+        for ring in &r.rings {
+            for k in 0..ring.len() {
+                let (a, b) = (ring[k], ring[(k + 1) % ring.len()]);
+                let key = if a < b { (a, b) } else { (b, a) };
+                *edge_uses.entry(key).or_insert(0) += 1;
+                match edge_first.get(&key) {
+                    Some(&g) => {
+                        let (x, y) = (find(&mut parent, fi), find(&mut parent, g));
+                        if x != y {
+                            parent[x] = y;
+                        }
+                    }
+                    None => {
+                        edge_first.insert(key, fi);
+                    }
+                }
+            }
+        }
+    }
+    // pass 3: topology
+    let mut body = Body::new();
+    let mut shell_of_root: HashMap<usize, ck_topo::body::ShellId> = HashMap::new();
+    let mut verts: HashMap<u32, ck_topo::body::VertexId> = HashMap::new();
+    let mut edges: HashMap<(u32, u32), ck_topo::body::EdgeId> = HashMap::new();
+    let mut face_ids = vec![];
+    let mut face_materials = vec![];
+    for fi in 0..recs.len() {
+        let root = find(&mut parent, fi);
+        let shell = *shell_of_root.entry(root).or_insert_with(|| {
+            let l = body.add_lump();
+            body.add_shell(l)
+        });
+        let r = &recs[fi];
         let fname = format!("F{}", face_ids.len());
-        let face = body.add_face(shell, Surface::plane(o, n), true, FaceName::other("skp", &fname));
-        for ring in &fixed {
+        let face = body.add_face(shell, Surface::plane(r.origin, r.normal), true, FaceName::other("skp", &fname));
+        for ring in &r.rings {
             let lp = body.add_loop(face);
             for k in 0..ring.len() {
                 let (a, b) = (ring[k], ring[(k + 1) % ring.len()]);
                 let (lo, hi, rev) = if a < b { (a, b, false) } else { (b, a, true) };
-                *edge_uses.entry((lo, hi)).or_insert(0) += 1;
                 let eid = match edges.get(&(lo, hi)) {
                     Some(&e) => e,
                     None => {
@@ -201,13 +248,9 @@ pub fn build_body(scene: &Scene, opt: &BodyOptions) -> R<SkpBody> {
             }
         }
         face_ids.push(format!("skp.{fname}"));
-        face_materials.push(pf.material);
-    }
-    if face_ids.is_empty() {
-        return Err(SkpError::new("body.empty", "no usable face (all were degenerate)"));
+        face_materials.push(r.material);
     }
     let open_edges = edge_uses.values().filter(|&&c| c == 1).count();
     let non_manifold_edges = edge_uses.values().filter(|&&c| c > 2).count();
-    ck_topo::region::rebuild_lumps(&mut body);
     Ok(SkpBody { body, face_ids, face_materials, materials: scene.materials.clone(), skipped_faces: skipped, open_edges, non_manifold_edges })
 }
