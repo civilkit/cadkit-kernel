@@ -959,6 +959,124 @@ unchanged). `"y"` maps (x, y, z) -> (x, z, -y) (SketchUp Z becomes our Y, right-
 reply's `import` gains `up` (the applied value) and `upMatrix` (row-major 3x3, nine numbers). Any other `up` is an error reply.
 Details in `docs/skp.md`.
 
+## Sketch analysis: `sketchAnalyze`
+
+Read-only structural analysis of one sketch, so an agent gets exact,
+structured feedback instead of a bare `noClosedProfile`. The oracle kernel
+has no equivalent query (searched: `strings` of `kernel.wasm` and the wasm2c
+dump — no sketch-analysis or finding names near sketch code; the original
+client derives "fully defined" itself with pin-and-solve probes), so the
+finding names are ours.
+
+```json
+{"type":"sketchAnalyze","featureId":"F1"}
+{"type":"sketchAnalyze","featureId":"F1","tolerance":0.05,"tiny":0.01}
+{"type":"sketchAnalyze","part":<part json>,"featureId":"F1"}
+```
+
+Fields: `featureId` (the sketch feature's id, e.g. `F1`), `tolerance`
+(near-coincident distance mm, default `0.01`; `<= 0` disables), `tiny`
+(tiny-segment length mm, default `0.001`; `<= 0` disables). The sketch comes
+from the tag's regenerated state, or — with `part` — from a private regen of
+that part through the incremental regen cache (the `checkProfile` pattern,
+and the way to analyse a document whose regen produced no body, e.g. one
+failing `noClosedProfile`). With neither a body nor `part`: `null` (like the
+other body queries). Errors: `sketchAnalyze: featureId must be a string`
+(missing / not a string), `sketchAnalyze: sketch F9 not found`.
+
+```json
+-> {"tolerance":0.01,"tiny":0.001,
+    "findings":[{"kind":"openEnd","entities":["e3"],"points":["p4","p5"],"at":[0,10],
+                 "gap":0.02,"nearest":"e4"}, {"kind":"nearCoincident", ...}],
+    "chains":[{"entities":["e1","e2","e3","e4"],"closed":false,"construction":false}],
+    "profile":{"closedChains":0,
+               "reason":{"kind":"openEnd","entities":["e4"],"points":["p5","p4"],"at":[0,10.02],
+                         "gap":0.02,"nearest":"e3"}}}
+```
+
+Every finding carries `kind`, plus `entities` / `points` (the ids it names)
+and `at` `[x, y]` (sketch coordinates) where a location makes sense:
+
+| kind | fires when | extra fields |
+|---|---|---|
+| `openEnd` | an entity end touches nothing (its point carries one end) | `gap` = distance to the nearest other open end, `nearest` = that entity's id, `points` = `[own, other]`; without another open end only the own fields appear. The `profile.reason` carries the biggest gap; a tie resolves to the later finding |
+| `nearCoincident` | two distinct points closer than `tolerance` with no `coincident` / `concentric` constraint between them (a `suppressed` one does not count) | `distance`, `at` = midpoint |
+| `duplicate` | two entities of the same kind on the same referenced points (line ends in either order; circle = same centre + radius; arc = same centre + ends) | |
+| `overlap` | two collinear lines whose interiors intersect (both ends of one within `tolerance` of the other's line) | |
+| `zeroLength` | a curve of length / radius `<= 0` | |
+| `tinySegment` | `0 < length < tiny` | `length`, `at` = midpoint |
+| `branch` | more than two entity ends at one point | `degree`, `points: [point]` |
+| `isolatedPoint` | a point no entity references (lettering anchors count) | |
+| `selfIntersection` | two entities cross inside their interiors (circles / ellipses too; crossings within `tolerance` of a shared endpoint are touches) | |
+
+`chains` are connected components over shared endpoint point ids (circles,
+ellipses, closed splines and lettering are chains of their own), each
+`{entities, closed, construction}`; `closed` = no dangling end,
+`construction` = every entity of the chain is construction geometry.
+
+`profile.closedChains` counts closed, non-construction chains — what a
+profile can be built from. When it is 0, `profile.reason` says why: the
+biggest `openEnd` finding (largest `gap`, with its location — so a
+`noClosedProfile` error can point at it), `{"kind":"empty"}` when the sketch
+has no curves, or `{"kind":"constructionOnly"}` when every closed chain is
+construction geometry. When a closed chain exists there is no `reason`.
+
+Fixtures (unit tests in `crates/ck-model/src/sketch/analyze.rs`): open square
+with a 0.02 mm gap, duplicate line, overlapping collinear lines, tee
+junction, zero-length line, self-crossing bow-tie, a clean square (no
+findings).
+
+## Sketch freedoms: `sketchFreedoms`
+
+What the solver can still move in one sketch — per point, per radius and
+per entity — from the null space of the Jacobian at the solution. The
+build, convergence and rank are the regen `status` block's
+(`opts.sketchStatus: true`), so `dof` is exactly its `dof`; a constraint
+flagged `suppressed` (see `docs/sketch-status.md`) is outside the system
+everywhere.
+
+```json
+{"type":"sketchFreedoms","featureId":"F1"}
+{"type":"sketchFreedoms","part":<part json>,"featureId":"F1"}
+```
+
+```json
+-> {"dof":1,"solved":true,
+    "points":[{"id":"o","free":0},{"id":"p","free":1,"dir":[0,1]}],
+    "radii":[{"id":"e1","free":false}],
+    "entities":[{"id":"e1","kind":"circle","free":0}]}
+```
+
+* `points` (every sketch point, document order): `free` is the rank of the
+  point's projected motions in the null space — `0` fixed or fully
+  determined, `1` exactly `dir` (unit sketch direction, sign-normalised:
+  the larger component positive, ties to x), `2` any direction in the
+  plane. A pinned point of a rigid body reports `free: 0`; a point moving
+  only along one line of a wider null space reports `1`.
+* `radii` (circles, ellipses, arcs): `free` when some null-space motion
+  changes the radius — circles/ellipses through their `r` unknown (an
+  `ext`/`from` driven radius has no unknown and is never free), arcs
+  through `dr = u·(motion of p1 - motion of c)` at the solved coordinates
+  (arcs carry no radius unknown).
+* `entities` (every entity, document order): `free` = the sum of the
+  referenced points' `free` plus 1 for its own free radius — a free circle
+  counts 3 (centre 2 + radius 1); a point shared by two lines counts in
+  both.
+* `dof` = unknowns - rank; `solved` as in `status`. If the system cannot
+  be built every non-fixed point counts 2, no radius is free and `solved`
+  is false (the `status` fallback).
+
+Errors carry the `sketchFreedoms:` prefix with the `sketchAnalyze` texts;
+null without a body or `part` behaves like `sketchAnalyze`.
+
+Fixtures (unit tests in `crates/ck-model/src/sketch/analyze.rs`): a free
+point (2), a horizontal line pinned at one end (the free end moves in x),
+a fully defined rectangle (0), a corner-pinned rectangle (width and
+height modes), a circle (centre 2 + radius) against the same circle with
+a radius constraint (radius not free), a point on a radius-constrained
+circle (tangent direction), an arc whose centre and end are fixed
+(radius not free), and an unbuildable sketch (fallback).
+
 ## Acceptance
 
 - A scripted agent session (no human) builds the benchmark parts in

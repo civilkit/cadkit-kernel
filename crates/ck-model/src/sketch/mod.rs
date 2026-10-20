@@ -19,6 +19,7 @@
 //!   coerced (`"7"` -> 7, `[1,"2"]` -> `[1,2]`; `"=2+3"` stays a string) and
 //!   an `expr`-driven value is rewritten.
 
+pub mod analyze;
 pub mod offset;
 pub mod profile;
 pub mod smooth;
@@ -165,6 +166,10 @@ pub struct Constraint {
     /// False when the constraint failed typed parsing (echoed verbatim and
     /// ignored by the solver build, which then fails as a whole).
     pub valid: bool,
+    /// The agent's `suppressed` flag: the solver ignores this constraint
+    /// everywhere (build, solve, status, analysis). The document still
+    /// carries it verbatim and `status.suppressed` lists it.
+    pub suppressed: bool,
 }
 
 /// Dimensional constraint types (client `gn` set).
@@ -343,6 +348,7 @@ impl Constraint {
             s1: num_or("s1", 1.0),
             s2: num_or("s2", 1.0),
             sign: num_or("sign", 1.0),
+            suppressed: jtruthy(j.get("suppressed")),
         }
     }
 }

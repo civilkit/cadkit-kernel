@@ -58,12 +58,15 @@ pub struct SketchStatus {
     /// `"under"` | `"full"` | `"over"`.
     pub state: &'static str,
     pub residual: f64,
+    /// Constraints flagged `suppressed` (the solver ignores them).
+    /// Document order; the key is only emitted when non-empty.
+    pub suppressed: Vec<String>,
 }
 
 impl SketchStatus {
     pub fn to_json(&self) -> Json {
         let ids = |v: &[String]| Json::Arr(v.iter().map(|s| Json::Str(s.clone())).collect());
-        Json::Obj(vec![
+        let mut o = vec![
             ("dof".into(), Json::Num(self.dof as f64)),
             ("fullyDefined".into(), Json::Bool(self.fully_defined)),
             ("conflicts".into(), ids(&self.conflicts)),
@@ -71,7 +74,11 @@ impl SketchStatus {
             ("solved".into(), Json::Bool(self.solved)),
             ("state".into(), Json::Str(self.state.into())),
             ("residual".into(), Json::Num(if self.residual.is_finite() { self.residual } else { -1.0 })),
-        ])
+        ];
+        if !self.suppressed.is_empty() {
+            o.push(("suppressed".into(), ids(&self.suppressed)));
+        }
+        Json::Obj(o)
     }
 }
 
@@ -80,8 +87,8 @@ fn norm(v: &[f64]) -> f64 {
 }
 
 /// Incremental row-space basis (orthonormal rows).
-struct Basis {
-    q: Vec<Vec<f64>>,
+pub(crate) struct Basis {
+    pub(crate) q: Vec<Vec<f64>>,
 }
 
 impl Basis {
@@ -113,31 +120,39 @@ impl Basis {
     }
 }
 
-pub fn sketch_status(sk: &Sketch) -> SketchStatus {
-    let sys = match build(sk) {
-        Ok(s) => s,
-        Err(_) => {
-            let free = sk.points.iter().filter(|p| !p.fixed).count() * 2;
-            return SketchStatus { dof: free, fully_defined: false, conflicts: vec![], redundant: vec![], solved: false, state: "under", residual: f64::NAN };
-        }
-    };
-    let n = sys.x.len();
+/// Solve at the sketch's coordinates (or converge from them): the
+/// coordinates the Jacobian is taken at, whether they satisfy the
+/// constraints, the residuals there, and the largest residual the drawn
+/// coordinates had (`SketchStatus::residual`).
+pub(crate) struct Converge {
+    pub x: Vec<f64>,
+    pub solved: bool,
+    pub res: Vec<f64>,
+    pub residual: f64,
+}
+
+pub(crate) fn converge(sys: &super::solver::System) -> Converge {
     let mut x = sys.x.clone();
-    let res0 = residuals(&sys, &x);
+    let res0 = residuals(sys, &x);
     let residual = res0.iter().fold(0.0f64, |m, v| if v.is_nan() || m.is_nan() { f64::NAN } else { m.max(v.abs()) });
     let mut res = res0;
     let mut solved = residual <= SOLVED_TOL;
     if !solved {
-        let t = solve(&sys, &SolveOpts::default());
+        let t = solve(sys, &SolveOpts::default());
         if t.ok {
             solved = true;
             x = t.x;
-            res = residuals(&sys, &x);
+            res = residuals(sys, &x);
         }
     }
-    let jac = jacobian(&sys, &mut x);
+    Converge { x, solved, res, residual }
+}
+
+/// Orthonormal row basis plus per-equation dependence flags: equations are
+/// taken in solver order, the later dependent one is flagged.
+pub(crate) fn row_basis(jac: &[Vec<(usize, f64)>], n: usize) -> (Basis, Vec<bool>) {
     let mut basis = Basis { q: Vec::new() };
-    let mut dependent = vec![false; sys.eqs.len()];
+    let mut dependent = vec![false; jac.len()];
     let mut row = vec![0.0; n];
     for (i, sparse) in jac.iter().enumerate() {
         row.iter_mut().for_each(|a| *a = 0.0);
@@ -146,6 +161,22 @@ pub fn sketch_status(sk: &Sketch) -> SketchStatus {
         }
         dependent[i] = !basis.add(&row);
     }
+    (basis, dependent)
+}
+
+pub fn sketch_status(sk: &Sketch) -> SketchStatus {
+    let suppressed: Vec<String> = sk.constraints.iter().filter(|c| c.suppressed).map(|c| c.id.clone()).collect();
+    let sys = match build(sk) {
+        Ok(s) => s,
+        Err(_) => {
+            let free = sk.points.iter().filter(|p| !p.fixed).count() * 2;
+            return SketchStatus { dof: free, fully_defined: false, conflicts: vec![], redundant: vec![], solved: false, state: "under", residual: f64::NAN, suppressed };
+        }
+    };
+    let n = sys.x.len();
+    let Converge { mut x, solved, res, residual } = converge(&sys);
+    let jac = jacobian(&sys, &mut x);
+    let (basis, dependent) = row_basis(&jac, n);
     let rank = basis.q.len();
     let mut conflicts: Vec<String> = Vec::new();
     let mut redundant: Vec<String> = Vec::new();
@@ -178,7 +209,7 @@ pub fn sketch_status(sk: &Sketch) -> SketchStatus {
     } else {
         "under"
     };
-    SketchStatus { dof, fully_defined: state == "full" && solved, conflicts, redundant, solved, state, residual }
+    SketchStatus { dof, fully_defined: state == "full" && solved, conflicts, redundant, solved, state, residual, suppressed }
 }
 
 #[cfg(test)]
@@ -254,6 +285,32 @@ mod tests {
         assert_eq!(s.redundant, vec!["c3"], "{s:?}");
         assert!(s.conflicts.is_empty());
         assert_eq!((s.dof, s.state, s.solved, s.fully_defined), (0, "over", true, false));
+    }
+
+    #[test]
+    fn suppressing_the_conflicting_constraint_clears_the_conflict() {
+        // the over-constrained triangle, c6 (the blamed length) suppressed:
+        // the system is consistent again and the flag is reported
+        let cons = format!(
+            r#"{{"type":"fix","id":"c1","refs":["p1"],"value":[0,0]}},{{"type":"horizontal","id":"c2","refs":["e1"]}},{{"type":"vertical","id":"c3","refs":["e3"]}},{},{},{{"type":"distance","id":"c6","refs":["p2","p3"],"value":7,"offset":null,"suppressed":true}}"#,
+            dist("c4", "p1", "p2", 3.0),
+            dist("c5", "p1", "p3", 4.0)
+        );
+        let s = sketch_status(&sk(
+            r#"{"id":"p1","x":0,"y":0},{"id":"p2","x":3,"y":0},{"id":"p3","x":0,"y":4}"#,
+            r#"{"type":"line","id":"e1","p1":"p1","p2":"p2"},{"type":"line","id":"e2","p1":"p2","p2":"p3"},{"type":"line","id":"e3","p1":"p3","p2":"p1"}"#,
+            &cons,
+        ));
+        assert_eq!((s.dof, s.state, s.fully_defined, s.solved), (0, "full", true, true), "{s:?}");
+        assert!(s.conflicts.is_empty(), "{s:?}");
+        assert!(s.redundant.is_empty(), "{s:?}");
+        assert_eq!(s.suppressed, vec!["c6"]);
+        // the key rides along last, and never appears for an unflagged sketch
+        let j = ck_json::to_string(&s.to_json());
+        assert!(j.ends_with(r#""suppressed":["c6"]}"#), "{j}");
+        let plain = sketch_status(&sk(RECT_PTS, RECT_ENTS, HV));
+        let j = ck_json::to_string(&plain.to_json());
+        assert!(!j.contains("suppressed"), "{j}");
     }
 
     #[test]

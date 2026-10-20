@@ -285,6 +285,9 @@ pub fn build(sk: &Sketch) -> Result<System, String> {
     }
 
     for k in &sk.constraints {
+        if k.suppressed {
+            continue;
+        }
         let cid = k.id.as_str();
         let e = &k.refs;
         let value = k.value.unwrap_or(f64::NAN);

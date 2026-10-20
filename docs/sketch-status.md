@@ -30,6 +30,7 @@ Each `sketches` entry `[featureId, {frame, profiles, sketch, status}]` gains:
 | `solved` | coordinates satisfy every constraint (max abs residual <= 1e-7), or a solve from them converges |
 | `state` | `"over"` if any constraint is dependent, else `"full"` at dof 0, else `"under"` (the original client's `si().status`) |
 | `residual` | max abs residual at the coordinates in the reply (-1 if not finite or the system cannot be built) |
+| `suppressed` | constraint ids flagged `suppressed:true`; document order, omitted entirely when empty (rides along as the last key) |
 
 Notes:
 
@@ -44,6 +45,11 @@ Notes:
   redundant; a constraint listed as conflict is not repeated under redundant.
 * If the equation system cannot be built (e.g. a constraint names a missing point) the kernel leaves the
   sketch unsolved without an error; status then has `solved: false`, `dof` = free coordinates.
+* A constraint object may carry `"suppressed": true` (agent input, additive): the solver ignores it
+  everywhere — build, solve, rank, `dof`, `conflicts`/`redundant`, `sketchFreedoms`, and the coincident
+  pairs `sketchAnalyze` uses to silence `nearCoincident`. The document roundtrips the flag verbatim with
+  the constraint, and `status.suppressed` lists the flagged ids. Suppressing the constraint a `conflicts`
+  entry blames clears the conflict (the remaining system is solved and `full`).
 * Code: `crates/ck-model/src/sketch/status.rs`. Types: `SketchSolverStatus` in `packages/part-model`.
   Checks: `cargo test -p ck-model --lib status`, `node tools/sketch_status_check.mjs` (through the wasm),
   `node tools/probe_sketch_status.mjs --orig | --status` (probe the oracle / ours),
@@ -60,6 +66,7 @@ port) from the supplied coordinates with ALL constraints, including a `fix` cons
 (the GUI's temporary drag pin; the solver treats it as a hard equation on that point). The SOLVED
 coordinates are used both in `sketches[i].sketch.points` and for the profiles that downstream features
 (extrude, ...) consume, so a preview body matches the sketch. Circle/ellipse radii are written back too.
+Every constraint except a `suppressed` one takes part.
 
 * Sketches whose coordinates already satisfy every constraint (max abs residual <= 1e-7) are not solved
   again (no extra solve); a sketch already re-solved because an `expr` changed a value is not solved twice.

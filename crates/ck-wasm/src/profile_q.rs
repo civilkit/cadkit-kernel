@@ -7,7 +7,7 @@
 use crate::engine::{Exec, TraceSink};
 use crate::regen_cache;
 use ck_json::{Json, Obj};
-use ck_model::regen::{self, RegenOpts};
+use ck_model::regen::{self, RegenOpts, SketchResult};
 use ck_model::Part;
 use ck_ops::profile;
 use ck_server::session::Cx;
@@ -15,7 +15,8 @@ use ck_server::trace::Trace;
 use ck_topo::body::Body;
 
 /// Regenerate `part_json` without tessellating or touching any tag.
-fn private_body(part_json: &Json) -> Result<(Option<Body>, Vec<(String, String)>), String> {
+/// Returns the body, the `(feature, code)` errors and the sketches.
+pub(crate) fn private_regen(part_json: &Json) -> Result<(Option<Body>, Vec<(String, String)>, Vec<SketchResult>), String> {
     let part = Part::from_json(part_json)?;
     let opts = RegenOpts::default();
     let run_n = regen::run_len(&part, &opts);
@@ -37,7 +38,7 @@ fn private_body(part_json: &Json) -> Result<(Option<Body>, Vec<(String, String)>
     let ck = rec.as_mut().map(|r| r as &mut dyn regen::Checkpoint);
     let res = regen::regen_from(&part, &opts, &mut ex, resume, ck);
     let errors = res.errors.iter().map(|e| (e.feature.clone(), e.error.code.clone())).collect();
-    Ok((ex.brep.body, errors))
+    Ok((ex.brep.body, errors, res.sketches))
 }
 
 /// `{type:"checkProfile", tag? | part?, profile, opts?}`
@@ -47,7 +48,7 @@ pub fn check_profile(cx: &Cx, snap_body: Option<&Body>) -> Result<Json, String> 
     let owned;
     let body: &Body = match (cx.msg.get("part"), snap_body) {
         (Some(p), _) => {
-            let (b, errors) = private_body(p)?;
+            let (b, errors, _) = private_regen(p)?;
             match b {
                 Some(b) => {
                     owned = b;
