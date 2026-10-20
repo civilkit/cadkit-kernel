@@ -11,7 +11,11 @@
 //!   piece (arc length, first one on a tie) is bisected at its parameter
 //!   midpoint, repeatedly (3 -> 6 gives cuts at 1/4, 1/2 of the first edge);
 //! * a profile running the other way round (about the loft direction) than
-//!   the first is reversed;
+//!   its predecessor is reversed (the first profile never turns; deciding
+//!   against the FIRST profile instead would flip every section once the
+//!   section planes rotate past 90 degrees about a common axis, which swaps
+//!   the halves of the pieces of the flipped stations while their start
+//!   points still match, and folds the solid: issue #2847);
 //! * the start of each profile is rotated to the cyclic shift that minimises
 //!   the sum of squared distances between the piece start points of
 //!   consecutive stations (equal to the centred cost when counts are equal;
@@ -463,12 +467,24 @@ pub fn match_chains_strategy(mut chains: Vec<Chain>, connectors: &[Option<f64>],
     if closed && n < 2 {
         n = 2;
     }
-    // directions about the loft: reverse chains running against the first
-    let n0 = chains.iter().find(|c| !c.is_point()).map_or(Vec3::new(0.0, 0.0, 0.0), |c| c.normal());
-    for c in chains.iter_mut().skip(1) {
-        if closed && !c.is_point() && (c.normal().dot(n0) < 0.0) != strat.flip {
-            *c = c.reversed();
+    // directions about the loft: reverse chains running against their predecessor. The first chain never
+    // turns; comparing each chain with the FIRST one instead flips the sections once their planes have
+    // rotated past 90 degrees about a common axis (#2847: the flipped station keeps its start points but
+    // its pieces are then the other halves of the ellipse, and the surface folds over).
+    let mut prev: Option<Vec3> = None;
+    for c in chains.iter_mut() {
+        if !closed || c.is_point() {
+            continue;
         }
+        let n = c.normal();
+        if let Some(p) = prev {
+            if (n.dot(p) < 0.0) != strat.flip {
+                *c = c.reversed();
+                prev = Some(-n);
+                continue;
+            }
+        }
+        prev = Some(n);
     }
     let conn = |i: usize| connectors.get(i).copied().flatten().filter(|_| closed);
     for (i, c) in chains.iter_mut().enumerate() {
