@@ -64,6 +64,25 @@ fn inside_out() {
     assert_eq!(codes(&b), vec!["VOLUME_NONPOSITIVE"]);
 }
 
+/// A shell whose faces cannot reach each other is still reported: the sweep
+/// builder splits components into their own shells (a ring revolve gives an
+/// outer and a void shell), but faces joined into one shell from elsewhere
+/// (damage, import) keep their `SHELL_DISCONNECTED`.
+#[test]
+fn unreachable_faces_in_a_shell() {
+    let mut b = box_body();
+    let lump = b.lump_ids().next().unwrap();
+    let ns = b.add_shell(lump);
+    // the two caps: edge-disconnected from each other, connected only via the sides
+    for f in [FaceId(0), FaceId(1)] {
+        let old = b.face(f).shell;
+        b.shells[old.idx()].faces.retain(|&x| x != f);
+        b.shells[ns.idx()].faces.push(f);
+        b.faces[f.idx()].shell = ns;
+    }
+    assert!(codes(&b).contains(&"SHELL_DISCONNECTED"), "{:?}", codes(&b));
+}
+
 fn xz_frame() -> Frame {
     Frame { o: Vec3::ZERO, x: Vec3::X, y: Vec3::new(0.0, 0.0, -1.0), z: Vec3::Y }
 }

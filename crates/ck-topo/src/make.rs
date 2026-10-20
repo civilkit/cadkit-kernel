@@ -15,14 +15,19 @@
 //!   360° revolves have no caps and the profile curves become seams;
 //!   profile vertices on the revolve axis give no rail, segments lying on
 //!   the axis give no face (partial revolve: one C0|C1 edge in their slot).
+//! - shells: one lump per region as before, but a shell whose faces are not
+//!   edge-connected is split into one shell per component (same lump): a
+//!   full revolve of a ring gives an outer and a void sphere that share no
+//!   edges and must not sit in one shell (`SHELL_DISCONNECTED`).
 
 pub mod revolve;
 
-use crate::body::{Body, FaceName, VertexId};
+use crate::body::{Body, FaceId, FaceName, ShellId, VertexId};
 use ck_geom::curve::Curve;
 use ck_geom::curve2::Curve2;
 use ck_geom::surface::Surface;
 use ck_geom::{Frame, Vec2, Vec3};
+use std::collections::HashSet;
 use std::f64::consts::TAU;
 
 pub type MakeResult = Result<Body, String>;
@@ -412,7 +417,56 @@ pub fn build_sweep_with(
     // one entity split into several side faces (closed spline cut at half
     // length): `S.<tag>~k`
     b.number_split_faces();
+    split_disconnected_shells(&mut b);
     b
+}
+
+/// One shell per edge-connected component. A full sweep of a region with
+/// holes builds closed patches that share no edges (revolving a ring gives
+/// two spheres): a valid outer + void boundary that a single shell reports
+/// as `SHELL_DISCONNECTED`. The extra components get their own shell in the
+/// original's lump (a void stays in its solid's lump, as a boolean void
+/// does); face order is untouched and a body whose shells are already
+/// connected is returned as it was.
+fn split_disconnected_shells(b: &mut Body) {
+    let shells: Vec<ShellId> = b.shell_ids().collect();
+    for s in shells {
+        let fs: Vec<FaceId> = b.shell(s).faces.iter().copied().filter(|&f| b.face(f).alive).collect();
+        if fs.len() <= 1 {
+            continue;
+        }
+        let fset: HashSet<FaceId> = fs.iter().copied().collect();
+        let mut seen: HashSet<FaceId> = HashSet::new();
+        let mut comps: Vec<Vec<FaceId>> = vec![];
+        for &seed in &fs {
+            if !seen.insert(seed) {
+                continue;
+            }
+            let mut comp = vec![seed];
+            let mut stack = vec![seed];
+            while let Some(f) = stack.pop() {
+                for g in b.face_neighbors(f) {
+                    if fset.contains(&g) && seen.insert(g) {
+                        comp.push(g);
+                        stack.push(g);
+                    }
+                }
+            }
+            comps.push(comp);
+        }
+        if comps.len() <= 1 {
+            continue;
+        }
+        let lump = b.shell(s).lump;
+        for comp in comps.into_iter().skip(1) {
+            let ns = b.add_shell(lump);
+            for f in comp {
+                b.shells[s.idx()].faces.retain(|&x| x != f);
+                b.shells[ns.idx()].faces.push(f);
+                b.faces[f.idx()].shell = ns;
+            }
+        }
+    }
 }
 
 /// Numerical sense: does the natural normal at `uv` agree with `outward`?
