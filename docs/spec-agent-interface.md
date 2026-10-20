@@ -245,6 +245,22 @@ Rules:
   booleans whose intersection curve passes THROUGH the apex (a cut away from the tip works).
   Check: `tools/loft_point_check.mjs` (wasm), `crates/ck-wasm/tests/loft_point.rs`, unit tests in `crates/ck-ops/src/loft.rs`.
 
+## Loft correspondence and sections with inner loops
+
+- Correspondence: every section's start points and orientation are decided against the PREVIOUS section (the first section
+  decides for itself), never against a fixed first section. Sections on planes that rotate about a common axis (a stack
+  turned past 90 degrees) therefore keep their pieces matched through a full turn; the old compare-against-the-first rule
+  flipped the tail sections at the 90 degree crossing while the start points still matched, pairing mismatched halves and
+  folding the loft (valid body, wrong volume: issue #2847, the 180 degree Pappus stack came out at 246.7 instead of 4441.3).
+  Check: `crates/ck-wasm/tests/loft_rotated_sections.rs` (90 / 120 / 180 degrees, Pappus to 1e-3).
+- Inner loops: a solid loft whose sections are regions with inner loops is hollow — the loft of the outlines minus the loft
+  of the inner loops, hole j matched across sections by nearest centroid (a section may move its holes; a point section
+  contributes its apex to every hole loft, so a ring plus a point is a hollow cone). Sections whose inner-loop counts
+  disagree are refused: `loftProfile {detail, hint}` (the detail names the sections). A `surface` loft takes the outlines
+  only — there is nothing to subtract. The marker's `loops` / `starts` list the outlines (the subtraction is an
+  operation, not sketch wire).
+  Check: `crates/ck-wasm/tests/loft_ring_sections.rs` (hollow tube, hollow cone, refusal), issue #1184.
+
 ## End references (`extrude` `upToFace`, `offsetFromFace`, `upToPoint`)
 
 `extrude` (add or cut) can stop at a face, at a face moved by a distance, or at a point's plane.

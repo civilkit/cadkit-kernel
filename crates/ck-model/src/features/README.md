@@ -12,7 +12,7 @@ strings from kernel.strings, and dispatch to ck-ops/ck-topo.
 | extrude | op(add/cut), sketch, end(blind/through/throughBoth/upToNext/mid), depth(expr), flip, draft(expr), draftOut, twist(expr, deg), twistCentre([x,y]), regions([entity ids], optional) |
 | revolve | op, sketch, axis, end, angle(expr), flip, regions([entity ids], optional) |
 | sweep | op, sketch, path ({kind: curve or sketch, id}; a `sketch` id may name a `sketch3d` holding one `spline`, tangent-constrained end lines allowed), twist (deg), (+guides, guideMode, surface: not reconstructed) |
-| loft | op, sketches[], surface, guides[{sketch, influence next only}], centreLine ({sketch}: a planar open chain the loft follows, a moving frame carries the sections (ck-ops `loft/centre.rs`); a straight one is a no-op; errors loftCentreLineInvalid / Kink / Reach / Tight / Apex / Guides, each with detail + hint), startNormal / endNormal (tension; `true` = 1), connectors[null\|fraction]; startTangent / *Continuity -> `loftTangentEdges` (sketch profiles) |
+| loft | op, sketches[], surface, guides[{sketch, influence next only}], centreLine ({sketch}: a planar open chain the loft follows, a moving frame carries the sections (ck-ops `loft/centre.rs`); a straight one is a no-op; errors loftCentreLineInvalid / Kink / Reach / Tight / Apex / Guides, each with detail + hint), startNormal / endNormal (tension; `true` = 1), connectors[null\|fraction]; startTangent / *Continuity -> `loftTangentEdges` (sketch profiles); regions with inner loops loft HOLLOW (outer loft minus the per-hole lofts, holes matched by centroid, a point section is the apex of each hole loft, inner-loop counts must agree else loftProfile {detail, hint}) |
 | fillet | radius(expr), edges[] (a pick may carry radius, or radii [near, far] with filletType "variable"), propagate; see docs/blend-corpus.md |
 | chamfer | chamferType(equal/distances=distanceDistance/angle=angleDistance/vertex), distance, angle, distance2, face, flip, propagate, edges[]; see docs/blend-corpus.md |
 | draft | neutral, faces[], angle(expr), flip |
@@ -43,7 +43,7 @@ strings from kernel.strings, and dispatch to ck-ops/ck-topo.
 
 - sweep: sweepPathInvalid, sweepProfileNotNormal, sweepGuideMissing,
   sweepGuidesTwist, sweepGuideShort, sweepGuideStretchTwo, sweepSelfIntersects, sweepFailed
-- loft: loftProfileOpen, loftProfileChains, loftGuideInvalid, loftGuideMiss,
+- loft: loftProfile, loftProfileOpen, loftProfileChains, loftGuideInvalid, loftGuideMiss,
   loftGuideOrder, loftGuideTangency, loftCentreLineInvalid/Tight/Reach/Kink/Apex/Guides, loftFailed, loftInvalidResult
 - shell: shellTooThick, shellUnsupported, shellFailed, offsetUnsupported (shellTooThick / shellFailed / moveFace* carry `limit`, `minRadius`, `maxThickness`, `face` when known)
 - draft: draftParallelFace, draftAxisNotParallel, draftUnsupported,
