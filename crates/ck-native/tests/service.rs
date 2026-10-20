@@ -272,3 +272,289 @@ fn idle_sessions_expire() {
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(rpc(port, &id, br#"{"id":1,"msg":{"type":"ping"}}"#).status, 404);
 }
+
+// ---------------------------------------------------------------- v1.1: ping and pairing
+
+fn tmpdir() -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static N: AtomicUsize = AtomicUsize::new(0);
+    let d = std::env::temp_dir().join(format!("ck-native-test-{}-{}", std::process::id(), N.fetch_add(1, Ordering::SeqCst)));
+    let _ = std::fs::remove_dir_all(&d);
+    d
+}
+
+fn json_field(reply: &str, key: &str) -> String {
+    let pat = format!("\"{key}\":\"");
+    let i = reply.find(&pat).unwrap_or_else(|| panic!("no {key} in {reply}")) + pat.len();
+    let j = reply[i..].find('"').unwrap_or_else(|| panic!("unterminated {key}")) + i;
+    reply[i..j].to_string()
+}
+
+fn pair_req(port: u16, code: &str, origin: &str, label: &str) -> R {
+    let body = format!("{{\"code\":\"{code}\",\"origin\":\"{origin}\",\"label\":\"{label}\"}}");
+    req(port, "POST", "/pair", &[("Origin", origin)], body.as_bytes())
+}
+
+fn paired(dir: &std::path::Path, port: u16, origin: &str, label: &str) -> (String, String) {
+    let code = ck_native::pair_code(dir, Duration::from_secs(120)).expect("pair code");
+    let r = pair_req(port, &code, origin, label);
+    assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
+    let reply = String::from_utf8(r.body).unwrap();
+    (json_field(&reply, "token"), json_field(&reply, "id"))
+}
+
+/// GET /ping: no token, the two advertised fields only, CORS for allowed origins only.
+#[test]
+fn ping_needs_no_token_and_leaks_nothing() {
+    let port = start(|c| c.origins.push("https://site.example.com".into()));
+    let want = format!("{{\"service\":\"ck-native\",\"protocol\":{}}}", ck_native::PROTOCOL_VERSION);
+    // no Origin (non-browser discovery)
+    let r = req(port, "GET", "/ping", &[], b"");
+    assert_eq!(r.status, 200);
+    assert_eq!(r.body, want.as_bytes(), "ping must carry only service and protocol");
+    assert!(r.h("Access-Control-Allow-Origin").is_none());
+    // allowed origins get CORS, same body
+    for o in ["http://localhost:5173", "https://site.example.com"] {
+        let r = req(port, "GET", "/ping", &[("Origin", o)], b"");
+        assert_eq!(r.status, 200, "{o}");
+        assert_eq!(r.body, want.as_bytes(), "{o}");
+        assert_eq!(r.h("Access-Control-Allow-Origin"), Some(o), "{o}");
+    }
+    // Origin: null and unlisted origins: 403, no CORS headers, no body leak
+    for o in ["null", "http://evil.example.com", "http://localhost:5174"] {
+        let r = req(port, "GET", "/ping", &[("Origin", o)], b"");
+        assert_eq!(r.status, 403, "{o}");
+        assert!(r.h("Access-Control-Allow-Origin").is_none(), "{o}");
+        assert!(!String::from_utf8_lossy(&r.body).contains("protocol"), "{o}");
+    }
+    // /ping opened nothing else: /version still needs the token
+    assert_eq!(req(port, "GET", "/version", &[], b"").status, 401);
+    // a preflight for /ping needs no token either
+    let r = req(port, "OPTIONS", "/ping", &[("Origin", "http://localhost:5173"), ("Access-Control-Request-Method", "GET")], b"");
+    assert_eq!(r.status, 204);
+    assert_eq!(r.h("Access-Control-Allow-Origin"), Some("http://localhost:5173"));
+    // POST /ping is a method error for a token holder, not a new route
+    let a = auth();
+    assert_eq!(req(port, "POST", "/ping", &[(a.0, a.1.as_str())], b"").status, 405);
+}
+
+/// Wrong, expired and single-use (reused) pairing codes.
+#[test]
+fn pairing_codes_wrong_expired_and_reused() {
+    let dir = tmpdir();
+    let port = start(|c| {
+        c.dir = Some(dir.clone());
+        c.origins.push("https://site.example.com".into());
+    });
+    // no code written yet
+    let r = pair_req(port, "01234567", "http://localhost:5173", "kit");
+    assert_eq!(r.status, 401, "{}", String::from_utf8_lossy(&r.body));
+    // wrong code: refused, the real code survives
+    let code = ck_native::pair_code(&dir, Duration::from_secs(120)).unwrap();
+    let r = pair_req(port, "00000000", "http://localhost:5173", "kit");
+    assert_eq!(r.status, 401);
+    assert!(String::from_utf8_lossy(&r.body).contains("wrong"), "{}", String::from_utf8_lossy(&r.body));
+    // right code: a token bound to origin and label
+    let r = pair_req(port, &code, "http://localhost:5173", "kit dev");
+    assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
+    let reply = String::from_utf8(r.body.clone()).unwrap();
+    assert_eq!(json_field(&reply, "origin"), "http://localhost:5173");
+    assert_eq!(json_field(&reply, "label"), "kit dev");
+    assert_eq!(json_field(&reply, "token").len(), 64);
+    assert_eq!(json_field(&reply, "id").len(), 8);
+    let token = json_field(&reply, "token");
+    // reused: the code is consumed
+    let r = pair_req(port, &code, "http://localhost:5173", "kit");
+    assert_eq!(r.status, 401, "{}", String::from_utf8_lossy(&r.body));
+    assert!(String::from_utf8_lossy(&r.body).contains("no pairing code"));
+    // expired: ttl already elapsed when the service reads it
+    let code2 = ck_native::pair_code(&dir, Duration::ZERO).unwrap();
+    let r = pair_req(port, &code2, "http://localhost:5173", "kit");
+    assert_eq!(r.status, 401);
+    assert!(String::from_utf8_lossy(&r.body).contains("expired"), "{}", String::from_utf8_lossy(&r.body));
+    // a page must claim its own Origin: header and body disagree
+    let code3 = ck_native::pair_code(&dir, Duration::from_secs(120)).unwrap();
+    let body = format!("{{\"code\":\"{code3}\",\"origin\":\"https://site.example.com\",\"label\":\"kit\"}}");
+    let r = req(port, "POST", "/pair", &[("Origin", "http://localhost:5173")], body.as_bytes());
+    assert_eq!(r.status, 403, "{}", String::from_utf8_lossy(&r.body));
+    // a non-browser client still cannot pair an origin that is not on the allow-list
+    let body = format!("{{\"code\":\"{code3}\",\"origin\":\"http://evil.example.com\",\"label\":\"kit\"}}");
+    let r = req(port, "POST", "/pair", &[], body.as_bytes());
+    assert_eq!(r.status, 403);
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = token;
+}
+
+/// A revoked client's token stops working on the running service (file reload), the id is gone.
+#[test]
+fn revoked_client_token_is_refused() {
+    let dir = tmpdir();
+    let port = start(|c| c.dir = Some(dir.clone()));
+    let (token, id) = paired(&dir, port, "http://localhost:5173", "kit");
+    let a = ("Authorization", format!("Bearer {token}"));
+    assert_eq!(req(port, "GET", "/version", &[(a.0, a.1.as_str())], b"").status, 200);
+    assert!(ck_native::revoke(&dir, &id).unwrap(), "the client existed");
+    assert!(!ck_native::revoke(&dir, &id).unwrap(), "revoked twice is unknown");
+    assert_eq!(req(port, "GET", "/version", &[(a.0, a.1.as_str())], b"").status, 401, "revoked token must die live");
+    assert!(ck_native::list_clients(&dir).is_empty());
+    // the shared token keeps working
+    let s = auth();
+    assert_eq!(req(port, "GET", "/version", &[(s.0, s.1.as_str())], b"").status, 200);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A paired token only works from the origin it was paired with.
+#[test]
+fn paired_token_is_bound_to_its_origin() {
+    let dir = tmpdir();
+    let port = start(|c| {
+        c.dir = Some(dir.clone());
+        c.origins.push("https://site.example.com".into());
+    });
+    let (token, _id) = paired(&dir, port, "http://localhost:5173", "kit");
+    let b = format!("Bearer {token}");
+    let a = ("Authorization", b.as_str());
+    // its own origin: ok, with CORS
+    let r = req(port, "GET", "/version", &[a, ("Origin", "http://localhost:5173")], b"");
+    assert_eq!(r.status, 200);
+    assert_eq!(r.h("Access-Control-Allow-Origin"), Some("http://localhost:5173"));
+    // a different origin, even an allowed one: 403 without CORS headers
+    let r = req(port, "GET", "/version", &[a, ("Origin", "https://site.example.com")], b"");
+    assert_eq!(r.status, 403, "{}", String::from_utf8_lossy(&r.body));
+    assert!(r.h("Access-Control-Allow-Origin").is_none());
+    // no Origin (non-browser): allowed, like the shared token
+    assert_eq!(req(port, "GET", "/version", &[a], b"").status, 200);
+    // the shared token is not origin-bound
+    let s = auth();
+    let r = req(port, "GET", "/version", &[(s.0, s.1.as_str()), ("Origin", "https://site.example.com")], b"");
+    assert_eq!(r.status, 200);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Eight simultaneous attempts on one code: exactly one wins, one record is written.
+#[test]
+fn concurrent_pairing_attempts_take_the_code_once() {
+    let dir = tmpdir();
+    let port = start(|c| c.dir = Some(dir.clone()));
+    let code = ck_native::pair_code(&dir, Duration::from_secs(120)).unwrap();
+    let ts: Vec<_> = (0..8)
+        .map(|i| {
+            let code = code.clone();
+            let origin = "http://localhost:5173".to_string();
+            std::thread::spawn(move || pair_req(port, &code, &origin, &format!("c{i}")).status)
+        })
+        .collect();
+    let mut ok = 0;
+    let mut refused = 0;
+    for t in ts {
+        match t.join().unwrap() {
+            200 => ok += 1,
+            401 => refused += 1,
+            s => panic!("unexpected status {s}"),
+        }
+    }
+    assert_eq!(ok, 1, "exactly one pairing wins");
+    assert_eq!(refused, 7);
+    assert_eq!(ck_native::list_clients(&dir).len(), 1, "one record, one token");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Without a config dir there is no pairing store: the body is drained,501, nothing written.
+#[test]
+fn pairing_without_a_config_dir_is_not_implemented() {
+    let port = start(|_| {});
+    let r = pair_req(port, "01234567", "http://localhost:5173", "kit");
+    assert_eq!(r.status, 501);
+}
+
+/// End-to-end through the real binary: --pair, POST /pair, clients, revoke, modes, and the
+/// request log never carries a token or a code.
+#[test]
+fn binary_paired_flow_logs_no_secret() {
+    use std::io::BufRead;
+    use std::process::{Command, Stdio};
+    let dir = tmpdir();
+    let bin = env!("CARGO_BIN_EXE_ck-native");
+    let mut child = Command::new(bin)
+        .args(["--config-dir", dir.to_str().unwrap(), "--port", "0"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn ck-native");
+    let mut err = std::io::BufReader::new(child.stderr.take().unwrap());
+    let mut log = String::new();
+    let port = loop {
+        let mut line = String::new();
+        assert!(err.read_line(&mut line).unwrap() > 0, "the service died before listening");
+        log.push_str(&line);
+        if let Some(i) = line.rfind("http://127.0.0.1:") {
+            let p: u16 = line[i + "http://127.0.0.1:".len()..].trim().parse().expect("port");
+            break p;
+        }
+    };
+    // ck-native --pair prints a one-time code to stdout
+    let out = Command::new(bin).args(["--config-dir", dir.to_str().unwrap(), "--pair"]).output().expect("run --pair");
+    assert!(out.status.success());
+    let printed = String::from_utf8(out.stdout).unwrap();
+    let code = printed
+        .lines()
+        .find_map(|l| l.strip_prefix("pairing code: "))
+        .unwrap_or_else(|| panic!("no code printed: {printed}"))
+        .to_string();
+    assert!(code.len() >= 8, "short code: {code}");
+    // pair over the wire, then use the token
+    let r = pair_req(port, &code, "http://localhost:5173", "log-test");
+    assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
+    let reply = String::from_utf8(r.body).unwrap();
+    let token = json_field(&reply, "token");
+    let id = json_field(&reply, "id");
+    let a = ("Authorization", format!("Bearer {token}"));
+    assert_eq!(req(port, "GET", "/version", &[(a.0, a.1.as_str())], b"").status, 200);
+    // the CLI lists and revokes the client while the service runs
+    let run = |args: &[&str]| {
+        let mut c = vec!["--config-dir", dir.to_str().unwrap()];
+        c.extend_from_slice(args);
+        let out = Command::new(bin).args(&c).output().expect("cli");
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let listed = run(&["clients"]);
+    assert!(listed.contains(&id) && listed.contains("log-test"), "{listed}");
+    let revoked = run(&["revoke", &id]);
+    assert!(revoked.contains(&format!("revoked {id}")), "{revoked}");
+    assert_eq!(req(port, "GET", "/version", &[(a.0, a.1.as_str())], b"").status, 401, "revoke is live");
+    assert!(run(&["clients"]).contains("no paired clients"));
+    // /ping still answers without a token
+    let r = req(port, "GET", "/ping", &[], b"");
+    assert_eq!(r.status, 200);
+    assert_eq!(String::from_utf8(r.body).unwrap(), format!("{{\"service\":\"ck-native\",\"protocol\":{}}}", ck_native::PROTOCOL_VERSION));
+    // stop the service, collect the rest of its request log
+    let _ = child.kill();
+    let _ = child.wait();
+    let mut line = String::new();
+    while err.read_line(&mut line).unwrap() > 0 {
+        log.push_str(&line);
+        line.clear();
+    }
+    let shared = std::fs::read_to_string(dir.join("token")).unwrap();
+    let shared = shared.trim().to_string();
+    // the log carries routes, never credentials
+    assert!(log.contains("/pair"), "{log}");
+    assert!(log.contains("/version"), "{log}");
+    assert!(log.contains("/ping"), "{log}");
+    assert!(!log.contains(&token), "paired token leaked into the log");
+    assert!(!log.contains(&shared), "shared token leaked into the log");
+    assert!(!log.contains(&code), "pairing code leaked into the log");
+    // config dir and files:700 /600, the consumed code file is gone
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(std::fs::metadata(&dir).unwrap().mode() & 0o777, 0o700, "config dir mode");
+        assert_eq!(std::fs::metadata(dir.join("token")).unwrap().mode() & 0o777, 0o600, "token mode");
+        assert_eq!(std::fs::metadata(dir.join("clients.json")).unwrap().mode() & 0o777, 0o600, "clients mode");
+    }
+    assert!(!dir.join("pairing.json").exists(), "the code file is single use");
+    // tokens are stored hashed: the file holds no token material
+    let clients = std::fs::read_to_string(dir.join("clients.json")).unwrap();
+    assert!(!clients.contains(&token) && !clients.contains(&shared));
+    let _ = std::fs::remove_dir_all(&dir);
+}

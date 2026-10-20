@@ -4,6 +4,9 @@
 //! thread-locals, exactly like one wasm instance per Worker). A small hand-written HTTP/1.1
 //! layer over `std::net`; no async runtime. See docs/native-service.md.
 
+pub mod store;
+pub use store::{list_clients, pair_code, revoke};
+
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -15,6 +18,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 /// Version of the HTTP shape + message framing the app handshakes against.
+/// `/ping` and `/pair` are additive (v1.1): nothing an old client sends changes.
 pub const PROTOCOL_VERSION: u32 = 1;
 const DEFAULT_ORIGIN: &str = "http://localhost:5173";
 const MAX_CONNECTIONS: usize = 64;
@@ -25,6 +29,9 @@ pub struct Config {
     pub token: String,
     /// Extra allowed Origins (besides http://localhost:5173).
     pub origins: Vec<String>,
+    /// Config dir with the shared `token`, `clients.json` and `pairing.json`.
+    /// `None` disables pairing and per-client tokens (tests that only need the shared token).
+    pub dir: Option<PathBuf>,
     pub max_body: usize,
     pub max_reply: usize,
     pub max_sessions: usize,
@@ -38,6 +45,7 @@ impl Default for Config {
         Config {
             token: String::new(),
             origins: vec![],
+            dir: None,
             max_body: 64 << 20,
             max_reply: 1 << 30,
             max_sessions: 8,
@@ -92,6 +100,11 @@ pub fn load_or_create_token(dir: &Path) -> Result<(String, PathBuf), String> {
         }
     }
     std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+    }
     let t = random_hex(32)?;
     let mut o = std::fs::OpenOptions::new();
     o.write(true).create(true).truncate(true);
@@ -110,7 +123,7 @@ pub fn load_or_create_token(dir: &Path) -> Result<(String, PathBuf), String> {
     Ok((t, path))
 }
 
-fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+pub(crate) fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     let mut d = (a.len() ^ b.len()) as u8;
     for i in 0..a.len().max(b.len()) {
         d |= a.get(i).copied().unwrap_or(0) ^ b.get(i).copied().unwrap_or(0);
@@ -152,6 +165,8 @@ struct Shared {
     port: u16,
     sessions: Mutex<HashMap<String, Arc<Session>>>,
     conns: AtomicUsize,
+    /// Paired clients from `<config-dir>/clients.json`, reloaded when the file changes.
+    clients: Mutex<store::Cache>,
 }
 
 fn spawn_worker(stack: usize) -> Result<Sender<Job>, String> {
@@ -368,6 +383,7 @@ fn route(sh: &Arc<Shared>, req: &Req, r: &mut BufReader<TcpStream>) -> Resp {
         return deny(403, "Origin not allowed");
     }
     let cors = origin.map(|o| o.to_string());
+    let path = req.path.split('?').next().unwrap_or("");
     if req.method == "OPTIONS" {
         // Preflight: only for allowed origins, no token (browsers never send one here).
         if origin.is_none() {
@@ -375,8 +391,36 @@ fn route(sh: &Arc<Shared>, req: &Req, r: &mut BufReader<TcpStream>) -> Resp {
         }
         return Resp { status: 204, body: vec![], ctype: "", cors, preflight: true, close: false };
     }
-    let tok = req.h("authorization").and_then(|a| a.strip_prefix("Bearer ")).unwrap_or("");
-    if cfg.token.is_empty() || !ct_eq(tok.trim().as_bytes(), cfg.token.as_bytes()) {
+    // v1.1: two pre-token routes. /ping answers without a token (and nothing but the two
+    // fields), /pair authenticates with the one-time code from `ck-native --pair`.
+    if req.method == "GET" && path == "/ping" {
+        let mut resp = json(200, format!("{{\"service\":\"ck-native\",\"protocol\":{}}}", PROTOCOL_VERSION));
+        resp.cors = cors;
+        return resp;
+    }
+    if req.method == "POST" && path == "/pair" {
+        let mut resp = dispatch_pair(sh, req, r);
+        resp.cors = cors;
+        return resp;
+    }
+    let tok = req.h("authorization").and_then(|a| a.strip_prefix("Bearer ")).unwrap_or("").trim();
+    let mut ok = !cfg.token.is_empty() && ct_eq(tok.as_bytes(), cfg.token.as_bytes());
+    if !ok && !tok.is_empty() {
+        // A paired client's token: only its stored hash is compared, and only from the
+        // origin it was paired with (no Origin = a non-browser client, like the shared token).
+        if let Some(dir) = &cfg.dir {
+            let mut cache = sh.clients.lock().unwrap();
+            let recs = cache.records(dir);
+            let h = store::sha256_hex(tok);
+            if let Some(rec) = recs.iter().find(|r| ct_eq(r.hash.as_bytes(), h.as_bytes())) {
+                match origin {
+                    Some(o) if !o.eq_ignore_ascii_case(&rec.origin) => return deny(403, "token not valid for this origin"),
+                    _ => ok = true,
+                }
+            }
+        }
+    }
+    if !ok {
         let mut e = deny(401, "missing or wrong token");
         e.cors = cors;
         return e;
@@ -384,6 +428,61 @@ fn route(sh: &Arc<Shared>, req: &Req, r: &mut BufReader<TcpStream>) -> Resp {
     let mut resp = dispatch(sh, req, r);
     resp.cors = cors;
     resp
+}
+
+/// `POST /pair {code, origin, label}` — the one-time code from `ck-native --pair` in exchange
+/// for a per-client token bound to `origin` (and recorded with `label`). No bearer token.
+fn dispatch_pair(sh: &Arc<Shared>, req: &Req, r: &mut BufReader<TcpStream>) -> Resp {
+    let body = match read_body(sh, req, r) {
+        Ok(b) => b,
+        Err(e) => return e,
+    };
+    let Some(dir) = sh.cfg.dir.clone() else {
+        // the body is drained above, so keep-alive stays in sync
+        return err(501, "pairing is not configured");
+    };
+    if body.len() > 4096 {
+        return err(413, "pairing body exceeds the size limit");
+    }
+    let Ok(text) = String::from_utf8(body) else {
+        return err(400, "bad pairing body");
+    };
+    let Ok(v) = ck_json::parse(&text) else {
+        return err(400, "bad pairing body");
+    };
+    let (Some(code), Some(origin), Some(label)) =
+        (v.get("code").and_then(|x| x.as_str()), v.get("origin").and_then(|x| x.as_str()), v.get("label").and_then(|x| x.as_str()))
+    else {
+        return err(400, "pairing body needs code, origin and label");
+    };
+    // The token binds to an allow-listed origin; a page that sent an Origin must claim that
+    // same origin (a confused page cannot pair someone else's origin in).
+    let allowed = sh.cfg.all_origins(sh.port);
+    if !allowed.iter().any(|a| a.eq_ignore_ascii_case(origin)) {
+        return err(403, "Origin not allowed");
+    }
+    if let Some(h) = req.h("origin") {
+        if !h.eq_ignore_ascii_case(origin) {
+            return err(403, "Origin does not match the page");
+        }
+    }
+    let label: String = label.chars().take(64).collect();
+    let mut cache = sh.clients.lock().unwrap();
+    // The lock serialises concurrent attempts: the first to take the code wins (single use).
+    if let Err(m) = store::take_code(&dir, code) {
+        return err(401, m);
+    }
+    let (token, rec) = match store::admit(&dir, origin, &label) {
+        Ok(x) => x,
+        Err(e) => return err(500, &e),
+    };
+    cache.invalidate();
+    let mut m: ck_json::Map = vec![];
+    m.push(("token".into(), ck_json::Json::Str(token)));
+    m.push(("id".into(), ck_json::Json::Str(rec.id)));
+    m.push(("origin".into(), ck_json::Json::Str(rec.origin)));
+    m.push(("label".into(), ck_json::Json::Str(rec.label)));
+    json(200, ck_json::to_string(&ck_json::Json::Obj(m)))
 }
 
 fn read_body(sh: &Shared, req: &Req, r: &mut BufReader<TcpStream>) -> Result<Vec<u8>, Resp> {
@@ -498,7 +597,9 @@ fn dispatch(sh: &Arc<Shared>, req: &Req, r: &mut BufReader<TcpStream>) -> Resp {
                 err(404, "unknown session")
             }
         }
-        (_, ["version"]) | (_, ["session"]) | (_, ["session", _]) | (_, ["session", _, "rpc"]) => err(405, "method not allowed"),
+        (_, ["version"]) | (_, ["session"]) | (_, ["session", _]) | (_, ["session", _, "rpc"]) | (_, ["ping"]) | (_, ["pair"]) => {
+            err(405, "method not allowed")
+        }
         _ => err(404, "not found"),
     }
 }
@@ -512,7 +613,13 @@ pub fn serve(listener: TcpListener, cfg: Config) {
         eprintln!("kernel panic at {loc}");
     }));
     let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
-    let sh = Arc::new(Shared { cfg, port, sessions: Mutex::new(HashMap::new()), conns: AtomicUsize::new(0) });
+    let sh = Arc::new(Shared {
+        cfg,
+        port,
+        sessions: Mutex::new(HashMap::new()),
+        conns: AtomicUsize::new(0),
+        clients: Mutex::new(store::Cache::new()),
+    });
     {
         let sh = sh.clone();
         std::thread::spawn(move || loop {

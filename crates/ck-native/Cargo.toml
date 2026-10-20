@@ -16,3 +16,5 @@ ck-server = { path = "../ck-server" }
 ck-wasm = { path = "../ck-wasm" }
 ck-ops = { path = "../ck-ops" }
 ck-core = { path = "../ck-core" }
+ck-json = { path = "../ck-json" }
+ck-text = { path = "../ck-text" }
