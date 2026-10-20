@@ -431,6 +431,7 @@ fn coincident_pairs(sk: &Sketch) -> Vec<(String, String)> {
     sk.constraints
         .iter()
         .filter(|c| c.kind == "coincident" || c.kind == "concentric")
+        .filter(|c| !c.suppressed)
         .filter_map(|c| Some((c.refs.first()?.clone(), c.refs.get(1)?.clone())))
         .collect()
 }
@@ -1041,6 +1042,18 @@ mod tests {
             "",
         ), 0.0, TINY);
         assert!(!has(&b, "nearCoincident"));
+    }
+
+    #[test]
+    fn suppressed_coincident_does_not_suppress_near_coincident() {
+        let a = an(&sk(
+            r#"{"id":"p1","x":0,"y":0},{"id":"p2","x":0.005,"y":0}"#,
+            r#"{"type":"line","id":"e1","p1":"p1","p2":"p2"}"#,
+            r#"{"type":"coincident","id":"c1","refs":["p1","p2"],"suppressed":true}"#,
+        ));
+        let f = one(&a, "nearCoincident");
+        assert_eq!(f.points, ["p1", "p2"], "{f:?}");
+        assert!((f.distance.unwrap() - 0.005).abs() < 1e-12);
     }
 
     #[test]

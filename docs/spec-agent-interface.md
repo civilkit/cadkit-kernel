@@ -992,7 +992,7 @@ and `at` `[x, y]` (sketch coordinates) where a location makes sense:
 | kind | fires when | extra fields |
 |---|---|---|
 | `openEnd` | an entity end touches nothing (its point carries one end) | `gap` = distance to the nearest other open end, `nearest` = that entity's id, `points` = `[own, other]`; without another open end only the own fields appear. The `profile.reason` carries the biggest gap; a tie resolves to the later finding |
-| `nearCoincident` | two distinct points closer than `tolerance` with no `coincident` / `concentric` constraint between them | `distance`, `at` = midpoint |
+| `nearCoincident` | two distinct points closer than `tolerance` with no `coincident` / `concentric` constraint between them (a `suppressed` one does not count) | `distance`, `at` = midpoint |
 | `duplicate` | two entities of the same kind on the same referenced points (line ends in either order; circle = same centre + radius; arc = same centre + ends) | |
 | `overlap` | two collinear lines whose interiors intersect (both ends of one within `tolerance` of the other's line) | |
 | `zeroLength` | a curve of length / radius `<= 0` | |
@@ -1023,7 +1023,9 @@ findings).
 What the solver can still move in one sketch — per point, per radius and
 per entity — from the null space of the Jacobian at the solution. The
 build, convergence and rank are the regen `status` block's
-(`opts.sketchStatus: true`), so `dof` is exactly its `dof`.
+(`opts.sketchStatus: true`), so `dof` is exactly its `dof`; a constraint
+flagged `suppressed` (see `docs/sketch-status.md`) is outside the system
+everywhere.
 
 ```json
 {"type":"sketchFreedoms","featureId":"F1"}
