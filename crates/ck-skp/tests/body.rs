@@ -138,6 +138,10 @@ fn transform_normal_stays_perpendicular_under_non_uniform_scale() {
     let n = transform_normal(&m, [0.0, 1.0, -1.0]);
     let d = |p: [f64; 3], q: [f64; 3]| p[0] * q[0] + p[1] * q[1] + p[2] * q[2];
     assert!(d(n, u).abs() < 1e-12 && d(n, v).abs() < 1e-12, "{n:?}");
+    // a mirror keeps the side of the normal, as rotating it does
+    let mirror = [-1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+    assert_eq!(transform_normal(&mirror, [1.0, 0.0, 0.0]), [-1.0, 0.0, 0.0]);
+    assert_eq!(transform_normal(&mirror, [0.0, 1.0, 0.0]), [0.0, 1.0, 0.0]);
 }
 
 /// The three files that took 10 to 75 s before the fix (licensed, so not committed): `SKP_PERF_FILES` is a list of paths

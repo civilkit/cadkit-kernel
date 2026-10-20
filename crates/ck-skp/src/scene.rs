@@ -167,8 +167,8 @@ pub fn rotate_vec(m: &[f64; 13], p: [f64; 3]) -> [f64; 3] {
     [m[0] * p[0] + m[1] * p[1] + m[2] * p[2], m[3] * p[0] + m[4] * p[1] + m[5] * p[2], m[6] * p[0] + m[7] * p[1] + m[8] * p[2]]
 }
 
-/// A surface normal under the affine map `m`: the cofactor matrix applied to `n` (the inverse transpose up to the
-/// positive scale `|det|`, with the sign of a mirror kept). `rotate_vec` is only right for rotations and uniform scales;
+/// A surface normal under the affine map `m`: the inverse transpose applied to `n` (as the cofactor matrix times the sign
+/// of the determinant, so a mirror keeps the side: the same as `rotate_vec` for rotations, mirrors and uniform scales). `rotate_vec` is only right for rotations and uniform scales;
 /// under a non-uniform scale it tilts the normal off the transformed face plane.
 pub fn transform_normal(m: &[f64; 13], n: [f64; 3]) -> [f64; 3] {
     let (r0, r1, r2) = ([m[0], m[1], m[2]], [m[3], m[4], m[5]], [m[6], m[7], m[8]]);
@@ -176,7 +176,8 @@ pub fn transform_normal(m: &[f64; 13], n: [f64; 3]) -> [f64; 3] {
     // rows of the cofactor matrix are the cross products of the other two rows
     let (c0, c1, c2) = (cr(r1, r2), cr(r2, r0), cr(r0, r1));
     let d = |c: [f64; 3]| c[0] * n[0] + c[1] * n[1] + c[2] * n[2];
-    [d(c0), d(c1), d(c2)]
+    let sg = if det3(m) < 0.0 { -1.0 } else { 1.0 };
+    [sg * d(c0), sg * d(c1), sg * d(c2)]
 }
 
 /// `parent * child` (the child is applied first).
