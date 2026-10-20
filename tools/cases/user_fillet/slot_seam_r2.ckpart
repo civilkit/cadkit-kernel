@@ -1,0 +1,169 @@
+{
+ "format": "ck-part",
+ "version": 1,
+ "name": "slot-fillet",
+ "features": [
+  {
+   "type": "sketch",
+   "id": "F1",
+   "name": "Stadium",
+   "plane": {
+    "kind": "std",
+    "id": "right"
+   },
+   "points": [
+    {
+     "id": "a",
+     "x": 9.5,
+     "y": 0.0
+    },
+    {
+     "id": "b",
+     "x": 9.5,
+     "y": 25.0
+    },
+    {
+     "id": "c1",
+     "x": 0,
+     "y": 25.0
+    },
+    {
+     "id": "d",
+     "x": -9.5,
+     "y": 25.0
+    },
+    {
+     "id": "e",
+     "x": -9.5,
+     "y": 0.0
+    },
+    {
+     "id": "c2",
+     "x": 0,
+     "y": 0.0
+    }
+   ],
+   "entities": [
+    {
+     "id": "l1",
+     "type": "line",
+     "p1": "a",
+     "p2": "b"
+    },
+    {
+     "id": "a1",
+     "type": "arc",
+     "c": "c1",
+     "p1": "b",
+     "p2": "d"
+    },
+    {
+     "id": "l2",
+     "type": "line",
+     "p1": "d",
+     "p2": "e"
+    },
+    {
+     "id": "a2",
+     "type": "arc",
+     "c": "c2",
+     "p1": "e",
+     "p2": "a"
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F2",
+   "op": "add",
+   "sketch": "F1",
+   "end": "blind",
+   "depth": 14
+  },
+  {
+   "type": "sketch",
+   "id": "F3",
+   "name": "Slot",
+   "plane": {
+    "kind": "std",
+    "id": "front"
+   },
+   "points": [
+    {
+     "id": "s1",
+     "x": 3.5,
+     "y": -12
+    },
+    {
+     "id": "s2",
+     "x": 9.5,
+     "y": -12
+    },
+    {
+     "id": "s3",
+     "x": 9.5,
+     "y": 0
+    },
+    {
+     "id": "s4",
+     "x": 3.5,
+     "y": 0
+    }
+   ],
+   "entities": [
+    {
+     "id": "m1",
+     "type": "line",
+     "p1": "s1",
+     "p2": "s2"
+    },
+    {
+     "id": "m2",
+     "type": "line",
+     "p1": "s2",
+     "p2": "s3"
+    },
+    {
+     "id": "m3",
+     "type": "line",
+     "p1": "s3",
+     "p2": "s4"
+    },
+    {
+     "id": "m4",
+     "type": "line",
+     "p1": "s4",
+     "p2": "s1"
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F4",
+   "op": "cut",
+   "sketch": "F3",
+   "end": "throughBoth",
+   "depth": 10
+  },
+  {
+   "type": "fillet",
+   "id": "F5",
+   "radius": 2,
+   "edges": [
+    {
+     "faces": [
+      "F2.S.l2",
+      "F4.S.m3"
+     ],
+     "at": [
+      6.5,
+      0,
+      9.5
+     ]
+    }
+   ]
+  }
+ ]
+}
