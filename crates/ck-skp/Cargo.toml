@@ -1,0 +1,12 @@
+[package]
+name = "ck-skp"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ck-geom = { path = "../ck-geom" }
+ck-topo = { path = "../ck-topo" }
+
+[dev-dependencies]
+ck-check = { path = "../ck-check" }
+ck-tess = { path = "../ck-tess" }
