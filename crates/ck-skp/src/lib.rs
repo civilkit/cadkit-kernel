@@ -29,7 +29,7 @@ pub mod zip;
 
 pub use error::{Limits, SkpError};
 pub use model::{Container, Model};
-pub use scene::{bake, BakeOptions, Scene};
+pub use scene::{bake, BakeOptions, Scene, Up};
 
 /// Parse a `.skp` file (either container) with the default limits.
 pub fn parse(data: &[u8]) -> Result<Model, SkpError> {

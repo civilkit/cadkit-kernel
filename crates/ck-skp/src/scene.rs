@@ -30,11 +30,57 @@ pub struct BakeOptions {
     /// Reproduce OpenSKP exactly where it is lossy: it ignores the layer and paint of instances of classic (pre-2021)
     /// files when baking. Used by the parity tests; off by default (the paint is applied).
     pub openskp_compat: bool,
+    /// Which way is up in the baked scene; see [`Up`]. Default [`Up::Z`] (as in the file).
+    pub up: Up,
+}
+
+/// Orientation of the baked scene. SketchUp is Z up (right-handed); the kit and kernel convention is Y up. The change is
+/// a proper rotation (determinant +1) applied to the finished scene (after instance flattening and the inch to mm
+/// scale), so winding, face order, areas and volumes are unchanged and normals rotate with the geometry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Up {
+    /// As in the file: (x, y, z) -> (x, y, z).
+    #[default]
+    Z,
+    /// SketchUp Z becomes our Y: (x, y, z) -> (x, z, -y), a -90 degree rotation about X. SketchUp's front (-Y) faces +Z.
+    Y,
+    /// `Y` followed by 180 degrees about Z, for models that arrive upside down: (x, y, z) -> (-x, -z, -y).
+    YFlip,
+}
+
+impl Up {
+    pub fn parse(s: &str) -> Option<Up> {
+        match s {
+            "z" => Some(Up::Z),
+            "y" => Some(Up::Y),
+            "yFlip" => Some(Up::YFlip),
+            _ => None,
+        }
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            Up::Z => "z",
+            Up::Y => "y",
+            Up::YFlip => "yFlip",
+        }
+    }
+    /// Row-major 3x3 rotation applied to column vectors.
+    pub fn matrix(self) -> [[f64; 3]; 3] {
+        match self {
+            Up::Z => [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            Up::Y => [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]],
+            Up::YFlip => [[-1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, -1.0, 0.0]],
+        }
+    }
+    pub fn apply(self, v: [f64; 3]) -> [f64; 3] {
+        let m = self.matrix();
+        [0, 1, 2].map(|r| m[r][0] * v[0] + m[r][1] * v[1] + m[r][2] * v[2])
+    }
 }
 
 impl Default for BakeOptions {
     fn default() -> Self {
-        BakeOptions { include_hidden: false, max_depth: 32, max_instances: 2_000_000, max_triangles: 30_000_000, keep_polygons: false, openskp_compat: false }
+        BakeOptions { include_hidden: false, max_depth: 32, max_instances: 2_000_000, max_triangles: 30_000_000, keep_polygons: false, openskp_compat: false, up: Up::Z }
     }
 }
 
@@ -618,5 +664,26 @@ pub fn bake(m: &Model, lim: &Limits, opt: &BakeOptions) -> R<Scene> {
     let mut b = Baker { m, lim, opt, cache: HashMap::new(), active: HashSet::new(), mat_index: HashMap::new(), tex_index: HashMap::new(), scene: Scene::default() };
     let root: &Definition = &m.root;
     b.instantiate(None, root, &IDENT, "Layer0", "ROOT", None, 0)?;
-    Ok(b.scene)
+    let mut scene = b.scene;
+    if opt.up != Up::Z {
+        let up = opt.up;
+        for p in &mut scene.primitives {
+            for v in &mut p.positions {
+                *v = up.apply(*v);
+            }
+            for n in &mut p.normals {
+                let r = up.apply([n[0] as f64, n[1] as f64, n[2] as f64]);
+                *n = [r[0] as f32, r[1] as f32, r[2] as f32];
+            }
+        }
+        for pf in &mut scene.polygons {
+            for l in &mut pf.loops {
+                for v in l.iter_mut() {
+                    *v = up.apply(*v);
+                }
+            }
+            pf.normal = up.apply(pf.normal);
+        }
+    }
+    Ok(scene)
 }
