@@ -89,7 +89,12 @@ pub fn exec_hole(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(
     let plain = (*kind == HoleKind::Simple && f.raw.get("diameter").is_some()).then(|| state.num(f, "diameter", 0.0)).transpose()?;
     let row = match (plain, size.as_deref().and_then(|s| ISO.iter().find(|(n, _)| *n == s)).map(|r| r.1)) {
         (Some(_), r) => r.unwrap_or([0.0; 7]),
-        (None, r) => r.ok_or_else(|| FeatureError::new(HOLE_INVALID))?,
+        (None, r) => r.ok_or_else(|| {
+            hint(
+                FeatureError::new(HOLE_INVALID),
+                "a simple hole needs a positive `diameter` or a recognised ISO `size` (M2 to M64); the `size` given is not in the table",
+            )
+        })?,
     };
     let fit_s = f.raw.get("fit").and_then(|v| v.as_str()).unwrap_or("");
     let _ = fit;
@@ -101,7 +106,7 @@ pub fn exec_hole(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(
         _ => row[2],
     };
     if d <= 0.0 {
-        return Err(FeatureError::new(HOLE_INVALID));
+        return Err(hint(FeatureError::new(HOLE_INVALID), "the hole diameter must be greater than zero (a standard `size`, or a positive `diameter`)"));
     }
     let pts: Vec<[f64; 2]> = sk
         .sketch

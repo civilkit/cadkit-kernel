@@ -202,7 +202,13 @@ impl FeatureError {
             return FeatureError { code: c.to_string(), params: Vec::new() }
                 .with("hostFace", Json::Str(h.to_string()))
                 .with("toolFace", Json::Str(t.to_string()))
-                .with("gap", Json::Num(g));
+                .with("gap", Json::Num(g))
+                .with(
+                    "hint",
+                    Json::Str(format!(
+                        "the two faces are nearly coincident (gap {g:.3e} mm) but not the same surface, so the intersection cannot be closed; make them exactly coincident or move the tool by a small amount (0.01), or give the feature a fuzzy `tolerance` (1e-5 to 1e-3 mm) / `autoFuzzy: true`"
+                    )),
+                );
         }
         // a boolean whose assembled result had open / non-manifold edges: `booleanFailed;edgeFaces=<f1>|<f2>;issue=<kind>;at=<x>|<y>|<z>`
         if let Some((c, d)) = code.split_once(";edgeFaces=") {
@@ -240,6 +246,15 @@ impl FeatureError {
                     "hint",
                     Json::Str("the boolean did not assemble and the retries at looser tolerances were not started because it had already run long; the operands probably touch tangentially or nearly coincide over a large area. Move the tool by a small amount (0.01), unite the bodies that touch first, make near-coincident faces exactly coincident, or give the feature a fuzzy `tolerance`".to_string()),
                 );
+        }
+        // a boolean that could not be assembled (no nearer cause diagnosed)
+        if code == "booleanFailed" {
+            return FeatureError { code: code.to_string(), params: Vec::new() }.with(
+                "hint",
+                Json::Str(
+                    "the operands' intersection could not be closed into a valid solid; the faces usually touch tangentially, coincide over an area, or leave a sliver thinner than ~1e-3 mm. Move the tool by a small amount (0.01), unite bodies that touch each other first, split the tool, or give the feature a fuzzy `tolerance` (1e-5 to 1e-3 mm) / `autoFuzzy: true`".to_string(),
+                ),
+            );
         }
         FeatureError { code: code.to_string(), params: Vec::new() }
     }
