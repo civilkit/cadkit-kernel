@@ -208,7 +208,7 @@ fn attempt(body: &Body, ids: &[FaceId], dist: &[f64], carried: &[(FaceId, ck_geo
     let mut out = ck_ops::offset::move_faces_body(body, &mv).map_err(|e| {
         let detail = e.detail.clone().unwrap_or_default();
         let fe = match e.code {
-            "offsetUnsupported" => unsupported(detail),
+            "offsetUnsupported" => super::offset_unsupported_hint(unsupported(detail.clone()), &detail),
             _ => failed(detail),
         };
         match &e.limit {

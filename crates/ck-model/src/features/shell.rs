@@ -22,11 +22,18 @@ pub fn exec_shell(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<
     }
     let out = ck_ops::shell::shell(body, &open, t, *outward, super::TOL).map_err(|e| {
         let mut fe = FeatureError::new(&e.code);
+        let mut detail = None;
         if let Some(d) = e.detail {
-            fe = fe.with("detail", Json::Str(d));
+            fe = fe.with("detail", Json::Str(d.clone()));
+            detail = Some(d);
         }
         if let Some(l) = &e.limit {
             fe = super::offset_limit_params(fe, l);
+        }
+        if e.code == "offsetUnsupported" {
+            if let Some(d) = detail {
+                fe = super::offset_unsupported_hint(fe, &d);
+            }
         }
         fe
     })?;

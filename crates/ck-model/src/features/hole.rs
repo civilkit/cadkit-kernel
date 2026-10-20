@@ -11,7 +11,9 @@
 //! * diameters = the client table `So` (app.pretty.js): fits
 //!   tap/close/normal/loose for `simple`, close/normal/loose for `cbore` /
 //!   `csk`, anything else -> `normal`; cbore `[diameter, depth]`; unknown
-//!   `size` -> `holeInvalid`; no points -> `holeNoPoints`; `kind:"csink"`
+//!   `size`, or no `size` at all (a non-simple hole needs one: a free
+//!   `diameter` alone is `holeInvalid {detail, hint}` saying size vs
+//!   diameter) -> `holeInvalid`; no points -> `holeNoPoints`; `kind:"csink"`
 //!   without `cskDiameter` behaves as simple (legacy); with it, or as
 //!   `countersink`, a cone `K0` is cut (head diameter, `cskAngle` included
 //!   angle, default 90); `cboreDiameter` / `cboreDepth` override the table;
@@ -39,6 +41,7 @@ use ck_topo::body::Body;
 use ck_topo::make::revolve::revolve;
 use ck_topo::make::{Profile, ProfileLoop, ProfileRegion, ProfileSeg};
 
+/// `holeInvalid {detail, hint}`: no usable size (the hint names size vs diameter).
 pub const HOLE_INVALID: &str = "holeInvalid";
 pub const HOLE_NO_POINTS: &str = "holeNoPoints";
 /// `holeCskDiameter {cskDiameter, holeDiameter, hint}`: countersink head diameter / angle impossible.
@@ -89,7 +92,23 @@ pub fn exec_hole(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(
     let plain = (*kind == HoleKind::Simple && f.raw.get("diameter").is_some()).then(|| state.num(f, "diameter", 0.0)).transpose()?;
     let row = match (plain, size.as_deref().and_then(|s| ISO.iter().find(|(n, _)| *n == s)).map(|r| r.1)) {
         (Some(_), r) => r.unwrap_or([0.0; 7]),
-        (None, r) => r.ok_or_else(|| FeatureError::new(HOLE_INVALID))?,
+        (None, r) => r.ok_or_else(|| {
+            let kname = match kind {
+                HoleKind::Simple => "simple",
+                HoleKind::Cbore => "counterbore",
+                HoleKind::Countersink | HoleKind::Csink => "countersink",
+            };
+            let e = FeatureError::new(HOLE_INVALID)
+                .with("detail", ck_json::Json::Str(format!("the {kname} hole has no size for the standard table")));
+            if given(f, "diameter") {
+                hint(
+                    e,
+                    "a counterbore takes its dimensions from the size table, not from diameter: give a size (e.g. M6), or set kind to \"simple\" to drill the diameter",
+                )
+            } else {
+                hint(e, "give a standard size (e.g. M6), or a plain diameter with kind \"simple\"")
+            }
+        })?,
     };
     let fit_s = f.raw.get("fit").and_then(|v| v.as_str()).unwrap_or("");
     let _ = fit;

@@ -1455,3 +1455,19 @@ pub(crate) fn offset_limit_params(mut fe: crate::regen::FeatureError, l: &ck_ops
     }
     fe
 }
+
+/// What to change for the `offsetUnsupported` cause that names an edge curve
+/// type: the edge between the offset faces is an ellipse / conic — a fillet
+/// on a drafted (oblique) edge — and the offset cannot rebuild it.
+pub(crate) fn offset_unsupported_hint(mut fe: crate::regen::FeatureError, detail: &str) -> crate::regen::FeatureError {
+    use ck_json::Json;
+    if detail.contains("edge curve type") {
+        fe = fe.with(
+            "hint",
+            Json::Str(
+                "an edge between the offset faces is an ellipse or conic (a fillet on a drafted edge), which the offset cannot rebuild: shell before the fillet, or remove the draft from the filleted edges".into(),
+            ),
+        );
+    }
+    fe
+}
