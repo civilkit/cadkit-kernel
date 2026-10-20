@@ -33,6 +33,9 @@ pub struct BoolOut {
     /// The result is outside the volume / box bounds the operands allow
     /// ([`super::sanity`]): wrong but topologically valid. `None` = plausible.
     pub mismatch: Option<super::sanity::VolumeMismatch>,
+    /// The two operands did not interact at all (no face pair came near): a tool
+    /// inside the body's cavity or away from it. Such a cut is a valid no-op.
+    pub disjoint: bool,
 }
 
 /// `a op b`. Errors: `booleanFailed` (topology could not be assembled).
@@ -332,12 +335,12 @@ fn boolean_at_merge(a: &Body, b: &Body, op: Op, tol: f64, merge: bool) -> Result
         return Err(BUDGET_EXCEEDED.into());
     }
     if b.num_faces() == 0 {
-        return Ok(BoolOut { body: a.clone(), no_effect: op != Op::Union, mismatch: None });
+        return Ok(BoolOut { body: a.clone(), no_effect: op != Op::Union, mismatch: None, disjoint: false });
     }
     if a.num_faces() == 0 {
         return Ok(match op {
-            Op::Union => BoolOut { body: b.clone(), no_effect: false, mismatch: None },
-            _ => BoolOut { body: Body::new(), no_effect: true, mismatch: None },
+            Op::Union => BoolOut { body: b.clone(), no_effect: false, mismatch: None, disjoint: false },
+            _ => BoolOut { body: Body::new(), no_effect: true, mismatch: None, disjoint: false },
         });
     }
     // (results keep the caller's bodies for the no-effect returns)
@@ -361,8 +364,8 @@ fn boolean_at_merge(a: &Body, b: &Body, op: Op, tol: f64, merge: bool) -> Result
         let a_in_b = ck_topo::region::classify(b, pa, tol) == ck_topo::region::Containment::Inside;
         let b_in_a = ck_topo::region::classify(a, pb, tol) == ck_topo::region::Containment::Inside;
         match op {
-            Op::Cut if !a_in_b && !b_in_a => return Ok(BoolOut { body: a0.clone(), no_effect: true, mismatch: None }),
-            Op::Intersect if !a_in_b && !b_in_a => return Ok(BoolOut { body: Body::new(), no_effect: true, mismatch: None }),
+            Op::Cut if !a_in_b && !b_in_a => return Ok(BoolOut { body: a0.clone(), no_effect: true, mismatch: None, disjoint: true }),
+            Op::Intersect if !a_in_b && !b_in_a => return Ok(BoolOut { body: Body::new(), no_effect: true, mismatch: None, disjoint: true }),
             _ => {} // nested: the general path (void shells / swallowed bodies)
         }
     }
@@ -381,7 +384,7 @@ fn boolean_at_merge(a: &Body, b: &Body, op: Op, tol: f64, merge: bool) -> Result
     let whole_a = |f: &super::assemble::OutFace| f.group == 0 || (f.group == 4 && f.walk.len() == 1 && f.walk[0].0 .0 == 0);
     let untouched_a = faces.iter().filter(|f| whole_a(f)).count();
     if op == Op::Cut && untouched_a == a_faces && faces.iter().all(|f| whole_a(f)) {
-        return Ok(BoolOut { body: a0.clone(), no_effect: true, mismatch: None });
+        return Ok(BoolOut { body: a0.clone(), no_effect: true, mismatch: None, disjoint: false });
     }
     let mut body = build(&arr, &faces);
     // (only the connectivity issues are used below)
@@ -455,7 +458,7 @@ fn boolean_at_merge(a: &Body, b: &Body, op: Op, tol: f64, merge: bool) -> Result
     {
         let mut out = a0.clone();
         out.append(b0);
-        return Ok(BoolOut { body: out, no_effect: false, mismatch: None });
+        return Ok(BoolOut { body: out, no_effect: false, mismatch: None, disjoint: false });
     }
     if !bad_issues.is_empty() {
         super::bool_dbg!("arrangement:\n{}", arr.dump());
@@ -500,7 +503,7 @@ fn boolean_at_merge(a: &Body, b: &Body, op: Op, tol: f64, merge: bool) -> Result
             "booleanTangent;euler={chi};hint=the operands touch tangentially (a wall grazes the other with no crossing); move one operand or widen the model tolerance"
         ));
     }
-    Ok(BoolOut { body, no_effect: false, mismatch: None })
+    Ok(BoolOut { body, no_effect: false, mismatch: None, disjoint: false })
 }
 
 /// The Euler characteristic of the first shell component for which
