@@ -109,6 +109,8 @@ pub const REQUEST_TYPES: &[(&str, Handler)] = &[
     // Extension: design-rule profiles (read-only).
     ("checkProfile", agent::check_profile),
     ("profiles", agent::profiles),
+    // Extension: read-only sketch analysis (findings, chains, profile reason).
+    ("sketchAnalyze", agent::sketch_analyze),
     // Extension: body-level boolean between lumps of the current body (preview, nothing committed).
     ("bodyBoolean", geometry::body_boolean),
 ];

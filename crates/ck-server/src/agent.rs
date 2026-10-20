@@ -150,3 +150,19 @@ pub fn check_profile(cx: &mut Cx) -> Result<Json, String> {
 pub fn profiles(cx: &mut Cx) -> Result<Json, String> {
     cx.query("profiles")
 }
+
+/// `{type:"sketchAnalyze", featureId, tolerance?, tiny?, tag? | part?}`:
+/// structural findings of one sketch (open ends with gap sizes,
+/// near-coincident points, duplicates, overlaps, zero-length and tiny
+/// segments, branches, isolated points, self-intersections), its chains and
+/// the reason there is no closed profile. Read-only. With `part` the part is
+/// regenerated privately (the `checkProfile` pattern — also the way to
+/// analyse a document whose regen produced no body); with neither a body nor
+/// a `part`: null.
+pub fn sketch_analyze(cx: &mut Cx) -> Result<Json, String> {
+    if cx.msg.get("part").is_some() {
+        check_part(cx.msg.get("part"))?;
+        return cx.query("sketchAnalyze");
+    }
+    null_or_query(cx, "sketchAnalyze")
+}

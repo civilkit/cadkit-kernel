@@ -19,6 +19,7 @@
 //!   coerced (`"7"` -> 7, `[1,"2"]` -> `[1,2]`; `"=2+3"` stays a string) and
 //!   an `expr`-driven value is rewritten.
 
+pub mod analyze;
 pub mod offset;
 pub mod profile;
 pub mod smooth;

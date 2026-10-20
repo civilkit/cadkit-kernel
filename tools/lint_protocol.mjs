@@ -65,6 +65,7 @@ if (isMainThread) {
     closestPoint: { points: [[0, 0, 0]] }, angles: { edges: 'all' }, clearance: { min: 1 }, symmetry: { opts: { samples: 200 } },
     loadFont: { name: 'lint', data: readFileSync(path.join(here, '../crates/ck-text/fonts/gauge.ttf')).toString('base64') }, unloadFont: { name: 'lint' }, listFonts: {}, subsetFont: { name: 'gauge', text: 'RPM x100' },
     textMetrics: { string: 'RPM x100', font: 'gauge', height: 5 }, textOutline: { string: 'RPM x100', font: 'gauge', height: 5, at: [1, 2], anchor: ['center', 'middle'] },
+    sketchAnalyze: { featureId: 'F1' },
   };
   const MUST_OK = new Set(['ping', 'regen', 'massProps', 'validate', 'interference', 'step', 'check', 'resolve', 'describe', 'refDiff', 'section', 'sections', 'probe', 'distance', 'maxDistance', 'thickness', 'closestPoint', 'angles', 'clearance', 'symmetry', 'textMetrics', 'textOutline', 'loadFont', 'unloadFont', 'listFonts', 'subsetFont']); // minimal body must succeed once a body exists
   const FIELDS = ['part', 'tag', 'opts', 'ref', 'refs', 'ids', 'sketch', 'distance', 'name', 'upTo', 'densities', 'bodies', 'dir', 'tol', 'a', 'b', 'u', 'at', 'expect', 'descriptions', 'description', 'names', 'base', 'plane', 'axis', 'n', 'positions', 'points', 'rays', 'min', 'on', 'edges', 'faces', 'pull', 'tagB', 'planes', 'draft', 'point', 'k', 'string', 'font', 'height', 'spacing', 'angle', 'arc', 'anchor', 'mirror', 'data', 'text', 'replace', 'fontHash'];

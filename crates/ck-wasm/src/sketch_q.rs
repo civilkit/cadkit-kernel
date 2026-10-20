@@ -1,12 +1,18 @@
 //! Sketch-backed halves of `refCurve` (and, later, `convert`): they read the
-//! solved sketches a regen leaves in its snapshot.
+//! solved sketches a regen leaves in its snapshot. `sketchAnalyze` /
+//! `sketchFreedoms` (agent extensions) add read-only analysis of one sketch,
+//! from the snapshot or from an inline `part`.
 
+use crate::engine::snapshot;
 use ck_core::linalg::{Frame, Vec3};
 use ck_geom::convert::curve_to_nurbs;
 use ck_geom::curve::Curve;
 use ck_geom::nurbs::bspline::BSplineCurve;
 use ck_model::regen::SketchResult;
+use ck_model::sketch::analyze;
 use ck_model::{Sketch, SketchEntity};
+use ck_json::Json;
+use ck_server::session::Cx;
 use std::f64::consts::TAU;
 
 /// Sweep of an arc in (0, 2pi] (client `tn()`).
@@ -99,6 +105,38 @@ pub fn ref_curve(sketches: &[SketchResult], r: &ck_json::Json) -> ck_json::Json 
         Some((c, closed)) => ck_ops::ref_curve::curve_reply(&c, closed),
         None => ck_ops::ref_curve::missing_reference(),
     }
+}
+
+/// The sketch `featureId` names for `sketchAnalyze`/`sketchFreedoms`: from
+/// the request's inline `part` (a private regen through the incremental
+/// cache, the `checkProfile` pattern — also the way to analyse a document
+/// whose regen produced no body, e.g. one failing `noClosedProfile`), else
+/// from the tag's snapshot.
+fn sketch_for(cx: &Cx, q: &str) -> Result<Sketch, String> {
+    let fid = cx.msg.get_str("featureId").ok_or_else(|| format!("{q}: featureId must be a string"))?;
+    let find = |sketches: &[SketchResult]| {
+        sketches
+            .iter()
+            .find(|s| s.id == fid)
+            .map(|s| s.sketch.clone())
+            .ok_or_else(|| format!("{q}: sketch {fid} not found"))
+    };
+    match cx.msg.get("part") {
+        Some(p) => {
+            ck_server::session::check_part(Some(p))?;
+            find(&crate::profile_q::private_regen(p)?.2)
+        }
+        None => find(&snapshot(cx)?.sketches),
+    }
+}
+
+/// `{type:"sketchAnalyze", featureId, tolerance?, tiny?, part?}`: structural
+/// findings, chains and the profile reason of one sketch (read-only).
+pub fn analyze_q(cx: &Cx) -> Result<Json, String> {
+    let sk = sketch_for(cx, "sketchAnalyze")?;
+    let tol = cx.msg.get_f64("tolerance").filter(|t| t.is_finite()).unwrap_or(analyze::NEAR_TOL);
+    let tiny = cx.msg.get_f64("tiny").filter(|t| t.is_finite()).unwrap_or(analyze::TINY);
+    Ok(analyze::analyze(&sk, tol, tiny).to_json())
 }
 
 /// `convert` with `{kind:"sketchCurve", sketch, entity}`: the entity

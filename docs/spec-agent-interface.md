@@ -951,6 +951,73 @@ warnings `textTooSmall`, `textMissingGlyph`, `textTruncated`, `textOverlap`, `te
 cache key and an entity may pin it with `fontHash`.
 Details, limits and checks: `docs/text.md`; corpus `tools/text_corpus.mjs`.
 
+## Sketch analysis: `sketchAnalyze`
+
+Read-only structural analysis of one sketch, so an agent gets exact,
+structured feedback instead of a bare `noClosedProfile`. The oracle kernel
+has no equivalent query (searched: `strings` of `kernel.wasm` and the wasm2c
+dump — no sketch-analysis or finding names near sketch code; the original
+client derives "fully defined" itself with pin-and-solve probes), so the
+finding names are ours.
+
+```json
+{"type":"sketchAnalyze","featureId":"F1"}
+{"type":"sketchAnalyze","featureId":"F1","tolerance":0.05,"tiny":0.01}
+{"type":"sketchAnalyze","part":<part json>,"featureId":"F1"}
+```
+
+Fields: `featureId` (the sketch feature's id, e.g. `F1`), `tolerance`
+(near-coincident distance mm, default `0.01`; `<= 0` disables), `tiny`
+(tiny-segment length mm, default `0.001`; `<= 0` disables). The sketch comes
+from the tag's regenerated state, or — with `part` — from a private regen of
+that part through the incremental regen cache (the `checkProfile` pattern,
+and the way to analyse a document whose regen produced no body, e.g. one
+failing `noClosedProfile`). With neither a body nor `part`: `null` (like the
+other body queries). Errors: `sketchAnalyze: featureId must be a string`
+(missing / not a string), `sketchAnalyze: sketch F9 not found`.
+
+```json
+-> {"tolerance":0.01,"tiny":0.001,
+    "findings":[{"kind":"openEnd","entities":["e3"],"points":["p4","p5"],"at":[0,10],
+                 "gap":0.02,"nearest":"e4"}, {"kind":"nearCoincident", ...}],
+    "chains":[{"entities":["e1","e2","e3","e4"],"closed":false,"construction":false}],
+    "profile":{"closedChains":0,
+               "reason":{"kind":"openEnd","entities":["e4"],"points":["p5","p4"],"at":[0,10.02],
+                         "gap":0.02,"nearest":"e3"}}}
+```
+
+Every finding carries `kind`, plus `entities` / `points` (the ids it names)
+and `at` `[x, y]` (sketch coordinates) where a location makes sense:
+
+| kind | fires when | extra fields |
+|---|---|---|
+| `openEnd` | an entity end touches nothing (its point carries one end) | `gap` = distance to the nearest other open end, `nearest` = that entity's id, `points` = `[own, other]`; without another open end only the own fields appear. The `profile.reason` carries the biggest gap; a tie resolves to the later finding |
+| `nearCoincident` | two distinct points closer than `tolerance` with no `coincident` / `concentric` constraint between them | `distance`, `at` = midpoint |
+| `duplicate` | two entities of the same kind on the same referenced points (line ends in either order; circle = same centre + radius; arc = same centre + ends) | |
+| `overlap` | two collinear lines whose interiors intersect (both ends of one within `tolerance` of the other's line) | |
+| `zeroLength` | a curve of length / radius `<= 0` | |
+| `tinySegment` | `0 < length < tiny` | `length`, `at` = midpoint |
+| `branch` | more than two entity ends at one point | `degree`, `points: [point]` |
+| `isolatedPoint` | a point no entity references (lettering anchors count) | |
+| `selfIntersection` | two entities cross inside their interiors (circles / ellipses too; crossings within `tolerance` of a shared endpoint are touches) | |
+
+`chains` are connected components over shared endpoint point ids (circles,
+ellipses, closed splines and lettering are chains of their own), each
+`{entities, closed, construction}`; `closed` = no dangling end,
+`construction` = every entity of the chain is construction geometry.
+
+`profile.closedChains` counts closed, non-construction chains — what a
+profile can be built from. When it is 0, `profile.reason` says why: the
+biggest `openEnd` finding (largest `gap`, with its location — so a
+`noClosedProfile` error can point at it), `{"kind":"empty"}` when the sketch
+has no curves, or `{"kind":"constructionOnly"}` when every closed chain is
+construction geometry. When a closed chain exists there is no `reason`.
+
+Fixtures (unit tests in `crates/ck-model/src/sketch/analyze.rs`): open square
+with a 0.02 mm gap, duplicate line, overlapping collinear lines, tee
+junction, zero-length line, self-crossing bow-tie, a clean square (no
+findings).
+
 ## Acceptance
 
 - A scripted agent session (no human) builds the benchmark parts in
