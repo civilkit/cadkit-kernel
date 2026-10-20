@@ -771,12 +771,16 @@ pub fn imprint_hooked(a: &Body, b: &Body, tol: f64, hook: Option<PairHook>) -> A
 /// crossings with every boundary edge of every face (+ overlap ends).
 /// Kept: intervals whose midpoint is not Out of any face and (unless
 /// `allow_all_on`) not On the boundary of all of them.
+/// Distance within which a tangent-contact breakpoint yields to an exact crossing (see [`trim`]).
+const SOFT_SNAP: f64 = 2e-3;
+
 fn trim(c: &Curve, r: (f64, f64), faces: &[(&Body, FaceId)], bx: &Aabb, tol: f64, allow_all_on: bool, cache: &mut LoopCache) -> Vec<(f64, f64)> {
     let r = crate::intersect::finite_range(c, r, bx.min, bx.max);
     if !(r.0.is_finite() && r.1.is_finite()) || r.1 - r.0 <= 0.0 {
         return vec![];
     }
     let mut ts = vec![r.0, r.1];
+    let mut soft: Vec<f64> = vec![];
     // an edge whose hull box stays clear of the curve's cannot meet it (every hit and overlap of cc::intersect lies
     // within 2 tol of both curves, a parameter slack past the range ends included): skip the intersection
     let hull = curve_hull_box(c, r.0, r.1).map(|b| b.padded(REJECT_PAD * tol + 1e-9));
@@ -797,6 +801,13 @@ fn trim(c: &Curve, r: (f64, f64), faces: &[(&Body, FaceId)], bx: &Aabb, tol: f64
                 }
             }
             let res = cc::intersect(c, r, &ed.curve, (ed.t0, ed.t1), tol);
+            for h in &res.hits {
+                // a hit where the two curves run (nearly) tangent is located only to ~sqrt(tol)
+                let (ta, tb) = (c.tangent(h.t1), ed.curve.tangent(h.t2));
+                if ta.len() > 1e-12 && tb.len() > 1e-12 && ta.cross(tb).len() < 0.1 * ta.len() * tb.len() {
+                    soft.push(h.t1);
+                }
+            }
             ts.extend(res.hits.iter().map(|h| h.t1));
             for o in res.overlaps {
                 ts.push(o.a.0);
@@ -806,6 +817,14 @@ fn trim(c: &Curve, r: (f64, f64), faces: &[(&Body, FaceId)], bx: &Aabb, tol: f64
     }
     ts.sort_by(|x, y| x.partial_cmp(y).unwrap());
     ts.dedup_by(|x, y| (*x - *y).abs() <= 1e-12 || (*x - *y).abs() <= param_slack(c, *y, tol * 0.5));
+    // a tangent contact with a boundary edge (a curve running along the line a face touches tangentially, e.g. a
+    // blend face meeting a wall that bounds a joined boss) is found off by up to ~sqrt(tol), next to the exact
+    // transversal crossing of the tool's own edge at the same place: only the exact one stays
+    if !soft.is_empty() {
+        let is_soft = |t: f64| soft.iter().any(|&s| (s - t).abs() <= 1e-12);
+        let hard: Vec<Vec3> = ts.iter().filter(|&&t| !is_soft(t)).map(|&t| c.eval(t)).collect();
+        ts.retain(|&t| !is_soft(t) || { let p = c.eval(t); !hard.iter().any(|q| q.dist(p) > tol && q.dist(p) < SOFT_SNAP) });
+    }
     let mut out: Vec<(f64, f64)> = vec![];
     super::bool_dbg!("  trim breakpoints {:?}", ts);
     for w in ts.windows(2) {
