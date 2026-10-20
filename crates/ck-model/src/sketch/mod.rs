@@ -365,6 +365,14 @@ impl Sketch {
         }
     }
 
+    /// Replace the echoed DOM (and the two display fields parsed from it) by `raw`, a document of the same sketch that
+    /// differs from the current one only in cosmetic keys (see the regen cache's `COSMETIC_KEYS`).
+    pub fn set_cosmetic_raw(&mut self, raw: Json) {
+        self.name = jstr(&raw, "name");
+        self.visible = raw.get("visible").map_or(true, |v| jtruthy(Some(v)));
+        self.raw = raw;
+    }
+
     pub fn point(&self, id: &str) -> Option<&SketchPoint> {
         self.points.iter().find(|p| p.id == id)
     }

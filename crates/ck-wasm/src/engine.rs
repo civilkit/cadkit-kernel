@@ -154,7 +154,8 @@ fn regen_hook(part: &Json, cx: &mut Cx) -> Result<(Json, State), String> {
             final_key = keys.last().copied();
             let hit = regen_cache::with(|c| c.lookup(&keys));
             let mut chained = None;
-            if let Some(h) = hit {
+            if let Some(mut h) = hit {
+                regen_cache::refresh_cosmetic(&mut h.result, &part.features);
                 ex.brep.load(&h.snap);
                 stats.0 = h.next;
                 chained = Some((h.result.clone(), h.snap));
