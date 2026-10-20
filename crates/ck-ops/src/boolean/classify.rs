@@ -266,7 +266,18 @@ fn loop_polygon_with(s: &Surface, pieces: &[(&Curve, f64, f64)], sense: bool, nf
         if let Some(target) = forced[i] {
             // snap the piece to the chosen copy by whole periods (the seam's own
             // u is 0 mod period; poles have no u of their own)
-            if let Some(q) = out[start..].iter().find(|q| !s.is_pole(q.x, q.y)).copied() {
+            let q = out[start..]
+                .iter()
+                .find(|q| !s.is_pole(q.x, q.y))
+                .copied()
+                // a straight seam piece is sampled once, at its start: when that is a pole
+                // (a cone face's whole-domain loop: apex, base circle, apex) take the piece's
+                // midpoint as the reference instead, or the twin traversals stay on one copy
+                .or_else(|| {
+                    let (u, v) = s.closest_param(c.eval(0.5 * (ta + tb)));
+                    (!s.is_pole(u, v)).then_some(Vec2::new(u, v))
+                });
+            if let Some(q) = q {
                 let d = target - q.x;
                 for p in &mut out[start..] {
                     p.x += d;

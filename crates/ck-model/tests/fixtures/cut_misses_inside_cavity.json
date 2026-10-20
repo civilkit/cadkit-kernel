@@ -1,0 +1,166 @@
+{
+ "format": "ck-part",
+ "version": 1,
+ "name": "451-hollow-tool-cut-inside",
+ "features": [
+  {
+   "type": "plane",
+   "mode": "offset",
+   "base": {
+    "kind": "std",
+    "id": "front"
+   },
+   "offset": -4,
+   "name": "z=-4",
+   "visible": false,
+   "id": "F1"
+  },
+  {
+   "type": "sketch",
+   "id": "S2",
+   "name": "Block",
+   "plane": {
+    "kind": "feature",
+    "id": "F1"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": -4,
+     "y": -4
+    },
+    {
+     "id": "p2",
+     "x": 4,
+     "y": -4
+    },
+    {
+     "id": "p3",
+     "x": 4,
+     "y": 4
+    },
+    {
+     "id": "p4",
+     "x": -4,
+     "y": 4
+    }
+   ],
+   "entities": [
+    {
+     "id": "e1",
+     "type": "line",
+     "p1": "p1",
+     "p2": "p2"
+    },
+    {
+     "id": "e2",
+     "type": "line",
+     "p1": "p2",
+     "p2": "p3"
+    },
+    {
+     "id": "e3",
+     "type": "line",
+     "p1": "p3",
+     "p2": "p4"
+    },
+    {
+     "id": "e4",
+     "type": "line",
+     "p1": "p4",
+     "p2": "p1"
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "E3",
+   "op": "add",
+   "sketch": "S2",
+   "end": "blind",
+   "depth": 8
+  },
+  {
+   "type": "sketch",
+   "id": "S4",
+   "name": "shell profile",
+   "plane": {
+    "kind": "std",
+    "id": "front"
+   },
+   "points": [
+    {
+     "id": "p1",
+     "x": 0,
+     "y": 0
+    },
+    {
+     "id": "p2",
+     "x": 40,
+     "y": 0
+    },
+    {
+     "id": "p3",
+     "x": -40,
+     "y": 0
+    },
+    {
+     "id": "p4",
+     "x": -18.5,
+     "y": 0
+    },
+    {
+     "id": "p5",
+     "x": 18.5,
+     "y": 0
+    }
+   ],
+   "entities": [
+    {
+     "id": "e1",
+     "type": "arc",
+     "c": "p1",
+     "p1": "p2",
+     "p2": "p3"
+    },
+    {
+     "id": "e2",
+     "type": "line",
+     "p1": "p3",
+     "p2": "p4"
+    },
+    {
+     "id": "e3",
+     "type": "arc",
+     "c": "p1",
+     "p1": "p5",
+     "p2": "p4"
+    },
+    {
+     "id": "e4",
+     "type": "line",
+     "p1": "p5",
+     "p2": "p2"
+    },
+    {
+     "id": "e5",
+     "type": "line",
+     "p1": "p3",
+     "p2": "p2",
+     "construction": true
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "revolve",
+   "id": "SHL",
+   "op": "cut",
+   "sketch": "S4",
+   "axis": "e5",
+   "end": "blind",
+   "angle": 360
+  }
+ ]
+}
