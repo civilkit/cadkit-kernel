@@ -110,6 +110,30 @@ fn cbore_errors() {
     assert!(code(r#","kind":"cbore","cboreDiameter":9"#).contains("hint"));
 }
 
+/// `kind:"cbore"` with a free `diameter` and no `size` (found while converting
+/// issue #1691) is `holeInvalid` with a detail and a hint naming size vs
+/// diameter — not a bare code.
+#[test]
+fn cbore_free_diameter_says_what_to_change() {
+    let src = r#"{"format":"ck-part","version":1,"features":[
+        {"type":"sketch","id":"F1","plane":{"kind":"std","id":"top"},"points":[
+          {"id":"p1","x":0,"y":0},{"id":"p2","x":40,"y":0},{"id":"p3","x":40,"y":20},{"id":"p4","x":0,"y":20}],
+         "entities":[{"type":"line","id":"e1","p1":"p1","p2":"p2"},{"type":"line","id":"e2","p1":"p2","p2":"p3"},
+          {"type":"line","id":"e3","p1":"p3","p2":"p4"},{"type":"line","id":"e4","p1":"p4","p2":"p1"}],"constraints":[]},
+        {"type":"extrude","id":"F2","op":"add","sketch":"F1","end":"blind","depth":10},
+        {"type":"sketch","id":"F3","plane":{"kind":"face","id":"F2.C1"},"points":[{"id":"O","x":0,"y":0,"fixed":true},{"id":"p0","x":10,"y":10}],
+         "entities":[{"type":"point","id":"e2","p":"p0"}],"constraints":[]},
+        {"type":"hole","id":"F4","sketch":"F3","standard":"iso","kind":"cbore","diameter":8,"end":"through"}]}"#;
+    let (errs, _, _) = run(src);
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    let e = &errs[0];
+    assert!(e.starts_with("F4:holeInvalid"), "{e}");
+    assert!(e.contains("detail"), "{e}");
+    assert!(e.contains("hint"), "{e}");
+    assert!(e.contains("size"), "{e}");
+    assert!(e.contains("diameter"), "{e}");
+}
+
 #[test]
 fn csink_legacy_is_plain() {
     let plain = removed("");

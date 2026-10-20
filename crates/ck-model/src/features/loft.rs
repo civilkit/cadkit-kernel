@@ -10,7 +10,14 @@
 //!    a surface loft takes one region (closed profile) or, with no region,
 //!    the sketch's curves as ONE open chain (anything else ->
 //!    `loftProfile`; an empty sketch too);
-//! 4. ck-ops: mixed open / closed (`loftProfileOpen`), all profiles in one
+//! 4. a solid loft whose sections carry inner loops is hollow: the tool is
+//!    the loft of the outer loops minus the loft of the matching inner
+//!    loops (`region.holes`, matched to the previous section by centroid;
+//!    a point section contributes its apex to every hole loft). Sections
+//!    with a region must all carry the same number of inner loops, else
+//!    `loftProfile {detail, hint}` (a solid built from the outer loops
+//!    alone drops the holes: issue #1184);
+//! 5. ck-ops: mixed open / closed (`loftProfileOpen`), all profiles in one
 //!    plane (`loftProfiles`), `loftProfileNotPlanar`, `loftFailed`;
 //!    the `nothingToCut` of a solid `cut` without a body comes after the
 //!    profile checks (and before the geometry).
@@ -113,6 +120,69 @@ fn profile_of(sk: &SketchResult, surface: bool) -> Result<(ProfileIn, Vec<Seg>),
     }
     let chain = open_chain(&sk.sketch).ok_or_else(|| FeatureError::new(LOFT_PROFILE))?;
     Ok((ProfileIn { frame: sk.frame, closed: false, segs: segs_in(sk, &chain)? }, chain))
+}
+
+/// The inner loops of the section's region (the `region.holes` of
+/// [`profile_of`]'s region, world space): one closed `ProfileIn` per hole,
+/// in region order. A sketch without a region (an apex section) has none.
+fn hole_profiles_of(sk: &SketchResult) -> Result<Vec<ProfileIn>, FeatureError> {
+    let Some(r) = sk.profiles.regions.first() else { return Ok(vec![]) };
+    let mut out = vec![];
+    for h in &r.holes {
+        out.push(ProfileIn { frame: sk.frame, closed: true, segs: segs_in(sk, h)? });
+    }
+    Ok(out)
+}
+
+/// Mean of the loop's segment start points (world): which hole of the
+/// previous section a loop follows.
+fn loop_centroid(p: &ProfileIn) -> Vec3 {
+    if p.segs.is_empty() {
+        return p.frame.o;
+    }
+    let mut c = Vec3::new(0.0, 0.0, 0.0);
+    let mut n = 0;
+    for s in &p.segs {
+        if let Some(g) = ck_ops::loft::stations::geom_of(&s.curve, s.t0, s.t1, s.rev) {
+            c = c + g.start();
+            n += 1;
+        }
+    }
+    if n == 0 { p.frame.o } else { c / n as f64 }
+}
+
+/// Put this section's holes in the previous section's hole order (greedy
+/// nearest centroid, unique): the classifier lists a region's inner loops
+/// in geometric order, which need not follow the same hole across sections.
+fn order_holes(prev: &[Vec3], cur: &mut [ProfileIn]) {
+    let n = cur.len();
+    if n < 2 || prev.len() != n {
+        return;
+    }
+    let cents: Vec<Vec3> = cur.iter().map(loop_centroid).collect();
+    let mut pairs: Vec<(f64, usize, usize)> = vec![];
+    for i in 0..n {
+        for j in 0..n {
+            pairs.push((prev[i].dist2(cents[j]), i, j));
+        }
+    }
+    pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let mut taken = vec![false; n];
+    let mut order = vec![0usize; n];
+    let mut got = vec![false; n];
+    for (_, i, j) in pairs {
+        if !got[i] && !taken[j] {
+            order[i] = j;
+            got[i] = true;
+            taken[j] = true;
+        }
+    }
+    if got.iter().all(|&g| g) {
+        let old: Vec<ProfileIn> = cur.to_vec();
+        for (i, &j) in order.iter().enumerate() {
+            cur[i] = old[j].clone();
+        }
+    }
 }
 
 /// `{p, f}` samples of one profile (see [`ck_ops::loft::marker_samples`]).
@@ -237,6 +307,13 @@ fn tension_markers(f: &Feature, out: &ck_ops::loft::LoftOut) -> Vec<Json> {
     v
 }
 
+/// Record the loft's marker (`markers[] = [id, {loops, starts, guided, tension}]`), replacing the
+/// feature's previous one (a regen reruns the feature).
+fn put_marker(state: &mut RegenState, id: &str, marker: Json) {
+    state.result.markers.retain(|m| m.as_arr().and_then(|a| a.first()).and_then(|j| j.as_str()) != Some(id));
+    state.result.markers.push(Json::Arr(vec![Json::Str(id.to_string()), marker]));
+}
+
 /// `loft`.
 pub fn exec_loft(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
     let FeatureKind::Loft { op, sketches, surface } = &f.kind else { unreachable!() };
@@ -253,6 +330,34 @@ pub fn exec_loft(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(
         let (p, _segs) = profile_of(sk, *surface)?;
         loops.push(loop_samples(&p));
         profiles.push(p);
+    }
+    // inner loops (solid only): every section with a region carries the same ones, else the
+    // loft of the outer loops alone would silently fill the holes (#1184)
+    let mut holes: Vec<Vec<ProfileIn>> = vec![];
+    if !*surface {
+        for sk in &sks {
+            holes.push(hole_profiles_of(sk)?);
+        }
+        let k = holes.iter().map(Vec::len).max().unwrap_or(0);
+        if k > 0 {
+            for (i, h) in holes.iter().enumerate() {
+                if h.len() != k && !profiles[i].segs.is_empty() {
+                    return Err(FeatureError::new(LOFT_PROFILE)
+                        .with("detail", Json::Str(format!("section {} has {} inner loop(s), another section has {k}", sketches[i], h.len())))
+                        .with("hint", Json::Str("draw the same inner loops (holes) in every section, or remove them".into())));
+                }
+            }
+            let mut prev: Vec<Vec3> = vec![];
+            for h in holes.iter_mut() {
+                if h.is_empty() {
+                    continue;
+                }
+                if !prev.is_empty() {
+                    order_holes(&prev, h);
+                }
+                prev = h.iter().map(loop_centroid).collect();
+            }
+        }
     }
     if !*surface && *op == Op::Cut && br.body.is_none() {
         return Err(FeatureError::new(codes::NOTHING_TO_CUT));
@@ -280,13 +385,72 @@ pub fn exec_loft(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(
         ("guided".into(), Json::Bool(guided)),
         ("tension".into(), Json::Arr(tension_markers(f, &out))),
     ]);
-    state.result.markers.retain(|m| m.as_arr().and_then(|a| a.first()).and_then(|j| j.as_str()) != Some(f.id.as_str()));
-    state.result.markers.push(Json::Arr(vec![Json::Str(f.id.clone()), marker]));
     if *surface {
+        put_marker(state, &f.id, marker);
         br.surfs.retain(|(id, _)| id != &f.id);
         br.surfs.push((f.id.clone(), out.body));
         return Ok(());
     }
     let combine = if *op == Op::Cut { super::extrude::Combine::Cut } else { super::extrude::Combine::Add };
-    br.apply(&f.id, super::extrude::Tool { body: out.body, combine, recipe: None })
+    // hollow: subtract the loft of the inner loops from the loft of the outlines
+    let mut tool = out.body;
+    let k = holes.iter().map(Vec::len).max().unwrap_or(0);
+    if k > 0 {
+        let hole_opts = LoftOpts {
+            surface: false,
+            guides: vec![],
+            start_normal: opts.start_normal,
+            end_normal: opts.end_normal,
+            connectors: vec![],
+            apex_tangent: opts.apex_tangent,
+            centre: opts.centre.clone(),
+        };
+        for j in 0..k {
+            let mut hp: Vec<ProfileIn> = vec![];
+            for i in 0..profiles.len() {
+                if !holes[i].is_empty() {
+                    hp.push(holes[i][j].clone());
+                } else {
+                    hp.push(profiles[i].clone()); // an apex section: its point for every hole loft
+                }
+            }
+            let hout = loft(&f.id, &hp, &hole_opts).map_err(err)?;
+            let (r, used) = super::fuzzy_boolean(&tool, &hout.body, ck_ops::boolean::Op::Cut, super::TOL, br.fuzz, br.auto_fuzz);
+            if used.is_some() {
+                br.fuzz_used = used;
+            }
+            match r {
+                Ok(bout) => {
+                    br.spans.push(super::boolean_span(
+                        ck_ops::boolean::Op::Cut,
+                        tool.num_faces(),
+                        hout.body.num_faces(),
+                        bout.body.num_faces(),
+                    ));
+                    if let Some(m) = &bout.mismatch {
+                        return Err(super::volume_mismatch(m));
+                    }
+                    if bout.no_effect {
+                        return Err(err(LoftError::with(
+                            ck_ops::loft::FAILED,
+                            "an inner loop removed no material (it does not lie inside the loft of the outlines)",
+                            "make every inner loop smaller than its section outline",
+                        )));
+                    }
+                    tool = bout.body;
+                }
+                Err(e) => {
+                    return Err(err(LoftError::with(
+                        ck_ops::loft::FAILED,
+                        &format!("the inner loops could not be subtracted from the lofted solid ({e})"),
+                        "draw the inner loops of every section closed and inside their outline",
+                    )));
+                }
+            }
+        }
+    }
+    // the marker only lands once the whole tool is built: a failure below replies as a plain
+    // error, without the marker of a loft that did not build
+    put_marker(state, &f.id, marker);
+    br.apply(&f.id, super::extrude::Tool { body: tool, combine, recipe: None })
 }

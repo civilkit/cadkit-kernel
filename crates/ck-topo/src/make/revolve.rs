@@ -384,6 +384,33 @@ mod tests {
         assert_eq!(fj.as_arr().unwrap()[0].get("normal").unwrap().as_vec3().unwrap(), [0.0, -1.0, 0.0]);
     }
 
+    /// A full revolve of a ring profile (#450) gives two closed sphere
+    /// patches (outer + void) that share no edges: each component gets its
+    /// own shell, in the one lump, so the shell check stays quiet. The
+    /// profile is the case's half-ring: two semicircular arcs joined along
+    /// the axis (the diameter both are centred on).
+    #[test]
+    fn rev360_ring_is_two_shells_in_one_lump() {
+        let p = ProfileLoop::new(vec![
+            ProfileSeg::arc("e1", Vec2::ZERO, Vec2::new(10.0, 0.0), Vec2::new(-10.0, 0.0)),
+            ProfileSeg::line("e2", Vec2::new(-10.0, 0.0), Vec2::new(-6.0, 0.0)),
+            ProfileSeg::arc("e3", Vec2::ZERO, Vec2::new(6.0, 0.0), Vec2::new(-6.0, 0.0)).reversed(),
+            ProfileSeg::line("e4", Vec2::new(6.0, 0.0), Vec2::new(10.0, 0.0)),
+        ]);
+        let p = Profile::new(Frame::identity(), vec![ProfileRegion { outer: p, holes: vec![] }]);
+        let b = revolve("F2", &p, Vec3::ZERO, Vec3::X, 0.0, TAU).unwrap();
+        assert!(check(&b, 1e-9).is_empty(), "{:?}", check(&b, 1e-9));
+        assert_eq!(ids(&b), ["F2.S.e1", "F2.S.e3"]);
+        let shells: Vec<_> = b.shell_ids().collect();
+        assert_eq!(shells.len(), 2, "outer and void shell");
+        assert_eq!(b.shell(shells[0]).lump, b.shell(shells[1]).lump, "the void stays in the solid's lump");
+        assert_eq!(b.face(crate::body::FaceId(0)).shell, shells[0]);
+        assert_eq!(b.face(crate::body::FaceId(1)).shell, shells[1]);
+        let m = crate::mass::mass_props(&b);
+        let want = 4.0 / 3.0 * std::f64::consts::PI * (10.0f64.powi(3) - 6.0f64.powi(3));
+        assert!((m.volume - want).abs() < 1e-6 * want, "{} vs {want}", m.volume);
+    }
+
     #[test]
     fn rev90_matches_oracle() {
         let b = revolve("F2", &rect_prof(10.0, 20.0), Vec3::ZERO, Vec3::Y, 0.0, std::f64::consts::FRAC_PI_2).unwrap();
