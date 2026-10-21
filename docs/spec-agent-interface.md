@@ -1093,6 +1093,24 @@ a radius constraint (radius not free), a point on a radius-constrained
 circle (tangent direction), an arc whose centre and end are fixed
 (radius not free), and an unbuildable sketch (fallback).
 
+## Part document version (`partVersionNewer`)
+
+A part document carries `version` (the file format's version; the kernel's own is `PART_VERSION` in
+`crates/ck-model/src/lib.rs`, the same number as `PART_VERSION` in the kit's
+`apps/cad/src/partVersion.ts`). The kernel reads a file with any `version` — like the format name, which
+has been `ck-part` since it was `ck-part` — and a document whose `version` is higher than the
+kernel's still regenerates. The regen reply then carries one additive field, next to `errors` / `body`:
+
+```json
+"partVersionNewer": {"file": 2, "kernel": 1}
+```
+
+`file` is the document's `version`, `kernel` the one this build knows. The field is absent for every
+document this kernel knows, so existing replies stay byte identical (the wire gate pins them). A missing
+or non-numeric `version` counts as `PART_VERSION`.
+
+Wasm: `crates/ck-wasm/tests/part_version.rs`.
+
 ## Acceptance
 
 - A scripted agent session (no human) builds the benchmark parts in

@@ -32,6 +32,10 @@ pub const PART_FORMAT_ERROR: &str = "Format";
 pub const PART_FORMAT: &str = "ck-part";
 /// The name this format had before `ck-part`: still read, never written.
 pub const LEGACY_PART_FORMAT: &str = "ck-part";
+/// The document version this kernel writes and knows (`apps/cad/src/partVersion.ts`
+/// keeps the same number in the kit). A file may carry a higher `version`; it is
+/// still read, and `regen` says so (`partVersionNewer`).
+pub const PART_VERSION: u32 = 1;
 
 /// Standard sketch planes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -233,7 +237,9 @@ impl From<f64> for Expr {
 pub struct Part {
     /// Always `"ck-part"` (a file with the legacy name is read as this).
     pub format: String,
-    /// 1 in every sample; not validated by the kernel (version 2 regens fine).
+    /// The document's `version`, or [`PART_VERSION`] when the file has none.
+    /// Not validated: a newer file is still read (`regen` then replies with
+    /// `partVersionNewer`).
     pub version: u32,
     pub name: String,
     /// The regen program, in order.
@@ -282,7 +288,7 @@ impl Part {
         let num = |k: &str| j.get(k).and_then(|v| v.as_f64());
         Ok(Part {
             format: PART_FORMAT.to_string(),
-            version: num("version").unwrap_or(1.0) as u32,
+            version: num("version").unwrap_or(PART_VERSION as f64) as u32,
             name: j.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
             features: feats.iter().map(Feature::from_json).collect(),
             seq: num("seq").unwrap_or(0.0).max(0.0) as u32,

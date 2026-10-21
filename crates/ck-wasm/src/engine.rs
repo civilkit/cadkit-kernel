@@ -5,7 +5,7 @@ use ck_json::{Json, Obj};
 use ck_model::features::{body_wire_with, Brep};
 use ck_model::regen::{self, RegenOpts, SketchResult, Tracer};
 use ck_model::sketch::offset::sketch_offset_json;
-use ck_model::{Part, Sketch};
+use ck_model::{Part, PART_VERSION, Sketch};
 use ck_server::session::{regen_label, Cx, Hooks, State, SNAPSHOT_LABEL};
 use ck_server::trace::{SpanId, Trace};
 use crate::regen_cache;
@@ -249,6 +249,11 @@ fn regen_hook(part: &Json, cx: &mut Cx) -> Result<(Json, State), String> {
         if let Json::Obj(kv) = &mut out {
             kv.push(("cacheStats".into(), j));
         }
+    }
+    // Additive: a document written by a newer build still regens; the reply
+    // then says so. Replies of files this kernel knows stay byte-identical.
+    if part.version > PART_VERSION {
+        out.push("partVersionNewer", Obj::new().put("file", part.version as f64).put("kernel", PART_VERSION as f64).build());
     }
     let state = match body {
         Some(body) => {
