@@ -7,7 +7,7 @@
 //!
 //! Parsing is deliberately lenient, like the original: the only hard part
 //! error is `"Format"` (reply `invalid part: Format`, kernel.strings), raised
-//! when the part is not an object, `format != "ck-part"`, or `features`
+//! when the part is not an object, `format` is neither `"ck-part"` nor the legacy `"ck-part"`, or `features`
 //! is not an array. Everything else (bad feature types, missing fields,
 //! wrong JSON types) parses with defaults and surfaces as per-feature regen
 //! errors (`unknownFeature`, `missingReference`, `missingSketch`, ...).
@@ -28,8 +28,10 @@ use ck_json::Json;
 
 /// The part-level parse error text (`invalid part: Format`).
 pub const PART_FORMAT_ERROR: &str = "Format";
-/// The only accepted `format` value.
+/// The `format` value written into every part.
 pub const PART_FORMAT: &str = "ck-part";
+/// The name this format had before `ck-part`: still read, never written.
+pub const LEGACY_PART_FORMAT: &str = "ck-part";
 
 /// Standard sketch planes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -229,7 +231,7 @@ impl From<f64> for Expr {
 /// "exploded":{..}, "appearance":{..}}`
 #[derive(Debug, Clone)]
 pub struct Part {
-    /// Always `"ck-part"`.
+    /// Always `"ck-part"` (a file with the legacy name is read as this).
     pub format: String,
     /// 1 in every sample; not validated by the kernel (version 2 regens fine).
     pub version: u32,
@@ -273,7 +275,7 @@ pub struct Feature {
 impl Part {
     /// Parse a part document. Errors only with `"Format"` (see crate doc).
     pub fn from_json(j: &Json) -> Result<Part, String> {
-        if !matches!(j, Json::Obj(_)) || j.get("format").and_then(|f| f.as_str()) != Some(PART_FORMAT) {
+        if !matches!(j, Json::Obj(_)) || !matches!(j.get("format").and_then(|f| f.as_str()), Some(PART_FORMAT | LEGACY_PART_FORMAT)) {
             return Err(PART_FORMAT_ERROR.to_string());
         }
         let feats = j.get("features").and_then(|f| f.as_arr()).ok_or_else(|| PART_FORMAT_ERROR.to_string())?;
