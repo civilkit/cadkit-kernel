@@ -34,6 +34,18 @@ fn wire_golden() {
     assert!(fails.is_empty(), "{}/{n} golden mismatches:\n{}", fails.len(), fails.join("\n"));
 }
 
+/// A part with the format's old name is read as `ck-part`: the reply is
+/// identical to the same request written with the new name.
+#[test]
+fn legacy_format_name_replies_identically() {
+    let new = r#"{"msg":{"type":"regen","part":{"format":"ck-part","features":[]}}}"#;
+    let old = r#"{"msg":{"type":"regen","part":{"format":"ck-part","features":[]}}}"#;
+    let (a, la) = run(&mut Server::new(), new);
+    let (b, lb) = run(&mut Server::new(), old);
+    assert_eq!(a, b);
+    assert_eq!(la, lb);
+}
+
 #[test]
 fn all_types_dispatch() {
     assert_eq!(REQUEST_TYPES.len(), 51); // loadFont/unloadFont/listFonts/subsetFont + importSldprt + importSkp + bodyBoolean + recognize + 8 measurement (distance/maxDistance/thickness/thicknessAt/closestPoint/angles/clearance/symmetry) + 17 original + validate/importSat/importStep/heal + check/resolve/describe/refDiff/threadData/checkProfile/profiles + section/sections/probe extensions + sketchAnalyze + sketchFreedoms

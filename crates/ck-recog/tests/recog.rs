@@ -134,3 +134,18 @@ fn bolt_circle_of_six_holes_is_a_pattern() {
     assert!(has(&r, "cpattern"), "{:?}", r.types);
     assert!(r.close, "rel {} {}", r.rel, r.debug);
 }
+
+/// A part document with the format's old name still reads (as `ck-part`) and
+/// the recognition pipeline rebuilds its features unchanged.
+#[test]
+fn legacy_part_format_name_still_reads() {
+    let src = format!(r#"{{"format":"ck-part","version":1,"features":[{RECT}]}}"#);
+    let part = ck_model::Part::from_json(&ck_json::parse(&src).unwrap()).unwrap();
+    assert_eq!(part.format, "ck-part");
+    let feats = part.raw.get_arr("features").unwrap().to_vec();
+    let (body, errs) = rebuild::rebuild(&feats).unwrap();
+    assert!(errs.is_empty(), "{errs:?}");
+    let rec = recognize(&body.expect("body"));
+    assert_eq!(rec.strategy, "prism");
+    assert!(rec.unexplained.is_empty());
+}

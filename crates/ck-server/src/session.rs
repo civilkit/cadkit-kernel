@@ -236,6 +236,10 @@ mod tests {
         let c = |s: &str| check_part(Some(&parse(s).unwrap())).is_ok();
         assert!(c(r#"{"format":"ck-part","features":[]}"#));
         assert!(c(r#"{"format":"ck-part","version":1.5,"features":[]}"#));
+        // the format's old name: still read (a file written before ck-part).
+        assert!(c(r#"{"format":"ck-part","features":[]}"#));
+        assert!(!c(r#"{"format":"ck-part","version":1}"#));
+        assert!(!c(r#"{"format":"ck-part","features":{}}"#));
         assert!(!c(r#"{"format":"ck-part","version":1}"#));
         assert!(!c(r#"{"format":"ck-part","features":{}}"#));
         assert!(!c(r#"{"format":"ck-part","features":null}"#));
