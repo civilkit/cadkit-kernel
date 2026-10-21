@@ -14,8 +14,9 @@ fn call(msg: &str) -> Json {
 
 /// 40x20x10 plate on the top plane, written with `version`.
 fn part(version: &str) -> String {
+    let version = if version.is_empty() { String::new() } else { format!(",{version}") };
     format!(
-        r#"{{"format":"ck-part",{version},"features":[
+        r#"{{"format":"ck-part"{version},"features":[
 {{"type":"sketch","id":"F1","plane":{{"kind":"std","id":"top"}},"points":[{{"id":"p1","x":0,"y":0}},{{"id":"p2","x":40,"y":0}},{{"id":"p3","x":40,"y":20}},{{"id":"p4","x":0,"y":20}}],
 "entities":[{{"type":"line","id":"e1","p1":"p1","p2":"p2"}},{{"type":"line","id":"e2","p1":"p2","p2":"p3"}},{{"type":"line","id":"e3","p1":"p3","p2":"p4"}},{{"type":"line","id":"e4","p1":"p4","p2":"p1"}}],"constraints":[]}},
 {{"type":"extrude","id":"F2","op":"add","sketch":"F1","end":"blind","depth":10}}]}}"#
