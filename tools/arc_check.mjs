@@ -1,12 +1,13 @@
 // Arc unit check without the DeepCAD dataset: a circular-segment loop
 // (one chord + one arc) extruded by 1. Tests {c,p1,p2} configurations:
 // CCW/CW, <180, =180, >180, tiny, and the centre on the opposite side.
+import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
 import { Kernel } from './kernel.mjs';
 
 const wasm = process.argv.includes('--wasm')
   ? process.argv[process.argv.indexOf('--wasm') + 1]
-  : '/path/to/work/kit/apps/cad/public/kernel/ck_wasm.wasm';
+  : fileURLToPath(new URL('../../kit/apps/cad/public/kernel/ck_wasm.wasm', import.meta.url));
 const mod = new WebAssembly.Module(readFileSync(wasm));
 const k = new Kernel(mod);
 const PI = Math.PI;

@@ -10,7 +10,7 @@ import { Kernel } from './kernel.mjs';
 
 const args = process.argv.slice(2);
 const opt = (f, d = null) => { const i = args.indexOf(f); if (i < 0) return d; const v = args[i + 1]; args.splice(i, 2); return v; };
-const DEF = '/path/to/work/kit/apps/cad/public/samples';
+const DEF = fileURLToPath(new URL('../../kit/apps/cad/public/samples', import.meta.url));
 
 if (args[0] === 'child') {
   const [, wasm, file, repsArg] = args;

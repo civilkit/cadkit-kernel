@@ -56,7 +56,7 @@ def find_face(faces, p):
 
 def main():
     wasm = arg('--wasm', os.path.join(HERE, '..', 'target', 'wasm32-unknown-unknown', 'release', 'ck_wasm.wasm'))
-    samples = arg('--samples', '/path/to/work/kit/apps/cad/public/samples')
+    samples = arg('--samples', os.path.join(HERE, '..', '..', 'kit', 'apps', 'cad', 'public', 'samples'))
     n = arg('--pairs', '20')
     tol = float(arg('--tol', '1e-6'))
     parts = arg('--parts', 'mounting-plate,parametric-bracket,stepper-bracket,bench-pipe_elbow,large-sample').split(',')

@@ -1,6 +1,6 @@
 {
  "version": 1,
- "wasm": "/path/to/work/kit/apps/cad/public/kernel/ck_wasm.wasm",
+ "wasm": "kit/apps/cad/public/kernel/ck_wasm.wasm",
  "cases": {
   "bcommon_simple/A1": {
    "cls": "booleanFailed",

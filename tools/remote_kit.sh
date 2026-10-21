@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run the KIT (GUI) vitest suite on the CI box. See docs/remote-build.md.
 #   tools/remote_kit.sh [--kit DIR] [--files PATTERN ...] [--wasm PATH] [--kernel DIR] [--tsc] [--out DIR] [--clean]
-#     --kit DIR      the kit worktree (default /path/to/work/kit)
+#     --kit DIR      the kit worktree (default: the kit next to this checkout)
 #     --files PAT    vitest file filter(s), e.g. apps/cad/src/controller (repeatable; default: all of apps packages)
 #     --wasm PATH    kernel wasm to test against (uploaded; e.g. the one tools/remote_build.sh copied back).
 #                    Default: the kernel-main artifact the box CI keeps.
@@ -11,7 +11,7 @@
 #     --clean        remove this kit worktree's directories on the box
 # Same host rules as tools/remote_build.sh. Everything lives under ~/ci-cad/remote-build.
 set -uo pipefail
-KIT=/path/to/work/kit; FILES=(); WASM=""; KERNEL=""; TSC=0; OUT=""; CLEAN=0
+KIT="$(cd "$(dirname "$0")/../.." && pwd)/kit"; FILES=(); WASM=""; KERNEL=""; TSC=0; OUT=""; CLEAN=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --kit) KIT="$2"; shift 2 ;;
@@ -84,8 +84,8 @@ if [ "$KSYNC" = 1 ]; then
 else
   K="$HOME/ci-cad/work/kernel-src"; echo "kernel packages: box CI checkout of kernel main (read only)"
 fi
-DEV=/path/to/work/rebuild
-grep -rIl "$DEV" tsconfig.json vite.config.ts packages apps --include='*.ts' --include='*.tsx' --include='*.json' 2>/dev/null | grep -v node_modules | while read -r f; do sed -i "s|$DEV|$K|g" "$f"; done
+# the kit finds the kernel repo as ../rebuild (tsconfig paths); here it is $K (vite and the tests read CK_REBUILD)
+sed -i "s|\"\.\./rebuild/|\"$K/|g" tsconfig.json
 if [ -n "$WREM" ]; then WASMP="$RUN/kernel.wasm"; else WASMP="$HOME/ci-cad/artifacts/kernel-main.wasm"; fi
 [ -s "$WASMP" ] || { echo "no kernel wasm for CK_WASM"; exit 1; }
 echo "CK_WASM: $(if [ -n "$WREM" ]; then echo uploaded; else echo box CI kernel-main artifact; fi)"

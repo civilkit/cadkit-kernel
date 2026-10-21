@@ -54,7 +54,7 @@ fn import_sat_failure_is_structured_and_keeps_state() {
 fn import_real_files_over_the_wire() {
     ck_wasm::engine::install();
     let dir = std::env::var("SAT_SAMPLES_DIR")
-        .unwrap_or_else(|_| "/private/tmp/claude-501/-Volumes-second-disk-tmp-purr-rebuild/296fdc97-740a-4f73-841f-21dbda16b0ed/scratchpad/sat".into());
+        .unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/../../../scratch-sat").into());
     for (rel, tag, faces) in [("dice.sat", "dice", 47.0), ("svalinn/ErrorBlocks.SAT", "blocks", 53.0)] {
         let Ok(bytes) = std::fs::read(format!("{dir}/{rel}")) else {
             eprintln!("skip {rel}: absent");

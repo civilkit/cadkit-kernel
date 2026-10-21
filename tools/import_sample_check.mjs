@@ -5,6 +5,7 @@
 //   node tools/import_sample_check.mjs DIR [--manifest FILE] [--only SUBSTR] [--json OUT]
 //   node tools/import_sample_check.mjs DIR --manifest FILE --update-baseline FILE
 //   node tools/import_sample_check.mjs DIR --manifest FILE --check FILE
+import { fileURLToPath } from 'node:url';
 import { readFileSync, readdirSync, statSync, writeFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -13,7 +14,7 @@ import { Kernel } from './kernel.mjs';
 const argv = process.argv.slice(2);
 const dir = argv[0];
 const opt = (f, d) => (argv.includes(f) ? argv[argv.indexOf(f) + 1] : d);
-const wasm = opt('--wasm', '/path/to/work/kit/apps/cad/public/kernel/ck_wasm.wasm');
+const wasm = opt('--wasm', fileURLToPath(new URL('../../kit/apps/cad/public/kernel/ck_wasm.wasm', import.meta.url)));
 const only = opt('--only');
 const importOnly = argv.includes('--import-only');
 const manifestFile = opt('--manifest');

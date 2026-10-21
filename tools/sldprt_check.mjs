@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2);
 const opt = (n, d) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : d; };
-const SCRATCH = '/path/to/work/scratch-sldprt';
+const SCRATCH = fileURLToPath(new URL('../../scratch-sldprt', import.meta.url));
 const dir = opt('--dir', path.join(SCRATCH, 'samples'));
 const refsDir = opt('--refs', path.join(SCRATCH, 'out'));
 const wasmPath = opt('--wasm', path.join(here, '../target/wasm32-unknown-unknown/release/ck_wasm.wasm'));

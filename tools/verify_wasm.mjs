@@ -118,7 +118,7 @@ results.push(...(await mapLimit(SWEEPS, quick ? 1 : 2, runSweep)));
 // Original-kernel differential
 {
   const out = path.join(tmp, 'origdiff.json');
-  const r = await run('node', [path.join(root, 'tools/orig_diff_sweep.mjs'), '--wasm', wasm, '--orig', '/path/to/work/kernel.wasm', ...(quick ? ['--quick'] : ['--samples', '10']), '--seed', '7', '--json', out], (quick ? 120 : 300) * 1000);
+  const r = await run('node', [path.join(root, 'tools/orig_diff_sweep.mjs'), '--wasm', wasm, '--orig', fileURLToPath(new URL('../../kernel.wasm', import.meta.url)), ...(quick ? ['--quick'] : ['--samples', '10']), '--seed', '7', '--json', out], (quick ? 120 : 300) * 1000);
   const rows = readJson(out);
   const base = baseline('tools/original_gaps_baseline.json');
   if (Array.isArray(rows)) {
@@ -133,7 +133,7 @@ results.push(...(await mapLimit(SWEEPS, quick ? 1 : 2, runSweep)));
 // Propeller foundation probe
 {
   const out = path.join(tmp, 'propprobe.json');
-  const r = await run('node', [path.join(root, 'tools/prop_probe.mjs'), '--wasm', wasm, '--orig', '/path/to/work/kernel.wasm', '--json', out], 120000);
+  const r = await run('node', [path.join(root, 'tools/prop_probe.mjs'), '--wasm', wasm, '--orig', fileURLToPath(new URL('../../kernel.wasm', import.meta.url)), '--json', out], 120000);
   const rows = readJson(out);
   const base = baseline('tools/prop_probe_baseline.json');
   if (Array.isArray(rows)) {

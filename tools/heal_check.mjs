@@ -18,7 +18,7 @@ const wasmPath = opt('--wasm', join(here, '..', 'target/wasm32-unknown-unknown/r
 const volTol = Number(opt('--vol-tol', '1e-3'));
 const maxMs = Number(opt('--max-ms', '10000'));
 const noOff = flag('--no-off');
-const DEFAULT_DIR = '/path/to/work/scratch-sldprt/samples';
+const DEFAULT_DIR = fileURLToPath(new URL('../../scratch-sldprt/samples', import.meta.url));
 const ref = JSON.parse(readFileSync(join(here, 'step_nist_reference.json'), 'utf8')).files;
 
 function collect(p, depth = 0) {

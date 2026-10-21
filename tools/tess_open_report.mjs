@@ -20,7 +20,7 @@ const args = process.argv.slice(2);
 const opt = (f, d = null) => { const i = args.indexOf(f); if (i < 0) return d; const v = args[i + 1]; args.splice(i, 2); return v; };
 const flag = (f) => { const i = args.indexOf(f); if (i < 0) return false; args.splice(i, 1); return true; };
 const wasm = opt('--wasm', path.join(here, '../target/wasm32-unknown-unknown/release/ck_wasm.wasm'));
-const kit = opt('--kit', '/path/to/work/kit');
+const kit = opt('--kit', fileURLToPath(new URL('../../kit', import.meta.url)));
 const only = opt('--only');
 const jsonOut = opt('--json');
 const skip = opt('--skip');

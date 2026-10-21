@@ -17,7 +17,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2);
 const opt = (f, d) => { const i = args.indexOf(f); return i < 0 ? d : args[i + 1]; };
 const wasm = opt('--wasm', path.join(here, '../target/wasm32-unknown-unknown/release/ck_wasm.wasm'));
-const dir = opt('--samples', '/path/to/work/kit/apps/cad/public/samples');
+const dir = opt('--samples', fileURLToPath(new URL('../../kit/apps/cad/public/samples', import.meta.url)));
 const only = opt('--only', '');
 const maxN = Number(opt('--max', '1000'));
 const budget = Number(opt('--budget-ms', '12000')); // per request (the kernel's own limit is 8 s, opts.timeMs)

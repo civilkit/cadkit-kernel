@@ -7,7 +7,7 @@ direction), never by index.
 
 ```sh
 node tools/fillet_sweep.mjs --samples 40 --seed 7 \
-  --wasm /path/to/work/kit/apps/cad/public/kernel/ck_wasm.wasm
+  --wasm <cadkit>/kit/apps/cad/public/kernel/ck_wasm.wasm
 node tools/fillet_sweep.mjs --samples 40 --seed 7 --update-baseline tools/fillet_sweep_baseline.json
 node tools/fillet_sweep.mjs --samples 40 --seed 7 --check tools/fillet_sweep_baseline.json
 node tools/fillet_sweep.mjs --samples 40 --seed 7 --only box_parallel4_8

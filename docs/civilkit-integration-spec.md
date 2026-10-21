@@ -11,7 +11,7 @@ Do not modify the kernel repo from CivilKit; ask for changes (section 7).
 
 ## 1. What the kernel is
 
-- Repo: `/path/to/work/rebuild` (Rust workspace, ~45k lines).
+- Repo: `<cadkit>/rebuild` (Rust workspace, ~45k lines).
   Local only, no remote. Same machine as CivilKit.
 - Product: `ck_wasm.wasm`, a self-contained WebAssembly module with one
   request/reply interface. It is deterministic (no clock/random needed), runs
@@ -24,7 +24,7 @@ Do not modify the kernel repo from CivilKit; ask for changes (section 7).
 ## 2. Build and load
 
 ```
-cd /path/to/work/rebuild
+cd <cadkit>/rebuild
 cargo build -p ck-wasm --target wasm32-unknown-unknown --release
 # -> target/wasm32-unknown-unknown/release/ck_wasm.wasm   (use --profile fast for quick local builds)
 ```

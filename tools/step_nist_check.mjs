@@ -15,7 +15,7 @@ const opt = (name, def) => { const i = args.indexOf(name); if (i < 0) return def
 const wasmPath = opt('--wasm', join(here, '..', 'target/wasm32-unknown-unknown/release/ck_wasm.wasm'));
 const tol = Number(opt('--tol', '1e-4'));
 const tolSpline = Number(opt('--tol-spline', '1e-3'));
-const DEFAULT_DIR = '/path/to/work/scratch-sldprt/samples';
+const DEFAULT_DIR = fileURLToPath(new URL('../../scratch-sldprt/samples', import.meta.url));
 const ref = JSON.parse(readFileSync(join(here, 'step_nist_reference.json'), 'utf8')).files;
 
 function collect(p, depth = 0) {

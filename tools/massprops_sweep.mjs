@@ -9,7 +9,7 @@ import { Kernel } from './kernel.mjs';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
 const opt = (f, d) => (argv.includes(f) ? argv[argv.indexOf(f) + 1] : d);
-const wasm = opt('--wasm', '/path/to/work/kit/apps/cad/public/kernel/ck_wasm.wasm');
+const wasm = opt('--wasm', fileURLToPath(new URL('../../kit/apps/cad/public/kernel/ck_wasm.wasm', import.meta.url)));
 const seed = Number(opt('--seed', '1'));
 const samples = Number(opt('--samples', '20'));
 const only = opt('--only', '');

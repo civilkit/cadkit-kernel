@@ -7,7 +7,7 @@ workspace is the reconstructed skeleton, rebuilt from artifacts.
 ## Repository layout
 
 ```
-/tmp-purr/
+/cadkit/
   kernel.wasm          ORIGINAL binary (5.5MB, no debug info) — the oracle
   kernel.wat           wabt WAT dump (104MB) — the disassembly
   kernel.strings       strings extracted from the binary

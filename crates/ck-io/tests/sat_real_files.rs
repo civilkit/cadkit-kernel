@@ -4,7 +4,7 @@
 use ck_io::sat::import_sat;
 
 fn dir() -> String {
-    std::env::var("SAT_SAMPLES_DIR").unwrap_or_else(|_| "/private/tmp/claude-501/-Volumes-second-disk-tmp-purr-rebuild/296fdc97-740a-4f73-841f-21dbda16b0ed/scratchpad/sat".into())
+    std::env::var("SAT_SAMPLES_DIR").unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/../../../scratch-sat").into())
 }
 
 fn run(rel: &str, min_faces: usize) {

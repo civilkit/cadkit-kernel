@@ -7,7 +7,7 @@ use std::path::Path;
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(ck_oracle)");
     let c2 = std::env::var("CK_ORACLE_DIR")
-        .unwrap_or_else(|_| "/path/to/work/c2".to_string());
+        .unwrap_or_else(|_| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../c2").to_string_lossy().into_owned());
     let lib = Path::new(&c2).join("libkerneloracle.a");
     println!("cargo:rerun-if-changed={}", lib.display());
     println!("cargo:rerun-if-env-changed=CK_ORACLE_DIR");

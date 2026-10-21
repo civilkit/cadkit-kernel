@@ -4,12 +4,13 @@
 //   node tools/deepcad_check.mjs --cases FILE [--scale 100]
 //   node tools/deepcad_check.mjs --cases FILE --update-baseline tools/deepcad_baseline.json
 //   node tools/deepcad_check.mjs --cases FILE --check tools/deepcad_baseline.json
+import { fileURLToPath } from 'node:url';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { Kernel } from './kernel.mjs';
 
 const argv = process.argv.slice(2);
 const opt = (f, d) => (argv.includes(f) ? argv[argv.indexOf(f) + 1] : d);
-const wasm = opt('--wasm', '/path/to/work/kit/apps/cad/public/kernel/ck_wasm.wasm');
+const wasm = opt('--wasm', fileURLToPath(new URL('../../kit/apps/cad/public/kernel/ck_wasm.wasm', import.meta.url)));
 const cases = JSON.parse(readFileSync(opt('--cases', 'tools/deepcad_cases.json'), 'utf8'));
 const scale = Number(opt('--scale', '1'));
 const auditFile = opt('--audit');
