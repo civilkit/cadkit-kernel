@@ -134,8 +134,12 @@ fn exec_variable_fillet(br: &mut Brep, state: &mut RegenState, f: &Feature, edge
         Some(a) if a.len() == 2 => a.iter().map(|x| crate::expr::eval_field(Some(x), &state.vars, f64::NAN).unwrap_or(f64::NAN)).collect(),
         _ => return Err(FeatureError::new("invalidValue")),
     };
-    if radii.iter().any(|r| !(*r > 0.0) || !r.is_finite()) {
-        return Err(FeatureError::new("invalidValue"));
+    // (ours, not in the oracle) one end may be 0: the round closes to the corner. See the retry below.
+    if radii.iter().any(|r| !(*r >= 0.0) || !r.is_finite()) || (radii[0] == 0.0 && radii[1] == 0.0) {
+        return Err(FeatureError::new("invalidValue")
+            .with("field", Json::Str("radii".into()))
+            .with("detail", Json::Str("a variable fillet needs radii [near, far], two finite numbers >= 0 that are not both 0".into()))
+            .with("hint", Json::Str("give a positive radius at least at one end, e.g. radii [4, 1]".into())));
     }
     let profile = fillet_profile(state, f)?;
     let rhos = match f.raw.get("rhos").and_then(|a| a.as_arr()) {
@@ -175,11 +179,48 @@ fn exec_variable_fillet(br: &mut Brep, state: &mut RegenState, f: &Feature, edge
         br.body = Some(out);
         return Ok(());
     }
+    // (ours) a radius of 0 at one end, where the round closes to the corner, is not built exactly. Try the smallest
+    // positive end radius the builder accepts (a fraction of the larger radius) and say which one was used.
+    if per_pick.iter().any(|p| p[0] == 0.0 || p[1] == 0.0) {
+        let big = per_pick.iter().flat_map(|p| p.iter().copied()).fold(0.0f64, f64::max);
+        let mut last = None;
+        let mut tried = vec![];
+        for frac in ZERO_END_FRACTIONS {
+            let eps = frac * big;
+            tried.push(eps);
+            let fix = |r: f64| if r == 0.0 { eps } else { r };
+            let pp: Vec<[f64; 2]> = per_pick.iter().map(|p| [fix(p[0]), fix(p[1])]).collect();
+            let sp = ck_ops::blend::interp::VarSpec { radii: [fix(radii[0]), fix(radii[1])], profile, rhos };
+            match ck_ops::blend::interp::variable_fillet_picks(body, &sel, &pp, sp, &f.id, super::TOL) {
+                Ok(out) => {
+                    corner_warnings(state, &f.id, &out);
+                    state.result.warnings.push(crate::regen::RegenError {
+                        feature: f.id.clone(),
+                        error: FeatureError::new("filletRadiusApproximated")
+                            .with("requested", Json::Str("end radius 0".into()))
+                            .with("used", Json::Num(eps))
+                            .with("detail", Json::Str(format!("a fillet radius of 0 at one end is not built exactly; the end radius {eps} (the smallest the builder accepted) was used")))
+                            .with("hint", Json::Str("give a small positive end radius yourself to control the result".into())),
+                    });
+                    br.body = Some(out);
+                    return Ok(());
+                }
+                Err(e) => last = Some(e),
+            }
+        }
+        let e = blend_error(last.expect("at least one attempt"));
+        return Err(e
+            .with("detail", Json::Str(format!("a radius of 0 at one end could not be built, nor an end radius of {:?}", tried)))
+            .with("hint", Json::Str("use a positive end radius, or a constant radius fillet".into())));
+    }
     let out = ck_ops::blend::interp::variable_fillet_picks(body, &sel, &per_pick, spec, &f.id, super::TOL).map_err(blend_error)?;
     corner_warnings(state, &f.id, &out);
     br.body = Some(out);
     Ok(())
 }
+
+/// End radii tried for a variable fillet that closes to 0, as fractions of the larger radius, smallest first.
+const ZERO_END_FRACTIONS: [f64; 6] = [0.05, 0.1, 0.15, 0.25, 0.4, 0.6];
 
 /// `fillet.profile`: `circular` (default), `conic` (`rho` in (0, 1), default 0.5: `filletRho`),
 /// `chord` (the radius is the chord width) or `curvature` (`shape` in [0.1, 1], default 0.5:
