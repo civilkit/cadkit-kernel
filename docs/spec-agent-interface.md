@@ -309,6 +309,13 @@ The end condition names its target in `endRef`:
 `fit`) give the hole diameter `d`; `kind` picks the head shape.
 
 - `kind:"simple"`: plain hole (or `diameter` instead of `size`).
+- A plain `diameter` also works for `cbore` and `countersink` when no table `size` applies (a `size` that is in the
+  table still wins and `diameter` is ignored). The step or cone must then be given explicitly: `cboreDiameter` and
+  `cboreDepth` for a counterbore, `cskDiameter` (and optionally `cskAngle`) for a countersink. All given: built exactly as
+  asked, no warning. Any missing: the hole is drilled as a SIMPLE hole of `diameter` and the regen result gets a warning
+  `holeDowngraded {requested: "counterbore"|"countersink", built: "simple", missing: [field names], detail, hint}` under
+  `warnings` (not an error; the body is built). With neither `size` nor `diameter` the hole is still refused
+  (`holeInvalid {detail, hint}`), the hint naming what to give for the kind asked.
 - `kind:"cbore"`: counterbore. `cboreDiameter` and `cboreDepth` (mm or
   expressions) override the ISO 4762 table values of the size; each is
   independent (absent: that table value, so documents without them are
