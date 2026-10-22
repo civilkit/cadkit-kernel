@@ -63,7 +63,7 @@ strings from kernel.strings, and dispatch to ck-ops/ck-topo.
   and invalidValue (tolerance <= 0, unknown direction), missingSketch / missingReference; order in docs/project-curve.md
 - extend: extendNotBoundary, extendTargetSelf, extendOneSurface,
   extendUnsupported, extendReflectTooFar, extendPointBehind, extendFolds
-- blends: filletChamfer, chamferVertexEdges(two/points), chamferType+filletType,
+- blends: warning filletRadiusApproximated {requested, used, detail, hint} (variable fillet with an end radius of 0: built with the smallest positive end radius that works; both ends 0 / negative stay invalidValue with detail + hint), filletChamfer, chamferVertexEdges(two/points), chamferType+filletType,
   "edge of blend X is gone after an earlier blend", "X collapses and cannot be removed"
 - assembly: mirrorOntoItself, mirrorNotKnitted
 - boolean: booleanFailed (params `hostFace`, `toolFace`, `gap` when the failure is two nearly coincident free-form walls: the tool
