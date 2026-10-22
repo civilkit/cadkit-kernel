@@ -216,6 +216,133 @@ fn explain_foot(b: &Body, fs: &[FaceId], q: Vec3) -> String {
     s
 }
 
+/// Diagnostic for `CK_BLEND_DEBUG`: which face of the set the foot came from and
+/// at which `(u, v)`, so a foot that jumps faces or sits on a face boundary is visible.
+fn foot_verbose(b: &Body, fs: &[FaceId], q: Vec3) -> String {
+    let mut best = f64::INFINITY;
+    let mut parts: Vec<(FaceId, f64, f64, f64, Option<Vec3>)> = vec![];
+    for &f in fs {
+        let sf = &b.face(f).surface;
+        let (u, v, pt) = sf.closest_point(q);
+        let n = b.outward_normal(f, u, v).try_normalize();
+        let d = pt.dist(q);
+        if d < best {
+            best = d;
+        }
+        parts.push((f, u, v, d, n));
+    }
+    parts
+        .into_iter()
+        .map(|(f, u, v, d, n)| {
+            format!(
+                "{} d={:.4} uv=({:.3},{:.3}){} n={}",
+                b.face_id_str(f),
+                d,
+                u,
+                v,
+                if d <= best + 1e-9 { "*" } else { " " },
+                n.map(|x| format!("({:.2},{:.2},{:.2})", x.x, x.y, x.z)).unwrap_or_else(|| "NULL".into()),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
+/// Signed distance to the nearest face of the set (the `foot_set` pick), as
+/// `(dist, face, closest point, normal)`. Positive means `q` is outside the solid there.
+fn signed_dist_set(b: &Body, fs: &[FaceId], q: Vec3) -> Option<(f64, FaceId, Vec3, Vec3)> {
+    let mut best: Option<(f64, FaceId, Vec3, Vec3)> = None;
+    for &f in fs {
+        if let Some((pt, n)) = foot(b, f, q) {
+            let d = pt.dist(q);
+            if best.as_ref().map_or(true, |x| d < x.0) {
+                best = Some((d, f, pt, n));
+            }
+        }
+    }
+    best
+}
+
+/// Decisive ground truth (behind `CK_BLEND_DEBUG`): sample the hub-offset cylinder
+/// (the locus of ball centres exactly `r` from the hub) around `p` and find where
+/// the blade is also `r` away, with NO plane constraint. If such a point exists but
+/// not in the normal plane, the plane constraint is the culprit (cause 4); if none
+/// exists, `r` is too large for the local geometry (cause 3).
+fn probe_centre_cyl(b: &Body, set1: &[FaceId], set2: &[FaceId], r: f64, p: Vec3) -> String {
+    let Some((o, ax, cr)) = set1.iter().find_map(|&f| match &b.face(f).surface {
+        Surface::Cylinder { frame, r } => Some((frame.o, frame.z, *r)),
+        _ => None,
+    }) else {
+        return "no cylinder in set1".into();
+    };
+    let rad = (p - o) - ax * (p - o).dot(ax);
+    let Some(e2) = rad.try_normalize() else { return "p on the axis".into() };
+    let e3 = ax.cross(e2);
+    let z0 = (p - o).dot(ax);
+    let (nr, nz) = (100usize, 50usize);
+    let (arange, zrange) = (0.6f64, 4.0 * r);
+    let mut best = (f64::INFINITY, 0.0, 0.0, 0.0);
+    for i in 0..=nr {
+        let dphi = -arange + 2.0 * arange * (i as f64) / (nr as f64);
+        for j in 0..=nz {
+            let dz = -zrange + 2.0 * zrange * (j as f64) / (nz as f64);
+            let c = o + e2 * ((cr + r) * dphi.cos()) + e3 * ((cr + r) * dphi.sin()) + ax * (z0 + dz);
+            if let Some((d2, _, _, _)) = signed_dist_set(b, set2, c) {
+                let g = (d2 - r).abs();
+                if g < best.0 {
+                    best = (g, dphi, dz, c.dist(p));
+                }
+            }
+        }
+    }
+    format!(
+        "hub-offset cylinder probe: min|d2-r|={:.3e} at dphi={:.3}rad dz={:.3} |c-p|={:.4}",
+        best.0, best.1, best.2, best.3
+    )
+}
+
+/// Ground truth for a failed station (behind `CK_BLEND_DEBUG`): sample the normal
+/// plane `(p, t)` on a grid and find where both face sets are `sg*r` away, so it is
+/// visible whether the ball fits there at all. Returns the best residual found.
+fn probe_centre(b: &Body, set1: &[FaceId], set2: &[FaceId], sg: f64, r: f64, p: Vec3, t: Vec3) -> String {
+    let tn = t.try_normalize().unwrap_or(Vec3::Z);
+    let a1 = if tn.x.abs() < 0.9 { tn.cross(Vec3::X) } else { tn.cross(Vec3::Y) };
+    let a1 = a1.try_normalize().unwrap_or(Vec3::X);
+    let a2 = tn.cross(a1).try_normalize().unwrap_or(Vec3::Y);
+    let (n, span) = (100usize, 6.0 * r);
+    let mut best = (f64::INFINITY, 0.0, 0.0, 0.0);
+    let mut hits = 0usize;
+    let mut min1 = f64::INFINITY;
+    let mut min2 = f64::INFINITY;
+    for i in 0..=n {
+        for j in 0..=n {
+            let a = -span + 2.0 * span * (i as f64) / (n as f64);
+            let bb = -span + 2.0 * span * (j as f64) / (n as f64);
+            let c = p + a1 * a + a2 * bb;
+            let (Some((d1, _, _, _)), Some((d2, _, _, _))) = (signed_dist_set(b, set1, c), signed_dist_set(b, set2, c)) else { continue };
+            let g1 = d1 - sg * r;
+            let g2 = d2 - sg * r;
+            if g1.abs() < min1 {
+                min1 = g1.abs();
+            }
+            if g2.abs() < min2 {
+                min2 = g2.abs();
+            }
+            let e = g1.abs().max(g2.abs());
+            if e < 1e-3 * r {
+                hits += 1;
+            }
+            if e < best.0 {
+                best = (e, a, bb, c.dist(p));
+            }
+        }
+    }
+    format!(
+        "normal-plane probe (span {span:.0}r): min|g1|={min1:.3e} min|g2|={min2:.3e}; best max|g|={:.3e} at a=({:.4},{:.4}), |c-p|={:.4}; cells |g|<1e-3r: {}",
+        best.0, best.1, best.2, best.3, hits
+    )
+}
+
 impl<'a> Ctx<'a> {
     /// Edge point and unit chain tangent at link parameter `s` in [0, 1].
     fn edge_at(&self, li: usize, s: f64) -> (Vec3, Vec3, Vec3) {
@@ -266,7 +393,7 @@ impl<'a> Ctx<'a> {
                 }
             }
         };
-        for _ in 0..80 {
+        for it in 0..80 {
             let (q1, n1) = match foot_set(self.b, &self.set1, c) {
                 Some(x) => x,
                 None => {
@@ -283,6 +410,14 @@ impl<'a> Ctx<'a> {
             };
             let g = [(c - q1).dot(n1) - self.sg * r, (c - q2).dot(n2) - self.sg * r, (c - off3).dot(row3)];
             let err = g.iter().fold(0.0f64, |m, x| m.max(x.abs()));
+            if std::env::var_os("CK_BLEND_DEBUG").is_some() {
+                eprintln!(
+                    "   it={it} c=({:.4},{:.4},{:.4}) g=[{:.3e},{:.3e},{:.3e}] p1=|c-q1|={:.4} p2=|c-q2|={:.4}",
+                    c.x, c.y, c.z, g[0], g[1], g[2], c.dist(q1), c.dist(q2)
+                );
+                eprintln!("      set1: {}", foot_verbose(self.b, &self.set1, c));
+                eprintln!("      set2: {}", foot_verbose(self.b, &self.set2, c));
+            }
             if err < 1e-11 * (1.0 + r) {
                 if std::env::var_os("CK_BLEND_DEBUG3").is_some() {
                     eprintln!("   foot residual: perp1 {:.2e} perp2 {:.2e}", (c - q1).cross(n1).len(), (c - q2).cross(n2).len());
@@ -293,6 +428,9 @@ impl<'a> Ctx<'a> {
             // damp the step: at a shallow dihedral (a blade root) the three-plane
             // system is near-singular and a full Newton step runs away
             let dl = dc.len();
+            if std::env::var_os("CK_BLEND_DEBUG").is_some() {
+                eprintln!("      dc=({:.4},{:.4},{:.4}) |dc|={:.4}{}", dc.x, dc.y, dc.z, dl, if dl > 2.0 * r { " (clamped to 2r)" } else { "" });
+            }
             if dl > 2.0 * r {
                 dc = dc * (2.0 * r / dl);
             }
@@ -300,6 +438,16 @@ impl<'a> Ctx<'a> {
             if !c.is_finite() || c.dist(p) > 20.0 * r {
                 return Err(failed_hint("centre diverged", BALL_HINT));
             }
+        }
+        if std::env::var_os("CK_BLEND_DEBUG").is_some() {
+            eprintln!(
+                "   li={li} s={s:.4} did not converge: p=({:.4},{:.4},{:.4}) t=({:.4},{:.4},{:.4}) sg={} r={}",
+                p.x, p.y, p.z, t.x, t.y, t.z, self.sg, r
+            );
+            eprintln!("   at p: set1 {}", foot_verbose(self.b, &self.set1, p));
+            eprintln!("   at p: set2 {}", foot_verbose(self.b, &self.set2, p));
+            eprintln!("   {}", probe_centre_cyl(self.b, &self.set1, &self.set2, r, p));
+            eprintln!("   {}", probe_centre(self.b, &self.set1, &self.set2, self.sg, r, p, t));
         }
         Err(failed_hint("centre did not converge", BALL_HINT))
     }
