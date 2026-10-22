@@ -466,7 +466,20 @@ fn boolean_at_merge(a: &Body, b: &Body, op: Op, tol: f64, merge: bool) -> Result
             if let Issue::OpenEdge(e) | Issue::NonManifoldEdge(e, _) | Issue::BadPairing(e) = i {
                 let ed = body.edge(*e);
                 let faces: Vec<_> = body.edge_coedges(*e).iter().map(|&c| body.face_id_str(body.coedge_face(c))).collect();
-                super::bool_dbg!("  bad edge {:?}: {} t[{:.5},{:.5}] p0 {:?} p1 {:?} faces {:?}", e, ed.curve.kind(), ed.t0, ed.t1, ed.curve.eval(ed.t0), ed.curve.eval(ed.t1), faces);
+                super::bool_dbg!(
+                    "  bad edge {:?}: {} nco={} seam={} v0={:?} v1={:?} t[{:.5},{:.5}] p0 {:?} p1 {:?} faces {:?}",
+                    e,
+                    ed.curve.kind(),
+                    body.edge_coedges(*e).len(),
+                    body.is_seam(*e),
+                    ed.v0.idx(),
+                    ed.v1.idx(),
+                    ed.t0,
+                    ed.t1,
+                    ed.curve.eval(ed.t0),
+                    ed.curve.eval(ed.t1),
+                    faces
+                );
             }
         }
         super::bool_dbg!("assembled body invalid: {} issues, first {:?}", bad_issues.len(), &bad_issues[..bad_issues.len().min(6)]);
