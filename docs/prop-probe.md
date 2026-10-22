@@ -101,3 +101,53 @@ Open here: make the blade-root fillet work (task 1). The pieces in place are
 closed-ring detection, the ring tool and the hint plumbing; the missing piece
 is a centre solver that stays on the offset-surface intersection at a shallow,
 curved dihedral instead of the plane-through-the-edge-point constraint.
+
+### Blade-root ring blend, task 1: measurement (2026-10-22, branch `blade-root-ring`)
+
+The one station the small case fails at is `li=2 s=0.5` of `blade_root_blend.rs`
+(`CK_BLEND_DEBUG=1` prints every Newton iteration: the centre, both feet with the
+face and `(u, v)` they came from, the residuals and the step). It is the midpoint
+of the **trailing-edge cap root edge** — the shortest edge of the ring (0.23 mm),
+where the 0.2 mm blunt cap (`F8.S.e2`) meets the hub cylinder.
+
+What the data shows:
+
+* The set2 (blade) foot jumps between the two side faces `F8.S.e1` (**clamped at
+  u = 1.000**) and `F8.S.e3` (**clamped at u = 0.000**) — both at a face
+  boundary, so the face normal the Newton uses is not the distance gradient. The
+  centre settles into a 2-cycle (`c=(6.1760,-3.3058,4.0067)` ⇄
+  `c=(6.2976,-3.0678,3.7941)`, `|dc| = 0.342`) and never converges. **(cause 1)**
+* At the station point `p=(5.5465,2.2883,-2.6208)`: the hub is at `d=0` with
+  radial normal `(0.92,0.38,0.00)`, and the nearest blade face is the **cap**
+  `F8.S.e2` (`d=0.0000`, normal `(-0.02,0.66,-0.75)`) — a ~103° junction, i.e.
+  open, not shallow. The side faces are `0.088` / `0.093` away.
+* Ground truth, sampling the **hub-offset cylinder** (every centre exactly `r`
+  from the hub) around `p`: `min |dist(c, blade) - r| = 5.3e-4`, but only at
+  `|c-p| = 2.07` (≈16° around the hub, `dz = -0.32`), i.e. not the local fillet.
+  Sampling the **normal plane** `(p, t)`: `min|g1| = 2.4e-4` and
+  `min|g2| = 7.0e-4` each on their own, but `best max|g| = 4.5e-2` and **no cell
+  below 1e-3** — the hub-offset and blade-offset curves only approach, they do
+  not cross. So there is no ball of radius 1 tangent to both the hub and the
+  blade near the station. **(cause 3)**
+
+Why: a ball tangent to the cap and the hub would touch the cap at
+`r/tan(θ/2) ≈ 0.79 mm` from the cap edge, but the cap is only 0.2 mm wide, so the
+foot falls off the cap onto a side face, whose own root edge is a different
+station. The 0.2 mm blunt trailing edge is effectively sharp at r = 1.
+
+Attempts, all without keeping the ball near the station:
+
+| fix | result |
+|---|---|
+| exact distance gradient `(c-q)/|c-q|` instead of the face normal | removes the 2-cycle but the Newton runs to a spurious far root (`|c-p|` 4–8): 909 stations, tool volume 9.3e8, contact curves 1.07 mm off the faces |
+| re-seed from the geometry seed (bisector) after a failure | still no convergence |
+| continuation along the centre curve (plane-free, minimum-norm step, seed = warm start then bisector) | still no convergence at any of the `li=2` stations |
+
+This matches the original kernel's refusal ("the spring does not leave its face at
+the chain's end"). Conclusion: the small case's 0.2 mm trailing edge cannot be
+filleted at `r = 1` by a rolling ball; **task 1 as written needs the task-2 corner
+rule** (a setback that ends the two side fillets before the cap, or a taper of the
+radius to zero across the cap), not a more robust centre Newton. The
+instrumentation (`foot_verbose`, `signed_dist_set`, `probe_centre_cyl`,
+`probe_centre`, per-iteration prints, all behind `CK_BLEND_DEBUG`) is kept for the
+next attempt.
