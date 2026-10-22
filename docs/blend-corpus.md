@@ -86,6 +86,19 @@ kernel, exported with `step`, and read by OCCT, so both start from the same geom
    (selections that worked are unchanged, so the gate is untouched); `propagate` does the same from one pick. R5 and R6 prisms, top and bottom loops,
    with a unioned arm, fillet and chamfer, match OCCT to 1e-7.
 
+## Overhang corner (block overhanging a wall): where today's step comes from
+
+Four straight edges meet at a vertex as two collinear pairs that flip convex/concave (fixture
+`crates/ck-model/tests/fixtures/overhang/bad_overhang_fillets.ckpart`, r = 2, corner at (25, 27, 9.193)).
+The stripes are built independently: the concave coves run on to the vertex plane (their extrusion has no
+margin) and the convex rounds pierce it with their margin, so at the corner the cove A ends with its full
+arc in the vertex plane, the round C is clipped 2 mm short with a planar cap (`F7.C0`, area 4 - pi), the
+round B's profile leg face survives as the uncut floor square `F7.S.l1` (r^2) and its cap as the wall
+triangle `F7.C1` (4 - pi) between D's end arc and the vertex. That step is the 1.71 mm3 gap to the
+analytic edge-only volume. OCCT instead trims every stripe at distance r from the vertex and closes the
+gap with one B-spline corner patch (~19.9 mm^2) whose boundary is the four end arcs plus the two spring
+lines on the walls, pinched along the body's sharp vertical edge through the vertex.
+
 ## What remains
 
 * **Equal chamfer at a convex 3-edge corner** (`cube_ch_equal_corner3`): OCCT closes the corner with a triangular face through
