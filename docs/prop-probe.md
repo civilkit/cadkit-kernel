@@ -151,3 +151,38 @@ radius to zero across the cap), not a more robust centre Newton. The
 instrumentation (`foot_verbose`, `signed_dist_set`, `probe_centre_cyl`,
 `probe_centre`, per-iteration prints, all behind `CK_BLEND_DEBUG`) is kept for the
 next attempt.
+
+### Marine hub fuse: the blade's tip wall grazes the hub cylinder (2026-10-23)
+
+`node tools/run_ckpart.mjs <wasm> tools/cases/marine_fuse` fails 6 of the 10
+documents with `booleanFailed;issue=openEdge` (the loft's union with the hub
+extrude, then the pattern cascades). Cause, from `CK_BOOL_DBG=1` on
+`p070_s4` (and the same shape on the others):
+
+* The cylinder's footprint loop (the SSI curves of the hub cylinder with the
+  blade's `S.face`, `S.tip`, `S.back`) does **not close**: the curve of two
+  adjacent blade faces ends at two nearly-coincident vertices instead of one,
+  a fraction of a mm to ~1.7 mm apart (`v10=(15.888,19.302,24.456)` vs
+  `v17=(15.727,19.434,24.677)`, 0.303 mm; and 1.7 mm on the pattern
+  instances). The gap is about one march step: `trim` finds **no** crossing
+  with the face's own edges on those curves, so each free-form SSI just stops
+  short of the shared blade rail (the blade's `S.tip` wall is tangent to the
+  cylinder there, the brief's "nearly tangent near the root").
+* With the loop open, `assemble::fragments` sees both ends of an inner cut
+  edge at degree 2 and drops it as "dangling" (that check is benign on
+  `default_s5`, which drops 54 of them and still builds, so it is the open
+  loop, not the check, that is fatal).
+* The hub cylinder's own seam segment `(25,0,z)` between the two places the
+  footprint crosses the seam then has one coedge — the seam-dependent
+  failures the brief saw at `(25,0,z)`.
+
+Fix in progress (in the boolean, not the input): cluster cut-curve endpoints
+within a few march steps in `imprint` before welding the vertex pool, so the
+two short ends snap to one vertex and the footprint loop closes. With
+`gap = 3 x (the cut curve's own control-point spacing)`: `p070_s6` and
+`p075_s5` now fuse (their loft succeeds, volume 275404 / 275174 vs the
+un-fused 230907), and `p070_s4` goes from 14 open edges to 6. The remaining
+4 documents still fail: the blade fragments (`S.face`, `S.back`, `S.tip`)
+are still dropped, so the cut edges keep one coedge even though their loop
+now closes — the fragment walk, not the SSI gap, is the next thing to look
+at.
