@@ -20,7 +20,8 @@
 //! * A thickness the profile cannot take (past a radius of curvature, a short segment eaten by an
 //!   inner corner) is `thinTooThick {limit, minRadius, maxThickness, thickness, side}`.
 
-use super::extrude::{profile_seg, REGION_NONE, REGION_UNKNOWN};
+use super::extrude::{profile_seg, sketch_axis, REGION_NONE, REGION_UNKNOWN};
+use super::FeatureKind;
 use crate::regen::{codes, FeatureError, RegenState, SketchResult};
 use crate::sketch::profile::{open_chains, Seg};
 use crate::Feature;
@@ -626,10 +627,76 @@ fn too_thick(chain: &Chain, th: &Thin) -> FeatureError {
         .with("face", Json::Str(chain.segs[0].tag.clone()))
 }
 
+/// The chains left after dropping the segments that lie on the revolve axis `(o, d)` (`d` unit):
+/// the strip between an on-axis segment and its offset would revolve into a solid rod down the
+/// middle of the hollow. A closed loop that loses segments becomes one open chain (its longest
+/// kept run, rotated to start at its first segment); an open chain that loses a middle segment
+/// splits into the runs. Lines only: no other curve can lie on a line.
+fn drop_on_axis(chain: Chain, sk: &SketchResult, o: Vec3, d: Vec3) -> Vec<Chain> {
+    let fr = &sk.frame;
+    let w = |p: Vec2| fr.o + fr.x * p.x + fr.y * p.y;
+    let on_axis = |s: &ProfileSeg| -> bool {
+        matches!(s.curve, Curve2::Line { .. }) && [w(s.start()), w(s.end())].iter().all(|p| (*p - o).cross(d).len() < 1e-6)
+    };
+    let keep: Vec<bool> = chain.segs.iter().map(|s| !on_axis(s)).collect();
+    if keep.iter().all(|&k| k) {
+        return vec![chain];
+    }
+    let n = chain.segs.len();
+    if chain.closed {
+        let mut best: Option<(usize, usize)> = None; // (start, length) of the longest kept run
+        for s0 in 0..n {
+            if !keep[s0] {
+                continue;
+            }
+            let mut len = 0;
+            while len < n && keep[(s0 + len) % n] {
+                len += 1;
+            }
+            if best.map_or(true, |(_, l)| len > l) {
+                best = Some((s0, len));
+            }
+        }
+        let Some((s0, len)) = best else { return vec![] };
+        let segs = (0..len).map(|k| chain.segs[(s0 + k) % n].clone()).collect();
+        return vec![Chain { segs, closed: false }];
+    }
+    let mut out: Vec<Chain> = vec![];
+    let mut cur: Vec<ProfileSeg> = vec![];
+    for (s, &k) in chain.segs.iter().zip(&keep) {
+        if k {
+            cur.push(s.clone());
+        } else if !cur.is_empty() {
+            out.push(Chain { segs: std::mem::take(&mut cur), closed: false });
+        }
+    }
+    if !cur.is_empty() {
+        out.push(Chain { segs: cur, closed: false });
+    }
+    out
+}
+
 /// The thin-wall profile of the sketch for the feature's `thin` option.
 pub fn thin_profile(sk: &SketchResult, f: &Feature, th: &Thin) -> Result<Profile, FeatureError> {
-    let mut regions = vec![];
+    // a revolve's wall ignores segments lying on its axis (a closed loop that loses them
+    // becomes an open chain): the strip between an on-axis segment and its offset would
+    // revolve into a solid rod on the axis
+    let axis = match &f.kind {
+        FeatureKind::Revolve { .. } => f.raw.get("axis").and_then(|a| sketch_axis(sk, a)),
+        _ => None,
+    };
+    let mut chains: Vec<Chain> = vec![];
     for chain in selected_chains(sk, f)? {
+        match axis {
+            Some((o, d)) => chains.extend(drop_on_axis(chain, sk, o, d)),
+            None => chains.push(chain),
+        }
+    }
+    if chains.is_empty() {
+        return Err(FeatureError::new(codes::NO_CLOSED_PROFILE));
+    }
+    let mut regions = vec![];
+    for chain in chains {
         let chain = oriented(chain);
         match wall(&chain, th, th.tl, th.tr) {
             Ok(r) => regions.push(r),
@@ -637,7 +704,6 @@ pub fn thin_profile(sk: &SketchResult, f: &Feature, th: &Thin) -> Result<Profile
             Err(Fail::Err(e)) => return Err(e),
         }
     }
-    let _ = Vec3::ZERO;
     Ok(Profile::new(sk.frame, regions))
 }
 

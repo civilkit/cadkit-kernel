@@ -613,7 +613,7 @@ pub fn todo(what: &str) -> String {
 }
 
 /// Revolve axis: a line entity of the sketch, in world coordinates.
-fn sketch_axis(sk: &SketchResult, axis: &Json) -> Option<(Vec3, Vec3)> {
+pub(super) fn sketch_axis(sk: &SketchResult, axis: &Json) -> Option<(Vec3, Vec3)> {
     let id = axis.as_str()?;
     let SketchEntity::Line { p1, p2, .. } = sk.sketch.entity(id)? else { return None };
     let (a, b) = (sk.sketch.point_xy(p1)?, sk.sketch.point_xy(p2)?);
