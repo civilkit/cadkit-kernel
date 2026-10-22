@@ -35,19 +35,26 @@ impl FeatureExec for Exec {
 
 /// Run a part; (errors as "F3:code {params}", volume, sorted face ids).
 fn run(src: &str) -> (Vec<String>, f64, Vec<String>) {
+    let (e, _, v, i) = run_full(src);
+    (e, v, i)
+}
+
+/// As `run`, plus the warnings as "F3:code {params}".
+fn run_full(src: &str) -> (Vec<String>, Vec<String>, f64, Vec<String>) {
     let part = Part::from_json(&ck_json::parse(src).unwrap()).unwrap();
     let mut ex = Exec { brep: Brep::new(), labels: Noop };
     let r = regen::regen(&part, &RegenOpts::default(), &mut ex);
     let errs: Vec<String> = r.errors.iter().map(|e| format!("{}:{}", e.feature, e.error.describe())).collect();
+    let warns: Vec<String> = r.warnings.iter().map(|e| format!("{}:{}", e.feature, e.error.describe())).collect();
     match ex.brep.body.as_ref() {
         Some(b) => {
             let iss = ck_check::validate(b, 1e-6);
             assert!(iss.is_empty(), "{:?}", iss.iter().take(3).map(|i| format!("{} {}", i.code, i.detail)).collect::<Vec<_>>());
             let mut ids: Vec<String> = b.face_ids().map(|f| b.face_id_str(f)).collect();
             ids.sort();
-            (errs, ck_topo::mass::mass_props(b).volume, ids)
+            (errs, warns, ck_topo::mass::mass_props(b).volume, ids)
         }
-        None => (errs, 0.0, vec![]),
+        None => (errs, warns, 0.0, vec![]),
     }
 }
 
@@ -110,28 +117,88 @@ fn cbore_errors() {
     assert!(code(r#","kind":"cbore","cboreDiameter":9"#).contains("hint"));
 }
 
-/// `kind:"cbore"` with a free `diameter` and no `size` (found while converting
-/// issue #1691) is `holeInvalid` with a detail and a hint naming size vs
-/// diameter — not a bare code.
+/// A part with the box and one hole at (10,10) whose fields are exactly `hole_fields` (no table size unless given).
+fn free_hole(hole_fields: &str) -> (Vec<String>, Vec<String>, f64, Vec<String>) {
+    let src = format!(
+        r#"{{"format":"ck-part","version":1,"features":[
+        {{"type":"sketch","id":"F1","plane":{{"kind":"std","id":"top"}},"points":[
+          {{"id":"p1","x":0,"y":0}},{{"id":"p2","x":40,"y":0}},{{"id":"p3","x":40,"y":20}},{{"id":"p4","x":0,"y":20}}],
+         "entities":[{{"type":"line","id":"e1","p1":"p1","p2":"p2"}},{{"type":"line","id":"e2","p1":"p2","p2":"p3"}},
+          {{"type":"line","id":"e3","p1":"p3","p2":"p4"}},{{"type":"line","id":"e4","p1":"p4","p2":"p1"}}],"constraints":[]}},
+        {{"type":"extrude","id":"F2","op":"add","sketch":"F1","end":"blind","depth":10}},
+        {{"type":"sketch","id":"F3","plane":{{"kind":"face","id":"F2.C1"}},"points":[{{"id":"O","x":0,"y":0,"fixed":true}},{{"id":"p0","x":10,"y":10}}],
+         "entities":[{{"type":"point","id":"e2","p":"p0"}}],"constraints":[]}},
+        {{"type":"hole","id":"F4","sketch":"F3","end":"through",{hole_fields}}}]}}"#
+    );
+    run_full(&src)
+}
+
+/// A counterbore with a free `diameter` and its step given explicitly is built exactly as asked (no table size
+/// needed, no warning).
 #[test]
-fn cbore_free_diameter_says_what_to_change() {
-    let src = r#"{"format":"ck-part","version":1,"features":[
-        {"type":"sketch","id":"F1","plane":{"kind":"std","id":"top"},"points":[
-          {"id":"p1","x":0,"y":0},{"id":"p2","x":40,"y":0},{"id":"p3","x":40,"y":20},{"id":"p4","x":0,"y":20}],
-         "entities":[{"type":"line","id":"e1","p1":"p1","p2":"p2"},{"type":"line","id":"e2","p1":"p2","p2":"p3"},
-          {"type":"line","id":"e3","p1":"p3","p2":"p4"},{"type":"line","id":"e4","p1":"p4","p2":"p1"}],"constraints":[]},
-        {"type":"extrude","id":"F2","op":"add","sketch":"F1","end":"blind","depth":10},
-        {"type":"sketch","id":"F3","plane":{"kind":"face","id":"F2.C1"},"points":[{"id":"O","x":0,"y":0,"fixed":true},{"id":"p0","x":10,"y":10}],
-         "entities":[{"type":"point","id":"e2","p":"p0"}],"constraints":[]},
-        {"type":"hole","id":"F4","sketch":"F3","standard":"iso","kind":"cbore","diameter":8,"end":"through"}]}"#;
-    let (errs, _, _) = run(src);
-    assert_eq!(errs.len(), 1, "{errs:?}");
-    let e = &errs[0];
-    assert!(e.starts_with("F4:holeInvalid"), "{e}");
-    assert!(e.contains("detail"), "{e}");
-    assert!(e.contains("hint"), "{e}");
-    assert!(e.contains("size"), "{e}");
-    assert!(e.contains("diameter"), "{e}");
+fn cbore_free_diameter_with_explicit_step_is_built() {
+    let (errs, warns, v, ids) = free_hole(r#""kind":"cbore","diameter":8,"cboreDiameter":14,"cboreDepth":4"#);
+    assert!(errs.is_empty() && warns.is_empty(), "{errs:?} {warns:?}");
+    close(BOX - v, PI * (49.0 * 4.0 + 16.0 * 6.0));
+    for n in ["F4.S.h1", "F4.S.h2", "F4.S.h3"] {
+        assert!(ids.iter().any(|i| i == n), "{n} in {ids:?}");
+    }
+}
+
+/// A counterbore with a free `diameter` and a missing step dimension is not refused: it is drilled as a simple
+/// hole of that diameter and a `holeDowngraded` warning says what was left out and how to get the step.
+#[test]
+fn cbore_free_diameter_without_step_downgrades_with_a_warning() {
+    for fields in [r#""kind":"cbore","diameter":8"#, r#""kind":"cbore","diameter":8,"cboreDiameter":14"#, r#""kind":"cbore","diameter":8,"cboreDepth":4"#] {
+        let (errs, warns, v, _) = free_hole(fields);
+        assert!(errs.is_empty(), "{fields}: {errs:?}");
+        close(BOX - v, PI * 16.0 * 10.0);
+        assert_eq!(warns.len(), 1, "{fields}: {warns:?}");
+        let w = &warns[0];
+        assert!(w.starts_with("F4:holeDowngraded"), "{w}");
+        for key in ["requested", "counterbore", "built", "simple", "missing", "detail", "hint"] {
+            assert!(w.contains(key), "{key} in {w}");
+        }
+    }
+    // the warning names only what is missing
+    let (_, warns, _, _) = free_hole(r#""kind":"cbore","diameter":8,"cboreDiameter":14"#);
+    assert!(warns[0].contains("cboreDepth") && !warns[0].contains("\"cboreDiameter\""), "{warns:?}");
+}
+
+/// Same for a countersink: head diameter given -> a cone; missing -> a simple hole and a warning.
+#[test]
+fn csink_free_diameter() {
+    let (errs, warns, v, _) = free_hole(r#""kind":"countersink","diameter":6,"cskDiameter":12,"cskAngle":90"#);
+    assert!(errs.is_empty() && warns.is_empty(), "{errs:?} {warns:?}");
+    // cone from head radius 6 down to hole radius 3 at 90 degrees included (45 half angle): 3 deep
+    close(BOX - v, frustum(3.0, 6.0, 3.0) + PI * 9.0 * 7.0);
+    let (errs, warns, v, _) = free_hole(r#""kind":"countersink","diameter":6"#);
+    assert!(errs.is_empty(), "{errs:?}");
+    close(BOX - v, PI * 9.0 * 10.0);
+    assert!(warns.len() == 1 && warns[0].starts_with("F4:holeDowngraded") && warns[0].contains("cskDiameter"), "{warns:?}");
+    assert!(warns[0].contains("countersink"), "{warns:?}");
+}
+
+/// A table size still wins over a free diameter for a counterbore (unchanged), with no warning.
+#[test]
+fn cbore_table_size_beats_free_diameter() {
+    let (errs, warns, v, _) = free_hole(r#""kind":"cbore","standard":"iso","size":"M8","fit":"normal","diameter":3"#);
+    assert!(errs.is_empty() && warns.is_empty(), "{errs:?} {warns:?}");
+    close(BOX - v, PI * (7.5 * 7.5 * 8.6 + R * R * 1.4));
+}
+
+/// Neither a size nor a diameter is still refused, with a hint that names what to give for the kind asked.
+#[test]
+fn no_size_and_no_diameter_says_what_to_give() {
+    for (kind, must) in [("cbore", "cboreDiameter"), ("countersink", "cskDiameter"), ("simple", "diameter")] {
+        let (errs, warns, _, _) = free_hole(&format!(r#""kind":"{kind}""#));
+        assert!(warns.is_empty(), "{warns:?}");
+        assert_eq!(errs.len(), 1, "{kind}: {errs:?}");
+        assert!(errs[0].starts_with("F4:holeInvalid") && errs[0].contains("detail") && errs[0].contains("hint") && errs[0].contains(must), "{kind}: {}", errs[0]);
+    }
+    // the countersink refusal talks about a countersink, not a counterbore
+    let (errs, ..) = free_hole(r#""kind":"countersink""#);
+    assert!(!errs[0].contains("a counterbore takes"), "{}", errs[0]);
 }
 
 #[test]

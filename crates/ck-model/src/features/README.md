@@ -50,7 +50,7 @@ strings from kernel.strings, and dispatch to ck-ops/ck-topo.
   draftTangentFaces, draftTooLarge, draftFailed (draftTooLarge from a closing taper carries `maxHeight`; a
   drafted circle extruded exactly to its tip builds a one-apex cone; the regen result lists `limits`
   `[[id, {maxHeight}]]` for such extrudes, see docs/spec-agent-interface.md "Taper limits")
-- hole: holeNoPoints, holeInvalid, holeClose/Loose (fit)
+- hole: holeNoPoints, holeInvalid, holeClose/Loose (fit); warning holeDowngraded (counterbore/countersink with a plain `diameter` but without its explicit step/cone dimensions is drilled as a simple hole)
 - rib: ribNeedsOpenSketch, ribNoContact
 - knit: knitNotClosed, knitNearMiss, knitFailed, knitted
 - fill: fillNotClosed, fillInvalid, fillFailed, fillCrosses, fillContinuity
@@ -110,5 +110,5 @@ strings from kernel.strings, and dispatch to ck-ops/ck-topo.
   combined with `draft` or `upToNext` (`draftUnsupported`). A twisted CUT
   tool whose caps are coplanar with body faces currently fails with
   `booleanFailed`: let it overshoot the body (scale `twist` with `depth`).
-- hole `diameter` (simple holes only, not an oracle option): plain diameter
+- hole `diameter` (not an oracle option; counterbore/countersink only when no table `size` applies, see docs/spec-agent-interface.md "Hole"): plain diameter
   (expr) used instead of `size`/`fit`; `<= 0` -> `holeInvalid`.

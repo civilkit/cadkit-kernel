@@ -26,6 +26,9 @@
 //! * radii come out of world coordinates (`1.6999999999999993` for M3
 //!   normal at x = 10): the section is laid out along the sketch x axis
 //!   from the sketch origin.
+//! * (ours, not in the oracle) a plain `diameter` also serves a counterbore / countersink when no table `size`
+//!   applies: with the step (`cboreDiameter` + `cboreDepth`) or cone (`cskDiameter`) given it is built as asked;
+//!   with any of them missing it is drilled as a simple hole and a `holeDowngraded` WARNING says what was left out.
 //! GUESS: csk (90° cone) geometry, flip, `through` length = the extrude
 //! `through` rule.
 
@@ -48,6 +51,9 @@ pub const HOLE_NO_POINTS: &str = "holeNoPoints";
 pub const HOLE_CSK_DIAMETER: &str = "holeCskDiameter";
 /// `holeCboreInvalid {hint, ..}`: counterbore diameter / depth impossible.
 pub const HOLE_CBORE_INVALID: &str = "holeCboreInvalid";
+/// WARNING `holeDowngraded {requested, built, missing, detail, hint}`: a counterbore / countersink with a plain
+/// `diameter` but without the dimensions of its step or cone is drilled as a simple hole instead of being refused.
+pub const HOLE_DOWNGRADED: &str = "holeDowngraded";
 
 fn given(f: &Feature, key: &str) -> bool {
     f.raw.get(key).is_some_and(|v| !matches!(v, ck_json::Json::Null))
@@ -87,29 +93,48 @@ fn line(a: Vec2, b: Vec2, tag: &str) -> ProfileSeg {
 pub fn exec_hole(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
     let FeatureKind::Hole { size, fit, kind, tip, flip, end, .. } = &f.kind else { unreachable!() };
     let sk = f.raw.get("sketch").and_then(|s| s.as_str()).and_then(|s| state.sketch(s)).ok_or_else(|| FeatureError::new(codes::MISSING_SKETCH))?;
-    // GUESS (not an oracle option): a simple hole may give a plain `diameter`
-    // instead of a standard `size`.
-    let plain = (*kind == HoleKind::Simple && f.raw.get("diameter").is_some()).then(|| state.num(f, "diameter", 0.0)).transpose()?;
-    let row = match (plain, size.as_deref().and_then(|s| ISO.iter().find(|(n, _)| *n == s)).map(|r| r.1)) {
+    // GUESS (not an oracle option): a plain `diameter` instead of a standard `size`. A simple hole always may;
+    // a counterbore / countersink may when no table size applies, and then its step or cone must be given
+    // explicitly (`cboreDiameter` + `cboreDepth`, `cskDiameter`), or it is drilled as a simple hole with a
+    // `holeDowngraded` warning (below).
+    let table_row = size.as_deref().and_then(|s| ISO.iter().find(|(n, _)| *n == s)).map(|r| r.1);
+    let plain = ((*kind == HoleKind::Simple || table_row.is_none()) && f.raw.get("diameter").is_some()).then(|| state.num(f, "diameter", 0.0)).transpose()?;
+    let row = match (plain, table_row) {
         (Some(_), r) => r.unwrap_or([0.0; 7]),
         (None, r) => r.ok_or_else(|| {
-            let kname = match kind {
-                HoleKind::Simple => "simple",
-                HoleKind::Cbore => "counterbore",
-                HoleKind::Countersink | HoleKind::Csink => "countersink",
+            let (kname, give) = match kind {
+                HoleKind::Simple => ("simple", "give a standard size (e.g. M6), or a plain diameter"),
+                HoleKind::Cbore => ("counterbore", "give a standard size (e.g. M6), or a diameter with cboreDiameter and cboreDepth"),
+                HoleKind::Countersink | HoleKind::Csink => ("countersink", "give a standard size (e.g. M6), or a diameter with cskDiameter (and cskAngle)"),
             };
-            let e = FeatureError::new(HOLE_INVALID)
-                .with("detail", ck_json::Json::Str(format!("the {kname} hole has no size for the standard table")));
-            if given(f, "diameter") {
-                hint(
-                    e,
-                    "a counterbore takes its dimensions from the size table, not from diameter: give a size (e.g. M6), or set kind to \"simple\" to drill the diameter",
-                )
-            } else {
-                hint(e, "give a standard size (e.g. M6), or a plain diameter with kind \"simple\"")
-            }
+            hint(
+                FeatureError::new(HOLE_INVALID).with("detail", ck_json::Json::Str(format!("the {kname} hole has no size for the standard table"))),
+                give,
+            )
         })?,
     };
+    // what the hole is really built as: a counterbore / countersink without its explicit dimensions (and without a
+    // table row to take them from) falls back to a simple hole of the given diameter
+    let mut kind_eff = *kind;
+    let mut downgrade: Option<FeatureError> = None; // pushed once the sketch borrow ends
+    if plain.is_some() && table_row.is_none() {
+        let missing: Vec<&str> = match kind {
+            HoleKind::Cbore => ["cboreDiameter", "cboreDepth"].into_iter().filter(|k| !given(f, k)).collect(),
+            HoleKind::Countersink | HoleKind::Csink => ["cskDiameter"].into_iter().filter(|k| !given(f, k)).collect(),
+            HoleKind::Simple => vec![],
+        };
+        if !missing.is_empty() {
+            let requested = if *kind == HoleKind::Cbore { "counterbore" } else { "countersink" };
+            let w = FeatureError::new(HOLE_DOWNGRADED)
+                .with("requested", ck_json::Json::Str(requested.into()))
+                .with("built", ck_json::Json::Str("simple".into()))
+                .with("missing", ck_json::Json::Arr(missing.iter().map(|m| ck_json::Json::Str((*m).into())).collect()))
+                .with("detail", ck_json::Json::Str(format!("the {requested} has no {} to build it from, so a plain hole of the given diameter was drilled", missing.join(" or "))));
+            downgrade = Some(hint(w, "give the missing dimension(s), or a standard size such as M6, to get the stepped hole"));
+            kind_eff = HoleKind::Simple;
+        }
+    }
+    let kind = &kind_eff;
     let fit_s = f.raw.get("fit").and_then(|v| v.as_str()).unwrap_or("");
     let _ = fit;
     let d = match (plain, kind, fit_s) {
@@ -136,6 +161,10 @@ pub fn exec_hole(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(
     }
     let Some(body) = br.body.clone() else { return Err(FeatureError::new(codes::NOTHING_TO_CUT)) };
     let fr = sk.frame;
+    if let Some(w) = downgrade {
+        state.result.warnings.retain(|x| x.feature != f.id);
+        state.result.warnings.push(crate::regen::RegenError { feature: f.id.clone(), error: w });
+    }
     let down = if *flip { fr.z } else { -fr.z };
     let r = d / 2.0;
     // counterbore: explicit fields beat the table (absent: table, as before)
