@@ -56,3 +56,48 @@ original kernel (`867fff6c`) and ours (`67a1fee2`) by
   re-derived for unequal sides. Skipped for now.
 - Guide lofts work when the guide actually hits the sections; the
   propeller-shaped guide was invalid (`loftGuideMiss` on both).
+
+### Blade-root fillet: diagnosis (2026-10-22, branch `blade-root-blend`)
+
+A smaller case than `cap8` (one lofted blade, 3 sections, on a cylinder;
+root radius 3.5 inside a hub radius 6, chord 7, 0.2 mm blunt trailing edge)
+pins the topology and the failure. See
+`crates/ck-model/tests/blade_root_blend.rs` and the fixture
+`blade_root_blunt.ckpart.json`.
+
+- The root loop is a **closed ring** of spline-intersection edges. The small
+  case has 5 edges sharing 5 vertices (each edge end is shared: as many
+  distinct vertices as edges); a sharp trailing edge gives 2 edges.
+- **`cap8`'s pick list is not the whole loop.** It names 12 of the loop's
+  edges (the loop of a 19-sided polygon section has more), so the chain the
+  blender builds is an **open sub-chain**. That is why `cap8` reaches the
+  chain-end logic (`detail` "foot 1" on the 12-edge selection at r = 2, and
+  "concave chain end is not on a planar face" for a single edge): the ends of
+  an open sub-chain lie on the hub cylinder and a blade face, neither planar.
+  The brief's "closed chain" only holds for the complete selection.
+- Selecting the **whole** loop used to be refused at once:
+  `blendUnsupported`, `detail` "closed ring of free-form edges"
+  (`freeform::build_chain` had no ring path). The ring is now recognised
+  (`build_chain` returns `closed`), the end logic is skipped and a ring tool
+  is built (closed rail edges, band faces, no caps). The blend still fails,
+  one step later: `blendFailed`, `detail` "centre did not converge", with the
+  hint "try a smaller fillet radius…". The rolling-ball centre Newton diverges
+  at the blade root's **shallow dihedral** (the third equation pins the centre
+  to the plane normal to the edge, which is only a first-order model on a
+  curved, near-tangent root). With `CK_BLEND_DEBUG=1` the failing station, ball
+  centre and per-face distances print; e.g. `li=1 s=0.5556
+  p=(5.7880,1.5810,-1.9143)`.
+- It is the dihedral, not the 0.2 mm blunt width: a 2 mm blunt edge and a
+  gentler twist (root section angle ≈ 20° instead of 54°) both still diverge
+  at the same kind of station. So task 1 is blocked on a robust constrained
+  centre solver (hypothesis 2 of the brief), not on the sharp-corner rule
+  (task 2).
+- `freeform.rs` now reports, behind `CK_BLEND_DEBUG`, the failing station
+  (`li`, `s`, the edge point) and, on a `foot_set` miss, every face of the
+  set with its closest-point distance, whether the ball centre lies in the
+  padded face box and the outward normal there (`explain_foot`).
+
+Open here: make the blade-root fillet work (task 1). The pieces in place are
+closed-ring detection, the ring tool and the hint plumbing; the missing piece
+is a centre solver that stays on the offset-surface intersection at a shallow,
+curved dihedral instead of the plane-through-the-edge-point constraint.

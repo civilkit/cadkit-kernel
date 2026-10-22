@@ -75,6 +75,22 @@ fn failed(m: &str) -> BlendError {
     BlendError::detail("blendFailed", m)
 }
 
+/// As [`failed`], with a `hint` the wizard shows the user for what to change.
+fn failed_hint(m: &str, hint: &str) -> BlendError {
+    dbg(m);
+    BlendError { code: "blendFailed".into(), detail: Some(m.into()), params: vec![("hint".into(), hint.into())] }
+}
+
+/// As [`unsupported`], with a `hint`.
+fn unsupported_hint(m: &str, hint: &str) -> BlendError {
+    dbg(m);
+    BlendError { code: "blendUnsupported".into(), detail: Some(m.into()), params: vec![("hint".into(), hint.into())] }
+}
+
+/// User-facing hint when the rolling ball cannot be placed on a blade-root chain: the dihedral is too
+/// shallow (a sharp trailing edge, a large radius) for the ball to touch both faces.
+const BALL_HINT: &str = "try a smaller fillet radius; near a sharp or nearly tangent trailing edge the ball cannot touch both faces, so give the edge a small blunt width or use a smaller radius";
+
 /// Does the (face, face, edge) combination fall outside the analytic fillet
 /// builder (so the free-form path must handle it)?
 pub fn needs_freeform(b: &Body, e: EdgeId) -> bool {
@@ -174,6 +190,32 @@ fn foot_set(b: &Body, fs: &[FaceId], q: Vec3) -> Option<(Vec3, Vec3)> {
     best.map(|x| (x.1, x.2))
 }
 
+/// Diagnostic for a `foot_set` miss (only called behind `CK_BLEND_DEBUG`): for
+/// every face of the set, the closest point distance, whether the ball centre
+/// lies in the padded face box and the outward normal there.
+fn explain_foot(b: &Body, fs: &[FaceId], q: Vec3) -> String {
+    let reach = REACH.with(|r| r.get());
+    let mut s = format!("c=({:.4},{:.4},{:.4})", q.x, q.y, q.z);
+    for &f in fs {
+        let bx = crate::bvh::face_box(b, f);
+        let inside = bx.padded(2.5 * reach + 0.05 * bx.diagonal()).contains(q);
+        let sf = &b.face(f).surface;
+        let (u, v, pt) = sf.closest_point(q);
+        let n = b.outward_normal(f, u, v).try_normalize();
+        s += &format!(
+            " | {} d={:.3e} box={} n={}",
+            b.face_id_str(f),
+            pt.dist(q),
+            if inside { "in" } else { "OUT" },
+            match n {
+                Some(x) => format!("({:.2},{:.2},{:.2})", x.x, x.y, x.z),
+                None => "NULL".into(),
+            }
+        );
+    }
+    s
+}
+
 impl<'a> Ctx<'a> {
     /// Edge point and unit chain tangent at link parameter `s` in [0, 1].
     fn edge_at(&self, li: usize, s: f64) -> (Vec3, Vec3, Vec3) {
@@ -212,12 +254,33 @@ impl<'a> Ctx<'a> {
                 let (_, n1) = foot_set(self.b, &self.set1, p).ok_or_else(|| failed("normal 1"))?;
                 let (_, n2) = foot_set(self.b, &self.set2, p).ok_or_else(|| failed("normal 2"))?;
                 let c12 = n1.dot(n2);
-                p + (n1 + n2) * (self.sg * r / (1.0 + c12))
+                // the two planes formula p + (n1+n2) r/(1+n1·n2) blows up where the faces are
+                // near-opposite (a shallow dihedral, common at a blade root): fall back to the
+                // bisector at radius r
+                let denom = 1.0 + c12;
+                if denom > 0.2 {
+                    p + (n1 + n2) * (self.sg * r / denom)
+                } else {
+                    let dir = (n1 + n2).try_normalize().unwrap_or(n1);
+                    p + dir * (self.sg * r)
+                }
             }
         };
         for _ in 0..80 {
-            let (q1, n1) = foot_set(self.b, &self.set1, c).ok_or_else(|| failed("foot 1"))?;
-            let (q2, n2) = foot_set(self.b, &self.set2, c).ok_or_else(|| failed("foot 2"))?;
+            let (q1, n1) = match foot_set(self.b, &self.set1, c) {
+                Some(x) => x,
+                None => {
+                    dbg(&format!("foot 1 miss: li={li} s={s:.4} {}", explain_foot(self.b, &self.set1, c)));
+                    return Err(failed_hint("foot 1", BALL_HINT));
+                }
+            };
+            let (q2, n2) = match foot_set(self.b, &self.set2, c) {
+                Some(x) => x,
+                None => {
+                    dbg(&format!("foot 2 miss: li={li} s={s:.4} {}", explain_foot(self.b, &self.set2, c)));
+                    return Err(failed_hint("foot 2", BALL_HINT));
+                }
+            };
             let g = [(c - q1).dot(n1) - self.sg * r, (c - q2).dot(n2) - self.sg * r, (c - off3).dot(row3)];
             let err = g.iter().fold(0.0f64, |m, x| m.max(x.abs()));
             if err < 1e-11 * (1.0 + r) {
@@ -226,13 +289,19 @@ impl<'a> Ctx<'a> {
                 }
                 return Ok(Station { p, a: q1, b: q2, c, t });
             }
-            let dc = crate::intersect::solve3([n1, n2, row3], [-g[0], -g[1], -g[2]]).ok_or_else(|| unsupported("singular centre system (tangent faces)"))?;
+            let mut dc = crate::intersect::solve3([n1, n2, row3], [-g[0], -g[1], -g[2]]).ok_or_else(|| unsupported("singular centre system (tangent faces)"))?;
+            // damp the step: at a shallow dihedral (a blade root) the three-plane
+            // system is near-singular and a full Newton step runs away
+            let dl = dc.len();
+            if dl > 2.0 * r {
+                dc = dc * (2.0 * r / dl);
+            }
             c = c + dc;
-            if !c.is_finite() || dc.len() > 50.0 * r {
-                return Err(failed("centre diverged"));
+            if !c.is_finite() || c.dist(p) > 20.0 * r {
+                return Err(failed_hint("centre diverged", BALL_HINT));
             }
         }
-        Err(failed("centre did not converge"))
+        Err(failed_hint("centre did not converge", BALL_HINT))
     }
 
     /// +1 when concave at `s` of link `li` (ball outside), -1 convex.
@@ -350,8 +419,9 @@ fn blend_patch(fit: &Fit) -> Result<BSplineSurface, BlendError> {
 }
 
 /// Chains of the selected edges (G1 by construction of the selection):
-/// ordered links; rings and branches are unsupported.
-fn build_chain(b: &Body, edges: &[EdgeId], start: usize) -> Result<Vec<(usize, bool)>, BlendError> {
+/// ordered links. A chain that returns to its start is a closed ring
+/// (`closed = true`); branches are unsupported.
+fn build_chain(b: &Body, edges: &[EdgeId], start: usize) -> Result<(Vec<(usize, bool)>, bool), BlendError> {
     let ends = |i: usize| (b.edge(edges[i]).v0, b.edge(edges[i]).v1);
     let deg = |v: ck_topo::body::VertexId| edges.iter().enumerate().filter(|(i, _)| ends(*i).0 == v || ends(*i).1 == v).count();
     let mut chain = vec![(start, true)];
@@ -369,8 +439,9 @@ fn build_chain(b: &Body, edges: &[EdgeId], start: usize) -> Result<Vec<(usize, b
         chain.push((nx, fwd));
         v = if fwd { ends(nx).1 } else { ends(nx).0 };
     }
+    // the walk returned to where it started: a closed ring of edges (no ends)
     if v == ends(start).0 {
-        return Err(unsupported("closed ring of free-form edges"));
+        return Ok((chain, true));
     }
     // backward
     let mut v = ends(start).0;
@@ -385,7 +456,7 @@ fn build_chain(b: &Body, edges: &[EdgeId], start: usize) -> Result<Vec<(usize, b
         chain.insert(0, (pv, fwd));
         v = if fwd { ends(pv).0 } else { ends(pv).1 };
     }
-    Ok(chain)
+    Ok((chain, false))
 }
 
 /// Fillet `edges` (free-form capable); see the module docs.
@@ -400,11 +471,11 @@ pub fn fillet_freeform(b: &Body, edges: &[(String, String, Vec3)], r: f64, featu
             .iter()
             .map(|&k| find_edge(&cur, &edges[k].0, &edges[k].1, edges[k].2).ok_or_else(|| BlendError::code("missingEdge")))
             .collect::<Result<_, _>>()?;
-        let chain = build_chain(&cur, &eids, 0)?;
+        let (chain, closed) = build_chain(&cur, &eids, 0)?;
         let picked: Vec<usize> = chain.iter().map(|&(i, _)| remaining[i]).collect();
         let links = make_links(&cur, &eids, &chain)?;
         let k = *picked.iter().min().unwrap_or(&first) as u32;
-        cur = blend_chain(&cur, links, r, feature, k, tol)?;
+        cur = blend_chain(&cur, links, r, feature, k, tol, closed)?;
         remaining.retain(|x| !picked.contains(x));
     }
     Ok(cur)
@@ -439,7 +510,7 @@ fn make_links(b: &Body, eids: &[EdgeId], chain: &[(usize, bool)]) -> Result<Vec<
     Ok(links)
 }
 
-fn blend_chain(b: &Body, links: Vec<Link>, r: f64, feature: &str, k: u32, tol: f64) -> Result<Body, BlendError> {
+fn blend_chain(b: &Body, links: Vec<Link>, r: f64, feature: &str, k: u32, tol: f64, closed: bool) -> Result<Body, BlendError> {
     let mut set1: Vec<FaceId> = vec![];
     let mut set2: Vec<FaceId> = vec![];
     for l in &links {
@@ -475,7 +546,13 @@ fn blend_chain(b: &Body, links: Vec<Link>, r: f64, feature: &str, k: u32, tol: f
             let s = i as f64 / n as f64;
             let (p, _, _) = ctx.edge_at(li, s);
             let guess = prev.as_ref().map(|q| q.c + (p - q.p));
-            let st = ctx.solve(li, s, guess)?;
+            let st = ctx.solve(li, s, guess).map_err(|e| {
+                dbg(&format!(
+                    "station solve failed li={li} s={s:.4} p=({:.4},{:.4},{:.4}): {}",
+                    p.x, p.y, p.z, e.detail.as_deref().unwrap_or(&e.code)
+                ));
+                e
+            })?;
             prev = Some(st.clone());
             nodes.push(Node { li, s, st });
         }
@@ -550,7 +627,15 @@ fn blend_chain(b: &Body, links: Vec<Link>, r: f64, feature: &str, k: u32, tol: f
     let mut pre = 0usize;
     // ends whose cap lies in the end face's plane
     let mut plane_caps = [false; 2];
-    if convex {
+    if closed {
+        // a ring has no ends: the sweep closes on itself. Force the last
+        // section onto the first so the fitted strip surfaces (and their rails)
+        // are exactly closed in u.
+        let last = nodes.len() - 1;
+        nodes[last].st = nodes[0].st.clone();
+        secs[last] = secs[0].clone();
+        ps[last] = ps[0];
+    } else if convex {
         let m = 0.5 * r;
         let shift = |s: &Sec, d: Vec3| Sec { pts: s.pts.map(|p| p + d), d0: s.d0, d1: s.d1 };
         for end in [0usize, 1] {
@@ -603,7 +688,10 @@ fn blend_chain(b: &Body, links: Vec<Link>, r: f64, feature: &str, k: u32, tol: f
                 Surface::Plane { frame } => Some((frame.o, b.planar_normal(f))),
                 _ => None,
             });
-            let Some((o, n)) = plane else { return Err(unsupported("concave chain end is not on a planar face")) };
+            let Some((o, n)) = plane else { return Err(unsupported_hint(
+                "concave chain end is not on a planar face",
+                "the root chain is open: select every edge of the closed root loop (all blade-face / hub edges), not a part of it; or give the trailing edge a small blunt width so the loop is smooth",
+            )) };
             let idx = if end == 0 { 0 } else { secs.len() - 1 };
             let before = (secs[idx].clone(), ps[idx]);
             let ni = if end == 0 { 0 } else { nodes.len() - 1 };
@@ -664,10 +752,14 @@ fn blend_chain(b: &Body, links: Vec<Link>, r: f64, feature: &str, k: u32, tol: f
     let fit = fit_cols(&secs, &ps)?;
     // chain parameter of every link junction (a blend face per link, like
     // one fillet per edge): the last station of link L-1
-    let junction_u: Vec<f64> = (1..ctx.links.len())
+    let mut junction_u: Vec<f64> = (1..ctx.links.len())
         .filter_map(|l| nodes.iter().rposition(|n| n.li == l - 1).map(|i| fit.u[i + pre]))
         .collect();
-    let mut tool = build_tool(&fit, &secs, feature, k, plane_caps, b, &ctx.links, &end_info, tol)?;
+    if closed {
+        // the junction where the ring closes (last link meets the first)
+        junction_u.push(1.0);
+    }
+    let mut tool = build_tool(&fit, &secs, feature, k, plane_caps, b, &ctx.links, &end_info, tol, closed)?;
     for &(o, n) in &trims {
         tool = trim_tool(&tool, o, n, &FaceName::blend(feature, k))?;
     }
@@ -863,12 +955,48 @@ fn build_tool(
     links: &[Link],
     end_info: &dyn Fn(usize) -> (ck_topo::body::VertexId, Vec<FaceId>),
     _tol: f64,
+    closed: bool,
 ) -> Result<Body, BlendError> {
     let nu = secs.len();
     let mut tool = Body::new();
     let lump = tool.add_lump();
     let shell = tool.add_shell(lump);
     let (u0, u1) = (fit.ku[0], fit.ku[fit.ku.len() - 1]);
+    let name_of = |s: usize| if s == 0 { FaceName::blend(feature, k) } else { FaceName::other(feature, &format!("TA{s}")) };
+    if closed {
+        // a ring: 5 closed rail edges and 5 band faces (each an annulus, two
+        // closed boundaries); no cross edges and no caps. The strip surfaces
+        // close in u because `secs` first == last.
+        let mut v = [ck_topo::body::VertexId(0); 5];
+        for (t, &c) in TRACKS.iter().enumerate() {
+            v[t] = tool.add_vertex(secs[0].pts[c]);
+        }
+        let long: Vec<EdgeId> = (0..5).map(|t| tool.add_edge(Curve::BSpline(fit.cols[TRACKS[t]].clone()), u0, u1, v[t], v[t])).collect();
+        let blend = blend_patch(fit)?;
+        let strips: Vec<Surface> = vec![
+            Surface::BSpline(Box::new(blend.clone())),
+            Surface::BSpline(Box::new(ruled(fit, TRACKS[1], TRACKS[2])?)),
+            Surface::BSpline(Box::new(ruled(fit, TRACKS[2], TRACKS[3])?)),
+            Surface::BSpline(Box::new(ruled(fit, TRACKS[3], TRACKS[4])?)),
+            Surface::BSpline(Box::new(ruled(fit, TRACKS[4], TRACKS[0])?)),
+        ];
+        for s in 0..5 {
+            let name = if s == 4 { FaceName::other(feature, "TA4") } else { name_of(s) };
+            let f = tool.add_face(shell, strips[s].clone(), true, name);
+            let l0 = tool.add_loop(f);
+            tool.add_coedge(l0, long[s], false, None);
+            let l1 = tool.add_loop(f);
+            tool.add_coedge(l1, long[(s + 1) % 5], true, None);
+        }
+        let (_, vol) = ck_topo::orient::orient_body_volume_quick(&mut tool);
+        if !(vol > 0.0) {
+            return Err(failed(&format!("ring tool volume {vol}")));
+        }
+        if std::env::var_os("CK_BLEND_DEBUG").is_some() {
+            dbg(&format!("ring tool built: {nu} stations, volume {vol:.3}, issues {:?}", ck_topo::check::check(&tool, 1e-5).len()));
+        }
+        return Ok(tool);
+    }
     // vertices per end per track
     let vs: Vec<[ck_topo::body::VertexId; 5]> = [0usize, nu - 1]
         .iter()
@@ -909,7 +1037,6 @@ fn build_tool(
             cross[end].push(e);
         }
     }
-    let name_of = |s: usize| if s == 0 { FaceName::blend(feature, k) } else { FaceName::other(feature, &format!("TA{s}")) };
     // strip faces (loop: v=0 side forward, end cross forward, v=1 side back, start cross back)
     for s in 0..5 {
         let f = tool.add_face(shell, strips[s].clone(), true, if s == 4 { FaceName::other(feature, "TA4") } else { name_of(s) });
