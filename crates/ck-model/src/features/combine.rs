@@ -8,8 +8,12 @@
 //!
 //! * `op`: `union` (`add`, `join`), `cut` (`subtract`), `intersect` (`common`) or `split`.
 //! * `target` (also `a`): which lump is operated on: a face name (the bare string or `{face}`; the lump holding
-//!   that face) or `{lump: n}` (index in `components` order, as `massProps {bodies:true}` lists them). `tools`
-//!   (also `b`, a single selection or an array): the lumps that act on it.
+//!   that face), `{lump: n}` (index in `components` order, as `massProps {bodies:true}` lists them) or `{body: name}`
+//!   (the lump with that body name; several lumps with the name: `ambiguousBody {name, candidates}`). `tools`
+//!   (also `b`, a single selection or an array): the lumps that act on it (`{body: name}` selects every lump
+//!   with the name).
+//! * `body` (optional): the name of the result lump (the first result lump of a `split`); default: the target's
+//!   name, if it has one. A name that another lump that stays already has is `bodyNameConflict`.
 //! * `union`: target united with every tool, one after the other (the machinery is binary, so the n-ary union is
 //!   sequential, in the listed order; tools that only overlap each other still end up in one lump).
 //!   `cut`: target minus every tool. `intersect`: target inside every tool. `split`: the target cut into the part
@@ -52,6 +56,7 @@ fn missing() -> FeatureError {
 pub enum Sel {
     Face(String),
     Lump(usize),
+    Body(String),
 }
 
 fn sels(j: Option<&Json>) -> Result<Vec<Sel>, FeatureError> {
@@ -65,7 +70,10 @@ fn sels(j: Option<&Json>) -> Result<Vec<Sel>, FeatureError> {
         if let Some(n) = j.get("lump").and_then(|n| n.as_f64()) {
             return Ok(Sel::Lump(n as usize));
         }
-        Err(invalid("a selection is a face name, {face} or {lump}"))
+        if let Some(n) = j.get_str("body") {
+            return Ok(Sel::Body(n.to_string()));
+        }
+        Err(invalid("a selection is a face name, {face}, {lump} or {body}"))
     };
     match j {
         None | Some(Json::Null) => Ok(vec![]),
@@ -79,6 +87,8 @@ pub struct Spec {
     pub target: Vec<Sel>,
     pub tools: Vec<Sel>,
     pub keep_tools: bool,
+    /// Name of the result lump.
+    pub body: Option<String>,
 }
 
 pub fn parse(raw: &Json) -> Result<Spec, FeatureError> {
@@ -97,7 +107,7 @@ pub fn parse(raw: &Json) -> Result<Spec, FeatureError> {
     if tools.is_empty() {
         return Err(invalid("tools lists at least one lump"));
     }
-    Ok(Spec { op, target, tools, keep_tools: crate::sketch::jtruthy(raw.get("keepTools")) })
+    Ok(Spec { op, target, tools, keep_tools: crate::sketch::jtruthy(raw.get("keepTools")), body: super::bodies::body_name(raw)? })
 }
 
 /// Result of [`combine_bodies`].
@@ -115,6 +125,29 @@ fn comp_of(b: &Body, comps: &[Vec<FaceId>], s: &Sel) -> Result<usize, FeatureErr
             let fid = b.find_face(name).ok_or_else(missing)?;
             comps.iter().position(|c| c.contains(&fid)).ok_or_else(missing)
         }
+        Sel::Body(name) => {
+            let ix = comps_of(b, comps, s)?;
+            if ix.len() > 1 {
+                let lumps: Vec<_> = ix.iter().map(|&i| b.face_lump(comps[i][0])).collect();
+                return Err(super::bodies::ambiguous(b, name, &lumps));
+            }
+            Ok(ix[0])
+        }
+    }
+}
+
+/// Every component a selector selects (a `{body}` name may select several lumps).
+fn comps_of(b: &Body, comps: &[Vec<FaceId>], s: &Sel) -> Result<Vec<usize>, FeatureError> {
+    match s {
+        Sel::Body(name) => {
+            let lumps = super::bodies::lumps_named(Some(b), name)?;
+            let ix: Vec<usize> = (0..comps.len()).filter(|&i| comps[i].first().is_some_and(|&f| lumps.contains(&b.face_lump(f)))).collect();
+            if ix.is_empty() {
+                return Err(missing());
+            }
+            Ok(ix)
+        }
+        _ => Ok(vec![comp_of(b, comps, s)?]),
     }
 }
 
@@ -125,18 +158,29 @@ fn extract(b: &Body, faces: &[FaceId]) -> Body {
 }
 
 /// Run the operation on the lumps of `body`.
-pub fn combine_bodies(body: &Body, spec: &Spec, fuzz: f64, auto: bool) -> Result<Out, FeatureError> {
+pub fn combine_bodies(body: &Body, spec: &Spec, fid: &str, fuzz: f64, auto: bool) -> Result<Out, FeatureError> {
     let comps = ck_topo::region::components(body);
     let t_ix = comp_of(body, &comps, &spec.target[0])?;
     let mut tool_ix: Vec<usize> = vec![];
     for s in &spec.tools {
-        let i = comp_of(body, &comps, s)?;
-        if i == t_ix {
-            return Err(invalid("a tool is the target lump"));
+        for i in comps_of(body, &comps, s)? {
+            if i == t_ix {
+                return Err(invalid("a tool is the target lump"));
+            }
+            if !tool_ix.contains(&i) {
+                tool_ix.push(i);
+            }
         }
-        if !tool_ix.contains(&i) {
-            tool_ix.push(i);
+    }
+    // the name of the result: `body`, else the target's own; a name a surviving lump has is a conflict
+    let target_name = body.lump(body.face_lump(comps[t_ix][0])).name.clone();
+    let result_name = spec.body.clone().or(target_name);
+    if let Some(n) = &spec.body {
+        let mut gone: Vec<ck_topo::body::LumpId> = comps[t_ix].iter().map(|&f| body.face_lump(f)).collect();
+        if !spec.keep_tools {
+            gone.extend(tool_ix.iter().flat_map(|&i| comps[i].iter().map(|&f| body.face_lump(f))));
         }
+        super::bodies::check_free(Some(body), n, fid, &gone)?;
     }
     let target = extract(body, &comps[t_ix]);
     let tools: Vec<Body> = tool_ix.iter().map(|&i| extract(body, &comps[i])).collect();
@@ -225,9 +269,11 @@ pub fn combine_bodies(body: &Body, spec: &Spec, fuzz: f64, auto: bool) -> Result
     let consumed: Vec<FaceId> = std::iter::once(t_ix).chain(tool_ix.iter().copied()).flat_map(|i| comps[i].iter().copied()).collect();
     let rest: Vec<FaceId> = body.face_ids().filter(|f| !consumed.contains(f)).collect();
     let mut out = if rest.is_empty() { Body::new() } else { extract(body, &rest) };
+    let mut first_result: Option<ck_topo::body::LumpId> = None;
     for p in &pieces {
         if p.num_faces() > 0 {
-            out.append(p);
+            let ids = out.append(p);
+            first_result = first_result.or(ids.first().copied());
         }
     }
     if spec.keep_tools {
@@ -236,6 +282,9 @@ pub fn combine_bodies(body: &Body, spec: &Spec, fuzz: f64, auto: bool) -> Result
         }
     }
     renumber(&mut out);
+    if let (Some(l), Some(n)) = (first_result, result_name) {
+        out.lumps[l.idx()].name = Some(n);
+    }
     Ok(Out { body: out, tolerance_used: used, spans })
 }
 
@@ -246,7 +295,7 @@ fn renumber(b: &mut Body) {
 pub fn exec_combine(br: &mut Brep, _state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
     let Some(body) = br.body.as_ref() else { return Err(FeatureError::new(codes::NOTHING_TO_CUT)) };
     let spec = parse(&f.raw)?;
-    let out = combine_bodies(body, &spec, br.fuzz, br.auto_fuzz)?;
+    let out = combine_bodies(body, &spec, &f.id, br.fuzz, br.auto_fuzz)?;
     br.spans.extend(out.spans);
     if out.tolerance_used.is_some() {
         br.fuzz_used = out.tolerance_used;
@@ -261,7 +310,7 @@ pub fn preview(body: &Body, msg: &Json) -> Json {
     use ck_json::Obj;
     let fuzz = msg.get("tolerance").and_then(|t| t.as_f64()).filter(|t| t.is_finite() && *t > 0.0).unwrap_or(0.0);
     let auto = crate::sketch::jtruthy(msg.get("autoFuzzy"));
-    let r = parse(msg).and_then(|s| combine_bodies(body, &s, fuzz, auto));
+    let r = parse(msg).and_then(|s| combine_bodies(body, &s, "bodyBoolean", fuzz, auto));
     match r {
         Ok(o) => {
             let mp = ck_topo::mass::mass_props(&o.body);

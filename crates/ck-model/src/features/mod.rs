@@ -45,6 +45,7 @@
 //! | projectCurve    | sketch \| curve, faces, degree, tolerance, direction (see project_curve.rs) |
 
 pub mod blends;
+pub mod bodies;
 pub mod combine;
 pub mod convert;
 pub mod curve_plane;
@@ -171,6 +172,8 @@ pub enum FeatureKind {
 pub enum Op {
     Add,
     Cut,
+    /// `newBody` (aliases `new`, `separate`): the result is its own lump, never united with the body.
+    NewBody,
 }
 
 /// End conditions (client error text lists: blind, through, throughBoth,
@@ -359,10 +362,10 @@ fn g(j: &Json, k: &str) -> Option<GeomRef> {
     j.get(k).and_then(GeomRef::from_json)
 }
 fn op(j: &Json) -> Op {
-    if j.get("op").and_then(|v| v.as_str()) == Some("cut") {
-        Op::Cut
-    } else {
-        Op::Add
+    match j.get("op").and_then(|v| v.as_str()) {
+        Some("cut") => Op::Cut,
+        Some(s) if bodies::is_new_body_op(s) => Op::NewBody,
+        _ => Op::Add,
     }
 }
 fn end(j: &Json) -> End {
@@ -778,8 +781,16 @@ impl Brep {
         use crate::regen::FeatureError;
         use ck_ops::boolean::Op as BOp;
         match (&self.body, combine) {
-            (None, extrude::Combine::Add) => {
+            (None, extrude::Combine::Add | extrude::Combine::Separate) => {
                 self.body = Some(tool.clone());
+                Ok(())
+            }
+            (Some(_), extrude::Combine::Separate) => {
+                // its own lump(s): the existing ones are untouched and the tool is not united with them
+                // (they may overlap, as after `moveBody`)
+                if let Some(b) = self.body.as_mut() {
+                    b.append(tool);
+                }
                 Ok(())
             }
             (None, extrude::Combine::Cut) => Err(FeatureError::new(crate::regen::codes::NOTHING_TO_CUT)),
@@ -1235,7 +1246,11 @@ impl crate::regen::FeatureExec for Brep {
         self.fuzz = if f.type_name == "editCurve" { 0.0 } else { crate::expr::eval_field(f.raw.get("tolerance"), &state.vars, 0.0).ok().filter(|t| t.is_finite() && *t > 0.0).unwrap_or(0.0) };
         self.auto_fuzz = crate::sketch::jtruthy(f.raw.get("autoFuzzy"));
         self.fuzz_used = None;
+        let prior = self.body.as_ref().map(bodies::named).unwrap_or_default();
         let r = self.exec_feature(state, f);
+        if r.is_ok() {
+            self.keep_body_names(f, &prior);
+        }
         if let (Some(t), true) = (self.fuzz_used.take(), r.is_ok()) {
             let w = crate::regen::FeatureError::new("booleanFuzzy").with("tolerance", Json::Num(t));
             state.result.warnings.push(crate::regen::RegenError { feature: f.id.clone(), error: w });
@@ -1247,7 +1262,26 @@ impl crate::regen::FeatureExec for Brep {
 }
 
 impl Brep {
+    /// After a feature: the lumps it created with `op: newBody` get the feature's `body` name, and the names the
+    /// lumps had before it follow their origin (see `bodies.rs`). Features that name lumps themselves (`combine`,
+    /// `moveBody` with `copy`) have done so already.
+    fn keep_body_names(&mut self, f: &crate::Feature, prior: &[(String, String)]) {
+        let Some(b) = self.body.as_mut() else { return };
+        if matches!(op(&f.raw), Op::NewBody) {
+            if let Ok(Some(name)) = bodies::body_name(&f.raw) {
+                bodies::stamp_origin(b, &f.id, &name);
+            }
+        }
+        bodies::restore(b, prior);
+    }
+
     fn exec_feature(&mut self, state: &mut crate::regen::RegenState, f: &crate::Feature) -> Result<(), crate::regen::FeatureError> {
+        bodies::check_feature(f)?;
+        if matches!(op(&f.raw), Op::NewBody) && matches!(f.type_name.as_str(), "extrude" | "revolve" | "loft" | "sweep") {
+            if let Some(name) = bodies::body_name(&f.raw)? {
+                bodies::check_free(self.body.as_ref(), &name, &f.id, &[])?;
+            }
+        }
         let tool = match &f.kind {
             FeatureKind::Extrude { end: End::UpToNext, .. } if self.body.is_some() => {
                 let t = extrude::exec_extrude(state, f, self.body.as_ref())?;

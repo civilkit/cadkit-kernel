@@ -1199,11 +1199,15 @@ pub fn mass_props_json(b: &Body, bodies: bool, densities: Option<&[f64]>) -> Jso
         .put("principal", Json::Arr(mp.principal.iter().map(|&x| Json::Num(x)).collect()))
         .put("axes", axes(&mp.axes));
     if bodies {
+        let names: Vec<Option<String>> = b.lump_ids().map(|l| b.lump(l).name.clone()).collect();
         let arr = ms
             .iter()
             .enumerate()
             .map(|(i, m)| {
                 let mut e = Obj::new().put("volume", m.volume).put("area", m.area).put("com", v3(m.com()));
+                if let Some(Some(n)) = names.get(i) {
+                    e = e.put("name", n.as_str());
+                }
                 if let Some(ds) = densities {
                     e = e.put("mass", m.volume * ds.get(i).copied().unwrap_or(1.0));
                 }

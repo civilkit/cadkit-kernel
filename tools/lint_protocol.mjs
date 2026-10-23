@@ -69,8 +69,8 @@ if (isMainThread) {
     sketchFreedoms: { featureId: 'F1' },
   };
   const MUST_OK = new Set(['ping', 'regen', 'massProps', 'validate', 'interference', 'step', 'check', 'resolve', 'describe', 'refDiff', 'section', 'sections', 'probe', 'distance', 'maxDistance', 'thickness', 'closestPoint', 'angles', 'clearance', 'symmetry', 'textMetrics', 'textOutline', 'loadFont', 'unloadFont', 'listFonts', 'subsetFont']); // minimal body must succeed once a body exists
-  const FIELDS = ['part', 'tag', 'opts', 'ref', 'refs', 'ids', 'sketch', 'distance', 'name', 'upTo', 'densities', 'bodies', 'dir', 'tol', 'a', 'b', 'u', 'at', 'expect', 'descriptions', 'description', 'names', 'base', 'plane', 'axis', 'n', 'positions', 'points', 'rays', 'min', 'on', 'edges', 'faces', 'pull', 'tagB', 'planes', 'draft', 'point', 'k', 'string', 'font', 'height', 'spacing', 'angle', 'arc', 'anchor', 'mirror', 'data', 'text', 'replace', 'fontHash'];
-  const VALUES = [null, 'x', 'NaN', '-1e999', 1e308, -1e308, -1, 0, [], {}, [[]], [null], true, { kind: 'face', id: 'nope' }, { kind: 5 }, [1, 2, 3]];
+  const FIELDS = ['part', 'tag', 'opts', 'ref', 'refs', 'ids', 'sketch', 'distance', 'name', 'upTo', 'densities', 'bodies', 'dir', 'tol', 'a', 'b', 'u', 'at', 'expect', 'descriptions', 'description', 'names', 'base', 'plane', 'axis', 'n', 'positions', 'points', 'rays', 'min', 'on', 'edges', 'faces', 'pull', 'tagB', 'planes', 'draft', 'point', 'k', 'string', 'font', 'height', 'spacing', 'angle', 'arc', 'anchor', 'mirror', 'data', 'text', 'replace', 'fontHash', 'body', 'op'];
+  const VALUES = [null, 'x', 'NaN', '-1e999', 1e308, -1e308, -1, 0, [], {}, [[]], [null], true, { kind: 'face', id: 'nope' }, { kind: 5 }, [1, 2, 3], { body: 'nope' }, 'newBody'];
 
   function check(label, k, body) {
     sent++;
@@ -148,7 +148,16 @@ if (isMainThread) {
       { type: 'text', id: 't1', string: 'RPM x100', font: 'gauge', height: 5, p: 'q', anchor: ['center', 'middle'], angle: 10, spacing: 1.1 },
       { type: 'text', id: 't2', string: 'KNOTS', font: 'engrave', height: 3, at: [30, 15], anchor: ['center', 'baseline'], arc: { centre: [30, 15], radius: 9, angleCentre: 90, side: 'outside' } }], constraints: [] },
     { type: 'extrude', id: 'F2', op: 'cut', sketch: 'S2', end: 'blind', depth: 0.3 }] };
-  const targets = ['box', 'rev90', 'cutHole', 'shellBoxOpen', 'sweepLine', 'lpatternCut', 'filletOne', 'textEngrave'];
+  // separate bodies (docs/adr/0004): `op:newBody`, `body` names, the `{body}` selector in moveBody / combine / deleteBody
+  const sq = (id, x0, x1) => ({ type: 'sketch', id, plane: { kind: 'std', id: 'top' }, points: [{ id: 'a', x: x0, y: 0 }, { id: 'b', x: x1, y: 0 }, { id: 'c', x: x1, y: 10 }, { id: 'd', x: x0, y: 10 }],
+    entities: [['a', 'b'], ['b', 'c'], ['c', 'd'], ['d', 'a']].map((q, i) => ({ type: 'line', id: 'e' + i, p1: q[0], p2: q[1] })), constraints: [] });
+  parts.newBodyNamed = { format: 'ck-part', version: 1, features: [
+    sq('S1', 0, 10), { type: 'extrude', id: 'F1', op: 'add', sketch: 'S1', end: 'blind', depth: 10 },
+    sq('S2', 5, 15), { type: 'extrude', id: 'F2', op: 'newBody', body: 'Plate', sketch: 'S2', end: 'blind', depth: 10 },
+    { type: 'moveBody', id: 'F3', bodies: [{ body: 'Plate' }], copy: true, body: 'Copy', translate: [0, 30, 0] },
+    { type: 'combine', id: 'F4', op: 'cut', target: { body: 'Plate' }, tools: [{ face: 'F1.C1' }], body: 'Plate' },
+    { type: 'deleteBody', id: 'F5', mode: 'delete', bodies: [{ body: 'Copy' }] }] };
+  const targets = ['box', 'rev90', 'cutHole', 'shellBoxOpen', 'sweepLine', 'lpatternCut', 'filletOne', 'textEngrave', 'newBodyNamed'];
   const k = new Kernel(mod);
   for (const name of targets) {
     const part = parts[name];
