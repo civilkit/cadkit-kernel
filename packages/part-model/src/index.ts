@@ -71,7 +71,8 @@ export interface SketchFeature {
   constraints: SketchConstraint[];
 }
 
-export type ExtrudeOp = 'add' | 'cut';
+/** `newBody` makes a separate body (lump) instead of uniting; name it with `body` (docs/adr/0004-multiple-bodies-in-one-part.md). */
+export type ExtrudeOp = 'add' | 'cut' | 'newBody';
 export type ExtrudeEnd = 'blind' | 'mid' | 'throughBoth';
 
 export interface ExtrudeFeature {
@@ -79,6 +80,8 @@ export interface ExtrudeFeature {
   id: string;
   name?: string;
   op: ExtrudeOp;
+  /** the name of the body this feature makes (with `op: 'newBody'`) */
+  body?: string;
   sketch: string; // FeatureId of a sketch feature
   end: ExtrudeEnd;
   depth?: number; // required unless end === 'throughBoth'

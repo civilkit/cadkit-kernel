@@ -78,6 +78,8 @@ export interface ExtrudeOpts {
   depth?: number;
   flip?: boolean;
   name?: string;
+  /** name of the body this makes (with `op: 'newBody'`) */
+  body?: string;
 }
 
 export class Part {
@@ -116,13 +118,14 @@ export class Part {
     return f.id as FeatureId;
   }
 
-  /** op 'add' | 'cut'; end 'blind' | 'mid' | 'throughBoth'; depth in mm (blind/mid). */
-  extrude({ sketch, op = 'add', end = 'blind', depth, flip = false, name }: ExtrudeOpts): FeatureId {
+  /** op 'add' | 'cut' | 'newBody' (a separate body, named by `body`); end 'blind' | 'mid' | 'throughBoth'; depth in mm (blind/mid). */
+  extrude({ sketch, op = 'add', end = 'blind', depth, flip = false, name, body }: ExtrudeOpts): FeatureId {
     const f: Feature = {
       type: 'extrude', op, sketch, end,
       id: this.nextId(), name: name ?? `${op} extrude`,
       ...(end !== 'throughBoth' ? { depth } : {}),
       ...(flip ? { flip: true } : {}),
+      ...(body !== undefined ? { body } : {}),
     };
     this.features.push(f);
     return f.id as FeatureId;
@@ -141,7 +144,7 @@ export class Part {
     return this.add({ type, name: name ?? type, ...fields } as unknown as GenericFeature);
   }
 
-  revolve(o: { sketch: string; op?: 'add' | 'cut'; end?: string; angle?: number; axis?: GeomRef | string | null; flip?: boolean; name?: string }): FeatureId {
+  revolve(o: { sketch: string; op?: 'add' | 'cut' | 'newBody'; body?: string; end?: string; angle?: number; axis?: GeomRef | string | null; flip?: boolean; name?: string }): FeatureId {
     const { sketch, op = 'add', end = 'blind', angle = 360, flip = false, name } = o;
     // Like the app: default to the sketch's first line entity when no axis given.
     // Explicit null stays null (the kernel reports missingAxis).
@@ -153,7 +156,7 @@ export class Part {
         : [];
       axis = lines[0] ?? null;
     }
-    return this.push('revolve', { op, sketch, axis, end, angle, ...(flip ? { flip: true } : {}) }, name ?? `${op} revolve`);
+    return this.push('revolve', { op, sketch, axis, end, angle, ...(flip ? { flip: true } : {}), ...(o.body !== undefined ? { body: o.body } : {}) }, name ?? `${op} revolve`);
   }
 
   /** edge = two faces + a point on it: {faces:[a,b], at:[x,y,z]} */
@@ -205,14 +208,14 @@ export class Part {
     }, name);
   }
 
-  sweep(o: { sketch: string | null; path?: GeomRef | null; op?: 'add' | 'cut'; twist?: number; name?: string }): FeatureId {
+  sweep(o: { sketch: string | null; path?: GeomRef | null; op?: 'add' | 'cut' | 'newBody'; body?: string; twist?: number; name?: string }): FeatureId {
     const { sketch, path = null, op = 'add', twist, name } = o;
-    return this.push('sweep', { op, sketch, path, ...(twist !== undefined ? { twist } : {}) }, name ?? `${op} sweep`);
+    return this.push('sweep', { op, sketch, path, ...(twist !== undefined ? { twist } : {}), ...(o.body !== undefined ? { body: o.body } : {}) }, name ?? `${op} sweep`);
   }
 
-  loft(o: { sketches: string[]; op?: 'add' | 'cut'; name?: string }): FeatureId {
+  loft(o: { sketches: string[]; op?: 'add' | 'cut' | 'newBody'; body?: string; name?: string }): FeatureId {
     const { sketches, op = 'add', name } = o;
-    return this.push('loft', { op, sketches }, name ?? `${op} loft`);
+    return this.push('loft', { op, sketches, ...(o.body !== undefined ? { body: o.body } : {}) }, name ?? `${op} loft`);
   }
 
   lpattern(o: { seeds: string[]; dir?: GeomRef | null; spacing: number; count: number; reverse?: boolean; name?: string }): FeatureId {
