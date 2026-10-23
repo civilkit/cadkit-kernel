@@ -16,7 +16,7 @@
 use super::classify::{point_in_face_cached, LoopCache, Where};
 use crate::bvh::{curve_hull_box, curve_range_box, curve_span_boxes, face_box, Aabb, Bvh};
 use crate::intersect::ss::{self, Bounds, SsResult};
-use crate::intersect::{cc, fit_param, param_slack};
+use crate::intersect::{cc, cs, fit_param, param_slack};
 use ck_geom::curve::Curve;
 use ck_geom::surface::Surface;
 use ck_geom::Vec3;
@@ -509,6 +509,10 @@ pub fn imprint_hooked(a: &Body, b: &Body, tol: f64, hook: Option<PairHook>) -> A
         let (sf, sg) = (&a.face(f).surface, &b.face(g).surface);
         let bx = bi.union(&bj);
         let bounds = ssi_bounds(sf, sg, &bi, &bj, &bx, pad);
+        // the march's chord length (the same expression as `ss::intersect_uncached`):
+        // an SSI curve may stop this far short of a face's boundary edge
+        let step = (bounds.hi - bounds.lo).len() / 64.0;
+        let max_gap = 2.0 * step;
         let before = cuts.len();
         let skipped = SKIP_PAIRS.with(|sp| {
             let sp = sp.borrow();
@@ -538,6 +542,8 @@ pub fn imprint_hooked(a: &Body, b: &Body, tol: f64, hook: Option<PairHook>) -> A
             }
             SsResult::Curves(cs) => {
                 for c in cs {
+                    let mut c = c;
+                    extend_to_face_boundary(&mut c, &[(a, f), (b, g)], tol, max_gap);
                     let curve = c.curve().clone();
                     let r = curve.range();
                     let kept = trim(&curve, r, &[(a, f), (b, g)], &bx, tol, false, &mut loop_cache);
@@ -765,6 +771,120 @@ pub fn imprint_hooked(a: &Body, b: &Body, tol: f64, hook: Option<PairHook>) -> A
         }
     }
     arr
+}
+
+/// Clip a free-form SSI curve to the trimmed face boundary: the face's edge
+/// meets the other face's surface at the point the curve should reach. If the
+/// march stopped short of it, the point is appended; if it overshot (the blade
+/// rail is nearly tangent to the cylinder, so the SSI marches a fraction of a
+/// step past the rail), the overshooting samples are dropped and the endpoint
+/// is replaced. Either way the curve is refitted so it really ends on the
+/// shared rail. Unlike clustering endpoints in the vertex pool, this changes
+/// the curve geometry, so the fragment walk sees the edge on the face boundary.
+fn extend_to_face_boundary(c: &mut ss::SsCurve, faces: &[(&Body, FaceId)], tol: f64, max_gap: f64) {
+    let (pts, curve, closed) = match c {
+        ss::SsCurve::Exact(_) => return,
+        ss::SsCurve::Fitted { pts, curve, closed } => (pts, curve, closed),
+    };
+    if *closed {
+        super::bool_dbg!("extend_to_face_boundary: closed curve skipped (p0 {:?})", curve.eval(curve.range().0));
+        return;
+    }
+    // Clip the overshoot only for the near-tangent free-form SSI of a periodic cylinder with a spline
+    // (the blade hub fuse): an ordinary boolean curve that runs past a boundary edge is handled by
+    // `trim` (or kept as-is), and clamping it here changes the result of unrelated booleans.
+    let trim_ok = faces.len() == 2 && {
+        let s = |i: usize| &faces[i].0.face(faces[i].1).surface;
+        let cyl = |x: &Surface| matches!(x, Surface::Cylinder { .. }) && x.periods().0.is_some();
+        let spl = |x: &Surface| matches!(x, Surface::BSpline(_));
+        (cyl(s(0)) && spl(s(1))) || (cyl(s(1)) && spl(s(0)))
+    };
+    let r = curve.range();
+    let p0 = curve.eval(r.0);
+    let p1 = curve.eval(r.1);
+    super::bool_dbg!("extend_to_face_boundary: open curve r {:?} p0 {:?} p1 {:?} max_gap {:.4} faces {}", r, p0, p1, max_gap, faces.len());
+    let mut start: Option<(f64, Vec3)> = None;
+    let mut end: Option<(f64, Vec3)> = None;
+    // an endpoint already lying on a boundary edge (an exact hit within tol) is not dangling: leave it
+    let (mut p0_on, mut p1_on) = (false, false);
+    for &(body, f) in faces {
+        for &(other_body, other_f) in faces {
+            if std::ptr::eq(body, other_body) && f == other_f {
+                continue;
+            }
+            let sg = &other_body.face(other_f).surface;
+            for e in body.face_edges(f) {
+                let ed = body.edge(e);
+                let eb = crate::bvh::curve_range_box(&ed.curve, ed.t0, ed.t1).padded(max_gap + tol);
+                if !eb.contains(p0) && !eb.contains(p1) {
+                    continue;
+                }
+                super::bool_dbg!("extend: edge {:?} kind {:?} contains p0={} p1={}", e, ed.curve.kind(), eb.contains(p0), eb.contains(p1));
+                let res = cs::intersect(&ed.curve, (ed.t0, ed.t1), sg, tol);
+                for h in res.hits {
+                    let d0 = h.p.dist(p0);
+                    let d1 = h.p.dist(p1);
+                    super::bool_dbg!("extend: hit d0={:.4} d1={:.4} max_gap={:.4}", d0, d1, max_gap);
+                    p0_on |= d0 <= tol;
+                    p1_on |= d1 <= tol;
+                    if d0 <= max_gap && d0 > tol && start.map_or(true, |(bd, _)| d0 < bd) {
+                        start = Some((d0, h.p));
+                    }
+                    if d1 <= max_gap && d1 > tol && end.map_or(true, |(bd, _)| d1 < bd) {
+                        end = Some((d1, h.p));
+                    }
+                }
+            }
+        }
+    }
+    super::bool_dbg!("extend: start {:?} end {:?} max_gap {:.4}", start, end, max_gap);
+    // Nearest sample of the marched polyline to the boundary hit: the curve may have marched a step
+    // *past* the boundary (the blade rail is nearly tangent to the cylinder, so the SSI overshoots by a
+    // fraction of a step). In that case the endpoint sample is replaced (and any samples beyond it are
+    // dropped), rather than rejected on the tangent sign, so the curve really ends on the rail.
+    let nearest = |pts: &[Vec3], p: Vec3| {
+        pts.iter().enumerate().min_by(|a, b| a.1.dist(p).partial_cmp(&b.1.dist(p)).unwrap()).map_or(0, |(i, _)| i)
+    };
+    let mut ext = false;
+    if let Some((_, p)) = start {
+        let t0 = curve.tangent(r.0);
+        if t0.len() > 1e-12 && (p0 - p).dot(t0) > 0.0 {
+            pts.insert(0, p);
+            ext = true;
+        } else if trim_ok && !p0_on {
+            let i = nearest(pts, p);
+            if i > 0 {
+                pts.drain(..i);
+            }
+            if let Some(first) = pts.first_mut() {
+                *first = p;
+                ext = true;
+            }
+        }
+    }
+    if let Some((_, p)) = end {
+        let t1 = curve.tangent(r.1);
+        if t1.len() > 1e-12 && (p - p1).dot(t1) > 0.0 {
+            pts.push(p);
+            ext = true;
+        } else if trim_ok && !p1_on {
+            let i = nearest(pts, p);
+            if i + 1 < pts.len() {
+                pts.truncate(i + 1);
+            }
+            if let Some(last) = pts.last_mut() {
+                *last = p;
+                ext = true;
+            }
+        }
+    }
+    super::bool_dbg!("extend: applied={} pts={}", ext, pts.len());
+    if ext && pts.len() >= 2 {
+        let deg = 3.min(pts.len() - 1);
+        if let Ok(bs) = ck_geom::fit::interpolate(pts, deg, ck_geom::fit::Param::ChordLength) {
+            *curve = Curve::BSpline(bs);
+        }
+    }
 }
 
 /// Trim curve `c` over `r` to the parts inside all `faces`. Breakpoints:

@@ -54,12 +54,10 @@ const CASES: &[(&str, &str)] = &[
     case!("p080_s7"),
 ];
 
-/// TARGET of task A: every spacing builds, is valid, and agrees in volume. Ignored because 6 of the
-/// 10 documents still fail the fuse with `booleanFailed;issue=openEdge`: the free-form SSI of the hub
-/// cylinder with the blade walls stops short of the shared blade rail, so the cylinder footprint loop
-/// does not close and the blade fragments are dropped. See docs/prop-probe.md, "Marine hub fuse".
+/// TARGET of task A: every spacing builds, is valid, and agrees in volume. The free-form SSI of the
+/// hub cylinder with the blade walls is extended to the trimmed face boundary, so the cylinder
+/// footprint loop closes on the shared blade rail. See docs/prop-probe.md, "Marine hub fuse".
 #[test]
-#[ignore = "task A: the hub fuse still leaves an open edge for 6 of the 10 spacings"]
 fn marine_fuse_builds_valid_for_every_spacing() {
     let mut built = vec![];
     for (name, src) in CASES {
