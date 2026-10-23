@@ -40,6 +40,7 @@ pub mod freeform;
 pub mod g2;
 pub mod interp;
 pub mod mixed;
+pub mod overhang;
 pub mod overlap;
 pub mod sheet;
 pub mod stripe;

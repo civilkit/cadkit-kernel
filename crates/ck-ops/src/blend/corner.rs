@@ -201,15 +201,15 @@ pub fn fix_sphere_pcurves(body: &mut Body, name: &str) {
 /// One directed loop segment of [`ToolBuilder`]: a line, or an arc of the
 /// circle through both ends about `centre` (the shorter way).
 #[derive(Clone)]
-struct Seg {
-    a: usize,
-    b: usize,
-    arc: Option<(Vec3, f64)>,
+pub(super) struct Seg {
+    pub(super) a: usize,
+    pub(super) b: usize,
+    pub(super) arc: Option<(Vec3, f64)>,
 }
 
 /// Minimal B-rep builder for the corner tool: planar faces with line / arc
 /// edges and one spherical patch, pcurves left to the projection fallback.
-struct ToolBuilder {
+pub(super) struct ToolBuilder {
     body: Body,
     verts: Vec<(Vec3, VertexId)>,
     edges: Vec<((usize, usize, bool), EdgeId)>,
@@ -217,16 +217,24 @@ struct ToolBuilder {
 }
 
 impl ToolBuilder {
-    fn new() -> ToolBuilder {
+    pub(super) fn new() -> ToolBuilder {
         let mut body = Body::new();
         let lump = body.add_lump();
         let shell = body.add_shell(lump);
         ToolBuilder { body, verts: vec![], edges: vec![], shell }
     }
-    fn vertex(&mut self, p: Vec3) -> usize {
+    pub(super) fn vertex(&mut self, p: Vec3) -> usize {
         let v = self.body.add_vertex(p);
         self.verts.push((p, v));
         self.verts.len() - 1
+    }
+    /// The vertex at `p`, reusing one already built there within `snap`, so
+    /// faces built from independently extracted wires share their common edges.
+    pub(super) fn vertex_shared(&mut self, p: Vec3, snap: f64) -> usize {
+        if let Some(k) = self.verts.iter().position(|(q, _)| q.dist(p) <= snap) {
+            return k;
+        }
+        self.vertex(p)
     }
     /// The quad `idx` as segments counter-clockwise about `normal`.
     fn cycle_by_angle(&self, idx: &[usize], normal: Vec3) -> Vec<Seg> {
@@ -254,7 +262,7 @@ impl ToolBuilder {
         }
     }
     /// Reverse a loop (segments and order).
-    fn reversed(segs: Vec<Seg>) -> Vec<Seg> {
+    pub(super) fn reversed(segs: Vec<Seg>) -> Vec<Seg> {
         segs.into_iter().rev().map(|s| Seg { a: s.b, b: s.a, arc: s.arc }).collect()
     }
     fn edge(&mut self, s: &Seg) -> (EdgeId, bool) {
@@ -282,7 +290,7 @@ impl ToolBuilder {
         self.edges.push((key, e));
         (e, rev)
     }
-    fn plane_face(&mut self, normal: Vec3, mut segs: Vec<Seg>, name: FaceName) {
+    pub(super) fn plane_face(&mut self, normal: Vec3, mut segs: Vec<Seg>, name: FaceName) {
         // counter-clockwise about `normal`
         let mut area = Vec3::ZERO;
         let pts: Vec<Vec3> = segs.iter().flat_map(|s| self.seg_points(s)).collect();
@@ -351,9 +359,33 @@ impl ToolBuilder {
             self.body.add_coedge(lp, e, rev, pc);
         }
     }
-    fn finish(mut self) -> Body {
+    pub(super) fn finish(mut self) -> Body {
         ck_topo::region::rebuild_lumps(&mut self.body);
         self.body
+    }
+
+    /// The loop of `segs` on the spline `surf`, oriented counter-clockwise
+    /// about `outward` (the loop's polygon area decides, as in
+    /// [`ToolBuilder::plane_face`]); `sense` puts the face's outward normal on
+    /// `outward`. Pcurves are left to the projection fallback (as in
+    /// [`ToolBuilder::sphere_face`]).
+    pub(super) fn bspline_face(&mut self, surf: ck_geom::nurbs::bsurf::BSplineSurface, mut segs: Vec<Seg>, outward: Vec3, name: FaceName) {
+        let pts: Vec<Vec3> = segs.iter().flat_map(|s| self.seg_points(s)).collect();
+        let mut area = Vec3::ZERO;
+        for i in 0..pts.len() {
+            area = area + pts[i].cross(pts[(i + 1) % pts.len()]);
+        }
+        if area.dot(outward) < 0.0 {
+            segs = ToolBuilder::reversed(segs);
+        }
+        let ((u0, u1), (v0, v1)) = surf.domain();
+        let sense = surf.normal(0.5 * (u0 + u1), 0.5 * (v0 + v1)).dot(outward) >= 0.0;
+        let f = self.body.add_face(self.shell, Surface::BSpline(Box::new(surf)), sense, name);
+        let lp = self.body.add_loop(f);
+        for s in &segs {
+            let (e, rev) = self.edge(s);
+            self.body.add_coedge(lp, e, rev, None);
+        }
     }
 }
 

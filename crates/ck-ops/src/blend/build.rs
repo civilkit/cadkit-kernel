@@ -268,6 +268,9 @@ fn blend_edges_inner(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, fea
         {
             return Err(BlendError::detail("blendUnsupported", "adjacent edges with a conic or curvature profile"));
         }
+        // overhang corners: four selected edges as two collinear pairs that flip convex/concave;
+        // their stripes are trimmed by the zone swap after the rounds (see super::overhang)
+        let overhangs: Vec<super::overhang::Corner> = if matches!(spec, Spec::Fillet(..)) { super::overhang::detect(b, &eids, r) } else { vec![] };
         let rounds: Vec<Vec<usize>> = match spec {
             Spec::Chamfer(..) => {
                 let mut done = vec![false; n];
@@ -333,15 +336,44 @@ fn blend_edges_inner(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, fea
                 rounds
             }
         };
+        let mut rounds = rounds;
+        if !overhangs.is_empty() {
+            // the four edges of a corner are one round whatever their chain links say
+            let oh: Vec<usize> = overhangs.iter().flat_map(|c| c.edges.iter().filter_map(|&e| eids.iter().position(|&x| x == e))).collect();
+            if let Some(first) = rounds.iter().position(|rd| rd.iter().any(|i| oh.contains(i))) {
+                let mut moved: Vec<usize> = vec![];
+                for (ri, rd) in rounds.iter_mut().enumerate() {
+                    if ri == first {
+                        continue;
+                    }
+                    rd.retain(|i| {
+                        if oh.contains(i) {
+                            moved.push(*i);
+                            false
+                        } else {
+                            true
+                        }
+                    });
+                }
+                moved.sort_unstable();
+                for i in moved {
+                    if !rounds[first].contains(&i) {
+                        rounds[first].push(i);
+                    }
+                }
+                rounds[first].sort_unstable();
+            }
+        }
         // junction vertices of the whole selection (an earlier round shortens the edges that follow)
         let mut junc = if matches!(spec, Spec::Fillet(..)) {
             junction_vertices(b, &eids, tol)
         } else if TANGENT_FLUSH.with(|c| c.get()) {
-            Junc { ext: vec![], flush: tangent_flush_vertices(b, &eids), mitre: vec![] }
+            Junc { ext: vec![], flush: tangent_flush_vertices(b, &eids), mitre: vec![], patch: vec![] }
         } else {
             Junc::default()
         };
         junc.mitre = mitre_pairs(b, &eids);
+        junc.patch.extend(overhangs.iter().map(|c| c.v));
         let mut out = b.clone();
         let mut earlier: Vec<String> = vec![];
         // chamfer: arcs of one split ring (a lofted cap rim cut in two at the
@@ -370,6 +402,14 @@ fn blend_edges_inner(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, fea
             } else {
                 // fillets: one global in-place numbering (junction layout)
                 out = raw;
+            }
+        }
+        // overhang corners: replace the zone box about the vertex with the corner patch solid
+        // (an Err keeps the striped body: a valid, nearly right solid, never a refusal)
+        for oh in &overhangs {
+            match super::overhang::splice(&out, oh, feature, tol) {
+                Ok(spliced) => out = spliced,
+                Err(e) => dbg_fail(&format!("overhang patch at ({:.3},{:.3},{:.3}): {} {:?}", oh.v.x, oh.v.y, oh.v.z, e.code, e.detail.unwrap_or_default())),
             }
         }
         if matches!(spec, Spec::Fillet(..)) {
@@ -506,6 +546,10 @@ struct Junc {
     /// edges that meet at a reflex corner of their common face. Both tools run on past the vertex and
     /// each keeps its own side of the bisector plane.
     mitre: Vec<(Vec3, Vec3, Vec3)>,
+    /// overhang-corner vertices (`super::overhang::detect`): no stripe tool may run on past them —
+    /// the corner is rebuilt from the zone box afterwards, and a tool piercing through would cut
+    /// material outside the zone that nothing repairs.
+    patch: Vec<Vec3>,
 }
 
 /// Reflex-corner pairs of the selection, see [`Junc::mitre`]: two selected straight convex edges of
@@ -761,7 +805,7 @@ fn junction_vertices(b: &Body, sel: &[EdgeId], tol: f64) -> Junc {
             out.push((p, behind));
         }
     }
-    Junc { ext: out, flush, mitre: vec![] }
+    Junc { ext: out, flush, mitre: vec![], patch: vec![] }
 }
 
 /// Both faces border a blend face of `feature` in `b` (their shared edge was
@@ -2010,6 +2054,19 @@ fn blend_edge_hint_inner(
     }
     for (o, n) in circ_clips {
         tool = clip_halfspace(&tool, o, n, tol)?;
+    }
+    // an overhang corner's vertex: the tool must not run on past it (a convex tool's margin
+    // would cut material on the far side of the vertex outside the zone, where the corner
+    // rebuild does not repair it); the zone swap trims the stripe to distance r afterwards
+    if circ.is_none() {
+        for &qv in &junc.patch {
+            if p0.dist(qv) <= 1e-6 && m0 > 0.0 {
+                tool = clip_halfspace(&tool, qv, dir, tol)?;
+            }
+            if p1.dist(qv) <= 1e-6 && m1 > 0.0 {
+                tool = clip_halfspace(&tool, qv, -dir, tol)?;
+            }
+        }
     }
     // an end that runs into a convex cylinder (a joined boss): the tool ends on its surface
     if convex && circ.is_none() {
