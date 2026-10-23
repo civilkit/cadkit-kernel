@@ -442,3 +442,17 @@ fn resolve_can_restrict_to_a_named_body() {
     assert_eq!(count(q(r#"{"kind":"edge","curve":"line","body":"Case"}"#)), 12.0);
     assert_eq!(count(q(r#"{"kind":"face","body":"Nope"}"#)), 0.0);
 }
+
+#[test]
+fn shell_acts_on_the_lump_of_its_face_not_on_a_coincident_copy() {
+    // a copy in place: every face exists twice; shelling the copy must leave the original alone and not fail on the coincidence
+    let a = boxf(2, 0.0, 10.0, "add", "");
+    let one = run(&format!(r#"{a},{{"type":"shell","id":"S","faces":["F2.C1"],"thickness":1}}"#));
+    one.clean();
+    let r = run(&format!(r#"{a},{{"type":"moveBody","id":"M","copy":true,"body":"Case"}},{{"type":"shell","id":"S","faces":["F2.C1@M.1"],"thickness":1}}"#));
+    r.clean();
+    assert_eq!(r.lumps(), 2);
+    assert!((r.volume_of("Case") - one.volume()).abs() < 1e-6, "{} vs {}", r.volume_of("Case"), one.volume());
+    assert!((r.volume() - one.volume() - 1000.0).abs() < 1e-6, "the original is still the full box");
+    assert_eq!(r.names().iter().filter(|n| n.as_deref() == Some("Case")).count(), 1);
+}
