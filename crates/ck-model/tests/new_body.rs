@@ -417,3 +417,14 @@ fn documents_without_new_body_or_body_regenerate_as_before() {
     let j = r.mass_bodies();
     assert!(j.iter().all(|b| b.get("name").is_none()));
 }
+
+#[test]
+fn move_copy_in_place_still_makes_the_named_copy() {
+    // no translate and no rotation: the copy lies exactly on the original (two lumps, the copy named)
+    let a = boxf(2, 0.0, 10.0, "add", "");
+    let r = run(&format!(r#"{a},{{"type":"moveBody","id":"M","copy":true,"body":"Case"}}"#));
+    r.clean();
+    assert_eq!(r.lumps(), 2);
+    assert_eq!(r.names(), vec![None, Some("Case".to_string())]);
+    assert!((r.volume_of("Case") - 1000.0).abs() < 1e-6);
+}
