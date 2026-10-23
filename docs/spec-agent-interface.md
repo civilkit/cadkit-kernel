@@ -769,6 +769,9 @@ Decision record: `docs/adr/0004-multiple-bodies-in-one-part.md` (step 1). Tests:
   instance, `F2.C1@F9.1`, is owned by the feature that made the instance, `F9`); `combine` gives its result the target's
   name (or its own `body`) explicitly. Unnamed lumps behave exactly as before. A feature whose result merges two named
   lumps keeps the name of the lump with the lowest origin.
+- `moveBody` with `copy: true` also takes `mirror: <plane>` (a standard plane, a plane feature or a planar face): the copies
+  are the mirror images about the plane (then moved by the motion, if any). Solid bodies only. A `mirror` feature whose
+  seed's tool has no recipe (a hole, loft or sweep) reflects the tool body itself.
 - Selector `{"body": "<name>"}` next to `{face}`, `{feature}`, `{lump}`: `moveBody.bodies`, `combine.target` and `tools`,
   `deleteBody.bodies`. Where several lumps are allowed it selects every lump with the name (a copy made from two lumps by
   one `moveBody` shares one name); `combine.target` takes exactly one.
@@ -787,8 +790,10 @@ Decision record: `docs/adr/0004-multiple-bodies-in-one-part.md` (step 1). Tests:
     `face` one face id of it).
   - `invalidValue {detail, hint?}`: `newBody` on a feature that does not take it, `body` that is not a non-empty string,
     `body` without `newBody` on extrude / revolve / loft / sweep.
-- Limits: a blend (`fillet`, `chamfer`) on a body whose lumps overlap fails with `blendFailed` (independent of names);
-  `combine` the lumps first, or keep them apart. A pattern whose seed is a `newBody` feature copies it as separate lumps
+- Limits: a `fillet` or `chamfer` whose picks all lie on one lump acts on that lump alone (the other lumps, a coincident
+  copy for one, take no part and are put back unchanged); picks spread over lumps that overlap still fail with
+  `blendFailed` (independent of names): `combine` the lumps first, or keep them apart. In an assembly (`insertPart`
+  components) the blend sees the whole body as before. A pattern whose seed is a `newBody` feature copies it as separate lumps
   (unnamed). `targets` on `cut` / `intersect` / `join` is not part of this step.
 
 ### Edge contact in results
