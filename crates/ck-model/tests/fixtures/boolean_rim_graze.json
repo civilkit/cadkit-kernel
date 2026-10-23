@@ -1,0 +1,1258 @@
+{
+ "format": "ck-part",
+ "version": 1,
+ "name": "crazy-geom-cuts",
+ "features": [
+  {
+   "type": "sketch",
+   "id": "F1",
+   "name": "Sketch1",
+   "plane": {
+    "kind": "std",
+    "id": "top"
+   },
+   "points": [
+    {
+     "id": "O",
+     "x": 0,
+     "y": 0,
+     "fixed": true
+    },
+    {
+     "id": "p1",
+     "x": 10,
+     "y": 0
+    },
+    {
+     "id": "p2",
+     "x": 10,
+     "y": 10
+    },
+    {
+     "id": "p3",
+     "x": 0,
+     "y": 10
+    },
+    {
+     "id": "p4",
+     "x": -10,
+     "y": 0
+    },
+    {
+     "id": "p5",
+     "x": -10,
+     "y": 10
+    },
+    {
+     "id": "p6",
+     "x": 0,
+     "y": -10
+    },
+    {
+     "id": "p7",
+     "x": 10,
+     "y": -10
+    },
+    {
+     "id": "p8",
+     "x": -10,
+     "y": -10
+    }
+   ],
+   "entities": [
+    {
+     "id": "e1",
+     "type": "line",
+     "p1": "O",
+     "p2": "p1"
+    },
+    {
+     "id": "e2",
+     "type": "line",
+     "p1": "p1",
+     "p2": "p2"
+    },
+    {
+     "id": "e3",
+     "type": "line",
+     "p1": "p2",
+     "p2": "p3"
+    },
+    {
+     "id": "e4",
+     "type": "line",
+     "p1": "p3",
+     "p2": "O"
+    },
+    {
+     "id": "e5",
+     "type": "line",
+     "p1": "p4",
+     "p2": "O"
+    },
+    {
+     "id": "e6",
+     "type": "line",
+     "p1": "O",
+     "p2": "p3"
+    },
+    {
+     "id": "e7",
+     "type": "line",
+     "p1": "p3",
+     "p2": "p5"
+    },
+    {
+     "id": "e8",
+     "type": "line",
+     "p1": "p5",
+     "p2": "p4"
+    },
+    {
+     "id": "e9",
+     "type": "line",
+     "p1": "p6",
+     "p2": "p7"
+    },
+    {
+     "id": "e10",
+     "type": "line",
+     "p1": "p7",
+     "p2": "p1"
+    },
+    {
+     "id": "e11",
+     "type": "line",
+     "p1": "p1",
+     "p2": "O"
+    },
+    {
+     "id": "e12",
+     "type": "line",
+     "p1": "O",
+     "p2": "p6"
+    },
+    {
+     "id": "e13",
+     "type": "line",
+     "p1": "p8",
+     "p2": "p6"
+    },
+    {
+     "id": "e14",
+     "type": "line",
+     "p1": "p6",
+     "p2": "O"
+    },
+    {
+     "id": "e15",
+     "type": "line",
+     "p1": "O",
+     "p2": "p4"
+    },
+    {
+     "id": "e16",
+     "type": "line",
+     "p1": "p4",
+     "p2": "p8"
+    }
+   ],
+   "constraints": [
+    {
+     "id": "k1",
+     "type": "horizontal",
+     "refs": [
+      "e1"
+     ]
+    },
+    {
+     "id": "k2",
+     "type": "horizontal",
+     "refs": [
+      "e3"
+     ]
+    },
+    {
+     "id": "k3",
+     "type": "vertical",
+     "refs": [
+      "e2"
+     ]
+    },
+    {
+     "id": "k4",
+     "type": "vertical",
+     "refs": [
+      "e4"
+     ]
+    },
+    {
+     "id": "k5",
+     "type": "distance",
+     "refs": [
+      "p1",
+      "p2"
+     ],
+     "value": 10
+    },
+    {
+     "id": "k6",
+     "type": "distance",
+     "refs": [
+      "O",
+      "p1"
+     ],
+     "value": 10
+    },
+    {
+     "id": "k7",
+     "type": "horizontal",
+     "refs": [
+      "e5"
+     ]
+    },
+    {
+     "id": "k8",
+     "type": "horizontal",
+     "refs": [
+      "e7"
+     ]
+    },
+    {
+     "id": "k9",
+     "type": "vertical",
+     "refs": [
+      "e8"
+     ]
+    },
+    {
+     "id": "k10",
+     "type": "distance",
+     "refs": [
+      "O",
+      "p3"
+     ],
+     "value": 10
+    },
+    {
+     "id": "k11",
+     "type": "distance",
+     "refs": [
+      "p4",
+      "O"
+     ],
+     "value": 10
+    },
+    {
+     "id": "k12",
+     "type": "horizontal",
+     "refs": [
+      "e9"
+     ]
+    },
+    {
+     "id": "k13",
+     "type": "vertical",
+     "refs": [
+      "e10"
+     ]
+    },
+    {
+     "id": "k14",
+     "type": "vertical",
+     "refs": [
+      "e12"
+     ]
+    },
+    {
+     "id": "k15",
+     "type": "distance",
+     "refs": [
+      "p7",
+      "p1"
+     ],
+     "value": 10
+    },
+    {
+     "id": "k16",
+     "type": "distance",
+     "refs": [
+      "p6",
+      "p7"
+     ],
+     "value": 10
+    },
+    {
+     "id": "k17",
+     "type": "horizontal",
+     "refs": [
+      "e13"
+     ]
+    },
+    {
+     "id": "k18",
+     "type": "vertical",
+     "refs": [
+      "e16"
+     ]
+    },
+    {
+     "id": "k19",
+     "type": "distance",
+     "refs": [
+      "p6",
+      "O"
+     ],
+     "value": 10
+    },
+    {
+     "id": "k20",
+     "type": "distance",
+     "refs": [
+      "p8",
+      "p6"
+     ],
+     "value": 10
+    }
+   ]
+  },
+  {
+   "type": "extrude",
+   "id": "F2",
+   "op": "add",
+   "sketch": "F1",
+   "end": "blind",
+   "depth": 10,
+   "name": "Extrude1",
+   "regions": [
+    "e5",
+    "e16",
+    "e13",
+    "e12",
+    "e4",
+    "e7",
+    "e8",
+    "e5",
+    "e1",
+    "e12",
+    "e9",
+    "e10"
+   ]
+  },
+  {
+   "type": "extrude",
+   "id": "F3",
+   "op": "add",
+   "sketch": "F1",
+   "end": "blind",
+   "depth": 10,
+   "name": "Extrude2",
+   "flip": true,
+   "regions": [
+    "e1",
+    "e12",
+    "e9",
+    "e10",
+    "e1",
+    "e2",
+    "e3",
+    "e4",
+    "e4",
+    "e7",
+    "e8",
+    "e5"
+   ]
+  },
+  {
+   "type": "plane",
+   "id": "F4",
+   "mode": "offset",
+   "base": {
+    "kind": "std",
+    "id": "right"
+   },
+   "offset": 10
+  },
+  {
+   "type": "sketch",
+   "id": "F5",
+   "name": "Sketch2",
+   "plane": {
+    "kind": "feature",
+    "id": "F4"
+   },
+   "points": [
+    {
+     "id": "O",
+     "x": 0,
+     "y": 0,
+     "fixed": true
+    },
+    {
+     "id": "p1",
+     "x": -10,
+     "y": -10
+    },
+    {
+     "id": "p2",
+     "x": -10,
+     "y": 10
+    },
+    {
+     "id": "p3",
+     "x": 10,
+     "y": -10
+    },
+    {
+     "id": "p4",
+     "x": 0,
+     "y": 10
+    },
+    {
+     "id": "p5",
+     "x": 0,
+     "y": 0
+    },
+    {
+     "id": "p6",
+     "x": 10,
+     "y": 0
+    },
+    {
+     "id": "p7",
+     "x": -7.8,
+     "y": -3.2
+    },
+    {
+     "id": "p8",
+     "x": -1.8,
+     "y": -3.2
+    },
+    {
+     "id": "p9",
+     "x": -1.8,
+     "y": 2.4
+    },
+    {
+     "id": "p10",
+     "x": -7.8,
+     "y": 2.4
+    }
+   ],
+   "entities": [
+    {
+     "id": "e1",
+     "type": "line",
+     "p1": "p1",
+     "p2": "p2"
+    },
+    {
+     "id": "e2",
+     "type": "line",
+     "p1": "p1",
+     "p2": "p3"
+    },
+    {
+     "id": "e3",
+     "type": "line",
+     "p1": "p4",
+     "p2": "p2"
+    },
+    {
+     "id": "e4",
+     "type": "line",
+     "p1": "p5",
+     "p2": "p4"
+    },
+    {
+     "id": "e5",
+     "type": "line",
+     "p1": "p6",
+     "p2": "p5"
+    },
+    {
+     "id": "e6",
+     "type": "line",
+     "p1": "p3",
+     "p2": "p6"
+    },
+    {
+     "id": "e7",
+     "type": "line",
+     "p1": "p7",
+     "p2": "p8"
+    },
+    {
+     "id": "e8",
+     "type": "line",
+     "p1": "p8",
+     "p2": "p9"
+    },
+    {
+     "id": "e9",
+     "type": "line",
+     "p1": "p9",
+     "p2": "p10"
+    },
+    {
+     "id": "e10",
+     "type": "line",
+     "p1": "p10",
+     "p2": "p7"
+    }
+   ],
+   "constraints": [
+    {
+     "id": "k1",
+     "type": "horizontal",
+     "refs": [
+      "e7"
+     ]
+    },
+    {
+     "id": "k2",
+     "type": "horizontal",
+     "refs": [
+      "e9"
+     ]
+    },
+    {
+     "id": "k3",
+     "type": "vertical",
+     "refs": [
+      "e8"
+     ]
+    },
+    {
+     "id": "k4",
+     "type": "vertical",
+     "refs": [
+      "e10"
+     ]
+    }
+   ]
+  },
+  {
+   "type": "extrude",
+   "id": "F6",
+   "op": "cut",
+   "sketch": "F5",
+   "end": "blind",
+   "depth": 100,
+   "name": "Extrude3",
+   "regions": [
+    "e7",
+    "e8",
+    "e9",
+    "e10"
+   ]
+  },
+  {
+   "type": "plane",
+   "id": "F7",
+   "mode": "offset",
+   "base": {
+    "kind": "std",
+    "id": "front"
+   },
+   "offset": 10
+  },
+  {
+   "type": "sketch",
+   "id": "F8",
+   "name": "Sketch3",
+   "plane": {
+    "kind": "feature",
+    "id": "F7"
+   },
+   "points": [
+    {
+     "id": "O",
+     "x": 0,
+     "y": 0,
+     "fixed": true
+    },
+    {
+     "id": "p1",
+     "x": -10,
+     "y": 10
+    },
+    {
+     "id": "p2",
+     "x": -10,
+     "y": 0
+    },
+    {
+     "id": "p3",
+     "x": 0,
+     "y": 0
+    },
+    {
+     "id": "p4",
+     "x": 0,
+     "y": 10
+    },
+    {
+     "id": "p5",
+     "x": 0,
+     "y": -10
+    },
+    {
+     "id": "p6",
+     "x": 10,
+     "y": -10
+    },
+    {
+     "id": "p7",
+     "x": 10,
+     "y": 10
+    },
+    {
+     "id": "p8",
+     "x": 10,
+     "y": 0
+    },
+    {
+     "id": "p9",
+     "x": -6.4,
+     "y": -2.6
+    },
+    {
+     "id": "p10",
+     "x": 7.4,
+     "y": -2.6
+    },
+    {
+     "id": "p11",
+     "x": 7.4,
+     "y": 2.6
+    },
+    {
+     "id": "p12",
+     "x": -6.4,
+     "y": 2.6
+    }
+   ],
+   "entities": [
+    {
+     "id": "e1",
+     "type": "line",
+     "p1": "p1",
+     "p2": "p2"
+    },
+    {
+     "id": "e2",
+     "type": "line",
+     "p1": "p2",
+     "p2": "p3"
+    },
+    {
+     "id": "e3",
+     "type": "line",
+     "p1": "p1",
+     "p2": "p4"
+    },
+    {
+     "id": "e4",
+     "type": "line",
+     "p1": "p3",
+     "p2": "p5"
+    },
+    {
+     "id": "e5",
+     "type": "line",
+     "p1": "p6",
+     "p2": "p5"
+    },
+    {
+     "id": "e6",
+     "type": "line",
+     "p1": "p4",
+     "p2": "p7"
+    },
+    {
+     "id": "e7",
+     "type": "line",
+     "p1": "p6",
+     "p2": "p8"
+    },
+    {
+     "id": "e8",
+     "type": "line",
+     "p1": "p8",
+     "p2": "p7"
+    },
+    {
+     "id": "e9",
+     "type": "line",
+     "p1": "p9",
+     "p2": "p10"
+    },
+    {
+     "id": "e10",
+     "type": "line",
+     "p1": "p10",
+     "p2": "p11"
+    },
+    {
+     "id": "e11",
+     "type": "line",
+     "p1": "p11",
+     "p2": "p12"
+    },
+    {
+     "id": "e12",
+     "type": "line",
+     "p1": "p12",
+     "p2": "p9"
+    }
+   ],
+   "constraints": [
+    {
+     "id": "k1",
+     "type": "horizontal",
+     "refs": [
+      "e9"
+     ]
+    },
+    {
+     "id": "k2",
+     "type": "horizontal",
+     "refs": [
+      "e11"
+     ]
+    },
+    {
+     "id": "k3",
+     "type": "vertical",
+     "refs": [
+      "e10"
+     ]
+    },
+    {
+     "id": "k4",
+     "type": "vertical",
+     "refs": [
+      "e12"
+     ]
+    }
+   ]
+  },
+  {
+   "type": "sketch",
+   "id": "F9",
+   "name": "Extrude4 profile",
+   "plane": {
+    "kind": "feature",
+    "id": "F7"
+   },
+   "points": [
+    {
+     "id": "O",
+     "x": 0,
+     "y": 0,
+     "fixed": true
+    },
+    {
+     "id": "q1",
+     "x": -6.4,
+     "y": 0
+    },
+    {
+     "id": "q2",
+     "x": 0,
+     "y": 0
+    },
+    {
+     "id": "q3",
+     "x": 0,
+     "y": -2.6
+    },
+    {
+     "id": "q4",
+     "x": 7.4,
+     "y": -2.6
+    },
+    {
+     "id": "q5",
+     "x": 7.4,
+     "y": 2.6
+    },
+    {
+     "id": "q6",
+     "x": -6.4,
+     "y": 2.6
+    }
+   ],
+   "entities": [
+    {
+     "id": "c1",
+     "type": "line",
+     "p1": "q1",
+     "p2": "q2"
+    },
+    {
+     "id": "c2",
+     "type": "line",
+     "p1": "q2",
+     "p2": "q3"
+    },
+    {
+     "id": "c3",
+     "type": "line",
+     "p1": "q3",
+     "p2": "q4"
+    },
+    {
+     "id": "c4",
+     "type": "line",
+     "p1": "q4",
+     "p2": "q5"
+    },
+    {
+     "id": "c5",
+     "type": "line",
+     "p1": "q5",
+     "p2": "q6"
+    },
+    {
+     "id": "c6",
+     "type": "line",
+     "p1": "q6",
+     "p2": "q1"
+    }
+   ],
+   "constraints": [],
+   "visible": false
+  },
+  {
+   "type": "extrude",
+   "id": "F10",
+   "op": "cut",
+   "sketch": "F9",
+   "end": "blind",
+   "depth": 100,
+   "name": "Extrude4"
+  },
+  {
+   "type": "plane",
+   "id": "F11",
+   "mode": "offset",
+   "base": {
+    "kind": "std",
+    "id": "top"
+   },
+   "offset": 10
+  },
+  {
+   "type": "sketch",
+   "id": "F12",
+   "name": "Sketch4",
+   "plane": {
+    "kind": "feature",
+    "id": "F11"
+   },
+   "points": [
+    {
+     "id": "O",
+     "x": 0,
+     "y": 0,
+     "fixed": true
+    },
+    {
+     "id": "p1",
+     "x": -10,
+     "y": -10
+    },
+    {
+     "id": "p2",
+     "x": -10,
+     "y": -7.8
+    },
+    {
+     "id": "p3",
+     "x": -6.4,
+     "y": -10
+    },
+    {
+     "id": "p4",
+     "x": -10,
+     "y": -1.8
+    },
+    {
+     "id": "p5",
+     "x": -10,
+     "y": 0
+    },
+    {
+     "id": "p6",
+     "x": -10,
+     "y": 10
+    },
+    {
+     "id": "p7",
+     "x": -6.4,
+     "y": 10
+    },
+    {
+     "id": "p8",
+     "x": 0,
+     "y": -10
+    },
+    {
+     "id": "p9",
+     "x": 0,
+     "y": 10
+    },
+    {
+     "id": "p10",
+     "x": 7.4,
+     "y": -10
+    },
+    {
+     "id": "p11",
+     "x": 0,
+     "y": 0
+    },
+    {
+     "id": "p12",
+     "x": 7.4,
+     "y": 0
+    },
+    {
+     "id": "p13",
+     "x": 10,
+     "y": -10
+    },
+    {
+     "id": "p14",
+     "x": 10,
+     "y": 0
+    },
+    {
+     "id": "p15",
+     "x": 10,
+     "y": -7.8
+    },
+    {
+     "id": "p16",
+     "x": 10,
+     "y": -1.8
+    },
+    {
+     "id": "p17",
+     "x": -2.4,
+     "y": -2.2
+    },
+    {
+     "id": "p18",
+     "x": 6.6,
+     "y": -2.2
+    },
+    {
+     "id": "p19",
+     "x": 6.6,
+     "y": 3.4
+    },
+    {
+     "id": "p20",
+     "x": -2.4,
+     "y": 3.4
+    }
+   ],
+   "entities": [
+    {
+     "id": "e1",
+     "type": "line",
+     "p1": "p1",
+     "p2": "p2"
+    },
+    {
+     "id": "e2",
+     "type": "line",
+     "p1": "p3",
+     "p2": "p1"
+    },
+    {
+     "id": "e3",
+     "type": "line",
+     "p1": "p2",
+     "p2": "p4"
+    },
+    {
+     "id": "e4",
+     "type": "line",
+     "p1": "p4",
+     "p2": "p5"
+    },
+    {
+     "id": "e5",
+     "type": "line",
+     "p1": "p5",
+     "p2": "p6"
+    },
+    {
+     "id": "e6",
+     "type": "line",
+     "p1": "p6",
+     "p2": "p7"
+    },
+    {
+     "id": "e7",
+     "type": "line",
+     "p1": "p8",
+     "p2": "p3"
+    },
+    {
+     "id": "e8",
+     "type": "line",
+     "p1": "p7",
+     "p2": "p9"
+    },
+    {
+     "id": "e9",
+     "type": "line",
+     "p1": "p10",
+     "p2": "p8"
+    },
+    {
+     "id": "e10",
+     "type": "line",
+     "p1": "p9",
+     "p2": "p11"
+    },
+    {
+     "id": "e11",
+     "type": "line",
+     "p1": "p11",
+     "p2": "p12"
+    },
+    {
+     "id": "e12",
+     "type": "line",
+     "p1": "p13",
+     "p2": "p10"
+    },
+    {
+     "id": "e13",
+     "type": "line",
+     "p1": "p12",
+     "p2": "p14"
+    },
+    {
+     "id": "e14",
+     "type": "line",
+     "p1": "p15",
+     "p2": "p13"
+    },
+    {
+     "id": "e15",
+     "type": "line",
+     "p1": "p16",
+     "p2": "p15"
+    },
+    {
+     "id": "e16",
+     "type": "line",
+     "p1": "p14",
+     "p2": "p16"
+    },
+    {
+     "id": "e17",
+     "type": "line",
+     "p1": "p17",
+     "p2": "p18"
+    },
+    {
+     "id": "e18",
+     "type": "line",
+     "p1": "p18",
+     "p2": "p19"
+    },
+    {
+     "id": "e19",
+     "type": "line",
+     "p1": "p19",
+     "p2": "p20"
+    },
+    {
+     "id": "e20",
+     "type": "line",
+     "p1": "p20",
+     "p2": "p17"
+    }
+   ],
+   "constraints": [
+    {
+     "id": "k1",
+     "type": "horizontal",
+     "refs": [
+      "e17"
+     ]
+    },
+    {
+     "id": "k2",
+     "type": "horizontal",
+     "refs": [
+      "e19"
+     ]
+    },
+    {
+     "id": "k3",
+     "type": "vertical",
+     "refs": [
+      "e18"
+     ]
+    },
+    {
+     "id": "k4",
+     "type": "vertical",
+     "refs": [
+      "e20"
+     ]
+    }
+   ]
+  },
+  {
+   "type": "sketch",
+   "id": "F13",
+   "name": "Extrude5 profile",
+   "plane": {
+    "kind": "feature",
+    "id": "F11"
+   },
+   "points": [
+    {
+     "id": "O",
+     "x": 0,
+     "y": 0,
+     "fixed": true
+    },
+    {
+     "id": "q1",
+     "x": 0,
+     "y": 3.4
+    },
+    {
+     "id": "q2",
+     "x": 0,
+     "y": 0
+    },
+    {
+     "id": "q3",
+     "x": 6.6,
+     "y": 0
+    },
+    {
+     "id": "q4",
+     "x": 6.6,
+     "y": 3.4
+    },
+    {
+     "id": "q5",
+     "x": 0,
+     "y": 0
+    },
+    {
+     "id": "q6",
+     "x": 0,
+     "y": 3.4
+    },
+    {
+     "id": "q7",
+     "x": -2.4,
+     "y": 3.4
+    },
+    {
+     "id": "q8",
+     "x": -2.4,
+     "y": -2.2
+    },
+    {
+     "id": "q9",
+     "x": 6.6,
+     "y": -2.2
+    },
+    {
+     "id": "q10",
+     "x": 6.6,
+     "y": 0
+    }
+   ],
+   "entities": [
+    {
+     "id": "c1",
+     "type": "line",
+     "p1": "q1",
+     "p2": "q2"
+    },
+    {
+     "id": "c2",
+     "type": "line",
+     "p1": "q2",
+     "p2": "q3"
+    },
+    {
+     "id": "c3",
+     "type": "line",
+     "p1": "q3",
+     "p2": "q4"
+    },
+    {
+     "id": "c4",
+     "type": "line",
+     "p1": "q4",
+     "p2": "q1"
+    },
+    {
+     "id": "c5",
+     "type": "line",
+     "p1": "q5",
+     "p2": "q6"
+    },
+    {
+     "id": "c6",
+     "type": "line",
+     "p1": "q6",
+     "p2": "q7"
+    },
+    {
+     "id": "c7",
+     "type": "line",
+     "p1": "q7",
+     "p2": "q8"
+    },
+    {
+     "id": "c8",
+     "type": "line",
+     "p1": "q8",
+     "p2": "q9"
+    },
+    {
+     "id": "c9",
+     "type": "line",
+     "p1": "q9",
+     "p2": "q10"
+    },
+    {
+     "id": "c10",
+     "type": "line",
+     "p1": "q10",
+     "p2": "q5"
+    }
+   ],
+   "constraints": [],
+   "visible": false
+  },
+  {
+   "type": "extrude",
+   "id": "F14",
+   "op": "cut",
+   "sketch": "F13",
+   "end": "blind",
+   "depth": 100,
+   "name": "Extrude5"
+  }
+ ],
+ "seq": 1
+}

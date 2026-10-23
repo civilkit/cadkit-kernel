@@ -610,6 +610,10 @@ impl<'a> Solid<'a> {
             return Class::Out;
         }
         let robust = super::robust();
+        // The first face the point lies on decides, except that two faces of the solid lying on the point
+        // with opposite outward normals (two lumps that touch along a face, or a zero-width slit) have
+        // material on both sides: the point is inside the solid, whichever face the search meets first.
+        let mut on: Option<Vec3> = None;
         for i in self.bvh.query_box(&near) {
             let g = self.faces[i];
             let (u, v, cp) = b.face(g).surface.closest_point(q);
@@ -621,6 +625,16 @@ impl<'a> Solid<'a> {
                 continue;
             }
             let ng = b.outward_normal(g, u, v);
+            match on {
+                None => on = Some(ng),
+                Some(n0) => {
+                    if n0.dot(ng) < -0.999 {
+                        return Class::In;
+                    }
+                }
+            }
+        }
+        if let Some(ng) = on {
             return if ng.dot(n) > 0.0 { Class::OnSame } else { Class::OnOpp };
         }
         // Not on any face: In/Out by ray parity. In a robust retry take the majority of all rays and the
