@@ -988,9 +988,12 @@ pub fn faces_moments(b: &Body, faces: &[FaceId], r: Vec3) -> Moments {
                 0.5 * q.z * q.z * q.x * n.z,
             ]
         });
-        let sg = if b.face(f).sense { 1.0 } else { -1.0 };
         m.volume += v[0];
-        m.area += sg * v[1];
+        // v[1] is sense * (orientation of the face's loops in its parameter domain) * area. The product of the two
+        // signs is +1 on a consistently built face, but a revolved face can carry clockwise loops together with
+        // sense = true (a torus whose centre lies on the far side of the axis does): the volume terms cancel that
+        // pair of signs, an area does not. An area is never negative, so take its magnitude.
+        m.area += v[1].abs();
         m.first = m.first + Vec3::new(v[2], v[3], v[4]);
         for i in 0..6 {
             m.second[i] += v[5 + i];
