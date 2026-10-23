@@ -86,6 +86,8 @@ pub struct FaceFact {
     pub adj_kinds: String,
     pub dup: usize,
     pub inner_loops: usize,
+    /// Name of the lump (body) the face is in, when it has one.
+    pub body: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -100,6 +102,8 @@ pub struct EdgeFact {
     pub center: Option<Vec3>,
     pub axis: Option<Vec3>,
     pub adj_kinds: String,
+    /// Name of the lump (body) the edge is in, when it has one.
+    pub body: Option<String>,
 }
 
 pub struct Facts {
@@ -133,6 +137,7 @@ fn face_fact(body: &Body, f: FaceId, light: bool) -> FaceFact {
             adj_kinds: String::new(),
             dup: 1,
             inner_loops: 0,
+            body: None,
         };
     }
     let sg = if face.sense { 1.0 } else { -1.0 };
@@ -227,6 +232,7 @@ fn face_fact(body: &Body, f: FaceId, light: bool) -> FaceFact {
         adj_kinds: String::new(),
         dup: 1,
         inner_loops: face.loops.len().saturating_sub(1),
+        body: body.lump(body.face_lump(f)).name.clone(),
     }
 }
 
@@ -370,6 +376,7 @@ fn gather_with(body: &Body, want: Option<&Want>) -> Facts {
             center,
             axis,
             adj_kinds: ks.join(","),
+            body: body.edge_faces(e).first().and_then(|&f| body.lump(body.face_lump(f)).name.clone()),
         });
     }
     let (mut lo, mut hi) = exact_bbox(body, false);
@@ -636,10 +643,10 @@ fn describe_one(facts: &Facts, n: &Json) -> Json {
 
 const FACE_KEYS: &[&str] = &[
     "kind", "surface", "normal", "axis", "radius", "role", "entity", "concave", "hole", "feature", "name", "touches", "area", "near",
-    "within", "extreme", "along",
+    "within", "extreme", "along", "body",
 ];
 const EDGE_KEYS: &[&str] =
-    &["kind", "curve", "dir", "radius", "length", "feature", "name", "touches", "between", "near", "within", "extreme", "along"];
+    &["kind", "curve", "dir", "radius", "length", "feature", "name", "touches", "between", "near", "within", "extreme", "along", "body"];
 
 fn parse_dir(j: &Json) -> Result<(Vec3, bool), String> {
     match j {
@@ -779,6 +786,13 @@ fn resolve_inner(facts: &Facts, d: &Json, edge: bool) -> Result<Json, String> {
         } else {
             nar.step(&mut c, "feature", |i| fs.contains(&facts.faces[i].feature));
         }
+    }
+    if let Some(j) = g("body") {
+        let names = str_list(j)?;
+        nar.step(&mut c, "body", |i| {
+            let b = if edge { &facts.edges[i].body } else { &facts.faces[i].body };
+            b.as_ref().is_some_and(|b| names.contains(b))
+        });
     }
     if let Some(j) = g("name") {
         let pats = str_list(j)?;
