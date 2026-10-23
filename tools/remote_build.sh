@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Build the kernel wasm and run its checks on the CI box instead of this (busy) machine. See docs/remote-build.md.
 #   tools/remote_build.sh [--worktree DIR] [--checks gate,large sample,loft,apex,fillet,section,spline,thin,suite,lint,text,projcurve,all|none]
-#                         [--cargo-test CRATE|"-p a -p b"|all] [--out DIR] [--no-sync-back] [--no-wasm] [--jobs N] [--reset]
+#                         [--cargo-test CRATE|"-p a -p b"|all] [--out DIR] [--no-sync-back] [--no-wasm] [--wasm-features LIST] [--jobs N] [--reset]
 #   tools/remote_build.sh --clean [--worktree DIR]     remove this worktree's directories on the box
 #   tools/remote_build.sh --prune                      remove worktree directories on the box unused for 3 days
 # Host: ssh alias from $REMOTE_BUILD_HOST, else the host part of this repo's `ci` git remote (as tools/ci_push.sh).
 # Everything on the box lives under ~/ci-cad/remote-build; nothing outside it is written or deleted.
 set -uo pipefail
-WT=""; CHECKS="gate"; CTEST=""; OUT=""; SYNC_BACK=1; MODE=run; RESET=0; NOWASM=0; JOBS="${REMOTE_BUILD_JOBS:-12}"
+WT=""; CHECKS="gate"; CTEST=""; OUT=""; SYNC_BACK=1; MODE=run; RESET=0; NOWASM=0; WASMF=""; JOBS="${REMOTE_BUILD_JOBS:-12}"
 usage() { sed -n 2,7p "$0" >&2; exit 64; }
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -19,6 +19,7 @@ while [ $# -gt 0 ]; do
     --jobs) JOBS="$2"; shift 2 ;;
     --reset) RESET=1; shift ;;
     --no-wasm) NOWASM=1; shift ;;
+    --wasm-features) WASMF="$2"; shift 2 ;;
     --clean) MODE=clean; shift ;;
     --prune) MODE=prune; shift ;;
     -h|--help) usage ;;
@@ -67,7 +68,7 @@ echo "synced in $(( $(date +%s) - T0 ))s"
 # 2. build + checks on the box (script on stdin, every argument quoted)
 read -r -d '' REMOTE <<'RSCRIPT'
 set -u
-NAME=$1; CHECKS=$2; CTEST=$3; JOBS=$4; NOWASM=${5:-0}
+NAME=$1; CHECKS=$2; CTEST=$3; JOBS=$4; NOWASM=${5:-0}; WASMF=${6:-}
 RB="$HOME/ci-cad/remote-build"
 case "$NAME" in ''|*/*|.*) echo "bad name"; exit 2;; esac
 SRC="$RB/wt/$NAME"; RUN="$RB/runs/$NAME"; export CARGO_TARGET_DIR="$RB/target/$NAME"
@@ -93,7 +94,7 @@ mkdir -p "$CARGO_TARGET_DIR"
 # one cargo job set at a time on the whole box (this also serialises each target dir)
 exec 9>"$RB/build.lock"
 echo "waiting for the build lock"; flock 9; echo "build lock taken"
-[ "$NOWASM" = 1 ] || step build-wasm nice -n 5 cargo build -q -p ck-wasm --target wasm32-unknown-unknown --release
+[ "$NOWASM" = 1 ] || step build-wasm nice -n 5 cargo build -q -p ck-wasm ${WASMF:+--features "$WASMF"} --target wasm32-unknown-unknown --release
 [ -s "$W" ] && echo "wasm bytes $(wc -c < "$W")"
 
 cargo_test_args() { # lib, bins and integration tests except ffi_diff (needs the dev machine's oracle library)
@@ -145,7 +146,7 @@ echo "box load after: $(cut -d' ' -f1-3 /proc/loadavg)"
 echo "REMOTE_FAILS=$FAILS"
 [ "$FAILS" = 0 ]
 RSCRIPT
-QA=""; for a in "$NAME" "$CHECKS" "$CTEST" "$JOBS" "$NOWASM"; do QA="$QA $(printf %q "$a")"; done
+QA=""; for a in "$NAME" "$CHECKS" "$CTEST" "$JOBS" "$NOWASM" "$WASMF"; do QA="$QA $(printf %q "$a")"; done
 printf '%s\n' "$REMOTE" | rsh "bash -s -- $QA"
 RC=$?
 [ "$RC" = 255 ] && echo "ssh connection failed or dropped" >&2
