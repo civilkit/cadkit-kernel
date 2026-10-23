@@ -252,7 +252,8 @@ pub fn exec_move_body(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Res
     solid_faces.dedup();
     surf_hit.sort_unstable();
     surf_hit.dedup();
-    let Some(x) = x else { return Ok(()) };
+    // a copy with no motion (a copy in place, to be named and worked on separately) still makes the copy
+    let x = match x { Some(x) => x, None if copy => Xform::IDENTITY, None => return Ok(()) };
     // ---- apply
     if !solid_faces.is_empty() {
         if copy {

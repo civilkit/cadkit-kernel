@@ -417,3 +417,28 @@ fn documents_without_new_body_or_body_regenerate_as_before() {
     let j = r.mass_bodies();
     assert!(j.iter().all(|b| b.get("name").is_none()));
 }
+
+#[test]
+fn move_copy_in_place_still_makes_the_named_copy() {
+    // no translate and no rotation: the copy lies exactly on the original (two lumps, the copy named)
+    let a = boxf(2, 0.0, 10.0, "add", "");
+    let r = run(&format!(r#"{a},{{"type":"moveBody","id":"M","copy":true,"body":"Case"}}"#));
+    r.clean();
+    assert_eq!(r.lumps(), 2);
+    assert_eq!(r.names(), vec![None, Some("Case".to_string())]);
+    assert!((r.volume_of("Case") - 1000.0).abs() < 1e-6);
+}
+
+#[test]
+fn resolve_can_restrict_to_a_named_body() {
+    // a copy in place lies on the original: every face exists twice, `body` picks the copy's
+    let a = boxf(2, 0.0, 10.0, "add", "");
+    let r = run(&format!(r#"{a},{{"type":"moveBody","id":"M","copy":true,"body":"Case"}}"#));
+    r.clean();
+    let q = |d: &str| ck_ops::agent::resolve(&r.body.as_ref().unwrap(), &ck_json::parse(&format!(r#"{{"description":{d}}}"#)).unwrap());
+    let count = |j: ck_json::Json| j.get("results").and_then(|a| a.as_arr()).and_then(|a| a[0].get("count")).and_then(|c| c.as_f64()).unwrap();
+    assert_eq!(count(q(r#"{"kind":"face"}"#)), 12.0);
+    assert_eq!(count(q(r#"{"kind":"face","body":"Case"}"#)), 6.0);
+    assert_eq!(count(q(r#"{"kind":"edge","curve":"line","body":"Case"}"#)), 12.0);
+    assert_eq!(count(q(r#"{"kind":"face","body":"Nope"}"#)), 0.0);
+}
