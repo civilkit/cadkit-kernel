@@ -456,3 +456,17 @@ fn shell_acts_on_the_lump_of_its_face_not_on_a_coincident_copy() {
     assert!((r.volume() - one.volume() - 1000.0).abs() < 1e-6, "the original is still the full box");
     assert_eq!(r.names().iter().filter(|n| n.as_deref() == Some("Case")).count(), 1);
 }
+
+/// A fillet on a copy that lies exactly on its original acts on the copy alone.
+#[test]
+fn fillet_acts_on_the_lump_of_its_edge_not_on_a_coincident_copy() {
+    let r = run(&format!(
+        r#"{},{{"type":"moveBody","id":"F4","bodies":[{{"body":"A"}}],"copy":true,"body":"C"}},
+        {{"type":"fillet","id":"F5","radius":2,"edges":[{{"faces":["F2.C1@F4.1","F2.S.e1@F4.1"]}}]}}"#,
+        boxf(2, 0.0, 10.0, "newBody", r#","body":"A""#)
+    ));
+    r.clean();
+    assert!((r.volume_of("A") - 1000.0).abs() < 1e-6, "{:?}", r.names());
+    let rounded = 1000.0 - (1.0 - std::f64::consts::FRAC_PI_4) * 4.0 * 10.0;
+    assert!((r.volume_of("C") - rounded).abs() < 1e-4, "C is {}", r.volume_of("C"));
+}

@@ -500,6 +500,53 @@ fn select_edges(br: &Brep, edges: &[crate::EdgeRef]) -> Result<Vec<(String, Stri
     Ok(sel)
 }
 
+/// With several lumps (bodies), a blend acts on the lump that holds the faces its picks name; another lump, a coincident copy
+/// for one, takes no part in it (a fillet beside an overlapping lump fails with `blendFailed`). The other lumps are put back
+/// unchanged after the blended lump. With one lump, or picks spread over several, `run` sees the whole body.
+pub fn on_lump_of_picks(br: &mut Brep, edges: &[crate::EdgeRef], run: impl FnOnce(&mut Brep) -> Result<(), FeatureError>) -> Result<(), FeatureError> {
+    let split = (|| {
+        let body = br.body.as_ref()?;
+        // component spans of an assembly index the body; they stay valid only when the body is not rebuilt
+        if body.lump_ids().count() < 2 || edges.is_empty() || !br.asm.components.is_empty() {
+            return None;
+        }
+        let mut lumps = vec![];
+        for e in edges {
+            for n in &e.faces {
+                lumps.push(body.face_lump(body.find_face(n)?));
+            }
+        }
+        lumps.sort_unstable();
+        lumps.dedup();
+        if lumps.len() != 1 {
+            return None;
+        }
+        let mine = ck_topo::mass::lump_faces(body, lumps[0]);
+        let rest: Vec<_> = body.face_ids().filter(|g| !mine.contains(g)).collect();
+        let mut sub = ck_ops::boolean::assemble::rebuild_in_order(body, &mine);
+        ck_topo::region::rebuild_lumps(&mut sub);
+        let mut others = ck_ops::boolean::assemble::rebuild_in_order(body, &rest);
+        ck_topo::region::rebuild_lumps(&mut others);
+        Some((sub, others))
+    })();
+    let Some((sub, others)) = split else { return run(br) };
+    let whole = br.body.replace(sub);
+    match run(br) {
+        Ok(()) => {
+            let done = br.body.take();
+            br.body = Some(others);
+            if let Some(d) = done {
+                br.append_body(&d);
+            }
+            Ok(())
+        }
+        Err(e) => {
+            br.body = whole;
+            Err(e)
+        }
+    }
+}
+
 /// `fillet`. Oracle (box probes): any `filletType` string (even
 /// `"circular"`) fails `unsupported {what:"fillet <type>"}` first; then
 /// `radius <= 0` -> `invalidValue`; then unresolved / no edges ->

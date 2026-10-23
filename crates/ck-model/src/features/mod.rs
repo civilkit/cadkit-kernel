@@ -1295,8 +1295,8 @@ impl Brep {
                 return self.exec_component_pattern(state, f)
             }
             FeatureKind::LPattern { .. } | FeatureKind::CPattern { .. } => return pattern::exec_pattern(self, state, f),
-            FeatureKind::Fillet { .. } => return blends::exec_fillet(self, state, f),
-            FeatureKind::Chamfer { .. } => return blends::exec_chamfer(self, state, f),
+            FeatureKind::Fillet { edges, .. } => return blends::on_lump_of_picks(self, edges, |br| blends::exec_fillet(br, state, f)),
+            FeatureKind::Chamfer { edges, .. } => return blends::on_lump_of_picks(self, edges, |br| blends::exec_chamfer(br, state, f)),
             FeatureKind::Shell { .. } => return shell::exec_shell(self, state, f),
             FeatureKind::InsertPart { .. } => return self.exec_insert(state, f),
             FeatureKind::Hole { .. } => return hole::exec_hole(self, state, f),
