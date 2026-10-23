@@ -391,7 +391,7 @@ pub fn exec_loft(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(
         br.surfs.push((f.id.clone(), out.body));
         return Ok(());
     }
-    let combine = if *op == Op::Cut { super::extrude::Combine::Cut } else { super::extrude::Combine::Add };
+    let combine = super::extrude::Combine::of(*op);
     // hollow: subtract the loft of the inner loops from the loft of the outlines
     let mut tool = out.body;
     let k = holes.iter().map(Vec::len).max().unwrap_or(0);

@@ -775,6 +775,28 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
             if !mesh_notes.is_empty() {
                 o = o.put("meshNotes", Json::Arr(mesh_notes.into_iter().map(Json::Str).collect()));
             }
+            // lumps that overlap are legal (`moveBody`, `newBody`): reported as info, never as an issue
+            if body.num_lumps() > 1 {
+                let info: Vec<Json> = ck_ops::interference::reply(body)
+                    .get_arr("pairs")
+                    .map(|ps| ps.to_vec())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|p| p.get_f64("volume").is_some_and(|v| v.abs() > 1e-9))
+                    .map(|p| {
+                        let mut o = Obj::new().put("code", "bodiesOverlap").put("severity", "info");
+                        for k in ["a", "b", "aName", "bName"] {
+                            if let Some(v) = p.get(k) {
+                                o = o.put(k, v.clone());
+                            }
+                        }
+                        o.put("volume", p.get_f64("volume").unwrap_or(0.0).abs()).build()
+                    })
+                    .collect();
+                if !info.is_empty() {
+                    o = o.put("info", Json::Arr(info));
+                }
+            }
             if used > 0.0 {
                 let note = format!("body carries edge/vertex tolerances up to {used:.3e} mm (cap {cap:.3e})");
                 o = o.put("notes", Json::Arr(vec![Json::Str(note)]));

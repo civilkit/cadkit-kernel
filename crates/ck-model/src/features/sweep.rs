@@ -243,7 +243,7 @@ pub fn exec_sweep(br: &Brep, state: &mut RegenState, f: &Feature) -> Result<Tool
         _ => return Err(missing()),
     };
     let profile = sketch_profile(sk)?;
-    let combine = if *op == Op::Cut { Combine::Cut } else { Combine::Add };
+    let combine = Combine::of(*op);
     if combine == Combine::Cut && br.body.is_none() {
         return Err(FeatureError::new(codes::NOTHING_TO_CUT));
     }
