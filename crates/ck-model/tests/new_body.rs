@@ -470,3 +470,18 @@ fn fillet_acts_on_the_lump_of_its_edge_not_on_a_coincident_copy() {
     let rounded = 1000.0 - (1.0 - std::f64::consts::FRAC_PI_4) * 4.0 * 10.0;
     assert!((r.volume_of("C") - rounded).abs() < 1e-4, "C is {}", r.volume_of("C"));
 }
+
+/// `moveBody` with `copy` and `mirror`: the named copy is the mirror image of the body about the plane.
+#[test]
+fn move_body_copy_can_mirror_about_a_plane() {
+    let r = run(&format!(
+        r#"{},{{"type":"moveBody","id":"F3","bodies":[{{"body":"A"}}],"copy":true,"body":"M","mirror":{{"kind":"std","id":"right"}}}}"#,
+        boxf(2, 2.0, 12.0, "newBody", r#","body":"A""#)
+    ));
+    r.clean();
+    assert_eq!(r.lumps(), 2);
+    assert!((r.volume_of("A") - 1000.0).abs() < 1e-6 && (r.volume_of("M") - 1000.0).abs() < 1e-6);
+    let (m, a) = (r.mass_bodies().into_iter().find(|b| b.get_str("name") == Some("M")).unwrap(), r.mass_bodies().into_iter().find(|b| b.get_str("name") == Some("A")).unwrap());
+    let x = |b: &ck_json::Json| b.get("com").and_then(|c| c.as_vec3()).unwrap()[0];
+    assert!((x(&a) - 7.0).abs() < 1e-6 && (x(&m) + 7.0).abs() < 1e-6, "centres {} {}", x(&a), x(&m));
+}

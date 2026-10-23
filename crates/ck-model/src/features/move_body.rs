@@ -29,6 +29,9 @@
 //! * `body: "<name>"` (with `copy: true`) names the copies; the original keeps its name. A name a lump already has is
 //!   `bodyNameConflict {name, features}`. Without `copy` a string `body` keeps its older meaning, a selection
 //!   (`bodies` alias), so existing documents read as before.
+//! * `mirror: <plane>` (with `copy: true`, solid bodies only): the copies are the mirror images about that plane (a standard
+//!   plane, a plane feature or a planar face, as for the `mirror` feature), then moved by the motion if there is one.
+//!   Face names carry the instance suffix as for any copy.
 //! * Errors: `nothingToCut` (no body), `missingReference`, `invalidValue`
 //!   (non-finite numbers / zero rotation axis, with `detail`).
 
@@ -200,6 +203,15 @@ pub fn exec_move_body(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Res
         super::bodies::check_free(br.body.as_ref(), n, &f.id, &[])?;
     }
     let x = motion(state, f)?;
+    let mirror = match f.raw.get("mirror") {
+        Some(p) if copy => {
+            let r = crate::GeomRef::from_json(p).ok_or_else(|| invalid("unknown mirror plane"))?;
+            let fr = super::pattern::plane_frame(br, state, &r).ok_or_else(missing)?;
+            Some(ck_core::linalg::Plane::new(fr.o, fr.z))
+        }
+        Some(_) => return Err(invalid("mirror needs copy: true")),
+        None => None,
+    };
     // ---- resolve the selection
     let mut solid_faces: Vec<FaceId> = vec![];
     let mut surf_hit: Vec<usize> = vec![];
@@ -254,12 +266,18 @@ pub fn exec_move_body(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Res
     surf_hit.dedup();
     // a copy with no motion (a copy in place, to be named and worked on separately) still makes the copy
     let x = match x { Some(x) => x, None if copy => Xform::IDENTITY, None => return Ok(()) };
+    if mirror.is_some() && !surf_hit.is_empty() {
+        return Err(invalid("mirror works on solid bodies only"));
+    }
     // ---- apply
     if !solid_faces.is_empty() {
         if copy {
             let b = br.body.as_ref().unwrap();
             let mut c = ck_ops::boolean::assemble::rebuild_in_order(b, &solid_faces);
             ck_topo::region::rebuild_lumps(&mut c);
+            if let Some(pl) = &mirror {
+                c = super::pattern::reflect_body(&c, pl).map_err(|e| FeatureError::new(&e))?;
+            }
             c.push_instance(&format!("{}.1", f.id));
             c.transform(&x);
             br.append_body(&c);
