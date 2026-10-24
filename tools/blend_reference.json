@@ -7,6 +7,10 @@
   "holed": 14869.026644707672,
   "lbr": 6000.0,
   "lwall": 31320.0,
+  "overhang": 80500.427748,
+  "overhang_mz": 80500.42774799999,
+  "overhang_skew": 80500.42774799999,
+  "overhang_under": 80500.427748,
   "pocket": 28800.0,
   "post0": 30000.0,
   "post2": 29896.99111843077,
@@ -260,6 +264,38 @@
  "lwall_inside_vert_r3": {
   "valid": true,
   "volume": 31504.758904177488
+ },
+ "overhang_all_r2": {
+  "valid": true,
+  "volume": 80482.56751184334
+ },
+ "overhang_concave_r2": {
+  "error": "Build failed",
+  "volume": null
+ },
+ "overhang_convex_r2": {
+  "valid": false,
+  "volume": 80429.94715332203
+ },
+ "overhang_mz_r2": {
+  "valid": true,
+  "volume": 80482.57513272492
+ },
+ "overhang_skew_refused": {
+  "valid": true,
+  "volume": 80491.81244266978
+ },
+ "overhang_three_r2": {
+  "error": "Build failed",
+  "volume": null
+ },
+ "overhang_two_corners_r2": {
+  "valid": true,
+  "volume": 80463.19461362636
+ },
+ "overhang_under_r2": {
+  "valid": true,
+  "volume": 80482.56751184334
  },
  "pocket_cove2_r1": {
   "valid": true,

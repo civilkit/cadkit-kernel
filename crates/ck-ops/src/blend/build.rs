@@ -269,8 +269,26 @@ fn blend_edges_inner(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, fea
             return Err(BlendError::detail("blendUnsupported", "adjacent edges with a conic or curvature profile"));
         }
         // overhang corners: four selected edges as two collinear pairs that flip convex/concave;
-        // their stripes are trimmed by the zone swap after the rounds (see super::overhang)
-        let overhangs: Vec<super::overhang::Corner> = if matches!(spec, Spec::Fillet(..)) { super::overhang::detect(b, &eids, r) } else { vec![] };
+        // their stripes are trimmed by the zone swap after the rounds (see super::overhang).
+        // A structural corner with skewed pair directions cannot take the patch (the zone box and
+        // the boundary chains are built for perpendicular pairs): refuse it with a hint instead of
+        // silently leaving the stepped stripes, and keep the ordinary path for every other shape.
+        let overhangs_all: Vec<super::overhang::Corner> = if matches!(spec, Spec::Fillet(..)) { super::overhang::detect(b, &eids, r) } else { vec![] };
+        if let Some(c) = overhangs_all.iter().find(|c| !c.patch_ok) {
+            let deg = c.a12.abs().clamp(-1.0, 1.0).acos().to_degrees();
+            return Err(BlendError {
+                detail: Some(format!(
+                    "a convex and a concave blended edge meet at ({:.3}, {:.3}, {:.3}) and their two edge directions are {:.0} degrees apart, not perpendicular",
+                    c.v.x, c.v.y, c.v.z, deg
+                )),
+                params: vec![(
+                    "hint".into(),
+                    "the corner patch is only built where the two edge directions are perpendicular: fillet the concave edges and the convex edges in separate features, or leave the four edges at this vertex out of the selection".into(),
+                )],
+                ..BlendError::code("blendCorner")
+            });
+        }
+        let overhangs: Vec<super::overhang::Corner> = overhangs_all;
         let rounds: Vec<Vec<usize>> = match spec {
             Spec::Chamfer(..) => {
                 let mut done = vec![false; n];
@@ -406,8 +424,8 @@ fn blend_edges_inner(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, fea
         }
         // overhang corners: replace the zone box about the vertex with the corner patch solid
         // (an Err keeps the striped body: a valid, nearly right solid, never a refusal)
-        for oh in &overhangs {
-            match super::overhang::splice(&out, oh, feature, tol) {
+        for (i, oh) in overhangs.iter().enumerate() {
+            match super::overhang::splice(&out, oh, feature, i, tol) {
                 Ok(spliced) => out = spliced,
                 Err(e) => dbg_fail(&format!("overhang patch at ({:.3},{:.3},{:.3}): {} {:?}", oh.v.x, oh.v.y, oh.v.z, e.code, e.detail.unwrap_or_default())),
             }

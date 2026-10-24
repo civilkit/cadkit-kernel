@@ -86,6 +86,10 @@ const BASES = {
   cube: [rect('F1', TOP, 0, 0, 30, 30), ext('F2', 'F1', 30)],
   // tall block 20 x 20 x 40 (long vertical edges)
   pillar: [rect('F1', TOP, 0, 0, 20, 20), ext('F2', 'F1', 40)],
+  overhang: [rect('F1', TOP, -25, -25, 25, 25), ext('F2', 'F1', 27), poly('F5', FACE('F2.C1'), [[8.961, -47.245], [43.471, -47.245], [43.471, -9.193], [8.961, -9.193]]), ext('F6', 'F5', 9.9)],
+  overhang_mz: [rect('F1', TOP, -25, -25, 25, 25), ext('F2', 'F1', 27), poly('F5', FACE('F2.C1'), [[8.961, 47.245], [43.471, 47.245], [43.471, 9.193], [8.961, 9.193]]), ext('F6', 'F5', 9.9)],
+  overhang_under: [rect('F1', TOP, -25, -25, 25, 25), ext('F2', 'F1', 27), poly('F5', FACE('F2.C0'), [[8.961, 9.193], [43.471, 9.193], [43.471, 47.245], [8.961, 47.245]]), ext('F6', 'F5', 9.9)],
+  overhang_skew: [rect('F1', TOP, -25, -25, 25, 25), ext('F2', 'F1', 27), poly('F5', FACE('F2.C1'), [[14.473241019502687, -51.0626273942198], [47.80734128473843, -42.13078214773182], [37.95875898049731, -5.375372605780193], [4.624658715261568, -14.307217852268181]]), ext('F6', 'F5', 9.9)],
 };
 
 // ---------------------------------------------------------------- cases
@@ -255,6 +259,21 @@ add('lbr_mixed_rims_1_2_wall_3', 'lbr', { k: 'fillet', r: 0 }, [{ at: LR1, r: 1 
 for (const [rim, wall] of [[1, 3], [2, 4], [4, 2]]) {
   add(`pocket_mixed_rim${rim}_wall${wall}`, 'pocket', { k: 'fillet', r: 0 }, [{ at: PR1, r: rim }, { at: PR2, r: rim }, { at: PW, r: wall }]);
 }
+
+// 8. the overhang corner: a block on the cube top overhanging a wall; four edges as two collinear
+// pairs flipping convex/concave. Volume against OCCT for the full set, the concave-only and
+// convex-only pairs, three of the four (a free end), the mirror, the block under the ledge, the
+// two-wall body (two corners), and the skewed corner, which the kernel refuses with blendCorner.
+add('overhang_all_r2', 'overhang', { k: 'fillet', r: 2 }, [{ at: [16.9805, 27, 9.193] }, { at: [25, 27, -7.903500000000001] }, { at: [34.2355, 27, 9.193] }, { at: [25, 27, 17.0965] }], { g1: true });
+add('overhang_concave_r2', 'overhang', { k: 'fillet', r: 2 }, [{ at: [16.9805, 27, 9.193] }, { at: [25, 27, 17.0965] }]);
+// (overhang_convex_r2 is not in the corpus: OCCT itself builds the convex-only pair as an
+// invalid solid, so its volume is no target; the kernel pair is checked against the analytic
+// estimate in crates/ck-model/tests/blend_overhang.rs)
+add('overhang_three_r2', 'overhang', { k: 'fillet', r: 2 }, [{ at: [16.9805, 27, 9.193] }, { at: [25, 27, -7.903500000000001] }, { at: [34.2355, 27, 9.193] }]);
+add('overhang_two_corners_r2', 'overhang', { k: 'fillet', r: 2 }, [{ at: [16.9805, 27, 9.193] }, { at: [25, 27, -7.903500000000001] }, { at: [34.2355, 27, 9.193] }, { at: [25, 27, 17.0965] }, { at: [-8, 27, 25] }, { at: [17, 27, 25] }, { at: [8.961, 27, 36] }, { at: [8.961, 27, 17.1] }], { g1: true, mitre: true });
+add('overhang_mz_r2', 'overhang_mz', { k: 'fillet', r: 2 }, [{ at: [16.9805, 27, -9.193] }, { at: [25, 27, 7.903500000000001] }, { at: [34.2355, 27, -9.193] }, { at: [25, 27, -17.0965] }], { g1: true });
+add('overhang_under_r2', 'overhang_under', { k: 'fillet', r: 2 }, [{ at: [16.9805, 0, 9.193] }, { at: [25, 0, -7.9035] }, { at: [34.2355, 0, 9.193] }, { at: [25, 0, 17.0965] }], { g1: true });
+add('overhang_skew_refused', 'overhang_skew', { k: 'fillet', r: 2 }, [{ at: [25, 27, 2.847661609514004] }, { at: [19.20444504226559, 27, 10.400575880129129] }, { at: [30.79555495773441, 27, 7.29474733889888] }, { at: [25, 27, 14.847661609514004] }], { expect: 'blendCorner' });
 
 // ---------------------------------------------------------------- engine
 function req(k, id, msg) {

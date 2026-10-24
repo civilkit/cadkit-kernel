@@ -46,6 +46,11 @@ pub(super) struct Corner {
     pub v: Vec3,
     pub r: f64,
     pub edges: [EdgeId; 4],
+    /// The corner patch can be built (perpendicular pairs, the boundary
+    /// closes); a structural corner without this is refused instead.
+    pub patch_ok: bool,
+    /// Dot of the two pair directions (the refusal quotes the angle).
+    pub a12: f64,
     s: [Strike; 4],
     pairs: [(usize, usize); 2],
 }
@@ -142,68 +147,67 @@ pub(super) fn detect(b: &Body, sel: &[EdgeId], r: f64) -> Vec<Corner> {
             used[j] = true;
             pairs.push((i, j));
         }
-        if pairs.len() != 2 || strikes[pairs[0].0].dir.dot(strikes[pairs[1].0].dir).abs() > 1e-9 {
+        if pairs.len() != 2 {
             continue;
         }
+        let a12 = strikes[pairs[0].0].dir.dot(strikes[pairs[1].0].dir);
+        let orthogonal = a12.abs() <= 1e-9;
         if pairs.iter().any(|&(i, j)| strikes[i].convex == strikes[j].convex) {
             continue;
         }
-        let centre = |i: usize| -> Vec3 {
-            let s = &strikes[i];
-            let c12 = s.n[0].dot(s.n[1]);
-            let sg = if s.convex { -1.0 } else { 1.0 };
-            vp + (s.n[0] + s.n[1]) * (sg * r / (1.0 + c12))
-        };
-        let foot = |i: usize, k: usize| centre(i) - strikes[i].n[k] * ((centre(i) - vp).dot(strikes[i].n[k]));
-        // each pair shares exactly one face; the two centres' feet on it coincide
-        let mut shared = 0;
-        for &(i, j) in &pairs {
-            let mut hit: Vec<(usize, usize, usize)> = vec![];
-            for ki in 0..2 {
-                for kj in 0..2 {
-                    if strikes[i].n[ki].dot(strikes[j].n[kj]) > 1.0 - 1e-9 {
-                        hit.push((ki, kj, 0));
+        // patch geometry (feet + closing coincidences) only for perpendicular pairs;
+        // a structural corner with skewed pairs is refused by the caller instead
+        let mut patch_ok = false;
+        if orthogonal {
+            let centre = |i: usize| -> Vec3 {
+                let s = &strikes[i];
+                let c12 = s.n[0].dot(s.n[1]);
+                let sg = if s.convex { -1.0 } else { 1.0 };
+                vp + (s.n[0] + s.n[1]) * (sg * r / (1.0 + c12))
+            };
+            let foot = |i: usize, k: usize| centre(i) - strikes[i].n[k] * ((centre(i) - vp).dot(strikes[i].n[k]));
+            // each pair shares exactly one face; the two centres' feet on it coincide
+            let mut feet_ok = true;
+            for &(i, j) in &pairs {
+                let mut hit: Vec<(usize, usize)> = vec![];
+                for ki in 0..2 {
+                    for kj in 0..2 {
+                        if strikes[i].n[ki].dot(strikes[j].n[kj]) > 1.0 - 1e-9 {
+                            hit.push((ki, kj));
+                        }
                     }
                 }
+                if hit.len() != 1 || foot(i, hit[0].0).dist(foot(j, hit[0].1)) > snap {
+                    feet_ok = false;
+                    break;
+                }
             }
-            if hit.len() != 1 {
-                hit.clear();
-            }
-            let ok = hit.len() == 1 && {
-                let (ki, kj, _) = hit[0];
-                foot(i, ki).dist(foot(j, kj)) <= snap
-            };
-            if !ok {
-                shared = -1;
-                break;
-            }
-            shared += 1;
-        }
-        if shared != 2 {
-            continue;
-        }
-        // exactly one cross-pair arc-end coincidence per strike, pairing the
-        // two pairs off (this closes the hexagon)
-        let end = |i: usize, k: usize| foot(i, k) + strikes[i].dir * r;
-        let mut hits: Vec<(usize, usize, usize, usize)> = vec![]; // (pi, k, qj, kj)
-        for &i in &[pairs[0].0, pairs[0].1] {
-            for k in 0..2 {
-                for &j in &[pairs[1].0, pairs[1].1] {
-                    for kj in 0..2 {
-                        if end(i, k).dist(end(j, kj)) <= snap {
-                            hits.push((i, k, j, kj));
+            // exactly one cross-pair arc-end coincidence per strike, pairing the
+            // two pairs off (this closes the boundary)
+            let end = |i: usize, k: usize| foot(i, k) + strikes[i].dir * r;
+            let mut hits: Vec<(usize, usize, usize, usize)> = vec![]; // (pi, k, qj, kj)
+            for &i in &[pairs[0].0, pairs[0].1] {
+                for k in 0..2 {
+                    for &j in &[pairs[1].0, pairs[1].1] {
+                        for kj in 0..2 {
+                            if end(i, k).dist(end(j, kj)) <= snap {
+                                hits.push((i, k, j, kj));
+                            }
                         }
                     }
                 }
             }
-        }
-        let distinct = hits.len() == 2 && hits[0].0 != hits[1].0 && hits[0].2 != hits[1].2;
-        if !distinct {
-            continue;
+            let distinct = hits.len() == 2 && hits[0].0 != hits[1].0 && hits[0].2 != hits[1].2;
+            patch_ok = feet_ok && distinct;
+            // an orthogonal corner whose boundary does not close: fall back to the
+            // ordinary stepped build (today's behaviour), no refusal
+            if !patch_ok {
+                continue;
+            }
         }
         let Ok(s) = <[Strike; 4]>::try_from(strikes) else { continue };
         let Ok(edges) = <[EdgeId; 4]>::try_from(inc) else { continue };
-        out.push(Corner { v: vp, r, edges, s, pairs: [pairs[0], pairs[1]] });
+        out.push(Corner { v: vp, r, edges, patch_ok, a12, s, pairs: [pairs[0], pairs[1]] });
     }
     out
 }
@@ -640,7 +644,7 @@ fn refit_pcurves(b: &mut Body, tol: f64) {
 /// Replace the striped body's zone box about the corner with `K` (module
 /// doc). `Err` leaves the caller with the striped body unchanged — a valid,
 /// nearly right solid, never a refusal.
-pub(super) fn splice(body: &Body, c: &Corner, feature: &str, tol: f64) -> Result<Body, BlendError> {
+pub(super) fn splice(body: &Body, c: &Corner, feature: &str, tag: usize, tol: f64) -> Result<Body, BlendError> {
     let fail = |d: &str| BlendError::detail("blendUnsupported", &format!("overhang corner: {d}"));
     let r = c.r;
     let snap = 1e-4 * (1.0 + r);
@@ -731,7 +735,7 @@ pub(super) fn splice(body: &Body, c: &Corner, feature: &str, tol: f64) -> Result
             .into_iter()
             .map(|(a, b, arc)| Seg { a: tb.vertex_shared(a, snap), b: tb.vertex_shared(b, snap), arc })
             .collect();
-        tb.plane_face(out, segs.clone(), FaceName::other(feature, &format!("Z{k}")));
+        tb.plane_face(out, segs.clone(), FaceName::other(feature, &format!("Z{tag}{k}")));
         sect.push(segs);
     }
     // the patch loop: each hex side traversed opposite to its section face
@@ -772,7 +776,7 @@ pub(super) fn splice(body: &Body, c: &Corner, feature: &str, tol: f64) -> Result
     let bottom = [(hex[1], hex[0], arc_a, c.centre(pa)), (hex[0], hex[5], arc_b, c.centre(qb))];
     let top = [(hex[2], hex[3], arc_c, c.centre(pc)), (hex[3], hex[4], arc_d, c.centre(qd))];
     let surf = patch_surface(&hex, bottom, [c.s[pa].dir, c.s[qb].dir], top, [c.s[pc].dir, c.s[qd].dir], wn, 49)?;
-    tb.bspline_face(surf, chain, outward, FaceName::other(feature, "P0"));
+    tb.bspline_face(surf, chain, outward, FaceName::other(feature, &format!("P{tag}")));
     let k = tb.finish();
     let ki = ck_topo::check::check(&k, tol);
     if !ki.is_empty() {
@@ -784,7 +788,7 @@ pub(super) fn splice(body: &Body, c: &Corner, feature: &str, tol: f64) -> Result
     // cannot cross (blend/freeform's tangent-contact rule) — and it grazes the zone section
     // planes along the boundary arcs, where a marched curve would run beside the exact circle
     // instead of on it; both pairs are declared disjoint and the shared edges weld directly.
-    let pname = FaceName::other(feature, "P0");
+    let pname = FaceName::other(feature, &format!("P{tag}"));
     let patch_f = k.face_ids().find(|&f| k.face(f).name == pname).ok_or_else(|| fail("patch face"))?;
     let line_sides = [(hex[1], hex[2]), (hex[4], hex[5])];
     let arc_sides: [[usize; 2]; 4] = [[1, 0], [3, 2], [4, 3], [0, 5]];
