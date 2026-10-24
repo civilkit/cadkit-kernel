@@ -49,6 +49,19 @@ pub const MIN_DEPTH: f64 = 1e-6;
 pub enum Combine {
     Add,
     Cut,
+    /// `newBody`: the tool becomes its own lump, not united with what it touches or crosses.
+    Separate,
+}
+
+impl Combine {
+    /// How a feature with this operation combines with the body.
+    pub fn of(op: super::Op) -> Combine {
+        match op {
+            super::Op::Add => Combine::Add,
+            super::Op::Cut => Combine::Cut,
+            super::Op::NewBody => Combine::Separate,
+        }
+    }
 }
 
 fn v2(p: [f64; 2]) -> Vec2 {
@@ -269,7 +282,7 @@ pub fn exec_extrude_ex(state: &RegenState, f: &Feature, body: Option<&Body>, ext
     let draft = state.num(f, "draft", 0.0)?;
     let (profile, thin_on) = super::thin::feature_profile(state, sk, f)?;
     let depth = depth.max(MIN_DEPTH);
-    let combine = if *op == Op::Cut { Combine::Cut } else { Combine::Add };
+    let combine = Combine::of(*op);
     let mut o = match end {
         End::Blind if *flip => ExtrudeOpts::flipped(depth),
         End::Blind => ExtrudeOpts::blind(depth),
@@ -643,7 +656,7 @@ pub fn exec_revolve(state: &RegenState, f: &Feature, has_body: bool) -> Result<T
     if angle.abs() < 1e-9 {
         return Err(FeatureError::new(codes::INVALID_VALUE));
     }
-    let combine = if *op == Op::Cut { Combine::Cut } else { Combine::Add };
+    let combine = Combine::of(*op);
     if combine == Combine::Cut && !has_body {
         return Err(FeatureError::new(codes::NOTHING_TO_CUT));
     }

@@ -565,7 +565,9 @@ body). Both fail with a structured error and leave the model unchanged.
  "translate":[10,0,0],"rotate":{"axis":[0,0,1],"origin":[0,0,0],"angle":30},"copy":false}
 ```
 
-- `bodies` (also `body` / `target`; an array, an object or a string): `{"face": name}` or the
+- `bodies` (also `target`, and `body` when it is an object / array, or a string while `copy` is not true; an array, an
+  object or a string): `{"body": name}` selects every lump with that body name (see "Separate bodies"),
+  `{"face": name}` or the
   bare name selects the lump holding that face, `{"feature": id}` (or a bare id that is not a
   face name, i.e. has no `.`) selects every lump holding a face made by that feature — the face
   names `F17.*` (caps, walls, blends alike, so the GUI need not know which) including instance
@@ -581,7 +583,8 @@ body). Both fail with a structured error and leave the model unchanged.
   already holds other solids. Names are unchanged, so references made after it still resolve
   (`crates/ck-model/tests/move_features.rs`, `bldc_rotates_*`, `face_references_after_a_bldc_transform`).
 - `copy: true` leaves the original and appends a moved copy whose face names get the
-  instance suffix `@<id>.1`; otherwise the entities move in place and all names are unchanged.
+  instance suffix `@<id>.1`; otherwise the entities move in place and all names are unchanged. With `copy: true`, a
+  string `body` names the copies (`bodyNameConflict` when the name is taken).
 - Moved bodies are not united with what they touch or cross: the result may hold overlapping
   lumps (use a boolean feature after it).
 - Errors: `nothingToCut`, `missingReference`, `invalidValue {detail}` (non-finite numbers,
@@ -714,9 +717,10 @@ A document can hold several lumps (separate bodies: a feature that does not touc
 ```
 
 - `op`: `union` (`add`, `join`), `cut` (`subtract`), `intersect` (`common`), `split`.
-- `target` (also `a`): exactly one lump, as a face name (bare string or `{face}`: the lump holding that face) or
-  `{lump: n}` (index in `massProps {bodies:true}` order). `tools` (also `tool`, `b`): one or more lumps, same selectors;
-  a tool may not be the target.
+- `target` (also `a`): exactly one lump, as a face name (bare string or `{face}`: the lump holding that face),
+  `{lump: n}` (index in `massProps {bodies:true}` order) or `{body: name}` (`ambiguousBody` when several lumps have the
+  name). `tools` (also `tool`, `b`): one or more lumps, same selectors (`{body}` takes every lump with the name);
+  a tool may not be the target. `body` (optional): the name of the result lump, default the target's name.
 - `union`: target united with each tool in turn (the arrangement is binary, so the n-ary union is sequential in the listed
   order; tools that overlap each other still end up in one lump). `cut`: target minus each tool. `intersect`: target inside
   every tool. `split`: the target cut into the part outside all tools and the part inside them (two lumps; the tools are
@@ -736,6 +740,61 @@ A document can hold several lumps (separate bodies: a feature that does not touc
 runs the same operation on a copy of the current body and answers
 `{"ok":true,"lumps":n,"volume":v,"area":a,"faces":[...],"toleranceUsed"?:t}` or
 `{"ok":false,"error":{"code":..,"params":{..}}}`. The state is not changed; to keep the result, add the `combine` feature.
+
+### Separate bodies: `op: "newBody"` and body names
+
+Decision record: `docs/adr/0004-multiple-bodies-in-one-part.md` (step 1). Tests: `crates/ck-model/tests/new_body.rs`,
+`crates/ck-wasm/tests/new_body_wire.rs`.
+
+```json
+{"type":"extrude","id":"F3","op":"newBody","body":"Case","sketch":"S3","end":"blind","depth":10}
+{"type":"moveBody","id":"F5","bodies":[{"body":"Case"}],"translate":[0,30,0],"copy":true,"body":"Case2"}
+{"type":"combine","id":"F6","op":"cut","target":{"body":"Case"},"tools":[{"body":"Tool"}],"body":"Case"}
+```
+
+- `op: "newBody"` (read aliases `new`, `separate`; written `newBody`) on `extrude`, `revolve`, `loft`, `sweep` (profile
+  regions, `thin`, `draft` and every end condition keep working): the result is added as its own lump and is NOT united
+  with lumps it touches or crosses; the existing lumps are untouched. Overlapping lumps are legal in a result (as after
+  `moveBody`). With no body yet it is a plain solid with the same faces and names as `add`. Face names are those of the same
+  feature with `add`. Every other solid-producing feature (`rib`, `thread`, `hole`, `lip`, patterns, `surface*`, ...)
+  refuses an `op` of `newBody` with `invalidValue {detail: "operation newBody is not supported by <type>", hint}`.
+- `body` (optional string) names the lump(s) a feature creates: on a `newBody` extrude / revolve / loft / sweep; on
+  `moveBody` with `copy: true` (names the copies, the original keeps its name; every copy of one `moveBody` gets the
+  name); on `combine` (names the result lump, the first one of a `split`; default: the target's name stays, if it has
+  one). A `body` on an extrude / revolve / loft / sweep whose `op` is not `newBody` is `invalidValue {detail}`. On
+  `moveBody`, a string `body` without `copy: true` keeps its older meaning (an alias of `bodies`, a selection), so
+  documents written before this step read as before; `body` as an object or array is always the selection alias.
+- The name is stored on the lump. It follows the lump through later features: a cut, a fillet, a regen after an unrelated
+  edit. The rule is the lump's origin, the lowest-numbered feature that owns one of its faces (a face made inside an
+  instance, `F2.C1@F9.1`, is owned by the feature that made the instance, `F9`); `combine` gives its result the target's
+  name (or its own `body`) explicitly. Unnamed lumps behave exactly as before. A feature whose result merges two named
+  lumps keeps the name of the lump with the lowest origin.
+- `moveBody` with `copy: true` also takes `mirror: <plane>` (a standard plane, a plane feature or a planar face): the copies
+  are the mirror images about the plane (then moved by the motion, if any). Solid bodies only. A `mirror` feature whose
+  seed's tool has no recipe (a hole, loft or sweep) reflects the tool body itself.
+- Selector `{"body": "<name>"}` next to `{face}`, `{feature}`, `{lump}`: `moveBody.bodies`, `combine.target` and `tools`,
+  `deleteBody.bodies`. Where several lumps are allowed it selects every lump with the name (a copy made from two lumps by
+  one `moveBody` shares one name); `combine.target` takes exactly one.
+- A cut limited to one body is a composition: a `newBody` tool, then `combine` `cut` with `target {body}` and the tool.
+- Reporting: `massProps {bodies:true}` entries carry `name` when the lump has one (absent otherwise). `interference` pairs
+  carry `aName` / `bName` likewise. `validate` does not report overlapping lumps as issues: `ok` and `issues` are
+  unchanged, and when lumps overlap the reply gets an `info` array of
+  `{"code":"bodiesOverlap","severity":"info","a":<face id>,"b":<face id>,"aName"?,"bName"?,"volume":<common volume>}`
+  (the key is absent when nothing overlaps); run a `combine` to resolve it.
+- Errors (`regen.errors`, the feature fails and the body is as it was):
+  - `bodyNameConflict {name, features:[id, id]}`: a live lump already has the name; `features` lists the feature that made
+    that lump (its origin) and the feature that asked for the name.
+  - `missingReference {name, nearest:[names]}`: a `{body}` selector matches no lump; `nearest` are up to three existing
+    names, closest first.
+  - `ambiguousBody {name, candidates:[{lump, face}]}`: `combine.target` named several lumps (`lump` is the wire index,
+    `face` one face id of it).
+  - `invalidValue {detail, hint?}`: `newBody` on a feature that does not take it, `body` that is not a non-empty string,
+    `body` without `newBody` on extrude / revolve / loft / sweep.
+- Limits: a `fillet` or `chamfer` whose picks all lie on one lump acts on that lump alone (the other lumps, a coincident
+  copy for one, take no part and are put back unchanged); picks spread over lumps that overlap still fail with
+  `blendFailed` (independent of names): `combine` the lumps first, or keep them apart. In an assembly (`insertPart`
+  components) the blend sees the whole body as before. A pattern whose seed is a `newBody` feature copies it as separate lumps
+  (unnamed). `targets` on `cut` / `intersect` / `join` is not part of this step.
 
 ### Edge contact in results
 

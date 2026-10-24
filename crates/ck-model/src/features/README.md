@@ -33,11 +33,23 @@ strings from kernel.strings, and dispatch to ck-ops/ck-topo.
 | insertPart | part(nested .ckpart), place/source, fixed, dx,dy,dz, axis, angle |
 | mate | kind(coincident/concentric/distance/angle/parallel), a, b, distance(expr), flip |
 | refPlane | mode, base, offset, flip, visible |
-| deleteBody | bodies[] |
+| deleteBody | bodies[] ({face}/{surface}/{body}) |
 | thread | face (cylinder face name), standard, size (validated against `crate::threads`), class, length (number or "full"), hand, start, modeled. Cosmetic: a `threads` entry + `warnings` (threadDiameterMismatch, threadModelFallback) in the regen result; modeled: helical groove tool cut from the body, faces `<id>.T0..T5` |
 | moveFace | faces[], mode(offset/translate), distance, translate[x,y,z], flip. Offsets / translates faces via ck-ops `move_faces_body`; neighbours extend, tangent fillets travel, names unchanged; errors noFaces, missingReference, moveFaceUnsupported, moveFaceFailed (move_face.rs) |
-| moveBody | bodies[]({face}/{surface}/{feature}, default all), translate[x,y,z], rotate{axis,origin,angle deg}, copy; rigid, names unchanged (copy: `@<id>.1`); `{feature}`/bare non-face id = lumps of faces made by that feature incl. `@...` copies (move_body.rs) |
+| moveBody | bodies[]({face}/{surface}/{feature}/{body}, default all), translate[x,y,z], rotate{axis,origin,angle deg}, copy, body (name of the copies when copy:true); rigid, names unchanged (copy: `@<id>.1`); `{feature}`/bare non-face id = lumps of faces made by that feature incl. `@...` copies (move_body.rs) |
 | pipeCut | radius(expr), edges[{faces,at}], faces[] (all their rim edges); the picks may sit in the solid or in a surface body; the result is a SURFACE body registered under the feature id (solid disappears) |
+
+## Separate bodies (`bodies.rs`, docs/adr/0004)
+
+- `op: "newBody"` (aliases `new`, `separate`) on extrude / revolve / loft / sweep: `Op::NewBody` -> `Combine::Separate`,
+  the tool is appended as its own lump (`Brep::combine_at`), never united. Any other feature type with that op:
+  `invalidValue {detail, hint}` (`bodies::check_feature`, run first in `exec_feature`).
+- `body` (string) names the lump(s) a feature creates: newBody features, `moveBody` with `copy:true`, `combine` (result;
+  default the target's name). Stored in `Lump::name` (ck-topo); `Brep::exec` puts the names of the lumps present before a
+  feature back on the lumps with the same origin afterwards (`bodies::restore`), so every feature keeps them.
+- Selector `{body: name}` in moveBody.bodies, combine target / tools, deleteBody.bodies. Errors: `bodyNameConflict {name,
+  features}`, `missingReference {name, nearest}`, `ambiguousBody {name, candidates}`.
+- `massProps {bodies:true}` entries and `interference` pairs carry the name; `validate` adds `info: [bodiesOverlap]`.
 
 ## Error strings (kernel.strings, verbatim per feature)
 

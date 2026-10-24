@@ -2,7 +2,7 @@
 //!
 //! `{bodies: <lump count>, pairs:[{a, b, volume, com, box}]}` where `a` / `b`
 //! are a face id of each lump (the client maps them back to its bodies) and
-//! `volume / com / box` describe the common part; a pair whose boolean fails
+//! `volume / com / box` describe the common part (`aName` / `bName`: the lump's body name, when it has one); a pair whose boolean fails
 //! reports `error` instead. Oracle: parts built by the feature set never
 //! contain overlapping lumps (overlapping solids merge), so only
 //! `{bodies:n, pairs:[]}` is pinned; the pair record is a GUESS (key order
@@ -55,7 +55,14 @@ pub fn reply(body: &Body) -> Json {
             if !boxes_overlap(&parts[i], &parts[j]) {
                 continue;
             }
-            let rec = Obj::new().put("a", first_face(lumps[i])).put("b", first_face(lumps[j]));
+            let mut rec = Obj::new().put("a", first_face(lumps[i])).put("b", first_face(lumps[j]));
+            // body names (docs/adr/0004), only on lumps that have one
+            if let Some(n) = &body.lump(lumps[i]).name {
+                rec = rec.put("aName", n.as_str());
+            }
+            if let Some(n) = &body.lump(lumps[j]).name {
+                rec = rec.put("bName", n.as_str());
+            }
             match boolean(&parts[i], &parts[j], Op::Intersect, TOL) {
                 Ok(out) if out.body.num_faces() > 0 => {
                     let mp = ck_topo::mass::mass_props(&out.body);

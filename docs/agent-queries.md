@@ -60,6 +60,7 @@ Number values: `5` (relative 1e-6), `{value,tol}` or `{min,max}`.
 | `feature` | yes | yes | feature id (or list) that made the face / that owns an adjacent face |
 | `name` | yes | yes | exact name, or prefix with trailing `*` (`"F2.S.*"`) |
 | `touches` | yes | yes | adjacent to / bounded by this face name |
+| `body` | yes | yes | name (or list) of the body (lump) the face / edge is in; bodies that overlap each have their own coincident faces, this tells them apart |
 | `between` | | yes | `[faceA, faceB]` |
 | `extreme` + `along` | yes | yes | `"max"`/`"min"` of the face centroid / edge midpoint along `x|y|z` among the matches so far; `along` defaults to the axis of `normal`/`axis`/`dir` |
 | `near` (+`within`) | yes | yes | `[x,y,z]` tie-break: keeps the single nearest candidate only when it is strictly nearest (reported as `resolvedBy:"near"`); `within` is a hard radius filter |

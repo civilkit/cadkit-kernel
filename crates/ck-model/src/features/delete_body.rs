@@ -1,6 +1,7 @@
 //! `deleteBody {mode, bodies}`: remove (`delete`) or keep only (`keep`) the
 //! named bodies. RECONSTRUCTION: `bodies[]` entries are `{face: "<face id>"}`
-//! (the body = the lump holding that face) or `{surface: "<feature id>"}`
+//! (the body = the lump holding that face), `{body: "<name>"}` (every lump with
+//! that body name; none: `missingReference {name, nearest}`) or `{surface: "<feature id>"}`
 //! (client `bodyRefOf`); an empty list is `noBodies`, an unresolved entry
 //! `missingReference` (oracle probes `deleteBodyNone` / `deleteBodySurf`).
 
@@ -21,7 +22,13 @@ pub fn exec_delete_body(br: &mut Brep, _state: &mut RegenState, f: &Feature) -> 
     let mut solid_faces: Vec<FaceId> = vec![];
     for r in refs {
         let missing = || FeatureError::new(codes::MISSING_REFERENCE);
-        if let Some(face) = r.get_str("face") {
+        if let Some(name) = r.get_str("body") {
+            let lumps = super::bodies::lumps_named(br.body.as_ref(), name)?;
+            let b = br.body.as_ref().ok_or_else(missing)?;
+            for l in lumps {
+                solid_faces.extend(ck_topo::mass::lump_faces(b, l));
+            }
+        } else if let Some(face) = r.get_str("face") {
             match br.slot_of_face(face).ok_or_else(missing)? {
                 Slot::Surf(i) => surf_hit.push(i),
                 Slot::Solid => {

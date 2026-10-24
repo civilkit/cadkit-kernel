@@ -9,7 +9,9 @@
 //!  "copy":false}
 //! ```
 //!
-//! * `bodies` (also `body` / `target`; an object, a string or an array of either):
+//! * `bodies` (also `target`, and `body` when it is an object or an array and `copy` is not true; an object, a
+//!   string or an array of either):
+//!   `{body: "<name>"}` selects every lump with that body name (none: `missingReference {name, nearest}`),
 //!   `{face: "<face id>"}` (or the bare string) selects the lump holding that face,
 //!   `{feature: "<feature id>"}` (or a bare id that is not a face name) selects every
 //!   lump holding a face made by that feature (`F17.*`, instance and patterned copies
@@ -24,6 +26,12 @@
 //! * `copy: true` leaves the original and appends a moved copy whose face names carry
 //!   the instance suffix `@<id>.1`; otherwise face names (hence references) are
 //!   unchanged: the entities are moved in place.
+//! * `body: "<name>"` (with `copy: true`) names the copies; the original keeps its name. A name a lump already has is
+//!   `bodyNameConflict {name, features}`. Without `copy` a string `body` keeps its older meaning, a selection
+//!   (`bodies` alias), so existing documents read as before.
+//! * `mirror: <plane>` (with `copy: true`, solid bodies only): the copies are the mirror images about that plane (a standard
+//!   plane, a plane feature or a planar face, as for the `mirror` feature), then moved by the motion if there is one.
+//!   Face names carry the instance suffix as for any copy.
 //! * Errors: `nothingToCut` (no body), `missingReference`, `invalidValue`
 //!   (non-finite numbers / zero rotation axis, with `detail`).
 
@@ -150,7 +158,12 @@ fn move_faces(b: &mut Body, faces: &[FaceId], x: &Xform) {
 }
 
 fn entries(raw: &Json) -> Vec<&Json> {
+    let copy = crate::sketch::jtruthy(raw.get("copy"));
     for k in ["bodies", "body", "target"] {
+        // with `copy: true` a string `body` is the name of the copies, not a selection
+        if k == "body" && copy && matches!(raw.get(k), Some(Json::Str(_))) {
+            continue;
+        }
         match raw.get(k) {
             Some(Json::Arr(a)) => return a.iter().collect(),
             Some(j @ (Json::Str(_) | Json::Obj(_))) => return vec![j],
@@ -185,7 +198,20 @@ pub fn exec_move_body(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Res
         return Err(FeatureError::new(codes::NOTHING_TO_CUT));
     }
     let copy = crate::sketch::jtruthy(f.raw.get("copy"));
+    let copy_name = if copy { super::bodies::body_name(&f.raw)? } else { None };
+    if let Some(n) = &copy_name {
+        super::bodies::check_free(br.body.as_ref(), n, &f.id, &[])?;
+    }
     let x = motion(state, f)?;
+    let mirror = match f.raw.get("mirror") {
+        Some(p) if copy => {
+            let r = crate::GeomRef::from_json(p).ok_or_else(|| invalid("unknown mirror plane"))?;
+            let fr = super::pattern::plane_frame(br, state, &r).ok_or_else(missing)?;
+            Some(ck_core::linalg::Plane::new(fr.o, fr.z))
+        }
+        Some(_) => return Err(invalid("mirror needs copy: true")),
+        None => None,
+    };
     // ---- resolve the selection
     let mut solid_faces: Vec<FaceId> = vec![];
     let mut surf_hit: Vec<usize> = vec![];
@@ -194,7 +220,15 @@ pub fn exec_move_body(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Res
         // `{face}` / a bare string that names a face; a bare id without `.`
         // falls through to the feature selection below.
         let face = r.get_str("face").or_else(|| r.as_str().filter(|s| s.contains('.')));
-        if let Some(face) = face {
+        if let Some(name) = r.get_str("body") {
+            // `{body: "<name>"}`: every lump with that body name
+            let b = br.body.as_ref();
+            let lumps = super::bodies::lumps_named(b, name)?;
+            let b = b.ok_or_else(missing)?;
+            for l in lumps {
+                solid_faces.extend(ck_topo::mass::lump_faces(b, l));
+            }
+        } else if let Some(face) = face {
             match br.slot_of_face(face).ok_or_else(missing)? {
                 Slot::Surf(i) => surf_hit.push(i),
                 Slot::Solid => {
@@ -230,16 +264,26 @@ pub fn exec_move_body(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Res
     solid_faces.dedup();
     surf_hit.sort_unstable();
     surf_hit.dedup();
-    let Some(x) = x else { return Ok(()) };
+    // a copy with no motion (a copy in place, to be named and worked on separately) still makes the copy
+    let x = match x { Some(x) => x, None if copy => Xform::IDENTITY, None => return Ok(()) };
+    if mirror.is_some() && !surf_hit.is_empty() {
+        return Err(invalid("mirror works on solid bodies only"));
+    }
     // ---- apply
     if !solid_faces.is_empty() {
         if copy {
             let b = br.body.as_ref().unwrap();
             let mut c = ck_ops::boolean::assemble::rebuild_in_order(b, &solid_faces);
             ck_topo::region::rebuild_lumps(&mut c);
+            if let Some(pl) = &mirror {
+                c = super::pattern::reflect_body(&c, pl).map_err(|e| FeatureError::new(&e))?;
+            }
             c.push_instance(&format!("{}.1", f.id));
             c.transform(&x);
             br.append_body(&c);
+            if let (Some(n), Some(b)) = (&copy_name, br.body.as_mut()) {
+                super::bodies::stamp_origin(b, &f.id, n);
+            }
         } else if let Some(b) = br.body.as_mut() {
             move_faces(b, &solid_faces, &x);
         }

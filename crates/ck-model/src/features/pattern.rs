@@ -308,8 +308,12 @@ pub fn exec_mirror(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
     let (geo, srcs) = thread_sources(state, f, seeds, auto);
     let mut copies = vec![];
     for (id, t) in seed_tools(br, &geo).or_else(|e| if geo.is_empty() && !seeds.is_empty() { Ok(vec![]) } else { Err(e) })? {
-        let recipe = t.recipe.as_ref().ok_or_else(|| FeatureError::new(&super::extrude::todo("mirror of a tool without a recipe")))?;
-        let mut b = mirror_tool(id, recipe, &pl).map_err(|e| FeatureError::new(&e))?;
+        let mut b = match t.recipe.as_ref() {
+            Some(recipe) => mirror_tool(id, recipe, &pl).map_err(|e| FeatureError::new(&e))?,
+            // A tool made without a recipe (the tool body of a targeted join / cut / intersect on a named body): reflect the body itself,
+            // as `body: true` does, faces keep their names.
+            None => reflect_body(&t.body, &pl).map_err(|e| FeatureError::new(&e))?,
+        };
         // GUESS: every seed's copy is instance 1
         b.push_instance(&format!("{}.1", f.id));
         copies.push((b, t.combine));

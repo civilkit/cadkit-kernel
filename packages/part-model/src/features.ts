@@ -47,7 +47,9 @@ export interface RevolveFeature {
   type: 'revolve';
   id: string;
   name?: string;
-  op: 'add' | 'cut';
+  op: 'add' | 'cut' | 'newBody';
+  /** with `op: 'newBody'` (or on any creating feature): the name of the body (lump) it makes */
+  body?: string;
   sketch: string | null;
   axis?: GeomRef | string | null;
   end: string;
@@ -62,7 +64,8 @@ export interface SweepFeature {
   type: 'sweep';
   id: string;
   name?: string;
-  op: 'add' | 'cut';
+  op: 'add' | 'cut' | 'newBody';
+  body?: string;
   sketch: string | null;
   path?: GeomRef | null;
   twist?: Expr;
@@ -74,7 +77,8 @@ export interface LoftFeature {
   type: 'loft';
   id: string;
   name?: string;
-  op: 'add' | 'cut';
+  op: 'add' | 'cut' | 'newBody';
+  body?: string;
   sketches: string[];
   surface?: boolean;
   centreLine?: unknown;
@@ -392,6 +396,21 @@ export interface PlaneFeature {
   [key: string]: unknown;
 }
 
+/** Boolean of whole bodies: `target` (one named body) combined with `tools` (named bodies). */
+export interface CombineFeature {
+  type: 'combine';
+  id: string;
+  name?: string;
+  op: 'union' | 'cut' | 'intersect' | 'split';
+  /** names the result body */
+  body?: string;
+  target: BodyRef;
+  tools: BodyRef[];
+  /** keep the tool bodies after the operation (default false) */
+  keepTools?: boolean;
+  [key: string]: unknown;
+}
+
 export interface DeleteBodyFeature {
   type: 'deleteBody';
   id: string;
@@ -547,7 +566,7 @@ export interface MoveFaceFeature {
 }
 
 /** A body of a `moveBody`: the lump holding a face, or a surface body by its feature id. */
-export type BodyRef = string | { face: string } | { surface: string };
+export type BodyRef = string | { face: string } | { surface: string } | { body: string } | { feature: string } | { lump: number };
 
 /**
  * Rigid move (rotate about `rotate.axis` through `rotate.origin` by `rotate.angle` degrees,
@@ -560,6 +579,10 @@ export interface MoveBodyFeature {
   id: string;
   name?: string;
   copy?: boolean;
+  /** with `copy: true`: the name of the copies (the original keeps its name) */
+  body?: string;
+  /** with `copy: true`: the copies are the mirror images about this plane (a standard plane, plane feature or planar face) */
+  mirror?: GeomRef;
   bodies?: BodyRef[];
   translate?: [Expr, Expr, Expr];
   rotate?: { axis: [Expr, Expr, Expr] | 'x' | 'y' | 'z'; origin?: [Expr, Expr, Expr]; angle: Expr };
@@ -623,7 +646,7 @@ export type KnownFeature =
   | DeleteFaceFeature | ThickenFeature | CutWithSurfaceFeature | PipeCutFeature
   | FreeformFeature | EditCurveFeature | ProjectCurveFeature | ExtendFeature
   | DomeFeature | SplitLineFeature | MoveFaceFeature | MoveBodyFeature
-  | ScaleFeature | AxisFeature | ThreadFeature;
+  | ScaleFeature | AxisFeature | ThreadFeature | CombineFeature;
 
 /** All wire type strings the kernel dispatches on. */
 export const FEATURE_TYPES = [
@@ -634,7 +657,7 @@ export const FEATURE_TYPES = [
   'surfaceOffset', 'knit', 'fill', 'insertPart', 'mate', 'plane',
   'deleteBody', 'deleteFace', 'thicken', 'cutWithSurface', 'pipeCut',
   'freeform', 'editCurve', 'projectCurve', 'extend', 'dome', 'splitLine',
-  'moveFace', 'moveBody', 'scale', 'axis', 'thread',
+  'moveFace', 'moveBody', 'scale', 'axis', 'thread', 'combine',
 ] as const;
 
 export type FeatureTypeName = (typeof FEATURE_TYPES)[number];

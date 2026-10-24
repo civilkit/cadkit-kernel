@@ -117,6 +117,8 @@ pub struct Shell {
 pub struct Lump {
     pub shells: Vec<ShellId>,
     pub alive: bool,
+    /// Document-level body name (`body` field of the feature that made the lump), if it has one.
+    pub name: Option<String>,
 }
 
 // ---------------------------------------------------------------- naming
@@ -370,7 +372,7 @@ impl Body {
 
     // ---- construction
     pub fn add_lump(&mut self) -> LumpId {
-        self.lumps.push(Lump { shells: vec![], alive: true });
+        self.lumps.push(Lump { shells: vec![], alive: true, name: None });
         LumpId(self.lumps.len() as u32 - 1)
     }
     pub fn add_shell(&mut self, lump: LumpId) -> ShellId {
