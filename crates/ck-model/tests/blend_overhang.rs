@@ -70,10 +70,7 @@ fn vol(o: Out) -> f64 {
     }
 }
 
-// IGNORED while the union repair lands (weld the F7.B3|F7.P0 seam edge and refit
-// the bad pcurve in overhang.rs); remove the attribute when it passes.
 #[test]
-#[ignore = "corner patch boolean union repair in progress"]
 fn all_four_edges_wrap_into_one_corner_patch() {
     let (v, b) = match run(FIXTURE, false) {
         Out::Ok { vol, body } => (vol, body),
@@ -106,7 +103,12 @@ fn all_four_edges_wrap_into_one_corner_patch() {
         let (u2, w2) = b.face(bf).surface.closest_param(p);
         let d = b.outward_normal(patch, u1, w1).normalize().dot(b.outward_normal(bf, u2, w2).normalize()).clamp(-1.0, 1.0);
         let ang = d.acos();
-        assert!(ang < 0.02, "F7.B{k} seam tangent deviation {ang} rad");
+        assert!(
+            ang < 0.02,
+            "F7.B{k} seam tangent deviation {ang} rad p_uv=({u1:.4},{w1:.4}) b_uv=({u2:.4},{w2:.4}) n_patch={:?} n_blend={:?}",
+            b.outward_normal(patch, u1, w1),
+            b.outward_normal(bf, u2, w2)
+        );
     }
 }
 
