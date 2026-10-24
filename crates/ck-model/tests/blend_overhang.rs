@@ -23,6 +23,10 @@ impl FeatureExec for Exec {
 }
 
 const FIXTURE: &str = include_str!("fixtures/overhang/bad_overhang_fillets.ckpart");
+const FIX_MZ: &str = include_str!("fixtures/overhang/bad_overhang_mz.ckpart");
+const FIX_UNDER: &str = include_str!("fixtures/overhang/bad_overhang_under.ckpart");
+const FIX_TWO: &str = include_str!("fixtures/overhang/bad_overhang_two.ckpart");
+const FIX_SKEW: &str = include_str!("fixtures/overhang/bad_overhang_skew.ckpart");
 
 /// The fixture's fillet edge picks 0..3: cube top / block wall (concave), cube top / cube wall (convex),
 /// underside / block wall (convex), cube wall / underside (concave).
@@ -63,6 +67,42 @@ fn run(src: &str, drop_last: bool) -> Out {
     Out::Ok { vol: ck_topo::mass::mass_props(&b).volume, body: b }
 }
 
+/// The wrap budget for a cube+block body with `patches` overhang corners: 12 original
+/// planes + 4 stripes and 1 spline patch per corner, nothing else; every stripe seams
+/// G1 to its patch.
+fn assert_wraps(b: &ck_topo::body::Body, patches: usize) {
+    use ck_topo::body::Role;
+    let names: Vec<String> = b.face_ids().map(|f| b.face_id_str(f)).collect();
+    assert_eq!(names.len(), 12 + 5 * patches, "faces {names:?}");
+    let f7: Vec<String> = names.into_iter().filter(|n| n.starts_with("F7.")).collect();
+    assert_eq!(f7.len(), 5 * patches, "F7 faces {f7:?} (steps or slivers leaked)");
+    let mut patch_faces = vec![];
+    for k in 0..patches {
+        let p = b.find_face(&format!("F7.P{k}")).unwrap_or_else(|| panic!("corner patch P{k} missing"));
+        assert!(matches!(b.face(p).surface, ck_geom::surface::Surface::BSpline(_)));
+        patch_faces.push(p);
+    }
+    let blends: Vec<ck_topo::body::FaceId> = f7
+        .iter()
+        .filter_map(|n| b.find_face(n))
+        .filter(|&f| matches!(b.face(f).name.role, Role::Blend(_)))
+        .collect();
+    assert_eq!(blends.len(), 4 * patches, "blend count");
+    for bf in blends {
+        let (pf, seam) = patch_faces
+            .iter()
+            .find_map(|&pf| b.face_edges(pf).into_iter().find(|&e| b.face_edges(bf).contains(&e)).map(|e| (pf, e)))
+            .expect("patch|stripe seam");
+        let ed = b.edge(seam);
+        let pt = ed.curve.eval(0.5 * (ed.t0 + ed.t1));
+        let (u1, w1) = b.face(pf).surface.closest_param(pt);
+        let (u2, w2) = b.face(bf).surface.closest_param(pt);
+        let d = b.outward_normal(pf, u1, w1).normalize().dot(b.outward_normal(bf, u2, w2).normalize()).clamp(-1.0, 1.0);
+        let ang = d.acos();
+        assert!(ang < 0.02, "{} seam tangent deviation {ang} rad", b.face_id_str(bf));
+    }
+}
+
 fn vol(o: Out) -> f64 {
     match o {
         Out::Ok { vol, .. } => vol,
@@ -84,32 +124,7 @@ fn all_four_edges_wrap_into_one_corner_patch() {
     let want = v0 + k * ((len[0] + len[3]) - (len[1] + len[2]));
     assert!((v - want).abs() < 2e-4 * v0, "volume {v} vs analytic {want}");
     // OCCT topology: 12 planes + 4 blend cylinders + 1 corner patch, nothing else
-    let names: Vec<String> = b.face_ids().map(|f| b.face_id_str(f)).collect();
-    assert_eq!(names.len(), 17, "faces {names:?}");
-    let f7: Vec<String> = names.into_iter().filter(|n| n.starts_with("F7.")).collect();
-    assert_eq!(f7.len(), 5, "F7 faces {f7:?} (steps or slivers leaked)");
-    let patch = b.find_face("F7.P0").expect("corner patch");
-    assert!(matches!(b.face(patch).surface, ck_geom::surface::Surface::BSpline(_)));
-    for k in 0..4u32 {
-        assert!(b.find_face(&format!("F7.B{k}")).is_some(), "blend F7.B{k}");
-    }
-    // G1: the patch's normal matches each stripe's across their shared arc
-    for k in 0..4u32 {
-        let bf = b.find_face(&format!("F7.B{k}")).unwrap();
-        let seam = b.face_edges(patch).into_iter().find(|&e| b.face_edges(bf).contains(&e)).expect("patch|stripe seam");
-        let ed = b.edge(seam);
-        let p = ed.curve.eval(0.5 * (ed.t0 + ed.t1));
-        let (u1, w1) = b.face(patch).surface.closest_param(p);
-        let (u2, w2) = b.face(bf).surface.closest_param(p);
-        let d = b.outward_normal(patch, u1, w1).normalize().dot(b.outward_normal(bf, u2, w2).normalize()).clamp(-1.0, 1.0);
-        let ang = d.acos();
-        assert!(
-            ang < 0.02,
-            "F7.B{k} seam tangent deviation {ang} rad p_uv=({u1:.4},{w1:.4}) b_uv=({u2:.4},{w2:.4}) n_patch={:?} n_blend={:?}",
-            b.outward_normal(patch, u1, w1),
-            b.outward_normal(bf, u2, w2)
-        );
-    }
+    assert_wraps(&b, 1);
 }
 
 #[test]
@@ -134,4 +149,64 @@ fn three_of_the_four_edges_still_build() {
     let v0 = vol(run(FIXTURE, true));
     let v = vol(run(&part_with(&[0, 1, 2]), false));
     assert!(v < v0 && v > v0 - 60.0, "{v} vs {v0}");
+}
+
+
+// ---------------------------------------------------------------- Task 2: generalisation
+
+#[test]
+fn the_mirrored_overhang_wraps_the_same_way() {
+    let (v, b) = match run(FIX_MZ, false) {
+        Out::Ok { vol, body } => (vol, body),
+        Out::Err { code, params } => panic!("unexpected error {code} {params:?}"),
+    };
+    let v0 = vol(run(FIX_MZ, true));
+    let k = (1.0 - std::f64::consts::FRAC_PI_4) * 4.0;
+    let len = [25.0 - 8.961, 9.193 + 25.0, 43.471 - 25.0, 25.0 - 9.193];
+    let want = v0 + k * ((len[0] + len[3]) - (len[1] + len[2]));
+    assert!((v - want).abs() < 2e-4 * v0, "mirror volume {v} vs analytic {want}");
+    assert_wraps(&b, 1);
+}
+
+#[test]
+fn a_block_under_the_ledge_wraps_the_same_way() {
+    let (v, b) = match run(FIX_UNDER, false) {
+        Out::Ok { vol, body } => (vol, body),
+        Out::Err { code, params } => panic!("unexpected error {code} {params:?}"),
+    };
+    let v0 = vol(run(FIX_UNDER, true));
+    let k = (1.0 - std::f64::consts::FRAC_PI_4) * 4.0;
+    let len = [25.0 - 8.961, 9.193 + 25.0, 43.471 - 25.0, 25.0 - 9.193];
+    let want = v0 + k * ((len[0] + len[3]) - (len[1] + len[2]));
+    assert!((v - want).abs() < 2e-4 * v0, "under-ledge volume {v} vs analytic {want}");
+    assert_wraps(&b, 1);
+}
+
+#[test]
+fn a_block_overhanging_two_walls_gets_two_corner_patches() {
+    let (v, b) = match run(FIX_TWO, false) {
+        Out::Ok { vol, body } => (vol, body),
+        Out::Err { code, params } => panic!("unexpected error {code} {params:?}"),
+    };
+    let v0 = vol(run(FIX_TWO, true));
+    let k = (1.0 - std::f64::consts::FRAC_PI_4) * 4.0;
+    // eight edges: picks 0,3 and 5,7 concave, 1,2,4,6 convex; lens of picks 4..7 are
+    // the second corner's (a) cube-top|x-wall 33.961, (b) top|z-wall 16.039,
+    // (c) under|z-wall 22.245, (d) under|x-wall 15.807
+    let want = v0 + k * ((16.039 + 15.807 + 16.039 + 15.807) - (34.193 + 18.471 + 33.961 + 22.245));
+    assert!((v - want).abs() < 2e-4 * v0, "two-corner volume {v} vs analytic {want}");
+    assert_wraps(&b, 2);
+}
+
+#[test]
+fn a_skewed_corner_is_refused_with_a_hint() {
+    match run(FIX_SKEW, false) {
+        Out::Err { code, params } => {
+            assert_eq!(code, "blendCorner");
+            let hint = params.iter().find(|(k, _)| k == "hint").map(|(_, v)| v.as_str()).unwrap_or("");
+            assert!(hint.contains("separate features"), "hint: {hint}");
+            assert!(params.iter().any(|(k, v)| k == "detail" && v.contains("not perpendicular")), "{params:?}");
+        }
+        Out::Ok { vol, .. } => panic!("expected a refusal, got a solid of volume {vol}"),
+    }
 }
