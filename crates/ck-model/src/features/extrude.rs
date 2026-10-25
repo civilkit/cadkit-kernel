@@ -675,3 +675,27 @@ pub fn exec_revolve(state: &RegenState, f: &Feature, has_body: bool) -> Result<T
     let body = revolve(&f.id, &profile, o, d, a0, a1).map_err(topo_err)?;
     Ok(Tool { body, combine, recipe: Some(Recipe::Revolve { profile, o, d, a0, a1 }) })
 }
+
+/// A ball of `radius` about `center` (poles along +Y): the revolve of a half disc, built directly so it needs no sketch.
+/// The one face is `<id>.S.e1`, a true sphere surface.
+pub fn exec_sphere(state: &RegenState, f: &Feature, has_body: bool) -> Result<Tool, FeatureError> {
+    let FeatureKind::Sphere { op } = &f.kind else { unreachable!() };
+    let bad = |detail: &str| FeatureError::new(codes::INVALID_VALUE).with("detail", Json::Str(detail.into()));
+    let c = super::move_body::vec3(state, f.raw.get("center"))?.unwrap_or(Vec3::ZERO);
+    let r = state.num(f, "radius", 0.0)?;
+    if !(r.is_finite() && r > 0.0) {
+        return Err(bad("the radius of a sphere is above 0"));
+    }
+    let combine = Combine::of(*op);
+    if combine == Combine::Cut && !has_body {
+        return Err(FeatureError::new(codes::NOTHING_TO_CUT));
+    }
+    let frame = ck_core::linalg::Frame { o: c, x: Vec3::X, y: Vec3::Y, z: Vec3::Z };
+    let half = ProfileLoop::new(vec![
+        ProfileSeg::arc("e1", Vec2::ZERO, Vec2::new(0.0, -r), Vec2::new(0.0, r)),
+        ProfileSeg::line("e2", Vec2::new(0.0, r), Vec2::new(0.0, -r)),
+    ]);
+    let profile = Profile::new(frame, vec![ProfileRegion { outer: half, holes: vec![] }]);
+    let body = revolve(&f.id, &profile, c, Vec3::Y, 0.0, TAU).map_err(topo_err)?;
+    Ok(Tool { body, combine, recipe: Some(Recipe::Revolve { profile, o: c, d: Vec3::Y, a0: 0.0, a1: TAU }) })
+}

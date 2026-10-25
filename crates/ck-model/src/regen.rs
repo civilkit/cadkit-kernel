@@ -122,7 +122,7 @@ pub mod codes {
 /// Pinned by probing each type with an empty payload; e.g. `convert`,
 /// `rebuildFace`, `matchEdges`, `refCurve` are separate messages, not features.
 pub const KNOWN_TYPES: &[&str] = &[
-    "sketch", "sketch3d", "plane", "axis", "extrude", "revolve", "sweep", "loft", "fillet", "chamfer", "shell", "rib",
+    "sketch", "sketch3d", "plane", "axis", "extrude", "revolve", "sphere", "sweep", "loft", "fillet", "chamfer", "shell", "rib",
     "lip", "dome", "splitLine", "draft", "moveFace", "hole", "lpattern", "cpattern", "mirror", "spattern",
     "fillpattern", "curvepattern", "moveBody", "mate", "insertPart", "scale", "surfaceExtrude", "surfaceRevolve",
     "surfacePlanar", "surfaceOffset", "deleteFace", "fill", "knit", "extend", "freeform", "trimSurface", "thicken",
