@@ -332,12 +332,87 @@ fn chain_at(segs: &[(Vec3, Vec3, Vec3, Vec3, f64)], t: f64) -> Vec3 {
     *c + (*ea * th.cos() + axis.cross(*ea) * th.sin()) * *rr
 }
 
+/// Fill the interior of `grid` (the four boundary rows/columns are already set) with
+/// the discrete Dirichlet Laplace solution.  Computed exactly in the sine basis of the
+/// grid graph, which is orthonormal and symmetric, so the two transforms are the same
+/// matrix product and the result is deterministic.
+fn harmonic_fill(grid: &mut [Vec<Vec3>], n: usize) {
+    let m = n - 2;
+    let den = m as f64 + 1.0;
+    let scale = (2.0 / den).sqrt();
+    let mut v = vec![vec![0.0f64; m]; m];
+    let mut lam = vec![0.0f64; m];
+    for k in 0..m {
+        lam[k] = 2.0 - 2.0 * ((k + 1) as f64 * std::f64::consts::PI / den).cos();
+        for i in 0..m {
+            v[k][i] = scale * ((k + 1) as f64 * (i + 1) as f64 * std::f64::consts::PI / den).sin();
+        }
+    }
+    let mul = |a: &[Vec<f64>], b: &[Vec<f64>]| -> Vec<Vec<f64>> {
+        let mut out = vec![vec![0.0f64; m]; m];
+        for i in 0..m {
+            for k in 0..m {
+                let aik = a[i][k];
+                for j in 0..m {
+                    out[i][j] += aik * b[k][j];
+                }
+            }
+        }
+        out
+    };
+    let comp = |p: Vec3, c: usize| -> f64 {
+        match c {
+            0 => p.x,
+            1 => p.y,
+            _ => p.z,
+        }
+    };
+    for c in 0..3 {
+        let mut b = vec![vec![0.0f64; m]; m];
+        for j in 0..m {
+            for i in 0..m {
+                if i == 0 {
+                    b[i][j] += comp(grid[0][j + 1], c);
+                }
+                if i == m - 1 {
+                    b[i][j] += comp(grid[n - 1][j + 1], c);
+                }
+                if j == 0 {
+                    b[i][j] += comp(grid[i + 1][0], c);
+                }
+                if j == m - 1 {
+                    b[i][j] += comp(grid[i + 1][n - 1], c);
+                }
+            }
+        }
+        let mut y = mul(&mul(&v, &b), &v);
+        for k in 0..m {
+            for l in 0..m {
+                y[k][l] /= lam[k] + lam[l];
+            }
+        }
+        let x = mul(&mul(&v, &y), &v);
+        for j in 0..m {
+            for i in 0..m {
+                let p = &mut grid[i + 1][j + 1];
+                match c {
+                    0 => p.x = x[i][j],
+                    1 => p.y = x[i][j],
+                    _ => p.z = x[i][j],
+                }
+            }
+        }
+    }
+}
+
 /// The patch surface through the hexagon `h` = [W1, A_line, C_line, W2,
-/// D_line, B_line] (module doc): a Coons grid over the four boundary chains
+/// D_line, B_line] (module doc): a grid over the four boundary chains
 /// (bottom W1..B_line through the two arcs, top C_line..D_line, sides the two
-/// lines), with the first interior rows projected into the stripes' cylinder
-/// tangent planes and the first interior columns into the wall planes (the
-/// seams' G1 neighbours), then tensor-product interpolation of the grid.
+/// lines), filled with the discrete Dirichlet Laplace solution so the ~90 deg
+/// corners where hexagon sides meet stay on the boundary, with the first
+/// interior rows projected into the stripes' cylinder tangent planes and the
+/// first interior columns into the wall planes (the seams' G1 neighbours),
+/// then tensor-product interpolation of the grid.
 fn patch_surface(
     h: &[Vec3; 6],
     bottom: [(Vec3, Vec3, Vec3, Vec3); 2], // (from, to, arc centre, strike centre+axis packed below)
@@ -366,18 +441,36 @@ fn patch_surface(
     let bw: Vec<f64> = bc.iter().map(|s| arc_sweep(s.0, s.1, s.2).1).collect();
     let tw: Vec<f64> = tc.iter().map(|s| arc_sweep(s.0, s.1, s.2).1).collect();
     let (bt, tt): (f64, f64) = (bw.iter().sum(), tw.iter().sum());
-    // Coons grid (reproduces the four boundary chains exactly)
+    // The four boundary chains.  The bottom and top chains each carry the ~90 degree
+    // corner where two hexagon sides meet (s = 0.5), so a Coons blend propagates it
+    // along the whole s = 0.5 line as a fold; the tessellator then breaks that fold
+    // into thousands of needle triangles whose geometric normals flip sign, which is
+    // what the renderer draws as a scribble at the pinch.  OCCT's reference patch is
+    // a plate fill that confines the corner to the boundary, so the interior is the
+    // discrete Dirichlet Laplace solution of the same four chains instead.
     let mut grid = vec![vec![Vec3::ZERO; n]; n];
+    for i in 0..n {
+        grid[i][0] = chain_at(&bc, sig[i]);
+        grid[i][n - 1] = chain_at(&tc, sig[i]);
+    }
     for j in 0..n {
-        for i in 0..n {
-            let (s, t) = (sig[i], sig[j]);
-            let bpt = chain_at(&bc, s);
-            let tpt = chain_at(&tc, s);
-            let lpt = bl(h[1], h[2], t);
-            let rpt = bl(h[5], h[4], t);
-            let bil = bl(bl(h[1], h[5], s), bl(h[2], h[4], s), t);
-            grid[i][j] = bpt * (1.0 - t) + tpt * t + lpt * (1.0 - s) + rpt * s - bil;
+        grid[0][j] = bl(h[1], h[2], sig[j]);
+        grid[n - 1][j] = bl(h[5], h[4], sig[j]);
+    }
+    if std::env::var("CK_PATCH_FILL").as_deref() == Ok("coons") {
+        for j in 1..n - 1 {
+            for i in 1..n - 1 {
+                let (s, t) = (sig[i], sig[j]);
+                let bpt = chain_at(&bc, s);
+                let tpt = chain_at(&tc, s);
+                let lpt = bl(h[1], h[2], t);
+                let rpt = bl(h[5], h[4], t);
+                let bil = bl(bl(h[1], h[5], s), bl(h[2], h[4], s), t);
+                grid[i][j] = bpt * (1.0 - t) + tpt * t + lpt * (1.0 - s) + rpt * s - bil;
+            }
         }
+    } else {
+        harmonic_fill(&mut grid, n);
     }
     // strike (centre, axis) covering chain fraction `s`
     let strike_at = |w: &[f64], tot: f64, centres: &[Vec3; 2], ax: &[Vec3; 2], s: f64| -> (Vec3, Vec3) {
@@ -394,13 +487,31 @@ fn patch_surface(
     };
     let bcent: [Vec3; 2] = [bottom[0].3, bottom[1].3];
     let tcent: [Vec3; 2] = [top[0].3, top[1].3];
-    // G1 rows: the fitted cubic's endpoint derivative mixes the first three
-    // interior rows, so all three are projected into the stripe cylinders'
-    // tangent planes (one row leaves a g2 term ~24 degrees off).
+    // G1 rows/columns: the fitted cubic's endpoint derivative mixes the first
+    // three interior lines, so those are projected into the stripe cylinders'
+    // tangent planes (one row leaves a g2 term ~24 degrees off). The projection
+    // tapers off over the next few lines: a band that stops dead ends in a
+    // crease the interpolant then rings around.
+    let env_u = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<usize>().ok());
+    let g1_full = env_u("CK_G1_FULL").unwrap_or(3);
+    let g1_taper = env_u("CK_G1_TAPER").unwrap_or(7).max(g1_full);
+    let g1w = |depth: usize| -> f64 {
+        if g1_full == 0 {
+            return 0.0;
+        }
+        if depth <= g1_full {
+            1.0
+        } else if depth >= g1_taper {
+            0.0
+        } else {
+            let t = (depth - g1_full) as f64 / (g1_taper - g1_full) as f64;
+            0.5 * (1.0 + (std::f64::consts::PI * t).cos())
+        }
+    };
     for &(vert, w, tot, cent, ax) in &[(0usize, &bw, bt, &bcent, &bottom_ax), (n - 1, &tw, tt, &tcent, &top_ax)] {
         let step: isize = if vert == 0 { 1 } else { -1 };
-        for depth in 1..=7 {
-            let j = vert as isize + step * depth;
+        for depth in 1..=g1_taper.max(1) {
+            let j = vert as isize + step * depth as isize;
             if j < 0 || j >= n as isize {
                 continue;
             }
@@ -414,7 +525,7 @@ fn patch_surface(
                 }
                 rad = rad.normalize();
                 let p = grid[i][j];
-                grid[i][j] = p - rad * ((p - q).dot(rad));
+                grid[i][j] = p - rad * ((p - q).dot(rad)) * g1w(depth);
                 if std::env::var_os("CK_BLEND_DEBUG").is_some() && depth == 1 && (i == n / 4 || i == 3 * n / 4) {
                     eprintln!("g1 row: i={i} j={j} sc=({:.2},{:.2},{:.2}) shift={:.6}", sc.x, sc.y, sc.z, (p - grid[i][j]).len());
                 }
@@ -424,8 +535,8 @@ fn patch_surface(
     // G1 columns: same stencil into the wall planes
     for &(vert, nrm) in &[(0usize, wall_n.0), (n - 1, wall_n.1)] {
         let step: isize = if vert == 0 { 1 } else { -1 };
-        for depth in 1..=7 {
-            let i = vert as isize + step * depth;
+        for depth in 1..=g1_taper.max(1) {
+            let i = vert as isize + step * depth as isize;
             if i < 0 || i >= n as isize {
                 continue;
             }
@@ -433,7 +544,7 @@ fn patch_surface(
             for j in 1..n - 1 {
                 let q = grid[vert][j];
                 let p = grid[i][j];
-                grid[i][j] = p - nrm * ((p - q).dot(nrm));
+                grid[i][j] = p - nrm * ((p - q).dot(nrm)) * g1w(depth);
             }
         }
     }

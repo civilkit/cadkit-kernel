@@ -106,7 +106,7 @@ the four end arcs plus the two spring lines bound one spline patch. The result o
 does: 4 cylinders (`F9.B0..B3`), the patch (`F9.P0`, kind `spline`), 11 planes. Cases `overhang_*` are in
 `tools/blend_corpus.mjs` with OCCT volumes in `tools/blend_reference.json` and run in the gate; `node tools/blend_corpus.mjs
 --only overhang` gives 5 ok / 0 failed / 2 without reference - `overhang_concave_r2` and `overhang_three_r2`, where OCCT
-itself reports `Build failed` - and `overhang_skew_refused`, which expects the refusal. Volumes are 1.3e-7 to 2.3e-7
+itself reports `Build failed` - and `overhang_skew_refused`, which expects the refusal. Volumes are 1.2e-7 to 2.2e-7
 relative to OCCT. `crates/ck-model/tests/blend_overhang.rs` checks the face count and, on the result body, G1 from the patch
 to each stripe along its arc (`assert_wraps`); `g1Defect` in the corpus does not look at `P0` (`isBlend` only matches `.B`
 and `.V` faces), so those seams are covered by the Rust tests alone.
@@ -114,16 +114,29 @@ and `.V` faces), so those seams are covered by the Rust tests alone.
 Close-ups of the r = 2 corner at (25, 27, 9.193), framed on the vertex (6.5 mm), azimuth/elevation 180/30 and 225/30, kit
 snapshot renderer over the wasm built from this branch: `overhang_r2_a1.png`, `overhang_r2_a2.png`. By eye every seam is
 clean: the cove under the ledge and the round on the wall run into their spring lines with no gap and no step, in both views,
-and the band ends stop short of the vertex plane as OCCT's do. What is not clean is the patch's display mesh within about
-3 mm of the pinch: of its 6064 triangles (mean edge 0.073 mm) 1100 shared edges have a signed dihedral over 90 deg, all of
-them inside x 23.8..26.2, y 25.9..28.2, z 8.0..10.4, 616 triangles are wound against the average of their neighbours and 260
-against their own vertex normals. Taking the absolute value of the dot product removes all of it (max unsigned dihedral
-under 90 deg), so the sheet does not fold over itself: it is crinkled and much of it is wound backwards, which is what draws
-the dark scribble at the tip in both pictures. Every overhang fixture reports the same counts (same corner, same r); the
-regular corner fixtures (`1207-arc-edge-boss-r2*`, `556-box-*`) report none, though they are not the same pinch, so that is
-a pointer rather than a like-for-like comparison. The B-rep level checks are unaffected - face count, volumes, `assert_wraps`
-all pass - so this sits in the display mesh of the patch around its singular point, open as a follow-up: partly the price of
-a genuinely pinched surface, but 260 triangles wound against their own vertex normals are not.
+and the band ends stop short of the vertex plane as OCCT's do.
+
+The patch's display mesh used to crinkle at the pinch - of its 6064 triangles 1100 shared edges had a signed dihedral over
+90 deg, 616 were wound against the average of their neighbours and 260 against their own vertex normals, which is what drew
+the dark scribble at the tip in both pictures. The cause was not the tessellator but the patch's own parametrisation: both
+boundary chains turn through about 90 deg where two hexagon sides meet (s = 0.5, at (23, 27, 7.193) and (27, 27, 11.193)),
+and the Coons blend propagates that corner along the whole line between them as a fold, which the depth refinement in
+`ck-tess` then chases into 3750 needle triangles whose geometric normals flip at random. `patch_surface` now fills the
+interior with the discrete Dirichlet Laplace solution of the same four chains (`harmonic_fill`), which confines the corner
+to the boundary the way OCCT's degree-8 plate does: the crease along u = 0.5 falls from 10.7 deg at the boundary to 0.0 in
+the middle instead of sitting at 13 to 15 deg the whole way, and projecting the grid on to OCCT's patch gives a mean normal
+difference of 7.4 deg (max 16.5) instead of 5.5 (max 46.6). The patch is now 632 triangles with a mean dihedral of 7.7 deg,
+none wound against their own vertex normals and 2 against their neighbours' average, and no edge over 90 deg draws a stroke:
+the 4 that remain (92 to 95 deg) sit where a curved chain turns near a hexagon corner, where the boundary itself turns.
+The flat fill moved where the depth refinement lands, and it used to leave boundary samples and the refinement points hugging
+them a few ulps apart - 182 triangles whose corners collapsed to one f32 point (the old blend emitted none), which the wire
+rounds to zero area and the renderer then draws with a meaningless facet normal. `ck-tess` now snaps an emitted vertex onto
+an already-emitted one within `CK_SNAP_TOL` (default 1e-4, the f32 resolution at these coordinates): that takes the patch to
+6 zero-area and 4 hairline triangles, and no triangle is wound against its own vertex normals any more (2 still disagree
+with their neighbours' average). Volumes improve marginally. `CK_PATCH_FILL=coons`
+restores the old blend for comparison in native runs (the wasm build always takes the default); the seams (`assert_wraps`),
+face count and volumes are unaffected either way. The gate's one soft drop (`regen.brep.mesh` -1) is the pre-existing
+`flangeBolt@13` tessellation-open issue, present on `kernel.wasm` too and unrelated to this change.
 
 ## What remains
 

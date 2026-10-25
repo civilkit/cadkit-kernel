@@ -1110,6 +1110,11 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
             }
         }
     }
+    // Two emitted vertices closer than this are the same point for the wire: f32 at coordinates of a
+    // few hundred only resolves ~1e-5, and the boundary sample / refinement-point pairs we are
+    // snapping sit under 1e-4. Over-snapping collapses a triangle whose neighbours still span the
+    // edge and leaves a hole, so the gate's open-mesh check is the arbiter of the value.
+    let snap_tol: f64 = std::env::var("CK_SNAP_TOL").ok().and_then(|v| v.parse().ok()).unwrap_or(1e-4);
     for (_, v) in tri.cdt.inside_tris() {
         if strict_plane {
             let c = (0..3).fold(Vec2::ZERO, |acc, k| acc + from_c(tri.cdt.pts[v[k] as usize]) * (1.0 / 3.0));
@@ -1118,24 +1123,43 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
             }
         }
         let mut ids = [0u32; 3];
+        let mut id_of = |cv: u32, out: &mut FaceMesh, local: &mut HashMap<u32, u32>| -> u32 {
+            if let Some(&id) = local.get(&cv) {
+                return id;
+            }
+            let (uv, p) = match vdata.get(&cv) {
+                Some(&d) => d,
+                None => {
+                    let uv = from_c(tri.cdt.pts[cv as usize]);
+                    let e = wrap_eval(uv);
+                    (uv, surf.eval(e.x, e.y))
+                }
+            };
+            let e = wrap_eval(uv);
+            out.uv.push(uv);
+            out.pts.push(p);
+            out.nrm.push(FaceMesh::outward(surf, sense, e));
+            (out.pts.len() - 1) as u32
+        };
         for k in 0..3 {
-            let cv = v[k];
-            let id = *local.entry(cv).or_insert_with(|| {
-                let (uv, p) = match vdata.get(&cv) {
-                    Some(&d) => d,
-                    None => {
-                        let uv = from_c(tri.cdt.pts[cv as usize]);
-                        let e = wrap_eval(uv);
-                        (uv, surf.eval(e.x, e.y))
-                    }
-                };
-                let e = wrap_eval(uv);
-                out.uv.push(uv);
-                out.pts.push(p);
-                out.nrm.push(FaceMesh::outward(surf, sense, e));
-                (out.pts.len() - 1) as u32
-            });
-            ids[k] = id;
+            ids[k] = id_of(v[k], &mut out, &mut local);
+        }
+        // Boundary samples and the refinement points hugging them land within a hair of each other
+        // (the refitted pcurve puts the straight side chains a few ulps off their isoparametric line),
+        // so snap the vertex onto an already-emitted one that is closer than the wire's f32 can tell
+        // apart; otherwise the pair survives as two points that round to one f32 and the triangle
+        // between them has no area for the renderer.
+        for k in 0..3 {
+            for j in 0..k {
+                if ids[k] != ids[j] && (out.pts[ids[k] as usize] - out.pts[ids[j] as usize]).len() < snap_tol {
+                    local.insert(v[k], ids[j]);
+                    ids[k] = ids[j];
+                    break;
+                }
+            }
+        }
+        if ids[0] == ids[1] || ids[1] == ids[2] || ids[0] == ids[2] {
+            continue;
         }
         let (pa, pb, pc) = (out.pts[ids[0] as usize], out.pts[ids[1] as usize], out.pts[ids[2] as usize]);
         if (pb - pa).cross(pc - pa).len2() <= 0.0 {
