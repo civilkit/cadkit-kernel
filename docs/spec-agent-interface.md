@@ -1177,6 +1177,157 @@ or non-numeric `version` counts as `PART_VERSION`.
 
 Wasm: `crates/ck-wasm/tests/part_version.rs`.
 
+## DFM queries: `dfmMinWall`, `dfmMinInternalRadius`, `dfmPocketRatio`, `dfmOverhang`, `dfmConstantSection`
+
+Read-only design-for-manufacture feedback on the tag's body (`tag`, like the other body queries; no body: `null`).
+Unlike `checkProfile` (which runs a bundle of rules with defaults) each request takes the limit as a required
+argument, answers one rule, and returns the measured value, where it is (stable face names, an edge key where an
+edge is the thing, and a point `[x, y, z]`) and which rule was broken. Replies are deterministic (no timings) and
+numbers are rounded to 1e-6. The oracle kernel has no equivalent, so these requests are not in `tools/cases.mjs`
+(byte-diffed against the original); their wire cases are `tools/dfm_check.mjs` (a `--checks dfm` step of
+`tools/remote_build.sh`) and `crates/ck-wasm/tests/dfm.rs`.
+
+Common reply fields: `rule` `{id, <limit>, unit, description}`, `supported` (`true`), `pass`, and a `violations`
+list whose entries each repeat `rule` (the id), the measured value and the `limit`. Bad arguments are errors with
+the request name prefix (`dfmMinWall: threshold must be a positive number`).
+
+**Structured refusals.** A body the query cannot judge is not guessed at:
+
+```json
+-> {"rule":{"id":"pocketRatio"},"supported":false,"pass":null,
+    "refusal":{"code":"nonAnalyticFaces","reason":"...","faces":["L.S.e1","L.S.e1~1"]}}
+```
+
+| code | when | requests |
+|---|---|---|
+| `emptyBody` | the body has no faces | all |
+| `nonAnalyticFaces` | a face is B-spline, screw or offset (or an extrusion / revolution of a spline profile): lofts, free-form and most imported bodies; `faces` lists them | `dfmMinInternalRadius`, `dfmPocketRatio`, `dfmConstantSection` (they classify faces by exact surface kind) |
+| `tessellationFailed` | some faces could not be meshed (`faces`) | `dfmOverhang`, `dfmConstantSection` (they read the display mesh) |
+
+`dfmMinWall` is ray based and `dfmOverhang` mesh based, so both still answer on free-form bodies.
+
+### `dfmMinWall`
+
+```json
+{"type":"dfmMinWall","tag":"t","threshold":1.2}
+{"type":"dfmMinWall","tag":"t","threshold":1.2,"opts":{"samples":20000}}
+```
+
+The `thickness` query (inward ray from surface samples to the opposite wall, default 6000 samples) against
+`threshold` (mm, `> 0`).
+
+```json
+-> {"rule":{"id":"minWall","min":1.2,"unit":"mm","description":"..."},"supported":true,"pass":false,"threshold":1.2,
+    "minimum":{"thickness":0.8,"faces":["F2.S.e1","F3.S.e1"],"point":[0,10,-5],"farPoint":[0.8,10,-5]},
+    "violations":[{"rule":"minWall","thickness":0.8,"limit":1.2,"faces":["F2.S.e1","F3.S.e1"],"point":[...],"farPoint":[...]}],
+    "samples":6000,"truncated":false}
+```
+
+`violations` has one entry per distinct thin region (clustered like `thickness`, thinnest first, at most 200),
+`faces` = the face the ray starts on and the face it exits through. `minimum` is `null` when no ray found an exit.
+Sampled: the value is exact for parallel plane pairs and a hair above the true minimum where the minimum is a
+single line (a hole next to an edge); a sliver thinner than the sample spacing can be missed. `truncated` is the
+`thickness` time budget flag.
+
+### `dfmMinInternalRadius`
+
+```json
+{"type":"dfmMinInternalRadius","tag":"t","toolRadius":3}
+{"type":"dfmMinInternalRadius","tag":"t","toolRadius":3,"direction":[0,1,0]}
+```
+
+Concave corners whose axis is parallel (within 5 degrees) to `direction` (the tool axis, default `[0,0,1]`):
+concave cylinders give their exact radius (`kind:"fillet"`), sharp concave straight edges radius 0
+(`kind:"sharp"`, with the edge key). Full cylinders (drilled holes) are not corners; floor edges are not parallel
+to the tool axis and are not reported.
+
+```json
+-> {"rule":{"id":"minInternalRadius","toolRadius":3,"unit":"mm","description":"..."},"supported":true,"pass":false,
+    "toolRadius":3,"direction":[0,1,0],
+    "minimum":{"rule":"minInternalRadius","radius":2,"limit":3,"kind":"fillet","faces":["F5.B0"],"point":[10,14,-15]},
+    "corners":[...all, ascending radius, at most 200...],"violations":[...radius < toolRadius...]}
+```
+
+`minimum` is `null` (and `pass` true) when the body has no such corner.
+
+### `dfmPocketRatio`
+
+```json
+{"type":"dfmPocketRatio","tag":"t","maxRatio":4}
+```
+
+A pocket is a planar floor whose every boundary edge is a concave corner (or a tangent concave fillet): closed
+pockets and flat-bottomed blind holes, including the inside of a shelled box. `depth` = height of the wall faces
+above the floor along the floor normal, `width` = the floor outline's narrowest caliper width (a single circle
+edge: its diameter; straight outlines use the exact vertices), `ratio = depth / width`. Open slots (a floor with a
+convex edge), steps, through holes and cone- or free-form-bottomed holes are not pockets.
+
+```json
+-> {"rule":{"id":"pocketRatio","maxRatio":4,"unit":"","description":"..."},"supported":true,"pass":false,"maxRatio":4,
+    "maximum":{<the first pocket>},
+    "pockets":[{"rule":"pocketRatio","floor":"F4.C0","walls":["F4.S.e1","..."],"faces":["F4.C0","..."],
+                "depth":12,"width":10,"ratio":1.2,"limit":4,"fails":false,"point":[20,8,-20]}],
+    "violations":[...pockets with ratio > maxRatio...]}
+```
+
+`pockets` is sorted by ratio, deepest first; `point` is on the floor. `maximum` is `null` with no pocket.
+
+### `dfmOverhang`
+
+```json
+{"type":"dfmOverhang","tag":"t","direction":[0,1,0],"angle":45}
+{"type":"dfmOverhang","tag":"t","direction":[0,1,0],"angle":45,"minArea":1}
+```
+
+`direction` is the build direction (up), `angle` degrees in `[0, 90]` measured from vertical like the `overhang`
+profile rule (0 = wall, 90 = flat ceiling): a downward-facing surface is flagged when its angle exceeds `angle`.
+Triangles lying on the build plate (the lowest height) are ignored. `minArea` (default 0) drops faces with less
+overhanging area.
+
+```json
+-> {"rule":{"id":"overhang","angle":45,"unit":"deg","description":"..."},"supported":true,"pass":false,
+    "direction":[0,0,-1],"angle":45,
+    "faces":[{"rule":"overhang","face":"F2.S.e6","faces":["F2.S.e6"],"overhangAngle":90,"limit":45,
+              "overhangArea":100,"faceArea":100,"supportVolume":500,"point":[5,5,-5]}],
+    "overhangArea":200,"supportVolume":1000,"supportVolumeMethod":"..."}
+```
+
+`faces` by overhanging area, largest first; `overhangAngle` is the worst triangle of the face, `point` the centre of its
+largest overhanging triangle. `supportVolume` is rough: the sum over overhanging triangles of projected area times the
+height down to the first surface below (a ray) or the build plate; whatever is below counts as support contact.
+
+### `dfmConstantSection`
+
+```json
+{"type":"dfmConstantSection","tag":"t","axis":[0,1,0]}
+```
+
+Is the body a constant extrusion along `axis`? True when every face is a side wall parallel to the axis (a plane,
+cylinder or extrusion surface along it) or a plane cap perpendicular to it at the two ends, so a through hole along
+the axis keeps it constant. Otherwise the first station along the axis where the section changes: the lowest
+interior cap (a step ledge, a blind pocket floor) or the lowest point of a face that is not parallel to the axis
+(taper, cone, a hole across the axis). Edge-bounded extremes of lines and circles are exact; interior extremes of
+curved faces are the mesh's.
+
+```json
+-> {"rule":{"id":"constantSection","unit":"","description":"..."},"supported":true,"axis":[0,0,1],
+    "start":-10,"end":0,"length":10,"pass":false,"constant":false,
+    "station":{"position":-5,"offset":5,"faces":["F2.S.e4"],"point":[30,5,-5],
+               "sectionAreaBefore":200,"sectionAreaAfter":400}}
+-> {...,"pass":true,"constant":true,"station":null,"sectionArea":776.0,"loops":2}
+```
+
+`position` is the coordinate along the axis, `offset` the distance from the body's start (`start`); the section areas
+are the `section` query's at the middle of the span before and after the station (omitted when the station is the
+start or the end).
+
+Fixtures (`crates/ck-wasm/tests/dfm.rs`, `tools/dfm_check.mjs`): plate with a through hole (wall 6 hole-to-edge, hole
+is not a corner, constant along its axis, first station 26 across it), stepped block (wall 5, a step is not a pocket,
+ledge station 5 in, areas 200 / 400), L bracket (wall 3, sharp inside corner at the right point), pocketed block
+(ratio 12/10, with 2 mm corner fillets: radius 2), T section (two 100 mm2 wing undersides, support volume 1000),
+plain box (constant along every edge axis, not along a diagonal), thin-walled shell (0.8 wall fails 1.2; inside is a
+19.2 / 28.4 pocket), a spline loft (refused as `nonAnalyticFaces`).
+
 ## Acceptance
 
 - A scripted agent session (no human) builds the benchmark parts in

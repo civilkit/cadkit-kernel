@@ -13,7 +13,7 @@
 //! rays at a BVH of the mesh. Sampled answers are estimates (see the doc).
 
 mod ctx;
-mod rules;
+pub(crate) mod rules;
 
 pub use ctx::Ctx;
 use ck_core::linalg::Vec3;

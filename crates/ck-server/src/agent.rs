@@ -179,3 +179,32 @@ pub fn sketch_freedoms(cx: &mut Cx) -> Result<Json, String> {
     }
     null_or_query(cx, "sketchFreedoms")
 }
+
+/// `{type:"dfmMinWall", threshold, tag?, opts?:{samples}}`: the thinnest wall against a minimum, every location below it
+/// with both faces and points. Read-only. No body: null.
+pub fn dfm_min_wall(cx: &mut Cx) -> Result<Json, String> {
+    null_or_query(cx, "dfmMinWall")
+}
+
+/// `{type:"dfmMinInternalRadius", toolRadius, direction?, tag?}`: the smallest concave corner radius against the cutter
+/// radius, with location. Read-only. No body: null.
+pub fn dfm_min_internal_radius(cx: &mut Cx) -> Result<Json, String> {
+    null_or_query(cx, "dfmMinInternalRadius")
+}
+
+/// `{type:"dfmPocketRatio", maxRatio, tag?}`: depth / width of every closed pocket against a limit. Read-only. No body: null.
+pub fn dfm_pocket_ratio(cx: &mut Cx) -> Result<Json, String> {
+    null_or_query(cx, "dfmPocketRatio")
+}
+
+/// `{type:"dfmOverhang", direction, angle, minArea?, tag?}`: faces steeper than `angle` from vertical against the build
+/// direction, their area and a rough support volume. Read-only. No body: null.
+pub fn dfm_overhang(cx: &mut Cx) -> Result<Json, String> {
+    null_or_query(cx, "dfmOverhang")
+}
+
+/// `{type:"dfmConstantSection", axis, tag?}`: whether the body is a constant extrusion along `axis`, else the first station
+/// where the section changes. Read-only. No body: null.
+pub fn dfm_constant_section(cx: &mut Cx) -> Result<Json, String> {
+    null_or_query(cx, "dfmConstantSection")
+}

@@ -32,7 +32,7 @@ const frame = (bytes) => {
   const b = Buffer.from(bytes), jl = b.readUInt32LE(0);
   return { json: b.subarray(4, 4 + jl).toString('utf8'), bin: b.subarray((4 + jl + 7) & -8).toString('base64') };
 };
-const nj = (j) => j.replace(/"ms":[0-9.e+-]+/g, '"ms":0').replace(/"at":[0-9.e+-]+/g, '"at":0');
+const nj = (j) => j.replace(/"ms":[0-9.e+-]+/g, '"ms":0').replace(/"at":[0-9.e+-]+/g, '"at":0').replace(/,"build":"[0-9a-f]+(-dirty)?"/g, '');
 const key = (f) => nj(f.json) + '\u0000' + f.bin;
 const wasmKey = (r) => (r.trap ? `TRAP ${r.trap}` : key(frame(r.bytes)));
 
