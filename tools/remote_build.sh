@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build the kernel wasm and run its checks on the CI box instead of this (busy) machine. See docs/remote-build.md.
-#   tools/remote_build.sh [--worktree DIR] [--checks gate,large sample,loft,apex,fillet,section,spline,thin,suite,lint,text,projcurve,all|none]
+#   tools/remote_build.sh [--worktree DIR] [--checks gate,large sample,loft,apex,fillet,section,spline,thin,suite,lint,text,projcurve,dfm,all|none]
 #                         [--cargo-test CRATE|"-p a -p b"|all] [--out DIR] [--no-sync-back] [--no-wasm] [--wasm-features LIST] [--jobs N] [--reset]
 #   tools/remote_build.sh --clean [--worktree DIR]     remove this worktree's directories on the box
 #   tools/remote_build.sh --prune                      remove worktree directories on the box unused for 3 days
@@ -68,7 +68,7 @@ echo "synced in $(( $(date +%s) - T0 ))s"
 # 2. build + checks on the box (script on stdin, every argument quoted)
 read -r -d '' REMOTE <<'RSCRIPT'
 set -u
-NAME=$1; CHECKS=$2; CTEST=$3; JOBS=$4; NOWASM=${5:-0}; WASMF=${6:-}
+NAME=$1; CHECKS=$2; CTEST=$3; JOBS=$4; NOWASM=${5:-0}; WASMF=${6:-}; REV=${7:-}
 RB="$HOME/ci-cad/remote-build"
 case "$NAME" in ''|*/*|.*) echo "bad name"; exit 2;; esac
 SRC="$RB/wt/$NAME"; RUN="$RB/runs/$NAME"; export CARGO_TARGET_DIR="$RB/target/$NAME"
@@ -94,7 +94,7 @@ mkdir -p "$CARGO_TARGET_DIR"
 # one cargo job set at a time on the whole box (this also serialises each target dir)
 exec 9>"$RB/build.lock"
 echo "waiting for the build lock"; flock 9; echo "build lock taken"
-[ "$NOWASM" = 1 ] || step build-wasm nice -n 5 cargo build -q -p ck-wasm ${WASMF:+--features "$WASMF"} --target wasm32-unknown-unknown --release
+[ "$NOWASM" = 1 ] || step build-wasm env CK_BUILD_REV="$REV" nice -n 5 cargo build -q -p ck-wasm ${WASMF:+--features "$WASMF"} --target wasm32-unknown-unknown --release
 [ -s "$W" ] && echo "wasm bytes $(wc -c < "$W")"
 
 cargo_test_args() { # lib, bins and integration tests except ffi_diff (needs the dev machine's oracle library)
@@ -112,7 +112,7 @@ fi
 flock -u 9; exec 9>&-    # checks are plain node: release the build lock
 
 CH=$(printf '%s' "$CHECKS" | tr ',' ' ')
-case " $CH " in *" all "*) CH="gate large sample loft apex fillet section spline thin suite lint text projcurve";; esac
+case " $CH " in *" all "*) CH="gate large sample loft apex fillet section spline thin suite lint text projcurve dfm";; esac
 case " $CH " in *" none "*) CH="";; esac
 SUITE="region_select thin_extrude thread end_reference profile coincident_boolean hole_dims move spline_shell spline_boolean mate"
 pids=""
@@ -130,6 +130,7 @@ if [ -s "$W" ]; then
       lint) step lint-protocol node tools/lint_protocol.mjs --wasm "$W" --quiet ;;
       text) step text-corpus node tools/text_corpus.mjs --wasm "$W" --quiet ;;
       projcurve) step project-curve-corpus node tools/project_curve_corpus.mjs --wasm "$W" --quiet ;;
+      dfm) step dfm node tools/dfm_check.mjs --wasm "$W" --quiet ;;
       suite) for s in $SUITE; do step "check-$s" node "tools/${s}_check.mjs" --wasm "$W"; done ;;
       *) echo "unknown check $c"; rec "check-$c" 64 0 ;;
     esac
@@ -146,7 +147,10 @@ echo "box load after: $(cut -d' ' -f1-3 /proc/loadavg)"
 echo "REMOTE_FAILS=$FAILS"
 [ "$FAILS" = 0 ]
 RSCRIPT
-QA=""; for a in "$NAME" "$CHECKS" "$CTEST" "$JOBS" "$NOWASM" "$WASMF"; do QA="$QA $(printf %q "$a")"; done
+# the commit the wasm is built from, reported by `ping` as `build` (`-dirty`: uncommitted changes in the tracked files)
+REV=$(git -C "$WT" rev-parse --short=12 HEAD 2>/dev/null || true)
+[ -n "$REV" ] && [ -n "$(git -C "$WT" status --porcelain --untracked-files=no 2>/dev/null)" ] && REV="$REV-dirty"
+QA=""; for a in "$NAME" "$CHECKS" "$CTEST" "$JOBS" "$NOWASM" "$WASMF" "$REV"; do QA="$QA $(printf %q "$a")"; done
 printf '%s\n' "$REMOTE" | rsh "bash -s -- $QA"
 RC=$?
 [ "$RC" = 255 ] && echo "ssh connection failed or dropped" >&2

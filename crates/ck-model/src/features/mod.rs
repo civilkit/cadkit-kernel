@@ -88,6 +88,8 @@ pub enum FeatureKind {
     Extrude { op: Op, sketch: Option<Ref>, end: End, depth: Expr, flip: bool, draft: Option<Expr>, draft_out: bool },
     Revolve { op: Op, sketch: Option<Ref>, axis: Option<GeomRef>, end: End, angle: Expr, flip: bool },
     Sweep { op: Op, sketch: Option<Ref>, path: Option<GeomRef>, surface: bool },
+    /// A ball: `center` and `radius` are read from the payload (expressions).
+    Sphere { op: Op },
     Loft { op: Op, sketches: Vec<Ref>, surface: bool },
     Fillet { radius: Expr, edges: Vec<EdgeRef> },
     Chamfer {
@@ -407,6 +409,7 @@ impl FeatureKind {
                 angle: e(j, "angle", 360.0),
                 flip: b(j, "flip"),
             },
+            "sphere" => FeatureKind::Sphere { op: op(j) },
             "sweep" => FeatureKind::Sweep { op: op(j), sketch: r_opt(j, "sketch"), path: g(j, "path"), surface: b(j, "surface") },
             "loft" => FeatureKind::Loft { op: op(j), sketches: refs(j, "sketches"), surface: b(j, "surface") },
             "fillet" => FeatureKind::Fillet { radius: e(j, "radius", 0.0), edges: edges(j, "edges") },
@@ -1277,7 +1280,7 @@ impl Brep {
 
     fn exec_feature(&mut self, state: &mut crate::regen::RegenState, f: &crate::Feature) -> Result<(), crate::regen::FeatureError> {
         bodies::check_feature(f)?;
-        if matches!(op(&f.raw), Op::NewBody) && matches!(f.type_name.as_str(), "extrude" | "revolve" | "loft" | "sweep") {
+        if matches!(op(&f.raw), Op::NewBody) && matches!(f.type_name.as_str(), "extrude" | "revolve" | "loft" | "sweep" | "sphere") {
             if let Some(name) = bodies::body_name(&f.raw)? {
                 bodies::check_free(self.body.as_ref(), &name, &f.id, &[])?;
             }
@@ -1290,6 +1293,7 @@ impl Brep {
             FeatureKind::Extrude { end: End::UpToFace | End::OffsetFromFace | End::UpToPoint, .. } => self.extrude_to_reference(state, f)?,
             FeatureKind::Extrude { .. } => extrude::exec_extrude(state, f, self.body.as_ref())?,
             FeatureKind::Revolve { .. } => extrude::exec_revolve(state, f, self.body.is_some())?,
+            FeatureKind::Sphere { .. } => extrude::exec_sphere(state, f, self.body.is_some())?,
             FeatureKind::Mirror { .. } => return pattern::exec_mirror(self, state, f),
             FeatureKind::CPattern { seeds, bodies, .. } if seeds.is_empty() && !bodies.is_empty() && !self.asm.components.is_empty() => {
                 return self.exec_component_pattern(state, f)

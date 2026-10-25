@@ -11,6 +11,7 @@ strings from kernel.strings, and dispatch to ck-ops/ck-topo.
 | sketch | plane, points[{id,x,y,fixed}], entities[{type:id,...}], constraints[{type,refs,value,offset}], seq, visible |
 | extrude | op(add/cut), sketch, end(blind/through/throughBoth/upToNext/mid), depth(expr), flip, draft(expr), draftOut, twist(expr, deg), twistCentre([x,y]), regions([entity ids], optional) |
 | revolve | op, sketch, axis, end, angle(expr), flip, regions([entity ids], optional) |
+| sphere | op(add/cut/newBody), center([x,y,z], exprs), radius(expr, above 0), body; no sketch: the revolve of a half disc about +Y through the centre, one face `<id>.S.e1` (a true sphere); `extrude.rs exec_sphere` |
 | sweep | op, sketch, path ({kind: curve or sketch, id}; a `sketch` id may name a `sketch3d` holding one `spline`, tangent-constrained end lines allowed), twist (deg), (+guides, guideMode, surface: not reconstructed) |
 | loft | op, sketches[], surface, guides[{sketch, influence next only}], centreLine ({sketch}: a planar open chain the loft follows, a moving frame carries the sections (ck-ops `loft/centre.rs`); a straight one is a no-op; errors loftCentreLineInvalid / Kink / Reach / Tight / Apex / Guides, each with detail + hint), startNormal / endNormal (tension; `true` = 1), connectors[null\|fraction]; startTangent / *Continuity -> `loftTangentEdges` (sketch profiles); regions with inner loops loft HOLLOW (outer loft minus the per-hole lofts, holes matched by centroid, a point section is the apex of each hole loft, inner-loop counts must agree else loftProfile {detail, hint}) |
 | fillet | radius(expr), edges[] (a pick may carry radius, or radii [near, far] with filletType "variable"), propagate; see docs/blend-corpus.md |
@@ -41,7 +42,7 @@ strings from kernel.strings, and dispatch to ck-ops/ck-topo.
 
 ## Separate bodies (`bodies.rs`, docs/adr/0004)
 
-- `op: "newBody"` (aliases `new`, `separate`) on extrude / revolve / loft / sweep: `Op::NewBody` -> `Combine::Separate`,
+- `op: "newBody"` (aliases `new`, `separate`) on extrude / revolve / loft / sweep / sphere: `Op::NewBody` -> `Combine::Separate`,
   the tool is appended as its own lump (`Brep::combine_at`), never united. Any other feature type with that op:
   `invalidValue {detail, hint}` (`bodies::check_feature`, run first in `exec_feature`).
 - `body` (string) names the lump(s) a feature creates: newBody features, `moveBody` with `copy:true`, `combine` (result;

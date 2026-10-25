@@ -114,6 +114,12 @@ pub const REQUEST_TYPES: &[(&str, Handler)] = &[
     // Extension: read-only sketch analysis (findings, chains, profile reason).
     ("sketchAnalyze", agent::sketch_analyze),
     ("sketchFreedoms", agent::sketch_freedoms),
+    // Extension: design-for-manufacture queries (read-only; value, location, rule, structured refusals).
+    ("dfmMinWall", agent::dfm_min_wall),
+    ("dfmMinInternalRadius", agent::dfm_min_internal_radius),
+    ("dfmPocketRatio", agent::dfm_pocket_ratio),
+    ("dfmOverhang", agent::dfm_overhang),
+    ("dfmConstantSection", agent::dfm_constant_section),
     // Extension: body-level boolean between lumps of the current body (preview, nothing committed).
     ("bodyBoolean", geometry::body_boolean),
 ];

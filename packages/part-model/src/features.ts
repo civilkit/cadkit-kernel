@@ -43,6 +43,19 @@ export interface Sketch3DFeature {
   [key: string]: unknown;
 }
 
+export interface SphereFeature {
+  type: 'sphere';
+  id: string;
+  name?: string;
+  op: 'add' | 'cut' | 'newBody';
+  /** with `op: 'newBody'`: the name of the body (lump) it makes */
+  body?: string;
+  /** the centre, in the part's world (Y up) */
+  center: [Expr, Expr, Expr];
+  radius: Expr;
+  [key: string]: unknown;
+}
+
 export interface RevolveFeature {
   type: 'revolve';
   id: string;
@@ -646,7 +659,7 @@ export type KnownFeature =
   | DeleteFaceFeature | ThickenFeature | CutWithSurfaceFeature | PipeCutFeature
   | FreeformFeature | EditCurveFeature | ProjectCurveFeature | ExtendFeature
   | DomeFeature | SplitLineFeature | MoveFaceFeature | MoveBodyFeature
-  | ScaleFeature | AxisFeature | ThreadFeature | CombineFeature;
+  | ScaleFeature | AxisFeature | ThreadFeature | CombineFeature | SphereFeature;
 
 /** All wire type strings the kernel dispatches on. */
 export const FEATURE_TYPES = [
@@ -657,7 +670,7 @@ export const FEATURE_TYPES = [
   'surfaceOffset', 'knit', 'fill', 'insertPart', 'mate', 'plane',
   'deleteBody', 'deleteFace', 'thicken', 'cutWithSurface', 'pipeCut',
   'freeform', 'editCurve', 'projectCurve', 'extend', 'dome', 'splitLine',
-  'moveFace', 'moveBody', 'scale', 'axis', 'thread', 'combine',
+  'moveFace', 'moveBody', 'scale', 'axis', 'thread', 'combine', 'sphere',
 ] as const;
 
 export type FeatureTypeName = (typeof FEATURE_TYPES)[number];

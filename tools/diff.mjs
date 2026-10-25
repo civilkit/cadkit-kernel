@@ -40,7 +40,7 @@ const norm = (r) => {
   // replace "ms" values (top-level + trace) with 0 while keeping frame layout comparable
   const jl = new DataView(r.bytes.buffer).getUint32(0, true);
   const base = (4 + jl + 7) & -8;
-  return { s: r.json.replace(/"ms":[0-9.e+-]+/g, '"ms":0').replace(/"at":[0-9.e+-]+/g, '"at":0'), bin: r.bytes.subarray(base) };
+  return { s: r.json.replace(/"ms":[0-9.e+-]+/g, '"ms":0').replace(/"at":[0-9.e+-]+/g, '"at":0').replace(/,"build":"[0-9a-f]+(-dirty)?"/g, ''), bin: r.bytes.subarray(base) };
 };
 const same = (a, b) => a.s === b.s && a.bin.length === b.bin.length && a.bin.every((x, i) => x === b.bin[i]);
 
