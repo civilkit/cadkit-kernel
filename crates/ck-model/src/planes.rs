@@ -351,6 +351,21 @@ pub fn three_points(state: &RegenState, exec: &mut dyn FeatureExec, f: &Feature,
     Ok(if flip { flipped(fr) } else { fr })
 }
 
+/// `frame`: a plane given outright by its `origin` and the directions of its `xDir` and `yDir` (world units, the
+/// feature's own numbers: no references). `x` is kept, `y` is made square to it, `z = x x y`. Used by importers
+/// whose source stores planes as a frame; `flip` negates `x` and `z` like the other modes.
+pub fn frame_plane(f: &Feature, flip: bool) -> Result<Frame, FeatureError> {
+    let get = |k: &str| f.raw.get(k).and_then(vec3_of).ok_or_else(missing);
+    let (o, x, y) = (get("origin")?, get("xDir")?, get("yDir")?);
+    let z = x.cross(y);
+    if x.len() < 1e-12 || z.len() <= 1e-9 * x.len() * y.len() {
+        return Err(err(PLANE_POINTS_IN_LINE));
+    }
+    let (x, z) = (x.normalize(), z.normalize());
+    let fr = Frame { o, x, y: z.cross(x), z };
+    Ok(if flip { flipped(fr) } else { fr })
+}
+
 pub fn parallel(state: &RegenState, exec: &mut dyn FeatureExec, f: &Feature, base: &Option<crate::GeomRef>, flip: bool) -> Result<Frame, FeatureError> {
     let b = base_frame(state, exec, base)?;
     let p = *points_of(state, exec, f).first().ok_or_else(missing)?;
@@ -689,6 +704,19 @@ mod tests {
         is(f, [5., 5., 0.], [-0.9732050807568877, -0.053589838486224534, -0.22360679774997902], [0.05358983848622454, 0.892820323027551, -0.447213595499958]);
         let f = p(r#"{"type":"plane","id":"P","mode":"perpendicular","base":{"kind":"std","id":"top"},"axis":{"kind":"sketchLine","sketch":"S1","entity":"e4"}}"#);
         is(f, [5., 5., 0.], [-0.8944271909999159, -0.4472135954999579, 0.], [0., 0., -1.]);
+    }
+
+    #[test]
+    fn frame_mode_is_the_given_frame() {
+        // y is made square to x, z = x x y; flip negates x and z
+        let f = p(r#"{"type":"plane","id":"P","mode":"frame","origin":[1,2,3],"xDir":[2,0,0],"yDir":[0,1,1]}"#);
+        let h = std::f64::consts::FRAC_1_SQRT_2;
+        is(f, [1., 2., 3.], [1., 0., 0.], [0., -h, h]);
+        assert!(near(f.y, [0., h, h]), "{f:?}");
+        let f = p(r#"{"type":"plane","id":"P","mode":"frame","origin":[0,0,0],"xDir":[1,0,0],"yDir":[0,0,1],"flip":true}"#);
+        assert!(near(f.x, [-1., 0., 0.]) && near(f.z, [0., 1., 0.]), "{f:?}");
+        assert_eq!(plane(r#"{"type":"plane","id":"P","mode":"frame","origin":[0,0,0],"xDir":[1,0,0]}"#).1, vec!["missingReference"]);
+        assert_eq!(plane(r#"{"type":"plane","id":"P","mode":"frame","origin":[0,0,0],"xDir":[1,0,0],"yDir":[2,0,0]}"#).1, vec!["planePointsInLine"]);
     }
 
     #[test]

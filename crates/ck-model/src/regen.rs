@@ -649,6 +649,7 @@ fn regen_plane(state: &mut RegenState, exec: &mut dyn FeatureExec, f: &Feature) 
         "curve" => Some(pl::curve_plane(state, exec, f, *flip)),
         "tangent" => Some(pl::tangent(state, exec, f, &base_ref(f), axis, *flip)),
         "parallel" => Some(pl::parallel(state, exec, f, &base_ref(f), *flip)),
+        "frame" => Some(pl::frame_plane(f, *flip)),
         _ => None,
     };
     if let Some(r) = driven {
