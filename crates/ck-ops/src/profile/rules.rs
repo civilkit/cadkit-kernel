@@ -451,7 +451,7 @@ fn bridge(cx: &Ctx, p: &Params, sev: Severity) -> Vec<Issue> {
 }
 
 /// A cylinder face whose boundary is only full circles (a barrel or a pin side).
-fn full_cylinder(cx: &Ctx, f: FaceId) -> bool {
+pub(crate) fn full_cylinder(cx: &Ctx, f: FaceId) -> bool {
     let b = cx.body;
     let mut sweep = 0.0;
     for e in b.face_edges(f) {
@@ -468,7 +468,7 @@ fn full_cylinder(cx: &Ctx, f: FaceId) -> bool {
 }
 
 /// Material outside the cylinder (a bore, a pocket corner): the outward normal points at the axis.
-fn is_concave_cylinder(cx: &Ctx, f: FaceId) -> bool {
+pub(crate) fn is_concave_cylinder(cx: &Ctx, f: FaceId) -> bool {
     let b = cx.body;
     let face = b.face(f);
     let Surface::Cylinder { frame, .. } = &face.surface else { return false };
@@ -572,7 +572,7 @@ fn plate_contact(cx: &Ctx, p: &Params, sev: Severity) -> Vec<Issue> {
 
 /// Is the edge between its two faces a concave (internal) one? None when
 /// it is not a two-face manifold edge. Returns (concave, angle between normals).
-fn edge_concavity(cx: &Ctx, e: EdgeId) -> Option<(bool, f64)> {
+pub(crate) fn edge_concavity(cx: &Ctx, e: EdgeId) -> Option<(bool, f64)> {
     let b = cx.body;
     let cs = b.edge_coedges(e);
     if cs.len() != 2 {
