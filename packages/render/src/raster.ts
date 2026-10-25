@@ -52,21 +52,39 @@ export interface Frame {
   rgb: Uint8Array;
 }
 
+/** World box to frame instead of the whole mesh (a close-up). */
+export interface FitBox {
+  min: number[];
+  max: number[];
+}
+
 export function renderTriangles(
   mesh: MeshData,
   view: ViewName,
   w: number,
   h: number,
   colors: Map<number, RGB>,
+  fitBox?: FitBox,
 ): Frame {
   const { right, up, dir } = cameraFor(view);
   const proj = (p: number[]): [number, number, number] => [dot(p, right), dot(p, up), dot(p, dir)];
-  // Fit projected bbox with a margin.
+  // Fit projected bbox with a margin; fitBox frames a region of the scene
+  // instead, so a close-up keeps the whole body (and its occlusion) in view.
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
-  for (let i = 0; i < mesh.positions.length; i += 3) {
-    const [x, y] = proj([mesh.positions[i], mesh.positions[i + 1], mesh.positions[i + 2]]);
+  const consider = (p: number[]): void => {
+    const [x, y] = proj(p);
     if (x < x0) x0 = x; if (x > x1) x1 = x;
     if (y < y0) y0 = y; if (y > y1) y1 = y;
+  };
+  if (fitBox) {
+    for (let c = 0; c < 8; c++) {
+      const side = [fitBox.min, fitBox.max];
+      consider([0, 1, 2].map((a) => side[(c >> a) & 1][a]));
+    }
+  } else {
+    for (let i = 0; i < mesh.positions.length; i += 3) {
+      consider([mesh.positions[i], mesh.positions[i + 1], mesh.positions[i + 2]]);
+    }
   }
   const span = Math.max(x1 - x0, y1 - y0, 1e-9);
   const sc = Math.min(w, h) * 0.9 / span;
