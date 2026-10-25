@@ -193,9 +193,15 @@ pub fn regen_label(n: usize) -> String {
 
 pub const SNAPSHOT_LABEL: &str = "snapshot for the view (display meshes, edges)";
 
-/// `{"type":"ping"}` -> `{"pong":true}`
+/// `{"type":"ping"}` -> `{"pong":true}`; a build made by `tools/remote_build.sh` adds `"build":"<commit>"` (`-dirty` when the
+/// tree had uncommitted changes), so a wasm file says which source it came from.
 pub fn ping(_cx: &mut Cx) -> Result<Json, String> {
-    Ok(Obj::new().put("pong", true).build())
+    let o = Obj::new().put("pong", true);
+    Ok(match option_env!("CK_BUILD_REV") {
+        Some(rev) if !rev.is_empty() => o.put("build", rev),
+        _ => o,
+    }
+    .build())
 }
 
 /// `{"type":"regen","tag":t,"part":{...},"opts":{"upTo":n}}`
