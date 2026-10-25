@@ -273,7 +273,13 @@ fn blend_edges_inner(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, fea
         // A structural corner with skewed pair directions cannot take the patch (the zone box and
         // the boundary chains are built for perpendicular pairs): refuse it with a hint instead of
         // silently leaving the stepped stripes, and keep the ordinary path for every other shape.
-        let overhangs_all: Vec<super::overhang::Corner> = if matches!(spec, Spec::Fillet(..)) { super::overhang::detect(b, &eids, r) } else { vec![] };
+        // per-pair radii come from the selection (`EDGE_RADII`, set by fillet_unequal);
+        // a constant selection is one radius for every edge
+        let eir: Vec<f64> = EDGE_RADII
+            .with(|c| c.borrow().clone())
+            .filter(|v| v.len() == eids.len())
+            .unwrap_or_else(|| vec![r; eids.len()]);
+        let overhangs_all: Vec<super::overhang::Corner> = if matches!(spec, Spec::Fillet(..)) { super::overhang::detect(b, &eids, &eir) } else { vec![] };
         if let Some(c) = overhangs_all.iter().find(|c| !c.patch_ok) {
             let deg = c.a12.abs().clamp(-1.0, 1.0).acos().to_degrees();
             return Err(BlendError {

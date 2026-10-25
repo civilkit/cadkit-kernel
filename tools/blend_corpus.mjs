@@ -271,6 +271,15 @@ add('overhang_concave_r2', 'overhang', { k: 'fillet', r: 2 }, [{ at: [16.9805, 2
 // estimate in crates/ck-model/tests/blend_overhang.rs)
 add('overhang_three_r2', 'overhang', { k: 'fillet', r: 2 }, [{ at: [16.9805, 27, 9.193] }, { at: [25, 27, -7.903500000000001] }, { at: [34.2355, 27, 9.193] }]);
 add('overhang_two_corners_r2', 'overhang', { k: 'fillet', r: 2 }, [{ at: [16.9805, 27, 9.193] }, { at: [25, 27, -7.903500000000001] }, { at: [34.2355, 27, 9.193] }, { at: [25, 27, 17.0965] }, { at: [-8, 27, 25] }, { at: [17, 27, 25] }, { at: [8.961, 27, 36] }, { at: [8.961, 27, 17.1] }], { g1: true, mitre: true });
+// unequal radii on the two pairs: picks 1, 3 (the z pair) at 3, picks 0, 2 at the
+// feature's 2. Each stripe is cut at the other pair's radius along its own edge, so the
+// four arc ends still coincide and the patch closes (OCCT builds the same 17 faces).
+add('overhang_unequal_r2_r3', 'overhang', { k: 'fillet', r: 2 }, [
+  { at: [16.9805, 27, 9.193] },
+  { at: [25, 27, -7.903500000000001], r: 3 },
+  { at: [34.2355, 27, 9.193] },
+  { at: [25, 27, 17.0965], r: 3 },
+], { g1: true });
 add('overhang_mz_r2', 'overhang_mz', { k: 'fillet', r: 2 }, [{ at: [16.9805, 27, -9.193] }, { at: [25, 27, 7.903500000000001] }, { at: [34.2355, 27, -9.193] }, { at: [25, 27, -17.0965] }], { g1: true });
 add('overhang_under_r2', 'overhang_under', { k: 'fillet', r: 2 }, [{ at: [16.9805, 0, 9.193] }, { at: [25, 0, -7.9035] }, { at: [34.2355, 0, 9.193] }, { at: [25, 0, 17.0965] }], { g1: true });
 add('overhang_skew_refused', 'overhang_skew', { k: 'fillet', r: 2 }, [{ at: [25, 27, 2.847661609514004] }, { at: [19.20444504226559, 27, 10.400575880129129] }, { at: [30.79555495773441, 27, 7.29474733889888] }, { at: [25, 27, 14.847661609514004] }], { expect: 'blendCorner' });
