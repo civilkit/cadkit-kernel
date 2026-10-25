@@ -66,7 +66,7 @@ const B = new WebAssembly.Module(readFileSync(wasmB));
 
 const score = {};
 const bump = (k, ok) => { score[k] ??= [0, 0]; score[k][1]++; if (ok) score[k][0]++; };
-const norm = (r) => (r.trap ? `TRAP ${r.trap.replace(/\/rustc\/[0-9a-f]+\/|:\d+:\d+:/g, '')}` : r.json.replace(/"ms":[0-9.e+-]+/g, '"ms":0').replace(/"at":[0-9.e+-]+/g, '"at":0'));
+const norm = (r) => (r.trap ? `TRAP ${r.trap.replace(/\/rustc\/[0-9a-f]+\/|:\d+:\d+:/g, '')}` : r.json.replace(/"ms":[0-9.e+-]+/g, '"ms":0').replace(/"at":[0-9.e+-]+/g, '"at":0').replace(/,"build":"[0-9a-f]+(-dirty)?"/g, ''));
 const bin = (r) => (r.trap ? '' : Buffer.from(r.bytes.subarray((4 + new DataView(r.bytes.buffer).getUint32(0, true) + 7) & -8)).toString('base64'));
 
 // 1. wire cases (stateful sequences)
