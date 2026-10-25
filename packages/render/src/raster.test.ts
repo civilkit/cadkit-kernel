@@ -39,4 +39,18 @@ describe('raster', () => {
     const px = [f.rgb[(50 * 100 + 50) * 3], f.rgb[(50 * 100 + 50) * 3 + 1], f.rgb[(50 * 100 + 50) * 3 + 2]];
     assert.ok(px[0] > 60 && px[0] === px[1] && px[1] === px[2]);
   });
+
+  it('fitBox frames the box instead of the mesh (close-up)', () => {
+    const red: RGB = [255, 0, 0];
+    const at = (f: { rgb: Uint8Array }, x: number, y: number) =>
+      [f.rgb[(y * 100 + x) * 3], f.rgb[(y * 100 + x) * 3 + 1], f.rgb[(y * 100 + x) * 3 + 2]];
+    // Without fitBox the triangle spans -2..2, so its top-left pixel is background.
+    const wide = renderTriangles(mesh, 'front', 100, 100, new Map([[0, red]]));
+    assert.deepEqual(at(wide, 3, 3), [16, 22, 30]);
+    // Framing the middle 1 x 1 of it zooms in: the same pixel is now the triangle.
+    const close = renderTriangles(mesh, 'front', 100, 100, new Map([[0, red]]),
+      { min: [-0.5, -0.5, -1], max: [0.5, 0.5, 1] });
+    assert.deepEqual(at(close, 3, 3), [255, 0, 0]);
+    assert.deepEqual(at(close, 50, 50), [255, 0, 0]);
+  });
 });

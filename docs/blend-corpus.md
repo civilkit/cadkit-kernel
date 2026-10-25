@@ -99,6 +99,32 @@ analytic edge-only volume. OCCT instead trims every stripe at distance r from th
 gap with one B-spline corner patch (~19.9 mm^2) whose boundary is the four end arcs plus the two spring
 lines on the walls, pinched along the body's sharp vertical edge through the vertex.
 
+## Overhang corner: what the branch builds, and the close-up check
+
+The corner now closes the way the diagnosis above says OCCT does: every stripe stops at distance r from the vertex plane and
+the four end arcs plus the two spring lines bound one spline patch. The result of `overhang_all_r2` has 17 faces, as OCCT's
+does: 4 cylinders (`F9.B0..B3`), the patch (`F9.P0`, kind `spline`), 11 planes. Cases `overhang_*` are in
+`tools/blend_corpus.mjs` with OCCT volumes in `tools/blend_reference.json` and run in the gate; `node tools/blend_corpus.mjs
+--only overhang` gives 5 ok / 0 failed / 2 without reference - `overhang_concave_r2` and `overhang_three_r2`, where OCCT
+itself reports `Build failed` - and `overhang_skew_refused`, which expects the refusal. Volumes are 1.3e-7 to 2.3e-7
+relative to OCCT. `crates/ck-model/tests/blend_overhang.rs` checks the face count and, on the result body, G1 from the patch
+to each stripe along its arc (`assert_wraps`); `g1Defect` in the corpus does not look at `P0` (`isBlend` only matches `.B`
+and `.V` faces), so those seams are covered by the Rust tests alone.
+
+Close-ups of the r = 2 corner at (25, 27, 9.193), framed on the vertex (6.5 mm), azimuth/elevation 180/30 and 225/30, kit
+snapshot renderer over the wasm built from this branch: `overhang_r2_a1.png`, `overhang_r2_a2.png`. By eye every seam is
+clean: the cove under the ledge and the round on the wall run into their spring lines with no gap and no step, in both views,
+and the band ends stop short of the vertex plane as OCCT's do. What is not clean is the patch's display mesh within about
+3 mm of the pinch: of its 6064 triangles (mean edge 0.073 mm) 1100 shared edges have a signed dihedral over 90 deg, all of
+them inside x 23.8..26.2, y 25.9..28.2, z 8.0..10.4, 616 triangles are wound against the average of their neighbours and 260
+against their own vertex normals. Taking the absolute value of the dot product removes all of it (max unsigned dihedral
+under 90 deg), so the sheet does not fold over itself: it is crinkled and much of it is wound backwards, which is what draws
+the dark scribble at the tip in both pictures. Every overhang fixture reports the same counts (same corner, same r); the
+regular corner fixtures (`1207-arc-edge-boss-r2*`, `556-box-*`) report none, though they are not the same pinch, so that is
+a pointer rather than a like-for-like comparison. The B-rep level checks are unaffected - face count, volumes, `assert_wraps`
+all pass - so this sits in the display mesh of the patch around its singular point, open as a follow-up: partly the price of
+a genuinely pinched surface, but 260 triangles wound against their own vertex normals are not.
+
 ## What remains
 
 * **Equal chamfer at a convex 3-edge corner** (`cube_ch_equal_corner3`): OCCT closes the corner with a triangular face through

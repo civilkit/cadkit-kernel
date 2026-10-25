@@ -2,7 +2,7 @@
 // The legend maps chip numbers to persistent face names (the mapping the
 // viewer and agents share); chips are drawn on the image, names live in data.
 import type { MeshData } from './mesh.js';
-import { PALETTE, renderTriangles, type RGB, type ViewName } from './raster.js';
+import { PALETTE, renderTriangles, type FitBox, type RGB, type ViewName } from './raster.js';
 import { encodePng } from './png.js';
 
 // 3x5 digit glyphs.
@@ -45,6 +45,8 @@ export interface RenderOpts {
   view?: ViewName;
   /** persistent face ids to highlight (unknown ids are ignored) */
   highlights?: string[];
+  /** frame this world box instead of the whole mesh (a close-up) */
+  fitBox?: FitBox;
 }
 
 export interface LegendEntry {
@@ -72,7 +74,7 @@ export function renderMesh(mesh: MeshData, opts: RenderOpts = {}): RenderResult 
     colors.set(fi, color);
     legend.push({ n: legend.length + 1, face: id, color });
   }
-  const frame = renderTriangles(mesh, opts.view ?? 'iso', w, h, colors);
+  const frame = renderTriangles(mesh, opts.view ?? 'iso', w, h, colors, opts.fitBox);
 
   // Legend strip along the bottom: chip + number per highlight.
   if (legend.length) {
