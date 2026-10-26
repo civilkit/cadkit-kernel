@@ -521,7 +521,8 @@ pub trait FeatureExec {
     /// Execute a geometry feature (not sketch/sketch3d/plane).
     fn exec(&mut self, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError>;
     /// Snapshot of the executor's accumulated state (the regen cache stores one
-    /// after every feature). `prev` is the previous snapshot of the same run,
+    /// after every feature of a short run, and every `stride`-th of a long one).
+    /// `prev` is the previous snapshot of the same run,
     /// whose unchanged parts the new one shares. `None` = not snapshottable.
     fn save(&self, _prev: Option<&crate::features::BrepSnap>) -> Option<crate::features::BrepSnap> {
         None

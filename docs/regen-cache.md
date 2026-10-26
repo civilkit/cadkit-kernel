@@ -14,8 +14,9 @@ Checks: `node tools/regen_cache_check.mjs` and
 
 ## What is cached
 
-After every feature of a regen the cache stores the complete state a
-continuation needs, under the key of the document prefix that produced it:
+The cache stores the complete state a continuation needs under the key of the
+document prefix that produced it — after every feature of a short run, and
+every `stride`-th one of a long one (see Checkpoints below):
 
 * the B-rep body with its persistent face names (names live in the body's
   faces), the tools of all body-making features (for mirror/patterns), the
@@ -135,6 +136,40 @@ is self-contained, so any subset of entries is valid.
 
 `opts.cacheCap: <bytes>` sets the cap of the instance (persists; `0`
 disables storing; tests use tiny values to force eviction).
+
+## Checkpoints (the sparse policy)
+
+The recorder (`Recorder` in `regen_cache.rs`) keeps the *state* after a feature
+so an edit can resume there instead of from the beginning. Storing one after
+every feature is quadratic in the feature count — each state copies the result
+and the body — so a long run costs far more to record than to regen.
+
+A run longer than `MAX_CHECKPOINTS` (256) therefore stores every `stride`-th
+state, where `stride = ceil((features - 1) / 256)`, plus always the last
+feature's. Positions are absolute (`(i + 1) % stride == 0`), so a later run of
+the same document stores at the same places, and an edit resumes from the
+nearest stored checkpoint before it — the features after that point re-run,
+because a prefix key cannot reuse a later feature whose input body changed.
+Nothing is lost by the sparsening: `reusedFeatures` counts from the checkpoint,
+so the gap of at most `stride - 1` features is re-run either way.
+
+Measured on SELENE-functional (7797 features, so `stride` 31) with a warm
+prefix, release wasm, one instance, cpu on the development machine:
+
+| edit at | features re-run | edit |
+|---|---|---|
+| feature 156 (2 %) | 7644 | 35.4 s |
+| feature 3898 (50 %) | 3902 | 32.5 s |
+| feature 7640 (98 %) | 160 | 20.1 s |
+
+Every one of the three reused its prefix exactly (`hits: 1`,
+`reusedFeatures = base`), so the checkpoint policy is not what an edit waits
+on. The floor is the reply: an edit that changes 160 features still takes
+20.1 s, because the run re-meshes ~12.7k face keys (~111 MB of mesh entries)
+and rebuilds the view snapshot regardless of how little changed. The features
+after the edit are 13–16 s of the 32–35 s. A denser policy (a checkpoint after
+each expensive feature) or a larger cap would therefore buy at most a few
+seconds on an edit in the middle and nothing at all near either end.
 
 ## Reuse statistics
 
