@@ -111,6 +111,13 @@ function sample(file) {
     if (dr.res && dr.res.draft.some((f) => f.min < -90.0001 || f.max > 90.0001)) viol.push(`${name} draft: outside [-90, 90]`);
     const sy = q({ type: 'symmetry', opts: { samples: 1500 } });
     row.sym = sy.ms;
+    // exact extent along x against the mesh extent of the sections (the mesh lies inside the body)
+    const ex = q({ type: 'extrema', dir: [1, 0, 0] });
+    row.ext = ex.ms;
+    if (ex.res) {
+      const e = ex.res.extent, m = sec.range[1] - sec.range[0];
+      if (!(e >= m - 1e-6 * diag && e <= m + 5e-3 * diag)) viol.push(`${name} extrema: x extent ${e} vs mesh extent ${m}`);
+    }
     if (sy.res) row.symN = sy.res.symmetric.length;
     rows.push(row);
   }

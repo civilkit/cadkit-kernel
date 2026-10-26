@@ -121,3 +121,56 @@ fn symmetric_box_and_closest() {
     assert!(call_err(r#"{"type":"clearance","tag":"s"}"#).contains("min"));
     assert!(call_err(r#"{"type":"angles","tag":"s"}"#).contains("edges"));
 }
+
+/// Two nested rectangles (a hollow square section) extruded `d`.
+fn tube_part(outer: f64, inner: f64, d: f64) -> String {
+    let rect = |pfx: &str, lo: f64, hi: f64| {
+        let p = [(lo, lo), (hi, lo), (hi, hi), (lo, hi)];
+        let pts: Vec<String> = p.iter().enumerate().map(|(i, (x, y))| format!(r#"{{"id":"{pfx}{}","x":{x},"y":{y}}}"#, i + 1)).collect();
+        let ents: Vec<String> = (0..4)
+            .map(|i| format!(r#"{{"type":"line","id":"{pfx}e{}","p1":"{pfx}{}","p2":"{pfx}{}"}}"#, i + 1, i + 1, (i + 1) % 4 + 1))
+            .collect();
+        (pts.join(","), ents.join(","))
+    };
+    let (po, eo) = rect("o", 0.0, outer);
+    let m = (outer - inner) / 2.0;
+    let (pi, ei) = rect("i", m, m + inner);
+    part(&format!("{po},{pi}"), &format!("{eo},{ei}"), d)
+}
+
+/// Sphere of radius 10 (half circle revolved about the +Y axis of the front plane).
+fn sphere_part() -> String {
+    let pts = r#"{"id":"c","x":0,"y":0},{"id":"s","x":0,"y":-10},{"id":"n","x":0,"y":10},{"id":"a1","x":0,"y":0},{"id":"a2","x":0,"y":10}"#;
+    let ents = r#"{"type":"arc","id":"e1","c":"c","p1":"s","p2":"n"},{"type":"line","id":"e2","p1":"n","p2":"s"},{"type":"line","id":"ax","p1":"a1","p2":"a2","construction":true}"#;
+    format!(
+        r#"{{"format":"ck-part","version":1,"features":[{{"type":"sketch","id":"F1","plane":{{"kind":"std","id":"front"}},"points":[{pts}],"entities":[{ents}],"constraints":[]}},{{"type":"revolve","id":"F2","op":"add","sketch":"F1","axis":"ax","angle":360}}]}}"#
+    )
+}
+
+#[test]
+fn extrema_of_box_sphere_and_tube() {
+    load("xb", &rect_part(40.0, 30.0, 20.0));
+    let r = call(r#"{"type":"extrema","tag":"xb","dir":[1,1,1]}"#);
+    let want = (40.0 + 30.0 + 20.0) / 3f64.sqrt();
+    assert!((num(&r, "extent") - want).abs() < 1e-9, "{}", ck_json::to_string(&r));
+    assert_eq!(r.get("exact"), Some(&Json::Bool(true)));
+    assert_eq!(r.get("max").unwrap().get("entity").unwrap().get_str("kind"), Some("vertex"));
+    assert!(r.get("elapsedMs").is_some() && r.get("truncated") == Some(&Json::Bool(false)));
+    // sphere r = 10: extent 20 along any direction, the extremes are +-r d from the centre
+    load("xs", &sphere_part());
+    for d in ["[0,1,0]", "[1,0,0]", "[1,1,1]", "[0.3,-1,0.7]"] {
+        let r = call(&format!(r#"{{"type":"extrema","tag":"xs","dir":{d}}}"#));
+        assert!((num(&r, "extent") - 20.0).abs() < 1e-7, "{d} {}", ck_json::to_string(&r));
+        assert!((num(r.get("max").unwrap(), "value") - 10.0).abs() < 1e-7, "{d} {}", ck_json::to_string(&r));
+        assert_eq!(r.get("exact"), Some(&Json::Bool(false)));
+        assert_eq!(r.get_str("method"), Some("sampled+refined"));
+    }
+    // hollow square section 40 outside, 30 inside (wall 5), 20 long: extrema see the outside only, thickness the wall
+    load("xt", &tube_part(40.0, 30.0, 20.0));
+    let r = call(r#"{"type":"extrema","tag":"xt","dir":[1,0,0]}"#);
+    assert!((num(&r, "extent") - 40.0).abs() < 1e-9, "{}", ck_json::to_string(&r));
+    let r = call(r#"{"type":"thickness","tag":"xt"}"#);
+    assert!((num(&r, "minThickness") - 5.0).abs() < 1e-6, "{}", ck_json::to_string(&r));
+    assert!(call_err(r#"{"type":"extrema","tag":"xt"}"#).contains("dir"));
+    assert!(call_err(r#"{"type":"extrema","tag":"xt","dir":[0,0,0]}"#).contains("zero"));
+}

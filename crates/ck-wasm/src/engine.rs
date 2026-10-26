@@ -844,6 +844,7 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
         "angles" => ck_ops::analysis::angles_reply(&snapshot(cx)?.body, cx.msg),
         "clearance" => ck_ops::analysis::clearance_reply(&snapshot(cx)?.body, cx.msg),
         "symmetry" => ck_ops::analysis::symmetry_reply(&snapshot(cx)?.body, cx.msg),
+        "extrema" => ck_ops::analysis::extrema_reply(&snapshot(cx)?.body, cx.msg),
         "dfmMinWall" => ck_ops::dfm::min_wall_reply(&snapshot(cx)?.body, cx.msg),
         "dfmMinInternalRadius" => ck_ops::dfm::min_internal_radius_reply(&snapshot(cx)?.body, cx.msg),
         "dfmPocketRatio" => ck_ops::dfm::pocket_ratio_reply(&snapshot(cx)?.body, cx.msg),

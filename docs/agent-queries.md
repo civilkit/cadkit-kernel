@@ -137,7 +137,7 @@ existing seven-ray parity classifier of `ck-ops::contain`.
 
 ## Measurement and analysis (read-only)
 
-`distance`, `maxDistance`, `thickness`, `thicknessAt`, `closestPoint`, `angles`, `clearance`, `symmetry`
+`distance`, `maxDistance`, `thickness`, `thicknessAt`, `closestPoint`, `angles`, `clearance`, `symmetry`, `extrema`
 (`crates/ck-ops/src/analysis.rs`; tests: its unit tests, `crates/ck-wasm/tests/measure.rs`, `tools/measure_check.mjs`,
 `tools/measure_occt_check.py`). All take `tag` (default `main`), answer `null` on a tag with no body, return
 `{ok:false,error}` with the field named for bad input, and never change the body. Options may sit in `opts` or at the
@@ -226,6 +226,33 @@ mirrored and measured against the body: `maxDeviation` and `rmsDeviation` of the
 (the mirror is an involution, so one direction is the whole Hausdorff distance). `symmetric` lists the planes with
 `maxDeviation <= tol` (default 1e-4 of the diagonal); `best` is the least deviating; `planes` has all, sorted. The
 symmetric-difference volume of the booleans is not computed.
+
+### extrema `{dir, of?, opts?:{samples}}`
+
+Lowest and highest point of the body (or of `of`, any entity) along the direction `dir` (any length, not zero): the
+extent of the part along an axis, a stock size, the topmost point. Positions are `dir . p` with `dir` normalised.
+
+```
+-> {"type":"extrema","tag":"main","dir":[1,1,1]}
+<- {"direction":[0.577,0.577,0.577],
+    "min":{"value":0,"point":[0,0,0],"entity":{"kind":"vertex","id":"V3"},"at":[{"kind":"vertex","id":"V3"}]},
+    "max":{"value":51.96,"point":[40,30,20],"entity":{"kind":"vertex","id":"V6"},"at":[{"kind":"vertex","id":"V6"}]},
+    "extent":51.96,"method":"vertices","exact":true,"samples":412,"elapsedMs":3,"truncated":false}
+```
+
+`entity` is what the extreme point lies on and `at` everything that attains it (at most 20): faces whose interior
+reaches the extreme (a planar face perpendicular to `dir` is attained over its whole area; `point` is then one point of
+it), else edges (a whole edge at the extreme, or a curved edge touching it in its interior), else vertices (a corner,
+or the end of an edge). `of` takes the entities of `distance`; for a point `min` and `max` coincide.
+
+How exact: every face is sampled on a `samples` x `samples` grid (default 16, at most 64) and every edge at `4 x samples`
+points; for curved faces and edges the two best samples of each side are refined by a pattern search to about 1e-10 of
+the cell size, inside the face and along the edge, so a smooth extreme (sphere, cylinder, torus, cone, fillets) comes
+out to about 1e-9. `method:"vertices"`, `exact:true` means every face searched is planar and every edge straight: the
+extreme is then a vertex or a whole edge / face and the value is exact to rounding. Otherwise `method:"sampled+refined"`,
+`exact:false`: an extreme of a free-form face narrower than the grid spacing (a small bump) can be missed, raise
+`opts.samples`. `samples` in the reply counts the points evaluated. Budget as below (`truncated:true`: some faces or
+edges were not searched, so the extent is a lower bound).
 
 ### Budget: `elapsedMs`, `truncated`
 

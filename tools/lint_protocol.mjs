@@ -62,7 +62,7 @@ if (isMainThread) {
     refDiff: { base: parts.box, part: parts.box },
     section: { plane: { origin: [0, 0, 0], normal: [0, 0, 1] } }, sections: { n: 3 }, bodyBoolean: { op: 'cut', target: 'F2.C1', tools: ['F2.C0'] }, probe: { points: [[0, 0, 0]], rays: [{ origin: [0, 0, 0], dir: [0, 0, 1] }] },
     distance: { a: [0, 0, 0], b: 'body' }, maxDistance: { opts: { samples: 200 } }, thickness: { opts: { samples: 200 } }, thicknessAt: { point: [0, 0, 0] },
-    closestPoint: { points: [[0, 0, 0]] }, angles: { edges: 'all' }, clearance: { min: 1 }, symmetry: { opts: { samples: 200 } },
+    closestPoint: { points: [[0, 0, 0]] }, angles: { edges: 'all' }, clearance: { min: 1 }, symmetry: { opts: { samples: 200 } }, extrema: { dir: [1, 0, 0] },
     loadFont: { name: 'lint', data: readFileSync(path.join(here, '../crates/ck-text/fonts/gauge.ttf')).toString('base64') }, unloadFont: { name: 'lint' }, listFonts: {}, subsetFont: { name: 'gauge', text: 'RPM x100' },
     textMetrics: { string: 'RPM x100', font: 'gauge', height: 5 }, textOutline: { string: 'RPM x100', font: 'gauge', height: 5, at: [1, 2], anchor: ['center', 'middle'] },
     sketchAnalyze: { featureId: 'F1' },
@@ -70,8 +70,8 @@ if (isMainThread) {
     dfmMinWall: { threshold: 1 }, dfmMinInternalRadius: { toolRadius: 1 }, dfmPocketRatio: { maxRatio: 4 },
     dfmOverhang: { direction: [0, 1, 0], angle: 45 }, dfmConstantSection: { axis: [0, 0, 1] },
   };
-  const MUST_OK = new Set(['ping', 'regen', 'massProps', 'validate', 'interference', 'step', 'check', 'resolve', 'describe', 'refDiff', 'section', 'sections', 'probe', 'distance', 'maxDistance', 'thickness', 'closestPoint', 'angles', 'clearance', 'symmetry', 'textMetrics', 'textOutline', 'loadFont', 'unloadFont', 'listFonts', 'subsetFont']); // minimal body must succeed once a body exists
-  const FIELDS = ['part', 'tag', 'opts', 'ref', 'refs', 'ids', 'sketch', 'distance', 'name', 'upTo', 'densities', 'bodies', 'dir', 'tol', 'a', 'b', 'u', 'at', 'expect', 'descriptions', 'description', 'names', 'base', 'plane', 'axis', 'n', 'positions', 'points', 'rays', 'min', 'on', 'edges', 'faces', 'pull', 'tagB', 'planes', 'draft', 'point', 'k', 'string', 'font', 'height', 'spacing', 'angle', 'arc', 'anchor', 'mirror', 'data', 'text', 'replace', 'fontHash', 'body', 'op'];
+  const MUST_OK = new Set(['ping', 'regen', 'massProps', 'validate', 'interference', 'step', 'check', 'resolve', 'describe', 'refDiff', 'section', 'sections', 'probe', 'distance', 'maxDistance', 'thickness', 'closestPoint', 'angles', 'clearance', 'symmetry', 'extrema', 'textMetrics', 'textOutline', 'loadFont', 'unloadFont', 'listFonts', 'subsetFont']); // minimal body must succeed once a body exists
+  const FIELDS = ['part', 'tag', 'opts', 'ref', 'refs', 'ids', 'sketch', 'distance', 'name', 'upTo', 'densities', 'bodies', 'dir', 'tol', 'a', 'b', 'u', 'at', 'expect', 'descriptions', 'description', 'names', 'base', 'plane', 'axis', 'n', 'positions', 'points', 'rays', 'min', 'on', 'edges', 'faces', 'pull', 'tagB', 'planes', 'draft', 'point', 'k', 'dir', 'of', 'string', 'font', 'height', 'spacing', 'angle', 'arc', 'anchor', 'mirror', 'data', 'text', 'replace', 'fontHash', 'body', 'op'];
   const VALUES = [null, 'x', 'NaN', '-1e999', 1e308, -1e308, -1, 0, [], {}, [[]], [null], true, { kind: 'face', id: 'nope' }, { kind: 5 }, [1, 2, 3], { body: 'nope' }, 'newBody'];
 
   function check(label, k, body) {

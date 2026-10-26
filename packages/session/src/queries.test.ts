@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { angles, check, clearance, closestPoint, describe as describeNames, distance, heal, importSat, importStep, massProps, maxDistance, probe, resolveDescriptions, section, sections, symmetry, thickness, thicknessAt, validate } from './queries.js';
+import { angles, check, clearance, closestPoint, describe as describeNames, distance, extrema, heal, importSat, importStep, massProps, maxDistance, probe, resolveDescriptions, section, sections, symmetry, thickness, thicknessAt, validate } from './queries.js';
 import { defaultWasmPath as wasmPath } from '../../kernel-client/src/worker.js';
 import type { KernelReply } from '../../kernel-client/src/protocol.js';
 import type { KernelTransport } from '../../driver/src/verify.js';
@@ -85,6 +85,7 @@ describe('queries', () => {
     await angles(fake({}, seen), { edges: 'all', draft: { pull: [0, 0, 1], min: 1 } });
     await clearance(fake({ pairs: [] }, seen), { min: 2, include: 'gap', limit: 5 });
     await symmetry(fake({ planes: [] }, seen), { samples: 500 });
+    await extrema(fake({}, seen), { dir: [0, 0, 1], of: 'F2.C1', samples: 8 });
     assert.deepEqual(seen, [
       { type: 'distance', tag: 'main', a: 'F2.C0', b: [1, 2, 3], tagB: 'o', opts: { samples: 9 } },
       { type: 'maxDistance', tag: 't', tagB: 'o', opts: { samples: 100, both: true } },
@@ -94,6 +95,7 @@ describe('queries', () => {
       { type: 'angles', tag: 'main', edges: 'all', draft: { pull: [0, 0, 1], min: 1 } },
       { type: 'clearance', tag: 'main', min: 2, opts: { include: 'gap', limit: 5 } },
       { type: 'symmetry', tag: 'main', opts: { samples: 500 } },
+      { type: 'extrema', tag: 'main', dir: [0, 0, 1], of: 'F2.C1', opts: { samples: 8 } },
     ]);
   });
 
@@ -158,6 +160,11 @@ describe('queries live', { skip: !existsSync(wasmPath()) && 'no wasm built' }, (
       assert.equal(cl.pairs.filter((x) => x.kind === 'wall').length, 1);
       const mx = await s.maxDistance();
       assert.ok(mx.maxDistance < 1e-9);
+      const ex = await s.extrema({ dir: [1, 0, 0] });
+      assert.ok(Math.abs(ex.extent - 10) < 1e-9 && ex.exact, JSON.stringify(ex));
+      assert.equal(ex.max.entity?.kind, 'face');
+      const ez = await s.extrema({ dir: [0, 0, 1] });
+      assert.ok(Math.abs(ez.extent - 2) < 1e-9);
       const sy = await s.symmetry();
       assert.ok(sy.symmetric.length >= 3);
       const cp = await s.closestPoint([[100, 100, 100]], { on: 'vertex' });
