@@ -126,6 +126,7 @@ pub fn walk(arr: &Arrangement, s: &Surface, sense: bool, hes: &[He]) -> Vec<Vec<
             let rin = he_out_dir(arr, (h.0, !h.1));
             let e1 = (rin - nrm * nrm.dot(rin)).try_normalize().unwrap_or(rin);
             let mut best: Option<(f64, usize)> = None;
+            let mut best_unused: Option<(f64, usize)> = None;
             for &k in &cands {
                 let g = hes[k];
                 let d = he_out_dir(arr, g);
@@ -138,21 +139,37 @@ pub fn walk(arr: &Arrangement, s: &Surface, sense: bool, hes: &[He]) -> Vec<Vec<
                 if best.map_or(true, |b| cw < b.0) {
                     best = Some((cw, k));
                 }
+                // Near-backtrack candidates (cw within 0.05 rad of a full turn) are the "last
+                // resort" in disguise; the twin/same-direction bump above only catches exact
+                // ones. Substituting one turns a straight continuation into a degenerate loop.
+                if !used[k] && cw < TAU - 0.05 && best_unused.map_or(true, |b| cw < b.0) {
+                    best_unused = Some((cw, k));
+                }
             }
             let Some((_, nx)) = best else { break };
             if nx == start {
                 ok = true;
                 break;
             }
-            if used[nx] {
-                break;
-            }
+            // A face walk must use each directed half-edge once. At a degenerate vertex (nearly
+            // tangent curves, the blade rail) the first-clockwise pick can be an edge an earlier
+            // cycle already took; take the nearest unused genuine edge instead of dropping the
+            // chain. A backtrack (twin / same direction, cw >= TAU) is never a substitute: it is
+            // the "last resort" the walk would rather revisit an edge than take, and substituting
+            // it turns a straight continuation into a degenerate loop. When no genuine unused
+            // candidate exists, break as HEAD does and drop the chain.
+            let nx = if used[nx] {
+                match best_unused {
+                    Some((_, k)) => k,
+                    _ => break,
+                }
+            } else {
+                nx
+            };
             cur = nx;
         }
         if ok {
             cycles.push(cyc);
-        } else {
-            super::bool_dbg!("walk: open chain of {} half-edges dropped: {:?}", cyc.len(), cyc);
         }
     }
     cycles
