@@ -1482,22 +1482,40 @@ mod tests {
 /// `~k` on both pieces; pinned: the whole family is re-ranked by control-box
 /// centre (`F2.C0~1` outer, `~2`/`~3` the floor pieces).
 pub(crate) fn renumber_duplicates(b: &mut ck_topo::body::Body) {
-    use std::collections::BTreeMap;
-    let mut fam: BTreeMap<(String, String, String), Vec<ck_topo::body::FaceId>> = BTreeMap::new();
+    use std::collections::{BTreeMap, HashMap};
+    use std::hash::{Hash, Hasher};
+    // Faces collide once their region is dropped, and `number_split_faces` only ever touches the
+    // region, so a hash of the name fields finds the faces worth an exact id — which is the whole
+    // walk for a body whose faces are all distinct, and most of a combine result is.
+    let mut cand: HashMap<u64, Vec<ck_topo::body::FaceId>> = HashMap::with_capacity(b.faces.len());
     for fid in b.face_ids() {
         let n = &b.face(fid).name;
-        let base = ck_topo::body::FaceName { region: None, ..n.clone() };
-        fam.entry((base.id(), String::new(), String::new())).or_default().push(fid);
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        n.feature.hash(&mut h);
+        n.role.hash(&mut h);
+        n.suffix.hash(&mut h);
+        cand.entry(h.finish()).or_default().push(fid);
+    }
+    let mut fam: BTreeMap<String, Vec<ck_topo::body::FaceId>> = BTreeMap::new();
+    for fs in cand.into_values().filter(|fs| fs.len() > 1) {
+        for fid in fs {
+            let mut base = b.face(fid).name.clone();
+            base.region = None;
+            fam.entry(base.id()).or_default().push(fid);
+        }
     }
     for (_, fs) in fam {
-        let ids: Vec<String> = fs.iter().map(|&x| b.face_id_str(x)).collect();
-        let dup = ids.iter().enumerate().any(|(i, a)| ids[..i].contains(a));
-        if dup {
-            for &x in &fs {
-                b.faces[x.idx()].name.region = None;
-            }
-            b.number_split_faces();
+        // read here and not up front: an earlier family's `number_split_faces` numbers faces across
+        // the whole body, and a family that is no longer a duplicate must not renumber again
+        let mut ids: Vec<String> = fs.iter().map(|&x| b.face_id_str(x)).collect();
+        ids.sort_unstable();
+        if !ids.windows(2).any(|w| w[0] == w[1]) {
+            continue;
         }
+        for &x in &fs {
+            b.faces[x.idx()].name.region = None;
+        }
+        b.number_split_faces();
     }
 }
 

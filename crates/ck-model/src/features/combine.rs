@@ -152,9 +152,8 @@ fn comps_of(b: &Body, comps: &[Vec<FaceId>], s: &Sel) -> Result<Vec<usize>, Feat
 }
 
 fn extract(b: &Body, faces: &[FaceId]) -> Body {
-    let mut c = ck_ops::boolean::assemble::rebuild_in_order(b, faces);
-    ck_topo::region::rebuild_lumps(&mut c);
-    c
+    // `rebuild_in_order` already rebuilds the shells and lumps of what it built
+    ck_ops::boolean::assemble::rebuild_in_order(b, faces)
 }
 
 /// Run the operation on the lumps of `body`.
@@ -266,8 +265,13 @@ pub fn combine_bodies(body: &Body, spec: &Spec, fid: &str, fuzz: f64, auto: bool
     }
 
     // untouched lumps first, then the result pieces, then (keepTools) the tools as they were
-    let consumed: Vec<FaceId> = std::iter::once(t_ix).chain(tool_ix.iter().copied()).flat_map(|i| comps[i].iter().copied()).collect();
-    let rest: Vec<FaceId> = body.face_ids().filter(|f| !consumed.contains(f)).collect();
+    let mut consumed = vec![false; body.faces.len()];
+    for i in std::iter::once(t_ix).chain(tool_ix.iter().copied()) {
+        for &f in &comps[i] {
+            consumed[f.idx()] = true;
+        }
+    }
+    let rest: Vec<FaceId> = body.face_ids().filter(|&f| !consumed[f.idx()]).collect();
     let mut out = if rest.is_empty() { Body::new() } else { extract(body, &rest) };
     let mut first_result: Option<ck_topo::body::LumpId> = None;
     for p in &pieces {
