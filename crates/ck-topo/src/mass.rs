@@ -1071,6 +1071,12 @@ pub fn face_signed_volume(b: &Body, f: FaceId) -> f64 {
 }
 
 
+/// Entries one tier of the face-volume table holds before it is cleared. It has to hold the faces of the biggest model that
+/// is rebuilt over and over: `rebuild_lumps` visits every face on each boolean result, and a table smaller than the model
+/// (it was 8192, a model of 11,500 faces) is cleared during every pass and so never hits, which made every cut of a large
+/// multi-body model cost seconds. 1 << 18 entries is a few MB.
+const FACE_VOL_MEMO_CAP: usize = 1 << 18;
+
 thread_local! {
     /// Per-face signed volumes by orientation-free face key (see `face_key`), one table per tier.
     static FACE_VOL_MEMO: std::cell::RefCell<[std::collections::HashMap<u64, f64>; 2]> = std::cell::RefCell::new([Default::default(), Default::default()]);
@@ -1090,7 +1096,7 @@ pub fn face_volume_memo(b: &Body, f: FaceId, coarse: bool) -> (f64, bool) {
     if x.is_finite() {
         FACE_VOL_MEMO.with(|m| {
             let mut m = m.borrow_mut();
-            if m[tier].len() >= 8192 {
+            if m[tier].len() >= FACE_VOL_MEMO_CAP {
                 m[tier].clear();
             }
             m[tier].insert(key, sgn * x);
