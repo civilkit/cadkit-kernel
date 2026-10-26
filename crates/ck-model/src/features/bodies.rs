@@ -95,7 +95,15 @@ pub fn any_named(b: &Body) -> bool {
 
 /// `(origin, name)` of every named lump.
 pub fn named(b: &Body) -> Vec<(String, String)> {
-    b.lump_ids().filter_map(|l| Some((origin(b, l)?.to_string(), b.lump(l).name.clone()?))).collect()
+    // the name is asked for first: `origin` walks the lump's faces, and a body is mostly lumps
+    // nobody named
+    if !any_named(b) {
+        return vec![];
+    }
+    b.lump_ids().filter_map(|l| {
+        let name = b.lump(l).name.clone()?;
+        Some((origin(b, l)?.to_string(), name))
+    }).collect()
 }
 
 /// Name every live lump of `b` whose origin is `feature` and that has no name yet.

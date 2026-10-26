@@ -178,8 +178,12 @@ impl Surface {
             Surface::BSpline(b) => b.fingerprint(),
             Surface::Offset { base, dist } => base.fingerprint().rotate_left(17) ^ dist.to_bits().wrapping_mul(0x9e3779b97f4a7c15),
             other => {
+                // the same exact-bit key `push_key` builds, hashed here: `{:?}` of a frame is a
+                // few hundred bytes of text per surface-surface pair, and every boolean asks
+                let mut key: Vec<u64> = Vec::new();
+                other.push_key(&mut key);
                 let mut h = std::collections::hash_map::DefaultHasher::new();
-                format!("{other:?}").hash(&mut h);
+                key.hash(&mut h);
                 h.finish()
             }
         }
