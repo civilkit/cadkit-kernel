@@ -193,26 +193,9 @@ fn faces_of_feature(b: &Body, fid: &str) -> Option<Vec<FaceId>> {
     (!fs.is_empty()).then_some(fs)
 }
 
-pub fn exec_move_body(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
-    if br.body.is_none() && br.surfs.is_empty() {
-        return Err(FeatureError::new(codes::NOTHING_TO_CUT));
-    }
-    let copy = crate::sketch::jtruthy(f.raw.get("copy"));
-    let copy_name = if copy { super::bodies::body_name(&f.raw)? } else { None };
-    if let Some(n) = &copy_name {
-        super::bodies::check_free(br.body.as_ref(), n, &f.id, &[])?;
-    }
-    let x = motion(state, f)?;
-    let mirror = match f.raw.get("mirror") {
-        Some(p) if copy => {
-            let r = crate::GeomRef::from_json(p).ok_or_else(|| invalid("unknown mirror plane"))?;
-            let fr = super::pattern::plane_frame(br, state, &r).ok_or_else(missing)?;
-            Some(ck_core::linalg::Plane::new(fr.o, fr.z))
-        }
-        Some(_) => return Err(invalid("mirror needs copy: true")),
-        None => None,
-    };
-    // ---- resolve the selection
+/// The faces of the solid body and the surface bodies a `bodies` / `body` / `target` selection names (see the module doc;
+/// none given: every lump of the solid body). Shared by `moveBody` and `scale`.
+pub(super) fn select(br: &Brep, f: &Feature) -> Result<(Vec<FaceId>, Vec<usize>), FeatureError> {
     let mut solid_faces: Vec<FaceId> = vec![];
     let mut surf_hit: Vec<usize> = vec![];
     let sel = entries(&f.raw);
@@ -264,6 +247,29 @@ pub fn exec_move_body(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Res
     solid_faces.dedup();
     surf_hit.sort_unstable();
     surf_hit.dedup();
+    Ok((solid_faces, surf_hit))
+}
+
+pub fn exec_move_body(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
+    if br.body.is_none() && br.surfs.is_empty() {
+        return Err(FeatureError::new(codes::NOTHING_TO_CUT));
+    }
+    let copy = crate::sketch::jtruthy(f.raw.get("copy"));
+    let copy_name = if copy { super::bodies::body_name(&f.raw)? } else { None };
+    if let Some(n) = &copy_name {
+        super::bodies::check_free(br.body.as_ref(), n, &f.id, &[])?;
+    }
+    let x = motion(state, f)?;
+    let mirror = match f.raw.get("mirror") {
+        Some(p) if copy => {
+            let r = crate::GeomRef::from_json(p).ok_or_else(|| invalid("unknown mirror plane"))?;
+            let fr = super::pattern::plane_frame(br, state, &r).ok_or_else(missing)?;
+            Some(ck_core::linalg::Plane::new(fr.o, fr.z))
+        }
+        Some(_) => return Err(invalid("mirror needs copy: true")),
+        None => None,
+    };
+    let (solid_faces, surf_hit) = select(br, f)?;
     // a copy with no motion (a copy in place, to be named and worked on separately) still makes the copy
     let x = match x { Some(x) => x, None if copy => Xform::IDENTITY, None => return Ok(()) };
     if mirror.is_some() && !surf_hit.is_empty() {

@@ -21,6 +21,7 @@ strings from kernel.strings, and dispatch to ck-ops/ck-topo.
 | hole | sketch, standard(iso), size, diameter (simple holes only: plain diameter instead of size), fit(normal/tap), kind(simple/cbore/csink), end, depth, tip, flip |
 | projectCurve | sketch \| curve (an earlier curve feature; wins over sketch), faces[] (empty/missing = every face of the solid and the surface bodies), degree(2..9, 3), tolerance(>0, 0.001), direction(both/forward/reverse); see project_curve.rs and docs/project-curve.md |
 | helix | sketch, definedBy(pitchRevs/heightRevs/heightPitch), pitch, revolutions, height, startAngle, leftHand, reverse |
+| scale | factor (number or [sx,sy,sz]; `factors` too), at (`origin`), bodies / body / target as moveBody; exact for planes, cylinders and cones stretched along their axis, B-spline faces, and (uniform) spheres and tori; the rest is refused `invalidValue` with detail and hint (`scale.rs`) |
 | rib | sketch, thickness(expr) |
 | lip | kind(material/move/offset/linear/turn/tension), faces[], edges[], width, height |
 | lpattern | seeds[], dir, spacing(expr), count, reverse |

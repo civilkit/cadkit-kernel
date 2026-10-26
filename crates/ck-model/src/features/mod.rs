@@ -41,6 +41,7 @@
 //! | deleteBody      | mode, bodies |
 //! | moveFace        | faces, mode (offset / translate), distance, translate, flip (parsed from the raw DOM, see move_face.rs) |
 //! | moveBody        | bodies ({face}/{surface}/{feature}), translate, rotate{axis,origin,angle}, copy (see move_body.rs) |
+//! | scale           | factor (number or [sx,sy,sz]), at, bodies as moveBody (see scale.rs) |
 //! | thread          | face, standard, size, class, length, hand, start, modeled (parsed from the raw DOM, see thread.rs) |
 //! | projectCurve    | sketch \| curve, faces, degree, tolerance, direction (see project_curve.rs) |
 
@@ -71,6 +72,7 @@ pub mod surface_extrude;
 pub mod surfaces;
 pub mod sweep;
 pub mod thin;
+pub mod scale;
 pub mod thread;
 
 use crate::sketch::jtruthy;
@@ -1315,6 +1317,7 @@ impl Brep {
             _ if f.type_name == "thread" => return thread::exec_thread(self, state, f),
             _ if f.type_name == "combine" || f.type_name == "bodyBoolean" => return combine::exec_combine(self, state, f),
             _ if f.type_name == "moveBody" => return move_body::exec_move_body(self, state, f),
+            _ if f.type_name == "scale" => return scale::exec_scale(self, state, f),
             _ if f.type_name == "moveFace" => return move_face::exec_move_face(self, state, f),
             _ if f.type_name == "pipeCut" => return pipecut::exec_pipecut(self, state, f),
             _ if f.type_name == "editCurve" => return edit_curve::exec_edit_curve(self, state, f),
