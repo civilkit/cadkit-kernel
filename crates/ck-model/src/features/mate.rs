@@ -14,9 +14,8 @@
 //! * nested regens ignore the nested `rollback`, emit no sketches / planes
 //!   into the assembly reply; a nested error -> `insertPartErrors` with
 //!   `detail: "<id>: <code>"` of the FIRST error in id order (the reply's
-//!   error map order), no component; features but no body ->
-//!   `insertPartEmpty`; an empty feature list -> nothing (no error, no
-//!   component);
+//!   error map order), no component; features but no body, and an empty
+//!   feature list, are both a quiet no-op (no error, no component);
 //! * trace: when the executed inserts reference >= 2 DISTINCT part
 //!   documents, a `"<n> inserted parts"` span (one nested `regenerate N
 //!   features` per distinct part, first-use order) opens the regen before
@@ -268,10 +267,10 @@ impl Brep {
             return Err(FeatureError::new(INSERT_PART_ERRORS).with("detail", Json::Str(detail)));
         }
         let Some(mut b) = nested.body else {
-            if nested.n_features == 0 {
-                return Ok(());
-            }
-            return Err(FeatureError::new(INSERT_PART_EMPTY));
+            // features but no solid body: the part is empty (145 of SELENE's are empty by
+            // design), and an empty feature list reached the same place above. Quiet no-op,
+            // no component.
+            return Ok(());
         };
         let x = placement(state, f, place)?;
         b.push_instance(&format!("{}.1", f.id));

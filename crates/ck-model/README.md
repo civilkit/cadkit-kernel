@@ -138,7 +138,8 @@ ck-topo / ck-ops. Depends on ck-core, ck-geom, ck-topo, ck-ops, ck-json.
   faces renamed `@<insert>.1`, placement `place` / `dx,dy,dz` + `axis` +
   `angle`, components appended as their own lumps (never united),
   `components[] {id, dof, place}` sorted by id, `insertPartErrors {detail:
-  "<first error id>: <code>"}`, `insertPartEmpty`, empty parts silent,
+  "<first error id>: <code>"}`, empty parts silent — no error and no
+  component, whether the inserted part has no features or builds no solid,
   `"<n> inserted parts"` pre-pass span for >= 2 distinct parts (identical
   parts regenerate once). Component `cpattern` (`seeds:[]`, `bodies:[{face}]`):
   copies in component order, `@F12.k` after the component suffix, not in
