@@ -41,11 +41,12 @@ macro_rules! case {
     };
 }
 
-const CASES: &[(&str, &str)] = &[
+/// The spacings that build, are valid and agree in volume: the default spacing plus the pattern
+/// spacings from 0.70 to 0.80 pitch. The free-form SSI of the hub cylinder with the blade walls is
+/// extended to the trimmed face boundary, so the cylinder footprint loop closes on the shared blade
+/// rail for these 7 of the 10 documents. See docs/prop-probe.md, "Marine hub fuse".
+const PASSING: &[(&str, &str)] = &[
     case!("default_s5"),
-    case!("p070_s4"),
-    case!("p070_s5"),
-    case!("p070_s6"),
     case!("p070_s7"),
     case!("p075_s5"),
     case!("p080_s4"),
@@ -54,26 +55,48 @@ const CASES: &[(&str, &str)] = &[
     case!("p080_s7"),
 ];
 
-/// TARGET of task A: every spacing builds, is valid, and agrees in volume. The free-form SSI of the
-/// hub cylinder with the blade walls is extended to the trimmed face boundary, so the cylinder
-/// footprint loop closes on the shared blade rail for 6 of the 10 spacings; the other 4 still leave
-/// an open edge at the near-tangent rail vertex. See docs/prop-probe.md, "Marine hub fuse".
-#[test]
-#[ignore = "task A: the hub fuse still leaves an open edge for 4 of the 10 spacings"]
-fn marine_fuse_builds_valid_for_every_spacing() {
+/// The three spacings still blocked by task A: the hub fuse leaves an open edge at the near-tangent
+/// rail vertex (`booleanFailed`). Kept ignored as the target of the fix; see docs/prop-probe.md.
+const FAILING: &[(&str, &str)] = &[
+    case!("p070_s4"),
+    case!("p070_s5"),
+    case!("p070_s6"),
+];
+
+fn build_cases(cases: &[(&'static str, &'static str)]) -> Vec<(&'static str, Built)> {
     let mut built = vec![];
-    for (name, src) in CASES {
+    for (name, src) in cases {
         let b = build(src);
         eprintln!("{name}: errors {:?} volume {:.3} issues {}", b.errors, b.volume, b.issues);
         built.push((*name, b));
     }
+    built
+}
+
+fn assert_built_valid(built: &[(&str, Built)]) {
     let bad: Vec<_> = built.iter().filter(|(_, b)| !b.errors.is_empty()).map(|(n, b)| format!("{n}: {:?}", b.errors)).collect();
     assert!(bad.is_empty(), "marine_fuse regen errors: {bad:#?}");
     let bad: Vec<_> = built.iter().filter(|(_, b)| b.issues != 0).map(|(n, b)| format!("{n}: {} issues", b.issues)).collect();
     assert!(bad.is_empty(), "marine_fuse invalid: {bad:#?}");
-    // the volume must agree across spacings (the brief: within 1 %)
-    let vs: Vec<f64> = built.iter().map(|(_, b)| b.volume).collect();
+}
+
+#[test]
+fn marine_fuse_builds_valid_for_every_spacing() {
+    let built = build_cases(PASSING);
+    assert_built_valid(&built);
+    // the volume must agree across the pattern spacings (the brief: within 1 %); default_s5 has a
+    // different hub length (110 mm vs 140 mm), so it is a validity case only, not a volume sample.
+    let vs: Vec<f64> = built.iter().filter(|(n, _)| *n != "default_s5").map(|(_, b)| b.volume).collect();
     let vmin = vs.iter().cloned().fold(f64::INFINITY, f64::min);
     let vmax = vs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
     assert!((vmax - vmin) <= 0.01 * vmax, "marine_fuse volumes differ by more than 1 %: {vs:?}");
+}
+
+/// TARGET of task A: the remaining three spacings must build like the rest. They currently fail
+/// with `booleanFailed;issue=openEdge` at the near-tangent rail vertex. See docs/prop-probe.md.
+#[test]
+#[ignore = "task A: p070_s4, p070_s5 and p070_s6 still leave an open edge at the near-tangent rail vertex"]
+fn marine_fuse_open_edge_spacings_build() {
+    let built = build_cases(FAILING);
+    assert_built_valid(&built);
 }
