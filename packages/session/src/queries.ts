@@ -625,6 +625,43 @@ export async function symmetry(
   return call<SymmetryReport>(kernel, msg);
 }
 
+export interface ExtremeEnd {
+  /** Signed position along `direction` (dot product of the point with the unit direction). */
+  value: number;
+  point: number[];
+  /** The face / edge / vertex the extreme lies on (faces first, then edges, then vertices). */
+  entity: EntityRef | null;
+  /** Everything that attains the extreme (at most 20). */
+  at: EntityRef[];
+}
+
+export interface ExtremaReport {
+  /** The unit direction measured along. */
+  direction: number[];
+  min: ExtremeEnd;
+  max: ExtremeEnd;
+  /** `max.value - min.value`: the extent of the entity along `direction`. */
+  extent: number;
+  /** `vertices`: exact (planar faces, straight edges); `sampled+refined`: curved faces / edges, see docs. */
+  method: 'vertices' | 'sampled+refined';
+  exact: boolean;
+  samples: number;
+  truncated: boolean;
+  elapsedMs: number;
+}
+
+/** Lowest and highest point of the body (or the entity `of`) along `dir`, with what they lie on. */
+export async function extrema(
+  kernel: KernelTransport,
+  q: { dir: number[]; of?: MeasureEntity; samples?: number },
+  opts: QueryOpts = {},
+): Promise<ExtremaReport> {
+  const msg: Record<string, unknown> = { type: 'extrema', tag: opts.tag ?? 'main', dir: q.dir };
+  if (q.of !== undefined) msg.of = q.of;
+  if (q.samples !== undefined) msg.opts = { samples: q.samples };
+  return call<ExtremaReport>(kernel, msg);
+}
+
 export interface ImportReport {
   errors: Array<[string, { code: string; params: Record<string, unknown> }]>;
   body?: { faces?: unknown[]; edges?: unknown[]; box?: { min: number[]; max: number[] } } | null;

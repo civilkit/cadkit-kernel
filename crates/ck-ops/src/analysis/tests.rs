@@ -110,3 +110,56 @@ fn clearance_and_symmetry() {
     // equal heights, both axes in the plane z = 0: the y and z mirrors, not the x mirror
     assert_eq!(r.get("symmetric").unwrap().as_arr().unwrap().len(), 2, "{r:?}");
 }
+
+#[test]
+fn cube_extrema_are_exact() {
+    let b = box_body("F2", 0.0, 0.0, 10.0, 10.0, 0.0, 10.0);
+    for d in ["[1,0,0]", "[0,1,0]", "[0,0,1]", "[0,0,-1]"] {
+        let r = extrema_reply(&b, &j(&format!(r#"{{"dir":{d}}}"#))).unwrap();
+        assert!((num(&r, "extent") - 10.0).abs() < 1e-9, "{d} {r:?}");
+        assert_eq!(r.get("exact"), Some(&Json::Bool(true)));
+        // the extreme along an axis is a whole face
+        assert_eq!(r.get("max").unwrap().get("entity").unwrap().get_str("kind"), Some("face"), "{d} {r:?}");
+        assert_eq!(r.get("min").unwrap().get("entity").unwrap().get_str("kind"), Some("face"), "{d} {r:?}");
+    }
+    // along the space diagonal the extreme is one corner: extent 30 / sqrt 3
+    let r = extrema_reply(&b, &j(r#"{"dir":[1,1,1]}"#)).unwrap();
+    assert!((num(&r, "extent") - 30.0 / 3f64.sqrt()).abs() < 1e-9, "{r:?}");
+    assert_eq!(r.get("max").unwrap().get("entity").unwrap().get_str("kind"), Some("vertex"), "{r:?}");
+    assert_eq!(r.get("max").unwrap().get("at").unwrap().as_arr().unwrap().len(), 1);
+    // a scaled direction measures the same
+    let r2 = extrema_reply(&b, &j(r#"{"dir":[5,5,5]}"#)).unwrap();
+    assert!((num(&r2, "extent") - num(&r, "extent")).abs() < 1e-12);
+    // a diagonal in one coordinate plane: the extreme is an edge
+    let r = extrema_reply(&b, &j(r#"{"dir":[1,1,0]}"#)).unwrap();
+    assert!((num(&r, "extent") - 20.0 / 2f64.sqrt()).abs() < 1e-9, "{r:?}");
+    assert_eq!(r.get("max").unwrap().get("entity").unwrap().get_str("kind"), Some("edge"), "{r:?}");
+}
+
+#[test]
+fn extrema_of_a_lump_and_errors() {
+    let b = two(box_body("F2", 0.0, 0.0, 10.0, 10.0, 0.0, 10.0), box_body("F3", 15.0, 0.0, 25.0, 10.0, 0.0, 10.0));
+    let r = extrema_reply(&b, &j(r#"{"dir":[1,0,0]}"#)).unwrap();
+    assert!((num(&r, "extent") - 25.0).abs() < 1e-9, "{r:?}");
+    let r = extrema_reply(&b, &j(r#"{"dir":[1,0,0],"of":"lump:1"}"#)).unwrap();
+    assert!((num(&r, "extent") - 10.0).abs() < 1e-9, "{r:?}");
+    assert!((num(r.get("min").unwrap(), "value") - 15.0).abs() < 1e-9, "{r:?}");
+    let r = extrema_reply(&b, &j(r#"{"dir":[1,0,0],"of":[0,0,0]}"#)).unwrap();
+    assert_eq!(num(&r, "extent"), 0.0);
+    assert!(extrema_reply(&b, &j(r#"{"dir":[0,0,0]}"#)).is_err());
+    assert!(extrema_reply(&b, &j(r#"{}"#)).is_err());
+}
+
+#[test]
+fn cylinder_extrema() {
+    // radius 5, height 10: along the axis 10, across it 2 r
+    let b = cyl_body("F2", 0.0, 0.0, 5.0, 0.0, 10.0);
+    let mut ext: Vec<f64> = ["[1,0,0]", "[0,1,0]", "[0,0,1]"].iter().map(|d| num(&extrema_reply(&b, &j(&format!(r#"{{"dir":{d}}}"#))).unwrap(), "extent")).collect();
+    ext.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    assert!((ext[0] - 10.0).abs() < 1e-9 && (ext[1] - 10.0).abs() < 1e-9 && (ext[2] - 10.0).abs() < 1e-9, "{ext:?}");
+    // slanted: h |d_axis| + 2 r |d_perp| with d = (1, 1, 1) / sqrt 3 (the axis is a coordinate axis)
+    let r = extrema_reply(&b, &j(r#"{"dir":[1,1,1]}"#)).unwrap();
+    let want = (10.0 + 10.0 * 2f64.sqrt()) / 3f64.sqrt();
+    assert!((num(&r, "extent") - want).abs() < 1e-8, "{r:?} want {want}");
+    assert_eq!(r.get("exact"), Some(&Json::Bool(false)));
+}

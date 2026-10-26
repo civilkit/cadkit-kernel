@@ -87,6 +87,11 @@ pub fn symmetry(cx: &mut Cx) -> Result<Json, String> {
     null_or_query(cx, "symmetry")
 }
 
+/// `{type:"extrema", tag?, dir, of?}`: lowest and highest point of the body (or `of`) along a direction.
+pub fn extrema(cx: &mut Cx) -> Result<Json, String> {
+    null_or_query(cx, "extrema")
+}
+
 /// `{type:"refDiff", base:<part>, part:<part>}`: regenerates both privately
 /// and reports references that now point at a different entity.
 pub fn ref_diff(cx: &mut Cx) -> Result<Json, String> {

@@ -14,7 +14,7 @@ Sizes: S = days of agent time, M = about a week, L = several weeks. Status is as
 | 7 | Hidden-line drawings | `drawing` lacks silhouette lines | full hidden-line removal | M | Open |
 | 8 | Free-form surface modelling | fill, knit, trim, spline surfaces; no network or constrained plate surfaces; surface-surface intersection on arbitrary NURBS is the weak spot | plate surfaces, Coons, constrained approximation | L | Open |
 | 9 | Mesh to B-rep and sewing | none | sewing and mesh conversion | M | Open |
-| 10 | Measurement | mass properties, interference, curvature, `probe`, `section` | minimum distance between shapes, minimum thickness, extrema | S | Open |
+| 10 | Measurement | mass properties, interference, curvature, `probe`, `section`; `distance` (minimum distance between entities or bodies), `thickness` / `thicknessAt` (minimum wall thickness), `extrema` (extent along a direction), `maxDistance`, `closestPoint`, `angles`, `clearance`, `symmetry` (`docs/agent-queries.md` "Measurement and analysis") | minimum distance between shapes, minimum thickness, extrema | S | **Done on branch** (agent: measure; `extrema` added last) |
 | 11 | Parallelism | single thread in wasm; native threads gave 1.38x in a trial | multithreaded booleans | L | Open |
 
 ## Order and reasoning

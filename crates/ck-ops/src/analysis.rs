@@ -1,5 +1,5 @@
 //! Measurement and analysis requests (read-only): `distance`, `maxDistance`, `thickness`, `thicknessAt`,
-//! `closestPoint`, `angles`, `clearance`, `symmetry`. Wire shapes: docs/agent-queries.md "Measurement".
+//! `closestPoint`, `angles`, `clearance`, `symmetry`, `extrema`. Wire shapes: docs/agent-queries.md "Measurement".
 //!
 //! Everything is built from two primitives on the existing kernel pieces: `nearest(prim, q)` (exact closest point of a
 //! face / edge / vertex / point to a point; `Containment::face_nearest`, `dist_in_range`) and `samples(prim)`.
@@ -151,6 +151,11 @@ pub fn clearance_reply(body: &Body, msg: &Json) -> Result<Json, String> {
 pub fn symmetry_reply(body: &Body, msg: &Json) -> Result<Json, String> {
     begin(msg);
     symmetry_inner(body, msg).map(stamp)
+}
+
+pub fn extrema_reply(body: &Body, msg: &Json) -> Result<Json, String> {
+    begin(msg);
+    extrema_inner(body, msg).map(stamp)
 }
 
 // ---------------------------------------------------------------- context
@@ -1531,6 +1536,255 @@ fn symmetry_inner(body: &Body, msg: &Json) -> Result<Json, String> {
         .put("symmetric", Json::Arr(syms))
         .put("best", best.unwrap_or(Json::Null))
         .put("planes", Json::Arr(res.into_iter().map(|r| r.1).collect()))
+        .build())
+}
+
+// ---------------------------------------------------------------- extrema
+
+/// Best value of `sgn * dir . p` found for a primitive, with its point.
+#[derive(Clone, Copy)]
+struct Best {
+    val: f64,
+    p: Vec3,
+}
+
+/// Pattern search for the extreme of `sgn * dir . S(u, v)` over a face from a grid sample, staying inside the face
+/// (an extreme on the boundary is left to the edge search).
+fn climb_face(ctx: &Ctx, f: FaceId, fi: usize, dir: Vec3, sgn: f64, start: (f64, f64), cell: (f64, f64)) -> Best {
+    let surf = &ctx.body.face(f).surface;
+    let (mut u, mut v) = start;
+    let mut p = surf.eval(u, v);
+    let mut best = sgn * dir.dot(p);
+    let (mut su, mut sv) = cell;
+    let (end_u, end_v) = (cell.0 * 1e-10, cell.1 * 1e-10);
+    for _ in 0..4000 {
+        if su < end_u && sv < end_v {
+            break;
+        }
+        let mut moved: Option<(f64, f64, Vec3, f64)> = None;
+        for (a, b) in [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0), (1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)] {
+            let (nu, nv) = (u + a * su, v + b * sv);
+            let q = surf.eval(nu, nv);
+            let val = sgn * dir.dot(q);
+            if val > moved.map_or(best, |m| m.3) + 1e-14 * (1.0 + best.abs()) && ctx.c.point_in_face(fi, nu, nv, TOL) == Where::In {
+                moved = Some((nu, nv, q, val));
+            }
+        }
+        match moved {
+            Some((nu, nv, q, val)) => (u, v, p, best) = (nu, nv, q, val),
+            None => {
+                su *= 0.5;
+                sv *= 0.5;
+            }
+        }
+    }
+    Best { val: best, p }
+}
+
+/// The same along an edge's curve parameter.
+fn climb_edge(ctx: &Ctx, e: EdgeId, dir: Vec3, sgn: f64, start: f64, cell: f64) -> Best {
+    let ed = ctx.body.edge(e);
+    let mut t = start;
+    let mut p = ed.curve.eval(t);
+    let mut best = sgn * dir.dot(p);
+    let mut s = cell;
+    for _ in 0..4000 {
+        if s < cell * 1e-10 {
+            break;
+        }
+        let mut moved: Option<(f64, Vec3, f64)> = None;
+        for a in [1.0, -1.0] {
+            let nt = (t + a * s).clamp(ed.t0, ed.t1);
+            let q = ed.curve.eval(nt);
+            let val = sgn * dir.dot(q);
+            if val > moved.map_or(best, |m| m.2) + 1e-14 * (1.0 + best.abs()) {
+                moved = Some((nt, q, val));
+            }
+        }
+        match moved {
+            Some((nt, q, val)) => (t, p, best) = (nt, q, val),
+            None => s *= 0.5,
+        }
+    }
+    Best { val: best, p }
+}
+
+/// `dir . p` negated for the minimum side (`k == 0`), so that larger is better on both sides.
+fn side_val(k: usize, dir: Vec3, p: Vec3) -> f64 {
+    if k == 0 {
+        -dir.dot(p)
+    } else {
+        dir.dot(p)
+    }
+}
+
+/// `{type:"extrema", tag, dir:[x,y,z], of?, opts?:{samples}}`: the lowest and highest point of an entity (default the
+/// whole body) along `dir`, with the face / edge / vertex they lie on.
+fn extrema_inner(body: &Body, msg: &Json) -> Result<Json, String> {
+    let dir = vec3_of(msg.get("dir"), "extrema: dir")?;
+    if dir.len() < 1e-12 {
+        return Err("extrema: dir must not be zero".into());
+    }
+    let dir = dir.normalize();
+    let ctx = Ctx::new(body);
+    let of = msg.get("of");
+    let prims = match of {
+        Some(j) => parse_entity(&ctx, j, "extrema: of")?,
+        None => parse_name(&ctx, "body", "extrema: of")?,
+    };
+    let n = opt_n(msg, "samples", 16, 64);
+    let tol = 1e-9 * ctx.diag;
+    // a face is searched with its edges: an extreme on the boundary of a face is an edge or vertex extreme
+    let mut edges: Vec<EdgeId> = vec![];
+    let mut seen = std::collections::HashSet::new();
+    for &p in &prims {
+        match p {
+            Prim::Edge(e) if seen.insert(e) => edges.push(e),
+            Prim::Face(f) => {
+                for e in body.face_edges(f) {
+                    if seen.insert(e) {
+                        edges.push(e);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut exact = true;
+    let mut samples = 0usize;
+    // per primitive: the best of the minimum side and of the maximum side
+    let mut found: Vec<(Prim, [Best; 2])> = vec![];
+    for &p in &prims {
+        match p {
+            Prim::Pt(_) | Prim::Vtx(_) => {
+                let x = prim_samples(&ctx, p, 1)[0];
+                found.push((p, [Best { val: side_val(0, dir, x), p: x }, Best { val: side_val(1, dir, x), p: x }]));
+                samples += 1;
+            }
+            Prim::Face(f) => {
+                if over() {
+                    break;
+                }
+                let planar = matches!(body.face(f).surface, ck_geom::surface::Surface::Plane { .. });
+                exact &= planar;
+                let grid = face_grid(&ctx, f, n);
+                let (Some(&fi), Some(((u0, u1), (v0, v1)))) = (ctx.fidx.get(&f), face_uv_box(&ctx, f)) else { continue };
+                let cell = ((u1 - u0) / n as f64, (v1 - v0) / n as f64);
+                let mut res: Vec<Best> = vec![];
+                for k in 0..2 {
+                    let sgn = if k == 0 { -1.0 } else { 1.0 };
+                    let mut order: Vec<&(f64, f64, Vec3)> = grid.iter().flatten().collect();
+                    samples += order.len();
+                    order.sort_by(|a, b| (sgn * dir.dot(b.2)).partial_cmp(&(sgn * dir.dot(a.2))).unwrap_or(std::cmp::Ordering::Equal));
+                    let Some(first) = order.first() else { break };
+                    let mut best = Best { val: sgn * dir.dot(first.2), p: first.2 };
+                    // the two best samples are refined (a plane is linear: its boundary holds the extreme)
+                    if !planar {
+                        for g in order.iter().take(2) {
+                            let b = climb_face(&ctx, f, fi, dir, sgn, (g.0, g.1), cell);
+                            samples += 1;
+                            if b.val > best.val {
+                                best = b;
+                            }
+                        }
+                    }
+                    res.push(best);
+                }
+                if res.len() == 2 {
+                    found.push((p, [res[0], res[1]]));
+                }
+            }
+            Prim::Edge(_) => {}
+        }
+    }
+    for &e in &edges {
+        if over() {
+            break;
+        }
+        let ed = body.edge(e);
+        let line = is_line(&ctx, e);
+        exact &= line;
+        let pts = ed.curve.sample(ed.t0, ed.t1, 4 * n);
+        samples += pts.len();
+        let cell = (ed.t1 - ed.t0) / (4 * n) as f64;
+        let mut res = [Best { val: 0.0, p: Vec3::ZERO }; 2];
+        for k in 0..2 {
+            let sgn = if k == 0 { -1.0 } else { 1.0 };
+            let mut order: Vec<usize> = (0..pts.len()).collect();
+            order.sort_by(|&a, &b| (sgn * dir.dot(pts[b])).partial_cmp(&(sgn * dir.dot(pts[a]))).unwrap_or(std::cmp::Ordering::Equal));
+            let mut best = Best { val: sgn * dir.dot(pts[order[0]]), p: pts[order[0]] };
+            if !line {
+                for &i in order.iter().take(2) {
+                    let b = climb_edge(&ctx, e, dir, sgn, ed.t0 + cell * i as f64, cell);
+                    if b.val > best.val {
+                        best = b;
+                    }
+                }
+            }
+            res[k] = best;
+        }
+        found.push((Prim::Edge(e), res));
+    }
+    if found.is_empty() {
+        return Err("extrema: nothing to measure (empty entity or no sample inside a face)".into());
+    }
+    let verts: Vec<(VertexId, Vec3)> = body.vertex_ids().map(|v| (v, body.vertex(v).p)).collect();
+    let side = |k: usize| -> Json {
+        let top = found.iter().map(|f| f.1[k].val).fold(f64::NEG_INFINITY, f64::max);
+        // what attains the extreme: faces (interior) first, then edges, then vertices and points
+        let mut at: Vec<(u8, Json, Vec3)> = vec![];
+        for f in &found {
+            let b = f.1[k];
+            if b.val < top - tol {
+                continue;
+            }
+            let vtx = verts.iter().find(|(_, x)| x.dist(b.p) <= 1e-7).map(|(v, x)| (prim_json(&ctx, Prim::Vtx(*v)), *x));
+            let hit = match f.0 {
+                Prim::Face(fc) => {
+                    let on_edge = body.face_edges(fc).iter().any(|&e| {
+                        let ed = body.edge(e);
+                        dist_in_range(&ed.curve, (ed.t0, ed.t1), b.p).1 <= 1e-7
+                    });
+                    if on_edge { vtx.map(|(j, x)| (2, j, x)) } else { Some((0, prim_json(&ctx, f.0), b.p)) }
+                }
+                Prim::Edge(e) => {
+                    let ed = body.edge(e);
+                    let ends = [body.vertex(ed.v0).p, body.vertex(ed.v1).p];
+                    // an extreme at one end only belongs to the vertex; a whole edge at the extreme, or an interior
+                    // point, belongs to the edge
+                    let at_end = ends.iter().any(|x| x.dist(b.p) <= 1e-7);
+                    let whole = ends.iter().all(|x| side_val(k, dir, *x) >= top - tol);
+                    if !at_end || whole { Some((1, prim_json(&ctx, f.0), b.p)) } else { vtx.map(|(j, x)| (2, j, x)) }
+                }
+                Prim::Vtx(_) => Some((2, prim_json(&ctx, f.0), b.p)),
+                Prim::Pt(_) => Some((3, prim_json(&ctx, f.0), b.p)),
+            };
+            if let Some(h) = hit {
+                if !at.iter().any(|a| a.1 == h.1) {
+                    at.push(h);
+                }
+            }
+        }
+        at.sort_by_key(|a| a.0);
+        let (point, entity) = at.first().map(|a| (a.2, a.1.clone())).unwrap_or((Vec3::ZERO, Json::Null));
+        Obj::new()
+            .put("value", if k == 0 { -top } else { top })
+            .put("point", v3(point))
+            .put("entity", entity)
+            .put("at", Json::Arr(at.iter().take(20).map(|a| a.1.clone()).collect()))
+            .build()
+    };
+    let (lo, hi) = (side(0), side(1));
+    let extent = hi.get_f64("value").unwrap_or(0.0) - lo.get_f64("value").unwrap_or(0.0);
+    Ok(Obj::new()
+        .put("direction", v3(dir))
+        .put("min", lo)
+        .put("max", hi)
+        .put("extent", extent)
+        .put("method", if exact { "vertices" } else { "sampled+refined" })
+        .put("exact", exact)
+        .put("samples", samples as f64)
+        .put("ofLabel", ent_label(of))
         .build())
 }
 
