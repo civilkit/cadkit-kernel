@@ -89,7 +89,7 @@ const ROD: &str = r#"
 /// The same rod with a 10 degree draft: a cone.
 const CONE: &str = r#"
  {"type":"sketch","id":"F1","plane":{"kind":"std","id":"top"},"points":[{"id":"c","x":0,"y":0}],"entities":[{"type":"circle","id":"c1","c":"c","r":5}],"constraints":[]},
- {"type":"extrude","id":"F2","op":"add","sketch":"F1","end":"blind","depth":30,"draft":10}"#;
+ {"type":"extrude","id":"F2","op":"add","sketch":"F1","end":"blind","depth":20,"draft":10}"#;
 
 /// The block with a 6 mm hole through it along y.
 const HOLED: &str = r#"
