@@ -324,6 +324,59 @@ const ROBUST_RETRY_MS: f64 = 12_000.0;
 /// Error code of a boolean stopped by the time budget (`ck_core::budget`).
 pub const BUDGET_EXCEEDED: &str = "booleanBudgetExceeded";
 
+/// Midpoints of the edges that coincide with another edge of the same operand (the operand's own
+/// self-contact: two half rings touching along a line). A boolean's four-face edge between such a pair
+/// is inherited, not a failure. Found through a spatial hash of the midpoints, so the cost is linear in
+/// the operand's edge count, not the quadratic all-pairs scan that ran over the whole host.
+fn inherited_contact_mids(a: &Body, b: &Body) -> Vec<Vec3> {
+    let mut out = vec![];
+    for x in [a, b] {
+        let mids: Vec<(Vec3, Vec3, Vec3)> = x
+            .edge_ids()
+            .map(|e| {
+                let ed = x.edge(e);
+                (ed.curve.eval(0.5 * (ed.t0 + ed.t1)), ed.curve.eval(ed.t0), ed.curve.eval(ed.t1))
+            })
+            .collect();
+        if mids.is_empty() {
+            continue;
+        }
+        let scale = mids.iter().map(|(m, s, e)| m.len().max(s.len()).max(e.len())).fold(0.0f64, f64::max);
+        let cell = 1e-5 * (1.0 + scale);
+        let key = |p: Vec3| ((p.x / cell).floor() as i64, (p.y / cell).floor() as i64, (p.z / cell).floor() as i64);
+        let mut grid: std::collections::HashMap<(i64, i64, i64), Vec<usize>> = Default::default();
+        for (i, (m, _, _)) in mids.iter().enumerate() {
+            grid.entry(key(*m)).or_default().push(i);
+        }
+        for (i, (m1, s1, e1)) in mids.iter().enumerate() {
+            let t = 1e-6 * (1.0 + m1.len());
+            let (cx, cy, cz) = key(*m1);
+            let mut coincides = false;
+            'cells: for dx in -1..=1 {
+                for dy in -1..=1 {
+                    for dz in -1..=1 {
+                        let Some(list) = grid.get(&(cx + dx, cy + dy, cz + dz)) else { continue };
+                        for &j in list {
+                            if j <= i {
+                                continue;
+                            }
+                            let (m2, s2, e2) = mids[j];
+                            if m1.dist(m2) < t && ((s1.dist(s2) < t && e1.dist(e2) < t) || (s1.dist(e2) < t && e1.dist(s2) < t)) {
+                                coincides = true;
+                                break 'cells;
+                            }
+                        }
+                    }
+                }
+            }
+            if coincides {
+                out.push(*m1);
+            }
+        }
+    }
+    out
+}
+
 fn boolean_at(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> {
     boolean_at_merge(a, b, op, tol, true)
 }
@@ -395,25 +448,7 @@ fn boolean_at_merge(a: &Body, b: &Body, op: Op, tol: f64, merge: bool) -> Result
     // a four-face edge shows up)
     let mut inherited: Option<Vec<Vec3>> = None;
     let mut is_inherited = |m: Vec3| -> bool {
-        let list = inherited.get_or_insert_with(|| {
-            let mut out = vec![];
-            for x in [a, b] {
-                let mids: Vec<(Vec3, Vec3, Vec3)> = x
-                    .edge_ids()
-                    .map(|e| {
-                        let ed = x.edge(e);
-                        (ed.curve.eval(0.5 * (ed.t0 + ed.t1)), ed.curve.eval(ed.t0), ed.curve.eval(ed.t1))
-                    })
-                    .collect();
-                for (i, (m1, s1, e1)) in mids.iter().enumerate() {
-                    let t = 1e-6 * (1.0 + m1.len());
-                    if mids[i + 1..].iter().any(|(m2, s2, e2)| m1.dist(*m2) < t && ((s1.dist(*s2) < t && e1.dist(*e2) < t) || (s1.dist(*e2) < t && e1.dist(*s2) < t))) {
-                        out.push(*m1);
-                    }
-                }
-            }
-            out
-        });
+        let list = inherited.get_or_insert_with(|| inherited_contact_mids(a, b));
         list.iter().any(|p| p.dist(m) < 1e-6 * (1.0 + m.len()))
     };
     // parts of the result that touch along an edge: split the four-face edge into one per material wedge
