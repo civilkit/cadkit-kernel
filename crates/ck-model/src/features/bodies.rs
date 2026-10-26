@@ -67,12 +67,19 @@ pub fn check_feature(f: &crate::Feature) -> Result<(), FeatureError> {
 }
 
 fn rank(id: &str) -> (u64, &str) {
-    // the first digit run, parsed out of the slice: `origin` asks for this once per face of a body
-    // on every feature (`named` + `restore`), so the run must not be collected into a String first
+    // the first digit run, read straight out of the bytes: `origin` asks for this once per face of
+    // a body on every feature (`named` + `restore`), so it must not collect or validate a String
     let b = id.as_bytes();
     let Some(s) = b.iter().position(u8::is_ascii_digit) else { return (u64::MAX, id) };
-    let e = b[s..].iter().position(|c| !c.is_ascii_digit()).map_or(b.len(), |i| s + i);
-    (std::str::from_utf8(&b[s..e]).ok().and_then(|d| d.parse().ok()).unwrap_or(u64::MAX), id)
+    let mut n: u64 = 0;
+    for &c in &b[s..] {
+        if !c.is_ascii_digit() {
+            break;
+        }
+        // saturating: a run too long for u64 is the same u64::MAX the old `parse().unwrap_or` gave
+        n = n.saturating_mul(10).saturating_add(u64::from(c - b'0'));
+    }
+    (n, id)
 }
 
 /// Feature that owns a face for the origin rule: the feature that made the outermost instance, else the face's own.
