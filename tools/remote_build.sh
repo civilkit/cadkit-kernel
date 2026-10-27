@@ -103,7 +103,7 @@ cargo_test_args() { # lib, bins and integration tests except ffi_diff (needs the
   echo "$a"
 }
 if [ -n "$CTEST" ]; then
-  if [ "$CTEST" = all ]; then CRATES=$(ls crates | sed 's/^ck-//'); else CRATES=$(printf '%s\n' $CTEST | grep -v '^-p$' | sed 's/^ck-//'); fi
+  if [ "$CTEST" = all ]; then CRATES=$(ls crates | grep '^ck-' | sed 's/^ck-//'); else CRATES=$(printf '%s\n' $CTEST | grep -v '^-p$' | sed 's/^ck-//'); fi
   for c in $CRATES; do
     [ -d "crates/ck-$c" ] || { echo "no crate ck-$c"; rec "cargo-test-$c" 1 0; continue; }
     step "cargo-test-$c" nice -n 5 cargo test --no-fail-fast $(cargo_test_args "ck-$c")
