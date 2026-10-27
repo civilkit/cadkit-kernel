@@ -5,7 +5,11 @@ use std::net::{TcpListener, TcpStream};
 use std::time::Duration;
 
 const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef";
-const PART: &str = include_str!("../../../tools/cases/bracket.ckpart");
+/// A 40x20x10 plate on the top plane.
+const PART: &str = r#"{"format":"ck-part","version":1,"features":[
+{"type":"sketch","id":"F1","plane":{"kind":"std","id":"top"},"points":[{"id":"p1","x":0,"y":0},{"id":"p2","x":40,"y":0},{"id":"p3","x":40,"y":20},{"id":"p4","x":0,"y":20}],
+"entities":[{"type":"line","id":"e1","p1":"p1","p2":"p2"},{"type":"line","id":"e2","p1":"p2","p2":"p3"},{"type":"line","id":"e3","p1":"p3","p2":"p4"},{"type":"line","id":"e4","p1":"p4","p2":"p1"}],"constraints":[]},
+{"type":"extrude","id":"F2","op":"add","sketch":"F1","end":"blind","depth":10}]}"#;
 
 fn start(f: impl FnOnce(&mut Config)) -> u16 {
     let mut cfg = Config { token: TOKEN.into(), quiet: true, stack: 64 << 20, ..Config::default() };

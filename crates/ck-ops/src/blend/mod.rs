@@ -11,7 +11,7 @@
 //! [`corner::sphere_corner_tool`] (the `V<k>` sphere patch of three equal
 //! fillets at a convex planar corner). The remaining stubs
 //! (`cap`, `g2`, `interp`, `overlap`, `sheet`, `stripe`, `surface`) are
-//! classified in docs/ck-ops-stubs.md; the original's `inplace`, `rolling`,
+//! classified in internal notes (not published); the original's `inplace`, `rolling`,
 //! `march`, `chain`, `spring` and `split` are covered by `build` /
 //! `freeform` and were removed.
 //!

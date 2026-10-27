@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build the kernel wasm and run its checks on the CI box instead of this (busy) machine. See docs/remote-build.md.
-#   tools/remote_build.sh [--worktree DIR] [--checks gate,large sample,loft,apex,fillet,section,spline,thin,suite,lint,text,projcurve,dfm,all|none]
+#   tools/remote_build.sh [--worktree DIR] [--checks gate,loft,apex,fillet,section,spline,thin,suite,lint,text,projcurve,dfm,all|none]
 #                         [--cargo-test CRATE|"-p a -p b"|all] [--out DIR] [--no-sync-back] [--no-wasm] [--wasm-features LIST] [--jobs N] [--reset]
 #   tools/remote_build.sh --clean [--worktree DIR]     remove this worktree's directories on the box
 #   tools/remote_build.sh --prune                      remove worktree directories on the box unused for 3 days
@@ -79,7 +79,7 @@ touch "$RUN/.last-used"; R="$RUN/remote_results.txt"; : > "$R"
 free=$(df -BG --output=avail "$RB" | tail -1 | tr -dc '0-9')
 echo "box: cores=$(nproc) load=$(cut -d' ' -f1-3 /proc/loadavg) free=${free}G"
 if [ "${free:-0}" -lt 15 ]; then echo "FAIL: less than 15G free on the box"; echo "FAIL disk 0" >> "$R"; exit 1; fi
-# the gate and large sample check read the oracle at ../../kernel.wasm (and the gate writes next to it): private copy inside the root
+# the gate reads the oracle at ../../kernel.wasm (and the gate writes next to it): private copy inside the root
 [ -s "$RB/wt/kernel.wasm" ] || cp "$HOME/kernel.wasm" "$RB/wt/kernel.wasm" || { echo "FAIL: oracle kernel.wasm missing"; exit 1; }
 W="$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/ck_wasm.wasm"
 FAILS=0
@@ -112,7 +112,7 @@ fi
 flock -u 9; exec 9>&-    # checks are plain node: release the build lock
 
 CH=$(printf '%s' "$CHECKS" | tr ',' ' ')
-case " $CH " in *" all "*) CH="gate large sample loft apex fillet section spline thin suite lint text projcurve dfm";; esac
+case " $CH " in *" all "*) CH="gate loft apex fillet section spline thin suite lint text projcurve dfm";; esac
 case " $CH " in *" none "*) CH="";; esac
 SUITE="region_select thin_extrude thread end_reference profile coincident_boolean hole_dims move spline_shell spline_boolean mate"
 pids=""
@@ -121,7 +121,6 @@ if [ -s "$W" ]; then
     case "$c" in
       # the gate also runs the blend corpus (documented shortfalls carry `known` and never fail it)
       gate) ( t=$SECONDS; rc=0; nice -n 5 node tools/gate.mjs --fast --quiet --wasm "$W" > "$RUN/gate.out" 2>&1 || rc=$?; printf '\n== blend corpus\n' >> "$RUN/gate.out"; nice -n 5 node tools/blend_corpus.mjs --wasm "$W" >> "$RUN/gate.out" 2>&1 || rc=$?; echo $rc > "$RUN/gate.rc"; echo $((SECONDS-t)) > "$RUN/gate.secs" ) & pids="$pids $!" ;;
-      large sample) step large sample node tools/check_large sample.mjs --wasm "$W" ;;
       loft) step loft node tools/loft_point_check.mjs --wasm "$W" ;;
       apex) step apex node tools/loft_apex_check.mjs --wasm "$W" ;;
       fillet) step fillet node tools/concave_fillet_check.mjs --wasm "$W" ;;

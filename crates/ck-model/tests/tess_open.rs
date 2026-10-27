@@ -62,20 +62,6 @@ fn ring_junction_on_the_cut_line_is_kept() {
     }
 }
 
-/// Flange rings with slits and bolt holes on the slit line: the chains either side of the slit connect over the dropped junction.
-#[test]
-fn slit_ring_with_bolt_holes_on_the_slit_is_closed() {
-    let issues = open_issues(include_str!("fixtures/tess_coupling_slit.json"));
-    assert!(issues.is_empty(), "{issues:?}");
-}
-
-/// Spline faces meeting at a cusp whose trim tail crosses the shared edge: no empty face, and the one-edge hairline is not a hole.
-#[test]
-fn spline_cusp_faces_mesh_without_holes() {
-    let issues = open_issues(include_str!("fixtures/tess_large sample_cusp.json"));
-    assert!(issues.is_empty(), "{issues:?}");
-}
-
 /// Debug probe (set `CK_PART=<part json>`): one line per face whose mesh is suspect (no triangles, open boundary graph,
 /// unrecovered trims, or mesh area outside 99..101 percent of the exact area).
 #[test]

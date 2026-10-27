@@ -59,7 +59,7 @@ def main():
     samples = arg('--samples', os.path.join(HERE, '..', '..', 'kit', 'apps', 'cad', 'public', 'samples'))
     n = arg('--pairs', '20')
     tol = float(arg('--tol', '1e-6'))
-    parts = arg('--parts', 'mounting-plate,parametric-bracket,stepper-bracket,bench-pipe_elbow,large-sample').split(',')
+    parts = arg('--parts', 'mounting-plate,parametric-bracket,bench-pipe_elbow').split(',')
     out = tempfile.mkdtemp(prefix='measure_occt_')
     worst, total, bad, nonzero = 0.0, 0, [], 0
     for name in parts:

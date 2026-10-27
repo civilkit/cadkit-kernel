@@ -82,7 +82,7 @@ cargo build -p ck-wasm --target wasm32-unknown-unknown --release
 node tools/native_diff.mjs [--bin target/service/ck-native] [--wasm ...] [--time] [--verbose]
 ```
 
-Starts the binary on a free port, sends every wire case of `tools/cases.mjs` (a fresh session per case, bodies in order) and the large sample and fan shroud regens, and compares with the wasm (`ms`/`at` normalised, JSON and binary part separately, as the gate does). `--time` adds CPU seconds (server process CPU vs this process for wasm; cache off).
+Starts the binary on a free port, sends every wire case of `tools/cases.mjs` (a fresh session per case, bodies in order) and the hair dryer and fan shroud regens, and compares with the wasm (`ms`/`at` normalised, JSON and binary part separately, as the gate does). `--time` adds CPU seconds (server process CPU vs this process for wasm; cache off).
 
 Result: the 280 wire cases are byte-identical. The two big documents are NOT byte-identical: floats differ in the last digit (system libm in the native build vs the libm compiled into the wasm), so the script reports the number of differing floats, the maximum relative difference and structural differences, and passes them as "equivalent" only when there are no structural differences and the relative difference is at most 1e-6. Byte-identity for those is impossible without a shared libm.
 

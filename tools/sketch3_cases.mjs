@@ -1,4 +1,4 @@
-// 3D sketch probe cases (each: {name, sketch}) — oracle via sketch3_oracle.mjs
+// 3D sketch probe cases (each: {name, sketch}) — oracle via sketch3_the reference harness (not published)
 const S3 = (over) => ({ type: 'sketch3d', id: 'F1', points: [], entities: [], constraints: [], seq: 3, visible: true, ...over });
 const P3 = (id, x, y, z, fixed) => ({ id, x, y, z, ...(fixed ? { fixed: true } : {}) });
 const L = (id, p1, p2) => ({ type: 'line', id, p1, p2 });

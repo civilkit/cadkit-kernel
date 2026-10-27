@@ -9,7 +9,7 @@ const env = { ck_now: () => 0, ck_unix_ms: () => 0,
 inst = new WebAssembly.Instance(mod, { env }).exports;
 for (const f of process.argv.slice(2)) {
   const body = readFileSync(f, 'utf8');
-  const b = new TextEncoder().encode(body.replace(/"format"\s*:\s*"ck-part"/g, '"format":"ck-part"')); panic = null;   // the original kernel.wasm only accepts the format's old name
+  const b = new TextEncoder().encode(body.replace(/"format"\s*:\s*"ck-part"/g, '"format":"formwerk-part"')); panic = null;   // the original kernel.wasm only accepts the format's old name
   try {
     const ptr = inst.ck_alloc(b.length);
     new Uint8Array(inst.memory.buffer, ptr, b.length).set(b);

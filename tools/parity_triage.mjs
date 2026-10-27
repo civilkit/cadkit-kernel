@@ -1,7 +1,7 @@
 // Per-case parity triage of the brep set: original vs rebuilt wasm.
 // usage: node tools/parity_triage.mjs [--wasm path] [--md | --json]   (default: one line per differing case)
 // For every brep case whose faces / edges / box / mass differ from the original,
-// prints the details needed to classify it (see docs/parity-triage.md).
+// prints the details needed to classify it (see internal notes (not published)).
 import { readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -83,7 +83,7 @@ for (const [name, part] of Object.entries(parts)) {
   } else d.mass = !ba && !bb;
   out.push(d);
 }
-// ---- classification (see docs/parity-triage.md for the rules and the evidence behind each group)
+// ---- classification (see internal notes (not published) for the rules and the evidence behind each group)
 const GROUPS = {
   MESHBUG: ['c', 'tessellation defect: our mesh disagrees with our own massProps (fillet torus band folded over the period edge); original mesh is consistent'],
   TWIST: ['a', 'original ignores twist (un-twisted body); ours matches the closed-form twist oracle (volume, com, box)'],
@@ -118,7 +118,7 @@ function classify(d) {
   if (big(/pts$/) || big(/box/) || big(/mid/)) labels.add('SAMPLING');
   if (Object.entries(d.by).some(([k, v]) => v > 0 && v < 1e-9) && labels.size === 0) labels.add('NOISE');
   if (labels.size === 0 && d.sig.length === 0 && Object.keys(d.by).length === 0) labels.add('NOISE');
-  // hand-labelled (documented in docs/parity-triage.md)
+  // hand-labelled (documented in internal notes (not published))
   if (MANUAL[d.name]) { labels.delete('MASS_A'); labels.delete('MASS_TOL'); labels.add(MANUAL[d.name]); }
   const order = ['MESHBUG', 'TWIST', 'MASS_CF', 'TIE', 'MASS_A', 'MASS_TOL', 'TOPO', 'META', 'ORDER', 'SAMPLING', 'NOISE'];
   return { labels: order.filter((l) => labels.has(l)), primary: order.find((l) => labels.has(l)) };

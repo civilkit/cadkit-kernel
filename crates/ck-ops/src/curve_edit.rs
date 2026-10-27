@@ -8,7 +8,7 @@
 //! soft outcomes `editCurveEntryOutside` / `editCurveRemapped` /
 //! `editCurveRefMissing` are reported per entry (`EntryOut`), not as errors.
 //!
-//! Oracle probes (tools/stub_cases.mjs `ec*`, docs/ck-ops-stubs.md): degree in
+//! Oracle probes (tools/stub_cases.mjs `ec*`, internal notes (not published)): degree in
 //! [2, 9]; `count` control points at least `degree + 1` (+ `degree` per kept
 //! corner, at least 4 with end tangents), at most 400; a chain that turns at a
 //! joint is `NotSmooth` unless `keepCorners` (then a knot of multiplicity

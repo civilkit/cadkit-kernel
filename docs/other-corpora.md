@@ -109,7 +109,7 @@ compares against a baseline; `--update-baseline` rewrites it. Baselines:
 (185 ok / 15 invalid each). The sample ids are in
 `tools/fusion_sample_1234.json` / `_5678.json`; `tools/fusion_fetch.sh`
 recreates only those files in `~/.cache`. Failure triage is in
-`docs/mimo-brief-import.md`.
+internal notes (not published).
 
 ### DeepCAD sample (first pass)
 
@@ -134,7 +134,7 @@ NewBody/Join/Cut.
   OCP `Standard_Failure`, 7 `ValueError`, 2 non-axis-aligned, 5 no extrude,
   2 operation, 1 OCP boolean failure.
 * Minimal arc-loop repros and the scale table are in
-  `docs/mimo-brief-deepcad.md`.
+  internal notes (not published).
 
 Reproduce (data and translated cases stay in the cache, not git):
 

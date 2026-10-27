@@ -1,4 +1,4 @@
-// Native service vs wasm: every wire case of tools/cases.mjs plus the large sample and the fan
+// Native service vs wasm: every wire case of tools/cases.mjs plus the hair dryer and the fan
 // shroud regens, sent through ck-native over HTTP and compared with the wasm replies
 // (ms / at normalised, mesh binary compared separately, exactly like the wire gate).
 //
@@ -6,7 +6,7 @@
 //          [--no-cases] [--no-big] [--time] [--verbose]
 //   Starts the binary on a free port with a throw-away config dir and token, shuts it down at the end.
 //   --time also reports CPU seconds of native (server process) vs wasm (this process) for the two
-//   big regens (cache off), the large sample_times.mjs method.
+//   big regens (cache off).
 // Exit 0 only if everything matches.
 import { readFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { spawn, execFileSync } from 'node:child_process';
@@ -99,7 +99,7 @@ try {
   }
   // ---- 2. big documents
   if (!noBig) {
-    const docs = [['large sample', 'cases/largeSampleFull.ckpart'], ['fan shroud', 'cases/perf/fan_shroud.ckpart']];
+    const docs = [['fan shroud', 'cases/perf/fan_shroud.ckpart']];
     const nativeCpu = () => {
       if (existsSync(`/proc/${srv.pid}/stat`)) { const f = readFileSync(`/proc/${srv.pid}/stat`, 'utf8').split(') ')[1].split(' '); return (+f[11] + +f[12]) / 100; }
       const t = execFileSync('ps', ['-o', 'cputime=', '-p', String(srv.pid)]).toString().trim(); // [[h:]m:]s.cc

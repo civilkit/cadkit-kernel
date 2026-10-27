@@ -1,150 +1,83 @@
-# CadKit kernel — source recovery & rebuild
+# CadKit kernel
 
-The original Rust source was lost to an SSD failure. What survived: the built
-`kernel.wasm`, the minified frontend, part files, and probe scripts. This
-workspace is the reconstructed skeleton, rebuilt from artifacts.
+A B-rep CAD kernel in Rust that compiles to WebAssembly. A part is a JSON feature tree
+(`.ckpart`); the kernel rebuilds it into a solid body with faces, edges, a display mesh and
+measurements, and exports STEP.
 
-## Repository layout
+- Sketches with a constraint solver, extrude, revolve, sweep, loft, shell, draft, helix, hole,
+  fillet/chamfer (including variable and corner blends), booleans, patterns, mirror, surfacing
+  features (knit, fill, trim, thicken, extend), assemblies with mates.
+- Reads and writes STEP; imports SketchUp (`.skp`) and SolidWorks (`.sldprt`) geometry.
+- Runs in a browser worker, in Node, or as a native service (`ck-native`).
 
-```
-/cadkit/
-  kernel.wasm          ORIGINAL binary (5.5MB, no debug info) — the oracle
-  kernel.wat           wabt WAT dump (104MB) — the disassembly
-  kernel.strings       strings extracted from the binary
-  rs_paths.txt         177 source file paths recovered from panic metadata
-  app.pretty.js        beautified frontend (37.5k lines) — client-side spec
-  oracle-flange.json   golden kernel response for coupling-sample.ckpart
-  rebuild/             THIS WORKSPACE — 10 crates, layout = rs_paths.txt
-  oracle.mjs           harness: run any msg against the ORIGINAL wasm
-```
-
-## The kernel interface (wire protocol)
-
-Transport: a single JSON request/response call over wasm linear memory,
-plus binary buffers for bulk arrays.
-
-### Exports (the ABI)
-
-| export | signature | meaning |
-|---|---|---|
-| `ck_alloc(n) -> ptr` | n bytes | allocate space in linear memory for the request |
-| `ck_request(ptr, len) -> u32` | raw request | run one message; returns total reply length |
-| `ck_reply() -> ptr` | | pointer to the reply |
-| `ck_commit() -> ptr`, `ck_commit_len() -> n` | | static build id string: `"class-a-surfacing da3c6f49..."` |
-| imports | `ck_panic(ptr,len)`, `ck_now() -> f64`, `ck_unix_ms() -> f64` | host callbacks |
-
-### Request (JSON)
-
-```json
-{"id": <n>, "msg": { ... }}
-```
-
-`msg` is discriminated by its `type` field. Exactly **17** request types
-exist (brute-forced against kernel.wasm — every identifier in kernel.strings +
-app.pretty.js was sent as `msg.type`): `ping`, `regen`, `matchEdges`, `drag`,
-`convert`, `sketchOffset`, `refCurve`, `measure`, `massProps`, `interference`,
-`step`, `inspect`, `continuity`, `curvatureAt`, `curvatureMap`, `comb`,
-`drawing`. Feature operations (`cutWithSurface`, `deleteFace`, `editCurve`,
-`freeform`, `dome`, ...) are part-document feature types carried inside a
-`regen`, not requests.
-
-Example: `{type:"regen", tag:"main", part:<.ckpart object>, opts:{upTo:n}}`
-
-### Response (binary envelope)
-
-```
-[u32 LE: json_len][json bytes][pad to 8][buffer 0][buffer 1]...
-```
-
-- JSON is `{"ok":true,"result":{...}}` or `{"ok":false,"error":"...","ms":...}`.
-- Any JSON object with `{"$buf": i, "type": "f32|f64|u32|i32|u8", "len": n,
-  "offset": o}` is a view into the binary area after the JSON: element `i`
-  starts at byte `pad(8) + o`, holding `n` elements of `type`.
-- The `body.mesh` of a regen result is always buffer-backed (positions,
-  normals, mids, triFace) — the 4.3MB flange golden has ~1.5M f32s.
-
-### regen result shape (pinned by oracle-flange.json)
-
-```jsonc
-{"errors": [],
- "components": [{"id":"F1","dof":6,"place":{"o":[..],"x":[..],"y":[..],"z":[..]}}],
- "planes": [], "markers": [], "sketches": [], "sketches3": [], "curves": [],
- "body": {"box": {"min":[..],"max":[..]},
-          "faces": [{"id":"F4.S.e1@F1.1","kind":"cylinder","planar":false,
-                     "meta":{"feature":"F4","entity":"e1@F1.1"},"lump":0}],
-          "edges": [{"pts":[..],"faces":[..],"key":"..","mid":[..],
-                     "circle":{"c":[..],"n":[..],"r":25}} or "line":true],
-          "silhouette": {"$buf":4,...},
-          "mesh": {"positions":{"$buf":0,...}, "normals":{"$buf":1,...},
-                   "mids":{"$buf":2,...}, "triFace":{"$buf":3,...}}},
- "surfaces": []}
-```
-
-Face kinds: plane, cylinder, cone, torus, spline (16 spline faces in the
-golden — full NURBS surfaces survive the pipeline).
-
-## How to run the oracle
-
-```bash
-cd rebuild
-node oracle.mjs ../coupling-sample.ckpart ../out.json
-# or a custom msg:
-node oracle.mjs ../bracket.ckpart ../out.json '{"type":"regen","tag":"plain","part":<obj>}'
-```
-
-## Crate map (file layout pinned by rs_paths.txt)
+## Layout
 
 | crate | role |
 |---|---|
-| `ck-core` | linalg (Vec3/mat/quat), quad roots, kdtree, tracing, xform |
-| `ck-geom` | curves/surfaces: curve, curve2, pcurve, surface, fit, nurbs/* |
-| `ck-topo` | B-rep topology: body, make (+revolve), edit, orient, region, check, mass |
-| `ck-ops` | operations: boolean/*, blend/* (17 files), loft/*, sweep, offset, shell, draft, helix, pipecut, surfacing/* (incl. rebuild/), intersect/*, bvh |
-| `ck-model` | document model: part, features/*, sketch (solver!), sketch3, expr, refs, regen |
-| `ck-tess` | tessellation: cdt, curvature, face, mesh |
-| `ck-server` | message dispatch: session, model, geometry, query, view, drawing, comb, curvature |
-| `ck-json` | zero-dep JSON (parser/writer/DOM) |
-| `ck-io` | STEP export (step/write.rs) — full AP203/AP214 writer strings in kernel.strings |
-| `ck-wasm` | the ABI boundary: ck_alloc/ck_request/ck_reply/ck_commit |
+| `ck-core` | linear algebra, root finding, k-d tree, tracing, transforms |
+| `ck-geom` | curves and surfaces: analytic types, NURBS, fitting, projection |
+| `ck-topo` | B-rep topology: bodies, construction, editing, orientation, regions, checks, mass properties |
+| `ck-ops` | booleans, blends, loft, sweep, offset, shell, draft, helix, surfacing, intersection |
+| `ck-model` | the document model: part, features, sketch solver, expressions, references, regeneration |
+| `ck-tess` | tessellation: constrained Delaunay, curvature, face meshing |
+| `ck-check` | validity and tessellation checks |
+| `ck-heal` | healing of imported geometry |
+| `ck-io` | STEP reader and writer |
+| `ck-skp`, `ck-sldprt` | SketchUp and SolidWorks readers |
+| `ck-text` | text outlines |
+| `ck-recog` | feature recognition |
+| `ck-json` | dependency-free JSON parser and writer |
+| `ck-server` | message dispatch |
+| `ck-wasm` | the WebAssembly ABI |
+| `ck-native` | HTTP service around the same dispatch |
 
-## Rebuild rules
+`packages/` holds the TypeScript side: the kernel client (browser worker, Node worker, native
+service), the part-model builders, sessions, and the render helpers.
 
-1. **Never invent wire formats.** Every JSON field name, message type, and
-   error string is pinned by artifacts. When in doubt, grep kernel.strings
-   or the oracle golden.
-2. **Float formatting**: shortest round-trip (`format!("{}", f64)`), integers
-   without `.0` — match the golden byte-for-byte.
-3. **Bottom-up order**: ck-core -> ck-geom/nurbs -> ck-topo -> ck-ops ->
-   ck-model/features -> ck-server -> ck-wasm. Lock each layer with a golden
-   diff before moving on.
-4. **Decompile as you go**: the WAT (`kernel.wat`) has all 4,213 functions;
-   mangled names only, so identify functions by their string references and
-   call sites, not names.
-5. `no_std`-ish kernel: the original used std with `panic=abort` on
-   wasm32-unknown-unknown, dlmalloc, no wasm-bindgen.
+## Wire protocol
 
-## Status / handoff (2026-10-11)
+One JSON request and one reply per call, through the module's linear memory, with binary buffers
+for bulk arrays.
 
-How to work: read `tools/AGENT_RULES.md`. Original code comes from
-`python3 -I tools/funcmap/packet.py queue <path>` / `packet.py fNNNN`;
-verify with `node tools/gate.mjs --fast` (per commit; full gate ≈25 min);
-land a worktree branch with `tools/land.sh <worktree>`.
+| export | meaning |
+|---|---|
+| `ck_alloc(n) -> ptr` | allocate `n` bytes for the request |
+| `ck_request(ptr, len) -> u32` | run one message; returns the reply length |
+| `ck_reply() -> ptr` | pointer to the reply |
+| `ck_commit() -> ptr`, `ck_commit_len() -> n` | build id string |
 
-Matches the original: wire layer (280/280), sketch solver, booleans,
-extrude/revolve/cut/mirror/patterns, planar + circular-edge fillets,
-chamfers (equal/vertex), shell/offset, draft, sweep (rigid paths), loft
-(solid/surface), surface features (knit/fill/trim/thicken/extend/...),
-insertPart + mates, hole, helix, 16/17 requests (all but `drawing`).
-bracket.ckpart matches end to end.
+Imports (module `env`): `ck_panic(ptr, len)`, `ck_now() -> f64`, `ck_unix_ms() -> f64`.
 
-Biggest open items (owner crate):
-- flange: bolt/nut revolve-cut booleans fail `booleanFailed` (ck-ops boolean);
-  thread cuts (swept spline tools) (ck-ops boolean/sweep)
-- stepper: screw part `booleanFailed`; mate refs to `~k` split faces (ck-model mate)
-- large sample: curved trimSurface (surface×surface), lip/rib on curved rims,
-  fillets between non-revolution faces (ck-ops trim/blend)
-- loft: unequal-arc-weight faces (~1e-3 off), centreLine + guides not read
-- chamfer distanceDistance/angleDistance; variable/curved-face blends
-- ck-tess: sphere/torus/cone triangle counts (~2x; port f3444/f3325)
-- STEP: 16/21 (draft STEP, conic serialisation)
-- drawing request; sketch3 solver; g1/g2/g3/onCurve/tension constraints
+Request: `{"id": <n>, "msg": { "type": "...", ... }}`. The request types are `ping`, `regen`,
+`matchEdges`, `drag`, `convert`, `sketchOffset`, `refCurve`, `measure`, `massProps`,
+`interference`, `step`, `inspect`, `continuity`, `curvatureAt`, `curvatureMap`, `comb` and
+`drawing`. Feature operations are part-document feature types carried inside a `regen`.
+Example: `{"type":"regen","tag":"main","part":<.ckpart object>,"opts":{"upTo":n}}`.
+
+Reply: `[u32 LE: json_len][json bytes][pad to 8][buffer 0][buffer 1]...`. The JSON is
+`{"ok":true,"result":{...}}` or `{"ok":false,"error":"..."}`. A JSON object
+`{"$buf": i, "type": "f32|f64|u32|i32|u8", "len": n, "offset": o}` is a view into the binary area:
+element `i` starts at byte `pad(8) + o` and holds `n` elements of `type`. The `body.mesh` of a
+regen result is always buffer-backed.
+
+## Build and test
+
+```
+cargo build -p ck-wasm --target wasm32-unknown-unknown --profile fast
+cargo test --workspace
+node tools/gate.mjs --fast        # the regression gate
+```
+
+The gate compares against a reference build of a previous kernel and a set of corpora;
+`tools/remote_build.sh` runs the build and the checks on a remote Linux box. Environment switches are named
+`CK_*` (for example `CK_WASM` selects the wasm the TypeScript tests load).
+
+## Part files
+
+A part is JSON with `"format": "ck-part"`. Files written under the earlier names (`fw-part`,
+`formwerk-part`, extension `.fwpart`) are still read and come back as `ck-part`.
+
+## Licence
+
+MIT OR Apache-2.0. See `LICENSE-MIT` and `LICENSE-APACHE`. Third-party material and its licences
+are listed in `THIRD_PARTY.md`.

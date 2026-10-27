@@ -77,12 +77,12 @@ fn damaged_parts_heal_back_to_valid_with_same_volume() {
     assert!(cases >= 25, "only {cases} cases exercised");
 }
 
-/// The format's old names (`ck-part`, `ck-part`) still parse, come back as
+/// The format's old names (`formwerk-part`, `fw-part`) still parse, come back as
 /// `ck-part` and heal exactly like a part written with the new name.
 #[test]
 fn legacy_format_name_still_reads() {
     let src = parts()[0].1.clone();
-    for legacy in ["ck-part", "ck-part"] {
+    for legacy in ["formwerk-part", "fw-part"] {
         let old = src.replace(r#""format":"ck-part""#, &format!(r#""format":"{legacy}""#));
         let parsed = Part::parse(&old).unwrap();
         assert_eq!(parsed.format, "ck-part");

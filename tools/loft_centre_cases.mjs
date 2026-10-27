@@ -1,4 +1,4 @@
-// Corpus for the loft `centreLine` option (docs/ck-ops-stubs.md, crates/ck-ops/src/loft/centre.rs).
+// Corpus for the loft `centreLine` option (internal notes (not published), crates/ck-ops/src/loft/centre.rs).
 // Every case is a self-contained .ckpart document: profiles on offset top planes (the loft runs along +y), the
 // centre line drawn on the front plane (sketch x -> world x, sketch y -> world y: the loft axis) unless noted.
 // Consumers: tools/loft_centre_check.mjs (oracle vs ours, section table) and, through

@@ -65,7 +65,7 @@ vented_louvre_case, mounting-plate, parametric-bracket, patterned-threaded-holes
 SolidWorks single-feature parts cube, cube with a 1 mm fillet, cube with a 5 mm hole, cone and cylinder with a fillet.
 Not recognised: SolidWorks sphere, torus, crossed cylinders (whole-body sphere / torus and cross-bores are not handled).
 
-Timing: below 200 faces almost every part is under 0.5 s; the slow ones are free-form (springs, propeller, large sample:
+Timing: below 200 faces almost every part is under 0.5 s; the slow ones are free-form (springs, propeller, hair dryer:
 the area integration of spline faces and the verification booleans) and the gear bodies (2 to 10 s, many layered extrudes).
 
 Failure analysis (prismatic subset, not exact):

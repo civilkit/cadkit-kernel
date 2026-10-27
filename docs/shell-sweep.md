@@ -49,7 +49,7 @@ the wasm hash, seed and sample count.
 
 The box/cylinder large-thickness refusals are correct behaviour. The four
 groups above are volume-law or wall-construction gaps; see
-`docs/mimo-brief-shell.md` for ranked repros.
+internal notes (not published) for ranked repros.
 
 ## Passed
 

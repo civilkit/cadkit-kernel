@@ -23,7 +23,7 @@ pub const SPAN_LABEL: &str = "drawing views";
 
 pub fn drawing(cx: &mut Cx) -> Result<Json, String> {
     if !cx.state()?.has_body {
-        // pinned by tests-golden/wire.json: the empty-state answer is `{}` when
+        // pinned by the recorded reference data (not published): the empty-state answer is `{}` when
         // hidden is truthy and `null` otherwise
         let hidden = cx.msg.get("hidden").map_or(false, |h| match h {
             Json::Bool(b) => *b,

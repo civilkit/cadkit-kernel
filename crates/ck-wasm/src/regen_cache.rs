@@ -18,7 +18,7 @@ use std::rc::Rc;
 /// Bump when the meaning of a cached state changes without the version.
 const FORMAT: u32 = 1;
 
-/// Default cap of estimated cached state, bytes. The large sample part (50
+/// Default cap of estimated cached state, bytes. The hair dryer part (50
 /// features, ~2.8 MB estimated per distinct body state) needs ~60 MB for a
 /// full chain; 256 MB keeps a few documents' worth of history while the
 /// wasm linear memory stays far below the 4 GB limit (docs/regen-cache.md).

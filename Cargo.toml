@@ -7,7 +7,7 @@ opt-level = 3
 lto = true
 panic = "abort"
 # one codegen unit: the same results (no float reassociation), a 13 % smaller wasm and no slower
-# (docs/perf-large sample.md, round 5)
+# (internal notes (not published), round 5)
 codegen-units = 1
 
 # The native service (crates/ck-native) must survive a kernel panic (catch_unwind), which

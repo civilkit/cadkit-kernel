@@ -56,7 +56,7 @@ Why: the near-coincident cylinders 1e-3 apart (`r5` against `r5.001` stacked, a 
 
 ## Timings
 
-The whole corpus (136 cases) runs in about 3 s on the wasm; the largest single cases are the Steinmetz bicylinders and spheres (50 to 300 ms). `tools/remote_build.sh --checks none` builds the wasm in 85 to 90 s on the CI box; `--cargo-test "-p ck-ops -p ck-topo -p ck-server -p ck-model"` takes 38 + 7 + 1 + 171 s; the gate 700 s. Gate numbers with this work: wire 280/280, valid 277/319, vol 319/319, step 16/21, large sample, loft point and concave fillet checks ok.
+The whole corpus (136 cases) runs in about 3 s on the wasm; the largest single cases are the Steinmetz bicylinders and spheres (50 to 300 ms). `tools/remote_build.sh --checks none` builds the wasm in 85 to 90 s on the CI box; `--cargo-test "-p ck-ops -p ck-topo -p ck-server -p ck-model"` takes 38 + 7 + 1 + 171 s; the gate 700 s. Gate numbers with this work: wire 280/280, valid 277/319, vol 319/319, step 16/21, hair dryer, loft point and concave fillet checks ok.
 
 ## All cases
 

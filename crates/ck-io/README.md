@@ -3,7 +3,7 @@
 File export. rs_paths.txt shows step/write.rs only — a STEP (AP214,
 `AUTOMOTIVE_DESIGN`) writer. Every format string survives in
 kernel.strings; layout/numbering/formatting are pinned by `step` replies
-of the original kernel (`tests/golden/*.step`).
+of the original kernel (the recorded reference data (not published)).
 
 ## API
 
@@ -50,7 +50,7 @@ let text: String = write_step(&body, name, &StepOpts { unix_ms: host_ck_unix_ms(
   axis = stored z; cone: negative semi-angle → negated axis.
 - the sign of zero of every oracle DIRECTION was recovered by
   instrumenting f414 (log of the normalised components) —
-  tests/golden/signed_dirs.txt; `write_step_signed_zeros` (test support)
+  the recorded reference data (not published); `write_step_signed_zeros` (test support)
   prints `-0.` so the test can compare them.
 - seam-split arcs (ck-topo `wire_chains`) are one EDGE_CURVE.
 - order: context #1..#14, world placement #15..#18, faces in shell order
@@ -67,7 +67,7 @@ let text: String = write_step(&body, name, &StepOpts { unix_ms: host_ck_unix_ms(
 ## Tests / status
 
 `cargo test -p ck-io`:
-- `tests/step_oracle.rs`, 16 golden bodies (ck-topo make::* constructions):
+- the recorded reference data (not published), 16 golden bodies (ck-topo make::* constructions):
   BYTE-identical AND every DIRECTION's sign of zero equal to the
   oracle's: box box3 cyl dext flip mid two rev360 rev90 revax360 revax90
   sphere torus cone void (15). `draft` is the one known diff (the oracle
@@ -80,7 +80,7 @@ let text: String = write_step(&body, name, &StepOpts { unix_ms: host_ck_unix_ms(
   ellipse + SURFACE_OF_LINEAR_EXTRUSION, SURFACE_OF_REVOLUTION verbatim
   against oracle lines.
 
-Golden capture: `tests/golden/<n>.req.json` is the regen request; run
+Request bodies: `tests/golden/<n>.req.json` is the regen request; run
 `node tools/q.mjs "$(cat <n>.req.json)" '{"id":2,"msg":{"type":"step","tag":"main","name":"<n>"}}'`
 and take `result` of the second reply. ell/spl/cvs/loft/revspl `.step`
 are reference-only (bodies not buildable with ck-topo yet).

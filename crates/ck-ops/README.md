@@ -63,7 +63,7 @@ where noted):
 | `continuity` | `judge_edge(body, e, &Settings) -> EdgeReport`, `reply(body, msg) -> Json` (the `continuity` query, wired in ck-wasm `query_hook`) | **oracle**: G1-G3 fields, normals, curvature/rate, status/fails, max, worst for fillets (planar / cylinder), box / cylinder corners (`ck-model/tests/continuity_golden.rs`); gap = golden-section noise, bit-exact only when the blend edges use the oracle's line parameterisation |
 | `draft` | `draft(body, neutral, dir, faces, angle, tol) -> Result<Body, DraftError{code, detail}>` — plane faces rotate about the neutral hinge, cylinders become cones; `interior_point` | **oracle**: face normals bit-exact for 1..44 degrees (two normalisation passes), cylinder -> cone exact, all error codes + details (`invalidValue`, `draftParallelFace`, `draftTooLarge` ...); vertices/edge pts within ~1e-11 (the oracle's offset engine leaves ~1e-10 solver noise, not reconstructed); NOT ported: offset engine f2871 (own `rebuild` stand-in), `~slab`/`~wedge` retry (f2874), extrusion-surface faces (`draftUnsupported`) |
 | `contain` | `Containment::{new, point_in_face, classify_point}` | unit; agrees with the winding classifier on grids (face test is a GUESS, see header) |
-| `measure` | `reply(body, msg)` (the `measure` query; `resolve_ref`) | **oracle** (`ck-wasm/tests/query_golden.rs`, 3027 queries): face/edge items, wedge, angle, normal/centre distance exact; pair `distance`/`points` reconstructed from the wasm structure (sample, project, refine top 3) — zero-distance contacts pick another point than the oracle's noise-ordered one |
+| `measure` | `reply(body, msg)` (the `measure` query; `resolve_ref`) | **oracle** (recorded reference queries, not published): face/edge items, wedge, angle, normal/centre distance exact; pair `distance`/`points` reconstructed from the wasm structure (sample, project, refine top 3) — zero-distance contacts pick another point than the oracle's noise-ordered one |
 | `curvature_at` | `reply(body, msg)` (`curvatureAt`) | **oracle**: p/n/k1/k2/d1/d2/gaussian/mean; sphere-pole nudge (1e-7 of the v range); needs the `analysis::surface_curvature` d1 sign (pinned) |
 | `ref_curve` | `edge_reply`, `curve_reply`, `nurbs_json` (`refCurve`; sketch curves in ck-wasm `sketch_q`) | **oracle**: edge NURBS (P,p,knots,w), start/end/closed |
 | `convert_proj` | `project_curve`, `project_ref`, `apply`, `reply` (`convert`) | **oracle**: line/circle/arc/ellipse/edge-on line entities, point reuse (1e-7), id/seq numbering, `from`; oblique arcs/splines: point count right (natural-spline deviation test), fit points direct samples (GUESS) |
@@ -75,7 +75,7 @@ where noted):
 
 The remaining stubs (loft/*, curve_edit, guide, simplify, blend cap / g2 / interp /
 overlap / sheet / stripe / surface, `surfacing::rebuild::edits`) are classified in
-[docs/ck-ops-stubs.md](../../docs/ck-ops-stubs.md) (feature missing / already
+internal notes (not published) (feature missing / already
 implemented elsewhere / internal helper).
 
 ### How to wire the surface ops (Gate B, ck-model/src/features)

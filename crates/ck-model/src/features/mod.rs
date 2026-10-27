@@ -1339,124 +1339,6 @@ mod tests {
     use super::*;
     use crate::Part;
 
-    const SAMPLES: [&str; 4] = ["bracket", "coupling-sample", "stepper-sample", "large-sample"];
-
-    fn load(name: &str) -> Option<Part> {
-        let p = format!("{}/../../../{}.ckpart", env!("CARGO_MANIFEST_DIR"), name);
-        let src = std::fs::read_to_string(p).ok()?;
-        Some(Part::parse(&src).expect("sample parses"))
-    }
-
-    fn walk(p: &Part, f: &mut dyn FnMut(&crate::Feature)) {
-        for x in &p.features {
-            f(x);
-            if let FeatureKind::InsertPart { part: Some(sub), .. } = &x.kind {
-                walk(sub, f);
-            }
-        }
-    }
-
-    /// Every feature in every sample parses to a typed kind (no `Other`), and
-    /// the document round-trips through `to_json` unchanged.
-    #[test]
-    fn samples_parse_fully() {
-        for name in SAMPLES {
-            let Some(p) = load(name) else { continue };
-            let mut n = 0;
-            walk(&p, &mut |f| {
-                n += 1;
-                assert!(!matches!(f.kind, FeatureKind::Other(_)), "{name}: {} {}", f.id, f.type_name);
-                if let FeatureKind::InsertPart { part, .. } = &f.kind {
-                    assert!(part.is_some(), "{name}: {} nested part", f.id);
-                }
-            });
-            assert!(n > 5, "{name}");
-            assert_eq!(ck_json::to_string(&p.to_json()), ck_json::to_string(&p.raw), "{name} round-trip");
-        }
-    }
-
-    #[test]
-    fn bracket_fields() {
-        let Some(p) = load("bracket") else { return };
-        assert_eq!(p.name, "NEMA 17 motor bracket");
-        assert_eq!(p.seq, 13);
-        assert_eq!(p.rollback, None);
-        assert_eq!(p.material, "aluminium");
-        assert_eq!(p.counters[0], ("sketch".to_string(), 4));
-        let f2 = p.feature("F2").unwrap();
-        match &f2.kind {
-            FeatureKind::Extrude { op, sketch, end, depth, .. } => {
-                assert_eq!(*op, Op::Add);
-                assert_eq!(sketch.as_ref().unwrap().as_str(), "F1");
-                assert_eq!(*end, End::Mid);
-                assert_eq!(depth.as_num(), Some(52.0));
-            }
-            k => panic!("{k:?}"),
-        }
-        match &p.feature("F11").unwrap().kind {
-            FeatureKind::Fillet { radius, edges } => {
-                assert_eq!(radius.as_num(), Some(5.0));
-                assert_eq!(edges.len(), 4);
-                assert_eq!(edges[0].faces, vec!["F2.C0", "F2.S.e10"]);
-                assert_eq!(edges[0].at, Some([-26.0, 58.0, 2.0]));
-            }
-            k => panic!("{k:?}"),
-        }
-        let s7 = p.feature("F7").unwrap().as_sketch().unwrap();
-        assert_eq!(s7.plane, Some(GeomRef::Face("F2.C1".into())));
-        match &p.feature("F10").unwrap().kind {
-            FeatureKind::Mirror { plane, body, seeds } => {
-                assert_eq!(*plane, Some(GeomRef::Std(crate::StdPlane::Right)));
-                assert!(!body);
-                assert_eq!(seeds[0].as_str(), "F8");
-            }
-            k => panic!("{k:?}"),
-        }
-    }
-
-    #[test]
-    fn assembly_fields() {
-        let Some(p) = load("coupling-sample") else { return };
-        let f2 = p.feature("F2").unwrap();
-        match &f2.kind {
-            FeatureKind::InsertPart { part, place, source, .. } => {
-                let sub = part.as_ref().unwrap();
-                assert_eq!(sub.name, "Flange coupling half");
-                assert_eq!(place.dx, -40.0);
-                assert_eq!(place.axis, Some(GeomRef::Axis("y".into())));
-                assert_eq!(place.angle, Some(Expr::Num(150.0)));
-                assert_eq!(source.as_deref(), Some("tests/real-parts/coupling-half.ckpart"));
-                match &sub.feature("F12").unwrap().kind {
-                    FeatureKind::RefPlane { mode, base, offset, visible, .. } => {
-                        assert_eq!(mode, "offset");
-                        assert_eq!(*base, Some(GeomRef::Std(crate::StdPlane::Top)));
-                        assert_eq!(offset.as_num(), Some(20.0));
-                        assert!(!visible);
-                    }
-                    k => panic!("{k:?}"),
-                }
-                match &sub.feature("F2").unwrap().kind {
-                    FeatureKind::Revolve { axis, angle, .. } => {
-                        assert_eq!(*axis, Some(GeomRef::Name("e14".into())));
-                        assert_eq!(angle.as_num(), Some(360.0));
-                    }
-                    k => panic!("{k:?}"),
-                }
-            }
-            k => panic!("{k:?}"),
-        }
-        let Some(n) = load("stepper-sample") else { return };
-        assert!(n.is_assembly());
-        match &n.feature("F30").unwrap().kind {
-            FeatureKind::InsertPart { place, .. } => {
-                let fr = place.frame.unwrap();
-                assert_eq!(fr.o.x, 0.6);
-                assert_eq!(fr.y.x, -1.0);
-            }
-            k => panic!("{k:?}"),
-        }
-    }
-
     #[test]
     fn format_errors() {
         for bad in [
@@ -1470,7 +1352,7 @@ mod tests {
             assert_eq!(Part::parse(bad).unwrap_err(), "Format", "{bad}");
         }
         // version is not validated; junk in other fields is tolerated.
-        for legacy in ["ck-part", "ck-part"] {
+        for legacy in ["formwerk-part", "fw-part"] {
             let old = Part::parse(&format!(r#"{{"format":"{legacy}","features":[]}}"#)).unwrap();
             assert_eq!(old.format, "ck-part");
         }

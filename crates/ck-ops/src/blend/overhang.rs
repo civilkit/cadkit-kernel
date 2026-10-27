@@ -1,4 +1,4 @@
-//! The overhang corner (docs/mimo-brief-overhang-corner.md): four straight
+//! The overhang corner (internal notes (not published)): four straight
 //! selected edges meeting at one 4-valent vertex as two collinear pairs that
 //! flip convex/concave, so no rolling ball runs through the corner and the
 //! ordinary stripes end in planar steps.

@@ -1,7 +1,7 @@
 // Single-feature B-rep parts (one sketch + extrude/revolve on an empty body):
-// the 15 bodies of crates/ck-topo/tests/oracle_bodies.json rebuilt as .ckpart
+// the 15 bodies of crates/ck-topo/the recorded reference data (not published) rebuilt as .ckpart
 // documents, plus a few extra end conditions. Consumers:
-//   tools/brep_golden.mjs  -> crates/ck-model/tests/golden/brep.json (oracle replies)
+//   the reference-capture tool (not published)  -> the recorded reference data (not published) (oracle replies)
 //   tools/diff.mjs --cases brep   (massProps / sketch inspect only: the regen
 //                                  reply itself carries the mesh, which ck-tess owns)
 const pt = (id, x, y) => ({ id, x, y });
@@ -473,7 +473,7 @@ parts.mirrorBodyCone = part([...parts.cone.features, { type: 'plane', id: 'F8', 
 
 // loft guides / end normals / connectors / centre line (ck-ops loft/guides.rs, smooth::through_ends).
 // Straight guides, end tangents and connectors reproduce the oracle's volumes; curved guides and
-// curved centre lines are not in the gate (see docs/ck-ops-stubs.md, tools/stub_cases.mjs).
+// curved centre lines are not in the gate (see internal notes (not published), tools/stub_cases.mjs).
 {
   const [s1, p2, s3] = parts.loftSq2.features;   // square r10 at y=0, plane y=30, square r5
   const base3 = [s1, p2, s3];
@@ -579,7 +579,7 @@ parts.mirrorBodyCone = part([...parts.cone.features, { type: 'plane', id: 'F8', 
 }
 
 // editCurve (ck-ops curve_edit): the rebuilt curve goes to `curves[]` / `markers[]`, the solid is untouched
-// (the fit is least squares, the oracle's is a different one: deviations differ, see docs/ck-ops-stubs.md).
+// (the fit is least squares, the oracle's is a different one: deviations differ, see internal notes (not published)).
 {
   const spl = { type: 'sketch', id: 'F1', plane: STD('front'), points: [pt('c1', 0, 0), pt('c2', 5, 8), pt('c3', 10, 2), pt('c4', 15, 9), pt('c5', 20, 0)],
     entities: [{ type: 'spline', id: 'e1', pts: ['c1', 'c2', 'c3', 'c4', 'c5'] }], constraints: [] };
@@ -596,7 +596,7 @@ parts.mirrorBodyCone = part([...parts.cone.features, { type: 'plane', id: 'F8', 
 }
 
 // pipeCut (ck-ops pipecut): a ball of `radius` rolled along edges / face rims removes
-// what it touches; the solid becomes a surface body (docs/ck-ops-stubs.md). Exploration
+// what it touches; the solid becomes a surface body (internal notes (not published)). Exploration
 // cases with error paths live in tools/stub_cases.mjs (node tools/cmp_stubs.mjs pipeCut).
 {
   const E = (a, b, at) => ({ faces: [a, b], at });
@@ -619,7 +619,7 @@ parts.mirrorBodyCone = part([...parts.cone.features, { type: 'plane', id: 'F8', 
 }
 
 // simplify stage of the boolean: coplanar / cocylindrical / cocone faces left by an edit are
-// merged (docs/ck-ops-stubs.md). simpCylStack used to return volume 2094 (the merged
+// merged (internal notes (not published)). simpCylStack used to return volume 2094 (the merged
 // cylinder lost its seam) with no error.
 {
   const circSk = (id, plane, cx, cy, r) => ({ type: 'sketch', id, plane, points: [pt('c', cx, cy)], entities: [{ type: 'circle', id: 'e1', c: 'c', r }], constraints: [] });

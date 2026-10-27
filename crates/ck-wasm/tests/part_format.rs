@@ -1,4 +1,4 @@
-//! The part format's old names (`ck-part`, `ck-part`) through the full server path:
+//! The part format's old names (`formwerk-part`, `fw-part`) through the full server path:
 //! `regen` and a nested `insertPart` both read it as `ck-part`. (There is no
 //! `open` request type; the kit's file-open path normalises the name itself.)
 
@@ -23,8 +23,8 @@ fn plate(format: &str) -> String {
 }
 
 #[test]
-fn regen_reads_the_ck_format_name() {
-    let old = call(&format!(r#"{{"type":"regen","tag":"t","part":{}}}"#, plate("ck-part")));
+fn regen_reads_the_fw_format_name() {
+    let old = call(&format!(r#"{{"type":"regen","tag":"t","part":{}}}"#, plate("fw-part")));
     let new = call(&format!(r#"{{"type":"regen","tag":"t","part":{}}}"#, plate("ck-part")));
     assert_eq!(old.get("ok"), Some(&Json::Bool(true)), "{}", ck_json::to_string(&old));
     assert_eq!(old.get("result"), new.get("result"), "{}", ck_json::to_string(&old));
@@ -32,7 +32,7 @@ fn regen_reads_the_ck_format_name() {
 
 #[test]
 fn regen_reads_the_old_format_name() {
-    let old = call(&format!(r#"{{"type":"regen","tag":"t","part":{}}}"#, plate("ck-part")));
+    let old = call(&format!(r#"{{"type":"regen","tag":"t","part":{}}}"#, plate("formwerk-part")));
     let new = call(&format!(r#"{{"type":"regen","tag":"t","part":{}}}"#, plate("ck-part")));
     assert_eq!(old.get("ok"), Some(&Json::Bool(true)), "{}", ck_json::to_string(&old));
     assert_eq!(old.get("result"), new.get("result"), "{}", ck_json::to_string(&old));
@@ -47,7 +47,7 @@ fn regen_reads_the_old_format_name() {
 fn insert_part_reads_the_old_format_name() {
     let part = format!(
         r#"{{"format":"ck-part","version":1,"features":[{{"type":"insertPart","id":"F1","name":"c","part":{},"fixed":true,"dx":50}}]}}"#,
-        plate("ck-part")
+        plate("formwerk-part")
     );
     let r = call(&format!(r#"{{"type":"regen","tag":"t","part":{part}}}"#));
     assert_eq!(r.get("ok"), Some(&Json::Bool(true)), "{}", ck_json::to_string(&r));

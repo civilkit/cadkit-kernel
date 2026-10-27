@@ -55,7 +55,7 @@ where the tangent turns by more than 1 degree, `closed` = the ends meet).
 
 * A source point exactly on the plane of a side face (box side seen edge-on): the oracle projects the ray lying in that face as
   a segment down the face; ours skips such a ray (`box-seam-between-faces`).
-* A curve produced by `editCurve` is fitted differently there (docs/ck-ops-stubs.md), so a projection of it differs by about 1e-2.
+* A curve produced by `editCurve` is fitted differently there (internal notes (not published)), so a projection of it differs by about 1e-2.
 * Tolerances below the sampling resolution of the data (~3e-5 for a long spline at 800..1040 samples; the data chords sit that far off the true curve) are reported honestly: the marker's
   `deviation` is what the fit achieves against our dense data; the oracle reports its own minimum (1e-6).
 * The fit itself (control point counts, exact knots) is ours: counts differ from the oracle for the same tolerance, the curves

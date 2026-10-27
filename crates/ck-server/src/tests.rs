@@ -1,10 +1,6 @@
-//! Golden tests: every request in tests-golden/wire.json (captured from the
-//! ORIGINAL kernel by tools/golden.mjs) must produce the identical reply
-//! JSON and total frame length.
+//! Server dispatch tests.
 
 use super::*;
-
-const GOLDEN: &str = include_str!("../../../tests-golden/wire.json");
 
 fn run(server: &mut Server, body: &str) -> (String, usize) {
     let r = server.handle(body.as_bytes());
@@ -13,33 +9,9 @@ fn run(server: &mut Server, body: &str) -> (String, usize) {
 }
 
 #[test]
-fn wire_golden() {
-    let g = ck_json::parse(GOLDEN).unwrap();
-    let mut fails = vec![];
-    let mut n = 0;
-    for case in g.as_arr().unwrap() {
-        let name = case.get_str("name").unwrap();
-        let mut s = Server::new();
-        for step in case.get_arr("steps").unwrap() {
-            let body = step.get_str("body").unwrap();
-            let Some(want) = step.get_str("json") else { continue };
-            n += 1;
-            let (got, total) = run(&mut s, body);
-            let want_total = step.get_f64("total").unwrap() as usize;
-            if got != want || total != want_total {
-                fails.push(format!("{name}: {}\n   want {want} ({want_total})\n   got  {got} ({total})", &body[..body.len().min(120)]));
-            }
-        }
-    }
-    assert!(fails.is_empty(), "{}/{n} golden mismatches:\n{}", fails.len(), fails.join("\n"));
-}
-
-/// A part with the format's old name is read as `ck-part`: the reply is
-/// identical to the same request written with the new name.
-#[test]
 fn legacy_format_name_replies_identically() {
     let new = r#"{"msg":{"type":"regen","part":{"format":"ck-part","features":[]}}}"#;
-    let old = r#"{"msg":{"type":"regen","part":{"format":"ck-part","features":[]}}}"#;
+    let old = r#"{"msg":{"type":"regen","part":{"format":"formwerk-part","features":[]}}}"#;
     let (a, la) = run(&mut Server::new(), new);
     let (b, lb) = run(&mut Server::new(), old);
     assert_eq!(a, b);

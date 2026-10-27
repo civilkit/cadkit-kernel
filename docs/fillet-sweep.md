@@ -61,7 +61,7 @@ with `propagate`) passes 38/40. The two failures are `kernel-null` — the wasm
 stopped responding for that request (first two rrect cases in seed 7; three in
 seed 11). OCP completes the same fillets, so the reference is not the problem.
 
-See `docs/mimo-brief-fillets.md` for the ranked kernel tasks and exact repro
+See internal notes (not published) for the ranked kernel tasks and exact repro
 ids.
 
 ## Second seed (seed 11)

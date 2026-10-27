@@ -1,8 +1,6 @@
 // section / sections / probe through the wasm (docs/agent-queries.md "section", "sections", "probe").
 // usage: node tools/section_check.mjs [--wasm path] [--quick]     exit 1 on any mismatch
-// Primitives with hand-computed areas, then the large sample part: sections-vs-massProps volume within 1e-3, finite
-// closed section loops at several planes, probe consistency (centre of mass region, far point). --quick skips the
-// large sample (a regen of minutes).
+// Primitives with hand-computed areas: sections vs exact volume, closed loops, probe consistency.
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -72,36 +70,5 @@ function open(p) {
   ok(st.volumeError < 1e-3, 'sphere sections n=41 volume', `err ${st.volumeError.toExponential(2)}`);
 }
 
-// --- large sample -----------------------------------------------------------------------------------------------------
-if (!quick) {
-  const hd = JSON.parse(readFileSync(path.join(here, 'cases/largeSampleFull.ckpart'), 'utf8'));
-  const t0 = now();
-  const q = open(hd);
-  console.log(`large sample regen ${((now() - t0) / 1000).toFixed(1)}s`);
-  const m = q({ type: 'massProps' }).result;
-  const bb = q({ type: 'sections', axis: 'x', n: 1 }).result.range;
-  // the large sample area profile has steps (head / handle junction), so the midpoint rule only converges at ~800 sections
-  for (const axis of ['x', 'y', 'z']) {
-    const coarse = q({ type: 'sections', axis, n: 21 });
-    ok(coarse.result.areas.every(Number.isFinite) && coarse.result.volumeError < 0.1, `large sample sections ${axis} n=21 (coarse)`, `err ${coarse.result.volumeError.toExponential(2)}, ${coarse.wall} ms`);
-    const fine = q({ type: 'sections', axis, n: 801 });
-    const r = fine.result;
-    ok(r.volumeError < 1e-3 && near(r.exactVolume, m.volume, 1e-12), `large sample sections ${axis} n=801 vs massProps`, `err ${r.volumeError.toExponential(2)}, ${fine.wall} ms (incl. massProps)`);
-  }
-  for (const [name, plane] of [
-    ['x mid', { origin: [(bb[0] + bb[1]) / 2, 0, 0], normal: [1, 0, 0] }],
-    ['y mid', { origin: [0, 10, 0], normal: [0, 1, 0] }],
-    ['z mid', { origin: [0, 0, 5], normal: [0, 0, 1] }],
-    ['oblique', { origin: [0, 10, 5], normal: [0.3, 0.8, 0.52] }],
-  ]) {
-    const j = q({ type: 'section', plane });
-    const r = j.result;
-    const closed = r.loops.every((l) => l.closed && l.pts.length >= 3 && l.edges.length >= 1);
-    ok(Number.isFinite(r.area) && closed && !r.openChains, `large sample section ${name}`, `${r.loops.length} loops, area ${r.area.toFixed(3)}, ${j.wall} ms`);
-  }
-  const pts = [[0, 0, 0], [1e4, 0, 0], [m.com[0], m.com[1], m.com[2]]];
-  const pj = q({ type: 'probe', points: pts });
-  ok(pj.ok && pj.result.points[1].inside === false, 'large sample probe far point outside', `${pj.wall} ms`);
-}
 console.log(bad ? `FAIL (${bad})` : 'section_check ok');
 process.exit(bad ? 1 : 0);

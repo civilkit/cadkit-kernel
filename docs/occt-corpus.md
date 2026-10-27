@@ -154,10 +154,10 @@ scripts; the whole corpus now has 86. Distinct groups (new groups marked):
 | 12 | two cylinders union, bottom rim fillet | 1 | `invalid EULER` | 2485.86 | ambiguous seam vertex on the rim |
 | 13 | **draft on a cylinder/cone side** | 3 (`A5`,`B2`,`B3`) | `wrongArea` / `draftUnsupported` / `invalidValue` | 2145.34, 987.866, 1138.79 | draft of a curved side about a tangent/offset plane |
 | 14 | **staged blend on a box** | 1 (`Q7`) | `wrongArea` | 133.982 | second fillet on the first fillet's result |
-| 15 | **bugs/modalg** | 5 | `booleanFailed`, `missingReference`, `EDGE_OFF_SURFACE`, wrong area | mixed | see `docs/mimo-brief-occt.md` |
+| 15 | **bugs/modalg** | 5 | `booleanFailed`, `missingReference`, `EDGE_OFF_SURFACE`, wrong area | mixed | see internal notes (not published) |
 
 Representative scripts, translated features and repro commands are in
-`docs/mimo-brief-occt.md`, ranked by case count.
+internal notes (not published), ranked by case count.
 
 ## One-command verifier
 
@@ -203,8 +203,8 @@ replay, a class-only baseline and a ranked Mimo brief.
 | tessellation | 180 | 96 ok, 84 `meshVolume` (torus, cylinder, cone, loft3) | `docs/tess-sweep.md` |
 | holes / patterns / mirror / draft | 120 | 120 ok | `docs/feature-sweep.md` |
 | crash fuzz | 5000 | 662 ok, 4002 structured, 238 trap, 74 hang, 24 invalid | `docs/crash-fuzz.md` |
-| Fusion import (rounds 1-3) | 800 | 745 ok, 55 invalid | `docs/mimo-brief-import.md` |
-| original vs ours | 91 | 57 both ok, 19 both fail, 15 original-only gaps | `docs/original-gaps.md` |
+| Fusion import (rounds 1-3) | 800 | 745 ok, 55 invalid | internal notes (not published) |
+| original vs ours | 91 | 57 both ok, 19 both fail, 15 original-only gaps | internal notes (not published) |
 | propeller foundation probe | 10 | 7 both ok, 2 both fail, 1 original-only gap | `docs/prop-probe.md` |
 
 The baselines are `tools/fillet_sweep_baseline.json`,

@@ -15,7 +15,7 @@
 //!
 //! GUESS: tolerances (length 1e-6 relative, parallel 1e-9, tangent 1e-3 rad)
 //! and the order of tangent chains; pinned by the brep cases
-//! (`tools/query_golden.mjs matchEdges`).
+//! (the reference-capture tool (not published) matchEdges`).
 
 use ck_core::linalg::Vec3;
 use ck_geom::curve::Curve;

@@ -1,4 +1,4 @@
-// Parts for the features that used to be ck-ops stubs (docs/ck-ops-stubs.md).
+// Parts for the features that used to be ck-ops stubs (internal notes (not published)).
 // Consumers: tools/cmp_stubs.mjs (oracle vs rebuilt, per-part summary) and,
 // for the parts that are implemented, tools/brep_cases.mjs (the gate).
 import { parts as base } from './brep_cases.mjs';

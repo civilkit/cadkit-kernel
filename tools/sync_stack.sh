@@ -5,7 +5,7 @@
 # usage: tools/sync_stack.sh [--wasm] [--force-copy] [--kit <kit dir>]
 #   (default)  compile packages/, report whether the wasm is older than the Rust sources, copy the wasm
 #              into the kit (and kit-film when present)
-#   --wasm     also rebuild the kernel wasm on the CI box (tools/remote_build.sh --checks large sample) first
+#   --wasm     also rebuild the kernel wasm on the CI box (tools/remote_build.sh --checks gate) first
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
@@ -25,7 +25,7 @@ done
 WASM="$ROOT/target/wasm32-unknown-unknown/release/ck_wasm.wasm"
 
 if [ "$REBUILD_WASM" = 1 ]; then
-  tools/remote_build.sh --checks large sample
+  tools/remote_build.sh --checks gate
 fi
 
 echo "== packages: tsc"

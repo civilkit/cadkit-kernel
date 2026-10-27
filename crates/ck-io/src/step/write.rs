@@ -1,10 +1,8 @@
 //! STEP AP214 (ISO 10303-21) writer — `step` request (ck-io/src/step/write.rs).
 //!
-//! Evidence (all byte-pinned against the ORIGINAL kernel's `step` reply,
-//! see tests/step_oracle.rs and tests/golden/*.step):
+//! The output format is pinned by recorded reference output (not published):
 //! - header / product / context boilerplate and every entity format string
-//!   survive verbatim in kernel.strings (`FILE_NAME(` .. `'CadKit',
-//!   'CadKit','');`, `(BOUNDED_CURVE()B_SPLINE_CURVE(`, ...).
+//!   (`FILE_NAME(` .. `'CadKit','CadKit','');`, `(BOUNDED_CURVE()B_SPLINE_CURVE(`, ...).
 //! - FILE_NAME time stamp = host `ck_unix_ms()` rendered as UTC
 //!   `YYYY-MM-DDTHH:MM:SS`; ms -> secs via `(ms/1000) as u64` (NaN and
 //!   negatives saturate to 1970-01-01T00:00:00; 1e20 ms gives year

@@ -581,7 +581,7 @@ body). Both fail with a structured error and leave the model unchanged.
   translates everything built so far as one rigid body (`rotate.axis` through `rotate.origin`,
   90-degree steps or any angle). Select only the inserted group with `bodies` when the document
   already holds other solids. Names are unchanged, so references made after it still resolve
-  (`crates/ck-model/tests/move_features.rs`, `bldc_rotates_*`, `face_references_after_a_bldc_transform`).
+  (`crates/ck-model/tests/move_features.rs`).
 - `copy: true` leaves the original and appends a moved copy whose face names get the
   instance suffix `@<id>.1`; otherwise the entities move in place and all names are unchanged. With `copy: true`, a
   string `body` names the copies (`bodyNameConflict` when the name is taken).
@@ -1164,7 +1164,7 @@ circle (tangent direction), an arc whose centre and end are fixed
 A part document carries `version` (the file format's version; the kernel's own is `PART_VERSION` in
 `crates/ck-model/src/lib.rs`, the same number as `PART_VERSION` in the kit's
 `apps/cad/src/partVersion.ts`). The kernel reads a file with any `version` — like the format name, which
-has been `ck-part` since it was `ck-part` — and a document whose `version` is higher than the
+has been `ck-part` since it was `formwerk-part` — and a document whose `version` is higher than the
 kernel's still regenerates. The regen reply then carries one additive field, next to `errors` / `body`:
 
 ```json
