@@ -302,9 +302,23 @@ face of the blend tool, i.e. a flat cut where a band ends). Images in `docs/blen
   vertex and are cut by the bisector plane (`Junc::mitre`, concave pairs), the intersection of the two cylinders:
   `post0_after.png`, exact. Rounded posts (`post2`, `post4`: a tangent line-arc chain) and the inside corner of two walls
   (`pocket_cove*`, `lwall_inside_*`, with and without the vertical edge) were already exact.
-* **Two steps** (concave edges first, then the convex ones: `tower_two_step_*`): still differs. The convex band now stops at the
-  wall plane but the result keeps a flat face (`ts_before.png`) and has 3 mm3 less material than OCCT's second step. Open,
-  marked `known` in the corpus so the gate stays green while it stands. Selecting all edges in one feature gives the exact
-  result.
+* **Two steps** (concave edges first, then the convex ones: `tower_two_step_*`): still differs, and this is the one open case in
+  the corpus. Selecting all edges in a single feature gives the exact result, so the gap is in what the *second* feature sees.
+  What is known about it now:
+  * The convex band on the two **vertical** corner edges is clamped by the "an end that runs into the blend faces of an earlier
+    feature" rule in `blend/build.rs`: the end margin is set to the distance to a plane neighbour of those blend faces whose
+    normal is parallel to the edge — here the plate top, so the margin is `r` and the band prisms all the way down to `z = 0`.
+    Below `z = r` the block's side faces are already internal (step 1's concave fillets absorbed them), so the band's own
+    coincident planar profile faces are born as new result faces, named `<feature>.S.l1`/`.S.l2`. That is what the corpus check
+    trips over: those names are how it recognises a tool face left behind. The three horizontal top edges are clean.
+  * Volume is short by exactly `0.164·r³` against OCCT's second step (5.7e-6 relative at r1, 1.5e-4 at r3) — the prism the band
+    adds below `z = r`.
+  * Flushing the band at the vertex instead of at the tangent plane removes the tool faces (26 → 22 faces) but is worse: the
+    volume overshoots by `0.265·r³`, and a π/2 crease shows up across `F9.B0|F9.B2` at `(30,40,r)`. That crease is step 1's
+    concave-blend junction at the outer corner — it lives in `{x < 30, y > 40}`, disjoint from the corner square the band cuts,
+    so no setting of the band's end margin can ever remove it. OCCT's one-feature result has no such crease because the three
+    edges are joined by a real junction rather than clipped at a plane.
+  * So neither flat setting matches OCCT: the truth is a rounded/rolled end, not a clamp. Left open, marked `known` in the corpus
+    so the gate stays green while it stands.
 * `tower_top_rim` (top rim edges and only the concave top-wall edge) is not in the corpus: OCCT carries the cove down the
   tangent continuation of the rim.
