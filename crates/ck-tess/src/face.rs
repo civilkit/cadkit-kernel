@@ -1110,11 +1110,21 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
             }
         }
     }
-    // Two emitted vertices closer than this are the same point for the wire: f32 at coordinates of a
-    // few hundred only resolves ~1e-5, and the boundary sample / refinement-point pairs we are
-    // snapping sit under 1e-4. Over-snapping collapses a triangle whose neighbours still span the
-    // edge and leaves a hole, so the gate's open-mesh check is the arbiter of the value.
+    // snap lookups: a boundary sample and the refinement point beside it can land within a hair
+    // of each other (the refitted pcurve puts a straight side chain a few ulps off its
+    // isoparametric line), and the wire only carries f32, so two points the f32 grid cannot tell
+    // apart give a triangle with no area and a meaningless facet normal. Join each new vertex to
+    // an already-emitted one within `snap_tol`, looked up for every vertex as it is emitted: every
+    // triangle mentioning either of a near pair then gets the same id, which keeps the mesh closed
+    // (merging only where the two co-occur in one triangle leaves the other edges unmatched).
     let snap_tol: f64 = std::env::var("CK_SNAP_TOL").ok().and_then(|v| v.parse().ok()).unwrap_or(1e-4);
+    // ...and only when the parameters agree: two copies of one point either side of a periodic
+    // cut (u and u + period) are coincident in 3D but joining them leaves edges whose uv midpoint
+    // lands a half period away, which the shading correction then measures as a huge normal step.
+    let snap_uv = 1e-3;
+    let cell = snap_tol.max(1e-12);
+    let mut cells: HashMap<(i64, i64, i64), Vec<u32>> = HashMap::default();
+    let key = |p: Vec3| -> (i64, i64, i64) { ((p.x / cell).floor() as i64, (p.y / cell).floor() as i64, (p.z / cell).floor() as i64) };
     for (_, v) in tri.cdt.inside_tris() {
         if strict_plane {
             let c = (0..3).fold(Vec2::ZERO, |acc, k| acc + from_c(tri.cdt.pts[v[k] as usize]) * (1.0 / 3.0));
@@ -1123,40 +1133,55 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
             }
         }
         let mut ids = [0u32; 3];
-        let mut id_of = |cv: u32, out: &mut FaceMesh, local: &mut HashMap<u32, u32>| -> u32 {
-            if let Some(&id) = local.get(&cv) {
-                return id;
-            }
-            let (uv, p) = match vdata.get(&cv) {
-                Some(&d) => d,
+        for k in 0..3 {
+            let cv = v[k];
+            ids[k] = match local.get(&cv) {
+                Some(&id) => id,
                 None => {
-                    let uv = from_c(tri.cdt.pts[cv as usize]);
-                    let e = wrap_eval(uv);
-                    (uv, surf.eval(e.x, e.y))
+                    let (uv, p) = match vdata.get(&cv) {
+                        Some(&d) => d,
+                        None => {
+                            let uv = from_c(tri.cdt.pts[cv as usize]);
+                            let e = wrap_eval(uv);
+                            (uv, surf.eval(e.x, e.y))
+                        }
+                    };
+                    let k0 = key(p);
+                    let mut joined = None;
+                    'near: for dx in -1i64..=1 {
+                        for dy in -1i64..=1 {
+                            for dz in -1i64..=1 {
+                                if let Some(here) = cells.get(&(k0.0 + dx, k0.1 + dy, k0.2 + dz)) {
+                                    for &id in here {
+                                        let u = out.uv[id as usize];
+                                        if (out.pts[id as usize] - p).len() < snap_tol
+                                            && (u.x - uv.x).abs() <= snap_uv
+                                            && (u.y - uv.y).abs() <= snap_uv
+                                        {
+                                            joined = Some(id);
+                                            break 'near;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    let id = match joined {
+                        Some(id) => id,
+                        None => {
+                            let e = wrap_eval(uv);
+                            out.uv.push(uv);
+                            out.pts.push(p);
+                            out.nrm.push(FaceMesh::outward(surf, sense, e));
+                            let id = (out.pts.len() - 1) as u32;
+                            cells.entry(key(p)).or_default().push(id);
+                            id
+                        }
+                    };
+                    local.insert(cv, id);
+                    id
                 }
             };
-            let e = wrap_eval(uv);
-            out.uv.push(uv);
-            out.pts.push(p);
-            out.nrm.push(FaceMesh::outward(surf, sense, e));
-            (out.pts.len() - 1) as u32
-        };
-        for k in 0..3 {
-            ids[k] = id_of(v[k], &mut out, &mut local);
-        }
-        // Boundary samples and the refinement points hugging them land within a hair of each other
-        // (the refitted pcurve puts the straight side chains a few ulps off their isoparametric line),
-        // so snap the vertex onto an already-emitted one that is closer than the wire's f32 can tell
-        // apart; otherwise the pair survives as two points that round to one f32 and the triangle
-        // between them has no area for the renderer.
-        for k in 0..3 {
-            for j in 0..k {
-                if ids[k] != ids[j] && (out.pts[ids[k] as usize] - out.pts[ids[j] as usize]).len() < snap_tol {
-                    local.insert(v[k], ids[j]);
-                    ids[k] = ids[j];
-                    break;
-                }
-            }
         }
         if ids[0] == ids[1] || ids[1] == ids[2] || ids[0] == ids[2] {
             continue;

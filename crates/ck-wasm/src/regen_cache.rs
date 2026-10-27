@@ -359,9 +359,15 @@ pub fn with<T>(f: impl FnOnce(&mut RegenCache) -> T) -> T {
     CACHE.with(|c| f(&mut c.borrow_mut()))
 }
 
-/// Stores the state after every feature of a run under the prefix keys.
+/// Most states one run stores. Saving a state copies the result and the body, so storing one after every feature of a
+/// document with thousands of them costs far more than the regen itself (quadratic in the feature count); a run longer
+/// than this stores every `stride`-th state instead, and an edit resumes from the nearest stored one before it.
+const MAX_CHECKPOINTS: usize = 256;
+
+/// Stores the state after every feature of a run (every `stride`-th, and the last, for a very long one) under the prefix keys.
 pub struct Recorder {
     keys: Vec<Key>,
+    stride: usize,
     prev: Option<(Rc<RegenResult>, BrepSnap)>,
 }
 
@@ -369,13 +375,18 @@ impl Recorder {
     /// `resumed`: the hit the run continues from, if any (its state chains the
     /// first new snapshot).
     pub fn new(keys: Vec<Key>, resumed: Option<(RegenResult, BrepSnap)>) -> Recorder {
-        Recorder { keys, prev: resumed.map(|(r, s)| (Rc::new(r), s)) }
+        let stride = (keys.len().saturating_sub(1)).div_ceil(MAX_CHECKPOINTS).max(1);
+        Recorder { keys, stride, prev: resumed.map(|(r, s)| (Rc::new(r), s)) }
     }
 }
 
 impl Checkpoint for Recorder {
     fn after(&mut self, i: usize, ran: bool, state: &RegenState, exec: &mut dyn FeatureExec) {
         let key = self.keys[i + 1];
+        // positions are absolute, so a later run of the same document stores at the same places
+        if (i + 1) % self.stride != 0 && i + 2 < self.keys.len() {
+            return;
+        }
         // an identical prefix is already stored: just continue from it
         if let Some(p) = with(|c| c.touch(&key)) {
             self.prev = Some(p);

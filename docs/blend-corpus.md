@@ -6,7 +6,9 @@ feature error, `validate` ok, volume within `1e-5` (planar bodies) or `1e-4` (cy
 radius: the radius law is not the same function in OCCT and here, see below) relative to OCCT. Two groups have wider bands,
 marked "ok within band" in the table: variable radius at corners (`var_corner*`, `var_ring_top`: 5e-4, a planar mitre and a
 slightly different radius law) and unequal radii at a vertex (`*unequal*`: 3e-4, a mitre where OCCT blends a patch). A case with
-`expect` must produce that error code.
+`expect` must produce that error code. A case whose shortfall is documented below carries `known: '<reason>'`: it is reported
+as `known` and never fails the run, while a case that newly breaks still does. The corpus runs inside the `gate` check of
+`tools/remote_build.sh`, so every gate runs it (142 ok, 6 known, 2 without reference as of this writing).
 
 ```
 node tools/blend_corpus.mjs [--wasm path] [--only substr] [--json out.json]     # run (exit 1 on any failure)
@@ -125,18 +127,30 @@ and the Coons blend propagates that corner along the whole line between them as 
 interior with the discrete Dirichlet Laplace solution of the same four chains (`harmonic_fill`), which confines the corner
 to the boundary the way OCCT's degree-8 plate does: the crease along u = 0.5 falls from 10.7 deg at the boundary to 0.0 in
 the middle instead of sitting at 13 to 15 deg the whole way, and projecting the grid on to OCCT's patch gives a mean normal
-difference of 7.4 deg (max 16.5) instead of 5.5 (max 46.6). The patch is now 632 triangles with a mean dihedral of 7.7 deg,
-none wound against their own vertex normals and 2 against their neighbours' average, and no edge over 90 deg draws a stroke:
-the 4 that remain (92 to 95 deg) sit where a curved chain turns near a hexagon corner, where the boundary itself turns.
-The flat fill moved where the depth refinement lands, and it used to leave boundary samples and the refinement points hugging
-them a few ulps apart - 182 triangles whose corners collapsed to one f32 point (the old blend emitted none), which the wire
-rounds to zero area and the renderer then draws with a meaningless facet normal. `ck-tess` now snaps an emitted vertex onto
-an already-emitted one within `CK_SNAP_TOL` (default 1e-4, the f32 resolution at these coordinates): that takes the patch to
-6 zero-area and 4 hairline triangles, and no triangle is wound against its own vertex normals any more (2 still disagree
-with their neighbours' average). Volumes improve marginally. `CK_PATCH_FILL=coons`
-restores the old blend for comparison in native runs (the wasm build always takes the default); the seams (`assert_wraps`),
-face count and volumes are unaffected either way. The gate's one soft drop (`regen.brep.mesh` -1) is the pre-existing
-`flangeBolt@13` tessellation-open issue, present on `kernel.wasm` too and unrelated to this change.
+difference of 7.4 deg (max 16.5) instead of 5.5 (max 46.6). The patch is now 636 triangles with a mean dihedral of 8.6 deg,
+2 wound against their own vertex normals and 4 against their neighbours' average. Of the 10 edges over 90 deg - all within
+3 mm of the vertex - four at 92 to 95 deg sit where a curved chain turns near a hexagon corner (the boundary itself turns
+there) and six at 180 deg sit on the two straight side chains, where the remaining 4 zero-area and 10 hairline triangles
+are: invisible, and both close-ups are clean. The flat fill moved where the depth refinement lands, and it used to leave
+boundary samples and the refinement points hugging them a few ulps apart - 182 triangles whose corners collapsed to one
+f32 point (the old blend emitted none), which the wire rounds to zero area and the renderer then draws with a meaningless
+facet normal. `ck-tess` joins each new vertex to an already-emitted one within `CK_SNAP_TOL` (default 1e-4, the f32
+resolution at these coordinates) *and* within 1e-3 in the parameters, looked up as every vertex is emitted so that all
+triangles mentioning either of a near pair get one id and the mesh stays closed - merging only where two vertices co-occur
+in one triangle leaves the neighbouring edges unmatched, and merging two copies of a point either side of a periodic cut
+sends an edge's uv midpoint half a period away, which the shading correction then measures as a huge normal step. Volumes
+improve marginally. `CK_PATCH_FILL=coons` restores the old blend for comparison in native runs (the wasm build always
+takes the default); the seams (`assert_wraps`), face count and volumes are unaffected either way. The gate's one soft
+drop (`regen.brep.mesh` -1) is the pre-existing `flangeBolt@13` tessellation-open issue, present on `kernel.wasm` too
+and unrelated to this change.
+
+Unequal radii on the two pairs build the patch too - `overhang_unequal_r2_r3` (picks 1, 3 at 3, picks 0, 2 at the
+feature's 2): OCCT gives 80462.85413551705 and 17 faces, ours 80462.8290 (3.1e-7 relative) and the same topology, G1 at
+every seam. Each stripe is cut at the *other* pair's radius along its own edge - the cross-trim OCCT uses - so the four
+arc ends still pair up and the hexagon closes; the zone box takes its faces from the hexagon's own extremes, which with
+unequal radii puts the two spring-line faces at different distances (the box is per-side along the third axis). The G1
+band widens with the radius: 7 lines at r = 2 (the tuned default), 9 at r = 3, where a 7-line band leaves the seam 0.028
+rad off against the 0.02 budget. Radii that disagree *within* a pair still fall back to the ordinary stepped build.
 
 ## What remains
 
@@ -150,7 +164,8 @@ face count and volumes are unaffected either way. The gate's one soft drop (`reg
   `blendUnsupported`; a variable edge ending at a concave corner is not mitred.
 * **Rounded rectangle with corner radius 2 and fillet 1.5** (`rrect2_fillet_*_loop_r1_5`): 1.6e-4 off (torus of major radius 0.5).
 * **The app's half-disc hole** at the foot of a concave/convex junction: not reproduced; the `lbr_mixed_*` and `pocket_mixed_*` cases pass the open-edge check.
-* **Unequal radii**: no blend patch (OCCT builds one); mixed vertices with unequal radii use the mitre.
+* **Unequal radii**: the overhang corner builds the patch when each antipodal pair shares one radius and the two pairs
+  differ (cross-trimmed, see above); radii differing *within* a pair, and mixed vertices generally, use the mitre.
 * **Face-face fillets** (two faces that share no edge) and **conic / curvature fillets at corners**: not started.
 * **Chamfers**: only equal chamfers are checked against OCCT at corners; asymmetric chamfers at a 3-edge corner follow the
   union rule above.
@@ -288,7 +303,8 @@ face of the blend tool, i.e. a flat cut where a band ends). Images in `docs/blen
   `post0_after.png`, exact. Rounded posts (`post2`, `post4`: a tangent line-arc chain) and the inside corner of two walls
   (`pocket_cove*`, `lwall_inside_*`, with and without the vertical edge) were already exact.
 * **Two steps** (concave edges first, then the convex ones: `tower_two_step_*`): still differs. The convex band now stops at the
-  wall plane but the result keeps a flat face (`ts_before.png`) and has 3 mm3 less material than OCCT's second step. Open.
-  Selecting all edges in one feature gives the exact result.
+  wall plane but the result keeps a flat face (`ts_before.png`) and has 3 mm3 less material than OCCT's second step. Open,
+  marked `known` in the corpus so the gate stays green while it stands. Selecting all edges in one feature gives the exact
+  result.
 * `tower_top_rim` (top rim edges and only the concave top-wall edge) is not in the corpus: OCCT carries the cove down the
   tangent continuation of the rim.

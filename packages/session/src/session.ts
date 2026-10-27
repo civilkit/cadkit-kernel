@@ -6,10 +6,10 @@
 import { emptyPart, FEATURE_TYPES, type PartDoc } from '../../part-model/src/index.js';
 import { hintFor, verify, type CheckResultItem, type KernelTransport, type RegenError, type VerifyReport } from '../../driver/src/verify.js';
 import {
-  angles, check, checkProfile, clearance, closestPoint, describe, distance, maxDistance, symmetry, thickness, thicknessAt, heal, importSat, importSkp, importSldprt, importStep, massProps, probe, profiles, resolveDescriptions, section, sections, step, textMetrics, textOutline, loadFont, unloadFont, listFonts, subsetFont, threadData, validate,
+  angles, check, checkProfile, clearance, closestPoint, describe, distance, extrema, maxDistance, symmetry, thickness, thicknessAt, heal, importSat, importSkp, importSldprt, importStep, massProps, probe, profiles, resolveDescriptions, section, sections, step, textMetrics, textOutline, loadFont, unloadFont, listFonts, subsetFont, threadData, validate,
   type CheckReport, type DescribeItem, type HealReport, type ImportReport, type SkpUp, type MassReport, type ProbeReport,
   type AnglesReport, type ClearanceReport, type ClosestPointReport, type DistanceReport, type HausdorffReport, type MaxDistanceReport, type MeasureEntity,
-  type SymmetryReport, type ThicknessAtReport, type ThicknessReport,
+  type ExtremaReport, type SymmetryReport, type ThicknessAtReport, type ThicknessReport,
   type ResolveMatch, type SectionReport, type SectionsReport, type ValidateIssue,
 } from './queries.js';
 export type EditOp =
@@ -938,6 +938,11 @@ export class Session {
   /** Mirror-symmetry planes with the sampled deviation. */
   symmetry(q?: Parameters<typeof symmetry>[1]): Promise<SymmetryReport> {
     return symmetry(this.kernel, q, { tag: this.tag });
+  }
+
+  /** Lowest and highest point of the body (or `of`) along a direction. */
+  extrema(q: Parameters<typeof extrema>[1]): Promise<ExtremaReport> {
+    return extrema(this.kernel, q, { tag: this.tag });
   }
 
   step(name?: string): Promise<string> {

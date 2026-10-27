@@ -3,25 +3,30 @@
 //! flip convex/concave, so no rolling ball runs through the corner and the
 //! ordinary stripes end in planar steps.
 //!
-//! The corner is rebuilt after the ordinary stripes: a zone box of half-size
-//! `r` about the vertex is cut out of the striped body and replaced by a hand
+//! The corner is rebuilt after the ordinary stripes: a zone box about the
+//! vertex (its faces the four stripes' arc planes and the two spring lines) is
+//! cut out of the striped body and replaced by a hand
 //! built solid `K`. `K`'s six planar faces exactly match the sections the cut
 //! leaves on the box faces (so the union closes with no steps: the step caps
 //! lose the sharp material that supported them to the zone, where `K`
 //! replaces it), and its seventh face is one B-spline patch through the
 //! hexagon where the four trimmed stripes end — G1 to each stripe along its
-//! arc, tangent to the two wall planes along the two straight sides. The
-//! patch interpolates a Coons grid of the six boundary chains with the first
-//! interior rows projected into the neighbours' tangent planes (discrete G1);
-//! its spine (the grid's `tau = 0.5` line) lies on the vertex-axis by the
-//! chains' point symmetry.
+//! arc, tangent to the two wall planes along the two straight sides. The two
+//! antipodal pairs may carry different radii: each stripe is cut at the
+//! *other* pair's radius along its own edge, so the four arc ends still pair
+//! up and the hexagon closes (as OCCT's does). The patch fills a grid of the
+//! six boundary chains with the discrete Dirichlet Laplace solution and
+//! projects the first interior rows into the neighbours' tangent planes
+//! (discrete G1); its spine (the grid's `tau = 0.5` line) lies on the
+//! vertex-axis by the chains' point symmetry.
 //!
 //! `detect` fires only when all of this holds, else the selection takes the
 //! ordinary path unchanged: 4-valent vertex, all four incident edges selected,
 //! straight between orthogonal planar faces with known convexity, two
 //! antipodal direction pairs with convexity flipping inside each pair, each
-//! pair sharing a face whose two ball-centre feet coincide, and exactly one
-//! cross-pair arc-end coincidence per strike (the hexagon closes).
+//! pair sharing a face whose two ball-centre feet coincide, one radius per
+//! pair (the two pairs may differ), and exactly one cross-pair arc-end
+//! coincidence per strike (the hexagon closes).
 
 use super::corner::{Seg, ToolBuilder};
 use super::BlendError;
@@ -44,7 +49,12 @@ struct Strike {
 /// A detected overhang corner (see the module doc).
 pub(super) struct Corner {
     pub v: Vec3,
-    pub r: f64,
+    /// The radius of each antipodal pair: the cylinder radius of its two
+    /// stripes. The pairs may differ. A stripe's arc is cut at the *other*
+    /// pair's radius, so with unequal radii each stripe ends where its
+    /// neighbour's trim plane falls and the hexagon still closes (OCCT does
+    /// the same: every arc end stays a cross-pair coincidence).
+    pub r: [f64; 2],
     pub edges: [EdgeId; 4],
     /// The corner patch can be built (perpendicular pairs, the boundary
     /// closes); a structural corner without this is refused instead.
@@ -56,12 +66,25 @@ pub(super) struct Corner {
 }
 
 impl Corner {
+    /// Which of the two pairs strike `i` belongs to.
+    fn pair_of(&self, i: usize) -> usize {
+        usize::from(self.pairs[1].0 == i || self.pairs[1].1 == i)
+    }
+    /// Strike `i`'s own radius: its cylinder.
+    fn radius(&self, i: usize) -> f64 {
+        self.r[self.pair_of(i)]
+    }
+    /// Distance along strike `i`'s edge to its arc: the other pair's radius
+    /// (see [`Corner::r`]).
+    fn trim(&self, i: usize) -> f64 {
+        self.r[1 - self.pair_of(i)]
+    }
     /// Ball centre of strike `i`: `v + (n0 + n1) * (s * r / (1 + n0.n1))`.
     fn centre(&self, i: usize) -> Vec3 {
         let s = &self.s[i];
         let c12 = s.n[0].dot(s.n[1]);
         let sg = if s.convex { -1.0 } else { 1.0 };
-        self.v + (s.n[0] + s.n[1]) * (sg * self.r / (1.0 + c12))
+        self.v + (s.n[0] + s.n[1]) * (sg * self.radius(i) / (1.0 + c12))
     }
     /// The tangent feet of strike `i` on its two faces.
     fn feet(&self, i: usize) -> [Vec3; 2] {
@@ -69,37 +92,43 @@ impl Corner {
         let s = &self.s[i];
         [0, 1].map(|k| c - s.n[k] * ((c - self.v).dot(s.n[k])))
     }
-    /// The arc end points of strike `i`: the feet pushed `r` along the edge
-    /// (both feet lie in the plane through `v` perpendicular to the edge).
+    /// The arc end points of strike `i`: the feet pushed the trim distance
+    /// along the edge (both feet lie in the plane through `v` perpendicular
+    /// to the edge; the arc sits `trim(i)` out along it).
     fn ends(&self, i: usize) -> [Vec3; 2] {
         let f = self.feet(i);
-        [f[0] + self.s[i].dir * self.r, f[1] + self.s[i].dir * self.r]
+        let t = self.trim(i);
+        [f[0] + self.s[i].dir * t, f[1] + self.s[i].dir * t]
     }
     /// Centre of strike `i`'s trimmed-end arc (its axis projected into the
-    /// end plane `{p : (p - v) . dir = r}`).
+    /// end plane `{p : (p - v) . dir = trim(i)}`).
     fn arc_centre(&self, i: usize) -> Vec3 {
         let s = &self.s[i];
         let c = self.centre(i);
-        c + s.dir * (self.r - (c - self.v).dot(s.dir))
+        c + s.dir * (self.trim(i) - (c - self.v).dot(s.dir))
     }
 }
 
-/// The overhang corners whose four edges are all in `sel`, or none. `r` is
-/// the selection's radius; see the module doc for the conditions.
-pub(super) fn detect(b: &Body, sel: &[EdgeId], r: f64) -> Vec<Corner> {
+/// The overhang corners whose four edges are all in `sel`, or none. `radii`
+/// is parallel to `sel`: each pair must agree on one radius, the two pairs may
+/// differ; see the module doc for the rest of the conditions.
+pub(super) fn detect(b: &Body, sel: &[EdgeId], radii: &[f64]) -> Vec<Corner> {
     let mut out = vec![];
-    if !(r > 0.0) || !r.is_finite() {
+    if sel.len() != radii.len() || !radii.iter().all(|&r| r > 0.0 && r.is_finite()) {
         return out;
     }
+    let rmax = radii.iter().cloned().fold(0.0f64, f64::max);
+    let r_of = |e: EdgeId| -> Option<f64> { sel.iter().position(|&x| x == e).map(|k| radii[k]) };
     for v in b.vertex_ids() {
         let inc: Vec<EdgeId> = b.edge_ids().filter(|&e| b.edge(e).v0 == v || b.edge(e).v1 == v).collect();
         if inc.len() != 4 || !inc.iter().all(|e| sel.contains(e)) {
             continue;
         }
         let vp = b.vertex(v).p;
-        let snap = 1e-6 * (1.0 + vp.len() + r);
+        let snap = 1e-6 * (1.0 + vp.len() + rmax);
         // straight, planar, orthogonal face pairs, known convexity
         let mut strikes: Vec<Strike> = vec![];
+        let mut rs: Vec<f64> = vec![];
         for &e in &inc {
             let ed = b.edge(e);
             let ok = (|| {
@@ -112,11 +141,13 @@ pub(super) fn detect(b: &Body, sel: &[EdgeId], r: f64) -> Vec<Corner> {
                 let n = [b.planar_normal(fs[0]), b.planar_normal(fs[1])];
                 (n[0].dot(n[1]).abs() <= 1e-9).then_some(Strike { dir: (b.vertex(other).p - vp).normalize(), convex: !concave, n })
             })();
-            let Some(s) = ok else {
+            let (Some(s), Some(r)) = (ok, r_of(e)) else {
                 strikes.clear();
+                rs.clear();
                 break;
             };
             strikes.push(s);
+            rs.push(r);
         }
         if strikes.len() != 4 {
             continue;
@@ -155,6 +186,13 @@ pub(super) fn detect(b: &Body, sel: &[EdgeId], r: f64) -> Vec<Corner> {
         if pairs.iter().any(|&(i, j)| strikes[i].convex == strikes[j].convex) {
             continue;
         }
+        // one radius per pair (the two stripes of a pair share their faces, so their
+        // feet only coincide when the radii agree); the pairs may differ
+        let r_pair = [rs[pairs[0].0], rs[pairs[1].0]];
+        if pairs.iter().enumerate().any(|(p, &(_, j))| (r_pair[p] - rs[j]).abs() > 1e-12 * (1.0 + r_pair[p].abs())) {
+            continue;
+        }
+        let pair_of = |i: usize| -> usize { usize::from(pairs[1].0 == i || pairs[1].1 == i) };
         // patch geometry (feet + closing coincidences) only for perpendicular pairs;
         // a structural corner with skewed pairs is refused by the caller instead
         let mut patch_ok = false;
@@ -163,7 +201,7 @@ pub(super) fn detect(b: &Body, sel: &[EdgeId], r: f64) -> Vec<Corner> {
                 let s = &strikes[i];
                 let c12 = s.n[0].dot(s.n[1]);
                 let sg = if s.convex { -1.0 } else { 1.0 };
-                vp + (s.n[0] + s.n[1]) * (sg * r / (1.0 + c12))
+                vp + (s.n[0] + s.n[1]) * (sg * rs[i] / (1.0 + c12))
             };
             let foot = |i: usize, k: usize| centre(i) - strikes[i].n[k] * ((centre(i) - vp).dot(strikes[i].n[k]));
             // each pair shares exactly one face; the two centres' feet on it coincide
@@ -183,8 +221,10 @@ pub(super) fn detect(b: &Body, sel: &[EdgeId], r: f64) -> Vec<Corner> {
                 }
             }
             // exactly one cross-pair arc-end coincidence per strike, pairing the
-            // two pairs off (this closes the boundary)
-            let end = |i: usize, k: usize| foot(i, k) + strikes[i].dir * r;
+            // two pairs off (this closes the boundary). The arc sits at the other
+            // pair's radius along the edge, so the ends still meet when the pairs
+            // carry different radii (see `Corner::r`).
+            let end = |i: usize, k: usize| foot(i, k) + strikes[i].dir * r_pair[1 - pair_of(i)];
             let mut hits: Vec<(usize, usize, usize, usize)> = vec![]; // (pi, k, qj, kj)
             for &i in &[pairs[0].0, pairs[0].1] {
                 for k in 0..2 {
@@ -207,7 +247,7 @@ pub(super) fn detect(b: &Body, sel: &[EdgeId], r: f64) -> Vec<Corner> {
         }
         let Ok(s) = <[Strike; 4]>::try_from(strikes) else { continue };
         let Ok(edges) = <[EdgeId; 4]>::try_from(inc) else { continue };
-        out.push(Corner { v: vp, r, edges, patch_ok, a12, s, pairs: [pairs[0], pairs[1]] });
+        out.push(Corner { v: vp, r: r_pair, edges, patch_ok, a12, s, pairs: [pairs[0], pairs[1]] });
     }
     out
 }
@@ -261,10 +301,19 @@ fn section(body: &Body, origin: Vec3, outward: Vec3, r: f64) -> Result<Vec<(Vec3
     Ok(segs)
 }
 
-/// The zone box about `v`: half-size `r` along the orthonormal axes `a`,
-/// six quads wound counter-clockwise about their outward normals.
-fn zone_box(v: Vec3, r: f64, a: [Vec3; 3]) -> Body {
-    let corner = |s: [i32; 3]| -> Vec3 { v + a[0] * (s[0] as f64 * r) + a[1] * (s[1] as f64 * r) + a[2] * (s[2] as f64 * r) };
+/// The zone box about `v`: the face on axis `a[k]` at side `s` sits `ext[k]`
+/// out (a signed pair, so with unequal pair radii the two faces of an axis can
+/// be at different distances), six quads wound counter-clockwise about their
+/// outward normals.
+fn zone_box(v: Vec3, ext: [(f64, f64); 3], a: [Vec3; 3]) -> Body {
+    let corner = |s: [i32; 3]| -> Vec3 {
+        let mut p = v;
+        for k in 0..3 {
+            let e = if s[k] > 0 { ext[k].1 } else { ext[k].0 };
+            p = p + a[k] * e;
+        }
+        p
+    };
     let mut polys: Vec<(Vec<Vec3>, FaceName)> = vec![];
     for k in 0..3usize {
         let (i, j) = match k {
@@ -494,7 +543,10 @@ fn patch_surface(
     // crease the interpolant then rings around.
     let env_u = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<usize>().ok());
     let g1_full = env_u("CK_G1_FULL").unwrap_or(3);
-    let g1_taper = env_u("CK_G1_TAPER").unwrap_or(7).max(g1_full);
+    // the band widens with the arc radius: 7 lines at r = 2 (the tuned default),
+    // 9 at r = 3, where a 7-line band leaves the seam 0.028 rad off
+    let rmax = bc.iter().chain(tc.iter()).map(|s| s.4).fold(0.0f64, f64::max);
+    let g1_taper = env_u("CK_G1_TAPER").unwrap_or((3.0 + 2.0 * rmax).round() as usize).max(g1_full);
     let g1w = |depth: usize| -> f64 {
         if g1_full == 0 {
             return 0.0;
@@ -757,9 +809,9 @@ fn refit_pcurves(b: &mut Body, tol: f64) {
 /// nearly right solid, never a refusal.
 pub(super) fn splice(body: &Body, c: &Corner, feature: &str, tag: usize, tol: f64) -> Result<Body, BlendError> {
     let fail = |d: &str| BlendError::detail("blendUnsupported", &format!("overhang corner: {d}"));
-    let r = c.r;
-    let snap = 1e-4 * (1.0 + r);
-    let close = |a: Vec3, b: Vec3| a.dist(b) <= 1e-6 * (1.0 + a.len() + r);
+    let rmax = c.r[0].max(c.r[1]);
+    let snap = 1e-4 * (1.0 + rmax);
+    let close = |a: Vec3, b: Vec3| a.dist(b) <= 1e-6 * (1.0 + a.len() + rmax);
     let (p0, p1) = (c.pairs[0].0, c.pairs[0].1);
     let (q0, q1) = (c.pairs[1].0, c.pairs[1].1);
     let ends = |i: usize| c.ends(i);
@@ -800,12 +852,40 @@ pub(super) fn splice(body: &Body, c: &Corner, feature: &str, tag: usize, tol: f6
     let a1 = c.s[p0].dir;
     let a2 = c.s[q0].dir;
     let a3 = a1.cross(a2).normalize();
+    let axes = [a1, a2, a3];
+    // The hexagon's vertices sit on the box faces: its arc vertices on the two
+    // end planes (each pair cut at the other's radius along its own edge) and its
+    // line vertices on the two spring-line planes (each at its own pair's radius).
+    // So take the box from them — with unequal pair radii the faces of an axis are
+    // at different distances, and the spring-line sides must land exactly on them.
+    let mut ext = {
+        let d0 = std::array::from_fn::<_, 3, _>(|k| (hex[0] - c.v).dot(axes[k]));
+        [(d0[0], d0[0]), (d0[1], d0[1]), (d0[2], d0[2])]
+    };
+    for &p in &hex[1..] {
+        for k in 0..3 {
+            let d = (p - c.v).dot(axes[k]);
+            ext[k].0 = ext[k].0.min(d);
+            ext[k].1 = ext[k].1.max(d);
+        }
+    }
+    // the outward normal of the box face containing `out` and its origin
+    let face = |out: Vec3| -> Option<(Vec3, Vec3)> {
+        for k in 0..3 {
+            let s = out.dot(axes[k]);
+            if s.abs() > 0.9 {
+                let d = if s > 0.0 { ext[k].1 } else { ext[k].0 };
+                return Some((out, c.v + axes[k] * d));
+            }
+        }
+        None
+    };
     // the plane (through the box) containing a line side
     let line_plane = |mid: Vec3| -> Vec3 {
-        for ax in [a1, a2, a3] {
-            let d = (mid - c.v).dot(ax);
-            if (d.abs() - r).abs() < 1e-6 * (1.0 + r) {
-                return ax * d.signum();
+        for k in 0..3 {
+            let d = (mid - c.v).dot(axes[k]);
+            if (d - ext[k].0).abs() < 1e-6 * (1.0 + rmax) || (d - ext[k].1).abs() < 1e-6 * (1.0 + rmax) {
+                return axes[k] * d.signum();
             }
         }
         a3
@@ -825,23 +905,26 @@ pub(super) fn splice(body: &Body, c: &Corner, feature: &str, tag: usize, tol: f6
     };
     let wn = (wall_n(c.pairs[0]), wall_n(c.pairs[1]));
     // cut the zone out; its six faces are the sections K must match
-    let zbox = zone_box(c.v, r, [a1, a2, a3]);
+    let zbox = zone_box(c.v, ext, axes);
     let cut = crate::boolean::boolean(body, &zbox, Op::Cut, tol).map(|o| o.body).map_err(|_| fail("zone cut"))?;
     // (box face outward, hex side endpoints in cycle order W1.., arc)
     let sides: [(Vec3, [usize; 2], Option<(Vec3, f64)>); 6] = [
-        (c.s[pa].dir, [1, 0], Some((arc_a, r))),
+        (c.s[pa].dir, [1, 0], Some((arc_a, c.radius(pa)))),
         (plane_l1, [2, 1], None),
-        (c.s[pc].dir, [3, 2], Some((arc_c, r))),
-        (c.s[qd].dir, [4, 3], Some((arc_d, r))),
+        (c.s[pc].dir, [3, 2], Some((arc_c, c.radius(pc)))),
+        (c.s[qd].dir, [4, 3], Some((arc_d, c.radius(qd)))),
         (plane_l2, [5, 4], None),
-        (c.s[qb].dir, [0, 5], Some((arc_b, r))),
+        (c.s[qb].dir, [0, 5], Some((arc_b, c.radius(qb)))),
     ];
     let mut tb = ToolBuilder::new();
     let hi: [usize; 6] = std::array::from_fn(|t| tb.vertex_shared(hex[t], snap));
     // the six section faces of K, oriented about their box outward normals
     let mut sect: Vec<Vec<Seg>> = vec![];
     for (k, &(out, _, _)) in sides.iter().enumerate() {
-        let raw = section(&cut, c.v + out * r, out, r)?;
+        let raw = {
+            let (_, org) = face(out).ok_or_else(|| fail("box face"))?;
+            section(&cut, org, out, rmax)?
+        };
         let segs: Vec<Seg> = raw
             .into_iter()
             .map(|(a, b, arc)| Seg { a: tb.vertex_shared(a, snap), b: tb.vertex_shared(b, snap), arc })
@@ -917,8 +1000,13 @@ pub(super) fn splice(body: &Body, c: &Corner, feature: &str, tag: usize, tol: f6
         } else if let Surface::Plane { frame } = &cut.face(other).surface {
             let on = |p: Vec3| ((p - frame.o).dot(frame.z)).abs() <= 1e-6;
             let wall = ((c.v - frame.o).dot(frame.z)).abs() <= 1e-6 && line_sides.iter().any(|&(a, b)| on(a) && on(b));
-            let section = [a1, a2, a3].iter().any(|&ax| frame.z.cross(ax).len() <= 1e-9 && (((c.v - frame.o).dot(ax)).abs() - r).abs() <= 1e-6 * (1.0 + r))
-                && arc_sides.iter().any(|&idx| on(hex[idx[0]]) && on(hex[idx[1]]));
+            let section = axes.iter().enumerate().any(|(k, &ax)| {
+                frame.z.cross(ax).len() <= 1e-9 && {
+                    // the plane sits at axes[k] * ext[k].side, so (v - o) . ax = -ext
+                    let d = (c.v - frame.o).dot(ax);
+                    (d + ext[k].0).abs() <= 1e-6 * (1.0 + rmax) || (d + ext[k].1).abs() <= 1e-6 * (1.0 + rmax)
+                }
+            }) && arc_sides.iter().any(|&idx| on(hex[idx[0]]) && on(hex[idx[1]]));
             wall || section
         } else {
             false

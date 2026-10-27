@@ -45,6 +45,25 @@ fn part_with(which: &[usize]) -> String {
     format!("{}{}{}", &FIXTURE[..i], picks.join(", "), &FIXTURE[j..])
 }
 
+/// the fixture with picks `which`, each carrying its own `radius` (`None` keeps the
+/// feature's default of 2): the unequal path (`fillet_unequal`) reads `edges[i].radius`
+fn part_with_radii(which: &[usize], radii: &[Option<f64>]) -> String {
+    let i = FIXTURE.find("\"edges\": [").expect("edges") + "\"edges\": [".len();
+    let j = i + FIXTURE[i..].find("], \"id\": \"F7\"").expect("fillet id");
+    let picks: Vec<String> = which
+        .iter()
+        .zip(radii)
+        .map(|(&k, r)| match r {
+            None => PICKS[k].to_string(),
+            Some(r) => {
+                let s = PICKS[k];
+                format!("{}{}, \"radius\": {r}}}", &s[..s.len() - 1], "")
+            }
+        })
+        .collect();
+    format!("{}{}{}", &FIXTURE[..i], picks.join(", "), &FIXTURE[j..])
+}
+
 enum Out {
     Ok { vol: f64, body: ck_topo::body::Body },
     Err { code: String, params: Vec<(String, String)> },
@@ -124,6 +143,28 @@ fn all_four_edges_wrap_into_one_corner_patch() {
     let want = v0 + k * ((len[0] + len[3]) - (len[1] + len[2]));
     assert!((v - want).abs() < 2e-4 * v0, "volume {v} vs analytic {want}");
     // OCCT topology: 12 planes + 4 blend cylinders + 1 corner patch, nothing else
+    assert_wraps(&b, 1);
+}
+
+/// Unequal radii on the two pairs (picks 0, 2 = 2; picks 1, 3 = 3): each stripe is cut at
+/// the other pair's radius along its own edge, so the hexagon still closes and the patch
+/// wraps. OCCT builds the same 17 faces with volume 80462.854136; the edge-only estimate
+/// weights each edge by its own radius squared.
+#[test]
+fn unequal_radii_on_the_two_pairs_still_wrap() {
+    let src = part_with_radii(&[0, 1, 2, 3], &[None, Some(3.0), None, Some(3.0)]);
+    let (v, b) = match run(&src, false) {
+        Out::Ok { vol, body } => (vol, body),
+        Out::Err { code, params } => panic!("unexpected error {code} {params:?}"),
+    };
+    let v0 = vol(run(&src, true));
+    let k = 1.0 - std::f64::consts::FRAC_PI_4;
+    let len = [25.0 - 8.961, 9.193 + 25.0, 43.471 - 25.0, 25.0 - 9.193];
+    // picks 0, 3 concave (r 2, 3); picks 1, 2 convex (r 3, 2)
+    let want = v0 + k * (4.0 * (len[0] - len[2]) + 9.0 * (len[3] - len[1]));
+    assert!((v - want).abs() < 2e-4 * v0, "volume {v} vs analytic {want}");
+    // the OCCT reference solid for these radii
+    assert!((v - 80462.854136).abs() < 2e-4 * v, "volume {v} vs OCCT 80462.854136");
     assert_wraps(&b, 1);
 }
 

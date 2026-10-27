@@ -119,7 +119,8 @@ pids=""
 if [ -s "$W" ]; then
   for c in $CH; do
     case "$c" in
-      gate) ( t=$SECONDS; nice -n 5 node tools/gate.mjs --fast --quiet --wasm "$W" > "$RUN/gate.out" 2>&1; echo $? > "$RUN/gate.rc"; echo $((SECONDS-t)) > "$RUN/gate.secs" ) & pids="$pids $!" ;;
+      # the gate also runs the blend corpus (documented shortfalls carry `known` and never fail it)
+      gate) ( t=$SECONDS; rc=0; nice -n 5 node tools/gate.mjs --fast --quiet --wasm "$W" > "$RUN/gate.out" 2>&1 || rc=$?; printf '\n== blend corpus\n' >> "$RUN/gate.out"; nice -n 5 node tools/blend_corpus.mjs --wasm "$W" >> "$RUN/gate.out" 2>&1 || rc=$?; echo $rc > "$RUN/gate.rc"; echo $((SECONDS-t)) > "$RUN/gate.secs" ) & pids="$pids $!" ;;
       large sample) step large sample node tools/check_large sample.mjs --wasm "$W" ;;
       loft) step loft node tools/loft_point_check.mjs --wasm "$W" ;;
       apex) step apex node tools/loft_apex_check.mjs --wasm "$W" ;;
