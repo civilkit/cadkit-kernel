@@ -67,20 +67,31 @@ pub fn check_feature(f: &crate::Feature) -> Result<(), FeatureError> {
 }
 
 fn rank(id: &str) -> (u64, &str) {
-    let digits: String = id.chars().skip_while(|c| !c.is_ascii_digit()).take_while(|c| c.is_ascii_digit()).collect();
-    (digits.parse().unwrap_or(u64::MAX), id)
+    // the first digit run, read straight out of the bytes: `origin` asks for this once per face of
+    // a body on every feature (`named` + `restore`), so it must not collect or validate a String
+    let b = id.as_bytes();
+    let Some(s) = b.iter().position(u8::is_ascii_digit) else { return (u64::MAX, id) };
+    let mut n: u64 = 0;
+    for &c in &b[s..] {
+        if !c.is_ascii_digit() {
+            break;
+        }
+        // saturating: a run too long for u64 is the same u64::MAX the old `parse().unwrap_or` gave
+        n = n.saturating_mul(10).saturating_add(u64::from(c - b'0'));
+    }
+    (n, id)
 }
 
 /// Feature that owns a face for the origin rule: the feature that made the outermost instance, else the face's own.
-fn face_owner(name: &ck_topo::body::FaceName) -> String {
+fn face_owner(name: &ck_topo::body::FaceName) -> &str {
     match name.suffix.rsplit('@').next().filter(|s| !s.is_empty()) {
-        Some(last) => last.split('.').next().unwrap_or(last).to_string(),
-        None => name.feature.clone(),
+        Some(last) => last.split('.').next().unwrap_or(last),
+        None => name.feature.as_str(),
     }
 }
 
 /// Origin feature of a lump (see the module doc).
-pub fn origin(b: &Body, l: LumpId) -> Option<String> {
+pub fn origin(b: &Body, l: LumpId) -> Option<&str> {
     ck_topo::mass::lump_faces(b, l).into_iter().map(|f| face_owner(&b.face(f).name)).min_by(|x, y| rank(x).cmp(&rank(y)))
 }
 
@@ -91,14 +102,22 @@ pub fn any_named(b: &Body) -> bool {
 
 /// `(origin, name)` of every named lump.
 pub fn named(b: &Body) -> Vec<(String, String)> {
-    b.lump_ids().filter_map(|l| Some((origin(b, l)?, b.lump(l).name.clone()?))).collect()
+    // the name is asked for first: `origin` walks the lump's faces, and a body is mostly lumps
+    // nobody named
+    if !any_named(b) {
+        return vec![];
+    }
+    b.lump_ids().filter_map(|l| {
+        let name = b.lump(l).name.clone()?;
+        Some((origin(b, l)?.to_string(), name))
+    }).collect()
 }
 
 /// Name every live lump of `b` whose origin is `feature` and that has no name yet.
 pub fn stamp_origin(b: &mut Body, feature: &str, name: &str) {
     let ls: Vec<LumpId> = b.lump_ids().collect();
     for l in ls {
-        if b.lump(l).name.is_none() && origin(b, l).as_deref() == Some(feature) {
+        if b.lump(l).name.is_none() && origin(b, l) == Some(feature) {
             b.lumps[l.idx()].name = Some(name.to_string());
         }
     }
@@ -110,15 +129,24 @@ pub fn restore(b: &mut Body, prior: &[(String, String)]) {
     if prior.is_empty() {
         return;
     }
+    // origin -> name, and the names a lump already carries: both maps are rebuilt per feature, so a
+    // lump scan and a linear walk of `prior` per unnamed lump are what they replace
+    let mut want: std::collections::HashMap<&str, &str> = std::collections::HashMap::with_capacity(prior.len());
+    for (o, n) in prior {
+        want.entry(o.as_str()).or_insert(n.as_str());
+    }
+    // owned: the names a lump already carries are borrowed from `b`, which the loop then writes to
+    let mut taken: std::collections::HashSet<String> = b.lump_ids().filter_map(|l| b.lump(l).name.clone()).collect();
     let ls: Vec<LumpId> = b.lump_ids().collect();
     for l in ls {
         if b.lump(l).name.is_some() {
             continue;
         }
         let Some(o) = origin(b, l) else { continue };
-        let Some((_, n)) = prior.iter().find(|(k, _)| *k == o) else { continue };
-        if !b.lump_ids().any(|m| b.lump(m).name.as_deref() == Some(n.as_str())) {
-            b.lumps[l.idx()].name = Some(n.clone());
+        let Some(&n) = want.get(o) else { continue };
+        if !taken.contains(n) {
+            taken.insert(n.to_string());
+            b.lumps[l.idx()].name = Some(n.to_string());
         }
     }
 }
@@ -133,7 +161,7 @@ pub fn check_free(b: Option<&Body>, name: &str, feature: &str, except: &[LumpId]
         }
         let mut fs = vec![];
         if let Some(o) = origin(b, l) {
-            fs.push(Json::Str(o));
+            fs.push(Json::Str(o.to_string()));
         }
         fs.push(Json::Str(feature.to_string()));
         return Err(FeatureError::new(BODY_NAME_CONFLICT).with("name", Json::Str(name.into())).with("features", Json::Arr(fs)));

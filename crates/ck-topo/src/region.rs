@@ -313,6 +313,8 @@ fn inside_shell(b: &Body, faces: &[FaceId], q: Vec3) -> bool {
 pub fn components(b: &Body) -> Vec<Vec<FaceId>> {
     let mut seen = vec![false; b.faces.len()];
     let mut out = vec![];
+    let mut neigh: Vec<FaceId> = vec![];
+    let mut scratch: Vec<crate::body::CoedgeId> = vec![];
     for f in b.face_ids() {
         if seen[f.idx()] {
             continue;
@@ -322,7 +324,8 @@ pub fn components(b: &Body) -> Vec<Vec<FaceId>> {
         let mut stack = vec![f];
         while let Some(g) = stack.pop() {
             comp.push(g);
-            for h in b.face_neighbors(g) {
+            b.face_neighbors_in(g, &mut neigh, &mut scratch);
+            for &h in &neigh {
                 if !seen[h.idx()] {
                     seen[h.idx()] = true;
                     stack.push(h);

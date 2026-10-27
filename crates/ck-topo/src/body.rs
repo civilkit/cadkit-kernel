@@ -503,6 +503,24 @@ impl Body {
         }
         out
     }
+    /// Faces sharing an edge with `f`, into buffers the caller reuses. `face_neighbors` builds
+    /// four Vecs per call; [`crate::region::components`] asks every face of a body in turn.
+    pub fn face_neighbors_in(&self, f: FaceId, out: &mut Vec<FaceId>, scratch: &mut Vec<CoedgeId>) {
+        out.clear();
+        for &l in &self.faces[f.idx()].loops {
+            for &c in &self.loops[l.idx()].coedges {
+                let e = self.coedges[c.idx()].edge;
+                scratch.clear();
+                scratch.extend(self.edges[e.idx()].coedges.iter().copied().filter(|&x| self.coedges[x.idx()].alive));
+                for ce in scratch.drain(..) {
+                    let g = self.coedge_face(ce);
+                    if g != f && !out.contains(&g) {
+                        out.push(g);
+                    }
+                }
+            }
+        }
+    }
     pub fn face_lump(&self, f: FaceId) -> LumpId {
         self.shells[self.faces[f.idx()].shell.idx()].lump
     }
