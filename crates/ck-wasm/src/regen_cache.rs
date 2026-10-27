@@ -382,6 +382,11 @@ impl Recorder {
 
 impl Checkpoint for Recorder {
     fn after(&mut self, i: usize, ran: bool, state: &RegenState, exec: &mut dyn FeatureExec) {
+        // a time limit ran out: the failure depends on the machine and the moment, not on the document, so neither this
+        // state nor any after it is stored (a later run of the same document must get its own chance)
+        if state.result.errors.iter().any(|e| e.error.code.ends_with("BudgetExceeded")) {
+            return;
+        }
         let key = self.keys[i + 1];
         // positions are absolute, so a later run of the same document stores at the same places
         if (i + 1) % self.stride != 0 && i + 2 < self.keys.len() {

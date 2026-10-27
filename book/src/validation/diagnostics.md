@@ -145,7 +145,7 @@ The `verify` function of the agent driver package (`packages/driver`) wraps `reg
 
 ### Surfaces and curves
 
-`knitNotClosed`, `knitNearMiss`; `fillNotClosed`, `fillInvalid`, `fillFailed`; `trimNoIntersection`, `trimNothingLeft`; `extendNotBoundary`, `extendNoTarget`, `extendPointBehind`, `extendUnsupported`, `extendFolds`; `thickenReach`, `thickenTooThick`, `thickenFailed`; `rebuildPeriodicFace`, `rebuildTooFine`, `rebuildFailed`; `projectCurveNoInput`, `projectCurveNoFaces`, `projectCurveMisses`, `projectCurveSeveral`, `projectCurvePlane`, `projectCurveFailed`; `editCurveNoInput`, `editCurveDegree`. Their meanings are in [operations](../kernel/operations.md) and [geometry](../kernel/geometry.md).
+`knitNotClosed`, `knitNearMiss`; `fillNotClosed`, `fillInvalid`, `fillFailed`; `trimNoIntersection`, `trimNothingLeft`, `trimPieceLoop`; `extendNotBoundary`, `extendNoTarget`, `extendPointBehind`, `extendUnsupported`, `extendFolds`; `thickenReach`, `thickenTooThick`, `thickenFailed`; `rebuildPeriodicFace`, `rebuildTooFine`, `rebuildFailed`; `projectCurveNoInput`, `projectCurveNoFaces`, `projectCurveMisses`, `projectCurveSeveral`, `projectCurvePlane`, `projectCurveFailed`; `editCurveNoInput`, `editCurveDegree`. Their meanings are in [operations](../kernel/operations.md) and [geometry](../kernel/geometry.md).
 
 ### Assemblies and bodies
 
@@ -157,9 +157,9 @@ Budgets only fire when the host supplies a real clock through `ck_now`. A host w
 
 | code | meaning |
 |---|---|
-| `featureBudgetExceeded` | The feature used more than `opts.featureTimeMs` (default 120000 ms). Its result is not applied. Known limitation: like any failed feature, this error is stored in the regeneration cache and replayed by later regens of the same document on the same kernel instance, even with a larger budget; pass `opts.noCache: true` to run it again. Parameters: `budgetMs`, `elapsedMs`, `hint`, and `cause` (the code the feature would have reported). |
+| `featureBudgetExceeded` | The feature used more than `opts.featureTimeMs` (default 120000 ms). Its result is not applied. It is not stored in the regeneration cache, so a later regen of the same document runs again. Parameters: `budgetMs`, `elapsedMs`, `hint`, and `cause` (the code the feature would have reported). |
 | `regenBudgetExceeded` | The document used more than `opts.regenTimeMs`. This feature and every later one did not run. It also appears, with the feature-budget hint, on every feature (sketches included) when the host clock advances by more than `featureTimeMs` between reads; see [errors](../protocol/errors.md). The same cache limitation applies. |
-| `healed` (in `errors`) | `opts.autoHeal` repaired the body after the feature: `fixed`, `codes`, `remaining`. Although it is informational it is stored in `errors`, and since an id has one entry it can replace a real error of the same feature. |
+| `healed` (in `errors`) | `opts.autoHeal` repaired the body after the feature: `fixed`, `codes`, `remaining`. Although it is informational it is stored in `errors`; it is not added when the feature already has an entry of its own. |
 | `partVersionNewer` | Not a feature error: a top-level key of the reply that says the document was written by a newer kernel (`file`, `kernel`). |
 
 ## What to do, in order

@@ -63,7 +63,7 @@ Reply:
 
 ### Healing during regeneration
 
-`opts.autoHeal: true` (with `opts.healTol`, default `1e-5`) tries a repair pass after every feature that leaves validator issues. The healed body is kept only if it has fewer issues than before, and the feature gets a `healed` entry with the number of fixes, the codes and the number left. The entry is written to `errors` (not `warnings`) and replaces any real error of the same feature.
+`opts.autoHeal: true` (with `opts.healTol`, default `1e-5`) tries a repair pass after every feature that leaves validator issues. The healed body is kept only if it has fewer issues than before, and the feature gets a `healed` entry with the number of fixes, the codes and the number left. The entry is written to `errors` (not `warnings`); a feature that already has an entry keeps it.
 
 ### The Rust API
 

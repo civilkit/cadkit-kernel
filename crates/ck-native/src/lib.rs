@@ -632,7 +632,11 @@ pub fn serve(listener: TcpListener, cfg: Config) {
         let Ok(c) = c else { continue };
         if sh.conns.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
             sh.conns.fetch_sub(1, Ordering::SeqCst);
-            continue; // dropped
+            // busy: say so instead of leaving the client to time out
+            let mut c = c;
+            let _ = c.set_write_timeout(Some(Duration::from_millis(200)));
+            let _ = c.write_all(b"HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nRetry-After: 1\r\nContent-Length: 0\r\n\r\n");
+            continue;
         }
         let sh2 = sh.clone();
         let spawned = std::thread::Builder::new().stack_size(1 << 20).spawn(move || {

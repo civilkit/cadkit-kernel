@@ -72,24 +72,25 @@ The TypeScript packages (`packages/part-model`, `builder`, `kernel-client`, `dri
 
 ## What runs from a bare checkout
 
-Two scripts compare the kernel live against a second kernel build, called here the comparison build: `tools/gate.mjs` and `tools/edit_robustness_check.mjs`. The comparison build is a separate `kernel.wasm` that must be placed next to the checkout (the scripts look for `../../kernel.wasm` relative to `tools/`; `edit_robustness_check.mjs` also takes `--orig path`). It is not distributed with the repository. Everything else runs from a bare checkout plus a built module:
+Some checks compare the kernel live against a second kernel build, called here the comparison build: parts of `tools/gate.mjs`, and `tools/edit_robustness_check.mjs`. The comparison build is a separate `kernel.wasm` that must be placed next to the checkout (the scripts look for `../../kernel.wasm` relative to `tools/`; `edit_robustness_check.mjs` also takes `--orig path`). It is not distributed with the repository. The gate runs without it in standalone mode (below); everything else here runs from a bare checkout plus a built module:
 
 | Needs only the repository and a built module | Needs the comparison build |
 |---|---|
-| `cargo test` for every crate | `tools/gate.mjs`, as a whole (it opens the comparison build before running any metric) |
+| `cargo test` for every crate | `tools/gate.mjs` without `--standalone` (it opens the comparison build before running any metric) |
 | `text_corpus`, `boolean_corpus`, `blend_corpus` | The gate metrics `wire`, `regen.*`, `mass.*`, `vol.*` and `step` (replies, volumes and STEP text compared with the comparison build's) |
 | `lint_protocol`, `section_check`, `thread_check` | The gate metric `edit.robust` and `tools/edit_robustness_check.mjs` |
 | `skp_check`, `sldprt_check`, `regen_cache_check` | |
+| `tools/gate.mjs --standalone`: the metrics that judge the module alone (`valid.*`, `build.*`, `oracle.*`, `import.*`, `heal.repair`, `naming.stable`, `iface.*`, `bench.*`) | |
 | The sweeps and `crash_fuzz`, run with `--wasm <module> --check <baseline>` against their committed baselines | |
 
 Scripts that load a module take `--wasm`; several default to a path outside the checkout, so pass it explicitly (for example `--wasm target/wasm32-unknown-unknown/release/ck_wasm.wasm`).
 
 ## The regression gate
 
-`tools/gate.mjs` runs the built module and the comparison build side by side over a fixed set of cases, computes a scoreboard of counts (items that pass out of items tried), compares it with the committed `tools/scoreboard.json`, prints each metric with its change, and exits with status 1 if a hard metric went down. Because it needs the comparison build, it cannot be run from a bare checkout, and the numbers below reproduce only with it.
+`tools/gate.mjs` runs the built module and the comparison build side by side over a fixed set of cases, computes a scoreboard of counts (items that pass out of items tried), compares it with the committed `tools/scoreboard.json`, prints each metric with its change, and exits with status 1 if a hard metric went down. With a comparison build next to the checkout it runs every metric; the numbers below are from that run. Without one (or with `--standalone`) it prints `standalone: no comparison build` and runs only the metrics that judge the module alone, which it compares with its own baseline, `tools/scoreboard.standalone.json` (`--update` writes that file in this mode). In standalone mode `valid.*` counts the parts that build and `build.*` counts how many do; the metrics that compare with the comparison build (`wire`, `regen.*`, `mass.*`, `vol.*`, `step`) and `edit.robust` are not run, so a standalone pass does not replace the full gate for a change to geometry or output formats.
 
 ```sh
-node tools/gate.mjs [--quiet] [--wasm path/to/ck_wasm.wasm]   # needs the comparison build
+node tools/gate.mjs [--quiet] [--standalone] [--wasm path/to/ck_wasm.wasm]   # all metrics need the comparison build, except with --standalone
 node tools/gate.mjs --update      # rewrite the baseline, in the commit that improves a metric
 ```
 
@@ -108,7 +109,7 @@ Some metrics compare the two builds' replies (`wire`, `regen.*`, `mass.*`, `vol.
 | `naming.stable` | soft | 214 / 216 | References to earlier faces still resolve to the same geometry after an upstream dimension edit |
 | `iface.*` | soft | 58 / 58 each | Agent-query self-consistency (`describe`, `resolve`, `check`, `refDiff`) on every fourth part |
 
-These too are computed inside `gate.mjs`, so they also need the comparison build to run through the gate; their scripts (`tools/bench/run.mjs`, `tools/naming_stability.mjs`, `tools/agent_iface.mjs`) can be run alone. Hard metrics fail the gate when they fall. Soft metrics print `WARN(soft)`. A metric not in the baseline prints `(new)`.
+These too are computed inside `gate.mjs` and run in standalone mode; their scripts (`tools/bench/run.mjs`, `tools/naming_stability.mjs`, `tools/agent_iface.mjs`) can be run alone. Hard metrics fail the gate when they fall. Soft metrics print `WARN(soft)`. A metric not in the baseline prints `(new)`.
 
 ## Results of the checks run for this book
 

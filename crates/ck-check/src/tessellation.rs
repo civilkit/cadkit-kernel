@@ -322,7 +322,9 @@ fn check_mesh_inner(b: &Body, positions: &[f32], tri_face: &[i32], failed: &[usi
         ) {
             continue;
         }
-        let exact = ck_topo::mass::face_integral::<1>(b, f, 1, &|_, n| [n.len()])[0].abs();
+        // the area element of a cylinder or cone is a polynomial in v: the tabulated path costs a tenth on a face with a long
+        // or tangled boundary (an invalid body), and is the same number on the rest
+        let exact = ck_topo::mass::face_integral_vpoly::<1>(b, f, 1, &|_, n| [n.len()])[0].abs();
         if exact.is_finite() && exact > 0.0 && (mesh_area[i] < 0.9 * exact || mesh_area[i] > 1.1 * exact) && (mesh_area[i] - exact).abs() > floor {
             out.push(Issue {
                 code: "TESSELLATION_OPEN",

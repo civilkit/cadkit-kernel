@@ -363,3 +363,38 @@ fn other_keys_still_rerun() {
     .join()
     .unwrap();
 }
+
+thread_local! { static TICKS: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) }; }
+fn counter_clock() -> f64 {
+    TICKS.with(|t| {
+        t.set(t.get() + 1.0);
+        t.get()
+    })
+}
+
+/// A regen that ran out of time is not stored: the same document without a limit runs to its own result.
+#[test]
+fn a_time_limit_failure_is_not_replayed() {
+    std::thread::spawn(|| {
+        ck_server::clock::set_now(counter_clock);
+        let p = part(40.0, 10.0, 10.0, 2.0, "");
+        let limited = ck_json::to_string(&parse(&regen(&p, r#"{"regenTimeMs":1}"#, "main")));
+        assert!(limited.contains("BudgetExceeded"), "the limit must trigger for this test to mean anything: {limited}");
+        let free = ck_json::to_string(&parse(&regen(&p, "{}", "main")));
+        assert!(!free.contains("BudgetExceeded"), "{free}");
+    })
+    .join()
+    .unwrap();
+}
+
+/// `cacheCap: 0` turns the cache off for the request; the body is still returned.
+#[test]
+fn cache_cap_zero_still_returns_the_body() {
+    std::thread::spawn(|| {
+        let r = parse(&regen(&part(40.0, 10.0, 10.0, 2.0, ""), r#"{"cacheCap":0}"#, "main"));
+        let res = r.get("result").unwrap();
+        assert!(matches!(res.get("body"), Some(Json::Obj(_))), "{}", ck_json::to_string(res).chars().take(300).collect::<String>());
+    })
+    .join()
+    .unwrap();
+}

@@ -92,7 +92,9 @@ fn trim_planar(targets: &[Body], tool: &Body, flip: bool, mutual: bool, tol: f64
                     Some(piece) => {
                         any_cut = true;
                         any_piece = true;
-                        build_piece(&mut out, shell, tgt, f, &piece);
+                        if !build_piece(&mut out, shell, tgt, f, &piece) {
+                            return Err(TrimError::code("trimPieceLoop"));
+                        }
                     }
                     None if crossed(tgt, &items, n, c) => {
                         // the plane divides the plane of the face but nothing
@@ -278,7 +280,7 @@ fn cut_piece(tgt: &Body, items: &[Item], n: Vec3, c: f64, flip: bool, _tol: f64)
 /// Build the kept piece face: edges in the reverse-walk order (rotated to
 /// the first surviving original), then the cut edges; loop chained by
 /// vertices with the cut edges traversed reversed (probe-pinned).
-fn build_piece(out: &mut Body, shell: ShellId, tgt: &Body, f: FaceId, piece: &Piece) {
+fn build_piece(out: &mut Body, shell: ShellId, tgt: &Body, f: FaceId, piece: &Piece) -> bool {
     let name = tgt.face(f).name.clone();
     let surface = tgt.face(f).surface.clone();
     let nf = out.add_face(shell, surface, tgt.face(f).sense, name);
@@ -320,9 +322,9 @@ fn build_piece(out: &mut Body, shell: ShellId, tgt: &Body, f: FaceId, piece: &Pi
     while chain.len() < created.len() {
         let last = *chain.last().unwrap();
         let tail = if last.1 { out.edge(last.0).v0 } else { out.edge(last.0).v1 };
-        let nxt = (0..created.len())
-            .find(|&i| !placed[i] && (out.edge(created[i].0).v0 == tail || out.edge(created[i].0).v1 == tail))
-            .expect("piece loop chains");
+        let Some(nxt) = (0..created.len()).find(|&i| !placed[i] && (out.edge(created[i].0).v0 == tail || out.edge(created[i].0).v1 == tail)) else {
+            return false;
+        };
         let (ne, _) = created[nxt];
         let rev = out.edge(ne).v0 != tail;
         chain.push((ne, rev));
@@ -331,6 +333,7 @@ fn build_piece(out: &mut Body, shell: ShellId, tgt: &Body, f: FaceId, piece: &Pi
     for (ne, rev) in chain {
         out.add_coedge(nloop, ne, rev, None);
     }
+    true
 }
 
 /// Copy a face (with its edges) verbatim into `out`.

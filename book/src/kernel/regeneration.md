@@ -23,7 +23,7 @@ The result has these top-level keys, in this order: `errors`, `components`, `pla
 | `suppressed: true` on a feature | The feature is skipped as if it were not there. It still takes part in the cache key. |
 | `opts.featureTimeMs`, `opts.regenTimeMs` | Work budgets; `0` means unlimited. A feature that runs out is `featureBudgetExceeded`; the whole document running out gives `regenBudgetExceeded` for the feature in progress and every later one.  (A host clock that advances by more than `featureTimeMs` between reads makes every feature, sketches included, fail with `regenBudgetExceeded` and the feature-budget hint; see [errors](../protocol/errors.md).) |
 | `opts.sketchStatus`, `opts.solveSketches` | Add a solver status to each sketch, or re-solve every sketch from its coordinates. |
-| `opts.autoHeal`, `opts.healTol` | After each feature that leaves validator issues, try a repair pass and keep the repaired body only if it has fewer issues; the feature gets a `healed` entry. That entry is written to `errors`, not `warnings`, and as there is one entry per feature id it replaces any real error of the same feature. Default tolerance `1e-5`. |
+| `opts.autoHeal`, `opts.healTol` | After each feature that leaves validator issues, try a repair pass and keep the repaired body only if it has fewer issues; the feature gets a `healed` entry. That entry is written to `errors`, not `warnings`; when the feature already has an entry, that entry is kept and no `healed` entry is added (the repair still applies). Default tolerance `1e-5`. |
 
 Measured with a box, a fillet that fails (F3) and a chamfer that picks the fillet's face (F4):
 
@@ -88,16 +88,16 @@ Storing a state after every feature of a long run would copy the result and the 
 
 The cache is bounded by an LRU over the *estimated* bytes of the unique pieces it holds (`Body::est_bytes` plus estimates for results and tools); a piece shared by several entries counts once. The default cap is 256 MiB of estimate; with the display caches the linear memory can reach roughly 300 MB in the worst case. Evicting an entry only drops that prefix, since every entry is self-contained.
 
-### Known limitation: budget failures are cached
+### Time-limit failures are not cached
 
-A failure caused by a time budget (`featureBudgetExceeded`, `regenBudgetExceeded`) is stored in the cache like any other failed feature. A later regeneration of the same document on the same kernel instance replays the stored error instead of running the feature again, even if the budget is raised or the machine is less busy. Pass `opts.noCache: true` (or use a fresh instance) to force a real run. The options `featureTimeMs` and `regenTimeMs` are not part of the cache key.
+A failure caused by a time budget (`featureBudgetExceeded`, `regenBudgetExceeded`) depends on the machine and the moment, not on the document, so it is not stored: once a budget error is in the result, the run stores no further states. A later regeneration of the same document runs again, with whatever budget it carries. (Builds before this change replayed the stored error; `opts.noCache: true` did not remove it.) The options `featureTimeMs` and `regenTimeMs` are not part of the cache key.
 
 ### Options
 
 | option (in `opts`) | effect |
 |---|---|
 | `noCache: true` | Bypass lookup and storage. The cache is untouched. |
-| `cacheCap: <bytes>` | Set the cap of this kernel instance (persists). `0` disables storing. The display caches scale with it. |
+| `cacheCap: <bytes>` | Set the cap of this kernel instance (persists). `0` turns the cache off for that request (nothing is stored or replayed). The display caches scale with it. |
 | `cacheStats: true` | Append a `cacheStats` object to the result: `enabled`, `reusedFeatures`, `ranFeatures`, `fullHit`, `entries`, `bytes`, `cap`, `lookups`, `hits`, `stored`, `evicted`, `viewHit`, and the face-mesh counters `tessFaceLookups`, `tessFaceHits`, `tessEntries`, `tessBytes`, `viewEntries`, `viewBytes`. |
 | `noView: true` | Skip the display snapshot: `body` and `surfaces` stay empty. For a client that already holds the view of this document and only needs the kernel's state and the errors. |
 

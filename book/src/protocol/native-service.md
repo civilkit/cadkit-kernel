@@ -31,7 +31,7 @@ On start it prints three lines to standard error: the version and address, the t
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--port N` | `7461` | TCP port on `127.0.0.1`. `0` lets the system pick one; the chosen port is printed. |
+| `--port N` | `7461` | TCP port on `127.0.0.1`, 0 to 65535. `0` lets the system pick one; the chosen port is printed. A larger number is refused. |
 | `--config-dir DIR` | see below | Directory for the token, paired clients and pairing code. |
 | `--allow-origin URL` | none | Add an allowed browser origin. Repeatable. |
 | `--site-origin URL` | none | Synonym for `--allow-origin`. |
@@ -119,7 +119,7 @@ Pairing lets a web page obtain its own token without the user copying the shared
 2. The page sends `POST /pair` with `{"code":"..","origin":"..","label":".."}`. The `origin` must be an allowed origin, and if the request has an `Origin` header it must equal the body's `origin`. The label is truncated to 64 characters.
 3. On success the service returns a new token (64 hex digits), a client `id` (8 hex digits), and the origin and label, and records the client in `clients.json` (hash only, mode 600).
 
-Failures: `401` with `no pairing code`, `wrong pairing code` or `pairing code expired`; `403` for an origin that is not allowed or does not match the page; `400` for a malformed body; `413` for a body over 4096 bytes; `501` if the service has no config dir. A wrong guess does not consume the real code. Concurrent attempts on one code: exactly one succeeds (tested with eight at once).
+Failures: `401` with `no pairing code`, `wrong pairing code` or `pairing code expired`; `403` for an origin that is not allowed or does not match the page; `400` for a malformed body; `413` for a body over 4096 bytes; `501` if the service has no config dir. A wrong guess does not consume the real code, but after 5 wrong guesses the pending code is cancelled (`too many wrong pairing codes; the code was cancelled`) and `ck-native --pair` must be run again. Concurrent attempts on one code: exactly one succeeds (tested with eight at once).
 
 A paired token works only from its origin: a request that carries a different `Origin` answers `403` (`token not valid for this origin`), and one without an `Origin` header (a non-browser client) is accepted. `ck-native revoke <id>` takes effect on a running service at its next request, because the service reloads `clients.json` when the file changes.
 
@@ -149,7 +149,7 @@ The `Host` check means a name that resolves to the loopback address, such as a D
 | Chunked request body | | `501` |
 | Reply body | `--max-reply-mib`, default 1 GiB | `413`; checked after the kernel has run, and the session stays usable |
 | Sessions | `--max-sessions`, default 8 | `429` on create |
-| Connections | 64 at once | extra connections are dropped without a reply |
+| Connections | 64 at once | an extra connection gets `503` with `Retry-After: 1` |
 | Socket read timeout | 300 s per read | the connection ends |
 
 There is no server-side time limit on a kernel request; any budgets inside the kernel are not covered here. The client enforces its own timeout (below).

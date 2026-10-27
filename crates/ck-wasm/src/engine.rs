@@ -139,7 +139,7 @@ fn regen_hook(part: &Json, cx: &mut Cx) -> Result<(Json, State), String> {
         ck_tess::mesh::set_face_cache_cap(cap as usize / 2);
     }
     // debug requests want the real per-feature spans, so they never replay
-    let use_cache = !flag("noCache") && !cx.trace.enabled();
+    let use_cache = !flag("noCache") && !cx.trace.enabled() && o.and_then(|o| o.get_f64("cacheCap")) != Some(0.0);
     ck_ops::intersect::ss::GRID_SEEDS.store(flag("ssiGridSeeds"), std::sync::atomic::Ordering::Relaxed);
     ck_ops::intersect::ss::ORIG_STEP.store(flag("ssiOrigStep"), std::sync::atomic::Ordering::Relaxed);
     let want_stats = flag("cacheStats");
@@ -656,6 +656,10 @@ fn auto_heal(body: &mut Body, tol: f64, f: &ck_model::Feature, state: &mut regen
         return;
     }
     *body = c;
+    // the feature already reported something (a warning): that message is kept
+    if state.result.errors.iter().any(|e| e.feature == f.id) {
+        return;
+    }
     let mut codes: Vec<&str> = rep.fixed.iter().map(|x| x.code).collect();
     codes.dedup();
     let err = regen::FeatureError::new("healed")

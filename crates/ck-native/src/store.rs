@@ -9,7 +9,7 @@
 //! files directly. Tokens are never stored; only their SHA-256.
 
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ck_json::{Json, Map};
@@ -198,6 +198,28 @@ impl Cache {
     }
 }
 
+const MAX_WRONG_TRIES: u32 = 5;
+/// Wrong codes seen per config dir since the last good one.
+static WRONG_TRIES: std::sync::Mutex<Vec<(PathBuf, u32)>> = std::sync::Mutex::new(Vec::new());
+
+/// Counts one wrong code for `dir` (`true` once the limit is reached) or, with `reset`, forgets the count.
+fn wrong_try(dir: &Path, reset: bool) -> bool {
+    let mut t = WRONG_TRIES.lock().unwrap_or_else(|e| e.into_inner());
+    let i = t.iter().position(|(d, _)| d == dir);
+    if reset {
+        if let Some(i) = i {
+            t.swap_remove(i);
+        }
+        return false;
+    }
+    let i = i.unwrap_or_else(|| {
+        t.push((dir.to_path_buf(), 0));
+        t.len() - 1
+    });
+    t[i].1 += 1;
+    t[i].1 >= MAX_WRONG_TRIES
+}
+
 /// The pending code, checked under the caller's lock. `Err` explains why it cannot be used.
 pub fn take_code(dir: &Path, code: &str) -> Result<(), &'static str> {
     let Some(p) = read_pending(dir) else { return Err("no pairing code") };
@@ -205,8 +227,15 @@ pub fn take_code(dir: &Path, code: &str) -> Result<(), &'static str> {
         return Err("pairing code expired");
     }
     if !crate::ct_eq(p.code.as_bytes(), code.as_bytes()) {
+        // a guessed code gets a few tries, then the pending code is burnt (run `ck-native --pair` for a new one)
+        if wrong_try(dir, false) {
+            wrong_try(dir, true);
+            consume_pending(dir);
+            return Err("too many wrong pairing codes; the code was cancelled");
+        }
         return Err("wrong pairing code");
     }
+    wrong_try(dir, true);
     consume_pending(dir);
     Ok(())
 }

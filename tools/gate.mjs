@@ -1,10 +1,16 @@
 // Regression gate + scoreboard: original kernel.wasm vs the rebuilt wasm.
 //
-// usage: node tools/gate.mjs [--fast] [--update] [--wasm path] [--quiet]
+// usage: node tools/gate.mjs [--fast] [--update] [--wasm path] [--quiet] [--standalone]
 //   Prints a scoreboard and compares it with tools/scoreboard.json (the
 //   committed baseline). Exit 1 if ANY metric went down. --update rewrites
 //   the baseline (do this in the commit that improves a metric).
 //   Build first: cargo build -p ck-wasm --target wasm32-unknown-unknown --release
+//
+// Standalone mode (--standalone, or automatically when ../../kernel.wasm does not exist): no comparison build is
+// needed. The metrics that compare against it (wire, regen.*, mass.*, vol.*, step*, edit.robust) are not run;
+// everything that judges our build alone is (valid.*, oracle.*, import.*, heal.repair, naming.stable, iface.*,
+// bench.*). The numbers are compared with tools/scoreboard.standalone.json instead, and --update writes that file.
+// In this mode valid.* covers the parts that build; build.* counts how many of them do.
 //
 // Metrics (counts of matching items; higher is better):
 //   wire.*        tools/cases.mjs replies byte-identical (ms normalised)
@@ -58,10 +64,14 @@ const flag = (f) => { const i = args.indexOf(f); if (i < 0) return false; args.s
 const opt = (f) => { const i = args.indexOf(f); if (i < 0) return null; const v = args[i + 1]; args.splice(i, 2); return v; };
 const update = flag('--update'), quiet = flag('--quiet'), fast = flag('--fast');
 const wasmB = opt('--wasm') ?? path.join(here, '../target/wasm32-unknown-unknown/release/ck_wasm.wasm');
-// Artifacts live next to the ORIGINAL kernel.wasm (follows the worktree symlink).
-const origWasm = realpathSync(path.join(here, '../../kernel.wasm'));
-const art = path.dirname(origWasm);
-const A = new WebAssembly.Module(readFileSync(origWasm));
+const standaloneFlag = flag('--standalone');
+const origPath = path.join(here, '../../kernel.wasm');
+const haveRef = !standaloneFlag && existsSync(origPath);
+// Artifacts live next to the comparison kernel.wasm (follows the worktree symlink); standalone: next to the build.
+const origWasm = haveRef ? realpathSync(origPath) : null;
+const art = origWasm ? path.dirname(origWasm) : path.dirname(path.resolve(wasmB));
+const A = haveRef ? new WebAssembly.Module(readFileSync(origWasm)) : null;
+if (!haveRef) console.log('standalone: no comparison build; wire, regen.*, mass.*, vol.*, step* and edit.robust are not run');
 const B = new WebAssembly.Module(readFileSync(wasmB));
 
 const score = {};
@@ -70,7 +80,7 @@ const norm = (r) => (r.trap ? `TRAP ${r.trap.replace(/\/rustc\/[0-9a-f]+\/|:\d+:
 const bin = (r) => (r.trap ? '' : Buffer.from(r.bytes.subarray((4 + new DataView(r.bytes.buffer).getUint32(0, true) + 7) & -8)).toString('base64'));
 
 // 1. wire cases (stateful sequences)
-for (const c of cases) {
+for (const c of haveRef ? cases : []) {
   const ka = new Kernel(A), kb = new Kernel(B);
   for (const [i, body] of c.bodies.entries()) {
     const ra = ka.request(body), rb = kb.request(body);
@@ -121,24 +131,24 @@ function regenSet(set, targets) {
   for (const t of targets) {
     const t0 = performance.now();
     const msg = { type: 'regen', tag: 'main', part: t.part, ...(t.upTo ? { opts: { upTo: t.upTo } } : {}) };
-    const ka = new Kernel(A), kb = new Kernel(B);
+    const ka = haveRef ? new Kernel(A) : null, kb = new Kernel(B);
     const body = JSON.stringify({ id: 1, msg });
-    const ra = ka.request(body), rb = kb.request(body);
-    const pa = ra.trap ? null : JSON.parse(ra.json), pb = rb.trap ? null : JSON.parse(rb.json);
+    const ra = ka?.request(body), rb = kb.request(body);
+    const pa = !ra || ra.trap ? null : JSON.parse(ra.json), pb = rb.trap ? null : JSON.parse(rb.json);
     const ba = pa?.result?.body, bb = pb?.result?.body;
     const cnt = (b) => b?.edges?.map(({ pts, ...e }) => ({ ...e, pts: pts.length }));
     const rest = (p) => { const r = { ...(p?.result ?? {}) }; delete r.body; return JSON.stringify([p?.ok, p?.error, r]); };
-    bump(`regen.${set}.faces`, !!pa && !!pb && JSON.stringify(ba?.faces) === JSON.stringify(bb?.faces));
-    bump(`regen.${set}.edges`, !!pa && !!pb && JSON.stringify(cnt(ba)) === JSON.stringify(cnt(bb)));
-    bump(`regen.${set}.box`, !!pa && !!pb && JSON.stringify(ba?.box) === JSON.stringify(bb?.box));
-    bump(`regen.${set}.rest`, !!pa && !!pb && rest(pa) === rest(pb));
-    bump(`regen.${set}.json`, !!pa && !!pb && norm(ra) === norm(rb));
+    if (haveRef) bump(`regen.${set}.faces`, !!pa && !!pb && JSON.stringify(ba?.faces) === JSON.stringify(bb?.faces));
+    if (haveRef) bump(`regen.${set}.edges`, !!pa && !!pb && JSON.stringify(cnt(ba)) === JSON.stringify(cnt(bb)));
+    if (haveRef) bump(`regen.${set}.box`, !!pa && !!pb && JSON.stringify(ba?.box) === JSON.stringify(bb?.box));
+    if (haveRef) bump(`regen.${set}.rest`, !!pa && !!pb && rest(pa) === rest(pb));
+    if (haveRef) bump(`regen.${set}.json`, !!pa && !!pb && norm(ra) === norm(rb));
     if (pa && pb && norm(ra) !== norm(rb)) (globalThis.__jsonDiff ??= []).push(`${set}:${t.name}${(pa.result?.errors?.length ?? 0) > 0 ? ' (original has errors)' : ''}`);
-    bump(`regen.${set}.mesh`, !!pa && !!pb && norm(ra) === norm(rb) && bin(ra) === bin(rb));
-    if (ba && bb) {
+    if (haveRef) bump(`regen.${set}.mesh`, !!pa && !!pb && norm(ra) === norm(rb) && bin(ra) === bin(rb));
+    if (haveRef ? ba && bb : bb) {
       const q = JSON.stringify({ id: 2, msg: { type: 'massProps', tag: 'main' } });
-      const ma = JSON.parse(ka.request(q).json || 'null')?.result, mb = JSON.parse(kb.request(q).json || 'null')?.result;
-      bump(`mass.${set}`, ['volume', 'area', 'com'].every((k) => close(mb?.[k], ma?.[k])));
+      const ma = ka ? JSON.parse(ka.request(q).json || 'null')?.result : null, mb = JSON.parse(kb.request(q).json || 'null')?.result;
+      if (haveRef) bump(`mass.${set}`, ['volume', 'area', 'com'].every((k) => close(mb?.[k], ma?.[k])));
       if (set === 'brep' && oracles[t.name]) {
         const bad = checkOracle(oracles[t.name], mb, bb.box);
         bump('oracle.brep', bad.length === 0);
@@ -147,14 +157,15 @@ function regenSet(set, targets) {
       const volOk = typeof mb?.volume === 'number' && Math.abs(mb.volume - ma?.volume) <= 1e-3 * Math.abs(ma?.volume ?? 0);
       // the original refuses the feature (`unsupported` ...) and ours builds it: not a regression
       const origRefused = (pa?.result?.errors?.length ?? 0) > 0 && (pb?.result?.errors?.length ?? 0) === 0;
-      bump(`vol.${set}`, volOk || origRefused);
-      if (!volOk) (globalThis.__volFail ??= []).push(`${set}:${t.name}: ours ${mb?.volume} original ${ma?.volume}`);
+      if (haveRef) bump(`vol.${set}`, volOk || origRefused);
+      if (haveRef && !volOk) (globalThis.__volFail ??= []).push(`${set}:${t.name}: ours ${mb?.volume} original ${ma?.volume}`);
       const manifold = (bb.edges ?? []).every((e) => e.faces?.length === 2);
       const vq = JSON.stringify({ id: 3, msg: { type: 'validate', tag: 'main' } });
       const vr = JSON.parse(kb.request(vq).json || 'null')?.result;
       const vissues = vr?.issues ?? [{ code: 'NO_VALIDATE' }];
       for (const i of vissues) validCodes[i.code] = (validCodes[i.code] ?? 0) + 1;
       if (vissues.length) validFail.push(`${set}:${t.name}:${[...new Set(vissues.map((i) => i.code))].join(',')} | ${vissues.slice(0, 3).map((i) => `${i.entity}: ${i.detail}`).join(' ; ')}`);
+      if (!haveRef) bump(`build.${set}`, true);
       bump(`valid.${set}`, !(pb.result.errors?.length) && mb?.volume > 0 && manifold && vissues.length === 0);
       // heal.repair: damage a COPY of each valid brep body (see ck_heal::damage::KINDS),
       // heal it, and require validate-clean + volume within 1e-6 (relative).
@@ -164,10 +175,12 @@ function regenSet(set, targets) {
         if (hd?.applied) bump('heal.repair', hd.clean === true);
       }
       if (set === 'brep') importRoundtrip(t, kb, pb, mb);
-    } else {
+    } else if (haveRef) {
       bump(`mass.${set}`, !ba && !bb);
       bump(`vol.${set}`, !ba && !bb);
       bump(`valid.${set}`, !ba && !bb && !(pb?.result?.errors?.length));
+    } else {
+      bump(`build.${set}`, false);
     }
     if (!quiet) process.stderr.write(`${t.name} ${((performance.now() - t0) / 1000).toFixed(1)}s\n`);
   }
@@ -208,9 +221,9 @@ for (const r of runNaming({ ours: wasmB })) if (!r.neg && r.edit !== '(baseline)
 // 2c'. iface.* (SOFT): agent queries (check/resolve/describe/refDiff) self-consistency, every 4th brep part
 for (const r of runIface({ wasm: wasmB, stride: 4 })) bump(`iface.${r.key}`, r.ok);
 
-// 2e. edit.robust (HARD): single-parameter edits of 12 small parts regen like the original's (no feature
+// 2e. edit.robust (HARD; needs the comparison build): single-parameter edits of 12 small parts regen like the original's (no feature
 // error, volume within 1e-3) wherever the original builds them (tools/edit_robustness_check.mjs --quick)
-{
+if (haveRef) {
   const jf = path.join(art, 'edit_quick.json');
   try { execFileSync(process.execPath, [path.join(here, 'edit_robustness_check.mjs'), '--quick', '--jobs', '4', '--wasm', wasmB, '--json', jf], { stdio: 'ignore' }); } catch { /* exit 1 = failures; the json is still written */ }
   if (existsSync(jf)) {
@@ -223,7 +236,7 @@ for (const r of runIface({ wasm: wasmB, stride: 4 })) bump(`iface.${r.key}`, r.o
 
 // 3. STEP export
 const gdir = path.join(here, '../crates/ck-io/tests/golden');
-if (existsSync(gdir)) for (const f of readdirSync(gdir).filter((f) => f.endsWith('.req.json')).sort()) {
+if (haveRef && existsSync(gdir)) for (const f of readdirSync(gdir).filter((f) => f.endsWith('.req.json')).sort()) {
   const req = readFileSync(path.join(gdir, f), 'utf8');
   const st = '{"id":2,"msg":{"type":"step","name":"t"}}';
   // the header names the program that wrote the file (the reference build and ours differ there): compare the rest
@@ -239,7 +252,7 @@ if (!quiet) process.stderr.write('\n');
 if (importFail.length && !quiet) console.log(importFail.join('\n'));
 
 // report + compare with baseline
-const basePath = path.join(here, 'scoreboard.json');
+const basePath = path.join(here, haveRef ? 'scoreboard.json' : 'scoreboard.standalone.json');
 const base = existsSync(basePath) ? JSON.parse(readFileSync(basePath, 'utf8')) : {};
 let worse = 0, soft = 0;
 const hard = (k) => /^(wire|valid\.|vol\.|oracle\.|import\.|heal\.|edit\.)/.test(k);

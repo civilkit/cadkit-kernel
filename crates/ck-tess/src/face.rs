@@ -932,12 +932,13 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
     for (i, &v) in tri.vmap.iter().enumerate() {
         vdata.entry(v).or_insert((b.pts[i].uv, b.pts[i].p));
     }
-    if matches!(surf, Surface::BSpline(_) | Surface::Screw { .. }) {
-        for (&v, &(uv, p)) in vdata.iter() {
-            let sp = surf.eval(uv.x, uv.y);
-            if sp.dist(p) > 0.25 * tol.chord {
-                off_surf.insert(v, sp);
-            }
+    // Other surfaces only count a gross offset (an invalid body whose trim is far off its face): a triangle with such a
+    // vertex never comes within the tolerance however often it is split, and refinement would spend its whole budget.
+    let off_limit = if matches!(surf, Surface::BSpline(_) | Surface::Screw { .. }) { 0.25 * tol.chord } else { 100.0 * tol.chord };
+    for (&v, &(uv, p)) in vdata.iter() {
+        let sp = surf.eval(uv.x, uv.y);
+        if sp.dist(p) > off_limit {
+            off_surf.insert(v, sp);
         }
     }
     let wrap_eval = |uv: Vec2| -> Vec2 {
@@ -1003,6 +1004,7 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
     // ---- 5. refinement
     let budget = 20000 + 50 * b.pts.len();
     let mut inserted = 0usize;
+    let mut front: Vec<usize> = vec![];
     let sense = face.sense;
     let is_spline = matches!(surf, Surface::BSpline(_) | Surface::Screw { .. });
     // Triangles that passed keep their vertices (and so their verdict) across
@@ -1064,6 +1066,15 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
             }
         }
         if cands.is_empty() {
+            break;
+        }
+        // Every pass halves the triangle size along a front that is resolving, and a feature a thousandth of the part is
+        // resolved in about ten passes, so after fourteen the front must be shrinking. One that is no smaller than it was six
+        // passes ago is not converging: its triangles have a vertex the
+        // surface cannot reach (a trim of a failed boolean), and splitting them again changes nothing. Stop here instead
+        // of spending the whole budget.
+        front.push(cands.len());
+        if front.len() > 14 && cands.len() >= front[front.len() - 7] {
             break;
         }
         let mut any = false;

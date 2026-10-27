@@ -194,6 +194,13 @@ if (shrinkInput) {
 
 
 const cases = Array.from({ length: n }, (_, i) => makeCase(i));
+// --dump ID[,ID...] --json FILE: write those generated cases as parts ({id: part}) and stop (to reproduce one by hand)
+if (opt('--dump')) {
+  const want = new Set(opt('--dump').split(','));
+  const out = Object.fromEntries(cases.filter((c) => want.has(c.id)).map((c) => [c.id, { format: 'ck-part', version: 1, features: c.features }]));
+  writeFileSync(opt('--json'), JSON.stringify(out, null, 1));
+  process.exit(0);
+}
 const results = await mapLimit(cases, workers, async (c) => {
   const r = await runOne(c.features);
   return { id: c.id, kind: c.kind, ...classify(r), features: c.features };

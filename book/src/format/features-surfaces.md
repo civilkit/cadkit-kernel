@@ -291,7 +291,7 @@ Cuts sheets with another sheet or a plane, keeping one side.
 | `mutual` | boolean | `false` | Return the tool, uncut, in the same result. |
 | `deleteTool` | boolean | `false` | Remove the tool sheet. An absent field keeps the tool; only an explicit `true` removes it. |
 
-The result is one sheet registered under the id of the trim; the kept piece keeps the face names. The trim is built for planar sheets cut by a plane or by another planar sheet. A target that is curved, or a tool that does not cross the target, is not trimmed. Errors: `missingReference`, `trimNoIntersection {detail}`, `trimNothingLeft`.
+The result is one sheet registered under the id of the trim; the kept piece keeps the face names. The trim is built for planar sheets cut by a plane or by another planar sheet. A target that is curved, or a tool that does not cross the target, is not trimmed. Errors: `missingReference`, `trimNoIntersection {detail}`, `trimNothingLeft`, `trimPieceLoop`.
 
 ```json
 {

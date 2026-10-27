@@ -26,7 +26,7 @@ fn main() {
     };
     while let Some(f) = a.next() {
         match f.as_str() {
-            "--port" => port = num(&mut a, &f) as u16,
+            "--port" => port = u16::try_from(num(&mut a, &f)).unwrap_or_else(|_| die("--port must be 0-65535")),
             "--config-dir" => dir = Some(a.next().unwrap_or_else(|| die("--config-dir needs a path")).into()),
             "--allow-origin" | "--site-origin" => cfg.origins.push(a.next().unwrap_or_else(|| die(&format!("{f} needs a URL")))),
             "--max-body-mib" => cfg.max_body = (num(&mut a, &f) as usize) << 20,

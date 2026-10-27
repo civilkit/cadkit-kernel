@@ -407,6 +407,38 @@ fn revoked_client_token_is_refused() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Past the connection limit the service answers 503 instead of dropping the connection.
+#[test]
+fn connections_over_the_limit_get_a_503() {
+    let port = start(|_| {});
+    let idle: Vec<TcpStream> = (0..64).map(|_| TcpStream::connect(("127.0.0.1", port)).unwrap()).collect();
+    std::thread::sleep(Duration::from_millis(300));
+    let mut extra = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    extra.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let mut text = String::new();
+    let _ = extra.read_to_string(&mut text);
+    assert!(text.starts_with("HTTP/1.1 503"), "{text:?}");
+    drop(idle);
+}
+
+/// A guessed code gets a few tries; then the pending code is cancelled, even for the right code.
+#[test]
+fn pairing_code_is_cancelled_after_repeated_wrong_guesses() {
+    let dir = tmpdir();
+    let port = start(|c| {
+        c.dir = Some(dir.clone());
+        c.origins.push("https://site.example.com".into());
+    });
+    let code = ck_native::pair_code(&dir, Duration::from_secs(120)).unwrap();
+    for _ in 0..5 {
+        let r = pair_req(port, "00000000", "http://localhost:5173", "kit");
+        assert_eq!(r.status, 401);
+    }
+    let r = pair_req(port, &code, "http://localhost:5173", "kit");
+    assert_eq!(r.status, 401, "{}", String::from_utf8_lossy(&r.body));
+    assert!(String::from_utf8_lossy(&r.body).contains("no pairing code"));
+}
+
 /// A paired token only works from the origin it was paired with.
 #[test]
 fn paired_token_is_bound_to_its_origin() {

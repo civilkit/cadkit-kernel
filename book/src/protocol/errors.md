@@ -84,7 +84,7 @@ Because a failure removes a feature's output, the next features that depend on i
 
 `featureBudgetExceeded` and `regenBudgetExceeded` report that a time limit stopped the work. When the limit of a feature (`opts.featureTimeMs`, default two minutes) has run out, a feature that failed at that moment reports `featureBudgetExceeded` instead of its own code, unless its own code already ends in `BudgetExceeded` (a boolean stopped by the limit keeps `booleanBudgetExceeded`); its result is not applied. When the limit of the whole document (`opts.regenTimeMs`) has run out, the running feature and every later one report `regenBudgetExceeded`; the later ones are not run. The `params` are `budgetMs`, `elapsedMs`, `hint` and, if the feature had failed for another reason, `cause` (that code). A feature limit that has already passed when a feature starts (a few microseconds, for instance) is reported as `regenBudgetExceeded` with the feature limit's `hint`. Budgets need a host clock ([Protocol overview](overview.md#time-ms-and-the-host-clock)).
 
-**Known limitation: budget failures are cached.** A failure caused by a time budget is stored in the regen cache like any result and is returned by later regens on the same instance, even when they carry no budget. Reproduction with a host clock that advances on every `ck_now` call: `regen` of a two-feature plate with `opts.featureTimeMs: 0.5` fails with `regenBudgetExceeded` on `F1` and `F2` and no body; the same part sent again with no options, on the same or another tag, returns the same two errors and `body: null`; with `opts.noCache: true` it returns the correct 6-face body; the next plain regen is wrong again. Features that share a leading prefix with the poisoned part are affected too. Workaround: send the affected regen with `opts.noCache: true`, or use a new instance. `noCache` does not remove the bad entries. A host clock that does not advance (as in the book's runner) never produces these errors.
+**Budget failures are not cached.** A failure caused by a time budget is not stored in the regen cache, so a later regen of the same part runs again with its own budget. Builds before this change replayed the stored error (and `body: null`) on the same instance; `opts.noCache: true` was the workaround.
 
 ### Codes of the driver and of references
 
@@ -320,6 +320,7 @@ Two warnings of the end conditions are in [Warnings](#warnings): `endConditionFa
 | `thickenReach` | The thickening offset cannot reach across an edge. |
 | `thickenTooThick` | An edge vanishes at this thickness. |
 | `trimNoIntersection` | The tool does not cut the surface. |
+| `trimPieceLoop` | The kept piece of a face could not be closed into a loop. The trim is not applied. |
 | `trimNothingLeft` | Nothing remains on the chosen side. |
 
 ## Warnings
