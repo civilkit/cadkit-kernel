@@ -168,7 +168,7 @@ export interface HelixFeature {
   id: string;
   name?: string;
   sketch: string | null;
-  definedBy?: 'pitchRevs' | 'pitchHeight' | 'revsHeight' | string;
+  definedBy?: 'pitchRevs' | 'heightRevs' | 'heightPitch' | string;
   pitch?: Expr;
   revolutions?: Expr;
   height?: Expr;

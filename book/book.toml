@@ -1,0 +1,19 @@
+[book]
+title = "The CadKit kernel"
+description = "The part format, the wire protocol, the kernel internals and how results are validated."
+authors = ["The CadKit authors"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "../target/book"
+create-missing = false
+
+[output.html]
+site-url = "/docs/cad/kernel/"
+default-theme = "light"
+preferred-dark-theme = "navy"
+
+[output.html.search]
+enable = true
+limit-results = 20

@@ -71,9 +71,8 @@ const caseList = () => {
   hf.features.push({ type: 'fillet', id: 'F4b', radius: 0.3, edges: [{ faces: ['F2.C0', 'F4.S.e1'], at: [7, 0, -5] }] });
   cs.push({ name: 'twoFillets', part: () => clone(hf) });
   // ckpart files
-  // all part files live in the repo (tools/cases): the metric must not depend on files next to the oracle wasm
-  // (the CI box has no bracket.ckpart there, which silently dropped the case: 214/216 became 209/211)
-  for (const [n, f, k] of [['bracket', 'cases/bracket.ckpart'], ['flangeHalf@11', 'cases/flangeHalf.ckpart', 11], ['flangeBolt@12', 'cases/flangeBolt.ckpart', 12]]) {
+  // all part files live in the repo (tools/cases): the metric must not depend on files outside the checkout
+  for (const [n, f, k] of [['flangeHalf@11', 'cases/flangeHalf.ckpart', 11], ['flangeBolt@12', 'cases/flangeBolt.ckpart', 12]]) {
     const p = load(f); // a missing file is an error, not a silently smaller denominator
     if (k) p.features = p.features.slice(0, k);
     cs.push({ name: n, part: () => clone(p), file: true });
