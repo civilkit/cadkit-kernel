@@ -1,4 +1,4 @@
-//! The part format's old name (`ck-part`) through the full server path:
+//! The part format's old names (`ck-part`, `ck-part`) through the full server path:
 //! `regen` and a nested `insertPart` both read it as `ck-part`. (There is no
 //! `open` request type; the kit's file-open path normalises the name itself.)
 
@@ -20,6 +20,14 @@ fn plate(format: &str) -> String {
 "entities":[{{"type":"line","id":"e1","p1":"p1","p2":"p2"}},{{"type":"line","id":"e2","p1":"p2","p2":"p3"}},{{"type":"line","id":"e3","p1":"p3","p2":"p4"}},{{"type":"line","id":"e4","p1":"p4","p2":"p1"}}],"constraints":[]}},
 {{"type":"extrude","id":"F2","op":"add","sketch":"F1","end":"blind","depth":10}}]}}"#
     )
+}
+
+#[test]
+fn regen_reads_the_ck_format_name() {
+    let old = call(&format!(r#"{{"type":"regen","tag":"t","part":{}}}"#, plate("ck-part")));
+    let new = call(&format!(r#"{{"type":"regen","tag":"t","part":{}}}"#, plate("ck-part")));
+    assert_eq!(old.get("ok"), Some(&Json::Bool(true)), "{}", ck_json::to_string(&old));
+    assert_eq!(old.get("result"), new.get("result"), "{}", ck_json::to_string(&old));
 }
 
 #[test]

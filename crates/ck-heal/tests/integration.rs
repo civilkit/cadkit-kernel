@@ -77,14 +77,16 @@ fn damaged_parts_heal_back_to_valid_with_same_volume() {
     assert!(cases >= 25, "only {cases} cases exercised");
 }
 
-/// The format's old name (`ck-part`) still parses, comes back as
-/// `ck-part` and heals exactly like a part written with the new name.
+/// The format's old names (`ck-part`, `ck-part`) still parse, come back as
+/// `ck-part` and heal exactly like a part written with the new name.
 #[test]
 fn legacy_format_name_still_reads() {
     let src = parts()[0].1.clone();
-    let old = src.replace(r#""format":"ck-part""#, r#""format":"ck-part""#);
-    let parsed = Part::parse(&old).unwrap();
-    assert_eq!(parsed.format, "ck-part");
-    let (a, b) = (body_of(&src), body_of(&old));
-    assert!((mass_props(&a).volume - mass_props(&b).volume).abs() <= 1e-9);
+    for legacy in ["ck-part", "ck-part"] {
+        let old = src.replace(r#""format":"ck-part""#, &format!(r#""format":"{legacy}""#));
+        let parsed = Part::parse(&old).unwrap();
+        assert_eq!(parsed.format, "ck-part");
+        let (a, b) = (body_of(&src), body_of(&old));
+        assert!((mass_props(&a).volume - mass_props(&b).volume).abs() <= 1e-9);
+    }
 }

@@ -159,12 +159,12 @@ pub fn tag_of(msg: &Json) -> &str {
 
 /// Validate a `.ckpart` object the way the original's part loader rejects it
 /// (all variants observed so far surface as `invalid part: Format`):
-/// not an object, `format` neither `"ck-part"` nor the legacy `"ck-part"`, or `features` not an array.
+/// not an object, `format` neither `"ck-part"` nor a legacy `"ck-part"` / `"ck-part"`, or `features` not an array.
 /// `version`, `name`, `params`, ... are not checked (version 0, 1.5, -1,
 /// null and "1"-with-features-missing all probed).
 pub fn check_part(part: Option<&Json>) -> Result<&Json, String> {
     let p = part.filter(|p| p.is_obj()).ok_or_else(|| INVALID_PART.to_string())?;
-    if !matches!(p.get_str("format"), Some("ck-part" | "ck-part")) || p.get_arr("features").is_none() {
+    if !matches!(p.get_str("format"), Some("ck-part" | "ck-part" | "ck-part")) || p.get_arr("features").is_none() {
         return Err(INVALID_PART.to_string());
     }
     Ok(p)

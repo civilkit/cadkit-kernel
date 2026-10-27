@@ -7,7 +7,7 @@
 //!
 //! Parsing is deliberately lenient, like the original: the only hard part
 //! error is `"Format"` (reply `invalid part: Format`, kernel.strings), raised
-//! when the part is not an object, `format` is neither `"ck-part"` nor the legacy `"ck-part"`, or `features`
+//! when the part is not an object, `format` is neither `"ck-part"` nor a legacy `"ck-part"` / `"ck-part"`, or `features`
 //! is not an array. Everything else (bad feature types, missing fields,
 //! wrong JSON types) parses with defaults and surfaces as per-feature regen
 //! errors (`unknownFeature`, `missingReference`, `missingSketch`, ...).
@@ -30,8 +30,10 @@ use ck_json::Json;
 pub const PART_FORMAT_ERROR: &str = "Format";
 /// The `format` value written into every part.
 pub const PART_FORMAT: &str = "ck-part";
-/// The name this format had before `ck-part`: still read, never written.
+/// The names this format had before `ck-part`: still read, never written.
 pub const LEGACY_PART_FORMAT: &str = "ck-part";
+/// The name between `ck-part` and `ck-part`: still read, never written.
+pub const LEGACY_PART_FORMAT_FW: &str = "ck-part";
 /// The document version this kernel writes and knows (`apps/cad/src/partVersion.ts`
 /// keeps the same number in the kit). A file may carry a higher `version`; it is
 /// still read, and `regen` says so (`partVersionNewer`).
@@ -281,7 +283,7 @@ pub struct Feature {
 impl Part {
     /// Parse a part document. Errors only with `"Format"` (see crate doc).
     pub fn from_json(j: &Json) -> Result<Part, String> {
-        if !matches!(j, Json::Obj(_)) || !matches!(j.get("format").and_then(|f| f.as_str()), Some(PART_FORMAT | LEGACY_PART_FORMAT)) {
+        if !matches!(j, Json::Obj(_)) || !matches!(j.get("format").and_then(|f| f.as_str()), Some(PART_FORMAT | LEGACY_PART_FORMAT | LEGACY_PART_FORMAT_FW)) {
             return Err(PART_FORMAT_ERROR.to_string());
         }
         let feats = j.get("features").and_then(|f| f.as_arr()).ok_or_else(|| PART_FORMAT_ERROR.to_string())?;

@@ -1470,8 +1470,10 @@ mod tests {
             assert_eq!(Part::parse(bad).unwrap_err(), "Format", "{bad}");
         }
         // version is not validated; junk in other fields is tolerated.
-        let old = Part::parse(r#"{"format":"ck-part","features":[]}"#).unwrap();
-        assert_eq!(old.format, "ck-part");
+        for legacy in ["ck-part", "ck-part"] {
+            let old = Part::parse(&format!(r#"{{"format":"{legacy}","features":[]}}"#)).unwrap();
+            assert_eq!(old.format, "ck-part");
+        }
         let p = Part::parse(r#"{"format":"ck-part","version":2,"features":[3,{"type":"bogus"}],"name":5,"seq":"x"}"#).unwrap();
         assert_eq!(p.features.len(), 2);
         assert_eq!(p.features[1].type_name, "bogus");
