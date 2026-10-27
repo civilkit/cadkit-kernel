@@ -74,8 +74,8 @@ The gate compares against a reference build of a previous kernel and a set of co
 
 ## Part files
 
-A part is JSON with `"format": "ck-part"`. Files written under the earlier names (`fw-part`,
-`formwerk-part`, extension `.fwpart`) are still read and come back as `ck-part`.
+A part is JSON with `"format": "ck-part"`. Files saved by earlier versions are still read and come
+back as `ck-part`.
 
 ## Licence
 
