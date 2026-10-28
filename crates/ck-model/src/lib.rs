@@ -7,7 +7,7 @@
 //!
 //! Parsing is deliberately lenient, like the original: the only hard part
 //! error is `"Format"` (reply `invalid part: Format`, kernel.strings), raised
-//! when the part is not an object, `format` is neither `"ck-part"` nor a legacy `"fw-part"` / `"formwerk-part"`, or `features`
+//! when the part is not an object, `format` is neither `"ck-part"` nor a legacy `"ck-part"` / `"ck-part"`, or `features`
 //! is not an array. Everything else (bad feature types, missing fields,
 //! wrong JSON types) parses with defaults and surfaces as per-feature regen
 //! errors (`unknownFeature`, `missingReference`, `missingSketch`, ...).
@@ -31,9 +31,9 @@ pub const PART_FORMAT_ERROR: &str = "Format";
 /// The `format` value written into every part.
 pub const PART_FORMAT: &str = "ck-part";
 /// The names this format had before `ck-part`: still read, never written.
-pub const LEGACY_PART_FORMAT: &str = "formwerk-part";
-/// The name between `formwerk-part` and `ck-part`: still read, never written.
-pub const LEGACY_PART_FORMAT_FW: &str = "fw-part";
+pub const LEGACY_PART_FORMAT: &str = "ck-part";
+/// The name between `ck-part` and `ck-part`: still read, never written.
+pub const LEGACY_PART_FORMAT_FW: &str = "ck-part";
 /// The document version this kernel writes and knows (`apps/cad/src/partVersion.ts`
 /// keeps the same number in the kit). A file may carry a higher `version`; it is
 /// still read, and `regen` says so (`partVersionNewer`).

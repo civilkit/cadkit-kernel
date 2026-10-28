@@ -91,7 +91,7 @@ A sheet revolved about an axis.
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `sketch` | feature id | required | The profile (regions or open chains). |
-| `axis` | string | required | The id of a line entity of the sketch, as for `revolve`. |
+| `axis` | string or object | required | A line entity of the sketch by id, or `{"sketch", "id"}` for a line of another sketch, as for `revolve`. |
 | `angle` | number or expression | `360` | Degrees. |
 | `end`, `flip` | | | As for `revolve`. |
 

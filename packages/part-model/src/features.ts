@@ -646,6 +646,30 @@ export interface ThreadFeature {
   [key: string]: unknown;
 }
 
+/**
+ * A diamond or pyramid knurl built directly as faces and cut from the body in one boolean (docs/knurl-band.md).
+ * The cylinder is given by axis, centre, radius and axial range, not by a face.
+ */
+export interface KnurlBandFeature {
+  type: 'knurlBand';
+  id: string;
+  name?: string;
+  axis?: 'x' | 'y' | 'z';
+  /** [x, y] for z, [x, z] for y, [y, z] for x */
+  center?: [Expr, Expr];
+  radius: Expr;
+  from: Expr;
+  to: Expr;
+  pattern: 'diamond' | 'pyramid';
+  count?: Expr;
+  pitch?: Expr;
+  depth?: Expr;
+  angle?: Expr;
+  helixAngle?: Expr;
+  ringPitch?: Expr;
+  [key: string]: unknown;
+}
+
 /** Every typed feature except sketch/extrude (declared in index.ts). */
 export type KnownFeature =
   | Sketch3DFeature | RevolveFeature | SweepFeature | LoftFeature
@@ -659,7 +683,7 @@ export type KnownFeature =
   | DeleteFaceFeature | ThickenFeature | CutWithSurfaceFeature | PipeCutFeature
   | FreeformFeature | EditCurveFeature | ProjectCurveFeature | ExtendFeature
   | DomeFeature | SplitLineFeature | MoveFaceFeature | MoveBodyFeature
-  | ScaleFeature | AxisFeature | ThreadFeature | CombineFeature | SphereFeature;
+  | ScaleFeature | AxisFeature | ThreadFeature | CombineFeature | SphereFeature | KnurlBandFeature;
 
 /** All wire type strings the kernel dispatches on. */
 export const FEATURE_TYPES = [
@@ -670,7 +694,7 @@ export const FEATURE_TYPES = [
   'surfaceOffset', 'knit', 'fill', 'insertPart', 'mate', 'plane',
   'deleteBody', 'deleteFace', 'thicken', 'cutWithSurface', 'pipeCut',
   'freeform', 'editCurve', 'projectCurve', 'extend', 'dome', 'splitLine',
-  'moveFace', 'moveBody', 'scale', 'axis', 'thread', 'combine', 'sphere',
+  'moveFace', 'moveBody', 'scale', 'axis', 'thread', 'combine', 'sphere', 'knurlBand',
 ] as const;
 
 export type FeatureTypeName = (typeof FEATURE_TYPES)[number];

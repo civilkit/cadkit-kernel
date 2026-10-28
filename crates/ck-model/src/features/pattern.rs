@@ -418,10 +418,15 @@ pub fn exec_pattern(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Resul
         }
         let tool = tool.unwrap_or_default();
         br.combine(&tool, *c, false)?;
-        all.append(&tool);
+        // the pattern's own tool is the seed AND its copies, so a pattern of this pattern copies the whole row
+        // (a union made only for this record is not a step of the feature: its span is dropped)
+        let spans = br.spans.len();
+        let whole = accumulate(br, seed.clone(), tool);
+        br.spans.truncate(spans);
+        all.append(&whole?);
         last = *c;
     }
-    // the pattern's own tool (seeds of later patterns): every instance
+    // the pattern's own tool (seeds of later patterns): the seeds and every instance
     if !tools.is_empty() {
         br.tools.push((f.id.clone(), std::rc::Rc::new(Tool { body: all, combine: last, recipe: None })));
     }

@@ -1,0 +1,111 @@
+{
+ "format": "ck-part",
+ "version": 1,
+ "features": [
+  {
+   "type": "sketch",
+   "id": "F1",
+   "plane": {
+    "kind": "std",
+    "id": "top"
+   },
+   "points": [
+    {
+     "id": "c",
+     "x": 0,
+     "y": 0
+    }
+   ],
+   "entities": [
+    {
+     "type": "circle",
+     "id": "e1",
+     "c": "c",
+     "r": 10
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F2",
+   "op": "add",
+   "sketch": "F1",
+   "end": "blind",
+   "depth": 20
+  },
+  {
+   "type": "sketch",
+   "id": "F3",
+   "plane": {
+    "kind": "face",
+    "id": "F2.C1"
+   },
+   "points": [
+    {
+     "id": "a",
+     "x": -5,
+     "y": -5
+    },
+    {
+     "id": "b",
+     "x": 5,
+     "y": -5
+    },
+    {
+     "id": "c",
+     "x": 5,
+     "y": 5
+    },
+    {
+     "id": "d",
+     "x": -5,
+     "y": 5
+    }
+   ],
+   "entities": [
+    {
+     "type": "line",
+     "id": "e1",
+     "p1": "a",
+     "p2": "b"
+    },
+    {
+     "type": "line",
+     "id": "e2",
+     "p1": "b",
+     "p2": "c"
+    },
+    {
+     "type": "line",
+     "id": "e3",
+     "p1": "c",
+     "p2": "d"
+    },
+    {
+     "type": "line",
+     "id": "e4",
+     "p1": "d",
+     "p2": "a"
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F4",
+   "op": "add",
+   "sketch": "F3",
+   "end": "blind",
+   "depth": 10
+  },
+  {
+   "type": "shell",
+   "id": "S",
+   "faces": [
+    "F4.C1"
+   ],
+   "thickness": 1.5
+  }
+ ]
+}

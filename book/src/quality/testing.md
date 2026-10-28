@@ -80,7 +80,7 @@ Some checks compare the kernel live against a second kernel build, called here t
 | `text_corpus`, `boolean_corpus`, `blend_corpus` | The gate metrics `wire`, `regen.*`, `mass.*`, `vol.*` and `step` (replies, volumes and STEP text compared with the comparison build's) |
 | `lint_protocol`, `section_check`, `thread_check` | The gate metric `edit.robust` and `tools/edit_robustness_check.mjs` |
 | `skp_check`, `sldprt_check`, `regen_cache_check` | |
-| `tools/gate.mjs --standalone`: the metrics that judge the module alone (`valid.*`, `build.*`, `oracle.*`, `import.*`, `heal.repair`, `naming.stable`, `iface.*`, `bench.*`) | |
+| `tools/gate.mjs --standalone`: the metrics that judge the module alone (`valid.*`, `build.*`, `import.*`, `heal.repair`, `naming.stable`, `iface.*`, `bench.*`) | |
 | The sweeps and `crash_fuzz`, run with `--wasm <module> --check <baseline>` against their committed baselines | |
 
 Scripts that load a module take `--wasm`; several default to a path outside the checkout, so pass it explicitly (for example `--wasm target/wasm32-unknown-unknown/release/ck_wasm.wasm`).

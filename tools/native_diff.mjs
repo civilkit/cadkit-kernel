@@ -1,4 +1,4 @@
-// Native service vs wasm: every wire case of tools/cases.mjs plus the hair dryer and the fan
+// Native service vs wasm: every wire case of tools/cases.mjs plus the large sample and the fan
 // shroud regens, sent through ck-native over HTTP and compared with the wasm replies
 // (ms / at normalised, mesh binary compared separately, exactly like the wire gate).
 //

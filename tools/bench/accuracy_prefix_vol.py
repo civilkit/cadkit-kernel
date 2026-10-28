@@ -1,4 +1,4 @@
-"""OCCT volume (adaptive, eps 1e-7) of every prefix STEP of the hair dryer (our kernel's body after each feature),
+"""OCCT volume (adaptive, eps 1e-7) of every prefix STEP of the large sample (our kernel's body after each feature),
 next to the volume both kernels report for that prefix. Called by accuracy_occt.py stage `prefixvol`."""
 import json, os, sys, time
 from multiprocessing import Pool

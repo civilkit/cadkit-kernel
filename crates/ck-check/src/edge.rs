@@ -29,8 +29,11 @@ pub fn vertex_deviation(b: &Body, e: ck_topo::body::EdgeId) -> [f64; 2] {
     [b.vertex(ed.v0).p.dist(ed.curve.eval(ed.t0)), b.vertex(ed.v1).p.dist(ed.curve.eval(ed.t1))]
 }
 
-pub fn check(b: &Body, tol: f64, cap: f64, out: &mut Vec<Issue>) {
+pub fn check(b: &Body, tol: f64, cap: f64, ctl: &crate::Ctl, out: &mut Vec<Issue>) {
     for e in b.edge_ids() {
+        if ctl.poll() {
+            return;
+        }
         let ed = b.edge(e);
         if !(ed.t1 > ed.t0) {
             out.push(Issue { code: "EDGE_RANGE", entity: edge_ent(b, e), detail: format!("t0={} >= t1={}", ed.t0, ed.t1) });

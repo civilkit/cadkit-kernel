@@ -49,10 +49,11 @@ on. The regen tag (`main`, `preview`, ...) is NOT part of the key: a
 * the effective regen options that change results: `sketchStatus`,
   `solveSketches` (which implies `sketchStatus`), `autoHeal` + `healTol`,
 * the document-level fields the engine reads: `format`, `version`, `kind`,
-  `material`, `variables` (raw JSON). Nothing else of the part object is read
-  by regen (checked by grep), so `name`, `seq`, `counters`, `rollback` and UI
-  keys are deliberately NOT in the key: renaming the part or bumping the
-  feature counters keeps the cache warm.
+  `variables` (raw JSON). Nothing else of the part object is read
+  by regen (checked by grep), so `name`, `material` (a label; the parser stores
+  it and nothing reads it), `seq`, `counters`, `rollback` and UI
+  keys are deliberately NOT in the key: renaming the part, changing its material
+  label or bumping the feature counters keeps the cache warm.
 
 `keys[i+1] = SHA256(keys[i] || json(feature i))` where `json` is the feature
 object exactly as received (key order included) minus the cosmetic keys below.
@@ -62,7 +63,7 @@ identical prefix, and the hash is 256 bits, so collisions are not a concern.
 
 ### Cosmetic fields
 
-`group`, `name`, `autoName`, `visible` and `userHidden` (top-level keys of a
+`group`, `name`, `autoName`, `visible`, `userHidden` and `color` (top-level keys of a
 feature object) are left out of the hash. They only label a feature in the
 tree: putting rows in a folder (a folder is the `group` string), renaming,
 hiding a plane. Editing them therefore keeps every key, a regen of the edited

@@ -145,6 +145,7 @@ function regenSet(set, targets) {
     if (haveRef) bump(`regen.${set}.json`, !!pa && !!pb && norm(ra) === norm(rb));
     if (pa && pb && norm(ra) !== norm(rb)) (globalThis.__jsonDiff ??= []).push(`${set}:${t.name}${(pa.result?.errors?.length ?? 0) > 0 ? ' (original has errors)' : ''}`);
     if (haveRef) bump(`regen.${set}.mesh`, !!pa && !!pb && norm(ra) === norm(rb) && bin(ra) === bin(rb));
+    if (haveRef && pa && pb && norm(ra) === norm(rb) && bin(ra) !== bin(rb)) (globalThis.__meshDiff ??= []).push(`${set}:${t.name}`);
     if (haveRef ? ba && bb : bb) {
       const q = JSON.stringify({ id: 2, msg: { type: 'massProps', tag: 'main' } });
       const ma = ka ? JSON.parse(ka.request(q).json || 'null')?.result : null, mb = JSON.parse(kb.request(q).json || 'null')?.result;
@@ -267,6 +268,7 @@ for (const k of Object.keys({ ...base, ...score }).sort()) {
 for (const f of oracleFail) console.log(`ORACLE MISMATCH ${f}`);
 for (const f of globalThis.__volFail ?? []) console.log(`VOL MISMATCH ${f}`);
 for (const f of globalThis.__jsonDiff ?? []) console.log(`JSON DIFF ${f}`);
+for (const f of globalThis.__meshDiff ?? []) console.log(`MESH DIFF ${f}`);   // same JSON, different binary buffers: the cases the mesh metric misses
 if (Object.keys(validCodes).length) { console.log('validate issue codes:', JSON.stringify(validCodes)); if (!quiet) console.log(validFail.join('\n')); else console.log(`validate-failing cases: ${validFail.length}`); }
 if (update) { const out = fast ? { ...base, ...score } : score; writeFileSync(basePath, JSON.stringify(out, null, 1) + '\n'); console.log(`baseline written: ${basePath}`); }
 else if (worse) { console.log(`\nGATE FAILED: ${worse} metric(s) regressed`); process.exitCode = 1; }

@@ -38,7 +38,6 @@ use ck_topo::body::Body;
 
 /// Kernel error codes (kernel.strings).
 pub const INSERT_PART_ERRORS: &str = "insertPartErrors";
-pub const INSERT_PART_EMPTY: &str = "insertPartEmpty";
 pub const MATE_CONFLICT: &str = "mateConflict";
 pub const MATE_GEOMETRY: &str = "mateGeometry";
 pub const MATE_SAME_BODY: &str = "mateSameBody";

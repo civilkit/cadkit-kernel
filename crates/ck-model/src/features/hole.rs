@@ -19,8 +19,9 @@
 //!   angle, default 90); `cboreDiameter` / `cboreDepth` override the table;
 //! * the tools are combined into one (`boolean Unite (9 × 3 faces)` for the
 //!   4th of four holes whose box meets the others'; disjoint boxes are
-//!   appended) then `boolean Subtract (body × tool)`; a hole that misses ->
-//!   `cutNoEffect`;
+//!   appended; ours: a hole is united only with the tools whose own boxes
+//!   meet its box, so a grid of clear holes costs no union) then
+//!   `boolean Subtract (body × tool)`; a hole that misses -> `cutNoEffect`;
 //! * section loop runs top -> axis -> bottom in the plane (sketch x, up)
 //!   (pinned by the tool face order h2 before h1 in the result);
 //! * radii come out of world coordinates (`1.6999999999999993` for M3
@@ -203,7 +204,7 @@ pub fn exec_hole(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(
     let depth = state.num(f, "depth", 0.0)?;
     let through = *end != super::End::Blind;
     let multi = pts.len() > 1;
-    let mut tool: Option<Body> = None;
+    let mut parts: Vec<(Body, (ck_core::linalg::Vec3, ck_core::linalg::Vec3))> = Vec::new();
     for (k, p) in pts.iter().enumerate() {
         let pw = fr.o + fr.x * p[0] + fr.y * p[1];
         let len = if through { through_len(pw, &body) } else { depth };
@@ -259,12 +260,32 @@ pub fn exec_hole(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(
                 face.name.region = Some(k as u32 + 1);
             }
         }
-        tool = Some(match tool {
-            None => b,
-            Some(t) => super::pattern::accumulate(br, t, b)?,
-        });
+        // Unite the new hole only with the tools whose own boxes meet its box (repeating while the union grows
+        // into more of them); tools clear of it stay separate shells. Folding every hole into one growing union
+        // made each step cost the whole tool so far, and a grid of holes meets the accumulated box at once.
+        let mut acc = b;
+        loop {
+            let (alo, ahi) = super::body_box(&acc);
+            let e = super::TOL;
+            let hit = parts.iter().position(|(_, (lo, hi))| !(alo.x > hi.x + e || lo.x > ahi.x + e || alo.y > hi.y + e || lo.y > ahi.y + e || alo.z > hi.z + e || lo.z > ahi.z + e));
+            match hit {
+                Some(i) => {
+                    let (t, _) = parts.remove(i);
+                    acc = super::pattern::accumulate(br, t, acc)?;
+                }
+                None => {
+                    parts.push((acc, (alo, ahi)));
+                    break;
+                }
+            }
+        }
     }
-    let tool = Tool { body: tool.unwrap(), combine: Combine::Cut, recipe: None };
+    let mut it = parts.into_iter().map(|p| p.0);
+    let mut whole = it.next().unwrap();
+    for p in it {
+        whole.append(&p);
+    }
+    let tool = Tool { body: whole, combine: Combine::Cut, recipe: None };
     let r = br.combine(&tool.body, Combine::Cut, true);
     br.tools.push((f.id.clone(), std::rc::Rc::new(tool)));
     r

@@ -166,3 +166,46 @@ fn two_outer_shells_in_one_lump_are_flagged() {
     a.lumps[l1.idx()].alive = false;
     assert!(validate(&a, 1e-7).iter().any(|i| i.code == "SOLID_MULTIPLE_OUTERS"), "{:?}", validate(&a, 1e-7));
 }
+
+thread_local! { static NOW: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) }; }
+/// A clock that advances 10 ms per reading, so a budget runs out after a known number of reads.
+fn ticking() -> f64 {
+    NOW.with(|t| {
+        let v = t.get() + 10.0;
+        t.set(v);
+        v
+    })
+}
+
+#[test]
+fn unlimited_run_is_the_plain_validate() {
+    let b = box_body();
+    let ctl = Ctl::unlimited();
+    assert_eq!(validate_ctl(&b, 1e-7, DEFAULT_TOL_CAP, false, &ctl), validate(&b, 1e-7));
+    assert!(!ctl.exceeded() && ctl.not_run().is_empty() && ctl.partial().is_empty());
+    let names: Vec<_> = ctl.stats().iter().map(|s| s.0).collect();
+    assert_eq!(names, ["shell", "loops", "edges", "solids"]);
+}
+
+#[test]
+fn tiny_budget_stops_the_remaining_checks_and_names_them() {
+    ck_core::budget::set_clock(ticking);
+    NOW.with(|t| t.set(0.0));
+    let b = box_body();
+    let ctl = Ctl::new(Some(15.0)); // reads: start 10; shell stage's expired() 20 > 15 + start... see below
+    let _ = validate_ctl(&b, 1e-7, DEFAULT_TOL_CAP, false, &ctl);
+    assert!(ctl.exceeded());
+    let not_run = ctl.not_run();
+    assert!(not_run.contains(&"solids"), "{not_run:?}");
+    assert!(ctl.stats().len() + not_run.len() >= 4);
+}
+
+#[test]
+fn quick_leaves_out_crossings_and_solids() {
+    let mut b = box_body();
+    ck_topo::orient::flip_face(&mut b, FaceId(2));
+    let ctl = Ctl::unlimited();
+    let q = validate_ctl(&b, 1e-7, DEFAULT_TOL_CAP, true, &ctl);
+    assert!(q.iter().any(|i| i.code == "SHELL_ORIENTATION"));
+    assert_eq!(ctl.not_run(), ["loopCrossings", "solids"]);
+}

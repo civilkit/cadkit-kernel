@@ -38,7 +38,7 @@ These features copy, reflect, move and scale what earlier features made: `lpatte
 
 `lpattern`, `cpattern` and `mirror` copy **features**, not faces. A seed is the id of an earlier feature that made a tool solid: an `extrude`, `revolve`, `sphere`, `sweep`, `loft` or `hole`, or an earlier pattern. The copies of the tool are combined with the body in the same way as the seed was: copies of a cut are cut, copies of a boss are added. A copy that falls outside the body does nothing and is not an error. A seed that is not a tool-making feature, or does not exist, is `missingReference`; an empty `seeds` list is `noSeeds`.
 
-The faces of a copy carry the id of the pattern and the number of the copy: `F4.C0@F5.1`, `F4.S.e1@F5.2`. The copies are numbered from 1; the seed itself keeps its name. A pattern of a pattern chains the suffixes.
+The faces of a copy carry the id of the pattern and the number of the copy: `F4.C0@F5.1`, `F4.S.e1@F5.2`. The copies are numbered from 1; the seed itself keeps its name. A pattern of a pattern chains the suffixes. A pattern's tool is its seeds together with all of their copies, so a pattern whose `seeds` is another pattern copies the whole result of the first one, the first seed included: a row of 5 holes (`F4`, then `F5` with `count` 5) used as the seed of a second pattern along the other axis gives 5 x 5 = 25 holes, with `"seeds": ["F5"]` alone. (Earlier builds dropped the first seed from the copy rows and gave 21; listing both ids, `["F4", "F5"]`, was the way round it, and still gives the same result.)
 
 Threads on the seed's faces are copied to the copies too: see [edge and face edits](features-edits.md#thread). All three pattern features take `carryThreads` (default `true`) to switch this off; a `thread` feature id can also be listed in `seeds` to copy that thread alone.
 
@@ -85,6 +85,21 @@ Run result: no errors; 8 faces, volume 11886.9027 mm³. The copies go to negativ
 
 Run result: errors `F5`: `missingReference`; 8 faces, volume 11886.9027 mm³.
 
+
+### Large patterns
+
+The only fixed limit is `count`: more than 10000 instances in one pattern is `invalidValue`. Time is the limit that matters, and it depends on how the grid is made. Measured on a 3 mm pitch grid of through holes (radius 1) in a 2 mm plate, one `regen` on a built wasm in Node on a laptop; the times include building the mesh for the reply, and the volume of every run matches the analytic value to 1e-9. No clock was installed, so no budget could trigger; with a clock the default `featureTimeMs` of 120 s applies (see [robustness](../quality/robustness.md)).
+
+| Grid | Holes | `lpattern` of `lpattern` | One sketch of circles, one `extrude` cut | One sketch of points, one `hole` |
+|---|---|---|---|---|
+| 10 x 10 | 100 | 0.5 s | 0.3 s | 7.6 s |
+| 20 x 20 | 400 | 1.0 s | not measured | 131 s |
+| 30 x 30 | 900 | 2.1 s | 2.4 s | 748 s |
+| 50 x 50 | 2500 | 9.5 s | 14.5 s | not measured |
+
+Use `lpattern` or a cut of circles for grids. A `hole` feature with many points grows with the square of the point count: each new hole is united with the tool built so far when its box meets that tool's box, which in a grid happens from the second row on. Above about 300 points in one `hole` feature a regen with the default feature budget ends in `featureBudgetExceeded`.
+
+A two-dimensional grid is two patterns, and the second can name just the first: a pattern's tool is its seeds together with all of their copies, so `"seeds": ["F5"]` for the pattern along the second direction copies the whole first row, the seed included.
 
 ## cpattern
 

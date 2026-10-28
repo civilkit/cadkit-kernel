@@ -29,6 +29,36 @@ Some codes start with `TODO(rebuild)`. They mark a case that is not implemented 
 
 A second array, `warnings`, has the same shape. A warning does not stop the feature: the body is built and the warning says that something was approximated or chosen. Warnings appear in the reply only when there is at least one.
 
+## Misspelled fields
+
+A field that a feature does not read is ignored, so a misspelling leaves the default in force: `"depht": 10` on an `extrude` builds the 1e-6 slab of `depth: 0`, with no error. For the feature types in the table below, the driver compares the feature's fields with the names the type reads and adds an `unknownField` warning per feature that has others.
+
+```json
+["F2", { "code": "unknownField",
+         "params": { "detail": "extrude has no field `depht`; it is ignored",
+                     "fields": ["depht"],
+                     "suggest": { "depht": "depth" },
+                     "hint": "`depht` -> `depth`" } }]
+```
+
+The warning above is what the kernel returned for an `extrude` of a 10 x 10 square sketch that says `"depht": 10` and no `depth`.
+
+- It is a warning, never an error: the feature runs exactly as it would without the extra field, and the rest of the reply is unchanged. A part with no unknown fields has no `warnings` entry for this.
+- `fields` lists the unknown names in document order. `suggest` has an entry only for names within two edits of a known field (a swapped pair of letters counts as one edit; so does a difference of case).
+- Always accepted, for every feature: `id`, `type`, `num`, `name`, `suppressed`, the editor fields `group`, `autoName`, `visible`, `userHidden` and `after`, and the boolean fields `tolerance` and `autoFuzzy`. A `sketch` also carries the editor fields `seq`, `prop` and `gear`. Keys inside a field's value (the members of `thin`, `endRef` or an edge pick) are not checked.
+- A suppressed feature is not checked. A feature type that is not in the table is not checked; the table starts with the most used types and grows with the format.
+
+| Type | Fields it reads |
+|---|---|
+| `sketch` | `plane`, `points`, `entities`, `constraints` |
+| `extrude` | `sketch`, `op`, `end`, `depth`, `flip`, `draft`, `draftOut`, `twist`, `twistCentre`, `regions`, `thin`, `endRef`, `offset`, `strictEnd`, `body` |
+| `revolve` | `sketch`, `op`, `axis`, `angle`, `end`, `flip`, `regions`, `thin`, `body` |
+| `fillet` | `radius`, `edges`, `profile`, `propagate`, `filletType`, `radii`, `rho`, `rhos`, `shape`, `side1`, `center`, `side2` |
+| `chamfer` | `chamferType`, `distance`, `distance2`, `distance3`, `angle`, `face`, `flip`, `propagate`, `edges` |
+| `hole` | `sketch`, `standard`, `size`, `fit`, `kind`, `diameter`, `end`, `depth`, `tip`, `flip`, `cboreDiameter`, `cboreDepth`, `cskDiameter`, `cskAngle` |
+
+The list lives in one table in `ck-model` (`features/known_fields.rs`); a test checks that no part of the test corpus produces the warning.
+
 ## Reading the errors array
 
 - **Sorting.** Errors are sorted by the feature id compared as a string, so `F10` comes before `F3`. There is one entry per feature; a second error for the same feature replaces the first. To read them in the order the features ran, sort by the feature's position in the document.
@@ -149,7 +179,7 @@ The `verify` function of the agent driver package (`packages/driver`) wraps `reg
 
 ### Assemblies and bodies
 
-`insertPartMissing`, `insertPartErrors` (the nested part had errors), `insertPartEmpty`, `mateConflict`, `mateGeometry`, `mateSameBody`, `mateFixed`, `bodyNameConflict` (`name`, `features`), `ambiguousBody` (`name`, `candidates`), `combineEmpty` (`detail`), `threadSizeUnknown`, `threadFaceNotCylinder`, with the warnings `threadDiameterMismatch`, `threadModelFallback`, `threadNotCarried`.
+`insertPartMissing`, `insertPartErrors` (the nested part had errors), `mateConflict`, `mateGeometry`, `mateSameBody`, `mateFixed`, `bodyNameConflict` (`name`, `features`), `ambiguousBody` (`name`, `candidates`), `combineEmpty` (`detail`), `threadSizeUnknown`, `threadFaceNotCylinder`, with the warnings `threadDiameterMismatch`, `threadModelFallback`, `threadNotCarried`.
 
 ### Budgets and repair
 

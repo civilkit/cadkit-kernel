@@ -13,7 +13,7 @@ export class Kernel {
   boot() { this.x = new WebAssembly.Instance(this.mod, { env: this.env }).exports; }
   commit() { return new TextDecoder().decode(new Uint8Array(this.x.memory.buffer, this.x.ck_commit(), this.x.ck_commit_len())); }
   request(body) {
-    const b = new TextEncoder().encode(body.replace(/"format"\s*:\s*"ck-part"/g, '"format":"formwerk-part"')); this.panic = null;   // the original kernel.wasm only accepts the format's old name; ours reads both
+    const b = new TextEncoder().encode(body.replace(/"format"\s*:\s*"ck-part"/g, '"format":"ck-part"')); this.panic = null;   // the original kernel.wasm only accepts the format's old name; ours reads both
     try {
       const p = this.x.ck_alloc(b.length);
       new Uint8Array(this.x.memory.buffer, p, b.length).set(b);

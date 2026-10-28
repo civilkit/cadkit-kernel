@@ -10,11 +10,10 @@
 //! * `surfacePlanar` is one face `F.P` (plane normal = sketch normal) with
 //!   the profile's edges in entity order.
 
-use super::extrude::{profile_seg, sketch_profile, MISSING_AXIS, MIN_DEPTH};
+use super::extrude::{profile_seg, sketch_axis, sketch_profile, MISSING_AXIS, MIN_DEPTH};
 use super::{Brep, End, FeatureKind};
 use crate::regen::{codes, FeatureError, RegenState, SketchResult};
 use crate::sketch::profile::open_chains;
-use crate::sketch::SketchEntity;
 use crate::Feature;
 use ck_geom::Vec3;
 use ck_topo::body::{Body, FaceId, FaceName, Role};
@@ -119,7 +118,7 @@ pub fn exec_surface_revolve(br: &mut Brep, state: &mut RegenState, f: &Feature) 
     let (o, d) = f
         .raw
         .get("axis")
-        .and_then(|a| sketch_axis(sk, a))
+        .and_then(|a| sketch_axis(state, sk, a))
         .ok_or_else(|| FeatureError::new(MISSING_AXIS))?;
     let profile = sheet_profile(sk, true)?;
     if crosses_axis(&profile, o, d) {
@@ -144,17 +143,6 @@ pub fn exec_surface_revolve(br: &mut Brep, state: &mut RegenState, f: &Feature) 
     let sheet = ck_ops::surfacing::sheet::sheet(&solid, &side_faces(&solid));
     br.set_surface(&f.id, sheet);
     Ok(())
-}
-
-fn sketch_axis(sk: &SketchResult, axis: &ck_json::Json) -> Option<(Vec3, Vec3)> {
-    let id = axis.as_str()?;
-    let SketchEntity::Line { p1, p2, .. } = sk.sketch.entity(id)? else { return None };
-    let (a, b) = (sk.sketch.point_xy(p1)?, sk.sketch.point_xy(p2)?);
-    let fr = &sk.frame;
-    let w = |p: [f64; 2]| fr.o + fr.x * p[0] + fr.y * p[1];
-    let (a, b) = (w(a), w(b));
-    let d = (b - a).try_normalize()?;
-    Some((a, d))
 }
 
 pub fn exec_surface_planar(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {

@@ -184,7 +184,7 @@ fn view_snapshot_and_face_cache_are_transparent() {
 
 // ---------------------------------------------------------------- cosmetic fields (docs/regen-cache.md)
 
-const COSMETIC: [&str; 5] = ["group", "name", "autoName", "visible", "userHidden"];
+const COSMETIC: [&str; 6] = ["group", "name", "autoName", "visible", "userHidden", "color"];
 
 fn doc(extra_features: bool) -> Json {
     let mut j = ck_json::parse(include_str!("fixtures/dome_cap.ckpart").trim()).unwrap();
@@ -332,6 +332,35 @@ fn cosmetic_keys_reach_the_reply_only_through_sketch_echoes() {
         let ja = a[(4 + u32::from_le_bytes([a[0], a[1], a[2], a[3]]) as usize + 7) & !7..].to_vec();
         let jb = b[(4 + u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize + 7) & !7..].to_vec();
         assert_eq!(ja, jb, "buffers (meshes) do not depend on them");
+    })
+    .join()
+    .unwrap();
+}
+
+/// Appearance-only edits (docs/regen-cache.md, issue 29): a feature colour or name and the part's name / material label
+/// are full hits and the reply (mesh buffers included) is that of a cold run.
+#[test]
+fn appearance_only_edits_are_full_hits_with_unchanged_mesh() {
+    std::thread::spawn(|| {
+        let mut base = doc(false);
+        let n = base.get("features").and_then(|f| f.as_arr()).unwrap().len();
+        set_key(&mut base, "material", Some(Json::Str("steel".into())));
+        let b = regen(&ck_json::to_string(&base), STATS, "main");
+        assert_eq!(stats(&b).get_f64("ranFeatures"), Some(n as f64));
+        let mut e = base.clone();
+        for f in feats(&mut e).iter_mut() {
+            set_key(f, "color", Some(ck_json::parse("[0.2,0.4,0.9]").unwrap()));
+            set_key(f, "name", Some(Json::Str("Painted".into())));
+        }
+        set_key(&mut e, "name", Some(Json::Str("Renamed part".into())));
+        set_key(&mut e, "material", Some(Json::Str("brass".into())));
+        let es = ck_json::to_string(&e);
+        let r = regen(&es, STATS, "main");
+        let st = stats(&r);
+        assert_eq!(st.get_bool("fullHit"), Some(true), "{}", ck_json::to_string(&st));
+        assert_eq!(st.get_f64("ranFeatures"), Some(0.0));
+        assert_eq!(norm(&r).1, norm(&b).1, "mesh unchanged");
+        assert_eq!(norm(&r), norm(&cold(&es, STATS)));
     })
     .join()
     .unwrap();

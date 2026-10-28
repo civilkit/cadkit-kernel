@@ -37,6 +37,7 @@ strings from kernel.strings, and dispatch to ck-ops/ck-topo.
 | refPlane | mode, base, offset, flip, visible |
 | deleteBody | bodies[] ({face}/{surface}/{body}) |
 | thread | face (cylinder face name), standard, size (validated against `crate::threads`), class, length (number or "full"), hand, start, modeled. Cosmetic: a `threads` entry + `warnings` (threadDiameterMismatch, threadModelFallback) in the regen result; modeled: helical groove tool cut from the body, faces `<id>.T0..T5` |
+| knurlBand | axis, center[2], radius, from, to, pattern(diamond/pyramid), count or pitch, depth, angle, helixAngle, ringPitch; a diamond or pyramid knurl built as faces and cut in one boolean, faces `<id>.K<n>` (knurl_band.rs, docs/knurl-band.md) |
 | moveFace | faces[], mode(offset/translate), distance, translate[x,y,z], flip. Offsets / translates faces via ck-ops `move_faces_body`; neighbours extend, tangent fillets travel, names unchanged; errors noFaces, missingReference, moveFaceUnsupported, moveFaceFailed (move_face.rs) |
 | moveBody | bodies[]({face}/{surface}/{feature}/{body}, default all), translate[x,y,z], rotate{axis,origin,angle deg}, copy, body (name of the copies when copy:true); rigid, names unchanged (copy: `@<id>.1`); `{feature}`/bare non-face id = lumps of faces made by that feature incl. `@...` copies (move_body.rs) |
 | pipeCut | radius(expr), edges[{faces,at}], faces[] (all their rim edges); the picks may sit in the solid or in a surface body; the result is a SURFACE body registered under the feature id (solid disappears) |
@@ -56,7 +57,7 @@ strings from kernel.strings, and dispatch to ck-ops/ck-topo.
 ## Error strings (kernel.strings, verbatim per feature)
 
 - sweep: sweepPathInvalid, sweepProfileNotNormal, sweepGuideMissing,
-  sweepGuidesTwist, sweepGuideShort, sweepGuideStretchTwo, sweepSelfIntersects, sweepFailed
+  sweepGuidesTwist, sweepGuideShort, sweepGuideStretchTwo, sweepFailed
 - loft: loftProfile, loftProfileOpen, loftProfileChains, loftGuideInvalid, loftGuideMiss,
   loftGuideOrder, loftGuideTangency, loftCentreLineInvalid/Tight/Reach/Kink/Apex/Guides, loftFailed, loftInvalidResult
 - shell: shellTooThick, shellUnsupported, shellFailed, offsetUnsupported (shellTooThick / shellFailed / moveFace* carry `limit`, `minRadius`, `maxThickness`, `face` when known)
@@ -69,6 +70,7 @@ strings from kernel.strings, and dispatch to ck-ops/ck-topo.
 - knit: knitNotClosed, knitNearMiss, knitFailed, knitted
 - fill: fillNotClosed, fillInvalid, fillFailed, fillCrosses, fillContinuity
 - thicken: thickenFailed, thickenPointedPole, thickenReach
+- knurlBand: invalidValue {field, detail}, knurlBandTooLarge, knurlBandInvalid {detail}, nothingToCut, cutNoEffect, booleanFailed
 - thread: threadSizeUnknown, threadFaceNotCylinder (warnings: threadDiameterMismatch, threadModelFallback)
 - pipeCut: pipeCutRadius, pipeCutFailed, pipeCutNothingLeft, alignPipeCutOneBody
 - projectCurve: projectCurveNoInput, projectCurveNoFaces, projectCurveMisses,

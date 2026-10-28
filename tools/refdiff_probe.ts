@@ -1,7 +1,7 @@
 // Where does a cached refDiff spend its time? Fixed cost (identical documents), last-feature edit, middle edit. REPRO_DOC=path
 import { readFileSync } from 'node:fs';
-import { Session } from '@fw/session';
-import type { PartDoc } from '@fw/part-model';
+import { Session } from '@ck/session';
+import type { PartDoc } from '@ck/part-model';
 const doc = JSON.parse(readFileSync(process.env.REPRO_DOC!, 'utf8'));
 const s = await Session.open(doc as PartDoc);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

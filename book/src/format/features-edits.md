@@ -116,6 +116,8 @@ Bevels edges.
 | `edges` | list of edge picks | required | For `vertex`: one pick `{"faces": [f1, f2, f3], "at": [..]}` naming the three faces of the corner. |
 | `distance3` | number or expression | `distance` | `vertex`: the third leg (`distance2` is the second). |
 
+A chamfer has constant legs along its edge: there is no variable chamfer (setbacks that differ at the two ends of an edge). A variable `fillet` has `radii`. The order of the `edges` list does not change the result.
+
 For `distances` and `angle`, `distance` is measured on the first face of the pick (the first entry of `faces`) unless `face` names it. Picks of one feature must agree on which face comes first (mixed orders are `unsupported`); naming `face` makes a ring of edges agree.
 
 Faces: `B0`, `B1`, ... per chamfered edge.
@@ -268,6 +270,8 @@ Cuts holes at the `point` entities of a sketch, into the face the sketch lies on
 | `flip` | boolean | `false` | Cut along the sketch normal instead of against it. |
 | `cboreDiameter`, `cboreDepth` | number or expression | table | Counterbore size. Each is independent. |
 | `cskDiameter`, `cskAngle` | number or expression | table, `90` | Countersink head diameter and included angle in degrees. |
+
+**Many points.** One `hole` feature takes any number of points; the cost grows about in step with the number of holes. Each hole is a separate tool solid; a hole is united with another only when the two overlap or touch, and all the tools are then cut from the body in one step. (Earlier builds folded every hole into one growing union, which made the time grow with the square of the number of points: 10 x 10 holes took 7.6 s, 20 x 20 about 131 s and 30 x 30 about 748 s.) On the build machine a 30 x 30 grid of through holes in one feature (900 holes, 906 faces) now takes about 3.3 s, 20 x 20 about 1.2 s and 10 x 10 under 0.1 s. The faces, their names and the volume are the same as before. Above a few hundred points the default feature time limit (when a clock is present) can still trip on a slow machine; split the points over several `hole` features or raise the limit.
 
 The hole diameter by size and fit, and the head sizes (mm):
 
@@ -422,8 +426,8 @@ Puts a thread on a cylindrical face: the wall of a hole or a shaft. By default i
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `face` | face name | required | A cylindrical face, for example `F4.S.h1`. A missing face is `missingReference`; a face that is not a cylinder is `threadFaceNotCylinder`. |
-| `standard` | string | required | `metric`, `metric-fine`, `UNC`, `UNF`, `BSP`, `NPT`, `Tr` or `Acme` (aliases such as `ISO`, `G` are accepted). |
-| `size` | string | required | A designation from the table of the standard, for example `M6`, `1/4-20`, `G1/4`. The `threadData` request lists them. |
+| `standard` | string | required | `metric`, `metric-fine`, `UNC`, `UNF`, `BSP`, `BSPT`, `NPT`, `Tr` or `Acme` (aliases such as `ISO`, `G` are accepted). |
+| `size` | string | required | A designation from the table of the standard, for example `M6`, `1/4-20`, `G1/4`, `R1/4`. The `threadData` request lists them. |
 | `class` | string | `6H`, `6g`, `2B`, `2A`, ... | Tolerance class. Recorded; it does not change the geometry. |
 | `length` | number, expression or `"full"` | `"full"` | Thread length in mm, clamped to the face. Zero or less is `invalidValue`. |
 | `hand` | string | `"right"` | `right` or `left`. |
@@ -432,9 +436,9 @@ Puts a thread on a cylindrical face: the wall of a hole or a shaft. By default i
 
 Internal or external is read from the face (concave is internal). A cosmetic thread changes nothing in the body; the reply gains a `threads` list sorted by feature id, one entry per thread with `id`, `face`, `standard`, `size`, `class`, `pitch`, `major`, `minor`, `pitchDiameter`, `angle`, `length`, `hand`, `internal`, `modeled`, `tapered`, `diameter` (of the face), and `start` and `dir` (a point on the axis and the unit direction into the face).
 
-A modeled thread cuts a trapezoidal groove (flank angle 60 for ISO and UN, 55 for BSP, 30 for Tr, 29 for Acme) with flat crests and roots. The groove faces are `T0` to `T5` (`T0` the inner or outer surface, `T1` and `T3` the flanks, `T2` root or bottom, `T4` and `T5` the end caps); those that lie in the void do not remain in the body. A thread that cannot be modeled stays cosmetic and the feature carries `threadModelFallback {reason, hint}`: tapered threads (NPT), a groove of more than 60 turns, a length shorter than one turn, a bore or shaft that does not match the thread, or a failed boolean.
+A modeled thread cuts a trapezoidal groove (flank angle 60 for ISO and UN, 55 for BSP, 30 for Tr, 29 for Acme) with flat crests and roots. The groove faces are `T0` to `T5` (`T0` the inner or outer surface, `T1` and `T3` the flanks, `T2` root or bottom, `T4` and `T5` the end caps); those that lie in the void do not remain in the body. A thread that cannot be modeled stays cosmetic and the feature carries `threadModelFallback {reason, hint}`: tapered threads (BSPT, NPT), a groove of more than 60 turns, a length shorter than one turn, a bore or shaft that does not match the thread, or a failed boolean.
 
-An internal thread wants the face diameter within 3 percent of the tap drill, an external one within 3 percent of the major diameter; otherwise the feature carries a warning `threadDiameterMismatch {expected, actual, size, standard, internal, nearest, hint}`. Patterns and mirrors carry the threads of their seeds onto the copies (see [patterns and transforms](features-patterns.md)).
+An internal thread wants the face diameter within 3 percent of the tap drill, an external one within 3 percent of the major diameter; otherwise the feature carries a warning `threadDiameterMismatch {expected, actual, size, standard, internal, nearest, hint}`. `BSP` is the parallel pipe thread G (ISO 228, G1/16 to G4); `BSPT` is the tapered pipe thread of ISO 7 (sizes `R1/16` to `R4`, and `Rp1/4` or `Rc1/4` find the same size). Both use the 55 degree form; a tapered size has a 1:16 taper on the diameter but is recorded as cosmetic data (`tapered: true`) and the real taper is not cut. Patterns and mirrors carry the threads of their seeds onto the copies (see [patterns and transforms](features-patterns.md)).
 
 ```json
 [

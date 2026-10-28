@@ -314,7 +314,7 @@ Sweeps the profile about an axis.
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `sketch` | feature id | required | The profile sketch. |
-| `axis` | string | required | The id of a line entity of the same sketch (it may be a construction line). Its direction is from `p1` to `p2`. Any other form is `missingAxis`. |
+| `axis` | string or object | required | A line entity of the profile's own sketch, by id (it may be a construction line), or a line of another sketch as `{"sketch": "<sketch id>", "id": "<line id>"}` (entity ids restart in each sketch, so the owner is named). Its direction is from `p1` to `p2`. Any other form, an unknown sketch or an unknown line is `missingAxis`. |
 | `op` | string | `"add"` | See above. |
 | `angle` | number or expression | `360` | Degrees; positive turns right-handed about the axis direction, negative the other way; 360 or more is a full turn. Zero is `invalidValue`. |
 | `end` | string | | Only `mid` is read: the sweep is centred on the sketch plane. |
@@ -367,6 +367,15 @@ Run result: no errors; 4 faces, volume 12566.3706 mm³. A tube with outer radius
 ```
 
 Run result: no errors; 6 faces, volume 3141.5927 mm³. A quarter of the tube, with faces `F2.C0`, `F2.C1`, `F2.S.e1`, `F2.S.e2`, `F2.S.e3`, `F2.S.e4`.
+
+
+The axis can be drawn in a different sketch. With the construction line `ax` moved into its own sketch `F0` (the same plane, a line from (0, 0) to (0, 20)) and left out of `F1`:
+
+```json
+{"type": "revolve", "id": "F2", "op": "add", "sketch": "F1", "axis": {"sketch": "F0", "id": "ax"}, "angle": 360}
+```
+
+Run result: no errors; 4 faces, volume 12566.3706 mm³, the same tube as with the axis inside `F1`. The axis line is read at its solved position in `F0` and placed by `F0`'s plane. `surfaceRevolve` takes the same forms.
 
 
 Moving the profile points `a` and `d` to x = -5 puts the profile on both sides of the axis:
@@ -506,7 +515,7 @@ A helix as a path (a coil of wire):
 Run result: no errors; 4 faces, volume 2220.661 mm³.
 
 
-Errors: `missingSketch`, `missingPath`, `sweepPathInvalid` (the path sketch is not one open chain), `sweepProfileNotNormal`, `noClosedProfile`, `nothingToCut`, `sweepSelfIntersects`, `sweepFailed`, `sweepGuideMissing`, `sweepGuidesTwist` (twist with guides), `sweepGuideShort`, `sweepGuideStretchTwo` and the other guide codes, `booleanFailed`.
+Errors: `missingSketch`, `missingPath`, `sweepPathInvalid` (the path sketch is not one open chain), `sweepProfileNotNormal`, `noClosedProfile`, `nothingToCut`, `sweepFailed`, `sweepGuideMissing`, `sweepGuidesTwist` (twist with guides), `sweepGuideShort`, `sweepGuideStretchTwo` and the other guide codes, `booleanFailed`.
 
 ## loft
 

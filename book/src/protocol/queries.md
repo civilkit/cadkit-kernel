@@ -43,6 +43,8 @@ Runs the independent solid validator, and a watertightness check of the display 
 | `tol` | number | `1e-6` | Geometric tolerance in mm. |
 | `healTolerance` | number | the validator's cap | The largest edge or vertex tolerance a body may carry before it counts as an issue. |
 | `mesh` | boolean | `true` | `false` skips the mesh check. |
+| `opts.validateTimeMs` | number | `60000` | Time budget in ms (`0`: unlimited). When it runs out the remaining checks are not run and the reply carries `validateBudgetExceeded`. |
+| `opts.quick` | boolean | `false` | Topology and bounding checks only (no volume checks, no mesh checks). |
 
 ```json
 { "type": "validate", "tag": "q" }
@@ -56,6 +58,9 @@ Runs the independent solid validator, and a watertightness check of the display 
 | `ok` | `true` when `issues` is empty. |
 | `issues` | `[{ code, entity, detail }]`: the check that failed, the entity it concerns (`F2.S.e1`, `edge#4`, `lump#0`) and a sentence. |
 | `toleranceUsed` | The largest edge or vertex tolerance in the body (0 for an exact body). |
+| `stats` | `{ totalMs, shell, loops, edges, solids, tessellation, ... }`: time in ms of the request and of each check that ran. |
+| `validateBudgetExceeded` | Only when the time budget ran out: `{ budgetMs, elapsedMs, checksNotRun, checksPartial, detail }`. `ok` is then `false`; `issues` holds what the checks that ran found. |
+| `quick`, `checksSkipped` | Only with `opts.quick`: `true` and the checks left out. |
 | `meshNotes` | Strings `"<face>: <note>"`, when the tessellator noted a problem on a face. Only when there are some. |
 | `info` | For a body with overlapping lumps: `{ code: "bodiesOverlap", severity: "info", a, b, aName?, bName?, volume }` for each overlapping pair. Overlap is legal and is never an issue. |
 | `notes` | A note when the body carries tolerances above zero. |

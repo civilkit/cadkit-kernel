@@ -1,0 +1,110 @@
+{
+ "format": "ck-part",
+ "version": 1,
+ "features": [
+  {
+   "type": "sketch",
+   "id": "F1",
+   "plane": {
+    "kind": "std",
+    "id": "top"
+   },
+   "points": [
+    {
+     "id": "a",
+     "x": 0,
+     "y": 0
+    },
+    {
+     "id": "b",
+     "x": 40,
+     "y": 0
+    },
+    {
+     "id": "c",
+     "x": 40,
+     "y": 40
+    },
+    {
+     "id": "d",
+     "x": 0,
+     "y": 40
+    }
+   ],
+   "entities": [
+    {
+     "type": "line",
+     "id": "e1",
+     "p1": "a",
+     "p2": "b"
+    },
+    {
+     "type": "line",
+     "id": "e2",
+     "p1": "b",
+     "p2": "c"
+    },
+    {
+     "type": "line",
+     "id": "e3",
+     "p1": "c",
+     "p2": "d"
+    },
+    {
+     "type": "line",
+     "id": "e4",
+     "p1": "d",
+     "p2": "a"
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "extrude",
+   "id": "F2",
+   "op": "add",
+   "sketch": "F1",
+   "end": "blind",
+   "depth": 20
+  },
+  {
+   "type": "sketch",
+   "id": "F3",
+   "plane": {
+    "kind": "face",
+    "id": "F2.C1"
+   },
+   "points": [
+    {
+     "id": "a",
+     "x": 20,
+     "y": 20
+    }
+   ],
+   "entities": [
+    {
+     "type": "point",
+     "id": "e1",
+     "p": "a"
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "hole",
+   "id": "H1",
+   "sketch": "F3",
+   "kind": "simple",
+   "diameter": 8,
+   "end": "through"
+  },
+  {
+   "type": "shell",
+   "id": "S",
+   "faces": [
+    "H1.S.h1"
+   ],
+   "thickness": 2
+  }
+ ]
+}

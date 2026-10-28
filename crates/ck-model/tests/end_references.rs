@@ -319,3 +319,30 @@ fn warnings_reach_the_wire_and_survive_json() {
     assert_eq!(w.len(), 1);
     assert!(ck_json::to_string(&w[0]).contains("endConditionFallback"));
 }
+
+#[test]
+fn up_to_face_parallel_to_the_extrusion_is_unreachable_not_run_through() {
+    // the block's right side (x = 40) lies along the boss's extrusion (+y) and covers only part of the profile (x 35..45)
+    let base = run(&block(20.0));
+    let side = base.plane_at(Vec3::X, Vec3::new(40.0, 0.0, 0.0));
+    for end in ["upToFace", "offsetFromFace"] {
+        let r = run(&boss(&format!(r#""end":"{end}","endRef":"{side}","offset":2,"depth":3"#)));
+        assert!(r.errors().is_empty(), "{end}: {:?}", r.errors());
+        let w = r.warning("endConditionFallback").expect("fallback warning");
+        assert_eq!(Run::param(w, "reason").and_then(|v| v.as_str()), Some("upToFaceBehind"));
+        assert!(near(r.volume - base.volume, 5.0 * 10.0 * 3.0, 1e-3), "{end}: blind 3 mm instead: {}", r.volume - base.volume);
+        // strictEnd turns it into a clear error
+        let r = run(&boss(&format!(r#""end":"{end}","endRef":"{side}","offset":2,"depth":3,"strictEnd":true"#)));
+        assert!(r.errors()[0].starts_with("F4:upToFaceBehind"), "{end}: {:?}", r.errors());
+    }
+    // the same for a cut: nothing is removed beyond the blind depth
+    let cut = format!(
+        r#"{},{},{{"type":"extrude","id":"F6","op":"cut","sketch":"F5","flip":true,"end":"upToFace","endRef":"{side}","depth":4}}"#,
+        block(20.0),
+        rect("F5", TOP, 35.0, 10.0, 45.0, 20.0)
+    );
+    let r = run(&cut);
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    assert!(r.warning("endConditionFallback").is_some());
+    assert!(near(base.volume - r.volume, 5.0 * 10.0 * 4.0, 1e-3), "{}", base.volume - r.volume);
+}

@@ -22,11 +22,29 @@ fn arr(v: Vec3) -> Json {
 /// A copy of `body` holding only lump `keep`.
 pub fn extract_lump(body: &Body, keep: LumpId) -> Body {
     let mut b = body.clone();
-    let keep_faces = ck_topo::mass::lump_faces(body, keep);
+    let mut keep_face = vec![false; body.faces.len()];
+    for f in ck_topo::mass::lump_faces(body, keep) {
+        keep_face[f.idx()] = true;
+    }
+    // what `ck_topo::edit::delete_face` does per face, with the dangling-entity sweep (`gc`) run once at the end
+    let mut any = false;
     for f in body.face_ids().collect::<Vec<_>>() {
-        if !keep_faces.contains(&f) {
-            ck_topo::edit::delete_face(&mut b, f);
+        if keep_face[f.idx()] {
+            continue;
         }
+        any = true;
+        b.faces[f.idx()].alive = false;
+        let sh = b.faces[f.idx()].shell;
+        b.shells[sh.idx()].faces.retain(|&x| x != f);
+        for l in b.faces[f.idx()].loops.clone() {
+            b.loops[l.idx()].alive = false;
+            for c in b.loops[l.idx()].coedges.clone() {
+                b.coedges[c.idx()].alive = false;
+            }
+        }
+    }
+    if any {
+        ck_topo::edit::gc(&mut b);
     }
     for l in body.lump_ids().collect::<Vec<_>>() {
         if l != keep {
@@ -39,22 +57,39 @@ pub fn extract_lump(body: &Body, keep: LumpId) -> Body {
     b
 }
 
-fn boxes_overlap(a: &Body, b: &Body) -> bool {
-    let ((alo, ahi), (blo, bhi)) = (a.bbox(), b.bbox());
+fn boxes_overlap(a: &(Vec3, Vec3), b: &(Vec3, Vec3)) -> bool {
+    let ((alo, ahi), (blo, bhi)) = (a, b);
     alo.x <= bhi.x + TOL && blo.x <= ahi.x + TOL && alo.y <= bhi.y + TOL && blo.y <= ahi.y + TOL && alo.z <= bhi.z + TOL && blo.z <= ahi.z + TOL
 }
 
 /// The `interference` reply.
 pub fn reply(body: &Body) -> Json {
     let lumps: Vec<LumpId> = body.lump_ids().collect();
-    let parts: Vec<Body> = lumps.iter().map(|&l| extract_lump(body, l)).collect();
+    // Each lump's box without building its single-lump copy (that copy costs a pass over the body per lump); the copies
+    // are made only for lumps whose box meets another's.
+    let live = body.face_ids().count();
+    let boxes: Vec<(Vec3, Vec3)> = lumps
+        .iter()
+        .map(|&l| {
+            let fs = ck_topo::mass::lump_faces(body, l);
+            // a lump that owns every live face leaves nothing to delete (and nothing for the sweep to drop)
+            if fs.len() == live { body.bbox() } else { body.bbox_of_faces(&fs) }
+        })
+        .collect();
+    let mut parts: Vec<Option<Body>> = lumps.iter().map(|_| None).collect();
     let first_face = |l: LumpId| ck_topo::mass::lump_faces(body, l).first().map(|&f| body.face_id_str(f)).unwrap_or_default();
     let mut pairs = vec![];
-    for i in 0..parts.len() {
-        for j in i + 1..parts.len() {
-            if !boxes_overlap(&parts[i], &parts[j]) {
+    for i in 0..lumps.len() {
+        for j in i + 1..lumps.len() {
+            if !boxes_overlap(&boxes[i], &boxes[j]) {
                 continue;
             }
+            for k in [i, j] {
+                if parts[k].is_none() {
+                    parts[k] = Some(extract_lump(body, lumps[k]));
+                }
+            }
+            let (pi, pj) = (parts[i].as_ref().unwrap(), parts[j].as_ref().unwrap());
             let mut rec = Obj::new().put("a", first_face(lumps[i])).put("b", first_face(lumps[j]));
             // body names (docs/adr/0004), only on lumps that have one
             if let Some(n) = &body.lump(lumps[i]).name {
@@ -63,7 +98,7 @@ pub fn reply(body: &Body) -> Json {
             if let Some(n) = &body.lump(lumps[j]).name {
                 rec = rec.put("bName", n.as_str());
             }
-            match boolean(&parts[i], &parts[j], Op::Intersect, TOL) {
+            match boolean(pi, pj, Op::Intersect, TOL) {
                 Ok(out) if out.body.num_faces() > 0 => {
                     let mp = ck_topo::mass::mass_props(&out.body);
                     if mp.volume.abs() < 1e-9 {
@@ -99,5 +134,36 @@ mod tests {
         let r = reply(&over);
         let p = &r.get_arr("pairs").unwrap()[0];
         assert!((p.get_f64("volume").unwrap().abs() - 250.0).abs() < 1e-6, "{}", ck_json::to_string(p));
+    }
+
+    /// The one-gc extraction and the box without a copy agree with the per-face `delete_face` extraction they replace.
+    #[test]
+    fn extraction_and_lump_box_match_the_per_face_deletion() {
+        let mut body = box_body("F2", 0.0, 0.0, 10.0, 10.0, 0.0, 10.0);
+        body.append(&box_body("F4", 5.0, 5.0, 15.0, 15.0, 0.0, 10.0));
+        body.append(&box_body("F6", 30.0, 0.0, 40.0, 10.0, 0.0, 12.0));
+        for l in body.lump_ids().collect::<Vec<_>>() {
+            let keep = ck_topo::mass::lump_faces(&body, l);
+            let mut old = body.clone();
+            for f in body.face_ids().collect::<Vec<_>>() {
+                if !keep.contains(&f) {
+                    ck_topo::edit::delete_face(&mut old, f);
+                }
+            }
+            for o in body.lump_ids().collect::<Vec<_>>() {
+                if o != l {
+                    old.lumps[o.idx()].alive = false;
+                    for s in old.lumps[o.idx()].shells.clone() {
+                        old.shells[s.idx()].alive = false;
+                    }
+                }
+            }
+            let new = extract_lump(&body, l);
+            assert_eq!(new.face_ids().collect::<Vec<_>>(), old.face_ids().collect::<Vec<_>>());
+            assert_eq!(new.edge_ids().collect::<Vec<_>>(), old.edge_ids().collect::<Vec<_>>());
+            assert_eq!(new.vertex_ids().collect::<Vec<_>>(), old.vertex_ids().collect::<Vec<_>>());
+            assert_eq!(new.bbox(), old.bbox());
+            assert_eq!(body.bbox_of_faces(&keep), old.bbox());
+        }
     }
 }

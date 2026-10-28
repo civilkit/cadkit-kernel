@@ -625,12 +625,17 @@ pub fn todo(what: &str) -> String {
     format!("TODO(rebuild): {what} needs ck-ops")
 }
 
-/// Revolve axis: a line entity of the sketch, in world coordinates.
-pub(super) fn sketch_axis(sk: &SketchResult, axis: &Json) -> Option<(Vec3, Vec3)> {
-    let id = axis.as_str()?;
-    let SketchEntity::Line { p1, p2, .. } = sk.sketch.entity(id)? else { return None };
-    let (a, b) = (sk.sketch.point_xy(p1)?, sk.sketch.point_xy(p2)?);
-    let fr = &sk.frame;
+/// Revolve axis, in world coordinates: a line entity id of the profile's own sketch, or
+/// `{"sketch": <sketch id>, "id": <line id>}` for a line of another sketch (entity ids restart in
+/// each sketch, so the owner is named).
+pub(super) fn sketch_axis(state: &RegenState, sk: &SketchResult, axis: &Json) -> Option<(Vec3, Vec3)> {
+    let (owner, id) = match axis {
+        Json::Str(id) => (sk, id.as_str()),
+        _ => (state.sketch(axis.get("sketch")?.as_str()?)?, axis.get("id")?.as_str()?),
+    };
+    let SketchEntity::Line { p1, p2, .. } = owner.sketch.entity(id)? else { return None };
+    let (a, b) = (owner.sketch.point_xy(p1)?, owner.sketch.point_xy(p2)?);
+    let fr = &owner.frame;
     let w = |p: [f64; 2]| fr.o + fr.x * p[0] + fr.y * p[1];
     let (a, b) = (w(a), w(b));
     let d = (b - a).try_normalize()?;
@@ -645,7 +650,7 @@ pub fn exec_revolve(state: &RegenState, f: &Feature, has_body: bool) -> Result<T
     let (o, d) = f
         .raw
         .get("axis")
-        .and_then(|a| sketch_axis(sk, a))
+        .and_then(|a| sketch_axis(state, sk, a))
         .ok_or_else(|| FeatureError::new(MISSING_AXIS))?;
     let (profile, _) = super::thin::feature_profile(state, sk, f)?;
     // pinned: a region on both sides of the axis -> profileCrossesAxis (no params)

@@ -759,47 +759,74 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
             let tol = cx.msg.get_f64("tol").unwrap_or(1e-6);
             let cap = cx.msg.get_f64("healTolerance").unwrap_or(ck_check::DEFAULT_TOL_CAP);
             let body = &snapshot(cx)?.body;
-            let mut iss = ck_check::validate_cap(body, tol, cap);
+            // `opts.validateTimeMs`: wall-clock budget in ms (default 60 s, `0` = unlimited); `opts.quick`: topology and bounding
+            // checks only
+            let vo = cx.msg.get("opts");
+            let limit = vo.and_then(|o| o.get_f64("validateTimeMs")).unwrap_or(DEFAULT_VALIDATE_MS);
+            let quick = vo.and_then(|o| o.get_bool("quick")).unwrap_or(false);
+            let ctl = ck_check::Ctl::new(Some(limit));
+            let mut iss = ck_check::validate_ctl(body, tol, cap, quick, &ctl);
             let mut mesh_notes: Vec<String> = vec![];
             // an independent witness that the B-rep claim holds: the display mesh of a valid solid is watertight (the
             // validate request only, never regen; `mesh:false` skips it). Since the tessellator's periodic-face and
             // unclosed-loop fixes no gate-corpus part or kit sample fires it.
-            if cx.msg.get_bool("mesh") != Some(false) {
-                let mesh = ck_tess::mesh::tessellate(body).mesh;
-                iss.extend(ck_check::tessellation::check_mesh_why(body, &mesh.positions, &mesh.tri_face, &mesh.failed, &mesh.failed_why));
-                let ids: Vec<_> = body.face_ids().collect();
-                mesh_notes = mesh.notes.iter().filter_map(|(i, t)| ids.get(*i).map(|&f| format!("{}: {}", body.face_id_str(f), t))).collect();
+            if quick {
+                for n in ["tessellation", "meshAreaWitness", "meshOpenEdges"] {
+                    ctl.skip(n);
+                }
+            } else if cx.msg.get_bool("mesh") != Some(false) {
+                if let Some(mesh) = ctl.stage("tessellation", || ck_tess::mesh::tessellate(body).mesh) {
+                    iss.extend(ck_check::tessellation::check_mesh_ctl(body, &mesh.positions, &mesh.tri_face, &mesh.failed, &mesh.failed_why, &ctl));
+                    let ids: Vec<_> = body.face_ids().collect();
+                    mesh_notes = mesh.notes.iter().filter_map(|(i, t)| ids.get(*i).map(|&f| format!("{}: {}", body.face_id_str(f), t))).collect();
+                } else {
+                    ctl.skip("meshAreaWitness");
+                    ctl.skip("meshOpenEdges");
+                }
             }
             let arr = iss
                 .iter()
                 .map(|i| Obj::new().put("code", i.code).put("entity", i.entity.as_str()).put("detail", i.detail.as_str()).build())
                 .collect();
             let used = ck_check::tolerance_used(body);
-            let mut o = Obj::new().put("ok", iss.is_empty()).put("issues", Json::Arr(arr)).put("toleranceUsed", used);
+            // lumps that overlap are legal (`moveBody`, `newBody`): reported as info, never as an issue
+            let mut overlap: Vec<Json> = vec![];
+            if body.num_lumps() > 1 {
+                if quick {
+                    ctl.skip("overlap");
+                } else if let Some(v) = ctl.stage("overlap", || overlap_info(body)) {
+                    overlap = v;
+                }
+            }
+            let exceeded = ctl.exceeded();
+            // a run cut short by its budget is not a clean bill of health: `ok` is false and `validateBudgetExceeded` says why
+            let mut o = Obj::new().put("ok", iss.is_empty() && !exceeded).put("issues", Json::Arr(arr)).put("toleranceUsed", used);
+            if exceeded {
+                let names = |v: Vec<&'static str>| Json::Arr(v.into_iter().map(|n| Json::Str(n.to_string())).collect());
+                o = o.put(
+                    "validateBudgetExceeded",
+                    Obj::new()
+                        .put("budgetMs", ctl.limit_ms())
+                        .put("elapsedMs", ctl.elapsed_ms())
+                        .put("checksNotRun", names(ctl.not_run()))
+                        .put("checksPartial", names(ctl.partial()))
+                        .put("detail", "validate used up its time budget (opts.validateTimeMs); the checks listed did not run or stopped early, so issues found so far are reported but the body is not fully validated. Raise validateTimeMs (0 = unlimited) or use opts.quick")
+                        .build(),
+                );
+            }
+            if quick {
+                o = o.put("quick", true).put("checksSkipped", Json::Arr(ctl.not_run().into_iter().map(|n| Json::Str(n.to_string())).collect()));
+            }
+            let mut st = Obj::new().put("totalMs", ctl.elapsed_ms());
+            for (n, ms) in ctl.stats() {
+                st = st.put(n, ms);
+            }
+            o = o.put("stats", st.build());
             if !mesh_notes.is_empty() {
                 o = o.put("meshNotes", Json::Arr(mesh_notes.into_iter().map(Json::Str).collect()));
             }
-            // lumps that overlap are legal (`moveBody`, `newBody`): reported as info, never as an issue
-            if body.num_lumps() > 1 {
-                let info: Vec<Json> = ck_ops::interference::reply(body)
-                    .get_arr("pairs")
-                    .map(|ps| ps.to_vec())
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter(|p| p.get_f64("volume").is_some_and(|v| v.abs() > 1e-9))
-                    .map(|p| {
-                        let mut o = Obj::new().put("code", "bodiesOverlap").put("severity", "info");
-                        for k in ["a", "b", "aName", "bName"] {
-                            if let Some(v) = p.get(k) {
-                                o = o.put(k, v.clone());
-                            }
-                        }
-                        o.put("volume", p.get_f64("volume").unwrap_or(0.0).abs()).build()
-                    })
-                    .collect();
-                if !info.is_empty() {
-                    o = o.put("info", Json::Arr(info));
-                }
+            if !overlap.is_empty() {
+                o = o.put("info", Json::Arr(overlap));
             }
             if used > 0.0 {
                 let note = format!("body carries edge/vertex tolerances up to {used:.3e} mm (cap {cap:.3e})");
@@ -1085,4 +1112,27 @@ fn recognize_query(cx: &mut Cx) -> Result<Json, String> {
         cx.session.put(&tag, State { has_body: true, data: Some(Box::new(snap)) });
     }
     Ok(out)
+}
+
+/// Default `opts.validateTimeMs` (ms).
+const DEFAULT_VALIDATE_MS: f64 = 60_000.0;
+
+/// The `bodiesOverlap` info records of `validate`: one per pair of overlapping lumps.
+fn overlap_info(body: &Body) -> Vec<Json> {
+    ck_ops::interference::reply(body)
+        .get_arr("pairs")
+        .map(|ps| ps.to_vec())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|p| p.get_f64("volume").is_some_and(|v| v.abs() > 1e-9))
+        .map(|p| {
+            let mut o = Obj::new().put("code", "bodiesOverlap").put("severity", "info");
+            for k in ["a", "b", "aName", "bName"] {
+                if let Some(v) = p.get(k) {
+                    o = o.put(k, v.clone());
+                }
+            }
+            o.put("volume", p.get_f64("volume").unwrap_or(0.0).abs()).build()
+        })
+        .collect()
 }

@@ -1,0 +1,92 @@
+{
+ "format": "ck-part",
+ "version": 1,
+ "features": [
+  {
+   "type": "sketch",
+   "id": "F1",
+   "plane": {
+    "kind": "std",
+    "id": "front"
+   },
+   "points": [
+    {
+     "id": "o",
+     "x": 0,
+     "y": 0
+    },
+    {
+     "id": "b",
+     "x": 20,
+     "y": 0
+    },
+    {
+     "id": "c",
+     "x": 10,
+     "y": 30
+    },
+    {
+     "id": "q",
+     "x": 0,
+     "y": 30
+    },
+    {
+     "id": "p",
+     "x": 0,
+     "y": 50
+    }
+   ],
+   "entities": [
+    {
+     "type": "line",
+     "id": "ax",
+     "p1": "o",
+     "p2": "p",
+     "construction": true
+    },
+    {
+     "type": "line",
+     "id": "e1",
+     "p1": "o",
+     "p2": "b"
+    },
+    {
+     "type": "line",
+     "id": "e2",
+     "p1": "b",
+     "p2": "c"
+    },
+    {
+     "type": "line",
+     "id": "e3",
+     "p1": "c",
+     "p2": "q"
+    },
+    {
+     "type": "line",
+     "id": "e4",
+     "p1": "q",
+     "p2": "o"
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "revolve",
+   "id": "F2",
+   "op": "add",
+   "sketch": "F1",
+   "axis": "ax",
+   "end": "blind",
+   "angle": 360
+  },
+  {
+   "type": "shell",
+   "id": "S",
+   "faces": [
+    "F2.S.e3"
+   ],
+   "thickness": 2
+  }
+ ]
+}

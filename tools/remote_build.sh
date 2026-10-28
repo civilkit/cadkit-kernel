@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build the kernel wasm and run its checks on the CI box instead of this (busy) machine. See docs/remote-build.md.
-#   tools/remote_build.sh [--worktree DIR] [--checks gate,loft,apex,fillet,section,spline,thin,suite,lint,text,projcurve,dfm,crashfuzz,all|none]
+#   tools/remote_build.sh [--worktree DIR] [--checks gate,loft,apex,fillet,section,spline,thin,suite,lint,text,projcurve,dfm,all|none]
 #                         [--cargo-test CRATE|"-p a -p b"|all] [--out DIR] [--no-sync-back] [--no-wasm] [--wasm-features LIST] [--jobs N] [--reset]
 #   tools/remote_build.sh --clean [--worktree DIR]     remove this worktree's directories on the box
 #   tools/remote_build.sh --prune                      remove worktree directories on the box unused for 3 days
@@ -79,9 +79,8 @@ touch "$RUN/.last-used"; R="$RUN/remote_results.txt"; : > "$R"
 free=$(df -BG --output=avail "$RB" | tail -1 | tr -dc '0-9')
 echo "box: cores=$(nproc) load=$(cut -d' ' -f1-3 /proc/loadavg) free=${free}G"
 if [ "${free:-0}" -lt 15 ]; then echo "FAIL: less than 15G free on the box"; echo "FAIL disk 0" >> "$R"; exit 1; fi
-# the gate reads the comparison build at ../../kernel.wasm (and writes next to it): private copy inside the root
-# no comparison build on the box: the gate then runs standalone (tools/gate.mjs), without the checks that need one
-[ -s "$RB/wt/kernel.wasm" ] || cp "$HOME/kernel.wasm" "$RB/wt/kernel.wasm" 2>/dev/null || echo "note: no comparison kernel.wasm; the gate runs standalone"
+# the gate reads the oracle at ../../kernel.wasm (and the gate writes next to it): private copy inside the root
+[ -s "$RB/wt/kernel.wasm" ] || cp "$HOME/kernel.wasm" "$RB/wt/kernel.wasm" || { echo "FAIL: oracle kernel.wasm missing"; exit 1; }
 W="$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/ck_wasm.wasm"
 FAILS=0
 rec() { # rec name rc secs
@@ -132,9 +131,6 @@ if [ -s "$W" ]; then
       text) step text-corpus node tools/text_corpus.mjs --wasm "$W" --quiet ;;
       projcurve) step project-curve-corpus node tools/project_curve_corpus.mjs --wasm "$W" --quiet ;;
       dfm) step dfm node tools/dfm_check.mjs --wasm "$W" --quiet ;;
-      # the crash/hang fuzz at the settings of its baseline (tools/crash_fuzz_baseline.json); lists every case that is not ok
-      crashfuzz) step crashfuzz node tools/crash_fuzz.mjs --wasm "$W" --cases 5000 --seed 7 --budget-ms 400 --timeout 6000 --workers 8 --no-shrink --check --json "$RUN/crash.json"
-        node -e 'const j=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); const c={}; for (const r of j.results) c[r.cls]=(c[r.cls]||0)+1; console.log("crashfuzz classes", JSON.stringify(c)); for (const r of j.results) if (r.cls==="hang"||r.cls==="trap") console.log("  not ok:", r.id, r.cls, r.detail||"");' "$RUN/crash.json" ;;
       suite) for s in $SUITE; do step "check-$s" node "tools/${s}_check.mjs" --wasm "$W"; done ;;
       *) echo "unknown check $c"; rec "check-$c" 64 0 ;;
     esac

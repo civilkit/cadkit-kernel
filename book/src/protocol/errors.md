@@ -261,7 +261,7 @@ Two warnings of the end conditions are in [Warnings](#warnings): `endConditionFa
 | `sweepPathInvalid` | The path sketch is not one connected open chain of supported curves. |
 | `sweepProfileNotNormal` | The profile plane is not nearly perpendicular (within 15 degrees) to the path at its start. |
 
-| `sweepFailed` | A guided sweep whose profile is not valid. `sweepSelfIntersects` is defined in the code but nothing emits it. |
+| `sweepFailed` | A guided sweep whose profile is not valid. |
 | `sweepGuidesCount` | More than two guides. |
 | `sweepGuideStretchTwo` | Stretch mode needs exactly two guides. |
 | `sweepGuideNotTouching` | A guide does not touch the profile. |
@@ -338,6 +338,7 @@ Two warnings of the end conditions are in [Warnings](#warnings): `endConditionFa
 | `threadNotCarried` | A pattern or mirror copy could not carry a thread over. `params`: `thread`, `face`, `reason`, `hint`. |
 | `cornerNotTangent` | Blended edges meet at a corner that is not tangent. `params.deviation` in degrees. |
 | `filletRadiusApproximated` | A fillet used an approximated radius. |
+| `unknownField` | A feature carries a field its type does not read, usually a misspelling. `params`: `fields` (the names, in document order), `suggest` (only for names close to a known field: `{"depht": "depth"}`), `detail`, `hint`. See [misspelled fields](../validation/diagnostics.md#misspelled-fields). |
 | `textTooSmall`, `textMissingGlyph`, `textTruncated`, `textOverlappingContours`, `textOverlap`, `textSpacingAdjusted` | Text sketch notes; see [Text and fonts](../io/text.md). `params`: `entity`, `detail`. |
 
 ## Text and font codes
@@ -346,7 +347,7 @@ Sketch features with text can fail with `textEmpty` (empty string), `textNothing
 
 ## Notes on specific codes
 
-- `insertPartEmpty` is defined in the code but nothing emits it.
+- An `insertPart` whose nested part is empty or has no solid body is not an error: it adds no component.
 - The `badName` and `cyclicVariables` codes are produced inside the variable resolver but are not put in the reply (see above).
 - `healed` is listed under `errors` although it marks a successful repair.
 - `refDiff` reports regen failures as `[featureId, code]` with a string code, not the `{ code, params }` object.

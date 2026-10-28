@@ -104,6 +104,8 @@ impl RegenTag {
 /// Error codes used by the driver (kernel.strings).
 pub mod codes {
     pub const UNKNOWN_FEATURE: &str = "unknownFeature";
+    /// Warning: a feature field its type does not read (see `features::known_fields`).
+    pub const UNKNOWN_FIELD: &str = "unknownField";
     pub const MISSING_REFERENCE: &str = "missingReference";
     pub const PLANE_LINE_NORMAL: &str = "planeLineNormal";
     pub const MISSING_SKETCH: &str = "missingSketch";
@@ -126,7 +128,7 @@ pub const KNOWN_TYPES: &[&str] = &[
     "lip", "dome", "splitLine", "draft", "moveFace", "hole", "lpattern", "cpattern", "mirror", "spattern",
     "fillpattern", "curvepattern", "moveBody", "mate", "insertPart", "scale", "surfaceExtrude", "surfaceRevolve",
     "surfacePlanar", "surfaceOffset", "deleteFace", "fill", "knit", "extend", "freeform", "trimSurface", "thicken",
-    "cutWithSurface", "pipeCut", "deleteBody", "editCurve", "projectCurve", "helix", "thread", "combine", "bodyBoolean",
+    "cutWithSurface", "pipeCut", "deleteBody", "editCurve", "projectCurve", "helix", "thread", "combine", "bodyBoolean", "knurlBand",
 ];
 
 /// The error the oracle reports for each known type when the payload is
@@ -159,6 +161,7 @@ pub const EMPTY_FEATURE_ERRORS: &[(&str, &str)] = &[
     ("moveBody", "nothingToCut"),
     ("combine", "nothingToCut"),
     ("bodyBoolean", "nothingToCut"),
+    ("knurlBand", "nothingToCut"),
     ("scale", "nothingToCut"),
     ("mate", "nothingToCut"),
     ("insertPart", "insertPartMissing"),
@@ -787,6 +790,29 @@ fn budget_error(e: FeatureError) -> FeatureError {
     out.with("budgetMs", Json::Num(limit.round())).with("elapsedMs", Json::Num(elapsed.round())).with("hint", Json::Str(hint.to_string()))
 }
 
+/// `unknownField`: the feature carries fields its type does not read (usually a misspelling, which would
+/// otherwise silently leave the default in force). A warning only; the feature builds as before.
+fn unknown_field_warning(f: &Feature) -> Option<FeatureError> {
+    let unknown = crate::features::known_fields::unknown_fields(f);
+    if unknown.is_empty() {
+        return None;
+    }
+    let names: Vec<String> = unknown.iter().map(|(k, _)| k.clone()).collect();
+    let suggest: Vec<(String, Json)> = unknown.iter().filter_map(|(k, s)| s.map(|s| (k.clone(), Json::Str(s.to_string())))).collect();
+    let hint = if suggest.is_empty() {
+        "check the field names in the part-format chapter for this feature type".to_string()
+    } else {
+        suggest.iter().map(|(k, s)| format!("`{k}` -> `{}`", s.as_str().unwrap_or(""))).collect::<Vec<_>>().join(", ")
+    };
+    let mut e = FeatureError::new(codes::UNKNOWN_FIELD)
+        .with("detail", Json::Str(format!("{} has no field {}; it is ignored", f.type_name, names.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", "))))
+        .with("fields", Json::Arr(names.into_iter().map(Json::Str).collect()));
+    if !suggest.is_empty() {
+        e = e.with("suggest", Json::Obj(suggest));
+    }
+    Some(e.with("hint", Json::Str(hint)))
+}
+
 fn run_feature(state: &mut RegenState, exec: &mut dyn FeatureExec, f: &Feature) -> Result<(), FeatureError> {
     if !KNOWN_TYPES.contains(&f.type_name.as_str()) {
         return Err(FeatureError::new(codes::UNKNOWN_FEATURE).with("type", Json::Str(f.type_name.clone())));
@@ -897,6 +923,9 @@ pub fn regen_from(part: &Part, opts: &RegenOpts, exec: &mut dyn FeatureExec, res
         }
         if let Err(e) = r {
             state.result.put_error(RegenError { feature: f.id.clone(), error: e });
+        }
+        if let Some(w) = unknown_field_warning(f) {
+            state.result.warnings.push(RegenError { feature: f.id.clone(), error: w });
         }
         if let Some(c) = ck.as_deref_mut() {
             c.after(i, true, &state, exec);

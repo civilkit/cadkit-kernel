@@ -4,8 +4,8 @@
 // FULL_ONLY=1 runs the non-lean edits only (steady state: the before-mass is the previous after-mass).
 // EDITS=last,f48,f42,early selects the cases (default last,f48,f42); LEAN_ONLY=1 skips the non-lean variants.
 import { readFileSync } from 'node:fs';
-import { Session } from '@fw/session';
-import type { PartDoc } from '@fw/part-model';
+import { Session } from '@ck/session';
+import type { PartDoc } from '@ck/part-model';
 const doc = JSON.parse(readFileSync(process.env.REPRO_DOC!, 'utf8'));
 const s = await Session.open(doc as PartDoc);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

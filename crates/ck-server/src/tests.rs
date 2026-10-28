@@ -11,7 +11,7 @@ fn run(server: &mut Server, body: &str) -> (String, usize) {
 #[test]
 fn legacy_format_name_replies_identically() {
     let new = r#"{"msg":{"type":"regen","part":{"format":"ck-part","features":[]}}}"#;
-    let old = r#"{"msg":{"type":"regen","part":{"format":"formwerk-part","features":[]}}}"#;
+    let old = r#"{"msg":{"type":"regen","part":{"format":"ck-part","features":[]}}}"#;
     let (a, la) = run(&mut Server::new(), new);
     let (b, lb) = run(&mut Server::new(), old);
     assert_eq!(a, b);

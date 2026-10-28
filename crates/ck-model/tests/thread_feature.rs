@@ -227,6 +227,17 @@ fn tapered_npt_is_cosmetic() {
 }
 
 #[test]
+fn tapered_bspt_is_cosmetic() {
+    let r = run(&format!("{}{}", through_hole(11.8), thread(r#""face":"F4.S.c1","standard":"BSPT","size":"Rp1/4","modeled":true"#)));
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    let t = r.thread("T1");
+    assert_eq!(t.get_bool("tapered"), Some(true));
+    assert_eq!(t.get_bool("modeled"), Some(false));
+    assert!(r.warning("threadModelFallback").is_some());
+    assert!((num(t, "major") - 13.157).abs() < 1e-3 && (num(t, "angle") - 55.0).abs() < 1e-9);
+}
+
+#[test]
 fn errors_are_structured() {
     let base = through_hole(5.0);
     let r = run(&format!("{base}{}", thread(r#""face":"F4.S.c1","standard":"metric","size":"M7.5""#)));

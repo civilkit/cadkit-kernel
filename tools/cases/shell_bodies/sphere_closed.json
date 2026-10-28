@@ -1,0 +1,23 @@
+{
+ "format": "ck-part",
+ "version": 1,
+ "features": [
+  {
+   "type": "sphere",
+   "id": "F2",
+   "op": "add",
+   "center": [
+    0,
+    0,
+    0
+   ],
+   "radius": 15
+  },
+  {
+   "type": "shell",
+   "id": "S",
+   "faces": [],
+   "thickness": 2
+  }
+ ]
+}

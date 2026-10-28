@@ -677,12 +677,12 @@ fn drop_on_axis(chain: Chain, sk: &SketchResult, o: Vec3, d: Vec3) -> Vec<Chain>
 }
 
 /// The thin-wall profile of the sketch for the feature's `thin` option.
-pub fn thin_profile(sk: &SketchResult, f: &Feature, th: &Thin) -> Result<Profile, FeatureError> {
+pub fn thin_profile(state: &RegenState, sk: &SketchResult, f: &Feature, th: &Thin) -> Result<Profile, FeatureError> {
     // a revolve's wall ignores segments lying on its axis (a closed loop that loses them
     // becomes an open chain): the strip between an on-axis segment and its offset would
     // revolve into a solid rod on the axis
     let axis = match &f.kind {
-        FeatureKind::Revolve { .. } => f.raw.get("axis").and_then(|a| sketch_axis(sk, a)),
+        FeatureKind::Revolve { .. } => f.raw.get("axis").and_then(|a| sketch_axis(state, sk, a)),
         _ => None,
     };
     let mut chains: Vec<Chain> = vec![];
@@ -710,7 +710,7 @@ pub fn thin_profile(sk: &SketchResult, f: &Feature, th: &Thin) -> Result<Profile
 /// The profile an extrude / revolve sweeps: the thin wall when `thin` is on, else the sketch regions.
 pub fn feature_profile(state: &RegenState, sk: &SketchResult, f: &Feature) -> Result<(Profile, bool), FeatureError> {
     match parse(state, f)? {
-        Some(th) => Ok((thin_profile(sk, f, &th)?, true)),
+        Some(th) => Ok((thin_profile(state, sk, f, &th)?, true)),
         None => Ok((super::extrude::selected_profile(sk, f)?, false)),
     }
 }

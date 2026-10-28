@@ -1,7 +1,7 @@
 //! `sweep` (ck-ops/src/sweep.rs): sweep a planar profile along a path.
 //!
 //! Codes (kernel.strings): sweepPathInvalid, sweepProfileNotNormal,
-//! sweepSelfIntersects, sweepFailed (guide codes live in guide.rs).
+//! sweepFailed (guide codes live in guide.rs).
 //!
 //! Reconstructed from oracle probes plus the packet reading of f2892 / f626:
 //! * the original reduces the path to a RIGID MOTION when it can (all lines
@@ -49,7 +49,6 @@ use ck_topo::make::{
 
 pub const PATH_INVALID: &str = "sweepPathInvalid";
 pub const PROFILE_NOT_NORMAL: &str = "sweepProfileNotNormal";
-pub const SELF_INTERSECTS: &str = "sweepSelfIntersects";
 pub const FAILED: &str = "sweepFailed";
 
 /// `| |t·n| - 1 |` above this: the profile is not normal to the path.

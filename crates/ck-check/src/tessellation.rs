@@ -265,16 +265,22 @@ pub fn open_mesh_edges_tol(positions: &[f32], tri_face: &[i32], q: f64, crack: f
 /// `TESSELLATION_OPEN` issues: one per face of `b` that has no triangle (`failed` = faces the tessellator gave up on, from
 /// the mesh), and one for the mesh edges used by a single triangle (entity = the first bordering faces).
 pub fn check_mesh(b: &Body, positions: &[f32], tri_face: &[i32], failed: &[usize]) -> Vec<Issue> {
-    check_mesh_inner(b, positions, tri_face, failed, &[], false)
+    check_mesh_inner(b, positions, tri_face, failed, &[], false, &crate::Ctl::unlimited())
 }
 
 /// [`check_mesh`] with the tessellator's reason for each failed face (`why[i]` belongs to `failed[i]`), and the per-face
 /// mesh-area witness (costs an exact area integral per face: the opt-in `validate` path only, not the boolean's rim check).
 pub fn check_mesh_why(b: &Body, positions: &[f32], tri_face: &[i32], failed: &[usize], why: &[String]) -> Vec<Issue> {
-    check_mesh_inner(b, positions, tri_face, failed, why, true)
+    check_mesh_inner(b, positions, tri_face, failed, why, true, &crate::Ctl::unlimited())
 }
 
-fn check_mesh_inner(b: &Body, positions: &[f32], tri_face: &[i32], failed: &[usize], why: &[String], area: bool) -> Vec<Issue> {
+/// [`check_mesh_why`] under a time limit: the area witness (`meshAreaWitness`) and the open-edge search (`meshOpenEdges`)
+/// are timed in `ctl`, the second is left out when the limit ran out during or before the first.
+pub fn check_mesh_ctl(b: &Body, positions: &[f32], tri_face: &[i32], failed: &[usize], why: &[String], ctl: &crate::Ctl) -> Vec<Issue> {
+    check_mesh_inner(b, positions, tri_face, failed, why, true, ctl)
+}
+
+fn check_mesh_inner(b: &Body, positions: &[f32], tri_face: &[i32], failed: &[usize], why: &[String], area: bool, ctl: &crate::Ctl) -> Vec<Issue> {
     let mut out = vec![];
     let ids: Vec<_> = b.face_ids().collect();
     let mut has = vec![false; ids.len()];
@@ -309,30 +315,36 @@ fn check_mesh_inner(b: &Body, positions: &[f32], tri_face: &[i32], failed: &[usi
     // (a polygon inscribed in a thin crescent loses a fifth of it) cannot be seen, and is not a hole
     let hi_all = positions.iter().fold(0.0f64, |m, &x| m.max((x as f64).abs()));
     let floor = 5e-4 * hi_all * hi_all;
-    for (i, &f) in ids.iter().enumerate() {
-        if !area || !has[i] {
-            continue;
+    let witness = |out: &mut Vec<Issue>| {
+        for (i, &f) in ids.iter().enumerate() {
+            if !area || !has[i] {
+                continue;
+            }
+            if ctl.expired() {
+                return;
+            }
+            // the exact area of a spline / swept / revolved face is an integral that costs more than meshing the whole body (a
+            // few seconds on a large sample shell): witness the analytic faces, where it is cheap, and leave the rest to the
+            // open-edge and no-triangle checks
+            if !matches!(
+                b.face(f).surface,
+                ck_geom::surface::Surface::Plane { .. } | ck_geom::surface::Surface::Cylinder { .. } | ck_geom::surface::Surface::Cone { .. } | ck_geom::surface::Surface::Sphere { .. } | ck_geom::surface::Surface::Torus { .. }
+            ) {
+                continue;
+            }
+            // the area element of a cylinder or cone is a polynomial in v: the tabulated path costs a tenth on a face with a long
+            // or tangled boundary (an invalid body), and is the same number on the rest
+            let exact = ck_topo::mass::face_integral_vpoly::<1>(b, f, 1, &|_, n| [n.len()])[0].abs();
+            if exact.is_finite() && exact > 0.0 && (mesh_area[i] < 0.9 * exact || mesh_area[i] > 1.1 * exact) && (mesh_area[i] - exact).abs() > floor {
+                out.push(Issue {
+                    code: "TESSELLATION_OPEN",
+                    entity: b.face_id_str(f),
+                    detail: format!("the mesh covers {:.0}% of the face area ({:.4e} of {:.4e})", 100.0 * mesh_area[i] / exact, mesh_area[i], exact),
+                });
+            }
         }
-        // the exact area of a spline / swept / revolved face is an integral that costs more than meshing the whole body (a
-        // few seconds on a large sample shell): witness the analytic faces, where it is cheap, and leave the rest to the
-        // open-edge and no-triangle checks
-        if !matches!(
-            b.face(f).surface,
-            ck_geom::surface::Surface::Plane { .. } | ck_geom::surface::Surface::Cylinder { .. } | ck_geom::surface::Surface::Cone { .. } | ck_geom::surface::Surface::Sphere { .. } | ck_geom::surface::Surface::Torus { .. }
-        ) {
-            continue;
-        }
-        // the area element of a cylinder or cone is a polynomial in v: the tabulated path costs a tenth on a face with a long
-        // or tangled boundary (an invalid body), and is the same number on the rest
-        let exact = ck_topo::mass::face_integral_vpoly::<1>(b, f, 1, &|_, n| [n.len()])[0].abs();
-        if exact.is_finite() && exact > 0.0 && (mesh_area[i] < 0.9 * exact || mesh_area[i] > 1.1 * exact) && (mesh_area[i] - exact).abs() > floor {
-            out.push(Issue {
-                code: "TESSELLATION_OPEN",
-                entity: b.face_id_str(f),
-                detail: format!("the mesh covers {:.0}% of the face area ({:.4e} of {:.4e})", 100.0 * mesh_area[i] / exact, mesh_area[i], exact),
-            });
-        }
-    }
+    };
+    ctl.stage("meshAreaWitness", || witness(&mut out));
     // vertex merge distance: well below the mesh feature size, above f32 rounding of the coordinates
     let mut hi = 0.0f64;
     for &x in positions {
@@ -340,7 +352,7 @@ fn check_mesh_inner(b: &Body, positions: &[f32], tri_face: &[i32], failed: &[usi
     }
     let q = (hi * 1e-5).max(1e-4);
     // a shared edge sampled differently by its two faces leaves a hairline of at most the chord deviation: not a hole
-    let (open, faces) = open_mesh_edges_tol(positions, tri_face, q, (hi * 2e-3).max(0.01));
+    let (open, faces) = ctl.stage("meshOpenEdges", || open_mesh_edges_tol(positions, tri_face, q, (hi * 2e-3).max(0.01))).unwrap_or((0, vec![]));
     if open > 0 {
         let names: Vec<String> = faces.iter().take(6).filter_map(|&i| ids.get(i as usize).map(|&f| b.face_id_str(f))).collect();
         out.push(Issue {

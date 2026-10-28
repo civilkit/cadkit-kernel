@@ -18,7 +18,7 @@ use std::rc::Rc;
 /// Bump when the meaning of a cached state changes without the version.
 const FORMAT: u32 = 1;
 
-/// Default cap of estimated cached state, bytes. The hair dryer part (50
+/// Default cap of estimated cached state, bytes. The large sample part (50
 /// features, ~2.8 MB estimated per distinct body state) needs ~60 MB for a
 /// full chain; 256 MB keeps a few documents' worth of history while the
 /// wasm linear memory stays far below the 4 GB limit (docs/regen-cache.md).
@@ -58,7 +58,7 @@ fn text_fonts(j: &Json, out: &mut Vec<String>) {
 /// "Cosmetic fields"). They are left out of the hash of a feature, so editing one (grouping into a folder, a rename,
 /// hiding a plane) keeps every key and the cached states valid. The only place they reach a reply is the echo of a
 /// sketch / sketch3d feature, which [`refresh_cosmetic`] rewrites from the current document on every hit.
-pub const COSMETIC_KEYS: [&str; 5] = ["group", "name", "autoName", "visible", "userHidden"];
+pub const COSMETIC_KEYS: [&str; 6] = ["group", "name", "autoName", "visible", "userHidden", "color"];
 
 fn is_cosmetic(k: &str) -> bool {
     COSMETIC_KEYS.contains(&k)
@@ -124,13 +124,13 @@ pub fn refresh_cosmetic(r: &mut RegenResult, feats: &[ck_model::Feature]) {
 /// with the full JSON of one more feature, so equal keys mean equal
 /// documents up to that feature (SHA-256, collisions are not a concern).
 ///
-/// Document level: only `format`, `version`, `kind`, `material` and
+/// Document level: only `format`, `version`, `kind` and
 /// `variables` (the part fields the engine reads besides `features`);
-/// `name`, `seq`, `counters`, `rollback` and unknown keys do not affect
+/// `name`, `material` (a label, never read by regen), `seq`, `counters`, `rollback` and unknown keys do not affect
 /// geometry and are deliberately left out so renames and feature-counter
 /// bumps keep the cache warm.
 pub fn chain_keys(part: &Json, o: &KeyOpts, n: usize) -> Vec<Key> {
-    let doc: Vec<(String, Json)> = ["format", "version", "kind", "material", "variables"]
+    let doc: Vec<(String, Json)> = ["format", "version", "kind", "variables"]
         .iter()
         .map(|k| (k.to_string(), part.get(k).cloned().unwrap_or(Json::Null)))
         .collect();

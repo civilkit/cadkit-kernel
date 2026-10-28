@@ -1164,7 +1164,7 @@ circle (tangent direction), an arc whose centre and end are fixed
 A part document carries `version` (the file format's version; the kernel's own is `PART_VERSION` in
 `crates/ck-model/src/lib.rs`, the same number as `PART_VERSION` in the kit's
 `apps/cad/src/partVersion.ts`). The kernel reads a file with any `version` — like the format name, which
-has been `ck-part` since it was `formwerk-part` — and a document whose `version` is higher than the
+has been `ck-part` since it was `ck-part` — and a document whose `version` is higher than the
 kernel's still regenerates. The regen reply then carries one additive field, next to `errors` / `body`:
 
 ```json

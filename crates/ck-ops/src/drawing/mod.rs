@@ -210,9 +210,8 @@ fn view_json(body: &Body, view: &ViewReq, hidden: bool) -> Json {
     let sec_faces: Vec<FaceId>;
     let body: &Body = match view.section {
         Some((point, h)) => {
-            let tool = plane_tool(body, view.z, point);
-            match boolean::boolean(body, &tool, Op::Cut, 1e-6) {
-                Ok(out) if !out.no_effect => {
+            match section_cut(body, view.z, point) {
+                Some(out) => {
                     cut = out.body;
                     sec_faces = cut.face_ids().filter(|&f| cut.face(f).name.id().starts_with("SEC.")).collect();
                     hatch = h;
@@ -333,7 +332,7 @@ fn view_json(body: &Body, view: &ViewReq, hidden: bool) -> Json {
                         let eb = proj(ed.curve.eval(ed.t1));
                         ev = ev.put("ends", Json::Arr(vec![point_json([ea.u, ea.v]), point_json([eb.u, eb.v])]));
                     }
-                    push_pieces(&occ, &mut pieces, &[pa, pb], eidx, k, tol);
+                    push_pieces_arc(&occ, &mut pieces, &[pa, pb], eidx, k, tol, r);
                     round_info.push(Some((ext, full)));
                 } else {
                     // tilted circle: polyline of the projected samples (GUESS)
@@ -523,9 +522,9 @@ fn view_json(body: &Body, view: &ViewReq, hidden: bool) -> Json {
                         .build(),
                 );
                 round_info.push(None);
-                push_pieces_impl(&occ, &mut pieces, &pts, Some(&test), eidx, b'o', tol, false);
+                push_pieces_impl(&occ, &mut pieces, &pts, Some(&test), None, eidx, b'o', tol, false);
             } else {
-                push_pieces_impl(&occ, &mut pieces, &pts, Some(&test), usize::MAX, b'o', tol, true);
+                push_pieces_impl(&occ, &mut pieces, &pts, Some(&test), None, usize::MAX, b'o', tol, true);
             }
         }
     }
@@ -639,14 +638,67 @@ fn body_bbox(body: &Body) -> Option<(Vec3, Vec3)> {
     (lo.x <= hi.x).then_some((lo, hi))
 }
 
+/// The section cut of `body` by the plane through `point` (the kept half is the viewer's).
+///
+/// First the plain attempt (the tool sized from the vertex box, centred on `point`): every pinned reply comes
+/// out of it unchanged. Two things make it fail on real models, so a failed or no-effect cut is retried:
+/// - the vertex box of a body of revolution is flat (a circle has one vertex), and `point` can lie far from the
+///   body along the plane (the kit puts it on the axis through the origin), so the tool square misses part of
+///   the body; the retry sizes the tool from sampled edge points and centres it on the body;
+/// - a plane through a hole's axis or along a seam can fail the boolean; the retry then moves the plane a hair
+///   to either side (1e-5 and 1e-4 of the body's diagonal, far under the drawing's tolerance).
+fn section_cut(body: &Body, n: Vec3, point: Vec3) -> Option<boolean::BoolOut> {
+    let try_cut = |tool: &Body| match boolean::boolean(body, tool, Op::Cut, 1e-6) {
+        Ok(out) if !out.no_effect => Some(out),
+        _ => None,
+    };
+    if let Some(out) = try_cut(&plane_tool(body, n, point)) {
+        return Some(out);
+    }
+    let (lo, hi) = body_extent(body)?;
+    let diag = (hi - lo).len();
+    for off in [0.0, 1e-5, -1e-5, 1e-4, -1e-4] {
+        let p = point + n * (off * diag);
+        let c = (lo + hi) * 0.5;
+        let origin = c - n * (c - p).dot(n);
+        if let Some(out) = try_cut(&plane_tool_at(n, origin, diag * 2.0 + 1.0)) {
+            return Some(out);
+        }
+    }
+    None
+}
+
+/// Bounding box over the vertices and over points sampled along every edge (a revolved body has one vertex per
+/// circle, so its vertex box can be flat).
+fn body_extent(body: &Body) -> Option<(Vec3, Vec3)> {
+    let (mut lo, mut hi) = body_bbox(body).unwrap_or((Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY), Vec3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY)));
+    for e in body.edge_ids() {
+        let ed = body.edge(e);
+        if !ed.alive {
+            continue;
+        }
+        let n = if ed.curve.kind() == "line" { 1 } else { 32 };
+        for i in 0..=n {
+            let p = ed.curve.eval(ed.t0 + (ed.t1 - ed.t0) * i as f64 / n as f64);
+            lo = Vec3::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z));
+            hi = Vec3::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z));
+        }
+    }
+    (lo.x <= hi.x).then_some((lo, hi))
+}
+
 /// A half-space tool box for the section cut: base square on the plane
 /// (feature "SEC", so the cutting cap is named `SEC.C0`, pinned), extruded
 /// away from the viewer.
 fn plane_tool(body: &Body, n: Vec3, point: Vec3) -> Body {
+    let (lo, hi) = body_bbox(body).unwrap_or((Vec3::ZERO, Vec3::new(1.0, 1.0, 1.0)));
+    plane_tool_at(n, point, (hi.x - lo.x).hypot(hi.y - lo.y).hypot(hi.z - lo.z) * 2.0 + 1.0)
+}
+
+/// The half-space tool: a square of side `d` centred on `point` in the plane, extruded away from the viewer.
+fn plane_tool_at(n: Vec3, point: Vec3, d: f64) -> Body {
     use ck_geom::{Frame, Vec2};
     use ck_topo::make::{extrude, ExtrudeOpts, Profile, ProfileLoop, ProfileRegion, ProfileSeg};
-    let (lo, hi) = body_bbox(body).unwrap_or((Vec3::ZERO, Vec3::new(1.0, 1.0, 1.0)));
-    let d = (hi.x - lo.x).hypot(hi.y - lo.y).hypot(hi.z - lo.z) * 2.0 + 1.0;
     let xx = if n.x.abs() < 0.9 { Vec3::X } else { Vec3::Y };
     let xx = (xx - n * xx.dot(n)).normalize();
     let yy = n.cross(xx);
@@ -706,6 +758,93 @@ impl Occluders {
             }
         }
         None
+    }
+
+    /// Is the point covered by any of the candidate triangles (see `runs_line`)?
+    fn covered_in(cand: &[&[P2; 3]], p: &P2, tol: f64) -> bool {
+        cand.iter().any(|t| {
+            bary(t, p, tol).map_or(false, |s| t[0].w * s[0] + t[1].w * s[1] + t[2].w * s[2] > p.w + tol)
+        })
+    }
+
+    /// Visibility runs along ONE straight segment a-b. The segment is cut at every place where it crosses the
+    /// outline of a triangle in front of it, and each stretch is classified by its own midpoint, so a long line
+    /// that runs behind one body and out the other side (a shaft through a bearing, a can and a plate) comes out
+    /// as a hidden piece and visible pieces instead of one class for its whole length.
+    ///
+    /// `arc` is the radius of a circle seen edge-on that this segment is the diameter of: the circle's points
+    /// project on the line with depth `a.w`-centred +-sqrt(r^2 - s^2) (its front and back half), and the line is
+    /// visible where either half is. A circle is not at the depth of its centre.
+    fn runs_line(&self, a: P2, b: P2, arc: Option<f64>, tol: f64) -> Vec<(f64, f64, bool)> {
+        let len = (b.u - a.u).hypot(b.v - a.v);
+        if len <= tol * 0.5 {
+            return vec![];
+        }
+        // triangles that can cover some point of the segment: they overlap its box and reach in front of it
+        let w_lo = a.w.min(b.w) - arc.unwrap_or(0.0);
+        let (u0, u1) = (a.u.min(b.u) - tol, a.u.max(b.u) + tol);
+        let (v0, v1) = (a.v.min(b.v) - tol, a.v.max(b.v) + tol);
+        let cand: Vec<&[P2; 3]> = self
+            .tris
+            .iter()
+            .filter(|(t, deg)| {
+                !*deg
+                    && t.iter().map(|q| q.w).fold(f64::NEG_INFINITY, f64::max) > w_lo + tol
+                    && t.iter().map(|q| q.u).fold(f64::NEG_INFINITY, f64::max) >= u0
+                    && t.iter().map(|q| q.u).fold(f64::INFINITY, f64::min) <= u1
+                    && t.iter().map(|q| q.v).fold(f64::NEG_INFINITY, f64::max) >= v0
+                    && t.iter().map(|q| q.v).fold(f64::INFINITY, f64::min) <= v1
+            })
+            .map(|(t, _)| t)
+            .collect();
+        // the crossings strictly inside the segment, then the two true ends (never moved by the merging)
+        let mut cuts: Vec<f64> = vec![];
+        for t in &cand {
+            for k in 0..3 {
+                if let Some(s) = seg_isect(a, b, t[k], t[(k + 1) % 3]) {
+                    if s * len > tol * 0.25 && (1.0 - s) * len > tol * 0.25 {
+                        cuts.push(s);
+                    }
+                }
+            }
+        }
+        cuts.sort_by(|x, y| x.total_cmp(y));
+        cuts.dedup_by(|x, y| (*x - *y).abs() * len < tol * 0.25);
+        let mut ts = vec![0.0];
+        ts.extend(cuts);
+        ts.push(1.0);
+        let vis_at = |t: f64| -> bool {
+            let m = a.lerp(&b, t);
+            match arc {
+                None => !Self::covered_in(&cand, &m, tol),
+                Some(r) => {
+                    let sd = 2.0 * t - 1.0;
+                    let dw = r * (1.0 - sd * sd).max(0.0).sqrt();
+                    let (f, k) = (P2 { w: m.w + dw, ..m }, P2 { w: m.w - dw, ..m });
+                    !Self::covered_in(&cand, &f, tol) || !Self::covered_in(&cand, &k, tol)
+                }
+            }
+        };
+        // one class per stretch; a stretch shorter than twice the tolerance (a mesh seam, not a gap) takes the class of its neighbour
+        let mut iv: Vec<(f64, f64, bool, bool)> = vec![]; // (t0, t1, visible, long enough)
+        for w in ts.windows(2) {
+            let long = (w[1] - w[0]) * len >= tol * 2.0;
+            iv.push((w[0], w[1], vis_at(0.5 * (w[0] + w[1])), long));
+        }
+        for i in 0..iv.len() {
+            if !iv[i].3 {
+                let from = if i > 0 { iv[i - 1].2 } else { iv.iter().find(|x| x.3).map_or(iv[i].2, |x| x.2) };
+                iv[i].2 = from;
+            }
+        }
+        let mut runs: Vec<(f64, f64, bool)> = vec![];
+        for (t0, t1, vis, _) in iv {
+            match runs.last_mut() {
+                Some(last) if last.2 == vis => last.1 = t1,
+                _ => runs.push((t0, t1, vis)),
+            }
+        }
+        runs
     }
 
     /// Visibility runs along a polyline: (t0, t1, visible) params.
@@ -812,11 +951,17 @@ fn canonicalize(p: &mut [P2]) {
 
 /// Split a polyline into visibility pieces and push them.
 fn push_pieces(occ: &Occluders, out: &mut Vec<Piece>, pts: &[P2], e: usize, k: u8, tol: f64) {
-    push_pieces_impl(occ, out, pts, None, e, k, tol, false)
+    push_pieces_impl(occ, out, pts, None, None, e, k, tol, false)
 }
 
+/// Like `push_pieces`, for the diameter line of a circle of radius `r` seen edge-on.
+fn push_pieces_arc(occ: &Occluders, out: &mut Vec<Piece>, pts: &[P2], e: usize, k: u8, tol: f64, r: f64) {
+    push_pieces_impl(occ, out, pts, None, Some(r), e, k, tol, false);
+}
+
+
 fn push_pieces_curve(occ: &Occluders, out: &mut Vec<Piece>, pts: &[P2], e: usize, k: u8, tol: f64, _closed: bool) {
-    push_pieces_impl(occ, out, pts, None, e, k, tol, true)
+    push_pieces_impl(occ, out, pts, None, None, e, k, tol, true)
 }
 
 static DBGLOG: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
@@ -824,8 +969,9 @@ pub(crate) fn dbg_dump() -> Vec<String> {
     std::mem::take(&mut *DBGLOG.lock().unwrap())
 }
 
-fn push_pieces_impl(occ: &Occluders, out: &mut Vec<Piece>, pts: &[P2], test: Option<&[P2]>, e: usize, k: u8, tol: f64, _closed: bool) {
-    let runs = occ.runs(test.unwrap_or(pts), tol);
+fn push_pieces_impl(occ: &Occluders, out: &mut Vec<Piece>, pts: &[P2], test: Option<&[P2]>, arc: Option<f64>, e: usize, k: u8, tol: f64, _closed: bool) {
+    let tp = test.unwrap_or(pts);
+    let runs = if tp.len() == 2 { occ.runs_line(tp[0], tp[1], arc, tol) } else { occ.runs(tp, tol) };
     if std::env::var("FWDBG").is_ok() {
         eprintln!("push e={e} k={} pts={:?} runs={:?}", k as char, pts.iter().map(|p| (p.u, p.v, p.w)).collect::<Vec<_>>(), runs);
     }

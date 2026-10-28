@@ -198,7 +198,7 @@ fn size_unknown(r: &Req) -> FeatureError {
         threads::sizes(&r.standard).iter().take(5).map(|t| Json::Str(t.designation.clone())).collect()
     };
     let hint = if known.is_none() {
-        format!("unknown thread standard {:?}; use one of metric, metric-fine, UNC, UNF, BSP, NPT, Tr, Acme (request threadData lists them)", r.standard)
+        format!("unknown thread standard {:?}; use one of metric, metric-fine, UNC, UNF, BSP, BSPT, NPT, Tr, Acme (request threadData lists them)", r.standard)
     } else {
         format!("{:?} is not a {} size; closest: {} (request threadData for the list)", r.size, known.unwrap_or(""), sugg.iter().filter_map(|j| j.as_str()).collect::<Vec<_>>().join(", "))
     };
@@ -229,7 +229,7 @@ fn diameter_warning(t: &ThreadSpec, cf: &CylFace) -> Option<FeatureError> {
         }
     }
     if t.tapered {
-        hint.push_str(" (NPT is tapered 1:16; the straight size given is the tap drill at the small end)");
+        hint.push_str(" (NPT and BSPT are tapered 1:16; the straight size given is the tap drill at the small end)");
     }
     Some(
         FeatureError::new(THREAD_DIAMETER_MISMATCH)

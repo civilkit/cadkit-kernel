@@ -99,6 +99,8 @@ A feature reports an error as `["<feature id>", {"code": "...", "params": {...}}
 | `booleanFailed`, `booleanVolumeMismatch` | The boolean with the body failed or gave an impossible volume. `booleanFailed` may carry `faces`, `issue`, `at` and a `hint`. |
 | `featureBudgetExceeded`, `regenBudgetExceeded` | A time limit ran out (below). |
 
+A field that the feature type does not read is reported as the warning `unknownField` (for `sketch`, `extrude`, `revolve`, `fillet`, `chamfer` and `hole`); see [misspelled fields](../validation/diagnostics.md#misspelled-fields).
+
 The codes of each feature are in its own chapter; [feature errors and diagnostics](../validation/diagnostics.md) collects them.
 
 ### Time budgets

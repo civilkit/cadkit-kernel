@@ -610,6 +610,39 @@ impl Body {
         (lo, hi)
     }
 
+    /// [`Body::bbox`] of the body that holds only `faces` (what `bbox` answers after every other face was deleted and the
+    /// dangling edges and vertices dropped), without building that body.
+    pub fn bbox_of_faces(&self, faces: &[FaceId]) -> (Vec3, Vec3) {
+        let mut lo = Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
+        let mut hi = -lo;
+        let mut seen = ck_core::fxhash::FxHashSet::default();
+        for &f in faces {
+            for &l in &self.faces[f.idx()].loops {
+                if !self.loops[l.idx()].alive {
+                    continue;
+                }
+                for &c in &self.loops[l.idx()].coedges {
+                    if self.coedges[c.idx()].alive && seen.insert(self.coedges[c.idx()].edge) {
+                        let ed = &self.edges[self.coedges[c.idx()].edge.idx()];
+                        for v in [ed.v0, ed.v1] {
+                            lo = lo.min(self.vertices[v.idx()].p);
+                            hi = hi.max(self.vertices[v.idx()].p);
+                        }
+                    }
+                }
+            }
+        }
+        for &e in &seen {
+            let ed = &self.edges[e.idx()];
+            if !matches!(ed.curve, Curve::Line { .. }) {
+                let (a, b) = sampled_box(&ed.curve, ed.t0, ed.t1);
+                lo = lo.min(a);
+                hi = hi.max(b);
+            }
+        }
+        (lo, hi)
+    }
+
     /// Box of a face from its boundary edges' control points: lines by
     /// their ends, splines by the control net of the trimmed piece.
     /// GUESS for conics (sampled arc). This is the key the oracle orders

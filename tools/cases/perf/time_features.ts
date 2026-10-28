@@ -1,7 +1,7 @@
 // Time a document feature by feature: regen of each solid-feature prefix (the kernel keeps no regen cache, so each is a full build). REPRO_DOC=path.
 import { readFileSync } from 'node:fs';
-import { Session } from '@fw/session';
-import type { PartDoc } from '@fw/part-model';
+import { Session } from '@ck/session';
+import type { PartDoc } from '@ck/part-model';
 const doc = JSON.parse(readFileSync(process.env.REPRO_DOC!, 'utf8'));
 const fs = doc.features as Array<{ id: string; type: string }>;
 let prev = 0;

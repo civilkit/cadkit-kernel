@@ -57,6 +57,7 @@ pub const STANDARDS: &[(&str, &str)] = &[
     ("UNC", "Unified National Coarse, #1 to 2 in (60 degrees)"),
     ("UNF", "Unified National Fine, #0 to 1-1/2 in (60 degrees)"),
     ("BSP", "British Standard Pipe parallel G, G1/16 to G4 (55 degrees)"),
+    ("BSPT", "British Standard Pipe taper R / Rp / Rc (ISO 7), R1/16 to R4 (55 degrees, taper 1:16)"),
     ("NPT", "National Pipe Taper, 1/16 to 4 (60 degrees, taper 1:16)"),
     ("Tr", "ISO trapezoidal Tr, Tr8x1.5 to Tr60x9 (30 degrees)"),
     ("Acme", "Acme general purpose, 1/4 to 2 in (29 degrees)"),
@@ -345,6 +346,22 @@ fn build() -> Vec<ThreadSpec> {
         s.class_external = "A";
         v.push(s);
     }
+    // ISO 7 pipe threads share the G sizes (gauge diameter, pitch, depth) and
+    // add the 1:16 taper; the tap drill is the one of the parallel size
+    for &(name, major, tpi, tap) in BSP {
+        let pitch = IN / tpi;
+        let h = WHIT_H * pitch;
+        let mut s = spec(format!("R{}", &name[1..]), "BSPT", major, pitch);
+        s.minor_internal = major - 2.0 * h;
+        s.minor_external = major - 2.0 * h;
+        s.pitch_dia = major - h;
+        s.angle = 55.0;
+        s.tap_drill = tap;
+        s.class_internal = "Rp";
+        s.class_external = "R";
+        s.tapered = true;
+        v.push(s);
+    }
     for &(name, od_in, tpi, dname, dia_in) in NPT {
         let pitch = IN / tpi;
         let e0 = od_in - (0.05 * od_in + 1.1) / tpi;
@@ -410,6 +427,7 @@ fn canon_standard(s: &str) -> Option<&'static str> {
         "unc" | "un" => "UNC",
         "unf" => "UNF",
         "bsp" | "bspp" | "bsp-parallel" | "g" | "bspp-g" => "BSP",
+        "bspt" | "bsp-taper" | "bsp-tapered" | "r" | "rp" | "rc" | "iso7" | "iso-7" => "BSPT",
         "npt" => "NPT",
         "tr" | "trapezoidal" | "tr-trapezoidal" => "Tr",
         "acme" => "Acme",
@@ -447,6 +465,11 @@ pub fn find(standard: &str, size: &str) -> Option<&'static ThreadSpec> {
     match st {
         "NPT" => rows().find(|t| key(t) == format!("{want}npt")),
         "BSP" => rows().find(|t| key(t) == format!("g{want}")),
+        "BSPT" => {
+            // `Rp1/4` and `Rc1/4` (internal forms) name the same size as `R1/4`
+            let bare = want.strip_prefix("rp").or_else(|| want.strip_prefix("rc")).or_else(|| want.strip_prefix('r')).unwrap_or(&want);
+            rows().find(|t| key(t) == format!("r{bare}"))
+        }
         "Tr" => rows().find(|t| key(t) == format!("tr{want}")),
         "UNC" | "UNF" => rows().find(|t| key(t).replace("unc", "").replace("unf", "") == want.replace("unc", "").replace("unf", "")),
         "metric" | "metric-fine" => {
@@ -600,6 +623,13 @@ mod tests {
         let g = find("BSP", "G1/4").unwrap();
         assert!(near(g.major, 13.157, 1e-9) && near(g.pitch, 1.337, 1e-3) && g.angle == 55.0 && !g.tapered);
         let n = find("NPT", "1/4").unwrap();
+        let r = find("BSPT", "Rp1/4").unwrap();
+        assert!(r.designation == "R1/4" && r.tapered && r.angle == 55.0 && near(r.major, 13.157, 1e-9) && near(25.4 / r.pitch, 19.0, 1e-9));
+        assert_eq!(find("rc", "3/8").map(|t| t.designation.as_str()), Some("R3/8"));
+        for (d, tpi) in [("G1/8", 28.0), ("G1/4", 19.0), ("G3/8", 19.0), ("G1/2", 14.0), ("G3/4", 14.0), ("G1", 11.0)] {
+            let g = find("BSP", d).unwrap();
+            assert!(near(25.4 / g.pitch, tpi, 1e-9) && !g.tapered, "{d}");
+        }
         assert!(near(n.major, 13.7, 0.05) && near(25.4 / n.pitch, 18.0, 1e-9) && n.tapered);
         let t = find("Tr", "Tr20x4").unwrap();
         assert!(near(t.minor_internal, 16.0, 1e-9) && near(t.minor_external, 15.5, 1e-9) && t.angle == 30.0);
