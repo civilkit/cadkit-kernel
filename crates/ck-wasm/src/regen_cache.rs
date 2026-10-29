@@ -426,4 +426,18 @@ mod tests {
         assert_eq!(sha256(&[&long]), sha256(&[&long[..37], &long[37..500], &long[500..]]));
         assert_eq!(hex(&sha256(&[b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"])), "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1");
     }
+
+    /// An `importStep` feature names its data by a key: the table of data (`blobs`) is not part of any key, however big it is,
+    /// and the key the feature names is.
+    #[test]
+    fn import_step_keys_do_not_hash_the_blob_table() {
+        let o = KeyOpts { sketch_status: false, solve_sketches: false, auto_heal: None };
+        let part = |blobs: &str, key: &str| {
+            ck_json::parse(&format!(r#"{{"format":"ck-part","version":1,"blobs":{{"k1":"{blobs}"}},"features":[{{"type":"importStep","id":"F1","blob":"{key}"}}]}}"#)).unwrap()
+        };
+        let small = chain_keys(&part("x", "k1"), &o, 1);
+        let big = chain_keys(&part(&"y".repeat(1 << 20), "k1"), &o, 1);
+        assert_eq!(small, big);
+        assert_ne!(small[1], chain_keys(&part("x", "k2"), &o, 1)[1]);
+    }
 }

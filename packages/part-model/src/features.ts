@@ -670,6 +670,24 @@ export interface KnurlBandFeature {
   [key: string]: unknown;
 }
 
+/**
+ * A body from a STEP file, held by the part. The STEP text is an entry of the part's `blobs` table (`PartDoc.blobs`) named by `blob`,
+ * the key being the lower-case hex SHA-256 of the text; `step` holds the text in the feature itself (small files only).
+ * Faces are named `<id>.I<solid>F<n>` (docs/import-step.md).
+ */
+export interface ImportStepFeature {
+  type: 'importStep';
+  id: string;
+  name?: string;
+  blob?: string;
+  step?: string;
+  /** name of the body; several solids are `<body>`, `<body> 2`, ... */
+  body?: string;
+  /** repair the solids after reading, as the `importStep` message does (faces turned the wrong way, free edges); for a STEP a converter restated */
+  heal?: boolean;
+  [key: string]: unknown;
+}
+
 /** Every typed feature except sketch/extrude (declared in index.ts). */
 export type KnownFeature =
   | Sketch3DFeature | RevolveFeature | SweepFeature | LoftFeature
@@ -683,7 +701,7 @@ export type KnownFeature =
   | DeleteFaceFeature | ThickenFeature | CutWithSurfaceFeature | PipeCutFeature
   | FreeformFeature | EditCurveFeature | ProjectCurveFeature | ExtendFeature
   | DomeFeature | SplitLineFeature | MoveFaceFeature | MoveBodyFeature
-  | ScaleFeature | AxisFeature | ThreadFeature | CombineFeature | SphereFeature | KnurlBandFeature;
+  | ScaleFeature | AxisFeature | ThreadFeature | CombineFeature | SphereFeature | KnurlBandFeature | ImportStepFeature;
 
 /** All wire type strings the kernel dispatches on. */
 export const FEATURE_TYPES = [
@@ -694,7 +712,7 @@ export const FEATURE_TYPES = [
   'surfaceOffset', 'knit', 'fill', 'insertPart', 'mate', 'plane',
   'deleteBody', 'deleteFace', 'thicken', 'cutWithSurface', 'pipeCut',
   'freeform', 'editCurve', 'projectCurve', 'extend', 'dome', 'splitLine',
-  'moveFace', 'moveBody', 'scale', 'axis', 'thread', 'combine', 'sphere', 'knurlBand',
+  'moveFace', 'moveBody', 'scale', 'axis', 'thread', 'combine', 'sphere', 'knurlBand', 'importStep',
 ] as const;
 
 export type FeatureTypeName = (typeof FEATURE_TYPES)[number];

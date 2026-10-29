@@ -30,6 +30,7 @@ pub const TABLE: &[(&str, &[&str])] = &[
         "fillet",
         &["radius", "edges", "profile", "propagate", "filletType", "radii", "rho", "rhos", "shape", "side1", "center", "side2"],
     ),
+    ("importStep", &["blob", "step", "body", "heal"]),
     ("chamfer", &["chamferType", "distance", "distance2", "distance3", "angle", "face", "flip", "propagate", "edges"]),
     (
         "hole",

@@ -81,12 +81,14 @@ The reply, trimmed:
 A hole is two more features: a sketch that holds the hole centre, placed on the top face of the plate, and a `hole` feature that cuts into the face from that sketch. The sketch plane is given as a face id, so the sketch sits on `F2.C1` and its coordinates are measured in that face's plane.
 
 ```json
+[
 { "type": "sketch", "id": "F3", "name": "Hole centre", "plane": { "kind": "face", "id": "F2.C1" },
   "points": [ { "id": "c", "x": 20, "y": 30 } ],
   "entities": [ { "id": "e1", "type": "point", "p": "c" } ],
   "constraints": [] },
 { "type": "hole", "id": "F4", "name": "Hole", "sketch": "F3",
   "kind": "simple", "diameter": 8, "end": "through" }
+]
 ```
 
 Append both to the `features` list of the plate and regenerate under the same tag. Each regen replaces the state of its tag, and the kernel reuses the work of the earlier features that did not change.
@@ -166,10 +168,12 @@ and the face ids are unchanged, so a feature that referred to `F2.C1` or `F4.S.h
 When a feature cannot be built, the regen still succeeds as a request: the error is reported per feature and the rest of the document runs on what exists. Setting the hole `diameter` to `0`:
 
 ```json
+{
 "errors": [
   [ "F4", { "code": "holeInvalid",
             "params": { "hint": "the hole diameter must be greater than zero (a standard `size`, or a positive `diameter`)" } } ]
 ]
+}
 ```
 
 The body is then the plate without a hole: six faces, the state from before `F4`. Each entry of `errors` is `[feature id, { code, params }]`, and `params.hint` says what to change. [Errors](../protocol/errors.md) lists the codes.

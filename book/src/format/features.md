@@ -49,6 +49,7 @@ The kernel knows 49 type names. A name that is not in this list is `unknownFeatu
 | `projectCurve` | Projects a sketch onto faces as a B-spline curve. | [surfaces](features-surfaces.md#projectcurve) |
 | `editCurve` | Rebuilds curves as a B-spline and edits its control points. | [surfaces](features-surfaces.md#editcurve) |
 | `insertPart` | Inserts another part as a component. | [assemblies](features-assemblies.md#insertpart) |
+| `importStep` | Holds a STEP body and brings its solids into the history. | [assemblies](features-assemblies.md#importstep) |
 | `mate` | Constrains two components. | [assemblies](features-assemblies.md#mate) |
 | `spattern` | Pattern driven by a sketch. Not built. | [patterns](features-patterns.md#not-built) |
 | `curvepattern` | Pattern along a curve. Not built. | [patterns](features-patterns.md#not-built) |

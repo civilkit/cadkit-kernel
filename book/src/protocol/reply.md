@@ -127,12 +127,14 @@ function decodeReply(bytes) {                       // bytes: a Uint8Array holdi
 A `regen` of the 100 x 60 x 10 plate with a hole (seven faces, 104 triangles) returns a frame of 17304 bytes. The JSON is `L = 5652` bytes, so `B = 5656` (the 4-byte prefix and the JSON already end on a multiple of 8, so no padding is added) and the binary area is 11648 bytes. The references in `body` are:
 
 ```json
+{
 "silhouette": { "$buf": 4, "type": "f32", "len": 0,   "offset": 11648 },
 "mesh": {
   "positions": { "$buf": 0, "type": "f32", "len": 936, "offset": 0 },
   "normals":   { "$buf": 1, "type": "f32", "len": 936, "offset": 3744 },
   "mids":      { "$buf": 2, "type": "f32", "len": 936, "offset": 7488 },
   "triFace":   { "$buf": 3, "type": "i32", "len": 104, "offset": 11232 }
+}
 }
 ```
 

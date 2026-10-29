@@ -30,6 +30,7 @@ Run result: no errors; no solid body. An empty `features` list is a valid part.
 | `rollback` | number or `null` | `null` | Regenerate only the first N features. See [rollback](#rollback-and-upto). |
 | `material` | string | `""` | Material name. The kernel does not use it for geometry or mass properties. |
 | `counters` | object of numbers | `{}` | Per-command-name counters that editors use to number feature names (`{"sketch": 4, "extrude": 2}`). Not used by the kernel. |
+| `blobs` | object of strings | none | Data that features refer to by key, such as the STEP text of an [`importStep`](features-assemblies.md#importstep) feature. The key is the SHA-256 of the text, in lower-case hex. |
 | `kind` | string | `""` | `"assembly"` marks an assembly document. The regen does not branch on it: an assembly is a part whose features are `insertPart` and `mate` (see [parts and assemblies](features-assemblies.md)). |
 
 Any other top-level field (a thumbnail, editor settings, fields written by a newer version) is not read and is left untouched. The kernel never rejects a document for having extra fields.

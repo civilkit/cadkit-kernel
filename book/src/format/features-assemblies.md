@@ -471,6 +471,42 @@ The copies are new bodies named with the pattern id after the component suffix (
 Run result: no errors; 9 faces, volume 4712.389 mm³. Three pins around the z axis. The copies are named `E1.C0@F1.1@F2.1`, `E1.C1@F1.1@F2.1`, ... and are not listed in `components` (1 component).
 
 
+## importStep
+
+Holds a body that came from a STEP file, so that sketches, cuts and fillets later in the history can work on it. The STEP text is kept inside the part, so the part does not depend on a file next to it.
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `blob` | string | none | Key of an entry in the part's top-level `blobs` table. The entry is the STEP text and the key is the SHA-256 of that text in lower-case hex (of its UTF-8 bytes). |
+| `step` | string | none | The STEP text written in the feature itself. Meant for small files; use `blob` for anything large. `blob` wins when both are given. |
+| `body` | string | none | Name for the body. When the file holds several solids they are named `<body>`, `<body> 2`, `<body> 3`, in file order. |
+
+```json
+{
+  "format": "ck-part", "version": 1,
+  "blobs": {"9f2c...e1": "ISO-10303-21;\nHEADER;\n..."},
+  "features": [{"type": "importStep", "id": "F1", "blob": "9f2c...e1", "body": "Case"}]
+}
+```
+
+How it behaves:
+
+- The kernel reads the file with its STEP reader. Lengths are converted to millimetres using the units the file declares (millimetre, centimetre, metre, inch and so on).
+- Every solid in the file becomes its own body. Following the rule for new bodies, the solids are added beside any bodies that already exist and are not joined to them.
+- Faces are named `<feature id>.I<solid>F<n>`, for example `F1.I1F7`. The solid number and the face number follow the order in the file, so the names are the same on every run and after the part is saved and opened again. Later features refer to these faces like any other face (see [identifiers and references](references.md)).
+- The key is checked against the text every time the feature runs. Because the regeneration cache only sees the key and not the text, a large file adds a few bytes to a cache key, and the same file used by two features is stored once.
+- Keep the `blobs` entry as long as a feature uses it. Editors should remove entries that no feature names.
+
+Errors and edge cases:
+
+| Situation | Result |
+|---|---|
+| No `blob` and no `step` | `importStepInvalid` with `params.detail`. |
+| The key is missing from `blobs`, or does not match the text | `importStepInvalid` with `params.detail`. |
+| The text is not a STEP file, is cut short or uses something the reader cannot build | `importStepInvalid`; `params.detail` is the reader's message, `params.reason` its code and `params.entity` the STEP entity number when it names one. |
+| The file holds no solid | `importStepInvalid`. |
+| A `body` name already used by another body | `bodyNameConflict`. |
+
 ## See also
 
 - [Overview of the part format](overview.md)

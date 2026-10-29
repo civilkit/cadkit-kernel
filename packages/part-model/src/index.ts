@@ -119,6 +119,8 @@ export interface PartDoc {
   rollback: null;
   material: Material;
   counters: Record<string, unknown>;
+  /** Data that features name by key: the STEP text of an `importStep`, by the SHA-256 (lower-case hex) of the text. */
+  blobs?: Record<string, string>;
   /** Intent expectations (check grammar): verified by default, Survives round-trips. */
   expect?: Array<Record<string, unknown>>;
 }

@@ -128,7 +128,7 @@ pub const KNOWN_TYPES: &[&str] = &[
     "lip", "dome", "splitLine", "draft", "moveFace", "hole", "lpattern", "cpattern", "mirror", "spattern",
     "fillpattern", "curvepattern", "moveBody", "mate", "insertPart", "scale", "surfaceExtrude", "surfaceRevolve",
     "surfacePlanar", "surfaceOffset", "deleteFace", "fill", "knit", "extend", "freeform", "trimSurface", "thicken",
-    "cutWithSurface", "pipeCut", "deleteBody", "editCurve", "projectCurve", "helix", "thread", "combine", "bodyBoolean", "knurlBand",
+    "cutWithSurface", "pipeCut", "deleteBody", "editCurve", "projectCurve", "helix", "thread", "combine", "bodyBoolean", "knurlBand", "importStep",
 ];
 
 /// The error the oracle reports for each known type when the payload is
@@ -162,6 +162,7 @@ pub const EMPTY_FEATURE_ERRORS: &[(&str, &str)] = &[
     ("combine", "nothingToCut"),
     ("bodyBoolean", "nothingToCut"),
     ("knurlBand", "nothingToCut"),
+    ("importStep", "importStepInvalid"),
     ("scale", "nothingToCut"),
     ("mate", "nothingToCut"),
     ("insertPart", "insertPartMissing"),

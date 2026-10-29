@@ -81,15 +81,19 @@ The arrays that are keyed by a feature id (`errors`, `planes`, `sketches`, `sket
 Each entry is a two-element array: the id of the feature (an empty string if the feature has no id) and an object with the error `code` and a `params` object.
 
 ```json
+{
 "errors": [ [ "F4", { "code": "holeInvalid", "params": { "hint": "the hole diameter must be greater than zero (a standard `size`, or a positive `diameter`)" } } ] ]
+}
 ```
 
 `params` carries the facts of the failure and, for most failures, a `hint` that says what to change. `warnings` has the same shape and means that the feature ran but something was approximated or ignored; for example a thread whose size does not fit the hole:
 
 ```json
+{
 "warnings": [ [ "F5", { "code": "threadDiameterMismatch", "params": {
     "expected": 6.8, "actual": 8, "size": "M8", "standard": "metric", "internal": true, "nearest": "M10",
     "hint": "hole is 8, M8 tap drill is 6.8: drill the hole to 6.8, or choose M10 (tap drill 8.5)" } } ] ]
+}
 ```
 
 [Errors](errors.md) lists all codes. With `autoHeal` a repaired feature adds a `healed` entry (with `fixed`, `codes` and `remaining`) to `errors`; it marks a repair, not a failure.
@@ -181,8 +185,10 @@ One entry per face, in the body's face order. The index of a face in this array 
 The faces of the plate with a hole:
 
 ```json
+[
 { "id": "F2.C1",    "kind": "plane",    "planar": true,  "meta": { "feature": "F2" }, "normal": [0, 0, 1] },
 { "id": "F4.S.h1",  "kind": "cylinder", "planar": false, "meta": { "feature": "F4", "entity": "h1" } }
+]
 ```
 
 The reply carries no geometry for curved faces beyond the mesh; ask `measure`, `describe` or `inspect` for the radius, axis and area ([Queries](queries.md)).

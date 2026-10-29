@@ -42,6 +42,7 @@
 //! | moveFace        | faces, mode (offset / translate), distance, translate, flip (parsed from the raw DOM, see move_face.rs) |
 //! | moveBody        | bodies ({face}/{surface}/{feature}), translate, rotate{axis,origin,angle}, copy (see move_body.rs) |
 //! | scale           | factor (number or [sx,sy,sz]), at, bodies as moveBody (see scale.rs) |
+//! | importStep      | blob (key into the part's `blobs`) or step (inline text), body, heal (see import_step.rs) |
 //! | knurlBand       | axis, center, radius, from, to, pattern, count, depth, angle, helixAngle, ringPitch (see knurl_band.rs) |
 //! | thread          | face, standard, size, class, length, hand, start, modeled (parsed from the raw DOM, see thread.rs) |
 //! | projectCurve    | sketch \| curve, faces, degree, tolerance, direction (see project_curve.rs) |
@@ -58,6 +59,7 @@ pub mod edit_curve;
 pub mod extrude;
 pub mod hole;
 pub mod known_fields;
+pub mod import_step;
 pub mod knurl_band;
 pub mod lip;
 pub mod loft;
@@ -1317,6 +1319,7 @@ impl Brep {
             FeatureKind::Lip { .. } => return lip::exec_lip(self, state, f),
             FeatureKind::Draft { .. } => return draft::exec_draft(self, state, f),
             FeatureKind::Loft { .. } => return loft::exec_loft(self, state, f),
+            _ if f.type_name == "importStep" => return import_step::exec_import_step(self, state, f),
             _ if f.type_name == "knurlBand" => return knurl_band::exec_knurl_band(self, state, f),
             _ if f.type_name == "thread" => return thread::exec_thread(self, state, f),
             _ if f.type_name == "combine" || f.type_name == "bodyBoolean" => return combine::exec_combine(self, state, f),
