@@ -45,16 +45,32 @@ power  := unary ('^' power)?                 right associative
 unary  := '(' expr ')' | '-' power | '+' power
         | name                               variable, or pi
         | function '(' expr ')'
+        | function2 '(' expr (',' expr)* ')'   the functions of the second table below
         | number [unit]
 number := digits ['.' [digits]] | '.' digits, with an optional exponent (e5, E-3)
 unit   := mm | cm | m | in | deg | °         case-insensitive
 ```
 
 - A leading `=` is optional inside variable definitions and constraint `expr`s and is removed. Spaces are allowed between tokens.
-- `,` is read as the decimal separator, so `1,5` is 1.5.
+- `,` is read as the decimal separator, so `1,5` is 1.5, except directly inside the parentheses of a call to one of the functions of the second table, where it separates the arguments: `max(1,5)` is 5 and `max(1.5, 2)` is 2.
 - Variable names are case sensitive. `pi` and the function names are case-insensitive.
 - `^` binds tighter than unary minus, so `-2^2` is -4 and `2^3^2` is 512.
 - Functions are `sqrt`, `sin`, `cos`, `tan` and `abs`, with one argument in parentheses. Trigonometric functions take degrees.
+- More functions, written in lower case and always followed by `(`:
+
+| Function | Arguments | Value |
+|---|---|---|
+| `min`, `max` | one or more | the smallest, the largest |
+| `pow(a, b)` | 2 | `a` to the power `b` |
+| `mod(a, b)` | 2 | the remainder of `a / b`, with the sign of `a` |
+| `hypot(a, b)` | 2 | `sqrt(a^2 + b^2)` |
+| `atan2(y, x)` | 2 | the angle of the point `(x, y)`, in degrees |
+| `asin`, `acos`, `atan` | 1 | an angle in degrees |
+| `round` | 1 | the nearest whole number, halves away from zero |
+| `floor`, `ceil`, `trunc` | 1 | rounded down, up, towards zero |
+| `exp`, `ln`, `log10` | 1 | `e` to the power, natural and decimal logarithm |
+
+  A wrong number of arguments, an argument or a result that is not finite (`ln(0)`, `asin(2)`, `mod(1, 0)`), or a name in capitals (`MAX(1, 2)`) is a syntax error. These names are not reserved: a variable may still be called `max` or `round`, and `max * 2` is that variable times 2; only a name followed by `(` is the function.
 - Units scale a number to millimetres or degrees: `cm` is 10, `m` is 1000, `in` is 25.4, `mm`, `deg` and `°` are 1. A unit directly after a name or a parenthesis is a syntax error.
 - A result that is not finite (`1/0`, `1e400`) is a syntax error.
 
@@ -78,6 +94,12 @@ Values of expressions as the kernel evaluates them (rounded to nine decimals; th
 | `=sqrt(16)` | 4 |
 | `=SQRT(16)` | 4 |
 | `=abs(-4)` | 4 |
+| `=max(3, 1, 2)` | 3 |
+| `=mod(-7, 4)` | -3 |
+| `=round(-2.5)` | -3 |
+| `=atan2(1, 1)` | 45 |
+| `=hypot(3, 4)` | 5 |
+| `=ln(0)` | `badExpression` |
 | `=sin(30)` | 0.5 |
 | `=cos(60)*10` | 5 |
 | `=tan(45)` | 1 |

@@ -10,6 +10,7 @@
 //! unary  := '(' expr ')' | '-' power | '+' power
 //!         | ident                         // variable (exact case), `pi`,
 //!         | func '(' expr ')'             //   or sqrt/sin/cos/tan/abs (any case)
+//!         | fn2 '(' expr (',' expr)* ')'  // the functions of `MULTI` below (lower case)
 //!         | number unit?
 //! number := /(\d+\.?\d*|\.\d+)(e[+-]?\d+)?/i
 //! unit   := mm | cm | m | in | deg | °     // case-insensitive, scale to mm / deg
@@ -17,6 +18,15 @@
 //!
 //! A leading `=` is stripped, `,` is a decimal separator, trig is in degrees,
 //! and a non-finite result is an error (`=1e400` -> badExpression).
+//!
+//! The functions of `MULTI` (`min max pow mod hypot atan2 round floor ceil trunc exp ln log10 asin
+//! acos atan`) are called only as `name(`, in lower case, so a variable of that name still works
+//! everywhere else and no expression that was valid keeps its meaning changed. Inside the
+//! parentheses of such a call a `,` separates the arguments instead of being a decimal separator
+//! (`max(1,5)` is 5; write a point for a decimal there, `max(1.5, 2)`). Every
+//! argument and every result must be finite (`ln(0)`, `asin(2)`, `mod(1,0)` are errors); `round`
+//! takes halves away from zero, `mod` keeps the sign of its first argument, the inverse
+//! trigonometric functions return degrees.
 //!
 //! Wire behaviour pinned with the oracle (extrude `depth` field):
 //! `"=w*2"` (w=30) -> 60, `"=2^3^2"` -> 512, `"=-2^2"` -> -4, `"=cos(60)*10"`
@@ -77,6 +87,79 @@ pub struct VarResolution {
 }
 
 const FUNCS: [&str; 5] = ["sqrt", "sin", "cos", "tan", "abs"];
+/// Functions called as `name(args)`: (name, number of arguments; 0 = one or more).
+const MULTI: [(&str, usize); 16] = [
+    ("min", 0),
+    ("max", 0),
+    ("pow", 2),
+    ("mod", 2),
+    ("hypot", 2),
+    ("atan2", 2),
+    ("round", 1),
+    ("floor", 1),
+    ("ceil", 1),
+    ("trunc", 1),
+    ("exp", 1),
+    ("ln", 1),
+    ("log10", 1),
+    ("asin", 1),
+    ("acos", 1),
+    ("atan", 1),
+];
+
+fn call_multi(f: &str, a: &[f64]) -> f64 {
+    let deg = 180.0 / std::f64::consts::PI;
+    match f {
+        "min" => a.iter().copied().fold(f64::INFINITY, f64::min),
+        "max" => a.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+        "pow" => a[0].powf(a[1]),
+        "mod" => a[0] % a[1],
+        "hypot" => a[0].hypot(a[1]),
+        "atan2" => a[0].atan2(a[1]) * deg,
+        "round" => a[0].round(),
+        "floor" => a[0].floor(),
+        "ceil" => a[0].ceil(),
+        "trunc" => a[0].trunc(),
+        "exp" => a[0].exp(),
+        "ln" => a[0].ln(),
+        "log10" => a[0].log10(),
+        "asin" => a[0].asin() * deg,
+        "acos" => a[0].acos() * deg,
+        _ => a[0].atan() * deg,
+    }
+}
+
+/// `,` is a decimal separator except directly inside the parentheses of a call to a `MULTI` function, where it separates arguments.
+fn decimal_commas(s: &str) -> String {
+    let c: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    let mut calls: Vec<bool> = Vec::new();
+    for (i, &ch) in c.iter().enumerate() {
+        match ch {
+            '(' => {
+                let mut j = i;
+                while j > 0 && c[j - 1].is_whitespace() {
+                    j -= 1;
+                }
+                let end = j;
+                while j > 0 && is_ident(c[j - 1]) {
+                    j -= 1;
+                }
+                let word: String = c[j..end].iter().collect();
+                calls.push(j < end && MULTI.iter().any(|(m, _)| *m == word));
+                out.push(ch);
+            }
+            ')' => {
+                calls.pop();
+                out.push(ch);
+            }
+            ',' if calls.last().copied().unwrap_or(false) => out.push(','),
+            ',' => out.push('.'),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
 const UNITS: [(&str, f64); 6] = [("mm", 1.0), ("cm", 10.0), ("m", 1e3), ("in", 25.4), ("deg", 1.0), ("\u{b0}", 1.0)];
 
 fn call(f: &str, x: f64) -> f64 {
@@ -106,6 +189,38 @@ fn is_ident(c: char) -> bool {
 }
 
 impl<'a> P<'a> {
+    /// `name(a, b, ...)` of a `MULTI` function, the cursor just after the name; `None` when no `(` follows (the word is then read as before).
+    fn multi(&mut self, name: &str) -> Option<R> {
+        let &(f, arity) = MULTI.iter().find(|(m, _)| *m == name)?;
+        let at = self.n;
+        self.ws();
+        if self.peek() != Some('(') {
+            self.n = at;
+            return None;
+        }
+        self.n += 1;
+        let mut args = Vec::new();
+        loop {
+            match self.expr() {
+                Ok(v) if v.is_finite() => args.push(v),
+                _ => return Some(Err(())),
+            }
+            self.ws();
+            match self.peek() {
+                Some(',') => self.n += 1,
+                Some(')') => {
+                    self.n += 1;
+                    break;
+                }
+                _ => return Some(Err(())),
+            }
+        }
+        if (arity == 0 && args.is_empty()) || (arity != 0 && args.len() != arity) {
+            return Some(Err(()));
+        }
+        let v = call_multi(f, &args);
+        Some(if v.is_finite() { Ok(v) } else { Err(()) })
+    }
     fn peek(&self) -> Option<char> {
         self.t.get(self.n).copied()
     }
@@ -200,6 +315,9 @@ impl<'a> P<'a> {
                 self.n += 1;
             }
             let id: String = self.t[s..self.n].iter().collect();
+            if let Some(r) = self.multi(&id) {
+                return r;
+            }
             if let Some(v) = self.vars.and_then(|m| m.get(&id)) {
                 return Ok(v);
             }
@@ -275,7 +393,8 @@ fn parse_float_prefix(s: &str) -> f64 {
 /// identifier or a non-finite result (client `al()` throws "syntax").
 pub fn eval(src: &str, vars: Option<&Vars>) -> Result<f64, ()> {
     let s = src.trim();
-    let s = s.strip_prefix('=').unwrap_or(s).replace(',', ".");
+    let s = s.strip_prefix('=').unwrap_or(s);
+    let s = decimal_commas(s);
     let mut p = P { t: s.chars().collect(), n: 0, vars };
     let v = p.expr()?;
     p.ws();
@@ -421,6 +540,67 @@ mod tests {
         for bad in ["7)", "(7", "7 7", "sqrt 4", "1e400", "abc", "", "3 mx", "foo(2)"] {
             assert_eq!(ev(bad), None, "{bad}");
         }
+    }
+
+    fn close(s: &str, want: f64) {
+        let got = ev(s).unwrap_or(f64::NAN);
+        assert!((got - want).abs() <= 1e-9 * want.abs().max(1.0), "{s} = {got}, want {want}");
+    }
+
+    #[test]
+    fn more_functions() {
+        close("min(3, 1, 2)", 1.0);
+        close("max(3, 1, 2)", 3.0);
+        close("min(4)", 4.0);
+        close("=max(1,5)", 5.0); // a comma separates arguments inside the call
+        close("max(1.5, 2) + 1,5", 3.5); // and is a decimal separator outside it
+        close("pow(2, 10)", 1024.0);
+        close("mod(7, 4)", 3.0);
+        close("mod(-7, 4)", -3.0); // the sign of the first argument
+        close("hypot(3, 4)", 5.0);
+        close("atan2(1, 1)", 45.0);
+        close("atan2(1, -1)", 135.0);
+        close("asin(0.5)", 30.0);
+        close("acos(0.5)", 60.0);
+        close("atan(1)", 45.0);
+        close("round(2.5) + round(-2.5) + round(2.4)", 2.0); // halves away from zero: 3 - 3 + 2
+        close("floor(-1.5)", -2.0);
+        close("ceil(-1.5)", -1.0);
+        close("trunc(-1.9)", -1.0);
+        close("exp(0) + ln(1) + log10(1000)", 4.0);
+        close("ln(exp(2))", 2.0);
+        close("max(sqrt(16), min(9, 7)) * 2 cm", 140.0); // nesting, and units on the numbers
+        close("-max(1, 2)^2", -4.0);
+        close("max (1, 2)", 2.0); // a space before the parenthesis
+        close("sqrt(2,25)", 1.5); // the old functions keep the decimal comma
+    }
+
+    #[test]
+    fn more_functions_errors() {
+        for bad in [
+            "max()", "min(1,)", "max(,1)", "pow(2)", "pow(1,2,3)", "mod(1)", "hypot(1)", "atan2(1)", "round(1,2)", "floor()", "ln(0)", "ln(-1)", "log10(0)", "asin(2)", "acos(-2)", "mod(1,0)",
+            "pow(0,-1)", "exp(1000)", "pow(10,400)", "max(1,2", "max 1", "max(1 2)", "max(1;2)", "Max(1,2)", "MIN(1,2)", "round 2.5", "ln(1e400)",
+        ] {
+            assert_eq!(ev(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn more_functions_leave_names_alone() {
+        // a variable called like one of them still works as a variable, and a call of that name is the function
+        let mut v = Vars::new();
+        v.set("max", 7.0);
+        v.set("round", 2.0);
+        assert_eq!(eval("=max*2", Some(&v)), Ok(14.0));
+        assert_eq!(eval("=round+1", Some(&v)), Ok(3.0));
+        assert_eq!(eval("=max(1, 3)", Some(&v)), Ok(3.0));
+        // and a name is not reserved: variables of these names resolve as before
+        let r = resolve_variables(&[Variable { name: "min".into(), expr: "4".into() }, Variable { name: "ln".into(), expr: "min*2".into() }]);
+        assert!(r.errors.is_empty(), "{:?}", r.errors);
+        assert_eq!(r.values.get("ln"), Some(8.0));
+        // the expressions that were valid read as they did
+        assert_eq!(ev("1,5+2,5"), Some(4.0));
+        assert_eq!(ev("sqrt(2,25)*2"), Some(3.0));
     }
 
     #[test]
