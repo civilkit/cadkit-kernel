@@ -114,7 +114,7 @@ fn diagnose_cut_failure(body: &Body, is_open: &dyn Fn(FaceId) -> bool, t: f64, o
         Some((r, face)) => ShellError {
             code: "shellFailed".into(),
             detail: Some(format!(
-                "the cavity could not be cut; curvature is not the limit ({face} has a smallest radius of {r:.2} mm against a wall of {t:.2} mm): try a slightly different thickness or open another face"
+                "the cavity could not be cut out of the shape, and not because the wall is too thick for its curvature ({face} has a smallest radius of {r:.2} mm against a wall of {t:.2} mm): this is a limit of the shell operation here, so a different thickness may not help; try opening another face or changing the shape slightly"
             )),
             limit: Some(OffsetLimit { kind: "curvature", min_radius: r, max_thickness: 0.0, face: Some(face) }),
         },
@@ -140,8 +140,10 @@ pub fn shell(body: &Body, open: &[FaceId], thickness: f64, outward: bool, tol: f
                     Some(l) => OffsetLimit { max_thickness: max, ..l },
                     None => OffsetLimit { kind: "thin", min_radius: 2.0 * ok, max_thickness: max, face: None },
                 });
-                if e.detail.is_none() {
-                    e.detail = Some(format!("a wall of {thickness:.2} mm does not fit this shape: use at most {max:.2} mm"));
+                match e.detail.as_deref() {
+                    None => e.detail = Some(format!("a wall of {thickness:.2} mm does not fit this shape: use at most {max:.2} mm")),
+                    Some(d) if d.starts_with("walls touch") => e.detail = Some(format!("{d}: use at most {max:.2} mm")),
+                    _ => {}
                 }
             }
             Err(e)
@@ -150,15 +152,22 @@ pub fn shell(body: &Body, open: &[FaceId], thickness: f64, outward: bool, tol: f
     }
 }
 
+/// Detail of the refusal when two walls meet inside the cavity; `shell` appends the thickness that works.
+const WALLS_MEET: &str = "walls touch: two parts of the shape are too close for this wall, so the cavity would be pinched shut or its offset surfaces overlap";
+
 fn floor_hundredth(x: f64) -> f64 {
     (x * 100.0).floor() / 100.0
 }
 
-/// The largest wall below `thickness` (to a sixteenth of it) that still shells: bisection on the
-/// failing thickness. `None` when not even a sixteenth of it works.
+/// The largest wall below `thickness` (to a sixteenth of it, a 256th when nothing larger works) that still
+/// shells: bisection on the failing thickness. `None` when not even that works.
 fn largest_working(body: &Body, open: &[FaceId], thickness: f64, outward: bool, tol: f64) -> Option<f64> {
     let (mut lo, mut hi) = (0.0f64, thickness);
-    for _ in 0..4 {
+    // (four halvings; up to eight when nothing worked yet, e.g. a thin web far below the wall asked for)
+    for i in 0..8 {
+        if i >= 4 && lo > 0.0 {
+            break;
+        }
         let mid = 0.5 * (lo + hi);
         if shell_once(body, open, mid, outward, tol).is_ok() {
             lo = mid;
@@ -314,6 +323,16 @@ fn shell_try(body: &Body, open: &[FaceId], thickness: f64, outward: bool, tol: f
     }
     let mut b = out.body;
     b.number_split_faces();
+    // Offset surfaces that cross or touch inside the cavity leave a wall that is not `t` thick (or a
+    // cavity pinched shut) in a body that still passes the topology checks: refuse it.
+    if !outward {
+        let crossing = ck_check::loop_issues(&b, 1e-6).into_iter().find(|i| matches!(i.code, "LOOP_CROSS" | "LOOP_SELF_INTERSECT"));
+        let touching = if crossing.is_none() { crate::shell_check::pinched_wall(&b, 2e-4) } else { None };
+        if crossing.is_some() || touching.is_some() {
+            let at = crossing.map(|i| i.entity).or(touching).unwrap_or_default();
+            return Err(ShellError::detail("shellTooThick", format!("{WALLS_MEET} (at {at})")));
+        }
+    }
     if !near_poles.is_empty() {
         // a cavity cut off short of an apex has to come out clean, else a plane further away is tried
         let wall = ck_topo::mass::mass_props(&b).volume;

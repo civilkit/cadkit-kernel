@@ -18,7 +18,7 @@
 //! Unsupported input never panics: it returns an [`ImportError`] naming the
 //! STEP entity id.
 
-use super::parse::{default_knots, expand_knots, parse, Ent, ImportError, StepFile, Val};
+use super::parse::{default_knots, expand_knots_max, parse, Ent, ImportError, StepFile, Val};
 use ck_geom::curve::Curve;
 use ck_geom::curve2::Curve2;
 use ck_geom::nurbs::bspline::BSplineCurve;
@@ -82,6 +82,13 @@ struct Rd<'a> {
     nface: usize,
     depth: std::cell::Cell<u32>,
 }
+
+/// Highest B-spline degree read. Real files stay below 30; the cap keeps a
+/// degree taken from the file from sizing a knot-vector allocation.
+const MAX_DEGREE: usize = 1024;
+
+/// Largest coordinate magnitude accepted, in mm (a thousand kilometres).
+const MAX_COORD_MM: f64 = 1e12;
 
 const VTOL: f64 = 1e-7;
 const CELL: f64 = 1e-4;
@@ -159,7 +166,9 @@ impl<'a> Rd<'a> {
             let p = m.parts.first()?;
             let v = p.args.first()?.as_f64()?;
             let u = p.args.get(1)?.as_ref()?;
-            return Some(v * self.unit_si(u, depth + 1)?);
+            let s = v * self.unit_si(u, depth + 1)?;
+            // a zero / negative / infinite factor would collapse or poison the model
+            return (s.is_finite() && s > 0.0).then_some(s);
         }
         None
     }
@@ -220,7 +229,16 @@ impl<'a> Rd<'a> {
         let c = a.get(1).and_then(Val::as_list).ok_or_else(|| bad(id, "CARTESIAN_POINT without coordinates"))?;
         let g = |i: usize| c.get(i).and_then(Val::as_f64);
         match (g(0), g(1)) {
-            (Some(x), Some(y)) => Ok(Vec3::new(x, y, g(2).unwrap_or(0.0)) * self.len),
+            (Some(x), Some(y)) => {
+                let p = Vec3::new(x, y, g(2).unwrap_or(0.0)) * self.len;
+                // finite and of a sane size: 1e300 survives the parser but overflows
+                // every distance / area computed from it (NaN domains, clamp panics)
+                if [p.x, p.y, p.z].iter().all(|c| c.abs() <= MAX_COORD_MM) {
+                    Ok(p)
+                } else {
+                    Err(bad(id, "coordinate out of range"))
+                }
+            }
             _ => Err(bad(id, "bad coordinates")),
         }
     }
@@ -386,7 +404,7 @@ impl<'a> Rd<'a> {
             ("B_SPLINE_CURVE", &p.args[..])
         };
         let off = usize::from(e.parts.len() == 1);
-        let deg = base.get(off).and_then(Val::as_usize).ok_or_else(|| bad(id, "bad degree"))?;
+        let deg = base.get(off).and_then(Val::as_usize).filter(|&d| d <= MAX_DEGREE).ok_or_else(|| bad(id, "bad degree"))?;
         let cps = self.refs_list(id, base.get(off + 1), "control points")?;
         let ctrl: Vec<Vec3> = cps.iter().map(|&r| self.point(r)).collect::<R<_>>()?;
         let n = ctrl.len();
@@ -397,7 +415,7 @@ impl<'a> Rd<'a> {
                 m.and_then(Val::as_list).ok_or_else(|| bad(id, "bad knot multiplicities"))?,
                 v.and_then(Val::as_list).ok_or_else(|| bad(id, "bad knot values"))?,
             );
-            expand_knots(m, v).ok_or_else(|| bad(id, "bad knot vector"))?
+            expand_knots_max(m, v, n + deg + 1).ok_or_else(|| bad(id, "bad knot vector"))?
         } else {
             default_knots(if kind == "UNIFORM_CURVE" { "UNIFORM_CURVE" } else { "QUASI_UNIFORM_CURVE" }, n, deg)
         };
@@ -497,8 +515,8 @@ impl<'a> Rd<'a> {
             ("B_SPLINE_SURFACE", &p.args[..])
         };
         let off = usize::from(e.parts.len() == 1);
-        let du = base.get(off).and_then(Val::as_usize).ok_or_else(|| bad(id, "bad u degree"))?;
-        let dv = base.get(off + 1).and_then(Val::as_usize).ok_or_else(|| bad(id, "bad v degree"))?;
+        let du = base.get(off).and_then(Val::as_usize).filter(|&d| d <= MAX_DEGREE).ok_or_else(|| bad(id, "bad u degree"))?;
+        let dv = base.get(off + 1).and_then(Val::as_usize).filter(|&d| d <= MAX_DEGREE).ok_or_else(|| bad(id, "bad v degree"))?;
         let rows = base.get(off + 2).and_then(Val::as_list).ok_or_else(|| bad(id, "bad control net"))?;
         let nu = rows.len();
         let mut ctrl = Vec::new();
@@ -521,8 +539,8 @@ impl<'a> Rd<'a> {
             let o = if e.parts.len() == 1 { 8 } else { 0 };
             let l = |i: usize| k.args.get(o + i).and_then(Val::as_list).ok_or_else(|| bad(id, "bad knot data"));
             (
-                expand_knots(l(0)?, l(2)?).ok_or_else(|| bad(id, "bad u knot vector"))?,
-                expand_knots(l(1)?, l(3)?).ok_or_else(|| bad(id, "bad v knot vector"))?,
+                expand_knots_max(l(0)?, l(2)?, nu + du + 1).ok_or_else(|| bad(id, "bad u knot vector"))?,
+                expand_knots_max(l(1)?, l(3)?, nv + dv + 1).ok_or_else(|| bad(id, "bad v knot vector"))?,
             )
         } else {
             let k = if kind == "UNIFORM_SURFACE" { "UNIFORM_SURFACE" } else { "QUASI_UNIFORM_SURFACE" };
@@ -695,6 +713,31 @@ impl<'a> Rd<'a> {
     }
 
     fn face_spec(&mut self, id: u32) -> R<FaceSpec> {
+        // ORIENTED_FACE('', *, face_element, orientation): the wrapped face, reversed
+        // when orientation is .F. The wrapper maps in place (one face, no copy of
+        // the wrapped face left behind).
+        if self.ent(id)?.kind() == "ORIENTED_FACE" {
+            let a = self.simple(id, &["ORIENTED_FACE"])?;
+            let inner = a.get(2).and_then(Val::as_ref).ok_or_else(|| bad(id, "ORIENTED_FACE without face"))?;
+            let orient = a.get(3).and_then(Val::as_bool).unwrap_or(true);
+            if self.depth.get() > 24 {
+                return Err(bad(id, "entity references nest too deeply (cycle?)"));
+            }
+            self.depth.set(self.depth.get() + 1);
+            let r = self.face_spec(inner);
+            self.depth.set(self.depth.get() - 1);
+            let mut spec = r?;
+            if !orient {
+                spec.sense = !spec.sense;
+                for l in &mut spec.loops {
+                    l.reverse();
+                    for c in l.iter_mut() {
+                        c.rev = !c.rev;
+                    }
+                }
+            }
+            return Ok(spec);
+        }
         let a = self.simple(id, &["ADVANCED_FACE", "FACE_SURFACE"])?;
         let bounds = self.refs_list(id, a.get(1), "bounds")?;
         let surface = self.surface(a.get(2).and_then(Val::as_ref).ok_or_else(|| bad(id, "face without surface"))?)?;
@@ -2015,6 +2058,17 @@ impl Rd<'_> {
     }
 }
 
+/// `x.clamp(lo, hi)` that leaves `x` alone when the bounds are NaN or reversed
+/// (a surface fitted through absurd coordinates has no usable domain); the plain
+/// `clamp` panics on such bounds.
+fn clamp_to(x: f64, lo: f64, hi: f64) -> f64 {
+    if lo <= hi {
+        x.clamp(lo, hi)
+    } else {
+        x
+    }
+}
+
 /// Refine `p` onto the intersection of two surfaces: Gauss-Newton on
 /// S_a(u1, v1) - S_b(u2, v2) = 0 (three equations, four unknowns; the minimum-norm
 /// step keeps the point near where it started), from the feet of `p`. `None`
@@ -2061,13 +2115,13 @@ fn snap_point(sa: &Surface, sb: &Surface, p0: Vec3, cap: f64, hint: &mut Option<
         // a curve lying on the boundary of a free-form patch: stay on the patch
         if matches!(sa, Surface::BSpline(_)) {
             let d = sa.domain();
-            u1 = u1.clamp(d.0 .0, d.0 .1);
-            v1 = v1.clamp(d.1 .0, d.1 .1);
+            u1 = clamp_to(u1, d.0 .0, d.0 .1);
+            v1 = clamp_to(v1, d.1 .0, d.1 .1);
         }
         if matches!(sb, Surface::BSpline(_)) {
             let d = sb.domain();
-            u2 = u2.clamp(d.0 .0, d.0 .1);
-            v2 = v2.clamp(d.1 .0, d.1 .1);
+            u2 = clamp_to(u2, d.0 .0, d.0 .1);
+            v2 = clamp_to(v2, d.1 .0, d.1 .1);
         }
         if !(u1.is_finite() && v1.is_finite() && u2.is_finite() && v2.is_finite()) {
             return None;

@@ -152,6 +152,14 @@ impl Ctl {
     }
 }
 
+/// Only the planar-face loop checks (`LOOP_CROSS`, `LOOP_SELF_INTERSECT`, loop closure): a cheap test
+/// that a boolean did not leave overlapping boundaries.
+pub fn loop_issues(b: &Body, tol: f64) -> Vec<Issue> {
+    let mut out = vec![];
+    wire::check(b, tol, true, &Ctl::new(None), &mut out);
+    out
+}
+
 /// `validate_cap` under `ctl`: each check is timed and skipped once the limit ran out. `quick` runs only the topology
 /// and bounding checks (shell, loop closure, edge and vertex deviation); it leaves out the planar loop self-intersection
 /// test (`loopCrossings`) and the solid checks (`solids`), which integrate the volume.

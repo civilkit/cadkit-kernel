@@ -998,8 +998,146 @@ impl Brep {
         Ok(tool)
     }
 
+    /// Whether another lump has the volume and box of the lump that holds `face`, and as many faces.
+    fn has_twin_lump(&self, face: &str) -> bool {
+        use ck_topo::mass::{lump_faces, mass_props};
+        let Some(body) = self.body.as_ref() else { return false };
+        if body.lump_ids().count() < 2 || !self.asm.components.is_empty() {
+            return false;
+        }
+        let Some(mine) = body.find_face(face).map(|f| body.face_lump(f)) else { return false };
+        let of = |l: ck_topo::body::LumpId| ck_ops::boolean::assemble::rebuild_in_order(body, &lump_faces(body, l));
+        let own = lump_faces(body, mine);
+        let mut me: Option<(f64, (ck_core::linalg::Vec3, ck_core::linalg::Vec3))> = None;
+        for l in body.lump_ids().filter(|&l| l != mine) {
+            if lump_faces(body, l).len() != own.len() {
+                continue;
+            }
+            let (a, b) = me.get_or_insert_with(|| { let m = of(mine); (mass_props(&m).volume, body_box(&m)) }).clone();
+            let other = of(l);
+            let (v, (lo, hi)) = (mass_props(&other).volume, body_box(&other));
+            let eps = 1e-6 * (1.0 + (b.1 - b.0).len());
+            if (v - a).abs() <= 1e-6 * a.abs().max(1.0) && (lo - b.0).len() <= eps && (hi - b.1).len() <= eps {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// A face name that tells which lump `target` means: a face name, `{face}`, or `{body}` (the first face of the lump with that body name;
+    /// several lumps with the name: `ambiguousBody`; none: `missingReference`).
+    fn target_face(&self, t: &Json) -> Result<String, crate::regen::FeatureError> {
+        use crate::regen::FeatureError;
+        let missing = || FeatureError::new(crate::regen::codes::MISSING_REFERENCE);
+        let body = self.body.as_ref().ok_or_else(|| FeatureError::new(crate::regen::codes::NOTHING_TO_CUT))?;
+        if let Some(n) = t.as_str().or_else(|| t.get_str("face")) {
+            return body.find_face(n).map(|_| n.to_string()).ok_or_else(missing);
+        }
+        let Some(name) = t.get_str("body") else { return Err(missing()) };
+        let lumps = bodies::lumps_named(Some(body), name)?;
+        if lumps.len() > 1 {
+            return Err(bodies::ambiguous(body, name, &lumps));
+        }
+        ck_topo::mass::lump_faces(body, lumps[0]).first().map(|&f| body.face_id_str(f)).ok_or_else(missing)
+    }
+
+    /// [`Brep::apply`] for a tool that acts on the lump holding `face` alone (the `target` field).
+    fn apply_to(&mut self, id: &str, tool: extrude::Tool, face: &str) -> Result<(), crate::regen::FeatureError> {
+        let r = match tool.combine {
+            extrude::Combine::Add | extrude::Combine::Cut => {
+                let (tb, c) = (&tool.body, tool.combine);
+                match blends::on_lump_of_face(self, face, |br| br.combine(tb, c, true)) {
+                    Some(r) => r,
+                    None => self.combine(&tool.body, tool.combine, true),
+                }
+            }
+            _ => self.combine(&tool.body, tool.combine, true),
+        };
+        self.tools.push((id.to_string(), std::rc::Rc::new(tool)));
+        r
+    }
+
+    /// With several bodies, after the boolean with all of them failed: an Add goes to the body that owns the sketch face (only that one,
+    /// a second copy of the tool would be added to every other body); a Cut goes to each body in turn, the owner of the sketch face
+    /// first. A body the cut leaves as it is (it misses the tool, or the tool lies in a hole of it) is skipped, not an error; the cut
+    /// fails (`cutNoEffect`) only when no body is touched, and a body whose boolean really fails fails the feature with that body's
+    /// name in `body`. Nothing is changed unless the whole feature works. `None`: this does not apply (one body, an assembly, an Add
+    /// without a sketch face), the first error stands.
+    fn per_body(&mut self, tool: &extrude::Tool, face: Option<&str>) -> Option<Result<(), crate::regen::FeatureError>> {
+        use crate::regen::FeatureError;
+        use ck_topo::mass::lump_faces;
+        let body = self.body.as_ref()?;
+        if body.lump_ids().count() < 2 || !self.asm.components.is_empty() {
+            return None;
+        }
+        let owner = face.and_then(|f| body.find_face(f)).map(|f| body.face_lump(f));
+        let mut order: Vec<(String, String)> = vec![];   // a face of the lump, and what to call the body
+        for l in body.lump_ids() {
+            let Some(&f0) = lump_faces(body, l).first() else { continue };
+            let fname = body.face_id_str(f0);
+            let label = body.lump(l).name.clone().unwrap_or_else(|| fname.clone());
+            if Some(l) == owner { order.insert(0, (fname, label)) } else { order.push((fname, label)) }
+        }
+        let c = tool.combine;
+        if c == extrude::Combine::Add {
+            order.truncate(usize::from(owner.is_some()));
+            if order.is_empty() {
+                return None;
+            }
+        }
+        let before = self.body.clone();
+        let (mut changed, mut real): (bool, Option<FeatureError>) = (false, None);
+        for (name, label) in order {
+            match blends::on_lump_of_face(self, &name, |br| br.combine(&tool.body, c, true)) {
+                Some(Ok(())) => changed = true,
+                Some(Err(e)) if e.code == CUT_NO_EFFECT => {}
+                Some(Err(e)) => {
+                    real = Some(e.with("body", ck_json::Json::Str(label)));
+                    break;
+                }
+                None => {
+                    self.body = before;
+                    return None;
+                }
+            }
+        }
+        if let Some(e) = real {
+            self.body = before;
+            return Some(Err(e));
+        }
+        if !changed {
+            self.body = before;
+            return Some(Err(FeatureError::new(CUT_NO_EFFECT)));
+        }
+        Some(Ok(()))
+    }
+
     fn apply(&mut self, id: &str, tool: extrude::Tool) -> Result<(), crate::regen::FeatureError> {
-        let r = self.combine(&tool.body, tool.combine, true);
+        self.apply_on(id, tool, None)
+    }
+
+    /// [`Brep::apply`] for a tool sketched on the face `face`. When another lump is an exact copy of the lump that holds the face
+    /// (a converted part carries its original solid on top of the body its history builds), a boolean with the whole body cannot
+    /// tell the two apart and fails or answers wrongly, so the tool is applied to the lump of the face alone and the other lumps
+    /// are put back unchanged, as a blend does. Without such a copy nothing changes: the tool meets every lump it reaches.
+    fn apply_on(&mut self, id: &str, tool: extrude::Tool, face: Option<&str>) -> Result<(), crate::regen::FeatureError> {
+        let scoped = match face {
+            Some(face) if matches!(tool.combine, extrude::Combine::Add | extrude::Combine::Cut) && self.has_twin_lump(face) => {
+                let (tb, c) = (&tool.body, tool.combine);
+                blends::on_lump_of_face(self, face, |br| br.combine(tb, c, true))
+            }
+            _ => None,
+        };
+        let mut r = match scoped {
+            Some(r) => r,
+            None => self.combine(&tool.body, tool.combine, true),
+        };
+        // the boolean with the whole body failed, and the part has several bodies: aim the tool at the bodies one at a time
+        if r.is_err() && matches!(tool.combine, extrude::Combine::Add | extrude::Combine::Cut) {
+            if let Some(fixed) = self.per_body(&tool, face) {
+                r = fixed;
+            }
+        }
         // GUESS: the tool is remembered even when the combine fails.
         self.tools.push((id.to_string(), std::rc::Rc::new(tool)));
         r
@@ -1337,7 +1475,23 @@ impl Brep {
                 state.result.limits.push((f.id.clone(), Json::Obj(vec![("maxHeight".into(), Json::Num(h))])));
             }
         }
-        self.apply(&f.id, tool)
+        // an add / cut whose sketch lies on a face acts on the lump of that face when the boolean with the whole body fails
+        let on_face = match (&f.kind, state.sketch(f.raw.get("sketch").and_then(|s| s.as_str()).unwrap_or(""))) {
+            (FeatureKind::Extrude { .. }, Some(sk)) => match &sk.sketch.plane {
+                Some(crate::GeomRef::Face(n)) => Some(n.clone()),
+                _ => None,
+            },
+            _ => None,
+        };
+        // `target` ({body: name}, {face: name} or a face name): the add / cut acts on that lump alone, the others stay as they are
+        let target = match (&f.kind, f.raw.get("target")) {
+            (FeatureKind::Extrude { .. }, Some(t)) if !matches!(t, Json::Null) => Some(self.target_face(t)?),
+            _ => None,
+        };
+        match target {
+            Some(face) => self.apply_to(&f.id, tool, &face),
+            None => self.apply_on(&f.id, tool, on_face.as_deref()),
+        }
     }
 }
 

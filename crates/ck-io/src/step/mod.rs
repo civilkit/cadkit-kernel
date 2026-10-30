@@ -4,4 +4,4 @@ pub mod read;
 pub mod write;
 pub use parse::ImportError;
 pub use read::{read_step, Imported};
-pub use write::{write_step, write_step_signed_zeros, StepOpts, StepWriter};
+pub use write::{try_write_step, write_step, write_step_signed_zeros, StepOpts, StepWriter};

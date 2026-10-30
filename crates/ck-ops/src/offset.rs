@@ -1684,9 +1684,22 @@ pub fn move_faces_body(src: &Body, mv: &dyn Fn(FaceId) -> FaceMove) -> Result<Bo
                 if r2 <= EPS {
                     return Err(shrink());
                 }
-                // angular extent is kept: vertices stay on their radial lines
                 let _ = r;
-                (Curve::Circle { frame: Frame { o: c, ..frame.clone() }, r: r2 }, ed.t0, ed.t1)
+                let nf = Frame { o: c, ..frame.clone() };
+                // Angular extent is kept where the end vertices stay on their radial lines. An end vertex that
+                // slides along the circle's own plane (a meridian arc of a sphere whose end moves with a
+                // neighbouring flat face) changes the angle: the range follows the moved vertices.
+                let ang = |p: Vec3| (p - c).dot(nf.y).atan2((p - c).dot(nf.x));
+                let wrap = |a: f64| a - std::f64::consts::TAU * (a / std::f64::consts::TAU).round();
+                let (mut t0, mut t1) = (ed.t0, ed.t1);
+                if !closed && (p1 - c).len() > EPS {
+                    let (a0, a1) = (ed.t0 + wrap(ang(p0) - ed.t0), ang(p1));
+                    let span = (a1 - a0).rem_euclid(std::f64::consts::TAU);
+                    if (a0 - ed.t0).abs() > 1e-9 || (span - (ed.t1 - ed.t0)).abs() > 1e-9 {
+                        (t0, t1) = (a0, a0 + if span < 1e-12 { std::f64::consts::TAU } else { span });
+                    }
+                }
+                (Curve::Circle { frame: nf, r: r2 }, t0, t1)
             }
             Curve::BSpline(_) => {
                 if fs.iter().any(|&f| shift_of(f).is_some()) {

@@ -504,38 +504,58 @@ fn select_edges(br: &Brep, edges: &[crate::EdgeRef]) -> Result<Vec<(String, Stri
 /// for one, takes no part in it (a fillet beside an overlapping lump fails with `blendFailed`). The other lumps are put back
 /// unchanged after the blended lump. With one lump, or picks spread over several, `run` sees the whole body.
 pub fn on_lump_of_picks(br: &mut Brep, edges: &[crate::EdgeRef], run: impl FnOnce(&mut Brep) -> Result<(), FeatureError>) -> Result<(), FeatureError> {
-    let split = (|| {
-        let body = br.body.as_ref()?;
-        // component spans of an assembly index the body; they stay valid only when the body is not rebuilt
-        if body.lump_ids().count() < 2 || edges.is_empty() || !br.asm.components.is_empty() {
-            return None;
-        }
-        let mut lumps = vec![];
-        for e in edges {
-            for n in &e.faces {
-                lumps.push(body.face_lump(body.find_face(n)?));
-            }
-        }
-        lumps.sort_unstable();
-        lumps.dedup();
-        if lumps.len() != 1 {
-            return None;
-        }
-        let mine = ck_topo::mass::lump_faces(body, lumps[0]);
-        let rest: Vec<_> = body.face_ids().filter(|g| !mine.contains(g)).collect();
-        let mut sub = ck_ops::boolean::assemble::rebuild_in_order(body, &mine);
-        ck_topo::region::rebuild_lumps(&mut sub);
-        let mut others = ck_ops::boolean::assemble::rebuild_in_order(body, &rest);
-        ck_topo::region::rebuild_lumps(&mut others);
-        Some((sub, others))
-    })();
-    let Some((sub, others)) = split else { return run(br) };
+    let names: Vec<&String> = edges.iter().flat_map(|e| e.faces.iter()).collect();
+    match lump_split(br, edges.is_empty(), &names) {
+        Some(split) => run_on_split(br, split, run),
+        None => run(br),
+    }
+}
+
+/// The lump holding all of `names` (faces) split from the other lumps, as (that lump, the rest); `None` when the body has one lump,
+/// the names are empty or spread over several lumps, an assembly indexes the body, or a name is not a face of it.
+fn lump_split(br: &Brep, none: bool, names: &[&String]) -> Option<Split> {
+    let body = br.body.as_ref()?;
+    // component spans of an assembly index the body; they stay valid only when the body is not rebuilt
+    if body.lump_ids().count() < 2 || none || !br.asm.components.is_empty() {
+        return None;
+    }
+    let mut lumps = vec![];
+    for n in names {
+        lumps.push(body.face_lump(body.find_face(n)?));
+    }
+    lumps.sort_unstable();
+    lumps.dedup();
+    if lumps.len() != 1 {
+        return None;
+    }
+    let mine = ck_topo::mass::lump_faces(body, lumps[0]);
+    let rest: Vec<_> = body.face_ids().filter(|g| !mine.contains(g)).collect();
+    let mut sub = ck_ops::boolean::assemble::rebuild_in_order(body, &mine);
+    ck_topo::region::rebuild_lumps(&mut sub);
+    let mut others = ck_ops::boolean::assemble::rebuild_in_order(body, &rest);
+    ck_topo::region::rebuild_lumps(&mut others);
+    let name = body.lump(lumps[0]).name.clone();
+    Some((sub, others, name))
+}
+
+/// The lump that was split off, the other lumps, and the body name of the lump that was split off.
+type Split = (ck_topo::body::Body, ck_topo::body::Body, Option<String>);
+
+fn run_on_split(br: &mut Brep, split: Split, run: impl FnOnce(&mut Brep) -> Result<(), FeatureError>) -> Result<(), FeatureError> {
+    let (sub, others, name) = split;
     let whole = br.body.replace(sub);
     match run(br) {
         Ok(()) => {
             let done = br.body.take();
             br.body = Some(others);
-            if let Some(d) = done {
+            if let Some(mut d) = done {
+                // the body keeps its name through the edit
+                if let (Some(n), 1) = (name, d.lump_ids().count()) {
+                    let l = d.lump_ids().next().unwrap();
+                    if d.lump(l).name.is_none() {
+                        d.lumps[l.idx()].name = Some(n);
+                    }
+                }
                 br.append_body(&d);
             }
             Ok(())
@@ -545,6 +565,14 @@ pub fn on_lump_of_picks(br: &mut Brep, edges: &[crate::EdgeRef], run: impl FnOnc
             Err(e)
         }
     }
+}
+
+/// Run `run` on the one lump that holds `face` while the other lumps stay as they are. `None` when that does not apply (see
+/// [`lump_split`]): `run` has not been called then.
+pub fn on_lump_of_face(br: &mut Brep, face: &str, run: impl FnOnce(&mut Brep) -> Result<(), FeatureError>) -> Option<Result<(), FeatureError>> {
+    let name = face.to_string();
+    let split = lump_split(br, false, &[&name])?;
+    Some(run_on_split(br, split, run))
 }
 
 /// `fillet`. Oracle (box probes): any `filletType` string (even

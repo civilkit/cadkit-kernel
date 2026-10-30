@@ -857,6 +857,40 @@ pub fn write_step(body: &Body, name: &str, opts: &StepOpts) -> String {
     write_step_impl(body, name, opts, false)
 }
 
+/// Whole-word `NaN` / `inf` outside string literals: what [`real`] prints for a
+/// non-finite value, which is not a valid Part 21 REAL.
+pub fn has_non_finite_token(text: &str) -> bool {
+    let mut in_str = false;
+    let mut word = String::new();
+    for c in text.chars().chain(std::iter::once(' ')) {
+        if c == '\'' {
+            in_str = !in_str;
+            word.clear();
+        } else if in_str {
+            continue;
+        } else if c.is_ascii_alphanumeric() || c == '_' {
+            word.push(c);
+        } else {
+            if word == "NaN" || word == "inf" {
+                return true;
+            }
+            word.clear();
+        }
+    }
+    false
+}
+
+/// [`write_step`] that refuses a body holding a NaN or infinite number (the
+/// file would otherwise contain `NaN` / `inf`, which no STEP reader accepts).
+pub fn try_write_step(body: &Body, name: &str, opts: &StepOpts) -> Result<String, String> {
+    let t = write_step(body, name, opts);
+    if has_non_finite_token(&t) {
+        Err("the body holds a non-finite number (NaN or infinity); STEP export refused".to_string())
+    } else {
+        Ok(t)
+    }
+}
+
 /// Test support: [`write_step`] with negative-zero DIRECTION components
 /// printed as `-0.` (the oracle prints `0.`), so goldens can pin the sign of
 /// zero of every direction, not only the resulting sharing.

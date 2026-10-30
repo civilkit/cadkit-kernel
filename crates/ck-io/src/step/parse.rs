@@ -41,7 +41,9 @@ impl Val {
     pub fn as_usize(&self) -> Option<usize> {
         match self {
             Val::Int(i) if *i >= 0 => Some(*i as usize),
-            Val::Real(x) if *x >= 0.0 && x.fract() == 0.0 => Some(*x as usize),
+            // below 2^53 the float is an exact integer; above it a saturating cast
+            // would hand out usize::MAX as a "count"
+            Val::Real(x) if *x >= 0.0 && x.fract() == 0.0 && *x < 9.007_199_254_740_992e15 => Some(*x as usize),
             _ => None,
         }
     }
@@ -132,9 +134,16 @@ pub struct StepFile {
     pub ents: HashMap<u32, Ent>,
 }
 
+/// Deepest nesting of lists / typed parameters accepted in one attribute. Real
+/// files nest a handful of levels; the parser recurses once per level, so an
+/// unbounded depth is a stack overflow (a crash) on hostile input.
+pub const MAX_NESTING: usize = 64;
+
 struct Lexer<'a> {
     b: &'a [u8],
     i: usize,
+    /// current list / typed-parameter nesting
+    depth: usize,
 }
 
 type PResult<T> = Result<T, ImportError>;
@@ -219,10 +228,26 @@ impl<'a> Lexer<'a> {
         }
         // STEP reals may end in '.' ("1.") or start with it (".5"); Rust's
         // parser takes both.
-        t.parse::<f64>().map(Val::Real).map_err(|_| perr(self, &format!("bad number {t:?}")))
+        match t.parse::<f64>() {
+            // "1E999" parses to infinity; a non-finite coordinate poisons every
+            // downstream computation, so it is refused at the source
+            Ok(x) if x.is_finite() => Ok(Val::Real(x)),
+            Ok(_) => Err(perr(self, &format!("real {t:?} is out of range"))),
+            Err(_) => Err(perr(self, &format!("bad number {t:?}"))),
+        }
     }
 
     fn value(&mut self) -> PResult<Val> {
+        if self.depth >= MAX_NESTING {
+            return Err(perr(self, "parameters nested too deeply"));
+        }
+        self.depth += 1;
+        let r = self.value_inner();
+        self.depth -= 1;
+        r
+    }
+
+    fn value_inner(&mut self) -> PResult<Val> {
         match self.peek() {
             None => Err(perr(self, "unexpected end of data")),
             Some(b'#') => {
@@ -267,7 +292,7 @@ impl<'a> Lexer<'a> {
             Some(c) if c.is_ascii_alphabetic() || c == b'_' => {
                 let name = self.ident().unwrap_or_default();
                 if self.eat(b'(') {
-                    Ok(Val::Typed(name, self.args_until_close()?))
+                    Ok(Val::Typed(canonical_name(name), self.args_until_close()?))
                 } else {
                     Err(perr(self, &format!("unexpected word {name}")))
                 }
@@ -295,11 +320,33 @@ impl<'a> Lexer<'a> {
     }
 
     fn part(&mut self) -> PResult<Part> {
-        let name = self.ident().ok_or_else(|| perr(self, "expected entity keyword"))?;
+        let name = canonical_name(self.ident().ok_or_else(|| perr(self, "expected entity keyword"))?);
         if !self.eat(b'(') {
             return Err(perr(self, "expected '(' after keyword"));
         }
         Ok(Part { name, args: self.args_until_close()? })
+    }
+}
+
+/// Part 21 allows an entity's short name wherever its long name is valid. Only
+/// the geometry / topology entities the reader consumes are mapped.
+fn canonical_name(n: String) -> String {
+    const SHORT: [(&str, &str); 11] = [
+        ("FCSRF", "FACE_SURFACE"),
+        ("FCOTBN", "FACE_OUTER_BOUND"),
+        ("PLYLP", "POLY_LOOP"),
+        ("CRTPNT", "CARTESIAN_POINT"),
+        ("DRCTN", "DIRECTION"),
+        ("A2PL3D", "AXIS2_PLACEMENT_3D"),
+        ("CLSSHL", "CLOSED_SHELL"),
+        ("BSSWK", "B_SPLINE_SURFACE_WITH_KNOTS"),
+        ("BSCWK", "B_SPLINE_CURVE_WITH_KNOTS"),
+        ("TRMCRV", "TRIMMED_CURVE"),
+        ("CMCRSG", "COMPOSITE_CURVE"),
+    ];
+    match SHORT.iter().find(|(s, _)| *s == n) {
+        Some((_, long)) => (*long).to_string(),
+        None => n,
     }
 }
 
@@ -359,7 +406,7 @@ pub fn parse(input: &str) -> Result<StepFile, ImportError> {
         return Err(ImportError::new("parse", None, "not a STEP file (missing ISO-10303-21 header)"));
     }
     // locate `DATA;` outside strings/comments by lexing the header sections
-    let mut l = Lexer { b, i: 0 };
+    let mut l = Lexer { b, i: 0, depth: 0 };
     let mut found = false;
     while l.i < b.len() {
         l.ws();
@@ -427,15 +474,33 @@ pub fn parse(input: &str) -> Result<StepFile, ImportError> {
 
 // ---- B-spline attribute helpers (knot expansion as brepkit `expand_knots`) ----
 
+/// Most knots any one B-spline in a file may expand to. A knot vector is
+/// `control points + degree + 1` long, so this also bounds the control net.
+pub const MAX_KNOTS: usize = 1 << 22;
+
 /// Expand `(mults)`, `(knot values)` into a flat knot vector.
 pub fn expand_knots(mults: &[Val], vals: &[Val]) -> Option<Vec<f64>> {
+    expand_knots_max(mults, vals, MAX_KNOTS)
+}
+
+/// [`expand_knots`] that gives up (None) rather than build more than `max`
+/// knots: the multiplicities are file input and must not size an allocation.
+pub fn expand_knots_max(mults: &[Val], vals: &[Val], max: usize) -> Option<Vec<f64>> {
     if mults.len() != vals.len() {
         return None;
     }
-    let mut k = Vec::new();
+    let mut total = 0usize;
+    for m in mults {
+        total = total.checked_add(m.as_usize()?)?;
+        if total > max {
+            return None;
+        }
+    }
+    let mut k = Vec::with_capacity(total);
     for (m, v) in mults.iter().zip(vals) {
+        let x = v.as_f64()?;
         for _ in 0..m.as_usize()? {
-            k.push(v.as_f64()?);
+            k.push(x);
         }
     }
     Some(k)

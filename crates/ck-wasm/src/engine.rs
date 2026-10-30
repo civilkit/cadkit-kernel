@@ -962,7 +962,7 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
             let mut body = snapshot(cx)?.body.clone();
             ck_topo::region::rebuild_lumps(&mut body);
             let opts = ck_io::step::StepOpts { unix_ms: ck_server::clock::unix_ms() };
-            Ok(Json::Str(ck_io::step::write_step(&body, &name, &opts)))
+            ck_io::step::try_write_step(&body, &name, &opts).map(Json::Str)
         }
         _ => Err(ck_server::session::todo(ty)),
     }

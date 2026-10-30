@@ -24,6 +24,7 @@ pub mod profile;
 pub mod analysis;
 pub mod section;
 pub mod shell;
+mod shell_check;
 pub mod simplify;
 pub mod spline_path;
 pub mod surfacing;
