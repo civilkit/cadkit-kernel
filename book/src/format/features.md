@@ -75,6 +75,7 @@ Each feature has the same parts: a field table (name, type, default, meaning), t
 | `suppressed` | all | Skips the feature, see [the overview](overview.md#suppression). |
 | `tolerance` | features that combine a tool with the body (`extrude`, `revolve`, `sweep`, `loft`, `hole`, `thread`, patterns, `combine`) | The fuzzy value of the boolean, in mm (number or expression, default 0). |
 | `autoFuzzy` | the same | `true` retries a failed or implausible boolean with a growing fuzzy value. |
+| `origin` | all | A free label for where the feature came from (for example `script#3` for a feature created by a script). The kernel does not read it and does not warn about it. |
 | `op`, `body` | `extrude`, `revolve`, `sweep`, `loft`, `sphere` | Operation and body name, see [solids](features-solids.md#operations-and-the-body). |
 
 ### Fuzzy booleans

@@ -10,11 +10,12 @@ use ck_json::Json;
 
 /// Fields that every feature may carry: identity, display and editor bookkeeping (cosmetic keys
 /// of the regen cache), suppression, and the boolean tolerance read by the features that combine
-/// a tool with the body.
+/// a tool with the body. `origin` is a label an editor or script runner stamps on the features it creates (for example
+/// `script#3`); it is not read, and it is not a cosmetic cache key, so a change to it simply regenerates.
 /// Every field the regeneration cache ignores (`COSMETIC_KEYS` in ck-wasm) must be listed here: a cached reply replays the
 /// warnings of the state it was made from, so a field that is ignored by the cache key but unknown here would warn on a cold
 /// run and not on a hit.
-const COMMON: &[&str] = &["id", "type", "num", "name", "suppressed", "group", "autoName", "visible", "userHidden", "color", "after", "tolerance", "autoFuzzy"];
+const COMMON: &[&str] = &["id", "type", "num", "name", "suppressed", "group", "autoName", "visible", "userHidden", "color", "after", "tolerance", "autoFuzzy", "origin"];
 
 /// Known fields per feature type, beyond [`COMMON`]. Nested keys (inside `thin`, `endRef`, the
 /// edge picks, ...) are not checked.

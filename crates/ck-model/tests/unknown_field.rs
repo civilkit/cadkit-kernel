@@ -85,6 +85,19 @@ fn the_warning_changes_nothing_else_in_the_reply() {
 }
 
 #[test]
+fn origin_is_bookkeeping_and_a_misspelling_of_a_real_field_still_warns() {
+    let ok = reply(&part(&format!(
+        r#"{},{{"type":"extrude","id":"F2","sketch":"S1","op":"add","end":"blind","depth":10,"origin":"script#1"}}"#,
+        SKETCH.replace(r#""id":"S1""#, r#""id":"S1","origin":"script#1""#)
+    )));
+    assert!(warnings(&ok).is_empty(), "{:?}", warnings(&ok));
+    let bad = reply(&part(&format!(r#"{SKETCH},{{"type":"extrude","id":"F2","sketch":"S1","origin":"script#1","depht":10}}"#)));
+    let w = warnings(&bad);
+    assert_eq!(w.len(), 1, "{w:?}");
+    assert_eq!(w[0].1.get("params").unwrap().get("fields").unwrap().as_arr().unwrap().len(), 1);
+}
+
+#[test]
 fn a_suppressed_feature_is_not_checked() {
     let r = reply(&part(r#"{"type":"extrude","id":"F2","suppressed":true,"depht":1}"#));
     assert!(warnings(&r).is_empty());
