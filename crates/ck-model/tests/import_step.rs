@@ -23,13 +23,20 @@ impl FeatureExec for Exec {
 struct Out {
     body: Option<Body>,
     errors: Vec<String>,
+    warnings: Vec<(String, String, Json)>,
+    surfs: Vec<(String, Body)>,
 }
 
 fn run_doc(doc: &str) -> Out {
     let part = Part::parse(doc).unwrap();
     let mut ex = Exec(Brep::new());
     let r = regen::regen(&part, &RegenOpts::default(), &mut ex);
-    Out { body: ex.0.body.clone(), errors: r.errors.iter().map(|e| format!("{}:{} {}", e.feature, e.error.code, ck_json::to_string(&Json::Obj(e.error.params.clone())))).collect() }
+    Out {
+        body: ex.0.body.clone(),
+        errors: r.errors.iter().map(|e| format!("{}:{} {}", e.feature, e.error.code, ck_json::to_string(&Json::Obj(e.error.params.clone())))).collect(),
+        warnings: r.warnings.iter().map(|e| (e.feature.clone(), e.error.code.clone(), Json::Obj(e.error.params.clone()))).collect(),
+        surfs: ex.0.surfs.clone(),
+    }
 }
 
 fn run(features: &str) -> Out {
@@ -264,7 +271,7 @@ fn with_a_face_turned(step: &str, nth: usize) -> String {
 }
 
 #[test]
-fn a_face_turned_the_wrong_way_reads_wrong_as_it_is_and_right_with_heal() {
+fn a_face_turned_the_wrong_way_is_not_kept_as_a_wrong_solid_and_heal_or_repair_fixes_it() {
     // a plain block: 20 x 10 x 5 = 1000
     let o = run(&format!("{},{}", rect("S1", -10.0, 10.0, false), extrude("E1", "S1")));
     assert!(o.errors.is_empty(), "{:?}", o.errors);
@@ -277,10 +284,29 @@ fn a_face_turned_the_wrong_way_reads_wrong_as_it_is_and_right_with_heal() {
     for nth in 0..6 {
         let turned = with_a_face_turned(&step, nth);
         assert_ne!(turned, step);
-        // as it is: a solid of the wrong volume (the reader keeps the sense the text states)
+        // as it is: a solid of the wrong volume is never kept; it comes in as a surface body of its six faces, with the reason
         let plain = run_doc(&doc_with_blob(&turned, ""));
         assert!(plain.errors.is_empty(), "{:?}", plain.errors);
-        let plain_volume = volume(&plain.body.expect("a body"));
+        if let Some(b) = plain.body.as_ref().filter(|b| b.num_faces() > 0) {
+            // kept as a solid only when it passes the validator, and then it must be the right solid
+            assert!((volume(b) - want).abs() < 1e-6 * want, "face {nth}: a wrong solid was kept ({} vs {want})", volume(b));
+            assert!(plain.surfs.is_empty());
+        } else {
+            seen += 1;
+            assert_eq!(plain.surfs.len(), 1);
+            assert_eq!((plain.surfs[0].0.as_str(), plain.surfs[0].1.num_faces()), ("F1.P1", 6));
+            let w = plain.warnings.iter().find(|w| w.1 == "importStepParts").expect("the needs-repair warning");
+            assert_eq!(w.0, "F1");
+            let txt = ck_json::to_string(&w.2);
+            assert!(txt.contains(r#""outcome":"surface""#) && txt.contains(r#""surface":"F1.P1""#), "{txt}");
+            // Repair Part turns the faces consistently: the solid of the source
+            let repaired = run_doc(&doc_with_blob(&turned, r#"{"type":"repairPart","id":"F2","target":"F1"}"#));
+            assert!(repaired.errors.is_empty(), "face {nth}: {:?}", repaired.errors);
+            assert!(repaired.surfs.is_empty(), "face {nth}: still a surface body");
+            let rv = volume(&repaired.body.expect("a repaired solid"));
+            assert!((rv - want).abs() < 1e-6 * want, "face {nth}: repaired volume {rv} vs {want}");
+            assert!(repaired.warnings.iter().any(|w| w.0 == "F2" && w.1 == "repairReport" && ck_json::to_string(&w.2).contains(r#""valid":true"#)));
+        }
         // healed, as the importStep message does: the solid of the source, whichever face was turned
         let key = blob_key(&turned);
         let healed_doc = doc_with_blob(&turned, "").replace(&format!(r#""blob":"{key}""#), &format!(r#""blob":"{key}","heal":true"#));
@@ -291,11 +317,8 @@ fn a_face_turned_the_wrong_way_reads_wrong_as_it_is_and_right_with_heal() {
         assert!((volume(&healed) - want).abs() < 1e-6 * want, "face {nth}: {} vs {want}", volume(&healed));
         assert_eq!(healed.num_lumps(), 1);
         assert_eq!(face_ids(&healed).len(), 6);
-        if (plain_volume - want).abs() > 0.05 * want {
-            seen += 1;
-        }
     }
-    assert!(seen >= 4, "turning a face should change the volume as it is read: {seen} of 6 did");
+    assert!(seen >= 4, "a turned face should leave a surface body: {seen} of 6 did");
 }
 
 #[test]
@@ -318,4 +341,92 @@ fn heal_must_be_true_or_false() {
     let o = run_doc(&doc);
     assert!(o.body.is_none());
     assert!(o.errors.iter().any(|e| e.contains("importStepInvalid") && e.contains("heal")), "{:?}", o.errors);
+}
+
+/// The text with the loop of its `nth` face pointing at an entity that is not there: the reader cannot read that face.
+fn with_a_face_broken(step: &str, nth: usize) -> String {
+    let mut at = 0;
+    for _ in 0..=nth {
+        at += step[at..].find("ADVANCED_FACE(").expect("a face") + 1;
+    }
+    let open = at + step[at..].find("(#").expect("a bound list") + 2;
+    let end = open + step[open..].find(|c: char| !c.is_ascii_digit()).unwrap();
+    format!("{}999999{}", &step[..open], &step[end..])
+}
+
+fn block() -> (String, f64) {
+    let o = run(&format!("{},{}", rect("S1", -10.0, 10.0, false), extrude("E1", "S1")));
+    let b = o.body.unwrap();
+    let v = volume(&b);
+    (step_text(&b), v)
+}
+
+#[test]
+fn a_face_the_reader_cannot_read_leaves_a_surface_body_and_repair_rebuilds_it() {
+    let (step, want) = block();
+    let broken = with_a_face_broken(&step, 2);
+    let o = run_doc(&doc_with_blob(&broken, ""));
+    assert!(o.errors.is_empty(), "{:?}", o.errors);
+    assert!(o.body.as_ref().map_or(true, |b| b.num_faces() == 0));
+    assert_eq!(o.surfs.len(), 1);
+    assert_eq!(o.surfs[0].1.num_faces(), 5);
+    let w = o.warnings.iter().find(|w| w.1 == "importStepParts").unwrap();
+    let txt = ck_json::to_string(&w.2);
+    assert!(txt.contains(r#""faces":5"#) && txt.contains(r#""facesTotal":6"#), "{txt}");
+    assert!(txt.contains(r#""code":"badEntity""#) && txt.contains("could not be read"), "{txt}");
+    // the face's plane was kept: Repair Part rebuilds the face on it
+    let r = run_doc(&doc_with_blob(&broken, r#"{"type":"repairPart","id":"F2","target":"F1"}"#));
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert!(r.surfs.is_empty());
+    assert!((volume(r.body.as_ref().unwrap()) - want).abs() < 1e-6 * want);
+    let rep = ck_json::to_string(&r.warnings.iter().find(|w| w.1 == "repairReport").unwrap().2);
+    assert!(rep.contains(r##""rebuilt":["#"##) && rep.contains(r#""valid":true"#), "{rep}");
+}
+
+#[test]
+fn an_unreadable_surface_leaves_a_hole_that_repair_patches_flat() {
+    let (step, want) = block();
+    // the first plane of the file becomes a surface type the reader does not know: its face cannot be rebuilt on it
+    let bad = step.replacen("PLANE(", "SWEPT_DISC_SURFACE(", 1);
+    let o = run_doc(&doc_with_blob(&bad, ""));
+    assert_eq!(o.surfs.len(), 1, "{:?} {:?}", o.errors, o.warnings);
+    let r = run_doc(&doc_with_blob(&bad, r#"{"type":"repairPart","id":"F2","target":"F1"}"#));
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    let rep = ck_json::to_string(&r.warnings.iter().find(|w| w.1 == "repairReport").unwrap().2);
+    assert!(rep.contains(r#""patched":true"#), "{rep}");
+    assert!((volume(r.body.as_ref().unwrap()) - want).abs() < 1e-6 * want, "{rep}");
+}
+
+#[test]
+fn repair_part_refusals_are_structured() {
+    let (step, _) = block();
+    // a sound file: nothing to repair
+    let o = run_doc(&doc_with_blob(&step, r#"{"type":"repairPart","id":"F2","target":"F1"}"#));
+    assert!(o.errors.iter().any(|e| e.starts_with("F2:repairNothing")), "{:?}", o.errors);
+    let broken = with_a_face_broken(&step, 2);
+    for (tail, code) in [
+        (r#"{"type":"repairPart","id":"F2"}"#, "F2:repairTarget"),
+        (r#"{"type":"repairPart","id":"F2","target":"F9"}"#, "F2:repairTarget"),
+        (r#"{"type":"repairPart","id":"F2","target":"F1","gap":5}"#, "F2:repairGap"),
+        (r#"{"type":"repairPart","id":"F2","target":"F1","gap":0}"#, "F2:repairGap"),
+    ] {
+        let o = run_doc(&doc_with_blob(&broken, tail));
+        assert!(o.errors.iter().any(|e| e.starts_with(code)), "{tail}: {:?}", o.errors);
+        assert_eq!(o.surfs.len(), 1, "{tail}: a refused repair changes nothing");
+    }
+}
+
+#[test]
+fn a_surface_model_file_comes_in_as_a_surface_body() {
+    let (step, _) = block();
+    let o = run_doc(&doc_with_blob(&step, ""));
+    let mut b = o.body.unwrap();
+    let f = b.face_ids().next().unwrap();
+    ck_topo::edit::delete_face(&mut b, f);
+    ck_topo::region::rebuild_lumps(&mut b);
+    let open = step_text(&b);
+    let o = run_doc(&doc_with_blob(&open, ""));
+    assert!(o.errors.is_empty(), "{:?}", o.errors);
+    assert_eq!(o.surfs.len(), 1);
+    assert_eq!(o.surfs[0].1.num_faces(), 5);
 }

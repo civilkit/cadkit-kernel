@@ -54,7 +54,7 @@ fn from_offset(e: OffsetError) -> ShellError {
 /// `shellTooThick` with the radius and the thickness that would work when a face curves more
 /// tightly than the wall is thick (the cavity folds over), else `shellFailed` saying that the
 /// curvature is not the limit.
-fn diagnose_cut_failure(body: &Body, is_open: &dyn Fn(FaceId) -> bool, t: f64, outward: bool) -> ShellError {
+fn diagnose_cut_failure(body: &Body, is_open: &dyn Fn(FaceId) -> bool, t: f64, outward: bool, why: Option<&str>) -> ShellError {
     // parallel planar faces facing away from each other: the wall between them
     // must fit both thicknesses (one if a face of the pair is opened)
     if !outward {
@@ -114,7 +114,8 @@ fn diagnose_cut_failure(body: &Body, is_open: &dyn Fn(FaceId) -> bool, t: f64, o
         Some((r, face)) => ShellError {
             code: "shellFailed".into(),
             detail: Some(format!(
-                "the cavity could not be cut out of the shape, and not because the wall is too thick for its curvature ({face} has a smallest radius of {r:.2} mm against a wall of {t:.2} mm): this is a limit of the shell operation here, so a different thickness may not help; try opening another face or changing the shape slightly"
+                "the cavity could not be cut out of the shape, and not because the wall is too thick for its curvature ({face} has a smallest radius of {r:.2} mm against a wall of {t:.2} mm): this is a limit of the shell operation here, so a different thickness may not help; try opening another face or changing the shape slightly{}",
+                why.map_or(String::new(), |w| format!(" (the boolean reported: {w})"))
             )),
             limit: Some(OffsetLimit { kind: "curvature", min_radius: r, max_thickness: 0.0, face: Some(face) }),
         },
@@ -142,15 +143,38 @@ pub fn shell(body: &Body, open: &[FaceId], thickness: f64, outward: bool, tol: f
                 });
                 match e.detail.as_deref() {
                     None => e.detail = Some(format!("a wall of {thickness:.2} mm does not fit this shape: use at most {max:.2} mm")),
-                    Some(d) if d.starts_with("walls touch") => e.detail = Some(format!("{d}: use at most {max:.2} mm")),
+                    Some(d) if d.starts_with("walls touch") || d.starts_with(INVALID_RESULT) => e.detail = Some(format!("{d}: use at most {max:.2} mm")),
                     _ => {}
                 }
+            }
+            Err(e)
+        }
+        // a thickness the failure names must itself build (a valid body): else the largest below it that does, or none
+        Err(mut e)
+            if matches!(e.code.as_str(), "shellTooThick" | "shellFailed" | "offsetTooLarge")
+                && e.limit.as_ref().is_some_and(|l| l.max_thickness > 0.0 && l.max_thickness < thickness) =>
+        {
+            let named = e.limit.as_ref().map_or(0.0, |l| l.max_thickness);
+            if shell_once(body, open, named, outward, tol).is_err() {
+                let max = largest_working(body, open, named, outward, tol).map_or(0.0, |ok| floor_hundredth(0.95 * ok));
+                if let Some(l) = e.limit.as_mut() {
+                    l.max_thickness = max;
+                }
+                let note = if max > 0.0 {
+                    format!("; a wall of {named:.2} mm does not build here either: use at most {max:.2} mm")
+                } else {
+                    format!("; a wall of {named:.2} mm does not build here either, nor does a thinner one")
+                };
+                e.detail = Some(e.detail.take().unwrap_or_default() + &note);
             }
             Err(e)
         }
         r => r,
     }
 }
+
+/// Detail of the refusal when the hollowed body does not validate; `shell` appends the thickness that works.
+const INVALID_RESULT: &str = "the hollowed body is not valid (the offset surfaces do not close into a clean wall on this shape)";
 
 /// Detail of the refusal when two walls meet inside the cavity; `shell` appends the thickness that works.
 const WALLS_MEET: &str = "walls touch: two parts of the shape are too close for this wall, so the cavity would be pinched shut or its offset surfaces overlap";
@@ -178,7 +202,9 @@ fn largest_working(body: &Body, open: &[FaceId], thickness: f64, outward: bool, 
     (lo > 0.0).then_some(lo)
 }
 
-fn shell_once(body: &Body, open: &[FaceId], thickness: f64, outward: bool, tol: f64) -> Result<Body, ShellError> {
+/// One shell attempt at exactly this wall, without the search for a wall that works (`shell` does that on a
+/// failure). Callers that search themselves use this to keep each try to one shell.
+pub fn shell_once(body: &Body, open: &[FaceId], thickness: f64, outward: bool, tol: f64) -> Result<Body, ShellError> {
     let cuts = if outward { vec![] } else { near_pole_cuts(body, thickness, 6.0 * thickness) };
     if cuts.is_empty() {
         return shell_try(body, open, thickness, outward, tol, 6.0);
@@ -309,17 +335,29 @@ fn shell_try(body: &Body, open: &[FaceId], thickness: f64, outward: bool, tol: f
         Some(p) => p,
         None => base.face_ids().zip(cavity.face_ids()).filter(|(a, b)| a == b).collect(),
     });
+    let coplanar_failed = || {
+        coplanar_open_pair(body, open).map(|(f, g)| {
+            ShellError::detail(
+            "shellUnsupported",
+            format!(
+                "the opened faces {} and {} lie on one plane and share an edge (the two end caps of a 180 degree revolve): a shell opened through such a split face is not supported; revolve a full turn and cut the body in half (so the opening is one face), then shell",
+                body.face_id_str(f),
+                body.face_id_str(g)
+            ),
+            )
+        })
+    };
     let out = boolean(&base, &cavity, Op::Cut, tol).map_err(|e| {
         if std::env::var_os("CK_OFFSET_DEBUG").is_some() {
             eprintln!("shell: cavity cut failed: {e}");
         }
-        diagnose_cut_failure(body, &is_open, t, outward)
+        coplanar_failed().unwrap_or_else(|| diagnose_cut_failure(body, &is_open, t, outward, Some(&e)))
     })?;
     if let Some(t) = dbg_t {
         eprintln!("shell: cavity cut {:.1}s", t.elapsed().as_secs_f64());
     }
     if out.no_effect || out.body.num_faces() == 0 {
-        return Err(diagnose_cut_failure(body, &is_open, t, outward));
+        return Err(coplanar_failed().unwrap_or_else(|| diagnose_cut_failure(body, &is_open, t, outward, None)));
     }
     let mut b = out.body;
     b.number_split_faces();
@@ -331,6 +369,17 @@ fn shell_try(body: &Body, open: &[FaceId], thickness: f64, outward: bool, tol: f
         if crossing.is_some() || touching.is_some() {
             let at = crossing.map(|i| i.entity).or(touching).unwrap_or_default();
             return Err(ShellError::detail("shellTooThick", format!("{WALLS_MEET} (at {at})")));
+        }
+    }
+    // A hollowed body that fails validation where the solid passed (an offset edge off its faces, a loop that
+    // does not close) is not returned as a result: refused, with what failed and, via `shell`, a wall that builds.
+    if near_poles.is_empty() {
+        let issues = ck_check::validate(&b, 1e-6);
+        if !issues.is_empty() && issues.len() > ck_check::validate(body, 1e-6).len() {
+            return Err(ShellError::detail(
+                "shellFailed",
+                format!("{INVALID_RESULT}: {} {} ({} issues in all)", issues[0].code, issues[0].detail, issues.len()),
+            ));
         }
     }
     if !near_poles.is_empty() {
@@ -350,7 +399,40 @@ fn shell_try(body: &Body, open: &[FaceId], thickness: f64, outward: bool, tol: f
             return Err(ShellError::detail("shellFailed", format!("the cavity cut off short of the apex left an invalid wall: {} {}", issues[0].code, issues[0].detail)));
         }
     }
+    // never hand back a body less valid than the one shelled (a cavity vertex placed off its edge where a hole
+    // crosses a curved wall off its axis, solidcore #1528)
+    let issues = ck_check::validate(&b, 1e-6);
+    if !issues.is_empty() && issues.len() > ck_check::validate(body, 1e-6).len() {
+        let i = &issues[0];
+        return Err(ShellError::detail(
+            "shellFailed",
+            format!(
+                "the shell came out as an invalid body ({} at {}: {}): this is a limit of the shell operation for this shape, not a wrong input; a hole or cut-out that crosses a curved wall off its axis is the usual cause: shell first and add the hole after, or centre the hole on the curved wall's axis",
+                i.code, i.entity, i.detail
+            ),
+        ));
+    }
     Ok(b)
+}
+
+/// Two opened planar faces that share an edge and lie on one plane (same outward normal): the start and end caps of a
+/// 180 degree revolve. Their offsets are the same plane and the cavity cut is not built for that opening.
+fn coplanar_open_pair(b: &Body, open: &[FaceId]) -> Option<(FaceId, FaceId)> {
+    for &f in open {
+        for e in b.face_edges(f) {
+            let fs = b.edge_faces(e);
+            let Some(&g) = fs.iter().find(|&&g| g != f) else { continue };
+            if fs.len() != 2 || !open.contains(&g) {
+                continue;
+            }
+            if let (Some((nf, cf)), Some((ng, cg))) = (plane_of(b, f), plane_of(b, g)) {
+                if nf.dot(ng) > 1.0 - 1e-12 && (cf - cg).abs() < 1e-9 * (1.0 + cf.abs()) {
+                    return Some((f.min(g), f.max(g)));
+                }
+            }
+        }
+    }
+    None
 }
 
 /// A plane across a point-ended loft that cuts off its apex: the side the apex is on is dropped.

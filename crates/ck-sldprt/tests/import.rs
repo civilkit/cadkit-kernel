@@ -210,3 +210,26 @@ fn synthetic_modern_container() {
     ok.extend(block("Contents/Test", b"hello world"));
     assert!(container::open(&ok, &lim).is_err());
 }
+
+/// The corpus part (not committed: `<repo>/_corpus`, see ck-heal/tests/import_corpus.rs) whose four spline faces have a
+/// vertex 2.5 mm off their surface: those faces are left out and named, the other faces come in (skipped without the corpus).
+#[test]
+fn a_face_that_cannot_be_built_is_left_out_and_named() {
+    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../_corpus/solidworks/samples/nist_ftc_07/part.SLDPRT");
+    let Ok(bytes) = std::fs::read(&p) else { return };
+    let imp = import_sldprt(&bytes).unwrap();
+    assert_eq!(imp.parts.len(), 1);
+    let part = &imp.parts[0];
+    let ids: Vec<i64> = part.refused.iter().map(|r| r.0).collect();
+    assert_eq!(ids, vec![5276, 5282, 5292, 5298]);
+    assert!(part.refused.iter().all(|r| r.1.code == "geometry.invalid"));
+    assert_eq!(part.faces.len() + 4, part.faces_total);
+    assert_eq!(part.refused_surfaces.len(), 4);
+}
+
+#[test]
+fn a_complete_part_has_no_refused_faces() {
+    let imp = import_sldprt(&fixture("sw2022_cube_10mm")).unwrap();
+    assert_eq!(imp.parts.len(), 1);
+    assert_eq!((imp.parts[0].faces_total, imp.parts[0].faces.len(), imp.parts[0].refused.len()), (6, 6, 0));
+}

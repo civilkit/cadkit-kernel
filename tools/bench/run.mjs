@@ -87,10 +87,18 @@ export function runBench({ wasm, only = null, set = 'benchcad', log = () => {} }
       else {
         const im = q(5, { type: 'massProps', tag: 'imp' }).result;
         const iv = q(6, { type: 'validate', tag: 'imp' }).result;
+        // an import that did not come in as a valid solid (a surface body, its faces left out) has no volume or centre: report it
+        const parts = imp.result?.parts ?? [];
+        const notSolid = parts.filter((p) => p.kind && p.kind !== 'solid');
+        if (!im || im.volume == null || !Array.isArray(im.com) || im.com.some((x) => x == null)) {
+          row.import = false;
+          row.importBad.push(`import came in without a solid's mass properties${notSolid.length ? ` (${notSolid.map((p) => `${p.name || p.entity}: ${p.kind}`).join('; ').slice(0, 160)})` : ''}`);
+        } else {
         const w2 = { volume: gt.volume, area: gt.area, com: gt.com, box: { min: gt.bbox.slice(0, 3), max: gt.bbox.slice(3) } };
         row.importBad.push(...compare({ volume: im.volume, area: im.area, com: im.com, box: ib.box }, w2, diag));
         if (iv?.issues?.length) row.importBad.push(`validate ${iv.issues.length} issue(s): ${iv.issues.slice(0, 2).map((i) => i.code).join(',')}`);
         row.import = row.importBad.length === 0;
+        }
       }
     }
   }

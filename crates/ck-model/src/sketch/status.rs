@@ -37,6 +37,7 @@
 //!   the sketch unsolved without an error) `solved` is false and `dof` is the
 //!   number of free coordinates.
 
+use super::guard::Problem;
 use super::solver::{build, jacobian, residuals, solve, SolveOpts};
 use super::Sketch;
 use ck_json::Json;
@@ -61,6 +62,10 @@ pub struct SketchStatus {
     /// Constraints flagged `suppressed` (the solver ignores them).
     /// Document order; the key is only emitted when non-empty.
     pub suppressed: Vec<String>,
+    /// Coded problems (sketch/guard.rs): the constraint picks first, in
+    /// document order, then a curve the solve would shrink to a point.
+    /// The key is only emitted when non-empty, before `suppressed`.
+    pub problems: Vec<Problem>,
 }
 
 impl SketchStatus {
@@ -75,6 +80,9 @@ impl SketchStatus {
             ("state".into(), Json::Str(self.state.into())),
             ("residual".into(), Json::Num(if self.residual.is_finite() { self.residual } else { -1.0 })),
         ];
+        if !self.problems.is_empty() {
+            o.push(("problems".into(), Json::Arr(self.problems.iter().map(|p| p.to_json()).collect())));
+        }
         if !self.suppressed.is_empty() {
             o.push(("suppressed".into(), ids(&self.suppressed)));
         }
@@ -123,29 +131,36 @@ impl Basis {
 /// Solve at the sketch's coordinates (or converge from them): the
 /// coordinates the Jacobian is taken at, whether they satisfy the
 /// constraints, the residuals there, and the largest residual the drawn
-/// coordinates had (`SketchStatus::residual`).
+/// coordinates had (`SketchStatus::residual`). A converged solve that
+/// shrinks a curve to a point is not taken (`solved` false, `shrunk` says
+/// which curve; sketch/guard.rs).
 pub(crate) struct Converge {
     pub x: Vec<f64>,
     pub solved: bool,
     pub res: Vec<f64>,
     pub residual: f64,
+    pub shrunk: Option<Problem>,
 }
 
-pub(crate) fn converge(sys: &super::solver::System) -> Converge {
+pub(crate) fn converge(sk: &Sketch, sys: &super::solver::System) -> Converge {
     let mut x = sys.x.clone();
     let res0 = residuals(sys, &x);
     let residual = res0.iter().fold(0.0f64, |m, v| if v.is_nan() || m.is_nan() { f64::NAN } else { m.max(v.abs()) });
     let mut res = res0;
     let mut solved = residual <= SOLVED_TOL;
+    let mut shrunk = None;
     if !solved {
         let t = solve(sys, &SolveOpts::default());
         if t.ok {
+            shrunk = super::guard::shrunk(sk, sys, &x, &t.x);
+        }
+        if t.ok && shrunk.is_none() {
             solved = true;
             x = t.x;
             res = residuals(sys, &x);
         }
     }
-    Converge { x, solved, res, residual }
+    Converge { x, solved, res, residual, shrunk }
 }
 
 /// Orthonormal row basis plus per-equation dependence flags: equations are
@@ -170,11 +185,13 @@ pub fn sketch_status(sk: &Sketch) -> SketchStatus {
         Ok(s) => s,
         Err(_) => {
             let free = sk.points.iter().filter(|p| !p.fixed).count() * 2;
-            return SketchStatus { dof: free, fully_defined: false, conflicts: vec![], redundant: vec![], solved: false, state: "under", residual: f64::NAN, suppressed };
+            return SketchStatus { dof: free, fully_defined: false, conflicts: vec![], redundant: vec![], solved: false, state: "under", residual: f64::NAN, suppressed, problems: vec![] };
         }
     };
     let n = sys.x.len();
-    let Converge { mut x, solved, res, residual } = converge(&sys);
+    let Converge { mut x, solved, res, residual, shrunk } = converge(sk, &sys);
+    let mut problems = super::guard::picks(sk);
+    problems.extend(shrunk);
     let jac = jacobian(&sys, &mut x);
     let (basis, dependent) = row_basis(&jac, n);
     let rank = basis.q.len();
@@ -209,7 +226,7 @@ pub fn sketch_status(sk: &Sketch) -> SketchStatus {
     } else {
         "under"
     };
-    SketchStatus { dof, fully_defined: state == "full" && solved, conflicts, redundant, solved, state, residual, suppressed }
+    SketchStatus { dof, fully_defined: state == "full" && solved, conflicts, redundant, solved, state, residual, suppressed, problems }
 }
 
 #[cfg(test)]

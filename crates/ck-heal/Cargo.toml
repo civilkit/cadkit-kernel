@@ -13,3 +13,6 @@ ck-check = { path = "../ck-check" }
 ck-model = { path = "../ck-model" }
 ck-json = { path = "../ck-json" }
 ck-core = { path = "../ck-core" }
+ck-io = { path = "../ck-io" }
+ck-sldprt = { path = "../ck-sldprt" }
+ck-skp = { path = "../ck-skp" }

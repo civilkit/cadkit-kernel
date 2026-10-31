@@ -43,6 +43,7 @@
 //! | moveBody        | bodies ({face}/{surface}/{feature}), translate, rotate{axis,origin,angle}, copy (see move_body.rs) |
 //! | scale           | factor (number or [sx,sy,sz]), at, bodies as moveBody (see scale.rs) |
 //! | importStep      | blob (key into the part's `blobs`) or step (inline text), body, heal (see import_step.rs) |
+//! | repairPart      | target (an importStep), gap, patchHoles (see repair_part.rs) |
 //! | knurlBand       | axis, center, radius, from, to, pattern, count, depth, angle, helixAngle, ringPitch (see knurl_band.rs) |
 //! | thread          | face, standard, size, class, length, hand, start, modeled (parsed from the raw DOM, see thread.rs) |
 //! | projectCurve    | sketch \| curve, faces, degree, tolerance, direction (see project_curve.rs) |
@@ -57,11 +58,14 @@ pub mod delete_body;
 pub mod draft;
 pub mod edit_curve;
 pub mod extrude;
+pub mod extrude_object;
 pub mod hole;
 pub mod known_fields;
 pub mod import_step;
+pub mod repair_part;
 pub mod knurl_band;
 pub mod lip;
+pub mod max_size;
 pub mod loft;
 pub mod mate;
 pub mod mate_kinds;
@@ -197,8 +201,15 @@ pub enum End {
     UpToFace,
     OffsetFromFace,
     UpToPoint,
+    /// `toObject`: the end is any reference in `endRef` (features/extrude_object.rs).
+    ToObject,
     /// Unrecognised value (raw string on `Feature::raw`).
     Unknown,
+}
+
+/// Whether an extrude names a start other than its sketch plane (`start` present, not null, not `"sketch"`).
+pub fn has_start(f: &crate::Feature) -> bool {
+    !matches!(f.raw.get("start"), None | Some(Json::Null)) && f.raw.get("start").and_then(|s| s.as_str()) != Some("sketch")
 }
 
 impl End {
@@ -212,6 +223,7 @@ impl End {
             "upToFace" => End::UpToFace,
             "offsetFromFace" => End::OffsetFromFace,
             "upToPoint" => End::UpToPoint,
+            "toObject" => End::ToObject,
             _ => End::Unknown,
         }
     }
@@ -998,6 +1010,94 @@ impl Brep {
         Ok(tool)
     }
 
+    /// `extrude` with `end:"toObject"` or `start:"fromObject"` (extrude_object.rs): the slanted start and end trims and
+    /// the body end. Every failure is a refusal (no fallback).
+    fn extrude_to_object(&mut self, state: &mut crate::regen::RegenState, f: &crate::Feature) -> Result<extrude::Tool, crate::regen::FeatureError> {
+        let mut extras = extrude::EndExtras::default();
+        let mut tool = extrude::exec_extrude_ex(state, f, self.body.as_ref(), &mut extras)?;
+        let clip_hint = |e: crate::regen::FeatureError| e.with("hint", Json::Str("the trim along the slanted plane failed; try a plane parallel to the sketch, or a small offset".into()));
+        if let Some(c) = extras.start_clip.take() {
+            tool = self.clip_tool(f, tool, c).map_err(clip_hint)?;
+        }
+        if let Some(c) = extras.clip.take() {
+            tool = self.clip_tool(f, tool, c).map_err(clip_hint)?;
+        }
+        if let Some(tb) = extras.to_body.take() {
+            tool = self.trim_to_body(tool, &tb)?;
+        }
+        state.result.warnings.retain(|w| w.feature != f.id);
+        for w in extras.warnings {
+            state.result.warnings.push(crate::regen::RegenError { feature: f.id.clone(), error: w });
+        }
+        Ok(tool)
+    }
+
+    /// To object on a body: the long tool less the named body's lumps, keeping the piece that touches the start plane.
+    /// A tool that never meets the body is `endRefMissed`; one that the body does not cover runs on past it
+    /// (`endRefOutside`).
+    fn trim_to_body(&mut self, mut tool: extrude::Tool, tb: &extrude_object::ToBody) -> Result<extrude::Tool, crate::regen::FeatureError> {
+        use crate::regen::FeatureError;
+        use ck_ops::boolean::Op as BOp;
+        let hint = |e: FeatureError, h: &str| e.with("field", Json::Str("endRef".into())).with("hint", Json::Str(h.into()));
+        let targets: Vec<ck_topo::body::Body> = {
+            let body = self.body.as_ref().ok_or_else(|| FeatureError::new(crate::regen::codes::MISSING_REFERENCE))?;
+            let lumps = bodies::lumps_named(Some(body), &tb.name).map_err(|e| hint(e, &format!("no body is named {}; pick the end again", tb.name)))?;
+            lumps.into_iter().map(|l| ck_ops::interference::extract_lump(body, l)).collect()
+        };
+        let missed = || hint(FeatureError::new(extrude_object::END_REF_MISSED).with("name", Json::Str(tb.name.clone())), "the extrusion never meets that body; flip the direction, or move the profile under the body");
+        let orig: Vec<String> = tool.body.face_ids().map(|f| tool.body.face_id_str(f)).collect();
+        let mut cur = tool.body.clone();
+        let mut met = false;
+        for target in &targets {
+            let r = ck_ops::boolean::boolean(&cur, target, BOp::Cut, TOL).map_err(|e| FeatureError::new(&e))?;
+            if let Some(m) = &r.mismatch {
+                return Err(volume_mismatch(m));
+            }
+            self.spans.push(boolean_span(BOp::Cut, cur.num_faces(), target.num_faces(), r.body.num_faces()));
+            met |= !r.no_effect;
+            cur = r.body;
+        }
+        if !met {
+            return Err(missed());
+        }
+        let (p0, n) = tb.start;
+        let on_start = |f: ck_topo::body::FaceId| {
+            cur.face_edges(f).into_iter().any(|e| {
+                let ed = cur.edge(e);
+                [ed.v0, ed.v1].iter().any(|&v| (cur.vertex(v).p - p0).dot(n).abs() < 1e-6)
+            })
+        };
+        let keep: Vec<ck_topo::body::FaceId> = ck_topo::region::components(&cur).into_iter().filter(|c| c.iter().any(|&f| on_start(f))).flatten().collect();
+        if keep.is_empty() {
+            return Err(missed());
+        }
+        let mut order: Vec<ck_topo::body::FaceId> = cur.face_ids().collect();
+        order.retain(|f| keep.contains(f));
+        let mut piece = ck_ops::boolean::assemble::rebuild_in_order(&cur, &order);
+        if piece.vertex_ids().any(|v| (piece.vertex(v).p - tb.far).dot(tb.dir) > -1e-6) {
+            return Err(hint(
+                FeatureError::new(extrude_object::END_REF_OUTSIDE).with("name", Json::Str(tb.name.clone())),
+                "the body does not cover the whole profile, so part of it would run on past the body; make the profile fit under the body, or end at a plane",
+            ));
+        }
+        // a face left whole keeps its tool name (as upToNext): the `~k` suffix belongs to the intermediate boolean
+        let base = |n: &ck_topo::body::FaceName| {
+            let mut m = n.clone();
+            m.region = None;
+            m
+        };
+        let names: Vec<ck_topo::body::FaceName> = piece.face_ids().map(|f| piece.face(f).name.clone()).collect();
+        for f in piece.faces.iter_mut().filter(|f| f.alive) {
+            let id = f.name.id();
+            let b0 = base(&f.name);
+            if f.name.region.is_some() && !orig.contains(&id) && orig.contains(&b0.id()) && names.iter().filter(|n| base(n) == b0).count() == 1 {
+                f.name = b0;
+            }
+        }
+        tool.body = piece;
+        Ok(tool)
+    }
+
     /// Whether another lump has the volume and box of the lump that holds `face`, and as many faces.
     fn has_twin_lump(&self, face: &str) -> bool {
         use ck_topo::mass::{lump_faces, mass_props};
@@ -1024,37 +1124,101 @@ impl Brep {
         false
     }
 
-    /// A face name that tells which lump `target` means: a face name, `{face}`, or `{body}` (the first face of the lump with that body name;
-    /// several lumps with the name: `ambiguousBody`; none: `missingReference`).
-    fn target_face(&self, t: &Json) -> Result<String, crate::regen::FeatureError> {
+    /// The faces (one per lump) a `target` selects. One selection (`{body}`, `{face}` or a face name) is exactly one lump (a body name
+    /// held by several lumps is `ambiguousBody`); a list selects each entry and a body name there stands for every lump of that name.
+    /// An unknown body name is `missingReference {name, nearest, bodies}`: `bodies` lists the names the part has.
+    fn target_faces(&self, t: &Json) -> Result<Vec<String>, crate::regen::FeatureError> {
         use crate::regen::FeatureError;
         let missing = || FeatureError::new(crate::regen::codes::MISSING_REFERENCE);
         let body = self.body.as_ref().ok_or_else(|| FeatureError::new(crate::regen::codes::NOTHING_TO_CUT))?;
-        if let Some(n) = t.as_str().or_else(|| t.get_str("face")) {
-            return body.find_face(n).map(|_| n.to_string()).ok_or_else(missing);
+        let many = matches!(t, Json::Arr(_));
+        let list = match t {
+            Json::Arr(a) if a.is_empty() => return Err(FeatureError::new(crate::regen::codes::INVALID_VALUE).with("detail", Json::Str("target lists at least one body".into()))),
+            Json::Arr(a) => a.as_slice(),
+            one => std::slice::from_ref(one),
+        };
+        let mut out: Vec<String> = vec![];
+        for t in list {
+            if let Some(n) = t.as_str().or_else(|| t.get_str("face")) {
+                out.push(body.find_face(n).map(|_| n.to_string()).ok_or_else(missing)?);
+                continue;
+            }
+            let Some(name) = t.get_str("body") else { return Err(missing()) };
+            let lumps = bodies::lumps_named(Some(body), name).map_err(|e| {
+                let every: Vec<Json> = body.lump_ids().filter_map(|l| body.lump(l).name.clone()).fold(vec![], |mut v, n| {
+                    if !v.contains(&n) {
+                        v.push(n);
+                    }
+                    v
+                }).into_iter().map(Json::Str).collect();
+                e.with("bodies", Json::Arr(every)).with("hint", Json::Str("target names bodies made with newBody (or a body name); the bodies the part has are listed in bodies".into()))
+            })?;
+            if lumps.len() > 1 && !many {
+                return Err(bodies::ambiguous(body, name, &lumps));
+            }
+            for l in lumps {
+                if let Some(&f) = ck_topo::mass::lump_faces(body, l).first() {
+                    out.push(body.face_id_str(f));
+                }
+            }
         }
-        let Some(name) = t.get_str("body") else { return Err(missing()) };
-        let lumps = bodies::lumps_named(Some(body), name)?;
-        if lumps.len() > 1 {
-            return Err(bodies::ambiguous(body, name, &lumps));
+        out.dedup();
+        if out.is_empty() {
+            return Err(missing());
         }
-        ck_topo::mass::lump_faces(body, lumps[0]).first().map(|&f| body.face_id_str(f)).ok_or_else(missing)
+        Ok(out)
     }
 
-    /// [`Brep::apply`] for a tool that acts on the lump holding `face` alone (the `target` field).
-    fn apply_to(&mut self, id: &str, tool: extrude::Tool, face: &str) -> Result<(), crate::regen::FeatureError> {
+    /// [`Brep::apply`] for a tool that acts on the lumps holding `faces` alone (the `target` field), one after the other. With several
+    /// targets one the tool misses is skipped; `cutNoEffect` only when it changes none. Nothing changes unless the whole feature works.
+    fn apply_to(&mut self, id: &str, tool: extrude::Tool, faces: &[String]) -> Result<(), crate::regen::FeatureError> {
         let r = match tool.combine {
             extrude::Combine::Add | extrude::Combine::Cut => {
+                let before = self.body.clone();
                 let (tb, c) = (&tool.body, tool.combine);
-                match blends::on_lump_of_face(self, face, |br| br.combine(tb, c, true)) {
-                    Some(r) => r,
-                    None => self.combine(&tool.body, tool.combine, true),
+                let (mut changed, mut res) = (false, Ok(()));
+                for face in faces {
+                    let one = match blends::on_lump_of_face(self, face, |br| br.combine(tb, c, true)) {
+                        Some(r) => r,
+                        None => self.combine(tb, c, true),
+                    };
+                    match one {
+                        Ok(()) => changed = true,
+                        Err(e) if e.code == CUT_NO_EFFECT && faces.len() > 1 => {}
+                        Err(e) => {
+                            res = Err(e);
+                            break;
+                        }
+                    }
                 }
+                if res.is_ok() && !changed {
+                    res = Err(crate::regen::FeatureError::new(CUT_NO_EFFECT));
+                }
+                if res.is_err() {
+                    self.body = before;
+                }
+                res
             }
             _ => self.combine(&tool.body, tool.combine, true),
         };
         self.tools.push((id.to_string(), std::rc::Rc::new(tool)));
         r
+    }
+
+    /// Apply the tool of `f`: to the bodies its `target` names, else as [`Brep::apply_on`] does.
+    pub(crate) fn apply_feature(&mut self, f: &crate::Feature, tool: extrude::Tool, on_face: Option<&str>) -> Result<(), crate::regen::FeatureError> {
+        match f.raw.get("target").filter(|t| !matches!(t, Json::Null)) {
+            Some(t) => {
+                if tool.combine == extrude::Combine::Separate {
+                    return Err(crate::regen::FeatureError::new(crate::regen::codes::INVALID_VALUE)
+                        .with("detail", Json::Str("target names the bodies an add or cut acts on; a newBody feature has none".into()))
+                        .with("hint", Json::Str("remove target, or set op to add or cut".into())));
+                }
+                let faces = self.target_faces(t)?;
+                self.apply_to(&f.id, tool, &faces)
+            }
+            None => self.apply_on(&f.id, tool, on_face),
+        }
     }
 
     /// With several bodies, after the boolean with all of them failed: an Add goes to the body that owns the sketch face (only that one,
@@ -1431,6 +1595,7 @@ impl Brep {
             }
         }
         let tool = match &f.kind {
+            FeatureKind::Extrude { end, .. } if *end == End::ToObject || has_start(f) => self.extrude_to_object(state, f)?,
             FeatureKind::Extrude { end: End::UpToNext, .. } if self.body.is_some() => {
                 let t = extrude::exec_extrude(state, f, self.body.as_ref())?;
                 self.up_to_next(t)?
@@ -1458,6 +1623,7 @@ impl Brep {
             FeatureKind::Draft { .. } => return draft::exec_draft(self, state, f),
             FeatureKind::Loft { .. } => return loft::exec_loft(self, state, f),
             _ if f.type_name == "importStep" => return import_step::exec_import_step(self, state, f),
+            _ if f.type_name == "repairPart" => return repair_part::exec_repair_part(self, state, f),
             _ if f.type_name == "knurlBand" => return knurl_band::exec_knurl_band(self, state, f),
             _ if f.type_name == "thread" => return thread::exec_thread(self, state, f),
             _ if f.type_name == "combine" || f.type_name == "bodyBoolean" => return combine::exec_combine(self, state, f),
@@ -1483,15 +1649,7 @@ impl Brep {
             },
             _ => None,
         };
-        // `target` ({body: name}, {face: name} or a face name): the add / cut acts on that lump alone, the others stay as they are
-        let target = match (&f.kind, f.raw.get("target")) {
-            (FeatureKind::Extrude { .. }, Some(t)) if !matches!(t, Json::Null) => Some(self.target_face(t)?),
-            _ => None,
-        };
-        match target {
-            Some(face) => self.apply_to(&f.id, tool, &face),
-            None => self.apply_on(&f.id, tool, on_face.as_deref()),
-        }
+        self.apply_feature(f, tool, on_face.as_deref())
     }
 }
 

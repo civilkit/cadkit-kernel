@@ -9,6 +9,8 @@
 //! flagged, so a valid body is returned unchanged.
 
 pub mod damage;
+pub mod honest;
+pub mod repair;
 mod orient;
 mod sew;
 mod small;
@@ -55,6 +57,12 @@ impl HealOpts {
     pub fn new(tol: f64) -> HealOpts {
         HealOpts { tol, sew: true, fix_small: true, fix_orientation: true, tolerant: false, cap: ck_check::DEFAULT_TOL_CAP }
     }
+}
+
+/// Only the tolerant-geometry pass: edges / vertices that deviate from their faces get a tolerance up to the cap; nothing
+/// else is changed (the geometry and topology stay as read). What an import does to a solid read from a native file.
+pub fn tolerant_only() -> HealOpts {
+    HealOpts { sew: false, fix_small: false, fix_orientation: false, tolerant: true, ..HealOpts::new(1e-4) }
 }
 
 /// Heal `b` in place with model tolerance `tol` (mm). No tolerant-edge pass.

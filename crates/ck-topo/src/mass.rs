@@ -8,10 +8,14 @@
 //!
 //! Wire shape (pinned by oracle probes, `{type:"massProps", tag, bodies:
 //! true, densities:[..]}`):
-//! `{volume, area, com, principal, axes[, bodies:[{volume,area,com[, mass]}]]
-//!   [, byMass:{mass, com, principal, axes}]}` — principal moments
+//! `{volume, area, com, principal, axes, firstMoment, inertia, inertiaOrigin
+//!   [, bodies:[{volume,area,com[, mass]}]]
+//!   [, byMass:{mass, com, principal, axes, firstMoment, inertia, inertiaOrigin}]}` — principal moments
 //! ascending (volume-weighted, density 1), `axes[i]` = unit eigenvector of
-//! `principal[i]`; `bodies` per lump (wire lump order), `byMass` uses
+//! `principal[i]`; `firstMoment` = ∫x dV about the origin (volume × com; mass × com
+//! in `byMass`), `inertia` / `inertiaOrigin` = the full 3×3 tensor (rows, world axes)
+//! about the centre of mass / the origin, the same integrals the principal moments
+//! come from (additive to the oracle shape); `bodies` per lump (wire lump order), `byMass` uses
 //! `densities[lump]` (g/mm³, client table Xt). With `densities` every
 //! `bodies[]` entry also carries `mass` (= volume × density); without, the
 //! reply is the oracle-pinned shape (no `mass`). The request-level rule
@@ -962,8 +966,12 @@ impl Moments {
     }
     /// Inertia tensor about the centroid (rows).
     pub fn inertia(&self) -> [[f64; 3]; 3] {
-        let c = self.about(self.com());
-        let s = c.second;
+        self.inertia_about(self.com())
+    }
+    /// Inertia tensor about an arbitrary point `p` (rows, world axes, density 1): J = ∫ (|q|² E − q qᵀ) dV, q = x − p.
+    /// Products of inertia carry the usual minus sign, so a body's tensor stays positive definite whatever holes it has.
+    pub fn inertia_about(&self, p: Vec3) -> [[f64; 3]; 3] {
+        let s = self.about(p).second;
         [[s[1] + s[2], -s[3], -s[5]], [-s[3], s[0] + s[2], -s[4]], [-s[5], -s[4], s[0] + s[1]]]
     }
 }
@@ -1174,12 +1182,28 @@ pub struct MassProps {
     pub com: Vec3,
     pub principal: [f64; 3],
     pub axes: [Vec3; 3],
+    /// ∫ x dV about the world origin (= volume × com)
+    pub first_moment: Vec3,
+    /// inertia tensor about the centre of mass, world axes (rows)
+    pub inertia: [[f64; 3]; 3],
+    /// inertia tensor about the world origin, world axes (rows)
+    pub inertia_origin: [[f64; 3]; 3],
 }
 
 impl MassProps {
     pub fn from_moments(m: &Moments) -> MassProps {
-        let (principal, axes) = eigen_sym(m.inertia());
-        MassProps { volume: m.volume, area: m.area, com: m.com(), principal, axes }
+        let inertia = m.inertia();
+        let (principal, axes) = eigen_sym(inertia);
+        MassProps {
+            volume: m.volume,
+            area: m.area,
+            com: m.com(),
+            principal,
+            axes,
+            first_moment: m.about(Vec3::ZERO).first,
+            inertia,
+            inertia_origin: m.inertia_about(Vec3::ZERO),
+        }
     }
 }
 
@@ -1198,12 +1222,16 @@ pub fn mass_props_json(b: &Body, bodies: bool, densities: Option<&[f64]>) -> Jso
     let mp = MassProps::from_moments(&total);
     let v3 = crate::body::v3;
     let axes = |a: &[Vec3; 3]| Json::Arr(a.iter().map(|&x| v3(x)).collect());
+    let mat = |m: &[[f64; 3]; 3]| Json::Arr(m.iter().map(|r| Json::Arr(r.iter().map(|&x| Json::Num(x)).collect())).collect());
     let mut o = Obj::new()
         .put("volume", mp.volume)
         .put("area", mp.area)
         .put("com", v3(mp.com))
         .put("principal", Json::Arr(mp.principal.iter().map(|&x| Json::Num(x)).collect()))
-        .put("axes", axes(&mp.axes));
+        .put("axes", axes(&mp.axes))
+        .put("firstMoment", v3(mp.first_moment))
+        .put("inertia", mat(&mp.inertia))
+        .put("inertiaOrigin", mat(&mp.inertia_origin));
     if bodies {
         let names: Vec<Option<String>> = b.lump_ids().map(|l| b.lump(l).name.clone()).collect();
         let arr = ms
@@ -1240,7 +1268,10 @@ pub fn mass_props_json(b: &Body, bodies: bool, densities: Option<&[f64]>) -> Jso
                     .put("mass", a.volume)
                     .put("com", v3(p.com))
                     .put("principal", Json::Arr(p.principal.iter().map(|&x| Json::Num(x)).collect()))
-                    .put("axes", axes(&p.axes)),
+                    .put("axes", axes(&p.axes))
+                    .put("firstMoment", v3(p.first_moment))
+                    .put("inertia", mat(&p.inertia))
+                    .put("inertiaOrigin", mat(&p.inertia_origin)),
             );
         }
     }
@@ -1342,7 +1373,7 @@ mod tests {
         assert!(close(bm.get_f64("mass").unwrap(), 21.6, 1e-13));
         assert!(close(bm.get_arr("principal").unwrap()[0].as_f64().unwrap(), 900.0, 1e-12));
         let keys: Vec<_> = j.as_obj().unwrap().iter().map(|(k, _)| k.as_str()).collect();
-        assert_eq!(keys, ["volume", "area", "com", "principal", "axes", "bodies", "byMass"]);
+        assert_eq!(keys, ["volume", "area", "com", "principal", "axes", "firstMoment", "inertia", "inertiaOrigin", "bodies", "byMass"]);
     }
 
     #[test]
@@ -1521,6 +1552,126 @@ mod tests {
         // mass-weighted CG x: (500·5 + 1000·25) / 1500 = 55/3
         let cx = bm.get("com").unwrap().as_vec3().unwrap()[0];
         assert!((cx - 55.0 / 3.0).abs() < 1e-11, "{cx}");
+    }
+
+    // ---- inertia tensor, first moments (density 1) ----
+
+    fn mat_close(a: &[[f64; 3]; 3], b: [[f64; 3]; 3], rel: f64, scale: f64) -> bool {
+        (0..3).all(|i| (0..3).all(|j| (a[i][j] - b[i][j]).abs() <= rel * scale))
+    }
+    fn solid_circle(c: Vec2, r: f64) -> ProfileRegion {
+        ProfileRegion { outer: ProfileLoop::new(vec![ProfileSeg::circle("e1", c, r)]), holes: vec![] }
+    }
+
+    #[test]
+    fn box_tensor_first_moments_and_parallel_axis() {
+        // box_body: 40 x 10 x 20, volume 8000, com [20, 5, -10]
+        let m = mass_props(&box_body());
+        let v = 8000.0;
+        let d = [v * 500.0 / 12.0, v * 2000.0 / 12.0, v * 1700.0 / 12.0];
+        assert!(mat_close(&m.inertia, [[d[0], 0.0, 0.0], [0.0, d[1], 0.0], [0.0, 0.0, d[2]]], 1e-12, d[1]), "{:?}", m.inertia);
+        assert!(vclose(m.first_moment, [160000.0, 40000.0, -80000.0], 1e-8), "{:?}", m.first_moment);
+        // parallel axis: I_o = I_com + V (|c|^2 E - c c^T), c = (20, 5, -10)
+        let (cx, cy, cz) = (20.0, 5.0, -10.0);
+        let c2 = cx * cx + cy * cy + cz * cz;
+        let o = [
+            [d[0] + v * (c2 - cx * cx), -v * cx * cy, -v * cx * cz],
+            [-v * cx * cy, d[1] + v * (c2 - cy * cy), -v * cy * cz],
+            [-v * cx * cz, -v * cy * cz, d[2] + v * (c2 - cz * cz)],
+        ];
+        assert!(mat_close(&m.inertia_origin, o, 1e-12, o[0][0]), "{:?}", m.inertia_origin);
+        // the tensor and the eigen-pairs describe the same thing: I a_k = principal_k a_k
+        for k in 0..3 {
+            let a = [m.axes[k].x, m.axes[k].y, m.axes[k].z];
+            for i in 0..3 {
+                let ia: f64 = (0..3).map(|j| m.inertia[i][j] * a[j]).sum();
+                assert!((ia - m.principal[k] * a[i]).abs() < 1e-6 * m.principal[2], "axis {k} row {i}");
+            }
+        }
+    }
+
+    #[test]
+    fn cylinder_sphere_hollow_closed_forms() {
+        // cylinder r 10, h 10 (axis along y in this frame)
+        let prof = Profile::new(top_frame(), vec![solid_circle(Vec2::new(5.0, 3.0), 10.0)]);
+        let m = mass_props(&extrude("F2", &prof, ExtrudeOpts::blind(10.0)).unwrap());
+        let v = PI * 100.0 * 10.0;
+        let (iax, itr) = (v * 100.0 / 2.0, v * (3.0 * 100.0 + 100.0) / 12.0);
+        assert!(mat_close(&m.inertia, [[itr, 0.0, 0.0], [0.0, iax, 0.0], [0.0, 0.0, itr]], 1e-12, iax), "{:?}", m.inertia);
+        // sphere r 10: 2/5 V r^2 on every diagonal entry, no products; centred on the origin, so both tensors agree
+        let fr = Frame::identity();
+        let semi = ProfileLoop::new(vec![
+            ProfileSeg::arc("e1", Vec2::ZERO, Vec2::new(0.0, -10.0), Vec2::new(0.0, 10.0)),
+            ProfileSeg::line("e2", Vec2::new(0.0, 10.0), Vec2::new(0.0, -10.0)),
+        ]);
+        let m = mass_props(&revolve("F2", &Profile::new(fr, vec![ProfileRegion { outer: semi, holes: vec![] }]), Vec3::ZERO, Vec3::Y, 0.0, TAU).unwrap());
+        let i = 0.4 * (4.0 / 3.0 * PI * 1000.0) * 100.0;
+        assert!(mat_close(&m.inertia, [[i, 0.0, 0.0], [0.0, i, 0.0], [0.0, 0.0, i]], 1e-12, i), "{:?}", m.inertia);
+        assert!(mat_close(&m.inertia_origin, m.inertia, 1e-9, i), "{:?}", m.inertia_origin);
+        assert!(vclose(m.first_moment, [0.0, 0.0, 0.0], 1e-8), "{:?}", m.first_moment);
+        // hollow cylinder (through hole r 4): a hole removes mass, it never flips a sign
+        let hole = ProfileLoop::new(vec![ProfileSeg::circle("e2", Vec2::new(5.0, 3.0), 4.0).reversed()]);
+        let prof = Profile::new(top_frame(), vec![ProfileRegion { outer: ProfileLoop::new(vec![ProfileSeg::circle("e1", Vec2::new(5.0, 3.0), 10.0)]), holes: vec![hole] }]);
+        let m = mass_props(&extrude("F2", &prof, ExtrudeOpts::blind(10.0)).unwrap());
+        let v = PI * (100.0 - 16.0) * 10.0;
+        let (iax, itr) = (v * (100.0 + 16.0) / 2.0, v * (3.0 * (100.0 + 16.0) + 100.0) / 12.0);
+        assert!(close(m.volume, v, 1e-13));
+        assert!(mat_close(&m.inertia, [[itr, 0.0, 0.0], [0.0, iax, 0.0], [0.0, 0.0, itr]], 1e-12, iax), "{:?}", m.inertia);
+        assert!(m.inertia[0][0] > 0.0 && m.inertia[1][1] > 0.0 && m.inertia[2][2] > 0.0);
+        assert!(vclose(m.com, [5.0, 5.0, -3.0], 1e-12));
+    }
+
+    #[test]
+    fn rotated_translated_box_principal_axes() {
+        // 30 x 10 rectangle turned 30 degrees about z, moved off the origin, extruded 6
+        let (a, b, c, th) = (30.0, 10.0, 6.0, 30f64.to_radians());
+        let (ct, st) = (th.cos(), th.sin());
+        let (ox, oy) = (17.0, -9.0);
+        let p = |u: f64, w: f64| Vec2::new(ox + u * ct - w * st, oy + u * st + w * ct);
+        let q = [p(-a / 2.0, -b / 2.0), p(a / 2.0, -b / 2.0), p(a / 2.0, b / 2.0), p(-a / 2.0, b / 2.0)];
+        let outer = ProfileLoop::new((0..4).map(|i| ProfileSeg::line(&format!("e{}", i + 1), q[i], q[(i + 1) % 4])).collect());
+        let m = mass_props(&extrude("F2", &Profile::new(Frame::identity(), vec![ProfileRegion { outer, holes: vec![] }]), ExtrudeOpts::blind(c)).unwrap());
+        let v = a * b * c;
+        assert!(close(m.volume, v, 1e-12));
+        // covariance of the box in world axes: S = R diag(a^2, b^2, c^2)/12 R^T
+        let (sxx, syy, szz, sxy) = ((a * a * ct * ct + b * b * st * st) / 12.0, (a * a * st * st + b * b * ct * ct) / 12.0, c * c / 12.0, (a * a - b * b) * ct * st / 12.0);
+        let want = [[v * (syy + szz), -v * sxy, 0.0], [-v * sxy, v * (sxx + szz), 0.0], [0.0, 0.0, v * (sxx + syy)]];
+        assert!(mat_close(&m.inertia, want, 1e-11, want[2][2]), "{:?}\n{:?}", m.inertia, want);
+        // about the origin: translation by the centre of mass adds V (|c|^2 E - c c^T)
+        let cm = m.com;
+        let c2 = cm.x * cm.x + cm.y * cm.y + cm.z * cm.z;
+        let cc = [cm.x, cm.y, cm.z];
+        let mut o = want;
+        for i in 0..3 {
+            for j in 0..3 {
+                o[i][j] += v * ((if i == j { c2 } else { 0.0 }) - cc[i] * cc[j]);
+            }
+        }
+        assert!(mat_close(&m.inertia_origin, o, 1e-11, o[0][0]), "{:?}\n{:?}", m.inertia_origin, o);
+        // principal moments about the a, b, c axes of the box, ascending; axes are the turned frame
+        let want_p = [v * (b * b + c * c) / 12.0, v * (a * a + c * c) / 12.0, v * (a * a + b * b) / 12.0];
+        for k in 0..3 {
+            assert!(close(m.principal[k], want_p[k], 1e-11), "{k}: {:?}", m.principal);
+        }
+        let dots = [m.axes[0].x * ct + m.axes[0].y * st, -m.axes[1].x * st + m.axes[1].y * ct, m.axes[2].z];
+        for (k, d) in dots.iter().enumerate() {
+            assert!((d.abs() - 1.0).abs() < 1e-9, "axis {k}: {:?}", m.axes);
+        }
+    }
+
+    #[test]
+    fn mass_json_carries_tensor_and_first_moment() {
+        let b = box_body();
+        let j = mass_props_json(&b, false, Some(&[0.0027]));
+        let row = |j: &Json, k: &str, i: usize| -> Vec<f64> { j.get_arr(k).unwrap()[i].as_arr().unwrap().iter().map(|x| x.as_f64().unwrap()).collect() };
+        let ixx = 8000.0 * 500.0 / 12.0;
+        assert!(close(row(&j, "inertia", 0)[0], ixx, 1e-12));
+        assert!(close(j.get_arr("firstMoment").unwrap()[0].as_f64().unwrap(), 160000.0, 1e-12));
+        let bm = j.get("byMass").unwrap();
+        // by mass: density 0.0027 scales volume-weighted numbers; first moment = mass * com
+        assert!(close(row(bm, "inertia", 0)[0], ixx * 0.0027, 1e-12));
+        assert!(close(bm.get_arr("firstMoment").unwrap()[0].as_f64().unwrap(), 160000.0 * 0.0027, 1e-12));
+        assert!(close(row(bm, "inertiaOrigin", 0)[0], 8000.0 * 0.0027 * (500.0 / 12.0 + 125.0), 1e-12));
     }
 
     #[test]

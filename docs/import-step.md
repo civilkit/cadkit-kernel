@@ -17,6 +17,16 @@ A feature `importStep` carries STEP text and yields its solids as bodies when th
 - Errors: `importStepInvalid` with `detail` (and `reason`, `entity` when the reader gives them). Truncated or hostile text returns this error; the tests cut a real file at many places.
 - Healing is a choice of the feature, `heal: true`; without it the body is the reader's result after the lumps are rebuilt, as before. The protocol message heals by default; a feature that changed geometry silently would be surprising inside a history, so the part says so. A converter that restates a part's geometry as STEP can write some faces turned the other way: read as it is, the solid is open or has a wrong volume (a cube with one face turned reads at two thirds of its volume), healed it is the solid of the source. `heal: true` runs the message's repair (`ck-heal`, all fixers, tolerant edges) after reading and before the lumps are rebuilt again; the flag is part of the feature, so it is part of the regen cache key. Leave it off for the STEP of the program that made the part.
 
+## Parts that are not solids, and Repair Part (2026-10-31)
+
+An import never keeps a mesh or a half-built solid.
+
+- The STEP and SolidWorks readers leave out a face they cannot build (with its reason: code, face id, message, and the surface it lay on when that could be read) instead of failing the whole file; the file is refused only when nothing could be read. STEP surface models (`SHELL_BASED_SURFACE_MODEL`) are read as parts too.
+- Each part is then checked on its own (`ck_heal::honest::sort`, validator at 1e-6): a valid solid joins the solid body; any other part with faces becomes a surface body of exactly those faces; a part with none is refused. Every part carries its reasons in plain words.
+- `importStep` feature: surface bodies are `<id>.P<k>` (k = the part's place in the file) and the feature carries the warning `importStepParts {detail, solids, surfaces, refused, parts}` (the "needs repair" mark). The `importStep`, `importSldprt` and `importSkp` messages reply `import.parts` the same way (STEP / SolidWorks: the valid solids as `body`, the others in `surfaces`; SketchUp keeps every piece in the body and only reports which pieces are solids). `step` on an import tag writes its surface bodies too.
+- `repairPart {target, gap = 0.2, patchHoles = true}` (modelled on SolidCraft's Repair Part, PR #8676): rebuilds the left-out faces on their own surface, sews free edges within `gap` (at most 1 mm), fills flat holes, and reports per surface body what it did (`repairReport`). A part that comes out valid joins the solid body. Curved holes are reported, not filled (no curved patch yet). Refusals: `repairTarget`, `repairNothing`, `repairGap`.
+- SolidWorks solids get the tolerance-only pass (`ck_heal::tolerant_only`) before they are judged, as a healed STEP import does: edges that follow their faces only to the file's accuracy get a tolerance, nothing else changes.
+
 ## Not done
 
 - Importing only some solids of a file, and moving or rotating the body at import: use `moveBody` after the feature.

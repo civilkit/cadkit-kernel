@@ -452,5 +452,5 @@ pub fn exec_loft(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(
     // the marker only lands once the whole tool is built: a failure below replies as a plain
     // error, without the marker of a loft that did not build
     put_marker(state, &f.id, marker);
-    br.apply(&f.id, super::extrude::Tool { body: tool, combine, recipe: None })
+    br.apply_feature(f, super::extrude::Tool { body: tool, combine, recipe: None }, None)
 }

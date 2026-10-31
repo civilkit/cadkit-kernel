@@ -81,3 +81,55 @@ fn import_errors_are_structured_and_keep_the_previous_state() {
     let e = call(r#"{"id":3,"msg":{"type":"importStep"}}"#);
     assert_eq!(e.get("ok"), Some(&Json::Bool(false)));
 }
+
+fn import_msg(id: u32, tag: &str, text: &str) -> String {
+    ck_json::to_string(&Json::Obj(vec![
+        ("id".into(), Json::Num(id as f64)),
+        (
+            "msg".into(),
+            Json::Obj(vec![
+                ("type".into(), Json::Str("importStep".into())),
+                ("tag".into(), Json::Str(tag.into())),
+                ("name".into(), Json::Str("t".into())),
+                ("data".into(), Json::Str(text.into())),
+            ]),
+        ),
+    ]))
+}
+
+/// A part the reader cannot finish is not a half-built solid: it comes back as a surface body of the faces that were
+/// read, `import.parts` says what became of it and why, and `step` writes the surface body too.
+#[test]
+fn a_part_with_a_face_left_out_comes_back_as_a_surface_body_with_its_reasons() {
+    ck_wasm::engine::install();
+    let req = std::fs::read_to_string(format!("{}/../ck-io/tests/golden/box.req.json", env!("CARGO_MANIFEST_DIR"))).unwrap();
+    call(&req);
+    let step = call(r#"{"id":2,"msg":{"type":"step","tag":"main","name":"box"}}"#);
+    let text = step.get("result").and_then(Json::as_str).unwrap().to_string();
+    // the loop of the third face points at an entity that is not there
+    let mut at = 0;
+    for _ in 0..3 {
+        at += text[at..].find("ADVANCED_FACE(").unwrap() + 1;
+    }
+    let open = at + text[at..].find("(#").unwrap() + 2;
+    let end = open + text[open..].find(|c: char| !c.is_ascii_digit()).unwrap();
+    let broken = format!("{}999999{}", &text[..open], &text[end..]);
+    let imp = call(&import_msg(3, "imp", &broken));
+    let res = imp.get("result").unwrap();
+    assert!(res.get_arr("errors").unwrap().is_empty(), "{:?}", res.get("errors"));
+    assert!(res.get("body").and_then(|b| b.get_arr("faces")).map_or(true, |f| f.is_empty()), "a half-built solid was returned as the body");
+    let surfs = res.get_arr("surfaces").unwrap();
+    assert_eq!(surfs.len(), 1);
+    let parts = res.get("import").and_then(|i| i.get_arr("parts")).unwrap();
+    assert_eq!(parts.len(), 1);
+    let p = &parts[0];
+    assert_eq!(p.get_str("outcome"), Some("surface"));
+    assert_eq!((num(p, "faces"), num(p, "facesTotal")), (5.0, 6.0));
+    let reasons = p.get_arr("reasons").unwrap();
+    assert_eq!(reasons[0].get_str("code"), Some("badEntity"));
+    assert!(reasons.iter().any(|r| r.get_str("code") == Some("SHELL_OPEN")));
+    // exporting keeps the surface body
+    let back = call(r#"{"id":4,"msg":{"type":"step","tag":"imp","name":"again"}}"#);
+    let t2 = back.get("result").and_then(Json::as_str).unwrap();
+    assert!(t2.contains("SHELL_BASED_SURFACE_MODEL"), "the surface body was dropped from the export");
+}

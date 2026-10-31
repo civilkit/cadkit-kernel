@@ -286,7 +286,7 @@ pub fn draft(body: &Body, neutral: Vec3, dir: Vec3, faces: &[FaceId], angle: f64
         }
     }
     let tips = tip_scan(body, &edits)?;
-    rebuild(body, &edits, &tips)
+    rebuild(body, &edits, &tips, tol)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -524,7 +524,7 @@ fn pair_name(b: &Body, fs: &[FaceId]) -> String {
 
 /// Stand-in for the offset engine (f2871): replace the face surfaces and
 /// re-derive every touched edge and vertex. Ids and arena order are kept.
-fn rebuild(b: &Body, edits: &[Edit], tips: &[Tip]) -> Result<Body, DraftError> {
+fn rebuild(b: &Body, edits: &[Edit], tips: &[Tip], tol: f64) -> Result<Body, DraftError> {
     let mut nb = b.clone();
     let changed: Vec<FaceId> = edits.iter().map(|e| e.face).collect();
     for e in edits {
@@ -628,7 +628,7 @@ fn rebuild(b: &Body, edits: &[Edit], tips: &[Tip]) -> Result<Body, DraftError> {
                         let first = b.edge_ids().find(|&x| b.edge(x).v0 == ed.v0 || b.edge(x).v1 == ed.v0).unwrap_or(e);
                         return Err(err("draftTooLarge", format!("edge {} turns over", pair_name(b, &b.edge_faces(first)))));
                     }
-                    if bb - a <= 1e-9 {
+                    if bb - a <= 1e-9_f64.max(tol) {
                         return Err(err("draftTooLarge", format!("edge {} shrinks to nothing", pair_name(b, &[fa, fb]))));
                     }
                     curve = ln;
@@ -696,6 +696,11 @@ fn rebuild(b: &Body, edits: &[Edit], tips: &[Tip]) -> Result<Body, DraftError> {
         let (a, bb) = (ed.curve.closest_param(pos(ed.v0)), ed.curve.closest_param(pos(ed.v1)));
         if !(bb > a) {
             return Err(err("draftTooLarge", format!("edge {} turns over", pair_name(b, &b.edge_faces(e)))));
+        }
+        // drafted faces that meet exactly (two sides 20 apart, 10 high, at 45 degrees) leave the
+        // edge between them a rounding error long: a zero-length edge, not a body
+        if pos(ed.v0).dist(pos(ed.v1)) < tol {
+            return Err(err("draftTooLarge", format!("edge {} shrinks to nothing", pair_name(b, &b.edge_faces(e)))));
         }
         let slot = &mut nb.edges[e.idx()];
         slot.t0 = a;
@@ -868,6 +873,29 @@ mod tests {
         assert!(ck_topo::check::check(&out, 1e-9).is_empty(), "{:?}", ck_topo::check::check(&out, 1e-9));
         let (v0, v1) = (ck_topo::mass::mass_props(&b).volume, ck_topo::mass::mass_props(&out).volume);
         assert!(v1 < v0 && v1 > 0.9 * v0, "volume {v0} -> {v1}");
+    }
+
+    /// Two sides 20 apart, 10 high: drafted inward by 45 degrees they meet in a
+    /// ridge and the top face's short edges shrink to nothing. Rounding left them
+    /// ~1e-15 long, so the draft returned a body with zero-length edges; it must
+    /// refuse (draftTooLarge) or build a valid body. Just below 45 it builds.
+    #[test]
+    fn sides_meeting_in_a_ridge_refuse() {
+        let b = box_body("F2", 0.0, 0.0, 40.0, 20.0, 0.0, 10.0);
+        let sides = [face(&b, "F2.S.e1"), face(&b, "F2.S.e3")];
+        match draft(&b, Vec3::ZERO, Vec3::Y, &sides, 45f64.to_radians(), 1e-6) {
+            Err(e) => assert_eq!(e.code, "draftTooLarge", "{e:?}"),
+            Ok(out) => panic!("45 degrees built a body: {:?}", ck_topo::check::check(&out, 1e-6)),
+        }
+        for a in [44.0, 44.999] {
+            let out = draft(&b, Vec3::ZERO, Vec3::Y, &sides, f64::to_radians(a), 1e-6).unwrap();
+            assert!(ck_topo::check::check(&out, 1e-6).is_empty(), "{a}: {:?}", ck_topo::check::check(&out, 1e-6));
+            // trapezoid prism: top width 20 - 2 * 10 tan(a)
+            let w = 20.0 - 20.0 * a.to_radians().tan();
+            let want = 40.0 * 10.0 * (20.0 + w) / 2.0;
+            let v = ck_topo::mass::mass_props(&out).volume;
+            assert!((v - want).abs() < 1e-6 * want, "{a}: volume {v} want {want}");
+        }
     }
 
     #[test]

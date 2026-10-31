@@ -140,3 +140,24 @@ fn hull_lofts_mesh_without_holes() {
         assert!(issues.is_empty(), "{issues:?}");
     }
 }
+
+/// A circle revolved a full turn (one torus face): the mesh used to cover 84% of the face for R/r = 10 (an O-ring) and
+/// less above it, and the horn torus (R = r) left mesh edges used by one triangle (solidcore #1491, #1710). Not covered:
+/// a torus a hair short of a horn (R = 1.001 r, a 0.001 mm inner ring) still leaves a few open mesh edges.
+#[test]
+fn full_torus_meshes_closed_at_any_proportion() {
+    use ck_geom::{Frame, Vec2, Vec3};
+    use ck_topo::make::{Profile, ProfileLoop, ProfileRegion, ProfileSeg};
+    let mut bad = vec![];
+    for (r, big) in [(3.0, 30.0), (1.0, 10.0), (1.0, 12.0), (1.0, 20.0), (1.0, 50.0), (1.5, 15.0), (1.0, 9.0), (4.0, 20.0), (3.0, 3.0), (5.0, 5.0)] {
+        let fr = Frame { o: Vec3::ZERO, x: Vec3::X, y: Vec3::Y, z: Vec3::Z };
+        let prof = Profile::new(fr, vec![ProfileRegion { outer: ProfileLoop::new(vec![ProfileSeg::circle("e1", Vec2::new(big, 0.0), r)]), holes: vec![] }]);
+        let body = ck_topo::make::revolve::revolve("F2", &prof, Vec3::ZERO, Vec3::Y, 0.0, 2.0 * std::f64::consts::PI).unwrap();
+        let m = ck_tess::mesh::tessellate(&body).mesh;
+        let issues: Vec<String> = check_mesh_why(&body, &m.positions, &m.tri_face, &m.failed, &m.failed_why).into_iter().map(|i| i.detail).collect();
+        if !issues.is_empty() {
+            bad.push(format!("r {r} R {big}: {issues:?}"));
+        }
+    }
+    assert!(bad.is_empty(), "{bad:#?}");
+}

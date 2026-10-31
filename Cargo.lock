@@ -29,8 +29,11 @@ dependencies = [
  "ck-check",
  "ck-core",
  "ck-geom",
+ "ck-io",
  "ck-json",
  "ck-model",
+ "ck-skp",
+ "ck-sldprt",
  "ck-topo",
 ]
 

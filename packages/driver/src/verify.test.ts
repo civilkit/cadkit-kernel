@@ -169,3 +169,16 @@ describe('booleanFailed hint', () => {
     assert.ok(hintFor('F5', 'booleanFailed', {}).hint.includes('overlap in a volume'));
   });
 });
+
+describe('refusal hints keep the kernel detail', () => {
+  it('shellUnsupported says why when the kernel says why', () => {
+    const h = hintFor('F3', 'shellUnsupported', { detail: 'the opened faces F2.C0 and F2.C1 lie on one plane' });
+    assert.equal(h.hint, 'F3: the opened faces F2.C0 and F2.C1 lie on one plane');
+    assert.ok(hintFor('F3', 'shellUnsupported', {}).hint.includes('cannot be shelled'));
+  });
+  it('draftTooLarge names the largest angle that builds', () => {
+    const h = hintFor('D', 'draftTooLarge', { detail: 'edge between F2.S.e2 and F2.C1 shrinks to nothing', hint: 'the largest draft angle that builds is 44.99 deg' });
+    assert.ok(h.hint.includes('44.99 deg'), h.hint);
+    assert.ok(hintFor('D', 'draftTooLarge', {}).hint.includes('reduce angle'));
+  });
+});

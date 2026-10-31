@@ -384,10 +384,21 @@ pub fn exec_thicken(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Resul
             None => fe,
         }
     };
-    let out = match thickness_at(f)? {
+    let ramp = thickness_at(f)?;
+    let constant = ramp.is_none();
+    let out = match ramp {
         None => sf::thicken::thicken(&br.surfs[i].1, &f.id, t, side, super::TOL).map_err(map)?,
         Some(ramp) => sf::thicken::thicken_variable(&br.surfs[i].1, &f.id, &ramp, side, super::TOL).map_err(map)?,
     };
+    // never hand back an invalid wall (a partial-turn revolved sheet used to come back with edges off their faces).
+    // GUESS / not covered: a variable-thickness wall is fitted and some of its tested bodies do not pass the check at
+    // the model tolerance (variable_thicken flat_sheet_ramp_volume_is_the_integral), so only the constant wall is judged.
+    if let Some(i) = ck_check::validate(&out, super::TOL).first().filter(|_| constant) {
+        return Err(coded("thickenFailed", &format!("the thickened wall is not a valid solid ({} at {}: {})", i.code, i.entity, i.detail)).with(
+            "hint",
+            Json::Str("close the surface into a solid and use shell, or build the wall from a thick profile (revolve or extrude the closed section)".into()),
+        ));
+    }
     // a wall that starts on a plane of the body it is added to is sunk into it: the wedge between its normal-offset base
     // and the plane is closed, so the foot is an ordinary concave cone / plane edge
     let out = match br.body.as_ref() {

@@ -9,7 +9,8 @@
 //!   least one of them must resolve (`missingReference`);
 //! * faces tangent to a drafted face (normals closer than 0.999999 at a
 //!   shared edge) are drafted with it (the list grows while iterated);
-//! * ck-ops errors carry `params.detail` (none for `invalidValue`).
+//! * ck-ops errors carry `params.detail` (none for `invalidValue`); `draftTooLarge` also carries
+//!   `maxSize` (angle, deg, the sign kept) when a smaller angle drafts, see max_size.rs.
 
 use super::pattern::plane_frame;
 use super::{Brep, FeatureKind};
@@ -80,8 +81,32 @@ pub fn exec_draft(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<
     let face_sign = if matches!(neutral, Some(crate::GeomRef::Face(_))) { -1.0 } else { 1.0 };
     let sg = (if *flip { -1.0 } else { 1.0 }) * face_sign;
     let dir = ck_geom::Vec3::new(sg * fr.z.x, sg * fr.z.y, sg * fr.z.z);
-    let out = ck_ops::draft::draft(body, fr.o, dir, &ids, angle * 0.017453292519943295, super::TOL)
-        .map_err(|e| draft_error(e, 0.0))?;
+    let out = match ck_ops::draft::draft(body, fr.o, dir, &ids, angle * 0.017453292519943295, super::TOL) {
+        Ok(b) => b,
+        // a face that shrinks to nothing or turns over: the largest angle that drafts (same sign as asked)
+        Err(e) if e.code == "draftTooLarge" => {
+            // a size counts as building only when the result is no less valid than the body
+            let before = ck_check::validate(body, super::TOL).len();
+            let max = super::max_size::largest_that_builds(angle.abs(), None, |a| {
+                ck_ops::draft::draft(body, fr.o, dir, &ids, a.copysign(angle).to_radians(), super::TOL)
+                    .is_ok_and(|b| ck_check::validate(&b, super::TOL).len() <= before)
+            });
+            let fe = draft_error(e, 0.0);
+            return Err(match max {
+                Some(m) => super::max_size::with_max_size(fe, "angle", m.copysign(angle), "deg"),
+                None => fe,
+            });
+        }
+        Err(e) => return Err(draft_error(e, 0.0)),
+    };
+    // never hand back a body less valid than the one drafted
+    let issues = ck_check::validate(&out, super::TOL);
+    if !issues.is_empty() && issues.len() > ck_check::validate(body, super::TOL).len() {
+        let i = &issues[0];
+        return Err(FeatureError::new("draftFailed")
+            .with("detail", Json::Str(format!("the drafted body is not valid ({} at {}: {})", i.code, i.entity, i.detail)))
+            .with("hint", Json::Str("try a smaller angle, or draft fewer faces at once".into())));
+    }
     br.body = Some(out);
     Ok(())
 }
@@ -137,13 +162,28 @@ pub fn tip_depth(profile: &ck_topo::make::Profile, o: &ck_topo::make::ExtrudeOpt
 ///
 /// A circular profile whose taper closes exactly at the far end gives a cone with one apex. Past that the
 /// error is `draftTooLarge` with `maxHeight`, the largest depth that still builds. A polygon whose edge
-/// collapses keeps the oracle's `draftTooLarge {detail}` (no `maxHeight`).
+/// collapses keeps the oracle's `draftTooLarge {detail}` (no `maxHeight`), plus `maxSize` (draft, deg).
 pub fn drafted_extrude(
     feature: &str,
     profile: &ck_topo::make::Profile,
     o: ck_topo::make::ExtrudeOpts,
 ) -> Result<Body, FeatureError> {
-    drafted_extrude_once(feature, profile, o)
+    match drafted_extrude_once(feature, profile, o) {
+        // a side that collapses (no closing cone, so no `maxHeight`): the largest draft angle that builds,
+        // in the field's degrees (`draft` is the magnitude; `draftOut` gives the direction)
+        Err(fe) if fe.code == "draftTooLarge" && fe.params.iter().all(|(k, _)| k != "maxHeight") => {
+            let asked = o.draft.abs().to_degrees();
+            let max = super::max_size::largest_that_builds(asked, None, |a| {
+                drafted_extrude_once(feature, profile, ck_topo::make::ExtrudeOpts { draft: a.to_radians().copysign(o.draft), ..o })
+                    .is_ok_and(|b| ck_check::validate(&b, super::TOL).is_empty())
+            });
+            Err(match max {
+                Some(m) => super::max_size::with_max_size(fe, "draft", m, "deg"),
+                None => fe,
+            })
+        }
+        r => r,
+    }
 }
 
 fn drafted_extrude_once(

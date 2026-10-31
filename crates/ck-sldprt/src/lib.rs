@@ -68,6 +68,8 @@ pub struct SldprtImport {
     pub notes: Vec<String>,
     /// XT node count of the transmit that was read.
     pub nodes: usize,
+    /// What became of each solid region (faces built, faces left out with the reason).
+    pub parts: Vec<build::PartRead>,
 }
 
 /// Read a part file with the default limits.
@@ -117,7 +119,7 @@ pub fn import_sldprt_with(bytes: &[u8], limits: &Limits) -> Result<SldprtImport,
                 }
                 match build::build(&[&ir], limits) {
                     Ok(built) => {
-                        return Ok(SldprtImport { sw_mass: sw_mass_props(&c), body: built.body, solids: built.solids, container: c.kind, schema: ir.schema.clone(), stream: t.stream.clone(), unit_scale: build::SCALE, approx: built.approx, notes: built.notes, nodes: n });
+                        return Ok(SldprtImport { sw_mass: sw_mass_props(&c), body: built.body, solids: built.solids, container: c.kind, schema: ir.schema.clone(), stream: t.stream.clone(), unit_scale: build::SCALE, approx: built.approx, notes: built.notes, nodes: n, parts: built.parts });
                     }
                     Err(e) => note_err(e, &mut first_err),
                 }
@@ -132,7 +134,7 @@ pub fn import_sldprt_with(bytes: &[u8], limits: &Limits) -> Result<SldprtImport,
             Ok(mut built) => {
                 built.notes.push(format!("live partition is empty; {} solid feature body transmit(s) taken", irs.len()));
                 let n = parts.iter().map(|p| p.1).sum();
-                return Ok(SldprtImport { sw_mass: sw_mass_props(&c), body: built.body, solids: built.solids, container: c.kind, schema: irs[0].schema.clone(), stream: parts[0].2.clone(), unit_scale: build::SCALE, approx: built.approx, notes: built.notes, nodes: n });
+                return Ok(SldprtImport { sw_mass: sw_mass_props(&c), body: built.body, solids: built.solids, container: c.kind, schema: irs[0].schema.clone(), stream: parts[0].2.clone(), unit_scale: build::SCALE, approx: built.approx, notes: built.notes, nodes: n, parts: built.parts });
             }
             Err(e) => note_err(e, &mut first_err),
         }

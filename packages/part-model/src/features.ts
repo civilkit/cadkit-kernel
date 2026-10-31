@@ -688,6 +688,25 @@ export interface ImportStepFeature {
   [key: string]: unknown;
 }
 
+/**
+ * Repair Part: repairs the surface bodies an `importStep` left (the parts of its file that are not valid solids, `<target>.P<k>`):
+ * faces the reader left out are rebuilt on their own surface, free edges within `gap` are sewn, flat holes are filled. A part
+ * that comes out a valid solid joins the solid body. Reports the warning `repairReport`; refused with `repairTarget`,
+ * `repairNothing` or `repairGap`.
+ */
+export interface RepairPartFeature {
+  type: 'repairPart';
+  id: string;
+  name?: string;
+  /** the importStep feature whose surface bodies are repaired */
+  target: string;
+  /** largest gap sewn, mm (default 0.2, at most 1) */
+  gap?: number;
+  /** fill flat holes with a face (default true) */
+  patchHoles?: boolean;
+  [key: string]: unknown;
+}
+
 /** Every typed feature except sketch/extrude (declared in index.ts). */
 export type KnownFeature =
   | Sketch3DFeature | RevolveFeature | SweepFeature | LoftFeature
@@ -701,7 +720,7 @@ export type KnownFeature =
   | DeleteFaceFeature | ThickenFeature | CutWithSurfaceFeature | PipeCutFeature
   | FreeformFeature | EditCurveFeature | ProjectCurveFeature | ExtendFeature
   | DomeFeature | SplitLineFeature | MoveFaceFeature | MoveBodyFeature
-  | ScaleFeature | AxisFeature | ThreadFeature | CombineFeature | SphereFeature | KnurlBandFeature | ImportStepFeature;
+  | ScaleFeature | AxisFeature | ThreadFeature | CombineFeature | SphereFeature | KnurlBandFeature | ImportStepFeature | RepairPartFeature;
 
 /** All wire type strings the kernel dispatches on. */
 export const FEATURE_TYPES = [
@@ -712,7 +731,7 @@ export const FEATURE_TYPES = [
   'surfaceOffset', 'knit', 'fill', 'insertPart', 'mate', 'plane',
   'deleteBody', 'deleteFace', 'thicken', 'cutWithSurface', 'pipeCut',
   'freeform', 'editCurve', 'projectCurve', 'extend', 'dome', 'splitLine',
-  'moveFace', 'moveBody', 'scale', 'axis', 'thread', 'combine', 'sphere', 'knurlBand', 'importStep',
+  'moveFace', 'moveBody', 'scale', 'axis', 'thread', 'combine', 'sphere', 'knurlBand', 'importStep', 'repairPart',
 ] as const;
 
 export type FeatureTypeName = (typeof FEATURE_TYPES)[number];
@@ -744,4 +763,16 @@ export interface SketchSolverStatus {
   state: 'under' | 'full' | 'over';
   /** max |constraint residual| at the coordinates in the reply (-1 if unavailable). */
   residual: number;
+  /** Coded problems (docs/sketch-status.md "Problems"); the key is absent when there are none. */
+  problems?: SketchProblem[];
+}
+
+/** One sketch problem: `sketchCurveShrunk` (the solve was not taken), `sketchSameCurveTwice`,
+ *  `sketchMidpointOwnEnd`, `sketchLineEndsCoincident`. */
+export interface SketchProblem {
+  code: string;
+  /** Plain words, e.g. "that would shrink e4 to a point: its constraints can only be met without it". */
+  message: string;
+  constraint?: string;
+  entity?: string;
 }

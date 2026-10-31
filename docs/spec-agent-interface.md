@@ -303,6 +303,41 @@ The end condition names its target in `endRef`:
 - Tool memory: a trimmed (slanted) tool has no `Recipe`, so mirror and pattern features reflect the finished body.
 - Check: `tools/end_reference_check.mjs` (wasm, run by `tools/land.sh`), `crates/ck-model/tests/end_references.rs`.
 
+## To object / From object (`extrude` `end:"toObject"`, `start:"fromObject"`)
+
+An extrude or cut can end (and start) at any reference. The reference is resolved again on every regen, so the end follows
+it when it moves (a Plane feature whose offset changes, a face of an earlier feature that grows, a sketch point that moves).
+
+```json
+{"type":"extrude","id":"F4","op":"add","sketch":"F3","end":"toObject","endRef":{"kind":"feature","id":"P1"},"endOffset":2}
+{"type":"extrude","id":"F4","op":"cut","sketch":"F3","flip":true,"end":"toObject","endRef":"F2.C1"}
+{"type":"extrude","id":"F4","op":"add","sketch":"F3","end":"toObject","endRef":{"kind":"body","name":"Lid"}}
+{"type":"extrude","id":"F4","op":"add","sketch":"F3","start":"fromObject","startRef":{"kind":"face","id":"F2.C1"},"startOffset":2,"end":"blind","depth":5}
+```
+
+- `endRef` / `startRef`: a face (`"F2.C1"` or `{"kind":"face","id":..}`; flat faces only, its plane is used, it need not
+  cover the profile), a plane (`{"kind":"std","id":"front"|"top"|"right"}`, `{"kind":"feature","id":<Plane feature>}`),
+  a point (`{"kind":"sketchPoint","sketch":..,"point":..}`, `{"kind":"vertex","faces":[..],"at":[x,y,z]}`,
+  `{"kind":"point","at":[x,y,z]}` or `[x,y,z]`: the plane through it parallel to the sketch), or, for an end only, a body
+  (`{"kind":"body","name":..}`: the tool runs until it meets that body's surface, which may be curved).
+- `endOffset` / `startOffset` (expressions, mm): move the plane along the extrusion direction (positive = further along).
+  A body end takes no offset (`invalidValue {field:"endOffset", hint}`).
+- `start:"fromObject"` works with `end` `blind` (depth measured from the start; a slanted start gives a parallel slanted
+  end) and `toObject`; with any other end it is `invalidValue {field:"start", hint}`. `start` absent or `"sketch"` is the
+  sketch plane. The profile is carried along the extrusion direction onto the start.
+- A plane at an angle to the sketch is reached exactly: the long tool is trimmed along it (the new face takes the cap's name).
+- Direction: as for `blind` (`flip`; a cut goes against the sketch normal unless `flip`).
+- Strict, every failure is an error with a `hint` param (no `endConditionFallback`, no `strictEnd` needed):
+  `missingReference {field, hint, face?|plane?|name?}` (absent or malformed reference, a face id that no longer exists,
+  no body yet, a Plane feature that is gone or comes later in the timeline, a deleted sketch point, a body name not in
+  the part), `upToFaceUnsupported {field, face, hint}` (a curved face), `endRefNoEnd {field, hint}` (the plane holds the
+  extrusion direction), `endRefBehind {field, hint}` (the end is not ahead of the start for the whole profile),
+  `endRefMissed {name, hint}` (the tool never meets the body), `endRefOutside {name, hint}` (the body does not cover the
+  whole profile), `endClipFailed {detail, hint}` (the slanted trim failed).
+- Persistence: a face id must exist. The only re-find is by name: the one face of the same `~k` family (`F2.C1~2` finds
+  `F2.C1`, warning `endRefRelinked`). A picked `at` point is never used to re-find a lost face by position.
+- Check: `crates/ck-model/tests/extrude_to_object.rs`.
+
 ## Hole: counterbore and countersink dimensions
 
 `hole` cuts one tool per sketch `point`. Standard sizes (`size` M2..M24 with
@@ -615,7 +650,12 @@ offset profile placed in the plane (exact, no sampling).
   face). Example: `F2.S.e1~1 curves too tightly for an offset of 12.00 mm: its smallest radius of curvature
   is 7.04 mm, use at most 5.62 mm`. A cavity the boolean could not cut is diagnosed the same way: tightest
   free-form radius against the wall, then parallel planar faces closer than the wall allows (`thin`), else a
-  `shellFailed` that says curvature is not the limit.
+  `shellFailed` that says curvature is not the limit (and carries the boolean's own report).
+- `shell` does not return a hollowed body that fails validation where the solid passed: `shellFailed` whose
+  `detail` starts "the hollowed body is not valid", names the first issue, and ends with the wall that builds.
+- A revolved free-form face (spline shoulder) shells: its seam edge moves onto the offset profile; an edge the
+  fit cannot rebuild names the two faces it joins (`edge between A and B: ...`). Checks:
+  `crates/ck-model/tests/shell_bottle.rs` (PET bottle, torus corner, drafted-groove cup).
 - `moveFace` accepts extruded walls (any extrusion surface) in `offset` mode and reports the same hints.
 - Checks: `crates/ck-model/tests/shell_spline_wall.rs` (analytic wall volumes of inward / outward, open /
   closed shells of spline and cvspline kidneys against an independently offset polygon; the too-thick hint

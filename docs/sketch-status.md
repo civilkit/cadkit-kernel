@@ -30,6 +30,7 @@ Each `sketches` entry `[featureId, {frame, profiles, sketch, status}]` gains:
 | `solved` | coordinates satisfy every constraint (max abs residual <= 1e-7), or a solve from them converges |
 | `state` | `"over"` if any constraint is dependent, else `"full"` at dof 0, else `"under"` (the original client's `si().status`) |
 | `residual` | max abs residual at the coordinates in the reply (-1 if not finite or the system cannot be built) |
+| `problems` | coded problems `{code, message, constraint?, entity?}` (see "Problems" below); omitted when empty, before `suppressed` |
 | `suppressed` | constraint ids flagged `suppressed:true`; document order, omitted entirely when empty (rides along as the last key) |
 
 Notes:
@@ -54,6 +55,24 @@ Notes:
   Checks: `cargo test -p ck-model --lib status`, `node tools/sketch_status_check.mjs` (through the wasm),
   `node tools/probe_sketch_status.mjs --orig | --status` (probe the oracle / ours),
   `node tools/bench/sketch_status_timing.mjs` (cost on the BenchCAD parts).
+
+## Problems (solve guard)
+
+`crates/ck-model/src/sketch/guard.rs`. Additive (the oracle has no such check); cases from the solidcraft sketch
+fuzzer (PRs #8988, #9049, #8562, #8611, #8577, #8600), pinned in `crates/ck-model/tests/sketch_guard.rs`.
+
+| code | when | effect |
+|---|---|---|
+| `sketchCurveShrunk` | a converged solve takes a line from >= 1e-3 to < 1e-5 long, or a circle / arc / ellipse radius the same way (`entity` names the first one) | the solve is not taken: the coordinates stay as sent, `solved: false` |
+| `sketchSameCurveTwice` | parallel, perpendicular, collinear, equal, tangent or concentric with one curve as both refs | named only |
+| `sketchMidpointOwnEnd` | a midpoint whose point is an end of its own line | named only (its solve then shrinks the line) |
+| `sketchLineEndsCoincident` | a coincident on the two ends of one line | named only (its solve then shrinks the line) |
+
+A zero-length line still "meets" its parallel, angle or tangent (the residual divides by its length), so such a
+solve converges and used to be reported solved while the sketch had collapsed (a rectangle corner made the midpoint
+of the opposite side, two opposite corners made coincident, a dragged end put on its line's own midpoint). The
+guard runs wherever regen solves (an `expr` change, `solveSketches`) and in the status' own solve. Curves already
+that short before the solve are left alone. Picks are listed in constraint order, then the shrunk curve.
 
 ## Live solve (`opts.solveSketches`)
 

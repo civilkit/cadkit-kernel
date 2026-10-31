@@ -19,7 +19,8 @@
 //!   face), the groove flanks are triangles through exact surface points.
 //! * Faces of the tool are named `<id>.K<n>`. Only the `v` profile is built; the result is checked (the tool is a closed manifold,
 //!   the cut removed volume, the result is not less valid than the body, still one lump per lump).
-//! * Errors: `nothingToCut` (no body), `invalidValue {field, detail}`, `knurlBandTooLarge`, `knurlBandInvalid {detail}`,
+//! * Errors: `nothingToCut` (no body), `invalidValue {field, detail}` (a groove too deep for the radius or the spacing
+//!   also carries `maxSize` (depth), see max_size.rs), `knurlBandTooLarge`, `knurlBandInvalid {detail}`,
 //!   `booleanFailed` and the other boolean errors, `cutNoEffect` (the band is not on the body).
 
 use super::extrude::Combine;
@@ -129,10 +130,27 @@ fn parse(state: &RegenState, f: &Feature) -> Result<Spec, FeatureError> {
     let count = count as usize;
     let pitch = circ / count as f64;
     let depth = num("depth", pitch / 4.0)?;
-    if !(depth > 0.0) || depth >= radius {
-        return Err(bad("depth", "positive and smaller than the radius"));
-    }
     let angle = num("angle", 90.0)?.to_radians();
+    // the deepest groove these checks pass: below the radius, and a land left between grooves (below)
+    let deepest = |e: FeatureError| {
+        if !(angle > 0.0 && angle < std::f64::consts::PI) {
+            return e;
+        }
+        // a pyramid's rings must leave a land too (`ringPitch`, checked below)
+        let spacing = match pattern {
+            Pattern::Pyramid => num("ringPitch", pitch).unwrap_or(pitch).min(pitch),
+            Pattern::Diamond => pitch,
+        };
+        let max = super::max_size::floor_nice((0.9 * spacing / (2.0 * (angle / 2.0).tan())).min(radius - 1e-6));
+        if max > 0.0 && max < depth {
+            super::max_size::with_max_size(e, "depth", max, "mm")
+        } else {
+            e
+        }
+    };
+    if !(depth > 0.0) || depth >= radius {
+        return Err(deepest(bad("depth", "positive and smaller than the radius")));
+    }
     if !(angle > 0.0 && angle < std::f64::consts::PI) {
         return Err(bad("angle", "between 0 and 180 degrees"));
     }
@@ -141,7 +159,7 @@ fn parse(state: &RegenState, f: &Feature) -> Result<Spec, FeatureError> {
     // grooves must leave a land between them (the helper's rule: 2 half <= 0.9 of the spacing)
     if 2.0 * half > 0.9 * pitch {
         let max_n = (0.9 * circ / (2.0 * half)).floor();
-        return Err(bad("count", &format!("{count} grooves of width {:.3} overlap; use at most {max_n} or a smaller depth", 2.0 * half)));
+        return Err(deepest(bad("count", &format!("{count} grooves of width {:.3} overlap; use at most {max_n} or a smaller depth", 2.0 * half))));
     }
     let (slope, rings) = match pattern {
         Pattern::Diamond => {

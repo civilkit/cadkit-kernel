@@ -1142,6 +1142,9 @@ fn edge_pcurve(s: &Surface, c: &Curve, t0: f64, t1: f64, tol: f64) -> Option<Cur
                 // (a long cut curve turning round inside a sweep face is ~1 mm off its
                 // 32-sample cubic fit at the tip: refine until it reproduces the curve)
                 pcurve_of_dense(s, c, t0, t1, tol, 1e-5).ok()
+            } else if matches!(s, Surface::Cone { .. } | Surface::Cylinder { .. } | Surface::Sphere { .. } | Surface::Torus { .. }) && matches!(c, Curve::BSpline(_)) {
+                // (a fitted offset edge between two drafted cones is ~1.5e-4 off its 32-sample pcurve)
+                pcurve_of_dense(s, c, t0, t1, tol, 1e-6).ok()
             } else if conic && !matches!(s, Surface::Plane { .. }) {
                 // a great circle on a sphere that does not pass through its poles (a
                 // rotated sphere cut by an axis plane) has no exact uv line: the

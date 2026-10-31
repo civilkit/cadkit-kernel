@@ -26,7 +26,8 @@
 //!   {detail}` (a surface kind the move cannot do: free-form, translate mode on a
 //!   curved face, a face of a surface body), `moveFaceFailed {detail}` (the neighbours
 //!   cannot meet the moved faces: an edge collapses or reverses, the result is not
-//!   valid or the volume changed the wrong way). A distance of 0 is a no-op.
+//!   valid or the volume changed the wrong way). A distance of 0 is a no-op. An offset that fails at its
+//!   distance but moves at a smaller one carries `maxSize` (distance, the sign kept), see max_size.rs.
 
 use super::{Brep, TOL};
 use crate::regen::{codes, FeatureError, RegenState};
@@ -284,7 +285,24 @@ pub fn exec_move_face(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Res
     if dist.iter().all(|&d| d.abs() < 1e-12) {
         return Ok(());
     }
-    let out = move_faces(body, &ids, &dist)?;
+    let out = match move_faces(body, &ids, &dist) {
+        Ok(b) => b,
+        // an offset that cannot be made this far: the largest distance that moves (same sign as asked)
+        Err(e) if e.code == "moveFaceFailed" && translate.is_none() => {
+            let named = e.params.iter().find(|(k, _)| k == "maxThickness").and_then(|(_, v)| v.as_f64()).filter(|m| *m > 0.0);
+            let asked = offset.abs();
+            let max = super::max_size::largest_that_builds(asked, named, |v| {
+                let d: Vec<f64> = dist.iter().map(|x| x * v / asked).collect();
+                move_faces(body, &ids, &d).is_ok()
+            });
+            let given = state.num(f, "distance", 0.0)?;
+            return Err(match max {
+                Some(m) => super::max_size::with_max_size(e, "distance", m.copysign(given), "mm"),
+                None => e,
+            });
+        }
+        Err(e) => return Err(e),
+    };
     br.body = Some(out);
     Ok(())
 }

@@ -30,7 +30,7 @@
 use crate::expr::{self, Vars};
 use crate::features::FeatureKind;
 use crate::sketch::profile::{profiles_with, Profiles};
-use crate::sketch::solver::{solve_sketch, SolveOpts};
+use crate::sketch::solver::SolveOpts;
 use crate::{Feature, GeomRef, Part, Sketch};
 use ck_core::linalg::{Frame, Vec3};
 use ck_json::Json;
@@ -129,6 +129,7 @@ pub const KNOWN_TYPES: &[&str] = &[
     "fillpattern", "curvepattern", "moveBody", "mate", "insertPart", "scale", "surfaceExtrude", "surfaceRevolve",
     "surfacePlanar", "surfaceOffset", "deleteFace", "fill", "knit", "extend", "freeform", "trimSurface", "thicken",
     "cutWithSurface", "pipeCut", "deleteBody", "editCurve", "projectCurve", "helix", "thread", "combine", "bodyBoolean", "knurlBand", "importStep",
+    "repairPart",
 ];
 
 /// The error the oracle reports for each known type when the payload is
@@ -163,6 +164,7 @@ pub const EMPTY_FEATURE_ERRORS: &[(&str, &str)] = &[
     ("bodyBoolean", "nothingToCut"),
     ("knurlBand", "nothingToCut"),
     ("importStep", "importStepInvalid"),
+    ("repairPart", "repairTarget"),
     ("scale", "nothingToCut"),
     ("mate", "nothingToCut"),
     ("insertPart", "insertPartMissing"),
@@ -596,8 +598,9 @@ fn regen_sketch(state: &mut RegenState, exec: &mut dyn FeatureExec, f: &Feature,
             changed = true;
         }
     }
+    // the guarded solve keeps the coordinates when the solution shrinks a curve to a point (sketch/guard.rs)
     if changed {
-        let _ = solve_sketch(&mut sk, &SolveOpts::default());
+        let _ = crate::sketch::guard::solve_sketch(&mut sk, &SolveOpts::default());
     }
     if state.solve_sketches && !changed {
         // GUI solve: skip when the supplied coordinates already satisfy every
@@ -606,7 +609,7 @@ fn regen_sketch(state: &mut RegenState, exec: &mut dyn FeatureExec, f: &Feature,
             let res = crate::sketch::solver::residuals(&sys, &sys.x);
             let worst = res.iter().fold(0.0f64, |m, v| if v.is_nan() || m.is_nan() { f64::NAN } else { m.max(v.abs()) });
             if !(worst <= crate::sketch::status::SOLVED_TOL) {
-                let _ = solve_sketch(&mut sk, &SolveOpts::default());
+                let _ = crate::sketch::guard::solve_sketch(&mut sk, &SolveOpts::default());
             }
         }
     }

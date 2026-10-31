@@ -44,9 +44,12 @@ fn rational_bspline_quarter_disc() {
 #[test]
 fn unsupported_entity_is_a_structured_error() {
     let t = std::fs::read_to_string(format!("{}/tests/fixtures/nurbs_quarter_disc.step", env!("CARGO_MANIFEST_DIR"))).unwrap();
-    // swap the plane of the bottom face for a surface type we do not read
+    // swap the plane of the bottom face for a surface type we do not read: that face is left out and named, the rest comes in
     let bad = t.replacen("PLANE(", "SWEPT_DISC_SURFACE(", 1);
-    let e = read_step(&bad).unwrap_err();
+    let r = read_step(&bad).unwrap();
+    let p = &r.parts[0];
+    assert_eq!((p.faces_total, p.faces.len(), p.refused.len()), (5, 4, 1));
+    let e = &p.refused[0];
     assert_eq!(e.code, "unsupported");
     assert!(e.entity.is_some() && e.message.contains("SWEPT_DISC_SURFACE"), "{e}");
 }
@@ -64,10 +67,13 @@ fn garbage_and_truncated_input_never_panic() {
         }
     }
     // a curve that is its own basis must be an error, not a stack overflow
+    // (the faces using it are left out with the reason)
     let cyc = t.replacen("#15 = TRIMMED_CURVE('',#9,", "#15 = TRIMMED_CURVE('',#15,", 1);
-    assert_eq!(read_step(&cyc).unwrap_err().code, "badEntity");
-    // dangling references
+    let r = read_step(&cyc).unwrap();
+    assert!(r.parts[0].refused.iter().any(|e| e.code == "badEntity"), "{:?}", r.parts[0].refused);
+    // dangling references: the missing face is named
     let dangling = t.replacen("CLOSED_SHELL('',(", "CLOSED_SHELL('',(#99999,", 1);
-    let e = read_step(&dangling).unwrap_err();
+    let r = read_step(&dangling).unwrap();
+    let e = &r.parts[0].refused[0];
     assert_eq!((e.code, e.entity), ("badEntity", Some(99999)));
 }

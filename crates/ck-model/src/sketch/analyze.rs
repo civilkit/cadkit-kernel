@@ -291,7 +291,7 @@ pub fn freedoms(sk: &Sketch) -> Freedoms {
         return Freedoms { dof, solved: false, points, radii, entities };
     };
     let n = sys.x.len();
-    let Converge { mut x, solved, .. } = converge(&sys);
+    let Converge { mut x, solved, .. } = converge(sk, &sys);
     let jac = jacobian(&sys, &mut x);
     let (basis, _) = row_basis(&jac, n);
     let dof = n - basis.q.len();

@@ -78,7 +78,8 @@ const FIX: Record<string, (feature: string, params: Record<string, unknown>) => 
     typeof p.detail === 'string'
       ? `${f}: ${p.detail}${typeof p.maxThickness === 'number' && p.maxThickness > 0 ? ` — move by at most ${p.maxThickness} mm` : ''}`
       : `${f}: the faces could not be moved — select tangent neighbours too or reduce the distance`,
-  shellUnsupported: (f) => `${f}: this shape cannot be shelled — remove the feature or change the base solid`,
+  shellUnsupported: (f, p) =>
+    typeof p.detail === 'string' ? `${f}: ${p.detail}` : `${f}: this shape cannot be shelled — remove the feature or change the base solid`,
   holeNoPoints: (f) => `${f}: hole sketch has no centres — add {type:'point'} entities over centre points (sk.point(x, y)), not circles or bare points`,
   holeInvalid: (f) => `${f}: hole parameters invalid — check diameter/depth against the stock`,
   ribNeedsOpenSketch: (f) => `${f}: rib profile must be an open chain — open the sketch profile`,
@@ -87,7 +88,7 @@ const FIX: Record<string, (feature: string, params: Record<string, unknown>) => 
   knitNearMiss: (f) => `${f}: sheet edges near-miss — move the boundary or relax the tolerance`,
   fillNotClosed: (f) => `${f}: fill boundary is not closed — close the edge loop`,
   fillContinuity: (f) => `${f}: continuity cannot be met on this loop — drop to G0 or change the loop`,
-  draftTooLarge: (f) => `${f}: draft angle too large for these faces — reduce angle`,
+  draftTooLarge: (f, p) => `${f}: draft angle too large for these faces — ${typeof p.hint === 'string' ? p.hint : 'reduce angle'}`,
   draftParallelFace: (f) => `${f}: neutral plane is parallel to a drafted face — pick another neutral`,
   filletChamfer: (f) => `${f}: blend failed — reduce radius/distance or reorder before other blends`,
   pipeCutRadius: (f, p) => `${f}: pipe radius too large${typeof p.max === 'number' ? ` (max ${p.max})` : ''} — reduce radius`,

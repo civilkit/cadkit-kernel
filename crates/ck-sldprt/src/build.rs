@@ -45,6 +45,24 @@ pub struct Built {
     pub solids: usize,
     pub approx: Vec<Approx>,
     pub notes: Vec<String>,
+    /// What became of each solid region, in file order.
+    pub parts: Vec<PartRead>,
+}
+
+/// One solid region of the file as built. A face that cannot be built is left out (named in `refused`) instead of failing
+/// the whole file; whether the faces that came in make a valid solid is judged afterwards (`ck_heal::honest`).
+#[derive(Debug, Clone)]
+pub struct PartRead {
+    /// XT body id.
+    pub body: i64,
+    /// Faces the file gives the region.
+    pub faces_total: usize,
+    /// Faces built (ids in `Built::body`).
+    pub faces: Vec<FaceId>,
+    /// Faces left out: (XT face id, reason).
+    pub refused: Vec<(i64, SldprtError)>,
+    /// The surface and sense of each refused face whose surface could be built: what a repair rebuilds the face on.
+    pub refused_surfaces: Vec<(i64, Surface, bool)>,
 }
 
 fn v3(a: V3) -> Vec3 {
@@ -119,6 +137,7 @@ struct B<'a> {
     splits: HashMap<usize, Vec<Vec3>>,
     /// Split points this pass needed.
     need_split: Vec<(usize, Vec3)>,
+    parts: Vec<PartRead>,
 }
 
 /// Build the kernel body of one or more IRs (all solid bodies end up as lumps of one body).
@@ -130,14 +149,15 @@ pub fn build(irs: &[&Ir], limits: &Limits) -> R<Built> {
         // every IR keeps its own split table (edge indices are per IR)
         let mut need_all: Vec<Vec<(usize, Vec3)>> = vec![];
         let mut body = Body::new();
-        let (mut solids, mut approx, mut notes) = (0usize, vec![], vec![]);
+        let (mut solids, mut approx, mut notes, mut parts) = (0usize, vec![], vec![], vec![]);
         let mut err: Option<SldprtError> = None;
         for (k, ir) in irs.iter().enumerate() {
-            let mut b = B { ir, body, curves: HashMap::new(), surfaces: HashMap::new(), verts: HashMap::new(), edges: HashMap::new(), approx: vec![], notes: vec![], splits: filter_splits(&splits, k), need_split: vec![] };
+            let mut b = B { ir, body, curves: HashMap::new(), surfaces: HashMap::new(), verts: HashMap::new(), edges: HashMap::new(), approx: vec![], notes: vec![], splits: filter_splits(&splits, k), need_split: vec![], parts: vec![] };
             let r = b.run(&mut solids);
             need_all.push(std::mem::take(&mut b.need_split));
             approx.extend(b.approx);
             notes.extend(b.notes);
+            parts.extend(b.parts);
             body = b.body;
             if let Err(e) = r {
                 err = Some(e);
@@ -150,9 +170,13 @@ pub fn build(irs: &[&Ir], limits: &Limits) -> R<Built> {
                 return Err(e);
             }
             if body.num_faces() == 0 {
+                // nothing came in: the first face's reason when a face was refused
+                if let Some((_, e)) = parts.iter().find_map(|p: &PartRead| p.refused.first()) {
+                    return Err(e.clone());
+                }
                 return Err(SldprtError::new("unsupported.body", format!("no solid faces imported ({})", notes.join("; "))));
             }
-            return Ok(Built { body, solids, approx, notes });
+            return Ok(Built { body, solids, approx, notes, parts });
         }
         for (k, need) in need_all.into_iter().enumerate() {
             for (e, p) in need {
@@ -196,6 +220,7 @@ impl<'a> B<'a> {
                 }
                 let lump = self.body.add_lump();
                 let mut shells: Vec<(ShellId, f64)> = vec![];
+                let mut part = PartRead { body: body.id, faces_total: 0, faces: vec![], refused: vec![], refused_surfaces: vec![] };
                 for sh in &reg.shells {
                     if sh.faces.is_empty() {
                         continue;
@@ -203,12 +228,29 @@ impl<'a> B<'a> {
                     let s = self.body.add_shell(lump);
                     let mut all: Vec<Vec3> = vec![];
                     for f in &sh.faces {
-                        all.extend(self.face(s, f)?);
+                        part.faces_total += 1;
+                        let n0 = self.body.faces.len();
+                        match self.face(s, f) {
+                            Ok(pts) => {
+                                all.extend(pts);
+                                part.faces.extend((n0..self.body.faces.len()).map(|i| FaceId(i as u32)));
+                            }
+                            Err(e) => {
+                                // a face whose surface can be built keeps it, for a repair to rebuild the face on
+                                if let Some(si) = f.surface {
+                                    if let Ok(sf) = self.surface(si) {
+                                        part.refused_surfaces.push((f.id, (*sf).clone(), f.same_sense ^ f.back));
+                                    }
+                                }
+                                part.refused.push((f.id, e));
+                            }
+                        }
                     }
                     let (lo, hi) = bbox_of(&all);
                     shells.push((s, if lo.x <= hi.x { lo.dist(hi) } else { 0.0 }));
                 }
                 self.orient_shells(&shells);
+                self.parts.push(part);
                 *solids += 1;
             }
         }

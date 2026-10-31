@@ -267,6 +267,14 @@ export interface MassReport {
   volume?: number;
   area?: number;
   com?: number[];
+  /** principal moments of inertia (ascending, unit density) and their unit axes */
+  principal?: number[];
+  axes?: number[][];
+  /** integral of x dV about the origin (volume times com; mass times com in byMass) */
+  firstMoment?: number[];
+  /** full 3x3 inertia tensor (rows, world axes, unit density) about the centre of mass and about the origin */
+  inertia?: number[][];
+  inertiaOrigin?: number[][];
   bodies?: Array<{ volume: number; area: number; com: number[] }>;
   [key: string]: unknown;
 }

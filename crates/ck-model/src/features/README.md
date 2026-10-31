@@ -51,6 +51,12 @@ strings from kernel.strings, and dispatch to ck-ops/ck-topo.
 - `body` (string) names the lump(s) a feature creates: newBody features, `moveBody` with `copy:true`, `combine` (result;
   default the target's name). Stored in `Lump::name` (ck-topo); `Brep::exec` puts the names of the lumps present before a
   feature back on the lumps with the same origin afterwards (`bodies::restore`), so every feature keeps them.
+- `target` on extrude / revolve / sweep / loft (op add or cut): the bodies the feature acts on, the others stay as they are. One
+  selection (`{body: name}`, `{face: name}` or a face name; a body name held by several lumps is `ambiguousBody`) or a list of them
+  (a body name there stands for every lump of that name). With a list, a body the tool misses is skipped; `cutNoEffect` only when
+  it changes none; nothing changes unless the whole feature works. An unknown name: `missingReference {name, nearest, bodies,
+  hint}` (`bodies` = the names the part has). With `op: newBody`: `invalidValue`. Without `target` the feature acts on every body
+  it overlaps. Tests: `tests/cut_from_bodies.rs`, `tests/coincident_lumps.rs`.
 - Selector `{body: name}` in moveBody.bodies, combine target / tools, deleteBody.bodies. Errors: `bodyNameConflict {name,
   features}`, `missingReference {name, nearest}`, `ambiguousBody {name, candidates}`.
 - `massProps {bodies:true}` entries and `interference` pairs carry the name; `validate` adds `info: [bodiesOverlap]`.

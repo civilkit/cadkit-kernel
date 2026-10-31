@@ -1648,24 +1648,29 @@ pub fn solve_sketch(sk: &mut Sketch, opts: &SolveOpts) -> Result<SolveResult, St
     let sys = build(sk)?;
     let res = solve(&sys, opts);
     if res.ok {
-        for p in sk.points.iter_mut() {
-            if let Some(&i) = sys.key_idx.get(&format!("{}.x", p.id)) {
-                p.x = res.x[i];
-                p.y = res.x[i + 1];
-            }
-        }
-        for e in sk.entities.iter_mut() {
-            match e {
-                SketchEntity::Circle { id, r, .. } | SketchEntity::Ellipse { id, r, .. } => {
-                    if let Some(&i) = sys.key_idx.get(&format!("{id}.r")) {
-                        *r = res.x[i].abs();
-                    }
-                }
-                _ => {}
-            }
-        }
+        write_back(sk, &sys, &res.x);
     }
     Ok(res)
+}
+
+/// Write solved unknowns `x` into the sketch: point coordinates and `|r|`.
+pub fn write_back(sk: &mut Sketch, sys: &System, x: &[f64]) {
+    for p in sk.points.iter_mut() {
+        if let Some(&i) = sys.key_idx.get(&format!("{}.x", p.id)) {
+            p.x = x[i];
+            p.y = x[i + 1];
+        }
+    }
+    for e in sk.entities.iter_mut() {
+        match e {
+            SketchEntity::Circle { id, r, .. } | SketchEntity::Ellipse { id, r, .. } => {
+                if let Some(&i) = sys.key_idx.get(&format!("{id}.r")) {
+                    *r = x[i].abs();
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 #[cfg(test)]

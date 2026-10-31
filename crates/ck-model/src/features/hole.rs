@@ -48,9 +48,11 @@ use ck_topo::make::{Profile, ProfileLoop, ProfileRegion, ProfileSeg};
 /// `holeInvalid {detail, hint}`: no usable size (the hint names size vs diameter).
 pub const HOLE_INVALID: &str = "holeInvalid";
 pub const HOLE_NO_POINTS: &str = "holeNoPoints";
-/// `holeCskDiameter {cskDiameter, holeDiameter, hint}`: countersink head diameter / angle impossible.
+/// `holeCskDiameter {cskDiameter, holeDiameter, hint}`: countersink head diameter / angle impossible; a cone deeper
+/// than the hole also carries `maxSize` (cskDiameter).
 pub const HOLE_CSK_DIAMETER: &str = "holeCskDiameter";
-/// `holeCboreInvalid {hint, ..}`: counterbore diameter / depth impossible.
+/// `holeCboreInvalid {hint, ..}`: counterbore diameter / depth impossible; a step as deep as the hole also carries
+/// `maxSize` (cboreDepth).
 pub const HOLE_CBORE_INVALID: &str = "holeCboreInvalid";
 /// WARNING `holeDowngraded {requested, built, missing, detail, hint}`: a counterbore / countersink with a plain
 /// `diameter` but without the dimensions of its step or cone is drilled as a simple hole instead of being refused.
@@ -204,6 +206,12 @@ pub fn exec_hole(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(
     let depth = state.num(f, "depth", 0.0)?;
     let through = *end != super::End::Blind;
     let multi = pts.len() > 1;
+    // the shortest hole of all the points: the bound of a counterbore depth / countersink cone (`maxSize`)
+    let shortest = || {
+        pts.iter()
+            .map(|p| if through { through_len(fr.o + fr.x * p[0] + fr.y * p[1], &body) } else { depth })
+            .fold(f64::INFINITY, f64::min)
+    };
     let mut parts: Vec<(Body, (ck_core::linalg::Vec3, ck_core::linalg::Vec3))> = Vec::new();
     for (k, p) in pts.iter().enumerate() {
         let pw = fr.o + fr.x * p[0] + fr.y * p[1];
@@ -216,10 +224,13 @@ pub fn exec_hole(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(
         if *kind == HoleKind::Cbore {
             let (cr, cd) = (cbore_d / 2.0, cbore_h);
             if cbore_custom && cd >= len - 1e-9 {
-                return Err(hint(
+                let e = hint(
                     FeatureError::new(HOLE_CBORE_INVALID).with("cboreDepth", num(cd)).with("holeDepth", num(len)),
                     "the counterbore must be shallower than the hole: reduce cboreDepth or increase depth",
-                ));
+                );
+                // the same test, solved for the depth
+                let max = super::max_size::floor_nice(shortest() - 1e-6);
+                return Err(if max > 0.0 { super::max_size::with_max_size(e, "cboreDepth", max, "mm") } else { e });
             }
             segs.push(line(Vec2::new(u, 0.0), Vec2::new(u + cr, 0.0), "h0"));
             segs.push(line(Vec2::new(u + cr, 0.0), Vec2::new(u + cr, -(cd)), "h1"));
@@ -229,10 +240,13 @@ pub fn exec_hole(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(
         } else if let Some((hr, half)) = csk {
             let cd = (hr - r) / half.tan();
             if cd >= len - 1e-9 {
-                return Err(hint(
+                let e = hint(
                     FeatureError::new(HOLE_CSK_DIAMETER).with("cskDiameter", num(hr * 2.0)).with("coneDepth", num(cd)).with("holeDepth", num(len)),
                     "the countersink cone is deeper than the hole: reduce cskDiameter, increase cskAngle or increase depth",
-                ));
+                );
+                // the same test, solved for the head diameter: (head / 2 - r) / tan(half) < shortest
+                let max = super::max_size::floor_nice(2.0 * (r + (shortest() - 1e-6) * half.tan()));
+                return Err(if max > 2.0 * r { super::max_size::with_max_size(e, "cskDiameter", max, "mm") } else { e });
             }
             segs.push(line(Vec2::new(u, 0.0), Vec2::new(u + hr, 0.0), "h0"));
             segs.push(line(Vec2::new(u + hr, 0.0), Vec2::new(u + r, -cd), "K0"));

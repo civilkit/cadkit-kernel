@@ -143,3 +143,39 @@ fn thin_web_limit_is_a_working_thickness() {
     }
     assert!(shell(&b, &[open], 0.15, false, 1e-6).is_err(), "0.15 mm wall crosses a 0.2 mm web");
 }
+
+/// A half ball made by revolving the half disc 180 degrees: its flat side is two coplanar faces (the
+/// start and end caps) that share the axis edge. Opening both (solidcore #1735) must either build the
+/// half ball shell or refuse saying why and what to do; it was refused as a generic cavity failure that
+/// blamed nothing in particular.
+#[test]
+fn half_ball_open_at_two_coplanar_caps() {
+    let prof = Profile::new(
+        xy(),
+        vec![ProfileRegion {
+            outer: ProfileLoop::new(vec![
+                ProfileSeg::arc("a", v(0.0, 0.0), v(0.0, -10.0), v(0.0, 10.0)),
+                ProfileSeg::line("b", v(0.0, 10.0), v(0.0, -10.0)),
+            ]),
+            holes: vec![],
+        }],
+    );
+    let h = revolve("R1", &prof, Vec3::ZERO, Vec3::Y, 0.0, PI).unwrap();
+    let open: Vec<FaceId> = h.face_ids().filter(|&f| matches!(h.face(f).surface, Surface::Plane { .. })).collect();
+    assert_eq!(open.len(), 2);
+    for t in [1.0, 2.0] {
+        match shell(&h, &open, t, false, 1e-6) {
+            Ok(b) => {
+                let want = 2.0 * PI / 3.0 * (1000.0 - (10.0 - t).powi(3));
+                assert!((vol(&b) - want).abs() < 1e-6 * want, "t={t}: {} vs {want}", vol(&b));
+                assert!(ck_check::validate(&b, 1e-6).is_empty(), "t={t}: {:?}", ck_check::validate(&b, 1e-6));
+            }
+            Err(e) => {
+                assert_eq!(e.code, "shellUnsupported", "t={t}: {e:?}");
+                let d = e.detail.unwrap_or_default();
+                assert!(d.contains("one plane") && d.contains("full turn"), "{d}");
+            }
+        }
+    }
+}
+

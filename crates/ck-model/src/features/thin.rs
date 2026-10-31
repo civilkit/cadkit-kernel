@@ -18,7 +18,8 @@
 //!   `<entity>.W0r` (round) / `.W0m` / `.W0b` (mitre connector / bevel); open end caps
 //!   `<first entity>.E0` / `<last entity>.E1`.
 //! * A thickness the profile cannot take (past a radius of curvature, a short segment eaten by an
-//!   inner corner) is `thinTooThick {limit, minRadius, maxThickness, thickness, side}`.
+//!   inner corner) is `thinTooThick {limit, minRadius, maxThickness, thickness, side}`, with `maxSize`
+//!   (thin.thickness) when that thickness fits every chain (see max_size.rs).
 
 use super::extrude::{profile_seg, sketch_axis, REGION_NONE, REGION_UNKNOWN};
 use super::FeatureKind;
@@ -594,6 +595,23 @@ fn min_concave_radius(c: &[ProfileSeg], d: f64) -> f64 {
     best
 }
 
+/// `maxSize` (thin.thickness) of a `thinTooThick`: its `maxThickness`, when every chain takes a wall that thick
+/// (the limit was found on the first chain that failed). Not with `side: both` and its own `thickness2`: the
+/// `thickness` field alone does not scale the other side.
+fn with_max_thickness(fe: FeatureError, chains: &[Chain], th: &Thin, f: &Feature) -> FeatureError {
+    let Some(m) = fe.params.iter().find(|(k, _)| k == "maxThickness").and_then(|(_, v)| v.as_f64()).filter(|m| *m > 0.0) else { return fe };
+    let t = f.raw.get("thin");
+    if t.and_then(|t| t.get("side")).and_then(|s| s.as_str()) == Some("both") && t.and_then(|t| t.get("thickness2")).is_some() {
+        return fe;
+    }
+    let k = m / th.thickness;
+    if chains.iter().all(|c| wall(c, th, th.tl * k, th.tr * k).is_ok()) {
+        super::max_size::with_max_size(fe, "thin.thickness", m, "mm")
+    } else {
+        fe
+    }
+}
+
 fn too_thick(chain: &Chain, th: &Thin) -> FeatureError {
     // bisect the scale of the thickness that still builds
     let (mut lo, mut hi) = (0.0f64, 1.0f64);
@@ -695,12 +713,12 @@ pub fn thin_profile(state: &RegenState, sk: &SketchResult, f: &Feature, th: &Thi
     if chains.is_empty() {
         return Err(FeatureError::new(codes::NO_CLOSED_PROFILE));
     }
+    let chains: Vec<Chain> = chains.into_iter().map(oriented).collect();
     let mut regions = vec![];
-    for chain in chains {
-        let chain = oriented(chain);
-        match wall(&chain, th, th.tl, th.tr) {
+    for chain in &chains {
+        match wall(chain, th, th.tl, th.tr) {
             Ok(r) => regions.push(r),
-            Err(Fail::Thick) => return Err(too_thick(&chain, th)),
+            Err(Fail::Thick) => return Err(with_max_thickness(too_thick(chain, th), &chains, th, f)),
             Err(Fail::Err(e)) => return Err(e),
         }
     }

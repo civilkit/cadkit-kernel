@@ -36,12 +36,38 @@ type R<T> = Result<T, ImportError>;
 #[derive(Debug)]
 pub struct Imported {
     pub body: Body,
-    /// MANIFOLD_SOLID_BREP / BREP_WITH_VOIDS count (= lumps).
+    /// MANIFOLD_SOLID_BREP / BREP_WITH_VOIDS count (`parts` also holds the shells of surface models).
     pub solids: usize,
     /// Length scale applied (file unit -> mm).
     pub length_scale: f64,
     /// Non-fatal problems (skipped degenerate loops, ...).
     pub warnings: Vec<ImportError>,
+    /// What became of each solid of the file, in file order (one per MANIFOLD_SOLID_BREP / BREP_WITH_VOIDS).
+    pub parts: Vec<SolidRead>,
+}
+
+/// One solid of the file as read. A face that cannot be read is left out (and named in `refused`) instead of failing the
+/// whole file; a solid whose shells cannot be walked at all carries `error` and no faces. Whether the faces that came in
+/// make a valid solid is judged afterwards (`ck_heal::honest`).
+#[derive(Debug, Clone)]
+pub struct SolidRead {
+    /// Entity id of the MANIFOLD_SOLID_BREP / BREP_WITH_VOIDS.
+    pub entity: u32,
+    /// Its label in the file ('' when unnamed).
+    pub name: String,
+    /// Faces the file gives the solid.
+    pub faces_total: usize,
+    /// Faces built (ids in `Imported::body`).
+    pub faces: Vec<FaceId>,
+    /// Faces left out, one error each, `entity` = the face's id.
+    pub refused: Vec<ImportError>,
+    /// The surface of each refused face whose surface could be read (face id, surface, sense): what a repair rebuilds the
+    /// face on.
+    pub refused_surfaces: Vec<(u32, Surface, bool)>,
+    /// The solid could not be read at all (its shells could not be walked).
+    pub error: Option<ImportError>,
+    /// A shell of a SHELL_BASED_SURFACE_MODEL: the file gives this part as surfaces, not as a solid.
+    pub surface_model: bool,
 }
 
 /// Parse `text` and build the solids it contains.
@@ -685,6 +711,12 @@ impl<'a> Rd<'a> {
         let e = self.ent(id)?;
         let kind = e.kind();
         if kind == "VERTEX_LOOP" {
+            // the loop carries nothing the body needs (a cone apex, a pole), but
+            // the vertex it names must exist: a dangling reference is damage
+            let a = self.simple(id, &["VERTEX_LOOP"])?;
+            let v = a.get(1).and_then(Val::as_ref).ok_or_else(|| bad(id, "VERTEX_LOOP without a vertex"))?;
+            let va = self.simple(v, &["VERTEX_POINT"])?;
+            self.point(va.get(1).and_then(Val::as_ref).ok_or_else(|| bad(v, "VERTEX_POINT without point"))?)?;
             return Ok(None);
         }
         let a = self.simple(id, &["EDGE_LOOP"]).map_err(|_| unsupported(id, kind))?;
@@ -801,14 +833,47 @@ impl<'a> Rd<'a> {
             .map(|(id, _)| *id)
             .collect();
         solids.sort();
-        if solids.is_empty() {
-            return Err(ImportError::new("noSolid", None, "no MANIFOLD_SOLID_BREP / BREP_WITH_VOIDS in the file"));
+        let name_of = |id: &u32| self.f.ents.get(id).and_then(|e| e.parts[0].args.first()).and_then(Val::as_str).unwrap_or("").to_string();
+        let mut named: Vec<(u32, String)> = solids.iter().map(|id| (*id, name_of(id))).collect();
+        // surface models (SHELL_BASED_SURFACE_MODEL): each shell is a part of its own, read the same way (a surface body)
+        let mut models: Vec<u32> = self.f.ents.iter().filter(|(_, e)| e.parts.len() == 1 && e.kind() == "SHELL_BASED_SURFACE_MODEL").map(|(id, _)| *id).collect();
+        models.sort();
+        for m in models {
+            let a = &self.f.ents[&m].parts[0].args;
+            for sh in a.get(1).and_then(Val::as_list).unwrap_or(&[]).iter().filter_map(Val::as_ref) {
+                if matches!(self.f.ents.get(&sh).map(|e| e.kind()), Some("OPEN_SHELL" | "CLOSED_SHELL")) {
+                    named.push((sh, name_of(&m)));
+                }
+            }
         }
-        for (k, sid) in solids.iter().enumerate() {
-            self.solid(*sid, k)?;
+        if named.is_empty() {
+            return Err(ImportError::new("noSolid", None, "no MANIFOLD_SOLID_BREP / BREP_WITH_VOIDS / SHELL_BASED_SURFACE_MODEL in the file"));
+        }
+        let mut parts = Vec::with_capacity(named.len());
+        for (k, (sid, name)) in named.into_iter().enumerate() {
+            let sid = &sid;
+            let surface_model = matches!(self.f.ents.get(sid).map(|e| e.kind()), Some("OPEN_SHELL" | "CLOSED_SHELL"));
+            let mut part = SolidRead { entity: *sid, name, faces_total: 0, faces: vec![], refused: vec![], refused_surfaces: vec![], error: None, surface_model };
+            if let Err(e) = self.solid(*sid, k, &mut part) {
+                part.error = Some(e);
+            }
+            parts.push(part);
+        }
+        // nothing at all came in: the file is refused with the first reason
+        if parts.iter().all(|p| p.faces.is_empty()) {
+            let first = parts.iter().find_map(|p| p.error.clone().or_else(|| p.refused.first().cloned()));
+            return Err(first.unwrap_or_else(|| ImportError::new("noSolid", None, "the solids of the file have no faces")));
         }
         let n = solids.len();
-        Ok(Imported { body: self.b, solids: n, length_scale: self.len, warnings: self.warnings })
+        Ok(Imported { body: self.b, solids: n, length_scale: self.len, warnings: self.warnings, parts })
+    }
+
+    /// The surface and sense of face `id` (for a refused face), when they can be read.
+    fn face_surface(&self, id: u32) -> Option<(Surface, bool)> {
+        let a = self.simple(id, &["ADVANCED_FACE", "FACE_SURFACE"]).ok()?;
+        let sid = a.get(2).and_then(Val::as_ref)?;
+        let surface = self.surface(sid).ok()?;
+        Some((surface, a.get(3).and_then(Val::as_bool).unwrap_or(true) != self.torus_flips(sid)))
     }
 
     fn shell_faces(&self, id: u32) -> R<Vec<u32>> {
@@ -822,10 +887,12 @@ impl<'a> Rd<'a> {
         }
     }
 
-    fn solid(&mut self, sid: u32, k: usize) -> R<()> {
+    fn solid(&mut self, sid: u32, k: usize, part: &mut SolidRead) -> R<()> {
         let e = self.ent(sid)?;
         let a = &e.parts[0].args;
-        let outer = a.get(1).and_then(Val::as_ref).ok_or_else(|| bad(sid, "solid without shell"))?;
+        // a shell of a surface model is read on its own; only a closed one is turned outward
+        let lone = matches!(e.kind(), "OPEN_SHELL" | "CLOSED_SHELL");
+        let outer = if lone { sid } else { a.get(1).and_then(Val::as_ref).ok_or_else(|| bad(sid, "solid without shell"))? };
         // (shell id, flipped)
         let mut shells = vec![(outer, false)];
         if e.kind() == "BREP_WITH_VOIDS" {
@@ -841,6 +908,7 @@ impl<'a> Rd<'a> {
                 }
             }
         }
+        let open = e.kind() == "OPEN_SHELL";
         let lump = self.b.add_lump();
         let feature = format!("I{}", k + 1);
         let mut shell_ids: Vec<(ShellId, bool)> = vec![];
@@ -849,7 +917,11 @@ impl<'a> Rd<'a> {
             let shell = self.b.add_shell(lump);
             let mut specs = Vec::new();
             for fid in self.shell_faces(shid)? {
-                specs.push(self.face_spec(fid)?);
+                part.faces_total += 1;
+                match self.face_spec(fid) {
+                    Ok(sp) => specs.push(sp),
+                    Err(e) => self.refuse_face(part, fid, e),
+                }
             }
             self.unflip_inconsistent_bounds(&mut specs);
             self.snap_edges_to_surfaces(&specs);
@@ -861,10 +933,30 @@ impl<'a> Rd<'a> {
             let (shell, s) = queue[i].take().unwrap();
             self.nface += 1;
             let name = FaceName::other(&feature, &format!("F{}", self.nface));
-            self.finalize_face(shell, s, name, &mut queue[i + 1..])?;
+            let fid = s.id;
+            let n0 = self.b.faces.len();
+            match self.finalize_face(shell, s, name, &mut queue[i + 1..]) {
+                Ok(()) => part.faces.extend((n0..self.b.faces.len()).map(|f| FaceId(f as u32))),
+                Err(e) => self.refuse_face(part, fid, e),
+            }
         }
-        self.orient_shells(lump, &shell_ids);
+        if !open {
+            self.orient_shells(lump, &shell_ids);
+        }
         Ok(())
+    }
+
+    /// Leave face `fid` out of the solid, with the reason (the error names the face; a deeper entity it came from is kept
+    /// in the message).
+    fn refuse_face(&mut self, part: &mut SolidRead, fid: u32, e: ImportError) {
+        let message = match e.entity {
+            Some(x) if x != fid => format!("{} (entity #{x})", e.message),
+            _ => e.message,
+        };
+        if let Some((surf, sense)) = self.face_surface(fid) {
+            part.refused_surfaces.push((fid, surf, sense));
+        }
+        part.refused.push(ImportError::new(e.code, Some(fid), message));
     }
 
     /// STEP exporters write intersection edges as fitted splines (and sometimes
@@ -2277,8 +2369,43 @@ END-ISO-10303-21;";
 
     #[test]
     fn unsupported_is_structured() {
-        let t = BOX.replace("#81=PLANE('',#80);", "#81=DEGENERATE_TOROIDAL_SURFACE('',#80,1.,1.);");
+        // nothing of the file can be read: the file is refused with the first face's reason
+        let t = BOX.replace("=PLANE('',", "=DEGENERATE_TOROIDAL_SURFACE('',");
         let e = read_step(&t).unwrap_err();
-        assert_eq!((e.code, e.entity), ("unsupported", Some(81)));
+        assert_eq!(e.code, "unsupported");
+        assert!(e.entity.is_some());
+    }
+
+    #[test]
+    fn a_face_that_cannot_be_read_is_left_out_and_named() {
+        let t = BOX.replace("#81=PLANE('',#80);", "#81=DEGENERATE_TOROIDAL_SURFACE('',#80,1.,1.);");
+        let r = read_step(&t).unwrap();
+        assert_eq!(r.parts.len(), 1);
+        let p = &r.parts[0];
+        assert_eq!((p.entity, p.name.as_str(), p.faces_total, p.faces.len()), (201, "box", 6, 5));
+        assert_eq!(p.refused.len(), 1);
+        assert_eq!((p.refused[0].code, p.refused[0].entity), ("unsupported", Some(106)));
+        assert!(p.refused[0].message.contains("#81"), "{}", p.refused[0].message);
+        assert!(p.error.is_none());
+        assert_eq!(r.body.num_faces(), 5);
+    }
+
+    #[test]
+    fn a_complete_solid_has_no_refusals() {
+        let r = read_step(BOX).unwrap();
+        assert_eq!(r.parts.len(), 1);
+        assert_eq!((r.parts[0].faces_total, r.parts[0].faces.len(), r.parts[0].refused.len()), (6, 6, 0));
+    }
+
+    #[test]
+    fn a_refused_face_keeps_its_surface_for_repair() {
+        // the loop of face #106 references a missing edge: the face is left out but its plane is kept
+        let t = BOX.replace("#106=ADVANCED_FACE('',(#105),#81,.F.);", "#106=ADVANCED_FACE('',(#999),#81,.F.);");
+        let r = read_step(&t).unwrap();
+        let p = &r.parts[0];
+        assert_eq!(p.refused.len(), 1);
+        assert_eq!(p.refused_surfaces.len(), 1);
+        assert_eq!(p.refused_surfaces[0].0, 106);
+        assert!(matches!(p.refused_surfaces[0].1, Surface::Plane { .. }));
     }
 }

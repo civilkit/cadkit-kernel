@@ -38,6 +38,9 @@ pub struct Snapshot {
     pub asm: ck_model::features::mate::Assembly,
     /// `heal` self-test memo: (tol, healthy at tol, volume) of `body`.
     pub heal_base: Option<(f64, bool, f64)>,
+    /// Surface bodies of an import (the parts that did not make valid solids, see `ck_heal::honest`): kept beside the
+    /// solid body so that `step` writes them too.
+    pub surfaces: Vec<(String, Body)>,
 }
 
 /// ck-server trace as a ck-model [`Tracer`].
@@ -258,7 +261,7 @@ fn regen_hook(part: &Json, cx: &mut Cx) -> Result<(Json, State), String> {
     let state = match body {
         Some(body) => {
             let sketches = std::mem::take(&mut result.sketches);
-            State { has_body: true, data: Some(Box::new(Snapshot { body, sketches, asm, heal_base: None })) }
+            State { has_body: true, data: Some(Box::new(Snapshot { body, sketches, asm, heal_base: None, surfaces: vec![] })) }
         }
         None => State::empty(),
     };
@@ -303,34 +306,27 @@ fn import_hook(cx: &mut Cx, _name: &str, data: &str) -> Result<(Json, Option<Sta
             Ok((out, None))
         }
         Ok(imp) => {
-            let mut body = imp.body;
-            ck_topo::region::rebuild_lumps(&mut body);
-            let heal_info = heal_opts(cx.msg).map(|ho| {
-                let rep = ck_heal::heal_with(&mut body, &ho);
-                ck_topo::region::rebuild_lumps(&mut body);
-                Obj::new()
-                    .put("fixed", rep.fixed.len() as f64)
-                    .put("remaining", rep.remaining.len() as f64)
-                    .put("toleranceUsed", ck_check::tolerance_used(&body))
-                    .build()
+            let (solids, scale) = (imp.solids, imp.length_scale);
+            let warnings = Json::Arr(imp.warnings.iter().map(err_json).collect());
+            let ho = heal_opts(cx.msg);
+            // what healing did, measured over the whole file before the parts are sorted
+            let heal_info = ho.as_ref().map(|ho| {
+                let mut b = imp.body.clone();
+                ck_topo::region::rebuild_lumps(&mut b);
+                let rep = ck_heal::heal_with(&mut b, ho);
+                Obj::new().put("fixed", rep.fixed.len() as f64).put("remaining", rep.remaining.len() as f64).put("toleranceUsed", ck_check::tolerance_used(&b)).build()
             });
-            let tess = ck_tess::mesh::tessellate(&body);
-            set_body(&mut out, body_json(&body, &tess, cx, &(vec![], vec![])));
-            let info = Obj::new()
-                .put("solids", imp.solids as f64)
-                .put("faces", body.num_faces() as f64)
-                .put("unitScale", imp.length_scale)
-                .put("warnings", Json::Arr(imp.warnings.iter().map(err_json).collect()))
-                .build();
-            let mut info = info;
+            // each part on its own: a valid solid joins the body, anything else is a surface body of its faces (never a half-built solid)
+            let r = ck_model::features::import_step::sort_step(imp, None, ho.as_ref());
+            let parts = ck_model::features::import_step::parts_json("import", &r.sorted.parts);
+            let surfaces: Vec<(String, Body)> = r.sorted.surfaces.into_iter().map(|(k, b)| (ck_model::features::import_step::surface_id("import", k), b)).collect();
+            let body = r.sorted.solid;
+            let faces = body.num_faces() + surfaces.iter().map(|s| s.1.num_faces()).sum::<usize>();
+            let mut info = Obj::new().put("solids", solids as f64).put("faces", faces as f64).put("unitScale", scale).put("warnings", warnings).put("parts", parts).build();
             if let (Json::Obj(kv), Some(h)) = (&mut info, heal_info) {
                 kv.push(("heal".into(), h));
             }
-            if let Json::Obj(kv) = &mut out {
-                kv.push(("import".into(), info));
-            }
-            let snap = Snapshot { body, sketches: vec![], asm: Default::default(), heal_base: None };
-            Ok((out, Some(State { has_body: true, data: Some(Box::new(snap)) })))
+            Ok(import_reply(cx, out, body, surfaces, info))
         }
     }
 }
@@ -376,10 +372,7 @@ fn import_sldprt_hook(cx: &mut Cx) -> Result<(Json, Option<State>), String> {
             Ok((out, None))
         }
         Ok(imp) => {
-            let mut body = imp.body;
-            ck_topo::region::rebuild_lumps(&mut body);
-            let tess = ck_tess::mesh::tessellate(&body);
-            set_body(&mut out, body_json(&body, &tess, cx, &(vec![], vec![])));
+            let (body, surfaces, parts) = sort_sldprt(imp.body, &imp.parts);
             let approx = imp.approx.iter().map(|a| Obj::new().put("what", a.what.as_str()).put("maxErrorMm", a.max_err_mm).build()).collect();
             // the mass properties SolidWorks stored in the file (mm^3, mm^2, kg), an independent check of the body
             let sw = match &imp.sw_mass {
@@ -396,7 +389,8 @@ fn import_sldprt_hook(cx: &mut Cx) -> Result<(Json, Option<State>), String> {
                 .put("format", "sldprt")
                 .put("name", name.as_str())
                 .put("solids", imp.solids as f64)
-                .put("faces", body.num_faces() as f64)
+                .put("faces", (body.num_faces() + surfaces.iter().map(|s| s.1.num_faces()).sum::<usize>()) as f64)
+                .put("parts", parts)
                 .put("unitScale", imp.unit_scale)
                 .put("container", if imp.container == ck_sldprt::Kind::Modern { "modern" } else { "ole2" })
                 .put("schema", imp.schema.as_str())
@@ -405,11 +399,7 @@ fn import_sldprt_hook(cx: &mut Cx) -> Result<(Json, Option<State>), String> {
                 .put("approximations", Json::Arr(approx))
                 .put("notes", Json::Arr(imp.notes.iter().map(|n| Json::Str(n.clone())).collect()))
                 .build();
-            if let Json::Obj(kv) = &mut out {
-                kv.push(("import".into(), info));
-            }
-            let snap = Snapshot { body, sketches: vec![], asm: Default::default(), heal_base: None };
-            Ok((out, Some(State { has_body: true, data: Some(Box::new(snap)) })))
+            Ok(import_reply(cx, out, body, surfaces, info))
         }
     }
 }
@@ -467,6 +457,7 @@ fn import_skp_hook(cx: &mut Cx) -> Result<(Json, Option<State>), String> {
         }
     };
     let body = sb.body;
+    let parts = skp_parts(&body);
     let tess = ck_tess::mesh::tessellate(&body);
     set_body(&mut out, body_json(&body, &tess, cx, &(vec![], vec![])));
     let materials = Json::Arr(
@@ -494,6 +485,7 @@ fn import_skp_hook(cx: &mut Cx) -> Result<(Json, Option<State>), String> {
         .put("upMatrix", Json::Arr(up.matrix().iter().flatten().map(|v| Json::Num(*v)).collect()))
         .put("faces", body.num_faces() as f64)
         .put("lumps", body.num_lumps() as f64)
+        .put("parts", parts)
         .put("openEdges", sb.open_edges as f64)
         .put("nonManifoldEdges", sb.non_manifold_edges as f64)
         .put("skippedFaces", sb.skipped_faces as f64)
@@ -508,7 +500,7 @@ fn import_skp_hook(cx: &mut Cx) -> Result<(Json, Option<State>), String> {
     if let Json::Obj(kv) = &mut out {
         kv.push(("import".into(), info));
     }
-    let snap = Snapshot { body, sketches: vec![], asm: Default::default(), heal_base: None };
+    let snap = Snapshot { body, sketches: vec![], asm: Default::default(), heal_base: None, surfaces: vec![] };
     Ok((out, Some(State { has_body: true, data: Some(Box::new(snap)) })))
 }
 
@@ -555,10 +547,82 @@ fn import_sat_hook(cx: &mut Cx) -> Result<(Json, Option<State>), String> {
                         .build(),
                 ));
             }
-            let state = State { has_body: true, data: Some(Box::new(Snapshot { body, sketches: vec![], asm: Default::default(), heal_base: None })) };
+            let state = State { has_body: true, data: Some(Box::new(Snapshot { body, sketches: vec![], asm: Default::default(), heal_base: None, surfaces: vec![] })) };
             Ok((out, Some(state)))
         }
     }
+}
+
+/// The reply and state of an import: the solid body (`body`), the surface bodies (`surfaces: [[id, body], ..]`, faces
+/// marked `meta.surface`) and `import` (with `parts`: what became of each part of the file).
+fn import_reply(cx: &mut Cx, mut out: Json, body: Body, surfaces: Vec<(String, Body)>, info: Json) -> (Json, Option<State>) {
+    let tess = ck_tess::mesh::tessellate(&body);
+    set_body(&mut out, body_json(&body, &tess, cx, &(vec![], vec![])));
+    let mut sj = vec![];
+    for (id, sb) in &surfaces {
+        let t = ck_tess::mesh::tessellate(sb);
+        let mut json = body_static(sb, &t, &(vec![(0, sb.faces.len())], vec![]));
+        mark_surface_faces(&mut json);
+        sj.push(Json::Arr(vec![Json::Str(id.clone()), attach_mesh(json, &t.mesh, cx)]));
+    }
+    set_key(&mut out, "surfaces", Json::Arr(sj));
+    if let Json::Obj(kv) = &mut out {
+        kv.push(("import".into(), info));
+    }
+    let has = body.num_faces() > 0 || !surfaces.is_empty();
+    let snap = Snapshot { body, sketches: vec![], asm: Default::default(), heal_base: None, surfaces };
+    (out, Some(State { has_body: has, data: Some(Box::new(snap)) }))
+}
+
+/// The parts of a SolidWorks import sorted like a STEP import's (`ck_heal::honest`): (solid body, surface bodies, `parts`).
+fn sort_sldprt(mut body: Body, parts: &[ck_sldprt::build::PartRead]) -> (Body, Vec<(String, Body)>, Json) {
+    use ck_heal::honest::{self, PartIn};
+    ck_topo::region::rebuild_lumps(&mut body);
+    // edges that follow their faces only to the file's accuracy get a tolerance (as a STEP import does); nothing else changes
+    ck_heal::heal_with(&mut body, &ck_heal::tolerant_only());
+    let ins: Vec<PartIn> = parts
+        .iter()
+        .enumerate()
+        .map(|(k, p)| PartIn {
+            label: format!("body {} (#{})", k + 1, p.body),
+            faces: p.faces.clone(),
+            faces_total: p.faces_total,
+            reasons: p.refused.iter().map(|(f, e)| honest::refused_face(e.code, format!("F{f}"), &e.message)).collect(),
+        })
+        .collect();
+    let s = honest::sort(&body, &ins, ck_check::DEFAULT_TOL_CAP);
+    let parts = ck_model::features::import_step::parts_json("import", &s.parts);
+    let surfaces = s.surfaces.into_iter().map(|(k, b)| (ck_model::features::import_step::surface_id("import", k), b)).collect();
+    (s.solid, surfaces, parts)
+}
+
+#[cfg(feature = "skp")]
+/// What each piece (connected set of faces) of a SketchUp model is: a valid closed solid, or a surface with the reasons.
+/// A SketchUp model is a surface model, so the body keeps every piece; this says which of them could be modelled on as
+/// solids. Pieces are listed in lump order, at most 200 (`solid` / `surface` count all).
+fn skp_parts(body: &Body) -> Json {
+    use ck_heal::honest::{self, PartIn};
+    let ins: Vec<PartIn> = body
+        .lump_ids()
+        .enumerate()
+        .map(|(k, l)| {
+            let faces = ck_topo::mass::lump_faces(body, l);
+            PartIn { label: format!("piece {}", k + 1), faces_total: faces.len(), faces, reasons: vec![] }
+        })
+        .collect();
+    let s = honest::sort(body, &ins, ck_check::DEFAULT_TOL_CAP);
+    let n = |o| s.parts.iter().filter(|p| p.outcome == o).count() as f64;
+    let shown: Vec<_> = s.parts.iter().take(200).cloned().collect();
+    let mut list = ck_model::features::import_step::parts_json("import", &shown);
+    // a piece is not split out of the body: no surface id to name
+    if let Json::Arr(a) = &mut list {
+        for p in a {
+            if let Json::Obj(kv) = p {
+                kv.retain(|(k, _)| k != "surface");
+            }
+        }
+    }
+    Obj::new().put("solid", n(honest::Outcome::Solid)).put("surface", n(honest::Outcome::Surface)).put("list", list).build()
 }
 
 fn set_body(result: &mut Json, body: Json) {
@@ -959,7 +1023,12 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
             // Reply: the whole STEP file as one JSON string (oracle); `name`
             // defaults to "part". Void shells must be split out first.
             let name = cx.msg.get_str("name").unwrap_or("part").to_string();
-            let mut body = snapshot(cx)?.body.clone();
+            let s = snapshot(cx)?;
+            let mut body = s.body.clone();
+            // an import's surface bodies are written too (as surface models): exporting never drops a part
+            for (_, sb) in &s.surfaces {
+                body.append(sb);
+            }
             ck_topo::region::rebuild_lumps(&mut body);
             let opts = ck_io::step::StepOpts { unix_ms: ck_server::clock::unix_ms() };
             ck_io::step::try_write_step(&body, &name, &opts).map(Json::Str)
@@ -1108,7 +1177,7 @@ fn recognize_query(cx: &mut Cx) -> Result<Json, String> {
     let (out, rebuilt) = ck_recog::request::run(&snapshot(cx)?.body, cx.msg);
     if let Some(b) = rebuilt {
         let tag = format!("{}.rebuilt", cx.tag());
-        let snap = Snapshot { body: b, sketches: vec![], asm: Default::default(), heal_base: None };
+        let snap = Snapshot { body: b, sketches: vec![], asm: Default::default(), heal_base: None, surfaces: vec![] };
         cx.session.put(&tag, State { has_body: true, data: Some(Box::new(snap)) });
     }
     Ok(out)

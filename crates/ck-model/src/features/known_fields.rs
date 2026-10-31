@@ -24,14 +24,15 @@ pub const TABLE: &[(&str, &[&str])] = &[
     ("sketch", &["plane", "points", "entities", "constraints", "seq", "prop", "gear"]),
     (
         "extrude",
-        &["sketch", "op", "end", "depth", "flip", "draft", "draftOut", "twist", "twistCentre", "regions", "thin", "endRef", "offset", "strictEnd", "body", "target"],
+        &["sketch", "op", "end", "depth", "flip", "draft", "draftOut", "twist", "twistCentre", "regions", "thin", "endRef", "offset", "strictEnd", "body", "target", "endOffset", "start", "startRef", "startOffset"],
     ),
-    ("revolve", &["sketch", "op", "axis", "angle", "end", "flip", "regions", "thin", "body"]),
+    ("revolve", &["sketch", "op", "axis", "angle", "end", "flip", "regions", "thin", "body", "target"]),
     (
         "fillet",
         &["radius", "edges", "profile", "propagate", "filletType", "radii", "rho", "rhos", "shape", "side1", "center", "side2"],
     ),
     ("importStep", &["blob", "step", "body", "heal"]),
+    ("repairPart", &["target", "gap", "patchHoles"]),
     ("chamfer", &["chamferType", "distance", "distance2", "distance3", "angle", "face", "flip", "propagate", "edges"]),
     (
         "hole",

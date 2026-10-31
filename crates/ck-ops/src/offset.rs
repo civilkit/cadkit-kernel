@@ -1213,7 +1213,18 @@ pub(crate) fn offset_spline_edge(src: &Body, e: EdgeId, moved: &[Option<Surface>
         let pm = ed.curve.eval(0.5 * (ed.t0 + ed.t1));
         fs.iter().map(|&f| dnat(f, pm).abs()).fold(0.0f64, f64::max)
     };
-    let chord_sampling = !grazing.get() && src.edge_length(e) < 3.0 * dmax + 1e-9 && p0.dist(p1) > 1e-9;
+    // (a long edge whose end vertices slid along it as well: the first or last sample of the old edge's
+    // parameter then falls beyond the moved end and the fit would double back; those are chord-sampled too)
+    let ends_slid = || {
+        let l = p0.dist(p1);
+        let dir = (p1 - p0).normalize();
+        let at = |k: f64| sample(ed.t0 + (ed.t1 - ed.t0) * k / 24.0).ok().map(|q| (q - p0).dot(dir));
+        match (at(1.0), at(23.0)) {
+            (Some(a), Some(b)) => a < 0.25 * l / 24.0 || b > l - 0.25 * l / 24.0,
+            _ => false,
+        }
+    };
+    let chord_sampling = !grazing.get() && p0.dist(p1) > 1e-9 && (src.edge_length(e) < 3.0 * dmax + 1e-9 || ends_slid());
     let sample_chord = |s: f64| -> Result<Vec3, OffsetError> {
         let x = p0 + (p1 - p0) * s;
         let dir = (p1 - p0).normalize();
@@ -1314,6 +1325,27 @@ pub(crate) fn offset_spline_edge(src: &Body, e: EdgeId, moved: &[Option<Surface>
             return Err(OffsetError::new("offsetUnsupported", format!("edge offset fit tolerance ({dev:.1e})")));
         }
     }
+}
+
+/// The seam of a surface of revolution (one face on both sides of the edge, the edge the profile at u = 0)
+/// moves onto the profile of the offset surface: that curve itself, cut between the moved end vertices.
+/// `None` when the edge is not such a seam, or the profile runs against the edge.
+fn seam_profile_edge(fs: &[FaceId], moved: &[Option<Surface>], p0: Vec3, p1: Vec3) -> Option<(Curve, f64, f64)> {
+    let [f] = fs else { return None };
+    let Some(Surface::Revolution { profile, .. }) = moved[f.idx()].as_ref() else { return None };
+    let (t0, t1) = (profile.closest_param(p0), profile.closest_param(p1));
+    let on = |t: f64, p: Vec3| profile.eval(t).dist(p) < 1e-6;
+    (t1 > t0 && on(t0, p0) && on(t1, p1)).then(|| (profile.as_ref().clone(), t0, t1))
+}
+
+/// An edge failure that has no face of its own (`offsetUnsupported` from the edge fit) says which faces the edge joins.
+fn edge_error(src: &Body, fs: &[FaceId], e: OffsetError) -> OffsetError {
+    if e.code != "offsetUnsupported" || fs.is_empty() {
+        return e;
+    }
+    let names: Vec<String> = fs.iter().map(|&f| src.face_id_str(f)).collect();
+    let d = e.detail.clone().unwrap_or_default();
+    OffsetError { detail: Some(format!("edge between {}: {d}", names.join(" and "))), ..e }
 }
 
 /// The edge between an extruded wall and a plane normal to the extrusion is the wall's profile
@@ -1589,6 +1621,34 @@ pub fn move_faces_body(src: &Body, mv: &dyn Fn(FaceId) -> FaceMove) -> Result<Bo
             }
         }
     }
+    // A vertex at the end of a cylinder's or cone's seam line meets only two surfaces (the round face counts once): the
+    // closest point of their offsets slides around the round face, off the seam's own generator, where the far end of
+    // the seam stays put, so the moved seam line misses one of its vertices (a hole drilled off the axis of a curved
+    // wall: VERTEX_OFF_CURVE t/4, solidcore #1528). The seam moves radially, inside its meridian plane: hold the vertex
+    // to that plane as well.
+    let mut meridian: Vec<Vec<Surface>> = vec![vec![]; src.vertices.len()];
+    for e in src.edge_ids() {
+        if !src.is_seam(e) {
+            continue;
+        }
+        let ed = src.edge(e);
+        let Curve::Line { d, .. } = ed.curve else { continue };
+        let Some(&f) = src.edge_faces(e).first() else { continue };
+        let (Surface::Cylinder { frame, .. } | Surface::Cone { frame, .. }) = &src.face(f).surface else { continue };
+        if shift_of(f).is_some() {
+            continue;
+        }
+        let p = src.vertex(ed.v0).p;
+        let foot = frame.o + frame.z.scale((p - frame.o).dot(frame.z));
+        let Some(n) = (p - foot).cross(frame.z).try_normalize() else { continue };
+        if n.dot(d).abs() > 1e-9 {
+            continue;
+        }
+        let pl = Surface::plane(foot, n);
+        for v in [ed.v0, ed.v1] {
+            meridian[v.idx()].push(pl.clone());
+        }
+    }
     let mut newp: Vec<Vec3> = src.vertices.iter().map(|v| v.p).collect();
     for v in src.vertex_ids() {
         let surfs: Vec<&Surface> = vfaces[v.idx()].iter().map(|f| moved[f.idx()].as_ref().unwrap()).collect();
@@ -1598,6 +1658,18 @@ pub fn move_faces_body(src: &Body, mv: &dyn Fn(FaceId) -> FaceMove) -> Result<Bo
         let seed = vfaces[v.idx()].iter().find_map(|&f| shift_of(f)).map_or(src.vertex(v).p, |s| src.vertex(v).p + s);
         newp[v.idx()] = solve_point(seed, &surfs)
             .ok_or_else(|| OffsetError::new("offsetDegenerate", "the offset faces do not meet at a corner"))?;
+        // only where two faces leave the vertex free to slide and it slid off the seam's meridian plane (a coaxial
+        // cap keeps it there by itself, and keeps its solution bit for bit)
+        if let (2, Some(pl)) = (surfs.len(), meridian[v.idx()].first()) {
+            let q = newp[v.idx()];
+            if pl.closest_point(q).2.dist(q) > 1e-12 * (1.0 + q.len()) {
+                let mut with = surfs.clone();
+                with.push(pl);
+                if let Some(p) = solve_point(seed, &with) {
+                    newp[v.idx()] = p;
+                }
+            }
+        }
         if std::env::var_os("CK_OFFSET_DEBUG").is_some() {
             let q = newp[v.idx()];
             let res = surfs.iter().map(|m| m.closest_point(q).2.dist(q)).fold(0.0f64, f64::max);
@@ -1638,14 +1710,17 @@ pub fn move_faces_body(src: &Body, mv: &dyn Fn(FaceId) -> FaceMove) -> Result<Bo
                 // straight only when the free-form offset is a ruled continuation of it; in general
                 // the offsets meet in a curve. Where the straight line misses the offset surfaces or
                 // the far vertex, sample the true meeting curve instead.
+                // The same holds for two curved analytic faces (two drafted cones meeting in a line): their
+                // offsets cross in a curve that is off the line by a hair growing with the square of the wall.
                 let freeform_nb = fs.len() == 2 && fs.iter().any(|&f| is_freeform(&src.face(f).surface));
-                if freeform_nb {
+                let curved_nb = fs.len() == 2 && fs.iter().any(|&f| !matches!(src.face(f).surface, Surface::Plane { .. }));
+                if curved_nb {
                     let end = line.eval(ed.t0 + len);
                     let miss = (0..=8)
                         .map(|k| line.eval(ed.t0 + len * k as f64 / 8.0))
                         .map(|q| fs.iter().map(|&f| moved[f.idx()].as_ref().map_or(0.0, |m| m.closest_point(q).2.dist(q))).fold(0.0f64, f64::max))
                         .fold(end.dist(p1), f64::max);
-                    if miss > 1e-5 {
+                    if miss > if freeform_nb { 1e-5 } else { 1e-7 } {
                         let dn = |f: FaceId, _p: Vec3| {
                             let d = dist(f);
                             if src.face(f).sense { d } else { -d }
@@ -1657,7 +1732,7 @@ pub fn move_faces_body(src: &Body, mv: &dyn Fn(FaceId) -> FaceMove) -> Result<Bo
                                 vfaces[v.idx()].iter().map(|&f| moved[f.idx()].as_ref().map_or(0.0, |m| m.closest_point(q).2.dist(q))).fold(0.0f64, f64::max)
                             })
                             .fold(0.0f64, f64::max);
-                        return_edge = Some(offset_spline_edge(src, e, &moved, &dn, p0, p1, gap)?);
+                        return_edge = Some(offset_spline_edge(src, e, &moved, &dn, p0, p1, gap).map_err(|e| edge_error(src, &fs, e))?);
                     }
                 }
                 match return_edge.take() {
@@ -1718,9 +1793,9 @@ pub fn move_faces_body(src: &Body, mv: &dyn Fn(FaceId) -> FaceMove) -> Result<Bo
                         vfaces[v.idx()].iter().map(|&f| moved[f.idx()].as_ref().map_or(0.0, |m| m.closest_point(q).2.dist(q))).fold(0.0f64, f64::max)
                     })
                     .fold(0.0f64, f64::max);
-                match exact_cap_edge(&fs, &moved, p0, p1) {
+                match exact_cap_edge(&fs, &moved, p0, p1).or_else(|| seam_profile_edge(&fs, &moved, p0, p1)) {
                     Some(r) => r,
-                    None => offset_spline_edge(src, e, &moved, &dn, p0, p1, gap)?,
+                    None => offset_spline_edge(src, e, &moved, &dn, p0, p1, gap).map_err(|e| edge_error(src, &fs, e))?,
                 }
             }
             _ => return Err(OffsetError::new("offsetUnsupported", "edge curve type")),

@@ -63,6 +63,9 @@ ck-topo / ck-ops. Depends on ck-core, ck-geom, ck-topo, ck-ops, ck-json.
 - `extrude` end conditions `upToFace` / `offsetFromFace` / `upToPoint` (`endRef`, `offset`): `extrude.rs` `plan_end` +
   `Brep::extrude_to_reference` (slanted ends trimmed by a boolean); unreachable ends fall back to blind with an
   `endConditionFallback` warning (docs/spec-agent-interface.md, "End references").
+- `extrude` `end:"toObject"` (`endRef`: face, plane, point, vertex, body; `endOffset`) and `start:"fromObject"`
+  (`startRef`, `startOffset`): `extrude_object.rs` + `Brep::extrude_to_object` / `trim_to_body`. Strict: a lost or
+  unreachable reference is a refusal with a `hint`, never a fallback (docs/spec-agent-interface.md, "To object / From object").
 - `refs::face_frame`: face sketch planes / plane bases (rule in refs.rs).
 - `features::body_wire`: wire `box/faces/edges` (edge `pts` = ck-topo
   `sample_edge` stand-in; box = exact bounds ∪ f32-rounded, GUESS for

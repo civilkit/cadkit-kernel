@@ -280,56 +280,74 @@ pub fn exec_extrude_ex(state: &RegenState, f: &Feature, body: Option<&Body>, ext
     let sk = sketch_of(state, f)?;
     let depth = state.num(f, "depth", 0.0)?;
     let draft = state.num(f, "draft", 0.0)?;
-    let (profile, thin_on) = super::thin::feature_profile(state, sk, f)?;
+    let (mut profile, thin_on) = super::thin::feature_profile(state, sk, f)?;
     let depth = depth.max(MIN_DEPTH);
     let combine = Combine::of(*op);
-    let mut o = match end {
-        End::Blind if *flip => ExtrudeOpts::flipped(depth),
-        End::Blind => ExtrudeOpts::blind(depth),
-        End::Mid => ExtrudeOpts::mid(depth),
-        // upToNext with a body: a `through` tool, trimmed by the caller
-        // (`Brep::up_to_next`); without one: nothingToCut (oracle).
-        End::UpToNext if !has_body => return Err(FeatureError::new(codes::NOTHING_TO_CUT)),
-        End::Through | End::ThroughBoth | End::UpToNext => {
-            let l = body.map_or(THROUGH_EMPTY, |b| through_len(sk.frame.o, b));
-            match end {
-                End::ThroughBoth => ExtrudeOpts::mid(2.0 * l),
-                _ if *flip => ExtrudeOpts::flipped(l),
-                _ => ExtrudeOpts::blind(l),
-            }
+    let object = super::extrude_object::wanted(f, *end)?;
+    let mut o = if object {
+        // To object / From object: the profile is carried to where the sweep starts; the trims are the caller's
+        let p = super::extrude_object::plan(state, f, &sk.frame, &profile, *flip, *end, depth, body, extras)?;
+        let d = if *flip { -sk.frame.z } else { sk.frame.z };
+        profile.frame.o = profile.frame.o + d * p.s0;
+        extras.clip = p.end_clip;
+        extras.start_clip = p.start_clip;
+        extras.to_body = p.to_body;
+        let l = p.len.max(MIN_DEPTH);
+        if *flip {
+            ExtrudeOpts::flipped(l)
+        } else {
+            ExtrudeOpts::blind(l)
         }
-        End::UpToFace | End::OffsetFromFace | End::UpToPoint => {
-            // The reference is resolved against the body (persistent face names); with no body every face
-            // reference is missing (oracle). A reference that cannot be reached falls back to a blind
-            // extrude of `depth` plus an `endConditionFallback` warning (unless `strictEnd`).
-            let planned = match extras.force_fallback.take() {
-                Some(e) => Err(e),
-                None => plan_end(state, f, &sk.frame, &profile, *flip, *end, body, extras),
-            };
-            match planned {
-                Ok(p) => {
-                    extras.clip = p.clip;
-                    let l = p.depth.max(MIN_DEPTH);
-                    if *flip {
-                        ExtrudeOpts::flipped(l)
-                    } else {
-                        ExtrudeOpts::blind(l)
-                    }
+    } else {
+        match end {
+            End::Blind if *flip => ExtrudeOpts::flipped(depth),
+            End::Blind => ExtrudeOpts::blind(depth),
+            End::Mid => ExtrudeOpts::mid(depth),
+            // upToNext with a body: a `through` tool, trimmed by the caller
+            // (`Brep::up_to_next`); without one: nothingToCut (oracle).
+            End::UpToNext if !has_body => return Err(FeatureError::new(codes::NOTHING_TO_CUT)),
+            End::Through | End::ThroughBoth | End::UpToNext => {
+                let l = body.map_or(THROUGH_EMPTY, |b| through_len(sk.frame.o, b));
+                match end {
+                    End::ThroughBoth => ExtrudeOpts::mid(2.0 * l),
+                    _ if *flip => ExtrudeOpts::flipped(l),
+                    _ => ExtrudeOpts::blind(l),
                 }
-                Err(e) if !strict_end(f) && is_unreachable(&e.code) => {
-                    extras.warnings.push(fallback_warning(*end, &e, depth));
-                    if *flip {
-                        ExtrudeOpts::flipped(depth)
-                    } else {
-                        ExtrudeOpts::blind(depth)
-                    }
-                }
-                Err(e) => return Err(e),
             }
-        }
-        End::Unknown => {
-            let e = f.raw.get("end").cloned().unwrap_or(Json::Null);
-            return Err(FeatureError::new(UNKNOWN_END).with("end", e));
+            End::UpToFace | End::OffsetFromFace | End::UpToPoint => {
+                // The reference is resolved against the body (persistent face names); with no body every face
+                // reference is missing (oracle). A reference that cannot be reached falls back to a blind
+                // extrude of `depth` plus an `endConditionFallback` warning (unless `strictEnd`).
+                let planned = match extras.force_fallback.take() {
+                    Some(e) => Err(e),
+                    None => plan_end(state, f, &sk.frame, &profile, *flip, *end, body, extras),
+                };
+                match planned {
+                    Ok(p) => {
+                        extras.clip = p.clip;
+                        let l = p.depth.max(MIN_DEPTH);
+                        if *flip {
+                            ExtrudeOpts::flipped(l)
+                        } else {
+                            ExtrudeOpts::blind(l)
+                        }
+                    }
+                    Err(e) if !strict_end(f) && is_unreachable(&e.code) => {
+                        extras.warnings.push(fallback_warning(*end, &e, depth));
+                        if *flip {
+                            ExtrudeOpts::flipped(depth)
+                        } else {
+                            ExtrudeOpts::blind(depth)
+                        }
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            End::ToObject => unreachable!("toObject takes the object path"),
+            End::Unknown => {
+                let e = f.raw.get("end").cloned().unwrap_or(Json::Null);
+                return Err(FeatureError::new(UNKNOWN_END).with("end", e));
+            }
         }
     };
     if combine == Combine::Cut && !has_body {
@@ -348,6 +366,11 @@ pub fn exec_extrude_ex(state: &RegenState, f: &Feature, body: Option<&Body>, ext
     if twist != 0.0 {
         if o.draft != 0.0 || matches!(end, End::UpToNext) {
             return Err(FeatureError::new("draftUnsupported"));
+        }
+        if extras.clip.is_some() || extras.start_clip.is_some() || extras.to_body.is_some() {
+            return Err(FeatureError::new(codes::INVALID_VALUE)
+                .with("detail", Json::Str("a twist cannot end on a slanted plane or a body".into()))
+                .with("hint", Json::Str("drop the twist, or end on a plane parallel to the sketch".into())));
         }
         let c = f.raw.get("twistCentre").and_then(|c| c.as_arr()).filter(|a| a.len() == 2);
         let centre = c.map_or(Vec2::ZERO, |a| Vec2::new(a[0].as_f64().unwrap_or(0.0), a[1].as_f64().unwrap_or(0.0)));
@@ -372,7 +395,7 @@ pub fn exec_extrude_ex(state: &RegenState, f: &Feature, body: Option<&Body>, ext
         }
         None => build(&profile)?,
     };
-    let recipe = if extras.clip.is_some() { None } else { Some(Recipe::Extrude { profile, opts: o }) };
+    let recipe = if extras.clip.is_some() || extras.start_clip.is_some() || extras.to_body.is_some() { None } else { Some(Recipe::Extrude { profile, opts: o }) };
     Ok(Tool { body, combine, recipe })
 }
 
@@ -426,6 +449,10 @@ pub struct EndExtras {
     pub warnings: Vec<FeatureError>,
     pub clip: Option<EndClip>,
     pub force_fallback: Option<FeatureError>,
+    /// From object on a slanted plane: the trim before the start (the cap most towards `w` takes the new face).
+    pub start_clip: Option<EndClip>,
+    /// To object on a body: the long tool is cut back to where it meets the body.
+    pub to_body: Option<super::extrude_object::ToBody>,
 }
 
 /// A slanted end plane: the tool is cut by the half-space beyond `p0` (towards `w`).
@@ -487,7 +514,7 @@ pub fn resolve_face(body: &Body, id: &str, at: Option<Vec3>) -> Option<(ck_topo:
 }
 
 /// World points along the profile boundaries (end points and interior samples).
-fn profile_samples(p: &Profile) -> Vec<Vec3> {
+pub(super) fn profile_samples(p: &Profile) -> Vec<Vec3> {
     let mut out = vec![];
     for r in &p.regions {
         for l in std::iter::once(&r.outer).chain(r.holes.iter()) {

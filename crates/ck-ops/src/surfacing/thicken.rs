@@ -397,6 +397,9 @@ pub fn thicken(sheet: &Body, feature: &str, thickness: f64, side: Side, tol: f64
     if faces.iter().any(|&f| !matches!(sheet.face(f).surface, Surface::Plane { .. } | Surface::Cylinder { .. } | Surface::Cone { .. } | Surface::Sphere { .. } | Surface::Torus { .. })) {
         return freeform::thicken_freeform(sheet, feature, thickness, side, tol);
     }
+    if let Some(r) = revolved::thicken_revolved(sheet, feature, thickness, side) {
+        return r;
+    }
     let normals: Vec<Vec3> = faces.iter().map(|&f| face_normal(sheet, f)).collect();
     let rims = sheet_rims(sheet, &faces);
     if rims.is_empty() {
@@ -1377,6 +1380,7 @@ fn connector(out: &mut Body, l: LoopId, a: Vec3, b: Vec3, rev: bool) {
 }
 
 mod freeform;
+mod revolved;
 
 #[cfg(test)]
 mod tests {

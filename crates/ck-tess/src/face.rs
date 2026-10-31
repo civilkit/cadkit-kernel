@@ -1037,7 +1037,16 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
             let area2 = n.len();
             let cuv3 = (a.0 + bb.0 + c.0) * (1.0 / 3.0);
             let flat3 = !(area2 > 1e-24 * (1.0 + a.1.len2()));
-            if flat3 && !is_spline {
+            // A full torus is the whole window: its four sides are two circles, each met twice. On a slender torus
+            // (R/r >= 10) the first triangulation joins points of the bottom side to points of the top side a period
+            // up, the same points in 3D: flat, but standing for a whole band of the tube. Accepting them left up to
+            // 78 percent of the face without mesh (solidcore #1491).
+            let spans_window = flat3
+                && matches!(surf, Surface::Torus { .. })
+                && [(a.0, bb.0), (bb.0, c.0), (c.0, a.0)].iter().any(|(x, y)| {
+                    pu.is_some_and(|p| (x.x - y.x).abs() > 0.5 * p) || pv.is_some_and(|p| (x.y - y.y).abs() > 0.5 * p)
+                });
+            if flat3 && !is_spline && !spans_window {
                 accepted.insert(key);
                 continue;
             }
