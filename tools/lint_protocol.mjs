@@ -57,7 +57,7 @@ if (isMainThread) {
     sketchOffset: { sketch: { type: 'sketch', points: [], entities: [] }, ids: [], distance: 1 }, refCurve: { ref: { kind: 'edge' } },
     measure: { a: { kind: 'face', id: 'F2.C1' }, b: { kind: 'face', id: 'F2.C0' } }, massProps: {}, interference: {}, step: { name: 't' },
     validate: {}, inspect: { ref: { kind: 'sketch', id: 'F1' } }, continuity: { refs: [] }, curvatureAt: { ref: { kind: 'face', id: 'F2.C1' }, u: 0.5, v: 0.5 },
-    curvatureMap: {}, comb: { refs: [{ kind: 'face', id: 'F2.C1' }] }, drawing: {},
+    curvatureMap: {}, exportMesh: {}, comb: { refs: [{ kind: 'face', id: 'F2.C1' }] }, drawing: {},
     check: { expect: [{ kind: 'volume', min: 0 }] }, resolve: { descriptions: [{ kind: 'face', surface: 'plane' }] }, describe: { names: ['F2.C1'] },
     refDiff: { base: parts.box, part: parts.box },
     section: { plane: { origin: [0, 0, 0], normal: [0, 0, 1] } }, sections: { n: 3 }, bodyBoolean: { op: 'cut', target: 'F2.C1', tools: ['F2.C0'] }, probe: { points: [[0, 0, 0]], rays: [{ origin: [0, 0, 0], dir: [0, 0, 1] }] },
@@ -65,12 +65,13 @@ if (isMainThread) {
     closestPoint: { points: [[0, 0, 0]] }, angles: { edges: 'all' }, clearance: { min: 1 }, symmetry: { opts: { samples: 200 } }, extrema: { dir: [1, 0, 0] },
     loadFont: { name: 'lint', data: readFileSync(path.join(here, '../crates/ck-text/fonts/gauge.ttf')).toString('base64') }, unloadFont: { name: 'lint' }, listFonts: {}, subsetFont: { name: 'gauge', text: 'RPM x100' },
     textMetrics: { string: 'RPM x100', font: 'gauge', height: 5 }, textOutline: { string: 'RPM x100', font: 'gauge', height: 5, at: [1, 2], anchor: ['center', 'middle'] },
+    equationCurve: { x: '20*cos(t)', y: '20*sin(t)', t: [0, 360], tol: 0.01 },
     sketchAnalyze: { featureId: 'F1' },
     sketchFreedoms: { featureId: 'F1' },
     dfmMinWall: { threshold: 1 }, dfmMinInternalRadius: { toolRadius: 1 }, dfmPocketRatio: { maxRatio: 4 },
     dfmOverhang: { direction: [0, 1, 0], angle: 45 }, dfmConstantSection: { axis: [0, 0, 1] },
   };
-  const MUST_OK = new Set(['ping', 'regen', 'massProps', 'validate', 'interference', 'step', 'check', 'resolve', 'describe', 'refDiff', 'section', 'sections', 'probe', 'distance', 'maxDistance', 'thickness', 'closestPoint', 'angles', 'clearance', 'symmetry', 'extrema', 'textMetrics', 'textOutline', 'loadFont', 'unloadFont', 'listFonts', 'subsetFont']); // minimal body must succeed once a body exists
+  const MUST_OK = new Set(['ping', 'regen', 'massProps', 'validate', 'interference', 'step', 'check', 'resolve', 'describe', 'refDiff', 'section', 'sections', 'probe', 'distance', 'maxDistance', 'thickness', 'closestPoint', 'angles', 'clearance', 'symmetry', 'extrema', 'textMetrics', 'textOutline', 'equationCurve', 'loadFont', 'unloadFont', 'listFonts', 'subsetFont']); // minimal body must succeed once a body exists
   const FIELDS = ['part', 'tag', 'opts', 'ref', 'refs', 'ids', 'sketch', 'distance', 'name', 'upTo', 'densities', 'bodies', 'dir', 'tol', 'a', 'b', 'u', 'at', 'expect', 'descriptions', 'description', 'names', 'base', 'plane', 'axis', 'n', 'positions', 'points', 'rays', 'min', 'on', 'edges', 'faces', 'pull', 'tagB', 'planes', 'draft', 'point', 'k', 'dir', 'of', 'string', 'font', 'height', 'spacing', 'angle', 'arc', 'anchor', 'mirror', 'data', 'text', 'replace', 'fontHash', 'body', 'op'];
   const VALUES = [null, 'x', 'NaN', '-1e999', 1e308, -1e308, -1, 0, [], {}, [[]], [null], true, { kind: 'face', id: 'nope' }, { kind: 5 }, [1, 2, 3], { body: 'nope' }, 'newBody'];
 

@@ -129,6 +129,32 @@ pub fn body_tol(body: &Body) -> Tol {
     t
 }
 
+/// Mesh quality presets of an export: `(name, chord factor, angle)`. The chord factor scales the body's regen chord, so a preset
+/// follows the size of the part; `normal` is exactly what the viewer shows.
+pub const EXPORT_QUALITIES: [(&str, f64, f64); 3] = [("coarse", 10.0, 0.6), ("normal", 1.0, curvature::ANGLE), ("fine", 0.25, 0.15)];
+
+/// The tessellation tolerance of an export mesh: a `quality` preset (`coarse`, `normal`, `fine`; default `normal`), and/or an absolute
+/// chord height `chord_mm` that replaces the preset's chord (the largest distance of a facet from the true surface, in model units).
+/// A chord below one millionth of the body's bounding-box diagonal is raised to that (a mesh finer than that is only noise and size);
+/// the second value says whether it was.
+pub fn export_tol(body: &Body, quality: Option<&str>, chord_mm: Option<f64>) -> Result<(Tol, bool), String> {
+    let base = body_tol(body);
+    let (factor, angle) = match quality {
+        None => (1.0, base.angle),
+        Some(q) => match EXPORT_QUALITIES.iter().find(|(n, _, _)| *n == q) {
+            Some(&(_, f, a)) => (f, a),
+            None => return Err(format!("quality must be one of {}, not {q:?}", EXPORT_QUALITIES.map(|(n, _, _)| n).join(", "))),
+        },
+    };
+    let Some(c) = chord_mm else { return Ok((Tol { chord: base.chord * factor, angle }, false)) };
+    if !(c.is_finite() && c > 0.0) {
+        return Err(format!("chord_mm must be a positive number of millimetres, not {c}"));
+    }
+    let (lo, hi) = body.bbox();
+    let floor = if lo.x <= hi.x && lo.y <= hi.y && lo.z <= hi.z { (hi - lo).len() * 1e-6 } else { 0.0 };
+    Ok((Tol { chord: c.max(floor), angle }, c < floor))
+}
+
 /// Samples every live edge: curve params, per-coedge uv refinement, per-face
 /// normal refinement, then the periodic-face cut params (see curvature.rs).
 pub fn sample_edges(body: &Body, tol: &Tol) -> EdgeSampling {

@@ -22,7 +22,7 @@
 //! low/high caps back).
 
 use super::extrude::{Combine, Recipe, Tool};
-use super::{thread, Brep, FeatureKind};
+use super::{pattern_place, thread, Brep, FeatureKind};
 use crate::regen::{codes, FeatureError, RegenState};
 use crate::{Feature, GeomRef, Ref};
 use ck_core::linalg::{Frame, Plane, Vec3};
@@ -326,23 +326,60 @@ pub fn exec_mirror(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
     Ok(())
 }
 
-/// Seeds and instance transforms of an `lpattern` / `cpattern` (`xs[k]` is instance `k + 1`).
-fn pattern_xforms<'f>(state: &RegenState, f: &'f Feature) -> Result<(&'f Vec<Ref>, Vec<Xform>), FeatureError> {
-    Ok(match &f.kind {
-        FeatureKind::LPattern { seeds, dir, reverse, .. } => {
-            let spacing = state.num(f, "spacing", 0.0)?;
-            let count = state.num(f, "count", 0.0)?;
-            let (_, d) = dir.as_ref().and_then(axis_of).ok_or_else(|| FeatureError::new(codes::MISSING_REFERENCE))?;
-            (seeds, ck_ops::boolean::apply::linear_instances(d, spacing, count_of(count)?, *reverse))
+/// Seeds of a pattern feature (`curvepattern` is not a typed kind: its seeds come from the raw DOM).
+fn seeds_of(f: &Feature) -> Vec<Ref> {
+    match &f.kind {
+        FeatureKind::LPattern { seeds, .. } | FeatureKind::CPattern { seeds, .. } => seeds.clone(),
+        _ => f.raw.get("seeds").and_then(|v| v.as_arr()).map(|a| a.iter().filter_map(|x| x.as_str().map(|s| Ref(s.to_string()))).collect()).unwrap_or_default(),
+    }
+}
+
+/// Middle of what is patterned: the centre of the box of the seeds' tools (None when no seed has a tool).
+fn seeds_mid(br: &Brep, seeds: &[Ref]) -> Option<Vec3> {
+    let (mut lo, mut hi) = (Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY), Vec3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY));
+    let mut any = false;
+    for s in seeds {
+        if let Some((_, t)) = br.tools.iter().rev().find(|(id, _)| id == s.as_str()) {
+            let (a, b) = super::body_box(&t.body);
+            lo = Vec3::new(lo.x.min(a.x), lo.y.min(a.y), lo.z.min(a.z));
+            hi = Vec3::new(hi.x.max(b.x), hi.y.max(b.y), hi.z.max(b.z));
+            any = true;
         }
-        FeatureKind::CPattern { seeds, axis, equal, reverse, .. } => {
+    }
+    any.then(|| (lo + hi) * 0.5)
+}
+
+/// Seeds and instance transforms of an `lpattern` / `cpattern` / `curvepattern` (`xs[k]` is instance `k + 1`).
+fn pattern_xforms(br: &mut Brep, state: &RegenState, f: &Feature) -> Result<(Vec<Ref>, Vec<Xform>), FeatureError> {
+    let seeds = seeds_of(f);
+    let xs = match &f.kind {
+        FeatureKind::LPattern { .. } => {
+            let to = |k: &str| f.raw.get(k).and_then(|v| v.as_str()) == Some("toObject");
+            let mid = if to("distanceType") || to("distanceType2") { seeds_mid(br, &seeds) } else { None };
+            let a = pattern_place::row(br, state, f, "", mid, count_of)?.ok_or_else(|| FeatureError::new(codes::MISSING_REFERENCE))?;
+            let b = pattern_place::row(br, state, f, "2", mid, count_of)?;
+            if let Some(b) = b.as_ref().filter(|b| b.count > 1 && a.count > 1) {
+                if a.d.cross(b.d).len() < 1e-9 {
+                    return Err(FeatureError::new(codes::INVALID_VALUE)
+                        .with("field", ck_json::Json::Str("dir2".into()))
+                        .with("detail", ck_json::Json::Str("the second direction runs along the first: pick a direction across it".into())));
+                }
+            }
+            if a.count as f64 * b.as_ref().map_or(1.0, |b| b.count.max(1) as f64) > MAX_INSTANCES {
+                return Err(FeatureError::new(codes::INVALID_VALUE));
+            }
+            pattern_place::grid(&a, b.as_ref())
+        }
+        FeatureKind::CPattern { axis, equal, reverse, .. } => {
             let count = state.num(f, "count", 0.0)?;
             let angle = state.num(f, "angle", 360.0)?;
-            let (o, d) = axis.as_ref().and_then(axis_of).ok_or_else(|| FeatureError::new(codes::MISSING_REFERENCE))?;
-            (seeds, ck_ops::boolean::apply::circular_instances(o, d, angle, count_of(count)?, *equal, *reverse))
+            let (o, d) = axis.as_ref().and_then(|a| crate::planes::resolve_axis(state, br, a)).ok_or_else(|| FeatureError::new(codes::MISSING_REFERENCE))?;
+            ck_ops::boolean::apply::circular_instances(o, d, angle, count_of(count)?, *equal, *reverse)
         }
+        _ if f.type_name == "curvepattern" => pattern_place::path_instances(br, state, f, seeds_mid(br, &seeds).unwrap_or(Vec3::ZERO), count_of)?,
         _ => unreachable!(),
-    })
+    };
+    Ok((seeds, xs))
 }
 
 /// A thread feature that comes AFTER a pattern / mirror of its host (the thread was added to a
@@ -357,14 +394,18 @@ pub fn carry_into_earlier(br: &mut Brep, state: &mut RegenState, tf: &Feature) {
             continue;
         }
         let (seeds, xs, mirror) = match &p.kind {
-            FeatureKind::LPattern { .. } | FeatureKind::CPattern { .. } => match pattern_xforms(state, p) {
+            FeatureKind::LPattern { .. } | FeatureKind::CPattern { .. } => match pattern_xforms(br, state, p) {
                 Ok((s, xs)) => (s, xs, false),
                 Err(_) => continue,
             },
             FeatureKind::Mirror { seeds, plane, body: false } => {
                 let Some(fr) = plane.as_ref().and_then(|g| plane_frame(br, state, g)) else { continue };
-                (seeds, vec![Xform::mirror(&Plane::new(fr.o, fr.z))], true)
+                (seeds.clone(), vec![Xform::mirror(&Plane::new(fr.o, fr.z))], true)
             }
+            _ if p.type_name == "curvepattern" => match pattern_xforms(br, state, p) {
+                Ok((s, xs)) => (s, xs, false),
+                Err(_) => continue,
+            },
             _ => continue,
         };
         let srcs: Vec<ck_json::Json> = state
@@ -386,17 +427,21 @@ pub fn carry_into_earlier(br: &mut Brep, state: &mut RegenState, tf: &Feature) {
     }
 }
 
-/// `lpattern` / `cpattern`.
+/// `lpattern` / `cpattern` / `curvepattern`.
 pub fn exec_pattern(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
-    if let FeatureKind::LPattern { seeds, .. } | FeatureKind::CPattern { seeds, .. } = &f.kind {
-        if seeds.is_empty() {
-            return Err(FeatureError::new(NO_SEEDS));
-        }
+    if f.type_name == "curvepattern" {
+        // the path is checked first (an empty curvepattern is `missingPath`, as the oracle answers)
+        super::sweep::path_segs(br, state, pattern_place::path_ref(f).as_ref())?;
     }
-    let (seeds, xs) = pattern_xforms(state, f)?;
+    if seeds_of(f).is_empty() {
+        return Err(FeatureError::new(NO_SEEDS));
+    }
+    let (seeds, xs) = pattern_xforms(br, state, f)?;
     state.result.warnings.retain(|w| w.feature != f.id);
-    let (geo, srcs) = thread_sources(state, f, seeds, carry_threads(f));
+    let (geo, srcs) = thread_sources(state, f, &seeds, carry_threads(f));
     let tools: Vec<(Body, Combine)> = if xs.is_empty() || geo.is_empty() { vec![] } else { seed_tools(br, &geo)?.into_iter().map(|(_, t)| (t.body.clone(), t.combine)).collect() };
+    // the body before the copies, for the check of copies that change nothing (only cloned when there are copies)
+    let before = if tools.is_empty() { None } else { br.body.clone() };
     // Pinned: per seed ONE boolean with all its instances (`boolean Subtract
     // (7 × 6 faces)` for 2 copies of a 3-face hole), seeds in order.
     // Instances are appended while their box is clear of the tool so far,
@@ -404,8 +449,10 @@ pub fn exec_pattern(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Resul
     // before `boolean Subtract (168 × 70 faces)`).
     let mut all = Body::new();
     let mut last = Combine::Add;
+    let mut overlap = false;
     for (seed, c) in &tools {
         let mut tool: Option<Body> = None;
+        let spans0 = br.spans.len();
         for (k, x) in xs.iter().enumerate() {
             if ck_core::budget::expired() {
                 return Err(FeatureError::new(crate::regen::codes::FEATURE_BUDGET));
@@ -417,22 +464,155 @@ pub fn exec_pattern(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Resul
             });
         }
         let tool = tool.unwrap_or_default();
+        let mut united = br.spans.len() > spans0;
         br.combine(&tool, *c, false)?;
         // the pattern's own tool is the seed AND its copies, so a pattern of this pattern copies the whole row
         // (a union made only for this record is not a step of the feature: its span is dropped)
         let spans = br.spans.len();
-        let whole = accumulate(br, seed.clone(), tool);
+        let whole = accumulate(br, seed.clone(), tool)?;
+        united |= br.spans.len() > spans;
         br.spans.truncate(spans);
-        all.append(&whole?);
+        // copies that overlap each other (or the seed): the united volume falls short of one seed's volume per copy
+        if united && !overlap {
+            let (v1, vw) = (ck_topo::mass::mass_props(seed).volume.abs(), ck_topo::mass::mass_props(&whole).volume.abs());
+            overlap = vw < v1 * (xs.len() + 1) as f64 * (1.0 - 1e-7) - 1e-9;
+        }
+        all.append(&whole);
         last = *c;
     }
     // the pattern's own tool (seeds of later patterns): the seeds and every instance
     if !tools.is_empty() {
         br.tools.push((f.id.clone(), std::rc::Rc::new(Tool { body: all, combine: last, recipe: None })));
+        copy_warnings(br, state, f, &tools, &xs, before.as_ref(), overlap);
     }
     // threads of the seeds follow onto every instance (cosmetic entries, modeled grooves again)
     carry_all(br, state, f, &srcs, &xs, true, false);
     Ok(())
+}
+
+/// Copies that changed nothing (a cut that misses, a boss inside the material).
+pub const COPIES_NO_EFFECT: &str = "patternCopiesNoEffect";
+/// Boss copies that do not touch the body: each is a body of its own.
+pub const COPIES_APART: &str = "patternCopiesApart";
+/// Copies that overlap each other or the seed.
+pub const COPIES_OVERLAP: &str = "patternCopiesOverlap";
+
+/// Copy numbers of feature `fid` a face name (suffix chain `@F9.1@F12.3`, or an absorbed face's whole id) carries.
+fn copy_numbers(name: &str, fid: &str, out: &mut Vec<usize>) {
+    for tok in name.split('@').skip(1) {
+        if let Some(k) = tok.strip_prefix(fid).and_then(|r| r.strip_prefix('.')).and_then(|r| r.parse::<usize>().ok()) {
+            out.push(k);
+        }
+    }
+}
+
+fn json_list(v: &[usize]) -> ck_json::Json {
+    ck_json::Json::Arr(v.iter().map(|&k| ck_json::Json::Num(k as f64)).collect())
+}
+
+/// The warnings of a built pattern, found cheaply from the result's face names: a copy that left no face (and no
+/// absorbed face name) changed nothing, unless it is a cut whose box meets the body and that cuts material away
+/// whole (then an exact intersection decides); a lump made only of copies is copies apart from the body.
+fn copy_warnings(br: &Brep, state: &mut RegenState, f: &Feature, tools: &[(Body, Combine)], xs: &[Xform], before: Option<&Body>, overlap: bool) {
+    let Some(body) = br.body.as_ref() else { return };
+    let n = xs.len();
+    let mut present = vec![false; n + 1];
+    let mut ks = vec![];
+    for fid in body.face_ids() {
+        let face = body.face(fid);
+        ks.clear();
+        copy_numbers(&face.name.suffix, &f.id, &mut ks);
+        for a in &face.absorbed {
+            copy_numbers(a, &f.id, &mut ks);
+        }
+        for &k in &ks {
+            if k <= n {
+                present[k] = true;
+            }
+        }
+    }
+    let warn = |state: &mut RegenState, e: FeatureError| state.result.warnings.push(crate::regen::RegenError { feature: f.id.clone(), error: e });
+    let mut missed: Vec<usize> = vec![];
+    for k in 1..=n {
+        if present[k] {
+            continue;
+        }
+        // a faceless cut copy whose box meets the body may still have taken material (it swallowed a whole lump)
+        let took = before.is_some_and(|b| {
+            let (blo, bhi) = super::body_box(b);
+            tools.iter().filter(|(_, c)| *c == Combine::Cut).any(|(seed, _)| {
+                let inst = ck_ops::boolean::apply::instance(seed, &xs[k - 1], &f.id, k);
+                let (lo, hi) = super::body_box(&inst);
+                let t = super::TOL;
+                let apart = lo.x > bhi.x + t || blo.x > hi.x + t || lo.y > bhi.y + t || blo.y > hi.y + t || lo.z > bhi.z + t || blo.z > hi.z + t;
+                !apart
+                    && ck_ops::boolean::boolean(b, &inst, ck_ops::boolean::Op::Intersect, super::TOL)
+                        .map_or(false, |o| ck_topo::mass::mass_props(&o.body).volume.abs() > 1e-9)
+            })
+        });
+        if !took {
+            missed.push(k);
+        }
+    }
+    if !missed.is_empty() {
+        warn(
+            state,
+            FeatureError::new(COPIES_NO_EFFECT)
+                .with("copies", json_list(&missed))
+                .with("of", ck_json::Json::Num(n as f64))
+                .with("hint", ck_json::Json::Str(format!("{} of the {n} copies change nothing: they miss the body (or lie inside its material). Check the count, spacing, direction and where the copies land", missed.len()))),
+        );
+    }
+    // boss copies standing alone
+    if tools.iter().any(|(_, c)| *c == Combine::Add) {
+        let mut apart: Vec<usize> = vec![];
+        for l in body.lump_ids() {
+            let mut lump: Vec<usize> = vec![];
+            let mut only = true;
+            for fid in ck_topo::mass::lump_faces(body, l) {
+                ks.clear();
+                copy_numbers(&body.face(fid).name.suffix, &f.id, &mut ks);
+                if ks.is_empty() {
+                    only = false;
+                    break;
+                }
+                lump.extend(ks.iter().copied());
+            }
+            if only {
+                apart.extend(lump);
+            }
+        }
+        apart.sort_unstable();
+        apart.dedup();
+        if !apart.is_empty() {
+            warn(
+                state,
+                FeatureError::new(COPIES_APART)
+                    .with("copies", json_list(&apart))
+                    .with("hint", ck_json::Json::Str(format!("{} copies do not touch the body, so each stands as a body of its own. Check the count, spacing and direction", apart.len()))),
+            );
+        }
+    }
+    if overlap {
+        let mut e = FeatureError::new(COPIES_OVERLAP).with("hint", ck_json::Json::Str("copies overlap each other: the spacing is smaller than what is patterned. Raise the spacing or lower the count".into()));
+        // a one-direction linear pattern: the width of what is patterned along the direction is the least spacing that keeps copies apart
+        if let (FeatureKind::LPattern { dir: Some(d), .. }, true) = (&f.kind, f.raw.get("dir2").map_or(true, |v| matches!(v, ck_json::Json::Null))) {
+            if let Some((_, d)) = axis_of(d) {
+                let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+                let d = Vec3::new(d.x.abs(), d.y.abs(), d.z.abs());
+                for (seed, _) in tools {
+                    let (a, b) = super::body_box(seed);
+                    lo = lo.min(a.dot(d));
+                    hi = hi.max(b.dot(d));
+                }
+                let w = ((hi - lo) * 1e6).round() / 1e6;
+                e = e.with("minSpacing", ck_json::Json::Num(w));
+                e.params.retain(|p| p.0 != "hint");
+                e = e.with("hint", ck_json::Json::Str(format!("copies overlap each other: what is patterned is {w} mm wide along the direction, so a spacing of {w} mm or more keeps them apart")));
+            }
+        }
+        warn(state, e);
+    }
 }
 
 /// Pinned: count 0 / 1 / negative -> no copies and no error (no boolean

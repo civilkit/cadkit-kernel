@@ -36,6 +36,7 @@ impl FeatureExec for Exec {
 
 /// Regen `features`; the errors, and the body checked valid when there are none.
 fn run(features: &str) -> Vec<regen::RegenError> {
+    ck_model::features::max_size::set_blend_search(true);
     let src = format!(r#"{{"format":"ck-part","version":1,"features":[{features}]}}"#);
     let part = Part::from_json(&ck_json::parse(&src).unwrap()).unwrap();
     let mut ex = Exec { brep: Brep::new(), labels: Noop };
@@ -81,6 +82,17 @@ const BOX: &str = r#"{"type":"sketch","id":"F1","plane":{"kind":"std","id":"top"
 
 fn with_box(f: &str) -> String {
     format!("{BOX},{f}")
+}
+
+/// 40 x 30 x 2 plate on the top plane (the blend table's `plate` base).
+const PLATE: &str = r#"{"type":"sketch","id":"F1","plane":{"kind":"std","id":"top"},"points":[
+  {"id":"p1","x":0,"y":0},{"id":"p2","x":40,"y":0},{"id":"p3","x":40,"y":30},{"id":"p4","x":0,"y":30}],
+ "entities":[{"type":"line","id":"e1","p1":"p1","p2":"p2"},{"type":"line","id":"e2","p1":"p2","p2":"p3"},
+  {"type":"line","id":"e3","p1":"p3","p2":"p4"},{"type":"line","id":"e4","p1":"p4","p2":"p1"}],"constraints":[]},
+ {"type":"extrude","id":"F2","op":"add","sketch":"F1","end":"blind","depth":2}"#;
+
+fn with_plate(f: &str) -> String {
+    format!("{PLATE},{f}")
 }
 
 #[test]
@@ -191,4 +203,20 @@ fn thin_wall_thickness() {
     assert!(v > 9.0 && v < 10.0, "{v}");
     assert!(th(v).is_empty(), "builds at {v}");
     assert!(!th(v * 1.03 + 0.04).is_empty(), "refused above {v}");
+}
+
+#[test]
+fn fillet_radius() {
+    // the blend table's plate-edge-r3 case: a 2 mm plate whose top edge takes a 3 mm round-over, refused
+    // `blendOverflow`; the largest radius that builds is named in `maxSize`.
+    let f = |r: f64| {
+        run(&with_plate(&format!(
+            r#"{{"type":"fillet","id":"F90","radius":{r},"edges":[{{"faces":["F2.C1","F2.S.e1"],"at":[20,2,0]}}]}}"#
+        )))
+    };
+    let (param, v, unit, _) = max_size(&f(3.0));
+    assert_eq!((param.as_str(), unit.as_str()), ("radius", "mm"));
+    assert!(v > 1.0 && v < 3.0, "{v}");
+    assert!(f(v).is_empty(), "builds at {v}");
+    assert!(!f(v * 1.03 + 0.04).is_empty(), "refused above {v}");
 }

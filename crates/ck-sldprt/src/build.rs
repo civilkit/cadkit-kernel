@@ -59,6 +59,8 @@ pub struct PartRead {
     pub faces_total: usize,
     /// Faces built (ids in `Built::body`).
     pub faces: Vec<FaceId>,
+    /// The XT face each entry of `faces` came from (its colour and feature tag are on the IR face).
+    pub face_xt: Vec<i64>,
     /// Faces left out: (XT face id, reason).
     pub refused: Vec<(i64, SldprtError)>,
     /// The surface and sense of each refused face whose surface could be built: what a repair rebuilds the face on.
@@ -220,7 +222,7 @@ impl<'a> B<'a> {
                 }
                 let lump = self.body.add_lump();
                 let mut shells: Vec<(ShellId, f64)> = vec![];
-                let mut part = PartRead { body: body.id, faces_total: 0, faces: vec![], refused: vec![], refused_surfaces: vec![] };
+                let mut part = PartRead { body: body.id, faces_total: 0, faces: vec![], face_xt: vec![], refused: vec![], refused_surfaces: vec![] };
                 for sh in &reg.shells {
                     if sh.faces.is_empty() {
                         continue;
@@ -234,6 +236,7 @@ impl<'a> B<'a> {
                             Ok(pts) => {
                                 all.extend(pts);
                                 part.faces.extend((n0..self.body.faces.len()).map(|i| FaceId(i as u32)));
+                                part.face_xt.resize(part.faces.len(), f.id);
                             }
                             Err(e) => {
                                 // a face whose surface can be built keeps it, for a repair to rebuild the face on
@@ -543,8 +546,43 @@ impl<'a> B<'a> {
                 Surface::Sphere { frame: frame_from(pt(*c), v3(*axis), v3(*x)), r: r * SCALE }
             }
             IrSurface::Torus { c, axis, major, minor, x } => {
-                if !(*major > 0.0) || !(*minor > 0.0) || minor >= major {
-                    return Err(uerr(format!("self-intersecting (apple/lemon) torus, major {major}, minor {minor}")));
+                if !(*minor > 0.0) || *major < 0.0 || v3(*axis).len() < 1e-12 {
+                    return Err(uerr(format!("degenerate torus, major {major}, minor {minor}")));
+                }
+                if minor >= major {
+                    // self-intersecting (apple / lemon) torus: no kernel torus, but the same surface is the revolution
+                    // of the part of the tube circle that is on one side of the axis (a rational quadratic arc of two
+                    // spans: the surface the faces lie on is this outer sheet, and a profile that crosses the axis
+                    // would defeat the surface-of-revolution foot search)
+                    let fr = frame_from(pt(*c), v3(*axis), v3(*x));
+                    let (xr, ax) = (fr.x, fr.z);
+                    let (m, r) = (major * SCALE, minor * SCALE);
+                    let t0 = (-m / r).acos(); // the circle meets the axis at t = +-t0 from the outer direction
+                    let ctr = fr.o + xr * m;
+                    let make = |dir: Vec3| -> R<Surface> {
+                        let th = t0; // half-sweep of each span is t0 (two spans over -t0..t0)
+                        let w = (0.5 * th).cos();
+                        let at = |t: f64| ctr + (xr * t.cos() + dir * t.sin()) * r;
+                        // middle control point of a span from a to b: the tangent intersection
+                        let mid = |a: f64, b: f64| {
+                            let h = 0.5 * (b - a);
+                            let c = 0.5 * (a + b);
+                            ctr + (xr * c.cos() + dir * c.sin()) * (r / h.cos())
+                        };
+                        let ctrl = vec![at(-t0), mid(-t0, 0.0), at(0.0), mid(0.0, t0), at(t0)];
+                        let prof = BSplineCurve::new_rational(2, vec![0.0, 0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 1.0], ctrl, vec![1.0, w, 1.0, w, 1.0]).map_err(|e| gerr(format!("apple torus arc: {e}")))?;
+                        Ok(Surface::Revolution { profile: Box::new(Curve::BSpline(prof)), axis_o: fr.o, axis: ax })
+                    };
+                    let mut rev = make(ax)?;
+                    // the natural normal of a torus points out of the tube
+                    let (u, v) = (0.3f64, 0.4f64);
+                    let tube = fr.o + (xr * u.cos() + fr.y * u.sin()) * m;
+                    if rev.normal(u, v).dot(rev.eval(u, v) - tube) < 0.0 {
+                        rev = make(-ax)?;
+                    }
+                    let rc = Rc::new(rev);
+                    self.surfaces.insert(si, rc.clone());
+                    return Ok(rc);
                 }
                 Surface::Torus { frame: frame_from(pt(*c), v3(*axis), v3(*x)), major: major * SCALE, minor: minor * SCALE }
             }
@@ -664,8 +702,13 @@ impl<'a> B<'a> {
                 let curve = fc.curve.clone();
                 let (mut t0, mut t1) = curve.range();
                 if let (Some(l0), Some(l1)) = (limits[0], limits[1]) {
-                    let (ta, mut tb) = (curve.closest_param(pt(l0)), curve.closest_param(pt(l1)));
+                    let (mut ta, mut tb) = (curve.closest_param(pt(l0)), curve.closest_param(pt(l1)));
                     if let Some(per) = fc.period {
+                        // the limits run along the spine's own direction: against the carrier's parameter when the
+                        // curve is stored reversed, so the arc is the one from l1 round to l0 (not the complement)
+                        if !fc.dir_inc {
+                            std::mem::swap(&mut ta, &mut tb);
+                        }
                         if tb <= ta {
                             tb += per;
                         }

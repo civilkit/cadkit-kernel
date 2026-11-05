@@ -682,8 +682,20 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
         }
     }
     let mut seg_list: Vec<(BPt, BPt)> = vec![];
+    // An open chain whose points were all junction markers is emptied by the drop loop above. Its old `n - 1` wrapped
+    // to usize::MAX and `chain[0]` panicked with an index-out-of-bounds on a blend face whose trim collapsed (the daisy
+    // top-rim case under wasm). It has no geometry, so skip it and let the boundary-point refusal below report the face.
+    let mut dropped_empty = 0usize;
     for (chain, closed) in &chains {
         let n = chain.len();
+        if n == 0 {
+            dropped_empty += 1;
+            #[cfg(not(target_arch = "wasm32"))]
+            if std::env::var("CK_TESS_DBG").is_ok() {
+                eprintln!("tessellate: face {} (cover={cover}): an open chain was emptied by the junction drop", body.face_id_str(f));
+            }
+            continue;
+        }
         let m = if *closed { n } else { n - 1 };
         for i in 0..m {
             let (mut a, mut q) = (chain[i], chain[(i + 1) % n]);
@@ -862,7 +874,11 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
     }
     let _ = (u_lo, u_hi);
     if b.pts.len() < 3 {
-        return Err("face has fewer than 3 boundary points".into());
+        return Err(if dropped_empty > 0 {
+            format!("face boundary collapsed to no points ({dropped_empty} empty chains after junction drop)")
+        } else {
+            "face has fewer than 3 boundary points".into()
+        });
     }
     // A cut-open periodic strip whose boundary is a single simple cycle: the original walks it counter-clockwise from the
     // corner with the smallest (u, v) (the reversed-sense rule: first vertex kept, the rest reversed).

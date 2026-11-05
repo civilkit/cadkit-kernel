@@ -9,14 +9,11 @@
 //! or revolved corner profile); multi-edge selections in rounds; and
 //! [`vertex::chamfer_vertex`] (3-valent corner cut) and
 //! [`corner::sphere_corner_tool`] (the `V<k>` sphere patch of three equal
-//! fillets at a convex planar corner). The remaining stubs
-//! (`cap`, `g2`, `interp`, `overlap`, `sheet`, `stripe`, `surface`) are
-//! classified in internal notes (not published); the original's `inplace`, `rolling`,
-//! `march`, `chain`, `spring` and `split` are covered by `build` /
-//! `freeform` and were removed.
-//!
-//! [`freeform`]: rolling-ball fillets along chains of free-form edges (B-spline /
-//! revolution faces, spline intersection edges), also built as a boolean tool.
+//! fillets at a convex planar corner). [`freeform`]: rolling-ball fillets along
+//! chains of free-form edges, also built as a boolean tool. Every result passes
+//! [`validity`] before it is returned. The reference's own `cap`, `overlap`,
+//! `sheet`, `stripe` and `surface` stages have no counterpart here (superseded by
+//! the tool + boolean construction, or deferred).
 //!
 //! Feature-level codes (kernel.strings): `filletChamfer`, `filletType`,
 //! `chamferType`, `chamferVertexEdges`, `nothingToBlend`, `missingEdge`,
@@ -33,18 +30,27 @@
 //! a 10 mm box edge), "a convex and a concave blended edge meet at …",
 //! "… blended edges meet at …".
 
+mod analytic;
+mod apply;
 pub mod build;
-pub mod cap;
+mod chain;
+mod concave_vertex;
 pub mod corner;
+mod diag;
+mod ends;
+mod find;
 pub mod freeform;
+mod inplace;
 pub mod g2;
 pub mod interp;
+mod layout;
 pub mod mixed;
+mod model;
 pub mod overhang;
-pub mod overlap;
-pub mod sheet;
-pub mod stripe;
-pub mod surface;
+mod rim_reflex;
+mod rounds;
+mod torus_corner;
+pub mod validity;
 pub mod vertex;
 
 /// Feature error `{code, params:{detail?}}` (oracle: regen `errors[]`).

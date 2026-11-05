@@ -7,8 +7,20 @@ wasm request `importSldprt` returns the same kind of result as `importStep` and 
 ```
 {type:"importSldprt", tag:"t", name:"part", data:"<base64 of the .SLDPRT file>"}
  -> result: {body, errors:[], import:{format:"sldprt", name, solids, faces, unitScale:1000,
-             container:"modern"|"ole2", schema, stream, nodes, approximations:[{what, maxErrorMm}], notes:[]}, ...}
- -> failure: body:null, errors:[["import", {code, params:{message}}]] (the tag keeps its previous state)
+             container:"modern"|"ole2", schema, stream, nodes, approximations:[{what, maxErrorMm}], notes:[],
+             swMassProps, features:[{id, name, type, dimensions:[{name, text, value}]}], configurations:[{name, material}],
+             material:{name, densityKgM3}|null, customProperties:[{name, value}], configurationProperties:[{name, value}],
+             units:{system, length, angle, lengthDecimals}|null,
+             versions:{solidworks, solidworksRelease, parasolid, parasolidModeller},
+             thumbnail:{mime, width, height, base64}|null, omittedForPrivacy,
+             faceAttributes:[{face, xtFace, colour, featureId, feature, kind, local}],
+             bodyAttributes:[{xtBody, density, lastFeatureId}]}, ...}
+ -> failure: body:null, errors:[["import", {code, params:{message}}]] (the tag keeps its previous state), plus import:{format,
+             name, swMassProps, features, ..., thumbnail} when the container opens (metadata only)
+
+Metadata (`meta.rs`) comes from plain streams (KeyWords XML, MATERIALTREE, docProps XML or OLE property sets, PreviewPNG);
+user names and absolute paths the file records are never returned (book/src/io/sldprt.md, "Privacy"). Face colour and feature
+id come from the XT attributes `SDL/TYSA_COLOUR` and `FACE_ID_2001` (`ir.rs`), keyed by the kernel face id `sldprt.F<n>`.
 ```
 
 Check script over a directory of parts: `node tools/sldprt_check.mjs --dir DIR [--refs DIR] [--filter S] [--strict]` prints,
@@ -44,10 +56,61 @@ feeds 130 truncated, bit-flipped, zeroed and garbage-padded copies of every fixt
 ### Which body is "the part"
 
 The live partition (`Config-0-Partition`, `(partition)` transmit) wins; its body is the part. The `(deltas)` transmit that
-follows it in the same stream is not applied (its node types are not decoded): for the sample parts the partition alone is the
-final body, but a part whose edits live only in deltas would import in its pre-edit state (see gaps). The ghost partition is used
-only as a last resort. If the partition holds no solid (parts whose geometry is an imported body), the solid bodies of the
-free-standing part transmits are taken instead, as the open readers do.
+follows it in the same stream is decoded (below) but not applied: it is the partition's undo history, and the partition already
+sits at the mark the deltas call current. The ghost partition is used only as a last resort. If the partition holds no solid
+(parts whose geometry is an imported body), the solid bodies of the free-standing part transmits are taken instead, as the open
+readers do.
+
+### Deltas (`xt::read_deltas`)
+
+The `(deltas)` transmit has the partition's header (counted `PS`, a description holding `(deltas)`, `SCH_<modeller>_<schema>_13006`
+and the maximum node type) and first-use schema information, but every pointer is followed by a status byte (`00` or `01`, not
+part of the reference) and a Hvec is eleven doubles (the first three are the position). After the header come a PARTITION node
+(type 3: `xmt`, current PMARK reference, `highest_id`), the current PMARK (type 4: `preceding`, `first_following`,
+`next_sibling`, `prev_sibling`, counts of new / deleted / copied-or-modified nodes, `delta_key`, `delta_is_forward`, `identifier`)
+and then sections, each closed by `00 01 00 01`:
+
+```text
+leading       = node* T
+map section   = (xmt kind)* 00 01 00 00 <word> node* T     (the word equals the node count on every sample)
+pmark section = PMARK+ node* T
+stream        = leading map (pmark map)* [pmark]           (ends at the end of the stream)
+```
+
+A node is any type except 1, 3 and 4. All 38 corpus files frame to the end of the stream with no bytes left over; none has an
+empty deltas transmit (the smallest holds two nodes and a 29-entry map). Three facts hold on every file and are tested:
+
+- the WORLD `current_id` and `highest_id` of the partition equal the identifier of the deltas' current PMARK and its PARTITION
+  `highest_id`, so the partition is already at the current mark;
+- every change has `delta_is_forward = 0`, and the mark identifiers fall along the chain (`preceding`) down to the initial mark
+  (null `preceding`): the chain runs from the current mark back in time;
+- the nodes a change holds are earlier versions of nodes the partition also has (most are byte-identical, the rest differ in
+  chain and owner pointers), the deleted nodes (attributes, value arrays) and the map's `(xmt, kind)` pairs, which name nodes
+  the change created. The BODY copies carry smaller `highest_node_id` values the further down the chain they sit.
+
+So a change takes the partition one mark back. Three rules were scored over the corpus (`examples/deltas_rules.rs`): the
+partition alone (the behaviour), every delta node laid over the partition in physical order (replace an existing type and xmt
+key, add a new one), and rolling back N changes from the current mark (drop the nodes the change created, restore what it
+deleted or changed). Against SolidWorks' stored volume and area:
+
+| file | partition | all nodes laid over | one change back |
+|---|---|---|---|
+| nist_ftc_09 | -0.405 % / +0.39 % | +14.0 % / +9.8 % (14 faces) | +0.008 % / 0.000 % |
+| nist_ctc_01 | -0.015 % / +0.11 % | +63 % (58 faces) | -0.001 % / 0.000 % |
+| nist_ctc_03 | -0.18 % / +0.05 % | -13 % | -0.10 % / 0.000 % |
+| nist_ftc_06 | -0.044 % / +0.27 % | -7.5 % | -0.010 % / 0.000 % |
+| nist_ftc_10 | +0.17 % / +0.01 % | +180 % | +0.025 % / +0.58 % |
+
+Laying every node over the partition mixes states from all marks: the face count collapses (139 to 58, 125 to 14) or grows
+(272 to 191 with a six times larger volume) and the volume leaves the stored value by 7 to 560 percent on every NIST part. It is wrong. Rolling one change back lands within the rounding of the stored values on the NIST parts,
+because the last feature of those parts (a cut with 34 new faces in six of them: the newest feature id among the faces drops
+from the last cut to the feature before it) postdates the stored mass properties, or they were stored with that feature rolled
+back. The partition holds the finished feature tree: `ck-swedit` rebuilds the whole tree, last cut included, to the partition's
+solid on 24 of the 38 files. One change back is not usable as a rule either: on parts with a single feature (`pend_pole`,
+`nist_ftc_11`, the loft sample) it leaves no solid, on the cube with a fillet it removes the fillet, and on `pend_mount_table_sharft_holder`
+it moves the volume further from the stored value. **No rule is adopted: the partition stays the part.** The stored volume of
+`nist_ftc_09` is a feature behind the finished body, not a deltas effect. A forward change (`delta_is_forward = 1`) never occurs in
+the corpus; if one turns up, the current mark would not be the partition's and this needs another look.
 
 ### XT to kernel mapping
 
@@ -129,7 +192,7 @@ Not imported: nist_ctc_02 (lemon torus), nist_ftc_07 (B-surface domain). Invalid
 | Feature tree, sketches, dimensions, PMI, configurations | not read; only the body of the first / active partition (`Config-0-Partition`) is imported, other configurations (`Config-N-*`) are separate streams that are ignored. The part's stored mass properties are returned in `import.swMassProps` (from `docProps/ISolidWorksInformation.xml`) as an independent check |
 | Sheet metal | the folded body imports as an ordinary solid; flat pattern, bend table and sheet-metal features are not read |
 | Surface (sheet) and wire bodies | not imported; a file with only such bodies answers `unsupported.body` (the CANivore-style file made of 11 surface bodies) |
-| Parasolid deltas | the `(deltas)` transmit that follows the partition is not decoded (its node types are not in the base schema and the update rule is unknown to the open readers). A part whose last edits live only in the deltas would import in its earlier state; `nist_ftc_09` is 0.45 percent short of SolidWorks' own volume, as is the open `sldprt2step` reader |
+| Parasolid deltas | the `(deltas)` transmit is decoded (`xt::read_deltas`) but not applied: it holds backward undo records ending at the partition's own mark, so the partition is the current state (see Deltas). The stored mass of `nist_ftc_09` (0.4 percent above the partition body) matches the state one change back, which lacks the last cut feature |
 | SolidWorks 2023 and later | only SW2022 samples (modern container, display-list version 15000) and older were available; the container and XT layers are version agnostic (schema edit scripts), but newer files are untested |
 | Surfaces | not supported: self-intersecting (apple / lemon) tori (`nist_ctc_02`), B-surfaces with periodic or extended domains whose vertices fall outside the NURBS domain (`nist_ftc_07`), cliff-edge and variable-radius blends, foreign (PE) geometry, mesh bodies |
 | Approximation | rolling-ball blends, intersection curves and SP-curves are interpolated B-splines; each is reported with its maximum deviation and refused above 0.05 mm. A few parts then fail the kernel validator's tight edge / surface check (`EDGE_OFF_SURFACE`, tolerance about 1e-5 relative) although volume and area match SolidWorks to 1e-3 or better |

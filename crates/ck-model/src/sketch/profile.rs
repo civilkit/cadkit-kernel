@@ -184,6 +184,11 @@ pub struct Region {
 #[derive(Debug, Clone, Default)]
 pub struct Profiles {
     pub regions: Vec<Region>,
+    /// Faces filled by even-odd nesting (a hole of a region, with its own holes) of a component that
+    /// the arrangement cuts into several faces (a ring split by petal outlines ending on it). They are
+    /// no regions of the sketch (`regions`, the `profiles` JSON and a whole-sketch extrude are
+    /// unchanged) but an id selection can pick them one by one. A plain closed loop (one face) is not here.
+    pub fills: Vec<Region>,
     pub open: bool,
 }
 
@@ -534,6 +539,117 @@ fn intersect(a: &Curve, b: &Curve, ta: &mut Vec<f64>, tb: &mut Vec<f64>) {
     }
 }
 
+
+// ---------------------------------------------------------------------------
+// T-junctions
+
+/// An end point lying on the inside of another curve (no shared vertex) within this distance (mm)
+/// cuts that curve there; same tolerance as the kit's `splitAtJunctions`.
+const T_TOL: f64 = 1e-4;
+
+fn scale_hint(curves: &[Curve]) -> f64 {
+    curves.iter().fold(1.0f64, |m, c| {
+        let (p, q) = (c.geom.eval(c.t0), c.geom.eval(c.t1));
+        m.max(p[0].abs()).max(p[1].abs()).max(q[0].abs()).max(q[1].abs())
+    })
+}
+
+/// Newton on `Pj(a) = Pi(b)` from (`e`, `t`): the point where curve `j` (carried past its end `e`) meets
+/// curve `i` near `q`. `None` when it does not converge within `T_TOL` of `q` or leaves `i`.
+fn meet(cj: &Curve, e: f64, ci: &Curve, t: f64, q: P) -> Option<(f64, f64)> {
+    let (mut a, mut b) = (e, t);
+    let mut ok = false;
+    for _ in 0..40 {
+        let (pa, pb) = (cj.geom.eval(a), ci.geom.eval(b));
+        let f = sub(pa, pb);
+        if f[0].hypot(f[1]) <= 1e-13 * (1.0 + pa[0].abs().max(pa[1].abs())) {
+            ok = true;
+            break;
+        }
+        let (da, db) = (cj.geom.d1(a), ci.geom.d1(b));
+        // [da, -db] * [x, y] = -f
+        let det = -da[0] * db[1] + db[0] * da[1];
+        if det.abs() <= 1e-9 * da[0].hypot(da[1]) * db[0].hypot(db[1]) {
+            return None;
+        }
+        let x = (f[0] * db[1] - db[0] * f[1]) / det;
+        let y = (f[0] * da[1] - da[0] * f[1]) / det;
+        a += x;
+        b += y;
+        if !a.is_finite() || !b.is_finite() {
+            return None;
+        }
+    }
+    if !ok || dist(cj.geom.eval(a), q) > T_TOL {
+        return None;
+    }
+    // keep the meeting point on `i` (a circle wraps)
+    let b = match &ci.geom {
+        Geom::Circle { .. } | Geom::Ellipse { .. } => {
+            if ci.closed {
+                ci.t0 + (b - ci.t0).rem_euclid(2.0 * PI)
+            } else {
+                arc_param(ci, b)?
+            }
+        }
+        _ if ci.closed && (b < ci.t0 || b > ci.t1) => return None,
+        _ => b,
+    };
+    let p = ci.geom.eval(b);
+    let on = b > ci.t0.min(ci.t1) && b < ci.t0.max(ci.t1) || ci.closed;
+    let near_end = !ci.closed && (dist(p, ci.geom.eval(ci.t0)) <= T_TOL || dist(p, ci.geom.eval(ci.t1)) <= T_TOL);
+    if !on || near_end || dist(p, cj.geom.eval(a)) > 1e-9 * (1.0 + p[0].abs().max(p[1].abs())) {
+        return None;
+    }
+    Some((a, b))
+}
+
+/// Parameter on `c` (strictly inside its range, off both ends by more than `T_TOL`) of the point nearest `q`
+/// when that point is within `T_TOL` of `q`.
+fn param_near(c: &Curve, q: P, dir: P) -> Option<f64> {
+    let t = match &c.geom {
+        Geom::Line { p, d } => {
+            let dd = dot(*d, *d);
+            if dd <= 0.0 {
+                return None;
+            }
+            ((dot(sub(q, *p), *d)) / dd).clamp(0.0, 1.0)
+        }
+        Geom::Circle { c: cc, r } => {
+            if ((q[0] - cc[0]).hypot(q[1] - cc[1]) - r).abs() > T_TOL {
+                return None;
+            }
+            arc_param(c, (q[1] - cc[1]).atan2(q[0] - cc[0]))?
+        }
+        _ => {
+            let s = samples(c);
+            let (k, _) = s.iter().enumerate().min_by(|a, b| dist(a.1 .1, q).partial_cmp(&dist(b.1 .1, q)).unwrap())?;
+            let (mut lo, mut hi) = (s[k.saturating_sub(1)].0, s[(k + 1).min(s.len() - 1)].0);
+            for _ in 0..60 {
+                let (m1, m2) = (lo + (hi - lo) / 3.0, hi - (hi - lo) / 3.0);
+                if dist(c.geom.eval(m1), q) < dist(c.geom.eval(m2), q) {
+                    hi = m2;
+                } else {
+                    lo = m1;
+                }
+            }
+            (lo + hi) / 2.0
+        }
+    };
+    let p = c.geom.eval(t);
+    if !t.is_finite() || !(dist(p, q) <= T_TOL) {
+        return None;
+    }
+    let near_end = !c.closed && (dist(p, c.geom.eval(c.t0)) <= T_TOL || dist(p, c.geom.eval(c.t1)) <= T_TOL);
+    // a curve running along this one (a collinear overlap, a tangent arc) is no T-junction
+    let (u, w) = (c.geom.d1(t), dir);
+    let (lu, lw) = (u[0].hypot(u[1]), w[0].hypot(w[1]));
+    if near_end || !(lu > 0.0 && lw > 0.0) || cross(u, w).abs() <= 1e-3 * lu * lw {
+        return None;
+    }
+    Some(t)
+}
+
 // ---------------------------------------------------------------------------
 // arrangement
 
@@ -709,6 +825,48 @@ pub fn profiles_with(sk: &Sketch, texts: &[super::text::TextLayout]) -> Profiles
             intersect(&curves[i], &curves[j], &mut ta, &mut tb);
             params[i].extend(ta);
             params[j].extend(tb);
+        }
+    }
+    // T-junctions: an open curve's free end point on another curve's inside, with no shared vertex, is
+    // moved along its own curve to meet that curve exactly (a gap of less than `T_TOL`), and the curve it
+    // meets is cut there
+    let ends: Vec<(usize, P)> = curves.iter().enumerate().filter(|(_, c)| !c.closed).flat_map(|(k, c)| [(k, c.geom.eval(c.t0)), (k, c.geom.eval(c.t1))]).collect();
+    for j in 0..n {
+        if curves[j].closed {
+            continue;
+        }
+        for which in 0..2 {
+            let e = if which == 0 { curves[j].t0 } else { curves[j].t1 };
+            let q = curves[j].geom.eval(e);
+            if !q[0].is_finite() || !q[1].is_finite() {
+                continue;
+            }
+            // another curve ending here: a joint, not a free end
+            if ends.iter().any(|(k, p)| *k != j && dist(*p, q) <= 1e-7 * scale_hint(&curves)) {
+                continue;
+            }
+            for i in 0..n {
+                if i == j {
+                    continue;
+                }
+                if let Some(b) = &boxes[i] {
+                    if q[0] < b[0] - T_TOL || q[0] > b[2] + T_TOL || q[1] < b[1] - T_TOL || q[1] > b[3] + T_TOL {
+                        continue;
+                    }
+                }
+                // an existing cut (a crossing, a shared end) already serves this end point
+                if params[i].iter().any(|&t| dist(curves[i].geom.eval(t), q) <= T_TOL) {
+                    continue;
+                }
+                let dj = curves[j].geom.d1(e);
+                let Some(t) = param_near(&curves[i], q, dj) else { continue };
+                let Some((a2, b2)) = meet(&curves[j], e, &curves[i], t, q) else { continue };
+                if let Some(slot) = params[j].iter_mut().find(|x| **x == e) {
+                    *slot = a2;
+                }
+                params[i].push(b2);
+                break;
+            }
         }
     }
     // pieces
@@ -909,8 +1067,28 @@ pub fn profiles_with(sk: &Sketch, texts: &[super::text::TextLayout]) -> Profiles
     }
     regions.sort_by_key(|r| r.0);
     let mut regions: Vec<Region> = regions.into_iter().map(|r| r.1).collect();
+    let mut fills: Vec<(usize, Region)> = Vec::new();
+    for (i, f) in faces.iter().enumerate() {
+        if depth[i] % 2 == 0 || face_comp.iter().filter(|&&c| c == face_comp[i]).count() < 2 {
+            continue;
+        }
+        let mut cyc = f.clone();
+        let k = (0..cyc.len()).min_by_key(|&j| cyc[j]).unwrap();
+        cyc.rotate_left(k);
+        let mut hs = holes_of[i].clone();
+        hs.sort_by_key(|h| h.0);
+        fills.push((
+            cyc[0],
+            Region {
+                outer: cyc.iter().map(|&h| seg_of(&curves, &pcs, h)).collect(),
+                holes: hs.iter().map(|(_, h)| h.iter().map(|&x| seg_of(&curves, &pcs, x)).collect()).collect(),
+            },
+        ));
+    }
+    fills.sort_by_key(|r| r.0);
+    let fills: Vec<Region> = fills.into_iter().map(|r| r.1).collect();
     regions.extend(super::text::regions(texts));
-    Profiles { open: regions.is_empty() && any, regions }
+    Profiles { open: regions.is_empty() && any, regions, fills }
 }
 
 /// The non-construction curves of `sk` as ONE open chain (surface-loft

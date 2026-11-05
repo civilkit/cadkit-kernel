@@ -19,6 +19,7 @@ pub fn install() {
     ck_server::set_hooks(Hooks {
         import_sat: Some(import_sat_hook),
         import_sldprt: Some(import_sldprt_hook),
+        sldprt_history: Some(sldprt_history_hook),
         #[cfg(feature = "skp")]
         import_skp: Some(import_skp_hook),
         regen: Some(regen_hook),
@@ -359,7 +360,9 @@ fn base64_decode(s: &str, what: &str) -> Result<Vec<u8>, String> {
 
 /// `importSldprt`: base64 of a SolidWorks part file -> the tag's body (result shaped like `importStep`: `body`,
 /// `errors` as `["import", {code, params:{message}}]`, plus `import:{format, solids, faces, unitScale, container,
-/// schema, approximations, notes}`).
+/// schema, approximations, notes}` and the file's metadata (`features`, `configurations`, `material`, properties, `units`,
+/// `versions`, `thumbnail`, `faceAttributes`, `bodyAttributes`; see book/src/io/sldprt.md). A file whose body cannot be
+/// imported still answers its metadata in `import` when the container opens.
 fn import_sldprt_hook(cx: &mut Cx) -> Result<(Json, Option<State>), String> {
     let data = cx.msg.get_str("data").unwrap_or("").to_string();
     let name = cx.msg.get_str("name").unwrap_or("part").to_string();
@@ -369,23 +372,20 @@ fn import_sldprt_hook(cx: &mut Cx) -> Result<(Json, Option<State>), String> {
         Err(e) => {
             let err = Json::Arr(vec![Json::Str("import".into()), Obj::new().put("code", e.code).put("params", Obj::new().put("message", e.message.as_str()).build()).build()]);
             set_key(&mut out, "errors", Json::Arr(vec![err]));
+            if let Ok(meta) = ck_sldprt::read_meta(&bytes) {
+                let info = sldprt_meta_json(Obj::new().put("format", "sldprt").put("name", name.as_str()).put("swMassProps", sw_mass_json(&meta.mass)), &meta, None).build();
+                if let Json::Obj(kv) = &mut out {
+                    kv.push(("import".into(), info));
+                }
+            }
             Ok((out, None))
         }
         Ok(imp) => {
+            let parasolid = imp.parasolid_version();
             let (body, surfaces, parts) = sort_sldprt(imp.body, &imp.parts);
             let approx = imp.approx.iter().map(|a| Obj::new().put("what", a.what.as_str()).put("maxErrorMm", a.max_err_mm).build()).collect();
-            // the mass properties SolidWorks stored in the file (mm^3, mm^2, kg), an independent check of the body
-            let sw = match &imp.sw_mass {
-                Some(m) => Obj::new()
-                    .put("volumeMm3", m.volume_m3 * 1e9)
-                    .put("areaMm2", m.area_m2 * 1e6)
-                    .put("massKg", m.mass_kg)
-                    .put("comMm", Json::Arr(m.com_m.iter().map(|x| Json::Num(x * 1e3)).collect()))
-                    .build(),
-                None => Json::Null,
-            };
             let info = Obj::new()
-                .put("swMassProps", sw)
+                .put("swMassProps", sw_mass_json(&imp.sw_mass))
                 .put("format", "sldprt")
                 .put("name", name.as_str())
                 .put("solids", imp.solids as f64)
@@ -397,11 +397,103 @@ fn import_sldprt_hook(cx: &mut Cx) -> Result<(Json, Option<State>), String> {
                 .put("stream", imp.stream.as_str())
                 .put("nodes", imp.nodes as f64)
                 .put("approximations", Json::Arr(approx))
-                .put("notes", Json::Arr(imp.notes.iter().map(|n| Json::Str(n.clone())).collect()))
+                .put("notes", Json::Arr(imp.notes.iter().map(|n| Json::Str(n.clone())).collect()));
+            let info = sldprt_meta_json(info, &imp.meta, parasolid)
+                .put("faceAttributes", Json::Arr(imp.face_tags.iter().map(face_tag_json).collect()))
+                .put(
+                    "bodyAttributes",
+                    Json::Arr(imp.body_tags.iter().map(|b| Obj::new().put("xtBody", b.xt_body).put("density", b.density.map_or(Json::Null, Json::Num)).put("lastFeatureId", b.last_feature.map_or(Json::Null, |v| Json::Num(v as f64))).build()).collect()),
+                )
                 .build();
             Ok(import_reply(cx, out, body, surfaces, info))
         }
     }
+}
+
+/// `sldprtHistory`: base64 of a SolidWorks part file -> `{ok, part, complete, outcome}` when the feature history rebuilds
+/// (`part`: a `ck-part` document; `complete`: every feature is ours, else the document ends in an `importBody` feature
+/// that stands for the rest of the file and holds the file in `blobs`), else `{ok:false, reason, outcome?}` (`reason`:
+/// `import` the file cannot be read, `noHistory` nothing could be read back, `notEditable`). Never an error reply for a
+/// file that does not rebuild: the caller keeps `importSldprt`. Read only.
+fn sldprt_history_hook(cx: &mut Cx) -> Result<Json, String> {
+    let data = cx.msg.get_str("data").unwrap_or("").to_string();
+    let bytes = base64_decode(&data, "sldprtHistory")?;
+    let no = |reason: &str, detail: String, outcome: Option<Json>| {
+        Obj::new().put("ok", false).put("reason", reason).put("detail", detail.as_str()).put("outcome", outcome.unwrap_or(Json::Null)).build()
+    };
+    let imp = match ck_sldprt::import_sldprt(&bytes) {
+        Ok(i) => i,
+        Err(e) => return Ok(no("import", format!("{}: {}", e.code, e.message), None)),
+    };
+    let out = ck_swedit::rebuild_history(&ck_swedit::Tagged::from_import(&imp));
+    let summary = out.json();
+    if !out.editable() {
+        let why = out.fallback.clone().unwrap_or_else(|| "no feature could be read back".to_string());
+        return Ok(no(if out.features.is_empty() { "noHistory" } else { "notEditable" }, why, Some(summary)));
+    }
+    let complete = out.prefix == 0;
+    Ok(Obj::new().put("ok", true).put("complete", complete).put("part", out.part_json(Some(&bytes))).put("outcome", summary).build())
+}
+
+/// The mass properties SolidWorks stored in the file (mm^3, mm^2, kg, mm), an independent check of the body.
+fn sw_mass_json(m: &Option<ck_sldprt::SwMassProps>) -> Json {
+    match m {
+        Some(m) => Obj::new()
+            .put("volumeMm3", m.volume_m3 * 1e9)
+            .put("areaMm2", m.area_m2 * 1e6)
+            .put("massKg", m.mass_kg)
+            .put("comMm", Json::Arr(m.com_m.iter().map(|x| Json::Num(x * 1e3)).collect()))
+            .build(),
+        None => Json::Null,
+    }
+}
+
+fn face_tag_json(t: &ck_sldprt::FaceTag) -> Json {
+    let num = |v: Option<i64>| v.map_or(Json::Null, |v| Json::Num(v as f64));
+    Obj::new()
+        .put("face", t.face.as_str())
+        .put("xtFace", t.xt_face)
+        .put("colour", t.colour.map_or(Json::Null, |c| Json::Arr(c.iter().map(|v| Json::Num(*v)).collect())))
+        .put("featureId", num(t.sw_id.as_ref().map(|s| s.feature)))
+        .put("feature", t.feature.as_deref().map_or(Json::Null, |n| Json::Str(n.to_string())))
+        .put("kind", num(t.sw_id.as_ref().map(|s| s.kind)))
+        .put("local", num(t.sw_id.as_ref().and_then(|s| s.local)))
+        .build()
+}
+
+/// The metadata keys of an `importSldprt` reply (every key always present; `null` or `[]` when the file lacks the stream).
+fn sldprt_meta_json(o: Obj, m: &ck_sldprt::SwMeta, parasolid: Option<(u32, String)>) -> Obj {
+    let s = |v: &Option<String>| v.as_deref().map_or(Json::Null, |x| Json::Str(x.to_string()));
+    let props = |v: &[(String, String)]| Json::Arr(v.iter().map(|(n, x)| Obj::new().put("name", n.as_str()).put("value", x.as_str()).build()).collect());
+    let features = m
+        .features
+        .iter()
+        .map(|f| {
+            let dims = f.dims.iter().map(|d| Obj::new().put("name", d.name.as_str()).put("text", d.text.as_str()).put("value", d.value.map_or(Json::Null, Json::Num)).build()).collect();
+            Obj::new().put("id", f.id).put("name", f.name.as_str()).put("type", f.kind.as_str()).put("dimensions", Json::Arr(dims)).build()
+        })
+        .collect();
+    let configs = m.configurations.iter().map(|c| Obj::new().put("name", c.name.as_str()).put("material", s(&c.material)).build()).collect();
+    let material = m.material.as_ref().map_or(Json::Null, |x| Obj::new().put("name", x.name.as_str()).put("densityKgM3", x.density_kg_m3.map_or(Json::Null, Json::Num)).build());
+    let units = m.units.as_ref().map_or(Json::Null, |u| {
+        Obj::new().put("system", s(&u.system)).put("length", s(&u.length)).put("angle", s(&u.angle)).put("lengthDecimals", u.length_decimals.map_or(Json::Null, |v| Json::Num(v as f64))).build()
+    });
+    let versions = Obj::new()
+        .put("solidworks", m.sw_version.map_or(Json::Null, |v| Json::Num(v as f64)))
+        .put("solidworksRelease", m.sw_release().map_or(Json::Null, |v| Json::Num(v as f64)))
+        .put("parasolid", parasolid.as_ref().map_or(Json::Null, |p| Json::Str(p.1.clone())))
+        .put("parasolidModeller", parasolid.as_ref().map_or(Json::Null, |p| Json::Num(p.0 as f64)))
+        .build();
+    let thumb = m.thumbnail.as_ref().map_or(Json::Null, |t| Obj::new().put("mime", "image/png").put("width", t.width).put("height", t.height).put("base64", ck_text::base64_encode(&t.png)).build());
+    o.put("features", Json::Arr(features))
+        .put("configurations", Json::Arr(configs))
+        .put("material", material)
+        .put("customProperties", props(&m.custom_properties))
+        .put("configurationProperties", props(&m.config_properties))
+        .put("units", units)
+        .put("versions", versions)
+        .put("thumbnail", thumb)
+        .put("omittedForPrivacy", m.omitted)
 }
 
 #[cfg(feature = "skp")]
@@ -575,25 +667,11 @@ fn import_reply(cx: &mut Cx, mut out: Json, body: Body, surfaces: Vec<(String, B
 }
 
 /// The parts of a SolidWorks import sorted like a STEP import's (`ck_heal::honest`): (solid body, surface bodies, `parts`).
-fn sort_sldprt(mut body: Body, parts: &[ck_sldprt::build::PartRead]) -> (Body, Vec<(String, Body)>, Json) {
-    use ck_heal::honest::{self, PartIn};
-    ck_topo::region::rebuild_lumps(&mut body);
-    // edges that follow their faces only to the file's accuracy get a tolerance (as a STEP import does); nothing else changes
-    ck_heal::heal_with(&mut body, &ck_heal::tolerant_only());
-    let ins: Vec<PartIn> = parts
-        .iter()
-        .enumerate()
-        .map(|(k, p)| PartIn {
-            label: format!("body {} (#{})", k + 1, p.body),
-            faces: p.faces.clone(),
-            faces_total: p.faces_total,
-            reasons: p.refused.iter().map(|(f, e)| honest::refused_face(e.code, format!("F{f}"), &e.message)).collect(),
-        })
-        .collect();
-    let s = honest::sort(&body, &ins, ck_check::DEFAULT_TOL_CAP);
+fn sort_sldprt(body: Body, parts: &[ck_sldprt::build::PartRead]) -> (Body, Vec<(String, Body)>, Json) {
+    // the same sorting as the `importBody` feature's, so an editable import's remainder is this body
+    let s = ck_model::features::import_body::sort_sldprt(body, parts, "import", None);
     let parts = ck_model::features::import_step::parts_json("import", &s.parts);
-    let surfaces = s.surfaces.into_iter().map(|(k, b)| (ck_model::features::import_step::surface_id("import", k), b)).collect();
-    (s.solid, surfaces, parts)
+    (s.solid, s.surfaces, parts)
 }
 
 #[cfg(feature = "skp")]
@@ -913,6 +991,7 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
         }
         "probe" => ck_ops::section::probe_reply(&snapshot(cx)?.body, cx.msg),
         "recognize" => recognize_query(cx),
+        "fitQuadrics" => fit_quadrics_query(cx),
         "distance" | "maxDistance" => {
             let body = &snapshot(cx)?.body;
             // `tagB`: measure against the body of another tag (a rebuilt part against the original)
@@ -961,6 +1040,7 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
         "sketchFreedoms" => crate::sketch_q::freedoms_q(cx),
         "textMetrics" => ck_model::sketch::text::metrics_reply(cx.msg),
         "textOutline" => ck_model::sketch::text::outline_reply(cx.msg),
+        "equationCurve" => ck_model::sketch::equation::reply(cx.msg),
         "loadFont" => ck_model::sketch::text::load_font_reply(cx.msg),
         "unloadFont" => ck_model::sketch::text::unload_font_reply(cx.msg),
         "listFonts" => Ok(ck_model::sketch::text::list_fonts_reply()),
@@ -983,6 +1063,32 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
         "interference" => Ok(ck_ops::interference::reply(&snapshot(cx)?.body)),
         "bodyBoolean" => Ok(ck_model::features::combine::preview(&snapshot(cx)?.body, cx.msg)),
         "comb" => Ok(comb(&snapshot(cx)?.body, &cx.msg)),
+        "exportMesh" => {
+            let body = &snapshot(cx)?.body;
+            let quality = match cx.msg.get("quality") {
+                None | Some(Json::Null) => None,
+                Some(Json::Str(q)) => Some(q.as_str()),
+                Some(_) => return Err("exportMesh: quality must be a string".to_string()),
+            };
+            let chord = match cx.msg.get("chord_mm") {
+                None | Some(Json::Null) => None,
+                Some(j) => Some(j.as_f64().ok_or_else(|| "exportMesh: chord_mm must be a number of millimetres".to_string())?),
+            };
+            let (tol, raised) = ck_tess::mesh::export_tol(body, quality, chord).map_err(|e| format!("exportMesh: {e}"))?;
+            let m = ck_tess::mesh::tessellate_with(body, &tol).mesh;
+            let ids: Vec<Json> = body.face_ids().map(|f| Json::Str(body.face_id_str(f))).collect();
+            let failed: Vec<Json> = body.face_ids().enumerate().filter(|(i, _)| m.failed.contains(i)).map(|(_, f)| Json::Str(body.face_id_str(f))).collect();
+            Ok(Obj::new()
+                .put("chord", tol.chord)
+                .put("angle", tol.angle)
+                .put("chordRaised", raised)
+                .put("triangles", m.num_tris() as f64)
+                .put("faces", Json::Arr(ids))
+                .put("failed", Json::Arr(failed))
+                .put("positions", cx.bufs.f32(&m.positions))
+                .put("triFace", cx.bufs.i32(&m.tri_face))
+                .build())
+        }
         "curvatureMap" => {
             let body = &snapshot(cx)?.body;
             let tess = ck_tess::mesh::tessellate(body);
@@ -1179,6 +1285,20 @@ fn recognize_query(cx: &mut Cx) -> Result<Json, String> {
         let tag = format!("{}.rebuilt", cx.tag());
         let snap = Snapshot { body: b, sketches: vec![], asm: Default::default(), heal_base: None, surfaces: vec![] };
         cx.session.put(&tag, State { has_body: true, data: Some(Box::new(snap)) });
+    }
+    Ok(out)
+}
+
+/// `fitQuadrics`: facet fans of the tag's body refit as cylinders and cones (ck-ops `fit_quadrics`); the body is replaced when the fit is
+/// kept (valid, volume within `opts.volumeTol`), unless `opts.dryRun`.
+fn fit_quadrics_query(cx: &mut Cx) -> Result<Json, String> {
+    let (out, fitted) = ck_ops::fit_quadrics::request(&snapshot(cx)?.body, cx.msg);
+    if let Some(b) = fitted {
+        let tag = cx.tag();
+        if let Some(snap) = cx.session.get_mut(&tag).and_then(|s| s.data.as_mut()).and_then(|d| d.downcast_mut::<Snapshot>()) {
+            snap.body = b;
+            snap.heal_base = None;
+        }
     }
     Ok(out)
 }

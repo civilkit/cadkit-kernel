@@ -1,0 +1,16 @@
+[package]
+name = "ck-swedit"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ck-core = { path = "../ck-core" }
+ck-geom = { path = "../ck-geom" }
+ck-json = { path = "../ck-json" }
+ck-topo = { path = "../ck-topo" }
+ck-model = { path = "../ck-model" }
+ck-recog = { path = "../ck-recog" }
+ck-sldprt = { path = "../ck-sldprt" }
+ck-check = { path = "../ck-check" }
+ck-ops = { path = "../ck-ops" }
+ck-text = { path = "../ck-text" }

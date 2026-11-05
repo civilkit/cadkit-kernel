@@ -129,7 +129,7 @@ pub const KNOWN_TYPES: &[&str] = &[
     "fillpattern", "curvepattern", "moveBody", "mate", "insertPart", "scale", "surfaceExtrude", "surfaceRevolve",
     "surfacePlanar", "surfaceOffset", "deleteFace", "fill", "knit", "extend", "freeform", "trimSurface", "thicken",
     "cutWithSurface", "pipeCut", "deleteBody", "editCurve", "projectCurve", "helix", "thread", "combine", "bodyBoolean", "knurlBand", "importStep",
-    "repairPart",
+    "repairPart", "importBody",
 ];
 
 /// The error the oracle reports for each known type when the payload is
@@ -164,6 +164,7 @@ pub const EMPTY_FEATURE_ERRORS: &[(&str, &str)] = &[
     ("bodyBoolean", "nothingToCut"),
     ("knurlBand", "nothingToCut"),
     ("importStep", "importStepInvalid"),
+    ("importBody", "importBodyInvalid"),
     ("repairPart", "repairTarget"),
     ("scale", "nothingToCut"),
     ("mate", "nothingToCut"),
@@ -597,6 +598,19 @@ fn regen_sketch(state: &mut RegenState, exec: &mut dyn FeatureExec, f: &Feature,
             c.value = Some(v);
             changed = true;
         }
+    }
+    // equation curves: their points come from the formulas on every regen (sketch/equation.rs)
+    match crate::sketch::equation::apply(&mut sk, &state.vars) {
+        Ok(eq) => {
+            changed |= eq.changed;
+            for (eid, w) in eq.warnings {
+                state.result.warnings.push(RegenError {
+                    feature: f.id.clone(),
+                    error: FeatureError::new(w.code).with("entity", Json::Str(eid)).with("detail", Json::Str(w.detail)),
+                });
+            }
+        }
+        Err((eid, e)) => return Err(FeatureError::new(e.code()).with("entity", Json::Str(eid)).with("detail", Json::Str(e.message()))),
     }
     // the guarded solve keeps the coordinates when the solution shrinks a curve to a point (sketch/guard.rs)
     if changed {

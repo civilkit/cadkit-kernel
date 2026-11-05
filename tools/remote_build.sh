@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
 # Build the kernel wasm and run its checks on the CI box instead of this (busy) machine. See docs/remote-build.md.
-#   tools/remote_build.sh [--worktree DIR] [--checks gate,loft,apex,fillet,section,spline,thin,suite,lint,text,projcurve,dfm,all|none]
+#   tools/remote_build.sh [--worktree DIR] [--checks gate,loft,apex,fillet,section,spline,thin,suite,lint,text,projcurve,dfm,wasmparity,all|none]
 #                         [--cargo-test CRATE|"-p a -p b"|all] [--out DIR] [--no-sync-back] [--no-wasm] [--wasm-features LIST] [--jobs N] [--reset]
+#                         [--test NAME] [--env K=V ...] [--fetch REL] [--musl-libm]
+#   --test NAME: with --cargo-test, run only that integration test, with --nocapture; --env K=V: set for the cargo
+#   tests (`{RUN}` in V is the box's run directory); --fetch REL: copy {RUN}/REL back to --out/REL after the run
+#   --musl-libm: cargo test binaries use the wasm's libm (an LD_PRELOAD shim, tools/libm_shim; docs/wasm-parity.md)
 #   tools/remote_build.sh --clean [--worktree DIR]     remove this worktree's directories on the box
 #   tools/remote_build.sh --prune                      remove worktree directories on the box unused for 3 days
 # Host: ssh alias from $REMOTE_BUILD_HOST, else the host part of this repo's `ci` git remote (as tools/ci_push.sh).
 # Everything on the box lives under ~/ci-cad/remote-build; nothing outside it is written or deleted.
 set -uo pipefail
 WT=""; CHECKS="gate"; CTEST=""; OUT=""; SYNC_BACK=1; MODE=run; RESET=0; NOWASM=0; WASMF=""; JOBS="${REMOTE_BUILD_JOBS:-12}"
-usage() { sed -n 2,7p "$0" >&2; exit 64; }
+TESTNAME=""; FETCH=""; ENVS=()
+usage() { sed -n 2,11p "$0" >&2; exit 64; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --worktree) WT="$2"; shift 2 ;;
@@ -18,8 +23,12 @@ while [ $# -gt 0 ]; do
     --no-sync-back) SYNC_BACK=0; shift ;;
     --jobs) JOBS="$2"; shift 2 ;;
     --reset) RESET=1; shift ;;
+    --test) TESTNAME="$2"; shift 2 ;;
+    --env) ENVS+=("$2"); shift 2 ;;
+    --fetch) FETCH="$2"; shift 2 ;;
     --no-wasm) NOWASM=1; shift ;;
     --wasm-features) WASMF="$2"; shift 2 ;;
+    --musl-libm) ENVS+=("CK_MUSL_LIBM=1"); shift ;;
     --clean) MODE=clean; shift ;;
     --prune) MODE=prune; shift ;;
     -h|--help) usage ;;
@@ -27,6 +36,9 @@ while [ $# -gt 0 ]; do
   esac
 done
 case "$JOBS" in ''|*[!0-9]*) echo "--jobs must be a number" >&2; exit 64 ;; esac
+case "$TESTNAME" in *[!A-Za-z0-9_-]*) echo "bad --test" >&2; exit 64 ;; esac
+case "$FETCH" in /*|*..*|*[!A-Za-z0-9_./-]*) echo "bad --fetch" >&2; exit 64 ;; esac
+for e in ${ENVS[@]+"${ENVS[@]}"}; do case "$e" in [A-Za-z_]*=*) ;; *) echo "bad --env $e" >&2; exit 64 ;; esac; done
 WT=$(cd "${WT:-$(dirname "$0")/..}" && pwd -P) || { echo "bad --worktree" >&2; exit 64; }
 [ -f "$WT/Cargo.toml" ] && [ -d "$WT/crates/ck-wasm" ] || { echo "not a kernel worktree: $WT" >&2; exit 64; }
 OUT="${OUT:-$WT/target/wasm32-unknown-unknown/release}"
@@ -68,7 +80,8 @@ echo "synced in $(( $(date +%s) - T0 ))s"
 # 2. build + checks on the box (script on stdin, every argument quoted)
 read -r -d '' REMOTE <<'RSCRIPT'
 set -u
-NAME=$1; CHECKS=$2; CTEST=$3; JOBS=$4; NOWASM=${5:-0}; WASMF=${6:-}; REV=${7:-}
+NAME=$1; CHECKS=$2; CTEST=$3; JOBS=$4; NOWASM=${5:-0}; WASMF=${6:-}; REV=${7:-}; TESTNAME=${8:-}
+shift 8 2>/dev/null || shift $#
 RB="$HOME/ci-cad/remote-build"
 case "$NAME" in ''|*/*|.*) echo "bad name"; exit 2;; esac
 SRC="$RB/wt/$NAME"; RUN="$RB/runs/$NAME"; export CARGO_TARGET_DIR="$RB/target/$NAME"
@@ -76,6 +89,8 @@ export RUSTUP_HOME="$HOME/ci-cad/rustup" CARGO_HOME="$HOME/ci-cad/cargo" PATH="$
 export PYTHONUTF8=1
 cd "$SRC" || exit 2
 touch "$RUN/.last-used"; R="$RUN/remote_results.txt"; : > "$R"
+touch "$RUN/.parity-start"   # a native table older than this run is not compared (wasmparity)
+TENV=(); for e in "$@"; do TENV+=("${e//\{RUN\}/$RUN}"); done   # --env pairs for the cargo tests
 free=$(df -BG --output=avail "$RB" | tail -1 | tr -dc '0-9')
 echo "box: cores=$(nproc) load=$(cut -d' ' -f1-3 /proc/loadavg) free=${free}G"
 if [ "${free:-0}" -lt 15 ]; then echo "FAIL: less than 15G free on the box"; echo "FAIL disk 0" >> "$R"; exit 1; fi
@@ -96,9 +111,19 @@ exec 9>"$RB/build.lock"
 echo "waiting for the build lock"; flock 9; echo "build lock taken"
 [ "$NOWASM" = 1 ] || step build-wasm env CK_BUILD_REV="$REV" nice -n 5 cargo build -q -p ck-wasm ${WASMF:+--features "$WASMF"} --target wasm32-unknown-unknown --release
 [ -s "$W" ] && echo "wasm bytes $(wc -c < "$W")"
+# --musl-libm: the cargo test binaries run with the host libm's transcendental functions replaced by the `libm` crate's
+# (the musl port the wasm32 build uses), through an LD_PRELOAD shim set as the cargo runner, so native float results
+# match the wasm's (docs/wasm-parity.md). Only the test binaries are preloaded, never cargo or rustc.
+case " ${TENV[*]-} " in *" CK_MUSL_LIBM=1 "*)
+  SHIM="$CARGO_TARGET_DIR/libm_shim/release/liblibm_shim.so"
+  ( cd tools/libm_shim && CARGO_TARGET_DIR="$CARGO_TARGET_DIR/libm_shim" cargo build -q --release --offline ) && [ -s "$SHIM" ] \
+    && TENV+=("CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER=env LD_PRELOAD=$SHIM") && echo "musl libm shim: $SHIM" \
+    || { echo "FAIL: the libm shim did not build"; rec musl-libm 1 0; } ;;
+esac
 
 cargo_test_args() { # lib, bins and integration tests except ffi_diff (needs the dev machine's oracle library)
   local c=$1 t a="-p $1 --profile fast --lib --bins"
+  if [ -n "$TESTNAME" ]; then echo "-p $1 --profile fast --test $TESTNAME -- --nocapture"; return; fi
   for t in $(ls "crates/$c/tests/"*.rs 2>/dev/null | sed -E 's|.*/([^/]+)\.rs$|\1|'); do [ "$t" = ffi_diff ] || a="$a --test $t"; done
   echo "$a"
 }
@@ -106,7 +131,7 @@ if [ -n "$CTEST" ]; then
   if [ "$CTEST" = all ]; then CRATES=$(ls crates | grep '^ck-' | sed 's/^ck-//'); else CRATES=$(printf '%s\n' $CTEST | grep -v '^-p$' | sed 's/^ck-//'); fi
   for c in $CRATES; do
     [ -d "crates/ck-$c" ] || { echo "no crate ck-$c"; rec "cargo-test-$c" 1 0; continue; }
-    step "cargo-test-$c" nice -n 5 cargo test --no-fail-fast $(cargo_test_args "ck-$c")
+    step "cargo-test-$c" env ${TENV[@]+"${TENV[@]}"} nice -n 5 cargo test --no-fail-fast $(cargo_test_args "ck-$c")
   done
 fi
 flock -u 9; exec 9>&-    # checks are plain node: release the build lock
@@ -131,6 +156,9 @@ if [ -s "$W" ]; then
       text) step text-corpus node tools/text_corpus.mjs --wasm "$W" --quiet ;;
       projcurve) step project-curve-corpus node tools/project_curve_corpus.mjs --wasm "$W" --quiet ;;
       dfm) step dfm node tools/dfm_check.mjs --wasm "$W" --quiet ;;
+      # the fillet table through the wasm, compared with the native table's BLEND_JSON when this run wrote one (tools/wasm_parity.sh)
+      wasmparity) NJ="$RUN/blend/table.json"; [ -s "$NJ" ] && [ "$NJ" -nt "$RUN/.parity-start" ] || NJ=""
+        step wasmparity env ${TENV[@]+"${TENV[@]}"} node tools/wasm_parity.mjs --wasm "$W" ${NJ:+--native "$NJ"} --json "$RUN/parity/parity.json" ;;
       suite) for s in $SUITE; do step "check-$s" node "tools/${s}_check.mjs" --wasm "$W"; done ;;
       *) echo "unknown check $c"; rec "check-$c" 64 0 ;;
     esac
@@ -140,7 +168,7 @@ if [ -s "$W" ]; then
     echo "== gate output"; cat "$RUN/gate.out"
     rec gate "$(cat "$RUN/gate.rc")" "$(cat "$RUN/gate.secs")"; rm -f "$RUN/gate.rc" "$RUN/gate.secs" "$RUN/gate.out"
   fi
-else
+elif [ -n "$CH" ]; then
   echo "no wasm built: checks skipped"; [ "$FAILS" = 0 ] && FAILS=1
 fi
 echo "box load after: $(cut -d' ' -f1-3 /proc/loadavg)"
@@ -150,7 +178,7 @@ RSCRIPT
 # the commit the wasm is built from, reported by `ping` as `build` (`-dirty`: uncommitted changes in the tracked files)
 REV=$(git -C "$WT" rev-parse --short=12 HEAD 2>/dev/null || true)
 [ -n "$REV" ] && [ -n "$(git -C "$WT" status --porcelain --untracked-files=no 2>/dev/null)" ] && REV="$REV-dirty"
-QA=""; for a in "$NAME" "$CHECKS" "$CTEST" "$JOBS" "$NOWASM" "$WASMF" "$REV"; do QA="$QA $(printf %q "$a")"; done
+QA=""; for a in "$NAME" "$CHECKS" "$CTEST" "$JOBS" "$NOWASM" "$WASMF" "$REV" "$TESTNAME" ${ENVS[@]+"${ENVS[@]}"}; do QA="$QA $(printf %q "$a")"; done
 printf '%s\n' "$REMOTE" | rsh "bash -s -- $QA"
 RC=$?
 [ "$RC" = 255 ] && echo "ssh connection failed or dropped" >&2
@@ -162,6 +190,10 @@ if [ "$SYNC_BACK" = 1 ]; then
     && echo "wasm -> $OUT/ck_wasm.wasm" || echo "(no wasm to copy back)"
   rsync -aq -e "ssh ${SSHO[*]}" "$H:ci-cad/remote-build/runs/$NAME/remote_results.txt" "$OUT/remote_results.txt" 2>/dev/null
   [ -f "$OUT/remote_results.txt" ] && { echo "--- $OUT/remote_results.txt"; cat "$OUT/remote_results.txt"; }
+fi
+if [ -n "$FETCH" ]; then
+  mkdir -p "$OUT/$FETCH"
+  rsync -aq -e "ssh ${SSHO[*]}" "$H:ci-cad/remote-build/runs/$NAME/$FETCH/" "$OUT/$FETCH/" 2>/dev/null && echo "fetched -> $OUT/$FETCH" || echo "(nothing fetched)"
 fi
 echo "total $(( $(date +%s) - T0 ))s, exit $RC"
 exit "$RC"

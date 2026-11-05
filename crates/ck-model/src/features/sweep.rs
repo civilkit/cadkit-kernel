@@ -215,17 +215,12 @@ pub(crate) fn sketch3_path(j: &Json) -> Result<Vec<PathSeg>, FeatureError> {
     Ok(vec![PathSeg::Spline { sp: std::sync::Arc::new(sp), rev: false }])
 }
 
-/// `sweep`.
-pub fn exec_sweep(br: &Brep, state: &mut RegenState, f: &Feature) -> Result<Tool, FeatureError> {
-    let FeatureKind::Sweep { op, path, surface, .. } = &f.kind else { unreachable!() };
-    let sk = f
-        .raw
-        .get("sketch")
-        .and_then(|s| s.as_str())
-        .and_then(|s| state.sketch(s))
-        .ok_or_else(|| FeatureError::new(codes::MISSING_SKETCH))?;
+/// The pieces of a sweep / path-pattern `path`: `{kind:"curve", id}` (a helix, or any other curve feature as a
+/// spline through its points) or `{kind:"sketch", id}` (an open chain of a sketch, or a `sketch3d` spline).
+/// No path, or one that does not resolve, is `missingPath`.
+pub(crate) fn path_segs(br: &Brep, state: &RegenState, path: Option<&GeomRef>) -> Result<Vec<PathSeg>, FeatureError> {
     let missing = || FeatureError::new(MISSING_PATH);
-    let segs = match path.as_ref().ok_or_else(missing)? {
+    Ok(match path.ok_or_else(missing)? {
         GeomRef::Curve(id) => {
             match br.helices.iter().rev().find(|(i, _)| i == id).map(|(_, h)| *h) {
                 Some(h) => vec![PathSeg::Helix { h, rev: false }],
@@ -241,7 +236,19 @@ pub fn exec_sweep(br: &Brep, state: &mut RegenState, f: &Feature) -> Result<Tool
             }
         }
         _ => return Err(missing()),
-    };
+    })
+}
+
+/// `sweep`.
+pub fn exec_sweep(br: &Brep, state: &mut RegenState, f: &Feature) -> Result<Tool, FeatureError> {
+    let FeatureKind::Sweep { op, path, surface, .. } = &f.kind else { unreachable!() };
+    let sk = f
+        .raw
+        .get("sketch")
+        .and_then(|s| s.as_str())
+        .and_then(|s| state.sketch(s))
+        .ok_or_else(|| FeatureError::new(codes::MISSING_SKETCH))?;
+    let segs = path_segs(br, state, path.as_ref())?;
     let profile = sketch_profile(sk)?;
     let combine = Combine::of(*op);
     if combine == Combine::Cut && br.body.is_none() {

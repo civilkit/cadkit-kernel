@@ -302,6 +302,21 @@ Recognises the features of a body that was imported (a solid with no history) an
 
 Result keys: `features` (a feature list in part-document form that rebuilds the body), `report` (the recognition strategy, the features and what could not be explained), `verify` (the comparison of the rebuilt body with the input body, or `null`), `errors` (strings from the rebuild), `unexplainedArea`, `unexplainedAreaFraction`, `applied`. For the plate with a hole the answer is the plate sketch and extrude, a hole feature, and `strategy: "prism"`. No body: `null`.
 
+### fitQuadrics
+
+Refits the facet fans of an imported mesh body (rings and arcs of planar strips) as cylinders and cones and, when the result validates and keeps the volume, replaces the tag's body ([Cylinders and cones from facets](../io/fit-quadrics.md)).
+
+| Parameter | Type | Default | Meaning |
+|---|---|---|---|
+| `opts.tol` | number | 0.5 % of the diagonal | Largest facet-to-surface deviation (chord sag), mm. |
+| `opts.fitTol` | number | `tol` / 10 | Largest corner-to-surface deviation, mm. |
+| `opts.maxStepDeg`, `opts.minStrips`, `opts.smoothDeg` | number | 30, 3, 20 | Largest angle between rails, fewest strips, crease below which coaxial groups are a curved profile. |
+| `opts.cones`, `opts.merge` | boolean | `true` | Recognise cones; merge coplanar faces first. |
+| `opts.volumeTol` | number | 0.05 | Keep the fit only if the relative volume change is smaller. |
+| `opts.dryRun` | boolean | `false` | Report without changing the body. |
+
+Result keys: `applied`, `reason` (`nothing`, `invalid`, `volumeChanged`, `dryRun`), `faces`, `volume`, `issues`, `groups`, `declined`. No body: `null`.
+
 ## Geometry
 
 ### inspect
@@ -799,7 +814,7 @@ The result's `import` is `{ solids, faces, unitScale, warnings, heal: { fixed, r
 
 ### importSldprt
 
-`data` is the base64 of a `.SLDPRT` file (required: `importSldprt: data (the .SLDPRT file as base64) is required`); `name` is optional. A file that is not a SolidWorks part answers `errors` `[ ["import", { "code": "container.format", "params": { "message": "neither an OLE2 compound file nor a SolidWorks block container" } }] ]`. See [SolidWorks](../io/sldprt.md).
+`data` is the base64 of a `.SLDPRT` file (required: `importSldprt: data (the .SLDPRT file as base64) is required`); `name` is optional. The result's `import` describes the body read (`solids`, `faces`, `container`, `schema`, ...) and the file's metadata: `features` (the feature tree with ids, types and dimension values), `configurations`, `material`, `customProperties`, `configurationProperties`, `units`, `versions`, `thumbnail` (base64 PNG or `null`), `faceAttributes` (colour and building feature of each face, by face id) and `bodyAttributes`. User names and paths recorded in the file are not returned. A failed import still carries the metadata in `import` when the file's container opens. A file that is not a SolidWorks part answers `errors` `[ ["import", { "code": "container.format", "params": { "message": "neither an OLE2 compound file nor a SolidWorks block container" } }] ]`. See [SolidWorks](../io/sldprt.md).
 
 ### importSkp
 

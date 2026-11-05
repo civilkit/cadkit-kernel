@@ -18,6 +18,7 @@ ck-heal = { path = "../ck-heal" }
 ck-ops = { path = "../ck-ops" }
 ck-io = { path = "../ck-io" }
 ck-sldprt = { path = "../ck-sldprt" }
+ck-swedit = { path = "../ck-swedit" }
 ck-skp = { path = "../ck-skp", optional = true }
 ck-tess = { path = "../ck-tess" }
 ck-recog = { path = "../ck-recog" }

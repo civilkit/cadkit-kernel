@@ -1,0 +1,19 @@
+# LD_PRELOAD shim for the wasm parity check (docs/wasm-parity.md): replaces the host C libm's transcendental functions
+# with the pure-Rust `libm` crate (the musl port the wasm32 build links through compiler-builtins), so a native Linux
+# test binary computes them bit-for-bit like the wasm. Not a workspace member; built only on the CI box.
+[package]
+name = "libm_shim"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+libm = "0.2"
+
+[workspace]
+
+[profile.release]
+panic = "abort"

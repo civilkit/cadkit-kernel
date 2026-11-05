@@ -20,13 +20,13 @@
 //! and a non-finite result is an error (`=1e400` -> badExpression).
 //!
 //! The functions of `MULTI` (`min max pow mod hypot atan2 round floor ceil trunc exp ln log10 asin
-//! acos atan`) are called only as `name(`, in lower case, so a variable of that name still works
+//! acos atan sinh cosh tanh asinh acosh atanh`) are called only as `name(`, in lower case, so a variable of that name still works
 //! everywhere else and no expression that was valid keeps its meaning changed. Inside the
 //! parentheses of such a call a `,` separates the arguments instead of being a decimal separator
 //! (`max(1,5)` is 5; write a point for a decimal there, `max(1.5, 2)`). Every
 //! argument and every result must be finite (`ln(0)`, `asin(2)`, `mod(1,0)` are errors); `round`
 //! takes halves away from zero, `mod` keeps the sign of its first argument, the inverse
-//! trigonometric functions return degrees.
+//! trigonometric functions return degrees; the hyperbolic ones take and give plain numbers.
 //!
 //! Wire behaviour pinned with the oracle (extrude `depth` field):
 //! `"=w*2"` (w=30) -> 60, `"=2^3^2"` -> 512, `"=-2^2"` -> -4, `"=cos(60)*10"`
@@ -88,7 +88,7 @@ pub struct VarResolution {
 
 const FUNCS: [&str; 5] = ["sqrt", "sin", "cos", "tan", "abs"];
 /// Functions called as `name(args)`: (name, number of arguments; 0 = one or more).
-const MULTI: [(&str, usize); 16] = [
+const MULTI: [(&str, usize); 22] = [
     ("min", 0),
     ("max", 0),
     ("pow", 2),
@@ -105,6 +105,12 @@ const MULTI: [(&str, usize); 16] = [
     ("asin", 1),
     ("acos", 1),
     ("atan", 1),
+    ("sinh", 1),
+    ("cosh", 1),
+    ("tanh", 1),
+    ("asinh", 1),
+    ("acosh", 1),
+    ("atanh", 1),
 ];
 
 fn call_multi(f: &str, a: &[f64]) -> f64 {
@@ -125,7 +131,14 @@ fn call_multi(f: &str, a: &[f64]) -> f64 {
         "log10" => a[0].log10(),
         "asin" => a[0].asin() * deg,
         "acos" => a[0].acos() * deg,
-        _ => a[0].atan() * deg,
+        "atan" => a[0].atan() * deg,
+        // hyperbolic: plain numbers in and out (no degrees); a result outside the domain (acosh below 1, atanh at or beyond 1) or past the double range is not finite and is an error
+        "sinh" => a[0].sinh(),
+        "cosh" => a[0].cosh(),
+        "tanh" => a[0].tanh(),
+        "asinh" => a[0].asinh(),
+        "acosh" => a[0].acosh(),
+        _ => a[0].atanh(),
     }
 }
 
@@ -423,6 +436,12 @@ pub fn identifiers(src: &str) -> Vec<String> {
     out
 }
 
+/// True for a word the grammar reads by itself (`pi`, a function name, a unit), so it is never an unknown variable.
+pub fn is_builtin_word(name: &str) -> bool {
+    let low = name.to_ascii_lowercase();
+    reserved(&low) || MULTI.iter().any(|(m, _)| *m == name)
+}
+
 fn reserved(name_lower: &str) -> bool {
     name_lower == "pi" || FUNCS.contains(&name_lower) || UNITS.iter().any(|(u, _)| *u == name_lower)
 }
@@ -573,6 +592,47 @@ mod tests {
         close("-max(1, 2)^2", -4.0);
         close("max (1, 2)", 2.0); // a space before the parenthesis
         close("sqrt(2,25)", 1.5); // the old functions keep the decimal comma
+    }
+
+    #[test]
+    fn hyperbolic_functions() {
+        // unitless in and out (unlike the trigonometric ones, which work in degrees)
+        close("sinh(0)", 0.0);
+        close("cosh(0)", 1.0);
+        close("tanh(0)", 0.0);
+        close("sinh(1)", 1.1752011936438014);
+        close("cosh(1)", 1.5430806348152437);
+        close("tanh(1)", 0.7615941559557649);
+        close("sinh(-1)", -1.1752011936438014);
+        close("asinh(1)", 0.881373587019543);
+        close("acosh(2)", 1.3169578969248166);
+        close("atanh(0.5)", 0.5493061443340549);
+        close("asinh(sinh(2.5))", 2.5);
+        close("acosh(cosh(2.5))", 2.5);
+        close("atanh(tanh(0.7))", 0.7);
+        close("cosh(1)^2 - sinh(1)^2", 1.0);
+        close("2 * sinh(1) + 1 cm", 12.350402387287603); // nests, takes units on its numbers
+        close("acosh(1)", 0.0); // the edge of the domain
+        close("tanh(1000)", 1.0); // saturates, still finite
+    }
+
+    #[test]
+    fn hyperbolic_domain_errors() {
+        for bad in [
+            "acosh(0.5)", "acosh(-1)", "atanh(1)", "atanh(-1)", "atanh(1.5)", "atanh(-2)", // outside the domain
+            "sinh(1000)", "cosh(1000)", "sinh(-1000)", // overflow to infinity
+            "sinh()", "cosh(1,2)", "tanh(1,2)", "asinh()", "asinh(1,2)", "Sinh(1)", "sinh 1",
+        ] {
+            assert_eq!(ev(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn hyperbolic_names_stay_variables() {
+        let mut v = Vars::new();
+        v.set("sinh", 3.0);
+        assert_eq!(eval("=sinh*2", Some(&v)), Ok(6.0));
+        assert_eq!(eval("=sinh(0)", Some(&v)), Ok(0.0));
     }
 
     #[test]

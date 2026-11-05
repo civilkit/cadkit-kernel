@@ -578,7 +578,7 @@ fn patch_surface(
                 rad = rad.normalize();
                 let p = grid[i][j];
                 grid[i][j] = p - rad * ((p - q).dot(rad)) * g1w(depth);
-                if std::env::var_os("CK_BLEND_DEBUG").is_some() && depth == 1 && (i == n / 4 || i == 3 * n / 4) {
+                if super::diag::on() && depth == 1 && (i == n / 4 || i == 3 * n / 4) {
                     eprintln!("g1 row: i={i} j={j} sc=({:.2},{:.2},{:.2}) shift={:.6}", sc.x, sc.y, sc.z, (p - grid[i][j]).len());
                 }
             }
@@ -660,7 +660,7 @@ fn boundary_pcurve(surf: &Surface, c: &Curve, t0: f64, t1: f64, tol: f64) -> Opt
             let b = ck_geom::fit::interpolate(&uvs, 3, ck_geom::fit::Param::ChordLength).ok()?;
             return Some(ck_geom::curve2::Curve2::BSpline(b.reparam(t0, t1)));
         }
-        if std::env::var_os("CK_BLEND_DEBUG").is_some() {
+        if super::diag::on() {
             let dmax = (0..=8).map(|k| {
                 let t = t0 + (t1 - t0) * k as f64 / 8.0;
                 let p = c.eval(t);
@@ -741,7 +741,7 @@ fn weld_seams(b: &mut Body, tol: f64) {
 }
 
 fn refit_pcurves(b: &mut Body, tol: f64) {
-    let dbg = std::env::var_os("CK_BLEND_DEBUG").is_some();
+    let dbg = super::diag::on();
     let mut fixes: Vec<(ck_topo::body::CoedgeId, Option<ck_geom::curve2::Curve2>)> = vec![];
     let mut flips: Vec<EdgeId> = vec![];
     for issue in ck_topo::check::check(b, tol) {
@@ -1012,7 +1012,7 @@ pub(super) fn splice(body: &Body, c: &Corner, feature: &str, tag: usize, tol: f6
             false
         };
         if hit {
-            if std::env::var_os("CK_BLEND_DEBUG").is_some() {
+            if super::diag::on() {
                 eprintln!("hook: P0 <-> {}", cut.face_id_str(other));
             }
             Some(Vec::new())
@@ -1022,7 +1022,7 @@ pub(super) fn splice(body: &Body, c: &Corner, feature: &str, tag: usize, tol: f6
     };
     let mut out: Option<Body> = None;
     let dbg = |m: &str| {
-        if std::env::var_os("CK_BLEND_DEBUG").is_some() {
+        if super::diag::on() {
             eprintln!("overhang union: {m}");
         }
     };

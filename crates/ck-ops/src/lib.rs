@@ -25,6 +25,7 @@ pub mod analysis;
 pub mod section;
 pub mod shell;
 mod shell_check;
+pub mod fit_quadrics;
 pub mod simplify;
 pub mod spline_path;
 pub mod surfacing;

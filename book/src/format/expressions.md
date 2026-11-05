@@ -69,8 +69,10 @@ unit   := mm | cm | m | in | deg | °         case-insensitive
 | `round` | 1 | the nearest whole number, halves away from zero |
 | `floor`, `ceil`, `trunc` | 1 | rounded down, up, towards zero |
 | `exp`, `ln`, `log10` | 1 | `e` to the power, natural and decimal logarithm |
+| `sinh`, `cosh`, `tanh` | 1 | hyperbolic functions of a plain number (not degrees) |
+| `asinh`, `acosh`, `atanh` | 1 | their inverses, plain numbers (not degrees); `acosh` needs 1 or more, `atanh` needs a number between -1 and 1 (both ends excluded) |
 
-  A wrong number of arguments, an argument or a result that is not finite (`ln(0)`, `asin(2)`, `mod(1, 0)`), or a name in capitals (`MAX(1, 2)`) is a syntax error. These names are not reserved: a variable may still be called `max` or `round`, and `max * 2` is that variable times 2; only a name followed by `(` is the function.
+  A wrong number of arguments, an argument or a result that is not finite (`ln(0)`, `asin(2)`, `mod(1, 0)`, `acosh(0.5)`, `atanh(1)`, `sinh(1000)`), or a name in capitals (`MAX(1, 2)`) is a syntax error. These names are not reserved: a variable may still be called `max` or `round`, and `max * 2` is that variable times 2; only a name followed by `(` is the function.
 - Units scale a number to millimetres or degrees: `cm` is 10, `m` is 1000, `in` is 25.4, `mm`, `deg` and `°` are 1. A unit directly after a name or a parenthesis is a syntax error.
 - A result that is not finite (`1/0`, `1e400`) is a syntax error.
 

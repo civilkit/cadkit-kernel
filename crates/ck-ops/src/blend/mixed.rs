@@ -51,7 +51,10 @@ pub(super) fn line_edge_concave(b: &Body, e: EdgeId) -> Option<bool> {
 pub fn fillet_mixed(b: &Body, edges: &[(String, String, Vec3)], radii: &[f64], feature: &str, tol: f64) -> Option<Result<Body, BlendError>> {
     let n = edges.len();
     let eids: Vec<EdgeId> = edges.iter().map(|(fa, fb, at)| find_edge(b, fa, fb, *at)).collect::<Option<_>>()?;
-    let conc: Vec<bool> = eids.iter().map(|&e| line_edge_concave(b, e)).collect::<Option<_>>()?;
+    let Some(conc) = eids.iter().map(|&e| line_edge_concave(b, e)).collect::<Option<Vec<bool>>>() else {
+        // curved outlines (a flank meeting a hub, arcs in the rim): see super::torus_corner
+        return super::torus_corner::fillet_mixed_curved(b, edges, radii, feature, tol);
+    };
     if !conc.iter().any(|&c| c) || conc.iter().all(|&c| c) {
         return None;
     }
@@ -115,7 +118,7 @@ pub fn fillet_mixed(b: &Body, edges: &[(String, String, Vec3)], radii: &[f64], f
     run(b, edges, &wall, &tops, [rw, rr], feature, tol).ok().map(Ok)
 }
 
-fn run(b: &Body, edges: &[(String, String, Vec3)], wall: &[bool], tops: &[(usize, FaceId)], r: [f64; 2], feature: &str, tol: f64) -> Result<Body, BlendError> {
+pub(super) fn run(b: &Body, edges: &[(String, String, Vec3)], wall: &[bool], tops: &[(usize, FaceId)], r: [f64; 2], feature: &str, tol: f64) -> Result<Body, BlendError> {
     let n = edges.len();
     let spec_a = Spec::Fillet(r[0], FilletProfile::Circular);
     let spec_b = Spec::Fillet(r[1], FilletProfile::Circular);
@@ -148,17 +151,20 @@ fn run(b: &Body, edges: &[(String, String, Vec3)], wall: &[bool], tops: &[(usize
     }
     let mut out = super::build::blend_edges_tangent_chain(&body1, &sel_b, spec_b, feature, tol)?;
     // blend names follow the selection: stage A's `B<j>` is pick `a_idx[j]`, stage B's `B<j>` is `b_idx[j]`
-    let renames: Vec<(usize, u32)> = out
-        .face_ids()
-        .filter_map(|f| {
-            let nm = &out.face(f).name;
-            match nm.role {
-                Role::Blend(k) if nm.feature == pre => Some((f.idx(), a_idx[k as usize] as u32)),
-                Role::Blend(k) if nm.feature == feature => Some((f.idx(), b_idx[k as usize] as u32)),
-                _ => None,
-            }
-        })
-        .collect();
+    // (a face past the selection, made by the tangent chain, takes a fresh index after all picks)
+    let mut spare = next as u32;
+    let mut renames: Vec<(usize, u32)> = vec![];
+    for f in out.face_ids() {
+        let nm = &out.face(f).name;
+        let (list, is_a) = match nm.role {
+            Role::Blend(_) if nm.feature == pre => (&a_idx, true),
+            Role::Blend(_) if nm.feature == feature => (&b_idx, false),
+            _ => continue,
+        };
+        let Role::Blend(k) = nm.role else { continue };
+        let _ = is_a;
+        renames.push((f.idx(), list.get(k as usize).map_or_else(|| { spare += 1; spare - 1 }, |&i| i as u32)));
+    }
     for (fi, k) in renames {
         out.faces[fi].name.feature = feature.to_string();
         out.faces[fi].name.role = Role::Blend(k);

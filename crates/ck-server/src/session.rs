@@ -98,8 +98,13 @@ pub type ImportSldprtHook = fn(cx: &mut Cx) -> Result<(Json, Option<State>), Str
 /// Same contract as [`ImportSatHook`].
 pub type ImportSkpHook = fn(cx: &mut Cx) -> Result<(Json, Option<State>), String>;
 
+/// Engine hook for `sldprtHistory`: rebuilds the feature history of a SolidWorks part file (base64 in `msg.data`) as a
+/// part document. Read only: answers the reply and leaves the session alone.
+pub type SldprtHistoryHook = fn(cx: &mut Cx) -> Result<Json, String>;
+
 #[derive(Default, Clone, Copy)]
 pub struct Hooks {
+    pub sldprt_history: Option<SldprtHistoryHook>,
     pub import_sat: Option<ImportSatHook>,
     pub import_skp: Option<ImportSkpHook>,
     pub import_sldprt: Option<ImportSldprtHook>,

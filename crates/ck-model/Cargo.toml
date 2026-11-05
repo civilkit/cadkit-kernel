@@ -13,6 +13,7 @@ ck-check = { path = "../ck-check" }
 ck-text = { path = "../ck-text" }
 ck-io = { path = "../ck-io" }
 ck-heal = { path = "../ck-heal" }
+ck-sldprt = { path = "../ck-sldprt" }
 
 [dev-dependencies]
 ck-tess = { path = "../ck-tess" }

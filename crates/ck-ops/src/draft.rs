@@ -390,6 +390,11 @@ fn solve_vertex(mut p: Vec3, surfs: &[&Surface]) -> Option<Vec3> {
             let (u, v) = s.closest_param(p);
             let q = s.eval(u, v);
             let n = s.normal(u, v).normalize();
+            // a face tangent to one already taken (the drafted neighbours of a smooth profile join G1) shares its
+            // normal at the vertex and contains it too: it adds no equation, only a singular matrix
+            if rows.iter().any(|r: &(Vec3, f64)| r.0.dot(n).abs() > 1.0 - 1e-9) {
+                continue;
+            }
             rows.push((n, (p - q).dot(n)));
         }
         let step = match rows.len() {
@@ -595,8 +600,13 @@ fn rebuild(b: &Body, edits: &[Edit], tips: &[Tip], tol: f64) -> Result<Body, Dra
                 return Err(failed(&format!("edge {} with {} faces", e.0, fs.len())));
             }
             let (fa, fb) = if fs[0].0 <= fs[1].0 { (fs[0], fs[1]) } else { (fs[1], fs[0]) };
-            let c = new_edge_curve(&nb.faces[fa.idx()].surface, &nb.faces[fb.idx()].surface, &ed.curve, near, (p0, p1, ed.t0, ed.t1))
-                .ok_or_else(|| {
+            let mut c = new_edge_curve(&nb.faces[fa.idx()].surface, &nb.faces[fb.idx()].surface, &ed.curve, near, (p0, p1, ed.t0, ed.t1));
+            if c.is_none() && matches!(ed.curve, Curve::Line { .. }) && p0.dist(p1) > 1e-9 {
+                // two drafted faces that join tangentially touch along a ruling: the surfaces intersect in a double
+                // curve the marcher does not trace, and the edge is the straight line between its new ends
+                c = Some(Curve::line_through(p0, p1));
+            }
+            let c = c.ok_or_else(|| {
                     if std::env::var_os("CK_DRAFT_DBG").is_some() {
                         eprintln!(
                             "DRAFT no curve: edge {} {} / {} curve {:?} near {:?}\n  A {:?}\n  B {:?}",

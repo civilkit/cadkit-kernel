@@ -64,6 +64,7 @@ dependencies = [
  "ck-io",
  "ck-json",
  "ck-ops",
+ "ck-sldprt",
  "ck-tess",
  "ck-text",
  "ck-topo",

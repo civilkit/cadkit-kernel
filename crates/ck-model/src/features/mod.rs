@@ -27,8 +27,9 @@
 //! | helix           | sketch, definedBy, pitch, revolutions, height, startAngle, leftHand, reverse, visible |
 //! | rib             | sketch, thickness, flip |
 //! | lip             | kind ("lip"), faces, edges, width, height |
-//! | lpattern        | seeds, dir ({kind:axis}), spacing, count, reverse |
+//! | lpattern        | seeds, dir ({kind:axis}), spacing, count, reverse, distanceType, extent, to, toOffset; dir2 ... toOffset2 (see pattern_place.rs) |
 //! | cpattern        | seeds, bodies, axis ({kind:axis}), count, angle, equal, reverse |
+//! | curvepattern    | seeds, path ({kind:sketch\|curve}), count, spacing, distanceType, extent, start, startFraction, flip, orientation (see pattern_place.rs) |
 //! | mirror          | seeds, plane ({kind:std}), body |
 //! | trimSurface     | surface, surfaces, toolSurface, plane, mutual, flip, deleteTool |
 //! | surfacePlanar   | sketch |
@@ -43,6 +44,7 @@
 //! | moveBody        | bodies ({face}/{surface}/{feature}), translate, rotate{axis,origin,angle}, copy (see move_body.rs) |
 //! | scale           | factor (number or [sx,sy,sz]), at, bodies as moveBody (see scale.rs) |
 //! | importStep      | blob (key into the part's `blobs`) or step (inline text), body, heal (see import_step.rs) |
+//! | importBody      | format (sldprt), blob (key into the part's `blobs`, base64 of the file), replace, body (see import_body.rs) |
 //! | repairPart      | target (an importStep), gap, patchHoles (see repair_part.rs) |
 //! | knurlBand       | axis, center, radius, from, to, pattern, count, depth, angle, helixAngle, ringPitch (see knurl_band.rs) |
 //! | thread          | face, standard, size, class, length, hand, start, modeled (parsed from the raw DOM, see thread.rs) |
@@ -61,6 +63,7 @@ pub mod extrude;
 pub mod extrude_object;
 pub mod hole;
 pub mod known_fields;
+pub mod import_body;
 pub mod import_step;
 pub mod repair_part;
 pub mod knurl_band;
@@ -72,6 +75,7 @@ pub mod mate_kinds;
 pub mod move_body;
 pub mod move_face;
 pub mod pattern;
+pub mod pattern_place;
 pub mod pipecut;
 pub mod project_curve;
 pub mod ref_plane;
@@ -1609,6 +1613,7 @@ impl Brep {
                 return self.exec_component_pattern(state, f)
             }
             FeatureKind::LPattern { .. } | FeatureKind::CPattern { .. } => return pattern::exec_pattern(self, state, f),
+            _ if f.type_name == "curvepattern" => return pattern::exec_pattern(self, state, f),
             FeatureKind::Fillet { edges, .. } => return blends::on_lump_of_picks(self, edges, |br| blends::exec_fillet(br, state, f)),
             FeatureKind::Chamfer { edges, .. } => return blends::on_lump_of_picks(self, edges, |br| blends::exec_chamfer(br, state, f)),
             FeatureKind::Shell { .. } => return shell::exec_shell(self, state, f),
@@ -1623,6 +1628,7 @@ impl Brep {
             FeatureKind::Draft { .. } => return draft::exec_draft(self, state, f),
             FeatureKind::Loft { .. } => return loft::exec_loft(self, state, f),
             _ if f.type_name == "importStep" => return import_step::exec_import_step(self, state, f),
+            _ if f.type_name == "importBody" => return import_body::exec_import_body(self, state, f),
             _ if f.type_name == "repairPart" => return repair_part::exec_repair_part(self, state, f),
             _ if f.type_name == "knurlBand" => return knurl_band::exec_knurl_band(self, state, f),
             _ if f.type_name == "thread" => return thread::exec_thread(self, state, f),

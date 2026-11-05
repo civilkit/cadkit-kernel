@@ -28,7 +28,7 @@ The kernel knows 49 type names. A name that is not in this list is `unknownFeatu
 | `lip` | A raised band or a groove along rim edges. | [edits](features-edits.md#lip) |
 | `moveFace` | Pushes or pulls faces; neighbours follow. | [edits](features-edits.md#moveface) |
 | `deleteBody` | Removes or keeps whole bodies. | [edits](features-edits.md#deletebody) |
-| `lpattern` | Copies features along an axis. | [patterns](features-patterns.md#lpattern) |
+| `lpattern` | Copies features along one or two world axes, by spacing, extent or up to an object. | [patterns](features-patterns.md#lpattern) |
 | `cpattern` | Copies features, or components, around an axis. | [patterns](features-patterns.md#cpattern) |
 | `mirror` | Reflects features or the whole body about a plane. | [patterns](features-patterns.md#mirror) |
 | `moveBody` | Moves, rotates or copies bodies. | [patterns](features-patterns.md#movebody) |
@@ -52,7 +52,7 @@ The kernel knows 49 type names. A name that is not in this list is `unknownFeatu
 | `importStep` | Holds a STEP body and brings its solids into the history. | [assemblies](features-assemblies.md#importstep) |
 | `mate` | Constrains two components. | [assemblies](features-assemblies.md#mate) |
 | `spattern` | Pattern driven by a sketch. Not built. | [patterns](features-patterns.md#not-built) |
-| `curvepattern` | Pattern along a curve. Not built. | [patterns](features-patterns.md#not-built) |
+| `curvepattern` | Pattern along a path: start point, flip, fixed or tangent orientation. | [patterns](features-patterns.md#curvepattern) |
 | `fillpattern` | Pattern that fills a face. Not built. | [patterns](features-patterns.md#not-built) |
 | `surfaceOffset` | Offsets a sheet. Not built. | [surfaces](features-surfaces.md#not-built) |
 | `cutWithSurface` | Cuts the body with a sheet. Not built. | [surfaces](features-surfaces.md#not-built) |

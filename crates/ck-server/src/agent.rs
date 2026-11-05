@@ -22,6 +22,11 @@ pub fn recognize(cx: &mut Cx) -> Result<Json, String> {
     null_or_query(cx, "recognize")
 }
 
+/// `{type:"fitQuadrics", tag, opts?}`: refit facet fans of the body as cylinders and cones (ck-ops fit_quadrics).
+pub fn fit_quadrics(cx: &mut Cx) -> Result<Json, String> {
+    null_or_query(cx, "fitQuadrics")
+}
+
 /// `{type:"resolve", tag, descriptions:[{kind:"face", ...}]}`
 pub fn resolve(cx: &mut Cx) -> Result<Json, String> {
     null_or_query(cx, "resolve")
@@ -109,6 +114,12 @@ pub fn text_metrics(cx: &mut Cx) -> Result<Json, String> {
 /// text entity as polylines (stateless, for the viewport preview).
 pub fn text_outline(cx: &mut Cx) -> Result<Json, String> {
     cx.query("textOutline")
+}
+
+/// `{type:"equationCurve", x, y, t:[start, end], tol?, variables?}`: the points of the spline an equation curve
+/// fits, with `closed`, `count`, `deviation` and `warnings` (stateless; docs/equation-curve.md).
+pub fn equation_curve(cx: &mut Cx) -> Result<Json, String> {
+    cx.query("equationCurve")
 }
 
 /// `{type:"loadFont", name, data:<base64 TTF/OTF>, replace?}`: register a font for the session; reply `{name, hash,

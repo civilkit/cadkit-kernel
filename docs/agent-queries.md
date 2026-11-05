@@ -310,6 +310,15 @@ output, `elapsedMs` / `truncated` present, sane ranges, `distance` agrees with `
 - `clearance` skips faces that share a vertex, so two faces of a tight V groove are not reported.
 - Only same-session tags can be compared (`tagB`).
 
+## fitQuadrics `{tag?, opts?:{tol, fitTol, maxStepDeg, minStrips, smoothDeg, cones, merge, volumeTol, dryRun}}`
+
+Refits the facet fans of a mesh body (rings and arcs of planar strips with parallel rails, or rails through one apex) as cylinder and
+cone faces with circular end edges, and replaces the tag's body when it validates no worse and the volume changes by less than
+`volumeTol` (default 5 %; the change is the chord sag of the facets). Reply: `{applied, reason?, tol, fitTol, faces:{before,after},
+volume:{before,after,relative}, issues:{before,after}, merged, groups:[{kind, face, strips, full, axis, origin, radius|halfAngle,
+maxResidual, sag}], declined:[{face, strips, reason}]}`. Spheres, tori and random meshes are left alone (`smoothProfile` or no rails).
+Details: the book chapter "Cylinders and cones from facets".
+
 ## Not done
 
 - `regen` does not accept `expect` (intent checks run only through `check`).

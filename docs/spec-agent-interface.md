@@ -1368,6 +1368,14 @@ ledge station 5 in, areas 200 / 400), L bracket (wall 3, sharp inside corner at 
 plain box (constant along every edge axis, not along a diagonal), thin-walled shell (0.8 wall fails 1.2; inside is a
 19.2 / 28.4 pocket), a spline loft (refused as `nonAnalyticFaces`).
 
+## Export mesh: `exportMesh`
+
+`{"type":"exportMesh","tag":"main","quality":"coarse","chord_mm":0.05}` meshes the tag's current body at the tolerance an export asks for, without touching the display mesh the regen reply carries. Both options are optional; with neither the mesh is the viewer's.
+
+- `quality`: `coarse` (chord ten times the viewer's, angle 0.6 rad), `normal` (the viewer's, the default) or `fine` (a quarter of the chord, angle 0.15 rad). The viewer's chord is the regen chord, 4e-4 of the body's box diagonal (never below 1e-3 mm), so a preset follows the size of the part.
+- `chord_mm`: an absolute chord height in millimetres (the most a facet may sit off the true surface). It replaces the preset's chord and keeps its angle. A value of 0 or below, or not a number, is refused (`exportMesh: chord_mm must be a positive number of millimetres`); one below a millionth of the box diagonal is raised to that and the reply says `chordRaised: true`. An unknown `quality` is refused with the three names.
+- Reply: `{chord, angle, chordRaised, triangles, faces, failed, positions, triFace}`. `positions` is a float32 buffer of 9 numbers per triangle, `triFace` an int32 buffer with the index into `faces` (the face ids, in body order) of each triangle; `failed` lists the ids of faces that could not be meshed (they are missing from the mesh). No normals are sent. Null when the tag's state holds no body; a tag the session does not hold is an error, as for every query.
+
 ## Acceptance
 
 - A scripted agent session (no human) builds the benchmark parts in

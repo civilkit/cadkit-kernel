@@ -181,7 +181,7 @@ impl XtFile {
 
 pub fn node_name(t: u16) -> Option<&'static str> {
     Some(match t {
-        10 => "ASSEMBLY", 11 => "INSTANCE", 12 => "BODY", 13 => "SHELL", 14 => "FACE", 15 => "LOOP", 16 => "EDGE", 17 => "HALFEDGE",
+        2 => "WORKSPACE", 3 => "PARTITION", 4 => "PMARK", 10 => "ASSEMBLY", 11 => "INSTANCE", 12 => "BODY", 13 => "SHELL", 14 => "FACE", 15 => "LOOP", 16 => "EDGE", 17 => "HALFEDGE",
         18 => "VERTEX", 19 => "REGION", 29 => "POINT", 30 => "LINE", 31 => "CIRCLE", 32 => "ELLIPSE", 38 => "INTERSECTION", 40 => "CHART",
         41 => "LIMIT", 45 => "BSPLINE_VERTICES", 50 => "PLANE", 51 => "CYLINDER", 52 => "CONE", 53 => "SPHERE", 54 => "TORUS",
         56 => "BLENDED_EDGE", 59 => "BLEND_BOUND", 60 => "OFFSET_SURF", 67 => "SWEPT_SURF", 68 => "SPUN_SURF", 70 => "LIST",
@@ -214,6 +214,9 @@ pub fn base_layout(t: u16) -> Option<Layout> {
     let fl = |n: &str| f1(n, 'f');
     let d = |n: &str| f1(n, 'd');
     Some(match t {
+        2 => vec![f("ws", 'c', VAR)],
+        3 => vec![p("current_pmark"), d("highest_id")],
+        4 => vec![p("preceding"), p("first_following"), p("next_sibling"), p("prev_sibling"), d("n_new_nodes"), d("n_del_nodes"), d("n_copy_mod_nodes"), d("delta_key"), f1("delta_is_forward", 'u'), d("identifier")],
         10 => vec![d("highest_node_id"), p("attributes_features"), p("attribute_chains"), p("list"), p("surface"), p("curve"), p("point"), p("key"), fl("res_size"), fl("res_linear"), p("ref_instance"), p("next"), p("previous"), f1("state", 'u'), p("owner"), f1("type", 'u'), p("sub_instance")],
         11 => vec![d("node_id"), p("attributes_features"), f1("type", 'u'), p("part"), p("transform"), p("assembly"), p("next_in_part"), p("prev_in_part"), p("next_of_part"), p("prev_of_part")],
         12 => vec![d("highest_node_id"), p("attributes_features"), p("attribute_chains"), p("surface"), p("curve"), p("point"), p("key"), fl("res_size"), fl("res_linear"), p("ref_instance"), p("next"), p("previous"), f1("state", 'u'), p("owner"), f1("body_type", 'u'), f1("nom_geom_state", 'u'), p("shell"), p("boundary_surface"), p("boundary_curve"), p("boundary_point"), p("region"), p("edge"), p("vertex")],
@@ -410,7 +413,7 @@ fn read_schema_info(r: &mut Rd, ty: u16, log: &mut Vec<String>) -> R<Layout> {
     Ok(out)
 }
 
-fn read_value(r: &mut Rd, fld: &Field, count: usize) -> R<Val> {
+fn read_value(r: &mut Rd, fld: &Field, count: usize, status: bool) -> R<Val> {
     let scalar = fld.n == 1;
     let n = if scalar { 1 } else { count };
     // guard absurd counts before allocating
@@ -420,7 +423,15 @@ fn read_value(r: &mut Rd, fld: &Field, count: usize) -> R<Val> {
     let k = fld.kind;
     Ok(match k {
         b'p' => {
-            if scalar { Val::I(r.index()?) } else { Val::AI((0..n).map(|_| r.index()).collect::<R<_>>()?) }
+            // the deltas transmit follows every pointer by a status byte (00 or 01) that is not part of the reference
+            let one = |r: &mut Rd| -> R<i64> {
+                let v = r.index()?;
+                if status {
+                    r.u8()?;
+                }
+                Ok(v)
+            };
+            if scalar { Val::I(one(r)?) } else { Val::AI((0..n).map(|_| one(r)).collect::<R<_>>()?) }
         }
         b'd' | b't' => {
             if scalar { Val::I(r.i32()? as i64) } else { Val::AI((0..n).map(|_| r.i32().map(|x| x as i64)).collect::<R<_>>()?) }
@@ -436,6 +447,17 @@ fn read_value(r: &mut Rd, fld: &Field, count: usize) -> R<Val> {
         }
         b'f' => {
             if scalar { Val::F(r.f64()?) } else { Val::AF((0..n).map(|_| r.f64()).collect::<R<_>>()?) }
+        }
+        b'h' if status => {
+            // a deltas Hvec is a carrier of eleven doubles; the first three are the position
+            let one = |r: &mut Rd| -> R<[f64; 3]> {
+                let p = [r.f64()?, r.f64()?, r.f64()?];
+                for _ in 0..8 {
+                    r.f64()?;
+                }
+                Ok(p)
+            };
+            if scalar { Val::V3(one(r)?) } else { Val::AV((0..n).map(|_| one(r)).collect::<R<_>>()?) }
         }
         b'v' | b'h' => {
             let one = |r: &mut Rd| -> R<[f64; 3]> { Ok([r.f64()?, r.f64()?, r.f64()?]) };
@@ -457,8 +479,7 @@ fn read_value(r: &mut Rd, fld: &Field, count: usize) -> R<Val> {
     })
 }
 
-/// Parse one neutral-binary XT transmit (part or partition) stream.
-pub fn read_xt(buf: &[u8], limits: &Limits) -> R<XtFile> {
+fn read_header(buf: &[u8]) -> R<(Rd<'_>, XtFile)> {
     let mut r = Rd { b: buf, pos: 0 };
     if r.raw(2)? != b"PS" {
         return Err(SldprtError::new("xt.header", "not a binary XT stream (no PS flag)"));
@@ -491,6 +512,263 @@ pub fn read_xt(buf: &[u8], limits: &Limits) -> R<XtFile> {
     if r.i32()? != 0 {
         return Err(SldprtError::new("xt.schema", "XT user fields are not supported"));
     }
+    Ok((r, xt))
+}
+
+fn read_node(r: &mut Rd, ty: u16, layouts: &mut HashMap<u16, Rc<Layout>>, log: &mut Vec<String>, status: bool) -> R<Node> {
+    let at = r.pos;
+    read_node_inner(r, ty, layouts, log, status).map_err(|mut e| {
+        if !e.message.contains("kind ") {
+            e.message = format!("{} (kind {ty} node at offset {at})", e.message);
+        }
+        e
+    })
+}
+
+fn read_node_inner(r: &mut Rd, ty: u16, layouts: &mut HashMap<u16, Rc<Layout>>, log: &mut Vec<String>, status: bool) -> R<Node> {
+    let layout = match layouts.get(&ty) {
+        Some(l) => l.clone(),
+        None => {
+            let l = Rc::new(read_schema_info(r, ty, log)?);
+            layouts.insert(ty, l.clone());
+            l
+        }
+    };
+    let mut count = 0usize;
+    if is_variable(&layout) {
+        let c = r.i32()?;
+        if c < 0 {
+            return Err(xerr(format!("negative variable length at offset {}", r.pos - 4)));
+        }
+        count = c as usize;
+    }
+    let idx = r.index()?;
+    // PARTITION and PMARK carry no status bytes
+    let st = status && ty != 3 && ty != 4;
+    let mut vals = Vec::with_capacity(layout.len());
+    for fld in layout.iter() {
+        let v = read_value(r, fld, if fld.n == VAR { count } else { fld.n as usize }, st).map_err(|e| xerr(format!("while reading {} #{idx}: {}", node_name(ty).unwrap_or("?"), e.message)))?;
+        vals.push(v);
+    }
+    Ok(Node { index: idx, ty, layout, vals })
+}
+
+/// One section of the `(deltas)` transmit.
+#[derive(Debug, Default)]
+pub struct DeltaSection {
+    /// `(xmt, kind)` pairs of a map section.
+    pub map: Vec<(i64, u16)>,
+    /// Terminal word of the map tail.
+    pub map_tail: u16,
+    /// Primary PMARK nodes (type 4) heading a PMARK section.
+    pub pmarks: Vec<Node>,
+    /// Ordinary nodes in physical order.
+    pub nodes: Vec<Node>,
+}
+
+/// A `(deltas)` transmit: header, PARTITION and current PMARK prefix, then sections
+/// `leading map (pmark map)* [pmark]` each closed by the terminator `00 01 00 01`.
+#[derive(Debug, Default)]
+pub struct Deltas {
+    pub schema_id: String,
+    pub partition: Option<Node>,
+    pub current_pmark: Option<Node>,
+    /// sections in physical order: `leading`, then alternating `map` and `pmark` sections
+    pub leading: DeltaSection,
+    pub maps: Vec<DeltaSection>,
+    pub pmark_sections: Vec<DeltaSection>,
+    pub final_terminator: bool,
+    pub trailing_bytes: usize,
+}
+
+impl Deltas {
+    pub fn node_count(&self) -> usize {
+        self.leading.nodes.len() + self.maps.iter().chain(self.pmark_sections.iter()).map(|s| s.nodes.len()).sum::<usize>()
+    }
+    /// All ordinary nodes in physical order.
+    pub fn all_nodes(&self) -> impl Iterator<Item = &Node> {
+        std::iter::once(&self.leading).chain(self.sections_in_order()).flat_map(|s| s.nodes.iter())
+    }
+    fn sections_in_order(&self) -> impl Iterator<Item = &DeltaSection> {
+        let mut v: Vec<&DeltaSection> = vec![];
+        for i in 0..self.maps.len() {
+            v.push(&self.maps[i]);
+            if let Some(p) = self.pmark_sections.get(i) {
+                v.push(p);
+            }
+        }
+        v.into_iter()
+    }
+}
+
+fn read_nodes_to_terminator(r: &mut Rd, layouts: &mut HashMap<u16, Rc<Layout>>, log: &mut Vec<String>, sec: &mut DeltaSection, limits: &Limits, total: &mut usize) -> R<()> {
+    loop {
+        let ty = r.u16()?;
+        if ty == 1 {
+            if r.u16()? != 1 {
+                return Err(xerr(format!("bad section terminator at offset {}", r.pos - 4)));
+            }
+            return Ok(());
+        }
+        if ty == 3 || ty == 4 {
+            return Err(xerr(format!("unexpected kind {ty} inside a deltas section at offset {}", r.pos - 2)));
+        }
+        *total += 1;
+        if *total > limits.max_nodes {
+            return Err(SldprtError::new("limit.nodes", "too many XT nodes"));
+        }
+        sec.nodes.push(read_node(r, ty, layouts, log, true)?);
+    }
+}
+
+/// How the `(deltas)` transmit is combined with the partition (experiment switch; see docs/sldprt.md, "Deltas").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeltaRule {
+    /// The partition alone (the current behaviour).
+    PartitionOnly,
+    /// Every delta node replaces the partition node with the same (type, xmt) key, an absent key adds one, in physical order.
+    Overlay,
+    /// Go back `n` pmark edges from the current mark: drop the nodes the edge created, restore the nodes it deleted or changed.
+    RollBack(usize),
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct DeltaStats {
+    pub replaced: usize,
+    pub added: usize,
+    pub removed: usize,
+    pub kind_conflicts: usize,
+}
+
+fn put(x: &mut XtFile, n: &Node, st: &mut DeltaStats) {
+    match x.nodes.get(&n.index) {
+        Some(old) if old.ty != n.ty => st.kind_conflicts += 1,
+        Some(_) => {
+            st.replaced += 1;
+            x.nodes.insert(n.index, n.clone());
+        }
+        None => {
+            st.added += 1;
+            x.nodes.insert(n.index, n.clone());
+        }
+    }
+}
+
+/// Apply `d` to the partition image `x` under `rule`.
+pub fn apply_deltas(x: &mut XtFile, d: &Deltas, rule: DeltaRule) -> DeltaStats {
+    let mut st = DeltaStats::default();
+    match rule {
+        DeltaRule::PartitionOnly => {}
+        DeltaRule::Overlay => {
+            for n in d.all_nodes() {
+                put(x, n, &mut st);
+            }
+        }
+        DeltaRule::RollBack(k) => {
+            for i in 0..k.min(d.maps.len()) {
+                let m = &d.maps[i];
+                for (xmt, kind) in &m.map {
+                    if x.nodes.get(xmt).map_or(false, |n| n.ty == *kind) {
+                        x.nodes.remove(xmt);
+                        st.removed += 1;
+                    }
+                }
+                let deleted = if i == 0 { &d.leading } else { &d.pmark_sections[i - 1] };
+                for n in deleted.nodes.iter().chain(m.nodes.iter()) {
+                    put(x, n, &mut st);
+                }
+            }
+        }
+    }
+    st
+}
+
+/// Parse a `(deltas)` transmit into its sections (grammar: see docs/sldprt.md, "Deltas").
+pub fn read_deltas(buf: &[u8], limits: &Limits) -> R<Deltas> {
+    let (mut r, xt) = read_header(buf)?;
+    let mut d = Deltas { schema_id: xt.schema_id.clone(), ..Default::default() };
+    let mut layouts: HashMap<u16, Rc<Layout>> = HashMap::new();
+    let mut log = vec![];
+    let mut total = 0usize;
+    if r.u16()? != 3 {
+        return Err(xerr("deltas stream does not start with a PARTITION node"));
+    }
+    d.partition = Some(read_node(&mut r, 3, &mut layouts, &mut log, true)?);
+    if r.u16()? != 4 {
+        return Err(xerr("deltas PARTITION is not followed by the current PMARK"));
+    }
+    d.current_pmark = Some(read_node(&mut r, 4, &mut layouts, &mut log, true)?);
+    read_nodes_to_terminator(&mut r, &mut layouts, &mut log, &mut d.leading, limits, &mut total)?;
+    loop {
+        // map section (required)
+        let mut m = DeltaSection::default();
+        loop {
+            let x = r.index()?;
+            if x == 0 {
+                if r.u16()? != 0 {
+                    return Err(xerr(format!("bad map tail at offset {}", r.pos - 2)));
+                }
+                m.map_tail = r.u16()?;
+                break;
+            }
+            let k = r.u16()?;
+            if m.map.len() > limits.max_nodes {
+                return Err(SldprtError::new("limit.nodes", "too many map entries"));
+            }
+            m.map.push((x, k));
+        }
+        read_nodes_to_terminator(&mut r, &mut layouts, &mut log, &mut m, limits, &mut total)?;
+        d.maps.push(m);
+        if r.pos >= buf.len() {
+            return Err(xerr("deltas stream ends after a closed map section"));
+        }
+        let ty = r.u16()?;
+        if ty == 1 {
+            if r.u16()? != 1 {
+                return Err(xerr("bad final terminator"));
+            }
+            d.final_terminator = true;
+            break;
+        }
+        if ty != 4 {
+            return Err(xerr(format!("expected a PMARK section or final terminator at offset {}, found kind {ty}", r.pos - 2)));
+        }
+        let mut p = DeltaSection::default();
+        p.pmarks.push(read_node(&mut r, 4, &mut layouts, &mut log, true)?);
+        // further primary PMARKs, then ordinary nodes
+        loop {
+            let ty = r.u16()?;
+            if ty == 1 {
+                if r.u16()? != 1 {
+                    return Err(xerr("bad section terminator"));
+                }
+                break;
+            }
+            if ty == 4 && p.nodes.is_empty() {
+                p.pmarks.push(read_node(&mut r, 4, &mut layouts, &mut log, true)?);
+                continue;
+            }
+            if ty == 3 || ty == 4 {
+                return Err(xerr(format!("unexpected kind {ty} inside a PMARK section")));
+            }
+            total += 1;
+            if total > limits.max_nodes {
+                return Err(SldprtError::new("limit.nodes", "too many XT nodes"));
+            }
+            p.nodes.push(read_node(&mut r, ty, &mut layouts, &mut log, true)?);
+        }
+        d.pmark_sections.push(p);
+        if r.pos >= buf.len() {
+            break;
+        }
+    }
+    d.trailing_bytes = buf.len() - r.pos;
+    Ok(d)
+}
+
+/// Parse one neutral-binary XT transmit (part or partition) stream.
+pub fn read_xt(buf: &[u8], limits: &Limits) -> R<XtFile> {
+    let (mut r, mut xt) = read_header(buf)?;
     let mut layouts: HashMap<u16, Rc<Layout>> = HashMap::new();
     let mut first = true;
     loop {
@@ -501,32 +779,12 @@ pub fn read_xt(buf: &[u8], limits: &Limits) -> R<XtFile> {
             }
             break;
         }
-        let layout = match layouts.get(&ty) {
-            Some(l) => l.clone(),
-            None => {
-                let l = Rc::new(read_schema_info(&mut r, ty, &mut xt.schema_log)?);
-                layouts.insert(ty, l.clone());
-                l
-            }
-        };
-        let mut count = 0usize;
-        if is_variable(&layout) {
-            let c = r.i32()?;
-            if c < 0 {
-                return Err(xerr(format!("negative variable length at offset {}", r.pos - 4)));
-            }
-            count = c as usize;
-        }
-        let idx = r.index()?;
-        let mut vals = Vec::with_capacity(layout.len());
-        for fld in layout.iter() {
-            let v = read_value(&mut r, fld, if fld.n == VAR { count } else { fld.n as usize }).map_err(|e| xerr(format!("while reading {} #{idx}: {}", node_name(ty).unwrap_or("?"), e.message)))?;
-            vals.push(v);
-        }
+        let node = read_node(&mut r, ty, &mut layouts, &mut xt.schema_log, false)?;
+        let idx = node.index;
         if xt.nodes.len() >= limits.max_nodes {
             return Err(SldprtError::new("limit.nodes", "too many XT nodes"));
         }
-        if xt.nodes.insert(idx, Node { index: idx, ty, layout, vals }).is_some() {
+        if xt.nodes.insert(idx, node).is_some() {
             return Err(xerr(format!("duplicate node index {idx}")));
         }
         if first {

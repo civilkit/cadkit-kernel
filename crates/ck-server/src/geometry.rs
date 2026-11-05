@@ -49,6 +49,12 @@ pub fn body_boolean(cx: &mut Cx) -> Result<Json, String> {
     null_or_query(cx, "bodyBoolean")
 }
 
+/// `{type:"exportMesh", tag, quality?, chord_mm?}`: the triangle mesh of the current body at the tolerance an export asks for
+/// (docs/spec-agent-interface.md "Export mesh"). Null when the tag holds no body.
+pub fn export_mesh(cx: &mut Cx) -> Result<Json, String> {
+    null_or_query(cx, "exportMesh")
+}
+
 pub fn heal(cx: &mut Cx) -> Result<Json, String> {
     null_or_query(cx, "heal")
 }
@@ -83,6 +89,18 @@ pub fn import_sldprt(cx: &mut Cx) -> Result<Json, String> {
         cx.session.put(&tag, s);
     }
     Ok(reply)
+}
+
+/// `{"type":"sldprtHistory","name":n?,"data":"<base64 of a .SLDPRT file>"}` -> `{ok, part?, complete?, reason?, outcome?}`: the
+/// part file's feature history (sketches, extrudes, fillets, ...) as a part document that regenerates to the body
+/// `importSldprt` reads, or `ok:false` with the reason (a file that cannot be read back is not an error of the request:
+/// the caller keeps the plain import). Read only: no tag, no state.
+pub fn sldprt_history(cx: &mut Cx) -> Result<Json, String> {
+    if cx.msg.get_str("data").is_none() {
+        return Err("sldprtHistory: data (the .SLDPRT file as base64) is required".to_string());
+    }
+    let Some(h) = cx.hooks.sldprt_history else { return Err(crate::session::todo("sldprtHistory")) };
+    h(cx)
 }
 
 /// `{"type":"importSkp","tag":t,"name":n?,"data":"<base64 of a .skp file>","opts":{"hidden":bool?,"maxFaces":n?}?}` ->

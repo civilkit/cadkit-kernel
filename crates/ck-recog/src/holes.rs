@@ -110,10 +110,20 @@ fn plane_is_hole_structure(m: &Model, g: FaceId, o: Vec3, a: Vec3) -> bool {
 }
 
 pub fn find_holes(m: &Model, claimed: &mut HashSet<FaceId>) -> Vec<Hole> {
+    find_holes_in(m, claimed, None)
+}
+
+/// Holes read from the faces of `only` alone: a hole feature's own faces, when later features cut into its walls
+/// (cross holes) or its far end (a counterbore from the other side). Faces outside `only` do not join a group, and a
+/// neighbour that is no plane across the axis is ignored where the strict reading would refuse the group.
+pub fn find_holes_in(m: &Model, claimed: &mut HashSet<FaceId>, only: Option<&HashSet<FaceId>>) -> Vec<Hole> {
     let mut out = vec![];
     let mut seen: HashSet<FaceId> = HashSet::new();
     for &c in &m.faces {
         if seen.contains(&c) || claimed.contains(&c) {
+            continue;
+        }
+        if only.map_or(false, |s| !s.contains(&c)) {
             continue;
         }
         let Kind::Cyl { o, a, convex: false, .. } = m.kind(c).clone() else { continue };
@@ -124,7 +134,7 @@ pub fn find_holes(m: &Model, claimed: &mut HashSet<FaceId>) -> Vec<Hole> {
         while let Some(f) = queue.pop() {
             for e in m.edges(f) {
                 let Some(g) = m.across(e, f) else { continue };
-                if inset.contains(&g) || claimed.contains(&g) {
+                if inset.contains(&g) || claimed.contains(&g) || only.map_or(false, |s| !s.contains(&g)) {
                     continue;
                 }
                 let ok = match axis_of(m.kind(g)) {
@@ -142,7 +152,7 @@ pub fn find_holes(m: &Model, claimed: &mut HashSet<FaceId>) -> Vec<Hole> {
         for &g in &group {
             seen.insert(g);
         }
-        if let Some(h) = classify(m, &group, &inset, o, a) {
+        if let Some(h) = classify(m, &group, &inset, o, a, only.is_some()) {
             for &g in &h.faces {
                 claimed.insert(g);
             }
@@ -152,7 +162,7 @@ pub fn find_holes(m: &Model, claimed: &mut HashSet<FaceId>) -> Vec<Hole> {
     out
 }
 
-fn classify(m: &Model, group: &[FaceId], inset: &HashSet<FaceId>, o: Vec3, a: Vec3) -> Option<Hole> {
+fn classify(m: &Model, group: &[FaceId], inset: &HashSet<FaceId>, o: Vec3, a: Vec3, tolerant: bool) -> Option<Hole> {
     // mouths
     struct Mouth {
         plane: FaceId,
@@ -167,11 +177,24 @@ fn classify(m: &Model, group: &[FaceId], inset: &HashSet<FaceId>, o: Vec3, a: Ve
             if inset.contains(&g) {
                 continue;
             }
-            let Kind::Plane { n, .. } = m.kind(g) else { return None };
+            let Kind::Plane { n, .. } = m.kind(g) else {
+                if tolerant {
+                    continue;
+                }
+                return None;
+            };
             if !par(*n, a) {
+                if tolerant {
+                    continue;
+                }
                 return None;
             }
-            let Curve::Circle { frame, r } = m.curve(e) else { return None };
+            let Curve::Circle { frame, r } = m.curve(e) else {
+                if tolerant {
+                    continue;
+                }
+                return None;
+            };
             if !coaxial(o, a, frame.o, frame.z) {
                 return None;
             }

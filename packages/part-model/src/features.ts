@@ -209,6 +209,21 @@ export interface LinearPatternFeature {
   spacing: Expr;
   count: Expr;
   reverse?: boolean;
+  /** How the copies are spread: `spacing` between neighbours (default), `extent` seed to last copy, `toObject` the last copy reaches `to`. */
+  distanceType?: 'spacing' | 'extent' | 'toObject';
+  extent?: Expr;
+  /** To Object: a plane or flat face reference, or a point `[x, y, z]` / `{kind:'point', at}` / `{kind:'vertex', faces, at}`. */
+  to?: GeomRef | number[] | null;
+  toOffset?: Expr;
+  /** A second direction: the same fields with the suffix 2. */
+  dir2?: GeomRef | null;
+  count2?: Expr;
+  spacing2?: Expr;
+  reverse2?: boolean;
+  distanceType2?: 'spacing' | 'extent' | 'toObject';
+  extent2?: Expr;
+  to2?: GeomRef | number[] | null;
+  toOffset2?: Expr;
   [key: string]: unknown;
 }
 
@@ -236,6 +251,16 @@ export interface CurvePatternFeature {
   spacing?: Expr;
   align?: boolean;
   reverse?: boolean;
+  /** `spacing` between neighbours (default) or `extent` from the seed to the last copy, along the path. */
+  distanceType?: 'spacing' | 'extent';
+  extent?: Expr;
+  /** Where the seed sits along the path: mm, or a fraction 0..1 of its length. */
+  start?: Expr;
+  startFraction?: Expr;
+  /** Run the path from its other end (the original `reverse`). */
+  flip?: boolean;
+  /** `fixed` (default) or `tangent` (the original `align: true`). */
+  orientation?: 'fixed' | 'tangent';
   [key: string]: unknown;
 }
 

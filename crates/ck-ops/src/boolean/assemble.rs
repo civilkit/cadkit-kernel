@@ -449,10 +449,20 @@ fn keep(op: Op, side: usize, c: Class) -> Option<bool> {
     }
 }
 
+thread_local! {
+    /// While set, fragments on one torus count as coincident (merged when they share an edge).
+    pub(crate) static MERGE_TORI: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 fn coincident(a: &Surface, b: &Surface, tol: f64) -> bool {
     match (a, b) {
         (Surface::Plane { frame: f }, Surface::Plane { frame: g }) => {
             f.z.cross(g.z).len() < 1e-9 && (g.o - f.o).dot(f.z).abs() <= tol
+        }
+        // one torus (the surface/surface intersection does not report coincident tori), only while [`MERGE_TORI`] is
+        // set: the two fillet tools of one rim arc meeting at a flush end (blend::rim_reflex)
+        (Surface::Torus { frame: f, major: ra, minor: rb }, Surface::Torus { frame: g, major: sa, minor: sb }) if MERGE_TORI.with(|c| c.get()) => {
+            f.z.cross(g.z).len() < 1e-9 && f.o.dist(g.o) <= tol && (ra - sa).abs() <= tol && (rb - sb).abs() <= tol
         }
         _ => ss::intersect(a, b, None, tol) == SsResult::Coincident,
     }
@@ -583,11 +593,17 @@ pub fn select_with(
                     if gone[i] || gone[j] {
                         continue;
                     }
+                    // a kept fragment whose boundary loops all went (a fully clipped tool face, seen when a smaller
+                    // radius was searched for a refused blend) has no point to compare: skip it instead of indexing
+                    // an empty loop. The result's validity gate decides whether the fragment may stay.
+                    let Some(he) = kept[i].0.loops.iter().flatten().next().copied() else {
+                        continue;
+                    };
                     let (fi, fj) = (&arr.faces[kept[i].0.af], &arr.faces[kept[j].0.af]);
                     if !coincident(&fi.surface, &fj.surface, tol) {
                         continue;
                     }
-                    let p = arr.verts[he_start(arr, kept[i].0.loops[0][0])];
+                    let p = arr.verts[he_start(arr, he)];
                     let ni = outward(&fi.surface, fi.sense ^ kept[i].1, p);
                     let nj = outward(&fj.surface, fj.sense ^ kept[j].1, p);
                     if ni.dot(nj) < -0.5 {

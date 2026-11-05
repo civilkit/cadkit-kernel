@@ -22,9 +22,16 @@ adapted to ck-topo / ck-geom, extended).
    - tests/fixtures/*.sldprt: four controlled test parts (cube, cube with a hole, cone, OLE2 cube) from the
      author's research-dump repository, folder "test files new" (MIT).
 
-3. cadmpeg/cadmpeg (code Apache-2.0, documentation CC-BY-4.0), docs/formats/sldprt.md
+3. cadmpeg/cadmpeg (code Apache-2.0, documentation CC-BY-4.0), docs/formats/{sldprt,parasolid,siemens_nx}.md
    - src/container.rs: block frame layout and cache-cell remarks; the notion that blocks must validate by size and
-     CRC so that false marker hits are dropped. No code was copied.
+     CRC so that false marker hits are dropped.
+   - src/xt.rs (read_deltas, apply_deltas): the deltas transmit grammar (sections closed by 00 01 00 01: a leading section,
+     map sections of (xmt, kind) pairs with a six-byte tail, PMARK sections), the status byte after every pointer in
+     deltas nodes, the PARTITION and PMARK field lists, the eleven-double Hvec, and the change rule (a full node with an
+     existing (type, xmt) key replaces that node, a new key adds one; WORLD current_id / highest_id are pmark identifiers),
+     from parasolid.md section 2, siemens_nx.md sections 4.2 and 7.2 and sldprt.md section 4.3. Which change is current
+     was not settled there; it was decided here from the sample files (docs/sldprt.md, "Deltas"). Documentation licensed
+     CC-BY-4.0, attributed to the cadmpeg project (https://github.com/cadmpeg/cadmpeg). No code was copied.
 
 Not used: dsandall/sld2step (AGPL-3.0) was neither read nor ported. The Siemens "Parasolid XT Format Reference" was not
 copied; only the structure visible in the open implementations and in sample files was used.

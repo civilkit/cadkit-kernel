@@ -20,6 +20,7 @@
 //!   an `expr`-driven value is rewritten.
 
 pub mod analyze;
+pub mod equation;
 pub mod guard;
 pub mod offset;
 pub mod profile;

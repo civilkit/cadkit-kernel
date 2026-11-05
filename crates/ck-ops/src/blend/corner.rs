@@ -108,7 +108,17 @@ pub fn sphere_corner_tool(b: &Body, corner: &Corner, r: f64, feature: &str, name
     // out by `m`; inn(i) = plane through c perpendicular to edge i
     let m = r + 1.0;
     // concave: the block is pushed into the material instead (normal -n)
-    let out_pl = |i: usize| (n[i] * -sg, vp - n[i] * (sg * m)); // (outward normal, point)
+    let outer: [(Vec3, Vec3); 3] = std::array::from_fn(|i| (n[i] * -sg, vp - n[i] * (sg * m))); // (outward normal, point)
+    sphere_block_minus_ball(c, u, outer, r, feature, name)
+}
+
+/// The tool of [`sphere_corner_tool`] from its planes: `c` the ball centre, `u[i]` the direction of edge `i` away from
+/// the vertex (the block's inner plane `i` is the plane through `c` perpendicular to it, the block on the vertex side),
+/// `outer[i]` the block's outer plane opposite to edge `i` as (outward normal of the block, a point on it). The
+/// planes need not be mutually perpendicular: the ball touches the strip of edge `i` along the circle in the inner
+/// plane `i`, so the contact point with the face opposite to edge `i` lies on the line of the other two inner planes.
+pub fn sphere_block_minus_ball(c: Vec3, u: [Vec3; 3], outer: [(Vec3, Vec3); 3], r: f64, feature: &str, name: &FaceName) -> Result<Body, BlendError> {
+    let out_pl = |i: usize| outer[i];
     let inn_pl = |i: usize| (u[i], c);
     let mut verts: Vec<Vec3> = vec![];
     for mask in 0..8usize {
@@ -131,8 +141,8 @@ pub fn sphere_corner_tool(b: &Body, corner: &Corner, r: f64, feature: &str, name
     // outer faces: the quads of the vertices with bit i clear
     for i in 0..3 {
         let quad: Vec<usize> = (0..8usize).filter(|mask| mask >> i & 1 == 0).map(|mask| ids_v[mask]).collect();
-        let segs = tb.cycle_by_angle(&quad, n[i] * -sg);
-        tb.plane_face(n[i] * -sg, segs, FaceName::side(feature, &format!("k{}0", i)));
+        let segs = tb.cycle_by_angle(&quad, outer[i].0);
+        tb.plane_face(outer[i].0, segs, FaceName::side(feature, &format!("k{}0", i)));
     }
     // inner faces: A_j, mask_j, opposite, mask_k, A_k and the arc back
     for i in 0..3 {

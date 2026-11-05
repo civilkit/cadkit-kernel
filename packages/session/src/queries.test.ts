@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { angles, check, clearance, closestPoint, describe as describeNames, distance, extrema, heal, importSat, importStep, massProps, maxDistance, probe, resolveDescriptions, section, sections, symmetry, thickness, thicknessAt, validate } from './queries.js';
+import { angles, check, clearance, closestPoint, describe as describeNames, distance, exportMesh, extrema, heal, importSat, importStep, massProps, maxDistance, probe, resolveDescriptions, section, sections, symmetry, thickness, thicknessAt, validate } from './queries.js';
 import { defaultWasmPath as wasmPath } from '../../kernel-client/src/worker.js';
 import type { KernelReply } from '../../kernel-client/src/protocol.js';
 import type { KernelTransport } from '../../driver/src/verify.js';
@@ -26,6 +26,27 @@ function failing(kind: 'trap' | 'error' | 'null'): KernelTransport {
     },
   };
 }
+
+describe('exportMesh', () => {
+  it('sends only the options given, and turns the buffers into a mesh', async () => {
+    const seen: Record<string, unknown>[] = [];
+    const buf = (type: string, data: ArrayLike<number>) => ({ $buf: 0, type, len: data.length, data: type === 'f32' ? Float32Array.from(data) : Int32Array.from(data) });
+    const k = fake({ chord: 0.5, angle: 0.6, chordRaised: false, triangles: 1, faces: ['F1.a', 'F1.b'], failed: [], positions: buf('f32', [0, 0, 0, 1, 0, 0, 0, 1, 0]), triFace: buf('i32', [1]) }, seen);
+    const r = await exportMesh(k, { quality: 'coarse', chord_mm: 0.5 }, { tag: 's1' });
+    assert.deepEqual(seen[0], { type: 'exportMesh', tag: 's1', quality: 'coarse', chord_mm: 0.5 });
+    assert.equal(r.chord, 0.5);
+    assert.equal(r.triangles, 1);
+    assert.deepEqual(Array.from(r.mesh.triFace), [1]);
+    assert.deepEqual(r.mesh.faceIds, ['F1.a', 'F1.b']);
+    assert.equal(r.mesh.positions.length, 9);
+    await exportMesh(k);
+    assert.deepEqual(seen[1], { type: 'exportMesh', tag: 'main' });
+  });
+  it('throws on a refusal and on no body', async () => {
+    await assert.rejects(exportMesh(failing('error')), /nope/);
+    await assert.rejects(exportMesh(failing('null')), /empty result/);
+  });
+});
 
 describe('queries', () => {
   it('unwraps results and tags requests', async () => {

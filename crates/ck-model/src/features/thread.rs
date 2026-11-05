@@ -343,6 +343,10 @@ fn build(br: &mut Brep, state: &mut RegenState, id: &str, req: &Req, spec: &'sta
 
 /// `thread`.
 pub fn exec_thread(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
+    // a thread read back from a file (profile and screw given outright): see `model::explicit`
+    if let Some(ex) = f.raw.get("explicit") {
+        return model::explicit(br, state, f, ex);
+    }
     let req = parse(state, f)?;
     let body = br.body.as_ref().ok_or_else(missing)?;
     let cf = cyl_face(body, &req.face)?;
@@ -622,6 +626,85 @@ pub mod model {
         }
         if after.num_lumps() != before.num_lumps() {
             return fail(br, "the cut split the body".to_string());
+        }
+        Ok(())
+    }
+
+    /// `explicit: {o, axis, x, profile: [[r, s], ...], angle, rise, op: "add" | "cut"}` (a thread read back from a
+    /// file, e.g. a SolidWorks modelled thread; no face, standard or size): the closed polygon `profile` (radius
+    /// from the axis along `x`, distance along `axis` from `o`) carried by a screw motion about the axis through `o`
+    /// (turn `angle` radians about `axis`, advance `rise` along it; both signed, so the hand is the sign of
+    /// `angle * rise`) and united with the body (`add`) or cut from it (`cut`). Faces `<id>.T<k>`.
+    pub fn explicit(br: &mut Brep, _state: &mut RegenState, f: &Feature, ex: &Json) -> Result<(), FeatureError> {
+        let bad = |field: &str| FeatureError::new(codes::INVALID_VALUE).with("field", Json::Str(field.to_string()));
+        let v3 = |k: &str| ex.get(k).and_then(|j| j.as_vec3()).map(|a| Vec3::new(a[0], a[1], a[2])).ok_or_else(|| bad(k));
+        let (o, axis, x) = (v3("o")?, v3("axis")?.try_normalize().ok_or_else(|| bad("axis"))?, v3("x")?);
+        let x = (x - axis * x.dot(axis)).try_normalize().ok_or_else(|| bad("x"))?;
+        let (angle, rise) = (ex.get_f64("angle").ok_or_else(|| bad("angle"))?, ex.get_f64("rise").ok_or_else(|| bad("rise"))?);
+        if !(angle.abs() > 1e-9) || !angle.is_finite() || !rise.is_finite() || angle.abs() / std::f64::consts::TAU > 200.0 {
+            return Err(bad("angle"));
+        }
+        let pts: Vec<(f64, f64)> = ex
+            .get_arr("profile")
+            .ok_or_else(|| bad("profile"))?
+            .iter()
+            .map(|p| p.as_arr().and_then(|a| Some((a.first()?.as_f64()?, a.get(1)?.as_f64()?))))
+            .collect::<Option<_>>()
+            .ok_or_else(|| bad("profile"))?;
+        if pts.len() < 3 {
+            return Err(bad("profile"));
+        }
+        let add = ex.get_str("op") != Some("cut");
+        let fail = |why: String| FeatureError::new(THREAD_MODEL_FALLBACK).with("reason", Json::Str(why.clone())).with("hint", Json::Str(format!("the thread {} could not be built: {why}", f.id)));
+        let n = pts.len();
+        // `tail` (turns): the last turns are swept and united as a piece of their own. One tool of 60 turns is as easy
+        // to unite as a short one until a face of the body (a shoulder the thread runs into) cuts across its end:
+        // the intersection curves of its long free-form faces then do not close, those of a short tool do
+        let turns = angle.abs() / std::f64::consts::TAU;
+        let tail = ex.get_f64("tail").filter(|t| *t > 0.0 && *t < turns).unwrap_or(0.0);
+        let cuts: Vec<f64> = if tail > 0.0 { vec![0.0, 1.0 - tail / turns, 1.0] } else { vec![0.0, 1.0] };
+        let e2 = axis.cross(x);
+        let mut tools = vec![];
+        for i in 0..cuts.len() - 1 {
+            let (f0, f1) = (cuts[i], cuts[i + 1]);
+            let (t0, r0) = (angle * f0, rise * f0);
+            let (xi, oi) = (x * t0.cos() + e2 * t0.sin(), o + axis * r0);
+            let fr = Frame { o: oi, x: xi, y: axis, z: xi.cross(axis) };
+            let segs: Vec<ProfileSeg> = (0..n).map(|i| ProfileSeg::line(&format!("t{i}"), Vec2::new(pts[i].0, pts[i].1), Vec2::new(pts[(i + 1) % n].0, pts[(i + 1) % n].1))).collect();
+            let prof = Profile::new(fr, vec![ProfileRegion { outer: ProfileLoop::new(segs), holes: vec![] }]).normalized();
+            let mut tool = sweep_motion(&f.id, &prof, Motion::Screw { o: oi, a: axis, angle: angle * (f1 - f0), rise: rise * (f1 - f0) }).map_err(fail)?;
+            for fc in tool.faces.iter_mut().filter(|fc| fc.alive) {
+                let k = match &fc.name.role {
+                    Role::Side(t) => t.trim_start_matches('t').parse::<u32>().unwrap_or(0),
+                    Role::Cap(k) => n as u32 + *k,
+                    _ => continue,
+                };
+                fc.name = FaceName::other(&f.id, &if i == 0 { format!("T{k}") } else { format!("T{k}p{i}") });
+            }
+            tools.push(tool);
+        }
+        let before = br.body.clone().ok_or_else(missing)?;
+        let (lumps, bad_faces) = (before.num_lumps(), ck_check::validate(&before, 1e-6).len());
+        let v0 = ck_topo::mass::mass_props(&before).volume;
+        let restore = |br: &mut Brep, b: &Body, why: String| {
+            br.body = Some(b.clone());
+            Err(fail(why))
+        };
+        for tool in &tools {
+            if let Err(e) = br.combine(tool, if add { Combine::Add } else { Combine::Cut }, false) {
+                return restore(br, &before, format!("the {} failed ({})", if add { "union" } else { "cut" }, e.describe()));
+            }
+        }
+        let after = br.body.as_ref().unwrap();
+        let v1 = ck_topo::mass::mass_props(after).volume;
+        if (add && !(v1 > v0)) || (!add && !(v1 < v0)) {
+            return restore(br, &before, format!("the volume went from {v0} to {v1}"));
+        }
+        if ck_check::validate(after, 1e-6).len() > bad_faces {
+            return restore(br, &before, "the result is not a valid solid".to_string());
+        }
+        if after.num_lumps() != lumps {
+            return restore(br, &before, "the result has a different number of lumps".to_string());
         }
         Ok(())
     }

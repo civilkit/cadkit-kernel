@@ -164,6 +164,62 @@ pub const REGION_NONE: &str = "extrudeRegionNone";
 /// `extrudeRegionUnknown {ids}`: `regions` names ids that are no entity of the sketch.
 pub const REGION_UNKNOWN: &str = "extrudeRegionUnknown";
 
+/// Length of an outer-loop segment.
+fn seg_len(s: &Seg) -> f64 {
+    s.sample(32).windows(2).map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1])).sum()
+}
+
+/// Which regions (`.0`, by index into `sk.profiles.regions`) and fills (`.1`, `sk.profiles.fills`) the entity
+/// ids select: those whose OUTER loop carries one of the ids.
+///
+/// Regions: every one the id touches (a shared edge or a split entity selects all of them).
+/// Fills (the faces of a ring cut by petal outlines ending on it): an id touching a face and a pocket of it
+/// (a face whose entities shared with other faces are a strict subset of the other's: a petal outline, and
+/// the ring minus the petals) goes to one of the two so each can be picked alone: to the face the id is
+/// mostly drawn on (longest length of the entity on its outer loop), on a tie to the pocket.
+fn faces_for_ids(sk: &SketchResult, ids: &[String]) -> (Vec<bool>, Vec<bool>) {
+    use std::collections::BTreeSet;
+    let (rs, fs) = (&sk.profiles.regions, &sk.profiles.fills);
+    let mut reg = vec![false; rs.len()];
+    let mut fill = vec![false; fs.len()];
+    let near = |p: [f64; 2], q: [f64; 2]| (p[0] - q[0]).hypot(p[1] - q[1]) <= 1e-6;
+    // entities of a fill's outer loop that border another fill
+    let shared: Vec<BTreeSet<&str>> = fs
+        .iter()
+        .enumerate()
+        .map(|(i, f)| {
+            f.outer
+                .iter()
+                .filter(|s| fs.iter().enumerate().any(|(j, g)| j != i && g.outer.iter().any(|t| t.tag == s.tag && near(s.a, t.b) && near(s.b, t.a))))
+                .map(|s| s.tag.as_str())
+                .collect()
+        })
+        .collect();
+    for id in ids {
+        for (i, r) in rs.iter().enumerate() {
+            reg[i] |= r.outer.iter().any(|s| &s.tag == id);
+        }
+        let hits: Vec<usize> = (0..fs.len()).filter(|&i| fs[i].outer.iter().any(|s| &s.tag == id)).collect();
+        let cover = |i: usize| fs[i].outer.iter().filter(|s| &s.tag == id).map(seg_len).sum::<f64>();
+        let mut drop = vec![false; fs.len()];
+        for &host in &hits {
+            for &pocket in &hits {
+                if shared[pocket].len() < shared[host].len() && shared[pocket].is_subset(&shared[host]) {
+                    if cover(host) > cover(pocket) * (1.0 + 1e-6) + 1e-9 {
+                        drop[pocket] = true;
+                    } else {
+                        drop[host] = true;
+                    }
+                }
+            }
+        }
+        for &i in &hits {
+            fill[i] |= !drop[i];
+        }
+    }
+    (reg, fill)
+}
+
 /// The profile of the sketch restricted to the feature's optional `regions`
 /// selection (docs/spec-agent-interface.md, "Region selection").
 ///
@@ -187,12 +243,21 @@ pub fn selected_profile(sk: &SketchResult, f: &Feature) -> Result<Profile, Featu
         return Err(FeatureError::new(REGION_UNKNOWN).with("ids", Json::Arr(unknown)));
     }
     let full = sketch_profile(sk)?;
-    let hit = |l: &[Seg]| l.iter().any(|s| ids.contains(&s.tag));
-    let mut regions: Vec<ProfileRegion> =
-        full.regions.iter().zip(&sk.profiles.regions).filter(|(_, r)| hit(&r.outer)).map(|(p, _)| p.clone()).collect();
+    // the regions the ids touch, then the fills of subdivided components (a ring cut by petal outlines)
+    let (preg, pfill) = faces_for_ids(sk, &ids);
+    let lp = |l: &Vec<Seg>| -> Result<ProfileLoop, FeatureError> {
+        Ok(ProfileLoop::new(l.iter().map(profile_seg).collect::<Result<_, _>>()?))
+    };
+    let mut regions: Vec<ProfileRegion> = vec![];
+    let cands: Vec<&crate::sketch::profile::Region> = sk.profiles.regions.iter().chain(sk.profiles.fills.iter()).collect();
+    let picked: Vec<bool> = preg.iter().chain(pfill.iter()).copied().collect();
+    for (r, _) in cands.iter().zip(&picked).filter(|(_, p)| **p) {
+        regions.push(ProfileRegion { outer: lp(&r.outer)?, holes: r.holes.iter().map(lp).collect::<Result<_, _>>()? });
+    }
     // ids that bound no region's outer loop but a hole loop select that hole's filled disc (no holes)
-    let matched: Vec<&String> = sk.profiles.regions.iter().filter(|r| hit(&r.outer)).flat_map(|r| r.outer.iter().map(|s| &s.tag)).collect();
-    let unmatched: Vec<&String> = ids.iter().filter(|i| !matched.contains(i)).collect();
+    let matched: Vec<&String> = cands.iter().zip(&picked).filter(|(_, p)| **p).flat_map(|(r, _)| r.outer.iter().map(|s| &s.tag)).collect();
+    let fill_tags: Vec<&String> = sk.profiles.fills.iter().flat_map(|r| r.outer.iter().map(|s| &s.tag)).collect();
+    let unmatched: Vec<&String> = ids.iter().filter(|i| !matched.contains(i) && !fill_tags.contains(i)).collect();
     for (p, r) in full.regions.iter().zip(&sk.profiles.regions) {
         for (hp, h) in p.holes.iter().zip(&r.holes) {
             if h.iter().any(|s| unmatched.contains(&&s.tag)) {
@@ -528,6 +593,14 @@ pub(super) fn profile_samples(p: &Profile) -> Vec<Vec3> {
         }
     }
     out
+}
+
+/// [`vertex_of`] without the relink warnings (a pattern's To Object vertex).
+pub(crate) fn vertex_near(body: &Body, faces: &[String], at: Vec3) -> Option<Vec3> {
+    if faces.is_empty() {
+        return None;
+    }
+    vertex_of(body, faces, at, &mut EndExtras::default())
 }
 
 /// A vertex shared by the named faces, nearest `at` (persistent: faces by name, the vertex by position).

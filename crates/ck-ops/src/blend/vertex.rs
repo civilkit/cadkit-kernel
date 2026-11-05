@@ -168,5 +168,6 @@ pub fn chamfer_vertex(b: &Body, at: Vec3, dist: [f64; 3], feature: &str, tol: f6
         }
     }
     let refs = [BlendRef { name: name.id(), faces: [hint[0].clone(), hint[1].clone()], ends: [vp, vp] }];
-    Ok(in_place_layout_opts(b, &raw, &refs, tol, &LayoutOpts { reserve: Some(3), piece_slots, ..Default::default() }))
+    let out = in_place_layout_opts(b, &raw, &refs, tol, &LayoutOpts { reserve: Some(3), piece_slots, ..Default::default() });
+    super::validity::check_vertex_cut(b, out, dist, tol)
 }

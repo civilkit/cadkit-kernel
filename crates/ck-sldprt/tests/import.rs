@@ -176,24 +176,26 @@ fn fuzz_no_panic() {
 
 /// A hand-made modern container: one stored-DEFLATE block with a nibble-swapped name; a flipped payload byte must drop
 /// the block (CRC mismatch), not yield a stream.
+/// One modern-container block holding `payload` as a stored DEFLATE block (payload below 64 KiB).
+fn block(name: &str, payload: &[u8]) -> Vec<u8> {
+    let mut deflate = vec![0x01];
+    deflate.extend((payload.len() as u16).to_le_bytes());
+    deflate.extend((!(payload.len() as u16)).to_le_bytes());
+    deflate.extend(payload);
+    let swapped: Vec<u8> = name.bytes().map(|b| (b << 4) | (b >> 4)).collect();
+    let mut v = container::MARKER.to_vec();
+    v.extend(7u32.to_le_bytes());
+    v.extend(ck_sldprt::inflate::crc32(payload).to_le_bytes());
+    v.extend((deflate.len() as u32).to_le_bytes());
+    v.extend((payload.len() as u32).to_le_bytes());
+    v.extend((swapped.len() as u32).to_le_bytes());
+    v.extend(swapped);
+    v.extend(deflate);
+    v
+}
+
 #[test]
 fn synthetic_modern_container() {
-    fn block(name: &str, payload: &[u8]) -> Vec<u8> {
-        let mut deflate = vec![0x01];
-        deflate.extend((payload.len() as u16).to_le_bytes());
-        deflate.extend((!(payload.len() as u16)).to_le_bytes());
-        deflate.extend(payload);
-        let swapped: Vec<u8> = name.bytes().map(|b| (b << 4) | (b >> 4)).collect();
-        let mut v = container::MARKER.to_vec();
-        v.extend(7u32.to_le_bytes());
-        v.extend(ck_sldprt::inflate::crc32(payload).to_le_bytes());
-        v.extend((deflate.len() as u32).to_le_bytes());
-        v.extend((payload.len() as u32).to_le_bytes());
-        v.extend((swapped.len() as u32).to_le_bytes());
-        v.extend(swapped);
-        v.extend(deflate);
-        v
-    }
     let mut file = vec![0, 0, 0, 0, 0, 0, 0, 4];
     file.extend(block("Contents/Test", b"hello world"));
     let c = container::open(&file, &Limits::default()).unwrap();
@@ -232,4 +234,143 @@ fn a_complete_part_has_no_refused_faces() {
     let imp = import_sldprt(&fixture("sw2022_cube_10mm")).unwrap();
     assert_eq!(imp.parts.len(), 1);
     assert_eq!((imp.parts[0].faces_total, imp.parts[0].faces.len(), imp.parts[0].refused.len()), (6, 6, 0));
+}
+
+// ------------------------------------------------------------------ face tags and metadata
+
+#[test]
+fn face_colour_and_feature_tags() {
+    // every face says which feature built it; the ids and names come from the feature list
+    for (name, want) in [("sw2022_cube_hole_5mm", vec![("Boss-Extrude1", 6), ("Cut-Extrude1", 1)]), ("sw2011_cube_10mm_ole2", vec![("Boss-Extrude1", 6)]), ("sw2022_cone", vec![("Revolve1", 2)])] {
+        let imp = import_sldprt(&fixture(name)).unwrap();
+        assert_eq!(imp.face_tags.len(), imp.body.num_faces(), "{name}");
+        let mut got: Vec<(String, usize)> = vec![];
+        for t in &imp.face_tags {
+            assert_eq!(t.face, format!("sldprt.F{}", t.xt_face), "{name}");
+            assert!(imp.body.faces.iter().any(|f| f.name.id() == t.face), "{name}: {} is not a face of the body", t.face);
+            let c = t.colour.unwrap_or_else(|| panic!("{name}: face {} has no colour", t.face));
+            assert!(c.iter().all(|v| (0.0..=1.0).contains(v)), "{name}: {c:?}");
+            let sw = t.sw_id.as_ref().unwrap();
+            let f = imp.meta.feature(sw.feature).unwrap_or_else(|| panic!("{name}: feature id {} not in the feature list", sw.feature));
+            assert_eq!(t.feature.as_deref(), Some(f.name.as_str()));
+            match got.iter_mut().find(|g| g.0 == f.name) {
+                Some(g) => g.1 += 1,
+                None => got.push((f.name.clone(), 1)),
+            }
+        }
+        got.sort();
+        let want: Vec<(String, usize)> = want.into_iter().map(|(n, k)| (n.to_string(), k)).collect();
+        assert_eq!(got, want, "{name}");
+        assert_eq!(imp.body_tags.len(), 1, "{name}");
+        assert!(imp.body_tags[0].density.map_or(false, |d| d > 0.0), "{name}: {:?}", imp.body_tags);
+        // the last feature that changed the body is in the list
+        assert!(imp.body_tags[0].last_feature.and_then(|f| imp.meta.feature(f)).is_some(), "{name}: {:?}", imp.body_tags);
+    }
+}
+
+#[test]
+fn metadata_of_both_containers() {
+    let modern = import_sldprt(&fixture("sw2022_cube_hole_5mm")).unwrap();
+    let m = &modern.meta;
+    let feats: Vec<(i64, &str, &str)> = m.features.iter().filter(|f| !matches!(f.kind.as_str(), "Plane" | "Origin" | "3DPoint")).map(|f| (f.id, f.name.as_str(), f.kind.as_str())).collect();
+    assert_eq!(feats, vec![(26, "Sketch1", "Sketch"), (32, "Boss-Extrude1", "Boss-Extrude"), (33, "Sketch2", "Sketch"), (46, "Cut-Extrude1", "Extrusion")]);
+    let d = &m.feature(32).unwrap().dims;
+    assert_eq!((d.len(), d[0].name.as_str(), d[0].text.as_str(), d[0].value), (1, "D1", "10", Some(10.0)));
+    assert_eq!(m.configurations.len(), 1);
+    assert_eq!((m.configurations[0].name.as_str(), m.configurations[0].material.as_deref()), ("Default", None));
+    assert_eq!(m.material, None);
+    let u = m.units.as_ref().unwrap();
+    assert_eq!((u.system.as_deref(), u.length.as_deref(), u.angle.as_deref(), u.length_decimals), (Some("MMGS"), Some("mm"), Some("deg"), Some(2)));
+    assert_eq!((m.sw_version, m.sw_release()), (Some(15000), Some(2022)));
+    assert_eq!(modern.parasolid_version().map(|p| p.1), Some("33.01".to_string()));
+
+    let ole = import_sldprt(&fixture("sw2011_cube_10mm_ole2")).unwrap();
+    let m = &ole.meta;
+    assert!(m.features.iter().any(|f| f.name == "Boss-Extrude1" && f.dims.first().map(|d| d.value) == Some(Some(10.0))), "{:?}", m.features);
+    assert_eq!(m.configurations.first().map(|c| c.name.as_str()), Some("Default"));
+    assert_eq!((m.sw_version, m.sw_release()), (Some(4700), Some(2011)));
+    assert_eq!(ole.parasolid_version().map(|p| p.1), Some("22.01".to_string()));
+    for imp in [&modern, &ole] {
+        let t = imp.meta.thumbnail.as_ref().expect("PreviewPNG");
+        assert_eq!((t.width, t.height, &t.png[1..4]), (640, 480, &b"PNG"[..]));
+    }
+}
+
+/// The user names and folder the fixture records (read here from the raw streams, so the test names none): modern
+/// `SW-Last Saved By`, `SW-Author`, `SW-Folder Name` and the core `lastModifiedBy`; OLE2 the summary set's author (4) and
+/// last author (8).
+pub fn recorded_private_strings(data: &[u8]) -> Vec<String> {
+    let c = container::open(data, &Limits::default()).unwrap();
+    let mut out = vec![];
+    let after = |t: &str, key: &str| t.find(key).map(|p| &t[p + key.len()..]).map(|v| v[..v.find('<').unwrap_or(0)].to_string());
+    if let Some(s) = c.stream("docProps/ISolidWorksInformation.xml") {
+        let t = String::from_utf8_lossy(&s.data);
+        for key in ["SW-Last Saved By", "SW-Author", "SW-Folder Name"] {
+            if let Some(p) = t.find(&format!("name=\"{key}\"")) {
+                out.extend(after(&t[p..], "<vt:lpstr>"));
+            }
+        }
+    }
+    if let Some(s) = c.stream("docProps/core.xml") {
+        out.extend(after(&String::from_utf8_lossy(&s.data), "lastModifiedBy>"));
+    }
+    if let Some(s) = c.streams.iter().find(|s| s.name == "SummaryInformation") {
+        let d = &s.data;
+        let u32at = |p: usize| d.get(p..p + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize).unwrap_or(0);
+        let base = u32at(44);
+        for k in 0..u32at(base + 4).min(64) {
+            let (pid, off) = (u32at(base + 8 + 8 * k), base + u32at(base + 12 + 8 * k));
+            if (pid == 4 || pid == 8) && u32at(off) == 0x1E {
+                let l = u32at(off + 4);
+                out.extend(d.get(off + 8..off + 8 + l).map(|b| String::from_utf8_lossy(b).trim_end_matches('\0').to_string()));
+            }
+        }
+    }
+    out.retain(|s| !s.trim().is_empty());
+    out
+}
+
+#[test]
+fn no_user_name_or_path_in_the_metadata() {
+    let mut checked = 0;
+    for (name, data) in fixtures() {
+        let imp = import_sldprt(&data).unwrap();
+        let all = format!("{:?} {:?} {:?}", imp.meta, imp.face_tags, imp.body_tags).to_lowercase();
+        for p in recorded_private_strings(&data) {
+            assert!(!all.contains(&p.to_lowercase()), "{name}: a recorded user name or folder is in the metadata");
+            checked += 1;
+        }
+        assert!(!all.contains(":\\\\"), "{name}: a path is in the metadata");
+    }
+    assert!(checked >= 5, "the fixtures record user names and folders ({checked} checked)");
+}
+
+/// A container with only metadata streams: user names and paths left out, missing streams empty, no panic.
+#[test]
+fn synthetic_metadata_privacy_and_missing_streams() {
+    let info = r#"<?xml version="1.0"?><Properties xmlns:vt="x"><propertySection name="UserDefinedProperties"><property name="SW-Last Saved By" pid="3"><vt:lpstr>example-user</vt:lpstr></property><property name="SW-Folder Name" pid="4"><vt:lpstr>C:\example\</vt:lpstr></property><property name="SW_UnitSystem" pid="5"><vt:i4>3</vt:i4></property><property name="SW_UnitsLinear" pid="6"><vt:i4>3</vt:i4></property></propertySection></Properties>"#;
+    let custom = r#"<?xml version="1.0"?><Properties xmlns:vt="x"><propertySection name="DocumentSummaryInformation"><property name="" pid="1"><vt:i2>65001</vt:i2></property></propertySection><propertySection name="UserDefinedProperties"><property name="Revision" pid="2"><vt:lpstr>B</vt:lpstr></property><property name="Drawn" pid="3"><vt:lpstr>Example-User</vt:lpstr></property><property name="Source" pid="4"><vt:lpstr>\\host\share\part.SLDPRT</vt:lpstr></property><property name="Weight" pid="5"><vt:lpstr>1.5 kg</vt:lpstr></property></propertySection></Properties>"#;
+    let kw = "\u{86}<?xml version=\"1.0\"?><Keywords id=\"1\" Name=\"doc\"><Configuration id=\"0\" Name=\"Default\" Material=\"1060 Alloy\"/><Extrusion id=\"32\" Name=\"Boss-Extrude1\" Type=\"Boss-Extrude\"><Dimension Name=\"D1\">25.4</Dimension></Extrusion></Keywords>";
+    let mut file = vec![0, 0, 0, 0, 0, 0, 0, 4];
+    file.extend(block("docProps/ISolidWorksInformation.xml", info.as_bytes()));
+    file.extend(block("docProps/custom.xml", custom.as_bytes()));
+    file.extend(block("swXmlContents/KeyWords", kw.as_bytes()));
+    file.extend(block("_MO_VERSION_11000/History", b"x"));
+    let m = ck_sldprt::read_meta(&file).unwrap();
+    assert_eq!(m.custom_properties, vec![("Revision".to_string(), "B".to_string()), ("Weight".to_string(), "1.5 kg".to_string())]);
+    assert_eq!(m.omitted, 2);
+    assert!(!format!("{m:?}").to_lowercase().contains("example-user") && !format!("{m:?}").contains("example\\"));
+    let u = m.units.as_ref().unwrap();
+    assert_eq!((u.system.as_deref(), u.length.as_deref(), u.angle.as_deref()), (Some("IPS"), Some("in"), None));
+    assert_eq!(m.features.len(), 1);
+    assert_eq!(m.features[0].dims[0].value, Some(25.4));
+    assert_eq!(m.material.as_ref().map(|x| (x.name.as_str(), x.density_kg_m3)), Some(("1060 Alloy", None)));
+    assert_eq!((m.sw_version, m.sw_release()), (Some(11000), Some(2018)));
+    assert!(m.thumbnail.is_none() && m.mass.is_none() && m.config_properties.is_empty());
+    // the import itself fails (no Parasolid), with a structured error
+    assert_eq!(import_sldprt(&file).unwrap_err().code, "container.no_parasolid");
+    // only one stream
+    let mut one = vec![0, 0, 0, 0, 0, 0, 0, 4];
+    one.extend(block("Contents/Other", b"nothing"));
+    assert_eq!(ck_sldprt::read_meta(&one).unwrap(), ck_sldprt::SwMeta::default());
 }

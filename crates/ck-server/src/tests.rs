@@ -20,7 +20,7 @@ fn legacy_format_name_replies_identically() {
 
 #[test]
 fn all_types_dispatch() {
-    assert_eq!(REQUEST_TYPES.len(), 57); // 5 dfm* queries + loadFont/unloadFont/listFonts/subsetFont + importSldprt + importSkp + bodyBoolean + recognize + 9 measurement (distance/maxDistance/thickness/thicknessAt/closestPoint/angles/clearance/symmetry/extrema) + 17 original + validate/importSat/importStep/heal + check/resolve/describe/refDiff/threadData/checkProfile/profiles + section/sections/probe extensions + sketchAnalyze + sketchFreedoms
+    assert_eq!(REQUEST_TYPES.len(), 61); // sldprtHistory + equationCurve + exportMesh + fitQuadrics + 5 dfm* queries + loadFont/unloadFont/listFonts/subsetFont + importSldprt + importSkp + bodyBoolean + recognize + 9 measurement (distance/maxDistance/thickness/thicknessAt/closestPoint/angles/clearance/symmetry/extrema) + 17 original + validate/importSat/importStep/heal + check/resolve/describe/refDiff/threadData/checkProfile/profiles + section/sections/probe extensions + sketchAnalyze + sketchFreedoms
     for (t, _) in REQUEST_TYPES {
         let (j, _) = run(&mut Server::new(), &format!(r#"{{"msg":{{"type":"{t}"}}}}"#));
         assert!(!j.contains("unknown request"), "{t}");

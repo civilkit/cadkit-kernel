@@ -70,6 +70,8 @@ pub const REQUEST_TYPES: &[(&str, Handler)] = &[
     ("importSat", geometry::import_sat),
     // Extension: SolidWorks part (.SLDPRT, base64) import -> a body in the tag's state.
     ("importSldprt", geometry::import_sldprt),
+    // Extension: feature history of a SolidWorks part (ck-swedit), read only.
+    ("sldprtHistory", geometry::sldprt_history),
     // Extension: SketchUp (.skp, base64) import -> a surface body of planar faces in the tag's state.
     ("importSkp", geometry::import_skp),
     ("inspect", query::inspect),
@@ -83,6 +85,8 @@ pub const REQUEST_TYPES: &[(&str, Handler)] = &[
     ("resolve", agent::resolve),
     // Extension: feature recognition (ck-recog) of an imported solid.
     ("recognize", agent::recognize),
+    // Extension: facet fans of an imported mesh body refit as cylinders and cones (ck-ops fit_quadrics).
+    ("fitQuadrics", agent::fit_quadrics),
     ("describe", agent::describe),
     ("refDiff", agent::ref_diff),
     // Extensions: verification (docs/agent-queries.md "section / sections / probe"), read-only.
@@ -104,6 +108,8 @@ pub const REQUEST_TYPES: &[(&str, Handler)] = &[
     // Extension: lettering (ck-text), stateless.
     ("textMetrics", agent::text_metrics),
     ("textOutline", agent::text_outline),
+    // Extension: equation curves, the fitted points of x(t), y(t) (stateless, the sketch editor preview).
+    ("equationCurve", agent::equation_curve),
     // Extension: fonts for lettering, kept for the session (load from bytes, unload, list, subset to a string).
     ("loadFont", agent::load_font),
     ("unloadFont", agent::unload_font),
@@ -121,6 +127,8 @@ pub const REQUEST_TYPES: &[(&str, Handler)] = &[
     ("dfmPocketRatio", agent::dfm_pocket_ratio),
     ("dfmOverhang", agent::dfm_overhang),
     ("dfmConstantSection", agent::dfm_constant_section),
+    // Extension: the mesh of the current body at an export tolerance (quality preset and/or absolute chord), read-only.
+    ("exportMesh", geometry::export_mesh),
     // Extension: body-level boolean between lumps of the current body (preview, nothing committed).
     ("bodyBoolean", geometry::body_boolean),
 ];

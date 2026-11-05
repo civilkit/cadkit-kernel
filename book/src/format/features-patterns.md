@@ -1,6 +1,6 @@
 # Patterns and transforms
 
-These features copy, reflect, move and scale what earlier features made: `lpattern`, `cpattern`, `mirror`, `moveBody`, `scale`, and `combine`, which applies a boolean between whole bodies. The examples use a 60 x 20 x 10 mm bar with a pocket of radius 3 at x = 10 (feature `F4`) or the plate of [the overview](overview.md).
+These features copy, reflect, move and scale what earlier features made: `lpattern`, `cpattern`, `curvepattern`, `mirror`, `moveBody`, `scale`, and `combine`, which applies a boolean between whole bodies. The examples use a 60 x 20 x 10 mm bar with a pocket of radius 3 at x = 10 (feature `F4`) or the plate of [the overview](overview.md).
 
 ```json
 {
@@ -36,7 +36,7 @@ These features copy, reflect, move and scale what earlier features made: `lpatte
 
 ## Seeds and copies
 
-`lpattern`, `cpattern` and `mirror` copy **features**, not faces. A seed is the id of an earlier feature that made a tool solid: an `extrude`, `revolve`, `sphere`, `sweep`, `loft` or `hole`, or an earlier pattern. The copies of the tool are combined with the body in the same way as the seed was: copies of a cut are cut, copies of a boss are added. A copy that falls outside the body does nothing and is not an error. A seed that is not a tool-making feature, or does not exist, is `missingReference`; an empty `seeds` list is `noSeeds`.
+`lpattern`, `cpattern` and `mirror` copy **features**, not faces. A seed is the id of an earlier feature that made a tool solid: an `extrude`, `revolve`, `sphere`, `sweep`, `loft` or `hole`, or an earlier pattern. The copies of the tool are combined with the body in the same way as the seed was: copies of a cut are cut, copies of a boss are added. A copy that falls outside the body does nothing and is not an error, but the pattern says so with a warning (see [Pattern warnings](#pattern-warnings)). A seed that is not a tool-making feature, or does not exist, is `missingReference`; an empty `seeds` list is `noSeeds`.
 
 The faces of a copy carry the id of the pattern and the number of the copy: `F4.C0@F5.1`, `F4.S.e1@F5.2`. The copies are numbered from 1; the seed itself keeps its name. A pattern of a pattern chains the suffixes. A pattern's tool is its seeds together with all of their copies, so a pattern whose `seeds` is another pattern copies the whole result of the first one, the first seed included: a row of 5 holes (`F4`, then `F5` with `count` 5) used as the seed of a second pattern along the other axis gives 5 x 5 = 25 holes, with `"seeds": ["F5"]` alone. (Earlier builds dropped the first seed from the copy rows and gave 21; listing both ids, `["F4", "F5"]`, was the way round it, and still gives the same result.)
 
@@ -52,9 +52,29 @@ Copies the seeds along a direction.
 | `dir` | `{"kind": "axis", "axis": "x"}` | required | A world axis (`x`, `y` or `z`). Any other reference is `missingReference`. |
 | `spacing` | number or expression | `0` | Distance between copies, mm. |
 | `count` | number or expression | `0` | Number of instances, **including the seed**. A value of 1 or less makes no copies and is not an error; a fractional count is rounded; more than 10000 is `invalidValue`. |
-| `reverse` | boolean | `false` | Copy towards the negative direction. |
+| `reverse` | boolean | `false` | Copy towards the negative direction. Not read with `distanceType: "toObject"`. |
+| `distanceType` | `"spacing"`, `"extent"` or `"toObject"` | `"spacing"` | How the copies are spread, see below. Any other word is `invalidValue` with `field: "distanceType"`. |
+| `extent` | number or expression | none | With `"extent"`: distance from the seed to the last copy, mm. It must be above 0 (`invalidValue` with `field: "extent"`). |
+| `to` | reference or point | none | With `"toObject"`: what the last copy reaches. See below. Missing or not found: `missingReference` with `field: "to"`. |
+| `toOffset` | number or expression | `0` | With `"toObject"`: moves the end the way the copies go, mm; negative stops short. |
+| `dir2`, `count2`, `spacing2`, `reverse2`, `distanceType2`, `extent2`, `to2`, `toOffset2` | as above | none | A second direction: the same fields for it. Without `dir2` there is no second direction; `count2` defaults to 1. A `dir2` along `dir` is `invalidValue` with `field: "dir2"`. |
 
-Copy `k` (from 1) is the seed moved by `k * spacing` along `dir`.
+Copy `k` (from 1) is the seed moved by `k * spacing` along `dir`. With a second direction, the grid cell `(i, j)` (`i` along `dir`, `j` along `dir2`) is copy `j * count + i`, the seed being `(0, 0)`, so the copies along the first direction keep their numbers from a one-direction pattern. More than 10000 instances in all is `invalidValue`.
+
+Distance types, per direction:
+
+- `"spacing"`: `spacing` is the distance between neighbours, as above.
+- `"extent"`: `extent` is the distance from the seed to the last copy, and the spacing is `extent / (count - 1)`. A new `count` keeps the extent.
+- `"toObject"`: the copy furthest along the direction reaches `to`, measured from the middle of what is patterned (the centre of the box of the seeds' tool solids). `to` is a plane (`{"kind": "std", "id": "right"}`, a plane feature `{"kind": "feature", "id": "F9"}`) or a flat face (`{"kind": "face", "id": "F2.S.e2"}`, with an optional `at` point that finds the face again if its name changed): the end is where the line from the middle along the direction meets it. Or a point: `[x, y, z]`, `{"kind": "point", "at": [x, y, z]}` or a body vertex `{"kind": "vertex", "faces": [..], "at": [..]}`: the end is its distance along the direction. The object gives the side, so the copies go the other way when it lies behind the middle, and `reverse` is not read. The pattern follows the object when it moves. Refusals: a plane or face that runs along the direction is `patternToObjectParallel`; an object at the middle, or an offset that brings the end back to or behind it, is `patternToObjectAtSeed` (with `distance`); a curved face is `patternToObjectUnsupported`.
+
+```json
+{
+  "type": "lpattern", "id": "F5", "seeds": ["F4"], "dir": {"kind": "axis", "axis": "x"}, "count": 3,
+  "distanceType": "toObject", "to": {"kind": "face", "id": "F2.S.e2"}, "toOffset": -10
+}
+```
+
+The pocket at x = 10 is copied towards the bar's end face at x = 60, ending 10 short of it: pockets at 10, 30 and 50.
 
 ```json
 {
@@ -73,7 +93,7 @@ Run result: no errors; 12 faces, volume 11660.708 mm³. Three pockets in a row: 
 }
 ```
 
-Run result: no errors; 8 faces, volume 11886.9027 mm³. The copies go to negative x, outside the bar: no copy touches the body and there is no error.
+Run result: no errors; 8 faces, volume 11886.9027 mm³. The copies go to negative x, outside the bar: no copy touches the body. This is not an error; the warning `patternCopiesNoEffect` with `copies: [1, 2]` says so.
 
 
 ```json
@@ -99,7 +119,7 @@ The only fixed limit is `count`: more than 10000 instances in one pattern is `in
 
 Use `lpattern` or a cut of circles for grids. A `hole` feature with many points grows with the square of the point count: each new hole is united with the tool built so far when its box meets that tool's box, which in a grid happens from the second row on. Above about 300 points in one `hole` feature a regen with the default feature budget ends in `featureBudgetExceeded`.
 
-A two-dimensional grid is two patterns, and the second can name just the first: a pattern's tool is its seeds together with all of their copies, so `"seeds": ["F5"]` for the pattern along the second direction copies the whole first row, the seed included.
+A two-dimensional grid is one pattern with `dir2`, or two patterns, the second seeded with the first (`"seeds": ["F5"]`: a pattern's tool holds its seeds and all their copies, see above).
 
 ## cpattern
 
@@ -333,9 +353,49 @@ Run result: no errors; 5 faces, volume 12251.2239 mm³. The tool is subtracted f
 Run result: no errors; 5 faces, volume 315.1467 mm³. Only the overlap of disc and tool is left.
 
 
+## curvepattern
+
+Copies the seeds along a path.
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `seeds` | list of feature ids | required | As for `lpattern`. |
+| `path` | `{"kind": "sketch", "id": ..}` or `{"kind": "curve", "id": ..}` | required | As a sweep's path: an open chain of lines and arcs of a sketch, a `sketch3d` spline, a helix or another curve feature. Missing or not found: `missingPath` (checked first). A closed chain is `pathInvalid`. |
+| `count` | number or expression | `0` | Instances including the seed, as for `lpattern`. |
+| `spacing` | number or expression | `0` | Distance along the path between copies, mm; must be above 0 (`invalidValue` with `field: "spacing"`). |
+| `distanceType` | `"spacing"` or `"extent"` | `"spacing"` | `"extent"`: `extent` is the distance along the path from the seed to the last copy. |
+| `extent` | number or expression | none | See `distanceType`. |
+| `start` | number or expression | `0` | Where the seed sits along the path, mm. Outside 0 to the path's length: `patternStartOutside`. |
+| `startFraction` | number or expression | none | The same as a fraction of the path's length, 0 to 1; it keeps its place when the path changes length. Read instead of `start` when given. |
+| `flip` | boolean | `false` | Run the path from its other end. |
+| `orientation` | `"fixed"` or `"tangent"` | `"fixed"` | `"fixed"`: the copies are moved, not turned. `"tangent"`: they are carried with a rotation-minimising frame along the path: round an arc they turn about its axis, at a corner between two pieces by the least turn between their directions, and along a helix or spline by small turns between sampled directions. |
+
+The older format's names are read too: `reverse` for `flip`, `align: true` for `"orientation": "tangent"`, `equal: true` (with no `distanceType`) for copies spread over the rest of the path, and a bare string `path` for a sketch id.
+
+The path runs from its end nearest the middle of the seeds (`flip`: from the other end). Copy `k` is the seed moved from the path point `start` to the path point `start + k * spacing`, turned with the path when `orientation` is `"tangent"`. The seed need not sit on the path: a seed 10 mm inside an arc stays 10 mm inside it with `"tangent"`. A last copy past the end of the path is `patternBeyondPath`, with `lastAt`, `length` and `maxSpacing`, the largest spacing that fits.
+
+```json
+{
+  "type": "curvepattern", "id": "C9", "seeds": ["H5"], "path": {"kind": "sketch", "id": "S8"}, "count": 3,
+  "distanceType": "extent", "extent": 125.66370614359172, "orientation": "tangent"
+}
+```
+
+With `S8` an arc of radius 40 about (50, 50) from (50, 10) anticlockwise to (50, 90), and the hole `H5` at (50, 20): copies at (80, 50) and (50, 80). With `"orientation": "fixed"` they are at (90, 60) and (50, 100).
+
+## Pattern warnings
+
+After `lpattern`, `cpattern` and `curvepattern` have combined their copies, the result's face names tell which copies left a mark (a copy's faces carry `@<pattern>.<k>`, see above). Three warnings come from that, without any extra boolean in the common case:
+
+| Warning | Params | When |
+|---|---|---|
+| `patternCopiesNoEffect` | `copies` (copy numbers), `of` (the number of copies), `hint` | Copies that changed nothing: a cut that misses the body, a boss inside the material. A cut copy that left no face but whose box meets the body is checked with an exact intersection (it may have cut away a whole lump). |
+| `patternCopiesApart` | `copies`, `hint` | Boss copies that touch nothing: each stands as a body of its own. |
+| `patternCopiesOverlap` | `hint`, and `minSpacing` for a one-direction `lpattern` | Copies that overlap each other or the seed: the union of seed and copies has less volume than one seed per instance. `minSpacing` is the width of what is patterned along the direction, the least spacing that keeps copies apart. Copies that only touch are not reported. |
+
 ## Not built
 
-The feature types `curvepattern`, `fillpattern` and `spattern` are accepted as names (they are not `unknownFeature`) but are not implemented: they fail with the error code `TODO(rebuild): <type> needs ck-ops`, except that `spattern` without a `sketch` that names a regenerated sketch reports `missingSketch` first.
+The feature types `fillpattern` and `spattern` are accepted as names (they are not `unknownFeature`) but are not implemented: they fail with the error code `TODO(rebuild): <type> needs ck-ops`, except that `spattern` without a `sketch` that names a regenerated sketch reports `missingSketch` first.
 
 ## See also
 

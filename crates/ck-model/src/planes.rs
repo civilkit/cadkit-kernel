@@ -255,13 +255,21 @@ fn seg_mid(seg: &PathSeg) -> Vec3 {
 
 /// Axis `(point, unit direction)` of an axis reference: a world axis, a
 /// straight edge (origin = its start), a sketch line (origin = its first
-/// point) or an `axis` feature.
+/// point), an `axis` feature, a cylindrical face (its axis), a free axis
+/// `{kind:"axis", point:[x,y,z], dir:[x,y,z]}` or a bare vector
+/// `{kind:"vector", dir:[x,y,z]}` (through the origin).
 pub fn resolve_axis(state: &RegenState, exec: &mut dyn FeatureExec, r: &crate::GeomRef) -> Option<(Vec3, Vec3)> {
     use crate::GeomRef;
     let (o, d) = match r {
         GeomRef::Axis(_) => crate::features::pattern::axis_of(r)?,
         GeomRef::Feature(id) => state.axes.iter().find(|a| &a.0 == id).map(|a| a.1)?,
+        GeomRef::Face(id) => match exec.face_surf(state, id)? {
+            FaceSurf::Cylinder { o, a, .. } => (o, a),
+            _ => return None,
+        },
         GeomRef::Other(j) => match kind_of(j)? {
+            "axis" => (j.get("point").and_then(vec3_of).unwrap_or(Vec3::ZERO), j.get("dir").and_then(vec3_of)?),
+            "vector" => (Vec3::ZERO, j.get("dir").or_else(|| j.get("v")).and_then(vec3_of)?),
             "edge" => {
                 let e = crate::EdgeRef::from_json(j)?;
                 exec.edge_line(state, &e.faces, e.at)?

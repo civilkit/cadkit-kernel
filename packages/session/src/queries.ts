@@ -4,6 +4,7 @@
 // handle real replies. This finishes the spec's tool table alongside Session
 // (open/read/edit/history/undo) and verify.
 import type { KernelTransport } from '../../driver/src/verify.js';
+import { meshFromBody, type MeshData } from '../../render/src/mesh.js';
 
 export interface QueryOpts {
   tag?: string;
@@ -674,6 +675,42 @@ export interface ImportReport {
   errors: Array<[string, { code: string; params: Record<string, unknown> }]>;
   body?: { faces?: unknown[]; edges?: unknown[]; box?: { min: number[]; max: number[] } } | null;
   [key: string]: unknown;
+}
+
+/** What an export asks of the mesh: a preset and/or an absolute chord height (the largest distance of a facet from the true surface, mm). */
+export interface ExportMeshOpts {
+  /** `coarse` (about ten times the viewer's chord), `normal` (the viewer's, the default) or `fine` (a quarter of it). */
+  quality?: 'coarse' | 'normal' | 'fine';
+  /** replaces the preset's chord; raised to a millionth of the part's size when smaller (`chordRaised`) */
+  chord_mm?: number;
+}
+export interface ExportMeshReport {
+  /** the chord height and angle (radians) the mesh was made with */
+  chord: number;
+  angle: number;
+  chordRaised: boolean;
+  triangles: number;
+  /** ids of the faces that could not be meshed (left out of the mesh) */
+  failed: string[];
+  /** positions (9 floats per triangle), triFace (the face index of each triangle) and faceIds (the ids those indices name); normals are not sent */
+  mesh: MeshData;
+}
+
+/** The tag's body meshed at an export tolerance (nothing is changed in the session). Throws on a refused option (`quality`, `chord_mm`) or no body. */
+export async function exportMesh(kernel: KernelTransport, o: ExportMeshOpts = {}, opts: QueryOpts = {}): Promise<ExportMeshReport> {
+  const msg: Record<string, unknown> = { type: 'exportMesh', tag: opts.tag ?? 'main' };
+  if (o.quality !== undefined) msg.quality = o.quality;
+  if (o.chord_mm !== undefined) msg.chord_mm = o.chord_mm;
+  const r = await call<Record<string, unknown>>(kernel, msg);
+  const faces = (r.faces as string[] | undefined) ?? [];
+  return {
+    chord: r.chord as number,
+    angle: r.angle as number,
+    chordRaised: r.chordRaised === true,
+    triangles: r.triangles as number,
+    failed: (r.failed as string[] | undefined) ?? [],
+    mesh: meshFromBody({ faces: faces.map((id) => ({ id })), mesh: { positions: r.positions as never, triFace: r.triFace as never } }),
+  };
 }
 
 /** STEP export of the tag's body as text. */

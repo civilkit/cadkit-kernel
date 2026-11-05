@@ -16,44 +16,20 @@ pub mod container;
 pub mod error;
 pub mod inflate;
 pub mod ir;
+pub mod meta;
 pub mod xt;
 
 pub use build::Approx;
 pub use container::Kind;
 pub use error::{Limits, SldprtError};
+pub use meta::{SwMassProps, SwMeta};
 
 use container::TransmitKind;
 use ck_topo::body::Body;
 
-/// The mass properties SolidWorks stored in the file (property `SW-MassProp-Config-0` of
-/// `docProps/ISolidWorksInformation.xml`, modern container only), in the SI units as stored: centre of mass (m), volume
-/// (m^3, six decimals), surface area (m^2, six decimals, i.e. 1 mm^2 resolution) and mass (kg). An independent check of the
-/// imported body.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct SwMassProps {
-    pub com_m: [f64; 3],
-    pub volume_m3: f64,
-    pub area_m2: f64,
-    pub mass_kg: f64,
-}
-
-fn sw_mass_props(c: &container::Container) -> Option<SwMassProps> {
-    let s = c.stream("docProps/ISolidWorksInformation.xml")?;
-    let text = String::from_utf8_lossy(&s.data);
-    let at = text.find("SW-MassProp-Config-0\"")?;
-    let rest = &text[at..];
-    let a = rest.find("<vt:lpstr>")? + 10;
-    let b = rest[a..].find("</vt:lpstr>")? + a;
-    let v: Vec<f64> = rest[a..b].split(',').filter_map(|x| x.trim().parse().ok()).collect();
-    if v.len() < 6 || v.iter().any(|x| !x.is_finite()) {
-        return None;
-    }
-    Some(SwMassProps { com_m: [v[0], v[1], v[2]], volume_m3: v[3], area_m2: v[4], mass_kg: v[5] })
-}
-
 #[derive(Debug)]
 pub struct SldprtImport {
-    /// Mass properties stored by SolidWorks in the file, if present.
+    /// Mass properties stored by SolidWorks in the file, if present (the same as `meta.mass`).
     pub sw_mass: Option<SwMassProps>,
     pub body: Body,
     pub solids: usize,
@@ -70,6 +46,72 @@ pub struct SldprtImport {
     pub nodes: usize,
     /// What became of each solid region (faces built, faces left out with the reason).
     pub parts: Vec<build::PartRead>,
+    /// Feature list, configurations, material, properties, units, versions and preview (see [`meta`]).
+    pub meta: SwMeta,
+    /// Colour and SolidWorks feature of each face built, in body order.
+    pub face_tags: Vec<FaceTag>,
+    /// Attributes of each solid XT body read.
+    pub body_tags: Vec<BodyTag>,
+}
+
+/// What the file says about one built face. The kernel body has no per-face colour, so it is reported here.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FaceTag {
+    /// Kernel face id (`sldprt.F<xt face>`).
+    pub face: String,
+    pub xt_face: i64,
+    /// RGB, 0..1.
+    pub colour: Option<[f64; 3]>,
+    pub sw_id: Option<ir::SwFaceId>,
+    /// Name of the feature `sw_id.feature` in the feature list.
+    pub feature: Option<String>,
+    /// Every feature tag on the face (see [`ir::IrFace::sw_ids`]).
+    pub sw_ids: Vec<ir::SwFaceId>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BodyTag {
+    pub xt_body: i64,
+    /// Density stored on the body (unit not established, see [`ir::IrBody::density`]).
+    pub density: Option<f64>,
+    pub last_feature: Option<i64>,
+}
+
+impl SldprtImport {
+    /// Parasolid modeller version of the transmit read, from the schema name `SCH_<modeller>_<schema>_<base>`: the number
+    /// (e.g. 3301247) and its `major.minor` form (`33.01`).
+    pub fn parasolid_version(&self) -> Option<(u32, String)> {
+        let n: u32 = self.schema.strip_prefix("SCH_")?.split('_').next()?.parse().ok()?;
+        Some((n, format!("{}.{:02}", n / 100_000, (n / 1000) % 100)))
+    }
+}
+
+/// Only the metadata of a part file (no geometry is read): for a file whose body cannot be imported.
+pub fn read_meta(bytes: &[u8]) -> Result<SwMeta, SldprtError> {
+    let limits = Limits::default();
+    Ok(meta::read(&container::open(bytes, &limits)?, &limits))
+}
+
+/// One tag per built face, in the order of `built.parts` and their `faces` (XT face ids repeat across the bodies of a
+/// multi-body part, so faces are looked up by body and face id).
+fn tags(irs: &[&ir::Ir], built: &build::Built, meta: &SwMeta) -> (Vec<FaceTag>, Vec<BodyTag>) {
+    let mut faces: std::collections::HashMap<(i64, i64), &ir::IrFace> = Default::default();
+    let mut bodies = vec![];
+    for b in irs.iter().flat_map(|ir| &ir.bodies).filter(|b| b.kind == ir::BodyKind::Solid) {
+        bodies.push(BodyTag { xt_body: b.id, density: b.density, last_feature: b.last_feature });
+        for f in b.regions.iter().flat_map(|r| &r.shells).flat_map(|s| &s.faces) {
+            faces.entry((b.id, f.id)).or_insert(f);
+        }
+    }
+    let mut out = vec![];
+    for p in &built.parts {
+        for (fid, xt) in p.faces.iter().zip(&p.face_xt) {
+            let Some(f) = faces.get(&(p.body, *xt)) else { continue };
+            let feature = f.sw_id.as_ref().and_then(|s| meta.feature(s.feature)).map(|x| x.name.clone());
+            out.push(FaceTag { face: built.body.face(*fid).name.id(), xt_face: *xt, colour: f.colour, sw_id: f.sw_id.clone(), feature, sw_ids: f.sw_ids.clone() });
+        }
+    }
+    (out, bodies)
 }
 
 /// Read a part file with the default limits.
@@ -119,7 +161,9 @@ pub fn import_sldprt_with(bytes: &[u8], limits: &Limits) -> Result<SldprtImport,
                 }
                 match build::build(&[&ir], limits) {
                     Ok(built) => {
-                        return Ok(SldprtImport { sw_mass: sw_mass_props(&c), body: built.body, solids: built.solids, container: c.kind, schema: ir.schema.clone(), stream: t.stream.clone(), unit_scale: build::SCALE, approx: built.approx, notes: built.notes, nodes: n, parts: built.parts });
+                        let meta = meta::read(&c, limits);
+                        let (face_tags, body_tags) = tags(&[&ir], &built, &meta);
+                        return Ok(SldprtImport { sw_mass: meta.mass, body: built.body, solids: built.solids, container: c.kind, schema: ir.schema.clone(), stream: t.stream.clone(), unit_scale: build::SCALE, approx: built.approx, notes: built.notes, nodes: n, parts: built.parts, meta, face_tags, body_tags });
                     }
                     Err(e) => note_err(e, &mut first_err),
                 }
@@ -134,7 +178,9 @@ pub fn import_sldprt_with(bytes: &[u8], limits: &Limits) -> Result<SldprtImport,
             Ok(mut built) => {
                 built.notes.push(format!("live partition is empty; {} solid feature body transmit(s) taken", irs.len()));
                 let n = parts.iter().map(|p| p.1).sum();
-                return Ok(SldprtImport { sw_mass: sw_mass_props(&c), body: built.body, solids: built.solids, container: c.kind, schema: irs[0].schema.clone(), stream: parts[0].2.clone(), unit_scale: build::SCALE, approx: built.approx, notes: built.notes, nodes: n, parts: built.parts });
+                let meta = meta::read(&c, limits);
+                let (face_tags, body_tags) = tags(&irs, &built, &meta);
+                return Ok(SldprtImport { sw_mass: meta.mass, body: built.body, solids: built.solids, container: c.kind, schema: irs[0].schema.clone(), stream: parts[0].2.clone(), unit_scale: build::SCALE, approx: built.approx, notes: built.notes, nodes: n, parts: built.parts, meta, face_tags, body_tags });
             }
             Err(e) => note_err(e, &mut first_err),
         }

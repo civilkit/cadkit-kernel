@@ -61,6 +61,7 @@
 - [SolidWorks](io/sldprt.md)
 - [ACIS SAT](io/sat.md)
 - [Feature recognition](io/recognition.md)
+- [Cylinders and cones from facets](io/fit-quadrics.md)
 - [Text and fonts](io/text.md)
 - [Drawings](io/drawings.md)
 

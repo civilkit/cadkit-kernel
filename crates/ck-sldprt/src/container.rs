@@ -353,9 +353,57 @@ fn open_ole2(buf: &[u8], limits: &Limits) -> R<Container> {
 
 // ------------------------------------------------------------------ Parasolid blobs
 
+/// The GUID-wrapped zlib frame whose GUID starts at `h`: `[u32 size] | GUID | u32 inflated | u32 deflated | zlib`, then
+/// continuation chunks `u32 inflated | u32 deflated | zlib`. The size word before the GUID is read when `h >= 4`.
+/// `Ok(None)` when nothing inflates; only a limit is an error.
+fn decode_blob(d: &[u8], h: usize, limits: &Limits) -> R<Option<Vec<u8>>> {
+    if h + 24 > d.len() {
+        return Ok(None);
+    }
+    let blob_size = if h >= 4 { u32le(d, h - 4).unwrap_or(0) as usize } else { 0 };
+    let (Some(_dsz), Some(csz)) = (u32le(d, h + 16), u32le(d, h + 20)) else { return Ok(None) };
+    let limit = if blob_size != 0 { d.len().min(h.saturating_add(blob_size).saturating_add(8)) } else { d.len() };
+    let mut pos = h + 24;
+    let mut csz = csz as usize;
+    let mut payload: Vec<u8> = vec![];
+    loop {
+        if csz == 0 || pos.checked_add(csz).map_or(true, |e| e > d.len()) {
+            break;
+        }
+        match inflate_zlib(&d[pos..pos + csz], limits.max_stream.saturating_sub(payload.len())) {
+            Ok((chunk, _)) => payload.extend_from_slice(&chunk),
+            Err(e) if e.code.starts_with("limit.") => return Err(e),
+            Err(_) => break,
+        }
+        pos += csz;
+        if pos + 9 > limit || pos + 9 > d.len() {
+            break;
+        }
+        let next = u32le(d, pos + 4).unwrap_or(0) as usize;
+        if next == 0 || pos + 8 + next > d.len() || d[pos + 8] != 0x78 {
+            break;
+        }
+        csz = next;
+        pos += 8;
+    }
+    Ok(if payload.is_empty() { None } else { Some(payload) })
+}
+
 impl Container {
     pub fn stream(&self, name: &str) -> Option<&Stream> {
         self.streams.iter().find(|s| s.name == name || s.name.ends_with(&format!("/{name}")))
+    }
+
+    /// The bytes of stream `name`, unwrapped: OLE2 files store some streams as `<name>__ZLB`, a GUID-wrapped zlib frame
+    /// (the same wrapping as the Parasolid transmits), which is inflated here. `None` when the stream is missing or its
+    /// frame does not inflate.
+    pub fn data(&self, name: &str, limits: &Limits) -> Option<Vec<u8>> {
+        if let Some(s) = self.stream(name) {
+            return Some(s.data.clone());
+        }
+        let d = &self.stream(&format!("{name}__ZLB"))?.data;
+        let h = if d.get(4..20) == Some(&BLOB_GUID[..]) { 4 } else if d.get(..16) == Some(&BLOB_GUID[..]) { 0 } else { return None };
+        decode_blob(d, h, limits).ok().flatten()
     }
 
     /// Every GUID-wrapped Parasolid transmit in any stream, inflated. A blob is
@@ -368,38 +416,10 @@ impl Container {
             let mut from = 0usize;
             while let Some(h) = find(d, &BLOB_GUID, from) {
                 from = h + 1;
-                if h < 4 || h + 24 > d.len() {
+                if h < 4 {
                     continue;
                 }
-                let blob_size = u32le(d, h - 4).unwrap_or(0) as usize;
-                let (Some(_dsz), Some(csz)) = (u32le(d, h + 16), u32le(d, h + 20)) else { continue };
-                let limit = if blob_size != 0 { d.len().min(h.saturating_add(blob_size).saturating_add(8)) } else { d.len() };
-                let mut pos = h + 24;
-                let mut csz = csz as usize;
-                let mut payload: Vec<u8> = vec![];
-                loop {
-                    if csz == 0 || pos.checked_add(csz).map_or(true, |e| e > d.len()) {
-                        break;
-                    }
-                    match inflate_zlib(&d[pos..pos + csz], limits.max_stream.saturating_sub(payload.len())) {
-                        Ok((chunk, _)) => payload.extend_from_slice(&chunk),
-                        Err(e) if e.code.starts_with("limit.") => return Err(e),
-                        Err(_) => break,
-                    }
-                    pos += csz;
-                    if pos + 9 > limit || pos + 9 > d.len() {
-                        break;
-                    }
-                    let next = u32le(d, pos + 4).unwrap_or(0) as usize;
-                    if next == 0 || pos + 8 + next > d.len() || d[pos + 8] != 0x78 {
-                        break;
-                    }
-                    csz = next;
-                    pos += 8;
-                }
-                if payload.is_empty() {
-                    continue;
-                }
+                let Some(payload) = decode_blob(d, h, limits)? else { continue };
                 total += payload.len();
                 if total > limits.max_total {
                     return Err(SldprtError::new("limit.total", "total transmit size exceeds the limit"));

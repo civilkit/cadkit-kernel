@@ -19,6 +19,27 @@ pub fn fillet_label(id: &str, r: f64, n: usize) -> String {
     format!("{id}: Fillet({r:?}, Circular) of {n} edge{}", if n == 1 { "" } else { "s" })
 }
 
+/// A blend refusal; when it is a size one (`blendFailed` / `blendOverflow` / `blendUnsupported`) and the asked radius
+/// is positive, search the same builder for the largest radius that builds and name it in `maxSize` (see max_size.rs).
+/// A smaller radius that does not build leaves the refusal as it was: no size is offered. Off unless
+/// [`super::max_size::set_blend_search`] turned it on.
+fn size_refusal(
+    e: ck_ops::blend::BlendError,
+    asked: f64,
+    before: usize,
+    mut build: impl FnMut(f64) -> Result<ck_topo::body::Body, ck_ops::blend::BlendError>,
+) -> FeatureError {
+    let size = matches!(e.code.as_str(), "blendFailed" | "blendOverflow" | "blendUnsupported");
+    let mut fe = blend_error(e);
+    if size && super::max_size::blend_search_enabled() && asked > 0.0 && asked.is_finite() {
+        let ok = |v: f64| build(v).is_ok_and(|b| ck_check::validate(&b, super::TOL).len() <= before);
+        if let Some(m) = super::max_size::largest_that_builds(asked, None, ok) {
+            fe = super::max_size::with_max_size(fe, "radius", m, "mm");
+        }
+    }
+    fe
+}
+
 pub fn blend_error(e: ck_ops::blend::BlendError) -> FeatureError {
     let mut fe = FeatureError::new(&e.code);
     if let Some(d) = e.detail {
@@ -631,17 +652,30 @@ pub fn exec_fillet(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
     // two convex edges and a concave one at a vertex: the concave corner is filled first, the rim rolls round it
     if profile == ck_ops::blend::build::FilletProfile::Circular {
         if let Some(res) = ck_ops::blend::mixed::fillet_mixed(body, &sel, &vec![r; sel.len()], &f.id, super::TOL) {
-            br.body = Some(res.map_err(blend_error)?);
-            return Ok(());
+            match res {
+                Ok(out) => {
+                    br.body = Some(out);
+                    return Ok(());
+                }
+                Err(e) => {
+                    let build = |radius: f64| {
+                        ck_ops::blend::mixed::fillet_mixed(body, &sel, &vec![radius; sel.len()], &f.id, super::TOL)
+                            .unwrap_or_else(|| Err(ck_ops::blend::BlendError::code("blendUnsupported")))
+                    };
+                    return Err(size_refusal(e, r, ck_check::validate(body, super::TOL).len(), build));
+                }
+            }
         }
     }
-    let spec = ck_ops::blend::build::Spec::Fillet(r, profile);
-    let out = if propagates(f) {
-        ck_ops::blend::build::blend_edges_tangent_chain(body, &sel, spec, &f.id, super::TOL)
-    } else {
-        ck_ops::blend::build::blend_edges(body, &sel, spec, &f.id, super::TOL)
-    }
-    .map_err(blend_error)?;
+    let build = |radius: f64| {
+        let spec = ck_ops::blend::build::Spec::Fillet(radius, profile);
+        if propagates(f) {
+            ck_ops::blend::build::blend_edges_tangent_chain(body, &sel, spec, &f.id, super::TOL)
+        } else {
+            ck_ops::blend::build::blend_edges(body, &sel, spec, &f.id, super::TOL)
+        }
+    };
+    let out = build(r).map_err(|e| size_refusal(e, r, ck_check::validate(body, super::TOL).len(), build))?;
     br.body = Some(out);
     Ok(())
 }

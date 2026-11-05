@@ -128,6 +128,23 @@ pub struct IrFace {
     pub loops: Vec<IrLoop>,
     /// The face was reached through the shell's front-face chain (seen from its other side).
     pub back: bool,
+    /// Face colour (attribute `SDL/TYSA_COLOUR`), RGB in 0..1.
+    pub colour: Option<[f64; 3]>,
+    /// The SolidWorks feature that made the face (attribute `FACE_ID_2001`): the smallest feature id of [`IrFace::sw_ids`].
+    pub sw_id: Option<SwFaceId>,
+    /// Every `FACE_ID_2001` tag on the face: a face two features share (a cut wall flush with a side, a side a later
+    /// boss extended) carries one per feature.
+    pub sw_ids: Vec<SwFaceId>,
+}
+
+/// SolidWorks' face tag `FACE_ID_2001`, integers `[kind, feature id, stamp, 0, local index, ...]`. The feature id is the id of
+/// the feature that built the face, as listed in `swXmlContents/KeyWords`; `kind` and `local` are inferred from sample files
+/// (kind 40 = an end cap, 74 = a side, 72 = a fillet face), not documented.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwFaceId {
+    pub kind: i64,
+    pub feature: i64,
+    pub local: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -156,6 +173,11 @@ pub struct IrBody {
     pub id: i64,
     pub kind: BodyKind,
     pub regions: Vec<IrRegion>,
+    /// Density as stored on the body (attribute `SDL/TYSA_DENSITY`). Its unit is not established: the sample files hold 1000
+    /// (SolidWorks 2011) or 1.0 (later versions) whatever the material, so the material's density is the one to use.
+    pub density: Option<f64>,
+    /// Id of the last feature that modified the body (attribute `LAST_BODY_MODIFYING_FEATURE_ID`).
+    pub last_feature: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -178,6 +200,8 @@ impl Ir {
 
 struct Ex<'a> {
     xt: &'a XtFile,
+    /// Attributes by owner node index: (definition name, field nodes).
+    attrs: HashMap<i64, Vec<(String, Vec<i64>)>>,
     ir: Ir,
     surf: HashMap<i64, usize>,
     curve: HashMap<i64, usize>,
@@ -468,13 +492,60 @@ impl<'a> Ex<'a> {
             }
             loops.push(IrLoop { id: lp.i("node_id"), fins, vertex });
         }
-        Ok(IrFace { id: f.i("node_id"), surface, same_sense, loops, back })
+        let colour = self.attr_reals(f.index, "SDL/TYSA_COLOUR").filter(|v| v.len() == 3 && v.iter().all(|c| c.is_finite())).map(|v| [v[0], v[1], v[2]]);
+        // a face modified by later features carries several tags (most recent first): the creating feature is the
+        // one with the smallest id
+        let sw_ids: Vec<SwFaceId> = self.attr_ints_all(f.index, "FACE_ID_2001").into_iter().filter(|v| v.len() >= 2).map(|v| SwFaceId { kind: v[0], feature: v[1], local: v.get(4).copied() }).collect();
+        let sw_id = sw_ids.iter().min_by_key(|t| t.feature).cloned();
+        Ok(IrFace { id: f.i("node_id"), surface, same_sense, loops, back, colour, sw_id, sw_ids })
     }
+
+    /// Field nodes of the first attribute named `name` on node `owner`.
+    fn attr_fields(&self, owner: i64, name: &str) -> impl Iterator<Item = &Node> {
+        let fields = self.attrs.get(&owner).and_then(|v| v.iter().find(|a| a.0 == name)).map(|a| a.1.as_slice()).unwrap_or(&[]);
+        fields.iter().filter_map(|&q| self.xt.get(q))
+    }
+
+    /// The first integer field (`INT_VALUES`) of attribute `name` on `owner`.
+    fn attr_ints(&self, owner: i64, name: &str) -> Option<Vec<i64>> {
+        self.attr_fields(owner, name).find(|n| n.ty == 82).map(|n| n.ai("values").to_vec())
+    }
+
+    /// The first integer field of every attribute named `name` on `owner`.
+    fn attr_ints_all(&self, owner: i64, name: &str) -> Vec<Vec<i64>> {
+        let attrs = self.attrs.get(&owner).map(|v| v.as_slice()).unwrap_or(&[]);
+        attrs.iter().filter(|a| a.0 == name).filter_map(|a| a.1.iter().filter_map(|&q| self.xt.get(q)).find(|n| n.ty == 82).map(|n| n.ai("values").to_vec())).collect()
+    }
+
+    /// The first real field (`REAL_VALUES`) of attribute `name` on `owner`.
+    fn attr_reals(&self, owner: i64, name: &str) -> Option<Vec<f64>> {
+        self.attr_fields(owner, name).find(|n| n.ty == 83).map(|n| n.af("values").to_vec())
+    }
+}
+
+/// Every attribute (`ATTRIBUTE` node) by the node index of its owner, with its definition's name.
+fn attributes(xt: &XtFile) -> HashMap<i64, Vec<(String, Vec<i64>)>> {
+    let mut names: HashMap<i64, String> = HashMap::new();
+    for n in xt.nodes.values().filter(|n| n.ty == 80) {
+        let id = xt.deref(n, "identifier").map(|i| match i.val("string") {
+            Some(crate::xt::Val::AS(b)) => b.iter().take_while(|&&c| c != 0).map(|&c| c as char).collect(),
+            _ => String::new(),
+        });
+        names.insert(n.index, id.unwrap_or_default());
+    }
+    let mut out: HashMap<i64, Vec<(String, Vec<i64>)>> = HashMap::new();
+    let mut list: Vec<&Node> = xt.nodes.values().filter(|n| n.ty == 81).collect();
+    list.sort_by_key(|n| n.index);
+    for a in list {
+        let Some(name) = names.get(&a.i("definition")) else { continue };
+        out.entry(a.i("owner")).or_default().push((name.clone(), a.ai("fields").to_vec()));
+    }
+    out
 }
 
 /// Build the IR of every body in an XT file.
 pub fn extract(xt: &XtFile, limits: &Limits) -> R<Ir> {
-    let mut ex = Ex { xt, ir: Ir { schema: xt.schema_id.clone(), ..Default::default() }, surf: HashMap::new(), curve: HashMap::new(), vert: HashMap::new(), edge: HashMap::new() };
+    let mut ex = Ex { xt, attrs: attributes(xt), ir: Ir { schema: xt.schema_id.clone(), ..Default::default() }, surf: HashMap::new(), curve: HashMap::new(), vert: HashMap::new(), edge: HashMap::new() };
     let mut bodies: Vec<&Node> = xt.nodes.values().filter(|n| n.ty == 12).collect();
     bodies.sort_by_key(|n| n.index);
     let mut nfaces = 0usize;
@@ -511,7 +582,9 @@ pub fn extract(xt: &XtFile, limits: &Limits) -> R<Ir> {
             }
             regions.push(reg);
         }
-        ex.ir.bodies.push(IrBody { id: b.index, kind, regions });
+        let density = ex.attr_reals(b.index, "SDL/TYSA_DENSITY").and_then(|v| v.first().copied()).filter(|d| d.is_finite());
+        let last_feature = ex.attr_ints(b.index, "LAST_BODY_MODIFYING_FEATURE_ID").and_then(|v| v.first().copied());
+        ex.ir.bodies.push(IrBody { id: b.index, kind, regions, density, last_feature });
     }
     if ex.ir.bodies.is_empty() {
         return Err(SldprtError::new("xt.empty", "no BODY node in the partition"));
