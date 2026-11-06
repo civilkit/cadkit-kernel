@@ -96,7 +96,8 @@ fn run(cx: &mut Cx, f: &SwFeature, fp: &[FaceId], env: &Env, kind: Pat) -> Resul
 
 fn run_faces(cx: &mut Cx, f: &SwFeature, fp: &[FaceId], env: &Env, kind: Pat) -> Result<String, String> {
     let m = cx.m;
-    if let Some(&bad) = fp.iter().find(|&&p| matches!(m.kind(p), Kind::Other(_))) {
+    // (a free-form face, of a sweep say, is compared point by point: `face_img`)
+    if let Some(&bad) = fp.iter().find(|&&p| matches!(m.kind(p), Kind::Other(k) if !FREE.contains(k))) {
         return Err(format!("{} face in a pattern", m.kind(bad).name()));
     }
     let mut seeds: Vec<Seed> = vec![];
@@ -126,23 +127,7 @@ fn run_faces(cx: &mut Cx, f: &SwFeature, fp: &[FaceId], env: &Env, kind: Pat) ->
 
     // the seeds: greedy cover of the pattern faces by the moved faces of one feature at a time
     let all_hits: Vec<Vec<Hit>> = fp.iter().map(|&p| hits_of(m, &sf, p, &found.xs)).collect();
-    let mut unexplained: HashSet<usize> = (0..fp.len()).collect();
-    let mut chosen: Vec<usize> = vec![];
-    loop {
-        let mut best: Option<(usize, usize)> = None;
-        for si in 0..seeds.len() {
-            if chosen.contains(&si) {
-                continue;
-            }
-            let c = unexplained.iter().filter(|&&pi| all_hits[pi].iter().any(|h| h.seed == si && h.moved)).count();
-            if c > 0 && best.map_or(true, |(_, bc)| c >= bc) {
-                best = Some((si, c));
-            }
-        }
-        let Some((si, _)) = best else { break };
-        chosen.push(si);
-        unexplained.retain(|&pi| !all_hits[pi].iter().any(|h| h.seed == si));
-    }
+    let (mut chosen, unexplained) = greedy(&all_hits, seeds.len(), fp.len());
     if !unexplained.is_empty() {
         return Err(format!("{} of {} pattern faces are not copies of one feature's faces", unexplained.len(), fp.len()));
     }
@@ -207,16 +192,81 @@ struct Hit {
     xf: usize,
     /// The image is a different surface from the seed face's own.
     moved: bool,
+    /// Not moved, yet the image of the seed face lands on a different face (their boxes meet) away from the seed's place.
+    placed: bool,
+    /// Not moved, and the image of the seed face lands on the pattern face (their boxes meet), or is that face.
+    lands: bool,
+}
+
+/// Box of points, grown by `tol`.
+fn bbox(pts: &[Vec3], tol: f64) -> (Vec3, Vec3) {
+    let (mut lo, mut hi) = (pts[0], pts[0]);
+    for q in pts {
+        lo = Vec3::new(lo.x.min(q.x), lo.y.min(q.y), lo.z.min(q.z));
+        hi = Vec3::new(hi.x.max(q.x), hi.y.max(q.y), hi.z.max(q.z));
+    }
+    let t = Vec3::new(tol, tol, tol);
+    (lo - t, hi + t)
+}
+
+fn meet(a: (Vec3, Vec3), b: (Vec3, Vec3)) -> bool {
+    a.0.x <= b.1.x && b.0.x <= a.1.x && a.0.y <= b.1.y && b.0.y <= a.1.y && a.0.z <= b.1.z && b.0.z <= a.1.z
+}
+
+/// Whether the image of face `s` under `x` lands on face `p` (or is it), and whether it lands away from `s`'s own place
+/// on a different face.
+fn landing(m: &Model, s: FaceId, x: &Xform, p: FaceId) -> (bool, bool) {
+    if s == p {
+        return (true, false);
+    }
+    let ps = crate::face_points(m, s);
+    let pp = crate::face_points(m, p);
+    if ps.is_empty() || pp.is_empty() {
+        return (false, false);
+    }
+    let img: Vec<Vec3> = ps.iter().map(|&q| x.apply_point(q)).collect();
+    let tol = 10.0 * TOL;
+    let mid = |v: &[Vec3]| v.iter().fold(Vec3::ZERO, |a, &q| a + q) * (1.0 / v.len() as f64);
+    let lands = meet(bbox(&img, tol), bbox(&pp, tol));
+    (lands, lands && mid(&img).dist(mid(&ps)) > tol)
+}
+
+/// The free-form surface kinds `face_img` compares.
+const FREE: [&str; 3] = ["revolution", "extrusion", "spline"];
+
+/// The surface of face `s` carried by `x` is the surface of face `p`: analytic surfaces by their parameters
+/// (`img_matches`), free-form ones of one kind by points of `s`'s boundary landing on `p`'s surface.
+fn face_img(m: &Model, s: FaceId, x: &Xform, p: FaceId) -> bool {
+    let (ks, kp) = (m.kind(s), m.kind(p));
+    let (Kind::Other(a), Kind::Other(b)) = (ks, kp) else { return img_matches(ks, x, kp) };
+    if a != b {
+        return false;
+    }
+    let pts: Vec<Vec3> = m.edges(s).into_iter().flat_map(|e| [m.p0(e), m.mid(e)]).map(|q| x.apply_point(q)).collect();
+    // (a cheap reject first: the images must fall within the target face's box)
+    let tp = crate::face_points(m, p);
+    let (mut lo, mut hi) = (tp[0], tp[0]);
+    for q in &tp {
+        lo = Vec3::new(lo.x.min(q.x), lo.y.min(q.y), lo.z.min(q.z));
+        hi = Vec3::new(hi.x.max(q.x), hi.y.max(q.y), hi.z.max(q.z));
+    }
+    let tol = 10.0 * TOL;
+    let inside = |q: &Vec3| q.x > lo.x - tol && q.y > lo.y - tol && q.z > lo.z - tol && q.x < hi.x + tol && q.y < hi.y + tol && q.z < hi.z + tol;
+    if !pts.iter().any(inside) {
+        return false;
+    }
+    let surf = &m.b.face(p).surface;
+    pts.iter().all(|&q| surf.closest_point_within(q, tol).map_or(false, |(_, _, c)| c.dist(q) < tol))
 }
 
 fn hits_of(m: &Model, sf: &[(usize, FaceId)], p: FaceId, xs: &[Xform]) -> Vec<Hit> {
-    let kp = m.kind(p);
     let mut out = vec![];
     for &(seed, s) in sf {
-        let ks = m.kind(s);
         for (xf, x) in xs.iter().enumerate() {
-            if img_matches(ks, x, kp) {
-                out.push(Hit { seed, face: s, xf, moved: !img_matches(ks, x, ks) });
+            if face_img(m, s, x, p) {
+                let moved = !face_img(m, s, x, s);
+                let (lands, placed) = if moved { (false, false) } else { landing(m, s, x, p) };
+                out.push(Hit { seed, face: s, xf, moved, placed, lands });
             }
         }
     }
@@ -242,14 +292,12 @@ impl Cover {
 fn cover(m: &Model, sf: &[(usize, FaceId)], fp: &[FaceId], xs: &[Xform]) -> Cover {
     let mut per = vec![false; xs.len()];
     for &p in fp {
-        let kp = m.kind(p);
         let mut found = false;
         for &(_, s) in sf {
-            let ks = m.kind(s);
             for (k, x) in xs.iter().enumerate() {
-                if img_matches(ks, x, kp) {
+                if face_img(m, s, x, p) {
                     found = true;
-                    if !per[k] && !img_matches(ks, x, ks) {
+                    if !per[k] && !face_img(m, s, x, s) {
                         per[k] = true;
                     }
                 }
@@ -799,6 +847,45 @@ fn refl_planes(a: &Kind, b: &Kind, out: &mut Vec<(Vec3, f64)>) {
     }
 }
 
+/// The number of seed features the greedy cover of the pattern faces by moved faces needs (None: faces stay unexplained).
+fn seeds_needed(m: &Model, sf: &[(usize, FaceId)], fp: &[FaceId], xs: &[Xform]) -> Option<usize> {
+    let all_hits: Vec<Vec<Hit>> = fp.iter().map(|&p| hits_of(m, sf, p, xs)).collect();
+    let nseeds = sf.iter().map(|s| s.0 + 1).max().unwrap_or(0);
+    let (chosen, unexplained) = greedy(&all_hits, nseeds, fp.len());
+    unexplained.is_empty().then_some(chosen.len())
+}
+
+/// Greedy cover of the pattern faces (`all_hits` per face) by seed features, one at a time: first by the faces each
+/// seed moves (most faces first, later features win ties); then, for faces still unexplained, by seed faces whose
+/// image lands on them although their surface maps to itself (a face on the mirror plane's normal plane, a copy on the
+/// seed's own plane further along). Returns the chosen seeds and the faces left unexplained.
+fn greedy(all_hits: &[Vec<Hit>], nseeds: usize, nfp: usize) -> (Vec<usize>, HashSet<usize>) {
+    let mut unexplained: HashSet<usize> = (0..nfp).collect();
+    let mut chosen: Vec<usize> = vec![];
+    for placed in [false, true] {
+        loop {
+            let mut best: Option<(usize, usize)> = None;
+            for si in 0..nseeds {
+                if chosen.contains(&si) {
+                    continue;
+                }
+                let c = unexplained.iter().filter(|&&pi| all_hits[pi].iter().any(|h| h.seed == si && (h.moved || (placed && h.placed)))).count();
+                if c > 0 && best.map_or(true, |(_, bc)| c >= bc) {
+                    best = Some((si, c));
+                }
+            }
+            let Some((si, _)) = best else { break };
+            chosen.push(si);
+            // (a face the seed's image only shares a surface with, elsewhere, is left for another seed)
+            unexplained.retain(|&pi| !all_hits[pi].iter().any(|h| h.seed == si && (h.moved || h.lands)));
+        }
+        if unexplained.is_empty() {
+            break;
+        }
+    }
+    (chosen, unexplained)
+}
+
 fn mirror(cx: &mut Cx, sf: &[(usize, FaceId)], fp: &[FaceId]) -> Result<Found, String> {
     let m = cx.m;
     let mut raw: Vec<(Vec3, f64)> = vec![];
@@ -818,9 +905,26 @@ fn mirror(cx: &mut Cx, sf: &[(usize, FaceId)], fp: &[FaceId]) -> Result<Found, S
         }
     }
     groups.sort_by(|a, b| b.1.cmp(&a.1));
-    groups.truncate(24);
+    groups.truncate(200);
     let xof = |pl: (Vec3, f64)| vec![Xform::mirror(&Plane::new(pl.0 * pl.1, pl.0))];
-    let (pl, xs) = choose(groups.iter().map(|g| (g.0, xof(g.0))), m, sf, fp).ok_or("no mirror plane reproduces the pattern's faces")?;
+    // a plane that covers the pattern from the fewest seed features (a plane at the other end of the part can carry
+    // some far face onto a pattern face by chance, with the seeds of other features)
+    let mut best: Option<(usize, (Vec3, f64), Vec<Xform>)> = None;
+    let mut loose: Option<((Vec3, f64), Vec<Xform>)> = None;
+    for g in &groups {
+        let xs = xof(g.0);
+        let c = cover(m, sf, fp, &xs);
+        if c.tight() {
+            if let Some(k) = seeds_needed(m, sf, fp, &xs) {
+                if best.as_ref().map_or(true, |b| k < b.0) {
+                    best = Some((k, g.0, xs));
+                }
+            }
+        } else if loose.is_none() && c.ok() {
+            loose = Some((g.0, xs));
+        }
+    }
+    let (pl, xs) = best.map(|b| (b.1, b.2)).or(loose).ok_or("no mirror plane reproduces the pattern's faces")?;
     let (mv, c) = pl;
     let plane = cx.frame(mv, mv * c).plane;
     let json = move |pid: &str, seeds: &[String]| Obj::new().put("type", "mirror").put("id", pid).put("seeds", seeds_json(seeds)).put("plane", plane.clone()).put("body", false).build();

@@ -36,7 +36,7 @@ fn run(src: &str) -> Outcome {
             SwFeature { id, name, kind: kind.into(), dims }
         })
         .collect();
-    rebuild_history(&Tagged { body: &body, tags, features: &sw, unit_mm: 1.0 })
+    rebuild_history(&Tagged { body: &body, tags, features: &sw, unit_mm: 1.0, start: None })
 }
 
 fn assert_exact(o: &Outcome) {

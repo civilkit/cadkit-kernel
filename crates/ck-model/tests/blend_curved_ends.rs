@@ -254,8 +254,8 @@ fn param<'a>(p: &'a [(String, String)], k: &str) -> Option<&'a str> {
     p.iter().find(|(n, _)| n == k).map(|(_, v)| v.trim_start_matches("Str(\"").trim_end_matches("\")"))
 }
 
-/// A blend too large for the face next to a curved end is refused with `blendOverflow`; the hint names the end that
-/// meets the curved face / wall and the largest size that fits (and that size then works).
+/// A convex blend too large for the face next to a curved end is refused with `blendOverflow`; the hint names the end
+/// that meets the curved face / wall and the largest size that fits (and that size then works).
 #[test]
 fn too_large_is_refused_with_a_hint() {
     // box side face is 20 high: the largest fillet is just under 20
@@ -265,14 +265,14 @@ fn too_large_is_refused_with_a_hint() {
     assert!((19.9..=20.0).contains(&max), "max {max}");
     assert!(matches!(param(&p, "curvedEnd"), Some("start" | "end")));
     pair(&box_cyl(false, max, 12.0, false));
-    // the boss wall above the bar top is 10 high
-    let (code, p) = refusal(&BAR_ARC.replace("\"radius\":2", "\"radius\":14"));
-    assert_eq!(code, "blendOverflow");
-    let max: f64 = param(&p, "max").unwrap().parse().unwrap();
-    assert!((9.9..=10.0).contains(&max), "max {max}");
-    assert!(param(&p, "curvedEnd").is_some());
-    let (a, b) = pair(&BAR_ARC.replace("\"radius\":2", &format!("\"radius\":{max}")));
-    assert!(b.vol > a.vol);
+    // the boss wall above the bar top is 10 high: a larger round rolls off it and is trimmed by the boss top (z = 20)
+    // continued, as a fillet wider than its face is
+    let (a, b) = pair(&BAR_ARC.replace("\"radius\":2", "\"radius\":14"));
+    let th = |rho: f64| 2.0 * (15.0 / rho).min(1.0).asin();
+    let exp = integ(14.0, |d| (20.0 + d) * th(20.0 + d) * wedge_fillet(14.0, d).min(10.0));
+    assert!((b.vol - a.vol - exp).abs() < 2e-5 * exp, "added {} expected {exp}", b.vol - a.vol);
+    assert_eq!(loc(&b, [20.5, 0.0, 19.9]), Loc::In);
+    assert_eq!(loc(&b, [20.5, 0.0, 20.05]), Loc::Out, "nothing above the boss top");
     // the straight edge into the boss: same
     let (code, p) = refusal(&bar(BAR_STRAIGHT, 14.0, false, false));
     assert_eq!(code, "blendOverflow");

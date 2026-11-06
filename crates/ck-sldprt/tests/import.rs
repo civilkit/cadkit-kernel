@@ -229,6 +229,24 @@ fn a_face_that_cannot_be_built_is_left_out_and_named() {
     assert_eq!(part.refused_surfaces.len(), 4);
 }
 
+/// A corpus part (not committed: `SW_CORPUS`, default `<repo>/corpus-local/samples`) whose rolling-ball blends run round
+/// closed spines: B-spline faces closed in one parameter, bands between two ring edges and patches across the closing
+/// isoline, and ring edges on blend boundaries. Every edge lies on its faces and the body has the file's volume.
+#[test]
+fn closed_spline_faces_and_blend_boundary_rings() {
+    let dir = std::env::var("SW_CORPUS").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../corpus-local/samples"));
+    let Ok(bytes) = std::fs::read(dir.join("nist_ctc_02/part.SLDPRT")) else { return };
+    let imp = import_sldprt(&bytes).unwrap();
+    assert_eq!((imp.parts.len(), imp.parts[0].faces.len(), imp.parts[0].faces_total), (1, 488, 488));
+    let issues = ck_check::validate(&imp.body, 1e-6);
+    assert!(issues.is_empty(), "{:?}", issues.iter().take(5).map(|i| format!("{} {} {}", i.code, i.entity, i.detail)).collect::<Vec<_>>());
+    let faces: Vec<_> = imp.body.face_ids().collect();
+    let vol = ck_topo::mass::signed_volume(&imp.body, &faces);
+    // SolidWorks' stored mass properties
+    let file = imp.sw_mass.unwrap().volume_m3 * 1e9;
+    assert!((vol - file).abs() < 1e-3 * file, "volume {vol} vs file {file}");
+}
+
 #[test]
 fn a_complete_part_has_no_refused_faces() {
     let imp = import_sldprt(&fixture("sw2022_cube_10mm")).unwrap();
@@ -373,4 +391,25 @@ fn synthetic_metadata_privacy_and_missing_streams() {
     let mut one = vec![0, 0, 0, 0, 0, 0, 0, 4];
     one.extend(block("Contents/Other", b"nothing"));
     assert_eq!(ck_sldprt::read_meta(&one).unwrap(), ck_sldprt::SwMeta::default());
+}
+
+/// The last file read is remembered: a second import of the same bytes is the same body (and another file is not
+/// mistaken for it), whichever order they come in.
+#[test]
+fn import_of_the_same_bytes_is_remembered() {
+    let (cube, cone) = (fixture("sw2022_cube_10mm"), fixture("sw2022_cone"));
+    let a = import_sldprt(&cube).unwrap();
+    let b = import_sldprt(&cube).unwrap();
+    assert_eq!((a.body.num_faces(), a.nodes, a.solids), (b.body.num_faces(), b.nodes, b.solids));
+    assert_eq!(a.face_tags.len(), b.face_tags.len());
+    let c = import_sldprt(&cone).unwrap();
+    assert_ne!(c.body.num_faces(), a.body.num_faces());
+    let d = import_sldprt(&cube).unwrap();
+    assert_eq!(d.body.num_faces(), a.body.num_faces());
+    // a changed byte is another file: the error of the damaged copy is not the remembered body
+    let mut bad = cube.clone();
+    let n = bad.len() / 2;
+    bad[n] ^= 0xff;
+    let _ = import_sldprt(&bad);
+    assert_eq!(import_sldprt(&cube).unwrap().body.num_faces(), a.body.num_faces());
 }

@@ -732,6 +732,36 @@ export interface RepairPartFeature {
   [key: string]: unknown;
 }
 
+/** One section of a `frame` member: a standard shape and its dimensions (mm); `id` / `label` name the stock in the cut list. */
+export interface FrameProfile {
+  kind: 'rectTube' | 'rect' | 'roundTube' | 'roundBar' | 'angle' | 'channel' | 'tslot';
+  id?: string;
+  label?: string;
+  [dim: string]: unknown;
+}
+
+/**
+ * A structural frame (weldment): every line of the skeleton sketch (or each world line of `lines`) becomes a member, the section
+ * swept along it and trimmed where members meet (mitre or butt; an end on the middle of another member is butted against it).
+ * Each member is its own body `<id> M<k>`. The regen reply lists the cut list under `frames` (stock length, cut angles, ends).
+ */
+export interface FrameFeature {
+  type: 'frame';
+  id: string;
+  name?: string;
+  sketch?: string;
+  /** line entity ids of the sketch to use (default: every non-construction line) */
+  segments?: string[];
+  lines?: Array<[[number, number, number], [number, number, number]]>;
+  profile: FrameProfile;
+  /** turn of the section about each member, deg */
+  rotate?: Expr;
+  corner?: 'mitre' | 'butt';
+  members?: Array<{ segment: string; profile?: FrameProfile; rotate?: Expr }>;
+  joints?: Array<{ segments: [string, string]; corner: 'mitre' | 'butt'; through?: string }>;
+  [key: string]: unknown;
+}
+
 /** Every typed feature except sketch/extrude (declared in index.ts). */
 export type KnownFeature =
   | Sketch3DFeature | RevolveFeature | SweepFeature | LoftFeature
@@ -745,7 +775,7 @@ export type KnownFeature =
   | DeleteFaceFeature | ThickenFeature | CutWithSurfaceFeature | PipeCutFeature
   | FreeformFeature | EditCurveFeature | ProjectCurveFeature | ExtendFeature
   | DomeFeature | SplitLineFeature | MoveFaceFeature | MoveBodyFeature
-  | ScaleFeature | AxisFeature | ThreadFeature | CombineFeature | SphereFeature | KnurlBandFeature | ImportStepFeature | RepairPartFeature;
+  | ScaleFeature | AxisFeature | ThreadFeature | CombineFeature | SphereFeature | KnurlBandFeature | ImportStepFeature | RepairPartFeature | FrameFeature;
 
 /** All wire type strings the kernel dispatches on. */
 export const FEATURE_TYPES = [
@@ -756,7 +786,7 @@ export const FEATURE_TYPES = [
   'surfaceOffset', 'knit', 'fill', 'insertPart', 'mate', 'plane',
   'deleteBody', 'deleteFace', 'thicken', 'cutWithSurface', 'pipeCut',
   'freeform', 'editCurve', 'projectCurve', 'extend', 'dome', 'splitLine',
-  'moveFace', 'moveBody', 'scale', 'axis', 'thread', 'combine', 'sphere', 'knurlBand', 'importStep', 'repairPart',
+  'moveFace', 'moveBody', 'scale', 'axis', 'thread', 'combine', 'sphere', 'knurlBand', 'importStep', 'repairPart', 'frame',
 ] as const;
 
 export type FeatureTypeName = (typeof FEATURE_TYPES)[number];

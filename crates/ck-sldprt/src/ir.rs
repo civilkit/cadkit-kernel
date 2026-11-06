@@ -73,7 +73,9 @@ pub enum IrCurve {
     BCurve(NurbsCurveIr),
     Trimmed { basis: Option<usize>, p1: V3, p2: V3, t1: f64, t2: f64 },
     /// Surface/surface intersection given by its chart points (terminators included).
-    Intersection { pts: Vec<V3>, surfaces: [Option<usize>; 2] },
+    /// `bounds`: a support that is a blend's boundary (BLEND_BOUND): the blend surface and which boundary.
+    /// `chordal`: the chart's chordal error (metres): how far its points may be from the curve (0 when not stored).
+    Intersection { pts: Vec<V3>, surfaces: [Option<usize>; 2], bounds: [Option<(usize, i64)>; 2], chordal: f64 },
     /// Curve in the parameter space of a surface.
     Sp { surface: Option<usize>, uv: Option<NurbsCurveIr> },
     Unsupported(String),
@@ -90,6 +92,9 @@ pub struct IrCurveNode {
 pub struct IrVertex {
     pub id: i64,
     pub p: V3,
+    /// Tolerance of a tolerant vertex (metres): how far the vertex may be from the curves and surfaces that meet there.
+    /// `None` when the vertex is exact (the file's null-tolerance sentinel).
+    pub tol: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -189,9 +194,20 @@ pub struct Ir {
     pub vertices: Vec<IrVertex>,
     pub edges: Vec<IrEdge>,
     pub notes: Vec<String>,
+    /// Build the faces of sheet bodies too (set by the caller for a file that holds no solid; see `import_sldprt`).
+    pub import_sheets: bool,
 }
 
 impl Ir {
+    /// Faces of sheet bodies.
+    pub fn sheet_faces(&self) -> usize {
+        self.bodies.iter().filter(|b| b.kind == BodyKind::Sheet).flat_map(|b| &b.regions).flat_map(|r| &r.shells).map(|s| s.faces.len()).sum()
+    }
+    /// Number of sheet bodies that have faces.
+    pub fn sheet_bodies(&self) -> usize {
+        self.bodies.iter().filter(|b| b.kind == BodyKind::Sheet && b.regions.iter().any(|r| r.shells.iter().any(|s| !s.faces.is_empty()))).count()
+    }
+
     /// Faces in solid regions of solid bodies.
     pub fn solid_faces(&self) -> usize {
         self.bodies.iter().filter(|b| b.kind == BodyKind::Solid).flat_map(|b| &b.regions).filter(|r| r.solid).flat_map(|r| &r.shells).map(|s| s.faces.len()).sum()
@@ -333,8 +349,10 @@ impl<'a> Ex<'a> {
                     for k in 0..2 {
                         if let Some(sn) = sv.get(k).and_then(|&s| self.xt.get(s)) {
                             support_plus[k] = sn.plus("sense");
-                            // blend boundaries (59) and cliff-edge blends (56) are not evaluable supports
-                            if sn.ty != 59 && sn.ty != 56 {
+                            // blend boundaries (59) are not evaluable supports; a rolling-ball blend ('R', or 'E' where the
+                            // ball runs along a sharp edge) is: a blend on a blend has the other blend's own surface for a
+                            // support (a zero-radius one is the edge itself)
+                            if sn.ty != 59 && (sn.ty != 56 || matches!(sn.c("blend_type"), b'R' | b'E')) {
                                 supports[k] = self.surface(sn.index, depth + 1);
                             }
                         }
@@ -380,6 +398,7 @@ impl<'a> Ex<'a> {
                 }
                 38 => {
                     let mut pts: Vec<V3> = vec![];
+                    let chordal = self.xt.deref(n, "chart").map(|c| c.f("chordal_error")).filter(|e| e.is_finite() && *e > 0.0 && *e < 1.0).unwrap_or(0.0);
                     if let Some(ch) = self.xt.deref(n, "chart") {
                         pts.extend(ch.av("hvec").iter().copied());
                         let ends = |k: &str| self.xt.deref(n, k).filter(|l| matches!(l.c("type"), b'T' | b'L')).and_then(|l| l.av("hvec").first().copied());
@@ -399,15 +418,18 @@ impl<'a> Ex<'a> {
                     let sv = n.ai("surface").to_vec();
                     // the two surfaces; a BLEND_BOUND (type 59) stands in for a blend support and is not evaluated
                     let mut surfaces = [None, None];
+                    let mut bounds = [None, None];
                     for (k, s) in sv.iter().take(2).enumerate() {
-                        if self.xt.get(*s).map_or(false, |sn| sn.ty != 59) {
-                            surfaces[k] = self.surface(*s, depth + 1);
+                        match self.xt.get(*s).map(|sn| (sn.ty, sn.i("boundary"), sn.i("blend"))) {
+                            Some((59, side, blend)) => bounds[k] = self.surface(blend, depth + 1).map(|b| (b, side)),
+                            Some(_) => surfaces[k] = self.surface(*s, depth + 1),
+                            None => {}
                         }
                     }
                     if pts.len() < 2 {
                         IrCurve::Unsupported("intersection curve without chart points".into())
                     } else {
-                        IrCurve::Intersection { pts, surfaces }
+                        IrCurve::Intersection { pts, surfaces, bounds, chordal }
                     }
                 }
                 137 => {
@@ -430,7 +452,8 @@ impl<'a> Ex<'a> {
         }
         let v = self.xt.get(idx)?;
         let p = self.xt.deref(v, "point")?;
-        self.ir.vertices.push(IrVertex { id: v.i("node_id"), p: p.v3("pvec") });
+        let tol = Some(v.f("tolerance")).filter(|t| t.is_finite() && *t > 0.0 && *t < 1.0);
+        self.ir.vertices.push(IrVertex { id: v.i("node_id"), p: p.v3("pvec"), tol });
         let i = self.ir.vertices.len() - 1;
         self.vert.insert(idx, i);
         Some(i)
@@ -576,6 +599,18 @@ pub fn extract(xt: &XtFile, limits: &Limits) -> R<Ir> {
                     nfaces += shell.faces.len();
                     if nfaces > limits.max_faces {
                         return Err(SldprtError::new("limit.faces", format!("more than {} faces", limits.max_faces)));
+                    }
+                } else if kind == BodyKind::Sheet {
+                    // a sheet body: its faces hang off the shell of its one (void) region. A face that cannot be read is
+                    // left out here (the file may hold solids that are read all the same), and so are faces past the limit.
+                    for f in xt.chain(xt.deref(sh, "face"), "next") {
+                        if nfaces >= limits.max_faces {
+                            break;
+                        }
+                        if let Ok(face) = ex.face(f, false) {
+                            shell.faces.push(face);
+                            nfaces += 1;
+                        }
                     }
                 }
                 reg.shells.push(shell);

@@ -16,6 +16,12 @@
 //! shrinks, a circle's radius decreases); neighbouring offsets are joined at
 //! their intersection (mitred corners), open chain ends are not extended; a
 //! radius that would become <= 0 gives `offsetTooLarge`.
+//! Not oracle-probed: in the `sketchOffset` reply an arc with a neighbour on
+//! both sides (a rounded corner) whose radius would become <= 0 is dropped and
+//! its neighbours meet at their mitre, so a rounded rectangle offset inward
+//! past its corner radius gets sharp corners; a lone arc, an open chain's end
+//! arc and a circle still give `offsetTooLarge`. `sketch_offset` (the lip)
+//! keeps the strict rule.
 //!
 //! First pass: joins without an intersection are left as gaps (GUESS: the
 //! kernel may insert round joins); spline sampling is uniform in chord
@@ -318,17 +324,32 @@ fn join(a: &mut OffSeg, b: &mut OffSeg) {
 
 /// Offset the given entities by `distance` (positive = left of the chain).
 pub fn sketch_offset(sk: &Sketch, ids: &[String], distance: f64) -> Result<Vec<Vec<OffSeg>>, &'static str> {
+    offset_chains(sk, ids, distance, false)
+}
+
+/// `drop_collapsed`: an arc between two neighbours whose offset radius would
+/// be <= 0 is left out (its neighbours are joined directly) instead of failing.
+fn offset_chains(sk: &Sketch, ids: &[String], distance: f64, drop_collapsed: bool) -> Result<Vec<Vec<OffSeg>>, &'static str> {
     let mut out = Vec::new();
     for (chain, closed) in chains(sk, ids) {
         let mut segs = Vec::new();
-        for it in &chain {
-            if let Some(s) = offset_item(sk, it, distance)? {
-                segs.push(s);
+        let mut dropped = false;
+        for (k, it) in chain.iter().enumerate() {
+            let inner = closed || (k > 0 && k + 1 < chain.len());
+            match offset_item(sk, it, distance) {
+                Ok(Some(s)) => segs.push(s),
+                Ok(None) => {}
+                Err(OFFSET_TOO_LARGE) if drop_collapsed && inner && chain.len() > 1 && matches!(it.e, SketchEntity::Arc { .. }) => dropped = true,
+                Err(e) => return Err(e),
             }
         }
         if segs.is_empty() {
+            if dropped {
+                return Err(OFFSET_TOO_LARGE);
+            }
             continue;
         }
+        let dirs: Vec<Option<P>> = segs.iter().map(|s| if let OffSeg::Line { a, b } = s { Some([b[0] - a[0], b[1] - a[1]]) } else { None }).collect();
         let n = segs.len();
         let joins = if closed && n > 1 { n } else { n - 1 };
         for k in 0..joins {
@@ -344,6 +365,21 @@ pub fn sketch_offset(sk: &Sketch, ids: &[String], distance: f64) -> Result<Vec<V
                 join(&mut y[0], &mut x[lo]);
             }
         }
+        if dropped {
+            // with a corner dropped the neighbours must still meet and no line may turn round
+            // (an obround offset past its half width): otherwise the offset is too large
+            let gap = (0..joins).any(|k| {
+                let (e, s) = (segs[k].end(), segs[(k + 1) % n].start());
+                (e[0] - s[0]).hypot(e[1] - s[1]) > 1e-9 * (1.0 + distance.abs())
+            });
+            let flipped = segs.iter().zip(&dirs).any(|(s, d)| match (s, d) {
+                (OffSeg::Line { a, b }, Some(d)) => (b[0] - a[0]) * d[0] + (b[1] - a[1]) * d[1] <= 0.0,
+                _ => false,
+            });
+            if gap || flipped {
+                return Err(OFFSET_TOO_LARGE);
+            }
+        }
         out.push(segs);
     }
     Ok(out)
@@ -351,7 +387,7 @@ pub fn sketch_offset(sk: &Sketch, ids: &[String], distance: f64) -> Result<Vec<V
 
 /// Wire reply for `sketchOffset`.
 pub fn sketch_offset_json(sk: &Sketch, ids: &[String], distance: f64) -> Json {
-    match sketch_offset(sk, ids, distance) {
+    match offset_chains(sk, ids, distance, true) {
         Ok(chs) => Json::Obj(vec![(
             "chains".into(),
             Json::Arr(chs.iter().map(|c| Json::Arr(c.iter().map(|s| s.to_json()).collect())).collect()),
@@ -394,5 +430,108 @@ mod tests {
         assert_eq!(off(&["e7"], 1.0), r#"{"chains":[[{"kind":"arc","c":[10,5],"r":4,"a":[10,1],"b":[10,9],"ccw":true}]]}"#);
         let s = off(&["e1", "e8"], 1.0);
         assert!(s.starts_with(r#"{"chains":[[{"kind":"line","a":[0,1],"b":[7.58578643762690"#), "{s}");
+    }
+
+    /// A sketch of the given points and entities (entities as JSON fragments).
+    fn sketch_of(pts: &[(&str, f64, f64)], ents: &[String]) -> Sketch {
+        let p: Vec<String> = pts.iter().map(|(id, x, y)| format!(r#"{{"id":"{id}","x":{x},"y":{y}}}"#)).collect();
+        Sketch::from_json(&ck_json::parse(&format!(r#"{{"points":[{}],"entities":[{}]}}"#, p.join(","), ents.join(","))).unwrap())
+    }
+    fn line(id: &str, a: &str, b: &str) -> String {
+        format!(r#"{{"type":"line","id":"{id}","p1":"{a}","p2":"{b}"}}"#)
+    }
+    fn arc(id: &str, c: &str, a: &str, b: &str) -> String {
+        format!(r#"{{"type":"arc","id":"{id}","c":"{c}","p1":"{a}","p2":"{b}"}}"#)
+    }
+    /// 20 x 10 rectangle at the origin with corner radius `r`, counter-clockwise (inward = positive offset).
+    fn rounded_rect(r: f64) -> (Sketch, Vec<String>) {
+        let pts = [
+            ("b0", r, 0.0), ("b1", 20.0 - r, 0.0), ("r0", 20.0, r), ("r1", 20.0, 10.0 - r),
+            ("t0", 20.0 - r, 10.0), ("t1", r, 10.0), ("l0", 0.0, 10.0 - r), ("l1", 0.0, r),
+            ("c0", 20.0 - r, r), ("c1", 20.0 - r, 10.0 - r), ("c2", r, 10.0 - r), ("c3", r, r),
+        ];
+        let ents = vec![
+            line("e1", "b0", "b1"), arc("e2", "c0", "b1", "r0"), line("e3", "r0", "r1"), arc("e4", "c1", "r1", "t0"),
+            line("e5", "t0", "t1"), arc("e6", "c2", "t1", "l0"), line("e7", "l0", "l1"), arc("e8", "c3", "l1", "b0"),
+        ];
+        let ids = (1..=8).map(|i| format!("e{i}")).collect();
+        (sketch_of(&pts, &ents), ids)
+    }
+    /// The reply's chains as (kind, a, b) per segment.
+    fn segs(j: &Json) -> Vec<Vec<(String, P, P)>> {
+        let p = |v: &Json| {
+            let a = v.as_arr().unwrap();
+            [a[0].as_f64().unwrap(), a[1].as_f64().unwrap()]
+        };
+        let chains = j.get("chains").unwrap_or_else(|| panic!("no chains: {}", ck_json::to_string(j)));
+        chains.as_arr().unwrap().iter().map(|c| c.as_arr().unwrap().iter().map(|s| (s.get_str("kind").unwrap().to_string(), p(s.get("a").unwrap()), p(s.get("b").unwrap()))).collect()).collect()
+    }
+    fn near(a: P, b: P) -> bool {
+        (a[0] - b[0]).hypot(a[1] - b[1]) < 1e-9
+    }
+    /// A closed chain whose segments run end to start.
+    fn closed_chain(c: &[(String, P, P)]) -> bool {
+        (0..c.len()).all(|k| near(c[k].2, c[(k + 1) % c.len()].1))
+    }
+
+    #[test]
+    fn offset_rounded_rect_past_corner_radius_gives_sharp_corners() {
+        let (sk, ids) = rounded_rect(2.0);
+        let j = sketch_offset_json(&sk, &ids, 3.0);
+        let ch = segs(&j);
+        assert_eq!(ch.len(), 1, "{}", ck_json::to_string(&j));
+        let c = &ch[0];
+        assert!(c.iter().all(|s| s.0 == "line") && c.len() == 4, "want 4 lines: {}", ck_json::to_string(&j));
+        assert!(closed_chain(c), "{}", ck_json::to_string(&j));
+        let want = [[3.0, 3.0], [17.0, 3.0], [17.0, 7.0], [3.0, 7.0]];
+        for (s, w) in c.iter().zip(want) {
+            assert!(near(s.1, w), "corner {:?} want {:?}", s.1, w);
+        }
+        // past half the height nothing is left: still an error, not crossed lines
+        assert_eq!(ck_json::to_string(&sketch_offset_json(&sk, &ids, 5.5)), r#"{"error":"offsetTooLarge"}"#);
+        // the lip keeps the strict rule
+        assert_eq!(sketch_offset(&sk, &ids, 3.0).unwrap_err(), OFFSET_TOO_LARGE);
+    }
+
+    #[test]
+    #[ignore = "offset does not split at self-intersections: a waist offset past half its width gives one crossed chain of 12 lines, not two outlines"]
+    fn offset_waist_splits_into_two_outlines() {
+        // dumbbell: two 10 x 10 squares joined by a 6 long, 4 wide waist; counter-clockwise
+        let pts = [
+            ("p0", 0.0, 0.0), ("p1", 10.0, 0.0), ("p2", 10.0, 3.0), ("p3", 16.0, 3.0), ("p4", 16.0, 0.0), ("p5", 26.0, 0.0),
+            ("p6", 26.0, 10.0), ("p7", 16.0, 10.0), ("p8", 16.0, 7.0), ("p9", 10.0, 7.0), ("p10", 10.0, 10.0), ("p11", 0.0, 10.0),
+        ];
+        let ents: Vec<String> = (0..12).map(|i| line(&format!("e{i}"), &format!("p{i}"), &format!("p{}", (i + 1) % 12))).collect();
+        let ids: Vec<String> = (0..12).map(|i| format!("e{i}")).collect();
+        let sk = sketch_of(&pts, &ents);
+        let j = sketch_offset_json(&sk, &ids, 2.5);
+        let ch = segs(&j);
+        assert_eq!(ch.len(), 2, "want two outlines: {}", ck_json::to_string(&j));
+        for (c, x0) in ch.iter().zip([2.5, 18.5]) {
+            assert!(c.len() == 4 && closed_chain(c), "{}", ck_json::to_string(&j));
+            let lo = c.iter().map(|s| s.1[0]).fold(f64::MAX, f64::min);
+            assert!((lo - x0).abs() < 1e-9, "outline from x {lo}, want {x0}");
+        }
+    }
+
+    #[test]
+    fn offset_follows_changed_distance() {
+        let (sk, ids) = rounded_rect(2.0);
+        for (d, arcs) in [(0.5, 4), (1.0, 4), (1.5, 4), (2.5, 0), (4.0, 0)] {
+            let j = sketch_offset_json(&sk, &ids, d);
+            let ch = segs(&j);
+            assert_eq!(ch.len(), 1, "d={d}: {}", ck_json::to_string(&j));
+            let c = &ch[0];
+            assert!(closed_chain(c), "d={d}: {}", ck_json::to_string(&j));
+            assert_eq!(c.iter().filter(|s| s.0 == "arc").count(), arcs, "d={d}: {}", ck_json::to_string(&j));
+            // the bottom line moves up by d; its ends stay over the corner centres, or at the mitre once the arcs are gone
+            let bottom = &c[0];
+            let x0 = if arcs > 0 { 2.0 } else { d };
+            assert!(near(bottom.1, [x0, d]) && near(bottom.2, [20.0 - x0, d]), "d={d}: bottom {:?} -> {:?}", bottom.1, bottom.2);
+            if arcs > 0 {
+                let r = j.get("chains").unwrap().as_arr().unwrap()[0].as_arr().unwrap()[1].get_f64("r").unwrap();
+                assert!((r - (2.0 - d)).abs() < 1e-12, "d={d}: corner radius {r}");
+            }
+        }
     }
 }

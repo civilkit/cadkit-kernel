@@ -39,7 +39,7 @@ fn run(src: &str) -> Outcome {
             }
         })
         .collect();
-    rebuild_history(&Tagged { body: &body, tags, features: &sw, unit_mm: 1.0 })
+    rebuild_history(&Tagged { body: &body, tags, features: &sw, unit_mm: 1.0, start: None })
 }
 
 fn circle(id: &str, r: f64) -> String {

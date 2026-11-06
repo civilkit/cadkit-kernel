@@ -185,6 +185,36 @@ pub fn snapshots(features: &[Json], ranges: &[(usize, usize)]) -> Result<(Vec<Op
     Ok((snaps, errs))
 }
 
+thread_local! {
+    /// Volume share of a face (about the origin) by a hash of its surface and trimming.
+    static FACE_VOL: std::cell::RefCell<HashMap<u64, f64>> = std::cell::RefCell::new(HashMap::new());
+}
+
+/// The volume of a body, as `mass_props(b).volume` to rounding, with each face's share remembered: the snapshots of
+/// consecutive steps share most of their faces, and the integral over a free-form face (a blend) is the cost of a
+/// snapshot.
+fn body_volume(b: &Body) -> f64 {
+    let mut total = 0.0;
+    for l in b.lump_ids() {
+        for f in ck_topo::mass::lump_faces(b, l) {
+            let h = crate::fastverify::face_hash(b, f);
+            let hit = FACE_VOL.with(|m| m.borrow().get(&h).copied());
+            total += hit.unwrap_or_else(|| {
+                let v = ck_topo::mass::face_integral_vpoly::<1>(b, f, 1, &|p, n| [p.dot(n) / 3.0])[0];
+                FACE_VOL.with(|m| {
+                    let mut m = m.borrow_mut();
+                    if m.len() >= 1 << 16 {
+                        m.clear();
+                    }
+                    m.insert(h, v);
+                });
+                v
+            });
+        }
+    }
+    total
+}
+
 /// Material a SolidWorks step adds or removes, where it is known from its type (and a fillet's faces).
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Dir {
@@ -203,7 +233,7 @@ fn dir_of(f: &SwFeature, own: &[FaceId], m: &Model) -> Dir {
             Some(false) => Dir::Removes,
             None => Dir::Unknown,
         },
-        Class::Skip | Class::Cosmetic => Dir::Neutral,
+        Class::Skip | Class::Cosmetic | Class::Draft => Dir::Neutral,
         Class::Extrude { cut } | Class::Revolve { cut } => {
             if cut {
                 Dir::Removes
@@ -212,6 +242,7 @@ fn dir_of(f: &SwFeature, own: &[FaceId], m: &Model) -> Dir {
             }
         }
         Class::Hole | Class::Shell => Dir::Removes,
+        Class::Rib => Dir::Adds,
         // a round on a convex edge takes material away, one in a concave corner fills it
         Class::Fillet => {
             let cv: Vec<Option<bool>> = own
@@ -305,7 +336,11 @@ pub fn check_steps(inp: &Input) -> Vec<Check> {
     }
     let blends: std::collections::HashSet<i64> = inp.features.iter().filter(|f| matches!(classify(f), Class::Fillet | Class::Chamfer)).map(|f| f.id).collect();
     let dirs: Vec<Dir> = inp.features.iter().map(|f| dir_of(f, own.get(&f.id).map_or(&[][..], |v| v), &m)).collect();
-    let vol_f = ck_topo::mass::mass_props(inp.body).volume;
+    // faces a later draft tilts: not settled before the draft step
+    let tilted_by: HashMap<FaceId, usize> = crate::later_draft::find(&m, inp.tags, inp.features, 0).into_iter().map(|l| (l.face, l.pos)).collect();
+    // (the file's volume is only compared with the steps' bodies: a part whose first step is unsupported has none to
+    // compare, and the integral over a whole free-form body is seconds)
+    let vol_f = if inp.steps.first().is_some_and(|s| s.status != Status::Unsupported) { body_volume(inp.body) } else { 0.0 };
     let eps = 1e-6 * vol_f.abs().max(1e-9);
     let mut out = vec![];
     let mut prev_vol = 0.0;
@@ -326,8 +361,19 @@ pub fn check_steps(inp: &Input) -> Vec<Check> {
             // can a later step have grown a face of this one? (only a step that adds material, or one of unknown kind)
             let extendable = dirs.iter().skip(pj.saturating_add(1)).any(|d| matches!(d, Dir::Adds | Dir::Unknown));
             let mut loops = ck_ops::boolean::classify::LoopCache::new();
+            // (a face of the step's body is only asked about a point inside its box, grown by the test's tolerance
+            // and a hundredth of its size: the box of a curved face comes from samples of its surface)
+            let mut boxes: HashMap<FaceId, ck_ops::bvh::Aabb> = HashMap::new();
+            let mut near = |h: FaceId, q: ck_geom::Vec3, tl: f64| {
+                let bb = *boxes.entry(h).or_insert_with(|| ck_ops::bvh::face_box(p, h));
+                let g = tl + 1e-6 + 0.01 * bb.diagonal();
+                !(bb.min.x <= bb.max.x) || q.x >= bb.min.x - g && q.x <= bb.max.x + g && q.y >= bb.min.y - g && q.y <= bb.max.y + g && q.z >= bb.min.z - g && q.z <= bb.max.z + g
+            };
             'faces: for &g in &m.faces {
                 let Some(ts) = inp.tags.get(g.idx()).filter(|v| !v.is_empty()) else { continue };
+                if tilted_by.get(&g).map_or(false, |&pd| pj < pd) {
+                    continue;
+                }
                 let last = ts.iter().map(|t| tpos(t.0)).max().unwrap();
                 let mine = ts.iter().any(|t| t.0 == st.sw_id);
                 let full = last <= pj;
@@ -364,7 +410,7 @@ pub fn check_steps(inp: &Input) -> Vec<Check> {
                     .map(|(&q, &tl)| {
                         let any: Vec<FaceId>;
                         let fs: &[FaceId] = if tl > PTOL { any = mp.faces.clone(); &any } else { &cands };
-                        fs.iter().any(|&h| ck_ops::boolean::classify::point_in_face_cached(p, h, q, tl, &mut loops) != ck_ops::boolean::classify::Where::Out)
+                        fs.iter().any(|&h| near(h, q, tl) && ck_ops::boolean::classify::point_in_face_cached(p, h, q, tl, &mut loops) != ck_ops::boolean::classify::Where::Out)
                     })
                     .collect();
                 if extendable {
@@ -380,7 +426,7 @@ pub fn check_steps(inp: &Input) -> Vec<Check> {
                     break 'faces;
                 }
             }
-            let v = ck_topo::mass::mass_props(p).volume;
+            let v = body_volume(p);
             c.vol = Some(v);
             let d = dirs.get(pj).copied().unwrap_or(Dir::Unknown);
             if d == Dir::Removes && v > prev_vol + eps {

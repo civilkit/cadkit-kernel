@@ -71,7 +71,7 @@ fn run(src: &str) -> Res {
         }
     }
     let sw = sw_features(&fs);
-    let t = Tagged { body: &body, tags, features: &sw, unit_mm: 1.0 };
+    let t = Tagged { body: &body, tags, features: &sw, unit_mm: 1.0, start: None };
     let out = rebuild_history(&t);
     let types = out.features.iter().map(|f| f.get_str("type").unwrap().to_string()).collect();
     Res { out, types }
@@ -150,7 +150,7 @@ fn oblique_extrusion() {
 
 #[test]
 fn unsupported_feature_falls_back() {
-    // a loft is not read back: the file keeps its plain solid and says why
+    // a wrap is not read back: the file keeps its plain solid and says why
     let src = r#"[{"type":"sketch","id":"F1","plane":{"kind":"std","id":"front"},"points":[{"id":"p1","x":0,"y":0},{"id":"p2","x":10,"y":0},{"id":"p3","x":10,"y":5},{"id":"p4","x":0,"y":5}],"entities":[{"id":"e1","type":"line","p1":"p1","p2":"p2"},{"id":"e2","type":"line","p1":"p2","p2":"p3"},{"id":"e3","type":"line","p1":"p3","p2":"p4"},{"id":"e4","type":"line","p1":"p4","p2":"p1"},{"id":"e5","type":"line","p1":"p4","p2":"p1","construction":true}],"constraints":[]},
     {"type":"revolve","id":"F2","op":"add","sketch":"F1","axis":"e5","angle":360}]"#;
     let fs = feats(src);
@@ -158,9 +158,9 @@ fn unsupported_feature_falls_back() {
     assert!(errs.is_empty(), "{errs:?}");
     let body = body.unwrap();
     let tags: Vec<Vec<(i64, i64)>> = body.faces.iter().map(|_| vec![(2, 0)]).collect();
-    let sw = vec![SwFeature { id: 1, name: "Sketch1".into(), kind: "Sketch".into(), dims: vec![] }, SwFeature { id: 2, name: "Loft1".into(), kind: "Loft".into(), dims: vec![] }];
-    let out = rebuild_history(&Tagged { body: &body, tags, features: &sw, unit_mm: 1.0 });
-    assert!(out.fallback.as_deref().unwrap().contains("Loft"), "{:?}", out.fallback);
+    let sw = vec![SwFeature { id: 1, name: "Sketch1".into(), kind: "Sketch".into(), dims: vec![] }, SwFeature { id: 2, name: "Wrap1".into(), kind: "Wrap".into(), dims: vec![] }];
+    let out = rebuild_history(&Tagged { body: &body, tags, features: &sw, unit_mm: 1.0, start: None });
+    assert!(out.fallback.as_deref().unwrap().contains("Wrap"), "{:?}", out.fallback);
     assert_eq!(out.steps[0].status, Status::Unsupported);
     assert!(out.body.is_none());
 }
@@ -179,4 +179,59 @@ fn through_cut_whose_mouth_a_later_chamfer_trimmed() {
     assert_exact(&r);
     let cut = r.out.features.iter().find(|f| f.get_str("op") == Some("cut")).expect("cut");
     assert_eq!(cut.get_str("end"), Some("through"));
+}
+
+#[test]
+fn open_profile_cut_with_ledge_and_step() {
+    // a through cut whose profile runs off the plate on the open side: the ledge (y=5) and the step down to the floor
+    // (y=-5) have walls, the far wall (x=15) runs on past the ledge's line. The ledge must not be carried across the plate
+    // to meet that wall (a closed cut that leaves the plate above the ledge standing)
+    let src = format!(
+        r#"[{BOX},
+        {{"type":"sketch","id":"F3","plane":{{"kind":"face","id":"F2.C1"}},"points":[{{"id":"p1","x":-40,"y":5}},{{"id":"p2","x":-10,"y":5}},{{"id":"p3","x":0,"y":-5}},{{"id":"p4","x":15,"y":-5}},{{"id":"p5","x":15,"y":30}},{{"id":"p6","x":-40,"y":30}}],"entities":[{{"id":"e1","type":"line","p1":"p1","p2":"p2"}},{{"id":"e2","type":"line","p1":"p2","p2":"p3"}},{{"id":"e3","type":"line","p1":"p3","p2":"p4"}},{{"id":"e4","type":"line","p1":"p4","p2":"p5"}},{{"id":"e5","type":"line","p1":"p5","p2":"p6"}},{{"id":"e6","type":"line","p1":"p6","p2":"p1"}}],"constraints":[]}},
+        {{"type":"extrude","id":"F4","op":"cut","sketch":"F3","end":"through"}}]"#
+    );
+    let r = run(&src);
+    assert_exact(&r);
+}
+
+#[test]
+fn blind_cut_open_past_the_plate_edge() {
+    // a blind cut whose profile runs off the plate's edge: the open side is closed through air, not across the plate
+    let src = format!(
+        r#"[{BOX},
+        {{"type":"sketch","id":"F3","plane":{{"kind":"face","id":"F2.C1"}},"points":[{{"id":"p1","x":20,"y":10}},{{"id":"p2","x":40,"y":10}},{{"id":"p3","x":40,"y":30}},{{"id":"p4","x":20,"y":30}}],"entities":[{{"id":"e1","type":"line","p1":"p1","p2":"p2"}},{{"id":"e2","type":"line","p1":"p2","p2":"p3"}},{{"id":"e3","type":"line","p1":"p3","p2":"p4"}},{{"id":"e4","type":"line","p1":"p4","p2":"p1"}}],"constraints":[]}},
+        {{"type":"extrude","id":"F4","op":"cut","sketch":"F3","end":"blind","depth":4}}]"#
+    );
+    let r = run(&src);
+    assert_exact(&r);
+}
+
+#[test]
+fn hole_open_into_a_tunnel_under_a_roof() {
+    // a block with a tunnel cut through it; a hole drilled up through the floor opens into the tunnel. It is open at
+    // both ends, yet no through-all hole: that would cut the roof over the tunnel too. It reads back as a blind hole
+    // down to its exit
+    let rect = |x0: f64, y0: f64, x1: f64, y1: f64| {
+        (
+            format!(r#"{{"id":"p1","x":{x0},"y":{y0}}},{{"id":"p2","x":{x1},"y":{y0}}},{{"id":"p3","x":{x1},"y":{y1}}},{{"id":"p4","x":{x0},"y":{y1}}}"#),
+            (1..=4).map(|i| format!(r#"{{"id":"e{i}","type":"line","p1":"p{i}","p2":"p{}"}}"#, i % 4 + 1)).collect::<Vec<_>>().join(","),
+        )
+    };
+    let (bp, be) = rect(-30.0, -20.0, 30.0, 20.0);
+    // the right plane's sketch x is world -z: the tunnel runs along x, y -8..8, z 10..35
+    let (tp, te) = rect(-35.0, -8.0, -10.0, 8.0);
+    let src = format!(
+        r#"[{{"type":"sketch","id":"F1","plane":{{"kind":"std","id":"front"}},"points":[{bp}],"entities":[{be}],"constraints":[]}},
+        {{"type":"extrude","id":"F2","op":"add","sketch":"F1","end":"blind","depth":40}},
+        {{"type":"plane","id":"F3","mode":"offset","base":{{"kind":"std","id":"right"}},"offset":-30}},
+        {{"type":"sketch","id":"F4","plane":{{"kind":"feature","id":"F3"}},"points":[{tp}],"entities":[{te}],"constraints":[]}},
+        {{"type":"extrude","id":"F5","op":"cut","sketch":"F4","end":"through","flip":true}},
+        {{"type":"sketch","id":"F6","plane":{{"kind":"std","id":"front"}},"points":[{{"id":"k","x":0,"y":0}}],"entities":[{{"id":"pt1","type":"point","p":"k"}}],"constraints":[]}},
+        {{"type":"hole","id":"F7","sketch":"F6","kind":"simple","diameter":6,"end":"blind","depth":10,"flip":true}}]"#
+    );
+    let r = run(&src);
+    assert_exact(&r);
+    let hole = r.out.features.iter().find(|f| f.get_str("type") == Some("hole")).expect("hole");
+    assert_eq!(hole.get_str("end"), Some("blind"), "{}", ck_json::to_string(hole));
 }

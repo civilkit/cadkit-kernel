@@ -135,6 +135,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "ck-swedit"
+version = "0.1.0"
+dependencies = [
+ "ck-check",
+ "ck-core",
+ "ck-geom",
+ "ck-json",
+ "ck-model",
+ "ck-ops",
+ "ck-recog",
+ "ck-sldprt",
+ "ck-text",
+ "ck-topo",
+]
+
+[[package]]
 name = "ck-tess"
 version = "0.1.0"
 dependencies = [
@@ -173,6 +189,7 @@ dependencies = [
  "ck-server",
  "ck-skp",
  "ck-sldprt",
+ "ck-swedit",
  "ck-tess",
  "ck-text",
  "ck-topo",

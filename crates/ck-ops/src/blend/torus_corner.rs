@@ -24,36 +24,6 @@ use ck_geom::surface::Surface;
 use ck_geom::Vec3;
 use ck_topo::body::{Body, EdgeId, FaceId};
 
-thread_local! {
-    /// While set, a concave straight edge between a plane and a cylinder parallel to it is built by the analytic
-    /// line builder (an exact cylinder) instead of the free-form path.
-    static WALL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// Sets [`WALL`] for its lifetime.
-struct WallGuard(bool);
-
-impl WallGuard {
-    fn new() -> WallGuard {
-        WallGuard(WALL.with(|c| c.replace(true)))
-    }
-}
-
-impl Drop for WallGuard {
-    fn drop(&mut self) {
-        WALL.with(|c| c.set(self.0));
-    }
-}
-
-/// Lets the analytic line builder take the wall lines (see [`WALL`]) until the guard is dropped.
-pub(super) fn wall_guard() -> impl Drop {
-    WallGuard::new()
-}
-
-pub(super) fn wall_enabled() -> bool {
-    WALL.with(|c| c.get())
-}
-
 /// Outward unit normal of face `f` at (its point nearest) `p`.
 fn normal_at(b: &Body, f: FaceId, p: Vec3) -> Vec3 {
     let (u, v) = b.face(f).surface.closest_param(p);
@@ -106,9 +76,50 @@ pub(super) fn is_wall_line(b: &Body, e: EdgeId) -> bool {
     kinds.contains(&0) && kinds.contains(&1) && edge_concave(b, e) == Some(true)
 }
 
-/// While [`WALL`] is set: the edge is a [`is_wall_line`] the analytic line builder takes.
+/// A convex straight edge between a plane and a concave cylinder (material outside it) whose axis is parallel to the
+/// edge: the point where a pocket's straight wall meets an arc of its outline that bulges out of the pocket. Its round
+/// is a cylinder (the ball's centre at `r` inside the plane and `R + r` from the axis).
+pub(super) fn is_convex_wall_line(b: &Body, e: EdgeId) -> bool {
+    let ed = b.edge(e);
+    let Curve::Line { d, .. } = ed.curve else { return false };
+    let fs = b.edge_faces(e);
+    if fs.len() != 2 {
+        return false;
+    }
+    let dir = d.normalize();
+    let pm = (b.vertex(ed.v0).p + b.vertex(ed.v1).p) * 0.5;
+    let kinds: Vec<u8> = fs
+        .iter()
+        .map(|&f| match &b.face(f).surface {
+            Surface::Plane { .. } => 0,
+            Surface::Cylinder { frame, .. } if frame.z.normalize().cross(dir).len() < 1e-9 => {
+                let rel = (pm - frame.o).reject(frame.z.normalize());
+                if normal_at(b, f, pm).dot(rel) < 0.0 { 1 } else { 2 }
+            }
+            _ => 2,
+        })
+        .collect();
+    kinds.contains(&0) && kinds.contains(&1) && edge_concave(b, e) == Some(false)
+}
+
+thread_local! {
+    /// While set, wall lines go to the free-form path (see [`free_walls`]).
+    static FREE_WALLS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The edge is a wall line the analytic line builder takes (an exact cylinder instead of the free-form path): an
+/// [`is_wall_line`] or an [`is_convex_wall_line`], unless [`free_walls`] is in force.
 pub(super) fn analytic_wall_edge(b: &Body, e: EdgeId) -> bool {
-    wall_enabled() && is_wall_line(b, e)
+    !FREE_WALLS.with(|c| c.get()) && (is_wall_line(b, e) || is_convex_wall_line(b, e))
+}
+
+/// Runs `f` with the wall lines on the free-form path (the retry of a selection the analytic wall builder refused:
+/// its contact line leaves the face where the free-form strip, which stops at the face's end, still fits).
+pub(super) fn free_walls<T>(f: impl FnOnce() -> T) -> T {
+    let old = FREE_WALLS.with(|c| c.replace(true));
+    let out = f();
+    FREE_WALLS.with(|c| c.set(old));
+    out
 }
 
 /// The rolling ball of a concave fillet of radius `r` at the point `pm` of a wall line between `faces` (one plane,
@@ -126,9 +137,12 @@ pub(super) fn wall_section(b: &Body, faces: [FaceId; 2], pm: Vec3, dir: Vec3, r:
         return None;
     }
     let np = b.planar_normal(faces[ip]).normalize();
-    // centre: on the plane offset by r (outward: the ball is outside the material), at R + r from the axis
+    // centre: on the plane offset by r, at R + r from the axis: outward (outside the material) beside a convex
+    // cylinder (a concave edge, [`is_wall_line`]), inward beside a concave one (a convex edge, [`is_convex_wall_line`])
+    let rel = (pm - frame.o).reject(ax);
+    let sr = if normal_at(b, faces[ic], pm).dot(rel) > 0.0 { r } else { -r };
     let w = np.cross(dir).normalize();
-    let q0 = (pm + np * r - frame.o).reject(ax);
+    let q0 = (pm + np * sr - frame.o).reject(ax);
     let rr = rc + r;
     let bq = q0.dot(w);
     let disc = bq * bq - (q0.dot(q0) - rr * rr);
@@ -138,14 +152,14 @@ pub(super) fn wall_section(b: &Body, faces: [FaceId; 2], pm: Vec3, dir: Vec3, r:
     let s = disc.sqrt();
     // the root nearer the edge
     let u = if (-bq + s).abs() <= (-bq - s).abs() { -bq + s } else { -bq - s };
-    let c = pm + np * r + w * u;
+    let c = pm + np * sr + w * u;
     let along = (c - frame.o).dot(ax);
     let radial = (c - frame.o).reject(ax);
     if radial.len() < 1e-12 {
         return None;
     }
     let tc = frame.o + ax * along + radial.normalize() * *rc;
-    let tp = c - np * r;
+    let tp = c - np * sr;
     // the ball must sit next to the edge, not on the far side of the hub
     if tc.dist(pm) > 4.0 * r || tp.dist(pm) > 4.0 * r {
         return None;
@@ -209,7 +223,6 @@ pub fn fillet_mixed_curved(b: &Body, edges: &[(String, String, Vec3)], radii: &[
     let same = |v: Vec<f64>| v.first().copied().filter(|x| v.iter().all(|y| (y - x).abs() <= 1e-12 * (1.0 + x.abs())));
     let rw = same((0..n).filter(|&i| wall[i]).map(|i| radii[i]).collect())?;
     let rr = same((0..n).filter(|&i| !wall[i]).map(|i| radii[i]).collect()).unwrap_or(rw);
-    let _g = WallGuard::new();
     match super::mixed::run(b, edges, &wall, &tops, [rw, rr], feature, tol) {
         Ok(out) => Some(Ok(out)),
         Err(e) => {

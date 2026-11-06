@@ -46,7 +46,7 @@ fn run(src: &str) -> Outcome {
         }
     }
     let sw = sw_features(&fs);
-    rebuild_history(&Tagged { body: &body, tags, features: &sw, unit_mm: 1.0 })
+    rebuild_history(&Tagged { body: &body, tags, features: &sw, unit_mm: 1.0, start: None })
 }
 
 fn steps(o: &Outcome) -> Vec<String> {

@@ -95,7 +95,14 @@ pub fn sort_sldprt(mut body: Body, parts: &[ck_sldprt::build::PartRead], prefix:
             label: format!("body {} (#{})", k + 1, p.body),
             faces: p.faces.clone(),
             faces_total: p.faces_total,
-            reasons: p.refused.iter().map(|(f, e)| honest::refused_face(e.code, format!("F{f}"), &e.message)).collect(),
+            reasons: {
+                let mut r: Vec<honest::Reason> = p.refused.iter().map(|(f, e)| honest::refused_face(e.code, format!("F{f}"), &e.message)).collect();
+                if p.sheet {
+                    // a sheet body is a surface whatever it encloses: it has an area and no volume
+                    r.push(honest::Reason { code: "sheetBody".into(), faces: vec![], message: "the file holds this as a sheet body (a surface), not a solid".into() });
+                }
+                r
+            },
         })
         .collect();
     let s = honest::sort(&body, &ins, ck_check::DEFAULT_TOL_CAP);

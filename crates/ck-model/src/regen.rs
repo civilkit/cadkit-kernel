@@ -129,7 +129,7 @@ pub const KNOWN_TYPES: &[&str] = &[
     "fillpattern", "curvepattern", "moveBody", "mate", "insertPart", "scale", "surfaceExtrude", "surfaceRevolve",
     "surfacePlanar", "surfaceOffset", "deleteFace", "fill", "knit", "extend", "freeform", "trimSurface", "thicken",
     "cutWithSurface", "pipeCut", "deleteBody", "editCurve", "projectCurve", "helix", "thread", "combine", "bodyBoolean", "knurlBand", "importStep",
-    "repairPart", "importBody",
+    "repairPart", "importBody", "frame",
 ];
 
 /// The error the oracle reports for each known type when the payload is
@@ -163,6 +163,7 @@ pub const EMPTY_FEATURE_ERRORS: &[(&str, &str)] = &[
     ("combine", "nothingToCut"),
     ("bodyBoolean", "nothingToCut"),
     ("knurlBand", "nothingToCut"),
+    ("frame", "frameInvalid"),
     ("importStep", "importStepInvalid"),
     ("importBody", "importBodyInvalid"),
     ("repairPart", "repairTarget"),
@@ -344,6 +345,8 @@ pub struct RegenResult {
     /// Per-feature size limits, `[id, {"maxHeight": h}]` on the wire: a drafted extrude of one circle
     /// reports the extrude depth at which its taper closes to a point. Only on the wire when non-empty.
     pub limits: Vec<(String, Json)>,
+    /// `frame` features: the cut list of each frame (id-keyed, see features/frame.rs). Only on the wire when non-empty.
+    pub frames: Vec<(String, Json)>,
 }
 
 fn upsert<T>(v: &mut Vec<T>, key: impl Fn(&T) -> &str, item: T) {
@@ -374,6 +377,9 @@ impl RegenResult {
     pub fn put_thread(&mut self, id: &str, j: Json) {
         upsert(&mut self.threads, |x| &x.0, (id.to_string(), j));
     }
+    pub fn put_frame(&mut self, id: &str, j: Json) {
+        upsert(&mut self.frames, |x| &x.0, (id.to_string(), j));
+    }
     pub fn put_sketch3(&mut self, id: &str, j: Json) {
         upsert(&mut self.sketches3, |x| &x.0, (id.to_string(), j));
     }
@@ -383,6 +389,9 @@ impl RegenResult {
         if let Json::Obj(m) = &mut out {
             if !self.threads.is_empty() {
                 m.push(("threads".into(), Json::Arr(sorted(&self.threads, |t| &t.0).into_iter().map(|t| t.1.clone()).collect())));
+            }
+            if !self.frames.is_empty() {
+                m.push(("frames".into(), Json::Arr(sorted(&self.frames, |t| &t.0).into_iter().map(|t| t.1.clone()).collect())));
             }
             if !self.limits.is_empty() {
                 m.push((

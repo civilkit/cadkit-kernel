@@ -505,11 +505,12 @@ impl BSplineSurface {
     }
 
     /// Evaluator for repeated first-order evaluation along one iso-v line
-    /// of a non-rational surface (None for rational / very high degree).
+    /// (None for very high degree). A rational surface collapses the homogeneous coordinates the same way
+    /// and divides at the end.
     /// The v basis is computed once; `segment` collapses the v direction
     /// for one u knot span so each `eval1` costs only a degree-p u basis.
     pub fn vline(&self, v: f64) -> Option<VLine<'_>> {
-        if self.weights.is_some() || self.deg_u >= 12 || self.deg_v >= 12 {
+        if self.deg_u >= 12 || self.deg_v >= 12 {
             return None;
         }
         let (_, (v0, v1)) = self.domain();
@@ -979,7 +980,7 @@ impl BSplineSurface {
                 }
                 // the common case, on the precomputed grid: the same test and updates as below, with the
                 // bound of the skip test kept between samples (it changes only when `best` or `local` does)
-                if let (true, Some((pts, _))) = (fast && pv < 16, grid) {
+                if let (true, Some((pts, _))) = (pv < 16, grid) {
                     let bound = |best: &(f64, f64, f64), local: &(f64, f64, f64)| {
                         let lim = best.0.max(local.0);
                         lim * lim * (1.0 + 1e-9)
@@ -1221,6 +1222,20 @@ impl BSplineSurface {
         let (pu, pv) = (self.deg_u, self.deg_v);
         let mut pts = vec![Vec3::ZERO; (nu + 1) * (nv + 1)];
         let mut rows = vec![(Vec3::ZERO, Vec3::ZERO); (nu + 1) * cv.max(1)];
+        // a rational surface: the samples are `eval` itself (what the scan computes there without the grid); the
+        // row boxes of the control net are not bounds of a rational surface and stay unused
+        if self.weights.is_some() {
+            let ((u0, u1), _) = self.domain();
+            for a in 0..=nu {
+                let u = u0 + (u1 - u0) * a as f64 / nu as f64;
+                for col in cols.iter() {
+                    for &k in col {
+                        pts[a * (nv + 1) + k] = self.eval(u, prep.vs[k].0);
+                    }
+                }
+            }
+            return (pts, rows);
+        }
         for a in 0..=nu {
             let (su, ref bu) = ubas[a];
             for (iv, col) in cols.iter().enumerate() {
@@ -1332,7 +1347,7 @@ impl BSplineSurface {
             })
             .collect();
         let hull = boxes.iter().filter(|b| b.0.x <= b.1.x).fold((Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY), Vec3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY)), |a, b| (a.0.min(b.0), a.1.max(b.1)));
-        let grid_ok = fast && pv < 16 && (nu + 1) * (nv + 1) <= 1 << 18;
+        let grid_ok = pv < 16 && (nu + 1) * (nv + 1) <= 1 << 18;
         // tiles of 4 x 4 cells (by span index) for `nearest_cells`
         let (tu, tv) = (cu.div_ceil(4).max(1), cv.div_ceil(4).max(1));
         let mut members: Vec<Vec<u32>> = vec![vec![]; tu * tv];
@@ -1474,6 +1489,9 @@ pub struct VSegment<'a> {
     su: usize,
     c: [Vec3; 12],
     d: [Vec3; 12],
+    /// Rational surface: `c`, `d` are the weighted points collapsed along v, and these the weights (value, v derivative).
+    w: [f64; 12],
+    wd: [f64; 12],
 }
 
 impl<'a> VLine<'a> {
@@ -1489,18 +1507,34 @@ impl<'a> VLine<'a> {
         let su = find_span(s.nu - 1, p, u, &s.knots_u);
         let mut c = [Vec3::ZERO; 12];
         let mut d = [Vec3::ZERO; 12];
+        let (mut w, mut wd) = ([0.0f64; 12], [0.0f64; 12]);
         for r in 0..=p {
             let i = su - p + r;
             let (mut a, mut b) = (Vec3::ZERO, Vec3::ZERO);
-            for t in 0..=q {
-                let cp = s.cp(i, self.sv - q + t);
-                a = a + cp * self.nv[0][t];
-                b = b + cp * self.nv[1][t];
+            if s.weights.is_some() {
+                let (mut ws, mut wds) = (0.0, 0.0);
+                for t in 0..=q {
+                    let j = self.sv - q + t;
+                    let wt = s.weight(i, j);
+                    let cp = s.cp(i, j) * wt;
+                    a = a + cp * self.nv[0][t];
+                    b = b + cp * self.nv[1][t];
+                    ws += wt * self.nv[0][t];
+                    wds += wt * self.nv[1][t];
+                }
+                w[r] = ws;
+                wd[r] = wds;
+            } else {
+                for t in 0..=q {
+                    let cp = s.cp(i, self.sv - q + t);
+                    a = a + cp * self.nv[0][t];
+                    b = b + cp * self.nv[1][t];
+                }
             }
             c[r] = a;
             d[r] = b;
         }
-        Some(VSegment { s, su, c, d })
+        Some(VSegment { s, su, c, d, w, wd })
     }
 }
 
@@ -1523,6 +1557,20 @@ impl VSegment<'_> {
     pub fn eval1_basis(&self, b: &[[f64; 12]; 3]) -> (Vec3, Vec3, Vec3) {
         let p = self.s.deg_u;
         let (mut pt, mut du, mut dv) = (Vec3::ZERO, Vec3::ZERO, Vec3::ZERO);
+        if self.s.weights.is_some() {
+            let (mut w0, mut w1, mut wv) = (0.0, 0.0, 0.0);
+            for r in 0..=p {
+                pt = pt + self.c[r] * b[0][r];
+                du = du + self.c[r] * b[1][r];
+                dv = dv + self.d[r] * b[0][r];
+                w0 += self.w[r] * b[0][r];
+                w1 += self.w[r] * b[1][r];
+                wv += self.wd[r] * b[0][r];
+            }
+            // (the quotient rule to first order, as `derivs2` forms it)
+            let x = pt / w0;
+            return (x, (du - x * w1) / w0, (dv - x * wv) / w0);
+        }
         for r in 0..=p {
             pt = pt + self.c[r] * b[0][r];
             du = du + self.c[r] * b[1][r];
@@ -1739,6 +1787,37 @@ mod tests {
             let d = s.derivs2(u, v);
             for (a, b) in [(d.p, g[0][0]), (d.du, g[1][0]), (d.dv, g[0][1]), (d.duu, g[2][0]), (d.duv, g[1][1]), (d.dvv, g[0][2])] {
                 assert!(vclose(a, b, 1e-11), "{a:?} vs {b:?}");
+            }
+        }
+    }
+
+    /// The iso-v evaluator of a rational surface gives the point and first partials of `derivs2` (to rounding).
+    #[test]
+    fn rational_vline_matches_derivs2() {
+        let s = surf(true);
+        assert!(s.weights.is_some());
+        for &v in &[0.0, 0.31, 0.6, 1.0] {
+            let line = s.vline(v).unwrap();
+            for &u in &[0.0, 0.2, 0.55, 0.9, 1.0] {
+                let seg = line.segment(u).unwrap();
+                assert!(seg.covers(u, u));
+                let (p, du, dv) = seg.eval1(u);
+                let d = s.derivs2(u, v);
+                assert!(vclose(p, d.p, 1e-12) && vclose(du, d.du, 1e-11) && vclose(dv, d.dv, 1e-11), "{u} {v}");
+            }
+        }
+    }
+
+    /// A rational surface asked for the same foot many times (the seed grid is built after a number of queries)
+    /// answers the same every time.
+    #[test]
+    fn rational_closest_param_is_stable_across_the_grid_build() {
+        let s = closed_tube();
+        let qs: Vec<Vec3> = (0..30).map(|i| Vec3::new(2.0 * (i as f64 * 0.7).cos(), 2.0 * (i as f64 * 0.7).sin(), 0.1 + 0.03 * i as f64)).collect();
+        let first: Vec<(f64, f64)> = qs.iter().map(|&q| s.closest_param_within(q, f64::INFINITY).unwrap()).collect();
+        for _ in 0..40 {
+            for (q, f) in qs.iter().zip(&first) {
+                assert_eq!(s.closest_param_within(*q, f64::INFINITY).unwrap(), *f);
             }
         }
     }

@@ -60,7 +60,7 @@ fn run_with(src: &str, extra: &[(i64, &str, &str, Vec<usize>)]) -> Res {
             tags[ids[i].idx()].push((*id, 0));
         }
     }
-    let t = Tagged { body: &body, tags, features: &sw, unit_mm: 1.0 };
+    let t = Tagged { body: &body, tags, features: &sw, unit_mm: 1.0, start: None };
     let out = rebuild_history(&t);
     let types = out.features.iter().map(|f| f.get_str("type").unwrap().to_string()).collect();
     Res { out, types }
@@ -175,7 +175,7 @@ fn thread_with_geometry_falls_back() {
     let body = body.unwrap();
     let tags: Vec<Vec<(i64, i64)>> = body.faces.iter().map(|_| vec![(9, 0)]).collect();
     let sw = vec![SwFeature { id: 9, name: "Thread1".into(), kind: "Thread".into(), dims: vec![] }];
-    let out = rebuild_history(&Tagged { body: &body, tags, features: &sw, unit_mm: 1.0 });
+    let out = rebuild_history(&Tagged { body: &body, tags, features: &sw, unit_mm: 1.0, start: None });
     assert!(out.fallback.is_some());
     assert_eq!(out.steps[0].status, Status::Unsupported);
 }
@@ -188,4 +188,59 @@ fn revolve_whole_sphere() {
     {"type":"revolve","id":"F2","op":"add","sketch":"F1","axis":"ax","angle":360}]"#;
     let r = run(src);
     assert_exact(&r);
+}
+
+#[test]
+fn revolve_spline_profile() {
+    // a vase: the side is a cubic spline (a surface of revolution with a spline profile), flat bottom and top
+    let src = r#"[{"type":"sketch","id":"F1","plane":{"kind":"std","id":"front"},"points":[{"id":"p1","x":0,"y":0},{"id":"p2","x":15,"y":0},{"id":"s1","x":22,"y":10},{"id":"s2","x":10,"y":20},{"id":"p3","x":8,"y":30},{"id":"p4","x":0,"y":30},{"id":"a1","x":0,"y":0},{"id":"a2","x":0,"y":30}],
+    "entities":[{"id":"e1","type":"line","p1":"p1","p2":"p2"},{"id":"e2","type":"cvspline","pts":["p2","s1","s2","p3"],"degree":3,"knots":[0,0,0,0,1,1,1,1]},{"id":"e3","type":"line","p1":"p3","p2":"p4"},{"id":"e4","type":"line","p1":"p4","p2":"p1"},{"id":"ax","type":"line","p1":"a1","p2":"a2","construction":true}],"constraints":[]},
+    {"type":"revolve","id":"F2","op":"add","sketch":"F1","axis":"ax","angle":360}]"#;
+    let r = run(src);
+    assert_exact(&r);
+    let sk = r.out.features.iter().find(|f| f.get_str("type") == Some("sketch")).unwrap();
+    assert!(ck_json::to_string(sk).contains("cvspline"), "{}", ck_json::to_string(sk));
+}
+
+/// A disc r 20 (y 0..10) about the y axis.
+const DISC: &str = r#"{"type":"sketch","id":"F1","plane":{"kind":"std","id":"front"},"points":[{"id":"p1","x":0,"y":0},{"id":"p2","x":20,"y":0},{"id":"p3","x":20,"y":10},{"id":"p4","x":0,"y":10},{"id":"a1","x":0,"y":0},{"id":"a2","x":0,"y":10}],
+"entities":[{"id":"e1","type":"line","p1":"p1","p2":"p2"},{"id":"e2","type":"line","p1":"p2","p2":"p3"},{"id":"e3","type":"line","p1":"p3","p2":"p4"},{"id":"e4","type":"line","p1":"p4","p2":"p1"},{"id":"ax","type":"line","p1":"a1","p2":"a2","construction":true}],"constraints":[]},
+{"type":"revolve","id":"F2","op":"add","sketch":"F1","axis":"ax","angle":360}"#;
+
+#[test]
+fn revolve_corner_taken_by_a_later_cut() {
+    // a bore through the disc, then a later revolved cut that steps the top rim: the disc's profile has four open
+    // ends (the bore and the step); the rim corner is read back where the cylinder and the top meet
+    let src = format!(
+        r#"[{DISC},
+        {{"type":"sketch","id":"F3","plane":{{"kind":"std","id":"front"}},"points":[{{"id":"q1","x":0,"y":-1}},{{"id":"q2","x":5,"y":-1}},{{"id":"q3","x":5,"y":11}},{{"id":"q4","x":0,"y":11}},{{"id":"a1","x":0,"y":-1}},{{"id":"a2","x":0,"y":11}}],
+        "entities":[{{"id":"e1","type":"line","p1":"q1","p2":"q2"}},{{"id":"e2","type":"line","p1":"q2","p2":"q3"}},{{"id":"e3","type":"line","p1":"q3","p2":"q4"}},{{"id":"e4","type":"line","p1":"q4","p2":"q1"}},{{"id":"ax","type":"line","p1":"a1","p2":"a2","construction":true}}],"constraints":[]}},
+        {{"type":"revolve","id":"F4","op":"cut","sketch":"F3","axis":"ax","angle":360}},
+        {{"type":"sketch","id":"F5","plane":{{"kind":"std","id":"front"}},"points":[{{"id":"q1","x":15,"y":8}},{{"id":"q2","x":21,"y":8}},{{"id":"q3","x":21,"y":11}},{{"id":"q4","x":15,"y":11}},{{"id":"a1","x":0,"y":0}},{{"id":"a2","x":0,"y":10}}],
+        "entities":[{{"id":"e1","type":"line","p1":"q1","p2":"q2"}},{{"id":"e2","type":"line","p1":"q2","p2":"q3"}},{{"id":"e3","type":"line","p1":"q3","p2":"q4"}},{{"id":"e4","type":"line","p1":"q4","p2":"q1"}},{{"id":"ax","type":"line","p1":"a1","p2":"a2","construction":true}}],"constraints":[]}},
+        {{"type":"revolve","id":"F6","op":"cut","sketch":"F5","axis":"ax","angle":360}}]"#
+    );
+    let r = run(&src);
+    let rev = r.out.steps.iter().find(|s| s.name == "Revolve2").expect("revolve step");
+    assert_eq!(rev.status, Status::Rebuilt, "{}", rev.note);
+    // the disc's own sketch is the full rectangle, its rim corner included (the notch cut's read-back is not
+    // checked here: a cut that takes a corner is closed by a diagonal)
+    let sk = ck_json::to_string(&r.out.features[0]);
+    assert!(sk.contains(r#""x":20,"y":10"#), "{sk}");
+}
+
+#[test]
+fn revolve_faces_split_by_a_later_cut() {
+    // a channel cut across the top of the disc from rim to rim splits the top face in two: both halves are one piece
+    // of the profile
+    let src = format!(
+        r#"[{DISC},
+        {{"type":"sketch","id":"F3","plane":{{"kind":"std","id":"front"}},"points":[{{"id":"q1","x":-30,"y":7}},{{"id":"q2","x":30,"y":7}},{{"id":"q3","x":30,"y":11}},{{"id":"q4","x":-30,"y":11}}],
+        "entities":[{{"id":"e1","type":"line","p1":"q1","p2":"q2"}},{{"id":"e2","type":"line","p1":"q2","p2":"q3"}},{{"id":"e3","type":"line","p1":"q3","p2":"q4"}},{{"id":"e4","type":"line","p1":"q4","p2":"q1"}}],"constraints":[]}},
+        {{"type":"extrude","id":"F4","op":"cut","sketch":"F3","end":"mid","depth":4}}]"#
+    );
+    let r = run(&src);
+    let rev = r.out.steps.iter().find(|s| s.name == "Revolve2").expect("revolve step");
+    assert_eq!(rev.status, Status::Rebuilt, "{}", rev.note);
+    assert!(rev.note.contains("pieces on"), "{}", rev.note);
 }

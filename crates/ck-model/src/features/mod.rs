@@ -46,6 +46,7 @@
 //! | importStep      | blob (key into the part's `blobs`) or step (inline text), body, heal (see import_step.rs) |
 //! | importBody      | format (sldprt), blob (key into the part's `blobs`, base64 of the file), replace, body (see import_body.rs) |
 //! | repairPart      | target (an importStep), gap, patchHoles (see repair_part.rs) |
+//! | frame           | sketch, segments, lines, profile, rotate, corner, members, joints (see frame.rs) |
 //! | knurlBand       | axis, center, radius, from, to, pattern, count, depth, angle, helixAngle, ringPitch (see knurl_band.rs) |
 //! | thread          | face, standard, size, class, length, hand, start, modeled (parsed from the raw DOM, see thread.rs) |
 //! | projectCurve    | sketch \| curve, faces, degree, tolerance, direction (see project_curve.rs) |
@@ -61,6 +62,7 @@ pub mod draft;
 pub mod edit_curve;
 pub mod extrude;
 pub mod extrude_object;
+pub mod frame;
 pub mod hole;
 pub mod known_fields;
 pub mod import_body;
@@ -864,11 +866,68 @@ impl Brep {
                     Err(e) => {
                         // GUESS: failed boolean span label keeps the input counts
                         self.spans.push(boolean_span(op, b.num_faces(), tool.num_faces(), b.num_faces()));
+                        // several lumps and an add that fails against all of them at once (a tool that spans bodies which only
+                        // touch each other): unite the tool with the lumps it reaches one after the other
+                        if op == BOp::Union {
+                            if let Some(nb) = self.union_lump_by_lump(tool, tol) {
+                                self.body = Some(nb);
+                                return Ok(());
+                            }
+                        }
                         Err(FeatureError::new(&e))
                     }
                 }
             }
         }
+    }
+
+    /// An add of `tool` to a body of several lumps, one lump at a time: the tool is united with every lump it
+    /// merges with (a union that leaves the two apart is a lump it does not reach), until no further lump joins. The
+    /// lumps it does not reach stay as they are, ahead of the result. `None`: the body has one lump, a boolean fails
+    /// or the tool reaches no lump.
+    fn union_lump_by_lump(&self, tool: &ck_topo::body::Body, tol: f64) -> Option<ck_topo::body::Body> {
+        use ck_ops::boolean::Op as BOp;
+        let b = self.body.as_ref()?;
+        let comps = ck_topo::region::components(b);
+        if comps.len() < 2 {
+            return None;
+        }
+        let mut rest: Vec<ck_topo::body::Body> = comps.iter().map(|c| ck_ops::boolean::assemble::rebuild_in_order(b, c)).collect();
+        let mut cur = tool.clone();
+        let mut joined = false;
+        loop {
+            let mut progress = false;
+            let mut i = 0;
+            while i < rest.len() {
+                let (r, _) = fuzzy_boolean(&cur, &rest[i], BOp::Union, tol, self.fuzz, self.auto_fuzz);
+                let out = r.ok()?;
+                if out.mismatch.is_some() {
+                    return None;
+                }
+                let (before, after) = (ck_topo::region::components(&cur).len() + 1, ck_topo::region::components(&out.body).len());
+                if !out.no_effect && after < before {
+                    cur = out.body;
+                    rest.remove(i);
+                    progress = true;
+                    joined = true;
+                } else {
+                    i += 1;
+                }
+            }
+            if !progress {
+                break;
+            }
+        }
+        if !joined {
+            return None;
+        }
+        let mut nb = ck_topo::body::Body::new();
+        for r in &rest {
+            nb.append(r);
+        }
+        nb.append(&cur);
+        renumber_duplicates(&mut nb);
+        Some(nb)
     }
 
     /// `upToNext` (oracle probes): add -> `tool − body` (span `boolean
@@ -1631,6 +1690,7 @@ impl Brep {
             _ if f.type_name == "importBody" => return import_body::exec_import_body(self, state, f),
             _ if f.type_name == "repairPart" => return repair_part::exec_repair_part(self, state, f),
             _ if f.type_name == "knurlBand" => return knurl_band::exec_knurl_band(self, state, f),
+            _ if f.type_name == "frame" => return frame::exec_frame(self, state, f),
             _ if f.type_name == "thread" => return thread::exec_thread(self, state, f),
             _ if f.type_name == "combine" || f.type_name == "bodyBoolean" => return combine::exec_combine(self, state, f),
             _ if f.type_name == "moveBody" => return move_body::exec_move_body(self, state, f),

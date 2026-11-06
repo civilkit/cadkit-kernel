@@ -655,12 +655,41 @@ pub fn plain_or_drafted(cx: &mut Cx, f: &SwFeature, faces: &[FaceId], cut: bool)
             cx.tree.ids.0 = ids;
             cx.tree.feats.truncate(nfeat);
             cx.notes.truncate(nnotes);
-            cx.names = names;
+            cx.names = names.clone();
             let tilted = faces.iter().any(|&g| match cx.m.kind(g) {
                 Kind::Cone { .. } => true,
                 Kind::Plane { n, .. } => faces.iter().any(|&h| matches!(cx.m.kind(h), Kind::Plane { n: m2, .. } if { let c = n.dot(*m2).abs(); c > 1e-6 && c < 1.0 - 1e-6 })),
                 _ => false,
             });
+            // a face a later draft tilted: the extrude as it was before (the face straight, through its pivot edge)
+            if let (Some(mu), true) = (cx.undrafted, faces.iter().any(|g| cx.later.iter().any(|l| l.face == *g))) {
+                let saved = cx.m;
+                cx.m = mu;
+                let r = crate::profile::extrude(cx, f, faces, cut);
+                cx.m = saved;
+                match r {
+                    Ok(note) => return Ok(format!("{note}; a later draft tilts a face")),
+                    Err(e) => {
+                        cx.tree.ids.0 = ids;
+                        cx.tree.feats.truncate(nfeat);
+                        cx.notes.truncate(nnotes);
+                        cx.names = names;
+                        if !tilted {
+                            return Err(format!("{plain}; before a later draft: {e}"));
+                        }
+                    }
+                }
+            }
+            // free-form sides (a spline or ellipse profile with a draft): a ruled loft between the sides' rows
+            let free = faces.iter().any(|&g| matches!(cx.m.kind(g), Kind::Other(_)));
+            if free {
+                return crate::loft::ruled_extrude(cx, f, faces, cut).map_err(|r| {
+                    cx.tree.ids.0 = ids;
+                    cx.tree.feats.truncate(nfeat);
+                    cx.notes.truncate(nnotes);
+                    format!("{plain}; as a ruled loft: {r}")
+                });
+            }
             if !tilted {
                 return Err(plain);
             }

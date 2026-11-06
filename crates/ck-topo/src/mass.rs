@@ -485,6 +485,12 @@ fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand
     type BasisPts = std::rc::Rc<Vec<[[f64; 12]; 3]>>;
     let vline_last: std::cell::RefCell<Option<(u64, Option<ck_geom::nurbs::bsurf::VLine<'_>>)>> = Default::default();
     let basis_memo: std::cell::RefCell<std::collections::HashMap<(u64, u64), BasisPts>> = Default::default();
+    let rational = matches!(surf, Surface::BSpline(bs) if bs.weights.is_some());
+    let memo_rows = std::cell::Cell::new(0usize);
+    let cone_t = match surf {
+        Surface::Cone { semi_angle, .. } => semi_angle.tan(),
+        _ => 0.0,
+    };
     let seg_integral = |a0: f64, u: f64, v: f64, memo: bool| -> [f64; K] {
         let mut g = [0.0; K];
         if a0 == u {
@@ -532,7 +538,8 @@ fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand
                 continue;
             }
             let fast = vl.as_ref().and_then(|l| l.segment(0.5 * (a + c))).filter(|s| s.covers(a, c));
-            let n = if fast.is_some() { fast_panels * res } else { ((span.abs() / hu).ceil() as usize).clamp(1, 512 * res) };
+            // (a rational span keeps the panel count of the generic path: only the evaluator is the fast one)
+            let n = if fast.is_some() && !rational { fast_panels * res } else { ((span.abs() / hu).ceil() as usize).clamp(1, 512 * res) };
             let h = span / n as f64;
             let rule: &[(f64, f64)] = match &coarse_rule {
                 Some(r) if fast.is_some() => r,
@@ -541,12 +548,15 @@ fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand
             let bas: Option<BasisPts> = match (&fast, memo) {
                 (Some(sg), true) => {
                     let mut m = basis_memo.borrow_mut();
-                    if m.len() >= 8192 {
+                    // (entries and basis rows: a rational span has many panels, and the rows are 288 bytes each)
+                    if m.len() >= 8192 || memo_rows.get() >= 131_072 {
                         m.clear();
+                        memo_rows.set(0);
                     }
                     Some(
                         m.entry((a.to_bits(), c.to_bits()))
                             .or_insert_with(|| {
+                                memo_rows.set(memo_rows.get() + n * rule.len());
                                 let mut v = Vec::with_capacity(n * rule.len());
                                 for i in 0..n {
                                     let mid = a + h * (i as f64 + 0.5);
@@ -581,10 +591,38 @@ fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand
                             let (p, du, dv) = sl.as_ref().unwrap().eval1(s);
                             (p, du.cross(dv))
                         }
-                        None => {
-                            let d = surf.derivs2(s, v);
-                            (d.p, d.du.cross(d.dv))
-                        }
+                        // cylinder / cone / sphere / torus: the first derivatives only, one sin_cos (the very expressions of
+                        // `Surface::derivs2`, which also builds the second derivatives from two sin_cos)
+                        None => match surf {
+                            Surface::Cylinder { frame, r } => {
+                                let (sn, cs) = s.sin_cos();
+                                let (rad, tan) = (frame.x * cs + frame.y * sn, frame.x * (-sn) + frame.y * cs);
+                                (frame.o + rad * *r + frame.z * v, (tan * *r).cross(frame.z))
+                            }
+                            Surface::Cone { frame, r, .. } => {
+                                let (sn, cs) = s.sin_cos();
+                                let (rad, tan) = (frame.x * cs + frame.y * sn, frame.x * (-sn) + frame.y * cs);
+                                let rho = r + v * cone_t;
+                                (frame.o + rad * rho + frame.z * v, (tan * rho).cross(rad * cone_t + frame.z))
+                            }
+                            Surface::Sphere { frame, r } => {
+                                let (sn, cs) = s.sin_cos();
+                                let (rad, tan) = (frame.x * cs + frame.y * sn, frame.x * (-sn) + frame.y * cs);
+                                let (sv, cv) = v.sin_cos();
+                                (frame.o + rad * (r * cv) + frame.z * (r * sv), (tan * (r * cv)).cross(rad * (-r * sv) + frame.z * (r * cv)))
+                            }
+                            Surface::Torus { frame, major, minor } => {
+                                let (sn, cs) = s.sin_cos();
+                                let (rad, tan) = (frame.x * cs + frame.y * sn, frame.x * (-sn) + frame.y * cs);
+                                let (sv, cv) = v.sin_cos();
+                                let rho = major + minor * cv;
+                                (frame.o + rad * rho + frame.z * (minor * sv), (tan * rho).cross(rad * (-minor * sv) + frame.z * (minor * cv)))
+                            }
+                            _ => {
+                                let d = surf.derivs2(s, v);
+                                (d.p, d.du.cross(d.dv))
+                            }
+                        },
                     };
                     let val = integrand(pt, nrm);
                     for k in 0..K {
@@ -931,6 +969,20 @@ pub struct Moments {
 }
 
 impl Moments {
+    /// Add one face's integrals (see [`faces_moments`]).
+    fn add_face(&mut self, v: &[f64; 11]) {
+        self.volume += v[0];
+        // v[1] is sense * (orientation of the face's loops in its parameter domain) * area. The product of the two
+        // signs is +1 on a consistently built face, but a revolved face can carry clockwise loops together with
+        // sense = true (a torus whose centre lies on the far side of the axis does): the volume terms cancel that
+        // pair of signs, an area does not. An area is never negative, so take its magnitude.
+        self.area += v[1].abs();
+        self.first = self.first + Vec3::new(v[2], v[3], v[4]);
+        for i in 0..6 {
+            self.second[i] += v[5 + i];
+        }
+    }
+
     pub fn com(&self) -> Vec3 {
         self.r + self.first / self.volume
     }
@@ -976,10 +1028,55 @@ impl Moments {
     }
 }
 
+/// Entries the table of face moments holds before it is cleared.
+const MOMENTS_MEMO_CAP: usize = 1 << 15;
+
+thread_local! {
+    /// The integrals of [`faces_moments`] of a face by [`moments_key`]: the mass properties of a body are asked again
+    /// for the same faces (the check after a boolean, the verification of a rebuild against the import, a later
+    /// snapshot of the same history), and an integral over a free-form face is the cost of a measurement.
+    static MOMENTS_MEMO: std::cell::RefCell<std::collections::HashMap<u64, [f64; 11]>> = std::cell::RefCell::new(Default::default());
+}
+
+/// Hash of everything a face's moments about `r` depend on: its surface, sense, trimming (edge curves at three
+/// points each, with the coedge directions) and the reference point.
+fn moments_key(b: &Body, f: FaceId, r: Vec3) -> u64 {
+    let face = b.face(f);
+    let mut h = 0xcbf29ce484222325u64;
+    let mut mix = |x: u64| {
+        h = (h ^ x).wrapping_mul(0x100000001b3);
+        h ^= h >> 29;
+    };
+    mix(face.surface.fingerprint());
+    mix(face.sense as u64);
+    mix(r.x.to_bits());
+    mix(r.y.to_bits());
+    mix(r.z.to_bits());
+    for &lp in &face.loops {
+        mix(0xa5a5);
+        for &c in &b.lp(lp).coedges {
+            let ed = b.edge(b.coedge(c).edge);
+            mix(b.coedge(c).rev as u64);
+            for t in [ed.t0, 0.5 * (ed.t0 + ed.t1), ed.t1] {
+                let p = ed.curve.eval(t);
+                mix(p.x.to_bits());
+                mix(p.y.to_bits());
+                mix(p.z.to_bits());
+            }
+        }
+    }
+    h
+}
+
 /// Moments of the given faces (normally one lump / the whole body).
 pub fn faces_moments(b: &Body, faces: &[FaceId], r: Vec3) -> Moments {
     let mut m = Moments { r, ..Default::default() };
     for &f in faces {
+        let key = moments_key(b, f, r);
+        if let Some(v) = MOMENTS_MEMO.with(|t| t.borrow().get(&key).copied()) {
+            m.add_face(&v);
+            continue;
+        }
         let v = face_integral_vpoly::<11>(b, f, 1, &|p, n| {
             let q = p - r;
             [
@@ -996,16 +1093,14 @@ pub fn faces_moments(b: &Body, faces: &[FaceId], r: Vec3) -> Moments {
                 0.5 * q.z * q.z * q.x * n.z,
             ]
         });
-        m.volume += v[0];
-        // v[1] is sense * (orientation of the face's loops in its parameter domain) * area. The product of the two
-        // signs is +1 on a consistently built face, but a revolved face can carry clockwise loops together with
-        // sense = true (a torus whose centre lies on the far side of the axis does): the volume terms cancel that
-        // pair of signs, an area does not. An area is never negative, so take its magnitude.
-        m.area += v[1].abs();
-        m.first = m.first + Vec3::new(v[2], v[3], v[4]);
-        for i in 0..6 {
-            m.second[i] += v[5 + i];
-        }
+        MOMENTS_MEMO.with(|t| {
+            let mut t = t.borrow_mut();
+            if t.len() >= MOMENTS_MEMO_CAP {
+                t.clear();
+            }
+            t.insert(key, v);
+        });
+        m.add_face(&v);
     }
     m
 }

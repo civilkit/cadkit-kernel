@@ -63,7 +63,7 @@ fn run_with(src: &str, edit: impl Fn(&mut Vec<SwFeature>)) -> Outcome {
     }
     let mut sw = sw_features(&fs);
     edit(&mut sw);
-    let t = Tagged { body: &body, tags, features: &sw, unit_mm: 1.0 };
+    let t = Tagged { body: &body, tags, features: &sw, unit_mm: 1.0, start: None };
     rebuild_history(&t)
 }
 
@@ -258,4 +258,40 @@ fn linear_pattern_along_a_diagonal() {
     assert_eq!(p.get_f64("count"), Some(3.0));
     assert!((p.get_f64("spacing").unwrap() - 10.0).abs() < 1e-6, "{}", ck_json::to_string(p));
     assert_eq!(p.get("dir").unwrap().get_str("kind"), Some("vector"));
+}
+
+/// Sketch entities of axis-aligned rectangles `(x0, y0, x1, y1)`: points and lines.
+fn rects(rs: &[(f64, f64, f64, f64)]) -> (String, String) {
+    let (mut pts, mut ents) = (vec![], vec![]);
+    for (i, &(x0, y0, x1, y1)) in rs.iter().enumerate() {
+        for (j, (x, y)) in [(x0, y0), (x1, y0), (x1, y1), (x0, y1)].into_iter().enumerate() {
+            pts.push(format!(r#"{{"id":"p{i}_{j}","x":{x},"y":{y}}}"#));
+            ents.push(format!(r#"{{"id":"e{i}_{j}","type":"line","p1":"p{i}_{j}","p2":"p{i}_{}"}}"#, (j + 1) % 4));
+        }
+    }
+    (pts.join(","), ents.join(","))
+}
+
+#[test]
+fn mirror_of_a_mirror_with_a_seed_known_by_its_top_only() {
+    // a boss whose side walls along x a cut replaced: only its top and its walls across x stay, and those planes map to
+    // themselves in the mirror plane x = 0 (the copy's top is no moved surface, it lies elsewhere on the same plane);
+    // then the boss, the cut and their mirror copy are mirrored again in the plane z = 0 (a mirror as a seed)
+    let (bp, be) = rects(&[(8.0, 14.0, 24.0, 30.0)]);
+    let (cp, ce) = rects(&[(4.0, 10.0, 10.0, 34.0), (22.0, 10.0, 28.0, 34.0)]);
+    let src = format!(
+        r#"[{PLATE},
+        {{"type":"sketch","id":"F3","plane":{{"kind":"face","id":"F2.C1"}},"points":[{bp}],"entities":[{be}],"constraints":[]}},
+        {{"type":"extrude","id":"F4","op":"add","sketch":"F3","end":"blind","depth":6}},
+        {{"type":"sketch","id":"F5","plane":{{"kind":"face","id":"F4.C1"}},"points":[{cp}],"entities":[{ce}],"constraints":[]}},
+        {{"type":"extrude","id":"F6","op":"cut","sketch":"F5","end":"blind","depth":8}},
+        {{"type":"mirror","id":"F7","seeds":["F4","F6"],"plane":{{"kind":"std","id":"right"}},"body":false}},
+        {{"type":"mirror","id":"F8","seeds":["F4","F6","F7"],"plane":{{"kind":"std","id":"front"}},"body":false}}]"#
+    );
+    let o = run(&src);
+    assert_exact(&o);
+    assert_eq!(types(&o).iter().filter(|t| *t == "mirror").count(), 2, "{:?}", types(&o));
+    let last = o.features.iter().rev().find(|f| f.get_str("type") == Some("mirror")).unwrap();
+    let seeds = last.get("seeds").unwrap().as_arr().unwrap().len();
+    assert!(seeds >= 3, "the second mirror copies the first one too: {}", ck_json::to_string(last));
 }

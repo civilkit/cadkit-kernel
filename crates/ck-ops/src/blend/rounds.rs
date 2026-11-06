@@ -51,6 +51,12 @@ pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featu
             return second;
         }
     }
+    // a selection with wall lines the analytic builder refused: the free-form strips, as before that builder took them
+    if first.is_err() && edges.iter().any(|(fa, fb, at)| find_edge(b, fa, fb, *at).is_some_and(|e| super::freeform::needs_freeform(b, e) && super::torus_corner::analytic_wall_edge(b, e))) {
+        if let Ok(x) = super::torus_corner::free_walls(attempt) {
+            return Ok(x);
+        }
+    }
     // when every attempt failed and the gate refused one of them, that refusal says more than a later attempt's failure
     match (first, rejected.into_inner()) {
         (Err(_), Some(gate)) => Err(gate),
@@ -354,6 +360,20 @@ pub(super) fn blend_edges_inner(b: &Body, edges: &[(String, String, Vec3)], spec
     Ok(in_place_layout(b, &raw, &refs, tol))
 }
 
+/// The edge of a corner whose two planar faces meet at the smallest turn, when it is the only one (`None` for a corner
+/// whose edges all have the same dihedral, such as a box corner).
+fn flattest_edge(b: &Body, c: &super::corner::Corner) -> Option<EdgeId> {
+    let dots: Vec<f64> = c.edges.iter().map(|&e| {
+        let fs = b.edge_faces(e);
+        if fs.len() == 2 { b.planar_normal(fs[0]).normalize().dot(b.planar_normal(fs[1]).normalize()) } else { f64::NAN }
+    }).collect();
+    if dots.iter().any(|d| !d.is_finite()) {
+        return None;
+    }
+    let i = (0..3).max_by(|&i, &j| dots[i].partial_cmp(&dots[j]).unwrap())?;
+    (0..3).all(|j| j == i || dots[i] > dots[j] + 1e-6).then_some(c.edges[i])
+}
+
 thread_local! {
     /// Radius of the fillet of selection index `k` (see [`fillet_unequal`]).
     pub(super) static EDGE_RADII: std::cell::RefCell<Option<Vec<f64>>> = const { std::cell::RefCell::new(None) };
@@ -403,7 +423,16 @@ pub(super) fn blend_edges_at(
     }
     let mut out = b.clone();
     let mut touched: Vec<String> = vec![];
-    for (k, (fa, fb, at)) in edges.iter().enumerate() {
+    // At a convex corner of three selected edges whose dihedrals differ (the vertical edge of an octagonal boss between
+    // two rim edges), the flattest edge's tool is built first: built after a rim tool has cut into the corner, it ends
+    // short of the ball centre and leaves a sliver of the mitre the corner's sphere patch does not remove.
+    let mut seq: Vec<usize> = (0..edges.len()).collect();
+    if matches!(spec, Spec::Fillet(..)) {
+        let first: Vec<EdgeId> = super::corner::find_corner(b, &sel_edges).iter().filter(|c| !c.concave).filter_map(|c| flattest_edge(b, c)).collect();
+        seq.sort_by_key(|&k| !first.contains(&sel_edges[k]));
+    }
+    for k in seq {
+        let (fa, fb, at) = &edges[k];
         let Some(e) = find_edge(&out, fa, fb, *at) else {
             // an earlier tool of this feature already blended it: collinear edges
             // separated by a notch (a hole centred on the edge line) are cut by one

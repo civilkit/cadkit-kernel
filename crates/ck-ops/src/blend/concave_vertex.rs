@@ -256,8 +256,6 @@ fn staged(b: &Body, edges: &[(String, String, Vec3)], eids: &[EdgeId], ts: &[Tri
             Some(Ok(x)) => x,
             other => {
                 dbg(&format!("concave vertex: stage 2 mixed build: {:?}", other.map(|r| r.map(|_| ()))));
-                // (a wall line between a plane and a cylinder is analytic)
-                let _wall = super::torus_corner::wall_guard();
                 blend_edges_inner(&cur, &sel2, Spec::Fillet(r, FilletProfile::Circular), feature, tol)?
             }
         };

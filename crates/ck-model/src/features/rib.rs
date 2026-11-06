@@ -70,15 +70,21 @@ pub fn exec_rib(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<()
     let last_tag = chain.last().map(|s| s.tag.clone()).unwrap_or_default();
     let far_tag = format!("{last_tag}l");
     let sides: [f64; 2] = if *flip { [-1.0, 1.0] } else { [1.0, -1.0] };
-    for s in sides {
+    // a chain end that meets an edge of the body exactly (a line drawn to a corner) leaves the enclosed piece joined
+    // to the outside along that edge: the end is then tried with its extension turned a little, either way
+    let rot = |v: Vec2, th: f64| Vec2::new(v.x * th.cos() - v.y * th.sin(), v.x * th.sin() + v.y * th.cos());
+    const EPS: f64 = 2e-3;
+    let tilts: [(f64, f64); 9] = [(0.0, 0.0), (0.0, EPS), (0.0, -EPS), (EPS, 0.0), (-EPS, 0.0), (EPS, EPS), (EPS, -EPS), (-EPS, EPS), (-EPS, -EPS)];
+    for ((ta, tb), s) in tilts.into_iter().flat_map(|t| sides.into_iter().map(move |s| (t, s))) {
         let n: Vec2 = left * s;
+        let (tan_a, tan_b) = (if ta != 0.0 { rot(tan_a, ta) } else { tan_a }, if tb != 0.0 { rot(tan_b, tb) } else { tan_b });
         let (a0, b0) = (a - tan_a * big, b + tan_b * big);
         // a line at either chain end is itself extended (one coplanar face
         // `S.<entity>r` wall to wall); curved ends get a tangent extension
         let mut mid = segs.clone();
         let is_line = |p: &ProfileSeg| matches!(p.curve, ck_geom::curve2::Curve2::Line { .. });
         let mut loop_segs = vec![];
-        if is_line(&mid[0]) {
+        if is_line(&mid[0]) && ta == 0.0 {
             let tag = mid[0].tag.clone();
             let e = mid[0].end();
             mid[0] = ProfileSeg::line(&tag, a0, e);
@@ -86,7 +92,7 @@ pub fn exec_rib(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<()
             loop_segs.push(ProfileSeg::line("x0", a0, a));
         }
         let n_mid = mid.len();
-        let tail_line = is_line(&mid[n_mid - 1]);
+        let tail_line = is_line(&mid[n_mid - 1]) && tb == 0.0;
         if tail_line {
             let tag = mid[n_mid - 1].tag.clone();
             let st = mid[n_mid - 1].start();

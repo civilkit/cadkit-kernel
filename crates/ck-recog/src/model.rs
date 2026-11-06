@@ -41,6 +41,16 @@ pub struct Model<'a> {
 }
 
 impl<'a> Model<'a> {
+    /// A copy of the model in which the surface of the given faces is another (a face as it was before a later
+    /// feature moved it); the body, and so the edges, stay the same.
+    pub fn with_kinds(&self, over: &[(FaceId, Kind)]) -> Model<'a> {
+        let mut kinds = self.kinds.clone();
+        for (f, k) in over {
+            kinds[f.idx()] = Some(k.clone());
+        }
+        Model { b: self.b, faces: self.faces.clone(), kinds }
+    }
+
     pub fn new(b: &'a Body) -> Model<'a> {
         let faces: Vec<FaceId> = b.face_ids().collect();
         let mut kinds: Vec<Option<Kind>> = vec![None; b.faces.len()];

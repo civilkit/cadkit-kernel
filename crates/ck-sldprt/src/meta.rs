@@ -133,7 +133,8 @@ pub fn read(c: &Container, limits: &Limits) -> SwMeta {
     // feature tree, configurations and their material
     if let Some(kw) = c.data("swXmlContents/KeyWords", limits) {
         let t = String::from_utf8_lossy(&kw);
-        let (features, configs) = keywords(&t);
+        let (mut features, configs) = keywords(&t);
+        crate::classes::canonicalize(c, limits, &mut features);
         for mut f in features {
             f.name = scrub.keep(f.name).unwrap_or_default();
             f.dims.retain_mut(|d| scrub.ok(&d.name) && scrub.ok(&d.text) || scrub.drop());

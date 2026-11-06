@@ -56,11 +56,15 @@ fn blend_files_keep_their_steps() {
     let cases: [(&str, bool, usize); 7] = [
         // a through cut whose mouth a later chamfer trimmed: the file now rebuilds to the end
         ("nist_ftc_09", true, 33),
-        // free-form blend strips where the file has cylinders, and the steps after them
-        ("nist_ftc_08", false, 24),
-        // a boss whose end a later fillet trimmed runs on to the fillet's other support
-        ("pend_table_mount", false, 13),
-        ("nist_ctc_01", false, 3),
+        // the foot ring whose tori wrap the corner rounds of the next fillet: read back with the corner rounds first
+        // (reordered, verified against the whole body); a split line the rebuild does not cut
+        ("nist_ftc_08", true, 30),
+        // a boss whose end a later fillet trimmed runs on to the fillet's other support; the last chamfer's ramp runs
+        // across a groove and into a lug boss (read back as a loft, the groove cut last, the bar behind the chamfer
+        // that cuts into it): complete in a geometry-equivalent order
+        ("pend_table_mount", true, 14),
+        // a 10 mm floor round whose contact runs off a ledge 3.4 mm wide (the outline's R25 corner continued trims it)
+        ("nist_ctc_01", true, 10),
         ("nist_ctc_03", false, 2),
         ("pend_encoder", false, 2),
         // a spoked web whose opening corners and rim rounds meet at unequal radii: read back as the full annulus,
@@ -81,14 +85,15 @@ fn blend_files_keep_their_steps() {
     }
 }
 
-/// The table mount's bracket reaches the floor it sits on and its lug boss keeps the height of its sides, so the last
-/// chamfer finds its concave edge (it used to stop on a missing edge).
+/// The table mount is rebuilt to the end in an order of its own, and says so in its notes.
 #[test]
-fn table_mount_last_chamfer_finds_its_edge() {
+fn table_mount_is_reordered_and_complete() {
     let dir = std::env::var("SW_CORPUS").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../corpus-local"));
     let Some(path) = find(&dir, "pend_table_mount") else { return };
     let imp = ck_sldprt::import_sldprt(&std::fs::read(path).unwrap()).unwrap();
     let out = rebuild_history(&Tagged::from_import(&imp));
-    let why = out.fallback.clone().unwrap_or_default();
-    assert!(!why.contains("missingEdge"), "pend_table_mount: {why}");
+    assert!(out.fallback.is_none(), "pend_table_mount: {:?}", out.fallback);
+    assert!(out.exact() || out.close());
+    assert!(out.steps.iter().any(|s| s.note.contains("not the file's order")));
+    assert!(out.notes.iter().any(|n| n.contains("reordered, geometry-equivalent")));
 }

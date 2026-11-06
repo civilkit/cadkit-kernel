@@ -106,8 +106,10 @@ pub fn sphere_corner_tool(b: &Body, corner: &Corner, r: f64, feature: &str, name
     }
     // the corner block: out(i) = plane of the face opposite to edge i, pushed
     // out by `m`; inn(i) = plane through c perpendicular to edge i
-    let m = r + 1.0;
-    // concave: the block is pushed into the material instead (normal -n)
+    // concave: the block is pushed into the material instead (normal -n), only by half the radius: the material
+    // behind a face may be thinner than r + 1 (a pocket ceiling 3.4 under the top, r = 3.048), and a block that
+    // reaches through it adds a lump on the far side
+    let m = if corner.concave { 0.5 * r } else { r + 1.0 };
     let outer: [(Vec3, Vec3); 3] = std::array::from_fn(|i| (n[i] * -sg, vp - n[i] * (sg * m))); // (outward normal, point)
     sphere_block_minus_ball(c, u, outer, r, feature, name)
 }

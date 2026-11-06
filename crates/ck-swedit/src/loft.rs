@@ -52,7 +52,11 @@ pub fn rebuild(cx: &mut Cx, f: &SwFeature, faces: &[FaceId]) -> Option<Result<St
     if f.name.contains("Thin") || f.kind.contains("Thin") {
         return Some(Err("thin loft".into()));
     }
-    Some(loft(cx, f, faces, cut))
+    let saved = crate::sweep::save(cx);
+    Some(loft(cx, f, faces, cut).or_else(|why| {
+        crate::sweep::restore(cx, &saved);
+        crate::sweep::loft_as(cx, f, faces, cut, why)
+    }))
 }
 
 /// An edge of a loop in travel order.
@@ -486,4 +490,118 @@ pub fn loft(cx: &mut Cx, f: &SwFeature, faces: &[FaceId], cut: bool) -> Result<S
         lat.len(),
         caps.len()
     ))
+}
+
+/// A drafted extrude of a free-form profile (a spline or an ellipse with a draft): SolidWorks leaves each side as a
+/// B-spline surface of degree 1 between two rows, the rows lying in planes normal to the extrude direction at two
+/// levels (the swept curve at those levels, scaled by the draft). The surfaces are those of a ruled loft between the
+/// rows: the extrude is read back as that loft, its first section the rows at the level without a cap (inside the
+/// earlier material, where the side's own face ends on it), the second the rows at the capped level. The rows must
+/// chain into closed loops at both levels and the sides must all be such surfaces; the caller checks the result.
+pub fn ruled_extrude(cx: &mut Cx, f: &SwFeature, faces: &[FaceId], cut: bool) -> Result<String, String> {
+    use ck_geom::nurbs::bspline::BSplineCurve;
+    let m = cx.m;
+    let caps: Vec<FaceId> = faces.iter().copied().filter(|&g| matches!(m.kind(g), Kind::Plane { .. })).collect();
+    let lat: Vec<FaceId> = faces.iter().copied().filter(|g| !caps.contains(g)).collect();
+    if lat.is_empty() || caps.is_empty() {
+        return Err("no ruled sides with a cap".into());
+    }
+    let Kind::Plane { n: d, .. } = m.kind(caps[0]).clone() else { unreachable!() };
+    if caps.iter().any(|&g| !matches!(m.kind(g), Kind::Plane { n, .. } if n.cross(d).len() < 1e-9)) {
+        return Err("caps of different directions".into());
+    }
+    // the two rows of every side, as curves, each with its level along `d`
+    let (lo, hi) = m.b.bbox();
+    let size = 1.0 + lo.dist(hi);
+    let level_of = |c: &[Vec3]| -> Option<f64> {
+        let l = c[0].dot(d);
+        c.iter().all(|p| (p.dot(d) - l).abs() < 1e-7 * size).then_some(l)
+    };
+    let mut rows: Vec<(f64, BSplineCurve)> = vec![];
+    for &g in &lat {
+        let Surface::BSpline(s) = &m.b.face(g).surface else { return Err(format!("side {} is no B-spline", m.b.face_id_str(g))) };
+        if s.weights.as_ref().map_or(false, |w| w.iter().any(|x| (x - w[0]).abs() > 1e-12)) {
+            return Err("a rational side".into());
+        }
+        let (r0, r1, deg, knots): (Vec<Vec3>, Vec<Vec3>, usize, Vec<f64>) = if s.deg_u == 1 && s.nu == 2 {
+            (s.ctrl[..s.nv].to_vec(), s.ctrl[s.nv..].to_vec(), s.deg_v, s.knots_v.clone())
+        } else if s.deg_v == 1 && s.nv == 2 {
+            ((0..s.nu).map(|i| s.ctrl[2 * i]).collect(), (0..s.nu).map(|i| s.ctrl[2 * i + 1]).collect(), s.deg_u, s.knots_u.clone())
+        } else {
+            return Err(format!("side {} is not ruled between two rows", m.b.face_id_str(g)));
+        };
+        for r in [r0, r1] {
+            let l = level_of(&r).ok_or("a row of a side does not lie in one plane normal to the caps")?;
+            // (clamped, so that a row starts and ends at its end control points: the sketch's cvspline does)
+            rows.push((l, BSplineCurve::new(deg, knots.clone(), r).map_err(|_| "a side with bad knots".to_string())?.clamp_ends()));
+        }
+    }
+    let mut levels: Vec<f64> = rows.iter().map(|r| r.0).collect();
+    levels.sort_by(|a, b| a.total_cmp(b));
+    levels.dedup_by(|a, b| (*a - *b).abs() < 1e-7 * size);
+    if levels.len() != 2 {
+        return Err(format!("the side rows lie at {} levels", levels.len()));
+    }
+    let cap_level = |g: FaceId| match m.kind(g) {
+        Kind::Plane { n, d: off } => off * n.dot(d),
+        _ => f64::NAN,
+    };
+    let capped = |l: f64| caps.iter().any(|&g| (cap_level(g) - l).abs() < 1e-7 * size);
+    if caps.iter().any(|&g| !capped(cap_level(g)) || !levels.iter().any(|&l| (cap_level(g) - l).abs() < 1e-7 * size)) {
+        return Err("a cap off the side rows' levels".into());
+    }
+    let (c0, c1) = (capped(levels[0]), capped(levels[1]));
+    let order = if c0 && !c1 { [levels[1], levels[0]] } else { [levels[0], levels[1]] };
+    // the rows of one level chained into closed loops (end to start, a row reversed where it runs the other way)
+    let chain = |l: f64| -> Result<Vec<BSplineCurve>, String> {
+        let mut free: Vec<BSplineCurve> = rows.iter().filter(|r| (r.0 - l).abs() < 1e-7 * size).map(|r| r.1.clone()).collect();
+        let tol = 1e-6 * size;
+        let mut out = vec![free.remove(0)];
+        let first = out[0].ctrl[0];
+        loop {
+            let cur = *out.last().unwrap().ctrl.last().unwrap();
+            if cur.dist(first) < tol {
+                break;
+            }
+            let Some(i) = free.iter().position(|c| c.ctrl[0].dist(cur) < tol || c.ctrl.last().unwrap().dist(cur) < tol) else {
+                return Err(format!("the side rows do not close (at {cur:?}, from {first:?}, {} row(s) left of {})", free.len(), rows.len()));
+            };
+            let c = free.swap_remove(i);
+            out.push(if c.ctrl[0].dist(cur) < tol { c } else { c.reversed() });
+        }
+        if !free.is_empty() {
+            return Err("the side rows make more than one loop".into());
+        }
+        Ok(out)
+    };
+    let secs = [chain(order[0])?, chain(order[1])?];
+    let mut sids = vec![];
+    let mut ents0: Vec<String> = vec![];
+    for (k, (sec, l)) in secs.iter().zip(order).enumerate() {
+        let fr = cx.frame(d, d * l);
+        let sid = cx.tree.ids.next();
+        let mut sk = Sk::new(sid.clone(), fr.plane.clone());
+        let mut pts: Vec<((f64, f64), String)> = vec![];
+        for c in sec {
+            let ids: Vec<String> = c.ctrl.iter().map(|&p| pt(&fr, &mut sk, &mut pts, p)).collect();
+            let id = format!("cv{}", sk.entities.len() + 1);
+            sk.entities.push(Obj::new().put("type", "cvspline").put("id", id.as_str()).put("pts", arr(ids.iter().map(|x| s(x)).collect())).put("degree", n(c.degree as f64)).put("knots", arr(c.knots.iter().map(|&k| n(k)).collect())).build());
+            if k == 0 {
+                ents0.push(id);
+            }
+        }
+        cx.tree.push(sk.json());
+        sids.push(sid);
+    }
+    let lid = cx.tree.ids.next();
+    cx.tree.push(Obj::new().put("type", "loft").put("id", lid.as_str()).put("op", if cut { "cut" } else { "add" }).put("sketches", arr(sids.iter().map(|x| s(x)).collect())).build());
+    for &g in &lat {
+        cx.names.entry(g).or_insert_with(|| format!("{lid}.S.{}", ents0[0]));
+    }
+    for &g in &caps {
+        let k = if (cap_level(g) - order[0]).abs() < 1e-7 * size { "C0" } else { "C1" };
+        cx.names.entry(g).or_insert_with(|| format!("{lid}.{k}"));
+    }
+    let _ = f;
+    Ok(format!("drafted free-form extrude read as a ruled loft between its sides' rows at {:.4} and {:.4} ({} side(s), {} cap(s))", order[0], order[1], lat.len(), caps.len()))
 }

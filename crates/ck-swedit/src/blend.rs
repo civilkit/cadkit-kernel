@@ -237,6 +237,69 @@ fn fillet_pick(cx: &Cx, f: FaceId, own: &HashSet<FaceId>) -> Result<Option<Pick>
     Ok(Some(Pick { a, b, at, param: r, param2: r }))
 }
 
+/// The section of a concave round between a cylinder and a sphere about one axis, as a revolve (added): the arc of
+/// the round from its tangent point on the cylinder to its tangent point on the sphere, then straight out to the
+/// cylinder's radius at the level of the second point and back along the cylinder. `None` when the pick is no
+/// such round; the strip is named after the arc.
+fn round_revolve(cx: &mut Cx, p: &Pick, strip: FaceId) -> Option<Result<(), String>> {
+    let m = cx.m;
+    let (cyl, sph) = match (m.kind(p.a).clone(), m.kind(p.b).clone()) {
+        (Kind::Cyl { .. }, Kind::Sphere { .. }) => (p.a, p.b),
+        (Kind::Sphere { .. }, Kind::Cyl { .. }) => (p.b, p.a),
+        _ => return None,
+    };
+    let (Kind::Cyl { o, a, r: rc, .. }, Kind::Sphere { c: sc, .. }, Kind::Torus { c: tc, a: ta, major, .. }) = (m.kind(cyl).clone(), m.kind(sph).clone(), m.kind(strip).clone()) else { return None };
+    let tol = 1e-6 * (1.0 + rc);
+    let on_axis = |q: Vec3| (q - o - a * (q - o).dot(a)).len() < tol;
+    if !on_axis(sc) || !on_axis(tc) || ta.cross(a).len() > 1e-9 {
+        return None;
+    }
+    Some((|| {
+        let foot = o + a * (p.at - o).dot(a);
+        let v = p.at - foot;
+        if v.len() < 1e-9 {
+            return Err("round on the axis".to_string());
+        }
+        // (any half plane through the axis does: a principal one keeps the sketch on a standard plane)
+        let u0 = [Vec3::X, Vec3::Y, Vec3::Z].into_iter().find(|e| e.dot(a).abs() < 1e-9).unwrap_or_else(|| v.normalize());
+        let first = cx.tree.feats.len();
+        let c3 = o + a * (tc - o).dot(a) + u0 * major;
+        let p1 = o + a * (c3 - o).dot(a) + u0 * rc;
+        let p2 = point_near(m, sph, c3);
+        let q = o + a * (p2 - o).dot(a) + u0 * rc;
+        let z = a.cross(u0).normalize();
+        let fr = cx.frame(z, o);
+        let sid = cx.tree.ids.next();
+        let mut sk = ck_recog::emit::Sk::new(sid.clone(), fr.plane.clone());
+        let xy = |w: Vec3| fr.xy(w);
+        let (x1, x2, xq, xc) = (xy(p1), xy(p2), xy(q), xy(c3));
+        let (n1, n2, nq, nc) = (sk.point(x1.0, x1.1), sk.point(x2.0, x2.1), sk.point(xq.0, xq.1), sk.point(xc.0, xc.1));
+        // the short arc about the tube centre, counter-clockwise
+        let (u, w) = ((x1.0 - xc.0, x1.1 - xc.1), (x2.0 - xc.0, x2.1 - xc.1));
+        let arc = if u.0 * w.1 - u.1 * w.0 > 0.0 { sk.arc(&nc, &n1, &n2) } else { sk.arc(&nc, &n2, &n1) };
+        sk.line(&n2, &nq, false);
+        sk.line(&nq, &n1, false);
+        let (xa, xb) = (xy(o), xy(o + a));
+        let (pa, pb) = (sk.point(xa.0, xa.1), sk.point(xb.0, xb.1));
+        let axis = sk.line(&pa, &pb, true);
+        cx.tree.push(sk.json());
+        let rid = cx.tree.ids.next();
+        cx.tree.push(Obj::new().put("type", "revolve").put("id", rid.as_str()).put("op", "add").put("sketch", sid.as_str()).put("axis", axis.as_str()).put("angle", n(360.0)).build());
+        cx.names.insert(strip, format!("{rid}.S.{arc}"));
+        // the filler goes in right after the later of the two supports: the holes and cuts between interrupt the round
+        // in the file, and run after it here
+        if let (Some(t1), Some(t2)) = (cx.tag_of(cyl), cx.tag_of(sph)) {
+            let after = t1.max(t2) as f64;
+            for f in cx.tree.feats[first..].iter_mut() {
+                if let Json::Obj(kv) = f {
+                    kv.push(("swHoistAfter".to_string(), Json::Num(after)));
+                }
+            }
+        }
+        Ok(())
+    })())
+}
+
 /// The supports of a planar chamfer strip: two plane neighbours whose intersection line runs in the strip's plane,
 /// both meeting the strip along edges parallel to that line (the rails); the pair with the longest rails. A cap
 /// across the strip's end (a plane the strip meets at its short edges) never qualifies.
@@ -347,6 +410,24 @@ pub fn blend(cx: &mut Cx, f: &SwFeature, faces: &[FaceId], chamfer: bool) -> Res
     if picks.is_empty() {
         return Err("no strip face".into());
     }
+    // a concave round between a boss's cylinder and a sphere about the same axis (a dome on the boss: the round takes
+    // the flat ring between them whole) is no fillet pick the kernel runs: the filler is the revolve of the round's
+    // section, added to the body
+    if !chamfer {
+        let mut k = picks.len();
+        while k > 0 {
+            k -= 1;
+            if let Some(res) = round_revolve(cx, &picks[k], strip[k]) {
+                res?;
+                picks.remove(k);
+                strip.remove(k);
+                corners += 1;
+            }
+        }
+        if picks.is_empty() {
+            return Ok(format!("{}; the round read back as the revolve of its section", dim_note(cx, f, "D1", "radius", 0.0)));
+        }
+    }
     // group by size (a chamfer with two distances: the first face of every pick carries `distance`)
     let same = |x: f64, y: f64| (x - y).abs() < 1e-6 * (1.0 + x.abs());
     let mut groups: Vec<(f64, f64, Vec<usize>)> = vec![];
@@ -359,7 +440,7 @@ pub fn blend(cx: &mut Cx, f: &SwFeature, faces: &[FaceId], chamfer: bool) -> Res
     // the supports as the document rebuilt so far names them: the faces of its edge at the pick point (a support
     // flush with another feature's face is one face of the rebuilt body, under one of the two names; a face a
     // boolean split carries a region suffix), else the names the read-back gave them
-    let prefix = ck_recog::rebuild::rebuild(&cx.tree.feats).ok().and_then(|(b, _)| b);
+    let prefix = cx.sess.borrow_mut().rebuild(&cx.tree.feats).ok().and_then(|(b, _)| b);
     let pm = prefix.as_ref().map(Model::new);
     let rebuilt_names = |p: &Pick| -> Option<(String, String)> {
         let (pb, pm) = (prefix.as_ref()?, pm.as_ref()?);

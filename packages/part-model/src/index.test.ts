@@ -30,6 +30,6 @@ describe('feature inventory', () => {
     const { FEATURE_TYPES } = await import('./features.js');
     const dispatch = ['sphere', 'sketch', 'sketch3d', 'extrude', 'revolve', 'sweep', 'loft', 'fillet', 'chamfer', 'draft', 'shell', 'hole', 'helix', 'rib', 'lip', 'lpattern', 'cpattern', 'mirror', 'trimSurface', 'surfacePlanar', 'surfaceRevolve', 'knit', 'fill', 'insertPart', 'mate', 'plane', 'deleteBody', 'combine', 'importStep', 'repairPart'];
     for (const t of dispatch) assert.ok((FEATURE_TYPES as readonly string[]).includes(t), t);
-    assert.equal(FEATURE_TYPES.length, 51);
+    assert.equal(FEATURE_TYPES.length, 52);
   });
 });

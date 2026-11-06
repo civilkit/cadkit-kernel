@@ -13,7 +13,7 @@ use ck_recog::emit::{n, Sk};
 use ck_recog::model::{comp, principal, Kind, Model, PlaneSpec};
 use ck_sldprt::meta::SwFeature;
 use ck_topo::body::{EdgeId, FaceId};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::f64::consts::TAU;
 
 type P2 = (f64, f64);
@@ -24,6 +24,10 @@ pub enum Seg2 {
     /// Arc about `c` from `a` to `b`, counter-clockwise when `ccw`.
     Arc { a: P2, b: P2, c: P2, ccw: bool },
     Circle { c: P2, r: f64 },
+    /// A whole ellipse: centre, the end of its major semi-axis, minor semi-axis (the sketch's `ellipse`).
+    Ellipse { c: P2, p: P2, r: f64 },
+    /// A non-rational B-spline piece from `a` to `b` (its first and last control points), in the sketch frame.
+    Spline { a: P2, b: P2, c: ck_geom::nurbs::bspline::BSplineCurve<ck_geom::Vec2> },
 }
 
 /// One closed loop of the profile; each piece remembers the side faces it came from.
@@ -62,7 +66,10 @@ pub fn classify_dir(m: &Model, faces: &[FaceId]) -> Result<Vec<(Vec3, Vec<FaceId
             }
             Kind::Cyl { a, .. } => cands.push(*a),
             Kind::Cone { .. } => return Err("drafted side (cone face)".into()),
-            k => return Err(format!("{} face in an extrude", k.name())),
+            k => match swept_dir(m, f) {
+                Some(a) => cands.push(a),
+                None => return Err(format!("{} face in an extrude", k.name())),
+            },
         }
     }
     if normals.len() <= 16 {
@@ -102,6 +109,7 @@ pub fn classify_dir(m: &Model, faces: &[FaceId]) -> Result<Vec<(Vec3, Vec<FaceId
                         ok = false;
                     }
                 }
+                Kind::Other(_) if swept_dir(m, f).map_or(false, |a| a.dot(d).abs() > 1.0 - 1e-6) => sides.push(f),
                 _ => ok = false,
             }
             if !ok {
@@ -117,6 +125,36 @@ pub fn classify_dir(m: &Model, faces: &[FaceId]) -> Result<Vec<(Vec3, Vec<FaceId
         return Err(format!("faces do not share an extrusion direction ({} faces: {})", faces.len(), kinds.join(", ")));
     }
     Ok(out)
+}
+
+/// The direction a free-form face is swept along when it is a curve carried straight along one direction (the side of
+/// an extruded spline or ellipse: an extrusion surface, or a B-spline surface of degree 1 with two rows in one
+/// parameter, each row the other moved by one vector).
+pub fn swept_dir(m: &Model, f: FaceId) -> Option<Vec3> {
+    use ck_geom::surface::Surface;
+    match &m.b.face(f).surface {
+        Surface::Extrusion { dir, .. } => (dir.len() > 1e-12).then(|| dir.normalize()),
+        Surface::BSpline(s) => {
+            let w = |k: usize| s.weights.as_ref().map_or(1.0, |w| w[k]);
+            // (row pairs: index of the point and of its partner in the other row)
+            let pairs: Vec<(usize, usize)> = if s.deg_u == 1 && s.nu == 2 {
+                (0..s.nv).map(|j| (j, s.nv + j)).collect()
+            } else if s.deg_v == 1 && s.nv == 2 {
+                (0..s.nu).map(|i| (2 * i, 2 * i + 1)).collect()
+            } else {
+                return None;
+            };
+            let (i0, j0) = pairs[0];
+            let v = s.ctrl[j0] - s.ctrl[i0];
+            let size = s.ctrl.iter().map(|p| p.dist(s.ctrl[0])).fold(v.len(), f64::max);
+            if v.len() < 1e-9 * (1.0 + size) {
+                return None;
+            }
+            let same = pairs.iter().all(|&(i, j)| (s.ctrl[j] - s.ctrl[i] - v).len() < 1e-9 * (1.0 + size) && (w(i) - w(j)).abs() < 1e-12);
+            same.then(|| v.normalize())
+        }
+        _ => None,
+    }
 }
 
 /// Points along a loop in its order (eight per edge, so a loop of one closed circle has an area).
@@ -217,7 +255,37 @@ fn coedge_seg(m: &Model, c: ck_topo::body::CoedgeId, fr: &Fr) -> Result<Seg2, St
                 Ok(Seg2::Arc { a: fr.xy(pa), b: fr.xy(pb), c: fr.xy(frame.o), ccw: !ce.rev == (frame.z.dot(fr.z) > 0.0) })
             }
         }
-        Curve::Ellipse { .. } => Err("profile edge is an ellipse".into()),
+        Curve::Ellipse { frame, a, b: rb } => {
+            if !(va == vb || pa.dist(pb) < TOL) {
+                return Err("profile edge is an elliptic arc".into());
+            }
+            if frame.z.cross(fr.z).len() > 1e-9 {
+                return Err("profile ellipse off the sketch plane".into());
+            }
+            let (big, small, axis) = if a >= rb { (*a, *rb, frame.x) } else { (*rb, *a, frame.y) };
+            Ok(Seg2::Ellipse { c: fr.xy(frame.o), p: fr.xy(frame.o + axis * big), r: small })
+        }
+        Curve::BSpline(_) => {
+            let ed = b.edge(ce.edge);
+            let Curve::BSpline(mut c) = ed.curve.segment(ed.t0, ed.t1) else { unreachable!() };
+            if c.weights.as_ref().map_or(false, |w| w.iter().any(|x| (x - w[0]).abs() > 1e-12)) {
+                return Err("profile edge is a rational spline".into());
+            }
+            if ce.rev {
+                c = c.reversed();
+            }
+            let (a, z) = (fr.xy(pa), fr.xy(pb));
+            let mut ctrl: Vec<ck_geom::Vec2> = c.ctrl.iter().map(|&p| fr.xy(p)).map(|q| ck_geom::Vec2::new(q.0, q.1)).collect();
+            let n = ctrl.len();
+            if n < 2 || !near2((ctrl[0].x, ctrl[0].y), a) || !near2((ctrl[n - 1].x, ctrl[n - 1].y), z) {
+                return Err("profile spline does not end at its vertices".into());
+            }
+            // (the ends are the vertices exactly, so the pieces of the loop share their end points)
+            ctrl[0] = ck_geom::Vec2::new(a.0, a.1);
+            ctrl[n - 1] = ck_geom::Vec2::new(z.0, z.1);
+            let c2 = ck_geom::nurbs::bspline::BSplineCurve::new(c.degree, c.knots.clone(), ctrl).map_err(|_| "profile spline with bad knots".to_string())?;
+            Ok(Seg2::Spline { a, b: z, c: c2 })
+        }
         _ => Err("profile edge is a free curve".into()),
     }
 }
@@ -526,13 +594,19 @@ pub fn side_chain(cx: &Cx, sides: &[FaceId], fr: &Fr, span: (f64, f64), cut: boo
     let z = fr.z;
     let trace_of = |g: FaceId| -> Option<Trace> {
         match m.kind(g) {
-            Kind::Plane { n, .. } => {
+            Kind::Plane { n, d } => {
                 let n2 = (n.dot(fr.x), n.dot(fr.y));
                 let l = n2.0.hypot(n2.1);
                 if l < 1e-9 {
                     return None;
                 }
-                let p = fr.xy(m.b.vertex(m.b.edge(m.b.face_edges(g).first().copied()?).v0).p);
+                // (a point of the plane: the vertex moved onto it, which moves a vertex of a face a later draft tilted)
+                let q = m.b.vertex(m.b.edge(m.b.face_edges(g).first().copied()?).v0).p;
+                let mut p = fr.xy(q - *n * (n.dot(q) - *d));
+                // (a face a later move-face feature pushed out: read at the place it had before)
+                if let Some(&s) = cx.shift.get(&g) {
+                    p = (p.0 - s * n2.0 / l, p.1 - s * n2.1 / l);
+                }
                 Some(Trace::Line { p, d: (-n2.1 / l, n2.0 / l) })
             }
             Kind::Cyl { o, a, r, .. } if a.dot(z).abs() > 1.0 - 1e-6 => Some(Trace::Circle { c: fr.xy(*o), r: *r }),
@@ -647,6 +721,19 @@ pub fn side_chain(cx: &Cx, sides: &[FaceId], fr: &Fr, span: (f64, f64), cut: boo
     }
     // pair ends: both near the traces' intersection, cheapest first
     let mut cands: Vec<(f64, usize, usize, P2)> = vec![];
+    // a meeting point behind an end (on the side's own stretch) is no corner of the profile: the side runs on past it
+    // (a wall flaring out to the body's boundary meets its mirror image below its own lower end); such pairs are tried
+    // only when the ends cannot be closed by a line instead
+    let mut behind: Vec<(f64, usize, usize, P2)> = vec![];
+    let is_behind = |k: usize, p: P2| -> bool {
+        let (gi, e) = ends[k];
+        let (Trace::Line { p: o, d: u }, Some(dir)) = (&groups[gi].0, dirs[k]) else { return false };
+        let tt = |q: P2| (q.0 - o.0) * u.0 + (q.1 - o.1) * u.1;
+        let (lo, hi) = ends.iter().filter(|x| x.0 == gi).fold((f64::INFINITY, f64::NEG_INFINITY), |a, x| (a.0.min(tt(x.1)), a.1.max(tt(x.1))));
+        let tol = 1e-4 * (1.0 + length[gi]);
+        // (a point inside the side's own stretch is a corner the side runs through: a face other features share)
+        (p.0 - e.0) * dir.0 + (p.1 - e.1) * dir.1 < -tol && (tt(p) < lo - tol || tt(p) > hi + tol)
+    };
     for i in 0..ends.len() {
         for j in i + 1..ends.len() {
             let (gi, gj) = (ends[i].0, ends[j].0);
@@ -666,15 +753,78 @@ pub fn side_chain(cx: &Cx, sides: &[FaceId], fr: &Fr, span: (f64, f64), cut: boo
                 let cost = (ei.0 - p.0).hypot(ei.1 - p.1) + (ej.0 - p.0).hypot(ej.1 - p.1);
                 // a corner removed by a later fillet or chamfer may be far from both remaining ends
                 if cost <= 2.0 * (length[gi] + length[gj]) {
-                    cands.push((cost, i, j, p));
+                    if is_behind(i, p) || is_behind(j, p) {
+                        behind.push((cost, i, j, p));
+                    } else {
+                        cands.push((cost, i, j, p));
+                    }
                 }
             }
         }
     }
+    // a cut's corner inside the stretch of a side that only this feature made would drop the rest of that side (the
+    // wall runs on, past the corner, to the end of its face), and the other side would be carried across material the
+    // earlier features made to reach it: the final body has no wall there, so it is no corner of the profile (the
+    // profile runs on, open, through air: a floor ledge meeting the far wall of a one-sided cut)
+    if cut {
+        use ck_ops::contain::{Containment, Loc};
+        let prior = prior_body(cx);
+        let pc = prior.as_ref().map(|pb| Containment::new(pb, TOL));
+        let at = |p: P2, t: f64| fr.o + fr.x * p.0 + fr.y * p.1 + fr.z * t;
+        let levels: Vec<f64> = [0.02, 0.15, 0.5, 0.85, 0.98].iter().map(|f| span.0 + f * (span.1 - span.0)).collect();
+        let runs_through = |e: P2, p: P2| -> bool {
+            let Some(pc) = pc.as_ref() else { return false };
+            dist2(e, p) > 1e-4 && (1..8).any(|k| levels.iter().any(|&t| pc.classify_point(at(lerp2(e, p, k as f64 / 8.0), t), TOL) == Loc::In))
+        };
+        let truncates = |k: usize, p: P2| -> bool {
+            let gi = ends[k].0;
+            let Trace::Line { p: o, d: u } = &groups[gi].0 else { return false };
+            if groups[gi].1.is_empty() || !groups[gi].1.iter().all(|&g| cx.tags.get(g.idx()).map_or(false, |v| v.len() == 1)) {
+                return false;
+            }
+            let tt = |q: P2| (q.0 - o.0) * u.0 + (q.1 - o.1) * u.1;
+            let (lo, hi) = ends.iter().filter(|x| x.0 == gi).fold((f64::INFINITY, f64::NEG_INFINITY), |a, x| (a.0.min(tt(x.1)), a.1.max(tt(x.1))));
+            let tol = 1e-4 * (1.0 + length[gi]);
+            tt(p) > lo + tol && tt(p) < hi - tol
+        };
+        // (a side the profile reads at the place it had before a move-face feature: its neighbours were extended past the
+        // corner, the corner is real)
+        let moved_pair = |c: &(f64, usize, usize, P2)| [c.1, c.2].iter().any(|&k| groups[ends[k].0].1.iter().any(|g| cx.shift.contains_key(g)));
+        // the stretch of a side a corner drops (from its paired end to the corner) against the stretch it keeps
+        let dropped_more = |k: usize, p: P2| -> bool {
+            let gi = ends[k].0;
+            let Trace::Line { p: o, d: u } = &groups[gi].0 else { return false };
+            let tt = |q: P2| (q.0 - o.0) * u.0 + (q.1 - o.1) * u.1;
+            let other = ends.iter().enumerate().find(|(i, x)| x.0 == gi && *i != k).map(|(_, x)| x.1);
+            let Some(other) = other else { return false };
+            (tt(ends[k].1) - tt(p)).abs() > (tt(other) - tt(p)).abs()
+        };
+        let bad = |c: &(f64, usize, usize, P2)| {
+            if moved_pair(c) && !(truncates(c.1, c.3) && dropped_more(c.1, c.3)) && !(truncates(c.2, c.3) && dropped_more(c.2, c.3)) {
+                return false;
+            }
+            let (a, b) = (ends[c.1].1, ends[c.2].1);
+            (truncates(c.1, c.3) && runs_through(b, c.3)) || (truncates(c.2, c.3) && runs_through(a, c.3))
+        };
+        cands.retain(|c| !bad(c));
+        behind.retain(|c| !bad(c));
+    }
     cands.sort_by(|a, b| a.0.total_cmp(&b.0));
+    behind.sort_by(|a, b| a.0.total_cmp(&b.0));
     let mut taken = vec![false; ends.len()];
     let mut links: Vec<(usize, usize, P2)> = vec![]; // (group, group, corner)
-    for (_, i, j, p) in cands {
+    let mut queue: Vec<(f64, usize, usize, P2)> = cands;
+    queue.push((f64::NAN, usize::MAX, usize::MAX, (0.0, 0.0)));
+    queue.extend(behind);
+    for (_, i, j, p) in queue {
+        if i == usize::MAX {
+            // the first pass is done: two free ends of different sides are closed by a line below, else the rest pair
+            let free: Vec<usize> = (0..ends.len()).filter(|&k| !taken[k]).collect();
+            if free.len() == 2 && ends[free[0]].0 != ends[free[1]].0 {
+                break;
+            }
+            continue;
+        }
         if taken[i] || taken[j] {
             continue;
         }
@@ -718,8 +868,65 @@ pub fn side_chain(cx: &Cx, sides: &[FaceId], fr: &Fr, span: (f64, f64), cut: boo
         }
     }
     // ends nothing meets: the stretch of the profile between them left no side on the final body
+    // a cut's chain whose two free ends nothing meets and that runs on through air (notches in a wall): closed round the
+    // body's outline before the ends of different chains are joined by a line
+    if cut {
+        let mut comp: Vec<usize> = (0..groups.len()).collect();
+        fn root0(c: &mut [usize], i: usize) -> usize {
+            let mut r = i;
+            while c[r] != r {
+                r = c[r];
+            }
+            r
+        }
+        for l in links.iter() {
+            let (a, b) = (root0(&mut comp, l.0), root0(&mut comp, l.1));
+            comp[a] = b;
+        }
+        let mut by: HashMap<usize, Vec<usize>> = HashMap::new();
+        for k in (0..ends.len()).filter(|&k| !taken[k]) {
+            let r = root0(&mut comp, ends[k].0);
+            by.entry(r).or_default().push(k);
+        }
+        let mut chains: Vec<Vec<usize>> = by.into_values().filter(|v| v.len() == 2).collect();
+        chains.sort();
+        // (a single chain with the only two free ends is left to the closing below)
+        if chains.len() > 1 || (0..ends.len()).filter(|&k| !taken[k]).count() > 2 {
+            for v in chains {
+                apply_open_closure(cx, fr, span, &ends, &dirs, (v[0], v[1]), (ends[v[0]].1, ends[v[1]].1), &mut groups, &mut length, &mut links, &mut taken);
+            }
+        }
+    }
     if (0..ends.len()).filter(|&k| !taken[k]).count() >= 2 {
         close_free(cx, fr, span, cut, &mut groups, &mut length, &ends, &dirs, &mut taken, &mut links);
+    }
+    // a cut with several open stretches (notches at both ends of a wall): each chain whose two ends nothing meets runs
+    // on through air and closes round the body's outline
+    if cut && (0..ends.len()).filter(|&k| !taken[k]).count() > 2 {
+        let mut comp: Vec<usize> = (0..groups.len()).collect();
+        fn root(c: &mut [usize], i: usize) -> usize {
+            let mut r = i;
+            while c[r] != r {
+                r = c[r];
+            }
+            r
+        }
+        for l in links.iter() {
+            let (a, b) = (root(&mut comp, l.0), root(&mut comp, l.1));
+            comp[a] = b;
+        }
+        let free: Vec<usize> = (0..ends.len()).filter(|&k| !taken[k]).collect();
+        let mut by: HashMap<usize, Vec<usize>> = HashMap::new();
+        for &k in &free {
+            let r = root(&mut comp, ends[k].0);
+            by.entry(r).or_default().push(k);
+        }
+        let mut chains: Vec<Vec<usize>> = by.into_values().filter(|v| v.len() == 2).collect();
+        chains.sort();
+        for v in chains {
+            let (i, j) = (v[0], v[1]);
+            apply_open_closure(cx, fr, span, &ends, &dirs, (i, j), (ends[i].1, ends[j].1), &mut groups, &mut length, &mut links, &mut taken);
+        }
     }
     // exactly two ends left: the side between them was absorbed by a flush face of another feature; close with a line
     let free: Vec<usize> = (0..ends.len()).filter(|&k| !taken[k]).collect();
@@ -734,9 +941,15 @@ pub fn side_chain(cx: &Cx, sides: &[FaceId], fr: &Fr, span: (f64, f64), cut: boo
                 }
             }
         }
+        // a cut whose straight closing would run through the material of the earlier features (the profile is open on
+        // the far side: it runs on, through air, to beyond the body): each end runs on along its side to just outside
+        // the body's outline in the sketch plane, and the two points join along that outline the short way round
+        if cut {
+            apply_open_closure(cx, fr, span, &ends, &dirs, (i, j), (ei, ej), &mut groups, &mut length, &mut links, &mut taken);
+        }
         let d = (ej.0 - ei.0, ej.1 - ei.1);
         let l = d.0.hypot(d.1);
-        if l > 1e-6 {
+        if l > 1e-6 && !taken[i] {
             groups.push((Trace::Line { p: ei, d: (d.0 / l, d.1 / l) }, vec![]));
             let gi = groups.len() - 1;
             length.push(l);
@@ -849,6 +1062,8 @@ pub fn side_chain(cx: &Cx, sides: &[FaceId], fr: &Fr, span: (f64, f64), cut: boo
                 Seg2::Line { a, b } => format!("L({:.3},{:.3})-({:.3},{:.3})", a.0, a.1, b.0, b.1),
                 Seg2::Arc { a, b, c, ccw } => format!("A({:.3},{:.3})-({:.3},{:.3}) c({:.3},{:.3}){}", a.0, a.1, b.0, b.1, c.0, c.1, if *ccw { "+" } else { "-" }),
                 Seg2::Circle { c, r } => format!("C({:.3},{:.3}) r{:.3}", c.0, c.1, r),
+                Seg2::Ellipse { c, p, r } => format!("E({:.3},{:.3}) to ({:.3},{:.3}) r{:.3}", c.0, c.1, p.0, p.1, r),
+                Seg2::Spline { a, b, .. } => format!("S({:.3},{:.3})-({:.3},{:.3})", a.0, a.1, b.0, b.1),
             })
             .collect();
         return Err(format!("the side traces give no simple outline ({why}: {})", desc.join(" ")));
@@ -856,9 +1071,141 @@ pub fn side_chain(cx: &Cx, sides: &[FaceId], fr: &Fr, span: (f64, f64), cut: boo
     Ok(loops)
 }
 
+/// Close the open stretch between two free ends `i`, `j` through air (`open_closure`), when the straight line would run
+/// through material: new straight groups join the two sides, linked at the corners.
+#[allow(clippy::too_many_arguments)]
+fn apply_open_closure(cx: &Cx, fr: &Fr, span: (f64, f64), ends: &[(usize, P2)], dirs: &[Option<P2>], (i, j): (usize, usize), (ei, ej): (P2, P2), groups: &mut Vec<(Trace, Vec<FaceId>)>, length: &mut Vec<f64>, links: &mut Vec<(usize, usize, P2)>, taken: &mut [bool]) {
+    let Some(path) = open_closure(cx, fr, span, (ei, dirs[i]), (ej, dirs[j])) else { return };
+    let mut prev = (ends[i].0, path[0]);
+    for &q in &path[1..] {
+        let d = (q.0 - prev.1 .0, q.1 - prev.1 .1);
+        let l = d.0.hypot(d.1);
+        if l < 1e-9 {
+            continue;
+        }
+        groups.push((Trace::Line { p: prev.1, d: (d.0 / l, d.1 / l) }, vec![]));
+        length.push(l);
+        let gi = groups.len() - 1;
+        links.push((prev.0, gi, prev.1));
+        prev = (gi, q);
+    }
+    links.push((prev.0, ends[j].0, prev.1));
+    taken[i] = true;
+    taken[j] = true;
+}
+
+/// The closing of an open cut profile whose two free ends lie on sides that run on out of the profile (`ends`: the end
+/// and the direction its side runs on): the points of the outline of the body in the sketch plane (grown a little) that
+/// each side reaches, and the outline's corners between them the short way round, when the straight line between the
+/// ends runs through material of the earlier features. The points run from the first end's side to the second's:
+/// `[reach 1, corners.., reach 2]` without the ends themselves; `None` when the line is safe or a side runs nowhere.
+fn open_closure(cx: &Cx, fr: &Fr, span: (f64, f64), (e1, d1): (P2, Option<P2>), (e2, d2): (P2, Option<P2>)) -> Option<Vec<P2>> {
+    use ck_ops::contain::{Containment, Loc};
+    let (d1, d2) = (d1?, d2?);
+    let prior = prior_body(cx)?;
+    let pc = Containment::new(&prior, TOL);
+    let at = |p: P2, t: f64| fr.o + fr.x * p.0 + fr.y * p.1 + fr.z * t;
+    let levels: Vec<f64> = [0.02, 0.15, 0.5, 0.85, 0.98].iter().map(|f| span.0 + f * (span.1 - span.0)).collect();
+    let through = (1..8).any(|k| levels.iter().any(|&t| pc.classify_point(at(lerp2(e1, e2, k as f64 / 8.0), t), TOL) == Loc::In));
+    if !through {
+        return None;
+    }
+    // the body's outline in the sketch plane
+    let (mut u0, mut u1, mut v0, mut v1) = (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
+    for v in cx.m.b.vertex_ids() {
+        let q = fr.xy(cx.m.b.vertex(v).p);
+        u0 = u0.min(q.0);
+        u1 = u1.max(q.0);
+        v0 = v0.min(q.1);
+        v1 = v1.max(q.1);
+    }
+    let m = 0.05 * (u1 - u0).max(v1 - v0) + 1e-3;
+    let (u0, u1, v0, v1) = (u0 - m, u1 + m, v0 - m, v1 + m);
+    let reach = |e: P2, d: P2| -> Option<P2> {
+        let mut t = f64::INFINITY;
+        if d.0 > 1e-9 {
+            t = t.min((u1 - e.0) / d.0);
+        } else if d.0 < -1e-9 {
+            t = t.min((u0 - e.0) / d.0);
+        }
+        if d.1 > 1e-9 {
+            t = t.min((v1 - e.1) / d.1);
+        } else if d.1 < -1e-9 {
+            t = t.min((v0 - e.1) / d.1);
+        }
+        (t.is_finite() && t > 0.0).then(|| (e.0 + t * d.0, e.1 + t * d.1))
+    };
+    let (p1, p2) = (reach(e1, d1)?, reach(e2, d2)?);
+    // position along the rectangle's boundary, counter-clockwise from its lower left corner
+    let (w, h) = (u1 - u0, v1 - v0);
+    let big = 2.0 * (w + h);
+    let tol = 1e-6 * (1.0 + w + h);
+    let s_of = |p: P2| -> f64 {
+        if (p.1 - v0).abs() < tol {
+            p.0 - u0
+        } else if (p.0 - u1).abs() < tol {
+            w + (p.1 - v0)
+        } else if (p.1 - v1).abs() < tol {
+            w + h + (u1 - p.0)
+        } else {
+            2.0 * w + h + (v1 - p.1)
+        }
+    };
+    let corners = [(0.0, (u0, v0)), (w, (u1, v0)), (w + h, (u1, v1)), (2.0 * w + h, (u0, v1))];
+    let (s1, s2) = (s_of(p1), s_of(p2));
+    let ccw = (s2 - s1).rem_euclid(big);
+    let mut path = vec![p1];
+    if ccw <= big / 2.0 {
+        let mut cs: Vec<(f64, P2)> = corners.iter().map(|&(s, c)| ((s - s1).rem_euclid(big), c)).filter(|&(r, _)| r > tol && r < ccw - tol).collect();
+        cs.sort_by(|a, b| a.0.total_cmp(&b.0));
+        path.extend(cs.into_iter().map(|c| c.1));
+    } else {
+        let cw = big - ccw;
+        let mut cs: Vec<(f64, P2)> = corners.iter().map(|&(s, c)| ((s1 - s).rem_euclid(big), c)).filter(|&(r, _)| r > tol && r < cw - tol).collect();
+        cs.sort_by(|a, b| a.0.total_cmp(&b.0));
+        path.extend(cs.into_iter().map(|c| c.1));
+    }
+    path.push(p2);
+    // the stretch the open closing adds to the straight one (between the line and the way round) must hold no material of
+    // the final body: a pocket's opening has the body's material on its far side, and there the line is the closing
+    {
+        let mut poly: Vec<P2> = vec![e1];
+        poly.extend(path.iter().copied());
+        poly.push(e2);
+        let fc = Containment::new(cx.m.b, TOL);
+        let lv: Vec<f64> = [0.02, 0.15, 0.5, 0.85, 0.98].iter().map(|f| span.0 + f * (span.1 - span.0)).collect();
+        const N: usize = 24;
+        let (mut a0, mut a1, mut b0, mut b1) = (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
+        for q in &poly {
+            a0 = a0.min(q.0);
+            a1 = a1.max(q.0);
+            b0 = b0.min(q.1);
+            b1 = b1.max(q.1);
+        }
+        for i in 0..N {
+            for j in 0..N {
+                let q = (a0 + (a1 - a0) * (i as f64 + 0.5) / N as f64, b0 + (b1 - b0) * (j as f64 + 0.5) / N as f64);
+                let mut inside = false;
+                for k in 0..poly.len() {
+                    let (a, b) = (poly[k], poly[(k + 1) % poly.len()]);
+                    if (a.1 > q.1) != (b.1 > q.1) && q.0 < a.0 + (q.1 - a.1) / (b.1 - a.1) * (b.0 - a.0) {
+                        inside = !inside;
+                    }
+                }
+                // (with faces read at the place they had before a move: the body has material there the move added)
+                if inside && cx.shift.is_empty() && lv.iter().any(|&t| fc.classify_point(at(q, t), TOL) == Loc::In) {
+                    return None;
+                }
+            }
+        }
+    }
+    // the last point is the second side's reach: the caller's closing runs on to the second end from it
+    Some(path)
+}
+
 /// The body the features rebuilt so far make (the material before this feature).
 fn prior_body(cx: &Cx) -> Option<ck_topo::body::Body> {
-    ck_recog::rebuild::rebuild(&cx.tree.feats).ok().and_then(|(b, _)| b)
+    cx.sess.borrow_mut().rebuild(&cx.tree.feats).ok().and_then(|(b, _)| b)
 }
 
 fn lerp2(a: P2, b: P2, t: f64) -> P2 {
@@ -1068,7 +1415,14 @@ fn not_simple(loops: &[Loop2]) -> Option<String> {
                         poly.push((c.0 + r * t.cos(), c.1 + r * t.sin()));
                     }
                 }
-                Seg2::Circle { .. } => {}
+                Seg2::Circle { .. } | Seg2::Ellipse { .. } => {}
+                Seg2::Spline { c, .. } => {
+                    let (t0, t1) = c.domain();
+                    for k in 0..16 {
+                        let q = c.eval(t0 + (t1 - t0) * k as f64 / 16.0);
+                        poly.push((q.x, q.y));
+                    }
+                }
             }
         }
         let n = poly.len();
@@ -1159,6 +1513,26 @@ pub fn emit_loops_ids(cx: &mut Cx, sk: &mut Sk, loops: &[Loop2], eid: &str) -> V
                     let pc = point(sk, *c);
                     sk.circle(&pc, *r)
                 }
+                Seg2::Ellipse { c, p, r } => {
+                    let (pc, pp) = (point(sk, *c), point(sk, *p));
+                    let id = format!("el{}", sk.entities.len() + 1);
+                    sk.entities.push(Obj::new().put("type", "ellipse").put("id", id.as_str()).put("c", pc.as_str()).put("p", pp.as_str()).put("r", n(*r)).build());
+                    id
+                }
+                Seg2::Spline { c, .. } => {
+                    let ids: Vec<String> = c.ctrl.iter().map(|q| point(sk, (q.x, q.y))).collect();
+                    let id = format!("cv{}", sk.entities.len() + 1);
+                    sk.entities.push(
+                        Obj::new()
+                            .put("type", "cvspline")
+                            .put("id", id.as_str())
+                            .put("pts", ck_recog::emit::arr(ids.iter().map(|x| ck_recog::emit::s(x)).collect()))
+                            .put("degree", n(c.degree as f64))
+                            .put("knots", ck_recog::emit::arr(c.knots.iter().map(|&k| n(k)).collect()))
+                            .build(),
+                    );
+                    id
+                }
             };
             // a face an earlier feature named keeps that name: a side flush with an earlier face is one face of
             // the rebuilt body, which carries the earlier feature's name
@@ -1195,6 +1569,7 @@ fn name_flush(cx: &mut Cx, pieces: &[(Seg2, String)], fr: &Fr, span: (f64, f64),
             }
             Seg2::Arc { a, c, .. } => (dist2(p, *c) - dist2(*a, *c)).abs() < tol * (1.0 + dist2(*a, *c)),
             Seg2::Circle { c, r } => (dist2(p, *c) - r).abs() < tol * (1.0 + r),
+            Seg2::Spline { .. } | Seg2::Ellipse { .. } => false,
         }
     };
     let mut found: Vec<(FaceId, String)> = vec![];
@@ -1222,6 +1597,198 @@ fn name_flush(cx: &mut Cx, pieces: &[(Seg2, String)], fr: &Fr, span: (f64, f64),
     for (g, n) in found {
         cx.names.insert(g, n);
     }
+}
+
+/// The level of the face a later fillet's round ends on, where the rim of `sides` at `end` (along `fz`) borders that
+/// round: the boss ran on to that face (`lower`: the end is the low one, the face lies below it).
+fn fillet_foot(cx: &Cx, feat: i64, sides: &[FaceId], fz: Vec3, end: f64, lower: bool) -> Option<f64> {
+    let m = cx.m;
+    let tol = TOL * (1.0 + end.abs());
+    for &g in sides {
+        for e in m.edges(g) {
+            if [m.p0(e), m.p1(e), m.mid(e)].iter().any(|p| (p.dot(fz) - end).abs() > tol) {
+                continue;
+            }
+            let Some(h) = m.across(e, g) else { continue };
+            if !cx.tags.get(h.idx()).map_or(false, |v| !v.is_empty() && v.iter().all(|t| t.1 == 72 && t.0 > feat)) {
+                continue;
+            }
+            for e2 in m.edges(h) {
+                if e2 == e {
+                    continue;
+                }
+                let Some(g2) = m.across(e2, h) else { continue };
+                match m.kind(g2) {
+                    &Kind::Plane { n, d } => {
+                        if n.dot(fz).abs() > 1.0 - 1e-9 {
+                            let l = d * n.dot(fz);
+                            if (lower && l < end - tol) || (!lower && l > end + tol) {
+                                return Some(l);
+                            }
+                        }
+                    }
+                    // (a curved support: the round's other rim, at one level along the direction, is where the
+                    // round stops; the boss ran on to that level and the filler of the round is read back as a
+                    // revolve of its section, `blend.rs`)
+                    Kind::Sphere { .. } | Kind::Cone { .. } => {
+                        let lv: Vec<f64> = [m.p0(e2), m.p1(e2), m.mid(e2)].iter().map(|p| p.dot(fz)).collect();
+                        let l = lv[0];
+                        if lv.iter().all(|x| (x - l).abs() < tol) && ((lower && l < end - tol) || (!lower && l > end + tol)) {
+                            return Some(l);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    None
+}
+
+/// A cut whose only faces are floors: planar faces of one plane and no wall, so the profile reached beyond the body on
+/// every side (a slab removed above a tilted plane). The sketch is a rectangle larger than the material before the cut,
+/// set above it, and the cut runs down to the floor level.
+fn slab_cut(cx: &mut Cx, faces: &[FaceId]) -> Option<Result<String, String>> {
+    let m = cx.m;
+    let (mut n0, mut level) = (None::<Vec3>, 0.0);
+    for &g in faces {
+        let Kind::Plane { n, d } = m.kind(g).clone() else { return None };
+        match n0 {
+            None => {
+                n0 = Some(n);
+                level = d;
+            }
+            Some(n0) => {
+                if n0.dot(n) < 1.0 - 1e-9 || (d - level).abs() > TOL * (1.0 + level.abs()) {
+                    return None;
+                }
+            }
+        }
+    }
+    let nz = n0?;
+    let prior = prior_body(cx)?;
+    // the material before the cut, in the frame of the sketch plane
+    let fr = cx.frame(nz, nz * level);
+    let (mut top, mut x0, mut x1, mut y0, mut y1) = (f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
+    for v in prior.vertex_ids() {
+        let p = prior.vertex(v).p;
+        let q = fr.xy(p);
+        top = top.max(p.dot(fr.z));
+        x0 = x0.min(q.0);
+        x1 = x1.max(q.0);
+        y0 = y0.min(q.1);
+        y1 = y1.max(q.1);
+    }
+    let tol = TOL * (1.0 + level.abs());
+    if !(top > level + tol) || !(x1 > x0) || !(y1 > y0) {
+        return Some(Err("floor does not cut the material".into()));
+    }
+    let pad = 0.1 * (top - level).max(x1 - x0).max(y1 - y0);
+    let (top, x0, x1, y0, y1) = (top + pad, x0 - pad, x1 + pad, y0 - pad, y1 + pad);
+    // the sketch sits above the material at `top`; the cut runs against its normal
+    let fr = cx.frame(nz, nz * top);
+    // the profile: one rectangle per floor, the extent of the floor in the sketch frame, so that the removed block
+    // reaches no further than the floors do (a block beyond them would take material of other features with it);
+    // a rectangle beyond the whole material when the floors lie in a body that reaches past them on every side
+    let _ = (x0, x1, y0, y1);
+    let mut loops: Vec<Loop2> = vec![];
+    for &g in faces {
+        let (mut a0, mut a1, mut b0, mut b1) = (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
+        for p in face_points(m, g) {
+            let q = fr.xy(p);
+            a0 = a0.min(q.0);
+            a1 = a1.max(q.0);
+            b0 = b0.min(q.1);
+            b1 = b1.max(q.1);
+        }
+        let pts = [(a0, b0), (a1, b0), (a1, b1), (a0, b1)];
+        let segs: Vec<(Seg2, Vec<FaceId>)> = (0..4).map(|i| (Seg2::Line { a: pts[i], b: pts[(i + 1) % 4] }, vec![])).collect();
+        loops.push(Loop2 { segs });
+    }
+    let from_floor = true;
+    let sid = cx.tree.ids.next();
+    let mut sk = Sk::new(sid.clone(), fr.plane.clone());
+    let eid = format!("F{}", cx.tree.ids.0 + 1);
+    emit_loops_ids(cx, &mut sk, &loops, &eid);
+    cx.tree.push(sk.json());
+    let eid2 = cx.tree.ids.next();
+    debug_assert_eq!(eid, eid2);
+    let depth = top - level;
+    let o = Obj::new().put("type", "extrude").put("id", eid.as_str()).put("op", "cut").put("sketch", sid.as_str()).put("end", "blind").put("depth", n(depth));
+    cx.tree.push(o.build());
+    for &g in faces {
+        cx.names.entry(g).or_insert_with(|| format!("{eid}.C1"));
+    }
+    Some(Ok(format!("{} floor face(s) of one plane, no wall: {}, blind depth {:.4} down to the floor", faces.len(), if from_floor { "one rectangle per floor" } else { "rectangle beyond the material" }, depth)))
+}
+
+/// A cut whose faces are planar floors that touch each other nowhere, on several planes (the slanted faces a thin cut
+/// left where its wall ran along the body's edges, tilted by its draft: the rest of the wall ran through air): one
+/// [`slab_cut`] per plane. Each slab (the floor's extent in its plane, from the floor up past the material before the
+/// cut) must hold no material of the final body, else the floors are not the whole of what the cut left (the walls of
+/// a slot face each other across it) and `None` lets the plain reading try.
+fn slab_cuts(cx: &mut Cx, faces: &[FaceId]) -> Option<Result<String, String>> {
+    use ck_ops::contain::{Containment, Loc};
+    let m = cx.m;
+    if faces.len() < 2 {
+        return None;
+    }
+    let mut groups: Vec<(Vec3, f64, Vec<FaceId>)> = vec![];
+    for &g in faces {
+        let Kind::Plane { n, d } = m.kind(g).clone() else { return None };
+        if m.edges(g).iter().any(|&e| m.across(e, g).map_or(false, |h| h != g && faces.contains(&h))) {
+            return None;
+        }
+        match groups.iter_mut().find(|x| x.0.dot(n) > 1.0 - 1e-9 && (x.1 - d).abs() <= TOL * (1.0 + d.abs())) {
+            Some(x) => x.2.push(g),
+            None => groups.push((n, d, vec![g])),
+        }
+    }
+    if groups.len() < 2 {
+        return None;
+    }
+    let prior = prior_body(cx)?;
+    let fc = Containment::new(m.b, TOL);
+    for (nz, level, fs) in &groups {
+        let top = prior.vertex_ids().map(|v| prior.vertex(v).p.dot(*nz)).fold(f64::NEG_INFINITY, f64::max);
+        if !(top > level + TOL * (1.0 + level.abs())) {
+            return None;
+        }
+        let a = [Vec3::X, Vec3::Y, Vec3::Z];
+        let k = (0..3).min_by(|&i, &j| comp(*nz, i).abs().total_cmp(&comp(*nz, j).abs())).unwrap();
+        let u = (a[k] - *nz * a[k].dot(*nz)).normalize();
+        let v = nz.cross(u);
+        for &g in fs {
+            let (mut a0, mut a1, mut b0, mut b1) = (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
+            for p in face_points(m, g) {
+                a0 = a0.min(p.dot(u));
+                a1 = a1.max(p.dot(u));
+                b0 = b0.min(p.dot(v));
+                b1 = b1.max(p.dot(v));
+            }
+            const N: usize = 8;
+            for i in 0..N {
+                for j in 0..N {
+                    let (s, t) = (a0 + (a1 - a0) * (i as f64 + 0.5) / N as f64, b0 + (b1 - b0) * (j as f64 + 0.5) / N as f64);
+                    for h in [0.02, 0.25, 0.5, 0.75, 0.98] {
+                        let p = u * s + v * t + *nz * (level + h * (top - level));
+                        if fc.classify_point(p, TOL) == Loc::In {
+                            return None;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut notes = vec![];
+    for (_, _, fs) in &groups {
+        match slab_cut(cx, fs) {
+            Some(Ok(n)) => notes.push(n),
+            Some(Err(e)) => return Some(Err(e)),
+            None => return Some(Err("a floor plane gives no slab".into())),
+        }
+    }
+    Some(Ok(format!("{} planes of floors that touch nowhere, one slab each: {}", groups.len(), notes.join("; "))))
 }
 
 /// Read an extrude back from its faces and emit plane, sketch and extrude.
@@ -1283,9 +1850,131 @@ fn listed_stretch_has_material(cx: &Cx, sides: &[FaceId], fz: Vec3, (lo, hi): (f
     pts.is_empty() || pts.iter().any(|&(q, _)| fc.classify_point(q, TOL) != Loc::Out)
 }
 
+/// A boss's faces are all planar caps at one level (its sketch plane) and nothing else: their outward normal and the
+/// level (along it) of the boss's far end: the listed depth, else the top of the material before it, when that lies
+/// below the caps.
+fn plate_caps(cx: &Cx, faces: &[FaceId], d1: Option<f64>) -> Option<(Vec3, f64)> {
+    let m = cx.m;
+    let Kind::Plane { n: n0, d: d0 } = m.kind(*faces.first()?).clone() else { return None };
+    let t = TOL * (1.0 + d0.abs());
+    if !faces.iter().all(|&g| matches!(m.kind(g), Kind::Plane { n, d } if n.dot(n0) > 1.0 - 1e-9 && (d - d0).abs() < t)) {
+        return None;
+    }
+    let far = match d1 {
+        Some(v) if v > 1e-6 => d0 - v,
+        _ => {
+            let prior = prior_body(cx)?;
+            let top = prior.vertex_ids().map(|v| prior.vertex(v).p.dot(n0)).fold(f64::NEG_INFINITY, f64::max);
+            if !(top.is_finite() && top < d0 - t) {
+                return None;
+            }
+            top
+        }
+    };
+    Some((n0, far))
+}
+
+/// `FACE_ID_2001` kind of a fillet face.
+const KIND_FILLET: i64 = 72;
+
+/// The outer outline of a cap whose whole rim later features made: their walls' traces as they are, and where a later
+/// round (a fillet face) ran along the rim, the corner the traces on either side of it meet at (the round was not
+/// there when the cap was).
+fn plate_outline(cx: &Cx, cap: FaceId, feat: i64, later: &HashSet<FaceId>, fr: &Fr) -> Result<Loop2, String> {
+    let m = cx.m;
+    let b = m.b;
+    let face = b.face(cap);
+    let area_of = |l: ck_topo::body::LoopId| -> f64 {
+        let pts: Vec<P2> = loop_points(b, l).into_iter().map(|p| fr.xy(p)).collect();
+        let mut a = 0.0;
+        for i in 0..pts.len() {
+            let (p, q) = (pts[i], pts[(i + 1) % pts.len()]);
+            a += p.0 * q.1 - q.0 * p.1;
+        }
+        a.abs()
+    };
+    let outer = face.loops.iter().copied().max_by(|&x, &y| area_of(x).total_cmp(&area_of(y))).ok_or("cap without loops")?;
+    let round = |g: FaceId| cx.tags.get(g.idx()).map_or(false, |v| !v.is_empty() && v.iter().all(|t| t.0 > feat && t.1 == KIND_FILLET));
+    let mut items: Vec<Option<Seg2>> = vec![];
+    for &c in &b.lp(outer).coedges {
+        let e = b.coedge(c).edge;
+        let other = m.across(e, cap).ok_or("rim edge without a neighbour")?;
+        if !later.contains(&other) {
+            return Err(format!("rim borders {}", b.face_id_str(other)));
+        }
+        if round(other) {
+            if items.last().map_or(true, |x| x.is_some()) {
+                items.push(None);
+            }
+        } else {
+            items.push(Some(coedge_seg(m, c, fr)?));
+        }
+    }
+    if items.iter().all(|x| x.is_none()) {
+        return Err("rim is all rounds".into());
+    }
+    let k = items.iter().position(|x| x.is_some()).unwrap();
+    items.rotate_left(k);
+    if items.len() > 1 && items[items.len() - 1].is_none() && items[0].is_none() {
+        items.pop();
+    }
+    let n = items.len();
+    let mut segs: Vec<Seg2> = items.iter().flatten().cloned().collect();
+    // each run of rounds: between the traces before and after it
+    let mut si = 0usize;
+    for i in 0..n {
+        if items[i].is_some() {
+            si += 1;
+            continue;
+        }
+        let ns = segs.len();
+        let (pi, ni) = ((si + ns - 1) % ns, si % ns);
+        let (Seg2::Line { a: a1, b: b1 }, Seg2::Line { a: a2, b: b2 }) = (segs[pi].clone(), segs[ni].clone()) else { return Err("a round between curved traces".into()) };
+        let (u, v) = ((b1.0 - a1.0, b1.1 - a1.1), (b2.0 - a2.0, b2.1 - a2.1));
+        let den = u.0 * v.1 - u.1 * v.0;
+        if den.abs() < 1e-9 * u.0.hypot(u.1) * v.0.hypot(v.1) {
+            return Err("a round between parallel traces".into());
+        }
+        let t = ((a2.0 - a1.0) * v.1 - (a2.1 - a1.1) * v.0) / den;
+        let x = (a1.0 + u.0 * t, a1.1 + u.1 * t);
+        // (the corner lies beyond both traces' ends, near the round)
+        let reach = dist2(b1, a2) * 4.0 + 1e-6;
+        if !(t > 1.0 - 1e-9) || dist2(x, b1) > reach || dist2(x, a2) > reach {
+            return Err("the traces beside a round do not meet near it".into());
+        }
+        segs[pi] = Seg2::Line { a: a1, b: x };
+        segs[ni] = Seg2::Line { a: x, b: b2 };
+    }
+    let mut out: Vec<(Seg2, Vec<FaceId>)> = segs.into_iter().map(|s| (s, vec![])).collect();
+    merge_segs(&mut out);
+    Ok(Loop2 { segs: out })
+}
+
+/// Signed area of a profile loop (the polygon of its segment ends).
+fn loop2_area(l: &Loop2) -> f64 {
+    let mut pts: Vec<P2> = vec![];
+    for (s, _) in &l.segs {
+        match s {
+            Seg2::Line { a, .. } | Seg2::Arc { a, .. } => pts.push(*a),
+            Seg2::Spline { c, .. } => {
+                let (t0, t1) = c.domain();
+                pts.extend((0..16).map(|k| c.eval(t0 + (t1 - t0) * k as f64 / 16.0)).map(|q| (q.x, q.y)));
+            }
+            Seg2::Circle { r, .. } => return std::f64::consts::PI * r * r,
+            Seg2::Ellipse { c, p, r } => return std::f64::consts::PI * dist2(*c, *p) * r,
+        }
+    }
+    let mut a = 0.0;
+    for i in 0..pts.len() {
+        let (p, q) = (pts[i], pts[(i + 1) % pts.len()]);
+        a += p.0 * q.1 - q.0 * p.1;
+    }
+    0.5 * a
+}
+
 pub fn extrude(cx: &mut Cx, f: &SwFeature, faces: &[FaceId], cut: bool) -> Result<String, String> {
     let m = cx.m;
-    let extent = |d: Vec3| -> (f64, f64) {
+    let extent_in = |faces: &[FaceId], d: Vec3| -> (f64, f64) {
         // along a principal axis the true extent of the faces (a saddle edge reaches further than its vertices and
         // mid points: a small hole breaking into a bore)
         if let Some((i, sg)) = principal(d) {
@@ -1296,7 +1985,7 @@ pub fn extrude(cx: &mut Cx, f: &SwFeature, faces: &[FaceId], cut: bool) -> Resul
             }
         }
         let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
-        for &g in faces {
+        for &g in faces.iter() {
             for p in face_points(m, g) {
                 lo = lo.min(p.dot(d));
                 hi = hi.max(p.dot(d));
@@ -1304,13 +1993,37 @@ pub fn extrude(cx: &mut Cx, f: &SwFeature, faces: &[FaceId], cut: bool) -> Resul
         }
         (lo, hi)
     };
+    let extent = |d: Vec3| extent_in(faces, d);
+    // the faces only this feature made: a wall it shares with an earlier feature's face (the two merged into one
+    // plane) runs on past the feature's own stretch
+    let own_faces: Vec<FaceId> = faces.iter().copied().filter(|&g| cx.tags.get(g.idx()).map_or(true, |v| v.iter().all(|t| t.0 >= f.id))).collect();
+    let own_extent = |d: Vec3| -> Option<(f64, f64)> { if own_faces.is_empty() || own_faces.len() == faces.len() { None } else { Some(extent_in(&own_faces, d)) } };
     // the direction: the file's cap tags decide (kind 40 = end cap), then the extent that equals the listed depth,
     // then the most caps
     let d1 = crate::dim(cx, f, "D1");
+    if cut {
+        if let Some(r) = slab_cuts(cx, faces) {
+            return r;
+        }
+    }
     let mut cands = classify_dir(m, faces)?;
     cands.retain(|c| !c.2.is_empty());
+    // a boss whose only faces are caps at its sketch plane (a plate whose sides later features all cut away): it runs
+    // from there, away from the caps' outward normal, to the listed depth or else to the material before it
+    let mut plate: Option<f64> = None;
     if cands.is_empty() {
-        return Err("no side faces".into());
+        if cut {
+            if let Some(r) = slab_cut(cx, faces) {
+                return r;
+            }
+        }
+        match if cut { None } else { plate_caps(cx, faces, d1) } {
+            Some((nrm, far)) => {
+                cands.push((nrm, faces.to_vec(), vec![]));
+                plate = Some(far);
+            }
+            None => return Err("no side faces".into()),
+        }
     }
     let score = |c: &(Vec3, Vec<FaceId>, Vec<FaceId>)| {
         let tagged_caps = c.1.iter().filter(|&&g| cx.is_cap(g, f.id)).count() as i64 - c.2.iter().filter(|&&g| cx.is_cap(g, f.id)).count() as i64;
@@ -1319,7 +2032,8 @@ pub fn extrude(cx: &mut Cx, f: &SwFeature, faces: &[FaceId], cut: bool) -> Resul
         // a cap whose rim is not the feature's own sides counts against the direction (a wall of a through slot
         // reads as a cap of the cross direction)
         let quality: i64 = c.1.iter().map(|&g| if rim_in(m, g, &c.2) { 1 } else { -1 }).sum();
-        (tagged_caps, d1_match, quality)
+        let d1_own = d1.map_or(false, |v| own_extent(c.0).map_or(false, |(lo, hi)| (hi - lo - v).abs() <= 1e-3 * (1.0 + v))) as i64;
+        (tagged_caps, d1_match, d1_own, quality)
     };
     cands.sort_by_key(|c| std::cmp::Reverse(score(c)));
     let (d, caps, mut sides) = cands.remove(0);
@@ -1351,6 +2065,21 @@ pub fn extrude(cx: &mut Cx, f: &SwFeature, faces: &[FaceId], cut: bool) -> Resul
         None => d,
     };
     let (mut lo, mut hi) = extent(fz);
+    if let Some(far) = plate {
+        if let Kind::Plane { n: cn, d: cd } = m.kind(caps[0]) {
+            let s = cn.dot(fz);
+            let (a, b) = (cd * s, far * s);
+            lo = a.min(b);
+            hi = a.max(b);
+        }
+    }
+    // a cut whose faces shared with earlier features run past the listed depth, its own faces matching it: the own stretch
+    if let (true, Some(v), Some((olo, ohi))) = (cut, d1, own_extent(fz)) {
+        if (hi - lo - v).abs() > 1e-3 * (1.0 + v) && (ohi - olo - v).abs() <= 1e-3 * (1.0 + v) {
+            lo = olo;
+            hi = ohi;
+        }
+    }
     // an end that lies beyond every vertex and edge mid point (a small hole breaking into a bore: the saddle edge
     // reaches further than the points on it) is a cut ending in a void: it runs a little past the extreme, so that
     // the tool does not touch the far surface tangentially
@@ -1402,6 +2131,7 @@ pub fn extrude(cx: &mut Cx, f: &SwFeature, faces: &[FaceId], cut: bool) -> Resul
         let short = !cut && v > hi - lo + t && nlo <= lo + t && nhi >= hi - t && listed_stretch_has_material(cx, &sides, fz, (lo, hi), (nlo, nhi));
         if v > 1e-6 && ((lv > lo + t && lv < hi - t) || short) {
             let up = matches!(m.kind(caps[0]), Kind::Plane { n, .. } if n.dot(fz) > 0.0);
+            let (old_lo, old_hi) = (lo, hi);
             if up != cut {
                 lo = lv - v;
                 hi = lv;
@@ -1410,6 +2140,105 @@ pub fn extrude(cx: &mut Cx, f: &SwFeature, faces: &[FaceId], cut: bool) -> Resul
                 hi = lv + v;
             }
             from_d1 = true;
+            // a boss whose listed stretch runs on, past the end of its faces, through a face of another body of the file
+            // (the face of a body that only touches the boss: the file keeps the two apart, a boss that reaches into the
+            // other would have united them) ends at that face
+            if !cut {
+                let cap_lump = m.b.face_lump(caps[0]);
+                let foot = face_points(m, caps[0]);
+                let level_n = |g: FaceId| match m.kind(g) {
+                    Kind::Plane { n, d } if n.dot(fz).abs() > 1.0 - 1e-9 => Some(d * n.dot(fz)),
+                    _ => None,
+                };
+                let crossing = |range: (f64, f64)| -> Vec<f64> {
+                    m.faces
+                        .iter()
+                        .copied()
+                        .filter(|&g| m.b.face_lump(g) != cap_lump)
+                        .filter_map(|g| level_n(g).filter(|&l| l > range.0 + t && l < range.1 - t).map(|l| (g, l)))
+                        .filter(|&(g, l)| foot.iter().any(|&p| !matches!(ck_ops::boolean::classify::point_in_face(m.b, g, p - fz * (p.dot(fz) - l), 1e-6), ck_ops::boolean::classify::Where::Out)))
+                        .map(|(_, l)| l)
+                        .collect()
+                };
+                if lo < old_lo - t {
+                    if let Some(l) = crossing((lo, old_lo)).into_iter().max_by(|a, b| a.total_cmp(b)) {
+                        lo = l;
+                    }
+                }
+                if hi > old_hi + t {
+                    if let Some(l) = crossing((old_hi, hi)).into_iter().min_by(|a, b| a.total_cmp(b)) {
+                        hi = l;
+                    }
+                }
+            }
+        }
+    }
+    // a blind cut whose walls end short of the listed depth at the mouth (the end without a cap), where a later chamfer
+    // or round trimmed them (the rim borders a face no earlier feature named): the tool ran on from the cap by the
+    // listed depth, through the stretch the blend has since taken away (air in the final body along the walls)
+    if let (true, false, 1, Some(v)) = (cut, from_d1, levels.len(), d1) {
+        let lv = levels[0];
+        let t = TOL * (1.0 + lo.abs().max(hi.abs()));
+        if v > hi - lo + 1e-3 * (1.0 + v) + t && principal(fz).is_some() {
+            let (nlo, nhi, mouth) = if (lv - hi).abs() < t { (hi - v, hi, lo) } else if (lv - lo).abs() < t { (lo, lo + v, hi) } else { (lo, hi, f64::NAN) };
+            if mouth.is_finite() && mouth_trimmed(cx, &sides, fz, mouth, t) && !listed_stretch_has_material(cx, &sides, fz, (lo, hi), (nlo, nhi)) {
+                lo = nlo;
+                hi = nhi;
+                from_d1 = true;
+            }
+        }
+    }
+    // a boss whose foot (an end with no cap of its own) a later fillet rounded runs on, under the round, to the face
+    // the round ends on: the sides stop where the round starts
+    if !cut && !from_d1 && plate.is_none() {
+        let has_cap = |x: f64| caps.iter().any(|&g| (level_of(g) - x).abs() < TOL * (1.0 + x.abs()));
+        if !has_cap(lo) {
+            if let Some(l) = fillet_foot(cx, f.id, &sides, fz, lo, true) {
+                lo = l;
+            }
+        }
+        if !has_cap(hi) {
+            if let Some(l) = fillet_foot(cx, f.id, &sides, fz, hi, false) {
+                hi = l;
+            }
+        }
+    }
+    // a cut with no cap of its own whose walls are shorter than the listed depth: the tool runs on, past the walls' far
+    // end, through air (the material it cut there is gone from the final body, or was never there). The listed depth
+    // reaches one way only: the stretch that keeps clear of the final body (the walls carried along it touch no
+    // material). The other way would cut what the final body still has.
+    let mut from_d1 = from_d1;
+    let walls = (lo, hi);
+    if let (true, true, Some(v)) = (cut, caps.is_empty(), d1) {
+        let t = TOL * (1.0 + lo.abs().max(hi.abs()));
+        if v > hi - lo + 1e-3 * (1.0 + v) + t && principal(fz).is_some() {
+            use ck_ops::contain::{Containment, Loc};
+            let fc = Containment::new(m.b, TOL);
+            let pts: Vec<Vec3> = faces.iter().flat_map(|&g| face_points(m, g).into_iter().take(6)).collect();
+            // (the levels of the body's vertices along the direction: a point between two of them is inside or outside
+            // the body for the whole stretch, however thin a wall there is)
+            let mut lv: Vec<f64> = m.b.vertex_ids().map(|v| m.b.vertex(v).p.dot(fz)).collect();
+            lv.sort_by(|a, b| a.total_cmp(b));
+            lv.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
+            let clear = |a: f64, b: f64| -> bool {
+                let mut zs: Vec<f64> = vec![a, b];
+                zs.extend(lv.iter().copied().filter(|&z| z > a && z < b));
+                zs.sort_by(|x, y| x.total_cmp(y));
+                let mids: Vec<f64> = zs.windows(2).filter(|w| w[1] - w[0] > 1e-6).map(|w| 0.5 * (w[0] + w[1])).collect();
+                !pts.iter().any(|&p| {
+                    let z0 = p.dot(fz);
+                    mids.iter().any(|&z| fc.classify_point(p + fz * (z - z0), TOL) == Loc::In)
+                })
+            };
+            let (up, down) = (clear(hi, lo + v), clear(hi - v, lo));
+            if up != down {
+                if up {
+                    hi = lo + v;
+                } else {
+                    lo = hi - v;
+                }
+                from_d1 = true;
+            }
         }
     }
     let depth = hi - lo;
@@ -1460,7 +2289,28 @@ pub fn extrude(cx: &mut Cx, f: &SwFeature, faces: &[FaceId], cut: bool) -> Resul
     if !own.is_empty() && own.len() < sides.len() {
         attempts.push(own);
     }
+    if plate.is_some() {
+        // the outer outline of the caps as the later features left it (what they cut inside it they cut again)
+        let later: HashSet<FaceId> = m.faces.iter().copied().filter(|&g| cx.tags.get(g.idx()).map_or(false, |v| !v.is_empty() && v.iter().all(|t| t.0 > f.id))).collect();
+        let mut best: Option<(f64, Loop2)> = None;
+        for &g in &caps {
+            match plate_outline(cx, g, f.id, &later, &fr) {
+                Ok(l) => {
+                    let a = loop2_area(&l).abs();
+                    if best.as_ref().map_or(true, |b| a > b.0) {
+                        best = Some((a, l));
+                    }
+                }
+                Err(e) => why.push(format!("cap with later cuts: {e}")),
+            }
+        }
+        if let Some((_, l)) = best {
+            loops = Some((vec![l], "outer cap outline with later cuts"));
+        }
+    }
     let span = (lo - level, hi - level);
+    // (the chords of the profile are tried over the stretch the walls cover, not the whole listed depth)
+    let wall_span = (walls.0.max(lo) - level, walls.1.min(hi) - level);
     for (k, ss) in attempts.iter().enumerate() {
         if loops.is_some() {
             break;
@@ -1511,7 +2361,7 @@ pub fn extrude(cx: &mut Cx, f: &SwFeature, faces: &[FaceId], cut: bool) -> Resul
             }
         }
         if loops.is_none() {
-            match side_chain(cx, ss, &fr, span, cut) {
+            match side_chain(cx, ss, &fr, wall_span, cut) {
                 Ok(l) => loops = Some((l, if k == 0 { "side traces" } else { "side traces of its own sides" })),
                 Err(e) => why.push(format!("{tag}traces: {e}")),
             }
@@ -1588,6 +2438,21 @@ pub fn extrude(cx: &mut Cx, f: &SwFeature, faces: &[FaceId], cut: bool) -> Resul
     o = if through { o.put("end", "through") } else { o.put("end", "blind").put("depth", n(depth)) };
     if flip {
         o = o.put("flip", true);
+    }
+    // the file keeps several bodies and this feature's faces are all on one of them: the add or cut acts on that body
+    // alone (a boolean with the whole body would sew the bodies that touch each other into one)
+    if !separate && m.b.lump_ids().count() > 1 {
+        let mut lumps: Vec<_> = sides.iter().chain(c0.iter()).chain(c1.iter()).map(|&g| m.b.face_lump(g)).collect();
+        lumps.dedup();
+        if let [l] = lumps[..] {
+            // (the face of the earliest feature of the body: the least likely to be consumed by what comes between)
+            let mut cand: Vec<(i64, FaceId)> = m.faces.iter().copied().filter(|&g| m.b.face_lump(g) == l).filter_map(|g| cx.tags.get(g.idx()).filter(|v| !v.is_empty() && v.iter().all(|t| t.0 < f.id)).map(|v| (v.iter().map(|t| t.0).max().unwrap_or(0), g))).collect();
+            cand.sort_by_key(|c| c.0);
+            let anchor = cand.iter().find_map(|&(_, g)| cx.lookup(g));
+            if let Some(n) = anchor {
+                o = o.put("target", n.as_str());
+            }
+        }
     }
     cx.tree.push(o.build());
     // sides the profile did not touch (a cap outline names only the sides at its rim) still belong to this extrude:

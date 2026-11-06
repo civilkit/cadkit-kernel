@@ -43,8 +43,13 @@ fn hole_with(cx: &mut Cx, f: &SwFeature, faces: &[FaceId], holes: &[Hole], toler
     if covered.len() != own.len() {
         return Err(format!("{} of {} faces are not part of a hole group", own.len() - covered.len(), own.len()));
     }
+    // a hole open at both ends is a through-all hole only when the body has no material further along its axis, in
+    // its bore: else it ended at its exit (the file's `up to next`, or a blind depth to the far face), and a
+    // through-all hole would cut the material beyond the gap too
+    let m = cx.m;
+    let through_all = |h: &Hole| h.through && !material_beyond(m, h);
     // identical holes share one feature
-    let key = |h: &Hole| (q(h.axis_in.x), q(h.axis_in.y), q(h.axis_in.z), q(h.d), h.through, if h.through { 0 } else { q(h.depth) }, h.tip, h.cbore.map(|(d, t)| (q(d), q(t))), h.csk.map(|(d, a, _)| (q(d), q(a))));
+    let key = |h: &Hole| (q(h.axis_in.x), q(h.axis_in.y), q(h.axis_in.z), q(h.d), through_all(h), if through_all(h) { 0 } else { q(h.depth) }, h.tip, h.cbore.map(|(d, t)| (q(d), q(t))), h.csk.map(|(d, a, _)| (q(d), q(a))));
     let mut groups: Vec<(Vec<&Hole>,)> = vec![];
     for h in &mine {
         match groups.iter_mut().find(|g| key(g.0[0]) == key(h)) {
@@ -86,7 +91,8 @@ fn hole_with(cx: &mut Cx, f: &SwFeature, faces: &[FaceId], holes: &[Hole], toler
             "simple"
         };
         let mut o = Obj::new().put("type", "hole").put("id", hid.as_str()).put("sketch", sid.as_str()).put("kind", kind).put("diameter", n(h0.d));
-        o = if h0.through { o.put("end", "through") } else { o.put("end", "blind").put("depth", n(h0.depth)) };
+        let all = through_all(h0);
+        o = if all { o.put("end", "through") } else { o.put("end", "blind").put("depth", n(h0.depth)) };
         if h0.tip {
             o = o.put("tip", true);
         }
@@ -106,7 +112,27 @@ fn hole_with(cx: &mut Cx, f: &SwFeature, faces: &[FaceId], holes: &[Hole], toler
             }
         }
         let listed = dim(cx, f, "Hole Dia").map(|v| if (v - h0.d).abs() < 1e-3 * (1.0 + h0.d) { " = Hole Dia.".to_string() } else { format!(" (file lists Hole Dia. = {v})") }).unwrap_or_default();
-        notes.push(format!("{} x {} d={:.4}{}{}", hv.len(), kind, h0.d, if h0.through { ", through".to_string() } else { format!(", depth {:.4}", h0.depth) }, listed));
+        notes.push(format!("{} x {} d={:.4}{}{}", hv.len(), kind, h0.d, if all { ", through".to_string() } else if h0.through { format!(", depth {:.4} to its exit (material further along its axis)", h0.depth) } else { format!(", depth {:.4}", h0.depth) }, listed));
     }
     Ok(notes.join("; "))
+}
+
+/// The body has material along the hole's axis outside the hole, inside its bore: past its exit or behind its
+/// entry (a through-all hole cuts its whole line). Sampled on the axis and on a ring just inside the bore, from either
+/// end of the hole to the body's extent.
+fn material_beyond(m: &ck_recog::model::Model, h: &Hole) -> bool {
+    use ck_ops::contain::{Containment, Loc};
+    let b = m.b;
+    let a = h.axis_in;
+    let (lo, hi) = b.bbox();
+    let ts: Vec<f64> = [lo.x, hi.x].iter().flat_map(|&x| [lo.y, hi.y].map(move |y| (x, y))).flat_map(|(x, y)| [lo.z, hi.z].map(move |z| ck_geom::Vec3::new(x, y, z))).map(|p| (p - h.centre).dot(a)).collect();
+    let (near, far) = ts.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |acc, &t| (acc.0.min(t), acc.1.max(t)));
+    let u = if a.x.abs() < 0.9 { ck_geom::Vec3::X } else { ck_geom::Vec3::Y };
+    let (u, v) = (a.cross(u).normalize(), a.cross(a.cross(u)).normalize());
+    let r = 0.45 * h.d;
+    let ring = [ck_geom::Vec3::ZERO, u * r, -u * r, v * r, -v * r];
+    let fc = Containment::new(b, 1e-6);
+    let n = 200;
+    let hit = |s: f64| ring.iter().any(|&o| fc.classify_point(h.centre + a * s + o, 1e-6) == Loc::In);
+    (far > h.depth + 1e-6 && (1..n).any(|k| hit(h.depth + (far - h.depth) * k as f64 / n as f64))) || (near < -1e-6 && (1..n).any(|k| hit(near * k as f64 / n as f64)))
 }

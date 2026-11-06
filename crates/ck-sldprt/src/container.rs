@@ -47,6 +47,26 @@ pub struct Container {
     /// Marker hits that were not blocks (cache cells, chance matches).
     pub skipped_hits: usize,
     pub warnings: Vec<String>,
+    /// Modern container: blocks that are there but cannot be trusted (see [`Damage`]). Empty for a sound file.
+    pub damaged: Vec<Damage>,
+}
+
+/// A block of the modern container that is damaged or lost: the file was cut short, or bytes inside it changed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Damage {
+    /// Stream name of the block.
+    pub name: String,
+    /// What is wrong with it.
+    pub why: String,
+}
+
+impl Damage {
+    /// A block the geometry comes from (the live or ghost partition, the stock bodies, the local bodies of a feature, the
+    /// inserted-part transmits): without it the file cannot be read as the model it was.
+    pub fn is_geometry(&self) -> bool {
+        let n = self.name.as_str();
+        n.contains("Partition") || n.contains("StockBodies") || n.contains("LocalBodies") || n.contains("Deltas")
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,12 +139,20 @@ fn unswap_name(raw: &[u8]) -> String {
     raw.iter().map(|&b| (b << 4) | (b >> 4)).map(|b| if (0x20..0x7f).contains(&b) { b as char } else { '?' }).collect()
 }
 
+/// A block name as the container writes it: printable ASCII only (anything else means the header is not one).
+fn plausible_name(raw: &[u8]) -> bool {
+    !raw.is_empty() && raw.iter().map(|&b| (b << 4) | (b >> 4)).all(|b| (0x20..0x7f).contains(&b))
+}
+
 fn open_modern(buf: &[u8], limits: &Limits) -> R<Container> {
-    let mut streams = vec![];
+    let mut streams: Vec<Stream> = vec![];
     let mut skipped = 0usize;
     let mut total = 0usize;
     let mut warnings = vec![];
     let mut idx = 0usize;
+    // blocks whose header is well formed but whose data does not check out (the cache cells that sit between the blocks
+    // reuse the marker, never inflate and have `uncomp` twice `comp` or one more: they are not blocks)
+    let mut bad: Vec<Damage> = vec![];
     while let Some(at) = find(buf, &MARKER, idx) {
         idx = at + 1;
         let (Some(crc), Some(csz), Some(dsz), Some(nl)) = (u32le(buf, at + 10), u32le(buf, at + 14), u32le(buf, at + 18), u32le(buf, at + 22)) else {
@@ -133,19 +161,37 @@ fn open_modern(buf: &[u8], limits: &Limits) -> R<Container> {
         };
         let (csz, dsz, nl) = (csz as usize, dsz as usize, nl as usize);
         let start = at + 26 + nl;
-        if nl == 0 || nl >= 1024 || csz == 0 || dsz > limits.max_stream || start.checked_add(csz).map_or(true, |e| e > buf.len()) {
+        if nl == 0 || nl >= 1024 || csz == 0 || dsz > limits.max_stream || at + 26 + nl > buf.len() {
             skipped += 1;
             continue;
         }
         let name_raw = &buf[at + 26..at + 26 + nl];
-        let Ok((data, _)) = inflate_raw(&buf[start..start + csz], dsz.max(1)) else {
-            skipped += 1;
-            continue;
-        };
-        if data.len() != dsz || crc32(&data) != crc {
+        let clean = plausible_name(name_raw);
+        let cell = dsz == csz.saturating_mul(2) || dsz == csz.saturating_mul(2).saturating_add(1);
+        if start.checked_add(csz).map_or(true, |e| e > buf.len()) {
+            if clean && !cell {
+                bad.push(Damage { name: unswap_name(name_raw), why: format!("the block is cut off: {csz} bytes are announced, {} are left in the file", buf.len() - start) });
+            }
             skipped += 1;
             continue;
         }
+        let inflated = inflate_raw(&buf[start..start + csz], dsz.max(1));
+        let why = match &inflated {
+            Err(_) => Some("the compressed data is damaged".to_string()),
+            Ok((data, _)) if data.len() != dsz => Some(format!("it inflates to {} bytes, {dsz} are recorded", data.len())),
+            Ok((data, _)) if crc32(data) != crc => Some("the CRC-32 of its data does not match the recorded one".to_string()),
+            Ok(_) => None,
+        };
+        if let Some(why) = why {
+            if clean {
+                if !cell {
+                    bad.push(Damage { name: unswap_name(name_raw), why });
+                }
+            }
+            skipped += 1;
+            continue;
+        }
+        let Ok((data, _)) = inflated else { continue };
         total += data.len();
         if total > limits.max_total {
             return Err(SldprtError::new("limit.total", "total inflated size exceeds the limit"));
@@ -156,13 +202,20 @@ fn open_modern(buf: &[u8], limits: &Limits) -> R<Container> {
         streams.push(Stream { name: unswap_name(name_raw), data, crc_ok: true });
         idx = start + csz;
     }
+    // a damaged block counts only when no sound block of the same name exists (stale copies of a stream are left behind)
+    let mut damaged: Vec<Damage> = vec![];
+    for d in bad {
+        if !streams.iter().any(|s| s.name == d.name) && !damaged.iter().any(|x| x.name == d.name) {
+            damaged.push(d);
+        }
+    }
     if streams.is_empty() {
         return Err(SldprtError::new("container.empty", "block marker found but no block passed the size and CRC checks"));
     }
     if buf.len() >= 8 && buf[4..8] != [0, 0, 0, 4] {
         warnings.push("unexpected container version word (not 00 00 00 04)".into());
     }
-    Ok(Container { kind: Kind::Modern, streams, skipped_hits: skipped, warnings })
+    Ok(Container { kind: Kind::Modern, streams, skipped_hits: skipped, warnings, damaged })
 }
 
 // ------------------------------------------------------------------ OLE2 / CFB
@@ -348,7 +401,7 @@ fn open_ole2(buf: &[u8], limits: &Limits) -> R<Container> {
         }
     }
     streams.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(Container { kind: Kind::Ole2, streams, skipped_hits: 0, warnings })
+    Ok(Container { kind: Kind::Ole2, streams, skipped_hits: 0, warnings, damaged: vec![] })
 }
 
 // ------------------------------------------------------------------ Parasolid blobs

@@ -38,6 +38,7 @@ fn corpus() {
         return;
     }
     let mut rows: Vec<String> = vec![];
+    let mut slow: Vec<(String, u128)> = vec![];
     let mut per_kind: BTreeMap<String, [usize; 3]> = BTreeMap::new(); // rebuilt, unsupported, skipped
     let mut causes: BTreeMap<String, usize> = BTreeMap::new();
     let (mut n_exact, mut n_close, mut n_fallback, mut n_noimport) = (0, 0, 0, 0);
@@ -56,9 +57,17 @@ fn corpus() {
                 continue;
             }
         };
+        // reading the file (container, Parasolid, faces, pcurves, orientation) is bounded on its own: it took tens of
+        // seconds on files with many free-form faces and long intersection curves, whatever their size (closest-point
+        // grid scans, face integrals of rational faces); about 5 s was the slowest measured file, native release
+        let import_ms = t0.elapsed().as_millis();
+        let import_limit: u128 = std::env::var("SWEDIT_MAX_IMPORT_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(15_000);
+        assert!(import_ms < import_limit, "{name}: {import_ms} ms to import (bound {import_limit} ms)");
         let t = Tagged::from_import(&imp);
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| rebuild_history(&t)));
         let ms = t0.elapsed().as_millis();
+        // a file that reads back slowly is slow in the app too (wasm): no file may take more than this
+        slow.push((name.clone(), ms));
         let out = match r {
             Ok(o) => o,
             Err(_) => {
@@ -132,6 +141,21 @@ fn corpus() {
             assert!(out.exact() || out.close(), "nist_ftc_10: history not complete: {:?}", out.fallback);
             assert!(out.remainder.is_none() && out.steps.iter().filter(|s| s.status == Status::Rebuilt).count() >= 19, "nist_ftc_10: steps missing");
         }
+        // open time: the files whose verification used to take a minute (a modelled thread's boolean difference, the
+        // whole prefix regenerated at every blend) stay within about 5x of the measured native release time
+        let bound_ms: u128 = match name.as_str() {
+            "pend_mount_table_sharft_holder" => 12_000,
+            "pend_bolt" => 25_000,
+            "nist_ftc_08" => 20_000,
+            "nist_ftc_10" => 10_000,
+            "pend_spoked_wheel_12T" => 18_000,
+            // partial files: a reordered reading is tried only where an order could help (see `reorder.rs`)
+            "nist_ftc_06" => 6_000,
+            "pend_table_mount" => 10_000,
+            "nist_ftc_07" | "nist_ctc_02" => 10_000,
+            _ => u128::MAX,
+        };
+        assert!(ms < bound_ms, "{name}: {ms} ms to read back (bound {bound_ms} ms)");
         let v = out.verify.as_ref().map(|v| format!("{:.3e}", v.rel)).unwrap_or("-".into());
         rows.push(format!("| {name} | {} | {rebuilt}/{nfeat} | {status} | {v} | {ms} |", imp.body.num_faces()));
         detail.push_str(&format!("\n### {name}\n\n"));
@@ -154,12 +178,27 @@ fn corpus() {
         assert!(*read >= 5 && *kept >= 4, "pend_spoked_wheel_12T: {read} steps read back, {kept} kept");
     }
     // the encoder's disc and shaft are separate bodies that touch (boss with merge off): read back as new bodies
-    if let Some((_, kept, read, _)) = prefixes.iter().find(|p| p.0 == "pend_encoder") {
-        assert!(*read >= 8 && *kept >= 6, "pend_encoder: {read} steps read back, {kept} kept");
-    }
+    // and the complete history rebuilds (the file has several bodies: later boss and cut act on the body they belong to)
+    // (the pin through them and the pocket in the boss act on their own body: target)
+    assert!(!prefixes.iter().any(|p| p.0 == "pend_encoder"), "pend_encoder: no longer a complete history");
     // the table mount's last chamfer keeps its listed distance (the supports are picked by it)
     if let Some((_, kept, read, _)) = prefixes.iter().find(|p| p.0 == "pend_table_mount") {
         assert!(*read >= 14 && *kept >= 13, "pend_table_mount: {read} steps read back, {kept} kept");
+    }
+    // the NIST FTC 06 rib (a two-line open profile run on to the body, ending exactly at a block corner), the cut with
+    // a wall flaring out to the body's boundary and the boss feet under a later round are read back and kept
+    if let Some((_, kept, read, _)) = prefixes.iter().find(|p| p.0 == "nist_ftc_06") {
+        assert!(*read >= 21 && *kept >= 20, "nist_ftc_06: {read} steps read back, {kept} kept");
+    }
+    // NIST FTC 06 is a complete history (the holes that open into a gap end at their exit, the rib-foot rounds end on
+    // the rib's slanted face); NIST CTC 04 keeps the fillet of the two in-line bosses, CTC 05 the chamfer of the bore
+    // whose mouth it trimmed
+    assert!(!prefixes.iter().any(|p| p.0 == "nist_ftc_06"), "nist_ftc_06: no longer a complete history");
+    if let Some((_, kept, _, _)) = prefixes.iter().find(|p| p.0 == "nist_ctc_04") {
+        assert!(*kept >= 21, "nist_ctc_04: {kept} steps kept");
+    }
+    if let Some((_, kept, _, _)) = prefixes.iter().find(|p| p.0 == "nist_ctc_05") {
+        assert!(*kept >= 15, "nist_ctc_05: {kept} steps kept");
     }
     let mut md = String::new();
     md.push_str(&format!("# Editable rebuild: {} files\n\nexact {n_exact}, close {n_close}, fallback {n_fallback}, not imported {n_noimport}\n\n", fs.len()));
@@ -194,4 +233,7 @@ fn corpus() {
         }
         std::fs::write(&out, md).unwrap();
     }
+    let limit: u128 = std::env::var("SWEDIT_MAX_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(20_000);
+    let over: Vec<&(String, u128)> = slow.iter().filter(|s| s.1 > limit).collect();
+    assert!(over.is_empty(), "files slower than {limit} ms: {over:?}");
 }

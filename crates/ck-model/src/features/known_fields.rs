@@ -34,6 +34,7 @@ pub const TABLE: &[(&str, &[&str])] = &[
     ("importStep", &["blob", "step", "body", "heal"]),
     ("repairPart", &["target", "gap", "patchHoles"]),
     ("importBody", &["format", "blob", "replace", "body", "from", "reason", "steps"]),
+    ("frame", &["sketch", "segments", "lines", "profile", "rotate", "corner", "members", "joints"]),
     ("chamfer", &["chamferType", "distance", "distance2", "distance3", "angle", "face", "flip", "propagate", "edges"]),
     (
         "hole",

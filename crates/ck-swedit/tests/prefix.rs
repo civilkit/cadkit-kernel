@@ -79,9 +79,9 @@ fn unsupported_step_three_keeps_two_steps() {
     let (body, tags, mut sw) = tagged(&four_steps());
     // the pocket (step 3) is a feature type we do not read back
     let pocket = sw.iter_mut().find(|f| f.id == 6).unwrap();
-    pocket.kind = "Sweep".into();
-    pocket.name = "Sweep6".into();
-    let o = rebuild_history(&Tagged { body: &body, tags, features: &sw, unit_mm: 1.0 });
+    pocket.kind = "Wrap".into();
+    pocket.name = "Wrap6".into();
+    let o = rebuild_history(&Tagged { body: &body, tags, features: &sw, unit_mm: 1.0, start: None });
     assert_eq!(o.prefix, 2, "steps {:#?}\nchecks {:?}", steps(&o), o.checks);
     assert!(!o.exact() && o.editable());
     assert_eq!(o.steps[2].status, Status::Unsupported);
@@ -89,10 +89,10 @@ fn unsupported_step_three_keeps_two_steps() {
     assert!(o.checks.iter().all(|c| c.ok()), "{:?}", o.checks);
     assert!(o.checks[0].faces.0 > 0, "the base's untouched faces are checked");
     let r = o.remainder.as_ref().unwrap();
-    assert_eq!(r.from.1, "Sweep6");
-    assert!(r.reason.contains("Sweep"), "{}", r.reason);
+    assert_eq!(r.from.1, "Wrap6");
+    assert!(r.reason.contains("Wrap"), "{}", r.reason);
     // the remainder stands for the sweep and every step after it
-    assert_eq!(r.steps.iter().map(|s| s.1.as_str()).collect::<Vec<_>>(), ["Sweep6", "Cut-Extrude8"]);
+    assert_eq!(r.steps.iter().map(|s| s.1.as_str()).collect::<Vec<_>>(), ["Wrap6", "Cut-Extrude8"]);
     let t = types(&o.features);
     assert_eq!(t.last().unwrap(), "importBody");
     assert_eq!(t.iter().filter(|x| *x == "extrude").count(), 2, "{t:?}");
@@ -117,18 +117,18 @@ fn unsupported_step_three_keeps_two_steps() {
 fn nothing_to_keep_stays_the_plain_solid() {
     let (body, tags, mut sw) = tagged(&four_steps());
     let base = sw.iter_mut().find(|f| f.id == 2).unwrap();
-    base.kind = "Sweep".into();
-    let o = rebuild_history(&Tagged { body: &body, tags, features: &sw, unit_mm: 1.0 });
+    base.kind = "Wrap".into();
+    let o = rebuild_history(&Tagged { body: &body, tags, features: &sw, unit_mm: 1.0, start: None });
     assert_eq!(o.prefix, 0);
     assert!(o.remainder.is_none() && !o.editable() && o.body.is_none());
-    assert!(o.fallback.as_deref().unwrap().contains("Sweep"));
+    assert!(o.fallback.as_deref().unwrap().contains("Wrap"));
     assert!(!types(&o.features).contains(&"importBody".to_string()));
 }
 
 #[test]
 fn a_complete_rebuild_has_no_remainder() {
     let (body, tags, sw) = tagged(&four_steps());
-    let o = rebuild_history(&Tagged { body: &body, tags, features: &sw, unit_mm: 1.0 });
+    let o = rebuild_history(&Tagged { body: &body, tags, features: &sw, unit_mm: 1.0, start: None });
     assert!(o.exact(), "{:?}", o.fallback);
     assert_eq!(o.prefix, 0);
     assert!(o.remainder.is_none() && o.checks.is_empty());
@@ -138,7 +138,7 @@ fn a_complete_rebuild_has_no_remainder() {
 /// The read-back history of the four steps, its step ranges and the checks of `features` (an edited copy).
 fn checks_of(edit: impl Fn(&mut Vec<Json>, &[(usize, usize)])) -> Vec<ck_swedit::prefix::Check> {
     let (body, tags, sw) = tagged(&four_steps());
-    let o = rebuild_history(&Tagged { body: &body, tags: tags.clone(), features: &sw, unit_mm: 1.0 });
+    let o = rebuild_history(&Tagged { body: &body, tags: tags.clone(), features: &sw, unit_mm: 1.0, start: None });
     assert!(o.exact());
     let mut fs = o.features.clone();
     edit(&mut fs, &o.ranges);
@@ -212,7 +212,7 @@ fn fixture_prefix_regenerates_to_the_import() {
     // the last feature that made faces (the hole) becomes a type we do not read back
     let made: Vec<i64> = imp.face_tags.iter().flat_map(|t| t.sw_ids.iter().map(|i| i.feature)).collect();
     let last = imp.meta.features.iter_mut().rev().find(|f| ck_swedit::classify(f) != ck_swedit::Class::Skip && made.contains(&f.id)).unwrap();
-    last.kind = "Sweep".into();
+    last.kind = "Wrap".into();
     let o = rebuild_history(&Tagged::from_import(&imp));
     // every step before the unsupported one (a leading no-geometry step included), the extrude among them
     let u = o.steps.iter().position(|s| s.status == Status::Unsupported).unwrap();

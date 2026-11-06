@@ -10,15 +10,23 @@
 //! whichever puts the region on the side the faces' outward normals point to (cut) or away from (boss). A partial
 //! angle takes the sketch plane from the start cap and the sweep from the angle between the two caps.
 //!
+//! A face on a stored surface of revolution (a spline profile spun about an axis) gives its generatrix from the
+//! profile itself, cut down to the face's boundary and read as a line, an arc or a `cvspline`. Faces that later
+//! features split around the axis (a pattern of cuts, a channel across a face) lie on one generatrix and are read
+//! as one piece. Where a later feature took a corner off (a chamfer, a step), two lines whose carriers meet just
+//! past both open ends are run on to their corner.
+//!
 //! This reads the faces itself rather than going through `ck_recog::revolve::analyze`: that one needs every face
 //! of the body, circular edges only and a closed chain, none of which holds for a feature in the middle of a
 //! history. The rebuild is still checked against the import by the caller.
 
 use crate::{face_points, Cx, TOL};
 use ck_geom::curve::Curve;
+use ck_geom::nurbs::bspline::BSplineCurve;
+use ck_geom::surface::Surface;
 use ck_geom::Vec3;
 use ck_json::Obj;
-use ck_recog::emit::{n, Sk};
+use ck_recog::emit::{arr, n, s as js, Sk};
 use ck_recog::model::{dist_to_line, par, principal, Kind, Model, PlaneSpec};
 use ck_sldprt::meta::SwFeature;
 use ck_topo::body::{EdgeId, FaceId};
@@ -33,12 +41,15 @@ enum Gen {
     /// Counter-clockwise (s towards rho) arc about `c`: `p(chi) = c + r (cos chi, sin chi)`.
     Arc { c: P, r: f64, a0: f64, span: f64 },
     Circle { c: P, r: f64 },
+    /// A spline generatrix (the profile of a surface of revolution), in (s, rho, 0).
+    Spline(BSplineCurve),
 }
 
 struct Prim {
     g: Gen,
-    /// The face the generatrix belongs to; `None` for a piece that bridges a gap a later feature left.
-    face: Option<FaceId>,
+    /// The faces the generatrix belongs to (several where later features split one face of the revolve around the
+    /// axis); empty for a piece that bridges a gap a later feature left.
+    faces: Vec<FaceId>,
     /// Outward normal of the face at the generatrix' middle, in (s, rho).
     nrm: P,
 }
@@ -50,7 +61,17 @@ struct Seg {
     b: P,
     /// Arc about `c` with radius `r`, from angle `a0` over the signed `span`.
     arc: Option<(P, f64, f64, f64)>,
+    /// A spline in (s, rho, 0) from `a` to `b`.
+    spl: Option<BSplineCurve>,
     faces: Vec<FaceId>,
+}
+
+fn v2(p: Vec3) -> P {
+    (p.x, p.y)
+}
+
+fn v3(p: P) -> Vec3 {
+    Vec3::new(p.0, p.1, 0.0)
 }
 
 fn arc_pt(c: P, r: f64, chi: f64) -> P {
@@ -63,15 +84,22 @@ fn d2(a: P, b: P) -> f64 {
 
 impl Seg {
     fn line(a: P, b: P, face: Option<FaceId>) -> Seg {
-        Seg { a, b, arc: None, faces: face.into_iter().collect() }
+        Seg { a, b, arc: None, spl: None, faces: face.into_iter().collect() }
     }
     fn mid(&self) -> P {
+        if let Some(c) = &self.spl {
+            let (u0, u1) = c.domain();
+            return v2(c.eval((u0 + u1) / 2.0));
+        }
         match self.arc {
             Some((c, r, a0, sp)) => arc_pt(c, r, a0 + sp / 2.0),
             None => ((self.a.0 + self.b.0) / 2.0, (self.a.1 + self.b.1) / 2.0),
         }
     }
     fn samples(&self) -> Vec<P> {
+        if let Some(c) = &self.spl {
+            return c.sample(48).into_iter().map(v2).collect();
+        }
         match self.arc {
             Some((c, r, a0, sp)) => (0..=24).map(|i| arc_pt(c, r, a0 + sp * i as f64 / 24.0)).collect(),
             None => vec![self.a, self.b],
@@ -79,6 +107,9 @@ impl Seg {
     }
     /// Unit tangent at the end of travel.
     fn tangent_end(&self) -> P {
+        if let Some(c) = &self.spl {
+            return v2(c.tangent(c.domain().1));
+        }
         match self.arc {
             Some((_, _, a0, sp)) => {
                 let t = a0 + sp;
@@ -89,6 +120,9 @@ impl Seg {
         }
     }
     fn tangent_start(&self) -> P {
+        if let Some(c) = &self.spl {
+            return v2(c.tangent(c.domain().0));
+        }
         match self.arc {
             Some((_, _, a0, sp)) => {
                 let s = sp.signum();
@@ -98,7 +132,7 @@ impl Seg {
         }
     }
     fn reversed(&self) -> Seg {
-        Seg { a: self.b, b: self.a, arc: self.arc.map(|(c, r, a0, sp)| (c, r, a0 + sp, -sp)), faces: self.faces.clone() }
+        Seg { a: self.b, b: self.a, arc: self.arc.map(|(c, r, a0, sp)| (c, r, a0 + sp, -sp)), spl: self.spl.as_ref().map(|c| c.reversed()), faces: self.faces.clone() }
     }
 }
 
@@ -134,7 +168,7 @@ fn wrap(t: f64) -> f64 {
 }
 
 /// The axis: a point and a unit direction shared by every face of the feature.
-fn find_axis(m: &Model, faces: &[FaceId], l: f64) -> Result<(Vec3, Vec3, Vec<FaceId>), String> {
+fn find_axis(m: &Model, faces: &[FaceId], l: f64, sphere_axis: Option<Vec3>) -> Result<(Vec3, Vec3, Vec<FaceId>), String> {
     let mut ax: Option<(Vec3, Vec3)> = None;
     for &f in faces {
         match m.kind(f) {
@@ -143,10 +177,17 @@ fn find_axis(m: &Model, faces: &[FaceId], l: f64) -> Result<(Vec3, Vec3, Vec<Fac
             _ => {}
         }
     }
+    // a surface of revolution about its own axis (a spline profile: the file stores the swept curve)
+    for &f in faces {
+        if let Some((o, d)) = rev_axis(m, f) {
+            ax = ax.or(Some((o, d)));
+        }
+    }
     if ax.is_none() {
-        // spheres only (and planes): the poles go along +Y like the kit's own ball
+        // spheres only (and planes): the poles go along the caller's axis (a dome: its base face's normal), else
+        // along +Y like the kit's own ball
         if let Some(c) = faces.iter().find_map(|&f| if let Kind::Sphere { c, .. } = m.kind(f) { Some(*c) } else { None }) {
-            ax = Some((c, Vec3::Y));
+            ax = Some((c, sphere_axis.unwrap_or(Vec3::Y)));
         }
     }
     let (ao, mut a) = ax.ok_or("no surface of revolution among the feature's faces")?;
@@ -173,13 +214,21 @@ fn find_axis(m: &Model, faces: &[FaceId], l: f64) -> Result<(Vec3, Vec3, Vec<Fac
                     false
                 }
             }
-            Kind::Other(_) => false,
+            Kind::Other(_) => rev_axis(m, f).map_or(false, |(o, d)| par(d, a) && dist_to_line(o, ao, a) < tol),
         };
         if !ok {
             return Err(format!("face {} ({}) is not about the axis", m.b.face_id_str(f), m.kind(f).name()));
         }
     }
     Ok((ao, a, caps))
+}
+
+/// Axis of a face on a surface of revolution (a profile curve spun about an axis).
+fn rev_axis(m: &Model, f: FaceId) -> Option<(Vec3, Vec3)> {
+    match &m.b.face(f).surface {
+        Surface::Revolution { axis_o, axis, .. } if matches!(m.kind(f), Kind::Other(_)) => Some((*axis_o, axis.normalize())),
+        _ => None,
+    }
 }
 
 struct Ax {
@@ -233,7 +282,9 @@ fn disc_interval(m: &Model, ax: &Ax, f: FaceId, tol: f64) -> (f64, f64) {
                 rmax = rmax.max(rho);
             }
         }
-        let axis_circle = es.len() == 1 && matches!(m.curve(es[0]), Curve::Circle { frame, .. } if par(frame.z, ax.a) && dist_to_line(frame.o, ax.ao, ax.a) < tol);
+        // (a circle about the axis, whole or split into arcs)
+        let about = |e: EdgeId| matches!(m.curve(e), Curve::Circle { frame, .. } if par(frame.z, ax.a) && dist_to_line(frame.o, ax.ao, ax.a) < tol);
+        let axis_circle = !es.is_empty() && es.iter().all(|&e| about(e)) && rmax - rmin < tol;
         if !es.is_empty() {
             loops.push(L { rmin, rmax, axis_circle });
         }
@@ -255,18 +306,26 @@ fn normal_sr(m: &Model, ax: &Ax, f: FaceId, p: Vec3) -> P {
     (nrm.dot(ax.a), nrm.dot(dir))
 }
 
-/// The generatrix of one lateral face. `frac` = sweep / 2 pi (1 for a full revolve).
-fn generatrix(m: &Model, ax: &Ax, f: FaceId, frac: f64, tol: f64) -> Result<Prim, String> {
-    let pts = boundary(m, ax, f);
+/// The generatrix of lateral faces on one surface (one face, or the pieces later features split it into around the
+/// axis). `frac` = sweep / 2 pi (1 for a full revolve).
+fn generatrix(m: &Model, ax: &Ax, fs: &[FaceId], frac: f64, tol: f64) -> Result<Prim, String> {
+    let f = fs[0];
+    let mut pts = vec![];
+    let mut owner = vec![];
+    for &g in fs {
+        let b = boundary(m, ax, g);
+        owner.extend(std::iter::repeat(g).take(b.len()));
+        pts.extend(b);
+    }
     // a boundary point off the axis, for the sense of the normal
-    let probe = pts.iter().find(|(q, _)| q.1 > 10.0 * tol).map(|(_, p)| *p);
+    let probe = pts.iter().zip(&owner).find(|((q, _), _)| q.1 > 10.0 * tol).map(|((_, p), g)| (*p, *g));
     let sense = |mid: P, c: P| -> P {
         // normal at `mid` of an arc about `c`: radial in the generatrix plane, outward = the side the normal at a
         // boundary point faces
         let r = unit((mid.0 - c.0, mid.1 - c.1));
         let sg = match probe {
-            Some(p) => {
-                let nn = normal_sr(m, ax, f, p);
+            Some((p, g)) => {
+                let nn = normal_sr(m, ax, g, p);
                 let (ps, prho, _) = ax.sr(p);
                 let rq = (ps - c.0, prho - c.1);
                 if nn.0 * rq.0 + nn.1 * rq.1 >= 0.0 {
@@ -280,25 +339,30 @@ fn generatrix(m: &Model, ax: &Ax, f: FaceId, frac: f64, tol: f64) -> Result<Prim
         (r.0 * sg, r.1 * sg)
     };
     let line_normal = || -> Result<P, String> {
-        let p = probe.ok_or("no boundary point off the axis")?;
-        Ok(normal_sr(m, ax, f, p))
+        let (p, g) = probe.ok_or("no boundary point off the axis")?;
+        Ok(normal_sr(m, ax, g, p))
     };
     let name = m.b.face_id_str(f);
     match m.kind(f).clone() {
         Kind::Plane { n: pn, d } => {
             let s = (d - pn.dot(ax.ao)) / pn.dot(ax.a);
-            let (lo, hi) = disc_interval(m, ax, f, tol);
+            let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+            for &g in fs {
+                let (l, h) = disc_interval(m, ax, g, tol);
+                lo = lo.min(l);
+                hi = hi.max(h);
+            }
             if hi - lo < tol {
                 return Err(format!("disc {name} has no radial extent"));
             }
-            Ok(Prim { g: Gen::Line { a: (s, lo), b: (s, hi) }, face: Some(f), nrm: (pn.dot(ax.a), 0.0) })
+            Ok(Prim { g: Gen::Line { a: (s, lo), b: (s, hi) }, faces: fs.to_vec(), nrm: (pn.dot(ax.a), 0.0) })
         }
         Kind::Cyl { r, .. } => {
             let (lo, hi) = s_range(&pts).ok_or_else(|| format!("cylinder {name} has no boundary"))?;
             if hi - lo < tol {
                 return Err(format!("cylinder {name} has no axial extent"));
             }
-            Ok(Prim { g: Gen::Line { a: (lo, r), b: (hi, r) }, face: Some(f), nrm: line_normal()? })
+            Ok(Prim { g: Gen::Line { a: (lo, r), b: (hi, r) }, faces: fs.to_vec(), nrm: line_normal()? })
         }
         Kind::Cone { o, a: ca, r0, half, .. } => {
             let (lo, hi) = s_range(&pts).ok_or_else(|| format!("cone {name} has no boundary"))?;
@@ -306,7 +370,12 @@ fn generatrix(m: &Model, ax: &Ax, f: FaceId, frac: f64, tol: f64) -> Result<Prim
                 let v: Vec<f64> = pts.iter().filter(|(q, _)| (q.0 - s).abs() < tol).map(|(q, _)| q.1).collect();
                 v.iter().sum::<f64>() / v.len() as f64
             };
-            let (a, b) = if hi - lo < tol {
+            let (rlo, rhi) = (pts.iter().map(|(q, _)| q.1).fold(f64::INFINITY, f64::min), pts.iter().map(|(q, _)| q.1).fold(f64::NEG_INFINITY, f64::max));
+            let (a, b) = if hi - lo < tol && rhi - rlo > tol {
+                // a cone nearly normal to the axis (a slight draft on a disc): the ends are told by the radius
+                let at = |rho: f64| pts.iter().min_by(|x, y| (x.0 .1 - rho).abs().total_cmp(&(y.0 .1 - rho).abs())).unwrap().0;
+                (at(rlo), at(rhi))
+            } else if hi - lo < tol {
                 let v = -r0 / half.tan();
                 let sa = (o + ca * v - ax.ao).dot(ax.a);
                 ((lo, rho_at(lo)), (sa, 0.0))
@@ -314,7 +383,7 @@ fn generatrix(m: &Model, ax: &Ax, f: FaceId, frac: f64, tol: f64) -> Result<Prim
                 ((lo, rho_at(lo)), (hi, rho_at(hi)))
             };
             let nrm = line_normal()?;
-            Ok(Prim { g: Gen::Line { a, b }, face: Some(f), nrm })
+            Ok(Prim { g: Gen::Line { a, b }, faces: fs.to_vec(), nrm })
         }
         Kind::Sphere { c, r, .. } => {
             let sc = (c - ax.ao).dot(ax.a);
@@ -327,9 +396,25 @@ fn generatrix(m: &Model, ax: &Ax, f: FaceId, frac: f64, tol: f64) -> Result<Prim
                     // one circle: the cap on one side of it, told by the area
                     let p1 = psi(pts[0].0);
                     let cap = TAU * r * r * (1.0 - p1.cos()) * frac;
-                    let a = m.area(f);
+                    let a: f64 = fs.iter().map(|&g| m.area(g)).sum();
                     let rest = 2.0 * TAU * r * r * frac - cap;
-                    if (a - cap).abs() <= (a - rest).abs() {
+                    // (a hemisphere: both sides have the same area; the face's own points tell the side)
+                    let side = if (cap - rest).abs() < 1e-6 * cap {
+                        let (mut above, mut below) = (0usize, 0usize);
+                        for q in fs.iter().flat_map(|&g| face_points(m, g)) {
+                            let (qs, qr, _) = ax.sr(q);
+                            let d = psi((qs, qr)) - p1;
+                            if d > 1e-6 {
+                                above += 1;
+                            } else if d < -1e-6 {
+                                below += 1;
+                            }
+                        }
+                        Some(below >= above)
+                    } else {
+                        None
+                    };
+                    if side.unwrap_or_else(|| (a - cap).abs() <= (a - rest).abs()) {
                         (0.0, p1)
                     } else {
                         (p1, PI)
@@ -341,12 +426,12 @@ fn generatrix(m: &Model, ax: &Ax, f: FaceId, frac: f64, tol: f64) -> Result<Prim
             };
             let cc = (sc, 0.0);
             let mid = arc_pt(cc, r, (lo + hi) / 2.0);
-            Ok(Prim { g: Gen::Arc { c: cc, r, a0: lo, span: hi - lo }, face: Some(f), nrm: sense(mid, cc) })
+            Ok(Prim { g: Gen::Arc { c: cc, r, a0: lo, span: hi - lo }, faces: fs.to_vec(), nrm: sense(mid, cc) })
         }
         Kind::Torus { c, major, minor, .. } => {
             let cc = ((c - ax.ao).dot(ax.a), major);
             if pts.is_empty() {
-                return Ok(Prim { g: Gen::Circle { c: cc, r: minor }, face: Some(f), nrm: sense((cc.0 + minor, cc.1), cc) });
+                return Ok(Prim { g: Gen::Circle { c: cc, r: minor }, faces: fs.to_vec(), nrm: sense((cc.0 + minor, cc.1), cc) });
             }
             let chi = |q: P| (q.1 - cc.1).atan2(q.0 - cc.0);
             let mut v: Vec<f64> = pts.iter().map(|(q, _)| wrap(chi(*q))).collect();
@@ -359,7 +444,7 @@ fn generatrix(m: &Model, ax: &Ax, f: FaceId, frac: f64, tol: f64) -> Result<Prim
                 let (c1, c2) = (v[0], v[1]);
                 let full = |a0: f64, sp: f64| TAU * minor * (major * sp - minor * ((a0 + sp).cos() - a0.cos())) * frac;
                 let (s1, s2) = (c2 - c1, TAU - (c2 - c1));
-                let a = m.area(f);
+                let a: f64 = fs.iter().map(|&g| m.area(g)).sum();
                 if (full(c1, s1) - a).abs() <= (full(c2, s2) - a).abs() {
                     (c1, s1)
                 } else {
@@ -375,16 +460,107 @@ fn generatrix(m: &Model, ax: &Ax, f: FaceId, frac: f64, tol: f64) -> Result<Prim
                     }
                 }
                 if best.0 < 1e-3 {
-                    return Ok(Prim { g: Gen::Circle { c: cc, r: minor }, face: Some(f), nrm: (1.0, 0.0) });
+                    return Ok(Prim { g: Gen::Circle { c: cc, r: minor }, faces: fs.to_vec(), nrm: (1.0, 0.0) });
                 }
                 let start = v[(best.1 + 1) % v.len()];
                 (start, TAU - best.0)
             };
             let mid = arc_pt(cc, minor, a0 + span / 2.0);
-            Ok(Prim { g: Gen::Arc { c: cc, r: minor, a0, span }, face: Some(f), nrm: sense(mid, cc) })
+            Ok(Prim { g: Gen::Arc { c: cc, r: minor, a0, span }, faces: fs.to_vec(), nrm: sense(mid, cc) })
         }
-        Kind::Other(k) => Err(format!("face {name} is a {k}")),
+        Kind::Other(k) => match &m.b.face(f).surface {
+            Surface::Revolution { profile, .. } => {
+                let (p, g) = probe.ok_or("no boundary point off the axis")?;
+                let (_, _, dir) = ax.sr(p);
+                let gen = spun(ax, profile, &pts, tol).map_err(|e| format!("face {name}: {e}"))?;
+                let nrm = match &gen {
+                    Gen::Line { .. } => normal_sr(m, ax, g, p),
+                    Gen::Arc { c, r, a0, span } => sense(arc_pt(*c, *r, a0 + span / 2.0), *c),
+                    Gen::Spline(c) => {
+                        let (u0, u1) = c.domain();
+                        let q = v2(c.eval((u0 + u1) / 2.0));
+                        normal_sr(m, ax, g, ax.ao + ax.a * q.0 + dir * q.1)
+                    }
+                    Gen::Circle { .. } => unreachable!(),
+                };
+                Ok(Prim { g: gen, faces: fs.to_vec(), nrm })
+            }
+            _ => Err(format!("face {name} is a {k}")),
+        },
     }
+}
+
+/// The generatrix of a face on a surface of revolution: the spun profile curve in its own half plane, cut down to the
+/// extent of the face's boundary points, and read as a line or an arc where it is one (a spline otherwise).
+fn spun(ax: &Ax, profile: &Curve, pts: &[(P, Vec3)], tol: f64) -> Result<Gen, String> {
+    let Curve::BSpline(c) = profile else { return Err("a surface of revolution with a non-spline profile".into()) };
+    // the profile's half plane: through the axis and its control point farthest from it
+    let off = |p: Vec3| {
+        let v = p - ax.ao;
+        v - ax.a * v.dot(ax.a)
+    };
+    let far = c.ctrl.iter().map(|&p| off(p)).max_by(|x, y| x.len().total_cmp(&y.len())).ok_or("empty profile")?;
+    if far.len() < tol {
+        return Err("the profile lies on the axis".into());
+    }
+    let dp = far.normalize();
+    let side = ax.a.cross(dp);
+    let mut ctrl = vec![];
+    for &p in &c.ctrl {
+        let r = off(p);
+        // (a control point off the half plane: no planar profile through the axis)
+        if r.dot(side).abs() > tol || r.dot(dp) < -tol {
+            return Err("the profile is not in a half plane through the axis".into());
+        }
+        ctrl.push(Vec3::new((p - ax.ao).dot(ax.a), r.dot(dp).max(0.0), 0.0));
+    }
+    let c2 = BSplineCurve { degree: c.degree, knots: c.knots.clone(), ctrl, weights: c.weights.clone() };
+    let (d0, d1) = c2.domain();
+    let (mut u0, mut u1) = (f64::INFINITY, f64::NEG_INFINITY);
+    for (q, _) in pts {
+        let u = c2.closest_param(v3(*q));
+        if v2(c2.eval(u)).0.is_nan() || d2(v2(c2.eval(u)), *q) > 100.0 * tol {
+            return Err("a boundary point off the profile".into());
+        }
+        u0 = u0.min(u);
+        u1 = u1.max(u);
+    }
+    if !(u1 > u0) {
+        return Err("no extent along the profile".into());
+    }
+    let eps = 1e-9 * (d1 - d0);
+    let cut = c2.segment(if u0 - d0 < eps { d0 } else { u0 }, if d1 - u1 < eps { d1 } else { u1 });
+    let smp: Vec<P> = cut.sample(32).into_iter().map(v2).collect();
+    let (a, b, mid) = (smp[0], smp[32], smp[16]);
+    if d2(a, b) < tol {
+        return Err("the profile piece is closed or has no length".into());
+    }
+    // a line?
+    let t = unit((b.0 - a.0, b.1 - a.1));
+    if smp.iter().all(|q| ((q.0 - a.0) * t.1 - (q.1 - a.1) * t.0).abs() < tol) {
+        return Ok(Gen::Line { a, b });
+    }
+    // an arc? (circumcircle of the ends and the middle)
+    let (ax_, ay, bx, by, cx_, cy) = (a.0, a.1, mid.0, mid.1, b.0, b.1);
+    let dd = 2.0 * (ax_ * (by - cy) + bx * (cy - ay) + cx_ * (ay - by));
+    if dd.abs() > 1e-12 {
+        let sq = |x: f64, y: f64| x * x + y * y;
+        let ux = (sq(ax_, ay) * (by - cy) + sq(bx, by) * (cy - ay) + sq(cx_, cy) * (ay - by)) / dd;
+        let uy = (sq(ax_, ay) * (cx_ - bx) + sq(bx, by) * (ax_ - cx_) + sq(cx_, cy) * (bx - ax_)) / dd;
+        let cc = (ux, uy);
+        let r = d2(cc, a);
+        if r < 1e6 * (1.0 + d2(a, b)) && smp.iter().all(|q| (d2(*q, cc) - r).abs() < tol) {
+            let ang = |q: P| (q.1 - cc.1).atan2(q.0 - cc.0);
+            let (ca, cm, cb) = (ang(a), ang(mid), ang(b));
+            let ccw = wrap(cb - ca);
+            let span = if wrap(cm - ca) < ccw { ccw } else { ccw - TAU };
+            return Ok(Gen::Arc { c: cc, r, a0: ca, span });
+        }
+    }
+    if cut.weights.as_ref().map_or(false, |w| w.iter().any(|x| (x - 1.0).abs() > 1e-12)) {
+        return Err("a rational spline profile that is no line or arc".into());
+    }
+    Ok(Gen::Spline(cut))
 }
 
 fn s_range(pts: &[(P, Vec3)]) -> Option<(f64, f64)> {
@@ -394,20 +570,114 @@ fn s_range(pts: &[(P, Vec3)]) -> Option<(f64, f64)> {
     Some((pts.iter().map(|(q, _)| q.0).fold(f64::INFINITY, f64::min), pts.iter().map(|(q, _)| q.0).fold(f64::NEG_INFINITY, f64::max)))
 }
 
+/// Whether `q` lies on the generatrix piece `g`.
+fn on_gen(g: &Gen, q: P, tol: f64) -> bool {
+    match g {
+        Gen::Line { a, b } => {
+            let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+            let l2 = dx * dx + dy * dy;
+            let t = (((q.0 - a.0) * dx + (q.1 - a.1) * dy) / l2.max(1e-300)).clamp(0.0, 1.0);
+            d2(q, (a.0 + t * dx, a.1 + t * dy)) < tol
+        }
+        Gen::Arc { c, r, a0, span } => {
+            if (d2(q, *c) - r).abs() > tol {
+                return false;
+            }
+            let chi = (q.1 - c.1).atan2(q.0 - c.0);
+            let slack = tol / r.max(1e-300);
+            let rel = if *span >= 0.0 { wrap(chi - a0 + slack) } else { wrap(a0 - chi + slack) };
+            rel <= span.abs() + 2.0 * slack
+        }
+        Gen::Spline(c) => d2(v2(c.eval(c.closest_param(v3(q)))), q) < tol,
+        Gen::Circle { .. } => false,
+    }
+}
+
+/// Later features (a pattern of cuts around the axis, a split line) cut one face of the revolve into several, each
+/// on the same surface: their generatrices overlap. Every set of overlapping generatrices on one surface is read
+/// again as one, over all the pieces' boundaries.
+fn join_split(m: &Model, ax: &Ax, prims: Vec<Prim>, frac: f64, tol: f64) -> Result<Vec<Prim>, String> {
+    let n = prims.len();
+    let inner = |p: &Prim| -> Vec<P> {
+        let sm = seg_of(p, false).samples();
+        let k = sm.len() - 1;
+        if k < 2 {
+            let (a, b) = (sm[0], sm[k]);
+            return [0.25, 0.5, 0.75].iter().map(|t| (a.0 + t * (b.0 - a.0), a.1 + t * (b.1 - a.1))).collect();
+        }
+        vec![sm[k / 4], sm[k / 2], sm[3 * k / 4]]
+    };
+    let same_kind = |x: &Gen, y: &Gen| std::mem::discriminant(x) == std::mem::discriminant(y);
+    let mut root: Vec<usize> = (0..n).collect();
+    fn find(r: &mut Vec<usize>, i: usize) -> usize {
+        let mut i = i;
+        while r[i] != i {
+            r[i] = r[r[i]];
+            i = r[i];
+        }
+        i
+    }
+    let pts: Vec<Vec<P>> = prims.iter().map(|p| if matches!(p.g, Gen::Circle { .. }) { vec![] } else { inner(p) }).collect();
+    let mut any = false;
+    for i in 0..n {
+        for j in i + 1..n {
+            if !same_kind(&prims[i].g, &prims[j].g) || pts[i].is_empty() || pts[j].is_empty() {
+                continue;
+            }
+            // the same carrier: every interior sample of one on the other, either way round (one piece notched
+            // more than the other), or overlapping ends
+            let ij = pts[j].iter().filter(|q| on_gen(&prims[i].g, **q, tol)).count();
+            let ji = pts[i].iter().filter(|q| on_gen(&prims[j].g, **q, tol)).count();
+            if ij + ji >= 2 {
+                let (ri, rj) = (find(&mut root, i), find(&mut root, j));
+                if ri != rj {
+                    root[rj] = ri;
+                    any = true;
+                }
+            }
+        }
+    }
+    if !any {
+        return Ok(prims);
+    }
+    let mut groups: Vec<(usize, Vec<FaceId>)> = vec![];
+    for i in 0..n {
+        let r = find(&mut root, i);
+        match groups.iter_mut().find(|g| g.0 == r) {
+            Some(g) => g.1.extend(prims[i].faces.iter().copied()),
+            None => groups.push((r, prims[i].faces.clone())),
+        }
+    }
+    let mut out = vec![];
+    for (r, fs) in groups {
+        if fs.len() == prims[r].faces.len() {
+            out.push(Prim { g: prims[r].g.clone(), faces: fs, nrm: prims[r].nrm });
+        } else {
+            out.push(generatrix(m, ax, &fs, frac, tol)?);
+        }
+    }
+    Ok(out)
+}
+
 fn ends_of(g: &Gen) -> (P, P) {
     match g {
         Gen::Line { a, b } => (*a, *b),
         Gen::Arc { c, r, a0, span } => (arc_pt(*c, *r, *a0), arc_pt(*c, *r, a0 + span)),
         Gen::Circle { c, r } => ((c.0 + r, c.1), (c.0 + r, c.1)),
+        Gen::Spline(c) => (v2(c.start()), v2(c.end())),
     }
 }
 
 fn seg_of(p: &Prim, rev: bool) -> Seg {
     let s = match &p.g {
-        Gen::Line { a, b } => Seg::line(*a, *b, p.face),
+        Gen::Line { a, b } => Seg { a: *a, b: *b, arc: None, spl: None, faces: p.faces.clone() },
         Gen::Arc { c, r, a0, span } => {
             let (a, b) = ends_of(&p.g);
-            Seg { a, b, arc: Some((*c, *r, *a0, *span)), faces: p.face.into_iter().collect() }
+            Seg { a, b, arc: Some((*c, *r, *a0, *span)), spl: None, faces: p.faces.clone() }
+        }
+        Gen::Spline(c) => {
+            let (a, b) = ends_of(&p.g);
+            Seg { a, b, arc: None, spl: Some(c.clone()), faces: p.faces.clone() }
         }
         Gen::Circle { .. } => unreachable!(),
     };
@@ -469,6 +739,15 @@ fn tangent_out(g: &Gen, at_end: bool) -> P {
             }
         }
         Gen::Circle { .. } => (0.0, 0.0),
+        Gen::Spline(c) => {
+            let (u0, u1) = c.domain();
+            let t = v2(c.tangent(if at_end { u1 } else { u0 }));
+            if at_end {
+                t
+            } else {
+                (-t.0, -t.1)
+            }
+        }
     };
     s
 }
@@ -501,7 +780,7 @@ fn fill_gaps(prims: &mut Vec<Prim>, tol: f64) {
     for i in 0..ends.len() {
         for j in i + 1..ends.len() {
             let (ei, ej) = (&ends[i], &ends[j]);
-            if ei.0 == ej.0 || prims[ei.0].face.is_none() || prims[ej.0].face.is_none() {
+            if ei.0 == ej.0 || prims[ei.0].faces.is_empty() || prims[ej.0].faces.is_empty() {
                 continue;
             }
             let same = match (&prims[ei.0].g, &prims[ej.0].g) {
@@ -542,9 +821,64 @@ fn fill_gaps(prims: &mut Vec<Prim>, tol: f64) {
                 let span = if ccw { wrap(cj - ci) } else { -wrap(ci - cj) };
                 Gen::Arc { c: *c, r: *r, a0: ci, span }
             }
-            Gen::Circle { .. } => continue,
+            Gen::Circle { .. } | Gen::Spline(_) => continue,
         };
-        add.push(Prim { g, face: None, nrm: (0.0, 0.0) });
+        add.push(Prim { g, faces: vec![], nrm: (0.0, 0.0) });
+    }
+    prims.extend(add);
+    ends = ends_now(prims);
+    if ends.len() <= 2 {
+        return;
+    }
+    // 1b: a line whose carrier runs on to another open end (a slight draft that meets a round tangentially, the rest of
+    // the face replaced by a later feature); 1c: two lines whose carriers meet just past both ends (a corner a later
+    // chamfer or fillet took off). Nearest first; each end once.
+    let is_line = |i: usize| matches!(prims[i].g, Gen::Line { .. }) && !prims[i].faces.is_empty();
+    let mut cand: Vec<(f64, usize, usize, P)> = vec![];
+    for i in 0..ends.len() {
+        for j in 0..ends.len() {
+            let (ei, ej) = (&ends[i], &ends[j]);
+            if i == j || ei.0 == ej.0 || !is_line(ei.0) {
+                continue;
+            }
+            let t = tangent_out(&prims[ei.0].g, ei.1);
+            let w = (ej.2 .0 - ei.2 .0, ej.2 .1 - ei.2 .1);
+            let along = w.0 * t.0 + w.1 * t.1;
+            if along > tol && (w.0 * t.1 - w.1 * t.0).abs() < tol {
+                cand.push((d2(ei.2, ej.2), i, j, ej.2));
+                continue;
+            }
+            if j < i || !is_line(ej.0) {
+                continue;
+            }
+            let u = tangent_out(&prims[ej.0].g, ej.1);
+            let den = t.0 * u.1 - t.1 * u.0;
+            if den.abs() < 1e-6 {
+                continue;
+            }
+            // ei + a t = ej + b u
+            let a_ = (w.0 * u.1 - w.1 * u.0) / den;
+            let b_ = (w.0 * t.1 - w.1 * t.0) / den;
+            let gap = d2(ei.2, ej.2);
+            if a_ > tol && b_ > tol && a_ < 2.0 * gap && b_ < 2.0 * gap {
+                cand.push((gap, i, j, (ei.2 .0 + a_ * t.0, ei.2 .1 + a_ * t.1)));
+            }
+        }
+    }
+    cand.sort_by(|x, y| x.0.total_cmp(&y.0));
+    let mut taken = vec![false; ends.len()];
+    let mut add: Vec<Prim> = vec![];
+    for (_, i, j, x) in cand {
+        if taken[i] || taken[j] {
+            continue;
+        }
+        taken[i] = true;
+        taken[j] = true;
+        let (pi, pj) = (ends[i].2, ends[j].2);
+        add.push(Prim { g: Gen::Line { a: pi, b: x }, faces: vec![], nrm: (0.0, 0.0) });
+        if d2(x, pj) > tol {
+            add.push(Prim { g: Gen::Line { a: x, b: pj }, faces: vec![], nrm: (0.0, 0.0) });
+        }
     }
     prims.extend(add);
     ends = ends_now(prims);
@@ -561,7 +895,7 @@ fn fill_gaps(prims: &mut Vec<Prim>, tol: f64) {
         let t = tangent_out(&prims[i].g, at_end);
         if t.1 < -1e-9 {
             let k = pt.1 / -t.1;
-            add.push(Prim { g: Gen::Line { a: pt, b: (pt.0 + t.0 * k, 0.0) }, face: None, nrm: (0.0, 0.0) });
+            add.push(Prim { g: Gen::Line { a: pt, b: (pt.0 + t.0 * k, 0.0) }, faces: vec![], nrm: (0.0, 0.0) });
         }
     }
     prims.extend(add);
@@ -598,7 +932,7 @@ fn chain(prims: &[Prim], tol: f64) -> Result<(Vec<Seg>, bool), String> {
 /// it joins are one sketch entity, as the original profile had it.
 fn merge(segs: &mut Vec<Seg>, tol: f64) {
     let cont = |x: &Seg, y: &Seg| -> bool {
-        if d2(x.b, y.a) > tol {
+        if d2(x.b, y.a) > tol || x.spl.is_some() || y.spl.is_some() {
             return false;
         }
         match (x.arc, y.arc) {
@@ -624,13 +958,49 @@ fn merge(segs: &mut Vec<Seg>, tol: f64) {
         };
         let mut faces = x.faces.clone();
         faces.extend(y.faces.iter().copied());
-        segs[i] = Seg { a: x.a, b: y.b, arc, faces };
+        segs[i] = Seg { a: x.a, b: y.b, arc, spl: None, faces };
         segs.remove(j);
+    }
+}
+
+/// Consecutive segments meet where the chain joined them (within `tol`); a spline's end is moved onto its neighbour's
+/// so the sketch's pieces share their points (lines and arcs keep the points they were read with).
+fn snap(segs: &mut [Seg], tol: f64) {
+    let k = segs.len();
+    for i in 0..k {
+        let j = (i + 1) % k;
+        if i == j || d2(segs[i].b, segs[j].a) > tol || d2(segs[i].b, segs[j].a) < 1e-12 {
+            continue;
+        }
+        if let Some(c) = segs[j].spl.as_mut() {
+            c.ctrl[0] = v3(segs[i].b);
+            segs[j].a = segs[i].b;
+        } else if let Some(c) = segs[i].spl.as_mut() {
+            *c.ctrl.last_mut().unwrap() = v3(segs[j].a);
+            segs[i].b = segs[j].a;
+        }
     }
 }
 
 /// Read a revolve back from its faces and emit plane, sketch and revolve.
 pub fn revolve(cx: &mut Cx, f: &SwFeature, faces: &[FaceId], cut: bool) -> Result<String, String> {
+    revolve_with(cx, f, faces, cut, &RevOpts::default())
+}
+
+/// What a caller knows of a revolve that its faces do not say (`sweep.rs`).
+#[derive(Debug, Clone, Default)]
+pub struct RevOpts {
+    /// The axis direction of a revolve made of spheres only (a dome: the normal of its base face).
+    pub sphere_axis: Option<Vec3>,
+    /// A revolve without end caps that spans less than a turn (an arc piece of a sweep path): a point of the half
+    /// plane it starts from (where the next piece of the path takes over) and the angle it runs on past the faces'
+    /// angular extent (where the tool leaves the material).
+    pub start: Option<(Vec3, f64)>,
+    /// Out: the normal of the sketch plane the profile was drawn in.
+    pub normal: std::cell::Cell<Option<Vec3>>,
+}
+
+pub fn revolve_with(cx: &mut Cx, f: &SwFeature, faces: &[FaceId], cut: bool, opts: &RevOpts) -> Result<String, String> {
     let m = cx.m;
     let (mut lo, mut hi) = (Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY), Vec3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY));
     for v in m.b.vertex_ids() {
@@ -640,14 +1010,38 @@ pub fn revolve(cx: &mut Cx, f: &SwFeature, faces: &[FaceId], cut: bool) -> Resul
     }
     let l = (hi - lo).len().max(1.0);
     let tol = TOL * (1.0 + l);
-    let (ao, a, caps) = find_axis(m, faces, l)?;
-    let ax = Ax { ao, a };
+    let (ao, mut a, caps) = find_axis(m, faces, l, opts.sphere_axis)?;
+    let mut ax = Ax { ao, a };
     let lateral: Vec<FaceId> = faces.iter().copied().filter(|g| !caps.contains(g)).collect();
     if lateral.is_empty() {
         return Err("no lateral face".into());
     }
     // the half plane the sketch is drawn in, and the sweep
     let (u0, sweep, c0, c1): (Vec3, f64, Vec<FaceId>, Vec<FaceId>) = match caps.len() {
+        0 if opts.start.is_some() => {
+            let (p0, extra) = opts.start.unwrap();
+            let (_, rho0, u) = ax.sr(p0);
+            if rho0 < tol {
+                return Err("the start of the partial revolve is on its axis".into());
+            }
+            // the faces' angular extent from the start half plane, on the side they lie (flip the axis for the other)
+            let phis: Vec<f64> = lateral.iter().flat_map(|&g| face_points(m, g)).filter(|p| ax.sr(*p).1 > tol).map(|p| {
+                let (_, _, d) = ax.sr(p);
+                wrap(a.cross(u).dot(d).atan2(u.dot(d)))
+            }).collect();
+            let near0 = |t: f64| t < 1e-6 || t > TAU - 1e-6;
+            let pos = phis.iter().filter(|&&t| !near0(t)).all(|&t| t < PI);
+            let neg = phis.iter().filter(|&&t| !near0(t)).all(|&t| t > PI);
+            if pos == neg {
+                return Err("the faces of the partial revolve do not lie on one side of its start".into());
+            }
+            if neg {
+                a = -a;
+                ax = Ax { ao, a };
+            }
+            let span = phis.iter().map(|&t| if near0(t) { 0.0 } else if neg { TAU - t } else { t }).fold(0.0, f64::max);
+            (u, (span + extra).min(TAU), vec![], vec![])
+        }
         0 => {
             let u = match principal(a) {
                 Some((ai, _)) => {
@@ -726,19 +1120,23 @@ pub fn revolve(cx: &mut Cx, f: &SwFeature, faces: &[FaceId], cut: bool) -> Resul
     let frac = sweep / TAU;
     let mut prims = vec![];
     for &g in &lateral {
-        prims.push(generatrix(m, &ax, g, frac, tol)?);
+        prims.push(generatrix(m, &ax, &[g], frac, tol)?);
     }
+    let prims0 = prims.len();
+    let mut prims = join_split(m, &ax, prims, frac, tol)?;
+    let nprims = prims.len();
     // sketch frame: the plane through the axis and the start half plane
     let z = a.cross(u0).normalize();
     let fr = cx.frame(z, ao);
+    opts.normal.set(Some(fr.z));
     let world = |p: P| ao + a * p.0 + u0 * p.1;
     let sk_xy = |p: P| fr.xy(world(p));
 
     // profile: the chain, closed
     let mut segs: Vec<Seg>;
     let mut circle: Option<(P, f64, FaceId)> = None;
-    if let [Prim { g: Gen::Circle { c, r }, face, .. }] = prims.as_slice() {
-        circle = Some((*c, *r, face.expect("a lateral face")));
+    if let [Prim { g: Gen::Circle { c, r }, faces, .. }] = prims.as_slice() {
+        circle = Some((*c, *r, faces[0]));
         segs = vec![];
     } else {
         if prims.iter().any(|p| matches!(p.g, Gen::Circle { .. })) {
@@ -752,6 +1150,7 @@ pub fn revolve(cx: &mut Cx, f: &SwFeature, faces: &[FaceId], cut: bool) -> Resul
         }
     }
     merge(&mut segs, tol);
+    snap(&mut segs, tol);
     // the sketch: counter-clockwise in the sketch plane
     if circle.is_none() {
         let mut poly: Vec<P> = vec![];
@@ -789,6 +1188,33 @@ pub fn revolve(cx: &mut Cx, f: &SwFeature, faces: &[FaceId], cut: bool) -> Resul
             smax = smax.max(q.0);
         }
         let e = match s.arc {
+            None if s.spl.is_some() => {
+                let c = s.spl.as_ref().unwrap();
+                let k = c.ctrl.len();
+                let ids: Vec<String> = (0..k)
+                    .map(|i| {
+                        if i == 0 {
+                            point(&mut sk, s.a)
+                        } else if i == k - 1 {
+                            point(&mut sk, s.b)
+                        } else {
+                            let q = sk_xy(v2(c.ctrl[i]));
+                            sk.point(q.0, q.1)
+                        }
+                    })
+                    .collect();
+                let id = format!("cv{}", sk.entities.len() + 1);
+                sk.entities.push(
+                    Obj::new()
+                        .put("type", "cvspline")
+                        .put("id", id.as_str())
+                        .put("pts", arr(ids.iter().map(|x| js(x)).collect()))
+                        .put("degree", n(c.degree as f64))
+                        .put("knots", arr(c.knots.iter().map(|&k| n(k)).collect()))
+                        .build(),
+                );
+                id
+            }
             None => {
                 let (pa, pb) = (point(&mut sk, s.a), point(&mut sk, s.b));
                 sk.line(&pa, &pb, false)
@@ -830,7 +1256,8 @@ pub fn revolve(cx: &mut Cx, f: &SwFeature, faces: &[FaceId], cut: bool) -> Resul
         cx.names.insert(g, format!("{rid}.C1"));
     }
     let dims: Vec<String> = f.dims.iter().map(|d| format!("{} = {}", d.name, d.text)).collect();
-    Ok(format!("{} about axis ({:.3},{:.3},{:.3}); {} face(s), angle {:.4}{}{}", if cut { "cut" } else { "boss" }, a.x, a.y, a.z, lateral.len(), angle, if caps.is_empty() { "" } else { ", end caps" }, if dims.is_empty() { String::new() } else { format!(" (file lists {})", dims.join(", ")) }))
+    let joined = if nprims < prims0 { format!(" ({prims0} pieces on {nprims} surfaces)") } else { String::new() };
+    Ok(format!("{} about axis ({:.3},{:.3},{:.3}); {} face(s){joined}, angle {:.4}{}{}", if cut { "cut" } else { "boss" }, a.x, a.y, a.z, lateral.len(), angle, if caps.is_empty() { "" } else { ", end caps" }, if dims.is_empty() { String::new() } else { format!(" (file lists {})", dims.join(", ")) }))
 }
 
 /// Close an open chain: extend a cut past the surface it meets, then join the ends directly or through the axis,
@@ -877,7 +1304,7 @@ fn close_open(segs: &mut Vec<Seg>, prims: &[Prim], cut: bool, l: f64, tol: f64) 
     let eps = 1e-3 * (1.0 + l);
     let probes: Vec<(P, P)> = prims
         .iter()
-        .filter(|p| p.face.is_some())
+        .filter(|p| !p.faces.is_empty())
         .map(|p| {
             let mid = seg_of(p, false).mid();
             ((mid.0 + side * eps * p.nrm.0, mid.1 + side * eps * p.nrm.1), (mid.0 - side * eps * p.nrm.0, mid.1 - side * eps * p.nrm.1))

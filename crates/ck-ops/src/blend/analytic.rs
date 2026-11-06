@@ -269,7 +269,7 @@ pub(super) fn blend_edge_hint_inner(
     // a plane meeting a cylinder along the line: the ball centre is at r from the plane and R + r from the axis
     let (off, ta, tb) = if circ.is_none() && !chamfer && faces.iter().any(|&f| matches!(b.face(f).surface, Surface::Cylinder { .. })) {
         match super::torus_corner::wall_section(b, faces, pm, dir, r) {
-            Some((c, a, bb)) if !convex && matches!(spec, Spec::Fillet(_, FilletProfile::Circular)) => (c - pm, a, bb),
+            Some((c, a, bb)) if (!convex || super::torus_corner::is_convex_wall_line(b, e)) && matches!(spec, Spec::Fillet(_, FilletProfile::Circular)) => (c - pm, a, bb),
             _ => {
                 dbg_fail("wall line: no exact section");
                 return Err(BlendError::code("blendUnsupported"));
@@ -323,6 +323,8 @@ pub(super) fn blend_edge_hint_inner(
         }
     };
     let (pm_c, ta_c, tb_c) = (rot(pm), rot(ta), rot(tb));
+    // a concave fillet whose contact runs off a narrow face over its convex far edge: trimmed by the next face continued
+    let mut overflow: Vec<OverflowClip> = vec![];
     for (f, t) in [(faces[0], ta_c), (faces[1], tb_c)] {
         let on_boundary = || {
             b.face_edges(f).into_iter().any(|e2| {
@@ -331,6 +333,15 @@ pub(super) fn blend_edge_hint_inner(
             })
         };
         if point_in_face(b, f, t, tol) == Where::Out && !on_boundary() {
+            if !convex && !tangent && matches!(spec, Spec::Fillet(_, FilletProfile::Circular)) {
+                if let Some(c) = overflow_clip(b, f, e, pm_c, t, b.bbox(), tol) {
+                    if super::diag::on() {
+                        eprintln!("{}: contact leaves {} past its far edge; trimmed by the next face continued", name.id(), b.face_id_str(f));
+                    }
+                    overflow.push(c);
+                    continue;
+                }
+            }
             if let Spec::Fillet(_, FilletProfile::Curvature(sh)) = spec {
                 // the largest radius whose contact points still lie on their faces
                 let fits = |rr: f64| -> bool {
@@ -522,17 +533,49 @@ pub(super) fn blend_edge_hint_inner(
         }
     }
     if !convex && circ.is_none() && !chamfer {
+        // per end, the junction vertex it was shortened from: the one on the edge's line nearest that end (beyond it,
+        // or already on the edge when an earlier tool lengthened it). Another junction further along the same line,
+        // the corner of a second boss in line with this one, is no end of this edge: running on to it would bridge
+        // the gap between the bosses
+        let (mut e0, mut e1): (Option<(f64, bool)>, Option<(f64, bool)>) = (None, None);
         for &(q, behind) in &junc.ext {
             if (q - p0).cross(dir).len() > 1e-6 {
                 continue;
             }
             let (t0, t1) = ((p0 - q).dot(dir), (q - p1).dot(dir));
-            let more = if behind { 0.25 * r } else { 0.0 };
-            if t0 > 1e-6 {
-                m0 = m0.max(t0 + more);
+            if t0.abs() < t1.abs() {
+                if e0.map_or(true, |x| t0.abs() < x.0.abs()) {
+                    e0 = Some((t0, behind));
+                }
+            } else if e1.map_or(true, |x| t1.abs() < x.0.abs()) {
+                e1 = Some((t1, behind));
             }
-            if t1 > 1e-6 {
-                m1 = m1.max(t1 + more);
+        }
+        let (e0, e1) = (e0.filter(|x| x.0 > 1e-6), e1.filter(|x| x.0 > 1e-6));
+        let more = |behind: bool| if behind { 0.25 * r } else { 0.0 };
+        if let Some((t, behind)) = e0 {
+            m0 = m0.max(t + more(behind));
+        }
+        if let Some((t, behind)) = e1 {
+            m1 = m1.max(t + more(behind));
+        }
+    }
+    // a concave straight edge that runs into an oblique planar end face (a rib's free face slanting across the corner
+    // the rib stands in): the tool runs on past that end and is clipped by the end face's plane, so the blend ends on
+    // it (as for a concave arc above) instead of on a plane square to the edge
+    if !convex && circ.is_none() && !chamfer {
+        for (v, od, which) in [(ed.v0, -dir, 0usize), (ed.v1, dir, 1usize)] {
+            if (if which == 0 { m0 } else { m1 }) > 0.0 {
+                continue;
+            }
+            if let Some((pv, ns)) = oblique_end_planes(b, v, &faces, od) {
+                let mm = r.max(len * 0.05) + 1.0;
+                if which == 0 {
+                    m0 = mm;
+                } else {
+                    m1 = mm;
+                }
+                clips.extend(ns.into_iter().map(|n| (pv, -n)));
             }
         }
     }
@@ -653,6 +696,9 @@ pub(super) fn blend_edge_hint_inner(
     }
     for (o, n) in circ_clips {
         tool = clip_halfspace(&tool, o, n, tol)?;
+    }
+    for c in &overflow {
+        tool = c.apply(&tool, tol)?;
     }
     // an overhang corner's vertex: the tool must not run on past it (a convex tool's margin
     // would cut material on the far side of the vertex outside the zone, where the corner

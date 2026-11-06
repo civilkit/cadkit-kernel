@@ -255,17 +255,30 @@ fn seed_tools<'a>(br: &'a Brep, seeds: &[Ref]) -> Result<Vec<(&'a str, &'a Tool)
     if seeds.is_empty() {
         return Err(FeatureError::new(NO_SEEDS));
     }
-    seeds
-        .iter()
-        .map(|s| {
-            br.tools
-                .iter()
-                .rev()
-                .find(|(id, _)| id == s.as_str())
-                .map(|(id, t)| (id.as_str(), &**t))
-                .ok_or_else(|| FeatureError::new(codes::MISSING_REFERENCE))
-        })
-        .collect()
+    let mut out = vec![];
+    for s in seeds {
+        if let Some((id, t)) = br.tools.iter().rev().find(|(id, _)| id == s.as_str()) {
+            out.push((id.as_str(), &**t));
+            continue;
+        }
+        // a mirror seed: its copies, one tool per seed of the mirror (`<id>#<k>`, the latest regeneration's)
+        let pre = format!("{}#", s.as_str());
+        let mut copies: Vec<(&str, &Tool)> = vec![];
+        for (id, t) in br.tools.iter().rev() {
+            let Some(k) = id.strip_prefix(&pre) else { continue };
+            if k == "0" {
+                copies.push((id.as_str(), &**t));
+                break;
+            }
+            copies.push((id.as_str(), &**t));
+        }
+        if copies.is_empty() {
+            return Err(FeatureError::new(codes::MISSING_REFERENCE));
+        }
+        copies.reverse();
+        out.extend(copies);
+    }
+    Ok(out)
 }
 
 /// `mirror`.
@@ -319,8 +332,13 @@ pub fn exec_mirror(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
         copies.push((b, t.combine));
     }
     // Pinned: one boolean per seed; a mirrored cut that misses is silent.
-    for (b, c) in copies {
-        br.combine(&b, c, false)?;
+    for (b, c) in &copies {
+        br.combine(b, *c, false)?;
+    }
+    // the copies are the mirror's own tools (`<id>#<k>`, one per seed in order), so a later mirror or pattern can name
+    // this mirror as a seed and copy its copies, each with its own boss / cut combine
+    for (k, (b, c)) in copies.into_iter().enumerate() {
+        br.tools.push((format!("{}#{k}", f.id), std::rc::Rc::new(Tool { body: b, combine: c, recipe: None })));
     }
     carry_all(br, state, f, &srcs, &[mx], true, true);
     Ok(())

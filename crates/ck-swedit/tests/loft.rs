@@ -54,7 +54,7 @@ fn run(src: &str) -> ck_swedit::Outcome {
         }
     }
     let sw = sw_features(&fs);
-    let t = Tagged { body: &body, tags, features: &sw, unit_mm: 1.0 };
+    let t = Tagged { body: &body, tags, features: &sw, unit_mm: 1.0, start: None };
     rebuild_history(&t)
 }
 
