@@ -466,7 +466,13 @@ pub fn side_cycles(m: &Model, sides: &HashSet<FaceId>, fr: &Fr) -> Result<Vec<Lo
                 return Err(format!("side face {} without edges along the direction (neighbours along it: {})", m.b.face_id_str(w), nb.join(", ")));
             };
             visited.insert(w);
-            loops.push(Loop2 { segs: vec![(Seg2::Circle { c: fr.xy(*o), r: *r }, vec![w])] });
+            // (pieces of one round, the rest of it taken by later features: one circle)
+            let c = fr.xy(*o);
+            if let Some(l) = loops.iter_mut().find(|l: &&mut Loop2| matches!(l.segs.as_slice(), [(Seg2::Circle { c: c0, r: r0 }, _)] if near2(*c0, c) && (r0 - r).abs() < 1e-9 * (1.0 + r))) {
+                l.segs[0].1.push(w);
+                continue;
+            }
+            loops.push(Loop2 { segs: vec![(Seg2::Circle { c, r: *r }, vec![w])] });
             continue;
         }
         if ves.len() != 2 {
@@ -672,6 +678,8 @@ pub fn side_chain(cx: &Cx, sides: &[FaceId], fr: &Fr, span: (f64, f64), cut: boo
     // length for the pairing tolerance
     let mut ends: Vec<(usize, P2)> = vec![];
     let mut dirs: Vec<Option<P2>> = vec![];
+    // (as `dirs`, with the tangent of an arc at its end running on into the gap its face leaves: for the closing of a cut)
+    let mut cdirs: Vec<Option<P2>> = vec![];
     let mut length: Vec<f64> = vec![];
     for (gi, (t, _)) in groups.iter().enumerate() {
         let (pts, vpos) = &gsamp[gi];
@@ -681,8 +689,10 @@ pub fn side_chain(cx: &Cx, sides: &[FaceId], fr: &Fr, span: (f64, f64), cut: boo
                 let (lo, hi) = pts.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |a, q| (a.0.min(tt(q)), a.1.max(tt(q))));
                 ends.push((gi, (p.0 + lo * d.0, p.1 + lo * d.1)));
                 dirs.push(Some((-d.0, -d.1)));
+                cdirs.push(Some((-d.0, -d.1)));
                 ends.push((gi, (p.0 + hi * d.0, p.1 + hi * d.1)));
                 dirs.push(Some(*d));
+                cdirs.push(Some(*d));
                 length.push(hi - lo);
             }
             Trace::Circle { c, r } => {
@@ -716,6 +726,14 @@ pub fn side_chain(cx: &Cx, sides: &[FaceId], fr: &Fr, span: (f64, f64), cut: boo
                 dirs.push(None);
                 ends.push((gi, va[(i + 1) % va.len()].1));
                 dirs.push(None);
+                // (the gap runs counter-clockwise from the first end to the second)
+                let tan = |q: P2, sign: f64| {
+                    let (rx, ry) = (q.0 - c.0, q.1 - c.1);
+                    let l = rx.hypot(ry).max(1e-12);
+                    (-sign * ry / l, sign * rx / l)
+                };
+                cdirs.push(Some(tan(va[i].1, 1.0)));
+                cdirs.push(Some(tan(va[(i + 1) % va.len()].1, -1.0)));
             }
         }
     }
@@ -750,6 +768,14 @@ pub fn side_chain(cx: &Cx, sides: &[FaceId], fr: &Fr, span: (f64, f64), cut: boo
                 continue;
             }
             for p in meet(&groups[gi].0, &groups[gj].0) {
+                // an arc's end cannot meet another side at an end of an arc of the same round: that corner closes the
+                // arcs from the other side (the walls of one round, split where earlier features share it)
+                if [i, j].iter().any(|&k| {
+                    let g = ends[k].0;
+                    matches!(groups[g].0, Trace::Circle { .. }) && ends.iter().enumerate().any(|(o, x)| o != k && (x.0 == g || same_trace(&groups[x.0].0, &groups[g].0)) && dist2(x.1, p) < 1e-4 * (1.0 + length[g]) && dist2(ends[k].1, p) > 1e-4 * (1.0 + length[g]))
+                }) {
+                    continue;
+                }
                 let cost = (ei.0 - p.0).hypot(ei.1 - p.1) + (ej.0 - p.0).hypot(ej.1 - p.1);
                 // a corner removed by a later fillet or chamfer may be far from both remaining ends
                 if cost <= 2.0 * (length[gi] + length[gj]) {
@@ -893,7 +919,7 @@ pub fn side_chain(cx: &Cx, sides: &[FaceId], fr: &Fr, span: (f64, f64), cut: boo
         // (a single chain with the only two free ends is left to the closing below)
         if chains.len() > 1 || (0..ends.len()).filter(|&k| !taken[k]).count() > 2 {
             for v in chains {
-                apply_open_closure(cx, fr, span, &ends, &dirs, (v[0], v[1]), (ends[v[0]].1, ends[v[1]].1), &mut groups, &mut length, &mut links, &mut taken);
+                apply_open_closure(cx, fr, span, &ends, &cdirs, (v[0], v[1]), (ends[v[0]].1, ends[v[1]].1), &mut groups, &mut length, &mut links, &mut taken);
             }
         }
     }
@@ -925,7 +951,7 @@ pub fn side_chain(cx: &Cx, sides: &[FaceId], fr: &Fr, span: (f64, f64), cut: boo
         chains.sort();
         for v in chains {
             let (i, j) = (v[0], v[1]);
-            apply_open_closure(cx, fr, span, &ends, &dirs, (i, j), (ends[i].1, ends[j].1), &mut groups, &mut length, &mut links, &mut taken);
+            apply_open_closure(cx, fr, span, &ends, &cdirs, (i, j), (ends[i].1, ends[j].1), &mut groups, &mut length, &mut links, &mut taken);
         }
     }
     // exactly two ends left: the side between them was absorbed by a flush face of another feature; close with a line
@@ -945,7 +971,7 @@ pub fn side_chain(cx: &Cx, sides: &[FaceId], fr: &Fr, span: (f64, f64), cut: boo
         // the far side: it runs on, through air, to beyond the body): each end runs on along its side to just outside
         // the body's outline in the sketch plane, and the two points join along that outline the short way round
         if cut {
-            apply_open_closure(cx, fr, span, &ends, &dirs, (i, j), (ei, ej), &mut groups, &mut length, &mut links, &mut taken);
+            apply_open_closure(cx, fr, span, &ends, &cdirs, (i, j), (ei, ej), &mut groups, &mut length, &mut links, &mut taken);
         }
         let d = (ej.0 - ei.0, ej.1 - ei.1);
         let l = d.0.hypot(d.1);
@@ -1075,7 +1101,14 @@ pub fn side_chain(cx: &Cx, sides: &[FaceId], fr: &Fr, span: (f64, f64), cut: boo
 /// through material: new straight groups join the two sides, linked at the corners.
 #[allow(clippy::too_many_arguments)]
 fn apply_open_closure(cx: &Cx, fr: &Fr, span: (f64, f64), ends: &[(usize, P2)], dirs: &[Option<P2>], (i, j): (usize, usize), (ei, ej): (P2, P2), groups: &mut Vec<(Trace, Vec<FaceId>)>, length: &mut Vec<f64>, links: &mut Vec<(usize, usize, P2)>, taken: &mut [bool]) {
-    let Some(path) = open_closure(cx, fr, span, (ei, dirs[i]), (ej, dirs[j])) else { return };
+    let Some(mut path) = open_closure(cx, fr, span, (ei, dirs[i]), (ej, dirs[j])) else { return };
+    // (an arc side ends at its end: the closing leaves it along the tangent from there, as a line of its own)
+    if matches!(groups[ends[i].0].0, Trace::Circle { .. }) {
+        path.insert(0, ei);
+    }
+    if matches!(groups[ends[j].0].0, Trace::Circle { .. }) {
+        path.push(ej);
+    }
     let mut prev = (ends[i].0, path[0]);
     for &q in &path[1..] {
         let d = (q.0 - prev.1 .0, q.1 - prev.1 .1);

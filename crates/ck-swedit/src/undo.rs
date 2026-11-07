@@ -12,8 +12,10 @@
 //!
 //! The steps are read back in passes: the first on the file's solid itself, which tells which leading steps are
 //! booleans whose tools can be undone; each later pass starts from the solid with those undone, so the steps see the
-//! material they were made on, and is kept when it reads further. Only extrudes and revolves that add or cut are
-//! undone; the first step that is not one ends the undo (the steps after it are read on the body as it is then).
+//! material they were made on, and is kept when it reads further. Extrudes and revolves that add or cut are undone by
+//! their tools turned round, fillets and chamfers by the tools that put their sharp edges back (`unblend.rs`), a mirror
+//! of the whole body by cutting away the copies' side of its plane (`unmirror.rs`); the first step that is none of
+//! these ends the undo (the steps after it are read on the body as it is then).
 
 use crate::{read_v, Outcome, Status, Tagged};
 use ck_json::{Json, Obj};
@@ -66,6 +68,8 @@ pub struct Start {
     /// Names of the file's faces that are faces of the starting body (`S0.I<k>F<n>`): every face no step after the
     /// sources made or changed.
     pub names: HashMap<FaceId, String>,
+    /// The starting body's name of every face of the file's solid (as `names`, also the faces later steps changed).
+    pub all: HashMap<FaceId, String>,
     pub src: HashSet<i64>,
     /// The note of the first source step.
     pub note: String,
@@ -76,29 +80,32 @@ pub struct Start {
 /// Names of the faces of the starting body: the start body is the file's solid face for face (the same faces in the
 /// same order, renamed `F1.I<k>F<n>`), so a face of the file that no step after the sources made or changed is named
 /// as the start body's face at its index (as `S0.I<k>F<n>`), where the two lie on the same surface.
-fn names(t: &Tagged, start: &Body, src: &HashSet<i64>) -> HashMap<FaceId, String> {
-    let mut out = HashMap::new();
+/// Also (second) the start body's name of every face of the file, whatever made it.
+fn names(t: &Tagged, start: &Body, src: &HashSet<i64>) -> (HashMap<FaceId, String>, HashMap<FaceId, String>) {
+    let (mut out, mut all) = (HashMap::new(), HashMap::new());
     if start.faces.len() != t.body.faces.len() {
-        return out;
+        return (out, all);
     }
     let pos: HashMap<i64, usize> = t.features.iter().enumerate().map(|(i, f)| (f.id, i)).collect();
-    let Some(last) = t.features.iter().rposition(|f| src.contains(&f.id)) else { return out };
+    let Some(last) = t.features.iter().rposition(|f| src.contains(&f.id)) else { return (out, all) };
     let (m, ms) = (Model::new(t.body), Model::new(start));
     let live: HashSet<FaceId> = ms.faces.iter().copied().collect();
     for &f in &m.faces {
-        if !t.tags.get(f.idx()).is_some_and(|v| !v.is_empty() && v.iter().all(|x| pos.get(&x.0).is_some_and(|&p| p <= last))) {
+        if !(live.contains(&f) && crate::blend::same_surface(m.kind(f), ms.kind(f))) {
             continue;
         }
-        if live.contains(&f) && crate::blend::same_surface(m.kind(f), ms.kind(f)) {
-            let n = start.face_id_str(f);
-            out.insert(f, n.strip_prefix("F1.").map_or(n.clone(), |r| format!("S0.{r}")));
+        let n = start.face_id_str(f);
+        let n = n.strip_prefix("F1.").map_or(n.clone(), |r| format!("S0.{r}"));
+        all.insert(f, n.clone());
+        if t.tags.get(f.idx()).is_some_and(|v| !v.is_empty() && v.iter().all(|x| pos.get(&x.0).is_some_and(|&p| p <= last))) {
+            out.insert(f, n);
         }
     }
-    out
+    (out, all)
 }
 
 /// The start features and names with the document ids they get (`S0`, `S1`, ... to fresh ids from `ids`).
-pub fn place(st: &Start, ids: &mut ck_recog::emit::Ids) -> (Vec<Json>, HashMap<FaceId, String>) {
+pub fn place(st: &Start, ids: &mut ck_recog::emit::Ids) -> (Vec<Json>, HashMap<FaceId, String>, HashMap<FaceId, String>) {
     let mut map = HashMap::new();
     for f in &st.feats {
         if let Some(id) = f.get_str("id") {
@@ -106,8 +113,8 @@ pub fn place(st: &Start, ids: &mut ck_recog::emit::Ids) -> (Vec<Json>, HashMap<F
         }
     }
     let feats = st.feats.iter().map(|f| retag(f, &map)).collect();
-    let names = st.names.iter().map(|(&f, n)| (f, match retag(&Json::Str(n.clone()), &map) { Json::Str(s) => s, _ => n.clone() })).collect();
-    (feats, names)
+    let re = |m: &HashMap<FaceId, String>| m.iter().map(|(&f, n)| (f, match retag(&Json::Str(n.clone()), &map) { Json::Str(s) => s, _ => n.clone() })).collect();
+    (feats, re(&st.names), re(&st.all))
 }
 
 fn retag(j: &Json, map: &HashMap<String, String>) -> Json {
@@ -175,9 +182,11 @@ struct Block {
 }
 
 /// The undo features of the steps right after the source steps of a read whose tools can be undone, up to `limit`
-/// steps.
-fn undo_block(o: &Outcome, src: &HashSet<i64>, limit: usize) -> Block {
-    let mut keep: Vec<(usize, usize, i64, String)> = vec![];
+/// steps: an extrude or revolve that adds or cuts by its tool turned round, a fillet or chamfer by the tools that put
+/// its sharp edges back (`unblend.rs`).
+fn undo_block(t: &Tagged, o: &Outcome, src: &HashSet<i64>, limit: usize) -> Block {
+    // (a, b, step, name, the undo features of a blend: planes and sketches, then tools)
+    let mut keep: Vec<(usize, usize, i64, String, Option<Vec<Json>>)> = vec![];
     let empty = Block { feats: vec![], steps: 0, of: HashMap::new() };
     let Some(i0) = o.steps.iter().position(|s| src.contains(&s.sw_id)) else { return empty };
     let Some(&(a0, base)) = o.ranges.get(i0) else { return empty };
@@ -185,6 +194,8 @@ fn undo_block(o: &Outcome, src: &HashSet<i64>, limit: usize) -> Block {
     if let Some(id) = o.features.get(a0).and_then(|f| f.get_str("id")) {
         map.insert(id.to_string(), "S0".to_string());
     }
+    let mut model: Option<Model> = None;
+    let mut fresh = 0usize;
     for (s, &(a, b)) in o.steps.iter().zip(&o.ranges).skip(i0 + 1) {
         if src.contains(&s.sw_id) {
             continue;
@@ -196,31 +207,65 @@ fn undo_block(o: &Outcome, src: &HashSet<i64>, limit: usize) -> Block {
             Status::Skipped if a == b => continue,
             Status::Rebuilt if a >= base && b <= o.features.len() && a < b => {
                 let solid: Vec<&Json> = o.features[a..b].iter().filter(|f| !matches!(f.get_str("type"), Some("plane" | "sketch"))).collect();
-                if solid.is_empty() || solid.iter().any(|f| inverted(f).is_none()) {
+                if solid.is_empty() {
                     break;
                 }
-                keep.push((a, b, s.sw_id, s.name.clone()));
+                let blend = |ty: &str| solid.iter().all(|f| f.get_str("type") == Some(ty));
+                if blend("fillet") || blend("chamfer") {
+                    let m = model.get_or_insert_with(|| Model::new(t.body));
+                    let faces: Vec<FaceId> = m.faces.iter().copied().filter(|g| t.tags.get(g.idx()).is_some_and(|v| v.iter().any(|x| x.0 == s.sw_id))).collect();
+                    let mut next = || {
+                        fresh += 1;
+                        format!("U{fresh}")
+                    };
+                    let Some(tools) = crate::unblend::tools(m, &faces, blend("chamfer"), &mut next) else { break };
+                    keep.push((a, b, s.sw_id, s.name.clone(), Some(tools)));
+                    continue;
+                }
+                if let [f] = solid[..] {
+                    if f.get_str("type") == Some("mirror") && matches!(f.get("body"), Some(Json::Bool(true))) {
+                        let m = model.get_or_insert_with(|| Model::new(t.body));
+                        let Some(fd) = crate::unmirror::find(m, &t.tags, s.sw_id, src) else { break };
+                        let mut next = || {
+                            fresh += 1;
+                            format!("U{fresh}")
+                        };
+                        keep.push((a, b, s.sw_id, s.name.clone(), Some(crate::unmirror::tools(m, &fd, &mut next))));
+                        continue;
+                    }
+                }
+                if solid.iter().any(|f| inverted(f).is_none()) {
+                    break;
+                }
+                keep.push((a, b, s.sw_id, s.name.clone(), None));
             }
             _ => break,
         }
     }
     let mut next = 0;
-    for &(a, b, ..) in &keep {
-        for f in &o.features[a..b] {
+    for (a, b, _, _, tools) in &keep {
+        let fs: &[Json] = tools.as_deref().unwrap_or(&o.features[*a..*b]);
+        for f in fs {
             if let Some(id) = f.get_str("id") {
                 next += 1;
                 map.insert(id.to_string(), format!("S{next}"));
             }
         }
     }
+    let is_sk = |f: &&Json| matches!(f.get_str("type"), Some("plane" | "sketch"));
     let mut out: Vec<Json> = vec![];
-    for &(a, b, ..) in &keep {
-        out.extend(o.features[a..b].iter().filter(|f| matches!(f.get_str("type"), Some("plane" | "sketch"))).map(|f| retag(f, &map)));
+    for (a, b, _, _, tools) in &keep {
+        let fs: &[Json] = tools.as_deref().unwrap_or(&o.features[*a..*b]);
+        out.extend(fs.iter().filter(is_sk).map(|f| retag(f, &map)));
     }
     let mut of = HashMap::new();
-    for (a, b, id, name) in keep.iter().rev() {
-        for f in o.features[*a..*b].iter().rev().filter(|f| !matches!(f.get_str("type"), Some("plane" | "sketch"))) {
-            let mut g = retag(&inverted(f).expect("checked above"), &map);
+    for (a, b, id, name, tools) in keep.iter().rev() {
+        let undo: Vec<Json> = match tools {
+            Some(ts) => ts.iter().rev().filter(|f| !is_sk(f)).cloned().collect(),
+            None => o.features[*a..*b].iter().rev().filter(|f| !is_sk(f)).map(|f| inverted(f).expect("checked above")).collect(),
+        };
+        for f in undo {
+            let mut g = retag(&f, &map);
             if let Json::Obj(kv) = &mut g {
                 kv.retain(|(k, _)| k != "name");
                 kv.push(("name".into(), Json::Str(format!("Undo {name}"))));
@@ -236,10 +281,10 @@ fn undo_block(o: &Outcome, src: &HashSet<i64>, limit: usize) -> Block {
 
 /// [`undo_block`] cut short where an undo does not regenerate on the file's solid (a boolean of a tool that
 /// coincides with faces of the body): the block ends before that step.
-fn checked_block(t: &Tagged, o: &Outcome, src: &HashSet<i64>, f0: &Json) -> Block {
-    let mut limit = usize::MAX;
+fn checked_block(t: &Tagged, o: &Outcome, src: &HashSet<i64>, f0: &Json, limit: usize) -> Block {
+    let mut limit = limit;
     loop {
-        let b = undo_block(o, src, limit);
+        let b = undo_block(t, o, src, limit);
         if b.feats.is_empty() {
             return b;
         }
@@ -297,12 +342,9 @@ pub fn merges(t: &Tagged, new: &Body) -> Option<usize> {
 pub fn rebuild(t: &Tagged) -> Option<Outcome> {
     let start = t.start.as_ref()?;
     let src = sources(t.features, &t.tags)?;
-    let names = names(t, start, &src);
+    let (names, all) = names(t, start, &src);
     let f1 = Obj::new().put("type", "importBody").put("id", "S0").put("name", "Imported body").put("format", "sldprt").put("blob", "").put("replace", true).build();
-    let mut undo: Vec<Json> = vec![];
-    let mut undone = 0usize;
-    let mut last: Option<Outcome> = None;
-    for _ in 0..4 {
+    let read = |undo: &[Json], undone: usize| {
         let mut feats = vec![f1.clone()];
         feats.extend(undo.iter().cloned());
         let note = if undone == 0 {
@@ -311,8 +353,17 @@ pub fn rebuild(t: &Tagged) -> Option<Outcome> {
             format!("the file's solid as the starting body (importBody), with the material of the next {undone} step(s) undone ({} undo feature(s))", undo.len())
         };
         // (the first reading, on the file's solid itself, only tells which steps to undo)
-        let st = Start { feats, names: names.clone(), src: src.clone(), note, verify: undone > 0 };
-        let o = read_v(t, 0, Some(&st));
+        let st = Start { feats, names: names.clone(), all: all.clone(), src: src.clone(), note, verify: undone > 0 };
+        read_v(t, 0, Some(&st))
+    };
+    let mut undo: Vec<Json> = vec![];
+    let mut undone = 0usize;
+    // (the reads on the file's solid with some steps undone, how many, and the undo of the read their own undo was
+    // taken from)
+    let mut passes: Vec<(Outcome, usize, (Vec<Json>, usize))> = vec![];
+    let mut prev: (Vec<Json>, usize) = (vec![], 0);
+    for _ in 0..4 {
+        let o = read(&undo, undone);
         let own = own_steps(&o, &src);
         if own.is_empty() {
             break;
@@ -323,22 +374,71 @@ pub fn rebuild(t: &Tagged) -> Option<Outcome> {
         if (o.exact() || o.close()) && own.len() == undone {
             return Some(o);
         }
-        let blk = checked_block(t, &o, &src, &f1);
+        let blk = checked_block(t, &o, &src, &f1, usize::MAX);
         if blk.steps == 0 && undone == 0 {
             // nothing to undo: no step of the file's own can be kept on the starting body
             return None;
         }
-        last = Some(o);
-        if blk.steps <= undone {
+        let more = blk.steps > undone;
+        let here = (undo.clone(), undone);
+        if undone > 0 {
+            passes.push((o, undone, prev));
+        }
+        if !more {
             break;
         }
+        prev = here;
         undo = blk.feats;
         undone = blk.steps;
     }
-    // (the read on the most material undone) the steps whose material is undone that pass their checks, then the
-    // file's remainder: a step after them is read on material it did not make
-    let mut o = last?;
-    let own = own_steps(&o, &src);
+    // (each read with material undone) the steps whose material is undone that pass their checks, then the file's
+    // remainder: a step after them is read on material it did not make. The read that keeps the most is taken, the
+    // one with the most undone of those
+    let mut best: Option<(Outcome, usize, (Vec<Json>, usize))> = None;
+    for (o, n, from) in passes.into_iter().rev() {
+        if let Some(o) = finish(t, o, n, &src) {
+            if best.as_ref().map_or(true, |b| kept(&o) > kept(&b.0)) {
+                best = Some((o, n, from));
+            }
+        }
+    }
+    // an undo that takes away more than its step made (a boss over material the imported body had there already)
+    // leaves faces of the starting body off it, and its read keeps none of the undone steps: fewer of them are undone
+    // then, last first, until every one undone is kept
+    let (mut out, n, from) = best?;
+    let mut l = n;
+    let mut base: Option<Outcome> = None;
+    while own_kept(&out, &src) < l && l > 1 {
+        l -= 1;
+        let prev = base.get_or_insert_with(|| read(&from.0, from.1));
+        let blk = checked_block(t, prev, &src, &f1, l);
+        if blk.steps == 0 || blk.steps >= n {
+            break;
+        }
+        let o = read(&blk.feats, blk.steps);
+        if (o.exact() || o.close()) && own_steps(&o, &src).len() == blk.steps {
+            return Some(o);
+        }
+        let Some(o) = finish(t, o, blk.steps, &src) else { continue };
+        if kept(&o) > kept(&out) {
+            out = o;
+        }
+        l = blk.steps;
+    }
+    Some(out)
+}
+
+/// Own steps (after the sources) kept in the editable prefix of a read.
+fn own_kept(o: &Outcome, src: &HashSet<i64>) -> usize {
+    let n = if o.exact() || o.close() { o.steps.len() } else { o.prefix };
+    let Some(i0) = o.steps.iter().position(|s| src.contains(&s.sw_id)) else { return 0 };
+    o.steps.iter().zip(&o.ranges).take(n).skip(i0 + 1).filter(|(s, r)| s.status == Status::Rebuilt && !src.contains(&s.sw_id) && r.0 < r.1).count()
+}
+
+/// A read with the material of its first `undone` own steps undone, ended at the next own step, with its editable
+/// prefix; `None` when no step of the file's own is kept.
+fn finish(t: &Tagged, mut o: Outcome, undone: usize, src: &HashSet<i64>) -> Option<Outcome> {
+    let own = own_steps(&o, src);
     if let Some(&i) = own.get(undone) {
         if o.steps.iter().take(i).all(|s| s.status != Status::Unsupported) {
             o.steps[i].status = Status::Unsupported;

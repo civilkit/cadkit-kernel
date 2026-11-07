@@ -343,7 +343,7 @@ pub fn exec_extrude_ex(state: &RegenState, f: &Feature, body: Option<&Body>, ext
     // Oracle: a cut goes AGAINST the sketch normal unless `flip`.
     let flip = &(*flip ^ (*op == Op::Cut));
     let sk = sketch_of(state, f)?;
-    let depth = state.num(f, "depth", 0.0)?;
+    let depth = state.size(f, "depth", 0.0)?;
     let draft = state.num(f, "draft", 0.0)?;
     let (mut profile, thin_on) = super::thin::feature_profile(state, sk, f)?;
     let depth = depth.max(MIN_DEPTH);

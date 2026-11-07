@@ -324,6 +324,13 @@ fn close_pole_spikes(s: &Surface, poly: &mut Vec<Vec2>, end_u: Option<f64>) {
     if (adv.abs() - per).abs() > 1e-6 * per {
         return;
     }
+    // the pole is the loop's last sample (circle, seam up to the apex, seam down: a pointed cone's side): the
+    // samples of the seam down stop at the pole, so the closing edge would run from the pole across the strip to
+    // the loop's start. Run the pole line back to the start's u instead; the closing edge is then the seam down.
+    if s.is_pole(poly[n - 1].x, poly[n - 1].y) {
+        poly.push(Vec2::new(poly[0].x, poly[n - 1].y));
+        return;
+    }
     for i in 1..n - 1 {
         let (prev, p, next) = (poly[i - 1], poly[i], poly[i + 1]);
         if !s.is_pole(p.x, p.y) {

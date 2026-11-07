@@ -11,7 +11,7 @@ use ck_topo::body::Body;
 
 pub fn exec_shell(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
     let FeatureKind::Shell { faces, outward, .. } = &f.kind else { unreachable!() };
-    let t = state.num(f, "thickness", 0.0)?;
+    let t = state.size(f, "thickness", 0.0)?;
     let Some(body) = br.body.as_ref() else { return Err(FeatureError::new(crate::regen::codes::NOTHING_TO_CUT)) };
     if !(t > 0.0) {
         return Err(FeatureError::new(crate::regen::codes::INVALID_VALUE));

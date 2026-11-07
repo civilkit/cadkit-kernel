@@ -235,3 +235,22 @@ fn hole_open_into_a_tunnel_under_a_roof() {
     let hole = r.out.features.iter().find(|f| f.get_str("type") == Some("hole")).expect("hole");
     assert_eq!(hole.get_str("end"), Some("blind"), "{}", ck_json::to_string(hole));
 }
+
+fn notch_src(r: f64) -> String {
+    format!(r#"[
+        {{"type":"sketch","id":"F1","plane":{{"kind":"std","id":"front"}},"points":[{{"id":"p1","x":0,"y":0}}],"entities":[{{"type":"circle","id":"e1","c":"p1","r":{r}}}],"constraints":[]}},
+        {{"type":"extrude","id":"F2","op":"add","sketch":"F1","end":"blind","depth":3}},
+        {{"type":"plane","id":"F3","mode":"offset","base":{{"kind":"std","id":"front"}},"offset":3}},
+        {{"type":"sketch","id":"F4","plane":{{"kind":"feature","id":"F3"}},"points":[{{"id":"p1","x":2.852118065,"y":17.527243231}},{{"id":"p2","x":0.40129344,"y":13.744142883}},{{"id":"p3","x":6.293576681,"y":12.612330967}},{{"id":"p4","x":-0.40129344,"y":13.744142883}},{{"id":"p5","x":0,"y":0}},{{"id":"p6","x":-2.852118065,"y":17.527243231}},{{"id":"p7","x":-6.293576681,"y":12.612330967}}],"entities":[{{"type":"arc","id":"e1","c":"p3","p1":"p1","p2":"p2"}},{{"type":"arc","id":"e2","c":"p5","p1":"p2","p2":"p4"}},{{"type":"arc","id":"e3","c":"p7","p1":"p4","p2":"p6"}},{{"type":"line","id":"e4","p1":"p6","p2":"p1"}}],"constraints":[]}},
+        {{"type":"extrude","id":"F5","op":"cut","sketch":"F4","end":"through"}}]"#)
+}
+
+#[test]
+fn notch_with_arc_flanks_open_at_a_round_rim() {
+    // a disc with a notch cut through its rim: the notch's two flanks are arcs that run on out of the disc, so the
+    // profile's closing (through air, outside the rim) leaves each arc along its tangent; the closing by a chord would
+    // leave a sliver of the rim standing
+    for r in [15.5, 16.5] {
+        assert_exact(&run(&notch_src(r)));
+    }
+}

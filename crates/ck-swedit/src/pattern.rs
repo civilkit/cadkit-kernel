@@ -236,7 +236,7 @@ const FREE: [&str; 3] = ["revolution", "extrusion", "spline"];
 
 /// The surface of face `s` carried by `x` is the surface of face `p`: analytic surfaces by their parameters
 /// (`img_matches`), free-form ones of one kind by points of `s`'s boundary landing on `p`'s surface.
-fn face_img(m: &Model, s: FaceId, x: &Xform, p: FaceId) -> bool {
+pub(crate) fn face_img(m: &Model, s: FaceId, x: &Xform, p: FaceId) -> bool {
     let (ks, kp) = (m.kind(s), m.kind(p));
     let (Kind::Other(a), Kind::Other(b)) = (ks, kp) else { return img_matches(ks, x, kp) };
     if a != b {
@@ -806,7 +806,7 @@ fn vec_json_arr(v: Vec3) -> ck_json::Json {
 // ---------- mirror ----------
 
 /// Mirror planes `(unit normal, offset)` that carry face `a` onto face `b`.
-fn refl_planes(a: &Kind, b: &Kind, out: &mut Vec<(Vec3, f64)>) {
+pub(crate) fn refl_planes(a: &Kind, b: &Kind, out: &mut Vec<(Vec3, f64)>) {
     match (a, b) {
         (Kind::Plane { n: na, d: da }, Kind::Plane { n: nb, d: db }) => {
             if (*na + *nb).len() < 1e-9 {

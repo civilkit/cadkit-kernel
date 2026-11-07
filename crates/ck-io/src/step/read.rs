@@ -685,6 +685,18 @@ impl<'a> Rd<'a> {
             while t1 - t0 > p + 1e-9 {
                 t1 -= p;
             }
+        } else if t1 <= t0 && lo != hi && matches!(&curve, Curve::BSpline(bs) if curve.eval(bs.domain().0).dist(curve.eval(bs.domain().1)) < 1e-6 * (1.0 + plo.len())) {
+            // a closed spline carrier whose arc crosses the seam (first vertex later on the curve than the second):
+            // move the seam to the first vertex so the arc is one parameter range
+            if let Curve::BSpline(bs) = &curve {
+                let (d0, d1) = bs.domain();
+                if t0 > d0 && t0 < d1 {
+                    curve = Curve::BSpline(bs.with_seam_at(t0));
+                    t1 += d1 - d0;
+                } else {
+                    return Err(bad(id, "edge has zero extent on its curve"));
+                }
+            }
         } else if t1 <= t0 {
             // the carrier runs from the second vertex to the first (a wrong
             // same_sense flag): the edge starts at the other vertex

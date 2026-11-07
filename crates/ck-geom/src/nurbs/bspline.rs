@@ -422,6 +422,23 @@ impl<P: Pt> BSplineCurve<P> {
         )
     }
 
+    /// A closed curve with its seam moved to the interior parameter `u`: the same point set, parametrised over
+    /// `[u, u + (b - a)]` (`[a, b]` the old domain), so an arc that crosses the old seam becomes one contiguous
+    /// parameter range. The joint carries a knot of multiplicity `degree` (the geometry is exact; the
+    /// representation is only C0 there). The caller guarantees the curve is closed and `u` is interior.
+    pub fn with_seam_at(&self, u: f64) -> Self {
+        let c = self.clamp_ends();
+        let (a, b) = c.domain();
+        let (lo, hi) = c.split(u);
+        let p = c.degree;
+        let span = b - a;
+        let mut knots: Vec<f64> = hi.knots[..hi.knots.len() - 1].to_vec();
+        knots.extend(lo.knots[p + 1..].iter().map(|k| k + span));
+        let mut h = hi.hom();
+        h.extend_from_slice(&lo.hom()[1..]);
+        Self::from_hom_parts(p, knots, &h, c.weights.is_some())
+    }
+
     /// The same curve over its domain with end knots of multiplicity p+1
     /// (an unclamped / periodic-style knot vector is cut back to its domain).
     pub fn clamp_ends(&self) -> Self {
@@ -1154,6 +1171,25 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod seam_tests {
+    use super::*;
+    use crate::Vec3;
+
+    #[test]
+    fn with_seam_at_keeps_the_point_set() {
+        let v = |x, y| Vec3::new(x, y, 0.0);
+        let c = BSplineCurve::new(3, vec![0., 0., 0., 0., 0.5, 1., 1., 1., 1.], vec![v(1., 1.), v(-1., 1.), v(-1., -1.), v(1., -1.), v(1., 1.)]).unwrap();
+        let r = c.with_seam_at(0.75);
+        assert_eq!(r.domain(), (0.75, 1.75));
+        for i in 0..=100 {
+            let t = 0.75 + i as f64 / 100.0;
+            let old = if t > 1.0 { t - 1.0 } else { t };
+            assert!(r.eval(t).dist(c.eval(old)) < 1e-12, "t {t}");
         }
     }
 }

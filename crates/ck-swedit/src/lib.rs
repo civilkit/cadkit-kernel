@@ -41,6 +41,8 @@ pub mod later_draft;
 pub mod rib;
 pub mod thread;
 pub mod undo;
+mod unblend;
+mod unmirror;
 
 use ck_geom::Vec3;
 use ck_json::{Json, Obj};
@@ -315,6 +317,9 @@ pub struct Cx<'a> {
     pub shift: HashMap<FaceId, f64>,
     /// The regeneration of the whole history ended with errors (set before the reordered readings are tried).
     pub regen_failed: bool,
+    /// For a part that starts with imported bodies, the starting body's name of every face of the file's solid, also
+    /// those a later step changed (`names` leaves them out): the supports of a blend fall back to it (`blend.rs`).
+    pub start_names: HashMap<FaceId, String>,
 }
 
 impl<'a> Cx<'a> {
@@ -494,7 +499,7 @@ pub(crate) fn read_v(t: &Tagged, variant: usize, start: Option<&undo::Start>) ->
     let m = Model::new(t.body);
     let later = later_draft::find(&m, &t.tags, t.features, variant);
     let mu = if later.is_empty() { None } else { Some(m.with_kinds(&later.iter().map(|l| (l.face, l.before.clone())).collect::<Vec<_>>())) };
-    let mut cx = Cx { m: &m, tags: &t.tags, unit_mm: t.unit_mm, tree: Tree::default(), names: HashMap::new(), notes: vec![], later, undrafted: mu.as_ref(), sess: Default::default(), shift: HashMap::new(), regen_failed: false };
+    let mut cx = Cx { m: &m, tags: &t.tags, unit_mm: t.unit_mm, tree: Tree::default(), names: HashMap::new(), notes: vec![], later, undrafted: mu.as_ref(), sess: Default::default(), shift: HashMap::new(), regen_failed: false, start_names: HashMap::new() };
     if start.is_some() {
         cx.sess = std::cell::RefCell::new(session::Session::with_start(t.start.clone()));
     }
@@ -526,9 +531,10 @@ pub(crate) fn read_v(t: &Tagged, variant: usize, start: Option<&undo::Start>) ->
             let first = steps.iter().all(|s: &Step| !st.src.contains(&s.sw_id));
             let n = cx.tree.feats.len();
             if first {
-                let (feats, names) = undo::place(st, &mut cx.tree.ids);
+                let (feats, names, all) = undo::place(st, &mut cx.tree.ids);
                 cx.tree.feats.extend(feats);
                 cx.names = names;
+                cx.start_names = all;
             }
             let n1 = cx.tree.feats.len();
             ranges.push((n, n1));
@@ -537,11 +543,12 @@ pub(crate) fn read_v(t: &Tagged, variant: usize, start: Option<&undo::Start>) ->
             made.insert(f.id, (n, n1));
             continue;
         }
-        // after the starting body only steps whose material can be undone (extrudes, revolves) are kept, so the read
-        // ends at the first other step that made faces (it would only be read on material it did not make)
+        // after the starting body only steps whose material can be undone (extrudes, revolves, fillets and chamfers)
+        // are kept, so the read ends at the first other step that made faces (it would only be read on material it did
+        // not make)
         if let Some(st) = start {
             let past = steps.iter().any(|s| st.src.contains(&s.sw_id));
-            if past && !faces.is_empty() && !matches!(class, Class::Extrude { .. } | Class::Revolve { .. } | Class::Cosmetic) {
+            if past && !faces.is_empty() && !matches!(class, Class::Extrude { .. } | Class::Revolve { .. } | Class::Cosmetic | Class::Fillet | Class::Chamfer) && f.kind != "Mirror" {
                 let n = cx.tree.feats.len();
                 ranges.push((n, n));
                 let why = "after the starting body: a step whose material is not undone in it".to_string();
@@ -609,7 +616,12 @@ pub(crate) fn read_v(t: &Tagged, variant: usize, start: Option<&undo::Start>) ->
             Class::Revolve { cut } => revolve::revolve(&mut cx, f, &faces, *cut),
             // (a thread that made faces of its own is modelled: swept along a helix, `thread.rs`)
             Class::Cosmetic => cosmetic(&cx, f, &faces).or_else(|e| thread::rebuild(&mut cx, f, &faces).map_err(|w| format!("{e}; {w}"))),
-            Class::Unsupported(why) => match pattern::rebuild(&mut cx, f, &faces, &pattern::Env { groups: &groups, made: &made, features: t.features }).or_else(|| loft::rebuild(&mut cx, f, &faces)).or_else(|| sweep::rebuild(&mut cx, f, &faces)) {
+            // (after an imported starting body a mirror is undone only as a mirror of the whole body)
+            Class::Unsupported(why) if start.is_some() && f.kind == "Mirror" => body_mirror(&mut cx, f, &start.expect("checked").src).unwrap_or_else(|| Err(format!("{why}; no plane mirrors the body onto the mirror's faces"))),
+            Class::Unsupported(why) => match pattern::rebuild(&mut cx, f, &faces, &pattern::Env { groups: &groups, made: &made, features: t.features })
+                .or_else(|| loft::rebuild(&mut cx, f, &faces))
+                .or_else(|| sweep::rebuild(&mut cx, f, &faces))
+            {
                 Some(r) => r,
                 None => Err(why.clone()),
             },
@@ -680,6 +692,15 @@ pub(crate) fn read_v(t: &Tagged, variant: usize, start: Option<&undo::Start>) ->
         }
     }
     out
+}
+
+/// A mirror of the whole body after an imported starting body (`unmirror.rs`), as our `mirror` with `body: true`.
+fn body_mirror(cx: &mut Cx, f: &SwFeature, src: &std::collections::HashSet<i64>) -> Option<Result<String, String>> {
+    let fd = unmirror::find(cx.m, cx.tags, f.id, src)?;
+    let plane = cx.frame(fd.n, fd.n * fd.c).plane;
+    let id = cx.tree.ids.next();
+    cx.tree.push(Obj::new().put("type", "mirror").put("id", id.as_str()).put("seeds", Json::Arr(vec![])).put("plane", plane).put("body", true).build());
+    Some(Ok(format!("mirror of the body in the plane n=({:.4}, {:.4}, {:.4}) at {:.4}", fd.n.x, fd.n.y, fd.n.z, fd.c)))
 }
 
 /// [`full_regen_in`] for a candidate order of the steps: the features are run a step at a time and the run stops at

@@ -107,6 +107,9 @@ pub struct IrEdge {
     pub end: Option<usize>,
     /// Curve of a fin, used by tolerant edges.
     pub fin_curve: Option<usize>,
+    /// Tolerance of a tolerant edge (metres): how far its curve may be from the faces that meet there. `None` when the
+    /// edge is exact (the file's null-tolerance sentinel).
+    pub tol: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -446,6 +449,15 @@ impl<'a> Ex<'a> {
         Some(i)
     }
 
+    /// IR curve `ci` (or the basis of a trimmed curve) is an SP-curve on a rolling-ball blend.
+    fn sp_on_blend(&self, ci: usize) -> bool {
+        match &self.ir.curves[ci].geom {
+            IrCurve::Trimmed { basis: Some(b), .. } => self.sp_on_blend(*b),
+            IrCurve::Sp { surface: Some(s), .. } => matches!(self.ir.surfaces[*s].geom, IrSurface::Blend { .. }),
+            _ => false,
+        }
+    }
+
     fn vertex(&mut self, idx: i64) -> Option<usize> {
         if let Some(&i) = self.vert.get(&idx) {
             return Some(i);
@@ -474,8 +486,12 @@ impl<'a> Ex<'a> {
         let end = e_idx.and_then(|v| self.vertex(v));
         let c = e.i("curve");
         let curve = self.curve(c, 0);
-        let fin_curve = [fin, other].iter().flatten().map(|f| f.i("curve")).find(|&c| c > 0).and_then(|c| self.curve(c, 0));
-        self.ir.edges.push(IrEdge { id: e.i("node_id"), curve, start, end, fin_curve });
+        // a tolerant edge's own geometry is on its fins: prefer a fin curve that is not an SP-curve on a blend (whose
+        // parameters are the file's blend parameters, which an approximated blend surface does not share)
+        let fin_curves: Vec<usize> = [fin, other].iter().flatten().map(|f| f.i("curve")).filter(|&c| c > 0).filter_map(|c| self.curve(c, 0)).collect();
+        let fin_curve = fin_curves.iter().copied().find(|&c| !self.sp_on_blend(c)).or(fin_curves.first().copied());
+        let tol = Some(e.f("tolerance")).filter(|t| t.is_finite() && *t > 0.0 && *t < 1.0);
+        self.ir.edges.push(IrEdge { id: e.i("node_id"), curve, start, end, fin_curve, tol });
         let i = self.ir.edges.len() - 1;
         self.edge.insert(idx, i);
         Some(i)

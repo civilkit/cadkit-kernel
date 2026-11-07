@@ -472,7 +472,11 @@ pub fn blend(cx: &mut Cx, f: &SwFeature, faces: &[FaceId], chamfer: bool) -> Res
             let p = &picks[i];
             let (na, nb) = match rebuilt_names(p) {
                 Some(x) => x,
-                None => (cx.name_of(p.a)?, cx.name_of(p.b)?),
+                // (a support a later step changed: the starting body of an imported part still has it)
+                None => {
+                    let name = |g: FaceId| cx.name_of(g).or_else(|e| cx.start_names.get(&g).cloned().ok_or(e));
+                    (name(p.a)?, name(p.b)?)
+                }
             };
             edges.push(Obj::new().put("faces", arr(vec![s(&na), s(&nb)])).put("at", vec3(p.at)).build());
         }

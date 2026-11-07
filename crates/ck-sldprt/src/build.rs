@@ -90,6 +90,12 @@ fn geo_tol(p: Vec3) -> f64 {
     2e-3 + 1e-5 * p.len()
 }
 
+/// A point this close (mm) to a curve is on it for the validator at model tolerance 1e-6 (which accepts 1e-5 (1 + |p|)),
+/// with room for our own fitted carriers.
+fn on_curve(p: Vec3) -> f64 {
+    2e-6 * (1.0 + p.len())
+}
+
 struct FwCurve {
     curve: Curve,
     /// Parameter period of circles / ellipses.
@@ -266,11 +272,54 @@ impl<'a> B<'a> {
                 self.parts.push(part);
             }
         }
+        self.tolerant_edges();
         Ok(())
     }
 
     // ------------------------------------------------------------ orientation
     /// Largest shell outward (positive volume), the others (cavities) inward.
+    /// A tolerant edge of the file (one with a stored tolerance, often a curve on one of its faces only) may be off its
+    /// faces by up to that tolerance, and any edge may be off them by up to the tolerance of a tolerant vertex it ends at
+    /// (the seam of a periodic face run to such a vertex, say): when a built edge is off its faces by more than the
+    /// validator accepts at model tolerance, and by no more than that file tolerance, it is given its deviation (with a
+    /// margin, at most the file's tolerance) as its own tolerance.
+    fn tolerant_edges(&mut self) {
+        let ir = self.ir;
+        let mut file_tol: HashMap<EdgeId, f64> = HashMap::new();
+        for (ei, info) in &self.edges {
+            if let Some(t) = ir.edges[*ei].tol {
+                for &e in &info.segs {
+                    file_tol.insert(e, t * SCALE);
+                }
+            }
+        }
+        for e in self.body.edge_ids().collect::<Vec<_>>() {
+            let ed = self.body.edge(e);
+            let t = file_tol.get(&e).copied().unwrap_or(0.0).max(self.body.vertex(ed.v0).tol).max(self.body.vertex(ed.v1).tol);
+            if !(t > 0.0) || ed.tol > 0.0 {
+                continue;
+            }
+            let (t0, t1) = (ed.t0, ed.t1);
+            let mut dev = 0.0f64;
+            let mut lim = f64::INFINITY;
+            for c in self.body.edge_coedges(e) {
+                let surf = &self.body.face(self.body.coedge_face(c)).surface;
+                let mut prev = None;
+                for k in 0..=16 {
+                    let s = t0 + (t1 - t0) * k as f64 / 16.0;
+                    let uv = self.body.coedge_uv(c, s, prev);
+                    prev = Some(uv);
+                    let q = ed.curve.eval(s);
+                    dev = dev.max(surf.eval(uv.x, uv.y).dist(q));
+                    lim = lim.min(on_curve(q));
+                }
+            }
+            if dev > lim && dev <= t {
+                self.body.edges[e.idx()].tol = (dev * 1.5).min(t);
+            }
+        }
+    }
+
     fn orient_shells(&mut self, shells: &[(ShellId, f64)]) {
         let mut order: Vec<(ShellId, f64)> = shells.to_vec();
         order.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -389,6 +438,11 @@ impl<'a> B<'a> {
                     let (sa, sb) = bound.as_ref()?;
                     let Surface::BSpline(bb) = &**sb else { return None };
                     let (u, _) = bb.closest_param(q);
+                    // past the end of the blend's cross-sections the nearest one is not where the curve is
+                    let (u0, u1) = bb.domain().0;
+                    if u <= u0 + 1e-9 * (u1 - u0) || u >= u1 - 1e-9 * (u1 - u0) {
+                        return None;
+                    }
                     let (v0, v1) = bb.domain().1;
                     let (e0, e1) = (bb.eval(u, v0), bb.eval(u, v1));
                     let e = if sa.distance(e0) <= sa.distance(e1) { e0 } else { e1 };
@@ -396,12 +450,14 @@ impl<'a> B<'a> {
                 };
                 let can = sups.is_some() || bound.is_some();
                 let mut bs = self.fit_points(&p)?;
-                // refine only when the plain fit through the chart points strays from the supports
+                // the fit is refined until it is on the supports to a tenth of what the validator accepts at model
+                // tolerance 1e-6 (10 * 1e-6 * (1 + |p|) mm): a curve that stays further off puts its edges off their faces
+                let fine = |q: Vec3| 1e-6 * (1.0 + q.len());
                 let strays = can && {
                     let (a, b) = bs.domain();
                     (0..48).any(|k| {
                         let q = bs.eval(a + (b - a) * (k as f64 + 0.37) / 48.0);
-                        onto(q).map_or(false, |c| c.dist(q) > 5e-4)
+                        onto(q).map_or(false, |c| c.dist(q) > fine(q))
                     })
                 };
                 if strays {
@@ -416,7 +472,7 @@ impl<'a> B<'a> {
                     }
                     p.dedup_by(|a, b| a.dist(*b) <= 1e-9);
                     bs = self.fit_points(&p)?;
-                    for _ in 0..3 {
+                    for _ in 0..6 {
                         if p.len() > 2000 {
                             break;
                         }
@@ -427,7 +483,7 @@ impl<'a> B<'a> {
                             let m = bs.eval(d0 + (d1 - d0) * 0.5 * (params[i] + params[i + 1]));
                             if let Some(q) = onto(m) {
                                 let e = q.dist(m);
-                                if e > 2e-5 && e < 0.5 * p[i].dist(p[i + 1]) && q.dist(p[i]) > 1e-9 && q.dist(p[i + 1]) > 1e-9 {
+                                if e > 0.5 * fine(m) && e < 0.5 * p[i].dist(p[i + 1]) && q.dist(p[i]) > 1e-9 && q.dist(p[i + 1]) > 1e-9 {
                                     ins.push((i, q));
                                 }
                             }
@@ -1036,7 +1092,7 @@ impl<'a> B<'a> {
 
     /// Where a vertex is put, and its tolerance (mm, 0 = exact). A tolerant vertex (one with a stored tolerance) can be off
     /// the curves that meet there by up to its tolerance. When those curves come together at one point (their nearest
-    /// points to the stored position agree to within [`geo_tol`]), the vertex goes to that point and is exact; otherwise
+    /// points to the stored position agree to within [`on_curve`]), the vertex goes to that point and is exact; otherwise
     /// it stays where the file puts it and keeps the file's tolerance, as long as every curve passes within it.
     fn vertex_position(&mut self, vi: usize) -> (Vec3, f64) {
         let v = &self.ir.vertices[vi];
@@ -1064,12 +1120,13 @@ impl<'a> B<'a> {
             feet.push(fc.curve.eval(t));
         }
         let worst = feet.iter().map(|f| f.dist(p)).fold(0.0, f64::max);
+        // on its curves to well within what the validator accepts at model tolerance 1e-6 (1e-5 (1 + |p|) mm): exact;
         // our own carriers (fitted intersection curves) may add up to `geo_tol` to the file's gap
-        if feet.is_empty() || worst <= geo_tol(p) || worst > tol + geo_tol(p) {
+        if feet.is_empty() || worst <= on_curve(p) || worst > tol + geo_tol(p) {
             return (p, 0.0);
         }
         let m = feet.iter().fold(Vec3::new(0.0, 0.0, 0.0), |a, f| a + *f) * (1.0 / feet.len() as f64);
-        if feet.iter().all(|f| f.dist(m) <= geo_tol(m)) {
+        if feet.iter().all(|f| f.dist(m) <= on_curve(m)) {
             (m, 0.0)
         } else {
             (p, tol.max(worst * (1.0 + 1e-9)))
@@ -2427,7 +2484,7 @@ mod tests {
         let circle = |id, z: f64| IrCurveNode { id, geom: IrCurve::Circle { c: [0.0, 0.0, z], n: [0.0, 0.0, 1.0], x: [1.0, 0.0, 0.0], r: rad(z) }, sense_plus: true };
         let curves = vec![circle(10, h), circle(11, -h)];
         let vertices = vec![IrVertex { id: 20, p: [rad(h), 0.0, h], tol: None }, IrVertex { id: 21, p: [rad(-h), 0.0, -h], tol: None }];
-        let edges = vec![IrEdge { id: 30, curve: Some(0), start: Some(0), end: Some(0), fin_curve: None }, IrEdge { id: 31, curve: Some(1), start: Some(1), end: Some(1), fin_curve: None }];
+        let edges = vec![IrEdge { id: 30, curve: Some(0), start: Some(0), end: Some(0), fin_curve: None, tol: None }, IrEdge { id: 31, curve: Some(1), start: Some(1), end: Some(1), fin_curve: None, tol: None }];
         let lp = |id, edge, forward| IrLoop { id, fins: vec![IrFin { edge, forward }], vertex: None };
         let face = |id, surface, loops| IrFace { id, surface: Some(surface), same_sense: true, loops, back: false, colour: None, sw_id: None, sw_ids: vec![] };
         let faces = vec![face(40, 0, vec![lp(50, 0, false), lp(51, 1, true)]), face(41, 1, vec![lp(52, 0, true)]), face(42, 2, vec![lp(53, 1, false)])];
@@ -2621,7 +2678,7 @@ mod tests {
         let curves = vec![cn(1, IrCurve::Line { o: [0.0; 3], d: [1.0, 0.0, 0.0] }), cn(2, IrCurve::Line { o: [0.01, 0.0, 0.0], d: [0.0, 1.0, 0.0] }), cn(3, IrCurve::Line { o: [0.01, 0.0, 0.0], d: [0.0, 0.0, 1.0] })];
         let off = 3e-6;
         let vertices = vec![IrVertex { id: 10, p: [0.0; 3], tol: None }, IrVertex { id: 11, p: [0.01, 0.0, off], tol: Some(1e-5) }, IrVertex { id: 12, p: [0.01, 0.01, 0.0], tol: None }, IrVertex { id: 13, p: [0.01, 4e-6, 0.01], tol: None }];
-        let edge = |id, curve, start, end| IrEdge { id, curve: Some(curve), start: Some(start), end: Some(end), fin_curve: None };
+        let edge = |id, curve, start, end| IrEdge { id, curve: Some(curve), start: Some(start), end: Some(end), fin_curve: None, tol: None };
         let ir = Ir { schema: "test".into(), curves: curves.clone(), vertices: vertices.clone(), edges: vec![edge(20, 0, 0, 1), edge(21, 1, 1, 2)], ..Default::default() };
         let mut b = builder(&ir);
         let e = b.edge(0).unwrap();
@@ -2637,6 +2694,86 @@ mod tests {
         assert!(b.body.vertex(v).p.dist(Vec3::new(10.0, 0.0, off * SCALE)) < 1e-9);
         assert!((b.body.vertex(v).tol - 1e-2).abs() < 1e-12);
         assert!(ck_check::validate_edges(&b.body, 1e-6, ck_check::DEFAULT_TOL_CAP).is_empty());
+    }
+
+    /// A tolerant vertex a fraction of a micrometre off the curves that meet there (well inside the file's
+    /// tolerance, but more than the validator accepts of an exact vertex) goes where they meet, or keeps the tolerance.
+    #[test]
+    fn a_tolerant_vertex_just_off_its_curves_is_on_them_or_tolerant() {
+        let curves = vec![cn(1, IrCurve::Line { o: [0.0; 3], d: [1.0, 0.0, 0.0] }), cn(2, IrCurve::Line { o: [0.01, 0.0, 0.0], d: [0.0, 1.0, 0.0] }), cn(3, IrCurve::Line { o: [0.01, 3e-7, 0.0], d: [0.0, 0.0, 1.0] })];
+        let off = 2e-7; // 0.2 um
+        let vertices = vec![IrVertex { id: 10, p: [0.0; 3], tol: None }, IrVertex { id: 11, p: [0.01, 0.0, off], tol: Some(1e-6) }, IrVertex { id: 12, p: [0.01, 0.01, 0.0], tol: None }, IrVertex { id: 13, p: [0.01, 3e-7, 0.01], tol: None }];
+        let edge = |id, curve, start, end| IrEdge { id, curve: Some(curve), start: Some(start), end: Some(end), fin_curve: None, tol: None };
+        let ir = Ir { schema: "test".into(), curves: curves.clone(), vertices: vertices.clone(), edges: vec![edge(20, 0, 0, 1), edge(21, 1, 1, 2)], ..Default::default() };
+        let mut b = builder(&ir);
+        let e = b.edge(0).unwrap();
+        let v = b.body.edge(e.segs[0]).v1;
+        assert!(b.body.vertex(v).p.dist(Vec3::new(10.0, 0.0, 0.0)) < 1e-9 && b.body.vertex(v).tol == 0.0);
+        b.edge(1).unwrap();
+        assert!(ck_check::validate_edges(&b.body, 1e-6, ck_check::DEFAULT_TOL_CAP).is_empty());
+        // with a third line 0.3 um away the curves do not meet in one point: the vertex keeps a tolerance
+        let ir = Ir { schema: "test".into(), curves, vertices, edges: vec![edge(20, 0, 0, 1), edge(21, 1, 1, 2), edge(22, 2, 1, 3)], ..Default::default() };
+        let mut b = builder(&ir);
+        for k in 0..3 {
+            b.edge(k).unwrap();
+        }
+        let v = b.body.edge(b.edges[&0].segs[0]).v1;
+        assert!(b.body.vertex(v).tol > 0.0 && b.body.vertex(v).tol <= 1e-3);
+        assert!(ck_check::validate_edges(&b.body, 1e-6, ck_check::DEFAULT_TOL_CAP).is_empty());
+    }
+
+    /// The fit through a few chart points of an intersection (here a plane at 30 degrees through a cylinder) is refined
+    /// until it lies on both supports to well within what the validator accepts at model tolerance 1e-6.
+    #[test]
+    fn an_intersection_fit_lies_on_both_supports() {
+        let (r, a) = (0.002f64, 30f64.to_radians());
+        let surfaces = vec![
+            sn(1, IrSurface::Cylinder { o: [0.0; 3], axis: [0.0, 0.0, 1.0], r, x: [1.0, 0.0, 0.0] }),
+            sn(2, IrSurface::Plane { o: [0.0; 3], n: [0.0, a.sin(), a.cos()], x: [1.0, 0.0, 0.0] }),
+        ];
+        let at = |th: f64| [r * th.cos(), r * th.sin(), -a.tan() * r * th.sin()];
+        let pts: Vec<V3> = (0..5).map(|k| at(0.4 * k as f64)).collect();
+        let curves = vec![cn(3, IrCurve::Intersection { pts, surfaces: [Some(0), Some(1)], bounds: [None, None], chordal: 0.0 })];
+        let ir = Ir { schema: "test".into(), surfaces, curves, ..Default::default() };
+        let mut b = builder(&ir);
+        let c = b.curve(0).unwrap();
+        let (s0, s1) = (b.surface(0).unwrap(), b.surface(1).unwrap());
+        let (t0, t1) = c.curve.range();
+        let worst = (0..=400).map(|k| {
+            let p = c.curve.eval(t0 + (t1 - t0) * k as f64 / 400.0);
+            s0.distance(p).max(s1.distance(p)) / (1.0 + p.len())
+        }).fold(0.0, f64::max);
+        assert!(worst < 2e-6, "the fit is {worst:.3e} (1 + |p|) mm off its supports");
+    }
+
+    /// An edge whose file tolerance covers its distance from a face (a tolerant edge: here a cap circle 0.3 um below the
+    /// cap's plane) takes that deviation as its tolerance and the solid is valid; an exact edge that far off is not.
+    #[test]
+    fn a_tolerant_edge_may_be_off_its_face_within_the_files_tolerance() {
+        let (r, h, d) = (0.01f64, 0.005f64, 3e-7f64);
+        let mk = |tol: Option<f64>| {
+            let surfaces = vec![
+                sn(1, IrSurface::Cylinder { o: [0.0; 3], axis: [0.0, 0.0, 1.0], r, x: [1.0, 0.0, 0.0] }),
+                sn(2, IrSurface::Plane { o: [0.0, 0.0, h + d], n: [0.0, 0.0, 1.0], x: [1.0, 0.0, 0.0] }),
+                sn(3, IrSurface::Plane { o: [0.0, 0.0, -h], n: [0.0, 0.0, -1.0], x: [1.0, 0.0, 0.0] }),
+            ];
+            let circle = |id, z: f64| cn(id, IrCurve::Circle { c: [0.0, 0.0, z], n: [0.0, 0.0, 1.0], x: [1.0, 0.0, 0.0], r });
+            let curves = vec![circle(10, h), circle(11, -h)];
+            let vertices = vec![IrVertex { id: 20, p: [r, 0.0, h], tol: None }, IrVertex { id: 21, p: [r, 0.0, -h], tol: None }];
+            let edges = vec![IrEdge { id: 30, curve: Some(0), start: Some(0), end: Some(0), fin_curve: None, tol }, IrEdge { id: 31, curve: Some(1), start: Some(1), end: Some(1), fin_curve: None, tol: None }];
+            let lp = |id, edge, forward| IrLoop { id, fins: vec![IrFin { edge, forward }], vertex: None };
+            let face = |id, surface, loops| IrFace { id, surface: Some(surface), same_sense: true, loops, back: false, colour: None, sw_id: None, sw_ids: vec![] };
+            let faces = vec![face(40, 0, vec![lp(50, 0, false), lp(51, 1, true)]), face(41, 1, vec![lp(52, 0, true)]), face(42, 2, vec![lp(53, 1, false)])];
+            let body = IrBody { id: 70, kind: BodyKind::Solid, regions: vec![IrRegion { solid: true, shells: vec![IrShell { id: 60, faces }] }], density: None, last_feature: None };
+            let ir = Ir { schema: "test".into(), bodies: vec![body], surfaces, curves, vertices, edges, notes: vec![], import_sheets: false };
+            build(&[&ir], &Limits::default()).unwrap().body
+        };
+        let exact = mk(None);
+        assert!(ck_check::validate(&exact, 1e-6).iter().any(|i| i.code == "EDGE_OFF_SURFACE"));
+        let tolerant = mk(Some(1e-6));
+        assert!(ck_check::validate(&tolerant, 1e-6).is_empty(), "{:?}", ck_check::validate(&tolerant, 1e-6));
+        let t = tolerant.edge_ids().map(|e| tolerant.edge(e).tol).fold(0.0, f64::max);
+        assert!(t >= d * SCALE && t <= 1e-3, "edge tolerance {t}");
     }
 
     #[test]
@@ -2660,7 +2797,7 @@ mod tests {
         let end = c.curve.eval(d0 + 0.05 * (d1 - d0));
         let m = |p: Vec3| [p.x / SCALE, p.y / SCALE, p.z / SCALE];
         let vertices = vec![IrVertex { id: 10, p: m(start), tol: None }, IrVertex { id: 11, p: m(end), tol: None }];
-        let ir = Ir { schema: "test".into(), curves, vertices, edges: vec![IrEdge { id: 20, curve: Some(0), start: Some(0), end: Some(1), fin_curve: None }], ..Default::default() };
+        let ir = Ir { schema: "test".into(), curves, vertices, edges: vec![IrEdge { id: 20, curve: Some(0), start: Some(0), end: Some(1), fin_curve: None, tol: None }], ..Default::default() };
         let mut b = builder(&ir);
         let e = b.edge(0).unwrap();
         let len: f64 = e.segs.iter().map(|&s| b.body.edge_length(s)).sum();
@@ -2676,7 +2813,7 @@ mod tests {
         let surfaces = vec![sn(1, IrSurface::Plane { o: [0.0, 0.0, 0.0], n: [0.0, 0.0, 1.0], x: [1.0, 0.0, 0.0] })];
         let curves = vec![IrCurveNode { id: 10, geom: IrCurve::Circle { c: [0.0; 3], n: [0.0, 0.0, 1.0], x: [1.0, 0.0, 0.0], r: 0.01 }, sense_plus: true }];
         let vertices = vec![IrVertex { id: 20, p: [0.01, 0.0, 0.0], tol: None }];
-        let edges = vec![IrEdge { id: 30, curve: Some(0), start: Some(0), end: Some(0), fin_curve: None }];
+        let edges = vec![IrEdge { id: 30, curve: Some(0), start: Some(0), end: Some(0), fin_curve: None, tol: None }];
         let lp = IrLoop { id: 50, fins: vec![IrFin { edge: 0, forward: true }], vertex: None };
         let face = IrFace { id: 40, surface: Some(0), same_sense: true, loops: vec![lp], back: false, colour: None, sw_id: None, sw_ids: vec![] };
         let body = IrBody { id: 70, kind: BodyKind::Sheet, regions: vec![IrRegion { solid: false, shells: vec![IrShell { id: 60, faces: vec![face] }] }], density: None, last_feature: None };

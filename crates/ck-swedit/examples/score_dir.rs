@@ -90,8 +90,46 @@ fn main() {
         } else {
             out.fallback.clone().unwrap_or_default()
         };
-        let stop: String = stop.chars().take(110).collect();
+        let width = std::env::var("SCORE_WIDTH").ok().and_then(|v| v.parse().ok()).unwrap_or(110usize);
+        let stop: String = stop.chars().take(width).collect();
         println!("{name} | {class} | {kept}/{total} | {valid} | {dvol} | {secs:.2} | {stop}");
+        // (SCORE_STEPS=1: every step of the read, for a survey of where files stop)
+        if std::env::var_os("SCORE_STEPS").is_some() {
+            for s in &out.steps {
+                let note: String = s.note.chars().take(160).collect();
+                println!("    {:?} {} [{}] faces {}: {note}", s.status, s.kind, s.name, s.faces);
+            }
+            // (the features of the file with faces on the final body, in tree order)
+            let mut nf = std::collections::HashMap::<i64, usize>::new();
+            for v in &t.tags {
+                let mut ids: Vec<i64> = v.iter().map(|x| x.0).collect();
+                ids.sort();
+                ids.dedup();
+                for id in ids {
+                    *nf.entry(id).or_default() += 1;
+                }
+            }
+            let fs: Vec<String> = imp.meta.features.iter().filter(|f| nf.contains_key(&f.id)).map(|f| format!("{}[{}]#{}:{}", f.kind, f.name, f.id, nf[&f.id])).collect();
+            println!("    features with faces: {}", fs.join(", "));
+            if let Some(u) = ck_swedit::undo::rebuild(&t) {
+                println!("    undo read: kept {} of {} steps, fallback {:?}", ck_swedit::undo::kept(&u), u.steps.len(), u.fallback.as_deref().map(|s| s.chars().take(160).collect::<String>()));
+                for (s, c) in u.steps.iter().zip(&u.checks) {
+                    if let Some(w) = c.failure() {
+                        println!("    undo check of {} [{}]: {}", s.kind, s.name, w.chars().take(300).collect::<String>());
+                    }
+                }
+                if let Some(r) = &u.remainder {
+                    println!("    undo remainder from {} ({}): {}", r.from.1, r.from.2, r.reason.chars().take(300).collect::<String>());
+                }
+                if std::env::var_os("SCORE_FEATS").is_some() {
+                    for f in &u.features {
+                        println!("      {}", ck_json::to_string(f));
+                    }
+                }
+            } else {
+                println!("    undo read: none");
+            }
+        }
     }
     let s: Vec<String> = tally.iter().map(|(k, v)| format!("{k} {v}")).collect();
     println!("TOTAL {} files: {}", files.len(), s.join(", "));

@@ -27,7 +27,10 @@ fn run(src: &str, kinds: &[(i64, &str, &str)]) -> Outcome {
     let body = body.expect("body");
     let mut tags = vec![vec![]; body.faces.len()];
     for fid in body.face_ids() {
-        if let Ok(t) = body.face(fid).name.feature[1..].parse::<i64>() {
+        // (a copy a mirror or pattern made carries that feature's tag, as SolidWorks tags it)
+        let nm = &body.face(fid).name;
+        let copy = nm.suffix.rsplit('@').next().filter(|_| nm.suffix.contains('@')).and_then(|s| s.strip_prefix('F')?.split('.').next()?.parse::<i64>().ok());
+        if let Some(t) = copy.or_else(|| nm.feature[1..].parse::<i64>().ok()) {
             tags[fid.idx()] = vec![(t, 0)];
         }
     }
@@ -142,4 +145,69 @@ fn sources_need_a_later_step() {
     // (a source run after steps read back as usual starts the body there)
     let feats = [f(1, "Extrusion"), f(2, "Combine"), f(3, "Extrusion")];
     assert_eq!(ck_swedit::undo::sources(&feats, &tags).map(|s| s.into_iter().collect::<Vec<_>>()), Some(vec![2]));
+}
+
+/// An imported block whose two long top edges a later fillet rounds, then a hole: the fillet's material is put back
+/// on the file's solid (the corner wedge along each edge, added), so the fillet and the hole rebuild on the starting
+/// body to the file's solid exactly.
+#[test]
+fn imported_block_then_fillet_and_hole() {
+    let src = format!(
+        r#"[{},{{"type":"extrude","id":"F2","op":"add","sketch":"F1","end":"blind","depth":10}},
+{{"type":"fillet","id":"F3","radius":3,"edges":[{{"faces":["F2.C1","F2.S.e1"],"at":[0,-20,10]}},{{"faces":["F2.C1","F2.S.e3"],"at":[0,20,10]}}]}},
+{},{{"type":"extrude","id":"F5","op":"cut","sketch":"F4","end":"through","flip":true}}]"#,
+        rect("F1", TOP, -30.0, -20.0, 30.0, 20.0),
+        circle("F4", TOP, 4.0, 0.0, 3.0),
+    );
+    let o = run(&src, &[(2, "Imported", "Imported1"), (3, "Fillet", "Fillet3")]);
+    assert!(o.exact(), "{:?}\n{:#?}", o.fallback, steps(&o));
+    let names: Vec<&str> = o.steps.iter().filter(|s| s.status == Status::Rebuilt).map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["Imported1", "Fillet3", "Cut-Extrude5"], "{:#?}", steps(&o));
+    let undo: Vec<&str> = o.features.iter().filter_map(|f| f.get_str("name")).filter(|n| n.starts_with("Undo")).collect();
+    assert_eq!(undo, ["Undo Cut-Extrude5", "Undo Fillet3", "Undo Fillet3"]);
+    assert!(o.features.iter().any(|f| f.get_str("type") == Some("fillet")));
+}
+
+/// An imported block with a round boss on it, then a fillet of the concave edge at the boss's foot (a torus strip)
+/// and a hole: the round's material is cut away by the revolve of the corner section, and both steps rebuild on the
+/// starting body to the file's solid exactly.
+#[test]
+fn imported_boss_then_foot_round() {
+    let src = format!(
+        r#"[{},{{"type":"extrude","id":"F2","op":"add","sketch":"F1","end":"blind","depth":10}},
+{{"type":"plane","id":"F3","mode":"offset","base":{TOP},"offset":10}},
+{},{{"type":"extrude","id":"F5","op":"add","sketch":"F4","end":"blind","depth":8}},
+{{"type":"fillet","id":"F6","radius":2,"edges":[{{"faces":["F2.C1","F5.S.e1"],"at":[-2,0,10]}}]}},
+{},{{"type":"extrude","id":"F8","op":"cut","sketch":"F7","end":"through","flip":true}}]"#,
+        rect("F1", TOP, -30.0, -20.0, 30.0, 20.0),
+        circle("F4", r#"{"kind":"feature","id":"F3"}"#, -10.0, 0.0, 8.0),
+        circle("F7", TOP, 15.0, 0.0, 3.0),
+    );
+    let o = run(&src, &[(2, "Imported", "Imported1"), (5, "Combine", "Combine1"), (6, "Fillet", "Fillet6")]);
+    assert!(o.exact(), "{:?}\n{:#?}", o.fallback, steps(&o));
+    let names: Vec<&str> = o.steps.iter().filter(|s| s.status == Status::Rebuilt).map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["Imported1", "Fillet6", "Cut-Extrude8"], "{:#?}", steps(&o));
+    let tools: Vec<&str> = o.features.iter().filter(|f| f.get_str("name") == Some("Undo Fillet6")).filter_map(|f| f.get_str("type")).collect();
+    assert_eq!(tools, ["revolve"]);
+}
+
+/// An imported block on one side of the right plane, a hole in it, then a mirror of the whole body in that plane:
+/// the mirror's material is undone by cutting away the copy's side, so the hole and the mirror both rebuild on the
+/// starting body (the hole once, its copy by the mirror) to the file's solid exactly.
+#[test]
+fn imported_block_then_hole_and_body_mirror() {
+    let src = format!(
+        r#"[{},{{"type":"extrude","id":"F2","op":"add","sketch":"F1","end":"blind","depth":10}},
+{},{{"type":"extrude","id":"F4","op":"cut","sketch":"F3","end":"through","flip":true}},
+{{"type":"mirror","id":"F5","seeds":[],"plane":{{"kind":"std","id":"right"}},"body":true}}]"#,
+        rect("F1", TOP, 0.0, -20.0, 30.0, 20.0),
+        circle("F3", TOP, 15.0, 5.0, 3.0),
+    );
+    let o = run(&src, &[(2, "Imported", "Imported1"), (5, "Mirror", "Mirror5")]);
+    assert!(o.exact(), "{:?}\n{:#?}", o.fallback, steps(&o));
+    let names: Vec<&str> = o.steps.iter().filter(|s| s.status == Status::Rebuilt).map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["Imported1", "Cut-Extrude4", "Mirror5"], "{:#?}", steps(&o));
+    assert!(o.features.iter().any(|f| f.get_str("type") == Some("mirror") && f.get("body") == Some(&Json::Bool(true))));
+    let undo: Vec<&str> = o.features.iter().filter_map(|f| f.get_str("name")).filter(|n| n.starts_with("Undo")).collect();
+    assert_eq!(undo, ["Undo Mirror5", "Undo Cut-Extrude4"]);
 }

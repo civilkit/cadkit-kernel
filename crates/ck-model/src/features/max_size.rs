@@ -14,10 +14,14 @@ use ck_json::{Json, Obj};
 /// Most builds one search may spend (only on the refusal path).
 pub const MAX_BUILDS: usize = 8;
 
-static BLEND_SEARCH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static BLEND_SEARCH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
-/// Whether a refused fillet searches for its largest size. Off by default: each search rebuilds the blend up to
-/// [`MAX_BUILDS`] more times, which is slow on a big body. A client that wants the size turns it on.
+/// Most faces a body may have for a refused fillet to search for its largest size: each search rebuilds the blend up
+/// to [`MAX_BUILDS`] more times, which is quick on a part of this size and slow on a big assembly.
+pub const BLEND_SEARCH_MAX_FACES: usize = 600;
+
+/// Whether a refused fillet searches for its largest size. On by default (bodies up to [`BLEND_SEARCH_MAX_FACES`]
+/// faces); a client that finds the extra builds too slow turns it off.
 pub fn blend_search_enabled() -> bool {
     BLEND_SEARCH.load(std::sync::atomic::Ordering::Relaxed)
 }

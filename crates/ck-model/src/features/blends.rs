@@ -21,17 +21,18 @@ pub fn fillet_label(id: &str, r: f64, n: usize) -> String {
 
 /// A blend refusal; when it is a size one (`blendFailed` / `blendOverflow` / `blendUnsupported`) and the asked radius
 /// is positive, search the same builder for the largest radius that builds and name it in `maxSize` (see max_size.rs).
-/// A smaller radius that does not build leaves the refusal as it was: no size is offered. Off unless
-/// [`super::max_size::set_blend_search`] turned it on.
+/// A smaller radius that does not build leaves the refusal as it was: no size is offered. Skipped for a body of more
+/// than [`super::max_size::BLEND_SEARCH_MAX_FACES`] faces, or when [`super::max_size::set_blend_search`] turned it off.
 fn size_refusal(
     e: ck_ops::blend::BlendError,
     asked: f64,
     before: usize,
+    faces: usize,
     mut build: impl FnMut(f64) -> Result<ck_topo::body::Body, ck_ops::blend::BlendError>,
 ) -> FeatureError {
     let size = matches!(e.code.as_str(), "blendFailed" | "blendOverflow" | "blendUnsupported");
     let mut fe = blend_error(e);
-    if size && super::max_size::blend_search_enabled() && asked > 0.0 && asked.is_finite() {
+    if size && super::max_size::blend_search_enabled() && faces <= super::max_size::BLEND_SEARCH_MAX_FACES && asked > 0.0 && asked.is_finite() {
         let ok = |v: f64| build(v).is_ok_and(|b| ck_check::validate(&b, super::TOL).len() <= before);
         if let Some(m) = super::max_size::largest_that_builds(asked, None, ok) {
             fe = super::max_size::with_max_size(fe, "radius", m, "mm");
@@ -294,7 +295,7 @@ pub fn exec_chamfer(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Resul
         ChamferType::Vertex => return exec_vertex_chamfer(br, state, f, edges),
         _ => return Err(FeatureError::new("unsupported").with("what", Json::Str(format!("chamfer {ty}")))),
     }
-    let d = state.num(f, "distance", 0.0)?;
+    let d = state.size(f, "distance", 0.0)?;
     if !(d > 0.0) || !d.is_finite() {
         return Err(FeatureError::new("invalidValue"));
     }
@@ -321,7 +322,7 @@ pub fn exec_chamfer(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Resul
 /// `face` makes a ring of edges around one face agree).
 fn exec_chamfer_legs(br: &mut Brep, state: &mut RegenState, f: &Feature, edges: &[crate::EdgeRef], ty: &str) -> Result<(), FeatureError> {
     use ck_ops::blend::build::ChamferLeg;
-    let d1 = state.num(f, "distance", 0.0)?;
+    let d1 = state.size(f, "distance", 0.0)?;
     if !(d1 > 0.0) || !d1.is_finite() {
         return Err(FeatureError::new("invalidValue"));
     }
@@ -611,7 +612,7 @@ pub fn exec_fillet(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
         }
         return Err(FeatureError::new("unsupported").with("what", Json::Str(format!("fillet {t}"))));
     }
-    let r = state.num(f, "radius", 0.0)?;
+    let r = state.size(f, "radius", 0.0)?;
     if !(r > 0.0) || !r.is_finite() {
         return Err(FeatureError::new("invalidValue"));
     }
@@ -662,7 +663,7 @@ pub fn exec_fillet(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
                         ck_ops::blend::mixed::fillet_mixed(body, &sel, &vec![radius; sel.len()], &f.id, super::TOL)
                             .unwrap_or_else(|| Err(ck_ops::blend::BlendError::code("blendUnsupported")))
                     };
-                    return Err(size_refusal(e, r, ck_check::validate(body, super::TOL).len(), build));
+                    return Err(size_refusal(e, r, ck_check::validate(body, super::TOL).len(), body.num_faces(), build));
                 }
             }
         }
@@ -675,7 +676,7 @@ pub fn exec_fillet(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
             ck_ops::blend::build::blend_edges(body, &sel, spec, &f.id, super::TOL)
         }
     };
-    let out = build(r).map_err(|e| size_refusal(e, r, ck_check::validate(body, super::TOL).len(), build))?;
+    let out = build(r).map_err(|e| size_refusal(e, r, ck_check::validate(body, super::TOL).len(), body.num_faces(), build))?;
     br.body = Some(out);
     Ok(())
 }
@@ -740,7 +741,7 @@ fn first_edge_mid(b: &ck_topo::body::Body, fa: &str, fb: &str) -> Option<Vec3> {
 /// `distance` / `distance2` / `distance3` (defaults: `distance`) along the
 /// vertex's edges in arena order. No `Chamfer(..)` span (oracle trace).
 fn exec_vertex_chamfer(br: &mut Brep, state: &mut RegenState, f: &Feature, edges: &[crate::EdgeRef]) -> Result<(), FeatureError> {
-    let d1 = state.num(f, "distance", 0.0)?;
+    let d1 = state.size(f, "distance", 0.0)?;
     let d2 = if f.raw.get("distance2").is_some() { state.num(f, "distance2", d1)? } else { d1 };
     let d3 = if f.raw.get("distance3").is_some() { state.num(f, "distance3", d1)? } else { d1 };
     let at = f

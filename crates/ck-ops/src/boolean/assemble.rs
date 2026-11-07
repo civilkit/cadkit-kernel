@@ -557,6 +557,11 @@ pub fn select_with(
             if skip_side == Some(side) {
                 continue;
             }
+            // classifying every fragment is the longest stage of a boolean on a many-faced operand (a pattern of 100
+            // copies spent 2.5 s here with no way out): honour the work budget
+            if ck_core::budget::poll() {
+                return Err(super::apply::BUDGET_EXCEEDED.to_string());
+            }
             let (q, n) = sample_point_whole(arr, &fr).ok_or_else(|| {
                 super::bool_dbg!("no sample point for a fragment of face {fi} (side {side}, {}, {} loops)", arr.faces[fi].name.id(), fr.loops.len());
                 "booleanFailed".to_string()

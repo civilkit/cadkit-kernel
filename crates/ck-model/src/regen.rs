@@ -487,7 +487,27 @@ impl<'p> RegenState<'p> {
     pub fn num(&self, f: &Feature, key: &str, default: f64) -> Result<f64, FeatureError> {
         expr::eval_field(f.raw.get(key), &self.vars, default).map_err(FeatureError::new)
     }
+
+    /// A length the kernel can honour: like `num`, but a finite value outside [`MIN_SIZE`, `MAX_SIZE`] mm is refused
+    /// with `invalidValue` naming the field and the range (zero and negative values stay with each feature's own
+    /// check). Without this a 1e-9 shell or a 1e300 extrude ran into the tolerances and failed with an unrelated code,
+    /// or came back `ok` with a body that does not tessellate.
+    pub fn size(&self, f: &Feature, key: &str, default: f64) -> Result<f64, FeatureError> {
+        let v = self.num(f, key, default)?;
+        if v.is_finite() && v > 0.0 && !(MIN_SIZE..=MAX_SIZE).contains(&v) {
+            let why = if v < MIN_SIZE { "below the kernel's resolution" } else { "larger than the kernel can model" };
+            return Err(FeatureError::new(codes::INVALID_VALUE)
+                .with("field", Json::Str(key.into()))
+                .with("detail", Json::Str(format!("{key} {v:e} is {why}")))
+                .with("hint", Json::Str(format!("use a {key} between {MIN_SIZE:e} and {MAX_SIZE:e} (model units, mm)"))));
+        }
+        Ok(v)
+    }
 }
+
+/// Smallest and largest length `RegenState::size` accepts (mm).
+pub const MIN_SIZE: f64 = 1e-6;
+pub const MAX_SIZE: f64 = 1e7;
 
 /// Debug-trace sink for the per-feature spans (`"F2 extrude → 6 faces"`,
 /// `"face names"`, ...). Ids are the sink's own.

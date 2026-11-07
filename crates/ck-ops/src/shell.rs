@@ -239,6 +239,38 @@ pub fn shell_once(body: &Body, open: &[FaceId], thickness: f64, outward: bool, t
     Err(first.unwrap())
 }
 
+/// An opened face and a closed neighbour that continues it smoothly across a shared edge (the rim of an opened
+/// face that was rounded or tangent-blended before the shell): the offset surfaces of the two are parallel
+/// (the opening moves outward, the wall inward) and never meet, so the cavity has no edge there. Returns the
+/// names of the pair.
+fn rim_tangent_to_open_face(body: &Body, open: &[FaceId]) -> Option<(String, String)> {
+    for &f in open {
+        for e in body.face_edges(f) {
+            let fs = body.edge_faces(e);
+            if fs.len() != 2 {
+                continue;
+            }
+            let g = if fs[0] == f { fs[1] } else { fs[0] };
+            if g == f || open.contains(&g) {
+                continue;
+            }
+            let ed = body.edge(e);
+            let p = ed.curve.eval(0.5 * (ed.t0 + ed.t1));
+            let nrm = |h: FaceId| {
+                let sf = &body.face(h).surface;
+                let (u, v, _) = sf.closest_point(p);
+                sf.normal(u, v).try_normalize()
+            };
+            if let (Some(a), Some(b)) = (nrm(f), nrm(g)) {
+                if a.cross(b).len() < 0.02 {
+                    return Some((body.face_id_str(f), body.face_id_str(g)));
+                }
+            }
+        }
+    }
+    None
+}
+
 fn shell_try(body: &Body, open: &[FaceId], thickness: f64, outward: bool, tol: f64, cut_factor: f64) -> Result<Body, ShellError> {
     if !(thickness > 0.0) || !thickness.is_finite() {
         return Err(ShellError::code("invalidValue"));
@@ -253,6 +285,14 @@ fn shell_try(body: &Body, open: &[FaceId], thickness: f64, outward: bool, tol: f
     // surfaces only close at a new apex). The cavity is therefore cut off by a plane across the
     // loft, `reach_of_pole` short of the apex: the wall stays solid beyond it (the cavity there
     // is a sliver narrower than the wall), and the cavity ends flush on that plane.
+    if let Some((open_face, neighbour)) = rim_tangent_to_open_face(body, open) {
+        return Err(ShellError::detail(
+            "shellUnsupported",
+            format!(
+                "the opened face {open_face} meets {neighbour} tangentially (a rounded rim): the wall cannot end flush on a face its neighbour continues smoothly. Shell first and round the rim afterwards, or leave the edges around the opened face unrounded"
+            ),
+        ));
+    }
     let reach_of_pole = cut_factor * thickness;
     let near_poles = near_pole_cuts(body, thickness, reach_of_pole);
     if outward && !near_poles.is_empty() {

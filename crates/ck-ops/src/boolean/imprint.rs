@@ -226,6 +226,12 @@ fn cut_crossings(a: &CutSeg, b: &CutSeg, tol: f64, out: &mut Vec<Vec3>) {
     }
     let mut found: Vec<Vec3> = vec![];
     for wa in pa.windows(2) {
+        // two curves a hair apart pass the pre-selection in nearly all of the 64 x 64 window pairs, each refined by up to 30
+        // closest-point searches: seconds for one pair of cuts. Out of time, the crossings found so far are dropped with
+        // the arrangement the caller discards.
+        if ck_core::budget::expired() {
+            return;
+        }
         for wb in pb.windows(2) {
             let (a0, a1, b0, b1) = (wa[0].1, wa[1].1, wb[0].1, wb[1].1);
             let (da, db) = (a1 - a0, b1 - b0);
@@ -238,6 +244,12 @@ fn cut_crossings(a: &CutSeg, b: &CutSeg, tol: f64, out: &mut Vec<Vec3>) {
             u = u.clamp(0.0, 1.0);
             let (qa, qb) = (a0 + da * s, b0 + db * u);
             if qa.dist(qb) > slack.max(0.05 * (da.len() + db.len())) {
+                continue;
+            }
+            // segments running side by side are a stretch where the cuts coincide or touch, not a crossing (which
+            // needs the curves transversal); refining every pair of such a stretch costs a closest-point search per
+            // step and finds no branch point
+            if da.cross(db).len() < 0.02 * da.len() * db.len() {
                 continue;
             }
             // refine on the true curves
@@ -525,6 +537,11 @@ pub fn imprint_hooked(a: &Body, b: &Body, tol: f64, hook: Option<PairHook>) -> A
             None if apart(f, g, &mut loop_cache) => SsResult::Disjoint,
             None => ss::intersect(sf, sg, Some(bounds), tol),
         };
+        // a surface pair that needed marching can take long on its own, and `poll` reads the clock only every few
+        // calls: read it after each real intersection
+        if ck_core::budget::expired() {
+            break;
+        }
         match ssi {
             SsResult::Disjoint => {}
             SsResult::Coincident => {
@@ -542,6 +559,10 @@ pub fn imprint_hooked(a: &Body, b: &Body, tol: f64, hook: Option<PairHook>) -> A
             }
             SsResult::Curves(cs) => {
                 for c in cs {
+                    // each curve is trimmed against both faces (hundreds of ms for a long fitted one): out of time, stop here
+                    if ck_core::budget::expired() {
+                        break;
+                    }
                     let mut c = c;
                     extend_to_face_boundary(&mut c, &[(a, f), (b, g)], tol, max_gap);
                     let curve = c.curve().clone();
@@ -625,9 +646,14 @@ pub fn imprint_hooked(a: &Body, b: &Body, tol: f64, hook: Option<PairHook>) -> A
     // ---- 1b. crossings between two cut curves of the same face pair: two branches of one intersection
     // (equal-size tubes meeting symmetrically, e.g. crossed blades) cross each other in their interiors
     // at a singular point; both must be split there or the face walk sees one edge in four directions.
-    for i in 0..if super::robust() { cuts.len() } else { 0 } {
+    // (each crossing search can take long on near-coincident cuts: seconds for 12 copies of a revolved body a hair apart,
+    // all of it here in the robust retry; out of time, the caller sees the expiry and discards the arrangement)
+    'crossings: for i in 0..if super::robust() { cuts.len() } else { 0 } {
         for j in i + 1..cuts.len() {
             if cuts[i].faces == cuts[j].faces {
+                if ck_core::budget::expired() {
+                    break 'crossings;
+                }
                 cut_crossings(&cuts[i], &cuts[j], tol, &mut extra);
             }
         }
@@ -949,6 +975,9 @@ fn trim(c: &Curve, r: (f64, f64), faces: &[(&Body, FaceId)], bx: &Aabb, tol: f64
     let mut out: Vec<(f64, f64)> = vec![];
     super::bool_dbg!("  trim breakpoints {:?}", ts);
     for w in ts.windows(2) {
+        if ck_core::budget::expired() {
+            break;
+        }
         let (t0, t1) = (w[0], w[1]);
         if c.eval(t0).dist(c.eval(t1)) <= tol && c.eval(t0).dist(c.eval(0.5 * (t0 + t1))) <= tol {
             continue;
@@ -977,6 +1006,20 @@ fn trim(c: &Curve, r: (f64, f64), faces: &[(&Body, FaceId)], bx: &Aabb, tol: f64
 mod tests {
     use super::*;
     use crate::boolean::tests::{box_body, cyl_body};
+
+    /// Two cuts of one face pair that run along each other (here the same line twice) have no crossing between them;
+    /// two that cross at an angle are split at their crossing.
+    #[test]
+    fn cuts_side_by_side_have_no_crossing() {
+        let seg = |o: Vec3, d: Vec3| CutSeg { curve: Curve::line(o, d), t0: 0.0, t1: 10.0, faces: vec![(0, FaceId(0)), (1, FaceId(0))] };
+        let along = seg(Vec3::new(0.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0));
+        let mut out = vec![];
+        cut_crossings(&along, &seg(Vec3::new(0.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0)), 1e-6, &mut out);
+        assert!(out.is_empty(), "{out:?}");
+        cut_crossings(&along, &seg(Vec3::new(5.0, -5.0, 0.0), Vec3::new(0.0, 1.0, 0.0)), 1e-6, &mut out);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].dist(Vec3::new(5.0, 0.0, 0.0)) < 1e-9, "{out:?}");
+    }
 
     #[test]
     fn box_cylinder_arrangement() {
