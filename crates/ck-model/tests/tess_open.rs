@@ -183,3 +183,13 @@ fn marine_propeller_default_meshes_closed() {
     let issues = open_issues(include_str!("../../../tools/cases/marine_fuse/default_s5.ckpart"));
     assert!(issues.is_empty(), "{issues:?}");
 }
+
+/// A thin disc and a very small cylinder (plain circle extrudes the crash fuzz generates): the display mesh must stay closed
+/// when the whole part is smaller than the vertex snap distance.
+#[test]
+fn small_plain_extrudes_mesh_closed() {
+    for json in [include_str!("fixtures/tess_thin_disc.json"), include_str!("fixtures/tess_tiny_cylinder.json")] {
+        let issues = open_issues(json);
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+}

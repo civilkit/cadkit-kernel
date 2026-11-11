@@ -1156,11 +1156,24 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
     // an already-emitted one within `snap_tol`, looked up for every vertex as it is emitted: every
     // triangle mentioning either of a near pair then gets the same id, which keeps the mesh closed
     // (merging only where the two co-occur in one triangle leaves the other edges unmatched).
-    let snap_tol: f64 = std::env::var("CK_SNAP_TOL").ok().and_then(|v| v.parse().ok()).unwrap_or(1e-4);
+    // The distances are absolute, so they are scaled down for a face that is itself smaller than they are (a disc a fraction of
+    // a millimetre thick, a tiny cylinder): there, two vertices a snap distance apart are a real triangle's corners, and
+    // joining them left the face with no triangles at all.
+    let (mut lo3, mut hi3, mut lo2, mut hi2) = (Vec3::new(f64::MAX, f64::MAX, f64::MAX), Vec3::new(f64::MIN, f64::MIN, f64::MIN), Vec2::new(f64::MAX, f64::MAX), Vec2::new(f64::MIN, f64::MIN));
+    for q in &b.pts {
+        lo3 = Vec3::new(lo3.x.min(q.p.x), lo3.y.min(q.p.y), lo3.z.min(q.p.z));
+        hi3 = Vec3::new(hi3.x.max(q.p.x), hi3.y.max(q.p.y), hi3.z.max(q.p.z));
+        lo2 = Vec2::new(lo2.x.min(q.uv.x), lo2.y.min(q.uv.y));
+        hi2 = Vec2::new(hi2.x.max(q.uv.x), hi2.y.max(q.uv.y));
+    }
+    // the smallest extent the face really has (a flat face has a zero one, which does not count)
+    let thin = |x: f64, cap: f64| if x > 1e-12 { x.min(cap) } else { cap };
+    let size3 = thin(hi3.x - lo3.x, 1e3).min(thin(hi3.y - lo3.y, 1e3)).min(thin(hi3.z - lo3.z, 1e3));
+    let snap_tol: f64 = std::env::var("CK_SNAP_TOL").ok().and_then(|v| v.parse().ok()).unwrap_or_else(|| 1e-4_f64.min(size3 * 1e-3));
     // ...and only when the parameters agree: two copies of one point either side of a periodic
     // cut (u and u + period) are coincident in 3D but joining them leaves edges whose uv midpoint
     // lands a half period away, which the shading correction then measures as a huge normal step.
-    let snap_uv = 1e-3;
+    let (snap_u, snap_v) = (1e-3 * thin(hi2.x - lo2.x, 1.0), 1e-3 * thin(hi2.y - lo2.y, 1.0));
     let cell = snap_tol.max(1e-12);
     let mut cells: HashMap<(i64, i64, i64), Vec<u32>> = HashMap::default();
     let key = |p: Vec3| -> (i64, i64, i64) { ((p.x / cell).floor() as i64, (p.y / cell).floor() as i64, (p.z / cell).floor() as i64) };
@@ -1194,8 +1207,8 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
                                     for &id in here {
                                         let u = out.uv[id as usize];
                                         if (out.pts[id as usize] - p).len() < snap_tol
-                                            && (u.x - uv.x).abs() <= snap_uv
-                                            && (u.y - uv.y).abs() <= snap_uv
+                                            && (u.x - uv.x).abs() <= snap_u
+                                            && (u.y - uv.y).abs() <= snap_v
                                         {
                                             joined = Some(id);
                                             break 'near;

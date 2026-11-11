@@ -1,0 +1,1 @@
+{"format":"ck-part","version":1,"features":[{"type":"sketch","id":"S1","plane":{"kind":"std","id":"front"},"points":[{"id":"c","x":0,"y":0}],"entities":[{"type":"circle","id":"e1","c":"c","r":0.001118458249091791}],"constraints":[]},{"type":"extrude","id":"F2","op":"add","sketch":"S1","end":"blind","depth":-14.651982858264818}]}

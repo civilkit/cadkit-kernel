@@ -102,3 +102,23 @@ degenerate documents, not a cone regression.
 Traps 238 to 0, hangs mostly bounded by time budgets and a faster curve fit; see `docs/robustness.md` (results,
 error codes, the rule, how to add a case). Minimal cases live in `tools/cases/crash/` and run in
 `crates/ck-model/tests/robust_cases.rs`. New options: `--budget-ms N`, `--wasm-label`.
+
+## Known regressions
+
+The baseline (`tools/crash_fuzz_baseline.json`, recorded with the wall-clock harness before the rename) has 24
+`invalid-result` cases; a run on a later main had 87 to 95. The harness was not the cause: the old and the CPU-clock
+harness give 94 and 95 on the same wasm. Bisecting kernel builds on `case_341` found the change that added the vertex snap
+in `ck-tess` (the harmonic patch fill commit `de97069e`), which joins vertices within an absolute 1e-4 (and 1e-3 in the
+parameters). On a face whose smallest extent is under about a tenth of a millimetre, that joined every corner of every
+triangle, so the face had no triangles and the part reported `TESSELLATION_OPEN`.
+
+That was 71 cases (45 of them a plain `sketch, extrude` of a circle with a thin or tiny result, plus patterns and mirrors of
+those, sweeps, and thickened surfaces). The snap distances are now capped at a thousandth of the face's smallest extent
+(`crates/ck-tess/src/face.rs`; test `small_plain_extrudes_mesh_closed`). With that, the 5000-case run has 29
+`invalid-result`; the baseline is left as it is.
+
+Still open, `ok` or `structured-error` in the baseline and `invalid-result` now (kernel issue 46):
+`case_642`, `case_834`, `case_3369` (extrude of a sliver rectangle 0.0008 wide, then `lpattern`), `case_1114` (zero-depth
+extrude, two mirrors), `case_3670` (a `thicken` of 1e-5). They fail by another mechanism than the snap
+(`TESSELLATION_OPEN`, and `SHELL_NONMANIFOLD` for `case_3369`). `case_331` (a depth-0 extrude with two chamfers and a
+pattern) also timed out once under load; it is not reproducible as a regression yet.
