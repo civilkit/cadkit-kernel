@@ -25,7 +25,7 @@ use super::Brep;
 use crate::expr::{self, Vars};
 use crate::regen::{codes, FeatureError, RegenState};
 use crate::Feature;
-use ck_core::linalg::{Frame, Mat3, Vec3};
+use ck_core::linalg::{Frame, Mat3, Plane, Vec3};
 use ck_core::xform::Xform;
 use ck_geom::curve2::Curve2;
 use ck_geom::Vec2;
@@ -1711,6 +1711,90 @@ pub fn convert_to_tree(br: &mut Brep) -> Result<(), FeatureError> {
     rebuild(br, &mut model)?;
     br.sheet.model = Some(model);
     Ok(())
+}
+
+/// `mirror` of the whole body of a part that is a live sheet: the part stays a sheet.
+///
+/// * `replace`: the mirror image takes the place of the sheet. Its panel tree is the reflected tree (every panel, bend, cut-out and
+///   the rule as they were; the layout frame is reflected, so the bend sides and the inside and outside of every bend stay correct),
+///   which unfolds to the same flat pattern as the original. Any plane will do.
+/// * otherwise the image is joined to the sheet, which is one sheet only when the two meet along a straight edge of the base plate
+///   that carries no bend, with the plane square to the plate and nothing else of the sheet touching it. The joined panel tree
+///   unfolds as a whole. Everything else (a plane across a face, apart from the sheet, through a bend, tilted) cannot be one sheet
+///   and is refused with the reason, since a part holds one sheet.
+///
+/// `Ok(false)`: the part is not a live sheet (another feature changed the body, or it is unfolded); the caller mirrors the solid.
+pub fn mirror_sheet(br: &mut Brep, pl: &Plane, replace: bool) -> Result<bool, FeatureError> {
+    let Some(mut model) = br.sheet.model.clone() else { return Ok(false) };
+    if model.unfolded || br.body.as_ref().map(body_sig) != Some(model.sig) {
+        return Ok(false);
+    }
+    let tree = tree_of(&model)?;
+    let fl = tree.flat;
+    let t = model.sheet.rule.thickness;
+    let hint_part = "mirror inside a part of its own and insert both, or pick a plane square to the base plate through one of its straight edges that carries no bend";
+    if replace {
+        let m = Xform::mirror(pl);
+        let fl2 = Flat3 { o: m.apply_point(fl.o), x: m.apply_vec(fl.x), y: -m.apply_vec(fl.y), n: m.apply_vec(fl.n) };
+        model.tree = Some(tree.reflected(fl2, |p| [p[0], -p[1]], |v| [v[0], -v[1]]));
+        // the layout frame of the model, as `flat3` reads it back
+        let z = fl2.x.cross(fl2.y);
+        model.frame = Frame { o: fl2.o, x: fl2.x, y: fl2.y, z };
+        model.dir = if z.dot(fl2.n) >= 0.0 { 1.0 } else { -1.0 };
+        model.contour = None;
+        rebuild(br, &mut model)?;
+        br.sheet.model = Some(model);
+        return Ok(true);
+    }
+    let across = pl.n.dot(fl.n).abs();
+    if across > 1.0 - 1e-9 {
+        let face = |h: f64| pl.signed_dist(fl.point([0.0, 0.0], h)).abs() < 1e-6;
+        let why = if face(0.0) || face(t) {
+            "the mirror plane is a face of the sheet: the two halves would touch over the whole face and the wall would double in thickness"
+        } else {
+            "the mirror plane is parallel to the sheet: the image lies over or across the sheet, not along its edge"
+        };
+        return Err(unsupported(why, hint_part));
+    }
+    if across > 1e-9 {
+        return Err(unsupported("the mirror plane is neither square to the sheet nor parallel to it, so the image does not continue the base plate", hint_part));
+    }
+    let mut m2 = [pl.n.dot(fl.x), pl.n.dot(fl.y)];
+    let l = (m2[0] * m2[0] + m2[1] * m2[1]).sqrt();
+    m2 = [m2[0] / l, m2[1] / l];
+    let c = fl.flat_of(pl.o).0;
+    let d0 = m2[0] * c[0] + m2[1] * c[1];
+    let line_dist = |p: P| m2[0] * p[0] + m2[1] * p[1] - d0;
+    let refl = |p: P| {
+        let k = 2.0 * line_dist(p);
+        [p[0] - k * m2[0], p[1] - k * m2[1]]
+    };
+    let refl_v = |v: P| {
+        let k = 2.0 * (m2[0] * v[0] + m2[1] * v[1]);
+        [v[0] - k * m2[0], v[1] - k * m2[1]]
+    };
+    let image = tree.reflected(fl, refl, refl_v);
+    let joined = tree.joined_mirror(&image, c, m2).map_err(|why| unsupported(format!("the mirror image cannot be joined to the sheet as one sheet: {why}"), hint_part))?;
+    // the solids may meet along the seam face only: one side of the plane, four corners on it
+    if let Some(b) = &br.body {
+        let ds: Vec<f64> = b.vertices.iter().map(|v| pl.signed_dist(v.p)).collect();
+        let (lo, hi) = ds.iter().fold((f64::MAX, f64::MIN), |a, d| (a.0.min(*d), a.1.max(*d)));
+        let on = ds.iter().filter(|d| d.abs() <= 1e-6).count();
+        if lo < -1e-6 && hi > 1e-6 {
+            return Err(unsupported("the mirror plane cuts through the sheet, so the image overlaps it", hint_part));
+        }
+        if on != 4 {
+            return Err(unsupported("the sheet touches the mirror plane at more than the end face of the base plate (a bend or flange reaches it), so the halves would fuse along more than a seam", hint_part));
+        }
+    }
+    model.tree = Some(joined);
+    rebuild(br, &mut model)?;
+    br.sheet.model = Some(model);
+    Ok(true)
+}
+
+pub(super) fn report_mirror(br: &Brep, state: &mut RegenState, f: &Feature) {
+    report(br, state, f, "mirror")
 }
 
 /// `sheetCorner`: round or chamfer corners of the panels (free walls only).

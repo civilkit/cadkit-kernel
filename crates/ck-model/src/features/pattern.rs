@@ -294,6 +294,19 @@ pub fn exec_mirror(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
         // `@<feature>.1`, one `boolean Unite (n × n faces)`; seeds ignored.
         // GUESS: no body -> missingReference.
         let b = br.body.as_ref().ok_or_else(|| FeatureError::new(codes::MISSING_REFERENCE))?;
+        let replace = f.raw.get("replace").and_then(|v| v.as_bool()).unwrap_or(false);
+        // a part that is a sheet stays one: the mirrored panel tree (see `mirror_sheet`)
+        if super::sheet_features::mirror_sheet(br, &pl, replace)? {
+            super::sheet_features::report_mirror(br, state, f);
+            return Ok(());
+        }
+        let b = br.body.as_ref().ok_or_else(|| FeatureError::new(codes::MISSING_REFERENCE))?;
+        if replace {
+            // the image takes the place of the body, faces keep their names
+            let img = reflect_body(b, &pl).map_err(|e| FeatureError::new(&e))?;
+            br.body = Some(img);
+            return Ok(());
+        }
         let mut copy = reflect_body(b, &pl).map_err(|e| FeatureError::new(&e))?;
         copy.push_instance(&format!("{}.1", f.id));
         // every thread of the body is mirrored with it (the copy's faces exist after the combine)

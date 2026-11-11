@@ -292,6 +292,8 @@ export interface MirrorFeature {
   seeds: string[];
   plane?: GeomRef | string | null;
   body?: boolean;
+  /** With `body`: the image replaces the body (a sheet metal part stays a sheet) instead of being united with it. */
+  replace?: boolean;
   [key: string]: unknown;
 }
 
