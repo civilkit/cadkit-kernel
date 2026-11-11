@@ -1,6 +1,6 @@
 // Request-body cases for the wire layer. Each case = a fresh kernel instance
 // fed `bodies` in order (state carries across bodies within a case).
-// Consumed by the reference-capture tool (not published) (writes the recorded reference data (not published) from the
+// Consumed by tools/golden.mjs (writes tests-golden/wire.json from the
 // ORIGINAL kernel) and tools/diff.mjs (original vs rebuilt, byte-for-byte).
 const T = ['comb', 'continuity', 'convert', 'curvatureAt', 'curvatureMap', 'drag', 'drawing', 'inspect',
   'interference', 'massProps', 'matchEdges', 'measure', 'refCurve', 'sketchOffset', 'step'];

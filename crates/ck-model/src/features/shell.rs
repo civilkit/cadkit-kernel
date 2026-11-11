@@ -19,7 +19,7 @@ pub fn exec_shell(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<
     let mut open = vec![];
     let mut single: Option<Body> = None;
     for r in faces {
-        let id = body.find_face(r.as_str()).ok_or_else(|| FeatureError::new(crate::regen::codes::MISSING_REFERENCE))?;
+        let id = body.find_face(r.as_str()).ok_or_else(|| crate::refs::missing_face([body], r.as_str()))?;
         open.push(id);
     }
     // with several lumps (bodies), only the lump that holds the open faces is shelled: another lump, a coincident
@@ -35,7 +35,7 @@ pub fn exec_shell(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<
         let names: Vec<String> = open.iter().map(|&g| body.face(g).name.id()).collect();
         let mut ids = vec![];
         for n in &names {
-            ids.push(sub.find_face(n).ok_or_else(|| FeatureError::new(crate::regen::codes::MISSING_REFERENCE))?);
+            ids.push(sub.find_face(n).ok_or_else(|| crate::refs::missing_face([&sub], n))?);
         }
         open = ids;
         let mut others = ck_ops::boolean::assemble::rebuild_in_order(body, &rest);

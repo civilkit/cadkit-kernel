@@ -122,7 +122,7 @@ fn comp_of(b: &Body, comps: &[Vec<FaceId>], s: &Sel) -> Result<usize, FeatureErr
     match s {
         Sel::Lump(n) => (*n < comps.len()).then_some(*n).ok_or_else(missing),
         Sel::Face(name) => {
-            let fid = b.find_face(name).ok_or_else(missing)?;
+            let fid = b.find_face(name).ok_or_else(|| crate::refs::missing_face([b], name))?;
             comps.iter().position(|c| c.contains(&fid)).ok_or_else(missing)
         }
         Sel::Body(name) => {

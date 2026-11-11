@@ -176,7 +176,7 @@ pub fn find_ref(b: &Body, id: &str) -> Option<ck_topo::body::FaceId> {
 
 /// Error codes that only mean "not rebuilt yet" (see [`Brep::exec_insert`]).
 pub fn is_rebuild_gap(code: &str) -> bool {
-    code.starts_with("TODO(rebuild)") || code == "blendUnsupported"
+    code == "notImplemented" || code == "blendUnsupported"
 }
 
 /// Canonical text of a nested part (cache key).

@@ -383,10 +383,27 @@ fn pattern_xforms(br: &mut Brep, state: &RegenState, f: &Feature) -> Result<(Vec
                         .with("detail", ck_json::Json::Str("the second direction runs along the first: pick a direction across it".into())));
                 }
             }
-            if a.count as f64 * b.as_ref().map_or(1.0, |b| b.count.max(1) as f64) > MAX_INSTANCES {
+            // a third direction makes a block: it has to leave the plane of the first two (or the line of the first when there is no second)
+            let c = pattern_place::row(br, state, f, "3", mid, count_of)?;
+            if let Some(c) = c.as_ref().filter(|c| c.count > 1) {
+                let bad = |what: &str| FeatureError::new(codes::INVALID_VALUE).with("field", ck_json::Json::Str("dir3".into())).with("detail", ck_json::Json::Str(what.into()));
+                if a.count > 1 && a.d.cross(c.d).len() < 1e-9 {
+                    return Err(bad("the third direction runs along the first: pick a direction across it"));
+                }
+                if let Some(b) = b.as_ref().filter(|b| b.count > 1) {
+                    if b.d.cross(c.d).len() < 1e-9 {
+                        return Err(bad("the third direction runs along the second: pick a direction across it"));
+                    }
+                    if a.count > 1 && a.d.dot(b.d.cross(c.d)).abs() < 1e-9 {
+                        return Err(bad("the third direction lies in the plane of the first two: pick a direction out of it"));
+                    }
+                }
+            }
+            let total = a.count as f64 * b.as_ref().map_or(1.0, |b| b.count.max(1) as f64) * c.as_ref().map_or(1.0, |c| c.count.max(1) as f64);
+            if total > MAX_INSTANCES {
                 return Err(FeatureError::new(codes::INVALID_VALUE));
             }
-            pattern_place::grid(&a, b.as_ref())
+            pattern_place::grid3(&a, b.as_ref(), c.as_ref())
         }
         FeatureKind::CPattern { axis, equal, reverse, .. } => {
             let count = state.num(f, "count", 0.0)?;
@@ -614,7 +631,7 @@ fn copy_warnings(br: &Brep, state: &mut RegenState, f: &Feature, tools: &[(Body,
     if overlap {
         let mut e = FeatureError::new(COPIES_OVERLAP).with("hint", ck_json::Json::Str("copies overlap each other: the spacing is smaller than what is patterned. Raise the spacing or lower the count".into()));
         // a one-direction linear pattern: the width of what is patterned along the direction is the least spacing that keeps copies apart
-        if let (FeatureKind::LPattern { dir: Some(d), .. }, true) = (&f.kind, f.raw.get("dir2").map_or(true, |v| matches!(v, ck_json::Json::Null))) {
+        if let (FeatureKind::LPattern { dir: Some(d), .. }, true) = (&f.kind, ["dir2", "dir3"].iter().all(|k| f.raw.get(*k).map_or(true, |v| matches!(v, ck_json::Json::Null)))) {
             if let Some((_, d)) = axis_of(d) {
                 let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
                 let d = Vec3::new(d.x.abs(), d.y.abs(), d.z.abs());

@@ -122,7 +122,7 @@ fn fit_face_with_margin(src: &Body, f: FaceId, d: f64, reach: f64) -> Result<Sur
     let cap0 = margin_cap(d);
     let mut last = None;
     for k in 0..5 {
-        let bx = face_uv_box(src, f, cap0 / f64::from(1u32 << (2 * k).min(8))).ok_or_else(|| OffsetError::new("offsetUnsupported", "face extent"))?;
+        let bx = face_uv_box(src, f, cap0 / f64::from(1u32 << (2 * k).min(8)), false).ok_or_else(|| OffsetError::new("offsetUnsupported", "face extent"))?;
         match fit_offset_surface(&src.face(f).surface, d, bx, reach) {
             Err(e) if e.code == "offsetUnsupported" && e.detail.as_deref().is_some_and(|m| m.contains("fit tolerance")) => {
                 if std::env::var_os("CK_OFFSET_DEBUG").is_some() {
@@ -149,7 +149,7 @@ fn fit_face_with_margin_by(src: &Body, f: FaceId, d_at: &dyn Fn(Vec3) -> f64, d_
     let cap0 = margin_cap(d_rep);
     let mut last = None;
     for k in 0..5 {
-        let bx = face_uv_box(src, f, cap0 / f64::from(1u32 << (2 * k).min(8))).ok_or_else(|| OffsetError::new("offsetUnsupported", "face extent"))?;
+        let bx = face_uv_box(src, f, cap0 / f64::from(1u32 << (2 * k).min(8)), true).ok_or_else(|| OffsetError::new("offsetUnsupported", "face extent"))?;
         match fit_offset_surface_by(&src.face(f).surface, d_at, d_rep, bx, reach) {
             Err(e) if e.code == "offsetUnsupported" && e.detail.as_deref().is_some_and(|m| m.contains("fit tolerance")) => {
                 if std::env::var_os("CK_OFFSET_DEBUG").is_some() {
@@ -170,7 +170,7 @@ fn is_freeform(s: &Surface) -> bool {
 /// (u, v) bounding box of the face's loops on its surface (periodic
 /// parameters unwrapped along the loop), grown by a margin and clamped to a
 /// finite domain.
-fn face_uv_box(src: &Body, f: FaceId, cap_mm: f64) -> Option<((f64, f64), (f64, f64))> {
+fn face_uv_box(src: &Body, f: FaceId, cap_mm: f64, miter_floor: bool) -> Option<((f64, f64), (f64, f64))> {
     let s = &src.face(f).surface;
     let (mut u0, mut u1, mut v0, mut v1) = (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
     let mut prev: Option<ck_geom::Vec2> = None;
@@ -234,8 +234,14 @@ fn face_uv_box(src: &Body, f: FaceId, cap_mm: f64) -> Option<((f64, f64), (f64, 
         // A direction of degree 1 (a ruled loft face) continues exactly, so its margin may be as wide as the
         // narrowest end needs (a face that tapers to a few millimetres still has to reach its neighbours' miters)
         let wide = |l: f64, cap: f64, ext: f64| (cap / l.max(1e-3 * cap)).min(ext);
-        mu = if deg_u == 1 { (mu.0.max(wide(lu.0, cap_mm, u1 - u0)), mu.1.max(wide(lu.1, cap_mm, u1 - u0))) } else { (mu.0.min(cap_mm / su.0 + 1e-9), mu.1.min(cap_mm / su.1 + 1e-9)) };
-        mv = if deg_v == 1 { (mv.0.max(wide(lv.0, cap_mm, v1 - v0)), mv.1.max(wide(lv.1, cap_mm, v1 - v0))) } else { (mv.0.min(cap_mm / sv.0 + 1e-9), mv.1.min(cap_mm / sv.1 + 1e-9)) };
+        // A convex crease's miter lies about a thickness and a half past the face's edge, so the margin is at least
+        // `cap_mm / 6` (two thicknesses at the widest cap), however short the face: 3 % of a small face is less than one
+        // thickness. The cap's own fold-over limit (`cap_mm / speed`, the fastest speed) still bounds it.
+        // (thicken only: a shell or offset of a free-form face keeps the 3 % margin its tolerance retries are tuned to)
+        let floor = if miter_floor { cap_mm / 6.0 } else { 0.0 };
+        let grow = |m: f64, slow: f64, fast: f64| m.max(floor / slow).min(cap_mm / fast + 1e-9);
+        mu = if deg_u == 1 { (mu.0.max(wide(lu.0, cap_mm, u1 - u0)), mu.1.max(wide(lu.1, cap_mm, u1 - u0))) } else { (grow(mu.0, lu.0, su.0), grow(mu.1, lu.1, su.1)) };
+        mv = if deg_v == 1 { (mv.0.max(wide(lv.0, cap_mm, v1 - v0)), mv.1.max(wide(lv.1, cap_mm, v1 - v0))) } else { (grow(mv.0, lv.0, sv.0), grow(mv.1, lv.1, sv.1)) };
     }
     let (a, b, c, d) = (u0 - mu.0, u1 + mu.1, v0 - mv.0, v1 + mv.1);
     Some(((a, b), (c, d)))
@@ -887,7 +893,7 @@ fn fit_offset_surface_by(s: &Surface, d_at: &dyn Fn(Vec3) -> f64, d_rep: f64, uv
 /// the plain quadrics are handled by their exact offset).
 pub fn face_min_radius(src: &Body, f: FaceId, d: f64) -> Option<f64> {
     let face = src.face(f);
-    let bx = face_uv_box(src, f, f64::INFINITY)?;
+    let bx = face_uv_box(src, f, f64::INFINITY, false)?;
     match &face.surface {
         Surface::Extrusion { profile, dir } => {
             let (r0, r1) = profile.range();

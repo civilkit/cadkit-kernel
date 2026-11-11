@@ -5,7 +5,7 @@
 //! part), `freeformEntryPlane` / `freeformOneFace` / `freeformMapped` are
 //! decided by the feature layer.
 //!
-//! Oracle probes (internal notes (not published), `ff*` in tools/stub_cases.mjs), box top
+//! Oracle probes (docs/ck-ops-stubs.md, `ff*` in tools/stub_cases.mjs), box top
 //! face rebuilt as a 5 x 5 net (degree 3, 2 spans; `net[i * 5 + j]`, i along u):
 //! * an entry `{points:[[i,j]..], of:[nu,nv], frame, dx, dy, dz, proportional,
 //!   symmetric, disabled}` moves the listed control points; the OUTER ring of

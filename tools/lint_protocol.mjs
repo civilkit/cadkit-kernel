@@ -66,6 +66,7 @@ if (isMainThread) {
     loadFont: { name: 'lint', data: readFileSync(path.join(here, '../crates/ck-text/fonts/gauge.ttf')).toString('base64') }, unloadFont: { name: 'lint' }, listFonts: {}, subsetFont: { name: 'gauge', text: 'RPM x100' },
     textMetrics: { string: 'RPM x100', font: 'gauge', height: 5 }, textOutline: { string: 'RPM x100', font: 'gauge', height: 5, at: [1, 2], anchor: ['center', 'middle'] },
     equationCurve: { x: '20*cos(t)', y: '20*sin(t)', t: [0, 360], tol: 0.01 },
+    sheetDxf: {}, sheetBendTable: {},
     sketchAnalyze: { featureId: 'F1' },
     sketchFreedoms: { featureId: 'F1' },
     dfmMinWall: { threshold: 1 }, dfmMinInternalRadius: { toolRadius: 1 }, dfmPocketRatio: { maxRatio: 4 },

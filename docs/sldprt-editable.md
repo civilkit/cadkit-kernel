@@ -155,6 +155,55 @@ are named `B<k>` by edge order. Shell: the rim of a removed face may also border
 Tests: `tests/recovery.rs` (two tabs whose inner ends sit in the base, two notches cut out of an edge, chamfer on a
 short vertical edge between caps, chamfer whose rail a later chamfer cut back, concave fillet at a boss foot).
 
+## Sheet metal parts (`sheet.rs`)
+
+A SolidWorks sheet metal part is read as editable sheet metal as far as the tree can be read back; the rest stays the
+imported remainder (`sldprt-editable-wp4.md`), so the body is always the file's own.
+
+| SolidWorks feature | ours | how |
+|---|---|---|
+| `Sheet-Metal` with a `Thickness` dimension (the rules; no faces) | `sheetRules` | `Thickness`, `D1` = bend radius, `D2` = k-factor (kept only in 0..1; else the kernel default) |
+| `Sheet-MetalN` (no dimensions), `Flat-Pattern`, `Cut list`, bend-line / bounding-box sketches | skipped | no geometry |
+| `Base-Flange` | `baseFlange` on the rules | the faces are read like a boss extrude (`profile::extrude`) with the cap outline as the later features left it (corner rounds and cuts into the rim baked in, holes later features cut left out); the extrude depth must equal the rule's thickness |
+| `Fillet` whose faces are round corners of the plate or of the leg of an edge flange (cylinders about the normal of a base flange or edge flange cap that meet that cap) | no feature | already in the outline of the base flange or of the leg (read from the final cap); a corner round that carries a lower id than the flange it rounds is read after that flange (`leg_round_order`: ids are not the history's order there) |
+| `Cut-Extrude` / hole wizard slot square to the plate, into its rim | no feature | already in the base flange outline |
+| `Cut-Extrude` square to the plate, inside it, through the sheet | `sheetCut` | the cut's sketch (an extrude cut converted) |
+| round hole wizard hole through the plate | `sheetCut` | so that flanges can follow it (the kernel refuses a flange after a plain hole) |
+| other hole wizard slots and holes (kinds `HoleWizard`, `... Slot`, `... Hole`) | the hole / cut chain of plain parts | |
+| `Edge-Flange` (+ the `EdgeBend` feature after it, no step of its own) | `edgeFlange` with `profile`, `from` / `to`, `angle`, `radius`, `position: outside` | see below |
+| `Miter-Flange`, `Hem`, `Jog`, `Sketched-Bend`, ... | unsupported | the step stops the read; the steps before it are the editable prefix, the file's body the remainder |
+
+**Edge flanges** (`sheet::edge_flange`). The `EdgeBend` feature holds the bend: two cylinders about one axis whose radii differ by the
+thickness (the smaller is the `radius`). The angle the leg turns through is the angle between the radius vectors of the inner
+cylinder's two tangent lines; the flange turns towards the axis (which tells the side of the parent: the pick point is put on that
+side of the parent's mid-plane); the bend's extent along the axis is the span on the parent edge (`from` / `to`, on the parent's
+mid-plane at the bend's start line). The leg is the outline of the flange's inner cap face (the face tangent to the inner
+cylinder) in `(v, h)` coordinates, `h` from the outer virtual sharp (`h = leg + (r + t) tan(a / 2)`), lines and arcs as they are
+(`profile`); its inner loops are `holes` (circles, or polygons of lines; a hole with other curves is not read back exactly and
+stops the read there). The flange hangs on the parent exactly where the bend starts, so the position is `outside` (nothing of the
+parent moves) and the parent is found by the pick: the base's outline edge at the bend, or the edge of an earlier flange's leg
+(its outline was read from the final cap, which ends where the next bend starts). SolidWorks's own `height` / offset
+dimensions are not used: only the faces. What does not read back stops the history there (the editable prefix and the imported
+remainder, as for every other feature): a flange whose bend or leg face has been split or cut through, a leg with a hole that has
+other curves than a circle, a bend with a non-uniform radius.
+
+Because panels, bends and legs are united in our solid, coplanar faces that SolidWorks keeps apart per feature (a bend's end
+face beside the leg's side face) are one face here. The verification (`fastverify::close_by_shell`, only for parts with a base
+flange) takes volume and area within 1e-6 and every surface of the file carrying the same total area in the rebuild as `close`
+(not `exact`).
+
+The three corpus parts (`..._BRUSHLESS_CHUTE_V3/V4/V5`, 133 to 193 tree entries) read back as follows (test:
+`crates/ck-wasm/tests/sldprt_sheet.rs`, skipped when the files are absent; `CK_SLDPRT_SHEET_DIR` names their directory):
+
+| part | Edge-Flange steps with faces / in the tree | result |
+|---|---|---|
+| V5 | 5 of 17 (the other twelve are suppressed in the file's configuration: no faces, skipped) | the whole history: rules, base flange, 5 edge flanges (a round hole in one leg, arcs in two legs, one on the leg of another), the corner rounds, the sheet cuts and slots; no remainder; volume error 4e-13 of the file's |
+| V4 | 7 of 17 | the whole history (7 edge flanges), no remainder; volume error 3e-13 |
+| V3 | 8 of 17 | the history regenerates to 3.3e-6 of the volume (the oblique bend ends are free-form faces in the file and planes here, so the faces do not pair): `close` is false and the read keeps the editable prefix (62 steps) and the file's body as the remainder |
+
+Not read back: a hem, miter flange, jog or sketched bend (no corpus part has one); an edge flange on a curved edge; a bend that
+SolidWorks cuts through later with a feature that is not square to the plate (the cut, not the flange, stops the read).
+
 ## Not done (next steps, in order of value)
 
 1. revolves (whole-body cone / sphere / torus parts and revolve features: the `ck-recog` revolve chain restricted to

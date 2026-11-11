@@ -29,7 +29,7 @@ let (lo, hi) = m.bbox().unwrap();                    // wire body.box (f32-round
 | silhouette | 12 f32/record `[a,b,nA,nB]`: same-face welded edges, strictly convex; concave/flat excluded |
 | faces | CDT of boundary samples only for planes/ruled-aligned faces (cap N−2, cylinder side 2N) |
 
-Exact oracle matches (the recorded reference data (not published), the recorded reference data (not published)): box, holed block, cylinder,
+Exact oracle matches (tests/oracle_mesh.rs, tests/oracle_mesh.json): box, holed block, cylinder,
 D-extrude, revolve 360/90, revolve-on-axis — per-face triangle counts, edge `pts` counts (box/cyl
 bit-level polylines), silhouette counts, box/normals/mids; box triangles identical, cylinder side
 identical but one quad diagonal. Sphere / torus / cone side: watertight, within 2× of oracle

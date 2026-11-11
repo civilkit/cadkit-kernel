@@ -25,7 +25,6 @@ fn torsion_spring_two_solids_import_with_full_volume() {
 }
 
 #[test]
-#[ignore = "known: the torus eye of this part is dropped from the display mesh (tessellation holes), tracked separately"]
 fn eyebolt_torus_fragments_tessellate() {
     let r = read_step(&gt("eyebolt_000265")).unwrap();
     let t = ck_tess::mesh::tessellate(&r.body);
@@ -33,6 +32,20 @@ fn eyebolt_torus_fragments_tessellate() {
     // the torus eye spans x = +-63
     assert!(lo.x < -62.9 && hi.x > 62.9, "{lo:?} {hi:?}");
     assert!(t.faces.iter().all(|f| f.is_some()), "a face failed to tessellate");
+    // the two halves of the eye are mirror images: each covers its own half once. A closed mesh of the wrong region
+    // (the first half covered twice over, the other missing) has the right look per face but the wrong volume.
+    let exact = ck_topo::mass::mass_props(&r.body).volume;
+    let mesh: f64 = {
+        let p = &t.mesh.positions;
+        (0..p.len() / 9)
+            .map(|k| {
+                let g = |i: usize| [p[k * 9 + i * 3] as f64, p[k * 9 + i * 3 + 1] as f64, p[k * 9 + i * 3 + 2] as f64];
+                let (a, b, c) = (g(0), g(1), g(2));
+                (a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0])) / 6.0
+            })
+            .sum()
+    };
+    assert!((mesh - exact).abs() < 0.01 * exact, "mesh volume {mesh} vs exact {exact}");
 }
 
 /// Deviation of the ground-truth coil faces from the ideal screw tube

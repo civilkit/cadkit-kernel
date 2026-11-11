@@ -262,3 +262,47 @@ fn sketch_freedoms_replies_points_radii_and_entities() {
     assert_eq!(e.get("ok"), Some(&Json::Bool(false)));
     assert_eq!(e.get_str("error"), Some("sketchFreedoms: sketch F9 not found"));
 }
+
+/// `refDiff` on a reference that resolves to nothing: the faces or edges it could mean now (`candidates`, closest first) and,
+/// only when exactly one fits, `suggest`; `repair: true` returns the document with those unambiguous suggestions applied.
+#[test]
+fn ref_diff_suggests_the_one_entity_a_lost_reference_can_mean_and_repairs_it() {
+    let base = with_follow_ups(10.0);
+    // the plate's first side is now made by sketch entity e9: F2.S.e1 is gone, the same wall is F2.S.e9
+    let renamed = base.replace(r#""type":"line","id":"e1""#, r#""type":"line","id":"e9""#);
+    assert_ne!(base, renamed);
+    let r = call(&format!(r#"{{"type":"refDiff","base":{base},"part":{renamed},"repair":true}}"#));
+    let ws = r.get_arr("warnings").unwrap();
+    let lost = ws.iter().find(|w| w.get_str("code") == Some("referenceLost")).unwrap_or_else(|| panic!("{}", ck_json::to_string(&r)));
+    assert_eq!(lost.get_str("feature"), Some("F4"), "{}", ck_json::to_string(&r));
+    let sg = lost.get("suggest").unwrap_or_else(|| panic!("a unique match: {}", ck_json::to_string(&r)));
+    let faces: Vec<&str> = sg.get_arr("faces").unwrap().iter().filter_map(|x| x.as_str()).collect();
+    assert_eq!(faces, ["F2.C1", "F2.S.e9"], "{}", ck_json::to_string(&r));
+    assert_eq!(lost.get_arr("candidates").unwrap().len(), 1);
+    // the repaired document points at the renamed wall and builds
+    let reps = r.get_arr("repairs").unwrap();
+    assert_eq!(reps.len(), 1, "{}", ck_json::to_string(&r));
+    assert_eq!(reps[0].get_str("feature"), Some("F4"));
+    let fixed = ck_json::to_string(r.get("repaired").unwrap());
+    assert!(fixed.contains("F2.S.e9") && !fixed.contains("F2.S.e1"), "{fixed}");
+    let built = call(&format!(r#"{{"type":"regen","tag":"rp","part":{fixed}}}"#));
+    assert_eq!(built.get_arr("errors").map_or(0, |e| e.len()), 0, "{}", ck_json::to_string(&built));
+    // the original, unrepaired document still fails on that fillet
+    let broken = call(&format!(r#"{{"type":"regen","tag":"rq","part":{renamed}}}"#));
+    assert!(broken.get_arr("errors").map_or(0, |e| e.len()) > 0);
+}
+
+#[test]
+fn ref_diff_has_no_suggestion_when_nothing_fits_and_repair_changes_nothing() {
+    let base = with_follow_ups(10.0);
+    let no_extrude = {
+        let mut j = ck_json::parse(&base).unwrap();
+        j.get_mut("features").unwrap().as_arr_mut().unwrap().remove(1);
+        ck_json::to_string(&j)
+    };
+    let r = call(&format!(r#"{{"type":"refDiff","base":{base},"part":{no_extrude},"repair":true}}"#));
+    let lost: Vec<&Json> = r.get_arr("warnings").unwrap().iter().filter(|w| w.get_str("code") == Some("referenceLost")).collect();
+    assert!(!lost.is_empty());
+    assert!(lost.iter().all(|w| w.get("suggest").is_none()), "{}", ck_json::to_string(&r));
+    assert_eq!(r.get_arr("repairs").unwrap().len(), 0);
+}

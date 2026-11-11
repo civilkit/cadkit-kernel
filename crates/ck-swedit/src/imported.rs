@@ -29,10 +29,13 @@ pub fn rebuild(t: &Tagged) -> Option<Outcome> {
     if ids.is_empty() || t.body.num_faces() == 0 {
         return None;
     }
+    // (a face may also carry the id of a feature the file's tree does not list, such as a copy of an imported body:
+    // nothing reads it back, so it stays part of the imported body; at least one face must be an imported one's)
+    let listed: HashSet<i64> = t.features.iter().map(|f| f.id).collect();
     let all = (0..t.body.faces.len()).all(|i| {
         let tg = &t.tags[i];
-        !tg.is_empty() && tg.iter().all(|x| ids.contains(&x.0))
-    });
+        !tg.is_empty() && tg.iter().all(|x| ids.contains(&x.0) || !listed.contains(&x.0))
+    }) && t.tags.iter().flatten().any(|x| ids.contains(&x.0));
     if !all || !ck_check::validate(t.body, 1e-6).is_empty() {
         return None;
     }

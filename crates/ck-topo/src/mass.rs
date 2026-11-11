@@ -21,6 +21,9 @@
 //! reply is the oracle-pinned shape (no `mass`). The request-level rule
 //! (`densities` implies `bodies:true`, length must match the lump count)
 //! lives in ck-wasm `query_hook`.
+//!
+//! A body of sheets only (open edges) answers `volume: 0`, `com` = the area centroid, `kind: "surface"`, with the
+//! other moments weighted by area (see [`mass_props_json`]).
 
 use crate::body::{Body, FaceId, LumpId};
 use ck_geom::curve2::Curve2;
@@ -1105,6 +1108,40 @@ pub fn faces_moments(b: &Body, faces: &[FaceId], r: Vec3) -> Moments {
     m
 }
 
+/// True when some edge of these faces is used by other than two coedges: the faces do not enclose a volume (a sheet).
+pub fn faces_are_open(b: &Body, faces: &[FaceId]) -> bool {
+    let mut uses: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+    for &f in faces {
+        for &l in &b.face(f).loops {
+            for &c in &b.lp(l).coedges {
+                *uses.entry(b.coedge(c).edge.idx() as u32).or_insert(0) += 1;
+            }
+        }
+    }
+    uses.values().any(|&n| n != 2)
+}
+
+/// Area-weighted moments of a sheet (surface density 1): `volume` holds the area, `first` = ∫ (p - r) dA and `second`
+/// = ∫ (p-r)_i (p-r)_j dA, so [`Moments::com`] is the area centroid and the inertia is that of a zero-thickness shell.
+pub fn sheet_moments(b: &Body, faces: &[FaceId], r: Vec3) -> Moments {
+    let mut m = Moments { r, ..Default::default() };
+    for &f in faces {
+        let v = face_integral_vpoly::<10>(b, f, 1, &|p, n| {
+            let (q, a) = (p - r, n.len());
+            [a, q.x * a, q.y * a, q.z * a, q.x * q.x * a, q.y * q.y * a, q.z * q.z * a, q.x * q.y * a, q.y * q.z * a, q.x * q.z * a]
+        });
+        // an area is never negative (see `add_face`): the sign of the area carries the face's orientation
+        let k = if v[0] < 0.0 { -1.0 } else { 1.0 };
+        m.volume += k * v[0];
+        m.area += k * v[0];
+        m.first = m.first + Vec3::new(k * v[1], k * v[2], k * v[3]);
+        for i in 0..6 {
+            m.second[i] += k * v[4 + i];
+        }
+    }
+    m
+}
+
 pub fn lump_faces(b: &Body, l: LumpId) -> Vec<FaceId> {
     let mut out = vec![];
     for &s in &b.lump(l).shells {
@@ -1311,15 +1348,28 @@ pub fn mass_props(b: &Body) -> MassProps {
 /// The `massProps` reply `result` object. With `densities`, every `bodies[]`
 /// entry also carries `mass` (= volume × density); without, the reply is the
 /// oracle-pinned shape (no `mass` field). `byMass` totals are unchanged.
+///
+/// A body whose every lump is a sheet (open edges: no enclosed volume) answers `volume: 0`, its `area`, `com` = the
+/// area centroid, and `kind: "surface"`; `principal`, `axes`, `firstMoment`, `inertia` and `inertiaOrigin` are then
+/// area-weighted (surface density 1) instead of volume-weighted, and `mass` is 0. Callers that read only `volume`
+/// or `area` are unaffected. (Before, `com` and `principal` were null.)
 pub fn mass_props_json(b: &Body, bodies: bool, densities: Option<&[f64]>) -> Json {
-    let ms = lump_moments(b);
+    let lumps: Vec<LumpId> = b.lump_ids().collect();
+    let surface = !lumps.is_empty() && lumps.iter().all(|&l| faces_are_open(b, &lump_faces(b, l)));
+    let ms = if surface {
+        let r = ref_point(b);
+        lumps.iter().map(|&l| sheet_moments(b, &lump_faces(b, l), r)).collect()
+    } else {
+        lump_moments(b)
+    };
+    let vol = |m: &Moments| if surface { 0.0 } else { m.volume };
     let total = ms.iter().skip(1).fold(ms.first().copied().unwrap_or_default(), |a, m| a.add(m));
     let mp = MassProps::from_moments(&total);
     let v3 = crate::body::v3;
     let axes = |a: &[Vec3; 3]| Json::Arr(a.iter().map(|&x| v3(x)).collect());
     let mat = |m: &[[f64; 3]; 3]| Json::Arr(m.iter().map(|r| Json::Arr(r.iter().map(|&x| Json::Num(x)).collect())).collect());
     let mut o = Obj::new()
-        .put("volume", mp.volume)
+        .put("volume", if surface { 0.0 } else { mp.volume })
         .put("area", mp.area)
         .put("com", v3(mp.com))
         .put("principal", Json::Arr(mp.principal.iter().map(|&x| Json::Num(x)).collect()))
@@ -1327,18 +1377,21 @@ pub fn mass_props_json(b: &Body, bodies: bool, densities: Option<&[f64]>) -> Jso
         .put("firstMoment", v3(mp.first_moment))
         .put("inertia", mat(&mp.inertia))
         .put("inertiaOrigin", mat(&mp.inertia_origin));
+    if surface {
+        o = o.put("kind", "surface");
+    }
     if bodies {
         let names: Vec<Option<String>> = b.lump_ids().map(|l| b.lump(l).name.clone()).collect();
         let arr = ms
             .iter()
             .enumerate()
             .map(|(i, m)| {
-                let mut e = Obj::new().put("volume", m.volume).put("area", m.area).put("com", v3(m.com()));
+                let mut e = Obj::new().put("volume", vol(m)).put("area", m.area).put("com", v3(m.com()));
                 if let Some(Some(n)) = names.get(i) {
                     e = e.put("name", n.as_str());
                 }
                 if let Some(ds) = densities {
-                    e = e.put("mass", m.volume * ds.get(i).copied().unwrap_or(1.0));
+                    e = e.put("mass", vol(m) * ds.get(i).copied().unwrap_or(1.0));
                 }
                 e.build()
             })
@@ -1360,7 +1413,7 @@ pub fn mass_props_json(b: &Body, bodies: bool, densities: Option<&[f64]>) -> Jso
             o = o.put(
                 "byMass",
                 Obj::new()
-                    .put("mass", a.volume)
+                    .put("mass", vol(&a))
                     .put("com", v3(p.com))
                     .put("principal", Json::Arr(p.principal.iter().map(|&x| Json::Num(x)).collect()))
                     .put("axes", axes(&p.axes))
@@ -1439,6 +1492,39 @@ mod tests {
     use crate::make::{extrude, revolve::revolve, ExtrudeOpts, Profile, ProfileLoop, ProfileRegion, ProfileSeg};
     use ck_geom::Frame;
     use std::f64::consts::{PI, TAU};
+
+    /// A sheet (a box with one face deleted) has no volume: `volume` 0, the area centroid for `com`, no nulls.
+    #[test]
+    fn sheet_body_answers_zero_volume_and_the_area_centroid() {
+        let mut b = box_body();
+        let r = ref_point_of(&b);
+        let full = sheet_moments(&b, &b.face_ids().collect::<Vec<_>>(), r);
+        let f = b.face_ids().next().unwrap();
+        let gone = sheet_moments(&b, &[f], r);
+        crate::edit::delete_face(&mut b, f);
+        let j = mass_props_json(&b, true, Some(&[2.0]));
+        assert_eq!(j.get_f64("volume"), Some(0.0));
+        assert_eq!(j.get_str("kind"), Some("surface"));
+        let area = j.get_f64("area").unwrap();
+        assert!(close(area, full.area - gone.area, 1e-9), "{area}");
+        // area-weighted: open sheet + removed face = the closed surface, whose centroid is the box centre
+        let c: Vec<f64> = j.get_arr("com").unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
+        let want = (full.com() * full.area - gone.com() * gone.area) * (1.0 / area);
+        assert!((c[0] - want.x).abs() < 1e-9 && (c[1] - want.y).abs() < 1e-9 && (c[2] - want.z).abs() < 1e-9, "{c:?} vs {want:?}");
+        for k in ["principal", "axes", "firstMoment", "inertia", "inertiaOrigin"] {
+            assert!(!j.get(k).unwrap().is_null(), "{k}");
+        }
+        let p: Vec<f64> = j.get_arr("principal").unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
+        assert!(p.iter().all(|x| x.is_finite() && *x > 0.0), "{p:?}");
+        let bodies = j.get_arr("bodies").unwrap();
+        assert_eq!(bodies[0].get_f64("volume"), Some(0.0));
+        assert_eq!(bodies[0].get_f64("mass"), Some(0.0));
+        assert_eq!(j.get("byMass").unwrap().get_f64("mass"), Some(0.0));
+        // a closed body is unchanged: no `kind`, positive volume
+        let jc = mass_props_json(&box_body(), false, None);
+        assert!(jc.get("kind").is_none() && jc.get_f64("volume").unwrap() > 0.0);
+    }
+
 
     fn close(a: f64, b: f64, rel: f64) -> bool {
         (a - b).abs() <= rel * b.abs().max(1.0)

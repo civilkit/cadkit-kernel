@@ -71,6 +71,7 @@ pub(super) fn has_tangent_mates(b: &Body, edges: &[(String, String, Vec3)]) -> b
 }
 
 pub(super) fn blend_edges_inner(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, feature: &str, tol: f64) -> Result<Body, BlendError> {
+    SWEPT.with(|w| w.borrow_mut().clear());
     let r = spec.size();
     if !(r > 0.0) || !r.is_finite() {
         return Err(BlendError::code("invalidValue"));
@@ -270,7 +271,16 @@ pub(super) fn blend_edges_inner(b: &Body, edges: &[(String, String, Vec3)], spec
         // seam) are ONE revolved cut, named for the first arc
         let (ring_lead, ring_skip) = if chamfer_only(spec) || matches!(spec, Spec::Fillet(_, FilletProfile::Circular)) { split_rings(b, &eids) } else { (vec![false; n], vec![false; n]) };
         for round in rounds {
-            let round: Vec<usize> = round.into_iter().filter(|&i| !ring_skip[i]).collect();
+            // (an edge an earlier round's tool already blended is gone: the other arc of a concave arc split by a seam,
+            // which that tool swept over, see analytic.rs)
+            let round: Vec<usize> = round
+                .into_iter()
+                .filter(|&i| !ring_skip[i])
+                .filter(|&i| {
+                    let (fa, fb, at) = &fwd[i];
+                    find_edge(&out, fa, fb, *at).is_some() || !(blended_by_earlier_tool(&out, fa, fb, feature) || swept_pick(*at))
+                })
+                .collect();
             if round.is_empty() {
                 continue;
             }
@@ -438,7 +448,7 @@ pub(super) fn blend_edges_at(
             // separated by a notch (a hole centred on the edge line) are cut by one
             // tool, whose margin runs on over the notch; the edge is gone but both of
             // its faces now border that feature's blend face
-            if blended_by_earlier_tool(&out, fa, fb, feature) {
+            if blended_by_earlier_tool(&out, fa, fb, feature) || swept_pick(*at) {
                 dbg_fail(&format!("edge {k} ({fa} | {fb}) was blended by an earlier tool"));
                 continue;
             }

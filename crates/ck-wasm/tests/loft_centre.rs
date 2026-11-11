@@ -1,4 +1,4 @@
-//! Loft `centreLine` through the engine (internal notes (not published) "loft centre line", crates/ck-ops/src/loft/centre.rs):
+//! Loft `centreLine` through the engine (docs/ck-ops-stubs.md "loft centre line", crates/ck-ops/src/loft/centre.rs):
 //! the loft follows a curved centre line (a moving frame carries the sections). Volumes and boxes are the
 //! oracle's (tools/loft_centre_check.mjs, 1e-3), the result is a valid solid (`validate` with the mesh check),
 //! survives a STEP round trip, regenerates identically with the cache on and off, and the straight / refused

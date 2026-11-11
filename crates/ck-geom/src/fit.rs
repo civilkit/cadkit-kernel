@@ -81,8 +81,8 @@ pub fn solve<P: Pt>(mut a: Vec<Vec<f64>>, mut b: Vec<P>) -> Result<Vec<P>, Strin
     let mut hi = vec![0usize; n];
     for c in 0..n {
         let rend = (c + lbw + 1).min(n);
-        let piv = (c..rend).max_by(|&i, &j| a[i][c].abs().partial_cmp(&a[j][c].abs()).unwrap()).unwrap();
-        if a[piv][c].abs() < 1e-300 {
+        let piv = (c..rend).max_by(|&i, &j| a[i][c].abs().total_cmp(&a[j][c].abs())).unwrap();
+        if !(a[piv][c].abs() >= 1e-300) || !a[piv][c].is_finite() {
             return Err("singular fit system".into());
         }
         a.swap(c, piv);
@@ -169,8 +169,9 @@ fn solve_band_many<P: Pt>(mut a: Vec<BandRow>, bs: &mut [Vec<P>]) -> Result<(), 
     let mut hi = vec![0usize; n];
     for c in 0..n {
         let rend = (c + lbw + 1).min(n);
-        let piv = (c..rend).max_by(|&i, &j| a[i].get(c).abs().partial_cmp(&a[j].get(c).abs()).unwrap()).unwrap();
-        if a[piv].get(c).abs() < 1e-300 {
+        let piv = (c..rend).max_by(|&i, &j| a[i].get(c).abs().total_cmp(&a[j].get(c).abs())).unwrap();
+        // `!(x >= t)` also refuses a NaN pivot (a non-finite number in the input)
+        if !(a[piv].get(c).abs() >= 1e-300) || !a[piv].get(c).is_finite() {
             return Err("singular fit system".into());
         }
         a.swap(c, piv);

@@ -920,6 +920,14 @@ fn extend_to_face_boundary(c: &mut ss::SsCurve, faces: &[(&Body, FaceId)], tol: 
 /// Relative distance within which a tangent-contact breakpoint yields to an exact crossing (see [`trim`]).
 const SOFT_SNAP: f64 = 2e-5; // x the size of the pair's box
 
+/// The distance within which a tangent-contact breakpoint yields to an exact crossing: [`SOFT_SNAP`] of the pair's box,
+/// or (a tangent hit is off by about sqrt(2 e R) for a curve fitted to e with curvature radius R near the contact: a
+/// millimetre-sized round fitted to 1e-6 puts it 1e-3 away) 3 sqrt(tol), held under a twentieth of the box.
+fn soft_window(tol: f64, bx: &Aabb) -> f64 {
+    let diag = (bx.max - bx.min).len();
+    (SOFT_SNAP * diag).max((3.0 * tol.sqrt()).min(0.05 * diag))
+}
+
 fn trim(c: &Curve, r: (f64, f64), faces: &[(&Body, FaceId)], bx: &Aabb, tol: f64, allow_all_on: bool, cache: &mut LoopCache) -> Vec<(f64, f64)> {
     let r = crate::intersect::finite_range(c, r, bx.min, bx.max);
     if !(r.0.is_finite() && r.1.is_finite()) || r.1 - r.0 <= 0.0 {
@@ -927,6 +935,13 @@ fn trim(c: &Curve, r: (f64, f64), faces: &[(&Body, FaceId)], bx: &Aabb, tol: f64
     }
     let mut ts = vec![r.0, r.1];
     let mut soft: Vec<f64> = vec![];
+    // tangent touches of a fitted curve: hits and the ends of short overlaps (see below), which yield to an exact
+    // crossing within the wider `soft_window`
+    let mut soft_ov: Vec<f64> = vec![];
+    // where the curve starts or stops running along a boundary edge (the ends of a long overlap)
+    let mut anchors: Vec<Vec3> = vec![];
+    // the vertices of the boundary edges met
+    let mut verts: Vec<Vec3> = vec![];
     // an edge whose hull box stays clear of the curve's cannot meet it (every hit and overlap of cc::intersect lies
     // within 2 tol of both curves, a parameter slack past the range ends included): skip the intersection
     let hull = curve_hull_box(c, r.0, r.1).map(|b| b.padded(REJECT_PAD * tol + 1e-9));
@@ -946,11 +961,18 @@ fn trim(c: &Curve, r: (f64, f64), faces: &[(&Body, FaceId)], bx: &Aabb, tol: f64
                     }
                 }
             }
+            verts.push(body.vertex(ed.v0).p);
+            verts.push(body.vertex(ed.v1).p);
             let res = cc::intersect(c, r, &ed.curve, (ed.t0, ed.t1), tol);
+            // a fitted (spline) curve on either side: its tangent touches are off by up to sqrt(2 e R), see `soft_window`
+            let fitted = matches!(c, Curve::BSpline(_)) || matches!(ed.curve, Curve::BSpline(_));
             for h in &res.hits {
                 // a hit where the two curves run (nearly) tangent is located only to ~sqrt(tol)
                 let (ta, tb) = (c.tangent(h.t1), ed.curve.tangent(h.t2));
                 if ta.len() > 1e-12 && tb.len() > 1e-12 && ta.cross(tb).len() < 0.1 * ta.len() * tb.len() {
+                    if fitted {
+                        soft_ov.push(h.t1);
+                    }
                     soft.push(h.t1);
                 }
             }
@@ -958,6 +980,16 @@ fn trim(c: &Curve, r: (f64, f64), faces: &[(&Body, FaceId)], bx: &Aabb, tol: f64
             for o in res.overlaps {
                 ts.push(o.a.0);
                 ts.push(o.a.1);
+                // a curve that touches an edge tangentially runs within tol of it over a short stretch (about
+                // sqrt(2 tol R) each side for curvature radius R): a short overlap is that touch, as unsure as a
+                // tangent hit (its ends are soft)
+                if fitted && c.eval(o.a.0).dist(c.eval(o.a.1)) < soft_window(tol, bx) {
+                    soft_ov.push(o.a.0);
+                    soft_ov.push(o.a.1);
+                } else {
+                    anchors.push(c.eval(o.a.0));
+                    anchors.push(c.eval(o.a.1));
+                }
             }
         }
     }
@@ -966,11 +998,28 @@ fn trim(c: &Curve, r: (f64, f64), faces: &[(&Body, FaceId)], bx: &Aabb, tol: f64
     // a tangent contact with a boundary edge (a curve running along the line a face touches tangentially, e.g. a
     // blend face meeting a wall that bounds a joined boss) is found off by up to ~sqrt(tol), next to the exact
     // transversal crossing of the tool's own edge at the same place: only the exact one stays
-    if !soft.is_empty() {
-        let is_soft = |t: f64| soft.iter().any(|&s| (s - t).abs() <= 1e-12);
+    if !soft.is_empty() || !soft_ov.is_empty() {
+        // (the curve's own ends are exact whatever touches them there)
+        let inner = |t: f64| (t - r.0).abs() > 1e-12 && (t - r.1).abs() > 1e-12;
+        let near = |v: &[f64], t: f64| v.iter().any(|&s| (s - t).abs() <= 1e-12);
+        let is_soft = |t: f64| inner(t) && (near(&soft, t) || near(&soft_ov, t));
         let snap = SOFT_SNAP * (bx.max - bx.min).len();
+        let snap_ov = soft_window(tol, bx);
         let hard: Vec<Vec3> = ts.iter().filter(|&&t| !is_soft(t)).map(|&t| c.eval(t)).collect();
-        ts.retain(|&t| !is_soft(t) || { let p = c.eval(t); !hard.iter().any(|q| q.dist(p) > tol && q.dist(p) < snap) });
+        // (a fitted curve's touch yields within the wider window only to the curve's own ends and to where it starts or
+        // stops running along an edge: the touch is then at a corner where that run ends, as a blend tool's section
+        // curve ends at the tool's corner; next to a transversal crossing it keeps the narrow window)
+        anchors.push(c.eval(r.0));
+        anchors.push(c.eval(r.1));
+        ts.retain(|&t| {
+            if !is_soft(t) {
+                return true;
+            }
+            let p = c.eval(t);
+            // (a touch on a vertex of the faces' boundary is exact: the vertex is where the curves meet)
+            let wide = near(&soft_ov, t) && !verts.iter().any(|q| q.dist(p) <= 2.0 * tol) && anchors.iter().any(|q| q.dist(p) > tol && q.dist(p) < snap_ov);
+            !wide && !hard.iter().any(|q| q.dist(p) > tol && q.dist(p) < snap)
+        });
     }
     let mut out: Vec<(f64, f64)> = vec![];
     super::bool_dbg!("  trim breakpoints {:?}", ts);

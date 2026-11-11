@@ -1187,8 +1187,12 @@ pub struct Sig {
 }
 
 pub fn face_sig(facts: &Facts, id: &str) -> Option<Sig> {
-    let f = facts.face_by_id(id)?;
-    Some(Sig {
+    Some(face_sig_of(facts, facts.face_by_id(id)?))
+}
+
+/// The signature of one face of `facts`.
+pub fn face_sig_of(facts: &Facts, f: &FaceFact) -> Sig {
+    Sig {
         is_edge: false,
         kind: f.kind,
         dir: f.normal.or(f.axis).unwrap_or(Vec3::ZERO),
@@ -1201,7 +1205,7 @@ pub fn face_sig(facts: &Facts, id: &str) -> Option<Sig> {
         hi: facts.hi,
         dup: f.dup,
         text: facts.face_text(f, &facts.boundary_sides(f)),
-    })
+    }
 }
 
 /// Edge between `faces` nearest `at` (the kernel's edge-reference rule).
@@ -1214,7 +1218,12 @@ pub fn edge_sig(facts: &Facts, faces: &[String], at: Option<Vec3>) -> Option<Sig
         Some(p) => c.iter().copied().min_by(|a, b| a.mid.dist(p).total_cmp(&b.mid.dist(p)))?,
         None => *c.first()?,
     };
-    Some(Sig {
+    Some(edge_sig_of(facts, e))
+}
+
+/// The signature of one edge of `facts`.
+pub fn edge_sig_of(facts: &Facts, e: &EdgeFact) -> Sig {
+    Sig {
         is_edge: true,
         kind: e.curve,
         dir: e.dir.unwrap_or(Vec3::ZERO),
@@ -1227,7 +1236,47 @@ pub fn edge_sig(facts: &Facts, faces: &[String], at: Option<Vec3>) -> Option<Sig
         hi: facts.hi,
         dup: 1,
         text: facts.edge_text(e),
-    })
+    }
+}
+
+/// A face or an edge of a body that could be the entity a lost reference used to point at.
+#[derive(Debug, Clone)]
+pub struct Match {
+    /// The face id, or for an edge the `A|B#n` key.
+    pub id: String,
+    /// For an edge, the sorted pair of face ids that meet in it; empty for a face.
+    pub faces: Vec<String>,
+    /// How far from `before` (0 = identical position and size): smaller is closer.
+    pub score: f64,
+    pub text: String,
+}
+
+/// The faces (or edges, when `before` is one) of `facts` that [`sig_diff`] accepts as the same entity as `before`, closest first.
+/// The score is the position gap as a share of the body diagonal plus a tenth of the log of the size ratio.
+pub fn matches_for(before: &Sig, facts: &Facts) -> Vec<Match> {
+    let score = |after: &Sig| -> f64 {
+        let gap = before.pos.dist(after.pos) / before.diag.max(after.diag).max(1e-9);
+        let size = if before.size > 1e-12 && after.size > 1e-12 { (after.size / before.size).ln().abs() * 0.1 } else { 0.0 };
+        gap + size
+    };
+    let mut out: Vec<Match> = vec![];
+    if before.is_edge {
+        for e in &facts.edges {
+            let sig = edge_sig_of(facts, e);
+            if sig_diff(before, &sig).is_none() {
+                out.push(Match { id: e.key.clone(), faces: e.faces.clone(), score: score(&sig), text: sig.text });
+            }
+        }
+    } else {
+        for f in &facts.faces {
+            let sig = face_sig_of(facts, f);
+            if sig_diff(before, &sig).is_none() {
+                out.push(Match { id: f.id.clone(), faces: vec![], score: score(&sig), text: sig.text });
+            }
+        }
+    }
+    out.sort_by(|a, b| a.score.total_cmp(&b.score).then_with(|| a.id.cmp(&b.id)));
+    out
 }
 
 fn ratio_ok(a: f64, b: f64) -> bool {

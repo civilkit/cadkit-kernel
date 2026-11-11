@@ -1,6 +1,6 @@
 # Shell and thicken of free-form lofts
 
-Two gaps from internal notes (not published) (multi-station polygon lofts): shelling a closed loft with a
+Two gaps from `docs/original-gaps.md` (multi-station polygon lofts): shelling a closed loft with a
 free-form face opened, and thickening a surface loft whose faces meet in creases. This note records
 what the original kernel does (as far as it was read or observed), which parts of its decompiled
 output were used, and what we do. Nothing here is transliterated from the decompilation; the

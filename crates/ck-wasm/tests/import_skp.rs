@@ -1,5 +1,5 @@
 //! `importSkp` request with `opts.up`: default 'z' (as in the file), 'y' = (x,y,z) -> (x,z,-y), 'yFlip' = (-x,-z,-y).
-//! Needs the `skp` feature: `cargo test -p ck-wasm --features skp --test import_skp`.
+//! Needs the `skp` feature (a default): `cargo test -p ck-wasm --test import_skp`.
 #![cfg(feature = "skp")]
 
 use ck_json::Json;

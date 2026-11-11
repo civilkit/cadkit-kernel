@@ -1,6 +1,6 @@
 // Measurement requests (distance, maxDistance, thickness, thicknessAt, closestPoint, angles, clearance, symmetry)
 // on every sample part: no trap, no error, sane ranges, internal consistency, timings.
-// usage: node tools/measure_check.mjs [--wasm path] [--samples dir] [--only substr] [--max N]
+// usage: node tools/measure_check.mjs [--wasm path] [--samples dir] [--only substr] [--large sample] [--max N]
 //        [--sample N] [--budget-ms N]     exit 1 on any violation
 // Per sample: regen (parts with feature errors or no body are skipped and listed), then
 //   thickness {samples:1500}      0 < min <= bbox diagonal, thinnest cluster list sorted, the min point lies on the body
@@ -124,6 +124,7 @@ function sample(file) {
 }
 
 let files = readdirSync(dir).filter((f) => f.endsWith('.ckpart') && f.includes(only)).sort();
+if (args.includes('--large sample')) files.push(path.resolve(here, 'cases/largeSampleFull.ckpart'));
 if (sampleN > 0 && files.length > sampleN) files = Array.from({ length: sampleN }, (_, i) => files[Math.floor((i * files.length) / sampleN)]);
 files = files.slice(0, maxN);
 const T0 = now();

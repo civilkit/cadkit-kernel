@@ -35,7 +35,7 @@ every case. The worst surface is the torus (0.8 % volume), then the cylinder
 (0.4 %). Boxes, spheres and two-section lofts pass; curved-surface chord
 height at the default tolerance is the cause.
 
-See internal notes (not published).
+See `docs/mimo-brief-tess.md`.
 
 ## Exact-cone wasm (`c917f6ac`)
 `loft2` now carries a true `cone` face. Ten cases fail: volume 7.9e-4 ..

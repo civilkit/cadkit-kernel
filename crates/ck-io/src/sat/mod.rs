@@ -1,8 +1,8 @@
 //! ACIS SAT import: text -> ck-topo [`Body`] with ck-geom surfaces/curves.
 //!
-//! Origin: the record parser is adapted from the author's own
-//! `sat_import.rs` in SGRebuild (`fem-core`, dependency-free ACIS 7.00 text
-//! parser; reused freely). That seed tessellated planar/cone faces; this
+//! Origin: the record parser is adapted from the author's own earlier
+//! ACIS 7.00 SAT text parser (dependency-free; reused with the author's
+//! permission). That seed tessellated planar/cone faces; this
 //! module instead builds the real B-rep.
 //!
 //! Supported

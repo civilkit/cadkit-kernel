@@ -171,3 +171,12 @@ fn suggestions_are_for_close_names_only() {
         assert_eq!(got.as_deref(), want, "{bad}");
     }
 }
+
+#[test]
+fn the_partial_width_and_shaped_flange_fields_are_known() {
+    let r = reply(&part(&format!(
+        r#"{SKETCH},{{"type":"edgeFlange","id":"F2","edges":[],"height":10,"start":2,"length":20,"from":[0,0,0],"to":[1,0,0],"relief":{{}},"profile":[],"holes":[]}},{{"type":"hem","id":"F3","edges":[],"length":5,"start":1,"relief":{{}}}}"#
+    )));
+    let unknown: Vec<_> = warnings(&r).into_iter().filter(|(k, _)| k == "unknownField").collect();
+    assert!(unknown.is_empty(), "{unknown:?}");
+}

@@ -29,11 +29,11 @@ pub fn exec_delete_body(br: &mut Brep, _state: &mut RegenState, f: &Feature) -> 
                 solid_faces.extend(ck_topo::mass::lump_faces(b, l));
             }
         } else if let Some(face) = r.get_str("face") {
-            match br.slot_of_face(face).ok_or_else(missing)? {
+            match br.slot_of_face(face).ok_or_else(|| br.missing_face(face))? {
                 Slot::Surf(i) => surf_hit.push(i),
                 Slot::Solid => {
                     let b = br.body.as_ref().ok_or_else(missing)?;
-                    let fid = b.find_face(face).ok_or_else(missing)?;
+                    let fid = b.find_face(face).ok_or_else(|| crate::refs::missing_face([b], face))?;
                     let comp = ck_topo::region::components(b).into_iter().find(|c| c.contains(&fid)).ok_or_else(missing)?;
                     solid_faces.extend(comp);
                 }

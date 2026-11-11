@@ -20,6 +20,7 @@ pub fn install() {
         import_sat: Some(import_sat_hook),
         import_sldprt: Some(import_sldprt_hook),
         sldprt_history: Some(sldprt_history_hook),
+        built_export: Some(built_export_hook),
         #[cfg(feature = "skp")]
         import_skp: Some(import_skp_hook),
         regen: Some(regen_hook),
@@ -144,8 +145,8 @@ fn regen_hook(part: &Json, cx: &mut Cx) -> Result<(Json, State), String> {
     }
     // debug requests want the real per-feature spans, so they never replay
     let use_cache = !flag("noCache") && !cx.trace.enabled() && o.and_then(|o| o.get_f64("cacheCap")) != Some(0.0);
-    ck_ops::intersect::ss::GRID_SEEDS.store(flag("ssiGridSeeds"), std::sync::atomic::Ordering::Relaxed);
-    ck_ops::intersect::ss::ORIG_STEP.store(flag("ssiOrigStep"), std::sync::atomic::Ordering::Relaxed);
+    ck_ops::intersect::ss::set_grid_seeds(flag("ssiGridSeeds"));
+    ck_ops::intersect::ss::set_orig_step(flag("ssiOrigStep"));
     let want_stats = flag("cacheStats");
     let run_n = regen::run_len(&part, &opts);
     let mut stats = (0usize, run_n); // (features reused, features in the run)
@@ -410,6 +411,27 @@ fn import_sldprt_hook(cx: &mut Cx) -> Result<(Json, Option<State>), String> {
     }
 }
 
+/// `builtExport`: see `ck_server::geometry::built_export`.
+fn built_export_hook(cx: &mut Cx) -> Result<Json, String> {
+    let only = cx.msg.get_str("feature").map(str::to_string);
+    let entries = ck_model::features::built_cache::kept()
+        .into_iter()
+        .filter(|e| only.as_ref().map_or(true, |f| *f == e.feature))
+        .map(|e| {
+            let mut o = Obj::new()
+                .put("feature", e.feature.as_str())
+                .put("key", e.key.as_str())
+                .put("source", if e.source == ck_model::features::built_cache::Source::Built { "built" } else { "saved" })
+                .put("data", ck_text::base64_encode(&e.bytes).as_str());
+            if let Some(r) = &e.rejected {
+                o = o.put("rejected", r.as_str());
+            }
+            o.build()
+        })
+        .collect();
+    Ok(Obj::new().put("ok", true).put("entries", Json::Arr(entries)).build())
+}
+
 /// `sldprtHistory`: base64 of a SolidWorks part file -> `{ok, part, complete, outcome}` when the feature history rebuilds
 /// (`part`: a `ck-part` document; `complete`: every feature is ours, else the document ends in an `importBody` feature
 /// that stands for the rest of the file and holds the file in `blobs`), else `{ok:false, reason, outcome?}` (`reason`:
@@ -604,13 +626,14 @@ fn import_sat_hook(cx: &mut Cx) -> Result<(Json, Option<State>), String> {
     let mut out = ck_server::session::empty_regen_result();
     match ck_io::sat::import_sat(&data) {
         Err(e) => {
-            let err = Obj::new()
-                .put("code", e.code)
+            // the shape the other importers use: ["import", {code, params}]
+            let params = Obj::new()
+                .put("message", e.detail.as_str())
                 .put("entity", e.entity_id().map_or(Json::Null, Json::Str))
                 .put("kind", e.kind.as_str())
                 .put("line", e.line as f64)
-                .put("message", e.detail.as_str())
                 .build();
+            let err = Json::Arr(vec![Json::Str("import".into()), Obj::new().put("code", e.code).put("params", params).build()]);
             set_key(&mut out, "errors", Json::Arr(vec![err]));
             Ok((out, None))
         }
@@ -1038,6 +1061,8 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
         // Extension: read-only sketch findings (ck-model sketch::analyze).
         "sketchAnalyze" => crate::sketch_q::analyze_q(cx),
         "sketchFreedoms" => crate::sketch_q::freedoms_q(cx),
+        "sheetDxf" => ck_model::features::sheet_export::dxf_reply(cx.msg),
+        "sheetBendTable" => ck_model::features::sheet_export::bend_table_reply(cx.msg),
         "textMetrics" => ck_model::sketch::text::metrics_reply(cx.msg),
         "textOutline" => ck_model::sketch::text::outline_reply(cx.msg),
         "equationCurve" => ck_model::sketch::equation::reply(cx.msg),

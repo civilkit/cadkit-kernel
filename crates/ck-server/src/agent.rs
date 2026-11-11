@@ -151,6 +151,17 @@ pub fn thread_data(cx: &mut Cx) -> Result<Json, String> {
     cx.query("threadData")
 }
 
+/// `{type:"sheetDxf", flatPattern, version?, units?, bendLines?, tangentLines?, bendNotes?, noteHeight?, layers?, layerNames?}`:
+/// the flat pattern of a regen result's `sheetMetal` entry as DXF text (stateless; docs/sheet-metal.md "Export").
+pub fn sheet_dxf(cx: &mut Cx) -> Result<Json, String> {
+    cx.query("sheetDxf")
+}
+
+/// `{type:"sheetBendTable", flatPattern, format?:"csv"|"json", body?}`: the bend table as text (stateless).
+pub fn sheet_bend_table(cx: &mut Cx) -> Result<Json, String> {
+    cx.query("sheetBendTable")
+}
+
 /// `{type:"checkProfile", tag? | part?, profile:"<id>"|{rules:[..]}, opts?}`:
 /// run a design-rule profile (fdm-print, cnc-3axis, injection or inline) on
 /// the tag's body, or on `part` regenerated privately. Read-only. No body: null.

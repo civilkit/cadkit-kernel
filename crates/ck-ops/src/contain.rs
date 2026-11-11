@@ -16,7 +16,7 @@
 //! Nothing in the crate calls this yet (`boolean::classify` has its own
 //! winding-number classifier); it is checked against that one in the tests.
 
-use crate::boolean::classify::{face_loops_uv, in_loops, Where};
+use crate::boolean::classify::{face_loops_uv, Where};
 use crate::boolean::imprint::dist_in_range;
 use crate::bvh::{face_bvh, Aabb, Bvh};
 use crate::intersect::cs;
@@ -111,7 +111,7 @@ impl<'a> Containment<'a> {
         if c.loops.iter().all(|l| l.len() < 3) {
             return true;
         }
-        in_loops(&face.surface, Vec2::new(u, v), &c.loops)
+        crate::boolean::classify::in_face_loops(self.body, self.faces[i], Vec2::new(u, v), &c.loops)
     }
 
     /// f2430: is the surface point (u, v) of face `i` inside the face,

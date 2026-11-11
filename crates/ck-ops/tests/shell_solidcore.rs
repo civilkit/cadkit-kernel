@@ -179,3 +179,37 @@ fn half_ball_open_at_two_coplanar_caps() {
     }
 }
 
+
+/// A cube of side `s` with every edge rounded at `r`: (outer volume, the volume of the rounded box).
+fn rounded_box_volume(s: f64, r: f64) -> f64 {
+    let c = s - 2.0 * r;
+    c * c * c + 6.0 * c * c * r + 12.0 * c * PI * r * r / 4.0 + 4.0 * PI * r * r * r / 3.0
+}
+
+/// solidcore #2532: a 40 cube, every edge rounded R5, shelled 2 with the top open. The opened face is bordered by the round
+/// of its own edges. The cavity is the box offset inward (a 36 box rounded R3, top at 38) plus the prism of the opening
+/// (the 30 x 30 flat of the top) from there up through the face, so the volume is known in closed form.
+#[test]
+fn rounded_box_shell_open_at_the_top_keeps_sphere_corners() {
+    let b = plate(40.0, 40.0, 40.0, vec![]);
+    let picks: Vec<(String, String, Vec3)> = b
+        .edge_ids()
+        .map(|e| {
+            let fs = b.edge_faces(e);
+            let ed = b.edge(e);
+            (b.face_id_str(fs[0]), b.face_id_str(fs[1]), ed.curve.eval(0.5 * (ed.t0 + ed.t1)))
+        })
+        .collect();
+    assert_eq!(picks.len(), 12);
+    let r = ck_ops::blend::fillet(&b, &picks, 5.0, "F2", 1e-6).unwrap_or_else(|e| panic!("fillet: {} {:?}", e.code, e.detail));
+    let open = face_facing(&r, Vec3::Z);
+    let s = shell(&r, &[open], 2.0, false, 1e-6);
+    report("rounded box shell", &s);
+    let s = s.unwrap_or_else(|e| panic!("shell refused: {} {:?}", e.code, e.detail));
+    let want = rounded_box_volume(40.0, 5.0) - (rounded_box_volume(36.0, 3.0) + 30.0 * 30.0 * 2.0);
+    assert!((vol(&s) - want).abs() < 1e-4 * want, "volume {} want {want}", vol(&s));
+    assert!(ck_check::validate(&s, 1e-6).is_empty(), "{:?}", ck_check::validate(&s, 1e-6).iter().take(3).map(|i| i.code).collect::<Vec<_>>());
+    let spheres: Vec<f64> = s.face_ids().filter_map(|f| if let Surface::Sphere { r, .. } = &s.face(f).surface { Some(*r) } else { None }).collect();
+    assert_eq!(spheres.iter().filter(|&&r| (r - 5.0).abs() < 1e-6).count(), 8, "outer corners {spheres:?}");
+    assert_eq!(spheres.iter().filter(|&&r| (r - 3.0).abs() < 1e-6).count(), 8, "inner corners (four at the floor, four under the rim) {spheres:?}");
+}

@@ -4,7 +4,7 @@
 //! Codes: `loftGuideInvalid` (no usable curve), `loftGuideMiss` (a profile
 //! is not touched), `loftGuideOrder` (the guide meets the profiles out of
 //! order, or the guides sit in a different order round different profiles).
-//! Oracle probes (internal notes (not published), tools/stub_cases.mjs `loftGuide*`):
+//! Oracle probes (docs/ck-ops-stubs.md, tools/stub_cases.mjs `loftGuide*`):
 //! a guide may run either way; it splits the profile piece it touches at the
 //! contact (a straight guide through the mid-points of two square edges
 //! gives 7 faces / 15 edges, the cut edge becomes `S.e2~1` / `S.e2~2`, the

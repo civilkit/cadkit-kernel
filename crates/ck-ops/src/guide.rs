@@ -7,7 +7,7 @@
 //! `sweepGuideShort` (it ends before the path does), `sweepGuidesSamePoint`,
 //! `sweepGuideDegenerate`, `sweepGuideOnPath` (the contact lies on the path).
 //!
-//! Oracle probes (internal notes (not published), tools/stub_cases.mjs `sweepGuide*`),
+//! Oracle probes (docs/ck-ops-stubs.md, tools/stub_cases.mjs `sweepGuide*`),
 //! circle r=3 swept 20 along a line, guide from (3,0) to (6,20):
 //! * `scale` (default, "scale and turn"): the section is scaled by the ratio
 //!   of the guide's distance from the path to the profile contact's, and

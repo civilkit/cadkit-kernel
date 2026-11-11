@@ -46,11 +46,11 @@ With `panic = "abort"` a kernel panic ends the call with a wasm trap. The host r
 
 | Feature | Crate | Effect |
 |---|---|---|
-| `skp` | `ck-wasm` | Links the SketchUp reader (`ck-skp`) and enables the `importSkp` request. Off by default: it adds about 320 KB (4.6 %) to the module. Without it, `importSkp` answers an error that begins `TODO(rebuild)`. |
+| `skp` | `ck-wasm` | Links the SketchUp reader (`ck-skp`) and enables the `importSkp` request. On by default: it adds about 320 KB (4.6 %) to the module; `--no-default-features` drops it. Without it, `importSkp` answers an error that begins `TODO(rebuild)`. |
 | `sanity-shadow` | `ck-wasm`, `ck-ops` | Runs the exact tier of the boolean sanity check even where the cheap tier already passed, and asserts that both agree. A checking mode for development, not for the shipped module. |
 
 ```sh
-cargo build -p ck-wasm --target wasm32-unknown-unknown --release --features skp
+cargo build -p ck-wasm --target wasm32-unknown-unknown --release
 ```
 
 [SketchUp](../io/skp.md) describes the import.

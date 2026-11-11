@@ -66,7 +66,7 @@ fn exec_full_round(br: &mut Brep, f: &Feature) -> Result<(), FeatureError> {
     let name = |k: &str| f.raw.get(k).and_then(|v| v.as_str()).map(str::to_string).ok_or_else(miss);
     let (s1, c, s2) = (name("side1")?, name("center")?, name("side2")?);
     let body = br.body.as_ref().ok_or_else(miss)?;
-    let fid = |n: &str| body.find_face(n).ok_or_else(miss);
+    let fid = |n: &str| body.find_face(n).ok_or_else(|| crate::refs::missing_face([body], n));
     let (f1, fc, f2) = (fid(&s1)?, fid(&c)?, fid(&s2)?);
     if f1 == f2 || f1 == fc || f2 == fc {
         return Err(unsup());
@@ -437,7 +437,7 @@ fn select_edges(br: &Brep, edges: &[crate::EdgeRef]) -> Result<Vec<(String, Stri
             if cands.is_empty() {
                 // no edge between the two families: the pick point may still sit on an edge of the same two
                 // features (a wall number that shifted when a boolean merged the halves of a cone)
-                let Some(e) = ck_ops::blend::build::find_edge_by_position(body, a, b, at) else { return Err(missing()) };
+                let Some(e) = ck_ops::blend::build::find_edge_by_position(body, a, b, at) else { return Err(crate::refs::missing_edge(body, a, b)) };
                 let fs = body.edge_faces(e);
                 picks.push(Pick::Exact(body.face_id_str(fs[0]), body.face_id_str(fs[1]), at));
                 continue;

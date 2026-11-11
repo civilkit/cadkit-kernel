@@ -515,11 +515,28 @@ pub fn point_in_face_cached(b: &Body, f: FaceId, p: Vec3, tol: f64, cache: &mut 
     if loops.iter().all(|l| l.len() < 3) {
         return Where::In; // closed surface without boundary (full sphere/torus)
     }
-    if in_loops(&face.surface, Vec2::new(u, v), loops) {
+    if in_face_loops(b, f, Vec2::new(u, v), loops) {
         Where::In
     } else {
         Where::Out
     }
+}
+
+/// Is the parameter point `uv` inside face `f`, given the face's uv polygons `loops` ([`face_loops_uv`])? Even-odd over the
+/// loops; except that a closed surface (a ball, a torus) whose seam loop was dropped as bounding nothing had that loop standing for
+/// the whole parameter domain, so the loops left are holes and a point is in the face when it is in none of them (a small hole
+/// off the seam and the poles; a hole on the seam or a pole is one outer loop with it and needs no flip).
+pub fn in_face_loops(b: &Body, f: FaceId, uv: Vec2, loops: &[Vec<Vec2>]) -> bool {
+    let face = b.face(f);
+    let inside = in_loops(&face.surface, uv, loops);
+    let seam_dropped = face.loops.iter().any(|&l| seam_only(b, l));
+    inside != seam_dropped
+}
+
+/// A loop that only walks seams (every edge both ways).
+pub(crate) fn seam_only(b: &Body, l: ck_topo::body::LoopId) -> bool {
+    let cs = &b.lp(l).coedges;
+    cs.iter().all(|&c| cs.iter().any(|&d| b.coedge(d).edge == b.coedge(c).edge && b.coedge(d).rev != b.coedge(c).rev))
 }
 
 /// Classify point `q` (on a fragment with outward normal `n`) against
@@ -595,7 +612,7 @@ impl<'a> Solid<'a> {
             return Where::In;
         }
         let (u, v) = s.closest_param(p);
-        if in_loops(s, Vec2::new(u, v), loops) {
+        if in_face_loops(b, self.faces[i], Vec2::new(u, v), loops) {
             Where::In
         } else {
             Where::Out

@@ -11,6 +11,17 @@ use ck_topo::body::{Body, EdgeId, FaceId, FaceName, Role};
 use ck_topo::make::{extrude, ExtrudeOpts, Profile, ProfileLoop, ProfileRegion, ProfileSeg};
 use super::{apply::*, diag::*, ends::*, model::*, rounds::*};
 
+thread_local! {
+    /// Edges of the selection a concave arc's tool swept over besides its own (the other arcs of a seam-split arc),
+    /// as (curve, range) on the body they were found in: they are blended, whatever an earlier tool did to their faces.
+    pub(super) static SWEPT: std::cell::RefCell<Vec<(Curve, f64, f64)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Does the pick point `at` lie on an edge an earlier tool of this selection swept over ([`SWEPT`])?
+pub(super) fn swept_pick(at: Vec3) -> bool {
+    SWEPT.with(|w| w.borrow().iter().any(|(c, t0, t1)| crate::boolean::imprint::near_in_range(c, (*t0, *t1), at, 1e-6 * (1.0 + at.len()))))
+}
+
 pub(super) fn chamfer_only(spec: Spec) -> bool {
     matches!(spec, Spec::Chamfer(..))
 }
@@ -99,6 +110,8 @@ pub(super) fn blend_edge_hint_inner(
     let mut ext = false;
     // angle swept by a circle edge (from its start point, ccw about the axis)
     let mut sweep = 0.0f64;
+    // a circle edge's first and last vertex along the swept arc (the chain's, see below)
+    let mut arc_ends: Option<(ck_topo::body::VertexId, ck_topo::body::VertexId)> = None;
     // Geometry at the working point P0 (line: edge midpoint; circle: its
     // start vertex, which is also the faces' seam point).
     let (p0, p1, dir, n1, n2, circ): (Vec3, Vec3, Vec3, Vec3, Vec3, Option<(Vec3, Vec3)>) = match ed.curve {
@@ -145,13 +158,65 @@ pub(super) fn blend_edge_hint_inner(
             };
             sweep = if ring { std::f64::consts::TAU } else { span };
             let t_start = ed.t0.min(ed.t1);
-            let p0 = ed.curve.eval(t_start);
+            let mut p0 = ed.curve.eval(t_start);
+            arc_ends = Some(if ed.t0 <= ed.t1 { (ed.v0, ed.v1) } else { (ed.v1, ed.v0) });
+            // a concave arc that a seam of the face it lies on split in several edges (arc_chain_siblings, selected
+            // with it) is one smooth edge: its tool is revolved over the whole chain, from the chain's first vertex
+            // to its last, so no flush cap is left at the seam vertex for the next arc's tool to glue onto (with an end
+            // that runs out through a side wall, that glue and the clip at the wall did not assemble). The other arcs
+            // are then blended by this tool.
+            if !ring && matches!(spec, Spec::Fillet(_, FilletProfile::Circular)) && concave_circle_edge(b, e, faces) {
+                let sibs = super::chain::arc_chain_siblings(b, e);
+                let (mut vs, mut ve) = arc_ends.unwrap();
+                let (mut back, mut fwd) = (0.0, 0.0);
+                let mut used = vec![e];
+                loop {
+                    let before = used.len();
+                    for &x in &sibs {
+                        if used.contains(&x) {
+                            continue;
+                        }
+                        let xe = b.edge(x);
+                        let sp = (xe.t1 - xe.t0).abs();
+                        let (a0, a1) = (xe.v0, xe.v1);
+                        if a0 == ve || a1 == ve {
+                            ve = if a0 == ve { a1 } else { a0 };
+                            fwd += sp;
+                            used.push(x);
+                        } else if a0 == vs || a1 == vs {
+                            vs = if a0 == vs { a1 } else { a0 };
+                            back += sp;
+                            used.push(x);
+                        }
+                    }
+                    if used.len() == before {
+                        break;
+                    }
+                }
+                if back + fwd > 0.0 && span + back + fwd < std::f64::consts::TAU - 1e-9 {
+                    let v = p0 - c;
+                    let (s, k) = ((-back).sin(), (-back).cos());
+                    p0 = c + v * k + axis.cross(v) * s + axis * (axis.dot(v) * (1.0 - k));
+                    sweep = span + back + fwd;
+                    arc_ends = Some((vs, ve));
+                    SWEPT.with(|w| w.borrow_mut().extend(used.iter().skip(1).map(|&x| {
+                        let xe = b.edge(x);
+                        (xe.curve.clone(), xe.t0.min(xe.t1), xe.t0.max(xe.t1))
+                    })));
+                    if super::diag::on() {
+                        eprintln!("concave arc chain of {} edges: one tool over {:.4} rad", used.len(), sweep);
+                    }
+                }
+            }
             let mut spline_face = false;
             let mut coaxial = |f: FaceId| match &b.face(f).surface {
                 Surface::Plane { frame } => frame.z.cross(axis).len() < 1e-9,
                 Surface::Cylinder { frame, .. } | Surface::Cone { frame, .. } => {
                     frame.z.cross(axis).len() < 1e-9 && (frame.o - c).cross(axis).len() < 1e-7 * (1.0 + rad)
                 }
+                // a ball whose centre is on the axis (a rod standing in a ball): a circular fillet's section is solved in the
+                // meridian plane (`sphere_section`)
+                Surface::Sphere { frame, .. } if !chamfer && matches!(spec, Spec::Fillet(_, FilletProfile::Circular)) => (frame.o - c).cross(axis).len() < 1e-7 * (1.0 + rad),
                 Surface::BSpline(_) if chamfer => {
                     let ok = bspline_coaxial_cone(&b.face(f).surface, c, axis);
                     spline_face |= ok;
@@ -168,7 +233,14 @@ pub(super) fn blend_edge_hint_inner(
                 let (u, v) = b.face(f).surface.closest_param(p0);
                 b.outward_normal(f, u, v).normalize()
             };
-            let dir = ed.curve.tangent(t_start).normalize();
+            // (the arc runs counter-clockwise about the axis from p0, the start of the chain)
+            let d0 = ed.curve.tangent(t_start).normalize();
+            let dir = if p0.dist(ed.curve.eval(t_start)) > 1e-12 {
+                let tg = axis.cross(p0 - c).normalize();
+                if d0.dot(axis.cross(ed.curve.eval(t_start) - c)) >= 0.0 { tg } else { -tg }
+            } else {
+                d0
+            };
             (p0, p0, dir, nrm(faces[0]), nrm(faces[1]), Some((c, axis)))
         }
     };
@@ -278,18 +350,64 @@ pub(super) fn blend_edge_hint_inner(
     } else {
         (off, ta, tb)
     };
+    // a circle edge against a ball: the meridian section is a line (or a circle) against a circle, no longer a straight corner
+    let (off, ta, tb) = match circ {
+        Some((c, axis)) if !chamfer && faces.iter().any(|&f| matches!(b.face(f).surface, Surface::Sphere { .. })) => match sphere_section(b, faces, [n1, n2], p0, c, axis, r, convex) {
+            Some((ctr, a, bb)) => (ctr - p0, a, bb),
+            None => {
+                dbg_fail("ball section: the rolling ball does not settle");
+                return Err(BlendError::code("blendUnsupported"));
+            }
+        },
+        _ => (off, ta, tb),
+    };
+    // (the run-on of a concave arc's tool past end `i` lies in the material: the tool's section inside the round's
+    // corner, swept on past the vertex as far as the run-on goes, stays in the body; checked at a few angles)
+    let runs_on_in_material = |i: usize| -> bool {
+        let Some((c, axis)) = circ else { return false };
+        let rad = (p0 - c).cross(axis).len();
+        if !(rad > 0.0) || off.len() <= r {
+            return false;
+        }
+        let mo = (r.max(sweep * rad * 0.05) + 1.0) / rad;
+        let inner = p0 + off * (0.5 * (1.0 - r / off.len()));
+        let rot = |p: Vec3, al: f64| {
+            let v = p - c;
+            c + v * al.cos() + axis.cross(v) * al.sin() + axis * (axis.dot(v) * (1.0 - al.cos()))
+        };
+        let solid = crate::contain::Containment::new(b, tol);
+        [0.25, 0.5, 0.75, 1.0].iter().all(|&k| {
+            let al = if i == 0 { -k * mo } else { sweep + k * mo };
+            solid.classify_point(rot(inner, al), tol) != crate::contain::Loc::Out
+        })
+    };
     // a concave arc that runs into a planar wall which is not radial (its plane does not contain the axis, e.g. the
     // side of a bar a boss joins at an angle): the swept tool runs on past that end and is clipped by the wall's
     // plane, so the blend ends on the wall instead of stopping short of it
     let mut circ_clips: Vec<(Vec3, Vec3)> = vec![];
     let mut circ_oblique = [false; 2];
+    let mut circ_surface_clips: Vec<(FaceId, OverflowClip)> = vec![];
     if !convex && sweep > 0.0 && sweep < std::f64::consts::TAU - 1e-9 {
-        if let Some((_, _)) = circ {
-            let (t_lo, t_hi) = (ed.t0.min(ed.t1), ed.t0.max(ed.t1));
-            let (vs, ve) = if ed.t0 <= ed.t1 { (ed.v0, ed.v1) } else { (ed.v1, ed.v0) };
-            for (i, (v, out)) in [(vs, -ed.curve.tangent(t_lo).normalize()), (ve, ed.curve.tangent(t_hi).normalize())].into_iter().enumerate() {
+        if let (Some((c, axis)), Some((vs, ve))) = (circ, arc_ends) {
+            let ccw = |v: ck_topo::body::VertexId| axis.cross(b.vertex(v).p - c).normalize();
+            for (i, (v, out)) in [(vs, -ccw(vs)), (ve, ccw(ve))].into_iter().enumerate() {
                 if let Some((pv, n)) = oblique_end_plane(b, v, &faces, out) {
-                    circ_clips.push((pv, -n));
+                    // (both ends on one plane, a pocket breaking out through a wall: one clip; a second one on the
+                    // same plane would cut the tool along its own clip face)
+                    let same = circ_clips.iter().any(|&(q, m)| (m + n).len() < 1e-9 && (pv - q).dot(n).abs() < 1e-9 * (1.0 + r));
+                    if !same {
+                        circ_clips.push((pv, -n));
+                    }
+                    circ_oblique[i] = true;
+                } else if let Some((g, clip)) = matches!(spec, Spec::Fillet(_, FilletProfile::Circular)).then(|| oblique_end_surface(b, v, &faces, out, b.bbox())).flatten() {
+                    if !circ_surface_clips.iter().any(|x: &(FaceId, OverflowClip)| x.0 == g) {
+                        circ_surface_clips.push((g, clip));
+                    }
+                    circ_oblique[i] = true;
+                } else if matches!(spec, Spec::Fillet(_, FilletProfile::Circular)) && concave_reflex_end(b, v, &faces, out) && runs_on_in_material(i) {
+                    // a concave arc that runs into a wall leaning over it (the sharp tip of a lens-shaped pocket, where
+                    // the other arc's wall closes the pocket): past the vertex the tool lies in the material behind that
+                    // wall, where the union adds nothing, so it runs on and the wall trims the round
                     circ_oblique[i] = true;
                 }
             }
@@ -313,9 +431,33 @@ pub(super) fn blend_edge_hint_inner(
     let ptol = (10.0 * tol).max(2e-5 * (b.bbox().1 - b.bbox().0).len()).min(0.25 * r);
     // (a section whose start end is clipped by an oblique wall is checked half way along the arc: its contact on the
     // face the wall bounds leaves that face through the wall by design)
+    // (likewise a convex arc whose start vertex is where it breaks out through an end face it crosses obliquely, a
+    // round pocket cut through the side of a plate: the contact on the face the end face bounds lies past the end face,
+    // outside the body, and the end face trims the round there; the tool runs on past both ends and the cut trims it)
+    let breaks_out = convex && !chamfer && sweep > 0.0 && sweep < std::f64::consts::TAU - 1e-9 && circ.is_some() && {
+        let v = arc_ends.map_or(ed.v0, |x| x.0);
+        let pv = b.vertex(v).p;
+        let mut ends: Vec<FaceId> = vec![];
+        for x in b.edge_ids().filter(|&x| b.edge(x).v0 == v || b.edge(x).v1 == v) {
+            for f in b.edge_faces(x) {
+                if !faces.contains(&f) && !ends.contains(&f) {
+                    ends.push(f);
+                }
+            }
+        }
+        let past_end = |t: Vec3| {
+            ends.iter().any(|&g| {
+                let (u, w) = b.face(g).surface.closest_param(pv);
+                (t - pv).dot(b.outward_normal(g, u, w).normalize()) > 1e-9 * (1.0 + r)
+            })
+        };
+        // (or the face goes on tangentially into the end face there, a flat ring into a corner round: the round ends
+        // flush at that vertex, see `g1_end`)
+        !ends.is_empty() && [(faces[0], ta), (faces[1], tb)].iter().any(|&(f, t)| point_in_face(b, f, t, tol) == Where::Out && (past_end(t) || g1_end(b, v, &faces).is_some_and(|x| x == f)))
+    };
     let rot = |p: Vec3| -> Vec3 {
         match circ {
-            Some((c, axis)) if circ_oblique[0] => {
+            Some((c, axis)) if circ_oblique[0] || breaks_out => {
                 let (v, al) = (p - c, 0.5 * sweep);
                 c + v * al.cos() + axis.cross(v) * al.sin() + axis * (axis.dot(v) * (1.0 - al.cos()))
             }
@@ -648,11 +790,33 @@ pub(super) fn blend_edge_hint_inner(
                 let mo = (r.max(span * rad * 0.05) + 1.0) / rad;
                 // an end that runs on into another arc of the same circle (a
                 // split ring) stops flush: that arc is cut by its own tool
-                let ends = [p0, ed.curve.eval(ed.t0.max(ed.t1))];
+                let ends = match arc_ends {
+                    Some((vs, ve)) => [b.vertex(vs).p, b.vertex(ve).p],
+                    None => [p0, ed.curve.eval(ed.t0.max(ed.t1))],
+                };
                 let flush = |q: Vec3| (ext && (continues_circle(b, e, q, c, axis, rad) || meets_own_blend(b, e, q, feature, tol))) || junc.flush.iter().any(|f| f.dist(q) < 1e-6 * (1.0 + rad));
+                // a convex arc whose face goes on tangentially into the end face (a flat ring into a corner round): the
+                // tool stops flush there, as at a smooth run-on of a straight edge (run on, it would notch the round)
+                // (not where the edge itself goes on smoothly into the next one, the rim of a rounded outline: that run
+                // is a chain and ends as one)
+                let smooth_on = |v: ck_topo::body::VertexId| {
+                    let pv = b.vertex(v).p;
+                    let d = axis.cross(pv - c).normalize();
+                    b.edge_ids().filter(|&x| x != e && (b.edge(x).v0 == v || b.edge(x).v1 == v)).any(|x| {
+                        let ex = b.edge(x);
+                        let t = ex.curve.tangent(if ex.v0 == v { ex.t0 } else { ex.t1 });
+                        t.len() > 1e-12 && t.normalize().cross(d).len() < 1e-6
+                    })
+                };
+                let g1 = |i: usize| {
+                    convex && !chamfer && arc_ends.is_some_and(|(vs, ve)| {
+                        let v = if i == 0 { vs } else { ve };
+                        g1_end(b, v, &faces).is_some() && !smooth_on(v)
+                    })
+                };
                 let (mut m0, mut m1) = (
-                    if circ_oblique[0] { mo } else if flush(ends[0]) { 0.0 } else { m },
-                    if circ_oblique[1] { mo } else if flush(ends[1]) { 0.0 } else { m },
+                    if circ_oblique[0] { mo } else if flush(ends[0]) || g1(0) { 0.0 } else { m },
+                    if circ_oblique[1] { mo } else if flush(ends[1]) || g1(1) { 0.0 } else { m },
                 );
                 // a convex arc that runs into a reflex corner (a hub arc's rim into the wall of a petal whose rim is
                 // not rounded): the only other face there is a plane that leans toward the material, so the tool must
@@ -660,7 +824,7 @@ pub(super) fn blend_edge_hint_inner(
                 // axis), else run on and clipped by it (while the clip plane cannot reach the tool's other end).
                 if convex && !chamfer && span + m0 + m1 < TAU {
                     let (t_lo, t_hi) = (ed.t0.min(ed.t1), ed.t0.max(ed.t1));
-                    let (vs, ve) = if ed.t0 <= ed.t1 { (ed.v0, ed.v1) } else { (ed.v1, ed.v0) };
+                    let (vs, ve) = arc_ends.unwrap_or(if ed.t0 <= ed.t1 { (ed.v0, ed.v1) } else { (ed.v1, ed.v0) });
                     let outs = [(vs, -ed.curve.tangent(t_lo).normalize()), (ve, ed.curve.tangent(t_hi).normalize())];
                     for (i, (v, out)) in outs.into_iter().enumerate() {
                         let mi = if i == 0 { m0 } else { m1 };
@@ -697,6 +861,9 @@ pub(super) fn blend_edge_hint_inner(
     for (o, n) in circ_clips {
         tool = clip_halfspace(&tool, o, n, tol)?;
     }
+    for (_, c) in &circ_surface_clips {
+        tool = c.apply(&tool, tol)?;
+    }
     for c in &overflow {
         tool = c.apply(&tool, tol)?;
     }
@@ -723,10 +890,20 @@ pub(super) fn blend_edge_hint_inner(
             }
         }
     }
+    if super::diag::on_level(2) {
+        eprintln!("{}: tool faces (convex {convex}):", name.id());
+        for f in tool.face_ids() {
+            eprintln!("  {} {} ({} edges)", tool.face_id_str(f), tool.face(f).surface.kind(), tool.face_edges(f).len());
+        }
+    }
     let op = if convex { Op::Cut } else { Op::Union };
     // order: untouched; edge faces (ref order), end faces (start, end);
     // other touched faces; blend
-    let ends: Vec<FaceId> = [ed.v0, ed.v1]
+    let end_vs = match arc_ends {
+        Some((vs, ve)) => [vs, ve],
+        None => [ed.v0, ed.v1],
+    };
+    let ends: Vec<FaceId> = end_vs
         .iter()
         .flat_map(|&v| {
             b.edge_ids()
@@ -751,6 +928,114 @@ pub(super) fn blend_edge_hint_inner(
         return apply_tool_hooked(b, &tool, op, &name, hint, tol, Some(&hook));
     }
     apply_tool(b, &tool, op, &name, hint, tol)
+}
+
+/// The rolling ball of radius `r` between two coaxial faces at the circle edge through `p0` (centre `c`, axis `axis`), one of
+/// them a sphere centred on the axis, the other a plane, a cylinder or a sphere: its centre, and the contact point on each face.
+/// The section is planar (the meridian plane through `p0`), so the centre `q` solves two equations there: its signed distance
+/// from each face (along the outward normal, positive outside the material) is `r` for a concave edge and `-r` for a convex one.
+/// Newton from the corner of the two normals, the finite-difference Jacobian in the plane; `None` when it does not settle.
+fn sphere_section(b: &Body, faces: [FaceId; 2], ns: [Vec3; 2], p0: Vec3, c: Vec3, axis: Vec3, r: f64, convex: bool) -> Option<(Vec3, Vec3, Vec3)> {
+    let er = (p0 - c) - axis * (axis.dot(p0 - c));
+    if er.len() < 1e-12 {
+        return None;
+    }
+    let er = er.normalize();
+    // distance of `q` from a face's surface, signed so that it grows away from the surface along `g` (its gradient at p0)
+    let dist = |f: FaceId, q: Vec3| -> Option<f64> {
+        Some(match &b.face(f).surface {
+            Surface::Plane { frame } => (q - frame.o).dot(frame.z),
+            Surface::Cylinder { frame, r } => {
+                let v = q - frame.o;
+                (v - frame.z * v.dot(frame.z)).len() - r
+            }
+            Surface::Sphere { frame, r } => (q - frame.o).len() - r,
+            _ => return None,
+        })
+    };
+    let grad = |f: FaceId| -> Option<Vec3> {
+        Some(match &b.face(f).surface {
+            Surface::Plane { frame } => frame.z,
+            Surface::Cylinder { frame, .. } => {
+                let v = p0 - frame.o;
+                (v - frame.z * v.dot(frame.z)).normalize()
+            }
+            Surface::Sphere { frame, .. } => (p0 - frame.o).normalize(),
+            _ => return None,
+        })
+    };
+    let sg = [0, 1].map(|i| grad(faces[i]).map(|g| if g.dot(ns[i]) >= 0.0 { 1.0 } else { -1.0 }));
+    let (s0, s1) = (sg[0]?, sg[1]?);
+    let want = if convex { -r } else { r };
+    let at = |a: f64, z: f64| c + er * a + axis * z;
+    let res = |a: f64, z: f64| -> Option<[f64; 2]> {
+        let q = at(a, z);
+        Some([s0 * dist(faces[0], q)? - want, s1 * dist(faces[1], q)? - want])
+    };
+    // start: the corner of the two normals
+    let c12 = ns[0].dot(ns[1]);
+    let q0 = p0 + (ns[0] + ns[1]) * (if convex { -r } else { r } / (1.0 + c12));
+    let (mut a, mut z) = ((q0 - c).dot(er), (q0 - c).dot(axis));
+    for _ in 0..60 {
+        let f = res(a, z)?;
+        if f[0].abs().max(f[1].abs()) < 1e-12 * (1.0 + r) {
+            let q = at(a, z);
+            let on = |f: FaceId| b.face(f).surface.closest_point(q).2;
+            if super::diag::on() {
+                eprintln!("ball section: p0 {p0:?} centre {q:?} contacts {:?} {:?} convex {convex} r {r}", on(faces[0]), on(faces[1]));
+            }
+            return Some((q, on(faces[0]), on(faces[1])));
+        }
+        let h = 1e-7 * (1.0 + r);
+        let (fa, fz) = (res(a + h, z)?, res(a, z + h)?);
+        let j = [[(fa[0] - f[0]) / h, (fz[0] - f[0]) / h], [(fa[1] - f[1]) / h, (fz[1] - f[1]) / h]];
+        let det = j[0][0] * j[1][1] - j[0][1] * j[1][0];
+        if det.abs() < 1e-14 {
+            return None;
+        }
+        let da = (f[0] * j[1][1] - f[1] * j[0][1]) / det;
+        let dz = (j[0][0] * f[1] - j[1][0] * f[0]) / det;
+        a -= da;
+        z -= dz;
+    }
+    None
+}
+
+/// The one of `faces` that goes on tangentially (G1) into the only other face at vertex `v` (their outward normals agree
+/// there), if any.
+fn g1_end(b: &Body, v: ck_topo::body::VertexId, faces: &[FaceId; 2]) -> Option<FaceId> {
+    let mut ends: Vec<FaceId> = vec![];
+    for x in b.edge_ids().filter(|&x| b.edge(x).v0 == v || b.edge(x).v1 == v) {
+        for f in b.edge_faces(x) {
+            if !faces.contains(&f) && !ends.contains(&f) {
+                ends.push(f);
+            }
+        }
+    }
+    if ends.len() != 1 {
+        return None;
+    }
+    let pv = b.vertex(v).p;
+    let n = |f: FaceId| {
+        let (u, w) = b.face(f).surface.closest_param(pv);
+        b.outward_normal(f, u, w).normalize()
+    };
+    let ng = n(ends[0]);
+    faces.iter().copied().find(|&f| (1.0 - n(f).dot(ng)).abs() < 1e-9)
+}
+
+/// Is the circle edge `e` between `faces` concave (the material angle is over 180 degrees), judged at its midpoint?
+fn concave_circle_edge(b: &Body, e: EdgeId, faces: [FaceId; 2]) -> bool {
+    let ed = b.edge(e);
+    let tm = 0.5 * (ed.t0 + ed.t1);
+    let (p, d) = (ed.curve.eval(tm), ed.curve.tangent(tm).normalize());
+    let Some(co) = b.edge_coedges(e).into_iter().find(|&c| b.coedge_face(c) == faces[0]) else { return false };
+    let tdir = if b.coedge(co).rev { -d } else { d };
+    let n = |f: FaceId| {
+        let (u, v) = b.face(f).surface.closest_param(p);
+        b.outward_normal(f, u, v).normalize()
+    };
+    n(faces[0]).cross(tdir).dot(n(faces[1])) > 1e-9
 }
 
 /// Circle through a curve's samples on `[t0, t1]`: `(centre, axis, radius,

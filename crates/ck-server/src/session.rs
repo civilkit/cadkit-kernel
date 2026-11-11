@@ -102,8 +102,13 @@ pub type ImportSkpHook = fn(cx: &mut Cx) -> Result<(Json, Option<State>), String
 /// part document. Read only: answers the reply and leaves the session alone.
 pub type SldprtHistoryHook = fn(cx: &mut Cx) -> Result<Json, String>;
 
+/// Engine hook for `builtExport`: the saved results of the import features built or read in this process (see
+/// `docs/regen-cache.md`, "Saved bodies"). Read only.
+pub type BuiltExportHook = fn(cx: &mut Cx) -> Result<Json, String>;
+
 #[derive(Default, Clone, Copy)]
 pub struct Hooks {
+    pub built_export: Option<BuiltExportHook>,
     pub sldprt_history: Option<SldprtHistoryHook>,
     pub import_sat: Option<ImportSatHook>,
     pub import_skp: Option<ImportSkpHook>,
@@ -155,7 +160,7 @@ impl<'a> Cx<'a> {
 
 /// The error a not-yet-rebuilt path returns (never produced by the oracle).
 pub fn todo(what: &str) -> String {
-    format!("TODO(rebuild): {what} needs the geometry engine (no hook installed)")
+    format!("notImplemented: {what} needs the geometry engine (no hook installed)")
 }
 
 pub fn tag_of(msg: &Json) -> &str {

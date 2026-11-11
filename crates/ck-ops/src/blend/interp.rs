@@ -4,7 +4,7 @@
 //!
 //! Codes: `invalidValue` (a radius <= 0), `blendTooLarge` (a contact line
 //! leaves its face), `blendUnsupported` (curved edge or face), `missingEdge`.
-//! Oracle probes (internal notes (not published), `var*` in tools/stub_cases.mjs):
+//! Oracle probes (docs/ck-ops-stubs.md, `var*` in tools/stub_cases.mjs):
 //! * `radii: [a, b]` (`filletType: "variable"`): `a` at the end of the edge
 //!   nearer the pick point, `b` at the other; every picked edge gets the same
 //!   pair (by its own pick); [1, 3] on the 40 mm box edge removes

@@ -40,8 +40,13 @@ fn import_sat_failure_is_structured_and_keeps_state() {
     assert_eq!(r.get("ok"), Some(&Json::Bool(true)));
     let errs = r.get("result").unwrap().get_arr("errors").unwrap();
     assert_eq!(errs.len(), 1);
-    assert_eq!(errs[0].get_str("code"), Some("sat.unsupported"));
-    assert_eq!(errs[0].get_str("entity"), Some("$4"));
+    // the same pair shape as the other importers: ["import", {code, params}]
+    let pair = errs[0].as_arr().expect("error is a [feature, error] pair");
+    assert_eq!(pair[0].as_str(), Some("import"));
+    assert_eq!(pair[1].get_str("code"), Some("sat.unsupported"));
+    let params = pair[1].get("params").unwrap();
+    assert_eq!(params.get_str("entity"), Some("$4"));
+    assert!(params.get_str("message").is_some());
     assert!(r.get("result").unwrap().get("body").unwrap().is_null());
     let q = call(obj(vec![("type", "validate".into()), ("tag", "u".into())]));
     assert_eq!(q.get("ok"), Some(&Json::Bool(false)));

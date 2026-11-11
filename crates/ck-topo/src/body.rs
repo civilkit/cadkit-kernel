@@ -529,9 +529,10 @@ impl Body {
         self.lump_ids().position(|x| x == l).unwrap_or(0)
     }
     pub fn find_face(&self, id: &str) -> Option<FaceId> {
-        self.face_ids().find(|&f| self.faces[f.idx()].name.id() == id).or_else(|| {
-            self.face_ids().find(|&f| self.faces[f.idx()].absorbed.iter().any(|a| a == id))
-        })
+        let exact = |id: &str| {
+            self.face_ids().find(|&f| self.faces[f.idx()].name.id() == id).or_else(|| self.face_ids().find(|&f| self.faces[f.idx()].absorbed.iter().any(|a| a == id)))
+        };
+        exact(id).or_else(|| root_panel_alias(id).and_then(|alt| exact(&alt)))
     }
     pub fn face_id_str(&self, f: FaceId) -> String {
         self.faces[f.idx()].name.id()
@@ -1331,4 +1332,20 @@ fn sampled_box(c: &Curve, t0: f64, t1: f64) -> (Vec3, Vec3) {
         }
         (lo, hi)
     })
+}
+
+/// A sheet metal base names its faces `B1.C1` while it is one panel and `B1.p0.C1` once folds or flanges split it into a
+/// panel tree: the root panel's faces are the same faces under the other spelling. The other spelling of `id`, if it has one
+/// (`B1.p0.rest` -> `B1.rest`; `B1.C<n>` -> `B1.p0.C<n>`), so a reference made in one state survives the other (removing the
+/// only fold must not orphan a sketch drawn on the plate).
+fn root_panel_alias(id: &str) -> Option<String> {
+    let (head, rest) = id.split_once('.')?;
+    if let Some(r) = rest.strip_prefix("p0.") {
+        return Some(format!("{head}.{r}"));
+    }
+    let digits = rest.strip_prefix('C')?;
+    if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) {
+        return Some(format!("{head}.p0.{rest}"));
+    }
+    None
 }

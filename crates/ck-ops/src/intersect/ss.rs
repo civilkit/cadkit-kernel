@@ -22,15 +22,34 @@
 
 use super::solve3;
 use ck_geom::curve::Curve;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::cell::Cell;
+use std::sync::atomic::Ordering;
+
+thread_local! {
+    static GRID_SEEDS: Cell<bool> = const { Cell::new(false) };
+    static ORIG_STEP: Cell<bool> = const { Cell::new(false) };
+}
 
 /// Seed the march from the 25 x 25 projection grids (the scheme before the patch boxes) instead of
 /// the patch-box cell boundaries (`patch.rs`). Set per regen by the `ssiGridSeeds` option.
-pub static GRID_SEEDS: AtomicBool = AtomicBool::new(false);
+///
+/// The two switches are per thread, not per process: a regen runs on one thread from the option read to
+/// the last intersection, so concurrent sessions (native service) no longer see each other's flags.
+pub fn set_grid_seeds(on: bool) {
+    GRID_SEEDS.with(|c| c.set(on));
+}
+pub fn grid_seeds_on() -> bool {
+    GRID_SEEDS.with(Cell::get)
+}
 /// March step and tracer start as the original computes them (`f2487`): step =
 /// clamp(0.1 min(cs1, cs2, diag), 0.001 diag, 0.05 diag) from the characteristic sizes, tracer
-/// starting at a quarter step. Off: diag / 64 and a full first step.
-pub static ORIG_STEP: AtomicBool = AtomicBool::new(false);
+/// starting at a quarter step. Off: diag / 64 and a full first step. Per thread, see [`set_grid_seeds`].
+pub fn set_orig_step(on: bool) {
+    ORIG_STEP.with(|c| c.set(on));
+}
+pub fn orig_step_on() -> bool {
+    ORIG_STEP.with(Cell::get)
+}
 
 use ck_geom::fit::{interpolate, Param};
 use ck_geom::surface::{SurfDerivs, Surface};
@@ -136,7 +155,7 @@ fn intersect_uncached(s1: &Surface, s2: &Surface, bounds: Option<Bounds>, tol: f
     match bounds {
         Some(b) => {
             let diag = (b.hi - b.lo).len();
-            let step = if ORIG_STEP.load(Ordering::Relaxed) {
+            let step = if orig_step_on() {
                 (0.1 * char_size(s1, diag).min(char_size(s2, diag)).min(diag)).clamp(0.001 * diag, 0.05 * diag).max(tol * 100.0)
             } else {
                 (diag / 64.0).max(tol * 100.0)
@@ -1180,7 +1199,7 @@ pub fn march(s1: &Surface, s2: &Surface, b: Bounds, tol: f64, step: f64) -> Vec<
     let diag = (b.hi - b.lo).len().max(step);
     let pad = step * 2.0;
     let mut seeds: Vec<MPt> = vec![];
-    let mut grid_seeds = GRID_SEEDS.load(Ordering::Relaxed) || std::env::var_os("CK_SSI_GRID").is_some();
+    let mut grid_seeds = grid_seeds_on() || std::env::var_os("CK_SSI_GRID").is_some();
     let t_all = super::patch::now();
     if !grid_seeds {
         let t_seed = super::patch::now();
@@ -1405,7 +1424,7 @@ fn trace(s1: &Surface, s2: &Surface, seed: MPt, t0: Vec3, b: &Bounds, tol: f64, 
     let mut pts = vec![seed];
     let mut cur = seed;
     let mut t = t0;
-    let mut h = if ORIG_STEP.load(Ordering::Relaxed) { 0.25 * step } else { step };
+    let mut h = if orig_step_on() { 0.25 * step } else { step };
     for it in 0..5000 {
         let pred = cur.p + t * h;
         let next = correct_uv_d(s1, s2, pred, t, cur.uv, tol);
@@ -1448,6 +1467,24 @@ fn trace(s1: &Surface, s2: &Surface, seed: MPt, t0: Vec3, b: &Bounds, tol: f64, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn debug_switches_are_per_thread() {
+        set_grid_seeds(true);
+        set_orig_step(true);
+        // another session's thread sees its own (default) switches, and setting them there does not touch ours
+        std::thread::spawn(|| {
+            assert!(!grid_seeds_on() && !orig_step_on());
+            set_grid_seeds(true);
+            set_grid_seeds(false);
+        })
+        .join()
+        .unwrap();
+        assert!(grid_seeds_on() && orig_step_on());
+        set_grid_seeds(false);
+        set_orig_step(false);
+    }
+
     use ck_geom::Frame;
     use std::f64::consts::TAU;
 

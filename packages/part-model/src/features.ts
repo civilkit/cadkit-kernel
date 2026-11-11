@@ -168,7 +168,7 @@ export interface HelixFeature {
   id: string;
   name?: string;
   sketch: string | null;
-  definedBy?: 'pitchRevs' | 'heightRevs' | 'heightPitch' | string;
+  definedBy?: 'pitchRevs' | 'pitchHeight' | 'revsHeight' | string;
   pitch?: Expr;
   revolutions?: Expr;
   height?: Expr;
@@ -734,7 +734,7 @@ export interface RepairPartFeature {
 
 /** One section of a `frame` member: a standard shape and its dimensions (mm); `id` / `label` name the stock in the cut list. */
 export interface FrameProfile {
-  kind: 'rectTube' | 'rect' | 'roundTube' | 'roundBar' | 'angle' | 'channel' | 'tslot';
+  kind: 'rectTube' | 'rect' | 'roundTube' | 'roundBar' | 'angle' | 'channel' | 'ibeam' | 'tslot';
   id?: string;
   label?: string;
   [dim: string]: unknown;
@@ -787,6 +787,7 @@ export const FEATURE_TYPES = [
   'deleteBody', 'deleteFace', 'thicken', 'cutWithSurface', 'pipeCut',
   'freeform', 'editCurve', 'projectCurve', 'extend', 'dome', 'splitLine',
   'moveFace', 'moveBody', 'scale', 'axis', 'thread', 'combine', 'sphere', 'knurlBand', 'importStep', 'repairPart', 'frame',
+  'sheetRules', 'baseFlange', 'edgeFlange', 'hem', 'fold', 'contourFlange', 'unfold', 'refold', 'sheetConvert', 'sheetCut', 'sheetCorner',
 ] as const;
 
 export type FeatureTypeName = (typeof FEATURE_TYPES)[number];

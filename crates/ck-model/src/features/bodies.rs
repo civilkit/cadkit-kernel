@@ -41,7 +41,7 @@ pub fn body_name(raw: &Json) -> Result<Option<String>, FeatureError> {
 }
 
 /// Feature types that take `op: "newBody"`.
-const NEW_BODY_TYPES: &[&str] = &["extrude", "revolve", "loft", "sweep", "sphere"];
+const NEW_BODY_TYPES: &[&str] = &["extrude", "revolve", "loft", "sweep", "sphere", "box"];
 
 /// Up-front checks of a feature's operation and `body` name, before it runs: `newBody` on a feature that does not
 /// support it, and a `body` name on an extrude / revolve / loft / sweep that is not `newBody`, are `invalidValue`.

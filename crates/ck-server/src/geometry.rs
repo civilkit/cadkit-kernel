@@ -103,6 +103,17 @@ pub fn sldprt_history(cx: &mut Cx) -> Result<Json, String> {
     h(cx)
 }
 
+/// `{"type":"builtExport","feature":id?}` -> `{ok, entries:[{feature, key, source, rejected?, data}]}`: the saved results of the
+/// import features (`importBody`) that the last regens built from their file or read from the document's `built` table,
+/// oldest first (at most the last few). `data` is the base64 text to store as `built[key]` of the part document (or beside
+/// it), compressed by the app if it likes before keeping and expanded again before it goes back in; `source` is `built` or
+/// `saved`; `rejected` says why an entry under the key was present but not used. With `feature`, only that feature's.
+/// Read only: no tag, no state. The entry is a cache: a document without it, or with a damaged or foreign one, rebuilds.
+pub fn built_export(cx: &mut Cx) -> Result<Json, String> {
+    let Some(h) = cx.hooks.built_export else { return Err(crate::session::todo("builtExport")) };
+    h(cx)
+}
+
 /// `{"type":"importSkp","tag":t,"name":n?,"data":"<base64 of a .skp file>","opts":{"hidden":bool?,"maxFaces":n?}?}` ->
 /// regen-shaped result like `importStep` (`body`, `errors`, plus `import`). The body is a surface model: one planar face per
 /// SketchUp face (holes kept), vertices welded, edges shared; `import.faceMaterials` lists the colour index of each

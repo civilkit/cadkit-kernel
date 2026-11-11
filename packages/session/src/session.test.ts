@@ -628,3 +628,67 @@ describe('skipped reference checks have no warnings', { skip: !existsSync(wasmPa
   });
 });
 type EditOpT = import('./session.js').EditOp;
+
+describe('session repair of lost references', { skip: !existsSync(wasmPath()) && 'no wasm built' }, () => {
+  const plate = async () => {
+    const { Part } = await import('../../builder/src/index.js');
+    const p = new Part('Plate', 'aluminium');
+    const base = p.sketch('Outline', 'front', (sk) => sk.rect(0, 0, 100, 60));
+    p.extrude({ sketch: base, op: 'add', end: 'blind', depth: 10, name: 'Plate' });
+    const doc = p.toJSON() as unknown as { features: Array<Record<string, unknown>> };
+    const sketch = doc.features.find((f) => f.type === 'sketch') as unknown as { id: string; entities: Array<{ id: string }> };
+    const side = sketch.entities[0].id;
+    // a shell that opens the wall made by the first sketch entity, so the document refers to that face by name
+    doc.features.push({ type: 'shell', id: 'F9', faces: [`F2.S.${side}`], thickness: 2 });
+    return { doc: doc as never, side, sketchId: sketch.id, sketch: JSON.stringify(sketch) };
+  };
+
+  it('a batch that renames the sketch entity behind a face is rejected, and says the one re-pointing that makes it build', async () => {
+    const { doc, side, sketchId, sketch } = await plate();
+    const s = await Session.open(doc, { author: 'agent' });
+    try {
+      const renamed = JSON.parse(sketch.split(`"${side}"`).join(`"${side}x"`));
+      const r = await s.edit([{ op: 'replace', id: sketchId, feature: renamed }], 'rename an entity');
+      assert.equal(r.ok, false);
+      assert.ok(r.errors?.some(([, e]) => e.code === 'missingReference'), JSON.stringify(r.errors));
+      assert.equal(r.repairs?.length, 1, JSON.stringify(r));
+      assert.equal(r.repairs?.[0].feature, 'F9');
+      assert.equal(r.repairs?.[0].to, `F2.S.${side}x`);
+      assert.equal(r.repairOps?.[0].op, 'replace');
+      // nothing was applied
+      assert.equal((await s.verify()).ok, true);
+    } finally {
+      await s.close();
+    }
+  });
+
+  it('with repair: true the same batch is applied together with the re-pointing, as ops in the record, and undoes in one step', async () => {
+    const { doc, side, sketchId, sketch } = await plate();
+    const s = await Session.open(doc, { author: 'agent' });
+    try {
+      const renamed = JSON.parse(sketch.split(`"${side}"`).join(`"${side}x"`));
+      const r = await s.edit([{ op: 'replace', id: sketchId, feature: renamed }], 'rename an entity', { repair: true });
+      assert.equal(r.ok, true, JSON.stringify(r));
+      assert.equal(r.repairs?.length, 1);
+      assert.equal(r.record?.ops.length, 2);
+      assert.equal((await s.verify()).ok, true);
+      const u = await s.undo();
+      assert.equal(u.records.length, 1);
+      assert.equal((await s.verify()).ok, true);
+    } finally {
+      await s.close();
+    }
+  });
+
+  it('a rejected edit with nothing that fits has no repairs', async () => {
+    const { doc } = await plate();
+    const s = await Session.open(doc, { author: 'agent' });
+    try {
+      const r = await s.edit([{ op: 'remove', id: 'F2', cascade: false }], 'drop the extrude');
+      assert.equal(r.ok, false);
+      assert.equal(r.repairs, undefined);
+    } finally {
+      await s.close();
+    }
+  });
+});

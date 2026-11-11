@@ -85,7 +85,7 @@ Run result: no errors; 8 faces, volume 7798.9381 mm³. The pocket faces are `F4.
 
 ### Taper and twist
 
-`draft` tapers the walls inwards by the given angle; `draftOut: true` tapers outwards. A taper that closes the profile before the depth is reached is `draftTooLarge`. For a profile made of one circle (a cone) the error carries `maxHeight`, the depth at which the taper closes to a point, and a successful drafted extrude of such a profile adds `limits: [["F2", {"maxHeight": h}]]` to the regen reply so an editor can limit its depth field. A depth equal to `maxHeight` builds a cone with one apex and no top cap. A drafted extrude with `end` `mid` or `throughBoth` is not built: it fails with the code `TODO(rebuild): mid-plane drafted extrude (boolean unite) needs ck-ops`.
+`draft` tapers the walls inwards by the given angle; `draftOut: true` tapers outwards. A taper that closes the profile before the depth is reached is `draftTooLarge`. For a profile made of one circle (a cone) the error carries `maxHeight`, the depth at which the taper closes to a point, and a successful drafted extrude of such a profile adds `limits: [["F2", {"maxHeight": h}]]` to the regen reply so an editor can limit its depth field. A depth equal to `maxHeight` builds a cone with one apex and no top cap. A drafted extrude with `end` `mid` or `throughBoth` is not built: it fails with the code `notImplemented` (`what`: `mid-plane drafted extrude (boolean unite)`).
 
 Added after the rectangle sketch `F1` of the plate (without its extrude):
 
@@ -448,10 +448,10 @@ Moves the profile along a path.
 | `twist` | number or expression | `0` | Degrees of rotation of the profile along the path. |
 | `guides` | list of curve references | none | Guide curves (`{"kind": ...}` with `sketchCurve`, `edge` or `curve`) that the profile follows. |
 | `guideMode` | string | `"scale"` | `scale`, `turn` or `stretch`. |
-| `surface` | boolean | `false` | A sheet sweep. Not built: the error code is `TODO(rebuild): surface sweep (open profile -> sheet body) needs ck-ops`. |
+| `surface` | boolean | `false` | A sheet sweep. Not built: the error code is `notImplemented` (`what`: `surface sweep (open profile -> sheet body)`). |
 | `body` | string | none | Name of the new body. |
 
-The path is walked from its free end. Consecutive path pieces must be joined end to end; corners between two lines are mitred. A corner between a line and an arc, or two arcs, that is not tangent is not built (`TODO(rebuild): mitre joint other than line-line (turn < 166 deg)`); make the arc tangent.
+The path is walked from its free end. Consecutive path pieces must be joined end to end; corners between two lines are mitred. A corner between a line and an arc, or two arcs, that is not tangent is not built (`notImplemented`, `what`: `mitre joint other than line-line (turn < 166 deg)`); make the arc tangent.
 
 Faces: `C0` and `C1` for the profile ends and `S.<profile entity>` for the surface swept by each profile entity. A side face is split `~1`, `~2`, ... along the pieces of the path.
 

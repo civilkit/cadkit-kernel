@@ -80,7 +80,28 @@ function gen() {
   }
 }
 gen();
-const selected = only ? cases.filter((c) => c.id.includes(only)) : cases;
+// Parts thinner than the wall (MitCad 0.44 comparison, docs/superpowers/plans/2026-11-05-mitcad-learnings.md Task 4). Own
+// generator seeded from `seed`, so the cases above keep their parameters and these keep theirs whatever `--samples` is.
+//   plate_thin: a plate no thicker than the wall, top removed (nothing can hollow).
+//   fin_thin:   a box with a fin on its top thinner than two walls, bottom removed (the box hollows, the fin cannot).
+//   skirt_thin: a cylinder with a thin cylindrical skirt standing on its top rim, bottom removed (the skirt cannot hollow).
+function genThin() {
+  let s2 = (seed ^ 0x9e3779b9) >>> 0;
+  const r2 = () => { s2 = (s2 * 1664525 + 1013904223) >>> 0; return s2 / 4294967296; };
+  const rr2 = (a, b) => a + (b - a) * r2();
+  for (let i = 0; i < samples; i++) {
+    const pw = rr2(20, 60), pd = rr2(20, 60), ph = rr2(1, 4), pt = ph * rr2(1, 1.5);
+    add(`plate_thin_${i}`, 'plate_thin', { kind: 'box', w: pw, d: pd, h: ph }, { thickness: pt, remove: ['top'] }, { kind: 'shell' });
+    const t = rr2(1, 3);
+    const fw = rr2(20, 60), fd = rr2(20, 60), fh = rr2(10, 40), ft = t * rr2(0.5, 1.5), fH = rr2(5, 20);
+    add(`fin_thin_${i}`, 'fin_thin', { kind: 'fin', w: fw, d: fd, h: fh, ft, fh: fH }, { thickness: t, remove: ['bottom'] }, { kind: 'shell' });
+    const sr = rr2(10, 30), sh = rr2(10, 40), st = t * rr2(0.4, 1.5), sH = rr2(5, 20);
+    add(`skirt_thin_${i}`, 'skirt_thin', { kind: 'skirt', r: sr, h: sh, st, sh: sH }, { thickness: t, remove: ['bottom'] }, { kind: 'shell' });
+  }
+}
+genThin();
+const onlyList = only ? only.split(',') : [];
+const selected = only ? cases.filter((c) => onlyList.some((o) => c.id.includes(o))) : cases;
 
 function featFor(c) {
   n = 0;
@@ -88,6 +109,12 @@ function featFor(c) {
   let f, faces;
   if (b.kind === 'box') {
     f = box(b.w, b.d, b.h); faces = { top: 'F2.C1', side_ymin: 'F2.S.e1' };
+  } else if (b.kind === 'fin') {
+    const body = box(b.w, b.d, b.h), fin = sk(b.w / 2 - b.ft / 2, 0, b.w / 2 + b.ft / 2, b.d, b.h);
+    f = [...body, ...fin, ex(`F${++n}`, fin[fin.length - 1].id, b.fh)]; faces = { bottom: 'F2.C0' };
+  } else if (b.kind === 'skirt') {
+    const body = cyl(b.r, b.h), sk2 = circSk(b.r, b.h); sk2[sk2.length - 1].entities.push(circ('e2', 'c', b.r - b.st));
+    f = [...body, ...sk2, ex(`F${++n}`, sk2[sk2.length - 1].id, b.sh)]; faces = { bottom: 'F2.C0' };
   } else if (b.kind === 'cyl') {
     f = cyl(b.r, b.h); faces = { top: 'F2.C1' };
   } else if (b.kind === 'tube') {
@@ -138,13 +165,16 @@ for (const c of selected) {
   const errs = (r.result?.errors ?? []).map(([, e]) => e.code);
   if (errs.length) {
     const refused = errs.some((e) => /thick|maxThickness|reach|apex|tip/i.test(e));
-    rows.push({ id: c.id, template: c.template, cls: refused ? 'refused' : errs[0], detail: errs.join(','), params: c.base, op: c.op });
+    const why = (r.result.errors ?? []).map(([fid, e]) => `${fid}:${e.code}${e.params ? ' ' + JSON.stringify(e.params).slice(0, 160) : ''}`);
+    rows.push({ id: c.id, template: c.template, cls: refused ? 'refused' : errs[0], detail: errs.join(','), why, params: c.base, op: c.op });
     continue;
   }
   const m = JSON.parse(k.request(JSON.stringify({ id: 2, msg: { type: 'massProps', tag: 'main' } })).json);
   const v = JSON.parse(k.request(JSON.stringify({ id: 3, msg: { type: 'validate', tag: 'main' } })).json);
   const vol = m.result?.volume ?? null;
-  rows.push({ id: c.id, template: c.template, cls: (v.result?.issues ?? []).length ? 'invalid' : 'ok', detail: (v.result?.issues ?? []).map((x) => x.code).join(','), vol, params: c.base, op: c.op });
+  // feature warnings (e.g. the faces a shell left solid), reported in --json only; they do not change the class
+  const warn = (r.result?.warnings ?? []).map((w) => (Array.isArray(w) ? w[1] : w)).map((w) => w?.code + (w?.params ? ` ${JSON.stringify(w.params).slice(0, 120)}` : ''));
+  rows.push({ id: c.id, template: c.template, cls: (v.result?.issues ?? []).length ? 'invalid' : 'ok', detail: (v.result?.issues ?? []).map((x) => x.code).join(','), vol, params: c.base, op: c.op, ...(warn.length ? { warn } : {}) });
 }
 
 const refPath = '/tmp/shell_sweep_cases.json', refOut = '/tmp/shell_sweep_ref.json';
@@ -154,7 +184,7 @@ const ref = existsSync(refOut) ? JSON.parse(readFileSync(refOut, 'utf8')) : {};
 for (const row of rows) {
   const rf = ref[row.id];
   if (!rf) { if (row.cls === 'ok' || row.cls === 'refused') row.cls = 'no-ref'; continue; }
-  if (rf.error) { row.cls = 'ref-fails'; row.detail = rf.error; continue; }
+  if (rf.error) { row.kernel = row.cls; row.cls = 'ref-fails'; row.detail = rf.error; continue; }
   if (rf.area != null) {
     const want = rf.area * (row.op?.thickness ?? 0);
     if (row.cls === 'ok' && row.vol != null && Math.abs(row.vol - want) > Math.max(0.03 * Math.abs(want), 1e-6)) { row.cls = 'wrongVolume'; row.detail = `vol ${row.vol.toFixed(3)} want ${want.toFixed(3)}`; }

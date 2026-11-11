@@ -315,6 +315,93 @@ pub(super) fn oblique_end_plane(b: &Body, v: ck_topo::body::VertexId, faces: &[F
     (n.dot(out) > 1e-6 && n.cross(out).len() > 1e-6).then(|| (b.vertex(v).p, n))
 }
 
+/// As [`oblique_end_plane`] for an end face on a cylinder or cone (a round pocket breaking out through the outer wall
+/// of a disc): the only other face at `v`, the body ends at it (its outward normal at `v` points along `out`). The tool
+/// is run on past the end and trimmed to the material side of that surface: the solid of revolution inside the surface
+/// (kept when the material is inside it, cut away when the material is outside), big enough to hold the tool's box.
+pub(super) fn oblique_end_surface(b: &Body, v: ck_topo::body::VertexId, faces: &[FaceId], out: Vec3, bb: (Vec3, Vec3)) -> Option<(FaceId, OverflowClip)> {
+    let mut ends: Vec<FaceId> = vec![];
+    for x in b.edge_ids().filter(|&x| b.edge(x).v0 == v || b.edge(x).v1 == v) {
+        for f in b.edge_faces(x) {
+            if !faces.contains(&f) && !ends.contains(&f) {
+                ends.push(f);
+            }
+        }
+    }
+    if ends.len() != 1 {
+        return None;
+    }
+    let g = ends[0];
+    let (frame, r, slope) = match &b.face(g).surface {
+        Surface::Cylinder { frame, r } => (*frame, *r, 0.0),
+        Surface::Cone { frame, r, semi_angle } => (*frame, *r, semi_angle.tan()),
+        _ => return None,
+    };
+    let pv = b.vertex(v).p;
+    let n = nrm_at(b, g, pv);
+    if !(n.dot(out) > 1e-6) {
+        return None;
+    }
+    let ax = frame.z.normalize();
+    let rel = pv - frame.o;
+    let rad = rel - ax * rel.dot(ax);
+    if rad.len() < 1e-9 {
+        return None;
+    }
+    // material inside the surface: the outward normal points away from the axis
+    let inside = n.dot(rad) > 0.0;
+    // the solid: radius r + slope z (z along the axis from the frame origin) over a span of the axis that covers the
+    // tool and the vertex, cut short at a cone's apex
+    let size = (bb.1 - bb.0).len() + rad.len() + r.abs() + 10.0;
+    let h = rel.dot(ax);
+    let (mut z0, mut z1) = (h - 2.0 * size, h + 2.0 * size);
+    if slope.abs() > 1e-12 {
+        let apex = -r / slope;
+        if apex > z0 && apex < z1 {
+            if apex < h { z0 = apex } else { z1 = apex }
+        }
+    }
+    let rho = |z: f64| (r + slope * z).max(0.0);
+    let (q0, q1) = (Vec2::new(rho(z0), z0), Vec2::new(rho(z1), z1));
+    let (a0, a1) = (Vec2::new(0.0, z0), Vec2::new(0.0, z1));
+    let mut segs = vec![];
+    let pts: Vec<Vec2> = [a0, q0, q1, a1].into_iter().fold(vec![], |mut acc: Vec<Vec2>, p| {
+        if acc.last().map_or(true, |l: &Vec2| (*l - p).len() > 1e-9) {
+            acc.push(p);
+        }
+        acc
+    });
+    let tags = ["k0", "k1", "k2", "k3"];
+    for i in 0..pts.len() {
+        segs.push(ProfileSeg::line(tags[i], pts[i], pts[(i + 1) % pts.len()]));
+    }
+    // meridian frame: u radial, v along the axis. The seam is the end face's own (a clip face that coincides with the
+    // end face then meets the same seam: one with its seam elsewhere split the face's region in the notch differently
+    // and the coincident pieces did not fuse), unless the vertex lies on that seam: then it goes opposite the vertex
+    let own = frame.x - ax * frame.x.dot(ax);
+    let off_seam = own.len() > 1e-12 && (own.normalize().cross(rad.normalize()).len() > 1e-3 || own.normalize().dot(rad.normalize()) < 0.0);
+    let x = if off_seam { own.normalize() } else { -rad.normalize() };
+    let fr = ck_geom::frame_from(frame.o, x.cross(ax), x);
+    let prof = Profile::new(fr, vec![ProfileRegion { outer: ProfileLoop::new(segs), holes: vec![] }]).normalized();
+    let solid = ck_topo::make::revolve::revolve("clip", &prof, frame.o, ax, 0.0, std::f64::consts::TAU).ok()?;
+    Some((g, if inside { OverflowClip::Keep(solid) } else { OverflowClip::Cut(solid) }))
+}
+
+/// The only other face at vertex `v` (any surface) leans over the edge's continuation past `v` (direction `out`): its
+/// outward normal there points back against `out`, so the edge runs on into the material behind it (the sharp tip of a
+/// lens-shaped pocket: one arc's rim runs into the other arc's wall).
+pub(super) fn concave_reflex_end(b: &Body, v: ck_topo::body::VertexId, faces: &[FaceId], out: Vec3) -> bool {
+    let mut ends: Vec<FaceId> = vec![];
+    for x in b.edge_ids().filter(|&x| b.edge(x).v0 == v || b.edge(x).v1 == v) {
+        for f in b.edge_faces(x) {
+            if !faces.contains(&f) && !ends.contains(&f) {
+                ends.push(f);
+            }
+        }
+    }
+    ends.len() == 1 && nrm_at(b, ends[0], b.vertex(v).p).dot(out) < -1e-6
+}
+
 /// The planar faces that end an edge at vertex `v` (the edge runs on in direction `out` past it), when at least one of
 /// them is oblique to the edge: one face as [`oblique_end_plane`], or two that meet at `v` along a convex edge (a rib's
 /// slanted free face drawn to the corner of a step: the slanted face and the step's face end the edge together). The

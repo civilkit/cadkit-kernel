@@ -16,6 +16,7 @@ use ck_model::{Feature, Part};
 use ck_ops::agent::{self, Sig};
 use ck_server::session::Cx;
 use ck_server::trace::Trace;
+use std::rc::Rc;
 
 /// A reference found in a feature's JSON.
 #[derive(Clone, Debug, PartialEq)]
@@ -72,14 +73,16 @@ fn collect(j: &Json, faces: &mut Vec<String>, edges: &mut Vec<(Vec<String>, Opti
     }
 }
 
-type Recorded = (RefKey, Option<[f64; 3]>, Option<Sig>);
+/// A reference, where it was pointing (its signature), and for one that resolves to nothing the facts of the body at that
+/// feature, to look for what it may mean now.
+type Recorded = (RefKey, Option<[f64; 3]>, Option<Sig>, Option<Rc<agent::Facts>>);
 
 struct Recorder<'a> {
     inner: Exec<'a>,
     /// feature id -> recorded refs
     refs: Vec<(String, Vec<Recorded>)>,
     /// signatures captured when a sketch/plane asked for a face frame
-    frames: Vec<(String, Option<Sig>)>,
+    frames: Vec<(String, Option<Sig>, Option<Rc<agent::Facts>>)>,
     /// gather the facts of the referenced entities only (the reference path gathers the whole body)
     light: bool,
 }
@@ -102,9 +105,13 @@ impl Recorder<'_> {
             })
             .collect();
         let facts = if self.light { agent::gather_for(body, &agent::Want { faces: &faces, pairs: &pairs }) } else { agent::gather(body) };
+        // the whole body's facts, gathered once and only for a reference that resolves to nothing
+        let full: std::cell::OnceCell<Rc<agent::Facts>> = std::cell::OnceCell::new();
+        let pool = || full.get_or_init(|| Rc::new(agent::gather(body))).clone();
         let mut out: Vec<Recorded> = faces.into_iter().map(|id| {
             let sig = agent::face_sig(&facts, &id);
-            (RefKey::Face(id), None, sig)
+            let lost = sig.is_none().then(&pool);
+            (RefKey::Face(id), None, sig, lost)
         }).collect();
         let mut seen: Vec<(Vec<String>, usize)> = vec![];
         for (names, at) in edges {
@@ -113,7 +120,8 @@ impl Recorder<'_> {
             let ord = seen.iter().filter(|(k, _)| *k == key).count();
             seen.push((key.clone(), ord));
             let sig = agent::edge_sig(&facts, &key, at.map(Vec3::from_array));
-            out.push((RefKey::Edge(key, ord), at, sig));
+            let lost = sig.is_none().then(&pool);
+            out.push((RefKey::Edge(key, ord), at, sig, lost));
         }
         out
     }
@@ -127,14 +135,15 @@ impl FeatureExec for Recorder<'_> {
         self.inner.face_count()
     }
     fn face_frame(&mut self, state: &RegenState, face: &str) -> Option<ck_core::linalg::Frame> {
-        if !self.frames.iter().any(|(f, _)| f == face) {
+        if !self.frames.iter().any(|(f, _, _)| f == face) {
             let light = self.light;
             let sig = self.inner.brep.body.as_ref().and_then(|b| {
                 let want = [face.to_string()];
                 let facts = if light { agent::gather_for(b, &agent::Want { faces: &want, pairs: &[] }) } else { agent::gather(b) };
                 agent::face_sig(&facts, face)
             });
-            self.frames.push((face.to_string(), sig));
+            let lost = if sig.is_none() { self.inner.brep.body.as_ref().map(|b| Rc::new(agent::gather(b))) } else { None };
+            self.frames.push((face.to_string(), sig, lost));
         }
         self.inner.face_frame(state, face)
     }
@@ -180,7 +189,7 @@ fn run(part: &Part, hit: Option<regen_cache::Hit>, light: bool) -> Run {
         collect(&f.raw, &mut faces, &mut edges);
         let got: Vec<Recorded> = faces
             .into_iter()
-            .filter_map(|id| rec.frames.iter().find(|(n, _)| *n == id).map(|(n, s)| (RefKey::Face(n.clone()), None, s.clone())))
+            .filter_map(|id| rec.frames.iter().find(|(n, _, _)| *n == id).map(|(n, s, p)| (RefKey::Face(n.clone()), None, s.clone(), p.clone())))
             .collect();
         if !got.is_empty() {
             rec.refs.push((f.id.clone(), got));
@@ -210,6 +219,68 @@ fn shared_prefix(base: &Part, base_json: &Json, part: &Part, part_json: &Json) -
     Some((p, ha, hb))
 }
 
+/// One unambiguous repair: in `feature`, the reference `from` becomes `to` (one face id, or the two face ids of an edge pick).
+struct Repair {
+    feature: String,
+    from: RefKey,
+    to: Vec<String>,
+}
+
+/// Rewrite the reference in the feature of `doc`. A face id is replaced wherever the feature's JSON holds it; an edge pick is
+/// found by its sorted face pair (the ordinal says which of several picks of one pair) and given the new pair, `at` kept.
+fn apply_repair(doc: &mut Json, r: &Repair) -> bool {
+    let Some(feats) = doc.get_mut("features").and_then(Json::as_arr_mut) else { return false };
+    let Some(feat) = feats.iter_mut().find(|f| f.get_str("id") == Some(r.feature.as_str())) else { return false };
+    match &r.from {
+        RefKey::Face(id) => replace_face(feat, id, &r.to[0]),
+        RefKey::Edge(pair, ord) => {
+            let mut seen = 0usize;
+            replace_edge(feat, pair, *ord, &r.to, &mut seen)
+        }
+    }
+}
+
+fn replace_face(j: &mut Json, from: &str, to: &str) -> bool {
+    match j {
+        Json::Str(s) if s == from => {
+            *s = to.to_string();
+            true
+        }
+        Json::Arr(a) => a.iter_mut().fold(false, |acc, x| replace_face(x, from, to) | acc),
+        Json::Obj(m) => m.iter_mut().fold(false, |acc, (_, v)| replace_face(v, from, to) | acc),
+        _ => false,
+    }
+}
+
+fn replace_edge(j: &mut Json, pair: &[String], ord: usize, to: &[String], seen: &mut usize) -> bool {
+    match j {
+        Json::Arr(a) => a.iter_mut().fold(false, |acc, x| replace_edge(x, pair, ord, to, seen) | acc),
+        Json::Obj(m) => {
+            let names: Option<Vec<String>> = m.iter().find(|(k, _)| k == "faces").and_then(|(_, v)| v.as_arr()).map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect());
+            let is_pick = m.iter().any(|(k, _)| k == "at");
+            if let (Some(mut names), true) = (names, is_pick) {
+                if names.len() == 2 {
+                    names.sort();
+                    names.dedup();
+                    if names == pair {
+                        let hit = *seen == ord;
+                        *seen += 1;
+                        if hit {
+                            if let Some((_, v)) = m.iter_mut().find(|(k, _)| k == "faces") {
+                                *v = Json::Arr(to.iter().map(|f| Json::from(f.as_str())).collect());
+                            }
+                            return true;
+                        }
+                        return false;
+                    }
+                }
+            }
+            m.iter_mut().fold(false, |acc, (_, v)| replace_edge(v, pair, ord, to, seen) | acc)
+        }
+        _ => false,
+    }
+}
+
 pub fn reply(cx: &mut Cx) -> Result<Json, String> {
     let (base_json, part_json) = (cx.msg.get("base").unwrap_or(&Json::Null), cx.msg.get("part").unwrap_or(&Json::Null));
     let base = Part::from_json(base_json)?;
@@ -226,13 +297,14 @@ pub fn reply(cx: &mut Cx) -> Result<Json, String> {
     let light = shared_allowed;
     let (a, b) = (run(&base, ha, light), run(&part, hb, light));
     let mut warnings = vec![];
+    let mut repairs: Vec<Repair> = vec![];
     let mut checked = 0usize;
     let mut new_runs: Vec<&(String, Vec<Recorded>)> = b.refs.iter().collect();
     new_runs.sort_by_key(|(id, _)| b.ids.iter().position(|x| x == id));
     for (fid, new_refs) in new_runs {
         let Some((_, old_refs)) = a.refs.iter().find(|(id, _)| id == fid) else { continue };
-        for (key, at, after) in new_refs {
-            let Some((_, _, before)) = old_refs.iter().find(|(k, _, _)| k == key) else { continue };
+        for (key, at, after, pool) in new_refs {
+            let Some((_, _, before, _)) = old_refs.iter().find(|(k, _, _, _)| k == key) else { continue };
             let Some(before) = before else { continue };
             checked += 1;
             let (code, reason, after_text) = match after {
@@ -242,16 +314,31 @@ pub fn reply(cx: &mut Cx) -> Result<Json, String> {
                     None => continue,
                 },
             };
-            warnings.push(
-                Obj::new()
-                    .put("code", code)
-                    .put("feature", fid.as_str())
-                    .put("ref", key.to_json(*at))
-                    .put("reason", reason)
-                    .put("before", before.text.as_str())
-                    .put("after", after_text)
-                    .build(),
-            );
+            let mut w = Obj::new()
+                .put("code", code)
+                .put("feature", fid.as_str())
+                .put("ref", key.to_json(*at))
+                .put("reason", reason)
+                .put("before", before.text.as_str())
+                .put("after", after_text);
+            // a lost reference: the faces (or edges) of the body at that feature that the old one could be, closest first. `suggest`
+            // only when exactly one fits, so a repair is never a guess between two.
+            if let Some(pool) = pool.as_ref().filter(|_| after.is_none()) {
+                let ms = agent::matches_for(before, pool);
+                let show = |m: &agent::Match| -> Json {
+                    if m.faces.is_empty() {
+                        Obj::new().put("id", m.id.as_str()).put("text", m.text.as_str()).build()
+                    } else {
+                        Obj::new().put("faces", Json::Arr(m.faces.iter().map(|f| Json::from(f.as_str())).collect())).put("text", m.text.as_str()).build()
+                    }
+                };
+                w = w.put("candidates", Json::Arr(ms.iter().take(5).map(show).collect()));
+                if let [only] = ms.as_slice() {
+                    w = w.put("suggest", show(only));
+                    repairs.push(Repair { feature: fid.clone(), from: key.clone(), to: if only.faces.is_empty() { vec![only.id.clone()] } else { only.faces.clone() } });
+                }
+            }
+            warnings.push(w.build());
         }
     }
     let removed: Vec<Json> = a.ids.iter().filter(|i| !b.ids.contains(i)).map(|s| Json::from(s.as_str())).collect();
@@ -265,6 +352,22 @@ pub fn reply(cx: &mut Cx) -> Result<Json, String> {
         .put("warnings", Json::Arr(warnings))
         .put("features", Obj::new().put("removed", Json::Arr(removed)).put("added", Json::Arr(added)).put("reordered", common_a != common_b))
         .put("errors", Json::Arr(errs));
+    // `repair: true`: the document with every unambiguous suggestion applied (the rest untouched), and the list of what was changed
+    if cx.msg.get_bool("repair") == Some(true) {
+        let mut fixed = part_json.clone();
+        let mut done = vec![];
+        for r in &repairs {
+            if apply_repair(&mut fixed, r) {
+                let from = match &r.from {
+                    RefKey::Face(id) => Json::from(id.as_str()),
+                    RefKey::Edge(fs, _) => Json::Arr(fs.iter().map(|f| Json::from(f.as_str())).collect()),
+                };
+                let to = if r.to.len() == 1 { Json::from(r.to[0].as_str()) } else { Json::Arr(r.to.iter().map(|f| Json::from(f.as_str())).collect()) };
+                done.push(Obj::new().put("feature", r.feature.as_str()).put("from", from).put("to", to).build());
+            }
+        }
+        out = out.put("repaired", fixed).put("repairs", Json::Arr(done));
+    }
     // which features were skipped: `checked` then counts only the references from the first changed feature on
     if cx.msg.get_bool("cacheStats") == Some(true) {
         out = out.put("cacheStats", Obj::new().put("resumedAt", resumed_at as f64).build());

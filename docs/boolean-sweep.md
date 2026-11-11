@@ -61,4 +61,4 @@ Smallest failing sets:
 - `overlap_39` cylinder r=8.11865 h=31.9531 union cylinder r=14.4226
   h=22.6069: `TESSELLATION_OPEN`.
 
-See internal notes (not published) for the ranked tasks.
+See `docs/mimo-brief-boolean.md` for the ranked tasks.

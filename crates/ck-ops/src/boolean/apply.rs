@@ -49,6 +49,14 @@ pub struct BoolOut {
 /// first result that assembles into a closed manifold wins.
 pub fn boolean(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> {
     FAIL_DIAG.with(|d| d.borrow_mut().take());
+    // Two operands that are the same solid at the same place (a part inserted twice at one pose): every face
+    // pair is coincident, which the general path grinds through at minutes per attempt. The answer is known.
+    if a.num_faces() > 0 && identical_solids(a, b, tol) {
+        return Ok(match op {
+            Op::Union | Op::Intersect => BoolOut { body: a.clone(), no_effect: false, mismatch: None, disjoint: false },
+            Op::Cut => BoolOut { body: Body::new(), no_effect: false, mismatch: None, disjoint: false },
+        });
+    }
     // Operands far from the origin (a part at 1e6 mm) lose precision to the absolute
     // tolerances: welding and closest-point tests compare distances of ~1e-6 while f64
     // squared distances near 1e12 resolve only ~1e-4. Move such operands to a local
@@ -85,6 +93,76 @@ pub fn boolean(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> 
             },
         }
     })
+}
+
+/// `a` and `b` are the same solid in the same place: equal element counts, and every face of `a` pairs with a
+/// distinct face of `b` of the same surface kind and sense whose boundary samples lie on each other's surface
+/// (within a few `tol`) and whose boundary has the same extent and length. Conservative: any doubt says no and the
+/// general path runs.
+pub(crate) fn identical_solids(a: &Body, b: &Body, tol: f64) -> bool {
+    use ck_geom::surface::Surface;
+    if a.num_faces() != b.num_faces() || a.edge_ids().count() != b.edge_ids().count() || a.vertex_ids().count() != b.vertex_ids().count() {
+        return false;
+    }
+    let m = (tol * 10.0).max(1e-7);
+    let (alo, ahi) = a.bbox();
+    let (blo, bhi) = b.bbox();
+    if (alo - blo).len() > m || (ahi - bhi).len() > m {
+        return false;
+    }
+    struct Fp {
+        pts: Vec<Vec3>,
+        lo: Vec3,
+        hi: Vec3,
+        len: f64,
+        nedges: usize,
+    }
+    let fp = |bd: &Body, f| {
+        let mut pts = vec![];
+        let mut len = 0.0;
+        let es = bd.face_edges(f);
+        for &e in &es {
+            let ed = bd.edge(e);
+            len += bd.edge_length(e);
+            for k in 0..=8 {
+                pts.push(ed.curve.eval(ed.t0 + (ed.t1 - ed.t0) * k as f64 / 8.0));
+            }
+        }
+        let (mut lo, mut hi) = (Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY), Vec3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY));
+        for &p in &pts {
+            lo = lo.min(p);
+            hi = hi.max(p);
+        }
+        Fp { pts, lo, hi, len, nedges: es.len() }
+    };
+    let kind = |s: &Surface| std::mem::discriminant(s);
+    let fa: Vec<_> = a.face_ids().map(|f| (f, fp(a, f))).collect();
+    let fb: Vec<_> = b.face_ids().map(|f| (f, fp(b, f))).collect();
+    let mut used = vec![false; fb.len()];
+    for (f, pa) in &fa {
+        let mut hit = None;
+        for (j, (g, pb)) in fb.iter().enumerate() {
+            if used[j]
+                || a.face(*f).sense != b.face(*g).sense
+                || kind(&a.face(*f).surface) != kind(&b.face(*g).surface)
+                || pa.nedges != pb.nedges
+                || (pa.lo - pb.lo).len() > m
+                || (pa.hi - pb.hi).len() > m
+                || (pa.len - pb.len).abs() > m * pa.len.max(1.0)
+            {
+                continue;
+            }
+            if pb.pts.iter().all(|&p| a.face(*f).surface.distance(p) <= m) && pa.pts.iter().all(|&p| b.face(*g).surface.distance(p) <= m) {
+                hit = Some(j);
+                break;
+            }
+        }
+        match hit {
+            Some(j) => used[j] = true,
+            None => return false,
+        }
+    }
+    true
 }
 
 /// Centre of the operands' combined box when it is far from the origin relative to their

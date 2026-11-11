@@ -4,7 +4,7 @@
 //! pipe surface itself is not part of it ("close the gap with Fill").
 //! Codes: `pipeCutRadius {max}`, `pipeCutFailed`, `pipeCutNothingLeft`.
 //!
-//! Oracle probes (tools/stub_cases.mjs `pipeCut*`, internal notes (not published)): a
+//! Oracle probes (tools/stub_cases.mjs `pipeCut*`, docs/ck-ops-stubs.md): a
 //! face loses exactly the part within distance `r` of the selected edges
 //! (capsule union: cylinder / torus per edge, ball at every end); faces that
 //! the ball covers completely disappear; `r` larger than an edge circle's

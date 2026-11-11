@@ -90,6 +90,9 @@ Reply `{ok, checked, warnings:[{code, feature, ref, reason, before, after}], fea
 `referenceLost` (no longer resolves). Ordinary parameter edits do not warn.
 The `regen` reply is deliberately unchanged (wire-pinned); a front end calls
 `refDiff` with the pre-edit document when applying edit, delete or move ops.
+A `referenceLost` warning also carries `candidates` (faces `{id,text}` or edges `{faces,text}` of the body at that feature that
+`sig_diff` still accepts as the old entity, closest first, at most 5) and, only when exactly one fits, `suggest`. `repair:true` adds
+`repaired` (the part with the unambiguous suggestions applied) and `repairs [{feature,from,to}]`; nothing is guessed between two.
 
 ## section `{tag?, plane:{origin, normal}}` (verification)
 

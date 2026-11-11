@@ -1,7 +1,7 @@
 //! ACIS SAT text tokenizer and record table.
 //!
-//! Adapted from the author's own `sat_import.rs` (SGRebuild `fem-core`, a
-//! dependency-free ACIS 7.00 text parser); the tokenizer was rewritten to
+//! Adapted from the author's own earlier ACIS 7.00 SAT text parser
+//! (dependency-free); the tokenizer was rewritten to
 //! split records on the `#` terminator (records may span lines, e.g. spline
 //! blocks), to accept optional `-N` record-index prefixes and to keep the
 //! header's unit scale.

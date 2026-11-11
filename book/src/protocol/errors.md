@@ -62,7 +62,7 @@ These are answered with `ok: true`.
 | `{ "error": "offsetTooLarge" }` | `sketchOffset` | An arc or circle would shrink to nothing. |
 | `{ "ok": false, "error": { "code", "params" } }` | `bodyBoolean` | The boolean cannot be done; the object has the form of a feature error. |
 | `{ "supported": false, "pass": null, "refusal": { "code", "reason" } }` | `dfm*` | The body is not one the rule can judge: `emptyBody`, `nonAnalyticFaces`, `tessellationFailed`. |
-| `body: null` and an `errors` entry | imports | The file could not be read. For STEP, SketchUp and SolidWorks files the entry is `["import", { "code", "params" }]` (codes such as `parse`, `container.magic`, `container.format`); for ACIS SAT it is an object `{ code, entity, kind, line, message }` (code `sat.parse`). See [Import and export](../io/step.md). |
+| `body: null` and an `errors` entry | imports | The file could not be read. The entry is `["import", { "code", "params" }]` for every importer (codes such as `parse`, `container.magic`, `container.format`, `sat.parse`). See [Import and export](../io/step.md). |
 | `issues` list | `validate`, `heal`, `checkProfile` | Findings about a body; see [Topology and geometry checks](../validation/checks.md). |
 | `errors` list | `refDiff` | Regen failures of either document as `[featureId, code]`, with the code as a plain string. |
 
@@ -78,6 +78,8 @@ Each failed feature has one entry in `errors`: `[featureId, { "code": "<code>", 
 - Numbers that say how far off the request was: `max` (largest blend radius that fits), `limit`, `minRadius`, `maxThickness`, `maxHeight`, `budgetMs`, `elapsedMs`.
 - `maxSize`: `{ "param", "value", "unit" }` on a refusal because a size is too large: `param` is the feature field (a dotted path for a nested one, `thin.thickness`), `value` the largest value of it that builds (the sign of the request kept, so a face pushed in by -12 gets -9.96), `unit` `mm` or `deg`. The `hint` says the same in words. Given only for a value the kernel built with its own checks (or the exact bound of a closed-form check), so a client can set the field to it without parsing text; when no such value is found it is absent. Given today by `shell` (`thickness`), `moveFace` (`distance`), `draft` (`angle`), a drafted `extrude` (`draft`), a thin wall (`thin.thickness`), `hole` (`cboreDepth`, `cskDiameter`) and `knurlBand` (`depth`); not yet by fillet and chamfer.
 - `name` and `nearest`: for a body or face name that does not resolve, with up to three existing names that are close.
+- `ref`, `candidates`, `hint`: for a face id that no face carries (`missingReference` from `shell`, `thread`, `combine`, `deleteFace`, `moveBody`, `pipeCut`, `fullRound`, the surface features and `projectCurve`). `candidates` lists up to six live face ids, those of the same feature first and the closest name first, or the three closest names of the whole model when the feature has no face left; `hint` says which of the two it is. A repair is a one-field edit: replace `ref` by one of `candidates`.
+- `faces`, `gone`, `candidates`, `neighbours`, `hint`: for `missingEdge` on an edge pick `{faces, at}` that no edge joins any more. `gone` lists the names no face carries (with `candidates` as above); when both faces exist, `neighbours` lists the faces the first one now meets.
 
 Because a failure removes a feature's output, the next features that depend on it fail too. The errors are in feature id order as strings, but the cause is the first failing feature in document order.
 

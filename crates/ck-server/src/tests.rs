@@ -1,6 +1,10 @@
-//! Server dispatch tests.
+//! Golden tests: every request in tests-golden/wire.json (captured from the
+//! ORIGINAL kernel by tools/golden.mjs) must produce the identical reply
+//! JSON and total frame length.
 
 use super::*;
+
+const GOLDEN: &str = include_str!("../../../tests-golden/wire.json");
 
 fn run(server: &mut Server, body: &str) -> (String, usize) {
     let r = server.handle(body.as_bytes());
@@ -8,6 +12,30 @@ fn run(server: &mut Server, body: &str) -> (String, usize) {
     (j.to_string(), r.len())
 }
 
+#[test]
+fn wire_golden() {
+    let g = ck_json::parse(GOLDEN).unwrap();
+    let mut fails = vec![];
+    let mut n = 0;
+    for case in g.as_arr().unwrap() {
+        let name = case.get_str("name").unwrap();
+        let mut s = Server::new();
+        for step in case.get_arr("steps").unwrap() {
+            let body = step.get_str("body").unwrap();
+            let Some(want) = step.get_str("json") else { continue };
+            n += 1;
+            let (got, total) = run(&mut s, body);
+            let want_total = step.get_f64("total").unwrap() as usize;
+            if got != want || total != want_total {
+                fails.push(format!("{name}: {}\n   want {want} ({want_total})\n   got  {got} ({total})", &body[..body.len().min(120)]));
+            }
+        }
+    }
+    assert!(fails.is_empty(), "{}/{n} golden mismatches:\n{}", fails.len(), fails.join("\n"));
+}
+
+/// A part with the format's old name is read as `ck-part`: the reply is
+/// identical to the same request written with the new name.
 #[test]
 fn legacy_format_name_replies_identically() {
     let new = r#"{"msg":{"type":"regen","part":{"format":"ck-part","features":[]}}}"#;
@@ -20,7 +48,7 @@ fn legacy_format_name_replies_identically() {
 
 #[test]
 fn all_types_dispatch() {
-    assert_eq!(REQUEST_TYPES.len(), 61); // sldprtHistory + equationCurve + exportMesh + fitQuadrics + 5 dfm* queries + loadFont/unloadFont/listFonts/subsetFont + importSldprt + importSkp + bodyBoolean + recognize + 9 measurement (distance/maxDistance/thickness/thicknessAt/closestPoint/angles/clearance/symmetry/extrema) + 17 original + validate/importSat/importStep/heal + check/resolve/describe/refDiff/threadData/checkProfile/profiles + section/sections/probe extensions + sketchAnalyze + sketchFreedoms
+    assert_eq!(REQUEST_TYPES.len(), 64); // builtExport + sheetDxf + sheetBendTable + sldprtHistory + equationCurve + exportMesh + fitQuadrics + 5 dfm* queries + loadFont/unloadFont/listFonts/subsetFont + importSldprt + importSkp + bodyBoolean + recognize + 9 measurement (distance/maxDistance/thickness/thicknessAt/closestPoint/angles/clearance/symmetry/extrema) + 17 original + validate/importSat/importStep/heal + check/resolve/describe/refDiff/threadData/checkProfile/profiles + section/sections/probe extensions + sketchAnalyze + sketchFreedoms
     for (t, _) in REQUEST_TYPES {
         let (j, _) = run(&mut Server::new(), &format!(r#"{{"msg":{{"type":"{t}"}}}}"#));
         assert!(!j.contains("unknown request"), "{t}");

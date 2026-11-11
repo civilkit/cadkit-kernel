@@ -1,6 +1,6 @@
 # Kernel gaps against OCCT: prioritised roadmap
 
-Written 2026-10-16 from `docs/roadmap.md`, internal notes (not published) and what the hull, NIST STEP and SolidWorks work found.
+Written 2026-10-16 from `docs/roadmap.md`, `docs/accuracy-vs-occt.md` and what the hull, NIST STEP and SolidWorks work found.
 Sizes: S = days of agent time, M = about a week, L = several weeks. Status is as of this date.
 
 | # | Gap | What we have today | What OCCT does | Size | Status |

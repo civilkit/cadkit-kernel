@@ -41,7 +41,7 @@ ck-topo / ck-ops. Depends on ck-core, ck-geom, ck-topo, ck-ops, ck-json.
 - `expr` — the client `al()` grammar (units, deg trig, `^`, pi), `=expr`
   numeric fields, variable resolution (`badName`/`badExpression`/`cyclicVariables`).
 - `sketch::solver` — bit-exact port of the kernel solver (verified on 22
-  oracle goldens in the recorded reference data (not published)). Needs a correctly
+  oracle goldens in `tests/golden/sketch_solve.json`). Needs a correctly
   rounded hypot (`solver::cr_hypot`) and the kernel's LU details.
 - `sketch::profile` — planar arrangement -> regions/holes/open (matches the
   oracle structurally, coordinates within 1e-7).
@@ -55,8 +55,7 @@ ck-topo / ck-ops. Depends on ck-core, ck-geom, ck-topo, ck-ops, ck-json.
   mid / through = 1000 / throughBoth = ±1000 on an empty body, depth <= 0
   -> 1e-6, draft / draftOut one-sided) and `revolve` (axis = a sketch line
   entity by id, degrees, flip, mid, >= 360 full) onto an EMPTY body via
-  ck-topo. Other geometry feature types -> `TODO(rebuild): <type> needs
-  ck-ops`.
+  ck-topo. Other geometry feature types -> `notImplemented` (`what` = the type).
   Error codes/precedence pinned: badExpression -> missingAxis (revolve) ->
   noClosedProfile -> unknownEnd{end} / invalidValue (angle 0) ->
   missingReference (upToFace/offsetFromFace/upToPoint) / nothingToCut.
@@ -73,8 +72,8 @@ ck-topo / ck-ops. Depends on ck-core, ck-geom, ck-topo, ck-ops, ck-json.
 - regen trace spans: `"<id> <type>"`, `" → N faces"` once a body exists,
   `"face names"` after each successful feature with a body, failures
   `"<id> <type>: <code>[ <params>]"` + child `"<id> failed: ..."`.
-- Tests: recorded reference data (not published)
-  (the reference-capture tool (not published), parts in `tools/brep_cases.mjs`):
+- Tests: `tests/brep_golden.rs` vs `tests/golden/brep.json`
+  (`node tools/brep_golden.mjs`, parts in `tools/brep_cases.mjs`):
   20/24 regen replies byte-identical minus mesh/pts (draft, draftOut ~1e-10,
   rev90mid / cone last ulp); massProps within 1e-9 (never byte-exact: the
   oracle's integration rounds differently; degenerate principal axes are
@@ -127,7 +126,7 @@ ck-topo / ck-ops. Depends on ck-core, ck-geom, ck-topo, ck-ops, ck-json.
   box, errors, trace labels identical to the oracle, massProps within
   3e-14; wire EDGE lists have the same face-pair set but differ in order
   and closed-circle start points (ck-ops, see crates/ck-ops README
-  findings). Pinned by recorded reference data (not published)
+  findings). Pinned by `tests/brep_golden.rs::parts_match_oracle`
   (`--ignored`, release: ~35 s — the ck-ops classifier integrates winding
   numbers) + 12 ck-ops mini-parts in `tools/brep_cases.mjs`.
 - `tools/regencmp.mjs` (`--prefixes --mass --trace --show`) diffs regen
@@ -176,7 +175,7 @@ ck-topo / ck-ops. Depends on ck-core, ck-geom, ck-topo, ck-ops, ck-json.
   `boolean Unite`) — same rule now used for pattern instances, and
   patterns keep their combined tool as a seed for later patterns.
 - `helix` -> `curves[]` byte-identical (`tools/asm/helixcases.mjs`).
-- REBUILD-ONLY: nested errors from unrebuilt ops (`TODO(rebuild)…`,
+- REBUILD-ONLY: nested errors from unrebuilt ops (`notImplemented`,
   `blendUnsupported`) don't abort an insert (`mate::is_rebuild_gap`).
 
 Flange (oracle-flange.json): components dof 6/0/1/0 all match; places Δ

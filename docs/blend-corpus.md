@@ -8,7 +8,7 @@ marked "ok within band" in the table: variable radius at corners (`var_corner*`,
 slightly different radius law) and unequal radii at a vertex (`*unequal*`: 3e-4, a mitre where OCCT blends a patch). A case with
 `expect` must produce that error code. A case whose shortfall is documented below carries `known: '<reason>'`: it is reported
 as `known` and never fails the run, while a case that newly breaks still does. The corpus runs inside the `gate` check of
-`tools/remote_build.sh`, so every gate runs it (142 ok, 6 known, 2 without reference as of this writing).
+`tools/remote_build.sh`, so every gate runs it (145 ok, 7 known, 2 without reference as of this writing).
 
 ```
 node tools/blend_corpus.mjs [--wasm path] [--only substr] [--json out.json]     # run (exit 1 on any failure)
@@ -169,6 +169,11 @@ rad off against the 0.02 budget. Radii that disagree *within* a pair still fall 
 * **Face-face fillets** (two faces that share no edge) and **conic / curvature fillets at corners**: not started.
 * **Chamfers**: only equal chamfers are checked against OCCT at corners; asymmetric chamfers at a 3-edge corner follow the
   union rule above.
+* **Chamfers over a narrow neighbour face** (`chamfer_narrow_*`: a 1 mm strip, a boss cylinder 1 mm high, a 1 mm rib top
+  with both its edges chamfered, the edge of a 1 mm plate; distance 1.5 to 2). OCCT's `MakeChamfer` fails on all four
+  (`Build failed`) and the kernel refuses all four with `blendOverflow`, so the cases expect that code. The refusal's detail
+  names the chamfer's own face (`F9.B0: spring leaves its face away from its edges`), not the narrow face that is too small;
+  `chamfer_narrow_unreachable` checks for the face (`expectFace`) and is `known` until the detail names it.
 
 ## Cases, before and after
 

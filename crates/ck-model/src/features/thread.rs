@@ -77,7 +77,7 @@ fn orient(a: Vec3) -> Vec3 {
 
 /// Resolve a face to its cylinder data.
 pub fn cyl_face(b: &Body, name: &str) -> Result<CylFace, FeatureError> {
-    let fid = b.find_face(name).ok_or_else(missing)?;
+    let fid = b.find_face(name).ok_or_else(|| crate::refs::missing_face([b], name))?;
     let face = b.face(fid);
     let Surface::Cylinder { frame, r } = &face.surface else {
         return Err(FeatureError::new(THREAD_FACE_NOT_CYLINDER)

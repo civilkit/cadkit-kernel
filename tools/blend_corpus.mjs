@@ -86,6 +86,14 @@ const BASES = {
   cube: [rect('F1', TOP, 0, 0, 30, 30), ext('F2', 'F1', 30)],
   // tall block 20 x 20 x 40 (long vertical edges)
   pillar: [rect('F1', TOP, 0, 0, 20, 20), ext('F2', 'F1', 40)],
+  // narrow neighbour faces (chamfer_narrow_*). `ledge`: the 40 x 20 x 10 box with a 40 x 19 x 10 block on its top, leaving a
+  // 1 mm strip of the box top along the front edge (y 10, z -1..0). `disc1`: a 40 x 40 x 10 plate with a boss r 8 only 1 high
+  // (its cylinder is the narrow face). `rib`: the box with a rib 1 wide, 5 high on top (rib top y 15, z -10.5..-9.5).
+  // `thin1`: a plate 40 x 20 x 1 (the side faces are 1 wide).
+  ledge: [rect('F1', TOP, 0, 0, 40, 20), ext('F2', 'F1', 10), rect('F3', FACE('F2.C1'), 0, 1, 40, 20), ext('F4', 'F3', 10)],
+  disc1: [rect('F1', TOP, 0, 0, 40, 40), ext('F2', 'F1', 10), circ('F3', FACE('F2.C1'), 20, 20, 8), ext('F4', 'F3', 1)],
+  rib: [rect('F1', TOP, 0, 0, 40, 20), ext('F2', 'F1', 10), rect('F3', FACE('F2.C1'), 0, 9.5, 40, 10.5), ext('F4', 'F3', 5)],
+  thin1: [rect('F1', TOP, 0, 0, 40, 20), ext('F2', 'F1', 1)],
   overhang: [rect('F1', TOP, -25, -25, 25, 25), ext('F2', 'F1', 27), poly('F5', FACE('F2.C1'), [[8.961, -47.245], [43.471, -47.245], [43.471, -9.193], [8.961, -9.193]]), ext('F6', 'F5', 9.9)],
   overhang_mz: [rect('F1', TOP, -25, -25, 25, 25), ext('F2', 'F1', 27), poly('F5', FACE('F2.C1'), [[8.961, 47.245], [43.471, 47.245], [43.471, 9.193], [8.961, 9.193]]), ext('F6', 'F5', 9.9)],
   overhang_under: [rect('F1', TOP, -25, -25, 25, 25), ext('F2', 'F1', 27), poly('F5', FACE('F2.C0'), [[8.961, 9.193], [43.471, 9.193], [43.471, 47.245], [8.961, 47.245]]), ext('F6', 'F5', 9.9)],
@@ -292,6 +300,20 @@ add('overhang_mz_r2', 'overhang_mz', { k: 'fillet', r: 2 }, [{ at: [16.9805, 27,
 add('overhang_under_r2', 'overhang_under', { k: 'fillet', r: 2 }, [{ at: [16.9805, 0, 9.193] }, { at: [25, 0, -7.9035] }, { at: [34.2355, 0, 9.193] }, { at: [25, 0, 17.0965] }], { g1: true });
 add('overhang_skew_refused', 'overhang_skew', { k: 'fillet', r: 2 }, [{ at: [25, 27, 2.847661609514004] }, { at: [19.20444504226559, 27, 10.400575880129129] }, { at: [30.79555495773441, 27, 7.29474733889888] }, { at: [25, 27, 14.847661609514004] }], { expect: 'blendCorner' });
 
+// 9. chamfers over a narrow neighbour face (MitCad 0.44 comparison, docs/superpowers/plans/2026-11-05-mitcad-learnings.md Task 3):
+// the chamfer distance is larger than the face beside the edge, so the chamfer has to run past that face into the next one.
+// OCCT's MakeChamfer fails on all four (`Build failed`, tools/blend_reference.json), so each expects the kernel's refusal.
+// The kernel's detail names its own chamfer face (`F9.B0: spring leaves its face away from its edges`), not the narrow face.
+add('chamfer_narrow_planar', 'ledge', { k: 'chamfer', d: 2 }, [[20, 10, 0]], { expect: 'blendOverflow' }); // 1 mm strip F2.C1, d 2
+add('chamfer_narrow_curved', 'disc1', { k: 'chamfer', d: 1.5 }, [[28, 11, -20]], { expect: 'blendOverflow', curved: true }); // boss cylinder F4.S.e1 1 high, d 1.5
+add('chamfer_narrow_meets_chamfer', 'rib', { k: 'chamfer', d: 1.5 }, [[20, 15, -9.5], [20, 15, -10.5]], { expect: 'blendOverflow' }); // both rib edges, strip F4.C1 1 wide
+add('chamfer_narrow_unreachable', 'thin1', { k: 'chamfer', d: 2 }, [[20, 1, 0]], {
+  // a 1 mm plate edge, d 2 on the 1 mm side face F2.S.e1: no body to run on to
+  expect: 'blendOverflow',
+  expectFace: 'F2.S.e1',
+  known: 'refused with blendOverflow (OCCT: Build failed too), but the detail names the chamfer face F9.B0, not the 1 mm side face F2.S.e1 that is too narrow',
+});
+
 // ---------------------------------------------------------------- engine
 function req(k, id, msg) {
   const r = k.request(JSON.stringify({ id, msg }));
@@ -458,11 +480,12 @@ function run(c) {
   const raw = k.request(JSON.stringify({ id: 2, msg: { type: 'regen', tag: 'main', part } }));
   const res = raw.json ? JSON.parse(raw.json) : { ok: false, trap: raw.trap };
   const errs = (res.result?.errors ?? []).map(([id, e]) => e.code + (e.params?.detail ? `(${String(e.params.detail).slice(0, 60)})` : ''));
+  const details = (res.result?.errors ?? []).map(([, e]) => String(e.params?.detail ?? ''));
   const ms = Date.now() - t0;
   if (res.trap || (!res.ok && !res.result)) return { errs: [`trap ${res.trap ?? ''}`], ms };
   const m = req(k, 3, { type: 'massProps', tag: 'main' });
   const v = req(k, 4, { type: 'validate', tag: 'main' });
-  return { errs, vol: m.ok ? m.result?.volume : null, valid: !!(v.ok && v.result?.ok), ms, faces: res.result?.body?.faces?.length, open: openMeshEdges(raw, res), g1: g1Defect(raw, res, c.mitre) };
+  return { errs, details, vol: m.ok ? m.result?.volume : null, valid: !!(v.ok && v.result?.ok), ms, faces: res.result?.body?.faces?.length, open: openMeshEdges(raw, res), g1: g1Defect(raw, res, c.mitre) };
 }
 
 if (argv.includes('--edges')) {
@@ -538,6 +561,11 @@ for (const c of cases) {
   if (c.expect) {
     status = r.errs.some((e) => e.startsWith(c.expect)) ? 'ok' : 'FAIL';
     note = `expect ${c.expect}, got ${r.errs.join() || 'no error'}`;
+    // `expectFace`: the refusal must also name that face of the base body in its detail
+    if (c.expectFace && status === 'ok' && !(r.details ?? []).some((d) => d.includes(c.expectFace))) {
+      status = 'FAIL';
+      note = `${note}; detail does not name ${c.expectFace}`;
+    }
   } else if (r.errs.length) {
     status = 'FAIL'; note = r.errs.join();
   } else if (!r.valid) {

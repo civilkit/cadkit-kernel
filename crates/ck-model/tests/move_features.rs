@@ -380,7 +380,19 @@ fn sweep_every_face_never_panics_and_stays_valid() {
 
 
 // ---- Task 6: a transform feature for a whole inserted part ----
-// `moveBody` is the transform feature (docs/spec-agent-interface.md).
+// The 16-feature BLDC motor (tests/fixtures/bldc_1306.json) rotates as one
+// rigid body: `moveBody` is the transform feature (docs/spec-agent-interface.md).
+
+fn bldc() -> String {
+    let p = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/bldc_1306.json");
+    let j = ck_json::parse(&std::fs::read_to_string(p).unwrap()).unwrap();
+    j.get_arr("features")
+        .unwrap()
+        .iter()
+        .map(|f| ck_json::to_string(f))
+        .collect::<Vec<_>>()
+        .join(",")
+}
 
 fn rot_z(c: Vec3, deg: f64, origin: Vec3) -> Vec3 {
     let a = deg.to_radians();
@@ -399,6 +411,107 @@ fn rot_x(c: Vec3, deg: f64, origin: Vec3) -> Vec3 {
 /// 90/180/270 about the motor's own axis (+Z through the origin): volume and
 /// names unchanged, the centre of gravity lands exactly on the rotated one,
 /// the body stays valid and the lump count is the same.
+#[test]
+fn bldc_rotates_rigidly_about_its_axis() {
+    let base = bldc();
+    let r0 = run(&base);
+    assert!(r0.errors().is_empty(), "{:?}", r0.errors());
+    assert!(r0.valid());
+    let mp0 = ck_topo::mass::mass_props(r0.body.as_ref().unwrap());
+    let (v0, c0) = (mp0.volume, mp0.com);
+    let (faces0, lumps0) = (r0.faces(), r0.body.as_ref().unwrap().num_lumps());
+    assert!(v0 > 1000.0, "the motor should have volume, got {v0}");
+    for angle in [90.0, 180.0, 270.0] {
+        let mb = format!(
+            r#"{{"type":"moveBody","id":"M1","rotate":{{"axis":[0,0,1],"origin":[0,0,0],"angle":{angle}}}}}"#
+        );
+        let r = with(&base, &mb);
+        assert!(r.errors().is_empty(), "{angle}: {:?}", r.errors());
+        assert!(r.valid(), "{angle}: invalid body");
+        let mp = ck_topo::mass::mass_props(r.body.as_ref().unwrap());
+        assert!(close(mp.volume, v0, 1e-9), "{angle}: volume {} vs {v0}", mp.volume);
+        let c = rot_z(c0, angle, Vec3::ZERO);
+        assert!((mp.com - c).len() < 1e-9, "{angle}: com {:?} vs {c:?}", mp.com);
+        assert_eq!(r.faces(), faces0, "{angle}: names changed");
+        assert_eq!(r.body.as_ref().unwrap().num_lumps(), lumps0, "{angle}: lump count changed");
+    }
+}
+
+/// The other directions of done-when: 90 degrees about another axis (+X through
+/// the origin) and about an axis that misses the origin (+Z through [5,3,2]).
+#[test]
+fn bldc_rotates_about_another_axis_and_about_an_axis_point() {
+    let base = bldc();
+    let r0 = run(&base);
+    let mp0 = ck_topo::mass::mass_props(r0.body.as_ref().unwrap());
+    let (v0, c0, faces0) = (mp0.volume, mp0.com, r0.faces());
+    let through_point = Vec3::new(5.0, 3.0, 2.0);
+    for angle in [90.0, 180.0, 270.0] {
+        // (axis, origin, expected centre of gravity)
+        let cases: [([f64; 3], Vec3, Vec3); 2] = [
+            ([1.0, 0.0, 0.0], Vec3::ZERO, rot_x(c0, angle, Vec3::ZERO)),
+            ([0.0, 0.0, 1.0], through_point, rot_z(c0, angle, through_point)),
+        ];
+        for (axis, origin, expect) in cases {
+            let mb = format!(
+                r#"{{"type":"moveBody","id":"M1","rotate":{{"axis":[{},{},{}],"origin":[{},{},{}],"angle":{angle}}}}}"#,
+                axis[0], axis[1], axis[2], origin.x, origin.y, origin.z
+            );
+            let r = with(&base, &mb);
+            assert!(r.errors().is_empty(), "{angle} {axis:?}/{origin:?}: {:?}", r.errors());
+            assert!(r.valid(), "{angle} {axis:?}/{origin:?}: invalid body");
+            let mp = ck_topo::mass::mass_props(r.body.as_ref().unwrap());
+            assert!(close(mp.volume, v0, 1e-9), "{angle} {axis:?}: volume {} vs {v0}", mp.volume);
+            assert!((mp.com - expect).len() < 1e-9, "{angle} {axis:?}/{origin:?}: com {:?} vs {expect:?}", mp.com);
+            assert_eq!(r.faces(), faces0, "{angle} {axis:?}: names changed");
+        }
+    }
+}
+
+/// Features after the transform still refer to faces of the moved part: a
+/// `moveBody` selecting the lump by face name (with a real translation) and a
+/// sketch whose plane is a face of the rotated body.
+#[test]
+fn face_references_after_a_bldc_transform() {
+    let base = bldc();
+    let r0 = run(&base);
+    assert!(r0.errors().is_empty(), "{:?}", r0.errors());
+    let v0 = ck_topo::mass::mass_props(r0.body.as_ref().unwrap()).volume;
+    let target = r0
+        .faces()
+        .iter()
+        .find(|n| n.starts_with("F2."))
+        .expect("the base revolve's faces")
+        .clone();
+    let b = r0.body.as_ref().unwrap();
+    let planar = b
+        .face_ids()
+        .map(|f| (b.face_id_str(f).to_string(), &b.face(f).surface))
+        .find(|(_, s)| matches!(s, ck_geom::surface::Surface::Plane { .. }))
+        .expect("a planar face")
+        .0;
+    let rot = r#"{"type":"moveBody","id":"M1","rotate":{"axis":[0,0,1],"origin":[0,0,0],"angle":90}}"#;
+    // (a) a later moveBody resolves the moved lump from one of its face names
+    let mb = format!(
+        r#"{{"type":"moveBody","id":"M2","bodies":[{{"face":"{target}"}}],"translate":[1,0,0]}}"#
+    );
+    let r = run(&format!("{base},{rot},{mb}"));
+    assert!(r.errors().is_empty(), "moveBody by face: {:?}", r.errors());
+    assert!(r.valid());
+    assert!(close(ck_topo::mass::mass_props(r.body.as_ref().unwrap()).volume, v0, 1e-9));
+    assert_eq!(r.faces(), r0.faces(), "names must be unchanged through both moves");
+    // (b) a sketch on a face of the rotated body resolves its plane
+    let sk = format!(
+        r#"{{"type":"sketch","id":"SF","plane":{{"kind":"face","id":"{planar}"}},"points":[{{"id":"p1","x":-1,"y":-1}},{{"id":"p2","x":1,"y":-1}},{{"id":"p3","x":1,"y":1}},{{"id":"p4","x":-1,"y":1}}],"entities":[{{"type":"line","id":"h1","p1":"p1","p2":"p2"}},{{"type":"line","id":"h2","p1":"p2","p2":"p3"}},{{"type":"line","id":"h3","p1":"p3","p2":"p4"}},{{"type":"line","id":"h4","p1":"p4","p2":"p1"}}],"constraints":[]}}"#
+    );
+    let r = run(&format!("{base},{rot},{sk}"));
+    assert!(r.errors().is_empty(), "sketch on face: {:?}", r.errors());
+}
+
+/// Task 6b: `bodies` selects by FEATURE id (`{"feature":"F4"}` / a bare id
+/// that is not a face name) — the lumps holding any face made by that feature.
+/// Two disjoint solids; only the second (F4's) lump rotates about +Z, the
+/// first is untouched, volumes and centres of gravity match the rotation.
 #[test]
 fn move_body_selects_the_lumps_of_a_feature() {
     let two = format!(
