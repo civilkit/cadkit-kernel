@@ -786,6 +786,92 @@ impl Tree {
         out
     }
 
+    /// The mirror image of the tree in a flat reflection (`pt` maps points, `vec` directions; a reflection that keeps the layout
+    /// plane, so the bends keep their angle and side). The panels run the other way round after a reflection, so every ring is
+    /// reversed (the tag of an edge travels with it); a bend keeps its zone and its extents because its line and normal are
+    /// reflected together.
+    pub fn reflected(&self, flat: Flat3, pt: impl Fn(P) -> P, vec: impl Fn(P) -> P) -> Tree {
+        let ring = |r: &Vec<P>| -> Vec<P> { r.iter().rev().map(|p| pt(*p)).collect() };
+        let panels = self
+            .panels
+            .iter()
+            .map(|p| {
+                let m: Poly = p.poly.iter().map(|(q, t)| (pt(*q), t.clone())).collect();
+                let n = m.len();
+                let poly: Poly = (0..n).map(|j| (m[n - 1 - j].0, m[(n + n - 2 - j) % n].1.clone())).collect();
+                Panel { poly, holes: p.holes.iter().map(&ring).collect(), via: p.via }
+            })
+            .collect();
+        let bends = self.bends.iter().map(|b| TBend { o: pt(b.o), d: vec(b.d), nu: vec(b.nu), ..b.clone() }).collect();
+        Tree { flat, panels, bends, folds: self.folds, reliefs: self.reliefs, cuts: self.cuts.iter().map(&ring).collect() }
+    }
+
+    /// The tree and its mirror image `other` (the same tree reflected across the flat line through `c` with unit normal `m`, in
+    /// the same layout) as one sheet: the two base plates meet along an edge of the base that lies on the line, and that edge must
+    /// not carry a bend. The plates become one panel and every other panel and bend of the image hangs on it.
+    pub fn joined_mirror(&self, other: &Tree, c: P, m: P) -> Result<Tree, String> {
+        const TOL: f64 = 1e-6;
+        let roots = |t: &Tree| t.panels.iter().enumerate().filter(|(_, p)| p.via.is_none()).map(|(i, _)| i).collect::<Vec<_>>();
+        let (r, r2) = match (roots(self).as_slice(), roots(other).as_slice()) {
+            ([a], [b]) => (*a, *b),
+            _ => return Err("the sheet has more than one base panel".into()),
+        };
+        let dist = |p: P| dot(sub(p, c), m);
+        let (pn, pn2) = (&self.panels[r], &other.panels[r2]);
+        let n = pn.poly.len();
+        let on: Vec<usize> = (0..n).filter(|&i| dist(pn.poly[i].0).abs() <= TOL).collect();
+        let e = match on.as_slice() {
+            [a, b] if (*a + 1) % n == *b => *a,
+            [a, b] if (*b + 1) % n == *a => *b,
+            [] => return Err("the base plate does not reach the mirror plane with an edge".into()),
+            _ => return Err("the base plate touches the mirror plane at more than one straight edge".into()),
+        };
+        let side = pn.poly.iter().map(|(q, _)| dist(*q)).find(|d| d.abs() > TOL).unwrap_or(0.0).signum();
+        if side == 0.0 || pn.poly.iter().any(|(q, _)| dist(*q) * side < -TOL) {
+            return Err("the base plate lies across the mirror plane".into());
+        }
+        let tag = pn.poly[e].1.clone();
+        if pn.poly.iter().filter(|v| v.1 == tag).count() != 1 || self.bends.iter().any(|b| b.parent == r && b.attach == tag) {
+            return Err("the edge of the base plate on the mirror plane carries a bend".into());
+        }
+        let (a, b) = (pn.poly[e].0, pn.poly[(e + 1) % n].0);
+        let n2 = pn2.poly.len();
+        let j = (0..n2)
+            .find(|&j| len(sub(pn2.poly[j].0, b)) <= TOL && len(sub(pn2.poly[(j + 1) % n2].0, a)) <= TOL)
+            .ok_or_else(|| "the mirror image of the base plate does not meet the plate along its edge".to_string())?;
+        // B .. A of the plate, then the image from A round to B
+        let mut ring: Poly = (1..=n).map(|k| pn.poly[(e + k) % n].clone()).collect();
+        ring.last_mut().map(|l| l.1 = pn2.poly[(j + 1) % n2].1.clone());
+        ring.extend((2..n2).map(|k| pn2.poly[(j + k) % n2].clone()));
+        // the two plates continue straight over the seam: no corner there
+        let mut k = 0;
+        while k < ring.len() && ring.len() > 3 {
+            let (pv, cu, nx) = (ring[(k + ring.len() - 1) % ring.len()].clone(), ring[k].clone(), ring[(k + 1) % ring.len()].0);
+            let (d1, d2) = (sub(cu.0, pv.0), sub(nx, cu.0));
+            let at_seam = len(sub(cu.0, a)) <= TOL || len(sub(cu.0, b)) <= TOL;
+            if at_seam && pv.1 == cu.1 && cross(d1, d2).abs() <= 1e-9 * len(d1) * len(d2) && dot(d1, d2) > 0.0 {
+                ring.remove(k);
+            } else {
+                k += 1;
+            }
+        }
+        let mut holes = pn.holes.clone();
+        holes.extend(pn2.holes.iter().cloned());
+        let mut panels = self.panels.clone();
+        panels[r] = Panel { poly: ring, holes, via: None };
+        let (off, boff) = (self.panels.len(), self.bends.len());
+        let map = |i: usize| if i == r2 { r } else { off + i - usize::from(i > r2) };
+        for (i, p) in other.panels.iter().enumerate().filter(|(i, _)| *i != r2) {
+            let _ = i;
+            panels.push(Panel { via: p.via.map(|k| k + boff), ..p.clone() });
+        }
+        let mut bends = self.bends.clone();
+        bends.extend(other.bends.iter().map(|b| TBend { parent: map(b.parent), child: map(b.child), ..b.clone() }));
+        let mut cuts = self.cuts.clone();
+        cuts.extend(other.cuts.iter().cloned());
+        Ok(Tree { flat: self.flat, panels, bends, folds: self.folds.max(other.folds), reliefs: self.reliefs.max(other.reliefs), cuts })
+    }
+
     /// The tag of an edge of a panel that no wall roles should name (the strip side of a bend, tags of zones).
     pub fn is_zone_tag(tag: &str) -> bool {
         tag == "z" || (tag.starts_with('z') && tag[1..].chars().next().map_or(false, |c| c.is_ascii_digit()))

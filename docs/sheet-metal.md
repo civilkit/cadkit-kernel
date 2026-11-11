@@ -451,3 +451,25 @@ the arcs are carried as arcs (tagged `ra<curve>`) through the panel tree. Pickin
 
 Limits: flanges on a curved edge; a profile that crosses itself; `then` with a profile; relief shapes other than the rectangle for partial
 flanges; a partial flange next to a flange of the same feature keeps no `gap` (give the span the clearance).
+
+
+# Mirror of a sheet
+
+`mirror` with `body: true` on a part that is a live sheet (the last feature was a sheet feature) keeps the part a sheet. A part holds
+one sheet, so the result is one panel tree; code: `sheet_features::mirror_sheet`, `Tree::reflected`, `Tree::joined_mirror`. Tests:
+`crates/ck-model/tests/sheet_mirror.rs`.
+
+* `"replace": true`: the image takes the place of the sheet. The tree is the reflected tree (panels, bends, K-factor, thickness,
+  rule, cut-outs; the layout frame is reflected and its flat y is negated, so a bend keeps its side and inside / outside), the flat
+  pattern and bend table are the same, and it unfolds. Any plane: a standard plane, a plane feature, a flat face of the sheet.
+  Faces keep their roles (`P0.front`, `B1.back`, ...).
+* otherwise the image is joined to the sheet. That is one sheet only when the plane is square to the base plate and runs along one
+  straight edge of it that carries no bend, and nothing else of the sheet touches the plane (the folded solid has exactly the four
+  corners of the end face on it). The two plates become one panel, the bends and panels of the image hang on it, and the joined sheet
+  unfolds as a whole (flat pattern twice as long for the L-bracket mirrored about its far end).
+* every other plane (a face of the sheet, parallel to the plate, tilted, through a bend, across the sheet, a flange reaching the plane)
+  is refused with `sheetMetalUnsupported {detail, hint}`: the two halves would not be one sheet (double wall, overlap, apart), and the
+  part is unchanged. The hint points to `replace` or to a plane through a bend-free end.
+* a part that is no longer the live sheet (another feature changed the body, or it is unfolded) mirrors as a solid, as before.
+  `replace` on a plain solid replaces the body by its image (faces keep their names).
+

@@ -190,6 +190,7 @@ Reflects seeds, or the whole body, about a plane.
 | `seeds` | list of feature ids | required unless `body` | The features to reflect. Each copy is instance 1 of the mirror (`F4.C0@F5.1`); a mirrored cap keeps its cap number. |
 | `plane` | plane reference | required | A standard plane, a plane feature or a planar face. A missing plane is `missingReference`. |
 | `body` | boolean | `false` | Reflect the whole body made so far and unite it with the body (seeds are then ignored). The copy's faces get `@<mirror id>.1`. A copy clear of the body is added as a separate body without a boolean. |
+| `replace` | boolean | `false` | With `body`: the image takes the place of the body instead of being united with it. On a sheet metal part (the last feature was a sheet feature) the part stays a sheet: the reflected panel tree, with the same flat pattern and bend table, for any plane including a flat face of the sheet. Without `replace`, a sheet is joined to its image only when the plane runs along a bend-free straight edge of the base plate, square to it (one sheet that unfolds as a whole); any other plane is refused with `sheetMetalUnsupported {detail, hint}` and the part is unchanged. |
 
 ```json
 [
