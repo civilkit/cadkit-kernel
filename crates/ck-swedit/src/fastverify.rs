@@ -223,9 +223,21 @@ fn same_faces_split(orig: &Body, new: &Body) -> bool {
     let (mo, mn) = (Model::new(orig), Model::new(new));
     let mut free: Vec<(FaceId, f64)> = mo.faces.iter().map(|&f| (f, mo.area(f))).collect();
     let mut left = vec![];
+    // (two free-form faces have no surface parameters to compare: they pair by area and by their box, to 1e-6 of
+    // its size)
+    let free_form = |b: &Body, m: &Model, f: FaceId| matches!(m.kind(f), Kind::Other(_)).then(|| b.bbox_of_faces(&[f]));
+    let boxes: HashMap<FaceId, (Vec3, Vec3)> = mo.faces.iter().filter_map(|&f| free_form(orig, &mo, f).map(|bb| (f, bb))).collect();
     for &g in &mn.faces {
         let a = mn.area(g);
-        match free.iter().position(|&(f, fa)| close(a, fa, 1e-6) && same_surface(mo.kind(f), mn.kind(g), 1e-6)) {
+        let gb = free_form(new, &mn, g);
+        let same_box = |f: FaceId| match (gb, boxes.get(&f)) {
+            (Some((l1, h1)), Some(&(l0, h0))) => {
+                let tol = 1e-6 * (1.0 + (h0 - l0).len());
+                (l1 - l0).len() < tol && (h1 - h0).len() < tol
+            }
+            _ => false,
+        };
+        match free.iter().position(|&(f, fa)| close(a, fa, 1e-6) && (same_surface(mo.kind(f), mn.kind(g), 1e-6) || same_box(f))) {
             Some(i) => {
                 free.swap_remove(i);
             }
@@ -404,4 +416,43 @@ fn shell_deviation_any(a: &Body, b: &Body, lim: f64) -> Option<(f64, f64)> {
         }
     }
     Some((worst, gap))
+}
+
+/// The faces of a body grouped by surface: `(a face of the group, the group's total area)`.
+fn surface_groups(b: &Body) -> Vec<(FaceId, f64)> {
+    let m = Model::new(b);
+    let mut groups: Vec<(FaceId, f64)> = vec![];
+    for &f in &m.faces {
+        let a = m.area(f);
+        match groups.iter_mut().find(|(g, _)| same_surface(m.kind(*g), m.kind(f), 1e-6)) {
+            Some(gr) => gr.1 += a,
+            None => groups.push((f, a)),
+        }
+    }
+    groups
+}
+
+/// The rebuild of a sheet metal part against the import: panels, bends and legs are united, so coplanar faces that SolidWorks keeps
+/// apart per feature (a bend's end face beside the leg's side face) are one face here and the faces do not pair one to one. Volume
+/// and area agree to 1e-6 and the faces pair up by surface: every surface of the import carries the same total area in the rebuild
+/// and the other way round. The same solid, `close` (not `exact`: the face partition differs).
+pub fn close_by_shell(orig: &Body, new: &Body, v: &Verify) -> Option<Verify> {
+    if !(v.rel < 1e-6) {
+        return None;
+    }
+    let (go, gn) = (surface_groups(orig), surface_groups(new));
+    if go.len() != gn.len() {
+        return None;
+    }
+    let (mo, mn) = (Model::new(orig), Model::new(new));
+    let mut free: Vec<(FaceId, f64)> = gn;
+    for (f, a) in go {
+        let i = free.iter().position(|&(g, ga)| close(a, ga, 1e-6) && same_surface(mo.kind(f), mn.kind(g), 1e-6))?;
+        free.swap_remove(i);
+    }
+    let b0 = orig.bbox();
+    if v.bbox_dev < 1e-3 * (1.0 + (b0.1 - b0.0).len()) {
+        return Some(Verify { vol_orig: v.vol_orig, vol_new: v.vol_new, sym_diff: None, rel: v.rel, bbox_dev: v.bbox_dev, area_rel: v.area_rel, exact: false, close: true });
+    }
+    None
 }

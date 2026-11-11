@@ -13,8 +13,14 @@ const wasm = opt('--wasm', fileURLToPath(new URL('../../kit/apps/cad/public/kern
 const n = Number(opt('--cases', '5000'));
 const seed = Number(opt('--seed', '7'));
 const onlyShrink = argv.includes('--no-shrink');
-const baselineFile = opt('--update-baseline', opt('--check', path.join(here, 'crash_fuzz_baseline.json')));
+// --check takes an optional baseline path; a following option (`--check --json out.json`, as the gate calls it) is not one
+const checkArg = argv.includes('--check') && argv[argv.indexOf('--check') + 1] && !argv[argv.indexOf('--check') + 1].startsWith('--') ? argv[argv.indexOf('--check') + 1] : undefined;
+const baselineFile = opt('--update-baseline', checkArg ?? path.join(here, 'crash_fuzz_baseline.json'));
+// --timeout is CPU milliseconds of the case (the worker thread's own CPU time), so the verdict does not depend on how busy the
+// machine is; --wall-factor caps the wall time at that many times the limit, for a case that never returns (an endless loop
+// is killed there) or that sleeps
 const timeout = Number(opt('--timeout', '1500'));
+const wallFactor = Number(opt('--wall-factor', '6'));
 const workers = Number(opt('--workers', '8'));
 // --budget-ms N: regen with opts.featureTimeMs = N and regenTimeMs = 2N (the kernel's time budgets); a hang is then a case
 // that runs past --timeout anyway (set it above 2N plus the unchecked remainder)
@@ -34,8 +40,9 @@ function runOne(features, t = timeout) {
     const w = new Worker(new URL('./crash_fuzz_worker.mjs', import.meta.url), { workerData: { wasm, features, budgetMs } });
     let done = false;
     const finish = (x) => { if (done) return; done = true; clearTimeout(timer); w.terminate().catch(() => {}); resolve(x); };
-    const timer = setTimeout(() => finish({ cls: 'hang', last: features[features.length - 1]?.type ?? 'none' }), t);
-    w.on('message', (m) => finish(m));
+    const timer = setTimeout(() => finish({ cls: 'hang', last: features[features.length - 1]?.type ?? 'none' }), t * wallFactor);
+    // a reply that took more CPU time than the limit is a hang even when it came back (the old wall-clock rule, load-proof)
+    w.on('message', (m) => finish(m.cpuMs > t ? { cls: 'hang', last: m.last, cpuMs: m.cpuMs } : m));
     w.on('error', (e) => finish({ cls: 'trap', trap: String(e), last: features[features.length - 1]?.type ?? 'none' }));
     w.on('exit', (code) => { if (code !== 0 && !done) finish({ cls: 'trap', trap: `worker exit ${code}`, last: features[features.length - 1]?.type ?? 'none' }); });
   });
@@ -203,7 +210,7 @@ if (opt('--dump')) {
 }
 const results = await mapLimit(cases, workers, async (c) => {
   const r = await runOne(c.features);
-  return { id: c.id, kind: c.kind, ...classify(r), features: c.features };
+  return { id: c.id, kind: c.kind, ...classify(r), ...(r.cpuMs != null ? { cpuMs: Math.round(r.cpuMs) } : {}), features: c.features };
 });
 const counts = {}; for (const r of results) counts[r.cls] = (counts[r.cls] ?? 0) + 1;
 console.log(JSON.stringify({ n, seed, wasmHash, ...counts }));

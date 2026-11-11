@@ -804,5 +804,5 @@
    "detail": ""
   }
  },
- "knownHang": "88324 importStep >90 s (known; see internal notes (not published))"
+ "knownHang": "88324 importStep >90 s (known; see docs/mimo-brief-import.md)"
 }

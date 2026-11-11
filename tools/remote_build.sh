@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build the kernel wasm and run its checks on the CI box instead of this (busy) machine. See docs/remote-build.md.
-#   tools/remote_build.sh [--worktree DIR] [--checks gate,loft,apex,fillet,section,spline,thin,suite,lint,text,projcurve,dfm,wasmparity,all|none]
+#   tools/remote_build.sh [--worktree DIR] [--checks gate,large sample,loft,apex,fillet,section,spline,thin,suite,lint,text,engrave,projcurve,dfm,propeller,crashfuzz,wasmparity,all|none]
 #                         [--cargo-test CRATE|"-p a -p b"|all] [--out DIR] [--no-sync-back] [--no-wasm] [--wasm-features LIST] [--jobs N] [--reset]
 #                         [--test NAME] [--env K=V ...] [--fetch REL] [--musl-libm]
 #   --test NAME: with --cargo-test, run only that integration test, with --nocapture; --env K=V: set for the cargo
@@ -94,8 +94,9 @@ TENV=(); for e in "$@"; do TENV+=("${e//\{RUN\}/$RUN}"); done   # --env pairs fo
 free=$(df -BG --output=avail "$RB" | tail -1 | tr -dc '0-9')
 echo "box: cores=$(nproc) load=$(cut -d' ' -f1-3 /proc/loadavg) free=${free}G"
 if [ "${free:-0}" -lt 15 ]; then echo "FAIL: less than 15G free on the box"; echo "FAIL disk 0" >> "$R"; exit 1; fi
-# the gate reads the oracle at ../../kernel.wasm (and the gate writes next to it): private copy inside the root
-[ -s "$RB/wt/kernel.wasm" ] || cp "$HOME/kernel.wasm" "$RB/wt/kernel.wasm" || { echo "FAIL: oracle kernel.wasm missing"; exit 1; }
+# the gate and large sample check read the oracle at ../../kernel.wasm (and the gate writes next to it): private copy inside the root
+# no comparison build on the box: the gate then runs standalone (tools/gate.mjs), without the checks that need one
+[ -s "$RB/wt/kernel.wasm" ] || cp "$HOME/kernel.wasm" "$RB/wt/kernel.wasm" 2>/dev/null || echo "note: no comparison kernel.wasm; the gate runs standalone"
 W="$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/ck_wasm.wasm"
 FAILS=0
 rec() { # rec name rc secs
@@ -137,7 +138,7 @@ fi
 flock -u 9; exec 9>&-    # checks are plain node: release the build lock
 
 CH=$(printf '%s' "$CHECKS" | tr ',' ' ')
-case " $CH " in *" all "*) CH="gate loft apex fillet section spline thin suite lint text projcurve dfm";; esac
+case " $CH " in *" all "*) CH="gate large sample loft apex fillet section spline thin suite lint text engrave projcurve dfm";; esac
 case " $CH " in *" none "*) CH="";; esac
 SUITE="region_select thin_extrude thread end_reference profile coincident_boolean hole_dims move spline_shell spline_boolean mate"
 pids=""
@@ -146,6 +147,7 @@ if [ -s "$W" ]; then
     case "$c" in
       # the gate also runs the blend corpus (documented shortfalls carry `known` and never fail it)
       gate) ( t=$SECONDS; rc=0; nice -n 5 node tools/gate.mjs --fast --quiet --wasm "$W" > "$RUN/gate.out" 2>&1 || rc=$?; printf '\n== blend corpus\n' >> "$RUN/gate.out"; nice -n 5 node tools/blend_corpus.mjs --wasm "$W" >> "$RUN/gate.out" 2>&1 || rc=$?; echo $rc > "$RUN/gate.rc"; echo $((SECONDS-t)) > "$RUN/gate.secs" ) & pids="$pids $!" ;;
+      large sample) step large sample node tools/check_large sample.mjs --wasm "$W" ;;
       loft) step loft node tools/loft_point_check.mjs --wasm "$W" ;;
       apex) step apex node tools/loft_apex_check.mjs --wasm "$W" ;;
       fillet) step fillet node tools/concave_fillet_check.mjs --wasm "$W" ;;
@@ -154,11 +156,18 @@ if [ -s "$W" ]; then
       thin) step thin_extrude node tools/thin_extrude_check.mjs --wasm "$W" ;;
       lint) step lint-protocol node tools/lint_protocol.mjs --wasm "$W" --quiet ;;
       text) step text-corpus node tools/text_corpus.mjs --wasm "$W" --quiet ;;
+      engrave) step engrave-bench node tools/engrave_bench.mjs --wasm "$W" --quiet --check --machine box ;;
       projcurve) step project-curve-corpus node tools/project_curve_corpus.mjs --wasm "$W" --quiet ;;
       dfm) step dfm node tools/dfm_check.mjs --wasm "$W" --quiet ;;
       # the fillet table through the wasm, compared with the native table's BLEND_JSON when this run wrote one (tools/wasm_parity.sh)
       wasmparity) NJ="$RUN/blend/table.json"; [ -s "$NJ" ] && [ "$NJ" -nt "$RUN/.parity-start" ] || NJ=""
         step wasmparity env ${TENV[@]+"${TENV[@]}"} node tools/wasm_parity.mjs --wasm "$W" ${NJ:+--native "$NJ"} --json "$RUN/parity/parity.json" ;;
+      # validate time against face count on generated parts (informational: prints a table; not part of `all`)
+      validatescale) step validatescale node tools/validate_scale_check.mjs --wasm "$W" ;;
+      # the crash/hang fuzz at the settings of its baseline (tools/crash_fuzz_baseline.json); lists every case that is not ok
+      crashfuzz) step crashfuzz node tools/crash_fuzz.mjs --wasm "$W" --cases 5000 --seed 7 --budget-ms 400 --timeout 6000 --workers 8 --no-shrink --check --json "$RUN/crash.json"
+        node -e 'const j=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); const c={}; for (const r of j.results) c[r.cls]=(c[r.cls]||0)+1; console.log("crashfuzz classes", JSON.stringify(c)); for (const r of j.results) if (r.cls==="hang"||r.cls==="trap") console.log("  not ok:", r.id, r.cls, r.detail||"");' "$RUN/crash.json" ;;
+      propeller) step propeller node tools/propeller_check.mjs --wasm "$W" ;;
       suite) for s in $SUITE; do step "check-$s" node "tools/${s}_check.mjs" --wasm "$W"; done ;;
       *) echo "unknown check $c"; rec "check-$c" 64 0 ;;
     esac

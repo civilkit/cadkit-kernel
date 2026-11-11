@@ -27,7 +27,7 @@
 //! | helix           | sketch, definedBy, pitch, revolutions, height, startAngle, leftHand, reverse, visible |
 //! | rib             | sketch, thickness, flip |
 //! | lip             | kind ("lip"), faces, edges, width, height |
-//! | lpattern        | seeds, dir ({kind:axis}), spacing, count, reverse, distanceType, extent, to, toOffset; dir2 ... toOffset2 (see pattern_place.rs) |
+//! | lpattern        | seeds, dir ({kind:axis}), spacing, count, reverse, distanceType, extent, to, toOffset; dir2 ... toOffset2, dir3 ... toOffset3 (see pattern_place.rs) |
 //! | cpattern        | seeds, bodies, axis ({kind:axis}), count, angle, equal, reverse |
 //! | curvepattern    | seeds, path ({kind:sketch\|curve}), count, spacing, distanceType, extent, start, startFraction, flip, orientation (see pattern_place.rs) |
 //! | mirror          | seeds, plane ({kind:std}), body |
@@ -46,7 +46,17 @@
 //! | importStep      | blob (key into the part's `blobs`) or step (inline text), body, heal (see import_step.rs) |
 //! | importBody      | format (sldprt), blob (key into the part's `blobs`, base64 of the file), replace, body (see import_body.rs) |
 //! | repairPart      | target (an importStep), gap, patchHoles (see repair_part.rs) |
-//! | frame           | sketch, segments, lines, profile, rotate, corner, members, joints (see frame.rs) |
+//! | sheetRules      | name, thickness, kFactor, bendRadius, reliefWidth, reliefDepth, cornerRelief, cornerReliefShape, hemGap, gap, active (see sheet_features.rs) |
+//! | baseFlange      | sketch, rule, flip (see sheet_features.rs) |
+//! | edgeFlange      | edges, height, angle, radius, heightFrom, position, flip, then (see sheet_features.rs) |
+//! | hem             | edges, length, gap, flip (see sheet_features.rs) |
+//! | fold            | line, points, angle, radius, position, fixed, flip (see sheet_features.rs) |
+//! | sheetConvert    | thickness, rule (see sheet_convert.rs) |
+//! | sheetCut        | sketch, regions (see sheet_features.rs) |
+//! | sheetCorner     | corners, mode, radius, distance (see sheet_features.rs) |
+//! | contourFlange   | sketch, curves, distance, rule, flip, reverse (see sheet_features.rs) |
+//! | unfold, refold  | (none) |
+//! | frame           | sketch, segments, lines, profile, rotate, corner, members, joints, hardware (see frame.rs) |
 //! | knurlBand       | axis, center, radius, from, to, pattern, count, depth, angle, helixAngle, ringPitch (see knurl_band.rs) |
 //! | thread          | face, standard, size, class, length, hand, start, modeled (parsed from the raw DOM, see thread.rs) |
 //! | projectCurve    | sketch \| curve, faces, degree, tolerance, direction (see project_curve.rs) |
@@ -65,6 +75,7 @@ pub mod extrude_object;
 pub mod frame;
 pub mod hole;
 pub mod known_fields;
+pub mod built_cache;
 pub mod import_body;
 pub mod import_step;
 pub mod repair_part;
@@ -82,6 +93,15 @@ pub mod pipecut;
 pub mod project_curve;
 pub mod ref_plane;
 pub mod rib;
+pub mod sheet;
+pub mod sheet_export;
+pub mod sheet_contour;
+pub mod sheet_features;
+pub mod sheet_fold;
+pub mod sheet_roles;
+pub mod sheet_convert;
+pub mod sheet_tree;
+pub mod sheet_tree3d;
 pub mod shell;
 pub mod surface_extrude;
 pub mod surfaces;
@@ -107,6 +127,7 @@ pub enum FeatureKind {
     Sweep { op: Op, sketch: Option<Ref>, path: Option<GeomRef>, surface: bool },
     /// A ball: `center` and `radius` are read from the payload (expressions).
     Sphere { op: Op },
+    Box { op: Op },
     Loft { op: Op, sketches: Vec<Ref>, surface: bool },
     Fillet { radius: Expr, edges: Vec<EdgeRef> },
     Chamfer {
@@ -435,6 +456,7 @@ impl FeatureKind {
                 flip: b(j, "flip"),
             },
             "sphere" => FeatureKind::Sphere { op: op(j) },
+            "box" => FeatureKind::Box { op: op(j) },
             "sweep" => FeatureKind::Sweep { op: op(j), sketch: r_opt(j, "sketch"), path: g(j, "path"), surface: b(j, "surface") },
             "loft" => FeatureKind::Loft { op: op(j), sketches: refs(j, "sketches"), surface: b(j, "surface") },
             "fillet" => FeatureKind::Fillet { radius: e(j, "radius", 0.0), edges: edges(j, "edges") },
@@ -686,6 +708,8 @@ pub struct Brep {
     pub auto_fuzz: bool,
     /// The fuzzy value that decided the last boolean of the feature (reported as the `booleanFuzzy` warning).
     pub fuzz_used: Option<f64>,
+    /// Sheet rules and the sheet metal model (sheet_features.rs).
+    pub sheet: sheet_features::SheetState,
 }
 
 /// Everything a [`Brep`] has accumulated, as cheaply shareable pieces: the
@@ -698,6 +722,7 @@ pub struct BrepSnap {
     pub asm: std::rc::Rc<mate::Assembly>,
     pub helices: std::rc::Rc<Vec<(String, ck_ops::helix::Helix)>>,
     pub surfs: std::rc::Rc<Vec<(String, ck_topo::body::Body)>>,
+    pub sheet: std::rc::Rc<sheet_features::SheetState>,
 }
 
 /// `a op b` under the feature's fuzzy value `fuzz` (0 = exact). With `auto`, a boolean that fails, comes out
@@ -768,6 +793,7 @@ impl Brep {
             },
             helices: share(prev.map(|p| &p.helices), &self.helices),
             surfs: share(prev.map(|p| &p.surfs), &self.surfs),
+            sheet: share(prev.map(|p| &p.sheet), &self.sheet),
         }
     }
 
@@ -779,6 +805,7 @@ impl Brep {
         self.asm = (*s.asm).clone();
         self.helices = (*s.helices).clone();
         self.surfs = (*s.surfs).clone();
+        self.sheet = (*s.sheet).clone();
         self.spans.clear();
     }
 
@@ -1203,7 +1230,7 @@ impl Brep {
         let mut out: Vec<String> = vec![];
         for t in list {
             if let Some(n) = t.as_str().or_else(|| t.get_str("face")) {
-                out.push(body.find_face(n).map(|_| n.to_string()).ok_or_else(missing)?);
+                out.push(body.find_face(n).map(|_| n.to_string()).ok_or_else(|| crate::refs::missing_face([body], n))?);
                 continue;
             }
             let Some(name) = t.get_str("body") else { return Err(missing()) };
@@ -1652,10 +1679,13 @@ impl Brep {
 
     fn exec_feature(&mut self, state: &mut crate::regen::RegenState, f: &crate::Feature) -> Result<(), crate::regen::FeatureError> {
         bodies::check_feature(f)?;
-        if matches!(op(&f.raw), Op::NewBody) && matches!(f.type_name.as_str(), "extrude" | "revolve" | "loft" | "sweep" | "sphere") {
+        if matches!(op(&f.raw), Op::NewBody) && matches!(f.type_name.as_str(), "extrude" | "revolve" | "loft" | "sweep" | "sphere" | "box") {
             if let Some(name) = bodies::body_name(&f.raw)? {
                 bodies::check_free(self.body.as_ref(), &name, &f.id, &[])?;
             }
+        }
+        if sheet_features::plain_cut_is_sheet_cut(self, state, f) {
+            return sheet_features::exec_sheet_cut(self, state, f);
         }
         let tool = match &f.kind {
             FeatureKind::Extrude { end, .. } if *end == End::ToObject || has_start(f) => self.extrude_to_object(state, f)?,
@@ -1667,6 +1697,7 @@ impl Brep {
             FeatureKind::Extrude { .. } => extrude::exec_extrude(state, f, self.body.as_ref())?,
             FeatureKind::Revolve { .. } => extrude::exec_revolve(state, f, self.body.is_some())?,
             FeatureKind::Sphere { .. } => extrude::exec_sphere(state, f, self.body.is_some())?,
+            FeatureKind::Box { .. } => extrude::exec_box(state, f, self.body.is_some())?,
             FeatureKind::Mirror { .. } => return pattern::exec_mirror(self, state, f),
             FeatureKind::CPattern { seeds, bodies, .. } if seeds.is_empty() && !bodies.is_empty() && !self.asm.components.is_empty() => {
                 return self.exec_component_pattern(state, f)
@@ -1691,6 +1722,17 @@ impl Brep {
             _ if f.type_name == "repairPart" => return repair_part::exec_repair_part(self, state, f),
             _ if f.type_name == "knurlBand" => return knurl_band::exec_knurl_band(self, state, f),
             _ if f.type_name == "frame" => return frame::exec_frame(self, state, f),
+            _ if f.type_name == "sheetRules" => return sheet_features::exec_sheet_rules(self, state, f),
+            _ if f.type_name == "baseFlange" => return sheet_features::exec_base_flange(self, state, f),
+            _ if f.type_name == "edgeFlange" => return sheet_features::exec_edge_flange(self, state, f),
+            _ if f.type_name == "hem" => return sheet_features::exec_hem(self, state, f),
+            _ if f.type_name == "fold" => return sheet_features::exec_fold(self, state, f),
+            _ if f.type_name == "contourFlange" => return sheet_features::exec_contour_flange(self, state, f),
+            _ if f.type_name == "sheetConvert" => return sheet_convert::exec_sheet_convert(self, state, f),
+            _ if f.type_name == "sheetCut" => return sheet_features::exec_sheet_cut(self, state, f),
+            _ if f.type_name == "sheetCorner" => return sheet_features::exec_sheet_corner(self, state, f),
+            _ if f.type_name == "unfold" => return sheet_features::exec_unfold(self, state, f),
+            _ if f.type_name == "refold" => return sheet_features::exec_refold(self, state, f),
             _ if f.type_name == "thread" => return thread::exec_thread(self, state, f),
             _ if f.type_name == "combine" || f.type_name == "bodyBoolean" => return combine::exec_combine(self, state, f),
             _ if f.type_name == "moveBody" => return move_body::exec_move_body(self, state, f),
@@ -1723,6 +1765,124 @@ impl Brep {
 mod tests {
     use super::*;
     use crate::Part;
+
+    const SAMPLES: [&str; 4] = ["bracket", "coupling-sample", "stepper-sample", "large-sample"];
+
+    fn load(name: &str) -> Option<Part> {
+        let p = format!("{}/../../../{}.ckpart", env!("CARGO_MANIFEST_DIR"), name);
+        let src = std::fs::read_to_string(p).ok()?;
+        Some(Part::parse(&src).expect("sample parses"))
+    }
+
+    fn walk(p: &Part, f: &mut dyn FnMut(&crate::Feature)) {
+        for x in &p.features {
+            f(x);
+            if let FeatureKind::InsertPart { part: Some(sub), .. } = &x.kind {
+                walk(sub, f);
+            }
+        }
+    }
+
+    /// Every feature in every sample parses to a typed kind (no `Other`), and
+    /// the document round-trips through `to_json` unchanged.
+    #[test]
+    fn samples_parse_fully() {
+        for name in SAMPLES {
+            let Some(p) = load(name) else { continue };
+            let mut n = 0;
+            walk(&p, &mut |f| {
+                n += 1;
+                assert!(!matches!(f.kind, FeatureKind::Other(_)), "{name}: {} {}", f.id, f.type_name);
+                if let FeatureKind::InsertPart { part, .. } = &f.kind {
+                    assert!(part.is_some(), "{name}: {} nested part", f.id);
+                }
+            });
+            assert!(n > 5, "{name}");
+            assert_eq!(ck_json::to_string(&p.to_json()), ck_json::to_string(&p.raw), "{name} round-trip");
+        }
+    }
+
+    #[test]
+    fn bracket_fields() {
+        let Some(p) = load("bracket") else { return };
+        assert_eq!(p.name, "NEMA 17 motor bracket");
+        assert_eq!(p.seq, 13);
+        assert_eq!(p.rollback, None);
+        assert_eq!(p.material, "aluminium");
+        assert_eq!(p.counters[0], ("sketch".to_string(), 4));
+        let f2 = p.feature("F2").unwrap();
+        match &f2.kind {
+            FeatureKind::Extrude { op, sketch, end, depth, .. } => {
+                assert_eq!(*op, Op::Add);
+                assert_eq!(sketch.as_ref().unwrap().as_str(), "F1");
+                assert_eq!(*end, End::Mid);
+                assert_eq!(depth.as_num(), Some(52.0));
+            }
+            k => panic!("{k:?}"),
+        }
+        match &p.feature("F11").unwrap().kind {
+            FeatureKind::Fillet { radius, edges } => {
+                assert_eq!(radius.as_num(), Some(5.0));
+                assert_eq!(edges.len(), 4);
+                assert_eq!(edges[0].faces, vec!["F2.C0", "F2.S.e10"]);
+                assert_eq!(edges[0].at, Some([-26.0, 58.0, 2.0]));
+            }
+            k => panic!("{k:?}"),
+        }
+        let s7 = p.feature("F7").unwrap().as_sketch().unwrap();
+        assert_eq!(s7.plane, Some(GeomRef::Face("F2.C1".into())));
+        match &p.feature("F10").unwrap().kind {
+            FeatureKind::Mirror { plane, body, seeds } => {
+                assert_eq!(*plane, Some(GeomRef::Std(crate::StdPlane::Right)));
+                assert!(!body);
+                assert_eq!(seeds[0].as_str(), "F8");
+            }
+            k => panic!("{k:?}"),
+        }
+    }
+
+    #[test]
+    fn assembly_fields() {
+        let Some(p) = load("coupling-sample") else { return };
+        let f2 = p.feature("F2").unwrap();
+        match &f2.kind {
+            FeatureKind::InsertPart { part, place, source, .. } => {
+                let sub = part.as_ref().unwrap();
+                assert_eq!(sub.name, "Flange coupling half");
+                assert_eq!(place.dx, -40.0);
+                assert_eq!(place.axis, Some(GeomRef::Axis("y".into())));
+                assert_eq!(place.angle, Some(Expr::Num(150.0)));
+                assert_eq!(source.as_deref(), Some("tests/real-parts/coupling-half.ckpart"));
+                match &sub.feature("F12").unwrap().kind {
+                    FeatureKind::RefPlane { mode, base, offset, visible, .. } => {
+                        assert_eq!(mode, "offset");
+                        assert_eq!(*base, Some(GeomRef::Std(crate::StdPlane::Top)));
+                        assert_eq!(offset.as_num(), Some(20.0));
+                        assert!(!visible);
+                    }
+                    k => panic!("{k:?}"),
+                }
+                match &sub.feature("F2").unwrap().kind {
+                    FeatureKind::Revolve { axis, angle, .. } => {
+                        assert_eq!(*axis, Some(GeomRef::Name("e14".into())));
+                        assert_eq!(angle.as_num(), Some(360.0));
+                    }
+                    k => panic!("{k:?}"),
+                }
+            }
+            k => panic!("{k:?}"),
+        }
+        let Some(n) = load("stepper-sample") else { return };
+        assert!(n.is_assembly());
+        match &n.feature("F30").unwrap().kind {
+            FeatureKind::InsertPart { place, .. } => {
+                let fr = place.frame.unwrap();
+                assert_eq!(fr.o.x, 0.6);
+                assert_eq!(fr.y.x, -1.0);
+            }
+            k => panic!("{k:?}"),
+        }
+    }
 
     #[test]
     fn format_errors() {

@@ -1,6 +1,7 @@
 //! Where the copies of a linear pattern and of a path pattern go (ck-model/src/features/pattern_place.rs).
 //!
-//! Linear pattern (`lpattern`), per direction (`dir`, and `dir2` with the same fields suffixed `2`):
+//! Linear pattern (`lpattern`), per direction (`dir`, and `dir2`, `dir3` with the same fields suffixed `2` / `3`; the three
+//! make a block of copies: `count × count2 × count3`):
 //! * `distanceType` `"spacing"` (default): `spacing` between neighbours, as before;
 //! * `"extent"`: `extent` from the seed to the last copy, spacing = extent / (count − 1);
 //! * `"toObject"`: the copy furthest along the direction reaches `to`, measured from the middle of the seeds
@@ -64,18 +65,18 @@ fn key(base: &str, sfx: &str) -> String {
     format!("{base}{sfx}")
 }
 
-/// Resolve direction `sfx` (`""` = direction 1, `"2"` = direction 2) of an `lpattern`; `None` for an unused direction 2.
+/// Resolve direction `sfx` (`""` = direction 1, `"2"` / `"3"` = directions 2 and 3) of an `lpattern`; `None` for an unused one.
 pub fn row(br: &mut Brep, state: &RegenState, f: &Feature, sfx: &str, mid: Option<Vec3>, count_of: impl Fn(f64) -> Result<usize, FeatureError>) -> Result<Option<Row>, FeatureError> {
     let raw = &f.raw;
     let dir = raw.get(&key("dir", sfx)).and_then(GeomRef::from_json);
-    if sfx == "2" && dir.is_none() {
+    if !sfx.is_empty() && dir.is_none() {
         return Ok(None);
     }
     let (_, d) = dir.as_ref().and_then(|g| crate::planes::resolve_axis(state, br, g)).ok_or_else(|| {
         if sfx.is_empty() {
             FeatureError::new(codes::MISSING_REFERENCE)
         } else {
-            missing("dir2")
+            missing(&key("dir", sfx))
         }
     })?;
     let count = count_of(state.num(f, &key("count", sfx), if sfx.is_empty() { 0.0 } else { 1.0 })?)?;
@@ -181,15 +182,23 @@ fn point_of(br: &Brep, r: &Json) -> Option<Vec3> {
 
 /// Instance transforms of one or two rows (copy `j·n1 + i` for grid cell (i, j), the seed (0, 0) left out).
 pub fn grid(a: &Row, b: Option<&Row>) -> Vec<Xform> {
+    grid3(a, b, None)
+}
+
+/// The copies of up to three directions (the seed itself, `(0, 0, 0)`, is left out): `(i, j, k)` is copy `(k·count2 + j)·count + i`.
+pub fn grid3(a: &Row, b: Option<&Row>, c: Option<&Row>) -> Vec<Xform> {
     let (n2, d2, s2) = b.map_or((1, Vec3::ZERO, 0.0), |r| (r.count.max(1), r.d, r.spacing));
+    let (n3, d3, s3) = c.map_or((1, Vec3::ZERO, 0.0), |r| (r.count.max(1), r.d, r.spacing));
     let n1 = a.count.max(1);
-    let mut out = Vec::with_capacity(n1 * n2);
-    for j in 0..n2 {
-        for i in 0..n1 {
-            if i == 0 && j == 0 {
-                continue;
+    let mut out = Vec::with_capacity(n1 * n2 * n3);
+    for k in 0..n3 {
+        for j in 0..n2 {
+            for i in 0..n1 {
+                if i == 0 && j == 0 && k == 0 {
+                    continue;
+                }
+                out.push(Xform::translation(a.d * (a.spacing * i as f64) + d2 * (s2 * j as f64) + d3 * (s3 * k as f64)));
             }
-            out.push(Xform::translation(a.d * (a.spacing * i as f64) + d2 * (s2 * j as f64)));
         }
     }
     out

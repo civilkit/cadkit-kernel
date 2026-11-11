@@ -53,7 +53,7 @@ B-rep topology: arena-based solid model. Depends on ck-core, ck-geom, ck-json.
 - `trig.rs` is required for native builds to reproduce wasm bits
   (macOS libm cos(120°) = −0.49999999999999983, kernel −0.4999999999999998);
   checked against the kernel's own f4182/f4184 on 4032 arguments
-  (the recorded reference data (not published)).
+  (tests/trig_oracle.rs).
 
 ## Split faces
 
@@ -125,8 +125,8 @@ of the rotations).
 
 `cargo test -p ck-topo`: unit tests per module + `tests/oracle.rs`, which
 diffs faces/edges (endpoints of `pts`) of 15 bodies against original-kernel
-replies stored in the recorded reference data (not published).
-the recorded reference data (not published): trig vs the kernel's own sin/cos.
+replies stored in `tests/oracle_bodies.json`.
+`tests/trig_oracle.rs`: trig vs the kernel's own sin/cos.
 
 ## Open / GUESS
 

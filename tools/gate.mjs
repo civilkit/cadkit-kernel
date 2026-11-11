@@ -187,6 +187,14 @@ function regenSet(set, targets) {
   }
 }
 regenSet('brep', Object.entries(brepParts).map(([name, part]) => ({ name, part })));
+// --fast skips the sample parts (minutes while booleans are slow)
+for (const f of fast ? [] : ['bracket', 'stepper-sample', 'coupling-sample', 'large-sample']) {
+  const p = path.join(art, `${f}.ckpart`);
+  if (!existsSync(p)) continue;
+  const part = JSON.parse(readFileSync(p, 'utf8'));
+  regenSet(f, part.features.map((_, k) => ({ name: `${f}@${k + 1}`, part, upTo: k + 1 })));
+}
+
 // 2b. ACIS SAT import (ours only; closed-form volumes in expected.json)
 const sdir = path.join(here, '../crates/ck-io/tests/fixtures/sat');
 if (existsSync(path.join(sdir, 'expected.json'))) {
@@ -240,9 +248,7 @@ const gdir = path.join(here, '../crates/ck-io/tests/golden');
 if (haveRef && existsSync(gdir)) for (const f of readdirSync(gdir).filter((f) => f.endsWith('.req.json')).sort()) {
   const req = readFileSync(path.join(gdir, f), 'utf8');
   const st = '{"id":2,"msg":{"type":"step","name":"t"}}';
-  // the header names the program that wrote the file (the reference build and ours differ there): compare the rest
-  const hdr = (t) => t.replace(/FILE_DESCRIPTION\(\('[^']*'\)/g, 'FILE_DESCRIPTION((X)').replace(/\(''\),\(''\),'[^']*','[^']*'/g, "(''),(''),X,X");
-  const [a, b] = [A, B].map((m) => { const k = new Kernel(m); k.request(req); return hdr(norm(k.request(st))); });
+  const [a, b] = [A, B].map((m) => { const k = new Kernel(m); k.request(req); return norm(k.request(st)); });
   bump('step', a === b);
   // same replies with every number rounded to 9 significant digits and -0 as 0: only
   // float-order noise (the oracle's own solver residue) separates these from identical
@@ -257,7 +263,7 @@ const basePath = path.join(here, haveRef ? 'scoreboard.json' : 'scoreboard.stand
 const base = existsSync(basePath) ? JSON.parse(readFileSync(basePath, 'utf8')) : {};
 let worse = 0, soft = 0;
 const hard = (k) => /^(wire|valid\.|vol\.|oracle\.|import\.|heal\.|edit\.)/.test(k);
-const skipped = () => false;
+const skipped = (k) => fast && /^(regen|mass|valid|vol)\.(bracket|stepper|flange|hair)/.test(k);
 for (const k of Object.keys({ ...base, ...score }).sort()) {
   const [m, n] = score[k] ?? [0, 0], b = base[k]?.[0];
   const d = b === undefined ? ' (new)' : m > b ? ` (+${m - b})` : m < b ? ` (-${b - m}) ${hard(k) ? 'REGRESSION' : 'WARN(soft)'}` : '';

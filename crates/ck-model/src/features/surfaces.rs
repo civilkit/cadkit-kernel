@@ -77,6 +77,11 @@ impl Brep {
         self.surfs.iter().position(|s| s.0 == id)
     }
 
+    /// `missingReference` for a face id nothing carries, listing the faces the solid and the surfaces have instead.
+    pub fn missing_face(&self, face: &str) -> FeatureError {
+        crate::refs::missing_face(self.body.iter().chain(self.surfs.iter().map(|(_, b)| b)), face)
+    }
+
     /// The body holding the live face `face`.
     pub fn slot_of_face(&self, face: &str) -> Option<Slot> {
         if let Some(i) = self.surfs.iter().position(|(_, b)| b.find_face(face).is_some()) {
@@ -153,9 +158,9 @@ fn flag(f: &Feature, k: &str) -> bool {
 /// the edge they share (nearest `at`).
 pub(super) fn pick_edge(br: &Brep, faces: &[String], at: Option<Vec3>) -> Result<(Slot, EdgeId), FeatureError> {
     let first = faces.first().ok_or_else(missing)?;
-    let slot = br.slot_of_face(first).ok_or_else(missing)?;
+    let slot = br.slot_of_face(first).ok_or_else(|| br.missing_face(first))?;
     let b = br.slot_body(slot).ok_or_else(missing)?;
-    let fids: Vec<FaceId> = faces.iter().map(|n| b.find_face(n).ok_or_else(missing)).collect::<Result<_, _>>()?;
+    let fids: Vec<FaceId> = faces.iter().map(|n| b.find_face(n).ok_or_else(|| crate::refs::missing_face([b], n))).collect::<Result<_, _>>()?;
     let dist = |e: EdgeId| -> f64 {
         match at {
             Some(p) => {
@@ -511,11 +516,11 @@ pub fn exec_delete_face(br: &mut Brep, _state: &mut RegenState, f: &Feature) -> 
     if names.is_empty() {
         return Err(missing());
     }
-    let slot = br.slot_of_face(&names[0]).ok_or_else(missing)?;
+    let slot = br.slot_of_face(&names[0]).ok_or_else(|| br.missing_face(&names[0]))?;
     let body = br.slot_body(slot).ok_or_else(missing)?.clone();
     let mut del = vec![];
     for n in &names {
-        del.push(body.find_face(n).ok_or_else(missing)?);
+        del.push(body.find_face(n).ok_or_else(|| crate::refs::missing_face([&body], n))?);
     }
     let mode = f.raw.get("mode").and_then(|m| m.as_str()).unwrap_or("delete");
     if mode != "delete" {
@@ -591,11 +596,11 @@ pub fn exec_freeform(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Resu
     if names.is_empty() {
         return Err(missing());
     }
-    let slot = br.slot_of_face(&names[0]).ok_or_else(missing)?;
+    let slot = br.slot_of_face(&names[0]).ok_or_else(|| br.missing_face(&names[0]))?;
     let body = br.slot_body(slot).ok_or_else(missing)?.clone();
     let mut faces = vec![];
     for n in &names {
-        faces.push(body.find_face(n).ok_or_else(missing)?);
+        faces.push(body.find_face(n).ok_or_else(|| crate::refs::missing_face([&body], n))?);
     }
     let edits_json: Vec<&Json> = f.raw.get("edits").and_then(|e| e.as_arr()).map(|a| a.iter().collect()).unwrap_or_default();
     // control point edits work on exactly one face

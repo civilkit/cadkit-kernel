@@ -52,13 +52,24 @@ fn rounded_box_shell(edges: &[&str], r: f64, t: f64) -> Outcome {
     run(&format!("{fillet},{shell}"))
 }
 
+/// Volume of an a x b x h box with every edge rounded at r.
+fn rounded(a: f64, b: f64, h: f64, r: f64) -> f64 {
+    let (x, y, z) = (a - 2.0 * r, b - 2.0 * r, h - 2.0 * r);
+    let pi = std::f64::consts::PI;
+    x * y * z + 2.0 * r * (x * y + x * z + y * z) + pi * r * r * (x + y + z) + 4.0 * pi * r * r * r / 3.0
+}
+
+/// The opened face is bordered by the round of its own edges. The cavity is the box offset inward (rounds R5 - t) plus the
+/// prism of the opening (the 30 x 30 flat of the top) from there up through the face: closed-form volume.
 #[test]
-fn a_rounded_rim_around_the_opened_face_is_refused_by_name() {
+fn a_rounded_rim_around_the_opened_face_shells() {
     for t in [2.0, 1.0] {
-        let (errs, _) = rounded_box_shell(&[VERTICAL, TOP_RIM, BOTTOM_RIM], 5.0, t);
-        assert_eq!(errs.len(), 1, "{errs:?}");
-        assert_eq!(errs[0].0, "shellUnsupported", "{errs:?}");
-        assert!(errs[0].1.contains("tangentially") && errs[0].1.contains("F2.C1"), "{errs:?}");
+        let (errs, r) = rounded_box_shell(&[VERTICAL, TOP_RIM, BOTTOM_RIM], 5.0, t);
+        assert!(errs.is_empty(), "t {t}: {errs:?}");
+        let (vol, issues, _) = r.unwrap();
+        assert_eq!(issues, 0, "t {t}");
+        let want = rounded(40.0, 40.0, 10.0, 5.0) - rounded(40.0 - 2.0 * t, 40.0 - 2.0 * t, 10.0 - 2.0 * t, 5.0 - t) - 30.0 * 30.0 * t;
+        assert!((vol - want).abs() < 1e-4 * want, "t {t}: volume {vol} want {want}");
     }
 }
 

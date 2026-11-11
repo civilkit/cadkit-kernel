@@ -689,9 +689,9 @@ pub fn exec_project_curve(br: &mut Brep, state: &mut RegenState, f: &Feature) ->
         }
     } else {
         for name in face_names {
-            let slot = br.slot_of_face(name).ok_or_else(|| FeatureError::new(codes::MISSING_REFERENCE))?;
+            let slot = br.slot_of_face(name).ok_or_else(|| br.missing_face(name))?;
             let body = br.slot_body(slot).ok_or_else(|| FeatureError::new(codes::MISSING_REFERENCE))?;
-            let face = body.find_face(name).ok_or_else(|| FeatureError::new(codes::MISSING_REFERENCE))?;
+            let face = body.find_face(name).ok_or_else(|| crate::refs::missing_face([body], name))?;
             targets.push(Target::new(body, face));
         }
     }

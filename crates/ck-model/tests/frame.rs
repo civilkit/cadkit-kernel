@@ -209,3 +209,78 @@ fn editing_the_skeleton_moves_the_members() {
     let e1 = o.members.iter().find(|m| m.0 == "e1").unwrap();
     assert!(near(e1.1, 840.0, 1e-6));
 }
+
+/// Area of an I section with flanges `w` x `tf`, web `tw`, depth `h` and four root fillets of radius `r`.
+fn a_ibeam(w: f64, h: f64, tf: f64, tw: f64, r: f64) -> f64 {
+    2.0 * w * tf + (h - 2.0 * tf) * tw + 4.0 * (1.0 - std::f64::consts::FRAC_PI_4) * r * r
+}
+
+const UB310: &str = r#"{"id":"310ub40","label":"310UB40.4","kind":"ibeam","w":165,"h":304,"tf":10.2,"tw":6.1,"r":11.4}"#;
+
+fn ibeam_frame(profile: &str, extra: &str) -> String {
+    format!(r#"{{"type":"frame","id":"F2","sketch":"S1","profile":{profile}{extra}}}"#)
+}
+
+#[test]
+fn ibeam_rectangle_mitred() {
+    let a = a_ibeam(165.0, 304.0, 10.2, 6.1, 11.4);
+    let o = run(&format!("{},{}", skeleton(&RECT), ibeam_frame(UB310, "")));
+    assert!(o.errors.is_empty(), "{:?}", o.errors);
+    assert_eq!(o.members.len(), 4);
+    for (seg, len, ang, ends, vol) in &o.members {
+        let cl = if seg == "e1" || seg == "e3" { 600.0 } else { 400.0 };
+        // the flanges (165 wide) lie in the plane of the frame: the long point is half a flange beyond each node
+        assert!(near(*len, cl + 165.0, 1e-6), "{seg} stock {len}");
+        assert!(near(ang[0], 45.0, 1e-6) && near(ang[1], 45.0, 1e-6), "{seg} {ang:?}");
+        assert_eq!(ends, &["mitre".to_string(), "mitre".to_string()]);
+        assert!(near(*vol, a * cl, 1e-5 * a * cl), "{seg} volume {vol} vs {}", a * cl);
+    }
+    check_body(&o, 4);
+}
+
+#[test]
+fn ibeam_rectangle_butted_and_tee() {
+    let a = a_ibeam(165.0, 304.0, 10.2, 6.1, 11.4);
+    let mut lines = RECT.to_vec();
+    lines.push(("e5", [300.0, 0.0], [300.0, 400.0]));
+    let o = run(&format!("{},{}", skeleton(&lines), ibeam_frame(UB310, r#","corner":"butt""#)));
+    assert!(o.errors.is_empty(), "{:?}", o.errors);
+    let m5 = o.members.iter().find(|m| m.0 == "e5").unwrap();
+    assert_eq!([m5.3[0].as_str(), m5.3[1].as_str()], ["tee", "tee"]);
+    for (seg, len, _, _, vol) in &o.members {
+        assert!(near(*vol, a * len, 1e-4 * a * len), "{seg} volume {vol} vs {}", a * len);
+    }
+    check_body(&o, 5);
+}
+
+#[test]
+fn channel_with_own_flange_and_web_thickness_and_root_radius() {
+    // a parallel flange channel 230 deep, 75 wide, flange 12, web 6.5, root radius 12: two root fillets
+    let prof = r#"{"id":"230pfc","kind":"channel","w":75,"h":230,"tf":12,"tw":6.5,"r":12}"#;
+    let a = 2.0 * 75.0 * 12.0 + (230.0 - 24.0) * 6.5 + 2.0 * (1.0 - std::f64::consts::FRAC_PI_4) * 144.0;
+    // one straight member: square cuts, so its volume is the section area x its length (a mitre of an unsymmetric section is not)
+    let o = run(&format!("{},{}", skeleton(&[("e1", [0.0, 0.0], [600.0, 0.0])]), ibeam_frame(prof, "")));
+    assert!(o.errors.is_empty(), "{:?}", o.errors);
+    assert!(near(o.members[0].4, a * 600.0, 1e-5 * a * 600.0), "volume {} vs {}", o.members[0].4, a * 600.0);
+    check_body(&o, 1);
+    // mitred in a rectangle it still builds, valid and without overlap
+    let o = run(&format!("{},{}", skeleton(&RECT), ibeam_frame(prof, "")));
+    assert!(o.errors.is_empty(), "{:?}", o.errors);
+    check_body(&o, 4);
+    // the old form (one thickness) still reads
+    let o = run(&format!("{},{}", skeleton(&RECT), ibeam_frame(r#"{"id":"c","kind":"channel","w":50,"h":100,"t":5}"#, "")));
+    assert!(o.errors.is_empty(), "{:?}", o.errors);
+}
+
+#[test]
+fn bad_ibeam_is_frame_invalid() {
+    for prof in [
+        r#"{"kind":"ibeam","w":100,"h":200,"tf":10}"#,                        // no web
+        r#"{"kind":"ibeam","w":100,"h":200,"tf":10,"tw":120}"#,               // web wider than the flange
+        r#"{"kind":"ibeam","w":100,"h":200,"tf":100,"tw":6}"#,                // flanges meet
+        r#"{"kind":"ibeam","w":100,"h":200,"tf":10,"tw":6,"r":200}"#,         // root radius does not fit
+    ] {
+        let o = run(&format!("{},{}", skeleton(&RECT), ibeam_frame(prof, "")));
+        assert!(o.errors.iter().any(|e| e.starts_with("F2:frameInvalid")), "{prof}: {:?}", o.errors);
+    }
+}

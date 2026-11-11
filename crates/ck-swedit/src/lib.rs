@@ -33,6 +33,7 @@ pub mod prefix;
 pub mod profile;
 pub mod revolve;
 pub mod session;
+pub mod sheet;
 pub mod shell;
 pub mod sweep;
 mod swap;
@@ -249,6 +250,12 @@ pub enum Class {
     Cosmetic,
     /// A draft made after the fact (`later_draft.rs`).
     Draft,
+    /// The sheet metal rules feature (`sheet.rs`): made no faces.
+    SheetRules,
+    /// The base flange of a sheet metal part (`sheet.rs`).
+    BaseFlange,
+    /// An edge flange of a sheet metal part (`sheet.rs`; its `EdgeBend` feature after it is skipped).
+    EdgeFlange,
     Unsupported(String),
 }
 
@@ -256,6 +263,21 @@ pub enum Class {
 pub fn classify(f: &SwFeature) -> Class {
     let (k, name) = (f.kind.as_str(), f.name.as_str());
     let starts = |p: &str| name.starts_with(p) || k.starts_with(p);
+    if sheet::is_rules(f) {
+        return Class::SheetRules;
+    }
+    if sheet::is_inert(f) {
+        return Class::Skip;
+    }
+    if sheet::is_base_flange(f) {
+        return Class::BaseFlange;
+    }
+    if sheet::is_edge_flange(f) {
+        return Class::EdgeFlange;
+    }
+    if sheet::is_edge_bend(f) {
+        return Class::Skip;
+    }
     match k {
         "Sketch" | "Plane" | "RefPlane" | "Axis" | "RefAxis" | "Coordinate System" | "CoordSys" | "OriginProfileFeature" | "3DSketch" | "3DProfileFeature" | "Point" | "RefPoint" | "Split Line" | "SplitLine" => Class::Skip,
         _ if k.starts_with("Sketch") => Class::Skip,
@@ -267,6 +289,8 @@ pub fn classify(f: &SwFeature) -> Class {
         "Fillet" => Class::Fillet,
         "Chamfer" => Class::Chamfer,
         "HoleWizard" | "Hole" => Class::Hole,
+        // (a hole wizard feature named for its result: `M5 Clearance Slot`, `Ø15.0 (15) Diameter Slot`, `M5 Clearance Hole`)
+        _ if k.ends_with(" Slot") || k.ends_with(" Hole") => Class::Hole,
         "Shell" => Class::Shell,
         "Rib" => Class::Rib,
         "Revolve" | "RevCut" | "Revolution" | "Revolve-Cut" | "Cut-Revolve" => {
@@ -277,7 +301,10 @@ pub fn classify(f: &SwFeature) -> Class {
             }
         }
         "Thread" | "CosmeticThread" | "Cosmetic Thread" | "ThreadCosmetic" => Class::Cosmetic,
-        other => Class::Unsupported(format!("feature type {other}")),
+        other => match sheet::unsupported_note(other) {
+            Some(why) => Class::Unsupported(why),
+            None => Class::Unsupported(format!("feature type {other}")),
+        },
     }
 }
 
@@ -496,6 +523,7 @@ fn rebuild_ordered_v(t: &Tagged, variant: usize) -> Outcome {
 
 /// [`rebuild_ordered_v`], with the document started by `start` (the starting body of an imported part, `undo.rs`).
 pub(crate) fn read_v(t: &Tagged, variant: usize, start: Option<&undo::Start>) -> Outcome {
+    sheet::reset();
     let m = Model::new(t.body);
     let later = later_draft::find(&m, &t.tags, t.features, variant);
     let mu = if later.is_empty() { None } else { Some(m.with_kinds(&later.iter().map(|l| (l.face, l.before.clone())).collect::<Vec<_>>())) };
@@ -519,7 +547,8 @@ pub(crate) fn read_v(t: &Tagged, variant: usize, start: Option<&undo::Start>) ->
     // our features of each step (`cx.tree.feats[a..b]`)
     let mut ranges: Vec<(usize, usize)> = vec![];
     let mut fallback = None;
-    for f in t.features {
+    let order = sheet::leg_round_order(&m, &t.tags, t.features);
+    for f in order.into_iter().map(|i| &t.features[i]) {
         let class = classify(f);
         if class == Class::Skip {
             continue;
@@ -591,6 +620,26 @@ pub(crate) fn read_v(t: &Tagged, variant: usize, start: Option<&undo::Start>) ->
                 continue;
             }
         }
+        if class == Class::SheetRules {
+            let first = cx.tree.feats.len();
+            match sheet::rules(&mut cx, f) {
+                Ok(note) => {
+                    step.note = note;
+                    made.insert(f.id, (first, cx.tree.feats.len()));
+                    ranges.push((first, cx.tree.feats.len()));
+                    steps.push(step);
+                    continue;
+                }
+                Err(why) => {
+                    ranges.push((first, first));
+                    step.status = Status::Unsupported;
+                    step.note = why.clone();
+                    fallback = Some(format!("{} ({}): {}", f.name, f.kind, why));
+                    steps.push(step);
+                    break;
+                }
+            }
+        }
         if faces.is_empty() {
             step.status = Status::Skipped;
             step.note = "no faces on the final body".into();
@@ -601,18 +650,37 @@ pub(crate) fn read_v(t: &Tagged, variant: usize, start: Option<&undo::Start>) ->
         }
         let first = cx.tree.feats.len();
         let r = match &class {
-            Class::Extrude { cut } => draft::plain_or_drafted(&mut cx, f, &faces, *cut),
-            Class::Fillet => blend::blend(&mut cx, f, &faces, false),
+            Class::Extrude { cut } => match if *cut { sheet::cut(&mut cx, f, &faces) } else { None } {
+                Some(r) => r,
+                None => draft::plain_or_drafted(&mut cx, f, &faces, *cut),
+            },
+            Class::Fillet => match sheet::fold_round(&cx, &faces, t.features) {
+                Some(note) => Ok(note),
+                None => blend::blend(&mut cx, f, &faces, false),
+            },
             Class::Chamfer => blend::blend(&mut cx, f, &faces, true),
             Class::Hole => {
-                let hs = holes.get_or_insert_with(|| ck_recog::holes::find_holes(&m, &mut Default::default()));
-                // a hole whose mouth is no plain circle (it breaks through an edge) is still a round cut
-                hole::hole(&mut cx, f, &faces, hs)
-                    .or_else(|e| profile::extrude(&mut cx, f, &faces, true).map(|n| format!("as a cut ({e}): {n}")))
-                    .or_else(|e| hole::hole_own(&mut cx, f, &faces).map_err(|g| format!("{e}; from its own faces: {g}")))
+                // (a slot that opens to the rim of the sheet of a sheet metal part is part of the plate's outline; a round hole through
+                // it is a cut of its flat pattern, which later flanges can follow)
+                let sheet_note = sheet::rim_cut(&cx, &faces).or_else(|| match sheet::round_hole_cut(&mut cx, f, &faces) {
+                    Some(Ok(note)) => Some(note),
+                    _ => None,
+                });
+                match sheet_note {
+                    Some(note) => Ok(note),
+                    None => {
+                        let hs = holes.get_or_insert_with(|| ck_recog::holes::find_holes(&m, &mut Default::default()));
+                        // a hole whose mouth is no plain circle (it breaks through an edge) is still a round cut
+                        hole::hole(&mut cx, f, &faces, hs)
+                            .or_else(|e| profile::extrude(&mut cx, f, &faces, true).map(|n| format!("as a cut ({e}): {n}")))
+                            .or_else(|e| hole::hole_own(&mut cx, f, &faces).map_err(|g| format!("{e}; from its own faces: {g}")))
+                    }
+                }
             }
             Class::Shell => shell::shell(&mut cx, f, &faces),
             Class::Rib => rib::rebuild(&mut cx, f, &faces),
+            Class::BaseFlange => sheet::base_flange(&mut cx, f, &faces),
+            Class::EdgeFlange => sheet::edge_flange(&mut cx, f, &faces, t.features),
             Class::Revolve { cut } => revolve::revolve(&mut cx, f, &faces, *cut),
             // (a thread that made faces of its own is modelled: swept along a helix, `thread.rs`)
             Class::Cosmetic => cosmetic(&cx, f, &faces).or_else(|e| thread::rebuild(&mut cx, f, &faces).map_err(|w| format!("{e}; {w}"))),
@@ -625,12 +693,12 @@ pub(crate) fn read_v(t: &Tagged, variant: usize, start: Option<&undo::Start>) ->
                 Some(r) => r,
                 None => Err(why.clone()),
             },
-            Class::Skip | Class::Draft => unreachable!(),
+            Class::Skip | Class::Draft | Class::SheetRules => unreachable!(),
         };
         match r {
             Ok(note) => {
                 step.note = note;
-                if class == Class::Cosmetic && cx.tree.feats.len() == first {
+                if matches!(class, Class::Cosmetic | Class::Fillet | Class::Extrude { .. }) && cx.tree.feats.len() == first {
                     step.status = Status::Skipped;
                 }
                 made.insert(f.id, (first, cx.tree.feats.len()));
@@ -735,7 +803,13 @@ fn full_regen_in(t: &Tagged, out: &mut Outcome, sess: &std::cell::RefCell<sessio
             }
             match body {
                 Some(b) => {
-                    let v = fastverify::verify_split(t.body, &b, undo::merges(t, &b).unwrap_or_else(|| split_merges(t)));
+                    let mut v = fastverify::verify_split(t.body, &b, undo::merges(t, &b).unwrap_or_else(|| split_merges(t)));
+                    if !v.close && out.features.iter().any(|f| f.get_str("type") == Some("baseFlange")) {
+                        // (a sheet metal rebuild merges the coplanar faces SolidWorks keeps apart per feature)
+                        if let Some(c) = fastverify::close_by_shell(t.body, &b, &v) {
+                            v = c;
+                        }
+                    }
                     if out.fallback.is_none() && !v.close {
                         out.fallback = Some(format!("rebuilt body differs: relative error {:.2e}, area {:.2e}", v.rel, v.area_rel));
                     }

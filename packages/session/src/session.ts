@@ -93,9 +93,22 @@ export interface RefWarning {
   [key: string]: unknown;
 }
 
+/** One reference a repair re-pointed: in `feature`, `from` (a face id, or the two face ids of an edge pick) became `to`. */
+export interface RepairInfo {
+  feature: string;
+  from: unknown;
+  to: unknown;
+}
+
 export interface EditResult {
   ok: boolean;
   record: EditRecord | null;
+  /** On a rejected edit that left references pointing at nothing (`missingReference`, `missingEdge`): the unambiguous
+   *  re-pointings the kernel found that make the same batch build, and the `replace` ops that apply them. Pass
+   *  `[...ops, ...repairOps]`, or call `edit(ops, reason, { repair: true })`. On an edit applied with `repair: true`: what was
+   *  re-pointed (the ops are part of the record). */
+  repairs?: RepairInfo[];
+  repairOps?: EditOp[];
   errors?: RegenError[];
   hints?: ReturnType<typeof hintFor>[];
   schemaError?: string;
@@ -630,7 +643,7 @@ export class Session {
   /** Apply a batch atomically. `lean` is for an interactive viewer: no before / after body facts (`diff`), and the
    *  reference check is skipped for a batch that only appends features (nothing earlier can be re-pointed) or delivered
    *  later as `refWarningsLater`. */
-  async edit(ops: EditOp[], reason?: string, opts?: { lean?: boolean; refCheck?: 'auto' | 'none' }): Promise<EditResult> {
+  async edit(ops: EditOp[], reason?: string, opts?: { lean?: boolean; refCheck?: 'auto' | 'none'; repair?: boolean }): Promise<EditResult> {
     const lean = opts?.lean === true;
     const refCheckOpt = opts?.refCheck ?? 'auto';
     this.lastActive = Date.now();
@@ -666,11 +679,19 @@ export class Session {
     if (regenRes.errors.length) {
       // Atomicity: the document stays unchanged; report what failed.
       await this.regen(this.doc).catch(() => null); // restore tag state
+      // an edit that left a reference pointing at nothing: when exactly one face or edge can be what it meant, say so
+      const lostRef = regenRes.errors.some(([, err]) => err.code === 'missingReference' || err.code === 'missingEdge');
+      const fix = lostRef && opts?.refCheck !== 'none' ? await this.repairOpsFor(before, candidate) : null;
+      if (fix && opts?.repair === true) {
+        const again = await this.edit([...ops, ...fix.ops], reason, { ...opts, repair: false });
+        return again.ok ? { ...again, repairs: fix.repairs } : again;
+      }
       return {
         ok: false,
         record: null,
         errors: regenRes.errors,
         hints: regenRes.errors.map(([fid, err]) => hintFor(fid, err.code, err.params ?? {})),
+        ...(fix ? { repairs: fix.repairs, repairOps: fix.ops } : {}),
       };
     }
 
@@ -733,6 +754,31 @@ export class Session {
   }
 
   private closed = false;
+
+  /** The unambiguous repairs of the references `part` lost since `base` (see refDiff `repair`), as `replace` ops, kept only
+   *  when the repaired document builds without errors. `null` when there is nothing to repair or the repair does not build. */
+  private async repairOpsFor(base: PartDoc, part: PartDoc): Promise<{ repairs: RepairInfo[]; ops: EditOp[] } | null> {
+    try {
+      const rd = await this.kernel.request({ type: 'refDiff', base, part, repair: true });
+      if (rd.trap || !rd.ok || !rd.result) return null;
+      const res = rd.result as { repaired?: PartDoc; repairs?: RepairInfo[] };
+      if (!res.repaired || !res.repairs?.length) return null;
+      const fixed = res.repaired;
+      const ops: EditOp[] = [];
+      for (const id of new Set(res.repairs.map((r) => r.feature))) {
+        const f = fixed.features.find((x) => x.id === id);
+        if (f) ops.push({ op: 'replace', id, feature: clone(f) as Record<string, unknown> });
+      }
+      if (!ops.length) return null;
+      const trial = clone(part);
+      for (const op of ops) applyOp(trial, op);
+      const built = await this.regen(trial);
+      await this.regen(this.doc).catch(() => null); // restore tag state
+      return built.errors.length === 0 ? { repairs: res.repairs, ops } : null;
+    } catch {
+      return null;
+    }
+  }
 
   private async refDiffOf(base: PartDoc, part: PartDoc): Promise<RefWarning[]> {
     try {

@@ -118,7 +118,7 @@ Repairs the body in place: merges near-coincident vertices, sews free edges, mak
 | `bodies` | With `bodies` or `densities`: `[{ volume, area, com, name?, mass? }]` per lump. `name` is the body name if the lump has one. |
 | `byMass` | With `densities`: `{ mass, com, principal, axes }` for the density-weighted whole. |
 
-With two overlapping blocks and `"bodies": true`, `bodies` is `[ { "volume": 4000, "area": 1600, "com": [10,10,5], "name": "A" }, { ..., "name": "B" } ]` while `volume` is `8000`: overlap is counted twice, since the lumps are separate bodies. With `"densities": [0.0027]` on the plate, the entry gets `"mass": 160.64` and `byMass.mass` is `160.64`. No body: `null`.
+With two overlapping blocks and `"bodies": true`, `bodies` is `[ { "volume": 4000, "area": 1600, "com": [10,10,5], "name": "A" }, { ..., "name": "B" } ]` while `volume` is `8000`: overlap is counted twice, since the lumps are separate bodies. With `"densities": [0.0027]` on the plate, the entry gets `"mass": 160.64` and `byMass.mass` is `160.64`. No body: `null`. A body whose lumps are all sheets (open edges, no enclosed volume, for example a surface import) answers `volume: 0`, its `area`, `com` as the area centroid and `kind: "surface"`; `principal`, `axes`, `firstMoment`, `inertia` and `inertiaOrigin` are then weighted by area (surface density 1), and `mass` is 0. Earlier replies had `null` for `com` and `principal` here; a caller that reads only `volume` or `area` sees no change.
 
 ### interference
 
@@ -260,6 +260,7 @@ Compares two versions of a document and reports references that now point at a d
 |---|---|---|
 | `base` | object | The document before the edit. |
 | `part` | object | The document after the edit. Both must be part documents (`invalid part: Format` otherwise). |
+| `repair` | boolean | Default `false`. `true` adds `repaired` (the `part` with every unambiguous suggestion applied) and `repairs`. |
 
 Result: `{ ok, checked, warnings, features, errors }`. `checked` is the number of references present in both. Each warning is `{ code, feature, ref, reason, before, after }`, with `code` `referenceChanged` (it resolves, to something that no longer matches in surface type, direction, neighbour kinds, size ratio between 0.25 and 4, or position) or `referenceLost`. `features` is `{ removed, added, reordered }` (feature ids). `errors` lists regen failures of either document as `[featureId, code]` pairs (the code is a plain string here). Ordinary parameter edits do not warn.
 
@@ -274,6 +275,8 @@ Result: `{ ok, checked, warnings, features, errors }`. `checked` is the number o
                   "after":  "line edge F2.C1|F2.S.e1#5: length 100, direction -x, midpoint (50, 60, 10); between F2.C1 and F2.S.e1" } ],
   "features": { "removed": [], "added": [], "reordered": false }, "errors": [] }
 ```
+
+A `referenceLost` warning also carries `candidates` and, when exactly one of them fits, `suggest`. The candidates are the faces (`{ "id", "text" }`) or, for an edge pick, the edges (`{ "faces": [a, b], "text" }`) of the body at that feature that the old entity could be: the kernel keeps those whose kind, direction, neighbour kinds, size and position still match the old one under the rules above, closest first, at most five. `suggest` is present only when exactly one entity fits, so a repair is never a choice between two; with two or more the client or the agent picks from `candidates`. With `"repair": true` the reply adds `repaired`, the `part` with each suggestion applied (a face id replaced in that feature, an edge pick given the new face pair with its `at` kept), and `repairs`, `[{ feature, from, to }]`. Nothing else in the document is touched. A reference that does not resolve in `part` and has no suggestion stays as it is and keeps failing with `missingReference` or `missingEdge`, whose own params list what the body has now.
 
 A client calls it with the document before an edit when it applies an edit, a deletion or a move. References inside sketches and inside nested inserted parts are not compared, and a feature whose id changes looks like a removal plus an addition.
 
@@ -329,7 +332,7 @@ Diagnostics for one selected thing.
 
 Only `kind: "sketch"` is implemented, and it needs a body in the state. The result is `{ type: "sketch", frame, regions, areas, open, texts? }`: the sketch plane, the number of closed regions, the area of each (outer minus holes) and the `open` flag; `texts` lists text entities with their ink boxes. For the plate sketch: `{ "type": "sketch", "frame": { ... }, "regions": 1, "areas": [6000.000000000001], "open": false }`.
 
-All other cases are errors: no `ref` or no string `kind` is `cannot inspect nothing`; an unknown kind (`body`, `FACE`) is `cannot inspect <kind>`; a sketch id that does not exist, or a state with no body, is `sketch not found`; on a state without a body `face`, `edge`, `curve`, `plane` give `<kind> not found`, `vertex` gives `vertex without a point` (no `at`) or `no vertex`, and `feature` answers `{ "type": "feature" }`. With a body, the kinds `face`, `edge`, `curve`, `plane`, `vertex` and `feature` are accepted but not implemented: they answer an error that begins `TODO(rebuild): inspect <kind>`. Use `describe`, `measure` and `resolve` for faces and edges.
+All other cases are errors: no `ref` or no string `kind` is `cannot inspect nothing`; an unknown kind (`body`, `FACE`) is `cannot inspect <kind>`; a sketch id that does not exist, or a state with no body, is `sketch not found`; on a state without a body `face`, `edge`, `curve`, `plane` give `<kind> not found`, `vertex` gives `vertex without a point` (no `at`) or `no vertex`, and `feature` answers `{ "type": "feature" }`. With a body, the kinds `face`, `edge`, `curve`, `plane`, `vertex` and `feature` are accepted but not implemented: they answer an error that begins `notImplemented: inspect <kind>`. Use `describe`, `measure` and `resolve` for faces and edges.
 
 ### continuity
 
@@ -810,7 +813,7 @@ The result's `import` is `{ solids, faces, unitScale, warnings, heal: { fixed, r
 
 ### importSat
 
-`data` is the SAT file text (required: `importSat: data (the SAT file text) is required`); `name` is optional. A failure answers `body: null` and `errors` as a list of objects, not pairs: `[ { "code": "sat.parse", "entity": null, "kind": "", "line": 1, "message": "bad SAT header (version)" } ]`. See [ACIS SAT](../io/sat.md).
+`data` is the SAT file text (required: `importSat: data (the SAT file text) is required`); `name` is optional. A failure answers `body: null` and `errors` in the same pair shape as the other importers: `[ ["import", { "code": "sat.parse", "params": { "message": "bad SAT header (version)", "entity": null, "kind": "", "line": 1 } }] ]`. See [ACIS SAT](../io/sat.md).
 
 ### importSldprt
 
@@ -818,7 +821,7 @@ The result's `import` is `{ solids, faces, unitScale, warnings, heal: { fixed, r
 
 ### importSkp
 
-`data` is the base64 of a `.skp` file (required: `importSkp: data (the .skp file as base64) is required`); `name` is optional. `opts` takes `hidden` (boolean), `maxFaces` (number) and `up` (`"z"` default, `"y"` or `"yFlip"`: how the file's axes map onto the kernel's; another value is an error reply). The result is a surface body: one planar face per SketchUp face (holes kept), vertices welded, and `import.faceMaterials` listing the colour index of each `skp.F<n>` face. A file that is not a SketchUp file answers `errors` `[ ["import", { "code": "container.magic", "params": { "message": "not a SketchUp file (bad header magic)", "offset": 0 } }] ]`. In a module built without the `skp` feature the request answers an error reply that begins `TODO(rebuild): importSkp`. See [SketchUp](../io/skp.md).
+`data` is the base64 of a `.skp` file (required: `importSkp: data (the .skp file as base64) is required`); `name` is optional. `opts` takes `hidden` (boolean), `maxFaces` (number) and `up` (`"z"` default, `"y"` or `"yFlip"`: how the file's axes map onto the kernel's; another value is an error reply). The result is a surface body: one planar face per SketchUp face (holes kept), vertices welded, and `import.faceMaterials` listing the colour index of each `skp.F<n>` face. A file that is not a SketchUp file answers `errors` `[ ["import", { "code": "container.magic", "params": { "message": "not a SketchUp file (bad header magic)", "offset": 0 } }] ]`. In a module built without the `skp` feature the request answers an error reply that begins `notImplemented: importSkp`. See [SketchUp](../io/skp.md).
 
 ## Text, fonts and tables
 

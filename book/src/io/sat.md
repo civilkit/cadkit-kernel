@@ -51,11 +51,13 @@ ACIS cylinders and cones come without a seam; the importer inserts one when two 
 
 ## Errors
 
-A failed import returns one error object. Unlike the other import requests, whose errors are `["import", {...}]` pairs, a SAT error is a flat object:
+A failed import returns one error, in the same `["import", {code, params}]` pair shape as the other import requests:
 
 ```json
-{"code":"sat.parse","entity":null,"kind":"","line":1,"message":"bad SAT header (version)"}
+["import", {"code":"sat.parse","params":{"message":"bad SAT header (version)","entity":null,"kind":"","line":1}}]
 ```
+
+The fields below are in `params`, except `code`.
 
 | Field | Meaning |
 |---|---|

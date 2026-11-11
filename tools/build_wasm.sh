@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Release wasm build, optionally followed by binaryen's wasm-opt (a size and speed pass over the
-# finished module; it never changes floating point results: the volume of a large part stays
-# 57733.46939995121, see internal notes (not published) "Round 5").
+# finished module; it never changes floating point results: the large sample volume stays
+# 57733.46939995121, see docs/perf-large sample.md "Round 5").
 #
 # usage: tools/build_wasm.sh [out.wasm]      default out: target/wasm32-unknown-unknown/release/ck_wasm.opt.wasm
 #

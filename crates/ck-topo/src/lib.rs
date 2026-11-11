@@ -1,5 +1,6 @@
 pub mod body;
 pub mod check;
+pub mod codec;
 pub mod edit;
 pub mod facekey;
 pub mod make;

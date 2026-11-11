@@ -8,12 +8,15 @@
 //! - `sketch`: the skeleton, a sketch or a `sketch3d`; every non-construction `line` is a member, in entity order. `segments`
 //!   (entity ids) picks a subset. `lines`: `[[[x,y,z],[x,y,z]], ..]` extra members given in world coordinates (keys `L0`, `L1`..).
 //! - `profile`: the section, `{kind, ...dims}` (numbers or expressions, mm): `rectTube {w,h,t,r}` (r = outer corner radius),
-//!   `rect {w,h}` (flat or square bar), `roundTube {d,t}`, `roundBar {d}`, `angle {w,h,t}`, `channel {w,h,t}`,
+//!   `rect {w,h}` (flat or square bar), `roundTube {d,t}`, `roundBar {d}`, `angle {w,h,t}`, `channel {w,h,t}` (or `tf`, `tw` for its own flange and web thickness, `r` root radius), `ibeam {w,h,tf,tw,r}` (flanges `w` wide, depth `h`),
 //!   `tslot {s, slot, lip, inner, depth, bore}`. `id` and `label` are carried through to the cut list. The section is centred on
 //!   the line (its box centre); its local y axis is the skeleton sketch's normal (a sketch3d / world line: world Z, or world Y for
 //!   a vertical member), turned by `rotate` (deg) about the member.
 //! - `corner`: `mitre` (default) or `butt`. `members`: per-member overrides `[{segment, profile?, rotate?}]`. `joints`:
 //!   `[{segments: [a, b], corner, through?}]` per corner (`through` = the member that runs on in a butt; default the first in order).
+//!
+//! - `hardware`: `{joint, cap, foot}` parts placed at the joints and free ends (L brackets with T-nuts and screws, gussets, end caps,
+//!   levelling feet), `joints[].connector` overrides one joint; see `frame/hw.rs`. The reply's frame entry then has `hardware`.
 //!
 //! The regen result lists the cut list under `frames`: `[{id, members: [{segment, body, profile, label, length, angles: [a0, a1],
 //! ends: [e0, e1], volume}]}]`, `length` the stock length (long point to long point), `angles` the cut angle of each end from square
@@ -31,6 +34,8 @@ use ck_geom::Vec2;
 use ck_json::{Json, Obj};
 use ck_topo::body::Body;
 use ck_topo::make::{extrude, ExtrudeOpts, Profile, ProfileLoop, ProfileRegion, ProfileSeg};
+
+mod hw;
 
 pub const FRAME_INVALID: &str = "frameInvalid";
 /// Endpoints closer than this are one node of the skeleton (mm).
@@ -87,6 +92,63 @@ fn v2(x: f64, y: f64) -> Vec2 {
 fn poly(pre: &str, pts: &[Vec2]) -> ProfileLoop {
     let n = pts.len();
     ProfileLoop::new((0..n).map(|i| ProfileSeg::line(&format!("{pre}{}", i + 1), pts[i], pts[(i + 1) % n])).collect())
+}
+
+/// Closed polygon loop (CCW) whose corners may be rounded: each vertex is `(point, radius)`, radius 0 = sharp. A corner that turns
+/// left (convex) gets a counter-clockwise arc, one that turns right (concave: the root of a flange) a clockwise one. Errors when
+/// the roundings of two neighbouring corners do not fit on the edge between them.
+fn rounded_poly(pre: &str, pts: &[(Vec2, f64)]) -> Result<ProfileLoop, FeatureError> {
+    let n = pts.len();
+    // per corner: where its rounding starts and ends, and the arc
+    struct Corner {
+        s: Vec2,
+        e: Vec2,
+        arc: Option<ProfileSeg>,
+    }
+    let mut cs: Vec<Corner> = vec![];
+    let mut k = 0;
+    let mut tag = || {
+        k += 1;
+        format!("{pre}{k}")
+    };
+    let mut reach = vec![0.0; n];
+    for i in 0..n {
+        let (p, r) = pts[i];
+        let (a, b) = (pts[(i + n - 1) % n].0, pts[(i + 1) % n].0);
+        let (d1, d2) = (p.dist(a), p.dist(b));
+        let u1 = v2((p.x - a.x) / d1, (p.y - a.y) / d1);
+        let u2 = v2((b.x - p.x) / d2, (b.y - p.y) / d2);
+        let cross = u1.x * u2.y - u1.y * u2.x;
+        if r <= 1e-9 || cross.abs() < 1e-12 {
+            cs.push(Corner { s: p, e: p, arc: None });
+            continue;
+        }
+        let phi = cross.abs().atan2(u1.x * u2.x + u1.y * u2.y);
+        let l = r * (phi / 2.0).tan();
+        reach[i] = l;
+        let s = v2(p.x - u1.x * l, p.y - u1.y * l);
+        let e = v2(p.x + u2.x * l, p.y + u2.y * l);
+        let nrm = if cross > 0.0 { v2(-u1.y, u1.x) } else { v2(u1.y, -u1.x) };
+        let c = v2(s.x + nrm.x * r, s.y + nrm.y * r);
+        let arc = if cross > 0.0 { ProfileSeg::arc(&tag(), c, s, e) } else { ProfileSeg::arc(&tag(), c, e, s).reversed() };
+        cs.push(Corner { s, e, arc: Some(arc) });
+    }
+    for i in 0..n {
+        if reach[i] + reach[(i + 1) % n] > pts[i].0.dist(pts[(i + 1) % n].0) + 1e-9 {
+            return Err(invalid("a corner radius `r` does not fit on the edge beside it"));
+        }
+    }
+    let mut segs = vec![];
+    for i in 0..n {
+        if let Some(a) = cs[i].arc.clone() {
+            segs.push(a);
+        }
+        let (from, to) = (cs[i].e, cs[(i + 1) % n].s);
+        if from.dist(to) > 1e-9 {
+            segs.push(ProfileSeg::line(&tag(), from, to));
+        }
+    }
+    Ok(ProfileLoop::new(segs))
 }
 
 /// Rectangle `w` x `h` centred on the origin with corner radius `r` (0: sharp), CCW.
@@ -171,20 +233,44 @@ pub fn section(state: &RegenState, p: &Json) -> Result<Section, FeatureError> {
         "angle" | "channel" => {
             let w = pos(dim(state, p, "w", None)?, "w")?;
             let h = pos(dim(state, p, "h", Some(w))?, "h")?;
-            let t = pos(dim(state, p, "t", None)?, "t")?;
-            if t >= w.min(h) - 1e-6 || (kind == "channel" && 2.0 * t >= h - 1e-6) {
+            let t = dim(state, p, "t", Some(0.0))?;
+            // a channel may give its own flange `tf` and web `tw` thickness (default `t`) and a root radius `r`
+            let (tf, tw) = if kind == "channel" { (dim(state, p, "tf", Some(t))?, dim(state, p, "tw", Some(t))?) } else { (t, t) };
+            let r = if kind == "channel" { dim(state, p, "r", Some(0.0))? } else { 0.0 };
+            let (tf, tw) = (pos(tf, "tf")?, pos(tw, "tw")?);
+            if kind == "angle" && t <= 1e-6 {
+                return Err(invalid("profile `t` must be above 0"));
+            }
+            if (kind == "angle" && t >= w.min(h) - 1e-6) || (kind == "channel" && (tw >= w - 1e-6 || 2.0 * tf >= h - 1e-6)) {
                 return Err(invalid("wall `t` is as thick as the section"));
             }
             let (a, b) = (w / 2.0, h / 2.0);
             // angle: legs along -y (left) and -x (bottom), heel at (-a,-b); channel: web on the left, flanges top and bottom
-            let pts: Vec<Vec2> = if kind == "angle" {
-                vec![v2(-a, -b), v2(a, -b), v2(a, -b + t), v2(-a + t, -b + t), v2(-a + t, b), v2(-a, b)]
+            let outer = if kind == "angle" {
+                poly("e", &[v2(-a, -b), v2(a, -b), v2(a, -b + t), v2(-a + t, -b + t), v2(-a + t, b), v2(-a, b)])
             } else {
-                vec![v2(-a, -b), v2(a, -b), v2(a, -b + t), v2(-a + t, -b + t), v2(-a + t, b - t), v2(a, b - t), v2(a, b), v2(-a, b)]
+                rounded_poly("e", &[(v2(-a, -b), 0.0), (v2(a, -b), 0.0), (v2(a, -b + tf), 0.0), (v2(-a + tw, -b + tf), r), (v2(-a + tw, b - tf), r), (v2(a, b - tf), 0.0), (v2(a, b), 0.0), (v2(-a, b), 0.0)])?
             };
+            let hull = if kind == "angle" { vec![Hull::Pt(v2(-a, -b)), Hull::Pt(v2(a, -b)), Hull::Pt(v2(a, -b + t)), Hull::Pt(v2(-a + t, b)), Hull::Pt(v2(-a, b))] } else { [v2(-a, -b), v2(a, -b), v2(a, b), v2(-a, b)].iter().map(|p| Hull::Pt(*p)).collect() };
+            Section { regions: vec![ProfileRegion { outer, holes: vec![] }], hull }
+        }
+        "ibeam" => {
+            // an I or H section: flanges `w` wide and `tf` thick at the top and bottom of the depth `h`, a web `tw` thick, root radius `r`
+            let w = pos(dim(state, p, "w", None)?, "w")?;
+            let h = pos(dim(state, p, "h", None)?, "h")?;
+            let tf = pos(dim(state, p, "tf", None)?, "tf")?;
+            let tw = pos(dim(state, p, "tw", None)?, "tw")?;
+            let r = dim(state, p, "r", Some(0.0))?;
+            if tw >= w - 1e-6 || 2.0 * tf >= h - 1e-6 {
+                return Err(invalid("flange `tf` or web `tw` is as thick as the section"));
+            }
+            let (a, b, c) = (w / 2.0, h / 2.0, tw / 2.0);
+            let pts = [
+                (v2(-a, -b), 0.0), (v2(a, -b), 0.0), (v2(a, -b + tf), 0.0), (v2(c, -b + tf), r), (v2(c, b - tf), r), (v2(a, b - tf), 0.0),
+                (v2(a, b), 0.0), (v2(-a, b), 0.0), (v2(-a, b - tf), 0.0), (v2(-c, b - tf), r), (v2(-c, -b + tf), r), (v2(-a, -b + tf), 0.0),
+            ];
             let hull = [v2(-a, -b), v2(a, -b), v2(a, b), v2(-a, b)].iter().map(|p| Hull::Pt(*p)).collect();
-            let hull = if kind == "angle" { vec![Hull::Pt(v2(-a, -b)), Hull::Pt(v2(a, -b)), Hull::Pt(v2(a, -b + t)), Hull::Pt(v2(-a + t, b)), Hull::Pt(v2(-a, b))] } else { hull };
-            Section { regions: vec![ProfileRegion { outer: poly("e", &pts), holes: vec![] }], hull }
+            Section { regions: vec![ProfileRegion { outer: rounded_poly("e", &pts)?, holes: vec![] }], hull }
         }
         "tslot" => {
             // a simplified T-slot extrusion: square `s`, one T slot in the middle of each side (opening `slot`, neck `lip` deep,
@@ -213,7 +299,7 @@ pub fn section(state: &RegenState, p: &Json) -> Result<Section, FeatureError> {
             let hull = [v2(-a, -a), v2(a, -a), v2(a, a), v2(-a, a)].iter().map(|p| Hull::Pt(*p)).collect();
             Section { regions: vec![ProfileRegion { outer: poly("e", &pts), holes }], hull }
         }
-        other => return Err(invalid(format!("unknown profile kind `{other}` (rectTube, rect, roundTube, roundBar, angle, channel, tslot)"))),
+        other => return Err(invalid(format!("unknown profile kind `{other}` (rectTube, rect, roundTube, roundBar, angle, channel, ibeam, tslot)"))),
     };
     Ok(s)
 }
@@ -506,7 +592,50 @@ pub fn exec_frame(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<
         m.ends = [e[0].0, e[1].0];
         m.kinds = [e[0].1, e[1].1];
     }
+    // the joints (pairs of members meeting at a node, or a member ending on another) for the hardware
+    let mut jl: Vec<hw::JointAt> = vec![];
+    let mut nodes3: Vec<hw::Node3> = vec![];
+    for i in 0..n {
+        for k in 0..2 {
+            let p = at(&ms[i], k);
+            let cl: Vec<(usize, usize)> = (0..n).flat_map(|j| (0..2).map(move |kk| (j, kk))).filter(|&(j, kk)| at(&ms[j], kk).dist(p) < NODE_TOL).collect();
+            if cl.len() >= 2 && cl[0] == (i, k) {
+                let through = cl.iter().map(|c| c.0).min().unwrap();
+                let first = *cl.iter().find(|c| c.0 == through).unwrap();
+                let pairs: Vec<((usize, usize), (usize, usize))> = if cl.len() == 2 { vec![(cl[0], cl[1])] } else { cl.iter().filter(|c| c.0 != through).map(|c| (first, *c)).collect() };
+                // three members at right angles: a 3-way node (the through member first)
+                let node3 = if cl.len() == 3 {
+                    let order: Vec<(usize, usize)> = std::iter::once(first).chain(cl.iter().copied().filter(|c| c.0 != through)).collect();
+                    let u: Vec<Vec3> = order.iter().map(|&(j, kk)| into(&ms[j], kk)).collect();
+                    let square = (0..3).all(|a| u[a].dot(u[(a + 1) % 3]).abs() < 1e-6);
+                    square.then(|| {
+                        nodes3.push(hw::Node3 { m: [order[0].0, order[1].0, order[2].0], u: [u[0], u[1], u[2]], node: p });
+                        nodes3.len() - 1
+                    })
+                } else {
+                    None
+                };
+                for ((ja, ka), (jb, kb)) in pairs {
+                    let (u1, u2) = (into(&ms[ja], ka), into(&ms[jb], kb));
+                    if u1.dot(u2) < -1.0 + 1e-9 {
+                        continue;
+                    }
+                    let corner = if ends[ja][ka].1 == "mitre" && ends[jb][kb].1 == "mitre" { "mitre" } else { "butt" };
+                    jl.push(hw::JointAt { a: ja, b: jb, u1, u2, node: p, corner, room: [ms[ja].len, ms[jb].len], alt: None, node3 });
+                }
+            } else if cl.len() == 1 && ends[i][k].1 == "tee" {
+                if let Some(j) = (0..n).filter(|&j| j != i).find(|&j| {
+                    let s = (p - ms[j].seg.a).dot(ms[j].d);
+                    s > NODE_TOL && s < ms[j].len - NODE_TOL && (ms[j].seg.a + ms[j].d * s).dist(p) < NODE_TOL
+                }) {
+                    let s = (p - ms[j].seg.a).dot(ms[j].d);
+                    jl.push(hw::JointAt { a: j, b: i, u1: ms[j].d, u2: into(&ms[i], k), node: p, corner: "tee", room: [ms[j].len - s, ms[i].len], alt: Some((-ms[j].d, s)), node3: None });
+                }
+            }
+        }
+    }
     // build each member: the section extruded over the whole axial range, then the plane ends cut off
+    let hw_out = hw::place(state, f, &ms, &jl, &nodes3)?;
     let mut list = vec![];
     let mut tools: Vec<Body> = vec![];
     for (idx, m) in ms.iter().enumerate() {
@@ -537,6 +666,17 @@ pub fn exec_frame(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<
             })?;
             body = out.body;
         }
+        // holes drilled for bolted hardware
+        let mut holes = 0.0;
+        if let Some((_, drills, _)) = &hw_out {
+            for (k, d) in drills.iter().enumerate().filter(|(_, d)| d.member == idx) {
+                let tool = d.tool(&format!("{tag}.D{k}"))?;
+                body = ck_ops::boolean::boolean(&body, &tool, ck_ops::boolean::Op::Cut, super::TOL)
+                    .map_err(|e| FeatureError::new("booleanFailed").with("detail", Json::Str(format!("member {} hole {k}: {e}", m.seg.key))))?
+                    .body;
+                holes += 1.0;
+            }
+        }
         let issues = ck_check::validate(&body, 1e-6);
         if !issues.is_empty() || body.num_lumps() != 1 {
             let codes: Vec<String> = issues.iter().take(4).map(|i| format!("{} {}", i.code, i.detail)).collect();
@@ -558,6 +698,7 @@ pub fn exec_frame(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<
                 .put("angles", Json::Arr(vec![Json::Num(r(m.angle(0))), Json::Num(r(m.angle(1)))]))
                 .put("ends", Json::Arr(m.kinds.iter().map(|k| Json::Str(k.to_string())).collect()))
                 .put("volume", r(vol))
+                .put_opt("holes", (holes > 0.0).then_some(holes))
                 .build(),
         );
         tools.push(body);
@@ -565,6 +706,13 @@ pub fn exec_frame(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<
     for t in &tools {
         br.combine(t, Combine::Separate, false)?;
     }
-    state.result.put_frame(&f.id, Obj::new().put("id", f.id.as_str()).put("members", Json::Arr(list)).build());
+    let mut entry = Obj::new().put("id", f.id.as_str()).put("members", Json::Arr(list));
+    if let Some((bodies, _, report)) = hw_out {
+        for b in &bodies {
+            br.combine(b, Combine::Separate, false)?;
+        }
+        entry = entry.put("hardware", report);
+    }
+    state.result.put_frame(&f.id, entry.build());
     Ok(())
 }

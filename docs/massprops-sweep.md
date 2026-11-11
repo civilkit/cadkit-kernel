@@ -38,4 +38,4 @@ The only group is the same three-section loft surface-law difference as
 `docs/shape-sweep.md`; the mass-property reply is correct for the shape the
 kernel actually builds. Worst case `loft3_5` (max rel volume 6.7e-2, area
 3.7e-2, COM 1.6e-2, inertia 1.0e-1). See
-internal notes (not published).
+`docs/mimo-brief-massprops.md`.

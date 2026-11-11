@@ -25,7 +25,7 @@ A failure never leaves a half-built body: the operations either return a new bod
 | `code` | A short camelCase identifier; the part to switch on. |
 | `params` | Anything else that helps: `detail` (a sentence about what failed, often naming faces), `hint` (what to change), and code-specific numbers (`max`, `limit`, `maxThickness`, `faces`, `at`, `gap`, `budgetMs`, `elapsedMs`, `cause`, ...). The object is empty when the code says it all. |
 
-Some codes start with `TODO(rebuild)`. They mark a case that is not implemented (for example a twisted sweep along a multi-piece path). They are not stable names.
+The code `notImplemented` marks a feature or option that is not built yet (for example a twisted sweep along a multi-piece path, or the `dome` feature). Its `what` parameter names the feature or option. The code is stable; the set of cases that return it shrinks as they are built.
 
 A second array, `warnings`, has the same shape. A warning does not stop the feature: the body is built and the warning says that something was approximated or chosen. Warnings appear in the reply only when there is at least one.
 

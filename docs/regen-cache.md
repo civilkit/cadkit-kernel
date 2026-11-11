@@ -249,6 +249,39 @@ per knot span; the sample list is now thinned to what the tolerance needs (`curv
 cap from 92k to 22k triangles at the same chordal bound, and unconstrained edges whose midpoint fails the chord test
 are flipped to the other diagonal before refinement (`Cdt::optimize_edges`).
 
+## Saved bodies (the import cache that outlives the process)
+
+Everything above lives in memory. A heavy import (`importBody` of a spline-rich part file: minutes, most of it building
+the geometry) can also be saved, so that reopening the document skips the build.
+
+* Code: `ck-topo/src/codec.rs` (lossless binary form of a `Body`), `ck-model/src/features/built_cache.rs` (what an import
+  saves, the key, the lookup), `importBody` runs through `built_cache::through`; the `builtExport` request
+  (`ck-server/src/geometry.rs`, hook in `ck-wasm/src/engine.rs`) hands the results out.
+* What is saved: the result of the import, i.e. the solid body, the surface bodies and what became of each part. It is
+  written exactly (every float is its 8 bytes, dead arena entries and face names included), so the restored body is `==`
+  to the built one, has the same volume and validates the same. The bytes end in a SHA-256 of themselves.
+* Where it lives: the document's top-level `built` table, `{"<key>": "<base64>"}`, next to `blobs`. The app takes the
+  entries from `builtExport` (`{entries:[{feature, key, source, data, rejected?}]}`: the results built or read since the
+  process started, newest last, at most 4) and stores them with the document. The app may compress `data` for storage
+  (deflate) but must hand the kernel the plain base64 text again. The table is not part of the regen cache key (like
+  `blobs`, it is data about the file, not a setting), so adding it does not invalidate anything.
+* The key is a SHA-256 over the kind of import, the blob's own key (SHA-256 of the file text), the feature id (faces and
+  surface bodies are named after it), the kernel crate version, `BUILT_REV` and the codec version. Bump `BUILT_REV`
+  whenever an import would build another body from the same file at the same crate version.
+* A cache, never an input: the entry is used only when its key is the one the feature computes, its checksum holds and the
+  decoded arenas are consistent (counts within the data, every id inside its arena, geometry sizes agree). Anything else, or
+  no entry, builds from the file as before; `builtExport` then reports `source:"built"` and, for an entry that was present
+  but unusable, `rejected` with the reason. The result is the same either way. A wrong body can only come from an entry
+  filed under a key it does not belong to; the checksum guards damage, not forgery.
+* Measured (`crates/ck-model/examples/body_blob_time.rs`, release build, native, one part file of 51 MB with 60 solid faces
+  and one surface body of 1631 faces): building the `importBody` result took 170-190 s; the saved result is 23.4 MB raw
+  (18.6 MB with gzip -6 or -9: spline control points are floats that do not compress) and reading it back, with the same
+  regen, took 1.4-2.3 s in total (that includes hashing the document's own 68 MB file text and base64-decoding the saved
+  text; the parts were not timed separately). The restored body is `==` to the built one; the solid alone is
+  33 KB raw (5 KB gzip). So the size is set by the surface bodies of the parts that are not valid solids, not by the solid.
+* Not covered: `importStep` (same pattern, add a `through` call around `read_parts`), the other features, and the
+  regen state after a later feature (only the import's own result is saved).
+
 ## Where an edit's time goes (edit-latency bench)
 
 `cargo test --profile fast -p ck-wasm --test edit_latency -- --ignored --nocapture` regens the fan shroud cold, then

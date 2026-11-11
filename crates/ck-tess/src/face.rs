@@ -249,8 +249,11 @@ pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, boo
             r.map_err(|e2| format!("{e}; welded: {e2}"))
         }
     };
-    // A face that meshed cleanly is done (no exact-area integral: it costs more than the tessellation itself).
-    if matches!(&first, Ok(m) if !m.open && m.unrecovered == 0 && !m.tris.is_empty()) {
+    // A face that meshed cleanly is done (no exact-area integral: it costs more than the tessellation itself), except a face
+    // on a surface periodic both ways (a torus): its loops can close the wrong way round the seams and give a closed mesh of
+    // the wrong region (an eyebolt's eye half covered twice over, the other half missing), which only the area shows.
+    let doubly_periodic = matches!(body.face(f).surface.periods(), (Some(_), Some(_)));
+    if !doubly_periodic && matches!(&first, Ok(m) if !m.open && m.unrecovered == 0 && !m.tris.is_empty()) {
         return first;
     }
     escalate(body, f, params, virt, ssi, cut, tol, first)

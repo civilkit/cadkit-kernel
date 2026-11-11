@@ -560,7 +560,9 @@ fn thicken_creased(sheet: &Body, feature: &str, faces: &[FaceId], rims: &[(EdgeI
         let surf = ruled_wall(&lo_c.0, (lo_c.1, lo_c.2), &hi_c.0, (hi_c.1, hi_c.2), 96)?;
         let wname = FaceName { feature: feature.into(), role: Role::Other(format!("W{w}")), region: None, suffix: String::new() };
         w += 1;
-        let wf = out.add_face(shell, surf, true, wname);
+        // the wall's own normal (u along the rim edge, v from the lower layer to the upper) points out of the sheet's rim when the
+        // edge runs the way its coedge does, and into it when the coedge is reversed: that wall is a reversed-sense face
+        let wf = out.add_face(shell, surf, !rev, wname);
         let wl = out.add_loop(wf);
         let (rev_lo, rev_hi) = (!(rev != true), !(rev != false));
         let (lo, hi) = (*need(&emap[0], &e, "edge")?, *need(&emap[1], &e, "edge")?);

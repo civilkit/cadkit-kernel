@@ -5,7 +5,7 @@
 //! volume, i.e. by its own spline fit, so it is built identically here).
 //!
 //! RECONSTRUCTED from the oracle's mesh sections (tools/face_section.mjs on
-//! `filletCurv`, see internal notes (not published)): the section is an Euler spiral
+//! `filletCurv`, see docs/ck-ops-stubs.md): the section is an Euler spiral
 //! (curvature ramping linearly from 0 to 1/r over a length `r f phi`), a
 //! circular arc of radius `r` (the "radius of the middle"), and the mirrored
 //! spiral, where `phi` is the turning angle of the edge (90 degrees on a box)

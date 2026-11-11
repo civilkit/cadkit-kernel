@@ -18,6 +18,11 @@ fn steps(o: &Outcome) -> Vec<String> {
 /// standing for an imported body. The start body is the same solid with its faces named as an `importBody` `F1`
 /// names them.
 fn run(src: &str, kinds: &[(i64, &str, &str)]) -> Outcome {
+    run_without(src, kinds, &[])
+}
+
+/// [`run`], with the features `unlisted` left out of the file's feature list (their faces keep their tags).
+fn run_without(src: &str, kinds: &[(i64, &str, &str)], unlisted: &[i64]) -> Outcome {
     let fs = match ck_json::parse(src).unwrap() {
         Json::Arr(a) => a,
         _ => panic!("array expected"),
@@ -50,6 +55,7 @@ fn run(src: &str, kinds: &[(i64, &str, &str)]) -> Outcome {
             let dims = f.get_f64("depth").map(|d| vec![SwDim { name: "D1".into(), text: d.to_string(), value: Some(d) }]).unwrap_or_default();
             SwFeature { id, name, kind, dims }
         })
+        .filter(|f| !unlisted.contains(&f.id))
         .collect();
     let mut start: Body = body.clone();
     for (n, f) in start.faces.iter_mut().enumerate() {
@@ -210,4 +216,86 @@ fn imported_block_then_hole_and_body_mirror() {
     assert!(o.features.iter().any(|f| f.get_str("type") == Some("mirror") && f.get("body") == Some(&Json::Bool(true))));
     let undo: Vec<&str> = o.features.iter().filter_map(|f| f.get_str("name")).filter(|n| n.starts_with("Undo")).collect();
     assert_eq!(undo, ["Undo Mirror5", "Undo Cut-Extrude4"]);
+}
+
+/// An imported block with only a round boss on its top: the boss's material is cut away from the file's solid (a cut
+/// whose tool is exactly the boss), and the boss rebuilds on that starting body to the file's solid.
+#[test]
+fn imported_block_then_round_boss() {
+    let src = format!(
+        r#"[{},{{"type":"extrude","id":"F2","op":"add","sketch":"F1","end":"blind","depth":10}},
+{{"type":"plane","id":"F3","mode":"offset","base":{TOP},"offset":10}},
+{},{{"type":"extrude","id":"F5","op":"add","sketch":"F4","end":"blind","depth":1}}]"#,
+        rect("F1", TOP, -30.0, -20.0, 30.0, 20.0),
+        circle("F4", r#"{"kind":"feature","id":"F3"}"#, 0.0, 0.0, 2.635482252),
+    );
+    let o = run(&src, &[(2, "Imported", "Imported1")]);
+    assert!(o.exact(), "{:?}\n{:#?}", o.fallback, steps(&o));
+    let names: Vec<&str> = o.steps.iter().filter(|s| s.status == Status::Rebuilt).map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["Imported1", "Boss-Extrude5"], "{:#?}", steps(&o));
+}
+
+/// An imported block and a second block whose feature the file's tree does not list (its faces carry an id no listed
+/// feature has): nothing reads that feature back, so the whole solid is the imported body, one exact `importBody`.
+#[test]
+fn imported_block_and_an_unlisted_feature() {
+    let src = format!(
+        r#"[{},{{"type":"extrude","id":"F2","op":"add","sketch":"F1","end":"blind","depth":10}},
+{},{{"type":"extrude","id":"F4","op":"add","sketch":"F3","end":"blind","depth":25}}]"#,
+        rect("F1", TOP, -30.0, -20.0, 30.0, 20.0),
+        circle("F3", TOP, -15.0, 0.0, 8.0),
+    );
+    let o = run_without(&src, &[(2, "Imported", "Imported1")], &[3, 4]);
+    assert!(o.exact(), "{:?}\n{:#?}", o.fallback, steps(&o));
+    assert_eq!(o.features.len(), 1);
+    assert_eq!(o.features[0].get_str("type"), Some("importBody"));
+    // (with the feature listed, its faces are its own: not the imported body's)
+    let o = run(&src, &[(2, "Imported", "Imported1")]);
+    assert!(!(o.features.len() == 1 && o.features[0].get_str("type") == Some("importBody")), "{:#?}", steps(&o));
+}
+
+/// Two imported blocks apart (a part of two bodies), then a boss on one of them: the boss joins that body only (its
+/// extrude names the body by `target`), and its undo cuts it away from that body, so the boss rebuilds on the starting
+/// body to the file's solid exactly.
+#[test]
+fn imported_bodies_then_boss_on_one() {
+    let top10 = r#"{"kind":"feature","id":"F5"}"#;
+    let src = format!(
+        r#"[{},{{"type":"extrude","id":"F2","op":"add","sketch":"F1","end":"blind","depth":10}},
+{},{{"type":"extrude","id":"F4","op":"newBody","sketch":"F3","end":"blind","depth":10}},
+{{"type":"plane","id":"F5","mode":"offset","base":{TOP},"offset":10}},
+{},{{"type":"extrude","id":"F7","op":"add","sketch":"F6","end":"blind","depth":6,"target":"F2.C1"}}]"#,
+        rect("F1", TOP, -30.0, -20.0, -5.0, 20.0),
+        rect("F3", TOP, 5.0, -20.0, 30.0, 20.0),
+        circle("F6", top10, -17.0, 0.0, 5.0),
+    );
+    let o = run(&src, &[(2, "Imported", "Imported1"), (4, "Imported", "Imported2")]);
+    assert!(o.exact(), "{:?}\n{:#?}", o.fallback, steps(&o));
+    let names: Vec<&str> = o.steps.iter().filter(|s| s.status == Status::Rebuilt).map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["Imported1", "Boss-Extrude7"], "{:#?}", steps(&o));
+    let undo: Vec<&Json> = o.features.iter().filter(|f| f.get_str("name").is_some_and(|n| n.starts_with("Undo"))).collect();
+    assert_eq!(undo.len(), 1);
+    assert!(undo[0].get("target").is_some(), "{}", ck_json::to_string(undo[0]));
+}
+
+/// An imported block, then a cut that takes a slab off its whole top (its only face is the floor; its walls ran
+/// through air): the file's solid has no material above the floor, so the cut runs the depth the file lists down to
+/// the floor, its material is put back as a block of that depth, and the cut rebuilds on it to the file's solid.
+#[test]
+fn imported_block_then_slab_cut_of_listed_depth() {
+    let top10 = r#"{"kind":"feature","id":"F3"}"#;
+    let src = format!(
+        r#"[{},{{"type":"extrude","id":"F2","op":"add","sketch":"F1","end":"blind","depth":10}},
+{{"type":"plane","id":"F3","mode":"offset","base":{TOP},"offset":10}},
+{},{{"type":"extrude","id":"F5","op":"cut","sketch":"F4","end":"blind","depth":3}}]"#,
+        rect("F1", TOP, -30.0, -20.0, 30.0, 20.0),
+        rect("F4", top10, -40.0, -30.0, 40.0, 30.0),
+    );
+    let o = run(&src, &[(2, "Imported", "Imported1")]);
+    assert!(o.exact(), "{:?}\n{:#?}", o.fallback, steps(&o));
+    let names: Vec<&str> = o.steps.iter().filter(|s| s.status == Status::Rebuilt).map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["Imported1", "Cut-Extrude5"], "{:#?}", steps(&o));
+    let cut = o.features.iter().rev().find(|f| f.get_str("type") == Some("extrude")).unwrap();
+    assert_eq!(cut.get_f64("depth"), Some(3.0), "{}", ck_json::to_string(cut));
+    assert!(o.steps.iter().any(|s| s.name == "Cut-Extrude5" && s.note.contains("the listed depth")), "{:#?}", steps(&o));
 }

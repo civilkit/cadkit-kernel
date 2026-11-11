@@ -11,6 +11,12 @@ node tools/crash_fuzz.mjs --cases 200 --seed 7 --no-shrink --json out.json
 node tools/crash_fuzz.mjs --shrink-input out.json --update-baseline tools/crash_fuzz_baseline.json
 ```
 
+`--timeout` is **CPU milliseconds** of the case (the worker thread's own CPU time, which is also the kernel's clock for
+`--budget-ms`), not wall time: under load the wall time of one case varied by a large factor, so the number of slow cases
+depended on the machine. A reply that used more CPU time than the limit counts as a `hang`; `--wall-factor` (default 6)
+caps the wall time at that many times the limit, to kill a case that never returns. Each result carries its `cpuMs`.
+`--check` takes an optional baseline path (`--check --json out.json`, as the gate calls it, no longer reads `--json` as one).
+
 Classes: `ok`, `structured-error` (a useful error reply), `trap` (wasm
 unreachable / panic), `hang` (per-case timeout), `invalid-result` (`ok` reply
 but `validate` issues), `wrong-answer` (positive/area invariant broken).

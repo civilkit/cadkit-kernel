@@ -35,4 +35,4 @@ STEP entities in the failing files: `CARTESIAN_POINT` (1360),
 (80), `ADVANCED_FACE` (80), `AXIS2_PLACEMENT_3D` (60). These are the
 B-spline/loft faces; no primitive template exposes the issue.
 
-See internal notes (not published).
+See `docs/mimo-brief-step-export.md`.

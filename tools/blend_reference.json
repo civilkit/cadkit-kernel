@@ -4,8 +4,10 @@
   "box": 7999.999999999998,
   "cone": 5927.138139772744,
   "cube": 27000.0,
+  "disc1": 16201.061929829746,
   "holed": 14869.026644707672,
   "lbr": 6000.0,
+  "ledge": 15599.999999999998,
   "lwall": 31320.0,
   "overhang": 80500.427748,
   "overhang_mz": 80500.42774799999,
@@ -15,11 +17,13 @@
   "post0": 30000.0,
   "post2": 29896.99111843077,
   "post4": 29587.964473723103,
+  "rib": 8199.999999999998,
   "rounded": 11690.973355292324,
   "rrect2": 9965.66370614359,
   "rrect5": 9785.398163397449,
   "rrect6": 9690.973355292323,
   "rrectarm": 10985.398163397445,
+  "thin1": 799.9999999999998,
   "tower": 28799.999999999993
  },
  "boss_ch2_base_rim": {
@@ -109,6 +113,22 @@
  "box_fillet_ring_top": {
   "valid": true,
   "volume": 7900.058969153037
+ },
+ "chamfer_narrow_curved": {
+  "error": "Build failed",
+  "volume": null
+ },
+ "chamfer_narrow_meets_chamfer": {
+  "error": "Build failed",
+  "volume": null
+ },
+ "chamfer_narrow_planar": {
+  "error": "Build failed",
+  "volume": null
+ },
+ "chamfer_narrow_unreachable": {
+  "error": "Build failed",
+  "volume": null
  },
  "cone_ch2_bore_rim": {
   "valid": true,

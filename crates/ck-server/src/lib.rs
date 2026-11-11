@@ -72,6 +72,8 @@ pub const REQUEST_TYPES: &[(&str, Handler)] = &[
     ("importSldprt", geometry::import_sldprt),
     // Extension: feature history of a SolidWorks part (ck-swedit), read only.
     ("sldprtHistory", geometry::sldprt_history),
+    // Extension: the saved results of the expensive imports (importBody), for the app to keep with the document.
+    ("builtExport", geometry::built_export),
     // Extension: SketchUp (.skp, base64) import -> a surface body of planar faces in the tag's state.
     ("importSkp", geometry::import_skp),
     ("inspect", query::inspect),
@@ -105,6 +107,9 @@ pub const REQUEST_TYPES: &[(&str, Handler)] = &[
     ("extrema", agent::extrema),
     // Extension: thread standards as data (stateless, read-only).
     ("threadData", agent::thread_data),
+    // Extension: sheet metal flat pattern export, DXF text and bend table (stateless: the flatPattern of a regen result in, text out).
+    ("sheetDxf", agent::sheet_dxf),
+    ("sheetBendTable", agent::sheet_bend_table),
     // Extension: lettering (ck-text), stateless.
     ("textMetrics", agent::text_metrics),
     ("textOutline", agent::text_outline),

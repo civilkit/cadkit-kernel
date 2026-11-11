@@ -422,13 +422,25 @@ impl<'a> B<'a> {
         if n == 0 || n > 1_000_000 {
             return Err(SatError::at("sat.parse", c.r, "bad knot count"));
         }
+        // same limit as the STEP reader; keeps `deg + 1` and the knot vector from overflowing
+        if deg > 1024 {
+            return Err(SatError::at("sat.parse", c.r, "bad spline degree"));
+        }
         let mut vals = vec![];
         let mut mult = vec![];
+        let mut total = 0usize;
         for _ in 0..n {
             vals.push(c.f()?);
-            mult.push(c.u()?);
+            let m = c.u()?;
+            if m > deg + 1 {
+                return Err(SatError::at("sat.parse", c.r, "knot multiplicity above degree + 1"));
+            }
+            total += m;
+            if total > 10_000_000 {
+                return Err(SatError::at("sat.parse", c.r, "absurd knot vector length"));
+            }
+            mult.push(m);
         }
-        let total: usize = mult.iter().sum();
         let (f, l) = (mult[0], mult[n - 1]);
         let mut ks: Vec<f64> = vec![];
         for (v, m) in vals.iter().zip(&mult) {

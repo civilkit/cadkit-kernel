@@ -290,6 +290,13 @@ fn coedge_seg(m: &Model, c: ck_topo::body::CoedgeId, fr: &Fr) -> Result<Seg2, St
     }
 }
 
+thread_local! {
+    /// Read the cap outline of a sheet metal base flange: the inner loops that later features cut are left out.
+    pub static OUTER_ONLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// With `OUTER_ONLY`: read the cap outline as the later features left it, before the side cycles and traces.
+    pub static CAP_FIRST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// The profile from the outline of a cap face. Loops whose rim borders only `sides` are taken; the outer loop
 /// must, inner loops that do not (holes and bosses of later features) are left out.
 pub fn cap_outline(m: &Model, cap: FaceId, sides: &HashSet<FaceId>, fr: &Fr) -> Result<Vec<Loop2>, String> {
@@ -301,6 +308,7 @@ pub fn cap_outline(m: &Model, cap: FaceId, sides: &HashSet<FaceId>, fr: &Fr) -> 
 /// then removes nothing more.
 pub fn cap_outline_later(m: &Model, cap: FaceId, sides: &HashSet<FaceId>, later: &HashSet<FaceId>, fr: &Fr) -> Result<Vec<Loop2>, String> {
     let b = m.b;
+    let outer_only = OUTER_ONLY.with(|x| x.get());
     let face = b.face(cap);
     // the outer loop: largest polygon area of the loop's vertices and edge mid points
     let area_of = |l: ck_topo::body::LoopId| -> f64 {
@@ -326,6 +334,12 @@ pub fn cap_outline_later(m: &Model, cap: FaceId, sides: &HashSet<FaceId>, later:
                 break;
             };
             let is_later = later.contains(&other);
+            // (a base flange: the holes later features cut are theirs, not the plate's)
+            if outer_only && l != outer && is_later {
+                why = "a hole of a later feature".into();
+                ok = false;
+                break;
+            }
             if !sides.contains(&other) && !is_later {
                 why = format!("rim borders {}", b.face_id_str(other));
                 ok = false;
@@ -1681,7 +1695,11 @@ fn fillet_foot(cx: &Cx, feat: i64, sides: &[FaceId], fz: Vec3, end: f64, lower: 
 /// A cut whose only faces are floors: planar faces of one plane and no wall, so the profile reached beyond the body on
 /// every side (a slab removed above a tilted plane). The sketch is a rectangle larger than the material before the cut,
 /// set above it, and the cut runs down to the floor level.
-fn slab_cut(cx: &mut Cx, faces: &[FaceId]) -> Option<Result<String, String>> {
+///
+/// After the starting body of an imported part (`undo.rs`) the material the cut removed is not in the body before it
+/// (the file's solid, whose material above the floor is gone): the cut then runs the depth the file lists (`d1`) down
+/// to the floor, from a sketch at that height, in every reading of the part.
+fn slab_cut(cx: &mut Cx, faces: &[FaceId], d1: Option<f64>) -> Option<Result<String, String>> {
     let m = cx.m;
     let (mut n0, mut level) = (None::<Vec3>, 0.0);
     for &g in faces {
@@ -1713,11 +1731,17 @@ fn slab_cut(cx: &mut Cx, faces: &[FaceId]) -> Option<Result<String, String>> {
         y1 = y1.max(q.1);
     }
     let tol = TOL * (1.0 + level.abs());
-    if !(top > level + tol) || !(x1 > x0) || !(y1 > y0) {
+    // (also where the material is there: the starting body of a later reading has this cut's material put back as a
+    // block of that depth, which the cut then takes away again exactly)
+    let listed = d1.filter(|&d| d > tol && !cx.start_names.is_empty());
+    if listed.is_none() && (!(top > level + tol) || !(x1 > x0) || !(y1 > y0)) {
         return Some(Err("floor does not cut the material".into()));
     }
     let pad = 0.1 * (top - level).max(x1 - x0).max(y1 - y0);
-    let (top, x0, x1, y0, y1) = (top + pad, x0 - pad, x1 + pad, y0 - pad, y1 + pad);
+    let (top, x0, x1, y0, y1) = match listed {
+        Some(d) => (level + d, x0, x1, y0, y1),
+        None => (top + pad, x0 - pad, x1 + pad, y0 - pad, y1 + pad),
+    };
     // the sketch sits above the material at `top`; the cut runs against its normal
     let fr = cx.frame(nz, nz * top);
     // the profile: one rectangle per floor, the extent of the floor in the sketch frame, so that the removed block
@@ -1752,7 +1776,8 @@ fn slab_cut(cx: &mut Cx, faces: &[FaceId]) -> Option<Result<String, String>> {
     for &g in faces {
         cx.names.entry(g).or_insert_with(|| format!("{eid}.C1"));
     }
-    Some(Ok(format!("{} floor face(s) of one plane, no wall: {}, blind depth {:.4} down to the floor", faces.len(), if from_floor { "one rectangle per floor" } else { "rectangle beyond the material" }, depth)))
+    let how = if listed.is_some() { " (the listed depth: the material above the floor is not in the starting body)" } else { "" };
+    Some(Ok(format!("{} floor face(s) of one plane, no wall: {}, blind depth {:.4} down to the floor{how}", faces.len(), if from_floor { "one rectangle per floor" } else { "rectangle beyond the material" }, depth)))
 }
 
 /// A cut whose faces are planar floors that touch each other nowhere, on several planes (the slanted faces a thin cut
@@ -1815,7 +1840,7 @@ fn slab_cuts(cx: &mut Cx, faces: &[FaceId]) -> Option<Result<String, String>> {
     }
     let mut notes = vec![];
     for (_, _, fs) in &groups {
-        match slab_cut(cx, fs) {
+        match slab_cut(cx, fs, None) {
             Some(Ok(n)) => notes.push(n),
             Some(Err(e)) => return Some(Err(e)),
             None => return Some(Err("a floor plane gives no slab".into())),
@@ -2046,7 +2071,7 @@ pub fn extrude(cx: &mut Cx, f: &SwFeature, faces: &[FaceId], cut: bool) -> Resul
     let mut plate: Option<f64> = None;
     if cands.is_empty() {
         if cut {
-            if let Some(r) = slab_cut(cx, faces) {
+            if let Some(r) = slab_cut(cx, faces, d1) {
                 return r;
             }
         }
@@ -2345,7 +2370,7 @@ pub fn extrude(cx: &mut Cx, f: &SwFeature, faces: &[FaceId], cut: bool) -> Resul
     // (the chords of the profile are tried over the stretch the walls cover, not the whole listed depth)
     let wall_span = (walls.0.max(lo) - level, walls.1.min(hi) - level);
     for (k, ss) in attempts.iter().enumerate() {
-        if loops.is_some() {
+        if loops.is_some() || (OUTER_ONLY.with(|x| x.get()) && CAP_FIRST.with(|x| x.get())) {
             break;
         }
         let tag = if k == 0 { "" } else { "own sides: " };

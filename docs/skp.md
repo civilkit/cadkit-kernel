@@ -20,8 +20,8 @@ The reply is regen-shaped like `importStep` / `importSldprt` (`body`, `errors`, 
 | wasm hook | `ck-wasm` `import_skp_hook`, behind the cargo feature **`skp`** |
 | kit | `packages/session` `importSkp`; check tool `tools/skp_check.mjs` |
 
-The wasm feature is **off by default**: the reader adds 323,936 bytes (7,093,626 -> 7,417,562, +4.6 %) to `ck_wasm.wasm`.
-Build with `cargo build -p ck-wasm --target wasm32-unknown-unknown --release --features skp`. Without it `importSkp` answers
+The wasm feature **`skp` is on by default** (`default = ["skp"]` in `ck-wasm`): the reader adds 323,936 bytes (7,093,626 -> 7,417,562, +4.6 %) to `ck_wasm.wasm`.
+Build with `cargo build -p ck-wasm --target wasm32-unknown-unknown --release`; `--no-default-features` drops it, and then `importSkp` answers
 the usual "not implemented" error; every other request is unchanged.
 
 ## What the body is

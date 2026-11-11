@@ -17,6 +17,7 @@ from OCP.gp import gp_Trsf, gp_Vec, gp_Pnt
 from OCP.BRepExtrema import BRepExtrema_DistShapeShape
 from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
 from OCP.GeomAbs import GeomAbs_Plane
+from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
 
 
 def arg(flag, default=None):
@@ -47,6 +48,10 @@ def center(f):
     c = p.CentreOfMass(); return (c.X(), c.Y(), c.Z())
 
 
+def unify(shape):
+    u = ShapeUpgrade_UnifySameDomain(shape, True, True, False); u.Build(); return u.Shape()
+
+
 def base(spec):
     k = spec['kind']
     if k == 'box':
@@ -68,6 +73,19 @@ def base(spec):
         tr = gp_Trsf(); tr.SetTranslation(gp_Vec(0, 0, t))
         b = BRepBuilderAPI_Transform(b, tr, True).Shape()
         f = BRepAlgoAPI_Fuse(a, b); f.Build(); return f.Shape()
+    if k == 'fin':
+        # box w x d x h, fin ft thick (x centred), fh high on its top
+        a = BRepPrimAPI_MakeBox(spec['w'], spec['d'], spec['h']).Shape()
+        b = BRepPrimAPI_MakeBox(gp_Pnt(spec['w'] / 2 - spec['ft'] / 2, 0, spec['h']), spec['ft'], spec['d'], spec['fh']).Shape()
+        f = BRepAlgoAPI_Fuse(a, b); f.Build(); return unify(f.Shape())
+    if k == 'skirt':
+        # cylinder r x h, a skirt (outer r, inner r - st) sh high on its top
+        a = BRepPrimAPI_MakeCylinder(spec['r'], spec['h']).Shape()
+        tr = gp_Trsf(); tr.SetTranslation(gp_Vec(0, 0, spec['h']))
+        o = BRepBuilderAPI_Transform(BRepPrimAPI_MakeCylinder(spec['r'], spec['sh']).Shape(), tr, True).Shape()
+        i = BRepBuilderAPI_Transform(BRepPrimAPI_MakeCylinder(spec['r'] - spec['st'], spec['sh'] + 1).Shape(), tr, True).Shape()
+        sk = BRepAlgoAPI_Cut(o, i); sk.Build()
+        f = BRepAlgoAPI_Fuse(a, sk.Shape()); f.Build(); return unify(f.Shape())
     if k == 'filletbox':
         s = BRepPrimAPI_MakeBox(spec['w'], spec['d'], spec['h']).Shape()
         v = BRepBuilderAPI_MakeVertex(gp_Pnt(spec['w'], 0, spec['h'] / 2)).Vertex()

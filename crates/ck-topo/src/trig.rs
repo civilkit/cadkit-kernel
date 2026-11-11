@@ -11,7 +11,7 @@
 //! it computes the same thing as std.
 //!
 //! Verified against the oracle's f4182/f4184 (exported from an
-//! instrumented kernel.wat) on 4000 arguments in the recorded reference data (not published).
+//! instrumented kernel.wat) on 4000 arguments in tests/trig_oracle.rs.
 
 const C1: f64 = 4.16666666666666019037e-02;
 const C2: f64 = -1.38888888888741095749e-03;

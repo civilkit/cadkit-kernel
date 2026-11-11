@@ -25,6 +25,7 @@ ck-recog = { path = "../ck-recog" }
 ck-text = { path = "../ck-text" }
 
 [features]
-# SketchUp (.skp) import (`importSkp`), +320 KB of wasm (+4.6 %): opt-in, see docs/skp.md
+# SketchUp (.skp) import (`importSkp`), +320 KB of wasm (+4.6 %): on by default, see docs/skp.md
+default = ["skp"]
 skp = ["dep:ck-skp"]
 sanity-shadow = ["ck-ops/sanity-shadow"]

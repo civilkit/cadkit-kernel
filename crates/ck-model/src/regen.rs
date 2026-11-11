@@ -124,12 +124,12 @@ pub mod codes {
 /// Pinned by probing each type with an empty payload; e.g. `convert`,
 /// `rebuildFace`, `matchEdges`, `refCurve` are separate messages, not features.
 pub const KNOWN_TYPES: &[&str] = &[
-    "sketch", "sketch3d", "plane", "axis", "extrude", "revolve", "sphere", "sweep", "loft", "fillet", "chamfer", "shell", "rib",
+    "sketch", "sketch3d", "plane", "axis", "extrude", "revolve", "sphere", "box", "sweep", "loft", "fillet", "chamfer", "shell", "rib",
     "lip", "dome", "splitLine", "draft", "moveFace", "hole", "lpattern", "cpattern", "mirror", "spattern",
     "fillpattern", "curvepattern", "moveBody", "mate", "insertPart", "scale", "surfaceExtrude", "surfaceRevolve",
     "surfacePlanar", "surfaceOffset", "deleteFace", "fill", "knit", "extend", "freeform", "trimSurface", "thicken",
     "cutWithSurface", "pipeCut", "deleteBody", "editCurve", "projectCurve", "helix", "thread", "combine", "bodyBoolean", "knurlBand", "importStep",
-    "repairPart", "importBody", "frame",
+    "repairPart", "importBody", "frame", "sheetRules", "baseFlange", "edgeFlange", "hem", "fold", "contourFlange", "unfold", "refold", "sheetCorner", "sheetCut", "sheetConvert",
 ];
 
 /// The error the oracle reports for each known type when the payload is
@@ -164,6 +164,16 @@ pub const EMPTY_FEATURE_ERRORS: &[(&str, &str)] = &[
     ("bodyBoolean", "nothingToCut"),
     ("knurlBand", "nothingToCut"),
     ("frame", "frameInvalid"),
+    ("baseFlange", "missingSketch"),
+    ("edgeFlange", "nothingToCut"),
+    ("hem", "nothingToCut"),
+    ("fold", "nothingToCut"),
+    ("contourFlange", "missingSketch"),
+    ("sheetCorner", "nothingToCut"),
+    ("sheetCut", "nothingToCut"),
+    ("sheetConvert", "nothingToCut"),
+    ("unfold", "nothingToCut"),
+    ("refold", "nothingToCut"),
     ("importStep", "importStepInvalid"),
     ("importBody", "importBodyInvalid"),
     ("repairPart", "repairTarget"),
@@ -192,7 +202,7 @@ pub const EMPTY_FEATURE_ERRORS: &[(&str, &str)] = &[
 
 /// Sketch-driven types for which the driver checks `sketch` itself.
 const SKETCH_CONSUMERS: &[&str] =
-    &["extrude", "revolve", "sweep", "hole", "helix", "surfaceRevolve", "surfacePlanar", "spattern"];
+    &["extrude", "revolve", "sweep", "hole", "helix", "surfaceRevolve", "surfacePlanar", "spattern", "baseFlange"];
 
 /// A feature failure: `{"code": "...", "params": {...}}`.
 #[derive(Debug, Clone, PartialEq)]
@@ -243,6 +253,12 @@ impl FeatureError {
             return FeatureError { code: c.to_string(), params: Vec::new() }
                 .with("euler", Json::Num(n.parse::<f64>().unwrap_or(0.0)))
                 .with("hint", Json::Str(hint.to_string()));
+        }
+        // a feature or option that is not built yet: `notImplemented;what=<name>`
+        if let Some((c, what)) = code.split_once(";what=") {
+            return FeatureError { code: c.to_string(), params: Vec::new() }
+                .with("what", Json::Str(what.to_string()))
+                .with("message", Json::Str(format!("{what} is not implemented yet")));
         }
         // a boolean that stopped retrying after a long time: `booleanBudgetExceeded;elapsedMs=<n>;budgetMs=<n>`
         if let Some((c, d)) = code.split_once(";elapsedMs=") {
@@ -347,6 +363,8 @@ pub struct RegenResult {
     pub limits: Vec<(String, Json)>,
     /// `frame` features: the cut list of each frame (id-keyed, see features/frame.rs). Only on the wire when non-empty.
     pub frames: Vec<(String, Json)>,
+    /// Sheet metal features: the rule and the flat pattern after each (id-keyed, see features/sheet_features.rs). Only on the wire when non-empty.
+    pub sheet_metal: Vec<(String, Json)>,
 }
 
 fn upsert<T>(v: &mut Vec<T>, key: impl Fn(&T) -> &str, item: T) {
@@ -380,6 +398,9 @@ impl RegenResult {
     pub fn put_frame(&mut self, id: &str, j: Json) {
         upsert(&mut self.frames, |x| &x.0, (id.to_string(), j));
     }
+    pub fn put_sheet_metal(&mut self, id: &str, j: Json) {
+        upsert(&mut self.sheet_metal, |x| &x.0, (id.to_string(), j));
+    }
     pub fn put_sketch3(&mut self, id: &str, j: Json) {
         upsert(&mut self.sketches3, |x| &x.0, (id.to_string(), j));
     }
@@ -392,6 +413,9 @@ impl RegenResult {
             }
             if !self.frames.is_empty() {
                 m.push(("frames".into(), Json::Arr(sorted(&self.frames, |t| &t.0).into_iter().map(|t| t.1.clone()).collect())));
+            }
+            if !self.sheet_metal.is_empty() {
+                m.push(("sheetMetal".into(), Json::Arr(sorted(&self.sheet_metal, |t| &t.0).into_iter().map(|t| t.1.clone()).collect())));
             }
             if !self.limits.is_empty() {
                 m.push((
@@ -1212,5 +1236,50 @@ mod tests {
         assert_eq!(ids(&run(&base, r#"{"upTo":"F1"}"#)), 1);
         assert_eq!(ids(&run(&base.replace(r#""version":1,"#, r#""version":1,"rollback":0,"#), "{}")), 0);
         assert_eq!(ids(&run(&base.replace(r#""type":"sketch","id":"F1","#, r#""type":"sketch","suppressed":true,"id":"F1","#), "{}")), 0);
+    }
+
+    /// The bracket's std-plane sketches regen exactly like the oracle
+    /// (frames, region counts, open flags); F7 is on a face (needs geometry).
+    #[test]
+    fn bracket_sketches() {
+        let path = format!("{}/../../../bracket.ckpart", env!("CARGO_MANIFEST_DIR"));
+        let Ok(src) = std::fs::read_to_string(path) else { return };
+        let part = Part::parse(&src).unwrap();
+        let r = regen(&part, &RegenOpts::default(), &mut NoGeometry);
+        let got: Vec<(String, usize, bool)> =
+            r.sketches.iter().map(|s| (s.id.clone(), s.profiles.regions.len(), s.profiles.open)).collect();
+        assert_eq!(got, vec![("F1".into(), 1, false), ("F3".into(), 5, false), ("F5".into(), 2, false)]);
+        assert_eq!(ck_json::to_string(&frame_json(&r.sketches[0].frame)), r#"{"o":[0,0,0],"x":[0,0,-1],"y":[0,1,0],"z":[1,0,0]}"#);
+        // without geometry: F7's face plane is unresolved, so F8 loses its sketch
+        let errs: Vec<(&str, &str)> = r.errors.iter().map(|e| (e.feature.as_str(), e.error.code.as_str())).collect();
+        assert_eq!(errs, vec![("F7", "missingReference"), ("F8", "missingSketch")]);
+    }
+
+    /// With the B-rep exec: F2 builds the L body, F7's face plane (F2.C1)
+    /// resolves to the oracle frame, the gusset F8 unites onto the body.
+    /// (The slow ck-ops cuts F4/F6 are suppressed here; the whole bracket
+    /// is pinned by the ignored `brep_golden::parts_match_oracle`.)
+    #[test]
+    fn bracket_brep() {
+        let path = format!("{}/../../../bracket.ckpart", env!("CARGO_MANIFEST_DIR"));
+        let Ok(src) = std::fs::read_to_string(path) else { return };
+        let mut part = Part::parse(&src).unwrap();
+        for f in part.features.iter_mut() {
+            if f.id == "F4" || f.id == "F6" {
+                f.suppressed = true;
+            }
+        }
+        let mut ex = crate::features::Brep::new();
+        let r = regen(&part, &RegenOpts { up_to: Some(8), ..RegenOpts::default() }, &mut ex);
+        let f7 = r.sketches.iter().find(|s| s.id == "F7").unwrap();
+        assert_eq!(ck_json::to_string(&frame_json(&f7.frame)), r#"{"o":[26,0,0],"x":[0,0,-1],"y":[0,1,0],"z":[1,0,0]}"#);
+        assert!(r.errors.is_empty(), "{:?}", r.errors);
+        let b = ex.body.unwrap();
+        // F8.C1 merged into F2.C1 during the union; its name survives as an
+        // absorbed alias, so a later feature referring to it resolves to the
+        // merged face instead of erroring (the Task 5 disjoint-lump regression).
+        assert!(b.find_face("F8.C0").is_some(), "F8.C0 stays its own face");
+        let merged = b.find_face("F8.C1").expect("F8.C1 resolves through absorbed");
+        assert_eq!(Some(merged), b.find_face("F2.C1"), "F8.C1 resolves to the face it merged into");
     }
 }

@@ -9,7 +9,7 @@
     "mcp": "tsc -p tsconfig.build.json && node mcp.mjs",
     "test": "npm run build && node --test \"dist/*/src/*.test.js\"",
     "clean": "rm -rf dist",
-    "typecheck": "for p in part-model builder kernel-client driver; do tsc --noEmit -p $p/tsconfig.json || exit 1; done"
+    "typecheck": "for p in part-model builder kernel-client driver mjcf; do tsc --noEmit -p $p/tsconfig.json || exit 1; done"
   },
   "keywords": [],
   "author": "",

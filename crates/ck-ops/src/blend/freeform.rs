@@ -64,7 +64,40 @@ pub fn needs_freeform(b: &Body, e: EdgeId) -> bool {
     if matches!(ed.curve, Curve::Line { .. }) && b.edge_faces(e).iter().any(|&f| !matches!(b.face(f).surface, Surface::Plane { .. })) {
         return true;
     }
-    b.edge_faces(e).iter().any(|&f| !matches!(b.face(f).surface, Surface::Plane { .. } | Surface::Cylinder { .. } | Surface::Cone { .. }))
+    // a circle between a ball centred on its axis and a coaxial plane, cylinder or ball (a rod standing in a ball) is analytic:
+    // the rolling ball's section is solved in the meridian plane (`analytic::sphere_section`)
+    let fs = b.edge_faces(e);
+    if let (Curve::Circle { .. }, Some((c, axis, rad))) = (&ed.curve, ed.curve.circle_info()) {
+        let axis = axis.normalize();
+        let coaxial_ball = |f: FaceId| matches!(&b.face(f).surface, Surface::Sphere { frame, .. } if (frame.o - c).cross(axis).len() < 1e-7 * (1.0 + rad));
+        let coaxial_other = |f: FaceId| match &b.face(f).surface {
+            Surface::Plane { frame } => frame.z.cross(axis).len() < 1e-9,
+            Surface::Cylinder { frame, .. } => frame.z.cross(axis).len() < 1e-9 && (frame.o - c).cross(axis).len() < 1e-7 * (1.0 + rad),
+            Surface::Sphere { .. } => coaxial_ball(f),
+            _ => false,
+        };
+        if fs.len() == 2 && fs.iter().any(|&f| coaxial_ball(f)) && fs.iter().all(|&f| coaxial_other(f)) && concave_circle(b, e, [fs[0], fs[1]]) {
+            return false;
+        }
+    }
+    fs.iter().any(|&f| !matches!(b.face(f).surface, Surface::Plane { .. } | Surface::Cylinder { .. } | Surface::Cone { .. }))
+}
+
+/// Is the circle edge `e` between `faces` a concave one (the material wraps past a half turn there)? The test of the analytic
+/// builder: the direction into the first face, against the second face's outward normal.
+fn concave_circle(b: &Body, e: EdgeId, faces: [FaceId; 2]) -> bool {
+    let ed = b.edge(e);
+    let t = 0.5 * (ed.t0 + ed.t1);
+    let p = ed.curve.eval(t);
+    let Some(co) = b.edge_coedges(e).into_iter().find(|&c| b.coedge_face(c) == faces[0]) else { return false };
+    let d = ed.curve.tangent(t).normalize();
+    let tdir = if b.coedge(co).rev { -d } else { d };
+    let n = |f: FaceId| {
+        let (u, v) = b.face(f).surface.closest_param(p);
+        b.outward_normal(f, u, v).normalize()
+    };
+    let (n1, n2) = (n(faces[0]), n(faces[1]));
+    n1.cross(tdir).dot(n2) >= 0.0
 }
 
 #[derive(Clone)]
@@ -805,10 +838,17 @@ fn blend_chain(b: &Body, links: Vec<Link>, r: f64, feature: &str, k: u32, tol: f
                 Surface::Plane { frame } => Some((frame.o, b.planar_normal(f))),
                 _ => None,
             });
-            let Some((o, n)) = plane else { return Err(unsupported_hint(
-                "concave chain end is not on a planar face",
-                "the root chain is open: select every edge of the closed root loop (all blade-face / hub edges), not a part of it; or give the trailing edge a small blunt width so the loop is smooth",
-            )) };
+            let Some((o, n)) = plane else {
+                // (name the faces the end runs into: at a blade root it is the hub, at the sharp tip of a drafted
+                // pocket the floor or a cone, and the remedy differs)
+                let kinds: Vec<&str> = fs.iter().map(|&f| b.face(f).surface.kind()).collect();
+                let hint = format!(
+                    "a concave free-form blend ends only on a plane, and this end meets {} ({}). Select the edges the blend runs on into past this end so the chain is closed (at a blade root: every blade-face / hub edge of the loop), or round the corner first so the edge ends on a flat face (a sharp tip between two walls: give it a small radius in the sketch)",
+                    if kinds.len() == 1 { "a curved face" } else { "curved faces" },
+                    kinds.join(", ")
+                );
+                return Err(unsupported_hint("concave chain end is not on a planar face", &hint));
+            };
             let idx = if end == 0 { 0 } else { secs.len() - 1 };
             let before = (secs[idx].clone(), ps[idx]);
             let ni = if end == 0 { 0 } else { nodes.len() - 1 };

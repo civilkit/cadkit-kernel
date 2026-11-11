@@ -1,7 +1,7 @@
 //! Curvature combs (`comb` request): sample points and curvature vectors
 //! along edges and along the iso-parameter lines of faces.
 //!
-//! Oracle shapes (the reference-capture tool (not published) `comb`):
+//! Oracle shapes (tools/query_golden.mjs `comb`):
 //! * edge -> one curve of `density + 1` points at uniform edge parameters
 //!   (`t0 + (t1 - t0)·i/density`, the two end teeth 1e-9 of the range
 //!   inside), `k` = curvature vector κ·N (towards the centre of curvature;

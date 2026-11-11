@@ -214,7 +214,7 @@ fn check_arc(src: &str, r: f64) {
     let (ev, ea) = arc_added(r);
     assert!((b.vol - a.vol - ev).abs() < 2e-5 * ev, "added {} expected {ev}", b.vol - a.vol);
     assert!((b.area - a.area - ea).abs() < 2e-5 * ea.abs(), "area change {} expected {ea}", b.area - a.area);
-    assert_eq!(b.faces, a.faces + 2, "two blend faces (the arc is two B-rep edges); the ends merge into the bar's sides");
+    assert_eq!(b.faces, a.faces + 1, "one blend face (the arc is two B-rep edges split by the boss's seam, one smooth edge, one tool); the ends merge into the bar's sides");
     // the fillet is there, and ends on the side wall (nothing added beyond y = +-15)
     assert_eq!(loc(&b, [20.0 + 0.1, 0.0, 10.1]), Loc::In);
     assert_eq!(loc(&b, [13.3, -15.2, 10.05]), Loc::Out, "nothing beyond the side wall");

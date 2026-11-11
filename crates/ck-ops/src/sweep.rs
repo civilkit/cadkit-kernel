@@ -212,7 +212,7 @@ pub fn sweep(feature: &str, profile: &Profile, path: &[PathSeg], twist: f64) -> 
             return Err(PROFILE_NOT_NORMAL.into());
         }
         if twist != 0.0 {
-            return Err("TODO(rebuild): twisted sweep along a spline path".to_string());
+            return Err("notImplemented;what=twisted sweep along a spline path".to_string());
         }
         return sweep_spline(feature, profile, sp, *rev);
     }
@@ -227,7 +227,7 @@ pub fn sweep(feature: &str, profile: &Profile, path: &[PathSeg], twist: f64) -> 
     };
     if twist != 0.0 {
         let Motion::Translate(v) = motion else {
-            return Err("TODO(rebuild): twisted sweep along a curved path".to_string());
+            return Err("notImplemented;what=twisted sweep along a curved path".to_string());
         };
         let len = v.len();
         if len < TOL {
@@ -1235,10 +1235,10 @@ fn half_space(p: Vec3, m: Vec3, positive: bool, h: f64) -> Result<Body, String> 
 /// cap stays `C0`, the last `C1`, interior caps disappear in the union.
 fn sweep_pieces(feature: &str, profile: &Profile, path: &[PathSeg], twist: f64) -> Result<Body, String> {
     if twist != 0.0 {
-        return Err("TODO(rebuild): twisted sweep along a multi-piece path".to_string());
+        return Err("notImplemented;what=twisted sweep along a multi-piece path".to_string());
     }
     if profile.regions.len() != 1 {
-        return Err("TODO(rebuild): multi-region profile swept along a multi-piece path".to_string());
+        return Err("notImplemented;what=multi-region profile swept along a multi-piece path".to_string());
     }
     let n = path.len();
     if path.iter().any(|s| matches!(s, PathSeg::Helix { .. } | PathSeg::Spline { .. })) {
@@ -1258,7 +1258,7 @@ fn sweep_pieces(feature: &str, profile: &Profile, path: &[PathSeg], twist: f64) 
         } else {
             let th = c.acos();
             if th > 2.9 || !matches!(path[i], PathSeg::Line { .. }) || !matches!(path[i + 1], PathSeg::Line { .. }) {
-                return Err("TODO(rebuild): mitre joint other than line-line (turn < 166 deg)".to_string());
+                return Err("notImplemented;what=mitre joint other than line-line (turn < 166 deg)".to_string());
             }
             joints.push(Some(th));
         }

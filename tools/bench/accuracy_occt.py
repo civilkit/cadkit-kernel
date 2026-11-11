@@ -5,6 +5,7 @@ usage: python3.12 accuracy_occt.py <stage> --dir DIR [--only id,id] [--procs 3]
                  and of the BenchCAD ground-truth STEPs (tools/bench/benchcad/gt/*.step)
          mesh    mesh-divergence volume with decreasing BRepMesh deflection + Richardson extrapolation
          mc      Monte Carlo volume with BRepClass3d_SolidClassifier (binomial error bars)
+         replay  large sample single-feature replay: our STEP before a feature + the feature built with OCP
                  vs the kernels' volume after it (DIR/prefix_step/*.step, DIR/prefix.json)
          all     the four above
 Writes/merges DIR/occt.json.  Independent of both kernels: only the exported STEP files are read.
@@ -230,7 +231,7 @@ def stage_step(d, only, procs):
 
 
 MESH_RELS = [4e-3, 2e-3, 1e-3, 5e-4, 2.5e-4, 1.25e-4, 6e-5, 3e-5, 1.5e-5]
-MESH_PARTS_DEFAULT = ['round_flange_000341', 'pulley_000030', 'spur_gear_000098', 'ball_knob_007575', 'torus_link_000095', 'dome_cap_000212', 'bolt_000008', 'enclosure_000042']
+MESH_PARTS_DEFAULT = ['largeSampleFull', 'large-sample', 'round_flange_000341', 'pulley_000030', 'spur_gear_000098', 'ball_knob_007575', 'torus_link_000095', 'dome_cap_000212', 'bolt_000008', 'enclosure_000042']
 
 
 def stage_mesh(d, only, procs):
@@ -296,7 +297,7 @@ def eps_job(job):
 def stage_eps(d, only, procs):
     """How much OCCT's own volume of ONE fixed STEP moves with its integrator setting (the yardstick's own error bar)."""
     res = {'eps': {}}
-    ids = only or ['eyebolt_000265', 'worm_screw_000021', 'coil_spring_000026', 'propeller_000192', 'tapered_boss_000256']
+    ids = only or ['largeSampleFull', 'eyebolt_000265', 'worm_screw_000021', 'coil_spring_000026', 'propeller_000192', 'tapered_boss_000256']
     jobs = [(f'ours/{i}', os.path.join(d, 'step', 'ours', f'{i}.step')) for i in ids if os.path.exists(os.path.join(d, 'step', 'ours', f'{i}.step'))]
     jobs += [(f'gt/{i}', os.path.join(GT_DIR, f'{i}.step')) for i in ids if os.path.exists(os.path.join(GT_DIR, f'{i}.step'))]
     with Pool(procs) as pool:

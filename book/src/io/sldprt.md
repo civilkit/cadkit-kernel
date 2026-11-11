@@ -188,6 +188,22 @@ The reader does not panic on malformed input. A test feeds truncated, bit-flippe
 
 Rebuilds the feature history of the part (sketches, extrudes, fillets, chamfers, holes, shells ...; the crate `crates/ck-swedit`, see `docs/sldprt-editable.md`) as a part document. Read only: no tag, no state. The reply is `{ok, complete, part, outcome}` when the history is editable: `part` is a `ck-part` document that regenerates to the body `importSldprt` reads, `complete` is true when every feature is ours (false: the document ends in an `importBody` feature that stands for the rest of the file and holds the file in `blobs`), `outcome` lists every step and its check. A file that does not rebuild is not an error: the reply is `{ok:false, reason, detail, outcome}` with `reason` `import` (the file cannot be read), `noHistory` (nothing could be read back) or `notEditable`, and the caller keeps `importSldprt`. A missing `data` is an error reply.
 
+## Keeping the built body: `built` and `builtExport`
+
+An `importBody` feature builds its body from the file held in the part's `blobs`; on a spline-rich part that takes minutes. The result can be kept with the document so that the next open does not build it:
+
+```json
+{"type":"builtExport","feature":"F9"}
+```
+
+answers `{ok, entries:[{feature, key, source, data, rejected?}]}`: the results of `importBody` features built from their file (`source: "built"`) or read from the document (`"saved"`) since the process started, newest last (at most four; `feature` narrows to one). Store `data` (base64 text; it may be compressed for storage) in the part's top-level `built` table under `key`:
+
+```json
+{"format":"ck-part","version":1,"blobs":{"<blob key>":"<base64 file>"},"built":{"<key>":"<base64 result>"},"features":[...]}
+```
+
+The entry is a cache and never an input. The feature computes the key itself (from the file's blob key, its own id, the kernel version and the format version), and reads the entry only when the key, a checksum and the structure of the stored body all hold; with no entry, a damaged one or one from another kernel version it builds from the file as before and the part comes out the same. The restored body is identical to the built one (same faces and names, same volume, same validity). `rejected` says why an entry under the right key was not used. See `docs/regen-cache.md`, "Saved bodies".
+
 ## See also
 
 - [STEP](step.md), [SketchUp](skp.md), [ACIS SAT](sat.md)

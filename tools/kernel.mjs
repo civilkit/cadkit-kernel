@@ -1,4 +1,4 @@
-// Minimal host for a kernel wasm (a reference build or this one), mirroring
+// Minimal host for a CadKit kernel wasm (original or rebuilt), mirroring
 // kernelworker.js: env imports ck_now / ck_unix_ms / ck_panic, re-instantiate
 // after a trap.
 export class Kernel {

@@ -233,7 +233,8 @@ fn dir_of(f: &SwFeature, own: &[FaceId], m: &Model) -> Dir {
             Some(false) => Dir::Removes,
             None => Dir::Unknown,
         },
-        Class::Skip | Class::Cosmetic | Class::Draft => Dir::Neutral,
+        Class::Skip | Class::Cosmetic | Class::Draft | Class::SheetRules => Dir::Neutral,
+        Class::BaseFlange => Dir::Adds,
         Class::Extrude { cut } | Class::Revolve { cut } => {
             if cut {
                 Dir::Removes
@@ -352,7 +353,7 @@ pub fn check_steps(inp: &Input) -> Vec<Check> {
         let snap = inp.snaps.get(j).and_then(|s| s.as_ref());
         if let Some(e) = inp.errs.get(j).filter(|e| !e.is_empty()) {
             c.regen = Some(e.join(", "));
-        } else if snap.is_none() && st.status == Status::Rebuilt {
+        } else if snap.is_none() && st.status == Status::Rebuilt && st.kind != "Sheet-Metal" {
             c.regen = Some("the step left no body".into());
         }
         let pj = tpos(st.sw_id);
@@ -363,11 +364,24 @@ pub fn check_steps(inp: &Input) -> Vec<Check> {
             let mut loops = ck_ops::boolean::classify::LoopCache::new();
             // (a face of the step's body is only asked about a point inside its box, grown by the test's tolerance
             // and a hundredth of its size: the box of a curved face comes from samples of its surface)
-            let mut boxes: HashMap<FaceId, ck_ops::bvh::Aabb> = HashMap::new();
-            let mut near = |h: FaceId, q: ck_geom::Vec3, tl: f64| {
-                let bb = *boxes.entry(h).or_insert_with(|| ck_ops::bvh::face_box(p, h));
+            let boxes: Vec<ck_ops::bvh::Aabb> = mp.faces.iter().map(|&h| ck_ops::bvh::face_box(p, h)).collect();
+            let at: HashMap<FaceId, usize> = mp.faces.iter().enumerate().map(|(i, &h)| (h, i)).collect();
+            let near = |h: FaceId, q: ck_geom::Vec3, tl: f64| {
+                let bb = boxes[at[&h]];
                 let g = tl + 1e-6 + 0.01 * bb.diagonal();
                 !(bb.min.x <= bb.max.x) || q.x >= bb.min.x - g && q.x <= bb.max.x + g && q.y >= bb.min.y - g && q.y <= bb.max.y + g && q.z >= bb.min.z - g && q.z <= bb.max.z + g
+            };
+            // (the faces of the step's body that can pass `near` for a point: their boxes grown as `near` grows them
+            // at the largest tolerance of a sample, in a tree, so a face of a large body is not compared with every
+            // face of the snapshot; a face without a box passes `near` everywhere and is always a candidate)
+            let open: Vec<FaceId> = mp.faces.iter().zip(&boxes).filter(|(_, bb)| !(bb.min.x <= bb.max.x)).map(|(&h, _)| h).collect();
+            let boxed: Vec<usize> = (0..mp.faces.len()).filter(|&i| boxes[i].min.x <= boxes[i].max.x).collect();
+            let tree = ck_ops::bvh::Bvh::build(&boxed.iter().map(|&i| boxes[i].padded(PTOL + SNAP + 1e-6 + 0.01 * boxes[i].diagonal())).collect::<Vec<_>>());
+            let near_any = |pts: &[ck_geom::Vec3]| -> Vec<FaceId> {
+                let mut hit: Vec<usize> = pts.iter().flat_map(|&q| tree.query_box(&ck_ops::bvh::Aabb::new(q, q))).map(|k| boxed[k]).collect();
+                hit.sort_unstable();
+                hit.dedup();
+                hit.into_iter().map(|i| mp.faces[i]).chain(open.iter().copied()).collect()
             };
             'faces: for &g in &m.faces {
                 let Some(ts) = inp.tags.get(g.idx()).filter(|v| !v.is_empty()) else { continue };
@@ -388,7 +402,15 @@ pub fn check_steps(inp: &Input) -> Vec<Check> {
                 // is a spline there, which the point test below still holds to the face within tolerance)
                 let blend = ts.iter().any(|t| blends.contains(&t.0));
                 let spline_ok = blend && matches!(k, Kind::Cyl { .. } | Kind::Torus { .. } | Kind::Cone { .. } | Kind::Sphere { .. });
-                let cands: Vec<FaceId> = mp.faces.iter().copied().filter(|&h| same_surface(k, mp.kind(h), STOL) || (spline_ok && matches!(mp.kind(h), Kind::Other(_)))).collect();
+                let pts = samples(&m, g);
+                let on_surface = |h: &FaceId| same_surface(k, mp.kind(*h), STOL) || (spline_ok && matches!(mp.kind(*h), Kind::Other(_)));
+                // (the faces near the face's points first: only those can take part in the point test below; the whole
+                // body only when none of them is on the surface)
+                let around = near_any(&pts);
+                let mut cands: Vec<FaceId> = around.iter().copied().filter(on_surface).collect();
+                if cands.is_empty() {
+                    cands = mp.faces.iter().copied().filter(on_surface).collect();
+                }
                 let what = || format!("face {} ({}, tags {:?})", inp.body.face_id_str(g), k.name(), ts.iter().map(|t| t.0).collect::<Vec<_>>());
                 if cands.is_empty() {
                     c.settled = Some(format!("{}: no face of the step's body on its surface", what()));
@@ -399,7 +421,6 @@ pub fn check_steps(inp: &Input) -> Vec<Check> {
                     continue;
                 }
                 c.faces.0 += 1;
-                let pts = samples(&m, g);
                 let tols: Vec<f64> = pts.iter().map(|&q| PTOL + surface_dev(&k, q)).collect();
                 // (a sample the file's own edge storage put off the surface lies on the boundary shared with a tangent blend,
                 // where a few 1e-4 normal gap is a slide of 1e-2 along the surface: it must lie on the step's body
@@ -408,8 +429,7 @@ pub fn check_steps(inp: &Input) -> Vec<Check> {
                     .iter()
                     .zip(&tols)
                     .map(|(&q, &tl)| {
-                        let any: Vec<FaceId>;
-                        let fs: &[FaceId] = if tl > PTOL { any = mp.faces.clone(); &any } else { &cands };
+                        let fs: &[FaceId] = if tl > PTOL { &around } else { &cands };
                         fs.iter().any(|&h| near(h, q, tl) && ck_ops::boolean::classify::point_in_face_cached(p, h, q, tl, &mut loops) != ck_ops::boolean::classify::Where::Out)
                     })
                     .collect();

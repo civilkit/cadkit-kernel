@@ -123,9 +123,14 @@ pub fn exec_import_body(br: &mut Brep, state: &mut RegenState, f: &Feature) -> R
         Some(_) => return Err(invalid("`replace` must be true or false")),
     };
     let name = super::bodies::body_name(&f.raw)?;
-    let bytes = ck_text::base64_decode(data(state, f)?).map_err(|e| invalid(format!("the blob is not base64 text: {e}")))?;
-    let imp = ck_sldprt::import_sldprt(&bytes).map_err(|e| FeatureError::new(IMPORT_BODY_INVALID).with("detail", Json::Str(e.message.clone())).with("reason", Json::Str(e.code.to_string())))?;
-    let sorted = sort_sldprt(imp.body, &imp.parts, &f.id, Some(&f.id));
+    let text = data(state, f)?;
+    // `data` checked that the feature's `blob` is the SHA-256 of `text`
+    let blob_key = f.raw.get("blob").and_then(|k| k.as_str()).unwrap_or_default().to_ascii_lowercase();
+    let sorted = super::built_cache::through(&state.part.raw, "importBody", &blob_key, &f.id, || {
+        let bytes = ck_text::base64_decode(text).map_err(|e| invalid(format!("the blob is not base64 text: {e}")))?;
+        let imp = ck_sldprt::import_sldprt(&bytes).map_err(|e| FeatureError::new(IMPORT_BODY_INVALID).with("detail", Json::Str(e.message.clone())).with("reason", Json::Str(e.code.to_string())))?;
+        Ok(sort_sldprt(imp.body, &imp.parts, &f.id, Some(&f.id)))
+    })?;
     if sorted.solid.num_faces() == 0 && sorted.surfaces.is_empty() {
         return Err(invalid("the file holds no solid"));
     }

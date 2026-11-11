@@ -91,6 +91,24 @@ fn localized_family(k: &str) -> Option<(Fam, Option<bool>)> {
     })
 }
 
+/// The stream holds a path to a part file named `name` (`\\<name>.SLDPRT` or `/<name>.sldprt`, UTF-16, any case of
+/// the extension).
+fn names_part_file(d: &[u8], name: &str) -> bool {
+    let utf16 = |s: &str| -> Vec<u8> { s.encode_utf16().flat_map(|u| u.to_le_bytes()).collect() };
+    ["SLDPRT", "sldprt", "SldPrt"].iter().any(|ext| {
+        let n = utf16(&format!("{name}.{ext}"));
+        let mut i = 0;
+        while let Some(k) = d[i..].windows(n.len()).position(|w| w == &n[..]) {
+            let at = i + k;
+            if at >= 2 && matches!(u16::from_le_bytes([d[at - 2], d[at - 1]]), 0x5c | 0x2f) {
+                return true;
+            }
+            i = at + 1;
+        }
+        false
+    })
+}
+
 /// One feature-name record of the stream.
 struct Rec {
     name: String,
@@ -223,6 +241,14 @@ fn canonicalize_stream(d: &[u8], feats: &mut [SwFeature]) {
             }
         }
     }
+    // an inserted part of a later class tag (only its first object declares `moStock_c`, and the tag is not shared with
+    // any feature of a known family): its display token is its own name and the stream holds the path of the part it
+    // brings in, `...\<name>.SLDPRT`
+    for (i, f) in feats.iter().enumerate() {
+        if fam[i].is_none() && !f.name.is_empty() && f.kind == f.name && names_part_file(d, &f.name) {
+            fam[i] = Some(Fam::Stock);
+        }
+    }
     for (i, f) in feats.iter_mut().enumerate() {
         let Some(fm) = fam[i] else { continue };
         let known = token_family(&f.kind).is_some();
@@ -330,6 +356,32 @@ mod tests {
         canonicalize_stream(&d, &mut fs);
         assert_eq!(fs[0].kind, "Imported");
         assert_eq!(fs[1].kind, "Extrusion");
+    }
+
+    /// A second inserted part (a class tag, not a declaration, before its name record; no feature of a known family
+    /// shares the tag): its display token is its own name and the stream holds the path of the part file it brings in.
+    #[test]
+    fn a_later_inserted_part_is_found_by_its_part_file() {
+        let path = |d: &mut Vec<u8>, s: &str| {
+            for u in s.encode_utf16() {
+                d.extend(u.to_le_bytes());
+            }
+        };
+        let mut d = vec![0u8; 8];
+        decl(&mut d, "moStock_c");
+        name_rec(&mut d, "base_plate");
+        d.extend([0u8; 12]);
+        name_rec(&mut d, "side_bracket");
+        d.extend([0u8; 12]);
+        path(&mut d, "C:\\parts\\side_bracket.SLDPRT");
+        d.extend([0u8; 4]);
+        // (a feature the user named with its own name but no part file: left alone)
+        name_rec(&mut d, "custom_thing");
+        d.extend([0u8; 12]);
+        let mut fs = vec![feat(1, "base_plate", "base_plate"), feat(2, "side_bracket", "side_bracket"), feat(3, "custom_thing", "custom_thing")];
+        canonicalize_stream(&d, &mut fs);
+        let kinds: Vec<&str> = fs.iter().map(|f| f.kind.as_str()).collect();
+        assert_eq!(kinds, ["Imported", "Imported", "custom_thing"]);
     }
 
 }

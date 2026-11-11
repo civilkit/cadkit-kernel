@@ -1654,10 +1654,41 @@ impl Rd<'_> {
             _ => return,
         };
         let pairs: Vec<(usize, usize)> = (0..n).flat_map(|i| (i + 1..n).map(move |j| (i, j))).filter(|&(i, j)| l[i].edge == l[j].edge && l[i].rev != l[j].rev).collect();
-        let [(i, j)] = pairs[..] else { return };
         let (du, dv) = bs.domain();
         let (lo, hi) = if d == 0 { du } else { dv };
         let tol = 1e-5 * per;
+        let [(i, j)] = pairs[..] else {
+            // No seam pair: a face that only touches the seam (a notch at the end of the range) has one coedge on the seam,
+            // whose pcurve the file may put at the other end of the range from its neighbours, so the loop jumps a whole
+            // period. Shift each pcurve to start where the one before it ends; keep that only if the loop then closes
+            // inside the parameter range.
+            if pairs.is_empty() {
+                let mut t: Vec<Co> = l.to_vec();
+                let mut ok = true;
+                for k in 1..n {
+                    let (Some(e), Some(s0)) = (self.co_uv(&t[k - 1], false), self.co_uv(&t[k], true)) else { return };
+                    let sh = ((comp(e, d) - comp(s0, d)) / per).round() * per;
+                    if sh != 0.0 {
+                        let pc = t[k].pc.as_ref().unwrap();
+                        t[k].pc = Some(translate(pc, unit2(d, sh)));
+                    }
+                }
+                let (Some(e), Some(s0)) = (self.co_uv(&t[n - 1], false), self.co_uv(&t[0], true)) else { return };
+                ok &= (comp(e, d) - comp(s0, d)).abs() <= tol;
+                for c in &t {
+                    let (a, z) = self.co_ts(c);
+                    let pc = c.pc.as_ref().unwrap();
+                    for q in 0..=8 {
+                        let x = comp(pc.eval(a + (z - a) * q as f64 / 8.0), d);
+                        ok &= x >= lo - tol && x <= hi + tol;
+                    }
+                }
+                if ok {
+                    l.clone_from_slice(&t);
+                }
+            }
+            return;
+        };
         let shifted = |c: &Co, x: f64| -> Co {
             let pc = c.pc.as_ref().unwrap();
             let mut o = c.clone();

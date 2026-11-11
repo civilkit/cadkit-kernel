@@ -156,8 +156,9 @@ fn inverted(f: &Json) -> Option<Json> {
     match ty {
         "revolve" => {}
         "extrude" => {
-            // (the end conditions that depend on other faces of the body are not undone)
-            if !matches!(f.get_str("end"), None | Some("blind" | "through" | "mid" | "throughBoth")) || f.get("target").is_some() {
+            // (the end conditions that depend on other faces of the body are not undone; an add or cut that acts on one
+            // body of several (`target`, a face of that body) is undone on that body)
+            if !matches!(f.get_str("end"), None | Some("blind" | "through" | "mid" | "throughBoth")) {
                 return None;
             }
             let flip = matches!(f.get("flip"), Some(Json::Bool(true)));
@@ -279,6 +280,11 @@ fn undo_block(t: &Tagged, o: &Outcome, src: &HashSet<i64>, limit: usize) -> Bloc
     Block { feats: out, steps: keep.len(), of }
 }
 
+thread_local! {
+    /// The regen errors of the undo blocks checked by the readings of one part ([`rebuild`] clears it).
+    static BLOCKS: std::cell::RefCell<HashMap<String, Vec<String>>> = std::cell::RefCell::new(HashMap::new());
+}
+
 /// [`undo_block`] cut short where an undo does not regenerate on the file's solid (a boolean of a tool that
 /// coincides with faces of the body): the block ends before that step.
 fn checked_block(t: &Tagged, o: &Outcome, src: &HashSet<i64>, f0: &Json, limit: usize) -> Block {
@@ -290,7 +296,16 @@ fn checked_block(t: &Tagged, o: &Outcome, src: &HashSet<i64>, f0: &Json, limit: 
         }
         let mut feats = vec![f0.clone()];
         feats.extend(b.feats.iter().cloned());
-        let errs = crate::session::Session::with_start(t.start.clone()).rebuild(&feats).map(|r| r.1).unwrap_or_else(|e| vec![format!("S0: {e}")]);
+        // (the same block is checked again by the next reading: its regen errors are remembered)
+        let key: String = feats.iter().map(ck_json::to_string).collect::<Vec<_>>().join("\n");
+        let errs = match BLOCKS.with(|m| m.borrow().get(&key).cloned()) {
+            Some(e) => e,
+            None => {
+                let e = crate::session::Session::with_start(t.start.clone()).rebuild(&feats).map(|r| r.1).unwrap_or_else(|e| vec![format!("S0: {e}")]);
+                BLOCKS.with(|m| m.borrow_mut().insert(key, e.clone()));
+                e
+            }
+        };
         // (the undo of the step nearest the sources that fails: the block keeps the steps before it)
         let order: Vec<i64> = o.steps.iter().map(|s| s.sw_id).collect();
         let Some(k) = errs.iter().filter_map(|e| e.split(':').next().and_then(|id| b.of.get(id.trim()))).filter_map(|id| order.iter().position(|x| x == id)).min() else {
@@ -342,6 +357,7 @@ pub fn merges(t: &Tagged, new: &Body) -> Option<usize> {
 pub fn rebuild(t: &Tagged) -> Option<Outcome> {
     let start = t.start.as_ref()?;
     let src = sources(t.features, &t.tags)?;
+    BLOCKS.with(|m| m.borrow_mut().clear());
     let (names, all) = names(t, start, &src);
     let f1 = Obj::new().put("type", "importBody").put("id", "S0").put("name", "Imported body").put("format", "sldprt").put("blob", "").put("replace", true).build();
     let read = |undo: &[Json], undone: usize| {

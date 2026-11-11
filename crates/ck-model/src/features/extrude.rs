@@ -719,10 +719,10 @@ pub const UP_TO_NEXT_NONE: &str = "upToNextNone";
 pub const UP_TO_NEXT_OPEN: &str = "upToNextOpen";
 pub const MISSING_AXIS: &str = "missingAxis";
 
-/// Error code for paths that need not-yet-rebuilt operations (never produced
-/// by the oracle).
+/// Error for a feature or option that is not built yet: the stable code `notImplemented` with the
+/// name of the feature or option in `what` (see `FeatureError::new`).
 pub fn todo(what: &str) -> String {
-    format!("TODO(rebuild): {what} needs ck-ops")
+    format!("notImplemented;what={what}")
 }
 
 /// Revolve axis, in world coordinates: a line entity id of the profile's own sketch, or
@@ -779,6 +779,34 @@ pub fn exec_revolve(state: &RegenState, f: &Feature, has_body: bool) -> Result<T
     let (a0, a1) = (a0.min(a1), a0.max(a1));
     let body = revolve(&f.id, &profile, o, d, a0, a1).map_err(topo_err)?;
     Ok(Tool { body, combine, recipe: Some(Recipe::Revolve { profile, o, d, a0, a1 }) })
+}
+
+/// A rectangular block: `size` `[x, y, z]` (or `width` / `depth` / `height`) about `center` (default the origin), edges along the
+/// world axes, with no sketch. Its faces are `<id>.S.e1` .. `<id>.S.e4` (the sides, -Y, +X, +Y, -X) and the caps `<id>.C0` (-Z) and
+/// `<id>.C1` (+Z), as an extruded rectangle names them.
+pub fn exec_box(state: &RegenState, f: &Feature, has_body: bool) -> Result<Tool, FeatureError> {
+    let FeatureKind::Box { op } = &f.kind else { unreachable!() };
+    let bad = |detail: &str| FeatureError::new(codes::INVALID_VALUE).with("detail", Json::Str(detail.into()));
+    let c = super::move_body::vec3(state, f.raw.get("center"))?.unwrap_or(Vec3::ZERO);
+    let size = match super::move_body::vec3(state, f.raw.get("size"))? {
+        Some(v) => v,
+        None => Vec3::new(state.num(f, "width", 0.0)?, state.num(f, "depth", 0.0)?, state.num(f, "height", 0.0)?),
+    };
+    if !(size.x.is_finite() && size.y.is_finite() && size.z.is_finite() && size.x > 0.0 && size.y > 0.0 && size.z > 0.0) {
+        return Err(bad("each side of a box is above 0 (size [x, y, z], or width, depth and height)"));
+    }
+    let combine = Combine::of(*op);
+    if combine == Combine::Cut && !has_body {
+        return Err(FeatureError::new(codes::NOTHING_TO_CUT));
+    }
+    let frame = ck_core::linalg::Frame { o: Vec3::new(c.x, c.y, c.z - size.z / 2.0), x: Vec3::X, y: Vec3::Y, z: Vec3::Z };
+    let (hx, hy) = (size.x / 2.0, size.y / 2.0);
+    let p = [Vec2::new(-hx, -hy), Vec2::new(hx, -hy), Vec2::new(hx, hy), Vec2::new(-hx, hy)];
+    let outer = ProfileLoop::new((0..4).map(|i| ProfileSeg::line(&format!("e{}", i + 1), p[i], p[(i + 1) % 4])).collect());
+    let profile = Profile::new(frame, vec![ProfileRegion { outer, holes: vec![] }]);
+    let opts = ExtrudeOpts { s0: 0.0, s1: size.z, dir: None, draft: 0.0 };
+    let body = extrude(&f.id, &profile, opts.clone()).map_err(topo_err)?;
+    Ok(Tool { body, combine, recipe: Some(Recipe::Extrude { profile, opts }) })
 }
 
 /// A ball of `radius` about `center` (poles along +Y): the revolve of a half disc, built directly so it needs no sketch.

@@ -3,7 +3,7 @@
 File export. rs_paths.txt shows step/write.rs only — a STEP (AP214,
 `AUTOMOTIVE_DESIGN`) writer. Every format string survives in
 kernel.strings; layout/numbering/formatting are pinned by `step` replies
-of the original kernel (the recorded reference data (not published)).
+of the original kernel (`tests/golden/*.step`).
 
 ## API
 
@@ -50,7 +50,7 @@ let text: String = write_step(&body, name, &StepOpts { unix_ms: host_ck_unix_ms(
   axis = stored z; cone: negative semi-angle → negated axis.
 - the sign of zero of every oracle DIRECTION was recovered by
   instrumenting f414 (log of the normalised components) —
-  the recorded reference data (not published); `write_step_signed_zeros` (test support)
+  tests/golden/signed_dirs.txt; `write_step_signed_zeros` (test support)
   prints `-0.` so the test can compare them.
 - seam-split arcs (ck-topo `wire_chains`) are one EDGE_CURVE.
 - order: context #1..#14, world placement #15..#18, faces in shell order
@@ -67,7 +67,7 @@ let text: String = write_step(&body, name, &StepOpts { unix_ms: host_ck_unix_ms(
 ## Tests / status
 
 `cargo test -p ck-io`:
-- the recorded reference data (not published), 16 golden bodies (ck-topo make::* constructions):
+- `tests/step_oracle.rs`, 16 golden bodies (ck-topo make::* constructions):
   BYTE-identical AND every DIRECTION's sign of zero equal to the
   oracle's: box box3 cyl dext flip mid two rev360 rev90 revax360 revax90
   sphere torus cone void (15). `draft` is the one known diff (the oracle
@@ -80,7 +80,7 @@ let text: String = write_step(&body, name, &StepOpts { unix_ms: host_ck_unix_ms(
   ellipse + SURFACE_OF_LINEAR_EXTRUSION, SURFACE_OF_REVOLUTION verbatim
   against oracle lines.
 
-Request bodies: `tests/golden/<n>.req.json` is the regen request; run
+Golden capture: `tests/golden/<n>.req.json` is the regen request; run
 `node tools/q.mjs "$(cat <n>.req.json)" '{"id":2,"msg":{"type":"step","tag":"main","name":"<n>"}}'`
 and take `result` of the second reply. ell/spl/cvs/loft/revspl `.step`
 are reference-only (bodies not buildable with ck-topo yet).
@@ -146,7 +146,7 @@ brep_cases) is written as a closed circle; the import is then wrong.
 
 `ck_io::sat::import_sat(text) -> Result<SatImport, SatError>` builds a real
 B-rep (ck-topo body, ck-geom surfaces/curves, mm). Origin: adapted from the
-author's own SGRebuild `sat_import.rs` parser. Supported: plane, cone-surface
+author's own earlier ACIS SAT text parser. Supported: plane, cone-surface
 (cylinder/cone, circular), sphere, torus, spline-surface and intcurve-curve
 with exact nubs/nurbs, straight/ellipse curves; face/coedge/edge sense,
 single/double-sided (all-double = sheet), unit scale; ACIS seamless cylinder /

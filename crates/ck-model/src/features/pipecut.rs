@@ -60,10 +60,10 @@ pub fn exec_pipecut(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Resul
         }
     }
     for name in &faces {
-        let s = br.slot_of_face(name).ok_or_else(missing)?;
+        let s = br.slot_of_face(name).ok_or_else(|| br.missing_face(name))?;
         put(s)?;
         let b = br.slot_body(s).ok_or_else(missing)?;
-        let fid = b.find_face(name).ok_or_else(missing)?;
+        let fid = b.find_face(name).ok_or_else(|| crate::refs::missing_face([b], name))?;
         for e in b.face_edges(fid) {
             // a seam (both sides the same face) is no edge of the model
             let fs = b.edge_faces(e);

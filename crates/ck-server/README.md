@@ -32,9 +32,9 @@ pinned by app.pretty.js + oracle goldens. Error paths produce
   drawing. The "96" figure elsewhere counts feature types, not requests.
 - Envelope, `ms` clock arithmetic, debug trace/buffers fields, tag/state
   semantics and every empty-state answer are byte-identical to the oracle
-  (`node tools/diff.mjs`, the recorded reference data (not published)).
+  (`node tools/diff.mjs`, tests-golden/wire.json).
 - Geometry plugs in via `ck_server::set_hooks(Hooks{regen, query, ...})`;
-  without hooks, body-bearing paths return `TODO(rebuild): ...` errors.
+  without hooks, body-bearing paths return `notImplemented: ...` errors.
   ck-wasm `engine.rs` installs the hooks for every body-bearing request
   except `drawing` (see crates/ck-wasm/README.md).
 - Deps trimmed to ck-json only (hooks decouple it from ck-model).

@@ -271,6 +271,54 @@ fn rim_tangent_to_open_face(body: &Body, open: &[FaceId]) -> Option<(String, Str
     None
 }
 
+/// Shell with an opened face whose neighbour continues it smoothly (a rounded rim). The offset of the opening moves out and
+/// that of the rim inward, and the two never meet, so the cavity is built differently: every face is offset inward (the opened
+/// one too), and a prism of the opened face's outline, from a little below that inward offset to past the face, opens the cavity
+/// through it. The wall then ends in a flat ring of the width of the round where the outline meets it. Cut in two steps (the
+/// offset cavity, then the prism).
+fn shell_rounded_rim(body: &Body, open: &[FaceId], t: f64, tol: f64) -> Result<Body, ShellError> {
+    use ck_topo::make::{extrude, ExtrudeOpts, Profile, ProfileLoop, ProfileRegion, ProfileSeg};
+    let fail = |m: String| ShellError::detail("shellFailed", m);
+    let cavity = offset_body(body, &|_| -t).map_err(from_offset)?;
+    let mut cur = boolean(body, &cavity, Op::Cut, tol).map_err(|e| fail(format!("the cavity could not be cut out of the shape: {e}")))?.body;
+    for &f in open {
+        let face = body.face(f);
+        let Surface::Plane { frame } = &face.surface else { return Err(fail("the opened face is not planar".into())) };
+        let mut loops: Vec<ProfileLoop> = vec![];
+        for &l in &face.loops {
+            let mut segs = vec![];
+            for (k, &c) in body.lp(l).coedges.iter().enumerate() {
+                if !body.coedge(c).alive {
+                    continue;
+                }
+                let ed = body.edge(body.coedge(c).edge);
+                let pc = match &body.coedge(c).pcurve {
+                    Some(pc) => pc.clone(),
+                    None => ck_geom::pcurve::exact_pcurve(&face.surface, &ed.curve, 1e-7).ok_or_else(|| fail("an edge of the opened face has no plane image".into()))?,
+                };
+                let (ta, tb) = body.coedge_params(c);
+                segs.push(ProfileSeg { tag: format!("r{k}"), curve: pc, t0: ta.min(tb), t1: ta.max(tb), rev: tb < ta });
+            }
+            loops.push(ProfileLoop::new(segs));
+        }
+        if loops.is_empty() {
+            return Err(fail("the opened face has no outline".into()));
+        }
+        let outer = loops.remove(0);
+        let profile = Profile::new(*frame, vec![ProfileRegion { outer, holes: loops }]).normalized();
+        // heights run along the plane frame's z; the face's outward side is +z when its sense is set
+        let (below, above) = (1.25 * t, t.max(1.0));
+        let o = if face.sense { ExtrudeOpts { s0: -below, s1: above, dir: None, draft: 0.0 } } else { ExtrudeOpts { s0: -above, s1: below, dir: None, draft: 0.0 } };
+        let prism = extrude("shellRim", &profile, o).map_err(|e| fail(format!("the opening could not be built: {e}")))?;
+        cur = boolean(&cur, &prism, Op::Cut, tol).map_err(|e| fail(format!("the opening could not be cut: {e}")))?.body;
+    }
+    cur.number_split_faces();
+    if !ck_check::validate(&cur, 1e-6).is_empty() && ck_check::validate(&cur, 1e-6).len() > ck_check::validate(body, 1e-6).len() {
+        return Err(fail("the hollowed body is not valid".into()));
+    }
+    Ok(cur)
+}
+
 fn shell_try(body: &Body, open: &[FaceId], thickness: f64, outward: bool, tol: f64, cut_factor: f64) -> Result<Body, ShellError> {
     if !(thickness > 0.0) || !thickness.is_finite() {
         return Err(ShellError::code("invalidValue"));
@@ -285,14 +333,6 @@ fn shell_try(body: &Body, open: &[FaceId], thickness: f64, outward: bool, tol: f
     // surfaces only close at a new apex). The cavity is therefore cut off by a plane across the
     // loft, `reach_of_pole` short of the apex: the wall stays solid beyond it (the cavity there
     // is a sliver narrower than the wall), and the cavity ends flush on that plane.
-    if let Some((open_face, neighbour)) = rim_tangent_to_open_face(body, open) {
-        return Err(ShellError::detail(
-            "shellUnsupported",
-            format!(
-                "the opened face {open_face} meets {neighbour} tangentially (a rounded rim): the wall cannot end flush on a face its neighbour continues smoothly. Shell first and round the rim afterwards, or leave the edges around the opened face unrounded"
-            ),
-        ));
-    }
     let reach_of_pole = cut_factor * thickness;
     let near_poles = near_pole_cuts(body, thickness, reach_of_pole);
     if outward && !near_poles.is_empty() {
@@ -301,6 +341,19 @@ fn shell_try(body: &Body, open: &[FaceId], thickness: f64, outward: bool, tol: f
             format!(
                 "{} runs into the apex of a point-ended loft: an outward shell of an apex is not supported. Cut the tip off further away (more than {reach_of_pole:.1} mm from the apex for this wall) or end the loft with a small closed section instead of a point",
                 near_poles[0].face
+            ),
+        ));
+    }
+    if let Some((open_face, neighbour)) = rim_tangent_to_open_face(body, open) {
+        if !outward && near_poles.is_empty() {
+            if let Ok(b) = shell_rounded_rim(body, open, thickness, tol) {
+                return Ok(b);
+            }
+        }
+        return Err(ShellError::detail(
+            "shellUnsupported",
+            format!(
+                "the opened face {open_face} meets {neighbour} tangentially (a rounded rim) and the wall could not be cut flush on it. Shell first and round the rim afterwards, or leave the edges around the opened face unrounded"
             ),
         ));
     }
