@@ -99,3 +99,21 @@ Every constraint except a `suppressed` one takes part.
   (`node tools/bench/sketch_status_timing.mjs --option solveSketches`).
 * Checks: `cargo test -p ck-model --lib solve_sketches`, `node tools/sketch_solve_check.mjs`
   (fixture `tools/fixtures/sketch_solve_off.json` = sha256 of option-off replies from a build without the option).
+
+## Solver timing on a dense drag
+
+`crates/ck-model/examples/sketch_solve_bench.rs` draws an N x N grid of off-square cells with a circle tangent to two sides of each cell,
+and drags the far corner in 12 pin steps, each a full solve from the last result (as the sketch editor does).
+`crates/ck-model/tests/sketch_solve_drag.rs` runs the same drag as a test: every step must converge, the worst solve must take under 1 s at
+N = 8 and under 10 s at N = 16 (loose bounds, so a loaded machine does not trip them), and the times are printed (`--nocapture`).
+
+Measured on the CI machine (native, `fast` profile, other jobs running, 12 steps):
+
+| N | unknowns | equations | mean per solve | worst per solve |
+|---|---|---|---|---|
+| 8 | 352 | 281 | 14.8 ms | 23.0 ms |
+| 16 | 1344 | 1073 | 230 ms | 311 ms |
+
+Four times the unknowns cost about 16 times the time (the solve is dense), which is far inside an interactive drag at N = 8 and
+noticeable but not a hot spot at N = 16. Not measured: a sketch with patterned copies in the solve (the sketch has no pattern
+entity, copies live in features).

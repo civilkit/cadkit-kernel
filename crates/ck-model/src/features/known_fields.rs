@@ -49,7 +49,7 @@ pub const TABLE: &[(&str, &[&str])] = &[
     ("chamfer", &["chamferType", "distance", "distance2", "distance3", "angle", "face", "flip", "propagate", "edges"]),
     (
         "hole",
-        &["sketch", "standard", "size", "fit", "kind", "diameter", "end", "depth", "tip", "flip", "cboreDiameter", "cboreDepth", "cskDiameter", "cskAngle"],
+        &["sketch", "standard", "size", "fit", "kind", "diameter", "end", "depth", "tip", "flip", "cboreDiameter", "cboreDepth", "cskDiameter", "cskAngle", "target"],
     ),
 ];
 

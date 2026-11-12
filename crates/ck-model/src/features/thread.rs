@@ -1,4 +1,4 @@
-//! `thread {face, standard, size, class?, length?, hand?, start?, modeled?}`:
+//! `thread {face, standard, size, class?, length?, hand?, start?, modeled?, clearance?}`:
 //! a thread on a cylindrical face (the wall of a hole, or an external shaft).
 //!
 //! Tables: `crate::threads` (also served by the `threadData` request).
@@ -14,6 +14,11 @@
 //!   dominant world component is positive); default the open end (a hole's mouth,
 //!   a shaft's free end), `"top"` when both or neither end is open.
 //!   `hand`: `"right"` (default) / `"left"`.
+//! * `clearance`: signed mm for a printed fit, positive = looser. It applies to the modeled groove only:
+//!   an internal thread's groove reaches `clearance` further out (the nut's major and minor diameters grow by
+//!   2 x clearance), an external thread's groove goes `clearance` deeper (the bolt's diameters shrink by
+//!   2 x clearance). Negative = tighter, the reverse. `|clearance|` above [`CLEARANCE_MAX`] is `invalidValue`.
+//!   The groove stays under 0.9 pitch wide, so a shaft well over the loosened major falls back to cosmetic.
 //! * Cosmetic (`modeled` false, the default): the geometry is untouched; the
 //!   regen result gets an entry in `threads` and, when the face diameter does not
 //!   fit the thread, a WARNING `threadDiameterMismatch` in `warnings` (not an
@@ -35,6 +40,9 @@ pub const THREAD_SIZE_UNKNOWN: &str = "threadSizeUnknown";
 pub const THREAD_FACE_NOT_CYLINDER: &str = "threadFaceNotCylinder";
 pub const THREAD_DIAMETER_MISMATCH: &str = "threadDiameterMismatch";
 pub const THREAD_MODEL_FALLBACK: &str = "threadModelFallback";
+
+/// Largest `|clearance|` (mm), the same bound the kit's thread panel uses.
+pub const CLEARANCE_MAX: f64 = 1.0;
 
 /// Relative tolerance of the diameter check (3 percent).
 pub const DIAMETER_TOL: f64 = 0.03;
@@ -146,6 +154,8 @@ struct Req {
     left: bool,
     start: Option<bool>,
     modeled: bool,
+    /// Signed printed-fit clearance, mm (positive = looser).
+    clearance: f64,
 }
 
 fn parse(state: &RegenState, f: &Feature) -> Result<Req, FeatureError> {
@@ -173,6 +183,10 @@ fn parse(state: &RegenState, f: &Feature) -> Result<Req, FeatureError> {
         Some("bottom") => Some(false),
         Some(_) => return Err(FeatureError::new(codes::INVALID_VALUE).with("field", Json::Str("start".into()))),
     };
+    let clearance = state.num(f, "clearance", 0.0)?;
+    if !clearance.is_finite() || clearance.abs() > CLEARANCE_MAX {
+        return Err(FeatureError::new(codes::INVALID_VALUE).with("field", Json::Str("clearance".into())).with("max", Json::Num(CLEARANCE_MAX)));
+    }
     Ok(Req {
         face,
         standard: s("standard").unwrap_or_default(),
@@ -182,6 +196,7 @@ fn parse(state: &RegenState, f: &Feature) -> Result<Req, FeatureError> {
         left,
         start,
         modeled: crate::sketch::jtruthy(f.raw.get("modeled")),
+        clearance,
     })
 }
 
@@ -301,7 +316,14 @@ fn build(br: &mut Brep, state: &mut RegenState, id: &str, req: &Req, spec: &'sta
             Some((r, s)) => (r, s),
             None => (id, ""),
         };
-        match model::apply(br, state, root, suffix, spec, cf, &pl, req.left) {
+        // the clearance moves the groove's major and minor radii (internal out, external in)
+        let mut eff = spec.clone();
+        let d = 2.0 * req.clearance * if cf.internal { 1.0 } else { -1.0 };
+        eff.major += d;
+        eff.minor_internal += d;
+        eff.minor_external += d;
+        eff.pitch_dia += d;
+        match model::apply(br, state, root, suffix, &eff, cf, &pl, req.left) {
             Ok(()) => modeled = true,
             Err(why) => warnings.push(
                 FeatureError::new(THREAD_MODEL_FALLBACK)
@@ -334,6 +356,9 @@ fn build(br: &mut Brep, state: &mut RegenState, id: &str, req: &Req, spec: &'sta
     if req.modeled {
         // what was asked for (a pattern instance retries the groove even when the source fell back)
         entry = entry.put("modelRequested", true);
+    }
+    if req.clearance != 0.0 {
+        entry = entry.put("clearance", round6(req.clearance));
     }
     for (k, v) in extra {
         entry = entry.put(k, v.clone());
@@ -437,6 +462,7 @@ pub fn carry(br: &mut Brep, state: &mut RegenState, src: &Json, x: &Xform, label
         left,
         start: Some(top),
         modeled: src.get_bool("modelRequested") == Some(true) || src.get_bool("modeled") == Some(true),
+        clearance: src.get_f64("clearance").unwrap_or(0.0),
     };
     let (entry, warnings) = build(br, state, &new_id, &req, spec, &cf, &extra);
     state.result.put_thread(&new_id, entry);

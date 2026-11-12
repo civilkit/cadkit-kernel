@@ -33,9 +33,41 @@ impl FeatureExec for Exec {
 }
 
 
+fn run(fs: &str, budget: Option<f64>) -> regen::RegenResult {
+    let src = format!(r#"{{"format":"ck-part","version":1,"features":{fs}}}"#);
+    let part = Part::from_json(&ck_json::parse(&src).unwrap()).unwrap();
+    let mut ex = Exec { brep: Brep::new(), labels: Noop };
+    let mut o = RegenOpts::default();
+    o.feature_time_ms = budget;
+    regen::regen(&part, &o, &mut ex)
+}
+
+fn pattern(depth: f64, count: u32) -> String {
+    format!(r#"[{{"type": "sketch", "id": "S1", "plane": {{"kind": "std", "id": "front"}}, "points": [{{"id": "c", "x": 0, "y": 0}}], "entities": [{{"type": "circle", "id": "e1", "c": "c", "r": 23.144436772121118}}], "constraints": []}}, {{"type": "extrude", "id": "F2", "op": "add", "sketch": "S1", "end": "blind", "depth": {depth}}}, {{"type": "lpattern", "id": "F9", "seeds": ["F2"], "dir": {{"kind": "axis", "axis": "z"}}, "spacing": 28.02503846255131, "count": {count}}}]"#)
+}
+
+/// A pattern of real (positive depth) overlapping copies is valid input: no up-front refusal may fire on repeated copies.
+#[test]
+fn a_small_pattern_of_overlapping_copies_is_not_refused() {
+    let r = run(&pattern(28.551495409570634, 5), None);
+    let codes: Vec<String> = r.errors.iter().map(|e| e.error.code.clone()).collect();
+    assert!(codes.is_empty(), "{codes:?}");
+}
+
+/// A negative depth is built as a 1e-6 mm slab (extrudeZeroDepth warns): a pattern of such slabs is refused at once with the
+/// thickness named (the weld distance cannot hold the two faces of a slab apart), it is not ground on until a budget.
+#[test]
+fn a_pattern_of_one_micron_slabs_is_refused_with_the_thickness() {
+    let r = run(&pattern(-28.551495409570634, 5), None);
+    assert_eq!(r.errors.len(), 1, "{:?}", r.errors.iter().map(|e| e.error.code.clone()).collect::<Vec<_>>());
+    let e = &r.errors[0].error;
+    assert_eq!(e.code, "booleanFailed");
+    assert!(e.params.iter().any(|(k, _)| k == "thickness"), "{:?}", e.params);
+}
+
 #[test]
 fn a_large_pattern_stops_at_its_feature_budget_inside_the_boolean() {
-    let fs = r#"[{"type": "sketch", "id": "S1", "plane": {"kind": "std", "id": "front"}, "points": [{"id": "c", "x": 0, "y": 0}], "entities": [{"type": "circle", "id": "e1", "c": "c", "r": -23.144436772121118}], "constraints": []}, {"type": "extrude", "id": "F2", "op": "add", "sketch": "S1", "end": "blind", "depth": -28.551495409570634}, {"type": "lpattern", "id": "F9", "seeds": ["F2"], "dir": {"kind": "axis", "axis": "z"}, "spacing": 28.02503846255131, "count": 100}]"#;
+    let fs = r#"[{"type": "sketch", "id": "S1", "plane": {"kind": "std", "id": "front"}, "points": [{"id": "c", "x": 0, "y": 0}], "entities": [{"type": "circle", "id": "e1", "c": "c", "r": 23.144436772121118}], "constraints": []}, {"type": "extrude", "id": "F2", "op": "add", "sketch": "S1", "end": "blind", "depth": 28.551495409570634}, {"type": "lpattern", "id": "F9", "seeds": ["F2"], "dir": {"kind": "axis", "axis": "z"}, "spacing": 28.02503846255131, "count": 100}]"#;
     let src = format!(r#"{{"format":"ck-part","version":1,"features":{fs}}}"#);
     let part = Part::from_json(&ck_json::parse(&src).unwrap()).unwrap();
     let mut ex = Exec { brep: Brep::new(), labels: Noop };

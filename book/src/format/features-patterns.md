@@ -112,12 +112,12 @@ The only fixed limit is `count`: more than 10000 instances in one pattern is `in
 
 | Grid | Holes | `lpattern` of `lpattern` | One sketch of circles, one `extrude` cut | One sketch of points, one `hole` |
 |---|---|---|---|---|
-| 10 x 10 | 100 | 0.5 s | 0.3 s | 7.6 s |
-| 20 x 20 | 400 | 1.0 s | not measured | 131 s |
-| 30 x 30 | 900 | 2.1 s | 2.4 s | 748 s |
-| 50 x 50 | 2500 | 9.5 s | 14.5 s | not measured |
+| 10 x 10 | 100 | 0.5 s | 0.3 s | under 0.1 s |
+| 20 x 20 | 400 | 1.0 s | not measured | 1.2 s |
+| 30 x 30 | 900 | 2.1 s | 2.4 s | 3.3 s |
+| 50 x 50 | 2500 | 9.5 s | 14.5 s | about 18 s |
 
-Use `lpattern` or a cut of circles for grids. A `hole` feature with many points grows with the square of the point count: each new hole is united with the tool built so far when its box meets that tool's box, which in a grid happens from the second row on. Above about 300 points in one `hole` feature a regen with the default feature budget ends in `featureBudgetExceeded`.
+The cost of a `hole` feature with many points grows about in step with the number of points: only the holes whose boxes meet are united, and all the tools are cut from the body in one step (earlier builds folded every hole into one growing union, which grew with the square of the count: 7.6 s for 10 x 10, 131 s for 20 x 20 and 748 s for 30 x 30). The `hole` column is a native build run beside other tests (the 10 x 10, 20 x 20 and 30 x 30 values from the fix that removed the quadratic growth, the 50 x 50 value from `tests/hole_many_points.rs`, which also checks 2506 faces and the analytic volume); a 50 x 50 grid of `lpattern` of `lpattern` takes about 20 s in the same native run. The numbers depend on the machine; the tests bound them loosely (180 s). With a clock installed the default `featureTimeMs` of 120 s applies, so a slow machine can still trip it on the largest grids: split the points over several features or raise the limit.
 
 A two-dimensional grid is one pattern with `dir2`, or two patterns, the second seeded with the first (`"seeds": ["F5"]`: a pattern's tool holds its seeds and all their copies, see above).
 

@@ -394,7 +394,7 @@ hard-coding them, and an agent uses the same data. No session state is needed
 
 ```json
 {"type":"threadData"}
--> {"units":"mm","standards":[{"id":"metric","description":"ISO metric coarse, M1 to M64 (60 degrees)","count":35,"sizes":["M1","M1.2", "..."]}, {"id":"UNC",...}]}
+-> {"units":"mm","standards":[{"id":"metric","description":"ISO metric coarse, M1 to M68 (60 degrees)","count":40,"sizes":["M1","M1.2", "..."]}, {"id":"UNC",...}]}
 
 {"type":"threadData","standard":"UNC"}
 -> {"standard":"UNC","units":"mm","sizes":[{"size":"1/4-20","standard":"UNC","major":6.35,"pitch":1.27,"tpi":20,

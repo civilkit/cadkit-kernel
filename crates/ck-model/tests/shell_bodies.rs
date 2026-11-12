@@ -1,7 +1,8 @@
 //! Shell on curved and stepped bodies (tools/cases/shell_bodies): each fixture is a body plus a `shell` as its last
 //! feature. The volumes are the kernel's own, checked against the closed form where there is one (the sphere).
-//! The fixtures that do not shell yet are kept beside them and listed in the ignored test at the end; two more are
-//! refused with a stated reason (a drafted and filleted edge, a thickened free-form surface), see the last tests.
+//! The fixtures that do not shell yet are kept beside them: an opening at a curved face is refused (`shellUnsupported`), a
+//! hemisphere opened at its flat face is an ignored known failure; two more are refused with a stated reason (a drafted and
+//! filleted edge, a thickened free-form surface), see the last tests.
 use ck_model::features::Brep;
 use ck_model::regen::{self, FeatureExec, RegenOpts, RegenResult, Tracer};
 use ck_model::Part;
@@ -111,11 +112,21 @@ fn shell_refused_where_an_edge_cannot_be_offset() {
     }
 }
 
+/// Opening a body at a curved face is not built: the refusal names it (`shellUnsupported`) and the body stays as it was.
 #[test]
-#[ignore = "known failures: shell of a body opened at a curved face or a hemisphere's flat face"]
-fn shell_cases_that_do_not_work_yet() {
-    for src in [fixture!("cone_side_wall_opened"), fixture!("halfsphere_flat_opened"), fixture!("hole_wall_opened")] {
-        let (errors, _, _) = shell_body(src);
-        assert!(errors.is_empty(), "{errors:?}");
+fn shell_opened_at_a_curved_face_is_refused() {
+    for src in [fixture!("cone_side_wall_opened"), fixture!("hole_wall_opened")] {
+        let (errors, _, valid) = shell_body(src);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].starts_with("S:") && errors[0].contains("shellUnsupported"), "{errors:?}");
+        assert!(valid, "the body before the shell stays valid");
     }
+}
+
+/// Still failing here (`shellFailed`); another line of work fixes it, after which it joins `passes(..)` with its volume.
+#[test]
+#[ignore = "known failure: a hemisphere shelled open at its flat face"]
+fn shell_of_a_hemisphere_opened_at_the_flat_face() {
+    let (errors, _, _) = shell_body(fixture!("halfsphere_flat_opened"));
+    assert!(errors.is_empty(), "{errors:?}");
 }

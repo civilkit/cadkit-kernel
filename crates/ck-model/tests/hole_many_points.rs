@@ -118,3 +118,48 @@ fn thirty_by_thirty_holes_in_one_feature_is_not_quadratic() {
     assert!((o.volume - 561382.7488).abs() < 1e-2, "volume {}", o.volume);
     assert!(o.ms < 15_000.0, "30 x 30 holes took {:.0} ms", o.ms);
 }
+
+/// Analytic volume of the `grid(n, pitch)` plate: (n pitch + 10)^2 x 10 less n^2 through holes of diameter 3.
+fn grid_volume(n: usize, pitch: f64) -> f64 {
+    let side = n as f64 * pitch + 10.0;
+    side * side * 10.0 - (n * n) as f64 * std::f64::consts::PI * 1.5 * 1.5 * 10.0
+}
+
+#[test]
+fn fifty_by_fifty_holes_in_one_feature() {
+    // 2500 points in one `hole` feature (the grid is a 410 mm plate): one face per hole wall plus the plate's six, and the exact volume.
+    // The bound is loose on purpose (a loaded box, a slower profile); it only catches the old quadratic growth (hours here).
+    let o = run(&grid(50, 8.0));
+    eprintln!("50 x 50 holes in one hole feature: {:.0} ms", o.ms);
+    assert!(o.errors.is_empty(), "{:?}", o.errors);
+    assert_eq!(o.faces, 2506);
+    assert!((o.volume - grid_volume(50, 8.0)).abs() < 1e-2, "volume {} want {}", o.volume, grid_volume(50, 8.0));
+    assert!(o.ms < 180_000.0, "50 x 50 holes took {:.0} ms", o.ms);
+}
+
+#[test]
+fn fifty_by_fifty_lpattern_of_lpattern() {
+    // the same grid as one seed hole, a row of 50 along x, and that row copied 50 times along y
+    let side = 50.0 * 8.0 + 10.0;
+    let src = format!(
+        r#"{{"format":"ck-part","version":1,"features":[
+  {{"type":"sketch","id":"S1","plane":{{"kind":"std","id":"front"}},"points":[
+     {{"id":"p1","x":0,"y":0}},{{"id":"p2","x":{side},"y":0}},{{"id":"p3","x":{side},"y":{side}}},{{"id":"p4","x":0,"y":{side}}}],
+   "entities":[{{"type":"line","id":"e1","p1":"p1","p2":"p2"}},{{"type":"line","id":"e2","p1":"p2","p2":"p3"}},
+     {{"type":"line","id":"e3","p1":"p3","p2":"p4"}},{{"type":"line","id":"e4","p1":"p4","p2":"p1"}}],"constraints":[]}},
+  {{"type":"extrude","id":"E2","op":"add","sketch":"S1","end":"blind","depth":10}},
+  {{"type":"plane","id":"P3","mode":"offset","base":{{"kind":"std","id":"front"}},"offset":10,"name":"top"}},
+  {{"type":"sketch","id":"S4","plane":{{"kind":"feature","id":"P3"}},"points":[{{"id":"p1","x":5,"y":5}}],
+   "entities":[{{"type":"point","id":"e1","p":"p1"}}],"constraints":[]}},
+  {{"type":"hole","id":"H5","sketch":"S4","kind":"simple","diameter":3,"end":"through"}},
+  {{"type":"lpattern","id":"L6","seeds":["H5"],"dir":{{"kind":"axis","axis":"x"}},"spacing":8,"count":50}},
+  {{"type":"lpattern","id":"L7","seeds":["L6"],"dir":{{"kind":"axis","axis":"y"}},"spacing":8,"count":50}}
+ ]}}"#
+    );
+    let o = run(&src);
+    eprintln!("50 x 50 lpattern of lpattern: {:.0} ms", o.ms);
+    assert!(o.errors.is_empty(), "{:?}", o.errors);
+    assert_eq!(o.faces, 2506);
+    assert!((o.volume - grid_volume(50, 8.0)).abs() < 1e-2, "volume {} want {}", o.volume, grid_volume(50, 8.0));
+    assert!(o.ms < 180_000.0, "50 x 50 lpattern took {:.0} ms", o.ms);
+}

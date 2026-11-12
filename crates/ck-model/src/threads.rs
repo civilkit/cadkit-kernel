@@ -52,7 +52,7 @@ pub struct ThreadSpec {
 
 /// A standard and a one-line description.
 pub const STANDARDS: &[(&str, &str)] = &[
-    ("metric", "ISO metric coarse, M1 to M64 (60 degrees)"),
+    ("metric", "ISO metric coarse, M1 to M68 (60 degrees)"),
     ("metric-fine", "ISO metric fine pitch, M3x0.35 to M64x4 (60 degrees)"),
     ("UNC", "Unified National Coarse, #1 to 2 in (60 degrees)"),
     ("UNF", "Unified National Fine, #0 to 1-1/2 in (60 degrees)"),
@@ -94,9 +94,10 @@ fn r1(x: f64) -> f64 {
     ((x + 1e-9) * 10.0).round() / 10.0
 }
 
-/// `(major, pitch, tap)` coarse rows; tap 0 = derived.
+/// `(major, pitch, tap)` coarse rows, ISO 724 / ISO 261 (coarse pitch per nominal diameter, series 1 to 3); tap 0 = derived.
 const METRIC: &[(&str, f64, f64, f64)] = &[
     ("M1", 1.0, 0.25, 0.75),
+    ("M1.1", 1.1, 0.25, 0.85),
     ("M1.2", 1.2, 0.25, 0.95),
     ("M1.4", 1.4, 0.3, 1.1),
     ("M1.6", 1.6, 0.35, 1.25),
@@ -107,11 +108,14 @@ const METRIC: &[(&str, f64, f64, f64)] = &[
     ("M3", 3.0, 0.5, 2.5),
     ("M3.5", 3.5, 0.6, 2.9),
     ("M4", 4.0, 0.7, 3.3),
+    ("M4.5", 4.5, 0.75, 3.8),
     ("M5", 5.0, 0.8, 4.2),
     ("M6", 6.0, 1.0, 5.0),
     ("M7", 7.0, 1.0, 6.0),
     ("M8", 8.0, 1.25, 6.8),
+    ("M9", 9.0, 1.25, 7.8),
     ("M10", 10.0, 1.5, 8.5),
+    ("M11", 11.0, 1.5, 9.5),
     ("M12", 12.0, 1.75, 10.2),
     ("M14", 14.0, 2.0, 12.0),
     ("M16", 16.0, 2.0, 14.0),
@@ -131,6 +135,7 @@ const METRIC: &[(&str, f64, f64, f64)] = &[
     ("M56", 56.0, 5.5, 50.5),
     ("M60", 60.0, 5.5, 54.5),
     ("M64", 64.0, 6.0, 58.0),
+    ("M68", 68.0, 6.0, 62.0),
 ];
 
 /// Common fine pitches `(major, pitch)`.
@@ -634,14 +639,14 @@ mod tests {
         let t = find("Tr", "Tr20x4").unwrap();
         assert!(near(t.minor_internal, 16.0, 1e-9) && near(t.minor_external, 15.5, 1e-9) && t.angle == 30.0);
         assert_eq!(find("tr", "Tr60x9").unwrap().pitch, 9.0);
-        assert!(find("metric", "M64").is_some() && find("metric", "M1").is_some());
+        assert!(find("metric", "M68").is_some() && find("metric", "M1").is_some());
         assert!(find("UNC", "2-4.5").is_some() && find("UNC", "#1-64").is_some() && find("UNF", "#0-80").is_some());
     }
 
     #[test]
     fn counts_and_aliases() {
-        assert_eq!(sizes("metric").len(), 35);
-        assert!(sizes("ISO").len() == 35 && sizes("g").len() == sizes("BSP").len());
+        assert_eq!(sizes("metric").len(), 40);
+        assert!(sizes("ISO").len() == 40 && sizes("g").len() == sizes("BSP").len());
         assert!(sizes("nope").is_empty());
         for (id, _) in STANDARDS {
             assert!(!sizes(id).is_empty(), "{id}");
@@ -665,6 +670,24 @@ mod tests {
             assert_eq!(n, 1, "{who} duplicated");
             // lookup roundtrip
             assert_eq!(find(t.standard, &t.designation).map(|x| &x.designation), Some(&t.designation), "{who}");
+        }
+    }
+
+    #[test]
+    fn metric_coarse_pitch_and_minor_follow_iso_724() {
+        // (designation, ISO 261 coarse pitch) for the sizes added with this test
+        for (d, p) in [("M1.1", 0.25), ("M4.5", 0.75), ("M9", 1.25), ("M11", 1.5), ("M68", 6.0)] {
+            let t = find("metric", d).unwrap_or_else(|| panic!("{d} missing"));
+            assert!(near(t.pitch, p, 1e-9), "{d} pitch");
+            assert!(near(t.minor_internal, t.major - 1.082532 * p, 1e-4), "{d} D1");
+            assert!(near(t.minor_external, t.major - 1.226869 * p, 1e-4), "{d} d3");
+            assert!(near(t.pitch_dia, t.major - 0.649519 * p, 1e-4), "{d} d2");
+            assert!(near(t.tap_drill, r1(t.major - p), 0.051), "{d} tap {}", t.tap_drill);
+        }
+        // every coarse row: the minor diameters follow from major and pitch
+        for t in sizes("metric") {
+            assert!(near(t.minor_internal, t.major - 1.082532 * t.pitch, 1e-4), "{}", t.designation);
+            assert!(near(t.minor_external, t.major - 1.226869 * t.pitch, 1e-4), "{}", t.designation);
         }
     }
 

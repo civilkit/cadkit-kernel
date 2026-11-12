@@ -79,12 +79,11 @@ fn can_outline_is_complete_up_to_the_end() {
     }
 }
 
-/// Open: the can's inner floor edge (circle r 11 at v = -19, inside the wall) is drawn as a visible line in the side view.
+/// The can's inner floor edge (circle r 11 at v = -19, inside the wall) is drawn as a visible line in the side view.
 /// It lies on a seam of the chamfer cone's display mesh (a mesh edge exactly along the line, which the covering test
-/// treats as "not strictly inside either triangle"), so neither the front nor the back half of the circle counts as
+/// treats as "not strictly inside either triangle"; `covered_seam` tests both sides of it), so neither the front nor the back half of the circle counts as
 /// covered although the outer wall is in front of both.
 #[test]
-#[ignore = "open: an edge-on circle on a mesh seam of the occluder is drawn visible (see the doc comment)"]
 fn can_inner_floor_circle_is_hidden_in_the_side_view() {
     regen(fixture());
     let lines = view(named("top")).unwrap();

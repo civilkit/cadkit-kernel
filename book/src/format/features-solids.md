@@ -37,6 +37,7 @@ Sweeps the profile of a sketch along its normal.
 | `offset` | number or expression | `0` | `offsetFromFace`: distance from the face along its outward normal. |
 | `strictEnd` | boolean | `false` | Report an unreachable end condition as an error instead of falling back. |
 | `body` | string | none | Name of the new body (with `op: "newBody"`). |
+| `target` | selection or list | none | The bodies an `add` or `cut` acts on, as `{"body":"A"}` or `{"face":"F2.C1"}` (a list acts on each). Without it a cut reaches every body it meets. A name that does not exist is refused with the names that do; a cut that reaches none of the named bodies is `cutNoEffect`; with `op: "newBody"` it is `invalidValue`. `extrude`, `revolve`, `loft`, `sweep` and `hole` take it. |
 
 End conditions:
 
@@ -445,6 +446,7 @@ Moves the profile along a path.
 | `sketch` | feature id | required | The profile. It must lie on a plane perpendicular to the path at its start: `sweepProfileNotNormal` otherwise. |
 | `path` | reference | required | `{"kind": "sketch", "id": "F1"}` for an open chain of lines and arcs in a sketch (or a `sketch3d` that holds one spline), or `{"kind": "curve", "id": "F5"}` for a helix or another curve feature. A missing or unusable path is `missingPath`. |
 | `op` | string | `"add"` | See above. A sweep cut is not reversed. |
+| `target` | selection or list | none | The bodies a sweep `add` or `cut` acts on; see `target` under extrude. |
 | `twist` | number or expression | `0` | Degrees of rotation of the profile along the path. |
 | `guides` | list of curve references | none | Guide curves (`{"kind": ...}` with `sketchCurve`, `edge` or `curve`) that the profile follows. |
 | `guideMode` | string | `"scale"` | `scale`, `turn` or `stretch`. |

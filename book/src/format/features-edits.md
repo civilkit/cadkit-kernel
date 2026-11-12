@@ -268,6 +268,7 @@ Cuts holes at the `point` entities of a sketch, into the face the sketch lies on
 | `depth` | number or expression | `0` | Depth of a blind hole. A blind hole needs a depth above 0: with `depth` missing or 0 the cut has no volume and the feature fails with `booleanFailed` (`params.issue: "openEdge"`, `params.faces` the face the sketch lies on), a misleading code for a missing depth. |
 | `tip` | boolean | `false` | A blind hole ends in a 118 degree drill-point cone. |
 | `flip` | boolean | `false` | Cut along the sketch normal instead of against it. |
+| `target` | selection or list | none | Drill only the named bodies (`{"body":"A"}`); see `target` in [solids](features-solids.md). Without it the holes cut every body they meet. |
 | `cboreDiameter`, `cboreDepth` | number or expression | table | Counterbore size. Each is independent. |
 | `cskDiameter`, `cskAngle` | number or expression | table, `90` | Countersink head diameter and included angle in degrees. |
 
@@ -433,6 +434,7 @@ Puts a thread on a cylindrical face: the wall of a hole or a shaft. By default i
 | `hand` | string | `"right"` | `right` or `left`. |
 | `start` | string | the open end | `top` or `bottom`: the end of the face with the higher or lower coordinate along its axis. |
 | `modeled` | boolean | `false` | Cut the real groove. |
+| `clearance` | number or expression | `0` | Printed-fit clearance in mm, signed, at most 1 in size (more is `invalidValue`). Positive is looser, negative tighter. It changes the modeled groove only: an internal thread's groove reaches `clearance` further out, an external thread's goes `clearance` deeper (the thread's diameters move by twice that). A groove is never wider than 0.9 of the pitch, so an external thread wants the shaft drawn near the loosened major (nominal major minus twice the clearance); a shaft left at the nominal major is `threadModelFallback`. The `threads` entry carries `clearance` when it is not zero. |
 
 Internal or external is read from the face (concave is internal). A cosmetic thread changes nothing in the body; the reply gains a `threads` list sorted by feature id, one entry per thread with `id`, `face`, `standard`, `size`, `class`, `pitch`, `major`, `minor`, `pitchDiameter`, `angle`, `length`, `hand`, `internal`, `modeled`, `tapered`, `diameter` (of the face), and `start` and `dir` (a point on the axis and the unit direction into the face).
 

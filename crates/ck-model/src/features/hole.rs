@@ -300,6 +300,10 @@ pub fn exec_hole(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(
         whole.append(&p);
     }
     let tool = Tool { body: whole, combine: Combine::Cut, recipe: None };
+    // a `target` names the bodies the hole is drilled in; without one the hole cuts everything it meets, as before
+    if f.raw.get("target").is_some_and(|t| !matches!(t, ck_json::Json::Null)) {
+        return br.apply_feature(f, tool, None);
+    }
     let r = br.combine(&tool.body, Combine::Cut, true);
     br.tools.push((f.id.clone(), std::rc::Rc::new(tool)));
     r

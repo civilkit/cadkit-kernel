@@ -767,6 +767,19 @@ impl Occluders {
         })
     }
 
+    /// `covered_in`, plus the mesh-seam case: a point exactly on an interior mesh edge of the occluder is strictly inside
+    /// neither triangle, so it reads "not covered" although the surface is in front of it on both sides. When the point
+    /// is not covered, it counts as covered if the points `d` to BOTH sides of the line (unit normal `nrm`) are covered
+    /// (an occluder boundary has the surface on one side only, so a grazing edge there stays visible).
+    fn covered_seam(cand: &[&[P2; 3]], p: &P2, nrm: (f64, f64), tol: f64) -> bool {
+        if Self::covered_in(cand, p, tol) {
+            return true;
+        }
+        let d = tol * 1.5;
+        let side = |s: f64| P2 { u: p.u + nrm.0 * d * s, v: p.v + nrm.1 * d * s, ..*p };
+        Self::covered_in(cand, &side(1.0), tol) && Self::covered_in(cand, &side(-1.0), tol)
+    }
+
     /// Visibility runs along ONE straight segment a-b. The segment is cut at every place where it crosses the
     /// outline of a triangle in front of it, and each stretch is classified by its own midpoint, so a long line
     /// that runs behind one body and out the other side (a shaft through a bearing, a can and a plate) comes out
@@ -821,7 +834,8 @@ impl Occluders {
                     let sd = 2.0 * t - 1.0;
                     let dw = r * (1.0 - sd * sd).max(0.0).sqrt();
                     let (f, k) = (P2 { w: m.w + dw, ..m }, P2 { w: m.w - dw, ..m });
-                    !Self::covered_in(&cand, &f, tol) || !Self::covered_in(&cand, &k, tol)
+                    let nrm = ((a.v - b.v) / len, (b.u - a.u) / len);
+                    !Self::covered_seam(&cand, &f, nrm, tol) || !Self::covered_seam(&cand, &k, nrm, tol)
                 }
             }
         };
@@ -835,6 +849,15 @@ impl Occluders {
             if !iv[i].3 {
                 let from = if i > 0 { iv[i - 1].2 } else { iv.iter().find(|x| x.3).map_or(iv[i].2, |x| x.2) };
                 iv[i].2 = from;
+            }
+        }
+        // an edge-on circle: a visible stretch of a few tolerances between two hidden ones is a sliver of the occluder's
+        // mesh (triangles too thin to count as covering), not a gap the circle shows through
+        if arc.is_some() {
+            for i in 1..iv.len().saturating_sub(1) {
+                if iv[i].2 && !iv[i - 1].2 && !iv[i + 1].2 && (iv[i].1 - iv[i].0) * len < tol * 8.0 {
+                    iv[i].2 = false;
+                }
             }
         }
         let mut runs: Vec<(f64, f64, bool)> = vec![];

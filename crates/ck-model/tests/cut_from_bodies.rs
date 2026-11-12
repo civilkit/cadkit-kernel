@@ -1,5 +1,5 @@
 //! `target` on a cut (or add) feature: the bodies the feature acts on, by name, so a cutter does not need a body of its own and a
-//! `combine`. One selection, or a list; extrude, revolve and loft take it. Volumes are analytic: boxes with integer overlaps.
+//! `combine`. One selection, or a list; extrude, revolve, loft, sweep and hole take it. Volumes are analytic: boxes with integer overlaps.
 
 #![allow(dead_code)]
 
@@ -235,4 +235,44 @@ fn a_loft_cut_takes_a_target() {
     let one = run(&doc(r#","target":{"body":"A"}"#));
     one.clean();
     assert!(near(one.volume_of("A"), 620.0) && near(one.volume_of("B"), 1000.0), "{:?}", one.mass_bodies());
+}
+
+#[test]
+fn a_hole_takes_a_target() {
+    // A: [0,10], B: [5,15] (x), both 10 high; a through hole of diameter 2 at x = 7.5 (inside both) drilled down from the top face (a plane at the box height).
+    // Target A drills A only (A loses 10 pi, B stays whole), target B the other way round.
+    let pi = std::f64::consts::PI;
+    let doc = |extra: &str| format!(
+        r#"{},{},{{"type":"plane","id":"PH","mode":"offset","base":{{"kind":"std","id":"top"}},"offset":10}},{{"type":"sketch","id":"SH","plane":{{"kind":"feature","id":"PH"}},"points":[{{"id":"p1","x":7.5,"y":5}}],"entities":[{{"type":"point","id":"e1","p":"p1"}}],"constraints":[]}},{{"type":"hole","id":"H","sketch":"SH","kind":"simple","diameter":2,"end":"through"{extra}}}"#,
+        named_box(1, 0.0, 10.0, "A"),
+        named_box(2, 5.0, 15.0, "B")
+    );
+    // (without a target a hole through the overlap of two bodies is `booleanFailed` today: the multi-body cut of the whole tool
+    // is the unchanged path, so it is not asserted here)
+    let one = run(&doc(r#","target":{"body":"A"}"#));
+    one.clean();
+    assert!(near(one.volume_of("A"), 1000.0 - 10.0 * pi) && near(one.volume_of("B"), 1000.0), "{:?}", one.mass_bodies());
+    let other = run(&doc(r#","target":{"body":"B"}"#));
+    other.clean();
+    assert!(near(other.volume_of("B"), 1000.0 - 10.0 * pi) && near(other.volume_of("A"), 1000.0), "{:?}", other.mass_bodies());
+    let none = run(&doc(r#","target":{"body":"Nope"}"#));
+    assert!(none.errors().iter().any(|e| e.starts_with("H:")), "{:?}", none.errors());
+}
+
+#[test]
+fn a_sweep_cut_takes_a_target() {
+    // A: [0,10], B: [5,15] (x). A straight sweep of the 2 x 2 square [6.5,8.5] x [4,6] (top plane) along the box height cuts
+    // 4 x 10 = 40 from each body it meets; target A leaves B whole.
+    let doc = |extra: &str| format!(
+        r#"{},{},{{"type":"sketch","id":"SP","plane":{{"kind":"std","id":"front"}},"points":[{{"id":"a","x":7.5,"y":0}},{{"id":"b","x":7.5,"y":10}}],"entities":[{{"type":"line","id":"e1","p1":"a","p2":"b"}}],"constraints":[]}},{},{{"type":"sweep","id":"W","op":"cut","sketch":"SQ","path":{{"kind":"sketch","id":"SP"}}{extra}}}"#,
+        named_box(1, 0.0, 10.0, "A"),
+        named_box(2, 5.0, 15.0, "B"),
+        r#"{"type":"sketch","id":"SQ","plane":{"kind":"std","id":"top"},"points":[{"id":"p1","x":6.5,"y":4},{"id":"p2","x":8.5,"y":4},{"id":"p3","x":8.5,"y":6},{"id":"p4","x":6.5,"y":6}],"entities":[{"type":"line","id":"e1","p1":"p1","p2":"p2"},{"type":"line","id":"e2","p1":"p2","p2":"p3"},{"type":"line","id":"e3","p1":"p3","p2":"p4"},{"type":"line","id":"e4","p1":"p4","p2":"p1"}],"constraints":[]}"#
+    );
+    let all = run(&doc(""));
+    all.clean();
+    assert!(near(all.volume_of("A"), 960.0) && near(all.volume_of("B"), 960.0), "{:?}", all.mass_bodies());
+    let one = run(&doc(r#","target":{"body":"A"}"#));
+    one.clean();
+    assert!(near(one.volume_of("A"), 960.0) && near(one.volume_of("B"), 1000.0), "{:?}", one.mass_bodies());
 }

@@ -8,7 +8,7 @@ use ck_model::sketch::solver::{build, solve, SolveOpts};
 use ck_model::Sketch;
 use std::time::Instant;
 
-fn grid(n: usize, drag: (f64, f64)) -> Sketch {
+pub fn grid(n: usize, drag: (f64, f64)) -> Sketch {
     let id = |i: usize, j: usize| format!("p{i}_{j}");
     let mut pts = Vec::new();
     for i in 0..=n {

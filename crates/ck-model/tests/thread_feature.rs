@@ -311,6 +311,46 @@ fn modeled_external_thread_on_a_shaft() {
     assert_modeled(&r, v0, want, 0.06);
 }
 
+/// The removed volume of a modeled thread with `clearance` (mm) in the feature.
+fn removed_with_clearance(base: String, face: &str, size: &str, c: Option<f64>) -> f64 {
+    let v0 = run(&base).volume;
+    let cl = c.map_or(String::new(), |c| format!(r#","clearance":{c}"#));
+    let r = run(&format!("{base}{}", thread(&format!(r#""face":"{face}","standard":"metric","size":"{size}","modeled":true{cl}"#))));
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    assert!(r.warning("threadModelFallback").is_none(), "fallback {c:?}: {:?}", r.result.warnings.iter().map(|w| w.error.describe()).collect::<Vec<_>>());
+    assert_eq!(r.thread("T1").get_bool("modeled"), Some(true));
+    v0 - r.volume
+}
+
+#[test]
+fn clearance_widens_and_narrows_the_modeled_groove() {
+    // internal M6 in a 5.2 mm bore (wide enough for the groove of a looser fit to reach it): the groove reaches `c` further out, so more material goes
+    let base = removed_with_clearance(through_hole(5.2), "F4.S.c1", "M6", None);
+    let wide = removed_with_clearance(through_hole(5.2), "F4.S.c1", "M6", Some(0.1));
+    let tight = removed_with_clearance(through_hole(5.2), "F4.S.c1", "M6", Some(-0.1));
+    assert!(wide > base * 1.08 && tight < base * 0.90 && tight > 0.0, "internal: tight {tight} base {base} wide {wide}");
+    // the change matches the analytic groove of the shifted spec
+    let mut spec = ck_model::threads::find("metric", "M6").unwrap().clone();
+    spec.major += 0.2;
+    let g = ck_model::features::thread::model::groove(&spec, true, 2.6).unwrap();
+    let want = g.per_pitch * 20.0 / spec.pitch;
+    assert!((wide - want).abs() <= 0.05 * want, "internal wide {wide} vs analytic {want}");
+    // external M8 on a shaft drawn at the loosened major (8 - 2 x 0.2): the groove is cut deeper and wider
+    // (a shaft left at 8.0 is over the shifted major by more than the 0.9 P groove limit allows: fallback)
+    let base = removed_with_clearance(shaft(7.6), "F2.S.c1", "M8", None);
+    let wide = removed_with_clearance(shaft(7.6), "F2.S.c1", "M8", Some(0.2));
+    assert!(wide > base * 1.05, "external: base {base} wide {wide}");
+}
+
+#[test]
+fn clearance_is_reported_and_checked() {
+    let r = run(&format!("{}{}", through_hole(5.0), thread(r#""face":"F4.S.c1","standard":"metric","size":"M6","clearance":0.15"#)));
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    assert_eq!(num(r.thread("T1"), "clearance"), 0.15);
+    let r = run(&format!("{}{}", through_hole(5.0), thread(r#""face":"F4.S.c1","standard":"metric","size":"M6","clearance":2"#)));
+    assert!(r.errors()[0].starts_with("T1:invalidValue"), "{:?}", r.errors());
+}
+
 #[test]
 fn modeled_handedness_differs() {
     let a = run(&format!("{}{}", through_hole(5.0), thread(r#""face":"F4.S.c1","standard":"metric","size":"M6","modeled":true"#)));
