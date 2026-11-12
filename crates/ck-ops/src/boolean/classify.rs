@@ -504,6 +504,54 @@ pub fn point_in_face(b: &Body, f: FaceId, p: Vec3, tol: f64) -> Where {
     point_in_face_cached(b, f, p, tol, &mut std::collections::HashMap::new())
 }
 
+/// Which side of its nearest boundary `p` (a point on face `f`'s surface, at parameters `(u, v)`) lies, decided from
+/// the one circle or ellipse edge within the sampling error of the face's uv polygons: `Some(true)` for inside the
+/// face. A polygon test is off by the chord sag of the rim (up to ~1e-4 on a large circle), so a point nearer to a rim
+/// than that, such as the 2e-4 stretch of a tool's edge left between its corner and the rim it crosses, is placed on
+/// the wrong side. `None` when no such edge is within reach, when the point is near the end of the edge (a corner:
+/// the neighbour edge takes part) or when two edges are in reach: the polygon test decides.
+fn rim_side(b: &Body, f: FaceId, p: Vec3, u: f64, v: f64) -> Option<bool> {
+    let face = b.face(f);
+    let mut best: Option<(f64, Vec3, Vec3)> = None; // (distance, foot, travel direction)
+    let mut n_near = 0;
+    for &l in &face.loops {
+        for &c in &b.lp(l).coedges {
+            let ed = b.edge(b.coedge(c).edge);
+            let rad = match &ed.curve {
+                Curve::Circle { r, .. } => *r,
+                Curve::Ellipse { a, b, .. } => a.max(*b),
+                _ => continue,
+            };
+            // the sag of the finest sampling used for the polygons (720 chords round a full circle)
+            let band = 2.0 * rad * (1.0 - (std::f64::consts::PI / 720.0).cos()) + 1e-9;
+            if !ed.curve.may_be_within(p, band) {
+                continue;
+            }
+            let (ta, tb) = b.coedge_params(c);
+            let (t, d) = super::imprint::dist_in_range(&ed.curve, (ta.min(tb), ta.max(tb)), p);
+            if d > band {
+                continue;
+            }
+            // not at an end of the piece: the foot must be more than the band from both ends
+            if ed.curve.eval(t).dist(ed.curve.eval(ta)) <= 2.0 * band || ed.curve.eval(t).dist(ed.curve.eval(tb)) <= 2.0 * band {
+                return None;
+            }
+            n_near += 1;
+            let dir = ed.curve.tangent(t) * (tb - ta).signum();
+            if best.map_or(true, |x| d < x.0) {
+                best = Some((d, ed.curve.eval(t), dir));
+            }
+        }
+    }
+    let (_, foot, dir) = best?;
+    if n_near != 1 {
+        return None;
+    }
+    let inward = b.outward_normal(f, u, v).cross(dir);
+    let side = inward.dot(p - foot);
+    (side.abs() > 1e-12).then_some(side > 0.0)
+}
+
 /// uv-loop cache of [`point_in_face_cached`], keyed by (body address, face).
 pub type LoopCache = std::collections::HashMap<(usize, u32), Vec<Vec<Vec2>>>;
 
@@ -530,7 +578,8 @@ pub fn point_in_face_cached(b: &Body, f: FaceId, p: Vec3, tol: f64, cache: &mut 
     if loops.iter().all(|l| l.len() < 3) {
         return Where::In; // closed surface without boundary (full sphere/torus)
     }
-    if in_face_loops(b, f, Vec2::new(u, v), loops) {
+    let inside = rim_side(b, f, p, u, v).unwrap_or_else(|| in_face_loops(b, f, Vec2::new(u, v), loops));
+    if inside {
         Where::In
     } else {
         Where::Out
@@ -627,7 +676,7 @@ impl<'a> Solid<'a> {
             return Where::In;
         }
         let (u, v) = s.closest_param(p);
-        if in_face_loops(b, self.faces[i], Vec2::new(u, v), loops) {
+        if rim_side(b, self.faces[i], p, u, v).unwrap_or_else(|| in_face_loops(b, self.faces[i], Vec2::new(u, v), loops)) {
             Where::In
         } else {
             Where::Out

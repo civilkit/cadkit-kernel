@@ -1,0 +1,102 @@
+{
+ "format": "ck-part",
+ "version": 1,
+ "name": "r",
+ "features": [
+  {
+   "type": "sketch",
+   "id": "S1",
+   "plane": {
+    "kind": "std",
+    "id": "front"
+   },
+   "points": [
+    {
+     "id": "c",
+     "x": 0,
+     "y": 0
+    }
+   ],
+   "entities": [
+    {
+     "type": "circle",
+     "id": "a",
+     "c": "c",
+     "r": 34.9921875
+    },
+    {
+     "type": "circle",
+     "id": "b",
+     "c": "c",
+     "r": 17.0078125
+    }
+   ]
+  },
+  {
+   "type": "extrude",
+   "id": "E1",
+   "op": "newBody",
+   "sketch": "S1",
+   "end": "blind",
+   "depth": 3,
+   "body": "b1"
+  },
+  {
+   "type": "sketch",
+   "id": "S2",
+   "plane": {
+    "kind": "std",
+    "id": "front"
+   },
+   "points": [
+    {
+     "id": "c",
+     "x": 0,
+     "y": 0
+    }
+   ],
+   "entities": [
+    {
+     "type": "circle",
+     "id": "a",
+     "c": "c",
+     "r": 35
+    },
+    {
+     "type": "circle",
+     "id": "b",
+     "c": "c",
+     "r": 17
+    }
+   ]
+  },
+  {
+   "type": "extrude",
+   "id": "E2",
+   "op": "newBody",
+   "sketch": "S2",
+   "end": "blind",
+   "depth": 2.9921875,
+   "body": "b2"
+  },
+  {
+   "type": "combine",
+   "id": "U",
+   "op": "union",
+   "target": {
+    "body": "b1"
+   },
+   "tools": [
+    {
+     "body": "b2"
+    }
+   ],
+   "body": "b1"
+  }
+ ],
+ "seq": 6,
+ "rollback": null,
+ "material": "steel",
+ "counters": {},
+ "variables": []
+}

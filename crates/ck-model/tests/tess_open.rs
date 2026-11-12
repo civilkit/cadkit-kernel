@@ -203,3 +203,18 @@ fn small_plain_extrudes_mesh_closed() {
         assert!(issues.is_empty(), "{issues:?}");
     }
 }
+
+/// A cylinder cut by a slot whose ends stop a hair inside the cylinder wall (a thin curved sliver is left on each side),
+/// then fused with a coaxial pin on one end: the wall fragments of the slivers must mesh (they had no triangles).
+#[test]
+fn slotted_cylinder_slivers_fused_to_pin_mesh() {
+    let issues = open_issues(include_str!("fixtures/tess_cyl_sliver_union.json"));
+    assert!(issues.is_empty(), "{issues:?}");
+}
+
+/// Two nested rings whose radii differ by under 0.01 mm, unioned: the thin ring faces must mesh without covering several times their area.
+#[test]
+fn nested_near_coincident_rings_mesh_cleanly() {
+    let issues = open_issues(include_str!("fixtures/tess_nested_rings.json"));
+    assert!(issues.is_empty(), "{issues:?}");
+}

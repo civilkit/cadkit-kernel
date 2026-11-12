@@ -102,6 +102,9 @@ fn propeller(f: &str) -> Body {
 }
 /// A blade lying along +x from the hub surface outwards, twisted along its length.
 fn twisted_blade(f: &str) -> Body {
+    twisted_blade_by(f, 0.9)
+}
+fn twisted_blade_by(f: &str, twist: f64) -> Body {
     let lp = ProfileLoop::new(vec![
         ProfileSeg::line("e1", v(-1.0, -3.0), v(1.0, -3.0)),
         ProfileSeg::line("e2", v(1.0, -3.0), v(1.0, 3.0)),
@@ -109,7 +112,7 @@ fn twisted_blade(f: &str) -> Body {
         ProfileSeg::line("e4", v(-1.0, 3.0), v(-1.0, -3.0)),
     ]);
     let prof = Profile::new(Frame { o: Vec3::new(2.0, 0.0, 0.0), x: Vec3::Y, y: Vec3::Z, z: Vec3::X }, region(lp));
-    sweep(f, &prof, &[PathSeg::Line { a: Vec3::new(2.0, 0.0, 0.0), b: Vec3::new(30.0, 0.0, 0.0) }], 0.9).unwrap()
+    sweep(f, &prof, &[PathSeg::Line { a: Vec3::new(2.0, 0.0, 0.0), b: Vec3::new(30.0, 0.0, 0.0) }], twist).unwrap()
 }
 #[test]
 fn identical_propeller() {
@@ -128,4 +131,20 @@ fn shifted_copy_is_not_identical() {
     b.transform(&Xform::translation(Vec3::new(10.0, 0.0, 0.0)));
     let u = boolean(&a, &b, Op::Union, 1e-6).unwrap();
     assert!((vol(&u.body) - 50.0 * 20.0 * 10.0).abs() < 1e-3, "{}", vol(&u.body));
+}
+
+/// A second blade fitted a second time over the first (kit issue 34): same outline, but the free-form faces lie a few
+/// thousandths of a millimetre off the first blade's, which no welding tolerance bridges. The union used to grind through
+/// every tolerance of the ladder and the robust mode (minutes) and then fail; it now refuses at once, naming the faces.
+#[test]
+fn near_coincident_blade_over_a_blade_fails_fast_with_the_faces_named() {
+    let p = propeller("F2");
+    let again = twisted_blade_by("G", 0.902);
+    let t = Instant::now();
+    let r = boolean(&p, &again, Op::Union, 1e-6);
+    let dt = t.elapsed().as_secs_f64();
+    eprintln!("near-coincident blade union: {dt:.3} s -> {:?}", r.as_ref().map(|_| ()));
+    let e = r.expect_err("the near-coincident union cannot close");
+    assert!(e.starts_with("booleanFailed;nearCoincident="), "{e}");
+    assert!(dt < 10.0, "took {dt:.1} s");
 }

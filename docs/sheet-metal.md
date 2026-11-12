@@ -391,6 +391,11 @@ length (`r tan(turn/2)` / `distance`). The fillet is a true cylinder face in the
 
 * `sheetCut`: staircase approximation of non-rectangular cuts across bends (the flat pattern is exact); the sketch is not
   followed onto folded panels (use a sketch parallel to the base plane); the cut does not split panels.
+* A plain through `extrude` cut of a folded sheet is tried as a `sheetCut` first (the part stays a sheet). When the panel tree cannot take
+  it (a region with an island, or a rebuild whose boolean is refused, for instance on a cut tool with a sliver wall from a sketch that
+  is a few nanometres off axis), it runs as an ordinary cut of the solid instead of failing; the part is then a plain solid after it. Without
+  that fallback a history read back from a file (sheet metal parts whose slots are plain cuts) stopped at the first such cut and ended in an imported remainder.
+  The fallback is not silent: the cut's feature row carries the warning `sheetCutFallback` (with the sheet cut's refusal in `reason` / `reasonDetail`).
 * `sheetConvert`: constant-thickness bent plates with straight cylindrical bends only (see above).
 * `sheetCorner`: corners of free walls of one panel only (no corners across bends).
 

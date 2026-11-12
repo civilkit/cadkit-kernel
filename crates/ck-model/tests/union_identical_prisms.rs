@@ -69,3 +69,19 @@ fn identical_coincident_prisms_union_into_one_body() {
     assert!(e.is_empty(), "{e:?}");
     check(&bodies, &[("b8", 1038.69), ("b9", 43.87)]);
 }
+
+/// A disc that is the tool of four keepTools intersects, then deleted: the four result bodies keep their names.
+#[test]
+fn delete_body_of_a_kept_tool_keeps_the_other_names() {
+    let json = include_str!("fixtures/delete_tool_keeps_names.json");
+    let (e, bodies) = run(json, 14);
+    assert!(e.is_empty(), "{e:?}");
+    assert_eq!(bodies.len(), 5, "{bodies:?}");
+    let (e, bodies) = run(json, 15);
+    assert!(e.is_empty(), "{e:?}");
+    assert_eq!(bodies.len(), 4, "{bodies:?}");
+    for n in ["b9", "b10", "b11", "b12"] {
+        assert!(bodies.iter().any(|b| b.0.as_deref() == Some(n)), "no body {n}: {bodies:?}");
+    }
+    assert!(bodies.iter().all(|b| b.0.is_some()), "{bodies:?}");
+}

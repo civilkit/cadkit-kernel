@@ -25,6 +25,7 @@ struct Out {
     brep: Brep,
     errors: Vec<(String, String)>,
     err_json: Vec<ck_json::Json>,
+    warnings: Vec<(String, ck_json::Json)>,
     last: Option<ck_json::Json>,
     frame: Option<ck_core::linalg::Frame>,
 }
@@ -48,6 +49,7 @@ fn run(features: &[String]) -> Out {
         brep: ex.0,
         errors: r.errors.iter().map(|e| (e.feature.clone(), e.error.code.clone())).collect(),
         err_json: r.errors.iter().map(|e| ck_json::Json::Obj(e.error.params.clone())).collect(),
+        warnings: r.warnings.iter().map(|e| (format!("{}:{}", e.feature, e.error.code), ck_json::Json::Obj(e.error.params.clone()))).collect(),
         last,
         frame: r.sketches.first().map(|s| s.frame),
     }
@@ -1090,4 +1092,46 @@ fn flange_on_the_free_end_of_a_flange_picked_by_a_point() {
     let hem = format!(r#"{{"type":"hem","id":"H1","edges":[{}],"length":8}}"#, at(50.0, 0.0, 20.0));
     ok(&part(&[first.clone(), hem]));
     ok(&part(&[first, flange("E2", &[(50.0, 60.0, 2.0)], r#""height":15"#)]));
+}
+
+#[test]
+fn plain_extrude_cut_the_panel_tree_cannot_take_is_still_a_cut() {
+    // a slot across the whole width of the plate splits the panel in two, which a sheet cut refuses: the plain extrude cut must then run
+    // as an ordinary cut of the solid, as it did before plain cuts were tried as sheet cuts, not fail
+    let fo = fold("F1", (80.0, 0.0, 2.0), (80.0, 60.0, 2.0), r#""angle":90"#);
+    let slot = rect_sketch("S2", 20.0, -5.0, 30.0, 65.0);
+    let sheet = part(&[fo.clone(), slot.clone(), cut("S2")]);
+    assert!(!sheet.errors.is_empty(), "the sheet cut itself refuses a cut that splits a panel: {:?}", sheet.errors);
+    let plain = part(&[fo.clone()]);
+    ok(&plain);
+    let whole = ck_topo::mass::mass_props(plain.body()).volume;
+    for end in [r#""end":"throughBoth""#] {
+        let x = format!(r#"{{"type":"extrude","id":"X1","op":"cut","sketch":"S2",{end}}}"#);
+        let o = part(&[fo.clone(), slot.clone(), x]);
+        assert!(o.errors.is_empty(), "{end}: {:?}", o.errors);
+        let b = o.body();
+        let bad = ck_check::validate(b, 1e-6);
+        assert!(bad.is_empty(), "{:?}", bad.iter().map(|i| i.code).collect::<Vec<_>>());
+        // the plate less the slot (10 wide, 60 long, 2 thick), in two lumps
+        vol_close(ck_topo::mass::mass_props(b).volume, whole - 10.0 * 60.0 * 2.0, 1e-6, "plate less the slot");
+        assert_eq!(b.num_lumps(), 2, "the slot splits the plate");
+        // the fallback is visible: a warning (not an error) on the feature, with the sheet-cut refusal in its params
+        assert_eq!(o.warnings.len(), 1, "{end}: {:?}", o.warnings);
+        assert_eq!(o.warnings[0].0, "X1:sheetCutFallback");
+        let w = &o.warnings[0].1;
+        assert!(w.get_str("detail").unwrap().contains("no longer an unfoldable sheet"));
+        assert!(w.get_str("hint").unwrap().contains("aligned with the sheet"));
+        assert!(w.get_str("reason").is_some_and(|r| !r.is_empty()), "{w:?}");
+    }
+}
+
+#[test]
+fn plain_extrude_cut_the_sheet_path_takes_has_no_fallback_warning() {
+    let fo = fold("F1", (80.0, 0.0, 2.0), (80.0, 60.0, 2.0), r#""angle":90"#);
+    let hole = rect_sketch("S2", 20.0, 20.0, 30.0, 40.0);
+    let x = r#"{"type":"extrude","id":"X1","op":"cut","sketch":"S2","end":"throughBoth"}"#.to_string();
+    let o = part(&[fo, hole, x]);
+    assert!(o.errors.is_empty(), "{:?}", o.errors);
+    assert!(o.warnings.is_empty(), "{:?}", o.warnings);
+    assert!(o.brep.sheet.model.is_some(), "still a sheet");
 }

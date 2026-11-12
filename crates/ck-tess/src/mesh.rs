@@ -155,6 +155,65 @@ pub fn export_tol(body: &Body, quality: Option<&str>, chord_mm: Option<f64>) -> 
     Ok((Tol { chord: c.max(floor), angle }, c < floor))
 }
 
+/// The chord tolerance to sample the circle edge `e` with: the global one, tightened when a face on it is thinner than a few chord
+/// heights. A cylinder or cone band thinner than the sagitta is covered by facets that lean by the sagitta (the two rims are
+/// sampled apart), so its mesh area is the sagitta's, not the band's; a planar ring that thin has rim polygons that cross each
+/// other. Either made a 0.008 mm step ring on a 35 mm radius cover two to five times its area. Such a rim is sampled so its
+/// sagitta is a quarter of the band (never finer than a sixteenth of the global chord).
+fn thin_band_tol(body: &Body, e: EdgeId, tol: &Tol) -> Tol {
+    let mut chord = tol.chord;
+    let ck_geom::curve::Curve::Circle { frame: fe, r: re } = &body.edge(e).curve else { return *tol };
+    if !(tol.chord > 0.0) {
+        return *tol;
+    }
+    for c in body.edge_coedges(e) {
+        let f = body.coedge_face(c);
+        let mut h = f64::INFINITY;
+        match body.face(f).surface {
+            ck_geom::surface::Surface::Cylinder { .. } | ck_geom::surface::Surface::Cone { .. } => {
+                let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+                for &l in &body.face(f).loops {
+                    for &c2 in &body.lp(l).coedges {
+                        if !body.coedge(c2).alive {
+                            continue;
+                        }
+                        let e2 = body.edge(body.coedge(c2).edge);
+                        for t in [e2.t0, e2.t1] {
+                            let v = body.coedge_uv(c2, t, None).y;
+                            lo = lo.min(v);
+                            hi = hi.max(v);
+                        }
+                    }
+                }
+                if hi > lo {
+                    h = hi - lo;
+                }
+            }
+            ck_geom::surface::Surface::Plane { .. } => {
+                // the gap to the nearest other circle of the face that this one encloses or is enclosed by
+                for &l in &body.face(f).loops {
+                    for &c2 in &body.lp(l).coedges {
+                        if !body.coedge(c2).alive || body.coedge(c2).edge == e {
+                            continue;
+                        }
+                        if let ck_geom::curve::Curve::Circle { frame: f2, r: r2 } = &body.edge(body.coedge(c2).edge).curve {
+                            let gap = (re - r2).abs() - (fe.o - f2.o).len();
+                            if gap > 0.0 {
+                                h = h.min(gap);
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        if h.is_finite() && h > 0.0 && h < 4.0 * tol.chord {
+            chord = chord.min((0.25 * h).max(tol.chord / 16.0));
+        }
+    }
+    Tol { chord, angle: tol.angle }
+}
+
 /// Samples every live edge: curve params, per-coedge uv refinement, per-face
 /// normal refinement, then the periodic-face cut params (see curvature.rs).
 pub fn sample_edges(body: &Body, tol: &Tol) -> EdgeSampling {
@@ -169,7 +228,8 @@ pub fn sample_edges(body: &Body, tol: &Tol) -> EdgeSampling {
         let first = body.edge(chain[0]);
         let p0 = first.t0;
         let total: f64 = chain.iter().map(|&e| body.edge(e).t1 - body.edge(e).t0).sum();
-        let grid = curvature::curve_params(&first.curve, p0, p0 + total, tol);
+        let chain_tol = chain.iter().map(|&e| thin_band_tol(body, e, tol)).fold(*tol, |a, t| Tol { chord: a.chord.min(t.chord), angle: a.angle });
+        let grid = curvature::curve_params(&first.curve, p0, p0 + total, &chain_tol);
         let span = total.abs().max(1e-300);
         let mut a = p0; // chain parameter where the member starts
         for (k, &e) in chain.iter().enumerate() {
@@ -213,7 +273,7 @@ pub fn sample_edges(body: &Body, tol: &Tol) -> EdgeSampling {
     }
     for e in body.edge_ids() {
         let ed = body.edge(e);
-        let mut ps = base[e.idx()].take().unwrap_or_else(|| curvature::curve_params(&ed.curve, ed.t0, ed.t1, tol));
+        let mut ps = base[e.idx()].take().unwrap_or_else(|| curvature::curve_params(&ed.curve, ed.t0, ed.t1, &thin_band_tol(body, e, tol)));
         let cos = body.edge_coedges(e);
         // uv chord refinement, coedge by coedge
         for &c in &cos {

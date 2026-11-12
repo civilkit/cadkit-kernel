@@ -53,7 +53,16 @@ pub fn exec_delete_body(br: &mut Brep, _state: &mut RegenState, f: &Feature) -> 
         } else if left.len() == all.len() {
             Some(b)
         } else {
-            Some(ck_ops::boolean::assemble::rebuild_in_order(&b, &left))
+            // `rebuild_in_order` keeps the face order, so face i of the result is `left[i]`: each remaining lump
+            // takes the name of the lump its faces came from. Giving the names back by origin feature (`restore`)
+            // loses one when two lumps share an origin, e.g. a keepTools intersect result and its kept tool.
+            let mut nb = ck_ops::boolean::assemble::rebuild_in_order(&b, &left);
+            let ls: Vec<ck_topo::body::LumpId> = nb.lump_ids().collect();
+            for l in ls {
+                let name = ck_topo::mass::lump_faces(&nb, l).into_iter().find_map(|f| b.lump(b.face_lump(left[f.idx()])).name.clone());
+                nb.lumps[l.idx()].name = name;
+            }
+            Some(nb)
         };
     }
     if keep {

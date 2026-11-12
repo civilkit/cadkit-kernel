@@ -78,6 +78,53 @@ struct BPt {
     virt: bool,
 }
 
+/// The smallest distance between two boundary points that lie on different connected pieces of the boundary (the loops of a
+/// face), when it is under `limit` and not zero (a point shared by two loops is one point); `f64::INFINITY` otherwise.
+fn boundary_loop_gap(pts: &[BPt], segs: &[(usize, usize)], limit: f64) -> f64 {
+    let n = pts.len();
+    if n < 2 || segs.is_empty() {
+        return f64::INFINITY;
+    }
+    let mut comp: Vec<usize> = (0..n).collect();
+    fn root(c: &mut [usize], mut i: usize) -> usize {
+        while c[i] != i {
+            c[i] = c[c[i]];
+            i = c[i];
+        }
+        i
+    }
+    for &(a, b) in segs {
+        if a < n && b < n {
+            let (ra, rb) = (root(&mut comp, a), root(&mut comp, b));
+            comp[ra] = rb;
+        }
+    }
+    let cell = limit.max(1e-12);
+    let key = |p: Vec3| -> (i64, i64, i64) { ((p.x / cell).floor() as i64, (p.y / cell).floor() as i64, (p.z / cell).floor() as i64) };
+    let mut cells: HashMap<(i64, i64, i64), Vec<usize>> = HashMap::default();
+    let mut gap = f64::INFINITY;
+    for i in 0..n {
+        let k = key(pts[i].p);
+        let ri = root(&mut comp, i);
+        for dx in -1i64..=1 {
+            for dy in -1i64..=1 {
+                for dz in -1i64..=1 {
+                    if let Some(here) = cells.get(&(k.0 + dx, k.1 + dy, k.2 + dz)) {
+                        for &j in here {
+                            let d = pts[i].p.dist(pts[j].p);
+                            if d > 1e-12 && d < gap && d < limit && root(&mut comp, j) != ri {
+                                gap = d;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        cells.entry(k).or_default().push(i);
+    }
+    gap
+}
+
 struct Builder<'a> {
     surf: &'a Surface,
     pts: Vec<BPt>,
@@ -400,6 +447,16 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
         let mut poly: Vec<BPt> = vec![];
         let mut prev: Option<Vec2> = None;
         let backwards = false;
+        // A loop whose edges are all sampled by their end points only (the cap of a thin sliver: a chord and an arc
+        // that bulges less than the sampling tolerance) has two distinct points and no area: add the arc's middle so
+        // the face still meshes as a thin lens.
+        let samples: usize = lp
+            .coedges
+            .iter()
+            .filter(|&&c| body.coedge(c).alive)
+            .map(|&c| params.get(body.coedge(c).edge.idx()).map_or(1, |p| p.len().max(2) - 1))
+            .sum();
+        let thin_loop = samples < 3;
         for &c in lp.coedges.iter() {
             let ce = body.coedge(c);
             if !ce.alive {
@@ -413,6 +470,9 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
             let mut ps: Vec<f64> = params.get(e.idx()).cloned().unwrap_or_default();
             if ps.len() < 2 {
                 ps = vec![ed.t0, ed.t1];
+            }
+            if thin_loop && ps.len() == 2 && !seam && !matches!(ed.curve, ck_geom::curve::Curve::Line { .. }) {
+                ps.insert(1, 0.5 * (ps[0] + ps[1]));
             }
             if ce.rev != backwards {
                 ps.reverse();
@@ -602,6 +662,15 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
                     let (a, b) = (ch[(i + n - 1) % n].uv, ch[(i + 1) % n].uv);
                     let (d1, d2) = (ch[i].uv - a, b - ch[i].uv);
                     keep_corner[i] = !(d1.len() > 1e-12 && d2.len() > 1e-12 && d1.dot(d2) > 0.9 * d1.len() * d2.len());
+                }
+            }
+            // A closed ring that would be left with fewer than 3 points keeps its junctions: the cap of a thin sliver
+            // (a circle segment whose arc is two samples) reads as smooth at the junction in the middle of its arc, but
+            // that junction is the apex of the cap, and the neighbouring wall has it as a boundary point too.
+            if *closed && n >= 3 {
+                let left = (0..n).filter(|&i| !ch[i].virt || keep_corner[i]).count();
+                if left < 3 {
+                    keep_corner.iter_mut().for_each(|k| *k = true);
                 }
             }
             let mut kept: Vec<BPt> = Vec::with_capacity(n);
@@ -1169,7 +1238,10 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
     // the smallest extent the face really has (a flat face has a zero one, which does not count)
     let thin = |x: f64, cap: f64| if x > 1e-12 { x.min(cap) } else { cap };
     let size3 = thin(hi3.x - lo3.x, 1e3).min(thin(hi3.y - lo3.y, 1e3)).min(thin(hi3.z - lo3.z, 1e3));
-    let snap_tol: f64 = std::env::var("CK_SNAP_TOL").ok().and_then(|v| v.parse().ok()).unwrap_or_else(|| 1e-4_f64.min(size3 * 1e-3));
+    // ...and below a quarter of the gap between two boundary loops (a ring a few 1e-5 wide: the inner and the outer rim are
+    // not near-duplicates of one point, and joining them left both end caps of a 1e-5 thick tube with no triangles)
+    let loop_gap = boundary_loop_gap(&b.pts, &b.segs, 1e-4);
+    let snap_tol: f64 = std::env::var("CK_SNAP_TOL").ok().and_then(|v| v.parse().ok()).unwrap_or_else(|| 1e-4_f64.min(size3 * 1e-3).min(0.25 * loop_gap));
     // ...and only when the parameters agree: two copies of one point either side of a periodic
     // cut (u and u + period) are coincident in 3D but joining them leaves edges whose uv midpoint
     // lands a half period away, which the shading correction then measures as a huge normal step.

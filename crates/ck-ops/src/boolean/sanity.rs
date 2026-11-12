@@ -73,6 +73,19 @@ fn solid_volume(b: &Body, coarse: bool) -> Option<f64> {
     v.is_finite().then_some(v)
 }
 
+/// [`solid_volume`] with the full-precision face integrals (no memo, every panel of a trim curve).
+fn precise_volume(b: &Body) -> Option<f64> {
+    if b.num_faces() == 0 {
+        return Some(0.0);
+    }
+    if !closed(b) {
+        return None;
+    }
+    let faces: Vec<_> = b.face_ids().collect();
+    let v = ck_topo::mass::signed_volume(b, &faces);
+    v.is_finite().then_some(v)
+}
+
 /// Every edge has exactly two coedges (what `solid_volume` requires before it integrates anything).
 fn closed(b: &Body) -> bool {
     b.num_faces() == 0 || !b.edge_ids().any(|e| b.edge_coedges(e).len() != 2)
@@ -207,7 +220,15 @@ fn check_exact(a: &Body, b: &Body, op: Op, result: &Body, box_ov: f64) -> Option
     let vr = solid_volume(result, false)?;
     let (lo, hi) = window(op, va, vb, box_ov);
     if !(vr >= lo && vr <= hi) {
-        return Some(VolumeMismatch { expected_min: lo.max(0.0).min(hi), expected_max: hi, got: vr, what: "volume" });
+        // The memoised face integrals take a quarter of the usual panels along a fitted trim curve (good to ~5e-5 of
+        // the volume on a smooth one), but a long fitted curve on a long sweep (a plane through the wire of a helix
+        // coil) can be off by a few percent. A verdict against the result is only given on the full-precision
+        // integrals; a result they place inside the window is plausible.
+        let (va, vb, vr) = (precise_volume(a)?, precise_volume(b)?, precise_volume(result)?);
+        let (lo, hi) = window(op, va, vb, box_ov);
+        if !(vr >= lo && vr <= hi) {
+            return Some(VolumeMismatch { expected_min: lo.max(0.0).min(hi), expected_max: hi, got: vr, what: "volume" });
+        }
     }
     if box_short(a, b, op, result) {
         return Some(VolumeMismatch { expected_min: va.max(vb), expected_max: va + vb, got: vr, what: "box" });

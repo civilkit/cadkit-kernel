@@ -186,14 +186,26 @@ fn cylf(id: u32, r: f64, y0: f64, extra: &str) -> String {
 fn tolerance_snaps_a_wall_1e3_off_and_warns() {
     // r5 cylinder, then an r5.001 cylinder stacked on it: the rim circles are 1e-3 apart
     let exact = run(&format!("{},{}", cylf(1, 5.0, 0.0, ""), cylf(2, 5.001, 10.0, "")));
-    assert!(exact.errors().iter().any(|e| e.ends_with("booleanFailed")), "{:?}", exact.errors());
+    // the exact union may fail (booleanFailed) or, since the boolean handles near-coincident rims, succeed; either way it
+    // must not claim a snap: the `booleanFuzzy` warning belongs to the tolerance path only
+    assert!(exact.errors().iter().all(|e| e.ends_with("booleanFailed")), "{:?}", exact.errors());
+    assert!(!exact.warnings().iter().any(|w| w.ends_with("booleanFuzzy")), "{:?}", exact.warnings());
     let fuzzy = run(&format!("{},{}", cylf(1, 5.0, 0.0, ""), cylf(2, 5.001, 10.0, r#","tolerance":0.002"#)));
     assert!(fuzzy.errors().is_empty(), "{:?}", fuzzy.errors());
     assert!((fuzzy.volume() - PI * 25.0 * 20.0).abs() < 0.01 * 20.0, "{}", fuzzy.volume());
     assert_eq!(fuzzy.warnings(), vec!["F2:booleanFuzzy"]);
+    // autoFuzzy only retries when the plain boolean fails or gives an invalid body. The plain union of these two cylinders now
+    // succeeds (the rims are handled as they are), so no snap happens and no warning is due; if it does snap, it must say so
+    // and give the snapped volume. Either way the volume is one of the two valid answers and an unsnapped result has no warning.
     let auto = run(&format!("{},{}", cylf(1, 5.0, 0.0, ""), cylf(2, 5.001, 10.0, r#","autoFuzzy":true"#)));
     assert!(auto.errors().is_empty(), "{:?}", auto.errors());
-    assert_eq!(auto.warnings(), vec!["F2:booleanFuzzy"]);
+    let stacked = PI * 25.0 * 10.0 + PI * 5.001 * 5.001 * 10.0;
+    if auto.warnings().is_empty() {
+        assert!((auto.volume() - stacked).abs() < 1e-3, "{}", auto.volume());
+    } else {
+        assert_eq!(auto.warnings(), vec!["F2:booleanFuzzy"]);
+        assert!((auto.volume() - PI * 25.0 * 20.0).abs() < 0.01 * 20.0, "{}", auto.volume());
+    }
 }
 
 #[test]

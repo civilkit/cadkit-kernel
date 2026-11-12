@@ -335,6 +335,7 @@ Two warnings of the end conditions are in [Warnings](#warnings): `endConditionFa
 | `booleanFuzzy` | The result depends on a fuzzy tolerance. `params.tolerance` is the value that decided it. |
 | `endConditionFallback` | An unreachable end reference ran as a blind extrude. `params`: `end`, `reason`, `fallback`, `depth`, and the params of the reason. |
 | `extrudeZeroDepth` | A `blind` or `mid` extrude has a depth of zero or less, or none (also when an expression evaluates to 0). It was built as a sliver of 1e-6 mm, as the reference does, which is not a usable solid and can make a later union fail with `booleanFailed` / `openEdge`. `params`: `depth`, `built`, `hint`. |
+| `sheetCutFallback` | A plain extrude cut of a folded sheet was tried as a sheet cut, which refused, so it ran as an ordinary cut of the solid; the part is no longer an unfoldable sheet (no flat pattern, no bend table). `params`: `detail`, `hint`, `reason` (the code of the sheet-cut refusal), `reasonDetail` (its detail, when it has one). |
 | `endRefRelinked` | The end face id no longer exists; the face was found again. `params`: `from`, `to`. |
 | `holeDowngraded` | A counterbore or countersink was drilled as a simple hole because its step or cone dimension is missing. `params`: `requested`, `built`, `missing`, `detail`, `hint`. |
 | `threadDiameterMismatch` | The hole or shaft diameter does not suit the thread. `params`: `expected`, `actual`, `size`, `standard`, `internal`, `nearest`, `hint`. |

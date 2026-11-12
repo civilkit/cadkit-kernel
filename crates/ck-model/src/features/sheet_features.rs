@@ -1882,6 +1882,21 @@ pub fn plain_cut_is_sheet_cut(br: &Brep, state: &RegenState, f: &Feature) -> boo
     sk.frame.z.dot(model.flat3().n).abs() > 1.0 - 1e-9
 }
 
+/// Warning: a plain extrude cut of a folded sheet was tried as a sheet cut, which refused, so it ran as an ordinary cut of the solid and
+/// the part is no longer an unfoldable sheet. Params: `detail`, `hint`, `reason` (the code of the sheet-cut refusal) and `reasonDetail` (its `detail`, when it has one).
+pub const SHEET_CUT_FALLBACK: &str = "sheetCutFallback";
+
+pub fn sheet_cut_fallback_warning(refusal: &FeatureError) -> FeatureError {
+    let mut w = FeatureError::new(SHEET_CUT_FALLBACK)
+        .with("detail", Json::Str("this cut was applied as a plain cut of the solid; the part is no longer an unfoldable sheet".into()))
+        .with("hint", Json::Str("check that the slot or sketch is aligned with the sheet; a cut a few nanometres off axis leaves a sliver the sheet cut refuses".into()))
+        .with("reason", Json::Str(refusal.code.clone()));
+    if let Some((_, d)) = refusal.params.iter().find(|(k, _)| k == "detail") {
+        w = w.with("reasonDetail", d.clone());
+    }
+    w
+}
+
 /// `sheetCut`: cut the closed regions of a sketch out of the sheet, through the flat pattern. The sketch is read in the flat layout
 /// (a sketch on the plane of the base, or parallel to it): its regions are removed from every panel they meet and from the bend
 /// zones they cross (the cut is mapped through the bend, so it runs across bends).

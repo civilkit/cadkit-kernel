@@ -246,6 +246,16 @@ impl FeatureError {
                 ),
             );
         }
+        // an operand with a feature no thicker than the welding tolerance (a 1e-6 mm slab): `booleanFailed;thinFeature=<len>`
+        if let Some((c, d)) = code.split_once(";thinFeature=") {
+            let len = d.parse::<f64>().unwrap_or(0.0);
+            return FeatureError { code: c.to_string(), params: Vec::new() }
+                .with("thickness", Json::Num(len))
+                .with(
+                    "hint",
+                    Json::Str(format!("an operand has a wall or slab only {len:.3e} mm thick, not thicker than the 1e-6 mm weld distance, so the boolean cannot hold its two faces apart (a zero-depth or negative-depth extrude is built as a 1e-6 mm slab); give it a real depth, or do not pattern, mirror or combine it")),
+                );
+        }
         // an exact tangency whose result has an odd Euler characteristic:
         // `booleanTangent;euler=<n>;hint=<text>`
         if let Some((c, d)) = code.split_once(";euler=") {

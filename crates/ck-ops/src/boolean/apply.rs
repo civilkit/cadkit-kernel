@@ -57,6 +57,24 @@ pub fn boolean(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> 
             Op::Cut => BoolOut { body: Body::new(), no_effect: false, mismatch: None, disjoint: false },
         });
     }
+    // An operand with an edge between two distinct vertices no farther apart than the welding tolerance (a 1e-6 mm slab, the
+    // clamp of a zero-depth extrude, is exactly that): the weld merges the two ends, the side faces collapse and the result is not a solid
+    // (open or non-manifold shell, no mesh triangles, material dropped). Refuse it instead of returning that.
+    if a.num_faces() > 0 && b.num_faces() > 0 {
+        if let Some(len) = [a, b].iter().find_map(|x| thin_edge(x, tol)) {
+            return Err(format!("booleanFailed;thinFeature={len:.3e}"));
+        }
+    }
+    // Two free-form faces that lie on each other to a few thousandths of their size but are not the same surface (a part
+    // inserted twice whose blades were fitted twice: gap 7e-3 mm on 100 mm blades) cannot be closed by any welding
+    // tolerance of the ladder (the marched intersection crosses back and forth along the whole outline); the attempts
+    // then grind through every tolerance and the robust mode for minutes. Refuse at once with the faces named.
+    if a.num_faces() > 0 && b.num_faces() > 0 {
+        let unweldable = tol * 1000.0;
+        if let Some((fa, fb, gap)) = near_coincident_within(a, b, unweldable, |diag| (diag * 2e-3).min(0.1)) {
+            return Err(format!("booleanFailed;nearCoincident={fa}|{fb}|{gap:.3e}"));
+        }
+    }
     // Operands far from the origin (a part at 1e6 mm) lose precision to the absolute
     // tolerances: welding and closest-point tests compare distances of ~1e-6 while f64
     // squared distances near 1e12 resolve only ~1e-4. Move such operands to a local
@@ -93,6 +111,27 @@ pub fn boolean(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> 
             },
         }
     })
+}
+
+/// Length of the shortest edge of `b` that joins two distinct vertices no farther apart than the welding tolerance (the
+/// vertex pool merges points within `tol`, so such an edge collapses and takes its side faces with it), `None` when there is
+/// none. The limit is `tol` plus a relative `1e-3` for the rounding of the transforms that placed the operand: the clamped
+/// zero-depth slab is `MIN_DEPTH == 1e-6 == tol` thick. A valid sliver beyond that (1.2e-6 mm, from line-tangent cylinders)
+/// is not refused: its ends stay apart in the pool.
+pub(crate) fn thin_edge(b: &Body, tol: f64) -> Option<f64> {
+    let lim = tol * (1.0 + 1e-3);
+    let mut worst: Option<f64> = None;
+    for e in b.edge_ids() {
+        let ed = b.edge(e);
+        if ed.v0 == ed.v1 || b.vertex(ed.v0).p.dist(b.vertex(ed.v1).p) > lim {
+            continue;
+        }
+        let len = b.edge_length(e);
+        if len <= lim && worst.map_or(true, |w| len < w) {
+            worst = Some(len);
+        }
+    }
+    worst
 }
 
 /// `a` and `b` are the same solid in the same place: equal element counts, and every face of `a` pairs with a
@@ -188,8 +227,16 @@ thread_local! {
 /// intersection of two such walls crosses back and forth along the whole outline, so the arrangement cannot close; the pair is
 /// the one to make exactly coincident (same curve) or to move apart. Smallest worst-case gap wins. Diagnosis only (after a failure).
 fn near_coincident(a: &Body, b: &Body) -> Option<(String, String, f64)> {
+    near_coincident_within(a, b, NEAR_FLOOR, |_| 0.1)
+}
+
+/// Gaps below this are the same surface for [`near_coincident_within`].
+const NEAR_FLOOR: f64 = 1e-7;
+
+/// [`near_coincident`] with the largest gap that still counts given per tool-face size (`limit(diagonal)`).
+fn near_coincident_within(a: &Body, b: &Body, min_gap: f64, limit: impl Fn(f64) -> f64) -> Option<(String, String, f64)> {
     use ck_geom::surface::Surface;
-    let freeform = |bd: &Body, f| matches!(bd.face(f).surface, Surface::Extrusion { .. } | Surface::BSpline(_) | Surface::Offset { .. });
+    let freeform = |bd: &Body, f| matches!(bd.face(f).surface, Surface::Extrusion { .. } | Surface::BSpline(_) | Surface::Offset { .. } | Surface::Screw { .. });
     let fa: Vec<_> = a.face_ids().filter(|&f| freeform(a, f)).collect();
     let fb: Vec<_> = b.face_ids().filter(|&f| freeform(b, f)).collect();
     if fa.is_empty() || fb.is_empty() || fa.len() * fb.len() > 2000 {
@@ -208,15 +255,23 @@ fn near_coincident(a: &Body, b: &Body) -> Option<(String, String, f64)> {
     let mut best: Option<(String, String, f64)> = None;
     for &g in &fb {
         let pts = samples(g);
+        let max_gap = {
+            let (mut lo, mut hi) = (Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY), Vec3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY));
+            for &p in &pts {
+                lo = lo.min(p);
+                hi = hi.max(p);
+            }
+            limit((hi - lo).len())
+        };
         for &f in &fa {
             let mut worst = 0.0f64;
             for &p in &pts {
                 worst = worst.max(a.face(f).surface.distance(p));
-                if worst > 0.1 {
+                if worst > max_gap {
                     break;
                 }
             }
-            if worst > 0.1 || worst < 1e-7 {
+            if worst > max_gap || worst < NEAR_FLOOR {
                 continue;
             }
             if best.as_ref().is_none_or(|x| worst < x.2) {
@@ -224,7 +279,9 @@ fn near_coincident(a: &Body, b: &Body) -> Option<(String, String, f64)> {
             }
         }
     }
-    best
+    // The tightest pair decides: when it is closer than `min_gap` the welding ladder may still close it, so nothing is
+    // refused (reporting a looser pair of the same walls instead would name a gap that is not the true one).
+    best.filter(|x| x.2 >= min_gap)
 }
 
 /// The ordinary ladder, then (only when it failed to assemble) the robust one: the same attempts with the

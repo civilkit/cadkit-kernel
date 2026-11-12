@@ -1684,8 +1684,14 @@ impl Brep {
                 bodies::check_free(self.body.as_ref(), &name, &f.id, &[])?;
             }
         }
+        let mut sheet_fallback = None;
         if sheet_features::plain_cut_is_sheet_cut(self, state, f) {
-            return sheet_features::exec_sheet_cut(self, state, f);
+            // a cut the panel tree cannot take (a region with an island, a rebuild whose boolean fails) is still a plain cut of the solid:
+            // the sheet cut leaves the body and the sheet model as they were when it fails, so the ordinary boolean runs on them
+            match sheet_features::exec_sheet_cut(self, state, f) {
+                Ok(()) => return Ok(()),
+                Err(e) => sheet_fallback = Some(sheet_features::sheet_cut_fallback_warning(&e)),
+            }
         }
         let tool = match &f.kind {
             FeatureKind::Extrude { end, .. } if *end == End::ToObject || has_start(f) => self.extrude_to_object(state, f)?,
@@ -1698,7 +1704,7 @@ impl Brep {
                 let mut extras = extrude::EndExtras::default();
                 let t = extrude::exec_extrude_ex(state, f, self.body.as_ref(), &mut extras)?;
                 state.result.warnings.retain(|w| w.feature != f.id);
-                for w in extras.warnings {
+                for w in extras.warnings.into_iter().chain(sheet_fallback.take()) {
                     state.result.warnings.push(crate::regen::RegenError { feature: f.id.clone(), error: w });
                 }
                 t
