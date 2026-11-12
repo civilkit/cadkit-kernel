@@ -230,6 +230,21 @@ pub(crate) fn seam_spike_u(s: &Surface, pieces: &[(&Curve, f64, f64)], sense: bo
 }
 
 fn loop_polygon_with(s: &Surface, pieces: &[(&Curve, f64, f64)], sense: bool, nfun: impl Fn(&Curve, f64, f64) -> usize) -> Vec<Vec2> {
+    loop_polygon_adv(s, pieces, sense, nfun).0
+}
+
+/// How far a loop advances in u around a periodic surface: the u of the loop's true end point minus the u of its first
+/// sample. A loop that closes in the parameter plane (or through a seam spike) advances 0; one that goes once round the
+/// axis without crossing a seam edge advances plus or minus a period.
+pub fn loop_u_advance(s: &Surface, pieces: &[(&Curve, f64, f64)], sense: bool) -> f64 {
+    let (poly, end_u) = loop_polygon_adv(s, pieces, sense, samples_fine);
+    match (poly.first(), end_u) {
+        (Some(p), Some(e)) => e - p.x,
+        _ => 0.0,
+    }
+}
+
+fn loop_polygon_adv(s: &Surface, pieces: &[(&Curve, f64, f64)], sense: bool, nfun: impl Fn(&Curve, f64, f64) -> usize) -> (Vec<Vec2>, Option<f64>) {
     let mut out = vec![];
     let mut prev: Option<Vec2> = None;
     let fp = s.foot_key();
@@ -294,7 +309,7 @@ fn loop_polygon_with(s: &Surface, pieces: &[(&Curve, f64, f64)], sense: bool, nf
         _ => None,
     };
     close_pole_spikes(s, &mut out, end_u);
-    out
+    (out, end_u)
 }
 
 /// A loop that reaches a pole of a periodic surface along a seam and comes

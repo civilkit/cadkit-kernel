@@ -1,6 +1,7 @@
 //! Shell on curved and stepped bodies (tools/cases/shell_bodies): each fixture is a body plus a `shell` as its last
 //! feature. The volumes are the kernel's own, checked against the closed form where there is one (the sphere).
-//! The fixtures that do not shell yet are kept beside them and listed in the ignored test at the end.
+//! The fixtures that do not shell yet are kept beside them and listed in the ignored test at the end; two more are
+//! refused with a stated reason (a drafted and filleted edge, a thickened free-form surface), see the last tests.
 use ck_model::features::Brep;
 use ck_model::regen::{self, FeatureExec, RegenOpts, RegenResult, Tracer};
 use ck_model::Part;
@@ -89,6 +90,25 @@ fn swept_bar_with_a_bend() {
 #[test]
 fn block_with_a_through_hole_shelled_open_at_the_top() {
     passes(fixture!("through_hole_open_top"), 9702.442);
+}
+
+/// A cylinder with a rectangular notch cut across the seam: the notch walls meet the cylinder in saddle-shaped corners.
+#[test]
+fn cylinder_with_a_notch_across_the_seam() {
+    passes(fixture!("saddle_notch_cyl_open_top"), 2178.260);
+    passes(fixture!("saddle_notch_cyl_closed"), 2518.730);
+}
+
+/// A shell of a body whose edge between a free-form wall and a plane wall cannot be offset is refused with a reason
+/// (`offsetUnsupported`) and the body stays as it was; it is not a wrong shell.
+#[test]
+fn shell_refused_where_an_edge_cannot_be_offset() {
+    for src in [fixture!("tapered_fillet_open_top"), fixture!("thickened_freeform_closed")] {
+        let (errors, _, valid) = shell_body(src);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].starts_with("S:") && errors[0].contains("offset"), "{errors:?}");
+        assert!(valid, "the body before the shell stays valid");
+    }
 }
 
 #[test]

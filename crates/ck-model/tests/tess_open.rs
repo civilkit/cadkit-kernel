@@ -76,6 +76,16 @@ fn spline_cusp_faces_mesh_without_holes() {
     assert!(issues.is_empty(), "{issues:?}");
 }
 
+/// A disc unioned onto a coaxial bar of the same radius that is cut flat (a short disc under a D-shaft): the two walls are one
+/// cylinder, and the bar's wall patch (its seam cancelled when the flat cut split it) does not wrap the axis. Fusing the
+/// patch into the disc's ring left a seam that stopped where the patch began: the ring and the upper loop each went once
+/// round the axis, and the two faces were meshed 136 and 194 percent over.
+#[test]
+fn ring_under_a_flat_cut_bar_is_covered() {
+    let issues = open_issues(include_str!("fixtures/tess_ring_flat_bar.json"));
+    assert!(issues.is_empty(), "{issues:?}");
+}
+
 /// Debug probe (set `CK_PART=<part json>`): one line per face whose mesh is suspect (no triangles, open boundary graph,
 /// unrecovered trims, or mesh area outside 99..101 percent of the exact area).
 #[test]

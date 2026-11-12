@@ -76,7 +76,15 @@ const B = new WebAssembly.Module(readFileSync(wasmB));
 
 const score = {};
 const bump = (k, ok) => { score[k] ??= [0, 0]; score[k][1]++; if (ok) score[k][0]++; };
-const norm = (r) => (r.trap ? `TRAP ${r.trap.replace(/\/rustc\/[0-9a-f]+\/|:\d+:\d+:/g, '')}` : r.json.replace(/"ms":[0-9.e+-]+/g, '"ms":0').replace(/"at":[0-9.e+-]+/g, '"at":0').replace(/,"build":"[0-9a-f]+(-dirty)?"/g, ''));
+// our-only warning (the reference clamps a zero depth silently): leave it out of the comparison with the reference
+const dropOurWarnings = (j) =>
+  j.includes('"extrudeZeroDepth"')
+    ? j
+        .replace(/\["[^"]*",\{"code":"extrudeZeroDepth"[^\]]*\}\],?/g, '')
+        .replace(/,\]/g, ']')
+        .replace(/,?"warnings":\[\]/g, '')
+    : j;
+const norm = (r) => (r.trap ? `TRAP ${r.trap.replace(/\/rustc\/[0-9a-f]+\/|:\d+:\d+:/g, '')}` : dropOurWarnings(r.json).replace(/"ms":[0-9.e+-]+/g, '"ms":0').replace(/"at":[0-9.e+-]+/g, '"at":0').replace(/,"build":"[0-9a-f]+(-dirty)?"/g, ''));
 const bin = (r) => (r.trap ? '' : Buffer.from(r.bytes.subarray((4 + new DataView(r.bytes.buffer).getUint32(0, true) + 7) & -8)).toString('base64'));
 
 // 1. wire cases (stateful sequences)
@@ -137,7 +145,7 @@ function regenSet(set, targets) {
     const pa = !ra || ra.trap ? null : JSON.parse(ra.json), pb = rb.trap ? null : JSON.parse(rb.json);
     const ba = pa?.result?.body, bb = pb?.result?.body;
     const cnt = (b) => b?.edges?.map(({ pts, ...e }) => ({ ...e, pts: pts.length }));
-    const rest = (p) => { const r = { ...(p?.result ?? {}) }; delete r.body; return JSON.stringify([p?.ok, p?.error, r]); };
+    const rest = (p) => { const r = { ...(p?.result ?? {}) }; delete r.body; if (r.warnings) { r.warnings = r.warnings.filter((e) => e?.[1]?.code !== 'extrudeZeroDepth'); if (!r.warnings.length) delete r.warnings; } return JSON.stringify([p?.ok, p?.error, r]); };
     if (haveRef) bump(`regen.${set}.faces`, !!pa && !!pb && JSON.stringify(ba?.faces) === JSON.stringify(bb?.faces));
     if (haveRef) bump(`regen.${set}.edges`, !!pa && !!pb && JSON.stringify(cnt(ba)) === JSON.stringify(cnt(bb)));
     if (haveRef) bump(`regen.${set}.box`, !!pa && !!pb && JSON.stringify(ba?.box) === JSON.stringify(bb?.box));

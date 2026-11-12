@@ -1,0 +1,63 @@
+{
+ "format": "ck-part",
+ "version": 1,
+ "features": [
+  {
+   "type": "sketch",
+   "id": "F1",
+   "plane": {
+    "kind": "std",
+    "id": "front"
+   },
+   "points": [
+    {
+     "id": "c1",
+     "x": 10,
+     "y": 3
+    },
+    {
+     "id": "c2",
+     "x": 15,
+     "y": 6
+    },
+    {
+     "id": "c3",
+     "x": 22,
+     "y": 7
+    }
+   ],
+   "entities": [
+    {
+     "type": "spline",
+     "id": "e8",
+     "pts": [
+      "c1",
+      "c2",
+      "c3"
+     ]
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "surfaceExtrude",
+   "id": "F2",
+   "sketch": "F1",
+   "end": "blind",
+   "depth": 12
+  },
+  {
+   "type": "thicken",
+   "id": "F3",
+   "surface": "F2",
+   "thickness": 4,
+   "side": "front"
+  },
+  {
+   "type": "shell",
+   "id": "S",
+   "faces": [],
+   "thickness": 1
+  }
+ ]
+}

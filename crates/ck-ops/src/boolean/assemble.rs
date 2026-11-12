@@ -23,7 +23,7 @@
 //!   GUESS/known mismatch: the oracle numbers kept whole edges first, then
 //!   split pieces, then new intersection edges, per face group.
 
-use super::classify::{in_loops, in_polygon, loop_polygon, outward, poly_area, Class, Solid};
+use super::classify::{in_loops, in_polygon, loop_polygon, loop_u_advance, outward, poly_area, Class, Solid};
 use super::imprint::{ArrFace, Arrangement};
 use super::Op;
 use crate::intersect::ss::{self, SsResult};
@@ -399,7 +399,13 @@ pub fn sample_point(arr: &Arrangement, f: &Fragment) -> Option<(Vec3, Vec3)> {
             let td = (e.curve.deriv(tm) * (tb - ta).signum()).normalize();
             let n = outward(s, af.sense, pm);
             let left = n.cross(td).normalize();
-            for eps in [3e-2, 1e-2, 3e-3, 1e-3, 1e-4] {
+            // Offsets run down to a few welding tolerances: a fragment can be a thin band (two coaxial cylinders
+            // a few micrometres apart split a shared cap into a disc and a ring that wide), narrower than
+            // 1e-4 of the fragment's size.
+            for eps in [3e-2, 1e-2, 3e-3, 1e-3, 1e-4, 3e-5, 1e-5, 3e-6, 1e-6] {
+                if eps < 1e-4 && eps * size < 8.0 * arr.tol {
+                    break;
+                }
                 let q0 = pm + left * (eps * size);
                 let (u, v, q) = s.closest_point(q0);
                 if !in_loops(s, Vec2::new(u, v), &polys) {
@@ -753,13 +759,17 @@ pub fn select_with(
     // merged groups
     roots.dedup();
     let mut done = vec![false; n];
+    // groups still to emit: the union-find groups, and the per-face subgroups of one that cannot be fused (below)
+    let mut work: std::collections::VecDeque<Vec<usize>> = Default::default();
     for i in 0..n {
         let r = find(&mut parent, i);
         if !merged[i] || done[r] {
             continue;
         }
         done[r] = true;
-        let members: Vec<usize> = std::mem::take(&mut members_of[r]);
+        work.push_back(std::mem::take(&mut members_of[r]));
+    }
+    while let Some(members) = work.pop_front() {
         let lead = members[0];
         let af = &arr.faces[kept[lead].0.af];
         let sense = af.sense ^ kept[lead].1;
@@ -835,6 +845,24 @@ pub fn select_with(
         }
         let hes: Vec<He> = tagged.iter().map(|x| x.1).filter(|h| !cancelled.contains(&h.0)).collect();
         let cycles = walk(arr, &af.surface, sense, &hes);
+        // Fragments of two faces fused across a period: where a cylinder's wall wraps the axis the seam has to stay in
+        // the loops, but a wall patch that did not wrap (a bar cut flat, whose seam was cancelled with its two sides)
+        // brings none, so a seam that stops where the patch begins leaves a ring loop and an upper loop that each go
+        // once round the axis and enclose nothing in the parameter plane (the display mesh covered such a ring 124 to
+        // 194 percent). Keep the fragments of each face fused among themselves and the faces apart, sharing the edge
+        // the fusing would have removed.
+        if periodic && !same_face && cycles.iter().any(|c| loop_u_advance(&af.surface, &pieces(arr, c), sense).abs() > 0.5 * af.surface.periods().0.unwrap_or(f64::INFINITY)) {
+            let mut by_face: Vec<(usize, Vec<usize>)> = vec![];
+            for &m in &members {
+                match by_face.iter_mut().find(|x| x.0 == kept[m].0.af) {
+                    Some(x) => x.1.push(m),
+                    None => by_face.push((kept[m].0.af, vec![m])),
+                }
+            }
+            super::bool_dbg!("merged face {}: loops go round the axis without a seam, keeping {} faces apart", af.name.id(), by_face.len());
+            work.extend(by_face.into_iter().map(|x| x.1));
+            continue;
+        }
         super::bool_dbg!(
             "merged face {}: members {:?} (faces {:?}), cancelled edges {:?}, remaining {:?}, {} cycles",
             af.name.id(),

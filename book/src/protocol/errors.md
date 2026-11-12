@@ -140,7 +140,7 @@ The variable table of the part (`variables`) is resolved before the features run
 | `profileCrossesAxis` | A revolve profile straddles the axis. `params.detail`. |
 | `thinTooThick` | A thin-wall extrude or revolve: the thickness is too large for the profile (a corner or curvature limit). `params`: `limit` (`curvature` or `corner`), `minRadius`, `maxThickness`, `thickness`, `face`. |
 | `offsetFitFailed` | The offset curve of a thin-wall profile could not be fitted within tolerance. |
-| `zeroDepth` | An extrusion or twisted extrusion with no depth (below 1e-9). The `extrude` feature itself replaces a depth of zero or less by 1e-6, so this code shows only on paths that do not. |
+| `zeroDepth` | An extrusion or twisted extrusion with no depth (below 1e-9). The `extrude` feature itself replaces a depth of zero or less by 1e-6, so this code shows only on paths that do not; the `extrude` feature raises the warning `extrudeZeroDepth` instead (see [Warnings](#warnings)). |
 | `emptyProfile`, `openProfile` | The profile has no region or is not closed. |
 | `extrudeDirectionInPlane` | The extrusion direction lies in the sketch plane. |
 | `zeroAngle`, `revolveAxisNotInPlane`, `revolveDegenerate` | A revolve with a zero angle, an axis that is not in the sketch plane, or a profile that is degenerate about the axis. |
@@ -334,6 +334,7 @@ Two warnings of the end conditions are in [Warnings](#warnings): `endConditionFa
 |---|---|
 | `booleanFuzzy` | The result depends on a fuzzy tolerance. `params.tolerance` is the value that decided it. |
 | `endConditionFallback` | An unreachable end reference ran as a blind extrude. `params`: `end`, `reason`, `fallback`, `depth`, and the params of the reason. |
+| `extrudeZeroDepth` | A `blind` or `mid` extrude has a depth of zero or less, or none (also when an expression evaluates to 0). It was built as a sliver of 1e-6 mm, as the reference does, which is not a usable solid and can make a later union fail with `booleanFailed` / `openEdge`. `params`: `depth`, `built`, `hint`. |
 | `endRefRelinked` | The end face id no longer exists; the face was found again. `params`: `from`, `to`. |
 | `holeDowngraded` | A counterbore or countersink was drilled as a simple hole because its step or cone dimension is missing. `params`: `requested`, `built`, `missing`, `detail`, `hint`. |
 | `threadDiameterMismatch` | The hole or shaft diameter does not suit the thread. `params`: `expected`, `actual`, `size`, `standard`, `internal`, `nearest`, `hint`. |

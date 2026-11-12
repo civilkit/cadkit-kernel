@@ -346,6 +346,10 @@ pub fn exec_extrude_ex(state: &RegenState, f: &Feature, body: Option<&Body>, ext
     let depth = state.size(f, "depth", 0.0)?;
     let draft = state.num(f, "draft", 0.0)?;
     let (mut profile, thin_on) = super::thin::feature_profile(state, sk, f)?;
+    if depth < MIN_DEPTH && matches!(end, End::Blind | End::Mid) {
+        // The reference clamps (see the module doc) and builds the 1e-6 sliver, so this stays a warning, not a refusal.
+        extras.warnings.push(zero_depth_warning(depth));
+    }
     let depth = depth.max(MIN_DEPTH);
     let combine = Combine::of(*op);
     let object = super::extrude_object::wanted(f, *end)?;
@@ -487,6 +491,17 @@ pub fn is_unreachable(code: &str) -> bool {
 
 fn strict_end(f: &Feature) -> bool {
     matches!(f.raw.get("strictEnd"), Some(Json::Bool(true)))
+}
+
+/// Warning: a blind or mid-plane extrude has depth 0 (or less, or none given); it was built as a sliver of
+/// [`MIN_DEPTH`], which is not a usable solid and can make later booleans fail. Params: `depth`, `built`, `hint`.
+pub const EXTRUDE_ZERO_DEPTH: &str = "extrudeZeroDepth";
+
+pub fn zero_depth_warning(depth: f64) -> FeatureError {
+    FeatureError::new(EXTRUDE_ZERO_DEPTH)
+        .with("depth", Json::Num(depth))
+        .with("built", Json::Num(MIN_DEPTH))
+        .with("hint", Json::Str("depth is 0; give a non-zero depth, or drop the feature (a zero-thickness extrude leaves a sliver that later booleans can fail on)".into()))
 }
 
 pub fn fallback_warning(end: End, e: &FeatureError, depth: f64) -> FeatureError {

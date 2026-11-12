@@ -70,6 +70,28 @@ The repository measures this as a gate: edits of upstream dimensions across 37 t
 - **Split faces have no successor tracking.** If `F2.C1` is split into `F2.C1~1` and `F2.C1~2` by a later edit, a reference to `F2.C1` stops resolving; nothing says which piece is meant.
 - **Sketch entity ids.** A side-face name embeds the id of the sketch entity (`e1`), so a sketch whose entity ids change renames its faces.
 
+## Comparison with a lineage-based proposal
+
+A design proposal for another CAD project (read for ideas only, nothing taken from its code) lists failure classes of persistent naming and three rules: when a name is lost, fall back by lineage (among the faces the same feature made, scored by role and origin) and never by geometry alone; a suppressed maker is a reference that is waiting, not a lost one; a reference is never re-pointed to another body. Our rules against each, with the tests that pin them (`crates/ck-model/tests/blend_naming.rs`):
+
+| Failure class | What we do | Test |
+|---|---|---|
+| A blend edge pick falls back to a point on another body | An edge reference needs both face names (or their `~k` family) to resolve. If either is gone the feature reports `missingEdge`, however close `at` is to another body's edge. With valid names the names win over a stray point. | `names_beat_the_picked_point_on_another_body`, `lost_names_do_not_fall_back_to_a_point_on_another_body`, `half_lost_names_do_not_fall_back_to_a_point_on_another_body` |
+| The maker of a referenced face is suppressed | The dependants report an error (`missingEdge` for an edge pick, `missingReference` for a face pick). Nothing is re-pointed, a look-alike body is never rounded, and unsuppressing restores the exact result. | `suppressed_maker_is_not_repointed_and_recovers`, `suppressed_maker_with_a_lookalike_body_never_rounds_it`, `face_pick_of_a_suppressed_maker_is_not_repointed` |
+| A reference crosses to another body | Never: a name belongs to one feature and one body, and the only position fallback (below) is limited to faces of the same two features. | the three tests of the first row |
+| A number edit upstream, or an unrelated cut | The pick keeps resolving: names come from the construction. | `upstream_number_edit_keeps_the_pick`, `upstream_cut_elsewhere_keeps_the_pick` |
+| A renamed sketch entity or a replaced maker id | The name changes with the entity or the feature id, so the pick is lost and reported, not re-pointed. | `renamed_entity_loses_the_pick_instead_of_repointing`, `replaced_maker_id_loses_the_pick` |
+| A face split by a later feature | A reference to the unsplit name stops resolving; there is no successor tracking (see above). The one fallback is for edge picks: faces of the same two features whose `~k` numbers shifted, the edge passing through `at`. | not a failing case, documented under "What breaks a name" |
+
+Where our rule differs:
+
+- A suppressed maker is an error on the dependant, not a "waiting" state. The part regenerates with that error and recovers when the maker is back; the error names the face that is gone.
+- Our fallback when a name is lost is position-based but narrow (same two features, the edge through `at` within 1e-6 relative); there is no lineage score among the faces of a feature.
+- A split pick takes the piece nearest the point, not every piece.
+- Names are text, not structured records, so role and origin are parsed from the string.
+
+Not covered by tests here: lineage scoring (we have none), stability of piece ordinals across kernels, and the two `naming.stable` edits of the gate that lose their references (both change the topology).
+
 ## Finding out when references change
 
 Two requests help an editor keep references valid.

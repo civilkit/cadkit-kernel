@@ -170,3 +170,19 @@ fn replaced_maker_id_loses_the_pick() {
     assert_eq!(r.errs, vec!["missingEdge".to_string()]);
     assert!((r.volume - BOX_VOL).abs() < 1e-6);
 }
+
+/// Face picks follow the same rule as edge picks: a sketch placed on a face of a suppressed maker is in error and is not
+/// moved to the look-alike face of the other body (same plane height, same shape).
+#[test]
+fn face_pick_of_a_suppressed_maker_is_not_repointed() {
+    let on_top = r#", {"type":"sketch","id":"F6","plane":{"kind":"face","id":"F2.C1"},"points":[{"id":"c","x":20,"y":10}],"entities":[{"type":"circle","id":"e1","c":"c","r":3}],"constraints":[]},
+{"type":"extrude","id":"F7","op":"cut","sketch":"F6","end":"blind","depth":4}"#;
+    let feats = base(true, "") + on_top;
+    let ok = run(&feats);
+    assert!(ok.errs.is_empty(), "{:?}", ok.errs);
+    assert!(ok.volume < 2.0 * BOX_VOL - 100.0, "the pocket is cut: {}", ok.volume);
+    let sup = feats.replace(r#""type":"extrude","id":"F2","#, r#""type":"extrude","suppressed":true,"id":"F2","#);
+    let r = run(&sup);
+    assert!(!r.errs.is_empty(), "the sketch on a missing face must report");
+    assert!((r.volume - BOX_VOL).abs() < 1e-6, "body B must stay a box: {}", r.volume);
+}

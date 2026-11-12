@@ -133,10 +133,16 @@ impl Arrangement {
         let cands: Vec<usize> = self.eidx.get(&key).cloned().unwrap_or_default();
         for i in cands {
             let e = &self.edges[i];
-            // samples of the new piece on the existing one
+            // samples of the new piece on the existing one, and of the existing one on the new piece: a sliver
+            // between two vertices a hair apart lies on the long piece through them (a closed loop whose two ends
+            // were cut at slightly different points) without being that piece
+            let reach = tol * if super::robust() { SLIVER } else { 10.0 };
             let on = [0.31, 0.5, 0.73].iter().all(|&f| {
                 let p = curve.eval(t0 + (t1 - t0) * f);
-                near_in_range(&e.curve, (e.t0, e.t1), p, tol * if super::robust() { SLIVER } else { 10.0 })
+                near_in_range(&e.curve, (e.t0, e.t1), p, reach)
+            }) && [0.31, 0.5, 0.73].iter().all(|&f| {
+                let p = e.curve.eval(e.t0 + (e.t1 - e.t0) * f);
+                near_in_range(curve, (t0, t1), p, reach)
             });
             if !on {
                 super::bool_dbg!(

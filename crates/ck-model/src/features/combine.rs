@@ -273,6 +273,21 @@ pub fn combine_bodies(body: &Body, spec: &Spec, fid: &str, fuzz: f64, auto: bool
     }
     let rest: Vec<FaceId> = body.face_ids().filter(|&f| !consumed[f.idx()]).collect();
     let mut out = if rest.is_empty() { Body::new() } else { extract(body, &rest) };
+    // The lumps the operation did not touch keep their names as they are: `restore` (bodies.rs) gives a name back by
+    // the lump's origin feature, which two lumps share when a result piece was cut from a lump that is also kept
+    // (an intersect with `keepTools` made from the tool's own faces), and one of them would lose its name.
+    if !rest.is_empty() {
+        let by_face: std::collections::HashMap<String, String> = body
+            .face_ids()
+            .filter(|&f| !consumed[f.idx()])
+            .filter_map(|f| Some((body.face_id_str(f), body.lump(body.face_lump(f)).name.clone()?)))
+            .collect();
+        let ls: Vec<ck_topo::body::LumpId> = out.lump_ids().collect();
+        for l in ls {
+            let name = ck_topo::mass::lump_faces(&out, l).into_iter().find_map(|f| by_face.get(&out.face_id_str(f)).cloned());
+            out.lumps[l.idx()].name = name;
+        }
+    }
     let mut first_result: Option<ck_topo::body::LumpId> = None;
     for p in &pieces {
         if p.num_faces() > 0 {
@@ -281,8 +296,11 @@ pub fn combine_bodies(body: &Body, spec: &Spec, fid: &str, fuzz: f64, auto: bool
         }
     }
     if spec.keep_tools {
-        for t in &tools {
-            out.append(t);
+        for (t, &i) in tools.iter().zip(&tool_ix) {
+            let name = body.lump(body.face_lump(comps[i][0])).name.clone();
+            if let Some(&l) = out.append(t).first() {
+                out.lumps[l.idx()].name = name;
+            }
         }
     }
     renumber(&mut out);

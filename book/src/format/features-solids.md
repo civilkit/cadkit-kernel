@@ -25,7 +25,7 @@ Sweeps the profile of a sketch along its normal.
 | `sketch` | feature id | required | The sketch. A missing or unknown sketch is `missingSketch`. |
 | `op` | string | `"add"` | See above. |
 | `end` | string | `"blind"` | The end condition (table below). |
-| `depth` | number or expression | `0` | Length in mm. Zero or negative is clamped to `1e-6`. |
+| `depth` | number or expression | `0` | Length in mm. Zero or negative is clamped to `1e-6` (a sliver, not a usable solid), and a `blind` or `mid` extrude says so with the warning `extrudeZeroDepth {depth, built, hint}`; give a non-zero depth, or drop the feature. |
 | `flip` | boolean | `false` | Extrude against the sketch normal. |
 | `draft` | number or expression | none | Taper angle in degrees; the profile shrinks towards the end. `draftOut` reverses it. |
 | `draftOut` | boolean | `false` | Taper outwards. |

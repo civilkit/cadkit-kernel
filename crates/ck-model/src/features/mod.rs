@@ -1694,7 +1694,15 @@ impl Brep {
                 self.up_to_next(t)?
             }
             FeatureKind::Extrude { end: End::UpToFace | End::OffsetFromFace | End::UpToPoint, .. } => self.extrude_to_reference(state, f)?,
-            FeatureKind::Extrude { .. } => extrude::exec_extrude(state, f, self.body.as_ref())?,
+            FeatureKind::Extrude { .. } => {
+                let mut extras = extrude::EndExtras::default();
+                let t = extrude::exec_extrude_ex(state, f, self.body.as_ref(), &mut extras)?;
+                state.result.warnings.retain(|w| w.feature != f.id);
+                for w in extras.warnings {
+                    state.result.warnings.push(crate::regen::RegenError { feature: f.id.clone(), error: w });
+                }
+                t
+            }
             FeatureKind::Revolve { .. } => extrude::exec_revolve(state, f, self.body.is_some())?,
             FeatureKind::Sphere { .. } => extrude::exec_sphere(state, f, self.body.is_some())?,
             FeatureKind::Box { .. } => extrude::exec_box(state, f, self.body.is_some())?,
