@@ -148,3 +148,64 @@ fn world_axes_unchanged_and_bad_references_still_error() {
         assert!(errs.iter().any(|e| e.contains("missingReference")), "{bad}: {errs:?}");
     }
 }
+
+/// Volume of the regenerated part (errors must be empty).
+fn volume(src: &str) -> f64 {
+    let part = Part::parse(src).unwrap();
+    let mut ex = Exec(Brep::new());
+    let res = regen::regen(&part, &RegenOpts::default(), &mut ex);
+    assert!(res.errors.is_empty(), "{:?}", res.errors.iter().map(|e| format!("{}:{}", e.feature, e.error.describe())).collect::<Vec<_>>());
+    ck_topo::mass::mass_props(ex.0.body.as_ref().expect("body")).volume
+}
+
+const PLATE: f64 = 100.0 * 100.0 * 10.0;
+fn hole_vol() -> f64 {
+    std::f64::consts::PI * 4.0 * 10.0
+}
+
+#[test]
+fn lpattern_along_a_30_degree_direction_positions_and_volume() {
+    // unit vector at 30 degrees; spacing 20 -> steps of (17.3205.., 10)
+    for dir in ["[0.8660254037844386,0.5,0]", "[1.7320508075688772,1,0]"] {
+        let tail = format!(r#",{{"type":"lpattern","id":"L6","seeds":["H5"],"dir":{{"kind":"vector","dir":{dir}}},"count":4,"spacing":20}}"#);
+        let src = plate_at(10.0, 10.0, &tail);
+        let (errs, h) = holes(&src);
+        assert!(errs.is_empty(), "{errs:?}");
+        let s = 20.0 * 30f64.to_radians().cos();
+        same(&h, &[(10.0, 10.0), (round(10.0 + s), 20.0), (round(10.0 + 2.0 * s), 30.0), (round(10.0 + 3.0 * s), 40.0)]);
+        assert!((volume(&src) - (PLATE - 4.0 * hole_vol())).abs() < 1e-3);
+    }
+}
+
+#[test]
+fn cpattern_six_holes_about_an_off_origin_axis_positions_and_volume() {
+    // axis through (40, 50) parallel to z; hole at radius 20 on the x axis of that centre
+    let tail = r#",{"type":"cpattern","id":"C6","seeds":["H5"],"axis":{"kind":"axis","point":[40,50,0],"dir":[0,0,1]},"count":6,"angle":360,"equal":true}"#;
+    let src = plate_at(60.0, 50.0, tail);
+    let (errs, h) = holes(&src);
+    assert!(errs.is_empty(), "{errs:?}");
+    let mut want: Vec<(f64, f64)> = (0..6).map(|k| {
+        let a = (60.0 * k as f64).to_radians();
+        (round(40.0 + 20.0 * a.cos()), round(50.0 + 20.0 * a.sin()))
+    }).collect();
+    want.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    same(&h, &want);
+    assert!((volume(&src) - (PLATE - 6.0 * hole_vol())).abs() < 1e-3);
+}
+
+#[test]
+fn cpattern_about_an_edge_positions_and_volume() {
+    // a 6 x 6 through pocket at (47..53); its corner edge at (53, 53) between the walls e2 (x = 53) and e3 (y = 53) is the axis
+    let tail = r#",{"type":"sketch","id":"S6","plane":{"kind":"feature","id":"P3"},
+          "points":[{"id":"a","x":47,"y":47},{"id":"b","x":53,"y":47},{"id":"c","x":53,"y":53},{"id":"d","x":47,"y":53}],
+          "entities":[{"type":"line","id":"e1","p1":"a","p2":"b"},{"type":"line","id":"e2","p1":"b","p2":"c"},
+                      {"type":"line","id":"e3","p1":"c","p2":"d"},{"type":"line","id":"e4","p1":"d","p2":"a"}],"constraints":[]},
+        {"type":"extrude","id":"E7","op":"cut","sketch":"S6","end":"through"},
+        {"type":"cpattern","id":"C8","seeds":["H5"],"axis":{"kind":"edge","faces":["E7.S.e2","E7.S.e3"],"at":[53,53,5]},"count":4,"angle":360,"equal":true}"#;
+    let src = plate_at(68.0, 63.0, tail);
+    let (errs, h) = holes(&src);
+    assert!(errs.is_empty(), "{errs:?}");
+    // offset (15, 10) from the edge, turned by 0/90/180/270 degrees (either sense gives the same set)
+    same(&h, &[(38.0, 43.0), (43.0, 68.0), (63.0, 38.0), (68.0, 63.0)]);
+    assert!((volume(&src) - (PLATE - 36.0 * 10.0 - 4.0 * hole_vol())).abs() < 1e-3);
+}

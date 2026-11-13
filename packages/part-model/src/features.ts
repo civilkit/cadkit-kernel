@@ -197,6 +197,49 @@ export interface LipFeature {
   edges: EdgeRef[];
   width: Expr;
   height: Expr;
+  /** distance from the path to the band (a centred tongue); default 0: the band touches the path */
+  inset?: Expr;
+  /** groove only: wider by this on each side and deeper by it (needs inset >= clearance when inset > 0) */
+  clearance?: Expr;
+  [key: string]: unknown;
+}
+
+/** A plane reference: a standard plane, a reference plane feature or a planar face. */
+export type PlaneRefJson = { kind: 'std'; id: string } | { kind: 'feature'; id: string } | { kind: 'face'; id: string };
+
+/** Cut a body by a plane into two bodies (`names`: [below, above], below = away from the plane normal). */
+export interface SplitFeature {
+  type: 'split';
+  id: string;
+  name?: string;
+  plane: PlaneRefJson;
+  offset?: Expr;
+  flip?: boolean;
+  target?: BodyRef | string;
+  names?: [string, string];
+  keep?: 'both' | 'below' | 'above';
+  [key: string]: unknown;
+}
+
+/** A split with a tongue on one half and a groove (wider and deeper by `clearance`) on the other. */
+export interface LipJointFeature {
+  type: 'lipJoint';
+  id: string;
+  name?: string;
+  plane: PlaneRefJson;
+  offset?: Expr;
+  flip?: boolean;
+  target?: BodyRef | string;
+  names?: [string, string];
+  height: Expr;
+  /** tongue width in mm; or `widthRatio` (fraction of the wall, default 0.5) */
+  width?: Expr;
+  widthRatio?: Expr;
+  /** distance from the outer wall; default: centred */
+  inset?: Expr;
+  /** default 0.2 */
+  clearance?: Expr;
+  tongue?: 'below' | 'above';
   [key: string]: unknown;
 }
 
@@ -777,7 +820,7 @@ export type KnownFeature =
   | DeleteFaceFeature | ThickenFeature | CutWithSurfaceFeature | PipeCutFeature
   | FreeformFeature | EditCurveFeature | ProjectCurveFeature | ExtendFeature
   | DomeFeature | SplitLineFeature | MoveFaceFeature | MoveBodyFeature
-  | ScaleFeature | AxisFeature | ThreadFeature | CombineFeature | SphereFeature | KnurlBandFeature | ImportStepFeature | RepairPartFeature | FrameFeature;
+  | ScaleFeature | AxisFeature | ThreadFeature | CombineFeature | SplitFeature | LipJointFeature | SphereFeature | KnurlBandFeature | ImportStepFeature | RepairPartFeature | FrameFeature;
 
 /** All wire type strings the kernel dispatches on. */
 export const FEATURE_TYPES = [
@@ -788,7 +831,7 @@ export const FEATURE_TYPES = [
   'surfaceOffset', 'knit', 'fill', 'insertPart', 'mate', 'plane',
   'deleteBody', 'deleteFace', 'thicken', 'cutWithSurface', 'pipeCut',
   'freeform', 'editCurve', 'projectCurve', 'extend', 'dome', 'splitLine',
-  'moveFace', 'moveBody', 'scale', 'axis', 'thread', 'combine', 'sphere', 'knurlBand', 'importStep', 'repairPart', 'frame',
+  'moveFace', 'moveBody', 'scale', 'axis', 'thread', 'combine', 'split', 'lipJoint', 'sphere', 'knurlBand', 'importStep', 'repairPart', 'frame',
   'sheetRules', 'baseFlange', 'edgeFlange', 'hem', 'fold', 'contourFlange', 'unfold', 'refold', 'sheetConvert', 'sheetCut', 'sheetCorner',
 ] as const;
 

@@ -22,6 +22,7 @@
   - [Patterns and transforms](format/features-patterns.md)
   - [Surfaces and curves](format/features-surfaces.md)
   - [Parts and assemblies](format/features-assemblies.md)
+  - [Sheet metal](format/features-sheet.md)
 - [Versions and earlier files](format/versions.md)
 
 # The protocol

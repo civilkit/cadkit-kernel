@@ -49,7 +49,7 @@ Copies the seeds along a direction.
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `seeds` | list of feature ids | required | See above. |
-| `dir` | `{"kind": "axis", "axis": "x"}` | required | A world axis (`x`, `y` or `z`). Any other reference is `missingReference`. |
+| `dir` | `{"kind": "axis", "axis": "x"}` | required | The direction the copies run along. A world axis (`x`, `y` or `z`); `{"kind": "vector", "dir": [x, y, z]}` (any direction, oblique too; the length does not matter); `{"kind": "axis", "point": [x, y, z], "dir": [x, y, z]}` (only the direction is read); a straight edge `{"kind": "edge", "faces": [f1, f2], "at": [x, y, z]}` (it runs from the edge's start to its end); the axis of a cylindrical face `{"kind": "face", "id": ...}`; an `axis` feature `{"kind": "feature", "id": ...}` or a sketch line `{"kind": "sketchLine", "sketch": ..., "entity": ...}`. A direction that does not resolve (a zero vector, a flat face, a curved edge) is `missingReference`. The same forms work for `dir2` and `dir3`; `reverse` flips the way. |
 | `spacing` | number or expression | `0` | Distance between copies, mm. |
 | `count` | number or expression | `0` | Number of instances, **including the seed**. A value of 1 or less makes no copies and is not an error; a fractional count is rounded; more than 10000 is `invalidValue`. |
 | `reverse` | boolean | `false` | Copy towards the negative direction. Not read with `distanceType: "toObject"`. |
@@ -128,7 +128,7 @@ Copies the seeds around an axis.
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `seeds` | list of feature ids | required | See above. For assemblies the list may be empty and `bodies` used, see [parts and assemblies](features-assemblies.md). |
-| `axis` | `{"kind": "axis", "axis": "z"}` | required | A world axis through the origin. |
+| `axis` | `{"kind": "axis", "axis": "z"}` | required | The axis the copies turn about. A world axis through the origin (`x`, `y` or `z`); `{"kind": "axis", "point": [x, y, z], "dir": [x, y, z]}` for any line (a point on it, defaulting to the origin, and its direction, oblique too; the length of `dir` does not matter, and its sign sets the sense of the turn); a straight edge `{"kind": "edge", "faces": [f1, f2], "at": [x, y, z]}`; the axis of a cylindrical face `{"kind": "face", "id": ...}`; an `axis` feature `{"kind": "feature", "id": ...}` or a sketch line. A bolt circle round (40, 50) is `{"kind": "axis", "point": [40, 50, 0], "dir": [0, 0, 1]}`. A reference that does not resolve (a zero `dir`, a flat face, a curved edge) is `missingReference`. |
 | `count` | number or expression | `0` | Number of instances including the seed. |
 | `angle` | number or expression | `360` | Degrees. With `equal` it is the total angle; otherwise the step. |
 | `equal` | boolean | `true` | `true`: copies are spread evenly: the step is `angle / count` for a full turn (360) and `angle / (count - 1)` otherwise, so the last copy lies at `angle`. `false`: `angle` is the step between neighbours. |

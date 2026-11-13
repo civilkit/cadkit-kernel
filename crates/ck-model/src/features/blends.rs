@@ -681,6 +681,32 @@ pub fn exec_fillet(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
     Ok(())
 }
 
+/// A circular fillet of radius `r` on edges given as (face, face, point) picks (the rib's free edge uses this: its edges
+/// are found by their face names, not picked by a reference). Same builders and size refusals as `fillet`.
+pub fn fillet_picks(br: &mut Brep, id: &str, sel: &[(String, String, Vec3)], r: f64) -> Result<(), FeatureError> {
+    let body = br.body.as_ref().ok_or_else(|| FeatureError::new("missingEdge"))?;
+    br.spans.push(Span::leaf(fillet_label(id, r, sel.len())));
+    if let Some(res) = ck_ops::blend::mixed::fillet_mixed(body, sel, &vec![r; sel.len()], id, super::TOL) {
+        return match res {
+            Ok(out) => {
+                br.body = Some(out);
+                Ok(())
+            }
+            Err(e) => {
+                let build = |radius: f64| {
+                    ck_ops::blend::mixed::fillet_mixed(body, sel, &vec![radius; sel.len()], id, super::TOL)
+                        .unwrap_or_else(|| Err(ck_ops::blend::BlendError::code("blendUnsupported")))
+                };
+                Err(size_refusal(e, r, ck_check::validate(body, super::TOL).len(), body.num_faces(), build))
+            }
+        };
+    }
+    let build = |radius: f64| ck_ops::blend::build::blend_edges(body, sel, ck_ops::blend::build::Spec::Fillet(radius, ck_ops::blend::build::FilletProfile::Circular), id, super::TOL);
+    let out = build(r).map_err(|e| size_refusal(e, r, ck_check::validate(body, super::TOL).len(), body.num_faces(), build))?;
+    br.body = Some(out);
+    Ok(())
+}
+
 /// `cornerNotTangent` warning: two blend faces of feature `id` that meet along an edge (the mitre of
 /// blends that end at a shared vertex with different radii) with a normal jump of more than half a
 /// degree; `deviation` is the largest jump in degrees.
@@ -716,7 +742,7 @@ fn corner_warnings(state: &mut RegenState, id: &str, out: &ck_topo::body::Body) 
 /// edge's two faces with the one whose loop runs the edge FORWARD first,
 /// whatever the selection order (`["F2.S.e8","F2.S.e9"]` -> e9, e8).
 /// ck-ops keeps the selection order, so normalise it here.
-fn forward_first(b: &ck_topo::body::Body, fa: &str, fb: &str, at: Vec3) -> (String, String, Vec3) {
+pub(crate) fn forward_first(b: &ck_topo::body::Body, fa: &str, fb: &str, at: Vec3) -> (String, String, Vec3) {
     let keep = (fa.to_string(), fb.to_string(), at);
     let Some(e) = ck_ops::blend::build::find_edge(b, fa, fb, at) else { return keep };
     let fwd = b.edge_coedges(e).into_iter().find(|&c| !b.coedge(c).rev).map(|c| b.coedge_face(c));

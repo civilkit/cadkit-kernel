@@ -23,7 +23,9 @@ strings from kernel.strings, and dispatch to ck-ops/ck-topo.
 | helix | sketch, definedBy(pitchRevs/heightRevs/heightPitch), pitch, revolutions, height, startAngle, leftHand, reverse |
 | scale | factor (number or [sx,sy,sz]; `factors` too), at (`origin`), bodies / body / target as moveBody; exact for planes, cylinders and cones stretched along their axis, B-spline faces, and (uniform) spheres and tori; the rest is refused `invalidValue` with detail and hint (`scale.rs`) |
 | rib | sketch, thickness(expr) |
-| lip | kind(material/move/offset/linear/turn/tension), faces[], edges[], width, height |
+| lip | kind(lip/groove), faces[], edges[], width, height, inset, clearance (groove) |
+| split | plane, offset, flip, target, names[below, above], keep(both/below/above); a plane cut into two bodies (split.rs) |
+| lipJoint | plane, offset, flip, target, names, height, width or widthRatio, inset, clearance, tongue(below/above); split plus a centred tongue and a groove wider and deeper by the clearance (split.rs) |
 | lpattern | seeds[], dir, spacing(expr), count, reverse |
 | cpattern | seeds[], axis, count, angle(expr), equal, reverse |
 | mirror | seeds[], plane, body |
@@ -75,7 +77,7 @@ strings from kernel.strings, and dispatch to ck-ops/ck-topo.
   drafted circle extruded exactly to its tip builds a one-apex cone; the regen result lists `limits`
   `[[id, {maxHeight}]]` for such extrudes, see docs/spec-agent-interface.md "Taper limits")
 - hole: holeNoPoints, holeInvalid, holeClose/Loose (fit); warning holeDowngraded (counterbore/countersink with a plain `diameter` but without its explicit step/cone dimensions is drilled as a simple hole)
-- rib: ribNeedsOpenSketch, ribNoContact
+- rib: ribNeedsOpenSketch, ribNoContact, invalidValue (side, draft, fillet), draftUnsupported (draft on more than one straight line)
 - knit: knitNotClosed, knitNearMiss, knitFailed, knitted
 - fill: fillNotClosed, fillInvalid, fillFailed, fillCrosses, fillContinuity
 - thicken: thickenFailed, thickenPointedPole, thickenReach

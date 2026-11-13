@@ -81,6 +81,31 @@ pub fn exec_lip(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<()
     if !(width > 0.0) || !(height > 0.0) {
         return Err(FeatureError::new(codes::INVALID_VALUE));
     }
+    // `inset`: the band starts this far inside the path (a centred tongue sits clear of the outer wall);
+    // `clearance` (groove only): the groove is wider by `clearance` on each side and deeper by `clearance`
+    let inset = state.num(f, "inset", 0.0)?;
+    let clearance = state.num(f, "clearance", 0.0)?;
+    let bad = |field: &str, detail: &str| FeatureError::new(codes::INVALID_VALUE).with("field", Json::Str(field.into())).with("detail", Json::Str(detail.into()));
+    if !inset.is_finite() || inset < 0.0 {
+        return Err(bad("inset", "inset is 0 or more"));
+    }
+    if !clearance.is_finite() || clearance < 0.0 {
+        return Err(bad("clearance", "clearance is 0 or more"));
+    }
+    let is_groove = kind == "groove";
+    let (mut inset, mut width, mut height) = (inset, width, height);
+    if is_groove && clearance > 0.0 {
+        if inset > 0.0 {
+            if clearance > inset + 1e-9 {
+                return Err(bad("clearance", "the clearance is larger than the inset: the groove would cut through the outer wall"));
+            }
+            inset = (inset - clearance).max(0.0);
+            width += 2.0 * clearance;
+        } else {
+            width += clearance;
+        }
+        height += clearance;
+    }
     let missing = || FeatureError::new(codes::MISSING_REFERENCE);
     if edges.is_empty() {
         return Err(missing());
@@ -284,7 +309,8 @@ pub fn exec_lip(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<()
             .build();
         let sk = Sketch::from_json(&sk_json);
         let ids: Vec<String> = (0..ents.len()).map(|k| format!("e{k}")).collect();
-        let off = sketch_offset(&sk, &ids, width).map_err(|e| FeatureError::new(e))?;
+        let off = sketch_offset(&sk, &ids, inset + width).map_err(|e| FeatureError::new(e))?;
+        let off_in = if inset > 0.0 { Some(sketch_offset(&sk, &ids, inset).map_err(|e| FeatureError::new(e))?) } else { None };
         if std::env::var_os("CK_LIP_DBG").is_some() {
             eprintln!("LIP chain of {} edges: {} pieces; offset chains {:?}", chain.len(), ent_pieces.len(), off.iter().map(|c| c.len()).collect::<Vec<_>>());
             for (k, (t, pc)) in ent_pieces.iter().enumerate() {
@@ -299,6 +325,12 @@ pub fn exec_lip(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<()
             return Err(FeatureError::new(&super::extrude::todo("lip offset with dropped pieces")));
         }
         let closed = path[*chain.last().unwrap()].end == path[chain[0]].start;
+        let off_in_chain = match off_in.and_then(|c| c.into_iter().next()) {
+            Some(c) if c.len() == ent_pieces.len() && closed => Some(c),
+            Some(_) if !closed => return Err(FeatureError::new(&super::extrude::todo("lip inset along an open rim path"))),
+            Some(_) => return Err(FeatureError::new(&super::extrude::todo("lip inset with dropped pieces"))),
+            None => None,
+        };
         // original side; a B-spline rim edge stays one exact segment (the
         // tool's path-side face must share the host edge, not a chord polygon),
         // its offset side is fitted through the true offset points
@@ -312,7 +344,7 @@ pub fn exec_lip(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<()
                 j += 1;
             }
             let tag = &path[ei].tag;
-            let fitted = path[ei].exact.as_ref().and_then(|(c2, ta, tb)| {
+            let fitted = path[ei].exact.as_ref().filter(|_| off_in_chain.is_none()).and_then(|(c2, ta, tb)| {
                 let (first, last) = (&off_chain[i], &off_chain[j - 1]);
                 let (o_start, o_end) = (off_start(first), off_end(last));
                 fit_offset(c2, *ta, *tb, width, Vec2::new(o_start[0], o_start[1]), Vec2::new(o_end[0], o_end[1]))
@@ -340,7 +372,10 @@ pub fn exec_lip(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<()
                 offs.push(ProfileSeg { tag: format!("{tag}l"), curve: ck_geom::curve2::Curve2::BSpline(fit), t0: d0, t1: d1, rev: false });
             } else {
                 for k in i..j {
-                    orig.push(seg_of_piece(&format!("{}r", ent_pieces[k].0), &ent_pieces[k].1));
+                    match &off_in_chain {
+                        Some(ic) => orig.extend(segs_of_off(&format!("{}r", ent_pieces[k].0), &ic[k])),
+                        None => orig.push(seg_of_piece(&format!("{}r", ent_pieces[k].0), &ent_pieces[k].1)),
+                    }
                     offs.extend(segs_of_off(&format!("{}l", ent_pieces[k].0), &off_chain[k]));
                 }
             }
@@ -376,13 +411,13 @@ pub fn exec_lip(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<()
         }
     }
     let profile = Profile::new(frame, regions);
-    let groove = kind == "groove";
+    let groove = is_groove;
     let opts = if groove { ExtrudeOpts::flipped(height) } else { ExtrudeOpts::blind(height) };
     let tool = extrude(&f.id, &profile, opts).map_err(|e| FeatureError::new(&e))?;
     // a tool built on exact spline rim curves welds to the host edges only to the accuracy of the
     // marched intersections: start at the looser tolerance the boolean ends up needing (the
     // large sample lip spent two thirds of its time in failed attempts at the tight ones)
-    let tol = if path.iter().any(|p| p.exact.is_some()) { super::TOL * 100.0 } else { super::TOL };
+    let tol = if path.iter().any(|p| p.exact.is_some()) && inset == 0.0 { super::TOL * 100.0 } else { super::TOL };
     br.combine_at(&tool, if groove { Combine::Cut } else { Combine::Add }, false, tol)
 }
 

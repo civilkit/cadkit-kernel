@@ -128,7 +128,7 @@ pub const KNOWN_TYPES: &[&str] = &[
     "lip", "dome", "splitLine", "draft", "moveFace", "hole", "lpattern", "cpattern", "mirror", "spattern",
     "fillpattern", "curvepattern", "moveBody", "mate", "insertPart", "scale", "surfaceExtrude", "surfaceRevolve",
     "surfacePlanar", "surfaceOffset", "deleteFace", "fill", "knit", "extend", "freeform", "trimSurface", "thicken",
-    "cutWithSurface", "pipeCut", "deleteBody", "editCurve", "projectCurve", "helix", "thread", "combine", "bodyBoolean", "knurlBand", "importStep",
+    "cutWithSurface", "pipeCut", "deleteBody", "editCurve", "projectCurve", "helix", "thread", "combine", "bodyBoolean", "split", "lipJoint", "knurlBand", "importStep",
     "repairPart", "importBody", "frame", "sheetRules", "baseFlange", "edgeFlange", "hem", "fold", "contourFlange", "unfold", "refold", "sheetCorner", "sheetCut", "sheetConvert",
 ];
 
@@ -161,6 +161,8 @@ pub const EMPTY_FEATURE_ERRORS: &[(&str, &str)] = &[
     ("curvepattern", "missingPath"),
     ("moveBody", "nothingToCut"),
     ("combine", "nothingToCut"),
+    ("split", "nothingToCut"),
+    ("lipJoint", "nothingToCut"),
     ("bodyBoolean", "nothingToCut"),
     ("knurlBand", "nothingToCut"),
     ("frame", "frameInvalid"),

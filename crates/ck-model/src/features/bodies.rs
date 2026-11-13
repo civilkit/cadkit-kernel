@@ -100,17 +100,35 @@ pub fn any_named(b: &Body) -> bool {
     b.lump_ids().any(|l| b.lump(l).name.is_some())
 }
 
-/// `(origin, name)` of every named lump.
-pub fn named(b: &Body) -> Vec<(String, String)> {
+/// A named lump as it was before a feature: its origin, its name, and (only when another named lump shares the
+/// origin, e.g. the two halves of a `split`) the names of its faces, which tell the halves apart afterwards.
+pub struct Prior {
+    pub origin: String,
+    pub name: String,
+    faces: Vec<ck_topo::body::FaceName>,
+}
+
+/// The named lumps of `b`.
+pub fn named(b: &Body) -> Vec<Prior> {
     // the name is asked for first: `origin` walks the lump's faces, and a body is mostly lumps
     // nobody named
     if !any_named(b) {
         return vec![];
     }
-    b.lump_ids().filter_map(|l| {
-        let name = b.lump(l).name.clone()?;
-        Some((origin(b, l)?.to_string(), name))
-    }).collect()
+    let mut out: Vec<Prior> = vec![];
+    let mut lumps: Vec<LumpId> = vec![];
+    for l in b.lump_ids() {
+        let Some(name) = b.lump(l).name.clone() else { continue };
+        let Some(o) = origin(b, l) else { continue };
+        out.push(Prior { origin: o.to_string(), name, faces: vec![] });
+        lumps.push(l);
+    }
+    for i in 0..out.len() {
+        if out.iter().filter(|p| p.origin == out[i].origin).count() > 1 {
+            out[i].faces = ck_topo::mass::lump_faces(b, lumps[i]).into_iter().map(|f| b.face(f).name.clone()).collect();
+        }
+    }
+    out
 }
 
 /// Name every live lump of `b` whose origin is `feature` and that has no name yet.
@@ -124,29 +142,48 @@ pub fn stamp_origin(b: &mut Body, feature: &str, name: &str) {
 }
 
 /// Put the names of `prior` back on the lumps of `b` that have the same origin and no name; a name is given
-/// to one lump only.
-pub fn restore(b: &mut Body, prior: &[(String, String)]) {
+/// to one lump only. Lumps that share an origin (the halves of a `split`) take the name of the prior lump whose
+/// faces they have most in common; a lump that shares no face with any of them stays unnamed.
+pub fn restore(b: &mut Body, prior: &[Prior]) {
     if prior.is_empty() {
         return;
-    }
-    // origin -> name, and the names a lump already carries: both maps are rebuilt per feature, so a
-    // lump scan and a linear walk of `prior` per unnamed lump are what they replace
-    let mut want: std::collections::HashMap<&str, &str> = std::collections::HashMap::with_capacity(prior.len());
-    for (o, n) in prior {
-        want.entry(o.as_str()).or_insert(n.as_str());
     }
     // owned: the names a lump already carries are borrowed from `b`, which the loop then writes to
     let mut taken: std::collections::HashSet<String> = b.lump_ids().filter_map(|l| b.lump(l).name.clone()).collect();
     let ls: Vec<LumpId> = b.lump_ids().collect();
+    // (shared faces, lump, prior) for the origins with several names
+    let mut ambiguous: Vec<(usize, LumpId, usize)> = vec![];
     for l in ls {
         if b.lump(l).name.is_some() {
             continue;
         }
         let Some(o) = origin(b, l) else { continue };
-        let Some(&n) = want.get(o) else { continue };
-        if !taken.contains(n) {
-            taken.insert(n.to_string());
-            b.lumps[l.idx()].name = Some(n.to_string());
+        let cands: Vec<usize> = (0..prior.len()).filter(|&i| prior[i].origin == o).collect();
+        match cands.as_slice() {
+            [] => {}
+            &[i] => {
+                if !taken.contains(&prior[i].name) {
+                    taken.insert(prior[i].name.clone());
+                    b.lumps[l.idx()].name = Some(prior[i].name.clone());
+                }
+            }
+            _ => {
+                let names: std::collections::HashSet<ck_topo::body::FaceName> = ck_topo::mass::lump_faces(b, l).into_iter().map(|f| b.face(f).name.clone()).collect();
+                for i in cands {
+                    let shared = prior[i].faces.iter().filter(|f| names.contains(*f)).count();
+                    if shared > 0 {
+                        ambiguous.push((shared, l, i));
+                    }
+                }
+            }
+        }
+    }
+    // best match first; a lump and a name are used once
+    ambiguous.sort_by(|x, y| y.0.cmp(&x.0));
+    for (_, l, i) in ambiguous {
+        if b.lump(l).name.is_none() && !taken.contains(&prior[i].name) {
+            taken.insert(prior[i].name.clone());
+            b.lumps[l.idx()].name = Some(prior[i].name.clone());
         }
     }
 }

@@ -75,7 +75,7 @@ See the import chapters for details; the main points:
 
 ## 7. Features not built
 
-Not implemented: sheet metal and steel bending (no flat pattern, no bend features); mate kinds `profileCenter`, `path`, `linearCoupler`, `cam` and `universalJoint`; hinge angle limits; `upToFace` for revolve and sweep, `offsetFromFace` on curved faces and `upToBody`; `thin` on sweep and loft and variable wall thickness on a thin extrude; moving a hole sideways with `moveFace`; a true n-ary union (booleans are sequential).
+Not implemented: sheet metal flanges on a curved edge, louvres, forming tools, a jog and a mitre flange (the rest of sheet metal is built: see [sheet metal](../format/features-sheet.md)); mate kinds `profileCenter`, `path`, `linearCoupler`, `cam` and `universalJoint`; hinge angle limits; `upToFace` for revolve and sweep, `offsetFromFace` on curved faces and `upToBody`; `thin` on sweep and loft and variable wall thickness on a thin extrude; moving a hole sideways with `moveFace`; a true n-ary union (booleans are sequential).
 
 Six feature types are accepted as names (they are not `unknownFeature`) but are not built. `dome`, `splitLine`, `fillpattern`, `surfaceOffset` and `cutWithSurface` always fail with `TODO(rebuild): <type> needs ck-ops` (checked: each as an empty feature after the plate of the STEP chapter), and `spattern` does the same once it has a sketch (without one it answers `missingSketch`). Some options of built features are refused with the same prefix: a drafted `mid` or `throughBoth` extrude, a `lip` on curved or several rim faces, an `extend` with a shape other than `same`, and a surface `sweep` of an open profile. See [regeneration](../protocol/regen.md) and [patterns and transforms](../format/features-patterns.md).
 

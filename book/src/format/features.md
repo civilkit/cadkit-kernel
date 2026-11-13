@@ -4,7 +4,7 @@ A part is a list of features, run in order. This chapter lists every feature typ
 
 ## Index of feature types
 
-The kernel knows 49 type names. A name that is not in this list is `unknownFeature`. Types marked "not built" are accepted as names but have no implementation: they fail with the error code `TODO(rebuild): <type> needs ck-ops`.
+The kernel knows 68 type names. Five of them (`box`, `frame`, `knurlBand`, `repairPart` and `importBody`) are not described in this index. A name that is not in this list is `unknownFeature`. Types marked "not built" are accepted as names but have no implementation: they fail with the error code `TODO(rebuild): <type> needs ck-ops`.
 
 | Type | What it does | Chapter |
 |---|---|---|
@@ -27,14 +27,17 @@ The kernel knows 49 type names. A name that is not in this list is `unknownFeatu
 | `thread` | Cosmetic or modeled thread on a cylindrical face. | [edits](features-edits.md#thread) |
 | `lip` | A raised band or a groove along rim edges. | [edits](features-edits.md#lip) |
 | `moveFace` | Pushes or pulls faces; neighbours follow. | [edits](features-edits.md#moveface) |
+| `split` | Cuts a body at a plane (or by tool bodies) into two named bodies. | [edits](features-edits.md#split) |
+| `lipJoint` | A split with a centred tongue on one half and a clearance groove on the other. | [edits](features-edits.md#lipjoint) |
 | `deleteBody` | Removes or keeps whole bodies. | [edits](features-edits.md#deletebody) |
-| `lpattern` | Copies features along one or two world axes, by spacing, extent or up to an object. | [patterns](features-patterns.md#lpattern) |
+| `lpattern` | Copies features along one to three directions (any vector, edge or axis), by spacing, extent or up to an object. | [patterns](features-patterns.md#lpattern) |
 | `cpattern` | Copies features, or components, around an axis. | [patterns](features-patterns.md#cpattern) |
 | `mirror` | Reflects features or the whole body about a plane. | [patterns](features-patterns.md#mirror) |
 | `moveBody` | Moves, rotates or copies bodies. | [patterns](features-patterns.md#movebody) |
 | `scale` | Scales bodies uniformly or per axis. | [patterns](features-patterns.md#scale) |
 | `combine` | Boolean between whole bodies (also written `bodyBoolean`). | [patterns](features-patterns.md#combine) |
 | `bodyBoolean` | Another name for `combine`. | [patterns](features-patterns.md#combine) |
+| `sheetRules`, `baseFlange`, `contourFlange`, `edgeFlange`, `hem`, `fold`, `unfold`, `refold`, `sheetConvert`, `sheetCut`, `sheetCorner` | Sheet metal: the stock rule, plates, bends, the flat pattern and its export. | [sheet metal](features-sheet.md) |
 | `surfacePlanar` | A flat sheet from a sketch profile. | [surfaces](features-surfaces.md#surfaceplanar) |
 | `surfaceExtrude` | A sheet swept from a profile. | [surfaces](features-surfaces.md#surfaceextrude) |
 | `surfaceRevolve` | A sheet revolved about an axis. | [surfaces](features-surfaces.md#surfacerevolve) |

@@ -145,7 +145,7 @@ The variable table of the part (`variables`) is resolved before the features run
 | `extrudeDirectionInPlane` | The extrusion direction lies in the sketch plane. |
 | `zeroAngle`, `revolveAxisNotInPlane`, `revolveDegenerate` | A revolve with a zero angle, an axis that is not in the sketch plane, or a profile that is degenerate about the axis. |
 | `draftTooLarge` | A drafted extrude: the taper closes to a point, or an edge turns over. `params.detail`; for an extrude of one circle `params.maxHeight` is the greatest depth that works. |
-| `draftUnsupported` | A twisted extrude combined with a draft or `upToNext`; a `draft` feature whose direction is skewed against the neutral plane or whose neutral plane cuts through the profile; or a face that is not a plane, a cylinder or a cylindrical cone (`params.detail` names the face and its surface kind). |
+| `draftUnsupported` | A twisted extrude combined with a draft or `upToNext`; a drafted `rib` whose sketch is not one straight line; a `draft` feature whose direction is skewed against the neutral plane or whose neutral plane cuts through the profile; or a face that is not a plane, a cylinder or a cylindrical cone (`params.detail` names the face and its surface kind). |
 | `twistUnsupported` | A twisted extrusion whose direction is not the sketch normal. |
 
 Two warnings of the end conditions are in [Warnings](#warnings): `endConditionFallback` (an unreachable end reference ran as a blind extrude of `depth`, unless the feature sets `strictEnd: true`, which makes the four unreachable codes above errors) and `endRefRelinked`.

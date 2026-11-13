@@ -103,6 +103,7 @@ pub mod sheet_convert;
 pub mod sheet_tree;
 pub mod sheet_tree3d;
 pub mod shell;
+pub mod split;
 pub mod surface_extrude;
 pub mod surfaces;
 pub mod sweep;
@@ -1382,9 +1383,24 @@ impl Brep {
             }
             _ => None,
         };
-        let mut r = match scoped {
-            Some(r) => r,
-            None => self.combine(&tool.body, tool.combine, true),
+        // named bodies that touch (the two halves of a `split`) would be welded into one lump by a boolean with the whole
+        // body: a cut meets each of them on its own, and the whole-body boolean stays the fallback
+        let each = if scoped.is_none() && tool.combine == extrude::Combine::Cut && self.body.as_ref().map_or(false, |b| bodies::any_named(b) && b.lump_ids().count() > 1) {
+            let before = self.body.clone();
+            match self.per_body(&tool, face) {
+                Some(Ok(())) => Some(Ok(())),
+                _ => {
+                    self.body = before;
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let mut r = match (scoped, each) {
+            (Some(r), _) => r,
+            (None, Some(r)) => r,
+            (None, None) => self.combine(&tool.body, tool.combine, true),
         };
         // the boolean with the whole body failed, and the part has several bodies: aim the tool at the bodies one at a time
         if r.is_err() && matches!(tool.combine, extrude::Combine::Add | extrude::Combine::Cut) {
@@ -1667,7 +1683,7 @@ impl Brep {
     /// After a feature: the lumps it created with `op: newBody` get the feature's `body` name, and the names the
     /// lumps had before it follow their origin (see `bodies.rs`). Features that name lumps themselves (`combine`,
     /// `moveBody` with `copy`) have done so already.
-    fn keep_body_names(&mut self, f: &crate::Feature, prior: &[(String, String)]) {
+    fn keep_body_names(&mut self, f: &crate::Feature, prior: &[bodies::Prior]) {
         let Some(b) = self.body.as_mut() else { return };
         if matches!(op(&f.raw), Op::NewBody) {
             if let Ok(Some(name)) = bodies::body_name(&f.raw) {
@@ -1748,6 +1764,8 @@ impl Brep {
             _ if f.type_name == "unfold" => return sheet_features::exec_unfold(self, state, f),
             _ if f.type_name == "refold" => return sheet_features::exec_refold(self, state, f),
             _ if f.type_name == "thread" => return thread::exec_thread(self, state, f),
+            _ if f.type_name == "split" => return split::exec_split(self, state, f),
+            _ if f.type_name == "lipJoint" => return split::exec_lip_joint(self, state, f),
             _ if f.type_name == "combine" || f.type_name == "bodyBoolean" => return combine::exec_combine(self, state, f),
             _ if f.type_name == "moveBody" => return move_body::exec_move_body(self, state, f),
             _ if f.type_name == "scale" => return scale::exec_scale(self, state, f),

@@ -531,6 +531,8 @@ Adds a raised band (a lip) along rim edges, or cuts a groove into the rim face.
 | `edges` | list of edge picks | required | The rim edges to follow: `{"faces": [rim face, neighbour face], "at": [..]}`. |
 | `width` | number or expression | `1` | Width of the band, measured inwards from the path. Must be above 0. |
 | `height` | number or expression | `1` | Height out of (lip) or depth into (groove) the rim face. Must be above 0. |
+| `inset` | number or expression | `0` | Distance from the path to the band, measured inwards. With `0` the band touches the path and merges with the wall; above 0 the band stands clear of the outer wall (a centred tongue in a wall) and needs a closed loop of rim edges. |
+| `clearance` | number or expression | `0` | Groove only: the groove is wider by `clearance` on each side (its `inset` shrinks by it, its width grows by twice it) and deeper by `clearance`, so a lip and a groove given the same `inset`, `width` and `height` fit with this gap. With `inset` above 0 it may not exceed `inset` (`invalidValue {field: "clearance"}`); with `inset` 0 the band is wider by `clearance` on its free side only. |
 
 The rim face must be planar. Faces: `C1` (the top of a lip) or `C0` (the floor of a groove), and `S.<neighbour face>l` for the inner wall of the band along each edge. The outer side of the band merges with the existing wall.
 
@@ -597,7 +599,57 @@ Run result: no errors; 16 faces, volume 3566 mm³. Volume 3566 (3392 + the 1 mm 
 Run result: no errors; 16 faces, volume 3218 mm³. Volume 3218. Faces `F4.C0`, `F4.S.F2.S.e4l`, `F4.S.F2.S.e3l`, `F4.S.F2.S.e2l`, `F4.S.F2.S.e1l`.
 
 
-Errors: `nothingToCut` (no body), `lipFace` (no rim face), `invalidValue` (width or height), `missingReference` (an edge pick), `booleanFailed`. A rim that is not planar, or several rim faces in different planes, is not built: the code is `TODO(rebuild): lip on a curved / several rim faces needs ck-ops`.
+Errors: `nothingToCut` (no body), `lipFace` (no rim face), `invalidValue` (width, height, `inset` or `clearance`), `missingReference` (an edge pick), `booleanFailed`. A rim that is not planar, or several rim faces in different planes, is not built: the code is `TODO(rebuild): lip on a curved / several rim faces needs ck-ops`; so is an `inset` along edges that do not close into a loop.
+
+A tongue 0.5 mm in from the outer wall of the 2 mm wall, with `"inset": 0.5` on the lip above (1 mm wide, 1.5 mm high), adds 168 mm³ (1.5 times the area between the outlines offset by 0.5 and by 1.5). The matching groove, `"kind": "groove"` with the same `width`, `height` and `inset` and `"clearance": 0.2`, removes 266.56 mm³ (a band 0.2 mm wider on each side and 0.2 mm deeper: 1.7 times the area between the outlines offset by 0.3 and by 1.7). For both halves of a case in one step see [lipJoint](#lipjoint).
+
+## split
+
+Cuts a body by a plane into two bodies. It is a `combine` of op `split` with a half-space tool the kernel builds for you.
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `plane` | plane reference | required | `{"kind":"std","id":"front"}`, a reference plane `{"kind":"feature","id":..}` or a planar face `{"kind":"face","id":..}`. |
+| `offset` | number or expression | `0` | Moves the plane along its normal. |
+| `flip` | boolean | `false` | Reverses the normal (the offset then also runs the other way). |
+| `target` | `{"body": name}` or name | the only body | The body to cut. Needed when the part has several bodies (`invalidValue {field: "target"}`). |
+| `names` | `[below, above]` | none | Names of the two halves: "below" is the half the plane normal points away from. Without `names` the part keeps the target's name (if it has one) on the lower half and the upper half gets `<name> 2`. Equal or blank names are `invalidValue`; a name another body already has is `bodyNameConflict`. |
+| `keep` | string | `both` | `below` or `above` drops the other half. |
+
+The cut face of each half is a planar face of the split feature; every other face keeps its name (a face the plane crosses gets `~k` on both halves). Errors: `nothingToCut`, `invalidValue {field, detail}`, `missingReference` (the plane), `cutNoEffect` (the plane misses the body or lies on a face of it), `bodyNameConflict`, `booleanFailed`.
+
+On the plate shelled open at the top with 2 mm walls (the document of [lip](#lip), without the lip):
+
+```json
+{"type": "split", "id": "F4", "plane": {"kind": "std", "id": "front"}, "offset": 5, "names": ["Base", "Lid"]}
+```
+
+Two bodies: `Lid`, the 5 mm high ring of the walls (1120 mm³), and `Base`, the floor and lower walls (2272 mm³); together 3392 mm³, the volume of the shelled plate.
+
+## lipJoint
+
+A `split` that also gives the two halves a tongue and a groove along the walls: one half carries a centred tongue, the other a groove wider and deeper by a clearance, so the halves fit with that gap all round.
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `plane`, `offset`, `flip`, `target`, `names` | | | As for `split`. |
+| `height` | number or expression | required | How far the tongue stands out of its half, mm. The groove is `height + clearance` deep. |
+| `width` | number or expression | none | Tongue width, mm. |
+| `widthRatio` | number or expression | `0.5` | Tongue width as a fraction of the wall thickness, used when `width` is absent (0 to 1, exclusive). |
+| `inset` | number or expression | centred | Distance from the outer wall to the tongue, mm. By default the tongue is centred in the wall: `(wall - width) / 2`. |
+| `clearance` | number or expression | `0.2` | The groove is wider by `clearance` on each side and deeper by `clearance`. |
+| `tongue` | string | `below` | `below` or `above`: the half that carries the tongue. |
+
+The wall thickness is measured on the cut face as the narrowest distance from its outer boundary to its inner boundary. A cut face with no inner boundary (a solid body) has no wall: give `width` and `inset` in mm. The tongue and the groove follow the outer boundary of the cut face and are made with [lip](#lip) (`inset` and `clearance`), so a curved or several-plane rim is refused in the same way. Errors: those of `split`, `invalidValue {field, detail}` when `height`, `width`, `widthRatio`, `inset`, `clearance` or `tongue` is wrong or `inset + width + clearance` is more than the wall, and a `lip` error with `step: "tongue"` or `"groove"`.
+
+On the same plate:
+
+```json
+{"type": "lipJoint", "id": "F4", "plane": {"kind": "std", "id": "front"}, "offset": 5,
+ "height": 1.5, "width": 1, "clearance": 0.2, "names": ["Base", "Lid"]}
+```
+
+Two bodies, both valid. The tongue (inset 0.5 mm, 1 mm wide, 1.5 mm high) adds 168 mm³ to `Base` (2440 mm³); the groove (0.3 to 1.7 mm from the outer wall, 1.7 mm deep) removes 266.56 mm³ from `Lid` (853.44 mm³). The total is 3392 + 168 - 266.56 = 3293.44 mm³, and the two bodies do not overlap: the void left around the tongue, 98.56 mm³, is the clearance.
 
 ## moveFace
 

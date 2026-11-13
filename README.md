@@ -2,8 +2,9 @@
 
 A B-rep geometry kernel for parametric part features, written in Rust and compiled to WebAssembly for the
 [CadKit](https://civilkit.io/cad/) CAD app. A host sends it a part (a JSON document listing features:
-sketches, extrudes, fillets, shells, holes, patterns, surfaces, assemblies and so on) and gets back the
-solid, its faces and edges, a display mesh, a status for every feature, and measurements.
+sketches, extrudes, fillets, shells, ribs, holes, patterns, split bodies and lip joints, surfaces, sheet metal,
+assemblies and so on) and gets back the solid, its faces and edges, a display mesh, a status for every feature,
+and measurements.
 
 - App: <https://civilkit.io/cad/>
 - App repository (editor, scripting, MCP server): <https://github.com/civilkit/cadkit-kit>
