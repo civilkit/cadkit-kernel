@@ -662,6 +662,7 @@ pub fn plain_or_drafted(cx: &mut Cx, f: &SwFeature, faces: &[FaceId], cut: bool)
                 _ => false,
             });
             // a face a later draft tilted: the extrude as it was before (the face straight, through its pivot edge)
+            let mut before: Option<String> = None;
             if let (Some(mu), true) = (cx.undrafted, faces.iter().any(|g| cx.later.iter().any(|l| l.face == *g))) {
                 let saved = cx.m;
                 cx.m = mu;
@@ -677,6 +678,7 @@ pub fn plain_or_drafted(cx: &mut Cx, f: &SwFeature, faces: &[FaceId], cut: bool)
                         if !tilted {
                             return Err(format!("{plain}; before a later draft: {e}"));
                         }
+                        before = Some(e);
                     }
                 }
             }
@@ -693,7 +695,11 @@ pub fn plain_or_drafted(cx: &mut Cx, f: &SwFeature, faces: &[FaceId], cut: bool)
             if !tilted {
                 return Err(plain);
             }
-            extrude(cx, f, faces, cut).map_err(|d| format!("{plain}; as a drafted extrude: {d}"))
+            // (the undrafted attempt's reason is kept: it says what the straightened faces did not give)
+            extrude(cx, f, faces, cut).map_err(|d| match &before {
+                Some(b) => format!("{plain}; before a later draft: {b}; as a drafted extrude: {d}"),
+                None => format!("{plain}; as a drafted extrude: {d}"),
+            })
         }
     }
 }

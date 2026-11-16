@@ -6,8 +6,8 @@ use ck_topo::body::{Body, EdgeId, FaceId, FaceName};
 /// Faces named `id`; a face an earlier tool split into regions (`F4.C1~1`, `~2`) is still
 /// named by its base id in the selection.
 pub(super) fn faces_named(b: &Body, id: &str) -> Vec<FaceId> {
-    if let Some(f) = b.find_face(id) {
-        return vec![f];
+    if b.find_face(id).is_some() {
+        return b.face_ids().filter(|&f| b.face_id_str(f) == id).collect();
     }
     let Some(mut want) = FaceName::parse(id) else { return vec![] };
     want.region = None;

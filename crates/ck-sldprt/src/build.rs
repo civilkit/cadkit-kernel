@@ -965,8 +965,11 @@ impl<'a> B<'a> {
         // the chart of an intersection spine is within its chordal error of the curve, and its end points are put back
         // onto the ball-centre locus, so the faces on the blend can run on a little past the last cross-section:
         // continue the spine past both ends (a quarter radius at a time, up to one radius) while the ball still
-        // touches both supports
-        if analytic.is_none() && entries.len() >= 2 && expect > 0.0 {
+        // touches both supports. A closed spine (its chart ends where it starts: the blend runs all the way round) has no
+        // ends to continue: sections added past the closing point would lap the surface over itself, it would no longer
+        // close, and the band between the face's two rim loops would get no seam
+        let closed_spine = entries.len() >= 4 && entries[0].0.dist(entries[entries.len() - 1].0) <= 1e-6;
+        if analytic.is_none() && entries.len() >= 2 && expect > 0.0 && !closed_spine {
             for front in [false, true] {
                 let n = entries.len();
                 let (mut last, prev) = if front { (entries[0].0, entries[1].0) } else { (entries[n - 1].0, entries[n - 2].0) };
@@ -2670,6 +2673,41 @@ mod tests {
         let ends = [s.eval(um, v0), s.eval(um, v1)];
         assert!(ends.iter().any(|e| (e.x - 1.0).hypot(e.z - 1.0) < 1e-5), "an arc end on the edge: {ends:?}");
         assert!(ends.iter().any(|e| e.x.hypot(e.z) < 1e-5), "an arc end on the plane: {ends:?}");
+    }
+
+    #[test]
+    fn a_blend_round_a_closed_chart_spine_closes_on_itself() {
+        // a 2 mm round where a 20 mm boss meets the plane z = 0: the ball's centre runs round the circle of radius 22 mm
+        // at z = 2, given as a closed intersection chart (it ends where it starts). The surface must close on itself in
+        // u, not lap past the closing point: the face between its two rim circles gets its seam from that
+        let (rc, r) = (0.02, 0.002);
+        let surfaces = vec![
+            sn(1, IrSurface::Plane { o: [0.0; 3], n: [0.0, 0.0, 1.0], x: [1.0, 0.0, 0.0] }),
+            sn(2, IrSurface::Cylinder { o: [0.0; 3], axis: [0.0, 0.0, 1.0], r: rc, x: [1.0, 0.0, 0.0] }),
+            sn(3, IrSurface::Blend { supports: [Some(0), Some(1)], support_plus: [true, true], spine: Some(0), spine_plus: true, range: [r, r], limits: [None, None] }),
+        ];
+        let n = 24;
+        let pts: Vec<V3> = (0..=n).map(|k| {
+            let a = TAU * (k % n) as f64 / n as f64;
+            [(rc + r) * a.cos(), (rc + r) * a.sin(), r]
+        }).collect();
+        let curves = vec![cn(4, IrCurve::Intersection { pts, surfaces: [None, None], bounds: [None, None], chordal: 0.0 })];
+        let ir = Ir { schema: "test".into(), surfaces, curves, ..Default::default() };
+        let mut b = builder(&ir);
+        let s = b.surface(2).unwrap();
+        let (pu, pv) = ck_geom::pcurve::closed_periods(&s);
+        let per = pu.expect("closed along the spine");
+        assert!(pv.is_none());
+        assert!((per - TAU * 22.0).abs() < 0.1, "one turn of the spine, not more: {per}");
+        let Surface::BSpline(bs) = &*s else { panic!("blend as a spline") };
+        let ((u0, u1), (v0, v1)) = bs.domain();
+        for i in 0..40 {
+            for j in 0..=4 {
+                let p = s.eval(u0 + (u1 - u0) * i as f64 / 40.0, v0 + (v1 - v0) * j as f64 / 4.0);
+                let d = (p.x.hypot(p.y) - 22.0).hypot(p.z - 2.0);
+                assert!((d - 2.0).abs() < 1e-4, "{p:?} on the ball");
+            }
+        }
     }
 
     #[test]

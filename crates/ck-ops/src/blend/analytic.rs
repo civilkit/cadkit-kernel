@@ -387,6 +387,12 @@ pub(super) fn blend_edge_hint_inner(
             solid.classify_point(rot(inner, al), tol) != crate::contain::Loc::Out
         })
     };
+    // (the face that ends the arc at `v` is one this feature's own tools left: the flat end of the neighbouring edge's
+    // tool, built before this one. That is a junction of the selection, not a wall of the body: the arc ends there as
+    // the junction says, it does not run on behind it)
+    let ends_on_own_tool = |v: ck_topo::body::VertexId| -> bool {
+        b.edge_ids().filter(|&x| b.edge(x).v0 == v || b.edge(x).v1 == v).flat_map(|x| b.edge_faces(x)).any(|f| !faces.contains(&f) && b.face(f).name.feature == feature)
+    };
     // a concave arc that runs into a planar wall which is not radial (its plane does not contain the axis, e.g. the
     // side of a bar a boss joins at an angle): the swept tool runs on past that end and is clipped by the wall's
     // plane, so the blend ends on the wall instead of stopping short of it
@@ -410,7 +416,7 @@ pub(super) fn blend_edge_hint_inner(
                         circ_surface_clips.push((g, clip));
                     }
                     circ_oblique[i] = true;
-                } else if matches!(spec, Spec::Fillet(_, FilletProfile::Circular)) && concave_reflex_end(b, v, &faces, out) && runs_on_in_material(i) {
+                } else if matches!(spec, Spec::Fillet(_, FilletProfile::Circular)) && !ends_on_own_tool(v) && concave_reflex_end(b, v, &faces, out) && runs_on_in_material(i) {
                     // a concave arc that runs into a wall leaning over it (the sharp tip of a lens-shaped pocket, where
                     // the other arc's wall closes the pocket): past the vertex the tool lies in the material behind that
                     // wall, where the union adds nothing, so it runs on and the wall trims the round

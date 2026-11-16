@@ -224,7 +224,7 @@ pub fn thicken_freeform_by(
     }
 
     // faces of both layers; the lower layer faces away from the material
-    add_layer_faces(&mut out, shell, sheet, &faces, &surfaces, &emap)?;
+    add_layer_faces(&mut out, shell, sheet, &faces, &surfaces, &emap, [layers[0].2, layers[1].2])?;
 
     // connectors between the layers at the rim corners, walls along the rim edges
     let mut connectors: HashMap<VertexId, EdgeId> = HashMap::new();
@@ -279,8 +279,12 @@ pub fn thicken_freeform_by(
     close_up(out, tol)
 }
 
-/// Faces of both layers: the lower layer faces away from the material.
-fn add_layer_faces(out: &mut Body, shell: ck_topo::body::ShellId, sheet: &Body, faces: &[FaceId], surfaces: &[Vec<Surface>], emap: &[HashMap<EdgeId, EdgeId>; 2]) -> Result<(), ThickenError> {
+/// Faces of both layers: the lower layer faces away from the material. A layer that is the sheet itself (`same[li]`)
+/// keeps the sheet's pcurves: its surface and edge curves are the sheet's own, and without them the tessellator
+/// projects the edges onto the surface, which on a closed profile lands on the wrong turn of the seam (an extruded
+/// closed spline came back as a 17k-triangle face with unrecovered trims and an open display mesh).
+#[allow(clippy::too_many_arguments)]
+fn add_layer_faces(out: &mut Body, shell: ck_topo::body::ShellId, sheet: &Body, faces: &[FaceId], surfaces: &[Vec<Surface>], emap: &[HashMap<EdgeId, EdgeId>; 2], same: [bool; 2]) -> Result<(), ThickenError> {
     for li in 0..2 {
         let flipped = li == 0;
         for (fi, &f) in faces.iter().enumerate() {
@@ -297,7 +301,7 @@ fn add_layer_faces(out: &mut Body, shell: ck_topo::body::ShellId, sheet: &Body, 
                 let nloop = out.add_loop(nf);
                 for cid in ordered {
                     let co = sheet.coedge(cid);
-                    out.add_coedge(nloop, *need(&emap[li], &co.edge, "edge")?, co.rev != flipped, None);
+                    out.add_coedge(nloop, *need(&emap[li], &co.edge, "edge")?, co.rev != flipped, if same[li] { co.pcurve.clone() } else { None });
                 }
             }
         }
@@ -547,7 +551,7 @@ fn thicken_creased(sheet: &Body, feature: &str, faces: &[FaceId], rims: &[(EdgeI
             ecurve[li].insert(e, (curve, t0, t1));
         }
     }
-    add_layer_faces(&mut out, shell, sheet, faces, surfaces, &emap)?;
+    add_layer_faces(&mut out, shell, sheet, faces, surfaces, &emap, [layers[0].2, layers[1].2])?;
 
     // walls along the rim edges, ruled between the two layers' rim edges
     let mut connectors: HashMap<VertexId, EdgeId> = HashMap::new();

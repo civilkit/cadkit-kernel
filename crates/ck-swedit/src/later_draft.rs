@@ -49,8 +49,13 @@ pub fn variants(m: &Model, tags: &[Vec<(i64, i64)>], features: &[SwFeature]) -> 
 
 fn candidates(m: &Model, tags: &[Vec<(i64, i64)>], features: &[SwFeature]) -> Vec<(Later, Vec<(FaceId, Kind)>)> {
     let pos: HashMap<i64, usize> = features.iter().enumerate().map(|(i, f)| (f.id, i)).collect();
-    let mut out = vec![];
-    for (pd, d) in features.iter().enumerate().filter(|(_, f)| is_draft(f)) {
+    let mut out: Vec<Vec<(Later, Vec<(FaceId, Kind)>)>> = vec![];
+    // The faces a later draft tilted, as they were before it: a draft made earlier turned about a neutral plane that the later
+    // draft may have tilted in its turn, so drafts are read latest first and an earlier one sees those faces straightened.
+    let mut undone: HashMap<FaceId, Kind> = HashMap::new();
+    let drafts: Vec<(usize, &SwFeature)> = features.iter().enumerate().filter(|(_, f)| is_draft(f)).collect();
+    for &(pd, d) in drafts.iter().rev() {
+        let mut found = vec![];
         let Some(a) = angle(d) else { continue };
         let sin = a.abs().to_radians().sin();
         let later_only = |g: FaceId| tags.get(g.idx()).map_or(false, |v| !v.is_empty() && v.iter().all(|t| pos.get(&t.0).map_or(true, |&p| p > pd)));
@@ -75,7 +80,7 @@ fn candidates(m: &Model, tags: &[Vec<(i64, i64)>], features: &[SwFeature]) -> Ve
                 // the neutral plane: a cap normal to the pull axis that this face meets, directly or through a face a
                 // later feature made (a blend at the foot of the wall)
                 let mut caps: Vec<(FaceId, f64)> = vec![];
-                let is_cap = |h: FaceId| match m.kind(h) {
+                let is_cap = |h: FaceId| match undone.get(&h).unwrap_or_else(|| m.kind(h)) {
                     Kind::Plane { n: nh, d } if nh.dot(e).abs() > 1.0 - 1e-9 => Some(d * nh.dot(e)),
                     _ => None,
                 };
@@ -108,12 +113,17 @@ fn candidates(m: &Model, tags: &[Vec<(i64, i64)>], features: &[SwFeature]) -> Ve
                     })
                     .collect();
                 let l0 = Later { face: g, pos: pd, feat: d.id, angle: a, neutral: list[0].0, before: list[0].1.clone() };
-                out.push((l0, list));
+                found.push((l0, list));
                 break;
             }
         }
+        for (l, list) in &found {
+            undone.entry(l.face).or_insert_with(|| list[0].1.clone());
+        }
+        out.push(found);
     }
-    out
+    // in the order of the file's list, as before
+    out.into_iter().rev().flatten().collect()
 }
 
 /// The draft step: the faces the file's draft feature tilted, tilted again about the cap they turn about.
@@ -134,7 +144,47 @@ pub fn rebuild(cx: &mut Cx, f: &SwFeature) -> Result<(String, Status), String> {
     let mut note = String::new();
     for (neutral, faces) in groups {
         let nn = name_of(cx, neutral)?;
-        let names: Vec<ck_json::Json> = faces.iter().map(|&g| name_of(cx, g).map(ck_json::Json::Str)).collect::<Result<_, _>>()?;
+        let mut names: Vec<ck_json::Json> = faces.iter().map(|&g| name_of(cx, g).map(ck_json::Json::Str)).collect::<Result<_, _>>()?;
+        // a name the rebuilt body holds only as pieces `<name>~k` (a cap of a profile with several outer loops, a cap
+        // the holes of its own sketch split): the pieces that hold the file's face, not every piece of that name
+        // (the draft feature's fallback would tilt them all about this one neutral)
+        if let Ok((Some(b), _)) = cx.sess.borrow_mut().rebuild(&cx.tree.feats) {
+            let mut exact: Vec<ck_json::Json> = vec![];
+            for (k, &g) in faces.iter().enumerate() {
+                let ck_json::Json::Str(nm) = &names[k] else { continue };
+                if b.find_face(nm).is_some() {
+                    exact.push(names[k].clone());
+                    continue;
+                }
+                let Some(before) = mine.iter().find(|l| l.face == g).map(|l| l.before.clone()) else { continue };
+                let pts = crate::face_points(cx.m, g);
+                let mut found: Vec<ck_json::Json> = vec![];
+                for h in b.face_ids() {
+                    let id = b.face_id_str(h);
+                    if id.split('~').next() != Some(nm.as_str()) || id == *nm {
+                        continue;
+                    }
+                    let mb = Model::new(&b);
+                    if !crate::fastverify::same_surface(&before, mb.kind(h), 1e-6) {
+                        continue;
+                    }
+                    // (the file's face is tilted: its points are moved back onto the plane it had)
+                    let on = |p: Vec3| match &before {
+                        Kind::Plane { n, d } => p - *n * (n.dot(p) - *d),
+                        _ => p,
+                    };
+                    if pts.iter().any(|&p| !matches!(ck_ops::boolean::classify::point_in_face(&b, h, on(p), 1e-6), ck_ops::boolean::classify::Where::Out)) {
+                        found.push(ck_json::Json::Str(id));
+                    }
+                }
+                if found.is_empty() {
+                    exact.push(names[k].clone());
+                } else {
+                    exact.extend(found);
+                }
+            }
+            names = exact;
+        }
         let a = mine[0].angle;
         let first = cx.tree.feats.len();
         let mut done = false;

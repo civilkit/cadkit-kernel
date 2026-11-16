@@ -1314,6 +1314,50 @@ fn run_on_to_floor(cx: &Cx, fr: &Fr, span: (f64, f64), (ei, di): (P2, P2), (ej, 
     None
 }
 
+/// The closing chord of a boss that lies in air (a later cut removed the stretch) may still lie short of where the
+/// profile ended: a slanted plane of the final body (the later cut's floor) leaves a wedge of the boss between the
+/// chord and the line where that plane meets one of the boss's end planes, thinner than any side face the sides could
+/// have kept (a round at the foot of the sides takes the rest). The two ends run on along their traces to that line
+/// when the strip between the old chord and the line, just inside the end plane, lies in the final body throughout and
+/// the new chord is in air further in.
+fn run_on_to_slant(cx: &Cx, fr: &Fr, span: (f64, f64), (ei, di): (P2, P2), (ej, dj): (P2, P2), fc: &ck_ops::contain::Containment) -> Option<(P2, P2)> {
+    use ck_ops::contain::Loc;
+    let m = cx.m;
+    let at = |p: P2, t: f64| fr.o + fr.x * p.0 + fr.y * p.1 + fr.z * t;
+    let mut cands: Vec<(f64, P2, P2, f64, f64)> = vec![];
+    for &h in &m.faces {
+        let Kind::Plane { n, d } = m.kind(h) else { continue };
+        let nz = n.dot(fr.z);
+        if nz.abs() < 1e-3 || nz.abs() > 1.0 - 1e-3 {
+            continue;
+        }
+        let n2 = (n.dot(fr.x), n.dot(fr.y));
+        for (lv, other) in [(span.0, span.1), (span.1, span.0)] {
+            let rhs = d - n.dot(fr.o) - nz * lv;
+            let hit = |e: P2, dir: P2| -> Option<P2> {
+                let c = n2.0 * dir.0 + n2.1 * dir.1;
+                let s = (rhs - (n2.0 * e.0 + n2.1 * e.1)) / c;
+                (c.abs() > 1e-6 && s > 1e-6).then(|| (e.0 + dir.0 * s, e.1 + dir.1 * s))
+            };
+            let (Some(pi), Some(pj)) = (hit(ei, di), hit(ej, dj)) else { continue };
+            let far = dist2(ei, pi).max(dist2(ej, pj));
+            if !cands.iter().any(|c| near2(c.1, pi) && near2(c.2, pj)) {
+                cands.push((far, pi, pj, lv, other));
+            }
+        }
+    }
+    cands.sort_by(|a, b| a.0.total_cmp(&b.0));
+    for (_, pi, pj, lv, other) in cands {
+        let inside = lv + 1e-3 * (other - lv);
+        let wedge = [0.25, 0.5, 0.75].iter().all(|&u| [0.25, 0.5, 0.75].iter().all(|&v| fc.classify_point(at(lerp2(lerp2(ei, ej, u), lerp2(pi, pj, u), v), inside), TOL) == Loc::In));
+        let air = (1..6).all(|k| [0.15, 0.5, 0.85].iter().all(|f| fc.classify_point(at(lerp2(pi, pj, k as f64 / 6.0), lv + f * (other - lv)), TOL) != Loc::In));
+        if wedge && air {
+            return Some((pi, pj));
+        }
+    }
+    None
+}
+
 /// Close the ends of the side traces that nothing meets (the stretch of the profile between them left no side on
 /// the final body): first with chords the material says are safe, then by continuing one trace across a gap.
 ///
@@ -1398,13 +1442,30 @@ fn close_free(
             let (pi, pj) = (ext(ei, dirs[i]), ext(ej, dirs[j]));
             let chord = chord_pts(pi, pj);
             let strip = if s > 0.0 { strip_pts(ei, ej, pi, pj) } else { vec![] };
+            // (a boss's chord may also be safe point by point: each point of the chord and of the strip either lies in
+            // the earlier material or outside the final body. A boss across the open top of a shelled box, whose inner
+            // side a later cut removed above the rim and whose own material runs on below it: the chord's stretch over
+            // the rim is earlier material, the stretch above it is the later cut's air.)
+            // (Only when the chord does reach earlier material somewhere: a chord wholly in air is rule B, which is
+            // kept to the unextended chord, since an extension into air adds material no later feature removes.)
+            let safe = |q: Vec3| in_prior(q) != Loc::Out || in_final(q) != Loc::In;
+            let mixed = || chord.iter().any(|&q| in_prior(q) == Loc::In) && chord.iter().chain(&strip).all(|&q| safe(q));
             let ok = if cut {
                 chord.iter().chain(&strip).all(|&q| in_prior(q) != Loc::In)
             } else {
-                chord.iter().all(|&q| in_prior(q) != Loc::Out) || (s == 0.0 && chord.iter().all(|&q| in_final(q) != Loc::In))
+                chord.iter().all(|&q| in_prior(q) != Loc::Out) || (s == 0.0 && chord.iter().all(|&q| in_final(q) != Loc::In)) || mixed()
             };
             if ok {
                 found = Some((pi, pj));
+                // (a boss's chord in air only: the sides may really have run on to where a slanted face of the final
+                // body meets the boss's end plane, with the boss's material left in the wedge between)
+                if !cut && s == 0.0 && chord.iter().all(|&q| in_final(q) != Loc::In) {
+                    if let (Some(di), Some(dj)) = (dirs[i], dirs[j]) {
+                        if let Some(x) = run_on_to_slant(cx, fr, span, (ei, di), (ej, dj), &fc) {
+                            found = Some(x);
+                        }
+                    }
+                }
                 break;
             }
         }

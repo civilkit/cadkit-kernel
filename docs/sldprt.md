@@ -164,7 +164,7 @@ Run of `node tools/sldprt_check.mjs` over the 41 public sample parts (46 files i
 | dump_SW2022_C20_cylinders_crossed | 8 | 2474.926 | 1170.796 | ok | 123 | 2474.926 (s2s) | 2.6e-9 | - |
 | dump_SW2022_C21_cylinder_fillet | 4 | 778.9574 | 457.3102 | ok | 36 | 778.9574 (s2s) | 0.0e+0 | - |
 | nist_ctc_01 | 139 | 1.4643e+7 | 8.0797e+5 | ok | 386 | 1.4627e+7 (sw*) | 1.1e-3 DIFF | 1.1e-3 |
-| nist_ctc_02 | - | - | - | FAIL | 468 | unsupported.geometry: self-intersecting (apple/lemon) torus, major 0.0007339792212194855, minor 0.006 | | |
+| nist_ctc_02 | 488 | 4.7102e+7 | 2.4818e+6 | ok | 3300 | 4.7101e+7 (OCCT) | 2.3e-5 | - |  (2026-11-15: imports and is valid; the lemon torus reads as a revolution; a closed blend spine was the real defect, fixed in `build.rs` `blend_surface`)
 | nist_ctc_03 | 139 | 3.3139e+5 | 3.5496e+5 | ok | 195 | 3.3139e+5 (s2s) | 1.4e-15 | 5.3e-4 |
 | nist_ctc_04 | 406 | 1.7519e+7 | 1.0231e+6 | ok | 1210 | 1.7519e+7 (sw) | 1.1e-5 | 5.8e-4 |
 | nist_ctc_05 | 156 | 1.2695e+7 | 8.5799e+5 | INVALID EDGE_OFF_SURFACE | 1434 | - | - | 3.8e-3 |
@@ -183,7 +183,7 @@ Run of `node tools/sldprt_check.mjs` over the 41 public sample parts (46 files i
 | pend_pole | 3 | 3392.92 | 2318.495 | ok | 15 | 3392.92 (s2s) | 0.0e+0 | - |
 | pend_table_mount | 56 | 52608.15 | 19282.96 | ok | 80 | 52608.15 (s2s) | 2.8e-16 | - |
 
-Not imported: nist_ctc_02 (lemon torus), nist_ftc_07 (B-surface domain). Invalid in the strict validator: the two loft parts, nist_ctc_05, nist_ftc_10, pend_bolt, pend_mount_table_sharft_holder (all EDGE_OFF_SURFACE on approximated carriers, deviations at most 1e-3 mm). Private test parts (not in the repo): three import and match sldprt2step; one file made only of surface bodies answers unsupported.body; one with a variable blend is refused (blend deviation above 0.05 mm).
+Not imported: none of the NIST parts (as of 2026-11-15 nist_ctc_02 and nist_ftc_07 both import and are valid; see the table row for nist_ctc_02). Invalid in the strict validator: the two loft parts, nist_ctc_05, nist_ftc_10, pend_bolt, pend_mount_table_sharft_holder (all EDGE_OFF_SURFACE on approximated carriers, deviations at most 1e-3 mm). Private test parts (not in the repo): three import and match sldprt2step; one file made only of surface bodies answers unsupported.body; one with a variable blend is refused (blend deviation above 0.05 mm).
 
 ## Gaps (what this reader does not do)
 
@@ -194,7 +194,7 @@ Not imported: nist_ctc_02 (lemon torus), nist_ftc_07 (B-surface domain). Invalid
 | Surface (sheet) and wire bodies | not imported; a file with only such bodies answers `unsupported.body` (the CANivore-style file made of 11 surface bodies) |
 | Parasolid deltas | the `(deltas)` transmit is decoded (`xt::read_deltas`) but not applied: it holds backward undo records ending at the partition's own mark, so the partition is the current state (see Deltas). The stored mass of `nist_ftc_09` (0.4 percent above the partition body) matches the state one change back, which lacks the last cut feature |
 | SolidWorks 2023 and later | only SW2022 samples (modern container, display-list version 15000) and older were available; the container and XT layers are version agnostic (schema edit scripts), but newer files are untested |
-| Surfaces | not supported: self-intersecting (apple / lemon) tori (`nist_ctc_02`), B-surfaces with periodic or extended domains whose vertices fall outside the NURBS domain (`nist_ftc_07`), cliff-edge and variable-radius blends, foreign (PE) geometry, mesh bodies |
+| Surfaces | not supported: cliff-edge and variable-radius blends, foreign (PE) geometry, mesh bodies |
 | Approximation | rolling-ball blends, intersection curves and SP-curves are interpolated B-splines; each is reported with its maximum deviation and refused above 0.05 mm. A few parts then fail the kernel validator's tight edge / surface check (`EDGE_OFF_SURFACE`, tolerance about 1e-5 relative) although volume and area match SolidWorks to 1e-3 or better |
 | Spheres | a hemisphere bounded by a great circle through the poles is re-expressed with a new axis; patches whose boundary arcs cannot be pole-free for any of 96 candidate axes are left alone |
 | Speed | the reader itself takes 5 to 700 ms per part (largest NIST parts 0.3 to 0.7 s); `importSldprt` also tessellates the result for the reply, which dominates on 400-face parts (several seconds, the same cost as `importStep` of the same part) |

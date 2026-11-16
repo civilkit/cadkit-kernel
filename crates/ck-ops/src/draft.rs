@@ -383,9 +383,14 @@ fn tip_scan(b: &Body, edits: &[Edit]) -> Result<Vec<Tip>, DraftError> {
 
 /// Least-change point on the intersection of `surfs`, starting at `p`
 /// (Gauss-Newton with minimum-norm steps).
-fn solve_vertex(mut p: Vec3, surfs: &[&Surface]) -> Option<Vec3> {
+/// `pin`: one more plane (normal and a point) the vertex stays in: the end of a seam of a face that is not drafted
+/// lies on two surfaces only, and stays on the seam.
+fn solve_vertex(mut p: Vec3, surfs: &[&Surface], pin: Option<(Vec3, Vec3)>) -> Option<Vec3> {
     for _ in 0..40 {
         let mut rows: Vec<(Vec3, f64)> = vec![];
+        if let Some((n, o)) = pin {
+            rows.push((n, (p - o).dot(n)));
+        }
         for s in surfs {
             let (u, v) = s.closest_param(p);
             let q = s.eval(u, v);
@@ -571,7 +576,20 @@ fn rebuild(b: &Body, edits: &[Edit], tips: &[Tip], tol: f64) -> Result<Body, Dra
             continue;
         }
         let surfs: Vec<&Surface> = fs.iter().map(|&f| &nb.faces[f.idx()].surface).collect();
-        let p = solve_vertex(b.vertex(v).p, &surfs)
+        // the end of a straight seam of a face that keeps its surface (the rim vertex of a hole whose cap is tilted):
+        // the vertex slides along the seam, not along the new rim (two surfaces alone leave it free on their curve)
+        let p0 = b.vertex(v).p;
+        let pin = b.edge_ids().find_map(|e| {
+            let ed = b.edge(e);
+            let Curve::Line { d, .. } = &ed.curve else { return None };
+            let f = *b.edge_faces(e).first()?;
+            if !(ed.v0 == v || ed.v1 == v) || !b.is_seam(e) || edits.iter().any(|x| x.face == f) {
+                return None;
+            }
+            let n = d.cross(outward_at(b, f, p0));
+            (n.len() > 1e-9).then(|| (n.normalize(), p0))
+        });
+        let p = solve_vertex(p0, &surfs, pin)
             .ok_or_else(|| failed(&format!("no vertex position near {:?}", b.vertex(v).p)))?;
         newp.push((v, p));
     }
@@ -669,8 +687,11 @@ fn rebuild(b: &Body, edits: &[Edit], tips: &[Tip], tol: f64) -> Result<Body, Dra
                     let (a0, b0) = (other.closest_param(p0), other.closest_param(p1));
                     let other = if a0 > b0 { other.reversed() } else { other };
                     let (a, bb) = (other.closest_param(p0), other.closest_param(p1));
+                    // a closed edge (a hole's full circle, now the ellipse a tilted plane cuts from the cylinder)
+                    // runs a whole period from its one vertex, as the circle case does
+                    let closed = ed.v0 == ed.v1 && matches!(other, Curve::Ellipse { .. });
                     t0 = a;
-                    t1 = bb;
+                    t1 = if closed { a + std::f64::consts::TAU } else { bb };
                     curve = other;
                 }
             }
@@ -833,6 +854,29 @@ mod tests {
         // top circle shrinks by 10 * tan(3 deg)
         let (lo, hi) = out.bbox();
         assert!(((hi.x - lo.x) - 2.0 * (10.0 - 10.0 * 3f64.to_radians().tan()).max(10.0)).abs() < 1e-6, "{lo:?} {hi:?}");
+    }
+
+    /// A cap with a through hole tilted about a side: the hole's rim, a closed circle edge with one vertex, becomes
+    /// the ellipse the tilted plane cuts from the hole's cylinder and keeps a whole period (it had `t0 == t1`).
+    #[test]
+    fn tilted_cap_keeps_the_rim_of_a_through_hole() {
+        use crate::boolean::tests::cyl_body;
+        let plate = box_body("F2", 0.0, 0.0, 40.0, 20.0, 0.0, 10.0);
+        let tool = cyl_body("F3", 20.0, 10.0, 3.0, -1.0, 11.0);
+        let b = crate::boolean::apply::boolean(&plate, &tool, crate::boolean::Op::Cut, 1e-6).unwrap().body;
+        let v0 = ck_topo::mass::mass_props(&b).volume;
+        let cap = b.face_ids().find(|&f| b.face_id_str(f).contains(".C1")).unwrap();
+        // pull along x: the cap (normal y) turns about the line where it meets the plane x = 0
+        let out = draft(&b, Vec3::ZERO, Vec3::X, &[cap], 5f64.to_radians(), 1e-6).unwrap();
+        assert!(ck_topo::check::check(&out, 1e-9).is_empty(), "{:?}", ck_topo::check::check(&out, 1e-9));
+        let rim = out.face_edges(cap).into_iter().find(|&e| matches!(out.edge(e).curve, Curve::Ellipse { .. })).expect("the rim is an ellipse");
+        let ed = out.edge(rim);
+        assert!((ed.t1 - ed.t0 - std::f64::consts::TAU).abs() < 1e-9, "rim range {} .. {}", ed.t0, ed.t1);
+        // the cap turned by 5 degrees about x = 0: the volume changes by the wedge over the plate less the hole's share
+        let t = 5f64.to_radians().tan();
+        let dv = (ck_topo::mass::mass_props(&out).volume - v0).abs();
+        let want = t * (0.5 * 40.0 * 40.0 * 20.0 - std::f64::consts::PI * 9.0 * 20.0);
+        assert!((dv - want).abs() < 1e-6 * want, "volume change {dv} want {want}");
     }
 
     /// Pull direction against the cylinder axis (a hole drafted from the

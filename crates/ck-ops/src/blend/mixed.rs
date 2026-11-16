@@ -51,9 +51,18 @@ pub(super) fn line_edge_concave(b: &Body, e: EdgeId) -> Option<bool> {
 pub fn fillet_mixed(b: &Body, edges: &[(String, String, Vec3)], radii: &[f64], feature: &str, tol: f64) -> Option<Result<Body, BlendError>> {
     let n = edges.len();
     let eids: Vec<EdgeId> = edges.iter().map(|(fa, fb, at)| find_edge(b, fa, fb, *at)).collect::<Option<_>>()?;
-    let Some(conc) = eids.iter().map(|&e| line_edge_concave(b, e)).collect::<Option<Vec<bool>>>() else {
+    let lines: Vec<Option<bool>> = eids.iter().map(|&e| line_edge_concave(b, e)).collect();
+    let all_lines = lines.iter().all(|c| c.is_some());
+    let conc: Vec<bool> = if all_lines {
+        lines.iter().map(|c| c.unwrap()).collect()
+    } else {
         // curved outlines (a flank meeting a hub, arcs in the rim): see super::torus_corner
-        return super::torus_corner::fillet_mixed_curved(b, edges, radii, feature, tol);
+        if let Some(res) = super::torus_corner::fillet_mixed_curved(b, edges, radii, feature, tol) {
+            return Some(res);
+        }
+        // curved edges elsewhere in the selection (the round foot of another boss) do not keep a straight foot corner
+        // (concave-concave-convex, below) from the two-stage build: they only need a side, convex or concave
+        eids.iter().zip(&lines).map(|(&e, c)| c.or_else(|| super::torus_corner::edge_concave(b, e))).collect::<Option<Vec<bool>>>()?
     };
     if !conc.iter().any(|&c| c) || conc.iter().all(|&c| c) {
         return None;
@@ -67,7 +76,7 @@ pub fn fillet_mixed(b: &Body, edges: &[(String, String, Vec3)], radii: &[f64], f
             continue;
         }
         let picks: Vec<usize> = (0..n).filter(|&i| inc.contains(&eids[i])).collect();
-        if picks.len() != 3 || picks.iter().filter(|&&i| conc[i]).count() != 1 {
+        if !all_lines || picks.len() != 3 || picks.iter().filter(|&&i| conc[i]).count() != 1 {
             continue;
         }
         let cv: Vec<usize> = picks.iter().copied().filter(|&i| !conc[i]).collect();
@@ -90,7 +99,7 @@ pub fn fillet_mixed(b: &Body, edges: &[(String, String, Vec3)], radii: &[f64], f
                 continue;
             }
             let picks: Vec<usize> = (0..n).filter(|&i| inc.contains(&eids[i])).collect();
-            if picks.len() != 3 || picks.iter().filter(|&&i| conc[i]).count() != 2 {
+            if picks.len() != 3 || picks.iter().filter(|&&i| conc[i]).count() != 2 || picks.iter().any(|&i| lines[i].is_none()) {
                 continue;
             }
             let cx = picks.iter().copied().find(|&i| !conc[i])?;

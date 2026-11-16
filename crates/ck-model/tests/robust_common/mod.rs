@@ -37,6 +37,26 @@ impl FeatureExec for Exec {
     }
 }
 
+/// The final body of a regenerated part, if any.
+#[allow(dead_code)]
+pub fn regen_body(src: &str) -> Option<ck_topo::body::Body> {
+    let part = Part::from_json(&ck_json::parse(src).unwrap()).unwrap();
+    let mut ex = Exec { brep: Brep::new(), labels: Noop };
+    let opts = RegenOpts::from_json(Some(&ck_json::parse(r#"{"solveSketches":true}"#).unwrap()));
+    let _ = regen::regen(&part, &opts, &mut ex);
+    ex.brep.body.clone()
+}
+
+/// The first surface body of a regenerated part (a sheet), if any.
+#[allow(dead_code)]
+pub fn regen_sheet(src: &str) -> Option<ck_topo::body::Body> {
+    let part = Part::from_json(&ck_json::parse(src).unwrap()).unwrap();
+    let mut ex = Exec { brep: Brep::new(), labels: Noop };
+    let opts = RegenOpts::from_json(Some(&ck_json::parse(r#"{"solveSketches":true}"#).unwrap()));
+    let _ = regen::regen(&part, &opts, &mut ex);
+    ex.brep.surfs.first().map(|s| s.1.clone())
+}
+
 /// Validation issues (`code: detail`) and volume of the final body, if any.
 pub fn regen_validate(src: &str) -> (Vec<String>, Option<f64>) {
     let part = Part::from_json(&ck_json::parse(src).unwrap()).unwrap();
