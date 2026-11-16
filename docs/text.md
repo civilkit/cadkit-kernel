@@ -11,7 +11,8 @@ Crate `ck-text` (outlines, layout), `ck-model/src/sketch/text.rs` (the entity an
 { "type": "text", "id": "t1", "string": "RPM x100", "font": "gauge", "height": 4,
   "at": [0, 0], "p": "p7", "anchor": ["center", "middle"], "angle": 0, "spacing": 1,
   "mirror": false, "polyline": false,
-  "arc": { "centre": [0, 0], "c": "p1", "radius": 28, "angleCentre": 90, "side": "outside" } }
+  "arc": { "centre": [0, 0], "c": "p1", "radius": 28, "angleCentre": 90, "side": "outside" },
+  "path": "e5", "pathOffset": 0, "pathFlip": false }
 ```
 
 | Field | Meaning |
@@ -30,6 +31,9 @@ Crate `ck-text` (outlines, layout), `ck-model/src/sketch/text.rs` (the entity an
 | `liga` | standard ligatures from GSUB (`liga`): a run like `ff` / `fi` (whatever the font defines) becomes one glyph with one advance; default false |
 | `merge` | union a glyph whose contours cross itself (overlapping strokes) into one outline before layout; default false, so existing documents keep the crossing loops and the `textOverlappingContours` warning |
 | `arc` | lay the letters along a circle (below) |
+| `path` | lay the letters along a curve of the same sketch (below): the id of a line, arc, circle, ellipse or spline entity, construction or not. In a stateless request (`textOutline`) a list of `[x, y]` points |
+| `pathOffset` | slide along the path (mm, may be negative), added to the default place of the anchor: the start of the path for a left anchor, its middle for a centre anchor, its end for a right anchor |
+| `pathFlip` | travel the path the other way (the letters stand on the other side of it) |
 | `construction` | true: ignored (not laid out, no profile) |
 
 Arc layout: `centre` (or `c`, a sketch point id), `radius` is the radius of the **anchor line** (baseline for the
@@ -40,6 +44,15 @@ radius), `angleCentre` the direction in degrees (CCW from +x) of the middle of t
 counter-clockwise (a title below the dial: `angleCentre` 270). Every letter keeps its shape and is rotated as a
 whole (tangent to the circle). For upright dial numerals place single `text` entities at the numeral radius with
 `angle` 0 (see `tools/text_corpus.mjs`, "dial numerals").
+
+Path layout: `path` names another entity of the sketch (typically a construction line or arc, drawn where the text should
+run). The letters follow it by arc length: each letter is rotated as a whole to the tangent at its middle (like `arc`), its
+baseline on the path and its top on the left of the direction of travel; a straight path equals `angle`, a circle equals
+`arc` (outside for a counter-clockwise circle). With a centre anchor the text is centred on the path; `pathOffset` slides it
+along, `pathFlip` reverses the direction. Past the end of the path the letters continue straight along the end tangent. The
+text follows when the path moves (a constrained line, a dragged spline point). A path that is not a curve of the sketch, or
+has no length, is `textBadPath`. On a path that bends tightly the pitch is widened like on a tight arc (`textSpacingAdjusted`).
+Text on a path wins over `arc` when both are given.
 
 The text is flat on the sketch plane like any sketch: use a sketch on a plane (standard, offset plane, a plane on a
 planar face), then `extrude` with `op: "cut"` (engrave, `depth` = engraving depth) or `op: "add"` (emboss).
@@ -77,7 +90,7 @@ for the sketch's text entities, and the usual `regions` / `areas` include the le
 ## Errors and warnings
 
 Regen of the sketch fails (feature error, `detail` has the message) with: `textEmpty` (empty string), `textNothingToDraw`
-(only blanks / unknown letters), `textFontNotLoaded` (the font is not `gauge` / `engrave` and nothing is loaded under that name; the message names the font and says how to load it), `textFontMismatch` (`fontHash` does not match the loaded file), `textBadHeight` (not a number in (0, 1e5)), `textBadArc` (radius <= 0),
+(only blanks / unknown letters), `textFontNotLoaded` (the font is not `gauge` / `engrave` and nothing is loaded under that name; the message names the font and says how to load it), `textFontMismatch` (`fontHash` does not match the loaded file), `textBadHeight` (not a number in (0, 1e5)), `textBadArc` (radius <= 0), `textBadPath` (`path` is not a line, arc, circle, ellipse or spline of the sketch, or has no length),
 `textBadValue` (a position, angle or spacing is not finite, spacing outside (0, 20)).
 
 Warnings (the sketch still regenerates; `warnings` of the regen result, params `entity` and `detail`):

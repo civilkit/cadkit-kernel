@@ -56,6 +56,63 @@ export interface SphereFeature {
   [key: string]: unknown;
 }
 
+export interface TorusFeature {
+  type: 'torus';
+  id: string;
+  name?: string;
+  op: 'add' | 'cut' | 'newBody';
+  body?: string;
+  /** the centre, in the part's world (Y up) */
+  center?: [Expr, Expr, Expr];
+  /** 'x' | 'y' | 'z' or a direction [x, y, z]; default z */
+  axis?: string | [Expr, Expr, Expr];
+  majorRadius: Expr;
+  minorRadius: Expr;
+  [key: string]: unknown;
+}
+
+export interface PipeFeature {
+  type: 'pipe';
+  id: string;
+  name?: string;
+  op: 'add' | 'cut' | 'newBody';
+  body?: string;
+  /** the path: a sketch or a curve of the part */
+  path: { kind: 'sketch' | 'curve'; id: string };
+  radius: Expr;
+  /** wall thickness for a hollow tube; absent = solid */
+  wall?: Expr;
+  [key: string]: unknown;
+}
+
+export interface CoilFeature {
+  type: 'coil';
+  id: string;
+  name?: string;
+  op: 'add' | 'cut' | 'newBody';
+  body?: string;
+  center?: [Expr, Expr, Expr];
+  axis?: string | [Expr, Expr, Expr];
+  radius: Expr;
+  wireRadius: Expr;
+  pitch: Expr;
+  /** give revolutions or height */
+  revolutions?: Expr;
+  height?: Expr;
+  leftHand?: boolean;
+  [key: string]: unknown;
+}
+
+export interface BoundingSolidFeature {
+  type: 'boundingSolid';
+  id: string;
+  name?: string;
+  /** the bodies, faces or features the box surrounds */
+  bodies: Array<{ body: string } | { face: string } | { feature: string }>;
+  padding?: Expr;
+  [key: string]: unknown;
+}
+
 export interface RevolveFeature {
   type: 'revolve';
   id: string;
@@ -390,9 +447,13 @@ export interface SurfaceOffsetFeature {
   type: 'surfaceOffset';
   id: string;
   name?: string;
-  faces: string[];
+  faces?: string[];
+  /** a surface body to offset, instead of faces */
+  surface?: string;
   distance: Expr;
   flip?: boolean;
+  /** keep the source surface body (default true) */
+  keep?: boolean;
   [key: string]: unknown;
 }
 
@@ -625,6 +686,12 @@ export interface SplitLineFeature {
   name?: string;
   sketch?: string | null;
   faces: string[];
+  /** cut by a plane instead of a sketch */
+  plane?: unknown;
+  offset?: Expr;
+  flip?: boolean;
+  /** sketch lines are projected along 'normal' (default), 'sketch' or a vector */
+  direction?: string | [Expr, Expr, Expr];
   [key: string]: unknown;
 }
 
@@ -820,7 +887,8 @@ export type KnownFeature =
   | DeleteFaceFeature | ThickenFeature | CutWithSurfaceFeature | PipeCutFeature
   | FreeformFeature | EditCurveFeature | ProjectCurveFeature | ExtendFeature
   | DomeFeature | SplitLineFeature | MoveFaceFeature | MoveBodyFeature
-  | ScaleFeature | AxisFeature | ThreadFeature | CombineFeature | SplitFeature | LipJointFeature | SphereFeature | KnurlBandFeature | ImportStepFeature | RepairPartFeature | FrameFeature;
+  | ScaleFeature | AxisFeature | ThreadFeature | CombineFeature | SplitFeature | LipJointFeature | SphereFeature | KnurlBandFeature | ImportStepFeature | RepairPartFeature | FrameFeature
+  | TorusFeature | PipeFeature | CoilFeature | BoundingSolidFeature;
 
 /** All wire type strings the kernel dispatches on. */
 export const FEATURE_TYPES = [
@@ -832,6 +900,7 @@ export const FEATURE_TYPES = [
   'deleteBody', 'deleteFace', 'thicken', 'cutWithSurface', 'pipeCut',
   'freeform', 'editCurve', 'projectCurve', 'extend', 'dome', 'splitLine',
   'moveFace', 'moveBody', 'scale', 'axis', 'thread', 'combine', 'split', 'lipJoint', 'sphere', 'knurlBand', 'importStep', 'repairPart', 'frame',
+  'torus', 'pipe', 'coil', 'boundingSolid',
   'sheetRules', 'baseFlange', 'edgeFlange', 'hem', 'fold', 'contourFlange', 'unfold', 'refold', 'sheetConvert', 'sheetCut', 'sheetCorner',
 ] as const;
 

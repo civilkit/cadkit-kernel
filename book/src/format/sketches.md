@@ -159,7 +159,7 @@ Run result: no errors; no solid body. The point `b` comes back unchanged at (30,
 
 An editor therefore writes solved coordinates; a program that edits a dimension by changing a variable gets them solved.
 
-Regen errors of a sketch feature: `missingReference` (the plane), `badExpression` (a constraint `expr` that does not evaluate), and the lettering errors `textEmpty`, `textNothingToDraw`, `textFontNotLoaded`, `textFontMismatch`, `textBadHeight`, `textBadArc`, `textBadValue` (see [text and fonts](../io/text.md)).
+Regen errors of a sketch feature: `missingReference` (the plane), `badExpression` (a constraint `expr` that does not evaluate), and the lettering errors `textEmpty`, `textNothingToDraw`, `textFontNotLoaded`, `textFontMismatch`, `textBadHeight`, `textBadArc`, `textBadPath`, `textBadValue` (see [text and fonts](../io/text.md)).
 
 ## Profiles
 

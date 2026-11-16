@@ -211,6 +211,48 @@ pub struct ArcSpec {
     pub side: Side,
 }
 
+/// Lay the letters along a polyline (a sketch line, arc, circle or spline sampled by the caller). The path is
+/// followed by arc length; each letter is rotated as a whole to the tangent at its middle, tops on the left of
+/// the direction of travel. Past either end the path continues straight along its end tangent.
+#[derive(Clone, Debug)]
+pub struct PathSpec {
+    pub pts: Vec<P>,
+    /// Slide along the path: added to the default distance of the anchor (see `Spec::h`), which is the start for a
+    /// left anchor, the middle for a centre anchor and the end for a right anchor, so a centred text is centred on the path.
+    pub start: Option<f64>,
+}
+
+/// The points of `pts` as (cumulative length, point) with repeated points dropped; `None` when fewer than two remain.
+fn path_table(pts: &[P]) -> Option<Vec<(f64, P)>> {
+    let mut t: Vec<(f64, P)> = vec![];
+    for p in pts {
+        if !(p[0].is_finite() && p[1].is_finite() && p[0].abs() < 1e9 && p[1].abs() < 1e9) {
+            return None;
+        }
+        match t.last() {
+            None => t.push((0.0, *p)),
+            Some((s, q)) => {
+                let d = (p[0] - q[0]).hypot(p[1] - q[1]);
+                if d > 1e-9 {
+                    t.push((s + d, *p));
+                }
+            }
+        }
+    }
+    (t.len() >= 2).then_some(t)
+}
+
+/// Point and unit tangent at arc length `s` (extended linearly past both ends).
+fn path_at(t: &[(f64, P)], s: f64) -> (P, P) {
+    let n = t.len();
+    let i = if s <= t[0].0 { 0 } else if s >= t[n - 1].0 { n - 2 } else { t.partition_point(|(l, _)| *l <= s).saturating_sub(1).min(n - 2) };
+    let ((l0, a), (l1, b)) = (t[i], t[i + 1]);
+    let len = l1 - l0;
+    let d = [(b[0] - a[0]) / len, (b[1] - a[1]) / len];
+    let u = s - l0;
+    ([a[0] + d[0] * u, a[1] + d[1] * u], d)
+}
+
 #[derive(Clone, Debug)]
 pub struct Spec {
     pub string: String,
@@ -225,6 +267,8 @@ pub struct Spec {
     pub angle: f64,
     pub mirror: bool,
     pub arc: Option<ArcSpec>,
+    /// Letters along a path instead (wins over `arc` when both are given).
+    pub path: Option<PathSpec>,
     /// Lines within a chord tolerance instead of B-spline edges.
     pub polyline: bool,
     /// Longest run of curve spans kept in one B-spline edge (1 to 16; default 4).
@@ -251,6 +295,7 @@ impl Default for Spec {
             angle: 0.0,
             mirror: false,
             arc: None,
+            path: None,
             polyline: false,
             run_spans: RUN_SPANS,
             kern: false,
@@ -280,6 +325,8 @@ pub enum Error {
     BadHeight,
     /// `textBadArc`
     BadArc,
+    /// `textBadPath`: the path has fewer than two distinct points
+    BadPath,
     /// `textBadValue`: a position / angle / spacing that is not a finite number
     BadValue,
 }
@@ -293,6 +340,7 @@ impl Error {
             Error::FontMismatch { .. } => "textFontMismatch",
             Error::BadHeight => "textBadHeight",
             Error::BadArc => "textBadArc",
+            Error::BadPath => "textBadPath",
             Error::BadValue => "textBadValue",
         }
     }
@@ -309,6 +357,7 @@ impl Error {
             ),
             Error::BadHeight => "text height must be a positive number".into(),
             Error::BadArc => "text on an arc needs a positive radius".into(),
+            Error::BadPath => "text on a path needs a path with a length (two different points at least)".into(),
             Error::BadValue => "text position, angle and spacing must be finite numbers (spacing 0.2 to 5)".into(),
         }
     }
@@ -963,20 +1012,26 @@ pub fn layout(spec: &Spec) -> Result<Layout, Error> {
             return Err(Error::BadArc);
         }
     }
+    if let Some(pa) = &spec.path {
+        if path_table(&pa.pts).is_none() || !pa.start.map_or(true, fin) {
+            return Err(Error::BadPath);
+        }
+    }
+    let curved = spec.arc.is_some() || spec.path.is_some();
     let mut warnings = run.warnings.clone();
     // letters closer than this cannot be engraved apart (serifs of neighbouring letters touch in the serif font)
     let gap = (GAP_FRAC * spec.height).max(MIN_GAP);
     let mut shifts = vec![0.0; run.glyphs.len()];
     let (mut regions, mut bbox) = place(spec, &run, 1.0, &shifts)?;
     let mut coll = collision(&regions, gap);
-    if coll.is_some() && spec.arc.is_some() {
+    if coll.is_some() && curved {
         // letters on a tight circle lean towards each other (inside) or their feet do (outside): open the pitch
         for step in 1..=15 {
             let pitch = 1.0 + 0.04 * step as f64;
             (regions, bbox) = place(spec, &run, pitch, &shifts)?;
             if collision(&regions, gap).is_none() {
                 coll = None;
-                warnings.push(Warning { code: "textSpacingAdjusted", detail: format!("letters on a radius-{} arc would touch; the pitch was widened by {:.0} %", spec.arc.as_ref().map_or(0.0, |a| a.radius), (pitch - 1.0) * 100.0) });
+                warnings.push(Warning { code: "textSpacingAdjusted", detail: format!("letters on {} would touch; the pitch was widened by {:.0} %", spec.arc.as_ref().filter(|_| spec.path.is_none()).map_or("a tight curve".to_string(), |a| format!("a radius-{} arc", a.radius)), (pitch - 1.0) * 100.0) });
                 break;
             }
         }
@@ -1106,13 +1161,35 @@ fn place(spec: &Spec, run: &Run, pitch: f64, shifts: &[f64]) -> Result<(Vec<Regi
         VAnchor::Middle => spec.height * 0.5,
         VAnchor::Top => spec.height,
     };
+    let table = match &spec.path {
+        Some(pa) => Some((path_table(&pa.pts).ok_or(Error::BadPath)?, pa.start)),
+        None => None,
+    };
     let mut regions = vec![];
     let mut bbox = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
     let (ca, sa) = (spec.angle.to_radians().cos(), spec.angle.to_radians().sin());
     for (gi, g) in run.glyphs.iter().enumerate() {
         // world = o + ex * (x0 + m * s * p.x) + ey * (y0 + s * p.y)
         let (o, ex, ey, x0, y0);
-        match &spec.arc {
+        let on_arc = if table.is_some() { None } else { spec.arc.as_ref() };
+        match on_arc {
+            None if table.is_some() => {
+                let (t, start) = table.as_ref().unwrap();
+                let total = t[t.len() - 1].0;
+                let s0 = start.unwrap_or(0.0)
+                    + match spec.h {
+                        HAnchor::Left => 0.0,
+                        HAnchor::Center => total * 0.5,
+                        HAnchor::Right => total,
+                    };
+                let gx = pitch * m * ((g.pen + g.adv * 0.5) * s + shifts[gi] - ax);
+                let (pt, d) = path_at(t, s0 + gx);
+                o = pt;
+                ex = d;
+                ey = [-d[1], d[0]];
+                x0 = -m * g.adv * 0.5 * s;
+                y0 = -ay;
+            }
             None => {
                 o = spec.at;
                 ex = [ca, sa];

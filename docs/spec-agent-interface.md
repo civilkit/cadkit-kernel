@@ -1059,12 +1059,12 @@ errors); wasm: `tools/mate_check.mjs` (run by `tools/land.sh`).
 ## Lettering: the sketch `text` entity, `textMetrics`, `textOutline`
 
 Engraved / embossed text on parts. A sketch entity `{type:"text", string, font?:"gauge"|"engrave", height (cap height),
-at:[x,y] | p:<point id>, anchor?:[h, v], angle?, spacing?, mirror?, polyline?, arc?:{centre|c, radius, angleCentre?,
+at:[x,y] | p:<point id>, anchor?:[h, v], angle?, spacing?, mirror?, polyline?, path?:<entity id>, pathOffset?, pathFlip?, arc?:{centre|c, radius, angleCentre?,
 side?:"outside"|"inside"}}` is fixed geometry (no constraints; the anchor point `p` may be constrained) whose outlines
 are closed profile loops (letters with holes and islands are regions with holes) for `extrude` add / cut and the other
 profile consumers. Stateless requests `textMetrics {string, font?, height, spacing?}` (advance, ink box) and
 `textOutline {<entity fields>}` (polylines for a preview) size and preview it; `inspect` of a sketch lists its `texts`.
-Errors `textEmpty`, `textNothingToDraw`, `textFontNotLoaded`, `textFontMismatch`, `textBadHeight`, `textBadArc`, `textBadValue`;
+Errors `textEmpty`, `textNothingToDraw`, `textFontNotLoaded`, `textFontMismatch`, `textBadHeight`, `textBadArc`, `textBadPath`, `textBadValue`;
 warnings `textTooSmall`, `textMissingGlyph`, `textTruncated`, `textOverlap`, `textSpacingAdjusted`. Two OFL fonts (`gauge`,
 `engrave`) are compiled in; any other TTF / OTF is registered for the session with `loadFont {name, data:<base64>, replace?}`
 (reply `{name, hash, glyphs, supported:[blocks], coverage, warnings, ..}`; errors `fontNameConflict`, `fontReserved`,

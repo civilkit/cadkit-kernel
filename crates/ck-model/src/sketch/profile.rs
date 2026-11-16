@@ -240,82 +240,96 @@ fn default_knots(n: usize, p: usize, closed: bool) -> Vec<f64> {
     }
 }
 
-fn curves_of(sk: &Sketch) -> (Vec<Curve>, bool) {
+/// The curve of one sketch entity (construction or not); `None` for points, text and degenerate geometry.
+fn curve_of(sk: &Sketch, e: &SketchEntity) -> Option<Curve> {
     let pt = |id: &str| sk.point(id).map(|p| [p.x, p.y]);
+    let tag = e.id().to_string();
+    let c = match e {
+        SketchEntity::Line { p1, p2, .. } => {
+            let (Some(a), Some(b)) = (pt(p1), pt(p2)) else { return None };
+            if dist(a, b) < 1e-12 {
+                return None;
+            }
+            Curve { tag, kind: "line", geom: Geom::Line { p: a, d: sub(b, a) }, t0: 0.0, t1: 1.0, closed: false }
+        }
+        SketchEntity::Circle { c, r, .. } => {
+            let Some(cc) = pt(c) else { return None };
+            if r.abs() < 1e-12 {
+                return None;
+            }
+            Curve { tag, kind: "arc", geom: Geom::Circle { c: cc, r: r.abs() }, t0: 0.0, t1: 2.0 * PI, closed: true }
+        }
+        SketchEntity::Arc { c, p1, p2, .. } => {
+            let (Some(cc), Some(a), Some(b)) = (pt(c), pt(p1), pt(p2)) else { return None };
+            let a0 = (a[1] - cc[1]).atan2(a[0] - cc[0]);
+            let sw = norm_sweep((b[1] - cc[1]).atan2(b[0] - cc[0]) - a0);
+            let r = dist(a, cc);
+            if r < 1e-12 {
+                return None;
+            }
+            let closed = (sw - 2.0 * PI).abs() < 1e-9;
+            Curve { tag, kind: "arc", geom: Geom::Circle { c: cc, r }, t0: a0, t1: a0 + sw, closed }
+        }
+        SketchEntity::Ellipse { c, p, r, .. } => {
+            let (Some(cc), Some(pp)) = (pt(c), pt(p)) else { return None };
+            let u = sub(pp, cc);
+            let lu = u[0].hypot(u[1]);
+            if lu < 1e-12 {
+                return None;
+            }
+            let v = [-u[1] / lu * r, u[0] / lu * r];
+            Curve { tag, kind: "arc", geom: Geom::Ellipse { c: cc, u, v }, t0: 0.0, t1: 2.0 * PI, closed: true }
+        }
+        SketchEntity::Spline { pts, closed, .. } => {
+            let ps: Vec<P> = pts.iter().filter_map(|p| pt(p)).collect();
+            let Some(s) = InterpSpline::new(&ps, *closed) else { return None };
+            let (l, cl) = (s.length(), s.closed);
+            Curve { tag, kind: "spline", geom: Geom::Spline(s), t0: 0.0, t1: l, closed: cl }
+        }
+        SketchEntity::CvSpline { pts, degree, knots, closed, .. } => {
+            let mut cv: Vec<P> = pts.iter().filter_map(|p| pt(p)).collect();
+            let p = (*degree as usize).max(1);
+            if cv.len() < p + 1 {
+                return None;
+            }
+            // GUESS: closed cvsplines as periodic uniform (wrap p control points).
+            let k = if *closed {
+                for i in 0..p {
+                    let q = cv[i];
+                    cv.push(q);
+                }
+                (0..cv.len() + p + 1).map(|i| i as f64).collect()
+            } else {
+                knots.clone().filter(|k| k.len() == cv.len() + p + 1).unwrap_or_else(|| default_knots(cv.len(), p, false))
+            };
+            let (t0, t1) = (k[p], k[cv.len()]);
+            Curve { tag, kind: "spline", geom: Geom::BSpline { cv, degree: p, knots: k }, t0, t1, closed: *closed }
+        }
+        SketchEntity::Point { .. } | SketchEntity::Text { .. } => return None,
+    };
+    Some(c)
+}
+
+fn curves_of(sk: &Sketch) -> (Vec<Curve>, bool) {
     let mut out = Vec::new();
-    let mut any = false;
     for e in &sk.entities {
         if e.construction() {
             continue;
         }
-        let tag = e.id().to_string();
-        let c = match e {
-            SketchEntity::Line { p1, p2, .. } => {
-                let (Some(a), Some(b)) = (pt(p1), pt(p2)) else { continue };
-                if dist(a, b) < 1e-12 {
-                    continue;
-                }
-                Curve { tag, kind: "line", geom: Geom::Line { p: a, d: sub(b, a) }, t0: 0.0, t1: 1.0, closed: false }
-            }
-            SketchEntity::Circle { c, r, .. } => {
-                let Some(cc) = pt(c) else { continue };
-                if r.abs() < 1e-12 {
-                    continue;
-                }
-                Curve { tag, kind: "arc", geom: Geom::Circle { c: cc, r: r.abs() }, t0: 0.0, t1: 2.0 * PI, closed: true }
-            }
-            SketchEntity::Arc { c, p1, p2, .. } => {
-                let (Some(cc), Some(a), Some(b)) = (pt(c), pt(p1), pt(p2)) else { continue };
-                let a0 = (a[1] - cc[1]).atan2(a[0] - cc[0]);
-                let sw = norm_sweep((b[1] - cc[1]).atan2(b[0] - cc[0]) - a0);
-                let r = dist(a, cc);
-                if r < 1e-12 {
-                    continue;
-                }
-                let closed = (sw - 2.0 * PI).abs() < 1e-9;
-                Curve { tag, kind: "arc", geom: Geom::Circle { c: cc, r }, t0: a0, t1: a0 + sw, closed }
-            }
-            SketchEntity::Ellipse { c, p, r, .. } => {
-                let (Some(cc), Some(pp)) = (pt(c), pt(p)) else { continue };
-                let u = sub(pp, cc);
-                let lu = u[0].hypot(u[1]);
-                if lu < 1e-12 {
-                    continue;
-                }
-                let v = [-u[1] / lu * r, u[0] / lu * r];
-                Curve { tag, kind: "arc", geom: Geom::Ellipse { c: cc, u, v }, t0: 0.0, t1: 2.0 * PI, closed: true }
-            }
-            SketchEntity::Spline { pts, closed, .. } => {
-                let ps: Vec<P> = pts.iter().filter_map(|p| pt(p)).collect();
-                let Some(s) = InterpSpline::new(&ps, *closed) else { continue };
-                let (l, cl) = (s.length(), s.closed);
-                Curve { tag, kind: "spline", geom: Geom::Spline(s), t0: 0.0, t1: l, closed: cl }
-            }
-            SketchEntity::CvSpline { pts, degree, knots, closed, .. } => {
-                let mut cv: Vec<P> = pts.iter().filter_map(|p| pt(p)).collect();
-                let p = (*degree as usize).max(1);
-                if cv.len() < p + 1 {
-                    continue;
-                }
-                // GUESS: closed cvsplines as periodic uniform (wrap p control points).
-                let k = if *closed {
-                    for i in 0..p {
-                        let q = cv[i];
-                        cv.push(q);
-                    }
-                    (0..cv.len() + p + 1).map(|i| i as f64).collect()
-                } else {
-                    knots.clone().filter(|k| k.len() == cv.len() + p + 1).unwrap_or_else(|| default_knots(cv.len(), p, false))
-                };
-                let (t0, t1) = (k[p], k[cv.len()]);
-                Curve { tag, kind: "spline", geom: Geom::BSpline { cv, degree: p, knots: k }, t0, t1, closed: *closed }
-            }
-            SketchEntity::Point { .. } | SketchEntity::Text { .. } => continue,
-        };
-        any = true;
-        out.push(c);
+        if let Some(c) = curve_of(sk, e) {
+            out.push(c);
+        }
     }
+    let any = !out.is_empty();
     (out, any)
+}
+
+/// Polyline along one entity (construction entities included) with `n` intervals, in the direction of its
+/// parameter (a line from p1 to p2, an arc from p1 counter-clockwise to p2); `None` when the entity is not a curve.
+pub fn entity_polyline(sk: &Sketch, id: &str, n: usize) -> Option<Vec<P>> {
+    let c = curve_of(sk, sk.entity(id)?)?;
+    let n = if c.kind == "line" { 1 } else { n.max(2) };
+    Some((0..=n).map(|i| c.geom.eval(c.t0 + (c.t1 - c.t0) * i as f64 / n as f64)).collect())
 }
 
 // ---------------------------------------------------------------------------

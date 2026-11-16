@@ -47,6 +47,12 @@ export interface SketchText {
   /** lines within a chord tolerance instead of B-spline edges */
   polyline?: boolean;
   /** lay the letters along a circle: outside = tops away from the centre, reads clockwise */
+  /** lay the letters along another entity of the sketch (line, arc, circle, ellipse, spline; construction or not): each letter turns to the tangent, tops on the left of travel. Wins over `arc`. */
+  path?: string;
+  /** slide along the path (mm), added to the default place of the anchor: the start / middle / end of the path for a left / centre / right anchor */
+  pathOffset?: number;
+  /** travel the path the other way */
+  pathFlip?: boolean;
   arc?: { centre?: [number, number]; c?: string; radius: number; angleCentre?: number; side?: 'outside' | 'inside' };
 }
 

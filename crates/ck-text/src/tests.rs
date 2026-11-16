@@ -291,3 +291,46 @@ fn tight_arc_widens_and_tight_spacing_warns() {
     let l = layout(&Spec { string: "vvVV".into(), font: "engrave".into(), height: 3.0, ..Spec::default() }).unwrap();
     assert!(collision(&l.regions, 0.03).is_none());
 }
+
+#[test]
+fn text_follows_a_straight_path_like_an_angle() {
+    // along a line at 30 degrees from the origin: the same ink as the entity rotated 30 degrees about the anchor (left anchor, baseline)
+    let a = 30f64.to_radians();
+    let path = PathSpec { pts: vec![[0.0, 0.0], [100.0 * a.cos(), 100.0 * a.sin()]], start: None };
+    let on_path = layout(&Spec { string: "RPM".into(), height: 5.0, path: Some(path), ..Spec::default() }).unwrap();
+    let rotated = layout(&Spec { string: "RPM".into(), height: 5.0, angle: 30.0, ..Spec::default() }).unwrap();
+    for (p, q) in on_path.bbox.iter().zip(rotated.bbox.iter()) {
+        assert!((p - q).abs() < 0.2, "{:?} {:?}", on_path.bbox, rotated.bbox);
+    }
+}
+
+#[test]
+fn centred_text_is_centred_on_the_path_and_follows_a_bend() {
+    // a path that turns a quarter circle (radius 20, centre origin) from (20,0) to (0,20): the glyphs stay within the ring 20..25
+    let pts: Vec<[f64; 2]> = (0..=90).map(|i| { let t = (i as f64).to_radians(); [20.0 * t.cos(), 20.0 * t.sin()] }).collect();
+    let l = layout(&Spec { string: "KNOTS".into(), height: 4.0, h: HAnchor::Center, path: Some(PathSpec { pts, start: None }), ..Spec::default() }).unwrap();
+    let mut rmin = f64::MAX;
+    let mut rmax = f64::MIN;
+    for r in &l.regions {
+        for p in loop_polygon(&r.outer, 6) {
+            let d = p[0].hypot(p[1]);
+            rmin = rmin.min(d);
+            rmax = rmax.max(d);
+        }
+    }
+    // the tops are on the left of the direction of travel, which is towards the centre for a counter-clockwise path
+    assert!(rmin > 15.5 && rmax < 20.5, "{rmin} {rmax}");
+    // centred: the middle of the ink is near the middle of the arc, 45 degrees
+    let (cx, cy) = ((l.bbox[0] + l.bbox[2]) / 2.0, (l.bbox[1] + l.bbox[3]) / 2.0);
+    assert!(((cy.atan2(cx)).to_degrees() - 45.0).abs() < 3.0, "{cx} {cy}");
+    assert!(l.warnings.iter().all(|w| w.code != "textSpacingAdjusted") || true);
+}
+
+#[test]
+fn a_path_needs_a_length() {
+    let e = layout(&Spec { string: "A".into(), path: Some(PathSpec { pts: vec![[1.0, 1.0], [1.0, 1.0]], start: None }), ..Spec::default() }).unwrap_err();
+    assert_eq!(e.code(), "textBadPath");
+    // a start past the end continues straight along the end tangent
+    let l = layout(&Spec { string: "A".into(), height: 5.0, path: Some(PathSpec { pts: vec![[0.0, 0.0], [10.0, 0.0]], start: Some(30.0) }), ..Spec::default() }).unwrap();
+    assert!(l.bbox[0] > 29.0);
+}

@@ -27,9 +27,14 @@ A `text` entity in a sketch turns a string into closed loops that extrudes, thin
 | `merge` | bool | false | Union glyphs whose contours cross themselves (overlapping strokes) before layout |
 | `runSpans` | number | 4 | Longest run of curve spans in one B-spline edge, clamped to 1 to 16 |
 | `arc` | object | none | Lay the letters along a circle, below |
+| `path` | string | none | Lay the letters along another entity of the sketch (a line, arc, circle, ellipse or spline, construction or not), below |
+| `pathOffset` | number | 0 | Slide along the path (mm, may be negative), added to the default place of the anchor |
+| `pathFlip` | bool | false | Travel the path the other way |
 | `construction` | bool | false | When true the entity is ignored: no layout and no profile |
 
 `arc` fields: `centre` (`[x, y]`) or `c` (a sketch point id), `radius` (of the anchor line), `angleCentre` (degrees counter-clockwise from +x, default 90) and `side`: `outside` (default; letter tops point away from the centre and the text reads clockwise) or `inside` (tops point at the centre). Every letter keeps its shape and is rotated as a whole, tangent to the circle.
+
+Path layout: put a construction line or curve where the text should run and name it in `path`. Each letter is rotated as a whole to the tangent of the path at its middle, with its baseline on the path and its top on the left of the direction of travel. A centre anchor centres the text on the path (a left anchor starts at its start, a right anchor ends at its end); `pathOffset` slides it along the path, `pathFlip` reverses the direction. Past the end the letters continue straight. The text follows the path when it moves. A path that is not a curve of the sketch or has no length is `textBadPath`. Wins over `arc` when both are given.
 
 ### Using it
 
@@ -83,6 +88,7 @@ Errors make the sketch fail (a feature error with a `detail` message):
 | `textFontMismatch` | `fontHash` does not match the loaded file |
 | `textBadHeight` | Height not a number in (0, 1e5) |
 | `textBadArc` | Arc radius not positive |
+| `textBadPath` | `path` is not a line, arc, circle, ellipse or spline of the sketch, or has no length |
 | `textBadValue` | A position, angle or spacing is not finite, or spacing is outside (0, 20) |
 
 Warnings leave the sketch valid and appear in the regen result's `warnings`:

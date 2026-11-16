@@ -348,7 +348,7 @@ Two warnings of the end conditions are in [Warnings](#warnings): `endConditionFa
 
 ## Text and font codes
 
-Sketch features with text can fail with `textEmpty` (empty string), `textNothingToDraw` (only blanks or unknown letters), `textFontNotLoaded`, `textFontMismatch` (`fontHash` does not match the loaded file), `textBadHeight` (not a number in 0 to 1e5), `textBadArc` (radius not positive) and `textBadValue` (a position, angle or spacing is not finite, or spacing is outside 0 to 20). Loading a font can warn with `fontKerningIgnored`, `fontLigaturesIgnored`, `fontVariableDefaultOnly`, `fontCollectionFirstFace`, `fontCffApproximated`, `fontNoCapHeight`, `fontOverlappingContours`, `fontEmbeddingRestricted`, `fontNoSubsetting` and `fontNoLatin`. [Text and fonts](../io/text.md) gives the causes.
+Sketch features with text can fail with `textEmpty` (empty string), `textNothingToDraw` (only blanks or unknown letters), `textFontNotLoaded`, `textFontMismatch` (`fontHash` does not match the loaded file), `textBadHeight` (not a number in 0 to 1e5), `textBadArc` (radius not positive), `textBadPath` (the path of a text on a path is not a curve of the sketch or has no length) and `textBadValue` (a position, angle or spacing is not finite, or spacing is outside 0 to 20). Loading a font can warn with `fontKerningIgnored`, `fontLigaturesIgnored`, `fontVariableDefaultOnly`, `fontCollectionFirstFace`, `fontCffApproximated`, `fontNoCapHeight`, `fontOverlappingContours`, `fontEmbeddingRestricted`, `fontNoSubsetting` and `fontNoLatin`. [Text and fonts](../io/text.md) gives the causes.
 
 ## Notes on specific codes
 

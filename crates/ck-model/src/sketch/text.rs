@@ -1,5 +1,7 @@
 //! Lettering entities: `{"type":"text","id":"t1","string":"RPM x100","font":"gauge","height":4,"at":[0,0],
 //! "anchor":["center","middle"],"angle":0,"spacing":1,"mirror":false,"arc":{..},"polyline":false}`.
+//! `"path":"e5"` (a line, arc, circle or spline of the same sketch, construction or not, or a list of points in a
+//! stateless request) lays the letters along that curve instead (`pathOffset`, `pathFlip`).
 //!
 //! A text entity is fixed geometry: it takes no constraints and is not intersected with the other
 //! curves of the sketch. Its outlines (ck-text) become profile regions of their own, appended after
@@ -19,6 +21,10 @@ pub struct TextEntity {
     pub p: Option<String>,
     /// Centre point id of an arc layout (`arc.c`), when given.
     pub arc_c: Option<String>,
+    /// Sketch entity id (`path`) the letters follow, when given.
+    pub path_entity: Option<String>,
+    /// Reverse the direction of travel along the path (`pathFlip`).
+    pub path_flip: bool,
 }
 
 fn pair(j: Option<&Json>) -> Option<[f64; 2]> {
@@ -79,7 +85,24 @@ impl TextEntity {
                 side,
             });
         }
-        TextEntity { spec, p: j.get("p").and_then(|v| v.as_str()).map(str::to_string), arc_c }
+        // `path`: an entity id of the same sketch, or (stateless requests such as textOutline) the polyline itself
+        let mut path_entity = None;
+        let (path_start, path_flip) = (jnum_opt(j.get("pathOffset")), jtruthy(j.get("pathFlip")));
+        match j.get("path") {
+            Some(Json::Str(id)) if !id.is_empty() => path_entity = Some(id.clone()),
+            Some(Json::Arr(a)) => {
+                let mut pts: Vec<[f64; 2]> = a.iter().filter_map(|q| pair(Some(q))).collect();
+                if path_flip {
+                    pts.reverse();
+                }
+                spec.path = Some(ck_text::PathSpec { pts, start: path_start });
+            }
+            _ => {}
+        }
+        if path_entity.is_some() {
+            spec.path = Some(ck_text::PathSpec { pts: vec![], start: path_start });
+        }
+        TextEntity { spec, p: j.get("p").and_then(|v| v.as_str()).map(str::to_string), arc_c, path_entity, path_flip }
     }
 
     /// The spec with the anchor / centre points resolved against the sketch.
@@ -90,6 +113,16 @@ impl TextEntity {
         }
         if let (Some(a), Some(q)) = (s.arc.as_mut(), self.arc_c.as_deref().and_then(|p| sk.point_xy(p))) {
             a.centre = q;
+        }
+        if let Some(id) = self.path_entity.as_deref() {
+            // the entity may be a construction line; a missing or point-like path is `textBadPath` at layout (empty polyline)
+            let mut pts = super::profile::entity_polyline(sk, id, 240).unwrap_or_default();
+            if self.path_flip {
+                pts.reverse();
+            }
+            if let Some(pa) = s.path.as_mut() {
+                pa.pts = pts;
+            }
         }
         s
     }
@@ -350,4 +383,43 @@ pub fn subset_font_reply(msg: &Json) -> Result<Json, String> {
         ("data".into(), Json::Str(ck_text::base64_encode(&bytes))),
         ("warnings".into(), Json::Arr(warnings.iter().map(font_warn).collect())),
     ]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sketch(entities: &str) -> Sketch {
+        let src = format!(
+            r#"{{"type":"sketch","id":"s","plane":{{"kind":"std","id":"front"}},"points":[{{"id":"a","x":0,"y":0}},{{"id":"b","x":60,"y":0}},{{"id":"c","x":0,"y":0}},{{"id":"d","x":0,"y":0}}],"entities":[{entities}],"constraints":[]}}"#
+        );
+        Sketch::from_json(&ck_json::parse(&src).unwrap())
+    }
+
+    fn bbox(sk: &Sketch, id: &str) -> [f64; 4] {
+        let l = layout_all(sk);
+        l.into_iter().find(|(i, _)| i == id).unwrap().1.unwrap().bbox
+    }
+
+    #[test]
+    fn text_follows_a_construction_line_and_flips() {
+        let line = r#"{"id":"e1","type":"line","p1":"a","p2":"b","construction":true}"#;
+        let on = |extra: &str| sketch(&format!(r#"{line},{{"id":"t","type":"text","string":"HELLO","height":5,"anchor":["center","baseline"],"path":"e1"{extra}}}"#));
+        let b = bbox(&on(""), "t");
+        // centred on a 60 mm line along +x: the ink is symmetric about x = 30, sitting above y = 0
+        assert!(((b[0] + b[2]) / 2.0 - 30.0).abs() < 1.0 && b[1] > -1.0 && b[3] < 6.0, "{b:?}");
+        // flipped: the path runs the other way, so the letters stand below the line, upside down
+        let f = bbox(&on(r#","pathFlip":true"#), "t");
+        assert!(f[3] < 1.0 && f[1] > -6.0, "{f:?}");
+        // pathOffset: the anchor is that far from the start of the path
+        let o = bbox(&sketch(&format!(r#"{line},{{"id":"t","type":"text","string":"HI","height":5,"path":"e1","pathOffset":20}}"#)), "t");
+        assert!(o[0] > 19.5 && o[0] < 22.0, "{o:?}");
+    }
+
+    #[test]
+    fn a_missing_path_is_an_error() {
+        // a counter-clockwise arc about the origin from (a) to (b'): letters stay on the ring
+        let sk = sketch(r#"{"id":"e1","type":"arc","c":"c","p1":"a","p2":"b"},{"id":"t","type":"text","string":"AB","height":4,"path":"nope"}"#);
+        assert_eq!(layout_all(&sk)[0].1.as_ref().unwrap_err().code(), "textBadPath");
+    }
 }
