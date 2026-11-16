@@ -41,7 +41,7 @@ fn coded(code: &str, detail: &str) -> FeatureError {
 pub fn handles(f: &Feature) -> bool {
     matches!(
         f.type_name.as_str(),
-        "surfacePlanar" | "surfaceRevolve" | "surfaceExtrude" | "knit" | "fill" | "trimSurface" | "thicken" | "extend" | "deleteFace" | "freeform" | "deleteBody"
+        "surfacePlanar" | "surfaceRevolve" | "surfaceExtrude" | "knit" | "fill" | "trimSurface" | "thicken" | "extend" | "deleteFace" | "freeform" | "deleteBody" | "surfaceOffset"
     )
 }
 
@@ -59,6 +59,7 @@ pub fn dispatch(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<()
         "deleteFace" => exec_delete_face(br, state, f),
         "freeform" => exec_freeform(br, state, f),
         "deleteBody" => super::delete_body::exec_delete_body(br, state, f),
+        "surfaceOffset" => super::surface_offset::exec_surface_offset(br, state, f),
         _ => unreachable!(),
     }
 }

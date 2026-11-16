@@ -97,7 +97,7 @@ impl PathSeg {
     }
     /// Unit direction of travel at the start (a helix: its rotational part,
     /// see the module header).
-    pub(crate) fn start_dir(&self) -> Option<Vec3> {
+    pub fn start_dir(&self) -> Option<Vec3> {
         match self {
             PathSeg::Line { a, b } => (*b - *a).try_normalize(),
             PathSeg::Arc { frame, a0, a1, .. } => {

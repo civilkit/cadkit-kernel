@@ -22,7 +22,7 @@ impl FeatureExec for Exec {
 
 #[test]
 fn unbuilt_feature_types_report_not_implemented() {
-    for ty in ["dome", "splitLine", "fillpattern", "surfaceOffset", "cutWithSurface"] {
+    for ty in ["fillpattern", "cutWithSurface"] {
         let src = format!(r#"{{"format":"ck-part","version":1,"features":[{{"type":"{ty}","id":"F1"}}]}}"#);
         let part = Part::from_json(&ck_json::parse(&src).unwrap()).unwrap();
         let r = regen::regen(&part, &RegenOpts::default(), &mut Exec(Brep::new()));

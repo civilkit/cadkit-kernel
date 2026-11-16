@@ -14,6 +14,9 @@ use ck_json::{Json, Obj};
 /// Most builds one search may spend (only on the refusal path).
 pub const MAX_BUILDS: usize = 8;
 
+/// Longest a search may keep starting builds, in ms of the host clock.
+pub const SEARCH_MS: f64 = 3000.0;
+
 static BLEND_SEARCH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
 /// Most faces a body may have for a refused fillet to search for its largest size: each search rebuilds the blend up
@@ -54,8 +57,14 @@ pub fn largest_that_builds(asked: f64, known: Option<f64>, mut builds: impl FnMu
             hi = k;
         }
     }
+    // (a build that cannot succeed can itself take seconds: a refusal must not wait for the whole search then;
+    // without a host clock the build count is the only bound)
+    let started = ck_core::budget::mark();
     while n < MAX_BUILDS {
         if lo > 0.0 && hi - lo <= (0.03 * lo).max(0.02) {
+            break;
+        }
+        if ck_core::budget::since(started) > SEARCH_MS {
             break;
         }
         let mid = floor_nice(0.5 * (lo + hi));

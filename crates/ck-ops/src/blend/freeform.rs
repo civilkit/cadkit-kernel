@@ -119,6 +119,20 @@ struct Ctx<'a> {
     sg: f64,
 }
 
+/// A screw (twisted extrude) face's surface with its profile range padded by `pad` each side: the ball of a chain end
+/// that runs on past the face's boundary (the tool's end extension) is still carried by the same surface there, where
+/// the foot of the finite patch would clamp to its boundary and the contact would leave the surface.
+fn padded_screw(sf: &Surface, pad: f64) -> Option<Surface> {
+    match sf {
+        Surface::Screw { profile, axis_o, axis, rise, urange: (u0, u1), vrange: (v0, v1) } => {
+            // (along the axis too: a ball near the end of a vertical edge has its foot a little past the face's last turn)
+            let pu = if rise.abs() > 1e-12 { pad / rise.abs() } else { 0.0 };
+            Some(Surface::Screw { profile: profile.clone(), axis_o: *axis_o, axis: *axis, rise: *rise, urange: (u0 - pu, u1 + pu), vrange: (v0 - pad, v1 + pad) })
+        }
+        _ => None,
+    }
+}
+
 fn foot(b: &Body, f: FaceId, q: Vec3) -> Option<(Vec3, Vec3)> {
     let sf = &b.face(f).surface;
     let (u, v, pt) = sf.closest_point(q);
@@ -141,7 +155,8 @@ fn foot_hint(b: &Body, f: FaceId, q: Vec3) -> Option<(Vec3, Vec3)> {
     if !bx.padded(2.5 * reach + 0.05 * bx.diagonal()).contains(q) {
         return None;
     }
-    let sf = &b.face(f).surface;
+    let padded = padded_screw(&b.face(f).surface, 3.0 * reach);
+    let sf = padded.as_ref().unwrap_or(&b.face(f).surface);
     let h = HINTS.with(|m| m.borrow().get(&(f.idx() as u32)).copied());
     let (u, v, pt) = match h {
         Some((hu, hv, hq)) if hq.dist(q) < 6.0 * reach => sf.closest_point_near(q, (hu, hv)),
@@ -534,7 +549,21 @@ fn blend_patch(fit: &Fit) -> Result<BSplineSurface, BlendError> {
 /// Chains of the selected edges (G1 by construction of the selection):
 /// ordered links. A chain that returns to its start is a closed ring
 /// (`closed = true`); branches are unsupported.
-fn build_chain(b: &Body, edges: &[EdgeId], start: usize) -> Result<(Vec<(usize, bool)>, bool), BlendError> {
+/// Edges `x` and `y` leave their shared vertex `v` along one line (a smooth continuation, not a sharp corner).
+fn continues_at(b: &Body, x: EdgeId, y: EdgeId, v: ck_topo::body::VertexId) -> bool {
+    let dir = |e: EdgeId| {
+        let ed = b.edge(e);
+        ed.curve.tangent(if ed.v0 == v { ed.t0 } else { ed.t1 }).try_normalize()
+    };
+    match (dir(x), dir(y)) {
+        (Some(a), Some(c)) => a.cross(c).len() < 1e-3,
+        _ => false,
+    }
+}
+
+/// Walk the selected `edges` from `start` into one chain. With `split_sharp` the chain also stops at a vertex where
+/// the next selected edge leaves at an angle (a sharp corner): each smooth run is its own chain.
+fn build_chain(b: &Body, edges: &[EdgeId], start: usize, split_sharp: bool) -> Result<(Vec<(usize, bool)>, bool), BlendError> {
     let ends = |i: usize| (b.edge(edges[i]).v0, b.edge(edges[i]).v1);
     let deg = |v: ck_topo::body::VertexId| edges.iter().enumerate().filter(|(i, _)| ends(*i).0 == v || ends(*i).1 == v).count();
     let mut chain = vec![(start, true)];
@@ -542,38 +571,66 @@ fn build_chain(b: &Body, edges: &[EdgeId], start: usize) -> Result<(Vec<(usize, 
     used[start] = true;
     // forward
     let mut v = ends(start).1;
+    let mut last = start;
     loop {
-        if deg(v) > 2 {
+        if deg(v) > 2 && !split_sharp {
             return Err(unsupported("branching blend selection"));
         }
-        let Some(nx) = (0..edges.len()).find(|&i| !used[i] && (ends(i).0 == v || ends(i).1 == v)) else { break };
+        let Some(nx) = (0..edges.len()).find(|&i| !used[i] && (ends(i).0 == v || ends(i).1 == v) && (!split_sharp || continues_at(b, edges[last], edges[i], v))) else { break };
         used[nx] = true;
         let fwd = ends(nx).0 == v;
         chain.push((nx, fwd));
         v = if fwd { ends(nx).1 } else { ends(nx).0 };
+        last = nx;
     }
     // the walk returned to where it started: a closed ring of edges (no ends)
-    if v == ends(start).0 {
+    if v == ends(start).0 && (!split_sharp || continues_at(b, edges[last], edges[start], v)) {
         return Ok((chain, true));
     }
     // backward
     let mut v = ends(start).0;
-    if deg(v) > 2 {
+    if deg(v) > 2 && !split_sharp {
         return Err(unsupported("branching blend selection"));
     }
+    let mut first = start;
     loop {
-        let Some(pv) = (0..edges.len()).find(|&i| !used[i] && (ends(i).0 == v || ends(i).1 == v)) else { break };
+        let Some(pv) = (0..edges.len()).find(|&i| !used[i] && (ends(i).0 == v || ends(i).1 == v) && (!split_sharp || continues_at(b, edges[first], edges[i], v))) else { break };
         used[pv] = true;
         // walking backwards: the link ends at v
         let fwd = ends(pv).1 == v;
         chain.insert(0, (pv, fwd));
         v = if fwd { ends(pv).0 } else { ends(pv).1 };
+        first = pv;
     }
     Ok((chain, false))
 }
 
 /// Fillet `edges` (free-form capable); see the module docs.
 pub fn fillet_freeform(b: &Body, edges: &[(String, String, Vec3)], r: f64, feature: &str, tol: f64) -> Result<Body, BlendError> {
+    let whole = fillet_freeform_chains(b, edges, r, feature, tol, false);
+    // A selection that runs round a sharp corner is one chain above, which the solver cannot follow (the ball's two
+    // faces change at the corner). Each smooth run on its own is a convex tool that runs on past its end, so the
+    // runs meet in a mitre like two plain edge fillets do; retried only when the whole selection failed.
+    if whole.is_err() && edges.len() > 1 {
+        if let Ok(done) = fillet_freeform_chains(b, edges, r, feature, tol, true) {
+            return Ok(done);
+        }
+    }
+    // Faces of a twisted extrude are screw surfaces. A failure there is not the generic "smaller radius" one (a ring of
+    // end edges at a twist of 60 degrees and over leaves the last chains' tools open, issue 67).
+    if let Err(e) = &whole {
+        let on_screw = edges.iter().any(|(fa, fb, at)| find_edge(b, fa, fb, *at).is_some_and(|ed| b.edge_faces(ed).iter().any(|&f| matches!(b.face(f).surface, Surface::Screw { .. }))));
+        if on_screw && e.code == "blendFailed" {
+            return Err(failed_hint(
+                "a fillet on a twisted extrude face: the blend could not be joined to the twisted (screw) side faces",
+                "a ring of end edges on a strongly twisted extrude (about 60 degrees and over) may not close: fillet fewer edges at a time, fillet before the twist, or build the rounded edge with other features",
+            ));
+        }
+    }
+    whole
+}
+
+fn fillet_freeform_chains(b: &Body, edges: &[(String, String, Vec3)], r: f64, feature: &str, tol: f64, split_sharp: bool) -> Result<Body, BlendError> {
     HINTS.with(|m| m.borrow_mut().clear());
     BOXES.with(|m| m.borrow_mut().clear());
     REACH.with(|c| c.set(r));
@@ -590,11 +647,13 @@ pub fn fillet_freeform(b: &Body, edges: &[(String, String, Vec3)], r: f64, featu
             .iter()
             .map(|&k| find_edge(&cur, &edges[k].0, &edges[k].1, edges[k].2).ok_or_else(|| BlendError::code("missingEdge")))
             .collect::<Result<_, _>>()?;
-        let (chain, closed) = build_chain(&cur, &eids, 0)?;
+        let (chain, closed) = build_chain(&cur, &eids, 0, split_sharp)?;
         let picked: Vec<usize> = chain.iter().map(|&(i, _)| remaining[i]).collect();
         let links = make_links(&cur, &eids, &chain)?;
         let k = *picked.iter().min().unwrap_or(&first) as u32;
-        cur = blend_chain(&cur, links, r, feature, k, tol, closed)?;
+        // (split runs: a later run starts where an earlier blend ended, up to about r short of the corner both meet at;
+        // its tool must run back past that corner, or the mitre is left with a ledge)
+        cur = blend_chain(&cur, links, r, feature, k, tol, closed, if split_sharp { 2.5 } else { 0.5 })?;
         remaining.retain(|x| !picked.contains(x));
     }
     // The boolean fits a pcurve on the blend surface for each new edge. On the contact edges the two faces are
@@ -660,7 +719,8 @@ fn make_links(b: &Body, eids: &[EdgeId], chain: &[(usize, bool)]) -> Result<Vec<
     Ok(links)
 }
 
-fn blend_chain(b: &Body, links: Vec<Link>, r: f64, feature: &str, k: u32, tol: f64, closed: bool) -> Result<Body, BlendError> {
+#[allow(clippy::too_many_arguments)]
+fn blend_chain(b: &Body, links: Vec<Link>, r: f64, feature: &str, k: u32, tol: f64, closed: bool, end_ext: f64) -> Result<Body, BlendError> {
     let mut set1: Vec<FaceId> = vec![];
     let mut set2: Vec<FaceId> = vec![];
     for l in &links {
@@ -786,7 +846,7 @@ fn blend_chain(b: &Body, links: Vec<Link>, r: f64, feature: &str, k: u32, tol: f
         secs[last] = secs[0].clone();
         ps[last] = ps[0];
     } else if convex {
-        let m = 0.5 * r;
+        let m = end_ext * r;
         let shift = |s: &Sec, d: Vec3| Sec { pts: s.pts.map(|p| p + d), d0: s.d0, d1: s.d1 };
         for end in [0usize, 1] {
             let last = nodes.len() - 1;
@@ -820,7 +880,13 @@ fn blend_chain(b: &Body, links: Vec<Link>, r: f64, feature: &str, k: u32, tol: f
                 trims.push((o, n));
             } else {
                 let d = t_out * m;
-                let sh = shift(&secs[idx], d);
+                // a chain end on a twisted face: the ball is carried on along the faces (a straight shift of the
+                // section leaves the twisted face, and its contact curve then misses the face's boundary edge)
+                let on_screw = [ctx.links[nd.li].f1, ctx.links[nd.li].f2].iter().any(|&f| matches!(b.face(f).surface, Surface::Screw { .. }));
+                let carried = on_screw
+                    .then(|| ctx.solve_with(nd.li, nd.s, Some(nd.st.c + d), Some((nd.st.p + d, t_out))).and_then(|st| section(&st, sg, r, kk)))
+                    .and_then(|x| x.ok());
+                let sh = carried.unwrap_or_else(|| shift(&secs[idx], d));
                 if end == 0 {
                     secs.insert(0, sh);
                     ps.insert(0, nd.st.p + d);

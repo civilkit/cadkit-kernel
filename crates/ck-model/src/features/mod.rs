@@ -58,8 +58,11 @@
 //! | unfold, refold  | (none) |
 //! | frame           | sketch, segments, lines, profile, rotate, corner, members, joints, hardware (see frame.rs) |
 //! | knurlBand       | axis, center, radius, from, to, pattern, count, depth, angle, helixAngle, ringPitch (see knurl_band.rs) |
+//! | torus, pipe, coil, boundingSolid, dome | see solids.rs |
 //! | thread          | face, standard, size, class, length, hand, start, modeled (parsed from the raw DOM, see thread.rs) |
 //! | projectCurve    | sketch \| curve, faces, degree, tolerance, direction (see project_curve.rs) |
+//! | surfaceOffset   | faces \| surface, distance, flip, keep (see surface_offset.rs) |
+//! | splitLine       | faces, plane, offset, flip \| sketch, direction (see split_line.rs) |
 
 pub mod blends;
 pub mod bodies;
@@ -104,11 +107,14 @@ pub mod sheet_tree;
 pub mod sheet_tree3d;
 pub mod shell;
 pub mod split;
+pub mod split_line;
 pub mod surface_extrude;
+pub mod surface_offset;
 pub mod surfaces;
 pub mod sweep;
 pub mod thin;
 pub mod scale;
+pub mod solids;
 pub mod thread;
 
 use crate::sketch::jtruthy;
@@ -1695,7 +1701,7 @@ impl Brep {
 
     fn exec_feature(&mut self, state: &mut crate::regen::RegenState, f: &crate::Feature) -> Result<(), crate::regen::FeatureError> {
         bodies::check_feature(f)?;
-        if matches!(op(&f.raw), Op::NewBody) && matches!(f.type_name.as_str(), "extrude" | "revolve" | "loft" | "sweep" | "sphere" | "box") {
+        if matches!(op(&f.raw), Op::NewBody) && matches!(f.type_name.as_str(), "extrude" | "revolve" | "loft" | "sweep" | "sphere" | "box" | "torus" | "pipe" | "coil" | "boundingSolid") {
             if let Some(name) = bodies::body_name(&f.raw)? {
                 bodies::check_free(self.body.as_ref(), &name, &f.id, &[])?;
             }
@@ -1728,6 +1734,11 @@ impl Brep {
             FeatureKind::Revolve { .. } => extrude::exec_revolve(state, f, self.body.is_some())?,
             FeatureKind::Sphere { .. } => extrude::exec_sphere(state, f, self.body.is_some())?,
             FeatureKind::Box { .. } => extrude::exec_box(state, f, self.body.is_some())?,
+            _ if f.type_name == "torus" => solids::exec_torus(state, f, self.body.is_some())?,
+            _ if f.type_name == "pipe" => solids::exec_pipe(self, state, f)?,
+            _ if f.type_name == "coil" => solids::exec_coil(state, f, self.body.is_some())?,
+            _ if f.type_name == "boundingSolid" => solids::exec_bounding_solid(self, state, f)?,
+            _ if f.type_name == "dome" => solids::exec_dome(self, state, f)?,
             FeatureKind::Mirror { .. } => return pattern::exec_mirror(self, state, f),
             FeatureKind::CPattern { seeds, bodies, .. } if seeds.is_empty() && !bodies.is_empty() && !self.asm.components.is_empty() => {
                 return self.exec_component_pattern(state, f)
@@ -1765,6 +1776,7 @@ impl Brep {
             _ if f.type_name == "refold" => return sheet_features::exec_refold(self, state, f),
             _ if f.type_name == "thread" => return thread::exec_thread(self, state, f),
             _ if f.type_name == "split" => return split::exec_split(self, state, f),
+            _ if f.type_name == "splitLine" => return split_line::exec_split_line(self, state, f),
             _ if f.type_name == "lipJoint" => return split::exec_lip_joint(self, state, f),
             _ if f.type_name == "combine" || f.type_name == "bodyBoolean" => return combine::exec_combine(self, state, f),
             _ if f.type_name == "moveBody" => return move_body::exec_move_body(self, state, f),

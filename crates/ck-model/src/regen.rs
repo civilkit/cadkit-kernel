@@ -129,7 +129,7 @@ pub const KNOWN_TYPES: &[&str] = &[
     "fillpattern", "curvepattern", "moveBody", "mate", "insertPart", "scale", "surfaceExtrude", "surfaceRevolve",
     "surfacePlanar", "surfaceOffset", "deleteFace", "fill", "knit", "extend", "freeform", "trimSurface", "thicken",
     "cutWithSurface", "pipeCut", "deleteBody", "editCurve", "projectCurve", "helix", "thread", "combine", "bodyBoolean", "split", "lipJoint", "knurlBand", "importStep",
-    "repairPart", "importBody", "frame", "sheetRules", "baseFlange", "edgeFlange", "hem", "fold", "contourFlange", "unfold", "refold", "sheetCorner", "sheetCut", "sheetConvert",
+    "repairPart", "importBody", "torus", "pipe", "coil", "boundingSolid", "frame", "sheetRules", "baseFlange", "edgeFlange", "hem", "fold", "contourFlange", "unfold", "refold", "sheetCorner", "sheetCut", "sheetConvert",
 ];
 
 /// The error the oracle reports for each known type when the payload is
@@ -200,6 +200,10 @@ pub const EMPTY_FEATURE_ERRORS: &[(&str, &str)] = &[
     ("editCurve", "editCurveNoInput"),
     ("projectCurve", "projectCurveNoFaces"),
     ("helix", "missingSketch"),
+    ("torus", "invalidValue"),
+    ("pipe", "invalidValue"),
+    ("coil", "invalidValue"),
+    ("boundingSolid", "nothingToCut"),
 ];
 
 /// Sketch-driven types for which the driver checks `sketch` itself.

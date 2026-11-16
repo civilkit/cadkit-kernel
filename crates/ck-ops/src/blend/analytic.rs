@@ -128,6 +128,12 @@ pub(super) fn blend_edge_hint_inner(
                     Surface::Cylinder { .. } if !chamfer && super::torus_corner::analytic_wall_edge(b, e) => {}
                     other => {
                         dbg_fail(&format!("line edge on {} face", other.kind()));
+                        if chamfer && matches!(other, Surface::Screw { .. }) {
+                            return Err(super::diag::unsupported_hint(
+                                "a chamfer on an edge of a twisted extrude face: chamfers need planar faces (or a cylinder along its axis)",
+                                "use a fillet, chamfer before the twist, or build the bevel with other features",
+                            ));
+                        }
                         return Err(BlendError::code("blendUnsupported"));
                     }
                 }
