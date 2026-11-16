@@ -139,7 +139,7 @@ fn target(state: &RegenState, f: &Feature, field: &str, body: Option<&Body>, nor
     }
     match kind {
         Some("std") => {
-            let p = id().and_then(crate::StdPlane::from_wire).ok_or_else(|| lost(field, "a standard plane is front, top or right"))?;
+            let p = id().and_then(crate::StdPlane::from_wire).ok_or_else(|| lost(field, "a standard plane is front, top, right, xz or yz"))?;
             let fr: Frame = p.frame();
             Ok(Target::Plane(fr.o, fr.z))
         }

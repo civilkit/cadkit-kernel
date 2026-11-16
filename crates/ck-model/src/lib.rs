@@ -45,6 +45,10 @@ pub enum StdPlane {
     Front,
     Top,
     Right,
+    /// Z-up Front: the XZ plane with x right and y up (+Z), normal -Y. `top` is XZ too but its y is -Z.
+    Xz,
+    /// Z-up Right: the YZ plane with x = +Y and y up (+Z), normal +X.
+    Yz,
 }
 
 impl StdPlane {
@@ -53,6 +57,8 @@ impl StdPlane {
             "front" => Some(StdPlane::Front),
             "top" => Some(StdPlane::Top),
             "right" => Some(StdPlane::Right),
+            "xz" => Some(StdPlane::Xz),
+            "yz" => Some(StdPlane::Yz),
             _ => None,
         }
     }
@@ -61,6 +67,8 @@ impl StdPlane {
             StdPlane::Front => "front",
             StdPlane::Top => "top",
             StdPlane::Right => "right",
+            StdPlane::Xz => "xz",
+            StdPlane::Yz => "yz",
         }
     }
     /// The plane frame (ck-core `std_plane`, = the client's `Ot` table).

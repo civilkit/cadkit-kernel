@@ -541,7 +541,8 @@ fn std_plane(id: &str) -> Option<[f64; 3]> {
     match id {
         "front" => Some([0.0, 0.0, 1.0]),
         "top" => Some([0.0, 1.0, 0.0]),
-        "right" => Some([1.0, 0.0, 0.0]),
+        "right" | "yz" => Some([1.0, 0.0, 0.0]),
+        "xz" => Some([0.0, -1.0, 0.0]),
         _ => None,
     }
 }

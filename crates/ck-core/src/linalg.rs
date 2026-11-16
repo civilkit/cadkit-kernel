@@ -747,6 +747,10 @@ pub fn std_plane(kind: &str) -> Frame {
         "front" => Frame::identity(),
         "top" => Frame { o: Vec3::ZERO, x: Vec3::X, y: Vec3::new(0.0, 0.0, -1.0), z: Vec3::Y },
         "right" => Frame { o: Vec3::ZERO, x: Vec3::new(0.0, 0.0, -1.0), y: Vec3::Y, z: Vec3::X },
+        // the Z-up pair: the same two planes as top and right, but y runs up the screen (+Z) and x runs right, so a sketch on them
+        // stands upright in a Z-up view. xz: seen from -Y (normal -Y); yz: seen from +X (x = +Y, normal +X).
+        "xz" => Frame { o: Vec3::ZERO, x: Vec3::X, y: Vec3::Z, z: Vec3::new(0.0, -1.0, 0.0) },
+        "yz" => Frame { o: Vec3::ZERO, x: Vec3::Y, y: Vec3::Z, z: Vec3::X },
         _ => Frame::identity(),
     }
 }
@@ -870,7 +874,7 @@ mod tests {
 
     #[test]
     fn std_planes_right_handed() {
-        for k in ["front", "top", "right"] {
+        for k in ["front", "top", "right", "xz", "yz"] {
             let f = std_plane(k);
             assert!(close(f.x.cross(f.y).dot(f.z), 1.0), "{k} not right-handed");
             assert!(close(f.x.len(), 1.0) && close(f.y.len(), 1.0) && close(f.z.len(), 1.0));
