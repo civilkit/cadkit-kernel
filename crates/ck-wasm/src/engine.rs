@@ -43,6 +43,8 @@ pub struct Snapshot {
     /// Surface bodies of an import (the parts that did not make valid solids, see `ck_heal::honest`): kept beside the
     /// solid body so that `step` writes them too.
     pub surfaces: Vec<(String, Body)>,
+    /// The ends of extrudes / revolves / sweeps that move with one of their inputs (`faceRun`).
+    pub ends: Vec<ck_model::features::press_pull::MovingEnd>,
 }
 
 /// ck-server trace as a ck-model [`Tracer`].
@@ -263,7 +265,7 @@ fn regen_hook(part: &Json, cx: &mut Cx) -> Result<(Json, State), String> {
     let state = match body {
         Some(body) => {
             let sketches = std::mem::take(&mut result.sketches);
-            State { has_body: true, data: Some(Box::new(Snapshot { body, sketches, asm, heal_base: None, surfaces: vec![] })) }
+            State { has_body: true, data: Some(Box::new(Snapshot { body, sketches, asm, heal_base: None, surfaces: vec![], ends: ck_model::features::press_pull::moving_ends(&part) })) }
         }
         None => State::empty(),
     };
@@ -614,7 +616,7 @@ fn import_skp_hook(cx: &mut Cx) -> Result<(Json, Option<State>), String> {
     if let Json::Obj(kv) = &mut out {
         kv.push(("import".into(), info));
     }
-    let snap = Snapshot { body, sketches: vec![], asm: Default::default(), heal_base: None, surfaces: vec![] };
+    let snap = Snapshot { body, sketches: vec![], asm: Default::default(), heal_base: None, surfaces: vec![], ends: vec![] };
     Ok((out, Some(State { has_body: true, data: Some(Box::new(snap)) })))
 }
 
@@ -662,7 +664,7 @@ fn import_sat_hook(cx: &mut Cx) -> Result<(Json, Option<State>), String> {
                         .build(),
                 ));
             }
-            let state = State { has_body: true, data: Some(Box::new(Snapshot { body, sketches: vec![], asm: Default::default(), heal_base: None, surfaces: vec![] })) };
+            let state = State { has_body: true, data: Some(Box::new(Snapshot { body, sketches: vec![], asm: Default::default(), heal_base: None, surfaces: vec![], ends: vec![] })) };
             Ok((out, Some(state)))
         }
     }
@@ -685,7 +687,7 @@ fn import_reply(cx: &mut Cx, mut out: Json, body: Body, surfaces: Vec<(String, B
         kv.push(("import".into(), info));
     }
     let has = body.num_faces() > 0 || !surfaces.is_empty();
-    let snap = Snapshot { body, sketches: vec![], asm: Default::default(), heal_base: None, surfaces };
+    let snap = Snapshot { body, sketches: vec![], asm: Default::default(), heal_base: None, surfaces, ends: vec![] };
     (out, Some(State { has_body: has, data: Some(Box::new(snap)) }))
 }
 
@@ -1081,6 +1083,10 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
         "inspect" => inspect(cx),
         "continuity" => Ok(ck_ops::continuity::reply(&snapshot(cx)?.body, &cx.msg)),
         "measure" => Ok(ck_ops::measure::reply(&snapshot(cx)?.body, &cx.msg)),
+        "faceRun" => {
+            let s = snapshot(cx)?;
+            Ok(ck_model::features::press_pull::face_run(&s.body, &cx.msg, &s.ends))
+        }
         "drag" => {
             let s = snapshot(cx)?;
             Ok(crate::drag::reply(&s.body, &s.asm, &cx.msg))
@@ -1308,7 +1314,7 @@ fn recognize_query(cx: &mut Cx) -> Result<Json, String> {
     let (out, rebuilt) = ck_recog::request::run(&snapshot(cx)?.body, cx.msg);
     if let Some(b) = rebuilt {
         let tag = format!("{}.rebuilt", cx.tag());
-        let snap = Snapshot { body: b, sketches: vec![], asm: Default::default(), heal_base: None, surfaces: vec![] };
+        let snap = Snapshot { body: b, sketches: vec![], asm: Default::default(), heal_base: None, surfaces: vec![], ends: vec![] };
         cx.session.put(&tag, State { has_body: true, data: Some(Box::new(snap)) });
     }
     Ok(out)

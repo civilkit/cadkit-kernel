@@ -27,6 +27,7 @@ The kernel knows 68 type names. Five of them (`box`, `frame`, `knurlBand`, `repa
 | `thread` | Cosmetic or modeled thread on a cylindrical face. | [edits](features-edits.md#thread) |
 | `lip` | A raised band or a groove along rim edges. | [edits](features-edits.md#lip) |
 | `moveFace` | Pushes or pulls faces; neighbours follow. | [edits](features-edits.md#moveface) |
+| `pressPull` | Continues a flat face straight out of or into the solid, with a draft or scale taper. | [edits](features-edits.md#presspull) |
 | `split` | Cuts a body at a plane (or by tool bodies) into two named bodies. | [edits](features-edits.md#split) |
 | `lipJoint` | A split with a centred tongue on one half and a clearance groove on the other. | [edits](features-edits.md#lipjoint) |
 | `deleteBody` | Removes or keeps whole bodies. | [edits](features-edits.md#deletebody) |

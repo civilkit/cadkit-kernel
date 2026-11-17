@@ -715,6 +715,25 @@ export interface MoveFaceFeature {
   [key: string]: unknown;
 }
 
+/**
+ * Continue a flat face straight out of the solid (positive `distance`, joined) or into it (negative, cut), as if the face
+ * were extruded. `taper`: `none` (default), `draft` (`angle` degrees, -85..85, outward positive: the outline grows) or
+ * `scale` (`endScale` > 0, about the face's area centre, holes included). The moved end keeps the face's name; new walls are
+ * `<id>.S.<tag>`. `continue: 'along'` (end follows a bend in the walls) is not built yet.
+ * Errors: noFaces, missingReference, invalidValue {field, detail, hint}, pressPullUnsupported {detail}, draftTooLarge,
+ * moveFaceFailed {detail} (+ maxSize).
+ */
+export interface PressPullFeature {
+  type: 'pressPull';
+  id: string;
+  name?: string;
+  faces: string[];
+  continue?: 'straight' | 'along';
+  distance: Expr;
+  taper?: { type: 'none' } | { type: 'draft'; angle: Expr } | { type: 'scale'; endScale: Expr };
+  [key: string]: unknown;
+}
+
 /** A body of a `moveBody`: the lump holding a face, or a surface body by its feature id. */
 export type BodyRef = string | { face: string } | { surface: string } | { body: string } | { feature: string } | { lump: number };
 
@@ -886,7 +905,7 @@ export type KnownFeature =
   | InsertPartFeature | MateFeature | PlaneFeature | DeleteBodyFeature
   | DeleteFaceFeature | ThickenFeature | CutWithSurfaceFeature | PipeCutFeature
   | FreeformFeature | EditCurveFeature | ProjectCurveFeature | ExtendFeature
-  | DomeFeature | SplitLineFeature | MoveFaceFeature | MoveBodyFeature
+  | DomeFeature | SplitLineFeature | MoveFaceFeature | PressPullFeature | MoveBodyFeature
   | ScaleFeature | AxisFeature | ThreadFeature | CombineFeature | SplitFeature | LipJointFeature | SphereFeature | KnurlBandFeature | ImportStepFeature | RepairPartFeature | FrameFeature
   | TorusFeature | PipeFeature | CoilFeature | BoundingSolidFeature;
 
@@ -899,7 +918,7 @@ export const FEATURE_TYPES = [
   'surfaceOffset', 'knit', 'fill', 'insertPart', 'mate', 'plane',
   'deleteBody', 'deleteFace', 'thicken', 'cutWithSurface', 'pipeCut',
   'freeform', 'editCurve', 'projectCurve', 'extend', 'dome', 'splitLine',
-  'moveFace', 'moveBody', 'scale', 'axis', 'thread', 'combine', 'split', 'lipJoint', 'sphere', 'knurlBand', 'importStep', 'repairPart', 'frame',
+  'moveFace', 'pressPull', 'moveBody', 'scale', 'axis', 'thread', 'combine', 'split', 'lipJoint', 'sphere', 'knurlBand', 'importStep', 'repairPart', 'frame',
   'torus', 'pipe', 'coil', 'boundingSolid',
   'sheetRules', 'baseFlange', 'edgeFlange', 'hem', 'fold', 'contourFlange', 'unfold', 'refold', 'sheetConvert', 'sheetCut', 'sheetCorner',
 ] as const;

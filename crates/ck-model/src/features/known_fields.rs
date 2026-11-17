@@ -24,7 +24,7 @@ pub const TABLE: &[(&str, &[&str])] = &[
     ("sketch", &["plane", "points", "entities", "constraints", "seq", "prop", "gear"]),
     (
         "extrude",
-        &["sketch", "op", "end", "depth", "flip", "draft", "draftOut", "twist", "twistCentre", "regions", "thin", "endRef", "offset", "strictEnd", "body", "target", "endOffset", "start", "startRef", "startOffset"],
+        &["sketch", "op", "end", "depth", "flip", "draft", "draftOut", "twist", "twistCentre", "endScale", "regions", "thin", "endRef", "offset", "strictEnd", "body", "target", "endOffset", "start", "startRef", "startOffset"],
     ),
     ("revolve", &["sketch", "op", "axis", "angle", "end", "flip", "regions", "thin", "body", "target"]),
     (

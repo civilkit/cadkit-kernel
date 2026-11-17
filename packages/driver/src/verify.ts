@@ -78,6 +78,8 @@ const FIX: Record<string, (feature: string, params: Record<string, unknown>) => 
     typeof p.detail === 'string'
       ? `${f}: ${p.detail}${typeof p.maxThickness === 'number' && p.maxThickness > 0 ? ` — move by at most ${p.maxThickness} mm` : ''}`
       : `${f}: the faces could not be moved — select tangent neighbours too or reduce the distance`,
+  pressPullUnsupported: (f, p) =>
+    typeof p.detail === 'string' ? `${f}: ${p.detail}` : `${f}: Press Pull continued needs a flat face`,
   shellUnsupported: (f, p) =>
     typeof p.detail === 'string' ? `${f}: ${p.detail}` : `${f}: this shape cannot be shelled — remove the feature or change the base solid`,
   holeNoPoints: (f) => `${f}: hole sketch has no centres — add {type:'point'} entities over centre points (sk.point(x, y)), not circles or bare points`,

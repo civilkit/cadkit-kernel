@@ -436,7 +436,13 @@ pub fn build(sk: &Sketch) -> Result<System, String> {
                 let c = b.pointish(refn(e, 0)?)?;
                 let t = b.pointish(refn(e, 1)?)?;
                 let (cv, tv) = if k.kind == "hdist" { (c.x, t.x) } else { (c.y, t.y) };
-                b.eq(cid, &[cv, tv], Box::new(move |r| (val(r, tv) - val(r, cv)).abs() - value));
+                // The side the dimension is on is the one its points start on, a start on top of each other taking
+                // the positive side and a negative value the opposite one: `|d| = value` has no slope at `d = 0`, so
+                // a dimension edited up from zero never solved (solidcraft #14298, #17503).
+                let d0 = val(&b.x, tv) - val(&b.x, cv);
+                let side = if d0 < -1e-9 { -1.0 } else { 1.0 };
+                let (side, want) = if value < 0.0 { (-side, -value) } else { (side, value) };
+                b.eq(cid, &[cv, tv], Box::new(move |r| side * (val(r, tv) - val(r, cv)) - want));
             }
             "pldist" => {
                 let c = b.pointish(refn(e, 0)?)?;

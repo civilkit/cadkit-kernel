@@ -22,6 +22,7 @@ pub mod ref_curve;
 pub mod pipecut;
 pub mod profile;
 pub mod analysis;
+pub mod scaled_extrude;
 pub mod section;
 pub mod shell;
 mod shell_check;

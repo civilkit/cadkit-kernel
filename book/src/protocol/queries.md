@@ -186,6 +186,24 @@ Pair keys: `distance` and `points` (the closest point on each reference), `angle
 
 For the hole wall and a side face: `items[0]` is `{ "surface": "cylinder", "area": 251.33, "radius": 4, "center": [20,30,10], "axis": [0,0,-1] }`, and the pair has `"distance": 16` with `points` `[16,30,10]` and `[0,30,10]`. A single edge: `{ "items": [ { "kind": "edge", "length": 100, "direction": [1,0,0], "wedge": 1.5707963267948966 } ] }`. No body: `null`.
 
+### faceRun
+
+Facts of flat faces for the Press Pull panel (see [`pressPull`](../format/features-edits.md#presspull)).
+
+| Parameter | Type | Meaning |
+|---|---|---|
+| `faces` | array | Face names. |
+
+The result is `{ "items": [...] }`, one per name: `face`, `found`; for a flat face `flat: true`, `centre` (area centre, holes taken out), `normal` (outward), `reach` (mm, the distance from the centre to the farthest point of the outer outline), `area`, and `endOf` (`{ "feature", "kind", "input" }` when the face is the moving end of an `extrude` (`depth`), `revolve` (`angle`) or `sweep` (`path`), else `null`). A face that is not flat has `flat: false` and `surface`. No body: `null`.
+
+```json
+{ "type": "faceRun", "tag": "q", "faces": ["F2.C1"] }
+```
+```json
+{ "items": [ { "face": "F2.C1", "found": true, "flat": true, "centre": [0,30,0], "normal": [0,1,0], "reach": 5, "area": 78.54,
+               "endOf": { "feature": "F2", "kind": "extrude", "input": "depth" } } ] }
+```
+
 ### describe
 
 Facts and a one-line description for named faces and edges.

@@ -145,6 +145,7 @@ There are 57 request types. "Tag" says what the request needs: **tag** means a r
 | `matchEdges` | part | Edges similar, parallel or tangent to seed edges, for edge picking. |
 | `resolve` | body | Turn descriptions of faces and edges ("the top face", "the hole barrel") into persistent names. |
 | `describe` | body | Facts and a one-line text for named faces and edges. |
+| `faceRun` | body | Area centre, outward normal, reach and the feature end of flat faces (the Press Pull panel). |
 | `refDiff` | part | Compare two versions of a part and report references that now point at a different entity. |
 | `check` | body | Check expectations (volume, counts, size, ...) against the body. |
 

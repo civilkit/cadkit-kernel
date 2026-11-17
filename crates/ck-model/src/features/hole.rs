@@ -92,10 +92,54 @@ fn line(a: Vec2, b: Vec2, tag: &str) -> ProfileSeg {
     ProfileSeg { tag: tag.to_string(), curve: Curve2::line_through(a, b), t0: 0.0, t1: len, rev: false }
 }
 
+/// A blind hole whose floor lies on the far side of the body, within a hair of it: material just above the floor and air
+/// just past it along the axis. A far side a hair off square to the axis (a sketch can leave the sides 1e-5 rad apart)
+/// would otherwise keep a film over half of the exit, or fail the cut when a drill point meets it (solidcraft #17873).
+fn exits_at_floor(body: &Body, at: ck_core::linalg::Vec3, down: ck_core::linalg::Vec3, depth: f64) -> bool {
+    use ck_topo::region::{classify, Containment};
+    let (lo, hi) = super::body_box(body);
+    let eps = lo.dist(hi) * 1e-6;
+    if !(eps > 0.0) {
+        return false;
+    }
+    let class = |h: f64| classify(body, at + down * h, 0.0);
+    class(depth - eps) == Containment::Inside && class(depth + eps) == Containment::Outside
+}
+
+/// How far past the far side such a hole's bore runs on: more than any skew of that side across the bore, little enough
+/// to stay clear of a part just beyond it.
+fn exit_run_on(body: &Body) -> f64 {
+    let (lo, hi) = super::body_box(body);
+    (lo.dist(hi) * 1e-4).clamp(1e-3, 0.05)
+}
+
+/// A field that cannot be read as what it should be is refused by name, before anything is drilled: a text for `flip`
+/// turned the hole round, an unknown `kind` or `end` drilled a plain through hole, and a depth that is not a number
+/// made a zero-length tool that failed as a boolean (solidcraft #9088 for the same on the hole direction).
+fn malformed_fields(f: &Feature, end: &super::End) -> Result<(), FeatureError> {
+    use ck_json::Json;
+    let bad = |field: &str, detail: &str, h: &str| Err(hint(FeatureError::new(HOLE_INVALID).with("field", Json::Str(field.into())).with("detail", Json::Str(detail.into())), h));
+    for key in ["flip", "tip"] {
+        if f.raw.get(key).is_some_and(|v| !matches!(v, Json::Bool(_) | Json::Num(_) | Json::Null)) {
+            return bad(key, &format!("`{key}` must be true or false"), &format!("set `{key}` to true or false, or leave it out"));
+        }
+    }
+    if let Some(k) = f.raw.get("kind").filter(|k| !matches!(k, Json::Null)) {
+        if !matches!(k.as_str(), Some("simple" | "cbore" | "csink" | "countersink" | "csk")) {
+            return bad("kind", "`kind` must be simple, cbore or countersink", "use kind simple, cbore (counterbore) or countersink");
+        }
+    }
+    if *end == super::End::Unknown {
+        return bad("end", "`end` must be blind or through", "use end blind with a depth, or end through");
+    }
+    Ok(())
+}
+
 /// `hole`.
 pub fn exec_hole(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
     let FeatureKind::Hole { size, fit, kind, tip, flip, end, .. } = &f.kind else { unreachable!() };
     let sk = f.raw.get("sketch").and_then(|s| s.as_str()).and_then(|s| state.sketch(s)).ok_or_else(|| FeatureError::new(codes::MISSING_SKETCH))?;
+    malformed_fields(f, end)?;
     // GUESS (not an oracle option): a plain `diameter` instead of a standard `size`. A simple hole always may;
     // a counterbore / countersink may when no table size applies, and then its step or cone must be given
     // explicitly (`cboreDiameter` + `cboreDepth`, `cskDiameter`), or it is drilled as a simple hole with a
@@ -204,6 +248,12 @@ pub fn exec_hole(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(
         csk = Some((head / 2.0, (ang / 2.0).to_radians()));
     }
     let depth = state.num(f, "depth", 0.0)?;
+    if *end == super::End::Blind && !(depth > 0.0) {
+        return Err(hint(
+            FeatureError::new(HOLE_INVALID).with("field", ck_json::Json::Str("depth".into())).with("detail", ck_json::Json::Str("a blind hole needs a depth above 0".into())),
+            "give a depth in mm above 0 (flip turns the hole round), or end through for a hole all the way",
+        ));
+    }
     let through = *end != super::End::Blind;
     let multi = pts.len() > 1;
     // the shortest hole of all the points: the bound of a counterbore depth / countersink cone (`maxSize`)
@@ -215,7 +265,15 @@ pub fn exec_hole(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(
     let mut parts: Vec<(Body, (ck_core::linalg::Vec3, ck_core::linalg::Vec3))> = Vec::new();
     for (k, p) in pts.iter().enumerate() {
         let pw = fr.o + fr.x * p[0] + fr.y * p[1];
-        let len = if through { through_len(pw, &body) } else { depth };
+        // a blind hole that ends where it comes out the far side is a through hole there (see `exits_at_floor`)
+        let exits = !through && depth > 0.0 && exits_at_floor(&body, pw, down, depth);
+        let len = if through {
+            through_len(pw, &body)
+        } else if exits {
+            depth + exit_run_on(&body)
+        } else {
+            depth
+        };
         // section plane: through the hole axis, x = sketch x, y = down
         let sec = Frame { o: fr.o + fr.y * p[1], x: fr.x, y: -down, z: fr.x.cross(-down) };
         let u = p[0];
@@ -259,7 +317,7 @@ pub fn exec_hole(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(
         }
         let bot = if *kind == HoleKind::Cbore { "h4" } else { "h2" };
         segs.push(line(Vec2::new(u + r, -(rw)), Vec2::new(u + r, -(len)), top_tag));
-        if *tip && !through {
+        if *tip && !through && !exits {
             let h = r / TIP_HALF.to_radians().tan();
             segs.push(line(Vec2::new(u + r, -(len)), Vec2::new(u, -(len + h)), bot));
             segs.push(line(Vec2::new(u, -(len + h)), Vec2::new(u, 0.0), "axis"));

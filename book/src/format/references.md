@@ -70,6 +70,7 @@ instance := feature '.' digits
 | `surfacePlanar` | `P`. |
 | `fill` | `F`. |
 | `knit`, `trimSurface`, `deleteFace` | The faces of the input surfaces keep their names. |
+| `pressPull` | The moved end keeps the name of the face; new walls are `<id>.S.<tag>` from the names of the faces across the edges; the old cap is consumed. |
 | `draft`, `moveFace`, `scale`, `moveBody` without `copy`, `combine` | All names are unchanged. A boolean that splits a face adds `~k`. |
 | `lpattern`, `cpattern`, `mirror`, `moveBody` with `copy` | The copies of the seed faces, with `@<feature>.<k>` (k from 1; the seed is not renamed). |
 | `insertPart` | Every face of the part, with `@<insert id>.1`. |

@@ -125,7 +125,7 @@ pub mod codes {
 /// `rebuildFace`, `matchEdges`, `refCurve` are separate messages, not features.
 pub const KNOWN_TYPES: &[&str] = &[
     "sketch", "sketch3d", "plane", "axis", "extrude", "revolve", "sphere", "box", "sweep", "loft", "fillet", "chamfer", "shell", "rib",
-    "lip", "dome", "splitLine", "draft", "moveFace", "hole", "lpattern", "cpattern", "mirror", "spattern",
+    "lip", "dome", "splitLine", "draft", "moveFace", "pressPull", "hole", "lpattern", "cpattern", "mirror", "spattern",
     "fillpattern", "curvepattern", "moveBody", "mate", "insertPart", "scale", "surfaceExtrude", "surfaceRevolve",
     "surfacePlanar", "surfaceOffset", "deleteFace", "fill", "knit", "extend", "freeform", "trimSurface", "thicken",
     "cutWithSurface", "pipeCut", "deleteBody", "editCurve", "projectCurve", "helix", "thread", "combine", "bodyBoolean", "split", "lipJoint", "knurlBand", "importStep",
@@ -152,6 +152,7 @@ pub const EMPTY_FEATURE_ERRORS: &[(&str, &str)] = &[
     ("dome", "nothingToCut"),
     ("splitLine", "nothingToCut"),
     ("moveFace", "nothingToCut"),
+    ("pressPull", "nothingToCut"),
     ("hole", "missingSketch"),
     ("lpattern", "missingReference"),
     ("cpattern", "missingReference"),

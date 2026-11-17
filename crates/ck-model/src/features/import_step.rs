@@ -206,6 +206,19 @@ pub fn parts_json(id: &str, parts: &[ck_heal::honest::Part]) -> Json {
 /// The warning an import with parts that are not solids carries (the "needs repair" mark).
 pub const IMPORT_STEP_PARTS: &str = "importStepParts";
 
+/// The place in the file of the solid a lump was read from, from its faces' names (`<feature>.I<solid>F<n>`).
+fn lump_solid(b: &ck_topo::body::Body, l: ck_topo::body::LumpId) -> Option<usize> {
+    let mut found = None;
+    for f in ck_topo::mass::lump_faces(b, l) {
+        let ck_topo::body::Role::Other(r) = &b.face(f).name.role else { return None };
+        let n: usize = r.strip_prefix('I')?.split('F').next()?.parse().ok()?;
+        if *found.get_or_insert(n) != n {
+            return None;
+        }
+    }
+    found
+}
+
 pub fn exec_import_step(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
     let name = super::bodies::body_name(&f.raw)?;
     if let Some(n) = &name {
@@ -222,13 +235,15 @@ pub fn exec_import_step(br: &mut Brep, state: &mut RegenState, f: &Feature) -> R
         br.combine(&sorted.solid, Combine::Separate, false)?;
     }
     if let (Some(n), Some(b)) = (name, br.body.as_mut()) {
-        let mut k = 0;
-        let ls: Vec<_> = b.lump_ids().collect();
-        for l in ls {
-            if b.lump(l).name.is_none() && super::bodies::origin(b, l) == Some(f.id.as_str()) {
-                k += 1;
-                b.lumps[l.idx()].name = Some(if k == 1 { n.clone() } else { format!("{n} {k}") });
-            }
+        let ls: Vec<_> = b.lump_ids().filter(|&l| b.lump(l).name.is_none() && super::bodies::origin(b, l) == Some(f.id.as_str())).collect();
+        // A body takes the number of the solid it was read from, so a solid the reader leaves out keeps its name and
+        // gives it to no other body (a later feature that names `<body> 3` still finds that solid). Lumps that cannot
+        // be told apart this way (one solid in several lumps) are numbered in order, as before.
+        let solids: Vec<Option<usize>> = ls.iter().map(|&l| lump_solid(b, l)).collect();
+        let distinct = solids.iter().all(|s| s.is_some()) && solids.iter().collect::<std::collections::BTreeSet<_>>().len() == solids.len();
+        for (i, &l) in ls.iter().enumerate() {
+            let k = if distinct { solids[i].unwrap_or(i + 1) } else { i + 1 };
+            b.lumps[l.idx()].name = Some(if k == 1 { n.clone() } else { format!("{n} {k}") });
         }
     }
     for (k, sb) in sorted.surfaces {

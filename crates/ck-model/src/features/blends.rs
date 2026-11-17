@@ -28,10 +28,26 @@ fn size_refusal(
     asked: f64,
     before: usize,
     faces: usize,
+    scale: f64,
     mut build: impl FnMut(f64) -> Result<ck_topo::body::Body, ck_ops::blend::BlendError>,
 ) -> FeatureError {
-    let size = matches!(e.code.as_str(), "blendFailed" | "blendOverflow" | "blendUnsupported");
+    // (a refusal that names a corner the builder does not take is not about the size: no size is offered)
+    let size = matches!(e.code.as_str(), "blendFailed" | "blendOverflow" | "blendUnsupported") && !e.detail.as_deref().is_some_and(|d| d.contains("corner patch"));
+    // a round the kernel's tolerance cannot tell from the sharp edge: its result holds no blend face. The size is too SMALL,
+    // so "the largest radius that builds" would send the user the wrong way: name a size that builds above the asked one.
+    // Only for a size under 1 % of the body (`scale` = its bounding box diagonal): the same symptom of a normal-sized round
+    // is a failed blend, not a small one.
+    let too_small = e.code == "blendFailed" && e.detail.as_deref() == Some("no blend face in result") && asked < 0.01 * scale;
     let mut fe = blend_error(e);
+    if too_small {
+        if super::max_size::blend_search_enabled() && faces <= super::max_size::BLEND_SEARCH_MAX_FACES && asked > 0.0 && asked.is_finite() {
+            let ok = |v: f64| build(v).is_ok_and(|b| ck_check::validate(&b, super::TOL).len() <= before);
+            if let Some(m) = super::max_size::smallest_that_builds(asked, ok) {
+                fe = super::max_size::with_min_size(fe, "radius", m, "mm");
+            }
+        }
+        return fe;
+    }
     if size && super::max_size::blend_search_enabled() && faces <= super::max_size::BLEND_SEARCH_MAX_FACES && asked > 0.0 && asked.is_finite() {
         let ok = |v: f64| build(v).is_ok_and(|b| ck_check::validate(&b, super::TOL).len() <= before);
         if let Some(m) = super::max_size::largest_that_builds(asked, None, ok) {
@@ -39,6 +55,12 @@ fn size_refusal(
         }
     }
     fe
+}
+
+/// The bounding box diagonal of `b`.
+fn body_scale(b: &ck_topo::body::Body) -> f64 {
+    let (lo, hi) = b.bbox();
+    (hi - lo).len()
 }
 
 pub fn blend_error(e: ck_ops::blend::BlendError) -> FeatureError {
@@ -663,7 +685,7 @@ pub fn exec_fillet(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
                         ck_ops::blend::mixed::fillet_mixed(body, &sel, &vec![radius; sel.len()], &f.id, super::TOL)
                             .unwrap_or_else(|| Err(ck_ops::blend::BlendError::code("blendUnsupported")))
                     };
-                    return Err(size_refusal(e, r, ck_check::validate(body, super::TOL).len(), body.num_faces(), build));
+                    return Err(size_refusal(e, r, ck_check::validate(body, super::TOL).len(), body.num_faces(), body_scale(body), build));
                 }
             }
         }
@@ -676,7 +698,7 @@ pub fn exec_fillet(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
             ck_ops::blend::build::blend_edges(body, &sel, spec, &f.id, super::TOL)
         }
     };
-    let out = build(r).map_err(|e| size_refusal(e, r, ck_check::validate(body, super::TOL).len(), body.num_faces(), build))?;
+    let out = build(r).map_err(|e| size_refusal(e, r, ck_check::validate(body, super::TOL).len(), body.num_faces(), body_scale(body), build))?;
     br.body = Some(out);
     Ok(())
 }
@@ -697,12 +719,12 @@ pub fn fillet_picks(br: &mut Brep, id: &str, sel: &[(String, String, Vec3)], r: 
                     ck_ops::blend::mixed::fillet_mixed(body, sel, &vec![radius; sel.len()], id, super::TOL)
                         .unwrap_or_else(|| Err(ck_ops::blend::BlendError::code("blendUnsupported")))
                 };
-                Err(size_refusal(e, r, ck_check::validate(body, super::TOL).len(), body.num_faces(), build))
+                Err(size_refusal(e, r, ck_check::validate(body, super::TOL).len(), body.num_faces(), body_scale(body), build))
             }
         };
     }
     let build = |radius: f64| ck_ops::blend::build::blend_edges(body, sel, ck_ops::blend::build::Spec::Fillet(radius, ck_ops::blend::build::FilletProfile::Circular), id, super::TOL);
-    let out = build(r).map_err(|e| size_refusal(e, r, ck_check::validate(body, super::TOL).len(), body.num_faces(), build))?;
+    let out = build(r).map_err(|e| size_refusal(e, r, ck_check::validate(body, super::TOL).len(), body.num_faces(), body_scale(body), build))?;
     br.body = Some(out);
     Ok(())
 }
@@ -793,7 +815,7 @@ fn propagates(f: &Feature) -> bool {
 }
 
 /// Close `sel` under tangent continuation: at a vertex of a selected edge, an unselected edge that
-/// shares exactly one face with it and leaves in the same direction (parallel tangents) joins the
+/// shares a face with it (both, for the other half of a seam-split ring) and leaves in the same direction (parallel tangents) joins the
 /// selection. New picks are `(face a, face b, midpoint)` in the order the edge lists its faces.
 fn propagate_tangent(body: &ck_topo::body::Body, sel: Vec<(String, String, Vec3)>) -> Vec<(String, String, Vec3)> {
     use ck_topo::body::EdgeId;
@@ -819,7 +841,9 @@ fn propagate_tangent(body: &ck_topo::body::Body, sel: Vec<(String, String, Vec3)
             let cands: Vec<EdgeId> = body.edge_ids().filter(|&x| x != e && !chain.contains(&x) && (body.edge(x).v0 == v || body.edge(x).v1 == v)).collect();
             for e2 in cands {
                 let f2 = body.edge_faces(e2);
-                if f2.len() != 2 || f2.iter().filter(|f| fe.contains(f)).count() != 1 {
+                let shared = f2.iter().filter(|f| fe.contains(f)).count();
+                let both_arcs = matches!(ed.curve, ck_geom::curve::Curve::Circle { .. }) && matches!(body.edge(e2).curve, ck_geom::curve::Curve::Circle { .. });
+                if f2.len() != 2 || shared == 0 || (shared == 2 && !both_arcs) {
                     continue;
                 }
                 let Some(t1) = tangent_at(e2, v) else { continue };

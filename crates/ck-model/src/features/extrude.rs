@@ -18,6 +18,13 @@
 //! * `draft` (degrees) tapers inward, `draftOut` outward; a mid-plane
 //!   drafted extrude is two halves UNITED by a boolean in the oracle
 //!   (`boolean Unite (6 × 6 faces)` trace) -> needs ck-ops;
+//! * `endScale` (number, 1 = none; REBUILD-ONLY, not an oracle option) scales the profile linearly over the depth to this
+//!   factor at the far end, about the point `twistCentre` (sketch xy, default the sketch origin): a 40 mm square extruded
+//!   20 mm with `endScale` 0.5 is a frustum. Names as the plain extrude (`F.S.<tag>`, `F.C0`, `F.C1`). Mid-plane: scale 1 at
+//!   the sketch plane and `endScale` at both ends (the side faces split in two, `~1` / `~2`); flip scales towards -normal;
+//!   a cut subtracts the same tool. Refused: a factor `<= 0`, not finite or below 1e-6 (`invalidValue`, field `endScale`);
+//!   with `draft` / `draftOut` or `twist` (`draftUnsupported {detail, hint}`); with through / throughBoth / upToNext or
+//!   an end on a slanted plane or a body (`invalidValue`). `endScale` 1 is the plain extrude.
 //! * revolve check order: `angle` expression -> `axis` (a LINE entity of the
 //!   sketch named by the bare string, construction or not; anything else
 //!   incl. `{kind:"axis"}` -> `missingAxis`) -> profile -> `|angle| ~ 0`
@@ -331,6 +338,58 @@ fn topo_err(e: String) -> FeatureError {
     FeatureError::new(&e)
 }
 
+/// `twistCentre` (sketch xy, default the sketch origin): the axis a twist turns about and the point an `endScale` scales about.
+fn twist_centre(f: &Feature) -> Vec2 {
+    let c = f.raw.get("twistCentre").and_then(|c| c.as_arr()).filter(|a| a.len() == 2);
+    c.map_or(Vec2::ZERO, |a| Vec2::new(a[0].as_f64().unwrap_or(0.0), a[1].as_f64().unwrap_or(0.0)))
+}
+
+/// Refusals of an extrude with an `endScale` other than 1 (a hint each): a factor that is not a positive finite number
+/// (or so small the far section is a point), a draft angle or a twist as well, an end that is not a plane parallel to the sketch.
+fn check_end_scale(state: &RegenState, f: &Feature, k: f64, draft: f64, end: End, extras: &EndExtras) -> Result<(), FeatureError> {
+    let bad = |detail: String, hint: &str| {
+        FeatureError::new(codes::INVALID_VALUE)
+            .with("field", Json::Str("endScale".into()))
+            .with("detail", Json::Str(detail))
+            .with("hint", Json::Str(hint.into()))
+    };
+    if !k.is_finite() || k <= 0.0 {
+        return Err(bad(format!("endScale {k} is not a positive number"), "use an endScale above 0 (1 = no scaling, 0.5 = half size at the far end)"));
+    }
+    if k < ck_ops::scaled_extrude::MIN_SCALE {
+        return Err(bad(
+            format!("endScale {k:e} makes the far section a point"),
+            "use an endScale of at least 1e-6; a pointed end (a cone or pyramid) is a loft to a point",
+        ));
+    }
+    let unsupported = |detail: &str, hint: &str| {
+        FeatureError::new("draftUnsupported").with("detail", Json::Str(detail.into())).with("hint", Json::Str(hint.into()))
+    };
+    if draft != 0.0 {
+        return Err(unsupported("a draft angle and an end scale both taper the sides", "use either a draft angle or an end scale"));
+    }
+    if state.num(f, "twist", 0.0)? != 0.0 {
+        return Err(unsupported("an end scale together with a twist is not supported", "use either a twist or an end scale"));
+    }
+    if matches!(end, End::UpToNext | End::Through | End::ThroughBoth) || extras.clip.is_some() || extras.start_clip.is_some() || extras.to_body.is_some() {
+        return Err(bad(
+            "an end scale needs an end at a set distance (the scale is reached at the far end)".into(),
+            "use a blind or mid-plane end (or an end on a plane parallel to the sketch), or drop the endScale",
+        ));
+    }
+    Ok(())
+}
+
+fn scale_err(e: String) -> FeatureError {
+    match e.as_str() {
+        "scaleDegenerate" => FeatureError::new("invalidValue")
+            .with("field", Json::Str("endScale".into()))
+            .with("detail", Json::Str("a section edge collapses to a point at this scale".into()))
+            .with("hint", Json::Str("use a larger endScale".into())),
+        _ => topo_err(e),
+    }
+}
+
 /// `extrude`. `has_body`: whether a body exists (cut / upToNext targets).
 pub fn exec_extrude(state: &RegenState, f: &Feature, body: Option<&Body>) -> Result<Tool, FeatureError> {
     exec_extrude_ex(state, f, body, &mut EndExtras::default())
@@ -422,7 +481,13 @@ pub fn exec_extrude_ex(state: &RegenState, f: &Feature, body: Option<&Body>, ext
     if combine == Combine::Cut && !has_body {
         return Err(FeatureError::new(codes::NOTHING_TO_CUT));
     }
-    if draft != 0.0 {
+    // `endScale`: the profile scales linearly to this factor at the far end (see `ck_ops::scaled_extrude`)
+    let end_scale = state.num(f, "endScale", 1.0)?;
+    let scaled = end_scale != 1.0;
+    if scaled {
+        check_end_scale(state, f, end_scale, draft, *end, extras)?;
+    }
+    if draft != 0.0 && !scaled {
         o.draft = draft.abs().to_radians() * if *draft_out { -1.0 } else { 1.0 };
         if *end == End::Mid || *end == End::ThroughBoth {
             // oracle: two drafted halves united (boolean Unite) — needs ck-ops
@@ -441,14 +506,21 @@ pub fn exec_extrude_ex(state: &RegenState, f: &Feature, body: Option<&Body>, ext
                 .with("detail", Json::Str("a twist cannot end on a slanted plane or a body".into()))
                 .with("hint", Json::Str("drop the twist, or end on a plane parallel to the sketch".into())));
         }
-        let c = f.raw.get("twistCentre").and_then(|c| c.as_arr()).filter(|a| a.len() == 2);
-        let centre = c.map_or(Vec2::ZERO, |a| Vec2::new(a[0].as_f64().unwrap_or(0.0), a[1].as_f64().unwrap_or(0.0)));
+        let centre = twist_centre(f);
         let body = ck_ops::sweep::twist_extrude(&f.id, &profile, o, twist.to_radians(), centre).map_err(topo_err)?;
         return Ok(Tool { body, combine, recipe: None });
     }
+    let centre = twist_centre(f);
+    let to_body = extras.to_body.is_some();
     let build = |p: &Profile| -> Result<Body, FeatureError> {
-        if o.draft != 0.0 {
-            super::draft::drafted_extrude(&f.id, p, o)
+        if scaled {
+            ck_ops::scaled_extrude::scaled_extrude(&f.id, p, o, end_scale, centre).map_err(scale_err)
+        } else if o.draft != 0.0 {
+            match super::draft::drafted_extrude(&f.id, p, o) {
+                // a tool that ends on a body only has to reach it (see `drafted_extrude_short`)
+                Err(e) if to_body && e.code == "draftTooLarge" => super::draft::drafted_extrude_short(&f.id, p, o).ok_or(e),
+                r => r,
+            }
         } else {
             extrude(&f.id, p, o).map_err(topo_err)
         }
@@ -464,7 +536,7 @@ pub fn exec_extrude_ex(state: &RegenState, f: &Feature, body: Option<&Body>, ext
         }
         None => build(&profile)?,
     };
-    let recipe = if extras.clip.is_some() || extras.start_clip.is_some() || extras.to_body.is_some() { None } else { Some(Recipe::Extrude { profile, opts: o }) };
+    let recipe = if scaled || extras.clip.is_some() || extras.start_clip.is_some() || extras.to_body.is_some() { None } else { Some(Recipe::Extrude { profile, opts: o }) };
     Ok(Tool { body, combine, recipe })
 }
 

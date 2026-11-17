@@ -71,6 +71,12 @@ fn topo_err(e: String) -> FeatureError {
 
 pub fn exec_surface_extrude(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
     let sk = sketch_of(state, f).map_err(|_| FeatureError::new(codes::NO_CLOSED_PROFILE))?;
+    if state.num(f, "endScale", 1.0)? != 1.0 {
+        return Err(FeatureError::new(codes::INVALID_VALUE)
+            .with("field", ck_json::Json::Str("endScale".into()))
+            .with("detail", ck_json::Json::Str("a surface extrude does not scale its profile".into()))
+            .with("hint", ck_json::Json::Str("extrude a solid with endScale, or drop the endScale".into())));
+    }
     let depth = state.num(f, "depth", 10.0)?.max(MIN_DEPTH);
     let flip = crate::sketch::jtruthy(f.raw.get("flip"));
     let end = f.raw.get("end").and_then(|e| e.as_str()).unwrap_or("blind");

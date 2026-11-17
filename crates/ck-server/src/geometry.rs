@@ -31,6 +31,12 @@ pub fn measure(cx: &mut Cx) -> Result<Json, String> {
     null_or_query(cx, "measure")
 }
 
+/// `{type:"faceRun", tag, faces:[names]}`: area centre, outward normal and reach of flat faces, and the feature end each is
+/// (see ck-model `press_pull::face_run`). Read-only. No body: null.
+pub fn face_run(cx: &mut Cx) -> Result<Json, String> {
+    null_or_query(cx, "faceRun")
+}
+
 pub fn mass_props(cx: &mut Cx) -> Result<Json, String> {
     cx.span(MASS_LABEL, |cx| null_or_query(cx, "massProps"))
 }

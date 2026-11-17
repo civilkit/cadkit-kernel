@@ -55,6 +55,32 @@ add it there so clusters stay stable. `--json` writes the same per case with `mo
    file from what the engine does now, run the table with `BLEND_TABLE_OUT=<file>` and review the diff.
 3. When a fix makes a case pass, the table reports `NEWPASS` and fails: set its `expect` to `"pass"`.
 
+## Stepped disc cases
+
+The `stepped-disc` and `stepped-disc-sunk` families (64 cases) are a 70 mm disc, 10 tall, whose top is split by a line through the
+middle with one half moved +5 mm (`stepped-disc`) or -5 mm (`stepped-disc-sunk`): every single edge, the rim of each half with the
+tangent chain on and off, the wall edges (E2 wall bottom, E5 wall top, E6/E7 the vertical wall|cylinder edges) in pairs and
+together, fillet and chamfer at 1 to 4 mm. They are NOT written by `tools/gen_blend_fixtures.mjs`: they come from
+`STEP_EMIT=<file> cargo test -p ck-model --test stepped_disc_blend emit_corpus -- --nocapture` (the line `CORPUS_JSON` carries the
+document), appended by hand to `blend_cases.json` / `blend_expect.json`. The `reference` volume is the engine's own result at the
+time of writing (`"source":"baseline"`), so these cases guard against regressions; they are not OCCT comparisons. Per-case times
+(`t=`) are 0.01 to 0.5 s, the baseline for speed work. `tests/stepped_disc_blend.rs` holds the strict checks behind them: the exact
+(analytic) volume of the rim blends, the wall-edge blends against an integral, no edge or mesh point outside the cylinder, and
+`SWEEP=1` runs every subset of the 8 edges.
+
+The `stepped-disc-top-*` and `stepped-disc-small-top-*` cases (32) are the raised half's top selection: rim arc + wall-top edge + one
+vertical wall edge (and the mirror), tangent chain on, 0.5 to 3 mm, on the 70 mm disc and on a 42 mm disc with a 5 mm step. All the
+chamfers build. The fillets of those three edges meet at a corner of two planes and a cylinder, where the vertex patch (`corner.rs`,
+planar faces only) does not exist: the tools leave the corner open at some sizes and close it by chance at others, so the fillet is
+refused with "three rounded edges meet at a corner with a curved face or edge" (no size hint) at 1 and 3 mm on the 70 mm disc, and the
+sizes that do build are a mitre, not a rolling-ball patch. One of them (42 mm disc, mirror selection, 1 mm) builds a solid that fails
+validation (VERTEX_OFF_CURVE 8e-3 mm) and is recorded as an expected failure. A proper fix is a sphere patch for plane, plane and
+cylinder faces: days of kernel work.
+
+Known and not asserted: slivers (edges shorter than 0.05 mm) where a blend ends tangent to a face or where an E5 and an E6/E7
+chamfer meet on the round wall; one arc of a seam-split rim chamfered without the chain runs on past the seam (about 7 % too much);
+a 0.5 mm fillet of one half of the sunk piece's seam-split rim leaves a pcurve 1e-3 off its surface.
+
 ## hard
 
 `"expect":"hard"` with a `"reason"` (and optionally `"alsoFails":["occt","solidcore"]`) marks a case that the

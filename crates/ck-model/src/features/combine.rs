@@ -151,6 +151,28 @@ fn comps_of(b: &Body, comps: &[Vec<FaceId>], s: &Sel) -> Result<Vec<usize>, Feat
     }
 }
 
+/// The faces of each lump, in `components` order of the lump's first component. A sealed void inside a lump is a
+/// connected component of its own, but it belongs to the lump around it: merging them keeps the void with its solid
+/// (a `{body}` selector must not read it as a second lump, and a cut must not treat it as a tool).
+fn lump_components(b: &Body) -> Vec<Vec<FaceId>> {
+    let mut out: Vec<Vec<FaceId>> = vec![];
+    let mut lumps: Vec<ck_topo::body::LumpId> = vec![];
+    for c in ck_topo::region::components(b) {
+        let l = b.face_lump(c[0]);
+        match lumps.iter().position(|&x| x == l) {
+            Some(i) => {
+                out[i].extend(c);
+                out[i].sort();
+            }
+            None => {
+                lumps.push(l);
+                out.push(c);
+            }
+        }
+    }
+    out
+}
+
 fn extract(b: &Body, faces: &[FaceId]) -> Body {
     // `rebuild_in_order` already rebuilds the shells and lumps of what it built
     ck_ops::boolean::assemble::rebuild_in_order(b, faces)
@@ -158,7 +180,7 @@ fn extract(b: &Body, faces: &[FaceId]) -> Body {
 
 /// Run the operation on the lumps of `body`.
 pub fn combine_bodies(body: &Body, spec: &Spec, fid: &str, fuzz: f64, auto: bool) -> Result<Out, FeatureError> {
-    let comps = ck_topo::region::components(body);
+    let comps = lump_components(body);
     let t_ix = comp_of(body, &comps, &spec.target[0])?;
     let mut tool_ix: Vec<usize> = vec![];
     for s in &spec.tools {

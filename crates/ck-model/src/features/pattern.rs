@@ -251,7 +251,24 @@ fn carry_all(br: &mut Brep, state: &mut RegenState, f: &Feature, srcs: &[ck_json
     }
 }
 
-fn seed_tools<'a>(br: &'a Brep, seeds: &[Ref]) -> Result<Vec<(&'a str, &'a Tool)>, FeatureError> {
+/// Why a seed has no tool to repeat: it names no feature, or a feature that leaves no tool body (a fillet, chamfer, shell, ...).
+/// Both are `missingReference`; the parameters say which and what to do instead.
+fn seed_error(part: &crate::Part, seed: &str) -> FeatureError {
+    use ck_json::Json;
+    let e = FeatureError::new(codes::MISSING_REFERENCE).with("seed", Json::Str(seed.to_string()));
+    match part.feature(seed) {
+        None => e.with("detail", Json::Str(format!("the seed `{seed}` names no feature of the part"))),
+        Some(sf) => {
+            let hint = match sf.type_name.as_str() {
+                "fillet" | "chamfer" => "pattern the feature that makes the shape (a boss or cut) and then round or chamfer the edges of the copies",
+                _ => "seed a feature that adds or cuts material from a sketch, a hole or a revolve",
+            };
+            e.with("detail", Json::Str(format!("the seed `{seed}` is a {} and leaves no tool body, so there is nothing to repeat", sf.type_name))).with("hint", Json::Str(hint.into()))
+        }
+    }
+}
+
+fn seed_tools<'a>(br: &'a Brep, part: &crate::Part, seeds: &[Ref]) -> Result<Vec<(&'a str, &'a Tool)>, FeatureError> {
     if seeds.is_empty() {
         return Err(FeatureError::new(NO_SEEDS));
     }
@@ -273,7 +290,7 @@ fn seed_tools<'a>(br: &'a Brep, seeds: &[Ref]) -> Result<Vec<(&'a str, &'a Tool)
             copies.push((id.as_str(), &**t));
         }
         if copies.is_empty() {
-            return Err(FeatureError::new(codes::MISSING_REFERENCE));
+            return Err(seed_error(part, s.as_str()));
         }
         copies.reverse();
         out.extend(copies);
@@ -333,7 +350,7 @@ pub fn exec_mirror(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
     }
     let (geo, srcs) = thread_sources(state, f, seeds, auto);
     let mut copies = vec![];
-    for (id, t) in seed_tools(br, &geo).or_else(|e| if geo.is_empty() && !seeds.is_empty() { Ok(vec![]) } else { Err(e) })? {
+    for (id, t) in seed_tools(br, state.part, &geo).or_else(|e| if geo.is_empty() && !seeds.is_empty() { Ok(vec![]) } else { Err(e) })? {
         let mut b = match t.recipe.as_ref() {
             Some(recipe) => mirror_tool(id, recipe, &pl).map_err(|e| FeatureError::new(&e))?,
             // A tool made without a recipe (the tool body of a targeted join / cut / intersect on a named body): reflect the body itself,
@@ -487,7 +504,7 @@ pub fn exec_pattern(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Resul
     let (seeds, xs) = pattern_xforms(br, state, f)?;
     state.result.warnings.retain(|w| w.feature != f.id);
     let (geo, srcs) = thread_sources(state, f, &seeds, carry_threads(f));
-    let tools: Vec<(Body, Combine)> = if xs.is_empty() || geo.is_empty() { vec![] } else { seed_tools(br, &geo)?.into_iter().map(|(_, t)| (t.body.clone(), t.combine)).collect() };
+    let tools: Vec<(Body, Combine)> = if xs.is_empty() || geo.is_empty() { vec![] } else { seed_tools(br, state.part, &geo)?.into_iter().map(|(_, t)| (t.body.clone(), t.combine)).collect() };
     // the body before the copies, for the check of copies that change nothing (only cloned when there are copies)
     let before = if tools.is_empty() { None } else { br.body.clone() };
     // Pinned: per seed ONE boolean with all its instances (`boolean Subtract

@@ -278,6 +278,15 @@ export class Part {
     }, o.name);
   }
 
+  pressPull(o: { faces: string[]; distance: number | string; taper?: { type: 'none' } | { type: 'draft'; angle: number | string } | { type: 'scale'; endScale: number | string }; name?: string }): FeatureId {
+    return this.push('pressPull', {
+      faces: o.faces,
+      continue: 'straight',
+      distance: o.distance,
+      ...(o.taper && o.taper.type !== 'none' ? { taper: o.taper } : {}),
+    }, o.name);
+  }
+
   moveBody(o: {
     bodies?: Array<string | { face: string } | { surface: string }>;
     translate?: [number, number, number];

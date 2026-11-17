@@ -77,6 +77,8 @@ pub const REQUEST_TYPES: &[(&str, Handler)] = &[
     // Extension: SketchUp (.skp, base64) import -> a surface body of planar faces in the tag's state.
     ("importSkp", geometry::import_skp),
     ("inspect", query::inspect),
+    // Extension: Press Pull panel facts of flat faces (centre, normal, reach, the feature end they move with).
+    ("faceRun", geometry::face_run),
     ("continuity", query::continuity),
     ("curvatureAt", curvature::curvature_at),
     ("curvatureMap", curvature::curvature_map),

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build the kernel wasm and run its checks on the CI box instead of this (busy) machine. See docs/remote-build.md.
-#   tools/remote_build.sh [--worktree DIR] [--checks gate,large sample,loft,apex,fillet,section,spline,thin,suite,lint,text,engrave,projcurve,dfm,propeller,crashfuzz,wasmparity,all|none]
+#   tools/remote_build.sh [--worktree DIR] [--checks gate,audit,large sample,loft,apex,fillet,section,spline,thin,suite,lint,text,engrave,projcurve,dfm,propeller,crashfuzz,wasmparity,all|none]
 #                         [--cargo-test CRATE|"-p a -p b"|all] [--out DIR] [--no-sync-back] [--no-wasm] [--wasm-features LIST] [--jobs N] [--reset]
 #                         [--test NAME] [--env K=V ...] [--fetch REL] [--musl-libm]
 #   --test NAME: with --cargo-test, run only that integration test, with --nocapture; --env K=V: set for the cargo
@@ -137,6 +137,13 @@ if [ -n "$CTEST" ]; then
 fi
 flock -u 9; exec 9>&-    # checks are plain node: release the build lock
 
+# RustSec advisories for the lockfile (cargo-audit, installed under the box's CARGO_HOME): a known vulnerability fails the gate, warnings (unmaintained or
+# yanked crates) are printed and do not. A missing tool is a failure, never a silent skip: install it with
+#   CARGO_HOME=~/ci-cad/cargo RUSTUP_HOME=~/ci-cad/rustup cargo install cargo-audit --locked
+audit_deps() {
+  if ! command -v cargo-audit >/dev/null 2>&1; then echo "FAIL: cargo-audit is not installed on the box (see tools/remote_build.sh, audit_deps)"; return 1; fi
+  nice -n 5 cargo audit
+}
 CH=$(printf '%s' "$CHECKS" | tr ',' ' ')
 case " $CH " in *" all "*) CH="gate large sample loft apex fillet section spline thin suite lint text engrave projcurve dfm";; esac
 case " $CH " in *" none "*) CH="";; esac
@@ -146,7 +153,8 @@ if [ -s "$W" ]; then
   for c in $CH; do
     case "$c" in
       # the gate also runs the blend corpus (documented shortfalls carry `known` and never fail it)
-      gate) ( t=$SECONDS; rc=0; nice -n 5 node tools/gate.mjs --fast --quiet --wasm "$W" > "$RUN/gate.out" 2>&1 || rc=$?; printf '\n== blend corpus\n' >> "$RUN/gate.out"; nice -n 5 node tools/blend_corpus.mjs --wasm "$W" >> "$RUN/gate.out" 2>&1 || rc=$?; echo $rc > "$RUN/gate.rc"; echo $((SECONDS-t)) > "$RUN/gate.secs" ) & pids="$pids $!" ;;
+      gate) ( t=$SECONDS; rc=0; nice -n 5 node tools/gate.mjs --fast --quiet --wasm "$W" > "$RUN/gate.out" 2>&1 || rc=$?; printf '\n== blend corpus\n' >> "$RUN/gate.out"; nice -n 5 node tools/blend_corpus.mjs --wasm "$W" >> "$RUN/gate.out" 2>&1 || rc=$?; printf '\n== cargo audit\n' >> "$RUN/gate.out"; audit_deps >> "$RUN/gate.out" 2>&1 || rc=$?; echo $rc > "$RUN/gate.rc"; echo $((SECONDS-t)) > "$RUN/gate.secs" ) & pids="$pids $!" ;;
+      audit) step cargo-audit audit_deps ;;
       large sample) step large sample node tools/check_large sample.mjs --wasm "$W" ;;
       loft) step loft node tools/loft_point_check.mjs --wasm "$W" ;;
       apex) step apex node tools/loft_apex_check.mjs --wasm "$W" ;;

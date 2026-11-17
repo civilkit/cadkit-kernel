@@ -593,6 +593,36 @@ body). Both fail with a structured error and leave the model unchanged.
   moved past other geometry (no interference check against unrelated parts of the body),
   surface-body faces.
 
+### `pressPull`
+
+```json
+{"type":"pressPull","id":"F9","faces":["F2.S.e5"],"continue":"straight","distance":10,"taper":{"type":"scale","endScale":1.1}}
+{"type":"pressPull","id":"F9","faces":["F2.S.e5"],"continue":"straight","distance":-10,"taper":{"type":"draft","angle":-3}}
+```
+
+A flat face continued as if it were extruded (`press_pull.rs`). `faces`: flat faces by persistent name (a
+`~k` split family by its base id, every piece continues); each continues on its own, in order. `continue`:
+`"straight"` only (`"along"` is refused `invalidValue {field:"continue"}`, kept for later). `distance`: mm or
+`"=expr"`, not 0; positive joins a piece (out of the material), negative cuts one (into it). `taper.type`:
+`none` (default), `draft` (`angle` degrees, -85..85, outward positive: the outline grows, holes shrink; built by
+`drafted_extrude`, so the same limits and corners as `extrude` `draft` with the opposite sign) or `scale`
+(`endScale` > 0, about the face's area centre, holes included, linear in the run length; built by
+`scaled_extrude`). Built as an extrude of the face outline (the face to profile conversion is internal), united
+or cut with the same checks `moveFace` applies to a step (volume, validity, lump count).
+- Names: the moved end keeps the face's name; the cap on the old face is consumed; new walls are
+  `<id>.S.<tag>`, the tag the name of the face across the edge with `.` as `_` and `~` as `p`
+  (`F2.S.e1` gives `F2_S_e1`). A straight run on walls it continues merges into them.
+- Errors (model unchanged): `nothingToCut`, `noFaces`, `missingReference`, `invalidValue {field, detail, hint}`
+  (distance 0 / not finite, `endScale` <= 0 or below 1e-6, `angle` out of range, unknown type, `continue`),
+  `pressPullUnsupported {detail}` (not flat, surface body), `draftTooLarge` (`maxHeight` for a round face,
+  `maxSize {param:"draft", unit:"deg"}` otherwise), `moveFaceFailed {detail}` with `maxSize {param:"distance"}`
+  (a cut through the body, a join into other material, an invalid or splitting result).
+- Query `faceRun {tag, faces}` -> `{items:[{face, found, flat, centre, normal, reach, area, endOf}]}`: `endOf` is
+  `{feature, kind: extrude|revolve|sweep, input: depth|angle|path}` when the face is the moving end of one of those
+  (the panel edits that feature), else null. The readout for a scale is `atan(reach * (endScale - 1) / distance)`.
+- Not done: `continue: "along"`, twist with scale.
+  Check: `crates/ck-model/tests/press_pull.rs`, `crates/ck-wasm/tests/face_run.rs`.
+
 ### `moveBody`
 
 ```json

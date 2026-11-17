@@ -101,7 +101,7 @@ Because a failure removes a feature's output, the next features that depend on i
 | `noClosedProfile` | The sketch has no closed profile to build from. `sketchAnalyze` says why. |
 | `nothingToCut` | The feature modifies a body (cut, shell, rib, draft, mate, ...) but the document has no body yet. |
 | `noBodies` | `deleteBody` with no body in the document. |
-| `noFaces` | `moveFace`, or `draft` with a valid neutral plane, was given an empty `faces` list. |
+| `noFaces` | `moveFace`, `pressPull`, or `draft` with a valid neutral plane, was given an empty `faces` list. |
 | `noSeeds` | A pattern or mirror has an empty `seeds` list or nothing to copy. |
 | `unsupported` | An option of a fillet or chamfer that the kernel does not build. `params.what` names it (`chamfer <type>`, `fillet profile <name>`, `fillet <filletType>`). Any `filletType` is refused this way, including `"circular"`: `filletType: "circular"` gives `unsupported { what: "fillet circular" }` although `circular` is also the name of the default `profile`. Leave `filletType` out, or use `"fullRound"`. |
 | `TODO(rebuild): <what> needs ck-ops` | The feature type is accepted but not implemented (see [Regeneration](regen.md#limits-and-known-gaps)), or the particular option is refused. The code is this whole sentence. |
@@ -180,6 +180,7 @@ Two warnings of the end conditions are in [Warnings](#warnings): `endConditionFa
 |---|---|
 | `moveFaceFailed` | A face move or offset produced no valid body. `params.detail`; for a curvature or thin-gap limit also `limit`, `minRadius`, `maxThickness`, `face`. |
 | `moveFaceUnsupported` | A face move of a surface or option the kernel does not offset. |
+| `pressPullUnsupported` | A `pressPull` of a face that is not flat, or of a face of a surface body. `params.detail`. A run that cannot be built is `moveFaceFailed` (with `maxSize` for the distance), a draft that closes the face is `draftTooLarge`. |
 | `alignPipeCutOneBody` | `pipeCut` edges that belong to different bodies. |
 | `pipeCutFailed` | The pipe cannot be built: an edge without length, or an edge type that is not supported. `params.detail`. |
 | `pipeCutNothingLeft` | The pipe removes every face. |

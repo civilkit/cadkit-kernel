@@ -60,6 +60,10 @@ fn candidates(m: &Model, tags: &[Vec<(i64, i64)>], features: &[SwFeature]) -> Ve
         let sin = a.abs().to_radians().sin();
         let later_only = |g: FaceId| tags.get(g.idx()).map_or(false, |v| !v.is_empty() && v.iter().all(|t| pos.get(&t.0).map_or(true, |&p| p > pd)));
         for &g in &m.faces {
+            // (a face a later draft tilted is that draft's: an earlier draft of the same angle does not tilt it again)
+            if undone.contains_key(&g) {
+                continue;
+            }
             let Kind::Plane { n, d: dn } = m.kind(g).clone() else { continue };
             let Some(ts) = tags.get(g.idx()).filter(|v| !v.is_empty()) else { continue };
             // a face of the draft's own would have been tilted by it; this is for faces of earlier features alone
@@ -117,6 +121,41 @@ fn candidates(m: &Model, tags: &[Vec<(i64, i64)>], features: &[SwFeature]) -> Ve
                 break;
             }
         }
+        // one SolidWorks draft has one neutral plane: the level most of its faces can turn about comes first in every
+        // face's list (a face's own first candidate, a floor of a later hole it happens to meet, is not that plane)
+        if found.len() > 1 {
+            let mut levels: Vec<(f64, usize)> = vec![];
+            for (_, list) in &found {
+                for &(h, _) in list {
+                    let lv = match m.kind(h) {
+                        Kind::Plane { n, d } => d * n.dot(Vec3::new(n.x.signum(), n.y.signum(), n.z.signum())),
+                        _ => continue,
+                    };
+                    match levels.iter_mut().find(|x| (x.0 - lv).abs() < 1e-6) {
+                        Some(x) => x.1 += 1,
+                        None => levels.push((lv, 1)),
+                    }
+                }
+            }
+            if let Some(&(best, count)) = levels.iter().max_by_key(|x| x.1) {
+                if count > 1 {
+                    for (l, list) in found.iter_mut() {
+                        let at = |h: FaceId| match m.kind(h) {
+                            Kind::Plane { n, d } => ((d * n.dot(Vec3::new(n.x.signum(), n.y.signum(), n.z.signum()))) - best).abs() < 1e-6,
+                            _ => false,
+                        };
+                        if let Some(k) = list.iter().position(|&(h, _)| at(h)) {
+                            if k > 0 {
+                                let item = list.remove(k);
+                                list.insert(0, item);
+                                l.neutral = list[0].0;
+                                l.before = list[0].1.clone();
+                            }
+                        }
+                    }
+                }
+            }
+        }
         for (l, list) in &found {
             undone.entry(l.face).or_insert_with(|| list[0].1.clone());
         }
@@ -132,6 +171,19 @@ pub fn rebuild(cx: &mut Cx, f: &SwFeature) -> Result<(String, Status), String> {
     if mine.is_empty() {
         return Ok(("no face of earlier features is tilted by its angle".into(), Status::Skipped));
     }
+    // a face that stands tilted already in the document rebuilt so far (its feature was read back on the tilted face:
+    // the floor of a slab cut, a drafted extrude) is left out, face by face: the draft adds nothing for it
+    let total = mine.len();
+    let mine: Vec<Later> = match cx.sess.borrow_mut().rebuild(&cx.tree.feats).ok().and_then(|(b, _)| b) {
+        Some(b) => {
+            let mb = Model::new(&b);
+            mine.into_iter().filter(|l| !mb.faces.iter().any(|&h| crate::fastverify::same_surface(cx.m.kind(l.face), mb.kind(h), 1e-6))).collect()
+        }
+        None => mine,
+    };
+    if mine.is_empty() {
+        return Ok((format!("{total} face(s) stand tilted already (the draft is part of their features)"), Status::Rebuilt));
+    }
     let name_of = |cx: &Cx, g: FaceId| cx.lookup(g).ok_or_else(|| format!("face {} has no name in the rebuilt document", cx.m.b.face_id_str(g)));
     // faces sharing a neutral cap go in one draft
     let mut groups: Vec<(FaceId, Vec<FaceId>)> = vec![];
@@ -143,48 +195,66 @@ pub fn rebuild(cx: &mut Cx, f: &SwFeature) -> Result<(String, Status), String> {
     }
     let mut note = String::new();
     for (neutral, faces) in groups {
-        let nn = name_of(cx, neutral)?;
-        let mut names: Vec<ck_json::Json> = faces.iter().map(|&g| name_of(cx, g).map(ck_json::Json::Str)).collect::<Result<_, _>>()?;
-        // a name the rebuilt body holds only as pieces `<name>~k` (a cap of a profile with several outer loops, a cap
-        // the holes of its own sketch split): the pieces that hold the file's face, not every piece of that name
-        // (the draft feature's fallback would tilt them all about this one neutral)
-        if let Ok((Some(b), _)) = cx.sess.borrow_mut().rebuild(&cx.tree.feats) {
-            let mut exact: Vec<ck_json::Json> = vec![];
-            for (k, &g) in faces.iter().enumerate() {
-                let ck_json::Json::Str(nm) = &names[k] else { continue };
-                if b.find_face(nm).is_some() {
-                    exact.push(names[k].clone());
-                    continue;
+        // the names the rebuilt document gives the faces may not single them out: a cap the body holds only as pieces
+        // `<name>~k` (a profile with several outer loops, a cap its own sketch's holes split), sides the profile did not
+        // touch (all `<id>.S.e1`), a pattern copy's name the kernel does not keep. The face the draft tilts is found by
+        // its geometry on the body before the draft: the rebuilt faces on the plane the file's face had before the
+        // draft that contain its points, named exactly; a face no rebuilt face matches keeps its name. The neutral is
+        // a plane: any named rebuilt face on it serves.
+        let body = cx.sess.borrow_mut().rebuild(&cx.tree.feats).ok().and_then(|(b, _)| b);
+        // the faces stand tilted already (the extrude that made them was read back with this draft built in): nothing
+        // to add for them
+        if let Some(b) = &body {
+            let mb = Model::new(b);
+            if faces.iter().all(|&g| mb.faces.iter().any(|&h| crate::fastverify::same_surface(cx.m.kind(g), mb.kind(h), 1e-6))) {
+                if note.is_empty() {
+                    note = format!("{} face(s) stand tilted already (the draft is part of their extrude)", faces.len());
                 }
-                let Some(before) = mine.iter().find(|l| l.face == g).map(|l| l.before.clone()) else { continue };
+                continue;
+            }
+        }
+        let on_plane = |b: &ck_topo::body::Body| -> Option<String> {
+            let mb = Model::new(b);
+            let want = cx.m.kind(neutral);
+            mb.faces.iter().find(|&&h| crate::fastverify::same_surface(want, mb.kind(h), 1e-6)).map(|&h| b.face_id_str(h))
+        };
+        let nn = match (name_of(cx, neutral), &body) {
+            // (a named neutral the body holds only as pieces `<name>~k`: any face on its plane)
+            (Ok(n), Some(b)) if b.find_face(&n).is_none() => on_plane(b).unwrap_or(n),
+            (Ok(n), _) => n,
+            (Err(e), Some(b)) => on_plane(b).ok_or(e)?,
+            (Err(e), None) => return Err(e),
+        };
+        let mut names: Vec<ck_json::Json> = vec![];
+        for &g in &faces {
+            let mut found: Vec<ck_json::Json> = vec![];
+            if let (Some(b), Some(before)) = (&body, mine.iter().find(|l| l.face == g).map(|l| l.before.clone())) {
+                let mb = Model::new(b);
                 let pts = crate::face_points(cx.m, g);
-                let mut found: Vec<ck_json::Json> = vec![];
-                for h in b.face_ids() {
-                    let id = b.face_id_str(h);
-                    if id.split('~').next() != Some(nm.as_str()) || id == *nm {
-                        continue;
+                // (the file's face is tilted: its points are moved back onto the plane it had)
+                let on = |p: Vec3| match &before {
+                    Kind::Plane { n, d } => p - *n * (n.dot(p) - *d),
+                    _ => p,
+                };
+                for &h in &mb.faces {
+                    if crate::fastverify::same_surface(&before, mb.kind(h), 1e-6) && pts.iter().any(|&p| !matches!(ck_ops::boolean::classify::point_in_face(b, h, on(p), 1e-6), ck_ops::boolean::classify::Where::Out)) {
+                        found.push(ck_json::Json::Str(b.face_id_str(h)));
                     }
-                    let mb = Model::new(&b);
-                    if !crate::fastverify::same_surface(&before, mb.kind(h), 1e-6) {
-                        continue;
-                    }
-                    // (the file's face is tilted: its points are moved back onto the plane it had)
-                    let on = |p: Vec3| match &before {
-                        Kind::Plane { n, d } => p - *n * (n.dot(p) - *d),
-                        _ => p,
-                    };
-                    if pts.iter().any(|&p| !matches!(ck_ops::boolean::classify::point_in_face(&b, h, on(p), 1e-6), ck_ops::boolean::classify::Where::Out)) {
-                        found.push(ck_json::Json::Str(id));
-                    }
-                }
-                if found.is_empty() {
-                    exact.push(names[k].clone());
-                } else {
-                    exact.extend(found);
                 }
             }
-            names = exact;
+            if found.is_empty() {
+                // (a name the rebuilt body does not hold and no face where the file's face stood: the face is not in
+                // the rebuilt document, an earlier step did not make it; said as such)
+                let nm = name_of(cx, g)?;
+                if body.as_ref().is_some_and(|b| b.find_face(&nm).is_none() && !b.face_ids().any(|h| b.face_id_str(h).split('~').next() == Some(nm.as_str()))) {
+                    return Err(format!("face {} ({nm}) is not in the rebuilt document: no face on the plane it had before the draft, and no face of that name", cx.m.b.face_id_str(g)));
+                }
+                names.push(ck_json::Json::Str(nm));
+            } else {
+                names.extend(found);
+            }
         }
+        names.dedup();
         let a = mine[0].angle;
         let first = cx.tree.feats.len();
         let mut done = false;

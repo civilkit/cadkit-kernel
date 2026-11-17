@@ -170,7 +170,7 @@ The `verify` function of the agent driver package (`packages/driver`) wraps `reg
 | `shellTooThick` (`detail`, `limit`, `minRadius`, `maxThickness`) | The wall is too thick for the body. `maxThickness` is a safe thickness, not the exact limit. | Use at most `maxThickness`. |
 | `shellUnsupported`, `shellFailed`, `offsetTooLarge`, `offsetUnsupported`, `offsetDegenerate`, `offsetFitFailed` | Shell and offset limits. | Reduce thickness; open another face. |
 | `draftParallelFace`, `draftAxisNotParallel`, `draftTangentFaces`, `draftTooLarge`, `draftUnsupported`, `draftFailed` | Draft preconditions; `draftTooLarge` names the edge that turns over. | Reduce the angle; pick another neutral plane. |
-| `moveFaceFailed`, `moveFaceUnsupported` | A move-face could not keep the neighbours consistent. `maxThickness` may give a limit. | Move less, or include tangent neighbours. |
+| `moveFaceFailed`, `moveFaceUnsupported`, `pressPullUnsupported` | A move-face could not keep the neighbours consistent. `maxThickness` may give a limit. | Move less, or include tangent neighbours. |
 | `pipeCutRadius` (`max`), `pipeCutFailed`, `pipeCutNothingLeft` | See [operations](../kernel/operations.md#pipe-cut). | Reduce the radius. |
 
 ### Surfaces and curves

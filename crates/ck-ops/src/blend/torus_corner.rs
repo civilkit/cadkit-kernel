@@ -102,6 +102,32 @@ pub(super) fn is_convex_wall_line(b: &Body, e: EdgeId) -> bool {
     kinds.contains(&0) && kinds.contains(&1) && edge_concave(b, e) == Some(false)
 }
 
+/// A convex straight edge between a plane and a convex cylinder (material inside it) whose axis is parallel to the
+/// edge: the vertical edge where a step wall meets the round wall of a disc. Its round is a cylinder (the ball's
+/// centre at `r` inside the plane and `R - r` from the axis).
+pub(super) fn is_convex_cyl_line(b: &Body, e: EdgeId) -> bool {
+    let ed = b.edge(e);
+    let Curve::Line { d, .. } = ed.curve else { return false };
+    let fs = b.edge_faces(e);
+    if fs.len() != 2 {
+        return false;
+    }
+    let dir = d.normalize();
+    let pm = (b.vertex(ed.v0).p + b.vertex(ed.v1).p) * 0.5;
+    let kinds: Vec<u8> = fs
+        .iter()
+        .map(|&f| match &b.face(f).surface {
+            Surface::Plane { .. } => 0,
+            Surface::Cylinder { frame, .. } if frame.z.normalize().cross(dir).len() < 1e-9 => {
+                let rel = (pm - frame.o).reject(frame.z.normalize());
+                if normal_at(b, f, pm).dot(rel) > 0.0 { 1 } else { 2 }
+            }
+            _ => 2,
+        })
+        .collect();
+    kinds.contains(&0) && kinds.contains(&1) && edge_concave(b, e) == Some(false)
+}
+
 thread_local! {
     /// While set, wall lines go to the free-form path (see [`free_walls`]).
     static FREE_WALLS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -110,7 +136,7 @@ thread_local! {
 /// The edge is a wall line the analytic line builder takes (an exact cylinder instead of the free-form path): an
 /// [`is_wall_line`] or an [`is_convex_wall_line`], unless [`free_walls`] is in force.
 pub(super) fn analytic_wall_edge(b: &Body, e: EdgeId) -> bool {
-    !FREE_WALLS.with(|c| c.get()) && (is_wall_line(b, e) || is_convex_wall_line(b, e))
+    !FREE_WALLS.with(|c| c.get()) && (is_wall_line(b, e) || is_convex_wall_line(b, e) || is_convex_cyl_line(b, e))
 }
 
 /// Runs `f` with the wall lines on the free-form path (the retry of a selection the analytic wall builder refused:
@@ -125,7 +151,7 @@ pub(super) fn free_walls<T>(f: impl FnOnce() -> T) -> T {
 /// The rolling ball of a concave fillet of radius `r` at the point `pm` of a wall line between `faces` (one plane,
 /// one cylinder parallel to the line): `(centre, contact on faces[0], contact on faces[1])`, all in the plane through
 /// `pm` normal to the line.
-pub(super) fn wall_section(b: &Body, faces: [FaceId; 2], pm: Vec3, dir: Vec3, r: f64) -> Option<(Vec3, Vec3, Vec3)> {
+pub(super) fn wall_section(b: &Body, faces: [FaceId; 2], pm: Vec3, dir: Vec3, r: f64, convex_edge: bool) -> Option<(Vec3, Vec3, Vec3)> {
     let (ip, ic) = match (&b.face(faces[0]).surface, &b.face(faces[1]).surface) {
         (Surface::Plane { .. }, Surface::Cylinder { .. }) => (0, 1),
         (Surface::Cylinder { .. }, Surface::Plane { .. }) => (1, 0),
@@ -140,10 +166,13 @@ pub(super) fn wall_section(b: &Body, faces: [FaceId; 2], pm: Vec3, dir: Vec3, r:
     // centre: on the plane offset by r, at R + r from the axis: outward (outside the material) beside a convex
     // cylinder (a concave edge, [`is_wall_line`]), inward beside a concave one (a convex edge, [`is_convex_wall_line`])
     let rel = (pm - frame.o).reject(ax);
-    let sr = if normal_at(b, faces[ic], pm).dot(rel) > 0.0 { r } else { -r };
+    let cyl_convex = normal_at(b, faces[ic], pm).dot(rel) > 0.0;
+    // (a convex edge on a convex cylinder: the ball is inside the material, `R - r` from the axis)
+    let inside = cyl_convex && convex_edge;
+    let sr = if cyl_convex && !inside { r } else { -r };
     let w = np.cross(dir).normalize();
     let q0 = (pm + np * sr - frame.o).reject(ax);
-    let rr = rc + r;
+    let rr = if inside { rc - r } else { rc + r };
     let bq = q0.dot(w);
     let disc = bq * bq - (q0.dot(q0) - rr * rr);
     if !(disc >= 0.0) {

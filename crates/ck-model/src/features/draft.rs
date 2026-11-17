@@ -17,6 +17,7 @@ use super::{Brep, FeatureKind};
 use crate::regen::{FeatureError, RegenState};
 use crate::Feature;
 use ck_json::Json;
+use ck_geom::Vec3;
 use ck_topo::body::{Body, FaceId};
 
 /// Tangent-propagation threshold (cos of the angle between outward normals).
@@ -186,6 +187,31 @@ pub fn drafted_extrude(
     }
 }
 
+/// A tapered extrude that has to end on a body (`end:"toObject"` on a body) is built long, past the body, and trimmed
+/// there. A narrowing taper can close before that length (a column tapering to a point at 45 mm that meets a ball at
+/// 10 mm), which refuses the long tool although the trimmed result is fine (solidcraft #15820). The tool only has to
+/// run as far as the body: this finds the longest length that still builds and takes 0.9999 of it. `None` when even a
+/// short tool does not build.
+pub fn drafted_extrude_short(feature: &str, profile: &ck_topo::make::Profile, o: ck_topo::make::ExtrudeOpts) -> Option<Body> {
+    let len = o.s1 - o.s0;
+    let with_len = |l: f64| if o.s1 <= 1e-12 { ck_topo::make::ExtrudeOpts { s0: o.s1 - l, ..o } } else { ck_topo::make::ExtrudeOpts { s1: o.s0 + l, ..o } };
+    let builds = |l: f64| drafted_extrude_once(feature, profile, with_len(l)).is_ok_and(|b| ck_check::validate(&b, super::TOL).is_empty());
+    let (mut lo, mut hi) = (0.0_f64, len);
+    if !builds(len * 1e-3) {
+        return None;
+    }
+    lo = lo.max(len * 1e-3);
+    for _ in 0..40 {
+        let mid = 0.5 * (lo + hi);
+        if builds(mid) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    drafted_extrude_once(feature, profile, with_len(lo * 0.9999)).ok()
+}
+
 fn drafted_extrude_once(
     feature: &str,
     profile: &ck_topo::make::Profile,
@@ -207,5 +233,94 @@ fn drafted_extrude_once(
     let sides: Vec<FaceId> =
         straight.face_ids().filter(|&f| matches!(straight.face(f).name.role, Role::Side(_))).collect();
     let pull = if s1 <= 1e-12 { -d } else { d };
-    ck_ops::draft::draft(&straight, fr.o, pull, &sides, o.draft, super::TOL).map_err(|e| draft_error(e, start_offset(&o)))
+    let body = ck_ops::draft::draft(&straight, fr.o, pull, &sides, o.draft, super::TOL).map_err(|e| draft_error(e, start_offset(&o)))?;
+    if let Some(what) = cap_folds(&body) {
+        return Err(FeatureError::new("draftTooLarge").with("detail", Json::Str(what)));
+    }
+    Ok(body)
+}
+
+/// Does a cap of a drafted extrude fold over itself? Walls that meet far from the edges they belong to (a thin web
+/// or the two sides of a slot, tapered until they cross) leave the cap's boundary running through itself. The
+/// drafted body is then built with a negative sliver there and still reads as valid, so its volume is wrong
+/// without any error. Segments of the cap's loops that are not neighbours must stay apart.
+fn cap_folds(b: &Body) -> Option<String> {
+    use ck_topo::body::Role;
+    for f in b.face_ids() {
+        if !matches!(b.face(f).name.role, Role::Cap(_)) {
+            continue;
+        }
+        // (start, end, loop, position in the loop)
+        let mut segs: Vec<(Vec3, Vec3, usize, usize)> = vec![];
+        let mut loop_len: Vec<usize> = vec![];
+        for (li, &l) in b.face(f).loops.iter().enumerate() {
+            let mut k = 0;
+            for &c in &b.lp(l).coedges {
+                let ce = &b.coedges[c.idx()];
+                let mut pts = b.sample_edge(ce.edge, 1e-3);
+                if ce.rev {
+                    pts.reverse();
+                }
+                for w in pts.windows(2) {
+                    segs.push((w[0], w[1], li, k));
+                    k += 1;
+                }
+            }
+            loop_len.push(k);
+        }
+        let eps = 1e-6 * segs.iter().map(|s| (s.1 - s.0).len()).fold(1.0_f64, f64::max);
+        let lo = |s: &(Vec3, Vec3, usize, usize)| [s.0.x.min(s.1.x), s.0.y.min(s.1.y), s.0.z.min(s.1.z)];
+        let hi = |s: &(Vec3, Vec3, usize, usize)| [s.0.x.max(s.1.x), s.0.y.max(s.1.y), s.0.z.max(s.1.z)];
+        for i in 0..segs.len() {
+            let (lo_a, hi_a) = (lo(&segs[i]), hi(&segs[i]));
+            for j in i + 1..segs.len() {
+                if segs[i].2 == segs[j].2 {
+                    // neighbours in the loop (cyclically) touch by construction
+                    let (n, d) = (loop_len[segs[i].2], segs[j].3 - segs[i].3);
+                    if d <= 1 || n - d <= 1 {
+                        continue;
+                    }
+                }
+                let (lo_b, hi_b) = (lo(&segs[j]), hi(&segs[j]));
+                if (0..3).any(|k| lo_a[k] > hi_b[k] + eps || lo_b[k] > hi_a[k] + eps) {
+                    continue;
+                }
+                if seg_dist(segs[i].0, segs[i].1, segs[j].0, segs[j].1) < eps {
+                    return Some(format!("the taper folds the profile over itself on {}: walls that meet vanish there", b.face_id_str(f)));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Smallest distance between segments `p0 p1` and `q0 q1` (closest points of two segments, clamped).
+fn seg_dist(p0: Vec3, p1: Vec3, q0: Vec3, q1: Vec3) -> f64 {
+    let (d1, d2, r) = (p1 - p0, q1 - q0, p0 - q0);
+    let (a, e, f) = (d1.dot(d1), d2.dot(d2), d2.dot(r));
+    let (s, t);
+    if a <= 1e-30 && e <= 1e-30 {
+        (s, t) = (0.0, 0.0);
+    } else if a <= 1e-30 {
+        (s, t) = (0.0, (f / e).clamp(0.0, 1.0));
+    } else {
+        let c = d1.dot(r);
+        if e <= 1e-30 {
+            (s, t) = ((-c / a).clamp(0.0, 1.0), 0.0);
+        } else {
+            let b = d1.dot(d2);
+            let den = a * e - b * b;
+            let mut s0 = if den > 1e-12 * a * e { ((b * f - c * e) / den).clamp(0.0, 1.0) } else { 0.0 };
+            let mut t0 = (b * s0 + f) / e;
+            if t0 < 0.0 {
+                t0 = 0.0;
+                s0 = (-c / a).clamp(0.0, 1.0);
+            } else if t0 > 1.0 {
+                t0 = 1.0;
+                s0 = ((b - c) / a).clamp(0.0, 1.0);
+            }
+            (s, t) = (s0, t0);
+        }
+    }
+    ((p0 + d1 * s) - (q0 + d2 * t)).len()
 }

@@ -460,6 +460,17 @@ pub(super) fn reflex_end_plane(b: &Body, v: ck_topo::body::VertexId, faces: &[Fa
 /// cylinder whose material lies inside it and ahead of the edge (a boss the edge runs
 /// into): the tool must not cut into it, so it is cut by this solid.
 pub(super) fn end_cylinder_solid(b: &Body, v: ck_topo::body::VertexId, od: Vec3, faces: &[FaceId], bb: (Vec3, Vec3)) -> Option<Body> {
+    end_cylinder(b, v, od, faces, bb, false)
+}
+
+/// [`end_cylinder_solid`] for an edge that ends ON a convex cylinder it does not run into (the material lies behind the end, the
+/// cylinder's outward normal points along `od`): the solid of that cylinder, which a filling (concave) tool is intersected with so that
+/// its flat end does not stand out past the round wall.
+pub(super) fn end_cylinder_keep(b: &Body, v: ck_topo::body::VertexId, od: Vec3, faces: &[FaceId], bb: (Vec3, Vec3)) -> Option<Body> {
+    end_cylinder(b, v, od, faces, bb, true)
+}
+
+fn end_cylinder(b: &Body, v: ck_topo::body::VertexId, od: Vec3, faces: &[FaceId], bb: (Vec3, Vec3), keep: bool) -> Option<Body> {
     let mut ends: Vec<FaceId> = vec![];
     for x in b.edge_ids().filter(|&x| b.edge(x).v0 == v || b.edge(x).v1 == v) {
         for f in b.edge_faces(x) {
@@ -478,7 +489,8 @@ pub(super) fn end_cylinder_solid(b: &Body, v: ck_topo::body::VertexId, od: Vec3,
     let rel = pv - frame.o;
     let rad = rel - frame.z * rel.dot(frame.z);
     // material is ahead of the edge (the face leans toward it) and inside the cylinder (normal points away from the axis)
-    if n.dot(od) > -1e-9 || n.dot(rad) <= 0.0 {
+    let ahead = if keep { n.dot(od) < 1e-9 } else { n.dot(od) > -1e-9 };
+    if ahead || n.dot(rad) <= 0.0 {
         return None;
     }
     let big = 4.0 * (bb.1 - bb.0).len() + 4.0 * rad.len() + 10.0;

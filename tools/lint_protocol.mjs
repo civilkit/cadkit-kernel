@@ -69,6 +69,7 @@ if (isMainThread) {
     sheetDxf: {}, sheetBendTable: {},
     sketchAnalyze: { featureId: 'F1' },
     sketchFreedoms: { featureId: 'F1' },
+    faceRun: { faces: ['F2.C1'] },
     dfmMinWall: { threshold: 1 }, dfmMinInternalRadius: { toolRadius: 1 }, dfmPocketRatio: { maxRatio: 4 },
     dfmOverhang: { direction: [0, 1, 0], angle: 45 }, dfmConstantSection: { axis: [0, 0, 1] },
   };

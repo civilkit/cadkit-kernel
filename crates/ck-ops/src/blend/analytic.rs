@@ -15,6 +15,9 @@ thread_local! {
     /// Edges of the selection a concave arc's tool swept over besides its own (the other arcs of a seam-split arc),
     /// as (curve, range) on the body they were found in: they are blended, whatever an earlier tool did to their faces.
     pub(super) static SWEPT: std::cell::RefCell<Vec<(Curve, f64, f64)>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// The body the selection started from: a convex chamfer's contact point that an earlier tool of the same selection took
+    /// out of its face (the corner where two chamfers meet) still lies on that face of the input.
+    pub(super) static ORIGINAL: std::cell::RefCell<Option<Body>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Does the pick point `at` lie on an edge an earlier tool of this selection swept over ([`SWEPT`])?
@@ -134,7 +137,14 @@ pub(super) fn blend_edge_hint_inner(
                                 "use a fillet, chamfer before the twist, or build the bevel with other features",
                             ));
                         }
-                        return Err(BlendError::code("blendUnsupported"));
+                        let what = if chamfer { "chamfer" } else { "round" };
+                        let kind = other.kind();
+                        let hint = if chamfer && matches!(other, Surface::BSpline(_)) {
+                            "a round of the same edge is built on free-form faces, a chamfer is not yet: use a round, or chamfer before the free-form face is made"
+                        } else {
+                            "a straight edge is blended between planar faces, or a plane and a cylinder along the edge: round or chamfer another edge, or change the faces beside this one"
+                        };
+                        return Err(super::diag::unsupported_hint(&format!("a {what} on this straight edge is not supported: one of its faces is a {kind} surface"), hint));
                     }
                 }
             }
@@ -158,7 +168,10 @@ pub(super) fn blend_edge_hint_inner(
                     }
                     None => {
                         dbg_fail(&format!("non-circle edge {}", ed.curve.kind()));
-                        return Err(BlendError::code("blendUnsupported"));
+                        return Err(super::diag::unsupported_hint(
+                            &format!("a {} on this {} edge is not supported: only straight and circular edges are blended this way", if chamfer { "chamfer" } else { "round" }, ed.curve.kind()),
+                            "a round runs along free-form chains of edges; a chamfer needs a straight or circular edge",
+                        ));
                     }
                 },
             };
@@ -232,7 +245,15 @@ pub(super) fn blend_edge_hint_inner(
             };
             if !coaxial(faces[0]) || !coaxial(faces[1]) || !(rad > 0.0) {
                 dbg_fail(&format!("circle edge not coaxial: {} {}", b.face(faces[0]).surface.kind(), b.face(faces[1]).surface.kind()));
-                return Err(BlendError::code("blendUnsupported"));
+                return Err(super::diag::unsupported_hint(
+                    &format!(
+                        "a {} on this circular edge is not supported: its faces ({} and {}) are not planes or surfaces of revolution about the circle's own axis",
+                        if chamfer { "chamfer" } else { "round" },
+                        b.face(faces[0]).surface.kind(),
+                        b.face(faces[1]).surface.kind()
+                    ),
+                    "a circular edge is blended between planes, cylinders, cones (and spheres for a round) that share its axis: pick another edge, or change the faces beside it",
+                ));
             }
             ext |= spline_face;
             let nrm = |f: FaceId| {
@@ -304,7 +325,10 @@ pub(super) fn blend_edge_hint_inner(
     };
     if (1.0 + c12).abs() < 1e-9 || (tangent && !(ext && circ.is_none())) {
         dbg_fail("tangent / folded faces");
-        return Err(BlendError::code("blendUnsupported")); // tangent / folded faces
+        return Err(super::diag::unsupported_hint(
+            "the two faces of this edge are tangent or folded onto each other, so there is no corner to blend",
+            "an edge between tangent faces has nothing to round; pick the edge where the faces meet at an angle",
+        ));
     }
     // convex iff the direction into F1 (left of its coedge about the
     // outward normal) points against n2
@@ -329,12 +353,33 @@ pub(super) fn blend_edge_hint_inner(
         let cv = away(faces[0], n1, leg1) || away(faces[1], n2, leg2);
         if !cv {
             dbg_fail("concave tangent edge");
-            return Err(BlendError::code("blendUnsupported"));
+            return Err(super::diag::unsupported_hint(
+                "this edge joins two faces tangentially and is concave, so there is no corner to blend",
+                "a tangent edge is only blended where a curved face falls away from the shared plane; pick another edge",
+            ));
         }
         true
     } else {
         n1.cross(tdir).dot(n2) < 0.0
     };
+    // a chamfer leg across a flat disc face longer than the disc's radius runs past its axis: there is no face beyond it to
+    // meet (the cone to the centre is the largest), so it is refused here instead of building a body whose rim leaves its surface
+    if let (Some((c, _)), true) = (circ, chamfer && convex) {
+        let rad = (p0 - c).len();
+        for (f, leg, d) in [(faces[0], leg1, ch1), (faces[1], leg2, ch2)] {
+            if matches!(b.face(f).surface, Surface::Plane { .. }) && leg.dot(c - p0) > 0.0 && d > rad * (1.0 + 1e-6) {
+                dbg_fail(&format!("chamfer leg {d} on a disc of radius {rad}"));
+                return Err(BlendError {
+                    code: "blendOverflow".into(),
+                    detail: Some(format!(
+                        "{}: the chamfer is wider than the face beside its edge and would take that face away, but cannot meet the face beyond it",
+                        FaceName::blend(feature, k).id()
+                    )),
+                    params: vec![("hint".into(), format!("the face is a disc of radius {rad:.6} mm: the largest distance on it is {rad:.6} mm, a cone to its centre"))],
+                });
+            }
+        }
+    }
     let s = if convex { -1.0 } else { 1.0 };
     // contact points on the two faces, the ball centre (fillet) and the
     // chamfer legs (in-face directions away from the edge: n x coedge dir)
@@ -346,11 +391,14 @@ pub(super) fn blend_edge_hint_inner(
     };
     // a plane meeting a cylinder along the line: the ball centre is at r from the plane and R + r from the axis
     let (off, ta, tb) = if circ.is_none() && !chamfer && faces.iter().any(|&f| matches!(b.face(f).surface, Surface::Cylinder { .. })) {
-        match super::torus_corner::wall_section(b, faces, pm, dir, r) {
-            Some((c, a, bb)) if (!convex || super::torus_corner::is_convex_wall_line(b, e)) && matches!(spec, Spec::Fillet(_, FilletProfile::Circular)) => (c - pm, a, bb),
+        match super::torus_corner::wall_section(b, faces, pm, dir, r, convex) {
+            Some((c, a, bb)) if (!convex || super::torus_corner::is_convex_wall_line(b, e) || super::torus_corner::is_convex_cyl_line(b, e)) && matches!(spec, Spec::Fillet(_, FilletProfile::Circular)) => (c - pm, a, bb),
             _ => {
                 dbg_fail("wall line: no exact section");
-                return Err(BlendError::code("blendUnsupported"));
+                return Err(super::diag::unsupported_hint(
+                    "a round on this straight edge between a plane and a cylinder is not supported: no exact rolling-ball section is built for this layout",
+                    "round the edge before the cylinder is joined, change the radius, or pick the cylinder's circular edge instead",
+                ));
             }
         }
     } else {
@@ -362,7 +410,10 @@ pub(super) fn blend_edge_hint_inner(
             Some((ctr, a, bb)) => (ctr - p0, a, bb),
             None => {
                 dbg_fail("ball section: the rolling ball does not settle");
-                return Err(BlendError::code("blendUnsupported"));
+                return Err(super::diag::unsupported_hint(
+                    "a round on this circular edge against a sphere is not supported: the rolling ball does not settle between the faces",
+                    "try a smaller radius, or round the edge before the sphere is joined",
+                ));
             }
         },
         _ => (off, ta, tb),
@@ -487,6 +538,9 @@ pub(super) fn blend_edge_hint_inner(
             })
         };
         if point_in_face(b, f, t, tol) == Where::Out && !on_boundary() {
+            if convex && chamfer && ORIGINAL.with(|o| o.borrow().as_ref().is_some_and(|ob| ob.find_face(&b.face_id_str(f)).is_some_and(|fo| point_in_face(ob, fo, t, tol) != Where::Out))) {
+                continue;
+            }
             if !convex && !tangent && matches!(spec, Spec::Fillet(_, FilletProfile::Circular)) {
                 if let Some(c) = overflow_clip(b, f, e, pm_c, t, b.bbox(), tol) {
                     if super::diag::on() {
@@ -605,6 +659,15 @@ pub(super) fn blend_edge_hint_inner(
         }
         if junc.flush.iter().any(|&q| near(q, p1, p0)) {
             m1 = 0.0;
+        }
+    }
+    // chamfer: an end whose only other face is a plane square to the edge that leans toward the material (a vertical edge that
+    // stops on the top of the lower step): the tool stops flush on it; run on, it cuts into the material behind
+    if convex && circ.is_none() && chamfer {
+        for (v, out, which) in [(ed.v0, -dir, 0usize), (ed.v1, dir, 1usize)] {
+            if reflex_end_plane(b, v, &faces, out).is_some_and(|n| n.cross(dir).len() < 1e-9) {
+                if which == 0 { m0 = 0.0 } else { m1 = 0.0 }
+            }
         }
     }
     // an end that runs into the blend faces of an earlier feature (the convex rim of a tower after its wall coves were rounded):
@@ -834,7 +897,7 @@ pub(super) fn blend_edge_hint_inner(
                 // not rounded): the only other face there is a plane that leans toward the material, so the tool must
                 // not run on into the wall. It ends on that plane: flush when the plane is radial (it contains the
                 // axis), else run on and clipped by it (while the clip plane cannot reach the tool's other end).
-                if convex && !chamfer && span + m0 + m1 < TAU {
+                if convex && span + m0 + m1 < TAU {
                     let (t_lo, t_hi) = (ed.t0.min(ed.t1), ed.t0.max(ed.t1));
                     let (vs, ve) = arc_ends.unwrap_or(if ed.t0 <= ed.t1 { (ed.v0, ed.v1) } else { (ed.v1, ed.v0) });
                     let outs = [(vs, -ed.curve.tangent(t_lo).normalize()), (ve, ed.curve.tangent(t_hi).normalize())];
@@ -846,6 +909,11 @@ pub(super) fn blend_edge_hint_inner(
                         let Some(n) = reflex_end_plane(b, v, &faces, out) else { continue };
                         let pv = b.vertex(v).p;
                         let radial = n.dot(axis).abs() < 1e-9 && (pv - c).dot(n).abs() < 1e-7 * (1.0 + rad);
+                        // (a chamfer only stops flush on a radial plane: an end plane that is off radial by the sketch precision
+                        // keeps its margin, which is the result the reference cases were recorded with)
+                        if chamfer && !radial {
+                            continue;
+                        }
                         if radial || span + m0 + m1 >= std::f64::consts::PI {
                             if i == 0 { m0 = 0.0 } else { m1 = 0.0 }
                         } else {
@@ -899,6 +967,14 @@ pub(super) fn blend_edge_hint_inner(
                 if let Some(cyl) = end_cylinder_solid(b, v, od, &faces, tool.bbox()) {
                     tool = crate::boolean::boolean(&tool, &cyl, Op::Cut, tol).map(|r| r.body).map_err(|_| BlendError::code("blendFailed"))?;
                 }
+            }
+        }
+    }
+    // a concave (filling) straight tool whose edge ends on a round wall: its end must not stand out past the wall
+    if !convex && circ.is_none() {
+        for (v, od) in [(ed.v0, -dir), (ed.v1, dir)] {
+            if let Some(cyl) = super::ends::end_cylinder_keep(b, v, od, &faces, tool.bbox()) {
+                tool = crate::boolean::boolean(&tool, &cyl, Op::Intersect, tol).map(|r| r.body).map_err(|_| BlendError::code("blendFailed"))?;
             }
         }
     }

@@ -688,6 +688,33 @@ Errors: `nothingToCut`, `noFaces`, `missingReference {ref}`, `invalidValue {deta
 Run result: errors `F3`: `moveFaceFailed` `{"detail":"an edge reverses"}`; 6 faces, volume 8000 mm³.
 
 
+## pressPull
+
+Continues a flat face straight out of the solid (joined) or into it (cut), as if the face were extruded, with the new walls optionally leaning (a draft) or the whole outline growing or shrinking (a scale). Where `moveFace` slides the face and lets its neighbours follow, `pressPull` adds or removes a piece of its own.
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `faces` | list of face names | required | Flat faces of the solid. A name without `~k` selects every piece. Each face continues on its own, in the order given. An empty list is `noFaces`. |
+| `continue` | string | `"straight"` | `straight`: the face is carried along its outward normal, unturned. `along` (the end follows a bend in the walls) is not built yet and is refused. |
+| `distance` | number or expression | required | Run length in mm, not 0. Positive runs out of the material and the piece is joined; negative runs into it and the piece is cut. |
+| `taper` | object | `{"type":"none"}` | `none`; `draft` with `angle` in degrees (-85 to 85); `scale` with `endScale` above 0. |
+
+`draft`: each new wall leans from its edge on the face by `t * tan(angle)` at run length `t`, positive outward, so the outline grows and holes shrink (the reverse sign of `extrude` `draft`, which tapers inward). It is built as `extrude` builds a draft and has the same limits and corner behaviour. `scale`: the outline, holes included, scales about the area centre of the face, linearly with the run length, to `endScale` at the end (1.1 is 110 %); walls on lines are planes, walls on circles about the centre are cones.
+
+Names: the moved end keeps the persistent name of the face, so sketches and features that referred to the face find it at its new place. The cap on the old face is consumed. New walls are named as the extrusion of the face names them, `<id>.S.<tag>`, with the tag made from the name of the face across each edge (`F2.S.e1` gives `F2_S_e1`). A straight run on walls it continues merges into them (no new faces); a taper gives new walls.
+
+```json
+{"type": "pressPull", "id": "F3", "faces": ["F2.C1"], "continue": "straight", "distance": 10, "taper": {"type": "scale", "endScale": 1.1}}
+```
+
+Run result on a 5 mm radius, 30 mm long rod: no errors; faces `F2.C0`, `F2.C1`, `F2.S.c1`, `F3.S.F2_S_c1`; volume 2356.19 + 10 * pi / 3 * (25 + 27.5 + 30.25) = 3222.74 mm³ (a frustum from radius 5 to 5.5 on the end).
+
+Errors (the model is unchanged on any): `nothingToCut`, `noFaces`, `missingReference {ref}`, `invalidValue {field, detail, hint}` (distance 0 or not finite, `endScale` not above 0 or below 1e-6, `angle` outside -85..85 or missing, unknown `taper.type`, `continue` other than `straight`), `pressPullUnsupported {detail}` (a face that is not flat, a face of a surface body), `draftTooLarge` (a draft that closes the face before the end of the run: `maxHeight` for a round face, else `maxSize` in degrees), and `moveFaceFailed {detail}` with `maxSize` (`distance`, the sign kept) where a shorter run builds: a cut through the body, a join into other material, a result that is not valid or splits the body.
+
+### faceRun
+
+`{"type": "faceRun", "tag": "t", "faces": ["F2.C1"]}` answers, per face, what the Press Pull panel needs: `found`, `flat`, `centre` (the area centre), `normal` (outward), `reach` (mm, how far the outline reaches from the centre at its farthest point), `area`, and `endOf`: `{feature, kind, input}` when the face is the moving end of an `extrude` (`depth`), `revolve` (`angle`) or `sweep` (`path`), else `null`, so the panel can open that feature instead of adding a press pull. The readout for a scale is `atan(reach * (endScale - 1) / distance)`. A face that is not flat answers `flat: false` and its `surface`. No body: `null`.
+
 ## deleteBody
 
 Removes whole bodies.

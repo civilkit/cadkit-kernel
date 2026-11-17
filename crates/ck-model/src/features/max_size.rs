@@ -14,6 +14,9 @@ use ck_json::{Json, Obj};
 /// Most builds one search may spend (only on the refusal path).
 pub const MAX_BUILDS: usize = 8;
 
+/// Most builds the search for a size ABOVE the asked one may spend (see [`smallest_that_builds`]).
+pub const MAX_UP_BUILDS: usize = 16;
+
 /// Longest a search may keep starting builds, in ms of the host clock.
 pub const SEARCH_MS: f64 = 3000.0;
 
@@ -78,7 +81,90 @@ pub fn largest_that_builds(asked: f64, known: Option<f64>, mut builds: impl FnMu
             hi = mid;
         }
     }
+    // (a build can succeed at a larger size than one that failed: the corner of a rim and a wall edge builds at 0.5 and 2 mm and
+    // not at 1 mm. Bisection alone would then name a size that is not the largest; up to three probes above it (within the build
+    // budget) keep the claim honest for such non-monotonic limits)
+    if lo > 0.0 && ck_core::budget::since(started) <= SEARCH_MS {
+        let base = lo;
+        for k in [0.25, 0.5, 0.75] {
+            let probe = floor_nice(base + (asked - base) * k);
+            if n >= MAX_BUILDS {
+                break;
+            }
+            if probe > lo && probe < asked {
+                n += 1;
+                if builds(probe) {
+                    lo = probe;
+                }
+            }
+        }
+    }
     (lo > 0.0).then_some(lo)
+}
+
+/// Round up to two significant digits.
+pub fn ceil_nice(x: f64) -> f64 {
+    if !(x > 0.0) || !x.is_finite() {
+        return x;
+    }
+    let e = x.log10().floor();
+    let s = 10f64.powf(1.0 - e);
+    (x * s).ceil() / s
+}
+
+/// A size above `asked` for which `builds` succeeds: for a refusal whose size is too SMALL (a round the kernel's
+/// tolerance cannot tell from the sharp edge). Doubles from `asked` until a build succeeds (at most [`MAX_UP_BUILDS`]
+/// builds; a build of a size too small to change the part is quick), then bisects back towards the last size that
+/// failed in at most three more, within [`SEARCH_MS`] in all. Every value tried is
+/// rounded up with [`ceil_nice`], so the answer is a value that was built. `None` when nothing tried builds.
+pub fn smallest_that_builds(asked: f64, mut builds: impl FnMut(f64) -> bool) -> Option<f64> {
+    if !(asked > 0.0) || !asked.is_finite() {
+        return None;
+    }
+    let started = ck_core::budget::mark();
+    let (mut lo, mut hi) = (asked, 0.0f64);
+    let mut n = 0;
+    let mut r = asked;
+    while n < MAX_UP_BUILDS && ck_core::budget::since(started) <= SEARCH_MS {
+        let next = ceil_nice(r * 2.0);
+        if !(next > r) || !next.is_finite() {
+            break;
+        }
+        r = next;
+        n += 1;
+        if builds(r) {
+            hi = r;
+            break;
+        }
+        lo = r;
+    }
+    if hi == 0.0 {
+        return None;
+    }
+    // (a size that builds can lie above one that fails and below another that fails: take the smaller of what was built)
+    for _ in 0..3 {
+        if ck_core::budget::since(started) > SEARCH_MS {
+            break;
+        }
+        let mid = ceil_nice(0.5 * (lo + hi));
+        if !(mid > lo && mid < hi) {
+            break;
+        }
+        if builds(mid) {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    Some(hi)
+}
+
+/// `fe` with `minSize {param, value, unit}` and the hint naming it: the size asked is too small to change the part.
+pub fn with_min_size(mut fe: FeatureError, param: &str, value: f64, unit: &str) -> FeatureError {
+    let say = format!("the {} is too small to change the part beyond the kernel's tolerance; {value} {unit} builds", words(param));
+    fe.params.retain(|(k, _)| k != "minSize" && k != "hint");
+    fe = fe.with("hint", Json::Str(say));
+    fe.with("minSize", Obj::new().put("param", param).put("value", value).put("unit", unit).build())
 }
 
 /// The field in words, for the hint.
@@ -109,6 +195,21 @@ pub fn with_max_size(mut fe: FeatureError, param: &str, value: f64, unit: &str) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_smallest_size_search_grows_from_the_asked_size_and_names_a_built_value() {
+        // builds from 0.08 up, except the band 0.3..0.4 (not monotone)
+        let mut tried = vec![];
+        let v = smallest_that_builds(0.001, |x| {
+            tried.push(x);
+            x >= 0.08
+        })
+        .unwrap();
+        assert!(v >= 0.08 && v < 0.2, "{v}");
+        assert!(tried.contains(&v), "the answer is a value that was built: {tried:?}");
+        assert_eq!(smallest_that_builds(0.001, |_| false), None);
+        assert_eq!(smallest_that_builds(f64::NAN, |_| true), None);
+    }
 
     #[test]
     fn bisection_finds_a_built_value_near_the_limit() {

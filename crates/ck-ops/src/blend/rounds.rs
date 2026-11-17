@@ -58,10 +58,42 @@ pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featu
         }
     }
     // when every attempt failed and the gate refused one of them, that refusal says more than a later attempt's failure
-    match (first, rejected.into_inner()) {
+    let res = match (first, rejected.into_inner()) {
         (Err(_), Some(gate)) => Err(gate),
         (r, _) => r,
+    };
+    if res.is_err() && matches!(spec, Spec::Fillet(..)) {
+        if let Some(e) = curved_corner_refusal(b, edges) {
+            return Err(e);
+        }
     }
+    res
+}
+
+/// A refused fillet whose selection has all three edges of a vertex, where a face or an edge there is curved (the rim arc,
+/// the wall-top edge and a vertical wall edge of a stepped disc): the vertex patch (`corner.rs`) exists for three planar
+/// faces only, and the tools of the three edges leave that corner open. Say so, instead of the open-edge check or a size
+/// hint that does not hold (such a corner builds at some sizes and not at others).
+fn curved_corner_refusal(b: &Body, edges: &[(String, String, Vec3)]) -> Option<BlendError> {
+    let eids: Vec<EdgeId> = edges.iter().filter_map(|(fa, fb, at)| find_edge(b, fa, fb, *at)).collect();
+    for v in b.vertex_ids() {
+        let inc: Vec<EdgeId> = b.edge_ids().filter(|&e| b.edge(e).v0 == v || b.edge(e).v1 == v).collect();
+        if inc.len() != 3 || !inc.iter().all(|e| eids.contains(e)) {
+            continue;
+        }
+        let straight = inc.iter().all(|&e| matches!(b.edge(e).curve, ck_geom::curve::Curve::Line { .. }));
+        let planar = inc.iter().flat_map(|&e| b.edge_faces(e)).all(|f| matches!(b.face(f).surface, ck_geom::surface::Surface::Plane { .. }));
+        if !(straight && planar) {
+            let p = b.vertex(v).p;
+            let mut e = BlendError::detail(
+                "blendUnsupported",
+                &format!("three rounded edges meet at a corner with a curved face or edge ({:.3}, {:.3}, {:.3}); the corner patch is only built where all three faces are planar", p.x, p.y, p.z),
+            );
+            e.params.push(("hint".into(), "round the rim and the wall edges in separate features, or leave one of the three edges at that corner out of the selection".into()));
+            return Some(e);
+        }
+    }
+    None
 }
 
 /// Two of the selected edges continue each other tangentially at a shared vertex.
@@ -72,6 +104,7 @@ pub(super) fn has_tangent_mates(b: &Body, edges: &[(String, String, Vec3)]) -> b
 
 pub(super) fn blend_edges_inner(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, feature: &str, tol: f64) -> Result<Body, BlendError> {
     SWEPT.with(|w| w.borrow_mut().clear());
+    ORIGINAL.with(|o| *o.borrow_mut() = Some(b.clone()));
     let r = spec.size();
     if !(r > 0.0) || !r.is_finite() {
         return Err(BlendError::code("invalidValue"));
@@ -449,6 +482,38 @@ pub(super) fn blend_edges_at(
             // tool, whose margin runs on over the notch; the edge is gone but both of
             // its faces now border that feature's blend face
             if blended_by_earlier_tool(&out, fa, fb, feature) || swept_pick(*at) {
+                // only a pick whose face pair another pick shares is one tool's run on (the notch's two halves). A pick on
+                // another pair of faces that an earlier round's tool swallowed whole (a round wider than the wall it
+                // runs over, the concave edge beside it) was not blended: building the part without it would drop it
+                // silently, so it is refused as overlapping
+                // convex or concave in the input: a swallowed pick of the same sense as another pick is one tool's run on
+                // (a split edge), one of the opposite sense (a concave round beside a convex one) is not
+                let convex_in = |ga: &str, gb: &str, p: Vec3| -> Option<bool> {
+                    let e = find_edge(b, ga, gb, p)?;
+                    let fs = b.edge_faces(e);
+                    if fs.len() != 2 {
+                        return None;
+                    }
+                    let ed = b.edge(e);
+                    let d = b.vertex(ed.v1).p - b.vertex(ed.v0).p;
+                    if !(d.len() > 1e-9) {
+                        return None;
+                    }
+                    let n = |f: FaceId| match &b.face(f).surface {
+                        ck_geom::surface::Surface::Plane { .. } => Some(b.planar_normal(f).normalize()),
+                        _ => None,
+                    };
+                    let (n1, n2) = (n(fs[0])?, n(fs[1])?);
+                    let co = b.edge_coedges(e).into_iter().find(|&c| b.coedge_face(c) == fs[0])?;
+                    let t = if b.coedge(co).rev { -d } else { d }.normalize();
+                    Some(n1.cross(t).dot(n2) < 0.0)
+                };
+                let mine = convex_in(fa, fb, *at);
+                let opposite = mine.is_some() && edges.iter().enumerate().any(|(j, (ga, gb, p))| j != k && convex_in(ga, gb, *p).is_some_and(|c| Some(!c) == mine));
+                if opposite && !swept_pick(*at) {
+                    dbg_fail(&format!("edge {k} ({fa} | {fb}) was taken by the blend of another edge"));
+                    return Err(BlendError::detail("blendOverflow", &format!("{feature}.B{}: blends overlap: the blend of another edge covers the edge between {fa} and {fb}", idx[k])));
+                }
                 dbg_fail(&format!("edge {k} ({fa} | {fb}) was blended by an earlier tool"));
                 continue;
             }

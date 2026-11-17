@@ -41,6 +41,7 @@
 //! | plane           | mode ("offset"/"angle"/"perpendicular"/"mid"; others fall back to offset), base, offset, flip, axis, angle, base2, curves, visible, userHidden |
 //! | deleteBody      | mode, bodies |
 //! | moveFace        | faces, mode (offset / translate), distance, translate, flip (parsed from the raw DOM, see move_face.rs) |
+//! | pressPull       | faces, continue (straight), distance, taper {type none / draft / scale, angle, endScale} (raw DOM, see press_pull.rs) |
 //! | moveBody        | bodies ({face}/{surface}/{feature}), translate, rotate{axis,origin,angle}, copy (see move_body.rs) |
 //! | scale           | factor (number or [sx,sy,sz]), at, bodies as moveBody (see scale.rs) |
 //! | importStep      | blob (key into the part's `blobs`) or step (inline text), body, heal (see import_step.rs) |
@@ -90,6 +91,7 @@ pub mod mate;
 pub mod mate_kinds;
 pub mod move_body;
 pub mod move_face;
+pub mod press_pull;
 pub mod pattern;
 pub mod pattern_place;
 pub mod pipecut;
@@ -1782,6 +1784,7 @@ impl Brep {
             _ if f.type_name == "moveBody" => return move_body::exec_move_body(self, state, f),
             _ if f.type_name == "scale" => return scale::exec_scale(self, state, f),
             _ if f.type_name == "moveFace" => return move_face::exec_move_face(self, state, f),
+            _ if f.type_name == "pressPull" => return press_pull::exec_press_pull(self, state, f),
             _ if f.type_name == "pipeCut" => return pipecut::exec_pipecut(self, state, f),
             _ if f.type_name == "editCurve" => return edit_curve::exec_edit_curve(self, state, f),
             _ if f.type_name == "projectCurve" => return project_curve::exec_project_curve(self, state, f),

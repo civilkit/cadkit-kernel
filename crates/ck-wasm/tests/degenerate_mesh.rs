@@ -10,15 +10,30 @@ fn call(msg: &str) -> (Json, usize) {
     (ck_json::parse(std::str::from_utf8(&r[4..4 + jl]).unwrap()).unwrap(), r.len())
 }
 
+/// The same checks on a body that a LEGAL blend leaves invalid (solidcraft kernel case `1080-fillet-sloped-basin-1-mm-rim-r4-2-edges`, a
+/// 100 x 60 x 30 slab with a lofted basin, two top rim edges rounded 4; the basin as our own STEP restatement, see THIRD_PARTY.md): the round's
+/// tangent edge `F2.TA1~2` lies 2e-3 off its surface (`EDGE_OFF_SURFACE`), no feature error. The chamfer that used to break the cone body above
+/// is refused now (below), so this is the body that keeps the guard exercised: small mesh, complete reply, still reported invalid.
 #[test]
 fn a_trim_far_off_its_surface_does_not_exhaust_the_refinement_budget() {
-    let part = include_str!("fixtures/chamfer_off_surface.json");
+    let part = include_str!("fixtures/round_off_surface_basin.json");
     let (r, bytes) = call(&format!(r#"{{"type":"regen","tag":"main","part":{part},"opts":{{"solveSketches":true}}}}"#));
     let res = r.get("result").unwrap();
+    assert!(res.get_arr("errors").is_some_and(|e| e.is_empty()), "the round builds");
     let tris = res.get("body").and_then(|b| b.get("mesh")).and_then(|m| m.get("triFace")).and_then(|t| t.get_f64("len")).expect("mesh");
-    assert!(tris < 8000.0, "{tris} triangles (was 23490)");
-    assert!(bytes < 1_500_000, "{bytes} bytes (was 3.5 MB)");
-    // the reply is still complete: the feature that broke the body is reported and validate still answers
+    assert!(tris < 8000.0, "{tris} triangles");
+    assert!(bytes < 1_500_000, "{bytes} bytes");
     let (v, _) = call(r#"{"type":"validate","tag":"main"}"#);
     assert!(v.get("result").and_then(|r| r.get_arr("issues")).is_some_and(|i| !i.is_empty()), "an invalid body is still reported invalid");
+}
+
+/// The original fixture: a chamfer of 28.2 across a disc of radius 15.5 runs past its axis. It used to build a body with its trim far off its
+/// cone; it is refused now, with the wider-than-its-face sentence.
+#[test]
+fn a_chamfer_wider_than_the_disc_it_cuts_is_refused_not_built_invalid() {
+    let part = include_str!("fixtures/chamfer_off_surface.json");
+    let (r, _) = call(&format!(r#"{{"type":"regen","tag":"main","part":{part},"opts":{{"solveSketches":true}}}}"#));
+    let errs = r.get("result").and_then(|r| r.get_arr("errors")).expect("errors");
+    let text = ck_json::to_string(&ck_json::Json::Arr(errs.to_vec()));
+    assert!(text.contains("wider than the face beside its edge") && text.contains("F4"), "{text}");
 }

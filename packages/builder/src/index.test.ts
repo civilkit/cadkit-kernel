@@ -119,6 +119,14 @@ describe('builder solid features', () => {
     assert.deepEqual(rec(p, 2), { type: 'moveBody', name: 'moveBody', bodies: [{ face: 'F2.C1' }], translate: [10, 0, 0], rotate: { axis: [0, 0, 1], origin: [0, 0, 0], angle: 30 }, copy: true, id: 'F3' });
   });
 
+  it('pressPull wire shape', () => {
+    const p = new Part('T');
+    p.pressPull({ faces: ['F2.C1'], distance: 10, taper: { type: 'scale', endScale: 1.1 } });
+    p.pressPull({ faces: ['F2.C1'], distance: -4 });
+    assert.deepEqual(rec(p, 0), { type: 'pressPull', name: 'pressPull', faces: ['F2.C1'], continue: 'straight', distance: 10, taper: { type: 'scale', endScale: 1.1 }, id: 'F1' });
+    assert.deepEqual(rec(p, 1), { type: 'pressPull', name: 'pressPull', faces: ['F2.C1'], continue: 'straight', distance: -4, id: 'F2' });
+  });
+
   it('point() makes a hole-centre point entity', () => {
     const p = new Part('T');
     let eid = '';
