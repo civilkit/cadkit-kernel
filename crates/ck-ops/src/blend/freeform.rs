@@ -742,7 +742,7 @@ fn blend_chain(b: &Body, links: Vec<Link>, r: f64, feature: &str, k: u32, tol: f
         }
     }
     let convex = sg < 0.0;
-    let kk = 0.5 * r;
+    let mut kk = 0.5 * r;
     // ---- stations (adaptive)
     let mut nodes: Vec<Node> = vec![];
     let mut prev: Option<Station> = None;
@@ -765,6 +765,25 @@ fn blend_chain(b: &Body, links: Vec<Link>, r: f64, feature: &str, k: u32, tol: f
             })?;
             prev = Some(st.clone());
             nodes.push(Node { li, s, st });
+        }
+    }
+    // A concave blend is built as a union with the tool: the section polygon reaches `kk` past the two contact points into the
+    // material (and diagonally past the corner). Where the wall is thinner than that (a rim 5 mm thick, a 10 mm round) the
+    // tool would come out of the far side and stay there as a bulge, valid but wrong: shorten the reach until the polygon's
+    // outer corners lie in the material.
+    if !convex {
+        let step = (nodes.len() / 4).max(1);
+        let in_material = |k: f64| {
+            nodes.iter().step_by(step).chain(nodes.last()).all(|n| match section(&n.st, sg, r, k) {
+                Ok(sc) => [NV, NV + 1, NV + 2].iter().all(|&j| ck_topo::region::classify_near(b, sc.pts[j], 1e-3) != ck_topo::region::Containment::Outside),
+                Err(_) => true,
+            })
+        };
+        for f in [1.0, 0.6, 0.35, 0.2, 0.1] {
+            kk = 0.5 * r * f;
+            if in_material(kk) {
+                break;
+            }
         }
     }
     if super::diag::on_level(2) {
@@ -899,7 +918,7 @@ fn blend_chain(b: &Body, links: Vec<Link>, r: f64, feature: &str, k: u32, tol: f
         }
     } else {
         for end in [0usize, 1] {
-            let (_, fs) = end_info(end);
+            let (ev, fs) = end_info(end);
             let plane = fs.iter().find_map(|&f| match &b.face(f).surface {
                 Surface::Plane { frame } => Some((frame.o, b.planar_normal(f))),
                 _ => None,
@@ -908,6 +927,16 @@ fn blend_chain(b: &Body, links: Vec<Link>, r: f64, feature: &str, k: u32, tol: f
                 // (name the faces the end runs into: at a blade root it is the hub, at the sharp tip of a drafted
                 // pocket the floor or a cone, and the remedy differs)
                 let kinds: Vec<&str> = fs.iter().map(|&f| b.face(f).surface.kind()).collect();
+                if fs.iter().any(|&f| matches!(b.face(f).surface, Surface::Torus { .. })) {
+                    // the end runs into the torus of an earlier round (a round of the top edge of a plate that this edge
+                    // meets): the ball would have to leave the face onto that blend, and no corner patch joins the two
+                    let p = b.vertex(ev).p;
+                    let hint = format!(
+                        "this round ends at ({:.3}, {:.3}, {:.3}) on the torus of an earlier round, and a concave round is only built up to a flat face, not onto another round (at any radius). Leave the edges that run into the earlier round out of this selection (the others, whose ends lie on flat faces, still round), or leave the earlier round off this corner",
+                        p.x, p.y, p.z
+                    );
+                    return Err(unsupported_hint("concave chain end is not on a planar face", &hint));
+                }
                 let hint = format!(
                     "a concave free-form blend ends only on a plane, and this end meets {} ({}). Select the edges the blend runs on into past this end so the chain is closed (at a blade root: every blade-face / hub edge of the loop), or round the corner first so the edge ends on a flat face (a sharp tip between two walls: give it a small radius in the sketch)",
                     if kinds.len() == 1 { "a curved face" } else { "curved faces" },

@@ -36,6 +36,10 @@ pub struct Corner {
     /// All three edges are concave (the void side of the vertex is a trihedral
     /// octant): the corner is filled with material (union), not cut.
     pub concave: bool,
+    /// Two planes and a convex cylinder, one of the edges an arc round the cylinder's axis (the rim of a stepped disc at its step
+    /// wall): `edges` are `[arc, line between the planes, line along the cylinder]` and `faces` the face opposite to each
+    /// (`[wall plane, cylinder, top plane]`); see [`cyl_corner_tool`].
+    pub curved: bool,
 }
 
 /// Corner at the vertex shared by exactly the three `selected` edges, or
@@ -48,6 +52,9 @@ pub fn find_corner(b: &Body, selected: &[EdgeId]) -> Vec<Corner> {
             continue;
         }
         if inc.iter().any(|&e| b.edge(e).v0 == b.edge(e).v1 || !matches!(b.edge(e).curve, ck_geom::curve::Curve::Line { .. })) {
+            if let Some(c) = find_cyl_corner(b, v, &inc) {
+                out.push(c);
+            }
             continue;
         }
         // the three faces at the vertex, each planar
@@ -60,6 +67,9 @@ pub fn find_corner(b: &Body, selected: &[EdgeId]) -> Vec<Corner> {
             }
         }
         if faces.len() != 3 || faces.iter().any(|&f| !matches!(b.face(f).surface, Surface::Plane { .. })) {
+            if let Some(c) = find_cyl_corner(b, v, &inc) {
+                out.push(c);
+            }
             continue;
         }
         let opposite = |e: EdgeId| faces.iter().copied().find(|f| !b.edge_faces(e).contains(f));
@@ -78,7 +88,7 @@ pub fn find_corner(b: &Body, selected: &[EdgeId]) -> Vec<Corner> {
         if !concave && !sgn.iter().all(|&s| s < 0) {
             continue; // mixed or degenerate vertex: no spherical corner
         }
-        out.push(Corner { vertex: v, edges: [inc[0], inc[1], inc[2]], faces: [f0, f1, f2], concave });
+        out.push(Corner { vertex: v, edges: [inc[0], inc[1], inc[2]], faces: [f0, f1, f2], concave, curved: false });
     }
     out
 }
@@ -86,6 +96,9 @@ pub fn find_corner(b: &Body, selected: &[EdgeId]) -> Vec<Corner> {
 /// The tool `H - ball` for `corner` (see the module doc), its sphere face
 /// named `name`. `Err(blendUnsupported)` for a concave / degenerate corner.
 pub fn sphere_corner_tool(b: &Body, corner: &Corner, r: f64, feature: &str, name: &FaceName, tol: f64) -> Result<Body, BlendError> {
+    if corner.curved {
+        return cyl_corner_tool(b, corner, r, feature, name);
+    }
     let vp = b.vertex(corner.vertex).p;
     let n: Vec<Vec3> = corner.faces.iter().map(|&f| b.planar_normal(f)).collect();
     // ball centre: r below each of the three planes
@@ -433,4 +446,164 @@ mod tests {
         // oracle volume of filletCorner3 (exact: 8000 - 64(1-pi/4)4/4... see tools/brep_cases.mjs)
         assert!((mass_props(&r).volume - 7941.250719950454).abs() < 1e-6, "{}", mass_props(&r).volume);
     }
+}
+
+/// A convex corner of two planes and a cylinder whose three edges are all selected: a rim arc round the cylinder's axis (between
+/// the cylinder and the top plane, square to the axis), the line where the two planes meet, and a line along the cylinder (between
+/// the cylinder and the wall plane, which is parallel to the axis). `None` for any other shape.
+fn find_cyl_corner(b: &Body, v: VertexId, inc: &[EdgeId]) -> Option<Corner> {
+    use super::torus_corner::edge_concave;
+    let arcs: Vec<EdgeId> = inc.iter().copied().filter(|&e| matches!(b.edge(e).curve, Curve::Circle { .. })).collect();
+    if arcs.len() != 1 || inc.iter().any(|&e| b.edge(e).v0 == b.edge(e).v1) {
+        return None;
+    }
+    if inc.iter().any(|&e| edge_concave(b, e) != Some(false)) {
+        return None;
+    }
+    let e_arc = arcs[0];
+    let lines: Vec<EdgeId> = inc.iter().copied().filter(|&e| e != e_arc).collect();
+    if lines.iter().any(|&e| !matches!(b.edge(e).curve, Curve::Line { .. })) {
+        return None;
+    }
+    let mut faces: Vec<FaceId> = vec![];
+    for &e in inc {
+        for f in b.edge_faces(e) {
+            if !faces.contains(&f) {
+                faces.push(f);
+            }
+        }
+    }
+    if faces.len() != 3 {
+        return None;
+    }
+    let cyls: Vec<FaceId> = faces.iter().copied().filter(|&f| matches!(b.face(f).surface, Surface::Cylinder { .. })).collect();
+    if cyls.len() != 1 || faces.iter().filter(|&&f| matches!(b.face(f).surface, Surface::Plane { .. })).count() != 2 {
+        return None;
+    }
+    let fc = cyls[0];
+    let on_c = |e: EdgeId| b.edge_faces(e).contains(&fc);
+    let (e_vert, e_top) = if on_c(lines[0]) && !on_c(lines[1]) {
+        (lines[0], lines[1])
+    } else if on_c(lines[1]) && !on_c(lines[0]) {
+        (lines[1], lines[0])
+    } else {
+        return None;
+    };
+    if !on_c(e_arc) {
+        return None;
+    }
+    let opp = |e: EdgeId| faces.iter().copied().find(|f| !b.edge_faces(e).contains(f));
+    let (f_w, f_c, f_t) = (opp(e_arc)?, opp(e_top)?, opp(e_vert)?);
+    if f_c != fc {
+        return None;
+    }
+    let Surface::Cylinder { frame, .. } = &b.face(fc).surface else { return None };
+    let ax = frame.z.normalize();
+    let Curve::Line { d: dv, .. } = b.edge(e_vert).curve else { return None };
+    let Curve::Line { d: dt, .. } = b.edge(e_top).curve else { return None };
+    let Some((_, circ_axis, _)) = b.edge(e_arc).curve.circle_info().map(|(c, a, r)| (c, a.normalize(), r)) else { return None };
+    // the vertical edge and the arc's axis along the cylinder's, the top plane square to it, the wall plane parallel to it
+    let nt = b.planar_normal(f_t).normalize();
+    let nw = b.planar_normal(f_w).normalize();
+    if dv.normalize().cross(ax).len() > 1e-7 || circ_axis.cross(ax).len() > 1e-7 || nt.cross(ax).len() > 1e-7 || nw.dot(ax).abs() > 1e-7 || dt.normalize().dot(ax).abs() > 1e-7 {
+        return None;
+    }
+    // a convex cylinder (its outward normal points away from the axis at the vertex)
+    let vp = b.vertex(v).p;
+    let (u, w) = b.face(fc).surface.closest_param(vp);
+    let rad = (vp - frame.o) - ax * (vp - frame.o).dot(ax);
+    if b.outward_normal(fc, u, w).dot(rad) <= 0.0 {
+        return None;
+    }
+    Some(Corner { vertex: v, edges: [e_arc, e_top, e_vert], faces: [f_w, f_c, f_t], concave: false, curved: true })
+}
+
+/// Direction of the edge `e` leaving the vertex `v` (the tangent of an arc at `v`).
+pub(super) fn leaving(b: &Body, e: EdgeId, v: VertexId) -> Vec3 {
+    let ed = b.edge(e);
+    let sgn = if ed.t1 >= ed.t0 { 1.0 } else { -1.0 };
+    let d = if ed.v0 == v { ed.curve.tangent(ed.t0) * sgn } else { -ed.curve.tangent(ed.t1) * sgn };
+    d.normalize()
+}
+
+/// Geometry of the vertex blend of [`find_cyl_corner`]: the rolling ball of radius `r` touches the two planes and the cylinder at
+/// `c` (`r` inside each: on the line of the two offset planes, `R - r` from the axis, the root on the vertex side of every edge),
+/// the directions `u` of the three edges at `c` (the arc's is the tangent of the circle through `c`), and the block's outer planes.
+pub(super) struct CylGeom {
+    pub c: Vec3,
+    pub u: [Vec3; 3],
+    pub outer: [(Vec3, Vec3); 3],
+    /// How far the ball centre is from the vertex along each edge: a length for the two lines, the angle (radians) for the arc.
+    pub along: [f64; 3],
+}
+
+/// Shortest length an edge must keep past the end of its tool at the cylinder corner. A rest of 0.1 mm or less leaves sliver faces
+/// and edges a hair off the cylinder (`corner_stress`: rests from 0.12 mm up build, in every pick order), so such a radius is
+/// refused; 0.25 keeps a margin.
+const MIN_REST: f64 = 0.25;
+
+pub(super) fn cyl_corner_geom(b: &Body, corner: &Corner, r: f64) -> Result<CylGeom, BlendError> {
+    let unsupported = || BlendError::code("blendUnsupported");
+    let refuse = |m: String| BlendError::detail("blendUnsupported", &m);
+    let [e_arc, e_top, e_vert] = corner.edges;
+    let [f_w, f_c, f_t] = corner.faces;
+    let vp = b.vertex(corner.vertex).p;
+    let Surface::Cylinder { frame, r: rc } = b.face(f_c).surface.clone() else { return Err(unsupported()) };
+    let ax = frame.z.normalize();
+    let (nw, nt) = (b.planar_normal(f_w).normalize(), b.planar_normal(f_t).normalize());
+    let d = nw.cross(nt).normalize();
+    let p0 = vp + crate::intersect::solve3([nw, nt, d], [-r, -r, 0.0]).ok_or_else(unsupported)?;
+    let q = (p0 - frame.o) - ax * (p0 - frame.o).dot(ax);
+    let (qd, qq) = (q.dot(d), q.dot(q) - (rc - r) * (rc - r));
+    let disc = qd * qd - qq;
+    let too_big = || refuse(format!("the radius {r} is too large for the cylinder (radius {rc:.3}) at this corner: the rolling ball cannot touch the wall, the top and the cylinder at once"));
+    if !(disc >= 0.0) || rc - r <= 0.0 {
+        return Err(too_big());
+    }
+    let away = |e: EdgeId| leaving(b, e, corner.vertex);
+    let (u_top, u_vert, u_arc_v) = (away(e_top), away(e_vert), away(e_arc));
+    let radv = (vp - frame.o) - ax * (vp - frame.o).dot(ax);
+    if radv.len() < 1e-12 {
+        return Err(unsupported());
+    }
+    let radv = radv.normalize();
+    let mut best: Option<(Vec3, [Vec3; 3], f64)> = None;
+    for sgn in [-1.0, 1.0] {
+        let c = p0 + d * (-qd + sgn * disc.sqrt());
+        let radc = (c - frame.o) - ax * (c - frame.o).dot(ax);
+        if radc.len() < 1e-12 {
+            continue;
+        }
+        let radc = radc.normalize();
+        let t = ax.cross(radc);
+        let u_arc = if t.dot(u_arc_v) >= 0.0 { t } else { -t };
+        let u = [u_arc, u_top, u_vert];
+        if u.iter().all(|x| (c - vp).dot(*x) > 0.0) {
+            best = Some((c, u, radv.dot(radc).clamp(-1.0, 1.0).acos()));
+        }
+    }
+    let Some((c, u, phi)) = best else { return Err(too_big()) };
+    let along = [phi, (c - vp).dot(u_top), (c - vp).dot(u_vert)];
+    // each edge must go on past the end of its tool by a real length: the tools end on the planes through the ball's centre, and
+    // a rest shorter than that leaves slivers (the vertical edge of a step as tall as the radius is the usual case)
+    let axial = (vp - frame.o).dot(ax);
+    let rim_r = ((vp - frame.o) - ax * axial).len();
+    for (i, (e, name)) in [(e_arc, "rim arc"), (e_top, "wall-top edge"), (e_vert, "vertical edge")].into_iter().enumerate() {
+        let len = b.edge_length(e);
+        let used = if i == 0 { along[0] * rim_r } else { along[i] };
+        if len - used < MIN_REST {
+            return Err(refuse(format!("the {name} at this corner is {len:.3} mm long, too short for a round of radius {r}: the corner patch needs the edge to run on {:.3} mm past the ball's contact line", used + MIN_REST)));
+        }
+    }
+    let m = r + 1.0;
+    let outer: [(Vec3, Vec3); 3] = [(nw, vp + nw * m), (radv, vp + radv * m), (nt, vp + nt * m)];
+    Ok(CylGeom { c, u, outer, along })
+}
+
+/// The vertex blend of [`find_cyl_corner`], see [`cyl_corner_geom`]: the corner block minus the ball. The tools of the three
+/// edge fillets end on the planes through `c` square to their edges (`rounds::cyl_corner_trims`), which for the arc is the radial
+/// plane through `c`; `sphere_block_minus_ball` takes the block's planes as they are (they need not be perpendicular).
+fn cyl_corner_tool(b: &Body, corner: &Corner, r: f64, feature: &str, name: &FaceName) -> Result<Body, BlendError> {
+    let g = cyl_corner_geom(b, corner, r)?;
+    sphere_block_minus_ball(g.c, g.u, g.outer, r, feature, name)
 }

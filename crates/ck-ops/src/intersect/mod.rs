@@ -12,6 +12,7 @@
 //! - `tol` is a model-space distance (points closer than `tol` coincide).
 
 pub mod cc;
+pub mod certified;
 pub mod cs;
 pub mod patch;
 pub mod ss;

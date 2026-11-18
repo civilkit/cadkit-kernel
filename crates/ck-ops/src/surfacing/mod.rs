@@ -4,6 +4,7 @@ pub mod fair;
 pub mod fill;
 pub mod foot;
 pub mod knit;
+pub mod n_sided;
 pub mod rebuild;
 pub mod sheet;
 pub mod thicken;

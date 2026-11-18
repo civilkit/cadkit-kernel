@@ -33,6 +33,8 @@ An open edge is dropped from the count when either of these holds:
 - **Both ends near another face's open edge.** Both end points lie within `crack` of an open edge that belongs to a different face. Two faces that sample their shared edge with different points (a T-junction) leave pairs of such edges.
 - **Covered.** Nine samples along the edge all lie within `crack` of a triangle of another face. The neighbour covers the edge to within the chord deviation.
 
+Forgiven edges are not lost: `validate` lists them in `meshNotes` as one entry per call, `TESSELLATION_HAIRLINE <faces>: <n> open mesh edges forgiven as hairline cracks (within <crack> mm of another face)`. It is a note, not an issue, so `ok` does not change. A face that is missing but thinner than `crack` leaves exactly this pattern, so a note on a body you expected to be clean is a reason to look at the faces it names. Because `crack` grows with the distance from the origin (`2e-3 * hi`), a part far from the origin forgives more.
+
 The remaining open edges are reported as one issue:
 
 ```json

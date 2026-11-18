@@ -59,6 +59,11 @@ pub(super) struct Corner {
     /// The corner patch can be built (perpendicular pairs, the boundary
     /// closes); a structural corner without this is refused instead.
     pub patch_ok: bool,
+    /// An equal-distance chamfer corner: the hexagon's arc sides are straight chamfer ends and the patch is a
+    /// smooth surface through the hexagon without the fillet's tangency to the stripes. Set by the caller after
+    /// `detect` (the geometry of the zone is the same: a chamfer of distance d meets each face where a fillet of
+    /// radius d has its feet).
+    pub chamfer: bool,
     /// Dot of the two pair directions (the refusal quotes the angle).
     pub a12: f64,
     s: [Strike; 4],
@@ -247,9 +252,44 @@ pub(super) fn detect(b: &Body, sel: &[EdgeId], radii: &[f64]) -> Vec<Corner> {
         }
         let Ok(s) = <[Strike; 4]>::try_from(strikes) else { continue };
         let Ok(edges) = <[EdgeId; 4]>::try_from(inc) else { continue };
-        out.push(Corner { v: vp, r: r_pair, edges, patch_ok, a12, s, pairs: [pairs[0], pairs[1]] });
+        out.push(Corner { v: vp, r: r_pair, edges, patch_ok, chamfer: false, a12, s, pairs: [pairs[0], pairs[1]] });
     }
     out
+}
+
+/// The segments of a section loop that run between the hexagon corners `ia` and `ib` (either way round the
+/// loop; the shorter run). More than one segment only when all of them are straight (a split line side).
+fn side_path(segs: &[Seg], ia: usize, ib: usize) -> Option<Vec<Seg>> {
+    let mut best: Option<Vec<Seg>> = None;
+    for start in 0..segs.len() {
+        let target = if segs[start].a == ia {
+            ib
+        } else if segs[start].a == ib {
+            ia
+        } else {
+            continue;
+        };
+        let mut run: Vec<Seg> = vec![];
+        let mut i = start;
+        loop {
+            run.push(segs[i].clone());
+            if segs[i].b == target {
+                break;
+            }
+            i = (i + 1) % segs.len();
+            if i == start {
+                run.clear();
+                break;
+            }
+        }
+        if run.is_empty() || (run.len() > 1 && run.iter().any(|s| s.arc.is_some())) {
+            continue;
+        }
+        if best.as_ref().map_or(true, |b| run.len() < b.len()) {
+            best = Some(run);
+        }
+    }
+    best
 }
 
 /// A section of `body` on the plane `{p : (p - origin) . outward = 0}` as
@@ -264,12 +304,25 @@ fn section(body: &Body, origin: Vec3, outward: Vec3, r: f64) -> Result<Vec<(Vec3
         if frame.z.dot(outward).abs() < 1.0 - 1e-9 || ((frame.o - origin).dot(outward)).abs() > 1e-6 * (1.0 + r) {
             continue;
         }
-        if body.planar_normal(f).dot(-outward) > 0.9 {
+        // (a face in the same plane that belongs to another corner of the part is not this zone's section)
+        let near = body.face_edges(f).iter().any(|&e| body.vertex(body.edge(e).v0).p.dist(origin) <= 4.0 * r + 1e-6);
+        if near && body.planar_normal(f).dot(-outward) > 0.9 {
             hits.push(f);
         }
     }
     if hits.len() != 1 || body.face(hits[0]).loops.len() != 1 {
-        return Err(fail());
+        let names: Vec<String> = hits.iter().map(|&f| {
+            let pts: Vec<Vec3> = body.face_edges(f).iter().flat_map(|&e| [body.vertex(body.edge(e).v0).p, body.vertex(body.edge(e).v1).p]).collect();
+            let fmt = |p: &Vec3| format!("({:.2},{:.2},{:.2})", p.x, p.y, p.z);
+            format!("{}({} loops, vertices {})", body.face_id_str(f), body.face(f).loops.len(), pts.iter().map(fmt).collect::<Vec<_>>().join(" "))
+        }).collect();
+        return Err(BlendError::detail(
+            "blendUnsupported",
+            &format!(
+                "overhang corner: zone section is not one planar face (plane normal ({:.0},{:.0},{:.0}) at ({:.3},{:.3},{:.3}): {})",
+                outward.x, outward.y, outward.z, origin.x, origin.y, origin.z, if names.is_empty() { "no face".to_string() } else { names.join(", ") }
+            ),
+        ));
     }
     let lp = body.face(hits[0]).loops[0];
     let mut segs: Vec<(Vec3, Vec3, Option<(Vec3, f64)>)> = vec![];
@@ -454,6 +507,31 @@ fn harmonic_fill(grid: &mut [Vec<Vec3>], n: usize) {
     }
 }
 
+/// The patch of an equal-distance chamfer corner: the same grid as [`patch_surface`] (bottom chain
+/// A_line, W1, B_line; top chain C_line, W2, D_line; the two line sides), but the chains are the straight
+/// chamfer ends and the interior is the harmonic fill alone: a chamfer's faces are planes that meet their
+/// neighbours at an angle, so no tangency is asked of the patch.
+fn chamfer_patch_surface(h: &[Vec3; 6], n: usize) -> Result<BSplineSurface, BlendError> {
+    let fail = |d: &str| BlendError::detail("blendUnsupported", &format!("overhang corner: chamfer patch fit: {d}"));
+    if n < 5 || n % 2 == 0 {
+        return Err(fail("grid size"));
+    }
+    let bl = |a: Vec3, b: Vec3, t: f64| a + (b - a) * t;
+    let chain = |a: Vec3, m: Vec3, b: Vec3, t: f64| if t <= 0.5 { bl(a, m, 2.0 * t) } else { bl(m, b, 2.0 * t - 1.0) };
+    let sig: Vec<f64> = (0..n).map(|i| i as f64 / (n - 1) as f64).collect();
+    let mut grid = vec![vec![Vec3::ZERO; n]; n];
+    for i in 0..n {
+        grid[i][0] = chain(h[1], h[0], h[5], sig[i]);
+        grid[i][n - 1] = chain(h[2], h[3], h[4], sig[i]);
+    }
+    for j in 0..n {
+        grid[0][j] = bl(h[1], h[2], sig[j]);
+        grid[n - 1][j] = bl(h[5], h[4], sig[j]);
+    }
+    harmonic_fill(&mut grid, n);
+    ck_geom::fit::interpolate_surface(&grid, 3, 3).map_err(|e| fail(&e))
+}
+
 /// The patch surface through the hexagon `h` = [W1, A_line, C_line, W2,
 /// D_line, B_line] (module doc): a grid over the four boundary chains
 /// (bottom W1..B_line through the two arcs, top C_line..D_line, sides the two
@@ -546,7 +624,9 @@ fn patch_surface(
     // the band widens with the arc radius: 7 lines at r = 2 (the tuned default),
     // 9 at r = 3, where a 7-line band leaves the seam 0.028 rad off
     let rmax = bc.iter().chain(tc.iter()).map(|s| s.4).fold(0.0f64, f64::max);
-    let g1_taper = env_u("CK_G1_TAPER").unwrap_or((3.0 + 2.0 * rmax).round() as usize).max(g1_full);
+    // (the band is in grid lines and the patch shape does not depend on the radius, so it never goes under 7:
+    // at 5 lines the patch leaves the stripes 0.15 rad (9 degrees) off tangent at every radius, 7 gives 0.016)
+    let g1_taper = env_u("CK_G1_TAPER").unwrap_or(((3.0 + 2.0 * rmax).round() as usize).max(7)).max(g1_full);
     let g1w = |depth: usize| -> f64 {
         if g1_full == 0 {
             return 0.0;
@@ -908,23 +988,26 @@ pub(super) fn splice(body: &Body, c: &Corner, feature: &str, tag: usize, tol: f6
     let zbox = zone_box(c.v, ext, axes);
     let cut = crate::boolean::boolean(body, &zbox, Op::Cut, tol).map(|o| o.body).map_err(|_| fail("zone cut"))?;
     // (box face outward, hex side endpoints in cycle order W1.., arc)
+    let arc_of = |a: Vec3, r: f64| if c.chamfer { None } else { Some((a, r)) };
     let sides: [(Vec3, [usize; 2], Option<(Vec3, f64)>); 6] = [
-        (c.s[pa].dir, [1, 0], Some((arc_a, c.radius(pa)))),
+        (c.s[pa].dir, [1, 0], arc_of(arc_a, c.radius(pa))),
         (plane_l1, [2, 1], None),
-        (c.s[pc].dir, [3, 2], Some((arc_c, c.radius(pc)))),
-        (c.s[qd].dir, [4, 3], Some((arc_d, c.radius(qd)))),
+        (c.s[pc].dir, [3, 2], arc_of(arc_c, c.radius(pc))),
+        (c.s[qd].dir, [4, 3], arc_of(arc_d, c.radius(qd))),
         (plane_l2, [5, 4], None),
-        (c.s[qb].dir, [0, 5], Some((arc_b, c.radius(qb)))),
+        (c.s[qb].dir, [0, 5], arc_of(arc_b, c.radius(qb))),
     ];
     let mut tb = ToolBuilder::new();
     let hi: [usize; 6] = std::array::from_fn(|t| tb.vertex_shared(hex[t], snap));
     // the six section faces of K, oriented about their box outward normals
     let mut sect: Vec<Vec<Seg>> = vec![];
+    let mut raw_dbg: Vec<String> = vec![];
     for (k, &(out, _, _)) in sides.iter().enumerate() {
         let raw = {
             let (_, org) = face(out).ok_or_else(|| fail("box face"))?;
             section(&cut, org, out, rmax)?
         };
+        raw_dbg.push(raw.iter().map(|(a, b, _)| format!("({:.3},{:.3},{:.3})->({:.3},{:.3},{:.3})", a.x, a.y, a.z, b.x, b.y, b.z)).collect::<Vec<_>>().join(" "));
         let segs: Vec<Seg> = raw
             .into_iter()
             .map(|(a, b, arc)| Seg { a: tb.vertex_shared(a, snap), b: tb.vertex_shared(b, snap), arc })
@@ -936,13 +1019,19 @@ pub(super) fn splice(body: &Body, c: &Corner, feature: &str, tag: usize, tol: f6
     let mut loose: Vec<Seg> = vec![];
     for (k, &(_, idx, arc)) in sides.iter().enumerate() {
         let (ia, ib) = (hi[idx[0]], hi[idx[1]]);
-        let has = sect[k]
-            .iter()
-            .find(|s| (s.a == ia && s.b == ib) || (s.a == ib && s.b == ia))
-            .ok_or_else(|| fail("hex side not in its section"))?;
-        // section runs ia->ib or ib->ia; the patch takes the opposite direction
-        let (fa, fb) = if (has.a, has.b) == (ia, ib) { (ib, ia) } else { (ia, ib) };
-        loose.push(Seg { a: fa, b: fb, arc });
+        // the hex side is one segment of its section, or, when the striped body splits the
+        // line there (two stripes' feet meet at the vertex on a shared wall's spring line), a run of
+        // collinear line segments of it: the patch then takes the same split so the union welds
+        let path = side_path(&sect[k], ia, ib).ok_or_else(|| {
+            fail(&format!(
+                "hex side {k} not in its section: side ({:.3},{:.3},{:.3})-({:.3},{:.3},{:.3}), section {}",
+                hex[idx[0]].x, hex[idx[0]].y, hex[idx[0]].z, hex[idx[1]].x, hex[idx[1]].y, hex[idx[1]].z, raw_dbg[k]
+            ))
+        })?;
+        // the section runs one way round the side; the patch takes the opposite direction
+        for sg in path.iter().rev() {
+            loose.push(Seg { a: sg.b, b: sg.a, arc: if path.len() == 1 { arc } else { None } });
+        }
     }
     // chain the six into one loop (they form the reverse of the cycle)
     let mut chain: Vec<Seg> = vec![];
@@ -957,10 +1046,14 @@ pub(super) fn splice(body: &Body, c: &Corner, feature: &str, tag: usize, tol: f6
     if chain.last().unwrap().b != chain[0].a {
         return Err(fail("patch loop"));
     }
-    let pos_of = |ix: usize| hi.iter().position(|&h| h == ix).map(|t| hex[t]).ok_or_else(|| fail("hex vertex"));
+    // the loop's hexagon corners in order (a split side's extra vertices lie on its line)
+    let corners: Vec<Vec3> = chain.iter().filter_map(|sg| hi.iter().position(|&h| h == sg.a).map(|t| hex[t])).collect();
+    if corners.len() != 6 {
+        return Err(fail("hex vertex"));
+    }
     let mut outward = Vec3::ZERO;
-    for t in 0..chain.len() {
-        let (p, q) = (pos_of(chain[t].a)?, pos_of(chain[t].b)?);
+    for t in 0..corners.len() {
+        let (p, q) = (corners[t], corners[(t + 1) % corners.len()]);
         outward = outward + Vec3::new((p.y - q.y) * (p.z + q.z), (p.z - q.z) * (p.x + q.x), (p.x - q.x) * (p.y + q.y));
     }
     if outward.len() < 1e-12 {
@@ -969,7 +1062,11 @@ pub(super) fn splice(body: &Body, c: &Corner, feature: &str, tag: usize, tol: f6
     outward = outward.normalize();
     let bottom = [(hex[1], hex[0], arc_a, c.centre(pa)), (hex[0], hex[5], arc_b, c.centre(qb))];
     let top = [(hex[2], hex[3], arc_c, c.centre(pc)), (hex[3], hex[4], arc_d, c.centre(qd))];
-    let surf = patch_surface(&hex, bottom, [c.s[pa].dir, c.s[qb].dir], top, [c.s[pc].dir, c.s[qd].dir], wn, 49)?;
+    let surf = if c.chamfer {
+        chamfer_patch_surface(&hex, 49)?
+    } else {
+        patch_surface(&hex, bottom, [c.s[pa].dir, c.s[qb].dir], top, [c.s[pc].dir, c.s[qd].dir], wn, 49)?
+    };
     tb.bspline_face(surf, chain, outward, FaceName::other(feature, &format!("P{tag}")));
     let k = tb.finish();
     let ki = ck_topo::check::check(&k, tol);

@@ -806,6 +806,37 @@ pub fn relocate_seams(b: &Body, other: &Body, drop: Class, tol: f64) -> Body {
         if !circles.iter().all(|&e| full(e)) {
             return None;
         }
+        // A circle's start vertex can only move if every other edge on it turns with it: the seam, or a radial
+        // line to the circle's centre (a disc cap's own seam). A bridge edge of a planar annulus (the floor of a
+        // counterbored hole joins its two circles by a slit, which the topology also counts as a seam) keeps its curve while its end vertex would move, and
+        // the faces then no longer pair along it (nonManifoldEdge). Such a cylinder keeps its seam.
+        for &e in &circles {
+            let ed = b.edge(e);
+            let Curve::Circle { frame: cf, .. } = &ed.curve else { return None };
+            let start = b.vertex(ed.v0).p;
+            for e2 in b.edge_ids() {
+                let x = b.edge(e2);
+                // (the seam of a cylinder or cone moves with the start; a bridge edge of a plane face is also "a seam"
+                // to the topology, one edge twice in one loop, and does not)
+                let periodic_seam = b.is_seam(e2)
+                    && b.edge_faces(e2).iter().all(|&g| matches!(b.face(g).surface, Surface::Cylinder { .. } | Surface::Cone { .. }));
+                if e2 == e || circles.contains(&e2) || periodic_seam {
+                    continue;
+                }
+                // (by position: a bridge edge may end on a vertex of its own that sits on the circle's start)
+                let other = if b.vertex(x.v0).p.dist(start) <= tol * 10.0 {
+                    x.v1
+                } else if b.vertex(x.v1).p.dist(start) <= tol * 10.0 {
+                    x.v0
+                } else {
+                    continue;
+                };
+                let radial = matches!(x.curve, Curve::Line { .. }) && b.vertex(other).p.dist(cf.o) <= tol * 10.0;
+                if !radial {
+                    return None;
+                }
+            }
+        }
         let in_drop = circles.iter().all(|&e| {
             let p = b.edge_mid(e);
             solid.classify(p, frame.z) == drop

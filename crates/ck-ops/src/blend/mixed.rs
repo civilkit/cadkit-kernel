@@ -124,7 +124,20 @@ pub fn fillet_mixed(b: &Body, edges: &[(String, String, Vec3)], radii: &[f64], f
     let same = |v: Vec<f64>| v.first().copied().filter(|x| v.iter().all(|y| (y - x).abs() <= 1e-12 * (1.0 + x.abs())));
     let rw = same((0..n).filter(|&i| wall[i]).map(|i| radii[i]).collect())?;
     let rr = same((0..n).filter(|&i| !wall[i]).map(|i| radii[i]).collect())?;
-    run(b, edges, &wall, &tops, [rw, rr], feature, tol).ok().map(Ok)
+    let mut out = run(b, edges, &wall, &tops, [rw, rr], feature, tol).ok()?;
+    // overhang corners (four selected edges at one vertex, two collinear pairs flipping convex/concave): the two
+    // stages above never see all four edges at once, so each of the corner's stripes ends in a planar step.
+    // The corner patch replaces the zone about the vertex in the finished body, as in the ordinary path.
+    for (i, oh) in super::overhang::detect(b, &eids, radii).iter().enumerate() {
+        if !oh.patch_ok {
+            continue;
+        }
+        match super::overhang::splice(&out, oh, feature, i, tol) {
+            Ok(spliced) => out = spliced,
+            Err(e) => super::diag::dbg_fail(&format!("overhang patch at ({:.3},{:.3},{:.3}): {} {:?}", oh.v.x, oh.v.y, oh.v.z, e.code, e.detail.unwrap_or_default())),
+        }
+    }
+    Some(Ok(out))
 }
 
 pub(super) fn run(b: &Body, edges: &[(String, String, Vec3)], wall: &[bool], tops: &[(usize, FaceId)], r: [f64; 2], feature: &str, tol: f64) -> Result<Body, BlendError> {

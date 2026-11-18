@@ -148,7 +148,7 @@ impl<P: Pt> BSplineCurve<P> {
         to_hom(&self.ctrl, self.weights.as_deref())
     }
 
-    fn from_hom_parts(degree: usize, knots: Vec<f64>, h: &[Hom<P>], keep_rational: bool) -> Self {
+    pub(crate) fn from_hom_parts(degree: usize, knots: Vec<f64>, h: &[Hom<P>], keep_rational: bool) -> Self {
         let (ctrl, w) = from_hom(h);
         let weights = if keep_rational { Some(w.unwrap_or_else(|| vec![1.0; ctrl.len()])) } else { w };
         BSplineCurve { degree, knots, ctrl, weights }

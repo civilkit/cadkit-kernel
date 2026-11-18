@@ -18,6 +18,29 @@ thread_local! {
     /// The body the selection started from: a convex chamfer's contact point that an earlier tool of the same selection took
     /// out of its face (the corner where two chamfers meet) still lies on that face of the input.
     pub(super) static ORIGINAL: std::cell::RefCell<Option<Body>> = const { std::cell::RefCell::new(None) };
+    /// Where the tools of the edges at a vertex blend (`corner::CylGeom`) end: short of the vertex, on the planes through the
+    /// ball's centre.
+    pub(super) static CORNER_TRIMS: std::cell::RefCell<Vec<CornerTrim>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// The attempt in progress built a plane-plane-cylinder corner (the validity gate then judges the geometry too).
+    pub(super) static CYL_CORNER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// A tool that ends `amount` short of the vertex `p`: a length along the line leaving it in direction `dir`, or the angle
+/// (radians) of an arc (`arc`).
+#[derive(Clone)]
+pub(super) struct CornerTrim {
+    pub p: Vec3,
+    pub arc: bool,
+    pub dir: Vec3,
+    pub amount: f64,
+}
+
+/// Clears [`CORNER_TRIMS`] when the selection is done, whatever way it ends.
+pub(super) struct TrimGuard;
+impl Drop for TrimGuard {
+    fn drop(&mut self) {
+        CORNER_TRIMS.with(|t| t.borrow_mut().clear());
+    }
 }
 
 /// Does the pick point `at` lie on an edge an earlier tool of this selection swept over ([`SWEPT`])?
@@ -796,6 +819,17 @@ pub(super) fn blend_edge_hint_inner(
             }
         }
     }
+    if circ.is_none() {
+        CORNER_TRIMS.with(|t| {
+            for tr in t.borrow().iter().filter(|tr| !tr.arc) {
+                if p0.dist(tr.p) < 1e-6 && tr.dir.dot(dir) > 1.0 - 1e-6 {
+                    m0 = -tr.amount;
+                } else if p1.dist(tr.p) < 1e-6 && tr.dir.dot(-dir) > 1.0 - 1e-6 {
+                    m1 = -tr.amount;
+                }
+            }
+        });
+    }
     let o = p0 - dir * m0;
     let fr = match circ {
         None => Frame::from_normal(o, dir),
@@ -846,7 +880,35 @@ pub(super) fn blend_edge_hint_inner(
         } else {
             ProfileSeg::arc("arc", cc, t2, t1).reversed()
         };
-        ProfileLoop::new(vec![ProfileSeg::line("l2", t2, cp), ProfileSeg::line("l1", cp, t1), arc])
+        if circ.is_none() && convex && !chamfer && faces.iter().any(|&f| matches!(b.face(f).surface, Surface::Cylinder { .. })) {
+            // a plane meeting a convex cylinder along a line: the cylinder's side of the section is an arc, not the chord
+            // `t2 - cp`, which would leave the lens between them standing as a sliver. The tool reaches out past both faces
+            // instead (nothing lies there), so no tool face is coincident with the cylinder.
+            let k = r + 1.0;
+            let outn = |f: FaceId, q: Vec3| -> Vec3 {
+                match &b.face(f).surface {
+                    Surface::Plane { .. } => b.planar_normal(f).normalize(),
+                    sf => {
+                        let (u, w) = sf.closest_param(q);
+                        b.outward_normal(f, u, w).normalize()
+                    }
+                }
+            };
+            let (o1, o2) = (outn(faces[0], ta), outn(faces[1], tb));
+            let (c1, c2) = (outn(faces[0], p0), outn(faces[1], p0));
+            let t1o = t1 + (uv(ta + o1) - t1) * k;
+            let t2o = t2 + (uv(tb + o2) - t2) * k;
+            let cpo = cp + ((uv(p0 + c1) - cp) + (uv(p0 + c2) - cp)) * k;
+            ProfileLoop::new(vec![
+                ProfileSeg::line("o2", t2, t2o),
+                ProfileSeg::line("o3", t2o, cpo),
+                ProfileSeg::line("o4", cpo, t1o),
+                ProfileSeg::line("o1", t1o, t1),
+                arc,
+            ])
+        } else {
+            ProfileLoop::new(vec![ProfileSeg::line("l2", t2, cp), ProfileSeg::line("l1", cp, t1), arc])
+        }
     };
     let prof = Profile::new(fr, vec![ProfileRegion { outer: lp, holes: vec![] }]).normalized();
     let made = match circ {
@@ -893,6 +955,15 @@ pub(super) fn blend_edge_hint_inner(
                     if circ_oblique[0] { mo } else if flush(ends[0]) || g1(0) { 0.0 } else { m },
                     if circ_oblique[1] { mo } else if flush(ends[1]) || g1(1) { 0.0 } else { m },
                 );
+                CORNER_TRIMS.with(|t| {
+                    for tr in t.borrow().iter().filter(|tr| tr.arc) {
+                        if ends[0].dist(tr.p) < 1e-6 {
+                            m0 = -tr.amount;
+                        } else if ends[1].dist(tr.p) < 1e-6 {
+                            m1 = -tr.amount;
+                        }
+                    }
+                });
                 // a convex arc that runs into a reflex corner (a hub arc's rim into the wall of a petal whose rim is
                 // not rounded): the only other face there is a plane that leans toward the material, so the tool must
                 // not run on into the wall. It ends on that plane: flush when the plane is radial (it contains the

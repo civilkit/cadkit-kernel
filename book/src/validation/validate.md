@@ -38,7 +38,7 @@ The validator does not change the body.
 | `stats` | Always present: `{totalMs, <check>: ms, ...}`, the wall-clock time of the request and of each check that ran, in ms. The check names are `shell`, `loops`, `edges`, `solids`, `tessellation`, `meshAreaWitness`, `meshOpenEdges` and, for a body with several lumps, `overlap`. All 0 when the host has no clock. |
 | `validateBudgetExceeded` | Present when the time budget ran out; see below. |
 | `quick`, `checksSkipped` | Present when `opts.quick` was set: `true`, and the names of the checks that were left out. |
-| `meshNotes` | Present when the tessellator marked a face as suspect: strings `<face>: <note>`. Not issues; see [tessellation checks](tessellation.md). |
+| `meshNotes` | Present when the tessellator marked a face as suspect: strings `<face>: <note>`, plus a `TESSELLATION_HAIRLINE <faces>: ...` entry when open mesh edges were forgiven as hairlines. Not issues; see [tessellation checks](tessellation.md). |
 | `info` | Present when the body has more than one lump and some of them overlap: one record per pair, `{code: "bodiesOverlap", severity: "info", a, b, volume}` with the names of the lumps when they have one. Overlap is legal (`newBody`, `moveBody`), so it is information, not an issue. |
 
 The request answers `null` as its `result` when the tag exists but holds no body (a document of only sketches, or one whose solid features all failed), and `{"ok": false, "error": "noState: nothing regenerated yet"}` when the tag has no state at all.

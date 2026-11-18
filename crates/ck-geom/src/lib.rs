@@ -13,11 +13,14 @@
 //!   can emit them 1:1.
 
 pub mod analysis;
+pub mod approx;
 pub mod convert;
 pub mod curve;
 pub mod curve2;
 pub mod fit;
+pub mod nsided;
 pub mod nurbs;
+pub mod offset;
 pub mod pcurve;
 pub mod surface;
 

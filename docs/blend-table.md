@@ -55,31 +55,94 @@ add it there so clusters stay stable. `--json` writes the same per case with `mo
    file from what the engine does now, run the table with `BLEND_TABLE_OUT=<file>` and review the diff.
 3. When a fix makes a case pass, the table reports `NEWPASS` and fails: set its `expect` to `"pass"`.
 
+## Overhang cases
+
+The `overhang-*` families are a 43 x 33.5 x 10 block with a second block of the same size sitting on its top and sticking out past two of its
+walls (the saved part behind the "all connected" report). Where the second block's wall and underside meet the first block's top and wall
+there are two 4-valent corners, each four selected straight edges as two collinear pairs that flip convex/concave (`overhang.rs`). Rows:
+the four edges of each corner (`-v1-4edges`, `-v2-4edges`, the "two lines" a user picks), every proper subset of them (`-v1-sub<picks>`),
+both corners (`-both-8edges`), every edge of the part (`-all`, `-all-chain`), and the tangent chain on a single edge or one edge of each line
+(`-line-chain`, `-two-lines-chain`), at 0.5, 1 and 2 mm for the first four kinds and 1 mm for the rest (the fillet ones; chamfers below). As the stepped-disc families these are
+written by the kernel's test, not by `gen_blend_fixtures.mjs`:
+`OH_EMIT=<file> cargo test -p ck-model --test overhang_fillet emit_corpus`, then `node tools/merge_stepped_corpus.mjs <file> overhang`
+(replaces every `overhang*` entry; the references are baseline volumes). The strict checks are `tests/overhang_fillet.rs`
+(`SWEEP=1` prints every subset with its volume change, patch / step-face counts and folded triangles; `ONE=10,11,12,13 R=1 DUMP=<dir>` one
+selection with its patch statistics and an OBJ). What it took: (1) the corner patch's section check demanded the spring line of a hexagon
+side to be one segment of the zone section, but where the striped body splits that line at the corner (the convex and the concave stripe of
+a pair meet on their shared wall) it is two or more collinear segments; the patch now takes the same split. Before, the corner kept its four
+stripes ending in planar steps without a word (the fallback after a failed splice is silent, `CK_BLEND_DEBUG=1` shows the reason). (2) The
+staged build of mixed vertices (`mixed.rs`) never offered the corner all four edges at once, so with a concave-concave-convex vertex anywhere in
+the selection ("all connected") both corners ended in steps and a ragged fan of triangles; it now splices the patch into its result.
+(3) The patch's G1 band is never narrower than 7 grid lines (5 left it 0.15 rad off tangent at every radius).
+
+Chamfers (`overhang-chamfer-*`, ids `-d<distance>`): the same selections with an equal-distance chamfer, plus two distances on one face and the
+four edges with two distances or an angle (refused: the first distance cannot be measured on one face for all four). A chamfer of distance d
+meets each face where a fillet of radius d has its feet, so the corner has the same zone and hexagon (`Corner::chamfer`: the hexagon's
+arc sides are the straight strip ends, the patch is the harmonic fill through them, no tangency asked); the corner's edges are built first,
+alone, and the rest of the selection on that body (`chamfer_corners_first`: in one pass the chamfers of a mixed vertex reshape the body about
+the corner and the patch union is non-manifold). Before, four chamfered edges ended in two planar triangles (+d^3 volume, the V-shaped peaks,
+flaps and open pockets of the report), and the "all connected" chamfer was refused ("edge shared by four faces") at the vertex under the
+overhang where two concave edges meet a convex vertical one: that vertex now closes in the first round order that does (concave edges
+first, then convex first), ending in planar steps like the same vertex of a fillet. The zone section also ignores faces of other corners that
+lie in the same plane.
+
 ## Stepped disc cases
 
-The `stepped-disc` and `stepped-disc-sunk` families (64 cases) are a 70 mm disc, 10 tall, whose top is split by a line through the
-middle with one half moved +5 mm (`stepped-disc`) or -5 mm (`stepped-disc-sunk`): every single edge, the rim of each half with the
-tangent chain on and off, the wall edges (E2 wall bottom, E5 wall top, E6/E7 the vertical wall|cylinder edges) in pairs and
-together, fillet and chamfer at 1 to 4 mm. They are NOT written by `tools/gen_blend_fixtures.mjs`: they come from
-`STEP_EMIT=<file> cargo test -p ck-model --test stepped_disc_blend emit_corpus -- --nocapture` (the line `CORPUS_JSON` carries the
-document), appended by hand to `blend_cases.json` / `blend_expect.json`. The `reference` volume is the engine's own result at the
-time of writing (`"source":"baseline"`), so these cases guard against regressions; they are not OCCT comparisons. Per-case times
-(`t=`) are 0.01 to 0.5 s, the baseline for speed work. `tests/stepped_disc_blend.rs` holds the strict checks behind them: the exact
-(analytic) volume of the rim blends, the wall-edge blends against an integral, no edge or mesh point outside the cylinder, and
-`SWEEP=1` runs every subset of the 8 edges.
+The `stepped-disc`, `stepped-disc-sunk`, `stepped-disc-small` and `stepped-disc-user` families are a 70 mm disc (42 mm for `-small`),
+10 tall, whose top is split by a line through the middle with one half moved +5 mm (`stepped-disc`) or -5 mm (`-sunk`; `-user` is
+the saved part whose split plane is 0.0023 mm off the centre): every single edge, the rim of each half with the tangent chain on and
+off, the wall edges (E2 wall bottom, E5 wall top, E6/E7 the vertical wall|cylinder edges) in pairs and together, fillet and chamfer
+at 1 to 4 mm, and the raised half's corner (rim arc + wall top + one vertical edge) described below. They are NOT written by
+`tools/gen_blend_fixtures.mjs` (which keeps the ones already in the file when it regenerates): they come from
+`STEP_EMIT=<file> cargo test -p ck-model --test stepped_disc_blend emit_corpus -- --nocapture` (the file carries the document), merged
+into `blend_cases.json` / `blend_expect.json` by `node tools/merge_stepped_corpus.mjs <file>` (it replaces every `stepped-disc*` entry).
+The `reference` volume is the engine's own result at the time of writing (`"source":"baseline"`), so these cases guard against
+regressions; they are not OCCT comparisons. Per-case times (`t=`) are 0.01 to 0.5 s, the baseline for speed work.
+`tests/stepped_disc_blend.rs` holds the strict checks behind them: the exact (analytic) volume of the rim blends, the wall-edge blends
+against an integral, no edge or mesh point outside the cylinder, and `SWEEP=1` runs every subset of the 8 edges.
 
-The `stepped-disc-top-*` and `stepped-disc-small-top-*` cases (32) are the raised half's top selection: rim arc + wall-top edge + one
-vertical wall edge (and the mirror), tangent chain on, 0.5 to 3 mm, on the 70 mm disc and on a 42 mm disc with a 5 mm step. All the
-chamfers build. The fillets of those three edges meet at a corner of two planes and a cylinder, where the vertex patch (`corner.rs`,
-planar faces only) does not exist: the tools leave the corner open at some sizes and close it by chance at others, so the fillet is
-refused with "three rounded edges meet at a corner with a curved face or edge" (no size hint) at 1 and 3 mm on the 70 mm disc, and the
-sizes that do build are a mitre, not a rolling-ball patch. One of them (42 mm disc, mirror selection, 1 mm) builds a solid that fails
-validation (VERTEX_OFF_CURVE 8e-3 mm) and is recorded as an expected failure. A proper fix is a sphere patch for plane, plane and
-cylinder faces: days of kernel work.
+The raised half's corner (`stepped-disc*-top-*`, `-top-order-*`, `-top-*-nochain`, `-user-top-*`): rim arc + wall-top edge + one vertical
+wall edge, the mirror selection, tangent chain on and off, in every pick order, on the 70 and the 42 mm disc and on the saved part whose
+split plane is 0.0023 mm off the centre. Two planes and a cylinder meet there. Fillets build at every radius from 0.5 to 4 mm: the three
+rounds end on the planes through the rolling ball's centre (`corner::cyl_corner_geom`) and a sphere patch (`F<n>.V0`,
+`corner::cyl_corner_tool`) joins them, tangent to the wall, the top and the cylinder. The volume is the sum of the three single-edge
+rounds less what the corners count twice (0.26 d^3 on the planar limit), and the same in every pick order and with the chain on or off.
+Strict checks: `tests/stepped_disc_blend.rs`, `fillets_of_the_three_edges_at_the_curved_corner_are_rolling_ball_corners` (both discs, all
+sides, 372 selections), `the_snapped_split_part_gets_the_corner_round_in_every_pick_order` (96), and the refusal test; `CMATRIX=1` runs
+the whole matrix (768 selections), `CSTRESS=1` other discs, steps and radii.
+
+What it took, for the next corner of this kind: (1) the vertical round of a plane against a convex cylinder is analytic now (its tool
+reaches out past the cylinder instead of following the chord of the section, which left the lens between chord and cylinder standing and
+sent the round to the free-form strip, which the patch cannot join); (2) with a curved corner in the selection the tools are built in one
+round, straight tools first, rim arcs last, whatever the pick order (with the rim tool first, the part whose split is 0.0023 mm off the
+centre failed at its far wall corner, where the wall-top tool runs on past the end of the rim round; the cause is not traced further); (3) the tangent-chain attempt (tool ends flush at the seam of the rim) runs first also with
+the chain off, the other half of the seam-split rim counted in, or the seam leaves slivers; (4) the validity gate also refuses a result of
+a curved corner with an edge off its surface or a face crossing itself (`validity::GEOMETRIC`), so that the next attempt gets its try.
+
+A radius the corner cannot hold is refused up front, in every pick order, with the reason: a vertical edge (the step) that does not run
+on 0.25 mm past the ball's contact line (`-too-big` cases: 4.8 and 5 mm on a 5 mm step; the radius must stay 0.25 mm under the step), or a
+cylinder too small for the ball (radius above half the cylinder's). All the chamfers build. The corner's own result has no defect; at some
+radii the other end of the wall top (the top and rim rounds meeting with the vertical edge unselected) leaves a 1e-4 to 1e-3 mm edge, as
+it does without the corner patch (top + rim alone at 3.9 mm on the 42 mm disc), and the two rounds cross there at a right angle.
 
 Known and not asserted: slivers (edges shorter than 0.05 mm) where a blend ends tangent to a face or where an E5 and an E6/E7
 chamfer meet on the round wall; one arc of a seam-split rim chamfered without the chain runs on past the seam (about 7 % too much);
-a 0.5 mm fillet of one half of the sunk piece's seam-split rim leaves a pcurve 1e-3 off its surface.
+a 0.5 mm fillet of one half of the sunk piece's seam-split rim leaves a pcurve 1e-3 off its surface; a single half of a seam-split rim
+filleted without the chain, alone (no corner), can come back with a few tiny torus pieces at the seam (an edge of 0.02 mm at 2 mm on the
+42 mm disc; the other half alone is refused above 0.71 mm). The same fillet in a selection of more edges takes the flush ends above.
+
+## Wheel (hub, two sector plates, rim)
+
+`wheel-*` (written by `tools/gen_blend_fixtures.mjs`, base built in the script): a hub (radius 7.5, 6 deep), two opposite quarter-sector
+plates (radius 7.5 to 50, 5 deep) and a rim ring (radius 50 to 55, 30 deep). R10 on the vertical concave edges (plate side with hub,
+plate side with rim): on the plain wheel and, after an R5 where the plate tops meet the rim, on the hub-side four, it builds, and the
+volume added is the rolling-ball section of each edge over the plate's depth (`tests/wheel_fillets.rs` checks it to 0.2 %). The rim-side
+edges after the R5 (`wheel-r5-then-vertical-r10`, `-rim-side`, `-r3`, `wheel-r2-then-vertical-r10`) are refused, at any radius, with
+`blendUnsupported` "concave chain end is not on a planar face" and a hint saying that the round ends on the torus of an earlier round at
+a given point: the vertical edge runs up to the R5's torus (the plane face above the plate is only the R5's end wedge), the ball would
+have to leave the plane over the convex plate-top edge, and no corner patch joins a concave round to another round (the patch of
+`corner.rs` is for three rounds meeting at a vertex, planes plus a cylinder). The other order (R10 first, R5 after) answers
+`blendFailed` "no blend face in result" and is not covered.
 
 ## hard
 

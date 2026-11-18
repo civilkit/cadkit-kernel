@@ -59,15 +59,15 @@ impl std::fmt::Display for FillError {
 }
 
 /// A chain step: the edge and the direction of the walk (start vertex).
-struct Step {
-    e: EdgeId,
+pub(crate) struct Step {
+    pub(crate) e: EdgeId,
     /// the walk traverses the edge v0→v1
-    fwd: bool,
+    pub(crate) fwd: bool,
 }
 
 /// Order the chain head-to-tail; the walk starts at chain[0]'s v0 unless
 /// the second edge forces the flip.
-fn walk_chain(b: &Body, chain: &[EdgeId]) -> Result<Vec<Step>, FillError> {
+pub(crate) fn walk_chain(b: &Body, chain: &[EdgeId]) -> Result<Vec<Step>, FillError> {
     match walk_in_order(b, chain) {
         Ok(s) => Ok(s),
         // picks arrive in selection order, not walk order: reorder greedily

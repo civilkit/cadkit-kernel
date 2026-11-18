@@ -38,6 +38,30 @@ thread_local! {
 pub fn set_grid_seeds(on: bool) {
     GRID_SEEDS.with(|c| c.set(on));
 }
+/// Only when an end point's normals have a sine below this does the tracer look at the chord midpoint
+/// ([`super::certified::certify_span`] decides, see `CLOSE_SIN`).
+const TIGHT_SIN: f64 = 0.6;
+/// A step is certified when the sine, at either end or at the chord midpoint, is below this. Not
+/// higher: the proof is conservative at shallow but benign crossings (a 10 degree drafted cone against a
+/// plane, sine 0.174, fails it near the curve's vertex), and halving there only changes the sampling of a
+/// correct trace, enough to tip a blend over an edge (blend_breakout_drafted on glibc libm). The hops it
+/// exists for sit at sines of a few hundredths.
+const CLOSE_SIN: f64 = 0.12;
+/// Below this sine the surfaces are tangent along the curve itself (a ball in a tube, a cylinder
+/// on a plane), not near another branch: nothing to separate, and no step would certify.
+const FLAT_SIN: f64 = 1e-4;
+
+thread_local! {
+    static CERTIFY_STEPS: Cell<bool> = const { Cell::new(true) };
+}
+/// Switch the certified step check of the tracer (default on; per thread). Off = the plain march.
+pub fn set_certify_steps(on: bool) {
+    CERTIFY_STEPS.with(|c| c.set(on));
+}
+pub fn certify_steps() -> bool {
+    CERTIFY_STEPS.with(Cell::get)
+}
+
 pub fn grid_seeds_on() -> bool {
     GRID_SEEDS.with(Cell::get)
 }
@@ -51,6 +75,7 @@ pub fn orig_step_on() -> bool {
     ORIG_STEP.with(Cell::get)
 }
 
+use super::certified::{certify_span, Certificate, Unresolved};
 use ck_geom::fit::{interpolate, Param};
 use ck_geom::surface::{SurfDerivs, Surface};
 use ck_geom::{any_perp, frame_from, Frame, Vec3};
@@ -1074,7 +1099,7 @@ fn uv_box(s: &Surface, b: &Bounds) -> ((f64, f64), (f64, f64)) {
 
 // ---- parameter-space marcher (warm-started 4x4 Newton, cf. original f2503)
 
-pub(super) type Uv4 = [f64; 4];
+pub type Uv4 = [f64; 4];
 
 pub(super) fn wrap_uv(s: &Surface, u: f64, v: f64) -> (f64, f64) {
     let ((a, b), (c, d)) = s.domain();
@@ -1183,13 +1208,15 @@ fn normal_from(s: &Surface, u: f64, v: f64, d: &SurfDerivs) -> Vec3 {
     }
 }
 
-/// `tangent_uv` from the derivatives `correct_uv_d` already evaluated.
-fn tangent_from(s1: &Surface, s2: &Surface, uv: Uv4, d1: &SurfDerivs, d2: &SurfDerivs) -> Option<Vec3> {
-    normal_from(s1, uv[0], uv[1], d1).cross(normal_from(s2, uv[2], uv[3], d2)).try_normalize()
+/// `tangent_uv` from the derivatives `correct_uv_d` already evaluated, with the sine of the angle
+/// between the two normals (small near a tangent contact or a branch point).
+fn tangent_from(s1: &Surface, s2: &Surface, uv: Uv4, d1: &SurfDerivs, d2: &SurfDerivs) -> Option<(Vec3, f64)> {
+    let c = normal_from(s1, uv[0], uv[1], d1).cross(normal_from(s2, uv[2], uv[3], d2));
+    c.try_normalize().map(|t| (t, c.len()))
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct MPt {
+pub struct MPt {
     pub p: Vec3,
     pub uv: Uv4,
 }
@@ -1425,12 +1452,13 @@ fn trace(s1: &Surface, s2: &Surface, seed: MPt, t0: Vec3, b: &Bounds, tol: f64, 
     let mut cur = seed;
     let mut t = t0;
     let mut h = if orig_step_on() { 0.25 * step } else { step };
+    let mut sin_cur = 1.0;
     for it in 0..5000 {
         let pred = cur.p + t * h;
         let next = correct_uv_d(s1, s2, pred, t, cur.uv, tol);
-        let ok = next.and_then(|(q, uv, d1, d2)| tangent_from(s1, s2, uv, &d1, &d2).map(|tq| (q, uv, tq)));
+        let ok = next.and_then(|(q, uv, d1, d2)| tangent_from(s1, s2, uv, &d1, &d2).map(|(tq, sq)| (q, uv, tq, sq)));
         match ok {
-            Some((q, uv, mut tq)) if q.dist(cur.p) < 2.0 * h && q.dist(cur.p) > 0.1 * h => {
+            Some((q, uv, mut tq, sq)) if q.dist(cur.p) < 2.0 * h && q.dist(cur.p) > 0.1 * h => {
                 if tq.dot(t) < 0.0 {
                     tq = -tq;
                 }
@@ -1438,6 +1466,28 @@ fn trace(s1: &Surface, s2: &Surface, seed: MPt, t0: Vec3, b: &Bounds, tol: f64, 
                     h *= 0.5; // > 15° turn: refine
                     continue;
                 }
+                // near a tangent contact or branch point (the normals nearly parallel) two
+                // branches of the intersection pass close together and the corrector can hop
+                // from one to the other: accept the step only when the interval Krawczyk test
+                // proves both points on one arc; otherwise halve it (down to the minimum step,
+                // where the plain step is kept, as before)
+                let mut sm = sq.min(sin_cur);
+                if certify_steps() && sm < TIGHT_SIN {
+                    // a narrow neck can fall between the end points: take the sine at the chord midpoint too
+                    let mid = (cur.p + q) * 0.5;
+                    let (a1, b1) = refine_uv(s1, cur.uv[0], cur.uv[1], mid);
+                    let (a2, b2) = refine_uv(s2, cur.uv[2], cur.uv[3], mid);
+                    sm = sm.min(s1.normal(a1, b1).cross(s2.normal(a2, b2)).len());
+                }
+                if certify_steps() && sm < CLOSE_SIN && sm > FLAT_SIN && h > step / 64.0 {
+                    let a = MPt { p: cur.p, uv: cur.uv };
+                    let b = MPt { p: q, uv };
+                    if matches!(certify_span(s1, s2, &a, &b, t + tq), Certificate::Unresolved(Unresolved::Singular | Unresolved::NoContraction)) {
+                        h *= 0.5;
+                        continue;
+                    }
+                }
+                sin_cur = sq;
                 // closed loop?
                 if it > 2 && pts.len() >= 3 && q.dist(seed.p) < 0.75 * h {
                     return (pts, true);

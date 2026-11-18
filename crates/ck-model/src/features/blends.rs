@@ -377,6 +377,12 @@ fn exec_chamfer_legs(br: &mut Brep, state: &mut RegenState, f: &Feature, edges: 
         // every pick must border the named face (by the family name, `~k` pieces ignored)
         let base = super::lip::base_id(ff);
         if !sel.iter().all(|s| super::lip::base_id(&s.0) == base || super::lip::base_id(&s.1) == base) {
+            if propagates(f) {
+                // the tangent chain brought in an edge that does not border the face the first distance is measured on
+                return Err(FeatureError::new("unsupported")
+                    .with("what", Json::Str(format!("chamfer {ty} along a tangent chain whose edges do not share the first face")))
+                    .with("hint", Json::Str("use an equal-distance chamfer, or turn the tangent chain off and chamfer the edges of each face in separate features".into())));
+            }
             return Err(FeatureError::new("missingEdge"));
         }
     }
@@ -408,7 +414,9 @@ fn exec_chamfer_legs(br: &mut Brep, state: &mut RegenState, f: &Feature, edges: 
             ChamferLeg::Angle(a) | ChamferLeg::AngleRev(a) => (d1, ChamferLeg::AngleRev(a)),
         }
     } else {
-        return Err(FeatureError::new("unsupported").with("what", Json::Str(format!("chamfer {ty} with mixed face order"))));
+        return Err(FeatureError::new("unsupported")
+            .with("what", Json::Str(format!("chamfer {ty} with mixed face order")))
+            .with("hint", Json::Str("name the face the first distance is measured on (`face`; every edge must border it), use an equal-distance chamfer, or chamfer the edges of each face in separate features".into())));
     };
     let body = br.body.as_ref().ok_or_else(|| FeatureError::new("missingEdge"))?;
     br.spans.push(Span::leaf(chamfer_label(&f.id, d1, sel.len())));

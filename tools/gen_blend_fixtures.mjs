@@ -9,7 +9,7 @@
 // reference engine; only its numbers (and the neutral source label) are embedded, under the case id.
 // The picks of a run are 3D points; they are resolved to {faces, at} against the base body of this kernel, so the
 // fixture file does not depend on how the picks were chosen.
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Kernel } from './kernel.mjs';
@@ -63,8 +63,9 @@ const NAMES = [
   [/^R_ring10_N(\d+)_(V|T|VT|VTB)_r(.+)$/, (m) => `daisy-ring-n${m[1]}-${m[2]}-r${m[3]}-ref`, 'daisy-ring'],
   [/^H_ring10_N(\d+)_hubrim_r(.+)$/, (m) => `daisy-ring-n${m[1]}-hubrim-r${m[2]}`, 'daisy-ring'],
   [/^S_ring10_N(\d+)_(.+)_r(.+)$/, (m) => `daisy-ring-n${m[1]}-${m[2]}-r${m[3]}`, 'daisy-ring'],
+  [/^W_wheel_(.+)$/, (m) => `wheel-${m[1]}`, 'wheel'],
 ];
-const BASE_NAMES = { ring10_5: 'daisy-ring10-5', box: 'box', lbr: 'l-bracket', pocket: 'pocket', cylcorner: 'hole-corner', plate: 'plate', conepocket: 'cone-pocket', pipe: 'pipe-tee', petH: 'feet-sector' };
+const BASE_NAMES = { ring10_5: 'daisy-ring10-5', box: 'box', lbr: 'l-bracket', pocket: 'pocket', cylcorner: 'hole-corner', plate: 'plate', conepocket: 'cone-pocket', pipe: 'pipe-tee', petH: 'feet-sector', wheel: 'wheel' };
 for (const v of ['A1', 'A2']) for (const n of [5, 6, 7, 8]) BASE_NAMES[`daisy${v}_${n}`] = `daisy-${v === 'A1' ? 'hub' : 'ring'}-${n}`;
 
 // synthetic sequence: the top rim rounded first (r 0.5), then the concave vertical edges next to the hub
@@ -160,6 +161,34 @@ function petalRing(N, { Rc, tm, rho, H }) {
     }
   }
 }
+
+// the wheel (issue 35): a hub (radius 7.5, 6 deep), two opposite quarter-sector plates from radius 7.5 to 50 (5 deep) and a rim ring
+// (radius 50 to 55, 30 deep), fused in that order. The vertical concave edges (plate side with hub, plate side with rim) at R10, on
+// their own and after an R5 where the plate tops meet the rim: the rim-side edges then end on the R5's torus (refused).
+{
+  const sk = (id, pts, ents) => ({ type: 'sketch', id, plane: { kind: 'std', id: 'top' }, points: [{ id: 'O', x: 0, y: 0, fixed: true }, ...pts.map(([i, x, y]) => ({ id: i, x, y }))], entities: ents, constraints: [] });
+  const line = (id, p1, p2) => ({ id, type: 'line', p1, p2 }), arc = (id, p1, p2) => ({ id, type: 'arc', c: 'O', p1, p2 });
+  specs.bases.wheel = [
+    sk('S1', [], [{ id: 'e1', type: 'circle', c: 'O', r: 7.5 }]),
+    { type: 'extrude', id: 'F2', op: 'add', sketch: 'S1', end: 'blind', depth: 6 },
+    sk('S3', [['sa1', 7.5, 0], ['sa2', 50, 0], ['sa3', 0, 50], ['sa4', 0, 7.5], ['ta1', -7.5, 0], ['ta2', -50, 0], ['ta3', 0, -50], ['ta4', 0, -7.5]],
+      [line('se1', 'sa1', 'sa2'), arc('se2', 'sa2', 'sa3'), line('se3', 'sa3', 'sa4'), arc('se4', 'sa4', 'sa1'), line('te1', 'ta1', 'ta2'), arc('te2', 'ta2', 'ta3'), line('te3', 'ta3', 'ta4'), arc('te4', 'ta4', 'ta1')]),
+    { type: 'extrude', id: 'F4', op: 'add', sketch: 'S3', end: 'blind', depth: 5 },
+    sk('S5', [], [{ id: 'e1', type: 'circle', c: 'O', r: 55 }, { id: 'e2', type: 'circle', c: 'O', r: 50 }]),
+    { type: 'extrude', id: 'F6', op: 'add', sketch: 'S5', end: 'blind', depth: 30 },
+  ];
+  const q = 50 * Math.SQRT1_2, mid = 2.5;
+  const arcs = [{ at: [q, 5, -q] }, { at: [-q, 5, q] }];
+  const hubV = [[7.5, mid, 0], [0, mid, -7.5], [-7.5, mid, 0], [0, mid, 7.5]].map((at) => ({ at }));
+  const rimV = [[50, mid, 0], [0, mid, -50], [-50, mid, 0], [0, mid, 50]].map((at) => ({ at }));
+  const wheel = (name, radius, picks, pre) => specs.runs.push({ run: `W_wheel_${name}`, base: 'wheel', radius, picks, ...(pre ? { pre: { radius: pre, picks: arcs } } : {}) });
+  wheel('vertical-r10', 10, [...hubV, ...rimV]);
+  wheel('r5-then-vertical-r10', 10, [...hubV, ...rimV], 5);
+  wheel('r5-then-vertical-r10-hub-side', 10, hubV, 5);
+  wheel('r5-then-vertical-r10-rim-side', 10, rimV, 5);
+  wheel('r5-then-vertical-r3', 3, [...hubV, ...rimV], 5);
+  wheel('r2-then-vertical-r10', 10, [...hubV, ...rimV], 2);
+}
 const cases = [], bases = {};
 for (const run of specs.runs) {
   const hit = NAMES.map(([re, f, fam]) => [re.exec(run.run), f, fam]).find(([m]) => m);
@@ -196,6 +225,13 @@ for (const run of specs.runs) {
     }
   }
   cases.push({ id: f(m), family, base: baseId, ...(pre ? { pre } : {}), fillet, reference, ...(run.sharp ? { sharp: true } : {}) });
+}
+// the stepped-disc families do not come from the comparison specs: they are written by the kernel's own test and merged by
+// tools/merge_stepped_corpus.mjs, so a regeneration keeps the ones already in the file
+if (existsSync(out)) {
+  const old = JSON.parse(readFileSync(out, 'utf8'));
+  for (const [k, v] of Object.entries(old.bases ?? {})) if (k.startsWith('stepped-disc')) bases[k] = v;
+  for (const c of old.cases ?? []) if (c.id.startsWith('stepped-disc')) cases.push(c);
 }
 const lines = (o) => Object.entries(o).map(([k, v]) => `  ${JSON.stringify(k)}: ${JSON.stringify(v)}`).join(',\n');
 writeFileSync(out, `{\n "bases": {\n${lines(bases)}\n },\n "cases": [\n${cases.map((c) => '  ' + JSON.stringify(c)).join(',\n')}\n ]\n}\n`);

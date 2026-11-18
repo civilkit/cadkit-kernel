@@ -161,6 +161,14 @@ pub fn import_sldprt_with(bytes: &[u8], limits: &Limits) -> Result<SldprtImport,
     Ok(r)
 }
 
+/// Whether a partition transmit with sheet bodies and no solid is imported as surfaces. Not a ghost partition when the
+/// free-standing part transmits (ranked before it) hold a solid: a part whose geometry is an imported body has an empty live
+/// partition, its solid in the part transmits of the feature bodies and a ghost partition holding only a small template
+/// sheet, which would otherwise be taken as the part.
+fn sheets_from_partition(stream: &str, solid_faces: usize, sheet_faces: usize, part_solid: bool) -> bool {
+    solid_faces == 0 && sheet_faces > 0 && !(stream.contains("Ghost") && part_solid)
+}
+
 fn import_container(c: &container::Container, limits: &Limits) -> Result<SldprtImport, SldprtError> {
     let mut ts = c.transmits(limits)?;
     if ts.is_empty() {
@@ -198,7 +206,8 @@ fn import_container(c: &container::Container, limits: &Limits) -> Result<SldprtI
                     continue;
                 }
                 // a file with sheet bodies and no solid: the sheets come in as surfaces
-                ir.import_sheets = ir.solid_faces() == 0 && ir.sheet_faces() > 0;
+                let part_solid = parts.iter().any(|p| p.0.solid_faces() > 0);
+                ir.import_sheets = sheets_from_partition(&t.stream, ir.solid_faces(), ir.sheet_faces(), part_solid);
                 if ir.solid_faces() == 0 && !ir.import_sheets {
                     continue;
                 }
@@ -241,4 +250,22 @@ fn import_container(c: &container::Container, limits: &Limits) -> Result<SldprtI
         return Err(SldprtError::new("unsupported.body", format!("no solid body in the file: it holds {nonsolid} sheet / wire body(ies), which are not imported")));
     }
     Err(first_err.unwrap_or_else(|| SldprtError::new("container.no_parasolid", "no usable Parasolid transmit")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sheets_from_partition;
+
+    #[test]
+    fn a_ghost_sheet_does_not_hide_an_imported_solid() {
+        // empty live partition, solid in a part transmit, sheet in the ghost: the ghost's sheet is not the part
+        assert!(!sheets_from_partition("Contents/Config-0-GhostPartition", 0, 1, true));
+        // a ghost sheet with no solid anywhere is still read (last resort), and so is a live partition of sheets
+        assert!(sheets_from_partition("Contents/Config-0-GhostPartition", 0, 1, false));
+        assert!(sheets_from_partition("Contents/Config-0-Partition", 0, 11, true));
+        assert!(sheets_from_partition("Contents/Config-0-Partition", 0, 11, false));
+        // a partition with a solid, or with no sheet, is not a sheet import
+        assert!(!sheets_from_partition("Contents/Config-0-Partition", 6, 1, false));
+        assert!(!sheets_from_partition("Contents/Config-0-GhostPartition", 0, 0, false));
+    }
 }

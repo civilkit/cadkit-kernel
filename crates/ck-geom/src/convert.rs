@@ -168,8 +168,8 @@ pub fn extrude(profile: &BSplineCurve, dir: Vec3, v0: f64, v1: f64) -> BSplineSu
 }
 
 /// Exact NURBS of a surface patch [u0,u1]×[v0,v1]. Corner parameters
-/// match; interior parameters of rational directions do not. Offsets are
-/// not exactly representable -> Err.
+/// match; interior parameters of rational directions do not. Offsets: exact
+/// for plane / cylinder / sphere / torus, otherwise fitted within tolerance (Err if degenerate).
 pub fn surface_to_nurbs(s: &Surface, (u0, u1): (f64, f64), (v0, v1): (f64, f64)) -> Result<BSplineSurface, String> {
     let rev = |prof: BSplineCurve, f: &Frame| {
         // rotate so angle u0 is measured from frame.x: profiles are built in
@@ -224,8 +224,70 @@ pub fn surface_to_nurbs(s: &Surface, (u0, u1): (f64, f64), (v0, v1): (f64, f64))
             let grid: Vec<Vec<Vec3>> = us.iter().map(|&u| vs.iter().map(|&v| s.eval(u, v)).collect()).collect();
             crate::fit::grid_surface(&grid, &us, &vs, 5, if nv == 1 { 1 } else { 3 })
         }
-        Surface::Offset { .. } => Err("offset surfaces have no exact NURBS form".into()),
+        Surface::Offset { .. } => offset_to_nurbs(s, (u0, u1), (v0, v1)),
     }
+}
+
+/// Offset surface over a patch: exact for planes, cylinders, spheres and tori
+/// (the offset is the same family, same parameters), otherwise a bicubic fit of
+/// the exact offset within 1e-6 of the patch size (at least 1e-6), same
+/// parameters. `Err` says why when the offset is degenerate (radius collapses,
+/// folds over itself, undefined normal, crease).
+fn offset_to_nurbs(s: &Surface, ur: (f64, f64), vr: (f64, f64)) -> Result<BSplineSurface, String> {
+    let (mut base, mut d) = (s, 0.0);
+    while let Surface::Offset { base: b, dist } = base {
+        d += *dist;
+        base = &**b;
+    }
+    let degenerate = |what: &str| Err(format!("degenerate offset: {what}"));
+    match base {
+        Surface::Plane { frame } => {
+            let f = Frame { o: frame.o + frame.z * d, ..*frame };
+            return surface_to_nurbs(&Surface::Plane { frame: f }, ur, vr);
+        }
+        Surface::Cylinder { frame, r } => {
+            if *r + d <= 1e-9 {
+                return degenerate("the cylinder radius collapses to zero or turns inside out");
+            }
+            return surface_to_nurbs(&Surface::Cylinder { frame: *frame, r: r + d }, ur, vr);
+        }
+        Surface::Sphere { frame, r } => {
+            if *r + d <= 1e-9 {
+                return degenerate("the sphere radius collapses to zero or turns inside out");
+            }
+            return surface_to_nurbs(&Surface::Sphere { frame: *frame, r: r + d }, ur, vr);
+        }
+        Surface::Torus { frame, major, minor } => {
+            if *minor + d <= 1e-9 {
+                return degenerate("the torus tube radius collapses to zero or turns inside out");
+            }
+            if *minor + d >= *major {
+                return degenerate("the torus tube radius reaches the major radius (self-intersecting spindle torus)");
+            }
+            return surface_to_nurbs(&Surface::Torus { frame: *frame, major: *major, minor: minor + d }, ur, vr);
+        }
+        Surface::BSpline(b) => {
+            crate::offset::check_creases(b)?;
+        }
+        _ => {}
+    }
+    // patch size for a relative tolerance
+    let mut lo = Vec3::new(f64::MAX, f64::MAX, f64::MAX);
+    let mut hi = Vec3::new(f64::MIN, f64::MIN, f64::MIN);
+    for i in 0..=8 {
+        for j in 0..=8 {
+            let p = s.eval(ur.0 + (ur.1 - ur.0) * i as f64 / 8.0, vr.0 + (vr.1 - vr.0) * j as f64 / 8.0);
+            if !(p.x.is_finite() && p.y.is_finite() && p.z.is_finite()) {
+                return degenerate("the offset is undefined on the patch");
+            }
+            lo = Vec3::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z));
+            hi = Vec3::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z));
+        }
+    }
+    let tol = 1e-6 * (hi - lo).len().max(1.0);
+    crate::offset::approximate_offset_surface(&|u, v| s.eval(u, v), &|u, v| base.normal(u, v), ur, vr, tol, &[], &[])
+        .map(|(b, _)| b)
+        .map_err(|e| format!("offset surface: {e}"))
 }
 
 /// Exact sub-patch of a B-spline surface via knot insertion.
@@ -368,8 +430,66 @@ mod tests {
             let n = surface_to_nurbs(s, *ur, *vr).unwrap();
             check_on(s, &n, *ur, *vr);
         }
-        assert!(surface_to_nurbs(&Surface::Offset { base: Box::new(cases[0].0.clone()), dist: 1.0 }, (0., 1.), (0., 1.))
-            .is_err());
+    }
+
+    fn offset_of(base: Surface, dist: f64) -> Surface {
+        Surface::Offset { base: Box::new(base), dist }
+    }
+
+    /// Offsets convert: the NURBS keeps the offset's own parameters, within the tolerance.
+    #[test]
+    fn offset_surfaces_to_nurbs() {
+        let f = Frame { o: Vec3::new(1., 2., 3.), x: Vec3::X, y: Vec3::Y, z: Vec3::Z };
+        let ex = Surface::Extrusion {
+            profile: Box::new(Curve::Circle { frame: f, r: 3.0 }),
+            dir: Vec3::Z,
+        };
+        let rev = Surface::Revolution {
+            profile: Box::new(Curve::line_through(Vec3::new(2., 0., 0.), Vec3::new(3., 0., 2.))),
+            axis_o: Vec3::ZERO,
+            axis: Vec3::Z,
+        };
+        let cases = [
+            (offset_of(Surface::Plane { frame: f }, 0.7), (0.0, 2.0), (0.0, 3.0)),
+            (offset_of(Surface::Cylinder { frame: f, r: 2.0 }, -0.5), (0.0, 3.0), (0.0, 2.0)),
+            (offset_of(offset_of(Surface::Sphere { frame: f, r: 3.0 }, 0.4), 0.3), (0.2, 2.5), (-1.0, 1.0)),
+            (offset_of(Surface::Torus { frame: f, major: 5.0, minor: 1.0 }, 0.5), (0.0, 3.0), (0.0, 3.0)),
+            (offset_of(ex, 0.4), (0.3, 2.5), (0.0, 2.0)),
+            (offset_of(rev, 0.25), (0.0, 2.5), (0.2, 2.0)),
+        ];
+        for (s, ur, vr) in &cases {
+            let n = surface_to_nurbs(s, *ur, *vr).unwrap_or_else(|e| panic!("{}: {e}", s.kind()));
+            // exact families keep angle parameters only at the corners: compare geometry for
+            // those, parameters for the fitted ones
+            let fitted = !matches!(s, Surface::Offset { base, .. } if matches!(**base, Surface::Plane { .. } | Surface::Cylinder { .. } | Surface::Torus { .. }))
+                && !matches!(s, Surface::Offset { base, .. } if matches!(**base, Surface::Offset { .. }));
+            for i in 0..=12 {
+                for j in 0..=12 {
+                    let (u, v) = (ur.0 + (ur.1 - ur.0) * i as f64 / 12.0, vr.0 + (vr.1 - vr.0) * j as f64 / 12.0);
+                    let want = s.eval(u, v);
+                    if fitted {
+                        assert!(vclose(n.eval(u, v), want, 1e-5), "{} at ({u},{v})", s.kind());
+                    } else {
+                        let (a, b) = n.closest_param(want);
+                        assert!(vclose(n.eval(a, b), want, 1e-6), "{} at ({u},{v})", s.kind());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn offset_surface_degenerate_cases_refuse() {
+        let f = Frame { o: Vec3::ZERO, x: Vec3::X, y: Vec3::Y, z: Vec3::Z };
+        let sphere = Surface::Sphere { frame: f, r: 3.0 };
+        let e = surface_to_nurbs(&offset_of(sphere, -3.5), (0., 1.), (-1., 1.)).unwrap_err();
+        assert!(e.contains("degenerate"), "{e}");
+        let torus = Surface::Torus { frame: f, major: 5.0, minor: 1.0 };
+        assert!(surface_to_nurbs(&offset_of(torus, 4.5), (0., 1.), (0., 1.)).unwrap_err().contains("spindle"));
+        // a concave cylinder profile offset past its radius of curvature folds over
+        let cyl_ex = Surface::Extrusion { profile: Box::new(Curve::Circle { frame: f, r: 2.0 }), dir: Vec3::Z };
+        let e = surface_to_nurbs(&offset_of(cyl_ex, -3.0), (0.0, 2.0), (0.0, 1.0));
+        assert!(e.is_err());
     }
 
     #[test]

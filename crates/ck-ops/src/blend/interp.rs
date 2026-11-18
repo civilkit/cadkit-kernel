@@ -134,7 +134,7 @@ fn variable_picks_core(
     if v.profile == FilletProfile::Circular {
         let mut nv = 0;
         for corner in super::corner::find_corner(b, &eids) {
-            if corner.concave {
+            if corner.concave || corner.curved {
                 continue;
             }
             let rs: Vec<f64> = ends.iter().filter(|x| x.0 == corner.vertex).map(|x| x.1).collect();

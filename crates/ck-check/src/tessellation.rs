@@ -147,6 +147,15 @@ fn uncovered_edges(positions: &[f32], tri_face: &[i32], edges: &[(i32, [f64; 3],
 /// faces that sample their shared edge with different points (a T-junction, a hairline crack of at most the chord deviation)
 /// leave such pairs, and they are no visible hole. `crack = 0` counts every edge used once.
 pub fn open_mesh_edges_tol(positions: &[f32], tri_face: &[i32], q: f64, crack: f64) -> (usize, Vec<i32>) {
+    let (open, faces, _) = open_mesh_edges_detail(positions, tri_face, q, crack);
+    (open, faces)
+}
+
+/// [`open_mesh_edges_tol`] that also returns the faces of the open edges it forgave as hairlines (one entry per forgiven
+/// edge, so a face with three forgiven edges appears three times). A body with a missing face thinner than `crack` gives
+/// exactly such edges, so the caller can report them without calling the mesh open.
+pub fn open_mesh_edges_detail(positions: &[f32], tri_face: &[i32], q: f64, crack: f64) -> (usize, Vec<i32>, Vec<i32>) {
+    let mut forgiven: Vec<i32> = vec![];
     let n = positions.len() / 3;
     let cell = |p: [f64; 3]| [(p[0] / q).floor() as i64, (p[1] / q).floor() as i64, (p[2] / q).floor() as i64];
     let mut reps: Vec<[f64; 3]> = vec![];
@@ -239,6 +248,7 @@ pub fn open_mesh_edges_tol(positions: &[f32], tri_face: &[i32], q: f64, crack: f
             false
         };
         let keep: Vec<bool> = open_edges.iter().map(|(f, a, b)| !(near_other(*a, *f) && near_other(*b, *f))).collect();
+        forgiven.extend(open_edges.iter().zip(&keep).filter(|(_, k)| !**k).map(|(e, _)| e.0));
         let mut k = keep.iter();
         open_edges.retain(|_| *k.next().unwrap());
     }
@@ -247,6 +257,7 @@ pub fn open_mesh_edges_tol(positions: &[f32], tri_face: &[i32], q: f64, crack: f
         // to within the chord deviation: the two faces sample their shared edge differently, leaving a hairline of that
         // width (a fine trim tail ending at a cusp, say), which is no hole.
         let keep = uncovered_edges(positions, tri_face, &open_edges, crack);
+        forgiven.extend(open_edges.iter().zip(&keep).filter(|(_, k)| !**k).map(|(e, _)| e.0));
         let mut k = keep.iter();
         open_edges.retain(|_| *k.next().unwrap());
     }
@@ -259,28 +270,37 @@ pub fn open_mesh_edges_tol(positions: &[f32], tri_face: &[i32], q: f64, crack: f
     let open = faces.len();
     faces.sort_unstable();
     faces.dedup();
-    (open, faces)
+    (open, faces, forgiven)
 }
 
 /// `TESSELLATION_OPEN` issues: one per face of `b` that has no triangle (`failed` = faces the tessellator gave up on, from
 /// the mesh), and one for the mesh edges used by a single triangle (entity = the first bordering faces).
 pub fn check_mesh(b: &Body, positions: &[f32], tri_face: &[i32], failed: &[usize]) -> Vec<Issue> {
-    check_mesh_inner(b, positions, tri_face, failed, &[], false, &crate::Ctl::unlimited())
+    check_mesh_inner(b, positions, tri_face, failed, &[], false, &crate::Ctl::unlimited()).0
 }
 
 /// [`check_mesh`] with the tessellator's reason for each failed face (`why[i]` belongs to `failed[i]`), and the per-face
 /// mesh-area witness (costs an exact area integral per face: the opt-in `validate` path only, not the boolean's rim check).
 pub fn check_mesh_why(b: &Body, positions: &[f32], tri_face: &[i32], failed: &[usize], why: &[String]) -> Vec<Issue> {
-    check_mesh_inner(b, positions, tri_face, failed, why, true, &crate::Ctl::unlimited())
+    check_mesh_inner(b, positions, tri_face, failed, why, true, &crate::Ctl::unlimited()).0
 }
 
 /// [`check_mesh_why`] under a time limit: the area witness (`meshAreaWitness`) and the open-edge search (`meshOpenEdges`)
 /// are timed in `ctl`, the second is left out when the limit ran out during or before the first.
 pub fn check_mesh_ctl(b: &Body, positions: &[f32], tri_face: &[i32], failed: &[usize], why: &[String], ctl: &crate::Ctl) -> Vec<Issue> {
+    check_mesh_inner(b, positions, tri_face, failed, why, true, ctl).0
+}
+
+/// [`check_mesh_ctl`] that also returns the hairline note: the open mesh edges that were forgiven because another face's
+/// triangles or open edges lie within the crack tolerance. They are not issues (the display mesh of a sound body has such
+/// cracks), but a face that is missing and thinner than the tolerance leaves exactly this, so `validate` lists them as
+/// `meshNotes` entries with the code `TESSELLATION_HAIRLINE`. Empty when nothing was forgiven.
+pub fn check_mesh_ctl_notes(b: &Body, positions: &[f32], tri_face: &[i32], failed: &[usize], why: &[String], ctl: &crate::Ctl) -> (Vec<Issue>, Vec<String>) {
     check_mesh_inner(b, positions, tri_face, failed, why, true, ctl)
 }
 
-fn check_mesh_inner(b: &Body, positions: &[f32], tri_face: &[i32], failed: &[usize], why: &[String], area: bool, ctl: &crate::Ctl) -> Vec<Issue> {
+fn check_mesh_inner(b: &Body, positions: &[f32], tri_face: &[i32], failed: &[usize], why: &[String], area: bool, ctl: &crate::Ctl) -> (Vec<Issue>, Vec<String>) {
+    let mut notes: Vec<String> = vec![];
     let mut out = vec![];
     let ids: Vec<_> = b.face_ids().collect();
     let mut has = vec![false; ids.len()];
@@ -352,7 +372,20 @@ fn check_mesh_inner(b: &Body, positions: &[f32], tri_face: &[i32], failed: &[usi
     }
     let q = (hi * 1e-5).max(1e-4);
     // a shared edge sampled differently by its two faces leaves a hairline of at most the chord deviation: not a hole
-    let (open, faces) = ctl.stage("meshOpenEdges", || open_mesh_edges_tol(positions, tri_face, q, (hi * 2e-3).max(0.01))).unwrap_or((0, vec![]));
+    let crack = (hi * 2e-3).max(0.01);
+    let (open, faces, forgiven) = ctl.stage("meshOpenEdges", || open_mesh_edges_detail(positions, tri_face, q, crack)).unwrap_or((0, vec![], vec![]));
+    if !forgiven.is_empty() {
+        let mut fs = forgiven.clone();
+        fs.sort_unstable();
+        fs.dedup();
+        let names: Vec<String> = fs.iter().take(6).filter_map(|&i| ids.get(i as usize).map(|&f| b.face_id_str(f))).collect();
+        notes.push(format!(
+            "TESSELLATION_HAIRLINE {}: {} open mesh edges forgiven as hairline cracks (within {:.3e} mm of another face); a face missing but thinner than that would look the same",
+            names.join("|"),
+            forgiven.len(),
+            crack
+        ));
+    }
     if open > 0 {
         let names: Vec<String> = faces.iter().take(6).filter_map(|&i| ids.get(i as usize).map(|&f| b.face_id_str(f))).collect();
         out.push(Issue {
@@ -361,7 +394,7 @@ fn check_mesh_inner(b: &Body, positions: &[f32], tri_face: &[i32], failed: &[usi
             detail: format!("{open} mesh edges are used by a single triangle (the display mesh has holes)"),
         });
     }
-    out
+    (out, notes)
 }
 
 #[cfg(test)]
@@ -403,6 +436,22 @@ mod tests {
         let (lone, _) = open_mesh_edges_tol(&pos[..9], &[0], 1e-4, 0.01);
         assert_eq!((strict, hairline), (7, 6), "face 0's x-axis edge is covered by face 1");
         assert_eq!(lone, 3, "a lone triangle's three rim edges are holes");
+    }
+
+    #[test]
+    fn forgiven_hairline_edges_are_listed_but_a_hole_rim_is_not() {
+        let tris: [[[f64; 3]; 3]; 3] = [
+            [[0., 0., 0.], [4., 0., 0.], [0., 4., 0.]],
+            [[0., 0.004, -0.5], [4., 0.004, -0.5], [4., 0.004, 0.5]],
+            [[0., 0.004, -0.5], [4., 0.004, 0.5], [0., 0.004, 0.5]],
+        ];
+        let pos: Vec<f32> = tris.iter().flatten().flat_map(|p| p.map(|x| x as f32)).collect();
+        let (open, _, forgiven) = open_mesh_edges_detail(&pos, &[0, 1, 1], 1e-4, 0.01);
+        let (strict, _, none) = open_mesh_edges_detail(&pos, &[0, 1, 1], 1e-4, 0.0);
+        assert_eq!((open, forgiven.len()), (6, 1), "the x-axis edge of face 0 is forgiven and listed");
+        assert_eq!((strict, none.len()), (7, 0), "no tolerance, nothing forgiven");
+        let (lone, _, f) = open_mesh_edges_detail(&pos[..9], &[0], 1e-4, 0.01);
+        assert_eq!((lone, f.len()), (3, 0), "a hole rim is reported, not forgiven");
     }
 
     #[test]

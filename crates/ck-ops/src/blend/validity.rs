@@ -63,6 +63,22 @@ fn fatal_counts(b: &Body, tol: f64) -> Vec<(&'static str, usize)> {
     out
 }
 
+/// Geometric `ck_check` codes judged for the plane-plane-cylinder corner (see [`check`]): a result with more of them than the
+/// input has a face or edge off its surface or a loop crossing itself.
+const GEOMETRIC: &[&str] = &["EDGE_OFF_SURFACE", "VERTEX_OFF_CURVE", "LOOP_SELF_INTERSECT", "LOOP_CROSS"];
+
+fn geometric_counts(b: &Body, tol: f64) -> Vec<(&'static str, usize)> {
+    let issues = ck_check::validate(b, tol);
+    let mut out: Vec<(&'static str, usize)> = vec![];
+    for i in issues.iter().filter(|i| GEOMETRIC.contains(&i.code)) {
+        match out.iter_mut().find(|(c, _)| *c == i.code) {
+            Some((_, n)) => *n += 1,
+            None => out.push((i.code, 1)),
+        }
+    }
+    out
+}
+
 fn fail(detail: String) -> BlendError {
     BlendError::detail("blendFailed", &detail)
 }
@@ -253,6 +269,20 @@ pub fn check(input: &Body, out: Body, picks: &[(String, String, Vec3)], spec: Sp
         return Ok(out);
     }
     let (vi, vo) = check_solid(input, &out, tol)?;
+    // a corner of two planes and a cylinder is built from three tools and a sphere patch that must join to the tolerance: a
+    // result with an edge off its surface or a face crossing itself is refused here, so that the next attempt (the ends of a
+    // tangent chain stopping flush) gets its try
+    if matches!(spec, Spec::Fillet(_, FilletProfile::Circular)) && super::analytic::CYL_CORNER.with(|c| c.get()) {
+        let go = geometric_counts(&out, tol);
+        if !go.is_empty() {
+            let gi = geometric_counts(input, tol);
+            for (code, n) in &go {
+                if *n > gi.iter().find(|(c, _)| c == code).map_or(0, |x| x.1) {
+                    return Err(fail(format!("the corner of the round is not a valid solid ({code})")));
+                }
+            }
+        }
+    }
     if vi > 0.0 {
         let slack = 1e-4 * vi;
         let dv = vo - vi;

@@ -552,7 +552,7 @@ impl BSplineSurface {
         n.du.cross(n.dv).normalize()
     }
 
-    fn column(&self, j: usize) -> BSplineCurve {
+    pub(crate) fn column(&self, j: usize) -> BSplineCurve {
         BSplineCurve {
             degree: self.deg_u,
             knots: self.knots_u.clone(),
@@ -561,7 +561,7 @@ impl BSplineSurface {
         }
     }
 
-    fn row(&self, i: usize) -> BSplineCurve {
+    pub(crate) fn row(&self, i: usize) -> BSplineCurve {
         BSplineCurve {
             degree: self.deg_v,
             knots: self.knots_v.clone(),

@@ -248,6 +248,18 @@ fn vertex_pseudo_normal(b: &Body, v: VertexId) -> Vec3 {
     }
 }
 
+/// [`classify`] by the nearest boundary feature alone (its pseudo-normal side): fast, and right for a point that lies near the
+/// boundary (within a few mm of a face, as the corners of a blend tool do); no winding number is evaluated, which is what makes
+/// [`classify`] slow on bodies with spline faces. A point far from every face may be misjudged.
+pub fn classify_near(b: &Body, q: Vec3, tol: f64) -> Containment {
+    match nearest_feature(b, q) {
+        None => Containment::Outside,
+        Some((d, _)) if d <= tol => Containment::On,
+        Some((_, side)) if side < 0.0 => Containment::Inside,
+        Some(_) => Containment::Outside,
+    }
+}
+
 /// Nearest boundary feature of `q`: (distance, side) with side < 0 inside,
 /// > 0 outside (dot of q − p with the feature's (pseudo-)normal).
 fn nearest_feature(b: &Body, q: Vec3) -> Option<(f64, f64)> {

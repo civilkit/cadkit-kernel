@@ -211,13 +211,22 @@ fn view_json(body: &Body, view: &ViewReq, hidden: bool) -> Json {
     let body: &Body = match view.section {
         Some((point, h)) => {
             match section_cut(body, view.z, point) {
-                Some(out) => {
+                Ok(out) => {
                     cut = out.body;
                     sec_faces = cut.face_ids().filter(|&f| cut.face(f).name.id().starts_with("SEC.")).collect();
                     hatch = h;
                     &cut
                 }
-                _ => return Obj::new().put("error", "cutNoEffect").build(),
+                // the error name stays `cutNoEffect` (pinned); when the boolean itself failed (not "the plane misses the
+                // body") the reply also says so, so the caller can tell the two apart
+                Err(Some(why)) => {
+                    return Obj::new()
+                        .put("error", "cutNoEffect")
+                        .put("detail", why)
+                        .put("hint", "the plane crosses the body but the boolean that builds the section failed; try another cut position or draw the view without the section")
+                        .build()
+                }
+                Err(None) => return Obj::new().put("error", "cutNoEffect").build(),
             }
         }
         None => {
@@ -647,25 +656,32 @@ fn body_bbox(body: &Body) -> Option<(Vec3, Vec3)> {
 ///   the body; the retry sizes the tool from sampled edge points and centres it on the body;
 /// - a plane through a hole's axis or along a seam can fail the boolean; the retry then moves the plane a hair
 ///   to either side (1e-5 and 1e-4 of the body's diagonal, far under the drawing's tolerance).
-fn section_cut(body: &Body, n: Vec3, point: Vec3) -> Option<boolean::BoolOut> {
+///
+/// `Err(Some(why))`: the boolean failed on every attempt (`why` = its message); `Err(None)`: the plane misses the body.
+fn section_cut(body: &Body, n: Vec3, point: Vec3) -> Result<boolean::BoolOut, Option<String>> {
+    let failed = std::cell::RefCell::new(None::<String>);
     let try_cut = |tool: &Body| match boolean::boolean(body, tool, Op::Cut, 1e-6) {
         Ok(out) if !out.no_effect => Some(out),
-        _ => None,
+        Ok(_) => None,
+        Err(e) => {
+            failed.borrow_mut().get_or_insert(e);
+            None
+        }
     };
     if let Some(out) = try_cut(&plane_tool(body, n, point)) {
-        return Some(out);
+        return Ok(out);
     }
-    let (lo, hi) = body_extent(body)?;
+    let Some((lo, hi)) = body_extent(body) else { return Err(None) };
     let diag = (hi - lo).len();
     for off in [0.0, 1e-5, -1e-5, 1e-4, -1e-4] {
         let p = point + n * (off * diag);
         let c = (lo + hi) * 0.5;
         let origin = c - n * (c - p).dot(n);
         if let Some(out) = try_cut(&plane_tool_at(n, origin, diag * 2.0 + 1.0)) {
-            return Some(out);
+            return Ok(out);
         }
     }
-    None
+    Err(failed.into_inner())
 }
 
 /// Bounding box over the vertices and over points sampled along every edge (a revolved body has one vertex per

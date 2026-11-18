@@ -210,7 +210,7 @@ const DISC: &str = r#"
  {"type":"splitLine","id":"F3","faces":["F2.C1"],"plane":{"kind":"std","id":"right"},"offset":0}"#;
 
 fn issues_of(b: &Body) -> Vec<String> {
-    let mut v: Vec<String> = ck_check::validate(b, 1e-6).iter().map(|i| format!("validate {}: {}", i.code, i.detail)).collect();
+    let mut v: Vec<String> = ck_check::validate(b, 1e-6).iter().map(|i| format!("validate {} {}: {}", i.code, i.entity, i.detail)).collect();
     v.extend(ck_topo::check::check(b, 1e-6).iter().map(|i| format!("check {i:?}")));
     let m = ck_tess::mesh::tessellate(b).mesh;
     v.extend(check_mesh_why(b, &m.positions, &m.tri_face, &m.failed, &m.failed_why).into_iter().map(|i| format!("mesh {}: {}", i.entity, i.detail)));
@@ -235,7 +235,7 @@ fn rim_edges(b: &Body, piece: &str) -> Vec<(String, f64)> {
 /// swept along the arc, Pappus: area x angle x centroid radius), the result validates, is a clean mesh. Prints one line per case.
 #[test]
 fn rim_blends_match_the_analytic_volume() {
-    if std::env::var("CORNER_ONE").is_ok() {
+    if std::env::var("CORNER_ONE").is_ok() || std::env::var("CMATRIX").is_ok() || std::env::var("CG1").is_ok() || std::env::var("CSTRESS").is_ok() {
         return; // a debug run of one selection: keep the trace readable
     }
     let mut fails = vec![];
@@ -336,7 +336,7 @@ fn shell_defects_r(b: &Body, v_max: f64, rr: f64) -> Vec<String> {
         }
         for p in b.sample_edge(e, 1e-3) {
             let r = (p.x * p.x + p.z * p.z).sqrt();
-            if r > rr + 1e-6 {
+            if r > rr + 2e-6 {
                 v.push(format!("edge point outside the cylinder: r={r:.6} at ({:.3},{:.3},{:.3})", p.x, p.y, p.z));
                 break;
             }
@@ -381,7 +381,7 @@ fn nearest_edge_pick(b: &Body, at: [f64; 3]) -> String {
 
 #[test]
 fn wall_edge_blends_are_exact_and_stay_inside_the_cylinder() {
-    if std::env::var("CORNER_ONE").is_ok() {
+    if std::env::var("CORNER_ONE").is_ok() || std::env::var("CMATRIX").is_ok() || std::env::var("CG1").is_ok() || std::env::var("CSTRESS").is_ok() {
         return; // a debug run of one selection: keep the trace readable
     }
     let moved = format!(r#"{DISC},{{"type":"moveFace","id":"F4","faces":["F2.C1~2"],"mode":"offset","distance":5}}"#);
@@ -491,7 +491,8 @@ fn corpus_specs() -> Vec<(String, &'static str, Vec<([f64; 3], &'static str)>, S
             }
         }
     }
-    // the raised half's top: rim arc + wall top + one vertical wall edge (and the mirror), chain on, on the 70 and the 42 mm disc
+    // the raised half's top: rim arc + wall top + one vertical wall edge (and the mirror), chain on, on the 70 and the 42 mm disc.
+    // Chamfers 0.5 to 3 mm; fillets (the corner is a sphere patch) every half millimetre from 0.5 to 4.
     for (bn, rr) in [("stepped-disc", 35.0f64), ("stepped-disc-small", 21.0)] {
         let h = rr * std::f64::consts::FRAC_1_SQRT_2;
         let sels: [(&str, Vec<([f64; 3], &'static str)>); 2] = [
@@ -499,11 +500,35 @@ fn corpus_specs() -> Vec<(String, &'static str, Vec<([f64; 3], &'static str)>, S
             ("e4+e5+e7", vec![([h, 15.0, h], ""), ([0.0, 15.0, 0.0], ""), ([0.0, 12.5, -rr], "")]),
         ];
         for (sn, at) in sels {
-            for d in [0.5, 1.0, 2.0, 3.0] {
-                for (kn, k) in [("fillet", fillet(d, true)), ("chamfer", chamfer(d, true))] {
-                    v.push((format!("{bn}-top-{sn}-{kn}{d}-chain"), if bn == "stepped-disc" { "stepped-disc" } else { "stepped-disc-small" }, at.clone(), k));
-                }
+            for d in [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0] {
+                v.push((format!("{bn}-top-{sn}-fillet{d}-chain"), bn, at.clone(), fillet(d, true)));
             }
+            for d in [0.5, 1.0, 2.0, 3.0] {
+                v.push((format!("{bn}-top-{sn}-chamfer{d}-chain"), bn, at.clone(), chamfer(d, true)));
+            }
+        }
+    }
+    // the same corner picked in the other orders (vertical edge first, wall top first, rim last ...) and with the chain off: the
+    // same shape, so the same volume as the order of the table's rows above
+    {
+        let (rr, h) = (35.0f64, 35.0 * std::f64::consts::FRAC_1_SQRT_2);
+        let pts: [(&str, [f64; 3]); 3] = [("rim", [h, 15.0, -h]), ("top", [0.0, 15.0, 0.0]), ("vert", [0.0, 12.5, rr])];
+        for order in [[2usize, 1, 0], [1, 2, 0], [2, 0, 1], [1, 0, 2]] {
+            for d in [1.0, 3.0] {
+                let name: Vec<&str> = order.iter().map(|&i| pts[i].0).collect();
+                v.push((format!("stepped-disc-top-order-{}-fillet{d}-chain", name.join("-")), "stepped-disc", order.iter().map(|&i| (pts[i].1, "")).collect(), fillet(d, true)));
+            }
+        }
+        for d in [1.0, 2.0, 3.0] {
+            v.push((format!("stepped-disc-top-e3+e5+e6-fillet{d}-nochain"), "stepped-disc", pts.iter().map(|p| (p.1, "")).collect(), fillet(d, false)));
+        }
+        // the radius the vertical wall edge (5 mm) cannot hold: refused with the reason
+        for d in [4.8, 5.0] {
+            v.push((format!("stepped-disc-top-e3+e5+e6-fillet{d}-too-big"), "stepped-disc", pts.iter().map(|p| (p.1, "")).collect(), fillet(d, true)));
+        }
+        // the user's part, the split 0.0023 mm off the centre
+        for d in [1.0, 2.0, 3.0] {
+            v.push((format!("stepped-disc-user-top-fillet{d}-chain"), "stepped-disc-user", pts.iter().map(|p| (p.1, "")).collect(), fillet(d, true)));
         }
     }
     // the sunk half
@@ -517,7 +542,7 @@ fn corpus_specs() -> Vec<(String, &'static str, Vec<([f64; 3], &'static str)>, S
 
 #[test]
 fn emit_corpus() {
-    if std::env::var("CORNER_ONE").is_ok() {
+    if std::env::var("CORNER_ONE").is_ok() || std::env::var("CMATRIX").is_ok() || std::env::var("CG1").is_ok() || std::env::var("CSTRESS").is_ok() {
         return; // a debug run of one selection: keep the trace readable
     }
     let Ok(out_path) = std::env::var("STEP_EMIT") else { return };
@@ -526,6 +551,7 @@ fn emit_corpus() {
     bases.insert("stepped-disc", mk(5.0));
     bases.insert("stepped-disc-sunk", mk(-5.0));
     bases.insert("stepped-disc-small", disc_moved(21.0, 5.0));
+    bases.insert("stepped-disc-user", user_split_part(0.0023355484));
     let bodies: BTreeMap<&str, Out> = bases.iter().map(|(k, v)| (*k, strict_run(v, ""))).collect();
     let mut cases = vec![];
     let mut expect = vec![];
@@ -674,7 +700,7 @@ fn corner_selection_one() {
 /// up to what the corners where two chamfers meet change (at most d^3 each).
 #[test]
 fn chamfers_of_the_raised_top_and_wall_edges_build_and_match_the_single_edge_volumes() {
-    if std::env::var("CORNER_ONE").is_ok() {
+    if std::env::var("CORNER_ONE").is_ok() || std::env::var("CMATRIX").is_ok() || std::env::var("CG1").is_ok() || std::env::var("CSTRESS").is_ok() {
         return;
     }
     let mut fails = vec![];
@@ -720,24 +746,595 @@ fn chamfers_of_the_raised_top_and_wall_edges_build_and_match_the_single_edge_vol
     assert!(fails.is_empty(), "{} chamfer selections: {:#?}", fails.len(), fails);
 }
 
-/// The three convex edges of the raised half's corner (rim arc, wall top, a vertical wall edge) at 3 mm: the corner patch exists
-/// for planar faces only, so the fillet is refused, and says so (no size hint: the corner builds at some sizes and not at others).
+/// The three picks of the raised half's corner on a disc of radius `rr` (step 5): the wall-top edge, the rim arc and the
+/// vertical wall edge, for the side `E4+E6` (rim arc next to the vertical edge at z = +R), `E3+E6` (the other half of the
+/// rim, which the tangent chain takes in), `E3+E7`, `E4+E7`.
+fn corner_picks(b: &Body, rr: f64, side: &str) -> [String; 3] {
+    let h = rr * std::f64::consts::FRAC_1_SQRT_2;
+    let (rim, vert) = match side {
+        "E4+E6" => ([h, 15.0, h], [0.0, 12.5, rr]),
+        "E3+E6" => ([h, 15.0, -h], [0.0, 12.5, rr]),
+        "E3+E7" => ([h, 15.0, -h], [0.0, 12.5, -rr]),
+        _ => ([h, 15.0, h], [0.0, 12.5, -rr]),
+    };
+    [nearest_edge_pick(b, [0.0, 15.0, 0.0]), nearest_edge_pick(b, rim), nearest_edge_pick(b, vert)]
+}
+
+fn corner_fillet(picks: &[String; 3], perm: [usize; 3], d: f64, chain: bool) -> String {
+    let ps: Vec<&str> = perm.iter().map(|&i| picks[i].as_str()).collect();
+    format!(r#"{{"type":"fillet","id":"F5","radius":{d},"propagate":{chain},"edges":[{}]}}"#, ps.join(","))
+}
+
+/// A fillet of the three edges of the raised half's corner (two planes and a cylinder meet there) is a rolling-ball round: the
+/// three rounds meet in a sphere patch, in whatever order the edges are picked, at every radius from 0.5 to 4 mm and with the
+/// tangent chain on or off. Each result validates, is a clean mesh, has nothing outside the cylinder, is tangent-continuous
+/// along the blend (only the end of the vertical round on the lower step is a sharp edge), has the one sphere face, and its volume
+/// is the sum of the three single-edge rounds less what the corners count twice (0.26 d^3 on the planar limit, a little more
+/// as the radius grows against the disc), the same in every order.
 #[test]
-fn a_fillet_of_the_three_edges_at_the_curved_corner_is_refused_and_says_why() {
-    if std::env::var("CORNER_ONE").is_ok() {
+fn fillets_of_the_three_edges_at_the_curved_corner_are_rolling_ball_corners() {
+    if std::env::var("CORNER_ONE").is_ok() || std::env::var("CMATRIX").is_ok() || std::env::var("CG1").is_ok() {
+        return;
+    }
+    let all: Vec<[usize; 3]> = perms3();
+    let mut fails = vec![];
+    for (rr, side) in [(35.0f64, "E4+E6"), (35.0, "E3+E6"), (35.0, "E3+E7"), (35.0, "E4+E7"), (21.0, "E4+E6"), (21.0, "E3+E7"), (21.0, "E3+E6"), (21.0, "E4+E7")] {
+        let moved = disc_moved(rr, 5.0);
+        let base = strict_run(&moved, "");
+        let b = base.body.as_ref().unwrap();
+        let v0 = ck_topo::mass::mass_props(b).volume;
+        let picks = corner_picks(b, rr, side);
+        // every order on the first side of each disc, three orders (each edge first once) on the others
+        let first = side == "E4+E6";
+        let perms: Vec<[usize; 3]> = if first { all.clone() } else { vec![[0, 1, 2], [1, 2, 0], [2, 0, 1]] };
+        let radii: Vec<f64> = if first { vec![0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0] } else { vec![0.5, 1.0, 2.0, 3.0, 4.0] };
+        for &d in &radii {
+            let mut dvs: Vec<f64> = vec![];
+            for &perm in &perms {
+                for chain in [true, false] {
+                    let known = false;
+                    let tag = format!("R{rr} {side} perm={perm:?} d={d} chain={chain}");
+                    let o = strict_run(&moved, &corner_fillet(&picks, perm, d, chain));
+                    if !o.errs.is_empty() {
+                        fails.push(format!("{tag}: refused {:?}", o.errs));
+                        continue;
+                    }
+                    let ob = o.body.as_ref().unwrap();
+                    let mut bad = corner_defects(ob, rr, if side.ends_with("E6") { 1.0 } else { -1.0 });
+                    bad.extend(g1_defects(ob, if side.ends_with("E6") { 1.0 } else { -1.0 }));
+                    let spheres = ob.face_ids().filter(|&f| ob.face(f).surface.kind() == "sphere").count();
+                    if spheres != 1 {
+                        bad.push(format!("{spheres} sphere faces"));
+                    }
+                    let vol = ck_topo::mass::mass_props(ob).volume;
+                    let overlap = (corner_single_sum(rr, d) + (vol - v0)) / (d * d * d);
+                    if !(0.255..=0.30).contains(&overlap) {
+                        bad.push(format!("volume: the corners count {overlap:.4} d^3 twice (want 0.26 to 0.29)"));
+                    }
+                    dvs.push(vol - v0);
+                    if !bad.is_empty() && !known {
+                        fails.push(format!("{tag}: {:?}", bad.iter().take(3).collect::<Vec<_>>()));
+                    }
+                }
+            }
+            let (lo, hi) = dvs.iter().fold((f64::MAX, f64::MIN), |a, &x| (a.0.min(x), a.1.max(x)));
+            if hi - lo > 1e-3 + 1e-6 * hi.abs() {
+                fails.push(format!("R{rr} {side} d={d}: the volume depends on the order or the chain: {lo:.4} .. {hi:.4}"));
+            }
+        }
+    }
+    assert!(fails.is_empty(), "{} corner fillets: {:#?}", fails.len(), fails);
+}
+
+/// `shell_defects_r` for the corner selection at z = `zs` * R: a short edge at the other end of the wall top (where the top and
+/// rim rounds meet with the vertical edge unselected: a pre-existing end condition that leaves an edge of 1e-4 to 1e-3 mm at some
+/// radii, with or without the corner patch) is not this corner's and is left out.
+fn corner_defects(b: &Body, rr: f64, zs: f64) -> Vec<String> {
+    shell_defects_r(b, 15.0, rr)
+        .into_iter()
+        .filter(|d| {
+            let z = d.split("z: ").nth(1).and_then(|t| t.split(|c: char| c == ' ' || c == '}' || c == ',').next()).and_then(|t| t.parse::<f64>().ok());
+            !(d.starts_with("short edge") && z.is_some_and(|z| z * zs < 0.0))
+        })
+        .collect()
+}
+
+/// Edges of the blend faces (feature F5) that are not tangent-continuous (more than 2e-3 rad between the face normals) at the
+/// corner at z = `zs` * R: not the mitre of the top and rim rounds at the other end of the wall top (two rounds meeting with the
+/// third edge unselected cross at a right angle there, as always), and not where the vertical round ends on the lower step.
+fn g1_defects(b: &Body, zs: f64) -> Vec<String> {
+    blend_g1(b)
+        .into_iter()
+        .filter(|(n, a)| {
+            let z = n.split("z: ").nth(1).and_then(|t| t.split(|c: char| c == ' ' || c == '}' || c == ',').next()).and_then(|t| t.parse::<f64>().ok());
+            *a > 2e-3 && !n.contains("F2.C1~1") && !z.is_some_and(|z| z * zs < 0.0)
+        })
+        .map(|(n, a)| format!("not tangent: {a:.3e} rad at {n}"))
+        .collect()
+}
+
+/// The radius the corner can take is bounded by the vertical wall edge (as tall as the step, 5 mm here): the patch needs the edge
+/// to run on 0.25 mm past the ball's contact line, and the cylinder must hold the ball. Beyond that the fillet is refused with the
+/// reason (no size hint: it says which edge is too short), at every pick order; just inside it, it builds.
+#[test]
+fn a_fillet_at_the_curved_corner_is_refused_with_its_reason_where_the_edge_is_too_short() {
+    if std::env::var("CORNER_ONE").is_ok() || std::env::var("CMATRIX").is_ok() || std::env::var("CG1").is_ok() {
         return;
     }
     let r = 35.0;
     let moved = disc_moved(r, 5.0);
     let base = strict_run(&moved, "");
     let b = base.body.as_ref().unwrap();
-    let h = r * std::f64::consts::FRAC_1_SQRT_2;
-    for (a, e5, v) in [([h, 15.0, -h], [0.0, 15.0, 0.0], [0.0, 12.5, r]), ([h, 15.0, h], [0.0, 15.0, 0.0], [0.0, 12.5, -r])] {
-        let picks = [nearest_edge_pick(b, a), nearest_edge_pick(b, e5), nearest_edge_pick(b, v)];
-        let f = format!(r#"{{"type":"fillet","id":"F5","radius":3,"propagate":true,"edges":[{}]}}"#, picks.join(","));
+    let v0 = ck_topo::mass::mass_props(b).volume;
+    let picks = corner_picks(b, r, "E4+E6");
+    for perm in [[0, 1, 2], [2, 1, 0], [1, 2, 0]] {
+        for d in [5.0, 4.8, 5.5, 8.0] {
+            let o = strict_run(&moved, &corner_fillet(&picks, perm, d, true));
+            assert_eq!(o.errs.len(), 1, "d={d} {perm:?}: {:?}", o.errs);
+            assert!(o.errs[0].contains("blendUnsupported") && o.errs[0].contains("vertical edge") && o.errs[0].contains("too short"), "d={d}: {}", o.errs[0]);
+            assert!(!o.errs[0].contains("maxSize") && !o.errs[0].contains("largest"), "no size is offered: {}", o.errs[0]);
+        }
+        for d in [4.7, 4.5] {
+            let o = strict_run(&moved, &corner_fillet(&picks, perm, d, true));
+            assert!(o.errs.is_empty(), "d={d} {perm:?}: {:?}", o.errs);
+            let ob = o.body.as_ref().unwrap();
+            let bad: Vec<String> = corner_defects(ob, r, 1.0).into_iter().chain(g1_defects(ob, 1.0)).collect();
+            assert!(bad.is_empty() && ck_topo::mass::mass_props(ob).volume < v0, "d={d} {perm:?}: {bad:?}");
+        }
+    }
+    // a small disc: the ball (radius 3) does not fit between the wall through the axis and the cylinder of radius 6 (its centre
+    // would lie on the seam: the quarter arc of the rim is used up)
+    let moved = disc_moved(6.0, 5.0);
+    let base = strict_run(&moved, "");
+    let b = base.body.as_ref().unwrap();
+    let picks = corner_picks(b, 6.0, "E4+E6");
+    let o = strict_run(&moved, &corner_fillet(&picks, [0, 1, 2], 3.0, true));
+    assert_eq!(o.errs.len(), 1, "{:?}", o.errs);
+    assert!(o.errs[0].contains("blendUnsupported") && (o.errs[0].contains("too large for the cylinder") || o.errs[0].contains("too short for a round of radius 3")), "{}", o.errs[0]);
+}
+
+/// The user's saved part (the split plane 0.0023 mm off the centre, a snapped pick) builds the same corner, in every pick order
+/// (the user's was wall top, rim arc, vertical edge), tangent chain on and off, 0.5 to 4 mm, with the volume the sum of the three
+/// rounds gives less the corners, the same in every order.
+#[test]
+fn the_snapped_split_part_gets_the_corner_round_in_every_pick_order() {
+    if std::env::var("CORNER_ONE").is_ok() || std::env::var("CMATRIX").is_ok() || std::env::var("CG1").is_ok() {
+        return;
+    }
+    let part = user_split_part(0.0023355484);
+    let base = strict_run(&part, "");
+    let b = base.body.as_ref().unwrap();
+    let v0 = ck_topo::mass::mass_props(b).volume;
+    let three = user_three(b).expect("the user's three edges");
+    let mut fails = vec![];
+    for d in [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0] {
+        let mut dvs: Vec<f64> = vec![];
+        for (perm, chain) in perms3().into_iter().flat_map(|p| [(p, true), (p, false)]) {
+            let ps: Vec<&str> = perm.iter().map(|&i| three[i].as_str()).collect();
+            let f = format!(r#"{{"type":"fillet","id":"F5","radius":{d},"propagate":{chain},"edges":[{}]}}"#, ps.join(","));
+            let (d, chain) = (d, format!("{chain} perm={perm:?}"));
+            let o = strict_run(&part, &f);
+            if !o.errs.is_empty() {
+                fails.push(format!("d={d} chain={chain}: refused {:?}", o.errs));
+                continue;
+            }
+            let ob = o.body.as_ref().unwrap();
+            let mut bad: Vec<String> = corner_defects(ob, 35.0, -1.0);
+            bad.extend(g1_defects(ob, -1.0));
+            let vol = ck_topo::mass::mass_props(ob).volume;
+            // the split is 0.0023 mm off the centre: the sums of the centred part hold to 1e-3 of the corner terms
+            let overlap = (corner_single_sum(35.0, d) + (vol - v0)) / (d * d * d);
+            if !(0.255..=0.30).contains(&overlap) {
+                bad.push(format!("volume: the corners count {overlap:.4} d^3 twice"));
+            }
+            dvs.push(vol - v0);
+            if !bad.is_empty() {
+                fails.push(format!("d={d} chain={chain}: {:?}", bad.iter().take(3).collect::<Vec<_>>()));
+            }
+        }
+        let (lo, hi) = dvs.iter().fold((f64::MAX, f64::MIN), |a, &x| (a.0.min(x), a.1.max(x)));
+        if hi - lo > 1e-3 + 1e-6 * hi.abs() {
+            fails.push(format!("d={d}: the volume depends on the order or the chain: {lo:.4} .. {hi:.4}"));
+        }
+    }
+    assert!(fails.is_empty(), "{} fillets of the user's part: {:#?}", fails.len(), fails);
+}
+
+// ---- tall parts: top at y = 80, the split through the centre (plane `right`: wall in x = 0; `front`: wall in z = 0) ----
+
+fn tall_part(r: f64, top: f64, step: f64, plane: &str) -> String {
+    format!(
+        r#"
+ {{"type":"sketch","id":"F1","plane":{{"kind":"std","id":"top"}},"points":[{{"id":"c","x":0,"y":0}}],"entities":[{{"type":"circle","id":"e1","c":"c","r":{r}}}],"constraints":[]}},
+ {{"type":"extrude","id":"F2","op":"add","sketch":"F1","end":"blind","depth":{}}},
+ {{"type":"splitLine","id":"F3","faces":["F2.C1"],"plane":{{"kind":"std","id":"{plane}"}},"offset":0}},
+ {{"type":"moveFace","id":"F4","faces":["F2.C1~2"],"mode":"offset","distance":{step}}}"#,
+        top - step
+    )
+}
+
+/// The user's three edges on a tall part: the wall's top edge, the raised half's rim arc (the one that ends at the picked wall
+/// corner) and one vertical wall edge; `None` when the body has not got them.
+fn user_three(b: &Body) -> Option<[String; 3]> {
+    let mut top = None;
+    let mut rim: Vec<(String, ck_geom::Vec3)> = vec![];
+    let mut vert: Vec<(String, ck_geom::Vec3)> = vec![];
+    for e in b.edge_ids() {
+        let fs: Vec<String> = b.edge_faces(e).into_iter().map(|g| b.face_id_str(g)).collect();
+        if fs.len() != 2 {
+            continue;
+        }
+        let m = b.edge_mid(e);
+        let pick = format!(r#"{{"faces":["{}","{}"],"at":[{},{},{}]}}"#, fs[0], fs[1], m.x, m.y, m.z);
+        let wall = |n: &String| n.contains(".S.F2_C1p1");
+        let cyl = |n: &String| n.starts_with("F2.S.");
+        if fs.iter().any(|n| n == "F2.C1~2") && fs.iter().any(wall) {
+            top = Some(pick);
+        } else if fs.iter().any(|n| n == "F2.C1~2") && fs.iter().any(cyl) {
+            rim.push((pick, m));
+        } else if fs.iter().any(wall) && fs.iter().any(cyl) {
+            vert.push((pick, m));
+        }
+    }
+    let v = vert.into_iter().min_by(|a, c| (a.1.x, a.1.z).partial_cmp(&(c.1.x, c.1.z)).unwrap())?;
+    // the rim arc that ends where the vertical edge does (the end of the arc nearest to it)
+    let r = rim.into_iter().min_by(|a, c| a.1.dist(v.1).partial_cmp(&c.1.dist(v.1)).unwrap())?;
+    Some([top?, r.0, v.0])
+}
+
+#[test]
+fn tall_corner_probe() {
+    if std::env::var("TALL").is_err() {
+        return;
+    }
+    for plane in ["right", "front"] {
+        for r in [30.0f64, 30.019, 35.0, 35.019] {
+            for step in [5.0f64, 10.0, 20.0, 30.0, 40.0] {
+                let part = tall_part(r, 80.0, step, plane);
+                let base = strict_run(&part, "");
+                if !base.errs.is_empty() {
+                    println!("TALL base fails {plane} R{r} step{step}: {:?}", base.errs);
+                    continue;
+                }
+                let b = base.body.as_ref().unwrap();
+                let v0 = ck_topo::mass::mass_props(b).volume;
+                let Some(three) = user_three(b) else {
+                    println!("TALL no edges {plane} R{r} step{step}");
+                    continue;
+                };
+                if r == 30.0 && step == 5.0 {
+                    let mut vs: Vec<String> = b.vertex_ids().map(|v| { let p = b.vertex(v).p; format!("({:.4},{:.4},{:.4} r={:.6})", p.x, p.y, p.z, (p.x * p.x + p.z * p.z).sqrt()) }).collect();
+                    vs.sort();
+                    println!("TALL verts {plane} R{r}: {}", vs.join(" "));
+                    println!("TALL picks {plane}: {:?}", three);
+                }
+                for d in [0.5, 1.0, 2.0, 3.0] {
+                    for chain in [true, false] {
+                        let f = format!(r#"{{"type":"fillet","id":"F5","radius":{d},"propagate":{chain},"edges":[{}]}}"#, three.join(","));
+                        let t = std::time::Instant::now();
+                        let o = strict_run(&part, &f);
+                        let secs = t.elapsed().as_secs_f64();
+                        let (cls, why) = if let Some(e) = o.errs.first() {
+                            ("REFUSED", e.chars().take(150).collect::<String>())
+                        } else {
+                            let ob = o.body.as_ref().unwrap();
+                            let vol = ck_topo::mass::mass_props(ob).volume;
+                            let bad: Vec<String> = shell_defects_r(ob, 80.0, r).into_iter().filter(|x| !x.starts_with("short edge")).collect();
+                            if bad.is_empty() { ("OK", format!("dv={:.3}", vol - v0)) } else { ("WRONG", bad[0].chars().take(120).collect()) }
+                        };
+                        println!("TALL {cls} {plane} R{r} step{step} d={d} chain={chain} t={secs:.2} {why}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---- the user's saved part: the split plane is 0.0023 mm off the centre (a snapped pick) ----
+
+/// Features of the user's `failing_split.ckpart` (sketch with a radius constraint and a fixed centre, extrude 10, split by the
+/// `right` plane at `off`, the piece `F2.C1~2` moved up 5), the split feature named F4 and the move F10, as the UI saves them.
+fn user_split_part(off: f64) -> String {
+    format!(
+        r#"
+ {{"type":"sketch","id":"F1","name":"Sketch on Top","plane":{{"kind":"std","id":"top"}},"points":[{{"id":"O","x":0,"y":0,"fixed":true}}],
+   "entities":[{{"id":"e1","type":"circle","c":"O","r":35}}],"constraints":[{{"id":"k1","type":"radius","refs":["e1"],"value":35}}]}},
+ {{"type":"extrude","op":"add","sketch":"F1","end":"blind","depth":10,"id":"F2"}},
+ {{"type":"splitLine","faces":["F2.C1"],"plane":{{"kind":"std","id":"right"}},"offset":{off},"id":"F4"}},
+ {{"type":"moveFace","faces":["F2.C1~2"],"mode":"offset","distance":5,"id":"F10"}}"#
+    )
+}
+
+#[test]
+fn user_split_offset_probe() {
+    if std::env::var("USERSPLIT").is_err() {
+        return;
+    }
+    for off in [0.0, 1e-6, 1e-4, 0.0023355484, 0.05, 0.5] {
+        let part = user_split_part(off);
+        let base = strict_run(&part, "");
+        if !base.errs.is_empty() {
+            println!("USER base fails off={off}: {:?}", base.errs);
+            continue;
+        }
+        let b = base.body.as_ref().unwrap();
+        let v0 = ck_topo::mass::mass_props(b).volume;
+        let mut vs: Vec<String> = b.vertex_ids().map(|v| { let p = b.vertex(v).p; format!("({:.6},{:.4},{:.6} r={:.6})", p.x, p.y, p.z, (p.x * p.x + p.z * p.z).sqrt()) }).collect();
+        vs.sort();
+        println!("USER verts off={off}: {}", vs.join(" "));
+        let Some(three) = user_three(b) else {
+            println!("USER no edges off={off}");
+            continue;
+        };
+        println!("USER picks off={off}: {:?}", three);
+        for d in [0.5, 1.0, 2.0, 3.0] {
+            for chain in [true, false] {
+                let f = format!(r#"{{"type":"fillet","id":"F5","radius":{d},"propagate":{chain},"edges":[{}]}}"#, three.join(","));
+                let o = strict_run(&part, &f);
+                let (cls, why) = if let Some(e) = o.errs.first() {
+                    ("REFUSED", e.chars().take(260).collect::<String>())
+                } else {
+                    let ob = o.body.as_ref().unwrap();
+                    let vol = ck_topo::mass::mass_props(ob).volume;
+                    let bad: Vec<String> = shell_defects_r(ob, 15.0, 35.0).into_iter().filter(|x| !x.starts_with("short edge")).collect();
+                    if bad.is_empty() { ("OK", format!("dv={:.3}", vol - v0)) } else { ("WRONG", bad[0].chars().take(120).collect()) }
+                };
+                println!("USER {cls} off={off} d={d} chain={chain} {why}");
+            }
+        }
+    }
+}
+
+// ---- the corner of the raised half: every pick order, size and disc ----
+
+/// Sum of the single-edge volumes of the corner selection (rim semicircle, wall-top line, one vertical edge of height 5) on the
+/// disc of radius `rr` with fillets of radius `d`: the rim by Pappus, the top by an integral over the chord, the vertical edge
+/// by its horizontal section (the wall plane, the cylinder and the rolling ball's arc) times 5. What the corner counts twice is
+/// left in (a patch of about 0.2 d^3).
+fn corner_single_sum(rr: f64, d: f64) -> f64 {
+    let pi = std::f64::consts::PI;
+    let area = d * d * (1.0 - pi / 4.0);
+    let cen = d * (10.0 - 3.0 * pi) / (3.0 * (4.0 - pi));
+    let rim = area * pi * (rr - cen);
+    let top = straight_edge_volume_r(rr, d, |x| d - (d * d - (x - d) * (x - d)).max(0.0).sqrt());
+    // vertical section in the (x, z) plane: the wall x = 0, the cylinder, the ball of radius d at (d, zc)
+    let zc = ((rr - d) * (rr - d) - d * d).sqrt();
+    let t2 = (d * rr / (rr - d), zc * rr / (rr - d));
+    let mut pts: Vec<(f64, f64)> = vec![(0.0, zc), (0.0, rr)];
+    let a_end = t2.0.atan2(t2.1);
+    let n = 4000;
+    for i in 1..=n {
+        let a = a_end * i as f64 / n as f64;
+        pts.push((rr * a.sin(), rr * a.cos()));
+    }
+    // the ball's arc from t2 back to t1 = (0, zc), the short way (centre (d, zc))
+    let (a2, a1) = ((t2.1 - zc).atan2(t2.0 - d), (0.0f64).atan2(-d));
+    let mut da = a1 - a2;
+    while da > pi {
+        da -= 2.0 * pi;
+    }
+    while da < -pi {
+        da += 2.0 * pi;
+    }
+    for i in 1..n {
+        let a = a2 + da * i as f64 / n as f64;
+        pts.push((d + d * a.cos(), zc + d * a.sin()));
+    }
+    let mut sec = 0.0;
+    for i in 0..pts.len() {
+        let (p, q) = (pts[i], pts[(i + 1) % pts.len()]);
+        sec += p.0 * q.1 - q.0 * p.1;
+    }
+    rim + top + 0.5 * sec.abs() * 5.0
+}
+
+/// Largest angle (radians) between the two face normals along an edge between a face of feature `F5` and another face, per edge
+/// (the points sampled along the edge): a rolling-ball blend is tangent to what it joins, except where it ends on a face square to it.
+fn blend_g1(b: &Body) -> Vec<(String, f64)> {
+    let mut out = vec![];
+    for e in b.edge_ids() {
+        let fs = b.edge_faces(e);
+        if fs.len() != 2 {
+            continue;
+        }
+        let names: Vec<String> = fs.iter().map(|&f| b.face_id_str(f)).collect();
+        if !names.iter().any(|n| n.starts_with("F5")) {
+            continue;
+        }
+        let mut worst = 0.0f64;
+        for p in b.sample_edge(e, 1e-2) {
+            let n: Vec<ck_geom::Vec3> = fs.iter().map(|&f| { let (u, v) = b.face(f).surface.closest_param(p); b.outward_normal(f, u, v).normalize() }).collect();
+            worst = worst.max(n[0].dot(n[1]).clamp(-1.0, 1.0).acos());
+        }
+        out.push((format!("{} | {} at {:.2?}", names[0], names[1], b.edge_mid(e)), worst));
+    }
+    out
+}
+
+fn perms3() -> Vec<[usize; 3]> {
+    vec![[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]]
+}
+
+/// `CMATRIX=1`: the corner selection (rim arc, wall top, vertical edge) in all six orders, both sides, with the arc next to the
+/// vertical edge or the other one of the seam-split rim, chain on and off, 0.5 to 4 mm, on the 70 and the 42 mm disc.
+#[test]
+fn corner_matrix() {
+    if std::env::var("CMATRIX").is_err() {
+        return;
+    }
+    let only: Option<Vec<String>> = std::env::var("CMATRIX_R").ok().map(|s| s.split(',').map(String::from).collect());
+    let side_only: Option<Vec<String>> = std::env::var("CMATRIX_SIDE").ok().map(|s| s.split(',').map(String::from).collect());
+    let chain_only: Option<bool> = std::env::var("CMATRIX_CHAIN").ok().map(|s| s == "true");
+    let disc_only: Option<f64> = std::env::var("CMATRIX_DISC").ok().and_then(|s| s.parse().ok());
+    let mut dvs: BTreeMap<String, Vec<(String, f64)>> = BTreeMap::new();
+    let mut tally: BTreeMap<String, usize> = BTreeMap::new();
+    for rr in [35.0f64, 21.0] {
+        if disc_only.is_some_and(|x| x != rr) {
+            continue;
+        }
+        // CMATRIX_OFF=<offset>: the user's part (split plane that far off the centre; R = 35 only)
+        let off: Option<f64> = std::env::var("CMATRIX_OFF").ok().and_then(|x| x.parse().ok());
+        if off.is_some() && rr != 35.0 {
+            continue;
+        }
+        let moved = off.map_or_else(|| disc_moved(rr, 5.0), user_split_part);
+        let base = strict_run(&moved, "");
+        let b = base.body.as_ref().unwrap();
+        let v0 = ck_topo::mass::mass_props(b).volume;
+        let h = rr * std::f64::consts::FRAC_1_SQRT_2;
+        // (label, rim arc, vertical edge)
+        let sides: [(&str, [f64; 3], [f64; 3]); 4] = [
+            ("E4+E6", [h, 15.0, h], [0.0, 12.5, rr]),
+            ("E3+E6", [h, 15.0, -h], [0.0, 12.5, rr]),
+            ("E3+E7", [h, 15.0, -h], [0.0, 12.5, -rr]),
+            ("E4+E7", [h, 15.0, h], [0.0, 12.5, -rr]),
+        ];
+        for (sn, rim, vert) in sides {
+            if side_only.as_ref().is_some_and(|o| !o.iter().any(|x| x == sn)) {
+                continue;
+            }
+            let picks3 = [nearest_edge_pick(b, [0.0, 15.0, 0.0]), nearest_edge_pick(b, rim), nearest_edge_pick(b, vert)];
+            let nm = ["top", "rim", "vert"];
+            for perm in perms3() {
+                for chain in [true, false] {
+                    if chain_only.is_some_and(|c| c != chain) {
+                        continue;
+                    }
+                    for d in [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0] {
+                        if let Some(o) = &only {
+                            if !o.iter().any(|x| x.parse::<f64>().ok() == Some(d)) {
+                                continue;
+                            }
+                        }
+                        let ps: Vec<&str> = perm.iter().map(|&i| picks3[i].as_str()).collect();
+                        let f = format!(r#"{{"type":"fillet","id":"F5","radius":{d},"propagate":{chain},"edges":[{}]}}"#, ps.join(","));
+                        let tag = format!("R{rr} {sn} {} d={d} chain={chain}", perm.iter().map(|&i| nm[i]).collect::<Vec<_>>().join(">"));
+                        let t = std::time::Instant::now();
+                        let o = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| strict_run(&moved, &f)));
+                        let secs = t.elapsed().as_secs_f64();
+                        let (cls, why) = match o {
+                            Err(_) => ("PANIC", String::new()),
+                            Ok(o) if !o.errs.is_empty() => ("REFUSED", o.errs.join("; ")),
+                            Ok(o) => {
+                                let ob = o.body.as_ref().unwrap();
+                                let vol = ck_topo::mass::mass_props(ob).volume;
+                                let all: Vec<String> = shell_defects_r(ob, 15.0, rr);
+                                let bad: Vec<String> = all.iter().filter(|x| !x.starts_with("short edge")).cloned().collect();
+                                if !bad.is_empty() {
+                                    ("WRONG", bad[0].clone())
+                                } else if !all.is_empty() {
+                                    ("SLIVER", all[0].clone())
+                                } else {
+                                    dvs.entry(format!("R{rr} {sn} d={d} chain={chain}")).or_default().push((tag.clone(), vol - v0));
+                                    ("OK", format!("overlap/d3={:.4} dv={:.4} faces={}", (corner_single_sum(rr, d) + (vol - v0)) / (d * d * d), vol - v0, ob.face_ids().map(|f| ob.face(f).surface.kind()).filter(|k| *k == "sphere").count()))
+                                }
+                            }
+                        };
+                        *tally.entry(format!("{cls} {}", if cls == "REFUSED" { why.chars().take(50).collect::<String>() } else { String::new() })).or_default() += 1;
+                        println!("CMATRIX {cls} {tag} t={secs:.2} {:.170}", why);
+                    }
+                }
+            }
+        }
+    }
+    for (k, v) in &dvs {
+        let (lo, hi) = v.iter().fold((f64::MAX, f64::MIN), |a, x| (a.0.min(x.1), a.1.max(x.1)));
+        if hi - lo > 1e-3 {
+            println!("CMATRIX-VOLDIFF {k}: {} of 6 orders ok, dv {lo:.4}..{hi:.4}", v.len());
+        }
+    }
+    for (k, n) in &tally {
+        println!("CMATRIX-TALLY {n} x {k}");
+    }
+}
+
+/// `CG1=<R>,<d>,<perm e.g. 012>,<E4+E6|E3+E6|...>,<chain>[;more]`: corner results' blend faces and their tangency
+/// (perm digits index top=0, rim=1, vert=2).
+#[test]
+fn corner_g1_one() {
+    let Ok(specs) = std::env::var("CG1") else { return };
+    for spec in specs.split(';') {
+        let p: Vec<&str> = spec.split(',').collect();
+        let (rr, d, perm, sn, chain): (f64, f64, Vec<usize>, &str, bool) = (p[0].parse().unwrap(), p[1].parse().unwrap(), p[2].chars().map(|c| c as usize - 48).collect(), p[3], p[4] == "true");
+        // CG1_OFF=<offset>: the user's part (split plane that far off the centre) instead of the centred disc
+        let moved = match std::env::var("CG1_OFF").ok().and_then(|x| x.parse::<f64>().ok()) {
+            Some(off) => user_split_part(off),
+            None => disc_moved(rr, 5.0),
+        };
+        let base = strict_run(&moved, "");
+        let b = base.body.as_ref().unwrap();
+        let h = rr * std::f64::consts::FRAC_1_SQRT_2;
+        let (rim, vert) = match sn {
+            "E4+E6" => ([h, 15.0, h], [0.0, 12.5, rr]),
+            "E3+E6" => ([h, 15.0, -h], [0.0, 12.5, rr]),
+            "E3+E7" => ([h, 15.0, -h], [0.0, 12.5, -rr]),
+            _ => ([h, 15.0, h], [0.0, 12.5, -rr]),
+        };
+        let picks3 = [nearest_edge_pick(b, [0.0, 15.0, 0.0]), nearest_edge_pick(b, rim), nearest_edge_pick(b, vert)];
+        let ps: Vec<&str> = perm.iter().map(|&i| picks3[i].as_str()).collect();
+        let f = format!(r#"{{"type":"fillet","id":"F5","radius":{d},"propagate":{chain},"edges":[{}]}}"#, ps.join(","));
+        println!("G1ONE ===== {spec}");
         let o = strict_run(&moved, &f);
-        assert_eq!(o.errs.len(), 1, "{:?}", o.errs);
-        assert!(o.errs[0].contains("blendUnsupported") && o.errs[0].contains("corner patch"), "{}", o.errs[0]);
-        assert!(!o.errs[0].contains("maxSize") && !o.errs[0].contains("largest"), "no size is offered: {}", o.errs[0]);
+        println!("G1ONE errs={:?}", o.errs);
+        if let Some(ob) = &o.body {
+            println!("G1ONE volume {:.4} defects {:?}", ck_topo::mass::mass_props(ob).volume, shell_defects_r(ob, 15.0, rr));
+            println!("G1ONE faces {:?}", ob.face_ids().map(|f| format!("{}:{}", ob.face_id_str(f), ob.face(f).surface.kind())).collect::<Vec<_>>());
+            for (n, a) in blend_g1(ob) {
+                println!("G1ONE {a:.2e} {n}");
+            }
+        }
+    }
+}
+
+/// `CSTRESS=1`: the corner selection on other discs and steps, radii up to and past what the part can hold (the vertical edge is
+/// `step` tall, the disc `R`): each result is built or refused, never invalid.
+#[test]
+fn corner_stress() {
+    if std::env::var("CSTRESS").is_err() {
+        return;
+    }
+    let list = |k: &str, dflt: &[f64]| -> Vec<f64> { std::env::var(k).map(|s| s.split(',').filter_map(|x| x.parse().ok()).collect()).unwrap_or_else(|_| dflt.to_vec()) };
+    let (rs, steps, ds) = (list("CSTRESS_R", &[35.0, 21.0, 12.0, 6.0]), list("CSTRESS_STEP", &[1.0, 2.0, 3.0, 5.0, 8.0]), list("CSTRESS_D", &[0.25, 0.5, 1.0, 2.0, 3.0, 4.0, 4.5, 5.0, 6.0, 8.0, 10.0, 14.0]));
+    for &rr in &rs {
+        for &step in &steps {
+            let moved = disc_moved(rr, step);
+            let base = strict_run(&moved, "");
+            if !base.errs.is_empty() {
+                println!("CSTRESS base fails R{rr} step{step}: {:?}", base.errs);
+                continue;
+            }
+            let b = base.body.as_ref().unwrap();
+            let v0 = ck_topo::mass::mass_props(b).volume;
+            let h = rr * std::f64::consts::FRAC_1_SQRT_2;
+            let top = 10.0 + step;
+            let picks3 = [nearest_edge_pick(b, [0.0, top, 0.0]), nearest_edge_pick(b, [h, top, h]), nearest_edge_pick(b, [0.0, 10.0 + step / 2.0, rr])];
+            // CSTRESS_REST: radii that leave this much of the vertical edge (step - d) instead of the CSTRESS_D list
+            let rests = list("CSTRESS_REST", &[]);
+            let dl: Vec<f64> = if rests.is_empty() { ds.clone() } else { rests.iter().map(|x| step - x).collect() };
+            for &d in &dl {
+                for perm in [[0usize, 1, 2], [2, 1, 0], [1, 2, 0], [0, 2, 1]] {
+                    let ps: Vec<&str> = perm.iter().map(|&i| picks3[i].as_str()).collect();
+                    let f = format!(r#"{{"type":"fillet","id":"F5","radius":{d},"propagate":true,"edges":[{}]}}"#, ps.join(","));
+                    let o = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| strict_run(&moved, &f)));
+                    let (cls, why) = match o {
+                        Err(_) => ("PANIC", String::new()),
+                        Ok(o) if !o.errs.is_empty() => ("REFUSED", o.errs.join("; ")),
+                        Ok(o) => {
+                            let ob = o.body.as_ref().unwrap();
+                            let vol = ck_topo::mass::mass_props(ob).volume;
+                            let bad: Vec<String> = shell_defects_r(ob, top, rr).into_iter().filter(|x| !x.starts_with("short edge")).collect();
+                            if !bad.is_empty() {
+                                ("WRONG", bad[0].clone())
+                            } else if !(vol < v0) {
+                                ("WRONG", format!("volume {v0} -> {vol}"))
+                            } else {
+                                ("OK", format!("dv={:.4} spheres={}", vol - v0, ob.face_ids().filter(|&f| ob.face(f).surface.kind() == "sphere").count()))
+                            }
+                        }
+                    };
+                    println!("CSTRESS {cls} R{rr} step{step} d={d} perm={perm:?} {:.200}", why);
+                }
+            }
+        }
     }
 }

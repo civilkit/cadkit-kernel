@@ -59,7 +59,10 @@ The live partition (`Config-0-Partition`, `(partition)` transmit) wins; its body
 follows it in the same stream is decoded (below) but not applied: it is the partition's undo history, and the partition already
 sits at the mark the deltas call current. The ghost partition is used only as a last resort. If the partition holds no solid
 (parts whose geometry is an imported body), the solid bodies of the free-standing part transmits are taken instead, as the open
-readers do.
+readers do. Such a part (one `Imported` feature) has an empty live partition (about 300 bytes, no BODY), its solid in
+`Config-0-FeatureBodies/LocalBodies` and a ghost partition holding one small template sheet face; that ghost sheet is not
+imported as surfaces while a part transmit holds a solid (`sheets_from_partition`). `examples/list_bodies.rs` lists a file's
+streams, transmits and bodies.
 
 ### Deltas (`xt::read_deltas`)
 

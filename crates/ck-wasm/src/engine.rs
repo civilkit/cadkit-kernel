@@ -943,9 +943,11 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
                 }
             } else if cx.msg.get_bool("mesh") != Some(false) {
                 if let Some(mesh) = ctl.stage("tessellation", || ck_tess::mesh::tessellate(body).mesh) {
-                    iss.extend(ck_check::tessellation::check_mesh_ctl(body, &mesh.positions, &mesh.tri_face, &mesh.failed, &mesh.failed_why, &ctl));
+                    let (mi, hairline) = ck_check::tessellation::check_mesh_ctl_notes(body, &mesh.positions, &mesh.tri_face, &mesh.failed, &mesh.failed_why, &ctl);
+                    iss.extend(mi);
                     let ids: Vec<_> = body.face_ids().collect();
                     mesh_notes = mesh.notes.iter().filter_map(|(i, t)| ids.get(*i).map(|&f| format!("{}: {}", body.face_id_str(f), t))).collect();
+                    mesh_notes.extend(hairline);
                 } else {
                     ctl.skip("meshAreaWitness");
                     ctl.skip("meshOpenEdges");
