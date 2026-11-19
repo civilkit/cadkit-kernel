@@ -108,6 +108,49 @@ pub fn gc(b: &mut Body) {
     }
 }
 
+/// Collapse every edge shorter than `lim` into one vertex at its midpoint, dropping the edge
+/// from both loops: the slivers a boolean leaves where a face touches another tangentially
+/// (a cylinder whose top line lies in a plane meets it in a micrometre arc). An edge is kept
+/// when its loop would drop below three edges, when it is closed, or when another edge joins
+/// the same two vertices. Returns how many edges were collapsed.
+pub fn collapse_short_edges(b: &mut Body, lim: f64) -> usize {
+    let mut n = 0;
+    for i in 0..b.edges.len() {
+        let e = EdgeId(i as u32);
+        if !b.edges[i].alive || !(b.edge_length(e) < lim) {
+            continue;
+        }
+        let (v0, v1) = (b.edges[i].v0, b.edges[i].v1);
+        if v0 == v1 {
+            continue;
+        }
+        let parallel = b.edge_ids().any(|g| g != e && ((b.edge(g).v0 == v0 && b.edge(g).v1 == v1) || (b.edge(g).v0 == v1 && b.edge(g).v1 == v0)));
+        let cs = b.edge_coedges(e);
+        let short_loop = cs.iter().any(|&c| b.loops[b.coedges[c.idx()].lp.idx()].coedges.iter().filter(|&&x| b.coedges[x.idx()].alive).count() < 3);
+        if parallel || short_loop {
+            continue;
+        }
+        b.vertices[v0.idx()].p = (b.vertices[v0.idx()].p + b.vertices[v1.idx()].p).scale(0.5);
+        for ed in b.edges.iter_mut() {
+            if ed.v0 == v1 {
+                ed.v0 = v0;
+            }
+            if ed.v1 == v1 {
+                ed.v1 = v0;
+            }
+        }
+        for c in cs {
+            b.coedges[c.idx()].alive = false;
+            let lp = b.coedges[c.idx()].lp;
+            b.loops[lp.idx()].coedges.retain(|&x| x != c);
+        }
+        b.edges[i].alive = false;
+        b.vertices[v1.idx()].alive = false;
+        n += 1;
+    }
+    n
+}
+
 /// Split face `f` with a new edge `curve[t0,t1]` from vertex `va` (at t0)
 /// to `vb` (at t1); both must lie on the same loop of `f`. The original
 /// face keeps the part containing the loop run va→vb; the other part

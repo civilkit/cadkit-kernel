@@ -68,6 +68,8 @@ const FIX: Record<string, (feature: string, params: Record<string, unknown>) => 
       : Array.isArray(p.faces) && p.faces.length
         ? `${f}: boolean failed — the result could not be closed around ${p.faces.slice(0, 4).join(', ')}${Array.isArray(p.at) ? ` (near ${p.at.map((x) => (typeof x === 'number' ? +x.toFixed(2) : x)).join(', ')})` : ''}${typeof p.issue === 'string' ? ` [${p.issue}]` : ''}: those faces touch tangentially or lie within ~1e-3 of each other along a rim — move the tool by a small amount (0.01), unite the bodies that touch each other first, or make the near-coincident faces exactly coincident`
         : `${f}: boolean failed — check the tool and target overlap in a volume, not just a face`,
+  booleanTangent: (f, p) =>
+    `${f}: ${typeof p.detail === 'string' ? p.detail : 'the combined body would not be a closed solid: two walls touch without crossing'} — ${typeof p.hint === 'string' && p.hint ? p.hint : 'move one operand by a small amount (0.01) so the walls either cross or stay apart'}`,
   shellTooThick: (f, p) =>
     typeof p.detail === 'string' && typeof p.maxThickness === 'number'
       ? `${f}: ${p.detail} — reduce thickness to ${p.maxThickness} mm or less`

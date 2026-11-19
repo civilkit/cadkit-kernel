@@ -210,8 +210,12 @@ Patches a hole bounded by a chain of edges.
 | `continuity` | string | `"G0"` | `G0`, `G1`, `G2` or `G3`. On a planar boundary the patch is a plane whatever the value. |
 | `fairing` | string | `"meowNURBS"` | `meowNURBS`, `plate`, `curvature` or `variation`. |
 | `guideStrength` | number | `0.5` | Strength of the fairing guide. |
+| `patch` | string | `"single"` | `single` or `nSided`. `nSided` fills a closed ring of at least 3 edges with N bicubic faces round a centre vertex instead of one planar or ruled face (`continuity` is then `G0` or `G1`; `fairing` and `guideStrength` are not used). |
+| `patchTolerance` | number | `1e-4` | `nSided` only: the largest distance of a patch side from the edge it stands for, in mm. |
 
 The patch is one face, `F`. Errors: `missingReference`, `fillNotClosed {detail}` (the chain is open), `fillInvalid` (the edges do not form one chain), `fillFailed {detail}`.
+
+With `patch: "nSided"` each ring edge is split at its parameter midpoint, N inner seam edges run from those midpoints to a new centre vertex, and the faces are `F5.N0` to `F5.N<N-1>`, numbered along the ring in the order of the picks. With `G1` each edge that borders a face leaves tangent to it. Extra errors: `fillContinuity` (`G2` and `G3` are refused), `fillInvalid` for a tolerance that is not positive, a ring of fewer than 3 edges or an unknown `patch`, `fillFailed {detail}` when the patches cannot meet the boundary within `patchTolerance`.
 
 An open box (walls and floor knitted into a sheet `F4`), then the four rim edges filled:
 

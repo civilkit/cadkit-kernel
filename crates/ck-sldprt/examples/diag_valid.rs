@@ -22,6 +22,8 @@ fn kind(s: &Surface) -> String {
         Surface::BSpline(b) => format!("bspline {}x{}", b.deg_u, b.deg_v),
         Surface::Screw { .. } => "screw".into(),
         Surface::Offset { base, dist } => format!("offset({}) {dist:.3}", kind(base)),
+        Surface::Sweep(_) => "sweep".into(),
+        Surface::Blend(_) => "blend".into(),
     }
 }
 

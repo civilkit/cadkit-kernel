@@ -66,3 +66,16 @@ fn zero_faces_is_an_error() {
     let e = import_sat(t).unwrap_err();
     assert_eq!(e.code, "sat.empty");
 }
+
+/// A string length (`@n`) past the end of the file, or one so large that adding it to the offset overflows, is a parse
+/// error with a line number, not a panic (debug builds overflowed) or a silently truncated string.
+#[test]
+fn string_length_past_end_is_parse_error() {
+    let t = box_sat();
+    for n in ["18446744073709551615", "99999999"] {
+        let bad = t.replacen("forward @7 unknown", &format!("forward @{n} unknown"), 1);
+        let e = import_sat(&bad).err().unwrap_or_else(|| panic!("@{n} should be refused"));
+        assert_eq!(e.code, "sat.parse", "{e}");
+        assert!(e.line >= 4, "{e}");
+    }
+}

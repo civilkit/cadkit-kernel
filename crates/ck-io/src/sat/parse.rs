@@ -125,7 +125,11 @@ pub fn parse_table(text: &str) -> Result<Table, SatError> {
                 }
                 let n: usize = body[i + 1..j].parse().unwrap_or(0);
                 j += 1; // the single separating space
-                let end = (j + n).min(bytes.len());
+                // a length past the end of the file (or one that overflows) is a malformed string, not a short read
+                let end = match j.checked_add(n) {
+                    Some(e) if e <= bytes.len() => e,
+                    _ => return Err(SatError::parse(line, "string length (@n) runs past the end of the file")),
+                };
                 let s = String::from_utf8_lossy(&bytes[j.min(end)..end]).to_string();
                 line += s.bytes().filter(|&b| b == b'\n').count();
                 cur.push(s);

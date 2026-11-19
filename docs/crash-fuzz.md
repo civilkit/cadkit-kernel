@@ -144,3 +144,32 @@ old and the CPU-clock harness give 94 and 95 on the same wasm. Three mechanisms:
    not refused).
 
 `case_4392` was not caused by the tessellator commits `faa77119` and `be8f8987`: the same result is on their parent.
+
+## Triage on main `1d7b6e81` (CI box, seed 7, 5000 cases, budget 400 ms, timeout 6000 CPU ms)
+
+The 71 regressions and 94 invalid results counted against the reverted baseline were already gone on this main (the slab and
+ring fixes above, baseline `c7609b88`). The box run gave ok 675, structured-error 4300, invalid-result 9, surface-only 13,
+degenerate 2, trap 0, hang 1, and `--check` 1 regression (`case_175`). No trap or panic; the 9 invalid results are the 9 of the
+baseline. Each one is a fault with a cause, so they were grouped and fixed, not kept in the baseline:
+
+| cases | class | root cause | fix | test |
+|---:|---|---|---|---|
+| 5 (`1517`, `1757`, `2140`, `3431`, `4236`) | `EDGE_OFF_SURFACE` | a revolve whose profile line is almost perpendicular to the axis over a radius of 1e6 to 1e8 makes a cone within rounding of 90 degrees; held as (semi-angle, axial v) its radius is off by about `2.2e-16 * dr^2 / dz` (1e-4 to 0.4 mm) | refused: `revolveDegenerate` with `segment`, `detail` (the error) and `hint` when that error exceeds what the edge check allows there, 1e-5 * (1 + distance from the origin) (`nearly_flat_cone`, `ck-topo/src/make/revolve.rs`) | `revolve::tests::nearly_flat_cone_refused_shallow_cone_kept`, `fuzz_invalid_results.rs` |
+| 3 (`1714`, `4935`, `3811`) | `TESSELLATION_OPEN` | a partial revolve wider than half a turn of a profile reaching the axis (cone wedge apex; sphere wedges too): the loop crosses the pole and the next meridian's u was unwrapped to the nearest copy, a period off, so the strip meshed the complement | the run after a pole crossing moves by a whole period so the loop closes and turns with the face sense (`pole_loop_fix`, `ck-tess/src/face.rs`) | `ck-tess/tests/poles.rs` `wedges_through_a_pole_mesh_closed`, `fuzz_invalid_results.rs` |
+| 1 (`244`) | `TESSELLATION_OPEN` (false) | the cone ends in a rim circle of radius 1e-4; the mesh is closed bit for bit, but the open-edge check welds at 1.7e-4 and merged the rim's points into a few, order-dependently | a mesh closed with exactly matched vertices has no open edge (`exact_closed`, `ck-check/src/tessellation.rs`) | `fuzz_invalid_results.rs` `cone_wedge_and_tiny_rim_mesh_closed` |
+| 1 (`175`) | hang (load) | a cut beside a 16 m thin thickened tube: no face interaction, so containment decides by the winding number, which refines to resolution 16 without polling the budget (0.4 s in wasm here, 6 s on the loaded box) | the winding number stops refining when the budget is out, and the disjoint check then returns `booleanBudgetExceeded` | `region::tests::winding_number_stops_refining_when_the_budget_runs_out` |
+
+Two more panics found on the way (debug builds only, in the import mutation fuzz): a SAT `@n` string length past the end of
+the file overflowed `j + n` (now `sat.parse` with the line), and a pcurve fit over a curve range with an infinite turn count
+overflowed `32 + usize::MAX` (saturating now). `fill`'s `order_chain` indexed `chain[0]` on an empty chain (now `fillInvalid`).
+
+Still open: a cone wedge of 355 degrees or more whose loop starts at the apex meshes nothing (it fails the same way before the
+pole fix; the strip window, not the pole crossing). Not hit by the fuzz.
+
+After the fixes (`3df28baa`, same parameters): ok 689, structured-error 4296, surface-only 13, degenerate 2, invalid-result 0,
+trap 0, hang 0; `--check` 0 regressions. The baseline was re-recorded from that run (label `crashfuzz-triage-3df28baa`). It
+differs from the previous one in ten cases: the nine former invalid results (four now `ok`, the five near-flat cones
+`structured-error`) and `case_3416` (`structured-error` to `ok`, a budget case). A further ten cases that ran out of their
+400 ms budget on the loaded box (`booleanBudgetExceeded`) finish on a quiet machine; both are pass classes. The slowest case
+used 1.5 s of CPU time on a quiet machine. On the CI box (loaded): ok 680, structured-error 4305, surface-only 13, degenerate 2,
+no invalid result, trap or hang, 0 regressions.

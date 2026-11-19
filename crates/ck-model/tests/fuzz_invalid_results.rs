@@ -52,6 +52,43 @@ fn patterns_and_mirrors_of_a_slab_refuse_or_stay_valid() {
     }
 }
 
+/// A revolve whose profile has a line almost perpendicular to the axis over a huge radius (1e6 to 1e8 mm long, under a
+/// millimetre to a few tens high) gave a cone whose semi-angle is within rounding of 90 degrees: its edges were 1e-4 to
+/// 0.4 mm off the surface (`EDGE_OFF_SURFACE`, cases 1517, 1757, 2140, 3431, 4236). It is refused with the segment, the
+/// error and a hint.
+#[test]
+fn revolve_of_a_nearly_flat_cone_is_refused() {
+    for (name, json) in [
+        ("case_1517", include_str!("fixtures/fuzz_case_1517.json")),
+        ("case_1757", include_str!("fixtures/fuzz_case_1757.json")),
+        ("case_2140", include_str!("fixtures/fuzz_case_2140.json")),
+    ] {
+        let part = Part::parse(json).unwrap();
+        let mut ex = Exec(Brep::new());
+        let res = regen::regen(&part, &RegenOpts::default(), &mut ex);
+        let e = res.errors.iter().find(|e| e.feature == "F2").unwrap_or_else(|| panic!("{name}: revolve not refused"));
+        assert_eq!(e.error.code, "revolveDegenerate", "{name}");
+        assert!(e.error.params.iter().any(|(k, _)| k == "hint"), "{name}: no hint");
+        let (_, issues) = outcome(json);
+        assert!(issues.is_empty(), "{name}: {issues:?}");
+    }
+}
+
+/// A 237-degree revolve of a triangle with its apex on the axis (and a zero-length line, as the fuzz draws it: cases 1714
+/// and 4935) meshed the complement of the cone wedge (TESSELLATION_OPEN). A full revolve of a cone that ends in a rim circle
+/// of radius 1e-4 (case 244) meshes closed bit for bit, but the open-edge check's 1.7e-4 weld merged the rim's points and
+/// reported 31 open edges.
+#[test]
+fn cone_wedge_and_tiny_rim_mesh_closed() {
+    for (name, json) in [
+        ("cone wedge 237", include_str!("fixtures/fuzz_cone_wedge_237.json")),
+        ("rim 1e-4", include_str!("fixtures/fuzz_cone_rim_1e-4.json")),
+    ] {
+        let (errors, issues) = outcome(json);
+        assert!(errors.is_empty() && issues.is_empty(), "{name}: {errors:?} {issues:?}");
+    }
+}
+
 /// The slab itself is a valid solid (K22); only combining it with a second operand is refused.
 #[test]
 fn single_slab_stays_valid() {

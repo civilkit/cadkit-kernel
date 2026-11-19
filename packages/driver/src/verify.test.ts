@@ -170,6 +170,17 @@ describe('booleanFailed hint', () => {
   });
 });
 
+describe('booleanTangent hint', () => {
+  it('says what is wrong and how to fix it, from the kernel detail and hint', () => {
+    const h = hintFor('F48', 'booleanTangent', { euler: -35, detail: 'the combined body would not be a closed solid at F23.S.e1~2', hint: 'move one operand' });
+    assert.equal(h.hint, 'F48: the combined body would not be a closed solid at F23.S.e1~2 — move one operand');
+  });
+  it('still explains itself without them (older kernels sent only euler and hint)', () => {
+    const h = hintFor('F48', 'booleanTangent', { euler: -45 });
+    assert.ok(h.hint.includes('not be a closed solid') && h.hint.includes('0.01') && !h.hint.includes('field table'), h.hint);
+  });
+});
+
 describe('refusal hints keep the kernel detail', () => {
   it('shellUnsupported says why when the kernel says why', () => {
     const h = hintFor('F3', 'shellUnsupported', { detail: 'the opened faces F2.C0 and F2.C1 lie on one plane' });

@@ -1108,7 +1108,7 @@ impl Body {
                 Curve::Line { .. } => 1,
                 Curve::Circle { r, .. } => arc_segments(*r, ed.t1 - ed.t0, tol),
                 Curve::Ellipse { a, b, .. } => arc_segments(a.max(*b), ed.t1 - ed.t0, tol),
-                Curve::BSpline(_) | Curve::Conic { .. } | Curve::Sinusoid { .. } => {
+                _ => {
                     let len = ed.curve.length_between(ed.t0, ed.t1);
                     ((len / (8.0 * tol).sqrt().max(1e-9)).ceil() as usize).clamp(2, 512)
                 }
@@ -1211,7 +1211,10 @@ pub fn transform_surface(s: &Surface, x: &Xform) -> Surface {
             }
         }
         Surface::Offset { base, dist } => Surface::Offset { base: Box::new(transform_surface(base, x)), dist: *dist },
+        // procedural kinds carry their own transform (parameterisation kept)
+        Surface::Sweep(_) | Surface::Blend(_) => s.transform_dyn(&|p| x.apply_point(p), &|d| x.apply_vec(d)),
     }
+
 }
 
 #[cfg(test)]

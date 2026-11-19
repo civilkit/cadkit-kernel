@@ -26,7 +26,10 @@
 //! - sinusoid: graph of a sine in the frame plane,
 //!   p(t) = o + t·x + a·sin(ω t + φ)·y.
 
+use crate::curve2::Curve2;
 use crate::nurbs::bspline::{newton_closest, BSplineCurve, GL8};
+use crate::procedural::{self as pr, CompositeCurve, OffsetRef};
+use crate::surface::Surface;
 use crate::{any_perp, frame_from, Frame, Vec3};
 use std::f64::consts::TAU;
 
@@ -49,6 +52,20 @@ pub enum Curve {
     /// p(t) = o + t·x + a·sin(ω t + φ)·y (unbounded in t).
     Sinusoid { frame: Frame, amp: f64, freq: f64, phase: f64 },
     BSpline(BSplineCurve),
+    /// Procedural: ordered pieces joined end to end, one parameter
+    /// (see [`crate::procedural`]).
+    Composite(Box<CompositeCurve>),
+    /// Procedural: P = C + d·unit(C' × N), N a fixed normal or a surface's
+    /// normal at the foot of C.
+    Offset { base: Box<Curve>, dist: f64, dir: OffsetRef },
+    /// Procedural: the foot of `base` on `surf`, along the surface normal
+    /// (`dir: None`) or along `dir`.
+    Projected { base: Box<Curve>, surf: Box<Surface>, dir: Option<Vec3> },
+    /// Procedural: C(t) = surf(uv(t)).
+    OnSurface { surf: Box<Surface>, uv: Curve2 },
+    /// Procedural: the iso line u = `at` (`fixed_u`) or v = `at` of `surf`,
+    /// run along the other parameter t (−t when `rev`).
+    Iso { surf: Box<Surface>, fixed_u: bool, at: f64, rev: bool },
 }
 
 /// Pushes the bits of a point (exact content keys, see [`Curve::push_key`]).
@@ -107,7 +124,114 @@ impl Curve {
                     }
                 }
             }
+            _ => {
+                pr::proc_push_key(self, out);
+            }
         }
+    }
+
+    /// Is this one of the procedural kinds (kept as a definition, converted to
+    /// a B-spline on demand)?
+    pub fn is_procedural(&self) -> bool {
+        matches!(self, Curve::Composite(_) | Curve::Offset { .. } | Curve::Projected { .. } | Curve::OnSurface { .. } | Curve::Iso { .. })
+    }
+
+    /// Depth of nested procedural definitions (0 for the plain kinds).
+    pub fn nesting(&self) -> usize {
+        match self {
+            Curve::Composite(cc) => 1 + cc.segs.iter().map(|g| g.curve.nesting()).max().unwrap_or(0),
+            Curve::Offset { base, dir, .. } => {
+                let s = match dir {
+                    OffsetRef::Surface(s) => s.nesting(),
+                    OffsetRef::Normal(_) => 0,
+                };
+                1 + base.nesting().max(s)
+            }
+            Curve::Projected { base, surf, .. } => 1 + base.nesting().max(surf.nesting()),
+            Curve::OnSurface { surf, .. } | Curve::Iso { surf, .. } => 1 + surf.nesting(),
+            _ => 0,
+        }
+    }
+
+    /// Composite of `(curve, t0, t1)` pieces in order (ends within `gap_tol`).
+    pub fn composite(pieces: Vec<(Curve, f64, f64)>, gap_tol: f64) -> Result<Curve, String> {
+        Ok(Curve::Composite(Box::new(CompositeCurve::new(pieces, gap_tol)?)))
+    }
+
+    /// Offset of `base` by `dist` along unit(C' × N), N the fixed `normal`.
+    pub fn offset(base: Curve, dist: f64, normal: Vec3) -> Result<Curve, String> {
+        if !(normal.len() > 1e-12) || !dist.is_finite() {
+            return Err("offset curve: zero normal or non-finite distance".into());
+        }
+        Self::check_nest(&base)?;
+        Ok(Curve::Offset { base: Box::new(base), dist, dir: OffsetRef::Normal(normal.normalize()) })
+    }
+
+    /// Offset of `base` by `dist` in the tangent planes of `surf` (along
+    /// unit(C' × n), n the surface normal at the foot of C).
+    pub fn offset_on(base: Curve, dist: f64, surf: Surface) -> Result<Curve, String> {
+        if !dist.is_finite() {
+            return Err("offset curve: non-finite distance".into());
+        }
+        Self::check_nest(&base)?;
+        if surf.nesting() >= pr::MAX_NESTING {
+            return Err("offset curve: surface nested too deep".into());
+        }
+        Ok(Curve::Offset { base: Box::new(base), dist, dir: OffsetRef::Surface(Box::new(surf)) })
+    }
+
+    /// Projection of `base` onto `surf`, along the normal (`dir: None`) or `dir`.
+    pub fn projected(base: Curve, surf: Surface, dir: Option<Vec3>) -> Result<Curve, String> {
+        Self::check_nest(&base)?;
+        if surf.nesting() >= pr::MAX_NESTING {
+            return Err("projected curve: surface nested too deep".into());
+        }
+        if let Some(d) = dir {
+            if !(d.len() > 1e-12) {
+                return Err("projected curve: zero direction".into());
+            }
+        }
+        Ok(Curve::Projected { base: Box::new(base), surf: Box::new(surf), dir: dir.map(|d| d.normalize()) })
+    }
+
+    /// The pcurve `uv` on `surf` as a 3D curve.
+    pub fn on_surface(surf: Surface, uv: Curve2) -> Curve {
+        Curve::OnSurface { surf: Box::new(surf), uv }
+    }
+
+    /// Iso line u = `at` (`fixed_u`) or v = `at` of `surf`.
+    pub fn iso(surf: Surface, fixed_u: bool, at: f64) -> Curve {
+        Curve::Iso { surf: Box::new(surf), fixed_u, at, rev: false }
+    }
+
+    fn check_nest(base: &Curve) -> Result<(), String> {
+        if base.nesting() >= pr::MAX_NESTING {
+            return Err(format!("procedural curve nested more than {} levels", pr::MAX_NESTING));
+        }
+        Ok(())
+    }
+
+    /// Parameter of [`Self::reversed`] at the point of this curve's `t`:
+    /// lines and open conics −t, closed conics 2π − t, splines a + b − t,
+    /// composites L − t, offsets and projections their base's map.
+    pub fn reversed_param(&self, t: f64) -> f64 {
+        match self {
+            Curve::Circle { .. } | Curve::Ellipse { .. } => TAU - t,
+            Curve::Conic { e, .. } if e.abs() < 1.0 => TAU - t,
+            Curve::BSpline(b) => {
+                let (a, e) = b.domain();
+                a + e - t
+            }
+            Curve::Line { .. } | Curve::Conic { .. } | Curve::Sinusoid { .. } => -t,
+            _ => pr::proc_reversed_param(self, t).unwrap_or(-t),
+        }
+    }
+
+    /// A B-spline of this curve over `[t0, t1]` within `tol` at the same
+    /// parameters, with its measured deviation bound (0 where the B-spline is
+    /// the curve exactly); see [`crate::procedural::certified_nurbs`].
+    pub fn to_nurbs_within(&self, t0: f64, t1: f64, tol: f64) -> Result<(BSplineCurve, f64), String> {
+        pr::certified_nurbs(self, t0, t1, tol)
     }
 
     /// Line through `o` with direction `d` (normalised).
@@ -171,6 +295,11 @@ impl Curve {
             Curve::Conic { .. } => "conic",
             Curve::Sinusoid { .. } => "sinusoid",
             Curve::BSpline(_) => "spline",
+            Curve::Composite(_) => "composite",
+            Curve::Offset { .. } => "offset",
+            Curve::Projected { .. } => "projected",
+            Curve::OnSurface { .. } => "pcurve",
+            Curve::Iso { .. } => "iso",
         }
     }
 
@@ -201,6 +330,7 @@ impl Curve {
                 (t, TAU - t)
             }
             Curve::BSpline(b) => b.domain(),
+            _ => pr::proc_range(self).unwrap(),
         }
     }
 
@@ -209,6 +339,16 @@ impl Curve {
         match self {
             Curve::Circle { .. } | Curve::Ellipse { .. } => Some(TAU),
             Curve::Conic { e, .. } if e.abs() < 1.0 => Some(TAU),
+            Curve::Offset { base, .. } | Curve::Projected { base, .. } => base.period(),
+            Curve::OnSurface { uv, .. } => uv.period(),
+            Curve::Iso { surf, fixed_u, .. } => {
+                let (pu, pv) = surf.periods();
+                if *fixed_u {
+                    pv
+                } else {
+                    pu
+                }
+            }
             _ => None,
         }
     }
@@ -226,6 +366,33 @@ impl Curve {
                 frame.o + frame.x * t + frame.y * (amp * (freq * t + phase).sin())
             }
             Curve::BSpline(c) => c.eval(t),
+            Curve::Composite(cc) => {
+                let (i, lt) = cc.locate(t);
+                cc.segs[i].curve.eval(lt)
+            }
+            Curve::OnSurface { surf, uv } => {
+                let p = uv.eval(t);
+                surf.eval(p.x, p.y)
+            }
+            Curve::Iso { surf, fixed_u, at, rev } => {
+                let x = if *rev { -t } else { t };
+                if *fixed_u {
+                    surf.eval(*at, x)
+                } else {
+                    surf.eval(x, *at)
+                }
+            }
+            Curve::Offset { base, dist, dir: OffsetRef::Normal(n) } => {
+                let c = base.derivs1_arr(t);
+                c[0] + c[1].cross(*n).normalize() * *dist
+            }
+            Curve::Offset { base, dist, dir: OffsetRef::Surface(s) } => {
+                let c = base.derivs1_arr(t);
+                let (u, v) = s.closest_param(c[0]);
+                c[0] + c[1].cross(pr::cross_normal(s, u, v)).normalize() * *dist
+            }
+            Curve::Projected { base, surf, dir: None } => surf.closest_point(base.eval(t)).2,
+            Curve::Projected { .. } => pr::proc_d2(self, t).unwrap()[0],
         }
     }
 
@@ -245,6 +412,7 @@ impl Curve {
             Curve::Conic { frame, p, e } => polar_derivs(frame, *p, *e, t, n),
             Curve::Sinusoid { frame, amp, freq, phase } => sinusoid_derivs(frame, *amp, *freq, *phase, t, n),
             Curve::BSpline(c) => c.derivs(t, n),
+            _ => pr::proc_derivs(self, t, n).unwrap(),
         }
     }
 
@@ -257,6 +425,9 @@ impl Curve {
             Curve::BSpline(c) if c.degree < 12 => c.derivs_arr(t, 2),
             Curve::Circle { frame, r } => conic_derivs_arr(frame, *r, *r, t),
             Curve::Ellipse { frame, a, b } => conic_derivs_arr(frame, *a, *b, t),
+            Curve::Composite(_) | Curve::Offset { .. } | Curve::Projected { .. } | Curve::OnSurface { .. } | Curve::Iso { .. } => {
+                pr::proc_d2(self, t).unwrap()
+            }
             _ => {
                 let v = self.derivs(t, 2);
                 [v[0], v[1], v[2]]
@@ -383,6 +554,7 @@ impl Curve {
                 best.1
             }
             Curve::BSpline(c) => c.closest_param_cached(q),
+            _ => pr::proc_closest(self, q).unwrap(),
         }
     }
 
@@ -411,6 +583,7 @@ impl Curve {
                 s
             }
             Curve::BSpline(c) => c.length_between(t0, t1),
+            _ => pr::proc_length(self, t0, t1).unwrap(),
         }
     }
 
@@ -440,6 +613,7 @@ impl Curve {
                 phase: -*phase,
             },
             Curve::BSpline(c) => Curve::BSpline(c.reversed()),
+            _ => pr::proc_reversed(self).unwrap(),
         }
     }
 
@@ -447,6 +621,13 @@ impl Curve {
     /// (g = linear part). Exact for rigid motions; conics assume `g` is a
     /// similarity (radius scaled by |g(x)|).
     pub fn transform(&self, f: impl Fn(Vec3) -> Vec3, g: impl Fn(Vec3) -> Vec3) -> Curve {
+        self.transform_dyn(&f, &g)
+    }
+
+    /// [`Self::transform`] through trait objects (the procedural kinds recurse
+    /// into their sub-curves and surfaces). Procedural kinds keep their
+    /// parameterisation: `result.eval(t) = f(self.eval(t))`.
+    pub fn transform_dyn(&self, f: &dyn Fn(Vec3) -> Vec3, g: &dyn Fn(Vec3) -> Vec3) -> Curve {
         let tf = |fr: &Frame| -> (Frame, f64) {
             let x = g(fr.x);
             let s = x.len();
@@ -472,8 +653,10 @@ impl Curve {
                 let (fr, s) = tf(frame);
                 Curve::Sinusoid { frame: fr, amp: amp * s, freq: freq / s, phase: *phase }
             }
-            Curve::BSpline(c) => Curve::BSpline(c.map(&f)),
+            Curve::BSpline(c) => Curve::BSpline(c.map(f)),
+            _ => pr::proc_transform(self, f, g).unwrap(),
         }
+
     }
 
     /// `n+1` evenly spaced samples over [t0,t1].

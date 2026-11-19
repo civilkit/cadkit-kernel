@@ -1220,8 +1220,14 @@ pub(crate) fn offset_spline_edge(src: &Body, e: EdgeId, moved: &[Option<Surface>
         fs.iter().map(|&f| dnat(f, pm).abs()).fold(0.0f64, f64::max)
     };
     // (a long edge whose end vertices slid along it as well: the first or last sample of the old edge's
-    // parameter then falls beyond the moved end and the fit would double back; those are chord-sampled too)
+    // parameter then falls beyond the moved end and the fit would double back; those are chord-sampled too.
+    // Only an edge that runs roughly along its chord: one that winds far from it, the long part of a closed
+    // intersection loop split at two nearby vertices, would be replaced by the short way between its ends)
+    let along_chord = src.edge_length(e) < 1.5 * ed.curve.eval(ed.t0).dist(ed.curve.eval(ed.t1));
     let ends_slid = || {
+        if !along_chord {
+            return false;
+        }
         let l = p0.dist(p1);
         let dir = (p1 - p0).normalize();
         let at = |k: f64| sample(ed.t0 + (ed.t1 - ed.t0) * k / 24.0).ok().map(|q| (q - p0).dot(dir));

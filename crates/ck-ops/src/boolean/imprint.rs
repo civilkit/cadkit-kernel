@@ -732,11 +732,37 @@ pub fn imprint_hooked(a: &Body, b: &Body, tol: f64, hook: Option<PairHook>) -> A
         for e in body.edge_ids() {
             let ed = body.edge(e);
             let ts = split_params(&ed.curve, ed.t0, ed.t1);
+            // pool vertex of every breakpoint (the ends are the edge's own vertices)
+            let mut bp: Vec<(f64, usize)> = ts
+                .iter()
+                .map(|&t| {
+                    let p = if t == ed.t0 {
+                        body.vertex(ed.v0).p
+                    } else if t == ed.t1 {
+                        body.vertex(ed.v1).p
+                    } else {
+                        ed.curve.eval(t)
+                    };
+                    (t, arr.vertex(p))
+                })
+                .collect();
+            // a split point that welds to the vertex of its neighbour leaves a piece with no length between two
+            // breakpoints of one vertex (the edge's curve ends a hair short of its vertex, so the vertex itself
+            // projects inside the range and splits it): drop the interior breakpoint so the piece merges into its
+            // neighbour; a zero-length closed piece makes the loop visit the vertex twice and the shell's Euler
+            // characteristic odd
+            let mut k = 1;
+            while k + 1 < bp.len() {
+                if bp[k].1 == bp[k - 1].1 || bp[k].1 == bp[k + 1].1 {
+                    super::bool_dbg!("dropped a split of edge {} (side {s}) at t={} that welds to its neighbour's vertex", e.idx(), bp[k].0);
+                    bp.remove(k);
+                } else {
+                    k += 1;
+                }
+            }
             let mut out = vec![];
-            for w in ts.windows(2) {
-                let v0 = if w[0] == ed.t0 { arr.vertex(body.vertex(ed.v0).p) } else { arr.vertex(ed.curve.eval(w[0])) };
-                let v1 = if w[1] == ed.t1 { arr.vertex(body.vertex(ed.v1).p) } else { arr.vertex(ed.curve.eval(w[1])) };
-                out.push(arr.edge(&ed.curve, w[0], w[1], v0, v1, Some((s, e))));
+            for w in bp.windows(2) {
+                out.push(arr.edge(&ed.curve, w[0].0, w[1].0, w[0].1, w[1].1, Some((s, e))));
             }
             pieces[s][e.idx()] = out;
         }

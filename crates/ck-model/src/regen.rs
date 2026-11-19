@@ -264,12 +264,43 @@ impl FeatureError {
                 );
         }
         // an exact tangency whose result has an odd Euler characteristic:
-        // `booleanTangent;euler=<n>;hint=<text>`
+        // `booleanTangent;euler=<n>[;faces=<a|b..>;at=<x|y|z>];hint=<text>`. `detail` says what is wrong in
+        // one sentence (the app shows `detail`, then `hint`); `faces` and `at` name where, when the kernel found it.
         if let Some((c, d)) = code.split_once(";euler=") {
-            let (n, hint) = d.split_once(";hint=").unwrap_or((d, ""));
-            return FeatureError { code: c.to_string(), params: Vec::new() }
-                .with("euler", Json::Num(n.parse::<f64>().unwrap_or(0.0)))
-                .with("hint", Json::Str(hint.to_string()));
+            let (head, hint) = d.split_once(";hint=").unwrap_or((d, ""));
+            let (n, rest) = head.split_once(';').unwrap_or((head, ""));
+            let mut faces: Vec<Json> = vec![];
+            let mut at: Vec<Json> = vec![];
+            for kv in rest.split(';') {
+                if let Some(v) = kv.strip_prefix("faces=") {
+                    faces = v.split('|').filter(|s| !s.is_empty()).map(|s| Json::Str(s.to_string())).collect();
+                } else if let Some(v) = kv.strip_prefix("at=") {
+                    at = v.split('|').filter_map(|x| x.parse::<f64>().ok()).map(Json::Num).collect();
+                }
+            }
+            let euler = n.parse::<f64>().unwrap_or(0.0);
+            let near = if at.len() == 3 {
+                let xs: Vec<String> = at.iter().map(|j| if let Json::Num(x) = j { format!("{:.2}", x) } else { String::new() }).collect();
+                format!(" near ({})", xs.join(", "))
+            } else {
+                String::new()
+            };
+            let on = if faces.is_empty() {
+                String::new()
+            } else {
+                let ns: Vec<String> = faces.iter().take(4).map(|j| if let Json::Str(s) = j { s.clone() } else { String::new() }).collect();
+                format!(" at {}", ns.join(", "))
+            };
+            let mut e = FeatureError { code: c.to_string(), params: Vec::new() }
+                .with("euler", Json::Num(euler))
+                .with("detail", Json::Str(format!("the combined body would not be a closed solid{on}{near}: two walls touch without crossing (Euler characteristic {euler})")));
+            if !faces.is_empty() {
+                e = e.with("faces", Json::Arr(faces));
+            }
+            if at.len() == 3 {
+                e = e.with("at", Json::Arr(at));
+            }
+            return e.with("hint", Json::Str(hint.to_string()));
         }
         // a feature or option that is not built yet: `notImplemented;what=<name>`
         if let Some((c, what)) = code.split_once(";what=") {

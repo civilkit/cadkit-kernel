@@ -386,6 +386,11 @@ impl StepWriter {
                 let bs = ck_geom::convert::curve_to_nurbs(c, c.range().0, c.range().1);
                 self.curve(&Curve::BSpline(bs))
             }
+            // procedural kinds have no STEP entity: their closed form or B-spline
+            _ => {
+                let (a, b) = c.range();
+                self.curve(&ck_geom::procedural::export_form(c, a, b))
+            }
         }
     }
 
@@ -478,6 +483,18 @@ impl StepWriter {
                 Ok(bs) => self.surface(&Surface::BSpline(Box::new(bs))),
                 Err(_) => self.surface(&Surface::plane(Vec3::ZERO, Vec3::Z)),
             },
+            // procedural patches have no STEP entity: their certified B-spline (a
+            // degenerate definition falls back to the bilinear patch of its corners)
+            Surface::Sweep(_) | Surface::Blend(_) => {
+                let (ur, vr) = s.domain();
+                let bs = ck_geom::convert::surface_to_nurbs(s, ur, vr).unwrap_or_else(|_| {
+                    let mut b = ck_geom::nurbs::bsurf::BSplineSurface::bilinear(s.eval(ur.0, vr.0), s.eval(ur.1, vr.0), s.eval(ur.0, vr.1), s.eval(ur.1, vr.1));
+                    b.knots_u = vec![ur.0, ur.0, ur.1, ur.1];
+                    b.knots_v = vec![vr.0, vr.0, vr.1, vr.1];
+                    b
+                });
+                self.surface(&Surface::BSpline(Box::new(bs)))
+            }
             Surface::Offset { base, dist } => {
                 let b = self.surface(base);
                 // GUESS: self_intersect flag .F. (string `OFFSET_SURFACE('',#`
@@ -515,7 +532,10 @@ impl StepWriter {
         // GUESS: lines are re-anchored at t0, other curves written as is.
         let c = match &ed.curve {
             Curve::Line { o, d } if ed.t0 != 0.0 => self.curve(&Curve::Line { o: *o + *d * ed.t0, d: *d }),
+            // a procedural edge: its closed form or B-spline over the edge's range
+            c if c.is_procedural() => self.curve(&ck_geom::procedural::export_form(c, ed.t0, ed.t1)),
             c => self.curve(c),
+
         };
         let i = self.ent(&format!("EDGE_CURVE('',#{a},#{b},#{c},.T.)"));
         self.edges.insert(e, i);

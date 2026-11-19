@@ -22,6 +22,8 @@ pub mod nsided;
 pub mod nurbs;
 pub mod offset;
 pub mod pcurve;
+pub mod procedural;
+pub mod procsurf;
 pub mod surface;
 
 pub use ck_core::linalg::{Frame, Vec3};

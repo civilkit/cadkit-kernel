@@ -73,6 +73,45 @@ fn frames() -> Vec<(&'static str, Frame, Vec3)> {
     ]
 }
 
+/// A partial revolve of a profile that reaches the axis at a point: a cone wedge (triangle profile, apex on the axis) and a
+/// sphere wedge (half disc). The loop of the curved face crosses the apex / pole from one meridian to the other; for a
+/// wedge wider than half a turn the far meridian was unwrapped one period over and the face meshed its complement (the
+/// crash fuzz's `case_1714` and `case_4935`: 77 % of a 237-degree cone, open mesh edges on the base). Every wedge meshes
+/// closed, and the curved face's mesh area is within 2 % of its exact area.
+#[test]
+fn wedges_through_a_pole_mesh_closed() {
+    let tri = || ProfileLoop::new(vec![ProfileSeg::line("e1", v(10.0, 0.0), v(0.0, 10.0)), ProfileSeg::line("e2", v(0.0, 10.0), v(0.0, 0.0)), ProfileSeg::line("e3", v(0.0, 0.0), v(10.0, 0.0))]);
+    let half = || ProfileLoop::new(vec![ProfileSeg::arc("e1", v(0.0, 0.0), v(0.0, -10.0), v(0.0, 10.0)), ProfileSeg::line("e2", v(0.0, 10.0), v(0.0, -10.0))]);
+    let mut all = vec![];
+    for (name, lp) in [("cone", tri()), ("sphere", half())] {
+        // (a cone wedge of 355 degrees or more whose loop starts at the apex still meshes nothing: a separate, older
+        // failure of the strip window, not of the pole crossing; see docs/crash-fuzz.md)
+        for deg in [90.0, 179.0, 180.0, 181.0, 200.0, 237.04, 270.0, 300.0, 350.0] {
+            for rev in [false, true] {
+                let lp = if rev { ProfileLoop::new(lp.segs.iter().rev().map(|s| s.reversed()).collect()) } else { lp.clone() };
+                let p = Profile::new(Frame::identity(), vec![ProfileRegion { outer: lp, holes: vec![] }]);
+                let b = revolve("F2", &p, Vec3::ZERO, Vec3::Y, 0.0, f64::to_radians(deg)).unwrap();
+                let t = tessellate(&b);
+                let m = &t.mesh;
+                let mut issues: Vec<String> = ck_check::tessellation::check_mesh_why(&b, &m.positions, &m.tri_face, &m.failed, &m.failed_why)
+                    .into_iter()
+                    .map(|i| format!("{} {}: {}", i.code, i.entity, i.detail))
+                    .collect();
+                for f in b.face_ids() {
+                    let Some(fm) = &t.faces[f.idx()] else { continue };
+                    let mesh: f64 = fm.tris.iter().map(|q| 0.5 * (fm.pts[q[1] as usize] - fm.pts[q[0] as usize]).cross(fm.pts[q[2] as usize] - fm.pts[q[0] as usize]).len()).sum();
+                    let exact = ck_topo::mass::face_integral::<1>(&b, f, 1, &|_, n| [n.len()])[0].abs();
+                    if (mesh - exact).abs() > 0.02 * exact {
+                        issues.push(format!("{}: mesh area {mesh:.3} of {exact:.3}", b.face_id_str(f)));
+                    }
+                }
+                all.push(format!("{name} {deg} rev{rev}: {issues:?}"));
+            }
+        }
+    }
+    assert!(all.iter().all(|l| l.ends_with("[]")), "\n{}", all.join("\n"));
+}
+
 #[test]
 fn onion_variants() {
     let mut all = vec![];

@@ -84,7 +84,7 @@ fn is_analytic(s: &Surface) -> bool {
         Surface::Extrusion { profile, .. } | Surface::Revolution { profile, .. } => {
             matches!(**profile, Curve::Line { .. } | Curve::Circle { .. } | Curve::Ellipse { .. } | Curve::Conic { .. })
         }
-        Surface::BSpline(_) | Surface::Screw { .. } | Surface::Offset { .. } => false,
+        Surface::BSpline(_) | Surface::Screw { .. } | Surface::Offset { .. } | Surface::Sweep(_) | Surface::Blend(_) => false,
     }
 }
 

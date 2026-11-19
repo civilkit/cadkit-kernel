@@ -477,7 +477,8 @@ fn pcurve_of_n(surf: &Surface, c: &Curve, t0: f64, t1: f64, tol: f64, n_min: Opt
         }
         .max(1e-6);
         let turns = len / (std::f64::consts::TAU * rad);
-        n = (32 + (16.0 * turns).ceil() as usize).clamp(32, 2048);
+        // a huge or non-finite length (hostile import) casts to usize::MAX; saturate instead of overflowing
+        n = 32usize.saturating_add((16.0 * turns).ceil() as usize).clamp(32, 2048);
     }
     if let Some(m) = n_min {
         n = n.max(m);
@@ -498,7 +499,23 @@ fn pcurve_of_n(surf: &Surface, c: &Curve, t0: f64, t1: f64, tol: f64, n_min: Opt
         }
         let d = (b - a) / (t1 - t0);
         let dev = uv_uniform.iter().enumerate().map(|(i, q)| q.dist(a + d * (t1 - t0) * (i as f64 / n as f64))).fold(0.0, f64::max);
-        if dev < 1e-6 {
+        // the uv test alone is in parameter units: on a long B-spline face (a 3.5 m lofted hull, u in [0, 1]) a uv
+        // deviation of 1e-6 is several micrometres in space, so a plane cut that is only nearly an iso-line got a
+        // straight pcurve 2.8e-3 off its edge (EDGE_OFF_SURFACE). Also require the line to reproduce the curve in
+        // space, at the samples and halfway between them, to 1e-6 relative to its size (a tenth of what `validate`
+        // allows; not looser for a boolean retried at a looser tolerance, which would keep the same line: a
+        // fitted pcurve is never wrong, only bigger).
+        let lim = tol.min(1e-6).max(1e-9) * (1.0 + pts[0].len());
+        // (B-spline faces only: on analytic faces the uv parameters are lengths or angles, and a curve that is
+        // straight in uv near a sphere pole but a hair off it in space must keep its line, whose mass integral is exact)
+        let line_ok = dev < 1e-6
+            && (!matches!(surf, Surface::BSpline(_))
+                || (0..2 * n).all(|k| {
+                    let t = t0 + (t1 - t0) * k as f64 / (2 * n) as f64;
+                    let q = a + d * (t - t0);
+                    surf.eval(q.x, q.y).dist(c.eval(t)) <= lim
+                }));
+        if line_ok {
             return Ok(Curve2::Line { o: a - d * t0, d });
         }
     }
@@ -570,6 +587,17 @@ mod tests {
             let p = exact_pcurve(s, c, 1e-9).unwrap_or_else(|| panic!("{} on {}", c.kind(), s.kind()));
             let cs = CurveOnSurface::new(&p, s);
             assert!(cs.deviation((0.3, 2.5), c, (0.3, 2.5), 20) < 1e-9, "{} on {}", c.kind(), s.kind());
+        }
+    }
+
+    /// A curve range so long that the turn count is infinite (a mutated STEP file) must not overflow the sample count
+    /// (debug builds panicked at `32 + usize::MAX`); any Ok or Err is fine.
+    #[test]
+    fn huge_range_on_periodic_surface_does_not_overflow() {
+        let cyl = Surface::Cylinder { frame: Frame::identity(), r: 1.0 };
+        let c = Curve::line(Vec3::new(2., 0., 0.), Vec3::new(0., 1., 1.));
+        for t1 in [1e300, f64::MAX] {
+            let _ = pcurve_of(&cyl, &c, 0.0, t1, 1e-6);
         }
     }
 

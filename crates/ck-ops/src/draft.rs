@@ -210,7 +210,7 @@ fn kind_name(s: &Surface) -> &'static str {
         Surface::Cone { .. } => "cone",
         Surface::Sphere { .. } => "sphere",
         Surface::Torus { .. } => "torus",
-        Surface::BSpline(_) | Surface::Screw { .. } => "spline",
+        Surface::BSpline(_) | Surface::Screw { .. } | Surface::Sweep(_) | Surface::Blend(_) => "spline",
         Surface::Offset { .. } => "offset",
         Surface::Extrusion { .. } => "extrusion",
         Surface::Revolution { .. } => "revolution",

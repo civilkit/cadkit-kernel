@@ -34,6 +34,7 @@
 
 use crate::curve::{wrap_angle, Curve};
 use crate::nurbs::bsurf::BSplineSurface;
+use crate::procsurf::{RollingBall, SweepSurface};
 use crate::{Frame, Vec3};
 use std::f64::consts::{FRAC_PI_2, TAU};
 
@@ -87,6 +88,10 @@ pub enum Surface {
     Screw { profile: Box<Curve>, axis_o: Vec3, axis: Vec3, rise: f64, urange: (f64, f64), vrange: (f64, f64) },
     /// σ = base + d·N_base.
     Offset { base: Box<Surface>, dist: f64 },
+    /// Procedural: a profile swept along a path (see [`crate::procsurf`]).
+    Sweep(Box<SweepSurface>),
+    /// Procedural: a rolling-ball blend of two supports (see [`crate::procsurf`]).
+    Blend(Box<RollingBall>),
 }
 
 const INF: f64 = f64::INFINITY;
@@ -167,6 +172,9 @@ impl Surface {
                 base.push_key(out);
                 out.push(dist.to_bits());
             }
+            Surface::Sweep(_) | Surface::Blend(_) => {
+                crate::procsurf::push_key(self, out);
+            }
         }
     }
 
@@ -205,7 +213,8 @@ impl Surface {
             Surface::Torus { .. } => "torus",
             Surface::Revolution { .. } => "revolution",
             Surface::Extrusion { .. } => "extrusion",
-            Surface::BSpline(_) | Surface::Screw { .. } => "spline",
+            // procedural patches present as spline faces on the wire, like screw patches
+            Surface::BSpline(_) | Surface::Screw { .. } | Surface::Sweep(_) | Surface::Blend(_) => "spline",
             Surface::Offset { .. } => "offset",
         }
     }
@@ -259,6 +268,8 @@ impl Surface {
             Surface::BSpline(s) => s.domain(),
             Surface::Screw { urange, vrange, .. } => (*urange, *vrange),
             Surface::Offset { base, .. } => base.domain(),
+            Surface::Sweep(w) => (w.urange, w.vrange),
+            Surface::Blend(b) => (b.urange, (0.0, 1.0)),
         }
     }
 
@@ -301,6 +312,8 @@ impl Surface {
                 let w = profile.eval(v) - *axis_o;
                 *axis_o + w * cu + *axis * (axis.dot(w) * (1.0 - cu) + rise * u) + axis.cross(w) * su
             }
+            Surface::Sweep(w) => w.eval(u, v),
+            Surface::Blend(b) => b.eval(u, v),
             _ => self.derivs2(u, v).p,
         }
     }
@@ -484,6 +497,8 @@ impl Surface {
                     dvv: b.dvv + nvv * d,
                 }
             }
+            Surface::Sweep(w) => w.derivs2(u, v),
+            Surface::Blend(b) => b.derivs2(u, v),
         }
     }
 
@@ -562,7 +577,7 @@ impl Surface {
                 let skl = s.derivs(u, v, 3);
                 SurfThirds { duuu: skl[3][0], duuv: skl[2][1], duvv: skl[1][2], dvvv: skl[0][3] }
             }
-            Surface::Offset { .. } => {
+            Surface::Offset { .. } | Surface::Sweep(_) | Surface::Blend(_) => {
                 let h = 1e-5;
                 SurfThirds {
                     duuu: (self.derivs2(u + h, v).duu - self.derivs2(u - h, v).duu) / (2.0 * h),
@@ -638,6 +653,7 @@ impl Surface {
             Surface::BSpline(s) => s.closest_param(q),
             Surface::Screw { .. } => screw_foot(self, q),
             Surface::Offset { base, .. } => base.closest_param(q),
+            Surface::Sweep(_) | Surface::Blend(_) => crate::procsurf::closest(self, q),
             Surface::Extrusion { profile, dir } => {
                 // exact: project q along dir onto the profile's "base" by
                 // minimising over u with v = (q - λ(u))·V/|V|²
@@ -845,7 +861,75 @@ impl Surface {
     pub fn distance(&self, q: Vec3) -> f64 {
         self.closest_point(q).2.dist(q)
     }
+
+    /// Depth of nested definitions (profiles, offset bases).
+    pub fn nesting(&self) -> usize {
+        match self {
+            Surface::Revolution { profile, .. } | Surface::Extrusion { profile, .. } | Surface::Screw { profile, .. } => profile.nesting(),
+            Surface::Offset { base, .. } => 1 + base.nesting(),
+            Surface::Sweep(w) => 1 + w.profile.nesting().max(w.path.nesting()),
+            Surface::Blend(b) => 1 + b.s1.nesting().max(b.s2.nesting()).max(b.spine.nesting()),
+            _ => 0,
+        }
+    }
+
+    /// Map by the affine `f` with linear part `g` (a similarity, scale s =
+    /// |g(x)|): frames are carried (axes divided by s) and lengths scaled by s,
+    /// with the conventions of the body transform (a mirror turns a screw's
+    /// axis and rise). The parameterisation is kept exactly for rigid motions.
+    pub fn transform_dyn(&self, f: &dyn Fn(Vec3) -> Vec3, g: &dyn Fn(Vec3) -> Vec3) -> Surface {
+        let s = g(Vec3::X).len();
+        let det = g(Vec3::X).dot(g(Vec3::Y).cross(g(Vec3::Z)));
+        let tf = |fr: &Frame| Frame { o: f(fr.o), x: g(fr.x) / s, y: g(fr.y) / s, z: g(fr.z) / s };
+        let tc = |c: &Curve| Box::new(c.transform_dyn(f, g));
+        match self {
+            Surface::Plane { frame } => Surface::Plane { frame: tf(frame) },
+            Surface::Cylinder { frame, r } => Surface::Cylinder { frame: tf(frame), r: r * s },
+            Surface::Cone { frame, r, semi_angle } => Surface::Cone { frame: tf(frame), r: r * s, semi_angle: *semi_angle },
+            Surface::Sphere { frame, r } => Surface::Sphere { frame: tf(frame), r: r * s },
+            Surface::Torus { frame, major, minor } => Surface::Torus { frame: tf(frame), major: major * s, minor: minor * s },
+            Surface::Revolution { profile, axis_o, axis } => {
+                Surface::Revolution { profile: tc(profile), axis_o: f(*axis_o), axis: g(*axis) / s }
+            }
+            Surface::Extrusion { profile, dir } => Surface::Extrusion { profile: tc(profile), dir: g(*dir) },
+            Surface::BSpline(b) => {
+                let mut b = b.clone();
+                b.ctrl.iter_mut().for_each(|p| *p = f(*p));
+                Surface::BSpline(b)
+            }
+            Surface::Screw { profile, axis_o, axis, rise, urange, vrange } => {
+                let m = det < 0.0;
+                Surface::Screw {
+                    profile: tc(profile),
+                    axis_o: f(*axis_o),
+                    axis: if m { -g(*axis) / s } else { g(*axis) / s },
+                    rise: if m { -rise * s } else { rise * s },
+                    urange: *urange,
+                    vrange: *vrange,
+                }
+            }
+            Surface::Offset { base, dist } => Surface::Offset { base: Box::new(base.transform_dyn(f, g)), dist: dist * s },
+            Surface::Sweep(_) | Surface::Blend(_) => crate::procsurf::transform(self, f, g).unwrap(),
+        }
+    }
+
+    /// Is this one of the procedural kinds (sweep, rolling-ball blend)?
+    pub fn is_procedural(&self) -> bool {
+        matches!(self, Surface::Sweep(_) | Surface::Blend(_))
+    }
+
+    /// A B-spline of this surface over `ur × vr` within `tol` and its measured
+    /// deviation bound: [`crate::procsurf::certified_nurbs`] for the procedural
+    /// kinds, the exact conversion (bound 0) for the others.
+    pub fn to_nurbs_within(&self, ur: (f64, f64), vr: (f64, f64), tol: f64) -> Result<(BSplineSurface, f64), String> {
+        if self.is_procedural() {
+            return crate::procsurf::certified_nurbs(self, ur, vr, tol);
+        }
+        crate::convert::surface_to_nurbs(self, ur, vr).map(|b| (b, 0.0))
+    }
+
 }
+
 
 #[inline]
 fn radial(f: &Frame, u: f64) -> Vec3 {

@@ -143,6 +143,24 @@ fn uncovered_edges(positions: &[f32], tri_face: &[i32], edges: &[(i32, [f64; 3],
         .collect()
 }
 
+/// Every mesh edge (between two distinct vertices, matched by their exact f32 coordinates, -0 = 0) is used by at least two
+/// triangles.
+fn exact_closed(positions: &[f32]) -> bool {
+    let key = |i: usize| [0, 1, 2].map(|k| (positions[3 * i + k] + 0.0).to_bits());
+    let mut uses: FxHashMap<([u32; 3], [u32; 3]), u32> = FxHashMap::default();
+    for t in 0..positions.len() / 9 {
+        let v = [key(3 * t), key(3 * t + 1), key(3 * t + 2)];
+        for e in 0..3 {
+            let (a, b) = (v[e], v[(e + 1) % 3]);
+            if a == b {
+                continue;
+            }
+            *uses.entry(if a < b { (a, b) } else { (b, a) }).or_insert(0) += 1;
+        }
+    }
+    uses.values().all(|&u| u >= 2)
+}
+
 /// [`open_mesh_edges`], not counting an open edge both of whose ends lie within `crack` of an open edge of ANOTHER face: two
 /// faces that sample their shared edge with different points (a T-junction, a hairline crack of at most the chord deviation)
 /// leave such pairs, and they are no visible hole. `crack = 0` counts every edge used once.
@@ -155,6 +173,13 @@ pub fn open_mesh_edges_tol(positions: &[f32], tri_face: &[i32], q: f64, crack: f
 /// edge, so a face with three forgiven edges appears three times). A body with a missing face thinner than `crack` gives
 /// exactly such edges, so the caller can report them without calling the mesh open.
 pub fn open_mesh_edges_detail(positions: &[f32], tri_face: &[i32], q: f64, crack: f64) -> (usize, Vec<i32>, Vec<i32>) {
+    // A mesh that is closed with its vertices matched bit for bit has no hole. The weld below then can only invent one: it
+    // joins each vertex to the first representative within `q`, so a feature smaller than `q` (the rim circle of radius 1e-4
+    // where a revolved cone almost reaches its axis, crash fuzz `case_244`) is merged into a few points in an order-dependent
+    // way, and the triangles around it read as open edges.
+    if exact_closed(positions) {
+        return (0, vec![], vec![]);
+    }
     let mut forgiven: Vec<i32> = vec![];
     let n = positions.len() / 3;
     let cell = |p: [f64; 3]| [(p[0] / q).floor() as i64, (p[1] / q).floor() as i64, (p[2] / q).floor() as i64];
@@ -467,5 +492,33 @@ mod tests {
         let strict = open_mesh_edges(&pos, &faces, 1e-4).0;
         let tol = open_mesh_edges_tol(&pos, &faces, 1e-4, 1e-3).0;
         assert_eq!(strict - tol, 3, "the three edges along the x axis pair up across faces");
+    }
+
+    /// A closed bipyramid over a ring of radius 1e-4 (smaller than the weld distance) is closed bit for bit: no open edge.
+    /// A tetrahedron without one face still has three. (The case where the weld itself invented open edges is the revolve
+    /// in `ck-model/tests/fuzz_invalid_results.rs`, `rim_circle_below_the_weld_distance_is_not_a_hole`.)
+    #[test]
+    fn closed_mesh_with_a_feature_below_the_weld_distance() {
+        let n = 20;
+        let ring: Vec<[f64; 3]> = (0..n).map(|k| {
+            let a = std::f64::consts::TAU * k as f64 / n as f64;
+            [1e-4 * a.cos(), 1e-4 * a.sin(), 0.0]
+        }).collect();
+        let (top, bot) = ([0.0, 0.0, 10.0], [0.0, 0.0, -10.0]);
+        let mut pos: Vec<f32> = vec![];
+        for k in 0..n {
+            let (a, b) = (ring[k], ring[(k + 1) % n]);
+            for t in [[a, b, top], [b, a, bot]] {
+                pos.extend(t.iter().flat_map(|p| p.map(|x| x as f32)));
+            }
+        }
+        let faces = vec![0; pos.len() / 9];
+        assert_eq!(open_mesh_edges_detail(&pos, &faces, 1.67e-4, 0.0).0, 0);
+        // a real hole is still one: a tetrahedron without one face
+        let p = [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]];
+        let tet = [[0, 2, 1], [0, 1, 3], [1, 2, 3], [0, 3, 2]];
+        let pos = flat(&p, &tet);
+        assert_eq!(open_mesh_edges_detail(&pos, &[0, 1, 2, 3], 1.67e-4, 0.0).0, 0);
+        assert_eq!(open_mesh_edges_detail(&pos[..27], &[0, 1, 2], 1.67e-4, 0.0).0, 3);
     }
 }

@@ -45,6 +45,9 @@ pub fn revolve(feature: &str, profile: &Profile, axis_o: Vec3, axis: Vec3, a0: f
     // frames keep x, y normalised and z = R·z as is (STEP writes x × y, the
     // wire normal is ±R·z). An unrotated start (a0 = 0) keeps the sketch
     // geometry bit-for-bit (applying an identity matrix would flip -0s).
+    if nearly_flat_cone(profile, axis_o, a).is_some() {
+        return Err("revolveDegenerate".into());
+    }
     let r0 = (a0 != 0.0).then(|| rotation(axis_o, a, a0));
     let r1 = rotation(axis_o, a, a0 + sweep);
     let rot_pt = |r: &Option<Xform>, p: Vec3| r.as_ref().map_or(p, |x| x.apply_point(p));
@@ -116,6 +119,38 @@ pub fn revolve(feature: &str, profile: &Profile, axis_o: Vec3, axis: Vec3, a0: f
         caps.push(Caps { c0: fr0, c1: fr1 });
     }
     Ok(build_sweep(feature, profile, regions, if closed { None } else { Some(&caps) }, sigma_pos, closed))
+}
+
+/// A profile line that is almost, but not exactly, perpendicular to the axis revolves into a cone whose semi-angle is
+/// within rounding of 90 degrees. The cone is held as (semi-angle, axial v), so its radius `r + v tan(semi-angle)` carries
+/// an error of about `ulp(pi/2) * (1 + tan^2) * |v|` = `2.2e-16 * dr^2 / dz` for a line rising `dz` along the axis over `dr`
+/// of radius: a line 1e6 long and 1 high is off by 2e-4, far over the model tolerance, and the body fails validation
+/// (edges off their cone). Returns the profile segment's tag and that error when it exceeds the limit the validator
+/// allows an edge there (`ck-check` edge check: 10 * 1e-6 * (1 + distance of the edge from the origin), taken at the nearer
+/// end of the line; the estimate is about three times the error seen); the caller refuses the revolve. Cones the
+/// validator accepts (an estimate of 1e-4 at 13 mm and more from the origin) still build.
+pub fn nearly_flat_cone(profile: &Profile, axis_o: Vec3, axis: Vec3) -> Option<(String, f64)> {
+    let a = axis.normalize();
+    let ax = Axis { o: axis_o, a };
+    for reg in &profile.regions {
+        for l in reg.loops() {
+            for s in &l.segs {
+                let Curve2::Line { .. } = s.curve else { continue };
+                let c = curve2_to_3d(&profile.frame, &s.curve, Vec3::ZERO);
+                let (pa, pb) = (c.eval(s.t0), c.eval(s.t1));
+                let dz = (ax.z(pb) - ax.z(pa)).abs();
+                let dr = (ax.radial(pb).len() - ax.radial(pa).len()).abs();
+                if dz < TOL || dr < TOL {
+                    continue; // plane or cylinder: exact
+                }
+                let err = 2.2e-16 * (1.0 + (dr / dz).powi(2)) * dz;
+                if err > 1e-5 * (1.0 + pa.len().min(pb.len())) {
+                    return Some((s.tag.clone(), err));
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Arcs whose centre is on the axis up to sketch precision (relative 1e-4:
@@ -215,7 +250,10 @@ pub fn rot_curve(r: &Xform, c: &Curve) -> Curve {
         Curve::Sinusoid { frame, amp, freq, phase } => {
             Curve::Sinusoid { frame: rot_frame(r, frame), amp: *amp, freq: *freq, phase: *phase }
         }
+        // procedural kinds carry their own rigid transform
+        other => other.transform(|p| r.apply_point(p), |d| r.apply_vec(d)),
     }
+
 }
 
 struct Axis {
@@ -453,6 +491,30 @@ mod tests {
         assert!(check(&b, 1e-9).is_empty(), "{:?}", check(&b, 1e-9));
         assert_eq!(ids(&b), ["F2.S.e1", "F2.S.e2", "F2.S.e3"]);
         assert_eq!(wire(&b).len(), 2);
+    }
+
+    /// A line 1e6 long and 0.5 high (relative to the axis) would be a cone within rounding of 90 degrees whose radius is
+    /// ~1e-4 off: refused. A shallow but ordinary cone (100 long, 0.01 high: ~2e-10 off) still builds and checks clean.
+    #[test]
+    fn nearly_flat_cone_refused_shallow_cone_kept() {
+        let tri = |w: f64, h: f64| {
+            let p = [Vec2::new(0.0, 0.0), Vec2::new(w, 0.0), Vec2::new(0.0, h)];
+            let outer = ProfileLoop::new((0..3).map(|i| ProfileSeg::line(["e1", "e2", "e3"][i], p[i], p[(i + 1) % 3])).collect());
+            Profile::new(Frame::identity(), vec![ProfileRegion { outer, holes: vec![] }])
+        };
+        let p = tri(1e6, 0.5);
+        assert_eq!(nearly_flat_cone(&p, Vec3::ZERO, Vec3::Y).map(|(t, _)| t), Some("e2".to_string()));
+        assert_eq!(revolve("F2", &p, Vec3::ZERO, Vec3::Y, 0.0, 1.0).unwrap_err(), "revolveDegenerate");
+        let p = tri(100.0, 0.01);
+        assert!(nearly_flat_cone(&p, Vec3::ZERO, Vec3::Y).is_none());
+        let b = revolve("F2", &p, Vec3::ZERO, Vec3::Y, 0.0, 1.0).unwrap();
+        assert!(check(&b, 1e-9).is_empty(), "{:?}", check(&b, 1e-9));
+        // ~5e-5 off, but 14 mm from the origin, where the validator allows 1.5e-4: kept
+        let pts = [Vec2::new(14.0, 0.0), Vec2::new(4.8e5, 1.0), Vec2::new(0.0, 1.0), Vec2::new(0.0, 0.0)];
+        let outer = ProfileLoop::new((0..4).map(|i| ProfileSeg::line(["e1", "e2", "e3", "e4"][i], pts[i], pts[(i + 1) % 4])).collect());
+        let p = Profile::new(Frame::identity(), vec![ProfileRegion { outer, holes: vec![] }]);
+        assert!(nearly_flat_cone(&p, Vec3::ZERO, Vec3::Y).is_none());
+        assert!(revolve("F2", &p, Vec3::ZERO, Vec3::Y, 0.0, 1.0).is_ok());
     }
 
     #[test]

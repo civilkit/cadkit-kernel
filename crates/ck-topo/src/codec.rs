@@ -14,6 +14,10 @@
 use crate::body::*;
 use ck_geom::curve::Curve;
 use ck_geom::curve2::Curve2;
+use ck_geom::procedural::{CompositeCurve, CompositeSeg, Continuity, OffsetRef};
+use ck_geom::procsurf::{RollingBall, SweepLaw, SweepSurface};
+
+
 use ck_geom::surface::Surface;
 use ck_geom::{Frame, Vec2, Vec3};
 
@@ -143,6 +147,61 @@ fn w_curve(w: &mut W, c: &Curve) {
             }
             w.weights(&b.weights);
         }
+        // procedural kinds (tags 6..=10, after every tag an older blob can hold, so old blobs read unchanged)
+        Curve::Composite(cc) => {
+            w.u8(6);
+            w.len(cc.segs.len());
+            for g in &cc.segs {
+                w_curve(w, &g.curve);
+                w.f64(g.t0);
+                w.f64(g.t1);
+            }
+            for j in &cc.joints {
+                w.u8(j.code());
+            }
+            for &s in &cc.starts {
+                w.f64(s);
+            }
+        }
+        Curve::Offset { base, dist, dir } => {
+            w.u8(7);
+            w_curve(w, base);
+            w.f64(*dist);
+            match dir {
+                OffsetRef::Normal(n) => {
+                    w.u8(0);
+                    w.v3(*n);
+                }
+                OffsetRef::Surface(s) => {
+                    w.u8(1);
+                    w_surface(w, s);
+                }
+            }
+        }
+        Curve::Projected { base, surf, dir } => {
+            w.u8(8);
+            w_curve(w, base);
+            w_surface(w, surf);
+            match dir {
+                None => w.u8(0),
+                Some(d) => {
+                    w.u8(1);
+                    w.v3(*d);
+                }
+            }
+        }
+        Curve::OnSurface { surf, uv } => {
+            w.u8(9);
+            w_surface(w, surf);
+            w_curve2(w, uv);
+        }
+        Curve::Iso { surf, fixed_u, at, rev } => {
+            w.u8(10);
+            w_surface(w, surf);
+            w.bool(*fixed_u);
+            w.f64(*at);
+            w.bool(*rev);
+        }
     }
 }
 
@@ -249,6 +308,33 @@ fn w_surface(w: &mut W, s: &Surface) {
             w.u8(9);
             w_surface(w, base);
             w.f64(*dist);
+        }
+        // procedural kinds (tags 10 and 11, after every tag an older blob can hold)
+        Surface::Sweep(s) => {
+            w.u8(10);
+            w_curve(w, &s.profile);
+            w_curve(w, &s.path);
+            match &s.law {
+                SweepLaw::Translate => w.u8(0),
+                SweepLaw::Up(u) => {
+                    w.u8(1);
+                    w.v3(*u);
+                }
+            }
+            for x in [s.urange.0, s.urange.1, s.vrange.0, s.vrange.1] {
+                w.f64(x);
+            }
+        }
+        Surface::Blend(b) => {
+            w.u8(11);
+            w_surface(w, &b.s1);
+            w_surface(w, &b.s2);
+            for x in [b.side1, b.side2, b.radius.0, b.radius.1] {
+                w.f64(x);
+            }
+            w_curve(w, &b.spine);
+            w.f64(b.urange.0);
+            w.f64(b.urange.1);
         }
     }
 }
@@ -449,7 +535,10 @@ impl<'a> R<'a> {
     }
 }
 
-fn r_curve(r: &mut R) -> Res<Curve> {
+fn r_curve(r: &mut R, depth: usize) -> Res<Curve> {
+    if depth > 16 {
+        return Err("geometry nested too deep".into());
+    }
     Ok(match r.u8()? {
         0 => Curve::Line { o: r.v3()?, d: r.v3()? },
         1 => Curve::Circle { frame: r.frame()?, r: r.f64()? },
@@ -465,6 +554,44 @@ fn r_curve(r: &mut R) -> Res<Curve> {
             check_spline(degree, knots.len(), ctrl.len(), &weights)?;
             Curve::BSpline(ck_geom::nurbs::bspline::BSplineCurve { degree, knots, ctrl, weights })
         }
+        6 => {
+            let n = r.count(17)?;
+            if n == 0 {
+                return Err("empty composite curve".into());
+            }
+            let mut segs = Vec::with_capacity(n);
+            for _ in 0..n {
+                let curve = r_curve(r, depth + 1)?;
+                segs.push(CompositeSeg { curve, t0: r.f64()?, t1: r.f64()? });
+            }
+            let joints = (1..n)
+                .map(|_| r.u8().and_then(|c| Continuity::from_code(c).ok_or_else(|| format!("bad continuity code {c}"))))
+                .collect::<Res<Vec<_>>>()?;
+            let starts = (0..n).map(|_| r.f64()).collect::<Res<Vec<_>>>()?;
+            Curve::Composite(Box::new(CompositeCurve { segs, joints, starts }))
+        }
+        7 => {
+            let base = Box::new(r_curve(r, depth + 1)?);
+            let dist = r.f64()?;
+            let dir = match r.u8()? {
+                0 => OffsetRef::Normal(r.v3()?),
+                1 => OffsetRef::Surface(Box::new(r_surface(r, depth + 1)?)),
+                t => return Err(format!("bad offset reference tag {t}")),
+            };
+            Curve::Offset { base, dist, dir }
+        }
+        8 => {
+            let base = Box::new(r_curve(r, depth + 1)?);
+            let surf = Box::new(r_surface(r, depth + 1)?);
+            let dir = match r.u8()? {
+                0 => None,
+                1 => Some(r.v3()?),
+                t => return Err(format!("bad option tag {t}")),
+            };
+            Curve::Projected { base, surf, dir }
+        }
+        9 => Curve::OnSurface { surf: Box::new(r_surface(r, depth + 1)?), uv: r_curve2(r)? },
+        10 => Curve::Iso { surf: Box::new(r_surface(r, depth + 1)?), fixed_u: r.bool()?, at: r.f64()?, rev: r.bool()? },
         t => return Err(format!("bad curve tag {t}")),
     })
 }
@@ -504,8 +631,8 @@ fn r_surface(r: &mut R, depth: usize) -> Res<Surface> {
         2 => Surface::Cone { frame: r.frame()?, r: r.f64()?, semi_angle: r.f64()? },
         3 => Surface::Sphere { frame: r.frame()?, r: r.f64()? },
         4 => Surface::Torus { frame: r.frame()?, major: r.f64()?, minor: r.f64()? },
-        5 => Surface::Revolution { profile: Box::new(r_curve(r)?), axis_o: r.v3()?, axis: r.v3()? },
-        6 => Surface::Extrusion { profile: Box::new(r_curve(r)?), dir: r.v3()? },
+        5 => Surface::Revolution { profile: Box::new(r_curve(r, depth + 1)?), axis_o: r.v3()?, axis: r.v3()? },
+        6 => Surface::Extrusion { profile: Box::new(r_curve(r, depth + 1)?), dir: r.v3()? },
         7 => {
             let (deg_u, deg_v) = (r.u32()? as usize, r.u32()? as usize);
             let knots_u = r.f64s()?;
@@ -522,7 +649,7 @@ fn r_surface(r: &mut R, depth: usize) -> Res<Surface> {
             Surface::BSpline(Box::new(ck_geom::nurbs::bsurf::BSplineSurface { deg_u, deg_v, knots_u, knots_v, nu, nv, ctrl, weights }))
         }
         8 => Surface::Screw {
-            profile: Box::new(r_curve(r)?),
+            profile: Box::new(r_curve(r, depth + 1)?),
             axis_o: r.v3()?,
             axis: r.v3()?,
             rise: r.f64()?,
@@ -530,6 +657,26 @@ fn r_surface(r: &mut R, depth: usize) -> Res<Surface> {
             vrange: (r.f64()?, r.f64()?),
         },
         9 => Surface::Offset { base: Box::new(r_surface(r, depth + 1)?), dist: r.f64()? },
+        10 => {
+            let profile = r_curve(r, depth + 1)?;
+            let path = r_curve(r, depth + 1)?;
+            let law = match r.u8()? {
+                0 => SweepLaw::Translate,
+                1 => SweepLaw::Up(r.v3()?),
+                t => return Err(format!("bad sweep law tag {t}")),
+            };
+            let urange = (r.f64()?, r.f64()?);
+            let vrange = (r.f64()?, r.f64()?);
+            Surface::Sweep(Box::new(SweepSurface { profile, path, law, urange, vrange }))
+        }
+        11 => {
+            let s1 = r_surface(r, depth + 1)?;
+            let s2 = r_surface(r, depth + 1)?;
+            let (side1, side2, r0, r1) = (r.f64()?, r.f64()?, r.f64()?, r.f64()?);
+            let spine = r_curve(r, depth + 1)?;
+            let urange = (r.f64()?, r.f64()?);
+            Surface::Blend(Box::new(RollingBall { s1, s2, side1, side2, radius: (r0, r1), spine, urange }))
+        }
         t => return Err(format!("bad surface tag {t}")),
     })
 }
@@ -573,7 +720,7 @@ fn decode_inner(r: &mut R) -> Result<Body, String> {
     }
     let ne = r.count(30)?;
     for _ in 0..ne {
-        let curve = r_curve(r)?;
+        let curve = r_curve(r, 0)?;
         let (t0, t1) = (r.f64()?, r.f64()?);
         let (v0, v1) = (r.u32()?, r.u32()?);
         let coedges = r.ids(usize::MAX, "coedge")?.into_iter().map(CoedgeId).collect();
@@ -769,8 +916,71 @@ mod tests {
         assert_eq!(c.vertices[1].p.z.to_bits(), (-0.0f64).to_bits());
     }
 
+    /// The procedural curve kinds: written after every older tag, read back bit for bit; the
+    /// older kinds' bytes are what they were (the legacy fixture is unchanged above).
+    fn procedural_sample() -> Body {
+        let mut b = sample();
+        let (v0, v1) = (b.edges[0].v0, b.edges[0].v1);
+        let fr = Frame { o: Vec3::new(1.0, 2.0, 3.0), x: Vec3::new(1.0, 0.0, 0.0), y: Vec3::new(0.0, 1.0, 0.0), z: Vec3::new(0.0, 0.0, 1.0) };
+        let cyl = Surface::Cylinder { frame: fr, r: 2.0 };
+        let line = Curve::line_through(Vec3::new(-2.0, 0.0, 0.0), Vec3::ZERO);
+        let arc = Curve::circle_x(Vec3::new(0.0, 1.0, 0.0), Vec3::Z, Vec3::new(0.0, -1.0, 0.0), 1.0);
+        let comp = Curve::composite(vec![(line.clone(), 0.0, 2.0), (arc.clone(), 0.0, 1.5)], 1e-12).unwrap();
+        let curves = vec![
+            comp.clone(),
+            Curve::offset(comp, 0.25, Vec3::Z).unwrap(),
+            Curve::offset_on(Curve::iso(cyl.clone(), true, 0.5), -0.1, cyl.clone()).unwrap(),
+            Curve::projected(arc.clone(), Surface::Sphere { frame: fr, r: 3.0 }, None).unwrap(),
+            Curve::projected(line, cyl.clone(), Some(Vec3::new(0.0, 1.0, 0.0))).unwrap(),
+            Curve::on_surface(cyl.clone(), Curve2::Line { o: Vec2::new(0.0, 1.0), d: Vec2::new(1.0, 0.5) }),
+            Curve::iso(Surface::Offset { base: Box::new(cyl), dist: 0.5 }, false, 0.3).reversed(),
+        ];
+        for c in curves {
+            b.add_edge(c, 0.0, 1.0, v0, v1);
+        }
+        let sh = b.faces[0].shell;
+        let pl = |n: Vec3| Surface::plane(Vec3::ZERO, n);
+        let sweep = SweepSurface::new(arc.clone(), Curve::circle_x(Vec3::ZERO, Vec3::Z, Vec3::X, 6.0), SweepLaw::Up(Vec3::Z), (0.0, 2.0), (0.0, 1.0)).unwrap();
+        let tr = SweepSurface::new(arc, Curve::line(Vec3::ZERO, Vec3::Z), SweepLaw::Translate, (0.0, 2.0), (0.0, 1.0)).unwrap();
+        let blend = RollingBall::new(pl(Vec3::Z), pl(Vec3::X), 1.0, 1.0, (1.5, 2.0), Curve::line(Vec3::ZERO, Vec3::Y), (-1.0, 2.0)).unwrap();
+        for s in [Surface::Sweep(Box::new(sweep)), Surface::Sweep(Box::new(tr)), Surface::Blend(Box::new(blend))] {
+            b.add_face(sh, s, true, FaceName::other("F8", "P1"));
+        }
+        b
+
+    }
+
+    #[test]
+    fn procedural_curves_round_trip() {
+        let b = procedural_sample();
+        let bytes = encode(&b);
+        let c = decode(&bytes).unwrap();
+        assert_eq!(b, c);
+        assert_eq!(encode(&c), bytes);
+        for n in (0..bytes.len()).step_by(7) {
+            assert!(decode(&bytes[..n]).is_err(), "prefix of {n} bytes decoded");
+        }
+        // damage never panics, and a decoded composite keeps its shape invariants
+        let mut seed = 0x2545f4914f6cdd1du64;
+        for _ in 0..2000 {
+            let mut d = bytes.clone();
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let i = (seed >> 33) as usize % d.len();
+            d[i] ^= 1 << ((seed >> 20) % 8);
+            if let Ok(c) = decode(&d) {
+                assert!(check_indices(&c).is_ok());
+                for e in &c.edges {
+                    if let Curve::Composite(cc) = &e.curve {
+                        assert!(!cc.segs.is_empty() && cc.starts.len() == cc.segs.len() && cc.joints.len() + 1 == cc.segs.len());
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn empty_body_round_trips() {
+
         assert_eq!(decode(&encode(&Body::new())).unwrap(), Body::new());
     }
 

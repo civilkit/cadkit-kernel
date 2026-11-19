@@ -78,19 +78,25 @@ pub fn curve_to_nurbs(c: &Curve, t0: f64, t1: f64) -> BSplineCurve {
         Curve::Ellipse { frame, a, b } => conic_arc(frame, *a, *b, t0, t1),
         // Conic/sinusoid: no closed rational form in this parameterisation
         // is wired up — approximate by a cubic through 32 samples.
-        Curve::Conic { .. } | Curve::Sinusoid { .. } => {
-            let n = 32;
-            let pts: Vec<Vec3> = (0..=n).map(|i| c.eval(t0 + (t1 - t0) * i as f64 / n as f64)).collect();
-            let u: Vec<f64> = (0..=n).map(|i| i as f64 / n as f64).collect();
-            let knots = crate::fit::averaged_knots(&u, 3);
-            let b = crate::fit::interpolate_with(&pts, 3, &u, knots)
-                .or_else(|_| crate::fit::interpolate(&pts, 3, crate::fit::Param::ChordLength))
-                .unwrap_or_else(|_| segment(c.eval(t0), c.eval(t1), t0, t1));
-            b.reparam(t0, t1)
-        }
+        Curve::Conic { .. } | Curve::Sinusoid { .. } => sampled_cubic(c, t0, t1),
         Curve::BSpline(b) => b.segment(t0, t1),
+        // procedural kinds: their certified B-spline (crate::procedural)
+        _ => crate::procedural::proc_to_nurbs(c, t0, t1),
     }
 }
+
+/// A cubic through 32 + 1 evenly spaced samples of `c` over [t0, t1].
+pub fn sampled_cubic(c: &Curve, t0: f64, t1: f64) -> BSplineCurve {
+    let n = 32;
+    let pts: Vec<Vec3> = (0..=n).map(|i| c.eval(t0 + (t1 - t0) * i as f64 / n as f64)).collect();
+    let u: Vec<f64> = (0..=n).map(|i| i as f64 / n as f64).collect();
+    let knots = crate::fit::averaged_knots(&u, 3);
+    let b = crate::fit::interpolate_with(&pts, 3, &u, knots)
+        .or_else(|_| crate::fit::interpolate(&pts, 3, crate::fit::Param::ChordLength))
+        .unwrap_or_else(|_| segment(c.eval(t0), c.eval(t1), t0, t1));
+    b.reparam(t0, t1)
+}
+
 
 /// 2D analogue of [`curve_to_nurbs`].
 pub fn curve2_to_nurbs(c: &Curve2, t0: f64, t1: f64) -> BSplineCurve<Vec2> {
@@ -225,6 +231,11 @@ pub fn surface_to_nurbs(s: &Surface, (u0, u1): (f64, f64), (v0, v1): (f64, f64))
             crate::fit::grid_surface(&grid, &us, &vs, 5, if nv == 1 { 1 } else { 3 })
         }
         Surface::Offset { .. } => offset_to_nurbs(s, (u0, u1), (v0, v1)),
+        // procedural kinds: their certified bicubic fit within 1e-6 of the patch size
+        Surface::Sweep(_) | Surface::Blend(_) => {
+            let tol = crate::procsurf::default_tol(s, (u0, u1), (v0, v1));
+            crate::procsurf::certified_nurbs(s, (u0, u1), (v0, v1), tol).map(|r| r.0)
+        }
     }
 }
 

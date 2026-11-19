@@ -864,6 +864,17 @@ pub fn exec_revolve(state: &RegenState, f: &Feature, has_body: bool) -> Result<T
     // the sketch plane).
     let (d, a0, a1) = if a1 < a0 { (-d, -a0, -a1) } else { (d, a0, a1) };
     let (a0, a1) = (a0.min(a1), a0.max(a1));
+    if let Some((seg, err)) = ck_topo::make::revolve::nearly_flat_cone(&profile, o, d) {
+        return Err(FeatureError::new("revolveDegenerate")
+            .with("segment", Json::Str(seg.clone()))
+            .with(
+                "detail",
+                Json::Str(format!(
+                    "sketch line {seg} is so close to perpendicular to the axis, over so long a radius, that its cone cannot be held within the model tolerance (about {err:.1e} mm off)"
+                )),
+            )
+            .with("hint", Json::Str(format!("make {seg} exactly perpendicular to the axis (a flat face), give it a steeper slope, or make the part smaller"))));
+    }
     let body = revolve(&f.id, &profile, o, d, a0, a1).map_err(topo_err)?;
     Ok(Tool { body, combine, recipe: Some(Recipe::Revolve { profile, o, d, a0, a1 }) })
 }

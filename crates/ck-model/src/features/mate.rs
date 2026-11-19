@@ -852,6 +852,8 @@ impl Xf {
             Curve::Sinusoid { frame, amp, freq, phase } => {
                 Curve::Sinusoid { frame: self.frame(frame), amp: self.scale() * amp, freq: *freq, phase: *phase }
             }
+            other => other.transform(|p| self.point(p), |d| self.vec(d)),
+
         }
     }
 
@@ -880,6 +882,7 @@ impl Xf {
                 vrange: *vrange,
             },
             Surface::Offset { base, dist } => Surface::Offset { base: Box::new(self.surface(base)), dist: k * dist },
+            other => other.transform_dyn(&|p| self.point(p), &|d| self.vec(d)),
         }
     }
 

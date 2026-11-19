@@ -132,6 +132,8 @@ pub fn reflect_body(b: &Body, pl: &Plane) -> Result<Body, String> {
             Curve::Sinusoid { frame, amp, freq, phase } => {
                 Curve::Sinusoid { frame: rh(frame), amp: *amp, freq: *freq, phase: *phase }
             }
+            other => other.transform(|q| p(q), |d| v(d)),
+
         }
     };
     let flip_v = |c: &Curve2| -> Curve2 {
@@ -175,6 +177,8 @@ pub fn reflect_body(b: &Body, pl: &Plane) -> Result<Body, String> {
                 false,
             ),
             Surface::Offset { .. } => return Err(super::extrude::todo("mirror of an offset surface")),
+            // procedural kinds map their definition, parameterisation kept (Su × Sv turns over, as a spline's)
+            sf @ (Surface::Sweep(_) | Surface::Blend(_)) => (sf.transform_dyn(&p, &v), true, false),
         };
         f.surface = s;
         if flip_sense {

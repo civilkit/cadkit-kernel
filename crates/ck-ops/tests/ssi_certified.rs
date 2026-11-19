@@ -177,6 +177,39 @@ fn traced_curves_verify() {
     }
 }
 
+/// Shallow but benign crossings: a plane wall against a drafted cone (5 to 20 degrees, both draft
+/// directions), whose intersection is a hyperbola with its vertex where the normals are closest. Every
+/// traced span is proved (before: a few spans through the vertex were not, and the tracer halved its
+/// step there), and the certified march samples the curve exactly as the uncertified one.
+#[test]
+fn shallow_crossings_certify_without_resampling() {
+    let run = |a: Surface, b: Surface, cert: bool| {
+        std::thread::spawn(move || {
+            ck_ops::intersect::ss::set_certify_steps(cert);
+            let res = intersect(&a, &b, Some(bx(40.0)), 1e-6);
+            let mut out = Vec::new();
+            for (pts, _, _) in fitted(&res) {
+                let (ok, _, total) = verify_polyline(&a, &b, pts);
+                out.push((pts.clone(), ok, total));
+            }
+            out
+        })
+        .join()
+        .unwrap()
+    };
+    for d in [9.0, 9.9, 10.5] {
+        for draft in [5.0f64, 10.0, 20.0, -10.0] {
+            let cone = Surface::Cone { frame: fr(Vec3::ZERO, Vec3::Z, Vec3::X), r: 10.0, semi_angle: -draft.to_radians() };
+            let pl = Surface::Plane { frame: fr(Vec3::new(d, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.05), Vec3::Y) };
+            let on = run(pl.clone(), cone.clone(), true);
+            let off = run(pl, cone, false);
+            assert_eq!(on.len(), 1, "d={d} draft={draft}");
+            assert_eq!(on[0].0, off[0].0, "d={d} draft={draft}: the certified march resampled the curve");
+            assert_eq!(on[0].1, on[0].2, "d={d} draft={draft}: {}/{} spans proved", on[0].1, on[0].2);
+        }
+    }
+}
+
 /// A big cylinder (r 20, along z) and a half-size one (r 10, along x) whose top almost touches
 /// the big wall (gap d, a near internal tangent): two loops `x = +- sqrt(400 - y^2)`,
 /// `y = 10 - d + 10 cos phi`, `z = 10 sin phi`. Before: a single curve of twice the length that

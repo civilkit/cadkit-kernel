@@ -151,6 +151,8 @@ fn map_curve(c: &Curve, m: &Map) -> Result<(Curve, f64), FeatureError> {
             let t = c.transform(|q| m.p(q), |d| m.v(d));
             (t, if matches!(c, Curve::Sinusoid { .. }) { k } else { 1.0 })
         }
+        _ => return Err(refuse("a procedural edge (composite, offset, projected or on-surface curve) cannot be scaled yet", HINT_ACROSS)),
+
     })
 }
 
@@ -220,9 +222,9 @@ fn map_surface(s: &Surface, m: &Map) -> Result<(Surface, Uv), FeatureError> {
             b.ctrl.iter_mut().for_each(|q| *q = m.p(*q));
             (Surface::BSpline(b), Uv::ID)
         }
-        Surface::Revolution { .. } | Surface::Extrusion { .. } | Surface::Screw { .. } | Surface::Offset { .. } => {
+        Surface::Revolution { .. } | Surface::Extrusion { .. } | Surface::Screw { .. } | Surface::Offset { .. } | Surface::Sweep(_) | Surface::Blend(_) => {
             return Err(refuse(
-                "this face is a revolution, extrusion, screw or offset surface, whose scaling is not built yet",
+                "this face is a revolution, extrusion, screw, offset, sweep or blend surface, whose scaling is not built yet",
                 "rebuild the body from a sketch at the size you need, or scale a body made of planes, cylinders, cones, spheres and free-form faces",
             ))
         }

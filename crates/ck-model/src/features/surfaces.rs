@@ -331,7 +331,7 @@ fn plane_sheet(fr: ck_geom::Frame) -> Body {
 
 // ------------------------------------------------------------------ fill
 
-pub fn exec_fill(br: &mut Brep, _state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
+pub fn exec_fill(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
     let FeatureKind::Fill { merge, continuity, fairing, .. } = &f.kind else { unreachable!() };
     let picks = edge_picks(f);
     if picks.is_empty() {
@@ -357,11 +357,23 @@ pub fn exec_fill(br: &mut Brep, _state: &mut RegenState, f: &Feature) -> Result<
         super::Continuity::G2 => "G2",
         super::Continuity::G3 => "G3",
     };
-    let out = sf::fill::fill(&body, &chain, cont, mode, strength, &f.id, super::TOL).map_err(|e| {
-        // pinned: an invalid patch face is reported as `fillInvalid`
-        let code = if e.detail.contains("not a valid face") { "fillInvalid" } else { e.code };
-        coded(code, &e.detail)
-    })?;
+    // `patch: "nSided"`: N free-form faces round a centre vertex instead of the one planar / ruled face
+    // (the default `fill` is pinned by oracle probes and is not touched)
+    let n_sided = match f.raw.get("patch").and_then(|v| v.as_str()) {
+        None | Some("single") => false,
+        Some("nSided") => true,
+        Some(other) => return Err(coded("fillInvalid", &format!("patch must be \"single\" or \"nSided\", not \"{other}\""))),
+    };
+    let out = if n_sided {
+        let tol = state.num(f, "patchTolerance", 1e-4)?;
+        sf::n_sided::fill_n_sided_body(&body, &chain, cont, &f.id, tol).map_err(|e| coded(e.code, &e.detail))?
+    } else {
+        sf::fill::fill(&body, &chain, cont, mode, strength, &f.id, super::TOL).map_err(|e| {
+            // pinned: an invalid patch face is reported as `fillInvalid`
+            let code = if e.detail.contains("not a valid face") { "fillInvalid" } else { e.code };
+            coded(code, &e.detail)
+        })?
+    };
     if *merge {
         br.replace_slot(slot, &f.id, out);
     } else {

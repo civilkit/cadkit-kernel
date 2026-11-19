@@ -84,8 +84,8 @@ fn order_chain(b: &Body, chain: &[EdgeId]) -> Option<Vec<EdgeId>> {
     let same = |a: VertexId, c: VertexId| a == c || b.vertex(a).p.dist(b.vertex(c).p) <= 1e-6;
     let touches = |e: EdgeId, v: VertexId| same(b.edge(e).v0, v) || same(b.edge(e).v1, v);
     let other = |e: EdgeId, v: VertexId| if same(b.edge(e).v0, v) { b.edge(e).v1 } else { b.edge(e).v0 };
-    let mut rest: Vec<EdgeId> = chain[1..].to_vec();
-    let first = chain[0];
+    let (&first, rest) = chain.split_first()?;
+    let mut rest: Vec<EdgeId> = rest.to_vec();
     // walk away from whichever end of the first edge continues
     let mut tail = b.edge(first).v1;
     if !rest.iter().any(|&e| touches(e, tail)) {
@@ -406,5 +406,15 @@ mod tests {
         let err = fill(&body, &[e0], "G0", Fairing::MeowNurbs, 0.5, "F6", 1e-6).unwrap_err();
         assert_eq!(err.code, "fillNotClosed");
         assert_eq!(err.detail, "the chain is open");
+    }
+
+    /// An empty chain (no edge resolved) is a structured `fillInvalid`, not a panic in the reorder.
+    #[test]
+    fn fill_empty_chain_is_structured_error() {
+        let body = u_sheet();
+        let err = fill(&body, &[], "G0", Fairing::MeowNurbs, 0.5, "F6", 1e-6).unwrap_err();
+        assert_eq!(err.code, "fillInvalid");
+        assert_eq!(err.detail, "the edges do not form one chain");
+        assert!(walk_chain(&body, &[]).is_err());
     }
 }

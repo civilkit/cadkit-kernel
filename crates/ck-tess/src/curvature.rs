@@ -137,7 +137,7 @@ pub fn curve_params(curve: &Curve, t0: f64, t1: f64, tol: &Tol) -> Vec<f64> {
         // GUESS: conic/sinusoid edges have no oracle samples; uniform in
         // arc length like the BSpline fallback.
         Curve::BSpline(_) => spline_params(curve, t0, t1, tol),
-        Curve::Conic { .. } | Curve::Sinusoid { .. } => {
+        _ => {
             let len = curve.length_between(t0, t1);
             let step = (8.0 * chord).sqrt().max(1e-9);
             uniform_params(t0, t1, seg_count(len / step).max(2))

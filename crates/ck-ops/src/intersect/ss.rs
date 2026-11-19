@@ -41,12 +41,13 @@ pub fn set_grid_seeds(on: bool) {
 /// Only when an end point's normals have a sine below this does the tracer look at the chord midpoint
 /// ([`super::certified::certify_span`] decides, see `CLOSE_SIN`).
 const TIGHT_SIN: f64 = 0.6;
-/// A step is certified when the sine, at either end or at the chord midpoint, is below this. Not
-/// higher: the proof is conservative at shallow but benign crossings (a 10 degree drafted cone against a
-/// plane, sine 0.174, fails it near the curve's vertex), and halving there only changes the sampling of a
-/// correct trace, enough to tip a blend over an edge (blend_breakout_drafted on glibc libm). The hops it
-/// exists for sit at sines of a few hundredths.
-const CLOSE_SIN: f64 = 0.12;
+/// A step is certified when the sine, at either end or at the chord midpoint, is below this. It was 0.12
+/// while the proof failed at shallow but benign crossings (a 10 degree drafted cone against a plane, sine
+/// 0.174, near the curve's vertex), where halving only changed the sampling of a correct trace, enough to
+/// tip a blend over an edge (blend_breakout_drafted on glibc libm). The span proof now centres its box on
+/// the arc, inflates only the coordinates that leave it and halves a span that still does not contract,
+/// so those crossings prove at their own steps (no halving: the sampling is the uncertified march's).
+const CLOSE_SIN: f64 = TIGHT_SIN;
 /// Below this sine the surfaces are tangent along the curve itself (a ball in a tube, a cylinder
 /// on a plane), not near another branch: nothing to separate, and no step would certify.
 const FLAT_SIN: f64 = 1e-4;
@@ -1471,7 +1472,8 @@ fn trace(s1: &Surface, s2: &Surface, seed: MPt, t0: Vec3, b: &Bounds, tol: f64, 
                 // from one to the other: accept the step only when the interval Krawczyk test
                 // proves both points on one arc; otherwise halve it (down to the minimum step,
                 // where the plain step is kept, as before)
-                let mut sm = sq.min(sin_cur);
+                let s_end = sq.min(sin_cur);
+                let mut sm = s_end;
                 if certify_steps() && sm < TIGHT_SIN {
                     // a narrow neck can fall between the end points: take the sine at the chord midpoint too
                     let mid = (cur.p + q) * 0.5;
@@ -1479,7 +1481,9 @@ fn trace(s1: &Surface, s2: &Surface, seed: MPt, t0: Vec3, b: &Bounds, tol: f64, 
                     let (a2, b2) = refine_uv(s2, cur.uv[2], cur.uv[3], mid);
                     sm = sm.min(s1.normal(a1, b1).cross(s2.normal(a2, b2)).len());
                 }
-                if certify_steps() && sm < CLOSE_SIN && sm > FLAT_SIN && h > step / 64.0 {
+                // tangent along the curve is judged at the end points: the midpoint's projections can sit on a
+                // near-tangent neck between two branches (sine ~0 there) that the step jumps across
+                if certify_steps() && sm < CLOSE_SIN && s_end > FLAT_SIN && h > step / 64.0 {
                     let a = MPt { p: cur.p, uv: cur.uv };
                     let b = MPt { p: q, uv };
                     if matches!(certify_span(s1, s2, &a, &b, t + tq), Certificate::Unresolved(Unresolved::Singular | Unresolved::NoContraction)) {

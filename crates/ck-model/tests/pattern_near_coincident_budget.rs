@@ -1,5 +1,7 @@
 //! The work budget reaches the trimming of the imprint: 12 copies of a revolved body a hair apart are stopped
-//! by `featureTimeMs` instead of grinding for seconds past it (crash fuzz seed 11, case 525).
+//! by `featureTimeMs` instead of grinding for seconds past it (crash fuzz seed 11, case 525). The case's profile line ran
+//! out to 3.7e7 mm, a cone the revolve now refuses (its edges would lie up to 1e-2 off it, `revolveDegenerate`); at a
+//! tenth of that radius the cone is held within the tolerance and the pattern still runs ~8 s unbudgeted.
 use ck_model::features::Brep;
 use ck_model::regen::{self, FeatureExec, RegenOpts, Tracer};
 use ck_model::Part;
@@ -35,7 +37,7 @@ impl FeatureExec for Exec {
 
 #[test]
 fn near_coincident_copies_stop_at_the_budget_inside_the_robust_retry() {
-    let fs = r#"[{"type": "sketch", "id": "S1", "plane": {"kind": "std", "id": "front"}, "points": [{"id": "p0", "x": 15.19005023187492, "y": 0}, {"id": "p1", "x": 36800185.55671228, "y": 22.885029329848475}, {"id": "p2", "x": 0, "y": 22.885029329848475}, {"id": "p3", "x": 0, "y": 0}, {"id": "a1", "x": 0, "y": 0}, {"id": "a2", "x": 0, "y": 22.885029329848475}], "entities": [{"type": "line", "id": "e1", "p1": "p0", "p2": "p1"}, {"type": "line", "id": "e2", "p1": "p1", "p2": "p2"}, {"type": "line", "id": "e3", "p1": "p2", "p2": "p3"}, {"type": "line", "id": "e4", "p1": "p3", "p2": "p0"}, {"type": "line", "id": "ax", "p1": "a1", "p2": "a2", "construction": true}], "constraints": []}, {"type": "revolve", "id": "F2", "op": "add", "sketch": "S1", "axis": "ax", "angle": 67.51865050359629}, {"type": "lpattern", "id": "F9", "seeds": ["F2"], "dir": {"kind": "axis", "axis": "x"}, "spacing": 1.1795727105332206e-05, "count": 12}]"#;
+    let fs = r#"[{"type": "sketch", "id": "S1", "plane": {"kind": "std", "id": "front"}, "points": [{"id": "p0", "x": 15.19005023187492, "y": 0}, {"id": "p1", "x": 3680018.555671228, "y": 22.885029329848475}, {"id": "p2", "x": 0, "y": 22.885029329848475}, {"id": "p3", "x": 0, "y": 0}, {"id": "a1", "x": 0, "y": 0}, {"id": "a2", "x": 0, "y": 22.885029329848475}], "entities": [{"type": "line", "id": "e1", "p1": "p0", "p2": "p1"}, {"type": "line", "id": "e2", "p1": "p1", "p2": "p2"}, {"type": "line", "id": "e3", "p1": "p2", "p2": "p3"}, {"type": "line", "id": "e4", "p1": "p3", "p2": "p0"}, {"type": "line", "id": "ax", "p1": "a1", "p2": "a2", "construction": true}], "constraints": []}, {"type": "revolve", "id": "F2", "op": "add", "sketch": "S1", "axis": "ax", "angle": 67.51865050359629}, {"type": "lpattern", "id": "F9", "seeds": ["F2"], "dir": {"kind": "axis", "axis": "x"}, "spacing": 1.1795727105332206e-05, "count": 12}]"#;
     let src = format!(r#"{{"format":"ck-part","version":1,"features":{fs}}}"#);
     let part = Part::from_json(&ck_json::parse(&src).unwrap()).unwrap();
     let mut ex = Exec { brep: Brep::new(), labels: Noop };

@@ -187,9 +187,16 @@ fn floor_hundredth(x: f64) -> f64 {
 /// shells: bisection on the failing thickness. `None` when not even that works.
 fn largest_working(body: &Body, open: &[FaceId], thickness: f64, outward: bool, tol: f64) -> Option<f64> {
     let (mut lo, mut hi) = (0.0f64, thickness);
+    // (a failing shell can take seconds itself, and the refusal waits for the whole search: no new try starts after
+    // SEARCH_MS of the host clock, so a refusal comes back with the best wall found so far, or none)
+    const SEARCH_MS: f64 = 3000.0;
+    let started = ck_core::budget::mark();
     // (four halvings; up to eight when nothing worked yet, e.g. a thin web far below the wall asked for)
     for i in 0..8 {
         if i >= 4 && lo > 0.0 {
+            break;
+        }
+        if i > 0 && ck_core::budget::since(started) > SEARCH_MS {
             break;
         }
         let mid = 0.5 * (lo + hi);
@@ -271,43 +278,308 @@ fn rim_tangent_to_open_face(body: &Body, open: &[FaceId]) -> Option<(String, Str
     None
 }
 
-/// Shell with an opened face whose neighbour continues it smoothly (a rounded rim). The offset of the opening moves out and
-/// that of the rim inward, and the two never meet, so the cavity is built differently: every face is offset inward (the opened
-/// one too), and a prism of the opened face's outline, from a little below that inward offset to past the face, opens the cavity
-/// through it. The wall then ends in a flat ring of the width of the round where the outline meets it. Cut in two steps (the
-/// offset cavity, then the prism).
-fn shell_rounded_rim(body: &Body, open: &[FaceId], t: f64, tol: f64) -> Result<Body, ShellError> {
-    use ck_topo::make::{extrude, ExtrudeOpts, Profile, ProfileLoop, ProfileRegion, ProfileSeg};
-    let fail = |m: String| ShellError::detail("shellFailed", m);
-    let cavity = offset_body(body, &|_| -t).map_err(from_offset)?;
-    let mut cur = boolean(body, &cavity, Op::Cut, tol).map_err(|e| fail(format!("the cavity could not be cut out of the shape: {e}")))?.body;
-    for &f in open {
-        let face = body.face(f);
-        let Surface::Plane { frame } = &face.surface else { return Err(fail("the opened face is not planar".into())) };
-        let mut loops: Vec<ProfileLoop> = vec![];
-        for &l in &face.loops {
-            let mut segs = vec![];
-            for (k, &c) in body.lp(l).coedges.iter().enumerate() {
-                if !body.coedge(c).alive {
+/// Does `s` contain, through every point, a straight line along `n` (a wall standing square on a plane of normal `n`)?
+fn ruled_along(s: &Surface, n: Vec3) -> bool {
+    match s {
+        Surface::Plane { frame } => frame.z.dot(n).abs() < 1e-9,
+        Surface::Cylinder { frame, .. } => frame.z.cross(n).len() < 1e-9,
+        Surface::Extrusion { dir, .. } => dir.try_normalize().is_some_and(|d| d.cross(n).len() < 1e-9),
+        _ => false,
+    }
+}
+
+/// Edges shorter than this in the outline of an opened face are slivers: the micrometre arcs a boolean leaves where a
+/// cylinder touches the plane along a line (a boss tangent to the opened face).
+const SLIVER: f64 = 1e-5;
+
+/// The outline of planar face `f` of `b` as a profile on its plane's frame, sliver edges dropped. Each edge of the outline is
+/// moved `grow(edge)` away from the face, in its plane (0 keeps it; only lines and arcs can move). The outer loop is the one
+/// enclosing the most area. Gaps left by a dropped sliver or a moved edge are closed where the two pieces run through a
+/// common point: two pieces of one arc, or two lines (extended to their crossing).
+fn face_outline(b: &Body, f: FaceId, grow: &dyn Fn(ck_topo::body::EdgeId) -> f64) -> Result<ck_topo::make::Profile, String> {
+    use ck_geom::curve2::Curve2;
+    use ck_geom::Vec2;
+    use ck_topo::make::{Profile, ProfileLoop, ProfileRegion, ProfileSeg};
+    let face = b.face(f);
+    let Surface::Plane { frame } = &face.surface else { return Err("the opened face is not planar".into()) };
+    let mut loops: Vec<(ProfileLoop, Vec<f64>)> = vec![];
+    for &l in &face.loops {
+        let (mut segs, mut moves) = (vec![], vec![]);
+        for (k, &c) in b.lp(l).coedges.iter().enumerate() {
+            if !b.coedge(c).alive {
+                continue;
+            }
+            let e = b.coedge(c).edge;
+            if b.edge_length(e) < SLIVER {
+                continue;
+            }
+            let ed = b.edge(e);
+            let pc = match &b.coedge(c).pcurve {
+                Some(pc) => pc.clone(),
+                None => ck_geom::pcurve::exact_pcurve(&face.surface, &ed.curve, 1e-7).ok_or("an edge of the opened face has no plane image")?,
+            };
+            let (ta, tb) = b.coedge_params(c);
+            segs.push(ProfileSeg { tag: format!("r{k}"), curve: pc, t0: ta.min(tb), t1: ta.max(tb), rev: tb < ta });
+            moves.push(grow(e));
+        }
+        if !segs.is_empty() {
+            loops.push((ProfileLoop::new(segs), moves));
+        }
+    }
+    if loops.is_empty() {
+        return Err("the opened face has no outline".into());
+    }
+    let k = (0..loops.len()).max_by(|&i, &j| loops[i].0.signed_area().abs().total_cmp(&loops[j].0.signed_area().abs())).unwrap();
+    let outer_k = loops.remove(k);
+    loops.insert(0, outer_k);
+    let mut done: Vec<ProfileLoop> = vec![];
+    for (i, (lp, moves)) in loops.into_iter().enumerate() {
+        // the region on the left of travel: the outer loop runs counter-clockwise, holes clockwise
+        let a = lp.signed_area();
+        let (mut segs, moves) = if (i == 0) == (a > 0.0) {
+            (lp.segs, moves)
+        } else {
+            (lp.segs.iter().rev().map(|s| s.reversed()).collect::<Vec<_>>(), moves.into_iter().rev().collect())
+        };
+        // move edges away from the face (to the right of travel)
+        for (s, &d) in segs.iter_mut().zip(&moves) {
+            if d == 0.0 {
+                continue;
+            }
+            let tm = 0.5 * (s.t0 + s.t1);
+            let tt = s.travel_tangent(tm);
+            if !(tt.len() > 1e-12) {
+                return Err("a degenerate edge in the outline".into());
+            }
+            let tt = tt.normalize();
+            let right = Vec2::new(tt.y, -tt.x);
+            s.curve = match &s.curve {
+                Curve2::Line { o, d: dir } => Curve2::Line { o: *o + right * d, d: *dir },
+                Curve2::Circle { c, x, r, ccw } => {
+                    let out = (s.curve.eval(tm) - *c).dot(right) > 0.0;
+                    let r2 = if out { r + d } else { r - d };
+                    if r2 <= 1e-9 {
+                        return Err("an arc of the outline shrinks to nothing".into());
+                    }
+                    Curve2::Circle { c: *c, x: *x, r: r2, ccw: *ccw }
+                }
+                _ => return Err("only lines and arcs of the outline can be moved".into()),
+            };
+        }
+        // close the gaps: the next piece starts where the previous one ends
+        let m = segs.len();
+        for i in 0..m {
+            let j = (i + m - 1) % m;
+            let end = segs[j].end();
+            if segs[i].start().dist(end) <= 1e-9 {
+                continue;
+            }
+            if let (Curve2::Line { o: o1, d: d1 }, Curve2::Line { o: o2, d: d2 }) = (segs[j].curve.clone(), segs[i].curve.clone()) {
+                let den = d1.cross(d2);
+                if den.abs() > 1e-9 * d1.len() * d2.len() {
+                    let u = (o2 - o1).cross(d2) / den;
+                    let v = (o2 - o1).cross(d1) / den;
+                    let pj = &mut segs[j];
+                    if pj.rev {
+                        pj.t0 = u;
+                    } else {
+                        pj.t1 = u;
+                    }
+                    let si = &mut segs[i];
+                    if si.rev {
+                        si.t1 = v;
+                    } else {
+                        si.t0 = v;
+                    }
                     continue;
                 }
-                let ed = body.edge(body.coedge(c).edge);
-                let pc = match &body.coedge(c).pcurve {
-                    Some(pc) => pc.clone(),
-                    None => ck_geom::pcurve::exact_pcurve(&face.surface, &ed.curve, 1e-7).ok_or_else(|| fail("an edge of the opened face has no plane image".into()))?,
-                };
-                let (ta, tb) = body.coedge_params(c);
-                segs.push(ProfileSeg { tag: format!("r{k}"), curve: pc, t0: ta.min(tb), t1: ta.max(tb), rev: tb < ta });
             }
-            loops.push(ProfileLoop::new(segs));
+            let s = &mut segs[i];
+            let old = s.t_start();
+            let mut tp = s.curve.closest_param(end);
+            if matches!(s.curve, Curve2::Circle { .. }) {
+                tp += std::f64::consts::TAU * ((old - tp) / std::f64::consts::TAU).round();
+            }
+            if s.curve.eval(tp).dist(end) < 1e-9 && (tp - old).abs() < 1e-3 {
+                if s.rev {
+                    s.t1 = tp;
+                } else {
+                    s.t0 = tp;
+                }
+            }
         }
-        if loops.is_empty() {
-            return Err(fail("the opened face has no outline".into()));
+        if segs.iter().any(|s| !(s.t1 > s.t0)) {
+            return Err("an edge of the moved outline reverses".into());
         }
-        let outer = loops.remove(0);
-        let profile = Profile::new(*frame, vec![ProfileRegion { outer, holes: loops }]).normalized();
-        // heights run along the plane frame's z; the face's outward side is +z when its sense is set
-        let (below, above) = (1.25 * t, t.max(1.0));
+        done.push(ProfileLoop::new(segs));
+    }
+    let outer = done.remove(0);
+    let profile = Profile::new(*frame, vec![ProfileRegion { outer, holes: done }]);
+    profile.validate().map_err(|e| format!("the outline of the opened face does not close: {e}"))?;
+    Ok(profile)
+}
+
+fn profile_area(p: &ck_topo::make::Profile) -> f64 {
+    p.regions.iter().map(|r| r.outer.signed_area().abs() - r.holes.iter().map(|h| h.signed_area().abs()).sum::<f64>()).sum()
+}
+
+/// A convex round along the rim of an opened face that is no larger than the wall (a fillet of the rim, radius <= t): its
+/// inward offset collapses, and the cavity has a sharp corner there, the same as for the body with that edge left sharp
+/// (the points at least `t` inside are the same). Returns, for such a body, that body with the rim edges sharp again and
+/// its opened faces: the body united with a slab of the opened faces' outlines moved out by each round's radius (the walls
+/// below the rounds then reach the opened plane), as deep as the largest round. `None` when no rim round is that small.
+fn sharpen_small_rims(body: &Body, open: &[FaceId], t: f64, tol: f64) -> Result<Option<(Body, Vec<FaceId>)>, String> {
+    use ck_topo::make::{extrude, ExtrudeOpts};
+    // (round radius per rim edge)
+    let small = |f: FaceId, e: ck_topo::body::EdgeId| -> Option<f64> {
+        let fs = body.edge_faces(e);
+        let g = *fs.iter().find(|&&g| g != f)?;
+        if fs.len() != 2 || open.contains(&g) || body.edge_length(e) < SLIVER {
+            return None;
+        }
+        let face = body.face(g);
+        // convex: the outward normal points away from the round's axis / spine (natural normal, sense set)
+        let r = match &face.surface {
+            Surface::Cylinder { r, .. } if face.sense => *r,
+            Surface::Torus { minor, .. } if face.sense => *minor,
+            _ => return None,
+        };
+        let ed = body.edge(e);
+        let p = ed.curve.eval(0.5 * (ed.t0 + ed.t1));
+        let nrm = |h: FaceId| {
+            let sf = &body.face(h).surface;
+            let (u, v, _) = sf.closest_point(p);
+            sf.normal(u, v).try_normalize()
+        };
+        let tangent = matches!((nrm(f), nrm(g)), (Some(a), Some(b)) if a.cross(b).len() < 0.02);
+        (tangent && r <= t * (1.0 + 1e-9)).then_some(r)
+    };
+    // (opened face, its outline moved out, slab depth)
+    let mut outlines = vec![];
+    let mut added_bound = 0.0;
+    for &f in open {
+        let rims: Vec<(ck_topo::body::EdgeId, f64)> = body.face_edges(f).into_iter().filter_map(|e| small(f, e).map(|r| (e, r))).collect();
+        let Some(depth) = rims.iter().map(|x| x.1).reduce(f64::max) else { continue };
+        let grow = |e: ck_topo::body::EdgeId| rims.iter().find(|x| x.0 == e).map_or(0.0, |x| x.1);
+        let profile = face_outline(body, f, &grow)?;
+        // (the corner a round of radius r removes has the section (1 - pi/4) r^2: at most that along the moved outline,
+        // which is at most twice as long as the rim)
+        let perimeter: f64 = rims.iter().map(|&(e, _)| body.edge_length(e)).sum::<f64>() * 2.0 + 1.0;
+        added_bound += (1.0 - std::f64::consts::FRAC_PI_4) * depth * depth * perimeter;
+        outlines.push((f, profile, depth));
+    }
+    if outlines.is_empty() {
+        return Ok(None);
+    }
+    let vol = |b: &Body| ck_topo::mass::mass_props(b).volume;
+    let vb = vol(body);
+    let mut last = String::new();
+    // the slab reaches past the rounds into the walls (its sides then lie on them), else just to where the rounds end
+    let mut found = None;
+    for factor in [1.25, 1.0] {
+        let mut sharp = body.clone();
+        let mut ok = true;
+        for (f, profile, depth) in &outlines {
+            let d = factor * depth;
+            // into the body: against the outward normal
+            let inward = if body.face(*f).sense { ExtrudeOpts { s0: -d, s1: 0.0, dir: None, draft: 0.0 } } else { ExtrudeOpts { s0: 0.0, s1: d, dir: None, draft: 0.0 } };
+            match extrude("shellSharp", profile, inward).and_then(|slab| boolean(&sharp, &slab, Op::Union, tol)) {
+                Ok(b) => sharp = b.body,
+                Err(e) => {
+                    last = e;
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        if !ok {
+            continue;
+        }
+        ck_topo::edit::merge_coplanar(&mut sharp, 1e-9);
+        let added = vol(&sharp) - vb;
+        let issues = ck_check::validate(&sharp, 1e-6).len();
+        if std::env::var_os("CK_OFFSET_DEBUG").is_some() {
+            eprintln!("shell (sharp rim, slab x{factor}): adds {added:.4} mm3 (at most {added_bound:.4}), {} faces, {issues} issues", sharp.num_faces());
+        }
+        // the slab may only fill the corners the rounds removed (not a pocket next to the rim)
+        if !(added > 0.0 && added <= added_bound) || issues > ck_check::validate(body, 1e-6).len() {
+            last = format!("the slab adds {added:.3} mm3 with {issues} issues");
+            continue;
+        }
+        found = Some(sharp);
+        break;
+    }
+    let Some(sharp) = found else { return Err(format!("the rim could not be made sharp for the cavity: {last}")) };
+    let planes: Vec<(Vec3, f64)> = open.iter().filter_map(|&f| plane_of(body, f)).collect();
+    let open_s: Vec<FaceId> = sharp
+        .face_ids()
+        .filter(|&g| plane_of(&sharp, g).is_some_and(|q| planes.iter().any(|pl| q.0.dot(pl.0) > 1.0 - 1e-9 && (q.1 - pl.1).abs() < 1e-6 * (1.0 + pl.1.abs()))))
+        .collect();
+    if open_s.len() != open.len() {
+        return Err(format!("the sharpened body has {} faces on the opened planes, not {}", open_s.len(), open.len()));
+    }
+    Ok(Some((sharp, open_s)))
+}
+
+/// Shell with an opened face that a neighbour meets tangentially: a rounded rim (a round of the opened face's edges), or a
+/// boss cylinder whose top line lies in the opened plane. The offset of the opening moves out and that of the tangent face
+/// inward, and the two never meet, so the cavity is built differently: every face is offset inward (the opened one too, which
+/// keeps the tangency and so the body's topology), and a prism of the closed cavity's opened face, from its plane to past the
+/// body's face, opens the cavity through it. Next to a round the wall then ends in a flat ring of the width of the round. Cut
+/// in two steps (the offset cavity, then the prism). A rim round no larger than the wall collapses in the inward offset: the
+/// cavity is then that of the body with the rim sharp ([`sharpen_small_rims`]), and the wall ends in the round itself.
+///
+/// The prism is the true opening only where the cavity's walls at its outline stand square on the opened plane or continue it
+/// tangentially: a wall meeting it at another angle (a draft) refuses. The result is checked by volume: body - closed cavity
+/// - opened area x t.
+fn shell_rounded_rim(body: &Body, open: &[FaceId], t: f64, tol: f64) -> Result<Body, ShellError> {
+    use ck_topo::make::{extrude, ExtrudeOpts};
+    let fail = |m: String| ShellError::detail("shellFailed", m);
+    let sharp = sharpen_small_rims(body, open, t, tol).map_err(fail)?;
+    let (src, src_open) = match &sharp {
+        Some((b, o)) => (b, o.clone()),
+        None => (body, open.to_vec()),
+    };
+    let cavity = offset_body(src, &|_| -t).map_err(from_offset)?;
+    let cut = {
+        // face k of the cavity is the offset of face k: those pairs never intersect (only when the cavity is the body's own)
+        let _skip = sharp.is_none().then(|| crate::boolean::imprint::skip_pairs(body.face_ids().zip(cavity.face_ids()).filter(|(a, b)| a == b).collect()));
+        boolean(body, &cavity, Op::Cut, tol)
+    };
+    let mut cur = cut.map_err(|e| fail(format!("the cavity could not be cut out of the shape: {e}")))?.body;
+    let mut lid = 0.0;
+    for &f in &src_open {
+        // (the offset keeps the face order: face f of the cavity is the offset of the opened face)
+        let face = cavity.face(f);
+        let Surface::Plane { .. } = &face.surface else { return Err(fail("the opened face is not planar".into())) };
+        let n = plane_of(&cavity, f).unwrap().0;
+        let mut square = false;
+        for e in cavity.face_edges(f) {
+            if cavity.edge_length(e) < SLIVER {
+                continue;
+            }
+            let ed = cavity.edge(e);
+            let p = ed.curve.eval(0.5 * (ed.t0 + ed.t1));
+            for g in cavity.edge_faces(e) {
+                if g == f {
+                    continue;
+                }
+                let gs = &cavity.face(g).surface;
+                let (u, v, _) = gs.closest_point(p);
+                let tangent = gs.normal(u, v).try_normalize().is_some_and(|m| m.cross(n).len() < 0.02);
+                if ruled_along(gs, n) {
+                    square = true;
+                } else if !tangent {
+                    return Err(fail(format!("{} meets the opened face at an angle (neither square nor tangent), so the opening cannot be cut as a prism", src.face_id_str(g))));
+                }
+            }
+        }
+        let profile = face_outline(&cavity, f, &|_| 0.0).map_err(fail)?;
+        lid += profile_area(&profile);
+        // heights run along the plane frame's z, from the cavity's face (the face's outward side is +z when its sense is
+        // set). Below a round the cavity bulges past the outline, so the prism starts a little below the face; along a wall
+        // standing square on it the prism starts on the face, flush with the wall
+        let (below, above) = (if square { 0.0 } else { 0.25 * t }, t + t.max(1.0));
         let o = if face.sense { ExtrudeOpts { s0: -below, s1: above, dir: None, draft: 0.0 } } else { ExtrudeOpts { s0: -above, s1: below, dir: None, draft: 0.0 } };
         let prism = extrude("shellRim", &profile, o).map_err(|e| fail(format!("the opening could not be built: {e}")))?;
         cur = boolean(&cur, &prism, Op::Cut, tol).map_err(|e| fail(format!("the opening could not be cut: {e}")))?.body;
@@ -315,6 +587,15 @@ fn shell_rounded_rim(body: &Body, open: &[FaceId], t: f64, tol: f64) -> Result<B
     cur.number_split_faces();
     if !ck_check::validate(&cur, 1e-6).is_empty() && ck_check::validate(&cur, 1e-6).len() > ck_check::validate(body, 1e-6).len() {
         return Err(fail("the hollowed body is not valid".into()));
+    }
+    let vol = |b: &Body| ck_topo::mass::mass_props(b).volume;
+    let (vb, vc, vo) = (vol(body), vol(&cavity), vol(&cur));
+    let want = vb - vc - lid * t;
+    if std::env::var_os("CK_OFFSET_DEBUG").is_some() {
+        eprintln!("shell (tangent opening): body {vb:.4} cavity {vc:.4} lid {:.4} -> want {want:.4} got {vo:.4}", lid * t);
+    }
+    if !((vo - want).abs() <= 1e-5 * vb) {
+        return Err(fail(format!("the hollowed body has the wrong volume ({vo:.3} mm3 against {want:.3} mm3)")));
     }
     Ok(cur)
 }
@@ -346,14 +627,19 @@ fn shell_try(body: &Body, open: &[FaceId], thickness: f64, outward: bool, tol: f
     }
     if let Some((open_face, neighbour)) = rim_tangent_to_open_face(body, open) {
         if !outward && near_poles.is_empty() {
-            if let Ok(b) = shell_rounded_rim(body, open, thickness, tol) {
-                return Ok(b);
+            match shell_rounded_rim(body, open, thickness, tol) {
+                Ok(b) => return Ok(b),
+                Err(e) => {
+                    if std::env::var_os("CK_OFFSET_DEBUG").is_some() {
+                        eprintln!("shell (tangent opening) failed: {:?}", e.detail);
+                    }
+                }
             }
         }
         return Err(ShellError::detail(
             "shellUnsupported",
             format!(
-                "the opened face {open_face} meets {neighbour} tangentially (a rounded rim) and the wall could not be cut flush on it. Shell first and round the rim afterwards, or leave the edges around the opened face unrounded"
+                "the opened face {open_face} meets {neighbour} tangentially (a rounded rim, or a curved face touching it along a line) and the wall could not be cut flush on it. Shell first and round the rim afterwards, or leave the edges around the opened face unrounded"
             ),
         ));
     }

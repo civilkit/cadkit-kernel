@@ -85,6 +85,83 @@ pub fn fill_n_sided(body: &Body, chain: &[EdgeId], continuity: &str, tol: f64) -
     n_sided_patch(&sides, tol).map_err(map_err)
 }
 
+/// The closed ring `chain` of `body` filled by N free-form faces round a centre vertex.
+///
+/// Each ring edge is split at its parameter midpoint (the neighbouring face's loop gets the two
+/// halves), N inner seam edges run from those midpoints to a new centre vertex, and patch `k` is
+/// one face bounded by the first half of ring side `k`, inner seam `k`, inner seam `k - 1` and the
+/// second half of ring side `k - 1`. Seams are shared by two coedges of opposite sense, and the
+/// ring coedges run opposite to the neighbouring faces'. The faces are named
+/// `<feature>.N<k>` (`k` = the side's position in the walk of the ring, from 0) and appended in
+/// that order, so the naming depends on nothing but the picks.
+pub fn fill_n_sided_body(body: &Body, chain: &[EdgeId], continuity: &str, feature: &str, tol: f64) -> Result<Body, FillError> {
+    use ck_geom::curve::Curve;
+    use ck_geom::surface::Surface;
+    use ck_topo::body::{FaceName, Role};
+
+    let patch = fill_n_sided(body, chain, continuity, tol)?;
+    let steps = walk_chain(body, chain)?;
+    let n = steps.len();
+    let fail = |d: &str| FillError { code: "fillFailed", detail: d.into() };
+    if patch.patches.len() != n {
+        return Err(fail("the patch count does not match the ring"));
+    }
+    // does the walk run with the neighbouring faces? (their coedges must run opposite to ours)
+    let body_rev = |e: EdgeId| body.edge_coedges(e).iter().find(|&&c| body.coedge(c).alive).map(|&c| body.coedge(c).rev).unwrap_or(false);
+    let agree = steps.iter().filter(|s| s.fwd == !body_rev(s.e)).count();
+    let backwards = agree * 2 > n;
+
+    let mut out = body.clone();
+    let lump = out.lump_ids().next().ok_or_else(|| fail("the body has no lump"))?;
+    let shell = out.add_shell(lump);
+
+    // split every ring edge at its parameter midpoint; each half is (edge, stored against the walk)
+    let mut mids = Vec::with_capacity(n);
+    let mut first = Vec::with_capacity(n);
+    let mut second = Vec::with_capacity(n);
+    for (k, s) in steps.iter().enumerate() {
+        let (t0, t1) = (out.edge(s.e).t0, out.edge(s.e).t1);
+        let (vm, ne) = ck_topo::edit::split_edge(&mut out, s.e, 0.5 * (t0 + t1));
+        if out.vertex(vm).p.dist(patch.patches[k].eval(1.0, 0.0)) > tol.max(1e-6) * 10.0 {
+            return Err(fail("a ring edge's parameter midpoint is not the patch's side midpoint"));
+        }
+        mids.push(vm);
+        if s.fwd {
+            first.push((s.e, false));
+            second.push((ne, false));
+        } else {
+            first.push((ne, true));
+            second.push((s.e, true));
+        }
+    }
+    // the centre and the inner seams (middle of side k -> centre)
+    let vc = out.add_vertex(patch.centre);
+    let mut seams = Vec::with_capacity(n);
+    for (k, p) in patch.patches.iter().enumerate() {
+        let c = p.iso_u(p.domain().0 .1);
+        let (a, b) = c.domain();
+        seams.push(out.add_edge(Curve::BSpline(c), a, b, mids[k], vc));
+    }
+    for (k, p) in patch.patches.iter().enumerate() {
+        let name = FaceName { feature: feature.into(), role: Role::Other(format!("N{k}")), region: None, suffix: String::new() };
+        let f = out.add_face(shell, Surface::BSpline(Box::new(p.clone())), !backwards, name);
+        let lp = out.add_loop(f);
+        let prev = (k + n - 1) % n;
+        // counter-clockwise in (u, v): along side k, down seam k, back up seam k - 1, along side k - 1
+        let mut co: Vec<(EdgeId, bool)> = vec![first[k], (seams[k], false), (seams[prev], true), second[prev]];
+        if backwards {
+            co.reverse();
+            for c in co.iter_mut() {
+                c.1 = !c.1;
+            }
+        }
+        for (e, rev) in co {
+            out.add_coedge(lp, e, rev, None);
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

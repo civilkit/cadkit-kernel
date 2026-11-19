@@ -303,7 +303,11 @@ fn angular(s: &Surface) -> (bool, bool) {
         Surface::Offset { base, .. } => angular(base),
         Surface::BSpline(_) => (false, false),
         Surface::Screw { .. } => (true, false),
+        Surface::Sweep(w) => (w.path.period().is_some(), w.profile.period().is_some()),
+        // the section across a blend is a circular arc, angle-proportional in v
+        Surface::Blend(_) => (false, true),
     }
+
 }
 
 /// ∮ G dv over the face boundary = sense · ∫∫_D F(σ, σu×σv) du dv, i.e.

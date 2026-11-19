@@ -551,6 +551,10 @@ fn boolean_at_merge(a: &Body, b: &Body, op: Op, tol: f64, merge: bool) -> Result
         let pb = first_point(b);
         let a_in_b = ck_topo::region::classify(b, pa, tol) == ck_topo::region::Containment::Inside;
         let b_in_a = ck_topo::region::classify(a, pb, tol) == ck_topo::region::Containment::Inside;
+        // (the winding number behind the containment stops refining when the budget runs out: do not act on it then)
+        if ck_core::budget::expired() {
+            return Err(BUDGET_EXCEEDED.into());
+        }
         match op {
             Op::Cut if !a_in_b && !b_in_a => return Ok(BoolOut { body: a0.clone(), no_effect: true, mismatch: None, disjoint: true }),
             Op::Intersect if !a_in_b && !b_in_a => return Ok(BoolOut { body: Body::new(), no_effect: true, mismatch: None, disjoint: true }),
@@ -680,13 +684,45 @@ fn boolean_at_merge(a: &Body, b: &Body, op: Op, tol: f64, merge: bool) -> Result
     // orientable boundary: an exact tangency leaves the result non-manifold at the
     // contact (three sheets meet along a line, or two loops meet at a point). The
     // geometry is assembled, but the body is not valid; refuse it structurally
-    // rather than return an invalid solid with a plausible volume.
+    // rather than return an invalid solid with a plausible volume. The faces and the
+    // point of the first loop that runs through one vertex twice are named.
     if let Some(chi) = odd_shell(&body) {
+        let at = pinch(&body).map_or(String::new(), |(names, p)| format!(";faces={};at={:.4}|{:.4}|{:.4}", names.join("|"), p.x, p.y, p.z));
         return Err(format!(
-            "booleanTangent;euler={chi};hint=the operands touch tangentially (a wall grazes the other with no crossing); move one operand or widen the model tolerance"
+            "booleanTangent;euler={chi}{at};hint=the operands touch tangentially (a wall grazes the other with no crossing); move one operand by a small amount (0.01) or widen the model tolerance"
         ));
     }
     Ok(BoolOut { body, no_effect: false, mismatch: None, disjoint: false })
+}
+
+/// The first loop that runs through one vertex twice along non-seam edges (two
+/// sheets of the result touching at a point, or a piece of edge with no length):
+/// the names of the faces at that vertex and its position.
+fn pinch(b: &Body) -> Option<(Vec<String>, Vec3)> {
+    for f in b.face_ids() {
+        for &l in &b.face(f).loops {
+            let mut seen = std::collections::HashSet::new();
+            for &c in &b.lp(l).coedges {
+                if b.is_seam(b.coedge(c).edge) {
+                    continue;
+                }
+                let v = b.coedge_start(c);
+                if !seen.insert(v) {
+                    let mut names: Vec<String> = vec![];
+                    for e in b.edge_ids().filter(|&e| b.edge(e).v0 == v || b.edge(e).v1 == v) {
+                        for g in b.edge_faces(e) {
+                            let n = b.face_id_str(g);
+                            if !names.contains(&n) && names.len() < 8 {
+                                names.push(n);
+                            }
+                        }
+                    }
+                    return Some((names, b.vertex(v).p));
+                }
+            }
+        }
+    }
+    None
 }
 
 /// The Euler characteristic of the first shell component for which

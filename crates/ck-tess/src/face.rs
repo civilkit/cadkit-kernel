@@ -439,12 +439,16 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
     let mut polys: Vec<Vec<BPt>> = vec![];
     // v of every seam end (a seam that reaches a pole is the only boundary there)
     let mut seam_v: Vec<f64> = vec![];
+    let live_loops = face.loops.iter().filter(|&&l| body.lp(l).alive).count();
     for &l in &face.loops {
         let lp = body.lp(l);
         if !lp.alive {
             continue;
         }
         let mut poly: Vec<BPt> = vec![];
+        // (poly length before, after) each join across a pole (same 3D point, a different u): see the loop closure
+        let mut pole_jumps: Vec<(usize, usize)> = vec![];
+        let (u_lo0, u_hi0) = (u_lo, u_hi);
         let mut prev: Option<Vec2> = None;
         let backwards = false;
         // A loop whose edges are all sampled by their end points only (the cap of a thin sliver: a chord and an arc
@@ -528,7 +532,11 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
             }
             if let Some(last) = poly.last().copied() {
                 if last.uv.x.is_finite() {
+                    let before = poly.len();
                     join(&mut poly, last, pl[0], tol);
+                    if !same_uv(last.uv, pl[0].uv) && last.p.dist(pl[0].p) <= 1e-9 * (1.0 + pl[0].p.len()) {
+                        pole_jumps.push((before, poly.len()));
+                    }
                     if same_uv(last.uv, pl[0].uv) {
                         pl.remove(0);
                     }
@@ -537,6 +545,10 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
             poly.extend(pl);
         }
         // close the loop
+        if let Some(p2) = pole_loop_fix(&poly, &pole_jumps, pu, face.sense, live_loops == 1, tol) {
+            poly = p2;
+            (u_lo, u_hi) = poly.iter().fold((u_lo0, u_hi0), |(lo, hi), q| (lo.min(q.uv.x), hi.max(q.uv.x)));
+        }
         if poly.len() >= 2 && poly.iter().all(|q| q.uv.x.is_finite()) {
             let (first, last) = (poly[0], *poly.last().unwrap());
             if same_uv(first.uv, last.uv) {
@@ -1533,6 +1545,81 @@ fn weld_close_points(segs: &mut [(BPt, BPt)]) {
 
 fn same_uv(a: Vec2, b: Vec2) -> bool {
     a.dist(b) <= SAME_UV_REL.with(|c| c.get()) * (1.0 + a.x.abs() + a.y.abs())
+}
+
+/// A loop through a pole (the apex of a partial revolve of a cone, the poles of a sphere wedge) crosses it from one
+/// meridian to the next, and the next meridian's u is unwrapped to the copy nearest the incoming one. For a wedge wider
+/// than half a turn that is the wrong copy: the loop then ends a period away from its start (cone), or closes the other
+/// way round and encloses the complement of the wedge (sphere), and the strip meshes the wrong part of the surface (open
+/// mesh, wrong area). A pole is the only place where u may jump, so each run of the loop after a pole crossing may move
+/// by a whole period. Returns the loop with the runs moved so that it closes (a non-pole start point is met again at the
+/// same u), spans at most one period, and turns the way the face's sense asks (a single loop is the outer loop: uv area
+/// times the sense sign is positive, as `ck_topo::orient::loops_consistent`). None when the loop needs no change (or no
+/// choice qualifies, or more than three pole crossings).
+fn pole_loop_fix(poly: &[BPt], jumps: &[(usize, usize)], pu: Option<f64>, sense: bool, single: bool, tol: &Tol) -> Option<Vec<BPt>> {
+    let per = pu?;
+    if jumps.is_empty() || jumps.len() > 3 || poly.len() < 3 || poly.iter().any(|q| !q.uv.x.is_finite()) {
+        return None;
+    }
+    let (first, last) = (poly[0], *poly.last()?);
+    let close_pole = !same_uv(first.uv, last.uv) && first.p.dist(last.p) <= 1e-9 * (1.0 + first.p.len()) && (first.uv.y - last.uv.y).abs() <= 1e-9 * (1.0 + first.uv.y.abs());
+    // runs: [0, before_1), [after_1, before_2), ... [after_n, len)
+    let mut runs: Vec<(usize, usize)> = vec![];
+    let mut s = 0;
+    for &(b, a) in jumps {
+        if b <= s || a > poly.len() {
+            return None;
+        }
+        runs.push((s, b));
+        s = a;
+    }
+    if s >= poly.len() {
+        return None;
+    }
+    runs.push((s, poly.len()));
+    let build = |shifts: &[f64]| -> Vec<BPt> {
+        let mut out: Vec<BPt> = vec![];
+        for (k, &(r0, r1)) in runs.iter().enumerate() {
+            let sh = if k == 0 { 0.0 } else { shifts[k - 1] };
+            let run: Vec<BPt> = poly[r0..r1].iter().map(|q| BPt { uv: Vec2::new(q.uv.x + sh, q.uv.y), ..*q }).collect();
+            if let Some(a) = out.last().copied() {
+                join(&mut out, a, run[0], tol);
+            }
+            out.extend(run);
+        }
+        out
+    };
+    let score = |p: &[BPt]| -> Option<f64> {
+        let (f, l) = (p[0], p[p.len() - 1]);
+        if !close_pole && (f.uv.x - l.uv.x).abs() > 1e-9 * per {
+            return None;
+        }
+        let (lo, hi) = p.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), q| (lo.min(q.uv.x), hi.max(q.uv.x)));
+        if hi - lo > per * (1.0 + 1e-9) {
+            return None;
+        }
+        let area: f64 = (0..p.len()).map(|i| { let (a, b) = (p[i].uv, p[(i + 1) % p.len()].uv); a.x * b.y - b.x * a.y }).sum::<f64>() * 0.5;
+        let sg = if sense { 1.0 } else { -1.0 };
+        (!single || area * sg > 0.0).then_some(area.abs())
+    };
+    if score(poly).is_some() {
+        return None;
+    }
+    let n = runs.len() - 1;
+    let mut best: Option<(f64, Vec<BPt>)> = None;
+    for code in 0..3usize.pow(n as u32) {
+        let shifts: Vec<f64> = (0..n).map(|k| ((code / 3usize.pow(k as u32)) % 3) as f64 - 1.0).map(|m| m * per).collect();
+        if shifts.iter().all(|&x| x == 0.0) {
+            continue;
+        }
+        let p = build(&shifts);
+        if let Some(a) = score(&p) {
+            if best.as_ref().map_or(true, |(b, _)| a < *b) {
+                best = Some((a, p));
+            }
+        }
+    }
+    best.map(|(_, p)| p)
 }
 
 /// Connects the end `a` of one coedge to the start `b` of the next: a pole

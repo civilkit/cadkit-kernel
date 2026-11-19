@@ -22,6 +22,11 @@ pub enum Containment {
 
 /// Winding number of `faces` about `q` (≈1 inside, 0 outside, ½ on).
 pub fn winding_number(b: &Body, faces: &[FaceId], q: Vec3) -> f64 {
+    winding_number_res(b, faces, q).0
+}
+
+/// [`winding_number`] and the quadrature resolution it stopped at (1 to 16).
+pub fn winding_number_res(b: &Body, faces: &[FaceId], q: Vec3) -> (f64, usize) {
     let at = |res: usize| -> f64 {
         faces
             .iter()
@@ -40,16 +45,20 @@ pub fn winding_number(b: &Body, faces: &[FaceId], q: Vec3) -> f64 {
             / (4.0 * PI)
     };
     let mut prev = at(1);
+    let mut used = 1;
     let mut res = 2;
-    while res <= 16 {
+    // each doubling costs four times the last (0.3 s at 16 on a 16 m tube in wasm): stop when the work budget runs out.
+    // The estimate is then unreliable; callers that act on it check `ck_core::budget::expired()` afterwards.
+    while res <= 16 && !ck_core::budget::expired() {
         let w = at(res);
         if (w - prev).abs() < 1e-3 {
-            return w;
+            return (w, res);
         }
         prev = w;
+        used = res;
         res *= 2;
     }
-    prev
+    (prev, used)
 }
 
 /// Distance from `q` to the nearest face surface point that is (roughly)
@@ -421,6 +430,37 @@ mod tests {
     use crate::make::tests::{box_body, rect};
     use crate::make::{extrude, ExtrudeOpts, Profile, ProfileLoop, ProfileRegion, ProfileSeg};
     use ck_geom::{Frame, Vec2};
+
+    /// A point on the axis of a big thin tube (radius 8190, wall 12, 2083 long: the crash fuzz's `case_175`) needs the finest
+    /// quadrature; once the work budget has run out the winding number stops at the coarsest (its callers then report the
+    /// budget instead of using it).
+    #[test]
+    fn winding_number_stops_refining_when_the_budget_runs_out() {
+        let v = Vec2::new;
+        let (r0, r1, h) = (8190.0, 8202.0, 2083.0);
+        let pts = [v(r0, 0.0), v(r1, 0.0), v(r1, h), v(r0, h)];
+        let outer = ProfileLoop::new((0..4).map(|i| ProfileSeg::line(["e1", "e2", "e3", "e4"][i], pts[i], pts[(i + 1) % 4])).collect());
+        let p = Profile::new(Frame::identity(), vec![ProfileRegion { outer, holes: vec![] }]);
+        let b = crate::make::revolve::revolve("F2", &p, Vec3::ZERO, Vec3::Y, 0.0, std::f64::consts::TAU).unwrap();
+        let faces: Vec<FaceId> = b.face_ids().collect();
+        let q = Vec3::new(0.0, 15.0, 0.0);
+        let (w, res) = winding_number_res(&b, &faces, q);
+        assert!(w.abs() < 0.1 && res > 1, "{w} at {res}");
+        fn fast_clock() -> f64 {
+            thread_local! { static T: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) }; }
+            T.with(|t| {
+                t.set(t.get() + 1000.0);
+                t.get()
+            })
+        }
+        std::thread::spawn(move || {
+            ck_core::budget::set_clock(fast_clock);
+            let _s = ck_core::budget::Scope::start(ck_core::budget::Which::Feature, Some(1.0));
+            assert_eq!(winding_number_res(&b, &faces, q).1, 1);
+        })
+        .join()
+        .unwrap();
+    }
 
     #[test]
     fn classify_box() {
