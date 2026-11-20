@@ -40,7 +40,7 @@ The message is free text, but the part before the first colon is stable and name
 | `importStep: data must be a STEP file as a string`, `importSat: data (the SAT file text) is required`, `importSldprt: data (the .SLDPRT file as base64) is required`, `importSkp: data (the .skp file as base64) is required` | imports | `data` is missing. |
 | `importSkp: opts.up must be "z", "y" or "yFlip", got ...` | `importSkp` | Unknown `opts.up`. |
 | `cannot inspect nothing`, `cannot inspect <kind>`, `<kind> not found`, `vertex without a point`, `no vertex` | `inspect` | See [Queries](queries.md#inspect). |
-| `<request>: ...` | measurement and analysis requests | A bad or missing argument, named after the request: `angles: edges ('all' \| [keys]), faces [a, b] or draft {pull} is required`, `closestPoint: at most 2000 points per request`, `closestPoint: on must be 'body', 'face', 'edge' or 'vertex'`, `extrema: dir must not be zero`, `probe: at most 2000 points per request` (and rays), `probe: points [[x, y, z], ...] or rays [{origin, dir}, ...] is required`, `probe: ray.dir must not be zero`, `section: plane.normal must not be zero`, `sections: axis must be 'x', 'y', 'z' or [nx, ny, nz]`, `sections: between 1 and 1000 positions`, `symmetry: plane.normal must not be zero`, `thickness: the body has no faces`, `thicknessAt: point [x, y, z] or face id is required`, `clearance: more than 4000 faces`, `maxDistance: nothing to sample`. Entity arguments that cannot be read give `unknown entity ...`, `no lump N (the body has M)` or `expected a face / edge / vertex id, a point, a lump or ...`. |
+| `<request>: ...` | measurement and analysis requests | A bad or missing argument, named after the request: `angles: edges ('all' \| [keys]), faces [a, b] or draft {pull} is required`, `closestPoint: at most 2000 points per request`, `closestPoint: on must be 'body', 'face', 'edge' or 'vertex'`, `extrema: dir must not be zero`, `probe: at most 2000 points per request` (and rays), `probe: points [[x, y, z], ...] or rays [{origin, dir}, ...] is required`, `probe: ray.dir must not be zero`, `section: plane.normal must not be zero`, `sections: axis must be 'x', 'y', 'z' or [nx, ny, nz]`, `sections: between 1 and 1000 positions`, `symmetry: plane.normal must not be zero`, `thickness: the body has no faces`, `thicknessAt: point [x, y, z] or face id is required`, `clearance: more than 4000 faces`, `maxDistance: nothing to sample`, `checkIntersection: a and b are required (face ids, lump:<n> or body)`, `checkIntersection: a: faces only`, `checkIntersection: N face pairs (at most 400 per request)`, `checkIntersection: tol must be positive`. Entity arguments that cannot be read give `unknown entity ...`, `no lump N (the body has M)` or `expected a face / edge / vertex id, a point, a lump or ...`. |
 | `dfmMinWall: threshold must be a positive number` (and the like) | `dfm*` | The required limit is missing or out of range; the message starts with the request name. |
 | `checkProfile ...`, `profile needs ...`, `rule <id>: ...` | `checkProfile` | Unknown profile, rule or parameter, a wrong type or a value out of range; the message lists the valid choices. |
 | `sketchAnalyze: featureId must be a string`, `sketchAnalyze: sketch F9 not found` (and `sketchFreedoms: ...`) | sketch analysis | Missing or unknown `featureId`. |
@@ -296,7 +296,27 @@ Two warnings of the end conditions are in [Warnings](#warnings): `endConditionFa
 | `projectCurvePlane` | The input curve does not define a projection plane. |
 | `projectCurveMisses` | The projection hits no face. |
 | `projectCurveSeveral` | The projection gives several separate chains; `params`: `count`, `points`. |
-| `projectCurveFailed` | The projected curve could not be fitted. `params.detail`. |
+| `projectCurveFailed` | The projected curve could not be fitted (procedural: not converted within `tolerance`). `params.detail`. |
+| `projectCurveGap`, `offsetCurveGap`, `compositeCurveGap` | Two consecutive input curves are further apart than `gapTolerance`. `params`: `index`, `gap`, `tolerance`, `at`, `hint`. |
+| `projectCurveNotChain`, `offsetCurveNotChain`, `compositeCurveNotChain` | The sketch curves do not form one chain. `params`: `count`, `left`, `points`, `hint`. |
+| `offsetCurveNoInput`, `compositeCurveNoInput` | No `curves`, `curve` or `sketch` (or a sketch with nothing to use). `params.hint`. |
+| `offsetCurveCorner` | The curve has a tangent discontinuity, so its offset is not one curve. `params`: `index`, `at`, `detail`, `hint`. |
+| `offsetCurveFold` | The distance passes the radius of curvature, or the offset comes closer than the distance to another part of the curve. `params`: `distance`, `at`, `radius`, `detail`, `hint`. |
+| `offsetCurveDirection` | No offset direction: zero tangent, tangent along the plane normal, or a zero normal. `params`: `at`, `detail`, `hint`. |
+| `offsetCurvePlane` | No `normal`, `plane` or `face`, and the curve does not lie in one plane. `params`: `detail`, `hint`. |
+| `offsetCurveFailed`, `compositeCurveFailed` | The curve could not be converted to a B-spline within `tolerance`. `params`: `detail`, `tolerance`, `hint`. |
+| `sweepSurfaceNoInput` | No `profile` or no `path`. `params`: `field`, `hint`. |
+| `sweepSurfaceGap`, `sweepSurfaceNotChain` | The profile or path chain has a gap / is not one chain (as `compositeCurveGap`, `compositeCurveNotChain`). |
+| `sweepSurfaceFrame` | The up direction is along the path tangent. `params`: `at`, `up`, `detail`, `hint`. |
+| `sweepSurfaceDegenerate` | The path has no tangent, or the surface has no area somewhere. `params`: `at`, `detail`, `hint`. |
+| `sweepSurfaceFold` | The profile reaches past the path's centre of curvature. `params`: `at`, `radius`, `distance`, `detail`, `hint`. |
+| `sweepSurfaceCaps` | `caps` on an open or non-planar profile. `params`: `detail`, `hint`. |
+| `sweepSurfaceFailed`, `blendSurfaceFailed` | The surface could not be converted to a B-spline within `tolerance`. `params`: `detail`, `tolerance`, `hint`. |
+| `blendSurfaceNoInput` | No `faces`. `params.hint`. |
+| `blendSurfaceSpan` | No span: the faces share no edge and there is no `from` / `to`. `params`: `detail`, `hint`. |
+| `blendSurfaceSides` | The default sides are undefined. `params`: `face`, `detail`, `hint`. |
+| `blendSurfaceNoContact` | No ball touches both faces along the span. `params`: `at`, `u`, `detail`, `hint`. |
+| `blendSurfaceRadius` | The ball does not fit, a smaller one does. `params`: `radius`, `maxRadius`, `at`, `detail`, `hint`. |
 
 ### Surfaces
 

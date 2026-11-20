@@ -338,6 +338,31 @@ it when it moves (a Plane feature whose offset changes, a face of an earlier fea
   `F2.C1`, warning `endRefRelinked`). A picked `at` point is never used to re-find a lost face by position.
 - Check: `crates/ck-model/tests/extrude_to_object.rs`.
 
+## Hole: end conditions
+
+`end` decides how far each centre's hole runs along the drill direction (into the sketch face, or out of it with
+`flip`). Every centre gets its own length.
+
+- `blind` (default in the builder): `depth` mm. `depth` is read for `blind` only.
+- `through`, `throughBoth`: through the whole part (both exactly as before; `throughBoth` still drills one way only).
+  `mid`, `upToPoint`, `toObject` are accepted and drill through all, as before.
+- `upToNext`: to where the hole's axis first leaves the body. The axis may start in the body, on its face, or short of
+  it across a gap; a shelled part is drilled through the near wall only. The bore runs a hair past that wall (as a blind
+  hole ending at the far side does) so no film is left. A centre whose axis never leaves the body (it misses it, or
+  drills away from it) is refused: `upToNextNone {point, detail, hint}` (`point` = 1-based centre index).
+  **Changed:** before this, `upToNext` drilled through all like `through`; a saved part with `upToNext` on a body with
+  more than one wall along a hole now keeps the walls past the first.
+- `upToFace` with `endRef` (a face id, or `{id, at}`, resolved like an extrude's `upToFace`): to the plane of that face,
+  measured along each centre's axis (a slanted face gives each centre its own length; the hole bottom is flat across
+  the bore at the axis point). `offsetFromFace`: the same plane moved by `offset` mm along the face's outward normal
+  (negative = into the material). A plane at the far side of the body gives a hole all the way there.
+- Errors: no `endRef`, or a face that does not exist: `missingReference {field: "endRef"}`. `holeEndFace {detail,
+  hint, ..}`: the face is not planar (`face`), its plane is parallel to the hole axis, or it lies behind the sketch
+  plane of a centre (`point`, `distance`).
+- `tip` (118 degree drill point) sits below the end for `blind` (unless the hole comes out the far side),
+  `upToNext`, `upToFace` and `offsetFromFace`; never on a through hole.
+- Check: `crates/ck-model/tests/hole_end.rs`.
+
 ## Hole: counterbore and countersink dimensions
 
 `hole` cuts one tool per sketch `point`. Standard sizes (`size` M2..M24 with
@@ -1405,6 +1430,54 @@ plain box (constant along every edge axis, not along a diagonal), thin-walled sh
 - `quality`: `coarse` (chord ten times the viewer's, angle 0.6 rad), `normal` (the viewer's, the default) or `fine` (a quarter of the chord, angle 0.15 rad). The viewer's chord is the regen chord, 4e-4 of the body's box diagonal (never below 1e-3 mm), so a preset follows the size of the part.
 - `chord_mm`: an absolute chord height in millimetres (the most a facet may sit off the true surface). It replaces the preset's chord and keeps its angle. A value of 0 or below, or not a number, is refused (`exportMesh: chord_mm must be a positive number of millimetres`); one below a millionth of the box diagonal is raised to that and the reply says `chordRaised: true`. An unknown `quality` is refused with the three names.
 - Reply: `{chord, angle, chordRaised, triangles, faces, failed, positions, triFace}`. `positions` is a float32 buffer of 9 numbers per triangle, `triFace` an int32 buffer with the index into `faces` (the face ids, in body order) of each triangle; `failed` lists the ids of faces that could not be meshed (they are missing from the mesh). No normals are sent. Null when the tag's state holds no body; a tag the session does not hold is an error, as for every query.
+
+## Mesh to solid: `meshToSolid`
+
+`{"type":"meshToSolid","tag":"m","name":"part","positions":[x,y,z,...],"indices":[a,b,c,...],"opts":{...}}` turns a triangle mesh
+(STL / OBJ / the kit's imported mesh record) into a valid solid in the tag, like an import: planar faces where triangles are
+coplanar, one cylinder, cone or sphere face where a smooth region of facets fits one, facets elsewhere (crate `ck-mesh`).
+
+- Input: `positions` (numbers, x y z per vertex) or `positionsF32` / `positionsF64` (base64 of a little-endian Float32Array /
+  Float64Array); `indices` (numbers) or `indicesU32` (base64 Uint32Array), three per triangle; without indices every three
+  vertices are a triangle (a soup). Model units are millimetres.
+- `opts`: `weldTol` (mm, default 1e-6 of the bounding-box diagonal), `planeTol` (mm, largest distance of a merged triangle's
+  corner from its face's plane, default 1e-5 of the diagonal), `angleTolDeg` (largest angle between a merged triangle and its
+  face, default 0.05), `maxTriangles` (default 200000), `maxFaces` (faces of the result, default 50000), `analytic` (refit
+  cylinders / cones / spheres, default true), `tol` (chord sag a facet may have from a fitted surface, default 0.5 % of the
+  diagonal), `fitTol` (largest distance of a facet corner from a fitted surface, default 2e-5 of the diagonal), `deviation`
+  (measure the result against the mesh, default true), `close` (see below; off by default). Noisy meshes (scans) need
+  `planeTol`, `angleTolDeg` and `fitTol` above their noise.
+- `opts.close`: `true` or `{tolerance, fill, maxHoleEdges, maxHoleArea, planarTol}` closes an open mesh before the watertight
+  check, and says so in the reply. `tolerance` (mm, default 1e-4 of the diagonal): vertices on open edges closer than this,
+  sharing no triangle, are merged, and a boundary vertex that close to an open edge splits it (cracks, T-junctions). `fill`
+  (default true): the remaining holes are filled when they have at most `maxHoleEdges` edges (default 500) and an area of at
+  most `maxHoleArea` (default 0.25) of the mesh's surface: planar loops (within `planarTol` = 1e-3 of the loop diameter of
+  their plane) by a planar cap, other loops by the minimum-area triangulation (up to 50 edges) or ear clipping in the best-fit
+  plane. Fill triangles run opposite to their neighbours. Without `close` an open mesh is refused as before.
+- Reply: regen-shaped (`body`, `errors`) plus `import`: `{format:"mesh", name, triangles, vertices, weldedVertices, diagonal,
+  weldTol, planeTol, angleTolDeg, collapsed, duplicates, slivers, flipped, insideOut, components, lumps, voids, planarFaces,
+  faces, faceTypes:{plane, cylinder, cone, sphere}, volume:{mesh, body, relative}, issues, healFixes, analytic:{applied,
+  reason?, planes, cylinders, cones, spheres, faceted, tol, fitTol, rounds, fitted:[{kind, face, triangles, origin, axis?,
+  radius | halfAngle, maxResidual, rmsResidual}], declined:[{reason, detail}]}, deviation:{max, rms, meshToBody, bodyToMesh,
+  samples, chord, at}, closing}`. `closing` (only with `opts.close`): `{tol, openEdges, mergedVertices, droppedTriangles,
+  stitched, reoriented, filledHoles, filledTriangles, filledArea, holes:[{edges, area, planar, maxPlaneDev, triangles, method:
+  "ear"|"minArea"|"earProjected", at}]}`. `volume.relative` compares the result with the mesh: 0 for a faceted result, the chord error of the
+  tessellation (the mesh is inscribed) where faces were refit.
+- Refusals (`errors: [["import", {code, params:{message, hint, ...}}]]`, `body: null`, the tag keeps its state):
+  `meshNotWatertight {openEdges, openLoops, positions}` (midpoints of the first 20 open edges), `meshNonManifold
+  {nonManifoldEdges, openEdges, positions}` or `{reason:"nonOrientable", positions}`, `meshDegenerate` (no volume, too few
+  triangles, a component of zero volume or only zero-area triangles), `meshTooLarge {triangles, limit}` or `{triangles, faces,
+  limit}`, `meshBadInput` (not a multiple of 3, index out of range, NaN, coordinates beyond 1e12, bad base64). With
+  `opts.close`, what cannot be closed: `meshHoleTooLarge {reason:"edges"|"area", failedHoles, holes, positions}`,
+  `meshHoleSelfIntersects {reason:"loopCrossesItself"|"fillIntersectsItself"|"fillIntersectsFill"|"fillIntersectsMesh"|
+  "noTriangulation", ...}`, `meshGapAmbiguous {reason:"weldNonManifold"|"pinchedLoop"|"brokenLoop", positions}` (each with
+  `message` and `hint`; `holes` lists `{code, reason, edges, area, at}` of every failing hole).
+- Repairs, reported, never silent: welding, collapsed and duplicate triangles dropped (an opposite pair, a wall between two
+  glued solids, both), zero-height triangles merged into a neighbour, triangles flipped to agree with their component, inside-out
+  components turned, voids (a component inside another) turned inward. Holes are filled only with `opts.close`, and then reported.
+- Not converted (kept as facets, valid): tori, free-form surfaces, sphere patches bounded by circles on different axes (a
+  rounded box corner), cylinders cut by oblique planes (ellipses), crossing cylinders; a region whose boundary to its neighbours
+  is not an exact circle or line stays faceted together with what depends on it.
 
 ## Acceptance
 

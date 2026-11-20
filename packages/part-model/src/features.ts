@@ -644,6 +644,12 @@ export interface EditCurveFeature {
  * of the solid and of the surface bodies. `direction`: along (`forward`), against (`reverse`) or both ways from
  * the plane normal (for a `curve` input the normal is the plane's with its largest component positive).
  * A projection that does not form one connected curve is `projectCurveSeveral`.
+ *
+ * `procedural: true` instead keeps the projection as its definition (a ck-geom projected curve) onto exactly ONE
+ * face: the input chain (`curves` refs in chain order, else `curve`, else `sketch`) to the closest point
+ * (`along: 'normal'`) or along a direction (`along: [x, y, z]`; default the sketch plane normal / the plane of the
+ * curve, else the closest point). `degree` and `direction` are not read then; `tolerance` bounds the B-spline the
+ * definition converts to. Refused when the projection leaves the face (`projectCurveMisses`).
  */
 export interface ProjectCurveFeature {
   type: 'projectCurve';
@@ -657,6 +663,116 @@ export interface ProjectCurveFeature {
   /** Largest distance of the fit from the projected data, mm (default 0.001); more control points (up to 400) until met. */
   tolerance?: Expr;
   direction?: 'both' | 'forward' | 'reverse';
+  /** Keep the projection as a procedural curve onto one face (see above). */
+  procedural?: boolean;
+  /** Procedural only: `'normal'` (closest point) or a direction. */
+  along?: 'normal' | [number, number, number];
+  /** Procedural only: curve references in chain order (win over `curve` and `sketch`). */
+  curves?: unknown[];
+  /** Procedural only: largest gap between consecutive pieces, mm (default 1e-5). */
+  gapTolerance?: Expr;
+  [key: string]: unknown;
+}
+
+/**
+ * Offset a curve or chain by `distance` along unit(C' x N) (positive: to the right of travel seen from the side
+ * N points to; for a sketch N is its plane normal), N from `normal`, `plane`, else the sketch plane / the plane of
+ * the curve; or in the tangent planes of a support `face` (N = the face's outward normal). The input is `curves`
+ * (refs in chain order), else `curve`, else `sketch`. Kept as a procedural curve; the offset of lines and arcs in
+ * their plane is exact. Refused: `offsetCurveCorner` (a tangent discontinuity), `offsetCurveFold` (the distance
+ * passes the radius of curvature, or the offset comes closer than the distance to another part of the curve),
+ * `offsetCurveDirection` (zero tangent, tangent along N, zero normal), `offsetCurvePlane` (no plane to offset in).
+ */
+export interface OffsetCurveFeature {
+  type: 'offsetCurve';
+  id: string;
+  name?: string;
+  curves?: unknown[];
+  curve?: string | null;
+  sketch?: string | null;
+  distance: Expr;
+  normal?: [number, number, number];
+  plane?: GeomRef | null;
+  face?: string;
+  /** Largest gap between consecutive pieces, mm (default 1e-5). */
+  gapTolerance?: Expr;
+  /** Bound of the B-spline the definition converts to, mm (default 0.001). */
+  tolerance?: Expr;
+  [key: string]: unknown;
+}
+
+/**
+ * Ordered curves / edges joined end to end into one curve (each piece turned to start where the previous one ends;
+ * a gap above `gapTolerance` is `compositeCurveGap`). Kept as a procedural composite; a chain of lines, arcs and
+ * B-splines converts exactly.
+ */
+export interface CompositeCurveFeature {
+  type: 'compositeCurve';
+  id: string;
+  name?: string;
+  curves?: unknown[];
+  curve?: string | null;
+  sketch?: string | null;
+  gapTolerance?: Expr;
+  tolerance?: Expr;
+  [key: string]: unknown;
+}
+
+/**
+ * A curve input of `sweepSurface`: a string (an earlier curve feature id, else a sketch whose non-construction
+ * curves form one chain), one curve reference (`{kind: 'sketchCurve', sketch, entity}`, `{kind: 'edge', faces, at}`,
+ * `{kind: 'curve', id}`) or a list of them in chain order.
+ */
+export type CurveInput = string | Record<string, unknown> | Record<string, unknown>[];
+
+/**
+ * A sheet whose one face is a profile swept along a path, kept as its definition (a procedural sweep surface).
+ * `frame: 'tangent'` (default) turns the profile with the path tangent and the `up` direction (default: the normal of
+ * a plane path, a world axis across a straight one, else +z); `'translate'` carries it without turning. `caps: true`
+ * closes a closed planar profile on an open path with plane faces `C0` (start) and `C1` (end). Faces `<id>.W`, caps
+ * `<id>.C0` / `<id>.C1`. Marker `{kind: 'sweep', faces, area, frame, closed: [path, profile], caps, pathLength, up?,
+ * volume?, degree, count, deviation}`. Refused: `sweepSurfaceNoInput`, `sweepSurfaceFrame` (up along the tangent),
+ * `sweepSurfaceDegenerate` (no area somewhere), `sweepSurfaceFold` (the profile reaches past the path's centre of
+ * curvature), `sweepSurfaceCaps`, `sweepSurfaceFailed` (not converted within `tolerance`).
+ */
+export interface SweepSurfaceFeature {
+  type: 'sweepSurface';
+  id: string;
+  name?: string;
+  profile: CurveInput;
+  path: CurveInput;
+  frame?: 'tangent' | 'translate';
+  /** Tangent frame only: a direction never along the path tangent. */
+  up?: [number, number, number];
+  caps?: boolean;
+  /** Largest gap between consecutive pieces of an input chain, mm (default 1e-5). */
+  gapTolerance?: Expr;
+  /** Bound of the B-spline the definition converts to, mm (default 0.001). */
+  tolerance?: Expr;
+  [key: string]: unknown;
+}
+
+/**
+ * A sheet whose one face is the rolling-ball blend between two faces, kept as its definition. `radius`: a number, or
+ * `[start, end]` linear along the span. `sides`: +1 where the ball lies on the side a face's outward normal points
+ * to, -1 against it (default: each toward the other face, a round of a convex edge). The span: `from` / `to` (a line
+ * spine between them), else the edge the faces share (nearest `at`). Face `<id>.R`. Marker `{kind: 'blend', faces,
+ * area, radius: [start, end], sides, span: 'edge' | 'points', spineLength, closed, degree, count, deviation}`.
+ * Refused: `blendSurfaceNoInput`, `blendSurfaceSpan`, `blendSurfaceSides`, `blendSurfaceNoContact {at, u}`,
+ * `blendSurfaceRadius {radius, maxRadius}`, `blendSurfaceFailed`.
+ */
+export interface BlendSurfaceFeature {
+  type: 'blendSurface';
+  id: string;
+  name?: string;
+  faces: [string, string];
+  radius: Expr | [Expr, Expr];
+  sides?: [1 | -1, 1 | -1];
+  from?: [number, number, number];
+  to?: [number, number, number];
+  at?: [number, number, number];
+  /** Bound of the B-spline the definition converts to, mm (default 0.001). */
+  tolerance?: Expr;
   [key: string]: unknown;
 }
 
@@ -904,7 +1020,7 @@ export type KnownFeature =
   | SurfaceExtrudeFeature | SurfaceOffsetFeature | KnitFeature | FillFeature
   | InsertPartFeature | MateFeature | PlaneFeature | DeleteBodyFeature
   | DeleteFaceFeature | ThickenFeature | CutWithSurfaceFeature | PipeCutFeature
-  | FreeformFeature | EditCurveFeature | ProjectCurveFeature | ExtendFeature
+  | FreeformFeature | EditCurveFeature | ProjectCurveFeature | OffsetCurveFeature | CompositeCurveFeature | SweepSurfaceFeature | BlendSurfaceFeature | ExtendFeature
   | DomeFeature | SplitLineFeature | MoveFaceFeature | PressPullFeature | MoveBodyFeature
   | ScaleFeature | AxisFeature | ThreadFeature | CombineFeature | SplitFeature | LipJointFeature | SphereFeature | KnurlBandFeature | ImportStepFeature | RepairPartFeature | FrameFeature
   | TorusFeature | PipeFeature | CoilFeature | BoundingSolidFeature;
@@ -917,7 +1033,7 @@ export const FEATURE_TYPES = [
   'trimSurface', 'surfacePlanar', 'surfaceRevolve', 'surfaceExtrude',
   'surfaceOffset', 'knit', 'fill', 'insertPart', 'mate', 'plane',
   'deleteBody', 'deleteFace', 'thicken', 'cutWithSurface', 'pipeCut',
-  'freeform', 'editCurve', 'projectCurve', 'extend', 'dome', 'splitLine',
+  'freeform', 'editCurve', 'projectCurve', 'offsetCurve', 'compositeCurve', 'sweepSurface', 'blendSurface', 'extend', 'dome', 'splitLine',
   'moveFace', 'pressPull', 'moveBody', 'scale', 'axis', 'thread', 'combine', 'split', 'lipJoint', 'sphere', 'knurlBand', 'importStep', 'repairPart', 'frame',
   'torus', 'pipe', 'coil', 'boundingSolid',
   'sheetRules', 'baseFlange', 'edgeFlange', 'hem', 'fold', 'contourFlange', 'unfold', 'refold', 'sheetConvert', 'sheetCut', 'sheetCorner',

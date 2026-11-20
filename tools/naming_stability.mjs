@@ -160,7 +160,7 @@ function collectRefs(part, body) {
 
 // ---------------------------------------------------------------- kernel access
 class Rig {
-  constructor(file) { this.k = new Kernel(new WebAssembly.Module(readFileSync(file))); }
+  constructor(file) { this.k = new Kernel(file instanceof WebAssembly.Module ? file : new WebAssembly.Module(readFileSync(file))); }
   q(msg) {
     const r = this.k.request(JSON.stringify({ id: 1, msg }));
     if (r.trap) return { trap: r.trap };
@@ -295,6 +295,10 @@ function trial(rig, c, base, ed) {
   return { cls: 'ok', detail: '' };
 }
 
+// the case names in run order (the gate runs one case per call, `only`, in parallel workers)
+export const namingCases = () => caseList().map((c) => c.name);
+
+// ours / orig: a wasm path or a compiled WebAssembly.Module
 export function runNaming({ ours, orig = null, only = null, quiet = true, log = () => {} } = {}) {
   const A = new Rig(ours), O = orig ? new Rig(orig) : null;
   const rows = [];

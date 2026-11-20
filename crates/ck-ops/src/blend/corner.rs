@@ -127,6 +127,33 @@ pub fn sphere_corner_tool(b: &Body, corner: &Corner, r: f64, feature: &str, name
     sphere_block_minus_ball(c, u, outer, r, feature, name)
 }
 
+/// The ball centre and the directions of the three edges away from the vertex of a convex corner of three planar faces
+/// that are not mutually perpendicular (a wall angle other than 90 degrees), `None` for any other corner. The tools of the
+/// three edges end on the planes through the centre square to them ([`super::analytic::CornerTrim`]), so each one is the
+/// same solid whatever order the edges are built in: a tool that runs on past the vertex cuts into the wedge of an obtuse
+/// wall angle, and one built after another tool has cut the corner ends in the wrong place.
+pub fn oblique_corner_centre(b: &Body, corner: &Corner, r: f64) -> Option<(Vec3, [Vec3; 3])> {
+    if corner.concave || corner.curved {
+        return None;
+    }
+    let vp = b.vertex(corner.vertex).p;
+    let n: Vec<Vec3> = corner.faces.iter().map(|&f| b.planar_normal(f).normalize()).collect();
+    if (0..3).all(|i| n[i].dot(n[(i + 1) % 3]).abs() < 1e-6) {
+        return None;
+    }
+    let c = crate::intersect::solve3([n[0], n[1], n[2]], [-r, -r, -r]).map(|d| vp + d)?;
+    let mut u = [Vec3::ZERO; 3];
+    for (i, &e) in corner.edges.iter().enumerate() {
+        let ed = b.edge(e);
+        let other = if ed.v0 == corner.vertex { b.vertex(ed.v1).p } else { b.vertex(ed.v0).p };
+        u[i] = (other - vp).normalize();
+        if (c - vp).dot(u[i]) <= 1e-9 || (c - vp).dot(u[i]) >= (other - vp).len() {
+            return None;
+        }
+    }
+    Some((c, u))
+}
+
 /// The tool of [`sphere_corner_tool`] from its planes: `c` the ball centre, `u[i]` the direction of edge `i` away from
 /// the vertex (the block's inner plane `i` is the plane through `c` perpendicular to it, the block on the vertex side),
 /// `outer[i]` the block's outer plane opposite to edge `i` as (outward normal of the block, a point on it). The

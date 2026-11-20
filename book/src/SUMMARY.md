@@ -63,6 +63,7 @@
 - [ACIS SAT](io/sat.md)
 - [Feature recognition](io/recognition.md)
 - [Cylinders and cones from facets](io/fit-quadrics.md)
+- [Mesh to solid](io/mesh-to-solid.md)
 - [Text and fonts](io/text.md)
 - [Drawings](io/drawings.md)
 

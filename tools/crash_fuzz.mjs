@@ -200,7 +200,9 @@ if (shrinkInput) {
 }
 
 
-const cases = Array.from({ length: n }, (_, i) => makeCase(i));
+// --only ID[,ID...]: run just those generated cases (a re-run of the cases a --check reported, one at a time with --workers 1)
+const onlyIds = opt('--only') ? new Set(opt('--only').split(',')) : null;
+const cases = Array.from({ length: n }, (_, i) => makeCase(i)).filter((c) => !onlyIds || onlyIds.has(c.id));
 // --dump ID[,ID...] --json FILE: write those generated cases as parts ({id: part}) and stop (to reproduce one by hand)
 if (opt('--dump')) {
   const want = new Set(opt('--dump').split(','));

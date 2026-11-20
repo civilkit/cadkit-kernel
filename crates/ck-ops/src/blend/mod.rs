@@ -26,10 +26,18 @@
 //! chain through X runs into itself", "both must move by the same
 //! distance", "edge of blend X is gone after an earlier blend",
 //! "X collapses and cannot be removed", "blends overlap: a spring not in
-//! its blend's face", "… spring leaves its face away from its edges"
+//! its blend's face", "blends overlap: the blend of another edge consumed
+//! the face beside the edge between X and Y" (`blendOverflow`: a pick an
+//! earlier tool of the same blend took away), "the faces X and Y are tangent
+//! all along the picked edge between them" (`blendUnsupported`: a smooth
+//! pick, refused before any tool runs), "… spring leaves its face away from its edges"
 //! (pinned: `F3.B0: spring leaves its face away from its edges` for r=30 on
 //! a 10 mm box edge), "a convex and a concave blended edge meet at …",
-//! "… blended edges meet at …".
+//! "… blended edges meet at …". A result that the joint guard (`guard.rs`) refuses carries `blendResultInvalid`
+//! with the failing check (`extent`, `crossing`, `containment`, `sliver`) in `params.check`.
+//! [`cross`]: the two edges of one strip face rounded with radii summing to more than its width build the intersection of
+//! the two rounded profiles (a sharp crease); the feature warns `blendRoundsCross`. [`cross_multi`]: the same over several walls
+//! of a prism at once (all top and bottom edges of a plate): two groups of picks, each built by the ordinary blend, intersected.
 
 mod analytic;
 mod apply;
@@ -37,12 +45,15 @@ pub mod build;
 mod chain;
 mod concave_vertex;
 pub mod corner;
+pub mod cross;
+pub mod cross_multi;
 mod diag;
 mod ends;
 mod find;
 pub mod freeform;
 mod inplace;
 pub mod g2;
+mod guard;
 pub mod interp;
 mod layout;
 pub mod mixed;

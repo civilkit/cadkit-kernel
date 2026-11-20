@@ -728,6 +728,44 @@ The lowest and highest point of the body along a direction.
 
 Result: `{ direction, min, max, extent, method, exact, samples, ofLabel, elapsedMs, truncated }`, where `min` and `max` are `{ value, point, entity, at }`: the value `dir . p`, one point where it is attained, what that point lies on, and everything that attains it (at most 20: faces whose interior reaches it, else edges, else vertices). `method: "vertices"`, `exact: true` means every face searched is planar and every edge straight, and the values are exact. Otherwise `"sampled+refined"`: curved faces and edges are searched on a grid and refined to about 1e-9 of the cell size; an extreme of a free-form face narrower than the grid spacing can be missed. For the plate along Z: `min.value` 0 on `F2.C0` (and all its edges and vertices), `max.value` 10 on `F2.C1`, `extent` 10. No body: `null`.
 
+### checkIntersection
+
+Diagnostics: the certified check of the intersection curves of two sets of faces. Each pair of faces (one from `a`, one from `b`) whose boxes meet is intersected by the same surface/surface intersection a boolean runs, with the same bounds and tolerance. Analytic results (lines, circles, ellipses) are exact and are counted in `curves` only. Every span of a marched curve, from one traced point to the next, is then put to an interval Newton (Krawczyk) proof: the two points lie on one arc of the true intersection, and no other branch passes between them. A span that is not proved gets points of the arc inserted, and the sub-spans are proved again (`repaired`). Nothing in the body changes, and the intersection a boolean uses is the same with or without this request.
+
+| Parameter | Type | Default | Meaning |
+|---|---|---|---|
+| `a`, `b` | faces | required | Face ids, `lump:<n>`, `"body"`, or an array of those. Edges, vertices and points are refused. |
+| `tagB` | string | none | Take `b` from the body of another tag, for example two bodies before a boolean. |
+| `opts.tol` | number | `1e-6` | The intersection tolerance. |
+| `opts.timeMs` | number | 8000 | Time budget; see the start of this section. |
+
+At most 400 face pairs per request. A face is never paired with itself.
+
+Result: `{ curves, marched, spans, proved, repaired, unresolved, pairs, byPair, issues, elapsedMs, truncated }`.
+
+| Field | Meaning |
+|---|---|
+| `curves` | Intersection curves found, exact and marched. |
+| `marched` | The marched curves, the ones that are checked. |
+| `spans` | Spans of the marched curves. |
+| `proved` | Spans proved as traced. |
+| `repaired` | Spans proved after inserting points of the arc. |
+| `unresolved` | Spans neither proved nor repaired. |
+| `pairs` | Face pairs intersected. |
+| `byPair` | Per face pair with a curve: `{ a, b, curves, marched, spans, proved, unresolved }`. |
+| `issues` | Every span not proved as traced: `{ a, b, curve, span, reason, repaired, from, to }`. `curve` counts the marched curves of the whole request; `span` is the index of the span's first point in its curve. `from` and `to` are the two traced points. |
+
+`reason` is one of:
+
+- `unsupported`: a surface kind without an interval evaluator (sweeps and blends kept as their definition, and offsets of surfaces other than planes, quadrics, tori, B-splines and swept surfaces).
+- `singular`: the Jacobian is singular at the span's centre (a tangent contact, a pole, an apex).
+- `noContraction`: the proof box did not contract, for example where two branches pass close together, near a tangency, or where the span's box reaches past a B-spline's domain and the arc is not shown to stay inside the face.
+- `degenerate`: inputs that are not finite.
+
+An unresolved span is not proof of an error. It says only that no guarantee could be given there: a tangent contact cannot be proved by this method. A curve that runs off the edge of a B-spline face is proved on the spline's polynomial continuation. The proof is kept only where each parameter that leaves the domain is monotone along the arc, so the arc between the two points stays on the face.
+
+For two crossing cylinders, radius 10 along one axis and radius 6 across it (two tags, `a` and `b` both `"body"`), the reply has `curves` 4. These are the two marched loops of the lateral faces and the two exact lines where the narrow cylinder's end cap cuts the wide one. `spans` is 790, `proved` 790 and `issues` is empty. For a box against itself every curve is an exact line, so `marched` and `spans` are 0. No body: `null`.
+
 ## Design rules and manufacturing
 
 ### profiles
@@ -836,6 +874,19 @@ The result's `import` is `{ solids, faces, unitScale, warnings, heal: { fixed, r
 ### importSldprt
 
 `data` is the base64 of a `.SLDPRT` file (required: `importSldprt: data (the .SLDPRT file as base64) is required`); `name` is optional. The result's `import` describes the body read (`solids`, `faces`, `container`, `schema`, ...) and the file's metadata: `features` (the feature tree with ids, types and dimension values), `configurations`, `material`, `customProperties`, `configurationProperties`, `units`, `versions`, `thumbnail` (base64 PNG or `null`), `faceAttributes` (colour and building feature of each face, by face id) and `bodyAttributes`. User names and paths recorded in the file are not returned. A failed import still carries the metadata in `import` when the file's container opens. A file that is not a SolidWorks part answers `errors` `[ ["import", { "code": "container.format", "params": { "message": "neither an OLE2 compound file nor a SolidWorks block container" } }] ]`. See [SolidWorks](../io/sldprt.md).
+
+### meshToSolid
+
+A triangle mesh into a solid in the tag ([Mesh to solid](../io/mesh-to-solid.md)). `positions` (numbers) or `positionsF32` / `positionsF64` (base64 typed arrays), `indices` (numbers) or `indicesU32` (base64), optional: without indices the vertices are a soup, three per triangle. The reply has the import shape: `body`, `errors` and `import` (the report). A mesh that is not closed answers `errors` `[ ["import", { "code": "meshNotWatertight", "params": { "message": "3 open edges in 1 gap(s): ...", "hint": "...", "openEdges": 3, "openLoops": 1, "positions": [[x, y, z], ...] } }] ]`.
+
+| Parameter | Type | Default | Meaning |
+|---|---|---|---|
+| `opts.weldTol` | number | 1e-6 of the diagonal | Vertices closer than this are one, mm. |
+| `opts.planeTol`, `opts.angleTolDeg` | number | 1e-5 of the diagonal, 0.05 | How far (mm) and how steep (degrees) a triangle may be off the plane of the face it is merged into. |
+| `opts.analytic` | boolean | `true` | Refit cylinders, cones and spheres. |
+| `opts.tol`, `opts.fitTol` | number | 0.5 % and 2e-5 of the diagonal | Chord sag of a facet and distance of a facet corner from a fitted surface, mm. |
+| `opts.maxTriangles`, `opts.maxFaces` | number | 200000, 50000 | Limits (`meshTooLarge` above). |
+| `opts.deviation` | boolean | `true` | Measure the result against the mesh. |
 
 ### importSkp
 

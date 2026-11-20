@@ -224,6 +224,8 @@ pub(crate) fn path_segs(br: &Brep, state: &RegenState, path: Option<&GeomRef>) -
         GeomRef::Curve(id) => {
             match br.helices.iter().rev().find(|(i, _)| i == id).map(|(_, h)| *h) {
                 Some(h) => vec![PathSeg::Helix { h, rev: false }],
+                // a procedural curve of lines and arcs: those pieces exactly
+                None if super::proc_curve::exact_path(br, id).is_some() => super::proc_curve::exact_path(br, id).unwrap(),
                 // any other curve feature (editCurve, projectCurve): swept along a spline through its points
                 None => vec![super::curve_ref::curve_path(state, id).ok_or_else(missing)?],
             }

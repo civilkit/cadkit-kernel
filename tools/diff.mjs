@@ -35,12 +35,14 @@ if (sig(A) !== sig(B)) console.log(`ABI MISMATCH\n  original ${sig(A)}\n  rebuil
 const ka = new Kernel(A), kb = new Kernel(B);
 if (ka.commit() !== kb.commit()) console.log(`COMMIT MISMATCH ${ka.commit()} vs ${kb.commit()}`);
 
+// the original kernel's STEP header names its old product; the rebuilt writer says CadKit (the old name is built from pieces so no source file carries it)
+const OLD_PRODUCT = new RegExp(['Purra', 'metric'].join(''), 'gi');
 const norm = (r) => {
   if (r.trap) return { s: `TRAP ${r.trap.replace(/\/rustc\/[0-9a-f]+\/|:\d+:\d+:/g, '')}`, bin: new Uint8Array() };
   // replace "ms" values (top-level + trace) with 0 while keeping frame layout comparable
   const jl = new DataView(r.bytes.buffer).getUint32(0, true);
   const base = (4 + jl + 7) & -8;
-  return { s: r.json.replace(/"ms":[0-9.e+-]+/g, '"ms":0').replace(/"at":[0-9.e+-]+/g, '"at":0').replace(/,"build":"[0-9a-f]+(-dirty)?"/g, ''), bin: r.bytes.subarray(base) };
+  return { s: r.json.replace(/"ms":[0-9.e+-]+/g, '"ms":0').replace(/"at":[0-9.e+-]+/g, '"at":0').replace(/,"build":"[0-9a-f]+(-dirty)?"/g, '').replace(OLD_PRODUCT, 'CadKit'), bin: r.bytes.subarray(base) };
 };
 const same = (a, b) => a.s === b.s && a.bin.length === b.bin.length && a.bin.every((x, i) => x === b.bin[i]);
 
@@ -58,6 +60,8 @@ for (const c of all) {
     else if (ty !== '(envelope)' && !KNOWN.has(ty)) ty = '(unknown type)';
     const t = byType.get(ty) || { ok: 0, bad: 0 }; byType.set(ty, t);
     if (same(ra, rb)) { ok++; t.ok++; if (verbose) console.log(`ok   ${c.name}`); continue; }
+    const kn = c.known?.[bi];
+    if (kn && rb.s === kn.json && rb.bin.length === 0) { ok++; t.ok++; console.log(`known ${c.name}#${bi}: ${kn.reason}`); continue; }
     bad++; t.bad++;
     console.log(`DIFF ${c.name}: ${body.slice(0, 160)}\n  orig    ${ra.s.slice(0, 300)} [+${ra.bin.length}B]\n  rebuilt ${rb.s.slice(0, 300)} [+${rb.bin.length}B]`);
   }

@@ -130,20 +130,29 @@ pub fn fillet_mixed(b: &Body, edges: &[(String, String, Vec3)], radii: &[f64], f
     // The corner patch replaces the zone about the vertex in the finished body, as in the ordinary path.
     for (i, oh) in super::overhang::detect(b, &eids, radii).iter().enumerate() {
         if !oh.patch_ok {
-            continue;
+            return Some(Err(oh.refusal(None)));
         }
         match super::overhang::splice(&out, oh, feature, i, tol) {
             Ok(spliced) => out = spliced,
-            Err(e) => super::diag::dbg_fail(&format!("overhang patch at ({:.3},{:.3},{:.3}): {} {:?}", oh.v.x, oh.v.y, oh.v.z, e.code, e.detail.unwrap_or_default())),
+            Err(e) => {
+                super::diag::dbg_fail(&format!("overhang patch at ({:.3},{:.3},{:.3}): {} {:?}", oh.v.x, oh.v.y, oh.v.z, e.code, e.detail));
+                let why = e.detail.as_deref().map(|d| d.trim_start_matches("overhang corner: ")).unwrap_or(&e.code).to_string();
+                return Some(Err(oh.refusal(Some(&why))));
+            }
         }
     }
     Some(Ok(out))
 }
 
 pub(super) fn run(b: &Body, edges: &[(String, String, Vec3)], wall: &[bool], tops: &[(usize, FaceId)], r: [f64; 2], feature: &str, tol: f64) -> Result<Body, BlendError> {
+    run_spec(b, edges, wall, tops, [Spec::Fillet(r[0], FilletProfile::Circular), Spec::Fillet(r[1], FilletProfile::Circular)], feature, tol)
+}
+
+/// [`run`] with the spec of each stage given (fillets, or equal-distance chamfers: [`chamfer_mixed`]).
+pub(super) fn run_spec(b: &Body, edges: &[(String, String, Vec3)], wall: &[bool], tops: &[(usize, FaceId)], specs: [Spec; 2], feature: &str, tol: f64) -> Result<Body, BlendError> {
     let n = edges.len();
-    let spec_a = Spec::Fillet(r[0], FilletProfile::Circular);
-    let spec_b = Spec::Fillet(r[1], FilletProfile::Circular);
+    let chamfer = matches!(specs[0], Spec::Chamfer(..));
+    let (spec_a, spec_b) = (specs[0], specs[1]);
     // stage A: the concave edges of mixed vertices
     let a_idx: Vec<usize> = (0..n).filter(|&i| wall[i]).collect();
     let pre = format!("{feature}_a");
@@ -171,7 +180,9 @@ pub(super) fn run(b: &Body, edges: &[(String, String, Vec3)], wall: &[bool], top
         b_idx.push(next);
         next += 1;
     }
-    let mut out = super::build::blend_edges_tangent_chain(&body1, &sel_b, spec_b, feature, tol)?;
+    // (the strip of a chamfer ends on the top face in a straight line that is not tangent to the edges it meets: the
+    // chamfers of that chain run as an ordinary selection, their joints mitred)
+    let mut out = if chamfer { blend_edges(&body1, &sel_b, spec_b, feature, tol)? } else { super::build::blend_edges_tangent_chain(&body1, &sel_b, spec_b, feature, tol)? };
     // blend names follow the selection: stage A's `B<j>` is pick `a_idx[j]`, stage B's `B<j>` is `b_idx[j]`
     // (a face past the selection, made by the tangent chain, takes a fresh index after all picks)
     let mut spare = next as u32;
@@ -192,4 +203,109 @@ pub(super) fn run(b: &Body, edges: &[(String, String, Vec3)], wall: &[bool], top
         out.faces[fi].name.role = Role::Blend(k);
     }
     Ok(out)
+}
+
+/// Equal-distance chamfer of a selection that holds a foot vertex (concave-concave-convex, all three edges picked: the foot of a
+/// tower on a wall, the corner under an overhang). Chamfered one edge after the other the result depends on the pick order
+/// (the strips of the concave pair stop in planar steps or leave tool faces, in most orders), so it is built in the order the
+/// surfaces depend on each other, as the fillet is: the convex edges first (each strip ends on the wall in a straight edge), then
+/// the concave edges together with those end edges as one selection, the chamfers of that chain mitred at their joints.
+/// Overhang corners of the selection are spliced in afterwards, as for a fillet. `None` when the selection has no such vertex
+/// or the staged build does not close (the caller then builds the selection in one pass).
+pub fn chamfer_mixed(b: &Body, edges: &[(String, String, Vec3)], d: f64, feature: &str, tol: f64) -> Option<Result<Body, BlendError>> {
+    let n = edges.len();
+    let eids: Vec<EdgeId> = edges.iter().map(|(fa, fb, at)| find_edge(b, fa, fb, *at)).collect::<Option<_>>()?;
+    let conc: Vec<bool> = eids.iter().map(|&e| line_edge_concave(b, e)).collect::<Option<_>>()?;
+    if !conc.iter().any(|&c| c) || conc.iter().all(|&c| c) {
+        return None;
+    }
+    let mut tops: Vec<(usize, FaceId)> = vec![];
+    for v in b.vertex_ids() {
+        let inc: Vec<EdgeId> = b.edge_ids().filter(|&e| b.edge(e).v0 == v || b.edge(e).v1 == v).collect();
+        if inc.len() != 3 {
+            continue;
+        }
+        let picks: Vec<usize> = (0..n).filter(|&i| inc.contains(&eids[i])).collect();
+        if picks.len() != 3 || picks.iter().filter(|&&i| conc[i]).count() != 2 {
+            continue;
+        }
+        let cx = picks.iter().copied().find(|&i| !conc[i])?;
+        let cc: Vec<usize> = picks.iter().copied().filter(|&i| conc[i]).collect();
+        let (f0, f1) = (b.edge_faces(eids[cc[0]]), b.edge_faces(eids[cc[1]]));
+        let common: Vec<FaceId> = f0.iter().copied().filter(|f| f1.contains(f)).collect();
+        if common.len() != 1 || b.edge_faces(eids[cx]).contains(&common[0]) {
+            continue;
+        }
+        tops.push((cx, common[0]));
+    }
+    if tops.is_empty() {
+        return None;
+    }
+    let wall: Vec<bool> = conc.iter().map(|&c| !c).collect();
+    let spec = Spec::Chamfer(d, super::model::ChamferLeg::Dist(d));
+    let mut out = run_spec(b, edges, &wall, &tops, [spec, spec], feature, tol).ok()?;
+    let mut ohs = super::overhang::detect(b, &eids, &vec![d; n]);
+    for (i, oh) in ohs.iter_mut().enumerate() {
+        oh.chamfer = true;
+        if !oh.patch_ok {
+            return Some(Err(oh.refusal(None)));
+        }
+        match super::overhang::splice(&out, oh, feature, i, tol) {
+            Ok(spliced) => out = spliced,
+            Err(_) => return None,
+        }
+    }
+    Some(Ok(out))
+}
+
+/// A finished equal-distance chamfer of a selection with corners (an overhang corner, or a convex and a concave pick meeting at a
+/// vertex) is checked for what the validators cannot see: a face of the tool left in the part (`<feature>.S.*`: a flap or ledge
+/// where two strips were cut apart), or an overhang corner whose patch is missing. Such a body is refused (`blendCorner`) with
+/// the vertex, the reason and a hint, never returned.
+pub(super) fn guard_corners(b: &Body, edges: &[(String, String, Vec3)], d: f64, out: &Body, feature: &str) -> Result<(), BlendError> {
+    let Some(eids) = edges.iter().map(|(fa, fb, at)| find_edge(b, fa, fb, *at)).collect::<Option<Vec<EdgeId>>>() else { return Ok(()) };
+    let ohs = super::overhang::detect(b, &eids, &vec![d; eids.len()]);
+    // vertices where a selected convex and a selected concave straight edge meet
+    let conc: Vec<Option<bool>> = eids.iter().map(|&e| line_edge_concave(b, e)).collect();
+    let mut corners: Vec<Vec3> = ohs.iter().map(|c| c.v).collect();
+    for i in 0..eids.len() {
+        for j in i + 1..eids.len() {
+            if let (Some(x), Some(y)) = (conc[i], conc[j]) {
+                if x != y {
+                    let (ei, ej) = (b.edge(eids[i]), b.edge(eids[j]));
+                    for v in [ei.v0, ei.v1] {
+                        if v == ej.v0 || v == ej.v1 {
+                            corners.push(b.vertex(v).p);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if corners.is_empty() {
+        return Ok(());
+    }
+    let prefix = format!("{feature}.S.");
+    let tool: Vec<FaceId> = out.face_ids().filter(|&f| out.face_id_str(f).starts_with(&prefix)).collect();
+    let patches = out.face_ids().filter(|&f| out.face_id_str(f).starts_with(&format!("{feature}.P"))).count();
+    let missing = patches < ohs.len();
+    if tool.is_empty() && !missing {
+        return Ok(());
+    }
+    // the corner nearest to the leftover face (or the first corner when only a patch is missing)
+    let at = |p: Vec3| corners.iter().copied().fold(None::<(f64, Vec3)>, |m, c| if m.map_or(true, |(dm, _)| p.dist(c) < dm) { Some((p.dist(c), c)) } else { m });
+    let probe = tool.first().and_then(|&f| out.face_edges(f).first().map(|&e| out.vertex(out.edge(e).v0).p));
+    let v = probe.and_then(at).map(|(_, c)| c).unwrap_or(corners[0]);
+    let why = if tool.is_empty() { "the corner patch is missing" } else { "a face of the cutting tool is left in the part there (a planar flap where two strips were cut apart)" };
+    Err(BlendError {
+        detail: Some(format!(
+            "the chamfers meeting at ({:.3}, {:.3}, {:.3}), where a convex and a concave edge meet and not every edge of the corner is picked, do not close into a clean corner: {why}",
+            v.x, v.y, v.z
+        )),
+        params: vec![(
+            "hint".into(),
+            "pick all the edges at that vertex (all three, or all four at an overhang corner), chamfer the convex and the concave edges in separate features, or leave the edges at this vertex out of the selection".into(),
+        )],
+        ..BlendError::code("blendCorner")
+    })
 }

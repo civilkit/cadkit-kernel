@@ -179,7 +179,7 @@ export class Part {
     return this.push('shell', { faces: o.faces ?? [], thickness: o.thickness, ...(o.outward ? { outward: true } : {}) }, o.name);
   }
 
-  hole(o: { sketch: string | null; kind?: string; diameter?: number; end?: string; depth?: number; tip?: boolean; flip?: boolean; cboreDiameter?: number; cboreDepth?: number; cskDiameter?: number; cskAngle?: number; name?: string }): FeatureId {
+  hole(o: { sketch: string | null; kind?: string; diameter?: number; end?: string; depth?: number; endRef?: string | { id: string; at?: [number, number, number] }; offset?: number; tip?: boolean; flip?: boolean; cboreDiameter?: number; cboreDepth?: number; cskDiameter?: number; cskAngle?: number; name?: string }): FeatureId {
     const { sketch, kind = 'simple', diameter = 6, end = 'blind', depth = 10, tip = true, flip = false, name, ...rest } = o;
     return this.push('hole', {
       sketch, kind, diameter, end, depth, tip,

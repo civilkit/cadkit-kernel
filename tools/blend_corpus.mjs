@@ -48,6 +48,8 @@ const rrectSketch = (id, plane, w, h, R) => {
 const BASES = {
   // 40 x 20 x 10 block: x 0..40, y 0..10, z -20..0
   box: [rect('F1', TOP, 0, 0, 40, 20), ext('F2', 'F1', 10)],
+  // 5 mm plate, quadrilateral outline (0,0) (40,4) (34,30) (-4,24), skewed walls (the crossing-rounds case, docs/dead-ends.md)
+  quad5: [poly('F1', TOP, [[0, 0], [40, 4], [34, 30], [-4, 24]]), ext('F2', 'F1', 5)],
   // L bracket: legs 40 x 10 and 10 x 30 (outline in x/-z), 10 high; concave vertical edge at x=10, z=-10
   lbr: [poly('F1', TOP, [[0, 0], [40, 0], [40, 10], [10, 10], [10, 30], [0, 30]]), ext('F2', 'F1', 10)],
   // 40 x 40 x 20 block with a 20 x 20 x 8 pocket in the top face (z -10..-30, x 10..30)
@@ -313,6 +315,17 @@ add('chamfer_narrow_unreachable', 'thin1', { k: 'chamfer', d: 2 }, [[20, 1, 0]],
   expectFace: 'F2.S.e1',
   known: 'refused with blendOverflow (OCCT: Build failed too), but the detail names the chamfer face F9.B0, not the 1 mm side face F2.S.e1 that is too narrow',
 });
+
+// 10. rounds that cross over several walls: the 8 cap edges of a 5 mm plate (no vertical edge), r over the tie (2.5). OCCT builds none
+// of the over-the-tie ones (no reference: NOREF, still checked for validity and a closed mesh); the oracle is in
+// crates/ck-model/tests/blend_cross_multi.rs. r 5.5 is taller than the walls and stays refused.
+const quad8 = [[20, 0, -2], [37, 0, -17], [15, 0, -27], [-2, 0, -12], [20, 5, -2], [37, 5, -17], [15, 5, -27], [-2, 5, -12]];
+add('cross_multi_quad_r2_4', 'quad5', { k: 'fillet', r: 2.4 }, quad8);
+add('cross_multi_quad_r2_5', 'quad5', { k: 'fillet', r: 2.5 }, quad8);
+add('cross_multi_quad_r2_6', 'quad5', { k: 'fillet', r: 2.6 }, quad8);
+add('cross_multi_quad_r3', 'quad5', { k: 'fillet', r: 3 }, quad8);
+add('cross_multi_quad_two_walls_r3', 'quad5', { k: 'fillet', r: 3 }, [quad8[0], quad8[2], quad8[4], quad8[6]]);
+add('cross_multi_quad_r5_5_refused', 'quad5', { k: 'fillet', r: 5.5 }, quad8, { expect: 'blendOverflow' });
 
 // ---------------------------------------------------------------- engine
 function req(k, id, msg) {

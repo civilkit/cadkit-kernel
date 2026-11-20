@@ -32,6 +32,7 @@ pub(super) use super::ends::clip_halfspace;
 pub use super::find::{find_edge, find_edge_by_position, forward_first};
 pub use super::layout::{in_place_layout, in_place_layout_opts, BlendRef, LayoutOpts};
 pub use super::analytic::fillet_line_edge;
+pub use super::cross::{take_rounds_cross, RoundsCross};
 pub use super::model::{ChamferLeg, FilletProfile, Spec};
 pub use super::rounds::blend_edges;
 
@@ -50,7 +51,12 @@ pub fn fillet(b: &Body, edges: &[(String, String, Vec3)], r: f64, feature: &str,
 
 /// Equal-distance chamfers (`Chamfer(d, d)` in the trace) of `edges`.
 pub fn chamfer(b: &Body, edges: &[(String, String, Vec3)], d: f64, feature: &str, tol: f64) -> Result<Body, BlendError> {
-    blend_edges(b, edges, Spec::Chamfer(d, ChamferLeg::Dist(d)), feature, tol)
+    let out = match super::mixed::chamfer_mixed(b, edges, d, feature, tol) {
+        Some(res) => res?,
+        None => blend_edges(b, edges, Spec::Chamfer(d, ChamferLeg::Dist(d)), feature, tol)?,
+    };
+    super::mixed::guard_corners(b, edges, d, &out, feature)?;
+    Ok(out)
 }
 
 /// Chamfer with distance `d1` on the FIRST face of every edge pick and a second leg given by a

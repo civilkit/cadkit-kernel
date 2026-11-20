@@ -100,11 +100,18 @@ fn cylinder_with_a_notch_across_the_seam() {
     passes(fixture!("saddle_notch_cyl_closed"), 2518.730);
 }
 
+/// A thickened free-form surface shells: its walls used to be built with their loops against the outward normal, which made the
+/// offset of the rim fail. Volume checked against the body (565.24) less the cavity (a 2 mm slab inside the 4 mm one).
+#[test]
+fn thickened_free_form_surface_shells() {
+    passes(fixture!("thickened_freeform_closed"), 369.726);
+}
+
 /// A shell of a body whose edge between a free-form wall and a plane wall cannot be offset is refused with a reason
 /// (`offsetUnsupported`) and the body stays as it was; it is not a wrong shell.
 #[test]
 fn shell_refused_where_an_edge_cannot_be_offset() {
-    for src in [fixture!("tapered_fillet_open_top"), fixture!("thickened_freeform_closed")] {
+    for src in [fixture!("tapered_fillet_open_top")] {
         let (errors, _, valid) = shell_body(src);
         assert_eq!(errors.len(), 1, "{errors:?}");
         assert!(errors[0].starts_with("S:") && errors[0].contains("offset"), "{errors:?}");

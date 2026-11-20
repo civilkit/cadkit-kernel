@@ -61,7 +61,8 @@ pub fn uv_near_fp(s: &Surface, fp: Option<u64>, p: Vec3, prev: Option<Vec2>) -> 
     // long B-spline faces (screw sweeps): the global closest-point search is
     // O(spans); a point on the surface next to the previous sample is found
     // by a local Gauss-Newton projection from it
-    if let (Surface::BSpline(bs), Some(q)) = (s, prev) {
+    let closed_v = closed_v_span(s);
+    if let (Surface::BSpline(bs), Some(q), None) = (s, prev, closed_v) {
         if let Some(uv) = local_project(bs, p, q) {
             return uv;
         }
@@ -80,6 +81,10 @@ pub fn uv_near_fp(s: &Surface, fp: Option<u64>, p: Vec3, prev: Option<Vec2>) -> 
         }
         if let Some(per) = pv {
             v = unwrap_near(v, q.y, per);
+        } else if let Some((a, b)) = closed_v {
+            // a spline closed in v has no declared period: its samples are unwrapped like a periodic one's, so a loop
+            // that runs round the closed direction (a rim, a seam walked up and back) is continuous in the polygon
+            v = unwrap_near(v, q.y, b - a);
         }
     }
     Vec2::new(u, v)
@@ -229,6 +234,53 @@ pub(crate) fn seam_spike_u(s: &Surface, pieces: &[(&Curve, f64, f64)], sense: bo
     forced
 }
 
+/// A B-spline surface that closes on itself in v without a declared period (the converted sweep of a closed profile): its
+/// seam is the iso-v line at either end of the domain, and the two sides of a seam edge sit one `v` span apart.
+pub(crate) fn closed_v_span(s: &Surface) -> Option<(f64, f64)> {
+    let Surface::BSpline(bs) = s else { return None };
+    let (nv, nu) = (bs.nv, bs.nu);
+    let gap = (0..nu).map(|i| bs.ctrl[i * nv].dist(bs.ctrl[i * nv + nv - 1])).fold(0.0f64, f64::max);
+    let closed = gap <= 1e-6;
+    let (_, (v0, v1)) = bs.domain();
+    (closed && v1 > v0 && s.periods().1.is_none()).then_some((v0, v1))
+}
+
+/// Like [`seam_spike_u`] for a surface closed in v: for each piece that is a seam edge walked out and straight back, the v its
+/// samples must be pinned to (the low end for the traversal whose region side is the near copy, the high end for the other).
+pub(crate) fn seam_spike_v(s: &Surface, pieces: &[(&Curve, f64, f64)], sense: bool) -> Vec<Option<f64>> {
+    let mut forced = vec![None; pieces.len()];
+    let Some((v0, v1)) = closed_v_span(s) else { return forced };
+    let per = v1 - v0;
+    let seam_du = |c: &Curve, ta: f64, tb: f64| -> Option<f64> {
+        for t in [ta, 0.5 * (ta + tb), tb] {
+            let (_, v) = s.closest_param(c.eval(t));
+            if (v - v0).min(v1 - v) > 1e-6 * per && !((v - v0).abs() <= 1e-6 * per || (v1 - v).abs() <= 1e-6 * per) {
+                return None;
+            }
+        }
+        Some(s.closest_param(c.eval(ta)).0 - s.closest_param(c.eval(tb)).0)
+    };
+    let n = pieces.len();
+    for (i, &(c, ta, tb)) in pieces.iter().enumerate() {
+        let Some(du) = seam_du(c, ta, tb) else { continue };
+        if du.abs() < 1e-12 {
+            continue;
+        }
+        let twin = [((i + 1) % n), ((i + n - 1) % n)].iter().any(|&j| {
+            j != i && {
+                let (d, a, b) = pieces[j];
+                std::ptr::eq(c as *const Curve, d as *const Curve) && (ta - b).abs() < 1e-9 && (tb - a).abs() < 1e-9
+            }
+        });
+        if twin {
+            // along +u with the region on its left puts the region at +v, so the traversal belongs on the low copy; a CW loop
+            // (sense false) swaps
+            forced[i] = Some(if (du < 0.0) == sense { v0 } else { v1 });
+        }
+    }
+    forced
+}
+
 fn loop_polygon_with(s: &Surface, pieces: &[(&Curve, f64, f64)], sense: bool, nfun: impl Fn(&Curve, f64, f64) -> usize) -> Vec<Vec2> {
     loop_polygon_adv(s, pieces, sense, nfun).0
 }
@@ -257,6 +309,7 @@ fn loop_polygon_adv(s: &Surface, pieces: &[(&Curve, f64, f64)], sense: bool, nfu
     // on the copy that keeps the face's region on its left (see
     // `seam_spike_u`).
     let forced = seam_spike_u(s, pieces, sense);
+    let forced_v = seam_spike_v(s, pieces, sense);
     for (i, &(c, ta, tb)) in pieces.iter().enumerate() {
         let mut n = nfun(c, ta, tb);
         if coaxial_circle(s, c) {
@@ -277,6 +330,14 @@ fn loop_polygon_adv(s: &Surface, pieces: &[(&Curve, f64, f64)], sense: bool, nfu
             }
             prev = Some(uv);
             out.push(uv);
+        }
+        if let Some(target) = forced_v[i] {
+            // the seam of a surface closed in v: snap the piece to the chosen end (its v is the seam's own)
+            let dv = target - out[start].y;
+            for p in &mut out[start..] {
+                p.y += dv;
+            }
+            prev = out.last().copied();
         }
         if let Some(target) = forced[i] {
             // snap the piece to the chosen copy by whole periods (the seam's own
@@ -388,7 +449,10 @@ fn crossings(p: Vec2, poly: &[Vec2]) -> bool {
 
 /// Point-in-polygon with periodic shifts (true if inside for some shift).
 pub fn in_polygon(s: &Surface, uv: Vec2, poly: &[Vec2]) -> bool {
-    let (pu, pv) = s.periods();
+    let (pu, mut pv) = s.periods();
+    if pv.is_none() {
+        pv = closed_v_span(s).map(|(a, b)| b - a);
+    }
     // shifts that can bring the point into the polygon's extent (a helical
     // boundary on a cylinder spans many periods)
     let shifts = |per: Option<f64>, pick: fn(&Vec2) -> f64, x: f64| -> Vec<f64> {
@@ -465,9 +529,60 @@ fn face_loops_uv_fine(b: &Body, f: FaceId) -> Vec<Vec<Vec2>> {
     (*v).clone()
 }
 
+/// A B-spline strip that closes on itself in u without a seam edge (the free-form fillet tool of a closed rim: its fitted strips
+/// join the first station to the last, so no edge marks the wrap) is bounded by two closed rails, each a curve at a constant
+/// v: their uv polygons are line segments that enclose nothing, so no point of the strip lies "inside" the face. The face
+/// is the band between the rails: the two polygons joined into the one rectangle they bound (the first rail forward, the
+/// second back; each carried on to the domain's end in u, as a closed loop's last sample stops one step short of it).
+/// Any other set of polygons is returned as it was.
+pub(crate) fn merge_strip_loops(s: &Surface, polys: Vec<Vec<Vec2>>) -> Vec<Vec<Vec2>> {
+    if polys.len() != 2 || !matches!(s, Surface::BSpline(_)) {
+        return polys;
+    }
+    let ((u0, u1), _) = s.domain();
+    if !(u0.is_finite() && u1.is_finite()) {
+        return polys;
+    }
+    let flat = |p: &Vec<Vec2>| {
+        if p.len() < 3 {
+            return false;
+        }
+        let (mut lo, mut hi) = (Vec2::new(f64::INFINITY, f64::INFINITY), Vec2::new(f64::NEG_INFINITY, f64::NEG_INFINITY));
+        for q in p {
+            lo = Vec2::new(lo.x.min(q.x), lo.y.min(q.y));
+            hi = Vec2::new(hi.x.max(q.x), hi.y.max(q.y));
+        }
+        let area = (0..p.len()).map(|i| p[i].x * p[(i + 1) % p.len()].y - p[(i + 1) % p.len()].x * p[i].y).sum::<f64>().abs() * 0.5;
+        // a rail runs the whole of u at (nearly) one v
+        (hi.x - lo.x) > 0.9 * (u1 - u0) && (hi.y - lo.y) < 1e-3 * (u1 - u0) && area < 1e-6 * (u1 - u0) * (u1 - u0)
+    };
+    if !(flat(&polys[0]) && flat(&polys[1])) {
+        return polys;
+    }
+    let mut a = polys[0].clone();
+    let mut b = polys[1].clone();
+    // both rails run the same way along u or opposite ways: orient each from low u to high u
+    for p in [&mut a, &mut b] {
+        if p[0].x > p[p.len() - 1].x {
+            p.reverse();
+        }
+        let last = p[p.len() - 1];
+        if last.x < u1 - 1e-9 {
+            p.push(Vec2::new(u1, last.y));
+        }
+        let first = p[0];
+        if first.x > u0 + 1e-9 {
+            p.insert(0, Vec2::new(u0, first.y));
+        }
+    }
+    b.reverse();
+    a.extend(b);
+    vec![a]
+}
+
 fn face_loops_uv_with(b: &Body, f: FaceId, nfun: impl Fn(&Curve, f64, f64) -> usize + Copy) -> Vec<Vec<Vec2>> {
     let face = b.face(f);
-    face.loops
+    merge_strip_loops(&face.surface, face.loops
         .iter()
         // a loop that only walks seams (every edge both ways: a revolved
         // sphere's meridian) bounds nothing: the face spans its period
@@ -487,7 +602,7 @@ fn face_loops_uv_with(b: &Body, f: FaceId, nfun: impl Fn(&Curve, f64, f64) -> us
                 .collect();
             loop_polygon_with(&face.surface, &pieces, face.sense, nfun)
         })
-        .collect()
+        .collect())
 }
 
 /// False only when `p` is surely farther than `tol` from the spline or ellipse `c` over `r` (outside the

@@ -248,7 +248,10 @@ pub fn thicken_freeform_by(
         let (bs, _, _) = fit_grid(&grid).map_err(|e| unsupported(format!("wall fit: {}", e.detail.unwrap_or_default())))?;
         let wname = FaceName { feature: feature.into(), role: Role::Other(format!("W{w}")), region: None, suffix: String::new() };
         w += 1;
-        let wf = out.add_face(shell, Surface::BSpline(Box::new(bs)), true, wname);
+        // the wall's own normal (u along the rim edge, v from the lower layer to the upper) points out of the sheet's rim when the
+        // edge runs the way its coedge does and into it when the coedge is reversed: that wall is a reversed-sense face, or its
+        // loop would walk clockwise about the outward normal (the boolean then cannot split it)
+        let wf = out.add_face(shell, Surface::BSpline(Box::new(bs)), !rev, wname);
         let wl = out.add_loop(wf);
         // lower layer edge as the lower face walks it reversed, then up the connector, the upper edge, down
         let (rev_lo, rev_hi) = (!(rev != true), !(rev != false));

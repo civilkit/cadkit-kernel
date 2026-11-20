@@ -97,6 +97,12 @@ pub fn extrema(cx: &mut Cx) -> Result<Json, String> {
     null_or_query(cx, "extrema")
 }
 
+/// `{type:"checkIntersection", tag?, tagB?, a, b, opts?}`: the certified check of the intersection curves of two
+/// sets of faces (diagnostics, read-only).
+pub fn check_intersection(cx: &mut Cx) -> Result<Json, String> {
+    null_or_query(cx, "checkIntersection")
+}
+
 /// `{type:"refDiff", base:<part>, part:<part>}`: regenerates both privately
 /// and reports references that now point at a different entity.
 pub fn ref_diff(cx: &mut Cx) -> Result<Json, String> {

@@ -14,7 +14,7 @@ const FIELD_TABLE = `| type | key fields |
 | fillet | radius, edges[{faces:[a,b],at:[x,y,z]}] |
 | chamfer | chamferType(equal/angleDistance/distanceDistance/vertex), distance, distance2, angle, edges |
 | shell | faces[] (empty = whole body), thickness, outward |
-| hole | sketch of point entities (sk.point(x,y) -> {type:"point",p}), kind(simple/cbore/csink), diameter, end, depth, tip |
+| hole | sketch of point entities (sk.point(x,y) -> {type:"point",p}), kind(simple/cbore/csink), diameter, end(blind/through/upToNext/upToFace/offsetFromFace), depth (blind only), endRef (face, upToFace/offsetFromFace), offset, tip |
 | draft | neutral, faces[], angle |
 | rib | sketch(open chain), thickness |
 | lip | kind, faces[], edges[], width, height |
@@ -25,7 +25,7 @@ const FIELD_TABLE = `| type | key fields |
 | mirror | seeds[], plane, body |
 | plane | mode(offset), base(std plane), offset |
 | moveFace | faces[], mode(offset: distance along the outward normal, + adds material; translate: translate [x,y,z], planar faces), flip. Neighbours extend, tangent fillets travel, names survive |
-| pressPull | faces[] (flat), continue "straight", distance (+ joins, - cuts, not 0), taper {type none/draft/scale, angle deg outward +, endScale}. The face continued as an extrude; moved end keeps the name, walls `<id>.S.<tag>`; query faceRun {faces} gives centre, normal, reach, endOf |
+| pressPull | faces[] (flat), continue "straight", distance (+ joins, - cuts, not 0), taper {type none/draft/scale, angle deg outward +, endScale}. The face continued as an extrude; moved end keeps the name, walls \`<id>.S.<tag>\`; query faceRun {faces} gives centre, normal, reach, endOf |
 | moveBody | bodies[]({face}/{surface}, default whole solid), translate [x,y,z], rotate {axis, origin, angle deg}, copy |
 | dome/splitLine/scale/axis/mate/deleteBody/deleteFace | see @ck-cad/part-model |
 | sheet features | surfaceExtrude/Revolve/Planar/Offset, trimSurface, knit, fill, thicken, extend |

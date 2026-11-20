@@ -41,7 +41,7 @@ What the rules are:
 - A `regen` whose `part` is not a part document (`format` is not `"ck-part"`, or `features` is not an array) fails with `invalid part: Format` and **keeps** the previous state of the tag. A regen in which individual features fail is not a failed request: it succeeds, reports the failures in `errors` and stores what was built ([Regeneration](regen.md)).
 - A request that needs state, for a tag that has never been stored, fails with `noState: nothing regenerated yet`. Clients that restore their state after a kernel restart can key on the prefix `noState`.
 - A request that needs a body, for a tag that has state but no body, does not fail: it answers an empty value of its own shape, in most cases `null` ([Queries](queries.md) gives the answer of each type).
-- `importStep`, `importSat`, `importSldprt` and `importSkp` store a body under their tag when the import succeeds, and leave the tag alone when it fails. `recognize` with `opts.apply` stores a rebuilt body under `<tag>.rebuilt`.
+- `importStep`, `importSat`, `importSldprt`, `importSkp` and `meshToSolid` store a body under their tag when the import succeeds, and leave the tag alone when it fails. `recognize` with `opts.apply` stores a rebuilt body under `<tag>.rebuilt`.
 - State lives as long as the session. The warm caches that make a repeated regen fast (the regen cache, the display-mesh caches) live with the session too; a capped amount of memory, 256 MiB by default for the regen cache, can be changed with `opts.cacheCap` ([Regeneration](regen.md)). A new instance starts empty.
 
 Some requests take everything they need in the message and use no tag: `ping`, `matchEdges`, `sketchOffset`, `refDiff`, `profiles`, `threadData`, `textMetrics`, `textOutline`, the font requests, and `checkProfile`, `sketchAnalyze` and `sketchFreedoms` when called with a `part`. They can be sent before any `regen`.
@@ -119,6 +119,7 @@ There are 57 request types. "Tag" says what the request needs: **tag** means a r
 | `importSat` | sets tag | Read an ACIS SAT file (text) into a body. |
 | `importSldprt` | sets tag | Read a SolidWorks part file (base64) into a body. |
 | `importSkp` | sets tag | Read a SketchUp file (base64) into a surface body of planar faces. Needs a module built with the `skp` feature. |
+| `meshToSolid` | sets tag | Turn a triangle mesh (positions, optional indices) into a valid solid: planar faces merged, cylinders, cones and spheres refit. |
 | `recognize` | body | Recognise the features of an imported solid and propose a feature tree. |
 
 ### Geometry queries
@@ -165,6 +166,7 @@ There are 57 request types. "Tag" says what the request needs: **tag** means a r
 | `clearance` | body | Face pairs closer than a given distance. |
 | `symmetry` | body | Mirror-symmetry planes and the deviation of the mirrored body. |
 | `extrema` | body | Lowest and highest point of the body along a direction. |
+| `checkIntersection` | body | Diagnostics: prove the marched surface/surface intersection curves of two sets of faces span by span, and list the spans that are not proved. |
 | `bodyBoolean` | body | Preview a boolean between the separate bodies of the state; nothing is stored. |
 
 ### Design rules

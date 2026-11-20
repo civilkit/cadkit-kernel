@@ -1,5 +1,24 @@
 # Blend notes
 
+## Fan shroud F48 / F49 and the conduit lip: a clean-up that reached 20 mm, and a translation that picked two edges too many (2026-11-20)
+
+- Fan shroud (`tools/cases/perf/fan_shroud.ckpart`, app sample `fan-shroud-filleted`): F48 (r 2) built with no error but
+  the body failed `validate` (8 `EDGE_OFF_SURFACE`, 7.5e-4, on grille faces F2 / F9 / F12 / F15 about 20 mm from the
+  blend), and F49 (r 0.5) then failed (`blendFailed`, an edge used by four faces). The same in the 0.8.3 kernel, so not
+  new. Cause: after its boolean the free-form blend collapsed every edge of the WHOLE result shorter than `6 FF_TOL`
+  (6e-3); the grille ring has a 7.5e-4 mm model edge, so its neighbours' ends moved by that much and
+  `refit_edges_on_faces` re-fitted them without pcurves, off their faces. Fix: an edge whose two ends are vertices of the
+  input is never collapsed (`collapse_short_edges_keeping`). Both fillets now build, the body validates. Test
+  `blend_far_sliver`. The guard has a new check, `collateral`: an edge away from the blend (on no new face, more than
+  `3 r` outside the new faces' box) that lies off its faces where the input's edge with the same ends did not is
+  refused (unit test in `guard.rs`).
+- Conduit snap-clip (`tools/bench/brepjs/conduit-snap-clip.ckpart.json`, app sample `brepjs-conduit_snap_clip`): F7 built
+  1.37 % below the reference volume with no error. The kernel was right: the translation rounded the two bore-end arcs
+  as well as the two lip lines; the reference rounds the lips only (its STEP has two r 1.44 cylinders, no torus). The
+  lips alone match the reference volume and area to 1e-6; the arcs alone remove exactly the analytic 37.0732 mm3. No
+  guard can flag this: it is a correct blend of a different selection. Fixed the bench translation; test
+  `blend_conduit_lip` pins both numbers.
+
 ## Part of a petal outline: a step at the flank / tip junction, pick order (2026-11-04)
 
 Report: on a five-petal body, a selection round one petal and its neighbour (rim flanks, tip arc, hub arcs, wall

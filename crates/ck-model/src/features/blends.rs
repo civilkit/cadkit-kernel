@@ -32,12 +32,21 @@ fn size_refusal(
     mut build: impl FnMut(f64) -> Result<ck_topo::body::Body, ck_ops::blend::BlendError>,
 ) -> FeatureError {
     // (a refusal that names a corner the builder does not take is not about the size: no size is offered)
-    let size = matches!(e.code.as_str(), "blendFailed" | "blendOverflow" | "blendUnsupported") && !e.detail.as_deref().is_some_and(|d| d.contains("corner patch"));
+    let size = matches!(e.code.as_str(), "blendFailed" | "blendOverflow" | "blendUnsupported" | "blendResultInvalid") && !e.detail.as_deref().is_some_and(|d| d.contains("corner patch") || d.contains("does not depend on the radius"));
     // a round the kernel's tolerance cannot tell from the sharp edge: its result holds no blend face. The size is too SMALL,
     // so "the largest radius that builds" would send the user the wrong way: name a size that builds above the asked one.
     // Only for a size under 1 % of the body (`scale` = its bounding box diagonal): the same symptom of a normal-sized round
     // is a failed blend, not a small one.
     let too_small = e.code == "blendFailed" && e.detail.as_deref() == Some("no blend face in result") && asked < 0.01 * scale;
+    // a round that leaves no face on the body and is not a tiny one: say what it usually means and what to change
+    let mut e = e;
+    if e.code == "blendFailed" && e.detail.as_deref() == Some("no blend face in result") && !too_small {
+        e.detail = Some("no blend face in result: the round's tool did not cut a face into the body, because the edges end on faces that an earlier blend made (the ball cannot roll across its torus or cylinder) or the ball does not fit the faces here".into());
+        e.params.push((
+            "hint".into(),
+            "if an earlier round runs into these edges, do this round first or leave the edges where the two rounds meet out of one of them (a corner of two rounds is not built); otherwise use a smaller radius or pick fewer edges".into(),
+        ));
+    }
     let mut fe = blend_error(e);
     if too_small {
         if super::max_size::blend_search_enabled() && faces <= super::max_size::BLEND_SEARCH_MAX_FACES && asked > 0.0 && asked.is_finite() {
@@ -415,8 +424,12 @@ fn exec_chamfer_legs(br: &mut Brep, state: &mut RegenState, f: &Feature, edges: 
         }
     } else {
         return Err(FeatureError::new("unsupported")
-            .with("what", Json::Str(format!("chamfer {ty} with mixed face order")))
-            .with("hint", Json::Str("name the face the first distance is measured on (`face`; every edge must border it), use an equal-distance chamfer, or chamfer the edges of each face in separate features".into())));
+            .with("what", Json::Str(format!(
+                "chamfer {ty} with mixed face order: the first distance is measured on the first face of each pick, and for {} of the {} picks that is the other face than for the rest, so the two distances would swap sides from edge to edge (as at a corner where a convex and a concave edge pair all four meet, a corner only an equal-distance chamfer can patch)",
+                swapped.iter().filter(|x| **x).count().min(swapped.iter().filter(|x| !**x).count()),
+                swapped.len()
+            )))
+            .with("hint", Json::Str("name the face the first distance is measured on (`face`; every edge must border it), use an equal-distance chamfer, chamfer the edges of each face in separate features, or leave the four edges at that corner out of the selection".into())));
     };
     let body = br.body.as_ref().ok_or_else(|| FeatureError::new("missingEdge"))?;
     br.spans.push(Span::leaf(chamfer_label(&f.id, d1, sel.len())));
@@ -668,11 +681,14 @@ pub fn exec_fillet(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
             br.spans.push(Span::leaf(fillet_label(&f.id, radii.iter().cloned().fold(0.0, f64::max), sel.len())));
             // mixed vertices first (a wall radius and a rim radius), else the per-edge builder
             let mixed = if profile == ck_ops::blend::build::FilletProfile::Circular { ck_ops::blend::mixed::fillet_mixed(body, &sel, &radii, &f.id, super::TOL) } else { None };
+            ck_ops::blend::build::take_rounds_cross();
             let out = match mixed {
                 Some(res) => res.map_err(blend_error)?,
                 None => ck_ops::blend::build::fillet_unequal(body, &sel, &radii, &f.id, super::TOL).map_err(blend_error)?,
             };
-            corner_warnings(state, &f.id, &out);
+            if !rounds_cross_warning(state, &f.id) {
+                corner_warnings(state, &f.id, &out);
+            }
             br.body = Some(out);
             return Ok(());
         }
@@ -682,7 +698,9 @@ pub fn exec_fillet(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
     br.spans.push(Span::leaf(fillet_label(&f.id, r, sel.len())));
     // two convex edges and a concave one at a vertex: the concave corner is filled first, the rim rolls round it
     if profile == ck_ops::blend::build::FilletProfile::Circular {
-        if let Some(res) = ck_ops::blend::mixed::fillet_mixed(body, &sel, &vec![r; sel.len()], &f.id, super::TOL) {
+        if let Some(res) = ck_ops::blend::mixed::fillet_mixed(body, &sel, &vec![r; sel.len()], &f.id, super::TOL)
+            .map(|res| res.and_then(|out| ck_ops::blend::validity::guard(body, &out, &sel, r, super::TOL).map(|_| out)))
+        {
             match res {
                 Ok(out) => {
                     br.body = Some(out);
@@ -706,9 +724,33 @@ pub fn exec_fillet(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
             ck_ops::blend::build::blend_edges(body, &sel, spec, &f.id, super::TOL)
         }
     };
+    ck_ops::blend::build::take_rounds_cross();
     let out = build(r).map_err(|e| size_refusal(e, r, ck_check::validate(body, super::TOL).len(), body.num_faces(), body_scale(body), build))?;
+    rounds_cross_warning(state, &f.id);
     br.body = Some(out);
     Ok(())
+}
+
+/// After a fillet built: when its two rounds crossed (the two edges of one strip face, radii summing to more than the
+/// strip's width, see ck-ops `blend::cross`), the warning `blendRoundsCross` with the strip's `width`, the `radii` and
+/// `meetRadius` / `meetRadii`, the sizes at which the rounds would just meet tangentially. True when it warned.
+fn rounds_cross_warning(state: &mut RegenState, id: &str) -> bool {
+    let Some(c) = ck_ops::blend::build::take_rounds_cross() else { return false };
+    let round = |x: f64| (x * 1e6).round() / 1e6;
+    let [r1, r2] = c.radii;
+    let mut e = FeatureError::new("blendRoundsCross")
+        .with("detail", Json::Str("the two roundings are wider than the face between them, so they cross in a sharp edge".into()))
+        .with("width", Json::Num(round(c.width)))
+        .with("radii", Json::Arr(vec![Json::Num(round(r1)), Json::Num(round(r2))]));
+    if (r1 - r2).abs() <= 1e-12 * (1.0 + r1) {
+        e = e.with("meetRadius", Json::Num(round(c.width / 2.0)));
+    } else {
+        let k = c.width / (r1 + r2);
+        e = e.with("meetRadii", Json::Arr(vec![Json::Num(round(r1 * k)), Json::Num(round(r2 * k))]));
+    }
+    state.result.warnings.retain(|w| !(w.feature == id && w.error.code == "blendRoundsCross"));
+    state.result.warnings.push(crate::regen::RegenError { feature: id.to_string(), error: e });
+    true
 }
 
 /// A circular fillet of radius `r` on edges given as (face, face, point) picks (the rib's free edge uses this: its edges
@@ -851,11 +893,14 @@ fn propagate_tangent(body: &ck_topo::body::Body, sel: Vec<(String, String, Vec3)
                 let f2 = body.edge_faces(e2);
                 let shared = f2.iter().filter(|f| fe.contains(f)).count();
                 let both_arcs = matches!(ed.curve, ck_geom::curve::Curve::Circle { .. }) && matches!(body.edge(e2).curve, ck_geom::curve::Curve::Circle { .. });
-                if f2.len() != 2 || shared == 0 || (shared == 2 && !both_arcs) {
+                // (no face in common is the next half of a wall split in two at its seam: both faces carry on smoothly)
+                let split_skin = shared == 0 && f2.len() == 2 && fe.len() == 2 && ck_ops::blend::freeform::continues_smoothly(body, [fe[0], fe[1]], [f2[0], f2[1]]).is_some();
+                if f2.len() != 2 || (shared == 0 && !split_skin) || (shared == 2 && !both_arcs) {
                     continue;
                 }
                 let Some(t1) = tangent_at(e2, v) else { continue };
-                if t0.cross(t1).len() > 1e-6 {
+                // (the two halves of a split skin meet where a closed spline closes: its end tangents agree only to about 1e-4)
+                if t0.cross(t1).len() > (if split_skin { 1e-3 } else { 1e-6 }) {
                     continue;
                 }
                 let ed2 = body.edge(e2);

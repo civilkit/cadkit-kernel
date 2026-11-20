@@ -140,7 +140,7 @@ existing seven-ray parity classifier of `ck-ops::contain`.
 
 ## Measurement and analysis (read-only)
 
-`distance`, `maxDistance`, `thickness`, `thicknessAt`, `closestPoint`, `angles`, `clearance`, `symmetry`, `extrema`
+`distance`, `maxDistance`, `thickness`, `thicknessAt`, `closestPoint`, `angles`, `clearance`, `symmetry`, `extrema`, `checkIntersection`
 (`crates/ck-ops/src/analysis.rs`; tests: its unit tests, `crates/ck-wasm/tests/measure.rs`, `tools/measure_check.mjs`,
 `tools/measure_occt_check.py`). All take `tag` (default `main`), answer `null` on a tag with no body, return
 `{ok:false,error}` with the field named for bad input, and never change the body. Options may sit in `opts` or at the
@@ -257,6 +257,26 @@ extreme is then a vertex or a whole edge / face and the value is exact to roundi
 `opts.samples`. `samples` in the reply counts the points evaluated. Budget as below (`truncated:true`: some faces or
 edges were not searched, so the extent is a lower bound).
 
+### checkIntersection `{a, b, tagB?, opts?:{tol}}`
+
+Diagnostics of the surface/surface intersection. Each pair of faces of `a` and `b` (face ids, `lump:<n>`, `body`;
+`tagB` takes `b` from another tag) whose boxes meet is intersected as a boolean would (same bounds and tolerance), and
+every span of each marched curve is proved, by Krawczyk's interval test, to lie on one arc of the true intersection
+(`ck_ops::intersect::certified::check_curves`). Spans that are not proved get points of the arc inserted and are
+proved again. At most 400 pairs; a face is not paired with itself.
+
+```
+-> {"type":"checkIntersection","tag":"ci1","tagB":"ci2","a":"body","b":"body"}
+<- {"curves":4,"marched":2,"spans":790,"proved":790,"repaired":0,"unresolved":0,"pairs":2,
+    "byPair":[{"a":"F2.S.e1","b":"F2.C0","curves":2,"marched":0,"spans":0,"proved":0,"unresolved":0},
+              {"a":"F2.S.e1","b":"F2.S.e1","curves":2,"marched":2,"spans":790,"proved":790,"unresolved":0}],
+    "issues":[],"elapsedMs":0,"truncated":false}
+```
+
+`issues` lists every span not proved as traced: `{a, b, curve, span, reason, repaired, from, to}`, `reason` one of
+`unsupported` (no interval evaluator: procedural sweeps and blends), `singular`, `noContraction`, `degenerate`. An
+unresolved span is the absence of a guarantee (a tangent contact cannot be proved), not a detected error.
+
 ### Budget: `elapsedMs`, `truncated`
 
 Every measurement reply carries `elapsedMs` (wall time inside the request) and `truncated`. The requests stop their
@@ -321,6 +341,16 @@ cone faces with circular end edges, and replaces the tag's body when it validate
 volume:{before,after,relative}, issues:{before,after}, merged, groups:[{kind, face, strips, full, axis, origin, radius|halfAngle,
 maxResidual, sag}], declined:[{face, strips, reason}]}`. Spheres, tori and random meshes are left alone (`smoothProfile` or no rails).
 Details: the book chapter "Cylinders and cones from facets".
+
+## meshToSolid `{tag, name?, positions | positionsF32 | positionsF64, indices? | indicesU32?, opts?}`
+
+A triangle mesh into a valid solid in the tag (an import: `errors` / `body` / `import`). Coplanar triangles become one planar face
+(holes kept), smooth regions of facets that fit a cylinder, cone or sphere become one exact face, the rest stays faceted. Refused
+with `meshNotWatertight {openEdges, openLoops, positions}`, `meshNonManifold`, `meshDegenerate`, `meshTooLarge`, `meshBadInput`
+(each with `message` and `hint`). `opts.close` (`true` or `{tolerance, fill, maxHoleEdges, maxHoleArea, planarTol}`, off by default)
+welds gaps, stitches cracks and fills small holes first; the reply's `import.closing` lists what was added, and what cannot be
+closed is refused with `meshHoleTooLarge`, `meshHoleSelfIntersects` or `meshGapAmbiguous` (`reason`, `hint`, `positions`).
+Options, the report and the limits: docs/spec-agent-interface.md, "Mesh to solid".
 
 ## Not done
 

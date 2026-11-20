@@ -23,6 +23,9 @@ thread_local! {
     pub(super) static CORNER_TRIMS: std::cell::RefCell<Vec<CornerTrim>> = const { std::cell::RefCell::new(Vec::new()) };
     /// The attempt in progress built a plane-plane-cylinder corner (the validity gate then judges the geometry too).
     pub(super) static CYL_CORNER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The concave arc tool of this attempt reaches a little way into the material behind both its faces (retry of a tool
+    /// whose overflow clip, a cylinder tangent to the wall the round leans on, found its face coincident with the wall's).
+    static INTO_MATERIAL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// A tool that ends `amount` short of the vertex `p`: a length along the line leaving it in direction `dir`, or the angle
@@ -33,6 +36,9 @@ pub(super) struct CornerTrim {
     pub arc: bool,
     pub dir: Vec3,
     pub amount: f64,
+    /// A planar corner's ball centre: the tool of the edge through `p` along `dir` ends on the plane through it square to
+    /// the edge, wherever the edge's own end has got to after earlier tools (`amount` is unused).
+    pub centre: Option<Vec3>,
 }
 
 /// Clears [`CORNER_TRIMS`] when the selection is done, whatever way it ends.
@@ -116,6 +122,32 @@ pub(super) fn blend_edge_hint(
 }
 
 pub(super) fn blend_edge_hint_inner(
+    b: &Body,
+    e: EdgeId,
+    faces: [FaceId; 2],
+    spec: Spec,
+    feature: &str,
+    k: u32,
+    tol: f64,
+    ring: bool,
+    junc: &EndConditions,
+) -> Result<(Body, Vec<String>), BlendError> {
+    let first = blend_edge_hint_inner0(b, e, faces, spec, feature, k, tol, ring, junc);
+    // a concave arc tool whose overflow clip could not be assembled (the clip cylinder is tangent to the wall face the tool's
+    // own face lies on): once more with the tool reaching into the material behind its faces, so that none of its faces is
+    // coincident with the wall
+    if first.as_ref().is_err_and(|x| x.code == "blendFailed" && x.detail.is_none()) && !INTO_MATERIAL.with(|c| c.get()) && matches!(spec, Spec::Fillet(_, FilletProfile::Circular)) {
+        INTO_MATERIAL.with(|c| c.set(true));
+        let second = blend_edge_hint_inner0(b, e, faces, spec, feature, k, tol, ring, junc);
+        INTO_MATERIAL.with(|c| c.set(false));
+        if second.is_ok() {
+            return second;
+        }
+    }
+    first
+}
+
+fn blend_edge_hint_inner0(
     b: &Body,
     e: EdgeId,
     faces: [FaceId; 2],
@@ -553,7 +585,18 @@ pub(super) fn blend_edge_hint_inner(
     let (pm_c, ta_c, tb_c) = (rot(pm), rot(ta), rot(tb));
     // a concave fillet whose contact runs off a narrow face over its convex far edge: trimmed by the next face continued
     let mut overflow: Vec<OverflowClip> = vec![];
-    for (f, t) in [(faces[0], ta_c), (faces[1], tb_c)] {
+    // (the section at the far end of a swept arc too, in the retry that reaches into the material: its contact may leave the face
+    // there as well, over the same kind of edge)
+    let mut sections = vec![(pm_c, [(faces[0], ta_c), (faces[1], tb_c)])];
+    if let (Some((c, axis)), true) = (circ, INTO_MATERIAL.with(|c| c.get()) && !convex && sweep > 0.0 && sweep < std::f64::consts::TAU - 1e-9) {
+        let turn = |p: Vec3| {
+            let (v, al) = (p - c, sweep);
+            c + v * al.cos() + axis.cross(v) * al.sin() + axis * (axis.dot(v) * (1.0 - al.cos()))
+        };
+        sections.push((turn(pm), [(faces[0], turn(ta)), (faces[1], turn(tb))]));
+    }
+    for (pm_s, fts) in sections {
+    for (f, t) in fts {
         let on_boundary = || {
             b.face_edges(f).into_iter().any(|e2| {
                 let x = b.edge(e2);
@@ -565,7 +608,7 @@ pub(super) fn blend_edge_hint_inner(
                 continue;
             }
             if !convex && !tangent && matches!(spec, Spec::Fillet(_, FilletProfile::Circular)) {
-                if let Some(c) = overflow_clip(b, f, e, pm_c, t, b.bbox(), tol) {
+                if let Some(c) = overflow_clip(b, f, e, pm_s, t, b.bbox(), tol) {
                     if super::diag::on() {
                         eprintln!("{}: contact leaves {} past its far edge; trimmed by the next face continued", name.id(), b.face_id_str(f));
                     }
@@ -602,6 +645,36 @@ pub(super) fn blend_edge_hint_inner(
                 })
             };
             let mut err = BlendError::detail("blendOverflow", &format!("{}: spring leaves its face away from its edges", name.id()));
+            // the contact runs off `f` over the edge it shares with a round an earlier feature made (a concave round on a
+            // plate's top, running on up to the round a vertical edge of that plate got): the ball would have to roll on
+            // over that round, which is not a plane or a cylinder this builder continues
+            let near_round = b
+                .face_edges(f)
+                .into_iter()
+                .filter(|&x| x != e)
+                .filter_map(|x| {
+                    let other = b.edge_faces(x).into_iter().find(|&h| h != f && !faces.contains(&h))?;
+                    let xe = b.edge(x);
+                    let d = crate::boolean::imprint::dist_in_range(&xe.curve, (xe.t0.min(xe.t1), xe.t0.max(xe.t1)), t).1;
+                    Some((other, d))
+                })
+                .filter(|&(h, _)| matches!(b.face(h).name.role, Role::Blend(_)) && b.face(h).name.feature != feature)
+                .min_by(|x, y| x.1.total_cmp(&y.1));
+            if let Some((h, _)) = near_round.filter(|&(_, d)| d <= 1.5 * r) {
+                err = BlendError::detail(
+                    "blendOverflow",
+                    &format!(
+                        "{}: the round's contact leaves {} where that face ends on {}, a round of an earlier feature: the ball would have to roll on over that round, which is not a plane or cylinder it can be continued across",
+                        name.id(),
+                        b.face_id_str(f),
+                        b.face_id_str(h)
+                    ),
+                );
+                err.params.push((
+                    "hint".into(),
+                    "do this round before the earlier round, or leave the edge where the two rounds meet out of one of them (a corner of two rounds is not built)".into(),
+                ));
+            }
             if curved_end.is_some() && r > 0.0 && fits(r * 1e-3) {
                 let (mut lo, mut hi) = (r * 1e-3, r);
                 for _ in 0..40 {
@@ -619,6 +692,7 @@ pub(super) fn blend_edge_hint_inner(
             }
             return Err(err);
         }
+    }
     }
     // tool profile in the plane perpendicular to dir through p0 - dir*margin
     // (line) or in the meridian plane through P0 (circle: revolved about the
@@ -642,7 +716,9 @@ pub(super) fn blend_edge_hint_inner(
                     }
                 }
             }
-            ends.len() == 1 && matches!(b.face(ends[0]).surface, Surface::Plane { .. }) && b.planar_normal(ends[0]).dot(out) < -1e-9
+            (ends.len() == 1 && matches!(b.face(ends[0]).surface, Surface::Plane { .. }) && b.planar_normal(ends[0]).dot(out) < -1e-9)
+                // (or the round wall of a hole that leans over the end: the chord of a D-shaped hole into its arc)
+                || hole_wall_reflex_end(b, v, &faces, out)
         };
         let near = |q: Vec3, p: Vec3, o: Vec3| (q - p).cross(dir).len() <= 1e-6 && q.dist(p) < q.dist(o);
         // the edge goes on past the vertex as a smooth (G1) edge of the same
@@ -763,6 +839,12 @@ pub(super) fn blend_edge_hint_inner(
             if n.len() < 1e-9 {
                 continue;
             }
+            // the two rounds meet on the bisector out to where both reach their full width: r / tan(theta / 2) past the
+            // vertex for edges theta apart (7.6 r at 15 degrees). A tool that stops short of that leaves its flat end
+            // standing in the mitre as a step
+            let cs = da.normalize().dot(db.normalize()).clamp(-1.0, 1.0);
+            let half_tan = ((1.0 - cs) / (1.0 + cs).max(1e-12)).sqrt();
+            let mm = mm.max(r * (1.2 / half_tan.max(0.02)) + r);
             if q.dist(p0) < 1e-6 && (da - dir).len() < 1e-6 {
                 m0 = mm;
                 clips.push((q, n.normalize()));
@@ -822,6 +904,18 @@ pub(super) fn blend_edge_hint_inner(
     if circ.is_none() {
         CORNER_TRIMS.with(|t| {
             for tr in t.borrow().iter().filter(|tr| !tr.arc) {
+                if let Some(c) = tr.centre {
+                    // on the line of the edge, the vertex at or behind the end; the end face is exactly on the plane through
+                    // the centre, as the vertex blend's inner face (an overlap makes two cylinders meet in a short mitre
+                    // curve round the ball's contact point)
+                    let hair = 0.0;
+                    if (tr.p - p0).cross(dir).len() < 1e-6 && tr.dir.dot(dir) > 1.0 - 1e-6 && (tr.p - p0).dot(dir) <= 1e-6 {
+                        m0 = hair - (c - p0).dot(dir);
+                    } else if (tr.p - p1).cross(dir).len() < 1e-6 && tr.dir.dot(-dir) > 1.0 - 1e-6 && (tr.p - p1).dot(dir) >= -1e-6 {
+                        m1 = hair - (c - p1).dot(-dir);
+                    }
+                    continue;
+                }
                 if p0.dist(tr.p) < 1e-6 && tr.dir.dot(dir) > 1.0 - 1e-6 {
                     m0 = -tr.amount;
                 } else if p1.dist(tr.p) < 1e-6 && tr.dir.dot(-dir) > 1.0 - 1e-6 {
@@ -880,7 +974,31 @@ pub(super) fn blend_edge_hint_inner(
         } else {
             ProfileSeg::arc("arc", cc, t2, t1).reversed()
         };
-        if circ.is_none() && convex && !chamfer && faces.iter().any(|&f| matches!(b.face(f).surface, Surface::Cylinder { .. })) {
+        if circ.is_some() && !convex && !chamfer && INTO_MATERIAL.with(|c| c.get()) && !overflow.is_empty() {
+            // (the tool reaches `k` into the material behind both faces; the section stays the corner between the contacts)
+            let k = 0.02 * r;
+            let outn = |f: FaceId, q: Vec3| -> Vec3 {
+                match &b.face(f).surface {
+                    Surface::Plane { .. } => b.planar_normal(f).normalize(),
+                    sf => {
+                        let (u, w) = sf.closest_param(q);
+                        b.outward_normal(f, u, w).normalize()
+                    }
+                }
+            };
+            let (o1, o2) = (outn(faces[0], ta), outn(faces[1], tb));
+            let (c1, c2) = (outn(faces[0], p0), outn(faces[1], p0));
+            let t1o = t1 - (uv(ta + o1) - t1) * k;
+            let t2o = t2 - (uv(tb + o2) - t2) * k;
+            let cpo = cp - ((uv(p0 + c1) - cp) + (uv(p0 + c2) - cp)) * k;
+            ProfileLoop::new(vec![
+                ProfileSeg::line("o2", t2, t2o),
+                ProfileSeg::line("o3", t2o, cpo),
+                ProfileSeg::line("o4", cpo, t1o),
+                ProfileSeg::line("o1", t1o, t1),
+                arc,
+            ])
+        } else if circ.is_none() && convex && !chamfer && faces.iter().any(|&f| matches!(b.face(f).surface, Surface::Cylinder { .. })) {
             // a plane meeting a convex cylinder along a line: the cylinder's side of the section is an arc, not the chord
             // `t2 - cp`, which would leave the lens between them standing as a sliver. The tool reaches out past both faces
             // instead (nothing lies there), so no tool face is coincident with the cylinder.
@@ -906,6 +1024,33 @@ pub(super) fn blend_edge_hint_inner(
                 ProfileSeg::line("o1", t1o, t1),
                 arc,
             ])
+        } else if let Some(iw) = (circ.is_none() && !convex && !chamfer && super::torus_corner::is_rim_wall_line(b, e))
+            .then(|| (0..2).find(|&i| matches!(b.face(faces[i]).surface, Surface::Cylinder { .. })))
+            .flatten()
+        {
+            // a plane meeting the inside of a ring (a concave cylinder) along a line: the wall's side of the section is an
+            // arc bulging into the material, not the chord to the corner, which would leave the lens between them standing
+            // as a sliver of gap. The tool reaches on into the material behind the wall by a little more than that lens is
+            // deep (it must not come out through a thin wall), so no tool face is coincident with the cylinder.
+            let tw = if iw == 0 { ta } else { tb };
+            let (u, w) = b.face(faces[iw]).surface.closest_param(tw);
+            let wn = b.outward_normal(faces[iw], u, w).normalize();
+            let (u0, w0) = b.face(faces[iw]).surface.closest_param(p0);
+            let wc = b.outward_normal(faces[iw], u0, w0).normalize();
+            let rcyl = match &b.face(faces[iw]).surface {
+                Surface::Cylinder { r, .. } => *r,
+                _ => unreachable!(),
+            };
+            let half = 0.5 * tw.dist(p0);
+            let sag = rcyl - (rcyl * rcyl - half * half).max(0.0).sqrt();
+            let dd = 3.0 * sag + 0.02 * r;
+            let twi = uv(tw - wn * dd);
+            let cpi = uv(p0 - wc * dd);
+            if iw == 1 {
+                ProfileLoop::new(vec![ProfileSeg::line("o2", t2, twi), ProfileSeg::line("o3", twi, cpi), ProfileSeg::line("o4", cpi, cp), ProfileSeg::line("l1", cp, t1), arc])
+            } else {
+                ProfileLoop::new(vec![ProfileSeg::line("l2", t2, cp), ProfileSeg::line("o4", cp, cpi), ProfileSeg::line("o3", cpi, twi), ProfileSeg::line("o1", twi, t1), arc])
+            }
         } else {
             ProfileLoop::new(vec![ProfileSeg::line("l2", t2, cp), ProfileSeg::line("l1", cp, t1), arc])
         }
@@ -975,6 +1120,11 @@ pub(super) fn blend_edge_hint_inner(
                     for (i, (v, out)) in outs.into_iter().enumerate() {
                         let mi = if i == 0 { m0 } else { m1 };
                         if mi == 0.0 || circ_oblique[i] {
+                            continue;
+                        }
+                        // (the round wall of another hole arc leaning over the end, the cusp of two overlapping holes: flush)
+                        if !chamfer && hole_wall_reflex_end(b, v, &faces, out) {
+                            if i == 0 { m0 = 0.0 } else { m1 = 0.0 }
                             continue;
                         }
                         let Some(n) = reflex_end_plane(b, v, &faces, out) else { continue };

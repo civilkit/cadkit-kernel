@@ -163,8 +163,7 @@ Two more panics found on the way (debug builds only, in the import mutation fuzz
 the file overflowed `j + n` (now `sat.parse` with the line), and a pcurve fit over a curve range with an infinite turn count
 overflowed `32 + usize::MAX` (saturating now). `fill`'s `order_chain` indexed `chain[0]` on an empty chain (now `fillInvalid`).
 
-Still open: a cone wedge of 355 degrees or more whose loop starts at the apex meshes nothing (it fails the same way before the
-pole fix; the strip window, not the pole crossing). Not hit by the fuzz.
+A cone wedge of 355 degrees or more whose loop starts at the apex used to mesh nothing (the fuzz does not generate it). The strip's cut is the middle of the widest gap between the sampled u values, and for a wedge missing under about 5 degrees that gap is a sampling step of the rim arc, not the missing wedge, so the cut fell inside the face; the strip then folded and gave no triangles, and the cover retry refused the loop as one that winds, because its closing segment over the apex (the same point in space, one v, u apart by less than a period) is not a whole period. That closing over the pole is legitimate (`join` samples it), so it is accepted (`over_pole`, `ck-tess/src/face.rs`) and the cover mesh closes with exact area and volume. Tests: `ck-tess/tests/poles.rs` (up to 360 degrees, volume checked) and `fuzz_invalid_results.rs` `cone_wedge_of_355_degrees_and_more_meshes_closed`.
 
 After the fixes (`3df28baa`, same parameters): ok 689, structured-error 4296, surface-only 13, degenerate 2, invalid-result 0,
 trap 0, hang 0; `--check` 0 regressions. The baseline was re-recorded from that run (label `crashfuzz-triage-3df28baa`). It

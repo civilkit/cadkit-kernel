@@ -16,7 +16,7 @@
 //! uniform factor stays one; B-spline faces and edges map their control points; a circle becomes an ellipse where the
 //! section is stretched. What cannot be kept exact is refused as `invalidValue` with a `detail` and a `hint`, and
 //! the body is left as it was: a cylinder or cone stretched across its axis (an elliptic cylinder), a sphere or torus
-//! under a non-uniform factor, and a revolution, extrusion, screw or offset surface (uniform or not, not yet).
+//! under a non-uniform factor, and a revolution, extrusion or screw surface (uniform or not, not yet), and an offset surface under a non-uniform factor.
 
 use super::move_body::{select, vec3};
 use super::Brep;
@@ -222,9 +222,15 @@ fn map_surface(s: &Surface, m: &Map) -> Result<(Surface, Uv), FeatureError> {
             b.ctrl.iter_mut().for_each(|q| *q = m.p(*q));
             (Surface::BSpline(b), Uv::ID)
         }
-        Surface::Revolution { .. } | Surface::Extrusion { .. } | Surface::Screw { .. } | Surface::Offset { .. } | Surface::Sweep(_) | Surface::Blend(_) => {
+        // B + d·n scales to (k B) + (k d)·n: the base's image with the distance scaled, parameters and pcurves kept
+        Surface::Offset { base, dist } => {
+            let k = uniform("offset surface")?;
+            let (b, uv) = map_surface(base, m)?;
+            (Surface::Offset { base: Box::new(b), dist: dist * k }, uv)
+        }
+        Surface::Revolution { .. } | Surface::Extrusion { .. } | Surface::Screw { .. } | Surface::Sweep(_) | Surface::Blend(_) => {
             return Err(refuse(
-                "this face is a revolution, extrusion, screw, offset, sweep or blend surface, whose scaling is not built yet",
+                "this face is a revolution, extrusion, screw, sweep or blend surface, whose scaling is not built yet",
                 "rebuild the body from a sketch at the size you need, or scale a body made of planes, cylinders, cones, spheres and free-form faces",
             ))
         }

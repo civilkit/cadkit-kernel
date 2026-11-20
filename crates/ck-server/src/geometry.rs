@@ -8,9 +8,9 @@
 //!   `densities` every `bodies[]` entry also carries `mass`; `densities`
 //!   alone implies `bodies:true` and must have one entry per lump.
 //! - `{type:"interference", tag:"main"}` -> `{bodies:n, pairs:[...]}`
-//! - `{type:"step", tag:"main", name}` -> STEP text (ck-io)
+//! - `{type:"step", tag:"main", name}` -> STEP text (ck-io); no body: refused `stepNothingToExport`
 //!
-//! Pinned with an empty state (body null): all four answer `null`.
+//! Pinned with an empty state (body null): `measure`, `massProps`, `interference` answer `null`; `step` is refused.
 //! `massProps` / `interference` run inside the spans "mass properties" /
 //! "interference between the bodies", opened BEFORE the state lookup.
 
@@ -137,8 +137,30 @@ pub fn import_skp(cx: &mut Cx) -> Result<Json, String> {
     Ok(reply)
 }
 
+/// `{"type":"meshToSolid","tag":t,"name":n?,"positions":[..] | "positionsF32"|"positionsF64":"<base64>",
+/// "indices":[..]? | "indicesU32":"<base64>"?, "opts":{..}?}` -> regen-shaped result like `importSkp` (`body`, `errors`,
+/// plus `import` with the conversion report; docs/agent-queries.md). A refused mesh answers `body:null` with a structured
+/// error (`meshNotWatertight`, `meshNonManifold`, `meshDegenerate`, `meshTooLarge`, `meshBadInput`) and leaves the tag alone.
+pub fn mesh_to_solid(cx: &mut Cx) -> Result<Json, String> {
+    let tag = cx.tag();
+    let Some(h) = cx.hooks.mesh_to_solid else { return Err(crate::session::todo("meshToSolid")) };
+    let (reply, state) = h(cx)?;
+    if let Some(s) = state {
+        cx.session.put(&tag, s);
+    }
+    Ok(reply)
+}
+
+/// The refusal of `step` when the document has no body at all (no solid, no surface).
+pub const STEP_NOTHING_TO_EXPORT: &str = "stepNothingToExport: the document has no bodies to export. Hint: make a solid or a surface first (an extrude, a revolve, a surfaceExtrude, ...); suppressed features and an empty rollback give nothing to write";
+
+/// `{type:"step", tag, name?}` -> the STEP text of the solid body and the surface bodies (each surface body a named
+/// SHELL_BASED_SURFACE_MODEL). A document with no body is refused with `stepNothingToExport` (not `null`).
 pub fn step(cx: &mut Cx) -> Result<Json, String> {
-    null_or_query(cx, "step")
+    if !cx.state()?.has_body {
+        return Err(STEP_NOTHING_TO_EXPORT.to_string());
+    }
+    cx.query("step")
 }
 
 /// Extension `{type:"importStep", tag?, name?, data:"<STEP text>"}`: parse the

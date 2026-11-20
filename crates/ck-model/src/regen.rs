@@ -128,7 +128,7 @@ pub const KNOWN_TYPES: &[&str] = &[
     "lip", "dome", "splitLine", "draft", "moveFace", "pressPull", "hole", "lpattern", "cpattern", "mirror", "spattern",
     "fillpattern", "curvepattern", "moveBody", "mate", "insertPart", "scale", "surfaceExtrude", "surfaceRevolve",
     "surfacePlanar", "surfaceOffset", "deleteFace", "fill", "knit", "extend", "freeform", "trimSurface", "thicken",
-    "cutWithSurface", "pipeCut", "deleteBody", "editCurve", "projectCurve", "helix", "thread", "combine", "bodyBoolean", "split", "lipJoint", "knurlBand", "importStep",
+    "cutWithSurface", "pipeCut", "deleteBody", "editCurve", "projectCurve", "offsetCurve", "compositeCurve", "sweepSurface", "blendSurface", "helix", "thread", "combine", "bodyBoolean", "split", "lipJoint", "knurlBand", "importStep",
     "repairPart", "importBody", "torus", "pipe", "coil", "boundingSolid", "frame", "sheetRules", "baseFlange", "edgeFlange", "hem", "fold", "contourFlange", "unfold", "refold", "sheetCorner", "sheetCut", "sheetConvert",
 ];
 
@@ -200,6 +200,12 @@ pub const EMPTY_FEATURE_ERRORS: &[(&str, &str)] = &[
     ("deleteBody", "noBodies"),
     ("editCurve", "editCurveNoInput"),
     ("projectCurve", "projectCurveNoFaces"),
+    // not oracle types: the procedural curve features (features/proc_curve.rs)
+    ("offsetCurve", "offsetCurveNoInput"),
+    ("compositeCurve", "compositeCurveNoInput"),
+    // not oracle types: the procedural surface features (features/proc_surface.rs)
+    ("sweepSurface", "sweepSurfaceNoInput"),
+    ("blendSurface", "blendSurfaceNoInput"),
     ("helix", "missingSketch"),
     ("torus", "invalidValue"),
     ("pipe", "invalidValue"),

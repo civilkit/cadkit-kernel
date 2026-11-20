@@ -76,6 +76,41 @@ pub(super) fn is_wall_line(b: &Body, e: EdgeId) -> bool {
     kinds.contains(&0) && kinds.contains(&1) && edge_concave(b, e) == Some(true)
 }
 
+/// A concave straight edge between a plane and a concave cylinder (the wall of a ring, material outside it) whose axis is
+/// parallel to the edge: the corner where a radial plate meets the inside of a rim. Its round is a cylinder (the ball's
+/// centre at `r` outside the plane and `R - r` from the axis).
+pub(super) fn is_rim_wall_line(b: &Body, e: EdgeId) -> bool {
+    let ed = b.edge(e);
+    let Curve::Line { d, .. } = ed.curve else { return false };
+    let fs = b.edge_faces(e);
+    if fs.len() != 2 {
+        return false;
+    }
+    let dir = d.normalize();
+    let pm = (b.vertex(ed.v0).p + b.vertex(ed.v1).p) * 0.5;
+    let kinds: Vec<u8> = fs
+        .iter()
+        .map(|&f| match &b.face(f).surface {
+            Surface::Plane { .. } => 0,
+            Surface::Cylinder { frame, .. } if frame.z.normalize().cross(dir).len() < 1e-9 => {
+                let rel = (pm - frame.o).reject(frame.z.normalize());
+                if normal_at(b, f, pm).dot(rel) < 0.0 { 1 } else { 2 }
+            }
+            _ => 2,
+        })
+        .collect();
+    // both ends on flat faces: an end on the round of an earlier feature (the torus an earlier round made along the
+    // plate's top) is not built by this builder, the free-form path refuses it with its reason
+    let flat_ends = [ed.v0, ed.v1].iter().all(|&v| {
+        b.edge_ids()
+            .filter(|&x| b.edge(x).v0 == v || b.edge(x).v1 == v)
+            .flat_map(|x| b.edge_faces(x))
+            .filter(|f| !fs.contains(f))
+            .all(|f| matches!(b.face(f).surface, Surface::Plane { .. }))
+    });
+    flat_ends && kinds.contains(&0) && kinds.contains(&1) && edge_concave(b, e) == Some(true)
+}
+
 /// A convex straight edge between a plane and a concave cylinder (material outside it) whose axis is parallel to the
 /// edge: the point where a pocket's straight wall meets an arc of its outline that bulges out of the pocket. Its round
 /// is a cylinder (the ball's centre at `r` inside the plane and `R + r` from the axis).
@@ -136,7 +171,7 @@ thread_local! {
 /// The edge is a wall line the analytic line builder takes (an exact cylinder instead of the free-form path): an
 /// [`is_wall_line`] or an [`is_convex_wall_line`], unless [`free_walls`] is in force.
 pub(super) fn analytic_wall_edge(b: &Body, e: EdgeId) -> bool {
-    !FREE_WALLS.with(|c| c.get()) && (is_wall_line(b, e) || is_convex_wall_line(b, e) || is_convex_cyl_line(b, e))
+    !FREE_WALLS.with(|c| c.get()) && (is_wall_line(b, e) || is_rim_wall_line(b, e) || is_convex_wall_line(b, e) || is_convex_cyl_line(b, e))
 }
 
 /// Runs `f` with the wall lines on the free-form path (the retry of a selection the analytic wall builder refused:
@@ -167,9 +202,10 @@ pub(super) fn wall_section(b: &Body, faces: [FaceId; 2], pm: Vec3, dir: Vec3, r:
     // cylinder (a concave edge, [`is_wall_line`]), inward beside a concave one (a convex edge, [`is_convex_wall_line`])
     let rel = (pm - frame.o).reject(ax);
     let cyl_convex = normal_at(b, faces[ic], pm).dot(rel) > 0.0;
-    // (a convex edge on a convex cylinder: the ball is inside the material, `R - r` from the axis)
-    let inside = cyl_convex && convex_edge;
-    let sr = if cyl_convex && !inside { r } else { -r };
+    // (a convex edge on a convex cylinder: the ball is inside the material, `R - r` from the axis; a concave edge on a
+    // concave cylinder, the wall of a ring: the ball is in the gap, `R - r` from the axis as well)
+    let inside = cyl_convex == convex_edge;
+    let sr = if convex_edge { -r } else { r };
     let w = np.cross(dir).normalize();
     let q0 = (pm + np * sr - frame.o).reject(ax);
     let rr = if inside { rc - r } else { rc + r };

@@ -26,6 +26,9 @@ const FIXTURE: &str = include_str!("fixtures/overhang_fillet.json");
 /// edge picks of the fixture, in its order: V2 = 0..3, V1 = 10..13, the rest are the other 19 edges
 const V1: [usize; 4] = [10, 11, 12, 13]; // A top|B wall z=0 (concave), A top|A wall x=21.5 (convex), A wall|B under (concave), B under|B wall (convex)
 const V2: [usize; 4] = [3, 2, 1, 0]; // A top|B wall x=0 (concave), A top|A wall z=16.7 (convex), A wall|B under (concave), B under|B wall (convex)
+/// the mixed vertex under the overhang at (21.5, 10, 16.7): A wall|B under along x (1, concave), A wall|B under along z (12, concave) and the
+/// vertical A corner edge (18, convex). Edge 12 is also an edge of V1, edge 1 one of V2.
+const MIXED: [usize; 3] = [1, 12, 18];
 
 /// the picks of the fixture's fillet, as text
 fn picks() -> Vec<String> {
@@ -630,7 +633,7 @@ fn the_tangent_chain_of_a_chamfer_is_the_collinear_partner_of_each_edge() {
 #[test]
 fn all_connected_chamfers_build_with_both_corner_patches() {
     let all: Vec<usize> = (0..picks().len()).collect();
-    let pinned = [(0.5, -65.9456), (1.0, -258.1992), (2.0, -988.1301), (3.0, -2122.7928)];
+    let pinned = [(0.5, -66.0332), (1.0, -258.8994), (2.0, -993.7315), (3.0, -2141.6973)];
     for (d, want) in pinned {
         for prop in [false, true] {
             let what = format!("chamfer all d={d} chain={prop}");
@@ -670,6 +673,9 @@ fn chamfers_with_two_distances_build_on_one_face_and_refuse_the_four_edge_corner
         let (o, _) = build_c(kind, &V1, 1.0, false);
         let e = o.errs.first().unwrap_or_else(|| panic!("{kind}: four edges of the corner built"));
         assert!(e.contains("mixed face order") && e.contains("hint"), "{kind}: {e}");
+        // the reason (the distances would swap sides from edge to edge) and what to do (an equal-distance chamfer, or the four edges left out)
+        assert!(e.contains("swap sides") && e.contains("only an equal-distance chamfer can patch"), "{kind}: {e}");
+        assert!(e.contains("leave the four edges at that corner out of the selection"), "{kind}: {e}");
     }
     let (o, _) = build_c("chamfer2F", &V1, 1.0, false);
     assert!(o.errs.first().is_some_and(|e| e.contains("missingEdge")), "{:?}", o.errs);
@@ -710,6 +716,11 @@ fn emit_corpus() {
         specs.push((format!("overhang-{name}-line-chain-r1"), vec![v[0]], 1.0, true));
         specs.push((format!("overhang-{name}-two-lines-chain-r1"), vec![v[0], v[1]], 1.0, true));
     }
+    // the mixed vertex under the overhang (two concave edges and the convex one between them), in two pick orders
+    for r in [0.5, 1.0, 2.0] {
+        specs.push((format!("overhang-v3-3edges-r{r}"), MIXED.to_vec(), r, false));
+        specs.push((format!("overhang-v3-3edges-rev-r{r}"), MIXED.iter().rev().copied().collect(), r, false));
+    }
     // chamfers: the same selections with the equal-distance chamfer, plus two distances on one face
     let mut cspecs: Vec<(String, Vec<usize>, f64, bool, &str)> = vec![];
     for d in [0.5, 1.0, 2.0] {
@@ -726,6 +737,16 @@ fn emit_corpus() {
         }
         cspecs.push((format!("overhang-chamfer-{name}-line-chain-d1"), vec![v[0]], 1.0, true, "chamfer"));
         cspecs.push((format!("overhang-chamfer-{name}-two-lines-chain-d1"), vec![v[0], v[1]], 1.0, true, "chamfer"));
+    }
+    for d in [0.5, 1.0, 2.0] {
+        cspecs.push((format!("overhang-chamfer-v3-3edges-d{d}"), MIXED.to_vec(), d, false, "chamfer"));
+        cspecs.push((format!("overhang-chamfer-v3-3edges-rev-d{d}"), MIXED.iter().rev().copied().collect(), d, false, "chamfer"));
+        cspecs.push((format!("overhang-chamfer-v3-3edges-mid-d{d}"), vec![12, 1, 18], d, false, "chamfer"));
+        cspecs.push((format!("overhang-chamfer-v3-all-rev-d{d}"), (0..picks().len()).rev().collect(), d, false, "chamfer"));
+    }
+    // a convex and a concave edge of the mixed vertex without the third: both pick orders
+    for (name, which) in [("v3-pair-1-18", [1usize, 18]), ("v3-pair-18-1", [18, 1]), ("v3-pair-12-18", [12, 18]), ("v3-pair-18-12", [18, 12])] {
+        cspecs.push((format!("overhang-chamfer-{name}-d1"), which.to_vec(), 1.0, false, "chamfer"));
     }
     cspecs.push(("overhang-chamfer-v1-two-distances-on-face-d1".into(), vec![V1[0], V1[1]], 1.0, false, "chamfer2F"));
     cspecs.push(("overhang-chamfer-v1-4edges-two-distances-d1".into(), V1.to_vec(), 1.0, false, "chamfer2"));
@@ -853,4 +874,167 @@ fn bisect_add() {
         let p = o.body.as_ref().map(|b| b.face_ids().filter(|&f| b.face_id_str(f).starts_with("F6.P")).count()).unwrap_or(0);
         println!("BISADD +{add}: patches {p} errs={:?}", o.errs.first().map(|e| e.chars().take(80).collect::<String>()));
     }
+}
+
+/// the loose faces (see `loose_faces`) with the distance of their nearest vertex to `v`
+fn loose_near(b: &Body, v: ck_geom::Vec3) -> Vec<(String, f64)> {
+    let mut out = vec![];
+    for f in b.face_ids() {
+        let n = b.face_id_str(f);
+        if !n.starts_with("F6.") || n.starts_with("F6.B") || n.starts_with("F6.P") {
+            continue;
+        }
+        let d = b.face_edges(f).iter().flat_map(|&e| [b.vertex(b.edge(e).v0).p.dist(v), b.vertex(b.edge(e).v1).p.dist(v)]).fold(f64::INFINITY, f64::min);
+        out.push((n, (d * 100.0).round() / 100.0));
+    }
+    out
+}
+
+const MIXED_V: ck_geom::Vec3 = ck_geom::Vec3 { x: 21.50030213344855, y: 10.0, z: 16.727255833598424 };
+
+/// `MIXPROBE=1`: every subset of the edges round the mixed vertex (21.5, 10, 16.7) and its two 4-valent neighbours, with
+/// and without the other 19 edges, in picked and reversed order. Prints the selections that refuse, leave planar steps,
+/// are unsound or depend on the order.
+#[test]
+fn mixed_probe() {
+    if std::env::var("MIXPROBE").is_err() {
+        return;
+    }
+    let core = [1usize, 12, 18, 2, 11, 10, 13, 3, 0];
+    let rest: Vec<usize> = (0..picks().len()).filter(|i| !core.contains(i)).collect();
+    let v0 = run(&part(&[0], 1.0, None), true).vol;
+    for mask in 1u32..(1 << (core.len() + usize::from(std::env::var("MIXREST").is_ok()))) {
+        let mut which: Vec<usize> = (0..core.len()).filter(|i| mask >> i & 1 == 1).map(|i| core[i]).collect();
+        if mask >> core.len() & 1 == 1 {
+            which.extend(rest.iter().copied());
+        }
+        if which.is_empty() {
+            continue;
+        }
+        let mut rev = which.clone();
+        rev.reverse();
+        let kind = std::env::var("MIXKIND").unwrap_or("fillet".into());
+        let a = run(&part_k(&kind, &which, 1.0, Some(false)), false);
+        let b = run(&part_k(&kind, &rev, 1.0, Some(false)), false);
+        let desc = |o: &Res| -> String {
+            match &o.body {
+                _ if !o.errs.is_empty() => format!("REFUSED {}", o.errs[0].chars().take(110).collect::<String>()),
+                Some(bd) => format!("dvol={:+.4} loose={:?} folded={} issues={}", o.vol - v0, loose_near(bd, MIXED_V), flipped(bd, 1e-3).len(), o.issues.len()),
+                None => "none".into(),
+            }
+        };
+        let (da, db) = (desc(&a), desc(&b));
+        let bad = |o: &Res, d: &str| d.starts_with("REFUSED") || !o.issues.is_empty() || o.body.as_ref().map_or(false, |bd| !loose_faces(bd).is_empty() || !flipped(bd, 0.05).is_empty());
+        let dep = (a.vol - b.vol).abs() > 1e-6 || (a.errs.is_empty() != b.errs.is_empty());
+        if bad(&a, &da) || bad(&b, &db) || dep {
+            println!("MIX [{}] {}\n    fwd {da}\n    rev {db}", label(&which.iter().copied().filter(|i| core.contains(i)).collect::<Vec<_>>()) + if mask >> core.len() & 1 == 1 { " +rest" } else { "" }, if dep { "ORDER-DEPENDENT" } else { "" });
+        }
+    }
+}
+
+// ------------------------------------------------------------------ the mixed vertex under the overhang
+
+/// all six pick orders of the three edges of the mixed vertex
+fn orders() -> Vec<[usize; 3]> {
+    let [a, b, c] = MIXED;
+    vec![[a, b, c], [a, c, b], [b, a, c], [b, c, a], [c, a, b], [c, b, a]]
+}
+
+/// A chamfer of the three edges of the mixed vertex (two concave, one convex: the foot of the corner of block A under block B)
+/// is the same part in every pick order: the convex strip ends on the underside of B in a straight edge, and the two concave strips and
+/// that edge are one chain, mitred at its joints. Built edge by edge in the pick order it used to leave a planar step or a face of
+/// the tool, and a different volume for each order (13.11, 13.61 and 14.11 at d = 1).
+#[test]
+fn the_mixed_vertex_chamfers_alike_in_every_pick_order() {
+    for d in [0.5, 1.0, 2.0] {
+        let mut first: Option<f64> = None;
+        for ord in orders() {
+            let what = format!("chamfer {ord:?} d={d}");
+            let (o, v0) = build_c("chamfer", &ord, d, false);
+            assert_sound(&o, &what);
+            let b = o.body.as_ref().unwrap();
+            assert!(loose_faces(b).is_empty(), "{what}: planar steps or tool faces {:?}", loose_faces(b));
+            let strips = b.face_ids().filter(|&f| b.face_id_str(f).starts_with("F6.B")).count();
+            assert_eq!(strips, 4, "{what}: three strips and the end strip of the convex one");
+            // the edge-only estimate: wedges along the two concave edges (21.5 and 16.7 long), the vertical strip's cut (10 high)
+            let est = 0.5 * d * d * (HX + HZ - 10.0);
+            assert!((o.vol - v0 - est).abs() < 0.1 * d * d * d, "{what}: volume change {} vs estimate {est}", o.vol - v0);
+            let want = *first.get_or_insert(o.vol);
+            assert!((o.vol - want).abs() < 1e-6, "{what}: volume {} differs from the first order's {want}", o.vol);
+        }
+    }
+}
+
+/// the same for the fillet (built in stages since the mixed-vertex work: convex first, then the concave chain on a torus)
+#[test]
+fn the_mixed_vertex_fillets_alike_in_every_pick_order() {
+    for r in [0.5, 1.0, 2.0] {
+        let mut first: Option<f64> = None;
+        for ord in orders() {
+            let what = format!("fillet {ord:?} r={r}");
+            let (o, _) = build(&ord, r, false);
+            assert_sound(&o, &what);
+            let b = o.body.as_ref().unwrap();
+            assert!(loose_faces(b).is_empty(), "{what}: planar steps {:?}", loose_faces(b));
+            let want = *first.get_or_insert(o.vol);
+            assert!((o.vol - want).abs() < 1e-6, "{what}: volume {} differs from the first order's {want}", o.vol);
+        }
+    }
+}
+
+/// With the other corner edges selected too (the two overhang corners V1 and V2 share an edge with the mixed vertex) the chamfer is built
+/// in the same stages and the corner patches are spliced in: reversed or not, the same part, two patches, no step near either corner or
+/// the mixed vertex.
+#[test]
+fn the_mixed_vertex_with_the_overhang_corners_is_the_same_part_in_reverse_order() {
+    let all: Vec<usize> = (0..picks().len()).collect();
+    let rev: Vec<usize> = all.iter().rev().copied().collect();
+    for d in [0.5, 1.0, 2.0] {
+        let what = format!("chamfer all d={d}");
+        let (a, _) = build_c("chamfer", &all, d, false);
+        let (b, _) = build_c("chamfer", &rev, d, false);
+        assert_sound(&a, &what);
+        assert_sound(&b, &what);
+        assert!((a.vol - b.vol).abs() < 1e-6, "{what}: {} vs reversed {}", a.vol, b.vol);
+        let bd = b.body.as_ref().unwrap();
+        assert!(flaps_at(bd, MIXED_V, 3.0 * d).is_empty(), "{what}: loose faces at the mixed vertex");
+        // V1 and V2 each keep their corner patch
+        assert_eq!(bd.face_ids().filter(|&f| bd.face_id_str(f).starts_with("F6.P")).count(), 2, "{what}");
+    }
+}
+
+/// A convex and a concave edge of the mixed vertex with the third edge left sharp: the convex strip is cut first in any pick order, so the
+/// two orders give one part (they gave a face of the tool in one order and a capped end in the other).
+#[test]
+fn a_convex_and_a_concave_edge_of_the_mixed_vertex_chamfer_alike_in_both_pick_orders() {
+    for pair in [[1usize, 18], [12, 18]] {
+        let (a, _) = build_c("chamfer", &pair, 1.0, false);
+        let (b, _) = build_c("chamfer", &[pair[1], pair[0]], 1.0, false);
+        assert_sound(&a, &format!("{pair:?}"));
+        assert_sound(&b, &format!("{pair:?} reversed"));
+        assert!((a.vol - b.vol).abs() < 1e-6, "{pair:?}: {} vs reversed {}", a.vol, b.vol);
+        for (o, tag) in [(&a, "picked"), (&b, "reversed")] {
+            let tool: Vec<String> = o.body.as_ref().unwrap().face_ids().map(|f| o.body.as_ref().unwrap().face_id_str(f)).filter(|n| n.starts_with("F6.S.")).collect();
+            assert!(tool.is_empty(), "{pair:?} {tag}: faces of the tool left in the part: {tool:?}");
+        }
+    }
+}
+
+/// A convex and a concave edge of the mixed vertex without the third, together with a fully selected overhang corner that shares an edge with
+/// it: chamfered it left a face of the tool in the part (valid and clean by every check, a flap in the model). It is refused with the vertex,
+/// the reason and a hint, in either pick order, and the same selection with the third edge builds.
+#[test]
+fn a_partial_mixed_vertex_next_to_an_overhang_corner_is_refused_not_left_with_a_tool_face() {
+    for sel in [vec![12usize, 18, 11, 10, 13], vec![13, 10, 11, 18, 12], vec![1, 12, 11, 10, 13]] {
+        let (o, _) = build_c("chamfer", &sel, 1.0, false);
+        assert!(o.body.is_none() || !o.errs.is_empty(), "{sel:?}: built a body with a leftover tool face");
+        let e = &o.errs[0];
+        assert!(e.contains("blendCorner") && e.contains("do not close into a clean corner") && e.contains("hint"), "{sel:?}: {e}");
+        assert!(e.contains("(21.500, 10.000,"), "{sel:?}: the refusal names no vertex: {e}");
+    }
+    let mut full = vec![12usize, 18, 1, 11, 10, 13];
+    full.sort_unstable();
+    let (o, _) = build_c("chamfer", &full, 1.0, false);
+    assert_sound(&o, "all three edges and the corner");
+    assert!(loose_faces(o.body.as_ref().unwrap()).iter().all(|n| !n.starts_with("F6.S.")), "tool face left");
 }

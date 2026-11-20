@@ -416,7 +416,7 @@ impl<'a> B<'a> {
                 let mut p: Vec<Vec3> = pts.iter().map(|q| pt(*q)).collect();
                 // chart points are put exactly on both supports and the fit is refined until it stays on them
                 let sups = match (surfaces[0], surfaces[1]) {
-                    (Some(a), Some(b)) => match (self.surface(a), self.surface(b)) {
+                    (Some(a), Some(b)) => match (self.meeting_support(a), self.meeting_support(b)) {
                         (Ok(sa), Ok(sb)) => Some([sa, sb]),
                         _ => None,
                     },
@@ -431,9 +431,21 @@ impl<'a> B<'a> {
                     },
                     _ => None,
                 };
+                let fine = |q: Vec3| 1e-6 * (1.0 + q.len());
                 let onto = |q: Vec3| -> Option<Vec3> {
                     if let Some(sup) = &sups {
-                        return Self::project_offsets(sup, [0.0, 0.0], q).or_else(|| Self::project_meet(sup, [0.0, 0.0], q));
+                        // alternating projection settles slowly where the supports meet at a shallow angle (a blend run
+                        // out onto another): where it leaves the point off a support, Newton on the tangent planes
+                        let off_by = |c: Vec3| sup[0].distance(c).max(sup[1].distance(c));
+                        let a = Self::project_offsets(sup, [0.0, 0.0], q);
+                        if a.map_or(true, |c| off_by(c) > fine(c)) {
+                            if let Some(m) = Self::project_meet(sup, [0.0, 0.0], q) {
+                                if a.map_or(true, |c| off_by(m) < off_by(c)) {
+                                    return Some(m);
+                                }
+                            }
+                        }
+                        return a;
                     }
                     let (sa, sb) = bound.as_ref()?;
                     let Surface::BSpline(bb) = &**sb else { return None };
@@ -452,7 +464,6 @@ impl<'a> B<'a> {
                 let mut bs = self.fit_points(&p)?;
                 // the fit is refined until it is on the supports to a tenth of what the validator accepts at model
                 // tolerance 1e-6 (10 * 1e-6 * (1 + |p|) mm): a curve that stays further off puts its edges off their faces
-                let fine = |q: Vec3| 1e-6 * (1.0 + q.len());
                 let strays = can && {
                     let (a, b) = bs.domain();
                     (0..48).any(|k| {
@@ -504,7 +515,7 @@ impl<'a> B<'a> {
                 let mut checked = 0;
                 let refined_bound = strays && bound.is_some();
                 for s in surfaces.iter().flatten().chain(bounds.iter().flatten().map(|b| &b.0).filter(|_| refined_bound)) {
-                    if let Ok(sf) = self.surface(*s) {
+                    if let Ok(sf) = self.meeting_support(*s) {
                         let (a, b) = curve.range();
                         for k in 0..48 {
                             let t = a + (b - a) * (k as f64 + 0.37) / 48.0;
@@ -757,6 +768,16 @@ impl<'a> B<'a> {
         };
         self.supports.insert(si, s.clone());
         Ok(s)
+    }
+
+    /// Surface `si` as one of the two supports of an intersection curve: a blend (one blend run out onto another) is
+    /// continued past its ends like a blend's own support, since the curve can run on past the end of the section it was built to.
+    fn meeting_support(&mut self, si: usize) -> R<Rc<Surface>> {
+        if matches!(self.ir.surfaces[si].geom, IrSurface::Blend { .. }) {
+            self.support(si)
+        } else {
+            self.surface(si)
+        }
     }
 
     /// Alternating projection of `p` onto the two support surfaces offset by `off` along their natural normals
@@ -1136,6 +1157,82 @@ impl<'a> B<'a> {
         }
     }
 
+    /// Whether the carrier of IR curve `ci` is fitted through chart points (an intersection curve, or a trim of one).
+    fn is_fitted(&self, ci: usize) -> bool {
+        match &self.ir.curves[ci].geom {
+            IrCurve::Intersection { .. } => true,
+            IrCurve::Trimmed { basis: Some(b), .. } => self.is_fitted(*b),
+            _ => false,
+        }
+    }
+
+    /// What kind of curve IR curve `ci` is (for messages): a trimmed curve names its basis.
+    fn curve_kind(&self, ci: usize) -> String {
+        match &self.ir.curves[ci].geom {
+            IrCurve::Line { .. } => "line".into(),
+            IrCurve::Circle { .. } => "circle".into(),
+            IrCurve::Ellipse { .. } => "ellipse".into(),
+            IrCurve::BCurve(n) => format!("b-curve degree {} {} ctrl{}{}", n.degree, n.ctrl.len(), if n.periodic { " periodic" } else { "" }, if n.weights.is_some() { " rational" } else { "" }),
+            IrCurve::Trimmed { basis, .. } => format!("trimmed {}", basis.map_or("?".to_string(), |b| self.curve_kind(b))),
+            IrCurve::Intersection { pts, .. } => format!("intersection curve of {} chart points", pts.len()),
+            IrCurve::Sp { surface, uv } => {
+                let on = surface.map_or("?", |si| match &self.ir.surfaces[si].geom {
+                    IrSurface::Plane { .. } => "plane",
+                    IrSurface::Cylinder { .. } => "cylinder",
+                    IrSurface::Cone { .. } => "cone",
+                    IrSurface::Sphere { .. } => "sphere",
+                    IrSurface::Torus { .. } => "torus",
+                    IrSurface::Nurbs(_) => "b-surface",
+                    IrSurface::Swept { .. } => "swept surface",
+                    IrSurface::Spun { .. } => "spun surface",
+                    IrSurface::Offset { .. } => "offset surface",
+                    IrSurface::Blend { .. } => "blend",
+                    IrSurface::Unsupported(_) => "unsupported surface",
+                });
+                match uv {
+                    Some(u) => format!("SP-curve degree {} {} ctrl on a {on}", u.degree, u.ctrl.len()),
+                    None => format!("SP-curve on a {on}"),
+                }
+            }
+            IrCurve::Unsupported(_) => "unsupported".into(),
+        }
+    }
+
+    /// The straight line in the parameters of a rolling-ball blend between the points `a` and `b` on it, as a carrier, for
+    /// the SP-curve `ci` (or the trimmed curve on one) of the file that is such a line (two control points) on a blend:
+    /// the file's parameters along the spine are not the built surface's (see [`Self::edge`]), the line through the
+    /// vertices' own parameters is the same curve for a section (constant along the spine) or a boundary (constant across).
+    fn sp_on_blend_between(&mut self, ci: usize, a: Vec3, b: Vec3) -> Option<FwCurve> {
+        let mut cj = ci;
+        if let IrCurve::Trimmed { basis: Some(bi), .. } = &self.ir.curves[cj].geom {
+            cj = *bi;
+        }
+        let IrCurve::Sp { surface: Some(si), uv: Some(uv) } = &self.ir.curves[cj].geom else { return None };
+        let (si, straight) = (*si, uv.ctrl.len() == 2 && uv.degree == 1);
+        if !straight || !matches!(self.ir.surfaces[si].geom, IrSurface::Blend { .. }) {
+            return None;
+        }
+        let sf = self.surface(si).ok()?;
+        let ((ua, va, pa), (ub, vb, pb)) = (sf.closest_point(a), sf.closest_point(b));
+        if pa.dist(a) > MAX_APPROX_MM || pb.dist(b) > MAX_APPROX_MM || (ua - ub).abs() + (va - vb).abs() < 1e-9 {
+            return None;
+        }
+        let pts: Vec<Vec3> = (0..=32).map(|k| {
+            let t = k as f64 / 32.0;
+            sf.eval(ua + (ub - ua) * t, va + (vb - va) * t)
+        }).collect();
+        let bs = self.fit_points(&pts).ok()?;
+        let closed = Self::is_closed(&bs);
+        let curve = Curve::BSpline(bs);
+        let (d0, d1) = curve.range();
+        let worst = (0..48).map(|k| sf.distance(curve.eval(d0 + (d1 - d0) * (k as f64 + 0.37) / 48.0))).fold(0.0, f64::max);
+        if worst > MAX_APPROX_MM {
+            return None;
+        }
+        self.approx.push(Approx { what: format!("SP-curve #{} on a blend, taken between its vertices", self.ir.curves[cj].id), max_err_mm: worst });
+        Some(FwCurve { curve, period: None, dir_inc: true, closed_spline: closed })
+    }
+
     /// Build an IR edge (split where the previous pass asked for it).
     fn edge(&mut self, ei: usize) -> R<EdgeInfo> {
         if let Some(e) = self.edges.get(&ei) {
@@ -1144,7 +1241,20 @@ impl<'a> B<'a> {
         let e = &self.ir.edges[ei];
         let eid = e.id;
         let ci = e.curve.or(e.fin_curve).ok_or_else(|| terr(format!("edge #{eid} has neither a curve nor fin curves")))?;
-        let fc = self.curve(ci)?;
+        let mut fc = self.curve(ci)?;
+        if let (Some(sv), Some(ev)) = (e.start, e.end) {
+            // an SP-curve on a rolling-ball blend is in the file's (spine parameter, section fraction): the surface built
+            // here runs along its own station spacing, so the stored curve lands off its vertices; the same line
+            // through the vertices' own parameters is on the surface
+            let ((vs, ps), (ve, pe)) = (self.vertex(sv), self.vertex(ev));
+            let vtol = self.body.vertex(vs).tol.max(self.body.vertex(ve).tol);
+            let miss = fc.curve.eval(fc.curve.closest_param(ps)).dist(ps).max(fc.curve.eval(fc.curve.closest_param(pe)).dist(pe));
+            if miss > geo_tol(ps).max(geo_tol(pe)).max(vtol) {
+                if let Some(alt) = self.sp_on_blend_between(ci, ps, pe) {
+                    fc = Rc::new(alt);
+                }
+            }
+        }
         let curve = &fc.curve;
         // (lo, hi, vertex at lo, vertex at hi, flip)
         let (lo, hi, v_lo, v_hi, flip): (f64, f64, VertexId, VertexId, bool) = match (e.start, e.end) {
@@ -1166,8 +1276,19 @@ impl<'a> B<'a> {
                 }
                 let miss = curve.eval(ta).dist(ps).max(curve.eval(tb).dist(pe));
                 let vtol = self.body.vertex(vs).tol.max(self.body.vertex(ve).tol);
-                if miss > geo_tol(ps).max(geo_tol(pe)).max(vtol) {
-                    return Err(gerr(format!("edge #{eid}: curve misses its vertices by {miss:.3e} mm")));
+                if miss > geo_tol(ps).max(geo_tol(pe)).max(vtol) && miss <= MAX_APPROX_MM && self.is_fitted(ci) {
+                    // a carrier fitted through the file's chart points is within the chart's error of the exact curve, so
+                    // the file's vertices can be that far off it: they take it as their tolerance
+                    for (v, p, t) in [(vs, ps, ta), (ve, pe, tb)] {
+                        let d = curve.eval(t).dist(p);
+                        if d > self.body.vertex(v).tol {
+                            self.body.vertices[v.idx()].tol = d * (1.0 + 1e-6);
+                        }
+                    }
+                } else if miss > geo_tol(ps).max(geo_tol(pe)).max(vtol) {
+                    let (d0, d1) = curve.range();
+                    let kind = self.curve_kind(ci);
+                    return Err(gerr(format!("edge #{eid}: curve misses its vertices by {miss:.3e} mm ({kind}; parameters {ta:.4e} {tb:.4e} in {d0:.4e}..{d1:.4e}; vertex gap {:.3e} mm)", ps.dist(pe))));
                 }
                 let tie = vs == ve || ps.dist(pe) < 1e-9;
                 if let Some(per) = fc.period {
@@ -2869,4 +2990,78 @@ mod tests {
         assert!((m.area - PI * 100.0).abs() < 1e-6 * PI * 100.0, "area {}", m.area);
     }
 
+    fn vtx(id: i64, p: [f64; 3]) -> IrVertex {
+        IrVertex { id, p, tol: None }
+    }
+
+    /// A tolerant edge (no curve of its own, a fin curve) from vertex 0 to vertex 1.
+    fn fin_edge(curve: usize) -> IrEdge {
+        IrEdge { id: 40, curve: None, start: Some(0), end: Some(1), fin_curve: Some(curve), tol: Some(3e-5) }
+    }
+
+    #[test]
+    fn an_sp_curve_on_a_blend_in_the_files_parameters_is_the_section_through_its_vertices() {
+        // the 1 mm round runs 20 mm along y; the file's SP-curve of a section is (spine parameter, 0..1) with the spine
+        // parameter its own (7 mm here), not the built surface's arc length (the section at y = 2 is at 12 mm there)
+        let mut ir = round_ir(IrSurface::Plane { o: [0.0; 3], n: [1.0, 0.0, 0.0], x: [0.0, 1.0, 0.0] });
+        let uv = NurbsCurveIr { degree: 1, dim: 2, ctrl: vec![vec![0.007, 0.0], vec![0.007, 1.0]], weights: None, knots: vec![0.0, 0.0, 1.0, 1.0], periodic: false, closed: false };
+        ir.curves.push(cn(6, IrCurve::Sp { surface: Some(2), uv: Some(uv) }));
+        ir.curves.push(cn(7, IrCurve::Trimmed { basis: Some(2), p1: [0.0; 3], p2: [0.0; 3], t1: 0.0, t2: 1.0 }));
+        ir.vertices = vec![vtx(1, [0.001, 0.002, 0.0]), vtx(2, [0.0, 0.002, 0.001])];
+        ir.edges = vec![fin_edge(3)];
+        let mut b = builder(&ir);
+        let info = b.edge(0).unwrap_or_else(|e| panic!("{e:?}"));
+        let ed = b.body.edge(info.segs[0]);
+        for (v, p) in [(ed.v0, Vec3::new(1.0, 2.0, 0.0)), (ed.v1, Vec3::new(0.0, 2.0, 1.0))] {
+            let q = b.body.vertex(v).p;
+            assert!(q.dist(p) < 1e-6 || q.dist(Vec3::new(p.z, p.y, p.x)) < 1e-6, "{q:?}");
+        }
+        // the carrier stays on the blend and runs along the section (constant y)
+        let (a, z) = ed.curve.range();
+        for k in 0..=8 {
+            let q = ed.curve.eval(a + (z - a) * k as f64 / 8.0);
+            assert!((q.y - 2.0).abs() < 1e-3, "{q:?}");
+            assert!((q.dist(Vec3::new(1.0, q.y, 1.0)) - 1.0).abs() < 1e-3, "{q:?}");
+        }
+    }
+
+    #[test]
+    fn vertices_a_little_off_a_fitted_intersection_curve_take_that_as_tolerance() {
+        // the chart of the planes' meeting line is exact, the file's vertices are 0.01 mm off it (the file's own curve is
+        // not the chart): they are accepted with a tolerance of the gap, not refused
+        let mut ir = round_ir(IrSurface::Plane { o: [0.0; 3], n: [1.0, 0.0, 0.0], x: [0.0, 1.0, 0.0] });
+        let pts: Vec<[f64; 3]> = (0..5).map(|k| [0.0, -0.01 + 0.005 * k as f64, 0.0]).collect();
+        ir.curves.push(cn(6, IrCurve::Intersection { pts, surfaces: [Some(0), Some(1)], bounds: [None, None], chordal: 0.0 }));
+        ir.vertices = vec![vtx(1, [1e-5, -0.005, 0.0]), vtx(2, [1e-5, 0.005, 0.0])];
+        ir.edges = vec![IrEdge { id: 40, curve: Some(2), start: Some(0), end: Some(1), fin_curve: None, tol: None }];
+        let mut b = builder(&ir);
+        let info = b.edge(0).unwrap_or_else(|e| panic!("{e:?}"));
+        let ed = b.body.edge(info.segs[0]);
+        assert!(b.body.vertex(ed.v0).tol >= 0.0099 && b.body.vertex(ed.v1).tol >= 0.0099);
+        // a gap beyond what a fitted carrier can be off is still refused
+        ir.vertices[0].p = [0.5e-3, -0.005, 0.0];
+        let mut b = builder(&ir);
+        assert!(b.edge(0).is_err());
+    }
+
+    #[test]
+    fn an_intersection_curve_on_a_blend_run_a_little_past_its_end_is_on_the_blend() {
+        // the round ends at y = 10 mm; a plane at y = 10.1 mm meets its continuation in an arc. The curve is fitted to a
+        // coarse chart of that arc, and is refined onto the supports: the blend continues past its end for that
+        let mut ir = round_ir(IrSurface::Plane { o: [0.0; 3], n: [1.0, 0.0, 0.0], x: [0.0, 1.0, 0.0] });
+        ir.surfaces.push(sn(8, IrSurface::Plane { o: [0.0, 0.0101, 0.0], n: [0.0, 1.0, 0.0], x: [1.0, 0.0, 0.0] }));
+        let r = 0.001;
+        let pts: Vec<[f64; 3]> = (0..4).map(|k| {
+            let a = FRAC_PI_2 * k as f64 / 3.0;
+            [r - r * a.sin(), 0.0101, r - r * a.cos()]
+        }).collect();
+        ir.curves.push(cn(6, IrCurve::Intersection { pts, surfaces: [Some(2), Some(3)], bounds: [None, None], chordal: 0.0 }));
+        let mut b = builder(&ir);
+        let c = b.curve(2).unwrap_or_else(|e| panic!("{e:?}"));
+        let (a, z) = c.curve.range();
+        for k in 0..=20 {
+            let q = c.curve.eval(a + (z - a) * k as f64 / 20.0);
+            assert!((q.y - 10.1).abs() < 1e-3 && (q.dist(Vec3::new(1.0, q.y, 1.0)) - 1.0).abs() < 1e-3, "{q:?}");
+        }
+    }
 }

@@ -845,6 +845,8 @@ pub fn profiles_with(sk: &Sketch, texts: &[super::text::TextLayout]) -> Profiles
     // moved along its own curve to meet that curve exactly (a gap of less than `T_TOL`), and the curve it
     // meets is cut there
     let ends: Vec<(usize, P)> = curves.iter().enumerate().filter(|(_, c)| !c.closed).flat_map(|(k, c)| [(k, c.geom.eval(c.t0)), (k, c.geom.eval(c.t1))]).collect();
+    // joint tolerance, once: scale_hint walks every curve, and calling it per end pair made this cubic
+    let joint_tol = 1e-7 * scale_hint(&curves);
     for j in 0..n {
         if curves[j].closed {
             continue;
@@ -856,7 +858,7 @@ pub fn profiles_with(sk: &Sketch, texts: &[super::text::TextLayout]) -> Profiles
                 continue;
             }
             // another curve ending here: a joint, not a free end
-            if ends.iter().any(|(k, p)| *k != j && dist(*p, q) <= 1e-7 * scale_hint(&curves)) {
+            if ends.iter().any(|(k, p)| *k != j && dist(*p, q) <= joint_tol) {
                 continue;
             }
             for i in 0..n {

@@ -5,7 +5,8 @@
 //!   concave edges (plate side with hub, plate side with rim). The R10 step is refused with `blendUnsupported`
 //!   ("concave chain end is not on a planar face", and a hint that names the earlier round): the four rim-side edges run
 //!   up to y = 10 where the torus of the R5 blend ends them, and no corner patch joins a concave round to another
-//!   round (issue 35, see the tests at the end for what builds and what is refused).
+//!   round (issue 35, see the tests at the end for what builds and what is refused). The other order (R10 first, then the R5 on the
+//!   plate-top arcs) builds.
 //! * `wheel_plates_r10_hub_edge.json`: R10 on the arcs where the plate tops meet the hub, which stands 1 mm above the
 //!   plates (radius larger than the face it rolls over). It builds as a pair of tori over the hub's top edge.
 use ck_model::features::Brep;
@@ -206,11 +207,69 @@ fn r10_on_the_vertical_edges_after_r5_is_refused_with_the_reason() {
     assert!(volume(&r5_only.body) > 0.0);
 }
 
-/// Issue 35, the other order: R10 on the eight vertical edges first, then the R5 on the plate-top arcs. Records what the
-/// engine does today (printed with --nocapture); whatever it answers, the part must stay sound.
+/// Volume the R5 adds to the wheel after the R10 on the vertical edges: the R5's fill (height `5 - sqrt(25 - (rho - 45)^2)` at
+/// radius `rho` between the ball and the rim wall) over the plate top between radius 45 and 50, where the top exists: the plates'
+/// quadrants plus the corner fills of the R10 rounds (the strip from the plate's side plane to the round, 14.48 degrees past it),
+/// outside the discs of the R10 rounds. Two plates.
+fn r5_fill_after_r10() -> f64 {
+    let (nr, nt) = (600usize, 4000usize);
+    let a = (12.5f64).atan2(48.41229182759271);
+    let (th0, th1) = (-std::f64::consts::FRAC_PI_2 - a, a);
+    let discs = [((38.72983346207417, 10.0), false), ((-10.0, -38.72983346207417), true)];
+    let mut tot = 0.0;
+    for i in 0..nr {
+        let rho = 45.0 + 5.0 * (i as f64 + 0.5) / nr as f64;
+        let h = 5.0 - (25.0 - (rho - 45.0).powi(2)).sqrt();
+        let mut inside = 0usize;
+        for j in 0..nt {
+            let th = th0 + (th1 - th0) * (j as f64 + 0.5) / nt as f64;
+            let (x, z) = (rho * th.cos(), rho * th.sin());
+            let cut = discs.iter().any(|&((cx, cz), second)| (if second { th < -std::f64::consts::FRAC_PI_2 } else { th > 0.0 }) && (x - cx).hypot(z - cz) < 10.0);
+            if !cut {
+                inside += 1;
+            }
+        }
+        tot += h * rho * (inside as f64 * (th1 - th0) / nt as f64) * (5.0 / nr as f64);
+    }
+    2.0 * tot
+}
+
+/// Issue 35, the other order: R10 on the eight vertical edges first, then the R5 on the plate-top arcs. It builds: valid, one closed
+/// solid, every face meshes, and the volume is the R10's plus the R5's fill over the plate top (the R5's chain runs on past each end
+/// of the plate to where the R10 rounds touch the rim wall, and is trimmed there by the R10 round's cylinder). The R10 rounds are
+/// exact cylinders (the wall lines of the rim and the hub are built analytically), which the R5's trim continues.
 #[test]
-fn r10_then_r5_order_is_sound_whatever_it_answers() {
+fn r10_then_r5_builds_with_the_volume_of_both() {
+    let base = base_volume();
+    let r10 = build_doc(&doc(&[vertical(true, true, 10.0)]));
+    assert!(r10.errors.is_empty(), "{:?}", r10.errors);
+    let cyl = r10
+        .body
+        .face_ids()
+        .filter(|&f| r10.body.face_id_str(f).starts_with("F8.B") && matches!(r10.body.face(f).surface, ck_geom::surface::Surface::Cylinder { .. }))
+        .count();
+    assert_eq!(cyl, 8, "the eight R10 rounds are exact cylinders");
     let b = build_doc(&doc(&[vertical(true, true, 10.0), r5(5.0)]));
-    println!("R10 THEN R5: errors {:?} volume {}", b.errors, volume(&b.body));
+    assert!(b.errors.is_empty(), "{:?}", b.errors);
     assert_sound(&b.body, "r10 then r5");
+    let want = (volume(&r10.body) - base) + r5_fill_after_r10();
+    let got = volume(&b.body) - base;
+    assert!((got - want).abs() < 2e-3 * want, "added {got}, the R10 plus the R5's fill give {want}");
+    // (the R5 faces: two tori, and nothing of the tool's helper faces left)
+    let r5_faces: Vec<String> = b.body.face_ids().map(|f| b.body.face_id_str(f)).filter(|n| n.starts_with("F7")).collect();
+    assert_eq!(r5_faces, ["F7.B0", "F7.B1"], "{r5_faces:?}");
+    let again = build_doc(&doc(&[vertical(true, true, 10.0), r5(5.0)]));
+    assert!(again.errors.is_empty() && volume(&again.body) == volume(&b.body), "not repeatable");
+}
+
+/// A smaller R5 after the R10 builds as well (R3 and R5): the part is valid and holds more material than the R10 alone.
+#[test]
+fn r10_then_a_smaller_r5_builds_valid() {
+    let r10 = build_doc(&doc(&[vertical(true, true, 10.0)]));
+    for rad in [3.0, 5.0] {
+        let b = build_doc(&doc(&[vertical(true, true, 10.0), r5(rad)]));
+        assert!(b.errors.is_empty(), "R{rad}: {:?}", b.errors);
+        assert_sound(&b.body, &format!("r10 then r{rad}"));
+        assert!(volume(&b.body) > volume(&r10.body) + 100.0, "R{rad}: the round added no material");
+    }
 }

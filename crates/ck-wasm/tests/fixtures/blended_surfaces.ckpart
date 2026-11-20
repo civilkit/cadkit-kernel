@@ -1,0 +1,91 @@
+{
+ "format": "ck-part",
+ "version": 1,
+ "name": "Part1",
+ "features": [
+  {
+   "type": "sketch",
+   "id": "F1",
+   "name": "Sketch on Front",
+   "plane": {
+    "kind": "std",
+    "id": "xz"
+   },
+   "points": [
+    {
+     "id": "O",
+     "x": 0,
+     "y": 0,
+     "fixed": true
+    },
+    {
+     "id": "p1",
+     "x": -41.32609868190447,
+     "y": 18.653615184859625
+    },
+    {
+     "id": "p2",
+     "x": -41.32609868190447,
+     "y": -20.776790896957486
+    },
+    {
+     "id": "p3",
+     "x": 4.1705237201922,
+     "y": -20.776790896957486
+    }
+   ],
+   "entities": [
+    {
+     "id": "e1",
+     "type": "line",
+     "p1": "p1",
+     "p2": "p2"
+    },
+    {
+     "id": "e2",
+     "type": "line",
+     "p1": "p2",
+     "p2": "p3"
+    }
+   ],
+   "constraints": [
+    {
+     "id": "k1",
+     "type": "vertical",
+     "refs": [
+      "e1"
+     ]
+    },
+    {
+     "id": "k2",
+     "type": "horizontal",
+     "refs": [
+      "e2"
+     ]
+    }
+   ]
+  },
+  {
+   "type": "surfaceExtrude",
+   "sketch": "F1",
+   "end": "blind",
+   "depth": 10,
+   "id": "F2"
+  },
+  {
+   "type": "blendSurface",
+   "faces": [
+    "F2.S.e1",
+    "F2.S.e2"
+   ],
+   "radius": 8,
+   "tolerance": 0.001,
+   "id": "F3"
+  }
+ ],
+ "seq": 4,
+ "rollback": null,
+ "material": "steel",
+ "counters": {},
+ "upAxis": "z"
+}

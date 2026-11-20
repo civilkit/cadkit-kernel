@@ -50,8 +50,12 @@ The kernel knows 68 type names. Five of them (`box`, `frame`, `knurlBand`, `repa
 | `deleteFace` | Removes faces from a solid or sheet. | [surfaces](features-surfaces.md#deleteface) |
 | `freeform` | Re-fits faces as B-spline surfaces and edits control points. | [surfaces](features-surfaces.md#freeform) |
 | `pipeCut` | Rolls a ball along edges and cuts away what it touches. | [surfaces](features-surfaces.md#pipecut) |
-| `projectCurve` | Projects a sketch onto faces as a B-spline curve. | [surfaces](features-surfaces.md#projectcurve) |
+| `projectCurve` | Projects a sketch onto faces as a B-spline curve (`procedural: true`: onto one face, kept as a projected curve). | [surfaces](features-surfaces.md#projectcurve) |
 | `editCurve` | Rebuilds curves as a B-spline and edits its control points. | [surfaces](features-surfaces.md#editcurve) |
+| `offsetCurve` | Offsets a curve or chain in a plane or along a face, kept as an offset curve. | [surfaces](features-surfaces.md#offsetcurve) |
+| `compositeCurve` | Joins curves and edges end to end into one curve. | [surfaces](features-surfaces.md#compositecurve) |
+| `sweepSurface` | A sheet on a profile swept along a path, kept as a procedural sweep surface. | [surfaces](features-surfaces.md#sweepsurface) |
+| `blendSurface` | A sheet on the rolling-ball blend of two faces, kept as a procedural blend surface. | [surfaces](features-surfaces.md#blendsurface) |
 | `insertPart` | Inserts another part as a component. | [assemblies](features-assemblies.md#insertpart) |
 | `importStep` | Holds a STEP body and brings its solids into the history. | [assemblies](features-assemblies.md#importstep) |
 | `mate` | Constrains two components. | [assemblies](features-assemblies.md#mate) |

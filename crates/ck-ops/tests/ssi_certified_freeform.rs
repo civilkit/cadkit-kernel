@@ -84,18 +84,9 @@ fn bicubic_against_plane_and_cylinder_certify() {
         on_both(&h, &s, &res, 1e-6);
         let chk = check_curves(&h, &s, &res);
         assert!(chk.spans > 50, "{tag}: {} spans", chk.spans);
-        // left unresolved only where the curve runs off the patch: a box about a point on the domain's edge
-        // reaches past it, where the (clamped) surface stops moving and the Jacobian can be singular
-        let fitted: Vec<&Vec<Vec3>> = res.curves().iter().filter_map(|c| if let SsCurve::Fitted { pts, .. } = c { Some(pts) } else { None }).collect();
-        for i in chk.issues.iter().filter(|i| !i.repaired) {
-            let pts = fitted[i.curve];
-            let on_edge = |p: Vec3| {
-                let (u, v) = h.closest_param(p);
-                u.min(v) < 1e-6 || u.max(v) > 1.0 - 1e-6
-            };
-            assert!(on_edge(pts[i.span]) || on_edge(pts[(i.span + 1) % pts.len()]), "{tag}: span {} unresolved inside the patch", i.span);
-        }
-        assert!(chk.unresolved() <= 2 * fitted.len(), "{tag}: {:?}", chk.issues);
+        // the spans where the curve runs off the patch are proved on the continued spline
+        // (curves_through_the_patch_edge_certify)
+        assert_eq!(chk.unresolved(), 0, "{tag}: {:?}", chk.issues);
         assert!(chk.certified * 100 >= chk.spans * 98, "{tag}: {}/{}", chk.certified, chk.spans);
     }
 }
@@ -201,4 +192,100 @@ fn check_reports_and_repairs() {
     let chk = check_curves(&a, &b, &hop);
     assert_eq!(chk.spans, 1);
     assert_eq!(chk.unresolved(), 1, "a hop between the loops was proved: {chk:?}");
+}
+
+/// Curves that run off the patch: a box about a point on the domain's edge reaches past it. The check
+/// proves those spans on the surfaces' polynomial continuation, with the arc kept inside the domain (each
+/// coordinate that leaves it is monotone along the arc), so every span is proved or repaired.
+#[test]
+fn curves_through_the_patch_edge_certify() {
+    let h = hill(2.0);
+    let cases: Vec<(&str, Surface)> = vec![
+        // across the hill, from the y = -4 edge to the y = 4 edge
+        ("plane x = 1", Surface::Plane { frame: fr(Vec3::new(1.0, 0.0, 0.0), Vec3::X, Vec3::Y) }),
+        ("oblique plane", Surface::Plane { frame: fr(Vec3::new(0.5, 0.0, 0.0), Vec3::new(1.0, 0.4, 0.1).normalize(), Vec3::Z) }),
+        // a plane cutting off the corner (4, 4) of the patch
+        ("corner plane", Surface::Plane { frame: fr(Vec3::new(3.0, 3.0, 0.0), Vec3::new(1.0, 1.0, 0.0).normalize(), Vec3::Z) }),
+        ("corner plane, tilted", Surface::Plane { frame: fr(Vec3::new(3.2, 3.0, 0.0), Vec3::new(1.0, 1.2, 0.5).normalize(), Vec3::Z) }),
+        // the hill's lower slopes: the curve leaves through all four edges
+        ("plane z = 0.1", Surface::Plane { frame: fr(Vec3::new(0.0, 0.0, 0.1), Vec3::Z, Vec3::X) }),
+        ("vertical cylinder past the edges", cyl(Vec3::new(0.3, -0.2, 0.0), Vec3::Z, Vec3::X, 4.5)),
+    ];
+    for (tag, s) in cases {
+        let res = intersect(&h, &s, Some(bx(6.0)), 1e-6);
+        assert!(!res.curves().is_empty(), "{tag}: no curve");
+        on_both(&h, &s, &res, 1e-6);
+        let chk = check_curves(&h, &s, &res);
+        let ends = res.curves().iter().filter(|c| matches!(c, SsCurve::Fitted { closed: false, .. })).count();
+        eprintln!("{tag}: {} curves ({ends} open), {}/{} spans proved as traced, {} unresolved: {:?}", res.curves().len(), chk.certified, chk.spans, chk.unresolved(), chk.issues);
+        assert!(ends > 0, "{tag}: no curve reaches the edge");
+        assert_eq!(chk.unresolved(), 0, "{tag}: {:?}", chk.issues);
+    }
+    // not a licence to leave the patch: a cylinder of radius 4.002 about the patch's centre crosses the edge
+    // x = 4 at y = -0.1265 and y = 0.1265, and the short arc between those points runs outside it (x up to
+    // 4.002, on the continued surface only). The continued system does prove one arc through the span's box
+    // (this case is proved without the monotonicity test); x turns back along it, so the span is not
+    // proved, and not repaired.
+    let c = cyl(Vec3::ZERO, Vec3::Z, Vec3::X, 4.002);
+    let on_edge = |y: f64| {
+        let (mut lo, mut hi) = (0.0, 1.0);
+        for _ in 0..200 {
+            let m = 0.5 * (lo + hi);
+            if h.eval(1.0, m).y < y {
+                lo = m;
+            } else {
+                hi = m;
+            }
+        }
+        h.eval(1.0, 0.5 * (lo + hi))
+    };
+    let yc = (4.002f64 * 4.002 - 16.0).sqrt();
+    let (pa, pb) = (on_edge(-yc), on_edge(yc));
+    assert!(h.distance(pa) < 1e-12 && c.distance(pa) < 1e-9 && c.distance(pb) < 1e-9);
+    let curve = ck_geom::curve::Curve::Line { o: pa, d: pb - pa };
+    let out = SsResult::Curves(vec![SsCurve::Fitted { pts: vec![pa, pb], curve, closed: false }]);
+    let chk = check_curves(&h, &c, &out);
+    assert_eq!((chk.spans, chk.unresolved()), (1, 1), "a span outside the patch was proved: {chk:?}");
+}
+
+/// Offsets of cylinders, spheres, tori and cones (evaluated in their exact analytic form) and of a
+/// revolved spline against planes and cylinders: the marched curves are proved span by span (every span
+/// was `Unsupported` before the offset evaluator took these bases).
+#[test]
+fn analytic_offsets_certify() {
+    let off = |b: Surface, d: f64| Surface::Offset { base: Box::new(b), dist: d };
+    let f = fr(Vec3::new(0.1, -0.2, 0.0), Vec3::Z, Vec3::X);
+    let tilted = Surface::Plane { frame: fr(Vec3::new(0.0, 0.0, 0.3), Vec3::new(0.3, 0.1, 1.0).normalize(), Vec3::X) };
+    let prof = ck_geom::curve::Curve::BSpline(
+        ck_geom::nurbs::bspline::BSplineCurve::new(
+            3,
+            vec![0.0, 0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0],
+            vec![Vec3::new(1.5, 0.0, -2.0), Vec3::new(2.2, 0.0, -1.0), Vec3::new(1.8, 0.0, 0.0), Vec3::new(2.4, 0.0, 1.0), Vec3::new(2.0, 0.0, 2.0)],
+        )
+        .unwrap(),
+    );
+    let rev = Surface::Revolution { profile: Box::new(prof), axis_o: Vec3::ZERO, axis: Vec3::Z };
+    let cases: Vec<(&str, Surface, Surface)> = vec![
+        ("offset cylinder x cylinder", off(cyl(Vec3::ZERO, Vec3::Z, Vec3::X, 1.5), 0.5), cyl(Vec3::ZERO, Vec3::X, Vec3::Y, 1.2)),
+        ("inward cylinder x plane", off(cyl(Vec3::ZERO, Vec3::Z, Vec3::X, 2.5), -0.5), tilted.clone()),
+        ("offset sphere x plane", off(Surface::Sphere { frame: f, r: 1.5 }, 0.5), tilted.clone()),
+        ("offset sphere x cylinder", off(Surface::Sphere { frame: f, r: 1.5 }, 0.5), cyl(Vec3::new(0.5, 0.0, 0.0), Vec3::X, Vec3::Y, 1.0)),
+        (
+            "offset torus x plane",
+            off(Surface::Torus { frame: f, major: 3.0, minor: 0.8 }, 0.3),
+            Surface::Plane { frame: fr(Vec3::new(0.0, 0.0, 0.4), Vec3::new(0.0, 0.1, 1.0).normalize(), Vec3::X) },
+        ),
+        ("offset cone x plane", off(Surface::Cone { frame: f, r: 1.5, semi_angle: 0.3 }, 0.4), tilted.clone()),
+        ("nested offset cylinder x cylinder", off(off(cyl(Vec3::ZERO, Vec3::Z, Vec3::X, 1.5), 0.3), 0.2), cyl(Vec3::ZERO, Vec3::X, Vec3::Y, 1.2)),
+        ("offset revolution x plane", off(rev, 0.25), tilted),
+    ];
+    for (tag, a, b) in cases {
+        let res = intersect(&a, &b, Some(bx(6.0)), 1e-6);
+        assert!(!res.curves().is_empty(), "{tag}: no curve");
+        on_both(&a, &b, &res, 1e-6);
+        let chk = check_curves(&a, &b, &res);
+        eprintln!("{tag}: {} curves, {}/{} spans proved, {} unresolved", res.curves().len(), chk.certified, chk.spans, chk.unresolved());
+        assert!(chk.spans > 20, "{tag}: {} spans", chk.spans);
+        assert_eq!(chk.unresolved(), 0, "{tag}: {:?}", chk.issues);
+    }
 }

@@ -3,8 +3,9 @@
 //! Evidence (all byte-pinned against the ORIGINAL kernel's `step` reply,
 //! see tests/step_oracle.rs and tests/golden/*.step):
 //! - header / product / context boilerplate and every entity format string
-//!   survive verbatim in kernel.strings (`FILE_NAME(` .. `'CadKit',
-//!   'CadKit','');`, `(BOUNDED_CURVE()B_SPLINE_CURVE(`, ...).
+//!   survive verbatim in kernel.strings (`(BOUNDED_CURVE()B_SPLINE_CURVE(`, ...).
+//!   The header's product name is the one deliberate difference: the original
+//!   names its old product, this writer says `CadKit` (decided 2026-10-12).
 //! - FILE_NAME time stamp = host `ck_unix_ms()` rendered as UTC
 //!   `YYYY-MM-DDTHH:MM:SS`; ms -> secs via `(ms/1000) as u64` (NaN and
 //!   negatives saturate to 1970-01-01T00:00:00; 1e20 ms gives year
@@ -876,7 +877,7 @@ fn shell_closed(body: &Body, s: ShellId) -> bool {
 
 /// The full `step` reply text for one body.
 pub fn write_step(body: &Body, name: &str, opts: &StepOpts) -> String {
-    write_step_impl(body, name, opts, false)
+    write_step_impl(body, name, opts, false, None)
 }
 
 /// Whole-word `NaN` / `inf` outside string literals: what [`real`] prints for a
@@ -918,10 +919,22 @@ pub fn try_write_step(body: &Body, name: &str, opts: &StepOpts) -> Result<String
 /// zero of every direction, not only the resulting sharing.
 #[doc(hidden)]
 pub fn write_step_signed_zeros(body: &Body, name: &str, opts: &StepOpts) -> String {
-    write_step_impl(body, name, opts, true)
+    write_step_impl(body, name, opts, true, None)
 }
 
-fn write_step_impl(body: &Body, name: &str, opts: &StepOpts, signed_zero: bool) -> String {
+/// [`try_write_step`] for a body that also holds surface bodies: `surface_name(face)` is `Some(name)` for a face that came
+/// from a surface body (every shell made of such faces is written as its own named SHELL_BASED_SURFACE_MODEL, open or
+/// closed) and `None` for a face of the solid body.
+pub fn try_write_step_with_surfaces(body: &Body, name: &str, opts: &StepOpts, surface_name: &dyn Fn(FaceId) -> Option<String>) -> Result<String, String> {
+    let t = write_step_impl(body, name, opts, false, Some(surface_name));
+    if has_non_finite_token(&t) {
+        Err("the body holds a non-finite number (NaN or infinity); STEP export refused".to_string())
+    } else {
+        Ok(t)
+    }
+}
+
+fn write_step_impl(body: &Body, name: &str, opts: &StepOpts, signed_zero: bool, surface_name: Option<&dyn Fn(FaceId) -> Option<String>>) -> String {
     let nm = string(name);
     let mut w = StepWriter::new();
     w.signed_zero = signed_zero;
@@ -948,15 +961,29 @@ fn write_step_impl(body: &Body, name: &str, opts: &StepOpts, signed_zero: bool) 
 
     // Shells per lump: first alive shell = outer, the rest are voids.
     let mut solids: Vec<String> = Vec::new();
-    let mut open: Vec<usize> = Vec::new();
+    let mut open: Vec<(usize, String)> = Vec::new();
     for l in body.lump_ids() {
-        let shells: Vec<ShellId> = body.lump(l).shells.iter().copied().filter(|&s| body.shell(s).alive).collect();
+        let mut shells: Vec<ShellId> = body.lump(l).shells.iter().copied().filter(|&s| body.shell(s).alive).collect();
+        // shells of surface bodies are surface models of their own, named after the body
+        if let Some(sn) = surface_name {
+            shells.retain(|&s| {
+                let own = body.shell(s).faces.iter().find(|&&f| body.face(f).alive).and_then(|&f| sn(f));
+                match own {
+                    Some(n) => {
+                        let (id, _) = w.shell(body, s, false);
+                        open.push((id, n));
+                        false
+                    }
+                    None => true,
+                }
+            });
+        }
         let mut outer = None;
         let mut voids = Vec::new();
         for (k, &s) in shells.iter().enumerate() {
             let (id, closed) = w.shell(body, s, k > 0);
             if !closed {
-                open.push(id);
+                open.push((id, nm.clone()));
             } else if k == 0 {
                 outer = Some(id);
             } else {
@@ -979,8 +1006,8 @@ fn write_step_impl(body: &Body, name: &str, opts: &StepOpts, signed_zero: bool) 
     let surf_rep = if open.is_empty() {
         None
     } else {
-        let m = w.ent(&format!("SHELL_BASED_SURFACE_MODEL('{nm}',({}))", refs(&open)));
-        Some(m)
+        let ms: Vec<usize> = open.iter().map(|(sh, n)| w.ent(&format!("SHELL_BASED_SURFACE_MODEL('{}',(#{sh}))", string(n)))).collect();
+        Some(ms)
     };
     let rep = if !items.is_empty() || surf_rep.is_none() {
         items.push(world);
@@ -989,7 +1016,10 @@ fn write_step_impl(body: &Body, name: &str, opts: &StepOpts, signed_zero: bool) 
     } else {
         None
     };
-    let mrep = surf_rep.map(|m| w.ent(&format!("MANIFOLD_SURFACE_SHAPE_REPRESENTATION('{nm}',(#{m},#{world}),#{ctx})")));
+    let mrep = surf_rep.map(|mut ms| {
+        ms.push(world);
+        w.ent(&format!("MANIFOLD_SURFACE_SHAPE_REPRESENTATION('{nm}',({}),#{ctx})", refs(&ms)))
+    });
     match (rep, mrep) {
         (Some(r), Some(m)) => {
             w.ent(&format!("SHAPE_DEFINITION_REPRESENTATION(#{pds},#{r})"));

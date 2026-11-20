@@ -76,6 +76,8 @@ pub const REQUEST_TYPES: &[(&str, Handler)] = &[
     ("builtExport", geometry::built_export),
     // Extension: SketchUp (.skp, base64) import -> a surface body of planar faces in the tag's state.
     ("importSkp", geometry::import_skp),
+    // Extension: a triangle mesh (STL / OBJ-like soup) -> a valid solid (planar faces merged, cylinders / cones / spheres refit).
+    ("meshToSolid", geometry::mesh_to_solid),
     ("inspect", query::inspect),
     // Extension: Press Pull panel facts of flat faces (centre, normal, reach, the feature end they move with).
     ("faceRun", geometry::face_run),
@@ -107,6 +109,8 @@ pub const REQUEST_TYPES: &[(&str, Handler)] = &[
     ("clearance", agent::clearance),
     ("symmetry", agent::symmetry),
     ("extrema", agent::extrema),
+    // Extension: diagnostics, the certified check of the surface/surface intersection curves of two sets of faces.
+    ("checkIntersection", agent::check_intersection),
     // Extension: thread standards as data (stateless, read-only).
     ("threadData", agent::thread_data),
     // Extension: sheet metal flat pattern export, DXF text and bend table (stateless: the flatPattern of a regen result in, text out).

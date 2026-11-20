@@ -51,10 +51,14 @@ pub const TABLE: &[(&str, &[&str])] = &[
     ("sheetCorner", &["corners", "mode", "radius", "distance", "size"]),
     ("unfold", &[]),
     ("refold", &[]),
+    ("offsetCurve", &["curves", "curve", "sketch", "gapTolerance", "distance", "normal", "plane", "face"]),
+    ("compositeCurve", &["curves", "curve", "sketch", "gapTolerance"]),
+    ("sweepSurface", &["profile", "path", "frame", "up", "caps", "gapTolerance"]),
+    ("blendSurface", &["faces", "radius", "sides", "from", "to", "at"]),
     ("chamfer", &["chamferType", "distance", "distance2", "distance3", "angle", "face", "flip", "propagate", "edges"]),
     (
         "hole",
-        &["sketch", "standard", "size", "fit", "kind", "diameter", "end", "depth", "tip", "flip", "cboreDiameter", "cboreDepth", "cskDiameter", "cskAngle", "target"],
+        &["sketch", "standard", "size", "fit", "kind", "diameter", "end", "depth", "tip", "flip", "cboreDiameter", "cboreDepth", "cskDiameter", "cskAngle", "target", "endRef", "offset"],
     ),
 ];
 

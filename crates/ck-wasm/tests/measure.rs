@@ -174,3 +174,32 @@ fn extrema_of_box_sphere_and_tube() {
     assert!(call_err(r#"{"type":"extrema","tag":"xt"}"#).contains("dir"));
     assert!(call_err(r#"{"type":"extrema","tag":"xt","dir":[0,0,0]}"#).contains("zero"));
 }
+
+fn circle_part(plane: &str, x: f64, y: f64, r: f64, depth: f64) -> String {
+    format!(
+        r#"{{"format":"ck-part","version":1,"features":[{{"type":"sketch","id":"F1","plane":{{"kind":"std","id":"{plane}"}},"points":[{{"id":"c","x":{x},"y":{y}}}],"entities":[{{"type":"circle","id":"e1","c":"c","r":{r}}}],"constraints":[]}},{{"type":"extrude","id":"F2","op":"add","sketch":"F1","end":"blind","depth":{depth}}}]}}"#
+    )
+}
+
+#[test]
+fn check_intersection_of_two_cylinders() {
+    // a cylinder r 10 and a crossing one r 6 (two tags): the marched curves of their lateral faces are proved span by span
+    load("ci1", &circle_part("top", 0.0, 0.0, 10.0, 40.0));
+    load("ci2", &circle_part("front", 0.0, 20.0, 6.0, 40.0));
+    let r = call(r#"{"type":"checkIntersection","tag":"ci1","tagB":"ci2","a":"body","b":"body"}"#);
+    let s = ck_json::to_string(&r);
+    assert!(num(&r, "marched") >= 1.0 && num(&r, "curves") >= num(&r, "marched"), "{s}");
+    assert!(num(&r, "spans") > 20.0, "{s}");
+    assert_eq!(num(&r, "unresolved"), 0.0, "{s}");
+    assert_eq!(num(&r, "proved") + num(&r, "repaired"), num(&r, "spans"), "{s}");
+    assert_eq!(r.get_arr("issues").unwrap().len() as f64, num(&r, "repaired"), "{s}");
+    assert!(r.get_arr("byPair").unwrap().iter().any(|p| num(p, "marched") > 0.0), "{s}");
+    assert_eq!(r.get("truncated"), Some(&Json::Bool(false)));
+    // faces of one body: a box's planar faces meet in exact lines, nothing is marched
+    load("ci3", &rect_part(40.0, 30.0, 20.0));
+    let r = call(r#"{"type":"checkIntersection","tag":"ci3","a":"body","b":"body"}"#);
+    assert!(num(&r, "curves") > 0.0 && num(&r, "marched") == 0.0 && num(&r, "spans") == 0.0, "{}", ck_json::to_string(&r));
+    assert!(call_err(r#"{"type":"checkIntersection","tag":"ci3","a":"body"}"#).contains("a and b are required"));
+    assert!(call_err(r#"{"type":"checkIntersection","tag":"ci3","a":"V1","b":"body"}"#).contains("faces only"));
+    assert!(call_err(r#"{"type":"checkIntersection","tag":"ci3","a":"nope","b":"body"}"#).contains("unknown entity"));
+}

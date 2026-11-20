@@ -54,6 +54,21 @@ name = "ck-json"
 version = "0.1.0"
 
 [[package]]
+name = "ck-mesh"
+version = "0.1.0"
+dependencies = [
+ "ck-check",
+ "ck-core",
+ "ck-geom",
+ "ck-heal",
+ "ck-json",
+ "ck-ops",
+ "ck-recog",
+ "ck-tess",
+ "ck-topo",
+]
+
+[[package]]
 name = "ck-model"
 version = "0.1.0"
 dependencies = [
@@ -184,6 +199,7 @@ dependencies = [
  "ck-heal",
  "ck-io",
  "ck-json",
+ "ck-mesh",
  "ck-model",
  "ck-ops",
  "ck-recog",

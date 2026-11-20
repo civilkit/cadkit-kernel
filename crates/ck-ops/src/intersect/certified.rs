@@ -5,10 +5,11 @@
 //! Ported in idea from solidcore (Apache-2.0, `geom/krawczyk.rs`, `geom/certified.rs`, docs
 //! `ssi.md` and `definitions-and-certificates.md`), rewritten onto this kernel's types; see
 //! THIRD_PARTY.md. Not a copy of its type system: intervals are the small [`Iv`] below, every
-//! operation widens its result by one ulp on each side (outward rounding), and only the
-//! analytic surface kinds have an interval evaluator (plane, cylinder, cone, sphere,
-//! torus). Anything else is `Unresolved(Unsupported)` and the caller keeps its uncertified
-//! path.
+//! operation widens its result by one ulp on each side (outward rounding). Interval evaluators
+//! cover the analytic kinds, B-splines, extrusions, revolutions, screws and offsets (of the
+//! analytic kinds in their exact form, of planes, B-splines and swept surfaces through the
+//! normal's derivatives). Anything else is `Unresolved(Unsupported)` and the caller keeps its
+//! uncertified path.
 //!
 //! Krawczyk's operator for `F(x) = 0` over a box `Y` about the point `m`, with `C` an
 //! approximate inverse of `F'(m)`:
@@ -323,21 +324,43 @@ fn hlerp(a: &H4, b: &H4, al: Iv) -> H4 {
     std::array::from_fn(|i| a[i].add(al.mul(b[i].sub(a[i]))))
 }
 
+/// Largest degree whose de Boor triangle is kept on the stack (higher degrees use a heap copy).
+const STACK_DEG: usize = 15;
+
+/// One de Boor step `r` of the degree-`q` piece of span `k` at the blossom argument `x`, in place on `w[0..=q]`.
+#[inline]
+fn deboor_step(w: &mut [H4], q: usize, k: usize, t: &[f64], r: usize, x: Iv) -> Option<()> {
+    for j in (r..=q).rev() {
+        let (t0, t1) = (t[j + k - q], t[j + 1 + k - r]);
+        let al = x.sub(Iv::pt(t0)).div(Iv::pt(t1).sub(Iv::pt(t0)))?;
+        w[j] = hlerp(&w[j - 1], &w[j], al);
+    }
+    Some(())
+}
+
 /// The blossom `f(xs[0], .., xs[q-1])` of the degree-`q` piece of span `k` (knots `t`), from its local
 /// control points `d[0..=q]` (global indices `k - q ..= k`).
 fn blossom(d: &[H4], q: usize, k: usize, t: &[f64], xs: &[Iv]) -> Option<H4> {
+    if q <= STACK_DEG {
+        let mut w = [[Iv::ZERO; 4]; STACK_DEG + 1];
+        w[..=q].copy_from_slice(&d[..=q]);
+        for r in 1..=q {
+            deboor_step(&mut w, q, k, t, r, xs[r - 1])?;
+        }
+        return Some(w[q]);
+    }
     let mut w = d.to_vec();
     for r in 1..=q {
-        for j in (r..=q).rev() {
-            let (t0, t1) = (t[j + k - q], t[j + 1 + k - r]);
-            let al = xs[r - 1].sub(Iv::pt(t0)).div(Iv::pt(t1).sub(Iv::pt(t0)))?;
-            w[j] = hlerp(&w[j - 1], &w[j], al);
-        }
+        deboor_step(&mut w, q, k, t, r, xs[r - 1])?;
     }
     Some(w[q])
 }
 
 /// Bezier control points of the piece over `x` (one point when `x` is a point).
+///
+/// Point `i` is the blossom `f(lo, .., lo, hi, .., hi)` with `q - i` arguments `lo`: the de Boor steps of its
+/// leading `lo` arguments are those of every point with at least as many, so the all-`lo` chain is run once
+/// and each point continues from its state (the same operations in the same order as one blossom per point).
 fn restrict(d: &[H4], q: usize, k: usize, t: &[f64], x: Iv) -> Option<Vec<H4>> {
     if q == 0 {
         return Some(vec![d[0]]);
@@ -345,12 +368,30 @@ fn restrict(d: &[H4], q: usize, k: usize, t: &[f64], x: Iv) -> Option<Vec<H4>> {
     if x.lo == x.hi {
         return Some(vec![blossom(d, q, k, t, &vec![x; q])?]);
     }
-    (0..=q)
-        .map(|i| {
-            let xs: Vec<Iv> = (0..q).map(|r| Iv::pt(if r < q - i { x.lo } else { x.hi })).collect();
-            blossom(d, q, k, t, &xs)
-        })
-        .collect()
+    let (lo, hi) = (Iv::pt(x.lo), Iv::pt(x.hi));
+    if q > STACK_DEG {
+        return (0..=q)
+            .map(|i| {
+                let xs: Vec<Iv> = (0..q).map(|r| if r < q - i { lo } else { hi }).collect();
+                blossom(d, q, k, t, &xs)
+            })
+            .collect();
+    }
+    let mut out = vec![[Iv::ZERO; 4]; q + 1];
+    // `chain` = state after `s` steps at `lo`; point `q - s` continues it with `q - s` steps at `hi`
+    let mut chain = [[Iv::ZERO; 4]; STACK_DEG + 1];
+    chain[..=q].copy_from_slice(&d[..=q]);
+    for s in 0..=q {
+        if s > 0 {
+            deboor_step(&mut chain, q, k, t, s, lo)?;
+        }
+        let mut w = chain;
+        for r in s + 1..=q {
+            deboor_step(&mut w, q, k, t, r, hi)?;
+        }
+        out[q - s] = w[q];
+    }
+    Some(out)
 }
 
 /// The control points of the derivative of the degree-`q` piece of span `k` (degree `q - 1`; zero for `q = 0`).
@@ -367,8 +408,28 @@ fn diff(d: &[H4], q: usize, k: usize, t: &[f64]) -> Option<Vec<H4>> {
         .collect()
 }
 
+thread_local! {
+    static EXTEND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// While alive, the spline evaluators continue each end span's polynomial past the domain instead of
+/// clamping (the edge-span proofs of [`check_curves`]; everything else sees the kernel's clamped spline).
+struct Extend(bool);
+impl Extend {
+    fn on() -> Extend {
+        Extend(EXTEND.with(|c| c.replace(true)))
+    }
+}
+impl Drop for Extend {
+    fn drop(&mut self) {
+        EXTEND.with(|c| c.set(self.0));
+    }
+}
+
 /// The interval clamped to the domain `[t[p], t[n + 1]]` and cut at the knots inside it: (piece, span)
-/// pairs, and whether the interval reached outside the domain.
+/// pairs, and whether the interval reached outside the domain. Under [`Extend`] the parts past the domain
+/// are pieces of the first and last spans (their polynomials continued), and the interval is not reported
+/// as outside.
 fn pieces(t: &[f64], p: usize, n: usize, x: Iv) -> Option<(Vec<(Iv, usize)>, bool)> {
     if !x.finite() || x.lo > x.hi {
         return None;
@@ -377,18 +438,28 @@ fn pieces(t: &[f64], p: usize, n: usize, x: Iv) -> Option<(Vec<(Iv, usize)>, boo
     let outside = x.lo < d0 || x.hi > d1;
     let (lo, hi) = (x.lo.clamp(d0, d1), x.hi.clamp(d0, d1));
     let span_of = |a: f64| (p..=n).rev().find(|&k| t[k] <= a && t[k] < t[k + 1]).unwrap_or(p);
-    let mut cuts = vec![lo];
-    for &kn in &t[p + 1..=n] {
-        if kn > lo && kn < hi && kn > *cuts.last().unwrap() {
-            cuts.push(kn);
+    let extend = outside && EXTEND.with(|c| c.get());
+    let mut out: Vec<(Iv, usize)> = Vec::new();
+    if extend && x.lo < d0 {
+        out.push((Iv::new(x.lo, x.hi.min(d0)), span_of(d0)));
+    }
+    if !extend || (x.hi > d0 && x.lo < d1) {
+        let mut cuts = vec![lo];
+        for &kn in &t[p + 1..=n] {
+            if kn > lo && kn < hi && kn > *cuts.last().unwrap() {
+                cuts.push(kn);
+            }
         }
+        if cuts.len() > 32 {
+            return None;
+        }
+        cuts.push(hi);
+        out.extend(cuts.windows(2).map(|w| (Iv::new(w[0], w[1]), span_of(w[0]))));
     }
-    if cuts.len() > 32 {
-        return None;
+    if extend && x.hi > d1 {
+        out.push((Iv::new(x.lo.max(d1), x.hi), span_of(d1)));
     }
-    cuts.push(hi);
-    let out: Vec<(Iv, usize)> = cuts.windows(2).map(|w| (Iv::new(w[0], w[1]), span_of(w[0]))).collect();
-    Some((out, outside))
+    Some((out, outside && !extend))
 }
 
 /// A tensor-product net `net[i][j]` (degree `qu` x `qv`, spans `ku`, `kv`) restricted to `u x v`.
@@ -525,10 +596,15 @@ fn bspline_ideriv(s: &BSplineSurface, u: Iv, v: Iv, second: bool) -> Option<(IDe
 
 /// Point and derivative of a B-spline curve over `t`.
 fn bspline_curve_ideriv(b: &BSplineCurve, t: Iv) -> Option<(V3, V3)> {
+    bspline_curve_ideriv2(b, t, false).map(|(p, d, _)| (p, d))
+}
+
+/// Point, first and (when `second`) second derivative of a B-spline curve over `t`.
+fn bspline_curve_ideriv2(b: &BSplineCurve, t: Iv, second: bool) -> Option<(V3, V3, Option<V3>)> {
     let p = b.degree;
     let (pcs, out) = pieces(&b.knots, p, b.ctrl.len() - 1, t)?;
     let c = b.ctrl[pcs[0].1];
-    let (mut hp, mut hd) = (None, None);
+    let (mut hp, mut hd, mut h2) = (None, None, None);
     for &(x, k) in &pcs {
         let d: Vec<H4> = (0..=p)
             .map(|i| {
@@ -544,36 +620,183 @@ fn bspline_curve_ideriv(b: &BSplineCurve, t: Iv) -> Option<(V3, V3)> {
         let (_, w) = hhull(&b0);
         let (a1, w1) = hhull(&b1);
         let der = vdiv(vsub(a1, vmul(pt, w1)), w)?;
+        if second {
+            // P'' = (A'' - 2 P' W' - P W'') / W
+            let d2 = diff(&dd, p.saturating_sub(1), k, &b.knots)?;
+            let b2 = restrict(&d2, p.saturating_sub(2), k, &b.knots, x)?;
+            let (a2, w2) = hhull(&b2);
+            let sec = vdiv(vsub(vsub(a2, vmul(der, w1.scale(2.0))), vmul(pt, w2)), w)?;
+            h2 = Some(hull_opt(h2, sec));
+        }
         hp = Some(hull_opt(hp, pt));
         hd = Some(hull_opt(hd, der));
     }
     let mut der = hd?;
     if out {
         der = vhull(der, [Iv::ZERO; 3]);
+        h2 = h2.map(|h| vhull(h, [Iv::ZERO; 3]));
     }
-    Some((vadd(v3(c), hp?), der))
+    Some((vadd(v3(c), hp?), der, h2))
 }
 
-/// Point, first and second partials for the surfaces an offset can sit on here (plane, B-spline).
+/// Point, first and second derivative of a curve over a parameter interval (the profile kinds a swept
+/// offset base can have here; `None` for the others).
+fn curve_ideriv2(c: &Curve, t: Iv) -> Option<(V3, V3, V3)> {
+    let (st, ct) = (t.sin(), t.cos());
+    let r = match c {
+        Curve::Line { o, d } => (vadd(v3(*o), vscale(*d, t)), v3(*d), [Iv::ZERO; 3]),
+        Curve::Circle { frame, r } => (
+            vadd(v3(frame.o), vadd(vscale(frame.x, ct.scale(*r)), vscale(frame.y, st.scale(*r)))),
+            vadd(vscale(frame.x, st.scale(-*r)), vscale(frame.y, ct.scale(*r))),
+            vadd(vscale(frame.x, ct.scale(-*r)), vscale(frame.y, st.scale(-*r))),
+        ),
+        Curve::Ellipse { frame, a, b } => (
+            vadd(v3(frame.o), vadd(vscale(frame.x, ct.scale(*a)), vscale(frame.y, st.scale(*b)))),
+            vadd(vscale(frame.x, st.scale(-*a)), vscale(frame.y, ct.scale(*b))),
+            vadd(vscale(frame.x, ct.scale(-*a)), vscale(frame.y, st.scale(-*b))),
+        ),
+        Curve::Sinusoid { frame, amp, freq, phase } => {
+            let arg = t.scale(*freq).add(Iv::pt(*phase));
+            (
+                vadd(vadd(v3(frame.o), vscale(frame.x, t)), vscale(frame.y, arg.sin().scale(*amp))),
+                vadd(v3(frame.x), vscale(frame.y, arg.cos().scale(amp * freq))),
+                vscale(frame.y, arg.sin().scale(-amp * freq * freq)),
+            )
+        }
+        Curve::BSpline(b) => {
+            let (p, d, s2) = bspline_curve_ideriv2(b, t, true)?;
+            (p, d, s2?)
+        }
+        _ => return None,
+    };
+    [r.0, r.1, r.2].iter().flatten().all(|e| e.finite()).then_some(r)
+}
+
+/// d^2/du^2 of [`rot`]: `-(w - (z.w) z) cos - (z x w) sin`.
+fn rot_uu(z: Vec3, w: V3, su: Iv, cu: Iv) -> V3 {
+    let zw = vdot(v3(z), w);
+    let perp = vsub(w, vscale(z, zw));
+    vsub(vmul(perp, cu.neg()), vmul(vcross(v3(z), w), su))
+}
+
+/// Point, first and second partials for the surfaces a generic offset can sit on here (plane, B-spline,
+/// extrusion, revolution and screw of the profiles [`curve_ideriv2`] takes).
 fn ideriv2(s: &Surface, u: Iv, v: Iv) -> Option<(IDerivs, [V3; 3])> {
+    let z3 = [Iv::ZERO; 3];
     match s {
-        Surface::Plane { .. } => Some((ideriv(s, u, v)?, [[Iv::ZERO; 3]; 3])),
+        Surface::Plane { .. } => Some((ideriv(s, u, v)?, [z3; 3])),
         Surface::BSpline(b) => {
             let (d, sec) = bspline_ideriv(b, u, v, true)?;
             Some((d, sec?))
+        }
+        Surface::Extrusion { profile, dir } => {
+            let (c, dc, ddc) = curve_ideriv2(profile, u)?;
+            Some((IDerivs { p: vadd(c, vscale(*dir, v)), du: dc, dv: v3(*dir) }, [ddc, z3, z3]))
+        }
+        Surface::Revolution { profile, axis_o, axis } => {
+            let (c, dc, ddc) = curve_ideriv2(profile, v)?;
+            let w = vsub(c, v3(*axis_o));
+            let (su, cu) = (u.sin(), u.cos());
+            let d = IDerivs { p: vadd(v3(*axis_o), rot(*axis, w, su, cu)), du: rot_u(*axis, w, su, cu), dv: rot(*axis, dc, su, cu) };
+            Some((d, [rot_uu(*axis, w, su, cu), rot_u(*axis, dc, su, cu), rot(*axis, ddc, su, cu)]))
+        }
+        Surface::Screw { profile, axis_o, axis, rise, .. } => {
+            let (c, dc, ddc) = curve_ideriv2(profile, v)?;
+            let w = vsub(c, v3(*axis_o));
+            let (su, cu) = (u.sin(), u.cos());
+            let d = IDerivs {
+                p: vadd(vadd(v3(*axis_o), rot(*axis, w, su, cu)), vscale(*axis, u.scale(*rise))),
+                du: vadd(rot_u(*axis, w, su, cu), v3(*axis * *rise)),
+                dv: rot(*axis, dc, su, cu),
+            };
+            Some((d, [rot_uu(*axis, w, su, cu), rot_u(*axis, dc, su, cu), rot(*axis, ddc, su, cu)]))
         }
         _ => None,
     }
 }
 
+/// The sign (+1 / -1) of an interval that does not contain zero.
+fn sign_of(x: Iv) -> Option<f64> {
+    if x.lo > 0.0 {
+        Some(1.0)
+    } else if x.hi < 0.0 {
+        Some(-1.0)
+    } else {
+        None
+    }
+}
+
+/// Offsets of cylinders, cones, spheres and tori are again surfaces of the same kind in the same
+/// parameters. The offset normal is the kernel's `W / |W|` (`W = B_u x B_v`), oriented by the sign of the
+/// factor in front of the geometric normal (`None` where that sign is not fixed over the box: an apex, a
+/// pole, the self-crossing of a spindle torus):
+/// - cylinder: `W = r rad`: radius `r + s d`;
+/// - sphere: `W = r^2 cos v (rad cos v + z sin v)`: radius `r + d` (`cos v > 0`);
+/// - torus: `W = rho minor (rad cos v + z sin v)`, `rho = major + minor cos v`: minor radius `minor + s d`;
+/// - cone: `W = rho (rad - z tan a)`, `rho = r + v tan a`: radial `rho + s d cos a`, axial `v - s d sin a`
+///   (the cone of radius `r + s d / cos a` with `v` shifted by `-s d sin a`).
+fn analytic_offset(s: &Surface, dist: Iv, u: Iv, v: Iv) -> Option<IDerivs> {
+    let rad = |f: &ck_geom::Frame| vadd(vscale(f.x, u.cos()), vscale(f.y, u.sin()));
+    let tan = |f: &ck_geom::Frame| vadd(vscale(f.x, u.sin().neg()), vscale(f.y, u.cos()));
+    Some(match s {
+        Surface::Cylinder { frame, r } => {
+            let rho = Iv::pt(*r).add(dist.scale(sign_of(Iv::pt(*r))?));
+            IDerivs { p: vadd(vadd(v3(frame.o), vmul(rad(frame), rho)), vscale(frame.z, v)), du: vmul(tan(frame), rho), dv: v3(frame.z) }
+        }
+        Surface::Sphere { frame, r } => {
+            let (sv, cv) = (v.sin(), v.cos());
+            if !(cv.lo > 0.0 && *r != 0.0) {
+                return None;
+            }
+            let rr = Iv::pt(*r).add(dist);
+            IDerivs {
+                p: vadd(vadd(v3(frame.o), vmul(rad(frame), cv.mul(rr))), vscale(frame.z, sv.mul(rr))),
+                du: vmul(tan(frame), cv.mul(rr)),
+                dv: vadd(vmul(rad(frame), sv.mul(rr).neg()), vscale(frame.z, cv.mul(rr))),
+            }
+        }
+        Surface::Torus { frame, major, minor } => {
+            let (sv, cv) = (v.sin(), v.cos());
+            let g = sign_of(Iv::pt(*major).add(cv.scale(*minor)).scale(*minor))?;
+            let mr = Iv::pt(*minor).add(dist.scale(g));
+            let rho = Iv::pt(*major).add(cv.mul(mr));
+            IDerivs {
+                p: vadd(vadd(v3(frame.o), vmul(rad(frame), rho)), vscale(frame.z, sv.mul(mr))),
+                du: vmul(tan(frame), rho),
+                dv: vadd(vmul(rad(frame), sv.mul(mr).neg()), vscale(frame.z, cv.mul(mr))),
+            }
+        }
+        Surface::Cone { frame, r, semi_angle } => {
+            let t = semi_angle.tan();
+            let rho = Iv::pt(*r).add(v.scale(t));
+            let sd = dist.scale(sign_of(rho)?);
+            let a = Iv::pt(*semi_angle);
+            let rho_o = rho.add(sd.mul(a.cos()));
+            let ax = v.sub(sd.mul(a.sin()));
+            IDerivs {
+                p: vadd(vadd(v3(frame.o), vmul(rad(frame), rho_o)), vscale(frame.z, ax)),
+                du: vmul(tan(frame), rho_o),
+                dv: vadd(vmul(rad(frame), Iv::pt(t)), v3(frame.z)),
+            }
+        }
+        _ => return None,
+    })
+}
+
 /// `O = B + d n`, `n = W / |W|` with `W = B_u x B_v`; `n_u = (W_u - n (n . W_u)) / |W|` (the kernel's
-/// offset, nested offsets collapsed). `None` where `|W|` can vanish (a degenerate base).
+/// offset, nested offsets collapsed). Offsets of cylinders, cones, spheres and tori use their exact
+/// analytic form ([`analytic_offset`]). `None` where `|W|` can vanish (a degenerate base).
 fn offset_ideriv(s: &Surface, u: Iv, v: Iv) -> Option<IDerivs> {
     let mut cur = s;
-    let mut d = 0.0;
+    // the kernel sums nested distances in its own order: an interval sum holds every rounding of it
+    let mut k = Iv::ZERO;
     while let Surface::Offset { base, dist } = cur {
-        d += *dist;
+        k = k.add(Iv::pt(*dist));
         cur = &**base;
+    }
+    if let Surface::Cylinder { .. } | Surface::Cone { .. } | Surface::Sphere { .. } | Surface::Torus { .. } = cur {
+        let r = analytic_offset(cur, k, u, v)?;
+        return [r.p, r.du, r.dv].iter().flatten().all(|e| e.finite()).then_some(r);
     }
     let (b, [buu, buv, bvv]) = ideriv2(cur, u, v)?;
     let w = vcross(b.du, b.dv);
@@ -586,7 +809,6 @@ fn offset_ideriv(s: &Surface, u: Iv, v: Iv) -> Option<IDerivs> {
     let wv = vadd(vcross(buv, b.dv), vcross(b.du, bvv));
     let nu = vdiv(vsub(wu, vmul(n, vdot(n, wu))), wl)?;
     let nv = vdiv(vsub(wv, vmul(n, vdot(n, wv))), wl)?;
-    let k = Iv::pt(d);
     let r = IDerivs { p: vadd(b.p, vmul(n, k)), du: vadd(b.du, vmul(nu, k)), dv: vadd(b.dv, vmul(nv, k)) };
     [r.p, r.du, r.dv].iter().flatten().all(|e| e.finite()).then_some(r)
 }
@@ -673,9 +895,7 @@ fn inverse4(m: [[f64; 4]; 4]) -> Option<[[f64; 4]; 4]> {
 }
 
 /// `F` (rows 0-2 `S1 - S2`, row 3 `(S1 - m) . t - lam`) over a box.
-fn f_box(s1: &Surface, s2: &Surface, x: &[Iv; 4], m: Vec3, t: Vec3, lam: Iv) -> Option<[Iv; 4]> {
-    let d1 = ideriv(s1, x[0], x[1])?;
-    let d2 = ideriv(s2, x[2], x[3])?;
+fn f_of(d1: &IDerivs, d2: &IDerivs, m: Vec3, t: Vec3, lam: Iv) -> [Iv; 4] {
     let mut f = [Iv::ZERO; 4];
     for i in 0..3 {
         f[i] = d1.p[i].sub(d2.p[i]);
@@ -687,13 +907,10 @@ fn f_box(s1: &Surface, s2: &Surface, x: &[Iv; 4], m: Vec3, t: Vec3, lam: Iv) -> 
         g = g.add(d1.p[i].sub(Iv::pt(mv[i])).scale(tv[i]));
     }
     f[3] = g.sub(lam);
-    Some(f)
+    f
 }
 
-/// `F'` over a box.
-fn j_box(s1: &Surface, s2: &Surface, x: &[Iv; 4], t: Vec3) -> Option<[[Iv; 4]; 4]> {
-    let d1 = ideriv(s1, x[0], x[1])?;
-    let d2 = ideriv(s2, x[2], x[3])?;
+fn j_of(d1: &IDerivs, d2: &IDerivs, t: Vec3) -> [[Iv; 4]; 4] {
     let tv = [t.x, t.y, t.z];
     let mut j = [[Iv::ZERO; 4]; 4];
     for i in 0..3 {
@@ -701,7 +918,13 @@ fn j_box(s1: &Surface, s2: &Surface, x: &[Iv; 4], t: Vec3) -> Option<[[Iv; 4]; 4
     }
     let dot = |a: V3| (0..3).fold(Iv::ZERO, |s, i| s.add(a[i].scale(tv[i])));
     j[3] = [dot(d1.du), dot(d1.dv), Iv::ZERO, Iv::ZERO];
-    Some(j)
+    j
+}
+
+fn j_box(s1: &Surface, s2: &Surface, x: &[Iv; 4], t: Vec3) -> Option<[[Iv; 4]; 4]> {
+    let d1 = ideriv(s1, x[0], x[1])?;
+    let d2 = ideriv(s2, x[2], x[3])?;
+    Some(j_of(&d1, &d2, t))
 }
 
 /// Krawczyk's test about `mid` for the system plane-through-`m`-normal-to-`t` at levels
@@ -711,10 +934,12 @@ fn krawczyk(s1: &Surface, s2: &Surface, mid: [f64; 4], m: Vec3, t: Vec3, lam: Iv
         return Certificate::Unresolved(Unresolved::Degenerate);
     }
     let xm: [Iv; 4] = mid.map(Iv::pt);
-    let Some(jm) = j_box(s1, s2, &xm, t) else { return Certificate::Unresolved(Unresolved::Unsupported) };
+    // one evaluation at the point box serves both J and F (it was evaluated twice, once for each)
+    let (Some(d1), Some(d2)) = (ideriv(s1, xm[0], xm[1]), ideriv(s2, xm[2], xm[3])) else { return Certificate::Unresolved(Unresolved::Unsupported) };
+    let jm = j_of(&d1, &d2, t);
     let jp = jm.map(|r| r.map(|e| e.mid()));
     let Some(c) = inverse4(jp) else { return Certificate::Unresolved(Unresolved::Singular) };
-    let Some(f) = f_box(s1, s2, &xm, m, t, lam) else { return Certificate::Unresolved(Unresolved::Unsupported) };
+    let f = f_of(&d1, &d2, m, t, lam);
     // C F(m)
     let mut cf = [Iv::ZERO; 4];
     for i in 0..4 {
@@ -806,10 +1031,77 @@ pub fn certify_span(s1: &Surface, s2: &Surface, a: &MPt, b: &MPt, t: Vec3) -> Ce
     let m = (a.p + b.p) * 0.5;
     let la = (a.p - m).dot(t);
     let lb = (b.p - m).dot(t);
-    match span_boxes(s1, s2, a.uv, bu, la, lb, m, t, SPAN_SPLITS) {
+    match span_boxes(s1, s2, a.uv, bu, la, lb, m, t, SPAN_SPLITS, None) {
         Certificate::Certified(_) => Certificate::Certified(()),
         Certificate::Unresolved(r) => Certificate::Unresolved(r),
     }
+}
+
+/// [`certify_span`] for a span at the edge of a spline's domain, whose proof box reaches past it (where the
+/// kernel's clamped spline stops moving, the Jacobian over the box holds singular matrices and nothing
+/// contracts). The boxes are proved on the spline's polynomial continuation ([`Extend`]): one arc of the
+/// continued surfaces' intersection runs through the box, and the true intersection inside the box (and
+/// the domain) is part of it. That arc stays inside the domain between `a` and `b` (as far as the traced
+/// end points themselves are inside it) when each parameter whose box leaves the domain is monotone along
+/// the arc ([`arc_monotone`]); a box where that is not proved fails.
+fn certify_span_edge(s1: &Surface, s2: &Surface, a: &MPt, b: &MPt, t: Vec3) -> Certificate<()> {
+    let Some(t) = t.try_normalize() else { return Certificate::Unresolved(Unresolved::Degenerate) };
+    let (p1, p2) = (s1.periods(), s2.periods());
+    let pers = [p1.0, p1.1, p2.0, p2.1];
+    let (d1, d2) = (s1.domain(), s2.domain());
+    let dom = [d1.0, d1.1, d2.0, d2.1];
+    let bu: Uv4 = std::array::from_fn(|i| unwrap_near(b.uv[i], a.uv[i], pers[i]));
+    let m = (a.p + b.p) * 0.5;
+    let (la, lb) = ((a.p - m).dot(t), (b.p - m).dot(t));
+    let _ext = Extend::on();
+    let leaf = |y: &[Iv; 4], mid: [f64; 4]| {
+        let need: [bool; 4] = std::array::from_fn(|i| pers[i].is_none() && (y[i].lo < dom[i].0 || y[i].hi > dom[i].1));
+        !need.iter().any(|&n| n) || arc_monotone(s1, s2, y, mid, t, need)
+    };
+    match span_boxes(s1, s2, a.uv, bu, la, lb, m, t, SPAN_SPLITS, Some(&leaf)) {
+        Certificate::Certified(_) => Certificate::Certified(()),
+        Certificate::Unresolved(r) => Certificate::Unresolved(r),
+    }
+}
+
+/// Proves that the parameters `need` are monotone along the arc through the box `y` (the root set of the
+/// span system over its levels, whose Jacobian `J` is nonsingular over `y`): the arc's tangent `dx/dlam`
+/// solves `J(x) z = e4`, and an interval vector `Z` with `C e4 + (I - C J(y)) Z` inside `Z` holds every such
+/// `z` (Krawczyk's test of the linear system); a component of `Z` that excludes zero has a fixed sign.
+fn arc_monotone(s1: &Surface, s2: &Surface, y: &[Iv; 4], mid: [f64; 4], t: Vec3, need: [bool; 4]) -> bool {
+    let xm: [Iv; 4] = mid.map(Iv::pt);
+    let Some(jm) = j_box(s1, s2, &xm, t) else { return false };
+    let Some(c) = inverse4(jm.map(|r| r.map(|e| e.mid()))) else { return false };
+    let Some(jb) = j_box(s1, s2, y, t) else { return false };
+    let mut cm = [[Iv::ZERO; 4]; 4];
+    for i in 0..4 {
+        for j in 0..4 {
+            let mut e = Iv::pt(if i == j { 1.0 } else { 0.0 });
+            for k in 0..4 {
+                e = e.sub(jb[k][j].scale(c[i][k]));
+            }
+            cm[i][j] = e;
+        }
+    }
+    // C e4 is the last column of C
+    let ce: [f64; 4] = std::array::from_fn(|i| c[i][3]);
+    let mut rad: [f64; 4] = std::array::from_fn(|i| 0.1 * ce[i].abs() + 1e-300);
+    let scale = ce.iter().fold(0.0f64, |s, x| s.max(x.abs()));
+    for r in rad.iter_mut() {
+        *r = r.max(1e-3 * scale);
+    }
+    for _ in 0..KRAWCZYK_STEPS {
+        let z: [Iv; 4] = std::array::from_fn(|i| Iv::new(ce[i] - rad[i], ce[i] + rad[i]));
+        let img: [Iv; 4] = std::array::from_fn(|i| (0..4).fold(Iv::pt(ce[i]), |s, j| s.add(cm[i][j].mul(z[j]))));
+        if (0..4).all(|i| img[i].lo > z[i].lo && img[i].hi < z[i].hi) {
+            return (0..4).all(|i| !need[i] || img[i].lo > 0.0 || img[i].hi < 0.0);
+        }
+        for i in 0..4 {
+            let reach = (img[i].lo - ce[i]).abs().max((img[i].hi - ce[i]).abs());
+            rad[i] = (1.1 * reach).max(1.5 * rad[i]);
+        }
+    }
+    false
 }
 
 /// How many times a span that does not contract in one box is halved (up to `2^SPAN_SPLITS` boxes).
@@ -858,9 +1150,21 @@ fn box_within(a: &[Iv; 4], b: &[Iv; 4]) -> bool {
 /// arc's middle-level root, or, when that box does not contract, in two halves joined at that root.
 /// Each half proves its levels have one root in its box; the middle level's root, certified in a small
 /// box inside both halves' boxes, is then the same point of both arcs, so the halves are one arc.
-/// Returns the boxes that hold the arc's two ends.
+/// Returns the boxes that hold the arc's two ends. `leaf`, when given, must also accept every box that
+/// proves a piece of the arc (with its centre).
 #[allow(clippy::too_many_arguments)]
-fn span_boxes(s1: &Surface, s2: &Surface, xa: [f64; 4], xb: [f64; 4], la: f64, lb: f64, m: Vec3, t: Vec3, depth: usize) -> Certificate<([Iv; 4], [Iv; 4])> {
+fn span_boxes(
+    s1: &Surface,
+    s2: &Surface,
+    xa: [f64; 4],
+    xb: [f64; 4],
+    la: f64,
+    lb: f64,
+    m: Vec3,
+    t: Vec3,
+    depth: usize,
+    leaf: Option<&dyn Fn(&[Iv; 4], [f64; 4]) -> bool>,
+) -> Certificate<([Iv; 4], [Iv; 4])> {
     let lc = 0.5 * (la + lb);
     let avg: [f64; 4] = std::array::from_fn(|i| 0.5 * (xa[i] + xb[i]));
     // the chord's midpoint is off the arc by the sagitta, which the box's margin would have to absorb (through
@@ -874,14 +1178,17 @@ fn span_boxes(s1: &Surface, s2: &Surface, xa: [f64; 4], xb: [f64; 4], la: f64, l
     match krawczyk(s1, s2, mid, m, t, lam, min_rad) {
         Certificate::Certified((_, rad)) => {
             let y: [Iv; 4] = std::array::from_fn(|i| Iv::new(mid[i] - rad[i], mid[i] + rad[i]));
+            if leaf.is_some_and(|f| !f(&y, mid)) {
+                return Certificate::Unresolved(Unresolved::NoContraction);
+            }
             Certificate::Certified((y, y))
         }
         Certificate::Unresolved(Unresolved::NoContraction) if depth > 0 && on_arc.is_some() => {
-            let (l0, l1) = match span_boxes(s1, s2, xa, mid, la, lc, m, t, depth - 1) {
+            let (l0, l1) = match span_boxes(s1, s2, xa, mid, la, lc, m, t, depth - 1, leaf) {
                 Certificate::Certified(b) => b,
                 r => return r,
             };
-            let (r0, r1) = match span_boxes(s1, s2, mid, xb, lc, lb, m, t, depth - 1) {
+            let (r0, r1) = match span_boxes(s1, s2, mid, xb, lc, lb, m, t, depth - 1, leaf) {
                 Certificate::Certified(b) => b,
                 r => return r,
             };
@@ -962,11 +1269,11 @@ impl SsCheck {
 const REPAIR_ROUNDS: usize = 3;
 
 /// Diagnostics / validation: prove that adjacent points of every marched curve of `res` lie on one arc
-/// of the true intersection of `s1` and `s2` ([`certify_span`]); where a span is not proved, insert points
-/// of the arc (Newton at levels between the ends, on the plane family normal to the chord) and prove the
-/// sub-spans. Reports the spans and the repaired polylines; the intersection itself is not changed.
-/// A span left unresolved is not a proof of a hop (a tangent contact, a pole and a box past a spline's
-/// domain also stay unresolved), only the absence of a guarantee.
+/// of the true intersection of `s1` and `s2` ([`certify_span`], and at a spline's edge
+/// [`certify_span_edge`]); where a span is not proved, insert points of the arc (Newton at levels between
+/// the ends, on the plane family normal to the chord) and prove the sub-spans. Reports the spans and the
+/// repaired polylines; the intersection itself is not changed. A span left unresolved is not a proof of a
+/// hop (a tangent contact or a pole also stays unresolved), only the absence of a guarantee.
 pub fn check_curves(s1: &Surface, s2: &Surface, res: &super::ss::SsResult) -> SsCheck {
     let mut out = SsCheck::default();
     let (p1, p2) = (s1.periods(), s2.periods());
@@ -994,7 +1301,7 @@ pub fn check_curves(s1: &Surface, s2: &Surface, res: &super::ss::SsResult) -> Ss
                 poly.push(b.p);
                 continue;
             };
-            match certify_span(s1, s2, a, b, t) {
+            match prove_span(s1, s2, a, b, t) {
                 Certificate::Certified(()) => {
                     out.certified += 1;
                     poly.push(b.p);
@@ -1013,6 +1320,18 @@ pub fn check_curves(s1: &Surface, s2: &Surface, res: &super::ss::SsResult) -> Ss
         ci += 1;
     }
     out
+}
+
+/// The span check of [`check_curves`]: [`certify_span`], and where that fails, the edge-span proof of
+/// [`certify_span_edge`] (the first failure's reason is the one reported).
+fn prove_span(s1: &Surface, s2: &Surface, a: &MPt, b: &MPt, t: Vec3) -> Certificate<()> {
+    match certify_span(s1, s2, a, b, t) {
+        Certificate::Unresolved(r) => match certify_span_edge(s1, s2, a, b, t) {
+            Certificate::Certified(()) => Certificate::Certified(()),
+            _ => Certificate::Unresolved(r),
+        },
+        ok => ok,
+    }
 }
 
 /// Points of the arc between `a` and `b` that make every sub-span provable, or `None`.
@@ -1035,7 +1354,7 @@ fn repair_span(s1: &Surface, s2: &Surface, a: &MPt, b: &MPt, t: Vec3, pers: &[Op
         chain.push(MPt { p: b.p, uv: bu });
         for w in chain.windows(2) {
             let Some(tt) = (w[1].p - w[0].p).try_normalize() else { continue 'round };
-            if !certify_span(s1, s2, &w[0], &w[1], tt).is_certified() {
+            if !prove_span(s1, s2, &w[0], &w[1], tt).is_certified() {
                 continue 'round;
             }
         }
@@ -1143,6 +1462,43 @@ mod enclosure_tests {
         t.extend(inner);
         t.extend(vec![b; p + 1]);
         t
+    }
+
+    /// `restrict` as one blossom per Bezier point (the form before the shared `lo` chain).
+    fn restrict_per_point(d: &[H4], q: usize, k: usize, t: &[f64], x: Iv) -> Option<Vec<H4>> {
+        (0..=q)
+            .map(|i| {
+                let xs: Vec<Iv> = (0..q).map(|r| Iv::pt(if r < q - i { x.lo } else { x.hi })).collect();
+                let mut w = d.to_vec();
+                for r in 1..=q {
+                    for j in (r..=q).rev() {
+                        let (t0, t1) = (t[j + k - q], t[j + 1 + k - r]);
+                        let al = xs[r - 1].sub(Iv::pt(t0)).div(Iv::pt(t1).sub(Iv::pt(t0)))?;
+                        w[j] = hlerp(&w[j - 1], &w[j], al);
+                    }
+                }
+                Some(w[q])
+            })
+            .collect()
+    }
+
+    #[test]
+    fn restrict_is_bitwise_one_blossom_per_point() {
+        let mut rng = Rng(7);
+        for _ in 0..400 {
+            let p = 1 + (rng.f() * 5.0) as usize;
+            let n = p + 1 + (rng.f() * 5.0) as usize;
+            let (a0, a1) = (rng.r(-2.0, 0.0), rng.r(0.5, 3.0));
+            let t = knots(&mut rng, n, p, a0, a1);
+            let k = (p..n).filter(|&k| t[k] < t[k + 1]).nth((rng.f() * 3.0) as usize % (n - p)).unwrap_or(p);
+            let d: Vec<H4> = (0..=p).map(|_| std::array::from_fn(|c| { let a = rng.r(-5.0, 5.0); if c == 3 { Iv::pt(rng.r(0.3, 3.0)) } else { Iv::new(a, a + rng.r(0.0, 1e-6)) } })).collect();
+            let (a, b) = (t[k], t[k + 1]);
+            let lo = rng.r(a, b);
+            let x = Iv::new(lo, rng.r(lo, b));
+            let (new, old) = (restrict(&d, p, k, &t, x), restrict_per_point(&d, p, k, &t, x));
+            let bits = |v: &Option<Vec<H4>>| v.as_ref().map(|v| v.iter().flat_map(|h| h.iter().flat_map(|i| [i.lo.to_bits(), i.hi.to_bits()])).collect::<Vec<_>>());
+            assert_eq!(bits(&new), bits(&old));
+        }
     }
 
     pub(super) fn rand_surface(rng: &mut Rng, pu: usize, pv: usize, rational: bool) -> BSplineSurface {
@@ -1315,5 +1671,138 @@ mod enclosure_tests {
         assert!(checked > 100, "{checked}");
         let pl = Surface::Offset { base: Box::new(Surface::Plane { frame: fr(Vec3::new(1.0, 2.0, 3.0), Vec3::new(0.1, 0.2, 1.0).normalize(), Vec3::X) }), dist: 0.7 };
         check_surface(&pl, &mut rng, (-3.0, 3.0), (-3.0, 3.0), 10);
+    }
+
+    #[test]
+    fn extended_spline_encloses_its_continuation() {
+        // the bicubic Bezier patch (u, v, u^3 + v^2) over [0, 1]^2, and the cubic (t, t^3, 0): past the domain
+        // the extended evaluator holds the polynomial (the clamped one would hold the edge values)
+        let a = [0.0, 0.0, 0.0, 1.0];
+        let b = [0.0, 0.0, 1.0 / 3.0, 1.0];
+        let ctrl: Vec<Vec3> = (0..16).map(|k| Vec3::new((k / 4) as f64 / 3.0, (k % 4) as f64 / 3.0, a[k / 4] + b[k % 4])).collect();
+        let kn = vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
+        let s = Surface::BSpline(Box::new(BSplineSurface::new(3, 3, kn.clone(), kn.clone(), 4, 4, ctrl, None).unwrap()));
+        let c = BSplineCurve::new(3, kn, (0..4).map(|i| Vec3::new(i as f64 / 3.0, a[i], 0.0)).collect()).unwrap();
+        let mut rng = Rng(8);
+        let _ext = Extend::on();
+        for _ in 0..200 {
+            let w = [1e-6, 1e-3, 0.1, 0.4][(rng.f() * 4.0) as usize];
+            let (u0, v0) = (rng.r(-0.3, 1.3 - w), rng.r(-0.3, 1.3 - w));
+            let e = ideriv(&s, Iv::new(u0, u0 + w), Iv::new(v0, v0 + w)).unwrap();
+            let (p, d) = bspline_curve_ideriv(&c, Iv::new(u0, u0 + w)).unwrap();
+            for i in 0..=6 {
+                for j in 0..=6 {
+                    let (u, v) = ((u0 + w * i as f64 / 6.0).min(u0 + w), (v0 + w * j as f64 / 6.0).min(v0 + w));
+                    assert!(inside(&e.p, Vec3::new(u, v, u * u * u + v * v), 1e-12), "p at ({u}, {v}): {:?}", e.p);
+                    assert!(inside(&e.du, Vec3::new(1.0, 0.0, 3.0 * u * u), 1e-12) && inside(&e.dv, Vec3::new(0.0, 1.0, 2.0 * v), 1e-12), "partials at ({u}, {v})");
+                    assert!(inside(&p, Vec3::new(u, u * u * u, 0.0), 1e-12) && inside(&d, Vec3::new(1.0, 3.0 * u * u, 0.0), 1e-12), "curve at {u}");
+                }
+            }
+        }
+        drop(_ext);
+        // and the guard restores the clamped evaluator: past the edge the partial may be zero again
+        let e = ideriv(&s, Iv::new(1.1, 1.2), Iv::new(0.5, 0.6)).unwrap();
+        assert!(e.du[0].lo <= 0.0);
+    }
+
+    /// Boxes inside `ur x vr` (an offset's normal past a spline's domain is the clamped one): every sample's
+    /// point and partials (the kernel's `derivs2`) lie in the enclosure. Returns how many boxes had one.
+    fn check_inside(s: &Surface, rng: &mut Rng, ur: (f64, f64), vr: (f64, f64), boxes: usize) -> usize {
+        let mut checked = 0;
+        for _ in 0..boxes {
+            let wu = (ur.1 - ur.0) * [1e-9, 1e-5, 1e-3, 0.02, 0.2][(rng.f() * 5.0) as usize];
+            let wv = (vr.1 - vr.0) * [1e-9, 1e-5, 1e-3, 0.02, 0.2][(rng.f() * 5.0) as usize];
+            let (a, c) = (rng.r(ur.0, ur.1 - wu), rng.r(vr.0, vr.1 - wv));
+            let Some(e) = ideriv(s, Iv::new(a, a + wu), Iv::new(c, c + wv)) else { continue };
+            checked += 1;
+            for i in 0..=6 {
+                for j in 0..=6 {
+                    let (u, v) = ((a + wu * i as f64 / 6.0).min(a + wu), (c + wv * j as f64 / 6.0).min(c + wv));
+                    let d = s.derivs2(u, v);
+                    assert!(
+                        inside(&e.p, d.p, 1e-11) && inside(&e.du, d.du, 1e-8) && inside(&e.dv, d.dv, 1e-8),
+                        "{} at ({u}, {v}): {d:?} vs {e:?}",
+                        s.kind()
+                    );
+                }
+            }
+        }
+        checked
+    }
+
+    #[test]
+    fn analytic_offsets_enclose_samples() {
+        // offsets of cylinders, cones, spheres and tori in their exact analytic form, outward, inward, past
+        // the axis (a cylinder offset by more than its radius) and nested
+        let mut rng = Rng(41);
+        let f = fr(Vec3::new(1.0, -2.0, 0.5), Vec3::new(0.3, 0.4, 1.0).normalize(), Vec3::X);
+        let off = |b: Surface, d: f64| Surface::Offset { base: Box::new(b), dist: d };
+        let bases: Vec<(Surface, (f64, f64))> = vec![
+            (Surface::Cylinder { frame: f, r: 2.0 }, (-3.0, 3.0)),
+            (Surface::Cone { frame: f, r: 2.0, semi_angle: 0.4 }, (-3.0, 3.0)),
+            (Surface::Cone { frame: f, r: 1.0, semi_angle: -0.3 }, (-2.0, 2.0)),
+            (Surface::Sphere { frame: f, r: 3.0 }, (-1.3, 1.3)),
+            (Surface::Torus { frame: f, major: 5.0, minor: 1.5 }, (-1.0, 7.0)),
+        ];
+        for (b, vr) in bases {
+            for d in [0.7, -0.7, -2.5, 1e-3] {
+                let s = off(b.clone(), d);
+                let n = check_inside(&s, &mut rng, (-1.0, 7.0), vr, 40);
+                assert_eq!(n, 40, "{} {d}: boxes without an enclosure", b.kind());
+                let nested = off(off(b.clone(), 0.5 * d), 0.25 * d);
+                assert_eq!(check_inside(&nested, &mut rng, (-1.0, 7.0), vr, 20), 20, "nested {} {d}", b.kind());
+            }
+        }
+        // tight: a small box's enclosure is about as wide as the surface moves over it
+        let s = off(Surface::Torus { frame: f, major: 5.0, minor: 1.5 }, 0.7);
+        let e = ideriv(&s, Iv::new(0.3, 0.3 + 1e-6), Iv::new(1.1, 1.1 + 1e-6)).unwrap();
+        assert!(width(&e.p) < 1e-5 && width(&e.du) < 1e-5, "{} {}", width(&e.p), width(&e.du));
+        // a cone offset over a box holding the apex has no fixed normal orientation
+        let k = off(Surface::Cone { frame: f, r: 1.0, semi_angle: 0.4 }, 0.2);
+        let apex = -1.0 / 0.4f64.tan();
+        assert!(ideriv(&k, Iv::new(0.0, 1.0), Iv::new(apex - 0.1, apex + 0.1)).is_none());
+    }
+
+    #[test]
+    fn swept_offsets_enclose_samples() {
+        // offsets of extrusions, revolutions and screws of B-spline and analytic profiles
+        let mut rng = Rng(77);
+        let axis = Vec3::new(0.2, -0.3, 1.0).normalize();
+        let o = Vec3::new(0.5, -1.0, 0.3);
+        let off = |b: Surface, d: f64| Surface::Offset { base: Box::new(b), dist: d };
+        let inset = |(a, b): (f64, f64)| (a + 0.05 * (b - a), b - 0.05 * (b - a));
+        let mut checked = 0;
+        for p in 1..=5 {
+            for rational in [false, true] {
+                let c = rand_curve(&mut rng, p, rational);
+                let dom = inset(c.domain());
+                let prof = Box::new(Curve::BSpline(c));
+                let ex = off(Surface::Extrusion { profile: prof.clone(), dir: Vec3::new(0.3, 0.4, 2.0) }, 0.15);
+                checked += check_inside(&ex, &mut rng, dom, (-1.0, 2.0), 20);
+                let rv = off(Surface::Revolution { profile: prof.clone(), axis_o: o, axis }, -0.2);
+                checked += check_inside(&rv, &mut rng, (-1.0, 7.0), dom, 20);
+                let sc = off(Surface::Screw { profile: prof, axis_o: o, axis, rise: 0.37, urange: (0.0, 12.0), vrange: dom }, 0.1);
+                checked += check_inside(&sc, &mut rng, (0.0, 12.0), dom, 20);
+            }
+        }
+        // degree 1 profiles have no curvature: the polyline's kinks are knots, which the boxes cut at
+        assert!(checked > 450, "{checked}");
+        let f = fr(Vec3::new(1.0, 2.0, 3.0), Vec3::new(1.0, 1.0, 0.2).normalize(), Vec3::Z);
+        let analytic = [
+            Curve::Line { o: Vec3::new(2.0, 0.0, -1.0), d: Vec3::new(0.3, 0.1, 1.0) },
+            Curve::Circle { frame: f, r: 1.3 },
+            Curve::Ellipse { frame: f, a: 2.0, b: 0.7 },
+            Curve::Sinusoid { frame: f, amp: 0.4, freq: 2.3, phase: 0.2 },
+        ];
+        for c in analytic {
+            let prof = Box::new(c);
+            let ex = off(Surface::Extrusion { profile: prof.clone(), dir: Vec3::new(0.0, 0.5, 1.5) }, 0.3);
+            // the widest boxes (a fifth of the range) can lose the normal to the wrapping of the cross product
+            let n = check_inside(&ex, &mut rng, (-2.0, 2.0), (-1.0, 1.0), 20);
+            assert!(n >= 15, "extrusion of {prof:?}: {n}");
+            let rv = off(Surface::Revolution { profile: prof.clone(), axis_o: o, axis }, 0.25);
+            let n = check_inside(&rv, &mut rng, (0.0, 6.3), (-1.5, 1.5), 20);
+            assert!(n >= 12, "revolution of {prof:?}: {n}");
+        }
     }
 }

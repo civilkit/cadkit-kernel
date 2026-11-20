@@ -163,8 +163,10 @@ pub(super) fn overflow_clip(b: &Body, f: FaceId, e: EdgeId, a: Vec3, t: Vec3, bb
     let (e2, d) = b
         .face_edges(f)
         .into_iter()
-        // (not a seam of `f`)
-        .filter(|&x| x != e && b.edge_faces(x).iter().any(|&h| h != f))
+        // (not a seam of `f`, and not an edge of the blended pair itself: where the contact leaves `f` at the chain's end
+        // vertex, the neighbouring arc of the same chain, between `f` and the other face of the blend, is as near as the
+        // edge `f` really ends at, and its other face is the wall the blend leans on, not a face to trim by)
+        .filter(|&x| x != e && b.edge_faces(x).iter().any(|&h| h != f) && !b.edge_faces(x).iter().any(|h| *h != f && b.edge_faces(e).contains(h)))
         .map(|x| {
             let ed = b.edge(x);
             (x, crate::boolean::imprint::dist_in_range(&ed.curve, (ed.t0.min(ed.t1), ed.t0.max(ed.t1)), q).1)
@@ -453,6 +455,36 @@ pub(super) fn reflex_end_plane(b: &Body, v: ck_topo::body::VertexId, faces: &[Fa
     }
     let n = b.planar_normal(ends[0]).normalize();
     (n.dot(out) < -1e-6).then_some(n)
+}
+
+/// The only other face at vertex `v` is the wall of a round hole (a cylinder or cone whose material lies outside it) that
+/// leans over the edge's continuation past `v` (direction `out`): the edge runs into a reflex corner of the hole's outline
+/// (the chord of a D-shaped hole meeting its arc), and past `v` lies the material behind that wall. A convex tool that
+/// ran on there would carve a groove into it (a thin sheet of the tool's leg left standing past the rim): it stops flush
+/// at `v`, as at a planar wall that leans toward the material.
+pub(super) fn hole_wall_reflex_end(b: &Body, v: ck_topo::body::VertexId, faces: &[FaceId], out: Vec3) -> bool {
+    let mut ends: Vec<FaceId> = vec![];
+    for x in b.edge_ids().filter(|&x| b.edge(x).v0 == v || b.edge(x).v1 == v) {
+        for f in b.edge_faces(x) {
+            if !faces.contains(&f) && !ends.contains(&f) {
+                ends.push(f);
+            }
+        }
+    }
+    if ends.len() != 1 {
+        return false;
+    }
+    let frame = match &b.face(ends[0]).surface {
+        Surface::Cylinder { frame, .. } | Surface::Cone { frame, .. } => *frame,
+        _ => return false,
+    };
+    let pv = b.vertex(v).p;
+    let n = nrm_at(b, ends[0], pv);
+    let ax = frame.z.normalize();
+    let rel = pv - frame.o;
+    let rad = rel - ax * rel.dot(ax);
+    // leans toward the material ahead, and the material is outside the surface (the normal points to the axis)
+    rad.len() > 1e-9 && n.dot(out) < -1e-6 && n.dot(rad) < 0.0
 }
 
 /// The solid of the cylinder that bounds an edge at its end vertex `v` (the edge runs

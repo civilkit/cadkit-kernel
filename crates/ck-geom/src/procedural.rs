@@ -644,11 +644,81 @@ pub(crate) fn proc_closest(c: &Curve, q: Vec3) -> Option<f64> {
     })
 }
 
-/// Arc length of a procedural curve over [t0, t1] (Gauss–Legendre, per piece
-/// for a composite).
+/// Parameters strictly inside `(a, b)` where the speed |C'| may jump: the joints of a
+/// composite, carried through the offset or projection of one.
+fn speed_breaks(c: &Curve, a: f64, b: f64, out: &mut Vec<f64>) {
+    match c {
+        Curve::Composite(cc) => out.extend(cc.breaks().into_iter().filter(|&x| x > a && x < b)),
+        Curve::Offset { base, .. } | Curve::Projected { base, .. } => speed_breaks(base, a, b, out),
+        _ => {}
+    }
+}
+
+const GK_X: [f64; 8] = [
+    0.991455371120812639206854697526329,
+    0.949107912342758524526189684047851,
+    0.864864423359769072789712788640926,
+    0.741531185599394439863864773280788,
+    0.586087235467691130294144838258730,
+    0.405845151377397166906606412076961,
+    0.207784955007898467600689403773245,
+    0.0,
+];
+const GK_WK: [f64; 8] = [
+    0.022935322010529224963732008058970,
+    0.063092092629978553290700663189204,
+    0.104790010322250183839876322541518,
+    0.140653259715525918745189590510238,
+    0.169004726639267902826583426598550,
+    0.190350578064785409913256402421014,
+    0.204432940075298892414161999234649,
+    0.209482141084727828012999174891714,
+];
+/// 7-point Gauss weights at `GK_X[1], [3], [5], [7]`.
+const GK_WG: [f64; 4] = [
+    0.129484966168869693270611432679082,
+    0.279705391489276667901467771423780,
+    0.381830050505118944950369775488975,
+    0.417959183673469387755102040816327,
+];
+
+/// Gauss–Kronrod (7, 15) estimate of ∫|C'| over [a, b]: (Kronrod value, |Kronrod − Gauss|).
+fn gk15(c: &Curve, a: f64, b: f64) -> (f64, f64) {
+    let (m, h) = (0.5 * (a + b), 0.5 * (b - a));
+    let f0 = c.deriv(m).len();
+    let (mut k, mut g) = (GK_WK[7] * f0, GK_WG[3] * f0);
+    for i in 0..7 {
+        let dx = h * GK_X[i];
+        let f = c.deriv(m - dx).len() + c.deriv(m + dx).len();
+        k += GK_WK[i] * f;
+        if i % 2 == 1 {
+            g += GK_WG[i / 2] * f;
+        }
+    }
+    (k * h.abs(), ((k - g) * h).abs())
+}
+
+/// Adaptive bisection until the local error estimate is within its share of `tol`
+/// (the error estimate of GK15 is conservative; the true error is far smaller).
+fn gk_adaptive(c: &Curve, a: f64, b: f64, tol: f64, depth: u32, total: f64) -> f64 {
+    let (k, e) = gk15(c, a, b);
+    let share = tol * ((b - a).abs() / total);
+    if e <= share || depth >= 30 {
+        return k;
+    }
+    let m = 0.5 * (a + b);
+    gk_adaptive(c, a, m, tol, depth + 1, total) + gk_adaptive(c, m, b, tol, depth + 1, total)
+}
+
+/// Arc length of a procedural curve over [t0, t1] (either order; the length is
+/// not negative). A composite is measured piece by piece; any other kind is split
+/// at the joints of the composite it is built on (the speed jumps there) and each
+/// smooth span integrated by adaptive Gauss–Kronrod (7, 15) with the error
+/// estimate held to 1e-12 of the length, so the result is exact to about that
+/// relative error wherever the speed is smooth between the breaks.
 pub(crate) fn proc_length(c: &Curve, t0: f64, t1: f64) -> Option<f64> {
+    let (a, b) = if t1 >= t0 { (t0, t1) } else { (t1, t0) };
     if let Curve::Composite(cc) = c {
-        let (a, b) = if t1 >= t0 { (t0, t1) } else { (t1, t0) };
         let mut s = 0.0;
         for (i, g) in cc.segs.iter().enumerate() {
             let (gs, ge) = (cc.starts[i], cc.starts[i] + (g.t1 - g.t0));
@@ -661,14 +731,23 @@ pub(crate) fn proc_length(c: &Curve, t0: f64, t1: f64) -> Option<f64> {
         return Some(s);
     }
     proc_range(c)?;
-    let n = 24;
+    let mut ks = vec![a];
+    let mut br = Vec::new();
+    speed_breaks(c, a, b, &mut br);
+    br.sort_by(|x, y| x.partial_cmp(y).unwrap());
+    br.dedup_by(|x, y| (*x - *y).abs() < 1e-14);
+    ks.extend(br);
+    ks.push(b);
     let mut s = 0.0;
-    for i in 0..n {
-        let a = t0 + (t1 - t0) * i as f64 / n as f64;
-        let b = t0 + (t1 - t0) * (i + 1) as f64 / n as f64;
-        let (m, h) = ((a + b) / 2.0, (b - a) / 2.0);
-        for &(x, w) in crate::nurbs::bspline::GL8.iter() {
-            s += w * h.abs() * c.deriv(m + h * x).len();
+    for w in ks.windows(2) {
+        // start from four panels so a feature cannot hide between the sample nodes
+        let n = 4;
+        let est: f64 = (0..n).map(|i| gk15(c, w[0] + (w[1] - w[0]) * i as f64 / n as f64, w[0] + (w[1] - w[0]) * (i + 1) as f64 / n as f64).0).sum();
+        let tol = 1e-12 * est.max(1e-300);
+        for i in 0..n {
+            let lo = w[0] + (w[1] - w[0]) * i as f64 / n as f64;
+            let hi = w[0] + (w[1] - w[0]) * (i + 1) as f64 / n as f64;
+            s += gk_adaptive(c, lo, hi, tol, 0, w[1] - w[0]);
         }
     }
     Some(s)
@@ -1320,5 +1399,175 @@ mod tests {
             }
         }
         assert!(refused);
+    }
+
+    // ---- arc length ----
+
+    /// High-order reference: 4000 panels of 8-point Gauss on a speed function.
+    fn ref_len(speed: &dyn Fn(f64) -> f64, a: f64, b: f64) -> f64 {
+        let n = 4000;
+        let mut s = 0.0;
+        for i in 0..n {
+            let lo = a + (b - a) * i as f64 / n as f64;
+            let hi = a + (b - a) * (i + 1) as f64 / n as f64;
+            let (m, h) = (0.5 * (lo + hi), 0.5 * (hi - lo));
+            for &(x, w) in crate::nurbs::bspline::GL8.iter() {
+                s += w * h * speed(m + h * x);
+            }
+        }
+        s
+    }
+    fn rel(a: f64, b: f64, tol: f64) -> bool {
+        (a - b).abs() <= tol * b.abs().max(1e-300)
+    }
+    /// Line of parameter speed 2 (to the origin) then the quarter arc (speed 1), tangent at the joint.
+    fn fast_line_arc() -> Curve {
+        let l = Curve::Line { o: Vec3::new(-2., 0., 0.), d: Vec3::new(2., 0., 0.) };
+        let a = Curve::circle_x(Vec3::new(0., 1., 0.), Vec3::Z, Vec3::new(0., -1., 0.), 1.0);
+        Curve::composite(vec![(l, 0.0, 1.0), (a, 0.0, FRAC_PI_2)], 1e-12).unwrap()
+    }
+
+    #[test]
+    fn composite_length_with_different_speeds() {
+        let c = fast_line_arc();
+        let (_, e) = c.range();
+        let total = 2.0 + FRAC_PI_2;
+        assert!(rel(c.length_between(0.0, e), total, 1e-12));
+        assert!(rel(c.length_between(e, 0.0), total, 1e-12));
+        // across the joint (global parameter 1): 0.5 of the line (1.0 long) + 0.4 rad of arc
+        assert!(rel(c.length_between(0.5, 1.4), 1.0 + 0.4, 1e-12));
+        assert!(rel(c.length_between(0.25, 0.75), 1.0, 1e-12));
+        assert!(rel(c.reversed().length_between(0.0, e), total, 1e-12));
+    }
+
+    #[test]
+    fn offset_of_a_composite_splits_at_the_joint() {
+        let c = fast_line_arc();
+        let (_, e) = c.range();
+        // one side runs outside the arc (radius 1 + d), the other inside (1 - d)
+        let d = 0.35;
+        let l1 = Curve::offset(c.clone(), d, Vec3::Z).unwrap().length_between(0.0, e);
+        let l2 = Curve::offset(c.clone(), -d, Vec3::Z).unwrap().length_between(0.0, e);
+        let (out, inn) = (2.0 + (1.0 + d) * FRAC_PI_2, 2.0 + (1.0 - d) * FRAC_PI_2);
+        let (hi, lo) = if l1 > l2 { (l1, l2) } else { (l2, l1) };
+        assert!(rel(hi, out, 1e-9), "{hi} vs {out}");
+        assert!(rel(lo, inn, 1e-9), "{lo} vs {inn}");
+        // a sub-range straddling the joint: 0.4 of the line parameter (0.8 long) + 0.5 rad of arc
+        let o = Curve::offset(c, d, Vec3::Z).unwrap();
+        let k = if l1 > l2 { 1.0 + d } else { 1.0 - d };
+        assert!(rel(o.length_between(0.6, 1.5), 0.8 + 0.5 * k, 1e-9));
+        assert!(rel(o.length_between(1.5, 0.6), 0.8 + 0.5 * k, 1e-9));
+    }
+
+    #[test]
+    fn offset_of_circle_and_line_are_exact() {
+        let c = Curve::circle(Vec3::new(1., 2., 3.), Vec3::new(0.2, -0.3, 1.0), 2.0);
+        let n = Vec3::new(0.2, -0.3, 1.0).normalize();
+        for (d, nn, r) in [(0.5, n, 2.5), (0.5, -n, 1.5), (-1.25, n, 0.75)] {
+            let o = Curve::offset(c.clone(), d, nn).unwrap();
+            assert!(rel(o.length_between(0.0, TAU), TAU * r, 1e-11));
+            assert!(rel(o.length_between(1.0, 4.0), 3.0 * r, 1e-11));
+            assert!(rel(o.length_between(4.0, 1.0), 3.0 * r, 1e-11));
+            assert!(rel(o.reversed().length_between(0.5, 2.5), 2.0 * r, 1e-11));
+        }
+        let l = Curve::Line { o: Vec3::new(1., 0., 0.), d: Vec3::new(3., 4., 0.) };
+        let o = Curve::offset(l, 0.7, Vec3::Z).unwrap();
+        assert!(rel(o.length_between(-1.0, 2.0), 15.0, 1e-11));
+    }
+
+    #[test]
+    fn projected_circle_is_an_ellipse_arc() {
+        let r = 2.0;
+        let (cen, m) = (Vec3::new(0.3, -0.2, 1.0), Vec3::new(0.2, 0.5, 1.0).normalize());
+        let circ = Curve::circle(cen, m, r);
+        let Curve::Circle { frame, .. } = &circ else { unreachable!() };
+        let (e1, e2) = (frame.x, frame.y);
+        // along the plane's own normal (z): drop the z component
+        let pl = Surface::plane(Vec3::new(0., 0., -2.), Vec3::Z);
+        let p = Curve::projected(circ.clone(), pl.clone(), None).unwrap();
+        let sp = |t: f64| {
+            let d = (e2 * t.cos() - e1 * t.sin()) * r;
+            Vec3::new(d.x, d.y, 0.0).len()
+        };
+        for (a, b) in [(0.0, TAU), (0.4, 2.9), (5.0, 1.0)] {
+            assert!(rel(p.length_between(a, b), ref_len(&sp, a.min(b), a.max(b)), 1e-10), "{a} {b}");
+        }
+        // along an oblique direction onto the same plane: the linear map I - d zT/(d.z)
+        let dv = Vec3::new(0.4, -0.3, 1.0);
+        let po = Curve::projected(circ, pl, Some(dv)).unwrap();
+        let so = |t: f64| {
+            let d = (e2 * t.cos() - e1 * t.sin()) * r;
+            (d - dv * (d.z / dv.z)).len()
+        };
+        for (a, b) in [(0.0, TAU), (0.4, 2.9)] {
+            assert!(rel(po.length_between(a, b), ref_len(&so, a, b), 1e-10), "{a} {b}");
+        }
+        assert!(rel(po.reversed().length_between(0.0, TAU), ref_len(&so, 0.0, TAU), 1e-10));
+    }
+
+    #[test]
+    fn projection_of_a_composite_splits_at_the_joint() {
+        // the composite lies in the plane z = 0: projecting onto it keeps the length
+        let c = fast_line_arc();
+        let (_, e) = c.range();
+        let pl = Surface::plane(Vec3::ZERO, Vec3::Z);
+        let p = Curve::projected(c.clone(), pl, None).unwrap();
+        assert!(rel(p.length_between(0.0, e), 2.0 + FRAC_PI_2, 1e-9));
+        assert!(rel(p.length_between(0.5, 1.4), 1.4, 1e-9));
+        // onto the plane 0.6 y + 0.8 z = 0 along z (z = -0.75 y): the line (along x) keeps its
+        // length, the arc point (x, y) moves at sqrt(dx^2 + dy^2 (1 + 0.75^2))
+        let pt = Surface::plane(Vec3::ZERO, Vec3::new(0.0, 0.6, 0.8));
+        let q = Curve::projected(c, pt, Some(Vec3::Z)).unwrap();
+        let sp = |t: f64| ((-t.sin()).powi(2) + t.cos().powi(2) * (1.0 + 0.5625)).sqrt();
+        let want = 2.0 + ref_len(&sp, 0.0, FRAC_PI_2);
+        let got = q.length_between(0.0, e);
+        assert!(rel(got, want, 1e-9), "{got} vs {want}");
+    }
+
+    #[test]
+    fn iso_lengths_of_cylinder_sphere_torus() {
+        let c = cyl();
+        // fixed_u: the generator line (unit speed in v); fixed_v: the circle of radius 3
+        assert!(rel(Curve::iso(c.clone(), true, 0.7).length_between(-1.0, 2.5), 3.5, 1e-12));
+        assert!(rel(Curve::iso(c.clone(), false, 0.4).length_between(0.0, TAU), TAU * 3.0, 1e-12));
+        assert!(rel(Curve::iso(c.clone(), false, 0.4).reversed().length_between(-1.0, 1.0), 6.0, 1e-12));
+        let s = sphere();
+        // a parallel at latitude v has radius 5 cos v; a meridian has radius 5
+        assert!(rel(Curve::iso(s.clone(), false, 0.4).length_between(0.2, 6.0), 5.0 * 0.4_f64.cos() * 5.8, 1e-11));
+        assert!(rel(Curve::iso(s, true, 1.3).length_between(-1.0, 0.5), 7.5, 1e-11));
+        let t = Surface::Torus { frame: Frame::identity(), major: 4.0, minor: 1.0 };
+        assert!(rel(Curve::iso(t.clone(), false, 0.9).length_between(0.0, TAU), TAU * (4.0 + 0.9_f64.cos()), 1e-11));
+        assert!(rel(Curve::iso(t.clone(), true, 0.9).length_between(0.0, TAU), TAU, 1e-11));
+        assert!(rel(Curve::iso(t, true, 0.9).reversed().length_between(-3.0, -1.0), 2.0, 1e-11));
+    }
+
+    #[test]
+    fn on_surface_line_in_uv_on_a_cylinder() {
+        // unit-speed uv line from (0.2, -0.5) towards (1.8, 1.3) on a radius-3 cylinder
+        let uv = Curve2::line_through(Vec2::new(0.2, -0.5), Vec2::new(2.0, 0.8));
+        let c = Curve::on_surface(cyl(), uv);
+        let n = 1.8_f64.hypot(1.3);
+        let sp = ((3.0 * 1.8 / n).powi(2) + (1.3 / n).powi(2)).sqrt(); // line_through is unit speed
+        assert!(rel(c.length_between(0.0, 1.0), sp, 1e-11), "{} vs {sp}", c.length_between(0.0, 1.0));
+        assert!(rel(c.length_between(0.7, 0.2), 0.5 * sp, 1e-11));
+    }
+
+    #[test]
+    fn closed_offset_loop_of_a_composite() {
+        // a stadium: two lines of speed 3 and two half circles of speed 1, closed
+        let (w, r) = (3.0, 1.0);
+        let l1 = Curve::Line { o: Vec3::new(0., -r, 0.), d: Vec3::new(w, 0., 0.) };
+        let a1 = Curve::circle_x(Vec3::new(w, 0., 0.), Vec3::Z, Vec3::new(0., -1., 0.), r);
+        let l2 = Curve::Line { o: Vec3::new(w, r, 0.), d: Vec3::new(-w, 0., 0.) };
+        let a2 = Curve::circle_x(Vec3::new(0., 0., 0.), Vec3::Z, Vec3::new(0., 1., 0.), r);
+        let c = Curve::composite(vec![(l1, 0.0, 1.0), (a1, 0.0, PI), (l2, 0.0, 1.0), (a2, 0.0, PI)], 1e-12).unwrap();
+        let (_, e) = c.range();
+        assert!(rel(c.length_between(0.0, e), 2.0 * w + TAU * r, 1e-12));
+        let d = 0.25;
+        let a = Curve::offset(c.clone(), d, Vec3::Z).unwrap().length_between(0.0, e);
+        let b = Curve::offset(c, -d, Vec3::Z).unwrap().length_between(0.0, e);
+        let (hi, lo) = (a.max(b), a.min(b));
+        assert!(rel(hi, 2.0 * w + TAU * (r + d), 1e-9), "{hi}");
+        assert!(rel(lo, 2.0 * w + TAU * (r - d), 1e-9), "{lo}");
     }
 }

@@ -179,6 +179,52 @@ fn extract(b: &Body, faces: &[FaceId]) -> Body {
 }
 
 /// Run the operation on the lumps of `body`.
+/// Faces of `b` that are planar with a mean width (twice the area over the perimeter) under `SLIVER_WIDTH`.
+const SLIVER_WIDTH: f64 = 1e-5;
+fn sliver_faces(b: &Body) -> usize {
+    use ck_geom::surface::Surface;
+    b.face_ids()
+        .filter(|&f| {
+            let face = b.face(f);
+            let Some(&l) = face.loops.first() else { return false };
+            if !matches!(face.surface, Surface::Plane { .. }) {
+                return false;
+            }
+            let area = ck_topo::orient::loop_uv_area(b, l).abs();
+            let per: f64 = b.lp(l).coedges.iter().map(|&c| b.edge_length(b.coedge(c).edge)).sum();
+            area > 0.0 && per > 0.0 && 2.0 * area / per < SLIVER_WIDTH
+        })
+        .count()
+}
+
+/// The same boolean with the tool moved by a small step (1e-4 mm) along each axis, the first
+/// result that has fewer sliver faces, is no more invalid than the operands and keeps the volume to within 1e-3 of the first result's.
+fn unsliver(a: &Body, b: &Body, op: BOp, first: &ck_ops::boolean::BoolOut) -> Option<ck_ops::boolean::BoolOut> {
+    use ck_core::linalg::Vec3;
+    const STEP: f64 = 1e-4;
+    let base = ck_topo::check::check(a, TOL).len() + ck_topo::check::check(b, TOL).len();
+    let v0 = ck_topo::mass::mass_props(&first.body).volume;
+    let n0 = sliver_faces(&first.body);
+    let mut best: Option<(usize, ck_ops::boolean::BoolOut)> = None;
+    for d in [Vec3::new(0.0, 0.0, STEP), Vec3::new(0.0, 0.0, -STEP), Vec3::new(STEP, 0.0, 0.0), Vec3::new(-STEP, 0.0, 0.0), Vec3::new(0.0, STEP, 0.0), Vec3::new(0.0, -STEP, 0.0)] {
+        let mut t = b.clone();
+        t.transform(&ck_core::xform::Xform::translation(d));
+        let Ok(o) = ck_ops::boolean::boolean(a, &t, op, TOL) else { continue };
+        if o.no_effect || o.mismatch.is_some() || sliver_faces(&o.body) >= n0 || ck_topo::check::check(&o.body, TOL).len() > base {
+            continue;
+        }
+        let v = ck_topo::mass::mass_props(&o.body).volume;
+        if (v - v0).abs() > 1e-3 * v0.abs().max(1.0) {
+            continue;
+        }
+        let key = sliver_faces(&o.body) * 100000 + o.body.num_faces();
+        if best.as_ref().is_none_or(|(k, _)| key < *k) {
+            best = Some((key, o));
+        }
+    }
+    best.map(|(_, o)| o)
+}
+
 pub fn combine_bodies(body: &Body, spec: &Spec, fid: &str, fuzz: f64, auto: bool) -> Result<Out, FeatureError> {
     let comps = lump_components(body);
     let t_ix = comp_of(body, &comps, &spec.target[0])?;
@@ -209,9 +255,19 @@ pub fn combine_bodies(body: &Body, spec: &Spec, fid: &str, fuzz: f64, auto: bool
     let mut used: Option<f64> = None;
 
     let mut run = |a: &Body, b: &Body, op: BOp| -> Result<ck_ops::boolean::BoolOut, FeatureError> {
-        let (r, u) = fuzzy_boolean(a, b, op, TOL, fuzz, auto);
+        let (mut r, u) = fuzzy_boolean(a, b, op, TOL, fuzz, auto);
         if u.is_some() {
             used = u;
+        }
+        // a tool wall that runs through an edge of the host to within a few welding tolerances leaves a face
+        // thinner than the tolerance in the result (a dovetail tail whose slanted wall ends on the corner of its
+        // blank), which the next boolean on that body cannot close: move the tool a hair off the edge instead
+        if let Ok(out) = &r {
+            if !out.no_effect && fuzz == 0.0 && sliver_faces(&out.body) > sliver_faces(a).max(sliver_faces(b)) {
+                if let Some(better) = unsliver(a, b, op, out) {
+                    r = Ok(better);
+                }
+            }
         }
         match r {
             Ok(out) => {

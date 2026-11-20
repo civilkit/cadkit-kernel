@@ -213,16 +213,93 @@ fn face_pieces<'a>(b: &'a Body, f: FaceId, derived: &'a [Option<Curve2>], fine: 
                     let mut pts = vec![];
                     for k in 0..=n {
                         let t = ta + (tb - ta) * k as f64 / n as f64;
-                        let uv = b.coedge_uv_fp(c, t, prev, fp);
+                        let mut uv = b.coedge_uv_fp(c, t, prev, fp);
+                        // a B-spline strip that closes on itself in u (the free-form fillet tool and blend of a closed rim): the
+                        // closest point at the end of a rail that went all the way round is u = 0 again, not the end of the
+                        // domain, which would make the loop close without advancing and integrate to nothing
+                        if let (Some(w), Some(q)) = (closed_u_width(&b.face(f).surface), prev) {
+                            if uv.x - q.x < -0.5 * w {
+                                uv.x += w;
+                            } else if uv.x - q.x > 0.5 * w {
+                                uv.x -= w;
+                            }
+                        }
+                        // a B-spline that closes on itself in v (the converted sweep of a closed profile): the same unwrapping, so
+                        // a rim that goes round it and a seam walked up and back are continuous in the parameter plane
+                        if let (Some(w), Some(q)) = (closed_v_width(&b.face(f).surface), prev) {
+                            if uv.y - q.y < -0.5 * w {
+                                uv.y += w;
+                            } else if uv.y - q.y > 0.5 * w {
+                                uv.y -= w;
+                            }
+                        }
                         prev = Some(uv);
                         pts.push(uv);
+                    }
+                    // (a rail that goes all the way round starts at the closing point, which reads as either end of the
+                    // domain: start it at the end its direction leaves from)
+                    if let (Some(w), true) = (closed_u_width(&b.face(f).surface), pts.len() > 1) {
+                        let ((u0, _), _) = b.face(f).surface.domain();
+                        let d = pts[pts.len() - 1].x - pts[0].x;
+                        if d < -0.5 * w && pts[0].x < u0 + 0.5 * w {
+                            pts.iter_mut().for_each(|q| q.x += w);
+                        } else if d > 0.5 * w && pts[0].x > u0 + 0.5 * w {
+                            pts.iter_mut().for_each(|q| q.x -= w);
+                        }
                     }
                     out.push(Piece::Poly(pts));
                 }
             }
         }
     }
+    // A strip that closes on itself in u (see `closed_u_width`) is bounded by two rails that each go once round the u period at
+    // a constant v. The integral reads the boundary of the face in the parameter plane, where the two seam sides of that
+    // rectangle (the first station and the last, one curve in space) are the part that carries the volume: add them, as
+    // the straight pieces joining the end of each rail to the start of the other.
+    if b.face(f).loops.len() == 2 && closed_u_width(&b.face(f).surface).is_some() {
+        let w = closed_u_width(&b.face(f).surface).unwrap_or(0.0);
+        let ends = |p: &Piece| match p {
+            Piece::Poly(v) if v.len() > 1 => Some((v[0], v[v.len() - 1])),
+            _ => None,
+        };
+        let rails: Vec<(Vec2, Vec2)> = out.iter().filter_map(ends).collect();
+        let is_rail = |(a, z): &(Vec2, Vec2)| (z.x - a.x).abs() > 0.99 * w && (z.y - a.y).abs() < 1e-6 * w;
+        if rails.len() == 2 && out.len() == 2 && rails.iter().all(is_rail) && (rails[0].0.y - rails[1].0.y).abs() > 1e-6 * w {
+            out.push(Piece::Poly(vec![rails[0].1, rails[1].0]));
+            out.push(Piece::Poly(vec![rails[1].1, rails[0].0]));
+        }
+    }
     out
+}
+
+/// The width of the v domain of a B-spline surface whose first and last v isolines coincide (it closes on itself in v without
+/// being flagged periodic), else `None`.
+fn closed_v_width(s: &Surface) -> Option<f64> {
+    let Surface::BSpline(_) = s else { return None };
+    let ((u0, u1), (v0, v1)) = s.domain();
+    if !(u0.is_finite() && u1.is_finite() && v0.is_finite() && v1.is_finite()) || s.periods().1.is_some() {
+        return None;
+    }
+    let scale = 1e-6 * (1.0 + s.eval(u0, v0).len());
+    [0.0, 0.3, 0.7, 1.0].iter().all(|&k| {
+        let u = u0 + (u1 - u0) * k;
+        s.eval(u, v0).dist(s.eval(u, v1)) <= scale
+    }).then_some(v1 - v0)
+}
+
+/// The width of the u domain of a B-spline surface whose first and last u isolines coincide (it closes on itself in u without
+/// being flagged periodic), else `None`.
+fn closed_u_width(s: &Surface) -> Option<f64> {
+    let Surface::BSpline(_) = s else { return None };
+    let ((u0, u1), (v0, v1)) = s.domain();
+    if !(u0.is_finite() && u1.is_finite() && v0.is_finite() && v1.is_finite()) || s.periods().0.is_some() {
+        return None;
+    }
+    let scale = 1e-9 * (1.0 + s.eval(u0, v0).len());
+    [0.0, 0.3, 0.7, 1.0].iter().all(|&k| {
+        let v = v0 + (v1 - v0) * k;
+        s.eval(u0, v).dist(s.eval(u1, v)) <= scale.max(1e-9)
+    }).then_some(u1 - u0)
 }
 
 /// B-spline faces are piecewise polynomial: cut straight boundary pcurves

@@ -36,7 +36,8 @@ use ck_geom::fit::{averaged_knots, interpolate_with};
 use ck_geom::nurbs::bspline::BSplineCurve;
 use ck_geom::nurbs::bsurf::BSplineSurface;
 use ck_geom::surface::Surface;
-use ck_geom::Vec3;
+use ck_geom::curve2::Curve2;
+use ck_geom::{Vec2, Vec3};
 use crate::surfacing::knit::BodyExt;
 use ck_topo::body::{Body, EdgeId, FaceId, FaceName};
 use super::diag::{dbg, failed, failed_hint, unsupported, unsupported_hint};
@@ -605,15 +606,108 @@ fn build_chain(b: &Body, edges: &[EdgeId], start: usize, split_sharp: bool) -> R
     Ok((chain, false))
 }
 
+/// Tolerance of the B-spline a procedural face is converted to before it is rounded (mm).
+const PROC_TOL: f64 = 1e-4;
+
+/// A copy of `b` whose procedural faces (a sweep or a rolling-ball blend surface) on the picked edges are their certified
+/// B-spline (within `PROC_TOL`), or `None` when there is none. Rounded as a procedural face the boolean classifies points
+/// against its definition by closest-point search (tens of seconds for one rim) and no seam path can see its closed profile
+/// (no declared period); as a B-spline it is a spline face like any other (a seam in v is read through `closed_v_span` in the
+/// classifier and `closed_v_width` in the mass integral). The whole blend, its validity gate and its guard see the copy.
+pub(super) fn procedural_to_bspline(b: &Body, edges: &[(String, String, Vec3)]) -> Option<Body> {
+    let mut conv: Option<Body> = None;
+    for (fa, fb, at) in edges {
+        let Some(e) = find_edge(b, fa, fb, *at) else { continue };
+        for f in b.edge_faces(e) {
+            let sf = &b.face(f).surface;
+            if !sf.is_procedural() {
+                continue;
+            }
+            let (ur, vr) = sf.domain();
+            let Ok((bs, _)) = sf.to_nurbs_within(ur, vr, PROC_TOL) else { continue };
+            conv.get_or_insert_with(|| b.clone()).faces[f.idx()].surface = Surface::BSpline(Box::new(bs));
+        }
+    }
+    conv
+}
+
 /// Fillet `edges` (free-form capable); see the module docs.
 pub fn fillet_freeform(b: &Body, edges: &[(String, String, Vec3)], r: f64, feature: &str, tol: f64) -> Result<Body, BlendError> {
+    // The wall of a thickened closed spline is two faces meeting at the seam vertices. A round along its rim crosses the
+    // seams (the faces change there), and the blend's tools do not close there (with the wall's booleans fixed, every ring and
+    // half rim still came out open or with a grown volume, after 25 s to 15 min): refuse at once, with the reason.
+    if let Some(at) = split_skin_rim(b, edges) {
+        return Err(failed_hint(
+            &format!("the round runs along the rim of a closed-spline wall (a wall split in two faces at a seam, here at ({:.2}, {:.2}, {:.2}))", at.x, at.y, at.z),
+            "rounding the rim of a thickened closed spline is not supported yet (the round's tool does not close across the seam between the wall's two halves). Round the edges of the sketch profile before the extrude and thicken (a sketch fillet at the corners), or build the rounded rim with a swept profile",
+        ));
+    }
+    // A pick whose two faces are tangent all along it (the edge where a flat face runs into an earlier round) has no corner
+    // to round at any size: the marcher refuses it at its first station. Refused up front, so the answer does not depend
+    // on the pick order or the size (picked after an edge whose round consumes the face between them, it was reported as
+    // that edge's overflow, or as missing).
+    for (fa, fb, at) in edges {
+        let Some(e) = find_edge(b, fa, fb, *at) else { continue };
+        let fs = b.edge_faces(e);
+        if fs.len() != 2 {
+            continue;
+        }
+        let ed = b.edge(e);
+        let smooth = [b.vertex(ed.v0).p, b.edge_mid(e), b.vertex(ed.v1).p].iter().all(|&p| match (foot(b, fs[0], p), foot(b, fs[1], p)) {
+            (Some((_, n1)), Some((_, n2))) => 1.0 - n1.dot(n2).abs() < 1e-9,
+            _ => false,
+        });
+        if smooth {
+            return Err(super::diag::unsupported_hint(
+                &format!("the faces {fa} and {fb} are tangent all along the picked edge between them: it is smooth, there is no corner to round"),
+                "leave this edge out of the selection: a fillet rounds edges where the faces meet at an angle",
+            ));
+        }
+    }
+    // A face that is a procedural surface still here (the conversion of `procedural_to_bspline` failed or was not run) is read
+    // through its definition, which the boolean classifies points against by closest-point search: tens of seconds for one
+    // rim, and the result then fails its volume check. Refused up front, with the way round it that builds.
+    for (fa, fb, at) in edges {
+        let Some(e) = find_edge(b, fa, fb, *at) else { continue };
+        if b.edge_faces(e).iter().any(|&f| b.face(f).surface.is_procedural()) {
+            return Err(super::diag::unsupported_hint(
+                &format!("the rounding of the edge between {fa} and {fb} does not depend on the radius: a fillet on a face that is a procedural sweep or blend surface could not be converted to a B-spline"),
+                "use a plain sweep feature for the tube (its side face is a torus or a cylinder, which rounds) when the path is a line or an arc, or leave this rim sharp",
+            ));
+        }
+    }
     let whole = fillet_freeform_chains(b, edges, r, feature, tol, false);
     // A selection that runs round a sharp corner is one chain above, which the solver cannot follow (the ball's two
     // faces change at the corner). Each smooth run on its own is a convex tool that runs on past its end, so the
-    // runs meet in a mitre like two plain edge fillets do; retried only when the whole selection failed.
-    if whole.is_err() && edges.len() > 1 {
+    // runs meet in a mitre like two plain edge fillets do; retried only when the whole selection failed, and only when
+    // two picked edges meet at a vertex (separate rings or runs are the same chains the first pass built: the retry
+    // would repeat the failed build, seconds long on a fine free-form tool, and fail the same way).
+    let eids_sel: Vec<EdgeId> = edges.iter().filter_map(|(fa, fb, at)| find_edge(b, fa, fb, *at)).collect();
+    let meets = eids_sel.iter().enumerate().any(|(i, &x)| {
+        let (a0, a1) = (b.edge(x).v0, b.edge(x).v1);
+        eids_sel[i + 1..].iter().any(|&y| [b.edge(y).v0, b.edge(y).v1].iter().any(|&v| v == a0 || v == a1))
+    });
+    if whole.is_err() && edges.len() > 1 && meets {
         if let Ok(done) = fillet_freeform_chains(b, edges, r, feature, tol, true) {
             return Ok(done);
+        }
+    }
+    // A free-form tool that was built (the ball rolled along the whole edge) but whose boolean with the body could not be
+    // assembled, on a rim between a plane and a curved side face that is not a cylinder or a cone (a swept tube is a torus or
+    // a procedural sweep surface): the failure comes from the join of the tool with that face, not from the radius, so a
+    // smaller radius fails the same way and the caller must not search sizes for it.
+    if let Err(e) = &whole {
+        let curved_rim = edges.iter().any(|(fa, fb, at)| {
+            find_edge(b, fa, fb, *at).is_some_and(|ed| {
+                matches!(b.edge(ed).curve, Curve::Circle { .. })
+                    && b.edge_faces(ed).iter().any(|&f| !matches!(b.face(f).surface, Surface::Plane { .. } | Surface::Cylinder { .. } | Surface::Cone { .. }))
+            })
+        });
+        if curved_rim && e.code == "blendFailed" && e.detail.as_deref().is_some_and(|d| d.starts_with("select:")) {
+            return Err(failed_hint(
+                "the rounding of a rim on a curved side face (a swept tube: a torus or sweep surface) could not be joined to that face; this does not depend on the radius",
+                "a smaller radius will not help: leave this rim sharp, or build the rounded end into the shape (for example a revolved profile that includes the rounded end)",
+            ));
         }
     }
     // Faces of a twisted extrude are screw surfaces. A failure there is not the generic "smaller radius" one (a ring of
@@ -628,6 +722,28 @@ pub fn fillet_freeform(b: &Body, edges: &[(String, String, Vec3)], r: f64, featu
         }
     }
     whole
+}
+
+/// A seam vertex of a wall split in two faces (the next edge of the selection, or the rim's other half, carries on tangentially
+/// along faces that share no face with this edge's but continue them), if a selected edge meets one.
+fn split_skin_rim(b: &Body, edges: &[(String, String, Vec3)]) -> Option<Vec3> {
+    let sel: Vec<EdgeId> = edges.iter().filter_map(|(fa, fb, at)| find_edge(b, fa, fb, *at)).collect();
+    for &e in &sel {
+        let ed = b.edge(e);
+        let fe = b.edge_faces(e);
+        if fe.len() != 2 {
+            continue;
+        }
+        for v in [ed.v0, ed.v1] {
+            for x in b.edge_ids().filter(|&x| x != e && (b.edge(x).v0 == v || b.edge(x).v1 == v)) {
+                let fx = b.edge_faces(x);
+                if fx.len() == 2 && !fx.iter().any(|f| fe.contains(f)) && continues_at(b, e, x, v) && continues_smoothly(b, [fe[0], fe[1]], [fx[0], fx[1]]).is_some() {
+                    return Some(b.vertex(v).p);
+                }
+            }
+        }
+    }
+    None
 }
 
 fn fillet_freeform_chains(b: &Body, edges: &[(String, String, Vec3)], r: f64, feature: &str, tol: f64, split_sharp: bool) -> Result<Body, BlendError> {
@@ -645,7 +761,17 @@ fn fillet_freeform_chains(b: &Body, edges: &[(String, String, Vec3)], r: f64, fe
         BOXES.with(|m| m.borrow_mut().clear());
         let eids: Vec<EdgeId> = remaining
             .iter()
-            .map(|&k| find_edge(&cur, &edges[k].0, &edges[k].1, edges[k].2).ok_or_else(|| BlendError::code("missingEdge")))
+            .map(|&k| {
+                find_edge(&cur, &edges[k].0, &edges[k].1, edges[k].2).ok_or_else(|| {
+                    // gone after an earlier chain of this blend although the input has it: that chain's blend consumed
+                    // the face beside it (a round wider than the face between two picked edges)
+                    if remaining.len() < edges.len() && find_edge(b, &edges[k].0, &edges[k].1, edges[k].2).is_some() {
+                        super::diag::consumed_by_earlier(feature, k as u32, &edges[k].0, &edges[k].1)
+                    } else {
+                        BlendError::code("missingEdge")
+                    }
+                })
+            })
             .collect::<Result<_, _>>()?;
         let (chain, closed) = build_chain(&cur, &eids, 0, split_sharp)?;
         let picked: Vec<usize> = chain.iter().map(|&(i, _)| remaining[i]).collect();
@@ -690,6 +816,32 @@ fn fillet_freeform_chains(b: &Body, edges: &[(String, String, Vec3)], r: f64, fe
     Ok(cur)
 }
 
+/// Do the faces `next` carry on the faces `prev` of a chain across edges where each pair is tangent-continuous (the
+/// same skin split in two)? Returns `next` ordered like `prev`.
+pub fn continues_smoothly(b: &Body, prev: [FaceId; 2], next: [FaceId; 2]) -> Option<(FaceId, FaceId)> {
+    let smooth = |f: FaceId, g: FaceId| -> bool {
+        b.face_edges(f).into_iter().any(|e| {
+            let fs = b.edge_faces(e);
+            if !(fs.contains(&f) && fs.contains(&g)) {
+                return false;
+            }
+            let ed = b.edge(e);
+            let p = ed.curve.eval(0.5 * (ed.t0 + ed.t1));
+            match (foot(b, f, p), foot(b, g, p)) {
+                (Some((_, n1)), Some((_, n2))) => n1.dot(n2) > 0.995,
+                _ => false,
+            }
+        })
+    };
+    if smooth(prev[0], next[0]) && smooth(prev[1], next[1]) {
+        Some((next[0], next[1]))
+    } else if smooth(prev[0], next[1]) && smooth(prev[1], next[0]) {
+        Some((next[1], next[0]))
+    } else {
+        None
+    }
+}
+
 fn make_links(b: &Body, eids: &[EdgeId], chain: &[(usize, bool)]) -> Result<Vec<Link>, BlendError> {
     let mut links: Vec<Link> = vec![];
     for &(i, fwd) in chain {
@@ -710,6 +862,10 @@ fn make_links(b: &Body, eids: &[EdgeId], chain: &[(usize, bool)]) -> Result<Vec<
             } else if has(pf[0]) {
                 f1 = pf[0];
                 f2 = if fs[0] == f1 { fs[1] } else { fs[0] };
+            } else if let Some((a, c)) = continues_smoothly(b, [prev.f1, prev.f2], [fs[0], fs[1]]) {
+                // a wall split into several faces of one smooth skin (a thickened closed spline: each wall and each cap is
+                // two faces meeting at the seam vertices): the next link's faces carry on the previous ones
+                (f1, f2) = (a, c);
             } else {
                 return Err(unsupported("chain faces do not continue"));
             }
@@ -731,6 +887,7 @@ fn blend_chain(b: &Body, links: Vec<Link>, r: f64, feature: &str, k: u32, tol: f
             set2.push(l.f2);
         }
     }
+    dbg(&format!("chain: {} links, closed={closed}, {} + {} faces", links.len(), set1.len(), set2.len()));
     let mut ctx = Ctx { b, links, set1, set2, r, sg: 1.0 };
     let sg = ctx.sign_at(0, 0.5)?;
     ctx.sg = sg;
@@ -802,6 +959,7 @@ fn blend_chain(b: &Body, links: Vec<Link>, r: f64, feature: &str, k: u32, tol: f
         let fit = fit_cols(&secs, &ps)?;
         let mut insert: Vec<(usize, usize, f64)> = vec![]; // (node index after which, link, s)
         let mut worst = 0.0f64;
+        let mut worst_at = 0usize;
         for i in 0..nodes.len() - 1 {
             let (n0, n1) = (&nodes[i], &nodes[i + 1]);
             let (li, s0) = if n0.li == n1.li { (n1.li, n0.s) } else { (n1.li, 0.0) };
@@ -817,17 +975,25 @@ fn blend_chain(b: &Body, links: Vec<Link>, r: f64, feature: &str, k: u32, tol: f
                     }
                 }
             }
+            if dev > worst {
+                worst_at = i;
+            }
             worst = worst.max(dev);
             if dev > FIT_TOL {
                 insert.push((i, li, sm));
             }
         }
-        dbg(&format!("fit round {round}: {} nodes, worst on-face deviation {worst:.2e}", nodes.len()));
+        dbg(&format!(
+            "fit round {round}: {} nodes, worst on-face deviation {worst:.2e} at node {worst_at} (link {} s {:.4}, p=({:.3},{:.3},{:.3}))",
+            nodes.len(), nodes[worst_at].li, nodes[worst_at].s, nodes[worst_at].st.p.x, nodes[worst_at].st.p.y, nodes[worst_at].st.p.z
+        ));
         if insert.is_empty() {
             break;
         }
         for &(i, li, sm) in insert.iter().rev() {
             let guess = Some((nodes[i].st.c + nodes[i + 1].st.c) * 0.5);
+            // (the warm starts are those of the last node solved, which is far from this one: stale on a closed spline face)
+            HINTS.with(|m| m.borrow_mut().clear());
             let st = ctx.solve(li, sm, guess)?;
             nodes.insert(i + 1, Node { li, s: sm, st });
         }
@@ -838,7 +1004,28 @@ fn blend_chain(b: &Body, links: Vec<Link>, r: f64, feature: &str, k: u32, tol: f
     if std::env::var("CK_FF_STOP").as_deref() == Ok("2") {
         return Err(failed("stopped after fit"));
     }
-    // ---- end handling
+    // A ring starts and closes at a vertex of the body, where the faces of a split wall meet. A tool whose seam sits on
+    // that vertex has its seam lines run along the body's own edge, and the imprint cannot tell the two apart. Start
+    // the ring in the middle of its first link instead.
+    let mut ring_start = false;
+    // the section where the ring tool's second half starts (the first half starts at section 0): the middle of the
+    // opposite link, again away from the body's own vertices
+    let mut ring_split = nodes.len() / 2;
+    if closed && ctx.links.len() >= 2 {
+        let first: Vec<usize> = (0..nodes.len()).filter(|&i| nodes[i].li == 0).collect();
+        if first.len() >= 3 {
+            let m = first[first.len() / 2];
+            nodes.pop();
+            nodes.rotate_left(m);
+            let head = nodes[0].clone();
+            nodes.push(head);
+            ring_start = true;
+            let opposite: Vec<usize> = (0..nodes.len()).filter(|&i| nodes[i].li == ctx.links.len() / 2).collect();
+            if opposite.len() >= 3 {
+                ring_split = opposite[opposite.len() / 2];
+            }
+        }
+    }
     let mut secs = secs_of(&nodes)?;
     let mut ps: Vec<Vec3> = nodes.iter().map(|n| n.st.p).collect();
     let end_info = |end: usize| -> (ck_topo::body::VertexId, Vec<FaceId>) {
@@ -1007,11 +1194,22 @@ fn blend_chain(b: &Body, links: Vec<Link>, r: f64, feature: &str, k: u32, tol: f
     let mut junction_u: Vec<f64> = (1..ctx.links.len())
         .filter_map(|l| nodes.iter().rposition(|n| n.li == l - 1).map(|i| fit.u[i + pre]))
         .collect();
-    if closed {
+    if ring_start {
+        // (the ring was rotated: a junction is where a link's first station is, and the first link's start is mid-ring)
+        junction_u = (1..ctx.links.len()).filter_map(|l| nodes.iter().position(|n| n.li == l).map(|i| fit.u[i + pre])).collect();
+        if let Some(i) = nodes.iter().position(|n| n.li == 0 && n.s == 0.0) {
+            junction_u.push(fit.u[i + pre]);
+        }
+        junction_u.sort_by(|a, c| a.total_cmp(c));
+    } else if closed {
         // the junction where the ring closes (last link meets the first)
         junction_u.push(1.0);
     }
-    let mut tool = build_tool(&fit, &secs, feature, k, plane_caps, b, &ctx.links, &end_info, tol, closed)?;
+    // A ring is fitted and built as two sweeps (sections 0 to `m`, `m` back to 0): the strips are B-spline surfaces, which have
+    // no period, and a closed one has its first and last rows on one curve, so a point there projects to either end.
+    let ring_m = ring_split.clamp(1, secs.len().saturating_sub(2).max(1));
+    let halves: Option<[Fit; 2]> = if closed { Some([fit_cols(&secs[..=ring_m], &ps[..=ring_m])?, fit_cols(&secs[ring_m..], &ps[ring_m..])?]) } else { None };
+    let mut tool = build_tool(&fit, &secs, feature, k, plane_caps, b, &ctx.links, &end_info, tol, closed, ring_m, halves.as_ref())?;
     for &(o, n) in &trims {
         tool = trim_tool(&tool, o, n, &FaceName::blend(feature, k))?;
     }
@@ -1031,20 +1229,36 @@ fn blend_chain(b: &Body, links: Vec<Link>, r: f64, feature: &str, k: u32, tol: f
     }
     let f1set: Vec<FaceId> = ctx.links.iter().map(|l| l.f1).collect();
     let f2set: Vec<FaceId> = ctx.links.iter().map(|l| l.f2).collect();
-    let blend_f = tool.face_ids().find(|&f| tool.face(f).name == blend_name).ok_or_else(|| failed("tool lost its blend face"))?;
-    let leg_a = tool.face_ids().find(|&f| tool.face(f).name == FaceName::other(feature, "TA4")).ok_or_else(|| failed("tool leg A"))?;
-    let leg_b = tool.face_ids().find(|&f| tool.face(f).name == FaceName::other(feature, "TA1")).ok_or_else(|| failed("tool leg B"))?;
-    let curve_a = Curve::BSpline(fit.cols[0].clone());
-    let curve_b = Curve::BSpline(fit.cols[NV - 1].clone());
+    // (a ring tool has two faces of each name, one per half)
+    let named = |n: FaceName| -> Vec<FaceId> { tool.face_ids().filter(|&f| tool.face(f).name == n).collect() };
+    let blend_fs = named(blend_name.clone());
+    let leg_as = named(FaceName::other(feature, "TA4"));
+    let leg_bs = named(FaceName::other(feature, "TA1"));
+    let Some(&blend_f) = blend_fs.first() else { return Err(failed("tool lost its blend face")) };
+    if leg_as.is_empty() {
+        return Err(failed("tool leg A"));
+    }
+    if leg_bs.is_empty() {
+        return Err(failed("tool leg B"));
+    }
+    // the contact curves, one per tool half (a chain's tool is one piece, a ring's two)
+    let (curves_a, curves_b): (Vec<Curve>, Vec<Curve>) = match &halves {
+        Some(hs) => (hs.iter().map(|h| Curve::BSpline(h.cols[0].clone())).collect(), hs.iter().map(|h| Curve::BSpline(h.cols[NV - 1].clone())).collect()),
+        None => (vec![Curve::BSpline(fit.cols[0].clone())], vec![Curve::BSpline(fit.cols[NV - 1].clone())]),
+    };
     let hook = |f: FaceId, g: FaceId| -> Option<Vec<Curve>> {
-        if g == blend_f && (f1set.contains(&f) || f2set.contains(&f)) {
+        if blend_fs.contains(&g) && (f1set.contains(&f) || f2set.contains(&f)) {
             return Some(vec![]);
         }
-        if g == leg_a && f1set.contains(&f) {
-            return Some(vec![curve_a.clone()]);
+        if let Some(i) = leg_as.iter().position(|&x| x == g) {
+            if f1set.contains(&f) {
+                return Some(vec![curves_a[i.min(curves_a.len() - 1)].clone()]);
+            }
         }
-        if g == leg_b && f2set.contains(&f) {
-            return Some(vec![curve_b.clone()]);
+        if let Some(i) = leg_bs.iter().position(|&x| x == g) {
+            if f2set.contains(&f) {
+                return Some(vec![curves_b[i.min(curves_b.len() - 1)].clone()]);
+            }
         }
         None
     };
@@ -1052,7 +1266,22 @@ fn blend_chain(b: &Body, links: Vec<Link>, r: f64, feature: &str, k: u32, tol: f
     let (mut out, _) = apply_tool_hooked(b, &tool, op, &blend_name, hint, tol.max(FF_TOL), Some(&hook))?;
     // the imprint welded at FF_TOL: put the vertices back on their faces and
     // re-fit edges to them, so the result validates at the model tolerance
-    split_blend_at_links(&mut out, &blend_name, &tool, blend_f, &junction_u, tol.max(FF_TOL));
+    // (the blend surface a junction arc is cut from, and its parameter on it: a ring has one surface per half)
+    let (surfs, junctions): (Vec<BSplineSurface>, Vec<(usize, f64)>) = match &halves {
+        Some(hs) => {
+            let um = fit.u[ring_m];
+            let js = junction_u.iter().map(|&u| if u <= um + 1e-12 { (0, u / um) } else { (1, (u - um) / (1.0 - um)) }).collect();
+            (hs.iter().filter_map(|h| blend_patch(h).ok()).collect(), js)
+        }
+        None => (
+            match &tool.face(blend_f).surface {
+                Surface::BSpline(bs) => vec![(**bs).clone()],
+                _ => vec![],
+            },
+            junction_u.iter().map(|&u| (0, u)).collect(),
+        ),
+    };
+    split_blend_at_links(&mut out, &blend_name, &surfs, &junctions, tol.max(FF_TOL));
     // (vertices that coincide with a tool vertex take the tool's exact spot:
     // it lies on all the faces it joins)
     if super::diag::on_level(3) {
@@ -1070,7 +1299,11 @@ fn blend_chain(b: &Body, links: Vec<Link>, r: f64, feature: &str, k: u32, tol: f
             out.vertex_mut(v).p = q;
         }
     }
-    collapse_short_edges(&mut out, 6.0 * FF_TOL);
+    // (only slivers the imprint made: a short edge of the input between two of its own vertices, far from the blend
+    // or not, is model geometry; collapsing one moved its neighbours' ends by its length and left their edges off
+    // their faces, e.g. a 7.5e-4 mm edge of the fan shroud's grille ring)
+    let input_verts: Vec<Vec3> = b.vertex_ids().map(|v| b.vertex(v).p).collect();
+    collapse_short_edges_keeping(&mut out, 6.0 * FF_TOL, &input_verts);
     crate::surfacing::trim::settle_vertices(&mut out, tol);
     refit_edges_on_faces(&mut out);
     crate::surfacing::trim::snap_edge_ends(&mut out, tol);
@@ -1208,6 +1441,8 @@ fn build_tool(
     end_info: &dyn Fn(usize) -> (ck_topo::body::VertexId, Vec<FaceId>),
     _tol: f64,
     closed: bool,
+    split: usize,
+    halves: Option<&[Fit; 2]>,
 ) -> Result<Body, BlendError> {
     let nu = secs.len();
     let mut tool = Body::new();
@@ -1215,37 +1450,110 @@ fn build_tool(
     let shell = tool.add_shell(lump);
     let (u0, u1) = (fit.ku[0], fit.ku[fit.ku.len() - 1]);
     let name_of = |s: usize| if s == 0 { FaceName::blend(feature, k) } else { FaceName::other(feature, &format!("TA{s}")) };
-    if closed {
-        // a ring: 5 closed rail edges and 5 band faces (each an annulus, two
-        // closed boundaries); no cross edges and no caps. The strip surfaces
-        // close in u because `secs` first == last.
-        let mut v = [ck_topo::body::VertexId(0); 5];
-        for (t, &c) in TRACKS.iter().enumerate() {
-            v[t] = tool.add_vertex(secs[0].pts[c]);
+    if let (true, Some(halves)) = (closed, halves) {
+        // A ring: the sweep closes on itself (`secs` first == last), built as two sweeps (sections 0 to `split`, `split` back
+        // to 0), each with its own strips, like the two halves of the walls of a closed spline sketch: ten faces, the cross
+        // edges of the two sections shared by the halves, no caps. (A band that closed on itself would be one face with a
+        // seam, which a B-spline surface cannot place.)
+        let m = split.clamp(1, nu - 2);
+        let blends: Vec<BSplineSurface> = halves.iter().map(blend_patch).collect::<Result<_, _>>()?;
+        let mut strips: Vec<Vec<Surface>> = vec![];
+        for (h, ft) in halves.iter().enumerate() {
+            strips.push(vec![
+                Surface::BSpline(Box::new(blends[h].clone())),
+                Surface::BSpline(Box::new(ruled(ft, TRACKS[1], TRACKS[2])?)),
+                Surface::BSpline(Box::new(ruled(ft, TRACKS[2], TRACKS[3])?)),
+                Surface::BSpline(Box::new(ruled(ft, TRACKS[3], TRACKS[4])?)),
+                Surface::BSpline(Box::new(ruled(ft, TRACKS[4], TRACKS[0])?)),
+            ]);
         }
-        let long: Vec<EdgeId> = (0..5).map(|t| tool.add_edge(Curve::BSpline(fit.cols[TRACKS[t]].clone()), u0, u1, v[t], v[t])).collect();
-        let blend = blend_patch(fit)?;
-        let strips: Vec<Surface> = vec![
-            Surface::BSpline(Box::new(blend.clone())),
-            Surface::BSpline(Box::new(ruled(fit, TRACKS[1], TRACKS[2])?)),
-            Surface::BSpline(Box::new(ruled(fit, TRACKS[2], TRACKS[3])?)),
-            Surface::BSpline(Box::new(ruled(fit, TRACKS[3], TRACKS[4])?)),
-            Surface::BSpline(Box::new(ruled(fit, TRACKS[4], TRACKS[0])?)),
-        ];
-        for s in 0..5 {
-            let name = if s == 4 { FaceName::other(feature, "TA4") } else { name_of(s) };
-            let f = tool.add_face(shell, strips[s].clone(), true, name);
-            let l0 = tool.add_loop(f);
-            tool.add_coedge(l0, long[s], false, None);
-            let l1 = tool.add_loop(f);
-            tool.add_coedge(l1, long[(s + 1) % 5], true, None);
+        // the vertices of the two sections, and the rails between them (half 0: section 0 to `split`, half 1: back)
+        let sec_v: Vec<[ck_topo::body::VertexId; 5]> = [0usize, m]
+            .iter()
+            .map(|&i| {
+                let mut a = [ck_topo::body::VertexId(0); 5];
+                for (t, &c) in TRACKS.iter().enumerate() {
+                    a[t] = tool.add_vertex(secs[i].pts[c]);
+                }
+                a
+            })
+            .collect();
+        let rails: Vec<Vec<EdgeId>> = (0..2)
+            .map(|h| {
+                (0..5)
+                    .map(|t| {
+                        let (ta, tb) = (halves[h].ku[0], halves[h].ku[halves[h].ku.len() - 1]);
+                        let (va, vb) = if h == 0 { (sec_v[0][t], sec_v[1][t]) } else { (sec_v[1][t], sec_v[0][t]) };
+                        tool.add_edge(Curve::BSpline(halves[h].cols[TRACKS[t]].clone()), ta, tb, va, vb)
+                    })
+                    .collect()
+            })
+            .collect();
+        // the cross edges of a section: the first side is the blend patch's arc at that u, the others straight
+        let arcs = [blends[0].iso_u(halves[0].ku[0]), blends[0].iso_u(halves[0].ku[halves[0].ku.len() - 1])];
+        let cross: Vec<Vec<EdgeId>> = [0usize, 1]
+            .iter()
+            .map(|&si| {
+                (0..5)
+                    .map(|t| {
+                        let (va, vb) = (sec_v[si][t], sec_v[si][(t + 1) % 5]);
+                        let (pa, pb) = (tool.vertex(va).p, tool.vertex(vb).p);
+                        if t == 0 {
+                            let arc = arcs[si].clone();
+                            let (t0, t1) = (arc.domain().0, arc.domain().1);
+                            tool.add_edge(Curve::BSpline(arc), t0, t1, va, vb)
+                        } else {
+                            let d = pb - pa;
+                            let len = d.len();
+                            tool.add_edge(Curve::Line { o: pa, d: d / len.max(1e-300) }, 0.0, len, va, vb)
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        // pcurves: the rails are iso-v lines of a strip (u is the edge parameter), the cross edges iso-u lines (the
+        // first side's arc has v as its parameter, the others run over their length)
+        let (va0, va1) = (arcs[0].domain().0, arcs[0].domain().1);
+        for h in 0..2 {
+            let (ua, ub) = (halves[h].ku[0], halves[h].ku[halves[h].ku.len() - 1]);
+            // the section at the start of the half and at its end
+            let (sa, sb) = if h == 0 { (0usize, 1usize) } else { (1, 0) };
+            for t in 0..5 {
+                let name = if t == 4 { FaceName::other(feature, "TA4") } else { name_of(t) };
+                let f = tool.add_face(shell, strips[h][t].clone(), true, name);
+                let (vlo, vhi) = if t == 0 { (va0, va1) } else { (0.0, 1.0) };
+                let rail = |v: f64| Curve2::Line { o: Vec2::new(0.0, v), d: Vec2::new(1.0, 0.0) };
+                let clen = |si: usize| if t == 0 { 1.0 } else { (tool.vertex(sec_v[si][(t + 1) % 5]).p - tool.vertex(sec_v[si][t]).p).len().max(1e-300) };
+                let across = |u: f64, len: f64| Curve2::Line { o: Vec2::new(u, 0.0), d: Vec2::new(0.0, 1.0 / len) };
+                let (la, lb) = (clen(sa), clen(sb));
+                let lp = tool.add_loop(f);
+                tool.add_coedge(lp, rails[h][t], false, Some(rail(vlo)));
+                tool.add_coedge(lp, cross[sb][t], false, Some(across(ub, lb)));
+                tool.add_coedge(lp, rails[h][(t + 1) % 5], true, Some(rail(vhi)));
+                tool.add_coedge(lp, cross[sa][t], true, Some(across(ua, la)));
+            }
         }
         let (_, vol) = ck_topo::orient::orient_body_volume_quick(&mut tool);
-        if !(vol > 0.0) {
+        // The faces are bands without a seam edge (their two loops are the closed rails), which the volume integral cannot
+        // read: it comes out as rounding noise of either sign, so it cannot say which way the shell faces. The tool lies between
+        // the blend arc and the section's far corner: the blend face's outward normal points away from that corner.
+        let blend_f = tool.face_ids().find(|&f| tool.face(f).name == FaceName::blend(feature, k)).ok_or_else(|| failed("ring tool lost its blend face"))?;
+        // (at the start of the blend face's own domain, where the first section lies: a ring built as two sweeps has a blend
+        // face per half, and the middle of the whole fit lies on the other one)
+        let (um, vm) = (tool.face(blend_f).surface.domain().0 .0, 0.5);
+        let m = tool.face(blend_f).surface.eval(um, vm);
+        let n = tool.outward_normal(blend_f, um, vm);
+        let corner = secs[0].pts[TRACKS[3]];
+        if !vol.is_finite() || n.dot(corner - m) == 0.0 {
             return Err(failed(&format!("ring tool volume {vol}")));
         }
+        if n.dot(corner - m) > 0.0 {
+            for f in tool.face_ids().collect::<Vec<_>>() {
+                ck_topo::orient::flip_face(&mut tool, f);
+            }
+        }
         if super::diag::on() {
-            dbg(&format!("ring tool built: {nu} stations, volume {vol:.3}, issues {:?}", ck_topo::check::check(&tool, 1e-5).len()));
+            dbg(&format!("ring tool built: {nu} stations, volume {vol:e} (mass {:e}), issues {:?}", ck_topo::mass::mass_props(&tool).volume, ck_topo::check::check(&tool, 1e-5).len()));
         }
         return Ok(tool);
     }
@@ -1506,11 +1814,21 @@ pub fn drop_zero_edges(out: &mut Body, max_len: f64) {
 /// inexact trimmed edge crosses a tool edge): the edge and its coedges
 /// vanish and its second vertex is merged into the first.
 pub fn collapse_short_edges(out: &mut Body, max_len: f64) {
+    collapse_short_edges_keeping(out, max_len, &[]);
+}
+
+/// [`collapse_short_edges`], leaving alone the edges whose two end vertices both sit (within 1e-7) on points of `keep`
+/// (the vertices of the body before the operation: such an edge is the input's own geometry, not a welding sliver).
+pub fn collapse_short_edges_keeping(out: &mut Body, max_len: f64, keep: &[Vec3]) {
     drop_zero_edges(out, max_len);
+    let kept = |p: Vec3| keep.iter().any(|q| q.dist(p) <= 1e-7);
     loop {
         let cand = out.edge_ids().find(|&e| {
             let ed = out.edge(e);
-            ed.v0 != ed.v1 && out.vertex(ed.v0).p.dist(out.vertex(ed.v1).p) < max_len && out.edge_length(e) < 3.0 * max_len
+            ed.v0 != ed.v1
+                && out.vertex(ed.v0).p.dist(out.vertex(ed.v1).p) < max_len
+                && out.edge_length(e) < 3.0 * max_len
+                && !(kept(out.vertex(ed.v0).p) && kept(out.vertex(ed.v1).p))
         });
         let Some(e) = cand else { break };
         let (keep, gone) = (out.edge(e).v0, out.edge(e).v1);
@@ -1537,9 +1855,9 @@ pub fn collapse_short_edges(out: &mut Body, max_len: f64) {
 /// Cut the blend face of a chain into one face per link along the section
 /// arcs at the link junctions (the oracle blends edge by edge: one blend
 /// face per edge, all named alike; `~k` numbering follows later).
-fn split_blend_at_links(out: &mut Body, name: &FaceName, tool: &Body, tool_blend: FaceId, junction_u: &[f64], tol: f64) {
-    let Surface::BSpline(bs) = tool.face(tool_blend).surface.clone() else { return };
-    for &uj in junction_u {
+fn split_blend_at_links(out: &mut Body, name: &FaceName, surfs: &[BSplineSurface], junctions: &[(usize, f64)], tol: f64) {
+    for &(h, uj) in junctions {
+        let Some(bs) = surfs.get(h) else { continue };
         let arc = bs.iso_u(uj);
         let (a_pt, b_pt, mid) = (arc.eval(arc.domain().0), arc.eval(arc.domain().1), arc.eval(0.5 * (arc.domain().0 + arc.domain().1)));
         let faces: Vec<FaceId> = out.face_ids().filter(|&f| out.face(f).name == *name).collect();

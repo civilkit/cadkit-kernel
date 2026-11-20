@@ -148,6 +148,7 @@ These requests live in `ck-ops::analysis`. Entities (`a`, `b`, `ids`) are a face
 | `clearance {min}` | Face pairs closer than `min`, classed `gap`, `wall` or `contact`. | Seeds from the display mesh and refines on the surfaces; a face whose mesh failed can hide a pair. Pairs that share a vertex are skipped. |
 | `symmetry` | Candidate mirror planes, each with the maximum and rms deviation of the mirrored surface. The same plane can be listed twice when a coordinate axis and a principal axis coincide (reported for some bodies; the block with the hole lists three distinct planes). | Sampled; a plane reports `exact: true` when every sample was measured. |
 | `extrema {dir}` | The lowest and highest point of the body along a direction. | Exact (`method: "vertices"`) when every face is planar and every edge straight; otherwise sampled and refined to about 1e-9. |
+| `checkIntersection {a, b}` | Diagnostics of the surface/surface intersection: per face pair, the marched curves and how many of their spans are proved to lie on one arc of the true intersection, with the spans that are not. | A proof by interval arithmetic with outward rounding (Krawczyk's test) for each span it reports as proved. An unproved span is the absence of a guarantee (a tangent contact cannot be proved), not a detected error. |
 
 ### angles
 

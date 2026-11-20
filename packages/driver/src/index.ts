@@ -1,29 +1,9 @@
-// Importable core of the repo's CLI driver: spec loading, STL encoding,
-// result shaping.
-// Browser launching stays with the caller (the CLI owns the Playwright
-// launch flags via its external helper) — this package takes an EvalPage.
+// Importable core of the repo's CLI driver: spec loading and STL encoding.
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { PartDoc } from '../../part-model/src/index.js';
-import { evalKernelInPage, type EvalPage, type KernelEvalResult } from '../../kernel-client/src/index.js';
-
-export interface RunOpts {
-  mass?: boolean | string;
-  step?: boolean | string; // output path when string
-  stl?: boolean | string; // output path when string
-  png?: boolean | string;
-  faces?: boolean | string;
-  full?: boolean;
-  view?: boolean | string;
-}
-
-export interface RunResult extends KernelEvalResult {
-  step?: { file: string; bytes: number };
-  stl?: { file: string; triangles: number };
-  png?: string;
-}
 
 /** Load a part spec: JSON file, or a builder .mjs whose default export returns a Part. */
 export async function loadSpec(file: string): Promise<PartDoc> {
@@ -54,44 +34,4 @@ export function stlBinary(positions: Float32Array, name?: string): Buffer {
     [nx, ny, nz, ...p].forEach((x, i) => buf.writeFloatLE(x, o + i * 4));
   }
   return buf;
-}
-
-const round7 = (v: unknown): unknown =>
-  typeof v === 'number' ? +v.toPrecision(7)
-  : Array.isArray(v) ? v.map(round7)
-  : v && typeof v === 'object'
-    ? Object.fromEntries(Object.entries(v as Record<string, unknown>).map(([k, x]) => [k, round7(x)]))
-    : v;
-
-/**
- * Drive one regen (+ optional mass/STEP/mesh) through the page's kernel,
- * write step/stl files, and return the compact JSON result.
- * Screenshot (png) still lives in the CLI — it needs canvas picking +
- * setView/loadPartState orchestration that deserves the viewer-facade pass.
- */
-export async function run(page: EvalPage, part: PartDoc, opts: RunOpts = {}): Promise<RunResult> {
-  // evalKernelInPage is self-contained so Playwright can serialize it into the page.
-  const r = await page.evaluate(evalKernelInPage, {
-    part,
-    mass: !!opts.mass,
-    step: !!opts.step,
-    stl: !!opts.stl,
-    faces: !!opts.faces,
-  }) as KernelEvalResult;
-  const out = r as RunResult;
-  if (r.stepText && opts.step && opts.step !== true) {
-    fs.writeFileSync(opts.step, r.stepText);
-    out.step = { file: opts.step, bytes: r.stepText.length };
-  }
-  if (r.positions && opts.stl && opts.stl !== true) {
-    fs.writeFileSync(opts.stl, stlBinary(Float32Array.from(r.positions), part.name));
-    out.stl = { file: opts.stl, triangles: r.triangles ?? 0 };
-  }
-  delete out.stepText;
-  delete out.positions;
-  if (out.mass && !opts.full) delete (out.mass as Record<string, unknown>).axes;
-  for (const k of ['mass', 'box'] as const) {
-    if (out[k]) (out as unknown as Record<string, unknown>)[k] = round7(out[k]);
-  }
-  return out;
 }

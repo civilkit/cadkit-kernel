@@ -71,6 +71,32 @@ pub(super) struct Corner {
 }
 
 impl Corner {
+    /// The refusal for a corner that cannot take the patch (`patch_ok` false) or whose patch failed to splice
+    /// (`failed` carries the reason). Names the vertex and the four edges' effect and says what to change.
+    pub(super) fn refusal(&self, failed: Option<&str>) -> BlendError {
+        let at = format!("({:.3}, {:.3}, {:.3})", self.v.x, self.v.y, self.v.z);
+        let (detail, hint) = if let Some(why) = failed {
+            (
+                format!(
+                    "the four selected edges at ({:.3}, {:.3}, {:.3}), where a convex and a concave edge pair meet, could not be joined by a corner patch ({why}); the strips would stop in planar steps there",
+                    self.v.x, self.v.y, self.v.z
+                ),
+                "round the corner on its own first (the four edges at this vertex in a separate feature, or one pair at a time), pick fewer edges, or change the radius or distance so the strips' ends meet".to_string(),
+            )
+        } else if self.a12.abs() > 1e-9 {
+            let deg = self.a12.abs().clamp(-1.0, 1.0).acos().to_degrees();
+            (
+                format!("a convex and a concave blended edge meet at {at} and their two edge directions are {deg:.0} degrees apart, not perpendicular"),
+                "the corner patch is only built where the two edge directions are perpendicular: fillet the concave edges and the convex edges in separate features, or leave the four edges at this vertex out of the selection".to_string(),
+            )
+        } else {
+            (
+                format!("the strips of the four blended edges at {at}, where a convex and a concave edge pair meet, do not end on each other's boundary, so no corner patch closes between them and they would stop in planar steps"),
+                "pick fewer edges (leave the four edges at this vertex out, or take one pair), blend the corner in a separate feature, or change the radius or distance so the strips' ends meet".to_string(),
+            )
+        };
+        BlendError { detail: Some(detail), params: vec![("hint".into(), hint)], ..BlendError::code("blendCorner") }
+    }
     /// Which of the two pairs strike `i` belongs to.
     fn pair_of(&self, i: usize) -> usize {
         usize::from(self.pairs[1].0 == i || self.pairs[1].1 == i)
@@ -244,11 +270,8 @@ pub(super) fn detect(b: &Body, sel: &[EdgeId], radii: &[f64]) -> Vec<Corner> {
             }
             let distinct = hits.len() == 2 && hits[0].0 != hits[1].0 && hits[0].2 != hits[1].2;
             patch_ok = feet_ok && distinct;
-            // an orthogonal corner whose boundary does not close: fall back to the
-            // ordinary stepped build (today's behaviour), no refusal
-            if !patch_ok {
-                continue;
-            }
+            // an orthogonal corner whose boundary does not close is kept with `patch_ok` false: the caller
+            // refuses it (`Corner::refusal`) instead of leaving the stripes in planar steps
         }
         let Ok(s) = <[Strike; 4]>::try_from(strikes) else { continue };
         let Ok(edges) = <[EdgeId; 4]>::try_from(inc) else { continue };
@@ -640,6 +663,22 @@ fn patch_surface(
             0.5 * (1.0 + (std::f64::consts::PI * t).cos())
         }
     };
+    // G1 columns: same stencil into the wall planes
+    for &(vert, nrm) in &[(0usize, wall_n.0), (n - 1, wall_n.1)] {
+        let step: isize = if vert == 0 { 1 } else { -1 };
+        for depth in 1..=g1_taper.max(1) {
+            let i = vert as isize + step * depth as isize;
+            if i < 0 || i >= n as isize {
+                continue;
+            }
+            let i = i as usize;
+            for j in 1..n - 1 {
+                let q = grid[vert][j];
+                let p = grid[i][j];
+                grid[i][j] = p - nrm * ((p - q).dot(nrm)) * g1w(depth);
+            }
+        }
+    }
     for &(vert, w, tot, cent, ax) in &[(0usize, &bw, bt, &bcent, &bottom_ax), (n - 1, &tw, tt, &tcent, &top_ax)] {
         let step: isize = if vert == 0 { 1 } else { -1 };
         for depth in 1..=g1_taper.max(1) {
@@ -661,22 +700,6 @@ fn patch_surface(
                 if super::diag::on() && depth == 1 && (i == n / 4 || i == 3 * n / 4) {
                     eprintln!("g1 row: i={i} j={j} sc=({:.2},{:.2},{:.2}) shift={:.6}", sc.x, sc.y, sc.z, (p - grid[i][j]).len());
                 }
-            }
-        }
-    }
-    // G1 columns: same stencil into the wall planes
-    for &(vert, nrm) in &[(0usize, wall_n.0), (n - 1, wall_n.1)] {
-        let step: isize = if vert == 0 { 1 } else { -1 };
-        for depth in 1..=g1_taper.max(1) {
-            let i = vert as isize + step * depth as isize;
-            if i < 0 || i >= n as isize {
-                continue;
-            }
-            let i = i as usize;
-            for j in 1..n - 1 {
-                let q = grid[vert][j];
-                let p = grid[i][j];
-                grid[i][j] = p - nrm * ((p - q).dot(nrm)) * g1w(depth);
             }
         }
     }
@@ -1167,4 +1190,49 @@ pub(super) fn splice(body: &Body, c: &Corner, feature: &str, tag: usize, tol: f6
     };
     out = crate::boolean::assemble::rebuild_in_order(&out, &order);
     Ok(out)
+}
+#[cfg(test)]
+mod refusal_tests {
+    use super::*;
+    use crate::boolean::tests::box_body;
+
+    fn corner(a12: f64) -> Corner {
+        let b = box_body("F2", 0.0, 0.0, 40.0, 20.0, 0.0, 10.0);
+        let ids: Vec<EdgeId> = b.edge_ids().take(4).collect();
+        let st = Strike { dir: Vec3::new(1.0, 0.0, 0.0), convex: true, n: [Vec3::new(0.0, 1.0, 0.0), Vec3::new(0.0, 0.0, 1.0)] };
+        Corner {
+            v: Vec3::new(1.0, 2.0, 3.0),
+            r: [1.0, 1.0],
+            edges: [ids[0], ids[1], ids[2], ids[3]],
+            patch_ok: false,
+            chamfer: false,
+            a12,
+            s: [st.clone(), st.clone(), st.clone(), st],
+            pairs: [(0, 1), (2, 3)],
+        }
+    }
+
+    fn text(e: &BlendError) -> (String, String) {
+        let hint = e.params.iter().find(|(k, _)| k == "hint").map(|(_, v)| v.clone()).unwrap_or_default();
+        (e.detail.clone().unwrap_or_default(), hint)
+    }
+
+    /// Every way a corner is refused names the vertex (or the four edges), says why, and carries a hint that says what to change;
+    /// all of them say "corner patch" (the size search of the feature layer leaves such refusals alone).
+    #[test]
+    fn refusals_name_the_vertex_the_reason_and_what_to_change() {
+        let skew = corner(0.5).refusal(None);
+        let (d, h) = text(&skew);
+        assert_eq!(skew.code, "blendCorner");
+        assert!(d.contains("(1.000, 2.000, 3.000)") && d.contains("60 degrees apart"), "{d}");
+        assert!(h.contains("separate features") && h.contains("corner patch"), "{h}");
+        let open = corner(0.0).refusal(None);
+        let (d, h) = text(&open);
+        assert!(d.contains("(1.000, 2.000, 3.000)") && d.contains("planar steps") && d.contains("corner patch"), "{d}");
+        assert!(h.contains("pick fewer edges") && h.contains("separate feature"), "{h}");
+        let failed = corner(0.0).refusal(Some("hexagon does not close"));
+        let (d, h) = text(&failed);
+        assert!(d.contains("(1.000, 2.000, 3.000)") && d.contains("hexagon does not close") && d.contains("corner patch") && d.contains("planar steps"), "{d}");
+        assert!(h.contains("pick fewer edges") && h.contains("round the corner on its own first"), "{h}");
+    }
 }

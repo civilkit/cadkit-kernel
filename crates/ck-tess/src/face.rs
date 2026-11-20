@@ -210,6 +210,15 @@ impl<'a> Builder<'a> {
     }
 }
 
+/// Largest angle (degrees) the normals at the corners of one spline-patch triangle may differ by before it is split.
+const SPLINE_NORMAL_TURN: f64 = 15.0;
+/// ... unless its longest edge is shorter than this many chord tolerances.
+const SPLINE_TURN_MIN_EDGE: f64 = 0.5;
+/// At most this many triangles of one face are split by the normal-turn rule (the chord rule has its own budget).
+const SPLINE_TURN_BUDGET: usize = 3000;
+/// The rule applies to faces whose boundary box diagonal is at most this many chord tolerances.
+const SPLINE_TURN_MAX_FACE: f64 = 400.0;
+
 /// Samples the iso-parameter segment `uv(s), s in [0,1]` with the chord / angle rule
 /// (uniform initial split then bisection, depth ≤ 10). Returns the interior + end parameters in (0,1].
 fn sample_iso(surf: &Surface, a: Vec2, b: Vec2, tol: &Tol) -> Vec<f64> {
@@ -401,12 +410,56 @@ fn mesh_face_strict(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, 
     }
 }
 
+/// `(u, v)`: for a B-spline face whose surface closes on itself in that direction with no periodic flag and whose loops hold no seam
+/// edge (no edge twice), the width of the closed domain and its end; see [`mesh_face_impl`].
+fn closed_strip(body: &Body, f: FaceId) -> (Option<(f64, f64)>, Option<(f64, f64)>) {
+    let face = body.face(f);
+    let Surface::BSpline(_) = &face.surface else { return (None, None) };
+    if face.surface.periods() != (None, None) {
+        return (None, None);
+    }
+    let mut seen = std::collections::HashSet::new();
+    for &l in &face.loops {
+        for &c in &body.lp(l).coedges {
+            if !seen.insert(body.coedge(c).edge) {
+                return (None, None);
+            }
+        }
+    }
+    let ((u0, u1), (v0, v1)) = face.surface.domain();
+    if !(u0.is_finite() && u1.is_finite() && v0.is_finite() && v1.is_finite()) {
+        return (None, None);
+    }
+    let scale = 1e-9 * (1.0 + face.surface.eval(u0, v0).len());
+    let ks = [0.0, 0.3, 0.7, 1.0];
+    let cu = ks.iter().all(|&k| {
+        let v = v0 + (v1 - v0) * k;
+        face.surface.eval(u0, v).dist(face.surface.eval(u1, v)) <= scale
+    });
+    let cv = ks.iter().all(|&k| {
+        let u = u0 + (u1 - u0) * k;
+        face.surface.eval(u, v0).dist(face.surface.eval(u, v1)) <= scale
+    });
+    (cu.then_some((u1 - u0, u1)), cv.then_some((v1 - v0, v1)))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bool)], ssi: &[f64], cut: FaceCut, tol: &Tol, cover: bool) -> Result<FaceMesh, String> {
     let face = body.face(f);
     crate::tr!(9, 0, 0, f.idx(), 0);
     let surf = &face.surface;
-    let (pu, pv) = surf.periods();
+    let (mut pu, mut pv) = surf.periods();
+    // A B-spline strip that closes on itself in u (or v) without a seam edge (the free-form fillet tool's band round a closed
+    // rim: its fitted strip joins the first station to the last): its loops are closed rails whose closing segment runs the
+    // whole width, overlapping the rail it closes, which the triangulation cannot recover. It is cut open like a periodic
+    // face instead, at its domain's start.
+    let strip = closed_strip(body, f);
+    if let Some((per, _)) = strip.0 {
+        pu = Some(per);
+    }
+    if let Some((per, _)) = strip.1 {
+        pv = Some(per);
+    }
     // The original opens a periodic direction at the window [cut - p, cut] (its uv bounds are exactly that window).
     // A cylinder wall bounded by the original's first SSI circle opens the other way: window [cut, cut + p].
     let ssi_hole = face.loops.iter().any(|&l| body.lp(l).coedges.iter().any(|&c| body.coedge(c).alive && ssi.get(body.coedge(c).edge.idx()).map_or(false, |&o| o != 0.0)));
@@ -421,6 +474,14 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
     } else {
         cut
     };
+    if !cover {
+        if let (Some((_, end)), None) = (strip.0, cut.u) {
+            cut.u = Some(end);
+        }
+        if let (Some((_, end)), None) = (strip.1, cut.v) {
+            cut.v = Some(end);
+        }
+    }
     let (mut cu, mut cv) = if cover {
         (None, None)
     } else {
@@ -469,7 +530,7 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
             let e = ce.edge;
             // (a B-spline patch closed on itself is an ordinary rectangle in uv: its seam edge
             // bounds the polygon on both sides, there is no cut window to open)
-            let seam = body.is_seam(e) && !matches!(surf, Surface::BSpline(_) | Surface::Screw { .. });
+            let seam = body.is_seam(e) && !matches!(surf, Surface::BSpline(_) | Surface::Screw { .. } | Surface::Sweep(_) | Surface::Blend(_));
             let ed = body.edge(e);
             let mut ps: Vec<f64> = params.get(e.idx()).cloned().unwrap_or_default();
             if ps.len() < 2 {
@@ -565,8 +626,12 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
                     None => d.abs() <= 1e-3 * (1.0 + d.abs()),
                 };
                 let whole = winds(first.uv.x - last.uv.x, pu) && winds(first.uv.y - last.uv.y, pv);
+                // The loop of a wedge that starts at its pole (a cone wedge of 355 degrees or more, the loop begins at the apex)
+                // closes over the pole line: the same point in space, the same v, u apart by less than a period. `join`
+                // samples that line; it is not a loop that winds.
+                let over_pole = !whole && (first.uv.y - last.uv.y).abs() <= 1e-9 * (1.0 + first.uv.y.abs()) && first.p.dist(last.p) <= 1e-9 * (1.0 + first.p.len());
                 join(&mut poly, last, first, tol);
-                if cover && !whole && first.uv.dist(poly.last().unwrap().uv) > 1e-6 && first.p.dist(poly.last().unwrap().p) <= 1e-6 * (1.0 + first.p.len()) {
+                if cover && !whole && !over_pole && first.uv.dist(poly.last().unwrap().uv) > 1e-6 && first.p.dist(poly.last().unwrap().p) <= 1e-6 * (1.0 + first.p.len()) {
                     return Err("loop winds a period".into());
                 }
             }
@@ -1034,7 +1099,7 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
     }
     // Other surfaces only count a gross offset (an invalid body whose trim is far off its face): a triangle with such a
     // vertex never comes within the tolerance however often it is split, and refinement would spend its whole budget.
-    let off_limit = if matches!(surf, Surface::BSpline(_) | Surface::Screw { .. }) { 0.25 * tol.chord } else { 100.0 * tol.chord };
+    let off_limit = if matches!(surf, Surface::BSpline(_) | Surface::Screw { .. } | Surface::Sweep(_) | Surface::Blend(_)) { 0.25 * tol.chord } else { 100.0 * tol.chord };
     for (&v, &(uv, p)) in vdata.iter() {
         let sp = surf.eval(uv.x, uv.y);
         if sp.dist(p) > off_limit {
@@ -1106,10 +1171,22 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
     let mut inserted = 0usize;
     let mut front: Vec<usize> = vec![];
     let sense = face.sense;
-    let is_spline = matches!(surf, Surface::BSpline(_) | Surface::Screw { .. });
+    let is_spline = matches!(surf, Surface::BSpline(_) | Surface::Screw { .. } | Surface::Sweep(_) | Surface::Blend(_));
     // Triangles that passed keep their vertices (and so their verdict) across
     // passes: remember them instead of re-evaluating the surface 4x each pass.
     let mut accepted: HashSet<[u32; 3]> = HashSet::default();
+    // splits asked for by the normal-turn rule alone (bounded per face, see SPLINE_TURN_BUDGET)
+    let mut turn_splits = 0usize;
+    // ... and only on a face a few hundred chords across (a blend corner patch is about 60): on a big loft or sweep face
+    // the rule chased every pinch of the surface and made the mesh ten times slower (crash fuzz, case_956)
+    let turn_ok = {
+        let (mut lo, mut hi) = (Vec3::new(f64::MAX, f64::MAX, f64::MAX), Vec3::new(f64::MIN, f64::MIN, f64::MIN));
+        for q in &b.pts {
+            lo = Vec3::new(lo.x.min(q.p.x), lo.y.min(q.p.y), lo.z.min(q.p.z));
+            hi = Vec3::new(hi.x.max(q.p.x), hi.y.max(q.p.y), hi.z.max(q.p.z));
+        }
+        !b.pts.is_empty() && (hi - lo).len() <= SPLINE_TURN_MAX_FACE * tol.chord
+    };
     for _pass in 0..64 {
         let mut cands: Vec<(Pt, u32)> = vec![];
         for (ti, v) in tri.cdt.inside_tris() {
@@ -1167,7 +1244,21 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
                 let sm = surf.eval(w.x, w.y);
                 dev = dev.max(sm.dist((x.1 + y.1) * 0.5));
             }
-            if dev > tol.chord {
+            // A spline patch whose normal turns through a large angle inside one triangle (a blend patch pinched at a
+            // corner of its outline) is a chord-flat but visibly lumpy face: the shader interpolates normals that
+            // differ by 70+ degrees. The limit is 15 degrees (10 gave 4700 triangles on the user's corner patch, 15 gives
+            // 2100), and a triangle under half a chord across is left alone.
+            let mut turns = false;
+            if dev <= tol.chord && matches!(surf, Surface::BSpline(_)) && !flat3 && turn_ok && turn_splits < SPLINE_TURN_BUDGET {
+                let nv: Vec<Vec3> = [a, bb, c].iter().map(|x| surf.normal(wrap_eval(x.0).x, wrap_eval(x.0).y)).collect();
+                let big = nv[0].dot(nv[1]).min(nv[1].dot(nv[2])).min(nv[2].dot(nv[0])) < SPLINE_NORMAL_TURN.to_radians().cos();
+                let longest = (bb.1 - a.1).len().max((c.1 - bb.1).len()).max((a.1 - c.1).len());
+                turns = big && longest > SPLINE_TURN_MIN_EDGE * tol.chord;
+            }
+            if dev > tol.chord || turns {
+                if turns && dev <= tol.chord {
+                    turn_splits += 1;
+                }
                 let cp = to_c(cuv3);
                 cands.push((cp, ti));
             } else {

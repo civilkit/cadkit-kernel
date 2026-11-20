@@ -76,15 +76,30 @@ the selection ("all connected") both corners ended in steps and a ragged fan of 
 (3) The patch's G1 band is never narrower than 7 grid lines (5 left it 0.15 rad off tangent at every radius).
 
 Chamfers (`overhang-chamfer-*`, ids `-d<distance>`): the same selections with an equal-distance chamfer, plus two distances on one face and the
-four edges with two distances or an angle (refused: the first distance cannot be measured on one face for all four). A chamfer of distance d
+four edges with two distances or an angle (refused: the first distance cannot be measured on one face for all four, and with unequal legs the
+strips of the two pairs stop at different distances on the shared faces, so the hexagon the patch needs does not close: see docs/dead-ends.md). A chamfer of distance d
 meets each face where a fillet of radius d has its feet, so the corner has the same zone and hexagon (`Corner::chamfer`: the hexagon's
 arc sides are the straight strip ends, the patch is the harmonic fill through them, no tangency asked); the corner's edges are built first,
 alone, and the rest of the selection on that body (`chamfer_corners_first`: in one pass the chamfers of a mixed vertex reshape the body about
 the corner and the patch union is non-manifold). Before, four chamfered edges ended in two planar triangles (+d^3 volume, the V-shaped peaks,
 flaps and open pockets of the report), and the "all connected" chamfer was refused ("edge shared by four faces") at the vertex under the
 overhang where two concave edges meet a convex vertical one: that vertex now closes in the first round order that does (concave edges
-first, then convex first), ending in planar steps like the same vertex of a fillet. The zone section also ignores faces of other corners that
+first, then convex first), ending in planar steps. The zone section also ignores faces of other corners that
 lie in the same plane.
+
+The mixed vertex under the overhang (`overhang-v3-*`, `overhang-chamfer-v3-*`; the vertex at (21.5, 10, 16.7) of the saved part: two concave edges
+where the walls of block A meet the underside of block B, and the vertical convex corner edge of A between them): the fillet builds it in stages
+(`mixed.rs`: convex edge first, then the concave chain on a torus) and is the same part in every pick order. The equal-distance chamfer did not: edge by edge
+in the pick order it left planar steps or a face of the tool (`F6.S.l*`) and a different volume per order (13.11, 13.61, 14.11 at d = 1; the edge-only
+estimate is 14.11). `chamfer_mixed` (`mixed.rs`, called first by `build::chamfer`) now builds it as the fillet does: the convex strip first (it ends on the
+underside of B in a straight edge, not tangent to anything), then the concave edges together with that end edge as one selection, the strips mitred at
+their joints (the 135 degree turns of the chain), then the overhang corner patches of the selection. Result at d = 1: four strips, no step, 14.097
+(the estimate less the joint terms), every pick order. The "all connected" chamfer takes the same path (its pinned volumes moved by 0.7 d^3: the old result
+still carried the step at this vertex). A convex and a concave edge of the vertex with the third left sharp used to depend on the pick order too (a tool
+face in one order, a capped end in the other); the convex pick of such a pair now goes first (`has_mixed_pair` in `rounds.rs`), so both orders give the
+capped end. The same pair with the 4-valent corner V1 or V2 also fully selected used to leave a face of the tool (`F6.S.l*`) in the part (34 selections of the
+probe `MIXPROBE=1 MIXKIND=chamfer cargo test -p ck-model --test overhang_fillet mixed_probe`, valid by every check; all 34 already did on main, which had 161 selections with a tool face in the probe, 315 depending on the pick order): a chamfer whose result carries
+one, or lacks an overhang corner's patch, is now refused (`blendCorner`, `guard_corners` in `mixed.rs`) with the vertex, the reason and a hint.
 
 ## Stepped disc cases
 
@@ -141,8 +156,19 @@ edges after the R5 (`wheel-r5-then-vertical-r10`, `-rim-side`, `-r3`, `wheel-r2-
 `blendUnsupported` "concave chain end is not on a planar face" and a hint saying that the round ends on the torus of an earlier round at
 a given point: the vertical edge runs up to the R5's torus (the plane face above the plate is only the R5's end wedge), the ball would
 have to leave the plane over the convex plate-top edge, and no corner patch joins a concave round to another round (the patch of
-`corner.rs` is for three rounds meeting at a vertex, planes plus a cylinder). The other order (R10 first, R5 after) answers
-`blendFailed` "no blend face in result" and is not covered.
+`corner.rs` is for three rounds meeting at a vertex, planes plus a cylinder). The other order (R10 first, R5 after) builds (`tests/wheel_fillets.rs`): the eight R10 rounds are now exact cylinders (the rim-side
+wall lines, a plane meeting the inside of a ring, are built by the analytic line builder like the hub-side ones: `is_rim_wall_line`, the
+tool reaches a little into the material behind the wall so that no tool face lies on it); the R5's chain of arcs then runs on 0.25 rad
+past each end of the plate to where the R10 rounds touch the rim wall, where the plate top ends along the top edge of an R10 round, and
+its tool is trimmed by that round's cylinder (the overflow trim). That cylinder is tangent to the rim wall the tool's own face lies on, so
+the trim is retried with the tool reaching into the material behind its two faces (`INTO_MATERIAL`), and in that retry the far end of the
+chain is trimmed as well as the first. The added volume is the R10's plus the R5's fill over the plate top (within 1e-3 of the integral).
+(Before, the R10 rounds were free-form and the R5 answered `blendFailed` "no blend face in result": the trim of the contact leaving the top
+was taken against the rim wall instead of the round and cut the whole tool away.) A rim-side wall line whose end is on a round of an
+earlier feature stays on the free-form path (the R5-then-R10 refusal above).
+
+Corner patches: a convex/concave edge-pair corner (four edges at a vertex) whose patch cannot be built or spliced is refused with
+`blendCorner`, naming the vertex, the reason and a hint, instead of returning the body with planar steps at the corner.
 
 ## hard
 

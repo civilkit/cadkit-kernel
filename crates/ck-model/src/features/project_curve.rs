@@ -494,7 +494,7 @@ fn normalise_samples(pts: Vec<Vec3>) -> Vec<Vec3> {
 
 /// Is every sample within 1e-4 of one plane? Returns its unit normal (largest component positive); `None` for
 /// points that are not coplanar or that lie on a line (no plane to speak of).
-fn plane_normal(pts: &[Vec3]) -> Option<Vec3> {
+pub(crate) fn plane_normal(pts: &[Vec3]) -> Option<Vec3> {
     if pts.len() < 3 {
         return None;
     }

@@ -12,6 +12,10 @@ fn run(server: &mut Server, body: &str) -> (String, usize) {
     (j.to_string(), r.len())
 }
 
+/// Known, intentional divergences from the original kernel's replies (the golden is the original's output; the same list,
+/// with reasons, is `known` in tools/cases.mjs): (case, step index) -> the reply must be the `stepNothingToExport` refusal.
+const KNOWN_STEP_NONE: &[(&str, usize)] = &[("empty:step", 1), ("empty:step", 3), ("empty:step", 4), ("empty:params", 65)];
+
 #[test]
 fn wire_golden() {
     let g = ck_json::parse(GOLDEN).unwrap();
@@ -20,12 +24,16 @@ fn wire_golden() {
     for case in g.as_arr().unwrap() {
         let name = case.get_str("name").unwrap();
         let mut s = Server::new();
-        for step in case.get_arr("steps").unwrap() {
+        for (si, step) in case.get_arr("steps").unwrap().iter().enumerate() {
             let body = step.get_str("body").unwrap();
             let Some(want) = step.get_str("json") else { continue };
             n += 1;
             let (got, total) = run(&mut s, body);
             let want_total = step.get_f64("total").unwrap() as usize;
+            if KNOWN_STEP_NONE.contains(&(name, si)) {
+                assert!(got.starts_with(r#"{"ok":false,"error":"stepNothingToExport: "#), "{name}#{si}: {got}");
+                continue;
+            }
             if got != want || total != want_total {
                 fails.push(format!("{name}: {}\n   want {want} ({want_total})\n   got  {got} ({total})", &body[..body.len().min(120)]));
             }
@@ -48,10 +56,22 @@ fn legacy_format_name_replies_identically() {
 
 #[test]
 fn all_types_dispatch() {
-    assert_eq!(REQUEST_TYPES.len(), 65); // faceRun + builtExport + sheetDxf + sheetBendTable + sldprtHistory + equationCurve + exportMesh + fitQuadrics + 5 dfm* queries + loadFont/unloadFont/listFonts/subsetFont + importSldprt + importSkp + bodyBoolean + recognize + 9 measurement (distance/maxDistance/thickness/thicknessAt/closestPoint/angles/clearance/symmetry/extrema) + 17 original + validate/importSat/importStep/heal + check/resolve/describe/refDiff/threadData/checkProfile/profiles + section/sections/probe extensions + sketchAnalyze + sketchFreedoms
+    assert_eq!(REQUEST_TYPES.len(), 67); // meshToSolid + checkIntersection + faceRun + builtExport + sheetDxf + sheetBendTable + sldprtHistory + equationCurve + exportMesh + fitQuadrics + 5 dfm* queries + loadFont/unloadFont/listFonts/subsetFont + importSldprt + importSkp + bodyBoolean + recognize + 9 measurement (distance/maxDistance/thickness/thicknessAt/closestPoint/angles/clearance/symmetry/extrema) + 17 original + validate/importSat/importStep/heal + check/resolve/describe/refDiff/threadData/checkProfile/profiles + section/sections/probe extensions + sketchAnalyze + sketchFreedoms
     for (t, _) in REQUEST_TYPES {
         let (j, _) = run(&mut Server::new(), &format!(r#"{{"msg":{{"type":"{t}"}}}}"#));
         assert!(!j.contains("unknown request"), "{t}");
+    }
+}
+
+/// `checkIntersection` is a body query like the measurement requests: before anything is regenerated it
+/// answers as they do (`noState`; the engine's checks run in ck-wasm/tests/measure.rs).
+#[test]
+fn check_intersection_without_a_body() {
+    for tag in ["", r#","tag":"zz""#] {
+        let (j, _) = run(&mut Server::new(), &format!(r#"{{"msg":{{"type":"checkIntersection","a":"body","b":"body"{tag}}}}}"#));
+        let (k, _) = run(&mut Server::new(), &format!(r#"{{"msg":{{"type":"clearance","min":1{tag}}}}}"#));
+        assert!(j.contains("noState"), "{j}");
+        assert_eq!(j, k);
     }
 }
 

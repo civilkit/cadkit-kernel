@@ -84,10 +84,10 @@ fn fail(detail: String) -> BlendError {
 }
 
 /// Edge geometry the volume bound needs: turning angle of the faces, convexity, length, bend radius.
-struct EdgeInfo {
+pub(super) struct EdgeInfo {
     len: f64,
-    alpha: f64,
-    convex: bool,
+    pub(super) alpha: f64,
+    pub(super) convex: bool,
     /// radius of the edge curve (infinite for a line, NaN for a curve that is not a circle)
     bend: f64,
     /// `bis . u` for the unit bisector `bis` of the face normals and the unit vector `u` from the circle's axis to the edge
@@ -96,7 +96,7 @@ struct EdgeInfo {
     verts: [ck_topo::body::VertexId; 2],
 }
 
-fn edge_info(b: &Body, e: EdgeId) -> Option<EdgeInfo> {
+pub(super) fn edge_info(b: &Body, e: EdgeId) -> Option<EdgeInfo> {
     let ed = b.edge(e);
     let fs = b.edge_faces(e);
     if fs.len() != 2 {
@@ -133,7 +133,7 @@ fn edge_info(b: &Body, e: EdgeId) -> Option<EdgeInfo> {
 
 /// The picked edges and everything a blend propagates to: edges that continue a picked one tangentially at a
 /// shared vertex and edges between the same two faces (a ring split by a seam).
-fn affected(b: &Body, picks: &[(String, String, Vec3)]) -> Vec<EdgeId> {
+pub(super) fn affected(b: &Body, picks: &[(String, String, Vec3)]) -> Vec<EdgeId> {
     let mut out: Vec<EdgeId> = picks.iter().filter_map(|(fa, fb, at)| super::build::find_edge(b, fa, fb, *at)).collect();
     let mut i = 0;
     while i < out.len() {
@@ -235,7 +235,7 @@ pub fn volume_bound(b: &Body, picks: &[(String, String, Vec3)], spec: Spec) -> O
 }
 
 /// Structure and sign of the volume, see the module notes. Returns `(input volume, result volume)`.
-fn check_solid(input: &Body, out: &Body, tol: f64) -> Result<(f64, f64), BlendError> {
+pub(super) fn check_solid(input: &Body, out: &Body, tol: f64) -> Result<(f64, f64), BlendError> {
     let (bad_in, bad_out) = (open_edges(input), open_edges(out));
     if bad_out > bad_in {
         let e = out.edge_ids().find(|&e| !out.edge_coedges(e).is_empty() && out.edge_coedges(e).len() != 2).unwrap();
@@ -298,7 +298,46 @@ pub fn check(input: &Body, out: Body, picks: &[(String, String, Vec3)], spec: Sp
             }
         }
     }
+    let (convex, concave) = convexity(input, picks);
+    // (an angle chamfer's second leg is `d tan(angle)` on a square edge)
+    let size = match spec {
+        Spec::Chamfer(a, ChamferLeg::Angle(al) | ChamferLeg::AngleRev(al)) => a * al.tan().abs().clamp(1.0, 20.0),
+        // (a curvature-continuous section touches its faces farther out than the circle of its radius: at the tangent
+        // distance of a square edge, judged over the sharper edges too)
+        Spec::Fillet(r, FilletProfile::Curvature(sh)) => {
+            super::g2::tangent_distance(r, sh, std::f64::consts::FRAC_PI_2).map_or(3.0 * r, |d| d.max(r)) * 1.5
+        }
+        _ => spec.size(),
+    };
+    super::guard::check(input, &out, picks, size, convex, concave, tol)?;
     Ok(out)
+}
+
+/// Whether every edge `picks` blends (with what the blend propagates to) is convex, and whether every one is concave;
+/// both false when one cannot be read or is tangent.
+pub fn convexity(b: &Body, picks: &[(String, String, Vec3)]) -> (bool, bool) {
+    let (mut cv, mut cc) = (true, true);
+    let sel = affected(b, picks);
+    if sel.is_empty() {
+        return (false, false);
+    }
+    for e in sel {
+        match edge_info(b, e) {
+            Some(i) if i.alpha > 1e-3 => {
+                cv &= i.convex;
+                cc &= !i.convex;
+            }
+            _ => return (false, false),
+        }
+    }
+    (cv, cc)
+}
+
+/// The joint guard (see `guard.rs`) on its own, for results of builders that do not run [`check`]: `r` is the largest
+/// size of the selection.
+pub fn guard(input: &Body, out: &Body, picks: &[(String, String, Vec3)], r: f64, tol: f64) -> Result<(), BlendError> {
+    let (convex, concave) = convexity(input, picks);
+    super::guard::check(input, out, picks, r, convex, concave, tol)
 }
 
 /// Judge the result of cutting the corner of `input` at a vertex with the three distances `dist`: a tetrahedron of

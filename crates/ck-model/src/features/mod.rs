@@ -95,6 +95,8 @@ pub mod press_pull;
 pub mod pattern;
 pub mod pattern_place;
 pub mod pipecut;
+pub mod proc_curve;
+pub mod proc_surface;
 pub mod project_curve;
 pub mod ref_plane;
 pub mod rib;
@@ -709,6 +711,8 @@ pub struct Brep {
     pub asm: mate::Assembly,
     /// Helix curves by feature id (sweep paths).
     pub helices: Vec<(String, ck_ops::helix::Helix)>,
+    /// Procedural curves by feature id (`offsetCurve`, `compositeCurve`, procedural `projectCurve`; proc_curve.rs).
+    pub proc_curves: Vec<(String, proc_curve::ProcCurve)>,
     /// Surface bodies by feature id (see `surfaces.rs`).
     pub surfs: Vec<(String, ck_topo::body::Body)>,
     /// Fuzzy value of the feature being executed (`tolerance`, mm; 0 = exact booleans) and the `autoFuzzy`
@@ -730,6 +734,7 @@ pub struct BrepSnap {
     pub tools: Vec<(String, std::rc::Rc<extrude::Tool>)>,
     pub asm: std::rc::Rc<mate::Assembly>,
     pub helices: std::rc::Rc<Vec<(String, ck_ops::helix::Helix)>>,
+    pub proc_curves: std::rc::Rc<Vec<(String, proc_curve::ProcCurve)>>,
     pub surfs: std::rc::Rc<Vec<(String, ck_topo::body::Body)>>,
     pub sheet: std::rc::Rc<sheet_features::SheetState>,
 }
@@ -801,6 +806,7 @@ impl Brep {
                 _ => Rc::new(self.asm.clone()),
             },
             helices: share(prev.map(|p| &p.helices), &self.helices),
+            proc_curves: share(prev.map(|p| &p.proc_curves), &self.proc_curves),
             surfs: share(prev.map(|p| &p.surfs), &self.surfs),
             sheet: share(prev.map(|p| &p.sheet), &self.sheet),
         }
@@ -813,6 +819,7 @@ impl Brep {
         self.tools = s.tools.clone();
         self.asm = (*s.asm).clone();
         self.helices = (*s.helices).clone();
+        self.proc_curves = (*s.proc_curves).clone();
         self.surfs = (*s.surfs).clone();
         self.sheet = (*s.sheet).clone();
         self.spans.clear();
@@ -1787,7 +1794,12 @@ impl Brep {
             _ if f.type_name == "pressPull" => return press_pull::exec_press_pull(self, state, f),
             _ if f.type_name == "pipeCut" => return pipecut::exec_pipecut(self, state, f),
             _ if f.type_name == "editCurve" => return edit_curve::exec_edit_curve(self, state, f),
+            _ if f.type_name == "projectCurve" && proc_curve::is_procedural(f) => return proc_curve::exec_project_curve(self, state, f),
             _ if f.type_name == "projectCurve" => return project_curve::exec_project_curve(self, state, f),
+            _ if f.type_name == "offsetCurve" => return proc_curve::exec_offset_curve(self, state, f),
+            _ if f.type_name == "compositeCurve" => return proc_curve::exec_composite_curve(self, state, f),
+            _ if f.type_name == "sweepSurface" => return proc_surface::exec_sweep_surface(self, state, f),
+            _ if f.type_name == "blendSurface" => return proc_surface::exec_blend_surface(self, state, f),
             _ => return Err(crate::regen::FeatureError::new(&extrude::todo(&f.type_name))),
         };
         if let Some(extrude::Recipe::Extrude { profile, opts }) = &tool.recipe {

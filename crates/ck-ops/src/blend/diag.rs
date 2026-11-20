@@ -73,3 +73,16 @@ pub(super) fn unsupported_hint(m: &str, hint: &str) -> BlendError {
     dbg(m);
     BlendError { code: "blendUnsupported".into(), detail: Some(m.into()), params: vec![("hint".into(), hint.into())] }
 }
+
+/// A picked edge that an earlier tool of the same blend took away: the round (or chamfer) of another edge of the selection
+/// is wider than the face between the two edges and consumed it, edge and all. That is a size refusal (`blendOverflow`,
+/// which the feature layer answers with the largest size that builds), not a missing edge: the edge was there when the
+/// blend started. `k` is the pick's blend number.
+pub(super) fn consumed_by_earlier(feature: &str, k: u32, fa: &str, fb: &str) -> BlendError {
+    dbg_fail(&format!("edge {k} ({fa} | {fb}) was consumed by the blend of another edge"));
+    BlendError {
+        code: "blendOverflow".into(),
+        detail: Some(format!("{feature}.B{k}: blends overlap: the blend of another edge consumed the face beside the edge between {fa} and {fb}")),
+        params: vec![("hint".into(), "the blends of this selection are wider than the face between their edges: use a smaller size".into())],
+    }
+}

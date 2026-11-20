@@ -1,0 +1,121 @@
+{
+ "format": "ck-part",
+ "version": 1,
+ "name": "Part1",
+ "features": [
+  {
+   "type": "sketch",
+   "id": "F1",
+   "name": "Sketch on Front",
+   "plane": {
+    "kind": "std",
+    "id": "xz"
+   },
+   "points": [
+    {
+     "id": "O",
+     "x": 0,
+     "y": 0,
+     "fixed": true
+    },
+    {
+     "id": "p1",
+     "x": 22.672483497044826,
+     "y": 15.165540800698876
+    },
+    {
+     "id": "p2",
+     "x": 22.5,
+     "y": -9.107048185609553
+    }
+   ],
+   "entities": [
+    {
+     "id": "e1",
+     "type": "arc",
+     "c": "p2",
+     "p1": "O",
+     "p2": "p1"
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "sketch",
+   "id": "F2",
+   "name": "Sketch on Top",
+   "plane": {
+    "kind": "std",
+    "id": "front"
+   },
+   "points": [
+    {
+     "id": "O",
+     "x": 0,
+     "y": 0,
+     "fixed": true
+    }
+   ],
+   "entities": [
+    {
+     "id": "e1",
+     "type": "circle",
+     "c": "O",
+     "r": 2.1990034161013345
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "sweepSurface",
+   "profile": "F2",
+   "path": "F1",
+   "frame": "tangent",
+   "tolerance": 0.001,
+   "id": "F3",
+   "caps": true
+  },
+  {
+   "type": "knit",
+   "surfaces": [
+    "F3"
+   ],
+   "solid": true,
+   "id": "F4"
+  },
+  {
+   "type": "fillet",
+   "radius": 0.2,
+   "edges": [
+    {
+     "faces": [
+      "F3.C0",
+      "F3.W"
+     ],
+     "at": [
+      -2.1990034161013345,
+      2.6930024948425947e-16,
+      0
+     ]
+    },
+    {
+     "faces": [
+      "F3.C1",
+      "F3.W"
+     ],
+     "at": [
+      21.861945984872428,
+      2.6930024948425947e-16,
+      17.209714219317448
+     ]
+    }
+   ],
+   "id": "F5"
+  }
+ ],
+ "seq": 6,
+ "rollback": null,
+ "material": "steel",
+ "counters": {},
+ "upAxis": "z"
+}

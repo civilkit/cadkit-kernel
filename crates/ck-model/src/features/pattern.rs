@@ -152,10 +152,10 @@ pub fn reflect_body(b: &Body, pl: &Plane) -> Result<Body, String> {
     for e in &mut out.edges {
         e.curve = curve(&e.curve);
     }
-    let mut vflip = vec![false; out.faces.len()];
-    for (i, f) in out.faces.iter_mut().enumerate() {
-        let lh = |fr: &Frame| Frame { o: p(fr.o), x: v(fr.x), y: v(fr.y), z: -v(fr.z) };
-        let (s, flip_sense, fv) = match &f.surface {
+    let lh = |fr: &Frame| Frame { o: p(fr.o), x: v(fr.x), y: v(fr.y), z: -v(fr.z) };
+    // (image, sense flips, pcurve v flips) of a surface that is not an offset
+    let mirror_base = |sf: &Surface| -> Result<(Surface, bool, bool), String> {
+        Ok(match sf {
             Surface::Plane { frame } => (Surface::Plane { frame: rh(frame) }, true, false),
             Surface::Cylinder { frame, r } => (Surface::Cylinder { frame: lh(frame), r: *r }, false, true),
             Surface::Cone { frame, r, semi_angle } => (Surface::Cone { frame: lh(frame), r: *r, semi_angle: -semi_angle }, false, true),
@@ -176,9 +176,28 @@ pub fn reflect_body(b: &Body, pl: &Plane) -> Result<Body, String> {
                 true,
                 false,
             ),
-            Surface::Offset { .. } => return Err(super::extrude::todo("mirror of an offset surface")),
             // procedural kinds map their definition, parameterisation kept (Su × Sv turns over, as a spline's)
             sf @ (Surface::Sweep(_) | Surface::Blend(_)) => (sf.transform_dyn(&p, &v), true, false),
+            Surface::Offset { .. } => return Err("mirror of an offset surface".into()),
+        })
+    };
+    let mut vflip = vec![false; out.faces.len()];
+    for (i, f) in out.faces.iter_mut().enumerate() {
+        let (s, flip_sense, fv) = match &f.surface {
+            // An offset is B + d·n_B, so its image is the image of the (collapsed) base, offset along that image's
+            // own normal: the same parameters and pcurves as the base. Where the base's parameterisation turns over
+            // (sense flips) its natural normal is the negated image normal, so the distance changes sign; where the
+            // frame is left-handed with v flipped the normal is the image normal and the distance is kept.
+            Surface::Offset { base, dist } => {
+                let (mut b, mut d) = (&**base, *dist);
+                while let Surface::Offset { base: bb, dist: dd } = b {
+                    d += *dd;
+                    b = &**bb;
+                }
+                let (img, flip, fv) = mirror_base(b).map_err(|e| super::extrude::todo(&e))?;
+                (Surface::Offset { base: Box::new(img), dist: if fv { d } else { -d } }, flip, fv)
+            }
+            other => mirror_base(other).map_err(|e| super::extrude::todo(&e))?,
         };
         f.surface = s;
         if flip_sense {

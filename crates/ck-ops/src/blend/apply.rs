@@ -101,8 +101,23 @@ pub(super) fn apply_tool_once(
     // the blend face may have merged into the coincident blend face of the
     // ring's previous arc (a split ring chamfered edge by edge: one cone)
     let merged_into_earlier = faces_out.iter().any(|f| (f.group == 0 || f.group == 4) && f.name.feature == name.feature && matches!(f.name.role, Role::Blend(_)));
-    if !faces_out.iter().any(|f| { let mut n = f.name.clone(); n.region = None; n == *name }) && !merged_into_earlier {
+    // or into the coincident blend face of an EARLIER feature: two rounds that meet across a face they consume to zero
+    // width (r = 2 then r = 2 on the two edges of a 4 wide face) share one cylinder, and the boolean fuses the new quarter
+    // into the earlier one (the one-op fillet gives the same single face). The fused face lists the new blend face among
+    // the names it absorbed.
+    let absorbed_by_blend = faces_out.iter().any(|f| {
+        matches!(f.name.role, Role::Blend(_))
+            && f.absorbed.iter().any(|a| FaceName::parse(a).map(|mut x| {
+                x.region = None;
+                x
+            }).as_ref() == Some(name))
+    });
+    if !faces_out.iter().any(|f| { let mut n = f.name.clone(); n.region = None; n == *name }) && !merged_into_earlier && !absorbed_by_blend {
         dbg_fail("no blend face in result");
+        if super::diag::on() {
+            eprintln!("  tool faces: {:?} volume {:.4}", tool.face_ids().map(|f| format!("{} {}", tool.face_id_str(f), tool.face(f).surface.kind())).collect::<Vec<_>>(), ck_topo::mass::mass_props(tool).volume);
+            eprintln!("  result faces: {:?}", faces_out.iter().map(|f| format!("{}:{}", f.name.id(), f.group)).collect::<Vec<_>>());
+        }
         return Err(BlendError::detail("blendFailed", "no blend face in result"));
     }
     let mut body = build(&arr, &faces_out);

@@ -1,0 +1,102 @@
+{
+ "format": "ck-part",
+ "version": 1,
+ "name": "Part1",
+ "features": [
+  {
+   "type": "sketch",
+   "id": "F1",
+   "plane": {
+    "kind": "std",
+    "id": "top"
+   },
+   "points": [
+    {
+     "id": "O",
+     "x": 0,
+     "y": 0,
+     "fixed": true
+    },
+    {
+     "id": "p1",
+     "x": 29.999999999999996,
+     "y": 30
+    },
+    {
+     "id": "p2",
+     "x": 30,
+     "y": 0
+    }
+   ],
+   "entities": [
+    {
+     "id": "e1",
+     "type": "arc",
+     "c": "p2",
+     "p1": "O",
+     "p2": "p1"
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "sketch",
+   "id": "F2",
+   "name": "Sketch on Top",
+   "plane": {
+    "kind": "std",
+    "id": "front"
+   },
+   "points": [
+    {
+     "id": "O",
+     "x": 0,
+     "y": 0,
+     "fixed": true
+    }
+   ],
+   "entities": [
+    {
+     "id": "e1",
+     "type": "circle",
+     "c": "O",
+     "r": 2.1990034161013345
+    }
+   ],
+   "constraints": []
+  },
+  {
+   "type": "sweep",
+   "id": "F3",
+   "op": "add",
+   "sketch": "F2",
+   "path": {
+    "kind": "sketch",
+    "id": "F1"
+   }
+  },
+  {
+   "type": "fillet",
+   "radius": 0.2,
+   "edges": [
+    {
+     "faces": [
+      "F3.C0",
+      "F3.S.e1"
+     ],
+     "at": [
+      -2.199,
+      0,
+      0
+     ]
+    }
+   ],
+   "id": "F9"
+  }
+ ],
+ "seq": 6,
+ "rollback": null,
+ "material": "steel",
+ "counters": {},
+ "upAxis": "z"
+}

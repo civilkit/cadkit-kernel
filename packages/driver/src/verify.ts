@@ -86,6 +86,8 @@ const FIX: Record<string, (feature: string, params: Record<string, unknown>) => 
     typeof p.detail === 'string' ? `${f}: ${p.detail}` : `${f}: this shape cannot be shelled — remove the feature or change the base solid`,
   holeNoPoints: (f) => `${f}: hole sketch has no centres — add {type:'point'} entities over centre points (sk.point(x, y)), not circles or bare points`,
   holeInvalid: (f) => `${f}: hole parameters invalid — check diameter/depth against the stock`,
+  holeEndFace: (f, p) =>
+    `${f}: ${typeof p.detail === 'string' ? p.detail : 'the hole cannot end at that face'} — ${typeof p.hint === 'string' && p.hint ? p.hint : 'pick a flat face across the hole direction that the hole drills towards, or use end blind with a depth'}`,
   ribNeedsOpenSketch: (f) => `${f}: rib profile must be an open chain — open the sketch profile`,
   ribNoContact: (f) => `${f}: rib does not touch the body — extend the profile to contact`,
   knitNotClosed: (f) => `${f}: sheets do not close — close the gap or relax the tolerance`,
@@ -95,6 +97,19 @@ const FIX: Record<string, (feature: string, params: Record<string, unknown>) => 
   draftTooLarge: (f, p) => `${f}: draft angle too large for these faces — ${typeof p.hint === 'string' ? p.hint : 'reduce angle'}`,
   draftParallelFace: (f) => `${f}: neutral plane is parallel to a drafted face — pick another neutral`,
   filletChamfer: (f) => `${f}: blend failed — reduce radius/distance or reorder before other blends`,
+  // a warning: the fillet built, its two rounds cross in a sharp edge
+  blendRoundsCross: (f, p) =>
+    `${f}: the two roundings are wider than the face between them, so they cross in a sharp edge — ${
+      typeof p.meetRadius === 'number'
+        ? `use r <= ${p.meetRadius} for a smooth meeting`
+        : Array.isArray(p.meetRadii)
+          ? `use radii of at most ${p.meetRadii.join(' and ')} (summing to the face width) for a smooth meeting`
+          : 'use radii summing to at most the face width for a smooth meeting'
+    }`,
+  blendResultInvalid: (f, p) =>
+    `${f}: the blend was built but its result failed the ${typeof p.check === 'string' ? p.check : 'post-condition'} check, so it was not used${typeof p.detail === 'string' ? ` (${p.detail})` : ''} — ${
+      typeof p.hint === 'string' && p.hint ? p.hint : 'use a smaller radius/distance, blend the edges that meet at that corner in separate features, round the sketch corner before the cut, or blend before the feature that made the corner'
+    }`,
   pipeCutRadius: (f, p) => `${f}: pipe radius too large${typeof p.max === 'number' ? ` (max ${p.max})` : ''} — reduce radius`,
   thickenReach: (f) => `${f}: sheet cannot be thickened that far — reduce distance`,
   extendFolds: (f) => `${f}: extension folds the surface — shorten the extension`,

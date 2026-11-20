@@ -246,6 +246,7 @@ fn snap_pieces(s: &BrepSnap) -> Vec<(usize, usize)> {
     v.push((ptr(&s.body), std::mem::size_of::<Option<ck_topo::body::Body>>() + s.body.as_ref().as_ref().map_or(0, |b| b.est_bytes())));
     v.push((ptr(&s.asm), 256 + s.asm.cache.iter().map(|(k, n)| k.len() + n.body.as_ref().map_or(0, |b| b.est_bytes())).sum::<usize>() + s.asm.components.len() * 256));
     v.push((ptr(&s.helices), 64 + s.helices.len() * 128));
+    v.push((ptr(&s.proc_curves), 64 + s.proc_curves.len() * 2048));
     v.push((ptr(&s.surfs), 64 + s.surfs.iter().map(|(_, b)| b.est_bytes()).sum::<usize>()));
     for (_, t) in &s.tools {
         v.push((ptr(t), 1024 + t.body.est_bytes()));

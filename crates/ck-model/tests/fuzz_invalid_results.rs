@@ -89,6 +89,39 @@ fn cone_wedge_and_tiny_rim_mesh_closed() {
     }
 }
 
+/// A revolve of 355 degrees or more of a triangle with its apex on the axis, the loop starting at the apex (either way round),
+/// meshed nothing (the strip's cut fell inside the rim arc and the cover refused the loop over the apex as one that winds). It
+/// meshes closed now, the mesh volume within 1 % of the exact wedge, from a small angle to just under a full turn and a full one.
+#[test]
+fn cone_wedge_of_355_degrees_and_more_meshes_closed() {
+    for pts in [[(0, 0), (10, 0), (0, 10)], [(0, 0), (0, 10), (10, 0)]] {
+        for deg in [90.0, 200.0, 350.0, 355.0, 358.0, 359.9, 359.999, 360.0] {
+            let p = |i: usize| format!(r#"{{"id":"p{i}","x":{},"y":{}}}"#, pts[i].0, pts[i].1);
+            let json = format!(
+                r#"{{"format":"ck-part","version":1,"features":[{{"type":"sketch","id":"S1","plane":{{"kind":"std","id":"front"}},"points":[{},{},{},{{"id":"a1","x":0,"y":0}},{{"id":"a2","x":0,"y":10}}],"entities":[{{"type":"line","id":"e1","p1":"p0","p2":"p1"}},{{"type":"line","id":"e2","p1":"p1","p2":"p2"}},{{"type":"line","id":"e3","p1":"p2","p2":"p0"}},{{"type":"line","id":"ax","p1":"a1","p2":"a2","construction":true}}],"constraints":[]}},{{"type":"revolve","id":"F2","op":"add","sketch":"S1","axis":"ax","angle":{deg}}}]}}"#,
+                p(0),
+                p(1),
+                p(2)
+            );
+            let (errors, issues) = outcome(&json);
+            assert!(errors.is_empty() && issues.is_empty(), "{pts:?} {deg}: {errors:?} {issues:?}");
+            let part = Part::parse(&json).unwrap();
+            let mut ex = Exec(Brep::new());
+            regen::regen(&part, &RegenOpts::default(), &mut ex);
+            let m = ck_tess::mesh::tessellate(ex.0.body.as_ref().unwrap()).mesh;
+            let at = |k: usize, j: usize| [0, 1, 2].map(|c| m.positions[9 * k + 3 * j + c] as f64);
+            let vol: f64 = (0..m.tri_face.len())
+                .map(|k| {
+                    let (a, b, c) = (at(k, 0), at(k, 1), at(k, 2));
+                    (a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0])) / 6.0
+                })
+                .sum();
+            let exact = std::f64::consts::PI * 1000.0 / 3.0 * deg / 360.0;
+            assert!((vol.abs() - exact).abs() < 0.01 * exact, "{pts:?} {deg}: mesh volume {vol} of {exact}");
+        }
+    }
+}
+
 /// The slab itself is a valid solid (K22); only combining it with a second operand is refused.
 #[test]
 fn single_slab_stays_valid() {

@@ -762,6 +762,88 @@ export async function importSkp(
   return { ...res, errors: res.errors ?? [] };
 }
 
+/** Options of `meshToSolid` (docs/spec-agent-interface.md, "Mesh to solid"); lengths in mm, `undefined` = the kernel's default. */
+export interface MeshToSolidOpts {
+  /** vertices closer than this are one (default 1e-6 of the bounding-box diagonal) */
+  weldTol?: number;
+  /** largest distance (mm) and angle (degrees) of a triangle from the plane of the face it is merged into */
+  planeTol?: number;
+  angleTolDeg?: number;
+  /** limits: refused with meshTooLarge above */
+  maxTriangles?: number;
+  maxFaces?: number;
+  /** refit cylinders, cones and spheres (default true) */
+  analytic?: boolean;
+  /** chord sag of a facet from a fitted surface, and largest distance of a facet corner from it */
+  tol?: number;
+  fitTol?: number;
+  /** measure the result against the mesh (default true) */
+  deviation?: boolean;
+  /**
+   * Close an open mesh before the watertight check: `true` for the defaults. Off by default (an open mesh is refused with
+   * meshNotWatertight). The reply's `closing` lists what was welded, stitched and filled.
+   */
+  close?: boolean | MeshCloseOpts;
+}
+
+/** Options of `meshToSolid`'s `close` (lengths in mm). */
+export interface MeshCloseOpts {
+  /** vertices on gaps closer than this are one, a boundary vertex this close to an open edge splits it (default 1e-4 of the diagonal) */
+  tolerance?: number;
+  /** fill the holes that remain (default true; false: only weld and stitch) */
+  fill?: boolean;
+  /** a hole is filled when it has at most this many edges (default 500) ... */
+  maxHoleEdges?: number;
+  /** ... and at most this fraction of the mesh's surface area (default 0.25) */
+  maxHoleArea?: number;
+  /** a hole loop is planar (planar cap) within this fraction of its diameter of its best-fit plane (default 1e-3) */
+  planarTol?: number;
+}
+
+/** A triangle mesh: x y z per vertex, and three vertex indices per triangle (without indices: three vertices a triangle). */
+export interface MeshInput {
+  positions: Float32Array | Float64Array | number[];
+  indices?: Uint32Array | number[];
+}
+
+function bytesToBase64(b: Uint8Array): string {
+  let s = '';
+  for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode(...b.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+
+/** Little-endian bytes of a typed array (every platform the kernel runs on is little endian). */
+function typedBase64(a: Float32Array | Float64Array | Uint32Array): string {
+  return bytesToBase64(new Uint8Array(a.buffer, a.byteOffset, a.byteLength));
+}
+
+/**
+ * Turn a triangle mesh into a valid solid in a fresh tag (import-shaped reply: `body`, `errors`, `import` = the conversion
+ * report). Typed arrays travel as base64 (`positionsF32` / `positionsF64`, `indicesU32`), plain arrays as numbers. A refused
+ * mesh answers `errors: [["import", {code, params:{message, hint, ...}}]]` with code meshNotWatertight, meshNonManifold,
+ * meshDegenerate, meshTooLarge or meshBadInput (with `close`: also meshHoleTooLarge, meshHoleSelfIntersects, meshGapAmbiguous), and
+ * leaves the tag alone.
+ */
+export async function meshToSolid(
+  kernel: KernelTransport,
+  mesh: MeshInput,
+  opts: { name?: string; tag?: string } & MeshToSolidOpts = {},
+): Promise<ImportReport> {
+  const { name, tag, ...o } = opts;
+  const msg: Record<string, unknown> = { type: 'meshToSolid', tag: tag ?? 'imp', name: name ?? 'mesh' };
+  const p = mesh.positions;
+  if (p instanceof Float32Array) msg.positionsF32 = typedBase64(p);
+  else if (p instanceof Float64Array) msg.positionsF64 = typedBase64(p);
+  else msg.positions = p;
+  const ix = mesh.indices;
+  if (ix instanceof Uint32Array) msg.indicesU32 = typedBase64(ix);
+  else if (ix) msg.indices = ix;
+  const kopts = Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined));
+  if (Object.keys(kopts).length) msg.opts = kopts;
+  const res = await call<ImportReport>(kernel, msg);
+  return { ...res, errors: res.errors ?? [] };
+}
+
 export async function importSat(
   kernel: KernelTransport,
   data: string,

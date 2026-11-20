@@ -19,10 +19,11 @@ import { parts } from './brep_cases.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
-export function runIface({ wasm, stride = 1 }) {
-  const mod = new WebAssembly.Module(readFileSync(wasm));
+// mod: an already compiled WebAssembly.Module of `wasm`; only: run just that part (the gate runs one part per call in parallel workers)
+export function runIface({ wasm, mod = null, stride = 1, only = null }) {
+  mod ??= new WebAssembly.Module(readFileSync(wasm));
   const out = [];
-  for (const [name, part] of Object.entries(parts).filter((_, i) => i % stride === 0)) {
+  for (const [name, part] of Object.entries(parts).filter(([n], i) => i % stride === 0 && (only === null || n === only))) {
     const k = new Kernel(mod);
     const q = (msg) => {
       const r = k.request(JSON.stringify({ id: 1, msg }));

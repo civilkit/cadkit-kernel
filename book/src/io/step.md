@@ -19,7 +19,7 @@ The reply carries the whole file as one JSON string, with no binary buffers:
 {"ok":true,"result":"ISO-10303-21;\nHEADER;\n...END-ISO-10303-21;\n","ms":0}
 ```
 
-`result` is `null` when the tag holds no body. This happens for an empty part and for a part that only builds surfaces (checked: a sketch with a `surfaceExtrude` answers `null`).
+A tag that holds no body at all (an empty part, a part of sketches only, every body feature suppressed) is refused: `{"ok":false,"error":"stepNothingToExport: the document has no bodies to export. Hint: make a solid or a surface first ..."}`. It used to answer `null`, which the session reported as `empty result for step`. A part that only builds surfaces (`surfaceExtrude`, `blendSurface`, ...) now exports: see [Surface bodies](#surface-bodies).
 
 The examples in this chapter use a 40 x 20 x 8 mm plate with a 10 mm through hole, built from this part:
 
@@ -73,11 +73,13 @@ The time stamp in `FILE_NAME` is the host clock (`ck_unix_ms`) in UTC. A host th
 - **Several lumps** give several `MANIFOLD_SOLID_BREP` entities in one `ADVANCED_BREP_SHAPE_REPRESENTATION`. A two-block part exported as 2 solids (checked).
 - **Numbers.** Reals print in the shortest form that reads back exactly, always with a decimal point (`0.`, `25.`, `1.E-7`); scientific notation is used below `1e-6` and from `1e15`. Strings escape `'` and `\`, drop control characters and write non-ASCII characters as `\X2\hhhh\X0\`.
 
-The writer has a code path for open shells (`SHELL_BASED_SURFACE_MODEL` in a `MANIFOLD_SURFACE_SHAPE_REPRESENTATION`). It is marked as unverified in the source and was not exercised here.
+### Surface bodies
+
+The surface bodies of the document (the `surfaces` list of the regen reply: `surfaceExtrude`, `blendSurface`, trims, an import's surface parts) are written together with the solid body. Each shell of a surface body, open or closed, becomes its own `SHELL_BASED_SURFACE_MODEL` named after the body's id (for example `F4`), all in one `MANIFOLD_SURFACE_SHAPE_REPRESENTATION`; when the document also has solids, that representation is tied to the solids' one by a `SHAPE_REPRESENTATION_RELATIONSHIP`. Suppressed features (and features after the rollback point) give no body, so they are not written. The kernel has no per-body hidden flag: a body the app hides is a display choice of the app, which filters before it asks (the `step` request writes every body the tag holds). Re-importing the file with `importStep` gives the same faces and surface types, the solids in `body` and the surface shells in `surfaces`.
 
 ### Not written
 
-Colours and styles, layers, per-face or per-body names, assemblies and placements, product structure beyond a single part, and product and manufacturing information. A part with several named bodies exports them as anonymous solids that share the part name.
+Colours and styles, layers, per-face names, solid names (they carry the part name), assemblies and placements, product structure beyond a single part, and product and manufacturing information. A part with several solids exports them as solids that share the part name; surface bodies carry their own id as the name.
 
 ## Import: the `importStep` request
 

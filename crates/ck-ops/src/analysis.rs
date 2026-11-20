@@ -1,5 +1,6 @@
 //! Measurement and analysis requests (read-only): `distance`, `maxDistance`, `thickness`, `thicknessAt`,
-//! `closestPoint`, `angles`, `clearance`, `symmetry`, `extrema`. Wire shapes: docs/agent-queries.md "Measurement".
+//! `closestPoint`, `angles`, `clearance`, `symmetry`, `extrema`, and the diagnostics request `checkIntersection`.
+//! Wire shapes: docs/agent-queries.md "Measurement".
 //!
 //! Everything is built from two primitives on the existing kernel pieces: `nearest(prim, q)` (exact closest point of a
 //! face / edge / vertex / point to a point; `Containment::face_nearest`, `dist_in_range`) and `samples(prim)`.
@@ -1785,6 +1786,134 @@ fn extrema_inner(body: &Body, msg: &Json) -> Result<Json, String> {
         .put("exact", exact)
         .put("samples", samples as f64)
         .put("ofLabel", ent_label(of))
+        .build())
+}
+
+// ---------------------------------------------------------------- checkIntersection
+
+pub fn check_intersection_reply(body: &Body, other: Option<&Body>, msg: &Json) -> Result<Json, String> {
+    begin(msg);
+    check_intersection_inner(body, other, msg).map(stamp)
+}
+
+/// At most this many face pairs per request (each is a surface/surface intersection).
+const MAX_SSI_PAIRS: usize = 400;
+
+fn unresolved_name(r: crate::intersect::certified::Unresolved) -> &'static str {
+    use crate::intersect::certified::Unresolved::*;
+    match r {
+        Unsupported => "unsupported",
+        Singular => "singular",
+        NoContraction => "noContraction",
+        Degenerate => "degenerate",
+    }
+}
+
+/// `{type:"checkIntersection", tag, tagB?, a, b, opts?:{tol}}`: the certified check of the intersection curves of
+/// two sets of faces (`certified::check_curves`). Each pair of faces whose boxes meet is intersected by the same
+/// surface/surface intersection a boolean runs (its bounds and tolerance), and every span of a marched curve is
+/// proved to lie on one arc of the true intersection, or reported. Nothing is changed.
+fn check_intersection_inner(body: &Body, other: Option<&Body>, msg: &Json) -> Result<Json, String> {
+    use crate::boolean::imprint::{ssi_bounds, EDGE_TOL};
+    use crate::intersect::{certified::check_curves, ss};
+    const NEED: &str = "checkIntersection: a and b are required (face ids, lump:<n> or body)";
+    let ca = Ctx::new(body);
+    let cb_owned;
+    let cb: &Ctx = if other.is_some() {
+        cb_owned = Ctx::new(other_ctx_body(body, other));
+        &cb_owned
+    } else {
+        &ca
+    };
+    let faces = |ctx: &Ctx, j: Option<&Json>, what: &str| -> Result<Vec<FaceId>, String> {
+        let prims = parse_entity(ctx, j.ok_or(NEED)?, what)?;
+        prims.iter().map(|p| if let Prim::Face(f) = p { Ok(*f) } else { Err(format!("{what}: faces only")) }).collect()
+    };
+    let fa = faces(&ca, msg.get("a"), "checkIntersection: a")?;
+    let fb = faces(cb, msg.get("b"), "checkIntersection: b")?;
+    let tol = opt_f(msg, "tol", TOL);
+    if !(tol > 0.0) {
+        return Err("checkIntersection: tol must be positive".into());
+    }
+    let pad = tol.max(1e-6);
+    let boxes_b: Vec<Aabb> = fb.iter().map(|&g| face_box(cb.body, g).padded(EDGE_TOL + pad)).collect();
+    let mut pairs = Vec::new();
+    for &f in &fa {
+        let bf = face_box(body, f).padded(EDGE_TOL + pad);
+        for (j, &g) in fb.iter().enumerate() {
+            // a face against itself is coincident, not a curve
+            if (other.is_none() && f == g) || !bf.overlaps(&boxes_b[j]) {
+                continue;
+            }
+            pairs.push((f, bf, g, boxes_b[j]));
+        }
+    }
+    if pairs.len() > MAX_SSI_PAIRS {
+        return Err(format!("checkIntersection: {} face pairs (at most {MAX_SSI_PAIRS} per request)", pairs.len()));
+    }
+    let (mut curves, mut marched, mut spans, mut proved, mut repaired, mut unresolved, mut done) = (0, 0, 0, 0, 0, 0, 0);
+    let mut issues = Vec::new();
+    let mut per_pair = Vec::new();
+    for (f, bf, g, bg) in pairs {
+        if over() {
+            mark_truncated();
+            break;
+        }
+        let (sf, sg) = (&body.face(f).surface, &cb.body.face(g).surface);
+        let bounds = ssi_bounds(sf, sg, &bf, &bg, &bf.union(&bg), pad);
+        let res = ss::intersect(sf, sg, Some(bounds), tol);
+        done += 1;
+        if res.curves().is_empty() {
+            continue;
+        }
+        let chk = check_curves(sf, sg, &res);
+        let fitted: Vec<&Vec<Vec3>> = res.curves().iter().filter_map(|c| if let ss::SsCurve::Fitted { pts, .. } = c { Some(pts) } else { None }).collect();
+        let base = marched;
+        curves += res.curves().len();
+        marched += fitted.len();
+        spans += chk.spans;
+        proved += chk.certified;
+        repaired += chk.issues.iter().filter(|i| i.repaired).count();
+        unresolved += chk.unresolved();
+        let (fs, gs) = (body.face_id_str(f), cb.body.face_id_str(g));
+        for i in &chk.issues {
+            let pts = fitted[i.curve];
+            let (p, q) = (pts[i.span], pts[(i.span + 1) % pts.len()]);
+            issues.push(
+                Obj::new()
+                    .put("a", fs.clone())
+                    .put("b", gs.clone())
+                    .put("curve", (base + i.curve) as f64)
+                    .put("span", i.span as f64)
+                    .put("reason", unresolved_name(i.reason))
+                    .put("repaired", i.repaired)
+                    .put("from", v3(p))
+                    .put("to", v3(q))
+                    .build(),
+            );
+        }
+        per_pair.push(
+            Obj::new()
+                .put("a", fs)
+                .put("b", gs)
+                .put("curves", res.curves().len() as f64)
+                .put("marched", fitted.len() as f64)
+                .put("spans", chk.spans as f64)
+                .put("proved", chk.certified as f64)
+                .put("unresolved", chk.unresolved() as f64)
+                .build(),
+        );
+    }
+    Ok(Obj::new()
+        .put("curves", curves as f64)
+        .put("marched", marched as f64)
+        .put("spans", spans as f64)
+        .put("proved", proved as f64)
+        .put("repaired", repaired as f64)
+        .put("unresolved", unresolved as f64)
+        .put("pairs", done as f64)
+        .put("byPair", Json::Arr(per_pair))
+        .put("issues", Json::Arr(issues))
         .build())
 }
 

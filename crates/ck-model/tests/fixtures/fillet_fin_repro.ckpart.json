@@ -1,0 +1,188 @@
+{
+ "format": "ck-part",
+ "version": 1,
+ "name": "Part1",
+ "features": [
+  {
+   "type": "sketch",
+   "id": "F1",
+   "name": "Sketch on Top",
+   "plane": {
+    "kind": "std",
+    "id": "front"
+   },
+   "points": [
+    {
+     "id": "O",
+     "x": 0,
+     "y": 0,
+     "fixed": true
+    },
+    {
+     "id": "p1",
+     "x": 62.709501844394985,
+     "y": -14.710572379466392
+    },
+    {
+     "id": "p2",
+     "x": -30,
+     "y": 0
+    }
+   ],
+   "entities": [
+    {
+     "id": "e1",
+     "type": "circle",
+     "c": "p2",
+     "r": 9
+    }
+   ],
+   "constraints": [
+    {
+     "id": "k1",
+     "type": "radius",
+     "refs": [
+      "e1"
+     ],
+     "value": 9
+    },
+    {
+     "id": "k2",
+     "type": "hdist",
+     "refs": [
+      "O",
+      "p2"
+     ],
+     "value": 30
+    },
+    {
+     "id": "k3",
+     "type": "horizontal",
+     "refs": [
+      "O",
+      "p2"
+     ]
+    }
+   ]
+  },
+  {
+   "type": "extrude",
+   "op": "add",
+   "sketch": "F1",
+   "end": "blind",
+   "depth": 10,
+   "id": "F2"
+  },
+  {
+   "type": "sketch",
+   "id": "F3",
+   "name": "Sketch",
+   "plane": {
+    "kind": "face",
+    "id": "F2.C1"
+   },
+   "points": [
+    {
+     "id": "O",
+     "x": 0,
+     "y": 0,
+     "fixed": true
+    },
+    {
+     "id": "p1",
+     "x": -29.999999999985306,
+     "y": 2.4906909867894456e-11
+    },
+    {
+     "id": "p2",
+     "x": -29.999999999999996,
+     "y": 1.7305555619517068e-14,
+     "fixed": true,
+     "ext": true
+    },
+    {
+     "id": "p3",
+     "x": -27.232473699864055,
+     "y": -0.012792704365963692
+    },
+    {
+     "id": "p4",
+     "x": -28.60452088624935,
+     "y": 2.5281918470429012
+    }
+   ],
+   "entities": [
+    {
+     "id": "e1",
+     "type": "point",
+     "p": "p1"
+    },
+    {
+     "id": "e2",
+     "type": "arc",
+     "c": "p4",
+     "p1": "p3",
+     "p2": "p1"
+    },
+    {
+     "id": "e3",
+     "type": "line",
+     "p1": "p1",
+     "p2": "p3"
+    }
+   ],
+   "constraints": [
+    {
+     "id": "k1",
+     "type": "coincident",
+     "refs": [
+      "p1",
+      "p2"
+     ]
+    }
+   ]
+  },
+  {
+   "type": "extrude",
+   "op": "cut",
+   "sketch": "F3",
+   "end": "blind",
+   "depth": 10,
+   "id": "F5"
+  },
+  {
+   "type": "fillet",
+   "radius": 0.5,
+   "edges": [
+    {
+     "faces": [
+      "F2.C1",
+      "F5.S.e2"
+     ],
+     "at": [
+      -28.591172585748936,
+      5.415913751077301,
+      10
+     ]
+    },
+    {
+     "faces": [
+      "F2.C1",
+      "F5.S.e3"
+     ],
+     "at": [
+      -28.616236849924682,
+      -0.006396352170528389,
+      10
+     ]
+    }
+   ],
+   "id": "F6"
+  }
+ ],
+ "seq": 7,
+ "rollback": null,
+ "material": "steel",
+ "counters": {},
+ "upAxis": "z"
+}

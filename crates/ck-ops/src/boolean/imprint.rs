@@ -294,7 +294,7 @@ fn cut_crossings(a: &CutSeg, b: &CutSeg, tol: f64, out: &mut Vec<Vec3>) {
 
 /// Edge tolerance the original stores on every edge (face boxes grow by it:
 /// a cap disk's box is 2e-5 + 2·1e-6 thick in the oracle's BVH dump).
-const EDGE_TOL: f64 = 1e-5;
+pub(crate) const EDGE_TOL: f64 = 1e-5;
 
 /// Box padding (in units of the welding tolerance) of the lossless hull-box rejections of [`trim`] and the
 /// edge splitting: well past the 2 tol (plus parameter slack) within which a crossing or a pool point counts.
@@ -472,7 +472,7 @@ fn plane_cone_apart_opt(pb: &Body, pf: FaceId, cb: &Body, cf: FaceId, tol: f64, 
 /// face is a long multi-span B-spline (a screw sweep): the other face then
 /// meets it only inside the overlap of the boxes, and marching the whole
 /// sweep (every turn crossing a small cap's plane) costs minutes.
-fn ssi_bounds(sf: &Surface, sg: &Surface, bi: &Aabb, bj: &Aabb, bx: &Aabb, pad: f64) -> Bounds {
+pub(crate) fn ssi_bounds(sf: &Surface, sg: &Surface, bi: &Aabb, bj: &Aabb, bx: &Aabb, pad: f64) -> Bounds {
     let long = |s: &Surface| s.is_long_sweep();
     // a huge companion face (the rib's wall-to-wall tool) makes the union box
     // so large that the marcher misses a branch of a small spline face

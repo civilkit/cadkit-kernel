@@ -376,6 +376,7 @@ pub fn sample_point(arr: &Arrangement, f: &Fragment) -> Option<(Vec3, Vec3)> {
             }
         })
         .collect();
+    let polys = super::classify::merge_strip_loops(s, polys);
     let mut cand: Vec<He> = f.loops.iter().find(|l| !l.is_empty() && !seam_only(l)).unwrap_or(&f.loops[0]).clone();
     let len = |h: &He| {
         let e = &arr.edges[h.0];

@@ -38,9 +38,13 @@ function compare(got, want, diag, volTol = TOL, areaTol = TOL) {
   return bad;
 }
 
-export function runBench({ wasm, only = null, set = 'benchcad', log = () => {} } = {}) {
+// the part ids in run order (the gate runs one part per call, `only`, in parallel workers)
+export const benchIds = (set = 'benchcad') => JSON.parse(readFileSync(path.join(here, set, 'manifest.json'), 'utf8')).parts.map((m) => m.id);
+
+// mod: an already compiled WebAssembly.Module of `wasm` (saves compiling it per call)
+export function runBench({ wasm, mod = null, only = null, set = 'benchcad', log = () => {} } = {}) {
   const dir = path.join(here, set);
-  const B = new WebAssembly.Module(readFileSync(wasm ?? path.join(here, '../../target/wasm32-unknown-unknown/release/ck_wasm.wasm')));
+  const B = mod ?? new WebAssembly.Module(readFileSync(wasm ?? path.join(here, '../../target/wasm32-unknown-unknown/release/ck_wasm.wasm')));
   const manifest = JSON.parse(readFileSync(path.join(dir, 'manifest.json'), 'utf8'));
   const rows = [];
   for (const m of manifest.parts) {

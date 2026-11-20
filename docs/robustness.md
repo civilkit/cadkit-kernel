@@ -116,3 +116,14 @@ error with an empty code.
 5. Refresh the baseline: `node tools/crash_fuzz.mjs --cases 5000 --seed 7 --budget-ms 400 --timeout 6000
    --update-baseline tools/crash_fuzz_baseline.json --wasm-label <label> --wasm <wasm>`. `--check` exits non-zero
    when a case that was ok or a structured error is now a trap, hang or invalid result.
+
+## Wrong but valid results: the blend guard
+
+A result that validates is not yet a correct one: a fillet whose tool ran on past a corner left a thin sheet over the
+top face, passed `validate()` and changed the volume by a plausible amount. Every fillet and chamfer result is therefore
+judged by the properties a correct blend has (`crates/ck-ops/src/blend/guard.rs`, run from the validity gate on every
+attempt and on the mixed-corner builder): the new faces stay within reach of the blended edges (section width beside an
+edge, the mitre's run-on `r / tan(t / 2)` past an end), do not cross faces they do not border, lie inside the input for a
+convex-only selection (outside it for a concave-only one), and are not slivers. A result that fails is refused with
+`blendResultInvalid`, the failing check in `params.check`, the place in `detail`, a hint, and the largest size that builds
+when one is found. Tests that pin the properties for corner joints: `crates/ck-model/tests/blend_joint_props.rs`.

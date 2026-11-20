@@ -6,13 +6,13 @@
 import { emptyPart, FEATURE_TYPES, type PartDoc } from '../../part-model/src/index.js';
 import { hintFor, verify, type CheckResultItem, type KernelTransport, type RegenError, type VerifyReport } from '../../driver/src/verify.js';
 import {
-  angles, check, checkProfile, clearance, closestPoint, describe, distance, exportMesh, extrema, maxDistance, symmetry, thickness, thicknessAt, heal, importSat, importSkp, importSldprt, importStep, massProps, probe, profiles, resolveDescriptions, section, sections, step, textMetrics, textOutline, loadFont, unloadFont, listFonts, subsetFont, threadData, validate,
-  type CheckReport, type DescribeItem, type ExportMeshOpts, type ExportMeshReport, type HealReport, type ImportReport, type SkpUp, type MassReport, type ProbeReport,
+  angles, check, checkProfile, clearance, closestPoint, describe, distance, exportMesh, extrema, maxDistance, symmetry, thickness, thicknessAt, heal, importSat, importSkp, importSldprt, importStep, massProps, meshToSolid, probe, profiles, resolveDescriptions, section, sections, step, textMetrics, textOutline, loadFont, unloadFont, listFonts, subsetFont, threadData, validate,
+  type CheckReport, type DescribeItem, type ExportMeshOpts, type ExportMeshReport, type HealReport, type ImportReport, type MeshInput, type MeshToSolidOpts, type SkpUp, type MassReport, type ProbeReport,
   type AnglesReport, type ClearanceReport, type ClosestPointReport, type DistanceReport, type HausdorffReport, type MaxDistanceReport, type MeasureEntity,
   type ExtremaReport, type SymmetryReport, type ThicknessAtReport, type ThicknessReport,
   type ResolveMatch, type SectionReport, type SectionsReport, type ValidateIssue,
 } from './queries.js';
-export type { ExportMeshOpts, ExportMeshReport };
+export type { ExportMeshOpts, ExportMeshReport, MeshInput, MeshToSolidOpts };
 export type EditOp =
   | { op: 'add'; feature: Record<string, unknown>; index?: number }
   | { op: 'set'; id: string; path: string; value: unknown }
@@ -1017,6 +1017,11 @@ export class Session {
 
   importSat(data: string, name?: string): Promise<ImportReport> {
     return importSat(this.kernel, data, { name });
+  }
+
+  /** A triangle mesh into a solid (planar faces merged, cylinders / cones / spheres refit); refusals come back in `errors`. */
+  meshToSolid(mesh: MeshInput, name?: string, opts: MeshToSolidOpts & { tag?: string } = {}): Promise<ImportReport> {
+    return meshToSolid(this.kernel, mesh, { name, ...opts });
   }
 
   async close(): Promise<void> {

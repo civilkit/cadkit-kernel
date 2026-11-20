@@ -104,4 +104,18 @@ one('regen:tags', m('{"type":"regen","tag":"x","part":{"format":"ck-part","featu
   m('{"type":"regen","tag":5,"part":{"format":"ck-part","features":[]}}'), m('{"type":"interference"}'),
   m('{"type":"regen","tag":"x","part":5}'), m('{"type":"interference","tag":"x"}'));
 
+// KNOWN, INTENTIONAL divergences from the original kernel: `known: {bodyIndex: {json, reason}}`. The rebuilt reply (ms
+// normalised) must equal `json` exactly: such a step counts as passing in tools/gate.mjs and tools/diff.mjs (reported as
+// known), a reply that is neither the original's nor this pinned one still fails, so a NEW divergence is caught.
+const STEP_NONE = 'stepNothingToExport: the document has no bodies to export. Hint: make a solid or a surface first (an extrude, a revolve, a surfaceExtrude, ...); suppressed features and an empty rollback give nothing to write';
+const STEP_NONE_WHY = 'step of a document with no body is refused with stepNothingToExport (the original answered null, which the app reported as "empty result for step")';
+for (const c of cases) {
+  if (!c.name.startsWith('empty:')) continue;
+  c.bodies.forEach((b, i) => {
+    let j; try { j = JSON.parse(b); } catch { return; }
+    if (j.msg?.type !== 'step' || j.msg.tag === 'other') return; // tag "other" was never regenerated: noState, as before
+    (c.known ??= {})[i] = { json: JSON.stringify({ ok: false, error: STEP_NONE, ms: 0, ...(j.msg.debug ? { trace: [] } : {}) }), reason: STEP_NONE_WHY };
+  });
+}
+
 export default cases;

@@ -1,0 +1,19 @@
+[package]
+name = "ck-mesh"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Triangle mesh to B-rep solid: welding, watertight report, orientation, coplanar merging, analytic refit"
+
+[dependencies]
+ck-core = { path = "../ck-core" }
+ck-geom = { path = "../ck-geom" }
+ck-topo = { path = "../ck-topo" }
+ck-json = { path = "../ck-json" }
+ck-check = { path = "../ck-check" }
+ck-heal = { path = "../ck-heal" }
+ck-ops = { path = "../ck-ops" }
+ck-tess = { path = "../ck-tess" }
+
+[dev-dependencies]
+ck-recog = { path = "../ck-recog" }

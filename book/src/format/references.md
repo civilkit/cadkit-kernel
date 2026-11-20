@@ -28,7 +28,7 @@ A reference to a geometric object is a string or an object with a `kind`:
 | `{"kind": "std", "id": "front"}` | A standard plane. | planes, mirrors, drafts |
 | `{"kind": "face", "id": "F2.C1"}` | A face of the body. | sketch planes, plane bases, `endRef`, `neutral` |
 | `{"kind": "feature", "id": "P1"}` | The plane or axis made by a feature. | planes, patterns |
-| `{"kind": "curve", "id": "F11"}` | A curve feature (a helix or a curve made by `projectCurve`). | `sweep` path, curve lists |
+| `{"kind": "curve", "id": "F11"}` | A curve feature (a helix, or a curve made by `projectCurve`, `editCurve`, `offsetCurve` or `compositeCurve`). | `sweep` path, curve lists |
 | `{"kind": "axis", "axis": "x"}` | A world axis through the origin. | patterns, plane axes, `insertPart` |
 | `{"faces": ["F2.C1", "F2.S.e1"], "at": [20, 0, 10]}` | An edge: see below. | `fillet`, `chamfer`, `lip`, `fill`, `extend`, `pipeCut` |
 

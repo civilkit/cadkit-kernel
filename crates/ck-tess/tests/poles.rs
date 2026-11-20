@@ -84,9 +84,9 @@ fn wedges_through_a_pole_mesh_closed() {
     let half = || ProfileLoop::new(vec![ProfileSeg::arc("e1", v(0.0, 0.0), v(0.0, -10.0), v(0.0, 10.0)), ProfileSeg::line("e2", v(0.0, 10.0), v(0.0, -10.0))]);
     let mut all = vec![];
     for (name, lp) in [("cone", tri()), ("sphere", half())] {
-        // (a cone wedge of 355 degrees or more whose loop starts at the apex still meshes nothing: a separate, older
-        // failure of the strip window, not of the pole crossing; see docs/crash-fuzz.md)
-        for deg in [90.0, 179.0, 180.0, 181.0, 200.0, 237.04, 270.0, 300.0, 350.0] {
+        // (355 degrees and more: the strip's cut falls inside the rim arc, the face spans it and the loop that starts at
+        // the apex used to be refused on the cover as one that winds; see `over_pole` in `mesh_face_impl`)
+        for deg in [90.0, 179.0, 180.0, 181.0, 200.0, 237.04, 270.0, 300.0, 350.0, 354.0, 355.0, 358.0, 359.9, 359.999, 360.0] {
             for rev in [false, true] {
                 let lp = if rev { ProfileLoop::new(lp.segs.iter().rev().map(|s| s.reversed()).collect()) } else { lp.clone() };
                 let p = Profile::new(Frame::identity(), vec![ProfileRegion { outer: lp, holes: vec![] }]);
@@ -104,6 +104,15 @@ fn wedges_through_a_pole_mesh_closed() {
                     if (mesh - exact).abs() > 0.02 * exact {
                         issues.push(format!("{}: mesh area {mesh:.3} of {exact:.3}", b.face_id_str(f)));
                     }
+                }
+                // the closed mesh's volume (divergence theorem) against the exact wedge: cone pi r^2 h / 3, half disc 4 pi r^3 / 3
+                let vol: f64 = t.mesh.tri_face.iter().enumerate().map(|(k, _)| {
+                    let q = |j: usize| Vec3::new(m.positions[9 * k + 3 * j] as f64, m.positions[9 * k + 3 * j + 1] as f64, m.positions[9 * k + 3 * j + 2] as f64);
+                    q(0).dot(q(1).cross(q(2))) / 6.0
+                }).sum();
+                let exact = if name == "cone" { std::f64::consts::PI * 1000.0 / 3.0 } else { 4.0 * std::f64::consts::PI * 1000.0 / 3.0 } * (deg / 360.0);
+                if (vol.abs() - exact).abs() > 0.02 * exact {
+                    issues.push(format!("mesh volume {vol:.3} of {exact:.3}"));
                 }
                 all.push(format!("{name} {deg} rev{rev}: {issues:?}"));
             }

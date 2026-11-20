@@ -17,6 +17,12 @@ pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featu
             }
         }
     }
+    // a fillet on a procedural (sweep or blend) face is made on its B-spline, so that the guard judges the result against it too
+    if matches!(spec, Spec::Fillet(..)) {
+        if let Some(c) = super::freeform::procedural_to_bspline(b, edges) {
+            return blend_edges(&c, edges, spec, feature, tol);
+        }
+    }
     // a plane-plane-cylinder corner whose patch does not fit at this radius is refused up front, in every pick order, with its
     // reason: a retry (the free-form strip for the vertical edge) would otherwise build the same selection as a mitre in some orders
     if matches!(spec, Spec::Fillet(_, FilletProfile::Circular)) && EDGE_RADII.with(|c| c.borrow().is_none()) {
@@ -88,6 +94,20 @@ pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featu
         (Err(_), Some(gate)) => Err(gate),
         (r, _) => r,
     };
+    // the edges of strip faces whose rounds are wider together than the strip: built as crossing rounds (cross.rs),
+    // only when the ordinary build refused it as an overflow
+    if res.as_ref().is_err_and(|e| e.code == "blendOverflow") && matches!(spec, Spec::Fillet(_, FilletProfile::Circular)) && edges.len() >= 2 {
+        let radii = EDGE_RADII.with(|c| c.borrow().clone()).filter(|v| v.len() == edges.len()).unwrap_or_else(|| vec![spec.size(); edges.len()]);
+        if edges.len() == 2 {
+            if let Some(Ok(out)) = super::cross::try_crossing(b, edges, [radii[0], radii[1]], feature, tol) {
+                return Ok(out);
+            }
+        }
+        // several walls at once (cross_multi.rs)
+        if let Some(Ok(out)) = super::cross_multi::try_crossing_multi(b, edges, &radii, feature, tol) {
+            return Ok(out);
+        }
+    }
     if res.is_err() && matches!(spec, Spec::Fillet(..)) {
         if let Some(e) = curved_corner_refusal(b, edges, spec.size()) {
             return Err(e);
@@ -264,12 +284,12 @@ pub(super) fn blend_edges_inner(b: &Body, edges: &[(String, String, Vec3)], spec
                 if let Some(c) = super::overhang::detect(b, &eids, &vec![1.0; n]).first() {
                     return Err(BlendError {
                         detail: Some(format!(
-                            "a chamfer with two different distances or an angle cannot meet a corner at ({:.3}, {:.3}, {:.3}) where a convex and a concave edge pair all four selected",
+                            "a chamfer with two different distances or an angle cannot meet the corner at ({:.3}, {:.3}, {:.3}) where a convex and a concave edge pair all four selected: the corner patch is a mitre through the ends of the four strips, and with unequal legs the strips of the concave pair and of the convex pair stop at different distances on the shared faces, so their ends do not meet and the strips would stop in planar steps",
                             c.v.x, c.v.y, c.v.z
                         )),
                         params: vec![(
                             "hint".into(),
-                            "use an equal-distance chamfer, chamfer the concave pair and the convex pair in separate features, or leave the four edges at this vertex out of the selection".into(),
+                            "use an equal-distance chamfer for these four edges, chamfer the concave pair and the convex pair in separate features, or leave the four edges at this vertex out of the selection".into(),
                         )],
                         ..BlendError::code("blendCorner")
                     });
@@ -278,18 +298,7 @@ pub(super) fn blend_edges_inner(b: &Body, edges: &[(String, String, Vec3)], spec
             }
         };
         if let Some(c) = overhangs_all.iter().find(|c| !c.patch_ok) {
-            let deg = c.a12.abs().clamp(-1.0, 1.0).acos().to_degrees();
-            return Err(BlendError {
-                detail: Some(format!(
-                    "a convex and a concave blended edge meet at ({:.3}, {:.3}, {:.3}) and their two edge directions are {:.0} degrees apart, not perpendicular",
-                    c.v.x, c.v.y, c.v.z, deg
-                )),
-                params: vec![(
-                    "hint".into(),
-                    "the corner patch is only built where the two edge directions are perpendicular: fillet the concave edges and the convex edges in separate features, or leave the four edges at this vertex out of the selection".into(),
-                )],
-                ..BlendError::code("blendCorner")
-            });
+            return Err(c.refusal(None));
         }
         let overhangs: Vec<super::overhang::Corner> = overhangs_all;
         // chamfers: the edges of the overhang corners are built first, on their own (each corner's zone is rebuilt from
@@ -312,8 +321,15 @@ pub(super) fn blend_edges_inner(b: &Body, edges: &[(String, String, Vec3)], spec
                 // names stay selection-indexed.
                 let tang: Vec<bool> = eids.iter().map(|&e| is_tangent_edge(b, e)).collect();
                 let mut order: Vec<usize> = (0..n).collect();
-                let alt = CHAMFER_ORDER.with(|c| c.get());
+                let mut alt = CHAMFER_ORDER.with(|c| c.get());
                 let concave: Vec<bool> = eids.iter().map(|&e| super::mixed::line_edge_concave(b, e).unwrap_or(false)).collect();
+                // a convex and a concave pick that share a vertex whose other edge is not picked: chamfered in the order of the
+                // selection the first strip's end is cut by the second tool in one order (a tool face or a planar step is left
+                // in the part) and ends in a clean cap in the other, so the result depended on the pick order. The convex pick
+                // goes first, whatever the selection's order (a stable sort: the other picks keep theirs)
+                if alt == 0 && has_mixed_pair(b, &eids, &concave) {
+                    alt = 2;
+                }
                 order.sort_by_key(|&i| (!tang[i], match alt { 1 => !concave[i], 2 => concave[i], _ => false }));
                 while done.iter().any(|d| !d) {
                     // an edge joins the round unless it shares a vertex with an
@@ -416,9 +432,23 @@ pub(super) fn blend_edges_inner(b: &Body, edges: &[(String, String, Vec3)], spec
                 let vp = b.vertex(corner.vertex).p;
                 CORNER_TRIMS.with(|t| {
                     for i in 0..3 {
-                        t.borrow_mut().push(CornerTrim { p: vp, arc: i == 0, dir: g.u[i], amount: g.along[i] });
+                        t.borrow_mut().push(CornerTrim { p: vp, arc: i == 0, dir: g.u[i], amount: g.along[i], centre: None });
                     }
                 });
+            }
+        }
+        // a convex corner of three planes at other than right angles (the vertical edge of a trapezoid prism between two
+        // slanted walls and its two top edges): the same trims, see `corner::oblique_corner_centre`
+        if matches!(spec, Spec::Fillet(_, FilletProfile::Circular)) && EDGE_RADII.with(|c| c.borrow().is_none()) {
+            for corner in super::corner::find_corner(b, &eids) {
+                if let Some((c, u)) = super::corner::oblique_corner_centre(b, &corner, r) {
+                    let vp = b.vertex(corner.vertex).p;
+                    CORNER_TRIMS.with(|t| {
+                        for i in 0..3 {
+                            t.borrow_mut().push(CornerTrim { p: vp, arc: false, dir: u[i], amount: 0.0, centre: Some(c) });
+                        }
+                    });
+                }
             }
         }
         // junction vertices of the whole selection (an earlier round shortens the edges that follow)
@@ -461,6 +491,10 @@ pub(super) fn blend_edges_inner(b: &Body, edges: &[(String, String, Vec3)], spec
             if round.is_empty() {
                 continue;
             }
+            // a pick of this round that an earlier round's tool took away (the selection had it: `eids`): an overflow
+            if let Some(&i) = round.iter().find(|&&i| find_edge(&out, &fwd[i].0, &fwd[i].1, fwd[i].2).is_none()) {
+                return Err(super::diag::consumed_by_earlier(feature, i as u32, &fwd[i].0, &fwd[i].1));
+            }
             let rings: Vec<bool> = round.iter().map(|&i| ring_lead[i]).collect();
             let idx: Vec<u32> = round.iter().map(|&i| i as u32).collect();
             let sel: Vec<(String, String, Vec3)> = round.iter().map(|&i| fwd[i].clone()).collect();
@@ -482,14 +516,38 @@ pub(super) fn blend_edges_inner(b: &Body, edges: &[(String, String, Vec3)], spec
             }
         }
         for c in &reflex {
-            out = super::rim_reflex::cut_wedge(&out, c, r, feature, c.line as u32, c.arc as u32, tol)?;
+            // the wedge must join as a valid solid; where its boolean does not close (a corner zone a few hundredths of a
+            // millimetre long at a small radius) the two rounds keep their flush ends, as long as the step between them
+            // is small (the zone reaches less than r / 2 past the corner); else the corner is refused
+            let joined = super::rim_reflex::cut_wedge(&out, c, r, feature, c.line as u32, c.arc as u32, tol).and_then(|w| super::validity::check_solid(&out, &w, tol).map(|_| w));
+            match joined {
+                Ok(w) => out = w,
+                Err(e) if c.zone_reach(r) <= 0.5 * r => {
+                    dbg_fail(&format!("reflex rim corner at ({:.3},{:.3},{:.3}): the wedge did not join ({} {:?}); the rounds end flush", c.v.x, c.v.y, c.v.z, e.code, e.detail));
+                }
+                Err(e) => {
+                    return Err(BlendError {
+                        code: "blendCorner".into(),
+                        detail: Some(format!(
+                            "the rounds of a straight edge and an arc that meet at ({:.3}, {:.3}, {:.3}), where the wall edge between them is left sharp, could not be joined ({})",
+                            c.v.x, c.v.y, c.v.z,
+                            e.detail.unwrap_or(e.code)
+                        )),
+                        params: vec![("hint".into(), "use a different radius, round the sketch corner before the cut (or round the wall edge too), or round the two edges in separate features".into())],
+                    });
+                }
+            }
         }
         // overhang corners: replace the zone box about the vertex with the corner patch solid
-        // (an Err keeps the striped body: a valid, nearly right solid, never a refusal)
+        // (a splice that fails is refused: the striped body would end each stripe in a planar step)
         for (i, oh) in overhangs.iter().enumerate() {
             match super::overhang::splice(&out, oh, feature, i, tol) {
                 Ok(spliced) => out = spliced,
-                Err(e) => dbg_fail(&format!("overhang patch at ({:.3},{:.3},{:.3}): {} {:?}", oh.v.x, oh.v.y, oh.v.z, e.code, e.detail.unwrap_or_default())),
+                Err(e) => {
+                    dbg_fail(&format!("overhang patch at ({:.3},{:.3},{:.3}): {} {:?}", oh.v.x, oh.v.y, oh.v.z, e.code, e.detail));
+                    let why = e.detail.as_deref().map(|d| d.trim_start_matches("overhang corner: ")).unwrap_or(&e.code).to_string();
+                    return Err(oh.refusal(Some(&why)));
+                }
             }
         }
         if matches!(spec, Spec::Fillet(..)) {
@@ -686,8 +744,8 @@ pub(super) fn blend_edges_at(
                 dbg_fail(&format!("edge {k} ({fa} | {fb}) was blended by an earlier tool"));
                 continue;
             }
-            dbg_fail(&format!("edge {k} ({fa} | {fb} at {at:?}) not found after earlier blends"));
-            return Err(BlendError::code("missingEdge"));
+            // the edge was found on this round's input (`refs` above): an earlier tool of the round took it away
+            return Err(super::diag::consumed_by_earlier(feature, idx[k], fa, fb));
         };
         let own = out.edge_faces(e);
         let (f1, f2) = match (out.find_face(fa), out.find_face(fb)) {
@@ -798,4 +856,22 @@ pub(super) fn blend_edges_at(
     order.sort_by_key(|&f| rank(f)); // stable: keeps relative order within ties
     let out = crate::boolean::assemble::rebuild_in_order(&out, &order);
     Ok((out, refs, touched))
+}
+
+/// A vertex where a selected straight convex edge and a selected straight concave edge meet (the picks of a corner that is
+/// not fully selected: the third edge of a 3-valent vertex, or the others of a 4-valent one, are left sharp).
+fn has_mixed_pair(b: &Body, eids: &[EdgeId], concave: &[bool]) -> bool {
+    let lines: Vec<bool> = eids.iter().map(|&e| super::mixed::line_edge_concave(b, e).is_some()).collect();
+    for (i, &a) in eids.iter().enumerate() {
+        for (j, &c) in eids.iter().enumerate().skip(i + 1) {
+            if !(lines[i] && lines[j]) || concave[i] == concave[j] {
+                continue;
+            }
+            let (ea, ec) = (b.edge(a), b.edge(c));
+            if [ea.v0, ea.v1].iter().any(|v| *v == ec.v0 || *v == ec.v1) {
+                return true;
+            }
+        }
+    }
+    false
 }

@@ -798,10 +798,6 @@
    "label": "kernel-gap:fillet-plane-cylinder-line",
    "note": "fillet (r 2, also 0.5 and 0.05) of the straight edge where a foot top plane meets the tube cylinder (axis parallel to the plane) is blendUnsupported; a chamfer of the same edge works."
   },
-  "conduit-snap-clip": {
-   "label": "kernel-gap:fillet-plane-cylinder-line",
-   "note": "F7 lip fillet is blendUnsupported (plane wall x bore cylinder, line edge, BJ-3). The hole tangent to the plate wall (F13) and its countersink (F15) are fixed (BJ-8)."
-  },
   "knuckle-hinge": {
    "label": "reference-mismatch:overlapping-solids",
    "note": "the countersinks now cut (BJ-1 fixed). The example returns two leaves that overlap each other (sum of volumes 5146.71, union 4990.04, brepjs fuse); we build one body, so the volume reference is the sum and cannot be matched exactly even when the cuts work."

@@ -23,6 +23,7 @@ pub fn install() {
         built_export: Some(built_export_hook),
         #[cfg(feature = "skp")]
         import_skp: Some(import_skp_hook),
+        mesh_to_solid: Some(mesh_to_solid_hook),
         regen: Some(regen_hook),
         import_step: Some(import_hook),
         query: Some(query_hook),
@@ -262,12 +263,14 @@ fn regen_hook(part: &Json, cx: &mut Cx) -> Result<(Json, State), String> {
     if part.version > PART_VERSION {
         out.push("partVersionNewer", Obj::new().put("file", part.version as f64).put("kernel", PART_VERSION as f64).build());
     }
-    let state = match body {
-        Some(body) => {
-            let sketches = std::mem::take(&mut result.sketches);
-            State { has_body: true, data: Some(Box::new(Snapshot { body, sketches, asm, heal_base: None, surfaces: vec![], ends: ck_model::features::press_pull::moving_ends(&part) })) }
-        }
-        None => State::empty(),
+    // surface bodies (surfaceExtrude, blendSurface, ...) are kept beside the solid body so that `step` writes them too; a
+    // document of surface bodies only has an empty solid body
+    let state = if body.is_some() || !surfs.is_empty() {
+        let sketches = std::mem::take(&mut result.sketches);
+        let body = body.unwrap_or_else(Body::new);
+        State { has_body: true, data: Some(Box::new(Snapshot { body, sketches, asm, heal_base: None, surfaces: surfs, ends: ck_model::features::press_pull::moving_ends(&part) })) }
+    } else {
+        State::empty()
     };
     Ok((out, state))
 }
@@ -518,6 +521,32 @@ fn sldprt_meta_json(o: Obj, m: &ck_sldprt::SwMeta, parasolid: Option<(u32, Strin
         .put("versions", versions)
         .put("thumbnail", thumb)
         .put("omittedForPrivacy", m.omitted)
+}
+
+/// `meshToSolid`: a triangle mesh -> the tag's body (ck-mesh: welded, checked, oriented, coplanar triangles merged into
+/// planar faces, cylinders / cones / spheres refit where the facets fit them). Result shaped like `importSkp`: `body`,
+/// `errors` as `["import", {code, params:{message, hint, ..}}]` on a refusal (the tag keeps its state), plus `import` (the
+/// conversion report, docs/agent-queries.md "meshToSolid").
+fn mesh_to_solid_hook(cx: &mut Cx) -> Result<(Json, Option<State>), String> {
+    let name = cx.msg.get_str("name").unwrap_or("mesh").to_string();
+    let mut out = ck_server::session::empty_regen_result();
+    let conv = match ck_mesh::request::run(cx.msg) {
+        Ok(c) => c,
+        Err(r) => {
+            let err = Json::Arr(vec![Json::Str("import".into()), ck_mesh::request::refusal_json(&r)]);
+            set_key(&mut out, "errors", Json::Arr(vec![err]));
+            return Ok((out, None));
+        }
+    };
+    let body = conv.body;
+    let tess = ck_tess::mesh::tessellate(&body);
+    set_body(&mut out, body_json(&body, &tess, cx, &(vec![], vec![])));
+    let info = ck_mesh::request::report_json(&name, &body, &conv.report);
+    if let Json::Obj(kv) = &mut out {
+        kv.push(("import".into(), info));
+    }
+    let snap = Snapshot { body, sketches: vec![], asm: Default::default(), heal_base: None, surfaces: vec![], ends: vec![] };
+    Ok((out, Some(State { has_body: true, data: Some(Box::new(snap)) })))
 }
 
 #[cfg(feature = "skp")]
@@ -1019,7 +1048,7 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
         "probe" => ck_ops::section::probe_reply(&snapshot(cx)?.body, cx.msg),
         "recognize" => recognize_query(cx),
         "fitQuadrics" => fit_quadrics_query(cx),
-        "distance" | "maxDistance" => {
+        "distance" | "maxDistance" | "checkIntersection" => {
             let body = &snapshot(cx)?.body;
             // `tagB`: measure against the body of another tag (a rebuilt part against the original)
             let other = match cx.msg.get_str("tagB") {
@@ -1035,6 +1064,8 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
             };
             if ty == "distance" {
                 ck_ops::analysis::distance_reply(body, other, cx.msg)
+            } else if ty == "checkIntersection" {
+                ck_ops::analysis::check_intersection_reply(body, other, cx.msg)
             } else {
                 ck_ops::analysis::max_distance_reply(body, other, cx.msg)
             }
@@ -1164,13 +1195,21 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
             let name = cx.msg.get_str("name").unwrap_or("part").to_string();
             let s = snapshot(cx)?;
             let mut body = s.body.clone();
-            // an import's surface bodies are written too (as surface models): exporting never drops a part
-            for (_, sb) in &s.surfaces {
+            // the surface bodies (an import's, or the document's surface features) are written too, as named surface
+            // models: exporting never drops a part. `ranges` = the face index range of each, to name its shells.
+            let mut ranges: Vec<(usize, usize, String)> = vec![];
+            for (id, sb) in &s.surfaces {
+                let at = body.faces.len();
                 body.append(sb);
+                ranges.push((at, body.faces.len(), id.clone()));
+            }
+            if body.num_faces() == 0 {
+                return Err(ck_server::geometry::STEP_NOTHING_TO_EXPORT.to_string());
             }
             ck_topo::region::rebuild_lumps(&mut body);
+            let surface_name = |f: ck_topo::body::FaceId| ranges.iter().find(|r| (r.0..r.1).contains(&f.idx())).map(|r| r.2.clone());
             let opts = ck_io::step::StepOpts { unix_ms: ck_server::clock::unix_ms() };
-            ck_io::step::try_write_step(&body, &name, &opts).map(Json::Str)
+            ck_io::step::try_write_step_with_surfaces(&body, &name, &opts, &surface_name).map(Json::Str)
         }
         _ => Err(ck_server::session::todo(ty)),
     }
