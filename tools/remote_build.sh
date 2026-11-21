@@ -8,7 +8,12 @@
 #   --quick: agent iteration, NOT a release verification: wasm build, ck-ops + ck-topo tests, only the ck-model integration
 #   tests listed in tools/ci/quick_tests.txt, and --checks (default gate, started beside the tests). --full = today's behaviour (the default).
 #   Cargo runs write per-test-binary times to test_times.txt beside remote_results.txt (fetched back with --out).
-#   --job-timeout SECS (default 10800): the whole job on the box (lock wait included) is killed after that and recorded as FAIL job-timeout.
+#   --job-timeout SECS (default by kind: quick 2700, full and cargo-test-only 10800): wall-clock limit of the job once it holds a slot (the
+#   slot wait is not counted). A job over it has its whole process tree killed on the box, the slot released, and `FAIL job-timeout` recorded.
+#   Kinds: quick (--quick), test (--cargo-test CRATE.. without --quick), full (--cargo-test all, checks only; also tools/ci/full_gate_on_main.sh).
+#   With --slots 3 the last CK_BOX_SLOTS_QUICK_ONLY (default 1, 0 = off) slots take quick jobs only; quick takes any free slot, preferring those.
+#   --status: print who runs what and who waits on the box, with the median duration per kind (no submission).
+#   --dry-run: print the plan (kind, slots this job may use, timeouts, tests) and validate tools/ci/quick_tests.txt; submit nothing.
 #   --test-timeout SECS (default 2400): each cargo test binary is killed after that (cargo runner `timeout`). One job per worktree name:
 #   a second submission while one waits or runs is refused (exit 75) with the run to fetch instead.
 #   --slots N (default 3, REMOTE_BUILD_SLOTS): the box runs N cargo jobs at once, each with cores/N build jobs unless --jobs is given.
@@ -20,8 +25,9 @@
 # Everything on the box lives under ~/ci/remote-build; nothing outside it is written or deleted.
 set -uo pipefail
 WT=""; CHECKS="gate"; CTEST=""; OUT=""; SYNC_BACK=1; MODE=run; RESET=0; NOWASM=0; WASMF=""; JOBS="${REMOTE_BUILD_JOBS:-}"; SLOTS="${REMOTE_BUILD_SLOTS:-3}"; IMPACT=1
-TESTNAME=""; FETCH=""; ENVS=(); QUICK=0; CHECKS_SET=0; JOBT=10800; BINT=2400
-usage() { sed -n 2,21p "$0" >&2; exit 64; }
+TESTNAME=""; FETCH=""; ENVS=(); QUICK=0; CHECKS_SET=0; JOBT=""; BINT=2400; DRY=0; QONLY="${CK_BOX_SLOTS_QUICK_ONLY:-1}"; WAITMAX="${CK_BOX_WAIT_MAX:-21600}"
+usage() { sed -n 2,26p "$0" >&2; exit 64; }
+ORIG_ARGS=("$@")
 while [ $# -gt 0 ]; do
   case "$1" in
     --worktree) WT="$2"; shift 2 ;;
@@ -43,6 +49,8 @@ while [ $# -gt 0 ]; do
     --no-wasm) NOWASM=1; shift ;;
     --wasm-features) WASMF="$2"; shift 2 ;;
     --musl-libm) ENVS+=("CK_MUSL_LIBM=1"); shift ;;
+    --status) MODE=status; shift ;;
+    --dry-run) DRY=1; shift ;;
     --clean) MODE=clean; shift ;;
     --prune) MODE=prune; shift ;;
     -h|--help) usage ;;
@@ -56,7 +64,13 @@ if [ "$QUICK" = 1 ]; then
 fi
 case "$JOBS" in *[!0-9]*) echo "--jobs must be a number" >&2; exit 64 ;; esac
 case "$SLOTS" in ''|*[!0-9]*|0) echo "--slots must be a number >= 1" >&2; exit 64 ;; esac
-case "$JOBT" in ''|*[!0-9]*) echo "--job-timeout must be seconds" >&2; exit 64 ;; esac
+case "$JOBT" in *[!0-9]*) echo "--job-timeout must be seconds" >&2; exit 64 ;; esac
+case "$QONLY" in ''|*[!0-9]*) echo "CK_BOX_SLOTS_QUICK_ONLY must be a number (0 = no reserved slot)" >&2; exit 64 ;; esac
+case "$WAITMAX" in ''|*[!0-9]*) echo "CK_BOX_WAIT_MAX must be seconds" >&2; exit 64 ;; esac
+LIB="$(dirname "$0")/ci/box_lib.sh"; [ -s "$LIB" ] || { echo "tools/ci/box_lib.sh missing" >&2; exit 64; }
+. "$LIB"
+KIND=$(bx_kind "$QUICK" "$CTEST"); QONLY=$(bx_qonly "$SLOTS" "$QONLY")
+[ -n "$JOBT" ] || { if [ "$KIND" = quick ]; then JOBT=2700; else JOBT=10800; fi; }
 case "$BINT" in ''|*[!0-9]*) echo "--test-timeout must be seconds" >&2; exit 64 ;; esac
 case "$TESTNAME" in *[!A-Za-z0-9_-]*) echo "bad --test" >&2; exit 64 ;; esac
 case "$FETCH" in /*|*..*|*[!A-Za-z0-9_./-]*) echo "bad --fetch" >&2; exit 64 ;; esac
@@ -75,6 +89,26 @@ RB='$HOME/ci/remote-build'     # expanded on the box only
 QUIET='post-quantum|store now|upgraded|openssh.com/pq'
 rsh() { ssh "${SSHO[@]}" "$H" "$@" 2> >(grep -Ev "$QUIET" >&2); }
 
+if [ "$MODE" = status ]; then
+  { cat "$LIB"; printf 'bx_status "$HOME/ci/remote-build" %s %s\n' "$SLOTS" "$QONLY"; } | rsh "bash -s"
+  exit $?
+fi
+if [ "$DRY" = 1 ]; then   # the plan only: nothing is sent, nothing is synced
+  QT="$WT/tools/ci/quick_tests.txt"
+  echo "dry run: $NAME (host $H)"
+  echo "  kind:      $KIND$([ "$KIND" = quick ] && echo ' (--quick)')"
+  echo "  slots:     $SLOTS in all, $QONLY reserved for quick jobs$([ "$QONLY" -gt 0 ] && echo " (slot(s) $((SLOTS - QONLY + 1))..$SLOTS)"); this job may use: $(bx_slots_for "$KIND" "$SLOTS" "$QONLY") (tried in that order)"
+  echo "  timeouts:  job $JOBT s wall clock once a slot is held (kind $KIND; --job-timeout overrides), at most $WAITMAX s waiting for a slot, each test binary $BINT s"
+  echo "  checks:    $CHECKS$([ "$QUICK" = 1 ] && [ "$CHECKS_SET" = 0 ] && echo ' (default)')"
+  echo "  cargo:     ${CTEST:-none}"
+  if [ "$QUICK" = 1 ]; then
+    echo "  quick list: $(bx_quick_pairs | wc -l | tr -d ' ') entries; crates always run: $(bx_quick_pairs | awk '{print $1}' | sort -u | tr '\n' ' ')"
+    MISS=$(cd "$WT" && bx_quick_missing)
+    if [ -n "$MISS" ]; then printf '%s\n' "$MISS" | sed 's/^/  FAIL quick_tests.txt names a missing test file: /'; exit 1; fi
+    echo "  quick list: every named test file exists"
+  fi
+  exit 0
+fi
 if [ "$MODE" = prune ]; then
   rsh "set -u; RB=$RB; [ -d \"\$RB/wt\" ] || exit 0; cd \"\$RB/wt\" || exit 1
     for d in */; do d=\${d%/}; [ -n \"\$d\" ] || continue; s=\"\$RB/runs/\$d/.last-used\"
@@ -97,6 +131,11 @@ if [ $? = 75 ]; then
   echo "  when it ends:   rsync $H:ci/remote-build/runs/$NAME/remote_results.txt $H:ci/remote-build/runs/$NAME/test_times.txt <dir>/" >&2
   exit 75
 fi
+# slot throttle (tools/ci/slot.sh, docs/ci.md): at most CK_BOX_SLOTS (default 2, 0 = off) submissions from this machine at once.
+# Everything from here (sync, the job, following it, copy back) runs again under the slot; the local setup above does not.
+if [ -z "${CK_SLOT_HELD:-}" ] && [ "${CK_BOX_SLOTS-2}" != 0 ]; then
+  CK_SLOT_HELD=1 "$(dirname "$0")/ci/slot.sh" "$0" ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"}; exit $?
+fi
 T0=$(date +%s)
 echo "remote_build: $NAME checks=$CHECKS cargo-test=${CTEST:-none} jobs=${JOBS:-auto} slots=$SLOTS"
 [ "$QUICK" = 1 ] && echo "QUICK: not a release verification"
@@ -114,7 +153,8 @@ echo "synced in $(( $(date +%s) - T0 ))s"
 read -r -d '' REMOTE <<'RSCRIPT'
 set -u
 NAME=$1; CHECKS=$2; CTEST=$3; JOBS=$4; NOWASM=${5:-0}; WASMF=${6:-}; REV=${7:-}; TESTNAME=${8:-}; QUICK=${9:-0}; BINT=${10:-2400}; SLOTS=${11:-3}; IMPCR=${12:-}
-shift 12 2>/dev/null || shift $#
+SUBHOST=${13:-?}; KIND=${14:-full}; LIMIT=${15:-10800}; QONLY=${16:-0}   # (the bx_* functions are in front of this script: tools/ci/box_lib.sh)
+shift 16 2>/dev/null || shift $#
 RB="$HOME/ci/remote-build"
 case "$NAME" in ''|*/*|.*) echo "bad name"; exit 2;; esac
 SRC="$RB/wt/$NAME"; RUN="$RB/runs/$NAME"; export CARGO_TARGET_DIR="$RB/target/$NAME"
@@ -124,6 +164,7 @@ cd "$SRC" || exit 2
 mkdir -p "$RUN"; exec 8>"$RUN/job.lock"
 flock -n 8 || { echo "BUSY: another job holds $NAME"; exit 75; }   # released when this job (and anything it started) ends
 printf 'started %s, pid %s, checks %s, cargo-test %s, quick %s\n' "$(date -u +%FT%TZ)" "$$" "$CHECKS" "$CTEST" "$QUICK" > "$RUN/job.info"
+rm -f "$RUN/job.meta" "$RUN/job.timeout"; bx_meta kind="$KIND" host="$SUBHOST" state=waiting submitted="$(date +%s)" limit="$LIMIT" slot=-
 touch "$RUN/.last-used"; rm -f "$RUN/gate_summary.txt"; R="$RUN/remote_results.txt"; : > "$R"; TT="$RUN/test_times.txt"; : > "$TT"; TTRAW="$RUN/test_times.raw"; : > "$TTRAW"
 if [ "$QUICK" = 1 ]; then echo "QUICK: not a release verification" | tee -a "$R"; fi
 touch "$RUN/.parity-start"   # a native table older than this run is not compared (wasmparity)
@@ -152,21 +193,14 @@ BINRUN="timeout -k 10 $BINT"   # every native test binary runs under this (cargo
 # housekeeping fallback: if the daily cron has not pruned idle worktree folders for 6 hours, do it now in the background
 PRUNE="$HOME/ci/bin/prune_remote_build.sh"
 [ -x "$PRUNE" ] && [ -z "$(find "$HOME/ci/prune.log" -mmin -360 2>/dev/null)" ] && (setsid nohup "$PRUNE" > /dev/null 2>&1 < /dev/null &)
-echo "waiting for a build slot (of $SLOTS)"
-SLOT=""
-while [ -z "$SLOT" ]; do
-  for i in $(seq 1 "$SLOTS"); do
-    if [ "$i" = 1 ]; then LF="$RB/build.lock"; else LF="$RB/build.lock.$i"; fi
-    exec 9>"$LF"
-    if flock -n 9; then SLOT=$i; break; fi
-    exec 9>&-
-  done
-  [ -n "$SLOT" ] || sleep 3
-done
+bx_acquire
+T_RUN=$SECONDS; bx_meta state=running slot="$SLOT" run_started="$(date +%s)"
+trap bx_finish EXIT
+bx_watchdog $$ "$LIMIT"   # wall-clock limit of this kind, counted from here (the slot is held); see bx_watchdog
 if [ -z "$JOBS" ]; then JOBS=$(( ($(nproc) + SLOTS - 1) / SLOTS )); [ "$JOBS" -ge 1 ] || JOBS=1; fi   # cores per slot, rounded up (16 cores, 3 slots: 6)
 export CARGO_BUILD_JOBS="$JOBS"
 export RUST_TEST_THREADS="${RUST_TEST_THREADS:-$JOBS}"   # test threads per slot, not per machine
-echo "build slot $SLOT of $SLOTS taken, cargo jobs $JOBS"
+echo "build slot $SLOT of $SLOTS taken ($KIND job, limit ${LIMIT}s), cargo jobs $JOBS"
 [ "$NOWASM" = 1 ] || step build-wasm env CK_BUILD_REV="$REV" nice -n 5 cargo build -q -p ck-wasm ${WASMF:+--features "$WASMF"} --target wasm32-unknown-unknown --release
 [ -s "$W" ] && echo "wasm bytes $(wc -c < "$W")"
 # --musl-libm: the cargo test binaries run with the host libm's transcendental functions replaced by the `libm` crate's
@@ -192,6 +226,11 @@ crashfuzz_check() {
   local out="$RUN/crash.out" rc=0 rc2=0 ids flaky="" i
   node tools/crash_fuzz.mjs --wasm "$W" --cases 5000 --seed 7 --budget-ms 400 --timeout 6000 --workers 8 --no-shrink --check --json "$RUN/crash.json" > "$out" 2>&1 || rc=$?
   cat "$out"
+  if [ "$rc" = 139 ]; then   # node SEGV under box load: one retry, on rc 139 only; the retry's result is the result
+    echo "crashfuzz: node SEGV (rc=139), retrying once"; rc=0
+    node tools/crash_fuzz.mjs --wasm "$W" --cases 5000 --seed 7 --budget-ms 400 --timeout 6000 --workers 8 --no-shrink --check --json "$RUN/crash.json" > "$out" 2>&1 || rc=$?
+    cat "$out"
+  fi
   [ "$rc" = 0 ] && return 0
   ids=$(sed -n 's/^  \([^ :]*\): [a-z-]* -> .*/\1/p' "$out" | paste -sd, -)
   [ -n "$ids" ] || return "$rc"
@@ -213,20 +252,18 @@ start_gate() {
   GATE_PID=$!
 }
 GATE_PID=""
-# tools/ci/quick_tests.txt as "crate name" pairs: a bare name is a ck-model test, `ck-io:name` (or `io:name`) one of another crate
-quick_pairs() { sed -e 's/#.*//' tools/ci/quick_tests.txt | tr -s ' \t' '\n\n' | grep . | awk '{ if (index($0,":")) { split($0,a,":"); c=a[1]; sub(/^ck-/,"",c); print "ck-" c, a[2] } else print "ck-model", $0 }'; }
 if [ "$QUICK" = 1 ]; then   # quick: every name in tools/ci/quick_tests.txt must exist; the gate runs beside the tests
-  quick_pairs | while read -r qc qt; do
-    [ -f "crates/$qc/tests/$qt.rs" ] || { echo "FAIL: quick_tests.txt names $qc $qt, no crates/$qc/tests/$qt.rs"; echo "FAIL quick-list-$qt 0 rc=1" >> "$R"; }
-  done
-  grep -q '^FAIL quick-list-' "$R" && FAILS=$((FAILS+1))
+  while read -r qc qt; do
+    [ -n "$qt" ] || continue
+    echo "FAIL: quick_tests.txt names $qc $qt, no crates/$qc/tests/$qt.rs"; echo "FAIL quick-list-$qt 0 rc=1" >> "$R"; FAILS=$((FAILS+1))
+  done < <(bx_quick_missing)
   case " $CH " in *" gate "*) [ -s "$W" ] && start_gate ;; esac
 fi
 cargo_test_args() { # lib, bins and integration tests except ffi_diff (needs the dev machine's oracle library)
   local c=$1 t a="-p $1 --profile fast --lib --bins"
   if [ -n "$TESTNAME" ]; then echo "-p $1 --profile fast --test $TESTNAME -- --nocapture"; return; fi
   if [ "$QUICK" = 1 ]; then   # a crate with names in tools/ci/quick_tests.txt runs only those test files; one without runs all of its tests
-    local qn; qn=$(quick_pairs | awk -v c="$c" '$1==c {print $2}')
+    local qn; qn=$(bx_quick_pairs | awk -v c="$c" '$1==c {print $2}')
     if [ -n "$qn" ]; then for t in $qn; do [ -f "crates/$c/tests/$t.rs" ] && a="$a --test $t"; done; echo "$a"; return; fi
   fi
   for t in $(ls "crates/$c/tests/"*.rs 2>/dev/null | sed -E 's|.*/([^/]+)\.rs$|\1|'); do [ "$t" = ffi_diff ] || a="$a --test $t"; done
@@ -245,13 +282,17 @@ timed_cargo_test() { # timed_cargo_test crate cargo-args...
 }
 case " ${TENV[*]-} " in *CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER=*) ;; *) TENV+=("CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER=$BINRUN") ;; esac
 if [ -n "$CTEST" ]; then
-  if [ "$CTEST" = all ]; then CRATES=$(ls crates | grep '^ck-' | sed 's/^ck-//'); else CRATES=$(printf '%s\n' $CTEST | grep -v '^-p$' | sed 's/^ck-//'); fi
+  if [ "$CTEST" = all ]; then CRATES=$(ls crates | grep '^ck-' | sed 's/^ck-//'); else CRATES=$(printf '%s\n' $CTEST | grep -v '^-p$' | sed 's/^ck-//' | tr '\n' ' '); fi   # one line: the `case " $CRATES "` tests below need spaces
+  if [ "$QUICK" = 1 ]; then   # --quick: every crate that tools/ci/quick_tests.txt names runs (its named test files only), ck-wasm included
+    for a in $(bx_quick_pairs | awk '{print $1}' | sort -u); do a=${a#ck-}; case " $CRATES " in *" $a "*) ;; *) CRATES="$CRATES $a" ;; esac; done
+    echo "quick list crates: $(bx_quick_pairs | awk '{print $1}' | sort | uniq -c | awk '{printf "%s:%s ", $2, $1}')"
+  fi
   if [ "$QUICK" = 1 ] && [ -n "$IMPCR" ]; then   # --quick: add the crates that depend (directly or not) on the ones this branch changed
     AFF=$(cargo metadata --no-deps --format-version 1 --offline 2>/dev/null | node -e '
       const m=JSON.parse(require("fs").readFileSync(0,"utf8")); const ws=m.packages.map(p=>p.name); const want=process.argv[1].trim();
       const set=new Set(want==="ALL"?ws:want.split(/\s+/).filter(x=>ws.includes(x)));
       for (let grew=true; grew;) { grew=false; for (const p of m.packages) if (!set.has(p.name) && p.dependencies.some(d=>set.has(d.name))) { set.add(p.name); grew=true; } }
-      console.log([...set].filter(n=>n!=="ck-wasm").sort().join(" "));' "$IMPCR")
+      console.log([...set].filter(n=>n!=="ck-wasm"||+process.argv[2]>0).sort().join(" "));' "$IMPCR" "$(bx_quick_pairs | grep -c '^ck-wasm ')")
     echo "quick impact: changed [$IMPCR] -> tests of: ${AFF:-none}"
     for a in $AFF; do a=${a#ck-}; case " $CRATES " in *" $a "*) ;; *) CRATES="$CRATES $a" ;; esac; done
   fi
@@ -259,9 +300,15 @@ if [ -n "$CTEST" ]; then
     [ -d "crates/ck-$c" ] || { echo "no crate ck-$c"; rec "cargo-test-$c" 1 0; continue; }
     step "cargo-test-$c" timed_cargo_test "ck-$c" env ${TENV[@]+"${TENV[@]}"} nice -n 5 cargo test --no-fail-fast $(cargo_test_args "ck-$c")
   done
+  if [ "$QUICK" = 1 ]; then   # every listed test binary must have run (a result line in test_times.raw), not just exist
+    while read -r qc qt; do
+      grep -qE "^[0-9.]+ $qc $qt\$" "$TTRAW" || { echo "FAIL: quick_tests.txt names $qc $qt but that test binary did not run"; echo "FAIL quick-ran-$qt 0 rc=1" >> "$R"; FAILS=$((FAILS+1)); }
+    done < <(bx_quick_pairs)
+  fi
   sort -rn "$TTRAW" > "$TT"; echo "per-binary test times (seconds crate test), slowest first: $TT"; head -15 "$TT"
 fi
 flock -u 9; exec 9>&-    # checks are plain node: release the build lock
+bx_meta slot=-
 
 # The gate's real numbers, kept in runs/<name>/gate_summary.txt and as `gate-metric <name> <got>/<total>` lines in remote_results.txt, so they
 # survive a dropped ssh (the streamed log is not needed) and "ok gate" is never the only evidence: wire, valid.brep, vol.brep, mass.brep and
@@ -354,13 +401,14 @@ fi
 # the commit the wasm is built from, reported by `ping` as `build` (`-dirty`: uncommitted changes in the tracked files)
 REV=$(git -C "$WT" rev-parse --short=12 HEAD 2>/dev/null || true)
 [ -n "$REV" ] && [ -n "$(git -C "$WT" status --porcelain --untracked-files=no 2>/dev/null)" ] && REV="$REV-dirty"
-QA=""; for a in "$NAME" "$CHECKS" "$CTEST" "$JOBS" "$NOWASM" "$WASMF" "$REV" "$TESTNAME" "$QUICK" "$BINT" "$SLOTS" "$IMPCR" ${ENVS[@]+"${ENVS[@]}"}; do QA="$QA $(printf %q "$a")"; done
+SUBHOST=$(hostname -s 2>/dev/null | tr -c 'A-Za-z0-9._\n-' '_'); SUBHOST=${CK_SUBMIT_HOST:-${SUBHOST:-?}}
+QA=""; for a in "$NAME" "$CHECKS" "$CTEST" "$JOBS" "$NOWASM" "$WASMF" "$REV" "$TESTNAME" "$QUICK" "$BINT" "$SLOTS" "$IMPCR" "$SUBHOST" "$KIND" "$JOBT" "$QONLY" ${ENVS[@]+"${ENVS[@]}"}; do QA="$QA $(printf %q "$a")"; done
 # The job runs DETACHED on the box (setsid nohup), writing runs/NAME/job.log and, when done, runs/NAME/job.rc. This side only
 # follows the log and reconnects when the ssh link drops, so a dropped connection no longer kills a long run (or reports a
 # failure that did not happen).
-printf '%s\n' "$REMOTE" | rsh "cat > $RB/runs/$NAME/remote.sh" || { echo "ssh failed" >&2; exit 3; }
-printf '%s\n' 'RB="$HOME/ci/remote-build"' "cd \"\$RB/runs/$NAME\"" "timeout -k 30 $JOBT bash remote.sh $QA" 'echo $? > job.rc' | rsh "cat > $RB/runs/$NAME/job.sh" || { echo "ssh failed" >&2; exit 3; }
-rsh "cd $RB/runs/$NAME && rm -f job.rc job.log && (setsid nohup bash job.sh > job.log 2>&1 < /dev/null &)" || { echo "could not start the job on the box" >&2; exit 3; }
+{ cat "$LIB"; printf '%s\n' "$REMOTE"; } | rsh "cat > $RB/runs/$NAME/remote.sh" || { echo "ssh failed" >&2; exit 3; }
+printf '%s\n' 'RB="$HOME/ci/remote-build"' "cd \"\$RB/runs/$NAME\"" "timeout -k 30 $((JOBT + WAITMAX)) bash remote.sh $QA" 'rc=$?' '[ -f job.timeout ] && rc=124   # the box watchdog (bx_watchdog) killed the job' 'echo $rc > job.rc' | rsh "cat > $RB/runs/$NAME/job.sh" || { echo "ssh failed" >&2; exit 3; }
+rsh "cd $RB/runs/$NAME && rm -f job.rc job.log job.timeout && (setsid nohup bash job.sh > job.log 2>&1 < /dev/null &)" || { echo "could not start the job on the box" >&2; exit 3; }
 FOLLOW=$(mktemp); SZ=0; FAILS_IN_ROW=0; RC=255
 while :; do
   DONE=0
@@ -376,9 +424,9 @@ while :; do
   sleep 5
 done
 rm -f "$FOLLOW"
-if [ "$RC" = 124 ]; then   # --job-timeout: the box job was killed
-  echo "FAIL: job timeout (${JOBT}s), killed on the box" >&2
-  rsh "echo 'FAIL job-timeout $JOBT rc=124' >> $RB/runs/$NAME/remote_results.txt" || true
+if [ "$RC" = 124 ]; then   # the box job was killed: by its watchdog (which wrote the FAIL line itself) or by the outer limit (JOBT plus the slot wait cap)
+  echo "FAIL: $KIND job timeout (limit ${JOBT}s of running, wait cap ${WAITMAX}s), killed on the box" >&2
+  rsh "grep -q '^FAIL job-timeout' $RB/runs/$NAME/remote_results.txt || echo 'FAIL job-timeout $JOBT rc=124 kind=$KIND limit=${JOBT}s (killed by the outer limit: ${JOBT}s plus at most ${WAITMAX}s waiting for a slot)' >> $RB/runs/$NAME/remote_results.txt" || true
 fi
 
 # 3. copy back

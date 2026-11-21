@@ -1,0 +1,5 @@
+{"format":"ck-part","version":1,"name":"T","seq":4,"rollback":null,"material":"steel","counters":{},"features":[
+{"type":"sketch","id":"S1","plane":{"kind":"std","id":"front"},"points":[{"id":"c","x":@OX@,"y":@OY@}],"entities":[{"type":"circle","id":"e1","c":"c","r":2}],"constraints":[]},
+{"type":"plane","id":"PS2","mode":"frame","origin":[@OX@,@OY@,0],"xDir":[0,0,1],"yDir":[1,0,0]},
+{"type":"sketch","id":"S2","plane":{"kind":"feature","id":"PS2"},"points":[{"id":"a","x":0,"y":0},{"id":"b","x":25,"y":0}],"entities":[{"type":"line","id":"e1","p1":"a","p2":"b"}],"constraints":[]},
+{"type":"sweepSurface","id":"W1","profile":"S1","path":"S2","frame":"translate","tolerance":0.001}]}

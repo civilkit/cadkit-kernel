@@ -530,6 +530,22 @@ fn sldprt_meta_json(o: Obj, m: &ck_sldprt::SwMeta, parasolid: Option<(u32, Strin
 fn mesh_to_solid_hook(cx: &mut Cx) -> Result<(Json, Option<State>), String> {
     let name = cx.msg.get_str("name").unwrap_or("mesh").to_string();
     let mut out = ck_server::session::empty_regen_result();
+    // opts.dryRun: the report and the triangles `opts.close` would invent, no body, the tag untouched
+    if cx.msg.get("opts").and_then(|o| o.get_bool("dryRun")).unwrap_or(false) {
+        match ck_mesh::request::run_preview(cx.msg) {
+            Ok(rep) => {
+                if let Json::Obj(kv) = &mut out {
+                    kv.push(("dryRun".into(), Json::Bool(true)));
+                    kv.push(("import".into(), ck_mesh::request::preview_json(&name, &rep)));
+                }
+            }
+            Err(r) => {
+                let err = Json::Arr(vec![Json::Str("import".into()), ck_mesh::request::refusal_json(&r)]);
+                set_key(&mut out, "errors", Json::Arr(vec![err]));
+            }
+        }
+        return Ok((out, None));
+    }
     let conv = match ck_mesh::request::run(cx.msg) {
         Ok(c) => c,
         Err(r) => {
@@ -836,6 +852,10 @@ fn body_static(b: &Body, tess: &ck_tess::mesh::Tess, renorm: &(Vec<(usize, usize
         slot.1 = b.edges_json(&|b, e| tess.edge_polyline(b, e));
         ck_model::features::renorm_edges(b, &mut slot.1, &|e| renorm.1.iter().any(|r| (r.0..r.1).contains(&e.idx())));
     }
+    // additive: the body (lump) index of each face, parallel to `faces` (docs/spec-agent-interface.md "Body identity")
+    kv.push(("faceBody".into(), Json::Arr(ck_topo::mass::face_bodies(b).into_iter().map(|i| Json::Num(i as f64)).collect())));
+    // additive: the name of each body, indexed like `faceBody` (null when unnamed)
+    kv.push(("bodyNames".into(), Json::Arr(ck_topo::mass::body_names(b).into_iter().map(|n| n.map_or(Json::Null, |n| Json::Str(n))).collect())));
     Json::Obj(kv)
 }
 
@@ -1101,6 +1121,7 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
         "textMetrics" => ck_model::sketch::text::metrics_reply(cx.msg),
         "textOutline" => ck_model::sketch::text::outline_reply(cx.msg),
         "equationCurve" => ck_model::sketch::equation::reply(cx.msg),
+        "meshDecimate" => crate::mesh_decimate::reply(cx),
         "loadFont" => ck_model::sketch::text::load_font_reply(cx.msg),
         "unloadFont" => ck_model::sketch::text::unload_font_reply(cx.msg),
         "listFonts" => Ok(ck_model::sketch::text::list_fonts_reply()),
@@ -1124,6 +1145,14 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
             let s = snapshot(cx)?;
             Ok(crate::drag::reply(&s.body, &s.asm, &cx.msg))
         }
+        "sweepDriver" => {
+            let s = snapshot(cx)?;
+            Ok(ck_model::features::motion::sweep_reply(&s.body, &s.asm, cx.msg))
+        }
+        "solvePoses" => {
+            let s = snapshot(cx)?;
+            Ok(ck_model::features::motion::reply(&s.body, &s.asm, cx.msg))
+        }
         "interference" => Ok(ck_ops::interference::reply(&snapshot(cx)?.body)),
         "bodyBoolean" => Ok(ck_model::features::combine::preview(&snapshot(cx)?.body, cx.msg)),
         "comb" => Ok(comb(&snapshot(cx)?.body, &cx.msg)),
@@ -1141,6 +1170,8 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
             let (tol, raised) = ck_tess::mesh::export_tol(body, quality, chord).map_err(|e| format!("exportMesh: {e}"))?;
             let m = ck_tess::mesh::tessellate_with(body, &tol).mesh;
             let ids: Vec<Json> = body.face_ids().map(|f| Json::Str(body.face_id_str(f))).collect();
+            let fb = ck_topo::mass::face_bodies(body);
+            let tri_body: Vec<i32> = m.tri_face.iter().map(|&t| fb.get(t as usize).copied().unwrap_or(-1)).collect();
             let failed: Vec<Json> = body.face_ids().enumerate().filter(|(i, _)| m.failed.contains(i)).map(|(_, f)| Json::Str(body.face_id_str(f))).collect();
             Ok(Obj::new()
                 .put("chord", tol.chord)
@@ -1148,9 +1179,11 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
                 .put("chordRaised", raised)
                 .put("triangles", m.num_tris() as f64)
                 .put("faces", Json::Arr(ids))
+                .put("faceBody", Json::Arr(fb.iter().map(|&i| Json::Num(i as f64)).collect()))
                 .put("failed", Json::Arr(failed))
                 .put("positions", cx.bufs.f32(&m.positions))
                 .put("triFace", cx.bufs.i32(&m.tri_face))
+                .put("triBody", cx.bufs.i32(&tri_body))
                 .build())
         }
         "curvatureMap" => {

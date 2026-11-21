@@ -358,6 +358,12 @@ impl<'a> Ctx<'a> {
     /// instead of the plane normal to the edge (flush chain ends: the
     /// section then lies in the end face's plane).
     fn solve_with(&self, li: usize, s: f64, guess: Option<Vec3>, plane: Option<(Vec3, Vec3)>) -> Result<Station, BlendError> {
+        self.solve_guarded(li, s, guess, plane, None)
+    }
+
+    /// As [`Self::solve_with`]; the divergence guard (the centre may stray at most 20 r) is measured from `guard` when given,
+    /// else from the edge point (a station marched along the centre curve is far from the edge point at a large radius).
+    fn solve_guarded(&self, li: usize, s: f64, guess: Option<Vec3>, plane: Option<(Vec3, Vec3)>, guard: Option<Vec3>) -> Result<Station, BlendError> {
         let l = &self.links[li];
         let _ = l;
         let (p, t, _) = self.edge_at(li, s);
@@ -426,7 +432,7 @@ impl<'a> Ctx<'a> {
                 dc = dc * (2.0 * r / dl);
             }
             c = c + dc;
-            if !c.is_finite() || c.dist(p) > 20.0 * r {
+            if !c.is_finite() || c.dist(guard.unwrap_or(p)) > 20.0 * r {
                 return Err(failed_hint("centre diverged", BALL_HINT));
             }
         }
@@ -455,6 +461,187 @@ impl<'a> Ctx<'a> {
         let co = self.b.edge_coedges(l.e).into_iter().find(|&c| self.b.coedge_face(c) == l.f1).ok_or_else(|| BlendError::code("missingEdge"))?;
         let tdir = if self.b.coedge(co).rev { -fw } else { fw };
         Ok(if n1.cross(tdir).dot(n2) < 0.0 { -1.0 } else { 1.0 })
+    }
+}
+
+/// A station solve that failed (the ball cannot be placed on the planes normal to the rim), as opposed to a refusal of the
+/// chain itself (mixed convexity, faces that do not continue, ...).
+fn is_station_failure(e: &BlendError) -> bool {
+    e.detail.as_deref().is_some_and(|d| d.starts_with("centre") || d.starts_with("foot") || d.starts_with("singular centre"))
+}
+
+/// Most stations a spine march may place before it gives up (a ring of the sizes seen needs 20 to 300).
+const SPINE_MAX_STATIONS: usize = 3000;
+
+impl<'a> Ctx<'a> {
+    /// Parameter in [0, 1] along link `li` of the edge point closest to `q`.
+    fn link_param(&self, li: usize, q: Vec3) -> f64 {
+        let l = &self.links[li];
+        let ed = self.b.edge(l.e);
+        let (t, _) = crate::boolean::imprint::dist_in_range(&ed.curve, (ed.t0, ed.t1), q);
+        let (ta, tb) = if l.fwd { (ed.t0, ed.t1) } else { (ed.t1, ed.t0) };
+        if tb == ta {
+            return 0.0;
+        }
+        ((t - ta) / (tb - ta)).clamp(0.0, 1.0)
+    }
+
+    /// Stations of a one-link ring marched ALONG the ball centre's own curve. Each station is solved on the plane through the
+    /// previous centre advanced by a step, normal to the centre curve's tangent `(c - a) x (c - b)`, instead of on the plane
+    /// normal to the rim edge. Those planes all pass through the rim circle's axis; where the ball centre runs close to
+    /// that axis (an oblique tube, a radius near what the rim allows) the plane system is near-singular and Newton lands on
+    /// the far root, and past that radius the axis lies outside the centre curve and there is no root at all.
+    ///
+    /// The step is chosen so the largest move of a contact point or the centre is about `r / 2`; the march closes where the
+    /// centre re-crosses the start plane, and the last station is the first. Fails (with the reason) when a solve stalls or
+    /// the ring does not close.
+    fn spine_march(&self) -> Result<Vec<Node>, BlendError> {
+        let r = self.r;
+        let tan_of = |st: &Station, like: Vec3| -> Vec3 {
+            let t = (st.c - st.a).cross(st.c - st.b).try_normalize().unwrap_or(like);
+            if t.dot(like) < 0.0 { -t } else { t }
+        };
+        let mut start = None;
+        for s0 in [0.0, 0.25, 0.5, 0.75] {
+            if let Ok(st) = self.solve(0, s0, None) {
+                start = Some((s0, st));
+                break;
+            }
+        }
+        let (s_start, st0) = start.ok_or_else(|| failed("spine march: no start station"))?;
+        let t0 = tan_of(&st0, st0.t);
+        let (mut tprev, mut cur) = (t0, st0.clone());
+        let mut sts: Vec<Station> = vec![st0.clone()];
+        let mut h = 0.25 * r;
+        let mut travelled = 0.0;
+        // (the centre curve is about as long as the rim, scaled by how far in the ball sits)
+        let budget = 6.0 * self.b.edge_length(self.links[0].e) + 40.0 * r;
+        let mut closed = false;
+        for _ in 0..8 * SPINE_MAX_STATIONS {
+            let g = cur.c + tprev * h;
+            let Ok(mut st) = self.solve_guarded(0, s_start, Some(g), Some((g, tprev)), Some(g)) else {
+                h *= 0.5;
+                if h < 1e-5 * r {
+                    return Err(failed("spine march stalled"));
+                }
+                continue;
+            };
+            let mv = st.a.dist(cur.a).max(st.b.dist(cur.b)).max(st.c.dist(cur.c));
+            if mv > 0.7 * r && h > 1e-4 * r {
+                h *= (0.5 * r / mv).max(0.25);
+                continue;
+            }
+            // closing: the centre crossed the start plane going forward, back near the start
+            let (d0, d1) = ((cur.c - st0.c).dot(t0), (st.c - st0.c).dot(t0));
+            if sts.len() > 3 && d0 < 0.0 && d1 >= 0.0 && st.c.dist(st0.c) < 4.0 * mv.max(h) {
+                closed = true;
+                break;
+            }
+            travelled += st.c.dist(cur.c);
+            if travelled > budget || sts.len() >= SPINE_MAX_STATIONS {
+                break;
+            }
+            tprev = tan_of(&st, tprev);
+            st.p = (st.a + st.b) * 0.5;
+            st.t = tprev;
+            cur = st.clone();
+            sts.push(st);
+            h = (h * (0.5 * r / mv.max(1e-12)).clamp(0.5, 1.6)).min(r);
+        }
+        if !closed {
+            return Err(failed("spine march did not close"));
+        }
+        // (no sliver interval before the closing station)
+        if sts.len() > 4 {
+            let (l, k) = (sts[sts.len() - 1].c, sts[sts.len() - 2].c);
+            if l.dist(st0.c) < 0.5 * l.dist(k) {
+                sts.pop();
+            }
+        }
+        sts[0].p = (sts[0].a + sts[0].b) * 0.5;
+        sts[0].t = t0;
+        let last = sts[0].clone();
+        sts.push(last);
+        let n = sts.len();
+        dbg(&format!("spine march: {n} stations"));
+        Ok(sts
+            .into_iter()
+            .enumerate()
+            .map(|(i, st)| {
+                let s = if i == 0 {
+                    s_start
+                } else if i == n - 1 {
+                    s_start + 1.0
+                } else {
+                    // (the edge parameter of the contact midpoint, unwrapped past the start)
+                    let q = self.link_param(0, st.p);
+                    if q < s_start { q + 1.0 } else { q }
+                };
+                Node { li: 0, s, st }
+            })
+            .collect())
+    }
+
+    /// A station between two marched ones: solved on the plane through the midpoint of their centres, normal to their chord.
+    fn spine_between(&self, a: &Node, c: &Node) -> Result<Node, BlendError> {
+        let g = (a.st.c + c.st.c) * 0.5;
+        let nrm = (c.st.c - a.st.c).try_normalize().unwrap_or(a.st.t);
+        let mut st = self.solve_guarded(0, a.s, Some(g), Some((g, nrm)), Some(g))?;
+        // a station between two marched ones lies between them: one that does not is the ball on another branch of the centre
+        // curve (a radius at the limit of the rim), and a ring fitted through it is garbage
+        let r = self.r;
+        let near = |x: Vec3, p: Vec3, q: Vec3| x.dist((p + q) * 0.5) <= 0.5 * p.dist(q) + 0.2 * r;
+        if !(near(st.c, a.st.c, c.st.c) && near(st.a, a.st.a, c.st.a) && near(st.b, a.st.b, c.st.b)) {
+            return Err(failed("centre did not converge (a station between two others left them)"));
+        }
+        st.p = (st.a + st.b) * 0.5;
+        st.t = nrm;
+        let q = self.link_param(0, st.p);
+        let s = if q < a.s { q + 1.0 } else { q };
+        Ok(Node { li: 0, s: s.clamp(a.s, c.s.max(a.s)), st })
+    }
+
+    /// The refusal of a ring the ball cannot be marched round at this radius, with the radius (found by marching at smaller
+    /// ones, within a time budget) the rim does allow.
+    fn spine_refusal(&self, why: &BlendError) -> BlendError {
+        let started = ck_core::budget::mark();
+        // (a radius is allowed when the ring marches and every interval of the march takes a station between its ends)
+        let ok = |r: f64| {
+            let c = Ctx { b: self.b, links: self.links.clone(), set1: self.set1.clone(), set2: self.set2.clone(), r, sg: self.sg };
+            c.spine_march().is_ok_and(|ns| ns.windows(2).all(|w| c.spine_between(&w[0], &w[1]).is_ok()))
+        };
+        let (mut lo, mut hi) = (0.0f64, self.r);
+        let mut r = 0.5 * self.r;
+        for _ in 0..5 {
+            if ck_core::budget::since(started) > 1500.0 {
+                break;
+            }
+            if ok(r) {
+                lo = r;
+                break;
+            }
+            hi = r;
+            r *= 0.5;
+        }
+        if lo > 0.0 {
+            for _ in 0..6 {
+                if ck_core::budget::since(started) > 2500.0 {
+                    break;
+                }
+                let mid = 0.5 * (lo + hi);
+                if ok(mid) {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+        }
+        let limit = if lo > 0.0 { format!(", about {:.1} mm", lo) } else { String::new() };
+        dbg(&format!("spine refusal: {}", why.detail.as_deref().unwrap_or(&why.code)));
+        failed_hint(
+            &format!("{RIM_LIMIT}{limit}: the ball cannot roll along both faces all the way round the rim"),
+            "use a smaller radius",
+        )
     }
 }
 
@@ -875,8 +1062,32 @@ fn make_links(b: &Body, eids: &[EdgeId], chain: &[(usize, bool)]) -> Result<Vec<
     Ok(links)
 }
 
+/// One chain's blend. A one-link ring whose blend fails on the planes normal to the rim is built again with the ring marched along
+/// the ball centre's own curve (`Ctx::spine_march`): everything that builds on the rim planes is untouched, and a failure of the
+/// second attempt is the refusal naming the limit of the radius (not the first attempt's garbage: on an oblique tube the rim
+/// planes can "converge" to a ball on the wrong branch of the centre curve and give an inside-out tool).
 #[allow(clippy::too_many_arguments)]
 fn blend_chain(b: &Body, links: Vec<Link>, r: f64, feature: &str, k: u32, tol: f64, closed: bool, end_ext: f64) -> Result<Body, BlendError> {
+    let ring = closed && links.len() == 1;
+    let again = if ring { Some(links.clone()) } else { None };
+    match blend_chain_inner(b, links, r, feature, k, tol, closed, end_ext, false) {
+        Err(e) if ring && (e.code == "blendFailed" || is_station_failure(&e)) && !e.detail.as_deref().is_some_and(|d| d.starts_with(RIM_LIMIT)) => {
+            dbg(&format!("rim-plane stations failed ({}): marching the ring along the centre curve", e.detail.as_deref().unwrap_or(&e.code).chars().take(120).collect::<String>()));
+            match blend_chain_inner(b, again.unwrap_or_default(), r, feature, k, tol, closed, end_ext, true) {
+                Ok(x) => Ok(x),
+                Err(e2) if e2.detail.as_deref().is_some_and(|d| d.starts_with(RIM_LIMIT)) => Err(e2),
+                Err(_) => Err(e),
+            }
+        }
+        x => x,
+    }
+}
+
+/// Start of the refusal of a ring the ball cannot be marched round (see `Ctx::spine_refusal`).
+const RIM_LIMIT: &str = "the radius exceeds what the rim allows";
+
+#[allow(clippy::too_many_arguments)]
+fn blend_chain_inner(b: &Body, links: Vec<Link>, r: f64, feature: &str, k: u32, tol: f64, closed: bool, end_ext: f64, force_spine: bool) -> Result<Body, BlendError> {
     let mut set1: Vec<FaceId> = vec![];
     let mut set2: Vec<FaceId> = vec![];
     for l in &links {
@@ -901,27 +1112,71 @@ fn blend_chain(b: &Body, links: Vec<Link>, r: f64, feature: &str, k: u32, tol: f
     let convex = sg < 0.0;
     let mut kk = 0.5 * r;
     // ---- stations (adaptive)
-    let mut nodes: Vec<Node> = vec![];
-    let mut prev: Option<Station> = None;
-    for li in 0..ctx.links.len() {
-        let len = b.edge_length(ctx.links[li].e);
-        let n = ((len / (0.5 * r)).ceil() as usize).clamp(4, 400);
-        for i in 0..=n {
-            if li > 0 && i == 0 {
-                continue;
+    // On the planes normal to the rim edge (today's march). A one-link ring that this march cannot place (a station solve
+    // fails), or that it places too coarsely (a centre step over `r` where the edge step is 0.5 r, or a first fit that leaves
+    // its faces by over 0.1 r), is marched again along its own centre curve (`Ctx::spine_march`): the planes normal to the
+    // rim all pass through the rim circle's axis, which an oblique tube's ball centre passes close to or never reaches.
+    let spine_ok = closed && ctx.links.len() == 1;
+    let mut spine = false;
+    let rim_nodes = (|| -> Result<Vec<Node>, BlendError> {
+        let mut nodes: Vec<Node> = vec![];
+        let mut prev: Option<Station> = None;
+        for li in 0..ctx.links.len() {
+            let len = b.edge_length(ctx.links[li].e);
+            let n = ((len / (0.5 * r)).ceil() as usize).clamp(4, 400);
+            for i in 0..=n {
+                if li > 0 && i == 0 {
+                    continue;
+                }
+                let s = i as f64 / n as f64;
+                let (p, _, _) = ctx.edge_at(li, s);
+                let guess = prev.as_ref().map(|q| q.c + (p - q.p));
+                let st = ctx.solve(li, s, guess).map_err(|e| {
+                    dbg(&format!(
+                        "station solve failed li={li} s={s:.4} p=({:.4},{:.4},{:.4}): {}",
+                        p.x, p.y, p.z, e.detail.as_deref().unwrap_or(&e.code)
+                    ));
+                    e
+                })?;
+                prev = Some(st.clone());
+                nodes.push(Node { li, s, st });
             }
-            let s = i as f64 / n as f64;
-            let (p, _, _) = ctx.edge_at(li, s);
-            let guess = prev.as_ref().map(|q| q.c + (p - q.p));
-            let st = ctx.solve(li, s, guess).map_err(|e| {
-                dbg(&format!(
-                    "station solve failed li={li} s={s:.4} p=({:.4},{:.4},{:.4}): {}",
-                    p.x, p.y, p.z, e.detail.as_deref().unwrap_or(&e.code)
-                ));
-                e
-            })?;
-            prev = Some(st.clone());
-            nodes.push(Node { li, s, st });
+        }
+        Ok(nodes)
+    });
+    let mut nodes: Vec<Node> = if force_spine {
+        spine = true;
+        ctx.spine_march().map_err(|se| ctx.spine_refusal(&se))?
+    } else {
+        rim_nodes()?
+    };
+    if spine_ok && !spine {
+        // (the edge step is len / n; a centre step over r where it is 0.5 r means the centre runs far faster than the rim)
+        let len = b.edge_length(ctx.links[0].e);
+        let estep = len / nodes.len().saturating_sub(1).max(1) as f64;
+        let cstep = nodes.windows(2).map(|w| w[0].st.c.dist(w[1].st.c)).fold(0.0f64, f64::max);
+        // (or both contact points stand still while the edge point moves: a ball on the wrong branch of the centre curve, which
+        // the rim planes can "converge" to, near the axis they all pass through)
+        let stalled = nodes
+            .windows(2)
+            .filter(|w| {
+                let e = w[0].st.p.dist(w[1].st.p);
+                e > 0.2 * r && w[0].st.a.dist(w[1].st.a).max(w[0].st.b.dist(w[1].st.b)) < 0.1 * e
+            })
+            .count()
+            >= 2;
+        if (estep <= 0.55 * r && cstep > r) || stalled {
+            match ctx.spine_march() {
+                Ok(sn) => {
+                    dbg(&format!("centre step {cstep:.3} (edge step {estep:.3}, stalled contacts {stalled}): marched along the centre curve"));
+                    nodes = sn;
+                    spine = true;
+                }
+                // (stalled contacts are a ball on the wrong branch: the rim planes' tool is garbage and its boolean slow, so
+                // the ring is refused here, with the limit, when the centre curve cannot be marched either)
+                Err(se) if stalled => return Err(ctx.spine_refusal(&se)),
+                Err(_) => {}
+            }
         }
     }
     // A concave blend is built as a union with the tool: the section polygon reaches `kk` past the two contact points into the
@@ -987,15 +1242,43 @@ fn blend_chain(b: &Body, links: Vec<Link>, r: f64, feature: &str, k: u32, tol: f
             "fit round {round}: {} nodes, worst on-face deviation {worst:.2e} at node {worst_at} (link {} s {:.4}, p=({:.3},{:.3},{:.3}))",
             nodes.len(), nodes[worst_at].li, nodes[worst_at].s, nodes[worst_at].st.p.x, nodes[worst_at].st.p.y, nodes[worst_at].st.p.z
         ));
+        // a first fit far off its faces: the stations on the rim planes are too coarse for the ball centre's path
+        if round == 0 && spine_ok && !spine && worst > 0.1 * r {
+            if let Ok(sn) = ctx.spine_march() {
+                dbg(&format!("first fit leaves its faces by {worst:.3}: marched along the centre curve"));
+                nodes = sn;
+                spine = true;
+                continue;
+            }
+        }
         if insert.is_empty() {
             break;
         }
+        let mut inserted: Vec<(usize, Node)> = vec![];
+        let mut failed_at: Option<BlendError> = None;
         for &(i, li, sm) in insert.iter().rev() {
-            let guess = Some((nodes[i].st.c + nodes[i + 1].st.c) * 0.5);
             // (the warm starts are those of the last node solved, which is far from this one: stale on a closed spline face)
             HINTS.with(|m| m.borrow_mut().clear());
-            let st = ctx.solve(li, sm, guess)?;
-            nodes.insert(i + 1, Node { li, s: sm, st });
+            let st = if spine {
+                ctx.spine_between(&nodes[i], &nodes[i + 1])
+            } else {
+                let guess = Some((nodes[i].st.c + nodes[i + 1].st.c) * 0.5);
+                ctx.solve(li, sm, guess).map(|st| Node { li, s: sm, st })
+            };
+            match st {
+                Ok(nd) => inserted.push((i, nd)),
+                Err(e) => {
+                    failed_at = Some(e);
+                    break;
+                }
+            }
+        }
+        if let Some(e) = failed_at {
+            // (on the rim planes the caller marches the ring along the centre curve instead; there, it is the refusal)
+            return Err(if spine && force_spine { ctx.spine_refusal(&e) } else { e });
+        }
+        for (i, nd) in inserted {
+            nodes.insert(i + 1, nd);
         }
         if nodes.len() > 1500 {
             break;

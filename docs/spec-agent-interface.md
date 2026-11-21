@@ -821,12 +821,28 @@ A document can hold several lumps (separate bodies: a feature that does not touc
   every tool. `split`: the target cut into the part outside all tools and the part inside them (two lumps; the tools are
   united first).
 - `keepTools` (default false): tool lumps stay as they were next to the result; otherwise they are consumed.
+- `union` of tools that do not touch the target (or each other): a boolean union cannot fuse them. By default they stay
+  separate lumps under their own names (documents written earlier select them by name afterwards, so this is kept) and the
+  warning `unionDisjoint {tools:[name | "lump n"], kept}` lists them. `"disjoint":"join"` makes the union ONE body of
+  several lumps: the tools are consumed (no body of their name is left), every lump of the result takes the result name
+  (`body`, else the target's; unnamed stays unnamed, a consumed tool's name never comes back), and `{body: name}`,
+  `deleteBody` (by name: every lump with the name) and `massProps {bodies:true}` see it as that one body. With
+  `keepTools: true` a tool that touches nothing is not merged either way (merging would have duplicated it as a second
+  lump); it stays as the kept tool under its own name and is listed with `kept: true`. A union where every tool touches is
+  unchanged (one lump, no warning). Tests: `crates/ck-model/tests/body_identity.rs`.
+- A `cut` none of whose tools removes anything from the target (a tool that misses it, is tangent, touches only along
+  an edge or a point, sits a hair away, or lies wholly inside a cavity) is not an error: the result is the target
+  unchanged (same faces, names, lump) and the warning `cutNoEffect {tools: [name or "lump n", ..], kept: bool}` lists the
+  tools. The tools are consumed unless `keepTools` (as in a cut that removes something; `kept` echoes `keepTools`), and
+  `body` still names the result. If at least one tool cuts, there is no warning. A `split` that changes nothing stays the
+  error `cutNoEffect` (it promises two lumps), as do the extrude / revolve / hole / split-plane cuts. Tests:
+  `crates/ck-model/tests/combine_cut_noop.rs`.
 - Persistent names: result faces keep the names of the faces they come from (target faces and tool faces keep their own
   feature ids; a face split by the operation gets the usual `~k` suffix), so references on both operands survive. Lumps not
   involved stay untouched and first in lump order; the result lumps follow.
 - Errors: `nothingToCut` (no body), `missingReference`, `invalidValue {detail}` (unknown op, not exactly one target, no
-  tools, tool is the target), `booleanFailed`, `booleanVolumeMismatch`, `cutNoEffect` (cut / split changed nothing),
-  `combineEmpty` (intersect of lumps that do not overlap). An error leaves the body as it was.
+  tools, tool is the target), `booleanFailed`, `booleanVolumeMismatch`, `cutNoEffect` (a `split` changed nothing; a
+  `cut` that removes nothing is the warning below), `combineEmpty` (intersect of lumps that do not overlap). An error leaves the body as it was.
 - Kit-facing JSON shape: exactly the object above; the kit builds it from the selected lumps' face names or lump indices.
 
 ### `bodyBoolean` request (preview, nothing committed)
@@ -835,6 +851,26 @@ A document can hold several lumps (separate bodies: a feature that does not touc
 runs the same operation on a copy of the current body and answers
 `{"ok":true,"lumps":n,"volume":v,"area":a,"faces":[...],"toleranceUsed"?:t}` or
 `{"ok":false,"error":{"code":..,"params":{..}}}`. The state is not changed; to keep the result, add the `combine` feature.
+
+### Body identity: `index` and `name` of a body, `faceBody` / `triBody` of the meshes
+
+A body is a lump (what `massProps {bodies:true}` lists, surface/sheet lumps included). Its `index` is the lump's rank among
+the live lumps; it is the same number in every reply below.
+
+- `massProps {bodies:true}` (also with `densities`): `result.bodies[i] = {volume, area, com, name, index[, mass]}`;
+  `name` is the document's body name (`newBody`, `combine` `body`, `moveBody` copy `body`, ...) or `null`; `index` is `i`.
+- The regen / render reply's `body` (and each `surfaces[k][1]`, a separate imported surface body whose lumps are its own and
+  not in `massProps`): `body.faceBody` is an int array parallel to `body.faces` (and to `triFace` values): the `index` of
+  the body each face belongs to. `body.faces[i].lump` (present when the part has several lumps) is the same number.
+  Per triangle: `faceBody[triFace[t]]`. Next to it, `body.bodyNames` is `[string|null]`, one entry per body (index -> body
+  name, `null` when unnamed, the same order and indexes as `massProps` `bodies[].index`, so `bodyNames[faceBody[f]]` names a face's
+  body without a `massProps` query); `surfaces[k][1]` carries its own `bodyNames` for its own lumps (the same convention as its `faceBody`).
+- `exportMesh`: `faceBody` parallel to `faces`, and `triBody`, an int32 buffer (after `triFace`) with the `index` of each
+  triangle's body (parallel to `triFace`).
+- Consistency: all of them come from `ck_topo::mass::face_bodies` / the same lump order as `massProps`; surface bodies made
+  by features are lumps of the one body and appear in all of them. Tests: `crates/ck-wasm/tests/body_identity_mesh.rs`.
+- Gate: the original kernel has none of these keys; `tools/gate.mjs` drops `faceBody`, `bodyNames`, `bodies[].index` and a null `name`
+  from both replies before the byte comparison (`dropAdditive`), the baseline is not lowered.
 
 ### Separate bodies: `op: "newBody"` and body names
 
@@ -1429,7 +1465,7 @@ plain box (constant along every edge axis, not along a diagonal), thin-walled sh
 
 - `quality`: `coarse` (chord ten times the viewer's, angle 0.6 rad), `normal` (the viewer's, the default) or `fine` (a quarter of the chord, angle 0.15 rad). The viewer's chord is the regen chord, 4e-4 of the body's box diagonal (never below 1e-3 mm), so a preset follows the size of the part.
 - `chord_mm`: an absolute chord height in millimetres (the most a facet may sit off the true surface). It replaces the preset's chord and keeps its angle. A value of 0 or below, or not a number, is refused (`exportMesh: chord_mm must be a positive number of millimetres`); one below a millionth of the box diagonal is raised to that and the reply says `chordRaised: true`. An unknown `quality` is refused with the three names.
-- Reply: `{chord, angle, chordRaised, triangles, faces, failed, positions, triFace}`. `positions` is a float32 buffer of 9 numbers per triangle, `triFace` an int32 buffer with the index into `faces` (the face ids, in body order) of each triangle; `failed` lists the ids of faces that could not be meshed (they are missing from the mesh). No normals are sent. Null when the tag's state holds no body; a tag the session does not hold is an error, as for every query.
+- Reply: `{chord, angle, chordRaised, triangles, faces, faceBody, failed, positions, triFace, triBody}` (`faceBody` / `triBody`: body index of each face / triangle, see "Body identity"). `positions` is a float32 buffer of 9 numbers per triangle, `triFace` an int32 buffer with the index into `faces` (the face ids, in body order) of each triangle; `failed` lists the ids of faces that could not be meshed (they are missing from the mesh). No normals are sent. Null when the tag's state holds no body; a tag the session does not hold is an error, as for every query.
 
 ## Mesh to solid: `meshToSolid`
 
@@ -1467,17 +1503,77 @@ coplanar, one cylinder, cone or sphere face where a smooth region of facets fits
   `meshNotWatertight {openEdges, openLoops, positions}` (midpoints of the first 20 open edges), `meshNonManifold
   {nonManifoldEdges, openEdges, positions}` or `{reason:"nonOrientable", positions}`, `meshDegenerate` (no volume, too few
   triangles, a component of zero volume or only zero-area triangles), `meshTooLarge {triangles, limit}` or `{triangles, faces,
-  limit}`, `meshBadInput` (not a multiple of 3, index out of range, NaN, coordinates beyond 1e12, bad base64). With
+  limit}` (its hint names `opts.decimate`), `meshBadInput` (not a multiple of 3, index out of range, NaN, coordinates beyond 1e12, bad base64). With
   `opts.close`, what cannot be closed: `meshHoleTooLarge {reason:"edges"|"area", failedHoles, holes, positions}`,
   `meshHoleSelfIntersects {reason:"loopCrossesItself"|"fillIntersectsItself"|"fillIntersectsFill"|"fillIntersectsMesh"|
   "noTriangulation", ...}`, `meshGapAmbiguous {reason:"weldNonManifold"|"pinchedLoop"|"brokenLoop", positions}` (each with
   `message` and `hint`; `holes` lists `{code, reason, edges, area, at}` of every failing hole).
+- `opts.maxSeconds` (alias `refitSeconds`; default 3, 0 = unlimited): the work budget of the analytic refit's seed loop, counted in work units
+  (`UNITS_PER_SECOND` = 1.5e7 points evaluated against a surface or facets tested per second of a native machine, so it holds on
+  a host without a clock) and, where the host has a clock, also as a time limit. When it runs out the loop stops: what is fitted
+  stays, the rest stays faceted, and `import.analytic` says `budgetExhausted: true`, `fittedFraction` (triangles in fitted faces /
+  triangles) and `workUnits`. A scan-like free-form mesh of 50000 triangles used to spend 10 to 40 s there; it now spends about
+  the budget. `import.stagesMs` (only where the host has a clock): `{weld, close?, orient, regions, faces, refit, validate,
+  deviation}` in ms.
+- `opts.dryRun: true` (preview for the closing dialog): the conversion stops after the closing stage and the watertight check,
+  builds nothing and leaves the tag alone. Reply: `{dryRun:true, errors, import}` with no `body`; `import` is `{format, name,
+  dryRun:true, triangles, vertices, weldedVertices, diagonal, weldTol, collapsed, duplicates, closing}` where each entry of
+  `closing.holes` also has `fill:{positions:[x,y,z,..], indices:[a,b,c,..]}`, the triangles `opts.close` would invent for that hole
+  (corners listed once per hole, the winding is the fill's). A mesh the conversion would refuse comes back with the same refusal.
+  The normal report never carries `fill`.
+- Time budget: between its stages (weld, close, orient, merge, refit, validate, deviation) the conversion polls the regen's time
+  budget (`ck_core::budget`, `opts.featureTimeMs` / `regenTimeMs`) and stops with `meshBudgetExceeded`, which the regen driver
+  turns into `featureBudgetExceeded` / `regenBudgetExceeded`. The wire request has no clock, so it is never cut short. The app's
+  Cancel kills and restarts the worker (a running wasm call cannot be interrupted); see book/src/io/mesh-to-solid.md, "Cancelling".
+- As a feature: `meshToSolid` keeps the mesh in the part and converts on every regen (book/src/io/mesh-to-solid.md, "As a feature").
 - Repairs, reported, never silent: welding, collapsed and duplicate triangles dropped (an opposite pair, a wall between two
   glued solids, both), zero-height triangles merged into a neighbour, triangles flipped to agree with their component, inside-out
   components turned, voids (a component inside another) turned inward. Holes are filled only with `opts.close`, and then reported.
 - Not converted (kept as facets, valid): tori, free-form surfaces, sphere patches bounded by circles on different axes (a
   rounded box corner), cylinders cut by oblique planes (ellipses), crossing cylinders; a region whose boundary to its neighbours
   is not an exact circle or line stays faceted together with what depends on it.
+
+### Decimation of scans: `meshDecimate` and `opts.decimate`
+
+A scan of a free-form object (noise, no flat panels) keeps one face per triangle, so a 120k-triangle scan is refused as
+`meshTooLarge` (`maxFaces`, default 50000). Quadric edge-collapse decimation within a deviation tolerance (crate `ck-mesh`,
+`decimate`) is the way out, either as a separate request or as a first step of `meshToSolid`.
+
+`{"type":"meshDecimate","positions":[..] | "positionsF32"|"positionsF64":"<base64>","indices":[..]? | "indicesU32":"<base64>"?,
+"opts":{"tol":0.05,"targetTriangles":15000,"keepAngleDeg":30,"weldTol":1e-4}}`. Stateless (no `tag`, nothing is stored).
+Input as `meshToSolid`. The mesh is welded (`weldTol`, default 1e-6 of the diagonal; collapsed and duplicate triangles are
+dropped) and must be manifold; it need not be closed or consistently wound.
+
+- `opts.tol` (mm, required, > 0): the largest distance of the result from the input surface. Hard bound, see below.
+- `opts.targetTriangles` (default: as far as `tol` allows): stop at this many triangles (at least 4).
+- `opts.keepAngleDeg` (default none): edges whose two faces meet at more than this angle stay creases: a vertex on a crease only
+  moves along it and a vertex where creases end or branch does not move, so a box-like part keeps its edges and corners.
+- Open meshes are decimated as they are: boundary edges are feature lines like creases (kept, simplified along themselves
+  within `tol`), the reply says `watertight:false` and `boundaryEdges`.
+- Reply: `{triangles, vertices, inputTriangles, inputVertices, collapses, tol, internalTol, attempts, stoppedBy:"target"|
+  "tolerance"|"verification", watertight, boundaryEdges, creaseEdges, refused:{topology, flip, deviation, clearance},
+  deviation:{max, rms, samples, inputToResult, resultToInput}, selfIntersections, inputSelfIntersections?, errors:[],
+  positions, indices}`. `positions` is a Float32 buffer (3 per vertex, `$buf` as in `exportMesh`), `indices` a Uint32 buffer
+  (3 per triangle); orientation of the input is kept. Refusals: `errors: [["import", {code, params:{message, hint, ..}}]]`,
+  `meshBadInput` (no or bad `tol`, bad arrays), `meshNonManifold {nonManifoldEdges, positions}` (an edge of more than two
+  triangles), `meshDegenerate`; no other fields then.
+- `opts.decimate` of `meshToSolid`: `{tol, targetTriangles?, keepAngleDeg?}` runs the same decimation right after the weld;
+  `import.decimation` of the reply is the report above (without the buffers). With `opts.decimate` the input may exceed
+  `maxTriangles` (the limit then applies to the decimated mesh). `meshTooLarge` hints name `opts.decimate` / `meshDecimate`.
+  With `opts.close` the decimation comes first, the closing after it.
+
+Guarantees. (1) Topology: collapses obey the link condition and are refused when they leave a tetrahedron or a lone triangle,
+turn a face over (normal dot below 0.05) or make a sliver, so a manifold input stays manifold with the same winding; the
+result's edges are re-counted. (2) Deviation: every original vertex is tracked to the vertex it was merged into and a collapse
+is accepted only when all original vertices of the vertices it touches stay within `internalTol` (0.85 x `tol`) of the new
+triangles; the finished mesh is then measured independently both ways (original vertices and triangle centroids to the result
+by BVH, and the result's to the original): `deviation.max` is that measurement and is at most `tol`; when it is not, the run
+is repeated with a tighter `internalTol` (up to 5 runs), and when none fits the input is returned unchanged
+(`stoppedBy:"verification"`). The positions of the reply are f32 (about 1e-7 relative rounding on top). (3) Sheets: a scan has
+places where two layers of the surface are a hair apart (a tyre and its wheel arch); a collapse that would bring the new
+triangles closer than 0.8 x min(their current distance, `tol`) to a triangle that does not touch the collapse is refused
+(`refused.clearance`), and a result with crossing triangles that the input did not have is rejected like a deviation overshoot
+(`selfIntersections`). Deterministic: the same input gives the same bits.
 
 ## Acceptance
 

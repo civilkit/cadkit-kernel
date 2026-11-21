@@ -48,6 +48,45 @@ use ck_topo::make::{
 };
 
 pub const PATH_INVALID: &str = "sweepPathInvalid";
+
+/// What a sweep path may be (the `supported` text of every path message).
+pub const PATH_SUPPORTED: &str = "a single spline; one helix; or a connected chain of lines and arcs, each joint tangent or a corner between two lines (turn under 166 deg)";
+
+/// Name of a path piece for messages.
+pub fn kind_name(s: &PathSeg) -> &'static str {
+    match s {
+        PathSeg::Line { .. } => "line",
+        PathSeg::Arc { .. } => "arc",
+        PathSeg::Helix { .. } => "helix",
+        PathSeg::Spline { .. } => "spline",
+    }
+}
+
+/// A path refusal as a coded string the feature layer turns into params:
+/// `<code>;pathWhy=<what is wrong>;hint=<what to change>[;joint=<i>][;at=x|y|z][;kinds=a|b|..]`.
+/// Values must not hold `;`. `joint` is the index of the first bad joint (between piece `i` and `i + 1`, from 0)
+/// or of the offending piece; `at` is where the break is; `kinds` are the piece types in path order.
+pub fn path_problem(code: &str, why: &str, hint: &str, joint: Option<usize>, at: Option<Vec3>, kinds: &[&str]) -> String {
+    let mut o = format!("{code};pathWhy={};hint={}", why.replace(';', ","), hint.replace(';', ","));
+    if let Some(j) = joint {
+        o += &format!(";joint={j}");
+    }
+    if let Some(p) = at {
+        o += &format!(";at={}|{}|{}", p.x, p.y, p.z);
+    }
+    if !kinds.is_empty() {
+        o += &format!(";kinds={}", kinds.join("|"));
+    }
+    o
+}
+
+fn path_kinds(path: &[PathSeg]) -> Vec<&'static str> {
+    path.iter().map(kind_name).collect()
+}
+
+/// Gap up to which two path pieces count as joined (mm) unless the caller vouches for a looser one
+/// (`sweep_joined`: pieces of a `compositeCurve` that was built with a larger `gapTolerance`).
+pub const JOIN_TOL: f64 = 1e-6;
 pub const PROFILE_NOT_NORMAL: &str = "sweepProfileNotNormal";
 pub const FAILED: &str = "sweepFailed";
 
@@ -191,9 +230,15 @@ pub fn path_motion(path: &[PathSeg]) -> Option<Motion> {
 /// travels (oracle probe: a straight path becomes a screw about the path
 /// line, rotating by +twist about the travel direction).
 pub fn sweep(feature: &str, profile: &Profile, path: &[PathSeg], twist: f64) -> Result<Body, String> {
+    sweep_joined(feature, profile, path, twist, JOIN_TOL)
+}
+
+/// [`sweep`] with pieces accepted as joined when their ends are within `join_tol` (the section is carried from
+/// piece to piece, so a gap that small leaves no trace in the body).
+pub fn sweep_joined(feature: &str, profile: &Profile, path: &[PathSeg], twist: f64, join_tol: f64) -> Result<Body, String> {
     profile.validate()?;
     if path.is_empty() {
-        return Err(PATH_INVALID.into());
+        return Err(path_problem(PATH_INVALID, "the path has no pieces", "give a path with at least one line, arc or spline", None, None, &[]));
     }
     // the end of the path nearest to the profile starts the sweep
     let q = profile_ref_point(profile);
@@ -204,7 +249,9 @@ pub fn sweep(feature: &str, profile: &Profile, path: &[PathSeg], twist: f64) -> 
     } else {
         path.to_vec()
     };
-    let t0 = oriented[0].start_dir().ok_or_else(|| PATH_INVALID.to_string())?;
+    let t0 = oriented[0].start_dir().ok_or_else(|| {
+        path_problem(PATH_INVALID, "the first piece of the path has no direction (zero length)", "remove the zero-length piece or move its end points apart", Some(0), Some(oriented[0].start()), &path_kinds(&oriented))
+    })?;
     let n = profile.frame.z;
     if let [PathSeg::Spline { sp, rev }] = &oriented[..] {
         // (like a helix, a spline carries a profile that is only roughly normal to it)
@@ -223,7 +270,7 @@ pub fn sweep(feature: &str, profile: &Profile, path: &[PathSeg], twist: f64) -> 
     // pieces united with mitre joints (strings 'mitre', 'half-space block',
     // 'the pieces did not unite'; f2329 / f2894 / f2331)
     let Some(motion) = path_motion(&oriented) else {
-        return sweep_pieces(feature, profile, &oriented, twist);
+        return sweep_pieces(feature, profile, &oriented, twist, join_tol);
     };
     if twist != 0.0 {
         let Motion::Translate(v) = motion else {
@@ -1233,7 +1280,7 @@ fn half_space(p: Vec3, m: Vec3, positive: bool, h: f64) -> Result<Body, String> 
 /// by the bisector plane. Side faces keep the profile entity tag with a
 /// `~k` piece number (`F3.S.e1~2` = entity `e1` on the 2nd piece); the first
 /// cap stays `C0`, the last `C1`, interior caps disappear in the union.
-fn sweep_pieces(feature: &str, profile: &Profile, path: &[PathSeg], twist: f64) -> Result<Body, String> {
+fn sweep_pieces(feature: &str, profile: &Profile, path: &[PathSeg], twist: f64, join_tol: f64) -> Result<Body, String> {
     if twist != 0.0 {
         return Err("notImplemented;what=twisted sweep along a multi-piece path".to_string());
     }
@@ -1241,24 +1288,63 @@ fn sweep_pieces(feature: &str, profile: &Profile, path: &[PathSeg], twist: f64) 
         return Err("notImplemented;what=multi-region profile swept along a multi-piece path".to_string());
     }
     let n = path.len();
-    if path.iter().any(|s| matches!(s, PathSeg::Helix { .. } | PathSeg::Spline { .. })) {
-        return Err(PATH_INVALID.into());
+    let kinds = path_kinds(path);
+    if let Some(i) = path.iter().position(|s| matches!(s, PathSeg::Helix { .. } | PathSeg::Spline { .. })) {
+        return Err(path_problem(
+            PATH_INVALID,
+            &format!("a path of {n} pieces can hold lines and arcs only; piece {i} is a {} and cannot be joined to other pieces", kinds[i]),
+            "draw the whole path as one spline (or one helix), or replace this piece by lines and arcs",
+            Some(i),
+            Some(path[i].start()),
+            &kinds,
+        ));
     }
     let ext = profile_extent(profile);
     // joint i joins piece i and i + 1: None = tangent, Some(turn angle) = mitre
     let mut joints: Vec<Option<f64>> = vec![];
     for i in 0..n.saturating_sub(1) {
-        let (d1, d2) = (end_dir(&path[i]).ok_or(PATH_INVALID)?, path[i + 1].start_dir().ok_or(PATH_INVALID)?);
-        if path[i].end().dist(path[i + 1].start()) > 1e-6 {
-            return Err(PATH_INVALID.into());
+        let zero = |k: usize| path_problem(PATH_INVALID, &format!("piece {k} ({}) has zero length", kinds[k]), "remove the zero-length piece or move its end points apart", Some(k), Some(path[k].start()), &kinds);
+        let (d1, d2) = (end_dir(&path[i]).ok_or_else(|| zero(i))?, path[i + 1].start_dir().ok_or_else(|| zero(i + 1))?);
+        let gap = path[i].end().dist(path[i + 1].start());
+        if gap > join_tol {
+            return Err(path_problem(
+                PATH_INVALID,
+                &format!("pieces {i} ({}) and {} ({}) do not meet: their ends are {gap:.6} mm apart (the sweep accepts {join_tol:.0e} mm)", kinds[i], i + 1, kinds[i + 1]),
+                "move the end points together, or join the pieces with a compositeCurve whose gapTolerance covers the gap and sweep along that",
+                Some(i),
+                Some(path[i].end()),
+                &kinds,
+            ));
         }
         let c = d1.dot(d2).clamp(-1.0, 1.0);
         if c > 1.0 - 1e-9 {
             joints.push(None);
         } else {
             let th = c.acos();
-            if th > 2.9 || !matches!(path[i], PathSeg::Line { .. }) || !matches!(path[i + 1], PathSeg::Line { .. }) {
-                return Err("notImplemented;what=mitre joint other than line-line (turn < 166 deg)".to_string());
+            let deg = th.to_degrees();
+            let line_line = matches!(path[i], PathSeg::Line { .. }) && matches!(path[i + 1], PathSeg::Line { .. });
+            if !line_line {
+                return Err(path_problem(
+                    "notImplemented",
+                    &format!(
+                        "joint {i} between a {} and a {} is a corner (the path turns {deg:.1} deg there); a corner is swept only between two lines, any other joint must be tangent",
+                        kinds[i], kinds[i + 1]
+                    ),
+                    "make the joint tangent (add a tangent constraint, or round the corner with an arc tangent to both pieces), or make both pieces lines",
+                    Some(i),
+                    Some(path[i].end()),
+                    &kinds,
+                ));
+            }
+            if th > 2.9 {
+                return Err(path_problem(
+                    PATH_INVALID,
+                    &format!("joint {i} between two lines turns {deg:.1} deg, back on itself (the mitre limit is 166 deg)"),
+                    "open the corner to under 166 deg, or split the path at that point",
+                    Some(i),
+                    Some(path[i].end()),
+                    &kinds,
+                ));
             }
             joints.push(Some(th));
         }

@@ -698,16 +698,28 @@ fn gk15(c: &Curve, a: f64, b: f64) -> (f64, f64) {
     (k * h.abs(), ((k - g) * h).abs())
 }
 
+/// Work budget of one [`proc_length`], in Gauss-Kronrod panels (15 speed evaluations each). The wasm host has no clock, so
+/// a bound has to be a count. A smooth span needs a few dozen panels; an integrand that cannot reach its tolerance
+/// (the speed of an iso-curve of a rolling-ball blend is a finite difference, good to about 1e-9 and no better, and the
+/// error goal is 1e-12 of the length) used to bisect to depth 30 on every panel: 2^30 panels, a hang. At the budget the
+/// panels still open keep their Kronrod value.
+pub(crate) const GK_PANEL_BUDGET: usize = 1024;
+/// Relative error below which a panel at least `GK_NOISE_DEPTH` deep is accepted whatever its share of the tolerance
+/// is: below this the speed's own noise decides, and bisecting further changes nothing.
+const GK_NOISE_FLOOR: f64 = 1e-9;
+const GK_NOISE_DEPTH: u32 = 8;
+
 /// Adaptive bisection until the local error estimate is within its share of `tol`
-/// (the error estimate of GK15 is conservative; the true error is far smaller).
-fn gk_adaptive(c: &Curve, a: f64, b: f64, tol: f64, depth: u32, total: f64) -> f64 {
+/// (the error estimate of GK15 is conservative; the true error is far smaller). `left` counts the panels still allowed.
+fn gk_adaptive(c: &Curve, a: f64, b: f64, tol: f64, depth: u32, total: f64, left: &mut usize) -> f64 {
     let (k, e) = gk15(c, a, b);
+    *left = left.saturating_sub(1);
     let share = tol * ((b - a).abs() / total);
-    if e <= share || depth >= 30 {
+    if e <= share || depth >= 30 || *left == 0 || (depth >= GK_NOISE_DEPTH && e <= GK_NOISE_FLOOR * k.abs()) {
         return k;
     }
     let m = 0.5 * (a + b);
-    gk_adaptive(c, a, m, tol, depth + 1, total) + gk_adaptive(c, m, b, tol, depth + 1, total)
+    gk_adaptive(c, a, m, tol, depth + 1, total, left) + gk_adaptive(c, m, b, tol, depth + 1, total, left)
 }
 
 /// Arc length of a procedural curve over [t0, t1] (either order; the length is
@@ -739,6 +751,7 @@ pub(crate) fn proc_length(c: &Curve, t0: f64, t1: f64) -> Option<f64> {
     ks.extend(br);
     ks.push(b);
     let mut s = 0.0;
+    let mut left = GK_PANEL_BUDGET;
     for w in ks.windows(2) {
         // start from four panels so a feature cannot hide between the sample nodes
         let n = 4;
@@ -747,7 +760,7 @@ pub(crate) fn proc_length(c: &Curve, t0: f64, t1: f64) -> Option<f64> {
         for i in 0..n {
             let lo = w[0] + (w[1] - w[0]) * i as f64 / n as f64;
             let hi = w[0] + (w[1] - w[0]) * (i + 1) as f64 / n as f64;
-            s += gk_adaptive(c, lo, hi, tol, 0, w[1] - w[0]);
+            s += gk_adaptive(c, lo, hi, tol, 0, w[1] - w[0], &mut left);
         }
     }
     Some(s)

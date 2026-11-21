@@ -1,6 +1,8 @@
 //! Saved results of the expensive import features (`importBody`), so that a later open of the document skips the
 //! rebuild. See `docs/regen-cache.md` ("Saved bodies") and the book page of `importBody`.
 //!
+//! (`meshToSolid` saves its conversion report as the `note` of the same record.)
+//!
 //! A saved result is what the import builds from its file: the solid body, the surface bodies and what became of each
 //! part ([`import_body::Sorted`]), written with `ck_topo::codec` and closed with a SHA-256 of everything before it. The
 //! document keeps it in its top-level `built` table, `{ "<key>": "<base64 of the bytes>" }`.
@@ -92,6 +94,9 @@ pub fn encode(s: &Sorted) -> Vec<u8> {
     for p in &s.parts {
         w_part(&mut w, p);
     }
+    if let Some(n) = &s.note {
+        w.str(n);
+    }
     let sum = ck_text::sha256(&[&w.buf]);
     w.buf.extend_from_slice(&sum);
     w.buf
@@ -123,10 +128,11 @@ pub fn decode(bytes: &[u8]) -> Result<Sorted, String> {
     }
     let np = r.count(10)?;
     let parts = (0..np).map(|_| r_part(&mut r)).collect::<Result<Vec<_>, _>>()?;
+    let note = if r.at_end() { None } else { Some(r.str()?) };
     if !r.at_end() {
         return Err("trailing bytes".into());
     }
-    Ok(Sorted { solid, surfaces, parts })
+    Ok(Sorted { solid, surfaces, parts, note })
 }
 
 /// What happened to the saved result of a feature in this process.

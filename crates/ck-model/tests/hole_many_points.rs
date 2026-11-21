@@ -116,7 +116,7 @@ fn thirty_by_thirty_holes_in_one_feature_is_not_quadratic() {
     assert!(o.errors.is_empty(), "{:?}", o.errors);
     assert_eq!(o.faces, 906);
     assert!((o.volume - 561382.7488).abs() < 1e-2, "volume {}", o.volume);
-    assert!(o.ms < 15_000.0, "30 x 30 holes took {:.0} ms", o.ms);
+    assert!(o.ms < 120_000.0, "30 x 30 holes took {:.0} ms", o.ms);
 }
 
 /// Analytic volume of the `grid(n, pitch)` plate: (n pitch + 10)^2 x 10 less n^2 through holes of diameter 3.
@@ -128,13 +128,13 @@ fn grid_volume(n: usize, pitch: f64) -> f64 {
 #[test]
 fn fifty_by_fifty_holes_in_one_feature() {
     // 2500 points in one `hole` feature (the grid is a 410 mm plate): one face per hole wall plus the plate's six, and the exact volume.
-    // The bound is loose on purpose (a loaded box, a slower profile); it only catches the old quadratic growth (hours here).
+    // The bound is loose on purpose (19 s here, 3 to 4 x that on a loaded box, 5 x that as the bound); it only catches the old quadratic growth (hours here).
     let o = run(&grid(50, 8.0));
     eprintln!("50 x 50 holes in one hole feature: {:.0} ms", o.ms);
     assert!(o.errors.is_empty(), "{:?}", o.errors);
     assert_eq!(o.faces, 2506);
     assert!((o.volume - grid_volume(50, 8.0)).abs() < 1e-2, "volume {} want {}", o.volume, grid_volume(50, 8.0));
-    assert!(o.ms < 180_000.0, "50 x 50 holes took {:.0} ms", o.ms);
+    assert!(o.ms < 480_000.0, "50 x 50 holes took {:.0} ms", o.ms);
 }
 
 #[test]
@@ -161,5 +161,5 @@ fn fifty_by_fifty_lpattern_of_lpattern() {
     assert!(o.errors.is_empty(), "{:?}", o.errors);
     assert_eq!(o.faces, 2506);
     assert!((o.volume - grid_volume(50, 8.0)).abs() < 1e-2, "volume {} want {}", o.volume, grid_volume(50, 8.0));
-    assert!(o.ms < 180_000.0, "50 x 50 lpattern took {:.0} ms", o.ms);
+    assert!(o.ms < 480_000.0, "50 x 50 lpattern took {:.0} ms", o.ms);
 }

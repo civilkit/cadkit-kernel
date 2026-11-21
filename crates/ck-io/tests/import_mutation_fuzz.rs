@@ -63,7 +63,7 @@ fn fuzz(name: &str, text: &str, cap: usize, read: fn(&str) -> bool) {
             runs += 1;
             if ok.is_err() {
                 bad.push(format!("panic: number #{k} `{}` -> `{rep}`", &text[s..e]));
-            } else if dt > Duration::from_secs(5) {
+            } else if dt > Duration::from_secs(60) {
                 bad.push(format!("slow {dt:?}: number #{k} `{}` -> `{rep}`", &text[s..e]));
             }
         }

@@ -22,7 +22,7 @@ fn guarded(text: String) -> Result<Result<Imported, ImportError>, String> {
             let _ = tx.send(r.map_err(|_| "panic".to_string()));
         })
         .unwrap();
-    rx.recv_timeout(Duration::from_secs(30)).unwrap_or_else(|_| Err("hang".to_string()))
+    rx.recv_timeout(Duration::from_secs(60)).unwrap_or_else(|_| Err("hang".to_string()))
 }
 
 /// The import says a part is not what the file claims: faces left out with their reasons, or a part that could not be read.

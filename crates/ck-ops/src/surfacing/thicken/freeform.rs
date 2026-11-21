@@ -270,16 +270,96 @@ pub fn thicken_freeform_by(
         let (s_end, s_start) = (sv_of(lo_end).ok_or_else(|| ThickenError::code("thickenFailed"))?, sv_of(lo_start).ok_or_else(|| ThickenError::code("thickenFailed"))?);
         need(&vmap[1], &s_end, "vertex")?;
         need(&vmap[1], &s_start, "vertex")?;
-        out.add_coedge(wl, lo, rev_lo, None);
+        // the rim edges' pcurves on the wall are fitted once here: without them the tessellator projects every edge sample
+        // onto a wall of several hundred spans (a trimmed skin's rim: minutes to mesh, and an open display mesh)
+        let wall_surf = out.face(wf).surface.clone();
+        let pc_of = |ed: EdgeId, out: &Body| {
+            let e = out.edge(ed);
+            wall_pcurve(&wall_surf, &e.curve, e.t0, e.t1, tol)
+        };
+        // only for a closed rim: its seam connector is ambiguous to a projection, and the dense wall of a trimmed skin's rim
+        // (hundreds of spans) took minutes to project onto. An open wall keeps the tessellator's own projection, which meshes it
+        // fine (the open closed-spline sheet of `thicken_spline` came back with an open display mesh, 20 times slower, with fitted pcurves)
+        let closed = out.edge(lo).curve.eval(out.edge(lo).t0).dist(out.edge(lo).curve.eval(out.edge(lo).t1)) < 1e-9;
+        let (pc_lo, pc_hi) = if closed { (pc_of(lo, &out), pc_of(hi, &out)) } else { (None, None) };
+        // the connectors run straight up the wall in uv (a closed rim shares one connector edge at both ends of the wall: its
+        // two coedges sit at the two u ends of the wall, which a projection of the 3D line cannot tell apart)
+        let (lo_t, hi_t) = ((out.edge(lo).t0, out.edge(lo).t1), out.edge(hi).t0);
+        let rung = |lo_param: f64, a: Vec3, b: Vec3| -> Option<ck_geom::curve2::Curve2> {
+            let (pl, ph) = (pc_lo.as_ref()?, pc_hi.as_ref()?);
+            let uv0 = pl.eval(lo_param);
+            let uv1 = ck_geom::Vec2::new(uv0.x, ph.eval(hi_t).y);
+            Some(ck_geom::curve2::Curve2::Line { o: uv0, d: (uv1 - uv0) * (1.0 / (b - a).len()) })
+        };
+        let (t_end, t_start) = if rev_lo { (lo_t.0, lo_t.1) } else { (lo_t.1, lo_t.0) };
+        out.add_coedge(wl, lo, rev_lo, pc_lo.clone());
         let c_end = to_hi(lo_end, s_end, &mut out, &mut connectors);
-        out.add_coedge(wl, c_end, false, None);
-        out.add_coedge(wl, hi, rev_hi, None);
+        let pe = rung(t_end, out.vertex(lo_end).p, out.vertex(out.edge(c_end).v1).p);
+        out.add_coedge(wl, c_end, false, pe);
+        out.add_coedge(wl, hi, rev_hi, pc_hi.clone());
         let c_start = to_hi(lo_start, s_start, &mut out, &mut connectors);
-        out.add_coedge(wl, c_start, true, None);
+        let ps = rung(t_start, out.vertex(lo_start).p, out.vertex(out.edge(c_start).v1).p);
+        out.add_coedge(wl, c_start, true, ps);
         let _ = ed;
     }
 
     close_up(out, tol)
+}
+
+/// The pcurve of a rim edge on its wall, over the edge's own parameter range: the edge is sampled, each sample projected with
+/// the previous result as the start (so the walk is continuous), and the samples interpolated. A closed rim ends on the wall's
+/// first u again: the surface is not periodic, so the last sample is put at the far u end, not left to a projection that
+/// cannot tell the two ends of the wall apart.
+fn wall_pcurve(surf: &Surface, c: &Curve, t0: f64, t1: f64, _tol: f64) -> Option<Curve2> {
+    let Surface::BSpline(bs) = surf else { return ck_geom::pcurve::pcurve_of_dense(surf, c, t0, t1, _tol, 1e-6).ok() };
+    // sample count doubled from the wall's own knot count until the pcurve follows the edge between the samples (a tight bend
+    // of a closed spline rim is 2e-4 off at 64 samples)
+    let mut m = bs.knots_u.len().clamp(64, 512);
+    loop {
+        let (pc, dev) = wall_pcurve_n(surf, c, t0, t1, m)?;
+        if dev <= 2e-6 || m >= 2048 {
+            return Some(pc);
+        }
+        m *= 2;
+    }
+}
+
+fn wall_pcurve_n(surf: &Surface, c: &Curve, t0: f64, t1: f64, m: usize) -> Option<(Curve2, f64)> {
+    let ((ulo, uhi), _) = surf.domain();
+    let ts: Vec<f64> = (0..=m).map(|k| t0 + (t1 - t0) * k as f64 / m as f64).collect();
+    let pts: Vec<Vec3> = ts.iter().map(|&t| c.eval(t)).collect();
+    // the middle sample is projected globally (the ends of a closed rim sit at both u ends of the wall); the walk then goes
+    // out from it in both directions, each step started from the one before
+    let mut uv: Vec<Vec2> = vec![Vec2::ZERO; m + 1];
+    let mid = m / 2;
+    let (u, v, _) = surf.closest_point(pts[mid]);
+    uv[mid] = Vec2::new(u, v);
+    for range in [(mid + 1..=m).collect::<Vec<_>>(), (0..mid).rev().collect::<Vec<_>>()] {
+        let mut hint = (u, v);
+        for k in range {
+            let (u2, v2, _) = surf.closest_point_near(pts[k], hint);
+            hint = (u2, v2);
+            uv[k] = Vec2::new(u2, v2);
+        }
+    }
+    if pts[0].dist(pts[m]) < 1e-9 {
+        // the walk starts at one u end of the wall and finishes at the other
+        let start_low = uv[1].x < uv[mid].x;
+        let (a, b) = if start_low { (ulo, uhi) } else { (uhi, ulo) };
+        uv[0].x = a;
+        uv[m].x = b;
+    }
+    let norm: Vec<f64> = (0..=m).map(|k| k as f64 / m as f64).collect();
+    let knots: Vec<f64> = ck_geom::fit::averaged_knots(&norm, 3).iter().map(|k| t0 + k * (t1 - t0)).collect();
+    let pc = Curve2::BSpline(ck_geom::fit::interpolate_with(&uv, 3, &ts, knots).ok()?);
+    let dev = (0..m)
+        .map(|k| {
+            let t = 0.5 * (ts[k] + ts[k + 1]);
+            let q = pc.eval(t);
+            surf.eval(q.x, q.y).dist(c.eval(t))
+        })
+        .fold(0.0, f64::max);
+    Some((pc, dev))
 }
 
 /// Faces of both layers: the lower layer faces away from the material. A layer that is the sheet itself (`same[li]`)

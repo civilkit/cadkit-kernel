@@ -371,6 +371,36 @@ pub fn exec_mirror(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
     if seeds.is_empty() {
         return Err(FeatureError::new(NO_SEEDS));
     }
+    // a seed that is a surface body (a planar surface, a surface extrude, a freeform skin; by feature id or any of its faces) has no
+    // tool: its image is a new surface body, faces named `<face>@<mirror>.1`, sense reversed with the reflection
+    let mut rest: Vec<Ref> = vec![];
+    let mut done: Vec<usize> = vec![];
+    for s in seeds {
+        let has_tool = br.tools.iter().any(|(id, _)| id == s.as_str() || id.starts_with(&format!("{}#", s.as_str())));
+        match br.surface_ref(s.as_str()).filter(|_| !has_tool) {
+            Some(i) => {
+                if !done.contains(&i) {
+                    done.push(i);
+                }
+            }
+            None => rest.push(s.clone()),
+        }
+    }
+    let mut images = vec![];
+    for &i in &done {
+        let mut b = reflect_body(&br.surfs[i].1, &pl).map_err(|e| FeatureError::new(&e))?;
+        b.push_instance(&format!("{}.1", f.id));
+        images.push(b);
+    }
+    let n_img = images.len();
+    for (k, b) in images.into_iter().enumerate() {
+        let id = if k == 0 { f.id.clone() } else { format!("{}#{k}", f.id) };
+        br.set_surface(&id, b);
+    }
+    if n_img > 0 && rest.is_empty() {
+        return Ok(());
+    }
+    let seeds = &rest;
     let (geo, srcs) = thread_sources(state, f, seeds, auto);
     let mut copies = vec![];
     for (id, t) in seed_tools(br, state.part, &geo).or_else(|e| if geo.is_empty() && !seeds.is_empty() { Ok(vec![]) } else { Err(e) })? {

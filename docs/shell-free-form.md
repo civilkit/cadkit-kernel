@@ -28,7 +28,7 @@ algorithms were re-derived and checked against the original's results.
   such corners of a straight sheet rim is the straight edge between them (not the rim translated by
   the offset), which matters at the 0.2 % level for volumes.
 - Failures that are structural in the original: the outside (or both-way) thicken of the 7-station
-  open "tinnie" U sheet is refused with `thickenReach` even for 0.2 mm, and so is the outside offset
+  open hull U sheet is refused with `thickenReach` even for 0.2 mm, and so is the outside offset
   of the closed-triangle loft. In the original the offset surfaces do not reach the corner's miter
   (the bottom face is only 40 mm wide at the stern); with the faces continued as far as the corner
   needs, the offset is perfectly regular, see below.

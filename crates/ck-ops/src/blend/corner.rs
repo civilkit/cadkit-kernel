@@ -242,6 +242,14 @@ pub fn fix_sphere_pcurves(body: &mut Body, name: &str) {
             let th = ed.t1 - ed.t0;
             let d = ck_geom::Vec2::new(du / th, (v(pb) - v(pa)) / th);
             let o = ck_geom::Vec2::new(ua, v(pa)) - d * ed.t0;
+            // a straight pcurve is the arc only when the arc is a meridian or the equator (the orthogonal corner); at an
+            // oblique corner (faces not mutually perpendicular) the arcs are slanted great circles: keep the boolean's refit
+            let tm = 0.5 * (ed.t0 + ed.t1);
+            let (um, vm) = (o.x + d.x * tm, o.y + d.y * tm);
+            let on_sphere = c + (frame.x * um.cos() + frame.y * um.sin()) * (vm.cos() * r) + frame.z * (vm.sin() * r);
+            if on_sphere.dist(ed.curve.eval(tm)) > 1e-7 * r {
+                return;
+            }
             fixes.push((cid.idx(), ck_geom::curve2::Curve2::Line { o, d }));
         }
     }

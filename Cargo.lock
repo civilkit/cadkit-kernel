@@ -64,6 +64,7 @@ dependencies = [
  "ck-json",
  "ck-ops",
  "ck-recog",
+ "ck-sldprt",
  "ck-tess",
  "ck-topo",
 ]
@@ -78,6 +79,7 @@ dependencies = [
  "ck-heal",
  "ck-io",
  "ck-json",
+ "ck-mesh",
  "ck-ops",
  "ck-sldprt",
  "ck-tess",

@@ -54,6 +54,10 @@ pub const REQUEST_TYPES: &[(&str, Handler)] = &[
     ("regen", session::regen),
     ("matchEdges", model::match_edges),
     ("drag", model::drag),
+    // Extension: motion studies, a list of poses of drivable mates solved on a copy of the tag's assembly (docs/spec-motion-studies.md).
+    ("solvePoses", model::solve_poses),
+    // Extension: motion studies, walk a driver and find where it stops (limit, contact, solver, range).
+    ("sweepDriver", model::sweep_driver),
     ("convert", model::convert),
     ("sketchOffset", model::sketch_offset),
     ("refCurve", model::ref_curve),
@@ -78,6 +82,8 @@ pub const REQUEST_TYPES: &[(&str, Handler)] = &[
     ("importSkp", geometry::import_skp),
     // Extension: a triangle mesh (STL / OBJ-like soup) -> a valid solid (planar faces merged, cylinders / cones / spheres refit).
     ("meshToSolid", geometry::mesh_to_solid),
+    // Extension: quadric decimation of a triangle mesh within a deviation tolerance (stateless).
+    ("meshDecimate", geometry::mesh_decimate),
     ("inspect", query::inspect),
     // Extension: Press Pull panel facts of flat faces (centre, normal, reach, the feature end they move with).
     ("faceRun", geometry::face_run),

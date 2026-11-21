@@ -58,6 +58,8 @@ pub struct HoleInfo {
     pub method: &'static str,
     /// Centre of the loop.
     pub at: Vec3,
+    /// The triangles added to close the hole, as corner coordinates (what a dry run shows; not in [`CloseReport::json`]).
+    pub fill: Vec<[Vec3; 3]>,
 }
 
 /// What the closing stage did.
@@ -80,19 +82,28 @@ pub struct CloseReport {
 
 impl CloseReport {
     pub fn json(&self) -> Json {
+        self.json_with(false)
+    }
+
+    /// [`json`](Self::json); with `fills` each hole also carries `fill:{positions:[x,y,z,..], indices:[a,b,c,..]}`, the
+    /// triangles invented for it (corners shared within a hole are listed once).
+    pub fn json_with(&self, fills: bool) -> Json {
         let holes: Vec<Json> = self
             .holes
             .iter()
             .map(|h| {
-                Obj::new()
+                let mut o = Obj::new()
                     .put("edges", h.edges as f64)
                     .put("area", h.area)
                     .put("planar", h.planar)
                     .put("maxPlaneDev", h.max_plane_dev)
                     .put("triangles", h.triangles as f64)
                     .put("method", h.method)
-                    .put("at", vec_json(h.at))
-                    .build()
+                    .put("at", vec_json(h.at));
+                if fills {
+                    o = o.put("fill", fill_json(&h.fill));
+                }
+                o.build()
             })
             .collect();
         Obj::new()
@@ -129,6 +140,25 @@ fn area_of(pts: &[Vec3], t: &[u32; 3]) -> f64 {
 }
 
 /// Run the stage on welded, cleaned triangles (no non-manifold edges). `tris` and `pts` are changed in place.
+/// `{positions:[x,y,z,..], indices:[a,b,c,..]}` of triangles given by corner coordinates (equal corners listed once).
+fn fill_json(tris: &[[Vec3; 3]]) -> Json {
+    let mut pos: Vec<Vec3> = vec![];
+    let mut idx: Vec<f64> = vec![];
+    for t in tris {
+        for p in t {
+            let i = pos.iter().position(|q| q.x == p.x && q.y == p.y && q.z == p.z).unwrap_or_else(|| {
+                pos.push(*p);
+                pos.len() - 1
+            });
+            idx.push(i as f64);
+        }
+    }
+    Obj::new()
+        .put("positions", Json::Arr(pos.iter().flat_map(|p| [Json::Num(p.x), Json::Num(p.y), Json::Num(p.z)]).collect()))
+        .put("indices", Json::Arr(idx.into_iter().map(Json::Num).collect()))
+        .build()
+}
+
 pub fn close(pts: &mut Vec<Vec3>, tris: &mut Vec<[u32; 3]>, c: &CloseOpts, diag: f64, max_listed: usize, rep: &mut CloseReport) -> Result<(), Refusal> {
     let tol = c.tol.filter(|v| *v > 0.0 && v.is_finite()).unwrap_or(CloseOpts::REL_TOL * diag);
     rep.tol = tol;
@@ -457,7 +487,8 @@ fn fill_holes(pts: &[Vec3], tris: &mut Vec<[u32; 3]>, c: &CloseOpts, diag: f64, 
     let _ = &mut fills;
     for lp in &loops {
         match fill_one(pts, lp, c, mesh_area, diag, eps, &|a, b| exists_base.contains(&key(a, b)) || fill_edges.contains(&key(a, b)), &grid, tris, &new_tris) {
-            Ok((tri, info)) => {
+            Ok((tri, mut info)) => {
+                info.fill = tri.iter().map(|t| [pts[t[0] as usize], pts[t[1] as usize], pts[t[2] as usize]]).collect();
                 for t in &tri {
                     for k in 0..3 {
                         fill_edges.insert(key(t[k], t[(k + 1) % 3]));
@@ -606,7 +637,7 @@ fn fill_one(
         }
     }
     let _ = diag;
-    let info = HoleInfo { edges: n, area, planar, max_plane_dev: dev, triangles: tri.len(), method, at: cen };
+    let info = HoleInfo { edges: n, area, planar, max_plane_dev: dev, triangles: tri.len(), method, at: cen, fill: vec![] };
     Ok((tri, info))
 }
 

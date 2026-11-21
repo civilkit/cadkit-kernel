@@ -143,3 +143,76 @@ CivilKit already has the platform pieces, and they are generic over opaque data:
 3. Where the shared kit and the version/live packages live (a third repo is the current plan).
 4. Whether the in-app agent chat is part of this app or only its edits are shown.
 5. Licence position for FeatureScript, and whether it is worth anything beyond macro features.
+
+## 9. Queue as of 2026-11-21 (kernel)
+
+Sizes as above. "Decision" means the owner has to choose before work starts.
+
+### 9a. Waiting for a decision
+
+| Item | Size | Notes |
+|---|---|---|
+| Joints for the Woodwork plugin (a small joint feature) | M | `docs/memo-kinematic-joints-in-the-part-document.md`: about 3 to 5 days kernel plus 3 to 5 days GUI; six product questions in the memo |
+| Curvature-continuous (G2) corner patch for overhang corners | M to L | `docs/memo-curvature-continuous-corner-patch.md`: the memo's advice is to accept G1 |
+| Reference meshes kept in exports, with a measure tool | M | Asked for by the GUI team; imported meshes stay meshes today and are not exported |
+| `combine` union of bodies that do not touch: join by default? | S | Today they stay separate with the `unionDisjoint` warning; `"disjoint":"join"` merges them. Changing the default breaks documents that select the tools by name (`union_identical_prisms`) |
+
+### 9b. Kernel work queued
+
+| Item | Size | Notes |
+|---|---|---|
+| Quadric mesh decimation (`meshDecimate`, `opts.decimate`) | S | Built and tested on branch `mesh-decimate`; held until the body-identity batch has shipped so each release has one reason to go red |
+| `bodyNames` next to `faceBody` in the regen reply | S | Asked for by the GUI team; branch `body-names` |
+| Offset / thicken of a faceted (meshToSolid) body | L | Not started. Interim: offset the mesh along its vertex normals outside the kernel |
+| Multi-body STL / 3MF export | M | `exportMesh` returns one body per call; file writing is done by the app |
+| Fillet on the rim of a thickened closed-spline wall | M | Diagnosis: the ring tool and boolean are fine; the untouched inner wall changes (lost pcurves, wrong sign of the wrap half). Branch `thick-wall-fillet` holds the unfinished work |
+| Swept-tube fillet beyond one-link closed rings | M | The spine-march fallback covers closed one-link rings; multi-link rings and open chains keep the old path |
+| Wheel fillet R5 then R10 | M | Needs a corner between a concave round and an earlier round |
+| Asymmetric four-edge chamfer corner; extra material at non-right-angle corners (4e-4 to 8e-4) | M | Known refusals and defects, see `docs/dead-ends.md` |
+| Sweep paths: mitred line-arc and arc-arc corners (a non-tangent corner is refused with a plain message since branch `sweep-path-messages`; lines and arcs of a 3D sketch and composite joins up to `gapTolerance` now build) | M | Found on the live wasm |
+| Faster boolean classify for all-planar operands | M | A cut of two 24k-face bodies takes about 5 s, 64 % in the winding-number classify of untouched fragments: use an exact solid-angle path, or classify one fragment per connected uncut piece |
+| Build stamp in the wasm | S | `ck_commit` is a fixed compatibility string, not a build stamp |
+| Cancel flag the kernel can read | M | Cancel only drops the late reply; the work limit counts work units because the wasm host has no clock |
+| Report text in `meshToSolidReport.detail` when the fit stops at its work limit | S | Asked for by the GUI team |
+| Large replies (65 MB for a 120k-triangle scan) | S | The reply carries the full import report: add `verbose` off by default; check the length a very large reply reports |
+| SolidWorks import: per-file table of complete / partial / failed parts, before and after the reader fixes | S | Measurement task, not run yet |
+
+### 9c. Order of work: by impact on the majority of users
+
+The rule: what an ordinary user of ordinary parts meets most often comes first; silent wrong results and hangs
+before refusals; refusals with a clear message before niche refusals; decisions and large projects last. At most two
+agents build at the same time while the development laptop is short on memory.
+
+| Rank | Item | Why it ranks here | Status |
+|---|---|---|---|
+| 1 | Hangs and silent wrong results (blendSurface off the origin, crash-fuzz and gate regressions) | Every user loses work to a hang or a wrong body without a message | Done 21 Nov (budget on the edge-length integral); keep the fuzz gate green |
+| 2 | Extra material at non-right-angle fillet corners | Ordinary fillets on ordinary parts give a valid but slightly wrong body | Started: branch `corner-extra-material` |
+| 3 | Clear messages for sweep paths (non-spline paths, line-arc corner, join tolerance) | Sweeping along a path is basic; today some failures have empty messages | Started: branch `sweep-path-messages` |
+| 4 | Body names and indexes, `bodyNames`, union warning | The app colours and selects by body; multi-body parts are common | Merged except `bodyNames` (branch `body-names`) |
+| 5 | SolidWorks and STEP import: per-file table of complete, partial and failed parts | Most users start from foreign files | Next: measurement, then fixes by the biggest reason |
+| 6 | Faster boolean classify for all-planar operands; `verbose` off for large replies | Large parts and scans feel slow | Queued |
+| 7 | Mesh decimation | Scan and print users | Built; ships after the body-identity batch |
+| 8 | Multi-body STL / 3MF export | Multi-part printing | Queued |
+| 9 | Cancel flag the kernel can read; build stamp; `detail` text for the work limit | Quality of life for the app and for support | Queued |
+| 10 | Fillet remainders: thickened closed-spline wall, swept-tube multi-link rings, wheel R5-then-R10, asymmetric four-edge chamfer corner | Rare shapes | Queued (`thick-wall-fillet` holds unfinished work) |
+| 11 | Offset / thicken of faceted bodies | Few users, large work | Queued |
+| 12 | Joints, G2 corner patch, reference meshes in exports, union-join default | Need a product decision first (section 9a) | Waiting |
+
+## 10. Interface directions: keeping our edge, closing the gap with OCCT and SMLib
+
+Our edge is the document model (stable names, regeneration), structured refusals with hints, work limits and
+reports of what was repaired. The costs of the JSON protocol are size and speed on large data, and having no direct
+handle to a live body. Options, in the order we would take them:
+
+1. **Binary for bulk data.** Meshes, scans and results go as typed arrays by reference (already so for meshes), and
+   replies drop the heavy reports unless asked (`verbose` off). Most of a 65 MB reply was report text.
+2. **A handle-based native API on the same core.** A thin Rust or C API that holds bodies in memory and returns
+   handles lets a native host skip JSON; the JSON protocol stays for the app and for AI agents.
+3. **A lower-level operation API next to the feature document.** `fillet(bodyHandle, edges, r)` and the like, returning
+   a new handle and a structured result, for callers who want OCCT-style control. Names and refusals still apply.
+4. **Structured errors and reports stay the standard** on every route in.
+5. **Interop layers.** An OCCT-style shim over our core, or the reverse, to run the same test files against both
+   kernels. It would also give a fair comparison on shared cases.
+
+Before committing to 2 and 3, profile how much of the JSON cost is parsing and how much is copying.
+

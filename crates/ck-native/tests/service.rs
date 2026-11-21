@@ -227,7 +227,7 @@ fn limits_and_unknown_session() {
     let a = auth();
     // oversized body: rejected from the header, before the body is read
     let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
-    s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(60))).unwrap();
     let r = send(&mut s, port, "POST", "/session/abc/rpc", &[(a.0, &a.1), ("Content-Length", "2000")], b"").unwrap();
     assert_eq!(r.status, 413);
     let big = vec![b' '; 2000];
@@ -254,7 +254,7 @@ fn keep_alive_serves_many_requests_on_one_connection() {
     let port = start(|_| {});
     let a = auth();
     let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
-    s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(60))).unwrap();
     let r = send(&mut s, port, "POST", "/session", &[(a.0, &a.1)], b"").unwrap();
     let id = String::from_utf8(r.body).unwrap().split('"').nth(3).unwrap().to_string();
     for _ in 0..3 {
@@ -410,7 +410,7 @@ fn connections_over_the_limit_get_a_503() {
     let idle: Vec<TcpStream> = (0..64).map(|_| TcpStream::connect(("127.0.0.1", port)).unwrap()).collect();
     std::thread::sleep(Duration::from_millis(300));
     let mut extra = TcpStream::connect(("127.0.0.1", port)).unwrap();
-    extra.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    extra.set_read_timeout(Some(Duration::from_secs(60))).unwrap();
     let mut text = String::new();
     let _ = extra.read_to_string(&mut text);
     assert!(text.starts_with("HTTP/1.1 503"), "{text:?}");

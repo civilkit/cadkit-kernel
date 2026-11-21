@@ -46,6 +46,7 @@
 //! | scale           | factor (number or [sx,sy,sz]), at, bodies as moveBody (see scale.rs) |
 //! | importStep      | blob (key into the part's `blobs`) or step (inline text), body, heal (see import_step.rs) |
 //! | importBody      | format (sldprt), blob (key into the part's `blobs`, base64 of the file), replace, body (see import_body.rs) |
+//! | meshToSolid      | blob (key into the part's `blobs`, base64 of the mesh), opts (meshToSolid options), replace, preview, body, source (informational) (see mesh_solid.rs) |
 //! | repairPart      | target (an importStep), gap, patchHoles (see repair_part.rs) |
 //! | sheetRules      | name, thickness, kFactor, bendRadius, reliefWidth, reliefDepth, cornerRelief, cornerReliefShape, hemGap, gap, active (see sheet_features.rs) |
 //! | baseFlange      | sketch, rule, flip (see sheet_features.rs) |
@@ -81,6 +82,7 @@ pub mod hole;
 pub mod known_fields;
 pub mod built_cache;
 pub mod import_body;
+pub mod mesh_solid;
 pub mod import_step;
 pub mod repair_part;
 pub mod knurl_band;
@@ -89,6 +91,8 @@ pub mod max_size;
 pub mod loft;
 pub mod mate;
 pub mod mate_kinds;
+pub mod motion;
+pub mod motion_contact;
 pub mod move_body;
 pub mod move_face;
 pub mod press_pull;
@@ -1705,6 +1709,10 @@ impl Brep {
                 bodies::stamp_origin(b, &f.id, &name);
             }
         }
+        // a joining union names every lump of its result itself (and consumed tools must not get their names back by origin)
+        if matches!(f.type_name.as_str(), "combine" | "bodyBoolean") && combine::parse(&f.raw).is_ok_and(|s| s.op == combine::CombineOp::Union && s.join_disjoint) {
+            return;
+        }
         bodies::restore(b, prior);
     }
 
@@ -1769,6 +1777,7 @@ impl Brep {
             FeatureKind::Loft { .. } => return loft::exec_loft(self, state, f),
             _ if f.type_name == "importStep" => return import_step::exec_import_step(self, state, f),
             _ if f.type_name == "importBody" => return import_body::exec_import_body(self, state, f),
+            _ if f.type_name == "meshToSolid" => return mesh_solid::exec_mesh_solid(self, state, f),
             _ if f.type_name == "repairPart" => return repair_part::exec_repair_part(self, state, f),
             _ if f.type_name == "knurlBand" => return knurl_band::exec_knurl_band(self, state, f),
             _ if f.type_name == "frame" => return frame::exec_frame(self, state, f),

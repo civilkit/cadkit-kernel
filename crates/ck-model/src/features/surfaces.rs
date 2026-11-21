@@ -105,9 +105,14 @@ impl Brep {
             return Some(i);
         }
         match self.slot_of_face(r) {
-            Some(Slot::Surf(i)) => Some(i),
-            _ => None,
+            Some(Slot::Surf(i)) => return Some(i),
+            Some(Slot::Solid) => return None,
+            None => {}
         }
+        // a surface a later feature rebuilt in place (freeform, extend, ...) is stored under that feature's id, but its
+        // faces keep the names of the feature that made them: `F2` still names the surface its faces `F2.P` belong to
+        let pre = format!("{r}.");
+        self.surfs.iter().position(|(_, b)| b.face_ids().any(|f| b.face(f).name.id().starts_with(&pre)))
     }
 
     /// Store `b` as the result of `id` in place of the body at `slot`
@@ -639,7 +644,9 @@ pub fn exec_freeform(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Resu
                 ("kept".into(), Json::Num(e.points.len() as f64)),
             ]));
         }
-        out = ed.body;
+        let before = std::mem::replace(&mut out, ed.body);
+        // the surface moved under a trimmed face's boundary: bring its free edges onto it
+        sf::rebuild::replace::lift_free_edges(&mut out, &faces, &before, super::TOL);
     }
     // pinned marker: the refit control net of every face, `net[i * nv + j]`
     let num = |x: usize| Json::Num(x as f64);

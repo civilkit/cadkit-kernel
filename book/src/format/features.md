@@ -4,7 +4,7 @@ A part is a list of features, run in order. This chapter lists every feature typ
 
 ## Index of feature types
 
-The kernel knows 68 type names. Five of them (`box`, `frame`, `knurlBand`, `repairPart` and `importBody`) are not described in this index. A name that is not in this list is `unknownFeature`. Types marked "not built" are accepted as names but have no implementation: they fail with the error code `TODO(rebuild): <type> needs ck-ops`.
+The kernel knows 69 type names. Five of them (`box`, `frame`, `knurlBand`, `repairPart` and `importBody`) are not described in this index. A name that is not in this list is `unknownFeature`. Types marked "not built" are accepted as names but have no implementation: they fail with the error code `TODO(rebuild): <type> needs ck-ops`.
 
 | Type | What it does | Chapter |
 |---|---|---|
@@ -58,6 +58,7 @@ The kernel knows 68 type names. Five of them (`box`, `frame`, `knurlBand`, `repa
 | `blendSurface` | A sheet on the rolling-ball blend of two faces, kept as a procedural blend surface. | [surfaces](features-surfaces.md#blendsurface) |
 | `insertPart` | Inserts another part as a component. | [assemblies](features-assemblies.md#insertpart) |
 | `importStep` | Holds a STEP body and brings its solids into the history. | [assemblies](features-assemblies.md#importstep) |
+| `meshToSolid` | Holds a triangle mesh and converts it to a solid on every regeneration. | [mesh to solid](../io/mesh-to-solid.md#as-a-feature-meshtosolid) |
 | `mate` | Constrains two components. | [assemblies](features-assemblies.md#mate) |
 | `spattern` | Pattern driven by a sketch. Not built. | [patterns](features-patterns.md#not-built) |
 | `curvepattern` | Pattern along a path: start point, flip, fixed or tangent orientation. | [patterns](features-patterns.md#curvepattern) |

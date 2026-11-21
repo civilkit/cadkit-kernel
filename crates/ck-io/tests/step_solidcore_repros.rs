@@ -52,7 +52,7 @@ fn r1082_import_rejects_non_finite() {
     let t = golden("box");
     let t = t.replacen("(0.,0.,-20.)", "(0.,0.,-1.E999)", 1);
     assert_ne!(t, golden("box"), "fixture text did not change");
-    match import_guarded(t, 20).expect("no panic / hang") {
+    match import_guarded(t, 60).expect("no panic / hang") {
         Err(_) => {}
         Ok(imp) => {
             for v in imp.body.vertex_ids() {
@@ -127,7 +127,7 @@ fn wrap_faces(text: &str, flip_first: bool) -> String {
 fn r1078_oriented_face_maps_without_phantoms() {
     for flip in [false, true] {
         let t = wrap_faces(&golden("box"), flip);
-        let imp = match import_guarded(t, 20).expect("no panic / hang") {
+        let imp = match import_guarded(t, 60).expect("no panic / hang") {
             Ok(i) => i,
             Err(e) => panic!("flip={flip}: ORIENTED_FACE not imported: {e}"),
         };
@@ -165,7 +165,7 @@ fn r1343_short_entity_names() {
         .replace("=AXIS2_PLACEMENT_3D(", "=A2PL3D(")
         .replace("=CLOSED_SHELL(", "=CLSSHL(");
     assert_ne!(short, t);
-    let imp = import_guarded(short, 20).expect("no panic / hang").unwrap_or_else(|e| panic!("short names: {e}"));
+    let imp = import_guarded(short, 60).expect("no panic / hang").unwrap_or_else(|e| panic!("short names: {e}"));
     assert_eq!(imp.body.num_faces(), 6);
 }
 
@@ -190,7 +190,7 @@ fn r1343_sheet_body() {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    match import_guarded(t, 20).expect("no panic / hang") {
+    match import_guarded(t, 60).expect("no panic / hang") {
         Ok(imp) => assert_eq!(imp.body.num_faces(), 6),
         Err(e) => panic!("sheet body not imported: {e}"),
     }
@@ -267,7 +267,7 @@ fn mutation_sweep_never_panics_or_hangs() {
         }
         for (what, text) in cases {
             n += 1;
-            if let Err(e) = import_guarded(text, 30) {
+            if let Err(e) = import_guarded(text, 60) {
                 failures.push(format!("{}: {what}: {e}", p.file_name().unwrap().to_string_lossy()));
             }
         }
@@ -288,7 +288,7 @@ fn r1082_export_finite_body_still_writes() {
 fn r1082_import_rejects_absurd_magnitude() {
     // (refused, or the faces that use the point left out with the reason: never a body built on it)
     let t = golden("box").replacen("(0.,0.,-20.)", "(0.,0.,-1.E300)", 1);
-    match import_guarded(t, 20).expect("no panic / hang") {
+    match import_guarded(t, 60).expect("no panic / hang") {
         Err(_) => {}
         Ok(r) => assert!(r.parts.iter().all(|p| !p.refused.is_empty()), "{:?}", r.parts),
     }

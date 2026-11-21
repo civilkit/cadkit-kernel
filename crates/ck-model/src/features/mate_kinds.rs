@@ -52,6 +52,10 @@ pub struct Ext {
     /// already applied) for tangent / one-wall slot.
     pub side: f64,
     pub creation: Option<Creation>,
+    /// Motion drive (see [`super::motion`]), never written by a feature:
+    /// hinge = rotation in radians about the axis, slot = slide in mm along the
+    /// slot, both from the pose the mate was created at.
+    pub drive: Option<f64>,
 }
 
 /// Placements and axes at the moment the mate was created.
@@ -470,6 +474,7 @@ pub fn exec_ext(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<()
         swapped,
         side: 0.0,
         creation: None,
+        drive: None,
     };
     let body = br.body.as_ref().unwrap();
     {
@@ -557,10 +562,47 @@ pub fn apply_posts(br: &mut Brep, k: usize) -> Result<bool, FeatureError> {
         moved |= match m.kind {
             K::Gear | K::RackPinion | K::Screw => couple(br, &m)?,
             K::Limits => limit(br, &m)?,
+            K::Hinge | K::Slot => drive_post(br, &m)?,
             _ => false,
         };
     }
     Ok(moved)
+}
+
+/// Motion drive of a hinge (turn about its axis) or a slot (slide along it),
+/// both measured from the creation pose, relative to the target component.
+fn drive_post(br: &mut Brep, m: &MateRec) -> Result<bool, FeatureError> {
+    let e = m.ext.as_deref().unwrap();
+    let (Some(want), Some(cr)) = (e.drive, e.creation) else { return Ok(false) };
+    let (pm, pt) = (br.asm.components[m.mover].place, br.asm.components[e.tc].place);
+    let (dm, dt) = (pm.compose(&inv(&cr.pm0)), pt.compose(&inv(&cr.pt0)));
+    match m.kind {
+        K::Hinge => {
+            // rotation of the mover relative to the target, read in the creation frame
+            let rel = inv(&dt).compose(&dm);
+            let cur = dtheta(&rel, &Xf::IDENTITY, cr.ax_t.1);
+            let diff = wrap_pi(want - cur);
+            if diff.abs() < 1e-10 {
+                return Ok(false);
+            }
+            let (o, d) = cur_axis(&pt, &cr.pt0, cr.ax_t);
+            move_comp(br, m.mover, &axis_rot(o, d, diff));
+            Ok(true)
+        }
+        _ => {
+            // slide direction: pin axis x wall normal, carried with the target
+            let u = dt.vec(cr.ax_m.1.cross(cr.ax_t.1));
+            let Some(u) = u.try_normalize() else { return Err(gerr("slot: the pin is parallel to the wall")) };
+            let o = cr.ax_m.0;
+            let cur = u.dot(dm.point(o) - dt.point(o));
+            let diff = want - cur;
+            if diff.abs() < 1e-9 {
+                return Ok(false);
+            }
+            move_comp(br, m.mover, &Xf::translation(u.scale(diff)));
+            Ok(true)
+        }
+    }
 }
 
 fn couple(br: &mut Brep, m: &MateRec) -> Result<bool, FeatureError> {
@@ -677,6 +719,9 @@ fn measure(b: &Body, m: &MateRec, e: &Ext) -> Option<(f64, Vec3, Vec3, Vec3)> {
 }
 
 fn limit(br: &mut Brep, m: &MateRec) -> Result<bool, FeatureError> {
+    if br.asm.skip_limits {
+        return Ok(false);
+    }
     let e = m.ext.as_deref().unwrap();
     let b = br.body.as_ref().unwrap();
     let Some((v, a, t, pivot)) = measure(b, m, e) else { return Err(FeatureError::new(MATE_GEOMETRY)) };
@@ -1116,4 +1161,44 @@ pub fn finalize(br: &mut Brep, force: bool) -> Option<Json> {
 /// Component of the target face of an oracle-kind mate.
 fn target_comp(br: &Brep, m: &MateRec) -> Option<usize> {
     br.component_of(&m.target)
+}
+
+// ------------------------------------------------------------ motion helpers
+
+/// Put every component back at `places` (rigid moves of their entities).
+pub fn restore_places(br: &mut Brep, places: &[Xf]) {
+    for (k, p) in places.iter().enumerate().take(br.asm.components.len()) {
+        let d = p.compose(&inv(&br.asm.components[k].place));
+        if !is_identity(&d) {
+            move_comp(br, k, &d);
+        }
+    }
+}
+
+/// A `limits` mate whose bound the current pose is beyond.
+#[derive(Debug, Clone)]
+pub struct LimitHit {
+    pub mate: String,
+    /// `"min"` or `"max"`.
+    pub bound: &'static str,
+    /// The bound, in degrees for an angle limit, else mm.
+    pub value: f64,
+    pub of_angle: bool,
+}
+
+/// The first `limits` mate the current pose violates (by more than 1e-6).
+pub fn limit_violation(br: &Brep) -> Option<LimitHit> {
+    let b = br.body.as_ref()?;
+    for m in &br.asm.mates {
+        let (K::Limits, Some(e)) = (m.kind, m.ext.as_deref()) else { continue };
+        let Some((v, ..)) = measure(b, m, e) else { continue };
+        let (lo, hi) = if e.of_angle { (e.min.map(f64::to_radians), e.max.map(f64::to_radians)) } else { (e.min, e.max) };
+        let out = |x: f64| if e.of_angle { x.to_degrees() } else { x };
+        match (lo, hi) {
+            (Some(l), _) if v < l - 1e-6 => return Some(LimitHit { mate: m.id.clone(), bound: "min", value: out(l), of_angle: e.of_angle }),
+            (_, Some(h)) if v > h + 1e-6 => return Some(LimitHit { mate: m.id.clone(), bound: "max", value: out(h), of_angle: e.of_angle }),
+            _ => {}
+        }
+    }
+    None
 }

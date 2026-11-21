@@ -321,6 +321,68 @@ export async function section(
   return call<SectionReport>(kernel, { type: 'section', tag: opts.tag ?? 'main', plane });
 }
 
+// ---- motion studies (docs/spec-motion-studies.md) --------------------------------------------------------------------------------------
+
+/** A mate a slider can drive: angles in degrees, distances in mm; `value` is the assembled value. */
+export interface MotionDriver { mate: string; kind: 'angle' | 'distance'; unit: 'deg' | 'mm'; value: number }
+/** The first thing a pose touches: `contact` when two components' surfaces cross, `near` when closer than the clearance. */
+export interface MotionContact { a: string; b: string; kind: 'contact' | 'near'; distance: number; at: number[] }
+export interface MotionPose {
+  ok: boolean;
+  places: Array<{ id: string; place: { o: number[]; x: number[]; y: number[]; z: number[] } }>;
+  contact?: MotionContact;
+  /** Why the mates could not hold at this pose (`mateConflict`, ...) and the driver last set. */
+  error?: string;
+  mate?: string;
+}
+export interface SolvePosesReport { drivers: MotionDriver[]; poses: MotionPose[] }
+export interface SweepReport {
+  driver: string;
+  from: number;
+  to: number;
+  /** The farthest value reached freely. */
+  reached: number;
+  stop: {
+    reason: 'range' | 'limit' | 'contact' | 'solver' | 'branchJump';
+    value: number;
+    mate?: string;
+    bound?: 'min' | 'max';
+    bound_value?: number;
+    a?: string;
+    b?: string;
+    near?: boolean;
+    distance?: number;
+    at?: number[];
+    error?: string;
+    component?: string;
+  };
+  /** Pairs of components that already touched where the sweep started (ignored by it). */
+  startContacts: string[][];
+  posesSolved: number;
+}
+
+/** Solve poses of the tag's assembly (`[{mateId: value}]`, degrees / mm; a driver a pose does not list keeps its value); read only. Contact is checked unless `contact: false`. */
+export async function solvePoses(
+  kernel: KernelTransport,
+  req: { poses: Array<Record<string, number>>; contact?: boolean; clearance?: number; chord?: number },
+  opts: QueryOpts = {},
+): Promise<SolvePosesReport> {
+  const r = await call<SolvePosesReport & { error?: string; mate?: string }>(kernel, { type: 'solvePoses', tag: opts.tag ?? 'main', ...req });
+  if (r.error) throw new Error(r.mate ? `${r.error}: ${r.mate}` : r.error);
+  return r;
+}
+
+/** Walk one driver from `from` (default 0) toward `to` and find where and why it stops: a `limits` mate, contact with a named part, the solver, a closed-loop flip, or the end of the range. Read only. */
+export async function sweepDriver(
+  kernel: KernelTransport,
+  req: { driver: string; from?: number; to: number; clearance?: number; contact?: boolean; steps?: number; tol?: number; hold?: Record<string, number>; chord?: number },
+  opts: QueryOpts = {},
+): Promise<SweepReport> {
+  const r = await call<SweepReport & { error?: string; mate?: string }>(kernel, { type: 'sweepDriver', tag: opts.tag ?? 'main', ...req });
+  if (r.error) throw new Error(r.mate ? `${r.error}: ${r.mate}` : r.error);
+  return r;
+}
+
 export interface SectionsReport {
   axis: number[];
   range: [number, number];
@@ -784,6 +846,52 @@ export interface MeshToSolidOpts {
    * meshNotWatertight). The reply's `closing` lists what was welded, stitched and filled.
    */
   close?: boolean | MeshCloseOpts;
+  /**
+   * Quadric decimation within a deviation tolerance, run right after the weld (docs/spec-agent-interface.md, "Decimation of
+   * scans"): the way to convert a scan that would be refused as meshTooLarge. The reply's `import.decimation` is the report.
+   */
+  decimate?: MeshDecimateOpts;
+}
+
+/** Options of `meshDecimate` and of `meshToSolid`'s `decimate` (lengths in mm). */
+export interface MeshDecimateOpts {
+  /** largest distance of the result from the input surface (required) */
+  tol: number;
+  /** stop at this many triangles (default: as far as `tol` allows) */
+  targetTriangles?: number;
+  /** keep edges whose faces meet at more than this angle (degrees) as creases (default none) */
+  keepAngleDeg?: number;
+}
+
+/** The report of a decimation (`meshDecimate` reply without the buffers; `import.decimation` of `meshToSolid`). */
+export interface MeshDecimateReport {
+  triangles: number;
+  vertices: number;
+  inputTriangles: number;
+  inputVertices: number;
+  collapses: number;
+  tol: number;
+  /** the tolerance the collapses were held to in the run that was kept */
+  internalTol: number;
+  attempts: number;
+  /** `target`, `tolerance` (no further collapse stays within tol) or `verification` (the mesh is unchanged) */
+  stoppedBy: 'target' | 'tolerance' | 'verification';
+  watertight: boolean;
+  boundaryEdges: number;
+  creaseEdges: number;
+  refused: { topology: number; flip: number; deviation: number; clearance: number };
+  /** measured on the finished mesh, both ways (`max` is at most `tol`) */
+  deviation: { max: number; rms: number; samples: number; inputToResult: number; resultToInput: number };
+  selfIntersections: number;
+  inputSelfIntersections?: number;
+}
+
+/** The reply of `meshDecimate`: the report, the mesh (`positions` x y z per vertex, `indices` three per triangle) and the refusals. */
+export interface MeshDecimateResult extends MeshDecimateReport {
+  positions: Float32Array;
+  indices: Uint32Array;
+  /** `[["import", {code, params:{message, hint, ...}}]]` when the mesh was refused (then there is no mesh) */
+  errors: unknown[];
 }
 
 /** Options of `meshToSolid`'s `close` (lengths in mm). */
@@ -842,6 +950,26 @@ export async function meshToSolid(
   if (Object.keys(kopts).length) msg.opts = kopts;
   const res = await call<ImportReport>(kernel, msg);
   return { ...res, errors: res.errors ?? [] };
+}
+
+/**
+ * Reduce a triangle mesh (a scan) to fewer triangles within a deviation tolerance; stateless (no tag). The result stays within
+ * `opts.tol` mm of the input (`deviation.max`, measured), is manifold with the input's winding and does not pull close sheets
+ * together. A refused mesh (meshBadInput, meshNonManifold, meshDegenerate) answers `errors` and empty arrays.
+ */
+export async function meshDecimate(kernel: KernelTransport, mesh: MeshInput, opts: MeshDecimateOpts & { weldTol?: number }): Promise<MeshDecimateResult> {
+  const msg: Record<string, unknown> = { type: 'meshDecimate' };
+  const p = mesh.positions;
+  if (p instanceof Float32Array) msg.positionsF32 = typedBase64(p);
+  else if (p instanceof Float64Array) msg.positionsF64 = typedBase64(p);
+  else msg.positions = p;
+  const ix = mesh.indices;
+  if (ix instanceof Uint32Array) msg.indicesU32 = typedBase64(ix);
+  else if (ix) msg.indices = ix;
+  msg.opts = Object.fromEntries(Object.entries(opts).filter(([, v]) => v !== undefined));
+  const res = await call<Record<string, unknown> & { positions?: { data: Float32Array }; indices?: { data: Uint32Array } }>(kernel, msg);
+  const { positions, indices, ...rest } = res;
+  return { ...(rest as unknown as MeshDecimateReport), errors: (rest.errors as unknown[]) ?? [], positions: positions?.data ?? new Float32Array(0), indices: indices?.data ?? new Uint32Array(0) };
 }
 
 export async function importSat(

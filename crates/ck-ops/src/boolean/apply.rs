@@ -49,6 +49,7 @@ pub struct BoolOut {
 /// first result that assembles into a closed manifold wins.
 pub fn boolean(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> {
     FAIL_DIAG.with(|d| d.borrow_mut().take());
+    let tm0 = ck_core::budget::mark();
     // Two operands that are the same solid at the same place (a part inserted twice at one pose): every face
     // pair is coincident, which the general path grinds through at minutes per attempt. The answer is known.
     if a.num_faces() > 0 && identical_solids(a, b, tol) {
@@ -75,6 +76,7 @@ pub fn boolean(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> 
             return Err(format!("booleanFailed;nearCoincident={fa}|{fb}|{gap:.3e}"));
         }
     }
+    super::bool_dbg!("stage pre-checks (identical, thin edge, near coincident): {:.0} ms", ck_core::budget::since(tm0));
     // Operands far from the origin (a part at 1e6 mm) lose precision to the absolute
     // tolerances: welding and closest-point tests compare distances of ~1e-6 while f64
     // squared distances near 1e12 resolve only ~1e-4. Move such operands to a local
@@ -381,12 +383,14 @@ fn boolean_ladder(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, Strin
 
 /// Attach the [`super::sanity`] verdict to a finished result.
 fn sanity(a: &Body, b: &Body, op: Op, mut out: BoolOut) -> BoolOut {
+    let tm = ck_core::budget::mark();
     if !out.no_effect {
         out.mismatch = super::sanity::check_result(a, b, op, &out.body);
         if let Some(m) = &out.mismatch {
             super::bool_dbg!("sanity: {} got {} outside [{}, {}]", m.what, m.got, m.expected_min, m.expected_max);
         }
     }
+    super::bool_dbg!("stage sanity (volume bounds): {:.0} ms", ck_core::budget::since(tm));
     out
 }
 
@@ -533,6 +537,7 @@ fn boolean_at_merge(a: &Body, b: &Body, op: Op, tol: f64, merge: bool) -> Result
     }
     // (results keep the caller's bodies for the no-effect returns)
     let (a0, b0) = (a, b);
+    let tm = ck_core::budget::mark();
     let a1 = relocate_seams(a0, b0, dropped(op, 0), tol);
     let b1 = relocate_seams(b0, a0, dropped(op, 1), tol);
     // two-lap closed-spline walls (extruded sketch splines): every closest-parameter search on such a
@@ -541,7 +546,11 @@ fn boolean_at_merge(a: &Body, b: &Body, op: Op, tol: f64, merge: bool) -> Result
     let (a1, b1) = (crate::offset::single_lap_body(&a1), crate::offset::single_lap_body(&b1));
     let (a1, b1) = (unpole(a1.clone(), &b1), unpole(b1.clone(), &a1));
     let (a, b) = (&a1, &b1);
+    super::bool_dbg!("stage prep (seams, single lap, unpole): {:.0} ms", ck_core::budget::since(tm));
+    let tm = ck_core::budget::mark();
     let arr = imprint(a, b, tol);
+    super::bool_dbg!("stage imprint: {:.0} ms", ck_core::budget::since(tm));
+    let tm = ck_core::budget::mark();
     if ck_core::budget::expired() {
         return Err(BUDGET_EXCEEDED.into());
     }
@@ -566,6 +575,7 @@ fn boolean_at_merge(a: &Body, b: &Body, op: Op, tol: f64, merge: bool) -> Result
     } else {
         select_split(&arr, [a, b], op)?
     };
+    super::bool_dbg!("stage classify and select: {:.0} ms", ck_core::budget::since(tm));
     if ck_core::budget::expired() {
         return Err(BUDGET_EXCEEDED.into());
     }
@@ -578,9 +588,13 @@ fn boolean_at_merge(a: &Body, b: &Body, op: Op, tol: f64, merge: bool) -> Result
     if op == Op::Cut && untouched_a == a_faces && faces.iter().all(|f| whole_a(f)) {
         return Ok(BoolOut { body: a0.clone(), no_effect: true, mismatch: None, disjoint: false });
     }
+    let tm = ck_core::budget::mark();
     let mut body = build(&arr, &faces);
+    super::bool_dbg!("stage build: {:.0} ms", ck_core::budget::since(tm));
+    let tm = ck_core::budget::mark();
     // (only the connectivity issues are used below)
     let mut issues = ck_topo::check::check_topology(&body, tol);
+    super::bool_dbg!("stage check_topology: {:.0} ms", ck_core::budget::since(tm));
     // two lumps of one operand touching along a line (the two half rings of a thin-wall extrude of two
     // arcs) have distinct but coincident edges that the arrangement welds into one edge of four faces:
     // that edge is the input's own contact, not a failure of the boolean (checked lazily, only when

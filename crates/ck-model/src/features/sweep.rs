@@ -88,13 +88,87 @@ fn world(fr: &Frame, p: [f64; 2]) -> Vec3 {
     fr.o + fr.x * p[0] + fr.y * p[1]
 }
 
+/// A path refusal with its plain message and params (`message`, `supported`, `path` = piece types, `joint`, `at`, `hint`).
+fn path_err(code: &str, why: &str, hint: &str, joint: Option<usize>, at: Option<Vec3>, pieces: &[PathSeg]) -> FeatureError {
+    let kinds: Vec<&str> = pieces.iter().map(ck_ops::sweep::kind_name).collect();
+    FeatureError::new(&ck_ops::sweep::path_problem(code, why, hint, joint, at, &kinds))
+}
+
+/// Pieces (with a label each: the entity id) -> one chain walked from a free end. Refuses, naming the place: a
+/// closed loop, a branch, pieces that are not connected to the chain.
+fn chain_pieces(pieces: Vec<PathSeg>, labels: &[String], what: &str) -> Result<Vec<PathSeg>, FeatureError> {
+    let near = |a: Vec3, b: Vec3| a.dist(b) < 1e-6;
+    let hint_open = format!("make the {what} one open chain: its pieces meet end to end at shared points, with no branch and no loop");
+    let mut start = None;
+    'find: for (i, p) in pieces.iter().enumerate() {
+        for (flip, q) in [(false, p.start()), (true, p.end())] {
+            let shared = pieces.iter().enumerate().any(|(j, o)| j != i && (near(o.start(), q) || near(o.end(), q)));
+            if !shared {
+                start = Some((i, flip));
+                break 'find;
+            }
+        }
+    }
+    let Some((i0, flip0)) = start else {
+        return Err(path_err(
+            PATH_INVALID,
+            &format!("the {what} is a closed loop of {} pieces (every end meets another piece), so it has no start", pieces.len()),
+            "a sweep path is open: remove one piece or leave a gap at the end where the sweep should start",
+            None,
+            Some(pieces[0].start()),
+            &pieces,
+        ));
+    };
+    let mut used = vec![false; pieces.len()];
+    used[i0] = true;
+    let mut chain = vec![if flip0 { pieces[i0].reversed() } else { pieces[i0].clone() }];
+    let mut order = vec![i0];
+    while chain.len() < pieces.len() {
+        let tip = chain.last().unwrap().end();
+        let hits: Vec<(usize, bool)> = pieces
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| !used[*j])
+            .flat_map(|(j, p)| [(near(p.start(), tip), j, false), (near(p.end(), tip), j, true)])
+            .filter(|(m, _, _)| *m)
+            .map(|(_, j, f)| (j, f))
+            .collect();
+        let Some(&(j, flip)) = hits.first() else {
+            let left: Vec<&str> = (0..pieces.len()).filter(|j| !used[*j]).map(|j| labels[j].as_str()).collect();
+            return Err(path_err(
+                PATH_INVALID,
+                &format!("the {what} breaks after piece {} ({}) at the marked point: the pieces {} do not connect to it (nothing within 1e-6 mm of its end)", chain.len() - 1, labels[*order.last().unwrap()], left.join(", ")),
+                &format!("move the end points together so the {what} is one chain (the sketch solver can do it with coincident constraints); to join pieces that are further apart than 1e-6 mm, use a compositeCurve with a gapTolerance and sweep along it"),
+                Some(chain.len() - 1),
+                Some(tip),
+                &pieces,
+            ));
+        };
+        if hits.iter().map(|h| h.0).collect::<std::collections::BTreeSet<_>>().len() > 1 {
+            return Err(path_err(
+                PATH_INVALID,
+                &format!("the {what} branches at piece {} ({}): more than one piece starts at its end", chain.len() - 1, labels[*order.last().unwrap()]),
+                &hint_open,
+                Some(chain.len() - 1),
+                Some(tip),
+                &pieces,
+            ));
+        }
+        used[j] = true;
+        order.push(j);
+        chain.push(if flip { pieces[j].reversed() } else { pieces[j].clone() });
+    }
+    Ok(chain)
+}
+
 /// Open sketch -> connected chain of path pieces (construction entities are
 /// skipped). The chain is walked from one of its two free ends; ck-ops
 /// orients it towards the profile.
 fn sketch_path(sk: &crate::regen::SketchResult) -> Result<Vec<PathSeg>, FeatureError> {
-    let bad = || FeatureError::new(PATH_INVALID);
+    let bad = || path_err(PATH_INVALID, "a point of the path sketch is missing", "check the sketch's points", None, None, &[]);
     let fr = sk.frame;
     let mut pieces: Vec<PathSeg> = vec![];
+    let mut labels: Vec<String> = vec![];
     for e in &sk.sketch.entities {
         if e.construction() {
             continue;
@@ -114,63 +188,89 @@ fn sketch_path(sk: &crate::regen::SketchResult) -> Result<Vec<PathSeg>, FeatureE
                 let ang = ang.rem_euclid(std::f64::consts::TAU);
                 pieces.push(PathSeg::Arc { frame, r, a0: 0.0, a1: if ang < 1e-12 { std::f64::consts::TAU } else { ang } });
             }
-            SketchEntity::Point { .. } => {}
-            _ => return Err(bad()),
+            SketchEntity::Point { .. } => continue,
+            other => {
+                return Err(path_err(
+                    PATH_INVALID,
+                    &format!("the path sketch holds a {} ({}): a sketch path is made of lines and arcs", other.type_name(), other.id()),
+                    "replace it by lines and arcs, mark it as construction geometry, or draw the path as a sketch3d spline",
+                    None,
+                    None,
+                    &pieces,
+                ))
+            }
         }
+        labels.push(e.id().to_string());
     }
     if pieces.is_empty() {
-        return Err(bad());
+        return Err(path_err(PATH_INVALID, "the path sketch has no lines or arcs", "draw the path as lines and arcs in the sketch", None, None, &[]));
     }
-    // walk the chain from a free end
-    let near = |a: Vec3, b: Vec3| a.dist(b) < 1e-6;
-    let mut start = None;
-    'find: for (i, p) in pieces.iter().enumerate() {
-        for (flip, q) in [(false, p.start()), (true, p.end())] {
-            let shared = pieces.iter().enumerate().any(|(j, o)| j != i && (near(o.start(), q) || near(o.end(), q)));
-            if !shared {
-                start = Some((i, flip));
-                break 'find;
-            }
-        }
-    }
-    let (i0, flip0) = start.ok_or_else(bad)?;
-    let mut used = vec![false; pieces.len()];
-    used[i0] = true;
-    let mut chain = vec![if flip0 { pieces[i0].reversed() } else { pieces[i0].clone() }];
-    while chain.len() < pieces.len() {
-        let tip = chain.last().unwrap().end();
-        let mut found = None;
-        for (j, p) in pieces.iter().enumerate() {
-            if used[j] {
-                continue;
-            }
-            if near(p.start(), tip) {
-                found = Some((j, false));
-                break;
-            }
-            if near(p.end(), tip) {
-                found = Some((j, true));
-                break;
-            }
-        }
-        let (j, flip) = found.ok_or_else(bad)?;
-        used[j] = true;
-        chain.push(if flip { pieces[j].reversed() } else { pieces[j].clone() });
-    }
-    Ok(chain)
+    chain_pieces(pieces, &labels, "path sketch")
 }
 
-/// A `sketch3d` path: one `spline` entity (natural cubic spline through its points, the curve the
-/// client draws), swept with the section carried along it by Frenet frames.
+/// A `sketch3d` path: either one `spline` entity (natural cubic spline through its points, the curve the
+/// client draws, swept with the section carried along it by rotation-minimizing frames), or a connected chain of
+/// `line` and `arc` entities (every joint tangent, or a corner between two lines).
 pub(crate) fn sketch3_path(j: &Json) -> Result<Vec<PathSeg>, FeatureError> {
-    let bad = || FeatureError::new(PATH_INVALID);
+    let bad = || path_err(PATH_INVALID, "the 3D sketch path could not be read: a point it refers to is missing", "check that every entity's points exist in the sketch", None, None, &[]);
     let sk = j.get("sketch").unwrap_or(j);
     let all = sk.get_arr("entities").unwrap_or(&[]);
     let live = |e: &&Json| e.get("construction").and_then(|c| c.as_bool()) != Some(true);
     let splines: Vec<&Json> = all.iter().filter(live).filter(|e| e.get_str("type") == Some("spline")).collect();
-    let [e] = splines[..] else { return Err(bad()) };
+    let types: Vec<String> = all.iter().filter(live).filter(|e| e.get_str("type") != Some("point")).map(|e| format!("{} {}", e.get_str("type").unwrap_or("?"), e.get_str("id").unwrap_or("?"))).collect();
+    let unsupported = |why: String, hint: &str| path_err(PATH_INVALID, &why, hint, None, None, &[]);
+    let points = sk.get_arr("points").ok_or_else(bad)?;
+    let point = |id: &str| -> Option<Vec3> {
+        let p = points.iter().find(|p| p.get_str("id") == Some(id))?;
+        Some(Vec3::new(p.get_f64("x").unwrap_or(0.0), p.get_f64("y").unwrap_or(0.0), p.get_f64("z").unwrap_or(0.0)))
+    };
+    if splines.is_empty() {
+        // a chain of lines and arcs
+        let mut pieces = vec![];
+        let mut labels = vec![];
+        for e in all.iter().filter(live) {
+            let id = e.get_str("id").unwrap_or("?").to_string();
+            let pt = |k: &str| e.get_str(k).and_then(&point);
+            match e.get_str("type") {
+                Some("point") => continue,
+                Some("line") => match (pt("p1"), pt("p2")) {
+                    (Some(a), Some(b)) => pieces.push(PathSeg::Line { a, b }),
+                    _ => return Err(unsupported(format!("the line {id} of the 3D sketch has a point that is not in the sketch"), "check the line's points")),
+                },
+                Some("arc") => {
+                    let (Some(c), Some(a), Some(b)) = (pt("c"), pt("p1"), pt("p2")) else {
+                        return Err(unsupported(format!("the arc {id} of the 3D sketch has a point that is not in the sketch"), "check the arc's centre and end points"));
+                    };
+                    let (u, w) = (a - c, b - c);
+                    let (Some(x), Some(z)) = (u.try_normalize(), u.cross(w).try_normalize()) else {
+                        return Err(unsupported(format!("the arc {id} of the 3D sketch is degenerate (its end points and centre are on one line)"), "move the arc's centre off the line through its end points"));
+                    };
+                    let ang = u.cross(w).len().atan2(u.dot(w));
+                    pieces.push(PathSeg::Arc { frame: Frame { o: c, x, y: z.cross(x), z }, r: u.len(), a0: 0.0, a1: ang });
+                }
+                Some(t) => {
+                    return Err(unsupported(
+                        format!("the 3D sketch holds a {t} ({id}): a 3D sketch path is one spline, or a chain of lines and arcs ({})", types.join(", ")),
+                        "draw the path as one spline, or as lines and arcs, and mark the other entities as construction",
+                    ))
+                }
+                None => return Err(bad()),
+            }
+            labels.push(id);
+        }
+        if pieces.is_empty() {
+            return Err(unsupported("the 3D sketch holds no spline, line or arc to sweep along".into(), "draw the path in the sketch"));
+        }
+        return chain_pieces(pieces, &labels, "3D sketch path");
+    }
+    let [e] = splines[..] else {
+        return Err(unsupported(
+            format!("the 3D sketch holds {} splines ({}): a single spline path is supported, and splines cannot be joined to each other or to lines and arcs", splines.len(), types.join(", ")),
+            "draw the whole path as one spline through all its points (a spline through the end points of the pieces), or replace the splines by lines and arcs",
+        ));
+    };
     if e.get("closed").and_then(|c| c.as_bool()) == Some(true) {
-        return Err(bad());
+        return Err(unsupported(format!("the spline {} is closed: a sweep path is open", e.get_str("id").unwrap_or("?")), "open the spline (clear `closed`) so it has a start and an end"));
     }
     // (the only other entities a path may hold: points and the lines that give the spline end tangents)
     let eid = e.get_str("id").unwrap_or("");
@@ -180,14 +280,12 @@ pub(crate) fn sketch3_path(j: &Json) -> Result<Vec<PathSeg>, FeatureError> {
             c.get_str("type") == Some("tangent") && refs.len() == 2 && refs.contains(&eid) && refs.contains(&l.get_str("id").unwrap_or("\u{0}"))
         })
     };
-    if all.iter().filter(live).any(|o| o.get_str("id") != Some(eid) && o.get_str("type") != Some("point") && !(o.get_str("type") == Some("line") && tangent_line(o))) {
-        return Err(bad());
+    if let Some(o) = all.iter().filter(live).find(|o| o.get_str("id") != Some(eid) && o.get_str("type") != Some("point") && !(o.get_str("type") == Some("line") && tangent_line(o))) {
+        return Err(unsupported(
+            format!("the 3D sketch mixes the spline {eid} with a {} ({}): a spline path cannot be joined to lines or arcs, except a line tangent to the spline's end that only sets the end direction ({})", o.get_str("type").unwrap_or("?"), o.get_str("id").unwrap_or("?"), types.join(", ")),
+            "draw the whole path as one spline, or make it lines and arcs only (mark helper entities as construction)",
+        ));
     }
-    let points = sk.get_arr("points").ok_or_else(bad)?;
-    let point = |id: &str| -> Option<Vec3> {
-        let p = points.iter().find(|p| p.get_str("id") == Some(id))?;
-        Some(Vec3::new(p.get_f64("x").unwrap_or(0.0), p.get_f64("y").unwrap_or(0.0), p.get_f64("z").unwrap_or(0.0)))
-    };
     let ids: Vec<&str> = e.get_arr("pts").ok_or_else(bad)?.iter().filter_map(|i| i.as_str()).collect();
     let pts: Vec<Vec3> = ids.iter().map(|id| point(id)).collect::<Option<_>>().ok_or_else(bad)?;
     // `tangent` constraints against a line fix the end tangents (client `$n`): the line's contact
@@ -211,7 +309,9 @@ pub(crate) fn sketch3_path(j: &Json) -> Result<Vec<PathSeg>, FeatureError> {
             }
         }
     }
-    let sp = ck_ops::spline_path::SplinePath::new(&pts, t0, t1).ok_or_else(bad)?;
+    let sp = ck_ops::spline_path::SplinePath::new(&pts, t0, t1).ok_or_else(|| {
+        path_err(PATH_INVALID, &format!("the spline {eid} has {} points and no usable curve through them (it needs at least 2 distinct points)", pts.len()), "give the spline two or more distinct points", None, None, &[])
+    })?;
     Ok(vec![PathSeg::Spline { sp: std::sync::Arc::new(sp), rev: false }])
 }
 
@@ -239,6 +339,15 @@ pub(crate) fn path_segs(br: &Brep, state: &RegenState, path: Option<&GeomRef>) -
         }
         _ => return Err(missing()),
     })
+}
+
+/// The gap up to which the pieces of `segs` count as joined: the widest gap between neighbouring pieces. A path
+/// whose pieces meet closer than `JOIN_TOL` keeps that; a larger gap exists only where the path came from a
+/// `compositeCurve` built with a `gapTolerance` that allowed it (a sketch chain is walked at 1e-6), so the sweep
+/// accepts what the composite accepted.
+pub(crate) fn path_join_tol(segs: &[PathSeg]) -> f64 {
+    let gap = segs.windows(2).map(|w| w[0].end().dist(w[1].start())).fold(0.0_f64, f64::max);
+    ck_ops::sweep::JOIN_TOL.max(gap * (1.0 + 1e-9))
 }
 
 /// `sweep`.
@@ -285,6 +394,7 @@ pub fn exec_sweep(br: &Brep, state: &mut RegenState, f: &Feature) -> Result<Tool
         state.result.markers.push(Json::Arr(vec![Json::Str(f.id.clone()), Json::Obj(vec![("guides".into(), contacts)])]));
         return Ok(Tool { body: g.body, combine, recipe: None });
     }
-    let body = ck_ops::sweep::sweep(&f.id, &profile, &segs, twist).map_err(|e| FeatureError::new(&e))?;
+    let join_tol = path_join_tol(&segs);
+    let body = ck_ops::sweep::sweep_joined(&f.id, &profile, &segs, twist, join_tol).map_err(|e| FeatureError::new(&e))?;
     Ok(Tool { body, combine, recipe: None })
 }

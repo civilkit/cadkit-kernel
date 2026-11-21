@@ -888,6 +888,19 @@ A triangle mesh into a solid in the tag ([Mesh to solid](../io/mesh-to-solid.md)
 | `opts.maxTriangles`, `opts.maxFaces` | number | 200000, 50000 | Limits (`meshTooLarge` above). |
 | `opts.deviation` | boolean | `true` | Measure the result against the mesh. |
 
+### meshDecimate
+
+A triangle mesh with fewer triangles, within a deviation tolerance ([Mesh to solid](../io/mesh-to-solid.md), "Scans"). Uses no tag. `positions` / `positionsF32` / `positionsF64` and `indices` / `indicesU32` as `meshToSolid`; the reply holds `positions` (Float32 buffer) and `indices` (Uint32 buffer) and a report with the measured deviation.
+
+| Parameter | Type | Default | Meaning |
+|---|---|---|---|
+| `opts.tol` | number | required | Largest distance of the result from the input, mm. |
+| `opts.targetTriangles` | number | as far as `tol` allows | Stop at this many triangles. |
+| `opts.keepAngleDeg` | number | none | Keep edges whose faces meet at more than this angle. |
+| `opts.weldTol` | number | 1e-6 of the diagonal | Vertices closer than this are one, mm. |
+
+`meshToSolid` takes `opts.decimate: {tol, targetTriangles?, keepAngleDeg?}` and reports `import.decimation`.
+
 ### importSkp
 
 `data` is the base64 of a `.skp` file (required: `importSkp: data (the .skp file as base64) is required`); `name` is optional. `opts` takes `hidden` (boolean), `maxFaces` (number) and `up` (`"z"` default, `"y"` or `"yFlip"`: how the file's axes map onto the kernel's; another value is an error reply). The result is a surface body: one planar face per SketchUp face (holes kept), vertices welded, and `import.faceMaterials` listing the colour index of each `skp.F<n>` face. A file that is not a SketchUp file answers `errors` `[ ["import", { "code": "container.magic", "params": { "message": "not a SketchUp file (bad header magic)", "offset": 0 } }] ]`. In a module built without the `skp` feature the request answers an error reply that begins `notImplemented: importSkp`. See [SketchUp](../io/skp.md).

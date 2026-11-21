@@ -1233,6 +1233,21 @@ pub fn lump_faces(b: &Body, l: LumpId) -> Vec<FaceId> {
     out
 }
 
+/// Body index of every live face, parallel to `face_ids()` (the order of the wire `faces` list and of `triFace`
+/// values): the face's lump rank among the live lumps, the same `index` `massProps {bodies:true}` gives each entry.
+pub fn face_bodies(b: &Body) -> Vec<i32> {
+    let mut rank = vec![-1i32; b.lumps.len()];
+    for (i, l) in b.lump_ids().enumerate() {
+        rank[l.idx()] = i as i32;
+    }
+    b.face_ids().map(|f| rank[b.face_lump(f).idx()]).collect()
+}
+
+/// Name of every live lump (body), in the order of `face_bodies` indexes and of `massProps {bodies:true}` `index`.
+pub fn body_names(b: &Body) -> Vec<Option<String>> {
+    b.lump_ids().map(|l| b.lump(l).name.clone()).collect()
+}
+
 /// Reference point (bbox centre) the moments are taken about.
 pub fn ref_point_of(b: &Body) -> Vec3 {
     ref_point(b)
@@ -1468,9 +1483,13 @@ pub fn mass_props_json(b: &Body, bodies: bool, densities: Option<&[f64]>) -> Jso
             .enumerate()
             .map(|(i, m)| {
                 let mut e = Obj::new().put("volume", vol(m)).put("area", m.area).put("com", v3(m.com()));
-                if let Some(Some(n)) = names.get(i) {
-                    e = e.put("name", n.as_str());
-                }
+                // `name` is the document's body name (null when the lump has none), `index` the lump order of this
+                // reply (and of the mesh replies' `faceBody` / `triBody`)
+                e = match names.get(i) {
+                    Some(Some(n)) => e.put("name", n.as_str()),
+                    _ => e.put("name", Json::Null),
+                };
+                e = e.put("index", i as f64);
                 if let Some(ds) = densities {
                     e = e.put("mass", vol(m) * ds.get(i).copied().unwrap_or(1.0));
                 }

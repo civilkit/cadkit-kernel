@@ -129,7 +129,7 @@ pub const KNOWN_TYPES: &[&str] = &[
     "fillpattern", "curvepattern", "moveBody", "mate", "insertPart", "scale", "surfaceExtrude", "surfaceRevolve",
     "surfacePlanar", "surfaceOffset", "deleteFace", "fill", "knit", "extend", "freeform", "trimSurface", "thicken",
     "cutWithSurface", "pipeCut", "deleteBody", "editCurve", "projectCurve", "offsetCurve", "compositeCurve", "sweepSurface", "blendSurface", "helix", "thread", "combine", "bodyBoolean", "split", "lipJoint", "knurlBand", "importStep",
-    "repairPart", "importBody", "torus", "pipe", "coil", "boundingSolid", "frame", "sheetRules", "baseFlange", "edgeFlange", "hem", "fold", "contourFlange", "unfold", "refold", "sheetCorner", "sheetCut", "sheetConvert",
+    "repairPart", "importBody", "meshToSolid", "torus", "pipe", "coil", "boundingSolid", "frame", "sheetRules", "baseFlange", "edgeFlange", "hem", "fold", "contourFlange", "unfold", "refold", "sheetCorner", "sheetCut", "sheetConvert",
 ];
 
 /// The error the oracle reports for each known type when the payload is
@@ -179,6 +179,7 @@ pub const EMPTY_FEATURE_ERRORS: &[(&str, &str)] = &[
     ("refold", "nothingToCut"),
     ("importStep", "importStepInvalid"),
     ("importBody", "importBodyInvalid"),
+    ("meshToSolid", "meshToSolidInvalid"),
     ("repairPart", "repairTarget"),
     ("scale", "nothingToCut"),
     ("mate", "nothingToCut"),
@@ -307,6 +308,23 @@ impl FeatureError {
                 e = e.with("at", Json::Arr(at));
             }
             return e.with("hint", Json::Str(hint.to_string()));
+        }
+        // a sweep path refusal (ck_ops::sweep::path_problem): `<code>;pathWhy=<why>;hint=<hint>[;joint=i][;at=x|y|z][;kinds=a|b]`
+        if let Some((c, d)) = code.split_once(";pathWhy=") {
+            let mut e = FeatureError { code: c.to_string(), params: Vec::new() };
+            let mut it = d.split(';');
+            let why = it.next().unwrap_or("").to_string();
+            e = e.with("message", Json::Str(why)).with("supported", Json::Str(ck_ops::sweep::PATH_SUPPORTED.to_string()));
+            for kv in it {
+                let Some((k, v)) = kv.split_once('=') else { continue };
+                e = match k {
+                    "joint" => e.with("joint", Json::Num(v.parse().unwrap_or(0.0))),
+                    "at" => e.with("at", Json::Arr(v.split('|').filter_map(|x| x.parse::<f64>().ok()).map(Json::Num).collect())),
+                    "kinds" => e.with("path", Json::Arr(v.split('|').map(|x| Json::Str(x.to_string())).collect())),
+                    _ => e.with(k, Json::Str(v.to_string())),
+                };
+            }
+            return e;
         }
         // a feature or option that is not built yet: `notImplemented;what=<name>`
         if let Some((c, what)) = code.split_once(";what=") {

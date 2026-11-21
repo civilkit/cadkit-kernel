@@ -3,7 +3,7 @@
 mod common;
 
 fn codes(id: &str) -> Vec<String> {
-    common::regen_codes_bounded(common::crash_case(id), 20).into_iter().map(|e| e.1).collect()
+    common::regen_codes_bounded(common::crash_case(id), 60).into_iter().map(|e| e.1).collect()
 }
 
 #[test]

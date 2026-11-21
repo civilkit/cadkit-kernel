@@ -22,7 +22,9 @@
 //! The wire request and its report: docs/agent-queries.md, "meshToSolid". Design references: THIRD_PARTY.md.
 
 pub mod analytic;
+pub mod blob;
 pub mod close;
+pub mod decimate;
 pub mod deviation;
 pub mod request;
 
@@ -55,6 +57,10 @@ pub struct Opts {
     /// Close the mesh before the watertight check (weld gaps, stitch cracks, fill holes). `None` (the default): an open
     /// mesh is refused.
     pub close: Option<close::CloseOpts>,
+    /// Quadric decimation within a tolerance right after welding (`opts.decimate`); `None`: not asked for.
+    pub decimate: Option<decimate::DecimateOpts>,
+    /// Stop after the closing stage and the watertight check ([`preview`]): nothing is oriented, merged or built.
+    pub dry_run: bool,
 }
 
 impl Default for Opts {
@@ -70,6 +76,8 @@ impl Default for Opts {
             deviation: true,
             max_listed: 20,
             close: None,
+            decimate: None,
+            dry_run: false,
         }
     }
 }
@@ -130,9 +138,27 @@ pub struct Report {
     pub deviation: Option<deviation::Deviation>,
     /// What the closing stage did (None: not asked for).
     pub closing: Option<close::CloseReport>,
+    /// What the decimation stage did (None: not asked for).
+    pub decimation: Option<decimate::DecimateReport>,
+    /// Host-clock time of each stage in ms (`weld`, `close`, `orient`, `regions`, `faces`, `refit`, `validate`, `deviation`),
+    /// in order; empty when the host has no clock (`ck_core::budget::set_clock`).
+    pub stages: Vec<(&'static str, f64)>,
+    /// The faceted body had more than [`QUICK_VALIDATION_FACES`] faces and got the quick validation.
+    pub quick_validation: bool,
 }
 
+/// Above this many faces a body built straight from the mesh gets the quick validation.
+pub const QUICK_VALIDATION_FACES: usize = 5000;
+
 impl Report {
+    /// Note the time since `*mark` as stage `name` and restart the mark.
+    pub fn lap(&mut self, name: &'static str, mark: &mut Option<f64>) {
+        if mark.is_some() {
+            self.stages.push((name, ck_core::budget::since(*mark)));
+            *mark = ck_core::budget::mark();
+        }
+    }
+
     pub fn volume_rel_err(&self) -> f64 {
         if self.mesh_volume.abs() > 0.0 {
             (self.body_volume - self.mesh_volume) / self.mesh_volume.abs()
@@ -405,8 +431,8 @@ pub fn close_mesh(positions: &[f64], indices: Option<&[u32]>, o: &Opts, rep: &mu
     let ntri = corners.len() / 3;
     rep.input_triangles = ntri;
     rep.input_vertices = nv;
-    if ntri > o.max_triangles {
-        return Err(Refusal::new("meshTooLarge", format!("{ntri} triangles exceed the limit of {}", o.max_triangles), "decimate the mesh (or raise opts.maxTriangles)")
+    if ntri > o.max_triangles && o.decimate.is_none() {
+        return Err(Refusal::new("meshTooLarge", format!("{ntri} triangles exceed the limit of {}", o.max_triangles), "set opts.decimate {tol} (quadric decimation within a deviation tolerance, or send the mesh through meshDecimate first), or raise opts.maxTriangles")
             .with("triangles", ntri as f64)
             .with("limit", o.max_triangles as f64));
     }
@@ -427,6 +453,7 @@ pub fn close_mesh(positions: &[f64], indices: Option<&[u32]>, o: &Opts, rep: &mu
     if !(diag < 1e12) || !(lo.len().max(hi.len()) < 1e12) {
         return Err(Refusal::new("meshBadInput", format!("coordinates up to {:.3e} are out of range", lo.len().max(hi.len())), "send coordinates in model units (mm) below 1e12"));
     }
+    let mut mark = ck_core::budget::mark();
     let weld_tol = o.weld_tol.filter(|v| *v > 0.0).unwrap_or(1e-6 * diag);
     rep.weld_tol = weld_tol;
     let (mut pts, map) = weld(&raw, weld_tol, lo);
@@ -441,6 +468,22 @@ pub fn close_mesh(positions: &[f64], indices: Option<&[u32]>, o: &Opts, rep: &mu
         }
     }
     rep.duplicates = drop_duplicates(&mut tris);
+    rep.lap("weld", &mut mark);
+    if let Some(r) = over_budget("welding") {
+        return Err(r);
+    }
+    if let Some(d) = &o.decimate {
+        rep.decimation = Some(decimate::apply(&mut pts, &mut tris, d)?);
+        if tris.len() > o.max_triangles {
+            return Err(Refusal::new("meshTooLarge", format!("{} triangles exceed the limit of {} even after decimation", tris.len(), o.max_triangles), "lower opts.decimate.targetTriangles or raise opts.maxTriangles")
+                .with("triangles", tris.len() as f64)
+                .with("limit", o.max_triangles as f64));
+        }
+        rep.lap("decimate", &mut mark);
+        if let Some(r) = over_budget("decimation") {
+            return Err(r);
+        }
+    }
     if let Some(co) = &o.close {
         let mut cr = close::CloseReport::default();
         let eu0 = edge_use(&tris);
@@ -448,6 +491,10 @@ pub fn close_mesh(positions: &[f64], indices: Option<&[u32]>, o: &Opts, rep: &mu
         let res = if eu0.nonmanifold.is_empty() { close::close(&mut pts, &mut tris, co, diag, o.max_listed, &mut cr) } else { Ok(()) };
         rep.closing = Some(cr);
         res?;
+        rep.lap("close", &mut mark);
+        if let Some(r) = over_budget("closing") {
+            return Err(r);
+        }
     }
     // used welded vertices
     rep.welded_vertices = {
@@ -484,6 +531,12 @@ pub fn close_mesh(positions: &[f64], indices: Option<&[u32]>, o: &Opts, rep: &mu
         .with("openEdges", eu.open.len() as f64)
         .with("openLoops", loops as f64)
         .with("positions", ck_json::Json::Arr(list)));
+    }
+    if o.dry_run {
+        return Ok(Closed { pts, tris, comp: vec![], comps: vec![] });
+    }
+    if let Some(r) = over_budget("orienting") {
+        return Err(r);
     }
     // orientation: flip[t] so that every twin pair runs opposite; components by the same walk
     let nt = tris.len();
@@ -610,6 +663,7 @@ pub fn close_mesh(positions: &[f64], indices: Option<&[u32]>, o: &Opts, rep: &mu
     rep.voids = comps.iter().filter(|c| c.depth % 2 == 1).count();
     rep.lumps = ncomp - rep.voids;
     rep.mesh_volume = comps.iter().map(|c| c.volume).sum();
+    rep.lap("orient", &mut mark);
     Ok(Closed { pts, tris, comp, comps })
 }
 
@@ -938,16 +992,26 @@ pub fn build_body(m: &Closed, faces: &[PlanarFace]) -> Body {
 pub fn mesh_to_solid(positions: &[f64], indices: Option<&[u32]>, o: &Opts) -> Result<Converted, Refusal> {
     let mut rep = Report { angle_tol_deg: o.angle_tol_deg, ..Default::default() };
     let m = close_mesh(positions, indices, o, &mut rep)?;
-    let plane_tol = o.plane_tol.filter(|v| *v > 0.0).unwrap_or(1e-5 * rep.diagonal);
+    let mut mark = ck_core::budget::mark();
+    // a decimated scan has no panels that are flat within 1e-5 of the diagonal, only triangles that happen to be nearly so
+    let plane_tol = o.plane_tol.filter(|v| *v > 0.0).unwrap_or(if o.decimate.is_some() { 1e-7 } else { 1e-5 } * rep.diagonal);
     rep.plane_tol = plane_tol;
+    if let Some(r) = over_budget("merging coplanar triangles") {
+        return Err(r);
+    }
     let rg = planar_regions(&m, plane_tol, o.angle_tol_deg, &mut rep)?;
+    rep.lap("regions", &mut mark);
     let faces = planar_faces(&m, &rg, plane_tol);
+    rep.lap("faces", &mut mark);
+    if let Some(r) = over_budget("building the planar faces") {
+        return Err(r);
+    }
     rep.planar_faces = faces.len();
     let too_large = |n: usize, what: &str| {
         Refusal::new(
             "meshTooLarge",
             format!("{n} faces {what} exceed the limit of {} (a free-form or scanned surface keeps one face per triangle)", o.max_faces),
-            "decimate the mesh (or raise opts.maxFaces)",
+            "set opts.decimate {tol, targetTriangles?} (quadric decimation within a deviation tolerance, or send the mesh through meshDecimate first), or raise opts.maxFaces",
         )
         .with("triangles", m.tris.len() as f64)
         .with("faces", n as f64)
@@ -958,7 +1022,13 @@ pub fn mesh_to_solid(positions: &[f64], indices: Option<&[u32]>, o: &Opts) -> Re
     let mut body = None;
     if o.analytic {
         let (ab, ar) = analytic::refit(&m, &rg, &o.fit, rep.diagonal, plane_tol, o.angle_tol_deg);
+        let mut ar = ar;
+        ar.fitted_fraction = ar.fitted.iter().map(|f| f.triangles).sum::<usize>() as f64 / m.tris.len().max(1) as f64;
         rep.analytic = Some(ar);
+        rep.lap("refit", &mut mark);
+        if let Some(r) = over_budget("the analytic refit") {
+            return Err(r);
+        }
         if let Some(ab) = ab {
             if ab.num_faces() > o.max_faces {
                 return Err(too_large(ab.num_faces(), "after the analytic refit"));
@@ -966,6 +1036,8 @@ pub fn mesh_to_solid(positions: &[f64], indices: Option<&[u32]>, o: &Opts) -> Re
             body = Some(ab);
         }
     }
+    // nothing was refit: the body is the mesh's own triangles, merged where coplanar
+    let faceted_only = body.is_none() || rep.analytic.as_ref().is_some_and(|a| !a.applied && a.fitted.is_empty());
     let (body, issues) = match body {
         Some(b) => (b, 0),
         None => {
@@ -973,7 +1045,11 @@ pub fn mesh_to_solid(positions: &[f64], indices: Option<&[u32]>, o: &Opts) -> Re
                 return Err(too_large(faces.len(), "after merging coplanar triangles"));
             }
             let mut b = build_body(&m, &faces);
-            let mut issues = ck_check::validate(&b, vtol);
+            // a body of thousands of planar faces straight from a closed, oriented mesh: the topology and bounding checks
+            // only (the loop-crossing and volume checks cost seconds on a scan and the mesh already passed the closed test)
+            let quick = b.num_faces() > QUICK_VALIDATION_FACES;
+            rep.quick_validation = quick;
+            let mut issues = ck_check::validate_ctl(&b, vtol, ck_check::DEFAULT_TOL_CAP, quick, &ck_check::Ctl::unlimited());
             if !issues.is_empty() {
                 let hr = ck_heal::heal(&mut b, plane_tol.max(vtol));
                 rep.heal_fixes = hr.fixed.len();
@@ -983,9 +1059,46 @@ pub fn mesh_to_solid(positions: &[f64], indices: Option<&[u32]>, o: &Opts) -> Re
         }
     };
     rep.issues = issues;
-    rep.body_volume = ck_topo::mass::mass_props(&body).volume;
+    rep.lap("validate", &mut mark);
+    if let Some(r) = over_budget("validation") {
+        return Err(r);
+    }
+    // the volume of a large body that is the mesh's own triangles is the mesh's (integrating 50000 faces costs seconds)
+    rep.body_volume = if faceted_only && body.num_faces() > QUICK_VALIDATION_FACES { rep.mesh_volume } else { ck_topo::mass::mass_props(&body).volume };
     if o.deviation {
-        rep.deviation = Some(deviation::measure(&body, &m));
+        // a large body built from the mesh's own triangles (nothing refit) deviates by nothing; a huge refit body is not sampled
+        rep.deviation = Some(if faceted_only && body.num_faces() > QUICK_VALIDATION_FACES {
+            deviation::Deviation { note: Some("exact: nothing was refit, the faces are the mesh's own"), ..Default::default() }
+        } else if body.num_faces() > deviation::MAX_FACES {
+            deviation::Deviation { note: Some("not measured: too many faces to tessellate and sample in time"), ..Default::default() }
+        } else {
+            deviation::measure(&body, &m)
+        });
+    }
+    rep.lap("deviation", &mut mark);
+    if let Some(r) = over_budget("measuring the deviation") {
+        return Err(r);
     }
     Ok(Converted { body, report: rep })
+}
+
+/// The conversion up to and including the closing stage and the watertight check, nothing built: the report (with, per
+/// hole, the triangles `opts.close` would add: [`close::HoleInfo::fill`]) or the refusal the conversion would give.
+pub fn preview(positions: &[f64], indices: Option<&[u32]>, o: &Opts) -> Result<Report, Refusal> {
+    let mut o = o.clone();
+    o.dry_run = true;
+    let mut rep = Report { angle_tol_deg: o.angle_tol_deg, ..Default::default() };
+    close_mesh(positions, indices, &o, &mut rep)?;
+    Ok(rep)
+}
+
+/// The refusal that stops the conversion between two stages when the regen's time budget (`ck_core::budget`) has run
+/// out. The conversion is a function of its input only, so a stopped run leaves nothing behind. `meshBudgetExceeded`
+/// is rewritten to the budget's own error by the regen driver; on the wire request (no clock) it never occurs.
+fn over_budget(stage: &str) -> Option<Refusal> {
+    if ck_core::budget::expired() {
+        Some(Refusal::new("meshBudgetExceeded", format!("the time limit ran out before {stage}"), "raise the time budget, or decimate the mesh"))
+    } else {
+        None
+    }
 }

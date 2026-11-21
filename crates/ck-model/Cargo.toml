@@ -14,6 +14,7 @@ ck-text = { path = "../ck-text" }
 ck-io = { path = "../ck-io" }
 ck-heal = { path = "../ck-heal" }
 ck-sldprt = { path = "../ck-sldprt" }
+ck-mesh = { path = "../ck-mesh" }
+ck-tess = { path = "../ck-tess" }
 
 [dev-dependencies]
-ck-tess = { path = "../ck-tess" }

@@ -6,13 +6,14 @@
 import { emptyPart, FEATURE_TYPES, type PartDoc } from '../../part-model/src/index.js';
 import { hintFor, verify, type CheckResultItem, type KernelTransport, type RegenError, type VerifyReport } from '../../driver/src/verify.js';
 import {
-  angles, check, checkProfile, clearance, closestPoint, describe, distance, exportMesh, extrema, maxDistance, symmetry, thickness, thicknessAt, heal, importSat, importSkp, importSldprt, importStep, massProps, meshToSolid, probe, profiles, resolveDescriptions, section, sections, step, textMetrics, textOutline, loadFont, unloadFont, listFonts, subsetFont, threadData, validate,
-  type CheckReport, type DescribeItem, type ExportMeshOpts, type ExportMeshReport, type HealReport, type ImportReport, type MeshInput, type MeshToSolidOpts, type SkpUp, type MassReport, type ProbeReport,
+  angles, check, checkProfile, clearance, closestPoint, describe, distance, exportMesh, extrema, maxDistance, symmetry, thickness, thicknessAt, heal, importSat, importSkp, importSldprt, importStep, massProps, meshDecimate, meshToSolid, probe, profiles, resolveDescriptions, section, sections, solvePoses, sweepDriver, step, textMetrics, textOutline, loadFont, unloadFont, listFonts, subsetFont, threadData, validate,
+  type CheckReport, type DescribeItem, type ExportMeshOpts, type ExportMeshReport, type HealReport, type ImportReport, type MeshDecimateOpts, type MeshDecimateResult, type MeshInput, type MeshToSolidOpts, type SkpUp, type MassReport, type ProbeReport,
   type AnglesReport, type ClearanceReport, type ClosestPointReport, type DistanceReport, type HausdorffReport, type MaxDistanceReport, type MeasureEntity,
+  type SolvePosesReport, type SweepReport,
   type ExtremaReport, type SymmetryReport, type ThicknessAtReport, type ThicknessReport,
   type ResolveMatch, type SectionReport, type SectionsReport, type ValidateIssue,
 } from './queries.js';
-export type { ExportMeshOpts, ExportMeshReport, MeshInput, MeshToSolidOpts };
+export type { ExportMeshOpts, ExportMeshReport, MeshDecimateOpts, MeshDecimateResult, MeshInput, MeshToSolidOpts };
 export type EditOp =
   | { op: 'add'; feature: Record<string, unknown>; index?: number }
   | { op: 'set'; id: string; path: string; value: unknown }
@@ -45,6 +46,19 @@ export interface ViewBody {
   curves: Array<{ id: string; pts: number[][] }>;
   planes: Array<{ id: string; frame: ViewFrame }>;
   markers: unknown[];
+  /** Body identity of the regen reply, as the kernel sends it: `faceBody[i]` is the body index of the i-th face of
+   *  `mesh.faceIds` (the order of `body.faces`), `bodyNames[k]` the name of body k (null when unnamed), the same
+   *  indexes as `massProps` `bodies[].index`. Present when the kernel reply has them. */
+  faceBody?: number[];
+  bodyNames?: Array<string | null>;
+}
+
+/** The body identity fields of a regen reply body, copied through only when they are plain arrays. */
+function bodyIdentity(body: Record<string, unknown> | null | undefined): Pick<ViewBody, 'faceBody' | 'bodyNames'> {
+  const out: Pick<ViewBody, 'faceBody' | 'bodyNames'> = {};
+  if (Array.isArray(body?.faceBody)) out.faceBody = body.faceBody as number[];
+  if (Array.isArray(body?.bodyNames)) out.bodyNames = body.bodyNames as Array<string | null>;
+  return out;
 }
 
 export interface PreviewResult {
@@ -571,6 +585,7 @@ export class Session {
       curves: curves.map(([id, e]) => ({ id, pts: e.pts })),
       planes: planes.map(([id, frame]) => ({ id, frame: frame as ViewFrame })),
       markers,
+      ...bodyIdentity(body as Record<string, unknown> | null | undefined),
     };
   }
 
@@ -635,6 +650,7 @@ export class Session {
         curves: curves.map(([id, e]) => ({ id, pts: e.pts })),
         planes: planes.map(([id, frame]) => ({ id, frame: frame as ViewFrame })),
         markers,
+        ...bodyIdentity(body as Record<string, unknown>),
       },
       sketches: viewSketches,
     };
@@ -931,6 +947,14 @@ export class Session {
     return massProps(this.kernel, { tag: this.tag, ...opts });
   }
 
+  /** Motion studies: solve poses of the assembly (`[{mateId: value}]`, degrees / mm), contact checked by default. Read only. */
+  solvePoses(poses: Array<Record<string, number>>, opts?: { contact?: boolean; clearance?: number; chord?: number }): Promise<SolvePosesReport> {
+    return solvePoses(this.kernel, { poses, ...opts }, { tag: this.tag });
+  }
+  /** Motion studies: walk a driver and find where and why it stops. Read only. */
+  sweepDriver(req: { driver: string; from?: number; to: number; clearance?: number; contact?: boolean; steps?: number; tol?: number; hold?: Record<string, number> }): Promise<SweepReport> {
+    return sweepDriver(this.kernel, req, { tag: this.tag });
+  }
   /** Exact cross-section loops at a plane. */
   section(plane: { origin: number[]; normal: number[] }): Promise<SectionReport> {
     return section(this.kernel, plane, { tag: this.tag });
@@ -1020,6 +1044,11 @@ export class Session {
   }
 
   /** A triangle mesh into a solid (planar faces merged, cylinders / cones / spheres refit); refusals come back in `errors`. */
+  /** Decimate a mesh within a tolerance (stateless: nothing is stored in the session). */
+  meshDecimate(mesh: MeshInput, opts: MeshDecimateOpts & { weldTol?: number }): Promise<MeshDecimateResult> {
+    return meshDecimate(this.kernel, mesh, opts);
+  }
+
   meshToSolid(mesh: MeshInput, name?: string, opts: MeshToSolidOpts & { tag?: string } = {}): Promise<ImportReport> {
     return meshToSolid(this.kernel, mesh, { name, ...opts });
   }

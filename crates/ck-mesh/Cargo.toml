@@ -14,6 +14,8 @@ ck-check = { path = "../ck-check" }
 ck-heal = { path = "../ck-heal" }
 ck-ops = { path = "../ck-ops" }
 ck-tess = { path = "../ck-tess" }
+# the bounded inflate that reads the kit's packed mesh blobs (no new dependency: ck-sldprt already carries it)
+ck-sldprt = { path = "../ck-sldprt" }
 
 [dev-dependencies]
 ck-recog = { path = "../ck-recog" }

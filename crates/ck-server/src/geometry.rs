@@ -151,6 +151,14 @@ pub fn mesh_to_solid(cx: &mut Cx) -> Result<Json, String> {
     Ok(reply)
 }
 
+/// `{"type":"meshDecimate","positions":[..] | "positionsF32"|"positionsF64":"<base64>","indices":[..]? | "indicesU32":"<base64>"?,
+/// "opts":{"tol":mm,"targetTriangles":n?,"keepAngleDeg":a?,"weldTol":mm?}}` -> `{triangles, vertices, ..., deviation, positions,
+/// indices}` (docs/agent-queries.md "meshDecimate"). Stateless: no tag. A refused mesh answers `errors: [["import", {code,
+/// params:{message, hint, ..}}]]`.
+pub fn mesh_decimate(cx: &mut Cx) -> Result<Json, String> {
+    cx.query("meshDecimate")
+}
+
 /// The refusal of `step` when the document has no body at all (no solid, no surface).
 pub const STEP_NOTHING_TO_EXPORT: &str = "stepNothingToExport: the document has no bodies to export. Hint: make a solid or a surface first (an extrude, a revolve, a surfaceExtrude, ...); suppressed features and an empty rollback give nothing to write";
 

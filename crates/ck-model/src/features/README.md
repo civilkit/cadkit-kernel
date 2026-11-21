@@ -12,7 +12,7 @@ strings from kernel.strings, and dispatch to ck-ops/ck-topo.
 | extrude | op(add/cut), sketch, end(blind/through/throughBoth/upToNext/mid), depth(expr), flip, draft(expr), draftOut, twist(expr, deg), twistCentre([x,y]; also the point endScale scales about), endScale(expr, 1 = none: the profile scales linearly to this factor at the far end), regions([entity ids], optional) |
 | revolve | op, sketch, axis, end, angle(expr), flip, regions([entity ids], optional); a profile line almost perpendicular to the axis over so long a radius that its cone would be off by more than the validator allows there is refused: `revolveDegenerate` {segment, detail, hint} |
 | sphere | op(add/cut/newBody), center([x,y,z], exprs), radius(expr, above 0), body; no sketch: the revolve of a half disc about +Y through the centre, one face `<id>.S.e1` (a true sphere); `extrude.rs exec_sphere` |
-| sweep | op, sketch, path ({kind: curve or sketch, id}; a `sketch` id may name a `sketch3d` holding one `spline`, tangent-constrained end lines allowed), twist (deg), (+guides, guideMode, surface: not reconstructed) |
+| sweep | op, sketch, path ({kind: curve or sketch, id}; a `sketch` id may name a `sketch3d` holding one `spline` (tangent-constrained end lines allowed) or a connected chain of `line` / `arc` entities; a chain's joints are tangent or a corner between two lines, and a composite's pieces may be as far apart as the composite's `gapTolerance`), twist (deg), (+guides, guideMode, surface: not reconstructed) |
 | loft | op, sketches[], surface, guides[{sketch, influence next only}], centreLine ({sketch}: a planar open chain the loft follows, a moving frame carries the sections (ck-ops `loft/centre.rs`); a straight one is a no-op; errors loftCentreLineInvalid / Kink / Reach / Tight / Apex / Guides, each with detail + hint), startNormal / endNormal (tension; `true` = 1), connectors[null\|fraction]; startTangent / *Continuity -> `loftTangentEdges` (sketch profiles); regions with inner loops loft HOLLOW (outer loft minus the per-hole lofts, holes matched by centroid, a point section is the apex of each hole loft, inner-loop counts must agree else loftProfile {detail, hint}) |
 | fillet | radius(expr), edges[] (a pick may carry radius, or radii [near, far] with filletType "variable"), propagate; see docs/blend-corpus.md |
 | chamfer | chamferType(equal/distances=distanceDistance/angle=angleDistance/vertex), distance, angle, distance2, face, flip, propagate, edges[]; see docs/blend-corpus.md |
@@ -46,6 +46,7 @@ strings from kernel.strings, and dispatch to ck-ops/ck-topo.
 | thread | face (cylinder face name), standard, size (validated against `crate::threads`), class, length (number or "full"), hand, start, modeled. Cosmetic: a `threads` entry + `warnings` (threadDiameterMismatch, threadModelFallback) in the regen result; modeled: helical groove tool cut from the body, faces `<id>.T0..T5`; `explicit` {o, axis, x, profile [[r,s]..], angle, rise, op add/cut, tail} instead of face/standard/size: a profile swept on a screw motion and united or cut (a modelled thread read back from a SolidWorks file, ck-swedit) |
 | importStep | blob (SHA-256 key into the part's top-level `blobs` table of STEP texts) or step (inline text), body (names of the solids); faces `<id>.I<solid>F<n>` (import_step.rs, book: features-assemblies) |
 | importBody | format (`sldprt`), blob (SHA-256 key into the part's `blobs` table; the entry is the part file as base64 text), replace (remove the bodies so far first), body; faces `<id>.I<solid>F<n>`; the remainder of an editable SolidWorks import (import_body.rs, docs/sldprt-editable-wp4.md) |
+| meshToSolid | blob (SHA-256 key into the part's `blobs` table; the entry is the mesh as base64 text: the app's packed `CKM2` payload or `u32 nVerts, u32 nTris, f32 xyz.., u32 idx..`, either optionally deflated), opts (the `meshToSolid` options: close, weldTol, planeTol, angleTolDeg, maxTriangles, maxFaces, analytic, deviation, tol, fitTol), replace (default false), preview (default false: dry run, builds nothing), body, source ({name, format}, informational only); faces `<id>.I1F<n>`; not an importer (the app reads the file format and hands over triangles); the result is cached in `built` (mesh_solid.rs, book: io/mesh-to-solid) |
 | torus, pipe, coil, boundingSolid, dome | sketch-free solids: a ring (majorRadius, minorRadius, axis, center), a tube along a path (path, radius, wall), a helical wire (radius, wireRadius, pitch, revolutions or height, leftHand), the box around bodies (bodies, padding), a cap on a round planar face (face, height) (solids.rs) |
 | knurlBand | axis, center[2], radius, from, to, pattern(diamond/pyramid), count or pitch, depth, angle, helixAngle, ringPitch; a diamond or pyramid knurl built as faces and cut in one boolean, faces `<id>.K<n>` (knurl_band.rs, docs/knurl-band.md) |
 | moveFace | faces[], mode(offset/translate), distance, translate[x,y,z], flip. Offsets / translates faces via ck-ops `move_faces_body`; neighbours extend, tangent fillets travel, names unchanged; errors noFaces, missingReference, moveFaceUnsupported, moveFaceFailed (move_face.rs) |
@@ -68,13 +69,16 @@ strings from kernel.strings, and dispatch to ck-ops/ck-topo.
   it changes none; nothing changes unless the whole feature works. An unknown name: `missingReference {name, nearest, bodies,
   hint}` (`bodies` = the names the part has). With `op: newBody`: `invalidValue`. Without `target` the feature acts on every body
   it overlaps. Tests: `tests/cut_from_bodies.rs`, `tests/coincident_lumps.rs`.
+- `combine` `cut` whose tools remove nothing (miss, tangent, edge / point contact, inside a cavity): not an error; the target stays
+  unchanged, the tools are consumed unless `keepTools`, warning `cutNoEffect {tools, kept}` (`Out::no_effect`). `split` that changes
+  nothing stays the error. Tests: `tests/combine_cut_noop.rs`.
 - Selector `{body: name}` in moveBody.bodies, combine target / tools, deleteBody.bodies. Errors: `bodyNameConflict {name,
   features}`, `missingReference {name, nearest}`, `ambiguousBody {name, candidates}`.
 - `massProps {bodies:true}` entries and `interference` pairs carry the name; `validate` adds `info: [bodiesOverlap]`.
 
 ## Error strings (kernel.strings, verbatim per feature)
 
-- sweep: sweepPathInvalid, sweepProfileNotNormal, sweepGuideMissing,
+- sweep: sweepPathInvalid (params `message`, `supported`, `path` = piece types, `joint` = first bad joint / piece, `at` = where, `hint`; also on `pipe`), notImplemented for a corner other than line-line (same params), sweepProfileNotNormal, sweepGuideMissing,
   sweepGuidesTwist, sweepGuideShort, sweepGuideStretchTwo, sweepFailed
 - loft: loftProfile, loftProfileOpen, loftProfileChains, loftGuideInvalid, loftGuideMiss,
   loftGuideOrder, loftGuideTangency, loftCentreLineInvalid/Tight/Reach/Kink/Apex/Guides, loftFailed, loftInvalidResult
@@ -90,6 +94,7 @@ strings from kernel.strings, and dispatch to ck-ops/ck-topo.
 - thicken: thickenFailed, thickenPointedPole, thickenReach
 - importStep: importStepInvalid {detail, hint, reason?, entity?}
 - importBody: importBodyInvalid {detail, hint?, reason?}; warning importBodyParts
+- meshToSolid: the refusal codes of meshToSolid (meshNotWatertight, meshNonManifold, meshHoleTooLarge, meshHoleSelfIntersects, meshGapAmbiguous, meshTooLarge, meshDegenerate, meshBadInput) with params {detail, message, hint, positions?, holes?, ..}; meshToSolidInvalid {detail, hint}; warnings meshToSolidReport {detail, report} (every successful run) and meshToSolidPreview {detail, report} (`preview: true`)
 - knurlBand: invalidValue {field, detail}, knurlBandTooLarge, knurlBandInvalid {detail}, nothingToCut, cutNoEffect, booleanFailed
 - thread: threadSizeUnknown, threadFaceNotCylinder (warnings: threadDiameterMismatch, threadModelFallback)
 - pipeCut: pipeCutRadius, pipeCutFailed, pipeCutNothingLeft, alignPipeCutOneBody

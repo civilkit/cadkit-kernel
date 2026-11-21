@@ -70,6 +70,9 @@ pub struct Sorted {
     pub solid: Body,
     pub surfaces: Vec<(String, Body)>,
     pub parts: Vec<ck_heal::honest::Part>,
+    /// What the import wants kept with the body, as JSON text (`meshToSolid`: the conversion report); `None` for the
+    /// others. Saved after the parts, and only when present, so saved results of the other imports read as before.
+    pub note: Option<String>,
 }
 
 /// Sort the body of a part file (`ck_sldprt::import_sldprt`): edges that follow their faces only to the file's accuracy
@@ -107,7 +110,7 @@ pub fn sort_sldprt(mut body: Body, parts: &[ck_sldprt::build::PartRead], prefix:
         .collect();
     let s = honest::sort(&body, &ins, ck_check::DEFAULT_TOL_CAP);
     let surfaces = s.surfaces.into_iter().map(|(k, b)| (import_step::surface_id(prefix, k), b)).collect();
-    Sorted { solid: s.solid, surfaces, parts: s.parts }
+    Sorted { solid: s.solid, surfaces, parts: s.parts, note: None }
 }
 
 pub fn exec_import_body(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {

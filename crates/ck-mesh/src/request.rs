@@ -5,7 +5,7 @@ use crate::{mesh_to_solid, Converted, Opts, Refusal, Report};
 use ck_json::{Json, Obj};
 use ck_topo::body::Body;
 
-fn b64(s: &str, what: &str) -> Result<Vec<u8>, Refusal> {
+pub(crate) fn b64(s: &str, what: &str) -> Result<Vec<u8>, Refusal> {
     let s = s.find("base64,").map_or(s, |i| &s[i + 7..]);
     let mut out = Vec::with_capacity(s.len() / 4 * 3);
     let (mut acc, mut nb) = (0u32, 0u32);
@@ -115,6 +115,15 @@ pub fn opts_of(msg: &Json) -> Opts {
         }
         _ => {}
     }
+    if let Some(d) = m.get("decimate").filter(|d| matches!(d, ck_json::Json::Obj(_))) {
+        o.decimate = Some(crate::decimate::DecimateOpts::from_json(d));
+    }
+    // seconds of work the analytic refit may spend (default 3; 0: unlimited), see `FitParams::max_seconds`;
+    // `maxSeconds` is the name of the spec, `refitSeconds` the earlier one (`maxSeconds` wins)
+    if let Some(v) = m.get_f64("maxSeconds").or_else(|| m.get_f64("refitSeconds")).filter(|v| *v >= 0.0 && v.is_finite()) {
+        o.fit.max_seconds = v;
+    }
+    o.dry_run = m.get_bool("dryRun").unwrap_or(false);
     o.fit.tol = pos("tol");
     o.fit.fit_tol = pos("fitTol");
     o
@@ -171,22 +180,31 @@ pub fn report_json(name: &str, b: &Body, r: &Report) -> Json {
     if let Some(c) = &r.closing {
         o = o.put("closing", c.json());
     }
+    if let Some(d) = &r.decimation {
+        o = o.put("decimation", d.json());
+    }
+    if !r.stages.is_empty() {
+        o = o.put("stagesMs", r.stages.iter().fold(Obj::new(), |o, (k, v)| o.put(k, *v)).build());
+    }
     if let Some(a) = &r.analytic {
         o = o.put("analytic", crate::analytic::report_json(a));
     }
     if let Some(d) = &r.deviation {
-        o = o.put(
-            "deviation",
-            Obj::new()
+        let mut dv = Obj::new()
                 .put("max", d.max)
                 .put("rms", d.rms)
                 .put("meshToBody", d.max_mesh_to_body)
                 .put("bodyToMesh", d.max_body_to_mesh)
                 .put("samples", d.samples as f64)
                 .put("chord", d.chord)
-                .put("at", v3(d.at))
-                .build(),
-        );
+                .put("at", v3(d.at));
+        if let Some(n) = d.note {
+            dv = dv.put("note", n);
+        }
+        o = o.put("deviation", dv.build());
+    }
+    if r.quick_validation {
+        o = o.put("validation", "quick");
     }
     o.build()
 }
@@ -198,6 +216,35 @@ pub fn refusal_json(r: &Refusal) -> Json {
         p = p.put(k, v.clone());
     }
     Obj::new().put("code", r.code).put("params", p.build()).build()
+}
+
+/// The report of a dry run (`opts.dryRun`, [`crate::preview`]) as JSON (`import` of the reply): the counts of the
+/// conversion's first stages and `closing` with, per hole, `fill:{positions, indices}`, the triangles `opts.close` would add.
+pub fn preview_json(name: &str, r: &Report) -> Json {
+    let mut o = Obj::new()
+        .put("format", "mesh")
+        .put("name", name)
+        .put("dryRun", true)
+        .put("triangles", r.input_triangles as f64)
+        .put("vertices", r.input_vertices as f64)
+        .put("weldedVertices", r.welded_vertices as f64)
+        .put("diagonal", r.diagonal)
+        .put("weldTol", r.weld_tol)
+        .put("collapsed", r.collapsed as f64)
+        .put("duplicates", r.duplicates as f64);
+    if let Some(d) = &r.decimation {
+        o = o.put("decimation", d.json());
+    }
+    if let Some(c) = &r.closing {
+        o = o.put("closing", c.json_with(true));
+    }
+    o.build()
+}
+
+/// Run a dry-run request ([`crate::preview`]): the report, or the refusal the conversion would give.
+pub fn run_preview(msg: &Json) -> Result<Report, Refusal> {
+    let (pos, idx) = mesh_of(msg)?;
+    crate::preview(&pos, idx.as_deref(), &opts_of(msg))
 }
 
 /// Run the request: the converted body and its report, or the refusal.

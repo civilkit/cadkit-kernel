@@ -153,7 +153,7 @@ pub fn exec_pipe(br: &Brep, state: &RegenState, f: &Feature) -> Result<Tool, Fea
     let first = segs.first().ok_or_else(|| FeatureError::new(super::sweep::PATH_INVALID))?;
     let d = first.start_dir().ok_or_else(|| FeatureError::new(super::sweep::PATH_INVALID))?;
     let profile = round_section(first.start(), d, perp(d), r, wall);
-    let body = ck_ops::sweep::sweep(&f.id, &profile, &segs, 0.0).map_err(|e| FeatureError::new(&e))?;
+    let body = ck_ops::sweep::sweep_joined(&f.id, &profile, &segs, 0.0, super::sweep::path_join_tol(&segs)).map_err(|e| FeatureError::new(&e))?;
     Ok(Tool { body, combine, recipe: None })
 }
 

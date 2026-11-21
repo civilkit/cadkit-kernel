@@ -138,6 +138,12 @@ normalised, `t` is the distance); `entering` is true when the ray goes from outs
 is reported once; a ray lying in a face skips that face; `tangent:true` marks grazing hits. Containment uses the
 existing seven-ray parity classifier of `ck-ops::contain`.
 
+## Body identity in replies
+
+`massProps {bodies:true}` entries carry `name` (the document's body name, `null` when none) and `index` (lump order); the
+regen reply's `body.faceBody` and `exportMesh`'s `faceBody` (parallel to the face list) and `triBody` (int32 buffer parallel
+to `triFace`) give each face's / triangle's body `index`. The regen reply's `body.bodyNames` (`[string|null]`, same indexes as `bodies[].index`) gives each body's name directly, so no `massProps` query is needed after a regen. Details: docs/spec-agent-interface.md "Body identity".
+
 ## Measurement and analysis (read-only)
 
 `distance`, `maxDistance`, `thickness`, `thicknessAt`, `closestPoint`, `angles`, `clearance`, `symmetry`, `extrema`, `checkIntersection`
@@ -350,7 +356,22 @@ with `meshNotWatertight {openEdges, openLoops, positions}`, `meshNonManifold`, `
 (each with `message` and `hint`). `opts.close` (`true` or `{tolerance, fill, maxHoleEdges, maxHoleArea, planarTol}`, off by default)
 welds gaps, stitches cracks and fills small holes first; the reply's `import.closing` lists what was added, and what cannot be
 closed is refused with `meshHoleTooLarge`, `meshHoleSelfIntersects` or `meshGapAmbiguous` (`reason`, `hint`, `positions`).
+`opts.dryRun: true` answers `{dryRun:true, import}` with the report of the first stages and, per hole `close` would fill,
+`fill:{positions, indices}` (the invented triangles), builds nothing and leaves the tag alone. The same conversion as a document
+feature that survives save and load: `meshToSolid` (book, "Mesh to solid").
 Options, the report and the limits: docs/spec-agent-interface.md, "Mesh to solid".
+
+## meshDecimate `{positions | positionsF32 | positionsF64, indices? | indicesU32?, opts:{tol, targetTriangles?, keepAngleDeg?, weldTol?}}`
+
+Stateless (no tag). Quadric edge-collapse decimation of a triangle mesh with a hard deviation bound: the result stays within
+`opts.tol` mm of the input (measured, `deviation.max`), is manifold with the input's winding, and does not pull two close
+sheets of the surface together. Stops at `targetTriangles` or when no collapse stays within `tol`. `keepAngleDeg` keeps creases;
+boundary edges of an open mesh are kept as lines. Reply: `{triangles, vertices, inputTriangles, inputVertices, collapses, tol,
+internalTol, attempts, stoppedBy, watertight, boundaryEdges, creaseEdges, refused, deviation:{max, rms, samples, inputToResult,
+resultToInput}, selfIntersections, errors:[], positions (f32 buffer), indices (u32 buffer)}`. Refusals as `errors: [["import",
+{code, params:{message, hint}}]]`: `meshBadInput`, `meshNonManifold`, `meshDegenerate`. `meshToSolid` takes the same options as
+`opts.decimate` (`import.decimation` is the report) and names it in its `meshTooLarge` hint. Details: docs/spec-agent-interface.md,
+"Decimation of scans".
 
 ## Not done
 

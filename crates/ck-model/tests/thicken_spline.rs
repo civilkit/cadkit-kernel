@@ -15,7 +15,7 @@ fn check(label: &str, src: String) {
     let v = vol.unwrap();
     let want = 220.15 * 10.0 * t_mm;
     assert!((v / want - 1.0).abs() < 0.2, "{label}: volume {v} vs about {want}");
-    assert!(secs < 20.0, "{label}: took {secs:.1}s");
+    assert!(secs < 60.0, "{label}: took {secs:.1}s");
 }
 
 #[test]

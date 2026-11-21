@@ -19,12 +19,22 @@
 //!   `cut`: target minus every tool. `intersect`: target inside every tool. `split`: the target cut into the part
 //!   outside all tools and the part inside them, two lumps.
 //! * `keepTools` (default false): the tool lumps stay as they were next to the result; otherwise they are consumed.
+//! * `union` of tools that do not touch the target (or each other): a boolean union cannot fuse them, so they stay
+//!   separate lumps under their own names (as documents written before this rule expect: later features select them by
+//!   name) and the warning `unionDisjoint {tools, kept}` lists them. `disjoint: "join"` makes the union one body of
+//!   several lumps instead: the tools are consumed, every lump of the result takes the result name (`body`, else the
+//!   target's). With `keepTools` a tool that touches nothing is not merged (merging would duplicate it): it stays as the
+//!   kept tool, listed in the warning with `kept: true`.
+//! * `cut` whose tools remove nothing from the target (a tool that misses it, is tangent, touches only along an edge
+//!   or a point, or lies wholly inside a cavity): not an error. The result is the target unchanged (same faces, names
+//!   and lump), the tools are consumed unless `keepTools` (as in any cut), and the warning `cutNoEffect {tools, kept}`
+//!   names the tools. `split` that changes nothing stays the error `cutNoEffect`: it promises two lumps.
 //! * Faces keep their persistent names (a face split by the operation gets the usual `~k` suffix), so references to
 //!   the faces of both operands survive; the result lumps come after the untouched lumps.
 //! * `tolerance` / `autoFuzzy`: the fuzzy value of the boolean, as on every other boolean-capable feature.
 //! * Errors: `nothingToCut` (no body), `missingReference` (selection not found), `invalidValue {detail}` (unknown op,
-//!   no tools, a tool that is the target), `booleanFailed`, `booleanVolumeMismatch`, `cutNoEffect` (cut / split changed
-//!   nothing), `combineEmpty {detail}` (intersect of lumps that do not overlap).
+//!   no tools, a tool that is the target), `booleanFailed`, `booleanVolumeMismatch`, `cutNoEffect` (split changed
+//!   nothing; for `cut` it is the warning above), `combineEmpty {detail}` (intersect of lumps that do not overlap).
 
 use super::{boolean_span, fuzzy_boolean, volume_mismatch, Brep, CUT_NO_EFFECT, TOL};
 use crate::regen::{codes, FeatureError, RegenState};
@@ -89,6 +99,8 @@ pub struct Spec {
     pub keep_tools: bool,
     /// Name of the result lump.
     pub body: Option<String>,
+    /// `disjoint: "join"` (union only): tools that touch nothing are consumed into the one result body.
+    pub join_disjoint: bool,
 }
 
 pub fn parse(raw: &Json) -> Result<Spec, FeatureError> {
@@ -107,7 +119,7 @@ pub fn parse(raw: &Json) -> Result<Spec, FeatureError> {
     if tools.is_empty() {
         return Err(invalid("tools lists at least one lump"));
     }
-    Ok(Spec { op, target, tools, keep_tools: crate::sketch::jtruthy(raw.get("keepTools")), body: super::bodies::body_name(raw)? })
+    Ok(Spec { op, target, tools, keep_tools: crate::sketch::jtruthy(raw.get("keepTools")), body: super::bodies::body_name(raw)?, join_disjoint: raw.get_str("disjoint") == Some("join") })
 }
 
 /// Result of [`combine_bodies`].
@@ -116,7 +128,19 @@ pub struct Out {
     /// Fuzzy value that decided one of the booleans, if any.
     pub tolerance_used: Option<f64>,
     pub spans: Vec<super::Span>,
+    /// `union` tools that did not touch what they were united with (see [`UNION_DISJOINT`]).
+    pub disjoint: Vec<String>,
+    /// `cut` tools that removed nothing from the target, listed only when none of them did (see [`CUT_NO_EFFECT`]).
+    pub no_effect: Vec<String>,
 }
+
+/// Warning of a `union` whose tool does not touch the target (or the earlier tools): the result holds it as a lump of
+/// its own. `{tools: [name or "lump n", ..], kept: bool}`.
+pub const UNION_DISJOINT: &str = "unionDisjoint";
+
+/// Warning of a `cut` none of whose tools removed anything from the target: the result is the target unchanged.
+/// `{tools: [name or "lump n", ..], kept: bool}` (`kept`: `keepTools`, the tools stay next to the target).
+pub const CUT_NO_EFFECT_WARNING: &str = CUT_NO_EFFECT;
 
 fn comp_of(b: &Body, comps: &[Vec<FaceId>], s: &Sel) -> Result<usize, FeatureError> {
     match s {
@@ -285,12 +309,28 @@ pub fn combine_bodies(body: &Body, spec: &Spec, fid: &str, fuzz: f64, auto: bool
     };
 
     let mut pieces: Vec<Body> = vec![];
+    let mut disjoint: Vec<String> = vec![];
+    let mut no_effect: Vec<String> = vec![];
+    // tools (indices into `tool_ix`) that were united into the result; with `keepTools` a tool that touches nothing is
+    // not merged, it stays the kept tool it is (merging it would duplicate it as a second lump)
+    let mut merged = vec![true; tool_ix.len()];
     match spec.op {
         CombineOp::Union => {
             let mut cur = target;
-            for t in &tools {
+            for (k, t) in tools.iter().enumerate() {
                 let out = run(&cur, t, BOp::Union)?;
                 if !out.no_effect {
+                    // no lump gained or lost: the tool shares nothing with what it was united with
+                    if out.body.num_lumps() >= cur.num_lumps() + t.num_lumps() {
+                        disjoint.push(match &body.lump(body.face_lump(comps[tool_ix[k]][0])).name {
+                            Some(n) => n.clone(),
+                            None => format!("lump {}", tool_ix[k]),
+                        });
+                        if spec.keep_tools {
+                            merged[k] = false;
+                            continue;
+                        }
+                    }
                     cur = out.body;
                 }
             }
@@ -306,8 +346,17 @@ pub fn combine_bodies(body: &Body, spec: &Spec, fid: &str, fuzz: f64, auto: bool
                     cur = out.body;
                 }
             }
+            // no tool removed anything (misses the target, tangent, touches along an edge or a point, lies in a
+            // cavity): the target stays as it was and the warning names the tools; the tools are consumed unless
+            // `keepTools`, exactly as in a cut that removes something
             if !changed {
-                return Err(FeatureError::new(CUT_NO_EFFECT));
+                no_effect = tool_ix
+                    .iter()
+                    .map(|&i| match &body.lump(body.face_lump(comps[i][0])).name {
+                        Some(n) => n.clone(),
+                        None => format!("lump {i}"),
+                    })
+                    .collect();
             }
             pieces.push(cur);
         }
@@ -367,10 +416,12 @@ pub fn combine_bodies(body: &Body, spec: &Spec, fid: &str, fuzz: f64, auto: bool
         }
     }
     let mut first_result: Option<ck_topo::body::LumpId> = None;
+    let mut result_lumps: Vec<ck_topo::body::LumpId> = vec![];
     for p in &pieces {
         if p.num_faces() > 0 {
             let ids = out.append(p);
             first_result = first_result.or(ids.first().copied());
+            result_lumps.extend(ids);
         }
     }
     if spec.keep_tools {
@@ -382,10 +433,18 @@ pub fn combine_bodies(body: &Body, spec: &Spec, fid: &str, fuzz: f64, auto: bool
         }
     }
     renumber(&mut out);
-    if let (Some(l), Some(n)) = (first_result, result_name) {
-        out.lumps[l.idx()].name = Some(n);
+    if let (Some(l), Some(n)) = (first_result, &result_name) {
+        out.lumps[l.idx()].name = Some(n.clone());
     }
-    Ok(Out { body: out, tolerance_used: used, spans })
+    // `disjoint: "join"`: a union is one body; a lump of it that touched nothing (a disjoint tool) is part of the result
+    // and takes its name; the consumed tools' own names are gone with them. Without it such a lump keeps the tool's name
+    // (what documents written before the option rely on)
+    if spec.op == CombineOp::Union && spec.join_disjoint {
+        for &l in &result_lumps {
+            out.lumps[l.idx()].name = result_name.clone();
+        }
+    }
+    Ok(Out { body: out, tolerance_used: used, spans, disjoint, no_effect })
 }
 
 fn renumber(b: &mut Body) {
@@ -397,6 +456,18 @@ pub fn exec_combine(br: &mut Brep, _state: &mut RegenState, f: &Feature) -> Resu
     let spec = parse(&f.raw)?;
     let out = combine_bodies(body, &spec, &f.id, br.fuzz, br.auto_fuzz)?;
     br.spans.extend(out.spans);
+    if !out.disjoint.is_empty() {
+        let w = FeatureError::new(UNION_DISJOINT)
+            .with("tools", Json::Arr(out.disjoint.iter().map(|n| Json::Str(n.clone())).collect()))
+            .with("kept", Json::Bool(spec.keep_tools));
+        _state.result.warnings.push(crate::regen::RegenError { feature: f.id.clone(), error: w });
+    }
+    if !out.no_effect.is_empty() {
+        let w = FeatureError::new(CUT_NO_EFFECT_WARNING)
+            .with("tools", Json::Arr(out.no_effect.iter().map(|n| Json::Str(n.clone())).collect()))
+            .with("kept", Json::Bool(spec.keep_tools));
+        _state.result.warnings.push(crate::regen::RegenError { feature: f.id.clone(), error: w });
+    }
     if out.tolerance_used.is_some() {
         br.fuzz_used = out.tolerance_used;
     }

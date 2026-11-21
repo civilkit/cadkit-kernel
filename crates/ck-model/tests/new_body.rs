@@ -415,7 +415,8 @@ fn documents_without_new_body_or_body_regenerate_as_before() {
     r.clean();
     assert_eq!(r.names(), vec![None]);
     let j = r.mass_bodies();
-    assert!(j.iter().all(|b| b.get("name").is_none()));
+    // an unnamed lump answers `name: null` (additive; used to be absent)
+    assert!(j.iter().all(|b| matches!(b.get("name"), None | Some(ck_json::Json::Null))));
 }
 
 #[test]

@@ -144,6 +144,8 @@ function classify(r) {
   if (r.errors?.length) return { cls:'structured-error', detail:r.errors.join(','), last:r.last };
   if (r.issues?.length) return { cls:'invalid-result', detail:r.issues.join(','), last:r.last };
   if (r.volume == null && r.area == null) return { cls:'surface-only', last:r.last };
+  // a part that holds only surface bodies has no solid to weigh: massProps says 0/0 for it, which is not a degenerate solid
+  if (r.volume === 0 && r.area === 0 && r.surfaces > 0) return { cls:'surface-only', last:r.last };
   if (r.volume === 0 && r.area === 0) return { cls:'degenerate', last:r.last };
   if (!(r.volume > 0) || !(r.area > 0)) return { cls:'wrong-answer', detail:`volume ${r.volume} area ${r.area}`, last:r.last };
   return { cls:'ok', last:r.last };

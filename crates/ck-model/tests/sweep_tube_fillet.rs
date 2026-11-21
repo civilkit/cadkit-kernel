@@ -60,9 +60,20 @@ fn corner_section(alpha: f64, r: f64) -> f64 {
     r * r * ((0.5 * alpha).tan().recip() - 0.5 * (std::f64::consts::PI - alpha))
 }
 
+/// Depth below the wall (the side face) of the centroid of that corner section: the rim's circle is shorter there, so the section
+/// sweeps `1 - depth / RHO` of the length it would on a straight edge (Pappus).
+fn corner_centroid_depth(alpha: f64, r: f64) -> f64 {
+    let (h, phi) = (0.5 * alpha, 0.5 * (std::f64::consts::PI - alpha));
+    let d_c = r / h.sin();
+    let (kite, d_kite) = (r * r / h.tan(), (d_c + r / h.tan() * h.cos()) / 3.0);
+    let (sector, d_sector) = (phi * r * r, d_c - 2.0 * r * phi.sin() / (3.0 * phi));
+    let d = (kite * d_kite - sector * d_sector) / (kite - sector);
+    d * h.sin()
+}
+
 /// Volume a round of radius `r` removes along the rim between faces `cap` and `side` of `b`: the corner section for the local
 /// interior angle of the material wedge (from the two outward normals), integrated along the rim edge near `p` (the angle of
-/// an oblique tube changes round the rim). A first-order estimate: the section is not shifted for the rim's curvature.
+/// an oblique tube changes round the rim). The section is weighted by the shorter circle its centroid sweeps (Pappus, tube radius `RHO`); the oblique rim's own curvature is not corrected.
 fn removed_along_rim(b: &ck_topo::body::Body, cap: &str, side: &str, r: f64) -> f64 {
     let id = |s: &str| b.face_ids().find(|&f| b.face_id_str(f) == s).unwrap();
     let (fc, fs) = (id(cap), id(side));
@@ -82,7 +93,7 @@ fn removed_along_rim(b: &ck_topo::body::Body, cap: &str, side: &str, r: f64) -> 
             b.outward_normal(f, u, v)
         };
         let alpha = std::f64::consts::PI - nrm(fc).dot(nrm(fs)).clamp(-1.0, 1.0).acos();
-        total += corner_section(alpha, r) * ds;
+        total += corner_section(alpha, r) * (1.0 - corner_centroid_depth(alpha, r) / RHO) * ds;
     }
     total
 }
@@ -106,7 +117,7 @@ fn builds(doc: &str, r: f64, rims: &[Rim]) {
     assert_eq!(b.lump_ids().count(), 1, "r {r}: one solid");
     let want: f64 = rims.iter().map(|(c, s, _)| removed_along_rim(&base, c, s, r)).sum();
     let got = before - volume(&b);
-    let tol = 0.07 + 0.5 * r / RHO;
+    let tol = 0.07;
     assert!((got - want).abs() <= tol * want, "r {r}: removed {got}, analytic {want}");
     eprintln!("r {r}: {} rims, {secs:.2} s, removed {got:.5} vs analytic {want:.5}", rims.len());
     assert!(secs < 20.0, "r {r}: {secs:.1} s");
@@ -159,3 +170,83 @@ fn one_rim_of_a_sweep_surface_tube_rounds() {
     }
 }
 
+
+/// Largest angle (degrees) between the shipped vertex normals at the two ends of a mesh edge, over the blend faces of the part
+/// (the metric of `blend_mesh_quality`: what the shader interpolates over, a lump or a crease on a round).
+fn blend_normal_jump(b: &ck_topo::body::Body, fid: &str) -> f64 {
+    let m = ck_tess::mesh::tessellate(b).mesh;
+    let ids: Vec<_> = b.face_ids().collect();
+    let mut worst = 0.0f64;
+    for (t, &fi) in m.tri_face.iter().enumerate() {
+        if !b.face_id_str(ids[fi as usize]).starts_with(fid) {
+            continue;
+        }
+        let nv = |k: usize| [m.normals[9 * t + 3 * k] as f64, m.normals[9 * t + 3 * k + 1] as f64, m.normals[9 * t + 3 * k + 2] as f64];
+        for (x, y) in [(0, 1), (1, 2), (2, 0)] {
+            let (a, c) = (nv(x), nv(y));
+            let (la, lc) = ((a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt(), (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt());
+            if la > 0.0 && lc > 0.0 {
+                worst = worst.max(((a[0] * c[0] + a[1] * c[1] + a[2] * c[2]) / (la * lc)).clamp(-1.0, 1.0).acos().to_degrees());
+            }
+        }
+    }
+    worst
+}
+
+/// `builds`, and the blend faces' mesh within the normal-jump bound of `blend_mesh_quality` (35 deg for a blend face).
+fn builds_smooth(doc: &str, r: f64, rims: &[Rim]) {
+    builds(doc, r, rims);
+    let fid = if doc.contains("\"id\": \"F9\"") { "F9.B" } else { "F5.B" };
+    let b = run(doc, Some(r)).1.unwrap();
+    let jump = blend_normal_jump(&b, fid);
+    eprintln!("r {r}: blend normal jump {jump:.1} deg");
+    assert!(jump <= 35.0, "r {r}: blend normal jump {jump:.1} deg");
+}
+
+/// Radii the planes normal to the rim cannot march (the oblique tube's ball centre passes 0.14 mm from the rim circle's axis at
+/// 1.4 and the axis is outside the centre curve from 1.5): the ring is marched along the ball centre's own curve.
+#[test]
+fn both_rims_of_a_sweep_surface_tube_round_at_large_radii() {
+    for r in [1.4, 1.6, 1.8] {
+        builds_smooth(SWEEP_SURFACE, r, &SWEEP_RIMS);
+    }
+}
+
+#[test]
+fn one_rim_of_a_sweep_surface_tube_rounds_at_large_radii() {
+    for r in [1.4, 1.6, 1.8] {
+        builds_smooth(SWEEP_SURFACE_ONE, r, &SWEEP_RIMS[..1]);
+    }
+}
+
+/// The rim planes still march the radii they always did (r 1.0 is today's path), and the torus tube is unchanged.
+#[test]
+fn radii_the_rim_planes_march_still_build() {
+    builds_smooth(SWEEP_SURFACE, 1.0, &SWEEP_RIMS);
+    builds_smooth(SWEEP_SURFACE_ONE, 1.0, &SWEEP_RIMS[..1]);
+    builds_smooth(TORUS, 1.0, &TORUS_RIMS);
+}
+
+#[test]
+fn rounding_a_sweep_surface_tube_at_a_large_radius_twice_gives_the_same_part() {
+    let a = volume(&run(SWEEP_SURFACE, Some(1.6)).1.unwrap());
+    let b = volume(&run(SWEEP_SURFACE, Some(1.6)).1.unwrap());
+    assert_eq!(a.to_bits(), b.to_bits());
+}
+
+/// Past what the rim allows the round is refused at once (the ring march fails), naming the limit, not after the seconds a
+/// size search of failing builds used to take.
+#[test]
+fn a_radius_beyond_the_rim_is_refused_fast_with_the_limit() {
+    for (doc, r) in [(SWEEP_SURFACE_ONE, LIMIT_PROBE), (SWEEP_SURFACE, LIMIT_PROBE)] {
+        let (errs, body, secs) = run(doc, Some(r));
+        eprintln!("r {r}: {secs:.2} s, {errs:?}");
+        assert!(body.is_none() || !errs.is_empty(), "r {r} built");
+        assert!(errs.iter().any(|e| e.2.contains("radius exceeds what the rim allows")), "r {r}: {errs:?}");
+        // wall clock on a shared, loaded machine: 6 to 9 s were seen there for what takes 1 to 3.5 s idle; the bound only has to
+        // catch a return of the unbounded size search (minutes), the message above proves the limit path was taken
+        assert!(secs < 60.0, "r {r}: refused after {secs:.1} s");
+    }
+}
+
+const LIMIT_PROBE: f64 = 2.4;

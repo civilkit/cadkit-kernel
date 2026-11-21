@@ -19,10 +19,15 @@ pub struct Deviation {
     pub chord: f64,
     /// Where the largest deviation is.
     pub at: Vec3,
+    /// Why there are no samples (`exact`, `not measured`), if so.
+    pub note: Option<&'static str>,
 }
 
+/// Above this many faces of the body the deviation is not measured (tessellating and sampling cost seconds).
+pub const MAX_FACES: usize = 20_000;
+
 /// Closest point on triangle (Ericson, Real-Time Collision Detection 5.1.5): squared distance.
-fn dist2_tri(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> f64 {
+pub(crate) fn dist2_tri(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> f64 {
     let (ab, ac, ap) = (b - a, c - a, p - a);
     let (d1, d2) = (ab.dot(ap), ac.dot(ap));
     if d1 <= 0.0 && d2 <= 0.0 {

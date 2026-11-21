@@ -662,4 +662,18 @@ mod tests {
         }
         assert!(SweepSurface::new(Curve::line(Vec3::ZERO, Vec3::X), Curve::line(Vec3::ZERO, Vec3::Z), SweepLaw::Up(Vec3::Z), (0.0, 1.0), (0.0, 1.0)).is_err());
     }
+
+    /// The length of an edge on a blend far from the origin used to bisect to depth 30 (2^30 panels, a hang): the speed of an
+    /// iso-curve is a finite difference whose noise grows with the coordinates, so the 1e-12 error goal was never reached.
+    /// It finishes within the panel budget, and the length is still the span's.
+    #[test]
+    fn iso_length_of_a_blend_far_from_the_origin_finishes() {
+        for off in [0.0, 15.0, 4000.0, 1.0e6] {
+            let o = Vec3::new(off, off, off);
+            let rb = RollingBall::new(plane(o, Vec3::Z), plane(o, Vec3::X), 1.0, 1.0, (3.0, 3.0), Curve::line(o, Vec3::Y), (0.0, 25.0)).unwrap();
+            let edge = Curve::iso(Surface::Blend(Box::new(rb)), false, 0.0);
+            let len = edge.length_between(0.0, 25.0);
+            assert!((len - 25.0).abs() <= 1e-6 * 25.0 + 1e-9 * off, "offset {off}: length {len}");
+        }
+    }
 }

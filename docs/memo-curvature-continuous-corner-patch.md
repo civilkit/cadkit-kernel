@@ -4,7 +4,7 @@ Status: proposal for the product owner. Docs only; nothing here changes behaviou
 
 ## The question in one paragraph
 
-On the user's overhang fillet part (`_scratch-volume-hunt/overhang_fillet_fail.ckpart`, corner patches `F6.P0` and `F6.P1`) a zebra-stripe view shows the stripes bending where the round and cove tubes meet the corner patch, and a Gaussian-curvature view shows four small hot spots at the patch corners. That is what a join that is tangent-continuous (G1) but not curvature-continuous (G2) looks like. Should we make the patch G2?
+On the user's overhang fillet part (the fixture `crates/ck-model/tests/fixtures/overhang/vertex_blend_lumpy.ckpart`, corner patches `F6.P0` and `F6.P1`) a zebra-stripe view shows the stripes bending where the round and cove tubes meet the corner patch, and a Gaussian-curvature view shows four small hot spots at the patch corners. That is what a join that is tangent-continuous (G1) but not curvature-continuous (G2) looks like. Should we make the patch G2?
 
 (I did not open the `.ckpart` or render it for this memo; the picture above is the kit session's reading, and the code reading below agrees with it.)
 

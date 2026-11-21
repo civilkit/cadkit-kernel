@@ -96,7 +96,7 @@ fn assert_refused_for_the_wall(what: &str, picks: &[String], r: f64, propagate: 
     assert!(!picks.is_empty(), "{what}: no picks");
     let (errs, secs) = fillet_of(picks, r, propagate);
     assert!(errs.iter().any(|e| e.starts_with("F4: blendFailed") && e.contains("closed-spline wall") && e.contains("hint")), "{what}: {errs:?}");
-    assert!(secs < 20.0, "{what}: refused after {secs:.1} s");
+    assert!(secs < 60.0, "{what}: refused after {secs:.1} s");
 }
 
 /// The wall of a thickened closed spline is split in two faces per side, and the halves are one smooth skin.

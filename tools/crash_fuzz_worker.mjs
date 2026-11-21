@@ -24,6 +24,6 @@ try {
   else {
     const m = ask(2, { type: 'massProps', tag: 'main', bodies: true });
     const v = ask(3, { type: 'validate', tag: 'main' });
-    parentPort.postMessage({ cls: 'ok', errors: (r.result?.errors ?? []).map(([, e]) => e.code), volume: m.result?.volume, area: m.result?.area, issues: (v.result?.issues ?? []).map((x) => x.code), last, cpuMs: clock() - t0 });
+    parentPort.postMessage({ cls: 'ok', errors: (r.result?.errors ?? []).map(([, e]) => e.code), surfaces: (r.result?.surfaces ?? []).length, volume: m.result?.volume, area: m.result?.area, issues: (v.result?.issues ?? []).map((x) => x.code), last, cpuMs: clock() - t0 });
   }
 } catch (e) { parentPort.postMessage({ cls: 'trap', trap: String(e), last }); }

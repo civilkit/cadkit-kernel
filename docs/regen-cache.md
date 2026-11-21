@@ -279,6 +279,10 @@ the geometry) can also be saved, so that reopening the document skips the build.
   regen, took 1.4-2.3 s in total (that includes hashing the document's own 68 MB file text and base64-decoding the saved
   text; the parts were not timed separately). The restored body is `==` to the built one; the solid alone is
   33 KB raw (5 KB gzip). So the size is set by the surface bodies of the parts that are not valid solids, not by the solid.
+* `meshToSolid` (the mesh converted to a solid, `ck-mesh`) goes through the same `built_cache::through`, kind `meshToSolid<MESH_REV>`;
+  the blob key part of its key is `<blob key>|<opts JSON>`, so a changed mesh or changed options miss. The saved record carries the
+  conversion report as a trailing `note` (JSON text) so that a saved result still reports. Bump `mesh_solid::MESH_REV` when
+  `ck-mesh` builds another body from the same mesh and options.
 * Not covered: `importStep` (same pattern, add a `through` call around `read_parts`), the other features, and the
   regen state after a later feature (only the import's own result is saved).
 

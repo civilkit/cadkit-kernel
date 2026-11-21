@@ -43,11 +43,58 @@ pub struct FitParams {
     pub max_regions: usize,
     /// Most seeds tried (each grows a cylinder, a cone and a sphere).
     pub max_seeds: usize,
+    /// Work budget of the seed loop, in seconds of a native machine (`maxSeconds` of the request, alias `refitSeconds`; 0: unlimited). It is
+    /// counted in work units ([`UNITS_PER_SECOND`]: points evaluated against a surface, facets tested), so it holds on a
+    /// host without a clock; where the host has a clock the same number of seconds is also a time limit. When it runs out
+    /// the seed loop stops: what is fitted so far stays, the rest stays faceted (`budgetExhausted` in the report).
+    pub max_seconds: f64,
+}
+
+/// Work units a native machine spends per second in the seed loop (measured on the synthetic free-form blob of
+/// `tests/perf_freeform.rs`: 1.3e7 to 3.1e7 units per second of a native machine, the low end taken; a wasm host is slower by
+/// about 1.5 to 2).
+pub const UNITS_PER_SECOND: f64 = 1.5e7;
+
+mod work {
+    //! The work counter of the seed loop (thread local: the conversion is single threaded).
+    use std::cell::Cell;
+    thread_local! {
+        static SPENT: Cell<u64> = const { Cell::new(0) };
+        static LIMIT: Cell<u64> = const { Cell::new(u64::MAX) };
+        static CLOCK: Cell<Option<(f64, f64)>> = const { Cell::new(None) };
+        static OVER: Cell<bool> = const { Cell::new(false) };
+    }
+    pub fn start(seconds: f64) {
+        SPENT.with(|c| c.set(0));
+        OVER.with(|c| c.set(false));
+        let on = seconds > 0.0 && seconds.is_finite();
+        LIMIT.with(|c| c.set(if on { (seconds * super::UNITS_PER_SECOND) as u64 } else { u64::MAX }));
+        CLOCK.with(|c| c.set(if on { ck_core::budget::mark().map(|m| (m, seconds * 1000.0)) } else { None }));
+    }
+    pub fn spend(n: usize) {
+        SPENT.with(|c| c.set(c.get().saturating_add(n as u64)));
+    }
+    pub fn spent() -> u64 {
+        SPENT.with(|c| c.get())
+    }
+    /// Has the work budget (units, the clock's seconds, the regen's time budget) run out? Latched.
+    pub fn over() -> bool {
+        if OVER.with(|c| c.get()) {
+            return true;
+        }
+        let o = SPENT.with(|c| c.get()) >= LIMIT.with(|c| c.get())
+            || CLOCK.with(|c| c.get()).is_some_and(|(m, ms)| ck_core::budget::since(Some(m)) >= ms)
+            || ck_core::budget::poll();
+        if o {
+            OVER.with(|c| c.set(true));
+        }
+        o
+    }
 }
 
 impl Default for FitParams {
     fn default() -> Self {
-        FitParams { tol: None, fit_tol: None, smooth_deg: 40.0, min_triangles: 4, max_regions: 200_000, max_seeds: 4_000 }
+        FitParams { tol: None, fit_tol: None, smooth_deg: 40.0, min_triangles: 4, max_regions: 200_000, max_seeds: 4_000, max_seconds: 3.0 }
     }
 }
 
@@ -83,6 +130,12 @@ pub struct AnalyticReport {
     pub applied: bool,
     pub reason: Option<String>,
     pub rounds: usize,
+    /// The work budget ([`FitParams::work_units`], the host clock budget) ran out: the seeds not yet tried stay faceted.
+    pub budget_exhausted: bool,
+    /// Share of the triangles that sit in a fitted (curved) face, 0..1.
+    pub fitted_fraction: f64,
+    /// Work units spent by the seed loop.
+    pub work_units: u64,
 }
 
 pub fn report_json(a: &AnalyticReport) -> Json {
@@ -113,7 +166,10 @@ pub fn report_json(a: &AnalyticReport) -> Json {
         .put("faceted", a.faceted as f64)
         .put("tol", a.tol)
         .put("fitTol", a.fit_tol)
-        .put("rounds", a.rounds as f64);
+        .put("rounds", a.rounds as f64)
+        .put("budgetExhausted", a.budget_exhausted)
+        .put("fittedFraction", a.fitted_fraction)
+        .put("workUnits", a.work_units as f64);
     if let Some(r) = &a.reason {
         o = o.put("reason", r.as_str());
     }
@@ -269,7 +325,12 @@ fn refine(p: Prim, pts: &[Vec3], scale: f64) -> Prim {
 }
 
 /// Levenberg-Marquardt minimisation of the squared residuals `res(x)` from `x` (numeric Jacobian).
-fn lm(x0: Vec<f64>, scale: f64, res: &dyn Fn(&[f64]) -> Vec<f64>) -> Vec<f64> {
+fn lm(x0: Vec<f64>, scale: f64, res0: &dyn Fn(&[f64]) -> Vec<f64>) -> Vec<f64> {
+    let res = |x: &[f64]| {
+        let r = res0(x);
+        work::spend(r.len());
+        r
+    };
     let mut x = x0;
     let n = x.len();
     let cost = |r: &[f64]| r.iter().map(|v| v * v).sum::<f64>();
@@ -277,6 +338,9 @@ fn lm(x0: Vec<f64>, scale: f64, res: &dyn Fn(&[f64]) -> Vec<f64>) -> Vec<f64> {
     let mut c = cost(&r);
     let mut lambda = 1e-3;
     for _ in 0..100 {
+        if work::over() {
+            break;
+        }
         let mut jt: Vec<Vec<f64>> = Vec::with_capacity(n);
         for k in 0..n {
             let h = 1e-7 * scale.max(x[k].abs()).max(1e-9);
@@ -528,6 +592,7 @@ impl Seg<'_> {
     /// `fits` with corner tolerance `ctol`.
     fn fits_within(&self, r: u32, p: &Prim, sense: f64, ctol: f64) -> bool {
         let ru = r as usize;
+        work::spend(self.verts[ru].len() + 1);
         if self.verts[ru].iter().any(|&i| p.dist(self.m.pts[i as usize]) > ctol) {
             return false;
         }
@@ -553,6 +618,7 @@ impl Seg<'_> {
         let mut wide: Vec<u32> = vec![seed];
         let mut k = 0;
         while k < wide.len() && wide.len() < 24 {
+            work::spend(wide.len());
             let r = wide[k];
             for &q in &self.smooth[r as usize] {
                 if wide.len() < 24 && similar(q) && !wide.contains(&q) {
@@ -595,6 +661,9 @@ impl Seg<'_> {
         let mut p: Option<Prim> = None;
         let mut sense = 1.0;
         for _ in 0..5 {
+            if work::over() {
+                return None;
+            }
             let (pts, nrm) = self.data(&set);
             let d = Data { pts: &pts, normals: &nrm, scale: self.diag };
             let q = match (kind, p) {
@@ -620,6 +689,7 @@ impl Seg<'_> {
             let mut i = 0;
             while i < conn.len() {
                 let r = conn[i];
+                work::spend(keep.len() + conn.len());
                 for &q2 in &self.smooth[r as usize] {
                     if keep.contains(&q2) && !conn.contains(&q2) {
                         conn.push(q2);
@@ -639,6 +709,9 @@ impl Seg<'_> {
         let mut p = p?;
         let mut inset: HashMap<u32, ()> = set.iter().map(|&r| (r, ())).collect();
         for _round in 0..40 {
+            if work::over() {
+                return None;
+            }
             let before = set.len();
             let mut k = 0;
             while k < set.len() {
@@ -1614,9 +1687,15 @@ pub fn refit(m: &Closed, rg: &Regions, p: &FitParams, diag: f64, plane_tol: f64,
     // budget of attempts bounds the work on a mesh that has no analytic surface at all (a scan)
     let mut tried = vec![false; rg.n];
     let mut attempts = 0usize;
+    work::start(p.max_seconds);
     for &s in &order {
         if claimed[s as usize] || tried[s as usize] {
             continue;
+        }
+        if work::over() {
+            rep.budget_exhausted = true;
+            rep.reason = Some(format!("the refit's work budget ({} s) ran out after {attempts} seeds; what is not fitted stays faceted", p.max_seconds));
+            break;
         }
         attempts += 1;
         if attempts > p.max_seeds {
@@ -1661,6 +1740,10 @@ pub fn refit(m: &Closed, rg: &Regions, p: &FitParams, diag: f64, plane_tol: f64,
             claimed[r as usize] = true;
         }
         clusters.push((pr, set, sense));
+    }
+    rep.work_units = work::spent();
+    if work::over() && !rep.budget_exhausted && attempts < order.len() {
+        rep.budget_exhausted = true;
     }
     if let Some(t) = t_start {
         eprintln!("growth done at {:.0} ms: {} clusters, {attempts} seeds", t.elapsed().as_secs_f64() * 1e3, clusters.len());

@@ -249,6 +249,29 @@ describe('session bodyForView', { skip: !existsSync(wasmPath()) && 'no wasm buil
     }
   });
 
+  it('carries the body identity of the regen reply: faceBody per face and bodyNames per body', async () => {
+    const { Part } = await import('../../builder/src/index.js');
+    const p = new Part('Two');
+    const a = p.sketch('A', 'front', (sk) => sk.rect(0, 0, 10, 10));
+    const b = p.sketch('B', 'front', (sk) => sk.rect(40, 0, 10, 10));
+    p.extrude({ sketch: a, op: 'add', end: 'blind', depth: 5 });
+    p.extrude({ sketch: b, op: 'add', end: 'blind', depth: 5 });
+    const doc = p.toJSON() as unknown as { features: Array<Record<string, unknown>> };
+    const names = ['Left', 'Right'];
+    doc.features.filter((f) => f.type === 'extrude').forEach((f, i) => { f.op = 'newBody'; f.body = names[i]; });
+    const s = await Session.open(doc as never);
+    try {
+      const v = await s.bodyForView();
+      assert.ok(v, 'expected a body');
+      assert.ok(Array.isArray(v.faceBody) && Array.isArray(v.bodyNames), 'the identity fields arrive');
+      assert.equal(v.faceBody.length, v.mesh.faceIds.length, 'one body index per face');
+      assert.deepEqual([...v.bodyNames].sort(), ['Left', 'Right']);
+      assert.deepEqual([...new Set(v.faceBody)].sort(), [0, 1]);
+    } finally {
+      await s.close();
+    }
+  });
+
   it('a helixed part returns the helix curve and datum planes', async () => {
     const { Part } = await import('../../builder/src/index.js');
     const p = new Part('Spring');

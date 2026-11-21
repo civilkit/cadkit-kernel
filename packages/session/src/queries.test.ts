@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { angles, check, clearance, closestPoint, describe as describeNames, distance, exportMesh, extrema, heal, importSat, importStep, massProps, maxDistance, probe, resolveDescriptions, section, sections, symmetry, thickness, thicknessAt, validate } from './queries.js';
+import { angles, check, clearance, closestPoint, describe as describeNames, distance, exportMesh, extrema, heal, importSat, importStep, massProps, maxDistance, meshDecimate, meshToSolid, probe, resolveDescriptions, section, sections, symmetry, thickness, thicknessAt, validate } from './queries.js';
 import { defaultWasmPath as wasmPath } from '../../kernel-client/src/worker.js';
 import type { KernelReply } from '../../kernel-client/src/protocol.js';
 import type { KernelTransport } from '../../driver/src/verify.js';
@@ -201,5 +201,30 @@ describe('queries live', { skip: !existsSync(wasmPath()) && 'no wasm built' }, (
     } finally {
       await s.close();
     }
+  });
+});
+
+describe('meshDecimate', () => {
+  it('sends the mesh as base64 with the options and returns the buffers as typed arrays', async () => {
+    const seen: Record<string, unknown>[] = [];
+    const buf = (type: string, data: Float32Array | Uint32Array) => ({ $buf: 0, type, len: data.length, data });
+    const k = fake({ triangles: 1, vertices: 3, inputTriangles: 4, stoppedBy: 'target', errors: [], positions: buf('f32', Float32Array.from([0, 0, 0, 1, 0, 0, 0, 1, 0])), indices: buf('u32', Uint32Array.from([0, 1, 2])) }, seen);
+    const r = await meshDecimate(k, { positions: Float32Array.from([0, 0, 0, 1, 0, 0, 0, 1, 0]), indices: Uint32Array.from([0, 1, 2]) }, { tol: 0.05, targetTriangles: 100, keepAngleDeg: undefined });
+    assert.equal(seen[0].type, 'meshDecimate');
+    assert.equal(typeof seen[0].positionsF32, 'string');
+    assert.equal(typeof seen[0].indicesU32, 'string');
+    assert.deepEqual(seen[0].opts, { tol: 0.05, targetTriangles: 100 });
+    assert.ok(r.positions instanceof Float32Array && r.indices instanceof Uint32Array);
+    assert.deepEqual(Array.from(r.indices), [0, 1, 2]);
+    assert.equal(r.stoppedBy, 'target');
+  });
+  it('a refusal gives errors and empty arrays; meshToSolid passes opts.decimate on', async () => {
+    const k = fake({ errors: [['import', { code: 'meshBadInput', params: { message: 'm', hint: 'h' } }]] });
+    const r = await meshDecimate(k, { positions: [0, 0, 0] }, { tol: 0 });
+    assert.equal(r.errors.length, 1);
+    assert.equal(r.positions.length, 0);
+    const seen: Record<string, unknown>[] = [];
+    await meshToSolid(fake({ errors: [] }, seen), { positions: [0, 0, 0] }, { decimate: { tol: 0.1, targetTriangles: 500 } });
+    assert.deepEqual((seen[0].opts as Record<string, unknown>).decimate, { tol: 0.1, targetTriangles: 500 });
   });
 });

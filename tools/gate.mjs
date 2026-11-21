@@ -102,7 +102,10 @@ const dropOurWarnings = (j) =>
     : j;
 // the original kernel's STEP header names its old product; the rebuilt writer says CadKit (the old name is built from pieces so no source file carries it)
 const OLD_PRODUCT = new RegExp(['Purra', 'metric'].join(''), 'gi');
-const norm = (r) => (r.trap ? `TRAP ${r.trap.replace(/\/rustc\/[0-9a-f]+\/|:\d+:\d+:/g, '')}` : dropOurWarnings(r.json).replace(/"ms":[0-9.e+-]+/g, '"ms":0').replace(/"at":[0-9.e+-]+/g, '"at":0').replace(/,"build":"[0-9a-f]+(-dirty)?"/g, '').replace(OLD_PRODUCT, 'CadKit'));
+// additive keys of the rebuilt replies that the original does not have (documented allowlist, docs/spec-agent-interface.md
+// "Body identity"): the body's `faceBody` (per face), `bodyNames` (per body), massProps `bodies[].index` and a null `name`
+const dropAdditive = (j) => j.replace(/,"faceBody":\[[0-9,-]*\]/g, '').replace(/,"bodyNames":\[(?:null|"(?:[^"\\]|\\.)*"|,)*\]/g, '').replace(/("name":(?:null|"(?:[^"\\]|\\.)*")),"index":\d+/g, '$1').replace(/,"name":null(?=[,}])/g, '');
+const norm = (r) => (r.trap ? `TRAP ${r.trap.replace(/\/rustc\/[0-9a-f]+\/|:\d+:\d+:/g, '')}` : dropAdditive(dropOurWarnings(r.json)).replace(/"ms":[0-9.e+-]+/g, '"ms":0').replace(/"at":[0-9.e+-]+/g, '"at":0').replace(/,"build":"[0-9a-f]+(-dirty)?"/g, '').replace(OLD_PRODUCT, 'CadKit'));
 const bin = (r) => (r.trap ? '' : Buffer.from(r.bytes.subarray((4 + new DataView(r.bytes.buffer).getUint32(0, true) + 7) & -8)).toString('base64'));
 
 const tasks = [];   // { g: group, name, run }, in the order of the sequential gate

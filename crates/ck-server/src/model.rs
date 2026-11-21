@@ -37,6 +37,35 @@ pub fn drag(cx: &mut Cx) -> Result<Json, String> {
     cx.query("drag")
 }
 
+pub const SOLVE_POSES_REQUIRED: &str = "solvePoses: poses must be an array of {mateId: value} objects";
+
+/// `{type:"solvePoses", tag, poses:[{<mate id>: value, ...}]}` -> `{drivers, poses:[{ok, places, error?, mate?}]}`
+/// (read-only; angles in degrees, distances in mm; see `ck_model::features::motion`). On an empty state the reply is
+/// `{"error":"noBody"}`.
+pub fn solve_poses(cx: &mut Cx) -> Result<Json, String> {
+    let has_body = cx.state()?.has_body;
+    if cx.msg.get_arr("poses").is_none() {
+        return Err(SOLVE_POSES_REQUIRED.into());
+    }
+    if !has_body {
+        return Ok(Obj::new().put("error", "noBody").build());
+    }
+    cx.query("solvePoses")
+}
+
+/// `{type:"sweepDriver", tag, driver, from?, to, clearance?, contact?, steps?, tol?, hold?}` -> `{driver, from, to, reached,
+/// stop:{reason, value, ...}, startContacts, posesSolved}` (read-only; see `ck_model::features::motion`).
+pub fn sweep_driver(cx: &mut Cx) -> Result<Json, String> {
+    let has_body = cx.state()?.has_body;
+    if cx.msg.get_str("driver").is_none() || cx.msg.get_f64("to").is_none() {
+        return Err("sweepDriver: driver and to are required".into());
+    }
+    if !has_body {
+        return Ok(Obj::new().put("error", "noBody").build());
+    }
+    cx.query("sweepDriver")
+}
+
 /// A sketch frame is an object with `o`,`x`,`y`,`z` numeric triples.
 /// Degenerate axes (all zero, non-unit z) are accepted (oracle).
 pub fn valid_frame(f: Option<&Json>) -> bool {

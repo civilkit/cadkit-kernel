@@ -105,3 +105,43 @@ fn open_mesh_is_closed_on_request() {
     let v_true = 60.0 * 40.0 * 10.0 - std::f64::consts::PI * 9.0 * 10.0;
     assert!((v - v_true).abs() < 2e-3 * v_true, "{v} vs {v_true}");
 }
+
+#[test]
+fn dry_run_answers_the_report_and_the_fill_and_leaves_the_tag_alone() {
+    // the drilled block missing its last triangle, as above: one hole of three edges
+    let mut soup = drilled_block_soup();
+    let last: Vec<f32> = soup[soup.len() - 9..].to_vec();
+    soup.truncate(soup.len() - 9);
+    let nums: Vec<String> = soup.iter().map(|v| format!("{v}")).collect();
+    let r = call(&format!(r#"{{"type":"meshToSolid","tag":"m5","positions":[{}],"opts":{{"close":true,"dryRun":true}}}}"#, nums.join(",")));
+    let res = result(&r);
+    assert_eq!(res.get_arr("errors").map(|a| a.len()), Some(0), "{}", ck_json::to_string(res).chars().take(600).collect::<String>());
+    assert_eq!(res.get_bool("dryRun"), Some(true));
+    assert!(res.get("body").map_or(true, |b| b.is_null()), "no body is built");
+    let imp = res.get("import").expect("import report");
+    assert_eq!(imp.get_bool("dryRun"), Some(true));
+    assert!(imp.get("faces").is_none() && imp.get("volume").is_none());
+    let hole = imp.path(&["closing", "holes"]).and_then(|h| h.at(0)).expect("the hole");
+    let fill = hole.get("fill").expect("fill");
+    assert_eq!(fill.get_arr("indices").unwrap().len(), 3, "one triangle");
+    let pos: Vec<f64> = fill.get_arr("positions").unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+    assert_eq!(pos.len(), 9);
+    // it is the triangle that was left out (same corners, to f32)
+    let mut want: Vec<f32> = last.clone();
+    let mut got: Vec<f32> = pos.iter().map(|v| *v as f32).collect();
+    let key = |v: &mut Vec<f32>| {
+        let mut c: Vec<[f32; 3]> = v.chunks(3).map(|c| [c[0], c[1], c[2]]).collect();
+        c.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        *v = c.concat();
+    };
+    key(&mut want);
+    key(&mut got);
+    assert_eq!(want, got);
+    // the tag was not written: a query on it finds no body
+    let q = call(r#"{"type":"massProps","tag":"m5"}"#);
+    assert!(ck_json::to_string(result(&q)).contains("null") || result(&q).get("error").is_some() || result(&q).get("volume").is_none(), "{}", ck_json::to_string(&q));
+    // the refusal a conversion would give comes the same way
+    let r = call(&format!(r#"{{"type":"meshToSolid","tag":"m6","positions":[{}],"opts":{{"dryRun":true}}}}"#, nums.join(",")));
+    let e = result(&r).get_arr("errors").unwrap();
+    assert_eq!(e[0].at(1).and_then(|c| c.get_str("code")), Some("meshNotWatertight"));
+}

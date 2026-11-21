@@ -149,3 +149,13 @@ pub fn dump(src: &str) {
         }
     }
 }
+
+/// Every surface body of a regenerated part (feature id, body), in order.
+#[allow(dead_code)]
+pub fn regen_surfs(src: &str) -> Vec<(String, ck_topo::body::Body)> {
+    let part = Part::from_json(&ck_json::parse(src).unwrap()).unwrap();
+    let mut ex = Exec { brep: Brep::new(), labels: Noop };
+    let opts = RegenOpts::from_json(Some(&ck_json::parse(r#"{"solveSketches":true}"#).unwrap()));
+    let _ = regen::regen(&part, &opts, &mut ex);
+    ex.brep.surfs.clone()
+}

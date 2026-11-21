@@ -61,7 +61,7 @@ fn corpus() {
         // seconds on files with many free-form faces and long intersection curves, whatever their size (closest-point
         // grid scans, face integrals of rational faces); about 5 s was the slowest measured file, native release
         let import_ms = t0.elapsed().as_millis();
-        let import_limit: u128 = std::env::var("SWEDIT_MAX_IMPORT_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(15_000);
+        let import_limit: u128 = std::env::var("SWEDIT_MAX_IMPORT_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(60_000);
         assert!(import_ms < import_limit, "{name}: {import_ms} ms to import (bound {import_limit} ms)");
         let t = Tagged::from_import(&imp);
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| rebuild_history(&t)));
@@ -155,6 +155,8 @@ fn corpus() {
             "nist_ftc_07" | "nist_ctc_02" => 10_000,
             _ => u128::MAX,
         };
+        // the table is about 5x the native release time on a quiet machine; a loaded CI box is 3 to 4x slower again, so 4x, and never under a minute
+        let bound_ms = bound_ms.saturating_mul(4).max(60_000);
         assert!(ms < bound_ms, "{name}: {ms} ms to read back (bound {bound_ms} ms)");
         let v = out.verify.as_ref().map(|v| format!("{:.3e}", v.rel)).unwrap_or("-".into());
         rows.push(format!("| {name} | {} | {rebuilt}/{nfeat} | {status} | {v} | {ms} |", imp.body.num_faces()));
@@ -233,7 +235,7 @@ fn corpus() {
         }
         std::fs::write(&out, md).unwrap();
     }
-    let limit: u128 = std::env::var("SWEDIT_MAX_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(20_000);
+    let limit: u128 = std::env::var("SWEDIT_MAX_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(60_000);
     let over: Vec<&(String, u128)> = slow.iter().filter(|s| s.1 > limit).collect();
     assert!(over.is_empty(), "files slower than {limit} ms: {over:?}");
 }

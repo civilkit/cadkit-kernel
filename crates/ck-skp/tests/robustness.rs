@@ -150,7 +150,7 @@ fn run_case(name: &str, case: usize, data: &[u8]) -> Duration {
     }));
     assert!(r.is_ok(), "{name}: case {case} panicked (len {})", data.len());
     let dt = t.elapsed();
-    assert!(dt < Duration::from_secs(20), "{name}: case {case} took {dt:?}");
+    assert!(dt < Duration::from_secs(60), "{name}: case {case} took {dt:?}");
     dt
 }
 

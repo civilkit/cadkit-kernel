@@ -202,6 +202,14 @@ pub struct Assembly {
     /// The flag: the rejected mate was of an extended kind (oracle kinds
     /// only surface it when the report is asked for).
     pub conflicts: Vec<(String, Vec<String>, bool)>,
+    /// Motion studies: solve as if every `limits` mate were absent (to tell a limit from another reason a pose fails).
+    pub skip_limits: bool,
+    /// Motion studies: moves per component the solver may make before it gives up (0 = the default 8; a closed loop needs more).
+    pub move_budget: usize,
+    /// Motion studies: solve each component by least squares even when its mates cannot all be met against the frozen rest.
+    pub soft: bool,
+    /// Motion studies: components held where a drive put them (their mates still pull the others).
+    pub frozen: Vec<usize>,
 }
 
 impl Assembly {
@@ -566,6 +574,25 @@ impl Assembly {
         }
         Ok(out)
     }
+
+    /// [`recs_for`] plus, for the mates a component is the *target* of, the same mate seen from the component's side (hinges that
+    /// pull both ways): what a closed loop needs, where every part must follow the ones around it (motion studies).
+    pub fn recs_for_loop(&self, b: &Body, k: usize) -> Result<Vec<Rec>, FeatureError> {
+        let mut out = self.recs_for(b, k)?;
+        for m in self.mates.iter().filter(|m| m.mover != k && m.kind == super::MateKind::Hinge) {
+            let Some(e) = m.ext.as_deref() else { continue };
+            if e.tc != k {
+                continue;
+            }
+            let mut e2 = e.clone();
+            e2.m2 = e.t2.clone();
+            e2.t2 = e.m2.clone();
+            e2.tc = m.mover;
+            let rev = MateRec { id: m.id.clone(), kind: m.kind, mover: k, moving: m.target.clone(), target: m.moving.clone(), distance: m.distance, flip: m.flip, ext: Some(Box::new(e2)) };
+            out.extend(super::mate_kinds::recs_ext(self, b, &rev)?);
+        }
+        Ok(out)
+    }
 }
 
 /// func f1375: Gauss-Seidel over the components (the new mate's mover
@@ -581,19 +608,40 @@ pub(super) fn solve_all(br: &mut Brep, first: usize) -> Result<(), FeatureError>
             if br.asm.components[k].fixed {
                 continue;
             }
-            let mut moved = solve_one(br, k)?;
+            let mut moved = if br.asm.frozen.contains(&k) { false } else { solve_one(br, k)? };
             if br.asm.mates.iter().any(|m| m.mover == k && m.ext.is_some()) {
                 moved |= super::mate_kinds::apply_posts(br, k)?;
             }
             if moved {
                 changed = true;
                 moves += 1;
-                if moves > 8 * n {
+                if moves > n * if br.asm.move_budget > 0 { br.asm.move_budget } else { 8 } {
                     return Err(FeatureError::new(MATE_CONFLICT));
                 }
             }
         }
         if !changed {
+            if br.asm.soft {
+                // a soft solve that stalled leaves a residual behind: the loop is not closed, so the pose does not exist
+                let body = br.body.as_ref().unwrap();
+                for &k in &order {
+                    if br.asm.components[k].fixed || br.asm.frozen.contains(&k) {
+                        continue;
+                    }
+                    let recs = br.asm.recs_for_loop(body, k)?;
+                    let mut rs: Vec<Row> = vec![];
+                    let (mut pos, mut ang) = (0.0f64, 0.0f64);
+                    let id = Xf::IDENTITY;
+                    for rec in &recs {
+                        let (a, p) = rows(rec, &id.r, Vec3::ZERO, Vec3::ZERO, &mut rs);
+                        pos = fmax(pos, p);
+                        ang = fmax(ang, a);
+                    }
+                    if pos > 1e-4 || ang > 1e-6 {
+                        return Err(FeatureError::new(MATE_CONFLICT));
+                    }
+                }
+            }
             return Ok(());
         }
     }
@@ -603,7 +651,7 @@ pub(super) fn solve_all(br: &mut Brep, first: usize) -> Result<(), FeatureError>
 /// when it moved.
 fn solve_one(br: &mut Brep, k: usize) -> Result<bool, FeatureError> {
     let body = br.body.as_ref().unwrap();
-    let recs = br.asm.recs_for(body, k)?;
+    let recs = if br.asm.soft { br.asm.recs_for_loop(body, k)? } else { br.asm.recs_for(body, k)? };
     if recs.is_empty() {
         return Ok(false);
     }
@@ -618,7 +666,7 @@ fn solve_one(br: &mut Brep, k: usize) -> Result<bool, FeatureError> {
         None => (Vec3::ZERO, 0.0),
     };
     DEBUG.with(|d| d.borrow_mut().push(format!("solve comp {k} center {:?} scale {:?} recs {:?}", c, scale, recs)));
-    let sv = solve(&recs, c, scale).ok_or_else(|| FeatureError::new(MATE_CONFLICT))?;
+    let sv = if br.asm.soft { solve_soft(&recs, c, scale) } else { solve(&recs, c, scale) }.ok_or_else(|| FeatureError::new(MATE_CONFLICT))?;
     DEBUG.with(|d| d.borrow_mut().push(format!("  -> iters {} delta {:?}", sv.iterations, sv.x)));
     if sv.iterations == 0 {
         return Ok(false);
@@ -1103,6 +1151,16 @@ fn fmax(a: f64, b: f64) -> f64 {
 /// steps capped at 0.5 rad; a stalled start is kicked by 0.001 rad once;
 /// at most 200 iterations. Converged: positional ≤ 1e-7, angular ≤ 1e-9.
 pub fn solve(recs: &[Rec], c: Vec3, scale: f64) -> Option<Solved> {
+    solve_impl(recs, c, scale, false)
+}
+
+/// [`solve`] that never gives up: when the records cannot all be met (they pull against the frozen rest of a closed loop) it
+/// returns the least-squares placement it reached, so that repeating it over the components converges on the loop (motion studies).
+pub fn solve_soft(recs: &[Rec], c: Vec3, scale: f64) -> Option<Solved> {
+    solve_impl(recs, c, scale, true)
+}
+
+fn solve_impl(recs: &[Rec], c: Vec3, scale: f64, soft: bool) -> Option<Solved> {
     let scale = if scale.is_nan() { 1.0 } else { scale };
     let l8 = if scale > 1.0 { scale } else { 1.0 };
     let l9 = 1.0 / l8;
@@ -1110,6 +1168,9 @@ pub fn solve(recs: &[Rec], c: Vec3, scale: f64) -> Option<Solved> {
     let mut t = Vec3::ZERO;
     let mut perturbed = false;
     let mut iter = 0u32;
+    // (a soft solve returns the best placement it passed through, not the last)
+    let mut best_val = f64::INFINITY;
+    let mut best_at = (r, t, 0u32);
     loop {
         let mut rs: Vec<Row> = vec![];
         let (mut pos, mut ang) = (0.0f64, 0.0f64);
@@ -1118,9 +1179,14 @@ pub fn solve(recs: &[Rec], c: Vec3, scale: f64) -> Option<Solved> {
             pos = fmax(pos, p);
             ang = fmax(ang, a);
         }
-        if pos <= 1e-7 && ang <= 1e-9 {
+        if if soft { pos <= 1e-6 && ang <= 1e-8 } else { pos <= 1e-7 && ang <= 1e-9 } {
             let tx = Vec3::new((c.x - rdot(&r, 0, c)) + t.x, (c.y - rdot(&r, 1, c)) + t.y, (c.z - rdot(&r, 2, c)) + t.z);
             return Some(Solved { x: Xf { r, t: [tx.x, tx.y, tx.z] }, iterations: iter });
+        }
+        let val = pos + ang * l8;
+        if val < best_val {
+            best_val = val;
+            best_at = (r, t, iter);
         }
         let mut a = [[0.0f64; 6]; 6];
         let mut b = [0.0f64; 6];
@@ -1143,13 +1209,23 @@ pub fn solve(recs: &[Rec], c: Vec3, scale: f64) -> Option<Solved> {
             m = fmax(m, a[i][i]);
         }
         let m = fmax(m, f64::MIN_POSITIVE);
+        // (a soft solve damps its free translations harder: the motion a closed loop leaves free must not random-walk on rounding noise)
         for i in 3..6 {
-            a[i][i] += m * 1e-10;
+            a[i][i] += m * if soft { 1e-6 } else { 1e-10 };
         }
         for i in 0..3 {
             a[i][i] += m * 1e-4;
         }
+        let best = |b: &([f64; 9], Vec3, u32)| {
+            let (r, t, iter) = (&b.0, b.1, b.2);
+            let tx = Vec3::new((c.x - rdot(r, 0, c)) + t.x, (c.y - rdot(r, 1, c)) + t.y, (c.z - rdot(r, 2, c)) + t.z);
+            Some(Solved { x: Xf { r: *r, t: [tx.x, tx.y, tx.z] }, iterations: iter })
+        };
         if g <= (pos + ang) * 1e-12 {
+            if soft {
+                // no way to improve against the frozen rest: stay (the kick below would walk a loop's free motion away)
+                return best(&best_at);
+            }
             if perturbed {
                 return None;
             }
@@ -1166,16 +1242,17 @@ pub fn solve(recs: &[Rec], c: Vec3, scale: f64) -> Option<Solved> {
             if iter < 200 {
                 continue;
             }
-            return None;
+            return if soft { best(&best_at) } else { None };
         }
         let mut am: Vec<Vec<f64>> = a.iter().map(|row| row.to_vec()).collect();
         let mut bv = b.to_vec();
-        let x = crate::sketch::solver::lu_solve(&mut am, &mut bv)?;
+        let Some(x) = crate::sketch::solver::lu_solve(&mut am, &mut bv) else { return if soft { best(&best_at) } else { None } };
         let (mut w0, mut w1, mut w2) = (l9 * x[0], l9 * x[1], l9 * x[2]);
         let mut ww = (w0 * w0 + w1 * w1) + w2 * w2;
         let n = ww.sqrt();
-        if n > 0.5 {
-            let k = 0.5 / n;
+        let cap = if soft { 0.05 } else { 0.5 };
+        if n > cap {
+            let k = cap / n;
             w0 *= k;
             w1 *= k;
             w2 *= k;
@@ -1189,7 +1266,7 @@ pub fn solve(recs: &[Rec], c: Vec3, scale: f64) -> Option<Solved> {
         }
         t = Vec3::new(x[3] + t.x, x[4] + t.y, x[5] + t.z);
         if iter == 200 {
-            return None;
+            return if soft { best(&best_at) } else { None };
         }
     }
 }

@@ -120,6 +120,7 @@ There are 57 request types. "Tag" says what the request needs: **tag** means a r
 | `importSldprt` | sets tag | Read a SolidWorks part file (base64) into a body. |
 | `importSkp` | sets tag | Read a SketchUp file (base64) into a surface body of planar faces. Needs a module built with the `skp` feature. |
 | `meshToSolid` | sets tag | Turn a triangle mesh (positions, optional indices) into a valid solid: planar faces merged, cylinders, cones and spheres refit. |
+| `meshDecimate` | none | Reduce a triangle mesh (a scan) to fewer triangles within a deviation tolerance; the mesh comes back as buffers. |
 | `recognize` | body | Recognise the features of an imported solid and propose a feature tree. |
 
 ### Geometry queries
