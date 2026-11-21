@@ -16,7 +16,9 @@ fn call(msg: &str) -> (Json, usize) {
 /// is refused now (below), so this is the body that keeps the guard exercised: small mesh, complete reply, still reported invalid.
 #[test]
 fn a_trim_far_off_its_surface_does_not_exhaust_the_refinement_budget() {
-    let part = include_str!("fixtures/round_off_surface_basin.json");
+    // (the basin's four walls nudged 1e-5 off flat: STEP analytic recognition reads a flat spline wall as a plane, and the round on planar walls
+    // takes the analytic path, which refuses it; with the walls left splines the round builds the invalid body this guard is about)
+    let part = include_str!("fixtures/round_off_surface_basin_nudged.json");
     let (r, bytes) = call(&format!(r#"{{"type":"regen","tag":"main","part":{part},"opts":{{"solveSketches":true}}}}"#));
     let res = r.get("result").unwrap();
     assert!(res.get_arr("errors").is_some_and(|e| e.is_empty()), "the round builds");
@@ -36,4 +38,15 @@ fn a_chamfer_wider_than_the_disc_it_cuts_is_refused_not_built_invalid() {
     let errs = r.get("result").and_then(|r| r.get_arr("errors")).expect("errors");
     let text = ck_json::to_string(&ck_json::Json::Arr(errs.to_vec()));
     assert!(text.contains("wider than the face beside its edge") && text.contains("F4"), "{text}");
+}
+
+/// The same basin with exactly flat walls is read with planar walls (STEP analytic recognition): the analytic round refuses it, with the
+/// radius that builds, instead of building a body with a trim 2e-3 off its surface.
+#[test]
+fn the_flat_walled_basin_round_is_refused_with_the_radius_that_builds() {
+    let part = include_str!("fixtures/round_off_surface_basin.json");
+    let (r, _) = call(&format!(r#"{{"type":"regen","tag":"main","part":{part},"opts":{{"solveSketches":true}}}}"#));
+    let errs = r.get("result").and_then(|r| r.get_arr("errors")).expect("errors");
+    let text = ck_json::to_string(&Json::Arr(errs.to_vec()));
+    assert!(text.contains("blendOverflow") && text.contains("largest radius that builds"), "{text}");
 }

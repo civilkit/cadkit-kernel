@@ -127,3 +127,13 @@ edge, the mitre's run-on `r / tan(t / 2)` past an end), do not cross faces they 
 convex-only selection (outside it for a concave-only one), and are not slivers. A result that fails is refused with
 `blendResultInvalid`, the failing check in `params.check`, the place in `detail`, a hint, and the largest size that builds
 when one is found. Tests that pin the properties for corner joints: `crates/ck-model/tests/blend_joint_props.rs`.
+
+**Size hints of a refused blend are checked, not assumed monotonic.** Passing is not monotonic in a blend's radius (a pipe tee builds
+at 0.2 to 1.87 mm, fails at 1.9 to 3.1 and builds again from 3.2). The size search (`features/max_size.rs`) finds a radius that
+builds, then a sweep of at most 6 more builds (counted by attempts; sizes from a quarter of it to twice it, never at or above the
+asked one) checks around it, only on the refusal path. When no checked size is refused below one that builds the refusal reads as
+before (`the largest radius that builds is X mm`, `maxSize {param:"radius", value:X, unit:"mm"}`). Otherwise it reads `a radius of X
+mm builds (checked: builds at ...; refused at ...); larger radii may fail and smaller ones are not guaranteed to build`, `maxSize`
+is still the largest radius that was built, and `sizeChecks {builds:[...], refused:[...]}` carries the two lists. The kit reads
+only `maxSize {param, value, unit}`. The rim limit of a swept tube (`the radius exceeds what the rim allows`) names the radius at which
+the ball still marches round the rim, floored to 0.01 (it used to be rounded to 0.1, which could name a radius above the one checked).

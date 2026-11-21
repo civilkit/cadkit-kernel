@@ -1341,6 +1341,19 @@ pub fn face_volume_memo(b: &Body, f: FaceId, coarse: bool) -> (f64, bool) {
     (x, false)
 }
 
+/// The volume of `a` minus the volume of `b`, summed over the faces that have no twin in the other body (a twin = the same
+/// `face_key`: same surface, same trimming): a twin has the same share in both, so it cancels. Two bodies that differ in a few
+/// faces cost only those faces, not the whole free-form model. Faces are measured from the origin as in [`face_signed_volume`],
+/// so the difference is the difference of the volumes for closed shells.
+pub fn volume_difference_unshared(a: &Body, b: &Body) -> f64 {
+    let keys = |x: &Body| -> std::collections::HashSet<u64> { x.face_ids().map(|f| face_key(x, f).0).collect() };
+    let (ka, kb) = (keys(a), keys(b));
+    let side = |x: &Body, other: &std::collections::HashSet<u64>| -> f64 {
+        x.face_ids().filter(|&f| !other.contains(&face_key(x, f).0)).map(|f| face_volume_memo(x, f, false).0).sum()
+    };
+    side(a, &kb) - side(b, &ka)
+}
+
 /// Orientation-free key of everything one face's volume integral depends on, and the sign that maps
 /// this face's integral to the key's canonical traversal. The integral runs along the face's boundary
 /// as traversed (the face `sense` does not enter it), so the same face traversed the other way round

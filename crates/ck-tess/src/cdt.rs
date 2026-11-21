@@ -543,9 +543,15 @@ impl Cdt {
         crate::tr!(6, 0, a0, b0, 0);
         let mut work: Vec<(u32, u32)> = vec![(a0, b0)];
         let mut iters = 0u32;
+        // Work budget in iterations (no clock: the wasm host's clock is not trusted to fire): a legitimate segment is split once per
+        // constrained edge it crosses, so a few multiples of the point count is generous. A segment that keeps splitting (two nearly
+        // overlapping constraints whose crossing point creeps along them, one new point per round, each round walking the whole fan)
+        // used to spend 100 000 rounds on a mesh that grew with every one; it is a failed segment instead.
+        let cap = (2_000 + 8 * self.pts.len() as u32).min(100_001);
         while let Some((a, b)) = work.pop() {
             iters += 1;
-            if a == b || iters >= 100_001 { continue; }
+            if iters >= cap { self.failed += 1; break; }
+            if a == b { continue; }
             if let Some((t, k)) = self.find_edge(a, b) {
                 self.mark_edge(t, k);
                 continue;
@@ -617,7 +623,11 @@ impl Cdt {
                 s = if 0.0 <= s { s } else { 0.0 };
                 s = if s <= 1.0 { s } else { 1.0 };
                 let pt = [pa[0] + (pb[0] - pa[0]) * s, pa[1] + (pb[1] - pa[1]) * s];
-                let m = self.insert_point(pt);
+                // a crossing within rounding of an end of the segment is that end (nearly overlapping constraints: the crossing point is
+                // ill-conditioned and would otherwise creep along them, one new point a hair from the last each round)
+                let eps = 1e-9 * (1.0 + pa[0].abs().max(pa[1].abs()).max(pb[0].abs()).max(pb[1].abs()));
+                let near = |q: [f64; 2]| (pt[0] - q[0]).abs().max((pt[1] - q[1]).abs()) < eps;
+                let m = if near(pa) { a } else if near(pb) { b } else { self.insert_point(pt) };
                 if m == a || m == b {
                     if p == m || q == m || p == a || p == b || q == a || q == b { return Walk::Fail; }
                     return Walk::Touch(p, q, m);

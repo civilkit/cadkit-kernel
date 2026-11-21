@@ -18,6 +18,7 @@
 //! Unsupported input never panics: it returns an [`ImportError`] naming the
 //! STEP entity id.
 
+use super::recog;
 use super::parse::{default_knots, expand_knots_max, parse, Ent, ImportError, StepFile, Val};
 use ck_geom::curve::Curve;
 use ck_geom::curve2::Curve2;
@@ -71,9 +72,71 @@ pub struct SolidRead {
 }
 
 /// Parse `text` and build the solids it contains.
+///
+/// B-spline carriers that are really a line, a circle or a plane are read as that (see `recog.rs`). The recognised read is
+/// compared with the plain one and thrown away when it is worse (a face fewer, a refusal more, more validation issues, a
+/// different volume), so recognition never makes an import worse than the splines would.
 pub fn read_step(text: &str) -> R<Imported> {
     let file = parse(text)?;
+    let mut rd = Rd::new(&file);
+    rd.recog = true;
+    let (rec, converted) = rd.run_counted();
+    if converted == 0 {
+        return rec;
+    }
+    let plain = Rd::new(&file).run();
+    match (rec, plain) {
+        (Ok(r), Ok(p)) => Ok(if recognised_is_no_worse(&r, &p) { r } else { p }),
+        (Ok(r), Err(_)) => Ok(r),
+        (Err(_), p) => p,
+    }
+}
+
+/// [`read_step`] without analytic recognition: B-spline carriers stay B-splines (for comparison and for tests).
+pub fn read_step_plain(text: &str) -> R<Imported> {
+    let file = parse(text)?;
     Rd::new(&file).run()
+}
+
+/// Is the import with analytic recognition at least as good as the plain one? Faces, refusals, warnings, validation
+/// issues and (when the same faces came in) the volume are compared.
+fn recognised_is_no_worse(r: &Imported, p: &Imported) -> bool {
+    if r.parts.len() != p.parts.len() {
+        return false;
+    }
+    let mut same_faces = true;
+    for (a, b) in r.parts.iter().zip(&p.parts) {
+        if a.faces.len() < b.faces.len() || a.refused.len() > b.refused.len() || (a.error.is_some() && b.error.is_none()) {
+            return false;
+        }
+        same_faces &= a.faces.len() == b.faces.len() && a.refused.len() == b.refused.len();
+    }
+    if r.warnings.len() > p.warnings.len() {
+        return false;
+    }
+    if r.parts.iter().any(|x| x.surface_model || x.faces.is_empty()) {
+        return true;
+    }
+    let (ir, ip) = (ck_check::validate(&r.body, 1e-6).len(), ck_check::validate(&p.body, 1e-6).len());
+    if ir > ip {
+        return false;
+    }
+    if same_faces {
+        // faces both reads share (same surface and trimming) have the same share of the volume: when the faces that differ
+        // change it by no more than rounding of the part's size, the volumes agree without measuring the whole body
+        let (lo, hi) = r.body.bbox();
+        let diag = (hi - lo).len();
+        if ck_topo::mass::volume_difference_unshared(&r.body, &p.body).abs() <= 1e-10 * diag * diag * diag {
+            return true;
+        }
+        let (vr, vp) = (ck_topo::mass::mass_props(&r.body).volume, ck_topo::mass::mass_props(&p.body).volume);
+        // (not tighter: the spline carriers' own volume is only quadrature-accurate, ~5e-7 for a rational circle; a wrong
+        // arc or sense changes the volume by far more)
+        if (vr - vp).abs() > 1e-5 * vp.abs().max(vr.abs()).max(1e-12) {
+            return false;
+        }
+    }
+    true
 }
 
 // ------------------------------------------------------------------ specs
@@ -107,6 +170,10 @@ struct Rd<'a> {
     warnings: Vec<ImportError>,
     nface: usize,
     depth: std::cell::Cell<u32>,
+    /// Read B-spline carriers that are really lines, circles or planes as those (`recog.rs`).
+    recog: bool,
+    /// How many carriers were so converted.
+    converted: usize,
 }
 
 /// Highest B-spline degree read. Real files stay below 30; the cap keeps a
@@ -139,6 +206,8 @@ impl<'a> Rd<'a> {
             warnings: vec![],
             nface: 0,
             depth: std::cell::Cell::new(0),
+            recog: false,
+            converted: 0,
         }
     }
 
@@ -656,6 +725,7 @@ impl<'a> Rd<'a> {
         let mut curve = self.curve(r(3)?)?;
         let same = a.get(4).and_then(Val::as_bool).unwrap_or(true);
         let (mut lo, mut hi, mut plo, mut phi) = if same { (va, vb, pa, pb) } else { (vb, va, pb, pa) };
+        curve = self.recognise_curve(curve, plo, phi);
         let mut lo_is_start = same;
         // degenerate edge (pole / apex): same vertex, no extent
         if lo == hi {
@@ -785,8 +855,9 @@ impl<'a> Rd<'a> {
         let a = self.simple(id, &["ADVANCED_FACE", "FACE_SURFACE"])?;
         let bounds = self.refs_list(id, a.get(1), "bounds")?;
         let surface = self.surface(a.get(2).and_then(Val::as_ref).ok_or_else(|| bad(id, "face without surface"))?)?;
+        let (surface, flip) = self.recognise_surface(surface);
         let sid = a.get(2).and_then(Val::as_ref).unwrap_or(0);
-        let sense = a.get(3).and_then(Val::as_bool).unwrap_or(true) != self.torus_flips(sid);
+        let sense = a.get(3).and_then(Val::as_bool).unwrap_or(true) != (self.torus_flips(sid) != flip);
         let mut loops = Vec::new();
         let mut flagged: Vec<bool> = Vec::new();
         let mut vertex_loop = false;
@@ -835,7 +906,93 @@ impl<'a> Rd<'a> {
 
     // ------------------------------------------------------------ driver
 
-    fn run(mut self) -> R<Imported> {
+    fn run(self) -> R<Imported> {
+        self.run_counted().0
+    }
+
+    /// Replace a B-spline carrier by the line or circle it is. A circle is only taken when the edge runs the way the
+    /// spline does (an open spline whose second vertex comes first would be read as the complementary arc).
+    fn recognise_curve(&mut self, curve: Curve, plo: Vec3, phi: Vec3) -> Curve {
+        let Curve::BSpline(bs) = &curve else { return curve };
+        if !self.recog {
+            return curve;
+        }
+        let found = match recog::spline_as_line(bs) {
+            Some(l) => Some(l),
+            None => recog::spline_as_circle(bs).filter(|_| {
+                let (d0, d1) = bs.domain();
+                let closed = curve.eval(d0).dist(curve.eval(d1)) < 1e-6 * (1.0 + plo.len());
+                closed || (plo.dist(phi) > 1e-9 && bs.closest_param(plo) < bs.closest_param(phi))
+            }),
+        };
+        match found {
+            Some(c) => {
+                self.converted += 1;
+                c
+            }
+            None => curve,
+        }
+    }
+
+    /// Replace a B-spline surface by the plane, circular cylinder or torus it is; the flag says the face's sense flips (the
+    /// spline's normal is the reverse of the cylinder's outward one).
+    fn recognise_surface(&mut self, surface: Surface) -> (Surface, bool) {
+        if self.recog {
+            if let Surface::BSpline(bs) = &surface {
+                if let Some(p) = recog::surface_as_plane(bs) {
+                    self.converted += 1;
+                    return (p, false);
+                }
+                if let Some((c, flip)) = recog::surface_as_cylinder(bs).or_else(|| recog::surface_as_torus(bs)) {
+                    self.converted += 1;
+                    return (c, flip);
+                }
+            }
+        }
+        (surface, false)
+    }
+
+    /// The refusal text of a file with nothing to build: what the file does contain (counts by entity type), so the user
+    /// can tell an empty file from one whose solids are in a form this reader does not take.
+    fn no_solid_message(&self) -> String {
+        const KINDS: [&str; 13] = [
+            "MANIFOLD_SOLID_BREP",
+            "BREP_WITH_VOIDS",
+            "SHELL_BASED_SURFACE_MODEL",
+            "CLOSED_SHELL",
+            "OPEN_SHELL",
+            "ADVANCED_FACE",
+            "FACETED_BREP",
+            "MANIFOLD_SURFACE_SHAPE_REPRESENTATION",
+            "TESSELLATED_SOLID",
+            "TRIANGULATED_FACE",
+            "GEOMETRIC_CURVE_SET",
+            "POLYLINE",
+            "CARTESIAN_POINT",
+        ];
+        let mut found = vec![];
+        for k in KINDS {
+            let n = self.f.ents.values().filter(|e| e.parts.iter().any(|p| p.name == k)).count();
+            if n > 0 {
+                found.push(format!("{n} {k}"));
+            }
+        }
+        let has = if found.is_empty() { "no solid, shell, face, curve or point entities".to_string() } else { found.join(", ") };
+        let faces = self.f.ents.values().any(|e| e.kind() == "ADVANCED_FACE");
+        let hint = if faces {
+            "faces are present but no MANIFOLD_SOLID_BREP, BREP_WITH_VOIDS or SHELL_BASED_SURFACE_MODEL refers to them, so nothing can be built from them"
+        } else {
+            "the file holds no B-rep solid or surface model (curves, points or tessellated shapes only, or an empty file); export the part as a B-rep (AP203/AP214/AP242 with MANIFOLD_SOLID_BREP)"
+        };
+        format!("no MANIFOLD_SOLID_BREP / BREP_WITH_VOIDS / SHELL_BASED_SURFACE_MODEL in the file (the file has: {has}). Hint: {hint}")
+    }
+
+    fn run_counted(mut self) -> (R<Imported>, usize) {
+        let r = self.run_inner();
+        (r, self.converted)
+    }
+
+    fn run_inner(&mut self) -> R<Imported> {
         self.detect_units();
         let mut solids: Vec<u32> = self
             .f
@@ -859,7 +1016,7 @@ impl<'a> Rd<'a> {
             }
         }
         if named.is_empty() {
-            return Err(ImportError::new("noSolid", None, "no MANIFOLD_SOLID_BREP / BREP_WITH_VOIDS / SHELL_BASED_SURFACE_MODEL in the file"));
+            return Err(ImportError::new("noSolid", None, self.no_solid_message()));
         }
         let mut parts = Vec::with_capacity(named.len());
         for (k, (sid, name)) in named.into_iter().enumerate() {
@@ -877,7 +1034,7 @@ impl<'a> Rd<'a> {
             return Err(first.unwrap_or_else(|| ImportError::new("noSolid", None, "the solids of the file have no faces")));
         }
         let n = solids.len();
-        Ok(Imported { body: self.b, solids: n, length_scale: self.len, warnings: self.warnings, parts })
+        Ok(Imported { body: std::mem::replace(&mut self.b, Body::new()), solids: n, length_scale: self.len, warnings: std::mem::take(&mut self.warnings), parts })
     }
 
     /// The surface and sense of face `id` (for a refused face), when they can be read.
@@ -2400,6 +2557,42 @@ DATA;
 ENDSEC;
 END-ISO-10303-21;";
 
+    /// Stage timings of an import (`STEP_PROFILE=<file> cargo test --profile fast -p ck-io profile_import -- --ignored --nocapture`).
+    #[test]
+    #[ignore]
+    fn profile_import() {
+        let Ok(path) = std::env::var("STEP_PROFILE") else { return };
+        let text = std::fs::read_to_string(path).unwrap();
+        let t = std::time::Instant::now();
+        let file = parse(&text).unwrap();
+        eprintln!("parse        {:?}", t.elapsed());
+        let t = std::time::Instant::now();
+        let mut rd = Rd::new(&file);
+        rd.recog = true;
+        let (rec, conv) = rd.run_counted();
+        eprintln!("read recog   {:?} (converted {conv})", t.elapsed());
+        let t = std::time::Instant::now();
+        let plain = Rd::new(&file).run();
+        eprintln!("read plain   {:?}", t.elapsed());
+        if let (Ok(r), Ok(p)) = (rec, plain) {
+            let t = std::time::Instant::now();
+            let n = ck_check::validate(&r.body, 1e-6).len();
+            eprintln!("validate r   {:?} ({n})", t.elapsed());
+            let t = std::time::Instant::now();
+            let n = ck_check::validate(&p.body, 1e-6).len();
+            eprintln!("validate p   {:?} ({n})", t.elapsed());
+            let t = std::time::Instant::now();
+            let d = ck_topo::mass::volume_difference_unshared(&r.body, &p.body);
+            eprintln!("unshared dV  {:?} ({d:e})", t.elapsed());
+            let t = std::time::Instant::now();
+            let v = ck_topo::mass::mass_props(&r.body).volume;
+            eprintln!("volume r     {:?} ({v})", t.elapsed());
+            let t = std::time::Instant::now();
+            let v = ck_topo::mass::mass_props(&p.body).volume;
+            eprintln!("volume p     {:?} ({v})", t.elapsed());
+        }
+    }
+
     #[test]
     fn imports_box() {
         let r = read_step(BOX).unwrap();
@@ -2450,5 +2643,36 @@ END-ISO-10303-21;";
         assert_eq!(p.refused_surfaces.len(), 1);
         assert_eq!(p.refused_surfaces[0].0, 106);
         assert!(matches!(p.refused_surfaces[0].1, Surface::Plane { .. }));
+    }
+
+    #[test]
+    fn a_file_without_a_solid_is_refused_with_what_it_contains() {
+        // a header and some geometry, no solid, no surface model
+        let t = "ISO-10303-21;\nHEADER;FILE_DESCRIPTION((''),'2;1');FILE_NAME('e','',(''),(''),'','','');FILE_SCHEMA(('AUTOMOTIVE_DESIGN'));ENDSEC;\nDATA;\n#1=CARTESIAN_POINT('',(0.,0.,0.));#2=CARTESIAN_POINT('',(1.,0.,0.));\nENDSEC;\nEND-ISO-10303-21;";
+        let e = read_step(t).err().expect("refused");
+        assert_eq!(e.code, "noSolid");
+        assert!(e.message.contains("2 CARTESIAN_POINT") && e.message.contains("Hint:"), "{}", e.message);
+        // an empty DATA section
+        let e = read_step("ISO-10303-21;\nHEADER;ENDSEC;\nDATA;\nENDSEC;\nEND-ISO-10303-21;").err().expect("refused");
+        assert!(e.message.contains("no solid, shell, face, curve or point entities"), "{}", e.message);
+        // faces with no solid over them: said so
+        let e = read_step(&BOX.replace("#201=MANIFOLD_SOLID_BREP('box',#200);", "")).err().expect("refused");
+        assert_eq!(e.code, "noSolid");
+        assert!(e.message.contains("6 ADVANCED_FACE") && e.message.contains("refers to them"), "{}", e.message);
+    }
+
+    #[test]
+    fn unshared_volume_difference_counts_only_faces_that_differ() {
+        let a = read_step(BOX).unwrap();
+        let b = read_step_plain(BOX).unwrap();
+        assert_eq!(ck_topo::mass::volume_difference_unshared(&a.body, &b.body), 0.0);
+        // a taller box: the top and the four walls differ, the bottom is shared; the difference is the volume's
+        let tall = BOX.replace("(0.,0.,5.)", "(0.,0.,8.)").replace("(10.,0.,5.)", "(10.,0.,8.)").replace("(10.,10.,5.)", "(10.,10.,8.)").replace("(0.,10.,5.)", "(0.,10.,8.)");
+        let c = read_step(&tall).unwrap();
+        let d = ck_topo::mass::volume_difference_unshared(&c.body, &a.body);
+        assert!((d - 300.0).abs() < 1e-6, "{d}");
+        // the recognised-versus-plain comparison still accepts equal reads and refuses a different volume
+        assert!(recognised_is_no_worse(&a, &b));
+        assert!(!recognised_is_no_worse(&c, &a));
     }
 }

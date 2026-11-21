@@ -165,7 +165,7 @@ A failed import answers `body: null` and one entry in `errors`:
 | Code | Meaning | Example (run) |
 |---|---|---|
 | `parse` | The text is not a Part 21 file | `not a STEP file (missing ISO-10303-21 header)`; `expected '(' after keyword at line 77` |
-| `noSolid` | The file parses but holds no solid | `no MANIFOLD_SOLID_BREP / BREP_WITH_VOIDS in the file` |
+| `noSolid` | The file parses but holds no solid or surface model | `no MANIFOLD_SOLID_BREP / BREP_WITH_VOIDS / SHELL_BASED_SURFACE_MODEL in the file (the file has: 6 ADVANCED_FACE, ...). Hint: ...`; the text counts what the file does hold |
 | `unsupported` | An entity the reader does not handle, with its id | replacing the first `PLANE` of the plate by `SWEPT_DISC_SURFACE` gives `{"code":"unsupported","params":{"message":"SWEPT_DISC_SURFACE is not supported","entity":22}}` (entity 21 for the circle-in-sketch variant) |
 | `badEntity` | A supported entity with missing or invalid arguments | |
 | `topology` | The faces cannot be assembled into a closed shell | |

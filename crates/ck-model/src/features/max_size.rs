@@ -102,6 +102,81 @@ pub fn largest_that_builds(asked: f64, known: Option<f64>, mut builds: impl FnMu
     (lo > 0.0).then_some(lo)
 }
 
+/// Most extra builds the verification sweep of a blend size hint may spend (only on the refusal path).
+pub const SWEEP_BUILDS: usize = 6;
+
+/// Longest the verification sweep may keep starting builds, in ms of the host clock (the build count is the real bound).
+pub const SWEEP_MS: f64 = 1500.0;
+
+/// What a verification sweep found: sizes that built and sizes that were refused, each ascending.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Sweep {
+    pub built: Vec<f64>,
+    pub refused: Vec<f64>,
+}
+
+/// Check, with at most [`SWEEP_BUILDS`] builds, how building behaves around `found` (a size that built, below `asked`,
+/// which was refused): up to six evenly spaced sizes from `found / 4` to `min(2 * found, asked)`, each rounded with
+/// [`floor_nice`] and not within 1 % of `found`. Passing is not monotonic in a blend's radius (a tee of pipes builds at 0.2 to
+/// 1.87, fails at 1.9 to 3.1 and builds again from 3.2), so the search's answer alone could mislead.
+pub fn sweep_around(asked: f64, found: f64, mut builds: impl FnMut(f64) -> bool) -> Sweep {
+    let mut out = Sweep::default();
+    if !(found > 0.0) || !(asked > found) || !asked.is_finite() {
+        return out;
+    }
+    let (lo, hi) = (0.25 * found, (2.0 * found).min(asked));
+    let started = ck_core::budget::mark();
+    let mut seen: Vec<f64> = vec![];
+    for i in 0..SWEEP_BUILDS {
+        if ck_core::budget::since(started) > SWEEP_MS {
+            break;
+        }
+        let v = floor_nice(lo + (hi - lo) * i as f64 / (SWEEP_BUILDS - 1) as f64);
+        if !(v > 0.0) || v >= asked || (v - found).abs() <= 0.01 * found || seen.contains(&v) {
+            continue;
+        }
+        seen.push(v);
+        if builds(v) {
+            out.built.push(v);
+        } else {
+            out.refused.push(v);
+        }
+    }
+    out
+}
+
+/// `fe` with the radius hint of a blend whose search found `found` (a size that built), told by what `sweep` verified. When
+/// no size checked is refused below one that builds, this is [`with_max_size`] (building is monotonic as far as checked: the
+/// old wording and `maxSize` = the largest size that built). Otherwise `maxSize` is still the largest size that was built, and
+/// the hint lists the sizes that build and the ones refused and says smaller sizes are not guaranteed to build; `sizeChecks
+/// {builds, refused}` carries the same lists.
+pub fn with_blend_sizes(fe: FeatureError, found: f64, sweep: &Sweep) -> FeatureError {
+    let mut built = sweep.built.clone();
+    built.push(found);
+    built.sort_by(|a, b| a.total_cmp(b));
+    let top = *built.last().unwrap();
+    if !sweep.refused.iter().any(|r| *r < top) {
+        return with_max_size(fe, "radius", top, "mm");
+    }
+    let list = |v: &[f64]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", ");
+    let say = format!(
+        "a radius of {top} mm builds (checked: builds at {} mm; refused at {} mm); larger radii may fail and smaller ones are not guaranteed to build",
+        list(&built),
+        list(&sweep.refused)
+    );
+    let nums = |v: &[f64]| Json::Arr(v.iter().map(|x| Json::from(*x)).collect());
+    let mut fe = with_max_size(fe, "radius", top, "mm");
+    // (replace the monotonic wording with the checked one)
+    if let Some((_, Json::Str(h))) = fe.params.iter_mut().find(|(k, _)| k == "hint") {
+        let old = format!("the largest radius that builds is {top} mm");
+        *h = match h.rfind(&old) {
+            Some(i) => format!("{}{}{}", &h[..i], say, &h[i + old.len()..]),
+            None => format!("{h}; {say}"),
+        };
+    }
+    fe.with("sizeChecks", Obj::new().put("builds", nums(&built)).put("refused", nums(&sweep.refused)).build())
+}
+
 /// Round up to two significant digits.
 pub fn ceil_nice(x: f64) -> f64 {
     if !(x > 0.0) || !x.is_finite() {
@@ -228,6 +303,51 @@ mod tests {
         assert!(v <= 4.0 && v > 3.8, "{v}");
         assert_eq!(largest_that_builds(12.0, None, |_| false), None);
         assert_eq!(largest_that_builds(0.0, None, |_| true), None);
+    }
+
+    #[test]
+    fn the_blend_sweep_reports_a_window_that_fails_between_sizes_that_build() {
+        // builds below 1.87 and from 3.2 up (the tee case), asked 5
+        let ok = |x: f64| x <= 1.87 || x >= 3.2;
+        let mut calls = 0;
+        let found = largest_that_builds(5.0, None, |x| ok(x)).unwrap();
+        let sw = sweep_around(5.0, found, |x| {
+            calls += 1;
+            ok(x)
+        });
+        assert!(calls <= SWEEP_BUILDS, "{calls}");
+        assert!(sw.built.iter().all(|x| ok(*x)) && sw.refused.iter().all(|x| !ok(*x)), "{sw:?}");
+        let fe = with_blend_sizes(FeatureError::new("blendFailed"), found, &Sweep { built: vec![0.5, 3.4], refused: vec![2.0, 2.8] });
+        let h = fe.params.iter().find(|(k, _)| k == "hint").unwrap().1.as_str().unwrap().to_string();
+        assert!(h.contains("a radius of 3.4 mm builds") && h.contains("refused at 2, 2.8") && h.contains("not guaranteed"), "{h}");
+        assert!(!h.contains("largest radius"), "{h}");
+        let m = &fe.params.iter().find(|(k, _)| k == "maxSize").unwrap().1;
+        assert_eq!(m.get("value").and_then(|v| v.as_f64()), Some(3.4));
+        assert!(fe.params.iter().any(|(k, _)| k == "sizeChecks"));
+    }
+
+    #[test]
+    fn the_blend_sweep_keeps_the_old_wording_when_building_is_monotonic_as_far_as_checked() {
+        let mut calls = 0;
+        let found = largest_that_builds(12.0, None, |x| x <= 10.0).unwrap();
+        let sw = sweep_around(12.0, found, |x| {
+            calls += 1;
+            x <= 10.0
+        });
+        assert!(calls <= SWEEP_BUILDS && !sw.built.is_empty(), "{calls} {sw:?}");
+        let fe = with_blend_sizes(FeatureError::new("blendFailed"), found, &sw);
+        let h = fe.params.iter().find(|(k, _)| k == "hint").unwrap().1.as_str().unwrap().to_string();
+        assert!(h.contains("the largest radius that builds is"), "{h}");
+        assert!(!fe.params.iter().any(|(k, _)| k == "sizeChecks"));
+        // the sweep never builds beyond its count, nor at or above the asked size, nor with nothing found
+        assert_eq!(sweep_around(12.0, 0.0, |_| panic!()), Sweep::default());
+        let mut n = 0;
+        sweep_around(1.0, 0.9, |x| {
+            n += 1;
+            assert!(x < 1.0);
+            true
+        });
+        assert!(n <= SWEEP_BUILDS);
     }
 
     #[test]

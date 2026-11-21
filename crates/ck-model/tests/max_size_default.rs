@@ -82,3 +82,20 @@ fn a_refused_round_over_names_a_radius_without_being_asked() {
     assert!(hint.contains(&format!("{v}")), "{hint}");
     assert!(f(v).is_empty(), "builds at {v}");
 }
+
+/// On a plain plate building is monotonic in the radius: the refusal keeps the plain wording, the radius it names was
+/// built (verified by a regen at it), and it carries no `sizeChecks` (that field appears only when a sweep around the answer
+/// finds a radius refused below one that builds).
+#[test]
+fn a_plain_refusal_keeps_the_plain_wording_and_a_verified_radius() {
+    let errs = run(&with_plate(
+        r#"{"type":"fillet","id":"F90","radius":3.0,"edges":[{"faces":["F2.C1","F2.S.e1"],"at":[20,2,0]}]}"#,
+    ));
+    let (_, v, _, hint) = max_size(&errs);
+    assert!(hint.contains("the largest radius that builds is"), "{hint}");
+    assert!(!errs[0].error.params.iter().any(|(k, _)| k == "sizeChecks"));
+    assert!(run(&with_plate(&format!(
+        r#"{{"type":"fillet","id":"F90","radius":{v},"edges":[{{"faces":["F2.C1","F2.S.e1"],"at":[20,2,0]}}]}}"#
+    )))
+    .is_empty());
+}

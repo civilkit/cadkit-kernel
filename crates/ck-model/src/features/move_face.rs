@@ -325,6 +325,34 @@ fn carried_faces(body: &Body, ids: &[FaceId], dist: &[f64]) -> Vec<(FaceId, ck_g
     out
 }
 
+/// A moved cylinder wall whose neighbour across an edge is a torus blend (the fillet at its foot) that is not moved
+/// with it: the torus would keep its major radius while the wall's radius changes, a body slightly off. Refused
+/// like any edge the offset cannot rebuild (the fillet would have to be carried or reshaped with the wall).
+fn base_torus_conflict(body: &Body, ids: &[FaceId], dist: &[f64], carried: &[(FaceId, ck_geom::Vec3)]) -> Option<String> {
+    const TANGENT_DOT: f64 = 0.999999;
+    for (k, &f) in ids.iter().enumerate() {
+        if dist[k] == 0.0 || !matches!(body.face(f).surface, Surface::Cylinder { .. }) {
+            continue;
+        }
+        for e in body.face_edges(f) {
+            let m = body.edge_mid(e);
+            for g in body.edge_faces(e) {
+                if g == f || ids.contains(&g) || carried.iter().any(|(c, _)| *c == g) || !matches!(body.face(g).surface, Surface::Torus { .. }) {
+                    continue;
+                }
+                let nrm = |x: FaceId| {
+                    let (u, v) = body.face(x).surface.closest_param(m);
+                    body.outward_normal(x, u, v)
+                };
+                if nrm(f).dot(nrm(g)).abs() > TANGENT_DOT {
+                    return Some(format!("edge between {} and {}: edge curve type", body.face_id_str(f), body.face_id_str(g)));
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Move `ids` of `body` by the per-face outward distances `dist` (aligned with
 /// `ids`; unselected faces stay, tangent round neighbours of a pushed plane travel with it
 /// when that gives a valid body). The pure geometric core, also used by the tests.
@@ -333,6 +361,9 @@ pub fn move_faces(body: &Body, ids: &[FaceId], dist: &[f64]) -> Result<Body, Fea
     let unrolled = ck_ops::offset::single_lap_body(body);
     let body = &unrolled;
     let carried = carried_faces(body, ids, dist);
+    if let Some(msg) = base_torus_conflict(body, ids, dist, &carried) {
+        return Err(super::offset_unsupported_hint(unsupported(msg.clone()), &msg));
+    }
     if carried.is_empty() {
         return attempt(body, ids, dist, &[]);
     }

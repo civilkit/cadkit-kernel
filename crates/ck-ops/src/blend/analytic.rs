@@ -924,6 +924,26 @@ fn blend_edge_hint_inner0(
             }
         });
     }
+    // an end that stopped flush at a tangent run-on (the edge's face goes on into a cylinder, its rim into a tangent edge) where
+    // that cylinder's wall RISES over the strip (a boss standing on the plate): the round ends on the wall, not on the plane
+    // through the tangent point. The tool runs on and is cut by the cylinder's column below (the plate under the boss is not
+    // cut away, which a flush tool does and leaves the boss overhanging)
+    let mut wall_cut = [false; 2];
+    if convex && circ.is_none() {
+        for (v, od, which) in [(ed.v0, -dir, 0usize), (ed.v1, dir, 1usize)] {
+            let (m, pv) = (if which == 0 { m0 } else { m1 }, b.vertex(v).p);
+            if m > 0.0 || junc.shared.iter().any(|q| q.dist(pv) < 1e-6) || !end_wall_overhangs(b, v, od, &faces, tol) {
+                continue;
+            }
+            if super::diag::on() {
+                eprintln!("{}: the end at {pv:?} runs into a wall that rises over the strip: the tool runs on, cut by the column", FaceName::blend(feature, k).id());
+            }
+            // (the whole straight run the vertex splits, so that one tool takes it: a second tool would start flush on the first's end)
+            let mm = margin + collinear_run_beyond(b, e, v, od);
+            if which == 0 { m0 = mm } else { m1 = mm }
+            wall_cut[which] = true;
+        }
+    }
     let o = p0 - dir * m0;
     let fr = match circ {
         None => Frame::from_normal(o, dir),
@@ -1183,9 +1203,9 @@ fn blend_edge_hint_inner0(
     }
     // an end that runs into a convex cylinder (a joined boss): the tool ends on its surface
     if convex && circ.is_none() {
-        for (v, od, m) in [(ed.v0, -dir, m0), (ed.v1, dir, m1)] {
+        for (v, od, m, wc) in [(ed.v0, -dir, m0, wall_cut[0]), (ed.v1, dir, m1, wall_cut[1])] {
             if m > 0.0 {
-                if let Some(cyl) = end_cylinder_solid(b, v, od, &faces, tool.bbox()) {
+                if let Some(cyl) = if wc { end_cylinder_tangent(b, v, od, &faces, tool.bbox()) } else { end_cylinder_solid(b, v, od, &faces, tool.bbox()) } {
                     tool = crate::boolean::boolean(&tool, &cyl, Op::Cut, tol).map(|r| r.body).map_err(|_| BlendError::code("blendFailed"))?;
                 }
             }

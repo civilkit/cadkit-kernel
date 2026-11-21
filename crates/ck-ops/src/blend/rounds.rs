@@ -465,7 +465,7 @@ pub(super) fn blend_edges_inner(b: &Body, edges: &[(String, String, Vec3)], spec
                     flush.push(p);
                 }
             }
-            EndConditions { ext: vec![], flush, mitre: vec![], patch: vec![] }
+            EndConditions { ext: vec![], flush, mitre: vec![], patch: vec![], shared: super::ends::shared_ends(b, &eids) }
         };
         junc.mitre = mitre_pairs(b, &eids, matches!(spec, Spec::Chamfer(d, ChamferLeg::Dist(d2)) if (d - d2).abs() < 1e-12));
         junc.patch.extend(overhangs.iter().map(|c| c.v));

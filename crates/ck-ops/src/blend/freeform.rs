@@ -636,10 +636,16 @@ impl<'a> Ctx<'a> {
                 }
             }
         }
-        let limit = if lo > 0.0 { format!(", about {:.1} mm", lo) } else { String::new() };
+        // (`lo` is a radius at which the ring marches: floored, never rounded up past it; the size search of the model layer
+        // names the radius that builds, this says only what the march allows)
+        let limit = if lo > 0.0 {
+            format!("; the ball rolls round the rim at a radius of {} mm (larger radii may fail, smaller ones are not guaranteed)", (lo * 100.0).floor() / 100.0)
+        } else {
+            String::new()
+        };
         dbg(&format!("spine refusal: {}", why.detail.as_deref().unwrap_or(&why.code)));
         failed_hint(
-            &format!("{RIM_LIMIT}{limit}: the ball cannot roll along both faces all the way round the rim"),
+            &format!("{RIM_LIMIT}: the ball cannot roll along both faces all the way round the rim{limit}"),
             "use a smaller radius",
         )
     }

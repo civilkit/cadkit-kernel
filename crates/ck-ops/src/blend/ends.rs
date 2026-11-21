@@ -492,17 +492,23 @@ pub(super) fn hole_wall_reflex_end(b: &Body, v: ck_topo::body::VertexId, faces: 
 /// cylinder whose material lies inside it and ahead of the edge (a boss the edge runs
 /// into): the tool must not cut into it, so it is cut by this solid.
 pub(super) fn end_cylinder_solid(b: &Body, v: ck_topo::body::VertexId, od: Vec3, faces: &[FaceId], bb: (Vec3, Vec3)) -> Option<Body> {
-    end_cylinder(b, v, od, faces, bb, false)
+    end_cylinder(b, v, od, faces, bb, 0)
+}
+
+/// [`end_cylinder_solid`] for an end where the cylinder's wall is tangent to the edge's direction (the face the edge borders runs
+/// tangent into the cylinder: the boss's wall touches the front face along a line), see [`end_wall_overhangs`].
+pub(super) fn end_cylinder_tangent(b: &Body, v: ck_topo::body::VertexId, od: Vec3, faces: &[FaceId], bb: (Vec3, Vec3)) -> Option<Body> {
+    end_cylinder(b, v, od, faces, bb, 2)
 }
 
 /// [`end_cylinder_solid`] for an edge that ends ON a convex cylinder it does not run into (the material lies behind the end, the
 /// cylinder's outward normal points along `od`): the solid of that cylinder, which a filling (concave) tool is intersected with so that
 /// its flat end does not stand out past the round wall.
 pub(super) fn end_cylinder_keep(b: &Body, v: ck_topo::body::VertexId, od: Vec3, faces: &[FaceId], bb: (Vec3, Vec3)) -> Option<Body> {
-    end_cylinder(b, v, od, faces, bb, true)
+    end_cylinder(b, v, od, faces, bb, 1)
 }
 
-fn end_cylinder(b: &Body, v: ck_topo::body::VertexId, od: Vec3, faces: &[FaceId], bb: (Vec3, Vec3), keep: bool) -> Option<Body> {
+fn end_cylinder(b: &Body, v: ck_topo::body::VertexId, od: Vec3, faces: &[FaceId], bb: (Vec3, Vec3), mode: u8) -> Option<Body> {
     let mut ends: Vec<FaceId> = vec![];
     for x in b.edge_ids().filter(|&x| b.edge(x).v0 == v || b.edge(x).v1 == v) {
         for f in b.edge_faces(x) {
@@ -510,6 +516,28 @@ fn end_cylinder(b: &Body, v: ck_topo::body::VertexId, od: Vec3, faces: &[FaceId]
                 ends.push(f);
             }
         }
+    }
+    // (a tangent end: the other region of the edge's own planar face, a face a boss that touches the edge's line pinched in two)
+    if mode == 2 {
+        let own = |g: FaceId| match &b.face(g).surface {
+            Surface::Plane { frame: fg } => faces.iter().any(|&f| matches!(&b.face(f).surface, Surface::Plane { frame: ff } if ff.z.normalize().cross(fg.z.normalize()).len() < 1e-9 && (fg.o - ff.o).dot(ff.z.normalize()).abs() < 1e-9)),
+            _ => false,
+        };
+        ends.retain(|&g| !own(g));
+    }
+    // (the faces of one cylinder surface that a join split in two, a boss standing on a half-round end of the same radius:
+    // the lower and the upper face meet along a smooth rim edge and are one wall)
+    if ends.len() > 1 {
+        let same = |f: FaceId, g: FaceId| match (&b.face(f).surface, &b.face(g).surface) {
+            (Surface::Cylinder { frame: a, r: ra }, Surface::Cylinder { frame: c, r: rc }) => {
+                (ra - rc).abs() < 1e-9 * (1.0 + ra.abs()) && a.z.normalize().cross(c.z.normalize()).len() < 1e-9 && (c.o - a.o).cross(a.z.normalize()).len() < 1e-9 * (1.0 + ra.abs())
+            }
+            _ => false,
+        };
+        if !ends.iter().all(|&g| same(ends[0], g)) {
+            return None;
+        }
+        ends.truncate(1);
     }
     if ends.len() != 1 {
         return None;
@@ -521,7 +549,11 @@ fn end_cylinder(b: &Body, v: ck_topo::body::VertexId, od: Vec3, faces: &[FaceId]
     let rel = pv - frame.o;
     let rad = rel - frame.z * rel.dot(frame.z);
     // material is ahead of the edge (the face leans toward it) and inside the cylinder (normal points away from the axis)
-    let ahead = if keep { n.dot(od) < 1e-9 } else { n.dot(od) > -1e-9 };
+    let ahead = match mode {
+        1 => n.dot(od) < 1e-9,
+        2 => n.dot(od) > 1e-3,
+        _ => n.dot(od) > -1e-9,
+    };
     if ahead || n.dot(rad) <= 0.0 {
         return None;
     }
@@ -677,18 +709,136 @@ pub(super) fn junction_vertices(b: &Body, sel: &[EdgeId], tol: f64) -> EndCondit
             out.push((p, behind));
         }
     }
-    EndConditions { ext: out, flush, mitre: vec![], patch: vec![] }
+    EndConditions { ext: out, flush, mitre: vec![], patch: vec![], shared: shared_ends(b, sel) }
 }
 
 /// Both faces border a blend face of `feature` in `b` (their shared edge was
 /// consumed by a tool of this feature).
 pub(super) fn blended_by_earlier_tool(b: &Body, fa: &str, fb: &str, feature: &str) -> bool {
-    let (Some(f1), Some(f2)) = (b.find_face(fa), b.find_face(fb)) else { return false };
+    // (a face an earlier tool split in regions, `E2.C1~1` and `E2.C1~2`, is still named by its own name)
+    let named = |id: &str| -> Vec<FaceId> {
+        match b.find_face(id) {
+            Some(f) => vec![f],
+            None => b
+                .face_ids()
+                .filter(|&f| {
+                    let mut n = b.face(f).name.clone();
+                    n.region = None;
+                    n.id() == id
+                })
+                .collect(),
+        }
+    };
+    let (f1, f2) = (named(fa), named(fb));
+    if f1.is_empty() || f2.is_empty() {
+        return false;
+    }
     b.face_ids().any(|g| {
         let n = &b.face(g).name;
         n.feature == feature && matches!(n.role, Role::Blend(_)) && {
             let nb = b.face_neighbors(g);
-            nb.contains(&f1) && nb.contains(&f2)
+            nb.iter().any(|f| f1.contains(f)) && nb.iter().any(|f| f2.contains(f))
         }
     })
+}
+
+/// The vertices where two or more of the `sel` edges meet.
+pub(super) fn shared_ends(b: &Body, sel: &[EdgeId]) -> Vec<Vec3> {
+    let mut out: Vec<Vec3> = vec![];
+    for (i, &e) in sel.iter().enumerate() {
+        let ed = b.edge(e);
+        for v in [ed.v0, ed.v1] {
+            let p = b.vertex(v).p;
+            // (a straight edge that goes on in the same line as another straight selected edge is one run split at the vertex:
+            // each tool may run on past it)
+            let dir_at = |x: EdgeId| {
+                let ex = b.edge(x);
+                if !matches!(ex.curve, Curve::Line { .. }) {
+                    return None;
+                }
+                let (a, c) = (b.vertex(ex.v0).p, b.vertex(ex.v1).p);
+                Some(if ex.v0 == v { c - a } else { a - c }.normalize())
+            };
+            let other = sel.iter().enumerate().any(|(j, &x)| {
+                j != i
+                    && (b.edge(x).v0 == v || b.edge(x).v1 == v)
+                    && !matches!((dir_at(e), dir_at(x)), (Some(d1), Some(d2)) if (d1 + d2).len() < 1e-9)
+            });
+            if other && !out.iter().any(|q| q.dist(p) < 1e-9) {
+                out.push(p);
+            }
+        }
+    }
+    out
+}
+
+/// A convex tool's end at `v` (the edge runs on in direction `od` past it) where the only other face is a convex cylinder
+/// wall (see [`end_cylinder_solid`]) that RISES over the strip the tool takes: material lies on the outer side of one of the
+/// edge's planar faces, inside the column of the cylinder (a boss standing on the plate the edge rounds, its wall tangent to
+/// the edge's other face). The round then ends on the wall: the tool runs on and is cut by the column, instead of stopping
+/// flush at the tangent point, which would cut the plate away under the boss and leave it overhanging. False for a wall that
+/// ends at the face the edge borders (a stadium's round end under a flat top: the rim goes on as a tangent edge).
+pub(super) fn end_wall_overhangs(b: &Body, v: ck_topo::body::VertexId, od: Vec3, faces: &[FaceId], tol: f64) -> bool {
+    if end_cylinder(b, v, od, faces, b.bbox(), 2).is_none() {
+        return false;
+    }
+    let mut ends: Vec<FaceId> = vec![];
+    for x in b.edge_ids().filter(|&x| b.edge(x).v0 == v || b.edge(x).v1 == v) {
+        for f in b.edge_faces(x) {
+            if !faces.contains(&f) && !ends.contains(&f) {
+                ends.push(f);
+            }
+        }
+    }
+    let Some(Surface::Cylinder { frame, .. }) = ends.iter().map(|&g| &b.face(g).surface).find(|s| matches!(s, Surface::Cylinder { .. })) else { return false };
+    let pv = b.vertex(v).p;
+    let rel = pv - frame.o;
+    let rad = rel - frame.z * rel.dot(frame.z) / frame.z.dot(frame.z);
+    if rad.len() < 1e-9 {
+        return false;
+    }
+    let inward = -rad.normalize();
+    let s = 1e-3 * (b.bbox().1 - b.bbox().0).len().max(1.0);
+    let cont = crate::contain::Containment::new(b, tol);
+    faces.iter().any(|&g| {
+        if !matches!(b.face(g).surface, Surface::Plane { .. }) {
+            return false;
+        }
+        let n = b.planar_normal(g).normalize();
+        n.dot(inward).abs() < 0.3 && cont.classify_point(pv + inward * s + n * s, tol) == crate::contain::Loc::In
+    })
+}
+
+/// How far the straight run of edge `e` goes on past its vertex `v` (direction `od`) as further straight edges of the same line
+/// that border the same two faces (one run a vertex splits, such as the front edge of a plate a boss touches): their summed length.
+pub(super) fn collinear_run_beyond(b: &Body, e: EdgeId, v: ck_topo::body::VertexId, od: Vec3) -> f64 {
+    let fe = b.edge_faces(e);
+    let (mut at, mut last, mut total) = (v, e, 0.0);
+    loop {
+        let next = b.edge_ids().filter(|&x| x != last && (b.edge(x).v0 == at || b.edge(x).v1 == at)).find(|&x| {
+            let ex = b.edge(x);
+            if !matches!(ex.curve, Curve::Line { .. }) {
+                return false;
+            }
+            let (a, c) = (b.vertex(ex.v0).p, b.vertex(ex.v1).p);
+            let d = if ex.v0 == at { c - a } else { a - c };
+            let fx = b.edge_faces(x);
+            d.len() > 1e-12 && (d.normalize() - od).len() < 1e-9 && fx.len() == 2 && fx.iter().all(|f| fe.iter().any(|g| g == f || same_plane(b, *f, *g)))
+        });
+        let Some(x) = next else { return total };
+        let ex = b.edge(x);
+        total += b.vertex(ex.v0).p.dist(b.vertex(ex.v1).p);
+        at = if ex.v0 == at { ex.v1 } else { ex.v0 };
+        last = x;
+        if total > 1e6 {
+            return total;
+        }
+    }
+}
+
+fn same_plane(b: &Body, f: FaceId, g: FaceId) -> bool {
+    match (&b.face(f).surface, &b.face(g).surface) {
+        (Surface::Plane { frame: a }, Surface::Plane { frame: c }) => a.z.normalize().cross(c.z.normalize()).len() < 1e-9 && (c.o - a.o).dot(a.z.normalize()).abs() < 1e-9,
+        _ => false,
+    }
 }

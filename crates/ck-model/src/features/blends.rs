@@ -59,8 +59,11 @@ fn size_refusal(
     }
     if size && super::max_size::blend_search_enabled() && faces <= super::max_size::BLEND_SEARCH_MAX_FACES && asked > 0.0 && asked.is_finite() {
         let ok = |v: f64| build(v).is_ok_and(|b| ck_check::validate(&b, super::TOL).len() <= before);
-        if let Some(m) = super::max_size::largest_that_builds(asked, None, ok) {
-            fe = super::max_size::with_max_size(fe, "radius", m, "mm");
+        let mut ok = ok;
+        if let Some(m) = super::max_size::largest_that_builds(asked, None, &mut ok) {
+            // (passing is not monotonic in the radius: a bounded sweep around the answer checks it, see max_size.rs)
+            let sweep = super::max_size::sweep_around(asked, m, &mut ok);
+            fe = super::max_size::with_blend_sizes(fe, m, &sweep);
         }
     }
     fe

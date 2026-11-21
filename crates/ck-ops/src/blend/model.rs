@@ -66,6 +66,8 @@ pub(super) struct EndConditions {
     /// the corner is rebuilt from the zone box afterwards, and a tool piercing through would cut
     /// material outside the zone that nothing repairs.
     pub(super) patch: Vec<Vec3>,
+    /// vertices where two or more selected edges meet (the ends of a chain stay flush there)
+    pub(super) shared: Vec<Vec3>,
 }
 
 /// An edge pick of a blend feature: the two faces named by the feature and a point on the edge.

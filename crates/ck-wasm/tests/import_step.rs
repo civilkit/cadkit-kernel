@@ -74,6 +74,9 @@ fn import_errors_are_structured_and_keep_the_previous_state() {
     assert_eq!(errs.len(), 1);
     let s = ck_json::to_string(&errs[0]);
     assert!(s.contains("noSolid"), "{s}");
+    // the refusal says what the file does hold, and what to do
+    assert!(s.contains("the file has: no solid, shell, face, curve or point entities"), "{s}");
+    assert!(s.contains("Hint:"), "{s}");
     // nothing was stored under the tag
     let m = call(r#"{"id":2,"msg":{"type":"massProps","tag":"bad"}}"#);
     assert_eq!(m.get("ok"), Some(&Json::Bool(false)));

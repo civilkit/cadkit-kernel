@@ -429,7 +429,7 @@ hard-coding them, and an agent uses the same data. No session state is needed
 {"type":"threadData","standard":"BSP","size":"G1/4"}      // one entry
 ```
 
-Standard ids: `metric` (coarse, `M6`), `metric-fine` (`M10x1.25`), `UNC`, `UNF`
+Standard ids: `metric` (coarse, `M6`; the full ISO 261 coarse series M1 to M68), `metric-fine` (`M10x1.25`; the ISO 261 fine series, 99 sizes from `M1x0.2` to `M64x4`, e.g. `M44x1.5`, `M48x0.75`), `UNC`, `UNF`
 (`1/4-20`, `#10-24`), `BSP` (parallel G, `G1/4`), `NPT` (`1/4 NPT`, tapered
 1:16), `Tr` (`Tr20x4`), `Acme` (`Acme 1/2-10`). Aliases are accepted
 (`ISO`, `G`, `bspp`, case-insensitive). `major` is the nominal diameter (for
