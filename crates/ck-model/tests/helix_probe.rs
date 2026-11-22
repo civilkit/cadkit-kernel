@@ -20,7 +20,7 @@ impl regen::FeatureExec for Exec {
 }
 
 #[test]
-#[ignore]
+#[ignore = "diagnostic probe: needs PART env input, prints only; run by hand"]
 fn helix_probe() {
     let path = std::env::var("PART").unwrap();
     let upto: Option<u32> = std::env::var("UPTO").ok().and_then(|s| s.parse().ok());
@@ -107,7 +107,7 @@ fn helix_probe() {
 
 /// Deviation of the (Y-up) sweep faces from the ideal screw tube R=56.25 r=3.52 pitch 17.24.
 #[test]
-#[ignore]
+#[ignore = "diagnostic probe: needs PART env input, prints only; run by hand"]
 fn helix_dev() {
     let path = std::env::var("PART").unwrap();
     let part = Part::parse(&std::fs::read_to_string(path).unwrap()).unwrap();
@@ -144,7 +144,7 @@ fn helix_dev() {
 /// Independent volume of the (sweep-only) body clipped to `lo <= y <= hi`, by a fine triangulation of its
 /// B-spline faces and flat caps (divergence theorem about (0, ref_y, 0); caps in the clip planes contribute 0).
 #[test]
-#[ignore]
+#[ignore = "diagnostic probe: needs PART env input, prints only; run by hand"]
 fn clip_volume() {
     let path = std::env::var("PART").unwrap();
     let (lo, hi): (f64, f64) = (std::env::var("LO").ok().and_then(|s| s.parse().ok()).unwrap_or(-1e9), std::env::var("HI").ok().and_then(|s| s.parse().ok()).unwrap_or(1e9));

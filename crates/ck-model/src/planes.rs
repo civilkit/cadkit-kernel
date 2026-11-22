@@ -308,30 +308,49 @@ fn plane_intersection(a: Frame, b: Frame) -> Result<(Vec3, Vec3), FeatureError> 
     Ok((p, c.normalize()))
 }
 
-/// The `axis` feature: `refs` = one axis-like reference (world axis, edge,
-/// sketch line, cylindrical face) or two planes (their intersection line).
-pub fn exec_axis(state: &mut RegenState, exec: &mut dyn FeatureExec, f: &Feature) -> Result<(), FeatureError> {
+fn compute_axis(state: &RegenState, exec: &mut dyn FeatureExec, f: &Feature) -> Result<(Vec3, Vec3), FeatureError> {
     let refs: Vec<Json> = f.raw.get("refs").and_then(|r| r.as_arr()).map(|a| a.to_vec()).unwrap_or_default();
-    let line = match refs.len() {
+    match refs.len() {
         1 => {
             let j = &refs[0];
             if kind_of(j) == Some("face") {
                 let id = j.get("id").and_then(|v| v.as_str()).ok_or_else(missing)?;
                 match exec.face_surf(state, id).ok_or_else(missing)? {
-                    FaceSurf::Cylinder { o, a, .. } => (o, a),
-                    _ => return Err(err(FACE_NOT_CYLINDRICAL)),
+                    FaceSurf::Cylinder { o, a, .. } => Ok((o, a)),
+                    _ => Err(err(FACE_NOT_CYLINDRICAL)),
                 }
             } else {
                 let r = crate::GeomRef::from_json(j).ok_or_else(missing)?;
-                resolve_axis(state, exec, &r).ok_or_else(missing)?
+                resolve_axis(state, exec, &r).ok_or_else(missing)
             }
         }
         2 => {
             let a = plane_of_ref(state, exec, &refs[0]).ok_or_else(missing)?;
             let b = plane_of_ref(state, exec, &refs[1]).ok_or_else(missing)?;
-            plane_intersection(a, b)?
+            plane_intersection(a, b)
         }
-        _ => return Err(missing()),
+        _ => Err(missing()),
+    }
+}
+
+/// The `axis` feature: `refs` = one axis-like reference (world axis, edge,
+/// sketch line, cylindrical face) or two planes (their intersection line).
+pub fn exec_axis(state: &mut RegenState, exec: &mut dyn FeatureExec, f: &Feature) -> Result<(), FeatureError> {
+    let line = match compute_axis(state, exec, f) {
+        Ok(line) => line,
+        Err(e) if e.code == codes::MISSING_REFERENCE => {
+            if let Some(frozen) = crate::regen::parse_frozen_axis(&f.raw) {
+                let label = f.raw.get("refs").and_then(|r| r.as_arr()).and_then(|a| a.first()).and_then(|j| j.get("id")).and_then(|v| v.as_str());
+                state.result.warnings.push(crate::regen::RegenError {
+                    feature: f.id.clone(),
+                    error: crate::regen::detached_ref_warning(label),
+                });
+                frozen
+            } else {
+                return Err(e);
+            }
+        }
+        Err(e) => return Err(e),
     };
     state.axes.retain(|a| a.0 != f.id);
     state.axes.push((f.id.clone(), line));

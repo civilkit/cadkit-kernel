@@ -246,7 +246,7 @@ fn strip_tool(m: &Model, f: FaceId, own: &HashSet<FaceId>, chamfer: bool) -> Opt
             let u = normal_to(a);
             let w = a.cross(u);
             let mut th: Vec<f64> = pts.iter().map(|q| (*q - c).dot(w).atan2((*q - c).dot(u))).collect();
-            th.sort_by(|x, y| x.partial_cmp(y).unwrap());
+            th.sort_by(|x, y| x.total_cmp(y));
             let tau = std::f64::consts::TAU;
             let (mut gap, mut after) = (th[0] + tau - th[th.len() - 1], th[0]);
             for i in 1..th.len() {

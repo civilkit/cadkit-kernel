@@ -281,12 +281,12 @@ fn min_wall(cx: &Ctx, p: &Params, sev: Severity) -> Vec<Issue> {
         i.at = Some(at);
         out.push((t, i));
     }
-    out.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    out.sort_by(|a, b| a.0.total_cmp(&b.0));
     out.into_iter().map(|x| x.1).collect()
 }
 
 fn median(v: &mut Vec<f64>) -> f64 {
-    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    v.sort_by(|a, b| a.total_cmp(b));
     v[v.len() / 2]
 }
 
@@ -343,7 +343,7 @@ fn uniform_wall(cx: &Ctx, p: &Params, sev: Severity) -> Vec<Issue> {
         i.at = Some(at);
         out.push(((t - nominal).abs(), i));
     }
-    out.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    out.sort_by(|a, b| b.0.total_cmp(&a.0));
     out.into_iter().map(|x| x.1).collect()
 }
 
@@ -370,7 +370,7 @@ fn overhang(cx: &Ctx, p: &Params, sev: Severity) -> Vec<Issue> {
     }
     let areas = face_areas(cx);
     let mut order: Vec<usize> = (0..n).filter(|&i| over[i] >= min_area.max(1e-9)).collect();
-    order.sort_by(|&a, &b| over[b].partial_cmp(&over[a]).unwrap_or(std::cmp::Ordering::Equal));
+    order.sort_by(|&a, &b| over[b].total_cmp(&over[a]));
     order
         .into_iter()
         .map(|f| {
@@ -446,7 +446,7 @@ fn bridge(cx: &Ctx, p: &Params, sev: Severity) -> Vec<Issue> {
         i.at = Some(cx.centroid(f));
         out.push((span, i));
     }
-    out.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    out.sort_by(|a, b| b.0.total_cmp(&a.0));
     out.into_iter().map(|x| x.1).collect()
 }
 
@@ -535,7 +535,7 @@ fn min_feature(cx: &Ctx, p: &Params, sev: Severity) -> Vec<Issue> {
         i.at = Some(at);
         out.push((t, i));
     }
-    out.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    out.sort_by(|a, b| a.0.total_cmp(&b.0));
     out.into_iter().map(|x| x.1).collect()
 }
 
@@ -650,7 +650,7 @@ fn min_internal_radius(cx: &Ctx, p: &Params, sev: Severity) -> Vec<Issue> {
         i.at = Some(cx.body.edge_mid(ne.first));
         out.push((0.0, i));
     }
-    out.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    out.sort_by(|a, b| a.0.total_cmp(&b.0));
     out.into_iter().map(|x| x.1).collect()
 }
 
@@ -706,7 +706,7 @@ fn undercut(cx: &Ctx, p: &Params, sev: Severity) -> Vec<Issue> {
         i.at = Some(cx.centroid(f));
         out.push((total, i));
     }
-    out.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    out.sort_by(|a, b| b.0.total_cmp(&a.0));
     out.into_iter().map(|x| x.1).collect()
 }
 
@@ -748,6 +748,6 @@ fn draft(cx: &Ctx, p: &Params, sev: Severity) -> Vec<Issue> {
         i.at = Some(cx.centroid(f));
         out.push((area[f], i));
     }
-    out.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    out.sort_by(|a, b| b.0.total_cmp(&a.0));
     out.into_iter().map(|x| x.1).collect()
 }

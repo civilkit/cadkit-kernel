@@ -667,7 +667,7 @@ fn union_loops(loops: &[Vec<Edge>], tol: f64) -> Option<Vec<Vec<Edge>>> {
         let mut sp = splits[si].clone();
         sp.push((0.0, *a0));
         sp.push((1.0, *a1));
-        sp.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap_or(std::cmp::Ordering::Equal));
+        sp.sort_by(|x, y| x.0.total_cmp(&y.0));
         let mut prev: Option<usize> = None;
         for (_, p) in sp {
             let idx = ensure(p, &mut pts, &mut key_of);

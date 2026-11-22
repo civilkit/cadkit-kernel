@@ -87,7 +87,7 @@ fn cam_mesh_area() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "diagnostic: needs CK_MESH_AREA_PARTS env input, prints only; run by hand"]
 fn audit() {
     let Ok(list) = std::env::var("CK_MESH_AREA_PARTS") else { return };
     for p in list.split(',') {

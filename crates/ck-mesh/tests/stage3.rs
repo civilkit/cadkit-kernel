@@ -195,7 +195,7 @@ fn timing_1k_10k() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "diagnostic: timing print-out at 100k triangles, no assertion; run by hand"]
 fn timing_100k() {
     for (name, src) in [("sphere", SPHERE.to_string()), ("shaft", shaft())] {
         let (got, ms, k) = timing(&src, 100_000);

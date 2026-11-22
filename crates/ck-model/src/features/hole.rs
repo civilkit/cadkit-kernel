@@ -98,14 +98,23 @@ fn line(a: Vec2, b: Vec2, tag: &str) -> ProfileSeg {
 /// A blind hole whose floor lies on the far side of the body, within a hair of it: material just above the floor and air
 /// just past it along the axis. A far side a hair off square to the axis (a sketch can leave the sides 1e-5 rad apart)
 /// would otherwise keep a film over half of the exit, or fail the cut when a drill point meets it (solidcraft #17873).
-fn exits_at_floor(body: &Body, at: ck_core::linalg::Vec3, down: ck_core::linalg::Vec3, depth: f64) -> bool {
-    use ck_topo::region::{classify, Containment};
+#[doc(hidden)]
+pub fn exits_at_floor(body: &Body, at: ck_core::linalg::Vec3, down: ck_core::linalg::Vec3, depth: f64) -> bool {
+    use ck_topo::region::{classify_near, nearest_boundary_distance, Containment};
     let (lo, hi) = super::body_box(body);
     let eps = lo.dist(hi) * 1e-6;
     if !(eps > 0.0) {
         return false;
     }
-    let class = |h: f64| classify(body, at + down * h, 0.0);
+    // Inside at depth - eps and Outside at depth + eps needs a face within 2 eps of the floor point. Far from every face
+    // (the usual blind hole) the answer is no, and the full `classify` (a winding number over every face, seconds on a
+    // spline body, once per centre and rebuild) is never needed. Near a face `classify` itself reads the nearest feature
+    // alone (that distance is far under 1 % of the diagonal), which is what `classify_near` does.
+    match nearest_boundary_distance(body, at + down * depth) {
+        Some(d) if d <= 4.0 * eps => {}
+        _ => return false,
+    }
+    let class = |h: f64| classify_near(body, at + down * h, 0.0);
     class(depth - eps) == Containment::Inside && class(depth + eps) == Containment::Outside
 }
 

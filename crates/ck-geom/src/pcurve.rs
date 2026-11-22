@@ -89,10 +89,21 @@ impl<'a> CurveOnSurface<'a> {
 /// Project points to (u,v), unwrapping periodic parameters so the sequence
 /// is continuous across seams.
 /// Parameter lengths a B-spline surface closes on itself in (its first and
-/// last isoline coincide: a sweep or revolve of a closed profile stored as
+/// last isoline coincide (or a linear extrusion of a closed spline): a sweep or revolve of a closed profile stored as
 /// one patch). `Surface::periods` is None for these; the uv of a path
 /// crossing the closing isoline must still be unwrapped.
 pub fn closed_periods(surf: &Surface) -> (Option<f64>, Option<f64>) {
+    // a linear extrusion of a closed spline profile (no periodic flag): u closes where the profile's end meets its start
+    if let Surface::Extrusion { profile, .. } = surf {
+        if profile.period().is_none() && matches!(**profile, Curve::BSpline(_)) {
+            let (t0, t1) = profile.range();
+            let (p0, p1) = (profile.eval(t0), profile.eval(t1));
+            if t1 > t0 && (t1 - t0).is_finite() && p0.dist(p1) < 1e-7 * (1.0 + p0.len()) {
+                return (Some(t1 - t0), None);
+            }
+        }
+        return (None, None);
+    }
     let Surface::BSpline(bs) = surf else { return (None, None) };
     let ((u0, u1), (v0, v1)) = bs.domain();
     if !(u1 > u0 && v1 > v0) || !(u1 - u0).is_finite() || !(v1 - v0).is_finite() {
@@ -273,6 +284,8 @@ fn warm_project(surf: &Surface, mut u: f64, mut v: f64, p: Vec3) -> Option<(f64,
     // (the step is a function of the state alone: a state met before has already failed the residual test,
     // and the iteration would only go round that cycle until it gives up)
     let mut seen = [(0u64, 0u64); 12];
+    // (set once a step was held on the domain edge: the point is then accepted only when it is ON the surface to rounding)
+    let mut clamped = false;
     for it in 0..12 {
         let state = (u.to_bits(), v.to_bits());
         if seen[..it].contains(&state) {
@@ -281,7 +294,7 @@ fn warm_project(surf: &Surface, mut u: f64, mut v: f64, p: Vec3) -> Option<(f64,
         seen[it] = state;
         let d = surf.derivs1(u, v);
         let r = p - d.p;
-        if r.len() < 1e-10 * scale {
+        if r.len() < if clamped { 1e-13 } else { 1e-10 } * scale {
             return Some((u, v));
         }
         let (a, b, c) = (d.du.dot(d.du), d.du.dot(d.dv), d.dv.dot(d.dv));
@@ -292,8 +305,24 @@ fn warm_project(surf: &Surface, mut u: f64, mut v: f64, p: Vec3) -> Option<(f64,
         let (ru, rv) = (r.dot(d.du), r.dot(d.dv));
         u += (ru * c - rv * b) / det;
         v += (a * rv - b * ru) / det;
-        if !(u.is_finite() && v.is_finite()) || u < u0 || u > u1 || v < v0 || v > v1 {
+        if !(u.is_finite() && v.is_finite()) {
             return None;
+        }
+        // a point ON a boundary isoline of the domain (an edge that runs along the edge of a loft) is overshot by the
+        // step to just outside it, by rounding alone: that sample was thrown back to the global search, which landed on a
+        // neighbouring spot up to 3.5e-2 mm away, and the fit through it was up to 13 mm off between samples. Hold the
+        // parameter on the boundary and go on. A held parameter is a result only when the residual there is rounding
+        // (1e-13 of the scale; the boundary points measure under 1e-14): a point merely NEAR the edge also overshoots, and
+        // snapping it onto the edge leaves up to 5e-11 mm, inside the looser test above but far worse than the global
+        // search's 1e-14, and a fillet on a twisted extrude then could not be joined. Such a point is rejected as before.
+        // (clamp panics on an inverted range, fatal on wasm: a degenerate domain is left as it is)
+        if u0 <= u1 && (u < u0 || u > u1) {
+            u = u.clamp(u0, u1);
+            clamped = true;
+        }
+        if v0 <= v1 && (v < v0 || v > v1) {
+            v = v.clamp(v0, v1);
+            clamped = true;
         }
     }
     None
@@ -554,6 +583,7 @@ pub const PERIOD: f64 = TAU;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nurbs::bsurf::BSplineSurface;
     use crate::testutil::*;
     use crate::{frame_from, Frame};
 
@@ -618,5 +648,95 @@ mod tests {
         // continuous in u (no 2π jump)
         let uvs = p.sample(0.0, 1.0, 50);
         assert!(uvs.windows(2).all(|w| (w[1].x - w[0].x).abs() < 0.5));
+    }
+
+    /// Ruled loft strip of a written marine blade (2 x 33 control points, cubic along v, v knots of a 136 mm length parametrisation).
+    const STRIP: [(f64, f64, f64); 66] = [
+        (47.347573, -42.184956, -28.958244), (48.644255, -42.954384, -28.726074), (50.411770, -44.003197, -28.409601),
+        (60.062575, -43.761584, -25.008642), (65.062218, -42.545161, -23.017643), (69.887133, -40.805802, -21.001733),
+        (74.437914, -38.583903, -19.005157), (78.818833, -35.957292, -17.008443), (83.039855, -32.959792, -15.014014),
+        (87.120440, -29.618589, -13.020047), (91.071908, -25.951407, -11.026368), (94.908332, -21.970596, -9.032613),
+        (98.646077, -17.682470, -7.038292), (102.317311, -13.089830, -5.043493), (105.943757, -8.179004, -3.045248),
+        (109.654652, -2.990462, -1.063349), (113.221777, 2.542112, 0.913422), (116.272806, 8.459259, 2.908381),
+        (118.930575, 14.629489, 4.887290), (120.894656, 21.015700, 6.861689), (121.639163, 27.494292, 8.852964),
+        (120.793042, 33.868716, 10.875027), (116.537769, 40.133965, 13.168763), (106.922035, 42.219879, 14.913721),
+        (97.322241, 43.192533, 16.573398), (89.353999, 45.578111, 18.732531), (82.737026, 47.661230, 20.760699),
+        (76.473421, 49.414015, 22.802056), (70.776964, 50.787769, 24.713628), (59.854277, 51.803022, 28.296973),
+        (63.407884, 52.490359, 27.325424), (53.838292, 50.519644, 30.025267), (51.167414, 49.969617, 30.778794),
+        (36.520879, -32.538768, -28.958244), (27.104939, -23.982787, -28.726074), (14.270019, -12.320083, -28.409601),
+        (17.456386, -12.731119, -25.008642), (17.733896, -11.564997, -23.017643), (18.382938, -10.722687, -21.001733),
+        (18.874928, -9.768512, -19.005157), (19.347221, -8.814371, -17.008443), (19.762921, -7.832586, -15.014014),
+        (20.130907, -6.833128, -13.020047), (20.447761, -5.816184, -11.026368), (20.713452, -4.784731, -9.032613),
+        (20.927148, -3.740933, -7.038292), (21.088357, -2.687504, -5.043493), (21.196647, -1.625469, -3.045248),
+        (21.251171, -0.568071, -1.063349), (21.253250, 0.487996, 0.913422), (21.202111, 1.552543, 2.908381),
+        (21.098563, 2.604668, 4.887290), (20.943543, 3.648021, 6.861689), (20.734641, 4.691097, 8.852964),
+        (20.470838, 5.738699, 10.875027), (20.106689, 6.908811, 13.168763), (19.778837, 7.781113, 14.913721),
+        (19.444669, 8.603842, 16.573398), (18.938068, 9.636575, 18.732531), (18.458245, 10.617869, 20.760699),
+        (17.765453, 11.450861, 22.802056), (17.634518, 12.643396, 24.713628), (14.031331, 12.247624, 28.296973),
+        (32.316723, 25.945249, 27.325424), (35.814475, 33.750893, 30.025267), (36.790699, 35.929452, 30.778794),
+    ];
+    const STRIP_KV: [f64; 31] = [0.000000, 11.475069, 15.641729, 19.542276, 23.341515, 27.100006, 30.848296, 34.604776, 38.382376, 42.191564, 46.042127, 49.944534, 53.911443, 57.960062, 62.114895, 66.342486, 70.590126, 74.861518, 79.107997, 83.265770, 87.329436, 91.502212, 96.939702, 102.752101, 107.365380, 111.505961, 115.422665, 119.211086, 122.942091, 132.482726, 136.176439];
+
+    /// Points ON a boundary isoline of a free-form surface project onto it exactly. The Newton polish was refused for a step
+    /// that overshot the domain edge by rounding, the global search then returned a neighbouring spot (up to 3.5e-2 mm off) and
+    /// the fitted pcurve interpolated it (13 mm off between samples): a written and re-read marine propeller came back as a
+    /// surface body (EDGE_OFF_SURFACE on the blade's section edges).
+    #[test]
+    fn boundary_isoline_points_project_exactly() {
+        let mut kv = vec![STRIP_KV[0]; 3];
+        kv.extend(STRIP_KV);
+        kv.extend([STRIP_KV[30]; 3]);
+        let ctrl: Vec<Vec3> = STRIP.iter().map(|&(x, y, z)| Vec3::new(x, y, z)).collect();
+        let surf = Surface::BSpline(Box::new(BSplineSurface::new(1, 3, vec![0.0, 0.0, 1.0, 1.0], kv, 2, 33, ctrl, None).unwrap()));
+        let ((u0, u1), (v0, _)) = surf.domain();
+        // the section edge: the whole v = v0 isoline, run along u (a straight line of the ruled strip)
+        let pts: Vec<Vec3> = (0..=40).map(|k| surf.eval(u0 + (u1 - u0) * k as f64 / 40.0, v0)).collect();
+        let uv = project_points(&surf, &pts);
+        let worst = pts.iter().zip(&uv).map(|(p, q)| surf.eval(q.x, q.y).dist(*p)).fold(0.0, f64::max);
+        assert!(worst < 1e-7, "worst {worst:e}");
+        let c = Curve::line_through(pts[0], pts[40]);
+        let len = pts[0].dist(pts[40]);
+        let p = pcurve_of(&surf, &c, 0.0, len, 1e-6).unwrap();
+        let cs = CurveOnSurface::new(&p, &surf);
+        assert!(cs.deviation((0.0, len), &c, (0.0, len), 200) < 1e-6);
+    }
+
+    #[test]
+    fn boundary_isoline_warm_project_clamps_to_domain() {
+        use crate::nurbs::bsurf::BSplineSurface;
+        // Concave along v at u = 0 so any Gauss-Newton tangent step from (0, v)
+        // towards another sample on u = 0 initially overshoots into u < 0.
+        let bs = BSplineSurface::new(
+            1,
+            3,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            2,
+            4,
+            vec![
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(2.0, 2.0, 0.5),
+                Vec3::new(2.0, 4.0, 1.0),
+                Vec3::new(0.0, 6.0, 1.5),
+                Vec3::new(5.0, 0.0, 0.0),
+                Vec3::new(7.0, 2.0, 0.5),
+                Vec3::new(7.0, 4.0, 1.0),
+                Vec3::new(5.0, 6.0, 1.5),
+            ],
+            None,
+        )
+        .unwrap();
+        let surf = Surface::BSpline(Box::new(bs.clone()));
+        let p_next = surf.eval(0.0, 0.4);
+        let projected = warm_project(&surf, 0.0, 0.2, p_next).expect("warm_project on boundary isoline");
+        assert!(projected.0.abs() <= 1e-12, "u={}", projected.0);
+        assert!((projected.1 - 0.4).abs() <= 1e-10, "v={}", projected.1);
+        assert!(surf.eval(projected.0, projected.1).dist(p_next) < 1e-10);
+
+        let iso = Curve::BSpline(bs.iso_u(0.0));
+        let pc = pcurve_of(&surf, &iso, 0.0, 1.0, 1e-9).unwrap();
+        let cs = CurveOnSurface::new(&pc, &surf);
+        assert!(cs.deviation((0.0, 1.0), &iso, (0.0, 1.0), 64) < 1e-9);
+        assert!(pc.sample(0.0, 1.0, 32).iter().all(|q| q.x.abs() < 1e-9));
     }
 }

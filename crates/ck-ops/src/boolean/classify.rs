@@ -888,7 +888,7 @@ impl<'a> Solid<'a> {
             seen.push(i);
             let s = &b.face(self.faces[i]).surface;
             let mut ts = crate::intersect::cs::line_params(q, d, s, self.tol)?;
-            ts.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            ts.sort_by(|a, b| a.total_cmp(b));
             let mut prev: Option<f64> = None;
             for t in ts {
                 if t.abs() <= self.tol * 10.0 {

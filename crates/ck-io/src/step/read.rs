@@ -287,13 +287,18 @@ impl<'a> Rd<'a> {
                 let Some(ue) = self.f.ents.get(&u) else { continue };
                 if !got_len && ue.has("LENGTH_UNIT") {
                     if let Some(s) = self.unit_si(u, 0) {
-                        self.len = s * 1000.0;
-                        got_len = true;
+                        let mm = s * 1000.0;
+                        if mm.is_finite() && mm > 0.0 {
+                            self.len = mm;
+                            got_len = true;
+                        }
                     }
                 } else if !got_ang && ue.has("PLANE_ANGLE_UNIT") {
                     if let Some(s) = self.unit_si(u, 0) {
-                        self.ang = s;
-                        got_ang = true;
+                        if s.is_finite() && s > 0.0 {
+                            self.ang = s;
+                            got_ang = true;
+                        }
                     }
                 }
             }
@@ -305,13 +310,18 @@ impl<'a> Rd<'a> {
             let e = &self.f.ents[id];
             if !got_len && e.has("LENGTH_UNIT") {
                 if let Some(s) = self.unit_si(*id, 0) {
-                    self.len = s * 1000.0;
-                    got_len = true;
+                    let mm = s * 1000.0;
+                    if mm.is_finite() && mm > 0.0 {
+                        self.len = mm;
+                        got_len = true;
+                    }
                 }
             } else if !got_ang && e.has("PLANE_ANGLE_UNIT") {
                 if let Some(s) = self.unit_si(*id, 0) {
-                    self.ang = s;
-                    got_ang = true;
+                    if s.is_finite() && s > 0.0 {
+                        self.ang = s;
+                        got_ang = true;
+                    }
                 }
             }
         }
@@ -432,7 +442,7 @@ impl<'a> Rd<'a> {
             "CIRCLE" => {
                 let f = self.axis2(a.get(1).and_then(Val::as_ref).ok_or_else(|| bad(id, "CIRCLE without placement"))?)?;
                 let r = self.real(id, a.get(2), "radius")? * self.len;
-                if r <= 0.0 {
+                if !(r.is_finite() && r > 0.0) {
                     return Err(bad(id, "non-positive radius"));
                 }
                 Ok(Curve::Circle { frame: f, r })
@@ -440,7 +450,7 @@ impl<'a> Rd<'a> {
             "ELLIPSE" => {
                 let f = self.axis2(a.get(1).and_then(Val::as_ref).ok_or_else(|| bad(id, "ELLIPSE without placement"))?)?;
                 let (sa, sb) = (self.real(id, a.get(2), "semi axis 1")? * self.len, self.real(id, a.get(3), "semi axis 2")? * self.len);
-                if sa <= 0.0 || sb <= 0.0 {
+                if !(sa.is_finite() && sb.is_finite() && sa > 0.0 && sb > 0.0) {
                     return Err(bad(id, "non-positive semi axis"));
                 }
                 Ok(Curve::Ellipse { frame: f, a: sa, b: sb })
@@ -451,21 +461,29 @@ impl<'a> Rd<'a> {
             "PARABOLA" => {
                 let f = self.axis2(a.get(1).and_then(Val::as_ref).ok_or_else(|| bad(id, "PARABOLA without placement"))?)?;
                 let fd = self.real(id, a.get(2), "focal distance")? * self.len;
-                if fd <= 0.0 {
+                if !(fd.is_finite() && fd > 0.0 && (2.0 * fd).is_finite()) {
                     return Err(bad(id, "non-positive focal distance"));
                 }
                 let o = f.o + f.x * fd;
+                if !o.is_finite() {
+                    return Err(bad(id, "non-finite parabola origin"));
+                }
                 Ok(Curve::Conic { frame: Frame { o, x: -f.x, y: f.z.cross(-f.x), z: f.z }, p: 2.0 * fd, e: 1.0 })
             }
             "HYPERBOLA" => {
                 let f = self.axis2(a.get(1).and_then(Val::as_ref).ok_or_else(|| bad(id, "HYPERBOLA without placement"))?)?;
                 let (sa, sb) = (self.real(id, a.get(2), "semi axis")? * self.len, self.real(id, a.get(3), "semi imaginary axis")? * self.len);
-                if sa <= 0.0 || sb <= 0.0 {
+                if !(sa.is_finite() && sb.is_finite() && sa > 0.0 && sb > 0.0) {
                     return Err(bad(id, "non-positive semi axis"));
                 }
                 let c = (sa * sa + sb * sb).sqrt();
+                let p = sb * sb / sa;
+                let e = c / sa;
                 let o = f.o + f.x * c;
-                Ok(Curve::Conic { frame: Frame { o, x: -f.x, y: f.z.cross(-f.x), z: f.z }, p: sb * sb / sa, e: c / sa })
+                if !(c.is_finite() && p.is_finite() && e.is_finite() && o.is_finite()) {
+                    return Err(bad(id, "hyperbola parameter out of range"));
+                }
+                Ok(Curve::Conic { frame: Frame { o, x: -f.x, y: f.z.cross(-f.x), z: f.z }, p, e })
             }
             "TRIMMED_CURVE" => {
                 let basis = self.curve(a.get(1).and_then(Val::as_ref).ok_or_else(|| bad(id, "TRIMMED_CURVE without basis"))?)?;
@@ -548,7 +566,7 @@ impl<'a> Rd<'a> {
             "PLANE" => Ok(Surface::Plane { frame: ax(1)? }),
             "CYLINDRICAL_SURFACE" => {
                 let r = self.real(id, a.get(2), "radius")? * self.len;
-                if r <= 0.0 {
+                if !(r.is_finite() && r > 0.0) {
                     return Err(bad(id, "non-positive radius"));
                 }
                 Ok(Surface::Cylinder { frame: ax(1)?, r })
@@ -556,14 +574,14 @@ impl<'a> Rd<'a> {
             "CONICAL_SURFACE" => {
                 let r = self.real(id, a.get(2), "radius")? * self.len;
                 let sa = self.real(id, a.get(3), "semi angle")? * self.ang;
-                if r < 0.0 || sa.abs() <= 1e-12 || sa.abs() >= FRAC_PI_2 {
+                if !(r.is_finite() && r >= 0.0 && sa.is_finite() && sa.abs() > 1e-12 && sa.abs() < FRAC_PI_2) {
                     return Err(bad(id, "invalid cone radius / semi angle"));
                 }
                 Ok(Surface::Cone { frame: ax(1)?, r, semi_angle: sa })
             }
             "SPHERICAL_SURFACE" => {
                 let r = self.real(id, a.get(2), "radius")? * self.len;
-                if r <= 0.0 {
+                if !(r.is_finite() && r > 0.0) {
                     return Err(bad(id, "non-positive radius"));
                 }
                 Ok(Surface::Sphere { frame: ax(1)?, r })
@@ -573,7 +591,7 @@ impl<'a> Rd<'a> {
                 // A negative radius describes the same torus with the opposite
                 // normal (see `torus_flips`); the face sense is flipped by the caller.
                 let (m, n) = (m.abs(), n.abs());
-                if m <= 1e-12 || n <= 1e-12 {
+                if !(m.is_finite() && n.is_finite() && m > 1e-12 && n > 1e-12) {
                     return Err(bad(id, "zero torus radius"));
                 }
                 Ok(Surface::Torus { frame: ax(1)?, major: m, minor: n })
@@ -595,7 +613,11 @@ impl<'a> Rd<'a> {
             }
             "OFFSET_SURFACE" => {
                 let base = self.surface(a.get(1).and_then(Val::as_ref).ok_or_else(|| bad(id, "offset without basis"))?)?;
-                Ok(Surface::Offset { base: Box::new(base), dist: self.real(id, a.get(2), "distance")? * self.len })
+                let dist = self.real(id, a.get(2), "distance")? * self.len;
+                if !dist.is_finite() {
+                    return Err(bad(id, "non-finite offset distance"));
+                }
+                Ok(Surface::Offset { base: Box::new(base), dist })
             }
             "RECTANGULAR_TRIMMED_SURFACE" => self.surface(a.get(1).and_then(Val::as_ref).ok_or_else(|| bad(id, "trimmed surface without basis"))?),
             k => Err(unsupported(id, k)),
@@ -667,7 +689,7 @@ impl<'a> Rd<'a> {
         for dx in -1..=1 {
             for dy in -1..=1 {
                 for dz in -1..=1 {
-                    if let Some(l) = self.vgrid.get(&(kx + dx, ky + dy, kz + dz)) {
+                    if let Some(l) = self.vgrid.get(&(kx.saturating_add(dx), ky.saturating_add(dy), kz.saturating_add(dz))) {
                         for &v in l {
                             if self.b.vertex(v).p.dist(p) <= VTOL {
                                 return v;
@@ -738,6 +760,9 @@ impl<'a> Rd<'a> {
         }
         let mut t0 = Self::param(&curve, plo, None);
         let mut t1 = Self::param(&curve, phi, Some(t0));
+        if !(t0.is_finite() && t1.is_finite()) {
+            return Err(bad(id, "non-finite edge parameter"));
+        }
         if lo == hi {
             match (&curve, curve.period()) {
                 (_, Some(p)) => t1 = t0 + p,
@@ -749,18 +774,39 @@ impl<'a> Rd<'a> {
                 _ => return Err(bad(id, "closed edge on an open curve")),
             }
         } else if let Some(p) = curve.period() {
-            while t1 <= t0 + 1e-12 {
-                t1 += p;
+            if !(p.is_finite() && p > 0.0) {
+                return Err(bad(id, "invalid curve period"));
             }
-            while t1 - t0 > p + 1e-9 {
-                t1 -= p;
+            if t1 <= t0 + 1e-12 {
+                let k = ((t0 + 1e-12 - t1) / p).floor() + 1.0;
+                if k.is_finite() && k <= 4.0 {
+                    while t1 <= t0 + 1e-12 {
+                        t1 += p;
+                    }
+                } else if k.is_finite() {
+                    t1 += k * p;
+                } else {
+                    return Err(bad(id, "edge parameter overflow"));
+                }
+            }
+            if t1 - t0 > p + 1e-9 {
+                let k = ((t1 - t0 - (p + 1e-9)) / p).floor() + 1.0;
+                if k.is_finite() && k <= 4.0 {
+                    while t1 - t0 > p + 1e-9 {
+                        t1 -= p;
+                    }
+                } else if k.is_finite() {
+                    t1 -= k * p;
+                } else {
+                    return Err(bad(id, "edge parameter overflow"));
+                }
             }
         } else if t1 <= t0 && lo != hi && matches!(&curve, Curve::BSpline(bs) if curve.eval(bs.domain().0).dist(curve.eval(bs.domain().1)) < 1e-6 * (1.0 + plo.len())) {
             // a closed spline carrier whose arc crosses the seam (first vertex later on the curve than the second):
             // move the seam to the first vertex so the arc is one parameter range
             if let Curve::BSpline(bs) = &curve {
                 let (d0, d1) = bs.domain();
-                if t0 > d0 && t0 < d1 {
+                if bs.degree > 0 && (d1 - d0).is_finite() && t0 > d0 && t0 < d1 {
                     curve = Curve::BSpline(bs.with_seam_at(t0));
                     t1 += d1 - d0;
                 } else {
@@ -780,9 +826,12 @@ impl<'a> Rd<'a> {
             lo_is_start = !lo_is_start;
             t0 = Self::param(&curve, plo, None);
             t1 = Self::param(&curve, phi, Some(t0));
-            if t1 <= t0 {
+            if !(t0.is_finite() && t1.is_finite() && t1 > t0) {
                 return Err(bad(id, "edge has zero extent on its curve"));
             }
+        }
+        if !(t0.is_finite() && t1.is_finite() && t1 > t0) {
+            return Err(bad(id, "edge has invalid parameter range"));
         }
         let e = self.b.add_edge(curve, t0, t1, lo, hi);
         self.edges.insert(id, Some((e, lo_is_start)));
@@ -1002,13 +1051,13 @@ impl<'a> Rd<'a> {
             .map(|(id, _)| *id)
             .collect();
         solids.sort();
-        let name_of = |id: &u32| self.f.ents.get(id).and_then(|e| e.parts[0].args.first()).and_then(Val::as_str).unwrap_or("").to_string();
+        let name_of = |id: &u32| self.f.ents.get(id).and_then(|e| e.parts.first()).and_then(|p| p.args.first()).and_then(Val::as_str).unwrap_or("").to_string();
         let mut named: Vec<(u32, String)> = solids.iter().map(|id| (*id, name_of(id))).collect();
         // surface models (SHELL_BASED_SURFACE_MODEL): each shell is a part of its own, read the same way (a surface body)
         let mut models: Vec<u32> = self.f.ents.iter().filter(|(_, e)| e.parts.len() == 1 && e.kind() == "SHELL_BASED_SURFACE_MODEL").map(|(id, _)| *id).collect();
         models.sort();
         for m in models {
-            let a = &self.f.ents[&m].parts[0].args;
+            let Some(a) = self.f.ents.get(&m).and_then(|e| e.parts.first()).map(|p| &p.args) else { continue };
             for sh in a.get(1).and_then(Val::as_list).unwrap_or(&[]).iter().filter_map(Val::as_ref) {
                 if matches!(self.f.ents.get(&sh).map(|e| e.kind()), Some("OPEN_SHELL" | "CLOSED_SHELL")) {
                     named.push((sh, name_of(&m)));
@@ -1058,7 +1107,10 @@ impl<'a> Rd<'a> {
 
     fn solid(&mut self, sid: u32, k: usize, part: &mut SolidRead) -> R<()> {
         let e = self.ent(sid)?;
-        let a = &e.parts[0].args;
+        let Some(p0) = e.parts.first() else {
+            return Err(bad(sid, "empty entity"));
+        };
+        let a = &p0.args;
         // a shell of a surface model is read on its own; only a closed one is turned outward
         let lone = matches!(e.kind(), "OPEN_SHELL" | "CLOSED_SHELL");
         let outer = if lone { sid } else { a.get(1).and_then(Val::as_ref).ok_or_else(|| bad(sid, "solid without shell"))? };
@@ -1068,7 +1120,10 @@ impl<'a> Rd<'a> {
             for v in self.refs_list(sid, a.get(2), "void list")? {
                 let ve = self.ent(v)?;
                 if ve.kind() == "ORIENTED_CLOSED_SHELL" {
-                    let va = &ve.parts[0].args;
+                    let Some(vp0) = ve.parts.first() else {
+                        return Err(bad(v, "empty entity"));
+                    };
+                    let va = &vp0.args;
                     let inner = va.get(2).and_then(Val::as_ref).ok_or_else(|| bad(v, "ORIENTED_CLOSED_SHELL without shell"))?;
                     let o = va.get(3).and_then(Val::as_bool).unwrap_or(true);
                     shells.push((inner, !o));
@@ -1099,7 +1154,7 @@ impl<'a> Rd<'a> {
             shell_ids.push((shell, flipped));
         }
         for i in 0..queue.len() {
-            let (shell, s) = queue[i].take().unwrap();
+            let Some((shell, s)) = queue[i].take() else { continue };
             self.nface += 1;
             let name = FaceName::other(&feature, &format!("F{}", self.nface));
             let fid = s.id;
@@ -1297,7 +1352,7 @@ fn first_pass(c: &Curve, dom: (f64, f64), ncp: usize, p: Vec3, after: Option<f64
     let from = after.unwrap_or(d0);
     let n = (ncp * 8).clamp(128, 4096);
     let h = (d1 - from) / n as f64;
-    if !(h > 0.0) {
+    if !(h > 0.0 && h.is_finite()) {
         return None;
     }
     let f = |t: f64| c.eval(t).dist(p);
@@ -1372,6 +1427,9 @@ fn iso(surf: &Surface, d: usize, s: f64) -> Option<Iso> {
         (Surface::Cone { .. }, 0) => {
             let (p0, p1) = (surf.eval(s, 0.0), surf.eval(s, 1.0));
             let l = p0.dist(p1);
+            if !(l.is_finite() && l > 1e-15) {
+                return None;
+            }
             Some(Iso { curve: Curve::Line { o: p0, d: (p1 - p0) / l }, k: 1.0 / l })
         }
         (Surface::Sphere { frame, r }, 0) => {
@@ -1467,7 +1525,7 @@ fn exact_ext(surf: &Surface, c: &Curve, t0: f64, t1: f64) -> Option<Curve2> {
             if (r - sr).abs() > tol * (1.0 + r) || cf.o.dist(frame.o) > tol * (1.0 + r) || cf.z.dot(frame.z).abs() > tol {
                 return None;
             }
-            let h0 = frame.z.cross(cf.z).normalize();
+            let h0 = frame.z.cross(cf.z).try_normalize()?;
             let pm = cf.o + (cf.x * (0.5 * (t0 + t1)).cos() + cf.y * (0.5 * (t0 + t1)).sin()) * *r;
             let h = if h0.dot(pm - frame.o) >= 0.0 { h0 } else { -h0 };
             let u0 = h.dot(frame.y).atan2(h.dot(frame.x));
@@ -1642,6 +1700,9 @@ impl Rd<'_> {
             Surface::Sphere { frame, r } => {
                 let c = iso(surf, 0, 0.0)?.curve;
                 let (s, n) = (frame.o - frame.z * *r, frame.o + frame.z * *r);
+                if !(s.is_finite() && n.is_finite()) {
+                    return None;
+                }
                 let (vs, vn) = (self.vertex_at(s), self.vertex_at(n));
                 let e = self.b.add_edge(c, -FRAC_PI_2, FRAC_PI_2, vs, vn);
                 vec![
@@ -1652,7 +1713,11 @@ impl Rd<'_> {
             Surface::Torus { .. } => {
                 let sc = iso(surf, 0, 0.0)?.curve;
                 let rc = iso(surf, 1, 0.0)?.curve;
-                let v = self.vertex_at(sc.eval(0.0));
+                let p = sc.eval(0.0);
+                if !p.is_finite() {
+                    return None;
+                }
+                let v = self.vertex_at(p);
                 let es = self.b.add_edge(sc, 0.0, TAU, v, v);
                 let er = self.b.add_edge(rc, 0.0, TAU, v, v);
                 vec![
@@ -1810,6 +1875,9 @@ impl Rd<'_> {
             (None, Some(p)) => (1usize, p),
             _ => return,
         };
+        if !(per.is_finite() && per > 0.0) {
+            return;
+        }
         let pairs: Vec<(usize, usize)> = (0..n).flat_map(|i| (i + 1..n).map(move |j| (i, j))).filter(|&(i, j)| l[i].edge == l[j].edge && l[i].rev != l[j].rev).collect();
         let (du, dv) = bs.domain();
         let (lo, hi) = if d == 0 { du } else { dv };
@@ -1819,26 +1887,51 @@ impl Rd<'_> {
             // whose pcurve the file may put at the other end of the range from its neighbours, so the loop jumps a whole
             // period. Shift each pcurve to start where the one before it ends; keep that only if the loop then closes
             // inside the parameter range.
-            if pairs.is_empty() {
+            // Several seam pairs (a face whose boundary meets the seam at two places, an island and its outer loop joined along
+            // the seam) are chained the same way: each coedge continues where the one before it ends, the twins of a pair
+            // landing a period apart; kept only when the loop closes, stays in range and runs the face's way round.
+            if pairs.is_empty() || pairs.len() >= 2 {
                 let mut t: Vec<Co> = l.to_vec();
                 let mut ok = true;
                 for k in 1..n {
                     let (Some(e), Some(s0)) = (self.co_uv(&t[k - 1], false), self.co_uv(&t[k], true)) else { return };
                     let sh = ((comp(e, d) - comp(s0, d)) / per).round() * per;
                     if sh != 0.0 {
-                        let pc = t[k].pc.as_ref().unwrap();
+                        let Some(pc) = t[k].pc.as_ref() else { return };
                         t[k].pc = Some(translate(pc, unit2(d, sh)));
                     }
                 }
                 let (Some(e), Some(s0)) = (self.co_uv(&t[n - 1], false), self.co_uv(&t[0], true)) else { return };
                 ok &= (comp(e, d) - comp(s0, d)).abs() <= tol;
+                // (the whole chain may sit a period off the range: bring it in by the shift of its mean)
+                let (mut sum, mut cnt) = (0.0, 0usize);
                 for c in &t {
                     let (a, z) = self.co_ts(c);
-                    let pc = c.pc.as_ref().unwrap();
+                    let Some(pc) = c.pc.as_ref() else { return };
+                    for q in 0..=8 {
+                        sum += comp(pc.eval(a + (z - a) * q as f64 / 8.0), d);
+                        cnt += 1;
+                    }
+                }
+                if !pairs.is_empty() && cnt > 0 {
+                    let sh = -((sum / cnt as f64 - 0.5 * (lo + hi)) / per).round() * per;
+                    if sh != 0.0 {
+                        for c in t.iter_mut() {
+                            let Some(pc) = c.pc.as_ref() else { return };
+                            c.pc = Some(translate(pc, unit2(d, sh)));
+                        }
+                    }
+                }
+                for c in &t {
+                    let (a, z) = self.co_ts(c);
+                    let Some(pc) = c.pc.as_ref() else { return };
                     for q in 0..=8 {
                         let x = comp(pc.eval(a + (z - a) * q as f64 / 8.0), d);
                         ok &= x >= lo - tol && x <= hi + tol;
                     }
+                }
+                if !pairs.is_empty() {
+                    ok &= self.loop_area(&t) * if sense { 1.0 } else { -1.0 } > 0.0;
                 }
                 if ok {
                     l.clone_from_slice(&t);
@@ -1846,11 +1939,11 @@ impl Rd<'_> {
             }
             return;
         };
-        let shifted = |c: &Co, x: f64| -> Co {
-            let pc = c.pc.as_ref().unwrap();
+        let shifted = |c: &Co, x: f64| -> Option<Co> {
+            let pc = c.pc.as_ref()?;
             let mut o = c.clone();
             o.pc = Some(translate(pc, unit2(d, x)));
-            o
+            Some(o)
         };
         for first in [lo, hi] {
             let other = if first == lo { hi } else { lo };
@@ -1858,22 +1951,27 @@ impl Rd<'_> {
             let mut ok = true;
             // seam twins
             for (k, lvl) in [(i, first), (j, other)] {
-                let x = comp(self.co_uv(&l[k], true).unwrap(), d);
+                let Some(uv) = self.co_uv(&l[k], true) else { return };
+                let x = comp(uv, d);
                 let sh = ((lvl - x) / per).round() * per;
                 if (x + sh - lvl).abs() > tol {
                     ok = false;
                 }
-                t[k] = shifted(&l[k], sh);
+                let Some(sc) = shifted(&l[k], sh) else { return };
+                t[k] = sc;
             }
             // the two chains between the twins: from `lvl_from` to `lvl_to`
             for (start, count, lvl_from, lvl_to) in [(i + 1, j - i - 1, first, other), (j + 1, n - (j - i) - 1, other, first)] {
                 let mut at = lvl_from;
                 for q in 0..count {
                     let k = (start + q) % n;
-                    let x = comp(self.co_uv(&l[k], true).unwrap(), d);
+                    let Some(uv) = self.co_uv(&l[k], true) else { return };
+                    let x = comp(uv, d);
                     let sh = ((at - x) / per).round() * per;
-                    t[k] = shifted(&l[k], sh);
-                    at = comp(self.co_uv(&t[k], false).unwrap(), d);
+                    let Some(sc) = shifted(&l[k], sh) else { return };
+                    t[k] = sc;
+                    let Some(end_uv) = self.co_uv(&t[k], false) else { return };
+                    at = comp(end_uv, d);
                 }
                 if (at - lvl_to).abs() > tol {
                     ok = false;
@@ -1884,12 +1982,19 @@ impl Rd<'_> {
             }
             // the pcurves must reproduce the 3D edges
             let scale = 1.0 + bs.eval(du.0, dv.0).len();
-            let good = t.iter().all(|c| {
+            // (a shift by whole periods leaves every point where it was: the edge may deviate from the face by the file's own
+            // tolerance, so the test is that no pcurve got worse, not that the deviation is small)
+            let dev = |c: &Co| -> Option<f64> {
                 let ed = self.b.edge(c.edge);
                 let tm = 0.5 * (ed.t0 + ed.t1);
-                let uv = c.pc.as_ref().unwrap().eval(tm);
-                bs.eval(uv.x, uv.y).dist(ed.curve.eval(tm)) < 1e-4 * scale
-            });
+                let uv = c.pc.as_ref()?.eval(tm);
+                Some(bs.eval(uv.x, uv.y).dist(ed.curve.eval(tm)))
+            };
+            let mut good = true;
+            for (c, c0) in t.iter().zip(l.iter()) {
+                let (Some(dc), Some(dc0)) = (dev(c), dev(c0)) else { return };
+                good &= dc < 1e-4 * scale || dc <= dc0 + 1e-6 * scale;
+            }
             if good && self.loop_area(&t) * if sense { 1.0 } else { -1.0 } > 0.0 {
                 l.clone_from_slice(&t);
                 return;
@@ -1902,7 +2007,10 @@ impl Rd<'_> {
         let mut prev: Option<Vec2> = None;
         for i in 0..l.len() {
             let (a, z) = self.co_ts(&l[i]);
-            let pc = l[i].pc.clone().unwrap();
+            let Some(pc) = l[i].pc.clone() else {
+                prev = None;
+                continue;
+            };
             if let Some(p) = prev {
                 let s = pc.eval(a);
                 let mut d = Vec2::new(0.0, 0.0);
@@ -1962,13 +2070,16 @@ impl Rd<'_> {
     /// Windings of a loop along one periodic axis: Σ displacement / period.
     fn winding(&self, l: &[Co], d: usize, per: Option<f64>) -> Option<i64> {
         let per = per?;
+        if !(per.is_finite() && per > 0.0) {
+            return None;
+        }
         let mut s = 0.0;
         for c in l {
             let (a, z) = (self.co_uv(c, true)?, self.co_uv(c, false)?);
             s += comp(z, d) - comp(a, d);
         }
         let k = (s / per).round();
-        ((s / per - k).abs() < 1e-6).then_some(k as i64)
+        (k.is_finite() && k.abs() < 1e15 && (s / per - k).abs() < 1e-6).then_some(k as i64)
     }
 
     fn complete_periodic(
@@ -1996,10 +2107,12 @@ impl Rd<'_> {
             return Ok(loops);
         }
         let d = wind[0].1;
-        if wind.iter().any(|w| w.1 != d || w.2.abs() != 1) {
+        if wind.iter().any(|w| w.1 != d || (w.2 != 1 && w.2 != -1)) {
             return Err(ImportError::new("unsupported", Some(id), "periodic face whose boundary winds more than once or around both directions"));
         }
-        let per = pers[d].unwrap();
+        let Some(per) = pers[d] else {
+            return Err(ImportError::new("topology", Some(id), "missing period for winding axis"));
+        };
         let mut loops = loops;
         match wind.len() {
             2 if wind[0].2 == -wind[1].2 => {
@@ -2185,6 +2298,9 @@ impl Rd<'_> {
     ) -> R<Vec<Co>> {
         let o = 1 - d;
         let fail = || ImportError::new("topology", Some(id), "periodic face whose two boundaries have no vertices at a common seam position");
+        if la.is_empty() || lb.is_empty() {
+            return Err(fail());
+        }
         // candidate seam positions: the start coordinate of every coedge of A
         let mut chosen = None;
         for i in 0..la.len() {
@@ -2196,7 +2312,8 @@ impl Rd<'_> {
         }
         if chosen.is_none() {
             // no common seam position: cut B's boundary where it crosses A's first vertex
-            let s = comp(self.co_uv(&la[0], true).ok_or_else(fail)?, d);
+            let first_a = la.first().ok_or_else(fail)?;
+            let s = comp(self.co_uv(first_a, true).ok_or_else(fail)?, d);
             if self.split_loop_at(&mut lb, d, s, per, rest) {
                 if let Some((rb, _)) = self.rotate_to(&lb, d, s, per) {
                     chosen = Some((0, rb));
@@ -2213,13 +2330,13 @@ impl Rd<'_> {
         let (pu, pv) = if d == 0 { (Some(per), per_o) } else { (per_o, Some(per)) };
         self.unwrap_loop(&mut ra, pu, pv);
         self.unwrap_loop(&mut rb, pu, pv);
-        let a0 = self.co_uv(&ra[0], true).ok_or_else(fail)?;
+        let a0 = self.co_uv(ra.first().ok_or_else(fail)?, true).ok_or_else(fail)?;
         let s = comp(a0, d);
         // shift B so its start meets the end of the seam leg
-        let b0 = self.co_uv(&rb[0], true).ok_or_else(fail)?;
+        let b0 = self.co_uv(rb.first().ok_or_else(fail)?, true).ok_or_else(fail)?;
         let target_d = s + wa as f64 * per;
         let mut sh = unit2(d, ((target_d - comp(b0, d)) / per).round() * per);
-        if let Some(po) = per_o {
+        if let Some(po) = per_o.filter(|&po| po.is_finite() && po > 0.0) {
             // B's copy along the other period: the face lies to the left of A's
             // travel (seen against the face normal, so to the right for a
             // reversed face). When the loops are not half a period apart the
@@ -2240,10 +2357,10 @@ impl Rd<'_> {
         for c in rb.iter_mut() {
             c.pc = c.pc.as_ref().map(|p| translate(p, sh));
         }
-        let b0 = self.co_uv(&rb[0], true).ok_or_else(fail)?;
+        let b0 = self.co_uv(rb.first().ok_or_else(fail)?, true).ok_or_else(fail)?;
         // seam edge from vertex of A's start to vertex of B's start
-        let va = self.co_start_vertex(&ra[0]);
-        let vb = self.co_start_vertex(&rb[0]);
+        let va = self.co_start_vertex(ra.first().ok_or_else(fail)?);
+        let vb = self.co_start_vertex(rb.first().ok_or_else(fail)?);
         let (o_a, o_b) = (comp(a0, o), comp(b0, o));
         let isoc = iso(surf, d, s).ok_or_else(|| ImportError::new("unsupported", Some(id), format!("seam on a {} surface", surf.kind())))?;
         if (o_b - o_a).abs() < 1e-12 {
@@ -2252,6 +2369,9 @@ impl Rd<'_> {
         // t of the seam curve at coordinate o: the iso curve has o(t) = k·t + c with c fixed by its start point
         let t_of = |ob: f64| -> f64 { self.iso_t(&isoc, surf, d, s, ob) };
         let (ta, tb) = (t_of(o_a), t_of(o_b));
+        if !(ta.is_finite() && tb.is_finite() && ta != tb) {
+            return Err(ImportError::new("topology", Some(id), "degenerate seam"));
+        }
         let (e, fwd_is_rev) = if ta < tb {
             (self.b.add_edge(isoc.curve.clone(), ta, tb, va, vb), false)
         } else {
@@ -2297,7 +2417,7 @@ impl Rd<'_> {
             return Err(fail("single winding boundary around the v direction"));
         }
         // which way does the face lie from the boundary: left of the traversal
-        let c0 = &la[0];
+        let c0 = la.first().ok_or_else(|| fail("empty loop"))?;
         let a0 = self.co_uv(c0, true).ok_or_else(|| fail("no pcurve"))?;
         let ed = self.b.edge(c0.edge);
         let tm = 0.5 * (ed.t0 + ed.t1);
@@ -2329,13 +2449,19 @@ impl Rd<'_> {
         };
         let s = a0.x;
         let pole_p = surf.eval(s, v_pole);
+        if !pole_p.is_finite() {
+            return Err(fail("non-finite pole point"));
+        }
         let vp = self.vertex_at(pole_p);
-        let va = self.co_start_vertex(&la[0]);
+        let va = self.co_start_vertex(c0);
         if va == vp {
             return Err(fail("boundary starts at the pole"));
         }
         let isoc = iso(surf, 0, s).ok_or_else(|| fail("no seam curve"))?;
         let (ta, tb) = (self.iso_t(&isoc, surf, 0, s, a0.y), self.iso_t(&isoc, surf, 0, s, v_pole));
+        if !(ta.is_finite() && tb.is_finite() && ta != tb) {
+            return Err(fail("degenerate pole seam"));
+        }
         let (e, rev) = if ta < tb {
             (self.b.add_edge(isoc.curve.clone(), ta, tb, va, vp), false)
         } else {
@@ -2559,7 +2685,7 @@ END-ISO-10303-21;";
 
     /// Stage timings of an import (`STEP_PROFILE=<file> cargo test --profile fast -p ck-io profile_import -- --ignored --nocapture`).
     #[test]
-    #[ignore]
+    #[ignore = "diagnostic: needs STEP_PROFILE env input, prints stage timings; run by hand"]
     fn profile_import() {
         let Ok(path) = std::env::var("STEP_PROFILE") else { return };
         let text = std::fs::read_to_string(path).unwrap();
@@ -2674,5 +2800,34 @@ END-ISO-10303-21;";
         // the recognised-versus-plain comparison still accepts equal reads and refuses a different volume
         assert!(recognised_is_no_worse(&a, &b));
         assert!(!recognised_is_no_worse(&c, &a));
+    }
+
+    #[test]
+    fn extreme_winding_does_not_overflow_abs() {
+        let f = StepFile::default();
+        let mut rd = Rd::new(&f);
+        let p0 = Vec3::new(1.0, 0.0, 0.0);
+        let p1 = Vec3::new(0.0, 1.0, 0.0);
+        let v0 = rd.b.add_vertex(p0);
+        let v1 = rd.b.add_vertex(p1);
+        let e = rd.b.add_edge(Curve::line(p0, Vec3::new(-1.0, 1.0, 0.0).normalize()), 0.0, 1.0, v0, v1);
+        // Huge negative u-displacement produces k = -1e25 -> i64::MIN in `k as i64`, which panicked on `w.2.abs()`
+        let c = Co { edge: e, rev: false, pc: Some(Curve2::Line { o: Vec2::new(0.0, 0.0), d: Vec2::new(-1.0e25 * TAU, 0.0) }) };
+        let surf = Surface::Cylinder { frame: Frame { o: Vec3::ZERO, x: Vec3::X, y: Vec3::Y, z: Vec3::Z }, r: 1.0 };
+        assert!(rd.winding(std::slice::from_ref(&c), 0, Some(TAU)).is_none());
+        let _ = rd.complete_periodic(1, &surf, true, vec![vec![c]], Some(TAU), None, &mut []);
+    }
+
+    #[test]
+    fn missing_pcurves_in_loop_helpers_do_not_panic() {
+        let f = StepFile::default();
+        let mut rd = Rd::new(&f);
+        let v0 = rd.b.add_vertex(Vec3::ZERO);
+        let v1 = rd.b.add_vertex(Vec3::X);
+        let e = rd.b.add_edge(Curve::line(Vec3::ZERO, Vec3::X), 0.0, 1.0, v0, v1);
+        let mut l = vec![Co { edge: e, rev: false, pc: None }; 3];
+        rd.unwrap_loop(&mut l, Some(TAU), None);
+        let bs = BSplineSurface::bilinear(Vec3::ZERO, Vec3::X, Vec3::Y, Vec3::new(1.0, 1.0, 0.0));
+        rd.fix_closed_spline_loop(&mut l, &Surface::BSpline(Box::new(bs)), true);
     }
 }

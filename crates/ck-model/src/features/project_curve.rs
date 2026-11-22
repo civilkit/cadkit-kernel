@@ -167,7 +167,7 @@ impl Caster<'_> {
                 .iter()
                 .map(|h| (h.p.dist(q), h.p))
                 .filter(|(d, p)| others.iter().all(|o| *d <= p.dist(*o)))
-                .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+                .min_by(|a, b| a.0.total_cmp(&b.0));
             match near {
                 Some((_, p)) => {
                     lo = m;
@@ -207,7 +207,7 @@ fn project_entity(c: &mut Caster, src: &[Vec3]) -> Vec<Track> {
                 }
             }
         }
-        pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        pairs.sort_by(|a, b| a.0.total_cmp(&b.0));
         let mut used_hit = vec![false; hits.len()];
         let mut used_open = vec![false; open.len()];
         let mut next_open: Vec<usize> = vec![];
@@ -347,7 +347,7 @@ fn src_at(src: &[Vec3], s: f64) -> Vec3 {
 fn refine_track(c: &mut Caster, src: &[Vec3], t: &mut Track) {
     for _ in 0..20 {
         let mut lens: Vec<f64> = t.pts.windows(2).map(|w| w[0].dist(w[1])).collect();
-        lens.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        lens.sort_by(|a, b| a.total_cmp(b));
         let median = lens[lens.len() / 2];
         let target = (2.5 * median).max(1e-9);
         let mut pts = Vec::with_capacity(t.pts.len() + 8);
@@ -363,7 +363,7 @@ fn refine_track(c: &mut Caster, src: &[Vec3], t: &mut Track) {
                     let mid = (a + b) * 0.5;
                     buf.clear();
                     c.hits_on(t.face, src_at(src, sm), &mut buf);
-                    let near = buf.iter().map(|h| (h.p.dist(mid), h.p)).min_by(|x, y| x.0.partial_cmp(&y.0).unwrap_or(std::cmp::Ordering::Equal));
+                    let near = buf.iter().map(|h| (h.p.dist(mid), h.p)).min_by(|x, y| x.0.total_cmp(&y.0));
                     if let Some((d, p)) = near {
                         if d < 0.6 * len {
                             pts.push(p);
@@ -540,7 +540,7 @@ pub(crate) fn plane_normal(pts: &[Vec3]) -> Option<Vec3> {
         }
     }
     let mut idx = [0usize, 1, 2];
-    idx.sort_by(|&i, &j| a[i][i].partial_cmp(&a[j][j]).unwrap_or(std::cmp::Ordering::Equal));
+    idx.sort_by(|&i, &j| a[i][i].total_cmp(&a[j][j]));
     let (mid, big) = (a[idx[1]][idx[1]], a[idx[2]][idx[2]]);
     // collinear: the two smaller spreads vanish against the largest
     if !(big > 1e-18) || mid < 1e-10 * big {

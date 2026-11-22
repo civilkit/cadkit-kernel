@@ -242,7 +242,7 @@ pub fn analyze(m: &Model, claimed: &HashSet<FaceId>, ai: usize) -> Option<Prism>
         levels.push(*hi);
     }
     levels.retain(|z| *z >= zmin - 1e-9 && *z <= zmax + 1e-9);
-    levels.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    levels.sort_by(|a, b| a.total_cmp(b));
     levels.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
 
     let vertical = |e: EdgeId| matches!(m.curve(e), Curve::Line { d, .. } if par(*d, nv));

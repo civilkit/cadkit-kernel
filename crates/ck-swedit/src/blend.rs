@@ -75,7 +75,7 @@ fn supports_of(m: &Model, f: FaceId, own: &HashSet<FaceId>, score: &dyn Fn(EdgeI
             None => acc.push((g, e, sc)),
         }
     }
-    acc.sort_by(|x, y| y.2.partial_cmp(&x.2).unwrap());
+    acc.sort_by(|x, y| y.2.total_cmp(&x.2));
     acc
 }
 
@@ -337,14 +337,14 @@ fn plane_rails(cx: &Cx, f: FaceId, own: &HashSet<FaceId>) -> Vec<(FaceId, EdgeId
             }
             let rails = |k: usize| -> Option<(f64, EdgeId)> {
                 let rs: Vec<&(EdgeId, Vec3)> = nb[k].2.iter().filter(|(_, d)| d.cross(dir).len() < 1e-6).collect();
-                let e = rs.iter().max_by(|x, y| m.b.edge_length(x.0).partial_cmp(&m.b.edge_length(y.0)).unwrap())?.0;
+                let e = rs.iter().max_by(|x, y| m.b.edge_length(x.0).total_cmp(&m.b.edge_length(y.0)))?.0;
                 Some((rs.iter().map(|x| m.b.edge_length(x.0)).sum(), e))
             };
             let (Some((la, ea)), Some((lb, eb))) = (rails(i), rails(j)) else { continue };
             cands.push((la + lb, nb[i].0, ea, nb[j].0, eb));
         }
     }
-    cands.sort_by(|x, y| y.0.partial_cmp(&x.0).unwrap());
+    cands.sort_by(|x, y| y.0.total_cmp(&x.0));
     cands.into_iter().map(|b| (b.1, b.2, b.3, b.4)).collect()
 }
 

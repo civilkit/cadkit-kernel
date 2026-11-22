@@ -384,7 +384,7 @@ fn van_scan() {
 /// Probe (run with --ignored --nocapture): the van with no triangle target at two tolerances (the smallest mesh each
 /// allows, its measured deviation, conversion time), and the undecimated mesh converted with the limits raised.
 #[test]
-#[ignore]
+#[ignore = "diagnostic probe: needs the van STL, prints only; run by hand"]
 fn van_probe() {
     let Some(path) = van_path() else { return };
     let (pos, idx) = read_stl(&path);

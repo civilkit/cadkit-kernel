@@ -220,7 +220,7 @@ pub fn group(arr: &Arrangement, s: &Surface, sense: bool, cycles: Vec<Vec<He>>) 
             .iter()
             .enumerate()
             .filter(|(_, &o)| in_polygon(s, probe, &polys[o]))
-            .min_by(|a, b| areas[*a.1].partial_cmp(&areas[*b.1]).unwrap())
+            .min_by(|a, b| areas[*a.1].total_cmp(&areas[*b.1]))
             .map(|(k, _)| k);
         match host {
             Some(k) => frags[k].push(c.clone()),
@@ -382,7 +382,7 @@ pub fn sample_point(arr: &Arrangement, f: &Fragment) -> Option<(Vec3, Vec3)> {
         let e = &arr.edges[h.0];
         e.curve.eval(e.t0).dist(e.curve.eval(e.t1)).max(e.curve.eval(e.t0).dist(e.curve.eval(0.5 * (e.t0 + e.t1))))
     };
-    cand.sort_by(|a, b| len(b).partial_cmp(&len(a)).unwrap());
+    cand.sort_by(|a, b| len(b).total_cmp(&len(a)));
     let all: Vec<Vec3> = f.loops.iter().flatten().map(|h| arr.verts[he_start(arr, *h)]).collect();
     let mut size = 0.0f64;
     for p in &all {
@@ -728,7 +728,7 @@ pub fn select_with(
         let key = |v: Vec3| (v.x, v.y, v.z);
         cs.sort_by(|a, b| {
             let (x, y) = (key(a.0), key(b.0));
-            let cmp = |p: f64, q: f64| if (p - q).abs() <= 1e-9 { std::cmp::Ordering::Equal } else { p.partial_cmp(&q).unwrap() };
+            let cmp = |p: f64, q: f64| if (p - q).abs() <= 1e-9 { std::cmp::Ordering::Equal } else { p.total_cmp(&q) };
             cmp(x.0, y.0).then(cmp(x.1, y.1)).then(cmp(x.2, y.2))
         });
         for (k, (_, i)) in cs.into_iter().enumerate() {
@@ -1076,8 +1076,17 @@ pub fn build(arr: &Arrangement, faces: &[OutFace]) -> Body {
             b.faces[f.idx()].absorbed = of.absorbed.clone();
         }
         let (pu, pv) = of.surface.periods();
+        // A sphere's latitude: `sphere_meridian` runs v past the pole, so v and v + 2 pi name one point. Without chaining and
+        // sheeting v by whole turns a meridian seam coedge at v in [3 pi / 2, 2 pi] was left beside the equator coedges at v = 0
+        // (a loop that does not close in uv: the display mesh covered the wrong region).
+        // (A closed B-spline's loops are not chained here: the mass integral and the blend sanity volume read their seam
+        // twins as they are written, see docs/dead-ends.md 2026-11-21.)
+        let sphere = matches!(of.surface, Surface::Sphere { .. });
+        let sheet_all: (Option<(f64, f64)>, Option<(f64, f64)>) = (None, if sphere { Some((0.0, TAU)) } else { None });
         for l in &of.loops {
             let lp = b.add_loop(f);
+            let (chain_pu, chain_pv) = (pu, pv.or(sphere.then_some(TAU)));
+            let sheet = sheet_all;
             let mut prev_end: Option<Vec2> = None;
             // (start, end) uv of every coedge's pcurve, for the pole fix below
             let mut ends: Vec<Option<(Vec2, Vec2)>> = vec![];
@@ -1112,13 +1121,18 @@ pub fn build(arr: &Arrangement, faces: &[OutFace]) -> Body {
                     let mut pc = pc;
                     if let Some(target) = forced.get(k).copied().flatten() {
                         let du = pu.map_or(0.0, |p| ((target - pc.eval(ta).x) / p).round() * p);
-                        if du != 0.0 {
-                            pc = shift2(&pc, Vec2::new(du, 0.0));
+                        // (the forced copy fixes u; v still follows the chain: a sphere's meridian runs v a period off)
+                        let dv = match (prev_end, chain_pv) {
+                            (Some(prev), Some(p)) => ((prev.y - pc.eval(ta).y) / p).round() * p,
+                            _ => 0.0,
+                        };
+                        if du != 0.0 || dv != 0.0 {
+                            pc = shift2(&pc, Vec2::new(du, dv));
                         }
                     } else if let Some(prev) = prev_end {
                         let s = pc.eval(ta);
-                        let du = pu.map_or(0.0, |p| ((prev.x - s.x) / p).round() * p);
-                        let dv = pv.map_or(0.0, |p| ((prev.y - s.y) / p).round() * p);
+                        let du = chain_pu.map_or(0.0, |p| ((prev.x - s.x) / p).round() * p);
+                        let dv = chain_pv.map_or(0.0, |p| ((prev.y - s.y) / p).round() * p);
                         if du != 0.0 || dv != 0.0 {
                             pc = shift2(&pc, Vec2::new(du, dv));
                         }
@@ -1162,6 +1176,33 @@ pub fn build(arr: &Arrangement, faces: &[OutFace]) -> Body {
                                     let d = if pu.is_some() { Vec2::new(-2.0 * p, 0.0) } else { Vec2::new(0.0, -2.0 * p) };
                                     b.coedges[cs[k].idx()].pcurve = Some(shift2(&pc, d));
                                 }
+                            }
+                        }
+                    }
+                }
+            } else if sheet.0.is_some() || sheet.1.is_some() {
+                // the chain is continuous but may sit a period off the surface's own parameter range: put the loop on the sheet
+                // its mean lies on
+                let cs = b.lp(lp).coedges.clone();
+                let (mut sx, mut sy, mut n) = (0.0, 0.0, 0usize);
+                for &c in &cs {
+                    if b.coedge(c).pcurve.is_some() {
+                        let (ta, tb) = b.coedge_params(c);
+                        for t in [ta, tb] {
+                            let q = b.coedge_uv(c, t, None);
+                            sx += q.x;
+                            sy += q.y;
+                            n += 1;
+                        }
+                    }
+                }
+                if n > 0 {
+                    let k = |m: f64, d: Option<(f64, f64)>| d.map_or(0.0, |(mid, p)| -((m - mid) / p).round() * p);
+                    let d = Vec2::new(k(sx / n as f64, sheet.0), k(sy / n as f64, sheet.1));
+                    if d.x != 0.0 || d.y != 0.0 {
+                        for &c in &cs {
+                            if let Some(pc) = b.coedges[c.idx()].pcurve.clone() {
+                                b.coedges[c.idx()].pcurve = Some(shift2(&pc, d));
                             }
                         }
                     }

@@ -79,6 +79,16 @@ describe('session ops (pure)', () => {
     assert.equal(s.history().length, 1);
   });
 
+  it('remove with detach keeps referencing features in place', async () => {
+    const s = new Session(plateDoc(), fake(), 't', 'tag');
+    const r = await s.edit([
+      { op: 'set', id: 'F2', path: 'frozenFrame', value: { o: [0, 0, 0], x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] } },
+      { op: 'remove', id: 'F1', detach: true },
+    ], 'detach base');
+    assert.equal(r.ok, true);
+    assert.deepEqual(s.document.features.map((f) => f.id), ['F2']);
+  });
+
   it('failed batches leave the document unchanged (atomic)', async () => {
     const s = new Session(plateDoc(), fake({ errors: [['F3', { code: 'filletChamfer', params: {} }]] }), 't', 'tag');
     const before = JSON.stringify(s.document);
@@ -713,5 +723,49 @@ describe('session repair of lost references', { skip: !existsSync(wasmPath()) &&
     } finally {
       await s.close();
     }
+  });
+});
+
+describe('session serialisation and reference scan', () => {
+  it('overlapping edits and undo run in call order and none is lost', async () => {
+    const slow: KernelTransport = {
+      async request(msg: Record<string, unknown>): Promise<KernelReply> {
+        await new Promise((r) => setTimeout(r, 5));
+        return fake().request(msg);
+      },
+    };
+    const s = new Session(plateDoc(), slow, 't', 'tag');
+    const [a, b, c] = await Promise.all([
+      s.edit([{ op: 'set', id: 'F2', path: 'depth', value: 5 }]),
+      s.edit([{ op: 'set', id: 'F2', path: 'end', value: 'through' }]),
+      s.edit([{ op: 'add', feature: { type: 'fillet', radius: 1, edges: [] } }]),
+    ]);
+    assert.deepEqual([a.ok, b.ok, c.ok], [true, true, true]);
+    const f2 = s.document.features[1] as unknown as { depth: number; end: string };
+    assert.equal(f2.depth, 5);
+    assert.equal(f2.end, 'through');
+    assert.equal(s.document.features.length, 3);
+    assert.equal(s.history().length, 3);
+    const [u, d] = await Promise.all([s.undo(1), s.edit([{ op: 'set', id: 'F2', path: 'depth', value: 7 }])]);
+    assert.equal(u.records.length, 1);
+    assert.equal(d.ok, true);
+    assert.equal(s.document.features.length, 2);
+    assert.equal((s.document.features[1] as unknown as { depth: number }).depth, 7);
+    // a failing call does not block the queue
+    const bad = s.edit([{ op: 'set', id: 'nope', path: 'x', value: 1 }]);
+    const ok = s.edit([{ op: 'set', id: 'F2', path: 'depth', value: 8 }]);
+    assert.equal((await bad).ok, false);
+    assert.equal((await ok).ok, true);
+  });
+
+  it('referencers reads reference positions, not labels, and sees face-name references', () => {
+    const doc = plateDoc();
+    (doc.features[1] as unknown as Record<string, unknown>).name = 'F1';
+    assert.deepEqual(referencers(doc, 'F1'), ['F2']);
+    const labelOnly = { ...doc, features: [doc.features[0], { type: 'extrude', op: 'add', sketch: 'X', depth: 1, id: 'F2', name: 'F1', group: 'F1' }] } as typeof doc;
+    assert.deepEqual(referencers(labelOnly, 'F1'), []);
+    const faceRef = { ...doc, features: [doc.features[0], { type: 'fillet', id: 'F3', radius: 1, edges: [{ faces: ['F1.C1', 'F1.C2'], at: [0, 0, 0] }] }] } as typeof doc;
+    assert.deepEqual(referencers(faceRef, 'F1'), ['F3']);
+    assert.deepEqual(referencers(faceRef, 'F10'), []);
   });
 });

@@ -48,7 +48,7 @@ impl Roots {
     /// Sort ascending and merge roots closer than `tol` (relative to scale).
     fn finish(mut self) -> Roots {
         let s = &mut self.r[..self.n];
-        s.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        s.sort_by(|a, b| a.total_cmp(b));
         let mut out = Roots::NONE;
         for &x in s.iter() {
             if out.n > 0 {

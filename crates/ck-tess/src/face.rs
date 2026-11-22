@@ -306,13 +306,23 @@ pub fn mesh_face(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, boo
         }
     };
     // A face that meshed cleanly is done (no exact-area integral: it costs more than the tessellation itself), except a face
-    // on a surface periodic both ways (a torus): its loops can close the wrong way round the seams and give a closed mesh of
-    // the wrong region (an eyebolt's eye half covered twice over, the other half missing), which only the area shows.
-    let doubly_periodic = matches!(body.face(f).surface.periods(), (Some(_), Some(_)));
-    if !doubly_periodic && matches!(&first, Ok(m) if !m.open && m.unrecovered == 0 && !m.tris.is_empty()) {
+    // on a surface that wraps or closes on itself (a torus, a sphere piece, a closed B-spline): its loops can close the wrong
+    // way round the seams and give a closed mesh of the wrong region (an eyebolt's eye half covered twice over, the other half
+    // missing; a split sphere meshed at three times its area), which only the area shows.
+    let clean = matches!(&first, Ok(m) if !m.open && m.unrecovered == 0 && !m.tris.is_empty());
+    if clean && !wraps_or_closes(&body.face(f).surface) {
         return first;
     }
-    escalate(body, f, params, virt, ssi, cut, tol, first)
+    escalate(body, f, params, virt, ssi, cut, tol, first, clean)
+}
+
+/// A surface on which a trim loop can close the wrong way round a seam: periodic (but not the plane-like cylinder and cone, whose
+/// faces are far too many to pay the exact-area integral for) or a B-spline that closes on itself without a periodic flag.
+fn wraps_or_closes(s: &Surface) -> bool {
+    match s {
+        Surface::Plane { .. } | Surface::Cylinder { .. } | Surface::Cone { .. } => false,
+        _ => s.periods() != (None, None) || ck_geom::pcurve::closed_periods(s) != (None, None),
+    }
 }
 
 /// Runs `g` with trim ends welded within `rel` of the parameter range.
@@ -331,9 +341,9 @@ fn mesh_area(m: &FaceMesh) -> f64 {
 /// strip with welded trim ends, the universal cover with and without the weld), judge each by the exact face area, and keep
 /// the one that covers it best: a face is never dropped while any attempt produced triangles.
 #[allow(clippy::too_many_arguments)]
-fn escalate(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bool)], ssi: &[f64], cut: FaceCut, tol: &Tol, first: Result<FaceMesh, String>) -> Result<FaceMesh, String> {
+fn escalate(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bool)], ssi: &[f64], cut: FaceCut, tol: &Tol, first: Result<FaceMesh, String>, first_clean: bool) -> Result<FaceMesh, String> {
     let exact = ck_topo::mass::face_integral::<1>(body, f, 1, &|_, n| [n.len()])[0].abs();
-    let periodic = body.face(f).surface.periods() != (None, None);
+    let periodic = body.face(f).surface.periods() != (None, None) || ck_geom::pcurve::closed_periods(&body.face(f).surface) != (None, None);
     let score = |m: &FaceMesh| -> f64 {
         if m.tris.is_empty() || !(exact > 0.0) {
             return f64::INFINITY;
@@ -374,10 +384,31 @@ fn escalate(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bool)], 
         }
     }
     match best {
+        // a first mesh that was closed and clean but covers a region of the wrong size, and no other attempt does better:
+        // refuse the face (the caller lists it as failed and `validate` names it) rather than show a wrong surface
+        Some(m) if first_clean && exact > 0.0 && score(&m) > WRONG_REGION_LOG_RATIO && !keep_wrong_for_diagnosis() => Err(format!(
+            "the mesh covers {:.0}% of the exact face area (closed region of the wrong size); {err}",
+            100.0 * mesh_area(&m) / exact
+        )),
         Some(m) => Ok(m),
         None => Err(err),
     }
 }
+
+/// Native diagnostics only (`CK_TESS_KEEP_WRONG=1`): keep the wrong-size mesh instead of refusing the face, to look at it.
+fn keep_wrong_for_diagnosis() -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::env::var("CK_TESS_KEEP_WRONG").is_ok()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        false
+    }
+}
+
+/// |ln(mesh area / exact area)| above which a closed, clean mesh of a face is refused (a factor of 1.25).
+const WRONG_REGION_LOG_RATIO: f64 = 0.2231;
 
 thread_local! {
     static SAME_UV_REL: std::cell::Cell<f64> = const { std::cell::Cell::new(1e-9) };
@@ -454,6 +485,10 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
     // whole width, overlapping the rail it closes, which the triangulation cannot recover. It is cut open like a periodic
     // face instead, at its domain's start.
     let strip = closed_strip(body, f);
+    // A closed spline whose seam twins carry no pcurve (a swept tube's side face): the projected seam end lands on either side of
+    // the closing isoline, so such a loop is chained by continuity through the closing direction and put on the sheet of the
+    // domain its mean lies on, as the boolean's loop assembly does for the loops it writes.
+    let (closed_u, closed_v) = if matches!(surf, Surface::BSpline(_)) && strip == (None, None) { ck_geom::pcurve::closed_periods(surf) } else { (None, None) };
     if let Some((per, _)) = strip.0 {
         pu = Some(per);
     }
@@ -510,6 +545,7 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
         // (poly length before, after) each join across a pole (same 3D point, a different u): see the loop closure
         let mut pole_jumps: Vec<(usize, usize)> = vec![];
         let (u_lo0, u_hi0) = (u_lo, u_hi);
+        let (v_lo0, v_hi0) = (v_lo, v_hi);
         let mut prev: Option<Vec2> = None;
         let backwards = false;
         // A loop whose edges are all sampled by their end points only (the cap of a thin sliver: a chord and an arc
@@ -522,6 +558,9 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
             .map(|&c| params.get(body.coedge(c).edge.idx()).map_or(1, |p| p.len().max(2) - 1))
             .sum();
         let thin_loop = samples < 3;
+        let chain_closed = (closed_u.is_some() || closed_v.is_some()) && lp.coedges.iter().any(|&c| body.coedge(c).alive && body.coedge(c).pcurve.is_none());
+        let (cpu, cpv) = if chain_closed { (closed_u, closed_v) } else { (None, None) };
+        let mut raw_uv: Vec<Vec2> = vec![];
         for &c in lp.coedges.iter() {
             let ce = body.coedge(c);
             if !ce.alive {
@@ -560,6 +599,15 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
                 if let (Some(per), Some(pr)) = (pv, prev) {
                     uv.y = ck_geom::pcurve::unwrap_near(uv.y, pr.y, per);
                 }
+                if let Some(pr) = prev {
+                    if let Some(per) = cpu {
+                        uv.x = ck_geom::pcurve::unwrap_near(uv.x, pr.x, per);
+                    }
+                    if let Some(per) = cpv {
+                        uv.y = ck_geom::pcurve::unwrap_near(uv.y, pr.y, per);
+                    }
+                }
+                raw_uv.push(uv);
                 let p = if i == 0 {
                     va
                 } else if i + 1 == ps.len() {
@@ -604,6 +652,30 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
                 }
             }
             poly.extend(pl);
+        }
+        if chain_closed && !raw_uv.is_empty() {
+            let n = raw_uv.len() as f64;
+            let (mx, my) = (raw_uv.iter().map(|q| q.x).sum::<f64>() / n, raw_uv.iter().map(|q| q.y).sum::<f64>() / n);
+            let ((du0, du1), (dv0, dv1)) = surf.domain();
+            let sh = |m: f64, lo: f64, hi: f64, per: Option<f64>| per.map_or(0.0, |p| -((m - 0.5 * (lo + hi)) / p).round() * p);
+            let (sx, sy) = (sh(mx, du0, du1, cpu), sh(my, dv0, dv1, cpv));
+            if sx != 0.0 || sy != 0.0 {
+                for q in poly.iter_mut().filter(|q| q.uv.x.is_finite()) {
+                    q.uv = Vec2::new(q.uv.x + sx, q.uv.y + sy);
+                }
+                // (the running bounds were taken before the shift)
+                let (mut ulo, mut uhi, mut vlo, mut vhi) = (u_lo0, u_hi0, v_lo0, v_hi0);
+                for q in poly.iter().filter(|q| q.uv.x.is_finite()) {
+                    ulo = ulo.min(q.uv.x);
+                    uhi = uhi.max(q.uv.x);
+                    vlo = vlo.min(q.uv.y);
+                    vhi = vhi.max(q.uv.y);
+                }
+                u_lo = ulo;
+                u_hi = uhi;
+                v_lo = vlo;
+                v_hi = vhi;
+            }
         }
         // close the loop
         if let Some(p2) = pole_loop_fix(&poly, &pole_jumps, pu, face.sense, live_loops == 1, tol) {

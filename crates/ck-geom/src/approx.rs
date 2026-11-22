@@ -137,7 +137,7 @@ fn with_spans(mut ts: Vec<f64>, (t0, t1): (f64, f64), interior: &[f64]) -> Vec<f
     for w in edges.windows(2) {
         ts.extend([w[0], 0.5 * (w[0] + w[1]), w[1]]);
     }
-    ts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    ts.sort_by(|a, b| a.total_cmp(b));
     ts.dedup_by(|a, b| (*a - *b).abs() <= 1e-13 * (t1 - t0));
     ts
 }
@@ -159,7 +159,7 @@ fn clamped_knots(t0: f64, t1: f64, p: usize, interior: &[f64]) -> Vec<f64> {
 /// Interior breakpoints strictly inside (t0, t1), sorted and distinct.
 fn interior_of(breaks: &[f64], t0: f64, t1: f64) -> Vec<f64> {
     let mut v: Vec<f64> = breaks.iter().copied().filter(|&b| b.is_finite() && b > t0 && b < t1).collect();
-    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    v.sort_by(|a, b| a.total_cmp(b));
     v.dedup_by(|a, b| (*a - *b).abs() < 1e-12 * (t1 - t0));
     v
 }
@@ -194,7 +194,7 @@ fn refine(interior: &mut Vec<f64>, t0: f64, t1: f64, bad: &[bool], data: Option<
             }
         }
     }
-    interior.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    interior.sort_by(|a, b| a.total_cmp(b));
     added
 }
 

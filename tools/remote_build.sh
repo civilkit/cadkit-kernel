@@ -6,7 +6,7 @@
 #   --test NAME: with --cargo-test, run only that integration test, with --nocapture; --env K=V: set for the cargo
 #   tests (`{RUN}` in V is the box's run directory); --fetch REL: copy {RUN}/REL back to --out/REL after the run
 #   --quick: agent iteration, NOT a release verification: wasm build, ck-ops + ck-topo tests, only the ck-model integration
-#   tests listed in tools/ci/quick_tests.txt, and --checks (default gate, started beside the tests). --full = today's behaviour (the default).
+#   tests listed in tools/ci/quick_tests.txt, and --checks (default gate,large sample, started beside the tests). --full = today's behaviour (the default).
 #   Cargo runs write per-test-binary times to test_times.txt beside remote_results.txt (fetched back with --out).
 #   --job-timeout SECS (default by kind: quick 2700, full and cargo-test-only 10800): wall-clock limit of the job once it holds a slot (the
 #   slot wait is not counted). A job over it has its whole process tree killed on the box, the slot released, and `FAIL job-timeout` recorded.
@@ -58,6 +58,8 @@ while [ $# -gt 0 ]; do
   esac
 done
 if [ "$QUICK" = 1 ]; then
+  # the large sample (a 45 s check) rides along: it regenerates the whole default part and caught what no gate case did (docs/remote-build.md)
+  [ "$CHECKS_SET" = 1 ] || CHECKS="gate,large sample"
   [ -z "$CTEST" ] && [ -z "$TESTNAME" ] || { echo "--quick fixes the cargo tests: drop --cargo-test/--test (or use --full)" >&2; exit 64; }
   [ -s "$(dirname "$0")/ci/quick_tests.txt" ] || { echo "tools/ci/quick_tests.txt missing" >&2; exit 64; }
   CTEST="-p ck-ops -p ck-topo -p ck-model"
@@ -401,13 +403,16 @@ fi
 # the commit the wasm is built from, reported by `ping` as `build` (`-dirty`: uncommitted changes in the tracked files)
 REV=$(git -C "$WT" rev-parse --short=12 HEAD 2>/dev/null || true)
 [ -n "$REV" ] && [ -n "$(git -C "$WT" status --porcelain --untracked-files=no 2>/dev/null)" ] && REV="$REV-dirty"
+# the full revision goes to the box's cargo build as CK_COMMIT (crates/ck-wasm/build.rs): the box checkout has no git, so without it
+# a box-built wasm would report "unknown" from ck_commit()
+FULLREV=$(git -C "$WT" rev-parse HEAD 2>/dev/null || true)
 SUBHOST=$(hostname -s 2>/dev/null | tr -c 'A-Za-z0-9._\n-' '_'); SUBHOST=${CK_SUBMIT_HOST:-${SUBHOST:-?}}
 QA=""; for a in "$NAME" "$CHECKS" "$CTEST" "$JOBS" "$NOWASM" "$WASMF" "$REV" "$TESTNAME" "$QUICK" "$BINT" "$SLOTS" "$IMPCR" "$SUBHOST" "$KIND" "$JOBT" "$QONLY" ${ENVS[@]+"${ENVS[@]}"}; do QA="$QA $(printf %q "$a")"; done
 # The job runs DETACHED on the box (setsid nohup), writing runs/NAME/job.log and, when done, runs/NAME/job.rc. This side only
 # follows the log and reconnects when the ssh link drops, so a dropped connection no longer kills a long run (or reports a
 # failure that did not happen).
 { cat "$LIB"; printf '%s\n' "$REMOTE"; } | rsh "cat > $RB/runs/$NAME/remote.sh" || { echo "ssh failed" >&2; exit 3; }
-printf '%s\n' 'RB="$HOME/ci/remote-build"' "cd \"\$RB/runs/$NAME\"" "timeout -k 30 $((JOBT + WAITMAX)) bash remote.sh $QA" 'rc=$?' '[ -f job.timeout ] && rc=124   # the box watchdog (bx_watchdog) killed the job' 'echo $rc > job.rc' | rsh "cat > $RB/runs/$NAME/job.sh" || { echo "ssh failed" >&2; exit 3; }
+printf '%s\n' 'RB="$HOME/ci/remote-build"' "cd \"\$RB/runs/$NAME\"" "timeout -k 30 $((JOBT + WAITMAX)) env CK_COMMIT=${FULLREV:-unknown} bash remote.sh $QA" 'rc=$?' '[ -f job.timeout ] && rc=124   # the box watchdog (bx_watchdog) killed the job' 'echo $rc > job.rc' | rsh "cat > $RB/runs/$NAME/job.sh" || { echo "ssh failed" >&2; exit 3; }
 rsh "cd $RB/runs/$NAME && rm -f job.rc job.log job.timeout && (setsid nohup bash job.sh > job.log 2>&1 < /dev/null &)" || { echo "could not start the job on the box" >&2; exit 3; }
 FOLLOW=$(mktemp); SZ=0; FAILS_IN_ROW=0; RC=255
 while :; do

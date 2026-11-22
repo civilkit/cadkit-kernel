@@ -260,7 +260,7 @@ fn move_face_of_the_spline_wall() {
 
 /// Manual probe: `FWT=5.6 FWK=spline cargo test ... probe_thickness -- --ignored --nocapture`.
 #[test]
-#[ignore]
+#[ignore = "diagnostic probe: needs FW* env inputs, prints only; run by hand"]
 fn probe_thickness() {
     let t: f64 = std::env::var("FWT").ok().and_then(|s| s.parse().ok()).unwrap_or(1.0);
     let kind = std::env::var("FWK").unwrap_or("spline".into());

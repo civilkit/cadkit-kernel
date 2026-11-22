@@ -17,7 +17,7 @@ use ck_geom::curve2::Curve2;
 use ck_geom::fit::{self, Param};
 use ck_geom::nurbs::bspline::BSplineCurve;
 use ck_geom::nurbs::bsurf::BSplineSurface;
-use ck_geom::pcurve::pcurve_of;
+use ck_geom::pcurve::pcurve_of_dense;
 use ck_geom::surface::Surface;
 use ck_geom::{frame_from, Vec2, Vec3};
 use ck_topo::body::{Body, EdgeId, FaceId, FaceName, ShellId, VertexId};
@@ -322,7 +322,7 @@ impl<'a> B<'a> {
 
     fn orient_shells(&mut self, shells: &[(ShellId, f64)]) {
         let mut order: Vec<(ShellId, f64)> = shells.to_vec();
-        order.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        order.sort_by(|a, b| b.1.total_cmp(&a.1));
         for (i, (s, _)) in order.iter().enumerate() {
             let faces: Vec<FaceId> = self.body.shell(*s).faces.clone();
             // only the sign is used: the coarse memoised quadrature (good to about 1e-6 of the faces' shares)
@@ -780,6 +780,34 @@ impl<'a> B<'a> {
         }
     }
 
+    /// Tangent foot of a rolling ball of offset `off` centred at `q` on `sup`. When a cylinder or sphere is offset
+    /// inward past its axis/centre (`off < -r`), the ball encloses the support and its tangent foot is on the far
+    /// (antipodal) side rather than the nearest point.
+    fn blend_foot(sup: &Surface, off: f64, q: Vec3, hint: Option<(f64, f64)>) -> (f64, f64, Vec3) {
+        match sup {
+            Surface::Cylinder { r, .. } if off < -*r => {
+                let (u, v, _) = sup.closest_point(q);
+                let u = u + PI;
+                (u, v, sup.eval(u, v))
+            }
+            Surface::Sphere { frame, r } if off < -*r => {
+                let d = q - frame.o;
+                let len = d.len();
+                if len > 1e-12 {
+                    let p = frame.o - d * (*r / len);
+                    let (u, v) = sup.closest_param(p);
+                    (u, v, p)
+                } else {
+                    sup.closest_point(q)
+                }
+            }
+            _ => match hint {
+                Some(h) => sup.closest_point_near(q, h),
+                None => sup.closest_point(q),
+            },
+        }
+    }
+
     /// Alternating projection of `p` onto the two support surfaces offset by `off` along their natural normals
     /// (the locus of the rolling ball's centre).
     fn project_offsets(sup: &[Rc<Surface>; 2], off: [f64; 2], p: Vec3) -> Option<Vec3> {
@@ -789,10 +817,7 @@ impl<'a> B<'a> {
         // search again whenever that foot is not a stationary point of the distance)
         let mut hint: [Option<(f64, f64)>; 2] = [None, None];
         let foot_of = |k: usize, q: Vec3, hint: &mut [Option<(f64, f64)>; 2]| -> (f64, f64, Vec3) {
-            let r = match hint[k] {
-                Some(h) => sup[k].closest_point_near(q, h),
-                None => sup[k].closest_point(q),
-            };
+            let r = Self::blend_foot(&sup[k], off[k], q, hint[k]);
             hint[k] = Some((r.0, r.1));
             r
         };
@@ -949,7 +974,7 @@ impl<'a> B<'a> {
             return Err(gerr(format!("blend #{nid}: spine too short")));
         }
         let feet_of = |c: Vec3| -> Option<(Vec3, Vec3)> {
-            let f = [sup[0].closest_point(c).2, sup[1].closest_point(c).2];
+            let f = [Self::blend_foot(&sup[0], off[0], c, None).2, Self::blend_foot(&sup[1], off[1], c, None).2];
             let (f0, f1) = if swap { (f[1], f[0]) } else { (f[0], f[1]) };
             let (r0, r1) = (c.dist(f0), c.dist(f1));
             let ok = (r0 - r1).abs() <= 0.02 * r0.max(r1) + 1e-9 && (expect == 0.0 || ((r0 - expect).abs() <= 0.02 * expect && (r1 - expect).abs() <= 0.02 * expect));
@@ -1084,7 +1109,7 @@ impl<'a> B<'a> {
                 break;
             }
             prev_worst = round_worst;
-            inserts.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            inserts.sort_by(|a, b| b.1.total_cmp(&a.1));
             let room = 400usize.saturating_sub(entries.len());
             let mut chosen: Vec<_> = inserts.into_iter().take(room).collect();
             chosen.sort_by_key(|c| c.0);
@@ -1363,7 +1388,7 @@ impl<'a> B<'a> {
                 }
             }
         }
-        ts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        ts.sort_by(|a, b| a.total_cmp(b));
         ts.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
         let mut segs = vec![];
         let mut bounds = vec![lo];
@@ -1449,11 +1474,36 @@ impl<'a> B<'a> {
         }
         let sense = f.same_sense ^ f.back;
 
+        // A spun circle whose centre lies on the revolution axis and whose plane contains the axis is a sphere; as a
+        // Surface::Revolution it double-covers the sphere (u, v) == (u + pi, pi - v), which breaks pcurve projection.
+        if let Surface::Revolution { profile, axis_o, axis } = &surface {
+            if let Curve::Circle { frame: cf, r } = profile.as_ref() {
+                if cf.z.dot(*axis).abs() < 1e-7 && (cf.o - *axis_o).cross(*axis).len() < 1e-7 * (1.0 + cf.o.len()) {
+                    let z = -*axis;
+                    let x = if cf.x.cross(z).len() > 1e-6 { cf.x } else { cf.y };
+                    surface = Surface::Sphere { frame: frame_from(cf.o, z, x), r: *r };
+                }
+            }
+        }
+
         // every vertex must lie on the surface
-        let is_spline = matches!(surface, Surface::BSpline(_));
         let mut checked: Vec<Vec3> = pts.clone();
         checked.sort_by(|a, b| a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y)).then(a.z.total_cmp(&b.z)));
         checked.dedup_by(|a, b| a.x == b.x && a.y == b.y && a.z == b.z);
+        if matches!(self.ir.surfaces[si].geom, IrSurface::Blend { .. }) {
+            let off = |s: &Surface| checked.iter().any(|p| s.distance(*p) > 20.0 * geo_tol(*p));
+            if off(&surface) {
+                for w in [0.25, 0.5] {
+                    if let Ok(wider) = self.blend_surface(si, w) {
+                        if !off(&wider) {
+                            surface = wider;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        let is_spline = matches!(surface, Surface::BSpline(_));
         for p in &checked {
             let d = surface.distance(*p);
             let tol = if is_spline { 20.0 * geo_tol(*p) } else { 5.0 * geo_tol(*p) };
@@ -1463,8 +1513,8 @@ impl<'a> B<'a> {
         }
         if loops.is_empty() {
             match &surface {
-                Surface::Sphere { .. } | Surface::Torus { .. } => {
-                    loops.push(self.full_periodic_loop(&surface, sense).ok_or_else(|| gerr(format!("face #{fid}: cannot build the loop of a full {}", surface.kind())))?);
+                Surface::Sphere { .. } | Surface::Torus { .. } | Surface::Revolution { .. } => {
+                    loops.push(self.full_periodic_loop(&surface, sense).ok_or_else(|| terr(format!("face #{fid} has no loop on a non-closed {} surface", surface.kind())))?);
                 }
                 _ => return Err(terr(format!("face #{fid} has no loop on a non-closed {} surface", surface.kind()))),
             }
@@ -1489,7 +1539,7 @@ impl<'a> B<'a> {
                 let explicit = ce.pc.is_some();
                 let mut pc = match ce.pc.clone() {
                     Some(p) => Some(p),
-                    None => pcurve_of(&surface, &curve, t0, t1, 1e-6).ok(),
+                    None => pcurve_of_dense(&surface, &curve, t0, t1, 1e-6, 1e-6).ok(),
                 };
                 if let (Some(c), false) = (pc.as_mut(), explicit) {
                     if ce.pole_jump {
@@ -1549,6 +1599,27 @@ impl<'a> B<'a> {
                     Ce { pc: Some(line(Vec2::new(0.0, TAU), Vec2::new(1.0, 0.0))), ..Ce::new(er, true) },
                     Ce { pc: Some(line(Vec2::new(0.0, 0.0), Vec2::new(0.0, 1.0))), ..Ce::new(es, true) },
                 ]
+            }
+            Surface::Revolution { profile, axis_o, axis } => {
+                if let Curve::Ellipse { frame: cf, a, b } = profile.as_ref() {
+                    if cf.z.dot(*axis).abs() < 1e-7 && (cf.o - *axis_o).cross(*axis).len() < 1e-6 * (1.0 + cf.o.len()) {
+                        // closed ellipsoid: two pole vertices where the ellipse crosses the axis
+                        let e_perp = cf.z.cross(*axis).normalize();
+                        let va = (-a * cf.x.dot(e_perp)).atan2(b * cf.y.dot(e_perp));
+                        let vb = va + PI;
+                        let (pa, pb) = (profile.eval(va), profile.eval(vb));
+                        let (v0, v1) = (self.vertex_at(pa), self.vertex_at(pb));
+                        let e = self.body.add_edge((**profile).clone(), va, vb, v0, v1);
+                        vec![
+                            Ce { pc: Some(line(Vec2::new(TAU, 0.0), Vec2::new(0.0, 1.0))), ..Ce::new(e, false) },
+                            Ce { pc: Some(line(Vec2::new(0.0, 0.0), Vec2::new(0.0, 1.0))), ..Ce::new(e, true) },
+                        ]
+                    } else {
+                        return None;
+                    }
+                } else {
+                    return None;
+                }
             }
             _ => return None,
         };
@@ -1972,6 +2043,40 @@ impl<'a> B<'a> {
         if surface.periods().0.is_none() {
             return Ok(loops);
         }
+        // A cone loop that already visits the apex (either a full cone that already carries a seam edge to the apex, or
+        // a partial cone whose ruling edges meet at the apex) needs no synthetic seam: orient the cone towards the apex
+        // as `cone_cap_seam` does, rotate the loop so the coedge leaving the apex is last, and mark it `pole_jump` so
+        // its u-period aligns with the loop's start rather than the arrival ruling.
+        if let Surface::Cone { frame, r, semi_angle } = surface.clone() {
+            let tan = semi_angle.tan();
+            if tan.abs() > 1e-9 {
+                let apex = frame.o + frame.z * (-r / tan);
+                let tol = 1e-6 * (1.0 + apex.len());
+                let mut touched_apex = false;
+                for ring in &mut loops {
+                    let n = ring.len();
+                    if let Some(k) = (0..n).find(|&k| {
+                        self.vpos(self.ce_start(&ring[k])).dist(apex) <= tol
+                            && self.vpos(self.ce_start(&ring[(k + 1) % n])).dist(apex) > tol
+                    }) {
+                        ring.rotate_left((k + 1) % n);
+                        if let Some(last) = ring.last_mut() {
+                            last.pole_jump = true;
+                        }
+                        touched_apex = true;
+                    }
+                }
+                if touched_apex {
+                    if semi_angle > 0.0 {
+                        if let Surface::Cone { frame, semi_angle, .. } = surface {
+                            *frame = ck_geom::Frame { o: frame.o, x: frame.x, y: -frame.y, z: -frame.z };
+                            *semi_angle = -*semi_angle;
+                        }
+                    }
+                    return Ok(loops);
+                }
+            }
+        }
         let w = self.windings(surface, &loops);
         let wrap: Vec<usize> = (0..loops.len()).filter(|&i| w[i] != 0).collect();
         if wrap.is_empty() {
@@ -2239,7 +2344,7 @@ impl<'a> B<'a> {
                     (0.5 * acc.dot(n), ring)
                 })
                 .collect();
-            areas.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+            areas.sort_by(|a, b| b.0.total_cmp(&a.0));
             if let Some((a, _)) = areas.first() {
                 if *a < 0.0 && a.abs() > 1e-9 {
                     return Err(SldprtError::new("topology.orientation", format!("face #{fid}: planar face loop runs clockwise about the face's outward normal")));
@@ -2258,7 +2363,7 @@ impl<'a> B<'a> {
                 (lo.dist(hi), ring)
             })
             .collect();
-        ext.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        ext.sort_by(|a, b| b.0.total_cmp(&a.0));
         Ok(ext.into_iter().map(|(_, r)| r).collect())
     }
 }
@@ -3063,5 +3168,127 @@ mod tests {
             let q = c.curve.eval(a + (z - a) * k as f64 / 20.0);
             assert!((q.y - 10.1).abs() < 1e-3 && (q.dist(Vec3::new(1.0, q.y, 1.0)) - 1.0).abs() < 1e-3, "{q:?}");
         }
+    }
+
+    #[test]
+    fn cone_loop_already_visiting_apex_builds_valid_solid() {
+        // Right circular cone of base radius 10 mm at z = 0 and apex at z = 10 mm (semi-angle 45 deg),
+        // whose cone face loop already includes a seam edge to the apex and back starting at the apex.
+        let r = 0.01;
+        let h = 0.01;
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let surfaces = vec![
+            sn(1, IrSurface::Cone { o: [0.0, 0.0, 0.0], axis: [0.0, 0.0, -1.0], r, sin: s, cos: s, x: [1.0, 0.0, 0.0] }),
+            sn(2, IrSurface::Plane { o: [0.0, 0.0, 0.0], n: [0.0, 0.0, -1.0], x: [1.0, 0.0, 0.0] }),
+        ];
+        let curves = vec![
+            cn(10, IrCurve::Circle { c: [0.0, 0.0, 0.0], n: [0.0, 0.0, 1.0], x: [1.0, 0.0, 0.0], r }),
+            cn(11, IrCurve::Line { o: [0.0, 0.0, h], d: [s, 0.0, -s] }),
+        ];
+        let vertices = vec![vtx(20, [0.0, 0.0, h]), vtx(21, [r, 0.0, 0.0])];
+        let edges = vec![
+            IrEdge { id: 30, curve: Some(0), start: Some(1), end: Some(1), fin_curve: None, tol: None },
+            IrEdge { id: 31, curve: Some(1), start: Some(0), end: Some(1), fin_curve: None, tol: None },
+        ];
+        // Start the cone loop at the apex vertex (the case that used to fail with "cone loop lies on the apex").
+        let cone_lp = IrLoop {
+            id: 50,
+            fins: vec![
+                IrFin { edge: 1, forward: true },
+                IrFin { edge: 0, forward: true },
+                IrFin { edge: 1, forward: false },
+            ],
+            vertex: None,
+        };
+        let base_lp = IrLoop { id: 51, fins: vec![IrFin { edge: 0, forward: false }], vertex: None };
+        let faces = vec![
+            IrFace { id: 40, surface: Some(0), same_sense: true, loops: vec![cone_lp], back: false, colour: None, sw_id: None, sw_ids: vec![] },
+            IrFace { id: 41, surface: Some(1), same_sense: true, loops: vec![base_lp], back: false, colour: None, sw_id: None, sw_ids: vec![] },
+        ];
+        let body = IrBody { id: 70, kind: BodyKind::Solid, regions: vec![IrRegion { solid: true, shells: vec![IrShell { id: 60, faces }] }], density: None, last_feature: None };
+        let ir = Ir { schema: "test".into(), bodies: vec![body], surfaces, curves, vertices, edges, notes: vec![], import_sheets: false };
+        let built = build(&[&ir], &Limits::default()).unwrap();
+        assert!(built.parts[0].refused.is_empty(), "refused: {:?}", built.parts[0].refused);
+        assert!(ck_check::validate(&built.body, 1e-6).is_empty(), "issues: {:?}", ck_check::validate(&built.body, 1e-6));
+        let mp = ck_topo::mass::mass_props(&built.body);
+        let expect = PI * 10.0 * 10.0 * 10.0 / 3.0;
+        assert!((mp.volume - expect).abs() < 1e-4 * expect, "vol {} vs {expect}", mp.volume);
+    }
+
+    #[test]
+    fn rolling_ball_blend_with_antipodal_cylinder_foot() {
+        // A 6 mm rolling-ball blend rolling inward (off = -6 mm) over a 1 mm cylinder along X
+        // and outward (off = +6 mm) over a 4 mm cylinder along Z (ball encloses the 1 mm cylinder).
+        let surfaces = vec![
+            sn(1, IrSurface::Cylinder { o: [0.0, 0.0, 0.011], axis: [1.0, 0.0, 0.0], r: 0.001, x: [0.0, 1.0, 0.0] }),
+            sn(2, IrSurface::Cylinder { o: [0.0, 0.0095, 0.021], axis: [0.0, 0.0, -1.0], r: 0.004, x: [1.0, 0.0, 0.0] }),
+            sn(3, IrSurface::Blend { supports: [Some(0), Some(1)], support_plus: [false, true], spine: Some(0), spine_plus: true, range: [0.006, 0.006], limits: [None, None] }),
+        ];
+        // Intersection of cylinder (r = 5 mm about (x, 0, 11)) and cylinder (r = 10 mm about (0, 9.5, z)):
+        // y in [-0.5, 1.0], x = sqrt(10^2 - (y - 9.5)^2), z = 11 + sqrt(5^2 - y^2).
+        let pts: Vec<V3> = [-0.0004f64, 0.0002, 0.0008]
+            .into_iter()
+            .map(|y| {
+                let x = (0.010f64 * 0.010 - (y - 0.0095).powi(2)).sqrt();
+                let z = 0.011 + (0.005f64 * 0.005 - y * y).sqrt();
+                [x, y, z]
+            })
+            .collect();
+        let curves = vec![cn(10, IrCurve::Intersection { pts, surfaces: [None, None], bounds: [None, None], chordal: 0.0 })];
+        let ir = Ir { schema: "test".into(), surfaces, curves, ..Default::default() };
+        let mut b = builder(&ir);
+        let s = b.surface(2).unwrap_or_else(|e| panic!("antipodal blend failed: {e:?}"));
+        // Check a known point on the antipodal contact line at y = -0.5 mm (ball centre (0, -0.5, 15.974937))
+        let c = Vec3::new(0.0, -0.5, 11.0 + (25.0f64 - 0.25).sqrt());
+        let f1 = Vec3::new(0.0, 9.5 - 4.0, c.z);
+        assert!(s.distance(f1) < 1e-2, "dist to s1 foot: {}", s.distance(f1));
+    }
+
+    #[test]
+    fn spun_circle_on_axis_builds_valid_sphere_solid() {
+        // Hemisphere of radius 5 mm represented as a SPUN_SURF of a circle centred on the axis, capped by z = 0.
+        let r = 0.005;
+        let surfaces = vec![
+            sn(1, IrSurface::Spun { profile: Some(0), base: [0.0; 3], axis: [0.0, 0.0, 1.0] }),
+            sn(2, IrSurface::Plane { o: [0.0; 3], n: [0.0, 0.0, -1.0], x: [1.0, 0.0, 0.0] }),
+        ];
+        let curves = vec![
+            cn(10, IrCurve::Circle { c: [0.0; 3], n: [0.0, -1.0, 0.0], x: [1.0, 0.0, 0.0], r }),
+            cn(11, IrCurve::Circle { c: [0.0; 3], n: [0.0, 0.0, 1.0], x: [1.0, 0.0, 0.0], r }),
+        ];
+        let vertices = vec![vtx(20, [r, 0.0, 0.0])];
+        let edges = vec![IrEdge { id: 30, curve: Some(1), start: Some(0), end: Some(0), fin_curve: None, tol: None }];
+        let sph_lp = IrLoop { id: 50, fins: vec![IrFin { edge: 0, forward: true }], vertex: None };
+        let cap_lp = IrLoop { id: 51, fins: vec![IrFin { edge: 0, forward: false }], vertex: None };
+        let faces = vec![
+            IrFace { id: 40, surface: Some(0), same_sense: true, loops: vec![sph_lp], back: false, colour: None, sw_id: None, sw_ids: vec![] },
+            IrFace { id: 41, surface: Some(1), same_sense: true, loops: vec![cap_lp], back: false, colour: None, sw_id: None, sw_ids: vec![] },
+        ];
+        let body = IrBody { id: 70, kind: BodyKind::Solid, regions: vec![IrRegion { solid: true, shells: vec![IrShell { id: 60, faces }] }], density: None, last_feature: None };
+        let ir = Ir { schema: "test".into(), bodies: vec![body], surfaces, curves, vertices, edges, notes: vec![], import_sheets: false };
+        let built = build(&[&ir], &Limits::default()).unwrap();
+        assert!(built.parts[0].refused.is_empty(), "refused: {:?}", built.parts[0].refused);
+        let issues = ck_check::validate(&built.body, 1e-6);
+        assert!(issues.is_empty(), "issues: {issues:?}");
+        let mp = ck_topo::mass::mass_props(&built.body);
+        let expect = 2.0 / 3.0 * PI * 125.0;
+        assert!((mp.volume - expect).abs() < 1e-4 * expect, "vol {} vs {expect}", mp.volume);
+    }
+
+    #[test]
+    fn loop_free_spun_ellipse_builds_valid_ellipsoid() {
+        // Closed ellipsoid with semi-axes 40 mm (equatorial) and 30 mm (polar) represented as a loop-free SPUN_SURF.
+        let surfaces = vec![sn(1, IrSurface::Spun { profile: Some(0), base: [0.0, 0.03, 0.0], axis: [0.0, 1.0, 0.0] })];
+        let curves = vec![cn(10, IrCurve::Ellipse { c: [0.0; 3], n: [0.0, 0.0, 1.0], x: [1.0, 0.0, 0.0], a: 0.04, b: 0.03 })];
+        let faces = vec![IrFace { id: 40, surface: Some(0), same_sense: true, loops: vec![], back: false, colour: None, sw_id: None, sw_ids: vec![] }];
+        let body = IrBody { id: 70, kind: BodyKind::Solid, regions: vec![IrRegion { solid: true, shells: vec![IrShell { id: 60, faces }] }], density: None, last_feature: None };
+        let ir = Ir { schema: "test".into(), bodies: vec![body], surfaces, curves, vertices: vec![], edges: vec![], notes: vec![], import_sheets: false };
+        let built = build(&[&ir], &Limits::default()).unwrap();
+        assert!(built.parts[0].refused.is_empty(), "refused: {:?}", built.parts[0].refused);
+        let issues = ck_check::validate(&built.body, 1e-6);
+        assert!(issues.is_empty(), "issues: {issues:?}");
+        let mp = ck_topo::mass::mass_props(&built.body);
+        let expect = 4.0 / 3.0 * PI * 40.0 * 40.0 * 30.0;
+        assert!((mp.volume - expect).abs() < 1e-3 * expect, "vol {} vs {expect}", mp.volume);
     }
 }

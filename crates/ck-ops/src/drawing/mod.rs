@@ -409,7 +409,7 @@ fn view_json(body: &Body, view: &ViewReq, hidden: bool) -> Json {
         if !(tmax > tmin) || thetas.is_empty() {
             continue;
         }
-        thetas.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        thetas.sort_by(|a, b| a.total_cmp(b));
         let tau = std::f64::consts::TAU;
         let mut max_gap = thetas[0] + tau - thetas[thetas.len() - 1];
         let mut max_gap_start = thetas[thetas.len() - 1];
@@ -561,10 +561,10 @@ fn view_json(body: &Body, view: &ViewReq, hidden: bool) -> Json {
         resolved.push((ang, off, start, len, seq, pc));
     }
     resolved.sort_by(|a, b| {
-        (a.0, a.1)
-            .partial_cmp(&(b.0, b.1))
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then(a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
+        a.0
+            .total_cmp(&b.0)
+            .then(a.1.total_cmp(&b.1))
+            .then(a.2.total_cmp(&b.2))
             .then(a.3.total_cmp(&b.3))
             .then(a.5.k.cmp(&b.5.k))
             .then(a.5.e.cmp(&b.5.e))

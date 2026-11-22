@@ -319,7 +319,7 @@ fn volume_change_scales_with_the_radius_squared() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "diagnostic: prints a report, no assertion; run by hand"]
 fn report() {
     for set in [CONE_SLOTS, CYLINDER_SLOTS, CYLINDER_WALLED_NOTCHES, RIBS, FLOOR_NOTCHES, FAN] {
         for (name, src) in set {

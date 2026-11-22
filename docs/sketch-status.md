@@ -74,6 +74,20 @@ of the opposite side, two opposite corners made coincident, a dragged end put on
 guard runs wherever regen solves (an `expr` change, `solveSketches`) and in the status' own solve. Curves already
 that short before the solve are left alone. Picks are listed in constraint order, then the shrunk curve.
 
+## `perpendicular` ref forms
+
+`{"type":"perpendicular","refs":[a,b]}` takes, refs in either order, one equation each (so one freedom fewer, like line + line):
+
+| refs | meaning | residual (a length) |
+|---|---|---|
+| line + line | directions at 90 degrees | `u . q / (|u||q|)` (unchanged) |
+| line + circle or arc | the line is a normal of the curve: it passes through the centre (when it ends on the curve, perpendicular to it there) | signed distance of the centre from the line's infinite line |
+| circle or arc + circle or arc | orthogonal circles, `d^2 = r1^2 + r2^2` (`d` centre distance; an arc's radius is centre to start) | `(d^2 - r1^2 - r2^2) / sqrt(d^2 + r1^2 + r2^2)` |
+
+An arc is a curve here (its centre and radius), no longer its chord. Anything else (a point, an ellipse) is not built: the
+solver error reads `perpendicular needs two lines, a line and a circle or arc, or two circles or arcs`, and, as for every
+build error, the sketch is left unsolved (no regen error, status `under`).
+
 ## Live solve (`opts.solveSketches`)
 
 `{"type":"regen","part":...,"opts":{"solveSketches":true}}` (literal `true` only). Off by default, so every

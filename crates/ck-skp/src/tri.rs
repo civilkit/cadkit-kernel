@@ -132,7 +132,7 @@ fn earcut2(rings: &[Vec<[f64; 2]>], budget: &mut u64) -> Option<Vec<[usize; 3]>>
     }
     // bridge holes, rightmost first
     let rightmost = |h: &Vec<usize>| h.iter().map(|&i| pts[i][0]).fold(f64::NEG_INFINITY, f64::max);
-    holes.sort_by(|a, b| rightmost(b).partial_cmp(&rightmost(a)).unwrap_or(std::cmp::Ordering::Equal));
+    holes.sort_by(|a, b| rightmost(b).total_cmp(&rightmost(a)));
     let mut poly = idx[0].clone();
     let mut remaining = holes.clone();
     while !remaining.is_empty() {
@@ -144,7 +144,7 @@ fn earcut2(rings: &[Vec<[f64; 2]>], budget: &mut u64) -> Option<Vec<[usize; 3]>>
         cand.sort_by(|&a, &b| {
             let da = (pts[poly[a]][0] - m[0]).powi(2) + (pts[poly[a]][1] - m[1]).powi(2);
             let db = (pts[poly[b]][0] - m[0]).powi(2) + (pts[poly[b]][1] - m[1]).powi(2);
-            da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+            da.total_cmp(&db)
         });
         let mut found = None;
         'cand: for &ci in &cand {

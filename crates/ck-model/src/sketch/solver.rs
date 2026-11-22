@@ -338,8 +338,24 @@ pub fn build(sk: &Sketch) -> Result<System, String> {
                 b.eq(cid, &[cv, tv], Box::new(move |r| val(r, cv) - val(r, tv)));
             }
             "parallel" | "perpendicular" => {
+                if k.kind == "perpendicular" && (b.raw_entity(refn(e, 0)?).is_none() || b.raw_entity(refn(e, 1)?).is_none()) {
+                    // a point (or a missing id) cannot be perpendicular to anything: say what can
+                    if b.sk.points.iter().any(|p| p.id == e[0] || p.id == e[1]) {
+                        return Err(PERP_REFS.into());
+                    }
+                }
                 let c = b.entity(refn(e, 0)?)?;
                 let t = b.entity(refn(e, 1)?)?;
+                if k.kind == "perpendicular" {
+                    let curve = |en: &Ent| matches!(en, Ent::Circle { .. } | Ent::Arc { .. });
+                    if curve(&c) || curve(&t) {
+                        perpendicular_curve(&mut b, cid, c, t)?;
+                        continue;
+                    }
+                    if !matches!((&c, &t), (Ent::Line { .. }, Ent::Line { .. })) {
+                        return Err(PERP_REFS.into());
+                    }
+                }
                 let (ca, cb) = line_ab(&c)?;
                 let (ta, tb) = line_ab(&t)?;
                 let par = k.kind == "parallel";
@@ -497,6 +513,46 @@ pub fn build(sk: &Sketch) -> Result<System, String> {
     }
     let Builder { x, key_idx, eqs, .. } = b;
     Ok(System { x, keys, key_idx, eqs })
+}
+
+const PERP_REFS: &str = "perpendicular needs two lines, a line and a circle or arc, or two circles or arcs";
+
+/// `perpendicular` with a circle or arc among the refs (either order). Line + curve: the line is a normal of the
+/// curve, i.e. passes through its centre (the point-on-line distance of the centre, a length). Curve + curve:
+/// orthogonal circles, `d^2 = r1^2 + r2^2`, scaled by `sqrt(d^2 + r1^2 + r2^2)` to a length. One equation each.
+fn perpendicular_curve(b: &mut Builder, cid: &str, c: Ent, t: Ent) -> Result<(), String> {
+    let curve = |en: &Ent| matches!(en, Ent::Circle { .. } | Ent::Arc { .. });
+    let mut vars = ent_vars(&c);
+    vars.extend(ent_vars(&t));
+    let (l, q) = match (&c, &t) {
+        (Ent::Line { .. }, _) => (Some(c), t),
+        (_, Ent::Line { .. }) => (Some(t), c),
+        _ => (None, t),
+    };
+    if let Some(Ent::Line { a, b: bb }) = l {
+        if !curve(&q) {
+            return Err(PERP_REFS.into());
+        }
+        let qc = center(&q).ok_or(PERP_REFS)?;
+        b.eq(cid, &vars, Box::new(move |z| line_dist(z, qc, a, bb)));
+        return Ok(());
+    }
+    if !curve(&c) || !curve(&t) {
+        return Err(PERP_REFS.into());
+    }
+    let (cc, tc) = (center(&c).ok_or(PERP_REFS)?, center(&t).ok_or(PERP_REFS)?);
+    b.eq(
+        cid,
+        &vars,
+        Box::new(move |z| {
+            let (p, q) = (pt(z, cc), pt(z, tc));
+            let d2 = (p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2);
+            let (r1, r2) = (radius(z, &c), radius(z, &t));
+            let s = d2 + r1 * r1 + r2 * r2;
+            (d2 - r1 * r1 - r2 * r2) / (s.sqrt() + 1e-12)
+        }),
+    );
+    Ok(())
 }
 
 fn tangent(b: &mut Builder, k: &super::Constraint) -> Result<(), String> {    let cid = k.id.as_str();
@@ -1421,15 +1477,54 @@ pub struct SolveResult {
     pub err: f64,
     pub iterations: usize,
     pub x: Vec<f64>,
+    /// The solution moved further than `RUNOFF * ` the start's extent: reported `ok == false`, never as solved.
+    pub diverged: bool,
 }
 
+/// A solve that ends further than this many start extents from where it began is a run-off, not a solution.
+const RUNOFF: f64 = 1e3;
+/// A step longer than this many start extents is not taken as is (damped instead).
+const STEP_CAP: f64 = 2.0;
+
 /// Damped Gauss-Newton / minimum-norm solve (client `Bs()`).
+/// The solve as the original kernel does it, with no damping, shaken retry or run-off check (the 3D sketch solver,
+/// whose goldens pin the original's results, including its non-converged ones).
+pub fn solve_oracle(sys: &System, opts: &SolveOpts) -> SolveResult {
+    solve_from(sys, opts, sys.x.clone(), &sys.x, false)
+}
+
 pub fn solve(sys: &System, opts: &SolveOpts) -> SolveResult {
-    let mut s = sys.x.clone();
+    let first = solve_from(sys, opts, sys.x.clone(), &sys.x, true);
+    if first.ok || sys.eqs.is_empty() {
+        return first;
+    }
+    // A start whose Jacobian is rank deficient while the residual is not (a horizontal line made vertical: both
+    // equations then pull along x, and the linearised step collapses the line) cannot be solved by any step from
+    // there. Try again from slightly shaken starts; a converged result of those replaces the failure.
+    let extent = start_extent(&sys.x);
+    for rel in [1e-3, 1e-2, 1e-1] {
+        let shaken: Vec<f64> = sys.x.iter().enumerate().map(|(k, v)| v + rel * extent * ((k as f64 + 1.0) * 12.9898).sin()).collect();
+        let r = solve_from(sys, opts, shaken, &sys.x, true);
+        if r.ok {
+            return r;
+        }
+    }
+    first
+}
+
+/// Extent of a start: the larger of the spread and the biggest magnitude, at least 1.
+fn start_extent(s0: &[f64]) -> f64 {
+    let (lo, hi) = s0.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), v| (l.min(*v), h.max(*v)));
+    let big = s0.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+    (if hi >= lo { hi - lo } else { 0.0 }).max(big).max(1.0)
+}
+
+fn solve_from(sys: &System, opts: &SolveOpts, start: Vec<f64>, origin: &[f64], damp: bool) -> SolveResult {
+    let mut s = start;
     let i = s.len();
     let o = sys.eqs.len();
     if o == 0 {
-        return SolveResult { ok: true, err: 0.0, iterations: 0, x: s };
+        return SolveResult { ok: true, err: 0.0, iterations: 0, x: s, diverged: false };
     }
     let mut a = vec![1.0; i];
     if let Some(w) = &opts.weights {
@@ -1437,6 +1532,8 @@ pub fn solve(sys: &System, opts: &SolveOpts) -> SolveResult {
             a[d] = 1.0 / w.get(d).copied().unwrap_or(1.0);
         }
     }
+    let s0 = origin.to_vec();
+    let extent = start_extent(&s0);
     let mut l = residuals(sys, &s);
     let mut c = js_max(l.iter().map(|v| v.abs()));
     let mut h = 0;
@@ -1467,15 +1564,46 @@ pub fn solve(sys: &System, opts: &SolveOpts) -> SolveResult {
             p = if m[x][x].is_nan() || p.is_nan() { f64::NAN } else { p.max(m[x][x]) };
         }
         let g = 1e-10 * p + 1e-14;
+        let m0 = m.clone();
         for x in 0..o {
             m[x][x] += g;
         }
         let mut rhs = l.clone();
         let Some(k) = lu_solve(&mut m, &mut rhs) else { break };
-        let mut bstep = vec![0.0; i];
-        for (x, row) in d.iter().enumerate() {
-            for &(e, p) in row {
-                bstep[e] -= a[e] * p * k[x];
+        let step_of = |k: &[f64]| {
+            let mut bstep = vec![0.0; i];
+            for (x, row) in d.iter().enumerate() {
+                for &(e, p) in row {
+                    bstep[e] -= a[e] * p * k[x];
+                }
+            }
+            bstep
+        };
+        let mut bstep = step_of(&k);
+        // At a stationary start (an angle held parallel, then asked perpendicular) the Jacobian vanishes and the
+        // minimum-norm step is unbounded. Only then: Levenberg-Marquardt, raise the damping until the step is
+        // no longer than a couple of start extents. Normal solves never enter here, so they are unchanged.
+        let cap = STEP_CAP * extent;
+        let too_long = |b: &[f64]| !(b.iter().fold(0.0f64, |m, v| m + v * v).sqrt() <= cap);
+        if damp && too_long(&bstep) {
+            let mut lam = (g * 1e3).max(1e-9 * p);
+            for _ in 0..40 {
+                let mut mm = m0.clone();
+                for x in 0..o {
+                    mm[x][x] += lam;
+                }
+                let mut rr = l.clone();
+                if let Some(kk) = lu_solve(&mut mm, &mut rr) {
+                    let b = step_of(&kk);
+                    if !too_long(&b) {
+                        bstep = b;
+                        break;
+                    }
+                }
+                lam *= 10.0;
+            }
+            if too_long(&bstep) {
+                break;
             }
         }
         let w = sumsq(&l);
@@ -1502,7 +1630,9 @@ pub fn solve(sys: &System, opts: &SolveOpts) -> SolveResult {
         c = mm;
         h += 1;
     }
-    SolveResult { ok: c <= opts.tol.max(1e-7), err: c, iterations: h, x: s }
+    let moved = s.iter().zip(&s0).fold(0.0f64, |m, (a, b)| m.max((a - b).abs()));
+    let diverged = damp && !(moved <= RUNOFF * extent);
+    SolveResult { ok: !diverged && c <= opts.tol.max(1e-7), err: c, iterations: h, x: s, diverged }
 }
 
 /// Rank / DOF analysis (client `ti()`).

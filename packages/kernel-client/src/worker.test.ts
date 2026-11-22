@@ -45,3 +45,53 @@ describe('worker kernel, missing wasm', () => {
     await assert.rejects(createWorkerKernel('/nonexistent/ck_wasm.wasm'), /kernel wasm not found at \/nonexistent\/ck_wasm\.wasm.*CK_WASM/s);
   });
 });
+
+describe('worker kernel, worker dies after startup', { skip: !existsSync(defaultWasmPath()) && 'no wasm built' }, () => {
+  // the worker's thread is reached through the Worker the kernel owns: terminate it from outside
+  // by making the host exit mid-call (a request type the host cannot answer is not needed: exit via env hook below)
+  it('answers a waiting call and every later call with a trap instead of hanging', async () => {
+    const { Worker } = await import('node:worker_threads');
+    const orig = Worker.prototype.postMessage;
+    let killed = false;
+    Worker.prototype.postMessage = function (this: InstanceType<typeof Worker>, ...a: Parameters<typeof orig>) {
+      const m = a[0] as { kind?: string };
+      if (m?.kind === 'call' && !killed) { killed = true; void this.terminate(); return; }
+      return orig.apply(this, a);
+    } as typeof orig;
+    const k = await createWorkerKernel();
+    try {
+      const first = await Promise.race([
+        k.request({ type: 'regen', tag: 't', part: plate() }),
+        new Promise<never>((_, rej) => setTimeout(() => rej(new Error('hung')), 10000)),
+      ]);
+      assert.equal(first.ok, false);
+      assert.match(first.trap ?? '', /worker exited/);
+      const later = await k.request({ type: 'regen', tag: 't', part: plate() });
+      assert.equal(later.ok, false);
+      assert.match(later.trap ?? '', /worker exited/);
+    } finally {
+      Worker.prototype.postMessage = orig;
+      await k.close();
+    }
+  });
+});
+
+describe('PendingCalls', () => {
+  it('fails everything waiting once, and answers later calls at once', async () => {
+    const { PendingCalls } = await import('./pending.js');
+    const p = new PendingCalls();
+    const a = p.open();
+    p.fail('gone');
+    p.fail('second reason ignored');
+    assert.deepEqual(await a.reply, { ok: false, trap: 'gone' });
+    assert.deepEqual(await p.open().reply, { ok: false, trap: 'gone' });
+    assert.equal(p.size, 0);
+  });
+});
+
+describe('hostScriptPath', () => {
+  it('finds the compiled host', async () => {
+    const { hostScriptPath } = await import('./worker.js');
+    assert.ok(existsSync(hostScriptPath()));
+  });
+});

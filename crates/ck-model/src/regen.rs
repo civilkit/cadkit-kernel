@@ -107,6 +107,8 @@ pub mod codes {
     /// Warning: a feature field its type does not read (see `features::known_fields`).
     pub const UNKNOWN_FIELD: &str = "unknownField";
     pub const MISSING_REFERENCE: &str = "missingReference";
+    /// Warning: a sketch, plane, or axis lost its upstream reference and is holding its last known `frozenFrame` / `frozenAxis`.
+    pub const DETACHED_REFERENCE: &str = "detachedReference";
     pub const PLANE_LINE_NORMAL: &str = "planeLineNormal";
     pub const MISSING_SKETCH: &str = "missingSketch";
     pub const BAD_EXPRESSION: &str = "badExpression";
@@ -707,12 +709,70 @@ pub(crate) fn resolve_plane(state: &RegenState, exec: &mut dyn FeatureExec, r: &
     }
 }
 
+fn parse_vec3(j: &Json) -> Option<Vec3> {
+    let a = j.as_arr()?;
+    if a.len() != 3 {
+        return None;
+    }
+    let (x, y, z) = (a[0].as_f64()?, a[1].as_f64()?, a[2].as_f64()?);
+    if !(x.is_finite() && y.is_finite() && z.is_finite()) {
+        return None;
+    }
+    Some(Vec3::new(x, y, z))
+}
+
+/// Parse an optional `frozenFrame` (`{"o":[..],"x":[..],"y":[..],"z":[..]}`) stored on a sketch or plane feature.
+pub(crate) fn parse_frozen_frame(raw: &Json) -> Option<Frame> {
+    let j = raw.get("frozenFrame")?;
+    let (o, x, y, z) = (parse_vec3(j.get("o")?)?, parse_vec3(j.get("x")?)?, parse_vec3(j.get("y")?)?, parse_vec3(j.get("z")?)?);
+    if x.len() < 1e-12 || y.len() < 1e-12 || z.len() < 1e-12 {
+        return None;
+    }
+    Some(Frame { o, x, y, z })
+}
+
+/// Parse an optional `frozenAxis` (`{"o":[..],"d":[..]}`) stored on an axis feature.
+pub(crate) fn parse_frozen_axis(raw: &Json) -> Option<(Vec3, Vec3)> {
+    let j = raw.get("frozenAxis")?;
+    let o = parse_vec3(j.get("o")?)?;
+    let d = parse_vec3(j.get("d")?)?.try_normalize()?;
+    Some((o, d))
+}
+
+fn geom_ref_label(r: &GeomRef) -> Option<String> {
+    match r {
+        GeomRef::Face(id) | GeomRef::Feature(id) | GeomRef::Curve(id) | GeomRef::Name(id) => Some(id.clone()),
+        GeomRef::Std(p) => Some(p.as_str().to_string()),
+        GeomRef::Axis(a) => Some(a.clone()),
+        GeomRef::Other(j) => j.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()),
+    }
+}
+
+pub(crate) fn detached_ref_warning(ref_label: Option<&str>) -> FeatureError {
+    match ref_label.filter(|s| !s.is_empty()) {
+        Some(r) => FeatureError::new(codes::DETACHED_REFERENCE)
+            .with("ref", Json::Str(r.to_string()))
+            .with("hint", Json::Str(format!("reference {r} no longer exists; holding its last known position — reattach to a face or plane"))),
+        None => FeatureError::new(codes::DETACHED_REFERENCE)
+            .with("hint", Json::Str("a reference no longer exists; holding its last known position — reattach to a face or plane".to_string())),
+    }
+}
+
 fn regen_sketch(state: &mut RegenState, exec: &mut dyn FeatureExec, f: &Feature, sk: &Sketch) -> Result<(), FeatureError> {
-    let frame = sk
-        .plane
-        .as_ref()
-        .and_then(|p| resolve_plane(state, exec, p))
-        .ok_or_else(|| FeatureError::new(codes::MISSING_REFERENCE))?;
+    let frame = match sk.plane.as_ref().and_then(|p| resolve_plane(state, exec, p)) {
+        Some(fr) => fr,
+        None => match parse_frozen_frame(&f.raw) {
+            Some(frozen) => {
+                let label = sk.plane.as_ref().and_then(geom_ref_label);
+                state.result.warnings.push(RegenError {
+                    feature: f.id.clone(),
+                    error: detached_ref_warning(label.as_deref()),
+                });
+                frozen
+            }
+            None => return Err(FeatureError::new(codes::MISSING_REFERENCE)),
+        },
+    };
     let mut sk = sk.clone();
     let mut changed = false;
     for c in sk.constraints.iter_mut() {
@@ -784,7 +844,7 @@ fn base_ref(f: &Feature) -> Option<GeomRef> {
     }
 }
 
-fn regen_plane(state: &mut RegenState, exec: &mut dyn FeatureExec, f: &Feature) -> Result<(), FeatureError> {
+fn compute_plane_frame(state: &mut RegenState, exec: &mut dyn FeatureExec, f: &Feature) -> Result<Frame, FeatureError> {
     let FeatureKind::RefPlane { mode, base, flip, axis, base2, .. } = &f.kind else { unreachable!() };
     use crate::planes as pl;
     // Point / curve / face driven modes (no base plane needed).
@@ -800,8 +860,7 @@ fn regen_plane(state: &mut RegenState, exec: &mut dyn FeatureExec, f: &Feature) 
         _ => None,
     };
     if let Some(r) = driven {
-        state.result.put_plane(&f.id, r?);
-        return Ok(());
+        return r;
     }
     let base = base
         .as_ref()
@@ -869,6 +928,29 @@ fn regen_plane(state: &mut RegenState, exec: &mut dyn FeatureExec, f: &Feature) 
             fr.o = fr.o + fr.z.scale(offset);
         }
     }
+    Ok(fr)
+}
+
+fn regen_plane(state: &mut RegenState, exec: &mut dyn FeatureExec, f: &Feature) -> Result<(), FeatureError> {
+    let fr = match compute_plane_frame(state, exec, f) {
+        Ok(fr) => fr,
+        Err(e) if e.code == codes::MISSING_REFERENCE || e.code == crate::planes::MISSING_PATH => {
+            if let Some(frozen) = parse_frozen_frame(&f.raw) {
+                let label = base_ref(f)
+                    .as_ref()
+                    .and_then(geom_ref_label)
+                    .or_else(|| f.raw.get("path").and_then(|v| v.as_str()).map(|s| s.to_string()));
+                state.result.warnings.push(RegenError {
+                    feature: f.id.clone(),
+                    error: detached_ref_warning(label.as_deref()),
+                });
+                frozen
+            } else {
+                return Err(e);
+            }
+        }
+        Err(e) => return Err(e),
+    };
     state.result.put_plane(&f.id, fr);
     Ok(())
 }

@@ -5,7 +5,7 @@ use super::tests::{box_body, cyl_body};
 use super::{boolean, Op};
 use ck_topo::body::Body;
 
-const TOL: f64 = 1e-6;
+const TOL: f64 = ck_core::linalg::EPS_LINEAR;
 
 fn vol(b: &Body) -> f64 {
     ck_topo::mass::mass_props(b).volume

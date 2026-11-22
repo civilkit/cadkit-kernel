@@ -1458,7 +1458,7 @@ fn val(x: &[f64], v: V3) -> f64 {
 /// Solve a 3D sketch in place: on success writes the solved x/y/z back.
 pub fn solve_sketch3(sk: &mut Sketch3, opts: &SolveOpts) -> Result<SolveResult, String> {
     let sys = build(sk)?;
-    let res = crate::sketch::solver::solve(&sys, opts);
+    let res = crate::sketch::solver::solve_oracle(&sys, opts);
     if res.ok {
         for p in sk.points.iter_mut() {
             let kx = sys.key_idx.get(&format!("{}.x", p.id)).copied();

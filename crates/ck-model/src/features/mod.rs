@@ -69,8 +69,6 @@
 pub mod blends;
 pub mod bodies;
 pub mod combine;
-pub mod convert;
-pub mod curve_plane;
 pub mod curve_ref;
 pub mod delete_body;
 pub mod draft;
@@ -102,7 +100,6 @@ pub mod pipecut;
 pub mod proc_curve;
 pub mod proc_surface;
 pub mod project_curve;
-pub mod ref_plane;
 pub mod rib;
 pub mod sheet;
 pub mod sheet_export;
@@ -661,7 +658,7 @@ impl FeatureKind {
 // ---------------------------------------------------------------- B-rep exec
 
 /// Modelling tolerance handed to ck-ops. GUESS: 1e-6 (ck-ops tests).
-pub const TOL: f64 = 1e-6;
+pub const TOL: f64 = ck_core::linalg::EPS_LINEAR;
 
 /// A debug-trace span produced inside a feature (drained into the regen
 /// [`crate::regen::Tracer`] by [`Brep::flush_spans`], nested under the

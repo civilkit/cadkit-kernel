@@ -523,7 +523,7 @@ pub fn section(body: &Body, tess: &Tess, o: Vec3, n: Vec3) -> Section {
         }
         loops.push(LoopOut { outer: area > 0.0, area, edges, pts: pts2 });
     }
-    loops.sort_by(|a, b| b.area.abs().partial_cmp(&a.area.abs()).unwrap_or(std::cmp::Ordering::Equal));
+    loops.sort_by(|a, b| b.area.abs().total_cmp(&a.area.abs()));
     let area = loops.iter().map(|l| l.area).sum();
     if loops.is_empty() {
         bb = [0.0; 4];
@@ -631,7 +631,7 @@ pub fn sections_reply(body: &Body, msg: &Json, exact_volume: Option<f64>) -> Res
             if v.iter().any(|x| !x.is_finite()) {
                 return Err("sections: positions must be finite".into());
             }
-            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            v.sort_by(|a, b| a.total_cmp(b));
             (v, false)
         }
         Some(_) => return Err("sections: positions must be an array of numbers".into()),

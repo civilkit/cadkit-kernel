@@ -66,7 +66,8 @@ export function toKernelReply(parsed: { ok?: unknown; result?: unknown; error?: 
 
 /** Messages between the main thread and the wasm worker host. */
 export type HostRequest =
-  | { kind: 'init'; wasmPath: string }
+  | { kind: 'init'; wasmPath: string }   // node worker: read from disk
+  | { kind: 'init'; wasmUrl: string }    // browser worker: fetched
   | { kind: 'call'; id: number; body: string };
 
 export type HostResponse =
@@ -78,3 +79,19 @@ export type HostResponse =
  *  the app refuses a service whose number differs, so two kernels never mix inside one document. Bump together with the
  *  server's constant whenever a message or reply changes shape. */
 export const KERNEL_PROTOCOL = 1;
+
+/**
+ * The ArrayBuffers behind the typed arrays in a reply (the display mesh is
+ * several MB), for a postMessage transfer list so they are handed over, not
+ * copied. Skips views onto a SharedArrayBuffer and empty ones.
+ */
+export function transferList(reply: unknown): ArrayBuffer[] {
+  const bufs = new Set<ArrayBuffer>();
+  const walk = (v: unknown): void => {
+    if (ArrayBuffer.isView(v)) { if (v.buffer instanceof ArrayBuffer && v.byteLength > 0) bufs.add(v.buffer); return; }
+    if (Array.isArray(v)) { for (const x of v) walk(x); return; }
+    if (v && typeof v === 'object') for (const x of Object.values(v)) walk(x);
+  };
+  walk(reply);
+  return [...bufs];
+}

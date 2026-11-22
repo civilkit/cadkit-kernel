@@ -20,7 +20,7 @@ use ck_geom::surface::Surface;
 use ck_geom::{Frame, Vec2, Vec3};
 use std::f64::consts::TAU;
 
-const TOL: f64 = 1e-9;
+const TOL: f64 = ck_core::linalg::EPS_POINT;
 
 /// Revolve `profile` about the axis (`axis_o`, unit `axis`) from angle `a0`
 /// to `a1` (radians, a0 < a1; |a1-a0| >= 2π is a full revolve).

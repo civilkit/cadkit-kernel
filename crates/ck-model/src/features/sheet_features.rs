@@ -1619,7 +1619,7 @@ fn chord_length(poly: &sheet_tree::Poly, o: P, d: P) -> f64 {
             ss.push(s);
         }
     }
-    ss.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    ss.sort_by(|a, b| a.total_cmp(b));
     ss.chunks(2).filter(|c| c.len() == 2).map(|c| c[1] - c[0]).sum()
 }
 

@@ -178,16 +178,3 @@ pub fn exec_surface_planar(br: &mut Brep, state: &mut RegenState, f: &Feature) -
 pub fn flip_face(b: &mut Body, f: FaceId) {
     ck_topo::orient::flip_face(b, f);
 }
-#[allow(dead_code)]
-fn flip_face_old(b: &mut Body, f: FaceId) {
-    b.faces[f.idx()].sense = !b.faces[f.idx()].sense;
-    for l in b.face(f).loops.clone() {
-        let mut cs = b.lp(l).coedges.clone();
-        cs.reverse();
-        for &c in &cs {
-            let co = &mut b.coedges[c.idx()];
-            co.rev = !co.rev;
-        }
-        b.loops[l.idx()].coedges = cs;
-    }
-}

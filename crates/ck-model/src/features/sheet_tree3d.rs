@@ -354,7 +354,7 @@ pub fn cut_tools(m: &Model, tree: &Tree) -> Result<Vec<Body>, FeatureError> {
                         vs.push(a[1] + (c[1] - a[1]) * (um - a[0]) / (c[0] - a[0]));
                     }
                 }
-                vs.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
+                vs.sort_by(|x, y| x.total_cmp(y));
                 let iv: Vec<(f64, f64)> = vs.chunks(2).filter(|c| c.len() == 2).map(|c| (c[0].max(lo), c[1].min(hi))).filter(|c| c.1 - c.0 > 1e-6).collect();
                 if iv.is_empty() {
                     continue;

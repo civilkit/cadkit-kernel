@@ -22,7 +22,6 @@
 //! real vertex is interior and every real edge has two triangles. Points go in by splitting a triangle or an edge and then restoring the
 //! Delaunay property with Lawson flips; a segment goes in by flipping the edges it crosses (S. W. Sloan, "A fast algorithm for generating
 //! constrained Delaunay triangulations", 1993) and is then never flipped. All sign decisions use exact predicates.
-#![allow(dead_code)]
 
 /// Exact-sign predicates (orient2d / incircle).
 pub mod predicates {
@@ -270,11 +269,6 @@ impl Cdt {
         panic!("fix_back: edge not found");
     }
 
-    /// Index of the edge `(a, b)` (in that direction) in triangle `t`.
-    fn edge_idx(&self, t: u32, a: u32, b: u32) -> Option<usize> {
-        let tr = &self.tris[t as usize];
-        (0..3).find(|&i| tr.v[(i + 1) % 3] == a && tr.v[(i + 2) % 3] == b)
-    }
 
     fn pos(tr: &Tri, u: u32) -> usize {
         if tr.v[0] == u { 0 } else if tr.v[1] == u { 1 } else { 2 }

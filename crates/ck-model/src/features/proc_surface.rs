@@ -571,7 +571,7 @@ pub fn exec_blend_surface(br: &mut Brep, state: &mut RegenState, f: &Feature) ->
                 let ed = b.edge(e);
                 ck_ops::boolean::imprint::dist_in_range(&ed.curve, (ed.t0, ed.t1), p).1
             });
-            let Some(e) = shared.into_iter().min_by(|&x, &y| dist(x).partial_cmp(&dist(y)).unwrap_or(std::cmp::Ordering::Equal)) else {
+            let Some(e) = shared.into_iter().min_by(|&x, &y| dist(x).total_cmp(&dist(y))) else {
                 return Err(hint(
                     FeatureError::new("blendSurfaceSpan").with("detail", Json::Str(format!("{} and {} share no edge", sup[0].name, sup[1].name))),
                     "give the span with `from` and `to` (the spine runs between them), or pick two faces that meet in an edge",

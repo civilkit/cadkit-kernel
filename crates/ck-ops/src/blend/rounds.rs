@@ -629,7 +629,7 @@ fn flattest_edge(b: &Body, c: &super::corner::Corner) -> Option<EdgeId> {
     if dots.iter().any(|d| !d.is_finite()) {
         return None;
     }
-    let i = (0..3).max_by(|&i, &j| dots[i].partial_cmp(&dots[j]).unwrap())?;
+    let i = (0..3).max_by(|&i, &j| dots[i].total_cmp(&dots[j]))?;
     (0..3).all(|j| j == i || dots[i] > dots[j] + 1e-6).then_some(c.edges[i])
 }
 

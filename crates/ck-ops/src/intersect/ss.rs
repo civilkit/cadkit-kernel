@@ -603,7 +603,7 @@ fn coaxial(s1: &Surface, s2: &Surface, tol: f64) -> Option<SsResult> {
         (Torus(..), _) | (_, Torus(..)) => return None,
     }
     let mut out = vec![];
-    hs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    hs.sort_by(|a, b| a.0.total_cmp(&b.0));
     hs.dedup_by(|a, b| (a.0 - b.0).abs() <= tol);
     for (h, rho) in hs {
         if rho > tol {
@@ -962,7 +962,7 @@ fn long_spline_implicit(sp: &Surface, other: &Surface, b: Bounds, tol: f64) -> O
                 let mut still: Vec<usize> = vec![];
                 for &ti in &active {
                     let last = tracks[ti].last().unwrap().1;
-                    let best = rs.iter().enumerate().filter(|(q, _)| !used[*q]).min_by(|a, c| (a.1 - last).abs().partial_cmp(&(c.1 - last).abs()).unwrap());
+                    let best = rs.iter().enumerate().filter(|(q, _)| !used[*q]).min_by(|a, c| (a.1 - last).abs().total_cmp(&(c.1 - last).abs()));
                     match best {
                         Some((q, &t)) if (t - last).abs() < 0.2 => {
                             used[q] = true;

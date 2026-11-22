@@ -37,7 +37,7 @@ pub fn find(m: &Model, tags: &[Vec<(i64, i64)>], id: i64, src: &HashSet<i64>) ->
     let analytic = |g: &FaceId| !matches!(m.kind(*g), Kind::Other(_));
     let mut sample: Vec<FaceId> = copies.iter().copied().filter(analytic).collect();
     let size = |g: FaceId| ck_ops::bvh::face_box(m.b, g).diagonal();
-    sample.sort_by(|a, b| size(*b).partial_cmp(&size(*a)).unwrap_or(std::cmp::Ordering::Equal));
+    sample.sort_by(|a, b| size(*b).total_cmp(&size(*a)));
     sample.truncate(8);
     let mut raw: Vec<(Vec3, f64)> = vec![];
     for &p in &sample {

@@ -1009,6 +1009,184 @@ export interface FrameFeature {
   [key: string]: unknown;
 }
 
+// ---- sheet metal (docs/sheet-metal.md, book/src/format/features-sheet.md; field names: crates/ck-model/src/features/known_fields.rs) ----
+
+/** A pick of a sheet edge: a point on it (`[x,y,z]` or `{at}`, the nearest outline edge wins), `{edge: n}` (index into
+ *  the outline), or a role name such as `"P0.side.e2"`. A partial flange may carry `start`/`length`/`from`/`to` on a pick. */
+export type SheetEdgePick = number[] | string | { at?: number[]; edge?: number; role?: string; panel?: number; [key: string]: unknown };
+
+/** The stock a sheet is made of. Only `name` is required; the rest default from the thickness. A rule with an existing name replaces it. */
+export interface SheetRulesFeature {
+  type: 'sheetRules';
+  id: string;
+  name?: string;
+  thickness?: Expr;
+  kFactor?: Expr;
+  bendRadius?: Expr;
+  reliefWidth?: Expr;
+  reliefDepth?: Expr;
+  cornerRelief?: Expr | string;
+  cornerReliefShape?: 'notch' | 'round' | 'rectangular' | 'tear' | string;
+  hemGap?: Expr;
+  gap?: Expr;
+  /** make this rule the active one (default true) */
+  active?: boolean;
+  [key: string]: unknown;
+}
+
+/** The first plate: one closed sketch region (holes allowed), extruded by the rule's thickness. */
+export interface BaseFlangeFeature {
+  type: 'baseFlange';
+  id: string;
+  name?: string;
+  sketch: string;
+  /** rule name; default the active rule */
+  rule?: string;
+  flip?: boolean;
+  regions?: string[];
+  [key: string]: unknown;
+}
+
+/** The base from an open chain of sketch lines. */
+export interface ContourFlangeFeature {
+  type: 'contourFlange';
+  id: string;
+  name?: string;
+  sketch: string;
+  /** sketch curve ids; default every line */
+  curves?: string[];
+  distance?: Expr;
+  rule?: string;
+  flip?: boolean;
+  reverse?: boolean;
+  [key: string]: unknown;
+}
+
+/** A further bend chained on the far edge of an edge flange (at most 16). */
+export interface SheetFlangeNext {
+  /** degrees, default 90 */
+  angle?: Expr;
+  height: Expr;
+  flip?: boolean;
+}
+
+/** A shaped flange leg: a closed loop of `{line:[[v,h],[v,h]]}` / `{arc:{center,from,to,ccw}}` segments in leg coordinates. */
+export type SheetProfile = Array<{ line?: number[][]; arc?: { center: number[]; from: number[]; to: number[]; ccw?: boolean }; [key: string]: unknown }>;
+
+/** A bent flange on edges of the plate. `height` is required. */
+export interface EdgeFlangeFeature {
+  type: 'edgeFlange';
+  id: string;
+  name?: string;
+  edges: SheetEdgePick[];
+  height: Expr;
+  /** degrees, default 90 */
+  angle?: Expr;
+  radius?: Expr;
+  heightFrom?: 'outer' | 'inner' | 'tangent' | string;
+  position?: 'inside' | 'outside' | 'middle' | string;
+  flip?: boolean;
+  /** chained bends */
+  then?: SheetFlangeNext[];
+  /** partial width: from the start of the edge by `start`/`length`, or between world points `from` and `to` on it */
+  start?: Expr;
+  length?: Expr;
+  from?: number[];
+  to?: number[];
+  profile?: SheetProfile;
+  /** each `{circle:{center:[v,h],radius}}` or a closed loop of segments */
+  holes?: Array<Record<string, unknown> | SheetProfile>;
+  /** the notch beside a partial flange */
+  relief?: 'none' | 'rectangular' | { width?: Expr; depth?: Expr };
+  [key: string]: unknown;
+}
+
+/** A 180 degree bend that lays a leg back against the sheet. */
+export interface HemFeature {
+  type: 'hem';
+  id: string;
+  name?: string;
+  edges: SheetEdgePick[];
+  length?: Expr;
+  /** inside radius of the hem */
+  gap?: Expr;
+  flip?: boolean;
+  start?: Expr;
+  from?: number[];
+  to?: number[];
+  profile?: SheetProfile;
+  holes?: Array<Record<string, unknown> | SheetProfile>;
+  relief?: 'none' | 'rectangular' | { width?: Expr; depth?: Expr };
+  [key: string]: unknown;
+}
+
+/** A bend across the sheet along a line: world `points`, or `line` naming a sketch line. */
+export interface FoldFeature {
+  type: 'fold';
+  id: string;
+  name?: string;
+  points?: number[][];
+  line?: { sketch: string; curve: string };
+  angle?: Expr;
+  radius?: Expr;
+  position?: 'centerline' | 'start' | 'end' | 'mould' | string;
+  /** the side that stays: a point [x,y,z] or a wall role such as `P0.side.e1` */
+  fixed?: number[] | string;
+  flip?: boolean;
+  [key: string]: unknown;
+}
+
+/** Make the body the flat sheet. */
+export interface UnfoldFeature {
+  type: 'unfold';
+  id: string;
+  name?: string;
+  [key: string]: unknown;
+}
+
+/** Fold the unfolded sheet again from the same bend rows. */
+export interface RefoldFeature {
+  type: 'refold';
+  id: string;
+  name?: string;
+  [key: string]: unknown;
+}
+
+/** Read a bent plate of constant thickness as a sheet (refused when the volume differs by more than 1 percent). */
+export interface SheetConvertFeature {
+  type: 'sheetConvert';
+  id: string;
+  name?: string;
+  thickness?: Expr;
+  rule?: string;
+  [key: string]: unknown;
+}
+
+/** Cut the closed regions of a sketch out of the sheet through the flat pattern. */
+export interface SheetCutFeature {
+  type: 'sheetCut';
+  id: string;
+  name?: string;
+  sketch: string;
+  regions?: string[];
+  [key: string]: unknown;
+}
+
+/** Round or chamfer corners of free walls. */
+export interface SheetCornerFeature {
+  type: 'sheetCorner';
+  id: string;
+  name?: string;
+  /** each a point [x,y,z] or `{panel, vertex}` */
+  corners: Array<number[] | { panel: number; vertex: number }>;
+  mode?: 'round' | 'chamfer' | string;
+  radius?: Expr;
+  distance?: Expr;
+  /** alias of radius/distance */
+  size?: Expr;
+  [key: string]: unknown;
+}
+
 /** Every typed feature except sketch/extrude (declared in index.ts). */
 export type KnownFeature =
   | Sketch3DFeature | RevolveFeature | SweepFeature | LoftFeature
@@ -1023,7 +1201,9 @@ export type KnownFeature =
   | FreeformFeature | EditCurveFeature | ProjectCurveFeature | OffsetCurveFeature | CompositeCurveFeature | SweepSurfaceFeature | BlendSurfaceFeature | ExtendFeature
   | DomeFeature | SplitLineFeature | MoveFaceFeature | PressPullFeature | MoveBodyFeature
   | ScaleFeature | AxisFeature | ThreadFeature | CombineFeature | SplitFeature | LipJointFeature | SphereFeature | KnurlBandFeature | ImportStepFeature | RepairPartFeature | FrameFeature
-  | TorusFeature | PipeFeature | CoilFeature | BoundingSolidFeature;
+  | TorusFeature | PipeFeature | CoilFeature | BoundingSolidFeature
+  | SheetRulesFeature | BaseFlangeFeature | ContourFlangeFeature | EdgeFlangeFeature | HemFeature | FoldFeature
+  | UnfoldFeature | RefoldFeature | SheetConvertFeature | SheetCutFeature | SheetCornerFeature;
 
 /** All wire type strings the kernel dispatches on. */
 export const FEATURE_TYPES = [

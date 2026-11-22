@@ -1,5 +1,6 @@
-//! `offsetUnsupported {detail:"edge curve type"}` carries a hint naming what
-//! to change (issue #391: shell after a fillet on drafted edges).
+//! Issue #391: shell after a fillet on drafted edges. The rounds' ends are conics (an `offsetUnsupported "edge curve
+//! type"` with a hint to shell before the fillet, until the offset learned to rebuild them); the shell now builds. The hint
+//! stays in `ck-model` for any conic the offset still cannot rebuild.
 
 use ck_model::features::Brep;
 use ck_model::regen::{self, FeatureExec, RegenOpts, Tracer};
@@ -34,7 +35,7 @@ impl FeatureExec for Exec {
 }
 
 #[test]
-fn fillet_on_drafted_edges_says_what_to_change() {
+fn fillet_on_drafted_edges_shells() {
     // issue #391's shape: a drafted tower, R6 on the four oblique vertical
     // edges, then shell 2.5 open at the top.
     let part = r#"{"format":"ck-part","version":1,"features":[
@@ -53,10 +54,11 @@ fn fillet_on_drafted_edges_says_what_to_change() {
     let mut ex = Exec { brep: Brep::new(), labels: Noop };
     let r = regen::regen(&part, &RegenOpts::default(), &mut ex);
     let errs: Vec<String> = r.errors.iter().map(|e| format!("{}:{}", e.feature, e.error.describe())).collect();
-    assert_eq!(errs.len(), 1, "{errs:?}");
-    let e = &errs[0];
-    assert!(e.starts_with("SH:offsetUnsupported"), "{e}");
-    assert!(e.contains("edge curve type"), "{e}");
-    assert!(e.contains("hint"), "{e}");
-    assert!(e.contains("shell before the fillet"), "{e}");
+    assert!(errs.is_empty(), "{errs:?}");
+    let b = ex.brep.body.as_ref().unwrap();
+    assert!(ck_check::validate(b, 1e-6).is_empty());
+    // cross-section integral: the rounded-rectangle section at each height less the section moved in by the wall
+    // (2.5 / cos 2 degrees), a 2.5 mm floor: 36794.8; the rolling-ball corner is not exactly a circle in a horizontal cut
+    let v = ck_topo::mass::mass_props(b).volume;
+    assert!((v - 36794.85).abs() < 1e-3 * 36794.85, "volume {v}");
 }

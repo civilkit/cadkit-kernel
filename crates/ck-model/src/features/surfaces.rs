@@ -195,7 +195,7 @@ pub(super) fn pick_edge(br: &Brep, faces: &[String], at: Option<Vec3>) -> Result
         cand
     };
     cand.into_iter()
-        .min_by(|&x, &y| dist(x).partial_cmp(&dist(y)).unwrap_or(std::cmp::Ordering::Equal))
+        .min_by(|&x, &y| dist(x).total_cmp(&dist(y)))
         .map(|e| (slot, e))
         .ok_or_else(missing)
 }

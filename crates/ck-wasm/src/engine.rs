@@ -1012,7 +1012,7 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
             if body.num_lumps() > 1 {
                 if quick {
                     ctl.skip("overlap");
-                } else if let Some(v) = ctl.stage("overlap", || overlap_info(body)) {
+                } else if let Some(v) = ctl.stage("overlap", || overlap_info(body, limit)) {
                     overlap = v;
                 }
             }
@@ -1411,9 +1411,36 @@ fn fit_quadrics_query(cx: &mut Cx) -> Result<Json, String> {
 /// Default `opts.validateTimeMs` (ms).
 const DEFAULT_VALIDATE_MS: f64 = 60_000.0;
 
-/// The `bodiesOverlap` info records of `validate`: one per pair of overlapping lumps.
-fn overlap_info(body: &Body) -> Vec<Json> {
-    ck_ops::interference::reply(body)
+/// The overlap stage may use at most this share of the validate budget, and never more than [`OVERLAP_MAX_MS`].
+const OVERLAP_SHARE: f64 = 0.25;
+const OVERLAP_MAX_MS: f64 = 10_000.0;
+/// Without a host clock: at most this many exact pair booleans.
+const OVERLAP_MAX_PAIRS: usize = 12;
+
+/// The `bodiesOverlap` info records of `validate`: one per pair of overlapping lumps. The check is information only
+/// (it never changes `ok`), so it runs under its own cap (a quarter of the validate budget, at most 10 s; without a
+/// clock 12 pair booleans), cheapest pairs first; when the cap stops it an `overlapCheckTruncated` record says how
+/// many pairs were not checked.
+fn overlap_info(body: &Body, validate_ms: f64) -> Vec<Json> {
+    let ms = if validate_ms > 0.0 { (validate_ms * OVERLAP_SHARE).min(OVERLAP_MAX_MS) } else { OVERLAP_MAX_MS };
+    let reply = ck_ops::interference::reply_budgeted(body, ck_ops::interference::Cap { ms, pairs: OVERLAP_MAX_PAIRS });
+    let unchecked = reply.get_f64("uncheckedPairs");
+    let mut out = overlap_records(&reply);
+    if let Some(n) = unchecked {
+        out.push(
+            Obj::new()
+                .put("code", "overlapCheckTruncated")
+                .put("severity", "info")
+                .put("uncheckedPairs", n)
+                .put("detail", format!("overlap check stopped at its budget: {n} body pairs were not checked"))
+                .build(),
+        );
+    }
+    out
+}
+
+fn overlap_records(reply: &Json) -> Vec<Json> {
+    reply
         .get_arr("pairs")
         .map(|ps| ps.to_vec())
         .unwrap_or_default()

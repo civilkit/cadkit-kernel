@@ -142,7 +142,7 @@ fn exec_full_round(br: &mut Brep, f: &Feature) -> Result<(), FeatureError> {
     }
     a[3] = [dir.x, dir.y, dir.z, 0.0, 0.0];
     for col in 0..4 {
-        let piv = (col..4).max_by(|&x, &y| a[x][col].abs().partial_cmp(&a[y][col].abs()).unwrap()).unwrap();
+        let piv = (col..4).max_by(|&x, &y| a[x][col].abs().total_cmp(&a[y][col].abs())).unwrap();
         if a[piv][col].abs() < 1e-12 {
             return Err(unsup());
         }

@@ -333,7 +333,7 @@ fn split_at_knots<'a>(surf: &Surface, pieces: Vec<Piece<'a>>) -> Vec<Piece<'a>> 
                         }
                     }
                 }
-                ts.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                ts.sort_by(|a, b| a.total_cmp(b));
                 if tb < ta {
                     ts.reverse();
                 }
@@ -894,7 +894,7 @@ fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand
             });
             let idx = list.partition_point(|e| e.0 < u);
             let cand = [idx.checked_sub(1), (idx < list.len()).then_some(idx)];
-            let best = cand.iter().flatten().copied().min_by(|&x, &y| (list[x].0 - u).abs().partial_cmp(&(list[y].0 - u).abs()).unwrap()).unwrap();
+            let best = cand.iter().flatten().copied().min_by(|&x, &y| (list[x].0 - u).abs().total_cmp(&(list[y].0 - u).abs())).unwrap();
             let (uc, gc) = list[best];
             if uc == u {
                 return gc;

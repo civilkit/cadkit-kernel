@@ -18,7 +18,7 @@ use ck_json::{Json, Obj};
 use ck_topo::body::{Body, EdgeId, FaceId, VertexId};
 use std::collections::HashMap;
 
-const TOL: f64 = 1e-6;
+const TOL: f64 = ck_core::linalg::EPS_LINEAR;
 const MAX_POINTS: usize = 2000;
 
 fn v3(v: Vec3) -> Json {
@@ -449,7 +449,7 @@ pub fn pair_min(ca: &Ctx, pa: Prim, cb: &Ctx, pb: Prim, n: usize) -> Option<Hit>
             starts.push((d, x));
         }
     }
-    starts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    starts.sort_by(|a, b| a.0.total_cmp(&b.0));
     let mut best: Option<Hit> = None;
     let mut used: Vec<Vec3> = vec![];
     for (_, s) in starts {
@@ -517,7 +517,7 @@ impl<'a> Ent<'a> {
                 (lb, lb, i)
             })
             .collect();
-        order.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        order.sort_by(|a, b| a.1.total_cmp(&b.1));
         let mut best: Option<(f64, Vec3, usize)> = None;
         for (lb, _, i) in order {
             let bound = best.map_or(ub, |b| b.0.min(ub));
@@ -566,7 +566,7 @@ fn ent_min(a: &Ent, b: &Ent, n: usize) -> Option<(Hit, usize, usize)> {
             pairs.push((box_dist(ba, bb), i, j));
         }
     }
-    pairs.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap_or(std::cmp::Ordering::Equal));
+    pairs.sort_by(|x, y| x.0.total_cmp(&y.0));
     let mut best: Option<(Hit, usize, usize)> = None;
     for (lb, i, j) in pairs {
         if over() {
@@ -955,7 +955,7 @@ fn thickness_inner(body: &Body, msg: &Json) -> Result<Json, String> {
             }
         }
     }
-    ths.sort_by(|a, b| a.t.partial_cmp(&b.t).unwrap_or(std::cmp::Ordering::Equal));
+    ths.sort_by(|a, b| a.t.total_cmp(&b.t));
     // optional: local thickness (largest inscribed ball) for the thinnest ray samples
     let mut vals: Vec<(f64, usize)> = ths.iter().enumerate().map(|(i, t)| (t.t, i)).collect();
     if sphere {
@@ -979,7 +979,7 @@ fn thickness_inner(body: &Body, msg: &Json) -> Result<Json, String> {
                 *v = 2.0 * inscribed_radius(&ctx, t.p, t.n, t.t);
             }
         }
-        vals.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        vals.sort_by(|a, b| a.0.total_cmp(&b.0));
     }
     let mut o = Obj::new().put("method", if sphere { "sphere" } else { "ray" }).put("samples", total as f64).put("noExit", noexit as f64);
     let Some(&(minv, mi)) = vals.first() else {
@@ -1102,7 +1102,7 @@ fn closest_point_inner(body: &Body, msg: &Json) -> Result<Json, String> {
         } else {
             universe.iter().filter_map(|&p| prim_nearest(&ctx, p, q).map(|(d, x)| (d, x, p))).collect()
         };
-        cands.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        cands.sort_by(|a, b| a.0.total_cmp(&b.0));
         let mut list = vec![];
         for (d, x, p) in cands.iter().take(k) {
             let mut o = Obj::new().put("distance", *d).put("point", v3(*x));
@@ -1382,7 +1382,7 @@ fn clearance_inner(body: &Body, msg: &Json) -> Result<Json, String> {
             cand.push((bd, a, b));
         }
     }
-    cand.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap_or(std::cmp::Ordering::Equal));
+    cand.sort_by(|x, y| x.0.total_cmp(&y.0));
     if cand.len() > max_pairs {
         cand.truncate(max_pairs);
         mark_truncated();
@@ -1421,7 +1421,7 @@ fn clearance_inner(body: &Body, msg: &Json) -> Result<Json, String> {
         }
         hits.push((h, a, b, kind));
     }
-    hits.sort_by(|x, y| x.0.d.partial_cmp(&y.0.d).unwrap_or(std::cmp::Ordering::Equal));
+    hits.sort_by(|x, y| x.0.d.total_cmp(&y.0.d));
     let total = hits.len();
     if total > limit {
         mark_truncated();
@@ -1528,7 +1528,7 @@ fn symmetry_inner(body: &Body, msg: &Json) -> Result<Json, String> {
                 .build(),
         ));
     }
-    res.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    res.sort_by(|a, b| a.0.total_cmp(&b.0));
     let best = res.first().map(|r| r.1.clone());
     let syms: Vec<Json> = res.iter().filter(|r| r.0 <= tol).map(|r| r.1.clone()).collect();
     Ok(Obj::new()
@@ -1676,7 +1676,7 @@ fn extrema_inner(body: &Body, msg: &Json) -> Result<Json, String> {
                     let sgn = if k == 0 { -1.0 } else { 1.0 };
                     let mut order: Vec<&(f64, f64, Vec3)> = grid.iter().flatten().collect();
                     samples += order.len();
-                    order.sort_by(|a, b| (sgn * dir.dot(b.2)).partial_cmp(&(sgn * dir.dot(a.2))).unwrap_or(std::cmp::Ordering::Equal));
+                    order.sort_by(|a, b| (sgn * dir.dot(b.2)).total_cmp(&(sgn * dir.dot(a.2))));
                     let Some(first) = order.first() else { break };
                     let mut best = Best { val: sgn * dir.dot(first.2), p: first.2 };
                     // the two best samples are refined (a plane is linear: its boundary holds the extreme)
@@ -1712,7 +1712,7 @@ fn extrema_inner(body: &Body, msg: &Json) -> Result<Json, String> {
         for k in 0..2 {
             let sgn = if k == 0 { -1.0 } else { 1.0 };
             let mut order: Vec<usize> = (0..pts.len()).collect();
-            order.sort_by(|&a, &b| (sgn * dir.dot(pts[b])).partial_cmp(&(sgn * dir.dot(pts[a]))).unwrap_or(std::cmp::Ordering::Equal));
+            order.sort_by(|&a, &b| (sgn * dir.dot(pts[b])).total_cmp(&(sgn * dir.dot(pts[a]))));
             let mut best = Best { val: sgn * dir.dot(pts[order[0]]), p: pts[order[0]] };
             if !line {
                 for &i in order.iter().take(2) {

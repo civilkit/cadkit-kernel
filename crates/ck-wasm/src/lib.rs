@@ -13,9 +13,9 @@
 //!   (capacity `max(len, 1)` — it is freed after the call);
 //! - `ck_reply`: borrows the global reply Vec (RefCell flag @8527208) and
 //!   returns its data pointer;
-//! - `ck_commit` returns a static string, `ck_commit_len` = 58:
-//!   "class-a-surfacing da3c6f49122f7955186a15d91471699f37e7fcf5"
-//!   (read back through the oracle's ck_commit/ck_commit_len).
+//! - `ck_commit` returns a static string, `ck_commit_len` its length: `"ck <revision>"`, the revision being
+//!   `CK_COMMIT` at build time, else `git rev-parse HEAD`, else `unknown` (see `build.rs`). Consumers compare
+//!   only its last token, as a hex prefix.
 //! - panics reach the host through `ck_panic` as the std PanicHookInfo
 //!   Display text, e.g. "panicked at /rustc/<hash>/library/core/src/time.rs:
 //!   962:23:\ncannot convert float seconds to Duration: value is either too
@@ -24,8 +24,8 @@
 
 use std::cell::RefCell;
 
-/// The build id the original reports.
-pub const COMMIT: &str = "class-a-surfacing da3c6f49122f7955186a15d91471699f37e7fcf5";
+/// The build id `ck_commit` reports: `ck <revision>` (set `CK_COMMIT` to override the git revision).
+pub const COMMIT: &str = concat!("ck ", env!("CK_WASM_COMMIT"));
 
 pub mod drag;
 pub mod engine;
@@ -142,6 +142,7 @@ mod tests {
         let r = unsafe { std::slice::from_raw_parts(ck_reply(), n) };
         assert_eq!(n, 48);
         assert_eq!(&r[4..45], br#"{"ok":true,"result":{"pong":true},"ms":0}"#);
-        assert_eq!(ck_commit_len(), 58);
+        assert_eq!(ck_commit_len() as usize, COMMIT.len());
+        assert!(COMMIT.starts_with("ck ") && COMMIT.len() > 3);
     }
 }

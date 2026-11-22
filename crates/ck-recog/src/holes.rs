@@ -250,13 +250,13 @@ fn classify(m: &Model, group: &[FaceId], inset: &HashSet<FaceId>, o: Vec3, a: Ve
                 if pts.len() != 2 {
                     return None;
                 }
-                pts.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap());
+                pts.sort_by(|x, y| x.0.total_cmp(&y.0));
                 stages.push(Stage { cyl: false, s0: pts[0].0, s1: pts[1].0, r0: pts[0].1, r1: pts[1].1 });
             }
             _ => {}
         }
     }
-    stages.sort_by(|x, y| x.s0.partial_cmp(&y.s0).unwrap().then(x.s1.partial_cmp(&y.s1).unwrap()));
+    stages.sort_by(|x, y| x.s0.total_cmp(&y.s0).then(x.s1.total_cmp(&y.s1)));
     let through = mouths.len() == 2;
     let mut i = 0;
     let mut csk = None;

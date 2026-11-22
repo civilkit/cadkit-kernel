@@ -57,7 +57,7 @@ fn find(p: &mut [usize], mut i: usize) -> usize {
 /// Returns the number of vertices merged away.
 pub fn merge_near_vertices(b: &mut Body, tol: f64, out: &mut Vec<Fixed>) -> usize {
     let mut vs = candidates(b, tol);
-    vs.sort_by(|&a, &c| b.vertex(a).p.x.partial_cmp(&b.vertex(c).p.x).unwrap());
+    vs.sort_by(|&a, &c| b.vertex(a).p.x.total_cmp(&b.vertex(c).p.x));
     let mut parent: Vec<usize> = (0..vs.len()).collect();
     for i in 0..vs.len() {
         let pi = b.vertex(vs[i]).p;

@@ -1,8 +1,7 @@
 //! Shell on curved and stepped bodies (tools/cases/shell_bodies): each fixture is a body plus a `shell` as its last
 //! feature. The volumes are the kernel's own, checked against the closed form where there is one (the sphere).
 //! The fixtures that do not shell yet are kept beside them: an opening at a curved face is refused (`shellUnsupported`), a
-//! hemisphere opened at its flat face is an ignored known failure; two more are refused with a stated reason (a drafted and
-//! filleted edge, a thickened free-form surface), see the last tests.
+//! hemisphere opened at its flat face is an ignored known failure; see the last tests.
 use ck_model::features::Brep;
 use ck_model::regen::{self, FeatureExec, RegenOpts, RegenResult, Tracer};
 use ck_model::Part;
@@ -107,16 +106,15 @@ fn thickened_free_form_surface_shells() {
     passes(fixture!("thickened_freeform_closed"), 369.726);
 }
 
-/// A shell of a body whose edge between a free-form wall and a plane wall cannot be offset is refused with a reason
-/// (`offsetUnsupported`) and the body stays as it was; it is not a wrong shell.
+/// A drafted block with its four oblique edges rounded (the round's ends are conics) shells: the offset rebuilds the ellipse
+/// where two offset faces meet. Volume against the cross-section integral (3231.1: rounded-rectangle section less the section
+/// moved in by the wall over cos 8 degrees, a floor of one wall), the rolling-ball corner not being a circle in a horizontal cut.
 #[test]
-fn shell_refused_where_an_edge_cannot_be_offset() {
-    for src in [fixture!("tapered_fillet_open_top")] {
-        let (errors, _, valid) = shell_body(src);
-        assert_eq!(errors.len(), 1, "{errors:?}");
-        assert!(errors[0].starts_with("S:") && errors[0].contains("offset"), "{errors:?}");
-        assert!(valid, "the body before the shell stays valid");
-    }
+fn drafted_block_with_rounded_edges_shells() {
+    let (errors, v, valid) = shell_body(fixture!("tapered_fillet_open_top"));
+    assert!(errors.is_empty(), "{errors:?}");
+    assert!(valid);
+    assert!((v - 3231.1).abs() < 2e-3 * 3231.1, "volume {v}");
 }
 
 /// Opening a body at a curved face is not built: the refusal names it (`shellUnsupported`) and the body stays as it was.

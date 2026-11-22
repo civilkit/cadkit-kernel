@@ -57,7 +57,7 @@ cargo build -p ck-wasm --target wasm32-unknown-unknown --release
 
 ### Build identity
 
-`ck_commit()` returns a fixed build string compiled into the module. The source revision is reported differently: when the environment variable `CK_BUILD_REV` is set at compile time, the `ping` reply carries it as `result.build`.
+`ck_commit()` returns the build string compiled into the module, `ck <revision>`: the revision is `CK_COMMIT` at build time, else `git rev-parse HEAD`, else `unknown`. The `ping` reply carries a separate build label: when the environment variable `CK_BUILD_REV` is set at compile time, the `ping` reply carries it as `result.build`.
 
 ```sh
 CK_BUILD_REV=$(git rev-parse --short=12 HEAD) \

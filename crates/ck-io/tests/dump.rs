@@ -1,6 +1,6 @@
 mod bodies;
 #[test]
-#[ignore]
+#[ignore = "diagnostic: needs B/OUT env inputs, prints or writes files; run by hand"]
 fn dump() {
     let name = std::env::var("B").unwrap();
     let b = bodies::build(&name);
@@ -17,7 +17,7 @@ fn dump() {
     for (i, v) in b.vertices.iter().enumerate() { println!("v{i} {:?}", v.p); }
 }
 #[test]
-#[ignore]
+#[ignore = "diagnostic: needs B/OUT env inputs, prints or writes files; run by hand"]
 fn dump_lumps() {
     let b = bodies::build(&std::env::var("B").unwrap());
     for (i, l) in b.lumps.iter().enumerate() { println!("lump {i} {:?}", l); }
@@ -26,7 +26,7 @@ fn dump_lumps() {
 }
 /// `OUT=<dir> cargo test -p ck-io --test dump write_ours -- --ignored`
 #[test]
-#[ignore]
+#[ignore = "diagnostic: needs B/OUT env inputs, prints or writes files; run by hand"]
 fn write_ours() {
     let dir = std::env::var("OUT").unwrap();
     for n in bodies::NAMES {

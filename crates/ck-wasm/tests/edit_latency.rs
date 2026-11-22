@@ -42,7 +42,7 @@ fn regen(part: &str, tag: &str) -> (Vec<u8>, f64, f64) {
 }
 
 #[test]
-#[ignore]
+#[ignore = "diagnostic: prints edit latency, no assertion; run by hand"]
 fn fan_edit_latency() {
     std::thread::Builder::new().stack_size(256 << 20).spawn(|| {
         ck_wasm::engine::install();

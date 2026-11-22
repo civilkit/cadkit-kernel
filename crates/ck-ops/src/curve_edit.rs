@@ -275,7 +275,7 @@ fn knots_for(n: usize, p: usize, corners: &[f64]) -> Option<Vec<f64>> {
     order.sort_by(|&x, &y| {
         let fx = (anchors[x + 1] - anchors[x]) * free as f64;
         let fy = (anchors[y + 1] - anchors[y]) * free as f64;
-        (fy - fy.floor()).partial_cmp(&(fx - fx.floor())).unwrap()
+        (fy - fy.floor()).total_cmp(&(fx - fx.floor()))
     });
     for i in order {
         if left == 0 {
@@ -331,7 +331,7 @@ fn fit(pts: &[Vec3], u: &[f64], corner_idx: &[usize], n: usize, o: &EditOpts) ->
         // the control point a C0 knot passes through
         let span = find_span(n - 1, p, *c, &knots);
         let b = basis_funs(span, *c, p, &knots);
-        let j = (0..=p).max_by(|&x, &y| b[x].partial_cmp(&b[y]).unwrap()).map(|j| span - p + j)?;
+        let j = (0..=p).max_by(|&x, &y| b[x].total_cmp(&b[y])).map(|j| span - p + j)?;
         if !fixed[j] {
             kind[j] = Cv::Fixed(pts[ci]);
             fixed[j] = true;

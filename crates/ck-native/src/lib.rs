@@ -131,6 +131,19 @@ pub(crate) fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     d == 0
 }
 
+/// A poisoned lock only means another request thread panicked while holding it (`catch_unwind` in the worker keeps the
+/// process alive). The session map, a session's sender and its last-use stamp are valid after any such panic, so those
+/// sites take the data back with `into_inner`.
+///
+/// The paired-client cache is a mirror of `clients.json`, so a poisoned one is emptied (`invalidate`) and reloaded from the file.
+fn lock_clients(m: &Mutex<store::Cache>) -> std::sync::MutexGuard<'_, store::Cache> {
+    m.lock().unwrap_or_else(|e| {
+        let mut g = e.into_inner();
+        g.invalidate();
+        g
+    })
+}
+
 // ---------------------------------------------------------------- native clock
 
 fn start() -> &'static Instant {
@@ -409,7 +422,7 @@ fn route(sh: &Arc<Shared>, req: &Req, r: &mut BufReader<TcpStream>) -> Resp {
         // A paired client's token: only its stored hash is compared, and only from the
         // origin it was paired with (no Origin = a non-browser client, like the shared token).
         if let Some(dir) = &cfg.dir {
-            let mut cache = sh.clients.lock().unwrap();
+            let mut cache = lock_clients(&sh.clients);
             let recs = cache.records(dir);
             let h = store::sha256_hex(tok);
             if let Some(rec) = recs.iter().find(|r| ct_eq(r.hash.as_bytes(), h.as_bytes())) {
@@ -467,7 +480,7 @@ fn dispatch_pair(sh: &Arc<Shared>, req: &Req, r: &mut BufReader<TcpStream>) -> R
         }
     }
     let label: String = label.chars().take(64).collect();
-    let mut cache = sh.clients.lock().unwrap();
+    let mut cache = lock_clients(&sh.clients);
     // The lock serialises concurrent attempts: the first to take the code wins (single use).
     if let Err(m) = store::take_code(&dir, code) {
         return err(401, m);
@@ -537,7 +550,7 @@ fn dispatch(sh: &Arc<Shared>, req: &Req, r: &mut BufReader<TcpStream>) -> Resp {
                     env!("CK_NATIVE_GIT"),
                     ck_wasm::COMMIT,
                     cores,
-                    sh.sessions.lock().unwrap().len(),
+                    sh.sessions.lock().unwrap_or_else(|e| e.into_inner()).len(),
                     sh.cfg.max_sessions
                 ),
             )
@@ -547,7 +560,7 @@ fn dispatch(sh: &Arc<Shared>, req: &Req, r: &mut BufReader<TcpStream>) -> Resp {
             if let Err(e) = read_body(sh, req, r) {
                 return e;
             }
-            let mut map = sh.sessions.lock().unwrap();
+            let mut map = sh.sessions.lock().unwrap_or_else(|e| e.into_inner());
             if map.len() >= sh.cfg.max_sessions {
                 return err(429, "maximum number of sessions reached");
             }
@@ -568,7 +581,7 @@ fn dispatch(sh: &Arc<Shared>, req: &Req, r: &mut BufReader<TcpStream>) -> Resp {
                 Err(e) => return e,
             };
             let s = {
-                let map = sh.sessions.lock().unwrap();
+                let map = sh.sessions.lock().unwrap_or_else(|e| e.into_inner());
                 match map.get(*id) {
                     Some(s) => {
                         s.busy.fetch_add(1, Ordering::SeqCst);
@@ -578,20 +591,20 @@ fn dispatch(sh: &Arc<Shared>, req: &Req, r: &mut BufReader<TcpStream>) -> Resp {
                 }
             };
             let (rtx, rrx) = channel();
-            let sent = s.tx.lock().unwrap().send(Job { body, reply: rtx }).is_ok();
+            let sent = s.tx.lock().unwrap_or_else(|e| e.into_inner()).send(Job { body, reply: rtx }).is_ok();
             let out = if sent { rrx.recv().map_err(|_| "worker gone".to_string()).and_then(|x| x) } else { Err("worker gone".into()) };
-            *s.last.lock().unwrap() = Instant::now();
+            *s.last.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
             s.busy.fetch_sub(1, Ordering::SeqCst);
             match out {
                 Ok(bytes) => Resp { status: 200, body: bytes, ctype: "application/octet-stream", cors: None, preflight: false, close: false },
                 Err(m) => {
-                    sh.sessions.lock().unwrap().remove(*id);
+                    sh.sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(*id);
                     err(500, &format!("{m}; the session was closed"))
                 }
             }
         }
         ("DELETE", ["session", id]) => {
-            if sh.sessions.lock().unwrap().remove(*id).is_some() {
+            if sh.sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(*id).is_some() {
                 json(200, "{\"closed\":true}".into())
             } else {
                 err(404, "unknown session")
@@ -624,8 +637,8 @@ pub fn serve(listener: TcpListener, cfg: Config) {
         let sh = sh.clone();
         std::thread::spawn(move || loop {
             std::thread::sleep((sh.cfg.idle / 4).clamp(Duration::from_millis(50), Duration::from_secs(5)));
-            let mut map = sh.sessions.lock().unwrap();
-            map.retain(|_, s| s.busy.load(Ordering::SeqCst) > 0 || s.last.lock().unwrap().elapsed() < sh.cfg.idle);
+            let mut map = sh.sessions.lock().unwrap_or_else(|e| e.into_inner());
+            map.retain(|_, s| s.busy.load(Ordering::SeqCst) > 0 || s.last.lock().unwrap_or_else(|e| e.into_inner()).elapsed() < sh.cfg.idle);
         });
     }
     for c in listener.incoming() {

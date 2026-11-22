@@ -1,7 +1,7 @@
 //! Diagnostic (ignored): `STEP=path cargo test -p ck-io --profile fast --test step_probe -- --ignored --nocapture`
 //! prints per-face area / signed volume of an imported STEP.
 #[test]
-#[ignore]
+#[ignore = "diagnostic probe: needs STEP env input, prints only; run by hand"]
 fn step_probe() {
     let path = std::env::var("STEP").unwrap();
     let t0 = std::time::Instant::now();

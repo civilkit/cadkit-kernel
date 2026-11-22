@@ -7,7 +7,7 @@ use ck_model::Part;
 use std::time::Instant;
 
 #[test]
-#[ignore]
+#[ignore = "diagnostic: timing print-out, no assertion; run by hand"]
 fn perf_probe() {
     let case = std::env::var("CASE").unwrap_or("flangeBolt".into());
     let upto: u32 = std::env::var("UPTO").ok().and_then(|s| s.parse().ok()).unwrap_or(13);

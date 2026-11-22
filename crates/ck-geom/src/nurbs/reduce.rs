@@ -74,7 +74,7 @@ fn interior_knots(knots: &[f64], a: f64, b: f64) -> Vec<(f64, usize)> {
 fn sample_params(ka: &[f64], kb: &[f64], per_span: usize) -> Vec<f64> {
     let mut ks: Vec<f64> = basis::distinct_knots(ka);
     ks.extend(basis::distinct_knots(kb));
-    ks.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    ks.sort_by(|a, b| a.total_cmp(b));
     ks.dedup_by(|a, b| (*a - *b).abs() < 1e-14);
     let mut out = Vec::new();
     for w in ks.windows(2) {

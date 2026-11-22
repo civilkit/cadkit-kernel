@@ -88,8 +88,7 @@ impl KdTree {
         self.perm[lo..hi].select_nth_unstable_by(mid - lo, |&a, &b| {
             pts[a as usize]
                 .get(axis)
-                .partial_cmp(&pts[b as usize].get(axis))
-                .unwrap_or(std::cmp::Ordering::Equal)
+                .total_cmp(&pts[b as usize].get(axis))
                 .then(a.cmp(&b))
         });
         let split = self.pts[self.perm[mid] as usize].get(axis);
@@ -150,7 +149,7 @@ impl KdTree {
         if !self.nodes.is_empty() && r >= 0.0 {
             self.radius_rec(0, q, r * r, &mut out);
         }
-        out.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal).then(a.1.cmp(&b.1)));
+        out.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
         out.into_iter().map(|(d2, i)| (i as usize, d2.sqrt())).collect()
     }
 

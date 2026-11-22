@@ -28,7 +28,7 @@ use crate::Feature;
 use ck_geom::curve::Curve;
 use ck_geom::{Frame, Vec2, Vec3};
 use ck_json::{Json, Obj};
-use ck_topo::body::{Body, CoedgeId, EdgeId, FaceId, FaceName, VertexId};
+use ck_topo::body::{CoedgeId, EdgeId, FaceId, VertexId};
 use ck_topo::make::{extrude, ExtrudeOpts, Profile, ProfileLoop, ProfileRegion, ProfileSeg};
 
 pub const LIP_FACE: &str = "lipFace";
@@ -497,6 +497,3 @@ fn segs_of_off(tag: &str, o: &OffSeg) -> Vec<ProfileSeg> {
         OffSeg::Curve { pts, .. } => pts.windows(2).map(|w| ProfileSeg::line(tag, v(w[0]), v(w[1]))).collect(),
     }
 }
-
-#[allow(dead_code)]
-fn _unused(_: &Body) {}

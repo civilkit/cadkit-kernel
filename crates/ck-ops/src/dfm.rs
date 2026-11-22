@@ -20,7 +20,6 @@ use ck_geom::curve::Curve;
 use ck_geom::surface::Surface;
 use ck_json::{Json, Obj};
 use ck_topo::body::{Body, FaceId};
-use std::cmp::Ordering;
 
 fn r6(x: f64) -> f64 {
     if x.is_finite() {
@@ -239,7 +238,7 @@ pub fn min_internal_radius_reply(body: &Body, msg: &Json) -> Result<Json, String
         faces.dedup();
         corners.push(Corner { radius: 0.0, kind: "sharp", faces, edge: Some(ne.key.clone()), at: body.edge_mid(ne.first) });
     }
-    corners.sort_by(|a, b| a.radius.partial_cmp(&b.radius).unwrap_or(Ordering::Equal).then_with(|| a.faces.cmp(&b.faces)).then_with(|| a.edge.cmp(&b.edge)));
+    corners.sort_by(|a, b| a.radius.total_cmp(&b.radius).then_with(|| a.faces.cmp(&b.faces)).then_with(|| a.edge.cmp(&b.edge)));
     let viol: Vec<Json> = corners.iter().filter(|c| c.radius < tool - 1e-9).map(|c| corner_json(c, tool)).collect();
     let minimum = corners.first().map_or(Json::Null, |c| corner_json(c, tool));
     Ok(Obj::new()
@@ -261,7 +260,7 @@ fn min_width(pts: &[Vec3], n: Vec3) -> f64 {
     let u = n.any_perp().normalize();
     let v = n.cross(u).normalize();
     let mut p: Vec<(f64, f64)> = pts.iter().map(|q| (q.dot(u), q.dot(v))).collect();
-    p.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+    p.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
     p.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-12 && (a.1 - b.1).abs() < 1e-12);
     if p.len() < 3 {
         return 0.0;
@@ -419,7 +418,7 @@ pub fn pocket_ratio_reply(body: &Body, msg: &Json) -> Result<Json, String> {
     }
     let cx = Ctx::new(body, 1000);
     let mut ps = find_pockets(&cx);
-    ps.sort_by(|a, b| (b.depth / b.width).partial_cmp(&(a.depth / a.width)).unwrap_or(Ordering::Equal).then_with(|| a.floor.cmp(&b.floor)));
+    ps.sort_by(|a, b| (b.depth / b.width).total_cmp(&(a.depth / a.width)).then_with(|| a.floor.cmp(&b.floor)));
     let js = |p: &Pocket| {
         let ratio = p.depth / p.width;
         Obj::new()
@@ -500,7 +499,7 @@ pub fn overhang_reply(body: &Body, msg: &Json) -> Result<Json, String> {
         support[t.face] += t.area * (-s) * h;
     }
     let mut order: Vec<usize> = (0..n).filter(|&i| area[i] > 1e-9 && area[i] >= min_area).collect();
-    order.sort_by(|&a, &b| area[b].partial_cmp(&area[a]).unwrap_or(Ordering::Equal).then_with(|| cx.names[a].cmp(&cx.names[b])));
+    order.sort_by(|&a, &b| area[b].total_cmp(&area[a]).then_with(|| cx.names[a].cmp(&cx.names[b])));
     let mut face_area = vec![0.0; n];
     for t in tris {
         face_area[t.face] += t.area;
@@ -635,7 +634,7 @@ pub fn constant_section_reply(body: &Body, msg: &Json) -> Result<Json, String> {
     let fi = changes.iter().filter(|c| c.0 <= first + tol).map(|c| c.1).min().unwrap_or(0);
     let p = {
         let pts: Vec<Vec3> = cx.tris().iter().filter(|t| t.face == fi).flat_map(|t| [t.a, t.b, t.c]).collect();
-        pts.iter().copied().min_by(|p, q| (p.dot(a) - first).abs().partial_cmp(&(q.dot(a) - first).abs()).unwrap_or(Ordering::Equal)).unwrap_or(cx.centroid(fi))
+        pts.iter().copied().min_by(|p, q| (p.dot(a) - first).abs().total_cmp(&(q.dot(a) - first).abs())).unwrap_or(cx.centroid(fi))
     };
     let mut station = Obj::new().put("position", r6(first)).put("offset", r6(first - lo)).put("faces", names(&at_faces)).put("point", pt(p));
     if first > lo + tol {

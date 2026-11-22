@@ -901,7 +901,7 @@ fn extend_to_face_boundary(c: &mut ss::SsCurve, faces: &[(&Body, FaceId)], tol: 
     // fraction of a step). In that case the endpoint sample is replaced (and any samples beyond it are
     // dropped), rather than rejected on the tangent sign, so the curve really ends on the rail.
     let nearest = |pts: &[Vec3], p: Vec3| {
-        pts.iter().enumerate().min_by(|a, b| a.1.dist(p).partial_cmp(&b.1.dist(p)).unwrap()).map_or(0, |(i, _)| i)
+        pts.iter().enumerate().min_by(|a, b| a.1.dist(p).total_cmp(&b.1.dist(p))).map_or(0, |(i, _)| i)
     };
     let mut ext = false;
     if let Some((_, p)) = start {
@@ -1025,7 +1025,7 @@ fn trim(c: &Curve, r: (f64, f64), faces: &[(&Body, FaceId)], bx: &Aabb, tol: f64
             }
         }
     }
-    ts.sort_by(|x, y| x.partial_cmp(y).unwrap());
+    ts.sort_by(|x, y| x.total_cmp(y));
     ts.dedup_by(|x, y| (*x - *y).abs() <= 1e-12 || (*x - *y).abs() <= param_slack(c, *y, tol * 0.5));
     // a tangent contact with a boundary edge (a curve running along the line a face touches tangentially, e.g. a
     // blend face meeting a wall that bounds a joined boss) is found off by up to ~sqrt(tol), next to the exact

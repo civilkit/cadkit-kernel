@@ -198,6 +198,20 @@ agents build at the same time while the development laptop is short on memory.
 | 11 | Offset / thicken of faceted bodies | Few users, large work | Queued |
 | 12 | Joints, G2 corner patch, reference meshes in exports, union-join default | Need a product decision first (section 9a) | Waiting |
 
+### 9d. Status 22 Nov 2026: shipped, and the queue for 0.8.8
+
+Shipped in 0.8.6 and 0.8.7 (kernel tags v0.8.6 = 5d4a6575, v0.8.7 = b7508d3f): the meshToSolid feature and decimation, body identity (names, indexes, per-face body), the swept-tube fillet at larger radii, drafted-corner fillets exact, clear sweep-path refusals, a combine cut that removes nothing (warning, not refusal), the `blendSurface` hang (a work budget on the edge-length integral), STEP import recognition of analytic curves and surfaces (with the mesher hang it exposed fixed), import time back near its old level, the peg round/chamfer silent-wrong-solid fix, the thread size tables, the verified size hint, and a guard so move-face refuses where a fillet torus would have to move with the wall.
+
+| Item | Where | Notes |
+|---|---|---|
+| Wrong closed region in the mesh (spheres after a boolean, tube side faces, closed-spline STEP loops) | branch `tess-wrong-closed-region` (full gate green at baseline) | Not done: closed-spline faces after a boolean (nine loft, coil and sweep cases are refused loudly instead of corrected), the uv-grid fallback, a sliver file, the seam-twin validate check |
+| Shell and offset across rounded rims | branch `shell-ellipse-edges` | Needs a per-case crash-fuzz diff (two cases moved from ok to structured-error) |
+| Convex round or chamfer past its face | branch `convex-cliff-overflow` | Turns refusals into builds; four existing pins flip and need decisions; full gate not run |
+| Thread fallbacks (retry at another helix start; refuse a second opposite-hand thread up front) | branch `thread-size-tables` | The size tables already shipped |
+| Sketch: perpendicular for circles and arcs; solver run-off on a constraint swap | branch `sketch-perpendicular-circles` | Needs a full gate (touches the 3D sketch solver call site) |
+| Move-face should carry a fillet torus with the wall instead of refusing | not started | The 0.8.7 guard only refuses |
+| Concave rounds meeting a tangent straight face, round-then-round, tee-pipe saddle band | not started | Fable's cluster diagnosis; see the solidcore comparison notes |
+
 ## 10. Interface directions: keeping our edge, closing the gap with OCCT and SMLib
 
 Our edge is the document model (stable names, regeneration), structured refusals with hints, work limits and

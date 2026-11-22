@@ -979,7 +979,7 @@ impl<'a> B<'a> {
                 (0.5 * acc.dot(n), ring)
             })
             .collect();
-        areas.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        areas.sort_by(|a, b| b.0.total_cmp(&a.0));
         if let Some((a, _)) = areas.first() {
             if *a < 0.0 && a.abs() > 1e-9 {
                 return Err(SatError::at("sat.orientation", fr, "planar face loop runs clockwise about the face's outward normal"));

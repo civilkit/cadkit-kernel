@@ -15,7 +15,7 @@
 use ck_geom::curve::Curve;
 use ck_geom::surface::Surface;
 use ck_geom::{Frame, Vec3};
-use ck_topo::body::{Body, EdgeId, FaceId, VertexId};
+use ck_topo::body::{Body, EdgeId, FaceId};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct OffsetError {
@@ -55,7 +55,7 @@ impl OffsetError {
 }
 
 const CENTRE: &str = "the offset passes the surface's centre of curvature";
-const EPS: f64 = 1e-9;
+const EPS: f64 = ck_core::linalg::EPS_POINT;
 
 /// Offset `s` by `d` along its natural normal. `None`: collapses (`Err`
 /// path of the caller: offsetTooLarge) — unsupported kinds return
@@ -1393,10 +1393,78 @@ fn exact_cap_edge(fs: &[FaceId], moved: &[Option<Surface>], p0: Vec3, p1: Vec3) 
     }
 }
 
+/// The ellipse where two moved faces meet when they are two equal cylinders with crossing axes (a mitred corner of two
+/// rounds) or a plane and a cylinder (a plane cut obliquely through a round): the plane of the section, its centre on the
+/// axis and the two semi-axes follow in closed form. `zref` is the normal of the edge's old frame: the new frame turns the
+/// same way, so the edge keeps its sense. `None` when the pair is anything else or the ends are not on the ellipse.
+fn exact_ellipse_edge(fs: &[FaceId], moved: &[Option<Surface>], zref: Vec3, closed: bool, p0: Vec3, p1: Vec3) -> Option<(Curve, f64, f64)> {
+    use std::f64::consts::TAU;
+    if fs.len() != 2 {
+        return None;
+    }
+    let (m1, m2) = (moved[fs[0].idx()].as_ref()?, moved[fs[1].idx()].as_ref()?);
+    // (section plane normal, point on the section plane, cylinder axis, radius)
+    let (n, c, ax, r) = match (m1, m2) {
+        (Surface::Cylinder { frame: f1, r: r1 }, Surface::Cylinder { frame: f2, r: r2 }) => {
+            let (a1, a2) = (f1.z, f2.z);
+            let cr = a1.cross(a2);
+            if cr.len() < 1e-6 || (r1 - r2).abs() > 1e-9 * (1.0 + r1) || *r1 <= EPS {
+                return None;
+            }
+            // the closest points of the two axes must meet (a corner), else there is no planar section
+            let w0 = f1.o - f2.o;
+            let (b, d, e) = (a1.dot(a2), a1.dot(w0), a2.dot(w0));
+            let den = 1.0 - b * b;
+            let (s, t) = ((b * e - d) / den, (e - b * d) / den);
+            let (q1, q2) = (f1.o + a1.scale(s), f2.o + a2.scale(t));
+            if q1.dist(q2) > 1e-9 * (1.0 + q1.len()) {
+                return None;
+            }
+            let c = (q1 + q2).scale(0.5);
+            // the mitre plane is normal to a1 - a2 or a1 + a2: the one the old ellipse lay in
+            let n = [a1 - a2, a1 + a2].into_iter().filter_map(|v| v.try_normalize()).max_by(|u, v| u.dot(zref).abs().total_cmp(&v.dot(zref).abs()))?;
+            (n, c, a1, *r1)
+        }
+        (Surface::Plane { frame: pf }, Surface::Cylinder { frame: cf, r }) | (Surface::Cylinder { frame: cf, r }, Surface::Plane { frame: pf }) => {
+            let k = pf.z.dot(cf.z);
+            if k.abs() < 1e-6 || *r <= EPS {
+                return None;
+            }
+            let c = cf.o + cf.z.scale((pf.o - cf.o).dot(pf.z) / k);
+            (pf.z, c, cf.z, *r)
+        }
+        _ => return None,
+    };
+    let y0 = ax.cross(n).try_normalize()?;
+    let x = n.cross(y0).try_normalize()?;
+    let sin2 = 1.0 - x.dot(ax) * x.dot(ax);
+    if sin2 < 1e-12 {
+        return None;
+    }
+    let (a, b) = (r / sin2.sqrt(), r);
+    let y = if x.cross(y0).dot(zref) >= 0.0 { y0 } else { -y0 };
+    let frame = Frame { o: c, x, y, z: x.cross(y) };
+    let ang = |p: Vec3| (p - c).dot(y).atan2((p - c).dot(x));
+    let (t0, t1) = if closed {
+        let t0 = ang(p0);
+        (t0, t0 + TAU)
+    } else {
+        let (t0, span) = (ang(p0), (ang(p1) - ang(p0)).rem_euclid(TAU));
+        (t0, t0 + if span < 1e-12 { TAU } else { span })
+    };
+    let curve = Curve::Ellipse { frame, a, b };
+    let tol = 1e-7 * (1.0 + p0.len());
+    let on = |q: Vec3| [m1, m2].iter().all(|m| m.closest_point(q).2.dist(q) <= tol);
+    if curve.eval(t0).dist(p0) > tol || curve.eval(t1).dist(p1) > tol || !(0..=8).all(|k| on(curve.eval(t0 + (t1 - t0) * k as f64 / 8.0))) {
+        return None;
+    }
+    Some((curve, t0, t1))
+}
+
 /// Solve `m · x = b` (3×3, Gaussian elimination with partial pivoting).
 fn solve3(mut m: [[f64; 3]; 3], mut b: [f64; 3]) -> Option<[f64; 3]> {
     for c in 0..3 {
-        let p = (c..3).max_by(|&i, &j| m[i][c].abs().partial_cmp(&m[j][c].abs()).unwrap())?;
+        let p = (c..3).max_by(|&i, &j| m[i][c].abs().total_cmp(&m[j][c].abs()))?;
         if m[p][c].abs() < 1e-300 {
             return None;
         }
@@ -1554,6 +1622,30 @@ pub fn offset_body(src: &Body, dist: &dyn Fn(FaceId) -> f64) -> Result<Body, Off
     move_faces_body(src, &|f| FaceMove::Offset(dist(f)))
 }
 
+/// Radius (mm) of the stand-in for a convex round that an inward offset makes vanish: the cavity then has a sharp
+/// corner, which is kept as a round this small so that the faces, edges and corners of the offset body stay those of the body.
+const VANISHED_RADIUS: f64 = 1e-3;
+
+/// The two planes a straight convex round runs tangent into along its sides (their normals square to its axis):
+/// `None` when the face does not have exactly those two.
+fn vanishing_round_planes(src: &Body, f: FaceId) -> Option<(FaceId, FaceId)> {
+    let Surface::Cylinder { frame, .. } = &src.face(f).surface else { return None };
+    let mut found: Vec<FaceId> = vec![];
+    for e in src.face_edges(f) {
+        let fs = src.edge_faces(e);
+        if fs.len() != 2 {
+            return None;
+        }
+        let g = if fs[0] == f { fs[1] } else { fs[0] };
+        if let Surface::Plane { frame: pf } = &src.face(g).surface {
+            if pf.z.dot(frame.z).abs() < 1e-9 && !found.contains(&g) {
+                found.push(g);
+            }
+        }
+    }
+    (found.len() == 2).then(|| (found[0], found[1]))
+}
+
 /// What happens to one face in [`move_faces_body`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FaceMove {
@@ -1583,10 +1675,18 @@ pub fn move_faces_body(src: &Body, mv: &dyn Fn(FaceId) -> FaceMove) -> Result<Bo
     let reach = 1.5 * src.face_ids().map(|f| dist(f).abs()).fold(0.0f64, f64::max);
     let dbg_clock = std::env::var_os("CK_OFFSET_DEBUG").is_some().then(std::time::Instant::now);
     let mut moved: Vec<Option<Surface>> = vec![None; src.faces.len()];
+    // convex cylinder rounds the inward offset makes vanish: their surfaces follow once the planes beside them have moved
+    let mut vanished: Vec<FaceId> = vec![];
     for f in src.face_ids() {
         let face = src.face(f);
         let d = dist(f);
         let nat = if face.sense { d } else { -d };
+        if let Surface::Cylinder { r, .. } = &face.surface {
+            if shift_of(f).is_none() && face.sense && nat < 0.0 && r + nat <= EPS && vanishing_round_planes(src, f).is_some() {
+                vanished.push(f);
+                continue;
+            }
+        }
         let r = if let Some(s) = shift_of(f) {
             Ok(ck_topo::body::transform_surface(&face.surface, &ck_core::xform::Xform::translation(s)))
         } else if is_freeform(&face.surface) {
@@ -1609,6 +1709,26 @@ pub fn move_faces_body(src: &Body, mv: &dyn Fn(FaceId) -> FaceMove) -> Result<Bo
                 OffsetError::new(e.code, format!("{}: {}", src.face_id_str(f), e.detail.unwrap_or_default()))
             }
         })?);
+    }
+
+    for &f in &vanished {
+        let Surface::Cylinder { frame, .. } = &src.face(f).surface else { unreachable!() };
+        let proxy = vanishing_round_planes(src, f)
+            .and_then(|(a, b)| {
+                // an axis at VANISHED_RADIUS inside both moved planes (cavity side), still on the old axis' normal plane
+                let out_n = |g: FaceId, m: &Surface| match m {
+                    Surface::Plane { frame } => Some((frame.o, if src.face(g).sense { frame.z } else { -frame.z })),
+                    _ => None,
+                };
+                let ((oa, na), (ob, nb)) = (out_n(a, moved[a.idx()].as_ref()?)?, out_n(b, moved[b.idx()].as_ref()?)?);
+                let q = crate::intersect::solve3([na, nb, frame.z], [oa.dot(na) - VANISHED_RADIUS, ob.dot(nb) - VANISHED_RADIUS, frame.o.dot(frame.z)])?;
+                Some(Surface::Cylinder { frame: Frame { o: q, ..*frame }, r: VANISHED_RADIUS })
+            })
+            .ok_or_else(|| OffsetError::new("offsetDegenerate", format!("{} collapses and cannot be removed", src.face_id_str(f))))?;
+        if std::env::var_os("CK_OFFSET_DEBUG").is_some() {
+            eprintln!("vanished round {}: stand-in {:?}", src.face_id_str(f), proxy);
+        }
+        moved[f.idx()] = Some(proxy);
     }
 
     if let Some(t) = dbg_clock {
@@ -1765,7 +1885,12 @@ pub fn move_faces_body(src: &Body, mv: &dyn Fn(FaceId) -> FaceMove) -> Result<Bo
                         _ => false,
                     })
                     .map_or(Vec3::ZERO, |(_, s)| s);
-                let fo = frame.o + carried;
+                // (the stand-in of a vanished round has its own axis: the arcs on it are about that axis)
+                let stand_in = fs.iter().find(|&&f| vanished.contains(&f)).and_then(|&f| match moved[f.idx()].as_ref() {
+                    Some(Surface::Cylinder { frame: cf, .. }) if cf.z.cross(z).len() < 1e-9 => Some(cf.o),
+                    _ => None,
+                });
+                let fo = stand_in.unwrap_or(frame.o + carried);
                 let c = fo + z.scale((p0 - fo).dot(z));
                 let r2 = (p0 - c).len();
                 if r2 <= EPS {
@@ -1810,6 +1935,31 @@ pub fn move_faces_body(src: &Body, mv: &dyn Fn(FaceId) -> FaceMove) -> Result<Bo
                     None => offset_spline_edge(src, e, &moved, &dn, p0, p1, gap).map_err(|e| edge_error(src, &fs, e))?,
                 }
             }
+            // The meeting of two rounds (the mitre of equal cylinders at a corner whose third edge is sharp) and a plane
+            // cut obliquely through a cylinder are ellipses: the offset surfaces are cylinders again, so the new edge is
+            // the ellipse of the moved pair, exact. Any other conic (and a pair that is not analytic) is sampled.
+            Curve::Ellipse { frame, .. } | Curve::Conic { frame, .. } => {
+                if fs.iter().any(|&f| shift_of(f).is_some()) {
+                    return Err(OffsetError::new("offsetUnsupported", "conic edge of a translated face"));
+                }
+                match exact_ellipse_edge(&fs, &moved, frame.z, closed, p0, p1) {
+                    Some(r) => r,
+                    None => {
+                        let dn = |f: FaceId, _p: Vec3| {
+                            let d = dist(f);
+                            if src.face(f).sense { d } else { -d }
+                        };
+                        let gap = [ed.v0, ed.v1]
+                            .iter()
+                            .map(|&v| {
+                                let q = newp[v.idx()];
+                                vfaces[v.idx()].iter().map(|&f| moved[f.idx()].as_ref().map_or(0.0, |m| m.closest_point(q).2.dist(q))).fold(0.0f64, f64::max)
+                            })
+                            .fold(0.0f64, f64::max);
+                        offset_spline_edge(src, e, &moved, &dn, p0, p1, gap).map_err(|e| edge_error(src, &fs, e))?
+                    }
+                }
+            }
             _ => return Err(OffsetError::new("offsetUnsupported", "edge curve type")),
         };
         let _ = closed;
@@ -1832,9 +1982,6 @@ pub fn move_faces_body(src: &Body, mv: &dyn Fn(FaceId) -> FaceMove) -> Result<Bo
     }
     Ok(out)
 }
-
-#[allow(unused)]
-fn _types(_: EdgeId, _: VertexId) {}
 
 #[cfg(test)]
 mod freeform_tests {

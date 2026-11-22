@@ -192,7 +192,7 @@ fn emit_prism(tree: &mut Tree, p: &Prism, items: &mut Vec<Item>, explained: &mut
     let mut order: Vec<usize> = (0..p.ivs.len()).collect();
     order.sort_by(|&a, &b| {
         let (x, y) = (&p.ivs[a], &p.ivs[b]);
-        x.level.cmp(&y.level).then(x.za.partial_cmp(&y.za).unwrap()).then(y.outer.cmp(&x.outer))
+        x.level.cmp(&y.level).then(x.za.total_cmp(&y.za)).then(y.outer.cmp(&x.outer))
     });
     let mut top_named = false;
     let mut bottom_named = false;
@@ -464,7 +464,7 @@ fn pattern_of(hv: &[&Hole], ai: usize) -> Option<Pat> {
         let along = |p: &(f64, f64)| if dir_idx == 0 { p.0 } else { p.1 };
         if pts.iter().all(|p| eq(other(p), other(&pts[0]))) {
             let mut v: Vec<f64> = pts.iter().map(along).collect();
-            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            v.sort_by(|a, b| a.total_cmp(b));
             let sp = v[1] - v[0];
             if sp > 1e-6 && v.windows(2).all(|w| eq(w[1] - w[0], sp)) {
                 let (wi, sg) = principal(dir_axis_world)?;
@@ -481,7 +481,7 @@ fn pattern_of(hv: &[&Hole], ai: usize) -> Option<Pat> {
             let r0 = (pts[0].0.powi(2) + pts[0].1.powi(2)).sqrt();
             if r0 > 1e-6 && pts.iter().all(|p| ((p.0.powi(2) + p.1.powi(2)).sqrt() - r0).abs() < 1e-5) {
                 let mut a: Vec<f64> = pts.iter().map(|p| p.1.atan2(p.0)).collect();
-                a.sort_by(|x, y| x.partial_cmp(y).unwrap());
+                a.sort_by(|x, y| x.total_cmp(y));
                 let step = std::f64::consts::TAU / nn as f64;
                 let ok = (0..nn).all(|i| {
                     let d = if i + 1 < nn { a[i + 1] - a[i] } else { a[0] + std::f64::consts::TAU - a[nn - 1] };

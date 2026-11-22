@@ -4,15 +4,16 @@
 import { parentPort } from 'node:worker_threads';
 import { readFileSync } from 'node:fs';
 import { WasmHost } from './wasm-host.js';
-import type { HostRequest, HostResponse } from './protocol.js';
+import { transferList, type HostRequest, type HostResponse } from './protocol.js';
 
-const post = (m: HostResponse) => parentPort!.postMessage(m);
+const post = (m: HostResponse, transfer: ArrayBuffer[] = []) => parentPort!.postMessage(m, transfer);
 
 let host: WasmHost | null = null;
 
 parentPort!.on('message', (m: HostRequest) => {
   if (m.kind === 'init') {
     try {
+      if (!('wasmPath' in m)) throw new Error('node worker needs a wasmPath');
       host = new WasmHost(new WebAssembly.Module(readFileSync(m.wasmPath)));
       post({ kind: 'ready', commit: host.commit });
     } catch (e) {
@@ -24,5 +25,7 @@ parentPort!.on('message', (m: HostRequest) => {
     post({ kind: 'done', id: m.id, reply: { ok: false, trap: 'worker has no instance' } });
     return;
   }
-  post({ kind: 'done', id: m.id, reply: host.call(m.body) });
+  // the reply's bulk arrays (display mesh) are handed over, not copied
+  const reply = host.call(m.body);
+  post({ kind: 'done', id: m.id, reply }, transferList(reply));
 });

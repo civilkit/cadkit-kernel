@@ -315,7 +315,7 @@ fn join(a: &mut OffSeg, b: &mut OffSeg) {
     if let Some(p) = cands.into_iter().min_by(|p, q| {
         let dp = (p[0] - mid[0]).hypot(p[1] - mid[1]);
         let dq = (q[0] - mid[0]).hypot(q[1] - mid[1]);
-        dp.partial_cmp(&dq).unwrap()
+        dp.total_cmp(&dq)
     }) {
         a.set_end(p);
         b.set_start(p);

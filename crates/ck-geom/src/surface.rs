@@ -285,9 +285,10 @@ impl Surface {
     /// Periods in (u, v).
     pub fn periods(&self) -> (Option<f64>, Option<f64>) {
         match self {
-            Surface::Cylinder { .. } | Surface::Cone { .. } | Surface::Sphere { .. } | Surface::Revolution { .. } => {
+            Surface::Cylinder { .. } | Surface::Cone { .. } | Surface::Sphere { .. } => {
                 (Some(TAU), None)
             }
+            Surface::Revolution { profile, .. } => (Some(TAU), profile.period()),
             Surface::Torus { .. } => (Some(TAU), Some(TAU)),
             Surface::Extrusion { profile, .. } => (profile.period(), None),
             Surface::Offset { base, .. } => base.periods(),
@@ -1727,5 +1728,23 @@ mod tests {
             None,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn revolution_of_circle_is_v_periodic() {
+        let prof = Curve::circle(Vec3::new(3.0, 0.0, 0.0), Vec3::Y, 0.6);
+        let surf = Surface::Revolution { profile: Box::new(prof), axis_o: Vec3::ZERO, axis: Vec3::Z };
+        assert_eq!(surf.periods(), (Some(TAU), Some(TAU)));
+        // meridian arc crossing v = 0 on the opposite side (u = pi)
+        let mer = Curve::circle(Vec3::new(-3.0, 0.0, 0.0), -Vec3::Y, 0.6);
+        let pc = crate::pcurve::pcurve_of(&surf, &mer, -1.0, 1.0, 1e-6).unwrap();
+        let worst = (0..=64)
+            .map(|k| {
+                let t = -1.0 + 2.0 * k as f64 / 64.0;
+                let uv = pc.eval(t);
+                surf.eval(uv.x, uv.y).dist(mer.eval(t))
+            })
+            .fold(0.0, f64::max);
+        assert!(worst < 1e-6, "meridian pcurve deviated {worst:.3e}");
     }
 }

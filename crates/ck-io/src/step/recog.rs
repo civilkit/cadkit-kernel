@@ -34,9 +34,18 @@ fn positive(w: &Option<Vec<f64>>) -> bool {
     w.as_ref().map_or(true, |w| w.iter().all(|&x| x.is_finite() && x > 0.0))
 }
 
+fn finite_pts(pts: &[Vec3]) -> bool {
+    pts.iter().all(|p| p.is_finite())
+}
+
+fn valid_domain(a: f64, b: f64) -> bool {
+    a < b && (b - a).is_finite()
+}
+
 fn extent(pts: &[Vec3]) -> f64 {
-    let mut lo = pts[0];
-    let mut hi = pts[0];
+    let Some(&first) = pts.first() else { return 0.0 };
+    let mut lo = first;
+    let mut hi = first;
     for p in pts {
         lo = Vec3::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z));
         hi = Vec3::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z));
@@ -47,7 +56,7 @@ fn extent(pts: &[Vec3]) -> f64 {
 /// The line a spline is, when its control points are collinear and monotone along it.
 pub fn spline_as_line(bs: &BSplineCurve) -> Option<Curve> {
     let n = bs.ctrl.len();
-    if n < 2 || !positive(&bs.weights) || bs.ctrl.iter().any(|p| !(p.x.is_finite() && p.y.is_finite() && p.z.is_finite())) {
+    if n < 2 || !positive(&bs.weights) || !finite_pts(&bs.ctrl) {
         return None;
     }
     let a = bs.ctrl[0];
@@ -56,7 +65,7 @@ pub fn spline_as_line(bs: &BSplineCurve) -> Option<Curve> {
     let size = extent(&bs.ctrl);
     let tol = TOL_REL * size.max(1.0);
     // zero length, or out and back (a closed spline): not one straight edge
-    if len < 1e-3 * size || len < 10.0 * tol {
+    if !(size.is_finite() && len.is_finite() && tol.is_finite()) || len < 1e-3 * size || len < 10.0 * tol {
         return None;
     }
     let d = (b - a) / len;
@@ -64,7 +73,7 @@ pub fn spline_as_line(bs: &BSplineCurve) -> Option<Curve> {
     for &p in &bs.ctrl {
         let v = p - a;
         let t = v.dot(d);
-        if (v - d * t).len() > tol || t < prev - tol || t > len + tol {
+        if !((v - d * t).len() <= tol && t >= prev - tol && t <= len + tol) {
             return None;
         }
         prev = prev.max(t);
@@ -75,16 +84,16 @@ pub fn spline_as_line(bs: &BSplineCurve) -> Option<Curve> {
 /// The circle (or arc) a spline lies on, when all its samples are within tolerance of one circle and it runs one way
 /// for at most one turn. The circle's normal is the direction of travel (counter-clockwise about it).
 pub fn spline_as_circle(bs: &BSplineCurve) -> Option<Curve> {
-    if bs.ctrl.len() < 3 || !positive(&bs.weights) {
+    if bs.ctrl.len() < 3 || !positive(&bs.weights) || !finite_pts(&bs.ctrl) {
         return None;
     }
     let size = extent(&bs.ctrl);
     let tol = TOL_REL * size.max(1.0);
-    if !(size > 10.0 * tol) {
+    if !(size.is_finite() && tol.is_finite() && size > 10.0 * tol) {
         return None;
     }
     let (t0, t1) = bs.domain();
-    if !(t1 > t0) {
+    if !valid_domain(t0, t1) {
         return None;
     }
     let at = |i: usize, n: usize| bs.eval(t0 + (t1 - t0) * (i as f64 / n as f64));
@@ -94,7 +103,7 @@ pub fn spline_as_circle(bs: &BSplineCurve) -> Option<Curve> {
     let (ab, ac) = (b - a, c - a);
     let nrm = ab.cross(ac);
     let nl = nrm.len();
-    if nl < 1e-6 * ab.len() * ac.len() || !nl.is_finite() {
+    if !(nl >= 1e-6 * ab.len() * ac.len() && nl.is_finite()) {
         return None;
     }
     let n = nrm / nl;
@@ -102,7 +111,7 @@ pub fn spline_as_circle(bs: &BSplineCurve) -> Option<Curve> {
     let o = a + (nrm.cross(ab) * d2 + ac.cross(nrm) * d1) / (2.0 * nl * nl);
     let r = a.dist(o);
     // an arc of huge radius is a straight edge that failed the line test: leave it to the spline
-    if !(r > 10.0 * tol) || r > 1e4 * size {
+    if !(r > 10.0 * tol && r.is_finite() && r <= 1e4 * size) {
         return None;
     }
     let f = frame_from(o, n, a - o);
@@ -113,10 +122,13 @@ pub fn spline_as_circle(bs: &BSplineCurve) -> Option<Curve> {
     for i in 0..=m {
         let p = at(i, m);
         let v = p - o;
-        if (v.len() - r).abs() > tol || v.dot(n).abs() > tol {
+        if !((v.len() - r).abs() <= tol && v.dot(n).abs() <= tol) {
             return None;
         }
         let ang = v.dot(f.y).atan2(v.dot(f.x));
+        if !ang.is_finite() {
+            return None;
+        }
         // unwrap against the previous angle: the step must be forward (counter-clockwise about the normal)
         let mut step = ang - prev;
         if i > 0 {
@@ -127,14 +139,14 @@ pub fn spline_as_circle(bs: &BSplineCurve) -> Option<Curve> {
                 step -= TAU;
             }
             // a step backwards by more than the tolerance's worth of angle
-            if step < -2.0 * tol / r {
+            if !(step >= -2.0 * tol / r) {
                 return None;
             }
             sweep += step.max(0.0);
         }
         prev = ang;
     }
-    if sweep > TAU + 1e-6 || sweep < 1e-6 {
+    if !(sweep <= TAU + 1e-6 && sweep >= 1e-6) {
         return None;
     }
     Some(Curve::Circle { frame: f, r })
@@ -148,12 +160,12 @@ pub fn analytic_curve(bs: &BSplineCurve) -> Option<Curve> {
 /// The plane a B-spline surface is, when its control net is coplanar and its normal keeps one side. The plane's normal
 /// is the surface's own `Su x Sv`.
 pub fn surface_as_plane(s: &BSplineSurface) -> Option<Surface> {
-    if s.ctrl.len() < 4 || !positive(&s.weights) || s.ctrl.iter().any(|p| !(p.x.is_finite() && p.y.is_finite() && p.z.is_finite())) {
+    if s.ctrl.len() < 4 || !positive(&s.weights) || !finite_pts(&s.ctrl) {
         return None;
     }
     let size = extent(&s.ctrl);
     let tol = TOL_REL * size.max(1.0);
-    if !(size > 10.0 * tol) {
+    if !(size.is_finite() && tol.is_finite() && size > 10.0 * tol) {
         return None;
     }
     // the plane through the best-spread triple of control points: first, farthest from it, then the one making the
@@ -173,15 +185,18 @@ pub fn surface_as_plane(s: &BSplineSurface) -> Option<Surface> {
         }
     }
     // a collinear net (a degenerate surface) has no plane
-    if best.len() < 1e-6 * size * size {
+    if !(best.len().is_finite() && best.len() >= 1e-6 * size * size) {
         return None;
     }
     let mut nrm = best.normalize();
-    if s.ctrl.iter().any(|&p| (p - p0).dot(nrm).abs() > tol) {
+    if s.ctrl.iter().any(|&p| !((p - p0).dot(nrm).abs() <= tol)) {
         return None;
     }
     // orientation: the spline's own normal must not change side anywhere (a fold) and gives the plane's sense
     let ((u0, u1), (v0, v1)) = s.domain();
+    if !(valid_domain(u0, u1) && valid_domain(v0, v1)) {
+        return None;
+    }
     let k = 8usize;
     let mut side = 0.0f64;
     for i in 0..=k {
@@ -208,7 +223,7 @@ pub fn surface_as_plane(s: &BSplineSurface) -> Option<Surface> {
     if side < 0.0 {
         nrm = -nrm;
     }
-    let xref = s.ctrl[(s.nu - 1) * s.nv] - s.ctrl[0];
+    let xref = s.ctrl.get(s.nu.saturating_sub(1).saturating_mul(s.nv)).copied().unwrap_or(p0) - s.ctrl[0];
     let xref = if xref.len() > 10.0 * tol { xref } else { p1 - p0 };
     Some(Surface::Plane { frame: frame_from(p0, nrm, xref) })
 }
@@ -218,7 +233,7 @@ pub fn surface_as_plane(s: &BSplineSurface) -> Option<Surface> {
 /// the surface and whether its own normal `Su x Sv` points inward (the face's sense must then be flipped, since the
 /// cylinder's natural normal is outward).
 pub fn surface_as_cylinder(s: &BSplineSurface) -> Option<(Surface, bool)> {
-    if s.ctrl.len() < 4 || !positive(&s.weights) {
+    if s.ctrl.len() < 4 || !positive(&s.weights) || !finite_pts(&s.ctrl) {
         return None;
     }
     let sf = cylinder_of(s).or_else(|| cylinder_of(&s.transposed()))?;
@@ -229,16 +244,22 @@ pub fn surface_as_cylinder(s: &BSplineSurface) -> Option<(Surface, bool)> {
 fn cylinder_of(s: &BSplineSurface) -> Option<Surface> {
     let size = extent(&s.ctrl);
     let tol = TOL_REL * size.max(1.0);
+    if !(size.is_finite() && tol.is_finite()) {
+        return None;
+    }
     let ((u0, u1), (v0, v1)) = s.domain();
+    if !(valid_domain(u0, u1) && valid_domain(v0, v1)) {
+        return None;
+    }
     let Some(Curve::Circle { frame, r }) = spline_as_circle(&s.iso_v(v0)) else { return None };
     let um = 0.5 * (u0 + u1);
     let axis = s.eval(um, v1) - s.eval(um, v0);
-    if axis.len() < 10.0 * tol {
+    if !(axis.len().is_finite() && axis.len() >= 10.0 * tol) {
         return None;
     }
     let axis = axis.normalize();
     // the axis is normal to the circle's plane (an oblique extrusion is an elliptic cylinder)
-    if axis.cross(frame.z).len() > 1e-7 {
+    if !(axis.cross(frame.z).len() <= 1e-7) {
         return None;
     }
     let (ku, kv) = (24usize, 8usize);
@@ -247,7 +268,7 @@ fn cylinder_of(s: &BSplineSurface) -> Option<Surface> {
             let (u, v) = (u0 + (u1 - u0) * i as f64 / ku as f64, v0 + (v1 - v0) * j as f64 / kv as f64);
             let w = s.eval(u, v) - frame.o;
             let radial = w - axis * w.dot(axis);
-            if (radial.len() - r).abs() > tol {
+            if !((radial.len() - r).abs() <= tol) {
                 return None;
             }
         }
@@ -278,6 +299,9 @@ fn outward(sf: &Surface, p: Vec3) -> Option<Vec3> {
 /// Set the face sense flip of a recognised cylinder or torus from `s`'s own normal (it must point one way everywhere).
 fn orient(s: &BSplineSurface, sf: Surface) -> Option<(Surface, bool)> {
     let ((u0, u1), (v0, v1)) = s.domain();
+    if !(valid_domain(u0, u1) && valid_domain(v0, v1)) {
+        return None;
+    }
     let k = 8usize;
     let mut side = 0.0f64;
     for i in 0..=k {
@@ -310,7 +334,7 @@ fn orient(s: &BSplineSurface, sf: Surface) -> Option<(Surface, bool)> {
 /// lie on one circle about it (the meridians), and every point is at the minor radius from that ring. Returns the surface and
 /// whether the spline's own normal points into the tube (the face sense flips).
 pub fn surface_as_torus(s: &BSplineSurface) -> Option<(Surface, bool)> {
-    if s.ctrl.len() < 9 || !positive(&s.weights) {
+    if s.ctrl.len() < 9 || !positive(&s.weights) || !finite_pts(&s.ctrl) {
         return None;
     }
     let sf = torus_of(s).or_else(|| torus_of(&s.transposed()))?;
@@ -320,7 +344,13 @@ pub fn surface_as_torus(s: &BSplineSurface) -> Option<(Surface, bool)> {
 fn torus_of(s: &BSplineSurface) -> Option<Surface> {
     let size = extent(&s.ctrl);
     let tol = TOL_REL * size.max(1.0);
+    if !(size.is_finite() && tol.is_finite()) {
+        return None;
+    }
     let ((u0, u1), (v0, v1)) = s.domain();
+    if !(valid_domain(u0, u1) && valid_domain(v0, v1)) {
+        return None;
+    }
     let Some(Curve::Circle { frame: fa, .. }) = spline_as_circle(&s.iso_v(v0)) else { return None };
     let Some(Curve::Circle { frame: fb, r }) = spline_as_circle(&s.iso_u(0.5 * (u0 + u1))) else { return None };
     let n = fa.z;
@@ -329,7 +359,7 @@ fn torus_of(s: &BSplineSurface) -> Option<Surface> {
     let perp = wb - n * h0;
     let big = perp.len();
     // the meridian circle's plane holds the axis; the ring is a proper one (radius above the tube's)
-    if fb.z.dot(n).abs() > 1e-7 || big < 10.0 * tol || big <= r * (1.0 + 1e-6) || fb.z.dot(perp.normalize()).abs() > 1e-7 {
+    if !(fb.z.dot(n).abs() <= 1e-7 && big >= 10.0 * tol && big > r * (1.0 + 1e-6) && fb.z.dot(perp.normalize()).abs() <= 1e-7) {
         return None;
     }
     let o = fa.o + n * h0;
@@ -340,7 +370,7 @@ fn torus_of(s: &BSplineSurface) -> Option<Surface> {
             let w = s.eval(u, v) - o;
             let h = w.dot(n);
             let rho = (w - n * h).len();
-            if ((rho - big).hypot(h) - r).abs() > tol {
+            if !(((rho - big).hypot(h) - r).abs() <= tol) {
                 return None;
             }
         }
@@ -569,5 +599,49 @@ mod tests {
         assert!(surface_as_cylinder(&torus_surface(13.0, 2.0)).is_none());
         // a spindle (tube radius above the ring radius)
         assert!(surface_as_torus(&torus_surface(1.5, 2.0)).is_none());
+    }
+
+    #[test]
+    fn empty_and_non_finite_splines_do_not_panic() {
+        assert_eq!(extent(&[]), 0.0);
+
+        let inf_dom_curve = BSplineCurve::new(
+            2,
+            vec![-1.0e308, -1.0e308, -1.0e308, 1.0e308, 1.0e308, 1.0e308],
+            vec![v(0.0, 0.0, 0.0), v(1.0, 0.0, 0.0), v(1.0, 1.0, 0.0)],
+        )
+        .unwrap();
+        assert!(analytic_curve(&inf_dom_curve).is_none());
+
+        let nan_curve = BSplineCurve::new(
+            2,
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            vec![v(0.0, 0.0, 0.0), v(f64::NAN, 0.0, 0.0), v(1.0, 1.0, 0.0)],
+        )
+        .unwrap();
+        assert!(analytic_curve(&nan_curve).is_none());
+
+        let mut nan_surf = bilinear([0.0; 4]);
+        nan_surf.ctrl[1].x = f64::NAN;
+        assert!(surface_as_plane(&nan_surf).is_none());
+        assert!(surface_as_cylinder(&nan_surf).is_none());
+
+        let inf_dom_surf = BSplineSurface::new(
+            1,
+            1,
+            vec![-1.0e308, -1.0e308, 1.0e308, 1.0e308],
+            vec![0.0, 0.0, 1.0, 1.0],
+            2,
+            2,
+            vec![v(0.0, 0.0, 0.0), v(0.0, 6.0, 0.0), v(10.0, 0.0, 0.0), v(10.0, 6.0, 0.0)],
+            None,
+        )
+        .unwrap();
+        assert!(surface_as_plane(&inf_dom_surf).is_none());
+        assert!(surface_as_cylinder(&inf_dom_surf).is_none());
+
+        let mut nan_tor = torus_surface(13.0, 2.0);
+        nan_tor.ctrl[4].z = f64::INFINITY;
+        assert!(surface_as_torus(&nan_tor).is_none());
     }
 }

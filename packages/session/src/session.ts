@@ -17,7 +17,7 @@ export type { ExportMeshOpts, ExportMeshReport, MeshDecimateOpts, MeshDecimateRe
 export type EditOp =
   | { op: 'add'; feature: Record<string, unknown>; index?: number }
   | { op: 'set'; id: string; path: string; value: unknown }
-  | { op: 'remove'; id: string; cascade?: boolean }
+  | { op: 'remove'; id: string; cascade?: boolean; detach?: boolean }
   | { op: 'move'; id: string; to: number }
   | { op: 'replace'; id: string; feature: Record<string, unknown> };
 
@@ -167,12 +167,27 @@ function clone<T>(v: T): T {
   return JSON.parse(JSON.stringify(v)) as T;
 }
 
-/** ids of features whose JSON mentions id (excluding the feature itself). */
+/** Keys whose string value only labels or identifies a feature (never points at another one). */
+const LABEL_KEYS = new Set(['id', 'type', 'num', 'name', 'autoName', 'group', 'origin', 'color']);
+
+/** Does feature `f` refer to feature `id`? A string value equal to the id (`"sketch": "F1"`) or a face name on it
+ *  (`"F1.C1"`, the shape the kernel's reference check reads), anywhere in the feature except under a label key
+ *  (name, group, ... of the feature itself) and except object keys. */
+export function mentions(f: unknown, id: string): boolean {
+  const hit = (s: string) => s === id || (s.length > id.length + 1 && s.startsWith(id) && s[id.length] === '.' && /[A-Za-z]/.test(s[id.length + 1]));
+  const walk = (v: unknown): boolean => {
+    if (typeof v === 'string') return hit(v);
+    if (Array.isArray(v)) return v.some(walk);
+    if (v && typeof v === 'object') return Object.values(v as Record<string, unknown>).some(walk);
+    return false;
+  };
+  if (!f || typeof f !== 'object') return false;
+  return Object.entries(f as Record<string, unknown>).some(([k, v]) => !LABEL_KEYS.has(k) && walk(v));
+}
+
+/** ids of features that refer to id (excluding the feature itself). */
 export function referencers(doc: PartDoc, id: string): string[] {
-  const needle = `"${id}"`;
-  return doc.features
-    .filter((f) => f.id !== id && JSON.stringify(f).includes(needle))
-    .map((f) => f.id);
+  return doc.features.filter((f) => f.id !== id && mentions(f, id)).map((f) => f.id);
 }
 
 /** Face / edge name references inside a feature's JSON, the way the kernel's reference check (refDiff) reads them: a
@@ -244,7 +259,7 @@ export function checkOp(doc: PartDoc, op: EditOp): string | null {
     }
     case 'remove': {
       if (!ids.has(op.id)) return `unknown feature ${op.id}`;
-      if (!op.cascade) {
+      if (!op.cascade && !op.detach) {
         const refs = referencers(doc, op.id);
         if (refs.length) return `${op.id} is still referenced by ${refs.join(', ')} (use cascade to remove them too)`;
       }
@@ -353,7 +368,7 @@ function applyOp(doc: PartDoc, op: EditOp): void {
           grew = false;
           for (const f of doc.features) {
             if (gone.has(f.id)) continue;
-            const hit = [...gone].some((g) => JSON.stringify(f).includes(`"${g}"`));
+            const hit = [...gone].some((g) => mentions(f, g));
             if (hit) { gone.add(f.id); grew = true; }
           }
         }
@@ -659,7 +674,21 @@ export class Session {
   /** Apply a batch atomically. `lean` is for an interactive viewer: no before / after body facts (`diff`), and the
    *  reference check is skipped for a batch that only appends features (nothing earlier can be re-pointed) or delivered
    *  later as `refWarningsLater`. */
-  async edit(ops: EditOp[], reason?: string, opts?: { lean?: boolean; refCheck?: 'auto' | 'none'; repair?: boolean }): Promise<EditResult> {
+  edit(ops: EditOp[], reason?: string, opts?: { lean?: boolean; refCheck?: 'auto' | 'none'; repair?: boolean }): Promise<EditResult> {
+    return this.serial(() => this.editNow(ops, reason, opts));
+  }
+
+  /** Mutating calls (`edit`, `undo`) run one after another in call order: each reads `doc` / `stack` across awaits, so two
+   *  overlapping calls would otherwise both start from the same document and the second would overwrite the first. A call that
+   *  throws does not block the ones queued behind it. */
+  private chain: Promise<unknown> = Promise.resolve();
+  private serial<T>(run: () => Promise<T>): Promise<T> {
+    const next = this.chain.then(run, run);
+    this.chain = next.catch(() => undefined);
+    return next;
+  }
+
+  private async editNow(ops: EditOp[], reason?: string, opts?: { lean?: boolean; refCheck?: 'auto' | 'none'; repair?: boolean }): Promise<EditResult> {
     const lean = opts?.lean === true;
     const refCheckOpt = opts?.refCheck ?? 'auto';
     this.lastActive = Date.now();
@@ -699,7 +728,7 @@ export class Session {
       const lostRef = regenRes.errors.some(([, err]) => err.code === 'missingReference' || err.code === 'missingEdge');
       const fix = lostRef && opts?.refCheck !== 'none' ? await this.repairOpsFor(before, candidate) : null;
       if (fix && opts?.repair === true) {
-        const again = await this.edit([...ops, ...fix.ops], reason, { ...opts, repair: false });
+        const again = await this.editNow([...ops, ...fix.ops], reason, { ...opts, repair: false });
         return again.ok ? { ...again, repairs: fix.repairs } : again;
       }
       return {
@@ -826,7 +855,11 @@ export class Session {
   }
 
   /** Revert the last n applied batches. The document is the source of truth;   *  the kernel tag is re-synced (resynced:false if that regen itself fails). */
-  async undo(n = 1): Promise<{ records: EditRecord[]; resynced: boolean }> {
+  undo(n = 1): Promise<{ records: EditRecord[]; resynced: boolean }> {
+    return this.serial(() => this.undoNow(n));
+  }
+
+  private async undoNow(n: number): Promise<{ records: EditRecord[]; resynced: boolean }> {
     this.lastActive = Date.now();
     const popped = this.stack.splice(Math.max(0, this.stack.length - n), n);
     if (popped.length) this.doc = clone(popped[0].before);

@@ -287,7 +287,7 @@ fn shell_small_rounded_rim_with_untangent_boss() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "diagnostic: debug print-out with env inputs, no assertion; run by hand"]
 fn zz_debug_cavity() {
     use ck_ops::boolean::{boolean, Op};
     let zc: f64 = std::env::var("ZC").ok().and_then(|s| s.parse().ok()).unwrap_or(15.0);

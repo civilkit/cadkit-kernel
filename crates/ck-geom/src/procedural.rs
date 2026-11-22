@@ -177,7 +177,7 @@ impl CompositeCurve {
     /// belongs to the piece that starts there; outside the range the end pieces
     /// extend).
     pub fn locate(&self, s: f64) -> (usize, f64) {
-        let i = match self.starts.binary_search_by(|x| x.partial_cmp(&s).unwrap_or(std::cmp::Ordering::Less)) {
+        let i = match self.starts.binary_search_by(|x| x.total_cmp(&s)) {
             Ok(i) => i,
             Err(0) => 0,
             Err(i) => i - 1,
@@ -746,7 +746,7 @@ pub(crate) fn proc_length(c: &Curve, t0: f64, t1: f64) -> Option<f64> {
     let mut ks = vec![a];
     let mut br = Vec::new();
     speed_breaks(c, a, b, &mut br);
-    br.sort_by(|x, y| x.partial_cmp(y).unwrap());
+    br.sort_by(|x, y| x.total_cmp(y));
     br.dedup_by(|x, y| (*x - *y).abs() < 1e-14);
     ks.extend(br);
     ks.push(b);

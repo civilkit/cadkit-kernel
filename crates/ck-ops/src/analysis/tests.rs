@@ -155,7 +155,7 @@ fn cylinder_extrema() {
     // radius 5, height 10: along the axis 10, across it 2 r
     let b = cyl_body("F2", 0.0, 0.0, 5.0, 0.0, 10.0);
     let mut ext: Vec<f64> = ["[1,0,0]", "[0,1,0]", "[0,0,1]"].iter().map(|d| num(&extrema_reply(&b, &j(&format!(r#"{{"dir":{d}}}"#))).unwrap(), "extent")).collect();
-    ext.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    ext.sort_by(|a, b| a.total_cmp(b));
     assert!((ext[0] - 10.0).abs() < 1e-9 && (ext[1] - 10.0).abs() < 1e-9 && (ext[2] - 10.0).abs() < 1e-9, "{ext:?}");
     // slanted: h |d_axis| + 2 r |d_perp| with d = (1, 1, 1) / sqrt 3 (the axis is a coordinate axis)
     let r = extrema_reply(&b, &j(r#"{"dir":[1,1,1]}"#)).unwrap();

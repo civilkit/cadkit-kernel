@@ -37,7 +37,7 @@ use ck_ops::boolean::classify::{point_in_face_cached, Where};
 use ck_ops::intersect::cs;
 use ck_topo::body::{Body, EdgeId, FaceId, VertexId};
 
-const TOL: f64 = 1e-6;
+const TOL: f64 = ck_core::linalg::EPS_LINEAR;
 
 fn invalid(field: &str, detail: &str) -> FeatureError {
     FeatureError::new(codes::INVALID_VALUE).with("field", Json::Str(field.into())).with("detail", Json::Str(detail.into()))
@@ -197,7 +197,7 @@ fn cut_face(b: &mut Body, f: FaceId, ln: &Line, pieces: &mut Vec<FaceId>) -> Res
     let mut need: Vec<usize> = chords.iter().flat_map(|&(i, j)| [i, j]).filter(|&k| vs[k].is_none()).collect();
     need.sort_unstable();
     need.dedup();
-    need.sort_by(|&p, &q| (cr[q].edge.idx(), cr[q].t).partial_cmp(&(cr[p].edge.idx(), cr[p].t)).unwrap_or(std::cmp::Ordering::Equal));
+    need.sort_by(|&p, &q| cr[q].edge.idx().cmp(&cr[p].edge.idx()).then(cr[q].t.total_cmp(&cr[p].t)));
     for k in need {
         let (v, _) = ck_topo::edit::split_edge(b, cr[k].edge, cr[k].t);
         vs[k] = Some(v);

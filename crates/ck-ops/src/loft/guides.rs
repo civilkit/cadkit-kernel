@@ -25,7 +25,6 @@
 
 use super::stations::{Chain, Piece, Stations};
 use super::{smooth, LoftError};
-use ck_geom::curve::Curve;
 use ck_geom::nurbs::bspline::BSplineCurve;
 use ck_geom::Vec3;
 
@@ -389,10 +388,6 @@ pub fn guided_stations(mut chains: Vec<Chain>, guides: &[GuideIn]) -> Result<Gui
     }
     Ok(Guided { st: Stations { closed, tags, chains, ts, dense: vec![] }, rails })
 }
-
-/// Silence "unused" for the curve type used by callers.
-#[allow(dead_code)]
-fn _curve(_: &Curve) {}
 
 #[cfg(test)]
 mod tests {

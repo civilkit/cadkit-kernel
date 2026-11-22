@@ -59,7 +59,7 @@ fn swap(r: CcResult) -> CcResult {
 
 /// Sort by t1, drop duplicates and points inside overlaps.
 fn finish(mut r: CcResult, tol: f64) -> CcResult {
-    r.hits.sort_by(|a, b| a.t1.partial_cmp(&b.t1).unwrap_or(std::cmp::Ordering::Equal));
+    r.hits.sort_by(|a, b| a.t1.total_cmp(&b.t1));
     let mut out: Vec<CcHit> = vec![];
     for h in r.hits {
         if out.iter().any(|o| o.p.dist(h.p) <= tol && (o.t1 - h.t1).abs() < 1e-6 && (o.t2 - h.t2).abs() < 1e-6) {
@@ -68,7 +68,7 @@ fn finish(mut r: CcResult, tol: f64) -> CcResult {
         out.push(h);
     }
     r.hits = out;
-    r.overlaps.sort_by(|a, b| a.a.0.partial_cmp(&b.a.0).unwrap_or(std::cmp::Ordering::Equal));
+    r.overlaps.sort_by(|a, b| a.a.0.total_cmp(&b.a.0));
     r
 }
 
@@ -267,7 +267,7 @@ pub fn ellipse_plane_params(f: &ck_geom::Frame, ra: f64, rb: f64, o: Vec3, n: Ve
         vec![ck_geom::curve::wrap_angle(phi)]
     } else {
         let mut v = vec![ck_geom::curve::wrap_angle(phi - al), ck_geom::curve::wrap_angle(phi + al)];
-        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        v.sort_by(|a, b| a.total_cmp(b));
         v
     }
 }
@@ -292,7 +292,7 @@ fn circle_overlap(out: &mut CcResult, c1: &Curve, r1: (f64, f64), c2: &Curve, r2
             cuts.push(t);
         }
     }
-    cuts.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    cuts.sort_by(|a, b| a.total_cmp(b));
     cuts.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
     let _ = inside;
     for w in cuts.windows(2) {

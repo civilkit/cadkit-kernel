@@ -5,7 +5,7 @@
 //! panel across the bends; every panel is unfolded into the flat layout of the root panel and the result is the panel tree of
 //! the sheet (`sheet_tree.rs`), from which the body is rebuilt and checked against the volume of the original.
 
-use super::sheet::{Rule, Sheet, P};
+use super::sheet::{Sheet, P};
 use super::sheet_features::{rule_of, unsupported, Model};
 use super::sheet_tree::{ccw, BendKind, Flat3, Panel, Poly, TBend, Tree};
 use super::Brep;
@@ -69,7 +69,7 @@ fn planar(body: &Body, f: FaceId) -> Option<Pf> {
     if rings.is_empty() {
         return None;
     }
-    let outer = (0..rings.len()).max_by(|&a, &b| areas[a].abs().partial_cmp(&areas[b].abs()).unwrap_or(std::cmp::Ordering::Equal))?;
+    let outer = (0..rings.len()).max_by(|&a, &b| areas[a].abs().total_cmp(&areas[b].abs()))?;
     let d = n.dot(rings[outer].0[0]);
     let mut holes = vec![];
     let mut main = None;
@@ -183,7 +183,7 @@ pub fn exec_sheet_convert(br: &mut Brep, state: &mut RegenState, f: &Feature) ->
     // the root: the panel (front, back) with the largest face
     let root = (0..planes.len())
         .filter(|&i| partner[i].is_some())
-        .max_by(|&a, &b| area_of(&planes[a].ring, planes[a].n).partial_cmp(&area_of(&planes[b].ring, planes[b].n)).unwrap_or(std::cmp::Ordering::Equal))
+        .max_by(|&a, &b| area_of(&planes[a].ring, planes[a].n).total_cmp(&area_of(&planes[b].ring, planes[b].n)))
         .ok_or_else(|| unsupported("no panel found: no two parallel faces are one thickness apart", hint))?;
     let rootp = Panel3 { front: root, back: partner[root].unwrap_or(root) };
     let nrm = -planes[rootp.front].n;
@@ -373,6 +373,3 @@ pub fn exec_sheet_convert(br: &mut Brep, state: &mut RegenState, f: &Feature) ->
     super::sheet_features::report_pub(br, state, f, "sheetConvert");
     Ok(())
 }
-
-#[allow(dead_code)]
-fn _unused(_: &Rule) {}

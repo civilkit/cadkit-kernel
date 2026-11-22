@@ -157,7 +157,7 @@ impl<'a> Containment<'a> {
                 out.push(RayHit { t: h.t.max(0.0), point: h.p, face: f, entering: nd < 0.0, tangent: nd.abs() < 1e-9 });
             }
         }
-        out.sort_by(|a, b| a.t.partial_cmp(&b.t).unwrap_or(std::cmp::Ordering::Equal));
+        out.sort_by(|a, b| a.t.total_cmp(&b.t));
         let mut merged: Vec<RayHit> = vec![];
         for h in out {
             if let Some(l) = merged.last() {
@@ -205,7 +205,7 @@ impl<'a> Containment<'a> {
                 ((dx * dx + dy * dy + dz * dz).sqrt(), i)
             })
             .collect();
-        order.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        order.sort_by(|a, b| a.0.total_cmp(&b.0));
         let mut best: Option<(f64, FaceId, Vec3)> = None;
         for (lb, i) in order {
             if best.map_or(false, |b| lb > b.0) {

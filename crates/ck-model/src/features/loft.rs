@@ -166,7 +166,7 @@ fn order_holes(prev: &[Vec3], cur: &mut [ProfileIn]) {
             pairs.push((prev[i].dist2(cents[j]), i, j));
         }
     }
-    pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    pairs.sort_by(|a, b| a.0.total_cmp(&b.0));
     let mut taken = vec![false; n];
     let mut order = vec![0usize; n];
     let mut got = vec![false; n];

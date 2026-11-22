@@ -269,6 +269,12 @@ pub fn classify_near(b: &Body, q: Vec3, tol: f64) -> Containment {
     }
 }
 
+/// Distance from `q` to the nearest boundary feature (`None` for a body without faces): the cheap first step of [`classify`],
+/// for a caller that only needs to know whether a face lies within a given distance.
+pub fn nearest_boundary_distance(b: &Body, q: Vec3) -> Option<f64> {
+    nearest_feature(b, q).map(|(d, _)| d)
+}
+
 /// Nearest boundary feature of `q`: (distance, side) with side < 0 inside,
 /// > 0 outside (dot of q − p with the feature's (pseudo-)normal).
 fn nearest_feature(b: &Body, q: Vec3) -> Option<(f64, f64)> {
@@ -413,7 +419,7 @@ pub fn rebuild_lumps(b: &mut Body) {
         let host = lump_of_shell
             .iter()
             .filter(|(_, _, _, j)| inside_shell(b, &comps[*j], probe))
-            .min_by(|a, b2| a.2.partial_cmp(&b2.2).unwrap())
+            .min_by(|a, b2| a.2.total_cmp(&b2.2))
             .map(|x| x.1);
         let l = host.unwrap_or_else(|| b.add_lump());
         let s = b.add_shell(l);

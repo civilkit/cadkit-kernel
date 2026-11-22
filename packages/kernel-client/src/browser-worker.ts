@@ -1,15 +1,16 @@
 // browser-worker.ts: module worker entry
 import { WasmHost } from './wasm-host.js';
-import type { HostRequest, HostResponse } from './protocol.js';
+import { transferList, type HostRequest, type HostResponse } from './protocol.js';
 
 let host: WasmHost | null = null;
 const post = (m: HostResponse) => (self as unknown as Worker).postMessage(m);
 
-self.onmessage = async (ev: MessageEvent<HostRequest & { wasmUrl?: string }>) => {
+self.onmessage = async (ev: MessageEvent<HostRequest>) => {
   const m = ev.data;
   if (m.kind === 'init') {
     try {
-      const res = await fetch((m as unknown as { wasmUrl: string }).wasmUrl);
+      if (!('wasmUrl' in m)) throw new Error('browser worker needs a wasmUrl');
+      const res = await fetch(m.wasmUrl);
       host = new WasmHost(await WebAssembly.compile(await res.arrayBuffer()));
       post({ kind: 'ready', commit: host.commit });
     } catch (e) {
@@ -20,12 +21,5 @@ self.onmessage = async (ev: MessageEvent<HostRequest & { wasmUrl?: string }>) =>
   if (!host) return post({ kind: 'done', id: m.id, reply: { ok: false, trap: 'worker has no instance' } });
   const reply = host.call(m.body);
   // the reply's bulk arrays (display mesh) are handed over, not copied: a regen reply carries several MB of them
-  const bufs = new Set<ArrayBuffer>();
-  const walk = (v: unknown): void => {
-    if (ArrayBuffer.isView(v)) { if (v.buffer instanceof ArrayBuffer && v.byteLength > 0) bufs.add(v.buffer); return; }
-    if (Array.isArray(v)) { for (const x of v) walk(x); return; }
-    if (v && typeof v === 'object') for (const x of Object.values(v)) walk(x);
-  };
-  walk(reply);
-  (self as unknown as Worker).postMessage({ kind: 'done', id: m.id, reply } satisfies HostResponse, [...bufs]);
+  (self as unknown as Worker).postMessage({ kind: 'done', id: m.id, reply } satisfies HostResponse, transferList(reply));
 };

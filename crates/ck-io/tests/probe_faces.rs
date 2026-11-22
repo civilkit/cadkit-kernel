@@ -2,7 +2,7 @@
 //! its tessellation failures and validate issues.
 //!   STEP=<file.step> [SHORT=1] [CK_TESS_DBG=1] cargo test -p ck-io --profile fast --test probe_faces -- --ignored --nocapture
 #[test]
-#[ignore]
+#[ignore = "diagnostic probe: needs STEP env input, prints only; run by hand"]
 fn probe() {
     let p = std::env::var("STEP").unwrap();
     let r = ck_io::step::read::read_step(&std::fs::read_to_string(&p).unwrap()).unwrap();

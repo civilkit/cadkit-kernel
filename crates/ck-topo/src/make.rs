@@ -758,7 +758,7 @@ pub(crate) fn offset_loop(pl: &ProfileLoop, delta: f64) -> Result<(Vec<(Curve2, 
         }
         let guess = v + (out_n(sp, sp.t_end()) + guess_n) * (0.5 * delta);
         let cands = intersect2(&curves[pi], &curves[ni]);
-        let best = cands.into_iter().min_by(|a, b| a.dist(guess).partial_cmp(&b.dist(guess)).unwrap());
+        let best = cands.into_iter().min_by(|a, b| a.dist(guess).total_cmp(&b.dist(guess)));
         verts.push(best.ok_or_else(|| "draftFailed".to_string())?);
     }
     // trims

@@ -23,7 +23,7 @@ use ck_geom::Vec3;
 
 /// Default modelling tolerance for the ops (mm).
 /// GUESS: matches ck-core EPS_LINEAR (1e-6); the kernel's own value is unknown.
-pub const TOL: f64 = 1e-6;
+pub const TOL: f64 = ck_core::linalg::EPS_LINEAR;
 
 /// Map parameter `t` of curve `c` into `[r.0 - slack, r.1 + slack]`, using
 /// the curve period for periodic carriers. `None` when outside. The result

@@ -150,6 +150,29 @@ thread_local! {
     static REACH: std::cell::Cell<f64> = const { std::cell::Cell::new(1.0) };
 }
 
+/// Drops the warm starts of the faces of `b` that are B-splines closing on themselves (in u or v, no declared period): a start
+/// left by a far node can sit on the other side of the closure.
+fn forget_closed_spline_hints(b: &Body) {
+    HINTS.with(|m| {
+        m.borrow_mut().retain(|&k, _| {
+            if k as usize >= b.faces.len() {
+                return true;
+            }
+            let sf = &b.face(FaceId(k)).surface;
+            let Surface::BSpline(_) = sf else { return true };
+            let ((u0, u1), (v0, v1)) = sf.domain();
+            if !(u0.is_finite() && u1.is_finite() && v0.is_finite() && v1.is_finite()) {
+                return true;
+            }
+            let tol = 1e-6 * (1.0 + sf.eval(u0, v0).len());
+            let ks = [0.0, 0.3, 0.7, 1.0];
+            let cu = sf.periods().0.is_none() && ks.iter().all(|&k| sf.eval(u0, v0 + (v1 - v0) * k).dist(sf.eval(u1, v0 + (v1 - v0) * k)) <= tol);
+            let cv = sf.periods().1.is_none() && ks.iter().all(|&k| sf.eval(u0 + (u1 - u0) * k, v0).dist(sf.eval(u0 + (u1 - u0) * k, v1)) <= tol);
+            !(cu || cv)
+        })
+    });
+}
+
 fn foot_hint(b: &Body, f: FaceId, q: Vec3) -> Option<(Vec3, Vec3)> {
     let reach = REACH.with(|r| r.get());
     let bx = BOXES.with(|m| *m.borrow_mut().entry(f.idx() as u32).or_insert_with(|| crate::bvh::face_box(b, f)));
@@ -1263,8 +1286,9 @@ fn blend_chain_inner(b: &Body, links: Vec<Link>, r: f64, feature: &str, k: u32, 
         let mut inserted: Vec<(usize, Node)> = vec![];
         let mut failed_at: Option<BlendError> = None;
         for &(i, li, sm) in insert.iter().rev() {
-            // (the warm starts are those of the last node solved, which is far from this one: stale on a closed spline face)
-            HINTS.with(|m| m.borrow_mut().clear());
+            // (the warm starts are those of the last node solved, which is far from this one: stale on a closed spline face; the
+            // other faces keep theirs, as every blend before the sweep tube fixes did)
+            forget_closed_spline_hints(b);
             let st = if spine {
                 ctx.spine_between(&nodes[i], &nodes[i + 1])
             } else {

@@ -35,7 +35,7 @@ impl FeatureExec for Exec {
 }
 
 #[test]
-#[ignore]
+#[ignore = "diagnostic probe: prints only; run by hand"]
 fn thread_probe() {
     let case = std::env::var("CASE").unwrap_or("flangeBolt".into());
     let upto: u32 = std::env::var("UPTO").ok().and_then(|s| s.parse().ok()).unwrap_or(13);

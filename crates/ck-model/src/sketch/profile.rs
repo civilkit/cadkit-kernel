@@ -637,7 +637,7 @@ fn param_near(c: &Curve, q: P, dir: P) -> Option<f64> {
         }
         _ => {
             let s = samples(c);
-            let (k, _) = s.iter().enumerate().min_by(|a, b| dist(a.1 .1, q).partial_cmp(&dist(b.1 .1, q)).unwrap())?;
+            let (k, _) = s.iter().enumerate().min_by(|a, b| dist(a.1 .1, q).total_cmp(&dist(b.1 .1, q)))?;
             let (mut lo, mut hi) = (s[k.saturating_sub(1)].0, s[(k + 1).min(s.len() - 1)].0);
             for _ in 0..60 {
                 let (m1, m2) = (lo + (hi - lo) / 3.0, hi - (hi - lo) / 3.0);
@@ -701,7 +701,7 @@ impl Graph {
 }
 
 fn dedup_sorted(v: &mut Vec<f64>, tol: f64) {
-    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    v.sort_by(|a, b| a.total_cmp(b));
     let mut out: Vec<f64> = Vec::new();
     for x in v.iter() {
         if out.last().map_or(true, |l| (x - l).abs() > tol) {
@@ -985,9 +985,9 @@ pub fn profiles_with(sk: &Sketch, texts: &[super::text::TextLayout]) -> Profiles
     for o in out.iter_mut() {
         o.sort_by(|x, y| {
             if (x.0 - y.0).abs() < 1e-9 {
-                x.1.partial_cmp(&y.1).unwrap_or(std::cmp::Ordering::Equal)
+                x.1.total_cmp(&y.1)
             } else {
-                x.0.partial_cmp(&y.0).unwrap()
+                x.0.total_cmp(&y.0)
             }
         });
     }

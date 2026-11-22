@@ -361,7 +361,7 @@ impl<'a> Cx<'a> {
         }
         let z = z.normalize();
         let a = [Vec3::X, Vec3::Y, Vec3::Z];
-        let k = (0..3).min_by(|&i, &j| ck_recog::model::comp(z, i).abs().partial_cmp(&ck_recog::model::comp(z, j).abs()).unwrap()).unwrap();
+        let k = (0..3).min_by(|&i, &j| ck_recog::model::comp(z, i).abs().total_cmp(&ck_recog::model::comp(z, j).abs())).unwrap();
         let x = (a[k] - z * a[k].dot(z)).normalize();
         let y = z.cross(x);
         let o = z * at.dot(z);

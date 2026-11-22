@@ -51,7 +51,7 @@ fn eyebolt_torus_fragments_tessellate() {
 /// Deviation of the ground-truth coil faces from the ideal screw tube
 /// (circle r in the meridian plane swept by the helix): diagnostic.
 #[test]
-#[ignore]
+#[ignore = "diagnostic: ground-truth coil probe, prints only; run by hand"]
 fn torsion_spring_gt_coil_vs_ideal_tube() {
     use ck_geom::surface::Surface;
     let r = read_step(&gt("torsion_spring_000054")).unwrap();
@@ -109,7 +109,7 @@ fn coil_spring_gt_imports_and_tessellates_fast() {
 
 /// Timing diagnostic: `cargo test -p ck-io --profile fast --test multi_solid_step coil_spring_gt_probe -- --ignored --nocapture`.
 #[test]
-#[ignore]
+#[ignore = "diagnostic: ground-truth coil probe, prints only; run by hand"]
 fn coil_spring_gt_probe() {
     let t = std::time::Instant::now();
     let r = read_step(&gt("coil_spring_000026")).unwrap();
@@ -127,7 +127,7 @@ fn coil_spring_gt_probe() {
 
 /// closest-point recovery on the GT coil face: random surface points must project back onto themselves.
 #[test]
-#[ignore]
+#[ignore = "diagnostic: ground-truth coil probe, prints only; run by hand"]
 fn coil_spring_closest_point_recovery() {
     use ck_geom::surface::Surface;
     let r = read_step(&gt("coil_spring_000026")).unwrap();
@@ -151,7 +151,7 @@ fn coil_spring_closest_point_recovery() {
 
 /// Centre line of the ground-truth coil: radius of the section-circle centres against the path parameter.
 #[test]
-#[ignore]
+#[ignore = "diagnostic: ground-truth coil probe, prints only; run by hand"]
 fn coil_spring_gt_centerline() {
     use ck_geom::surface::Surface;
     let r = read_step(&gt("coil_spring_000026")).unwrap();

@@ -74,7 +74,7 @@ pub fn find_edge_by_position(b: &Body, fa: &str, fb: &str, at: Vec3) -> Option<E
                 && ((by_feature(fs[0], &ha.feature) && by_feature(fs[1], &hb.feature)) || (by_feature(fs[1], &ha.feature) && by_feature(fs[0], &hb.feature)))
                 && dist(e) <= 1e-6 * scale
         })
-        .min_by(|&x, &y| dist(x).partial_cmp(&dist(y)).unwrap())
+        .min_by(|&x, &y| dist(x).total_cmp(&dist(y)))
 }
 
 pub(super) fn find_edge_named(b: &Body, fa: &str, fb: &str, at: Vec3, named: &dyn Fn(&str) -> Vec<FaceId>) -> Option<EdgeId> {
@@ -89,7 +89,7 @@ pub(super) fn find_edge_named(b: &Body, fa: &str, fb: &str, at: Vec3, named: &dy
                 let ed = b.edge(e);
                 crate::boolean::imprint::dist_in_range(&ed.curve, (ed.t0, ed.t1), at).1
             };
-            d(x).partial_cmp(&d(y)).unwrap()
+            d(x).total_cmp(&d(y))
         })
 }
 

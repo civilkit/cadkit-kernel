@@ -71,7 +71,7 @@ pub fn hatch_lines(body: &Body, faces: &[FaceId], x: Vec3, y: Vec3, _z: Vec3, h:
         if ts.len() < 2 {
             continue;
         }
-        ts.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        ts.sort_by(|a, b| a.total_cmp(b));
         ts.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
         if ts.len() % 2 == 1 {
             ts.pop(); // GUESS: drop an unpaired crossing

@@ -168,7 +168,7 @@ pub fn clip_half(poly: &Poly, n: P, c: f64, tag: &str) -> Vec<Poly> {
         return if ring.iter().all(|v| v.k == K::In) { vec![poly.clone()] } else { vec![] };
     }
     let mut order = cross_idx.clone();
-    order.sort_by(|&a, &b| ring[a].t.partial_cmp(&ring[b].t).unwrap_or(std::cmp::Ordering::Equal));
+    order.sort_by(|&a, &b| ring[a].t.total_cmp(&ring[b].t));
     let mut mate = vec![usize::MAX; ring.len()];
     for pair in order.chunks(2) {
         if pair.len() == 2 {
@@ -276,7 +276,7 @@ pub fn merge_loops(polys: &[Vec<P>]) -> Vec<Vec<P>> {
                     on.push((s, k));
                 }
             }
-            on.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap_or(std::cmp::Ordering::Equal));
+            on.sort_by(|x, y| x.0.total_cmp(&y.0));
             let mut prev = a;
             for (_, k) in on {
                 edges.push((prev, k));
@@ -339,7 +339,7 @@ pub fn merge_loops(polys: &[Vec<P>]) -> Vec<Vec<P>> {
                     let dout = unit(sub(pts[rest[j].1], pts[rest[j].0]));
                     cross(din, dout).atan2(dot(din, dout))
                 };
-                ang(x).partial_cmp(&ang(y)).unwrap_or(std::cmp::Ordering::Equal)
+                ang(x).total_cmp(&ang(y))
             });
             match best {
                 Some(j) => cur = j,
@@ -351,7 +351,7 @@ pub fn merge_loops(polys: &[Vec<P>]) -> Vec<Vec<P>> {
         }
     }
     let mut outers: Vec<Vec<P>> = loops.iter().filter(|l| area(l) > 0.0).cloned().collect();
-    outers.sort_by(|a, b| area(b).partial_cmp(&area(a)).unwrap_or(std::cmp::Ordering::Equal));
+    outers.sort_by(|a, b| area(b).total_cmp(&area(a)));
     outers.extend(loops.into_iter().filter(|l| area(l) <= 0.0));
     outers
 }
@@ -810,7 +810,7 @@ impl Tree {
     /// the same layout) as one sheet: the two base plates meet along an edge of the base that lies on the line, and that edge must
     /// not carry a bend. The plates become one panel and every other panel and bend of the image hangs on it.
     pub fn joined_mirror(&self, other: &Tree, c: P, m: P) -> Result<Tree, String> {
-        const TOL: f64 = 1e-6;
+        const TOL: f64 = ck_core::linalg::EPS_LINEAR;
         let roots = |t: &Tree| t.panels.iter().enumerate().filter(|(_, p)| p.via.is_none()).map(|(i, _)| i).collect::<Vec<_>>();
         let (r, r2) = match (roots(self).as_slice(), roots(other).as_slice()) {
             ([a], [b]) => (*a, *b),
@@ -1688,7 +1688,7 @@ fn split_params(a: P, b: P, other: &[P]) -> Vec<f64> {
             ts.push(tv);
         }
     }
-    ts.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
+    ts.sort_by(|x, y| x.total_cmp(y));
     ts.dedup_by(|x, y| (*x - *y).abs() < 1e-9);
     ts
 }
@@ -1775,7 +1775,7 @@ pub fn subtract(p: &Poly, r: &[P], tag: &str) -> (Vec<Poly>, Vec<Vec<P>>) {
                     let dout = unit(sub(edges[j].1, edges[j].0));
                     cross(din, dout).atan2(dot(din, dout))
                 };
-                ang(x).partial_cmp(&ang(y)).unwrap_or(std::cmp::Ordering::Equal)
+                ang(x).total_cmp(&ang(y))
             });
             match best {
                 Some(j) => cur = j,

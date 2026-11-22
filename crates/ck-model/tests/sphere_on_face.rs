@@ -127,7 +127,7 @@ fn hemisphere_face_survives_on_every_block_face() {
 
 /// Manual probe: `FWP=front FWU=0 FWV=40 FWX=0 FWO=add cargo test ... probe -- --ignored --nocapture`.
 #[test]
-#[ignore]
+#[ignore = "diagnostic probe: needs FW* env inputs, prints only; run by hand"]
 fn probe() {
     let g = |k: &str, d: &str| std::env::var(k).unwrap_or(d.into());
     let f = format!("{BLOCK},{}", sphere(&g("FWP", "front"), g("FWU", "0").parse().unwrap(), g("FWV", "40").parse().unwrap(), g("FWX", "0") == "1", &g("FWO", "add")));

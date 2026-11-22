@@ -47,7 +47,7 @@ pub fn roundtrip(name: &str, b: &Body) -> Result<String, String> {
 
 /// Debug: `STEP=<file> cargo test -p ck-io --test roundtrip dump_file -- --ignored --nocapture`
 #[test]
-#[ignore]
+#[ignore = "diagnostic: needs STEP env input, prints only; run by hand"]
 fn dump_file() {
     let text = std::fs::read_to_string(std::env::var("STEP").unwrap()).unwrap();
     let imp = read_step(&text).unwrap();

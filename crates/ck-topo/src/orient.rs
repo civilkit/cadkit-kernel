@@ -69,7 +69,7 @@ pub fn fix_planar_loops(b: &mut Body, f: FaceId) -> bool {
     }
     let sg = if b.faces[f.idx()].sense { 1.0 } else { -1.0 };
     let areas: Vec<f64> = loops.iter().map(|&l| loop_uv_area(b, l) * sg).collect();
-    let outer = (0..loops.len()).max_by(|&i, &j| areas[i].abs().partial_cmp(&areas[j].abs()).unwrap()).unwrap();
+    let outer = (0..loops.len()).max_by(|&i, &j| areas[i].abs().total_cmp(&areas[j].abs())).unwrap();
     let mut changed = false;
     if outer != 0 {
         b.faces[f.idx()].loops.swap(0, outer);

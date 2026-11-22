@@ -223,7 +223,7 @@ pub fn fix_orientation(b: &mut Body, out: &mut Vec<Fixed>) -> usize {
             let v = signed_volume(b, &comp);
             comps.push((comp, v));
         }
-        let big = (0..comps.len()).max_by(|&i, &j| comps[i].1.abs().partial_cmp(&comps[j].1.abs()).unwrap()).unwrap();
+        let big = (0..comps.len()).max_by(|&i, &j| comps[i].1.abs().total_cmp(&comps[j].1.abs())).unwrap();
         for (i, (comp, v)) in comps.iter().enumerate() {
             let want_pos = i == big;
             if (*v > 0.0) != want_pos && *v != 0.0 {

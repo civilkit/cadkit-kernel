@@ -9,14 +9,15 @@
     "mcp": "tsc -p tsconfig.build.json && node mcp.mjs",
     "test": "npm run build && node --test \"dist/*/src/*.test.js\"",
     "clean": "rm -rf dist",
-    "typecheck": "for p in part-model builder kernel-client driver mjcf; do tsc --noEmit -p $p/tsconfig.json || exit 1; done"
+    "typecheck": "for p in part-model builder kernel-client driver mjcf session render; do tsc --noEmit -p $p/tsconfig.json || exit 1; done"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.32.1",
-    "@types/node": "^26.6.5",
-    "typescript": "^7.0.2"
+    "@types/node": "^20.19.0",
+    "typescript": "^7.0.2",
+    "zod": "^4.6.7"
   }
 }

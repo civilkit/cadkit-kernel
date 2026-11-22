@@ -195,7 +195,7 @@ fn solve4(mut a: [[f64; 4]; 4], mut r: [f64; 4]) -> Option<[f64; 4]> {
         return None;
     }
     for c in 0..4 {
-        let p = (c..4).max_by(|&i, &j| a[i][c].abs().partial_cmp(&a[j][c].abs()).unwrap_or(std::cmp::Ordering::Equal))?;
+        let p = (c..4).max_by(|&i, &j| a[i][c].abs().total_cmp(&a[j][c].abs()))?;
         if !(a[p][c].abs() > 1e-14 * scale) {
             return None;
         }

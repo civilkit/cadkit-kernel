@@ -428,6 +428,19 @@ mod tests {
         assert_eq!(hex(&sha256(&[b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"])), "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1");
     }
 
+    /// The relation `known_fields.rs` documents: every key the regen cache ignores (`COSMETIC_KEYS`) is a known field of every
+    /// feature type in `TABLE`, so a cached reply and a cold run warn the same (`unknownField`).
+    #[test]
+    fn cosmetic_keys_are_known_fields_of_every_type() {
+        for (ty, _) in ck_model::features::known_fields::TABLE {
+            let mut members = vec![("type".to_string(), Json::Str(ty.to_string()))];
+            members.extend(COSMETIC_KEYS.iter().map(|k| (k.to_string(), Json::Str("x".into()))));
+            let f = ck_model::Feature::from_json(&Json::Obj(members));
+            let unknown = ck_model::features::known_fields::unknown_fields(&f);
+            assert!(unknown.is_empty(), "feature type {ty}: cosmetic keys unknown to known_fields: {unknown:?}");
+        }
+    }
+
     /// An `importStep` feature names its data by a key: the table of data (`blobs`) is not part of any key, however big it is,
     /// and the key the feature names is.
     #[test]

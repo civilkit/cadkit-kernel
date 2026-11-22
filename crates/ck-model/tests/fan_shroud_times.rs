@@ -70,7 +70,7 @@ impl FeatureExec for Exec {
 }
 
 #[test]
-#[ignore]
+#[ignore = "diagnostic: timing print-out, no assertion; run by hand"]
 fn fan_shroud_feature_times() {
     let path = std::env::var("CK_PART").unwrap_or_else(|_| format!("{}/../../tools/cases/perf/fan_shroud.ckpart", env!("CARGO_MANIFEST_DIR")));
     let part = Part::from_json(&ck_json::parse(&std::fs::read_to_string(path).unwrap()).unwrap()).unwrap();

@@ -77,12 +77,6 @@ pub fn solve(a: &[Vec<f64>], b: &[f64]) -> Option<Vec<f64>> {
     Some(x)
 }
 
-/// Scale a parameter from the fitted net's [0, spans] to the surface's
-/// domain [a, b].
-fn to_domain(t: f64, a: f64, b: f64) -> f64 {
-    a + (b - a) * (t / (b - a).max(1e-12) * (b - a))
-}
-
 /// Fit `orig` (over the uv window) with a deg×spans B-spline net by
 /// interpolation at the Greville points. Errors when the system is
 /// singular (rebuildFailed).
@@ -163,10 +157,6 @@ pub fn to_net_param(uv: Vec2, uw: (f64, f64), vw: (f64, f64), spans_u: usize, sp
     Vec2::new(t, s)
 }
 
-#[allow(dead_code)]
-fn _unused(t: f64, a: f64, b: f64) -> f64 {
-    to_domain(t, a, b)
-}
 
 #[cfg(test)]
 mod tests {

@@ -122,7 +122,8 @@ export interface PartDoc {
   features: Feature[];
   /** next feature id counter — ids are F1, F2, … */
   seq: number;
-  rollback: null;
+  /** regenerate only the first N features (a number); null = all. A string rollback is ignored by the kernel. */
+  rollback: number | string | null;
   material: Material;
   counters: Record<string, unknown>;
   /** Data that features name by key: the STEP text of an `importStep`, by the SHA-256 (lower-case hex) of the text. */

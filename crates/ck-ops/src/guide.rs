@@ -98,7 +98,7 @@ impl Poly {
     }
     fn at(&self, l: f64) -> Vec3 {
         let l = l.clamp(0.0, self.len());
-        let i = match self.s.binary_search_by(|x| x.partial_cmp(&l).unwrap()) {
+        let i = match self.s.binary_search_by(|x| x.total_cmp(&l)) {
             Ok(i) => i.min(self.p.len() - 2),
             Err(i) => (i - 1).min(self.p.len() - 2),
         };

@@ -1099,7 +1099,7 @@ mod tests {
     /// whole groove inside (a pocket), `ZHI=3` lets it run out of the top end.
     /// `SSDBG=1` prints the boolean's phases and open edges.
     #[test]
-    #[ignore]
+    #[ignore = "diagnostic: prints timings/open edges, no assertion; run by hand"]
     fn screw_cut_shank() {
         use crate::boolean::{boolean, Op};
         use ck_topo::make::extrude;
@@ -1131,7 +1131,7 @@ mod tests {
     /// Point classification against a multi-turn screw tool along the line
     /// x = -4 (the groove is centred on z = 1, 3, 5 ...).
     #[test]
-    #[ignore]
+    #[ignore = "diagnostic: prints timings/open edges, no assertion; run by hand"]
     fn screw_tool_classify() {
         use crate::boolean::classify::Solid;
         let tool = sweep("F13", &trap(), &helix_path(4.0, false), 0.0).unwrap();
@@ -1147,7 +1147,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "diagnostic: prints timings/open edges, no assertion; run by hand"]
     fn screw_tool_rays() {
         use crate::boolean::classify::point_in_face;
         let tool = sweep("F13", &trap(), &helix_path(4.0, false), 0.0).unwrap();
@@ -1168,7 +1168,7 @@ mod tests {
     /// Currently `booleanFailed`; prints the SSI timings and the open edges of
     /// the assembled result (see the guard in ck-model features/sweep.rs).
     #[test]
-    #[ignore]
+    #[ignore = "known failure: the screw cut returns booleanFailed; prints SSI timings and open edges"]
     fn cut_timing() {
         use crate::boolean::{boolean, Op};
         use ck_topo::make::extrude;

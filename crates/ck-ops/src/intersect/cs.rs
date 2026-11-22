@@ -59,7 +59,7 @@ pub fn intersect(c: &Curve, r: (f64, f64), s: &Surface, tol: f64) -> CsResult {
         }
         None => general(c, r, s, tol, &mut out),
     }
-    out.hits.sort_by(|a, b| a.t.partial_cmp(&b.t).unwrap_or(std::cmp::Ordering::Equal));
+    out.hits.sort_by(|a, b| a.t.total_cmp(&b.t));
     out.hits.dedup_by(|a, b| (a.t - b.t).abs() < 1e-10);
     out
 }
@@ -715,6 +715,7 @@ mod tests {
     }
 
     /// The version of `line_bspline` before the cell-box cache, tiles and the allocation-free derivatives.
+    // Frozen copy of the old algorithm, kept verbatim as the test oracle; not worth restyling for clippy.
     #[allow(clippy::all)]
     fn line_bspline_reference(o: Vec3, d: Vec3, bs: &ck_geom::nurbs::bsurf::BSplineSurface, tol: f64) -> Option<Vec<f64>> {
         // rational surfaces too: `derivs` handles the weights and the control
