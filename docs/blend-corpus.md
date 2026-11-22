@@ -171,9 +171,11 @@ rad off against the 0.02 budget. Radii that disagree *within* a pair still fall 
   union rule above.
 * **Chamfers over a narrow neighbour face** (`chamfer_narrow_*`: a 1 mm strip, a boss cylinder 1 mm high, a 1 mm rib top
   with both its edges chamfered, the edge of a 1 mm plate; distance 1.5 to 2). OCCT's `MakeChamfer` fails on all four
-  (`Build failed`) and the kernel refuses all four with `blendOverflow`, so the cases expect that code. The refusal's detail
-  names the chamfer's own face (`F9.B0: spring leaves its face away from its edges`), not the narrow face that is too small;
-  `chamfer_narrow_unreachable` checks for the face (`expectFace`) and is `known` until the detail names it.
+  (`Build failed`). A chamfer larger than the face beside its edge now builds when one contact stays on its face (warning
+  `blendRanOffFace`), so `chamfer_narrow_planar` and `chamfer_narrow_curved` are checked against analytic volumes (`vol`:
+  15600 - 80, and plate + boss less the revolved chamfer triangle, 16148.0476; the kernel matches to 1e-15) and are valid with a
+  closed mesh. `chamfer_narrow_meets_chamfer` (both rib edges) still refuses with `blendOverflow`. `chamfer_narrow_unreachable`
+  now also builds (its other contact, the top face, stays on its face) and stays `known` until its expectation is revisited.
 
 ## Cases, before and after
 

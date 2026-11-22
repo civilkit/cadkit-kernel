@@ -40,7 +40,7 @@
 use ck_geom::curve::Curve;
 use ck_geom::surface::Surface;
 use ck_geom::{Frame, Vec3};
-use ck_topo::body::{Body, CoedgeId, EdgeId, FaceId, ShellId, VertexId};
+use ck_topo::body::{Body, CoedgeId, EdgeId, FaceId, LumpId, ShellId, VertexId};
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
@@ -49,6 +49,18 @@ use std::fmt::Write as _;
 pub struct StepOpts {
     /// Host clock (`ck_unix_ms` import) used for the FILE_NAME time stamp.
     pub unix_ms: f64,
+}
+
+/// Optional metadata for STEP AP214/AP242 export: per-lump names, per-lump RGB colors,
+/// and per-face RGB colors (all RGB channels in `0.0..=1.0`).
+#[derive(Debug, Clone, Default)]
+pub struct StepExportMeta {
+    /// Optional override names per lump (takes precedence over `Lump::name`, fallback to part `name`).
+    pub body_names: HashMap<LumpId, String>,
+    /// Optional RGB color `[r, g, b]` (`0.0..=1.0`) per lump.
+    pub body_colors: HashMap<LumpId, [f64; 3]>,
+    /// Optional RGB color `[r, g, b]` (`0.0..=1.0`) per face.
+    pub face_colors: HashMap<FaceId, [f64; 3]>,
 }
 
 /// Format one STEP REAL.
@@ -179,6 +191,7 @@ pub struct StepWriter {
     dirs: HashMap<[u64; 3], usize>,
     verts: HashMap<VertexId, usize>,
     edges: HashMap<EdgeId, usize>,
+    face_ents: HashMap<FaceId, Vec<usize>>,
     /// print -0 DIRECTION components as `-0.` (test support)
     signed_zero: bool,
     /// member edge -> (head, tail) of its seam-split chain (len > 1 only)
@@ -199,6 +212,7 @@ impl StepWriter {
             dirs: HashMap::new(),
             verts: HashMap::new(),
             edges: HashMap::new(),
+            face_ents: HashMap::new(),
             signed_zero: false,
             chain: HashMap::new(),
         }
@@ -649,7 +663,9 @@ impl StepWriter {
         let mut faces = Vec::new();
         for &f in &body.shell(s).faces {
             if body.face(f).alive {
+                let n0 = faces.len();
                 self.face(body, f, void, &mut faces);
+                self.face_ents.entry(f).or_default().extend_from_slice(&faces[n0..]);
             }
         }
         let closed = shell_closed(body, s);
@@ -877,7 +893,34 @@ fn shell_closed(body: &Body, s: ShellId) -> bool {
 
 /// The full `step` reply text for one body.
 pub fn write_step(body: &Body, name: &str, opts: &StepOpts) -> String {
-    write_step_impl(body, name, opts, false, None)
+    write_step_impl(body, name, opts, false, None, None)
+}
+
+/// [`write_step`] with optional per-body names and per-body / per-face AP214 RGB colors.
+pub fn write_step_with_meta(
+    body: &Body,
+    name: &str,
+    opts: &StepOpts,
+    meta: &StepExportMeta,
+    surface_name: Option<&dyn Fn(FaceId) -> Option<String>>,
+) -> String {
+    write_step_impl(body, name, opts, false, surface_name, Some(meta))
+}
+
+/// [`try_write_step`] with optional per-body names and per-body / per-face AP214 RGB colors.
+pub fn try_write_step_with_meta(
+    body: &Body,
+    name: &str,
+    opts: &StepOpts,
+    meta: &StepExportMeta,
+    surface_name: Option<&dyn Fn(FaceId) -> Option<String>>,
+) -> Result<String, String> {
+    let t = write_step_impl(body, name, opts, false, surface_name, Some(meta));
+    if has_non_finite_token(&t) {
+        Err("the body holds a non-finite number (NaN or infinity); STEP export refused".to_string())
+    } else {
+        Ok(t)
+    }
 }
 
 /// Whole-word `NaN` / `inf` outside string literals: what [`real`] prints for a
@@ -919,14 +962,14 @@ pub fn try_write_step(body: &Body, name: &str, opts: &StepOpts) -> Result<String
 /// zero of every direction, not only the resulting sharing.
 #[doc(hidden)]
 pub fn write_step_signed_zeros(body: &Body, name: &str, opts: &StepOpts) -> String {
-    write_step_impl(body, name, opts, true, None)
+    write_step_impl(body, name, opts, true, None, None)
 }
 
 /// [`try_write_step`] for a body that also holds surface bodies: `surface_name(face)` is `Some(name)` for a face that came
 /// from a surface body (every shell made of such faces is written as its own named SHELL_BASED_SURFACE_MODEL, open or
 /// closed) and `None` for a face of the solid body.
 pub fn try_write_step_with_surfaces(body: &Body, name: &str, opts: &StepOpts, surface_name: &dyn Fn(FaceId) -> Option<String>) -> Result<String, String> {
-    let t = write_step_impl(body, name, opts, false, Some(surface_name));
+    let t = write_step_impl(body, name, opts, false, Some(surface_name), None);
     if has_non_finite_token(&t) {
         Err("the body holds a non-finite number (NaN or infinity); STEP export refused".to_string())
     } else {
@@ -934,7 +977,14 @@ pub fn try_write_step_with_surfaces(body: &Body, name: &str, opts: &StepOpts, su
     }
 }
 
-fn write_step_impl(body: &Body, name: &str, opts: &StepOpts, signed_zero: bool, surface_name: Option<&dyn Fn(FaceId) -> Option<String>>) -> String {
+fn write_step_impl(
+    body: &Body,
+    name: &str,
+    opts: &StepOpts,
+    signed_zero: bool,
+    surface_name: Option<&dyn Fn(FaceId) -> Option<String>>,
+    meta: Option<&StepExportMeta>,
+) -> String {
     let nm = string(name);
     let mut w = StepWriter::new();
     w.signed_zero = signed_zero;
@@ -960,7 +1010,7 @@ fn write_step_impl(body: &Body, name: &str, opts: &StepOpts, signed_zero: bool, 
     let world = w.axis2(Vec3::ZERO, Vec3::Z, Vec3::X);
 
     // Shells per lump: first alive shell = outer, the rest are voids.
-    let mut solids: Vec<String> = Vec::new();
+    let mut solids: Vec<(LumpId, String)> = Vec::new();
     let mut open: Vec<(usize, String)> = Vec::new();
     for l in body.lump_ids() {
         let mut shells: Vec<ShellId> = body.lump(l).shells.iter().copied().filter(|&s| body.shell(s).alive).collect();
@@ -978,12 +1028,18 @@ fn write_step_impl(body: &Body, name: &str, opts: &StepOpts, signed_zero: bool, 
                 }
             });
         }
+        let lump_nm = meta
+            .and_then(|m| m.body_names.get(&l))
+            .filter(|s| !s.is_empty())
+            .map(|s| string(s))
+            .or_else(|| body.lump(l).name.as_deref().filter(|s| !s.is_empty()).map(string))
+            .unwrap_or_else(|| nm.clone());
         let mut outer = None;
         let mut voids = Vec::new();
         for (k, &s) in shells.iter().enumerate() {
             let (id, closed) = w.shell(body, s, k > 0);
             if !closed {
-                open.push((id, nm.clone()));
+                open.push((id, lump_nm.clone()));
             } else if k == 0 {
                 outer = Some(id);
             } else {
@@ -991,14 +1047,21 @@ fn write_step_impl(body: &Body, name: &str, opts: &StepOpts, signed_zero: bool, 
             }
         }
         if let Some(o) = outer {
-            solids.push(if voids.is_empty() {
-                format!("MANIFOLD_SOLID_BREP('{nm}',#{o})")
+            let s_txt = if voids.is_empty() {
+                format!("MANIFOLD_SOLID_BREP('{lump_nm}',#{o})")
             } else {
-                format!("BREP_WITH_VOIDS('{nm}',#{o},({}))", refs(&voids))
-            });
+                format!("BREP_WITH_VOIDS('{lump_nm}',#{o},({}))", refs(&voids))
+            };
+            solids.push((l, s_txt));
         }
     }
-    let mut items: Vec<usize> = solids.iter().map(|s| w.ent(s)).collect();
+    let mut solid_ents: Vec<(LumpId, usize)> = Vec::with_capacity(solids.len());
+    let mut items: Vec<usize> = Vec::with_capacity(solids.len() + 1);
+    for (l, s) in &solids {
+        let id = w.ent(s);
+        solid_ents.push((*l, id));
+        items.push(id);
+    }
     // GUESS: open shells (never produced by an oracle regen body so far):
     // SHELL_BASED_SURFACE_MODEL + MANIFOLD_SURFACE_SHAPE_REPRESENTATION,
     // linked to the solid representation by SHAPE_REPRESENTATION_RELATIONSHIP
@@ -1029,6 +1092,56 @@ fn write_step_impl(body: &Body, name: &str, opts: &StepOpts, signed_zero: bool, 
             w.ent(&format!("SHAPE_DEFINITION_REPRESENTATION(#{pds},#{r})"));
         }
         (None, None) => {}
+    }
+
+    if let Some(m) = meta {
+        if !m.body_colors.is_empty() || !m.face_colors.is_empty() {
+            let mut style_cache: HashMap<[u64; 3], usize> = HashMap::new();
+            let mut styled_items: Vec<usize> = Vec::new();
+            let mut psa_for = |w: &mut StepWriter, rgb: [f64; 3]| -> Option<usize> {
+                if !rgb.iter().all(|c| c.is_finite()) {
+                    return None;
+                }
+                let c = [rgb[0].clamp(0.0, 1.0), rgb[1].clamp(0.0, 1.0), rgb[2].clamp(0.0, 1.0)];
+                let key = [c[0].to_bits(), c[1].to_bits(), c[2].to_bits()];
+                if let Some(&psa) = style_cache.get(&key) {
+                    return Some(psa);
+                }
+                let col = w.ent(&format!("COLOUR_RGB('',{},{},{})", real(c[0]), real(c[1]), real(c[2])));
+                let fasc = w.ent(&format!("FILL_AREA_STYLE_COLOUR('',#{col})"));
+                let fas = w.ent(&format!("FILL_AREA_STYLE('',(#{fasc}))"));
+                let ssfa = w.ent(&format!("SURFACE_STYLE_FILL_AREA(#{fas})"));
+                let sss = w.ent(&format!("SURFACE_SIDE_STYLE('',(#{ssfa}))"));
+                let ssu = w.ent(&format!("SURFACE_STYLE_USAGE(.BOTH.,#{sss})"));
+                let psa = w.ent(&format!("PRESENTATION_STYLE_ASSIGNMENT((#{ssu}))"));
+                style_cache.insert(key, psa);
+                Some(psa)
+            };
+            for &(l, ent_id) in &solid_ents {
+                if let Some(&rgb) = m.body_colors.get(&l) {
+                    if let Some(psa) = psa_for(&mut w, rgb) {
+                        styled_items.push(w.ent(&format!("STYLED_ITEM('',(#{psa}),#{ent_id})")));
+                    }
+                }
+            }
+            for f in body.face_ids() {
+                if let Some(&rgb) = m.face_colors.get(&f) {
+                    if let Some(fents) = w.face_ents.get(&f).cloned() {
+                        if let Some(psa) = psa_for(&mut w, rgb) {
+                            for fe in fents {
+                                styled_items.push(w.ent(&format!("STYLED_ITEM('',(#{psa}),#{fe})")));
+                            }
+                        }
+                    }
+                }
+            }
+            if !styled_items.is_empty() {
+                w.ent(&format!(
+                    "MECHANICAL_DESIGN_GEOMETRIC_PRESENTATION_REPRESENTATION('',({}),#{ctx})",
+                    refs(&styled_items)
+                ));
+            }
+        }
     }
 
     let mut s = String::new();

@@ -20,6 +20,7 @@
 
 use super::recog;
 use super::parse::{default_knots, expand_knots_max, parse, Ent, ImportError, StepFile, Val};
+use ck_core::xform::Xform;
 use ck_geom::curve::Curve;
 use ck_geom::curve2::Curve2;
 use ck_geom::nurbs::bspline::BSplineCurve;
@@ -54,8 +55,12 @@ pub struct Imported {
 pub struct SolidRead {
     /// Entity id of the MANIFOLD_SOLID_BREP / BREP_WITH_VOIDS.
     pub entity: u32,
-    /// Its label in the file ('' when unnamed).
+    /// Its label in the file (occurrence name, MANIFOLD_SOLID_BREP name, or PRODUCT name; '' when unnamed).
     pub name: String,
+    /// Optional RGB color `[r, g, b]` in `0.0..=1.0` from AP214/AP242 `STYLED_ITEM`.
+    pub color: Option<[f64; 3]>,
+    /// Optional per-face RGB colors `[r, g, b]` in `0.0..=1.0` from `STYLED_ITEM` on `ADVANCED_FACE`.
+    pub face_colors: HashMap<FaceId, [f64; 3]>,
     /// Faces the file gives the solid.
     pub faces_total: usize,
     /// Faces built (ids in `Imported::body`).
@@ -1036,6 +1041,152 @@ impl<'a> Rd<'a> {
         format!("no MANIFOLD_SOLID_BREP / BREP_WITH_VOIDS / SHELL_BASED_SURFACE_MODEL in the file (the file has: {has}). Hint: {hint}")
     }
 
+    // ------------------------------------------------- AP214/AP242 colors & assembly
+
+    fn parse_predefined_color(name: &str) -> Option<[f64; 3]> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "red" => Some([1.0, 0.0, 0.0]),
+            "green" => Some([0.0, 1.0, 0.0]),
+            "blue" => Some([0.0, 0.0, 1.0]),
+            "yellow" => Some([1.0, 1.0, 0.0]),
+            "magenta" => Some([1.0, 0.0, 1.0]),
+            "cyan" => Some([0.0, 1.0, 1.0]),
+            "white" => Some([1.0, 1.0, 1.0]),
+            "black" => Some([0.0, 0.0, 0.0]),
+            _ => None,
+        }
+    }
+
+    fn resolve_color(&self, id: u32, depth: u32) -> Option<[f64; 3]> {
+        if depth > 12 {
+            return None;
+        }
+        let e = self.f.ents.get(&id)?;
+        for p in &e.parts {
+            match p.name.as_str() {
+                "COLOUR_RGB" => {
+                    let r = p.args.get(1).and_then(Val::as_f64)?;
+                    let g = p.args.get(2).and_then(Val::as_f64)?;
+                    let b = p.args.get(3).and_then(Val::as_f64)?;
+                    if r.is_finite() && g.is_finite() && b.is_finite() {
+                        return Some([r.clamp(0.0, 1.0), g.clamp(0.0, 1.0), b.clamp(0.0, 1.0)]);
+                    }
+                }
+                "DRAUGHTING_PRE_DEFINED_COLOUR" => {
+                    if let Some(s) = p.args.first().and_then(Val::as_str) {
+                        if let Some(c) = Self::parse_predefined_color(s) {
+                            return Some(c);
+                        }
+                    }
+                }
+                "FILL_AREA_STYLE_COLOUR" | "SURFACE_STYLE_RENDERING" | "SURFACE_STYLE_RENDERING_WITH_PROPERTIES" => {
+                    if let Some(r) = p.args.get(1).and_then(Val::as_ref) {
+                        if let Some(c) = self.resolve_color(r, depth + 1) {
+                            return Some(c);
+                        }
+                    }
+                }
+                "FILL_AREA_STYLE" | "SURFACE_SIDE_STYLE" => {
+                    if let Some(list) = p.args.get(1).and_then(Val::as_list) {
+                        for v in list {
+                            if let Some(r) = v.as_ref() {
+                                if let Some(c) = self.resolve_color(r, depth + 1) {
+                                    return Some(c);
+                                }
+                            }
+                        }
+                    }
+                }
+                "SURFACE_STYLE_FILL_AREA" => {
+                    if let Some(r) = p.args.first().and_then(Val::as_ref) {
+                        if let Some(c) = self.resolve_color(r, depth + 1) {
+                            return Some(c);
+                        }
+                    }
+                }
+                "SURFACE_STYLE_USAGE" => {
+                    if let Some(r) = p.args.get(1).and_then(Val::as_ref) {
+                        if let Some(c) = self.resolve_color(r, depth + 1) {
+                            return Some(c);
+                        }
+                    }
+                }
+                "PRESENTATION_STYLE_ASSIGNMENT" | "PRESENTATION_STYLE_BY_CONTEXT" => {
+                    if let Some(list) = p.args.first().and_then(Val::as_list) {
+                        for v in list {
+                            if let Some(r) = v.as_ref() {
+                                if let Some(c) = self.resolve_color(r, depth + 1) {
+                                    return Some(c);
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn collect_styled_colors(&self) -> HashMap<u32, [f64; 3]> {
+        let mut map = HashMap::new();
+        let mut ids: Vec<u32> = self.f.ents.keys().copied().collect();
+        ids.sort_unstable();
+        for pass in ["STYLED_ITEM", "OVER_RIDING_STYLED_ITEM"] {
+            for &id in &ids {
+                let Some(e) = self.f.ents.get(&id) else { continue };
+                let Some(p) = e.part(pass) else { continue };
+                let Some(styles) = p.args.get(1).and_then(Val::as_list) else { continue };
+                let Some(item) = p.args.get(2).and_then(Val::as_ref) else { continue };
+                for s in styles {
+                    if let Some(sr) = s.as_ref() {
+                        if let Some(c) = self.resolve_color(sr, 0) {
+                            map.insert(item, c);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        map
+    }
+
+    fn extract_rr_reps_and_xform(&self, rr_id: u32) -> Option<(u32, u32, Option<(Frame, Frame)>)> {
+        let e = self.f.ents.get(&rr_id)?;
+        let mut rep1 = None;
+        let mut rep2 = None;
+        let mut idt_ref = None;
+        for p in &e.parts {
+            match p.name.as_str() {
+                "REPRESENTATION_RELATIONSHIP" | "SHAPE_REPRESENTATION_RELATIONSHIP" => {
+                    if p.args.len() >= 4 {
+                        rep1 = p.args.get(2).and_then(Val::as_ref).or(rep1);
+                        rep2 = p.args.get(3).and_then(Val::as_ref).or(rep2);
+                    }
+                }
+                "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION" => {
+                    if p.args.len() >= 5 {
+                        rep1 = p.args.get(2).and_then(Val::as_ref).or(rep1);
+                        rep2 = p.args.get(3).and_then(Val::as_ref).or(rep2);
+                        idt_ref = p.args.get(4).and_then(Val::as_ref).or(idt_ref);
+                    } else if let Some(r) = p.args.first().and_then(Val::as_ref) {
+                        idt_ref = Some(r);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let (r1, r2) = (rep1?, rep2?);
+        let frames = idt_ref.and_then(|tid| {
+            let te = self.f.ents.get(&tid)?;
+            let tp = te.part("ITEM_DEFINED_TRANSFORMATION")?;
+            let a1 = tp.args.get(2).and_then(Val::as_ref)?;
+            let a2 = tp.args.get(3).and_then(Val::as_ref)?;
+            Some((self.axis2(a1).ok()?, self.axis2(a2).ok()?))
+        });
+        Some((r1, r2, frames))
+    }
+
     fn run_counted(mut self) -> (R<Imported>, usize) {
         let r = self.run_inner();
         (r, self.converted)
@@ -1043,6 +1194,331 @@ impl<'a> Rd<'a> {
 
     fn run_inner(&mut self) -> R<Imported> {
         self.detect_units();
+        let item_colors = self.collect_styled_colors();
+        let name_of = |id: u32| -> String {
+            self.f
+                .ents
+                .get(&id)
+                .and_then(|e| e.parts.first())
+                .and_then(|p| p.args.first())
+                .and_then(Val::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        };
+
+        // --- Product & shape representation graph (for PRODUCT names & assembly placements) ---
+        let mut all_ids: Vec<u32> = self.f.ents.keys().copied().collect();
+        all_ids.sort_unstable();
+
+        let mut prod_name: HashMap<u32, String> = HashMap::new();
+        let mut pdf_to_prod: HashMap<u32, u32> = HashMap::new();
+        let mut pd_to_pdf: HashMap<u32, u32> = HashMap::new();
+        let mut pds_to_def: HashMap<u32, u32> = HashMap::new();
+        let mut sdr_list: Vec<(u32, u32)> = Vec::new();
+        let mut rep_items: HashMap<u32, Vec<u32>> = HashMap::new();
+        let mut cdsr_list: Vec<(u32, u32)> = Vec::new();
+        let mut nauo_list: Vec<(u32, String, u32, u32)> = Vec::new();
+
+        for &id in &all_ids {
+            let Some(e) = self.f.ents.get(&id) else { continue };
+            for p in &e.parts {
+                match p.name.as_str() {
+                    "PRODUCT" => {
+                        let nm = p.args.get(1).and_then(Val::as_str).unwrap_or("").trim();
+                        let pid = p.args.first().and_then(Val::as_str).unwrap_or("").trim();
+                        let chosen = if !nm.is_empty() { nm } else { pid };
+                        if !chosen.is_empty() {
+                            prod_name.insert(id, chosen.to_string());
+                        }
+                    }
+                    "PRODUCT_DEFINITION_FORMATION" | "PRODUCT_DEFINITION_FORMATION_WITH_SPECIFIED_SOURCE" => {
+                        if let Some(pr) = p.args.get(2).and_then(Val::as_ref) {
+                            pdf_to_prod.insert(id, pr);
+                        }
+                    }
+                    "PRODUCT_DEFINITION" => {
+                        if let Some(pdf) = p.args.get(2).and_then(Val::as_ref) {
+                            pd_to_pdf.insert(id, pdf);
+                        }
+                    }
+                    "PRODUCT_DEFINITION_SHAPE" => {
+                        if let Some(def) = p.args.get(2).and_then(Val::as_ref) {
+                            pds_to_def.insert(id, def);
+                        }
+                    }
+                    "SHAPE_DEFINITION_REPRESENTATION" => {
+                        if let (Some(pds), Some(rep)) = (p.args.first().and_then(Val::as_ref), p.args.get(1).and_then(Val::as_ref)) {
+                            sdr_list.push((pds, rep));
+                        }
+                    }
+                    "SHAPE_REPRESENTATION" | "ADVANCED_BREP_SHAPE_REPRESENTATION" | "MANIFOLD_SURFACE_SHAPE_REPRESENTATION" => {
+                        if let Some(list) = p.args.get(1).and_then(Val::as_list) {
+                            let items: Vec<u32> = list.iter().filter_map(Val::as_ref).collect();
+                            rep_items.insert(id, items);
+                        }
+                    }
+                    "CONTEXT_DEPENDENT_SHAPE_REPRESENTATION" => {
+                        if let (Some(rr), Some(pds)) = (p.args.first().and_then(Val::as_ref), p.args.get(1).and_then(Val::as_ref)) {
+                            cdsr_list.push((rr, pds));
+                        }
+                    }
+                    "NEXT_ASSEMBLY_USAGE_OCCURRENCE" => {
+                        if let (Some(parent_pd), Some(child_pd)) = (p.args.get(3).and_then(Val::as_ref), p.args.get(4).and_then(Val::as_ref)) {
+                            let nm = p.args.get(1).and_then(Val::as_str).unwrap_or("").trim();
+                            let oid = p.args.first().and_then(Val::as_str).unwrap_or("").trim();
+                            let occ_name = if !nm.is_empty() { nm } else { oid };
+                            nauo_list.push((id, occ_name.to_string(), parent_pd, child_pd));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let pd_name = |pd: u32| -> String {
+            pd_to_pdf
+                .get(&pd)
+                .and_then(|pdf| pdf_to_prod.get(pdf))
+                .and_then(|pr| prod_name.get(pr))
+                .cloned()
+                .unwrap_or_default()
+        };
+
+        let mut pd_to_reps: HashMap<u32, Vec<u32>> = HashMap::new();
+        let mut rep_to_pd: HashMap<u32, u32> = HashMap::new();
+        for (pds, rep) in sdr_list {
+            if let Some(&pd) = pds_to_def.get(&pds) {
+                pd_to_reps.entry(pd).or_default().push(rep);
+                rep_to_pd.entry(rep).or_insert(pd);
+            }
+        }
+
+        // Assembly occurrence transforms from CONTEXT_DEPENDENT_SHAPE_REPRESENTATION
+        let mut cdsr_rrs: HashSet<u32> = HashSet::new();
+        let mut nauo_cdsr: HashMap<u32, (u32, u32, Option<(Frame, Frame)>)> = HashMap::new();
+        for (rr, pds) in cdsr_list {
+            cdsr_rrs.insert(rr);
+            if let (Some(&nauo), Some(info)) = (pds_to_def.get(&pds), self.extract_rr_reps_and_xform(rr)) {
+                nauo_cdsr.insert(nauo, info);
+            }
+        }
+
+        // Non-assembly SHAPE_REPRESENTATION_RELATIONSHIP links (e.g. SHAPE_REPRESENTATION <-> ADVANCED_BREP_SHAPE_REPRESENTATION)
+        let mut rep_links: HashMap<u32, Vec<u32>> = HashMap::new();
+        for &id in &all_ids {
+            if cdsr_rrs.contains(&id) {
+                continue;
+            }
+            let Some(e) = self.f.ents.get(&id) else { continue };
+            if e.has("SHAPE_REPRESENTATION_RELATIONSHIP") {
+                if let Some((r1, r2, _)) = self.extract_rr_reps_and_xform(id) {
+                    rep_links.entry(r1).or_default().push(r2);
+                    rep_links.entry(r2).or_default().push(r1);
+                }
+            }
+        }
+
+        // Helper: collect all reps belonging to a PRODUCT_DEFINITION via BFS over non-assembly links
+        let reps_for_pd = |pd: u32| -> Vec<u32> {
+            let mut out = Vec::new();
+            let mut seen = HashSet::new();
+            let mut queue: Vec<u32> = pd_to_reps.get(&pd).cloned().unwrap_or_default();
+            let mut qi = 0;
+            while qi < queue.len() {
+                let r = queue[qi];
+                qi += 1;
+                if !seen.insert(r) {
+                    continue;
+                }
+                out.push(r);
+                if let Some(adj) = rep_links.get(&r) {
+                    for &nxt in adj {
+                        if !seen.contains(&nxt) {
+                            queue.push(nxt);
+                        }
+                    }
+                }
+            }
+            out
+        };
+
+        // Map every solid/surface-model entity id to its owning (rep_id, product_name) for fallback naming & color
+        let mut item_owner_rep: HashMap<u32, u32> = HashMap::new();
+        let mut item_prod_name: HashMap<u32, String> = HashMap::new();
+        for (&pd, _) in &pd_to_reps {
+            let pnm = pd_name(pd);
+            for r in reps_for_pd(pd) {
+                if let Some(items) = rep_items.get(&r) {
+                    for &it in items {
+                        item_owner_rep.entry(it).or_insert(r);
+                        if !pnm.is_empty() {
+                            item_prod_name.entry(it).or_insert_with(|| pnm.clone());
+                        }
+                        if self.f.ents.get(&it).map(|e| e.kind()) == Some("SHELL_BASED_SURFACE_MODEL") {
+                            if let Some(a) = self.f.ents.get(&it).and_then(|e| e.parts.first()).map(|p| &p.args) {
+                                for sh in a.get(1).and_then(Val::as_list).unwrap_or(&[]).iter().filter_map(Val::as_ref) {
+                                    item_owner_rep.entry(sh).or_insert(r);
+                                    if !pnm.is_empty() {
+                                        item_prod_name.entry(sh).or_insert_with(|| pnm.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Also record rep ownership for any rep even if not linked to a PD
+        for (&r, items) in &rep_items {
+            for &it in items {
+                item_owner_rep.entry(it).or_insert(r);
+            }
+        }
+
+        // Collect all solids and surface-model shells in a representation (supporting MAPPED_ITEM too)
+        fn collect_rep_solids(
+            rd: &Rd<'_>,
+            rep_id: u32,
+            rep_items: &HashMap<u32, Vec<u32>>,
+            base_xform: Xform,
+            depth: u32,
+            out: &mut Vec<(u32, u32, String, bool, Xform)>,
+        ) {
+            if depth > 12 {
+                return;
+            }
+            let Some(items) = rep_items.get(&rep_id) else { return };
+            for &it in items {
+                let Some(e) = rd.f.ents.get(&it) else { continue };
+                if e.parts.len() == 1 && matches!(e.kind(), "MANIFOLD_SOLID_BREP" | "BREP_WITH_VOIDS") {
+                    let nm = e.parts[0].args.first().and_then(Val::as_str).unwrap_or("").trim().to_string();
+                    out.push((it, rep_id, nm, false, base_xform));
+                } else if e.parts.len() == 1 && e.kind() == "SHELL_BASED_SURFACE_MODEL" {
+                    let nm = e.parts[0].args.first().and_then(Val::as_str).unwrap_or("").trim().to_string();
+                    for sh in e.parts[0].args.get(1).and_then(Val::as_list).unwrap_or(&[]).iter().filter_map(Val::as_ref) {
+                        if matches!(rd.f.ents.get(&sh).map(|se| se.kind()), Some("OPEN_SHELL" | "CLOSED_SHELL")) {
+                            out.push((sh, rep_id, nm.clone(), true, base_xform));
+                        }
+                    }
+                } else if e.parts.len() == 1 && e.kind() == "MAPPED_ITEM" {
+                    let Some(src_ref) = e.parts[0].args.get(1).and_then(Val::as_ref) else { continue };
+                    let Some(tgt_ref) = e.parts[0].args.get(2).and_then(Val::as_ref) else { continue };
+                    let Some(src_ent) = rd.f.ents.get(&src_ref).and_then(|se| se.part("REPRESENTATION_MAP")) else { continue };
+                    let Some(orig_ax) = src_ent.args.first().and_then(Val::as_ref) else { continue };
+                    let Some(mapped_rep) = src_ent.args.get(1).and_then(Val::as_ref) else { continue };
+                    let (Ok(fa), Ok(fb)) = (rd.axis2(orig_ax), rd.axis2(tgt_ref)) else { continue };
+                    let mx = base_xform.compose(&Xform::frame_to_frame(&fa, &fb));
+                    collect_rep_solids(rd, mapped_rep, rep_items, mx, depth + 1, out);
+                }
+            }
+        }
+
+        struct SolidJob {
+            sid: u32,
+            rep_id: Option<u32>,
+            name: String,
+            xform: Xform,
+            surface_model: bool,
+            isolate_cache: bool,
+        }
+
+        let mut jobs: Vec<SolidJob> = Vec::new();
+        let mut visited_sids: HashSet<u32> = HashSet::new();
+
+        // Build assembly tree if NEXT_ASSEMBLY_USAGE_OCCURRENCE entities exist
+        if !nauo_list.is_empty() {
+            struct Occ {
+                child_pd: u32,
+                name: String,
+                xform: Xform,
+            }
+            let mut children: HashMap<u32, Vec<Occ>> = HashMap::new();
+            let mut is_child: HashSet<u32> = HashSet::new();
+            let mut parent_pds: Vec<u32> = Vec::new();
+            for (nauo_id, occ_name, parent_pd, child_pd) in nauo_list {
+                let xform = if let Some(&(r1, r2, Some((f1, f2)))) = nauo_cdsr.get(&nauo_id) {
+                    let r1_pd = rep_to_pd.get(&r1).copied();
+                    let r2_pd = rep_to_pd.get(&r2).copied();
+                    if parent_pd != child_pd && r1_pd == Some(parent_pd) && r2_pd == Some(child_pd) {
+                        Xform::frame_to_frame(&f2, &f1)
+                    } else {
+                        Xform::frame_to_frame(&f1, &f2)
+                    }
+                } else {
+                    Xform::IDENTITY
+                };
+                if !children.contains_key(&parent_pd) {
+                    parent_pds.push(parent_pd);
+                }
+                children.entry(parent_pd).or_default().push(Occ { child_pd, name: occ_name, xform });
+                is_child.insert(child_pd);
+            }
+            let roots: Vec<u32> = parent_pds.into_iter().filter(|pd| !is_child.contains(pd)).collect();
+
+            struct WalkCtx<'a> {
+                rd: &'a Rd<'a>,
+                children: &'a HashMap<u32, Vec<Occ>>,
+                rep_items: &'a HashMap<u32, Vec<u32>>,
+                reps_for_pd: &'a dyn Fn(u32) -> Vec<u32>,
+                pd_name: &'a dyn Fn(u32) -> String,
+                jobs: &'a mut Vec<SolidJob>,
+                visited: &'a mut HashSet<u32>,
+            }
+            fn walk_pd(ctx: &mut WalkCtx<'_>, pd: u32, xform: Xform, occ_name: &str, depth: u32) {
+                if depth > 32 {
+                    return;
+                }
+                let pnm = (ctx.pd_name)(pd);
+                let mut direct = Vec::new();
+                for r in (ctx.reps_for_pd)(pd) {
+                    collect_rep_solids(ctx.rd, r, ctx.rep_items, Xform::IDENTITY, 0, &mut direct);
+                }
+                let multi = direct.len() > 1;
+                for (sid, rep_id, solid_nm, surface_model, local_xform) in direct {
+                    let name = if !occ_name.is_empty() {
+                        if multi && !solid_nm.is_empty() && solid_nm != occ_name && solid_nm != pnm {
+                            format!("{occ_name}/{solid_nm}")
+                        } else {
+                            occ_name.to_string()
+                        }
+                    } else if !solid_nm.is_empty() {
+                        solid_nm
+                    } else {
+                        pnm.clone()
+                    };
+                    ctx.visited.insert(sid);
+                    ctx.jobs.push(SolidJob {
+                        sid,
+                        rep_id: Some(rep_id),
+                        name,
+                        xform: xform.compose(&local_xform),
+                        surface_model,
+                        isolate_cache: true,
+                    });
+                }
+                if let Some(occs) = ctx.children.get(&pd) {
+                    for occ in occs {
+                        let next_x = xform.compose(&occ.xform);
+                        walk_pd(ctx, occ.child_pd, next_x, &occ.name, depth + 1);
+                    }
+                }
+            }
+            let mut wctx = WalkCtx {
+                rd: self,
+                children: &children,
+                rep_items: &rep_items,
+                reps_for_pd: &reps_for_pd,
+                pd_name: &pd_name,
+                jobs: &mut jobs,
+                visited: &mut visited_sids,
+            };
+            for root in roots {
+                walk_pd(&mut wctx, root, Xform::IDENTITY, "", 0);
+            }
+        }
+
+        // Any solids or surface models not already emitted by the assembly tree (including all non-assembly files)
         let mut solids: Vec<u32> = self
             .f
             .ents
@@ -1051,29 +1527,95 @@ impl<'a> Rd<'a> {
             .map(|(id, _)| *id)
             .collect();
         solids.sort();
-        let name_of = |id: &u32| self.f.ents.get(id).and_then(|e| e.parts.first()).and_then(|p| p.args.first()).and_then(Val::as_str).unwrap_or("").to_string();
-        let mut named: Vec<(u32, String)> = solids.iter().map(|id| (*id, name_of(id))).collect();
+        for sid in solids {
+            if visited_sids.contains(&sid) {
+                continue;
+            }
+            let mut nm = name_of(sid);
+            if nm.is_empty() {
+                if let Some(pnm) = item_prod_name.get(&sid) {
+                    nm = pnm.clone();
+                }
+            }
+            jobs.push(SolidJob {
+                sid,
+                rep_id: item_owner_rep.get(&sid).copied(),
+                name: nm,
+                xform: Xform::IDENTITY,
+                surface_model: false,
+                isolate_cache: false,
+            });
+        }
         // surface models (SHELL_BASED_SURFACE_MODEL): each shell is a part of its own, read the same way (a surface body)
         let mut models: Vec<u32> = self.f.ents.iter().filter(|(_, e)| e.parts.len() == 1 && e.kind() == "SHELL_BASED_SURFACE_MODEL").map(|(id, _)| *id).collect();
         models.sort();
         for m in models {
             let Some(a) = self.f.ents.get(&m).and_then(|e| e.parts.first()).map(|p| &p.args) else { continue };
             for sh in a.get(1).and_then(Val::as_list).unwrap_or(&[]).iter().filter_map(Val::as_ref) {
+                if visited_sids.contains(&sh) {
+                    continue;
+                }
                 if matches!(self.f.ents.get(&sh).map(|e| e.kind()), Some("OPEN_SHELL" | "CLOSED_SHELL")) {
-                    named.push((sh, name_of(&m)));
+                    let mut nm = name_of(m);
+                    if nm.is_empty() {
+                        if let Some(pnm) = item_prod_name.get(&sh).or_else(|| item_prod_name.get(&m)) {
+                            nm = pnm.clone();
+                        }
+                    }
+                    jobs.push(SolidJob {
+                        sid: sh,
+                        rep_id: item_owner_rep.get(&sh).or_else(|| item_owner_rep.get(&m)).copied(),
+                        name: nm,
+                        xform: Xform::IDENTITY,
+                        surface_model: true,
+                        isolate_cache: false,
+                    });
                 }
             }
         }
-        if named.is_empty() {
+        if jobs.is_empty() {
             return Err(ImportError::new("noSolid", None, self.no_solid_message()));
         }
-        let mut parts = Vec::with_capacity(named.len());
-        for (k, (sid, name)) in named.into_iter().enumerate() {
-            let sid = &sid;
-            let surface_model = matches!(self.f.ents.get(sid).map(|e| e.kind()), Some("OPEN_SHELL" | "CLOSED_SHELL"));
-            let mut part = SolidRead { entity: *sid, name, faces_total: 0, faces: vec![], refused: vec![], refused_surfaces: vec![], error: None, surface_model };
-            if let Err(e) = self.solid(*sid, k, &mut part) {
+
+        let solid_count = jobs.iter().filter(|j| !j.surface_model).count();
+        let mut parts = Vec::with_capacity(jobs.len());
+        for (k, job) in jobs.into_iter().enumerate() {
+            if job.isolate_cache {
+                self.verts.clear();
+                self.vgrid.clear();
+                self.edges.clear();
+            }
+            let v0 = self.b.vertices.len();
+            let e0 = self.b.edges.len();
+            let f0 = self.b.faces.len();
+            let mut part = SolidRead {
+                entity: job.sid,
+                name: job.name,
+                color: None,
+                face_colors: HashMap::new(),
+                faces_total: 0,
+                faces: vec![],
+                refused: vec![],
+                refused_surfaces: vec![],
+                error: None,
+                surface_model: job.surface_model,
+            };
+            if let Err(e) = self.solid(job.sid, k, job.rep_id, &item_colors, &mut part) {
                 part.error = Some(e);
+            } else if job.xform != Xform::IDENTITY {
+                let x = &job.xform;
+                for v in &mut self.b.vertices[v0..] {
+                    v.p = x.apply_point(v.p);
+                }
+                for ed in &mut self.b.edges[e0..] {
+                    ed.curve = ed.curve.transform(|p| x.apply_point(p), |d| x.apply_vec(d));
+                }
+                for fc in &mut self.b.faces[f0..] {
+                    fc.surface = ck_topo::body::transform_surface(&fc.surface, x);
+                }
+                for (_, surf, _) in &mut part.refused_surfaces {
+                    *surf = ck_topo::body::transform_surface(surf, x);
+                }
             }
             parts.push(part);
         }
@@ -1082,8 +1624,7 @@ impl<'a> Rd<'a> {
             let first = parts.iter().find_map(|p| p.error.clone().or_else(|| p.refused.first().cloned()));
             return Err(first.unwrap_or_else(|| ImportError::new("noSolid", None, "the solids of the file have no faces")));
         }
-        let n = solids.len();
-        Ok(Imported { body: std::mem::replace(&mut self.b, Body::new()), solids: n, length_scale: self.len, warnings: std::mem::take(&mut self.warnings), parts })
+        Ok(Imported { body: std::mem::replace(&mut self.b, Body::new()), solids: solid_count, length_scale: self.len, warnings: std::mem::take(&mut self.warnings), parts })
     }
 
     /// The surface and sense of face `id` (for a refused face), when they can be read.
@@ -1105,7 +1646,7 @@ impl<'a> Rd<'a> {
         }
     }
 
-    fn solid(&mut self, sid: u32, k: usize, part: &mut SolidRead) -> R<()> {
+    fn solid(&mut self, sid: u32, k: usize, rep_id: Option<u32>, item_colors: &HashMap<u32, [f64; 3]>, part: &mut SolidRead) -> R<()> {
         let e = self.ent(sid)?;
         let Some(p0) = e.parts.first() else {
             return Err(bad(sid, "empty entity"));
@@ -1114,6 +1655,11 @@ impl<'a> Rd<'a> {
         // a shell of a surface model is read on its own; only a closed one is turned outward
         let lone = matches!(e.kind(), "OPEN_SHELL" | "CLOSED_SHELL");
         let outer = if lone { sid } else { a.get(1).and_then(Val::as_ref).ok_or_else(|| bad(sid, "solid without shell"))? };
+        part.color = item_colors
+            .get(&sid)
+            .or_else(|| item_colors.get(&outer))
+            .or_else(|| rep_id.and_then(|r| item_colors.get(&r)))
+            .copied();
         // (shell id, flipped)
         let mut shells = vec![(outer, false)];
         if e.kind() == "BREP_WITH_VOIDS" {
@@ -1134,6 +1680,9 @@ impl<'a> Rd<'a> {
         }
         let open = e.kind() == "OPEN_SHELL";
         let lump = self.b.add_lump();
+        if !part.name.is_empty() {
+            self.b.lumps[lump.idx()].name = Some(part.name.clone());
+        }
         let feature = format!("I{}", k + 1);
         let mut shell_ids: Vec<(ShellId, bool)> = vec![];
         let mut queue: Vec<Option<(ShellId, FaceSpec)>> = vec![];
@@ -1160,8 +1709,24 @@ impl<'a> Rd<'a> {
             let fid = s.id;
             let n0 = self.b.faces.len();
             match self.finalize_face(shell, s, name, &mut queue[i + 1..]) {
-                Ok(()) => part.faces.extend((n0..self.b.faces.len()).map(|f| FaceId(f as u32))),
+                Ok(()) => {
+                    let face_col = item_colors.get(&fid).copied();
+                    for f in n0..self.b.faces.len() {
+                        let face_id = FaceId(f as u32);
+                        part.faces.push(face_id);
+                        if let Some(c) = face_col {
+                            part.face_colors.insert(face_id, c);
+                        }
+                    }
+                }
                 Err(e) => self.refuse_face(part, fid, e),
+            }
+        }
+        if part.color.is_none() && !part.faces.is_empty() && part.face_colors.len() == part.faces.len() {
+            if let Some(&first) = part.face_colors.get(&part.faces[0]) {
+                if part.faces.iter().all(|f| part.face_colors.get(f) == Some(&first)) {
+                    part.color = Some(first);
+                }
             }
         }
         if !open {

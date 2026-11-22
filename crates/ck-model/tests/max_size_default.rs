@@ -76,9 +76,10 @@ fn a_refused_round_over_names_a_radius_without_being_asked() {
             r#"{{"type":"fillet","id":"F90","radius":{r},"edges":[{{"faces":["F2.C1","F2.S.e1"],"at":[20,2,0]}}]}}"#
         )))
     };
-    let (param, v, unit, hint) = max_size(&f(3.0));
+    let (param, v, unit, hint) = max_size(&f(35.0));
     assert_eq!((param.as_str(), unit.as_str()), ("radius", "mm"));
-    assert!(v > 1.0 && v < 3.0, "{v}");
+    // both contacts run off at 35 (the wall is 2 high, the top 30 wide); a round that keeps one contact on its face builds
+    assert!(v > 25.0 && v < 35.0, "{v}");
     assert!(hint.contains(&format!("{v}")), "{hint}");
     assert!(f(v).is_empty(), "builds at {v}");
 }
@@ -89,7 +90,7 @@ fn a_refused_round_over_names_a_radius_without_being_asked() {
 #[test]
 fn a_plain_refusal_keeps_the_plain_wording_and_a_verified_radius() {
     let errs = run(&with_plate(
-        r#"{"type":"fillet","id":"F90","radius":3.0,"edges":[{"faces":["F2.C1","F2.S.e1"],"at":[20,2,0]}]}"#,
+        r#"{"type":"fillet","id":"F90","radius":35.0,"edges":[{"faces":["F2.C1","F2.S.e1"],"at":[20,2,0]}]}"#,
     ));
     let (_, v, _, hint) = max_size(&errs);
     assert!(hint.contains("the largest radius that builds is"), "{hint}");

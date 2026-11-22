@@ -131,6 +131,12 @@ fn a_part_with_a_face_left_out_comes_back_as_a_surface_body_with_its_reasons() {
     let reasons = p.get_arr("reasons").unwrap();
     assert_eq!(reasons[0].get_str("code"), Some("badEntity"));
     assert!(reasons.iter().any(|r| r.get_str("code") == Some("SHELL_OPEN")));
+    // the reply says it as a warning too (M2), in the pair shape of a regen warning; a client reading `errors` alone sees nothing wrong
+    let ws = res.get_arr("warnings").expect("a surface body without a warning on the reply");
+    let w = ws[0].as_arr().unwrap();
+    assert_eq!(w[1].get_str("code"), Some("importStepParts"));
+    let params = w[1].get("params").unwrap();
+    assert_eq!((num(params, "solids"), num(params, "surfaces")), (0.0, 1.0));
     // exporting keeps the surface body
     let back = call(r#"{"id":4,"msg":{"type":"step","tag":"imp","name":"again"}}"#);
     let t2 = back.get("result").and_then(Json::as_str).unwrap();

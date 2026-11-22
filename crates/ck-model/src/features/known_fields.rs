@@ -15,7 +15,7 @@ use ck_json::Json;
 /// Every field the regeneration cache ignores (`COSMETIC_KEYS` in ck-wasm) must be listed here: a cached reply replays the
 /// warnings of the state it was made from, so a field that is ignored by the cache key but unknown here would warn on a cold
 /// run and not on a hit.
-const COMMON: &[&str] = &["id", "type", "num", "name", "suppressed", "group", "autoName", "visible", "userHidden", "color", "after", "tolerance", "autoFuzzy", "origin", "frozenFrame", "frozenAxis"];
+const COMMON: &[&str] = &["id", "type", "num", "name", "suppressed", "group", "autoName", "visible", "userHidden", "color", "after", "tolerance", "autoFuzzy", "retryPerturb", "origin", "frozenFrame", "frozenAxis"];
 
 /// Known fields per feature type, beyond [`COMMON`]. Nested keys (inside `thin`, `endRef`, the
 /// edge picks, ...) are not checked.

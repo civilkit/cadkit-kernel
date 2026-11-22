@@ -451,8 +451,11 @@ fn crossing_rounds_unequal_radii() {
 /// is now the crossing one (r = w = 4) where the walls allow it.
 #[test]
 fn crossing_limits_stay_refused() {
+    // (rounds 3.5 > the 3 high walls: each runs off its wall, is built on the wall continued and cut from the body; since
+    // 3.5 + 3.5 > 4 the two cross: the kept section is below both rounded profiles, clipped by the 3 high walls)
     let base = prism(4.0, 3.0, 6.0, 0.0);
-    refused("walls 3 high r=3.5", &base, &both(4.0, 3.0, 6.0, 0.0, 3.5), "F3");
+    let o = built("cross walls 3 high r=3.5", &base, &both(4.0, 3.0, 6.0, 0.0, 3.5), 6.0 * (4.0 * 3.0 - removed_profiles_clipped(4.0, 3.5, 3.5, 3.0)));
+    assert!(o.warns.iter().any(|w| w.contains("blendRanOffFace")), "{:?}", o.warns);
     let base = prism(4.0, 10.0, 6.0, 0.0);
     let o = run_once(&base, &both(4.0, 10.0, 6.0, 0.0, 4.5));
     println!("both r=4.5: {:?} {:?}", o.errs, o.params);
@@ -474,9 +477,27 @@ fn chamfers_wider_than_half_the_face() {
 }
 
 #[test]
-fn single_edge_wider_than_the_face_is_refused() {
+fn single_edge_wider_than_the_face_runs_off_it() {
+    // (a round wider than the 4 wide top face runs off it over the far top edge: built on the top plane continued, the part
+    // that lies in the body cut away (solidcore kernel case 5158); it used to be refused)
     let base = prism(4.0, 10.0, 6.0, 0.0);
-    refused("single r=4.5", &base, &[fillet("F3", 4.5, &[top_left(4.0, 6.0, 0.0, None)])], "F3");
+    let o = built("single r=4.5", &base, &[fillet("F3", 4.5, &[top_left(4.0, 6.0, 0.0, None)])], 6.0 * (4.0 * 10.0 - removed_profiles(4.0, 4.5, 0.0)));
+    assert!(o.warns.iter().any(|w| w.contains("blendRanOffFace")), "{:?}", o.warns);
+}
+
+/// [`removed_profiles`] with the rounds' depth clipped to the wall's height `h`.
+fn removed_profiles_clipped(w: f64, r1: f64, r2: f64, h: f64) -> f64 {
+    let d1 = |x: f64| if x < r1 { r1 - (r1 * r1 - (r1 - x) * (r1 - x)).max(0.0).sqrt() } else { 0.0 };
+    let d2 = |x: f64| if x > w - r2 { r2 - (r2 * r2 - (x - w + r2) * (x - w + r2)).max(0.0).sqrt() } else { 0.0 };
+    let f = |x: f64| d1(x).max(d2(x)).min(h);
+    let n = 400_000;
+    let du = (w / 2.0).sqrt() / n as f64;
+    (0..n)
+        .map(|i| {
+            let u = (i as f64 + 0.5) * du;
+            (f(u * u) + f(w - u * u)) * 2.0 * u * du
+        })
+        .sum()
 }
 
 // ---------------------------------------------------------------- crossing rounds (r1 + r2 > w)

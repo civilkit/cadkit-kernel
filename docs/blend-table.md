@@ -191,3 +191,12 @@ Read the last lines of a log first. Debug runs take about twice as long, so filt
 
 The product runs the kernel as wasm, which can decide a marginal case differently (its libm differs in the last
 ulp). `tools/wasm_parity.sh` runs the table through the wasm and lists the cases that differ; see `docs/wasm-parity.md`.
+
+## Rounds past their face (branch convex-cliff-overflow)
+
+A convex round or chamfer larger than the face or wall it runs onto is built (on the supports continued, cut from the body)
+when one of its two contacts stays on its face; the feature warns `blendRanOffFace` with the `faces` it ran off. Rows that
+flipped from expected_fail to pass, with analytic references (the round's section clipped to the 2 mm plate, integrated):
+`plate-edge-r3` (2325.004152626), `plate-edge-r5` (2223.647609009), `plate-ring-r3` (2147.845375949; the four rounds meet
+in mitres, removed = integral of min(2, depth(s)) over the boundary strips of perimeter 140 - 8 s). All three agree with the
+built volume to 0.000 %. No other row of the 447 moved. Still refused: both contacts off their faces.

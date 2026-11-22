@@ -4,5 +4,8 @@ pub mod read;
 pub mod recog;
 pub mod write;
 pub use parse::ImportError;
-pub use read::{read_step, read_step_plain, Imported};
-pub use write::{try_write_step, try_write_step_with_surfaces, write_step, write_step_signed_zeros, StepOpts, StepWriter};
+pub use read::{read_step, read_step_plain, Imported, SolidRead};
+pub use write::{
+    try_write_step, try_write_step_with_meta, try_write_step_with_surfaces, write_step, write_step_signed_zeros,
+    write_step_with_meta, StepExportMeta, StepOpts, StepWriter,
+};

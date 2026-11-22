@@ -260,6 +260,66 @@ pub(super) fn overflow_clip(b: &Body, f: FaceId, e: EdgeId, a: Vec3, t: Vec3, bb
     }
 }
 
+/// A CONVEX blend whose contact `t` on face `f` (reached from the edge point `a`) lies past a far edge of `f` that is itself
+/// convex: the contact runs off the face over a cliff (a round bigger than the 10 mm face it rolls onto, a rim round bigger than
+/// the wall's height). The blend wedge on the continued supports is then still the right tool: cut from the body it takes the
+/// part of the wedge that lies in the body, which is what the removed region is. True when the contact leaves `f` over an edge
+/// whose far face turns away from the leg (a cliff), or a plane the leg runs into (the floor under a pocket wall: the wall is
+/// continued below it). A curved wall that rises there (a boss) is not this: the tool ends on it.
+pub(super) fn leaves_over_convex_edge(b: &Body, f: FaceId, e: EdgeId, a: Vec3, t: Vec3, bb: (Vec3, Vec3), tol: f64) -> bool {
+    use crate::boolean::classify::{point_in_face, Where};
+    let on_f = |q: Vec3| match &b.face(f).surface {
+        Surface::Plane { .. } => q,
+        sf => sf.closest_point(q).2,
+    };
+    let inside = |s: f64| point_in_face(b, f, on_f(a + (t - a) * s), tol) != Where::Out;
+    const N: usize = 64;
+    let Some(k) = (1..=N).find(|&k| !inside(k as f64 / N as f64)) else { if super::diag::on() { eprintln!("cliff: no (1)"); } return false };
+    let (mut lo, mut hi) = ((k - 1) as f64 / N as f64, k as f64 / N as f64);
+    if !inside(lo) {
+        if super::diag::on() { eprintln!("cliff: no (lo)"); }
+        return false;
+    }
+    for _ in 0..60 {
+        let mid = 0.5 * (lo + hi);
+        if inside(mid) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let q = on_f(a + (t - a) * lo);
+    let size = (bb.1 - bb.0).len();
+    let far = b
+        .face_edges(f)
+        .into_iter()
+        .filter(|&x| x != e && b.edge_faces(x).len() == 2 && b.edge_faces(x).iter().any(|&h| h != f) && !b.edge_faces(x).iter().any(|h| *h != f && b.edge_faces(e).contains(h)))
+        .map(|x| {
+            let ed = b.edge(x);
+            (x, crate::boolean::imprint::dist_in_range(&ed.curve, (ed.t0.min(ed.t1), ed.t0.max(ed.t1)), q).1)
+        })
+        .min_by(|x, y| x.1.total_cmp(&y.1));
+    let Some((e2, d)) = far else { if super::diag::on() { eprintln!("cliff: no (2)"); } return false };
+    if d > 1e-4 * (1.0 + size) {
+        if super::diag::on() { eprintln!("cliff: no (dist {d:e})"); }
+        return false;
+    }
+    let Some(g) = b.edge_faces(e2).into_iter().find(|&x| x != f) else { if super::diag::on() { eprintln!("cliff: no (3)"); } return false };
+    let (nf, ng) = (nrm_at(b, f, q), nrm_at(b, g, q));
+    let leg = t - a;
+    let leg = (leg - nf * leg.dot(nf)).normalize();
+    if super::diag::on() { eprintln!("cliff: ng.leg {}", ng.dot(leg)); }
+    // a concave far edge (the floor of a pocket the chamfer runs down the wall of, past it) only over a PLANE: where a boss
+    // rises over the strip (a cylinder) the tool ends on its wall instead (`end_wall_overhangs`), and the refusal stays for
+    // the fallbacks that handle it
+    // (nor over a blend face: rounds that cross, or a round on an earlier round, have their own builders and refusals)
+    if matches!(b.face(g).name.role, Role::Blend(_)) {
+        return false;
+    }
+    let d = ng.dot(leg);
+    d > 1e-6 || (d < -1e-6 && matches!(b.face(g).surface, Surface::Plane { .. }))
+}
+
 /// The outward normal of face `f` at its point nearest `p`.
 fn nrm_at(b: &Body, f: FaceId, p: Vec3) -> Vec3 {
     let (u, v) = b.face(f).surface.closest_param(p);

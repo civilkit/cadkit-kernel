@@ -207,16 +207,18 @@ fn thin_wall_thickness() {
 
 #[test]
 fn fillet_radius() {
-    // the blend table's plate-edge-r3 case: a 2 mm plate whose top edge takes a 3 mm round-over, refused
+    // a round on the top long edge of the 40 x 20 x 10 box: past 10 it runs off the side wall and past 20 off the top as well.
+    // A round that runs off ONE face is built (the blend table's plate-edge-r3 case); 30 runs off both and is refused
     // `blendOverflow`; the largest radius that builds is named in `maxSize`.
     let f = |r: f64| {
-        run(&with_plate(&format!(
-            r#"{{"type":"fillet","id":"F90","radius":{r},"edges":[{{"faces":["F2.C1","F2.S.e1"],"at":[20,2,0]}}]}}"#
+        run(&with_box(&format!(
+            r#"{{"type":"fillet","id":"F90","radius":{r},"edges":[{{"faces":["F2.C1","F2.S.e1"],"at":[20,0,10]}}]}}"#
         )))
     };
-    let (param, v, unit, _) = max_size(&f(3.0));
+    assert!(f(15.0).is_empty(), "a round past the 10 high wall builds");
+    let (param, v, unit, _) = max_size(&f(30.0));
     assert_eq!((param.as_str(), unit.as_str()), ("radius", "mm"));
-    assert!(v > 1.0 && v < 3.0, "{v}");
+    assert!(v > 10.0 && v <= 20.0, "{v}");
     assert!(f(v).is_empty(), "builds at {v}");
     assert!(!f(v * 1.03 + 0.04).is_empty(), "refused above {v}");
 }

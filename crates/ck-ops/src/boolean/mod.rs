@@ -68,6 +68,7 @@ pub mod classify;
 pub mod contact;
 pub mod fuzzy;
 pub mod imprint;
+pub mod perturb;
 pub mod sanity;
 
 /// Boolean operation (A op B).

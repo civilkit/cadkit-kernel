@@ -127,6 +127,8 @@ pub struct Out {
     pub body: Body,
     /// Fuzzy value that decided one of the booleans, if any.
     pub tolerance_used: Option<f64>,
+    /// Bounded perturbation that rescued one of the booleans, if any.
+    pub perturb_used: Option<ck_ops::boolean::perturb::Perturbation>,
     pub spans: Vec<super::Span>,
     /// `union` tools that did not touch what they were united with (see [`UNION_DISJOINT`]).
     pub disjoint: Vec<String>,
@@ -249,7 +251,7 @@ fn unsliver(a: &Body, b: &Body, op: BOp, first: &ck_ops::boolean::BoolOut) -> Op
     best.map(|(_, o)| o)
 }
 
-pub fn combine_bodies(body: &Body, spec: &Spec, fid: &str, fuzz: f64, auto: bool) -> Result<Out, FeatureError> {
+pub fn combine_bodies(body: &Body, spec: &Spec, fid: &str, fuzz: f64, auto: bool, retry_perturb: bool) -> Result<Out, FeatureError> {
     let comps = lump_components(body);
     let t_ix = comp_of(body, &comps, &spec.target[0])?;
     let mut tool_ix: Vec<usize> = vec![];
@@ -277,11 +279,15 @@ pub fn combine_bodies(body: &Body, spec: &Spec, fid: &str, fuzz: f64, auto: bool
     let tools: Vec<Body> = tool_ix.iter().map(|&i| extract(body, &comps[i])).collect();
     let mut spans = vec![];
     let mut used: Option<f64> = None;
+    let mut perturb_used: Option<ck_ops::boolean::perturb::Perturbation> = None;
 
     let mut run = |a: &Body, b: &Body, op: BOp| -> Result<ck_ops::boolean::BoolOut, FeatureError> {
-        let (mut r, u) = fuzzy_boolean(a, b, op, TOL, fuzz, auto);
+        let (mut r, u, p) = fuzzy_boolean(a, b, op, TOL, fuzz, auto, retry_perturb);
         if u.is_some() {
             used = u;
+        }
+        if p.is_some() {
+            perturb_used = p;
         }
         // a tool wall that runs through an edge of the host to within a few welding tolerances leaves a face
         // thinner than the tolerance in the result (a dovetail tail whose slanted wall ends on the corner of its
@@ -444,7 +450,7 @@ pub fn combine_bodies(body: &Body, spec: &Spec, fid: &str, fuzz: f64, auto: bool
             out.lumps[l.idx()].name = result_name.clone();
         }
     }
-    Ok(Out { body: out, tolerance_used: used, spans, disjoint, no_effect })
+    Ok(Out { body: out, tolerance_used: used, perturb_used, spans, disjoint, no_effect })
 }
 
 fn renumber(b: &mut Body) {
@@ -454,7 +460,7 @@ fn renumber(b: &mut Body) {
 pub fn exec_combine(br: &mut Brep, _state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
     let Some(body) = br.body.as_ref() else { return Err(FeatureError::new(codes::NOTHING_TO_CUT)) };
     let spec = parse(&f.raw)?;
-    let out = combine_bodies(body, &spec, &f.id, br.fuzz, br.auto_fuzz)?;
+    let out = combine_bodies(body, &spec, &f.id, br.fuzz, br.auto_fuzz, br.retry_perturb)?;
     br.spans.extend(out.spans);
     if !out.disjoint.is_empty() {
         let w = FeatureError::new(UNION_DISJOINT)
@@ -471,17 +477,21 @@ pub fn exec_combine(br: &mut Brep, _state: &mut RegenState, f: &Feature) -> Resu
     if out.tolerance_used.is_some() {
         br.fuzz_used = out.tolerance_used;
     }
+    if out.perturb_used.is_some() {
+        br.perturb_used = out.perturb_used;
+    }
     br.body = (out.body.num_faces() > 0).then_some(out.body);
     Ok(())
 }
 
 /// The `bodyBoolean` request: the same operation on a copy of the current body, nothing committed. Reply:
-/// `{ok, op, lumps, faces, volume, toleranceUsed?}` or `{ok:false, error:{code, ...}}`.
+/// `{ok, op, lumps, faces, volume, toleranceUsed?, perturbed?}` or `{ok:false, error:{code, ...}}`.
 pub fn preview(body: &Body, msg: &Json) -> Json {
     use ck_json::Obj;
     let fuzz = msg.get("tolerance").and_then(|t| t.as_f64()).filter(|t| t.is_finite() && *t > 0.0).unwrap_or(0.0);
     let auto = crate::sketch::jtruthy(msg.get("autoFuzzy"));
-    let r = parse(msg).and_then(|s| combine_bodies(body, &s, "bodyBoolean", fuzz, auto));
+    let retry_perturb = crate::sketch::jtruthy(msg.get("retryPerturb"));
+    let r = parse(msg).and_then(|s| combine_bodies(body, &s, "bodyBoolean", fuzz, auto, retry_perturb));
     match r {
         Ok(o) => {
             let mp = ck_topo::mass::mass_props(&o.body);
@@ -494,6 +504,19 @@ pub fn preview(body: &Body, msg: &Json) -> Json {
                 .put("faces", Json::Arr(faces));
             if let Some(t) = o.tolerance_used {
                 ob = ob.put("toleranceUsed", t);
+            }
+            if let Some(p) = o.perturb_used {
+                ob = ob.put(
+                    "perturbed",
+                    Obj::new()
+                        .put("dx", p.translation.x)
+                        .put("dy", p.translation.y)
+                        .put("dz", p.translation.z)
+                        .put("distance", p.distance_mm)
+                        .put("rotation", p.rotation_rad)
+                        .put("attempt", p.attempt as f64)
+                        .build(),
+                );
             }
             ob.build()
         }

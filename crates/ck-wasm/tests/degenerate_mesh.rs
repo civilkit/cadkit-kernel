@@ -40,13 +40,15 @@ fn a_chamfer_wider_than_the_disc_it_cuts_is_refused_not_built_invalid() {
     assert!(text.contains("wider than the face beside its edge") && text.contains("F4"), "{text}");
 }
 
-/// The same basin with exactly flat walls is read with planar walls (STEP analytic recognition): the analytic round refuses it, with the
-/// radius that builds, instead of building a body with a trim 2e-3 off its surface.
+/// The same basin with exactly flat walls is read with planar walls (STEP analytic recognition): the analytic round used to refuse it, with
+/// the radius that builds, because its contact runs off the rim's face over the far edge. A round that runs off a face is built now (on the
+/// planes continued, cut from the body): no error, a valid body, and the feature warns `blendRanOffFace`.
 #[test]
-fn the_flat_walled_basin_round_is_refused_with_the_radius_that_builds() {
+fn the_flat_walled_basin_round_runs_off_its_face_and_builds_valid() {
     let part = include_str!("fixtures/round_off_surface_basin.json");
     let (r, _) = call(&format!(r#"{{"type":"regen","tag":"main","part":{part},"opts":{{"solveSketches":true}}}}"#));
-    let errs = r.get("result").and_then(|r| r.get_arr("errors")).expect("errors");
-    let text = ck_json::to_string(&Json::Arr(errs.to_vec()));
-    assert!(text.contains("blendOverflow") && text.contains("largest radius that builds"), "{text}");
+    let res = r.get("result").unwrap();
+    assert!(res.get_arr("errors").is_some_and(|e| e.is_empty()), "{:?}", res.get_arr("errors"));
+    let (v, _) = call(r#"{"type":"validate","tag":"main"}"#);
+    assert!(v.get("result").and_then(|r| r.get_arr("issues")).is_some_and(|i| i.is_empty()), "{:?}", v);
 }

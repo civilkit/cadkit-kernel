@@ -3,7 +3,7 @@
 //! face area and `validate` reports no TESSELLATION_OPEN. Fixtures (tests/fixtures/tess_closed_region):
 //! - A: a full sphere read from a STEP record (seam edge only) then split by a boolean: the meridian seam coedges
 //!   carried v in [3 pi / 2, 2 pi] beside equator coedges at v = 0 (the loop did not close in uv),
-//! - B1 (closed B-spline faces after a boolean, seam twins on one isoline) is NOT fixed here: the faces are refused by the area check,
+//! - B1: closed B-spline faces after a boolean (loft, coil), the two seam coedges on one isoline: the tessellator chains the loop through the closed direction,
 //! - B2: a closed rational dome read from STEP whose face meets the seam at two places (two seam pairs in one loop),
 //! - B3: a linear extrusion of a closed spline, straight from import,
 //! - ok_control_*: sphere and hemisphere imports that always meshed right.
@@ -94,6 +94,17 @@ tube_fixture!(sweep_tube_one_rim_fillet, "sweep_tube_one_rim_fillet.ckpart.json"
 tube_fixture!(sweep_tube_rim_fillet, "sweep_tube_rim_fillet.ckpart.json");
 
 fixture!(sphere_split_by_boolean, "A_sphere_hemisphere_part.json");
+fixture!(loft_seam_after_boolean_443, "B1_loft443_part.json");
+fixture!(loft_seam_after_boolean_396, "B1_loft396_part.json");
+fixture!(coil_seam_after_boolean_1411, "B1_coil1411_part.json");
+fixture!(crossed_lofted_tubes_1615, "cases/tessellation_1615-crossed-lofted-tubes.json");
+// (open: its fi1.B0 spline faces mesh 81 to 94 percent of the exact area through the server path; clean when the boolean chained the loops)
+#[test]
+#[ignore]
+fn sphere_plane_rim_fillet_r2() {
+    let p = problems("r2", "r.json", include_str!("fixtures/tess_closed_region/cases/fillets_cov-fillet-exact-sphere-plane-rim-r2.json"));
+    assert!(p.is_empty(), "{}", p.join("\n"));
+}
 fixture!(extrusion_of_closed_spline, "B3_spl_periodic_extrusion.step");
 fixture!(closed_rational_dome_two_seam_pairs, "B2_42594_closed_rational_dome.step");
 fixture!(control_hemisphere_equator_loop, "ok_control_hemisphere_equator_loop.step");

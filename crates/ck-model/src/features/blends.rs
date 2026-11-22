@@ -338,7 +338,9 @@ pub fn exec_chamfer(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Resul
     let _chain = ck_ops::blend::build::TangentChainGuard::new(propagates(f));
     br.spans.push(Span::leaf(chamfer_label(&f.id, d, sel.len())));
     let body = br.body.as_ref().ok_or_else(|| FeatureError::new("missingEdge"))?;
+    ck_ops::blend::build::take_ran_off();
     let out = ck_ops::blend::build::chamfer(body, &sel, d, &f.id, super::TOL).map_err(blend_error)?;
+    ran_off_warning(state, &f.id);
     br.body = Some(out);
     Ok(())
 }
@@ -403,7 +405,9 @@ fn exec_chamfer_legs(br: &mut Brep, state: &mut RegenState, f: &Feature, edges: 
         // a named face: each edge decides on its own which of its sides is the first
         let body = br.body.as_ref().ok_or_else(|| FeatureError::new("missingEdge"))?;
         br.spans.push(Span::leaf(chamfer_label(&f.id, d1, sel.len())));
+        ck_ops::blend::build::take_ran_off();
         let out = ck_ops::blend::build::chamfer_legs_on_face(body, &sel, d1, leg, ff, flip, &f.id, super::TOL).map_err(blend_error)?;
+        ran_off_warning(state, &f.id);
         br.body = Some(out);
         return Ok(());
     }
@@ -436,7 +440,9 @@ fn exec_chamfer_legs(br: &mut Brep, state: &mut RegenState, f: &Feature, edges: 
     };
     let body = br.body.as_ref().ok_or_else(|| FeatureError::new("missingEdge"))?;
     br.spans.push(Span::leaf(chamfer_label(&f.id, d1, sel.len())));
-    let out = ck_ops::blend::build::chamfer_legs(body, &sel, d1, leg, &f.id, super::TOL).map_err(blend_error)?;
+    ck_ops::blend::build::take_ran_off();
+        let out = ck_ops::blend::build::chamfer_legs(body, &sel, d1, leg, &f.id, super::TOL).map_err(blend_error)?;
+        ran_off_warning(state, &f.id);
     br.body = Some(out);
     Ok(())
 }
@@ -728,10 +734,26 @@ pub fn exec_fillet(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
         }
     };
     ck_ops::blend::build::take_rounds_cross();
+    ck_ops::blend::build::take_ran_off();
     let out = build(r).map_err(|e| size_refusal(e, r, ck_check::validate(body, super::TOL).len(), body.num_faces(), body_scale(body), build))?;
+    ran_off_warning(state, &f.id);
     rounds_cross_warning(state, &f.id);
     br.body = Some(out);
     Ok(())
+}
+
+/// After a blend built: the warning `blendRanOffFace` with the `faces` a round or chamfer larger than the face it rolls onto
+/// ran off (the blend was built on the faces continued, and what it took beyond them is cut from the body).
+fn ran_off_warning(state: &mut RegenState, id: &str) {
+    let faces = ck_ops::blend::build::take_ran_off();
+    state.result.warnings.retain(|w| !(w.feature == id && w.error.code == "blendRanOffFace"));
+    if faces.is_empty() {
+        return;
+    }
+    let e = FeatureError::new("blendRanOffFace")
+        .with("detail", Json::Str("the blend is larger than the face beside its edge, so it runs off that face; it is built as if the face went on, and the face is used up or cut back".into()))
+        .with("faces", Json::Arr(faces.into_iter().map(Json::Str).collect()));
+    state.result.warnings.push(crate::regen::RegenError { feature: id.to_string(), error: e });
 }
 
 /// After a fillet built: when its two rounds crossed (the two edges of one strip face, radii summing to more than the

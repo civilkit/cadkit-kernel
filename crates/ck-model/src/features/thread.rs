@@ -23,7 +23,7 @@
 //!   regen result gets an entry in `threads` and, when the face diameter does not
 //!   fit the thread, a WARNING `threadDiameterMismatch` in `warnings` (not an
 //!   error: the document still regenerates).
-//! * Modeled: see [`model`]; falls back to cosmetic with a `threadModelFallback`
+//! * Modeled: see [`model`] (the cut is retried at up to three helix starts; a second thread over the same stretch of a face is refused early); falls back to cosmetic with a `threadModelFallback`
 //!   warning when the boolean fails or the model would be unreasonably large.
 
 use super::Brep;
@@ -583,13 +583,26 @@ pub mod model {
 
     /// Build the groove solid for a thread; faces named `<id>.T<k>`.
     pub fn tool(id: &str, spec: &ThreadSpec, cf: &CylFace, pl: &Placement, left: bool) -> Result<(Body, Groove), String> {
+        tool_at(id, spec, cf, pl, left, 0.0)
+    }
+
+    /// Helix starts tried, in order (`phase`: turns round the axis, which also sets how far the groove overshoots an
+    /// open end, `0.8 * phase` pitches at the start and `1.04 * phase` at the far end). The first is the default.
+    /// Where the groove's flank meets the body's rim, or its end meets a face, the boolean can fail to close the
+    /// intersection for one position and not for the next (a 30 mm shaft with M10x1 failed, 29 and 31 mm did not);
+    /// the same thread (pitch, hand, extent) at another start then cuts.
+    pub const PHASES: [f64; 3] = [0.0, 0.37, 0.71];
+
+    /// [`tool`] with the helix started at `phase` (see [`PHASES`]).
+    pub fn tool_at(id: &str, spec: &ThreadSpec, cf: &CylFace, pl: &Placement, left: bool, phase: f64) -> Result<(Body, Groove), String> {
         let gr = groove(spec, cf.internal, cf.radius)?;
         let p = spec.pitch;
         let d = pl.dir;
         // centre line of the helix along the axis: from s0 to s1 (distance from the start end into the face)
         let margin = 0.05 * p;
-        let s0 = if pl.start_open { -(gr.half + 0.5 * p) } else { gr.half + margin };
-        let s1 = if pl.far_open { pl.length + gr.half + 0.5 * p } else { pl.length - gr.half - margin };
+        let more = 0.8 * phase * p;
+        let s0 = if pl.start_open { -(gr.half + 0.5 * p + more) } else { gr.half + margin };
+        let s1 = if pl.far_open { pl.length + gr.half + 0.5 * p + 1.3 * more } else { pl.length - gr.half - margin };
         let travel = s1 - s0;
         if !(travel > 0.5 * p) {
             return Err(format!("the thread length {} is shorter than one groove ({})", super::fmt(pl.length), super::fmt(2.0 * gr.half + 0.5 * p)));
@@ -599,7 +612,9 @@ pub mod model {
             return Err(format!("{} turns; modeled threads are limited to {} turns (shorten the length)", turns.round(), MAX_TURNS));
         }
         let o = pl.start + d * s0;
-        let x = radial_for(d);
+        let x0 = radial_for(d);
+        let (sn, cs) = (std::f64::consts::TAU * phase).sin_cos();
+        let x = x0 * cs + d.cross(x0) * sn;
         let fr = Frame { o, x, y: d, z: x.cross(d) };
         let segs: Vec<ProfileSeg> = (0..4)
             .map(|i| {
@@ -621,23 +636,92 @@ pub mod model {
         Ok((body, gr))
     }
 
-    pub fn apply(br: &mut Brep, _state: &mut RegenState, id: &str, suffix: &str, spec: &ThreadSpec, cf: &CylFace, pl: &Placement, left: bool) -> Result<(), String> {
+    pub fn apply(br: &mut Brep, state: &mut RegenState, id: &str, suffix: &str, spec: &ThreadSpec, cf: &CylFace, pl: &Placement, left: bool) -> Result<(), String> {
         if spec.tapered {
             return Err(format!("{} is a tapered (1:16) thread; modeled tapered threads are not built", spec.designation));
         }
         let before = br.body.clone().ok_or("no solid")?;
         let v0 = ck_topo::mass::mass_props(&before).volume;
-        let (mut tool, gr) = tool(id, spec, cf, pl, left)?;
+        // a groove over an earlier modeled thread of the same face crosses its turns: the boolean's work grows with
+        // the product of the two turn counts, so refuse early what it cannot finish, and try one way only
+        let cross = crossing(state, spec, cf, pl);
+        if let Some((tid, old_turns, new_turns)) = &cross {
+            let work = old_turns * new_turns;
+            if work > CROSS_WORK_MAX {
+                return Err(format!(
+                    "this groove ({} turns) would cross the modeled groove of thread {tid} ({} turns) on the same stretch of the face: {} turn crossings, over the {} the boolean is tried on; thread the two over shorter or separate stretches (a length) or give one of them a coarser pitch",
+                    new_turns.round(), old_turns.round(), work.round(), CROSS_WORK_MAX
+                ));
+            }
+        }
+        let phases: &[f64] = if cross.is_some() { &PHASES[..1] } else { &PHASES };
+        let mut why = String::new();
+        for &ph in phases {
+            br.body = Some(before.clone());
+            match try_cut(br, id, suffix, spec, cf, pl, left, ph, &before, v0) {
+                Ok(()) => return Ok(()),
+                Err((retry, w)) => {
+                    br.body = Some(before.clone());
+                    if why.is_empty() {
+                        why = w;
+                    }
+                    if !retry {
+                        break; // the reason does not depend on where the helix starts
+                    }
+                }
+            }
+        }
+        if phases.len() > 1 && why.starts_with("the groove could not be cut") {
+            why = format!("{why}; the same groove started at {} other positions round the axis failed too", phases.len() - 1);
+        }
+        Err(why)
+    }
+
+    /// Most turn crossings (turns of the new groove x turns of the old one over the shared stretch) of a second
+    /// modeled thread on the same face that is still tried.
+    pub const CROSS_WORK_MAX: f64 = 36.0;
+
+    /// The modeled thread already on this face that the new groove overlaps: `(id, its turns, the new turns)` over the
+    /// stretch both cover (the largest overlap when several).
+    fn crossing(state: &RegenState, spec: &ThreadSpec, cf: &CylFace, pl: &Placement) -> Option<(String, f64, f64)> {
+        let mut best: Option<(String, f64, f64)> = None;
+        for (tid, e) in state.result.threads.iter() {
+            if e.get_bool("modeled") != Some(true) {
+                continue;
+            }
+            let (Some(st), Some(dr), Some(len), Some(pitch), Some(dia)) = (pt(e.get("start")), pt(e.get("dir")), e.get_f64("length"), e.get_f64("pitch"), e.get_f64("diameter")) else {
+                continue;
+            };
+            let along = dr.dot(pl.dir);
+            if along.abs() < 1.0 - 1e-6 || (dia - 2.0 * cf.radius).abs() > 1e-4 * dia.max(1.0) {
+                continue;
+            }
+            let off = st - pl.start;
+            if (off - pl.dir * off.dot(pl.dir)).len() > 1e-4 * dia.max(1.0) {
+                continue;
+            }
+            let a = off.dot(pl.dir);
+            let (lo, hi) = if along > 0.0 { (a, a + len) } else { (a - len, a) };
+            let ov = hi.min(pl.length) - lo.max(0.0);
+            if ov <= 0.0 {
+                continue;
+            }
+            let (ot, nt) = (ov / pitch, ov / spec.pitch);
+            if best.as_ref().map_or(true, |b| ot * nt > b.1 * b.2) {
+                best = Some((tid.clone(), ot, nt));
+            }
+        }
+        best
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn try_cut(br: &mut Brep, id: &str, suffix: &str, spec: &ThreadSpec, cf: &CylFace, pl: &Placement, left: bool, phase: f64, before: &Body, v0: f64) -> Result<(), (bool, String)> {
+        let (mut tool, gr) = tool_at(id, spec, cf, pl, left, phase).map_err(|e| (false, e))?;
         if !suffix.is_empty() {
             tool.push_instance(suffix);
         }
-        let r = br.combine(&tool, Combine::Cut, false);
-        let fail = |br: &mut Brep, why: String| {
-            br.body = Some(before.clone());
-            Err(why)
-        };
-        if let Err(e) = r {
-            return fail(br, format!("the groove could not be cut ({})", e.describe()));
+        if let Err(e) = br.combine(&tool, Combine::Cut, false) {
+            return Err((true, format!("the groove could not be cut ({})", e.describe())));
         }
         let after = br.body.as_ref().unwrap();
         let v1 = ck_topo::mass::mass_props(after).volume;
@@ -645,13 +729,13 @@ pub mod model {
         let want = gr.per_pitch * pl.length / spec.pitch;
         let dv = v0 - v1;
         if !(dv > 0.4 * want && dv < 1.6 * want) {
-            return fail(br, format!("the cut removed {} mm3, expected about {}", super::fmt(dv), super::fmt(want)));
+            return Err((true, format!("the cut removed {} mm3, expected about {}", super::fmt(dv), super::fmt(want))));
         }
-        if ck_check::validate(after, 1e-6).len() > ck_check::validate(&before, 1e-6).len() {
-            return fail(br, "the cut produced an invalid solid".to_string());
+        if ck_check::validate(after, 1e-6).len() > ck_check::validate(before, 1e-6).len() {
+            return Err((true, "the cut produced an invalid solid".to_string()));
         }
         if after.num_lumps() != before.num_lumps() {
-            return fail(br, "the cut split the body".to_string());
+            return Err((true, "the cut split the body".to_string()));
         }
         Ok(())
     }

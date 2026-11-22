@@ -26,6 +26,16 @@ thread_local! {
     /// The concave arc tool of this attempt reaches a little way into the material behind both its faces (retry of a tool
     /// whose overflow clip, a cylinder tangent to the wall the round leans on, found its face coincident with the wall's).
     static INTO_MATERIAL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Ids of the faces the blends of the build in progress ran off (a convex round or chamfer bigger than the face it rolls
+    /// onto, see [`take_ran_off`]).
+    static RAN_OFF: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The faces the blends built since the last call ran off (and forgets them): a convex round or chamfer larger than the face
+/// or wall it runs onto is built on the continued supports, and the face is used up or cut back. The feature layer clears it
+/// before a build and reads it after the build succeeded, for the warning `blendRanOffFace`.
+pub fn take_ran_off() -> Vec<String> {
+    RAN_OFF.with(|r| std::mem::take(&mut *r.borrow_mut()))
 }
 
 /// A tool that ends `amount` short of the vertex `p`: a length along the line leaving it in direction `dir`, or the angle
@@ -132,7 +142,18 @@ pub(super) fn blend_edge_hint_inner(
     ring: bool,
     junc: &EndConditions,
 ) -> Result<(Body, Vec<String>), BlendError> {
+    let mark = RAN_OFF.with(|r| r.borrow().len());
     let first = blend_edge_hint_inner0(b, e, faces, spec, feature, k, tol, ring, junc);
+    // (what a failed attempt ran off is not the build's)
+    if first.is_err() {
+        RAN_OFF.with(|r| r.borrow_mut().truncate(mark));
+    }
+    let first = first.map(|(mut out, hint)| {
+        if RAN_OFF.with(|r| r.borrow().len()) > mark {
+            name_surviving_legs(b, faces, feature, &mut out);
+        }
+        (out, hint)
+    });
     // a concave arc tool whose overflow clip could not be assembled (the clip cylinder is tangent to the wall face the tool's
     // own face lies on): once more with the tool reaching into the material behind its faces, so that none of its faces is
     // coincident with the wall
@@ -145,6 +166,35 @@ pub(super) fn blend_edge_hint_inner(
         }
     }
     first
+}
+
+/// A blend that ran off its face leaves a leg of its tool standing in the result: the continued wall below a pocket's floor, the
+/// groove the chamfer cut round it. That face lies on the surface of the support face it continues, so it takes that face's name
+/// (as the second piece, `~2`, when the face itself is still there) instead of the tool's scratch name `<feature>.S.l1`.
+fn name_surviving_legs(b: &Body, faces: [FaceId; 2], feature: &str, out: &mut Body) {
+    let same = |x: &Surface, y: &Surface| match (x, y) {
+        (Surface::Plane { frame: f }, Surface::Plane { frame: g }) => f.z.cross(g.z).len() < 1e-9 && (g.o - f.o).dot(f.z).abs() < 1e-6 * (1.0 + g.o.len()),
+        (Surface::Cylinder { frame: f, r: ra }, Surface::Cylinder { frame: g, r: rb }) => {
+            f.z.cross(g.z).len() < 1e-9 && (ra - rb).abs() < 1e-9 * (1.0 + ra) && (g.o - f.o).cross(f.z).len() < 1e-6 * (1.0 + g.o.len())
+        }
+        _ => false,
+    };
+    let ids: Vec<_> = out.face_ids().collect();
+    for f in ids {
+        let n = out.face(f).name.clone();
+        if n.feature != feature || !matches!(&n.role, Role::Side(s) if s.starts_with('l')) {
+            continue;
+        }
+        if let Some(&sup) = faces.iter().find(|&&g| same(&out.face(f).surface, &b.face(g).surface)) {
+            let mut nn = b.face(sup).name.clone();
+            // (the wall itself used up by the blend: nothing to tell it from)
+            let alive = out.face_ids().any(|x| x != f && out.face(x).name == nn);
+            if alive && nn.region.is_none() {
+                nn.region = Some(2);
+            }
+            out.faces[f.idx()].name = nn;
+        }
+    }
 }
 
 fn blend_edge_hint_inner0(
@@ -615,6 +665,24 @@ fn blend_edge_hint_inner0(
                     overflow.push(c);
                     continue;
                 }
+            }
+            // a convex round or chamfer that runs past the face it rolls onto, over a convex far edge, while its other contact
+            // stays on its own face: the wedge on the continued supports cut from the body is the removed region
+            if convex
+                && !matches!(spec, Spec::Fillet(_, FilletProfile::Curvature(_)))
+                && fts.iter().any(|&(f2, t2)| f2 != f && point_in_face(b, f2, t2, tol) != Where::Out)
+                && super::ends::leaves_over_convex_edge(b, f, e, pm_s, t, b.bbox(), tol)
+            {
+                if super::diag::on() {
+                    eprintln!("{}: contact leaves {} over its far edge; the wedge on the continued supports is cut", name.id(), b.face_id_str(f));
+                }
+                RAN_OFF.with(|r| {
+                    let id = b.face_id_str(f);
+                    if !r.borrow().contains(&id) {
+                        r.borrow_mut().push(id);
+                    }
+                });
+                continue;
             }
             if let Spec::Fillet(_, FilletProfile::Curvature(sh)) = spec {
                 // the largest radius whose contact points still lie on their faces

@@ -415,9 +415,12 @@ pub fn exec_loft(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(
                 }
             }
             let hout = loft(&f.id, &hp, &hole_opts).map_err(err)?;
-            let (r, used) = super::fuzzy_boolean(&tool, &hout.body, ck_ops::boolean::Op::Cut, super::TOL, br.fuzz, br.auto_fuzz);
+            let (r, used, perturbed) = super::fuzzy_boolean(&tool, &hout.body, ck_ops::boolean::Op::Cut, super::TOL, br.fuzz, br.auto_fuzz, br.retry_perturb);
             if used.is_some() {
                 br.fuzz_used = used;
+            }
+            if perturbed.is_some() {
+                br.perturb_used = perturbed;
             }
             match r {
                 Ok(bout) => {

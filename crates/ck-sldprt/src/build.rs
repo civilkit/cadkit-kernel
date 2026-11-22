@@ -519,7 +519,14 @@ impl<'a> B<'a> {
                         let (a, b) = curve.range();
                         for k in 0..48 {
                             let t = a + (b - a) * (k as f64 + 0.37) / 48.0;
-                            worst = worst.max(sf.distance(curve.eval(t)));
+                            let q = curve.eval(t);
+                            let d = sf.distance(q);
+                            // the file's chart runs on past the end of a bounded patch (the intersection with the surface
+                            // continued): that stretch is not the support's, and the edges that use the curve stop inside it
+                            if d > MAX_APPROX_MM && Self::beyond_patch(&sf, q) {
+                                continue;
+                            }
+                            worst = worst.max(d);
                         }
                         checked += 1;
                     }
@@ -768,6 +775,22 @@ impl<'a> B<'a> {
         };
         self.supports.insert(si, s.clone());
         Ok(s)
+    }
+
+    /// Whether `q`, off the patch `sf`, has its nearest point on an edge of the patch's parameter domain: `q` is past the
+    /// end of a bounded B-spline patch (or an offset of one), not a point the patch fails to reach on its interior.
+    fn beyond_patch(sf: &Surface, q: Vec3) -> bool {
+        let mut base = sf;
+        while let Surface::Offset { base: b, .. } = base {
+            base = b;
+        }
+        if !matches!(base, Surface::BSpline(_)) {
+            return false;
+        }
+        let ((u0, u1), (v0, v1)) = sf.domain();
+        let (u, v) = sf.closest_param(q);
+        let at = |x: f64, a: f64, c: f64| (x - a).abs() <= 1e-6 * (c - a).abs() || (x - c).abs() <= 1e-6 * (c - a).abs();
+        at(u, u0, u1) || at(v, v0, v1)
     }
 
     /// Surface `si` as one of the two supports of an intersection curve: a blend (one blend run out onto another) is

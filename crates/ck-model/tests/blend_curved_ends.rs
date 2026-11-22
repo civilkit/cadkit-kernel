@@ -241,30 +241,15 @@ fn arc_edge_boss_radii() {
 }
 
 
-/// the error params of a refused blend
-fn refusal(src: &str) -> (String, Vec<(String, String)>) {
-    let part = Part::parse(src).unwrap();
-    let mut ex = Exec(Brep::new());
-    let r = regen::regen(&part, &RegenOpts::default(), &mut ex);
-    let e = r.errors.first().expect("expected a refusal");
-    (e.error.code.clone(), e.error.params.iter().map(|(k, v)| (k.clone(), format!("{v:?}"))).collect())
-}
-
-fn param<'a>(p: &'a [(String, String)], k: &str) -> Option<&'a str> {
-    p.iter().find(|(n, _)| n == k).map(|(_, v)| v.trim_start_matches("Str(\"").trim_end_matches("\")"))
-}
-
 /// A convex blend too large for the face next to a curved end is refused with `blendOverflow`; the hint names the end
 /// that meets the curved face / wall and the largest size that fits (and that size then works).
 #[test]
 fn too_large_is_refused_with_a_hint() {
     // box side face is 20 high: the largest fillet is just under 20
-    let (code, p) = refusal(&box_cyl(false, 25.0, 12.0, false));
-    assert_eq!(code, "blendOverflow");
-    let max: f64 = param(&p, "max").unwrap().parse().unwrap();
-    assert!((19.9..=20.0).contains(&max), "max {max}");
-    assert!(matches!(param(&p, "curvedEnd"), Some("start" | "end")));
-    pair(&box_cyl(false, max, 12.0, false));
+    // (a round of 25 on the 20 high side face runs off it over the far edge: built on the face continued, valid; it used to
+    // be refused with the largest size that fits, 19.9x)
+    let (a, b) = pair(&box_cyl(false, 25.0, 12.0, false));
+    assert!(b.vol < a.vol && ck_check::validate(&b.body, 1e-6).is_empty());
     // the boss wall above the bar top is 10 high: a larger round rolls off it and is trimmed by the boss top (z = 20)
     // continued, as a fillet wider than its face is
     let (a, b) = pair(&BAR_ARC.replace("\"radius\":2", "\"radius\":14"));
@@ -274,7 +259,7 @@ fn too_large_is_refused_with_a_hint() {
     assert_eq!(loc(&b, [20.5, 0.0, 19.9]), Loc::In);
     assert_eq!(loc(&b, [20.5, 0.0, 20.05]), Loc::Out, "nothing above the boss top");
     // the straight edge into the boss: same
-    let (code, p) = refusal(&bar(BAR_STRAIGHT, 14.0, false, false));
-    assert_eq!(code, "blendOverflow");
-    assert!(param(&p, "max").is_some() && param(&p, "curvedEnd").is_some());
+    // (it used to be refused with the largest size that fits and the curved end it meets)
+    let (a, b) = pair(&bar(BAR_STRAIGHT, 14.0, false, false));
+    assert!(b.vol < a.vol && ck_check::validate(&b.body, 1e-6).is_empty());
 }

@@ -716,12 +716,16 @@ pub struct Brep {
     pub proc_curves: Vec<(String, proc_curve::ProcCurve)>,
     /// Surface bodies by feature id (see `surfaces.rs`).
     pub surfs: Vec<(String, ck_topo::body::Body)>,
-    /// Fuzzy value of the feature being executed (`tolerance`, mm; 0 = exact booleans) and the `autoFuzzy`
-    /// retry switch; set by [`Brep::exec`], read by [`Brep::combine_at`].
+    /// Fuzzy value of the feature being executed (`tolerance`, mm; 0 = exact booleans), the `autoFuzzy`
+    /// retry switch, and the opt-in `retryPerturb` bounded perturbation retry switch; set by [`Brep::exec`],
+    /// read by [`Brep::combine_at`].
     pub fuzz: f64,
     pub auto_fuzz: bool,
+    pub retry_perturb: bool,
     /// The fuzzy value that decided the last boolean of the feature (reported as the `booleanFuzzy` warning).
     pub fuzz_used: Option<f64>,
+    /// The bounded perturbation that rescued a failing boolean of the feature (reported as the `booleanPerturbed` warning).
+    pub perturb_used: Option<ck_ops::boolean::perturb::Perturbation>,
     /// Sheet rules and the sheet metal model (sheet_features.rs).
     pub sheet: sheet_features::SheetState,
 }
@@ -742,9 +746,10 @@ pub struct BrepSnap {
 
 /// `a op b` under the feature's fuzzy value `fuzz` (0 = exact). With `auto`, a boolean that fails, comes out
 /// implausible (volume / box check) or comes out invalid is retried with the fuzzy value 1e-7, 1e-5, 1e-3
-/// (those above `fuzz`); the first retry that gives a plausible, valid result wins. Returns the value that
-/// decided the result (`Some` only when it changed the geometry or a retry was needed). A result that fails
-/// the sanity check is never accepted silently: it stays in the returned `Ok` with its `mismatch` set.
+/// (those above `fuzz`); the first retry that gives a plausible, valid result wins. With `retry_perturb`,
+/// if the boolean still fails due to a geometric degeneracy (or comes out invalid/mismatched), it is retried
+/// with a strictly bounded deterministic perturbation of `b` (`<= 1e-4 mm` / `<= 2e-6 rad`) and validated
+/// via `ck_check::validate`. Returns `(result, fuzz_used, perturbation_used)`.
 pub(crate) fn fuzzy_boolean(
     a: &ck_topo::body::Body,
     b: &ck_topo::body::Body,
@@ -752,12 +757,14 @@ pub(crate) fn fuzzy_boolean(
     tol: f64,
     fuzz: f64,
     auto: bool,
-) -> (Result<ck_ops::boolean::BoolOut, String>, Option<f64>) {
+    retry_perturb: bool,
+) -> (Result<ck_ops::boolean::BoolOut, String>, Option<f64>, Option<ck_ops::boolean::perturb::Perturbation>) {
     use ck_ops::boolean::fuzzy::{boolean_fuzzy, last_snapped};
+    use ck_ops::boolean::perturb::{is_retryable_error, retry_perturbed};
     let mut r = boolean_fuzzy(a, b, op, tol, fuzz);
     let mut used = (fuzz > 0.0 && last_snapped() > 0).then_some(fuzz);
-    if !auto {
-        return (r, used);
+    if !auto && !retry_perturb {
+        return (r, used, None);
     }
     let base_issues = std::cell::OnceCell::new();
     let invalid = |o: &ck_ops::boolean::BoolOut| {
@@ -768,7 +775,7 @@ pub(crate) fn fuzzy_boolean(
         Err(e) => e.starts_with("booleanFailed"),
         Ok(o) => o.mismatch.is_some() || invalid(o),
     };
-    if bad(&r) {
+    if auto && bad(&r) {
         for z in [1e-7, 1e-5, 1e-3] {
             if z <= fuzz {
                 continue;
@@ -781,7 +788,27 @@ pub(crate) fn fuzzy_boolean(
             }
         }
     }
-    (r, used)
+    if retry_perturb {
+        let needs_perturb = match &r {
+            Err(e) => is_retryable_error(e),
+            Ok(o) => {
+                if o.mismatch.is_some() || invalid(o) {
+                    true
+                } else if !o.no_effect {
+                    let base_valid = ck_check::validate(a, tol).len() + ck_check::validate(b, tol).len();
+                    ck_check::validate(&o.body, tol).len() > base_valid
+                } else {
+                    false
+                }
+            }
+        };
+        if needs_perturb {
+            if let Some((out, p)) = retry_perturbed(a, b, op, tol, fuzz) {
+                return (Ok(out), used, Some(p));
+            }
+        }
+    }
+    (r, used, None)
 }
 
 impl Brep {
@@ -868,9 +895,12 @@ impl Brep {
             (None, extrude::Combine::Cut) => Err(FeatureError::new(crate::regen::codes::NOTHING_TO_CUT)),
             (Some(b), c) => {
                 let op = if c == extrude::Combine::Cut { BOp::Cut } else { BOp::Union };
-                let (r, used) = fuzzy_boolean(b, tool, op, tol, self.fuzz, self.auto_fuzz);
+                let (r, used, perturbed) = fuzzy_boolean(b, tool, op, tol, self.fuzz, self.auto_fuzz, self.retry_perturb);
                 if used.is_some() {
                     self.fuzz_used = used;
+                }
+                if perturbed.is_some() {
+                    self.perturb_used = perturbed;
                 }
                 match r {
                     Ok(out) => {
@@ -929,7 +959,7 @@ impl Brep {
     /// merges with (a union that leaves the two apart is a lump it does not reach), until no further lump joins. The
     /// lumps it does not reach stay as they are, ahead of the result. `None`: the body has one lump, a boolean fails
     /// or the tool reaches no lump.
-    fn union_lump_by_lump(&self, tool: &ck_topo::body::Body, tol: f64) -> Option<ck_topo::body::Body> {
+    fn union_lump_by_lump(&mut self, tool: &ck_topo::body::Body, tol: f64) -> Option<ck_topo::body::Body> {
         use ck_ops::boolean::Op as BOp;
         let b = self.body.as_ref()?;
         let comps = ck_topo::region::components(b);
@@ -943,10 +973,16 @@ impl Brep {
             let mut progress = false;
             let mut i = 0;
             while i < rest.len() {
-                let (r, _) = fuzzy_boolean(&cur, &rest[i], BOp::Union, tol, self.fuzz, self.auto_fuzz);
+                let (r, used, perturbed) = fuzzy_boolean(&cur, &rest[i], BOp::Union, tol, self.fuzz, self.auto_fuzz, self.retry_perturb);
                 let out = r.ok()?;
                 if out.mismatch.is_some() {
                     return None;
+                }
+                if used.is_some() {
+                    self.fuzz_used = used;
+                }
+                if perturbed.is_some() {
+                    self.perturb_used = perturbed;
                 }
                 let (before, after) = (ck_topo::region::components(&cur).len() + 1, ck_topo::region::components(&out.body).len());
                 if !out.no_effect && after < before {
@@ -1679,7 +1715,9 @@ impl crate::regen::FeatureExec for Brep {
     fn exec(&mut self, state: &mut crate::regen::RegenState, f: &crate::Feature) -> Result<(), crate::regen::FeatureError> {
         self.fuzz = if f.type_name == "editCurve" { 0.0 } else { crate::expr::eval_field(f.raw.get("tolerance"), &state.vars, 0.0).ok().filter(|t| t.is_finite() && *t > 0.0).unwrap_or(0.0) };
         self.auto_fuzz = crate::sketch::jtruthy(f.raw.get("autoFuzzy"));
+        self.retry_perturb = crate::sketch::jtruthy(f.raw.get("retryPerturb"));
         self.fuzz_used = None;
+        self.perturb_used = None;
         let prior = self.body.as_ref().map(bodies::named).unwrap_or_default();
         let r = self.exec_feature(state, f);
         if r.is_ok() {
@@ -1689,8 +1727,27 @@ impl crate::regen::FeatureExec for Brep {
             let w = crate::regen::FeatureError::new("booleanFuzzy").with("tolerance", Json::Num(t));
             state.result.warnings.push(crate::regen::RegenError { feature: f.id.clone(), error: w });
         }
+        if let (Some(p), true) = (self.perturb_used.take(), r.is_ok()) {
+            let w = crate::regen::FeatureError::new("booleanPerturbed")
+                .with("dx", Json::Num(p.translation.x))
+                .with("dy", Json::Num(p.translation.y))
+                .with("dz", Json::Num(p.translation.z))
+                .with("distance", Json::Num(p.distance_mm))
+                .with("rotation", Json::Num(p.rotation_rad))
+                .with("axis", Json::Arr(vec![Json::Num(p.axis.x), Json::Num(p.axis.y), Json::Num(p.axis.z)]))
+                .with("attempt", Json::Num(p.attempt as f64))
+                .with(
+                    "detail",
+                    Json::Str(format!(
+                        "boolean succeeded after bounded tool perturbation (offset {:.3e} mm, rotation {:.3e} rad)",
+                        p.distance_mm, p.rotation_rad
+                    )),
+                );
+            state.result.warnings.push(crate::regen::RegenError { feature: f.id.clone(), error: w });
+        }
         self.fuzz = 0.0;
         self.auto_fuzz = false;
+        self.retry_perturb = false;
         r
     }
 }

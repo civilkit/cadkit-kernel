@@ -325,7 +325,14 @@ fn import_hook(cx: &mut Cx, _name: &str, data: &str) -> Result<(Json, Option<Sta
             });
             // each part on its own: a valid solid joins the body, anything else is a surface body of its faces (never a half-built solid)
             let r = ck_model::features::import_step::sort_step(imp, None, ho.as_ref());
-            let parts = ck_model::features::import_step::parts_json("import", &r.sorted.parts);
+            let mut parts = ck_model::features::import_step::parts_json("import", &r.sorted.parts);
+            if let Json::Arr(items) = &mut parts {
+                for (item, col) in items.iter_mut().zip(&r.part_colors) {
+                    if let (Json::Obj(kv), Some([cr, cg, cb])) = (item, col) {
+                        kv.push(("color".into(), Json::Arr(vec![Json::Num(*cr), Json::Num(*cg), Json::Num(*cb)])));
+                    }
+                }
+            }
             let surfaces: Vec<(String, Body)> = r.sorted.surfaces.into_iter().map(|(k, b)| (ck_model::features::import_step::surface_id("import", k), b)).collect();
             let body = r.sorted.solid;
             let faces = body.num_faces() + surfaces.iter().map(|s| s.1.num_faces()).sum::<usize>();
@@ -728,12 +735,38 @@ fn import_reply(cx: &mut Cx, mut out: Json, body: Body, surfaces: Vec<(String, B
         sj.push(Json::Arr(vec![Json::Str(id.clone()), attach_mesh(json, &t.mesh, cx)]));
     }
     set_key(&mut out, "surfaces", Json::Arr(sj));
+    // a part that did not come in as a solid is said on the reply itself (the same `[feature, {code, params}]` pair a regen
+    // reports), not only inside `import.parts[].reasons`: a surface body has no volume and a client that looks at `errors`
+    // alone would show nothing wrong
+    let warning = import_parts_warning(&info);
     if let Json::Obj(kv) = &mut out {
         kv.push(("import".into(), info));
+        if let Some(w) = warning {
+            kv.push(("warnings".into(), Json::Arr(vec![w])));
+        }
     }
     let has = body.num_faces() > 0 || !surfaces.is_empty();
     let snap = Snapshot { body, sketches: vec![], asm: Default::default(), heal_base: None, surfaces, ends: vec![] };
     (out, Some(State { has_body: has, data: Some(Box::new(snap)) }))
+}
+
+/// The `importStepParts` warning of an import whose `parts` (in `info`) are not all solids: `["import", {code, params}]`.
+fn import_parts_warning(info: &Json) -> Option<Json> {
+    let Some(Json::Arr(parts)) = info.get("parts") else { return None };
+    let count = |o: &str| parts.iter().filter(|p| matches!(p.get("outcome"), Some(Json::Str(s)) if s == o)).count();
+    let (solids, surfaces, refused) = (count("solid"), count("surface"), count("refused"));
+    if surfaces + refused == 0 {
+        return None;
+    }
+    let detail = format!("needs repair: {} of {} part(s) of the file are not valid solids and came in as surface bodies of the faces that could be read (or not at all); Repair Part (repairPart) can try to make them solids", surfaces + refused, parts.len());
+    let params = Obj::new()
+        .put("detail", detail.as_str())
+        .put("solids", solids as f64)
+        .put("surfaces", surfaces as f64)
+        .put("refused", refused as f64)
+        .put("parts", Json::Arr(parts.clone()))
+        .build();
+    Some(Json::Arr(vec![Json::Str("import".into()), Obj::new().put("code", ck_model::features::import_step::IMPORT_STEP_PARTS).put("params", params).build()]))
 }
 
 /// The parts of a SolidWorks import sorted like a STEP import's (`ck_heal::honest`): (solid body, surface bodies, `parts`).
@@ -1228,6 +1261,15 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
             let name = cx.msg.get_str("name").unwrap_or("part").to_string();
             let s = snapshot(cx)?;
             let mut body = s.body.clone();
+            // Remember each face's lump name before `rebuild_lumps` rebuilds the lump table.
+            let mut face_lump_name: std::collections::HashMap<ck_topo::body::FaceId, String> = std::collections::HashMap::new();
+            for l in body.lump_ids() {
+                if let Some(ln) = body.lump(l).name.as_deref().filter(|n| !n.is_empty()) {
+                    for f in ck_topo::mass::lump_faces(&body, l) {
+                        face_lump_name.insert(f, ln.to_string());
+                    }
+                }
+            }
             // the surface bodies (an import's, or the document's surface features) are written too, as named surface
             // models: exporting never drops a part. `ranges` = the face index range of each, to name its shells.
             let mut ranges: Vec<(usize, usize, String)> = vec![];
@@ -1240,9 +1282,36 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
                 return Err(ck_server::geometry::STEP_NOTHING_TO_EXPORT.to_string());
             }
             ck_topo::region::rebuild_lumps(&mut body);
+            for l in body.lump_ids().collect::<Vec<_>>() {
+                if let Some(ln) = ck_topo::mass::lump_faces(&body, l).into_iter().find_map(|f| face_lump_name.get(&f).cloned()) {
+                    body.lumps[l.idx()].name = Some(ln);
+                }
+            }
             let surface_name = |f: ck_topo::body::FaceId| ranges.iter().find(|r| (r.0..r.1).contains(&f.idx())).map(|r| r.2.clone());
             let opts = ck_io::step::StepOpts { unix_ms: ck_server::clock::unix_ms() };
-            ck_io::step::try_write_step_with_surfaces(&body, &name, &opts, &surface_name).map(Json::Str)
+            if let Some(Json::Obj(colors_kv)) = cx.msg.get("colors") {
+                let mut meta = ck_io::step::StepExportMeta::default();
+                let parse_rgb = |v: &Json| -> Option<[f64; 3]> {
+                    let Json::Arr(a) = v else { return None };
+                    if a.len() < 3 {
+                        return None;
+                    }
+                    Some([a[0].as_f64()?, a[1].as_f64()?, a[2].as_f64()?])
+                };
+                for (idx, l) in body.lump_ids().enumerate() {
+                    let key_name = body.lump(l).name.as_deref();
+                    let idx_str = idx.to_string();
+                    let found = key_name
+                        .and_then(|kn| colors_kv.iter().find(|(k, _)| k == kn).map(|(_, v)| v))
+                        .or_else(|| colors_kv.iter().find(|(k, _)| k == &idx_str).map(|(_, v)| v));
+                    if let Some(rgb) = found.and_then(parse_rgb) {
+                        meta.body_colors.insert(l, rgb);
+                    }
+                }
+                ck_io::step::try_write_step_with_meta(&body, &name, &opts, &meta, Some(&surface_name)).map(Json::Str)
+            } else {
+                ck_io::step::try_write_step_with_surfaces(&body, &name, &opts, &surface_name).map(Json::Str)
+            }
         }
         _ => Err(ck_server::session::todo(ty)),
     }

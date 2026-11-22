@@ -558,7 +558,9 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
             .map(|&c| params.get(body.coedge(c).edge.idx()).map_or(1, |p| p.len().max(2) - 1))
             .sum();
         let thin_loop = samples < 3;
-        let chain_closed = (closed_u.is_some() || closed_v.is_some()) && lp.coedges.iter().any(|&c| body.coedge(c).alive && body.coedge(c).pcurve.is_none());
+        // (or a loop that walks one edge both ways: the boolean writes both copies of a closed spline's seam on the same isoline)
+        let seam_twice = lp.coedges.iter().enumerate().any(|(i, &c)| lp.coedges[i + 1..].iter().any(|&d| body.coedge(c).edge == body.coedge(d).edge));
+        let chain_closed = (closed_u.is_some() || closed_v.is_some()) && lp.coedges.iter().any(|&c| body.coedge(c).alive && (seam_twice || body.coedge(c).pcurve.is_none()));
         let (cpu, cpv) = if chain_closed { (closed_u, closed_v) } else { (None, None) };
         let mut raw_uv: Vec<Vec2> = vec![];
         for &c in lp.coedges.iter() {

@@ -32,6 +32,7 @@ pub(super) use super::ends::clip_halfspace;
 pub use super::find::{find_edge, find_edge_by_position, forward_first};
 pub use super::layout::{in_place_layout, in_place_layout_opts, BlendRef, LayoutOpts};
 pub use super::analytic::fillet_line_edge;
+pub use super::analytic::take_ran_off;
 pub use super::cross::{take_rounds_cross, RoundsCross};
 pub use super::model::{ChamferLeg, FilletProfile, Spec};
 pub use super::rounds::blend_edges;

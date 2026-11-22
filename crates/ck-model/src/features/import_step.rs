@@ -81,6 +81,10 @@ pub struct ReadOut {
     pub sorted: ck_heal::honest::Sorted,
     pub left_out: Vec<Vec<ck_heal::repair::LeftOut>>,
     pub solids: usize,
+    /// Per-part STEP names (empty when unnamed in the file), aligned with `sorted.parts`.
+    pub part_names: Vec<String>,
+    /// Per-part STEP AP214/AP242 RGB colors (`0.0..=1.0`), aligned with `sorted.parts`.
+    pub part_colors: Vec<Option<[f64; 3]>>,
 }
 
 /// The id of the surface body of part `k` (0-based) of import feature `id`: `<id>.P<k+1>`.
@@ -165,7 +169,26 @@ pub fn sort_step(imp: ck_io::step::Imported, rename: Option<&str>, heal: Option<
         .iter()
         .map(|p| p.refused_surfaces.iter().map(|(f, s, sense)| ck_heal::repair::LeftOut { id: format!("#{f}"), surface: s.clone(), sense: *sense }).collect())
         .collect();
-    ReadOut { sorted: honest::sort(&body, &parts, cap), left_out, solids: imp.solids }
+    let part_names: Vec<String> = imp.parts.iter().map(|p| p.name.clone()).collect();
+    let part_colors: Vec<Option<[f64; 3]>> = imp.parts.iter().map(|p| p.color).collect();
+    let mut sorted = honest::sort(&body, &parts, cap);
+    // Preserve STEP solid/product/occurrence names on the resulting lumps.
+    let mut used_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for l in sorted.solid.lump_ids().collect::<Vec<_>>() {
+        if let Some(k) = lump_solid_any(&sorted.solid, l) {
+            if let Some(raw_nm) = part_names.get(k.saturating_sub(1)).filter(|s| !s.trim().is_empty()) {
+                let base = raw_nm.trim();
+                let mut cand = base.to_string();
+                let mut n = 2usize;
+                while !used_names.insert(cand.clone()) {
+                    cand = format!("{base} {n}");
+                    n += 1;
+                }
+                sorted.solid.lumps[l.idx()].name = Some(cand);
+            }
+        }
+    }
+    ReadOut { sorted, left_out, solids: imp.solids, part_names, part_colors }
 }
 
 /// What became of each part, as warning params: `[{label, outcome, faces, facesTotal, surface?, reasons:[{code, faces,
@@ -206,6 +229,26 @@ pub fn parts_json(id: &str, parts: &[ck_heal::honest::Part]) -> Json {
 /// The warning an import with parts that are not solids carries (the "needs repair" mark).
 pub const IMPORT_STEP_PARTS: &str = "importStepParts";
 
+/// The place in the file of the solid a lump was read from, from its faces' names
+/// (either `<feature>.I<solid>F<n>` or the reader's `I<solid>.F<n>`).
+fn lump_solid_any(b: &ck_topo::body::Body, l: ck_topo::body::LumpId) -> Option<usize> {
+    let mut found = None;
+    for f in ck_topo::mass::lump_faces(b, l) {
+        let name = &b.face(f).name;
+        let n: usize = if let Some(s) = name.feature.strip_prefix('I') {
+            s.parse().ok()?
+        } else if let ck_topo::body::Role::Other(r) = &name.role {
+            r.strip_prefix('I')?.split('F').next()?.parse().ok()?
+        } else {
+            return None;
+        };
+        if *found.get_or_insert(n) != n {
+            return None;
+        }
+    }
+    found
+}
+
 /// The place in the file of the solid a lump was read from, from its faces' names (`<feature>.I<solid>F<n>`).
 fn lump_solid(b: &ck_topo::body::Body, l: ck_topo::body::LumpId) -> Option<usize> {
     let mut found = None;
@@ -235,7 +278,7 @@ pub fn exec_import_step(br: &mut Brep, state: &mut RegenState, f: &Feature) -> R
         br.combine(&sorted.solid, Combine::Separate, false)?;
     }
     if let (Some(n), Some(b)) = (name, br.body.as_mut()) {
-        let ls: Vec<_> = b.lump_ids().filter(|&l| b.lump(l).name.is_none() && super::bodies::origin(b, l) == Some(f.id.as_str())).collect();
+        let ls: Vec<_> = b.lump_ids().filter(|&l| super::bodies::origin(b, l) == Some(f.id.as_str())).collect();
         // A body takes the number of the solid it was read from, so a solid the reader leaves out keeps its name and
         // gives it to no other body (a later feature that names `<body> 3` still finds that solid). Lumps that cannot
         // be told apart this way (one solid in several lumps) are numbered in order, as before.

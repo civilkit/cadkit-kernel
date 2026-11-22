@@ -146,6 +146,7 @@ struct Split {
     body: Body,
     spans: Vec<super::Span>,
     tolerance_used: Option<f64>,
+    perturb_used: Option<ck_ops::boolean::perturb::Perturbation>,
 }
 
 fn split_body(br: &Brep, body: &Body, pl: &Pl, f: &Feature) -> Result<Split, FeatureError> {
@@ -195,10 +196,14 @@ fn split_whole(br: &Brep, body: &Body, tool: &Body) -> Result<Split, FeatureErro
     use ck_ops::boolean::Op as BOp;
     let mut spans = vec![];
     let mut used: Option<f64> = None;
+    let mut perturb_used: Option<ck_ops::boolean::perturb::Perturbation> = None;
     let mut run = |op: BOp| -> Result<ck_ops::boolean::BoolOut, FeatureError> {
-        let (r, u) = super::fuzzy_boolean(body, tool, op, super::TOL, br.fuzz, br.auto_fuzz);
+        let (r, u, p) = super::fuzzy_boolean(body, tool, op, super::TOL, br.fuzz, br.auto_fuzz, br.retry_perturb);
         if u.is_some() {
             used = u;
+        }
+        if p.is_some() {
+            perturb_used = p;
         }
         match r {
             Ok(out) => {
@@ -220,7 +225,7 @@ fn split_whole(br: &Brep, body: &Body, tool: &Body) -> Result<Split, FeatureErro
     out.append(&below.body);
     out.append(&above.body);
     super::renumber_duplicates(&mut out);
-    Ok(Split { body: out, spans, tolerance_used: used })
+    Ok(Split { body: out, spans, tolerance_used: used, perturb_used })
 }
 
 /// Name the two halves and refuse a name a lump outside the split already has.
@@ -272,6 +277,9 @@ pub fn exec_split(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<
     br.spans.extend(out.spans);
     if out.tolerance_used.is_some() {
         br.fuzz_used = out.tolerance_used;
+    }
+    if out.perturb_used.is_some() {
+        br.perturb_used = out.perturb_used;
     }
     let mut nb = out.body;
     name_halves(&mut nb, &pl, &names, target.as_deref(), &f.id)?;
@@ -416,6 +424,9 @@ pub fn exec_lip_joint(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Res
     br.spans.extend(out.spans);
     if out.tolerance_used.is_some() {
         br.fuzz_used = out.tolerance_used;
+    }
+    if out.perturb_used.is_some() {
+        br.perturb_used = out.perturb_used;
     }
     let nb = out.body;
     let Some((below, above)) = halves(&nb, &pl) else { return Err(FeatureError::new(codes::MISSING_REFERENCE)) };

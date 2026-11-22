@@ -32,7 +32,8 @@
 //! all along the picked edge between them" (`blendUnsupported`: a smooth
 //! pick, refused before any tool runs), "… spring leaves its face away from its edges"
 //! (pinned: `F3.B0: spring leaves its face away from its edges` for r=30 on
-//! a 10 mm box edge), "a convex and a concave blended edge meet at …",
+//! a 10 mm box edge; a convex round or chamfer that runs off one face while its other contact stays on its own face is NOT
+//! refused: it is built on the supports continued and cut from the body, with the warning `blendRanOffFace`), "a convex and a concave blended edge meet at …",
 //! "… blended edges meet at …". A result that the joint guard (`guard.rs`) refuses carries `blendResultInvalid`
 //! with the failing check (`extent`, `crossing`, `containment`, `sliver`) in `params.check`.
 //! [`cross`]: the two edges of one strip face rounded with radii summing to more than its width build the intersection of

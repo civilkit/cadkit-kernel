@@ -536,9 +536,23 @@ and boolean machinery.
   thread length is shorter than one groove, the bore is not smaller than the
   major diameter or is too small for the groove to reach it (a hole far under the
   minor diameter), the shaft is smaller than the root or so far over the major
-  that the groove cannot clear it, the boolean fails, the result is an invalid
-  solid or splits into several lumps, or the removed volume is not within
-  0.4x-1.6x of the analytic groove volume.
+  that the groove cannot clear it, the groove would cross an earlier modeled
+  thread of the same face over more than 36 turn crossings (turns of the new
+  groove x turns of the old one over the stretch both cover; refused before
+  any boolean runs, the reason names the other thread and both turn counts), the
+  boolean fails at every helix start tried, the result is an invalid solid or splits
+  into several lumps, or the removed volume is not within 0.4x-1.6x of the
+  analytic groove volume.
+- Retries: the boolean can fail to close the intersection of a groove flank with the
+  rim for one start position of the helix and not for the next (an M10x1 on a 30 mm
+  shaft failed, 29 and 31 mm did not). The cut is therefore tried at up to three
+  helix starts (0, 0.37 and 0.71 turns round the axis; the later ones also overshoot an
+  open end by a different amount). The first is the default, so a thread that cuts
+  at once is unchanged. The fallback reason says that the other starts failed too.
+  Known limit: two modeled threads over the same stretch of one face (a left-hand
+  thread over a right-hand one) are not built; the boolean fails on the crossing
+  grooves even for a few turns (about 3 s) and for 20 x 20 turns ran for over a minute,
+  so the second falls back and its warning says why.
 - Volume: the removed volume equals the analytic groove volume (ring integral of
   the groove width over the cut radii, per pitch, times length / pitch); the
   tests check it to 5 percent for full-length threads and to 10 percent for partial
@@ -1583,3 +1597,7 @@ triangles closer than 0.8 x min(their current distance, `tol`) to a triangle tha
 - Every tool call returns within a bounded time on the benchmark set.
 - The protocol lint passes for the server layer.
 - Edit atomicity: a failing batch leaves the document unchanged.
+
+## Fillet and chamfer: a blend larger than the face beside its edge
+
+A round or chamfer whose size is larger than the face it rolls onto now builds when at least one of its two contacts stays on its face (before, it was refused with `blendOverflow`). The body is built as if the face continued, and what the blend takes beyond the face is cut from the body. The regen result carries a warning `blendRanOffFace {detail, faces}` (wire `warnings`, `[featureId, {code, params}]`), where `faces` lists the face ids the blend ran off. When both contacts run off their faces the feature is still refused with `blendOverflow`.

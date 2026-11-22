@@ -304,10 +304,13 @@ add('overhang_skew_refused', 'overhang_skew', { k: 'fillet', r: 2 }, [{ at: [25,
 
 // 9. chamfers over a narrow neighbour face (MitCad 0.44 comparison, docs/superpowers/plans/2026-11-05-mitcad-learnings.md Task 3):
 // the chamfer distance is larger than the face beside the edge, so the chamfer has to run past that face into the next one.
-// OCCT's MakeChamfer fails on all four (`Build failed`, tools/blend_reference.json), so each expects the kernel's refusal.
-// The kernel's detail names its own chamfer face (`F9.B0: spring leaves its face away from its edges`), not the narrow face.
-add('chamfer_narrow_planar', 'ledge', { k: 'chamfer', d: 2 }, [[20, 10, 0]], { expect: 'blendOverflow' }); // 1 mm strip F2.C1, d 2
-add('chamfer_narrow_curved', 'disc1', { k: 'chamfer', d: 1.5 }, [[28, 11, -20]], { expect: 'blendOverflow', curved: true }); // boss cylinder F4.S.e1 1 high, d 1.5
+// OCCT's MakeChamfer fails on all four (`Build failed`, tools/blend_reference.json). A chamfer larger than the narrow face beside its
+// edge builds when one contact stays on its face (warning blendRanOffFace): the planar and curved cases are checked against the
+// analytic volume (`vol`); the meets-chamfer case (both rib edges) and the 1 mm plate edge keep the kernel's refusal.
+// planar: the box 8000 + the 40 x 19 x 10 block 7600, less the chamfer's triangle (legs 2) over the 40 mm edge: 15600 - 80.
+add('chamfer_narrow_planar', 'ledge', { k: 'chamfer', d: 2 }, [[20, 10, 0]], { vol: 15520 }); // 1 mm strip F2.C1, d 2
+// curved: the 40 x 40 x 10 plate + the r 8 x 1 boss, less the revolved triangle (legs 1.5, centroid radius 7.5): 2 pi 7.5 1.125.
+add('chamfer_narrow_curved', 'disc1', { k: 'chamfer', d: 1.5 }, [[28, 11, -20]], { vol: 40 * 40 * 10 + Math.PI * 64 - 2 * Math.PI * 7.5 * 1.125, curved: true }); // boss cylinder F4.S.e1 1 high, d 1.5
 add('chamfer_narrow_meets_chamfer', 'rib', { k: 'chamfer', d: 1.5 }, [[20, 15, -9.5], [20, 15, -10.5]], { expect: 'blendOverflow' }); // both rib edges, strip F4.C1 1 wide
 add('chamfer_narrow_unreachable', 'thin1', { k: 'chamfer', d: 2 }, [[20, 1, 0]], {
   // a 1 mm plate edge, d 2 on the 1 mm side face F2.S.e1: no body to run on to
@@ -587,6 +590,11 @@ for (const c of cases) {
     status = 'FAIL'; note = `normal jump ${r.g1.max.toFixed(4)} rad across ${r.g1.where}, vol ${r.vol?.toFixed(4)}`;
   } else if (r.open) {
     status = 'FAIL'; note = `${r.open} open mesh edge(s) (a face is missing in the display mesh), vol ${r.vol?.toFixed(4)}`;
+  } else if (c.vol != null) {
+    // `vol`: an analytic volume (the case has no OCCT reference)
+    const rel = Math.abs(r.vol - c.vol) / c.vol;
+    status = rel <= tol ? 'ok' : 'FAIL';
+    note = `vol ${r.vol.toFixed(4)} analytic ${c.vol.toFixed(4)} (rel ${rel.toExponential(1)})`;
   } else if (!rf || rf.volume == null) {
     status = 'NOREF'; note = `vol ${r.vol?.toFixed(4)} (no OCCT reference${rf?.error ? ': ' + rf.error : ''})`;
   } else {

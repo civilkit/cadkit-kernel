@@ -1,5 +1,6 @@
 //! Thread size tables (`ck_model::threads`): the standard sizes are present, every row follows the
 //! basic-dimension formulas of its standard, and the newly added sizes build a modeled thread on a shaft.
+//! Plus the limits of the modeled build (long threads, a second thread over the first).
 
 use ck_model::threads::{self, find, sizes};
 
@@ -190,5 +191,69 @@ fn new_sizes_build_a_valid_modeled_thread_on_a_shaft() {
         assert_eq!(b.num_lumps(), 1);
         let dv = v0 - r.volume;
         assert!(dv > 0.0 && (dv - want).abs() <= 0.15 * want, "{size}: removed {dv}, analytic {want}");
+    }
+}
+
+/// Ladder case: M10x1 over a 30 mm shaft (30 turns). The first helix start leaves the boolean with an open edge where the
+/// flank meets the rim; the retry at another start cuts, so the thread is modeled instead of a cosmetic fallback.
+#[test]
+fn fine_m10x1_on_a_30mm_shaft_is_modeled() {
+    let base = shaft(10.0, 30.0);
+    let plain = tf::run(&base);
+    let r = tf::run(&format!("{base}{}", th("T1", r#""standard":"metric-fine","size":"M10x1""#)));
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    assert!(r.warning("threadModelFallback").is_none(), "{:?}", r.result.warnings.iter().map(|w| w.error.describe()).collect::<Vec<_>>());
+    assert_eq!(r.thread("T1").get_bool("modeled"), Some(true));
+    let b = r.body.as_ref().unwrap();
+    assert!(ck_check::validate(b, 1e-6).is_empty());
+    assert_eq!(b.num_lumps(), 1);
+    let spec = find("metric-fine", "M10x1").unwrap();
+    let g = ck_model::features::thread::model::groove(spec, false, 5.0).unwrap();
+    let want = g.per_pitch * 30.0 / spec.pitch;
+    let dv = plain.volume - r.volume;
+    assert!((dv - want).abs() <= 0.06 * want, "removed {dv}, analytic {want}");
+}
+
+/// Neighbouring lengths of the same thread (the failure was specific to one start position) also build.
+#[test]
+fn fine_m10x1_neighbouring_lengths_are_modeled() {
+    for l in [29.0, 31.0] {
+        let r = tf::run(&format!("{}{}", shaft(10.0, l), th("T1", r#""standard":"metric-fine","size":"M10x1""#)));
+        assert_eq!(r.thread("T1").get_bool("modeled"), Some(true), "L={l}: {:?}", r.result.warnings.iter().map(|w| w.error.describe()).collect::<Vec<_>>());
+    }
+}
+
+/// Ladder case "both hands": a left-hand thread over a right-hand one on the same 30 mm of the same face crosses it
+/// about 20 x 20 times, which the boolean could not finish (it ran for over a minute and then failed). It is refused
+/// up front, with the numbers and what to change, and the first thread is untouched.
+#[test]
+fn second_thread_over_the_first_falls_back_fast_with_the_reason() {
+    let base = shaft(10.0, 30.0);
+    let one = tf::run(&format!("{base}{}", th("T1", r#""standard":"metric","size":"M10""#)));
+    assert_eq!(one.thread("T1").get_bool("modeled"), Some(true));
+    let both = tf::run(&format!("{base}{}{}", th("T1", r#""standard":"metric","size":"M10""#), th("T2", r#""standard":"metric","size":"M10","hand":"left""#)));
+    assert!(both.errors().is_empty(), "{:?}", both.errors());
+    let w = both.result.warnings.iter().find(|w| w.feature == "T2" && w.error.code == "threadModelFallback").expect("T2 falls back");
+    let reason = w.error.params.iter().find(|p| p.0 == "reason").and_then(|p| p.1.as_str()).unwrap().to_string();
+    assert!(reason.contains("T1") && reason.contains("turn crossings") && reason.contains("shorter or separate"), "{reason}");
+    assert_eq!(both.thread("T2").get_bool("modeled"), Some(false));
+    assert_eq!(both.thread("T1").get_bool("modeled"), Some(true));
+    // the body is exactly the one with the first thread alone, and no second boolean ran
+    assert_eq!(both.volume, one.volume);
+    assert!(both.ms < one.ms * 2.0 + 500.0, "second thread took {} ms against {} ms for the first", both.ms, one.ms);
+}
+
+/// Threads on different stretches of one shaft do not cross, so the early refusal does not apply to them.
+#[test]
+fn threads_on_separate_stretches_are_not_refused() {
+    let base = shaft(10.0, 40.0);
+    let r = tf::run(&format!(
+        "{base}{}{}",
+        th("T1", r#""standard":"metric","size":"M10","length":10,"start":"top""#),
+        th("T2", r#""standard":"metric","size":"M10","length":10,"start":"bottom","hand":"left""#)
+    ));
+    for w in &r.result.warnings {
+        let d = w.error.describe();
+        assert!(!d.contains("turn crossings"), "refused: {d}");
     }
 }
