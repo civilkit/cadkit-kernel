@@ -309,11 +309,85 @@ pub fn chamfer_label(id: &str, d: f64, n: usize) -> String {
     format!("{id}: Chamfer({d:?}, {d:?}) of {n} edge{}", if n == 1 { "" } else { "s" })
 }
 
+/// A refusal of a blend option: `invalidValue {field, detail, hint}`.
+fn blend_opt_error(field: &str, detail: String, hint: &str) -> FeatureError {
+    FeatureError::new("invalidValue").with("field", Json::Str(field.into())).with("detail", Json::Str(detail)).with("hint", Json::Str(hint.into()))
+}
+
+/// Evaluate the optional partial-edge `startOffset`, `endOffset` (fillet and chamfer) and corner `setback` (fillet) of
+/// feature `f`, in mm. `startOffset` counts from the end of each picked edge nearer its pick point, `endOffset` from the
+/// other end; `setback` is the distance along each edge from a three-edge vertex to the corner patch (0 or absent:
+/// automatic). Each must be a finite number >= 0, else `invalidValue {field, detail, hint}`. With `propagate: true`
+/// the offsets are refused (they would stop the blend short at every joint of the tangent chain).
+fn parse_blend_opts(state: &RegenState, f: &Feature, allow_setback: bool) -> Result<ck_ops::blend::build::BlendOpts, FeatureError> {
+    let eval_opt = |camel: &str, snake: &str, typed: Option<f64>| -> Result<Option<f64>, FeatureError> {
+        let val = if f.raw.get(camel).is_some() {
+            Some(state.num(f, camel, 0.0)?)
+        } else if f.raw.get(snake).is_some() {
+            Some(state.num(f, snake, 0.0)?)
+        } else {
+            typed
+        };
+        if let Some(v) = val {
+            if !v.is_finite() || v < 0.0 {
+                return Err(blend_opt_error(camel, format!("{camel} is {v}: it must be a distance of 0 or more"), "give 0 (or leave it out) or a positive distance in mm"));
+            }
+        }
+        Ok(val)
+    };
+    let (typed_start, typed_end, typed_setback) = match &f.kind {
+        FeatureKind::Fillet { start_offset, end_offset, setback, .. } => (*start_offset, *end_offset, *setback),
+        FeatureKind::Chamfer { start_offset, end_offset, .. } => (*start_offset, *end_offset, None),
+        _ => (None, None, None),
+    };
+    let start_offset = eval_opt("startOffset", "start_offset", typed_start)?;
+    let end_offset = eval_opt("endOffset", "end_offset", typed_end)?;
+    let setback = if allow_setback { eval_opt("setback", "setback", typed_setback)? } else { None };
+    if (start_offset.is_some_and(|v| v > 0.0) || end_offset.is_some_and(|v| v > 0.0)) && propagates(f) {
+        let field = if start_offset.is_some_and(|v| v > 0.0) { "startOffset" } else { "endOffset" };
+        return Err(blend_opt_error(
+            field,
+            format!("{field} cannot be combined with propagate: the blend would stop short at every joint of the tangent chain"),
+            "select the edges explicitly instead of propagate, or drop the offsets",
+        ));
+    }
+    Ok(ck_ops::blend::build::BlendOpts { start_offset, end_offset, setback })
+}
+
+/// After a fillet with a `setback` built: the warning `blendSetbackAdjusted {requested, applied, min, max, detail}` for a
+/// corner whose setback was outside the range its radii and edges allow (moved to the nearest end of it), and
+/// `blendSetbackUnused {detail}` when no corner of the selection took a setback patch (a setback applies to a vertex
+/// where exactly three selected edges meet between planes).
+fn setback_warnings(state: &mut RegenState, id: &str, opts: &ck_ops::blend::build::BlendOpts) {
+    let rep = ck_ops::blend::build::take_setback_report();
+    state.result.warnings.retain(|w| !(w.feature == id && (w.error.code == "blendSetbackAdjusted" || w.error.code == "blendSetbackUnused")));
+    let Some(req) = opts.setback.filter(|&s| s > 0.0) else { return };
+    let round = |x: f64| (x * 1e6).round() / 1e6;
+    if rep.used == 0 {
+        let e = FeatureError::new("blendSetbackUnused")
+            .with("requested", Json::Num(round(req)))
+            .with("detail", Json::Str("no corner of the selection took the setback: it applies where exactly three selected edges meet at a vertex between planes".into()));
+        state.result.warnings.push(crate::regen::RegenError { feature: id.to_string(), error: e });
+        return;
+    }
+    if let Some(a) = rep.adjusted.last() {
+        let e = FeatureError::new("blendSetbackAdjusted")
+            .with("requested", Json::Num(round(a[0])))
+            .with("applied", Json::Num(round(a[1])))
+            .with("min", Json::Num(round(a[2])))
+            .with("max", Json::Num(round(a[3])))
+            .with("detail", Json::Str("the setback is outside the range these radii and edge lengths allow at the corner; the nearest value in the range was used".into()));
+        state.result.warnings.push(crate::regen::RegenError { feature: id.to_string(), error: e });
+    }
+}
+
 /// `chamfer`. Oracle (box probes): `equal` (also the default) is the only
 /// supported edge chamfer; `distanceDistance` / `angleDistance` / unknown
 /// types fail `unsupported {what:"chamfer <type>"}` before anything else.
 pub fn exec_chamfer(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
     let FeatureKind::Chamfer { chamfer_type, edges, .. } = &f.kind else { unreachable!() };
+    let opts = parse_blend_opts(state, f, false)?;
+    let _opts_guard = ck_ops::blend::build::BlendOptsGuard::new(opts);
     let ty = f.raw.get("chamferType").and_then(|v| v.as_str()).unwrap_or("equal").to_string();
     // `distanceDistance` / `angleDistance` are the long names of `distances` / `angle`
     let ty = match ty.as_str() {
@@ -321,6 +395,9 @@ pub fn exec_chamfer(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Resul
         "angleDistance" => "angle".to_string(),
         _ => ty,
     };
+    if ty == "variable" {
+        return exec_chamfer_variable(br, state, f, edges);
+    }
     if matches!(ty.as_str(), "distances" | "angle") {
         return exec_chamfer_legs(br, state, f, edges, &ty);
     }
@@ -341,6 +418,56 @@ pub fn exec_chamfer(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Resul
     ck_ops::blend::build::take_ran_off();
     let out = ck_ops::blend::build::chamfer(body, &sel, d, &f.id, super::TOL).map_err(blend_error)?;
     ran_off_warning(state, &f.id);
+    br.body = Some(out);
+    Ok(())
+}
+
+/// `chamferType: "variable"`: the equal-distance chamfer whose distance runs linearly along each picked edge from
+/// `startDistance` at the end of the edge nearer its pick point to `endDistance` at the other end (the same
+/// near / far convention as `startOffset` and a variable fillet's `radii`). A pick may carry its own `startDistance` /
+/// `endDistance`; the feature's pair is the default. Straight edges between two planar faces only; the chamfer face is
+/// planar. Edges that meet at a vertex must agree on the distance there (`variableRadiusMismatch`). `startOffset` /
+/// `endOffset` apply as for the other chamfers; `propagate` is refused. Errors name the field (`invalidValue {field, detail, hint}`).
+fn exec_chamfer_variable(br: &mut Brep, state: &mut RegenState, f: &Feature, edges: &[crate::EdgeRef]) -> Result<(), FeatureError> {
+    let bad = |field: &str, detail: String, hint: &str| {
+        FeatureError::new("invalidValue").with("field", Json::Str(field.into())).with("detail", Json::Str(detail)).with("hint", Json::Str(hint.into()))
+    };
+    if propagates(f) {
+        return Err(bad("propagate", "a variable chamfer does not follow a tangent chain".into(), "turn propagate off and pick each edge"));
+    }
+    let eval = |state: &RegenState, j: &Json, field: &str| -> Result<f64, FeatureError> {
+        let v = crate::expr::eval_field(Some(j), &state.vars, f64::NAN).unwrap_or(f64::NAN);
+        if v.is_finite() && v > 0.0 {
+            Ok(v)
+        } else {
+            Err(bad(field, format!("{field} is {v}: a variable chamfer needs a finite distance above 0 at both ends"), "give startDistance and endDistance in mm, e.g. 4 and 1"))
+        }
+    };
+    let feat_pair = {
+        let mut out = [0.0; 2];
+        for (i, field) in ["startDistance", "endDistance"].into_iter().enumerate() {
+            match f.raw.get(field) {
+                Some(j) => out[i] = eval(state, j, field)?,
+                None => return Err(bad(field, format!("{field} is missing: a variable chamfer needs startDistance and endDistance"), "give both, e.g. startDistance 4, endDistance 1")),
+            }
+        }
+        out
+    };
+    let sel = select_edges(br, edges)?;
+    let picks = f.raw.get("edges").and_then(|a| a.as_arr());
+    let mut per_pick: Vec<[f64; 2]> = vec![];
+    for i in 0..sel.len() {
+        let mut pair = feat_pair;
+        for (k, field) in ["startDistance", "endDistance"].into_iter().enumerate() {
+            if let Some(j) = picks.and_then(|a| a.get(i)).and_then(|p| p.get(field)) {
+                pair[k] = eval(state, j, field)?;
+            }
+        }
+        per_pick.push(pair);
+    }
+    br.spans.push(Span::leaf(format!("{}: Chamfer({:?}..{:?}) of {} edge{}", f.id, feat_pair[0], feat_pair[1], sel.len(), if sel.len() == 1 { "" } else { "s" })));
+    let body = br.body.as_ref().ok_or_else(|| FeatureError::new("missingEdge"))?;
+    let out = ck_ops::blend::interp::variable_chamfer_picks(body, &sel, &per_pick, &f.id, super::TOL).map_err(blend_error)?;
     br.body = Some(out);
     Ok(())
 }
@@ -655,6 +782,8 @@ pub fn on_lump_of_face(br: &mut Brep, face: &str, run: impl FnOnce(&mut Brep) ->
 /// `missingEdge`; none of these open the `Fillet(..)` span.
 pub fn exec_fillet(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
     let FeatureKind::Fillet { edges, .. } = &f.kind else { unreachable!() };
+    let opts = parse_blend_opts(state, f, true)?;
+    let _opts_guard = ck_ops::blend::build::BlendOptsGuard::new(opts);
     if let Some(t) = f.raw.get("filletType").and_then(|v| v.as_str()) {
         if t == "variable" {
             return exec_variable_fillet(br, state, f, edges);
@@ -689,7 +818,8 @@ pub fn exec_fillet(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
             let body = br.body.as_ref().ok_or_else(|| FeatureError::new("missingEdge"))?;
             br.spans.push(Span::leaf(fillet_label(&f.id, radii.iter().cloned().fold(0.0, f64::max), sel.len())));
             // mixed vertices first (a wall radius and a rim radius), else the per-edge builder
-            let mixed = if profile == ck_ops::blend::build::FilletProfile::Circular { ck_ops::blend::mixed::fillet_mixed(body, &sel, &radii, &f.id, super::TOL) } else { None };
+            let partial = opts.start_offset.is_some_and(|v| v > 0.0) || opts.end_offset.is_some_and(|v| v > 0.0);
+            let mixed = if profile == ck_ops::blend::build::FilletProfile::Circular && !partial { ck_ops::blend::mixed::fillet_mixed(body, &sel, &radii, &f.id, super::TOL) } else { None };
             ck_ops::blend::build::take_rounds_cross();
             let out = match mixed {
                 Some(res) => res.map_err(blend_error)?,
@@ -698,6 +828,7 @@ pub fn exec_fillet(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
             if !rounds_cross_warning(state, &f.id) {
                 corner_warnings(state, &f.id, &out);
             }
+            setback_warnings(state, &f.id, &opts);
             br.body = Some(out);
             return Ok(());
         }
@@ -706,12 +837,13 @@ pub fn exec_fillet(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
     let body = br.body.as_ref().ok_or_else(|| FeatureError::new("missingEdge"))?;
     br.spans.push(Span::leaf(fillet_label(&f.id, r, sel.len())));
     // two convex edges and a concave one at a vertex: the concave corner is filled first, the rim rolls round it
-    if profile == ck_ops::blend::build::FilletProfile::Circular {
+    if profile == ck_ops::blend::build::FilletProfile::Circular && opts.start_offset.is_none_or(|v| v <= 0.0) && opts.end_offset.is_none_or(|v| v <= 0.0) {
         if let Some(res) = ck_ops::blend::mixed::fillet_mixed(body, &sel, &vec![r; sel.len()], &f.id, super::TOL)
             .map(|res| res.and_then(|out| ck_ops::blend::validity::guard(body, &out, &sel, r, super::TOL).map(|_| out)))
         {
             match res {
                 Ok(out) => {
+                    setback_warnings(state, &f.id, &opts);
                     br.body = Some(out);
                     return Ok(());
                 }
@@ -738,6 +870,7 @@ pub fn exec_fillet(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
     let out = build(r).map_err(|e| size_refusal(e, r, ck_check::validate(body, super::TOL).len(), body.num_faces(), body_scale(body), build))?;
     ran_off_warning(state, &f.id);
     rounds_cross_warning(state, &f.id);
+    setback_warnings(state, &f.id, &opts);
     br.body = Some(out);
     Ok(())
 }

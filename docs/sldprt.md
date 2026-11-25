@@ -192,6 +192,7 @@ Not imported: none of the NIST parts (as of 2026-11-15 nist_ctc_02 and nist_ftc_
 
 | Area | State |
 |---|---|
+| Assemblies (`.SLDASM`) | the component tree (nested sub-assemblies, per-instance transform, referenced file names, suppressed / hidden flags, configuration names) is read from `swXmlContents/COMPINSTANCETREE` by `ck-sldprt::asm` and request `sldasmTree` (book/src/io/sldprt.md); mates, in-context references and the parts' geometry are not read |
 | Feature tree, sketches, dimensions, PMI, configurations | not read; only the body of the first / active partition (`Config-0-Partition`) is imported, other configurations (`Config-N-*`) are separate streams that are ignored. The part's stored mass properties are returned in `import.swMassProps` (from `docProps/ISolidWorksInformation.xml`) as an independent check |
 | Sheet metal | the folded body imports as an ordinary solid; flat pattern, bend table and sheet-metal features are not read |
 | Surface (sheet) and wire bodies | not imported; a file with only such bodies answers `unsupported.body` (the CANivore-style file made of 11 surface bodies) |
@@ -201,3 +202,15 @@ Not imported: none of the NIST parts (as of 2026-11-15 nist_ctc_02 and nist_ftc_
 | Approximation | rolling-ball blends, intersection curves and SP-curves are interpolated B-splines; each is reported with its maximum deviation and refused above 0.05 mm. A few parts then fail the kernel validator's tight edge / surface check (`EDGE_OFF_SURFACE`, tolerance about 1e-5 relative) although volume and area match SolidWorks to 1e-3 or better |
 | Spheres | a hemisphere bounded by a great circle through the poles is re-expressed with a new axis; patches whose boundary arcs cannot be pole-free for any of 96 candidate axes are left alone |
 | Speed | the reader itself takes 5 to 700 ms per part (largest NIST parts 0.3 to 0.7 s); `importSldprt` also tessellates the result for the reply, which dominates on 400-face parts (several seconds, the same cost as `importStep` of the same part) |
+
+## Assembly trees (`ck-sldprt::asm`, request `sldasmTree`)
+
+Written from our own reading of 16 sample assemblies (two products' CAD sets, all SolidWorks 2015+ container, 2 to 380 references each). Stream list of an assembly: the part's streams plus `swXmlContents/COMPINSTANCETREE` (XML, `sw2003` schema), `Contents/Config-N-MatesList` (mates, not read) and `Contents/DisplayLists` (large, not read).
+
+Layout of the tree (see the module docs of `crates/ck-sldprt/src/asm.rs`): `swHeader/swFile` lists every document (type, path), `swModelList/swModel` has one entry per (document, configuration) in use, an assembly model holds `swReference` children (one per instance, with `swModelRef`, `swTransform`, `swSuppressed`, `swHidden`, `swIsVirtualComponent`, `swConfigurationName`, ...), and `swConfigurationList` names the top assembly's configurations (`swMostRecentConfiguration` marks the saved one). The top assembly is the model no reference points to; a top assembly with N configurations has N such models, one per configuration (the 16 samples have between 1 and 10).
+
+`swTransform` is a row-vector 4x4 in metres, relative to the parent assembly. The orientation (rows are the images of the axes, not columns) was settled on the sample whose five placed parts reproduce the assembly's stored bounding box only with the row reading; on the rest of the set (symmetric rotations) both readings agree.
+
+Results (fast profile, laptop): all 16 samples read in every configuration (871 components in the active configurations; 6 files have several configurations, up to 10), every transform is finite, a proper rotation (|det| = 1 within 1e-6) with last column `0 0 0 1`, every instance names a file, and the component count matches the tree. `asPart` gives 2 to 266 `insertPart` features per file and every document regenerates with no errors (0 to 6 ms). `sldasmTree` takes 1 to 250 ms per file, except the files with a very large display-list stream (0.8 to 1.7 s, almost all of it the container inflating the stream, up to 55 MB).
+
+Not decoded: mates (`Config-N-MatesList` is a binary stream), in-context references, exploded views, per-instance display state, equations, patterns of components as such (each instance is listed). Old-format (OLE2) assemblies go through the same code (the stream is read through `Container::data`, which unwraps `__ZLB`), but no OLE2 assembly was available to test it.

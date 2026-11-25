@@ -98,6 +98,10 @@ pub type ImportSldprtHook = fn(cx: &mut Cx) -> Result<(Json, Option<State>), Str
 /// Same contract as [`ImportSatHook`].
 pub type ImportSkpHook = fn(cx: &mut Cx) -> Result<(Json, Option<State>), String>;
 
+/// Engine hook for `importF3d`: reads `msg.data` (base64 of a Fusion `.f3d` / `.f3z` file, or of one `.smb` / `.smbh` body blob) into
+/// bodies. Same contract as [`ImportSatHook`].
+pub type ImportF3dHook = fn(cx: &mut Cx) -> Result<(Json, Option<State>), String>;
+
 /// Engine hook for `meshToSolid`: a triangle mesh (`msg.positions*`, `msg.indices*`) into a solid body. Same contract as
 /// [`ImportSatHook`].
 pub type MeshToSolidHook = fn(cx: &mut Cx) -> Result<(Json, Option<State>), String>;
@@ -106,16 +110,26 @@ pub type MeshToSolidHook = fn(cx: &mut Cx) -> Result<(Json, Option<State>), Stri
 /// part document. Read only: answers the reply and leaves the session alone.
 pub type SldprtHistoryHook = fn(cx: &mut Cx) -> Result<Json, String>;
 
+/// Engine hook for `sldasmTree`: the component tree of a SolidWorks assembly file (base64 in `msg.data`). Read only.
+pub type SldasmTreeHook = fn(cx: &mut Cx) -> Result<Json, String>;
+
 /// Engine hook for `builtExport`: the saved results of the import features built or read in this process (see
 /// `docs/regen-cache.md`, "Saved bodies"). Read only.
 pub type BuiltExportHook = fn(cx: &mut Cx) -> Result<Json, String>;
 
+/// Engine hook for `f3dFeatures`: maps the design dumps the lazy decoder wasm made (`f3dDump`) to ck-part feature lists and
+/// checks them against the imported body (needs the kernel's regen, so it lives in the main kernel). Read only.
+pub type F3dFeaturesHook = fn(cx: &mut Cx) -> Result<Json, String>;
+
 #[derive(Default, Clone, Copy)]
 pub struct Hooks {
+    pub f3d_features: Option<F3dFeaturesHook>,
     pub built_export: Option<BuiltExportHook>,
     pub sldprt_history: Option<SldprtHistoryHook>,
+    pub sldasm_tree: Option<SldasmTreeHook>,
     pub import_sat: Option<ImportSatHook>,
     pub import_skp: Option<ImportSkpHook>,
+    pub import_f3d: Option<ImportF3dHook>,
     pub mesh_to_solid: Option<MeshToSolidHook>,
     pub import_sldprt: Option<ImportSldprtHook>,
     pub import_step: Option<ImportHook>,
@@ -132,6 +146,9 @@ pub struct Cx<'a> {
     pub bufs: &'a mut Buffers,
     pub trace: &'a mut Trace,
     pub hooks: Hooks,
+    /// Notes for the reply envelope (`warnings`, only sent when there are some): for a reply that is a bare value, such as
+    /// the STEP text of `step`, which has no field of its own to carry them.
+    pub warnings: Vec<String>,
 }
 
 impl<'a> Cx<'a> {

@@ -181,6 +181,71 @@ pub struct Region {
     pub holes: Vec<Vec<Seg>>,
 }
 
+/// The loop as a polygon (each segment sampled, so an arc is a few chords).
+fn region_loop_poly(l: &[Seg]) -> Vec<P> {
+    let mut out = Vec::new();
+    for s in l {
+        let pts = s.sample(48);
+        out.extend_from_slice(&pts[..pts.len() - 1]);
+    }
+    out
+}
+
+/// Even-odd test of a point against a polygon.
+fn region_in_poly(poly: &[P], p: P) -> bool {
+    let mut inside = false;
+    for i in 0..poly.len() {
+        let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
+        if (a[1] > p[1]) != (b[1] > p[1]) && p[0] < a[0] + (p[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0]) {
+            inside = !inside;
+        }
+    }
+    inside
+}
+
+impl Region {
+    /// Whether the point lies inside the outer loop and inside none of the holes (a point on the boundary is
+    /// decided by rounding: pick points well inside).
+    pub fn contains(&self, p: [f64; 2]) -> bool {
+        region_in_poly(&region_loop_poly(&self.outer), p) && !self.holes.iter().any(|h| region_in_poly(&region_loop_poly(h), p))
+    }
+
+    /// A point well inside the region (in its outer loop, in none of its holes): the middle of the widest stretch of a
+    /// few horizontal scan lines. `None` for a region with no area.
+    pub fn interior_point(&self) -> Option<[f64; 2]> {
+        let loops: Vec<Vec<P>> = std::iter::once(region_loop_poly(&self.outer)).chain(self.holes.iter().map(|h| region_loop_poly(h))).collect();
+        let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+        for q in &loops[0] {
+            lo = lo.min(q[1]);
+            hi = hi.max(q[1]);
+        }
+        if !(hi > lo) {
+            return None;
+        }
+        let mut best: Option<(f64, [f64; 2])> = None;
+        for k in 1..=15 {
+            let y = lo + (hi - lo) * (k as f64 / 16.0 + 0.0137);
+            let mut xs: Vec<f64> = Vec::new();
+            for poly in &loops {
+                for i in 0..poly.len() {
+                    let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
+                    if (a[1] > y) != (b[1] > y) {
+                        xs.push(a[0] + (y - a[1]) / (b[1] - a[1]) * (b[0] - a[0]));
+                    }
+                }
+            }
+            xs.sort_by(|a, b| a.total_cmp(b));
+            for w in xs.chunks_exact(2) {
+                let width = w[1] - w[0];
+                if best.is_none_or(|(bw, _)| width > bw) {
+                    best = Some((width, [(w[0] + w[1]) / 2.0, y]));
+                }
+            }
+        }
+        best.filter(|(w, _)| *w > 0.0).map(|(_, p)| p).filter(|p| self.contains(*p))
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Profiles {
     pub regions: Vec<Region>,
@@ -453,10 +518,33 @@ fn samples(c: &Curve) -> Vec<(f64, P)> {
         .collect()
 }
 
+/// A curve's samples and the box of them, made once per curve.
+struct Sampled {
+    pts: Vec<(f64, P)>,
+    bbox: [f64; 4],
+}
+
+fn sampled(c: &Curve) -> Sampled {
+    let pts = samples(c);
+    let mut bbox = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+    for (_, q) in &pts {
+        bbox = [bbox[0].min(q[0]), bbox[1].min(q[1]), bbox[2].max(q[0]), bbox[3].max(q[1])];
+    }
+    // a non-finite sample: no early out (NaN compares false)
+    Sampled { pts, bbox }
+}
+
 /// Generic intersection: polyline crossing + Newton refinement on P(s) = Q(t).
-fn inter_generic(a: &Curve, b: &Curve, ta: &mut Vec<f64>, tb: &mut Vec<f64>) {
-    let sa = samples(a);
-    let sb = samples(b);
+fn inter_generic(a: &Curve, b: &Curve, sa: &Sampled, sb: &Sampled, ta: &mut Vec<f64>, tb: &mut Vec<f64>) {
+    // Every crossing lies in both polylines' boxes (the padding covers the segment test's 1e-9 end slack), so curves
+    // whose sampled boxes are apart cannot cross: skipping them gives the same result. (A gear outline has one fitted
+    // spline per tooth gap, hundreds of samples each: all those pairs used to be tested.)
+    let (ba, bb) = (sa.bbox, sb.bbox);
+    let pad = 1e-7 * (1.0 + ba.iter().chain(bb.iter()).fold(0.0f64, |m, x| m.max(x.abs())));
+    if ba[0] > bb[2] + pad || bb[0] > ba[2] + pad || ba[1] > bb[3] + pad || bb[1] > ba[3] + pad {
+        return;
+    }
+    let (sa, sb) = (&sa.pts, &sb.pts);
     for i in 0..sa.len() - 1 {
         for j in 0..sb.len() - 1 {
             let (p0, p1) = (sa[i].1, sa[i + 1].1);
@@ -543,13 +631,13 @@ fn curve_box(c: &Curve) -> Option<[f64; 4]> {
     Some([b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad])
 }
 
-fn intersect(a: &Curve, b: &Curve, ta: &mut Vec<f64>, tb: &mut Vec<f64>) {
+fn intersect(a: &Curve, b: &Curve, ca: &std::cell::OnceCell<Sampled>, cb: &std::cell::OnceCell<Sampled>, ta: &mut Vec<f64>, tb: &mut Vec<f64>) {
     match (&a.geom, &b.geom) {
         (Geom::Line { .. }, Geom::Line { .. }) => inter_line_line(a, b, ta, tb),
         (Geom::Line { .. }, Geom::Circle { .. }) => inter_line_circle(a, b, ta, tb),
         (Geom::Circle { .. }, Geom::Line { .. }) => inter_line_circle(b, a, tb, ta),
         (Geom::Circle { .. }, Geom::Circle { .. }) => inter_circle_circle(a, b, ta, tb),
-        _ => inter_generic(a, b, ta, tb),
+        _ => inter_generic(a, b, ca.get_or_init(|| sampled(a)), cb.get_or_init(|| sampled(b)), ta, tb),
     }
 }
 
@@ -828,6 +916,7 @@ pub fn profiles_with(sk: &Sketch, texts: &[super::text::TextLayout]) -> Profiles
     // conservative boxes (padded past every intersection tolerance below):
     // curves with disjoint boxes cannot cross
     let boxes: Vec<Option<[f64; 4]>> = curves.iter().map(curve_box).collect();
+    let sampled_of: Vec<std::cell::OnceCell<Sampled>> = (0..n).map(|_| std::cell::OnceCell::new()).collect();
     for i in 0..n {
         for j in i + 1..n {
             if let (Some(a), Some(b)) = (&boxes[i], &boxes[j]) {
@@ -836,7 +925,7 @@ pub fn profiles_with(sk: &Sketch, texts: &[super::text::TextLayout]) -> Profiles
                 }
             }
             let (mut ta, mut tb) = (Vec::new(), Vec::new());
-            intersect(&curves[i], &curves[j], &mut ta, &mut tb);
+            intersect(&curves[i], &curves[j], &sampled_of[i], &sampled_of[j], &mut ta, &mut tb);
             params[i].extend(ta);
             params[j].extend(tb);
         }
@@ -941,6 +1030,14 @@ pub fn profiles_with(sk: &Sketch, texts: &[super::text::TextLayout]) -> Profiles
             let v0 = g.vertex(pa);
             let v1 = g.vertex(pb);
             let mid = c.geom.eval((a + b) / 2.0);
+            // a piece too short to be told from its own vertex (the stub a line keeps past a crossing when its end
+            // overshoots the line it was meant to end on by less than the vertex tolerance) is no edge: kept, it is a
+            // loop on one vertex that no pruning removes and that breaks the faces next to it
+            // (Lines only: a closed circle, ellipse or spline is also one vertex to itself, and its own size can sit
+            // under ten vertex tolerances far from the origin, where the tolerance scales with the coordinates)
+            if matches!(c.geom, Geom::Line { .. }) && v0 == v1 && dist(mid, pa) <= g.tol * 10.0 && dist(pa, pb) <= g.tol {
+                continue;
+            }
             // drop exact duplicates of an earlier piece
             let dup = pcs.iter().any(|q| {
                 ((q.v0 == v0 && q.v1 == v1) || (q.v0 == v1 && q.v1 == v0)) && {

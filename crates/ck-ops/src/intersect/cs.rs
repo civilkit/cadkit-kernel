@@ -384,8 +384,12 @@ fn line_bspline(o: Vec3, d: Vec3, bs: &ck_geom::nurbs::bsurf::BSplineSurface, to
         let (a, b) = (su[ia], sv[ib]);
         let (ua, ub, va, vb) = (bs.knots_u[a], bs.knots_u[a + 1], bs.knots_v[b], bs.knots_v[b + 1]);
         let tm = if t0.is_finite() && t1.is_finite() { 0.5 * (t0 + t1) } else { 0.0 };
-        for (fu, fv) in [(0.5, 0.5), (0.2, 0.2), (0.8, 0.8), (0.2, 0.8), (0.8, 0.2)] {
-            let (mut u, mut v, mut t) = (ua + (ub - ua) * fu, va + (vb - va) * fv, tm);
+        // A cell can hold two roots (a line through the inside of a rounded patch enters and leaves it: one quarter-arc
+        // wall cell is crossed twice by a ray from a point inside). Every start is tried and every distinct root kept; the
+        // second seeds start from the two ends of the slab so the far root is reached whichever the first Newton found.
+        let span = if t0.is_finite() && t1.is_finite() { t1 - t0 } else { 0.0 };
+        for (fu, fv, ft) in [(0.5, 0.5, 0.5), (0.5, 0.5, 0.15), (0.5, 0.5, 0.85), (0.2, 0.2, 0.5), (0.8, 0.8, 0.5), (0.2, 0.8, 0.5), (0.8, 0.2, 0.5)] {
+            let (mut u, mut v, mut t) = (ua + (ub - ua) * fu, va + (vb - va) * fv, if span > 0.0 { t0 + span * ft } else { tm });
             let mut ok = false;
             for _ in 0..25 {
                 let (pt, su_, sv_) = match bs.derivs1_nr(u, v) {
@@ -396,22 +400,29 @@ fn line_bspline(o: Vec3, d: Vec3, bs: &ck_geom::nurbs::bsurf::BSplineSurface, to
                     }
                 };
                 let f = o + d * t - pt;
-                if f.len() < tol * 0.01 {
+                // (polished to rounding: two starts that reach one root agree to ~1e-12, so the roots of a cell can be
+                // told apart from each other at 1e-7)
+                if f.len() < 1e-12 * (1.0 + pt.len()) {
                     ok = true;
                     break;
                 }
                 let rows = [Vec3::new(d.x, -su_.x, -sv_.x), Vec3::new(d.y, -su_.y, -sv_.y), Vec3::new(d.z, -su_.z, -sv_.z)];
-                let Some(dl) = solve3(rows, [-f.x, -f.y, -f.z]) else { break };
+                let Some(dl) = solve3(rows, [-f.x, -f.y, -f.z]) else {
+                    ok = f.len() < tol * 0.01;
+                    break;
+                };
                 t += dl.x;
                 u = (u + dl.y).clamp(u0, u1);
                 v = (v + dl.z).clamp(v0, v1);
+            }
+            if !ok {
+                ok = (o + d * t - bs.eval(u, v)).len() < tol * 0.01;
             }
             if ok {
                 // the root must lie in this cell (or a neighbour reports it)
                 if u >= ua - 1e-9 && u <= ub + 1e-9 && v >= va - 1e-9 && v <= vb + 1e-9 && !roots.iter().any(|r| (r - t).abs() < 1e-7 * (1.0 + t.abs())) {
                     roots.push(t);
                 }
-                break;
             }
         }
     }
@@ -714,7 +725,8 @@ mod tests {
         (f64::NEG_INFINITY, f64::INFINITY)
     }
 
-    /// The version of `line_bspline` before the cell-box cache, tiles and the allocation-free derivatives.
+    /// The version of `line_bspline` before the cell-box cache, tiles and the allocation-free derivatives (with the same
+    /// all-roots-per-cell search as the real one: the oracle is for the caching, not for the root search).
     // Frozen copy of the old algorithm, kept verbatim as the test oracle; not worth restyling for clippy.
     #[allow(clippy::all)]
     fn line_bspline_reference(o: Vec3, d: Vec3, bs: &ck_geom::nurbs::bsurf::BSplineSurface, tol: f64) -> Option<Vec<f64>> {
@@ -759,13 +771,14 @@ mod tests {
                 }
                 let (ua, ub, va, vb) = (bs.knots_u[a], bs.knots_u[a + 1], bs.knots_v[b], bs.knots_v[b + 1]);
                 let tm = if t0.is_finite() && t1.is_finite() { 0.5 * (t0 + t1) } else { 0.0 };
-                for (fu, fv) in [(0.5, 0.5), (0.2, 0.2), (0.8, 0.8), (0.2, 0.8), (0.8, 0.2)] {
-                    let (mut u, mut v, mut t) = (ua + (ub - ua) * fu, va + (vb - va) * fv, tm);
+                let span = if t0.is_finite() && t1.is_finite() { t1 - t0 } else { 0.0 };
+                for (fu, fv, ft) in [(0.5, 0.5, 0.5), (0.5, 0.5, 0.15), (0.5, 0.5, 0.85), (0.2, 0.2, 0.5), (0.8, 0.8, 0.5), (0.2, 0.8, 0.5), (0.8, 0.2, 0.5)] {
+                    let (mut u, mut v, mut t) = (ua + (ub - ua) * fu, va + (vb - va) * fv, if span > 0.0 { t0 + span * ft } else { tm });
                     let mut ok = false;
                     for _ in 0..25 {
                         let ders = bs.derivs(u, v, 1);
                         let f = o + d * t - ders[0][0];
-                        if f.len() < tol * 0.01 {
+                        if f.len() < 1e-12 * (1.0 + ders[0][0].len()) {
                             ok = true;
                             break;
                         }
@@ -776,12 +789,14 @@ mod tests {
                         u = (u + dl.y).clamp(u0, u1);
                         v = (v + dl.z).clamp(v0, v1);
                     }
+                    if !ok {
+                        ok = (o + d * t - bs.eval(u, v)).len() < tol * 0.01;
+                    }
                     if ok {
                         // the root must lie in this cell (or a neighbour reports it)
                         if u >= ua - 1e-9 && u <= ub + 1e-9 && v >= va - 1e-9 && v <= vb + 1e-9 && !roots.iter().any(|r| (r - t).abs() < 1e-7 * (1.0 + t.abs())) {
                             roots.push(t);
                         }
-                        break;
                     }
                 }
             }
@@ -815,6 +830,38 @@ mod tests {
                 found += a.len();
             }
             assert!(found > 100, "{found}");
+        }
+    }
+
+    /// A ray from inside a rounded wall crosses a rational quarter-arc cell twice (the bottle base's corner: a ruled loft
+    /// of an R7 and an R12 arc, one knot span). Newton from the first start used to stop at the first root of a cell, so
+    /// the far crossing was lost and every parity test through it (`Solid::classify`, `Containment`) read an inside point
+    /// as outside.
+    #[test]
+    fn a_ray_crosses_one_rational_arc_cell_twice() {
+        use ck_geom::nurbs::bsurf::BSplineSurface;
+        let w = std::f64::consts::FRAC_1_SQRT_2;
+        // arc corner (centre c, radius r) from angle -90 to 0 degrees: control points (c.x, c.y - r), (c.x + r, c.y - r), (c.x + r, c.y)
+        let arc = |c: (f64, f64), r: f64| [Vec3::new(c.0, c.1 - r, 0.0), Vec3::new(c.0 + r, c.1 - r, 0.0), Vec3::new(c.0 + r, c.1, 0.0)];
+        let (a0, a1) = (arc((0.0, 0.0), 7.0), arc((1.5, -4.5), 12.0));
+        let mut ctrl = vec![];
+        let mut ws = vec![];
+        for i in 0..3 {
+            ctrl.push(Vec3::new(a0[i].x, a0[i].y, 0.0));
+            ctrl.push(Vec3::new(a1[i].x, a1[i].y, 114.0));
+            let wi = if i == 1 { w } else { 1.0 };
+            ws.extend([wi, wi]);
+        }
+        let bs = BSplineSurface::new(2, 1, vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], vec![0.0, 0.0, 114.0, 114.0], 3, 2, ctrl, Some(ws)).unwrap();
+        let o = Vec3::new(4.0531, -5.2642, 1.2064);
+        let d = Vec3::new(0.5773502691896258, 0.6123724356957945, 0.5400617248673217);
+        let ts = line_bspline(o, d, &bs, 1e-4).unwrap();
+        assert_eq!(ts.len(), 2, "{ts:?}");
+        assert!((ts[0] + 1.7317).abs() < 1e-3 && (ts[1] - 4.9555).abs() < 1e-3, "{ts:?}");
+        for t in ts {
+            let p = o + d * t;
+            let r = (p.x - 1.5 * p.z / 114.0).hypot(p.y + 4.5 * p.z / 114.0);
+            assert!((r - (7.0 + 5.0 * p.z / 114.0)).abs() < 1e-6, "root {t} off the wall by {}", r - (7.0 + 5.0 * p.z / 114.0));
         }
     }
 

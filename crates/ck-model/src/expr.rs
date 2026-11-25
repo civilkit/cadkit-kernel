@@ -32,7 +32,9 @@
 //! `"=w*2"` (w=30) -> 60, `"=2^3^2"` -> 512, `"=-2^2"` -> -4, `"=cos(60)*10"`
 //! -> 5.000000000000001, `"=1,5"` -> 1.5, `"=3 m"` -> 3000, `"=W"` / `"=abc"`
 //! / `"=7)"` / `"=sqrt 4"` -> error `badExpression`; non-`=` strings are plain
-//! numbers: `" 7 "` -> 7, `"2*3"` / `"abc"` -> 0 (no error).
+//! numbers: `" 7 "` -> 7, `"abc"` -> 0 (no error); a bare expression
+//! such as `"2*3"` or `"1in"` evaluates like `"=2*3"` (the oracle read it as 0); a bare string with a
+//! comma (`"1,5"`) is `badExpression`.
 //!
 //! Global variables (`part.variables = [{name, expr}]`) resolve like the
 //! client's `zs()`: invalid/reserved/duplicate names -> `badName`, a failing
@@ -518,9 +520,18 @@ pub fn eval_field(j: Option<&Json>, vars: &Vars, default: f64) -> Result<f64, &'
             if t.starts_with('=') {
                 eval(t, Some(vars)).map_err(|_| BAD_EXPRESSION)
             } else {
-                // GUESS: plain-number strings that fail to parse fall back to 0
-                // (oracle: "abc" / "2*3" / "1in" give a zero-depth extrude).
-                Ok(s.trim().parse::<f64>().ok().filter(|v| v.is_finite()).unwrap_or(0.0))
+                // A plain number, else a bare expression ("20+20" reads as 40, like "=20+20"). The oracle read
+                // "2*3" / "1in" as 0, which silently dropped the value. A comma is refused (`badExpression`):
+                // as a decimal comma "1,5" is 1.5 but "1,500" would read as 1.5 too. Text that is neither a
+                // number nor an expression ("abc") stays 0 (oracle).
+                let t = s.trim();
+                if let Some(v) = t.parse::<f64>().ok().filter(|v| v.is_finite()) {
+                    Ok(v)
+                } else if t.contains(',') {
+                    Err(BAD_EXPRESSION)
+                } else {
+                    Ok(eval(t, Some(vars)).unwrap_or(0.0))
+                }
             }
         }
         _ => Ok(default),
@@ -681,7 +692,10 @@ mod tests {
         assert_eq!(f(Json::Str("=10".into())), Ok(10.0));
         assert_eq!(f(Json::Str("= w * 2 ".into())), Ok(60.0));
         assert_eq!(f(Json::Str(" 7 ".into())), Ok(7.0));
-        assert_eq!(f(Json::Str("2*3".into())), Ok(0.0));
+        assert_eq!(f(Json::Str("2*3".into())), Ok(6.0));
+        assert_eq!(f(Json::Str("w/2".into())), Ok(15.0));
+        assert_eq!(f(Json::Str("1in".into())), Ok(25.4));
+        assert_eq!(f(Json::Str("1,5".into())), Err(BAD_EXPRESSION));
         assert_eq!(f(Json::Str("=abc".into())), Err(BAD_EXPRESSION));
         assert_eq!(f(Json::Bool(true)), Ok(0.0));
         assert_eq!(eval_field(None, &v, 5.0), Ok(5.0));

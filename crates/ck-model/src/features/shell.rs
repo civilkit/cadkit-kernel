@@ -20,6 +20,18 @@ pub fn exec_shell(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<
     let mut single: Option<Body> = None;
     for r in faces {
         let id = body.find_face(r.as_str()).ok_or_else(|| crate::refs::missing_face([body], r.as_str()))?;
+        // an opened face that is neither flat nor free-form is refused before any work: a round (blend face), cone or
+        // cylinder wall has no opening the shell can build yet
+        if !matches!(body.face(id).surface, ck_geom::surface::Surface::Plane { .. } | ck_geom::surface::Surface::BSpline(_)) {
+            let name = body.face_id_str(id);
+            return Err(FeatureError::new("shellUnsupported")
+                .with("face", Json::Str(name.clone()))
+                .with("detail", Json::Str(format!("opened face {name} is not planar")))
+                .with(
+                    "hint",
+                    Json::Str("a shell can only be opened at a flat face; a round, cylinder or cone face cannot be removed: pick a flat face next to it, or shell the body closed".into()),
+                ));
+        }
         open.push(id);
     }
     // with several lumps (bodies), only the lump that holds the open faces is shelled: another lump, a coincident
@@ -46,12 +58,19 @@ pub fn exec_shell(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<
         None
     };
     let target = single.as_ref().unwrap_or(body);
+    let started = ck_core::budget::mark();
     let out = ck_ops::shell::shell(target, &open, t, *outward, super::TOL).map_err(|e| {
+        // a refusal that took longer than the search window (the shell itself skipped its own search) gets no verification
+        // builds either: each would cost as much again
+        let slow = ck_core::budget::since(started) > ck_ops::shell::SEARCH_SKIP_MS;
+        // a curvature refusal the shell made without building its wall (the body at the asked wall was not valid): the wall
+        // it names is not built here either, each try would cost seconds and fail
+        let unbuilt = e.detail.as_deref().is_some_and(|d| d.ends_with(&format!("({})", ck_ops::shell::UNBUILT_NOTE)));
         // a wall too thick for the shape: the largest that builds, from the thickness the shell named (verified, then
         // pushed towards the refused one). Without a named thickness the shell's own search found none: say nothing.
         let named = e.limit.as_ref().map(|l| l.max_thickness).filter(|m| *m > 0.0);
         let max = match (e.code.as_str(), named) {
-            ("shellTooThick" | "shellFailed" | "offsetTooLarge", Some(m)) => {
+            ("shellTooThick" | "shellFailed" | "offsetTooLarge", Some(m)) if !slow && !unbuilt => {
                 let before = ck_check::validate(target, super::TOL).len();
                 super::max_size::largest_that_builds(t, Some(m), |v| {
                     ck_ops::shell::shell_once(target, &open, v, *outward, super::TOL).is_ok_and(|b| ck_check::validate(&b, super::TOL).len() <= before)
@@ -67,10 +86,10 @@ pub fn exec_shell(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<
         }
         // a thickness the shell named that does not build a valid body is not offered (the solidcore #1528 plate: the
         // offset named 1.18 mm, which built a body with a vertex off its edge)
-        let unverified = named.is_some() && max.is_none() && matches!(e.code.as_str(), "shellTooThick" | "shellFailed" | "offsetTooLarge");
+        let unverified = named.is_some() && max.is_none() && !slow && matches!(e.code.as_str(), "shellTooThick" | "shellFailed" | "offsetTooLarge");
         if let Some(l) = &e.limit {
             fe = super::offset_limit_params(fe, l);
-            if unverified {
+            if unverified || unbuilt || (slow && named.is_some()) {
                 fe.params.retain(|(k, _)| k != "maxThickness");
             }
         }

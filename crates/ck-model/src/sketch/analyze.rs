@@ -113,6 +113,19 @@ pub struct Chain {
     pub construction: bool,
 }
 
+/// `[{id, value}]` of the driven (measured) dimensions, measured on the sketch as drawn; empty when there are none.
+fn measured(sk: &Sketch) -> Vec<(String, f64)> {
+    sk.constraints
+        .iter()
+        .filter(|c| c.driven && c.valid && !c.suppressed && c.is_dimension())
+        .filter_map(|c| Some((c.id.clone(), sk.measure(c)?)))
+        .collect()
+}
+
+fn measured_json(m: &[(String, f64)]) -> Json {
+    Json::Arr(m.iter().map(|(id, v)| Obj::new().put("id", id.as_str()).put("value", *v).build()).collect())
+}
+
 /// The full analysis of one sketch.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Analysis {
@@ -127,6 +140,8 @@ pub struct Analysis {
     /// Why there is no profile when `closed_chains` is 0: the biggest
     /// `openEnd` gap, `empty` (no curves), or `constructionOnly`.
     pub reason: Option<Finding>,
+    /// Measured values of the driven dimensions (wire `driven`, only when present).
+    pub driven: Vec<(String, f64)>,
 }
 
 impl Analysis {
@@ -135,7 +150,7 @@ impl Analysis {
         if let Some(r) = &self.reason {
             profile = profile.put("reason", r.to_json());
         }
-        Obj::new()
+        let mut o = Obj::new()
             .put("tolerance", self.tolerance)
             .put("tiny", self.tiny)
             .put("findings", Json::Arr(self.findings.iter().map(Finding::to_json).collect()))
@@ -154,8 +169,11 @@ impl Analysis {
                         .collect(),
                 ),
             )
-            .put("profile", profile.build())
-            .build()
+            .put("profile", profile.build());
+        if !self.driven.is_empty() {
+            o = o.put("driven", measured_json(&self.driven));
+        }
+        o.build()
     }
 }
 
@@ -202,12 +220,14 @@ pub struct Freedoms {
     pub points: Vec<PointFreedom>,
     pub radii: Vec<RadiusFreedom>,
     pub entities: Vec<EntityFreedom>,
+    /// Measured values of the driven dimensions (wire `driven`, only when present).
+    pub driven: Vec<(String, f64)>,
 }
 
 impl Freedoms {
     pub fn to_json(&self) -> Json {
         let arr = |v: Vec<Json>| Json::Arr(v);
-        Obj::new()
+        let mut o = Obj::new()
             .put("dof", self.dof as f64)
             .put("solved", self.solved)
             .put(
@@ -237,8 +257,11 @@ impl Freedoms {
                         .map(|e| Obj::new().put("id", e.id.as_str()).put("kind", e.kind).put("free", e.free as f64).build())
                         .collect(),
                 ),
-            )
-            .build()
+            );
+        if !self.driven.is_empty() {
+            o = o.put("driven", measured_json(&self.driven));
+        }
+        o.build()
     }
 }
 
@@ -288,7 +311,7 @@ pub fn freedoms(sk: &Sketch) -> Freedoms {
             .collect::<Vec<_>>();
         let dof = sk.points.iter().filter(|p| !p.fixed).count() * 2;
         let entities = entity_freedoms(sk, &points, &radii);
-        return Freedoms { dof, solved: false, points, radii, entities };
+        return Freedoms { dof, solved: false, points, radii, entities, driven: measured(sk) };
     };
     let n = sys.x.len();
     let Converge { mut x, solved, .. } = converge(sk, &sys);
@@ -389,7 +412,7 @@ pub fn freedoms(sk: &Sketch) -> Freedoms {
         radii.push(RadiusFreedom { id, free });
     }
     let entities = entity_freedoms(sk, &points, &radii);
-    Freedoms { dof, solved, points, radii, entities }
+    Freedoms { dof, solved, points, radii, entities, driven: measured(sk) }
 }
 
 fn pos(sk: &Sketch, id: &str) -> Option<[f64; 2]> {
@@ -431,7 +454,7 @@ fn coincident_pairs(sk: &Sketch) -> Vec<(String, String)> {
     sk.constraints
         .iter()
         .filter(|c| c.kind == "coincident" || c.kind == "concentric")
-        .filter(|c| !c.suppressed)
+        .filter(|c| !c.ignored())
         .filter_map(|c| Some((c.refs.first()?.clone(), c.refs.get(1)?.clone())))
         .collect()
 }
@@ -713,7 +736,7 @@ pub fn analyze(sk: &Sketch, tolerance: f64, tiny: f64) -> Analysis {
             .cloned()
             .or_else(|| Some(Finding::new("constructionOnly")))
     };
-    Analysis { tolerance, tiny, findings, chains, closed_chains, reason }
+    Analysis { tolerance, tiny, findings, chains, closed_chains, reason, driven: measured(sk) }
 }
 
 impl Finding {

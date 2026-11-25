@@ -1,0 +1,9 @@
+[package]
+name = "ck-f3d-file"
+version = "0.1.0"
+edition = "2024"
+description = "The document inside a Fusion 360 .f3d / .f3z zip container, its display meshes and appearance packages (adapted from MitCad's f3d-file crate, MIT)"
+
+[dependencies]
+# The zip container (inflate, Zstandard) and the vec3 module; f3d-file's own zip layer (src/zip.rs) adapts ck-asm's.
+ck-asm = { path = "../ck-asm" }

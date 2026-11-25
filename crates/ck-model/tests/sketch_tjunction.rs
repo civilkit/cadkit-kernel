@@ -257,3 +257,20 @@ fn ring_is_cut_into_a_face_per_petal_plus_the_annulus() {
         }
     }
 }
+
+/// A chord whose end overshoots the side it should end on by less than the vertex tolerance (a plate side that is a
+/// hair off vertical, a chord end placed on the vertical) leaves a stub shorter than a vertex past the crossing: the
+/// plate is still cut in two regions, the stub is no edge.
+#[test]
+fn a_chord_that_overshoots_its_side_by_less_than_a_vertex_still_splits_the_region() {
+    // plate 124 x 130, its left side from (0,130) to (1.8e-6,0); the chord at y=60 ends at x = 0 (past the side,
+    // which is at 9.7e-7 there) and at the other side exactly
+    let src = r#"{"type":"sketch","id":"F1","plane":{"kind":"std","id":"front"},
+      "points":[{"id":"a","x":0,"y":130},{"id":"b","x":1.8e-6,"y":0},{"id":"c","x":124,"y":0},{"id":"d","x":124,"y":130},
+                {"id":"e","x":0,"y":60},{"id":"f","x":62,"y":60},{"id":"g","x":124,"y":60}],
+      "entities":[{"type":"line","id":"s1","p1":"a","p2":"b"},{"type":"line","id":"s2","p1":"b","p2":"c"},{"type":"line","id":"s3","p1":"c","p2":"d"},{"type":"line","id":"s4","p1":"d","p2":"a"},
+                  {"type":"line","id":"k1","p1":"e","p2":"f"},{"type":"line","id":"k2","p1":"f","p2":"g"}],"constraints":[]}"#;
+    let sk = ck_model::sketch::Sketch::from_json(&ck_json::parse(src).unwrap());
+    let p = ck_model::sketch::profile::profiles(&sk);
+    assert_eq!(p.regions.len(), 2, "{:?}", p.regions.iter().map(|r| r.outer.iter().map(|s| s.tag.clone()).collect::<Vec<_>>()).collect::<Vec<_>>());
+}

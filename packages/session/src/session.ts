@@ -5,8 +5,9 @@
 // {id, author, time, ops, reason}; undo reverts the last N batches.
 import { emptyPart, FEATURE_TYPES, type PartDoc } from '../../part-model/src/index.js';
 import { hintFor, verify, type CheckResultItem, type KernelTransport, type RegenError, type VerifyReport } from '../../driver/src/verify.js';
+import type { F3dFeaturesResult } from '../../kernel-client/src/f3d-decoder.js';
 import {
-  angles, check, checkProfile, clearance, closestPoint, describe, distance, exportMesh, extrema, maxDistance, symmetry, thickness, thicknessAt, heal, importSat, importSkp, importSldprt, importStep, massProps, meshDecimate, meshToSolid, probe, profiles, resolveDescriptions, section, sections, solvePoses, sweepDriver, step, textMetrics, textOutline, loadFont, unloadFont, listFonts, subsetFont, threadData, validate,
+  angles, check, checkProfile, clearance, closestPoint, describe, distance, exportMesh, extrema, maxDistance, symmetry, thickness, thicknessAt, heal, f3dFeatures, importF3dLazy, importSat, importSkp, importSldprt, importStep, massProps, meshDecimate, meshToSolid, probe, profiles, resolveDescriptions, section, sections, solvePoses, sweepDriver, step, textMetrics, textOutline, loadFont, unloadFont, listFonts, subsetFont, threadData, validate,
   type CheckReport, type DescribeItem, type ExportMeshOpts, type ExportMeshReport, type HealReport, type ImportReport, type MeshDecimateOpts, type MeshDecimateResult, type MeshInput, type MeshToSolidOpts, type SkpUp, type MassReport, type ProbeReport,
   type AnglesReport, type ClearanceReport, type ClosestPointReport, type DistanceReport, type HausdorffReport, type MaxDistanceReport, type MeasureEntity,
   type SolvePosesReport, type SweepReport,
@@ -1070,6 +1071,25 @@ export class Session {
   /** A SketchUp .skp file: `data` is the file bytes as base64; hidden geometry is skipped unless `hidden`. */
   importSkp(data: string, name?: string, opts: { hidden?: boolean; maxFaces?: number; up?: SkpUp } = {}): Promise<ImportReport> {
     return importSkp(this.kernel, data, { name, ...opts });
+  }
+
+  /**
+   * A Fusion 360 .f3d / .f3z file or one .smb body blob: `data` is the bytes as base64 (see `importF3d`). Decoded by the lazily
+   * loaded decoder wasm (kernel-client `configureF3dDecoder`, docs/f3d-lazy.md); throws `F3dDecoderMissingError` without one.
+   */
+  importF3d(data: string, name?: string, opts: { history?: boolean; allBodies?: boolean } = {}): Promise<ImportReport> {
+    const bin = atob(data.replace(/^data:[^,]*,/, ''));
+    const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+    return importF3dLazy(this.kernel, bytes, { name, ...opts });
+  }
+
+  /**
+   * The timeline of a Fusion 360 file as ck-part feature lists, one per design, each with `check.verdict` (the history regenerated in
+   * the kernel against the imported body). The decoder wasm reads the dump, the kernel maps it (docs/f3d-lazy.md).
+   */
+  f3dFeatures(data: string, name?: string): Promise<F3dFeaturesResult> {
+    const bin = atob(data.replace(/^data:[^,]*,/, ''));
+    return f3dFeatures(this.kernel, Uint8Array.from(bin, (c) => c.charCodeAt(0)), { name });
   }
 
   importSat(data: string, name?: string): Promise<ImportReport> {

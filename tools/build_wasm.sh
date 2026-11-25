@@ -11,7 +11,7 @@
 #   npm install --prefix <scratch dir> binaryen && WASM_OPT=<scratch dir>/node_modules/.bin/wasm-opt tools/build_wasm.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
-cargo build -p ck-wasm --target wasm32-unknown-unknown --release
+cargo build --locked -p ck-wasm --target wasm32-unknown-unknown --release
 IN="${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/release/ck_wasm.wasm"
 OUT="${1:-${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/release/ck_wasm.opt.wasm}"
 OPT="${WASM_OPT:-$(command -v wasm-opt || true)}"

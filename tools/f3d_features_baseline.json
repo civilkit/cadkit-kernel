@@ -1,0 +1,346 @@
+{
+  "_about": "Aggregate numbers of crates/ck-f3d-features/tests/corpus.rs over the Fusion corpus (no file names): timeline items mapped to part features or left as placeholders, and designs whose regenerated history has the volume and box of the imported body. Rewritten by CK_F3D_UPDATE_BASELINE=1.",
+  "byType": {
+    "(unknown)": {
+      "mapped": 0,
+      "placeholder": 61
+    },
+    "AlignFeature": {
+      "mapped": 0,
+      "placeholder": 10
+    },
+    "AsBuiltJoint": {
+      "mapped": 0,
+      "placeholder": 172
+    },
+    "BaseFeature": {
+      "mapped": 0,
+      "placeholder": 440
+    },
+    "BoxFeature": {
+      "mapped": 0,
+      "placeholder": 10
+    },
+    "Canvas": {
+      "mapped": 0,
+      "placeholder": 5
+    },
+    "ChamferFeature": {
+      "mapped": 0,
+      "placeholder": 82
+    },
+    "CircularOccurrencePattern": {
+      "mapped": 0,
+      "placeholder": 2
+    },
+    "CircularPatternFeature": {
+      "mapped": 0,
+      "placeholder": 36
+    },
+    "CoilFeature": {
+      "mapped": 0,
+      "placeholder": 1
+    },
+    "CombineFeature": {
+      "mapped": 6,
+      "placeholder": 181
+    },
+    "ComponentFromBodies": {
+      "mapped": 0,
+      "placeholder": 43
+    },
+    "ComponentInsert": {
+      "mapped": 0,
+      "placeholder": 84
+    },
+    "ConstructionAxis": {
+      "mapped": 0,
+      "placeholder": 8
+    },
+    "ConstructionPlane": {
+      "mapped": 780,
+      "placeholder": 0
+    },
+    "CopyPasteBodies": {
+      "mapped": 16,
+      "placeholder": 50
+    },
+    "CopyPasteOccurrence": {
+      "mapped": 0,
+      "placeholder": 128
+    },
+    "CylinderFeature": {
+      "mapped": 0,
+      "placeholder": 8
+    },
+    "DeleteFaceFeature": {
+      "mapped": 0,
+      "placeholder": 93
+    },
+    "DerivedInstance": {
+      "mapped": 0,
+      "placeholder": 18
+    },
+    "EmbossFeature": {
+      "mapped": 0,
+      "placeholder": 32
+    },
+    "ExternalDerived": {
+      "mapped": 0,
+      "placeholder": 6
+    },
+    "ExtrudeFeature": {
+      "mapped": 1137,
+      "placeholder": 529
+    },
+    "FilletFeature": {
+      "mapped": 43,
+      "placeholder": 336
+    },
+    "GeometricRelationship": {
+      "mapped": 0,
+      "placeholder": 26
+    },
+    "GroundOccurrence": {
+      "mapped": 0,
+      "placeholder": 8
+    },
+    "Group": {
+      "mapped": 0,
+      "placeholder": 35
+    },
+    "HoleFeature": {
+      "mapped": 0,
+      "placeholder": 12
+    },
+    "Joint": {
+      "mapped": 0,
+      "placeholder": 83
+    },
+    "JointOrigin": {
+      "mapped": 0,
+      "placeholder": 3
+    },
+    "LoftFeature": {
+      "mapped": 0,
+      "placeholder": 24
+    },
+    "MeshFeature": {
+      "mapped": 0,
+      "placeholder": 4
+    },
+    "MirrorComponent": {
+      "mapped": 0,
+      "placeholder": 2
+    },
+    "MirrorFeature": {
+      "mapped": 0,
+      "placeholder": 18
+    },
+    "MoveFaceFeature": {
+      "mapped": 0,
+      "placeholder": 2
+    },
+    "MoveFeature": {
+      "mapped": 52,
+      "placeholder": 58
+    },
+    "Occurrence": {
+      "mapped": 0,
+      "placeholder": 180
+    },
+    "OffsetFacesFeature": {
+      "mapped": 0,
+      "placeholder": 33
+    },
+    "PCBFeature": {
+      "mapped": 0,
+      "placeholder": 1
+    },
+    "RectangularPatternFeature": {
+      "mapped": 0,
+      "placeholder": 13
+    },
+    "RemoveFeature": {
+      "mapped": 0,
+      "placeholder": 8
+    },
+    "RevolveFeature": {
+      "mapped": 13,
+      "placeholder": 3
+    },
+    "RigidGroup": {
+      "mapped": 0,
+      "placeholder": 7
+    },
+    "ShellFeature": {
+      "mapped": 0,
+      "placeholder": 5
+    },
+    "Sketch": {
+      "mapped": 1566,
+      "placeholder": 87
+    },
+    "Snapshot": {
+      "mapped": 0,
+      "placeholder": 144
+    },
+    "SphereFeature": {
+      "mapped": 0,
+      "placeholder": 3
+    },
+    "SplitBodyFeature": {
+      "mapped": 0,
+      "placeholder": 14
+    },
+    "SweepFeature": {
+      "mapped": 0,
+      "placeholder": 29
+    },
+    "ThreadFeature": {
+      "mapped": 0,
+      "placeholder": 16
+    }
+  },
+  "comparableDesigns": 96,
+  "decodeFailures": 0,
+  "designs": 124,
+  "designsWithoutTimeline": 16,
+  "files": 62,
+  "fullyMappedDesigns": 13,
+  "items": 6766,
+  "mapped": 3613,
+  "placeholder": 3153,
+  "placeholderReasons": {
+    "AlignFeature is not mapped to a CadKit part yet": 10,
+    "AsBuiltJoint is not mapped to a CadKit part yet": 172,
+    "BaseFeature is not mapped to a CadKit part yet": 439,
+    "BoxFeature is not mapped to a CadKit part yet": 10,
+    "Canvas is not mapped to a CadKit part yet": 5,
+    "CircularOccurrencePattern is not mapped to a CadKit part yet": 2,
+    "CoilFeature is not mapped to a CadKit part yet": 1,
+    "ComponentFromBodies is not mapped to a CadKit part yet": 43,
+    "ComponentInsert is not mapped to a CadKit part yet": 84,
+    "ConstructionAxis is not mapped to a CadKit part yet": 8,
+    "CopyPasteOccurrence is not mapped to a CadKit part yet": 128,
+    "CylinderFeature is not mapped to a CadKit part yet": 8,
+    "DeleteFaceFeature is not mapped to a CadKit part yet": 93,
+    "DerivedInstance is not mapped to a CadKit part yet": 18,
+    "EmbossFeature is not mapped to a CadKit part yet": 32,
+    "ExternalDerived is not mapped to a CadKit part yet": 6,
+    "GeometricRelationship is not mapped to a CadKit part yet": 26,
+    "GroundOccurrence is not mapped to a CadKit part yet": 8,
+    "Group is not mapped to a CadKit part yet": 35,
+    "HoleFeature is not mapped to a CadKit part yet": 12,
+    "Joint is not mapped to a CadKit part yet": 83,
+    "JointOrigin is not mapped to a CadKit part yet": 3,
+    "LoftFeature is not mapped to a CadKit part yet": 24,
+    "MeshFeature is not mapped to a CadKit part yet": 4,
+    "MirrorComponent is not mapped to a CadKit part yet": 2,
+    "MoveFaceFeature is not mapped to a CadKit part yet": 2,
+    "Occurrence is not mapped to a CadKit part yet": 180,
+    "OffsetFacesFeature is not mapped to a CadKit part yet": 32,
+    "PCBFeature is not mapped to a CadKit part yet": 1,
+    "RemoveFeature is not mapped to a CadKit part yet": 8,
+    "RigidGroup is not mapped to a CadKit part yet": 7,
+    "ShellFeature is not mapped to a CadKit part yet": 5,
+    "Snapshot is not mapped to a CadKit part yet": 144,
+    "SphereFeature is not mapped to a CadKit part yet": 3,
+    "SplitBodyFeature is not mapped to a CadKit part yet": 14,
+    "SweepFeature is not mapped to a CadKit part yet": 29,
+    "ThreadFeature is not mapped to a CadKit part yet": 16,
+    "a chamfer with two different distances is not mapped yet": 8,
+    "a circular pattern of bodies or faces is not mapped yet": 9,
+    "a fitted spline has fewer than two fit points": 3,
+    "a mirror of bodies is mapped only for a design with one body and nothing unmapped before it": 12,
+    "a move is mapped only for a design with one body and nothing unmapped before it": 1,
+    "a profile's outline is not a region the kernel finds in the sketch": 42,
+    "a profile's outline is the outline of several regions of the sketch, which curve ids cannot tell apart": 25,
+    "a rational spline is not mapped yet": 52,
+    "a rectangular pattern of bodies or faces is not mapped yet": 8,
+    "a revolve of a partial turn in one direction is not mapped yet": 1,
+    "a sketch point has no usable position": 20,
+    "a symmetric circular pattern is not mapped yet": 6,
+    "a thin extrude is not mapped yet": 1,
+    "an earlier item did not map, so the edges of the body so far are not those the file names": 384,
+    "an earlier item did not map, so the faces of the body so far are not those the file names": 320,
+    "an edge of it is not an edge of the history regenerated so far": 12,
+    "an extrude of a face that cuts positive is not mapped yet": 6,
+    "an extrude of a face that is not a join or a cut is not mapped yet": 5,
+    "an extrude of a face that joins negative is not mapped yet": 1,
+    "an extrude of a face with this extent is not mapped yet": 3,
+    "an extrude that starts away from its sketch plane is not mapped yet": 34,
+    "an extrude to something other than a face is not mapped yet": 1,
+    "an extrude with a different length each way is not mapped yet": 1,
+    "an extrude with these two extents is not mapped yet": 6,
+    "an input feature (FilletFeature) is not an extrude or revolve that mapped, and only those are repeated": 11,
+    "an input feature (LoftFeature) is not an extrude or revolve that mapped, and only those are repeated": 1,
+    "it cuts, but no earlier feature made a body": 5,
+    "it cuts, but no earlier feature of its component made a body": 3,
+    "it moves no body": 1,
+    "it names a profile whose outline is not known": 3,
+    "it names no edges": 8,
+    "it names no single target body": 4,
+    "it names no sketch": 3,
+    "its EllipticalArc curves are not mapped yet": 4,
+    "its axis is a construction axis that is not an origin axis": 1,
+    "its component's occurrence has no placement": 21,
+    "its face is not a planar face of the history regenerated so far": 3,
+    "its length is not a number": 1,
+    "its length is not a positive number": 1,
+    "its moved body is made by a BoxFeature item, and the history so far has no such body (that item is not mapped,": 1,
+    "its moved body is made by a CombineFeature item, and the history so far has no such body (that item is not map": 1,
+    "its moved body is made by a CopyPasteBodies item, and the history so far has no such body (that item is not ma": 20,
+    "its moved body is made by a CylinderFeature item, and the history so far has no such body (that item is not ma": 1,
+    "its moved body is made by a ExtrudeFeature item, and the history so far has no such body (that item is not map": 13,
+    "its moved body is made by a MirrorFeature item, and the history so far has no such body (that item is not mapp": 3,
+    "its moved body is made by a SphereFeature item, and the history so far has no such body (that item is not mapp": 2,
+    "its moved body is made by a SplitBodyFeature item, and the history so far has no such body (that item is not m": 2,
+    "its moved body is suppressed in the file": 5,
+    "its plane has no direction": 1,
+    "its radius is not a positive number": 1,
+    "its sketch is not in the part": 60,
+    "its source body is in another component than the item": 8,
+    "its source body is made by a CopyPasteBodies item, and the history so far has no such body (that item is not m": 6,
+    "its source body is made by a ExtrudeFeature item, and the history so far has no such body (that item is not ma": 1,
+    "its source body is made by a MirrorFeature item, and the history so far has no such body (that item is not map": 1,
+    "its source body is made by a SplitBodyFeature item, and the history so far has no such body (that item is not ": 2,
+    "its source body is suppressed in the file": 3,
+    "its target body is made by a BaseFeature item, and the history so far has no such body (that item is not mappe": 68,
+    "its target body is made by a CombineFeature item, and the history so far has no such body (that item is not ma": 1,
+    "its target body is made by a CopyPasteBodies item, and the history so far has no such body (that item is not m": 71,
+    "its target body is made by a ExtrudeFeature item, and the history so far has no such body (that item is not ma": 15,
+    "its target body is made by a LoftFeature item, and the history so far has no such body (that item is not mappe": 4,
+    "its target body is made by a SplitBodyFeature item, and the history so far has no such body (that item is not ": 8,
+    "its target body is suppressed in the file": 1,
+    "its tool body is made by a BaseFeature item, and the history so far has no such body (that item is not mapped,": 2,
+    "its tool body is made by a BoxFeature item, and the history so far has no such body (that item is not mapped, ": 2,
+    "its tool body is made by a CopyPasteBodies item, and the history so far has no such body (that item is not map": 1,
+    "its tool body is made by a LoftFeature item, and the history so far has no such body (that item is not mapped,": 2,
+    "its tool body is made by a SplitBodyFeature item, and the history so far has no such body (that item is not ma": 1,
+    "its unnamed curves are not mapped yet": 1,
+    "no earlier feature made a body": 1,
+    "the body B# is # lumps in the history regenerated so far, and a selection by the file's names needs exactly on": 4,
+    "the body bed v# body is # lumps in the history regenerated so far, and a selection by the file's names needs e": 1,
+    "the body up-arrow-piece body # is # lumps in the history regenerated so far, and a selection by the file's nam": 2,
+    "the design has bodies in several components, and a part's pattern acts on the one body": 18,
+    "the file does not say which item made its source body": 29,
+    "the file does not say which item made its target body": 1,
+    "this item's type is not known": 61
+  },
+  "unverifiedReasons": {
+    "the history builds no body": 14,
+    "the history does not regenerate cleanly: F#: blendFailed (the result is not a closed solid: # edge(s) are not ": 1,
+    "the history does not regenerate cleanly: F#: blendOverflow (F#.B#: spring leaves its face away from its edges)": 1,
+    "the history does not regenerate cleanly: F#: blendUnsupported (the faces F#.S.c#~# and F#.S.c#~# are tangent a": 1,
+    "the history does not regenerate cleanly: F#: booleanFailed": 4,
+    "the history does not regenerate cleanly: F#: booleanTangent (the combined body would not be a closed solid: tw": 2,
+    "the history does not regenerate cleanly: F#: cutNoEffect": 17,
+    "the history does not regenerate cleanly: F#: profileCrossesAxis": 1,
+    "the history's body differs from the imported one: volume +#.# %, box #.# mm": 16,
+    "the history's body differs from the imported one: volume -#.# %, box #.# mm": 22,
+    "the imported body could not be built to compare with": 12
+  },
+  "verifiedDesigns": 17,
+  "verifiedFullyMappedDesigns": 13
+}

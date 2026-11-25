@@ -5,6 +5,7 @@
 // (open/read/edit/history/undo) and verify.
 import type { KernelTransport } from '../../driver/src/verify.js';
 import { meshFromBody, type MeshData } from '../../render/src/mesh.js';
+import { F3D_DECODER_MISSING, F3dDecoderMissingError, loadF3dDecoder, type F3dDecoder, type F3dFeaturesResult } from '../../kernel-client/src/f3d-decoder.js';
 
 export interface QueryOpts {
   tag?: string;
@@ -15,7 +16,7 @@ async function call<T>(kernel: KernelTransport, msg: Record<string, unknown>): P
   const r = await kernel.request(msg);
   if (r.trap) throw new Error(`trap: ${r.trap}`);
   if (!r.ok) throw new Error(typeof r.error === 'string' ? r.error : 'request failed');
-  if (r.result === undefined || r.result === null) throw new Error(`empty result for ${msg.type}`);
+  if (r.result === undefined || r.result === null) throw new Error(`empty result for ${msg.type}: the part has no solid body to answer it (a feature failed or none builds one), so read the last edit's errors first`);
   return r.result as T;
 }
 
@@ -735,6 +736,9 @@ export async function extrema(
 
 export interface ImportReport {
   errors: Array<[string, { code: string; params: Record<string, unknown> }]>;
+  /** Non-fatal findings of the import, same `[feature, {code, params}]` shape as `errors` (e.g. `importStepParts`: what each
+   *  solid / surface of a multi-part file became). Always an array; empty when the kernel sent none. */
+  warnings: Array<[string, { code: string; params: Record<string, unknown> }]>;
   body?: { faces?: unknown[]; edges?: unknown[]; box?: { min: number[]; max: number[] } } | null;
   [key: string]: unknown;
 }
@@ -788,7 +792,7 @@ export async function step(kernel: KernelTransport, name: string, opts: QueryOpt
   opts: { name?: string; tag?: string } = {},
 ): Promise<ImportReport> {
   const res = await call<ImportReport>(kernel, { type: 'importStep', tag: opts.tag ?? 'imp', name: opts.name ?? 'import', data });
-  return { ...res, errors: res.errors ?? [] };
+  return { ...res, errors: res.errors ?? [], warnings: res.warnings ?? [] };
 }
 
 /** Import a SolidWorks .SLDPRT part (base64 of the file bytes) into a fresh tag; reply is regen-shaped like importStep. */
@@ -798,7 +802,7 @@ export async function importSldprt(
   opts: { name?: string; tag?: string } = {},
 ): Promise<ImportReport> {
   const res = await call<ImportReport>(kernel, { type: 'importSldprt', tag: opts.tag ?? 'imp', name: opts.name ?? 'import', data });
-  return { ...res, errors: res.errors ?? [] };
+  return { ...res, errors: res.errors ?? [], warnings: res.warnings ?? [] };
 }
 
 /**
@@ -821,7 +825,69 @@ export async function importSkp(
   if (opts.up !== undefined) o.up = opts.up;
   if (Object.keys(o).length) msg.opts = o;
   const res = await call<ImportReport>(kernel, msg);
-  return { ...res, errors: res.errors ?? [] };
+  return { ...res, errors: res.errors ?? [], warnings: res.warnings ?? [] };
+}
+
+/**
+ * Import a Fusion 360 .f3d / .f3z file, or one .smb body blob (base64 of the bytes), into a fresh tag (docs/f3d.md). The valid
+ * solids are the tag's body, every other ASM body a surface body `import.P<k>`; `import.report` says in plain English what was
+ * read and what was left out. By default only the design's own bodies are read (the top-level bodies of the history blob, or of the
+ * plain blobs of a document without one); `opts.allBodies` reads every body of every blob, and with it `opts.history` also reads the
+ * history bodies that are twins of plain ones.
+ */
+export async function importF3d(
+  kernel: KernelTransport,
+  data: string,
+  opts: { name?: string; tag?: string; history?: boolean; allBodies?: boolean } = {},
+): Promise<ImportReport> {
+  const msg: Record<string, unknown> = { type: 'importF3d', tag: opts.tag ?? 'imp', name: opts.name ?? 'import', data };
+  if (opts.history !== undefined || opts.allBodies !== undefined) msg.opts = { history: opts.history, allBodies: opts.allBodies };
+  const res = await call<ImportReport>(kernel, msg);
+  return { ...res, errors: res.errors ?? [], warnings: res.warnings ?? [] };
+}
+
+/**
+ * `importF3d` with the decoder loaded on demand (docs/f3d-lazy.md): the main kernel wasm has no .f3d decoder, so the bytes are
+ * decoded by the separate `ck_f3d.wasm` (kernel-client `loadF3dDecoder`, fetched the first time) and the main kernel gets the
+ * decoded bodies as `importF3d`'s `decoded`. The reply is the one `importF3d` gives. A file that cannot be read answers
+ * `errors` (as `importF3d` does) and leaves the tag alone; no decoder at all throws `F3dDecoderMissingError` (code
+ * `f3d.decoderMissing`), unless the kernel itself can decode (a native service built with it), which is tried first as a fallback.
+ */
+export async function importF3dLazy(
+  kernel: KernelTransport,
+  bytes: Uint8Array,
+  opts: { name?: string; tag?: string; history?: boolean; allBodies?: boolean } = {},
+): Promise<ImportReport> {
+  const name = opts.name ?? 'import';
+  let decoder: F3dDecoder;
+  try {
+    decoder = await loadF3dDecoder();
+  } catch (e) {
+    if (!(e instanceof F3dDecoderMissingError)) throw e;
+    // no second wasm: a kernel that carries the decoder inline still answers
+    const res = await importF3d(kernel, bytesToBase64(bytes), opts);
+    const missing = res.errors.find(([, err]) => err.code === F3D_DECODER_MISSING);
+    if (missing) throw e;
+    return res;
+  }
+  const d = decoder.decode(bytes, { name, history: opts.history, allBodies: opts.allBodies });
+  if (d.errors) return { errors: d.errors, warnings: [], body: null };
+  const msg: Record<string, unknown> = { type: 'importF3d', tag: opts.tag ?? 'imp', name, decoded: d.decoded };
+  const res = await call<ImportReport>(kernel, msg);
+  return { ...res, errors: res.errors ?? [], warnings: res.warnings ?? [] };
+}
+
+/**
+ * The timeline of a Fusion 360 file as a ck-part feature list per design (docs/f3d-lazy.md): the lazily loaded decoder wasm reads the
+ * design dump (`f3dDump`), the MAIN kernel maps it (`f3dFeatures`; the mapping regenerates the history so far to find the edges and
+ * faces it names, which only the kernel can do) and checks the history against the imported body. Each design's `check.verdict` says
+ * whether the history is the design's. Throws `F3dDecoderMissingError` when no decoder wasm is configured.
+ */
+export async function f3dFeatures(kernel: KernelTransport, bytes: Uint8Array, opts: { name?: string } = {}): Promise<F3dFeaturesResult> {
+  const decoder = await loadF3dDecoder();
+  const d = decoder.dump(bytes, { name: opts.name });
+  if (d.errors) return { errors: d.errors };
+  return call<F3dFeaturesResult>(kernel, { type: 'f3dFeatures', designs: d.designs });
 }
 
 /** Options of `meshToSolid` (docs/spec-agent-interface.md, "Mesh to solid"); lengths in mm, `undefined` = the kernel's default. */
@@ -949,7 +1015,7 @@ export async function meshToSolid(
   const kopts = Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined));
   if (Object.keys(kopts).length) msg.opts = kopts;
   const res = await call<ImportReport>(kernel, msg);
-  return { ...res, errors: res.errors ?? [] };
+  return { ...res, errors: res.errors ?? [], warnings: res.warnings ?? [] };
 }
 
 /**
@@ -978,5 +1044,5 @@ export async function importSat(
   opts: { name?: string; tag?: string } = {},
 ): Promise<ImportReport> {
   const res = await call<ImportReport>(kernel, { type: 'importSat', tag: opts.tag ?? 'imp', name: opts.name ?? 'import', data });
-  return { ...res, errors: res.errors ?? [] };
+  return { ...res, errors: res.errors ?? [], warnings: res.warnings ?? [] };
 }

@@ -319,6 +319,34 @@ add('chamfer_narrow_unreachable', 'thin1', { k: 'chamfer', d: 2 }, [[20, 1, 0]],
   known: 'refused with blendOverflow (OCCT: Build failed too), but the detail names the chamfer face F9.B0, not the 1 mm side face F2.S.e1 that is too narrow',
 });
 
+// 11. partial-edge blends (`startOffset` / `endOffset`) and the explicit corner setback (docs/spec-agent-interface.md, "Partial-edge
+// fillets and chamfers"). `startOffset` counts from the end of the edge nearer the pick. Closed forms, no OCCT reference:
+// the 40 x 10 x 20 box (8000), top-front edge 40 long: a round of radius r removes (1 - pi/4) r^2 per length, a chamfer d^2/2.
+const SEC2 = 4 - Math.PI; // (1 - pi/4) r^2, r 2
+add('partial_fillet_box_r2_5_10', 'box', { k: 'fillet', r: 2, so: 5, eo: 10 }, [TOPE.f], { vol: 8000 - 25 * SEC2 });
+add('partial_fillet_box_start_near_pick_x3', 'box', { k: 'fillet', r: 2, so: 6 }, [[3, 10, 0]], { vol: 8000 - 34 * SEC2 });
+add('partial_fillet_box_start_near_pick_x37', 'box', { k: 'fillet', r: 2, so: 6 }, [[37, 10, 0]], { vol: 8000 - 34 * SEC2 });
+add('partial_chamfer_box_d2_5_15', 'box', { k: 'chamfer', d: 2, so: 5, eo: 15 }, [TOPE.f], { vol: 8000 - 20 * 2 });
+add('partial_chamfer_box_end_only', 'box', { k: 'chamfer', d: 3, eo: 12 }, [TOPE.b], { vol: 8000 - 28 * 4.5 });
+// a round of radius r on the top rim of a boss (R 8) takes revolve(area (1 - pi/4) r^2 about the axis, centroid radius from the
+// square less the quarter disc): int rho dA = r^2 (2R - r)/2 - (R - r) pi r^2/4 - r^3/3; the arc left is 2 pi - (3 + 5)/R
+{
+  const R = 8, r = 2, rhoA = r * r * (2 * R - r) / 2 - (R - r) * Math.PI * r * r / 4 - r * r * r / 3;
+  add('partial_fillet_boss_rim_r2_3_5', 'boss', { k: 'fillet', r, so: 3, eo: 5 }, [[28, 25, -20]], { vol: 16000 + 960 * Math.PI - (2 * Math.PI - 8 / R) * rhoA, curved: true });
+}
+// setback corner of three rounds on a cube corner (30 cube, vertex (30, 30, 0), r 3): the rolling-ball sphere patch is the corner at
+// the natural setback r, removing r^3 (1 - pi/6) in the cube at the vertex (the cube less the octant of the ball) and
+// (1 - pi/4) r^2 per length of each edge beyond it
+{
+  const r = 3, strip = (1 - Math.PI / 4) * r * r, V = 27000;
+  const CORNER3 = [[15, 30, 0], [30, 30, -15], [30, 15, 0]];
+  add('setback_corner_natural_r3', 'cube', { k: 'fillet', r, sb: 3 }, CORNER3, { vol: V - r ** 3 * (1 - Math.PI / 6) - 3 * (30 - r) * strip, g1: true });
+  add('setback_corner_below_natural_r3', 'cube', { k: 'fillet', r, sb: 1 }, CORNER3, { vol: V - r ** 3 * (1 - Math.PI / 6) - 3 * (30 - r) * strip, g1: true });
+  // a larger setback: the rounds run from the setback plane out (strips of length 30 - s) and the patch takes less than the cube of
+  // side s at the vertex: no closed form for the free-form patch itself, so closed-form bounds
+  for (const s of [5, 8]) add(`setback_corner_s${s}_r3`, 'cube', { k: 'fillet', r, sb: s }, CORNER3, { vrange: [V - 3 * (30 - s) * strip - s ** 3, V - 3 * (30 - s) * strip] });
+}
+
 // 10. rounds that cross over several walls: the 8 cap edges of a 5 mm plate (no vertical edge), r over the tie (2.5). OCCT builds none
 // of the over-the-tie ones (no reference: NOREF, still checked for validity and a closed mesh); the oracle is in
 // crates/ck-model/tests/blend_cross_multi.rs. r 5.5 is taller than the walls and stays refused.
@@ -380,7 +408,8 @@ function feature(k, c, body, picks = c.picks, id = 'F9') {
     return ref;
   });
   const o = c.op;
-  const pr = c.propagate ? { propagate: true } : {};
+  // `so` / `eo` / `sb` on the op: startOffset / endOffset (partial edge, mm) and the corner setback (mm), see docs/blend-corpus.md
+  const pr = { ...(c.propagate ? { propagate: true } : {}), ...(o.so != null ? { startOffset: o.so } : {}), ...(o.eo != null ? { endOffset: o.eo } : {}), ...(o.sb != null ? { setback: o.sb } : {}) };
   switch (o.k) {
     case 'fillet': return o.r > 0 ? { type: 'fillet', id, radius: o.r, edges, ...pr } : { type: 'fillet', id, radius: Math.max(...picks.map((p) => p.r)), edges };
     case 'varfillet': return { type: 'fillet', id, filletType: 'variable', radii: o.radii, edges };
@@ -590,6 +619,10 @@ for (const c of cases) {
     status = 'FAIL'; note = `normal jump ${r.g1.max.toFixed(4)} rad across ${r.g1.where}, vol ${r.vol?.toFixed(4)}`;
   } else if (r.open) {
     status = 'FAIL'; note = `${r.open} open mesh edge(s) (a face is missing in the display mesh), vol ${r.vol?.toFixed(4)}`;
+  } else if (c.vrange) {
+    // `vrange: [lo, hi]`: closed-form bounds where the exact volume has no closed form (a setback patch is a free-form surface)
+    status = r.vol > c.vrange[0] && r.vol < c.vrange[1] ? 'ok' : 'FAIL';
+    note = `vol ${r.vol.toFixed(4)} within closed-form bounds (${c.vrange[0].toFixed(4)}, ${c.vrange[1].toFixed(4)})`;
   } else if (c.vol != null) {
     // `vol`: an analytic volume (the case has no OCCT reference)
     const rel = Math.abs(r.vol - c.vol) / c.vol;

@@ -1,0 +1,11 @@
+[package]
+name = "ck-f3d-dump"
+version = "0.1.0"
+edition = "2024"
+description = "The Fusion 360 design dump IR (JSON schema in SCHEMA.md) as Rust types (adapted from MitCad's dump crate, MIT)"
+
+[dependencies]
+# Vec3 and the vector helpers (the one vec3 module of the workspace).
+ck-asm = { path = "../ck-asm" }
+serde.workspace = true
+serde_json.workspace = true

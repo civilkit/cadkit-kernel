@@ -81,3 +81,14 @@ fn rounding_everything_but_the_rim_still_shells() {
     assert_eq!(issues, 0);
     assert!((vol - 4964.5).abs() < 1.0, "{vol}");
 }
+
+/// A shell opened at a round (a blend face) is refused up front, naming the face and the reason, with a hint.
+#[test]
+fn shell_opened_at_a_round_is_refused_up_front() {
+    let fillet = r#"{"type":"fillet","id":"F3","radius":4,"edges":[{"faces":["F2.S.e1","F2.S.e2"],"at":[40,20,0]}]}"#;
+    let shell = r#"{"type":"shell","id":"F4","faces":["F3.B0"],"thickness":1}"#;
+    let (errs, _) = run(&format!("{fillet},{shell}"));
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    assert_eq!(errs[0].0, "shellUnsupported");
+    assert!(errs[0].1.contains("opened face F3.B0 is not planar") && errs[0].1.contains("hint"), "{errs:?}");
+}

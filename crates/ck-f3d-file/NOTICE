@@ -1,0 +1,22 @@
+ck-f3d-file: attribution
+
+The file layer of this crate is MitCad's, adapted:
+
+  MitCad, f3d-file crate (core/f3d-file), version 0.70.0, upstream commit 806a4210126ab977ba678708dd476496ddbd2968
+  Copyright (c) 2026 MitCad contributors, MIT licence (LICENSE-MIT-mitcad)
+
+What came from MitCad, and what was changed:
+
+  - src/{container,lzma,ogs,paramesh,protein}.rs and MITCAD_README.md (the upstream README): copied unchanged except
+    for the points below. Every such file carries `SPDX-License-Identifier: MIT`.
+  - `mitcad_vec3::` became `ck_asm::vec3::` (ogs.rs tests); `F3dFile::open(path)` (container.rs) is built only off
+    wasm32; lib.rs declares `zip` as a module of this crate instead of re-exporting `mitcad_zip`.
+  - not taken: the rest of the MitCad tree.
+
+Ours (this repository's own code): src/zip.rs. It has the interface of MitCad's `core/zip` crate (an owned Archive,
+Entry, Method, ZipError, per-read size limits and the mitcad#923 expansion-ratio check) on top of `ck_asm::zip`, whose
+inflate and Zstandard decoders are this workspace's own (MitCad's crate uses `miniz_oxide` and `ruzstd`; this crate has
+no dependency outside the workspace). No ZIP64 and no zip writer.
+
+Not used: the Autodesk Fusion SDK, or any file or code from Autodesk. Fusion and Autodesk are trademarks of their
+owner and are used here only to name the file format.

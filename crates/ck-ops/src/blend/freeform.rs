@@ -28,7 +28,7 @@
 //! one blend face `B<k>` (k = first selected edge of the chain).
 //! Closed rings and branching selections are `blendUnsupported`.
 
-use super::build::{apply_tool_hooked, find_edge};
+use super::build::{apply_tool_hooked, apply_tool_hooked_ring, find_edge};
 use super::BlendError;
 use crate::boolean::Op;
 use ck_geom::curve::Curve;
@@ -858,6 +858,15 @@ pub fn fillet_freeform(b: &Body, edges: &[(String, String, Vec3)], r: f64, featu
             "rounding the rim of a thickened closed spline is not supported yet (the round's tool does not close across the seam between the wall's two halves). Round the edges of the sketch profile before the extrude and thicken (a sketch fillet at the corners), or build the rounded rim with a swept profile",
         ));
     }
+    // A closed ring of two or more free-form links with no corner (a closed spline wall, split in two faces at its seam, or
+    // G1-joined splines): the round's tool is built, but its boolean with the body does not close across the seams and comes
+    // out open at every size, so the size search would only repeat the failure for tens of seconds. Refused at once.
+    if smooth_freeform_ring(b, edges) {
+        return Err(super::diag::unsupported_hint(
+            "the rim is a closed smooth free-form curve; a round on a smooth closed spline rim is not supported yet",
+            "close the profile with a short straight line or an arc so the outline has a corner, or use a chamfer-free alternative (draft/offset)",
+        ));
+    }
     // A pick whose two faces are tangent all along it (the edge where a flat face runs into an earlier round) has no corner
     // to round at any size: the marcher refuses it at its first station. Refused up front, so the answer does not depend
     // on the pick order or the size (picked after an edge whose round consumes the face between them, it was reported as
@@ -938,6 +947,27 @@ pub fn fillet_freeform(b: &Body, edges: &[(String, String, Vec3)], r: f64, featu
         }
     }
     whole
+}
+
+/// True when the selected edges include a closed ring of 2 or more links, joined tangentially all round (no corner), every
+/// link a free-form curve on an extruded wall.
+fn smooth_freeform_ring(b: &Body, edges: &[(String, String, Vec3)]) -> bool {
+    let eids: Vec<EdgeId> = edges.iter().filter_map(|(fa, fb, at)| find_edge(b, fa, fb, *at)).collect();
+    let mut left: Vec<EdgeId> = eids.clone();
+    while !left.is_empty() {
+        let Ok((chain, closed)) = build_chain(b, &left, 0, true) else { return false };
+        let ring: Vec<EdgeId> = chain.iter().map(|&(i, _)| left[i]).collect();
+        // every link a true free-form curve lying on an extruded (ruled) wall: the failing class. A ring that has a straight or
+        // circular link, or whose walls are loft faces (the base of a lofted bottle), builds and is left alone.
+        let freeform_on_extrusion = |&e: &EdgeId| {
+            !matches!(b.edge(e).curve, Curve::Line { .. } | Curve::Circle { .. }) && b.edge_faces(e).iter().any(|&f| matches!(b.face(f).surface, Surface::Extrusion { .. }))
+        };
+        if closed && ring.len() >= 2 && ring.iter().all(freeform_on_extrusion) {
+            return true;
+        }
+        left.retain(|e| !ring.contains(e));
+    }
+    false
 }
 
 /// A seam vertex of a wall split in two faces (the next edge of the selection, or the rim's other half, carries on tangentially
@@ -1576,7 +1606,9 @@ fn blend_chain_inner(b: &Body, links: Vec<Link>, r: f64, feature: &str, k: u32, 
         None
     };
     let op = if convex { Op::Cut } else { Op::Union };
-    let (mut out, _) = apply_tool_hooked(b, &tool, op, &blend_name, hint, tol.max(FF_TOL), Some(&hook))?;
+    // (a ring of several links: a tool of strips fitted to a different wall each)
+    let apply = if closed && ctx.links.len() >= 2 { apply_tool_hooked_ring } else { apply_tool_hooked };
+    let (mut out, _) = apply(b, &tool, op, &blend_name, hint, tol.max(FF_TOL), Some(&hook))?;
     // the imprint welded at FF_TOL: put the vertices back on their faces and
     // re-fit edges to them, so the result validates at the model tolerance
     // (the blend surface a junction arc is cut from, and its parameter on it: a ring has one surface per half)

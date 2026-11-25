@@ -35,7 +35,7 @@ A `plane` feature creates a reference plane. Its frame appears in the `planes` l
 |---|---|---|---|
 | `mode` | string | `"offset"` | How the plane is made. See the table below; an unknown mode behaves as `offset`. |
 | `base` | plane reference | none | The plane the mode starts from (`offset`, `angle`, `perpendicular`, `mid`, `parallel`, `tangent`). |
-| `offset` | number or expression | `0` | Distance along the plane normal (`offset`, `curve`). |
+| `offset` | number or expression | `0` | Distance along the plane normal (`offset`, `curve`). In `angle` mode: distance along the normal of the tilted plane, applied after the rotation. |
 | `flip` | boolean | `false` | Turns the plane around: `x` and `z` are negated (for `normal` the `z` and `y` axes). In `angle` mode it negates the angle. |
 | `axis` | axis reference | none | The line the plane turns about or contains (`angle`, `perpendicular`, `linePoint`, `tangent`). |
 | `angle` | number or expression | `0` | Degrees, for `angle`. |
@@ -55,8 +55,8 @@ The frame of every mode is right-handed with `z` the plane normal. The origin `o
 | `mode` | Plane | Origin and axes |
 |---|---|---|
 | `offset` | Parallel to `base`, moved along its normal by `offset`. | The base frame with `o = base.o + z * offset`. With `flip` the base `x` and `z` are negated before the offset is applied, so the plane faces the other way and the offset follows. |
-| `angle` | `base` turned about `axis` by `angle` degrees, right-handed about the axis direction. | The plane contains the axis line; `o` is the origin of the axis. When the axis lies in the base plane it becomes the new `x`. |
-| `perpendicular` | Contains `axis` and is perpendicular to `base`. | `x` is the axis direction, `y` the base normal made perpendicular to it. |
+| `angle` | `base` turned about `axis` by `angle` degrees, right-handed about the axis direction. | The plane contains the axis line; `o` is the origin of the axis. When the axis lies in the base plane it becomes the new `x`. With `offset` the origin then moves along the tilted normal `z` by `offset`: the plane parallel to the angled one, `offset` away (0 is unchanged). |
+| `perpendicular` | Contains `axis` and is perpendicular to `base`. `offset` is ignored in this mode. | `x` is the axis direction, `y` the base normal made perpendicular to it. |
 | `mid` | Halfway between `base` and `base2`. | For parallel planes the base frame moved halfway. Otherwise the bisector plane through the line where they meet. |
 | `threePoints` | Through three points. | `o` is the first point, `x` points towards the second, `z` is `x` crossed with the direction to the third. |
 | `linePoint` | Through a line (`axis`) and a point (`points[0]`). | `o` is the foot of the point on the line, `x` the line direction. |

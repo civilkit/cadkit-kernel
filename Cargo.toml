@@ -2,6 +2,14 @@
 resolver = "2"
 members = ["crates/*"]
 
+# Third-party crates, declared once. Only the Fusion phase B crates (ck-f3d-dump, later ck-f3d-decode and
+# ck-f3d-design) use them, as `serde.workspace = true`; every other crate stays free of dependencies outside this
+# workspace, and the wasm (ck-wasm) pulls them in only when it depends on one of those crates. Cargo.lock is
+# committed and pins the versions, so the CI box builds the same sources from its registry cache (docs/f3d.md).
+[workspace.dependencies]
+serde = { version = "1.0.229", default-features = false, features = ["std", "derive"] }
+serde_json = { version = "1.0.154", default-features = false, features = ["std", "float_roundtrip"] }
+
 [profile.release]
 opt-level = 3
 lto = true

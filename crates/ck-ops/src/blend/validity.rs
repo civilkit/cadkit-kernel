@@ -229,7 +229,7 @@ pub fn volume_bound(b: &Body, picks: &[(String, String, Vec3)], spec: Spec) -> O
         }
     }
     // corners and chain ends: a vertex of the selection that is not an internal point of a tangent chain
-    let m = d1.max(d2);
+    let m = d1.max(d2).max(super::rounds::corner_setback().unwrap_or(0.0));
     total += chain_ends(b, &sel) as f64 * m * m * m;
     Some((total, all_convex, all_concave))
 }
@@ -265,6 +265,9 @@ pub(super) fn check_solid(input: &Body, out: &Body, tol: f64) -> Result<(f64, f6
 
 /// Judge `out`, the result of blending `picks` of `input`, see the module notes.
 pub fn check(input: &Body, out: Body, picks: &[(String, String, Vec3)], spec: Spec, tol: f64) -> Result<Body, BlendError> {
+    // (the blend rebuilds the body: the tolerances the input recorded on its edges, e.g. a shell's creases, carry over)
+    let mut out = out;
+    ck_topo::edit::carry_edge_tols(input, &mut out);
     if !enabled() {
         return Ok(out);
     }

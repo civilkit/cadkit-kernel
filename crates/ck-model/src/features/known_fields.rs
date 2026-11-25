@@ -24,19 +24,21 @@ pub const TABLE: &[(&str, &[&str])] = &[
     // `dimPlacement` (where a dimension label was dragged), `refDims` (reference dimensions) and `cornerHoles`
     // (the corner-hole editor's record). The solver reads none of them.
     ("sketch", &["plane", "points", "entities", "constraints", "seq", "prop", "gear", "dimPlacement", "refDims", "cornerHoles"]),
+    ("connector", &["anchor", "offset", "rotate", "flip", "rotateZ"]),
     (
         "extrude",
-        &["sketch", "op", "end", "depth", "flip", "draft", "draftOut", "twist", "twistCentre", "endScale", "regions", "thin", "endRef", "offset", "strictEnd", "body", "target", "endOffset", "start", "startRef", "startOffset"],
+        &["sketch", "op", "end", "depth", "flip", "draft", "draftOut", "twist", "twistCentre", "endScale", "regions", "regionAt", "thin", "endRef", "offset", "strictEnd", "body", "target", "endOffset", "start", "startRef", "startOffset"],
     ),
-    ("revolve", &["sketch", "op", "axis", "angle", "end", "flip", "regions", "thin", "body", "target"]),
+    ("revolve", &["sketch", "op", "axis", "angle", "end", "flip", "regions", "regionAt", "thin", "body", "target"]),
     (
         "fillet",
-        &["radius", "edges", "profile", "propagate", "filletType", "radii", "rho", "rhos", "shape", "side1", "center", "side2"],
+        &["radius", "edges", "profile", "propagate", "filletType", "radii", "rho", "rhos", "shape", "side1", "center", "side2", "startOffset", "endOffset", "setback"],
     ),
     ("torus", &["op", "body", "target", "center", "axis", "majorRadius", "minorRadius", "radius", "tubeRadius"]),
     ("pipe", &["op", "body", "target", "path", "radius", "wall"]),
     ("coil", &["op", "body", "target", "center", "axis", "radius", "wireRadius", "pitch", "revolutions", "height", "leftHand"]),
     ("boundingSolid", &["op", "body", "bodies", "target", "padding"]),
+    ("wrap", &["sketch", "profiles", "face", "op", "depth", "method", "alongAxis", "around", "rotation", "taper", "flip", "direction", "target"]),
     ("dome", &["face", "faces", "height", "elliptical"]),
     ("importStep", &["blob", "step", "body", "heal"]),
     ("repairPart", &["target", "gap", "patchHoles"]),
@@ -58,7 +60,7 @@ pub const TABLE: &[(&str, &[&str])] = &[
     ("compositeCurve", &["curves", "curve", "sketch", "gapTolerance"]),
     ("sweepSurface", &["profile", "path", "frame", "up", "caps", "gapTolerance"]),
     ("blendSurface", &["faces", "radius", "sides", "from", "to", "at"]),
-    ("chamfer", &["chamferType", "distance", "distance2", "distance3", "angle", "face", "flip", "propagate", "edges"]),
+    ("chamfer", &["chamferType", "distance", "distance2", "distance3", "angle", "face", "flip", "propagate", "edges", "startOffset", "endOffset", "startDistance", "endDistance"]),
     (
         "hole",
         &["sketch", "standard", "size", "fit", "kind", "diameter", "end", "depth", "tip", "flip", "cboreDiameter", "cboreDepth", "cskDiameter", "cskAngle", "target", "endRef", "offset"],

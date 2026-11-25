@@ -736,6 +736,12 @@ pub struct Solid<'a> {
     loops: Vec<std::cell::OnceCell<Vec<Vec<Vec2>>>>,
     edges: Vec<Vec<ck_topo::body::EdgeId>>,
     bvh: crate::bvh::Bvh,
+    /// A ray whose crossing with a face lies within this distance of the face's edge, or meets the face at a steeper
+    /// grazing angle than 0.05 (the cosine of the angle to the face normal), counts as ambiguous (the next ray is tried).
+    /// 0 keeps the exact test (within the solid's own tolerance). Set for a free-form blend tool, whose faces are fits
+    /// good to a few thousandths: a ray through the corner of its section crosses one face or two there depending on
+    /// rounding.
+    pub ray_band: f64,
 }
 
 /// Ray directions tried in turn (irrational-ish, away from the axes so a
@@ -762,7 +768,7 @@ impl<'a> Solid<'a> {
                 bb.padded(tol * 10.0 + 0.02 * bb.diagonal())
             })
             .collect();
-        Solid { body, tol, faces, loops, edges, bvh: crate::bvh::Bvh::build(&boxes) }
+        Solid { body, tol, faces, loops, edges, bvh: crate::bvh::Bvh::build(&boxes), ray_band: 0.0 }
     }
 
     /// Point `p` (near face `i`'s surface) inside / on / outside face `i`.
@@ -874,6 +880,15 @@ impl<'a> Solid<'a> {
         }
     }
 
+    /// Is `p` within `band` of an edge of face `i`?
+    fn near_edge(&self, i: usize, p: Vec3, band: f64) -> bool {
+        let b = self.body;
+        self.edges[i].iter().any(|&e| {
+            let ed = b.edge(e);
+            near_hull(&ed.curve, (ed.t0, ed.t1), p, band) && super::imprint::near_in_range(&ed.curve, (ed.t0, ed.t1), p, band)
+        })
+    }
+
     /// Parity of the crossings of the ray `q + t d` (t > 0); None when the
     /// ray grazes a face, passes through an edge, or meets a surface
     /// without a closed-form line intersection.
@@ -916,6 +931,9 @@ impl<'a> Solid<'a> {
                         let nn = s.normal(u, v).normalize();
                         if nn.dot(d).abs() < 1e-3 {
                             return None; // grazing
+                        }
+                        if self.ray_band > 0.0 && (nn.dot(d).abs() < 0.05 || self.near_edge(i, p, self.ray_band)) {
+                            return None; // too close to an edge or to grazing for a fitted face
                         }
                         count += 1;
                     }

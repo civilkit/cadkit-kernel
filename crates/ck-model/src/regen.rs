@@ -126,11 +126,11 @@ pub mod codes {
 /// Pinned by probing each type with an empty payload; e.g. `convert`,
 /// `rebuildFace`, `matchEdges`, `refCurve` are separate messages, not features.
 pub const KNOWN_TYPES: &[&str] = &[
-    "sketch", "sketch3d", "plane", "axis", "extrude", "revolve", "sphere", "box", "sweep", "loft", "fillet", "chamfer", "shell", "rib",
+    "sketch", "sketch3d", "plane", "axis", "connector", "extrude", "revolve", "sphere", "box", "sweep", "loft", "fillet", "chamfer", "shell", "rib",
     "lip", "dome", "splitLine", "draft", "moveFace", "pressPull", "hole", "lpattern", "cpattern", "mirror", "spattern",
     "fillpattern", "curvepattern", "moveBody", "mate", "insertPart", "scale", "surfaceExtrude", "surfaceRevolve",
     "surfacePlanar", "surfaceOffset", "deleteFace", "fill", "knit", "extend", "freeform", "trimSurface", "thicken",
-    "cutWithSurface", "pipeCut", "deleteBody", "editCurve", "projectCurve", "offsetCurve", "compositeCurve", "sweepSurface", "blendSurface", "helix", "thread", "combine", "bodyBoolean", "split", "lipJoint", "knurlBand", "importStep",
+    "cutWithSurface", "pipeCut", "deleteBody", "editCurve", "projectCurve", "offsetCurve", "compositeCurve", "sweepSurface", "blendSurface", "helix", "thread", "combine", "bodyBoolean", "split", "lipJoint", "knurlBand", "wrap", "importStep",
     "repairPart", "importBody", "meshToSolid", "torus", "pipe", "coil", "boundingSolid", "frame", "sheetRules", "baseFlange", "edgeFlange", "hem", "fold", "contourFlange", "unfold", "refold", "sheetCorner", "sheetCut", "sheetConvert",
 ];
 
@@ -141,6 +141,7 @@ pub const KNOWN_TYPES: &[&str] = &[
 /// `projectCurveNoInput`, see tests/project_curve.rs.)
 pub const EMPTY_FEATURE_ERRORS: &[(&str, &str)] = &[
     ("axis", "missingReference"),
+    ("connector", "missingReference"),
     ("extrude", "missingSketch"),
     ("revolve", "missingSketch"),
     ("sweep", "missingSketch"),
@@ -168,6 +169,7 @@ pub const EMPTY_FEATURE_ERRORS: &[(&str, &str)] = &[
     ("lipJoint", "nothingToCut"),
     ("bodyBoolean", "nothingToCut"),
     ("knurlBand", "nothingToCut"),
+    ("wrap", "wrapNoInput"),
     ("frame", "frameInvalid"),
     ("baseFlange", "missingSketch"),
     ("edgeFlange", "nothingToCut"),
@@ -439,6 +441,8 @@ pub struct RegenResult {
     pub frames: Vec<(String, Json)>,
     /// Sheet metal features: the rule and the flat pattern after each (id-keyed, see features/sheet_features.rs). Only on the wire when non-empty.
     pub sheet_metal: Vec<(String, Json)>,
+    /// `connector` features (Mate Connectors): `(id, name, frame)`. Only on the wire when non-empty.
+    pub connectors: Vec<(String, String, Frame)>,
 }
 
 fn upsert<T>(v: &mut Vec<T>, key: impl Fn(&T) -> &str, item: T) {
@@ -475,6 +479,9 @@ impl RegenResult {
     pub fn put_sheet_metal(&mut self, id: &str, j: Json) {
         upsert(&mut self.sheet_metal, |x| &x.0, (id.to_string(), j));
     }
+    pub fn put_connector(&mut self, id: &str, name: &str, f: Frame) {
+        upsert(&mut self.connectors, |x| &x.0, (id.to_string(), name.to_string(), f));
+    }
     pub fn put_sketch3(&mut self, id: &str, j: Json) {
         upsert(&mut self.sketches3, |x| &x.0, (id.to_string(), j));
     }
@@ -482,6 +489,29 @@ impl RegenResult {
     pub fn to_json(&self) -> Json {
         let mut out = self.to_json_base();
         if let Json::Obj(m) = &mut out {
+            if !self.connectors.is_empty() {
+                m.push((
+                    "connectors".into(),
+                    Json::Arr(
+                        sorted(&self.connectors, |c| &c.0)
+                            .into_iter()
+                            .map(|(id, name, f)| {
+                                let v = |v: Vec3| Json::Arr(vec![Json::Num(v.x), Json::Num(v.y), Json::Num(v.z)]);
+                                Json::Arr(vec![
+                                    Json::Str(id.clone()),
+                                    Json::Obj(vec![
+                                        ("name".into(), Json::Str(name.clone())),
+                                        ("o".into(), v(f.o)),
+                                        ("x".into(), v(f.x)),
+                                        ("y".into(), v(f.y)),
+                                        ("z".into(), v(f.z)),
+                                    ]),
+                                ])
+                            })
+                            .collect(),
+                    ),
+                ));
+            }
             if !self.threads.is_empty() {
                 m.push(("threads".into(), Json::Arr(sorted(&self.threads, |t| &t.0).into_iter().map(|t| t.1.clone()).collect())));
             }
@@ -581,6 +611,9 @@ impl<'p> RegenState<'p> {
     pub fn plane(&self, id: &str) -> Option<Frame> {
         self.result.planes.iter().find(|p| p.0 == id).map(|p| p.1)
     }
+    pub fn connector(&self, id: &str) -> Option<Frame> {
+        self.result.connectors.iter().find(|c| c.0 == id).map(|c| c.2)
+    }
     /// Evaluate a numeric field of a feature (`expr::eval_field`).
     pub fn num(&self, f: &Feature, key: &str, default: f64) -> Result<f64, FeatureError> {
         expr::eval_field(f.raw.get(key), &self.vars, default).map_err(FeatureError::new)
@@ -630,6 +663,11 @@ pub trait FeatureExec {
     /// Frame of a planar face (`{"kind":"face","id":"F2.C1"}` sketch planes
     /// and plane bases). `None` = unresolvable (`missingReference`).
     fn face_frame(&mut self, _state: &RegenState, _face: &str) -> Option<Frame> {
+        None
+    }
+    /// Centroid-anchored frame of a face (planar, cylindrical, conical, spherical)
+    /// for Mate Connectors (`type: "connector"`). `None` = unresolvable.
+    fn face_connector_frame(&mut self, _state: &RegenState, _face: &str) -> Option<Frame> {
         None
     }
     /// Straight edge `(point, unit direction)` of an edge selection
@@ -866,7 +904,19 @@ fn compute_plane_frame(state: &mut RegenState, exec: &mut dyn FeatureExec, f: &F
         .as_ref()
         .and_then(|b| resolve_plane(state, exec, b))
         .ok_or_else(|| FeatureError::new(codes::MISSING_REFERENCE))?;
-    let missing = || FeatureError::new(codes::MISSING_REFERENCE);
+    let mode_s = mode.as_str();
+    let missing = || {
+        let (detail, hint) = match mode_s {
+            "angle" | "perpendicular" => (
+                format!("{mode_s} plane has no axis that resolves"),
+                "angle needs an axis: a line, edge or axis feature".to_string(),
+            ),
+            "mid" => ("mid plane has no second plane that resolves".to_string(), "mid needs a second plane (base2)".to_string()),
+            _ => ("the plane's base does not resolve".to_string(), "give a base plane (std, plane feature or planar face)".to_string()),
+        };
+        let hint = if mode_s == "perpendicular" { "perpendicular needs an axis: a line, edge or axis feature".to_string() } else { hint };
+        FeatureError::new(codes::MISSING_REFERENCE).with("detail", Json::Str(detail)).with("hint", Json::Str(hint))
+    };
     // Modes pinned against the original: offset, angle, perpendicular, mid
     // (the others live in `planes`). Unknown modes behave as "offset".
     let mut fr = base;
@@ -887,13 +937,18 @@ fn compute_plane_frame(state: &mut RegenState, exec: &mut dyn FeatureExec, f: &F
                 x = -x;
             }
             fr = Frame { o, x, y: z.cross(x), z };
+            // `offset`: distance along the tilted plane's own normal, after the rotation (0 = unchanged)
+            let offset = state.num(f, "offset", 0.0)?;
+            fr.o = fr.o + fr.z.scale(offset);
         }
         "perpendicular" => {
             // Plane through the axis line, perpendicular to the base plane:
             // x = axis direction, y = base normal, z = x × y.
             let (o, d) = axis.as_ref().and_then(|a| crate::planes::resolve_axis(state, exec, a)).ok_or_else(missing)?;
             if d.cross(base.z).len() < 1e-9 {
-                return Err(FeatureError::new(codes::PLANE_LINE_NORMAL));
+                return Err(FeatureError::new(codes::PLANE_LINE_NORMAL)
+                    .with("detail", Json::Str("the axis is parallel to the normal of the base plane".into()))
+                    .with("hint", Json::Str("the axis lies along the base normal: pick an axis that lies in or crosses the base plane".into())));
             }
             // y = the base normal made perpendicular to the axis
             let y = base.z.reject(d).normalize();
@@ -1052,6 +1107,7 @@ fn run_feature(state: &mut RegenState, exec: &mut dyn FeatureExec, f: &Feature) 
     }
     match f.type_name.as_str() {
         "axis" => return crate::planes::exec_axis(state, exec, f),
+        "connector" => return crate::connector::exec_connector(state, exec, f),
         "sketch3d" => {
             state.result.put_sketch3(&f.id, sketch3d_echo(&f.raw));
             return Ok(());

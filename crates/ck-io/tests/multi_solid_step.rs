@@ -17,7 +17,8 @@ fn torsion_spring_two_solids_import_with_full_volume() {
     assert!((mp.area - 102528.72).abs() / 102528.72 < 1e-4, "area {}", mp.area);
     let lumps = ck_topo::mass::lump_moments(&r.body);
     assert!(lumps.iter().all(|m| m.volume > 0.0));
-    assert!(ck_check::validate(&r.body, 1e-6).is_empty());
+    let issues = ck_check::validate(&r.body, 1e-6);
+    assert!(issues.is_empty(), "{issues:?}");
     // the closed sweep face tessellates (bbox reaches the coil radius)
     let t = ck_tess::mesh::tessellate(&r.body);
     let (lo, hi) = t.mesh.bbox().unwrap();
@@ -100,7 +101,8 @@ fn coil_spring_gt_imports_and_tessellates_fast() {
     // dataset volume 89283.67, area 52788.04 (the face integral double-counts the coils' overlap, as OCC does)
     assert!((mp.volume - 89283.67).abs() / 89283.67 < 1e-3, "volume {}", mp.volume);
     assert!((mp.area - 52788.04).abs() / 52788.04 < 1e-3, "area {}", mp.area);
-    assert!(ck_check::validate(&r.body, 1e-6).is_empty());
+    let issues = ck_check::validate(&r.body, 1e-6);
+    assert!(issues.is_empty(), "{issues:?}");
     let tm = ck_tess::mesh::tessellate(&r.body);
     assert!(tm.mesh.failed.is_empty());
     assert!(tm.mesh.tri_face.len() > 30_000, "{} triangles", tm.mesh.tri_face.len());

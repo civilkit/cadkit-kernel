@@ -4,3 +4,6 @@ __pycache__/
 node_modules/
 packages/dist/
 packages/plate.json
+
+# third-party Fusion corpus files copied here for crates/ck-asm/tests/corpus.rs (docs/f3d.md); never committed
+/crates/ck-asm/tests/corpus-local/

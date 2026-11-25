@@ -31,12 +31,42 @@ pub(super) fn apply_tool_hooked(
     tol: f64,
     hook: Option<crate::boolean::imprint::PairHook>,
 ) -> Result<(Body, Vec<String>), BlendError> {
+    apply_tool_hooked_with(b, tool, op, name, hint, tol, hook, 0.0)
+}
+
+/// [`apply_tool_hooked`] for the tool of a closed ring of free-form links (faces fitted to a few thousandths): a ray
+/// through the corner of the tool's section within `ray_band` of an edge is ambiguous when fragments are classified
+/// against it, so the next ray decides (`Solid::ray_band`). A sliver of a spline wall inside the tool, whose ray ran
+/// within 0.005 mm of the contact curve, read as outside on one of two mirror-image corners (the bottle base's 5 mm round).
+pub(super) fn apply_tool_hooked_ring(
+    b: &Body,
+    tool: &Body,
+    op: Op,
+    name: &FaceName,
+    hint: Vec<String>,
+    tol: f64,
+    hook: Option<crate::boolean::imprint::PairHook>,
+) -> Result<(Body, Vec<String>), BlendError> {
+    apply_tool_hooked_with(b, tool, op, name, hint, tol, hook, 1e-2)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_tool_hooked_with(
+    b: &Body,
+    tool: &Body,
+    op: Op,
+    name: &FaceName,
+    hint: Vec<String>,
+    tol: f64,
+    hook: Option<crate::boolean::imprint::PairHook>,
+    ray_band: f64,
+) -> Result<(Body, Vec<String>), BlendError> {
     let mut first = None;
     // a tangent-contact (hooked) tool also gets a last try with a tight weld: a body with sliver faces thinner than the
     // loose weld (bands stacked a few thousandths apart) collapses them and does not assemble
     let ks: &[f64] = if hook.is_some() { &[1.0, 10.0, 100.0, 0.1] } else { &[1.0, 10.0, 100.0] };
     for &k in ks {
-        match apply_tool_once(b, tool, op, name, hint.clone(), tol * k, hook) {
+        match apply_tool_once(b, tool, op, name, hint.clone(), tol * k, hook, ray_band) {
             Ok(r) => match crate::boolean::sanity::check_result(b, tool, op, &r.0) {
                 None => return Ok(r),
                 Some(m) => {
@@ -61,6 +91,7 @@ pub(super) fn apply_tool_once(
     hint: Vec<String>,
     tol: f64,
     hook: Option<crate::boolean::imprint::PairHook>,
+    ray_band: f64,
 ) -> Result<(Body, Vec<String>), BlendError> {
     let hook_given = hook.is_some();
     let dbg_t = super::diag::on().then(std::time::Instant::now);
@@ -71,7 +102,7 @@ pub(super) fn apply_tool_once(
     let dbg_t = super::diag::on().then(std::time::Instant::now);
     // a hooked (tangent contact) tool is imprinted at a loose welding tolerance; classify against it tightly
     let class_tol = if hook_given { tol.min(1e-5) } else { tol };
-    let mut faces_out = crate::boolean::assemble::select_class_tol(&arr, [b, tool], op, class_tol).map_err(|e| {
+    let mut faces_out = if ray_band > 0.0 { crate::boolean::assemble::select_class_tol_ring(&arr, [b, tool], op, class_tol, ray_band) } else { crate::boolean::assemble::select_class_tol(&arr, [b, tool], op, class_tol) }.map_err(|e| {
         let msg = format!("select: {e:?}");
         dbg_fail(&msg);
         BlendError::detail("blendFailed", &msg)

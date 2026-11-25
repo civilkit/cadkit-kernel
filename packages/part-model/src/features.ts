@@ -153,7 +153,26 @@ export interface LoftFeature {
   surface?: boolean;
   centreLine?: unknown;
   guides?: unknown;
+  /** Per profile, the fraction (0 to 1) of a closed profile's length where its start point sits; null = chosen by the kernel (0 is the fraction 0, not "automatic"). */
+  connectors?: Array<number | null>;
+  startNormal?: number | boolean;
+  endNormal?: number | boolean;
+  apexTangent?: number;
+  railSmoothing?: 'natural' | 'local' | 'auto';
+  /**
+   * End conditions, one entry per section (same length as `sketches`; null / missing = free). Only the first and last may be non-free.
+   * `directional`: `angle` in degrees from the profile plane (0 < angle < 180, default 90 = along the profile normal; below 90 the loft flares
+   * outward, above 90 it leans inward) and `weight` (> 0, default 1, the tension). `tangent` / `curvature` are carried but refused by the kernel.
+   */
+  conditions?: Array<LoftCondition | null>;
   [key: string]: unknown;
+}
+
+export interface LoftCondition {
+  type: 'free' | 'directional' | 'tangent' | 'curvature';
+  angle?: number;
+  weight?: number;
+  face?: unknown;
 }
 
 export interface FilletFeature {
@@ -162,6 +181,12 @@ export interface FilletFeature {
   name?: string;
   radius: Expr;
   edges: EdgeRef[];
+  /** partial edge: the round stops this many mm short of the end of each picked edge that is nearer its pick point (`at`); >= 0, 0 or absent = to the end. Not with `propagate`. Applies to every edge of the feature. */
+  startOffset?: Expr;
+  /** partial edge: the round stops this many mm short of the other end of each picked edge; >= 0. `startOffset + endOffset` must be below the edge length (`invalidValue {field, detail, hint, length}`). */
+  endOffset?: Expr;
+  /** corner setback in mm: distance along each edge from a vertex of three selected edges to the corner patch; 0 or absent = automatic (rolling-ball sphere; the natural setback is the radius). Warnings `blendSetbackAdjusted` / `blendSetbackUnused`. */
+  setback?: Expr;
   [key: string]: unknown;
 }
 
@@ -175,6 +200,10 @@ export interface ChamferFeature {
   angle?: Expr;
   flip?: boolean;
   edges: EdgeRef[];
+  /** partial edge: the chamfer stops this many mm short of the end of each picked edge that is nearer its pick point (`at`); >= 0, 0 or absent = to the end. Not with `propagate`. */
+  startOffset?: Expr;
+  /** partial edge: the chamfer stops this many mm short of the other end of each picked edge; >= 0. `startOffset + endOffset` must be below the edge length. */
+  endOffset?: Expr;
   [key: string]: unknown;
 }
 
@@ -492,6 +521,41 @@ export interface InsertPartFeature {
   [key: string]: unknown;
 }
 
+/** Anchor for a Mate Connector (`type: 'connector'`). */
+export type ConnectorAnchor =
+  | { kind: 'face'; id: string }
+  | { kind: 'circle'; face?: string; id?: string; faces?: string[]; at?: [number, number, number] }
+  | { kind: 'vertex'; faces: string[]; at?: [number, number, number] }
+  | { kind: 'edge'; faces: string[]; at?: [number, number, number] }
+  | { kind: 'std'; id: string }
+  | { kind: 'feature'; id: string }
+  | { kind: 'connector'; id: string }
+  | { kind: 'frame'; origin?: [number, number, number]; xDir: [number, number, number]; yDir?: [number, number, number]; zDir?: [number, number, number] };
+
+/** First-class Mate Connector: a named local coordinate frame `(origin, x, y, z)`. */
+export interface ConnectorFeature {
+  type: 'connector';
+  id: string;
+  name?: string;
+  anchor: ConnectorAnchor;
+  /** Local translation offset `[dx, dy, dz]` in anchor frame coordinates. */
+  offset?: [Expr, Expr, Expr];
+  /** Local Euler rotations `[rx, ry, rz]` in degrees. */
+  rotate?: [Expr, Expr, Expr];
+  /** Flip the Z axis (and X to preserve right-handedness). */
+  flip?: boolean;
+  /** Rotation about local Z in degrees. */
+  rotateZ?: Expr;
+  [key: string]: unknown;
+}
+
+/** Reference to a Mate Connector (on a component or at assembly top-level). */
+export interface ConnectorRef {
+  kind: 'connector';
+  id: string;
+  component?: string;
+}
+
 export interface MateFeature {
   type: 'mate';
   id: string;
@@ -500,21 +564,26 @@ export interface MateFeature {
     | 'coincident' | 'concentric' | 'distance' | 'angle' | 'parallel'
     | 'perpendicular' | 'tangent' | 'lock' | 'symmetric' | 'width'
     | 'hinge' | 'slot' | 'screw' | 'gear' | 'rackPinion' | 'limits'
+    | 'fastened' | 'revolute' | 'slider' | 'cylindrical' | 'planar'
     | string;
-  a?: string | null;
-  b?: string | null;
+  a?: string | ConnectorRef | null;
+  b?: string | ConnectorRef | null;
   /** Second face of the mover / target side (width, hinge stop, slot wall). */
   a2?: string | null;
   b2?: string | null;
   /** Mirror face of `symmetric`. */
   c?: string | null;
   distance?: Expr;
+  /** Mate-level local offset `[dx, dy, dz]` (or scalar Z offset) for connector mates. */
+  offset?: [Expr, Expr, Expr] | Expr;
+  /** Mate-level Z rotation (degrees) for connector mates. */
+  rotateZ?: Expr;
   /** Degrees: the `angle` mate's angle, or the drive of gear / rackPinion / screw. */
   angle?: Expr;
   ratio?: Expr;
   pitch?: Expr;
   radius?: Expr;
-  /** `limits`: range of the measured distance (or of the angle, degrees, with `of: 'angle'`). */
+  /** `limits` / `revolute` / `slider`: range of the measured distance (mm) or angle (degrees). */
   min?: Expr;
   max?: Expr;
   of?: 'distance' | 'angle';
@@ -671,6 +740,22 @@ export interface ProjectCurveFeature {
   curves?: unknown[];
   /** Procedural only: largest gap between consecutive pieces, mm (default 1e-5). */
   gapTolerance?: Expr;
+  /**
+   * `project` (default: the projection above) or `wrap` (docs/proposals/wrap-feature.md 2.2): lay the sketch's curves on ONE
+   * cylindrical face (`faces` of length 1) by length along the surface (theta = s / r, z = y), open or closed, any number of turns.
+   * `wrap` takes a `sketch` only (not `curve`, not `procedural`) and does not read `direction`; the marker adds `turns`.
+   */
+  method?: 'project' | 'wrap';
+  /** `wrap` only, as the solid `wrap`: mm along the axis (the direction whose largest component is positive). */
+  alongAxis?: Expr;
+  /** `wrap` only: degrees about the axis, along the reading direction. */
+  around?: Expr;
+  /** `wrap` only: degrees about the middle of the curves, in the sketch. */
+  rotation?: Expr;
+  /** `wrap` only: mirror along the circumference. */
+  flip?: boolean;
+  /** `wrap` only: subset of the sketch's entity ids (default every non-construction entity). */
+  entities?: string[];
   [key: string]: unknown;
 }
 
@@ -943,6 +1028,45 @@ export interface KnurlBandFeature {
 }
 
 /**
+ * Text and closed profiles laid on a curved face by length along the surface (docs/proposals/wrap-feature.md; phase 1: a cylindrical
+ * face, outside or in a bore). Widths are kept (the development of the cylinder is isometric); walls stand along the face normals
+ * unless `taper` is set. Faces: walls `<id>.S.<tag>`, the cap that stays `<id>.C0`.
+ */
+export interface WrapFeature {
+  type: 'wrap';
+  id: string;
+  name?: string;
+  /** Sketch feature id whose closed regions (text, loops) are wrapped. */
+  sketch: string;
+  /** Subset of the sketch's profiles (a region's outer entity id, or a text entity id = all its glyphs); default all closed regions. */
+  profiles?: string[];
+  /** One cylindrical face name. */
+  face: string;
+  op: 'add' | 'cut';
+  /** Height raised / depth engraved along the face normals, mm. */
+  depth: Expr;
+  /** `auto` and `wrap` develop the cylinder; `project` is not built yet (wrapFaceUnsupported). */
+  method?: 'auto' | 'wrap' | 'project';
+  /** mm along the axis direction whose largest component is positive. */
+  alongAxis?: Expr;
+  /** degrees about the axis, along the reading direction. */
+  around?: Expr;
+  /** degrees, counter-clockwise in the sketch, about the middle of the selected profiles. */
+  rotation?: Expr;
+  /** degrees, -45..45: positive widens the profile as it rises from the face. */
+  taper?: Expr;
+  /** Mirror along the circumference (about the middle of the selected profiles). */
+  flip?: boolean;
+  /** `project` only (not built yet). */
+  direction?: unknown;
+  /** As `extrude`: the body the add / cut acts on. */
+  target?: unknown;
+  /** Fit tolerance of the curved edges, mm (default 0.001). */
+  tolerance?: Expr;
+  [key: string]: unknown;
+}
+
+/**
  * A body from a STEP file, held by the part. The STEP text is an entry of the part's `blobs` table (`PartDoc.blobs`) named by `blob`,
  * the key being the lower-case hex SHA-256 of the text; `step` holds the text in the feature itself (small files only).
  * Faces are named `<id>.I<solid>F<n>` (docs/import-step.md).
@@ -1200,7 +1324,7 @@ export type KnownFeature =
   | DeleteFaceFeature | ThickenFeature | CutWithSurfaceFeature | PipeCutFeature
   | FreeformFeature | EditCurveFeature | ProjectCurveFeature | OffsetCurveFeature | CompositeCurveFeature | SweepSurfaceFeature | BlendSurfaceFeature | ExtendFeature
   | DomeFeature | SplitLineFeature | MoveFaceFeature | PressPullFeature | MoveBodyFeature
-  | ScaleFeature | AxisFeature | ThreadFeature | CombineFeature | SplitFeature | LipJointFeature | SphereFeature | KnurlBandFeature | ImportStepFeature | RepairPartFeature | FrameFeature
+  | ScaleFeature | AxisFeature | ConnectorFeature | ThreadFeature | CombineFeature | SplitFeature | LipJointFeature | SphereFeature | KnurlBandFeature | WrapFeature | ImportStepFeature | RepairPartFeature | FrameFeature
   | TorusFeature | PipeFeature | CoilFeature | BoundingSolidFeature
   | SheetRulesFeature | BaseFlangeFeature | ContourFlangeFeature | EdgeFlangeFeature | HemFeature | FoldFeature
   | UnfoldFeature | RefoldFeature | SheetConvertFeature | SheetCutFeature | SheetCornerFeature;
@@ -1214,7 +1338,7 @@ export const FEATURE_TYPES = [
   'surfaceOffset', 'knit', 'fill', 'insertPart', 'mate', 'plane',
   'deleteBody', 'deleteFace', 'thicken', 'cutWithSurface', 'pipeCut',
   'freeform', 'editCurve', 'projectCurve', 'offsetCurve', 'compositeCurve', 'sweepSurface', 'blendSurface', 'extend', 'dome', 'splitLine',
-  'moveFace', 'pressPull', 'moveBody', 'scale', 'axis', 'thread', 'combine', 'split', 'lipJoint', 'sphere', 'knurlBand', 'importStep', 'repairPart', 'frame',
+  'moveFace', 'pressPull', 'moveBody', 'scale', 'axis', 'connector', 'thread', 'combine', 'split', 'lipJoint', 'sphere', 'knurlBand', 'wrap', 'importStep', 'repairPart', 'frame',
   'torus', 'pipe', 'coil', 'boundingSolid',
   'sheetRules', 'baseFlange', 'edgeFlange', 'hem', 'fold', 'contourFlange', 'unfold', 'refold', 'sheetConvert', 'sheetCut', 'sheetCorner',
 ] as const;

@@ -128,7 +128,32 @@ fn diagnose_cut_failure(body: &Body, is_open: &dyn Fn(FaceId) -> bool, t: f64, o
 /// carries the thickness that would work (`limit.max_thickness`): where the failure itself does
 /// not name one it is found by halving the wall until the shell succeeds.
 pub fn shell(body: &Body, open: &[FaceId], thickness: f64, outward: bool, tol: f64) -> Result<Body, ShellError> {
-    match shell_once(body, open, thickness, outward, tol) {
+    let first_try = ck_core::budget::mark();
+    let first = shell_once(body, open, thickness, outward, tol);
+    // A failing attempt that itself took longer than the search window (a loft's offset surfaces fitted to the
+    // validator's tolerance take many seconds on a slow host) is not followed by the search for a wall that works:
+    // each search build would cost as much again, and the refusal would come back after minutes (or after the host
+    // gave up on the kernel). The refusal says so; without a host clock the time is 0 and the search runs.
+    let took = ck_core::budget::since(first_try);
+    if let Err(mut e) = first {
+        if took > SEARCH_SKIP_MS && matches!(e.code.as_str(), "shellTooThick" | "shellFailed" | "offsetTooLarge") {
+            let note = format!("one attempt took {:.0} s, so no thinner wall was tried: try a thinner wall, or shell before the shape gets this many curved faces", took / 1000.0);
+            e.detail = Some(match e.detail.take() {
+                Some(d) => format!("{d} ({note})"),
+                None => note,
+            });
+            return Err(e);
+        }
+        return shell_search(body, open, thickness, outward, tol, Err(e));
+    }
+    first
+}
+
+/// Wall-clock a failing first attempt may take (ms of the host clock) before the search for a wall that works is skipped.
+pub const SEARCH_SKIP_MS: f64 = 3000.0;
+
+fn shell_search(body: &Body, open: &[FaceId], thickness: f64, outward: bool, tol: f64, first: Result<Body, ShellError>) -> Result<Body, ShellError> {
+    match first {
         Err(mut e)
             if matches!(e.code.as_str(), "shellTooThick" | "shellFailed" | "offsetTooLarge")
                 && e.limit.as_ref().map_or(true, |l| l.max_thickness <= 0.0)
@@ -155,13 +180,21 @@ pub fn shell(body: &Body, open: &[FaceId], thickness: f64, outward: bool, tol: f
                 && e.limit.as_ref().is_some_and(|l| l.max_thickness > 0.0 && l.max_thickness < thickness) =>
         {
             let named = e.limit.as_ref().map_or(0.0, |l| l.max_thickness);
-            if shell_once(body, open, named, outward, tol).is_err() {
-                let max = largest_working(body, open, named, outward, tol).map_or(0.0, |ok| floor_hundredth(0.95 * ok));
+            if e.detail.as_deref().is_some_and(|d| d.ends_with(&format!("({UNBUILT_NOTE})"))) {
+                return Err(e);
+            }
+            if let Err(first_fail) = shell_once(body, open, named, outward, tol) {
+                // (a wall that came out as an invalid body: the faces' own shape is the limit, and each further try costs a
+                // build of seconds, so no search below it is made)
+                let tries = if first_fail.detail.as_deref().is_some_and(|d| d.starts_with(INVALID_RESULT)) { 0 } else { 8 };
+                let max = largest_working_n(body, open, named, outward, tol, tries).map_or(0.0, |ok| floor_hundredth(0.95 * ok));
                 if let Some(l) = e.limit.as_mut() {
                     l.max_thickness = max;
                 }
                 let note = if max > 0.0 {
                     format!("; a wall of {named:.2} mm does not build here either: use at most {max:.2} mm")
+                } else if tries == 0 {
+                    format!("; a wall of {named:.2} mm does not build here either: the shape of the face is the limit, a thinner wall was not tried")
                 } else {
                     format!("; a wall of {named:.2} mm does not build here either, nor does a thinner one")
                 };
@@ -172,6 +205,14 @@ pub fn shell(body: &Body, open: &[FaceId], thickness: f64, outward: bool, tol: f
         r => r,
     }
 }
+
+/// A free-form face whose smallest radius of curvature is under this many walls is too tight for the wall when the hollowed
+/// body does not validate (the cavity keeps a radius of less than a quarter of the wall there).
+const TIGHT_FACTOR: f64 = 1.25;
+
+/// Ends the detail of a curvature refusal whose wall was not built to check it: the hollowed body at the wall asked for did not
+/// validate, and the wall named is the curvature's limit. `shell_search` does not build that wall again (seconds per build).
+pub const UNBUILT_NOTE: &str = "the hollowed body at this wall is not a valid solid";
 
 /// Detail of the refusal when the hollowed body does not validate; `shell` appends the thickness that works.
 const INVALID_RESULT: &str = "the hollowed body is not valid (the offset surfaces do not close into a clean wall on this shape)";
@@ -186,13 +227,18 @@ fn floor_hundredth(x: f64) -> f64 {
 /// The largest wall below `thickness` (to a sixteenth of it, a 256th when nothing larger works) that still
 /// shells: bisection on the failing thickness. `None` when not even that works.
 fn largest_working(body: &Body, open: &[FaceId], thickness: f64, outward: bool, tol: f64) -> Option<f64> {
+    largest_working_n(body, open, thickness, outward, tol, 8)
+}
+
+/// [`largest_working`] with at most `tries` builds.
+fn largest_working_n(body: &Body, open: &[FaceId], thickness: f64, outward: bool, tol: f64, tries: usize) -> Option<f64> {
     let (mut lo, mut hi) = (0.0f64, thickness);
     // (a failing shell can take seconds itself, and the refusal waits for the whole search: no new try starts after
     // SEARCH_MS of the host clock, so a refusal comes back with the best wall found so far, or none)
     const SEARCH_MS: f64 = 3000.0;
     let started = ck_core::budget::mark();
     // (four halvings; up to eight when nothing worked yet, e.g. a thin web far below the wall asked for)
-    for i in 0..8 {
+    for i in 0..tries {
         if i >= 4 && lo > 0.0 {
             break;
         }
@@ -740,6 +786,9 @@ fn shell_try(body: &Body, open: &[FaceId], thickness: f64, outward: bool, tol: f
     }
     let mut b = out.body;
     b.number_split_faces();
+    if !outward {
+        tolerate_offset_seams(&mut b, body);
+    }
     // Offset surfaces that cross or touch inside the cavity leave a wall that is not `t` thick (or a
     // cavity pinched shut) in a body that still passes the topology checks: refuse it.
     if !outward {
@@ -755,6 +804,17 @@ fn shell_try(body: &Body, open: &[FaceId], thickness: f64, outward: bool, tol: f
     if near_poles.is_empty() {
         let issues = ck_check::validate(&b, 1e-6);
         if !issues.is_empty() && issues.len() > ck_check::validate(body, 1e-6).len() {
+            // A face whose radius of curvature is only a little more than the wall leaves the cavity a radius of a fraction
+            // of the wall: the cut still comes out as a body, but never a valid one (seams off their faces beyond the
+            // tolerant-seam limit, at every wall down to a hair). That is the wall being too thick for the face, so it is
+            // named as such, with the wall that fits it, instead of the symptom.
+            let diag = diagnose_cut_failure(body, &is_open, t, outward, None);
+            if let Some(l) = diag.limit.as_ref().filter(|l| l.kind == "curvature" && l.min_radius < TIGHT_FACTOR * t) {
+                let face = l.face.clone().unwrap_or_default();
+                let limit = OffsetLimit { kind: "curvature", min_radius: l.min_radius, max_thickness: (0.8 * l.min_radius * 100.0).floor() / 100.0, face: l.face.clone() };
+                let detail = format!("{} ({UNBUILT_NOTE})", crate::offset::limit_message(&face, t, &limit));
+                return Err(ShellError { code: "shellTooThick".into(), detail: Some(detail), limit: Some(limit) });
+            }
             return Err(ShellError::detail(
                 "shellFailed",
                 format!("{INVALID_RESULT}: {} {} ({} issues in all)", issues[0].code, issues[0].detail, issues.len()),
@@ -792,6 +852,35 @@ fn shell_try(body: &Body, open: &[FaceId], thickness: f64, outward: bool, tol: f
         ));
     }
     Ok(b)
+}
+
+/// Largest gap (mm) between the offset surfaces of two faces that meet tangentially in the shelled body that is recorded as
+/// an edge tolerance instead of refused.
+const SEAM_TOL: f64 = 3e-3;
+
+/// A lofted (free-form) wall meets its neighbours across seams that are tangent only to the fit tolerance of the loft (the
+/// normals differ by 1e-4 rad or so). Offset by a wall `t` the two surfaces then miss each other by `t` x that angle (7e-4 mm
+/// for a 2 mm wall of the bottle) at the crease, and the one edge the cavity has there cannot lie on both. Such an edge is
+/// recorded as tolerant (its own deviation from its faces, as the healing pass does) instead of the whole shell being refused
+/// for a gap of under a micron times the wall. Only edges between a free-form face and its neighbour, only up to [`SEAM_TOL`],
+/// and only where the source body had no such deviation itself.
+fn tolerate_offset_seams(b: &mut Body, src: &Body) {
+    let src_dev = src.edge_ids().map(|e| ck_check::face_deviation(src, e, 8)).fold(0.0f64, f64::max);
+    for e in b.edge_ids().collect::<Vec<_>>() {
+        let ed = b.edge(e);
+        if !(ed.t1 > ed.t0) || !b.edge_faces(e).iter().any(|&f| matches!(b.face(f).surface, Surface::BSpline(_))) {
+            continue;
+        }
+        let scale = 1.0 + ed.curve.eval(ed.t0).len();
+        let lim = (1e-6 * scale * 10.0).max(ed.tol).max(src_dev);
+        let mut dev = ck_check::face_deviation(b, e, 8);
+        if dev > lim {
+            dev = dev.max(ck_check::face_deviation(b, e, 32));
+        }
+        if dev > lim && dev <= SEAM_TOL {
+            b.edges[e.idx()].tol = dev * 1.05;
+        }
+    }
 }
 
 /// Two opened planar faces that share an edge and lie on one plane (same outward normal): the start and end caps of a

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Build the kernel wasm and run its checks on the CI box instead of this (busy) machine. See docs/remote-build.md.
-#   tools/remote_build.sh [--worktree DIR] [--checks gate,audit,large sample,loft,apex,fillet,section,spline,thin,suite,lint,text,engrave,projcurve,dfm,propeller,crashfuzz,wasmparity,all|none]
+#   tools/remote_build.sh [--worktree DIR] [--checks gate,audit,large sample,herringbone,loft,apex,fillet,section,spline,thin,suite,lint,text,wrap,engrave,projcurve,dfm,propeller,crashfuzz,wasmparity,all|none]
 #                         [--cargo-test CRATE|"-p a -p b"|all] [--out DIR] [--no-sync-back] [--no-wasm] [--wasm-features LIST] [--jobs N] [--reset]
 #                         [--test NAME] [--env K=V ...] [--fetch REL] [--musl-libm]
 #   --test NAME: with --cargo-test, run only that integration test, with --nocapture; --env K=V: set for the cargo
 #   tests (`{RUN}` in V is the box's run directory); --fetch REL: copy {RUN}/REL back to --out/REL after the run
 #   --quick: agent iteration, NOT a release verification: wasm build, ck-ops + ck-topo tests, only the ck-model integration
-#   tests listed in tools/ci/quick_tests.txt, and --checks (default gate,large sample, started beside the tests). --full = today's behaviour (the default).
+#   tests listed in tools/ci/quick_tests.txt, and --checks (default gate,large sample,herringbone, started beside the tests). --full = today's behaviour (the default).
 #   Cargo runs write per-test-binary times to test_times.txt beside remote_results.txt (fetched back with --out).
 #   --job-timeout SECS (default by kind: quick 2700, full and cargo-test-only 10800): wall-clock limit of the job once it holds a slot (the
 #   slot wait is not counted). A job over it has its whole process tree killed on the box, the slot released, and `FAIL job-timeout` recorded.
@@ -59,7 +59,7 @@ while [ $# -gt 0 ]; do
 done
 if [ "$QUICK" = 1 ]; then
   # the large sample (a 45 s check) rides along: it regenerates the whole default part and caught what no gate case did (docs/remote-build.md)
-  [ "$CHECKS_SET" = 1 ] || CHECKS="gate,large sample"
+  [ "$CHECKS_SET" = 1 ] || CHECKS="gate,large sample,herringbone"
   [ -z "$CTEST" ] && [ -z "$TESTNAME" ] || { echo "--quick fixes the cargo tests: drop --cargo-test/--test (or use --full)" >&2; exit 64; }
   [ -s "$(dirname "$0")/ci/quick_tests.txt" ] || { echo "tools/ci/quick_tests.txt missing" >&2; exit 64; }
   CTEST="-p ck-ops -p ck-topo -p ck-model"
@@ -203,7 +203,7 @@ if [ -z "$JOBS" ]; then JOBS=$(( ($(nproc) + SLOTS - 1) / SLOTS )); [ "$JOBS" -g
 export CARGO_BUILD_JOBS="$JOBS"
 export RUST_TEST_THREADS="${RUST_TEST_THREADS:-$JOBS}"   # test threads per slot, not per machine
 echo "build slot $SLOT of $SLOTS taken ($KIND job, limit ${LIMIT}s), cargo jobs $JOBS"
-[ "$NOWASM" = 1 ] || step build-wasm env CK_BUILD_REV="$REV" nice -n 5 cargo build -q -p ck-wasm ${WASMF:+--features "$WASMF"} --target wasm32-unknown-unknown --release
+[ "$NOWASM" = 1 ] || step build-wasm env CK_BUILD_REV="$REV" nice -n 5 cargo build --locked -q -p ck-wasm ${WASMF:+--features "$WASMF"} --target wasm32-unknown-unknown --release
 [ -s "$W" ] && echo "wasm bytes $(wc -c < "$W")"
 # --musl-libm: the cargo test binaries run with the host libm's transcendental functions replaced by the `libm` crate's
 # (the musl port the wasm32 build uses), through an LD_PRELOAD shim set as the cargo runner, so native float results
@@ -245,7 +245,7 @@ crashfuzz_check() {
   return "$rc2"
 }
 CH=$(printf '%s' "$CHECKS" | tr ',' ' ')
-case " $CH " in *" all "*) CH="gate large sample loft apex fillet section spline thin suite lint text engrave projcurve dfm";; esac
+case " $CH " in *" all "*) CH="gate large sample herringbone loft apex fillet section spline thin suite lint text engrave projcurve dfm";; esac
 case " $CH " in *" none "*) CH="";; esac
 # the gate in the background (node, no build lock needed, so --quick starts it before the cargo tests)
 export CK_GATE_WORKERS="${CK_GATE_WORKERS:-4}"   # gate.mjs worker threads (1 = the old sequential run)
@@ -300,7 +300,7 @@ if [ -n "$CTEST" ]; then
   fi
   for c in $CRATES; do
     [ -d "crates/ck-$c" ] || { echo "no crate ck-$c"; rec "cargo-test-$c" 1 0; continue; }
-    step "cargo-test-$c" timed_cargo_test "ck-$c" env ${TENV[@]+"${TENV[@]}"} nice -n 5 cargo test --no-fail-fast $(cargo_test_args "ck-$c")
+    step "cargo-test-$c" timed_cargo_test "ck-$c" env ${TENV[@]+"${TENV[@]}"} nice -n 5 cargo test --locked --no-fail-fast $(cargo_test_args "ck-$c")
   done
   if [ "$QUICK" = 1 ]; then   # every listed test binary must have run (a result line in test_times.raw), not just exist
     while read -r qc qt; do
@@ -344,6 +344,7 @@ if [ -s "$W" ]; then
       gate) if [ -z "$GATE_PID" ]; then start_gate; fi; pids="$pids $GATE_PID" ;;
       audit) step cargo-audit audit_deps ;;
       large sample) step large sample node tools/check_large sample.mjs --wasm "$W" ;;
+      herringbone) step herringbone node tools/herringbone_check.mjs --wasm "$W" ;;
       loft) step loft node tools/loft_point_check.mjs --wasm "$W" ;;
       apex) step apex node tools/loft_apex_check.mjs --wasm "$W" ;;
       fillet) step fillet node tools/concave_fillet_check.mjs --wasm "$W" ;;
@@ -352,6 +353,7 @@ if [ -s "$W" ]; then
       thin) step thin_extrude node tools/thin_extrude_check.mjs --wasm "$W" ;;
       lint) step lint-protocol node tools/lint_protocol.mjs --wasm "$W" --quiet ;;
       text) step text-corpus node tools/text_corpus.mjs --wasm "$W" --quiet ;;
+      wrap) step wrap-corpus node tools/wrap_corpus.mjs --wasm "$W" --quiet ;;
       engrave) step engrave-bench node tools/engrave_bench.mjs --wasm "$W" --quiet --check --machine box ;;
       projcurve) step project-curve-corpus node tools/project_curve_corpus.mjs --wasm "$W" --quiet ;;
       dfm) step dfm node tools/dfm_check.mjs --wasm "$W" --quiet ;;

@@ -395,6 +395,9 @@ pub struct Strategy {
     pub flip: bool,
     /// Share the cuts of a profile with fewer pieces over its pieces by length ([`Chain::split_even`]).
     pub even: bool,
+    /// Align circles to rounded outlines even when a circle has a fixed start (a connector), keeping that start; the cuts then
+    /// turn with it.
+    pub keep_starts: bool,
 }
 
 impl Stations {
@@ -412,6 +415,126 @@ impl Stations {
     /// Station `i` was inserted along a centre line (it is not one of the profiles).
     pub fn is_dense(&self, i: usize) -> bool {
         self.dense.get(i).copied().unwrap_or(false)
+    }
+}
+
+/// Is `c` a smooth closed outline made of lines AND arcs (a rounded rectangle, a slot): every joint tangent, at least one
+/// straight piece and one arc? Such an outline has natural cut points, the tangent points between its sides and its arcs.
+fn is_rounded_outline(c: &Chain) -> bool {
+    let n = c.pieces.len();
+    if !c.closed || n < 4 || !c.pieces.iter().any(|p| p.g.is_line()) || !c.pieces.iter().any(|p| matches!(p.g, Geom3::Conic { .. })) {
+        return false;
+    }
+    let tan = |g: &Geom3, s: f64| g.to_nurbs().derivs(s, 1).get(1).and_then(|d| d.try_normalize());
+    (0..n).all(|j| match (tan(&c.pieces[j].g, 1.0), tan(&c.pieces[(j + 1) % n].g, 0.0)) {
+        (Some(a), Some(b)) => a.dot(b) > 1.0 - 1e-6,
+        _ => false,
+    })
+}
+
+/// A closed outline of straight pieces only (a rectangle, a triangle, a hexagon).
+fn is_polygon(c: &Chain) -> bool {
+    c.closed && c.pieces.len() >= 3 && c.pieces.iter().all(|p| p.g.is_line())
+}
+
+/// An outline a circle or ellipse is cut like: a rounded outline, or a plain polygon (the circle is then cut at the polar angles of
+/// the corners, so that the sides run straight from each corner to the round section instead of twisting round the loft).
+fn is_pairing_outline(c: &Chain) -> bool {
+    is_rounded_outline(c) || is_polygon(c)
+}
+
+/// A full circle as the pieces of one concentric conic: its (centre, u, v, sense of travel, start angle).
+fn full_circle(c: &Chain) -> Option<(Vec3, Vec3, Vec3, f64, f64)> {
+    full_conic(c).filter(|f| (f.1.len() - f.2.len()).abs() < 1e-9 * f.1.len())
+}
+
+/// A full circle or ellipse as the pieces of one concentric conic (same tuple as [`full_circle`]).
+fn full_conic(c: &Chain) -> Option<(Vec3, Vec3, Vec3, f64, f64)> {
+    let Some(Geom3::Conic { c: o, u, v, t0, .. }) = c.pieces.first().map(|p| &p.g) else { return None };
+    let mut sweep = 0.0;
+    let dir = c.pieces.first().map(|p| if let Geom3::Conic { t0, t1, .. } = &p.g { (t1 - t0).signum() } else { 1.0 })?;
+    for p in &c.pieces {
+        let Geom3::Conic { c: o2, u: u2, v: v2, t0: a0, t1: a1 } = &p.g else { return None };
+        if o2.dist(*o) > 1e-9 * (1.0 + o.len()) || u2.dist(*u) > 1e-9 * (1.0 + u.len()) || v2.dist(*v) > 1e-9 * (1.0 + v.len()) || (a1 - a0) * dir <= 0.0 {
+            return None;
+        }
+        sweep += (a1 - a0).abs();
+    }
+    ((sweep - 2.0 * std::f64::consts::PI).abs() < 1e-9 && u.dot(*v).abs() < 1e-9 * u.len() * v.len()).then_some((*o, *u, *v, dir, *t0))
+}
+
+/// The point a section's polar angles are measured about: the centre of a circle, else the mean of the piece starts.
+fn polar_origin(c: &Chain) -> Vec3 {
+    full_circle(c).map_or_else(|| c.centroid(), |f| f.0)
+}
+
+/// Cut the circle `c` at the polar angles of the piece starts of `r` (about their centres, in the circle's plane), starting at the
+/// first of them, so that the circle gets as many pieces as `r` and piece `j` of both covers the same angular range.
+fn cut_circle_like(c: &Chain, r: &Chain, keep_start: bool) -> Option<Chain> {
+    let (o, u, v, dir, t_start) = full_conic(c)?;
+    let n = r.pieces.len();
+    // the planes must be parallel, and the circle's sense of travel the one the outline of `r` runs in
+    let (nc, nr) = (u.cross(v), r.normal());
+    if nc.cross(nr).len() > 1e-6 * nc.len() * nr.len() {
+        return None;
+    }
+    let cen = polar_origin(r);
+    let (uh, vh) = (u / u.len(), v / v.len());
+    // the parameter of the conic point in the polar direction of `d` (the polar angle itself for a circle)
+    let ang: Vec<f64> = r.pieces.iter().map(|p| {
+        let d = p.g.start() - cen;
+        (d.dot(vh) / v.len()).atan2(d.dot(uh) / u.len())
+    }).collect();
+    let tau = 2.0 * std::f64::consts::PI;
+    let rel: Vec<f64> = ang.iter().map(|a| ((a - ang[0]) * dir).rem_euclid(tau)).collect();
+    if rel.windows(2).any(|w| !(w[1] > w[0] + 1e-9)) || rel.last().is_some_and(|l| *l >= tau - 1e-9) {
+        return None;
+    }
+    let tag = c.pieces.first().map(|p| p.tag.clone())?;
+    // the circle starts at the angle of the outline's first piece, or (a retry honouring a fixed start) where the user put it
+    let a0 = if keep_start { t_start } else { ang[0] };
+    let at = |k: usize| if k < n { a0 + dir * rel[k] } else { a0 + dir * tau };
+    let pieces = (0..n).map(|k| Piece { tag: tag.clone(), g: Geom3::Conic { c: o, u, v, t0: at(k), t1: at(k + 1) } }).collect();
+    Some(Chain { closed: true, pieces })
+}
+
+/// Pairing of a circle with a rounded outline (rounded rectangle, slot), which the plain bisection of the circle pairs badly:
+/// the circle's equal parts start at 45-degree steps while the outline's pieces start at its tangent points, so the pieces of
+/// the two sections pair with a twist and the seams between the faces curl (a pinwheel) instead of running from the corner to
+/// the circle. Cutting the circle at the polar angles of the outline's tangent points makes piece `j` of both cover the same
+/// angular range (a connector other than 0 on a circle is an override: the circles are then paired as before, and only when that result is invalid is the alignment retried with the fixed start kept, see [`Strategy::keep_starts`]). Applies only when a section is a full circle and another one a smooth outline of lines and arcs with
+/// more pieces; every other pairing keeps the pinned oracle rule. A further circle takes the cuts of the circle before it.
+fn align_circles_to_outlines(chains: &mut [Chain], n: usize, keep: &[bool]) {
+    let is_ref = |c: &Chain| c.pieces.len() == n && (is_pairing_outline(c) || full_conic(c).is_some());
+    for dir in [true, false] {
+        let order: Vec<usize> = if dir { (0..chains.len()).collect() } else { (0..chains.len()).rev().collect() };
+        let mut last: Option<usize> = None;
+        for &i in &order {
+            if chains[i].is_point() || !chains[i].closed {
+                continue;
+            }
+            if full_conic(&chains[i]).is_some() && chains[i].pieces.len() < n {
+                if let Some(r) = last {
+                    if let Some(cut) = cut_circle_like(&chains[i], &chains[r], keep[i]) {
+                        chains[i] = cut;
+                        last = Some(i);
+                    }
+                }
+            } else if is_pairing_outline(&chains[i]) && chains[i].pieces.len() == n {
+                last = Some(i);
+            } else if let (Some(_), true) = (last, is_ref(&chains[i])) {
+                last = Some(i);
+            }
+        }
+    }
+}
+
+/// [`align_circles_to_outlines`] for the guided loft, whose guides cut the sections afterwards: a circle is cut like the
+/// rounded outline of another section, so that the cuts of the guides fall in matching pieces.
+pub fn align_circles_for_guides(chains: &mut [Chain]) {
+    let n = chains.iter().map(|c| c.pieces.len()).max().unwrap_or(0);
+    if chains.iter().all(|c| c.closed) && chains.iter().any(is_rounded_outline) {
+        align_circles_to_outlines(chains, n, &vec![false; chains.len()]);
     }
 }
 
@@ -491,6 +614,14 @@ pub fn match_chains_strategy(mut chains: Vec<Chain>, connectors: &[Option<f64>],
         if let Some(f) = conn(i) {
             *c = start_at_fraction(c, f);
             n = n.max(c.pieces.len());
+        }
+    }
+    if !strat.even && closed && chains.iter().any(is_pairing_outline) && (chains.iter().any(is_rounded_outline) || chains.iter().any(|c| full_conic(c).is_some())) {
+        // a start the user fixed on a circle (a connector other than 0) is an override: the circles are then paired as before
+        let fixed_circle = (0..chains.len()).any(|i| conn(i).is_some_and(|f| f.rem_euclid(1.0) > 1e-12) && full_conic(&chains[i]).is_some());
+        if !fixed_circle || strat.keep_starts {
+            let keep: Vec<bool> = (0..chains.len()).map(|i| strat.keep_starts && conn(i).is_some_and(|f| f.rem_euclid(1.0) > 1e-12)).collect();
+            align_circles_to_outlines(&mut chains, n, &keep);
         }
     }
     for c in chains.iter_mut() {
@@ -591,7 +722,7 @@ mod tests {
         for k in 0..c.pieces.len() {
             assert!(c.pieces[k].g.end().dist(c.pieces[(k + 1) % 7].g.start()) < 1e-9);
         }
-        for strat in [Strategy::default(), Strategy { shift: 1, flip: false, even: true }, Strategy { shift: 0, flip: true, even: false }, Strategy { shift: 2, flip: true, even: true }] {
+        for strat in [Strategy::default(), Strategy { shift: 1, flip: false, even: true, keep_starts: false }, Strategy { shift: 0, flip: true, even: false, keep_starts: false }, Strategy { shift: 2, flip: true, even: true, keep_starts: false }] {
             let st = match_chains_strategy(vec![sq(0.0, 4.0), tri.clone(), sq(60.0, 3.0)], &[], strat);
             assert!(st.is_consistent(), "{strat:?}");
         }

@@ -223,11 +223,14 @@ fn guides_of(state: &RegenState, f: &Feature) -> Result<Vec<ck_ops::loft::guides
         let mut pts: Vec<Vec3> = vec![];
         for s in segs_in(sk, &chain)? {
             let Some(g) = ck_ops::loft::stations::geom_of(&s.curve, s.t0, s.t1, s.rev) else { return Err(bad("unsupported guide curve")) };
-            for k in 0..=32 {
+            // a polyline fine enough that the fit points of a long spline lie on it to far less than the miss tolerance
+            // (1e-4 of the longest profile piece): 32 samples of a 240 mm spline sag 0.07 mm at a bend, the chord now stays below 0.5 mm
+            let n = ((g.length() / 0.5).ceil() as usize).clamp(32, 4096);
+            for k in 0..=n {
                 if k == 0 && !pts.is_empty() {
                     continue;
                 }
-                pts.push(g.at(k as f64 / 32.0));
+                pts.push(g.at(k as f64 / n as f64));
             }
         }
         out.push(ck_ops::loft::guides::GuideIn { pts });
@@ -242,6 +245,71 @@ fn tension(f: &Feature, key: &str) -> Option<f64> {
         Json::Bool(true) => Some(1.0),
         _ => None,
     }
+}
+
+/// One resolved end condition: the tension (`weight`) and the angle (degrees) of a directional end.
+#[derive(Clone, Copy)]
+struct EndCond {
+    weight: f64,
+    angle: f64,
+}
+
+/// `conditions`: one entry per profile, `null` / missing / `{"type":"free"}` = free. `directional` takes `angle` (degrees, `0 < angle < 180`,
+/// default 90 = along the profile normal; below 90 the loft flares outward from the profile, above 90 it leans inward) and `weight` (> 0,
+/// default 1, the tension). `tangent` / `curvature` parse (with an optional `face`) and are refused as `loftTangentEdges`. Only the first
+/// and last entry may be non-free (`loftConditionInterior`); a shape error is `loftConditionInvalid {detail, hint}`. Returns the
+/// start and end condition; a directional entry wins over the legacy `startNormal` / `endNormal` of the same end.
+fn conditions_of(f: &Feature, nprof: usize) -> Result<[Option<EndCond>; 2], FeatureError> {
+    let bad = |detail: String, hint: &str| FeatureError::new("loftConditionInvalid").with("detail", Json::Str(detail)).with("hint", Json::Str(hint.into()));
+    let Some(c) = f.raw.get("conditions").filter(|c| !matches!(c, Json::Null)) else { return Ok([None, None]) };
+    let Some(arr) = c.as_arr() else {
+        return Err(bad("conditions is not an array".into(), "give one entry per profile: {\"type\":\"directional\",\"angle\":90,\"weight\":1}, or null for a free end"));
+    };
+    if arr.is_empty() {
+        return Ok([None, None]);
+    }
+    if arr.len() != nprof {
+        return Err(bad(format!("conditions has {} entries for {nprof} profiles", arr.len()), "give exactly one entry per profile, null for a free one"));
+    }
+    let mut out = [None, None];
+    for (i, e) in arr.iter().enumerate() {
+        if matches!(e, Json::Null) {
+            continue;
+        }
+        let ty = e.get_str("type").ok_or_else(|| bad(format!("condition {} has no type", i + 1), "type is one of free, directional, tangent, curvature"))?;
+        match ty {
+            "free" => continue,
+            "directional" | "tangent" | "curvature" => {}
+            _ => return Err(bad(format!("condition {} has the unknown type {ty:?}", i + 1), "type is one of free, directional, tangent, curvature")),
+        }
+        let weight = match e.get("weight") {
+            None | Some(Json::Null) => 1.0,
+            Some(w) => match w.as_f64() {
+                Some(w) if w.is_finite() && w > 0.0 => w,
+                _ => return Err(bad(format!("condition {} has a weight that is not a positive number", i + 1), "weight is a number above 0 (the tension, default 1)")),
+            },
+        };
+        let angle = match e.get("angle") {
+            None | Some(Json::Null) => 90.0,
+            Some(a) => match a.as_f64() {
+                Some(a) if a.is_finite() && a > 0.0 && a < 180.0 => a,
+                _ => return Err(bad(format!("condition {} has an angle outside 0 to 180 degrees", i + 1), "angle is measured from the profile plane in degrees, above 0 and below 180; 90 is perpendicular")),
+            },
+        };
+        if i != 0 && i != nprof - 1 {
+            return Err(FeatureError::new("loftConditionInterior")
+                .with("detail", Json::Str(format!("profile {} is not the first or last, and only the end profiles take an end condition", i + 1)))
+                .with("hint", Json::Str("set the condition of the inner profiles to null (free), or split the loft at that profile".into())));
+        }
+        if ty != "directional" {
+            continue; // refused below, once every entry has been checked
+        }
+        out[if i == 0 { 0 } else { 1 }] = Some(EndCond { weight, angle });
+    }
+    if arr.iter().any(|e| matches!(e.get_str("type"), Some("tangent" | "curvature"))) {
+        return Err(FeatureError::new("loftTangentEdges"));
+    }
+    Ok(out)
 }
 
 /// `centreLine`: a planar sketch chain (the spine) the loft follows (ck-ops `loft::centre`: a moving frame along the
@@ -289,10 +357,10 @@ const CENTRE_SAMPLES: usize = 128;
 /// `tension[]` of the marker: one entry per end constraint (`p` the station centroid,
 /// `d` the unit direction into the loft, `reach` a quarter of the loft length: RECONSTRUCTED
 /// from the oracle's `{end,p,d,reach,tension}`; its `p` / `reach` differ in the low digits).
-fn tension_markers(f: &Feature, out: &ck_ops::loft::LoftOut) -> Vec<Json> {
+fn tension_markers(tens: [Option<f64>; 2], out: &ck_ops::loft::LoftOut) -> Vec<Json> {
     let mut v = vec![];
     let len = out.end_centroids[0].dist(out.end_centroids[1]);
-    for (i, (name, d, key)) in [("start", out.ends.d0, "startNormal"), ("end", out.ends.d1, "endNormal")].into_iter().enumerate() {
+    for (i, (name, d)) in [("start", out.ends.d0), ("end", out.ends.d1)].into_iter().enumerate() {
         let Some(d) = d else { continue };
         let t = d.len();
         let u = if i == 0 { d / t } else { -(d / t) };
@@ -301,7 +369,7 @@ fn tension_markers(f: &Feature, out: &ck_ops::loft::LoftOut) -> Vec<Json> {
             ("p".into(), v3(out.end_centroids[i])),
             ("d".into(), v3(u)),
             ("reach".into(), Json::Num(len / 4.0)),
-            ("tension".into(), Json::Num(tension(f, key).unwrap_or(1.0))),
+            ("tension".into(), Json::Num(tens[i].unwrap_or(1.0))),
         ]));
     }
     v
@@ -377,13 +445,31 @@ pub fn exec_loft(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(
         .and_then(|c| c.as_arr())
         .map(|a| a.iter().map(|x| x.as_f64()).collect())
         .unwrap_or_default();
-    let opts = LoftOpts { surface: *surface, guides, start_normal: tension(f, "startNormal"), end_normal: tension(f, "endNormal"), connectors, apex_tangent: f.raw.get("apexTangent").and_then(|v| v.as_f64()).filter(|t| t.is_finite()), centre };
+    let conds = conditions_of(f, profiles.len())?;
+    if conds.iter().any(|c| c.is_some()) && (guided || centre.is_some() || profiles.iter().any(|p| p.segs.is_empty())) {
+        return Err(FeatureError::new("loftConditionCombo")
+            .with("detail", Json::Str("end conditions cannot be combined with guides, a centre line or a point (apex) end".into()))
+            .with("hint", Json::Str("remove the conditions (leave the ends free), or remove the guides / centre line / point end".into())));
+    }
+    let start_normal = conds[0].map(|c| c.weight).or_else(|| tension(f, "startNormal"));
+    let end_normal = conds[1].map(|c| c.weight).or_else(|| tension(f, "endNormal"));
+    let opts = LoftOpts { surface: *surface, guides, start_normal, end_normal, start_angle: conds[0].map(|c| c.angle), end_angle: conds[1].map(|c| c.angle), connectors, apex_tangent: f.raw.get("apexTangent").and_then(|v| v.as_f64()).filter(|t| t.is_finite()), centre, rails: f.raw.get("railSmoothing").and_then(|v| v.as_str()).and_then(ck_ops::loft::RailSmoothing::parse).unwrap_or_default() };
     let out = loft(&f.id, &profiles, &opts).map_err(err)?;
+    // never silent: a solid that leaves the sections' boxes (a smooth loft through uneven sections bulges past the widest
+    // middle one) is reported, with how far and what to change
+    if out.overshoot > out.overshoot_tol {
+        let w = FeatureError::new("loftOvershoot")
+            .with("overshoot", Json::Num((out.overshoot * 1e3).round() / 1e3))
+            .with("detail", Json::Str(format!("the lofted solid leaves the box of the sections by {:.1} mm", out.overshoot)))
+            .with("hint", Json::Str("set railSmoothing to \"auto\" or \"local\" (rails that stay between their sections), add an intermediate section where the shape should turn, or loft the stretches between the widest sections separately".into()));
+        state.result.warnings.retain(|x| !(x.feature == f.id && x.error.code == "loftOvershoot"));
+        state.result.warnings.push(crate::regen::RegenError { feature: f.id.clone(), error: w });
+    }
     let marker = Json::Obj(vec![
         ("loops".into(), Json::Arr(loops)),
         ("starts".into(), Json::Arr(out.starts.iter().map(|p| v3(*p)).collect())),
         ("guided".into(), Json::Bool(guided)),
-        ("tension".into(), Json::Arr(tension_markers(f, &out))),
+        ("tension".into(), Json::Arr(tension_markers([start_normal, end_normal], &out))),
     ]);
     if *surface {
         put_marker(state, &f.id, marker);
@@ -401,9 +487,12 @@ pub fn exec_loft(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(
             guides: vec![],
             start_normal: opts.start_normal,
             end_normal: opts.end_normal,
+            start_angle: opts.start_angle,
+            end_angle: opts.end_angle,
             connectors: vec![],
             apex_tangent: opts.apex_tangent,
             centre: opts.centre.clone(),
+            rails: opts.rails,
         };
         for j in 0..k {
             let mut hp: Vec<ProfileIn> = vec![];

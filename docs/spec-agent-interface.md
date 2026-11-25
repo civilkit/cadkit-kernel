@@ -211,6 +211,21 @@ point's position in the sketch plane is the apex. There is no extra field.
 
 Rules:
 
+- End conditions (`conditions`, step 1 of the Fusion-style conditions): optional list aligned with the sections (same length as
+  `sketches`; `null` / missing / `{"type":"free"}` = free), entry `{"type":"free"|"directional"|"tangent"|"curvature",
+  "angle"?: degrees, "weight"?: number, "face"?: ref}`. Only the first and last entry may be non-free (`loftConditionInterior`);
+  a malformed list or entry is `loftConditionInvalid {detail, hint}`. `directional`: `angle` is measured from the profile plane
+  (0 < angle < 180, default 90 = along the profile normal) and `weight` is the tension (> 0, default 1). In words: seen from
+  the side of the loft, 90 leaves straight along the normal; 60 leans 30 degrees outward from that normal (the solid flares
+  out of the profile, a cylinder between equal circles bulges); 120 leans inward (it necks in). The same at both ends: at the
+  last section an angle below 90 means the rail arrives from the outside. The rail tangent is `weight * (sin(angle) * n +
+  cos(angle) * o)`, `n` the unit profile normal into the loft and `o` the unit in-plane outline normal pointing out of the
+  section (negated at the last section). Angle 90 with weight w equals `startNormal` / `endNormal` = w; a non-free entry wins
+  over the legacy flag of its end. `tangent` / `curvature` parse and fail with `loftTangentEdges`. With guides, a centre line
+  or a point end: `loftConditionCombo`; an angle other than 90 on an outline with a corner: `loftConditionCorner`. A steep
+  angle or heavy weight that bulges the solid past its sections is reported by the `loftOvershoot` warning (and a result that
+  fails validation is `loftInvalidResult`). Example: `"conditions":[{"type":"directional","angle":60,"weight":1.5},null,
+  {"type":"directional"}]`.
 - Only the first and the last section can be a point (not both: that is `loftProfiles`). A point section in the middle,
   guide curves with a point section and a `surface` loft with a point section are `loftFailed {detail}`.
 - Geometry: the lateral surface of each piece of the neighbouring section converges to the apex (the B-spline loft surface
@@ -1161,6 +1176,63 @@ Native checks: `crates/ck-model/tests/mates_ext.rs` (hinge leaves one rotation, 
 half, screw advance, rack travel, tangent distances, limits clamping, conflicts and redundancy named, structured
 errors); wasm: `tools/mate_check.mjs` (run by `tools/land.sh`).
 
+## Wrap: text and closed profiles on a cylindrical face (`wrap`)
+
+`{"type":"wrap","id":"F9","sketch":"F8","profiles":["t1"],"face":"F1.S.e3","op":"cut","depth":0.4,"method":"auto","alongAxis":0,"around":0,"rotation":0,"taper":0,"flip":false,"direction":null,"target":null,"tolerance":0.001}`.
+Design and later phases: `docs/proposals/wrap-feature.md`. Phase 1 builds cylindrical faces only (the outside of a boss, the wall of a bore);
+a plane is `wrapFaceUnsupported` (hint: use `extrude`), so are a cone, a sphere, a torus, free-form faces and `method: "project"` (not built yet).
+All numbers take `"=expr"`.
+
+| Field | Meaning |
+|---|---|
+| `sketch`, `profiles` | the sketch feature whose closed regions (text outlines, loops) are wrapped; `profiles` (optional) picks regions by the id of an outer boundary entity, a text entity id picks all its glyphs. Open curves are ignored |
+| `face` | one cylindrical face name |
+| `op`, `depth` | `add` (raise) or `cut` (engrave); height / depth along the face normals, mm, > 0 (`newBody` is `invalidValue`) |
+| `method` | `auto` / `wrap` (the development of the cylinder); `project` is `wrapFaceUnsupported` for now |
+| `alongAxis` | mm along the axis direction whose largest component is positive |
+| `around` | degrees about the axis, along the reading direction (positive = to the reader's right) |
+| `rotation` | degrees, counter-clockwise in the sketch, about the middle of the selected profiles (applied first) |
+| `flip` | mirror along the circumference, about the middle of the selected profiles |
+| `taper` | degrees, -45..45: positive widens the profile as it rises from the face; 0 = walls along the face normals |
+| `target` | as `extrude` (default: the body that owns `face`) |
+| `tolerance` | mm, default 0.001: bound of the fit of curved edges (this is not the boolean tolerance) |
+
+Placement. The sketch is read in its plane's directions `e_z` (the axis projected into the plane) and `e_s = e_z x normal`, about the sketch
+origin; the profile lands where the face is nearest the plane (a plane through the axis: the side its normal points to). Arc length on the
+face is the sketch's length (widths are kept), and the lettering reads correctly seen from the side the face normal points to: from outside
+for a boss, from inside for a bore. A sketch plane perpendicular to the axis is `wrapPlane`.
+
+Result. Walls `<id>.S.<tag>` (`~k` numbers equal names), the cap that stays in the result (a cut's floor, an add's top) `<id>.C0`. Edges
+parallel to the axis or round it are exact planar walls (`deviation` 0, untapered); every other edge is a ruled B-spline wall within
+`tolerance`. `markers[] = [id, {profiles, turns, deviation, method:"wrap", surface:"cylinder"}]` (`turns`: widest profile extent / circumference).
+
+Errors: `wrapNoInput {hint}` (no `sketch`, or no closed region), `missingSketch`, `nothingToCut`, `missingReference`, `wrapFaceUnsupported
+{faceKind, hint}`, `wrapPlane {detail, hint}`, `wrapProfileTooWide {profile, extent, circumference, hint}` (a profile or the whole selection spans a
+full turn), `wrapProfileOffFace {profile, at, hint}` (an outline sample off the trimmed face, or a rim / hole boundary inside the profile),
+`wrapProfilesOverlap {profiles}`, `wrapDepthTooLarge {depth, max, hint}` (an add into a bore of depth >= radius; a cut or add that would reach
+the axis), `wrapTaperTooLarge {profile, maxTaper, hint}`, `wrapToolInvalid {detail}`, `invalidValue {field, detail}`, and the boolean errors. On any
+error the body is left as it was. Warnings: `wrapApproximated {maxDeviation, tolerance}` (a fit stopped at 400 points), `wrapCutThrough {profile,
+wall}` (an engraving deeper than the wall: pierces, valid result).
+
+Limits of phase 1: a very fine tapered outline (text with taper above a degree or so) can be refused with `wrapTaperTooLarge` or fail the boolean;
+the offset is sampled, not trimmed. A circular wall longer than 0.4 turn is built in pieces (same faces, `~k` names).
+
+### Wrap phase 2: open curves, `projectCurve` with `method: "wrap"`
+
+`{"type":"projectCurve","id":"F5","sketch":"S2","faces":["F1.S.e1"],"method":"wrap","entities":["e0"],"alongAxis":0,"around":0,"rotation":0,"flip":false,"degree":3,"tolerance":0.001}`.
+The same feature as today's `projectCurve` (same `curves[]` entry `[id,{pts,axis:false,t0:0,t1:1}]` and marker, so every consumer works: `sweep`
+`path` / `guides`, `plane` mode `curve`, `editCurve`, `curve` of another `projectCurve`), with `method` `project` (default, unchanged) or `wrap`.
+`wrap` lays the non-construction curves of the sketch (`entities[]` optional subset; open or closed; lines, arcs, circles, splines) on ONE cylindrical
+face of `faces[]` by length along the surface (`theta = s / r`, `z = y`; the same map, offsets and sign rules as the solid `wrap`, so a curve and a wrap of
+the same sketch coincide). A curve may run many turns (a 3-turn line is a helix). `alongAxis` mm, `around` degrees, `rotation` degrees about the middle of
+the curves, `flip` as in `wrap`. `degree` / `tolerance` as `projectCurve`; `direction`, `curve`, `procedural: true` are not used with `wrap`
+(`procedural` is `invalidValue`, `curve` without `sketch` is `wrapNoInput`). The marker is the `projectCurve` marker plus `turns` (span along the
+circumference / circumference). Errors: `wrapFaceUnsupported {faceKind, hint}` (`faces` is not exactly one cylindrical face), `wrapNoInput`, `wrapPlane`,
+`wrapProfileOffFace {profile, entity, at, hint}` (a sample of an entity is off the trimmed face: nothing is dropped), `wrapCurveTooLong {length,
+maxControlPoints, deviation, tolerance, hint}` (the fit needs more than 400 control points), `projectCurveSeveral` (disjoint entities), `missingReference`
+(face, or an `entities` id), `missingSketch`, `invalidValue`. Tests: `crates/ck-model/tests/wrap.rs` (open curves, helix, sweep, offsets, bore, refusals),
+corpus cases `curve ...` in `tools/wrap_corpus.mjs`.
+
 ## Lettering: the sketch `text` entity, `textMetrics`, `textOutline`
 
 Engraved / embossed text on parts. A sketch entity `{type:"text", string, font?:"gauge"|"engrave", height (cap height),
@@ -1601,3 +1673,16 @@ triangles closer than 0.8 x min(their current distance, `tol`) to a triangle tha
 ## Fillet and chamfer: a blend larger than the face beside its edge
 
 A round or chamfer whose size is larger than the face it rolls onto now builds when at least one of its two contacts stays on its face (before, it was refused with `blendOverflow`). The body is built as if the face continued, and what the blend takes beyond the face is cut from the body. The regen result carries a warning `blendRanOffFace {detail, faces}` (wire `warnings`, `[featureId, {code, params}]`), where `faces` lists the face ids the blend ran off. When both contacts run off their faces the feature is still refused with `blendOverflow`.
+
+## Fillet and chamfer: partial edges and corner setback
+
+Wire fields of `fillet` and `chamfer` (numbers or `=expression`, mm; absent or 0 = off):
+
+- `startOffset`, `endOffset` (fillet and chamfer): the blend runs along only part of each picked edge. `startOffset` is the distance from the end of the edge NEARER the pick point `at`, `endOffset` from the other end (the convention of `radii: [near, far]`; a pick near the middle of the edge is ambiguous, so pick near the end you mean). They are per feature, applying to every edge of `edges`; to blend different edges differently use two features. The blend ends in a flat cut square to the edge. Circular edges are offset along the arc (a closed ring has its seam as the start).
+- `setback` (fillet only): the distance along each edge from a vertex where exactly three selected edges meet between planes to the corner patch `V<k>`. Absent or 0: automatic (the rolling-ball sphere for equal rounds). The natural setback of equal rounds on a right-angle corner is the radius; a smaller request is raised to it, a larger one builds a free-form six-sided setback patch; unequal radii with a setback are blended by that patch instead of a mitre. The upper limit is 0.45 of the shortest of the three edges.
+
+Errors, all `invalidValue {field, detail, hint}` (`field` is `startOffset`, `endOffset` or `setback`): negative or non-finite value; `startOffset` + `endOffset` not below the edge length (adds `length`, the edge length in mm; `field` is `startOffset` when that alone uses the edge up, else `endOffset`); offsets together with `propagate: true`. `blendUnsupported {detail, hint}`: offsets on a free-form edge. A setback that cannot be built at a vertex is the underlying blend error (`blendTooLarge`, `blendUnsupported`) with the vertex in `detail`.
+
+Warnings (`[featureId, {code, params}]`): `blendSetbackAdjusted {requested, applied, min, max, detail}` (the setback was outside the range these radii and edges allow; `applied` was used), `blendSetbackUnused {requested, detail}` (no vertex of the selection took a setback patch). `blendRanOffFace` is unchanged and still applies to a partial blend larger than the face beside it. Faces: unchanged (`B<k>` per edge, `V<k>` per corner patch).
+
+Checks: `crates/ck-model/tests/blend_setback.rs` (closed-form volumes: partial round 8000 - 25 (4 - pi) = 7978.5398, partial chamfer 8000 - 20 x 2 = 7960, the sphere corner), `tools/blend_corpus.mjs` section 11, `docs/blend-corpus.md`.

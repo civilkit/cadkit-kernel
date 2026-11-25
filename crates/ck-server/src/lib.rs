@@ -76,10 +76,16 @@ pub const REQUEST_TYPES: &[(&str, Handler)] = &[
     ("importSldprt", geometry::import_sldprt),
     // Extension: feature history of a SolidWorks part (ck-swedit), read only.
     ("sldprtHistory", geometry::sldprt_history),
+    // Extension: component tree of a SolidWorks assembly (.SLDASM), read only.
+    ("sldasmTree", geometry::sldasm_tree),
     // Extension: the saved results of the expensive imports (importBody), for the app to keep with the document.
     ("builtExport", geometry::built_export),
     // Extension: SketchUp (.skp, base64) import -> a surface body of planar faces in the tag's state.
     ("importSkp", geometry::import_skp),
+    // Extension: Fusion 360 (.f3d / .f3z container or a bare .smb body blob, base64) import -> the solids in the tag's state, the rest as surface bodies.
+    ("importF3d", geometry::import_f3d),
+    // Extension: Fusion design dumps (from ck_f3d.wasm's f3dDump) -> ck-part feature lists + the check against the import, read only.
+    ("f3dFeatures", geometry::f3d_features),
     // Extension: a triangle mesh (STL / OBJ-like soup) -> a valid solid (planar faces merged, cylinders / cones / spheres refit).
     ("meshToSolid", geometry::mesh_to_solid),
     // Extension: quadric decimation of a triangle mesh within a deviation tolerance (stateless).
@@ -178,28 +184,34 @@ impl Server {
         };
         let mut trace = if msg.get_bool("debug") == Some(true) { Trace::on() } else { Trace::off() };
         let mut bufs = Buffers::new();
+        let mut warnings: Vec<String> = vec![];
         let result = match msg.get_str("type").filter(|t| !t.is_empty()) {
             None => Err(NO_TYPE.to_string()),
             Some(ty) => match handler_for(ty) {
                 None => Err(format!("{UNKNOWN}{ty}")),
                 Some(h) => {
                     let mut cx =
-                        Cx { msg, session: &mut self.session, bufs: &mut bufs, trace: &mut trace, hooks: self.hooks };
-                    h(&mut cx)
+                        Cx { msg, session: &mut self.session, bufs: &mut bufs, trace: &mut trace, hooks: self.hooks, warnings: vec![] };
+                    let r = h(&mut cx);
+                    warnings = std::mem::take(&mut cx.warnings);
+                    r
                 }
             },
         };
         let ms = clock::elapsed_ms(start, clock::now());
         let tr = trace.enabled().then_some(&trace);
         match result {
-            Ok(r) => ok_reply(r, ms, &bufs, tr),
+            Ok(r) => ok_reply(r, ms, &bufs, tr, &warnings),
             Err(e) => error_reply(&e, ms, tr),
         }
     }
 }
 
-fn ok_reply(result: Json, ms: f64, bufs: &Buffers, trace: Option<&Trace>) -> Vec<u8> {
+fn ok_reply(result: Json, ms: f64, bufs: &Buffers, trace: Option<&Trace>, warnings: &[String]) -> Vec<u8> {
     let mut o = Obj::new().put("ok", true).put("result", result).put("ms", ms);
+    if !warnings.is_empty() {
+        o = o.put("warnings", Json::Arr(warnings.iter().map(|w| Json::Str(w.clone())).collect()));
+    }
     if let Some(t) = trace {
         o = o
             .put("buffers", Obj::new().put("count", bufs.count()).put("bytes", bufs.bytes()))

@@ -2386,6 +2386,8 @@ impl Rd<'_> {
             for l in &mut loops {
                 self.fix_closed_spline_loop(l, &surface, sense);
             }
+            self.close_spline_pole_cap(&mut loops, &surface, sense);
+            self.join_spline_rings(&mut loops, &surface, sense);
         }
         if periodic {
             if loops.iter().flatten().any(|c| c.pc.is_none()) {
@@ -2564,6 +2566,147 @@ impl Rd<'_> {
                 l.clone_from_slice(&t);
                 return;
             }
+        }
+    }
+
+    /// A face of a B-spline surface closed in one direction (a revolved spline) that is cut off by one closed edge running once
+    /// round the closed direction, the other end of the surface being a pole (a row of control points that are one point). Other
+    /// systems write such a face with that single edge and no seam or pole edge (as does our export); the loop is closed here
+    /// with the meridian to the pole and back, the pole staying implicit, as for a cone's cap. The rim must start on the
+    /// surface's own seam; left alone otherwise, or when the loop would not run the face's way.
+    fn close_spline_pole_cap(&mut self, loops: &mut Vec<Vec<Co>>, surf: &Surface, sense: bool) {
+        let Surface::BSpline(bs) = surf else { return };
+        if loops.len() != 1 || loops[0].len() != 1 {
+            return;
+        }
+        let (cu, cv) = ck_geom::pcurve::closed_periods(surf);
+        let (d, per) = match (cu, cv) {
+            (Some(p), None) => (0usize, p),
+            (None, Some(p)) => (1usize, p),
+            _ => return,
+        };
+        let rim = loops[0][0].clone();
+        let ed = self.b.edge(rim.edge);
+        if ed.v0 != ed.v1 {
+            return;
+        }
+        let va = ed.v0;
+        let (Some(s_uv), Some(e_uv)) = (self.co_uv(&rim, true), self.co_uv(&rim, false)) else { return };
+        let tol = 1e-5 * per;
+        if ((comp(e_uv, d) - comp(s_uv, d)).abs() - per).abs() > tol || (comp(e_uv, 1 - d) - comp(s_uv, 1 - d)).abs() > tol {
+            return;
+        }
+        let ((u0, u1), (v0, v1)) = bs.domain();
+        let ((s_lo, s_hi), (a_lo, a_hi)) = if d == 0 { ((u0, u1), (v0, v1)) } else { ((v0, v1), (u0, u1)) };
+        let (vs, ve, a_loop) = (comp(s_uv, d), comp(e_uv, d), comp(s_uv, 1 - d));
+        let on_seam = |x: f64| (x - s_lo).abs() <= tol || (x - s_hi).abs() <= tol;
+        if !on_seam(vs) || !on_seam(ve) {
+            return;
+        }
+        let same = |pts: Vec<Vec3>| pts.windows(2).all(|w| w[0].dist(w[1]) <= 1e-9 * (1.0 + w[0].len()));
+        let (nu, nv) = (bs.nu, bs.nv);
+        // d == 1: closed in v, the poles are rows of u (`ctrl[i * nv + j]`); d == 0: columns
+        let (pole_at_lo, pole_at_hi) = if d == 1 {
+            let row = |i: usize| (0..nv).map(|j| bs.ctrl[i * nv + j]).collect::<Vec<_>>();
+            (same(row(0)), same(row(nu - 1)))
+        } else {
+            let col = |j: usize| (0..nu).map(|i| bs.ctrl[i * nv + j]).collect::<Vec<_>>();
+            (same(col(0)), same(col(nv - 1)))
+        };
+        if pole_at_lo == pole_at_hi {
+            return;
+        }
+        let a_pole = if pole_at_lo { a_lo } else { a_hi };
+        if (a_pole - a_loop).abs() < 1e-9 * (1.0 + a_pole.abs()) {
+            return;
+        }
+        let curve = if d == 1 { bs.iso_v(vs) } else { bs.iso_u(vs) };
+        let pole_p = curve.eval(a_pole);
+        // the meridian must reach the rim's vertex
+        if !pole_p.is_finite() || curve.eval(a_loop).dist(self.b.vertex(va).p) > 1e-4 * (1.0 + pole_p.len()) {
+            return;
+        }
+        let pole_first = a_pole < a_loop;
+        let (t0, t1) = if pole_first { (a_pole, a_loop) } else { (a_loop, a_pole) };
+        let line = |at: f64| if d == 1 { Curve2::Line { o: Vec2::new(0.0, at), d: Vec2::new(1.0, 0.0) } } else { Curve2::Line { o: Vec2::new(at, 0.0), d: Vec2::new(0.0, 1.0) } };
+        // the rim ends at `ve` and starts at `vs`: up the seam at `ve` to the pole, jump to `vs`, back down to the start
+        let seam = self.b.add_edge(Curve::BSpline(curve), t0, t1, va, va);
+        let l = vec![rim, Co { edge: seam, rev: pole_first, pc: Some(line(ve)) }, Co { edge: seam, rev: !pole_first, pc: Some(line(vs)) }];
+        if self.loop_area(&l) * if sense { 1.0 } else { -1.0 } > 0.0 {
+            let pole = self.vertex_at(pole_p);
+            let e = &mut self.b.edges[seam.idx()];
+            if pole_first {
+                e.v0 = pole;
+            } else {
+                e.v1 = pole;
+            }
+            loops[0] = l;
+        } else {
+            self.b.edges[seam.idx()].alive = false;
+        }
+    }
+
+    /// A ring of a B-spline surface closed in one direction (a revolved spline): two closed edges, each running once round the
+    /// closed direction on the surface's seam, written as two loops with no seam edge (as other systems write it, and as our
+    /// export does). They become one loop joined by a seam edge, run up the seam and back down, as for a cylinder's ring.
+    /// Left alone when the two do not run opposite ways or the loop would not run the face's way.
+    fn join_spline_rings(&mut self, loops: &mut Vec<Vec<Co>>, surf: &Surface, sense: bool) {
+        let Surface::BSpline(bs) = surf else { return };
+        if loops.len() != 2 || loops.iter().any(|l| l.len() != 1) {
+            return;
+        }
+        let (cu, cv) = ck_geom::pcurve::closed_periods(surf);
+        let (d, per) = match (cu, cv) {
+            (Some(p), None) => (0usize, p),
+            (None, Some(p)) => (1usize, p),
+            _ => return,
+        };
+        let (a, b) = (loops[0][0].clone(), loops[1][0].clone());
+        if a.edge == b.edge {
+            return;
+        }
+        let (ea, eb) = (self.b.edge(a.edge), self.b.edge(b.edge));
+        if ea.v0 != ea.v1 || eb.v0 != eb.v1 {
+            return;
+        }
+        let (va, vb) = (ea.v0, eb.v0);
+        let tol = 1e-5 * per;
+        let ((u0, u1), (v0, v1)) = bs.domain();
+        let (s_lo, s_hi) = if d == 0 { (u0, u1) } else { (v0, v1) };
+        let on_seam = |x: f64| (x - s_lo).abs() <= tol || (x - s_hi).abs() <= tol;
+        let (Some(sa), Some(ea_uv), Some(sb), Some(eb_uv)) = (self.co_uv(&a, true), self.co_uv(&a, false), self.co_uv(&b, true), self.co_uv(&b, false)) else { return };
+        for (x, y) in [(sa, ea_uv), (sb, eb_uv)] {
+            if ((comp(y, d) - comp(x, d)).abs() - per).abs() > tol || (comp(y, 1 - d) - comp(x, 1 - d)).abs() > tol || !on_seam(comp(x, d)) || !on_seam(comp(y, d)) {
+                return;
+            }
+        }
+        // the two run opposite ways: B starts where A ends (mod the period) and ends where A starts
+        if (comp(sb, d) - comp(ea_uv, d)).abs() > tol && ((comp(sb, d) - comp(ea_uv, d)).abs() - per).abs() > tol {
+            return;
+        }
+        let shift = comp(ea_uv, d) - comp(sb, d);
+        let Some(pc_b) = b.pc.as_ref() else { return };
+        let b_shifted = Co { edge: b.edge, rev: b.rev, pc: Some(translate(pc_b, unit2(d, (shift / per).round() * per))) };
+        let (a_loop, b_loop) = (comp(sa, 1 - d), comp(sb, 1 - d));
+        if (a_loop - b_loop).abs() < 1e-9 * (1.0 + a_loop.abs()) {
+            return;
+        }
+        let (v_a_end, v_a_start) = (comp(ea_uv, d), comp(sa, d));
+        let seam_at = v_a_start;
+        let curve = if d == 1 { bs.iso_v(seam_at) } else { bs.iso_u(seam_at) };
+        let (lo, hi, v_lo, v_hi) = if a_loop < b_loop { (a_loop, b_loop, va, vb) } else { (b_loop, a_loop, vb, va) };
+        if curve.eval(a_loop).dist(self.b.vertex(va).p) > 1e-4 * (1.0 + curve.eval(a_loop).len()) || curve.eval(b_loop).dist(self.b.vertex(vb).p) > 1e-4 * (1.0 + curve.eval(b_loop).len()) {
+            return;
+        }
+        let line = |at: f64| if d == 1 { Curve2::Line { o: Vec2::new(0.0, at), d: Vec2::new(1.0, 0.0) } } else { Curve2::Line { o: Vec2::new(at, 0.0), d: Vec2::new(0.0, 1.0) } };
+        let seam = self.b.add_edge(Curve::BSpline(curve), lo, hi, v_lo, v_hi);
+        let a_below = a_loop < b_loop;
+        // up the seam from A's end to B's start, B round, and back down to A's start
+        let l = vec![a, Co { edge: seam, rev: !a_below, pc: Some(line(v_a_end)) }, b_shifted, Co { edge: seam, rev: a_below, pc: Some(line(v_a_start)) }];
+        if self.loop_area(&l) * if sense { 1.0 } else { -1.0 } > 0.0 {
+            *loops = vec![l];
+        } else {
+            self.b.edges[seam.idx()].alive = false;
         }
     }
 

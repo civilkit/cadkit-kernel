@@ -1,0 +1,23 @@
+[package]
+name = "ck-f3d-design"
+version = "0.1.0"
+edition = "2024"
+description = "The design segment of Fusion 360 .f3d files (timeline, parameters, sketches, features, components) decoded into the dump IR (adapted from MitCad's f3d-design crate, MIT)"
+
+[dependencies]
+# The ASM bodies whose history the feature inputs are found in; the vec3 module.
+ck-asm = { path = "../ck-asm" }
+# The design dump IR (SCHEMA.md of ck-f3d-dump).
+ck-f3d-dump = { path = "../ck-f3d-dump" }
+# The streams, records and sketches decoded.
+ck-f3d-decode = { path = "../ck-f3d-decode" }
+# The document inside the zip container and its asset packages; its `zip` module is the zip layer used here.
+ck-f3d-file = { path = "../ck-f3d-file" }
+# The names of the B-rep entities that feature inputs name.
+ck-f3d-names = { path = "../ck-f3d-names" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+# The count of references read, for the linear sketch scan test.
+ck-f3d-decode = { path = "../ck-f3d-decode", features = ["scan-count"] }

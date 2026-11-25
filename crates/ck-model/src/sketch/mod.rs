@@ -20,6 +20,7 @@
 //!   an `expr`-driven value is rewritten.
 
 pub mod analyze;
+pub mod measure;
 pub mod equation;
 pub mod guard;
 pub mod offset;
@@ -147,7 +148,7 @@ impl SketchEntity {
 /// `kind` is the wire `type`: coincident, concentric, pointOnLine,
 /// pointOnCircle, midpoint, horizontal, vertical, parallel, perpendicular,
 /// collinear, equal, tangent, fix, pierce, symmetric, g1/g2/g3, onCurve,
-/// tension, distance, hdist, vdist, pldist, radius, diameter, raddiff, angle.
+/// tension, distance, hdist, vdist, pldist, radius, diameter, raddiff, angle, arclength.
 #[derive(Debug, Clone, Default)]
 pub struct Constraint {
     pub id: String,
@@ -172,14 +173,23 @@ pub struct Constraint {
     /// everywhere (build, solve, status, analysis). The document still
     /// carries it verbatim and `status.suppressed` lists it.
     pub suppressed: bool,
+    /// `driven: true` on a dimension: a measured (reference) dimension. The solver ignores it like a suppressed
+    /// one, and the regen echo writes the measured value of the solved sketch into its `value`.
+    pub driven: bool,
 }
 
 /// Dimensional constraint types (client `gn` set).
-pub const DIMENSIONS: [&str; 8] = ["distance", "hdist", "vdist", "pldist", "radius", "diameter", "raddiff", "angle"];
+pub const DIMENSIONS: [&str; 9] =
+    ["distance", "hdist", "vdist", "pldist", "radius", "diameter", "raddiff", "angle", "arclength"];
 
 impl Constraint {
     pub fn is_dimension(&self) -> bool {
         DIMENSIONS.contains(&self.kind.as_str())
+    }
+
+    /// The solver, status and analysis skip it: suppressed, or a driven (measured) dimension.
+    pub fn ignored(&self) -> bool {
+        self.suppressed || (self.driven && self.is_dimension())
     }
 }
 
@@ -351,6 +361,7 @@ impl Constraint {
             s2: num_or("s2", 1.0),
             sign: num_or("sign", 1.0),
             suppressed: jtruthy(j.get("suppressed")),
+            driven: jtruthy(j.get("driven")),
         }
     }
 }
@@ -449,7 +460,11 @@ impl Sketch {
         for (i, r) in raw_cons.iter().enumerate() {
             let mut q = r.clone();
             if let (Some(c), Json::Obj(_)) = (self.constraints.get(i), &q) {
-                if c.valid {
+                if c.valid && c.driven && c.is_dimension() {
+                    if let Some(v) = self.measure(c) {
+                        obj_set(&mut q, "value", Json::Num(v));
+                    }
+                } else if c.valid {
                     match q.get("value") {
                         Some(Json::Arr(a)) => {
                             let a2 = a

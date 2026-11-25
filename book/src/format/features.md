@@ -4,7 +4,7 @@ A part is a list of features, run in order. This chapter lists every feature typ
 
 ## Index of feature types
 
-The kernel knows 69 type names. Five of them (`box`, `frame`, `knurlBand`, `repairPart` and `importBody`) are not described in this index. A name that is not in this list is `unknownFeature`. Types marked "not built" are accepted as names but have no implementation: they fail with the error code `TODO(rebuild): <type> needs ck-ops`.
+The kernel knows 70 type names. Six of them (`box`, `frame`, `knurlBand`, `wrap`, `repairPart` and `importBody`) are not described in this index. A name that is not in this list is `unknownFeature`. Types marked "not built" are accepted as names but have no implementation: they fail with the error code `TODO(rebuild): <type> needs ck-ops`.
 
 | Type | What it does | Chapter |
 |---|---|---|

@@ -65,6 +65,14 @@ pub fn variable_fillet_picks(
     variable_picks_core(b, edges, radii, v, feature, tol)
 }
 
+/// Variable chamfers: the distance on both faces runs linearly from `d[0]` at the end of each picked edge nearer its
+/// pick point to `d[1]` at the other end (`distances[k]` for `edges[k]`). The chamfer face stays planar; the tool is
+/// built like a variable fillet's, so the corner, partial-edge (`start_offset`, `end_offset`) and error rules are the same.
+pub fn variable_chamfer_picks(b: &Body, edges: &[(String, String, Vec3)], distances: &[[f64; 2]], feature: &str, tol: f64) -> Result<Body, BlendError> {
+    let v = VarSpec { radii: [0.0, 0.0], profile: FilletProfile::Chamfer, rhos: [0.5, 0.5] };
+    variable_picks_core(b, edges, distances, v, feature, tol)
+}
+
 fn variable_picks_core(
     b: &Body,
     edges: &[(String, String, Vec3)],
@@ -152,6 +160,10 @@ fn variable_picks_core(
     Ok(cur)
 }
 
+fn unsupported_var(m: &str, hint: &str) -> BlendError {
+    super::diag::unsupported_hint(m, hint)
+}
+
 fn unsupported() -> BlendError {
     BlendError::code("blendUnsupported")
 }
@@ -160,21 +172,34 @@ fn blend_one(b: &Body, cur: &Body, fa: &str, fb: &str, at: Vec3, v: VarSpec, fea
     let e = find_edge(b, fa, fb, at).ok_or_else(|| BlendError::code("missingEdge"))?;
     let ed = b.edge(e).clone();
     if !matches!(ed.curve, Curve::Line { .. }) {
-        return Err(unsupported());
+        return Err(unsupported_var(&format!("a variable chamfer on this {} edge is not supported: only straight edges are chamfered with a distance that changes along the edge", ed.curve.kind()), "chamferType \"variable\" needs a straight edge between two planar faces; use an equal, distances or angle chamfer on a circular edge"));
     }
     let faces: [FaceId; 2] = [b.find_face(fa).ok_or_else(|| BlendError::code("missingEdge"))?, b.find_face(fb).ok_or_else(|| BlendError::code("missingEdge"))?];
     if faces.iter().any(|&f| !matches!(b.face(f).surface, Surface::Plane { .. })) {
-        return Err(unsupported());
+        return Err(unsupported_var("a variable chamfer on this edge is not supported: one of its faces is not planar", "chamferType \"variable\" needs a straight edge between two planar faces; only straight and circular edges are chamfered, and a circular one with an equal, distances or angle chamfer"));
     }
     let (pa, pb) = (b.vertex(ed.v0).p, b.vertex(ed.v1).p);
     let len = pa.dist(pb);
+    // `startOffset` is the end of the edge nearer the pick (the end `radii[0]` belongs to), `endOffset` the other
+    let b_opts = super::rounds::blend_opts();
+    let (s_near, s_far) = (b_opts.start_offset.unwrap_or(0.0), b_opts.end_offset.unwrap_or(0.0));
+    if (s_near > 0.0 || s_far > 0.0) && s_near + s_far >= len - 10.0 * tol {
+        let field = if s_near >= len - 10.0 * tol { "startOffset" } else { "endOffset" };
+        return Err(super::rounds::offset_error(
+            field,
+            format!("startOffset {s_near} + endOffset {s_far} leave nothing of the {len:.6} mm long edge to blend"),
+            "the two offsets must add up to less than the length of the edge",
+            Some(len),
+        ));
+    }
     let dir_e = (pb - pa) / len;
-    let (near, far) = if at.dist(pa) <= at.dist(pb) { (pa, pb) } else { (pb, pa) };
+    let near_is_v0 = at.dist(pa) <= at.dist(pb);
+    let (near, far) = if near_is_v0 { (pa, pb) } else { (pb, pa) };
     let dir = (far - near) / len;
     let (n1, n2) = (b.planar_normal(faces[0]), b.planar_normal(faces[1]));
     let c12 = n1.dot(n2);
     if (1.0 - c12).abs() < 1e-9 || (1.0 + c12).abs() < 1e-9 {
-        return Err(unsupported());
+        return Err(unsupported_var("a variable chamfer on this edge is not supported: its two faces are parallel", "the two faces of the edge must meet at an angle"));
     }
     let phi = c12.clamp(-1.0, 1.0).acos();
     let co = b.edge_coedges(e).into_iter().find(|&c| b.coedge_face(c) == faces[0]).ok_or_else(|| BlendError::code("missingEdge"))?;
@@ -197,6 +222,7 @@ fn blend_one(b: &Body, cur: &Body, fa: &str, fb: &str, at: Vec3, v: VarSpec, fea
                 let d = super::g2::tangent_distance(r, sh, phi).ok_or_else(unsupported)?;
                 Ok((p, p + leg1 * d, p + leg2 * d, r))
             }
+            FilletProfile::Chamfer => Ok((p, p + leg1 * r, p + leg2 * r, r)),
             _ => {
                 let rr = if v.profile == FilletProfile::Chord { r / (2.0 * (0.5 * phi).sin()) } else { r };
                 let off = (n1 + n2) * (s * rr / (1.0 + c12));
@@ -224,7 +250,13 @@ fn blend_one(b: &Body, cur: &Body, fa: &str, fb: &str, at: Vec3, v: VarSpec, fea
             base_margin
         }
     };
-    let (m0, m1) = (limit(v.radii[0], -slope), limit(v.radii[1], slope));
+    let (mut m0, mut m1) = (limit(v.radii[0], -slope), limit(v.radii[1], slope));
+    if s_near > 0.0 {
+        m0 = -s_near;
+    }
+    if s_far > 0.0 {
+        m1 = -s_far;
+    }
     // a conic whose rho changes is not a ruled family (the weights would be interpolated, not rho):
     // sample it at nine stations instead of two
     let n_st = if matches!(v.profile, FilletProfile::Conic(_)) && (v.rhos[0] - v.rhos[1]).abs() > 1e-9 { 9 } else { 2 };
@@ -241,6 +273,7 @@ fn blend_one(b: &Body, cur: &Body, fa: &str, fb: &str, at: Vec3, v: VarSpec, fea
         let seg = match v.profile {
             FilletProfile::Conic(_) => super::g2::conic_segment(rho_at(t.clamp(0.0, len)), t1, cp, t2).ok_or_else(unsupported)?,
             FilletProfile::Curvature(sh) => super::g2::g2_segment(rad_at(t), sh, phi, t1, cp, t2).ok_or_else(unsupported)?,
+            FilletProfile::Chamfer => ProfileSeg::line("arc", t1, t2),
             _ => {
                 let off = (n1 + n2) * (s * rr / (1.0 + c12));
                 let cc = uv(p + off);

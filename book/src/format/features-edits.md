@@ -17,10 +17,29 @@ Rounds edges with a circular arc.
 | `filletType` | string | omitted | Leave it out for a constant radius. `"variable"` (see below) and `"fullRound"` are the only accepted values; any other string, including `"circular"`, is `unsupported`. |
 | `radii` | `[near, far]` | none | `variable`: the radius at the end of each picked edge nearer the pick point, and at the other end. Both at least 0, not both 0. |
 | `side1`, `center`, `side2` | face names | none | `fullRound`: the three faces the ball rolls between. |
+| `startOffset`, `endOffset` | number or expression, mm | none (0) | Partial edge: the round stops this far from the end of each picked edge that is nearer its pick point (`startOffset`) and from the other end (`endOffset`). Each at least 0; together they must leave part of the edge (`invalidValue {field, detail, hint, length}`). Not with `propagate`. See "Partial edges" below. |
+| `setback` | number or expression, mm | none (automatic) | Distance along each edge from a vertex where three rounded edges meet to the corner patch. 0 or absent: the rolling-ball sphere patch. See "Corner setback" below. |
 
 A pick may carry its own `radius` (that edge is rounded with it; the feature's `radius` is the default) or, for a variable fillet, its own `radii`. Edges that meet at a vertex with different radii end in a mitre and the feature carries a `cornerNotTangent {deviation}` warning with the largest normal jump in degrees. Edges that meet at a vertex of a variable fillet must have the same radius there (`variableRadiusMismatch`).
 
-Faces: `B0`, `B1`, ... one per rounded edge in the order of the picks; `V0`, ... for the spherical patch where three rounded edges meet at a convex corner.
+Faces: `B0`, `B1`, ... one per rounded edge in the order of the picks; `V0`, ... for the spherical patch where three rounded edges meet at a convex corner (the setback patch, with `setback`).
+
+### Partial edges
+
+`startOffset` and `endOffset` (fillet and chamfer) make the blend run along only part of each picked edge. The offsets are distances in mm along the edge, counted from the end nearer the pick point (`startOffset`) and from the other end (`endOffset`), the same convention as `radii: [near, far]`; pick the edge near the end you mean. They apply to every edge of the feature. The blend ends in a flat cut square to the edge, so a partial blend leaves a step; the blend is a cylinder (fillet) or plane (chamfer) over `length - startOffset - endOffset`, and the volume removed is that length times the section ((1 - pi/4) r² for a round, d²/2 for an equal chamfer). A circular edge is offset along its arc. Where an offset stops a blend short of a vertex, no corner patch is built there. Offsets are refused with `propagate` and, for a round, on free-form (B-spline) edges (`blendUnsupported`).
+
+```json
+{
+  "type": "fillet", "id": "F3", "radius": 2, "startOffset": 5, "endOffset": 10,
+  "edges": [{"faces": ["F2.C1", "F2.S.e1"], "at": [20, 0, 10]}]
+}
+```
+
+Run result: no errors; volume 8000 - 25 x (4 - pi) = 7978.5398 mm³ (the 40 mm edge, 25 mm blended).
+
+### Corner setback
+
+`setback` (fillet) sets where the three rounds of a vertex end and the corner patch begins, measured along each edge from the vertex. The natural setback of equal rounds on a right-angle corner is the radius: that gives the rolling-ball sphere patch, and a setback at or below it changes nothing (warning `blendSetbackAdjusted` when it was below). A larger setback builds a six-sided free-form patch `V<k>` that meets each round along its arc and the legs between them, which blends the corner more softly; unequal radii at the vertex are then blended with this patch instead of a mitre. The setback is limited to 0.45 of the shortest of the three edges. Warnings: `blendSetbackAdjusted {requested, applied, min, max, detail}` (the value was moved into the range the radii and edges allow) and `blendSetbackUnused {requested, detail}` (no vertex of the selection has exactly three selected edges between planes, so nothing used it). A setback that cannot be built at a vertex is the blend error of the cause (`blendTooLarge`, `blendUnsupported`) with the vertex in `detail`. Chamfers take no `setback`.
 
 ```json
 {
@@ -98,7 +117,7 @@ A radius the faces cannot take:
 Run result: errors `F3`: `blendOverflow` `{"detail":"F3.B0: spring leaves its face away from its edges"}`; 6 faces, volume 8000 mm³.
 
 
-Errors: `invalidValue` (radius not above 0, bad `radii`), `missingEdge`, `blendOverflow {detail}` (the round leaves its faces), `blendTooLarge`, `blendFailed {detail}`, `blendUnsupported`, `unsupported {what}`, `filletRho`, `filletShape`, `variableRadiusMismatch`, `fullRoundUnsupported`, `missingReference` (a face of `fullRound`), `badExpression`. Warnings: `cornerNotTangent`, `filletRadiusApproximated` (a variable end radius of 0 is built with a small positive radius; `params.used` says which).
+Errors: `invalidValue` (radius not above 0, bad `radii`, a negative or too long `startOffset` / `endOffset` / `setback`: `{field, detail, hint}`), `missingEdge`, `blendOverflow {detail}` (the round leaves its faces), `blendTooLarge`, `blendFailed {detail}`, `blendUnsupported`, `unsupported {what}`, `filletRho`, `filletShape`, `variableRadiusMismatch`, `fullRoundUnsupported`, `missingReference` (a face of `fullRound`), `badExpression`. Warnings: `blendSetbackAdjusted`, `blendSetbackUnused`, `cornerNotTangent`, `filletRadiusApproximated` (a variable end radius of 0 is built with a small positive radius; `params.used` says which).
 
 ## chamfer
 
@@ -115,6 +134,7 @@ Bevels edges.
 | `propagate` | boolean | `false` | As for `fillet`. |
 | `edges` | list of edge picks | required | For `vertex`: one pick `{"faces": [f1, f2, f3], "at": [..]}` naming the three faces of the corner. |
 | `distance3` | number or expression | `distance` | `vertex`: the third leg (`distance2` is the second). |
+| `startOffset`, `endOffset` | number or expression, mm | none (0) | Partial edge, as for `fillet`: the chamfer stops this far from the end of each picked edge nearer its pick point (`startOffset`) and from the other end (`endOffset`). |
 
 A chamfer has constant legs along its edge: there is no variable chamfer (setbacks that differ at the two ends of an edge). A variable `fillet` has `radii`. The order of the `edges` list does not change the result.
 

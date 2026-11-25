@@ -1,0 +1,11 @@
+[package]
+name = "ck-f3d-names"
+version = "0.1.0"
+edition = "2024"
+description = "Names of the B-rep entities in .f3d body blobs and the entities that feature inputs name (adapted from MitCad's f3d-names crate, MIT)"
+
+[dependencies]
+# The ASM bodies whose entities carry the names.
+ck-asm = { path = "../ck-asm" }
+# The names as the dump IR's recipes give them (`EntityName`).
+ck-f3d-dump = { path = "../ck-f3d-dump" }

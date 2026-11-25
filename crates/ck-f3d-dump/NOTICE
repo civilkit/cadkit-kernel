@@ -1,0 +1,19 @@
+ck-f3d-dump: attribution
+
+The design dump IR of this crate is MitCad's, adapted:
+
+  MitCad, dump crate (core/dump) and its schema (core/import/SCHEMA.md), version 0.70.0,
+  upstream commit 806a4210126ab977ba678708dd476496ddbd2968
+  Copyright (c) 2026 MitCad contributors, MIT licence (LICENSE-MIT-mitcad)
+
+What came from MitCad, and what was changed:
+
+  - src/{lib,cage,record,state}.rs, SCHEMA.md and MITCAD_README.md (the upstream README, kept for its description of the
+    IR): copied unchanged except for the points below. Every source file carries `SPDX-License-Identifier: MIT`.
+  - the path `mitcad_vec3::Vec3` became `ck_asm::vec3::Vec3` (the vec3 module is ck-asm's, which took it from MitCad's
+    core/vec3), and Cargo.toml is this workspace's (serde and serde_json come from [workspace.dependencies]).
+  - the schema name written into a dump (`SCHEMA_NAME`, "mitcad-f3d-dump") and the doc comments' references to MitCad
+    issue numbers and crate paths are as upstream: dumps made with MitCad's tools read here, and the other way round.
+
+Not used: the Autodesk Fusion SDK, or any file or code from Autodesk. Fusion and Autodesk are trademarks of their
+owner and are used here only to name the file format.

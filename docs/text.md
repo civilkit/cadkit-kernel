@@ -210,7 +210,7 @@ on `textOutline` adds `outerEdges` / `holeEdges` (the exact line / B-spline cont
 
 ## Limits
 
-* Planar only (as every sketch). No text on a curved face: project or wrap is not built.
+* Planar only (as every sketch). Text on a cylindrical face (outside or in a bore) is the `wrap` feature (`docs/spec-agent-interface.md`, "Wrap"): it keeps the letter widths along the surface. Cones, spheres and free-form faces are not built yet (`wrapFaceUnsupported`).
 * Kerning (`kern` / GPOS `kern`) and standard ligatures (`liga`) only when the entity sets `kern: true` / `liga: true`
   (default off, so existing documents are unchanged); no contextual alternates, no bold / italic (pick the bold file),
   no right-to-left or complex scripts; single line per entity. Variable fonts give their default instance only.

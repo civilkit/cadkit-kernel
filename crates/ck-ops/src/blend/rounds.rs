@@ -209,10 +209,16 @@ pub(super) fn blend_edges_inner(b: &Body, edges: &[(String, String, Vec3)], spec
     if !(r > 0.0) || !r.is_finite() {
         return Err(BlendError::code("invalidValue"));
     }
+    let opts = blend_opts();
+    for (field, v) in [("startOffset", opts.start_offset), ("endOffset", opts.end_offset), ("setback", opts.setback)] {
+        if let Some(x) = v.filter(|x| !x.is_finite() || *x < 0.0) {
+            return Err(offset_error(field, format!("{field} is {x}: it must be a distance of 0 or more"), "give 0 (or leave it out) or a positive distance in mm", None));
+        }
+    }
     if edges.is_empty() {
         return Err(BlendError::code("missingEdge"));
     }
-    if matches!(spec, Spec::Fillet(_, FilletProfile::Circular)) {
+    if matches!(spec, Spec::Fillet(_, FilletProfile::Circular)) && !has_partial_offsets() {
         // a concave vertex of three equal fillets with a free-form edge: staged build with a sphere patch
         if let Some(Ok(done)) = super::concave_vertex::try_fillet(b, edges, r, feature, tol) {
             return Ok(done);
@@ -220,6 +226,12 @@ pub(super) fn blend_edges_inner(b: &Body, edges: &[(String, String, Vec3)], spec
     }
     if matches!(spec, Spec::Fillet(..)) {
         let free = edges.iter().any(|(fa, fb, at)| find_edge(b, fa, fb, *at).is_some_and(|e| super::freeform::needs_freeform(b, e) && !super::torus_corner::analytic_wall_edge(b, e)));
+        if free && has_partial_offsets() {
+            return Err(super::diag::unsupported_hint(
+                "startOffset / endOffset on a free-form edge",
+                "a partial-edge blend is built on straight and circular edges between planes, cylinders and cones: drop the offsets or pick another edge",
+            ));
+        }
         if free {
             return super::freeform::fillet_freeform(b, edges, r, feature, tol);
         }
@@ -227,7 +239,7 @@ pub(super) fn blend_edges_inner(b: &Body, edges: &[(String, String, Vec3)], spec
     // a circle split in arcs by a seam (a lofted cone's rim is two arcs on one surface) is one smooth edge: selecting
     // one arc selects the whole ring, so the blend runs all the way round instead of stopping at the seam vertex
     let expanded;
-    let edges = if matches!(spec, Spec::Fillet(_, FilletProfile::Circular)) && EDGE_RADII.with(|c| c.borrow().is_none()) {
+    let edges = if !has_partial_offsets() && matches!(spec, Spec::Fillet(_, FilletProfile::Circular)) && EDGE_RADII.with(|c| c.borrow().is_none()) {
         expanded = with_ring_siblings(b, edges);
         &expanded[..]
     } else {
@@ -476,7 +488,7 @@ pub(super) fn blend_edges_inner(b: &Body, edges: &[(String, String, Vec3)], spec
         let mut earlier: Vec<String> = vec![];
         // chamfer: arcs of one split ring (a lofted cap rim cut in two at the
         // seam) are ONE revolved cut, named for the first arc
-        let (ring_lead, ring_skip) = if chamfer_only(spec) || matches!(spec, Spec::Fillet(_, FilletProfile::Circular)) { split_rings(b, &eids) } else { (vec![false; n], vec![false; n]) };
+        let (ring_lead, ring_skip) = if !has_partial_offsets() && (chamfer_only(spec) || matches!(spec, Spec::Fillet(_, FilletProfile::Circular))) { split_rings(b, &eids) } else { (vec![false; n], vec![false; n]) };
         for round in rounds {
             // (an edge an earlier round's tool already blended is gone: the other arc of a concave arc split by a seam,
             // which that tool swept over, see analytic.rs)
@@ -552,40 +564,86 @@ pub(super) fn blend_edges_inner(b: &Body, edges: &[(String, String, Vec3)], spec
         }
         if matches!(spec, Spec::Fillet(..)) {
             // three fillets meeting at a convex planar corner: the rolling
-            // ball's sphere patch `V<k>` replaces the miter
+            // ball's sphere patch `V<k>` (or setback B-spline patch) replaces the miter
             let mut corners: Vec<Vec3> = vec![];
+            let explicit_setback = corner_setback();
+            let b_opts = blend_opts();
+            let partial = b_opts.start_offset.is_some_and(|v| v > 0.0) || b_opts.end_offset.is_some_and(|v| v > 0.0);
             for corner in super::corner::find_corner(b, &eids) {
-                // per-edge radii: the ball patch needs one radius at the corner
-                let rc = EDGE_RADII.with(|c| {
-                    c.borrow().as_ref().map(|v| {
-                        let rs: Vec<f64> = corner.edges.iter().filter_map(|e| eids.iter().position(|x| x == e)).map(|i| v[i]).collect();
-                        if rs.len() == 3 && rs.iter().all(|x| (x - rs[0]).abs() <= 1e-12 * (1.0 + rs[0])) { Some(rs[0]) } else { None }
+                // If partial-edge offsets stop any of the corner's three edges short of this vertex,
+                // the strips do not meet at the vertex.
+                if partial
+                    && corner.edges.iter().any(|&e| {
+                        let ed = b.edge(e);
+                        let pick = eids.iter().position(|&x| x == e).map(|i| edges[i].2);
+                        let (at_v0, at_v1) = offsets_by_end(b.vertex(ed.v0).p, b.vertex(ed.v1).p, pick);
+                        (ed.v0 == corner.vertex && at_v0 > 0.0) || (ed.v1 == corner.vertex && at_v1 > 0.0)
                     })
+                {
+                    continue;
+                }
+                let rs_vec: Vec<f64> = EDGE_RADII.with(|c| {
+                    c.borrow().as_ref().map_or_else(
+                        || vec![r; 3],
+                        |v| corner.edges.iter().filter_map(|e| eids.iter().position(|x| x == e)).map(|i| v[i]).collect(),
+                    )
                 });
-                let r = match rc {
-                    Some(Some(x)) => x,
-                    Some(None) => continue,
-                    None => r,
-                };
+                if rs_vec.len() != 3 {
+                    continue;
+                }
+                let rs = [rs_vec[0], rs_vec[1], rs_vec[2]];
+                let equal_radii = rs.iter().all(|x| (x - rs[0]).abs() <= 1e-12 * (1.0 + rs[0]));
+                if !equal_radii && explicit_setback.is_none() {
+                    continue;
+                }
                 let name = FaceName::other(feature, &format!("V{}", corners.len()));
-                let tool = match super::corner::sphere_corner_tool(b, &corner, r, feature, &name, tol) {
-                    Ok(t) => t,
-                    Err(e) => {
-                        dbg_fail(&format!("corner tool at {:?}: {} {:?}", b.vertex(corner.vertex).p, e.code, e.detail));
-                        continue;
-                    }
+                let (tool, setback_hex) = match explicit_setback {
+                    Some(sb) => match super::corner::setback_corner_tool(b, &corner, rs, sb, feature, &name, tol) {
+                        Ok(t) => t,
+                        Err(e) => {
+                            dbg_fail(&format!("setback corner tool at {:?}: {} {:?}", b.vertex(corner.vertex).p, e.code, e.detail));
+                            // an explicit setback that cannot be built is refused, not dropped (the corner would silently be a mitre)
+                            let why = e.detail.clone().unwrap_or_else(|| e.code.clone());
+                            return Err(BlendError::detail(&e.code, &format!("the corner setback of {sb} cannot be built at the vertex {:?}: {why}", b.vertex(corner.vertex).p)));
+                        }
+                    },
+                    None => match super::corner::sphere_corner_tool(b, &corner, rs[0], feature, &name, tol) {
+                        Ok(t) => (t, None),
+                        Err(e) => {
+                            dbg_fail(&format!("corner tool at {:?}: {} {:?}", b.vertex(corner.vertex).p, e.code, e.detail));
+                            continue;
+                        }
+                    },
                 };
                 let op = if corner.concave { Op::Union } else { Op::Cut };
-                let mut cut = match apply_tool(&out, &tool, op, &name, vec![], tol) {
-                    Ok((c, _)) => c,
-                    Err(e) => {
-                        dbg_fail(&format!("corner cut at {:?}: {} {:?}", b.vertex(corner.vertex).p, e.code, e.detail));
-                        continue;
+                let mut cut = if let Some(hex) = &setback_hex {
+                    let patch_f = tool.face_ids().find(|&f| tool.face(f).name == name);
+                    let hook = |_f: FaceId, g: FaceId| -> Option<Vec<ck_geom::curve::Curve>> {
+                        (Some(g) == patch_f).then(Vec::new)
+                    };
+                    let mut c = match apply_tool_hooked(&out, &tool, op, &name, vec![], tol, Some(&hook)) {
+                        Ok((c, _)) => c,
+                        Err(e) => {
+                            dbg_fail(&format!("setback corner cut at {:?}: {} {:?}", b.vertex(corner.vertex).p, e.code, e.detail));
+                            return Err(BlendError::detail(&e.code, &format!("the corner setback of {} cannot be cut at the vertex {:?}", explicit_setback.unwrap_or(0.0), b.vertex(corner.vertex).p)));
+                        }
+                    };
+                    super::corner::fix_setback_pcurves(&mut c, &name.id(), hex);
+                    c
+                } else {
+                    let mut c = match apply_tool(&out, &tool, op, &name, vec![], tol) {
+                        Ok((c, _)) => c,
+                        Err(e) => {
+                            dbg_fail(&format!("corner cut at {:?}: {} {:?}", b.vertex(corner.vertex).p, e.code, e.detail));
+                            continue;
+                        }
+                    };
+                    if !corner.curved {
+                        super::corner::fix_sphere_pcurves(&mut c, &name.id());
                     }
+                    c
                 };
-                if !corner.curved {
-                    super::corner::fix_sphere_pcurves(&mut cut, &name.id());
-                }
+                let _ = &mut cut;
                 // faces: the input order, then the new vertex blends
                 let order: Vec<FaceId> = {
                     let key = |f: FaceId| -> usize {
@@ -636,6 +694,48 @@ fn flattest_edge(b: &Body, c: &super::corner::Corner) -> Option<EdgeId> {
 thread_local! {
     /// Radius of the fillet of selection index `k` (see [`fillet_unequal`]).
     pub(super) static EDGE_RADII: std::cell::RefCell<Option<Vec<f64>>> = const { std::cell::RefCell::new(None) };
+    /// Partial-edge start/end offsets and explicit corner setback distance (see [`super::build::BlendOptsGuard`]).
+    pub(super) static BLEND_OPTS: std::cell::Cell<BlendOpts> = const { std::cell::Cell::new(BlendOpts { start_offset: None, end_offset: None, setback: None }) };
+}
+
+pub(super) fn blend_opts() -> BlendOpts {
+    BLEND_OPTS.with(|c| c.get())
+}
+
+thread_local! {
+    /// The pick point of the edge whose tool is being built: `startOffset` counts from the end of the edge nearer to it.
+    pub(super) static BLEND_PICK: std::cell::Cell<Option<Vec3>> = const { std::cell::Cell::new(None) };
+    /// What the corner setback did in this feature (see [`super::build::take_setback_report`]).
+    pub(super) static SETBACK_REPORT: std::cell::RefCell<super::model::SetbackReport> = const { std::cell::RefCell::new(super::model::SetbackReport { used: 0, adjusted: Vec::new() }) };
+}
+
+/// `(start, end)` offsets as they apply to the ends `(first, last)` of an edge, given where the edge was picked: `start`
+/// is the offset of the end nearer the pick, so a feature means the same whichever way the edge runs in the model.
+pub(super) fn offsets_by_end(first: Vec3, last: Vec3, pick: Option<Vec3>) -> (f64, f64) {
+    let o = blend_opts();
+    let (s, e) = (o.start_offset.unwrap_or(0.0), o.end_offset.unwrap_or(0.0));
+    match pick {
+        Some(at) if at.dist(last) < at.dist(first) => (e, s),
+        _ => (s, e),
+    }
+}
+
+/// An `invalidValue` refusal of an offset or setback: `field` names the wire field, with the reason and what to change.
+pub(super) fn offset_error(field: &str, detail: String, hint: &str, length: Option<f64>) -> BlendError {
+    let mut params = vec![("field".to_string(), field.to_string()), ("hint".to_string(), hint.to_string())];
+    if let Some(l) = length {
+        params.push(("length".to_string(), format!("{}", (l * 1e6).round() / 1e6)));
+    }
+    BlendError { code: "invalidValue".into(), detail: Some(detail), params }
+}
+
+pub(super) fn has_partial_offsets() -> bool {
+    let o = blend_opts();
+    o.start_offset.is_some_and(|v| v > 0.0) || o.end_offset.is_some_and(|v| v > 0.0)
+}
+
+pub(super) fn corner_setback() -> Option<f64> {
+    blend_opts().setback.filter(|&s| s > 0.0)
 }
 
 thread_local! {
@@ -767,7 +867,10 @@ pub(super) fn blend_edges_at(
             Spec::Fillet(_, p) => EDGE_RADII.with(|c| c.borrow().as_ref().and_then(|v| v.get(idx[k] as usize).copied())).map_or(spec, |r| Spec::Fillet(r, p)),
             _ => spec,
         };
-        let (body, hint) = blend_edge_hint(&out, e, [f1, f2], spec_k, feature, idx[k], tol, rings.get(k).copied().unwrap_or(false), junc)?;
+        BLEND_PICK.with(|c| c.set(Some(*at)));
+        let built = blend_edge_hint(&out, e, [f1, f2], spec_k, feature, idx[k], tol, rings.get(k).copied().unwrap_or(false), junc);
+        BLEND_PICK.with(|c| c.set(None));
+        let (body, hint) = built?;
         if super::diag::on() {
             eprintln!("tool B{} ({fa} | {fb}) -> faces {:?}", idx[k], body.face_ids().map(|f| format!("{}:{}", body.face_id_str(f), body.face(f).surface.kind())).collect::<Vec<_>>());
         }

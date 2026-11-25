@@ -37,6 +37,7 @@ pub mod sheet;
 pub mod shell;
 pub mod sweep;
 mod swap;
+pub mod sketch_profile;
 mod hoist;
 pub mod later_draft;
 pub mod rib;
@@ -115,6 +116,7 @@ impl<'a> Tagged<'a> {
             }
         }
         let start = undo::start_body(imp, &tags);
+        sketch_profile::set(imp.sketches.clone());
         Tagged { body: b, tags, features: &imp.meta.features, unit_mm: unit_mm(&imp.meta), start }
     }
 }
@@ -442,6 +444,32 @@ pub fn face_points(m: &Model, f: FaceId) -> Vec<Vec3> {
 /// Rebuild the history of a tagged body. When it stops on a chamfer or fillet, the blend is also tried earlier in
 /// the history (see [`hoisted`]).
 pub fn rebuild_history(t: &Tagged) -> Outcome {
+    // the history carries the file's own sketches (dimensions, relations) where they give the profile the faces give; a body the
+    // rebuild then fails to reproduce is rebuilt once more with sketches drawn from the faces, and the better outcome is kept
+    if !sketch_profile::preferred() {
+        return rebuild_history_with(t);
+    }
+    let before = sketch_profile::WRITTEN.with(|w| w.borrow()[0]);
+    let prev = sketch_profile::prefer(true);
+    let with = rebuild_history_with(t);
+    let used = sketch_profile::WRITTEN.with(|w| w.borrow()[0]) > before;
+    let out = if used && !(with.exact() || with.close()) {
+        sketch_profile::prefer(false);
+        let without = rebuild_history_with(t);
+        let score = |o: &Outcome| if o.exact() { (3, 0) } else if o.close() { (2, 0) } else { (1, o.prefix) };
+        if score(&without) > score(&with) {
+            without
+        } else {
+            with
+        }
+    } else {
+        with
+    };
+    sketch_profile::prefer(prev);
+    out
+}
+
+fn rebuild_history_with(t: &Tagged) -> Outcome {
     if let Some(o) = imported::rebuild(t) {
         return o;
     }

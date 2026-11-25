@@ -258,6 +258,320 @@ pub fn fix_sphere_pcurves(body: &mut Body, name: &str) {
     }
 }
 
+/// The six boundary vertices `[a01, a02, a12, a10, a20, a21]` of a 6-sided setback corner patch.
+pub type SetbackHex = [Vec3; 6];
+
+/// Evaluate the shorter circular arc from `pa` to `pb` about `c` of radius `r` at fraction `s in [0, 1]`.
+fn eval_setback_arc(pa: Vec3, pb: Vec3, c: Vec3, r: f64, s: f64) -> Vec3 {
+    let (ea, eb) = ((pa - c).normalize(), (pb - c).normalize());
+    let th = ea.dot(eb).clamp(-1.0, 1.0).acos();
+    let ez = ea.cross(eb).normalize();
+    let ang = s * th;
+    c + (ea * ang.cos() + ez.cross(ea) * ang.sin()) * r
+}
+
+/// Build the tensor-product cubic B-spline surface for a 6-sided setback corner patch with triple knots at
+/// `u = 1/3` and `u = 2/3` so that the three top boundary segments (`Arc_2`, `L_0`, `Arc_1`), the bottom segment
+/// (`Arc_0`), and the two straight side segments (`L_1`, `L_2`) are interpolated with zero corner overshoot.
+fn setback_patch_surface(
+    hex: &SetbackHex,
+    centres: [Vec3; 3],
+    radii: [f64; 3],
+) -> Result<ck_geom::nurbs::bsurf::BSplineSurface, BlendError> {
+    use ck_geom::fit::{averaged_knots, interpolate_with_many};
+    use ck_geom::nurbs::bsurf::BSplineSurface;
+    let [a01, a02, a12, a10, a20, a21] = *hex;
+    let [c0, c1, c2] = centres;
+    let [r0, r1, r2] = radii;
+    const M: usize = 8;
+    const NU_GRID: usize = 3 * M + 1; // 25
+    const NV_GRID: usize = M + 1; // 9
+    const H_STEPS: usize = 3 * M + 1; // 25 x 25 isotropic grid for harmonic relaxation
+
+    let mut grid = vec![vec![Vec3::ZERO; H_STEPS]; NU_GRID];
+    for i in 0..NU_GRID {
+        let u = i as f64 / (NU_GRID - 1) as f64;
+        grid[i][0] = eval_setback_arc(a01, a02, c0, r0, u);
+        grid[i][H_STEPS - 1] = if i <= M {
+            let s = i as f64 / M as f64;
+            eval_setback_arc(a21, a20, c2, r2, s)
+        } else if i <= 2 * M {
+            let s = (i - M) as f64 / M as f64;
+            a20 + (a10 - a20) * s
+        } else {
+            let s = (i - 2 * M) as f64 / M as f64;
+            eval_setback_arc(a10, a12, c1, r1, s)
+        };
+    }
+    for j in 0..H_STEPS {
+        let v = j as f64 / (H_STEPS - 1) as f64;
+        grid[0][j] = a01 + (a21 - a01) * v;
+        grid[NU_GRID - 1][j] = a02 + (a12 - a02) * v;
+    }
+    // Initialize interior by Coons blend, then relax harmonically
+    for i in 1..NU_GRID - 1 {
+        let u = i as f64 / (NU_GRID - 1) as f64;
+        for j in 1..H_STEPS - 1 {
+            let v = j as f64 / (H_STEPS - 1) as f64;
+            let bil = (a01 * (1.0 - u) + a02 * u) * (1.0 - v) + (grid[0][H_STEPS - 1] * (1.0 - u) + grid[NU_GRID - 1][H_STEPS - 1] * u) * v;
+            grid[i][j] = grid[i][0] * (1.0 - v) + grid[i][H_STEPS - 1] * v + grid[0][j] * (1.0 - u) + grid[NU_GRID - 1][j] * u - bil;
+        }
+    }
+    for _ in 0..300 {
+        for i in 1..NU_GRID - 1 {
+            for j in 1..H_STEPS - 1 {
+                grid[i][j] = (grid[i - 1][j] + grid[i + 1][j] + grid[i][j - 1] + grid[i][j + 1]) * 0.25;
+            }
+        }
+    }
+
+    // Subsample v at every 3rd row (0, 3, 6, ..., 24 -> 9 rows) and interpolate each of the 3 u-thirds
+    let u_local: Vec<f64> = (0..=M).map(|k| k as f64 / M as f64).collect();
+    let knots_local = averaged_knots(&u_local, 3);
+    let mut seg0_rows: Vec<Vec<Vec3>> = Vec::with_capacity(NV_GRID);
+    let mut seg1_rows: Vec<Vec<Vec3>> = Vec::with_capacity(NV_GRID);
+    let mut seg2_rows: Vec<Vec<Vec3>> = Vec::with_capacity(NV_GRID);
+    for jv in 0..NV_GRID {
+        let j = jv * 3;
+        seg0_rows.push((0..=M).map(|i| grid[i][j]).collect());
+        seg1_rows.push((M..=2 * M).map(|i| grid[i][j]).collect());
+        seg2_rows.push((2 * M..=3 * M).map(|i| grid[i][j]).collect());
+    }
+    let c0_rows = interpolate_with_many(&seg0_rows, 3, &u_local, &knots_local).map_err(|_| BlendError::code("blendFailed"))?;
+    let c1_rows = interpolate_with_many(&seg1_rows, 3, &u_local, &knots_local).map_err(|_| BlendError::code("blendFailed"))?;
+    let c2_rows = interpolate_with_many(&seg2_rows, 3, &u_local, &knots_local).map_err(|_| BlendError::code("blendFailed"))?;
+
+    let nu = (M + 1) + M + M; // 25
+    let mut cols_for_v: Vec<Vec<Vec3>> = vec![Vec::with_capacity(NV_GRID); nu];
+    for jv in 0..NV_GRID {
+        let mut combined = Vec::with_capacity(nu);
+        combined.extend_from_slice(&c0_rows[jv]);
+        combined.extend_from_slice(&c1_rows[jv][1..]);
+        combined.extend_from_slice(&c2_rows[jv][1..]);
+        for (i, &pt) in combined.iter().enumerate() {
+            cols_for_v[i].push(pt);
+        }
+    }
+    let ctrl_cols = interpolate_with_many(&cols_for_v, 3, &u_local, &knots_local).map_err(|_| BlendError::code("blendFailed"))?;
+
+    let mut knots_u = vec![0.0; 4];
+    for &k in &knots_local[4..M + 1] {
+        knots_u.push(k / 3.0);
+    }
+    knots_u.extend_from_slice(&[1.0 / 3.0; 3]);
+    for &k in &knots_local[4..M + 1] {
+        knots_u.push((1.0 + k) / 3.0);
+    }
+    knots_u.extend_from_slice(&[2.0 / 3.0; 3]);
+    for &k in &knots_local[4..M + 1] {
+        knots_u.push((2.0 + k) / 3.0);
+    }
+    knots_u.extend_from_slice(&[1.0; 4]);
+
+    let nv = NV_GRID;
+    let mut ctrl = Vec::with_capacity(nu * nv);
+    for col in ctrl_cols {
+        ctrl.extend(col);
+    }
+    BSplineSurface::new(3, 3, knots_u, knots_local, nu, nv, ctrl, None).map_err(|_| BlendError::code("blendFailed"))
+}
+
+/// Build the corner tool for a 3-edge blend corner with explicit setback distance `setback` (clamped safely to
+/// `[min_setback, 0.45 * min_edge_len]`) and per-edge radii `radii`. When the clamped setback equals `min_setback`
+/// and the three radii are equal, delegates to [`sphere_corner_tool`]; otherwise constructs the 6-sided setback
+/// corner tool and returns its 6 patch vertices (`SetbackHex`) for [`fix_setback_pcurves`].
+pub fn setback_corner_tool(
+    b: &Body,
+    corner: &Corner,
+    radii: [f64; 3],
+    setback: f64,
+    feature: &str,
+    name: &FaceName,
+    tol: f64,
+) -> Result<(Body, Option<SetbackHex>), BlendError> {
+    if corner.curved {
+        return cyl_corner_tool(b, corner, radii[0], feature, name).map(|t| (t, None));
+    }
+    let vp = b.vertex(corner.vertex).p;
+    let n: Vec<Vec3> = corner.faces.iter().map(|&f| b.planar_normal(f).normalize()).collect();
+    let sg = if corner.concave { 1.0 } else { -1.0 };
+    let mut u = [Vec3::ZERO; 3];
+    let mut elen = [0.0f64; 3];
+    for (i, &e) in corner.edges.iter().enumerate() {
+        let ed = b.edge(e);
+        let other = if ed.v0 == corner.vertex { b.vertex(ed.v1).p } else { b.vertex(ed.v0).p };
+        elen[i] = (other - vp).len();
+        if !(elen[i] > 1e-9) {
+            return Err(BlendError::code("blendUnsupported"));
+        }
+        u[i] = (other - vp) / elen[i];
+    }
+    let r_min = radii[0].min(radii[1]).min(radii[2]);
+    let r_max = radii[0].max(radii[1]).max(radii[2]);
+    let c_max = crate::intersect::solve3([n[0], n[1], n[2]], [sg * r_max, sg * r_max, sg * r_max])
+        .map(|d| vp + d)
+        .ok_or_else(|| BlendError::code("blendUnsupported"))?;
+    for i in 0..3 {
+        if (c_max - vp).dot(u[i]) <= 0.0 {
+            return Err(BlendError::code("blendUnsupported"));
+        }
+    }
+    let min_setback = (0..3).map(|i| (c_max - vp).dot(u[i])).fold(0.0f64, f64::max);
+    let max_setback = elen.iter().map(|&l| 0.45 * l).fold(f64::INFINITY, f64::min);
+    if !(max_setback >= min_setback) {
+        return Err(BlendError::detail(
+            "blendTooLarge",
+            &format!("the rounds are too large for a setback corner here: the setback patch needs at least {min_setback:.6} mm along each edge but the shortest edge allows {max_setback:.6} mm (0.45 of its length)"),
+        ));
+    }
+    let mut s = setback.clamp(min_setback, max_setback);
+    if (s - setback).abs() > 1e-9 {
+        super::rounds::SETBACK_REPORT.with(|r| r.borrow_mut().adjusted.push([setback, s, min_setback, max_setback]));
+    }
+    super::rounds::SETBACK_REPORT.with(|r| r.borrow_mut().used += 1);
+    let equal_radii = (r_max - r_min) <= 1e-9 * (1.0 + r_max);
+    let equal_nat = (0..3).all(|i| ((c_max - vp).dot(u[i]) - min_setback).abs() <= 1e-4 * (1.0 + r_max));
+    if equal_radii && equal_nat && (s - min_setback).abs() <= 1e-3 * (1.0 + r_max) {
+        return sphere_corner_tool(b, corner, radii[0], feature, name, tol).map(|t| (t, None));
+    }
+    if s <= min_setback + 1e-3 * r_max {
+        s = (min_setback + 0.05 * r_max).min(max_setback);
+    }
+
+    let inn_pl: [(Vec3, Vec3); 3] = std::array::from_fn(|i| (u[i], vp + u[i] * s));
+    let mut c_pt = [Vec3::ZERO; 3];
+    let mut a_ij = [Vec3::ZERO; 3];
+    let mut a_ik = [Vec3::ZERO; 3];
+    for i in 0..3 {
+        let (j, k) = ((i + 1) % 3, (i + 2) % 3);
+        let ri = radii[i];
+        c_pt[i] = crate::intersect::solve3(
+            [n[j], n[k], u[i]],
+            [n[j].dot(vp) + sg * ri, n[k].dot(vp) + sg * ri, u[i].dot(inn_pl[i].1)],
+        )
+        .ok_or_else(|| BlendError::code("blendUnsupported"))?;
+        a_ij[i] = c_pt[i] - n[j] * (sg * ri);
+        a_ik[i] = c_pt[i] - n[k] * (sg * ri);
+    }
+
+    let mut leg_pl = [(Vec3::ZERO, Vec3::ZERO); 3];
+    for j in 0..3 {
+        let (k, i) = ((j + 1) % 3, (j + 2) % 3);
+        let (akj, aij) = (a_ik[k], a_ij[i]);
+        let chord = aij - akj;
+        if chord.len() <= 10.0 * tol {
+            return Err(BlendError::code("blendUnsupported"));
+        }
+        let mut ln = chord.normalize().cross(n[j]).normalize();
+        let mid = (akj + aij) * 0.5;
+        if ln.dot(mid - vp) < 0.0 {
+            ln = -ln;
+        }
+        leg_pl[j] = (ln, mid);
+    }
+
+    let m = if corner.concave { 0.5 * r_min } else { r_max + 1.0 };
+    let outer: [(Vec3, Vec3); 3] = std::array::from_fn(|j| (n[j] * -sg, vp - n[j] * (sg * m)));
+    let intersect3 = |p0: (Vec3, Vec3), p1: (Vec3, Vec3), p2: (Vec3, Vec3)| -> Result<Vec3, BlendError> {
+        crate::intersect::solve3(
+            [p0.0, p1.0, p2.0],
+            [p0.0.dot(p0.1), p1.0.dot(p1.1), p2.0.dot(p2.1)],
+        )
+        .ok_or_else(|| BlendError::code("blendUnsupported"))
+    };
+    let o_pt = intersect3(outer[0], outer[1], outer[2])?;
+    let mut e_pt = [Vec3::ZERO; 3];
+    let mut b_ij = [Vec3::ZERO; 3];
+    let mut b_ik = [Vec3::ZERO; 3];
+    for i in 0..3 {
+        let (j, k) = ((i + 1) % 3, (i + 2) % 3);
+        e_pt[i] = intersect3(inn_pl[i], outer[j], outer[k])?;
+        b_ij[i] = intersect3(inn_pl[i], leg_pl[j], outer[j])?;
+        b_ik[i] = intersect3(inn_pl[i], leg_pl[k], outer[k])?;
+    }
+
+    let mut tb = ToolBuilder::new();
+    let id_o = tb.vertex(o_pt);
+    let id_e: [usize; 3] = std::array::from_fn(|i| tb.vertex(e_pt[i]));
+    let id_aij: [usize; 3] = std::array::from_fn(|i| tb.vertex(a_ij[i]));
+    let id_aik: [usize; 3] = std::array::from_fn(|i| tb.vertex(a_ik[i]));
+    let id_bij: [usize; 3] = std::array::from_fn(|i| tb.vertex(b_ij[i]));
+    let id_bik: [usize; 3] = std::array::from_fn(|i| tb.vertex(b_ik[i]));
+
+    for j in 0..3 {
+        let (k, i) = ((j + 1) % 3, (j + 2) % 3);
+        let pts = [id_o, id_e[k], id_bik[k], id_bij[i], id_e[i]];
+        let segs: Vec<Seg> = (0..5).map(|t| Seg { a: pts[t], b: pts[(t + 1) % 5], arc: None }).collect();
+        tb.plane_face(outer[j].0, segs, FaceName::side(feature, &format!("k{}0", j)));
+    }
+    for i in 0..3 {
+        let pts = [id_aij[i], id_bij[i], id_e[i], id_bik[i], id_aik[i]];
+        let mut segs: Vec<Seg> = (0..4).map(|t| Seg { a: pts[t], b: pts[t + 1], arc: None }).collect();
+        segs.push(Seg { a: id_aik[i], b: id_aij[i], arc: Some((c_pt[i], radii[i])) });
+        tb.plane_face(u[i], segs, FaceName::side(feature, &format!("k{}1", i)));
+    }
+    for j in 0..3 {
+        let (k, i) = ((j + 1) % 3, (j + 2) % 3);
+        let pts = [id_aik[k], id_bik[k], id_bij[i], id_aij[i]];
+        let segs: Vec<Seg> = (0..4).map(|t| Seg { a: pts[t], b: pts[(t + 1) % 4], arc: None }).collect();
+        tb.plane_face(leg_pl[j].0, segs, FaceName::side(feature, &format!("k{}2", j)));
+    }
+
+    let hex: SetbackHex = [a_ij[0], a_ik[0], a_ij[1], a_ik[1], a_ij[2], a_ik[2]];
+    let surf = setback_patch_surface(&hex, c_pt, radii)?;
+    let patch_segs = vec![
+        Seg { a: id_aij[0], b: id_aik[0], arc: Some((c_pt[0], radii[0])) },
+        Seg { a: id_aik[0], b: id_aij[1], arc: None },
+        Seg { a: id_aij[1], b: id_aik[1], arc: Some((c_pt[1], radii[1])) },
+        Seg { a: id_aik[1], b: id_aij[2], arc: None },
+        Seg { a: id_aij[2], b: id_aik[2], arc: Some((c_pt[2], radii[2])) },
+        Seg { a: id_aik[2], b: id_aij[0], arc: None },
+    ];
+    let outward = (u[0] + u[1] + u[2]).normalize();
+    tb.bspline_face(surf, patch_segs, outward, name.clone());
+    let mut tool = tb.finish();
+    fix_setback_pcurves(&mut tool, &name.id(), &hex);
+    Ok((tool, Some(hex)))
+}
+
+/// Assign exact linear `(u, v)` boundary pcurves to the 6 coedges of a setback corner patch `name`.
+pub fn fix_setback_pcurves(body: &mut Body, name: &str, hex: &SetbackHex) {
+    let Some(f) = body.find_face(name) else { return };
+    if !matches!(body.face(f).surface, Surface::BSpline(_)) {
+        return;
+    }
+    let hex_uv = [
+        ck_geom::Vec2::new(0.0, 0.0),
+        ck_geom::Vec2::new(1.0, 0.0),
+        ck_geom::Vec2::new(1.0, 1.0),
+        ck_geom::Vec2::new(2.0 / 3.0, 1.0),
+        ck_geom::Vec2::new(1.0 / 3.0, 1.0),
+        ck_geom::Vec2::new(0.0, 1.0),
+    ];
+    let uv_of = |p: Vec3| -> Option<ck_geom::Vec2> {
+        let (idx, d) = hex.iter().enumerate().map(|(i, &q)| (i, q.dist(p))).min_by(|a, b| a.1.total_cmp(&b.1))?;
+        (d <= 1e-3 * (1.0 + p.len())).then_some(hex_uv[idx])
+    };
+    let mut fixes: Vec<(usize, ck_geom::curve2::Curve2)> = vec![];
+    for &l in &body.face(f).loops {
+        for &cid in &body.lp(l).coedges {
+            let ed = body.edge(body.coedge(cid).edge);
+            let (pa, pb) = (ed.curve.eval(ed.t0), ed.curve.eval(ed.t1));
+            let (Some(ua), Some(ub)) = (uv_of(pa), uv_of(pb)) else { return };
+            let span = ed.t1 - ed.t0;
+            if span.abs() <= 1e-14 {
+                return;
+            }
+            let d = (ub - ua) * (1.0 / span);
+            let o = ua - d * ed.t0;
+            fixes.push((cid.idx(), ck_geom::curve2::Curve2::Line { o, d }));
+        }
+    }
+    for (i, pc) in fixes {
+        body.coedges[i].pcurve = Some(pc);
+    }
+}
+
 /// One directed loop segment of [`ToolBuilder`]: a line, or an arc of the
 /// circle through both ends about `centre` (the shorter way).
 #[derive(Clone)]
@@ -480,6 +794,39 @@ mod tests {
         assert_eq!(faces[faces.len() - 4..], ["F3.B0", "F3.B1", "F3.B2", "F3.V0"]);
         // oracle volume of filletCorner3 (exact: 8000 - 64(1-pi/4)4/4... see tools/brep_cases.mjs)
         assert!((mass_props(&r).volume - 7941.250719950454).abs() < 1e-6, "{}", mass_props(&r).volume);
+    }
+
+    #[test]
+    fn box_corner_explicit_setback_varies_patch_area_and_volume() {
+        use crate::blend::build::{fillet_unequal, fillet_with_opts, BlendOpts, BlendOptsGuard};
+        let b = box_body("F2", 0.0, 0.0, 40.0, 20.0, 0.0, 10.0);
+        let sel = [
+            ("F2.C1".to_string(), "F2.S.e1".to_string(), Vec3::new(20., 10., 0.)),
+            ("F2.C1".to_string(), "F2.S.e2".to_string(), Vec3::new(40., 10., -10.)),
+            ("F2.S.e1".to_string(), "F2.S.e2".to_string(), Vec3::new(40., 5., 0.)),
+        ];
+
+        let mut areas = vec![];
+        let mut vols = vec![];
+        for sb in [2.0, 3.0, 4.0] {
+            let opts = BlendOpts { start_offset: None, end_offset: None, setback: Some(sb) };
+            let out = fillet_with_opts(&b, &sel, 2.0, opts, "F3", 1e-6).unwrap();
+            assert!(ck_topo::check::check(&out, 1e-6).is_empty(), "check failed for setback={sb}");
+            assert!(ck_check::validate(&out, 1e-6).is_empty(), "validate failed for setback={sb}: {:?}", ck_check::validate(&out, 1e-6));
+            let v0 = out.find_face("F3.V0").expect("corner patch F3.V0");
+            let patch_area = ck_topo::mass::faces_moments(&out, &[v0], Vec3::ZERO).area.abs();
+            let vol = mass_props(&out).volume;
+            areas.push(patch_area);
+            vols.push(vol);
+        }
+        assert!(areas[0] < areas[1] && areas[1] < areas[2], "patch areas should grow with setback: {areas:?}");
+        assert!(vols[0] > vols[1] && vols[1] > vols[2], "volumes should shrink with larger convex setback: {vols:?}");
+
+        // Unequal radii at a 3-edge corner with explicit setback
+        let _g = BlendOptsGuard::new(BlendOpts { start_offset: None, end_offset: None, setback: Some(3.5) });
+        let out_unequal = fillet_unequal(&b, &sel, &[1.5, 2.0, 2.5], "F3", 1e-6).unwrap();
+        assert!(ck_check::validate(&out_unequal, 1e-6).is_empty(), "unequal setback validate: {:?}", ck_check::validate(&out_unequal, 1e-6));
+        assert!(out_unequal.find_face("F3.V0").is_some());
     }
 }
 

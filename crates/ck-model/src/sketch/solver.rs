@@ -285,7 +285,7 @@ pub fn build(sk: &Sketch) -> Result<System, String> {
     }
 
     for k in &sk.constraints {
-        if k.suppressed {
+        if k.ignored() {
             continue;
         }
         let cid = k.id.as_str();
@@ -472,6 +472,24 @@ pub fn build(sk: &Sketch) -> Result<System, String> {
                 let c = b.entity(refn(e, 0)?)?;
                 let m = if k.kind == "diameter" { 2.0 } else { 1.0 };
                 b.eq(cid, &ent_vars(&c), Box::new(move |z| m * radius(z, &c) - value));
+            }
+            "arclength" => {
+                // radius x counter-clockwise sweep (see `measure::arc_sweep`); a circle is its circumference.
+                let c = b.entity(refn(e, 0)?)?;
+                match c {
+                    Ent::Arc { c: o, a, b: bb } => b.eq(
+                        cid,
+                        &ent_vars(&c),
+                        Box::new(move |z| {
+                            let (o, p, q) = (pt(z, o), pt(z, a), pt(z, bb));
+                            ve(p[0] - o[0], p[1] - o[1]) * super::measure::arc_sweep(o, p, q) - value
+                        }),
+                    ),
+                    Ent::Circle { .. } => {
+                        b.eq(cid, &ent_vars(&c), Box::new(move |z| std::f64::consts::TAU * radius(z, &c) - value))
+                    }
+                    _ => return Err("arclength needs an arc or a circle".into()),
+                }
             }
             "raddiff" => {
                 let c = b.entity(refn(e, 0)?)?;

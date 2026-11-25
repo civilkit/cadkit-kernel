@@ -114,6 +114,41 @@ pub struct Facts {
     pub diag: f64,
 }
 
+/// Concave cylinder (material outside: the outward normal points at the axis) and hole barrel (a concave
+/// cylinder whose non-seam boundary is only full circles) tests of a face.
+fn face_concave_hole(body: &Body, f: FaceId) -> (bool, bool) {
+    let face = body.face(f);
+    let mut concave = false;
+    if let Surface::Cylinder { frame, .. } = &face.surface {
+        if let Some(&e) = body.face_edges(f).first() {
+            let p = body.edge_mid(e);
+            let (u, v) = face.surface.closest_param(p);
+            let n = body.outward_normal(f, u, v);
+            let d = p - frame.o;
+            let radial = d - frame.z * d.dot(frame.z);
+            concave = n.dot(radial) < 0.0;
+        }
+    }
+    let mut hole = false;
+    if concave {
+        let mut sweep = 0.0;
+        let mut ok = true;
+        for e in body.face_edges(f) {
+            if body.is_seam(e) {
+                continue;
+            }
+            let ed = body.edge(e);
+            if matches!(ed.curve, Curve::Circle { .. }) {
+                sweep += (ed.t1 - ed.t0).abs();
+            } else {
+                ok = false;
+            }
+        }
+        hole = ok && sweep >= 2.0 * TAU - 1e-3;
+    }
+    (concave, hole)
+}
+
 fn face_fact(body: &Body, f: FaceId, light: bool) -> FaceFact {
     let face = body.face(f);
     if light {
@@ -173,36 +208,7 @@ fn face_fact(body: &Body, f: FaceId, light: bool) -> FaceFact {
         Surface::Revolution { axis: a, .. } => axis = Some(*a),
         _ => {}
     }
-    // concave cylinder (material outside): outward normal points at the axis
-    let mut concave = false;
-    if let Surface::Cylinder { frame, .. } = &face.surface {
-        if let Some(&e) = body.face_edges(f).first() {
-            let p = body.edge_mid(e);
-            let (u, v) = face.surface.closest_param(p);
-            let n = body.outward_normal(f, u, v);
-            let d = p - frame.o;
-            let radial = d - frame.z * d.dot(frame.z);
-            concave = n.dot(radial) < 0.0;
-        }
-    }
-    // a hole barrel: concave cylinder whose non-seam boundary is only full circles
-    let mut hole = false;
-    if concave {
-        let mut sweep = 0.0;
-        let mut ok = true;
-        for e in body.face_edges(f) {
-            if body.is_seam(e) {
-                continue;
-            }
-            let ed = body.edge(e);
-            if matches!(ed.curve, Curve::Circle { .. }) {
-                sweep += (ed.t1 - ed.t0).abs();
-            } else {
-                ok = false;
-            }
-        }
-        hole = ok && sweep >= 2.0 * TAU - 1e-3;
-    }
+    let (concave, hole) = face_concave_hole(body, f);
     let (role, entity, index) = match &face.name.role {
         Role::Side(e) => ("side", Some(e.clone()), None),
         Role::Cap(k) => ("cap", None, Some(*k)),
@@ -284,6 +290,40 @@ pub fn exact_bbox(body: &Body, mesh: bool) -> (Vec3, Vec3) {
         }
     }
     (lo, hi)
+}
+
+/// What `check` reads of the facts: the counts of faces / edges / holes / inner loops and the bounds. Exactly the
+/// numbers [`gather`] gives for those, without the face integrals (area, centroid), adjacency and edge lengths that
+/// `check` never reads.
+struct CheckFacts {
+    faces: usize,
+    edges: usize,
+    holes: usize,
+    inner_loops: usize,
+    lo: Vec3,
+    hi: Vec3,
+}
+
+fn check_facts(body: &Body) -> CheckFacts {
+    let (mut faces, mut holes, mut inner_loops) = (0, 0, 0);
+    for f in body.face_ids() {
+        faces += 1;
+        holes += face_concave_hole(body, f).1 as usize;
+        inner_loops += body.face(f).loops.len().saturating_sub(1);
+    }
+    let mut edges = 0;
+    for (_, chain) in body.wire_numbered().0 {
+        let e = chain[0];
+        if body.is_split_rail(e) || body.edge_faces(e).is_empty() {
+            continue;
+        }
+        edges += 1;
+    }
+    let (mut lo, mut hi) = exact_bbox(body, false);
+    if !(lo.is_finite() && hi.is_finite()) {
+        (lo, hi) = (Vec3::ZERO, Vec3::ZERO);
+    }
+    CheckFacts { faces, edges, holes, inner_loops, lo, hi }
 }
 
 pub fn gather(body: &Body) -> Facts {
@@ -988,6 +1028,27 @@ pub fn measure_body(body: &Body, facts: &Facts) -> Measured {
     }
 }
 
+/// [`measure_body`] of `body` without gathering the per-face / per-edge facts (same values).
+fn measure_fast(body: &Body) -> Measured {
+    let cf = check_facts(body);
+    let moments = ck_topo::mass::lump_moments(body);
+    let total = moments.iter().skip(1).fold(moments.first().copied().unwrap_or_default(), |a, m| a.add(m));
+    let mp = ck_topo::mass::MassProps::from_moments(&total);
+    Measured {
+        volume: mp.volume,
+        area: mp.area,
+        com: mp.com,
+        lo: cf.lo,
+        hi: cf.hi,
+        faces: cf.faces,
+        edges: cf.edges,
+        vertices: body.vertex_ids().count(),
+        solids: moments.iter().filter(|m| m.volume > 0.0).count(),
+        holes: cf.holes,
+        inner_loops: cf.inner_loops,
+    }
+}
+
 const COUNT_KINDS: &[&str] = &["faces", "edges", "vertices", "solids", "holes", "innerLoops"];
 const SCALAR_KINDS: &[&str] = &["volume", "area", "mass"];
 
@@ -1039,9 +1100,23 @@ fn expectations(msg: &Json) -> Vec<Json> {
 /// `check {expect:[..]}` -> per-expectation pass/fail with the measured value.
 /// `valid_issues` lazily counts validator issues for `{kind:"valid"}`.
 pub fn check(body: &Body, msg: &Json, valid_issues: &dyn Fn() -> usize) -> Json {
-    let facts = gather(body);
+    // `legacyMeasure:true` is a test hook: the pre-optimisation measuring path, the oracle of tests/check_fast.rs
+    check_impl(body, msg, valid_issues, msg.get_bool("legacyMeasure") == Some(true))
+}
+
+/// `legacy` measures through [`gather`] + [`measure_body`] (the pre-optimisation path, the test oracle).
+fn check_impl(body: &Body, msg: &Json, valid_issues: &dyn Fn() -> usize, legacy: bool) -> Json {
     let exps = expectations(msg);
-    let mut m = measure_body(body, &facts);
+    // `measured:false` with only `valid` expectations: nothing reads the measurements, so skip them and the reply's
+    // `measured` block
+    let skip = msg.get_bool("measured") == Some(false) && exps.iter().all(|e| e.get_str("kind") == Some("valid"));
+    let mut m = if skip {
+        Measured { volume: 0.0, area: 0.0, com: Vec3::ZERO, lo: Vec3::ZERO, hi: Vec3::ZERO, faces: 0, edges: 0, vertices: 0, solids: 0, holes: 0, inner_loops: 0 }
+    } else if legacy {
+        measure_body(body, &gather(body))
+    } else {
+        measure_fast(body)
+    };
     if exps.iter().any(|e| e.get_str("kind") == Some("bbox")) {
         // free-form faces need the display mesh; only paid for when a bbox is asked
         (m.lo, m.hi) = exact_bbox(body, true);
@@ -1139,12 +1214,15 @@ pub fn check(body: &Body, msg: &Json, valid_issues: &dyn Fn() -> usize) -> Json 
         results.push(o.build());
     }
     let failed = results.iter().filter(|r| r.get_bool("pass") != Some(true)).count();
-    Obj::new()
+    let o = Obj::new()
         .put("ok", failed == 0)
         .put("passed", (results.len() - failed) as f64)
         .put("failed", failed as f64)
-        .put("results", Json::Arr(results))
-        .put(
+        .put("results", Json::Arr(results));
+    if skip {
+        return o.build();
+    }
+    o.put(
             "measured",
             Obj::new()
                 .put("volume", rnd(m.volume))

@@ -42,10 +42,12 @@ pub struct Limits {
     pub max_nodes: usize,
     /// Most faces imported.
     pub max_faces: usize,
+    /// Most components of an assembly tree (every instance counted, nested sub-assemblies expanded).
+    pub max_components: usize,
 }
 
 impl Default for Limits {
     fn default() -> Limits {
-        Limits { max_file: 256 << 20, max_stream: 256 << 20, max_total: 768 << 20, max_ratio: 2000, max_streams: 4096, max_nodes: 4_000_000, max_faces: 50_000 }
+        Limits { max_file: 256 << 20, max_stream: 256 << 20, max_total: 768 << 20, max_ratio: 2000, max_streams: 4096, max_nodes: 4_000_000, max_faces: 50_000, max_components: 100_000 }
     }
 }

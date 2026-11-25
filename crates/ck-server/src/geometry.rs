@@ -109,6 +109,28 @@ pub fn sldprt_history(cx: &mut Cx) -> Result<Json, String> {
     h(cx)
 }
 
+/// `{"type":"sldasmTree","data":"<base64 of a .SLDASM file>","configuration":name?,"asPart":bool?}` -> `{ok, name, configuration,
+/// configurations:[{name, active}], count, components:[{name, model, part, kind, configuration, transform, suppressed, hidden,
+/// virtual, excludeFromBom, flexible, bbox, children}], notes, part?}`: the assembly's component tree (nested sub-assemblies,
+/// per-component placement in millimetres relative to the parent, referenced file names). With `asPart` also `part`, a
+/// part document of `insertPart` features (see book/src/io/sldprt.md). A file that is not a readable assembly answers
+/// `{ok:false, code, reason}` (stable `asm.*` / `container.*` / `limit.*` codes). Read only: no tag, no state.
+pub fn sldasm_tree(cx: &mut Cx) -> Result<Json, String> {
+    if cx.msg.get_str("data").is_none() {
+        return Err("sldasmTree: data (the .SLDASM file as base64) is required".to_string());
+    }
+    let Some(h) = cx.hooks.sldasm_tree else { return Err(crate::session::todo("sldasmTree")) };
+    h(cx)
+}
+
+/// `{"type":"f3dFeatures","designs":[{label, dump, reference?, referenceError?}]}` (the `designs` of ck_f3d.wasm's `f3dDump`) ->
+/// `{designs:[{label, part, mapped, placeholders, items, notes, check}]}`: each design's timeline as a ck-part feature list and the
+/// regenerate-and-compare verdict against `reference` (docs/f3d-lazy.md). Read only: no tag, no state.
+pub fn f3d_features(cx: &mut Cx) -> Result<Json, String> {
+    let Some(h) = cx.hooks.f3d_features else { return Err(crate::session::todo("f3dFeatures")) };
+    h(cx)
+}
+
 /// `{"type":"builtExport","feature":id?}` -> `{ok, entries:[{feature, key, source, rejected?, data}]}`: the saved results of the
 /// import features (`importBody`) that the last regens built from their file or read from the document's `built` table,
 /// oldest first (at most the last few). `data` is the base64 text to store as `built[key]` of the part document (or beside
@@ -130,6 +152,24 @@ pub fn import_skp(cx: &mut Cx) -> Result<Json, String> {
     }
     let tag = cx.tag();
     let Some(h) = cx.hooks.import_skp else { return Err(crate::session::todo("importSkp")) };
+    let (reply, state) = h(cx)?;
+    if let Some(s) = state {
+        cx.session.put(&tag, s);
+    }
+    Ok(reply)
+}
+
+/// `{"type":"importF3d","tag":t,"name":n?,"data":"<base64 of a .f3d / .f3z file or of one .smb / .smbh body blob>","opts":{"history":bool?}?}` ->
+/// regen-shaped result like `importStep` (`body`, `surfaces`, `errors`, `warnings`, plus `import`). The valid closed solids of the file are the
+/// tag's body (a lump each); every other ASM body (sheets, bodies with a face the reader cannot make) comes in as the surface body of the faces
+/// that were read, with the reasons in `import.parts` and the `importStepParts` warning. `import.report` says in plain words what was read and
+/// what was left out. A file that cannot be read answers `body:null` with a structured error and leaves the tag's state alone.
+pub fn import_f3d(cx: &mut Cx) -> Result<Json, String> {
+    if cx.msg.get_str("data").is_none() && cx.msg.get("decoded").is_none() {
+        return Err("importF3d: data (the .f3d / .f3z file or .smb blob as base64) or decoded (the bodies ck_f3d.wasm decoded) is required".to_string());
+    }
+    let tag = cx.tag();
+    let Some(h) = cx.hooks.import_f3d else { return Err(crate::session::todo("importF3d")) };
     let (reply, state) = h(cx)?;
     if let Some(s) = state {
         cx.session.put(&tag, s);

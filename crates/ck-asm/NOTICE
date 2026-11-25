@@ -1,0 +1,27 @@
+ck-asm: attribution
+
+This crate reads Fusion 360 (.f3d, .f3z) files. Its reader of the ASM B-rep blobs is MitCad's, adapted:
+
+  MitCad, ASM reader (core/asm and core/vec3), version 0.70.0, upstream commit 806a4210126ab977ba678708dd476496ddbd2968
+  Copyright (c) 2026 MitCad contributors, MIT licence (LICENSE-MIT-mitcad)
+
+What came from MitCad, and what was changed:
+
+  - src/asm/*.rs, src/brep.rs, src/convert.rs, src/history_states.rs, src/ids.rs, src/testdata.rs, ASM_FORMAT.md
+    (core/asm, core/f3d/ASM_FORMAT.md): copied unchanged except for the points below. Every such file carries
+    `SPDX-License-Identifier: MIT`.
+  - src/vec3/ (core/vec3): copied unchanged; it is a module of this crate here, not a crate of its own.
+  - the paths `mitcad_vec3::` became `crate::vec3::` (src/brep.rs), the one unit test of src/convert.rs that checked the
+    C++ builder's flat encoding (`flat.rs`) checks the flags the builder reads instead, and src/testdata.rs asserts
+    `shell_is_closed_solid` where it asserted the flat encoding.
+  - not taken: core/asm/src/flat.rs (the input of MitCad's OCCT builder), the rest of the MitCad tree.
+
+Ours (this repository's own code): src/lib.rs, src/build.rs (the
+neutral B-rep built into ck-topo), src/import.rs, src/container.rs, src/zip.rs, src/inflate.rs (the DEFLATE decoder of
+ck-skp / ck-sldprt) and src/zstd.rs (a Zstandard decoder written from RFC 8878; MitCad uses the `ruzstd` crate, this
+crate has no dependency outside the workspace). The format knowledge of the container entries follows MitCad's
+core/f3d-file container reader.
+
+Not used: the Autodesk Fusion or ASM SDK, or any file or code from Autodesk. MitCad's notes say its format knowledge
+comes from inspecting files only. Fusion, ASM and Autodesk are trademarks of their owner and are used here only to name
+the file format.

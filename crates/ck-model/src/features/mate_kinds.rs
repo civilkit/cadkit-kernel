@@ -19,9 +19,20 @@ use super::mate::{comp_box, find_ref, knorm, plane_normal, rows, MateRec, Rec, R
 use super::{Brep, FeatureKind, MateKind as K};
 use crate::regen::{self, FeatureError, RegenState};
 use crate::Feature;
-use ck_core::linalg::{wrap_pi, Vec3};
+use ck_core::linalg::{wrap_pi, Frame, Mat3, Vec3};
 use ck_json::{Json, Obj};
 use ck_topo::body::Body;
+
+/// One connector endpoint of a connector-based mate.
+#[derive(Debug, Clone)]
+pub struct ConnEndpoint {
+    /// Component index (`None` = top-level assembly connector, world-fixed).
+    pub comp: Option<usize>,
+    /// Connector feature id (`"C1"`).
+    pub id: String,
+    /// Local frame of the connector on its component (or world frame if `comp` is `None`).
+    pub local: Frame,
+}
 
 /// Extra data of an extended mate.
 #[derive(Debug, Clone, Default)]
@@ -56,6 +67,13 @@ pub struct Ext {
     /// hinge = rotation in radians about the axis, slot = slide in mm along the
     /// slot, both from the pose the mate was created at.
     pub drive: Option<f64>,
+    /// Connector endpoints for connector-based mates (`fastened`, `revolute`, `slider`, `cylindrical`, `planar`).
+    pub conn_m: Option<ConnEndpoint>,
+    pub conn_t: Option<ConnEndpoint>,
+    /// Mate-level local offset `[dx, dy, dz]` in target connector frame.
+    pub offset: Option<Vec3>,
+    /// Mate-level rotation about target connector Z (radians).
+    pub rotate_z: f64,
 }
 
 /// Placements and axes at the moment the mate was created.
@@ -188,10 +206,81 @@ fn two_axes_concentric(gm: G, gt: G) -> Result<Vec<Rec>, FeatureError> {
     }
 }
 
+/// Current world-space frame of a connector endpoint.
+fn conn_world_frame(asm: &super::mate::Assembly, ep: &ConnEndpoint) -> Frame {
+    match ep.comp {
+        Some(c) => asm.components[c].place.frame(&ep.local),
+        None => ep.local,
+    }
+}
+
+/// Target connector world frame with mate-level `offset`, `flip`, and `rotateZ` applied.
+fn target_conn_frame(asm: &super::mate::Assembly, m: &MateRec, e: &Ext) -> Option<Frame> {
+    let ep = e.conn_t.as_ref()?;
+    let mut fr = conn_world_frame(asm, ep);
+    if let Some(off) = e.offset {
+        fr.o = fr.o + fr.x.scale(off.x) + fr.y.scale(off.y) + fr.z.scale(off.z);
+    } else if m.distance != 0.0 {
+        fr.o = fr.o + fr.z.scale(m.distance);
+    }
+    if m.flip {
+        fr.x = -fr.x;
+        fr.z = -fr.z;
+    }
+    if e.rotate_z.abs() > 0.0 {
+        let rot = Mat3::rotation(fr.z, e.rotate_z);
+        fr.x = rot.mul_vec(fr.x).normalize();
+        fr.y = rot.mul_vec(fr.y).normalize();
+    }
+    Some(fr)
+}
+
+/// Constraint records for connector-based joint mates (`fastened`, `revolute`,
+/// `slider`, `cylindrical`, `planar`).
+fn recs_connector(asm: &super::mate::Assembly, m: &MateRec, e: &Ext) -> Result<Vec<Rec>, FeatureError> {
+    let ep_m = e.conn_m.as_ref().ok_or_else(|| FeatureError::new(regen::codes::MISSING_REFERENCE))?;
+    let fm = conn_world_frame(asm, ep_m);
+    let ft = target_conn_frame(asm, m, e).ok_or_else(|| FeatureError::new(regen::codes::MISSING_REFERENCE))?;
+    Ok(match m.kind {
+        K::Fastened => vec![
+            Rec::Dir { a: fm.z, b: ft.z, s: 1.0 },
+            Rec::Dir { a: fm.x, b: ft.x, s: 1.0 },
+            Rec::PtPlane { p: fm.o, q: ft.o, n: ft.x, d: 0.0 },
+            Rec::PtPlane { p: fm.o, q: ft.o, n: ft.y, d: 0.0 },
+            Rec::PtPlane { p: fm.o, q: ft.o, n: ft.z, d: 0.0 },
+        ],
+        K::Revolute => vec![
+            Rec::Dir { a: fm.z, b: ft.z, s: 1.0 },
+            Rec::PtPlane { p: fm.o, q: ft.o, n: ft.x, d: 0.0 },
+            Rec::PtPlane { p: fm.o, q: ft.o, n: ft.y, d: 0.0 },
+            Rec::PtPlane { p: fm.o, q: ft.o, n: ft.z, d: 0.0 },
+        ],
+        K::Slider => vec![
+            Rec::Dir { a: fm.z, b: ft.z, s: 1.0 },
+            Rec::Dir { a: fm.x, b: ft.x, s: 1.0 },
+            Rec::PtPlane { p: fm.o, q: ft.o, n: ft.x, d: 0.0 },
+            Rec::PtPlane { p: fm.o, q: ft.o, n: ft.y, d: 0.0 },
+        ],
+        K::Cylindrical => vec![
+            Rec::Dir { a: fm.z, b: ft.z, s: 1.0 },
+            Rec::PtPlane { p: fm.o, q: ft.o, n: ft.x, d: 0.0 },
+            Rec::PtPlane { p: fm.o, q: ft.o, n: ft.y, d: 0.0 },
+        ],
+        K::Planar => vec![
+            Rec::Dir { a: fm.z, b: ft.z, s: 1.0 },
+            Rec::PtPlane { p: fm.o, q: ft.o, n: ft.z, d: 0.0 },
+        ],
+        _ => return Err(FeatureError::new(MATE_GEOMETRY)),
+    })
+}
+
 /// Records of an extended mate for its mover (the body is at the current
 /// pose).
 pub fn recs_ext(asm: &super::mate::Assembly, b: &Body, m: &MateRec) -> Result<Vec<Rec>, FeatureError> {
     let e = m.ext.as_deref().ok_or_else(|| gerr("no extension"))?;
+    if m.kind.is_connector_joint() {
+        return recs_connector(asm, m, e);
+    }
     let g = |id: &str| geo(b, id).ok_or_else(|| FeatureError::new(MATE_GEOMETRY));
     let gm = g(&m.moving)?;
     let gt = g(&m.target)?;
@@ -380,9 +469,164 @@ fn comp_scale(asm: &super::mate::Assembly, b: &Body, k: usize) -> (Vec3, f64) {
     }
 }
 
+/// Resolve `{ kind: "connector", id: "C1", component?: "F5" }` to a [`ConnEndpoint`].
+fn resolve_conn_endpoint(br: &Brep, state: &RegenState, j: Option<&Json>) -> Option<ConnEndpoint> {
+    let obj = j?;
+    if obj.get("kind").and_then(|v| v.as_str()) != Some("connector") {
+        return None;
+    }
+    let id = obj.get("id").and_then(|v| v.as_str())?;
+    if let Some(comp_id) = obj.get("component").and_then(|v| v.as_str()) {
+        let ci = br.component_by_id(comp_id)?;
+        let (_, _, local) = br.asm.components[ci].connectors.iter().find(|c| c.0 == id)?;
+        return Some(ConnEndpoint { comp: Some(ci), id: id.to_string(), local: *local });
+    }
+    // No component specified: match a unique component connector, else a top-level assembly connector.
+    let mut found: Option<(usize, Frame)> = None;
+    for (ci, comp) in br.asm.components.iter().enumerate() {
+        if let Some((_, _, local)) = comp.connectors.iter().find(|c| c.0 == id) {
+            if found.is_some() {
+                return None; // ambiguous across multiple components
+            }
+            found = Some((ci, *local));
+        }
+    }
+    if let Some((ci, local)) = found {
+        return Some(ConnEndpoint { comp: Some(ci), id: id.to_string(), local });
+    }
+    state.connector(id).map(|local| ConnEndpoint { comp: None, id: id.to_string(), local })
+}
+
+fn eval_mate_offset(f: &Feature, state: &RegenState) -> Result<Option<Vec3>, FeatureError> {
+    let Some(v) = f.raw.get("offset") else { return Ok(None) };
+    if let Some(arr) = v.as_arr() {
+        if arr.len() != 3 {
+            return Err(FeatureError::new(regen::codes::INVALID_VALUE));
+        }
+        let x = crate::expr::eval_field(Some(&arr[0]), &state.vars, 0.0).map_err(FeatureError::new)?;
+        let y = crate::expr::eval_field(Some(&arr[1]), &state.vars, 0.0).map_err(FeatureError::new)?;
+        let z = crate::expr::eval_field(Some(&arr[2]), &state.vars, 0.0).map_err(FeatureError::new)?;
+        if !(x.is_finite() && y.is_finite() && z.is_finite()) {
+            return Err(FeatureError::new(regen::codes::INVALID_VALUE));
+        }
+        return Ok(Some(Vec3::new(x, y, z)));
+    }
+    let z = crate::expr::eval_field(Some(v), &state.vars, 0.0).map_err(FeatureError::new)?;
+    if !z.is_finite() {
+        return Err(FeatureError::new(regen::codes::INVALID_VALUE));
+    }
+    Ok(Some(Vec3::new(0.0, 0.0, z)))
+}
+
+/// `mate` of a connector-based joint kind (`fastened`, `revolute`, `slider`, `cylindrical`, `planar`).
+fn exec_connector_mate(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
+    let FeatureKind::Mate { kind, flip, .. } = &f.kind else { unreachable!() };
+    let ep_a = resolve_conn_endpoint(br, state, f.raw.get("a")).ok_or_else(|| FeatureError::new(regen::codes::MISSING_REFERENCE))?;
+    let ep_b = resolve_conn_endpoint(br, state, f.raw.get("b")).ok_or_else(|| FeatureError::new(regen::codes::MISSING_REFERENCE))?;
+    if ep_a.comp.is_some() && ep_a.comp == ep_b.comp {
+        return Err(FeatureError::new(MATE_SAME_BODY));
+    }
+    let fa = ep_a.comp.map_or(true, |c| br.asm.components[c].fixed);
+    let fb = ep_b.comp.map_or(true, |c| br.asm.components[c].fixed);
+    if fa && fb {
+        return Err(FeatureError::new(MATE_FIXED));
+    }
+    let opt = |k: &str, state: &RegenState| -> Result<Option<f64>, FeatureError> {
+        if f.raw.get(k).is_some() {
+            let v = state.num(f, k, 0.0)?;
+            if !v.is_finite() {
+                return Err(FeatureError::new(regen::codes::BAD_EXPRESSION));
+            }
+            Ok(Some(v))
+        } else {
+            Ok(None)
+        }
+    };
+    let distance = state.num(f, "distance", 0.0)?;
+    let offset = eval_mate_offset(f, state)?;
+    let rotate_z = if f.raw.get("rotateZ").is_some() {
+        let rz = state.num(f, "rotateZ", 0.0)?;
+        if !rz.is_finite() {
+            return Err(FeatureError::new(regen::codes::INVALID_VALUE));
+        }
+        rz.to_radians()
+    } else {
+        0.0
+    };
+    let min = opt("min", state)?;
+    let max = opt("max", state)?;
+    if let (Some(lo), Some(hi)) = (min, max) {
+        if lo > hi {
+            return Err(gerr("limits: min is above max"));
+        }
+    }
+    let (mover, conn_m, conn_t, tc) = if fa {
+        (ep_b.comp.unwrap(), ep_b, ep_a.clone(), ep_a.comp.unwrap_or(usize::MAX))
+    } else {
+        (ep_a.comp.unwrap(), ep_a, ep_b.clone(), ep_b.comp.unwrap_or(usize::MAX))
+    };
+    let ext = Ext {
+        tc,
+        min,
+        max,
+        conn_m: Some(conn_m.clone()),
+        conn_t: Some(conn_t.clone()),
+        offset,
+        rotate_z,
+        ..Ext::default()
+    };
+    let m = MateRec {
+        id: f.id.clone(),
+        kind: *kind,
+        mover,
+        moving: conn_m.id.clone(),
+        target: conn_t.id.clone(),
+        distance,
+        flip: *flip,
+        ext: Some(Box::new(ext)),
+    };
+    // validate records
+    recs_connector(&br.asm, &m, m.ext.as_deref().unwrap())?;
+    let saved_body = br.body.clone();
+    let saved_places: Vec<Xf> = br.asm.components.iter().map(|c| c.place).collect();
+    br.asm.mates.push(m);
+    let mut r = super::mate::solve_all(br, mover);
+    if r.is_err() && matches!(kind, K::Fastened | K::Slider) {
+        // Escape pure 180-degree antiparallel X singularity about Z (e.g. rotateZ: 180)
+        br.body = saved_body.clone();
+        for (c, p) in br.asm.components.iter_mut().zip(saved_places.iter().copied()) {
+            c.place = p;
+        }
+        let m_ref = br.asm.mates.last().unwrap();
+        let e_ref = m_ref.ext.as_deref().unwrap();
+        if let Some(ft) = target_conn_frame(&br.asm, m_ref, e_ref) {
+            let fm = conn_world_frame(&br.asm, e_ref.conn_m.as_ref().unwrap());
+            move_comp(br, mover, &axis_rot(fm.o, ft.z, 0.05));
+            r = super::mate::solve_all(br, mover);
+        }
+    }
+    if let Err(mut err) = r {
+        let new = br.asm.mates.pop().unwrap();
+        br.body = saved_body;
+        for (c, p) in br.asm.components.iter_mut().zip(saved_places) {
+            c.place = p;
+        }
+        let with = record_conflict(br, &new, tc);
+        if err.code == MATE_CONFLICT {
+            err = err.with("mates", Json::Arr(std::iter::once(new.id.clone()).chain(with.iter().cloned()).map(Json::Str).collect()));
+        }
+        return Err(err);
+    }
+    super::mate::update_dof(br);
+    Ok(())
+}
+
 /// `mate` of an extended kind.
 pub fn exec_ext(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
     let FeatureKind::Mate { kind, a, b, flip, a2, b2, c, .. } = &f.kind else { unreachable!() };
+    if kind.is_connector_joint() {
+        return exec_connector_mate(br, state, f);
+    }
     let s = |r: &Option<super::Ref>| r.as_ref().map(|r| r.as_str().to_string());
     let (ra, rb) = (s(a), s(b));
     let ca = ra.as_deref().and_then(|r| br.component_of(r));
@@ -475,6 +719,7 @@ pub fn exec_ext(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<()
         side: 0.0,
         creation: None,
         drive: None,
+        ..Ext::default()
     };
     let body = br.body.as_ref().unwrap();
     {
@@ -563,6 +808,7 @@ pub fn apply_posts(br: &mut Brep, k: usize) -> Result<bool, FeatureError> {
             K::Gear | K::RackPinion | K::Screw => couple(br, &m)?,
             K::Limits => limit(br, &m)?,
             K::Hinge | K::Slot => drive_post(br, &m)?,
+            K::Revolute | K::Slider => connector_limit(br, &m)?,
             _ => false,
         };
     }
@@ -743,6 +989,45 @@ fn limit(br: &mut Brep, m: &MateRec) -> Result<bool, FeatureError> {
     };
     move_comp(br, m.mover, &x);
     Ok(true)
+}
+
+/// Optional `min`/`max` limit clamping for `revolute` (degrees about Z) and `slider` (mm along Z).
+fn connector_limit(br: &mut Brep, m: &MateRec) -> Result<bool, FeatureError> {
+    if br.asm.skip_limits {
+        return Ok(false);
+    }
+    let e = m.ext.as_deref().unwrap();
+    if e.min.is_none() && e.max.is_none() {
+        return Ok(false);
+    }
+    let Some(ep_m) = e.conn_m.as_ref() else { return Ok(false) };
+    let Some(ft) = target_conn_frame(&br.asm, m, e) else { return Ok(false) };
+    let fm = conn_world_frame(&br.asm, ep_m);
+    match m.kind {
+        K::Revolute => {
+            let theta = ft.z.dot(ft.x.cross(fm.x)).atan2(ft.x.dot(fm.x));
+            let lo = e.min.map(f64::to_radians);
+            let hi = e.max.map(f64::to_radians);
+            let want = match (lo, hi) {
+                (Some(l), _) if theta < l - 1e-9 => l,
+                (_, Some(h)) if theta > h + 1e-9 => h,
+                _ => return Ok(false),
+            };
+            move_comp(br, m.mover, &axis_rot(ft.o, ft.z, want - theta));
+            Ok(true)
+        }
+        K::Slider => {
+            let z = ft.z.dot(fm.o - ft.o);
+            let want = match (e.min, e.max) {
+                (Some(l), _) if z < l - 1e-9 => l,
+                (_, Some(h)) if z > h + 1e-9 => h,
+                _ => return Ok(false),
+            };
+            move_comp(br, m.mover, &Xf::translation(ft.z.scale(want - z)));
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
 }
 
 // -------------------------------------------------------------- report

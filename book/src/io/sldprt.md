@@ -188,6 +188,36 @@ The reader does not panic on malformed input. A test feeds truncated, bit-flippe
 
 Rebuilds the feature history of the part (sketches, extrudes, fillets, chamfers, holes, shells ...; the crate `crates/ck-swedit`, see `docs/sldprt-editable.md`) as a part document. Read only: no tag, no state. The reply is `{ok, complete, part, outcome}` when the history is editable: `part` is a `ck-part` document that regenerates to the body `importSldprt` reads, `complete` is true when every feature is ours (false: the document ends in an `importBody` feature that stands for the rest of the file and holds the file in `blobs`), `outcome` lists every step and its check. A file that does not rebuild is not an error: the reply is `{ok:false, reason, detail, outcome}` with `reason` `import` (the file cannot be read), `noHistory` (nothing could be read back) or `notEditable`, and the caller keeps `importSldprt`. A missing `data` is an error reply.
 
+## Assemblies: `sldasmTree`
+
+A `.SLDASM` file is the same container as a part; its component tree is the plain XML stream `swXmlContents/COMPINSTANCETREE`. `sldasmTree` reads it (read only: no tag, no state, no geometry, the referenced parts are not opened):
+
+```json
+{"type":"sldasmTree","data":"<base64 of the .SLDASM file>","configuration":"name?","asPart":false}
+```
+
+answers `{ok:true, name, configuration, configurations:[{name, active}], count, components, notes}`. `configuration` picks the configuration of the top assembly (default: the one the file was saved in). `components` is a tree; each entry is
+
+| Field | Meaning |
+|---|---|
+| `name` | instance name as in the SolidWorks tree (`Plate-1`) |
+| `model` | name of the document it is an instance of |
+| `part` | file name of that document (`Plate.SLDPRT` or `Sub.SLDASM`, no folders), `null` when the tree names none |
+| `kind` | `part`, `assembly` or `null` |
+| `configuration` | configuration of the referenced document this instance uses |
+| `transform` | 16 numbers: a 4x4 matrix, row-major, for column vectors (`p' = M p`, translation in the last column), millimetres, relative to the parent assembly |
+| `suppressed`, `hidden`, `virtual`, `excludeFromBom`, `flexible` | the flags of the instance |
+| `bbox` | `[xmin,ymin,zmin,xmax,ymax,zmax]` of the referenced model in its own coordinates, mm, or `null` |
+| `children` | the components of a sub-assembly (a sub-assembly is expanded where it is used, once per instance) |
+
+The file stores the transform as 16 numbers for row vectors (rows 0 to 2 are the images of the part's x, y and z axes, row 3 the origin in metres). This was checked against the assembly's own stored bounding box: placing the stored part boxes by the file's matrices reproduces the assembly box with this reading and not with the transpose (the check needs a non-symmetric rotation; the sample set has such components). The reply's matrix is the transposed, millimetre form. Only the file name of each referenced document is returned, never the folders it came from.
+
+With `"asPart":true` the reply also has `part`: a `ck-part` document of one `insertPart` feature per placed part (sub-assemblies flattened, each part's `place` frame `{o,x,y,z}` composed through its parents; suppressed components skipped and counted in `suppressedSkipped`; `hidden` and `configuration` kept on the feature). A referenced part is a file the reply does not hold, so each feature's nested `part` is an empty `ck-part` stand-in with `"unresolved":true` and `source` the file name; it regenerates to nothing and without an error, and `unresolved` (top level) lists the file names to supply. To resolve them pass `"parts":{"<file name>":<ck-part document>}` (for example the `part` of `sldprtHistory` for that file); a supplied document replaces the stand-in (names compared without case).
+
+A file that is not a readable assembly answers `{ok:false, code, reason}` with a stable code: `container.*` (not a SolidWorks file), `asm.no_tree` (a part, or the tree block is damaged), `asm.format`, `asm.not_assembly`, `asm.configuration` (unknown name), `asm.cycle`, `limit.depth` (sub-assemblies nested over 64 levels), `limit.components` (over 100 000 component instances in the expanded tree, or four times that many references), and the container's own `limit.*`. Malformed input never panics.
+
+Not read: mates, in-context references, exploded views, equations, assembly features, per-instance display state, the parts' geometry. Only the top assembly's configurations are listed; a sub-assembly is read in the configuration the tree uses it in.
+
 ## Keeping the built body: `built` and `builtExport`
 
 An `importBody` feature builds its body from the file held in the part's `blobs`; on a spline-rich part that takes minutes. The result can be kept with the document so that the next open does not build it:

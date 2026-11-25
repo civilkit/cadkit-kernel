@@ -1,9 +1,9 @@
 //! Shell on curved and stepped bodies (tools/cases/shell_bodies): each fixture is a body plus a `shell` as its last
 //! feature. The volumes are the kernel's own, checked against the closed form where there is one (the sphere).
 //! The fixtures that do not shell yet are kept beside them: an opening at a curved face is refused (`shellUnsupported`), a
-//! hemisphere opened at its flat face is an ignored known failure; see the last tests.
+//! hemisphere opened at its flat face is pinned as passing with its closed form.
 use ck_model::features::Brep;
-use ck_model::regen::{self, FeatureExec, RegenOpts, RegenResult, Tracer};
+use ck_model::regen::{self, FeatureExec, RegenOpts, Tracer};
 use ck_model::Part;
 
 #[derive(Default)]
@@ -128,10 +128,9 @@ fn shell_opened_at_a_curved_face_is_refused() {
     }
 }
 
-/// Still failing here (`shellFailed`); another line of work fixes it, after which it joins `passes(..)` with its volume.
+/// A hemisphere (R 15) shelled 2 mm inward and open at its flat face: half of the closed-sphere wall, 2/3 pi (15^3 - 13^3).
 #[test]
-#[ignore = "known failure: a hemisphere shelled open at its flat face"]
 fn shell_of_a_hemisphere_opened_at_the_flat_face() {
-    let (errors, _, _) = shell_body(fixture!("halfsphere_flat_opened"));
-    assert!(errors.is_empty(), "{errors:?}");
+    let expect = 2.0 / 3.0 * std::f64::consts::PI * (15.0f64.powi(3) - 13.0f64.powi(3));
+    passes(fixture!("halfsphere_flat_opened"), expect);
 }

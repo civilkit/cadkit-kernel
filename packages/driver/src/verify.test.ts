@@ -34,6 +34,27 @@ describe('verify', () => {
     assert.equal(r.check?.failed, 0);
   });
 
+  it('asks check to skip the measurements only when every expectation is valid', async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const k: KernelTransport = {
+      async request(msg) {
+        if (msg.type === 'check') seen.push(msg);
+        const r: Record<string, unknown> = {
+          regen: { ok: true, result: { errors: [], body: {} } },
+          validate: { ok: true, result: { ok: true, issues: [] } },
+          check: { ok: true, result: { ok: true, passed: 1, failed: 0, results: [] } },
+        };
+        return r[msg.type as string] as KernelReply;
+      },
+    };
+    await verify(k, part);
+    await verify(k, part, { expect: [{ kind: 'valid' }, { kind: 'valid' }] });
+    await verify(k, part, { expect: [{ kind: 'valid' }, { kind: 'volume', min: 1 }] });
+    assert.equal(seen[0].measured, false);
+    assert.equal(seen[1].measured, false);
+    assert.equal('measured' in seen[2], false);
+  });
+
   it('points regen errors at the feature with fix text', async () => {
     const k = fake({
       regen: { ok: true, result: { errors: [['F2', { code: 'missingSketch', params: {} }]], body: {} } },

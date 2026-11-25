@@ -26,6 +26,7 @@
 //! other moments weighted by area (see [`mass_props_json`]).
 
 use crate::body::{Body, FaceId, LumpId};
+use ck_geom::curve::Curve;
 use ck_geom::curve2::Curve2;
 use ck_geom::surface::Surface;
 use ck_geom::{Vec2, Vec3};
@@ -199,12 +200,57 @@ fn face_pieces<'a>(b: &'a Body, f: FaceId, derived: &'a [Option<Curve2>], fine: 
     };
     for &l in &b.face(f).loops {
         let mut prev: Option<Vec2> = None;
-        for &c in &b.lp(l).coedges {
+        let ring = &b.lp(l).coedges;
+        // A sphere loop whose pcurves run past a pole closes in the continued parameters when the meridian is continued
+        // (no fold needed: the signed integral over the continuation is the area); one that ends on the far side of the
+        // pole from where it started (a meridian that comes in to the pole and leaves it on the opposite one) is folded.
+        let fold_ring = matches!(b.face(f).surface, Surface::Sphere { .. }) && {
+            let ends = |c: crate::body::CoedgeId, first: bool| {
+                let (ta, tb) = b.coedge_params(c);
+                b.coedge(c).pcurve.as_ref().map(|q| q.eval(if first { ta } else { tb }))
+            };
+            let apart = |a: Vec2, z: Vec2| (a.y - z.y).abs() > 1e-9 || ((a.x - z.x) / std::f64::consts::TAU - ((a.x - z.x) / std::f64::consts::TAU).round()).abs() > 1e-9;
+            // (or a ring that is cut inside: a meridian that comes in to the pole from the far side, v = pi down to pi/2, starts
+            // where the previous coedge ended in space but not in the parameter plane, however the whole ring closes)
+            let cut_inside = ring.windows(2).any(|w| matches!((ends(w[0], false), ends(w[1], true)), (Some(z), Some(a)) if apart(a, z)));
+            cut_inside
+                || match (ring.first().and_then(|&c| ends(c, true)), ring.last().and_then(|&c| ends(c, false))) {
+                    (Some(a), Some(z)) => apart(a, z),
+                    _ => false,
+                }
+        };
+        let ring_start = out.len();
+        for (ci, &c) in ring.iter().enumerate() {
             let (ta, tb) = b.coedge_params(c);
             let pcurve = b.coedge(c).pcurve.as_ref().or(derived[k_co].as_ref());
             k_co += 1;
+            // where the next coedge of the ring starts (a fold of this one over a pole closes against it)
+            let next_start = {
+                let nc = ring[(ci + 1) % ring.len()];
+                let (na, _) = b.coedge_params(nc);
+                b.coedge(nc).pcurve.as_ref().map(|q| q.eval(na))
+            };
+            if let (true, Some(pc @ Curve2::Line { .. })) = (fold_ring, pcurve) {
+                if let Some(pieces) = sphere_pole_fold(pc, ta, tb, prev, next_start) {
+                    prev = pieces.last().and_then(|p| match p {
+                        Piece::Poly(v) => v.last().copied(),
+                        _ => None,
+                    });
+                    out.extend(pieces);
+                    continue;
+                }
+            }
             match pcurve {
                 Some(pc) => {
+                    // A coedge that leaves a pole starts anywhere along the pole line (the pole itself has no edge: a cone's
+                    // apex, a B-spline cap's centre): the loop's parameter-plane image jumps there, and the jump is part of the
+                    // boundary, a straight piece along the pole line.
+                    let start = pc.eval(ta);
+                    if let (Some(q), Surface::BSpline(_)) = (prev, &b.face(f).surface) {
+                        if q.dist(start) > 1e-9 * (1.0 + q.x.abs() + q.y.abs()) && on_pole_line(&b.face(f).surface, q, start) {
+                            out.push(Piece::Poly(vec![q, start]));
+                        }
+                    }
                     prev = Some(pc.eval(tb));
                     out.push(Piece::Exact(pc, ta, tb));
                 }
@@ -251,7 +297,10 @@ fn face_pieces<'a>(b: &'a Body, f: FaceId, derived: &'a [Option<Curve2>], fine: 
                 }
             }
         }
-    }
+            if fold_ring {
+            close_folded_ring(&mut out, ring_start);
+        }
+}
     // A strip that closes on itself in u (see `closed_u_width`) is bounded by two rails that each go once round the u period at
     // a constant v. The integral reads the boundary of the face in the parameter plane, where the two seam sides of that
     // rectangle (the first station and the last, one curve in space) are the part that carries the volume: add them, as
@@ -270,6 +319,95 @@ fn face_pieces<'a>(b: &'a Body, f: FaceId, derived: &'a [Option<Curve2>], fine: 
         }
     }
     out
+}
+
+/// A folded ring (see [`sphere_pole_fold`]) that goes through one pole: the run after the pole is put a whole number of periods
+/// over so that the ring closes (the pole is where u may jump, and the net u of the ring must be that of a closed loop).
+fn close_folded_ring(out: &mut [Piece<'_>], from: usize) {
+    use std::f64::consts::TAU;
+    let ends = |p: &Piece| -> Option<(Vec2, Vec2)> {
+        match p {
+            Piece::Poly(v) if v.len() > 1 => Some((v[0], v[v.len() - 1])),
+            Piece::Exact(pc, ta, tb) => Some((pc.eval(*ta), pc.eval(*tb))),
+            _ => None,
+        }
+    };
+    let n = out.len() - from;
+    if n < 2 {
+        return;
+    }
+    let es: Vec<(Vec2, Vec2)> = match out[from..].iter().map(ends).collect::<Option<Vec<_>>>() {
+        Some(e) => e,
+        None => return,
+    };
+    let big = |a: Vec2, b: Vec2| (a.y - b.y).abs() > 1e-9 || (a.x - b.x).abs() > 1e-9;
+    let jumps: Vec<usize> = (1..n).filter(|&i| big(es[i - 1].1, es[i].0)).collect();
+    if jumps.len() != 1 {
+        return;
+    }
+    let (s0, e1) = (es[0].0, es[n - 1].1);
+    if (s0.y - e1.y).abs() > 1e-9 {
+        return;
+    }
+    let k = ((s0.x - e1.x) / TAU).round();
+    if k == 0.0 || (s0.x - e1.x - k * TAU).abs() > 1e-9 {
+        return;
+    }
+    for i in jumps[0]..n {
+        let piece = &mut out[from + i];
+        let pts: Vec<Vec2> = match piece {
+            Piece::Poly(v) => v.clone(),
+            Piece::Exact(pc, ta, tb) => (0..=64).map(|j| pc.eval(*ta + (*tb - *ta) * j as f64 / 64.0)).collect(),
+        };
+        *piece = Piece::Poly(pts.into_iter().map(|q| Vec2::new(q.x + k * TAU, q.y)).collect());
+    }
+}
+
+/// A meridian pcurve of a sphere that runs past a pole (v beyond +-pi/2: the evaluation continues onto the opposite meridian) as
+/// straight pieces inside the domain: in to the pole, across the pole line, out again on the opposite meridian (u + pi, or
+/// u - pi when that one meets the next coedge of the ring). None when the pcurve stays inside the domain.
+fn sphere_pole_fold(pc: &Curve2, ta: f64, tb: f64, prev: Option<Vec2>, next_start: Option<Vec2>) -> Option<Vec<Piece<'static>>> {
+    use std::f64::consts::{FRAC_PI_2, PI};
+    let Curve2::Line { d, .. } = pc else { return None };
+    if d.x != 0.0 {
+        return None;
+    }
+    let (a, z) = (pc.eval(ta), pc.eval(tb));
+    // (a point on the pole itself belongs to either side)
+    let out = |v: f64| v.abs() > FRAC_PI_2 + 1e-9;
+    let inside = |v: f64| v.abs() < FRAC_PI_2 - 1e-9;
+    let fold = |q: Vec2, du: f64| Vec2::new(q.x + du, q.y.signum() * PI - q.y);
+    let pick = |target: Option<Vec2>, base_x: f64| -> f64 {
+        match target {
+            Some(t) if (base_x - PI - t.x).abs() < (base_x + PI - t.x).abs() => -PI,
+            _ => PI,
+        }
+    };
+    let pts: Vec<Vec2> = if inside(a.y) && out(z.y) {
+        // in, then out past the pole: [a .. pole] jump [folded end]
+        let zf = fold(z, pick(next_start, z.x));
+        let vp = FRAC_PI_2 * z.y.signum();
+        vec![a, Vec2::new(a.x, vp), Vec2::new(zf.x, vp), zf]
+    } else if out(a.y) && inside(z.y) {
+        // starts past the pole, ends inside: [folded start] pole jump [.. z]
+        let af = fold(a, pick(prev, a.x));
+        let vp = FRAC_PI_2 * a.y.signum();
+        vec![af, Vec2::new(af.x, vp), Vec2::new(z.x, vp), z]
+    } else if (out(a.y) && !inside(z.y)) || (!inside(a.y) && out(z.y)) {
+        // wholly past the pole (it may end on the pole): the folded copy
+        let du = if out(a.y) { pick(prev, a.x) } else { pick(next_start, z.x) };
+        vec![fold(a, du), fold(z, du)]
+    } else {
+        return None;
+    };
+    Some(vec![Piece::Poly(pts)])
+}
+
+/// Whether the segment `a`..`b` of the parameter plane lies on a pole line of `surf`: its ends and its middle are one point in space.
+fn on_pole_line(surf: &Surface, a: Vec2, b: Vec2) -> bool {
+    let p = surf.eval(a.x, a.y);
+    let tol = 1e-9 * (1.0 + p.len());
+    [b, a.lerp(b, 0.5), a.lerp(b, 0.25)].iter().all(|q| surf.eval(q.x, q.y).dist(p) <= tol)
 }
 
 /// The width of the v domain of a B-spline surface whose first and last v isolines coincide (it closes on itself in v without
@@ -305,15 +443,32 @@ fn closed_u_width(s: &Surface) -> Option<f64> {
 /// B-spline faces are piecewise polynomial: cut straight boundary pcurves
 /// where they cross an interior knot line, so that every Gauss panel lies
 /// in one polynomial span (loft side faces have knots at the stations).
+/// Interior knots of the profile curve of a screw patch, in the patch's v range (the profile parameter). A profile that is a
+/// fitted spline (a gear flank through its fillet and root: tens of cubic spans) changes its shape from span to span; the
+/// integrals along v are cut there, as those of a B-spline face are cut at its knots.
+fn screw_profile_knots(surf: &Surface) -> Vec<f64> {
+    let Surface::Screw { profile, vrange, .. } = surf else { return vec![] };
+    let Curve::BSpline(c) = &**profile else { return vec![] };
+    let (lo, hi) = (vrange.0.min(vrange.1), vrange.0.max(vrange.1));
+    let mut k: Vec<f64> = c.knots.iter().copied().filter(|&x| x > lo + 1e-12 && x < hi - 1e-12).collect();
+    k.dedup();
+    k
+}
+
 fn split_at_knots<'a>(surf: &Surface, pieces: Vec<Piece<'a>>) -> Vec<Piece<'a>> {
-    let Surface::BSpline(bs) = surf else { return pieces };
-    let ((u0, u1), (v0, v1)) = bs.domain();
     let inner = |k: &[f64], lo: f64, hi: f64| -> Vec<f64> {
         let mut out: Vec<f64> = k.iter().copied().filter(|&x| x > lo && x < hi).collect();
         out.dedup();
         out
     };
-    let (ku, kv) = (inner(&bs.knots_u, u0, u1), inner(&bs.knots_v, v0, v1));
+    let (ku, kv) = match surf {
+        Surface::BSpline(bs) => {
+            let ((u0, u1), (v0, v1)) = bs.domain();
+            (inner(&bs.knots_u, u0, u1), inner(&bs.knots_v, v0, v1))
+        }
+        Surface::Screw { .. } => (vec![], screw_profile_knots(surf)),
+        _ => return pieces,
+    };
     if ku.is_empty() && kv.is_empty() {
         return pieces;
     }
@@ -734,7 +889,12 @@ fn face_integral_with<const K: usize>(b: &Body, f: FaceId, res: usize, integrand
             ks.dedup();
             ks.windows(2).map(|w| (w[0], w[1])).collect()
         }
-        Surface::Screw { vrange, .. } if long_spline && vrange.1 > vrange.0 => vec![*vrange],
+        Surface::Screw { vrange, .. } if long_spline && vrange.1 > vrange.0 => {
+            let mut ks = vec![vrange.0];
+            ks.extend(screw_profile_knots(surf));
+            ks.push(vrange.1);
+            ks.windows(2).map(|w| (w[0], w[1])).collect()
+        }
         _ if analytic_tab => vec![(vmin, vmax)],
         _ => vec![],
     };
@@ -1122,7 +1282,7 @@ thread_local! {
     static MOMENTS_MEMO: std::cell::RefCell<std::collections::HashMap<u64, [f64; 11]>> = std::cell::RefCell::new(Default::default());
 }
 
-/// Hash of everything a face's moments about `r` depend on: its surface, sense, trimming (edge curves at three
+/// Hash of everything a face's moments about `r` depend on: its surface, sense, trimming (edge curves at five
 /// points each, with the coedge directions) and the reference point.
 fn moments_key(b: &Body, f: FaceId, r: Vec3) -> u64 {
     let face = b.face(f);
@@ -1141,7 +1301,9 @@ fn moments_key(b: &Body, f: FaceId, r: Vec3) -> u64 {
         for &c in &b.lp(lp).coedges {
             let ed = b.edge(b.coedge(c).edge);
             mix(b.coedge(c).rev as u64);
-            for t in [ed.t0, 0.5 * (ed.t0 + ed.t1), ed.t1] {
+            // five points, not three: a full circle (or any closed edge) read forwards or backwards has the same
+            // start, middle and end, and only a point between them tells its direction
+            for t in [ed.t0, 0.75 * ed.t0 + 0.25 * ed.t1, 0.5 * (ed.t0 + ed.t1), 0.25 * ed.t0 + 0.75 * ed.t1, ed.t1] {
                 let p = ed.curve.eval(t);
                 mix(p.x.to_bits());
                 mix(p.y.to_bits());
@@ -1361,8 +1523,8 @@ pub fn volume_difference_unshared(a: &Body, b: &Body) -> f64 {
 /// `+1` for the one whose forward hash is the smaller.
 fn face_key(b: &Body, f: FaceId) -> (u64, f64) {
     let face = b.face(f);
-    // (rev flag, [start, middle, end] of the edge curve) of every coedge, loop by loop
-    let loops: Vec<Vec<(bool, [Vec3; 3])>> = face
+    // (rev flag, [start, quarter, middle, three-quarter, end] of the edge curve) of every coedge, loop by loop
+    let loops: Vec<Vec<(bool, [Vec3; 5])>> = face
         .loops
         .iter()
         .map(|&l| {
@@ -1371,7 +1533,7 @@ fn face_key(b: &Body, f: FaceId) -> (u64, f64) {
                 .iter()
                 .map(|&c| {
                     let ed = b.edge(b.coedge(c).edge);
-                    (b.coedge(c).rev, [ed.t0, 0.5 * (ed.t0 + ed.t1), ed.t1].map(|t| ed.curve.eval(t)))
+                    (b.coedge(c).rev, [ed.t0, 0.75 * ed.t0 + 0.25 * ed.t1, 0.5 * (ed.t0 + ed.t1), 0.25 * ed.t0 + 0.75 * ed.t1, ed.t1].map(|t| ed.curve.eval(t)))
                 })
                 .collect()
         })
@@ -1389,8 +1551,8 @@ fn face_key(b: &Body, f: FaceId) -> (u64, f64) {
             for i in 0..cs.len() {
                 let (rev, pts) = &cs[if reversed { cs.len() - 1 - i } else { i }];
                 mix((*rev != reversed) as u64);
-                for k in 0..3 {
-                    let p = pts[if reversed { 2 - k } else { k }];
+                for k in 0..5 {
+                    let p = pts[if reversed { 4 - k } else { k }];
                     mix(p.x.to_bits());
                     mix(p.y.to_bits());
                     mix(p.z.to_bits());

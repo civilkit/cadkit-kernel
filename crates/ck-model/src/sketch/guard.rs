@@ -112,7 +112,7 @@ pub fn picks(sk: &Sketch) -> Vec<Problem> {
         _ => None,
     };
     let mut out = Vec::new();
-    for k in sk.constraints.iter().filter(|k| !k.suppressed) {
+    for k in sk.constraints.iter().filter(|k| !k.ignored()) {
         let r = |i: usize| k.refs.get(i).map(|s| s.as_str()).unwrap_or("");
         let mut push = |code, message: String, entity: &str| {
             out.push(Problem { code, message, constraint: Some(k.id.clone()), entity: Some(entity.to_string()) })

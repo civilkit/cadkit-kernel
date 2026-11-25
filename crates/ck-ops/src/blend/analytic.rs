@@ -377,6 +377,39 @@ fn blend_edge_hint_inner0(
         }
     };
     let len = p0.dist(p1);
+    // `startOffset` counts from the end of the edge nearer the pick, `endOffset` from the other (here: `p0`'s end, `p1`'s end)
+    let (s_start, s_end) = {
+        let last = match circ {
+            Some((c, axis)) => {
+                let (v, al) = (p0 - c, sweep);
+                c + v * al.cos() + axis.cross(v) * al.sin() + axis * (axis.dot(v) * (1.0 - al.cos()))
+            }
+            None => p1,
+        };
+        super::rounds::offsets_by_end(p0, last, super::rounds::BLEND_PICK.with(|c| c.get()))
+    };
+    let (has_start, has_end) = (s_start > 0.0, s_end > 0.0);
+    if has_start || has_end {
+        let o = super::rounds::blend_opts();
+        let length = match circ {
+            Some((c, _)) => sweep * (p0 - c).len(),
+            None => len,
+        };
+        if !(length > 0.0) || s_start + s_end >= length - 10.0 * tol {
+            let field = if o.start_offset.unwrap_or(0.0) >= length - 10.0 * tol { "startOffset" } else { "endOffset" };
+            return Err(super::rounds::offset_error(
+                field,
+                format!(
+                    "startOffset {} + endOffset {} leave nothing of the {:.6} mm long edge to blend",
+                    o.start_offset.unwrap_or(0.0),
+                    o.end_offset.unwrap_or(0.0),
+                    length
+                ),
+                "the two offsets must add up to less than the length of the edge (a blend of at least a few tolerances remains)",
+                Some(length),
+            ));
+        }
+    }
     let c12 = n1.dot(n2);
     let tangent = (1.0 - c12).abs() < 1e-9;
     // turning angle of the edge; a CHORD fillet is the circular fillet whose
@@ -437,7 +470,7 @@ fn blend_edge_hint_inner0(
     }
     // convex iff the direction into F1 (left of its coedge about the
     // outward normal) points against n2
-    let pm = if circ.is_some() { p0 } else { (p0 + p1) * 0.5 };
+    let pm = if circ.is_some() { p0 } else { p0 + dir * (0.5 * (s_start + len - s_end)) };
     let co = b.edge_coedges(e).into_iter().find(|&c| b.coedge_face(c) == faces[0]).ok_or_else(|| BlendError::code("missingEdge"))?;
     let tdir = if b.coedge(co).rev { -dir } else { dir };
     let up = |f: FaceId, q: Vec3| -> Vec3 {
@@ -625,6 +658,13 @@ fn blend_edge_hint_inner0(
     };
     let rot = |p: Vec3| -> Vec3 {
         match circ {
+            Some((c, axis)) if has_start || has_end => {
+                let rad = (p0 - c).len().max(1e-12);
+                let a0 = s_start / rad;
+                let a1 = sweep - s_end / rad;
+                let (v, al) = (p - c, 0.5 * (a0 + a1));
+                c + v * al.cos() + axis.cross(v) * al.sin() + axis * (axis.dot(v) * (1.0 - al.cos()))
+            }
             Some((c, axis)) if circ_oblique[0] || breaks_out => {
                 let (v, al) = (p - c, 0.5 * sweep);
                 c + v * al.cos() + axis.cross(v) * al.sin() + axis * (axis.dot(v) * (1.0 - al.cos()))
@@ -992,6 +1032,62 @@ fn blend_edge_hint_inner0(
             }
         });
     }
+    // a convex round or chamfer whose end face is a plane square to the edge, with a wall rising from that plane inside the
+    // footprint of the tool (a ledge's corner edge, the wall standing on the ledge flush with it): the tool that pierces the end
+    // would run on into the wall and cut it. It stops flush on the end plane instead.
+    if convex && circ.is_none() && matches!(spec, Spec::Fillet(_, FilletProfile::Circular) | Spec::Chamfer(..)) {
+        let mut cont: Option<crate::contain::Containment> = None;
+        for (v, od, which) in [(ed.v0, -dir, 0usize), (ed.v1, dir, 1usize)] {
+            if (if which == 0 { m0 } else { m1 }) <= 0.0 {
+                continue;
+            }
+            let pv = b.vertex(v).p;
+            let mut ends: Vec<FaceId> = vec![];
+            for x in b.edge_ids().filter(|&x| b.edge(x).v0 == v || b.edge(x).v1 == v) {
+                for f in b.edge_faces(x) {
+                    if !faces.contains(&f) && !ends.contains(&f) {
+                        ends.push(f);
+                    }
+                }
+            }
+            let [g] = ends[..] else { continue };
+            if !matches!(b.face(g).surface, Surface::Plane { .. }) || b.planar_normal(g).dot(od) < 1.0 - 1e-9 {
+                continue;
+            }
+            // (cheap test first: a face next to the end face across an edge that reaches past the end plane)
+            let rises = b.face_edges(g).into_iter().any(|x2| {
+                b.edge_faces(x2).into_iter().filter(|&h| h != g).any(|h| {
+                    b.face_edges(h).into_iter().any(|x3| [b.edge(x3).v0, b.edge(x3).v1].iter().any(|&w| (b.vertex(w).p - pv).dot(od) > 1e-6 * (1.0 + r)))
+                })
+            });
+            if !rises {
+                continue;
+            }
+            let s = 1e-3 * (b.bbox().1 - b.bbox().0).len().max(1.0);
+            let shift = (pv - pm) + od * s;
+            let cont = cont.get_or_insert_with(|| crate::contain::Containment::new(b, tol));
+            // (the removed strip hugs the arc, or the chord of a chamfer, on the corner's side)
+            let (ctr, ra, rb) = (pm + off, ta - (pm + off), tb - (pm + off));
+            let hit = (1..16).any(|i| {
+                let f = i as f64 / 16.0;
+                let q = if chamfer {
+                    ta + (tb - ta) * f
+                } else {
+                    let w = (ra * (1.0 - f) + rb * f).normalize();
+                    ctr + w * r
+                };
+                // (nudged from the arc towards the corner, where the tool takes material)
+                let toward = (pm - q).normalize();
+                cont.classify_point(q + toward * (2.0 * s) + shift, tol) == crate::contain::Loc::In
+            });
+            if hit {
+                if super::diag::on() {
+                    eprintln!("{}: the end at {pv:?} meets a wall rising from its end plane inside the tool: the tool stops flush on the plane", FaceName::blend(feature, k).id());
+                }
+                if which == 0 { m0 = 0.0 } else { m1 = 0.0 }
+            }
+        }
+    }
     // an end that stopped flush at a tangent run-on (the edge's face goes on into a cylinder, its rim into a tangent edge) where
     // that cylinder's wall RISES over the strip (a boss standing on the plate): the round ends on the wall, not on the plane
     // through the tangent point. The tool runs on and is cut by the cylinder's column below (the plate under the boss is not
@@ -1010,6 +1106,18 @@ fn blend_edge_hint_inner0(
             let mm = margin + collinear_run_beyond(b, e, v, od);
             if which == 0 { m0 = mm } else { m1 = mm }
             wall_cut[which] = true;
+        }
+    }
+    if circ.is_none() {
+        if has_start {
+            m0 = -s_start;
+            wall_cut[0] = false;
+            clips.retain(|&(q, _)| q.dist(p0) >= 1e-6);
+        }
+        if has_end {
+            m1 = -s_end;
+            wall_cut[1] = false;
+            clips.retain(|&(q, _)| q.dist(p1) >= 1e-6);
         }
     }
     let o = p0 - dir * m0;
@@ -1153,7 +1261,13 @@ fn blend_edge_hint_inner0(
             use std::f64::consts::TAU;
             let span = sweep;
             let rad = (p0 - c).len();
-            let (a0, a1) = if span >= TAU - 1e-9 {
+            let (a0, a1) = if has_start || has_end {
+                if has_start && has_end {
+                    circ_clips.clear();
+                    circ_surface_clips.clear();
+                }
+                (s_start / rad, span - s_end / rad)
+            } else if span >= TAU - 1e-9 {
                 (0.0, TAU)
             } else {
                 let m = if convex { (r.max(span * rad * 0.05) + 1.0) / rad } else { 0.0 };
@@ -1242,6 +1356,10 @@ fn blend_edge_hint_inner0(
     for f in &mut tool.faces {
         if f.name.role == Role::Side("arc".into()) {
             f.name = name.clone();
+        } else if k > 0 && (has_start || has_end) {
+            if let Role::Cap(c) = f.name.role {
+                f.name.role = Role::Cap(2 * k + c);
+            }
         }
     }
     for (o, n) in clips {
@@ -1281,7 +1399,10 @@ fn blend_edge_hint_inner0(
     }
     // a concave (filling) straight tool whose edge ends on a round wall: its end must not stand out past the wall
     if !convex && circ.is_none() {
-        for (v, od) in [(ed.v0, -dir), (ed.v1, dir)] {
+        for (v, od, skip) in [(ed.v0, -dir, has_start), (ed.v1, dir, has_end)] {
+            if skip {
+                continue;
+            }
             if let Some(cyl) = super::ends::end_cylinder_keep(b, v, od, &faces, tool.bbox()) {
                 tool = crate::boolean::boolean(&tool, &cyl, Op::Intersect, tol).map(|r| r.body).map_err(|_| BlendError::code("blendFailed"))?;
             }

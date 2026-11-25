@@ -1,0 +1,15 @@
+[package]
+name = "ck-asm"
+version = "0.1.0"
+edition = "2024"
+description = "Fusion 360 (.f3d / .f3z) reader: the ASM B-rep blobs (adapted from MitCad's ASM reader, MIT) built into ck-topo bodies"
+
+[dependencies]
+ck-geom = { path = "../ck-geom" }
+ck-topo = { path = "../ck-topo" }
+ck-check = { path = "../ck-check" }
+ck-heal = { path = "../ck-heal" }
+
+[dev-dependencies]
+ck-tess = { path = "../ck-tess" }
+ck-json = { path = "../ck-json" }

@@ -81,7 +81,8 @@ describe('round-trip', () => {
       const back = rebuild(doc);
       assert.deepEqual(back.features, doc.features, path.basename(f));
       assert.equal(back.seq, doc.seq, path.basename(f));
-      assert.equal(back.name, doc.name, path.basename(f));
+      // a bare fixture (apexBow) names nothing: the builder's default name applies
+      assert.equal(back.name, doc.name ?? 'Part', path.basename(f));
     }
   });
 });

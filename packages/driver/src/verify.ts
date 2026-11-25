@@ -183,7 +183,9 @@ export async function verify(
 
   let check: VerifyReport['check'] = null;
   try {
-    const c = await kernel.request({ type: 'check', tag, expect });
+    // nothing reads the measurements when every expectation is `valid`: let the kernel skip them
+    const onlyValid = expect.every((e) => e.kind === 'valid');
+    const c = await kernel.request(onlyValid ? { type: 'check', tag, expect, measured: false } : { type: 'check', tag, expect });
     if (!c.trap && c.ok && c.result) {
       const res = c.result as { passed: number; failed: number; results: CheckResultItem[] };
       check = { passed: res.passed ?? 0, failed: res.failed ?? 0, results: res.results ?? [] };

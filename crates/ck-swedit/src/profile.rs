@@ -2515,6 +2515,41 @@ pub fn extrude(cx: &mut Cx, f: &SwFeature, faces: &[FaceId], cut: bool) -> Resul
             }
         }
     }
+    // the sketch the file stores, read for comparison with what the faces gave, and as the profile where they gave none; where
+    // it gives the same outline as the faces, the history carries it (its dimensions and relations) instead of a drawing of the faces
+    let sketch = crate::sketch_profile::build(cx, f.id, &fr, loops.as_ref().map(|(l, _)| l.as_slice()));
+    let sk_origin = sketch.as_ref().ok().and_then(|b| b.origin_mm());
+    let mut true_sk: Option<crate::sketch_profile::Built> = None;
+    let loops = match (loops, sketch) {
+        (Some((l, src)), Ok(b)) => {
+            let same = crate::sketch_profile::same_profile(&l, &b.loops);
+            crate::sketch_profile::STATS.with(|s| s.borrow_mut()[if same { 0 } else { 1 }] += 1);
+            // (one piece for one piece: a side of the faces that is several pieces of the sketch is named after one of them, and the rebuilt body's faces would not be the file's)
+            let one_to_one = l.iter().map(|x| x.segs.len()).sum::<usize>() == b.loops.iter().map(|x| x.segs.len()).sum::<usize>();
+            if same && one_to_one && crate::sketch_profile::preferred() {
+                true_sk = Some(b);
+            }
+            Some((l, src))
+        }
+        (None, Ok(b)) => {
+            crate::sketch_profile::STATS.with(|s| s.borrow_mut()[2] += 1);
+            let l = b.loops.clone();
+            if crate::sketch_profile::preferred() {
+                true_sk = Some(b);
+            }
+            Some((l, "the file's sketch"))
+        }
+        (l, Err(e)) => {
+            if l.is_some() {
+                crate::sketch_profile::STATS.with(|s| s.borrow_mut()[3] += 1);
+                // (the reason without the sketch's name: "Sketch12: ..." counts with the others)
+                let why = e.split_once(": ").map_or(e.clone(), |(_, r)| r.to_string());
+                let why = if why.starts_with("plane frame unknown") { "plane frame unknown".to_string() } else { why };
+                crate::sketch_profile::WHY.with(|w| *w.borrow_mut().entry(why).or_default() += 1);
+            }
+            l
+        }
+    };
     let Some((loops, source)) = loops else { return Err(format!("no profile ({})", why.join("; "))) };
     // a cut without caps that reaches the body's extent is a through cut
     let through = cut && caps.is_empty() && {
@@ -2531,11 +2566,38 @@ pub fn extrude(cx: &mut Cx, f: &SwFeature, faces: &[FaceId], cut: bool) -> Resul
         }
     };
     let sid = cx.tree.ids.next();
-    let mut sk = Sk::new(sid.clone(), fr.plane.clone());
     let eid = format!("F{}", cx.tree.ids.0 + 1);
-    let pieces = emit_loops_ids(cx, &mut sk, &loops, &eid);
+    let written = true_sk.as_ref().map(|b| crate::sketch_profile::write(b, &sid, fr.plane.clone()));
+    let pieces = match written {
+        Some(w) => {
+            // the sides of the faces are named after the entity of the sketch that lies under them
+            for (seg, faces) in loops.iter().flat_map(|l| l.segs.iter()) {
+                let mid = crate::sketch_profile::mid_probe(seg);
+                if let Some((_, e)) = w.piece_ids.iter().find(|(t, _)| crate::sketch_profile::on_piece(t, mid)) {
+                    for &g in faces {
+                        cx.names.entry(g).or_insert_with(|| format!("{eid}.S.{e}"));
+                    }
+                }
+            }
+            crate::sketch_profile::WRITTEN.with(|c| {
+                let mut c = c.borrow_mut();
+                c[0] += 1;
+                c[1] += (w.dims > 0) as usize;
+                c[2] += w.dims;
+                c[3] += w.rels;
+                c[4] += w.dropped;
+            });
+            cx.tree.push(w.json.clone());
+            w.piece_ids
+        }
+        None => {
+            let mut sk = Sk::new(sid.clone(), fr.plane.clone());
+            let pieces = emit_loops_ids(cx, &mut sk, &loops, &eid);
+            cx.tree.push(sk.json());
+            pieces
+        }
+    };
     name_flush(cx, &pieces, &fr, span, &eid);
-    cx.tree.push(sk.json());
     let eid2 = cx.tree.ids.next();
     debug_assert_eq!(eid, eid2);
     // a boss whose cap lies against an earlier feature's face (the same plane, facing the other way, a point of the
@@ -2587,5 +2649,31 @@ pub fn extrude(cx: &mut Cx, f: &SwFeature, faces: &[FaceId], cut: bool) -> Resul
         cx.names.entry(g).or_insert_with(|| format!("{eid}.C1"));
     }
     let nseg: usize = loops.iter().map(|l| l.segs.len()).sum();
-    Ok(format!("{}; {} loop(s), {} segment(s) from the {}{}{}", dim_note(cx, f, "D1", "depth", depth), loops.len(), nseg, source, if through { "; through" } else { "" }, if extended { "; sides extended by later features" } else { "" }) + if from_d1 { "; far end from the listed depth" } else { "" })
+    let tnote = match &true_sk {
+        Some(b) => format!("; the file's sketch{}", if b.matched { " (frame matched to the faces' profile)" } else { "" }),
+        None => String::new(),
+    };
+    // the end condition the file stores, and where its sketch plane lies on the span the rebuilt feature covers
+    let file_end = match crate::sketch_profile::end_info(f.id) {
+        Some((t, from, name)) => {
+            let at = sk_origin.map(|o| {
+                let l = o.dot(fz);
+                let tol = 1e-4 * (1.0 + hi.abs().max(lo.abs()));
+                if (l - lo).abs() < tol {
+                    "at the low end".to_string()
+                } else if (l - hi).abs() < tol {
+                    "at the high end".to_string()
+                } else if (l - 0.5 * (lo + hi)).abs() < tol {
+                    "at the middle".to_string()
+                } else if l > lo && l < hi {
+                    "inside the span".to_string()
+                } else {
+                    "outside the span".to_string()
+                }
+            });
+            format!("; file end spec {t} ({name}){}{}", from.filter(|&v| v != 0).map_or(String::new(), |v| format!(", start type {v}")), at.map_or(String::new(), |a| format!(", sketch plane {a}")))
+        }
+        None => String::new(),
+    };
+    Ok(format!("{}; {} loop(s), {} segment(s) from the {}{}{}", dim_note(cx, f, "D1", "depth", depth), loops.len(), nseg, source, if through { "; through" } else { "" }, if extended { "; sides extended by later features" } else { "" }) + if from_d1 { "; far end from the listed depth" } else { "" } + &tnote + &file_end)
 }

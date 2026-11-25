@@ -1,0 +1,27 @@
+ck-f3d-design: attribution
+
+The design decoder of this crate is MitCad's, adapted:
+
+  MitCad, f3d-design crate (core/f3d-design), version 0.70.0, upstream commit 806a4210126ab977ba678708dd476496ddbd2968
+  Copyright (c) 2026 MitCad contributors, MIT licence (LICENSE-MIT-mitcad)
+
+What came from MitCad, and what was changed:
+
+  - src/*.rs (appearance, build and build/*, cage, derive_sources, inputs, nonfinite, package, tests) and
+    MITCAD_README.md (the upstream README): copied unchanged except for the points below. Every source file carries
+    `SPDX-License-Identifier: MIT`.
+  - the crate paths `mitcad_asm`, `mitcad_vec3`, `mitcad_dump`, `mitcad_f3d_file`, `mitcad_f3d_names` and
+    `mitcad_f3d_decode` became `ck_asm`, `ck_asm::vec3`, `ck_f3d_dump`, `ck_f3d_file`, `ck_f3d_names` and
+    `ck_f3d_decode`; `mitcad_zip` is `ck_f3d_file::zip` (this workspace has no separate zip crate; the tests' `stored_zip` is `ck_asm::zip::stored_zip`). Cargo.toml is this
+    workspace's.
+  - the path-based entry points (`documents`, `package`, `decode_path`: they open a file) are built only off wasm32;
+    added in lib.rs: `package_from_bytes` and `decode_bytes`, the same without the file system (they work on wasm32).
+  - `DECODER_NAME` (the `decoder` string written into a dump) is "ck-f3d-design <version>" instead of "mitcad-f3d
+    <version>". The schema name (`mitcad-f3d-dump`) is as upstream.
+  - the three std::thread::scope sites (inputs, appearance) are as upstream: a thread that does not start leaves its
+    work to the others and the calling thread, so with no threads (wasm32) the work is done serially.
+  - the test fixture testdata/external_dump_box.json is MitCad's core/f3d/tests/data/external_dump_box.json (synthetic), included from tests.rs.
+  - not taken: the rest of the MitCad tree.
+
+Not used: the Autodesk Fusion SDK, or any file or code from Autodesk. Fusion and Autodesk are trademarks of their
+owner and are used here only to name the file format.

@@ -1,0 +1,28 @@
+[package]
+name = "ck-wasm-f3d"
+version = "0.1.0"
+edition = "2021"
+description = "The Fusion 360 (.f3d) decoder as its own wasm (lazily loaded by the app): .f3d bytes -> encoded bodies + the importF3d report, and the timeline as a design dump"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ck-json = { path = "../ck-json" }
+ck-server = { path = "../ck-server" }
+ck-core = { path = "../ck-core" }
+ck-topo = { path = "../ck-topo" }
+ck-heal = { path = "../ck-heal" }
+ck-model = { path = "../ck-model" }
+ck-asm = { path = "../ck-asm" }
+ck-f3d-design = { path = "../ck-f3d-design", optional = true }
+serde_json = { workspace = true, optional = true }
+
+[features]
+# `f3dDump`: each design's dump IR as JSON plus the measure of its imported body (the design decoder), +~0.6 MB. The mapping
+# of the timeline to ck-part features runs in the main kernel (`f3dFeatures`, docs/f3d-lazy.md), which has the regen it needs.
+default = ["features"]
+features = ["dep:ck-f3d-design", "dep:serde_json"]
+# `abi`: export the wasm ABI (`ck_alloc`, `ck_request`, `ck_reply`, `ck_commit`, `ck_commit_len`). Only the standalone wasm build
+# (tools/build_wasm_f3d.sh) enables it; no crate may depend on this one with `abi`, or its symbols clash with ck-wasm's.
+abi = []

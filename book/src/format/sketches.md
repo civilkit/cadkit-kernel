@@ -69,6 +69,7 @@ A constraint has an `id`, a `type`, `refs` (ids of points or entities) and, for 
 | `pldist` | point, line | Distance from the point to the line equals `value`. |
 | `radius`, `diameter` | circle/arc/ellipse | The radius (twice the radius) equals `value`. |
 | `raddiff` | circle/arc, circle/arc | `sign * (r2 - r1)` equals `value`; `sign` is 1 or -1. |
+| `arclength` | arc (or circle) | Arc length, radius times the counter-clockwise sweep from `p1` to `p2` in `(0, 2 pi]`, equals `value` (mm). An arc whose ends coincide is the full circle (`2 pi r`); a circle counts as its circumference. |
 | `angle` | line, line | The angle from the first to the second direction equals `value` degrees; `s1` and `s2` (1 or -1) flip the direction of each line. |
 | `g1`, `g2`, `g3` | cvspline, curve | Continuity of an open control-point spline with another curve at the end `at` (a control point id). |
 | `onCurve` | point, curve | The point lies at the parameter fraction `value` (0 to 1) of the curve. |
@@ -81,6 +82,7 @@ Other fields of a constraint:
 | `value` | The number the dimension is driven to. `[x, y]` for `fix`. A numeric string is converted. |
 | `expr` | A variable expression that drives `value`, such as `"=w/2"`. See [variables and expressions](expressions.md). |
 | `offset` | Where an editor draws the dimension. Kept, not used. |
+| `driven` | `true` on a dimension makes it a measured (reference) one: the solver ignores it and the regen echo writes the measured value of the solved sketch into `value` (angles in degrees, 0 to 360). |
 | `suppressed` | `true` makes the solver ignore the constraint everywhere, while the document keeps it. |
 | `at`, `internal`, `s1`, `s2`, `sign` | Options of `tangent`, `angle`, `raddiff` and the spline constraints, as above. |
 

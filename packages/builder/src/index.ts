@@ -213,9 +213,22 @@ export class Part {
     return this.push('sweep', { op, sketch, path, ...(twist !== undefined ? { twist } : {}), ...(o.body !== undefined ? { body: o.body } : {}) }, name ?? `${op} sweep`);
   }
 
-  loft(o: { sketches: string[]; op?: 'add' | 'cut' | 'newBody'; body?: string; name?: string }): FeatureId {
+  /**
+   * `connectors[i]`: the fraction (0 to 1) of closed profile i's length where its start point sits; `null` (or a missing entry)
+   * lets the kernel choose, and a number, 0 included, fixes it. `startNormal` / `endNormal`: end tension (true = 1).
+   */
+  loft(o: {
+    sketches: string[]; op?: 'add' | 'cut' | 'newBody'; body?: string; name?: string; surface?: boolean;
+    connectors?: Array<number | null>; startNormal?: number | boolean; endNormal?: number | boolean; apexTangent?: number;
+    centreLine?: unknown; guides?: unknown; railSmoothing?: 'natural' | 'local' | 'auto';
+    conditions?: Array<{ type: 'free' | 'directional' | 'tangent' | 'curvature'; angle?: number; weight?: number; face?: unknown } | null>;
+  }): FeatureId {
     const { sketches, op = 'add', name } = o;
-    return this.push('loft', { op, sketches, ...(o.body !== undefined ? { body: o.body } : {}) }, name ?? `${op} loft`);
+    const extra: Record<string, unknown> = {};
+    for (const k of ['surface', 'connectors', 'startNormal', 'endNormal', 'apexTangent', 'centreLine', 'guides', 'railSmoothing', 'conditions'] as const) {
+      if (o[k] !== undefined) extra[k] = o[k];
+    }
+    return this.push('loft', { op, sketches, ...(o.body !== undefined ? { body: o.body } : {}), ...extra }, name ?? `${op} loft`);
   }
 
   lpattern(o: { seeds: string[]; dir?: GeomRef | null; spacing: number; count: number; reverse?: boolean; name?: string }): FeatureId {

@@ -252,7 +252,11 @@ Two warnings of the end conditions are in [Warnings](#warnings): `endConditionFa
 | `loftSectionTooSmall` | The same, with a section small against the loft length. |
 | `loftInvalidResult` | The solid built from the sections failed validation under every matching strategy. `detail`, `hint`. |
 | `loftFailed` | The loft could not be built (for example guide curves with a point section, an unsupported guide influence). `detail`, `hint`. |
-| `loftTangentEdges` | Any truthy `startTangent`, `endTangent`, `startContinuity` or `endContinuity` on a loft. The check runs before the loft is built and always fails: tangency to adjacent faces is not available. Remove the fields. |
+| `loftTangentEdges` | Any truthy `startTangent`, `endTangent`, `startContinuity` or `endContinuity` on a loft. The check runs before the loft is built and always fails: tangency to adjacent faces is not available. Remove the fields. The same code refuses a `tangent` or `curvature` entry in a loft's `conditions` (they parse, so a replay can carry them). |
+| `loftConditionInvalid` | A `conditions` list that is not an array or not one entry per section, an unknown `type`, an `angle` outside 0 to 180 degrees (exclusive) or a `weight` not above 0. `detail`, `hint`. |
+| `loftConditionInterior` | A non-free end condition on a section that is neither the first nor the last. `detail`, `hint`. |
+| `loftConditionCombo` | An end condition together with guides, a centre line or a point end (or, with an angle other than 90, open sections). `detail`, `hint`. |
+| `loftConditionCorner` | A directional end condition with an angle other than 90 on a section whose outline has a corner (the outward direction is undefined there): round the corner or use 90. `detail`, `hint`. |
 | `loftGuideInvalid` | A guide cannot be used: it is not a curve or has no length, two guides touch a profile at the same point, or the guides cannot be matched to the sections. `detail` says which. |
 | `loftGuideMiss` | A guide misses one of the profiles (`detail`: "the guide misses profile N"). |
 | `loftGuideOrder` | A guide meets the profiles out of order, or the guides meet the profiles in different orders. |
@@ -291,6 +295,16 @@ Two warnings of the end conditions are in [Warnings](#warnings): `endConditionFa
 | `editCurveTooFewPoints`, `editCurveTooManyPoints` | The control point count is below its minimum or above the limit. |
 | `editCurveWeight` | A weight is not positive. `params.entry`. |
 | `editCurveNoPlane` | The planar option without a plane. |
+| `wrapNoInput` | `wrap` with no `sketch`, or a sketch with no closed region; `projectCurve` with `method: "wrap"` and no `sketch`. `params.hint`. |
+| `wrapFaceUnsupported` | `wrap`, or `projectCurve` with `method: "wrap"` (which needs exactly one cylindrical face in `faces`), on a face it does not build (a plane, a cone, a sphere, free-form) or with `method: "project"`. `params`: `faceKind`, `hint`. |
+| `wrapPlane` | The sketch plane of a `wrap` is perpendicular to the axis of the face. `params`: `detail`, `hint`. |
+| `wrapProfileTooWide` | A profile, or the whole selection, spans a full turn of the cylinder. `params`: `profile`, `extent`, `circumference`, `hint`. |
+| `wrapProfileOffFace` | A profile leaves the trimmed face (its edge, or a hole in it); for `projectCurve` with `method: "wrap"`, a point of a curve does (`profile` and `entity` are the entity id). `params`: `profile`, `at`, `hint`. |
+| `wrapProfilesOverlap` | Two profiles of a `wrap` overlap on the face. `params.profiles`. |
+| `wrapDepthTooLarge` | The `depth` of a `wrap` would reach the axis (an add into a bore: depth >= radius). `params`: `depth`, `max`, `hint`. |
+| `wrapTaperTooLarge` | The tapered rail of a `wrap` crosses itself or loses a counter. `params`: `profile`, `maxTaper`, `hint`. |
+| `wrapToolInvalid` | The tool body of a `wrap` is not a closed solid, or the result is not valid. `params.detail`. |
+| `wrapCurveTooLong` | A `projectCurve` with `method: "wrap"` that the fit cannot reach `tolerance` for in 400 control points. `params`: `length`, `maxControlPoints`, `deviation`, `tolerance`, `hint`. |
 | `projectCurveNoFaces` | `projectCurve` with no body or sheet to project onto. |
 | `projectCurveNoInput` | No `curve` or `sketch` given, or fewer than two points. |
 | `projectCurvePlane` | The input curve does not define a projection plane. |
@@ -353,6 +367,8 @@ Two warnings of the end conditions are in [Warnings](#warnings): `endConditionFa
 
 | Code | Cause |
 |---|---|
+| `wrapApproximated` | A curved edge of a `wrap` stopped at 400 points above a quarter of its `tolerance`. `params`: `maxDeviation`, `tolerance`. |
+| `wrapCutThrough` | A `wrap` cut is deeper than the wall there: it pierces (the result is valid). `params`: `profile`, `wall`. |
 | `booleanFuzzy` | The result depends on a fuzzy tolerance. `params.tolerance` is the value that decided it. |
 | `endConditionFallback` | An unreachable end reference ran as a blind extrude. `params`: `end`, `reason`, `fallback`, `depth`, and the params of the reason. |
 | `extrudeZeroDepth` | A `blind` or `mid` extrude has a depth of zero or less, or none (also when an expression evaluates to 0). It was built as a sliver of 1e-6 mm, as the reference does, which is not a usable solid and can make a later union fail with `booleanFailed` / `openEdge`. `params`: `depth`, `built`, `hint`. |

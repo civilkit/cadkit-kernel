@@ -18,7 +18,7 @@ A numeric field is read as follows:
 |---|---|
 | number | that number |
 | string starting with `=` (leading spaces allowed) | the value of the expression; a syntax error, an unknown name or a non-finite result is `badExpression` |
-| any other string | the string read as a plain number after trimming spaces; `0` if it is not one |
+| any other string | a plain number after trimming spaces; otherwise the value of the string read as an expression, as if it started with `=` (`"20+20"` is 40, `"1in"` is 25.4, `"w*2"` uses the variable); a string with a comma (`"1,5"`) is `badExpression`; `0` if it is neither a number nor an expression |
 | missing, `null`, boolean, array, object | the default of the field |
 
 | Field value | Value |
@@ -26,9 +26,10 @@ A numeric field is read as follows:
 | `7` | 7 |
 | `"7"` | 7 |
 | `" 7 "` | 7 |
-| `"2*3"` | 0 |
+| `"2*3"` | 6 |
 | `"abc"` | 0 |
-| `"1in"` | 0 |
+| `"1in"` | 25.4 |
+| `"1,5"` | `badExpression` |
 | `true` | 0 |
 | `null` | 0 |
 

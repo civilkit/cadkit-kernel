@@ -11,6 +11,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod asm;
 pub mod build;
 pub mod classes;
 pub mod container;
@@ -18,8 +19,10 @@ pub mod error;
 pub mod inflate;
 pub mod ir;
 pub mod meta;
+pub mod sketch;
 pub mod xt;
 
+pub use asm::{read_asm, AsmComponent, AsmConfig, AsmTree};
 pub use build::Approx;
 pub use container::Kind;
 pub use error::{Limits, SldprtError};
@@ -55,6 +58,8 @@ pub struct SldprtImport {
     pub face_tags: Vec<FaceTag>,
     /// Attributes of each solid XT body read.
     pub body_tags: Vec<BodyTag>,
+    /// The sketches and feature parameters of the feature stream (`None` when the stream is missing or unreadable).
+    pub sketches: Option<sketch::SketchSet>,
 }
 
 /// What the file says about one built face. The kernel body has no per-face colour, so it is reported here.
@@ -223,7 +228,7 @@ fn import_container(c: &container::Container, limits: &Limits) -> Result<SldprtI
                         }
                         let meta = meta::read(c, limits);
                         let (face_tags, body_tags) = tags(&[&ir], &built, &meta);
-                        return Ok(SldprtImport { sw_mass: meta.mass, body: built.body, solids: built.solids, sheets, container: c.kind, schema: ir.schema.clone(), stream: t.stream.clone(), unit_scale: build::SCALE, approx: built.approx, notes: built.notes, nodes: n, parts: built.parts, meta, face_tags, body_tags });
+                        return Ok(SldprtImport { sw_mass: meta.mass, body: built.body, solids: built.solids, sheets, container: c.kind, schema: ir.schema.clone(), stream: t.stream.clone(), unit_scale: build::SCALE, approx: built.approx, notes: built.notes, nodes: n, parts: built.parts, meta, face_tags, body_tags, sketches: sketch::read(c, limits).ok() });
                     }
                     Err(e) => note_err(e, &mut first_err),
                 }
@@ -241,7 +246,7 @@ fn import_container(c: &container::Container, limits: &Limits) -> Result<SldprtI
                 let n = parts.iter().map(|p| p.1).sum();
                 let meta = meta::read(c, limits);
                 let (face_tags, body_tags) = tags(&irs, &built, &meta);
-                return Ok(SldprtImport { sw_mass: meta.mass, body: built.body, solids: built.solids, sheets, container: c.kind, schema: irs[0].schema.clone(), stream: parts[0].2.clone(), unit_scale: build::SCALE, approx: built.approx, notes: built.notes, nodes: n, parts: built.parts, meta, face_tags, body_tags });
+                return Ok(SldprtImport { sw_mass: meta.mass, body: built.body, solids: built.solids, sheets, container: c.kind, schema: irs[0].schema.clone(), stream: parts[0].2.clone(), unit_scale: build::SCALE, approx: built.approx, notes: built.notes, nodes: n, parts: built.parts, meta, face_tags, body_tags, sketches: sketch::read(c, limits).ok() });
             }
             Err(e) => note_err(e, &mut first_err),
         }

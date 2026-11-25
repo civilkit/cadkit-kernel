@@ -390,3 +390,38 @@ mod tests {
         assert_eq!(b.wire_edges().len(), 12);
     }
 }
+
+/// Give the edges of `dst` the tolerance of the edge of `src` that has the same two end points and the same midpoint (to 1e-6):
+/// an operation that rebuilds a body (a boolean, a blend) drops the tolerances `src` recorded (a shelled loft's creases lie
+/// a few 1e-4 off their faces), and an edge it left untouched is as far off its faces as it was. Edges that match nothing
+/// (new, moved, split) keep their own. Returns how many edges received a tolerance.
+pub fn carry_edge_tols(src: &Body, dst: &mut Body) -> usize {
+    use std::collections::HashMap;
+    let key = |p: ck_geom::Vec3| ((p.x * 1e6).round() as i64, (p.y * 1e6).round() as i64, (p.z * 1e6).round() as i64);
+    let id = |b: &Body, e: EdgeId| {
+        let ed = b.edge(e);
+        let (a, c) = (key(b.vertex(ed.v0).p), key(b.vertex(ed.v1).p));
+        let m = key(ed.curve.eval(0.5 * (ed.t0 + ed.t1)));
+        if a <= c { (a, c, m) } else { (c, a, m) }
+    };
+    let mut tols: HashMap<_, f64> = HashMap::new();
+    for e in src.edge_ids() {
+        if src.edge(e).tol > 0.0 {
+            let t = tols.entry(id(src, e)).or_insert(0.0);
+            *t = t.max(src.edge(e).tol);
+        }
+    }
+    if tols.is_empty() {
+        return 0;
+    }
+    let mut n = 0;
+    for e in dst.edge_ids().collect::<Vec<_>>() {
+        if let Some(&t) = tols.get(&id(dst, e)) {
+            if t > dst.edge(e).tol {
+                dst.edges[e.idx()].tol = t;
+                n += 1;
+            }
+        }
+    }
+    n
+}

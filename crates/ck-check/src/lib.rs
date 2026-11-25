@@ -3,6 +3,7 @@
 //! re-expressed over ck-topo bodies and ck-geom evaluation.
 
 mod edge;
+pub mod fold;
 pub use edge::{face_deviation, vertex_deviation};
 mod shell;
 mod solid;

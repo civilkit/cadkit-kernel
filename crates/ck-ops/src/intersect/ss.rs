@@ -48,6 +48,11 @@ const TIGHT_SIN: f64 = 0.6;
 /// the arc, inflates only the coordinates that leave it and halves a span that still does not contract,
 /// so those crossings prove at their own steps (no halving: the sampling is the uncertified march's).
 const CLOSE_SIN: f64 = TIGHT_SIN;
+/// Span proofs one trace of a free-form pair (B-spline, offset, screw or spline-profile faces) may spend before it goes on with the
+/// plain march (enough for the near-tangent graze of a B-spline cylinder, ssi_certified_freeform; 0 loses it). Each proof is an interval Newton on B-spline nets, and a trace along a long shallow crossing asks for one per
+/// step and halves the step when it fails: the fuse of the two twisted halves of a herringbone gear took 4 times as long on the CI box
+/// once free-form pairs were proved. Analytic pairs are proved as before; `certified::check_curves` still checks free-form curves.
+const FREEFORM_PROOFS: usize = 8;
 /// Below this sine the surfaces are tangent along the curve itself (a ball in a tube, a cylinder
 /// on a plane), not near another branch: nothing to separate, and no step would certify.
 const FLAT_SIN: f64 = 1e-4;
@@ -1447,6 +1452,15 @@ fn fit_refined(
     interpolate(&pts, deg, Param::ChordLength).ok().map(|b| (pts, b))
 }
 
+fn free_form_pair(s1: &Surface, s2: &Surface) -> bool {
+    let ff = |s: &Surface| match s {
+        Surface::BSpline(_) | Surface::Offset { .. } | Surface::Screw { .. } => true,
+        Surface::Extrusion { profile, .. } | Surface::Revolution { profile, .. } => matches!(**profile, ck_geom::curve::Curve::BSpline(_)),
+        _ => false,
+    };
+    ff(s1) || ff(s2)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn trace(s1: &Surface, s2: &Surface, seed: MPt, t0: Vec3, b: &Bounds, tol: f64, step: f64, pad: f64) -> (Vec<MPt>, bool) {
     let mut pts = vec![seed];
@@ -1454,6 +1468,7 @@ fn trace(s1: &Surface, s2: &Surface, seed: MPt, t0: Vec3, b: &Bounds, tol: f64, 
     let mut t = t0;
     let mut h = if orig_step_on() { 0.25 * step } else { step };
     let mut sin_cur = 1.0;
+    let mut proofs = 0usize;
     for it in 0..5000 {
         let pred = cur.p + t * h;
         let next = correct_uv_d(s1, s2, pred, t, cur.uv, tol);
@@ -1474,7 +1489,10 @@ fn trace(s1: &Surface, s2: &Surface, seed: MPt, t0: Vec3, b: &Bounds, tol: f64, 
                 // where the plain step is kept, as before)
                 let s_end = sq.min(sin_cur);
                 let mut sm = s_end;
-                if certify_steps() && sm < TIGHT_SIN {
+                let ff = free_form_pair(s1, s2);
+                // a free-form pair that has used up its proofs is marched plainly
+                let (tight_sin, close_sin) = if ff && proofs >= FREEFORM_PROOFS { (0.0, 0.0) } else { (TIGHT_SIN, CLOSE_SIN) };
+                if certify_steps() && sm < tight_sin {
                     // a narrow neck can fall between the end points: take the sine at the chord midpoint too
                     let mid = (cur.p + q) * 0.5;
                     let (a1, b1) = refine_uv(s1, cur.uv[0], cur.uv[1], mid);
@@ -1483,9 +1501,10 @@ fn trace(s1: &Surface, s2: &Surface, seed: MPt, t0: Vec3, b: &Bounds, tol: f64, 
                 }
                 // tangent along the curve is judged at the end points: the midpoint's projections can sit on a
                 // near-tangent neck between two branches (sine ~0 there) that the step jumps across
-                if certify_steps() && sm < CLOSE_SIN && s_end > FLAT_SIN && h > step / 64.0 {
+                if certify_steps() && sm < close_sin && s_end > FLAT_SIN && h > step / 64.0 {
                     let a = MPt { p: cur.p, uv: cur.uv };
                     let b = MPt { p: q, uv };
+                    proofs += 1;
                     if matches!(certify_span(s1, s2, &a, &b, t + tq), Certificate::Unresolved(Unresolved::Singular | Unresolved::NoContraction)) {
                         h *= 0.5;
                         continue;

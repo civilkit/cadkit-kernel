@@ -59,7 +59,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Kernel } from './kernel.mjs';
 import cases from './cases.mjs';
-import { parts as brepParts } from './brep_cases.mjs';
+import { parts as brepParts, knownVolumes } from './brep_cases.mjs';
 import { oracles } from './oracles/index.mjs';
 import { checkOracle } from './oracles/check.mjs';
 import { runBench, benchIds } from './bench/run.mjs';
@@ -186,13 +186,16 @@ function regenOne(set, t) {
   if (haveRef ? ba && bb : bb) {
     const q = JSON.stringify({ id: 2, msg: { type: 'massProps', tag: 'main' } });
     const ma = ka ? JSON.parse(ka.request(q).json || 'null')?.result : null, mb = JSON.parse(kb.request(q).json || 'null')?.result;
-    if (haveRef) bump(`mass.${set}`, ['volume', 'area', 'com'].every((k) => close(mb?.[k], ma?.[k])));
+    // a known, intentional volume divergence (tools/brep_cases.mjs `knownVolumes`): both volumes are pinned, so a further change still fails
+    const kv = haveRef && set === 'brep' ? knownVolumes[t.name] : null;
+    const knownVol = !!kv && Math.abs(mb?.volume - kv.ours) <= 1e-3 * kv.ours && Math.abs(ma?.volume - kv.original) <= 1e-3 * kv.original;
+    if (haveRef) bump(`mass.${set}`, knownVol || ['volume', 'area', 'com'].every((k) => close(mb?.[k], ma?.[k])));
     if (set === 'brep' && oracles[t.name]) {
       const bad = checkOracle(oracles[t.name], mb, bb.box);
       bump('oracle.brep', bad.length === 0);
       if (bad.length) note('oracleFail', `${t.name}: ${bad.join(' | ')}`);
     }
-    const volOk = typeof mb?.volume === 'number' && Math.abs(mb.volume - ma?.volume) <= 1e-3 * Math.abs(ma?.volume ?? 0);
+    const volOk = knownVol || typeof mb?.volume === 'number' && Math.abs(mb.volume - ma?.volume) <= 1e-3 * Math.abs(ma?.volume ?? 0);
     // the original refuses the feature (`unsupported` ...) and ours builds it: not a regression
     const origRefused = (pa?.result?.errors?.length ?? 0) > 0 && (pb?.result?.errors?.length ?? 0) === 0;
     if (haveRef) bump(`vol.${set}`, volOk || origRefused);

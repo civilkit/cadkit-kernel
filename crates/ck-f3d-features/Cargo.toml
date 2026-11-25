@@ -1,0 +1,24 @@
+[package]
+name = "ck-f3d-features"
+version = "0.1.0"
+edition = "2024"
+description = "A Fusion 360 design's feature timeline (the ck-f3d-dump IR) as a CadKit part feature list, with a guard that regenerates it and compares it with the imported body"
+
+[dependencies]
+# The design dump IR the timeline is read from.
+ck-f3d-dump = { path = "../ck-f3d-dump" }
+# The mapping regenerates the history so far (edges / faces of fillets, face-profile extrudes, region picking) with the kernel,
+# so this crate links the kernel's regen. It is built into the main kernel wasm, not the lazy decoder (docs/f3d-lazy.md).
+ck-json = { path = "../ck-json" }
+ck-model = { path = "../ck-model" }
+ck-topo = { path = "../ck-topo" }
+ck-core = { path = "../ck-core" }
+ck-geom = { path = "../ck-geom" }
+# point-in-face test, to find the face a profile names in the regenerated history.
+ck-ops = { path = "../ck-ops" }
+# The imported body the regenerated history is compared with.
+ck-asm = { path = "../ck-asm" }
+serde_json.workspace = true
+
+[dev-dependencies]
+ck-f3d-design = { path = "../ck-f3d-design" }

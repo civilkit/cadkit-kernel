@@ -48,6 +48,14 @@ pub struct BoolOut {
 /// (the vertex pool, edge de-duplication and trims all follow `tol`); the
 /// first result that assembles into a closed manifold wins.
 pub fn boolean(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> {
+    let mut out = boolean_untoleranced(a, b, op, tol)?;
+    // (the result is rebuilt: an edge of an operand that survives as it was keeps the tolerance the operand recorded)
+    ck_topo::edit::carry_edge_tols(a, &mut out.body);
+    ck_topo::edit::carry_edge_tols(b, &mut out.body);
+    Ok(out)
+}
+
+fn boolean_untoleranced(a: &Body, b: &Body, op: Op, tol: f64) -> Result<BoolOut, String> {
     FAIL_DIAG.with(|d| d.borrow_mut().take());
     let tm0 = ck_core::budget::mark();
     // Two operands that are the same solid at the same place (a part inserted twice at one pose): every face

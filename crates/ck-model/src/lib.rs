@@ -13,6 +13,7 @@
 //! errors (`unknownFeature`, `missingReference`, `missingSketch`, ...).
 //! Every feature keeps its raw DOM in `Feature::raw` for fields not typed here.
 
+pub mod connector;
 pub mod expr;
 pub mod features;
 pub mod planes;
@@ -360,6 +361,39 @@ impl Feature {
     pub fn to_json(&self) -> Json {
         match &self.kind {
             features::FeatureKind::Sketch(s) => s.to_json(),
+            features::FeatureKind::Fillet { start_offset, end_offset, setback, .. } => {
+                let mut o = self.raw.clone();
+                if let Some(v) = start_offset {
+                    if o.get("startOffset").is_none() {
+                        sketch::obj_set(&mut o, "startOffset", Json::Num(*v));
+                    }
+                }
+                if let Some(v) = end_offset {
+                    if o.get("endOffset").is_none() {
+                        sketch::obj_set(&mut o, "endOffset", Json::Num(*v));
+                    }
+                }
+                if let Some(v) = setback {
+                    if o.get("setback").is_none() {
+                        sketch::obj_set(&mut o, "setback", Json::Num(*v));
+                    }
+                }
+                o
+            }
+            features::FeatureKind::Chamfer { start_offset, end_offset, .. } => {
+                let mut o = self.raw.clone();
+                if let Some(v) = start_offset {
+                    if o.get("startOffset").is_none() {
+                        sketch::obj_set(&mut o, "startOffset", Json::Num(*v));
+                    }
+                }
+                if let Some(v) = end_offset {
+                    if o.get("endOffset").is_none() {
+                        sketch::obj_set(&mut o, "endOffset", Json::Num(*v));
+                    }
+                }
+                o
+            }
             _ => self.raw.clone(),
         }
     }

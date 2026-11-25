@@ -1,0 +1,19 @@
+[package]
+name = "ck-f3d-decode"
+version = "0.1.0"
+edition = "2024"
+description = "The streams, records and sketches of the design segment of .f3d files decoded (adapted from MitCad's f3d-decode crate, MIT)"
+
+[dependencies]
+# The B-rep curves that stored curves are evaluated as, and Vec3 (ck-asm's vec3 module).
+ck-asm = { path = "../ck-asm" }
+# The design dump IR and the item state types.
+ck-f3d-dump = { path = "../ck-f3d-dump" }
+# The edge tails that recipes name.
+ck-f3d-names = { path = "../ck-f3d-names" }
+serde_json.workspace = true
+
+[features]
+# A per-thread count of the references read (`stream::ref_reads`), for the tests that keep the sketch scans linear
+# (mitcad#1348). Only the tests turn it on.
+scan-count = []

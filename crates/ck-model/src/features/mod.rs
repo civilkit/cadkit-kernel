@@ -59,6 +59,7 @@
 //! | contourFlange   | sketch, curves, distance, rule, flip, reverse (see sheet_features.rs) |
 //! | unfold, refold  | (none) |
 //! | frame           | sketch, segments, lines, profile, rotate, corner, members, joints, hardware (see frame.rs) |
+//! | wrap            | sketch, profiles, face, op, depth, method, alongAxis, around, rotation, taper, flip, tolerance (see wrap.rs) |
 //! | knurlBand       | axis, center, radius, from, to, pattern, count, depth, angle, helixAngle, ringPitch (see knurl_band.rs) |
 //! | torus, pipe, coil, boundingSolid, dome | see solids.rs |
 //! | thread          | face, standard, size, class, length, hand, start, modeled (parsed from the raw DOM, see thread.rs) |
@@ -84,6 +85,8 @@ pub mod mesh_solid;
 pub mod import_step;
 pub mod repair_part;
 pub mod knurl_band;
+pub mod wrap;
+pub mod wrap_tool;
 pub mod lip;
 pub mod max_size;
 pub mod loft;
@@ -141,7 +144,13 @@ pub enum FeatureKind {
     Sphere { op: Op },
     Box { op: Op },
     Loft { op: Op, sketches: Vec<Ref>, surface: bool },
-    Fillet { radius: Expr, edges: Vec<EdgeRef> },
+    Fillet {
+        radius: Expr,
+        edges: Vec<EdgeRef>,
+        start_offset: Option<f64>,
+        end_offset: Option<f64>,
+        setback: Option<f64>,
+    },
     Chamfer {
         chamfer_type: ChamferType,
         distance: Expr,
@@ -149,6 +158,8 @@ pub enum FeatureKind {
         angle: Option<Expr>,
         flip: bool,
         edges: Vec<EdgeRef>,
+        start_offset: Option<f64>,
+        end_offset: Option<f64>,
     },
     Draft { neutral: Option<GeomRef>, faces: Vec<Ref>, angle: Expr, flip: bool },
     Shell { faces: Vec<Ref>, thickness: Expr, outward: bool },
@@ -338,6 +349,11 @@ pub enum MateKind {
     Gear,
     RackPinion,
     Limits,
+    Fastened,
+    Revolute,
+    Slider,
+    Cylindrical,
+    Planar,
     Unknown,
 }
 
@@ -345,6 +361,10 @@ impl MateKind {
     /// Kinds added after the oracle's five (no oracle behaviour to match).
     pub fn is_extended(self) -> bool {
         !matches!(self, MateKind::Coincident | MateKind::Concentric | MateKind::Distance | MateKind::Parallel | MateKind::Unknown)
+    }
+    /// Connector-based joint kinds (`fastened`, `revolute`, `slider`, `cylindrical`, `planar`).
+    pub fn is_connector_joint(self) -> bool {
+        matches!(self, MateKind::Fastened | MateKind::Revolute | MateKind::Slider | MateKind::Cylindrical | MateKind::Planar)
     }
     /// Wire name.
     pub fn name(self) -> &'static str {
@@ -365,6 +385,11 @@ impl MateKind {
             MateKind::Gear => "gear",
             MateKind::RackPinion => "rackPinion",
             MateKind::Limits => "limits",
+            MateKind::Fastened => "fastened",
+            MateKind::Revolute => "revolute",
+            MateKind::Slider => "slider",
+            MateKind::Cylindrical => "cylindrical",
+            MateKind::Planar => "planar",
             MateKind::Unknown => "unknown",
         }
     }
@@ -471,7 +496,13 @@ impl FeatureKind {
             "box" => FeatureKind::Box { op: op(j) },
             "sweep" => FeatureKind::Sweep { op: op(j), sketch: r_opt(j, "sketch"), path: g(j, "path"), surface: b(j, "surface") },
             "loft" => FeatureKind::Loft { op: op(j), sketches: refs(j, "sketches"), surface: b(j, "surface") },
-            "fillet" => FeatureKind::Fillet { radius: e(j, "radius", 0.0), edges: edges(j, "edges") },
+            "fillet" => FeatureKind::Fillet {
+                radius: e(j, "radius", 0.0),
+                edges: edges(j, "edges"),
+                start_offset: j.get("startOffset").or_else(|| j.get("start_offset")).and_then(|v| v.as_f64()),
+                end_offset: j.get("endOffset").or_else(|| j.get("end_offset")).and_then(|v| v.as_f64()),
+                setback: j.get("setback").and_then(|v| v.as_f64()),
+            },
             "chamfer" => FeatureKind::Chamfer {
                 chamfer_type: match j.get("chamferType").and_then(|v| v.as_str()).unwrap_or("equal") {
                     "equal" => ChamferType::Equal,
@@ -485,6 +516,8 @@ impl FeatureKind {
                 angle: e_opt(j, "angle"),
                 flip: b(j, "flip"),
                 edges: edges(j, "edges"),
+                start_offset: j.get("startOffset").or_else(|| j.get("start_offset")).and_then(|v| v.as_f64()),
+                end_offset: j.get("endOffset").or_else(|| j.get("end_offset")).and_then(|v| v.as_f64()),
             },
             "draft" => FeatureKind::Draft { neutral: g(j, "neutral"), faces: refs(j, "faces"), angle: e(j, "angle", 0.0), flip: b(j, "flip") },
             "shell" => FeatureKind::Shell { faces: refs(j, "faces"), thickness: e(j, "thickness", 0.0), outward: b(j, "outward") },
@@ -614,6 +647,11 @@ impl FeatureKind {
                     "gear" => MateKind::Gear,
                     "rackPinion" => MateKind::RackPinion,
                     "limits" => MateKind::Limits,
+                    "fastened" => MateKind::Fastened,
+                    "revolute" => MateKind::Revolute,
+                    "slider" => MateKind::Slider,
+                    "cylindrical" => MateKind::Cylindrical,
+                    "planar" => MateKind::Planar,
                     _ => MateKind::Unknown,
                 },
                 a: r_opt(j, "a"),
@@ -928,6 +966,12 @@ impl Brep {
                         if out.no_effect && op == BOp::Cut && warn_no_effect {
                             // pinned: body unchanged (original edge order)
                             return Err(FeatureError::new(CUT_NO_EFFECT));
+                        }
+                        if !out.no_effect && op == BOp::Cut && warn_no_effect && cut_left_nothing(b, &out.body) {
+                            // wrong but valid-looking: an empty body is not a result, keep the body as it was
+                            return Err(FeatureError::new(CUT_REMOVED_BODY)
+                                .with("detail", Json::Str("the cut removes the whole body: nothing solid is left".into()))
+                                .with("hint", Json::Str("make the cut smaller than the part (a countersink or counterbore head narrower than the part, a cut that leaves some material)".into())));
                         }
                         if !out.no_effect {
                             let mut nb = out.body;
@@ -1468,6 +1512,21 @@ impl Brep {
 
 /// Feature warning: a cut that removes nothing (kernel.strings).
 pub const CUT_NO_EFFECT: &str = "cutNoEffect";
+/// `cutRemovedBody {detail, hint}`: a cut whose result holds no solid (the tool took the whole body); the body stays as it was.
+pub const CUT_REMOVED_BODY: &str = "cutRemovedBody";
+
+/// A cut of a solid body that leaves no faces, or only a sliver of zero volume. Surface bodies (no volume to begin with)
+/// and bodies with material left never match.
+fn cut_left_nothing(before: &ck_topo::body::Body, after: &ck_topo::body::Body) -> bool {
+    if after.num_faces() == 0 {
+        return before.num_faces() > 0;
+    }
+    if after.num_faces() > 12 {
+        return false;
+    }
+    let v0 = ck_topo::mass::mass_props(before).volume;
+    v0 > 0.0 && ck_topo::mass::mass_props(after).volume.abs() <= 1e-9 * v0
+}
 
 /// Not in kernel.strings: a boolean whose closed, valid result lies outside
 /// the volume (or box) bounds its operands allow, see `ck_ops::boolean::sanity`.
@@ -1640,6 +1699,9 @@ impl crate::regen::FeatureExec for Brep {
     fn face_frame(&mut self, _state: &crate::regen::RegenState, face: &str) -> Option<ck_core::linalg::Frame> {
         crate::refs::face_frame(self.body.as_ref()?, face)
     }
+    fn face_connector_frame(&mut self, _state: &crate::regen::RegenState, face: &str) -> Option<ck_core::linalg::Frame> {
+        crate::refs::face_connector_frame(self.body.as_ref()?, face)
+    }
     fn face_count(&self) -> Option<usize> {
         self.body.as_ref().map(|b| b.num_faces())
     }
@@ -1713,7 +1775,7 @@ impl crate::regen::FeatureExec for Brep {
         })
     }
     fn exec(&mut self, state: &mut crate::regen::RegenState, f: &crate::Feature) -> Result<(), crate::regen::FeatureError> {
-        self.fuzz = if f.type_name == "editCurve" { 0.0 } else { crate::expr::eval_field(f.raw.get("tolerance"), &state.vars, 0.0).ok().filter(|t| t.is_finite() && *t > 0.0).unwrap_or(0.0) };
+        self.fuzz = if f.type_name == "editCurve" || f.type_name == "wrap" { 0.0 } else { crate::expr::eval_field(f.raw.get("tolerance"), &state.vars, 0.0).ok().filter(|t| t.is_finite() && *t > 0.0).unwrap_or(0.0) };
         self.auto_fuzz = crate::sketch::jtruthy(f.raw.get("autoFuzzy"));
         self.retry_perturb = crate::sketch::jtruthy(f.raw.get("retryPerturb"));
         self.fuzz_used = None;
@@ -1834,6 +1896,7 @@ impl Brep {
             _ if f.type_name == "meshToSolid" => return mesh_solid::exec_mesh_solid(self, state, f),
             _ if f.type_name == "repairPart" => return repair_part::exec_repair_part(self, state, f),
             _ if f.type_name == "knurlBand" => return knurl_band::exec_knurl_band(self, state, f),
+            _ if f.type_name == "wrap" => return wrap::exec_wrap(self, state, f),
             _ if f.type_name == "frame" => return frame::exec_frame(self, state, f),
             _ if f.type_name == "sheetRules" => return sheet_features::exec_sheet_rules(self, state, f),
             _ if f.type_name == "baseFlange" => return sheet_features::exec_base_flange(self, state, f),
@@ -1857,7 +1920,7 @@ impl Brep {
             _ if f.type_name == "pressPull" => return press_pull::exec_press_pull(self, state, f),
             _ if f.type_name == "pipeCut" => return pipecut::exec_pipecut(self, state, f),
             _ if f.type_name == "editCurve" => return edit_curve::exec_edit_curve(self, state, f),
-            _ if f.type_name == "projectCurve" && proc_curve::is_procedural(f) => return proc_curve::exec_project_curve(self, state, f),
+            _ if f.type_name == "projectCurve" && f.raw.get_str("method") != Some("wrap") && proc_curve::is_procedural(f) => return proc_curve::exec_project_curve(self, state, f),
             _ if f.type_name == "projectCurve" => return project_curve::exec_project_curve(self, state, f),
             _ if f.type_name == "offsetCurve" => return proc_curve::exec_offset_curve(self, state, f),
             _ if f.type_name == "compositeCurve" => return proc_curve::exec_composite_curve(self, state, f),
@@ -1943,7 +2006,7 @@ mod tests {
             k => panic!("{k:?}"),
         }
         match &p.feature("F11").unwrap().kind {
-            FeatureKind::Fillet { radius, edges } => {
+            FeatureKind::Fillet { radius, edges, .. } => {
                 assert_eq!(radius.as_num(), Some(5.0));
                 assert_eq!(edges.len(), 4);
                 assert_eq!(edges[0].faces, vec!["F2.C0", "F2.S.e10"]);
@@ -2026,6 +2089,101 @@ mod tests {
         let p = Part::parse(r#"{"format":"ck-part","version":2,"features":[3,{"type":"bogus"}],"name":5,"seq":"x"}"#).unwrap();
         assert_eq!(p.features.len(), 2);
         assert_eq!(p.features[1].type_name, "bogus");
+    }
+
+    #[test]
+    fn fillet_and_chamfer_setback_and_offsets_round_trip_and_regen() {
+        let src = r#"{
+            "format": "ck-part",
+            "version": 1,
+            "name": "BlendSetbackTest",
+            "seq": 5,
+            "rollback": null,
+            "material": "steel",
+            "counters": {},
+            "features": [
+                {
+                    "id": "F1",
+                    "type": "box",
+                    "op": "add",
+                    "center": [20, 5, -10],
+                    "size": [40, 10, 20]
+                },
+                {
+                    "id": "F2",
+                    "type": "fillet",
+                    "radius": 2,
+                    "startOffset": 5,
+                    "endOffset": 10,
+                    "setback": 3.5,
+                    "edges": [{"faces": ["F1.C1", "F1.S.e1"], "at": [20, 10, 0]}]
+                },
+                {
+                    "id": "F3",
+                    "type": "chamfer",
+                    "chamferType": "equal",
+                    "distance": 1.5,
+                    "startOffset": 4,
+                    "endOffset": 6,
+                    "edges": [{"faces": ["F1.C1", "F1.S.e3"], "at": [20, 10, -20]}]
+                },
+                {
+                    "id": "F4",
+                    "type": "fillet",
+                    "radius": 1,
+                    "edges": [{"faces": ["F1.C0", "F1.S.e1"], "at": [20, 0, 0]}]
+                }
+            ]
+        }"#;
+        let part = Part::parse(src).expect("parse part");
+        match &part.feature("F2").unwrap().kind {
+            FeatureKind::Fillet { radius, start_offset, end_offset, setback, .. } => {
+                assert_eq!(radius.as_num(), Some(2.0));
+                assert_eq!(*start_offset, Some(5.0));
+                assert_eq!(*end_offset, Some(10.0));
+                assert_eq!(*setback, Some(3.5));
+            }
+            other => panic!("expected Fillet, got {other:?}"),
+        }
+        match &part.feature("F3").unwrap().kind {
+            FeatureKind::Chamfer { distance, start_offset, end_offset, .. } => {
+                assert_eq!(distance.as_num(), Some(1.5));
+                assert_eq!(*start_offset, Some(4.0));
+                assert_eq!(*end_offset, Some(6.0));
+            }
+            other => panic!("expected Chamfer, got {other:?}"),
+        }
+        // Backwards compatibility when omitted
+        match &part.feature("F4").unwrap().kind {
+            FeatureKind::Fillet { start_offset, end_offset, setback, .. } => {
+                assert_eq!(*start_offset, None);
+                assert_eq!(*end_offset, None);
+                assert_eq!(*setback, None);
+            }
+            other => panic!("expected Fillet, got {other:?}"),
+        }
+        // JSON round-trip preserves present fields and omits None fields
+        let rt_json = part.to_json();
+        let rt_part = Part::from_json(&rt_json).expect("round-trip from_json");
+        let f2_json = rt_part.feature("F2").unwrap().to_json();
+        assert_eq!(f2_json.get("startOffset").and_then(|v| v.as_f64()), Some(5.0));
+        assert_eq!(f2_json.get("endOffset").and_then(|v| v.as_f64()), Some(10.0));
+        assert_eq!(f2_json.get("setback").and_then(|v| v.as_f64()), Some(3.5));
+        let f4_json = rt_part.feature("F4").unwrap().to_json();
+        assert!(f4_json.get("startOffset").is_none());
+        assert!(f4_json.get("endOffset").is_none());
+        assert!(f4_json.get("setback").is_none());
+        assert!(known_fields::unknown_fields(rt_part.feature("F2").unwrap()).is_empty());
+        assert!(known_fields::unknown_fields(rt_part.feature("F3").unwrap()).is_empty());
+
+        // Regen integration check
+        let mut br = Brep::default();
+        let res = crate::regen::regen(&part, &crate::regen::RegenOpts::default(), &mut br);
+        assert!(res.errors.is_empty(), "regen errors: {:?}", res.errors);
+        // F2 asks for a setback on a single edge: no vertex of three selected edges, so exactly that warning and no other
+        assert!(res.warnings.len() == 1 && res.warnings[0].feature == "F2" && res.warnings[0].error.code == "blendSetbackUnused", "regen warnings: {:?}", res.warnings);
+        let body = br.body.as_ref().expect("regenerated body");
+        assert!(ck_check::validate(body, TOL).is_empty());
     }
 }
 

@@ -1,0 +1,20 @@
+ck-f3d-decode: attribution
+
+The decoders of this crate are MitCad's, adapted:
+
+  MitCad, f3d-decode crate (core/f3d-decode), version 0.70.0, upstream commit 806a4210126ab977ba678708dd476496ddbd2968
+  Copyright (c) 2026 MitCad contributors, MIT licence (LICENSE-MIT-mitcad)
+
+What came from MitCad, and what was changed:
+
+  - src/{classes,curve,decode,learn,lib,mesh,recipe,sketch,stream,unicode,writer}.rs and MITCAD_README.md (the upstream
+    README): copied unchanged except for the points below, tests included (they are in the source files). Every source
+    file carries `SPDX-License-Identifier: MIT`.
+  - the paths `mitcad_asm::brep` and `mitcad_vec3::` became `ck_asm::brep` and `ck_asm::vec3::` (both modules are
+    ck-asm's), `mitcad_dump` became `ck_f3d_dump` and `mitcad_f3d_names` became `ck_f3d_names` (in code and in the doc
+    links); one doc link to `mitcad_f3d_file::paramesh` became `ck_f3d_file::paramesh`. Cargo.toml is this workspace's
+    (serde_json comes from [workspace.dependencies]; the `scan-count` feature is kept).
+  - references in doc comments to MitCad issue numbers, to `mitcad_f3d_design` and to MitCad tool paths are as upstream.
+
+Not used: the Autodesk Fusion SDK, or any file or code from Autodesk. Fusion and Autodesk are trademarks of their
+owner and are used here only to name the file format.

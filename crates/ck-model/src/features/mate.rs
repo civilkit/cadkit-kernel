@@ -68,11 +68,39 @@ pub struct Component {
     pub range: Span3,
     /// Remaining degrees of freedom (wire `dof`).
     pub dof: u32,
+    /// Local-space Mate Connectors defined on the inserted part: `(id, name, local_frame)`.
+    pub connectors: Vec<(String, String, Frame)>,
 }
 
 impl Component {
     pub fn to_json(&self) -> Json {
-        Obj::new().put("id", self.id.as_str()).put("dof", self.dof as f64).put("place", regen::frame_json(&self.place.to_xform().to_frame())).build()
+        let mut o = Obj::new()
+            .put("id", self.id.as_str())
+            .put("dof", self.dof as f64)
+            .put("place", regen::frame_json(&self.place.to_xform().to_frame()));
+        if !self.connectors.is_empty() {
+            let mut cs: Vec<&(String, String, Frame)> = self.connectors.iter().collect();
+            cs.sort_by(|a, b| a.0.cmp(&b.0));
+            let v = |v: Vec3| Json::Arr(vec![Json::Num(v.x), Json::Num(v.y), Json::Num(v.z)]);
+            let arr: Vec<Json> = cs
+                .into_iter()
+                .map(|(id, name, local)| {
+                    let f = self.place.frame(local);
+                    Json::Arr(vec![
+                        Json::Str(id.clone()),
+                        Json::Obj(vec![
+                            ("name".into(), Json::Str(name.clone())),
+                            ("o".into(), v(f.o)),
+                            ("x".into(), v(f.x)),
+                            ("y".into(), v(f.y)),
+                            ("z".into(), v(f.z)),
+                        ]),
+                    ])
+                })
+                .collect();
+            o = o.put("connectors", Json::Arr(arr));
+        }
+        o.build()
     }
     pub fn owns_face(&self, f: ck_topo::body::FaceId) -> bool {
         (self.range.faces.0..self.range.faces.1).contains(&f.idx())
@@ -85,6 +113,7 @@ pub struct Nested {
     pub body: Option<Body>,
     pub errors: Vec<RegenError>,
     pub n_features: usize,
+    pub connectors: Vec<(String, String, Frame)>,
 }
 
 /// Collects a nested regen's trace spans into a [`super::Span`] tree.
@@ -134,6 +163,21 @@ impl regen::FeatureExec for NestedExec {
     fn face_frame(&mut self, state: &RegenState, face: &str) -> Option<Frame> {
         regen::FeatureExec::face_frame(&mut self.brep, state, face)
     }
+    fn face_connector_frame(&mut self, state: &RegenState, face: &str) -> Option<Frame> {
+        regen::FeatureExec::face_connector_frame(&mut self.brep, state, face)
+    }
+    fn edge_line(&mut self, state: &RegenState, faces: &[String], at: Option<[f64; 3]>) -> Option<(Vec3, Vec3)> {
+        regen::FeatureExec::edge_line(&mut self.brep, state, faces, at)
+    }
+    fn face_surf(&mut self, state: &RegenState, face: &str) -> Option<regen::FaceSurf> {
+        regen::FeatureExec::face_surf(&mut self.brep, state, face)
+    }
+    fn vertex_point(&mut self, state: &RegenState, faces: &[String], at: Option<Vec3>) -> Option<Vec3> {
+        regen::FeatureExec::vertex_point(&mut self.brep, state, faces, at)
+    }
+    fn edge_seg(&mut self, state: &RegenState, faces: &[String], at: Option<Vec3>) -> Option<ck_ops::sweep::PathSeg> {
+        regen::FeatureExec::edge_seg(&mut self.brep, state, faces, at)
+    }
     fn prepare(&mut self, state: &RegenState, features: &[&Feature]) {
         self.brep.prepare(state, features);
         self.brep.flush_spans(&mut self.sink);
@@ -155,7 +199,7 @@ pub fn regen_nested(part: &Part) -> (super::Span, Nested) {
     let span = super::Span { label: format!("regenerate {n} features"), children: ex.sink.roots };
     let mut errors = r.errors;
     errors.sort_by(|a, b| a.feature.cmp(&b.feature));
-    (span, Nested { body: ex.brep.body, errors, n_features: n })
+    (span, Nested { body: ex.brep.body, errors, n_features: n, connectors: r.connectors })
 }
 
 /// A face reference: the exact id, else the first face whose id minus its
@@ -283,7 +327,14 @@ impl Brep {
         b.push_instance(&format!("{}.1", f.id));
         x.body(&mut b);
         let range = self.append_body(&b);
-        let c = Component { id: f.id.clone(), fixed: *fixed, place: x, range, dof: if *fixed { 0 } else { 6 } };
+        let c = Component {
+            id: f.id.clone(),
+            fixed: *fixed,
+            place: x,
+            range,
+            dof: if *fixed { 0 } else { 6 },
+            connectors: nested.connectors,
+        };
         self.asm.components.push(c);
         Ok(())
     }
@@ -331,6 +382,11 @@ impl Brep {
         let b = self.body.as_ref()?;
         let f = find_ref(b, id)?;
         self.asm.components.iter().position(|c| c.owns_face(f))
+    }
+
+    /// Component with insertPart feature id `id`.
+    pub fn component_by_id(&self, id: &str) -> Option<usize> {
+        self.asm.components.iter().position(|c| c.id == id)
     }
 
     /// Component `cpattern` (`bodies: [{face}]`).

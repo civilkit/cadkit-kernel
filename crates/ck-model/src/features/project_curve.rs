@@ -459,7 +459,7 @@ fn poly_len(pts: &[Vec3]) -> f64 {
 }
 
 /// Bring a sample polyline to 800..1040 samples: dense enough for the face tests and the fit, small enough to cast.
-fn normalise_samples(pts: Vec<Vec3>) -> Vec<Vec3> {
+pub(super) fn normalise_samples(pts: Vec<Vec3>) -> Vec<Vec3> {
     let mut v: Vec<Vec3> = Vec::with_capacity(pts.len());
     for p in pts {
         if v.last().map_or(true, |q: &Vec3| q.dist(p) > 1e-12) {
@@ -658,6 +658,12 @@ pub fn exec_project_curve(br: &mut Brep, state: &mut RegenState, f: &Feature) ->
     if br.body.is_none() && br.surfs.is_empty() {
         return Err(FeatureError::new("projectCurveNoFaces"));
     }
+    match f.raw.get("method") {
+        None | Some(Json::Null) => {}
+        Some(Json::Str(m)) if m == "project" => {}
+        Some(Json::Str(m)) if m == "wrap" => return exec_wrap_curve(br, state, f),
+        Some(_) => return Err(FeatureError::new(codes::INVALID_VALUE).with("field", Json::Str("method".into())).with("detail", Json::Str("project or wrap".into()))),
+    }
     let (ents, normal) = source(state, f)?;
 
     let degree = field(state, f, "degree", 3.0)?;
@@ -726,12 +732,19 @@ pub fn exec_project_curve(br: &mut Brep, state: &mut RegenState, f: &Feature) ->
     }
     let chain = chains.pop().unwrap();
 
+    fit_chain(state, f, chain.runs, chain.closed, pieces, degree, tolerance, None)
+}
+
+/// Fit the chain of runs as one B-spline and write the curve and its marker (the part shared by both methods). `wrap`: the
+/// marker's `turns`, and a fit that cannot reach the tolerance in 400 control points is `wrapCurveTooLong`.
+fn fit_chain(state: &mut RegenState, f: &Feature, runs: Vec<Vec<Vec3>>, closed: bool, pieces: usize, degree: usize, tolerance: f64, wrap: Option<f64>) -> Result<(), FeatureError> {
     // the joints are exact for the fit: a gap below the join distance is closed by moving the start of the next run
-    let mut runs = chain.runs;
+    let mut runs = runs;
+    // the joints are exact for the fit: a gap below the join distance is closed by moving the start of the next run
     for i in 1..runs.len() {
         runs[i][0] = *runs[i - 1].last().unwrap();
     }
-    if chain.closed {
+    if closed {
         let first = runs[0][0];
         *runs.last_mut().unwrap().last_mut().unwrap() = first;
     }
@@ -762,6 +775,17 @@ pub fn exec_project_curve(br: &mut Brep, state: &mut RegenState, f: &Feature) ->
         match edit_curve(&pieces_in, &opts) {
             Ok(o) => out = o,
             Err(_) => break,
+        }
+    }
+    if wrap.is_some() && out.cvs.len() >= 400 {
+        let dev = curve_to_data(&out.curve, &pieces_in);
+        if dev > tolerance {
+            return Err(FeatureError::new(super::wrap::WRAP_CURVE_TOO_LONG)
+                .with("length", Json::Num(length))
+                .with("maxControlPoints", Json::Num(400.0))
+                .with("deviation", Json::Num(dev))
+                .with("tolerance", Json::Num(tolerance))
+                .with("hint", Json::Str("split the curve into shorter ones, or raise the tolerance".into())));
         }
     }
     // display polyline: every knot span (a corner is a knot of full multiplicity) sampled on its own
@@ -796,8 +820,30 @@ pub fn exec_project_curve(br: &mut Brep, state: &mut RegenState, f: &Feature) ->
             ("length".into(), Json::Num(length)),
             ("pieces".into(), Json::Num(pieces as f64)),
             ("corners".into(), Json::Num(out.corners as f64)),
-            ("closed".into(), Json::Bool(chain.closed)),
-        ]),
+            ("closed".into(), Json::Bool(closed)),
+        ].into_iter().chain(wrap.map(|t| ("turns".to_string(), Json::Num(t)))).collect()),
     ]));
     Ok(())
+}
+
+/// `method: "wrap"`: the sketch's curves laid on one cylindrical face by length along the surface (`wrap::curve_runs`), then the
+/// same chaining and fit as the projection.
+fn exec_wrap_curve(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
+    let degree = field(state, f, "degree", 3.0)?.round().max(0.0) as usize;
+    if !(2..=9).contains(&degree) {
+        return Err(FeatureError::new("editCurveDegree").with("min", Json::Num(2.0)).with("max", Json::Num(9.0)));
+    }
+    let tolerance = field(state, f, "tolerance", 0.001)?;
+    if !(tolerance > 0.0) {
+        return Err(FeatureError::new(codes::INVALID_VALUE).with("field", Json::Str("tolerance".into())).with("detail", Json::Str("must be positive".into())));
+    }
+    let (runs, turns) = super::wrap::curve_runs(br, state, f, tolerance)?;
+    let pieces = runs.len();
+    let mut chains = chain_up(runs);
+    if chains.len() > 1 {
+        let points: Vec<Json> = chains.iter().filter(|c| !c.closed).flat_map(|c| [c.runs[0][0], *c.runs.last().unwrap().last().unwrap()]).map(v3).collect();
+        return Err(FeatureError::new("projectCurveSeveral").with("count", Json::Num(chains.len() as f64)).with("points", Json::Arr(points)));
+    }
+    let chain = chains.pop().unwrap();
+    fit_chain(state, f, chain.runs, chain.closed, pieces, degree, tolerance, Some(turns))
 }

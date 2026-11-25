@@ -29,6 +29,11 @@ shorthand object `{volume: 1000, faces: 7, edges: {min: 10}}`.
 Reply: `{ok, passed, failed, results:[{index, id?, kind, pass, measured, expected, detail}], measured:{...all}}`.
 An unusable expectation (unknown kind, missing value) fails with an explanatory `detail`.
 
+Optional `measured:false`: when every expectation is `{kind:"valid"}` (or `expect` is empty), `check` skips the
+measurements (mass properties, counts, bounds) and the reply carries no top-level `measured` block; `results` are unchanged. With any
+other expectation the flag is ignored and the reply is the full one. Default (flag absent or `true`): reply unchanged.
+`packages/driver/src/verify.ts` sends it when every expectation is `valid`.
+
 ## resolve `{descriptions:[..]}` (or `description`)
 
 Reply per description: `{description, status: unique|ambiguous|none|invalid, ambiguous, count, matches:[..], narrowing:[{filter, remaining}], hint?, error?, resolvedBy?}`.

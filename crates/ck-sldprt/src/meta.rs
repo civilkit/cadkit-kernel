@@ -329,7 +329,7 @@ fn keywords(t: &str) -> (Vec<SwFeature>, Vec<SwConfig>) {
 }
 
 /// The element starting at `at` (`<`): (tag, attributes, self-closing, index after `>`).
-fn element(t: &str, at: usize) -> Option<(String, Vec<(String, String)>, bool, usize)> {
+pub(crate) fn element(t: &str, at: usize) -> Option<(String, Vec<(String, String)>, bool, usize)> {
     let b = t.as_bytes();
     let mut j = at + 1;
     let mut quote: Option<u8> = None;
@@ -363,7 +363,7 @@ fn element(t: &str, at: usize) -> Option<(String, Vec<(String, String)>, bool, u
     Some((tag, attrs, self_closing, j + 1))
 }
 
-fn unescape(s: &str) -> String {
+pub(crate) fn unescape(s: &str) -> String {
     if !s.contains('&') {
         return s.to_string();
     }
@@ -432,7 +432,7 @@ fn first_number(s: &str) -> Option<f64> {
 
 // ------------------------------------------------------------------ material
 
-fn utf16_or_8(d: &[u8]) -> String {
+pub(crate) fn utf16_or_8(d: &[u8]) -> String {
     if d.len() >= 2 && d[..2] == [0xFF, 0xFE] {
         let u: Vec<u16> = d[2..].chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
         String::from_utf16_lossy(&u)

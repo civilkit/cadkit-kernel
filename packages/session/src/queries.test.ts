@@ -80,6 +80,9 @@ describe('queries', () => {
     assert.equal((await massProps(fake({ volume: 5 }), {})).volume, 5);
     const im = await importStep(fake({ errors: [], body: null }), 'DATA');
     assert.deepEqual(im.errors, []);
+    assert.deepEqual(im.warnings, []);
+    const w: Array<[string, { code: string; params: Record<string, unknown> }]> = [['F1', { code: 'importStepParts', params: { solids: 2 } }]];
+    assert.deepEqual((await importStep(fake({ errors: [], warnings: w }), 'DATA')).warnings, w);
     const is = await importSat(fake({ errors: [] }), 'DATA');
     assert.deepEqual(is.errors, []);
   });

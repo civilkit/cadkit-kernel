@@ -19,4 +19,9 @@ describe('guide', () => {
     assert.ok(text.includes('throughBoth'));
     assert.ok(text.includes('ADR 0001'));
   });
+
+  it('lists the blend offsets, setback and variable chamfer', () => {
+    const { text } = getGuide();
+    for (const k of ['startOffset', 'endOffset', 'setback', 'startDistance', 'endDistance', 'variable']) assert.ok(text.includes(k), k);
+  });
 });

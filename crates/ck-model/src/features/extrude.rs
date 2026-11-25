@@ -240,18 +240,64 @@ fn faces_for_ids(sk: &SketchResult, ids: &[String]) -> (Vec<bool>, Vec<bool>) {
 /// selected region is named exactly as if it were alone in the sketch (no
 /// `~k`); several get `~1..~n` over the selection.
 pub fn selected_profile(sk: &SketchResult, f: &Feature) -> Result<Profile, FeatureError> {
-    let Some(sel) = f.raw.get("regions") else { return sketch_profile(sk) };
-    let ids: Vec<String> = sel
-        .as_arr()
-        .and_then(|a| a.iter().map(|v| v.as_str().map(str::to_string)).collect::<Option<_>>())
-        .ok_or_else(|| FeatureError::new(codes::INVALID_VALUE).with("field", Json::Str("regions".into())))?;
+    selected_profile_by(sk, f, "regions")
+}
+
+/// [`selected_profile`] reading the selection from another field (`wrap` calls it `profiles`).
+pub fn selected_profile_by(sk: &SketchResult, f: &Feature, field: &str) -> Result<Profile, FeatureError> {
+    // `regionAt` (with the `regions` field only): points in the sketch's plane, each picking the region (or fill)
+    // that has the point inside it, for a region that none of the entity ids can pick alone
+    let at: Vec<[f64; 2]> = match f.raw.get("regionAt").filter(|_| field == "regions") {
+        None => Vec::new(),
+        Some(v) => v
+            .as_arr()
+            .and_then(|a| {
+                a.iter()
+                    .map(|p| {
+                        let p = p.as_arr()?;
+                        Some([p.first()?.as_f64().filter(|v| v.is_finite())?, p.get(1)?.as_f64().filter(|v| v.is_finite())?])
+                    })
+                    .collect::<Option<Vec<_>>>()
+            })
+            .ok_or_else(|| FeatureError::new(codes::INVALID_VALUE).with("field", Json::Str("regionAt".into())))?,
+    };
+    let sel = match f.raw.get(field) {
+        Some(sel) => Some(sel),
+        None if at.is_empty() => return sketch_profile(sk),
+        None => None,
+    };
+    let ids: Vec<String> = match sel {
+        None => Vec::new(),
+        Some(sel) => sel
+            .as_arr()
+            .and_then(|a| a.iter().map(|v| v.as_str().map(str::to_string)).collect::<Option<_>>())
+            .ok_or_else(|| FeatureError::new(codes::INVALID_VALUE).with("field", Json::Str(field.into())))?,
+    };
     let unknown: Vec<Json> = ids.iter().filter(|i| sk.sketch.entity(i).is_none()).map(|i| Json::Str(i.clone())).collect();
     if !unknown.is_empty() {
         return Err(FeatureError::new(REGION_UNKNOWN).with("ids", Json::Arr(unknown)));
     }
     let full = sketch_profile(sk)?;
     // the regions the ids touch, then the fills of subdivided components (a ring cut by petal outlines)
-    let (preg, pfill) = faces_for_ids(sk, &ids);
+    let (mut preg, mut pfill) = faces_for_ids(sk, &ids);
+    for p in &at {
+        let mut hit = false;
+        for (i, r) in sk.profiles.regions.iter().enumerate() {
+            if r.contains(*p) {
+                preg[i] = true;
+                hit = true;
+            }
+        }
+        for (i, r) in sk.profiles.fills.iter().enumerate() {
+            if r.contains(*p) {
+                pfill[i] = true;
+                hit = true;
+            }
+        }
+        if !hit {
+            return Err(FeatureError::new(REGION_NONE).with("regionAt", Json::Arr(vec![Json::Num(p[0]), Json::Num(p[1])])));
+        }
+    }
     let lp = |l: &Vec<Seg>| -> Result<ProfileLoop, FeatureError> {
         Ok(ProfileLoop::new(l.iter().map(profile_seg).collect::<Result<_, _>>()?))
     };
@@ -525,7 +571,7 @@ pub fn exec_extrude_ex(state: &RegenState, f: &Feature, body: Option<&Body>, ext
             extrude(&f.id, p, o).map_err(topo_err)
         }
     };
-    let body = match f.raw.get("regions").filter(|_| !thin_on).and_then(|_| split_islands(&profile)) {
+    let body = match f.raw.get("regions").or_else(|| f.raw.get("regionAt")).filter(|_| !thin_on).and_then(|_| split_islands(&profile)) {
         // a selected region that fills a hole of another selected one: sweep the two apart and unite
         // them, so the shared wall disappears and the caps merge (one lump, not two touching ones)
         Some((base, islands)) => {

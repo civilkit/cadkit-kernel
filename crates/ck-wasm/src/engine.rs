@@ -17,9 +17,12 @@ pub fn install() {
     ck_ops::analysis::set_clock(ck_server::clock::now);
     ck_core::budget::set_clock(ck_server::clock::now);
     ck_server::set_hooks(Hooks {
+        f3d_features: Some(crate::f3d_features::f3d_features_hook),
         import_sat: Some(import_sat_hook),
         import_sldprt: Some(import_sldprt_hook),
+        import_f3d: Some(import_f3d_hook),
         sldprt_history: Some(sldprt_history_hook),
+        sldasm_tree: Some(crate::sldasm::sldasm_tree_hook),
         built_export: Some(built_export_hook),
         #[cfg(feature = "skp")]
         import_skp: Some(import_skp_hook),
@@ -95,6 +98,9 @@ impl regen::FeatureExec for Exec<'_> {
     }
     fn face_frame(&mut self, state: &regen::RegenState, face: &str) -> Option<ck_core::linalg::Frame> {
         self.brep.face_frame(state, face)
+    }
+    fn face_connector_frame(&mut self, state: &regen::RegenState, face: &str) -> Option<ck_core::linalg::Frame> {
+        self.brep.face_connector_frame(state, face)
     }
     fn edge_line(&mut self, state: &regen::RegenState, faces: &[String], at: Option<[f64; 3]>) -> Option<(ck_core::linalg::Vec3, ck_core::linalg::Vec3)> {
         self.brep.edge_line(state, faces, at)
@@ -346,7 +352,7 @@ fn import_hook(cx: &mut Cx, _name: &str, data: &str) -> Result<(Json, Option<Sta
 }
 
 /// Standard base64 (also accepts url-safe letters, whitespace and a `data:...;base64,` prefix).
-fn base64_decode(s: &str, what: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn base64_decode(s: &str, what: &str) -> Result<Vec<u8>, String> {
     let s = s.find("base64,").map_or(s, |i| &s[i + 7..]);
     let mut out = Vec::with_capacity(s.len() / 4 * 3);
     let (mut acc, mut nb) = (0u32, 0u32);
@@ -670,6 +676,66 @@ fn import_skp_hook(cx: &mut Cx) -> Result<(Json, Option<State>), String> {
     }
     let snap = Snapshot { body, sketches: vec![], asm: Default::default(), heal_base: None, surfaces: vec![], ends: vec![] };
     Ok((out, Some(State { has_body: true, data: Some(Box::new(snap)) })))
+}
+
+/// `importF3d`: a Fusion 360 file (`.f3d` / `.f3z`) or one `.smb` / `.smbh` ASM body blob -> the tag's bodies. Result
+/// shaped like `importSldprt`: `body` (the valid closed solids, a lump each), `surfaces` (every other ASM body as the surface body of
+/// the faces that were read), `errors` as `["import", {code, params:{message}}]` when the file cannot be read, the `importStepParts`
+/// warning when a body is not a solid, plus `import:{format, name, container, unitScale, blobs, solids, surfaces, refused, faces,
+/// facesTotal, parts, report, skippedFaces}`. `report` says in plain words what was read and what was left out; `opts.history` also
+/// reads the history blob (`.smbh`) of a body that is saved as a plain blob too (both hold the same bodies). See docs/f3d.md.
+///
+/// This module has no decoder (docs/f3d-lazy.md): the request carries either `decoded` (`{solid, surfaces, info}`, what
+/// ck_f3d.wasm's `decodeF3d` answers: bodies in the lossless `ck_topo::codec` form as base64), or `data` (the file's bytes as
+/// base64), which only a build with feature `f3d` can decode; without it the reply is the error `f3d.decoderMissing`.
+fn import_f3d_hook(cx: &mut Cx) -> Result<(Json, Option<State>), String> {
+    let name = cx.msg.get_str("name").unwrap_or("model").to_string();
+    let mut out = ck_server::session::empty_regen_result();
+    if let Some(d) = cx.msg.get("decoded") {
+        let body_of = |b64: &str, what: &str| -> Result<Body, String> {
+            let bytes = base64_decode(b64, what)?;
+            ck_topo::codec::decode(&bytes).map_err(|e| format!("{what}: {e}"))
+        };
+        let solid = body_of(d.get_str("solid").ok_or("importF3d: decoded.solid is required")?, "importF3d decoded.solid")?;
+        let mut surfaces = vec![];
+        for s in d.get("surfaces").and_then(|s| s.as_arr()).unwrap_or(&[]) {
+            let (Some(id), Some(b)) = (s.as_arr().and_then(|a| a.first()).and_then(|v| v.as_str()), s.as_arr().and_then(|a| a.get(1)).and_then(|v| v.as_str())) else {
+                return Err("importF3d: decoded.surfaces must be [[id, base64], ...]".to_string());
+            };
+            surfaces.push((id.to_string(), body_of(b, "importF3d decoded.surfaces")?));
+        }
+        let info = d.get("info").cloned().ok_or("importF3d: decoded.info is required")?;
+        return Ok(import_reply(cx, out, solid, surfaces, info));
+    }
+    #[cfg(feature = "f3d")]
+    {
+        let data = cx.msg.get_str("data").unwrap_or("").to_string();
+        let bytes = base64_decode(&data, "importF3d")?;
+        let o = cx.msg.get("opts");
+        let opts = ck_wasm_f3d::Options { history: o.and_then(|o| o.get_bool("history")).unwrap_or(false), all_bodies: o.and_then(|o| o.get_bool("allBodies")).unwrap_or(false) };
+        return match ck_wasm_f3d::decode(&bytes, &name, &opts) {
+            Ok(d) => Ok(import_reply(cx, out, d.solid, d.surfaces, d.info)),
+            Err(e) => {
+                set_key(&mut out, "errors", import_error_list(&e.code, &e.message));
+                Ok((out, None))
+            }
+        };
+    }
+    #[cfg(not(feature = "f3d"))]
+    {
+        let _ = name;
+        set_key(
+            &mut out,
+            "errors",
+            import_error_list("f3d.decoderMissing", "this kernel has no Fusion 360 decoder: decode the file with the separate ck_f3d.wasm (decodeF3d) and send the result as `decoded`"),
+        );
+        Ok((out, None))
+    }
+}
+
+/// `[["import", {code, params:{message}}]]`: the structured error the importers answer with.
+fn import_error_list(code: &str, message: &str) -> Json {
+    Json::Arr(vec![Json::Arr(vec![Json::Str("import".into()), Obj::new().put("code", code).put("params", Obj::new().put("message", message).build()).build()])])
 }
 
 /// `importSat`: ACIS SAT text -> body snapshot. Reply = regen-shaped result
@@ -1289,7 +1355,9 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
             }
             let surface_name = |f: ck_topo::body::FaceId| ranges.iter().find(|r| (r.0..r.1).contains(&f.idx())).map(|r| r.2.clone());
             let opts = ck_io::step::StepOpts { unix_ms: ck_server::clock::unix_ms() };
-            if let Some(Json::Obj(colors_kv)) = cx.msg.get("colors") {
+            let verify = cx.msg.get_bool("verify") != Some(false);
+            let expect = verify.then(|| (body.num_faces(), ck_topo::mass::mass_props(&body).volume));
+            let out = if let Some(Json::Obj(colors_kv)) = cx.msg.get("colors") {
                 let mut meta = ck_io::step::StepExportMeta::default();
                 let parse_rgb = |v: &Json| -> Option<[f64; 3]> {
                     let Json::Arr(a) = v else { return None };
@@ -1311,10 +1379,38 @@ fn query_hook(ty: &str, cx: &mut Cx) -> Result<Json, String> {
                 ck_io::step::try_write_step_with_meta(&body, &name, &opts, &meta, Some(&surface_name)).map(Json::Str)
             } else {
                 ck_io::step::try_write_step_with_surfaces(&body, &name, &opts, &surface_name).map(Json::Str)
+            };
+            // the export reads its own file back: a file that does not give the body again is said so in the reply's
+            // `warnings` (the result stays the STEP text). `verify: false` skips the check.
+            if let (Ok(Json::Str(text)), Some((faces, vol))) = (&out, expect) {
+                if let Some(w) = step_round_trip_warning(text, faces, vol) {
+                    cx.warnings.push(w);
+                }
             }
+            out
         }
         _ => Err(ck_server::session::todo(ty)),
     }
+}
+
+/// What the STEP text `text` gets back as, against the body it was written from (`faces`, `volume`): `None` when it
+/// reads back as the same body, else the sentence for the reply.
+fn step_round_trip_warning(text: &str, faces: usize, volume: f64) -> Option<String> {
+    let r = match ck_io::step::read_step(text) {
+        Ok(r) => r,
+        Err(e) => return Some(format!("the exported STEP file could not be read back ({e}): it may not hold this body")),
+    };
+    let refused: usize = r.parts.iter().map(|p| p.refused.len()).sum();
+    let got = r.body.num_faces();
+    let v = ck_topo::mass::mass_props(&r.body).volume;
+    let off = (v - volume).abs() / volume.abs().max(1e-9);
+    if refused == 0 && got == faces && off <= 1e-3 {
+        return None;
+    }
+    Some(format!(
+        "the exported STEP file does not read back as this body: {got} of {faces} faces ({refused} refused), volume {v:.6e} against {volume:.6e} (off by {:.2}%)",
+        off * 100.0
+    ))
 }
 
 /// `inspect` with a body: only `sketch` refs so far.
@@ -1525,4 +1621,22 @@ fn overlap_records(reply: &Json) -> Vec<Json> {
             o.put("volume", p.get_f64("volume").unwrap_or(0.0).abs()).build()
         })
         .collect()
+}
+
+#[cfg(test)]
+mod step_verify_tests {
+    use super::step_round_trip_warning;
+
+    const TEXT: &str = include_str!("../../ck-io/tests/fixtures/occ_cylinder_and_box.step");
+
+    #[test]
+    fn a_file_that_reads_back_as_the_body_gives_no_warning_and_a_different_one_does() {
+        let r = ck_io::step::read_step(TEXT).unwrap();
+        let (faces, vol) = (r.body.num_faces(), ck_topo::mass::mass_props(&r.body).volume);
+        assert_eq!(step_round_trip_warning(TEXT, faces, vol), None);
+        let w = step_round_trip_warning(TEXT, faces, vol * 1.5).unwrap();
+        assert!(w.contains("does not read back as this body") && w.contains("volume"), "{w}");
+        assert!(step_round_trip_warning(TEXT, faces + 1, vol).is_some());
+        assert!(step_round_trip_warning("not a step file", faces, vol).unwrap().contains("could not be read back"));
+    }
 }

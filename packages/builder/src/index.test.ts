@@ -70,6 +70,17 @@ describe('builder', () => {
 
 describe('builder solid features', () => {
   const rec = (p: Part, i: number) => p.features[i] as unknown as Record<string, unknown>;
+  it('loft keeps connectors and the other kernel options (they used to be dropped silently)', () => {
+    const p = new Part('T');
+    const a = p.sketch('A', 'front', () => {});
+    const b = p.sketch('B', 'front', () => {});
+    p.loft({ sketches: [a, b], connectors: [0, null], startNormal: 1, surface: true });
+    assert.deepEqual(rec(p, 2).connectors, [0, null]);
+    assert.equal(rec(p, 2).startNormal, 1);
+    assert.equal(rec(p, 2).surface, true);
+    p.loft({ sketches: [a, b] });
+    assert.ok(!('connectors' in rec(p, 3)));
+  });
   it('emits defaults matching the kernel dispatch', () => {
     const p = new Part('T');
     const s = p.sketch('S', 'front', () => {});

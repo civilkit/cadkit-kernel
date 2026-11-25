@@ -530,6 +530,17 @@ pub fn select_class_tol(arr: &Arrangement, bodies: [&Body; 2], op: Op, tol: f64)
     })
 }
 
+/// [`select_class_tol`] for a cut by a free-form blend tool (`bodies[1]`): the tool's faces are fits, so a ray through
+/// the corner of its section within `band` of an edge is ambiguous and the next ray decides (see `Solid::ray_band`).
+pub fn select_class_tol_ring(arr: &Arrangement, bodies: [&Body; 2], op: Op, tol: f64, band: f64) -> Result<Vec<OutFace>, String> {
+    let mut solids = [Solid::new(bodies[0], tol), Solid::new(bodies[1], tol)];
+    solids[1].ray_band = band;
+    select_with(arr, true, None, |side, _fi, q, n| {
+        let c = solids[1 - side].classify(q, n);
+        (c, keep(op, side, c))
+    })
+}
+
 /// [`select`] as a split-only pass: coincident same-facing fragments are not re-fused
 /// (two cone bands on one cone surface whose seams are at different angles must stay
 /// two faces; re-fusing them leaves a degenerate face and drops material).

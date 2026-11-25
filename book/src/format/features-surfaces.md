@@ -572,10 +572,20 @@ Projects a sketch, or a planar curve, perpendicular to its plane onto faces and 
 | `degree` | number | `3` | B-spline degree, 2 to 9. |
 | `tolerance` | number | `0.001` | Largest distance of the fit from the projected data (mm), above 0. More control points (up to 400) are used until it is met. |
 | `direction` | string | `"both"` | `both`, `forward` (along the sketch normal) or `reverse`. |
+| `method` | string | `"project"` | `project` (above) or `wrap` (below). |
+| `alongAxis`, `around`, `rotation`, `flip`, `entities` | | `0`, `0`, `0`, `false`, all | `wrap` only. |
 
 Every sample of the curve is cast along the normal against the chosen faces and all crossings inside the trimmed faces are kept. The pieces must form one connected chain; several chains are `projectCurveSeveral {count, points}`. It makes a curve and no faces: the faces it is projected on are not split. The result appears in `curves` as `[id, {pts, axis: false, t0: 0, t1: 1}]` and in `markers` as `{degree, count, deviation, length, pieces, corners, closed}`.
 
 Errors, in the order they are checked: `projectCurveNoFaces` (no solid and no sheet), `projectCurveNoInput` (neither `sketch` nor `curve`, or a sketch with nothing to project), `missingReference` (an unresolved `curve` or face), `projectCurvePlane` (a `curve` that is not planar), `missingSketch`, `editCurveDegree {min, max}`, `invalidValue` (tolerance or `direction`), `badExpression`, `projectCurveMisses`, `projectCurveSeveral`, `projectCurveFailed`.
+
+### `method: "wrap"`
+
+The sketch is laid on ONE cylindrical face by length along the surface instead of being projected: sketch arc length is arc length on the face (`theta = s / r`, `z = y`), the same map as the solid [`wrap`](#wrap). `faces` must name exactly one cylindrical face (outside of a boss or the wall of a bore; a plane, a cone or anything else is `wrapFaceUnsupported {faceKind, hint}`). `curve` inputs and `procedural: true` are not wrapped. `degree` and `tolerance` work as for the projection (`direction` is not read). Open or closed curves; a curve may run past one turn (a helical path is the point). Fields: `alongAxis` (mm along the axis), `around` (degrees about it), `rotation` (degrees about the middle of the curves, in the sketch, applied first), `flip` (mirror along the circumference), `entities` (optional list of sketch entity ids; default every non-construction entity), all as in `wrap`. The result is the same `curves` entry and marker, plus `turns` (the span of the curve along the circumference divided by the circumference). Disjoint curves give `projectCurveSeveral`. Errors: `wrapNoInput` (no `sketch`), `wrapPlane` (sketch plane perpendicular to the axis), `wrapProfileOffFace {profile, at, entity, hint}` (a point of an entity is off the trimmed face; the part is not dropped, the length would lie), `wrapCurveTooLong {length, maxControlPoints, deviation, tolerance, hint}` (the fit does not reach `tolerance` in 400 control points: split the curve or raise the tolerance), `invalidValue {field, detail}` (`method`, `tolerance`, `procedural`), `missingReference` (a face, or an `entities` id that is not in the sketch).
+
+```json
+{"type": "projectCurve", "id": "F5", "sketch": "S2", "faces": ["F1.S.e1"], "method": "wrap", "alongAxis": 0, "around": 0, "rotation": 0}
+```
 
 A circle on a plane 20 mm above the plate (`F3`), projected onto the top face only. Appended to the plate of [the overview](overview.md):
 

@@ -40,6 +40,78 @@ pub fn face_frame(body: &Body, id: &str) -> Option<Frame> {
     Some(Frame { o, x, y, z })
 }
 
+/// Centroid-anchored frame of a face (planar, cylindrical, conical, or spherical)
+/// for Mate Connectors (`type: "connector"`).
+pub fn face_connector_frame(body: &Body, id: &str) -> Option<Frame> {
+    use ck_geom::curve::Curve;
+    let f = find_face(body, id).or_else(|| crate::features::mate::find_ref(body, id))?;
+    // Compute the bounding box center of the face's edges (handles both straight
+    // polygons and circular caps/cylinders accurately).
+    let mut lo = Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
+    let mut hi = Vec3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for e in body.face_edges(f) {
+        let ed = body.edge(e);
+        match &ed.curve {
+            Curve::Line { o, d } => {
+                let a = *o + *d * ed.t0;
+                let b = *o + *d * ed.t1;
+                lo = lo.min(a).min(b);
+                hi = hi.max(a).max(b);
+            }
+            Curve::Circle { frame, r } => {
+                // Full circle or arc: sample 16 points + endpoints for exact center on full circles
+                let n = 16usize;
+                for i in 0..=n {
+                    let t = ed.t0 + (ed.t1 - ed.t0) * (i as f64 / n as f64);
+                    let p = frame.o + frame.x * (r * t.cos()) + frame.y * (r * t.sin());
+                    lo = lo.min(p);
+                    hi = hi.max(p);
+                }
+            }
+            c => {
+                for p in c.sample(ed.t0, ed.t1, 16) {
+                    lo = lo.min(p);
+                    hi = hi.max(p);
+                }
+            }
+        }
+    }
+    let center = (lo.x <= hi.x && lo.x.is_finite() && hi.x.is_finite()).then(|| (lo + hi).scale(0.5));
+    match &body.face(f).surface {
+        Surface::Plane { frame } => {
+            let z = body.planar_normal(f);
+            let o = match center {
+                Some(c) => c - z * (c - frame.o).dot(z),
+                None => frame.o,
+            };
+            let x = if z.y.abs() > 0.99 {
+                Vec3::X.reject(z).try_normalize().unwrap_or(Vec3::X)
+            } else {
+                Vec3::Y.cross(z).try_normalize().unwrap_or(Vec3::X)
+            };
+            let y = z.cross(x);
+            Some(Frame { o, x, y, z })
+        }
+        Surface::Cylinder { frame, .. } | Surface::Cone { frame, .. } => {
+            let z = frame.z.try_normalize()?;
+            let o = match center {
+                Some(c) => frame.o + z * (c - frame.o).dot(z),
+                None => frame.o,
+            };
+            let x = frame.x.reject(z).try_normalize().unwrap_or_else(|| z.any_perp().normalize());
+            let y = z.cross(x);
+            Some(Frame { o, x, y, z })
+        }
+        Surface::Sphere { frame, .. } => {
+            let z = frame.z.try_normalize().unwrap_or(Vec3::Z);
+            let x = frame.x.reject(z).try_normalize().unwrap_or_else(|| z.any_perp().normalize());
+            let y = z.cross(x);
+            Some(Frame { o: frame.o, x, y, z })
+        }
+        _ => None,
+    }
+}
+
 /// Edit distance between two face ids (to put the likeliest candidates first).
 fn distance(a: &str, b: &str) -> usize {
     let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());

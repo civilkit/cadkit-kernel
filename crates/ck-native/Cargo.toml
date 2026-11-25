@@ -13,7 +13,8 @@ path = "src/main.rs"
 
 [dependencies]
 ck-server = { path = "../ck-server" }
-ck-wasm = { path = "../ck-wasm" }
+# the service keeps decoding .f3d itself (no second download over localhost)
+ck-wasm = { path = "../ck-wasm", features = ["f3d"] }
 ck-ops = { path = "../ck-ops" }
 ck-core = { path = "../ck-core" }
 ck-json = { path = "../ck-json" }

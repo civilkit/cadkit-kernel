@@ -22,11 +22,11 @@
 //!   #14, #16..#19). This boolean-based pass renumbers edges in face-walk
 //!   order; face ids, order, geometry and massProps match.
 
-use super::rounds::{CHAMFER_FIRST, EDGE_RADII, TANGENT_FLUSH};
+use super::rounds::{BLEND_OPTS, CHAMFER_FIRST, EDGE_RADII, TANGENT_FLUSH};
 use super::BlendError;
 use ck_geom::Vec3;
 use ck_topo::body::{Body, FaceName};
-pub(super) use super::apply::{apply_tool, apply_tool_hooked};
+pub(super) use super::apply::{apply_tool, apply_tool_hooked, apply_tool_hooked_ring};
 pub(super) use super::diag::last_fail;
 pub(super) use super::ends::clip_halfspace;
 pub use super::find::{find_edge, find_edge_by_position, forward_first};
@@ -34,8 +34,43 @@ pub use super::layout::{in_place_layout, in_place_layout_opts, BlendRef, LayoutO
 pub use super::analytic::fillet_line_edge;
 pub use super::analytic::take_ran_off;
 pub use super::cross::{take_rounds_cross, RoundsCross};
-pub use super::model::{ChamferLeg, FilletProfile, Spec};
+pub use super::model::{BlendOpts, ChamferLeg, FilletProfile, SetbackReport, Spec};
 pub use super::rounds::blend_edges;
+
+/// Sets [`BLEND_OPTS`] (partial-edge start/end offsets and explicit corner setback) for its lifetime.
+pub struct BlendOptsGuard(BlendOpts);
+
+impl BlendOptsGuard {
+    pub fn new(opts: BlendOpts) -> BlendOptsGuard {
+        take_setback_report();
+        let old = BLEND_OPTS.with(|c| c.replace(opts));
+        BlendOptsGuard(old)
+    }
+}
+
+impl Drop for BlendOptsGuard {
+    fn drop(&mut self) {
+        BLEND_OPTS.with(|c| c.set(self.0));
+    }
+}
+
+/// What the corner setback did since the last call (or since the [`BlendOptsGuard`] was made): corners built with a
+/// setback patch, and corners where the requested setback had to be moved into its range.
+pub fn take_setback_report() -> SetbackReport {
+    super::rounds::SETBACK_REPORT.with(|r| std::mem::take(&mut *r.borrow_mut()))
+}
+
+/// Constant-radius fillets with explicit [`BlendOpts`] (`start_offset`, `end_offset`, `setback`).
+pub fn fillet_with_opts(b: &Body, edges: &[(String, String, Vec3)], r: f64, opts: BlendOpts, feature: &str, tol: f64) -> Result<Body, BlendError> {
+    let _g = BlendOptsGuard::new(opts);
+    fillet(b, edges, r, feature, tol)
+}
+
+/// Equal-distance chamfers with explicit [`BlendOpts`] (`start_offset`, `end_offset`).
+pub fn chamfer_with_opts(b: &Body, edges: &[(String, String, Vec3)], d: f64, opts: BlendOpts, feature: &str, tol: f64) -> Result<Body, BlendError> {
+    let _g = BlendOptsGuard::new(opts);
+    chamfer(b, edges, d, feature, tol)
+}
 
 /// Constant-radius fillets of `edges` (face-name pairs + pick point, in
 /// ref order), blend faces `B0, B1, …` of `feature`.
@@ -466,5 +501,57 @@ mod tests {
         let add = std::f64::consts::PI * simpson(|t| (x(t) * x(t) - 64.0) * 3.0 * t.sin(), 0.0, (2.0f64 / 3.0).acos(), 2000);
         let v = mass_props(&r).volume;
         assert!((v - v0 - add).abs() < 1e-9 * v0, "{} vs {add}", v - v0);
+    }
+
+    #[test]
+    fn partial_edge_fillet_start_and_end_offsets() {
+        let b = the_box();
+        let v_box = mass_props(&b).volume;
+        let pick = [e("F2.C1", "F2.S.e1", [20.0, 10.0, 0.0])];
+        let full = fillet(&b, &pick, 2.0, "F3", 1e-6).unwrap();
+        let v_full = mass_props(&full).volume;
+
+        let opts = BlendOpts { start_offset: Some(5.0), end_offset: Some(10.0), setback: None };
+        let part = fillet_with_opts(&b, &pick, 2.0, opts, "F3", 1e-6).unwrap();
+        assert!(ck_topo::check::check(&part, 1e-6).is_empty());
+        assert!(ck_check::validate(&part, 1e-6).is_empty());
+        let v_part = mass_props(&part).volume;
+        assert!(v_part > v_full && v_part < v_box, "v_part={v_part} not in ({v_full}, {v_box})");
+        // active length = 40 - 5 - 10 = 25 mm; cross-section removed area = r^2 (1 - pi/4) = 4 - pi
+        let expected = v_box - 25.0 * (4.0 - std::f64::consts::PI);
+        assert!((v_part - expected).abs() < 1e-5, "v_part={v_part} vs expected={expected}");
+
+        // start-only offset (active length = 30 mm)
+        let start_only = fillet_with_opts(
+            &b,
+            &pick,
+            2.0,
+            BlendOpts { start_offset: Some(10.0), end_offset: None, setback: None },
+            "F3",
+            1e-6,
+        )
+        .unwrap();
+        assert!(ck_check::validate(&start_only, 1e-6).is_empty());
+        let v_start = mass_props(&start_only).volume;
+        assert!((v_start - (v_box - 30.0 * (4.0 - std::f64::consts::PI))).abs() < 1e-5);
+    }
+
+    #[test]
+    fn partial_edge_chamfer_start_and_end_offsets() {
+        let b = the_box();
+        let v_box = mass_props(&b).volume;
+        let pick = [e("F2.C1", "F2.S.e1", [20.0, 10.0, 0.0])];
+        let full = chamfer(&b, &pick, 2.0, "F3", 1e-6).unwrap();
+        let v_full = mass_props(&full).volume;
+        assert!((v_full - 7920.0).abs() < 1e-9);
+
+        // active length = 40 - 5 - 15 = 20 mm (half of the 40 mm edge -> half the volume reduction = 40.0)
+        let opts = BlendOpts { start_offset: Some(5.0), end_offset: Some(15.0), setback: None };
+        let part = chamfer_with_opts(&b, &pick, 2.0, opts, "F3", 1e-6).unwrap();
+        assert!(ck_topo::check::check(&part, 1e-6).is_empty());
+        assert!(ck_check::validate(&part, 1e-6).is_empty());
+        let v_part = mass_props(&part).volume;
+        assert!(v_part > v_full && v_part < v_box);
+        assert!((v_part - (v_box - 20.0 * 2.0)).abs() < 1e-5, "v_part={v_part}");
     }
 }

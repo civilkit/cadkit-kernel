@@ -661,6 +661,20 @@ export const queries = [
 
 export const regenMsg = (p) => ({ type: 'regen', tag: 'main', part: p });
 export { parts };
+
+// KNOWN, INTENTIONAL volume divergences from the original kernel (the gate's mass.brep and vol.brep): `name: {ours, original, reason}`.
+// The gate accepts the case only while the rebuilt volume stays within 1e-3 of `ours` AND the original's within 1e-3 of `original`,
+// so a further change to the case is still caught.
+export const knownVolumes = {
+  loftCircSq: {
+    ours: 4444.41,
+    original: 4024.46,
+    reason: 'circle r8 -> square 10x10 over 30: the circle is cut at the square corner directions (no twist). The original paired the sections ' +
+      'with the circle cut at 0/90/180/270 degrees, 45 degrees off the corners (a twisted loft). Independent check: a ruled loft with the circle ' +
+      'cut at the corner directions, integrated numerically (60 slices of the interpolated outline), is 4451 (0.15% from ours); the twisted ' +
+      'pairing gives about the original 4024.',
+  },
+};
 /// diff.mjs cases: body 0 (the regen) is run but not compared.
 export default Object.entries(parts).map(([name, p]) => ({
   name: `brep:${name}`, ignore: [0], bodies: [m(regenMsg(p)), ...queries.map(m)],

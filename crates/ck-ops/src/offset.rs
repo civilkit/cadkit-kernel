@@ -90,11 +90,15 @@ fn offset_surface(s: &Surface, d: f64) -> Result<Surface, OffsetError> {
 pub fn offset_face_surface(src: &Body, f: FaceId, d: f64, reach: f64) -> Result<Surface, OffsetError> {
     let face = src.face(f);
     if is_freeform(&face.surface) {
-        fit_face_with_margin(src, f, d, reach)
+        fit_face_with_margin(src, f, d, reach, 0)
     } else {
         offset_surface(&face.surface, d)
     }
 }
+
+/// Number of free-form offset fits that failed their tolerance and were retried with a shorter margin since start
+/// (each costs seconds on a large face): lets a test see that a face did not need a retry.
+pub static FIT_RETRIES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Fit tolerance of sampled offset surfaces / edge curves (mm).
 const FIT_TOL: f64 = 1e-5;
@@ -118,13 +122,20 @@ fn margin_cap(d: f64) -> f64 {
 /// quickly turning surface (a loft's tapering last span) folds over a few thicknesses out, which the fit
 /// reports as a tolerance failure: retry with a smaller margin (the margin is only slack for the edge
 /// curves, which need the offset surfaces a little beyond the face).
-fn fit_face_with_margin(src: &Body, f: FaceId, d: f64, reach: f64) -> Result<Surface, OffsetError> {
+///
+/// `reach_k0` starts the reach's shortening ladder at that step (the reach is divided by 4 per step): a face that no
+/// differently moved face borders has no cavity running past it, and a narrow blend continued by the full reach folds
+/// over, which costs a failed fit of seconds before the shorter reach succeeds.
+fn fit_face_with_margin(src: &Body, f: FaceId, d: f64, reach: f64, reach_k0: u32) -> Result<Surface, OffsetError> {
     let cap0 = margin_cap(d);
     let mut last = None;
     for k in 0..5 {
         let bx = face_uv_box(src, f, cap0 / f64::from(1u32 << (2 * k).min(8)), false).ok_or_else(|| OffsetError::new("offsetUnsupported", "face extent"))?;
-        match fit_offset_surface(&src.face(f).surface, d, bx, reach) {
+        // (the reach past the face is slack as well: a blend only a few mm wide continued by a wall's thickness or more
+        // by its second-order polynomial folds over, and the fit never settles; each retry shortens it too)
+        match fit_offset_surface(&src.face(f).surface, d, bx, reach / f64::from(1u32 << (2 * (k + reach_k0).min(8)))) {
             Err(e) if e.code == "offsetUnsupported" && e.detail.as_deref().is_some_and(|m| m.contains("fit tolerance")) => {
+                FIT_RETRIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 if std::env::var_os("CK_OFFSET_DEBUG").is_some() {
                     eprintln!("margin retry: {} d={d} margin cap {:.2} mm failed: {:?}", src.face_id_str(f), cap0 / f64::from(1u32 << (2 * k).min(8)), e.detail);
                 }
@@ -1673,6 +1684,8 @@ pub fn move_faces_body(src: &Body, mv: &dyn Fn(FaceId) -> FaceMove) -> Result<Bo
     // new surfaces (free-form offsets extend `reach` past their faces: the
     // cavity of a shell overshoots an opened face by the wall thickness)
     let reach = 1.5 * src.face_ids().map(|f| dist(f).abs()).fold(0.0f64, f64::max);
+    // (some faces move differently from others: a shell's opened faces; a uniform offset has no such cavity end)
+    let mixed = src.face_ids().any(|f| shift_of(f).is_some() || (dist(f) - dist(src.face_ids().next().unwrap())).abs() > 1e-12);
     let dbg_clock = std::env::var_os("CK_OFFSET_DEBUG").is_some().then(std::time::Instant::now);
     let mut moved: Vec<Option<Surface>> = vec![None; src.faces.len()];
     // convex cylinder rounds the inward offset makes vanish: their surfaces follow once the planes beside them have moved
@@ -1690,7 +1703,13 @@ pub fn move_faces_body(src: &Body, mv: &dyn Fn(FaceId) -> FaceMove) -> Result<Bo
         let r = if let Some(s) = shift_of(f) {
             Ok(ck_topo::body::transform_surface(&face.surface, &ck_core::xform::Xform::translation(s)))
         } else if is_freeform(&face.surface) {
-            fit_face_with_margin(src, f, nat, reach)
+            // the cavity of a shell runs past an opened face only: a face that no differently moved face borders
+            // takes the reach a retry would end on
+            let alone = mixed && src.face_edges(f).into_iter().all(|e| src.edge_faces(e).into_iter().all(|g| g == f || (dist(g) - d).abs() < 1e-12 && shift_of(g).is_none()));
+            if alone && std::env::var_os("CK_OFFSET_DEBUG").is_some() {
+                eprintln!("short reach: {} d={d}", src.face_id_str(f));
+            }
+            fit_face_with_margin(src, f, nat, reach, u32::from(alone))
         } else {
             offset_surface(&face.surface, nat)
         };

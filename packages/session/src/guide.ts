@@ -8,11 +8,11 @@ export const GUIDE_VERSION = 'ck-guide/1';
 
 const FIELD_TABLE = `| type | key fields |
 |---|---|
-| sketch | plane(front=top XY, top=XZ, right=ZY), points[{id,x,y}], entities[line(p1,p2),circle(c,r),arc], constraints[] |
+| sketch | plane(front=top XY, top=XZ, right=ZY), points[{id,x,y}], entities[line(p1,p2),circle(c,r),arc], constraints[{type,id,refs,value?}; dimensions distance/hdist/vdist/pldist/radius/diameter/raddiff/angle/arclength (arc length in mm, one arc; a circle = circumference), driven:true = measured only] |
 | extrude | op(add/cut), sketch, end(blind/mid/throughBoth), depth, flip |
 | revolve | op, sketch, axis(sketch line id, defaults to first line), end, angle |
-| fillet | radius, edges[{faces:[a,b],at:[x,y,z]}] |
-| chamfer | chamferType(equal/angleDistance/distanceDistance/vertex), distance, distance2, angle, edges |
+| fillet | radius, edges[{faces:[a,b],at:[x,y,z]}], startOffset/endOffset (round stops short of the edge ends; start = the end nearer the pick; not with propagate), setback (distance each round runs before the corner patch at a vertex where three rounds meet) |
+| chamfer | chamferType(equal/angleDistance/distanceDistance/vertex/variable), distance, distance2, angle, edges, startOffset/endOffset, variable: startDistance (at the pick end) and endDistance |
 | shell | faces[] (empty = whole body), thickness, outward |
 | hole | sketch of point entities (sk.point(x,y) -> {type:"point",p}), kind(simple/cbore/csink), diameter, end(blind/through/upToNext/upToFace/offsetFromFace), depth (blind only), endRef (face, upToFace/offsetFromFace), offset, tip |
 | draft | neutral, faces[], angle |
@@ -23,7 +23,7 @@ const FIELD_TABLE = `| type | key fields |
 | sweep/loft | op, sketch(+path) / sketches[] |
 | lpattern/cpattern | seeds[], dir/axis, spacing/count, angle, equal, reverse |
 | mirror | seeds[], plane, body |
-| plane | mode(offset), base(std plane), offset |
+| plane | mode(offset, angle, perpendicular or mid), base(std plane), offset (in angle mode: along the tilted normal, after the rotation about axis), axis, angle, base2 (mid) |
 | moveFace | faces[], mode(offset: distance along the outward normal, + adds material; translate: translate [x,y,z], planar faces), flip. Neighbours extend, tangent fillets travel, names survive |
 | pressPull | faces[] (flat), continue "straight", distance (+ joins, - cuts, not 0), taper {type none/draft/scale, angle deg outward +, endScale}. The face continued as an extrude; moved end keeps the name, walls \`<id>.S.<tag>\`; query faceRun {faces} gives centre, normal, reach, endOf |
 | moveBody | bodies[]({face}/{surface}, default whole solid), translate [x,y,z], rotate {axis, origin, angle deg}, copy |
@@ -52,7 +52,11 @@ p.hole({ sketch: c, diameter: 8, flip: true });
 \`\`\`
 ### shell
 Shell faces[] empty hollows the whole body; list faces to keep them open.
-Thickness must stay below the thinnest wall (else shellTooThick).`;
+Thickness must stay below the thinnest wall (else shellTooThick).
+### numeric expressions
+A numeric field may be a number, a string such as "20+20" or "=w*2" (variables
+by name), or "1in" (units cm, m, in). A string with a comma is refused
+(badExpression); write 1.5, not "1,5".`;
 
 export function getGuide(): { version: string; text: string } {
   const fixes = listFixes()

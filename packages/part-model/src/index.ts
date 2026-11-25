@@ -62,9 +62,12 @@ export interface SketchConstraint {
     | 'horizontal' | 'vertical' | 'distance' | 'equal' | 'coincident'
     | 'tangent' | 'parallel' | 'perpendicular' | 'concentric'
     | 'collinear' | 'symmetric' | 'midpoint' | 'fix'
-    | 'radius' | 'diameter' | 'angle';
+    | 'radius' | 'diameter' | 'angle' | 'arclength';
   refs?: string[];
+  /** Dimensions: the driving value (mm, degrees for `angle`). A `driven` one has it written back as the measured value. */
   value?: number;
+  /** A measured (reference) dimension: ignored by the solver, `value` is the measurement of the solved sketch. */
+  driven?: boolean;
 }
 
 export interface SketchFeature {

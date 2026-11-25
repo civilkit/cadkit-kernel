@@ -203,6 +203,25 @@ fn explicit_regions_still_select_individual_regions() {
     assert!(lens > 0.0 && lens <= all + 1e-6, "{lens} {all}");
 }
 
+#[test]
+fn a_point_inside_a_region_picks_that_region_alone() {
+    // `regionAt`: the lens (the midpoint of the two centres is inside it) and a crescent (a point of circle 0 left
+    // of the lens), each alone, which no entity id can do (every id bounds a neighbour too)
+    let (r, d) = (11.0_f64, ((185.0_f64 - 165.469).hypot(74.55 - 82.7345)));
+    let lens_area = 2.0 * r * r * (d / (2.0 * r)).acos() - d / 2.0 * (4.0 * r * r - d * d).sqrt();
+    let mid = r#","regionAt":[[175.2345,78.64225]]"#;
+    close(removed(&TWO, mid), lens_area * T);
+    let crescent = r#","regionAt":[[178.0,70.0]]"#;
+    let c0 = removed(&TWO, crescent);
+    assert!((c0 - (PI * r * r - lens_area) * T).abs() < 1e-3, "{c0}");
+    // a point in no region is refused
+    let (e, _, _) = run(&plate(&TWO, "cut", r#","regionAt":[[0.0,0.0]]"#));
+    assert!(e.iter().any(|m| m.contains("extrudeRegionNone")), "{e:?}");
+    // a malformed list is refused
+    let (e, _, _) = run(&plate(&TWO, "cut", r#","regionAt":[[1.0]]"#));
+    assert!(!e.is_empty());
+}
+
 /// The corpus case (tools/cases/overlap_regions): a plate cut by two crossing holes of one sketch.
 #[test]
 fn corpus_case_removes_the_union() {

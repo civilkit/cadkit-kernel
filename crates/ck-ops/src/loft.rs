@@ -70,6 +70,12 @@ pub struct LoftOpts {
     /// along its normal with this tension (unit speed times the tension).
     pub start_normal: Option<f64>,
     pub end_normal: Option<f64>,
+    /// Angle (degrees, 0 < a < 180, default 90) of the rails at the first / last profile, measured from the profile
+    /// plane's outward direction to its normal: 90 leaves along the normal (the legacy `startNormal`), below 90 leans
+    /// outward (the solid flares), above 90 inward. Used only where `start_normal` / `end_normal` (the tension) is
+    /// set; a non-90 angle needs smooth closed planar outlines and a plain loft (see [`CONDITION_CORNER`]).
+    pub start_angle: Option<f64>,
+    pub end_angle: Option<f64>,
     /// `connectors[i]`: arc-length fraction at which profile `i` starts.
     pub connectors: Vec<Option<f64>>,
     /// `apexTangent` (0..2, default 1): speed of the rails arriving at a point (apex) end, as a multiple of
@@ -78,6 +84,33 @@ pub struct LoftOpts {
     /// The centre line (spine) the loft follows, see [`centre`]; `None` = no centre line. A straight spine
     /// changes nothing.
     pub centre: Option<centre::Spine>,
+    /// How the rails run between three or more sections, see [`RailSmoothing`].
+    pub rails: RailSmoothing,
+}
+
+/// The rails of a loft through three or more sections (`railSmoothing` on the feature).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RailSmoothing {
+    /// The natural cubic spline through the sections (the pinned oracle rule, C2): the default. When a middle
+    /// section is the widest the spline bulges past it (see [`OVERSHOOT_REL`]); the loft reports `overshoot`.
+    #[default]
+    Natural,
+    /// Shape-preserving local rails ([`smooth::through_local`], C1): a rail never leaves the range of its sections and
+    /// a section only shapes the stretches next to it. Plain lofts only (no guides, centre line, end tension, point end).
+    Local,
+    /// Natural, unless the solid overshoots the sections by more than [`OVERSHOOT_REL`]: then local.
+    Auto,
+}
+
+impl RailSmoothing {
+    pub fn parse(s: &str) -> Option<RailSmoothing> {
+        match s {
+            "natural" => Some(RailSmoothing::Natural),
+            "local" => Some(RailSmoothing::Local),
+            "auto" => Some(RailSmoothing::Auto),
+            _ => None,
+        }
+    }
 }
 
 /// End tangents of the rails (derivative with respect to the loft parameter).
@@ -85,6 +118,9 @@ pub struct LoftOpts {
 pub struct Ends {
     pub d0: Option<Vec3>,
     pub d1: Option<Vec3>,
+    /// The in-plane (outward) part of the end tangents of a leaning end condition, see [`Lean`]. `d0` / `d1` then hold the
+    /// part along the profile normal only.
+    pub lean: [Option<Lean>; 2],
     /// Apex rail speed factor (see `LoftOpts::apex_tangent`) for a point first / last station; the rails of a
     /// point end are clamped to the chord direction from the neighbouring station instead of the natural
     /// (zero second derivative) end, which lets the surface overshoot into a dent near the apex.
@@ -93,12 +129,35 @@ pub struct Ends {
     pub auto: bool,
 }
 
+/// The outward part of a directional end condition whose angle is not 90: the rails at an outline point `P` leave with
+/// `coef * outward(P)` added to the normal part, `outward` the unit in-plane normal of the outline pointing away from its
+/// inside (`sign * unit(T x axis)`, `sign` = +1 for an outline running counter-clockwise about `axis`).
+#[derive(Debug, Clone, Copy)]
+pub struct Lean {
+    pub coef: f64,
+    pub axis: Vec3,
+    pub sign: f64,
+}
+
+impl Lean {
+    /// The in-plane outward vector (times `coef`) for the outline tangent `t`.
+    fn at(&self, t: Vec3) -> Vec3 {
+        match t.cross(self.axis).try_normalize() {
+            Some(o) => o * (self.coef * self.sign),
+            None => Vec3::new(0.0, 0.0, 0.0),
+        }
+    }
+}
+
 impl Ends {
     fn arr(d: Option<Vec3>) -> Option<[f64; 3]> {
         d.map(|v| [v.x, v.y, v.z])
     }
     fn any(&self) -> bool {
         self.d0.is_some() || self.d1.is_some()
+    }
+    fn leaning(&self) -> bool {
+        self.lean.iter().any(|l| l.is_some())
     }
 }
 
@@ -112,6 +171,12 @@ pub struct LoftOut {
     pub end_centroids: [Vec3; 2],
     /// With a curved centre line: the largest distance of a profile point from it (mm).
     pub centre_radial: Option<f64>,
+    /// How far (mm) the solid's box leaves the union of the sections' boxes; 0 = inside.
+    pub overshoot: f64,
+    /// The overshoot above which it is worth a warning ([`OVERSHOOT_REL`] of the largest section).
+    pub overshoot_tol: f64,
+    /// The natural rails overshot the sections, so the shape-preserving local rails were used instead.
+    pub local_rails: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -151,6 +216,12 @@ pub const FAILED: &str = "loftFailed";
 pub const INVALID_RESULT: &str = "loftInvalidResult";
 /// A section whose polygon crosses itself and is small against the loft length.
 pub const SECTION_TOO_SMALL: &str = "loftSectionTooSmall";
+/// A directional end condition (angle other than 90) on a loft that cannot take it (guides, centre line, point end,
+/// open outline).
+pub const CONDITION_COMBO: &str = "loftConditionCombo";
+/// A directional end condition with an angle other than 90 on an outline with a corner: the outward direction is not
+/// defined there.
+pub const CONDITION_CORNER: &str = "loftConditionCorner";
 pub const PROFILE_SELF_INTERSECT: &str = "loftProfileSelfIntersect";
 /// An end section whose size is below this fraction of the loft length becomes a point section.
 pub const SNAP_REL: f64 = 1e-3;
@@ -354,11 +425,134 @@ fn self_intersection(c: &Chain) -> Option<f64> {
 /// alternative matchings of [`RETRIES`] are tried in order, and when none is valid the result is the
 /// structured error `loftInvalidResult {detail, hint}`.
 pub fn loft(feature: &str, profiles: &[ProfileIn], opts: &LoftOpts) -> Result<LoftOut, LoftError> {
+    let want_local = opts.rails == RailSmoothing::Local && local_applies(profiles, opts);
+    let mut out = smooth::with_local(want_local, || loft_gated(feature, profiles, opts))?;
+    out.local_rails = want_local;
+    // The natural rails (the pinned oracle rule) overshoot the sections when a middle section is the widest: the
+    // natural spline through widths 38, 47.5, 20 bulges 12 mm past the 47.5 section. The solid's excess over the union of
+    // the section boxes is reported in `overshoot` either way; with `Auto` the local rails are tried above
+    // [`OVERSHOOT_REL`] and the better of the two kept.
+    if let Some((lo, hi, size)) = section_box(profiles, opts) {
+        out.overshoot = overshoot_of(&out.body, lo, hi);
+        if opts.rails == RailSmoothing::Auto && out.overshoot > OVERSHOOT_REL * size && local_applies(profiles, opts) {
+            if let Ok(mut alt) = smooth::with_local(true, || loft_gated(feature, profiles, opts)) {
+                alt.overshoot = overshoot_of(&alt.body, lo, hi);
+                if alt.overshoot < out.overshoot {
+                    alt.local_rails = true;
+                    out = alt;
+                }
+            }
+        }
+        out.overshoot_tol = OVERSHOOT_REL * size;
+    }
+    Ok(out)
+}
+
+/// The solid may leave the box of the sections by this fraction of the largest section's diagonal before it is
+/// reported (and, with [`RailSmoothing::Auto`], the local rails tried). The natural rails of the oracle probes (random
+/// hull lofts that match the reference exactly) overshoot by up to 9 % on this measure, so natural stays the default; the
+/// bottle that prompted this overshoots by 10 to 12 %.
+pub const OVERSHOOT_REL: f64 = 0.06;
+
+/// The local rails stand in only for plain lofts: natural rails with end tangents, a point (apex) end, guides and a
+/// centre line keep their own constructions.
+fn local_applies(profiles: &[ProfileIn], opts: &LoftOpts) -> bool {
+    profiles.len() >= 3
+        && opts.guides.is_empty()
+        && opts.centre.is_none()
+        && opts.start_normal.is_none()
+        && opts.end_normal.is_none()
+        && profiles.iter().all(|p| !is_point_profile(p))
+}
+
+/// The lean of an end condition on `chain`: refused at a corner of the outline; its orientation about `axis` from the
+/// sampled polygon.
+fn lean_of(chain: &Chain, axis: Vec3, coef: f64) -> Result<Option<Lean>, LoftError> {
+    let n = chain.pieces.len();
+    for j in 0..n {
+        let (a, b) = (piece_tangent(&chain.pieces[j].g, 1.0), piece_tangent(&chain.pieces[(j + 1) % n].g, 0.0));
+        if let (Some(a), Some(b)) = (a, b) {
+            if a.dot(b) < 1.0 - 1e-6 {
+                return Err(LoftError::with(
+                    CONDITION_CORNER,
+                    "an end condition with an angle other than 90 degrees needs a smooth outline, and the section has a corner",
+                    "round the corners of the section (fillet the sketch), or set the angle to 90 degrees",
+                ));
+            }
+        }
+    }
+    let mut area = 0.0;
+    for p in &chain.pieces {
+        let mut prev = p.g.at(0.0);
+        for i in 1..=16 {
+            let q = p.g.at(i as f64 / 16.0);
+            area += prev.cross(q).dot(axis);
+            prev = q;
+        }
+    }
+    if area.abs() < 1e-12 {
+        return Err(LoftError::failed("the section has no area for an end condition", "use a section that encloses an area"));
+    }
+    Ok(Some(Lean { coef, axis, sign: if area > 0.0 { 1.0 } else { -1.0 } }))
+}
+
+/// Unit tangent of a piece at its start (`s` = 0) or end (1), in travel direction.
+fn piece_tangent(g: &Geom3, s: f64) -> Option<Vec3> {
+    g.to_nurbs().derivs(s, 1).get(1).and_then(|d| d.try_normalize())
+}
+
+/// Box (`lo`, `hi`) of all sections and the largest section's box diagonal. None when a section cannot be chained.
+fn section_box(profiles: &[ProfileIn], opts: &LoftOpts) -> Option<(Vec3, Vec3, f64)> {
+    let chains = chains_of(profiles, opts).ok()?;
+    let inf = f64::INFINITY;
+    let (mut lo, mut hi) = (Vec3::new(inf, inf, inf), Vec3::new(-inf, -inf, -inf));
+    let mut size = 0.0f64;
+    for c in &chains {
+        let (mut l, mut h) = (Vec3::new(inf, inf, inf), Vec3::new(-inf, -inf, -inf));
+        for p in &c.pieces {
+            for i in 0..=32 {
+                let q = p.g.at(i as f64 / 32.0);
+                l = l.min(q);
+                h = h.max(q);
+            }
+        }
+        if l.x.is_finite() {
+            size = size.max((h - l).len());
+            lo = lo.min(l);
+            hi = hi.max(h);
+        }
+    }
+    (size > 0.0).then_some((lo, hi, size))
+}
+
+/// How far the body's box leaves the box (`lo`, `hi`) in any direction.
+fn overshoot_of(body: &Body, lo: Vec3, hi: Vec3) -> f64 {
+    let (a, b) = body.bbox();
+    [lo.x - a.x, lo.y - a.y, lo.z - a.z, b.x - hi.x, b.y - hi.y, b.z - hi.z].into_iter().fold(0.0, f64::max)
+}
+
+/// A section that is one full circle.
+fn is_full_circle(p: &ProfileIn) -> bool {
+    matches!(p.segs.as_slice(), [s] if matches!(s.curve, Curve::Circle { .. }) && ((s.t1 - s.t0).abs() - std::f64::consts::TAU).abs() < 1e-9)
+}
+
+fn loft_gated(feature: &str, profiles: &[ProfileIn], opts: &LoftOpts) -> Result<LoftOut, LoftError> {
     let out = loft_once(feature, profiles, opts, Strategy::default())?;
     if opts.surface {
         return Ok(out);
     }
-    let first = ck_check::validate(&out.body, GATE_TOL);
+    // FACE_FOLD is read only for sections that are full circles: that is where the pairing twists and folds the
+    // blend between sections over itself. A free-form blade (spline sections) may turn its normal sharply and is
+    // judged by `validate` alone.
+    let circles = profiles.iter().any(is_full_circle);
+    let issues = |b: &Body| {
+        let mut v = ck_check::validate(b, GATE_TOL);
+        if circles {
+            ck_check::fold::check(b, &ck_check::Ctl::unlimited(), &mut v);
+        }
+        v
+    };
+    let first = issues(&out.body);
     if first.is_empty() {
         return Ok(out);
     }
@@ -372,14 +566,20 @@ pub fn loft(feature: &str, profiles: &[ProfileIn], opts: &LoftOpts) -> Result<Lo
     if !cap_only {
         for strat in RETRIES {
             if let Ok(o) = loft_once(feature, profiles, opts, strat) {
-                if ck_check::validate(&o.body, GATE_TOL).is_empty() {
+                if issues(&o.body).is_empty() {
                     return Ok(o);
                 }
             }
         }
     }
     let ents: Vec<String> = first.iter().take(3).map(|i| format!("{} at {}", i.code, i.entity)).collect();
-    let (detail, hint) = if cap_only {
+    let folded = first.iter().any(|i| i.code == "FACE_FOLD");
+    let (detail, hint) = if folded {
+        (
+            format!("the lofted surface folds over itself, so part of it would face into the solid ({})", ents.join(", ")),
+            "the sections are paired with a twist: clear the connectors or set them so that every section starts at the matching place (the seams then run straight), or add intermediate sections",
+        )
+    } else if cap_only {
         (
             format!("an end section is not a simple closed curve ({}): its outline folds back on itself", ents.join(", ")),
             "redraw the first or last section without nearly-coincident points (no double clicks or tiny kinks), or use fewer spline points",
@@ -397,12 +597,13 @@ pub fn loft(feature: &str, profiles: &[ProfileIn], opts: &LoftOpts) -> Result<Lo
 const GATE_TOL: f64 = 1e-6;
 
 /// Alternative matchings tried, in order, when the default matching gives an invalid solid.
-const RETRIES: [Strategy; 5] = [
-    Strategy { shift: 0, flip: false, even: true },
-    Strategy { shift: 1, flip: false, even: false },
-    Strategy { shift: 0, flip: true, even: false },
-    Strategy { shift: 0, flip: true, even: true },
-    Strategy { shift: 2, flip: false, even: true },
+const RETRIES: [Strategy; 6] = [
+    Strategy { shift: 0, flip: false, even: false, keep_starts: true },
+    Strategy { shift: 0, flip: false, even: true, keep_starts: false },
+    Strategy { shift: 1, flip: false, even: false, keep_starts: false },
+    Strategy { shift: 0, flip: true, even: false, keep_starts: false },
+    Strategy { shift: 0, flip: true, even: true, keep_starts: false },
+    Strategy { shift: 2, flip: false, even: true, keep_starts: false },
 ];
 
 fn loft_once(feature: &str, profiles: &[ProfileIn], opts: &LoftOpts, strat: Strategy) -> Result<LoftOut, LoftError> {
@@ -446,19 +647,44 @@ fn loft_once(feature: &str, profiles: &[ProfileIn], opts: &LoftOpts, strat: Stra
     if k < 2 || profiles.len() < 2 {
         return Err(LoftError::failed("a loft needs at least two sections", "select two or more sections"));
     }
+    let leaning = |a: Option<f64>| a.map_or(false, |a| (a - 90.0).abs() > 1e-9);
+    if (opts.start_normal.is_some() && leaning(opts.start_angle)) || (opts.end_normal.is_some() && leaning(opts.end_angle)) {
+        if !opts.guides.is_empty() || opts.centre.is_some() || !st.closed || st.chains.iter().any(|c| c.is_point()) {
+            return Err(LoftError::with(
+                CONDITION_COMBO,
+                "an end condition with an angle other than 90 degrees needs a plain loft between closed sections",
+                "set the angle to 90, or remove the guides / centre line / point end, or use closed sections",
+            ));
+        }
+    }
     if let Some(t) = opts.start_normal {
         let mut n = profiles[0].frame.z;
         if n.dot(cen[1] - cen[0]) < 0.0 {
             n = -n;
         }
-        ends.d0 = Some(n * t);
+        let a = opts.start_angle.unwrap_or(90.0);
+        if leaning(Some(a)) {
+            let r = a.to_radians();
+            ends.d0 = Some(n * (t * r.sin()));
+            ends.lean[0] = lean_of(&st.chains[0], profiles[0].frame.z, t * r.cos())?;
+        } else {
+            ends.d0 = Some(n * t);
+        }
     }
     if let Some(t) = opts.end_normal {
         let mut n = profiles[profiles.len() - 1].frame.z;
         if n.dot(cen[k - 1] - cen[k - 2]) < 0.0 {
             n = -n;
         }
-        ends.d1 = Some(n * t);
+        let a = opts.end_angle.unwrap_or(90.0);
+        if leaning(Some(a)) {
+            let r = a.to_radians();
+            ends.d1 = Some(n * (t * r.sin()));
+            // the condition is symmetric: leaning outward at the last profile means the rail arrives from the outside
+            ends.lean[1] = lean_of(&st.chains[k - 1], profiles[profiles.len() - 1].frame.z, -t * r.cos())?;
+        } else {
+            ends.d1 = Some(n * t);
+        }
     }
     // centre line: the sections between the profiles follow the spine (ck-ops/src/loft/centre.rs)
     let mut centre_radial = None;
@@ -509,7 +735,7 @@ fn loft_once(feature: &str, profiles: &[ProfileIn], opts: &LoftOpts, strat: Stra
     // through them take no end derivative of their own
     let build_ends = if centre_radial.is_some() { Ends { d0: None, d1: None, ..ends } } else { ends };
     let body = build(feature, &st, profiles, opts.surface, &grails, build_ends)?;
-    Ok(LoftOut { body, starts, ends, end_centroids: [cen[0], cen[k - 1]], centre_radial })
+    Ok(LoftOut { body, starts, ends, end_centroids: [cen[0], cen[k - 1]], centre_radial, overshoot: 0.0, overshoot_tol: f64::INFINITY, local_rails: false })
 }
 
 // ------------------------------------------------------------------ faces
@@ -637,6 +863,10 @@ fn side(st: &Stations, j: usize, ends: Ends) -> Result<Side, LoftError> {
         return Err(LoftError::failed("a section has no piece to match", "redraw the sections with the same number of points"));
     }
     let cs = compat(pieces.iter().map(|g| g.to_nurbs()).collect())?;
+    // a leaning end condition: the sampled blend carries the outward part of the end tangent along the outline
+    if ends.leaning() {
+        return Ok(Side { surface: blend_surface(&cs, &st.ts, ends)?, cs, plane: None });
+    }
     // flat quad of straight pieces (every station's piece in one plane)
     if !ends.any() && pieces.iter().all(|g| g.is_line()) {
         let (a0, b0, a1, b1) = (pieces[0].start(), pieces[0].end(), pieces[k - 1].start(), pieces[k - 1].end());
@@ -810,6 +1040,14 @@ fn blend_surface(cs: &[BSplineCurve], ts: &[f64], ends: Ends) -> Result<Surface,
         let pts: Vec<[f64; 3]> = cs.iter().map(|c| { let p = c.eval(u); [p.x, p.y, p.z] }).collect();
         let kk = pts.len();
         let (mut d0, mut d1) = (Ends::arr(ends.d0), Ends::arr(ends.d1));
+        for (d, l, c) in [(&mut d0, ends.lean[0], &cs[0]), (&mut d1, ends.lean[1], &cs[kk - 1])] {
+            if let (Some(l), Some(dv)) = (l, d.as_mut()) {
+                if let Some(t) = c.derivs(u, 1).get(1) {
+                    let o = l.at(*t);
+                    *dv = [dv[0] + o.x, dv[1] + o.y, dv[2] + o.z];
+                }
+            }
+        }
         if kk > 2 {
             if let Some(f) = ends.apex[0] {
                 d0 = Some(apex_rail(&pts[0], &pts[1], ts[1] - ts[0], f));
@@ -857,7 +1095,7 @@ fn gordon_side(st: &Stations, j: usize, lf: &dyn Fn(f64) -> Vec3, rf: &dyn Fn(f6
     let spans = ck_geom::nurbs::basis::distinct_knots(&cs[0].knots).len().saturating_sub(1).max(1);
     let n = 24 * spans + 1;
     let us: Vec<f64> = (0..n).map(|a| a as f64 / (n - 1) as f64).collect();
-    let per = 8;
+    let per = guides::RAIL_SAMPLES;
     let mut vs: Vec<f64> = vec![];
     for s in 0..k - 1 {
         for i in 0..per {
@@ -1126,7 +1364,20 @@ fn build(feature: &str, st: &Stations, profiles: &[ProfileIn], surface: bool, gr
             }
             None => {
                 let pts: Vec<Vec3> = (0..k).map(|s| vp(s, i)).collect();
-                rail_curves.push(rail(&st.ts, &pts, ends)?);
+                let mut e = ends;
+                if ends.leaning() {
+                    // the rail leaves a vertex with the outward part of the outline at that vertex
+                    for (slot, l, c) in [(0usize, ends.lean[0], 0usize), (1, ends.lean[1], k - 1)] {
+                        if let Some(l) = l {
+                            let g = &st.chains[c].pieces[i % n].g;
+                            if let Some(t) = piece_tangent(g, if i < n { 0.0 } else { 1.0 }) {
+                                let d = if slot == 0 { &mut e.d0 } else { &mut e.d1 };
+                                *d = d.map(|v| v + l.at(t));
+                            }
+                        }
+                    }
+                }
+                rail_curves.push(rail(&st.ts, &pts, e)?);
             }
         }
     }

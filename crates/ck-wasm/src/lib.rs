@@ -35,6 +35,8 @@ pub mod refdiff;
 pub mod regen_cache;
 pub mod view_cache;
 pub mod sketch_q;
+pub mod f3d_features;
+pub mod sldasm;
 
 #[cfg(target_arch = "wasm32")]
 mod host {

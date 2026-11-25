@@ -19,13 +19,25 @@ ck-ops = { path = "../ck-ops" }
 ck-io = { path = "../ck-io" }
 ck-sldprt = { path = "../ck-sldprt" }
 ck-swedit = { path = "../ck-swedit" }
+# the .f3d decoder is NOT linked by default: the app loads it as its own wasm (crates/ck-wasm-f3d, docs/f3d-lazy.md)
+ck-wasm-f3d = { path = "../ck-wasm-f3d", default-features = false, optional = true }
 ck-skp = { path = "../ck-skp", optional = true }
 ck-tess = { path = "../ck-tess" }
 ck-recog = { path = "../ck-recog" }
 ck-mesh = { path = "../ck-mesh" }
 ck-text = { path = "../ck-text" }
+# `f3dFeatures`: the Fusion timeline mapping (links the regen the kernel has already); the decoder stays in its own wasm
+ck-f3d-features = { path = "../ck-f3d-features" }
+ck-f3d-dump = { path = "../ck-f3d-dump" }
+serde_json.workspace = true
+
+[dev-dependencies]
+ck-asm = { path = "../ck-asm" }
 
 [features]
+# Inline .f3d decoding in this module (+ the decoder's size): for the native service and tests. The wasm the app loads is built
+# without it and takes decoded bodies from ck_f3d.wasm instead.
+f3d = ["dep:ck-wasm-f3d"]
 # SketchUp (.skp) import (`importSkp`), +320 KB of wasm (+4.6 %): on by default, see docs/skp.md
 default = ["skp"]
 skp = ["dep:ck-skp"]

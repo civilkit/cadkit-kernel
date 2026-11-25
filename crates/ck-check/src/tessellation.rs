@@ -75,8 +75,15 @@ fn point_tri_dist(p: [f64; 3], a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> f64 {
     dot(d, d).sqrt()
 }
 
-/// For each open edge `(face, a, b)`: `false` when nine samples along it all lie within `crack` of a triangle of another face.
-fn uncovered_edges(positions: &[f32], tri_face: &[i32], edges: &[(i32, [f64; 3], [f64; 3])], crack: f64) -> Vec<bool> {
+/// Whether the faces `a` and `b` may explain a hairline crack between them: always when `adj` is `None`, else when `adj` says
+/// they are neighbours in the B-rep.
+fn may_pair(adj: Option<&dyn Fn(i32, i32) -> bool>, a: i32, b: i32) -> bool {
+    a != b && adj.map_or(true, |f| f(a, b))
+}
+
+/// For each open edge `(face, a, b)`: `None` when some of nine samples along it lie farther than `crack` from every triangle of
+/// another (neighbouring, see [`may_pair`]) face; else `Some(gap)`, the largest distance of a sample to the nearest such triangle.
+fn uncovered_edges(positions: &[f32], tri_face: &[i32], edges: &[(i32, [f64; 3], [f64; 3])], crack: f64, adj: Option<&dyn Fn(i32, i32) -> bool>) -> Vec<Option<f64>> {
     let nt = positions.len() / 9;
     let pt = |t: usize, k: usize| [positions[9 * t + 3 * k] as f64, positions[9 * t + 3 * k + 1] as f64, positions[9 * t + 3 * k + 2] as f64];
     let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
@@ -91,7 +98,7 @@ fn uncovered_edges(positions: &[f32], tri_face: &[i32], edges: &[(i32, [f64; 3],
     }
     let ext = (0..3).map(|d| hi[d] - lo[d]).fold(0.0, f64::max);
     if nt == 0 || !(ext > 0.0) {
-        return vec![true; edges.len()];
+        return vec![None; edges.len()];
     }
     let cs = (ext / 48.0).max(crack * 2.0);
     let cell = |p: [f64; 3]| [((p[0] - lo[0]) / cs).floor() as i64, ((p[1] - lo[1]) / cs).floor() as i64, ((p[2] - lo[2]) / cs).floor() as i64];
@@ -127,18 +134,24 @@ fn uncovered_edges(positions: &[f32], tri_face: &[i32], edges: &[(i32, [f64; 3],
     edges
         .iter()
         .map(|(face, a, b)| {
-            let covered = (0..=8).all(|k| {
+            let mut gap = 0.0f64;
+            for k in 0..=8 {
                 let u = k as f64 / 8.0;
                 let p = [a[0] + u * (b[0] - a[0]), a[1] + u * (b[1] - a[1]), a[2] + u * (b[2] - a[2])];
-                grid.get(&cell(p)).map_or(&[][..], |v| &v[..]).iter().chain(big.iter()).any(|&t| {
+                let mut best = f64::INFINITY;
+                for &t in grid.get(&cell(p)).map_or(&[][..], |v| &v[..]).iter().chain(big.iter()) {
                     let t = t as usize;
                     let (mn, mx) = &boxes[t];
-                    tri_face.get(t).copied().unwrap_or(-1) != *face
-                        && (0..3).all(|d| p[d] >= mn[d] && p[d] <= mx[d])
-                        && point_tri_dist(p, pt(t, 0), pt(t, 1), pt(t, 2)) <= crack
-                })
-            });
-            !covered
+                    if may_pair(adj, *face, tri_face.get(t).copied().unwrap_or(-1)) && (0..3).all(|d| p[d] >= mn[d] && p[d] <= mx[d]) {
+                        best = best.min(point_tri_dist(p, pt(t, 0), pt(t, 1), pt(t, 2)));
+                    }
+                }
+                if best > crack {
+                    return None;
+                }
+                gap = gap.max(best);
+            }
+            Some(gap)
         })
         .collect()
 }
@@ -165,14 +178,20 @@ fn exact_closed(positions: &[f32]) -> bool {
 /// faces that sample their shared edge with different points (a T-junction, a hairline crack of at most the chord deviation)
 /// leave such pairs, and they are no visible hole. `crack = 0` counts every edge used once.
 pub fn open_mesh_edges_tol(positions: &[f32], tri_face: &[i32], q: f64, crack: f64) -> (usize, Vec<i32>) {
-    let (open, faces, _) = open_mesh_edges_detail(positions, tri_face, q, crack);
+    let (open, faces, _) = open_mesh_edges_detail(positions, tri_face, q, crack, None);
     (open, faces)
 }
 
-/// [`open_mesh_edges_tol`] that also returns the faces of the open edges it forgave as hairlines (one entry per forgiven
-/// edge, so a face with three forgiven edges appears three times). A body with a missing face thinner than `crack` gives
-/// exactly such edges, so the caller can report them without calling the mesh open.
-pub fn open_mesh_edges_detail(positions: &[f32], tri_face: &[i32], q: f64, crack: f64) -> (usize, Vec<i32>, Vec<i32>) {
+/// [`open_mesh_edges_tol`] that also returns the open edges it forgave as hairlines: `(face, gap)` per forgiven edge (so a
+/// face with three forgiven edges appears three times), `gap` the largest distance between the edge and the face that
+/// covers it. A body with a missing face thinner than `crack` gives exactly such edges, so the caller can report them
+/// without calling the mesh open.
+///
+/// `adj(a, b)` says whether faces `a` and `b` are neighbours in the B-rep (share an edge). With `Some(adj)` an open edge is
+/// forgiven only against a neighbouring face: a sampling difference along a shared edge explains the crack, but an open
+/// edge next to a face that is no neighbour is a hole (a thin face between two neighbours that lost its triangles leaves
+/// its two rims exactly like that). `None` forgives against any other face.
+pub fn open_mesh_edges_detail(positions: &[f32], tri_face: &[i32], q: f64, crack: f64, adj: Option<&dyn Fn(i32, i32) -> bool>) -> (usize, Vec<i32>, Vec<(i32, f64)>) {
     // A mesh that is closed with its vertices matched bit for bit has no hole. The weld below then can only invent one: it
     // joins each vertex to the first representative within `q`, so a feature smaller than `q` (the rim circle of radius 1e-4
     // where a revolved cone almost reaches its axis, crash fuzz `case_244`) is merged into a few points in an order-dependent
@@ -180,7 +199,7 @@ pub fn open_mesh_edges_detail(positions: &[f32], tri_face: &[i32], q: f64, crack
     if exact_closed(positions) {
         return (0, vec![], vec![]);
     }
-    let mut forgiven: Vec<i32> = vec![];
+    let mut forgiven: Vec<(i32, f64)> = vec![];
     let n = positions.len() / 3;
     let cell = |p: [f64; 3]| [(p[0] / q).floor() as i64, (p[1] / q).floor() as i64, (p[2] / q).floor() as i64];
     let mut reps: Vec<[f64; 3]> = vec![];
@@ -254,7 +273,9 @@ pub fn open_mesh_edges_detail(positions: &[f32], tri_face: &[i32], q: f64, crack
                 }
             }
         }
-        let near_other = |p: [f64; 3], face: i32| -> bool {
+        // distance from `p` to the nearest open edge of another (neighbouring) face, when within `crack`
+        let near_other = |p: [f64; 3], face: i32| -> Option<f64> {
+            let mut best: Option<f64> = None;
             let c = cell(p);
             for dx in -1..=1 {
                 for dy in -1..=1 {
@@ -262,29 +283,38 @@ pub fn open_mesh_edges_detail(positions: &[f32], tri_face: &[i32], q: f64, crack
                         if let Some(v) = grid.get(&[c[0] + dx, c[1] + dy, c[2] + dz]) {
                             for &j in v {
                                 let (f, a, b) = &open_edges[j as usize];
-                                if *f != face && seg_dist(p, *a, *b) <= crack {
-                                    return true;
+                                if may_pair(adj, face, *f) {
+                                    let d = seg_dist(p, *a, *b);
+                                    if d <= crack && best.map_or(true, |m| d < m) {
+                                        best = Some(d);
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
-            false
+            best
         };
-        let keep: Vec<bool> = open_edges.iter().map(|(f, a, b)| !(near_other(*a, *f) && near_other(*b, *f))).collect();
-        forgiven.extend(open_edges.iter().zip(&keep).filter(|(_, k)| !**k).map(|(e, _)| e.0));
-        let mut k = keep.iter();
-        open_edges.retain(|_| *k.next().unwrap());
+        let gaps: Vec<Option<f64>> = open_edges
+            .iter()
+            .map(|(f, a, b)| match (near_other(*a, *f), near_other(*b, *f)) {
+                (Some(x), Some(y)) => Some(x.max(y)),
+                _ => None,
+            })
+            .collect();
+        forgiven.extend(open_edges.iter().zip(&gaps).filter_map(|(e, g)| g.map(|g| (e.0, g))));
+        let mut k = gaps.iter();
+        open_edges.retain(|_| k.next().unwrap().is_none());
     }
     if crack > 0.0 && !open_edges.is_empty() {
         // An open edge whose every sample lies within `crack` of a triangle of ANOTHER face has a neighbour that covers it
         // to within the chord deviation: the two faces sample their shared edge differently, leaving a hairline of that
         // width (a fine trim tail ending at a cusp, say), which is no hole.
-        let keep = uncovered_edges(positions, tri_face, &open_edges, crack);
-        forgiven.extend(open_edges.iter().zip(&keep).filter(|(_, k)| !**k).map(|(e, _)| e.0));
-        let mut k = keep.iter();
-        open_edges.retain(|_| *k.next().unwrap());
+        let gaps = uncovered_edges(positions, tri_face, &open_edges, crack, adj);
+        forgiven.extend(open_edges.iter().zip(&gaps).filter_map(|(e, g)| g.map(|g| (e.0, g))));
+        let mut k = gaps.iter();
+        open_edges.retain(|_| k.next().unwrap().is_none());
     }
     if crack > 0.0 && std::env::var("CK_OPEN_DBG").is_ok() {
         for (f, a, b) in &open_edges {
@@ -398,17 +428,33 @@ fn check_mesh_inner(b: &Body, positions: &[f32], tri_face: &[i32], failed: &[usi
     let q = (hi * 1e-5).max(1e-4);
     // a shared edge sampled differently by its two faces leaves a hairline of at most the chord deviation: not a hole
     let crack = (hi * 2e-3).max(0.01);
-    let (open, faces, forgiven) = ctl.stage("meshOpenEdges", || open_mesh_edges_detail(positions, tri_face, q, crack)).unwrap_or((0, vec![], vec![]));
+    // faces are neighbours when some live B-rep edge borders both (seam pieces of one surface included)
+    let mut pairs: ck_core::fxhash::FxHashSet<(i32, i32)> = Default::default();
+    {
+        let index: FxHashMap<_, i32> = ids.iter().enumerate().map(|(i, &f)| (f, i as i32)).collect();
+        for e in b.edge_ids() {
+            let fs: Vec<i32> = b.edge_faces(e).iter().filter_map(|f| index.get(f).copied()).collect();
+            for (i, &x) in fs.iter().enumerate() {
+                for &y in &fs[i + 1..] {
+                    pairs.insert((x.min(y), x.max(y)));
+                }
+            }
+        }
+    }
+    let adj = |x: i32, y: i32| pairs.contains(&(x.min(y), x.max(y)));
+    let (open, faces, forgiven) = ctl.stage("meshOpenEdges", || open_mesh_edges_detail(positions, tri_face, q, crack, Some(&adj))).unwrap_or((0, vec![], vec![]));
     if !forgiven.is_empty() {
-        let mut fs = forgiven.clone();
+        let max_gap = forgiven.iter().fold(0.0f64, |m, e| m.max(e.1));
+        let mut fs: Vec<i32> = forgiven.iter().map(|e| e.0).collect();
         fs.sort_unstable();
         fs.dedup();
         let names: Vec<String> = fs.iter().take(6).filter_map(|&i| ids.get(i as usize).map(|&f| b.face_id_str(f))).collect();
         notes.push(format!(
-            "TESSELLATION_HAIRLINE {}: {} open mesh edges forgiven as hairline cracks (within {:.3e} mm of another face); a face missing but thinner than that would look the same",
+            "TESSELLATION_HAIRLINE {}: {} open mesh edges forgiven as hairline cracks between neighbouring faces (within {:.3e} mm, measured gap up to {:.3e} mm); a face missing but thinner than that would look the same",
             names.join("|"),
             forgiven.len(),
-            crack
+            crack,
+            max_gap
         ));
     }
     if open > 0 {
@@ -471,12 +517,49 @@ mod tests {
             [[0., 0.004, -0.5], [4., 0.004, 0.5], [0., 0.004, 0.5]],
         ];
         let pos: Vec<f32> = tris.iter().flatten().flat_map(|p| p.map(|x| x as f32)).collect();
-        let (open, _, forgiven) = open_mesh_edges_detail(&pos, &[0, 1, 1], 1e-4, 0.01);
-        let (strict, _, none) = open_mesh_edges_detail(&pos, &[0, 1, 1], 1e-4, 0.0);
+        let (open, _, forgiven) = open_mesh_edges_detail(&pos, &[0, 1, 1], 1e-4, 0.01, Some(&|_, _| true));
+        let (strict, _, none) = open_mesh_edges_detail(&pos, &[0, 1, 1], 1e-4, 0.0, None);
         assert_eq!((open, forgiven.len()), (6, 1), "the x-axis edge of face 0 is forgiven and listed");
+        assert!((forgiven[0].1 - 0.004).abs() < 1e-6, "the measured gap is reported: {:?}", forgiven);
         assert_eq!((strict, none.len()), (7, 0), "no tolerance, nothing forgiven");
-        let (lone, _, f) = open_mesh_edges_detail(&pos[..9], &[0], 1e-4, 0.01);
+        let (lone, _, f) = open_mesh_edges_detail(&pos[..9], &[0], 1e-4, 0.01, None);
         assert_eq!((lone, f.len()), (3, 0), "a hole rim is reported, not forgiven");
+    }
+
+    /// A thin strip face (face 1) between faces 0 and 2 lost all its triangles: the two rims it leaves are 0.05 apart, inside
+    /// the crack tolerance. Face 0 and face 2 are both neighbours of the strip but not of each other, so the rims are holes.
+    /// If the faces were neighbours (a shared edge sampled differently) the same geometry is a forgiven hairline.
+    #[test]
+    fn rims_of_a_missing_thin_strip_between_non_neighbours_are_a_hole() {
+        let tris: [[[f64; 3]; 3]; 2] = [
+            [[0., 0., 0.], [4., 0., 0.], [0., 4., 0.]],
+            [[0., 0.05, 0.], [4., 0.05, 0.], [0., 0.05, 4.]],
+        ];
+        let pos: Vec<f32> = tris.iter().flatten().flat_map(|p| p.map(|x| x as f32)).collect();
+        let faces = [0, 2];
+        let strip_only = |a: i32, b: i32| (a == 0 && b == 1) || (a == 1 && b == 0) || (a == 1 && b == 2) || (a == 2 && b == 1);
+        let (old, _, old_f) = open_mesh_edges_detail(&pos, &faces, 1e-4, 0.2, None);
+        let (open, open_faces, forgiven) = open_mesh_edges_detail(&pos, &faces, 1e-4, 0.2, Some(&strip_only));
+        assert_eq!((old, old_f.len()), (4, 2), "without adjacency the two rims facing each other are forgiven");
+        assert_eq!((open, forgiven.len()), (6, 0), "faces 0 and 2 are no neighbours: both rims stay open");
+        assert_eq!(open_faces, vec![0, 2]);
+        let (open, _, forgiven) = open_mesh_edges_detail(&pos, &faces, 1e-4, 0.2, Some(&|a, b| a != b));
+        assert_eq!((open, forgiven.len()), (4, 2), "neighbouring faces: forgiven as before");
+        let widest = forgiven.iter().fold(0.0f64, |m, e| m.max(e.1));
+        assert!((widest - 0.05).abs() < 1e-6, "gap {:?}", forgiven);
+    }
+
+    #[test]
+    fn covered_edge_is_not_forgiven_against_a_non_neighbour() {
+        // the fine-trim-tail case (face 1 covers face 0's edge at 0.004) with faces that do not share an edge: a hole
+        let tris: [[[f64; 3]; 3]; 3] = [
+            [[0., 0., 0.], [4., 0., 0.], [0., 4., 0.]],
+            [[0., 0.004, -0.5], [4., 0.004, -0.5], [4., 0.004, 0.5]],
+            [[0., 0.004, -0.5], [4., 0.004, 0.5], [0., 0.004, 0.5]],
+        ];
+        let pos: Vec<f32> = tris.iter().flatten().flat_map(|p| p.map(|x| x as f32)).collect();
+        let (open, _, f) = open_mesh_edges_detail(&pos, &[0, 1, 1], 1e-4, 0.01, Some(&|_, _| false));
+        assert_eq!((open, f.len()), (7, 0));
     }
 
     #[test]
@@ -513,12 +596,12 @@ mod tests {
             }
         }
         let faces = vec![0; pos.len() / 9];
-        assert_eq!(open_mesh_edges_detail(&pos, &faces, 1.67e-4, 0.0).0, 0);
+        assert_eq!(open_mesh_edges_detail(&pos, &faces, 1.67e-4, 0.0, None).0, 0);
         // a real hole is still one: a tetrahedron without one face
         let p = [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]];
         let tet = [[0, 2, 1], [0, 1, 3], [1, 2, 3], [0, 3, 2]];
         let pos = flat(&p, &tet);
-        assert_eq!(open_mesh_edges_detail(&pos, &[0, 1, 2, 3], 1.67e-4, 0.0).0, 0);
-        assert_eq!(open_mesh_edges_detail(&pos[..27], &[0, 1, 2], 1.67e-4, 0.0).0, 3);
+        assert_eq!(open_mesh_edges_detail(&pos, &[0, 1, 2, 3], 1.67e-4, 0.0, None).0, 0);
+        assert_eq!(open_mesh_edges_detail(&pos[..27], &[0, 1, 2], 1.67e-4, 0.0, None).0, 3);
     }
 }

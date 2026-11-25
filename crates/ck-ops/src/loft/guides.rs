@@ -32,6 +32,11 @@ pub const GUIDE_INVALID: &str = "loftGuideInvalid";
 pub const GUIDE_MISS: &str = "loftGuideMiss";
 pub const GUIDE_ORDER: &str = "loftGuideOrder";
 
+/// Samples of a guide rail between two stations. The rail is the natural spline through these samples, and the Gordon side
+/// face is sampled at the SAME loft parameters, so that the face contains the rail exactly; two different counts made the
+/// face boundary deviate from the rail by 0.3 mm on a guide that bends at a profile (`loftInvalidResult`, EDGE_OFF_SURFACE).
+pub const RAIL_SAMPLES: usize = 16;
+
 /// One guide curve as a dense polyline (travel direction as drawn).
 #[derive(Debug, Clone)]
 pub struct GuideIn {
@@ -170,6 +175,9 @@ pub fn guided_stations(mut chains: Vec<Chain>, guides: &[GuideIn]) -> Result<Gui
                 *c = c.reversed();
             }
         }
+    }
+    if closed {
+        super::stations::align_circles_for_guides(&mut chains);
     }
     let size = chains
         .iter()
@@ -366,7 +374,7 @@ pub fn guided_stations(mut chains: Vec<Chain>, guides: &[GuideIn]) -> Result<Gui
                 c.pieces[n - 1].g.end()
             }
         };
-        let per = 12;
+        let per = RAIL_SAMPLES;
         let mut vs = vec![];
         let mut pts: Vec<[f64; 3]> = vec![];
         for s in 0..k - 1 {

@@ -42,6 +42,13 @@ fn corpus() {
     let mut per_kind: BTreeMap<String, [usize; 3]> = BTreeMap::new(); // rebuilt, unsupported, skipped
     let mut causes: BTreeMap<String, usize> = BTreeMap::new();
     let (mut n_exact, mut n_close, mut n_fallback, mut n_noimport) = (0, 0, 0, 0);
+    // sketches of the rebuilt histories: (all, the file's own sketch, with at least one dimension, dimensions, relations), over the
+    // files that rebuilt exactly or closely, and over every file's editable history (a prefix counts)
+    let mut sk_count = [0usize; 5];
+    // the end spec word the file stores against what the rebuilt step shows: (word, a depth is listed, reads as through, where the
+    // file's sketch plane lies on the rebuilt span) -> steps
+    let mut ends: BTreeMap<(String, bool, bool, String), usize> = BTreeMap::new();
+    let mut sk_files: Vec<String> = vec![];
     // files with an editable prefix: (label, prefix steps, steps read back, composed body verified)
     let mut prefixes: Vec<(String, usize, usize, String)> = vec![];
     let mut detail = String::new();
@@ -131,6 +138,34 @@ fn corpus() {
             }
         };
         let rebuilt = out.steps.iter().filter(|s| s.status == Status::Rebuilt).count();
+        for s in out.steps.iter().filter(|s| s.status == Status::Rebuilt && s.kind != "Revolve") {
+            if let Some(i) = s.note.find("file end spec ") {
+                let rest = &s.note[i + 14..];
+                let word = rest.split(' ').next().unwrap_or("").to_string();
+                let at = rest.split("sketch plane ").nth(1).unwrap_or("not known").to_string();
+                *ends.entry((word, !s.note.contains("no dimension listed"), s.note.contains("; through"), at)).or_default() += 1;
+            }
+        }
+        {
+            let mut mine = [0usize; 5];
+            for f in out.features.iter().filter(|f| f.get("type").and_then(|t| t.as_str()) == Some("sketch")) {
+                mine[0] += 1;
+                if f.get("source").and_then(|t| t.as_str()) == Some("sldprt") {
+                    mine[1] += 1;
+                    let cons = f.get("constraints").and_then(|c| c.as_arr()).unwrap_or(&[]);
+                    let dims = cons.iter().filter(|c| c.get("value").is_some()).count();
+                    mine[2] += (dims > 0) as usize;
+                    mine[3] += dims;
+                    mine[4] += cons.len() - dims;
+                }
+            }
+            if mine[1] > 0 {
+                sk_files.push(format!("{name}: {} of {} sketches are the file's own, {} with dimensions ({} dimensions, {} relations)", mine[1], mine[0], mine[2], mine[3], mine[4]));
+            }
+            for k in 0..5 {
+                sk_count[k] += mine[k];
+            }
+        }
         // the bolt's modelled thread (a ridge swept along a helix) is read back and the history is complete
         if name == "pend_bolt" {
             assert!(out.exact() || out.close(), "pend_bolt: history not complete: {:?}", out.fallback);
@@ -229,6 +264,20 @@ fn corpus() {
     md.push_str("\n## Per file\n");
     md.push_str(&detail);
     println!("{md}");
+    let st = ck_swedit::sketch_profile::STATS.with(|s| *s.borrow());
+    println!("HISTORY SKETCHES: {} in all, {} the file's own, {} of those with dimensions; {} dimensions, {} relations", sk_count[0], sk_count[1], sk_count[2], sk_count[3], sk_count[4]);
+    for l in &sk_files {
+        println!("  {l}");
+    }
+    println!("END SPECS (file word, depth listed, rebuilt as through, file sketch plane on the span): steps");
+    for (k, v) in &ends {
+        println!("  {:?}: {v}", k);
+    }
+    println!("WHY THE FILE'S SKETCH WAS NOT USED (steps where the faces gave a profile):");
+    for (k, v) in ck_swedit::sketch_profile::WHY.with(|w| w.borrow().clone()) {
+        println!("  {v} x {k}");
+    }
+    println!("SKETCH PROFILES: same as the faces' {}, different {}, used where the faces gave none {}, sketch unusable while the faces gave one {}", st[0], st[1], st[2], st[3]);
     if let Ok(out) = std::env::var("SWEDIT_OUT") {
         if let Some(d) = Path::new(&out).parent() {
             let _ = std::fs::create_dir_all(d);

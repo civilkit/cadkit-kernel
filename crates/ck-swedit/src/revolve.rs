@@ -1161,6 +1161,55 @@ pub fn revolve_with(cx: &mut Cx, f: &SwFeature, faces: &[FaceId], cut: bool, opt
             segs = segs.iter().rev().map(|s| s.reversed()).collect();
         }
     }
+    // the file's own sketch, where it draws the profile the faces gave (same outline, one piece for one piece) and an axis line
+    // lies on the revolve axis: the history carries it, with its dimensions and relations
+    let true_sk = if crate::sketch_profile::preferred() && !cx_has_spline(&segs) {
+        let face_loops = segs_to_loops(&segs, circle.as_ref(), &sk_xy);
+        crate::sketch_profile::build(cx, f.id, &fr, Some(&face_loops)).ok().filter(|b| {
+            crate::sketch_profile::same_profile(&face_loops, &b.loops)
+                && face_loops.iter().map(|l| l.segs.len()).sum::<usize>() == b.loops.iter().map(|l| l.segs.len()).sum::<usize>()
+        })
+    } else {
+        None
+    };
+    if let Some(b) = true_sk {
+        let sid = cx.tree.ids.next();
+        let mut w = crate::sketch_profile::write(&b, &sid, fr.plane.clone());
+        let (a0q, a1q) = (sk_xy((smin_of(&segs, &circle), 0.0)), sk_xy((smax_of(&segs, &circle), 0.0)));
+        let axis = crate::sketch_profile::axis_entity(&mut w, a0q, a1q);
+        // faces take the name of the entity under them
+        let mut named: Vec<(FaceId, String)> = vec![];
+        if let Some((_, _, face)) = circle {
+            if let Some((_, e)) = w.piece_ids.first() {
+                named.push((face, e.clone()));
+            }
+        }
+        for s in &segs {
+            let mid = sk_xy(s.mid());
+            if let Some((_, e)) = w.piece_ids.iter().find(|(t, _)| crate::sketch_profile::on_piece(t, mid)) {
+                for &fc in &s.faces {
+                    named.push((fc, e.clone()));
+                }
+            }
+        }
+        cx.tree.push(w.json);
+        crate::sketch_profile::WRITTEN.with(|c| c.borrow_mut()[0] += 1);
+        let rid = cx.tree.ids.next();
+        let angle = sweep.to_degrees();
+        let o = Obj::new().put("type", "revolve").put("id", rid.as_str()).put("op", if cut { "cut" } else { "add" }).put("sketch", sid.as_str()).put("axis", axis.as_str()).put("angle", n(angle));
+        cx.tree.push(o.build());
+        for (fc, e) in named {
+            cx.names.insert(fc, format!("{rid}.S.{e}"));
+        }
+        for g in c0 {
+            cx.names.insert(g, format!("{rid}.C0"));
+        }
+        for g in c1 {
+            cx.names.insert(g, format!("{rid}.C1"));
+        }
+        let dims: Vec<String> = f.dims.iter().map(|d| format!("{} = {}", d.name, d.text)).collect();
+        return Ok(format!("{} about axis ({:.3},{:.3},{:.3}); {} face(s), angle {:.4}{}{} (the file's sketch)", if cut { "cut" } else { "boss" }, a.x, a.y, a.z, lateral.len(), angle, if caps.is_empty() { "" } else { ", end caps" }, if dims.is_empty() { String::new() } else { format!(" (file lists {})", dims.join(", ")) }));
+    }
     let sid = cx.tree.ids.next();
     let mut sk = Sk::new(sid.clone(), fr.plane.clone());
     let mut pts: Vec<(P, String)> = vec![];
@@ -1325,4 +1374,62 @@ fn close_open(segs: &mut Vec<Seg>, prims: &[Prim], cut: bool, l: f64, tol: f64) 
         }
     }
     Err("no closure of the profile puts the region on the faces' material side".into())
+}
+
+fn cx_has_spline(segs: &[Seg]) -> bool {
+    segs.iter().any(|s| s.spl.is_some())
+}
+
+/// The extent of the profile along the axis (the two ends of the axis line the sketch gets when it has none).
+fn smin_of(segs: &[Seg], circle: &Option<(P, f64, FaceId)>) -> f64 {
+    let mut v = f64::INFINITY;
+    if let Some((c, r, _)) = circle {
+        v = v.min(c.0 - r);
+    }
+    for s in segs {
+        for q in s.samples() {
+            v = v.min(q.0);
+        }
+    }
+    if v.is_finite() { v } else { 0.0 }
+}
+
+fn smax_of(segs: &[Seg], circle: &Option<(P, f64, FaceId)>) -> f64 {
+    let mut v = f64::NEG_INFINITY;
+    if let Some((c, r, _)) = circle {
+        v = v.max(c.0 + r);
+    }
+    for s in segs {
+        for q in s.samples() {
+            v = v.max(q.0);
+        }
+    }
+    let lo = smin_of(segs, circle);
+    let v = if v.is_finite() { v } else { 1.0 };
+    if v - lo < 1e-6 { lo + 2.0 } else { v }
+}
+
+/// The profile of a revolve as loops of the sketch frame (lines, arcs and the one circle; splines are not handled).
+fn segs_to_loops(segs: &[Seg], circle: Option<&(P, f64, FaceId)>, sk_xy: &dyn Fn(P) -> P) -> Vec<crate::profile::Loop2> {
+    use crate::profile::{Loop2, Seg2};
+    let mut out = vec![];
+    if let Some((c, r, _)) = circle {
+        out.push(Loop2 { segs: vec![(Seg2::Circle { c: sk_xy(*c), r: *r }, vec![])] });
+    }
+    if !segs.is_empty() {
+        let mut l = Loop2 { segs: vec![] };
+        for s in segs {
+            let seg = match s.arc {
+                None => Seg2::Line { a: sk_xy(s.a), b: sk_xy(s.b) },
+                Some((c, _, _, _)) => {
+                    let (qa, qc, qm) = (sk_xy(s.a), sk_xy(c), sk_xy(s.mid()));
+                    let ccw = (qa.0 - qc.0) * (qm.1 - qc.1) - (qa.1 - qc.1) * (qm.0 - qc.0) > 0.0;
+                    Seg2::Arc { a: qa, b: sk_xy(s.b), c: qc, ccw }
+                }
+            };
+            l.segs.push((seg, vec![]));
+        }
+        out.push(l);
+    }
+    out
 }

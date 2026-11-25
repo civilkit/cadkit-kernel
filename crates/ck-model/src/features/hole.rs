@@ -327,6 +327,29 @@ pub fn exec_hole(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(
     use super::End;
     let multi = pts.len() > 1;
     let centres: Vec<ck_core::linalg::Vec3> = pts.iter().map(|p| fr.o + fr.x * p[0] + fr.y * p[1]).collect();
+    // A counterbore / countersink head that covers the whole face (every corner of the part's box, seen along the axis, lies
+    // inside the head disc) is no hole: the cbore skims a layer off the part and the cone eats all of it.
+    if matches!(kind, HoleKind::Cbore) || csk.is_some() {
+        let head_r = if *kind == HoleKind::Cbore { cbore_d / 2.0 } else { csk.map_or(0.0, |c| c.0) };
+        let (lo, hi) = super::body_box(&body);
+        for c in &centres {
+            let mut far: f64 = 0.0;
+            for k in 0..8 {
+                let v = ck_core::linalg::Vec3::new(if k & 1 == 0 { lo.x } else { hi.x }, if k & 2 == 0 { lo.y } else { hi.y }, if k & 4 == 0 { lo.z } else { hi.z }) - *c;
+                far = far.max((v - down * v.dot(down)).len());
+            }
+            if head_r >= far {
+                let (code, field, what) = if *kind == HoleKind::Cbore { (HOLE_CBORE_INVALID, "cboreDiameter", "counterbore") } else { (HOLE_CSK_DIAMETER, "cskDiameter", "countersink") };
+                return Err(hint(
+                    FeatureError::new(code)
+                        .with(field, num(head_r * 2.0))
+                        .with("partExtent", num(far * 2.0))
+                        .with("detail", ck_json::Json::Str(format!("the {what} diameter {:.4} mm is wider than the part ({:.4} mm across at the farthest corner from the hole)", head_r * 2.0, far * 2.0))),
+                    &format!("make {field} smaller than the part; the {what} must leave material around the hole"),
+                ));
+            }
+        }
+    }
     // Per centre: (tool length, the end is where the bore comes out of the body). `through`, `throughBoth` and the
     // ends a hole has no meaning for yet (`mid`, `upToPoint`, `toObject`) drill through all, as they always have.
     let lens: Vec<(f64, bool)> = match end {
@@ -487,10 +510,22 @@ pub fn exec_hole(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(
     }
     let tool = Tool { body: whole, combine: Combine::Cut, recipe: None };
     // a `target` names the bodies the hole is drilled in; without one the hole cuts everything it meets, as before
+    // the cone or step takes the whole body (it is wider than the part where it cuts): name the head, not a generic cut
+    let named = |e: FeatureError| {
+        if e.code != super::CUT_REMOVED_BODY {
+            return e;
+        }
+        let (code, field, what) = if *kind == HoleKind::Cbore { (HOLE_CBORE_INVALID, "cboreDiameter", "counterbore") } else { (HOLE_CSK_DIAMETER, "cskDiameter", "countersink") };
+        let head = if *kind == HoleKind::Cbore { cbore_d } else { csk.map_or(0.0, |c| c.0 * 2.0) };
+        hint(
+            FeatureError::new(code).with(field, num(head)).with("detail", ck_json::Json::Str(format!("the {what} (head diameter {head:.4} mm) removes the whole part"))),
+            &format!("make {field} smaller, or the part larger: the {what} must leave material"),
+        )
+    };
     if f.raw.get("target").is_some_and(|t| !matches!(t, ck_json::Json::Null)) {
-        return br.apply_feature(f, tool, None);
+        return br.apply_feature(f, tool, None).map_err(named);
     }
-    let r = br.combine(&tool.body, Combine::Cut, true);
+    let r = br.combine(&tool.body, Combine::Cut, true).map_err(named);
     br.tools.push((f.id.clone(), std::rc::Rc::new(tool)));
     r
 }

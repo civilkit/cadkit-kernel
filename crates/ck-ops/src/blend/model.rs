@@ -39,6 +39,29 @@ pub enum FilletProfile {
     Conic(f64),
     Chord,
     Curvature(f64),
+    /// Straight section (a chamfer): the radii of a [`interp::VarSpec`] are the distances along both faces; only the
+    /// variable-section builder produces it.
+    Chamfer,
+}
+
+/// Optional partial-edge offsets and corner setback distance (mm).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct BlendOpts {
+    /// Distance in mm from the edge start (`v0` / `t0`) where the blend begins (`> 0.0` stops short of the start vertex).
+    pub start_offset: Option<f64>,
+    /// Distance in mm from the edge end (`v1` / `t1`) where the blend stops short of the end vertex.
+    pub end_offset: Option<f64>,
+    /// Explicit corner setback distance (mm) at a convex or concave vertex of three blended edges (`None` or 0: automatic).
+    pub setback: Option<f64>,
+}
+
+/// What the explicit corner setback did in one feature.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SetbackReport {
+    /// Corners built with a setback patch.
+    pub used: usize,
+    /// Corners where the requested setback was out of range and was moved: `[requested, applied, min, max]` (mm).
+    pub adjusted: Vec<[f64; 4]>,
 }
 
 impl Spec {

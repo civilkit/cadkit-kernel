@@ -209,3 +209,23 @@ fn quick_leaves_out_crossings_and_solids() {
     assert!(q.iter().any(|i| i.code == "SHELL_ORIENTATION"));
     assert_eq!(ctl.not_run(), ["loopCrossings", "solids"]);
 }
+
+/// A flat patch whose net doubles back on itself is folded: its normal flips outright (up, then down) where the
+/// surface turns round.
+#[test]
+fn fold_detector_finds_a_flat_patch_doubled_back() {
+    use ck_geom::nurbs::bsurf::BSplineSurface;
+    use ck_geom::surface::Surface;
+    let kn = vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
+    let patch = |cols: [f64; 4]| {
+        let mut ctrl = vec![];
+        for a in 0..4 {
+            for c in 0..4 {
+                ctrl.push(Vec3::new(cols[a] * 10.0, c as f64 * 10.0, 0.0));
+            }
+        }
+        Surface::BSpline(Box::new(BSplineSurface::new(3, 3, kn.clone(), kn.clone(), 4, 4, ctrl, None).unwrap()))
+    };
+    assert_eq!(fold::surface_fold(&patch([0.0, 1.0, 2.0, 3.0]), (0.0, 1.0), (0.0, 1.0)), None);
+    assert!(fold::surface_fold(&patch([0.0, 3.0, -1.0, 3.0]), (0.0, 1.0), (0.0, 1.0)).is_some());
+}

@@ -371,12 +371,15 @@ fn escalate(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bool)], 
     };
     offer(first, &mut best, &mut err);
     if !best.as_ref().map_or(false, |m| good(m)) {
-        let tries: [(bool, f64); 3] = [(false, 1e-6), (true, 1e-9), (true, 1e-6)];
-        for (cover, rel) in tries {
-            if cover && !periodic {
+        // (the last two: loops that wind a whole period close by the periodicity, not by a walk back over themselves)
+        let tries: [(bool, f64, bool); 5] = [(false, 1e-6, false), (true, 1e-9, false), (true, 1e-6, false), (false, 1e-9, true), (false, 1e-6, true)];
+        for (cover, rel, no_retrace) in tries {
+            if (cover || no_retrace) && !periodic {
                 continue;
             }
+            NO_RETRACE.with(|c| c.set(no_retrace));
             let r = with_same_uv(rel, || mesh_face_impl(body, f, params, virt, ssi, cut, tol, cover));
+            NO_RETRACE.with(|c| c.set(false));
             offer(r, &mut best, &mut err);
             if best.as_ref().map_or(false, |m| good(m)) {
                 break;
@@ -386,13 +389,37 @@ fn escalate(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bool)], 
     match best {
         // a first mesh that was closed and clean but covers a region of the wrong size, and no other attempt does better:
         // refuse the face (the caller lists it as failed and `validate` names it) rather than show a wrong surface
-        Some(m) if first_clean && exact > 0.0 && score(&m) > WRONG_REGION_LOG_RATIO && !keep_wrong_for_diagnosis() => Err(format!(
+        // (...unless the size is what the tolerance allows: see `chord_limited`)
+        Some(m) if first_clean && exact > 0.0 && score(&m) > WRONG_REGION_LOG_RATIO && !chord_limited(&m, exact, tol) && !keep_wrong_for_diagnosis() => Err(format!(
             "the mesh covers {:.0}% of the exact face area (closed region of the wrong size); {err}",
             100.0 * mesh_area(&m) / exact
         )),
         Some(m) => Ok(m),
         None => Err(err),
     }
+}
+
+/// Whether a closed mesh's area differs from the exact area by no more than its chord tolerance explains. A face much smaller than
+/// the tolerance the whole part sets (a ball of radius 0.5 mm in a 600 mm robot, chord 0.4 mm) or much thinner than it (a fillet
+/// band 0.2 mm across and 277 mm round: its flat triangles sag 0.5 mm and cover a half more than the surface) is meshed within the
+/// chord of the surface, but with an area that is far from the exact one. Such a mesh is a coarse cover of the right region, not a
+/// closed region of the wrong size: its area is off by about the chord times the boundary length, and by less than a factor of two
+/// (a wrong region is off by more, or by far more than the chord can explain; a face smaller than two chords has no size to judge).
+fn chord_limited(m: &FaceMesh, exact: f64, tol: &Tol) -> bool {
+    let mut edges: HashMap<(u32, u32), u32> = HashMap::default();
+    for t in &m.tris {
+        for k in 0..3 {
+            let (a, b) = (t[k], t[(k + 1) % 3]);
+            *edges.entry((a.min(b), a.max(b))).or_insert(0) += 1;
+        }
+    }
+    let rim: f64 = edges.iter().filter(|(_, &n)| n == 1).map(|(&(a, b), _)| (m.pts[a as usize] - m.pts[b as usize]).len()).sum();
+    let area = mesh_area(m);
+    let ratio = area / exact;
+    // (a face the tolerance cannot resolve at all, smaller than a couple of chords across, has no size to judge)
+    let (lo, hi) = m.pts.iter().fold((Vec3::new(f64::MAX, f64::MAX, f64::MAX), Vec3::new(f64::MIN, f64::MIN, f64::MIN)), |(lo, hi), p| (Vec3::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z)), Vec3::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z))));
+    let tiny = (hi - lo).len() <= 2.0 * tol.chord;
+    (tiny || (ratio > 0.5 && ratio < 2.0)) && (area - exact).abs() <= tol.chord * rim
 }
 
 /// Native diagnostics only (`CK_TESS_KEEP_WRONG=1`): keep the wrong-size mesh instead of refusing the face, to look at it.
@@ -412,6 +439,8 @@ const WRONG_REGION_LOG_RATIO: f64 = 0.2231;
 
 thread_local! {
     static SAME_UV_REL: std::cell::Cell<f64> = const { std::cell::Cell::new(1e-9) };
+    /// A loop that winds a whole period closes by the periodicity: no walk back over its own line (see `mesh_face_impl`).
+    static NO_RETRACE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 fn mesh_face_strict(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bool)], ssi: &[f64], cut: FaceCut, tol: &Tol) -> Result<FaceMesh, String> {
@@ -498,7 +527,9 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
     // The original opens a periodic direction at the window [cut - p, cut] (its uv bounds are exactly that window).
     // A cylinder wall bounded by the original's first SSI circle opens the other way: window [cut, cut + p].
     let ssi_hole = face.loops.iter().any(|&l| body.lp(l).coedges.iter().any(|&c| body.coedge(c).alive && ssi.get(body.coedge(c).edge.idx()).map_or(false, |&o| o != 0.0)));
-    let wsh = if ssi_hole { 0.0 } else { 1.0 };
+    // (a closed B-spline strip is opened at its own domain, which is the only window the spline can be evaluated in: an edge that
+    // looks like the first circle of an SSI pair - a circle arc whose parameter starts below zero - must not move it a period up)
+    let wsh = if ssi_hole && strip == (None, None) { 0.0 } else { 1.0 };
     // full spheres / tori are opened at their parameter domain [0, p] (oracle bounds)
     let full_dom = matches!(surf, Surface::Sphere { .. } | Surface::Torus { .. });
     let cut0 = cut;
@@ -533,6 +564,7 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
     let mut u_lo = f64::INFINITY;
     let mut u_hi = f64::NEG_INFINITY;
     let mut polys: Vec<Vec<BPt>> = vec![];
+    let is_sphere = matches!(surf, Surface::Sphere { .. });
     // v of every seam end (a seam that reaches a pole is the only boundary there)
     let mut seam_v: Vec<f64> = vec![];
     let live_loops = face.loops.iter().filter(|&&l| body.lp(l).alive).count();
@@ -547,6 +579,7 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
         let (u_lo0, u_hi0) = (u_lo, u_hi);
         let (v_lo0, v_hi0) = (v_lo, v_hi);
         let mut prev: Option<Vec2> = None;
+        let mut prev_p: Option<Vec3> = None;
         let backwards = false;
         // A loop whose edges are all sampled by their end points only (the cap of a thin sliver: a chord and an arc
         // that bulges less than the sampling tolerance) has two distinct points and no area: add the arc's middle so
@@ -588,8 +621,17 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
                 if backwards { (s1, s0) } else { (s0, s1) }
             };
             let mut pl: Vec<BPt> = Vec::with_capacity(ps.len());
+            let mut fold_flags: Vec<(bool, f64)> = Vec::with_capacity(ps.len());
             for (i, &t) in ps.iter().enumerate() {
                 let mut uv = body.coedge_uv(c, t, prev);
+                // A sphere's meridian pcurve runs on past a pole (v beyond +-pi/2: the evaluation continues onto the opposite
+                // meridian). Fold such a point back into the domain: (u + pi, +-pi - v).
+                let folded = is_sphere && uv.y.abs() > std::f64::consts::FRAC_PI_2 + 1e-9;
+                fold_flags.push((folded, uv.y.signum()));
+                if folded {
+                    let sg = uv.y.signum();
+                    uv = Vec2::new(uv.x + std::f64::consts::PI, sg * std::f64::consts::PI - uv.y);
+                }
                 // A seam edge's pcurve copy is deliberate: the face's two sides of the seam sit
                 // one period apart (a wrapping trim loop). Unwrapping it against the previous
                 // point would collapse the pair onto one copy and lose the face's trim.
@@ -601,7 +643,12 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
                 if let (Some(per), Some(pr)) = (pv, prev) {
                     uv.y = ck_geom::pcurve::unwrap_near(uv.y, pr.y, per);
                 }
-                if let Some(pr) = prev {
+                // (a coedge that leaves a pole keeps the sheet its own pcurve gives it: the pole is where the loop may
+                // move by a period, and the builder places the second walk of a pole cap's meridian there. Unwrapped
+                // against the previous point it would fall back onto the first walk's sheet and the loop would end a
+                // period from its start.)
+                let leaves_pole = i == 0 && ce.pcurve.is_some() && prev_p.is_some_and(|q| q.dist(va) <= 1e-9 * (1.0 + va.len())) && at_pole(surf, uv, cpu.is_some(), cpv.is_some());
+                if let (Some(pr), false) = (prev, leaves_pole) {
                     if let Some(per) = cpu {
                         uv.x = ck_geom::pcurve::unwrap_near(uv.x, pr.x, per);
                     }
@@ -618,11 +665,30 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
                     ed.curve.eval(t)
                 };
                 prev = Some(uv);
+                prev_p = Some(p);
                 v_lo = v_lo.min(uv.y);
                 v_hi = v_hi.max(uv.y);
                 u_lo = u_lo.min(uv.x);
                 u_hi = u_hi.max(uv.x);
                 pl.push(BPt { uv, p, virt: false });
+            }
+            // the pcurve crossed a pole: the loop goes in to the pole on one meridian and out on the opposite one
+            if is_sphere && fold_flags.windows(2).any(|w| w[0].0 != w[1].0) {
+                let mut out: Vec<BPt> = Vec::with_capacity(pl.len() + 4);
+                for (i, q) in pl.iter().enumerate() {
+                    if i > 0 && fold_flags[i - 1].0 != fold_flags[i].0 {
+                        // (the pole the pcurve ran past: the sign of the raw v on the folded side)
+                        let vp = std::f64::consts::FRAC_PI_2 * if fold_flags[i].0 { fold_flags[i].1 } else { fold_flags[i - 1].1 };
+                        let pole = surf.eval(0.0, vp);
+                        let a = BPt { uv: Vec2::new(pl[i - 1].uv.x, vp), p: pole, virt: false };
+                        let b = BPt { uv: Vec2::new(q.uv.x, vp), p: pole, virt: false };
+                        out.push(a);
+                        join(&mut out, a, b, tol);
+                        out.push(b);
+                    }
+                    out.push(*q);
+                }
+                pl = out;
             }
             if std::env::var("CK_DUMP3").is_ok() { eprintln!("COEDGE f{:?} c={:?} rev={} seam={} n={} first={:?} last={:?}", f, c, ce.rev, seam, pl.len(), pl.first().map(|q| q.uv), pl.last().map(|q| q.uv)); }
             // junctions of a merged circle chain are not vertices of the original's single edge: mark, drop later
@@ -704,7 +770,12 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
                 // closes over the pole line: the same point in space, the same v, u apart by less than a period. `join`
                 // samples that line; it is not a loop that winds.
                 let over_pole = !whole && (first.uv.y - last.uv.y).abs() <= 1e-9 * (1.0 + first.uv.y.abs()) && first.p.dist(last.p) <= 1e-9 * (1.0 + first.p.len());
-                join(&mut poly, last, first, tol);
+                // (a loop that winds a whole period and is the same point in space on both ends closes by itself: sampled across, the
+                // closing segment walks back over the loop's own line, and its two layers cancel in every parity test on the strip)
+                let winding = whole && !over_pole && NO_RETRACE.with(|c| c.get()) && first.p.dist(last.p) <= 1e-9 * (1.0 + first.p.len()) && !at_pole(surf, last.uv, pu.is_some(), pv.is_some());
+                if !winding {
+                    join(&mut poly, last, first, tol);
+                }
                 if cover && !whole && !over_pole && first.uv.dist(poly.last().unwrap().uv) > 1e-6 && first.p.dist(poly.last().unwrap().p) <= 1e-6 * (1.0 + first.p.len()) {
                     return Err("loop winds a period".into());
                 }
@@ -1033,7 +1104,13 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
             } else {
                 // boundary points on the cut lines -> inside intervals
                 let mut on: Vec<f64> = b.pts.iter().filter(|q| q.uv.x == c).map(|q| q.uv.y).collect();
-                on.extend(b.pts.iter().filter(|q| q.uv.x == c + p).map(|q| q.uv.y));
+                let right: Vec<f64> = b.pts.iter().filter(|q| q.uv.x == c + p).map(|q| q.uv.y).collect();
+                if cv.is_some() {
+                    // (a torus fragment: see the same rule for v below)
+                    on.retain(|y| right.iter().any(|z| (y - z).abs() <= 1e-9 * (1.0 + y.abs())));
+                } else {
+                    on.extend(right);
+                }
                 // a seam ending at a pole (a hemisphere cap bounded by one circle): the pole is not a
                 // boundary point, so the cut lines must reach it and the pole line closes the strip
                 let mut poles: Vec<f64> = vec![];
@@ -1067,7 +1144,11 @@ fn mesh_face_impl(body: &Body, f: FaceId, params: &[Vec<f64>], virt: &[(bool, bo
                 // a torus fragment is cut open in v as well: boundary points on its v cut lines bound inside intervals there
                 if let (Some(cv1), Some(qv1)) = (cv, pv) {
                     let mut onv: Vec<f64> = b.pts.iter().filter(|q| q.uv.y == cv1).map(|q| q.uv.x).collect();
-                    onv.extend(b.pts.iter().filter(|q| q.uv.y == cv1 + qv1).map(|q| q.uv.x));
+                    let top: Vec<f64> = b.pts.iter().filter(|q| q.uv.y == cv1 + qv1).map(|q| q.uv.x).collect();
+                    // A boundary that crosses the cut has its points on both lines, at the same u. Points on one line only are an
+                    // edge of the face that lies along that line (a patch that starts at v = 0): the cut does not pass through the
+                    // face there, and a line drawn on the other side would hang loose outside it and leave the strip's graph open.
+                    onv.retain(|x| top.iter().any(|y| (x - y).abs() <= 1e-9 * (1.0 + x.abs())));
                     onv.sort_by(|x, y| x.total_cmp(y));
                     onv.dedup();
                     for w in onv.windows(2) {
@@ -1706,6 +1787,17 @@ fn weld_close_points(segs: &mut [(BPt, BPt)]) {
             q.uv = v;
         }
     }
+}
+
+/// Whether `uv` is a pole of `surf` in the closed direction(s) asked: the point does not move when that parameter
+/// runs a quarter of the way across the closed domain.
+fn at_pole(surf: &Surface, uv: Vec2, closed_u: bool, closed_v: bool) -> bool {
+    let ((u0, u1), (v0, v1)) = surf.domain();
+    let p = surf.eval(uv.x, uv.y);
+    let tol = 1e-9 * (1.0 + p.len());
+    // (a step that stays inside the domain: past its end the surface may clamp, and a clamped point does not move)
+    let step = |x: f64, lo: f64, hi: f64| if x + 0.25 * (hi - lo) <= hi { 0.25 * (hi - lo) } else { -0.25 * (hi - lo) };
+    (closed_u && surf.eval(uv.x + step(uv.x, u0, u1), uv.y).dist(p) <= tol) || (closed_v && surf.eval(uv.x, uv.y + step(uv.y, v0, v1)).dist(p) <= tol)
 }
 
 fn same_uv(a: Vec2, b: Vec2) -> bool {
