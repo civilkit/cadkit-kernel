@@ -260,7 +260,7 @@ impl FeatureError {
             return e.with(
                 "hint",
                 Json::Str(
-                    "the intersection of these faces could not be closed into a valid solid (touching tangentially, a rim lying on the other surface, or a sliver thinner than ~1e-3); move the tool by a small amount (0.01), unite the bodies that touch each other first, make the near-coincident faces exactly coincident, or give the feature a fuzzy `tolerance` (1e-5 to 1e-3 mm) / `autoFuzzy: true` so nearly coincident faces are treated as coincident".to_string(),
+                    "the intersection of these faces could not be closed into a valid solid (touching tangentially, a rim lying on the other surface, or a sliver thinner than ~1e-3). If the tool's wall starts along an edge of the body (a boss or pocket sketched from the outline of a face), the two edges are not the same curve: a spline drawn through points sampled on the edge is off it by 1e-4 to 1e-2 mm, and a fuzzy `tolerance` / `autoFuzzy` does not close that. Make the sketch curve exactly the edge (convert the edge instead of fitting points), start the feature as a new body and join it afterwards, or move the tool by a small amount (0.01) so it no longer touches the rim; for near-coincident faces, a fuzzy `tolerance` (1e-5 to 1e-3 mm) / `autoFuzzy: true` treats them as coincident".to_string(),
                 ),
             );
         }

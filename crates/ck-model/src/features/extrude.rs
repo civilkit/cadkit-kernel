@@ -440,6 +440,132 @@ fn scale_err(e: String) -> FeatureError {
     }
 }
 
+/// How far a free-form profile curve may lie from a face boundary and still be that boundary (mm).
+const RIM_SNAP: f64 = 2e-2;
+/// ... or this fraction of the profile's size, whichever is larger (a spline through 32 points per edge of a 150 mm outline
+/// ends up to 2.3e-2 mm off the rim, 1.5e-4 of its size).
+const RIM_SNAP_REL: f64 = 5e-4;
+
+/// Distance from `q` to the segment `a`-`b`.
+fn seg_dist(a: Vec3, b: Vec3, q: Vec3) -> f64 {
+    let d = b - a;
+    let l2 = d.dot(d);
+    let t = if l2 > 0.0 { ((q - a).dot(d) / l2).clamp(0.0, 1.0) } else { 0.0 };
+    (a + d * t).dist(q)
+}
+
+/// A profile loop made of free-form sketch curves (splines through points) that follows the boundary loop of a planar
+/// face of `body` lying in the sketch plane (a boss or pocket sketched from "converted edges" of the face) is replaced
+/// by that boundary's own edge curves. The sketch spline only passes THROUGH points sampled on the rim, so it is
+/// 1e-4 .. 1e-3 mm off it: the tool's wall would run beside the body's rim instead of along it, and the boolean could
+/// neither merge the two edges nor close the sliver between them (`booleanFailed`, `openEdge`). Segments keep the tag
+/// of the sketch segment nearest to each edge, so the faces are named as before.
+fn snap_to_face_rim(profile: &mut Profile, body: &Body) {
+    use ck_geom::surface::Surface;
+    let fr = profile.frame;
+    let to3 = |p: Vec2| fr.o + fr.x * p.x + fr.y * p.y;
+    let to2 = |q: Vec3| Vec2::new((q - fr.o).dot(fr.x), (q - fr.o).dot(fr.y));
+    // the planar faces in the sketch plane
+    let faces: Vec<_> = body
+        .face_ids()
+        .filter(|&f| matches!(&body.face(f).surface, Surface::Plane { frame } if frame.z.dot(fr.z).abs() > 1.0 - 1e-9 && (frame.o - fr.o).dot(fr.z).abs() < 1e-6))
+        .collect();
+    if faces.is_empty() {
+        return;
+    }
+    let dist_edge = |e: ck_topo::body::EdgeId, q: Vec3| -> f64 {
+        let ed = body.edge(e);
+        let t = ed.curve.closest_param(q);
+        let t = if ed.curve.period().is_some() { t } else { t.clamp(ed.t0, ed.t1) };
+        ed.curve.eval(t).dist(q)
+    };
+    let loop_pts = |l: &ProfileLoop, n: usize| -> Vec<Vec3> {
+        let mut v = vec![];
+        for s in &l.segs {
+            let (a, b) = (s.t_start(), s.t_end());
+            v.extend((0..n).map(|k| to3(s.curve.eval(a + (b - a) * k as f64 / n as f64))));
+        }
+        v
+    };
+    for r in profile.regions.iter_mut() {
+        let loops: Vec<&mut ProfileLoop> = std::iter::once(&mut r.outer).chain(r.holes.iter_mut()).collect();
+        for lp in loops {
+            if !lp.segs.iter().any(|s| matches!(s.curve, Curve2::BSpline(_))) {
+                continue;
+            }
+            let pts = loop_pts(lp, 24);
+            let snap = {
+                let (mut lo, mut hi) = (pts[0], pts[0]);
+                for q in &pts {
+                    lo = Vec3::new(lo.x.min(q.x), lo.y.min(q.y), lo.z.min(q.z));
+                    hi = Vec3::new(hi.x.max(q.x), hi.y.max(q.y), hi.z.max(q.z));
+                }
+                RIM_SNAP.max(RIM_SNAP_REL * (hi - lo).len())
+            };
+            let dense = loop_pts(lp, 240);
+            'faces: for &fc in &faces {
+                for &l in &body.face(fc).loops {
+                    let cos: Vec<_> = body.lp(l).coedges.iter().copied().filter(|&c| body.coedge(c).alive).collect();
+                    let edges: Vec<_> = cos.iter().map(|&c| body.coedge(c).edge).collect();
+                    if edges.is_empty() {
+                        continue;
+                    }
+                    // profile -> boundary
+                    if pts.iter().any(|&q| edges.iter().map(|&e| dist_edge(e, q)).fold(f64::INFINITY, f64::min) > snap) {
+                        continue;
+                    }
+                    // boundary -> profile (the whole boundary is covered, not a part of it)
+                    let covered = edges.iter().all(|&e| {
+                        let ed = body.edge(e);
+                        (0..=8).all(|k| {
+                            let q = ed.curve.eval(ed.t0 + (ed.t1 - ed.t0) * k as f64 / 8.0);
+                            dense.windows(2).map(|w| seg_dist(w[0], w[1], q)).fold(f64::INFINITY, f64::min) <= snap
+                        })
+                    });
+                    if !covered {
+                        continue;
+                    }
+                    let mut segs = vec![];
+                    for &c in &cos {
+                        let (rev, ed) = (body.coedge(c).rev, body.edge(body.coedge(c).edge));
+                        let mid = to2(ed.curve.eval(0.5 * (ed.t0 + ed.t1)));
+                        let tag = lp
+                            .segs
+                            .iter()
+                            .min_by(|a, b| {
+                                let d = |s: &ProfileSeg| (0..=8).map(|k| s.curve.eval(s.t0 + (s.t1 - s.t0) * k as f64 / 8.0).dist(mid)).fold(f64::INFINITY, f64::min);
+                                d(a).total_cmp(&d(b))
+                            })
+                            .map_or_else(|| "e1".to_string(), |s| s.tag.clone());
+                        let seg = match &ed.curve {
+                            ck_geom::curve::Curve::Line { .. } => ProfileSeg::line(&tag, to2(ed.curve.eval(ed.t0)), to2(ed.curve.eval(ed.t1))),
+                            ck_geom::curve::Curve::BSpline(b) => ProfileSeg { tag, curve: Curve2::BSpline(b.map(to2)), t0: ed.t0, t1: ed.t1, rev: false },
+                            other => match other.to_nurbs_within(ed.t0, ed.t1, 1e-9) {
+                                Ok((b, _)) => {
+                                    let (t0, t1) = b.domain();
+                                    ProfileSeg { tag, curve: Curve2::BSpline(b.map(to2)), t0, t1, rev: false }
+                                }
+                                Err(_) => return,
+                            },
+                        };
+                        // (a face's loop runs along its coedges; `rev` says the edge is walked backwards)
+                        segs.push(if rev { seg.reversed() } else { seg });
+                    }
+                    let mut new = ProfileLoop::new(segs);
+                    if new.max_gap() > 1e-6 {
+                        continue;
+                    }
+                    if new.signed_area() * lp.signed_area() < 0.0 {
+                        new = new.reversed();
+                    }
+                    *lp = new;
+                    break 'faces;
+                }
+            }
+        }
+    }
+}
+
 /// `extrude`. `has_body`: whether a body exists (cut / upToNext targets).
 pub fn exec_extrude(state: &RegenState, f: &Feature, body: Option<&Body>) -> Result<Tool, FeatureError> {
     exec_extrude_ex(state, f, body, &mut EndExtras::default())
@@ -455,6 +581,9 @@ pub fn exec_extrude_ex(state: &RegenState, f: &Feature, body: Option<&Body>, ext
     let depth = state.size(f, "depth", 0.0)?;
     let draft = state.num(f, "draft", 0.0)?;
     let (mut profile, thin_on) = super::thin::feature_profile(state, sk, f)?;
+    if let (false, Some(b)) = (thin_on, body) {
+        snap_to_face_rim(&mut profile, b);
+    }
     if depth < MIN_DEPTH && matches!(end, End::Blind | End::Mid) {
         // The reference clamps (see the module doc) and builds the 1e-6 sliver, so this stays a warning, not a refusal.
         extras.warnings.push(zero_depth_warning(depth));

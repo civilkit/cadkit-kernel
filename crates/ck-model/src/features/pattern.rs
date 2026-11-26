@@ -569,7 +569,7 @@ pub fn exec_pattern(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Resul
     let mut last = Combine::Add;
     let mut overlap = false;
     for (seed, c) in &tools {
-        let mut tool: Option<Body> = None;
+        let mut tool: Option<Acc> = None;
         let spans0 = br.spans.len();
         for (k, x) in xs.iter().enumerate() {
             if ck_core::budget::expired() {
@@ -577,17 +577,17 @@ pub fn exec_pattern(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Resul
             }
             let inst = ck_ops::boolean::apply::instance(seed, x, &f.id, k + 1);
             tool = Some(match tool {
-                None => inst,
-                Some(t) => accumulate(br, t, inst)?,
+                None => Acc::new(inst),
+                Some(t) => t.add(br, inst)?,
             });
         }
-        let tool = tool.unwrap_or_default();
+        let tool = tool.unwrap_or_else(|| Acc::new(Body::new()));
         let mut united = br.spans.len() > spans0;
-        br.combine(&tool, *c, false)?;
+        br.combine(&tool.body, *c, false)?;
         // the pattern's own tool is the seed AND its copies, so a pattern of this pattern copies the whole row
         // (a union made only for this record is not a step of the feature: its span is dropped)
         let spans = br.spans.len();
-        let whole = accumulate(br, seed.clone(), tool)?;
+        let whole = Acc::new(seed.clone()).add_all(br, tool)?.body;
         united |= br.spans.len() > spans;
         br.spans.truncate(spans);
         // copies that overlap each other (or the seed): the united volume falls short of one seed's volume per copy
@@ -754,6 +754,46 @@ pub const NO_SEEDS: &str = "noSeeds";
 
 /// Add `b` to the tool `t`: appended when their boxes are clear (GUESS:
 /// exact bounds ± tol, the `mirror body:true` rule), else `boolean Unite`.
+/// A tool under construction with the boxes of the pieces appended so far.
+/// A new piece is appended (no boolean) when its box is clear of EVERY piece's box, not only of the box of the whole:
+/// a grid of copies has a whole-tool box that spans all of them, which sent every copy of a 2D pattern through a union.
+/// Test hook: true gives the old rule (one box for the whole tool), to compare results with the piece-wise rule.
+pub static LEGACY_ACCUMULATE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+struct Acc {
+    body: Body,
+    boxes: Vec<(Vec3, Vec3)>,
+}
+
+fn boxes_apart(a: &(Vec3, Vec3), b: &(Vec3, Vec3)) -> bool {
+    let e = super::TOL;
+    a.0.x > b.1.x + e || b.0.x > a.1.x + e || a.0.y > b.1.y + e || b.0.y > a.1.y + e || a.0.z > b.1.z + e || b.0.z > a.1.z + e
+}
+
+impl Acc {
+    fn new(body: Body) -> Acc {
+        let boxes = if body.num_faces() == 0 { vec![] } else { vec![super::body_box(&body)] };
+        Acc { body, boxes }
+    }
+    fn add(self, br: &mut Brep, b: Body) -> Result<Acc, FeatureError> {
+        let bb = super::body_box(&b);
+        self.add_boxed(br, b, vec![bb])
+    }
+    fn add_all(self, br: &mut Brep, o: Acc) -> Result<Acc, FeatureError> {
+        let boxes = o.boxes;
+        self.add_boxed(br, o.body, boxes)
+    }
+    fn add_boxed(mut self, br: &mut Brep, b: Body, bbs: Vec<(Vec3, Vec3)>) -> Result<Acc, FeatureError> {
+        if !LEGACY_ACCUMULATE.load(std::sync::atomic::Ordering::Relaxed) && self.boxes.iter().all(|x| bbs.iter().all(|y| boxes_apart(x, y))) {
+            self.body.append(&b);
+            self.boxes.extend(bbs);
+            return Ok(self);
+        }
+        let body = accumulate(br, self.body, b)?;
+        Ok(Acc::new(body))
+    }
+}
+
 pub fn accumulate(br: &mut Brep, mut t: Body, b: Body) -> Result<Body, FeatureError> {
     let (alo, ahi) = super::body_box(&t);
     let (blo, bhi) = super::body_box(&b);
