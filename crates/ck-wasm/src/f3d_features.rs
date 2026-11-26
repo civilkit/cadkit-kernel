@@ -22,7 +22,7 @@ fn read_measure(j: &Json) -> Option<Measure> {
         let a = j.get(k)?.as_arr()?;
         Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?, a.get(2)?.as_f64()?])
     };
-    Some(Measure { volume: j.get("volume")?.as_f64()?, min: v3("min")?, max: v3("max")?, solids: j.get("solids")?.as_f64()? as usize })
+    Some(Measure { volume: j.get("volume")?.as_f64()?, min: v3("min")?, max: v3("max")?, solids: j.get("solids")?.as_f64()? as usize, unread: j.get("unread").and_then(|u| u.as_f64()).unwrap_or(0.0) as usize })
 }
 
 /// `{type:"f3dFeatures", designs:[{label, dump, reference?, referenceError?}]}` (the `designs` of the decoder's `f3dDump`;

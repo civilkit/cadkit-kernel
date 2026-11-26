@@ -651,7 +651,7 @@ fn shell_try(body: &Body, open: &[FaceId], thickness: f64, outward: bool, tol: f
         return Err(ShellError::code("invalidValue"));
     }
     for &f in open {
-        if !matches!(body.face(f).surface, Surface::Plane { .. } | Surface::BSpline(_)) {
+        if !matches!(body.face(f).surface, Surface::Plane { .. } | Surface::BSpline(_)) && !(!outward && is_through_hole_wall(body, f)) {
             return Err(ShellError::detail("shellUnsupported", format!("opened face {} is not planar", body.face_id_str(f))));
         }
     }
@@ -913,6 +913,37 @@ struct PoleCut {
 }
 
 /// Outward normal and plane constant of a planar face.
+/// The wall of a through hole: a concave cylinder (its outward normal points to the axis) whose rims all lie on planes.
+/// Opening the body there is built (the cavity's wall is the same cylinder one overshoot nearer the axis); every other
+/// curved face stays refused.
+pub fn is_through_hole_wall(body: &Body, f: FaceId) -> bool {
+    let face = body.face(f);
+    let Surface::Cylinder { frame, .. } = &face.surface else { return false };
+    let mut rims = 0;
+    for e in body.face_edges(f) {
+        if body.is_seam(e) {
+            continue; // `edge_faces` lists a seam's one face once
+        }
+        let fs = body.edge_faces(e);
+        if fs.len() != 2 {
+            return false;
+        }
+        let g = if fs[0] == f { fs[1] } else { fs[0] };
+        if !matches!(body.face(g).surface, Surface::Plane { .. }) {
+            return false;
+        }
+        rims += 1;
+    }
+    if rims < 2 {
+        return false;
+    }
+    let ed = body.edge(body.face_edges(f).into_iter().find(|&e| !body.is_seam(e)).unwrap());
+    let p = ed.curve.eval(0.5 * (ed.t0 + ed.t1));
+    let (u, v, _) = face.surface.closest_point(p);
+    let radial = p - frame.o - frame.z * (p - frame.o).dot(frame.z);
+    body.outward_normal(f, u, v).dot(radial) < 0.0
+}
+
 fn plane_of(body: &Body, f: FaceId) -> Option<(Vec3, f64)> {
     match &body.face(f).surface {
         Surface::Plane { frame } => {

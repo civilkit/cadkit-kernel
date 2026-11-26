@@ -802,6 +802,18 @@ pub(super) fn blended_by_earlier_tool(b: &Body, fa: &str, fb: &str, feature: &st
     })
 }
 
+/// Some blend face of `feature` has an edge within `reach` of the point `at`.
+pub(super) fn blend_runs_anywhere(b: &Body, feature: &str, at: Vec3, reach: f64) -> bool {
+    let reach = reach + 1e-6 * (1.0 + at.len());
+    b.face_ids().any(|g| {
+        let n = &b.face(g).name;
+        n.feature == feature && matches!(n.role, Role::Blend(_)) && b.face_edges(g).iter().any(|&e| {
+            let ed = b.edge(e);
+            crate::boolean::imprint::dist_in_range(&ed.curve, (ed.t0, ed.t1), at).1 <= reach
+        })
+    })
+}
+
 /// The vertices where two or more of the `sel` edges meet.
 pub(super) fn shared_ends(b: &Body, sel: &[EdgeId]) -> Vec<Vec3> {
     let mut out: Vec<Vec3> = vec![];

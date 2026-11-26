@@ -101,7 +101,7 @@ pub fn sketch_entity_samples(sk: &SketchResult, id: &str) -> Option<Vec<Vec3>> {
             let r = r.abs();
             Some(sample(CURVED, &|t| c3 + x * (lu * (TAU * t).cos()) + y * (r * (TAU * t).sin())))
         }
-        SketchEntity::CvSpline { pts, degree, knots, closed, .. } => {
+        SketchEntity::CvSpline { pts, degree, knots, weights, closed, .. } => {
             let p = (*degree as usize).max(1);
             let ctrl: Vec<Vec3> = pts.iter().filter_map(|q| pt(q)).collect();
             if *closed || ctrl.len() < p + 1 {
@@ -119,7 +119,10 @@ pub fn sketch_entity_samples(sk: &SketchResult, id: &str) -> Option<Vec<Vec3>> {
                     k
                 }
             };
-            let b = ck_geom::nurbs::bspline::BSplineCurve::new(p, k, ctrl).ok()?;
+            let b = match weights {
+                Some(w) if w.len() == ctrl.len() => ck_geom::nurbs::bspline::BSplineCurve::new_rational(p, k, ctrl, w.clone()).ok()?,
+                _ => ck_geom::nurbs::bspline::BSplineCurve::new(p, k, ctrl).ok()?,
+            };
             let (a, z) = b.domain();
             Some(sample(CURVED, &|t| b.eval(a + (z - a) * t)))
         }

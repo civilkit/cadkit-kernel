@@ -39,8 +39,8 @@ fn dir_b(s: &Sketch) -> [f64; 2] {
 
 #[test]
 fn parallel_keeps_its_sense_through_a_far_move() {
-    // start B at every 10 degrees except near perpendicular (where either sense is equally close)
-    for deg in (0..360).step_by(10).filter(|d| ((*d as f64).to_radians().cos()).abs() > 0.3) {
+    // start B at every degree except within 3 degrees of perpendicular (where either sense is equally close)
+    for deg in (0..360).filter(|d| ((*d as f64).to_radians().cos()).abs() > 0.05) {
         let mut s = two_lines("parallel", deg as f64);
         let r = solve_sketch(&mut s, &SolveOpts::default()).unwrap();
         assert!(r.ok, "start {deg}: {r:?}");
@@ -54,7 +54,8 @@ fn parallel_keeps_its_sense_through_a_far_move() {
 
 #[test]
 fn perpendicular_keeps_its_sense_through_a_far_move() {
-    for deg in (0..360).step_by(10).filter(|d| ((*d as f64).to_radians().sin()).abs() > 0.3) {
+    // every degree except within 3 degrees of the ambiguous direction (parallel to A)
+    for deg in (0..360).filter(|d| ((*d as f64).to_radians().sin()).abs() > 0.05) {
         let mut s = two_lines("perpendicular", deg as f64);
         let r = solve_sketch(&mut s, &SolveOpts::default()).unwrap();
         assert!(r.ok, "start {deg}: {r:?}");

@@ -345,3 +345,43 @@ fn corpus_sketches_against_the_body() {
         assert!(first_hit * 10 >= first_lines * 5, "{first_hit}/{first_lines}");
     }
 }
+
+/// The centre index an arc or circle record stores: where it names a point equidistant from an arc's ends, the centre of every arc is
+/// that point (167 of 170 arcs of the local corpus; the others are settled by relations to another coincident point), the radius it
+/// gives is a radius of the body for all but 2 of the arcs, and more sketches decode exactly than with the search alone (186 of 289).
+#[test]
+fn corpus_stored_centres_agree_with_the_geometry() {
+    let root = std::env::var("SW_CORPUS").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../corpus-local"));
+    let mut fs = vec![];
+    corpus_files(&root.join("samples"), &mut fs);
+    if fs.is_empty() {
+        return;
+    }
+    let lim = Limits::default();
+    let (mut arcs, mut arcs_agree, mut sketches, mut exact) = (0, 0, 0, 0);
+    for p in &fs {
+        let Ok(bytes) = std::fs::read(p) else { continue };
+        let Ok(c) = container::open(&bytes, &lim) else { continue };
+        let Ok(set) = sketch::read(&c, &lim) else { continue };
+        for s in &set.sketches {
+            sketches += 1;
+            exact += s.exact() as usize;
+            for cv in &s.curves {
+                if let SkCurve::Arc { start, end, centre: Some(k), stored: Some(st), .. } = cv {
+                    let d = |i: usize, j: usize| (s.points[i].x - s.points[j].x).hypot(s.points[i].y - s.points[j].y);
+                    if *st < s.points.len() && (d(*st, *start) - d(*st, *end)).abs() < 1e-9 * d(*start, *end).max(1e-3) {
+                        arcs += 1;
+                        arcs_agree += (*st == *k) as usize;
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("stored centres: {arcs_agree}/{arcs} arcs take the stored centre; {exact}/{sketches} sketches decode exactly");
+    if arcs > 100 {
+        assert!(arcs_agree * 100 >= arcs * 97, "{arcs_agree}/{arcs}");
+    }
+    if sketches > 250 {
+        assert!(exact >= 200, "{exact}/{sketches} exact sketches");
+    }
+}

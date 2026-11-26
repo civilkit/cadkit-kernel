@@ -1,5 +1,51 @@
 # Blend notes
 
+## Rim of an extruded closed spline: built in place (2026-11-26)
+
+`crates/ck-ops/src/blend/spline_rim.rs`, hooked at the top of `blend_edges`. A round or an equal chamfer on the cap rim of an extruded
+smooth closed free-form profile (closed `spline` or `cvspline` sketch curve, straight extrusion, plane cap) is a closed form: with C(t) the rim,
+n(t) its outward normal in the cap plane and u the direction into the wall, the wall contact is C + r u, the corner is C and the cap contact is
+C - r n. The blend face is the B-spline strip over those three rows (weights 1, 1/sqrt 2, 1 across for a round; two rows for a chamfer) and the
+solid is edited in place (no tool, no boolean), see `docs/dead-ends.md` (2026-11-26). Picking one edge of the smooth rim rounds the whole rim.
+Refusals, all by name and instant: the size does not fit the tightest bend of the profile (`it bends with a radius of about X`, the inside of the
+round turns inside out where 1 - r kappa <= 0), the wall under the rim is not taller than the size (`only X high`), the offset runs into another
+part of the rim (a neck narrower than 2 r), the round reaches another loop of the cap. Numbers (`blend_closed_spline_families`, 756 cases of the
+bean matrix families, 10 mm walls): 578 build, 178 refused (42 of them both rims at r = 5), none broken; the repro part (6 points, 20 mm) builds at every size
+up to 14.25 (the tightest bend), top, bottom and both rims. There is no `docs/blend-limits.md` or `tools/blend_limits` in this tree: those numbers come
+from the test above, not from a corpus run.
+
+## Spline and line profiles: sharp corners, tangent joins, vertical edges and the three-way corner (2026-11-26)
+
+`blend/spline_rim.rs` (ring builder) and `blend/spline_vertical.rs` (vertical corner edges), tests `blend_spline_corner` (quick) and
+`blend_spline_corner_families`. Profiles made of splines, lines and arcs, extruded straight with plane caps (a D, a circle with a flat, two arcs
+and two flats; at least one spline run).
+
+- **Links.** The cap loop is a ring of links: a B-spline on an extruded B-spline wall, a line on a plane wall, an arc on a cylinder wall. Each link
+  gets the same strip of rows (wall contact, corner, cap contact; cubic pieces of the rim, an arc cut fine enough for 5e-8 mm). A line or arc keeps
+  its exact edge curves (translated line, circle of radius rho - r); only the strip is piecewise cubic.
+- **Tangent joins** (spline leaves the line along it, within 3e-7/r): the ring is smooth, one pick rounds all of it, the shared edge is the section
+  arc, exactly as for a smooth closed spline.
+- **Sharp convex corners** (spline meets line at an angle, any angle the offsets allow): the two strips are crossed at a mitre. The cap contact
+  curves are cut where the two inward offsets meet (2D Newton), and the edge between the two blend faces is the intersection of the strips, found by
+  3x3 Newton on the strips' own formulas (the rational quadratic section, or the chamfer segment) at 24 values of the section parameter, carried
+  as an interpolating cubic with the two pcurves interpolated through the same samples. All edges of the loop must be picked (else the old path).
+  Reflex corners are left to the old path.
+- **Vertical corner edges** (round: an exact cylinder whose axis is where the two inward offsets of the walls meet; chamfer: a plane through the points
+  at arc length d on each wall) are built in place; the two rim edges are cut back to the contact points and the arc or chord becomes an edge of
+  each cap loop. What is left is a loop of splines, lines and arcs that the ring builder rounds.
+- **Three-way corner.** Vertical round of radius rv then rim round of radius rr, rv >= rr: the arc link's strip is a torus-like B-spline strip
+  (offset circle rho - rr). Where rv = rr the offset circle collapses to the arc's centre and the arc link's face is a spherical triangle: its
+  cap contact edge disappears and the two cap vertices coincide. Picked in one fillet (the vertical picks may carry their own radius) the same two
+  stages run; vertical chamfers leave short chords whose mitred ends the ring builder handles, so chamfer + chamfer, round + chamfer and chamfer +
+  round combine freely. Names: the vertical face is `B<k>` of its pick; the faces of unpicked links of the ring take indices after the picks.
+- **Checks and refusals** (named, instant): the result must pass `ck_check::validate`; size above the tightest bend or the acute corner's reach
+  (`offset curves ... do not meet`, `bends with a radius of about X`), an edge shorter than its mitres (`shorter than the mitres at its two
+  ends need`), wall not taller than the size, neck narrower than 2 r, vertical radius smaller than the rim's (the strip's inward offset turns inside
+  out at the arc: `bends with a radius of about rv`), rim rounded before the vertical edge (the old path refuses it, see dead-ends).
+- **Numbers**: see the probe tables in the tests. Independent estimate: Pappus per rim with the mitre term `xr * 2 tan(theta/2)` per sharp
+  corner, the vertical cut's area (polygon of the sampled walls and the contact arc) times the height, and the changed rim length.
+  The mass integral of a body is good to about 2e-6 of its volume, which is the floor for small removals (a vertical round on a nearly tangent corner).
+
 ## Fan shroud F48 / F49 and the conduit lip: a clean-up that reached 20 mm, and a translation that picked two edges too many (2026-11-20)
 
 - Fan shroud (`tools/cases/perf/fan_shroud.ckpart`, app sample `fan-shroud-filleted`): F48 (r 2) built with no error but

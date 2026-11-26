@@ -9,7 +9,7 @@
 //!   two regions, the overhangs vanish); exact duplicate pieces are dropped
 //!   (a second line over an existing edge, either direction); collinear
 //!   overlaps are *not* split (a half-length segment lying on an edge is
-//!   ignored);
+//!   ignored; a sketch with `"splitOverlaps": true` splits both lines at the other's ends instead, as Fusion does);
 //! * every bounded face of a connected component is a candidate region;
 //!   components nested inside faces of other components alternate
 //!   region/hole by even-odd depth (3 concentric circles -> ring + disk);
@@ -62,7 +62,7 @@ pub enum Geom {
     /// Interpolating spline, parameter = chord length.
     Spline(InterpSpline),
     /// B-spline (control points, degree, knots).
-    BSpline { cv: Vec<P>, degree: usize, knots: Vec<f64> },
+    BSpline { cv: Vec<P>, degree: usize, knots: Vec<f64>, w: Option<Vec<f64>> },
 }
 
 impl Geom {
@@ -72,7 +72,10 @@ impl Geom {
             Geom::Circle { c, r } => [c[0] + r * t.cos(), c[1] + r * t.sin()],
             Geom::Ellipse { c, u, v } => [c[0] + u[0] * t.cos() + v[0] * t.sin(), c[1] + u[1] * t.cos() + v[1] * t.sin()],
             Geom::Spline(s) => s.eval(t),
-            Geom::BSpline { cv, degree, knots } => de_boor(cv, *degree, knots, t),
+            Geom::BSpline { cv, degree, knots, w } => match w {
+                Some(w) => de_boor_rational(cv, w, *degree, knots, t),
+                None => de_boor(cv, *degree, knots, t),
+            },
         }
     }
     /// First derivative.
@@ -103,6 +106,14 @@ impl Geom {
             }
         }
     }
+}
+
+/// A rational B-spline point: de Boor on the weighted control points and the weights, then the division.
+fn de_boor_rational(cv: &[P], w: &[f64], p: usize, k: &[f64], t: f64) -> P {
+    let wp: Vec<P> = cv.iter().zip(w).map(|(c, w)| [c[0] * w, c[1] * w]).collect();
+    let num = de_boor(&wp, p, k, t);
+    let den = de_boor(&w.iter().map(|w| [*w, 0.0]).collect::<Vec<P>>(), p, k, t)[0];
+    [num[0] / den, num[1] / den]
 }
 
 fn de_boor(cv: &[P], p: usize, k: &[f64], t: f64) -> P {
@@ -351,8 +362,11 @@ fn curve_of(sk: &Sketch, e: &SketchEntity) -> Option<Curve> {
             let (l, cl) = (s.length(), s.closed);
             Curve { tag, kind: "spline", geom: Geom::Spline(s), t0: 0.0, t1: l, closed: cl }
         }
-        SketchEntity::CvSpline { pts, degree, knots, closed, .. } => {
+        SketchEntity::CvSpline { pts, degree, knots, weights, closed, .. } => {
             let mut cv: Vec<P> = pts.iter().filter_map(|p| pt(p)).collect();
+            // weights count only when there is one positive finite weight per control point
+            let mut w: Option<Vec<f64>> =
+                weights.clone().filter(|w| w.len() == cv.len() && w.iter().all(|x| *x > 0.0 && x.is_finite()));
             let p = (*degree as usize).max(1);
             if cv.len() < p + 1 {
                 return None;
@@ -362,13 +376,17 @@ fn curve_of(sk: &Sketch, e: &SketchEntity) -> Option<Curve> {
                 for i in 0..p {
                     let q = cv[i];
                     cv.push(q);
+                    if let Some(w) = w.as_mut() {
+                        let x = w[i];
+                        w.push(x);
+                    }
                 }
                 (0..cv.len() + p + 1).map(|i| i as f64).collect()
             } else {
                 knots.clone().filter(|k| k.len() == cv.len() + p + 1).unwrap_or_else(|| default_knots(cv.len(), p, false))
             };
             let (t0, t1) = (k[p], k[cv.len()]);
-            Curve { tag, kind: "spline", geom: Geom::BSpline { cv, degree: p, knots: k }, t0, t1, closed: *closed }
+            Curve { tag, kind: "spline", geom: Geom::BSpline { cv, degree: p, knots: k, w }, t0, t1, closed: *closed }
         }
         SketchEntity::Point { .. } | SketchEntity::Text { .. } => return None,
     };
@@ -438,6 +456,36 @@ fn inter_line_line(a: &Curve, b: &Curve, ta: &mut Vec<f64>, tb: &mut Vec<f64>) {
     if t >= -tol_t && t <= 1.0 + tol_t && s >= -tol_s && s <= 1.0 + tol_s {
         add_param(ta, a, t.max(0.0).min(1.0));
         add_param(tb, b, s.max(0.0).min(1.0));
+    }
+}
+
+/// A collinear overlap of two lines cuts each at the other's ends that lie inside it (Fusion's sketches split their lines
+/// there (when the other line's start is within 5e-7 mm of this one's line, so that the cut and the end are one vertex); the oracle's arrangement ignores collinear overlaps, so this runs only for a sketch with `"splitOverlaps": true`).
+fn overlap_line_line(a: &Curve, b: &Curve, ta: &mut Vec<f64>, tb: &mut Vec<f64>) {
+    let (Geom::Line { p, d }, Geom::Line { p: q, d: e }) = (&a.geom, &b.geom) else { return };
+    let (la, lb) = (d[0].hypot(d[1]), e[0].hypot(e[1]));
+    if la < 1e-12 || lb < 1e-12 || cross(*d, *e).abs() > 1e-9 * la * lb || cross(*d, sub(*q, *p)).abs() / la > 5e-7 {
+        return;
+    }
+    let (dd, ee) = (dot(*d, *d), dot(*e, *e));
+    let tq = dot(sub(*q, *p), *d) / dd;
+    let tq2 = tq + dot(*e, *d) / dd;
+    let sp = dot(sub(*p, *q), *e) / ee;
+    let sp2 = sp + dot(*d, *e) / ee;
+    let (tol_a, tol_b) = (1e-6 / la, 1e-6 / lb);
+    // the two share a stretch of positive length (touching ends are the T-junction pass's)
+    if tq.max(tq2) <= tol_a || tq.min(tq2) >= 1.0 - tol_a {
+        return;
+    }
+    for t in [tq, tq2] {
+        if t > tol_a && t < 1.0 - tol_a {
+            add_param(ta, a, t);
+        }
+    }
+    for s in [sp, sp2] {
+        if s > tol_b && s < 1.0 - tol_b {
+            add_param(tb, b, s);
+        }
     }
 }
 
@@ -911,6 +959,7 @@ pub fn profiles(sk: &Sketch) -> Profiles {
 pub fn profiles_with(sk: &Sketch, texts: &[super::text::TextLayout]) -> Profiles {
     let (curves, any) = curves_of(sk);
     let n = curves.len();
+    let split_overlaps = matches!(sk.raw.get("splitOverlaps"), Some(Json::Bool(true)));
     // split parameters
     let mut params: Vec<Vec<f64>> = curves.iter().map(|c| vec![c.t0, c.t1]).collect();
     // conservative boxes (padded past every intersection tolerance below):
@@ -926,6 +975,9 @@ pub fn profiles_with(sk: &Sketch, texts: &[super::text::TextLayout]) -> Profiles
             }
             let (mut ta, mut tb) = (Vec::new(), Vec::new());
             intersect(&curves[i], &curves[j], &sampled_of[i], &sampled_of[j], &mut ta, &mut tb);
+            if split_overlaps {
+                overlap_line_line(&curves[i], &curves[j], &mut ta, &mut tb);
+            }
             params[i].extend(ta);
             params[j].extend(tb);
         }

@@ -126,9 +126,21 @@ pub(crate) fn map(b: &mut Builder, name: &str, d: &SketchDetail) -> Result<Sketc
                 if nurbs.get("isPeriodic").and_then(Value::as_bool) == Some(true) {
                     return Err("a periodic spline is not mapped yet".into());
                 }
-                if nurbs.get("isRational").and_then(Value::as_bool) == Some(true) {
-                    return Err("a rational spline is not mapped yet".into());
-                }
+                // a rational spline carries one weight per control point (the part's cvspline `weights`)
+                let rational = nurbs.get("isRational").and_then(Value::as_bool) == Some(true);
+                let weights: Option<Vec<f64>> = if rational {
+                    let w: Option<Vec<f64>> = nurbs
+                        .get("weights")
+                        .and_then(Value::as_array)
+                        .map(|a| a.iter().filter_map(Value::as_f64).collect::<Vec<_>>())
+                        .filter(|w| w.len() == nurbs.get("controlPoints").and_then(Value::as_array).map_or(usize::MAX, Vec::len));
+                    match w {
+                        Some(w) if w.iter().all(|x| *x > 0.0 && x.is_finite()) => Some(w),
+                        _ => return Err("a rational spline has no usable weights".into()),
+                    }
+                } else {
+                    None
+                };
                 let cps: Vec<[f64; 3]> = nurbs
                     .get("controlPoints")
                     .and_then(Value::as_array)
@@ -163,7 +175,11 @@ pub(crate) fn map(b: &mut Builder, name: &str, d: &SketchDetail) -> Result<Sketc
                     points.push(json!({"id": pid, "x": p[0] * CM_TO_MM, "y": p[1] * CM_TO_MM}));
                     ids.push(pid);
                 }
-                json!({"type": "cvspline", "id": id, "pts": ids, "degree": degree, "knots": knots})
+                let mut j = json!({"type": "cvspline", "id": id, "pts": ids, "degree": degree, "knots": knots});
+                if let Some(w) = weights {
+                    j["weights"] = json!(w);
+                }
+                j
             }
             "SketchEllipse" => {
                 let centre = end(c, &c.center_sketch_point, &positions)?;
@@ -217,9 +233,48 @@ pub(crate) fn map(b: &mut Builder, name: &str, d: &SketchDetail) -> Result<Sketc
     if d.is_visible == Some(false) {
         feature["visible"] = json!(false);
     }
+    // Fusion cuts two lines that run along one another at each other's ends (a notch drawn on an edge of a plate splits the
+    // edge); the part's region finder leaves collinear overlaps alone unless told to
+    if overlapping_lines(&lines, &positions, &curve_ids) {
+        feature["splitOverlaps"] = json!(true);
+    }
     b.features.push(feature);
     let (regions, holes, region_points) = region_outlines(&b.features[b.features.len() - 1]);
     Ok(SketchInfo { id, plane, frame, normal_sign, curves: curve_ids, lines, points: positions, regions, holes, region_points })
+}
+
+/// Whether two (non-construction) lines of a sketch lie along one another over a stretch of positive length.
+fn overlapping_lines(lines: &BTreeMap<String, (String, String)>, at: &BTreeMap<String, [f64; 2]>, solid: &BTreeSet<String>) -> bool {
+    let segs: Vec<([f64; 2], [f64; 2])> = lines
+        .iter()
+        .filter(|(id, _)| solid.contains(*id))
+        .filter_map(|(_, (a, c))| Some((*at.get(a)?, *at.get(c)?)))
+        .collect();
+    for (i, (p, q)) in segs.iter().enumerate() {
+        let d = [q[0] - p[0], q[1] - p[1]];
+        let len = d[0].hypot(d[1]);
+        if len < 1e-9 {
+            continue;
+        }
+        for (r, s) in &segs[i + 1..] {
+            let e = [s[0] - r[0], s[1] - r[1]];
+            let lb = e[0].hypot(e[1]);
+            if lb < 1e-9 || (d[0] * e[1] - d[1] * e[0]).abs() > 1e-9 * len * lb {
+                continue;
+            }
+            // the other line is on this one's line, and the two share more than a point
+            if ((r[0] - p[0]) * d[1] - (r[1] - p[1]) * d[0]).abs() / len > 5e-7 {
+                continue;
+            }
+            let t = |x: [f64; 2]| ((x[0] - p[0]) * d[0] + (x[1] - p[1]) * d[1]) / (len * len);
+            let (t0, t1) = (t(*r), t(*s));
+            let tol = 1e-6 / len;
+            if t0.max(t1) > tol && t0.min(t1) < 1.0 - tol {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// The id of a curve's end point, which must be a point of the sketch.

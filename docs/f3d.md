@@ -151,7 +151,7 @@ the Fusion type and the reason; `items` carries one report per timeline item and
   Extrudes that start away from the profile (an `OffsetStart`) stay placeholders: a part's extrude has no start offset,
   so it needs the sketch re-made on an offset plane.
 - **Mirror and patterns.** Mapped since slice 6 where exact (see the slice 6 section); the part's mirror and pattern
-  features take feature ids as seeds, while Fusion's inputs are bodies, faces or features by the file's own names.
+  features take feature ids as seeds, while Fusion's inputs are bodies, faces or features by the file's own names. A circular pattern whose inputs are an extrude and its fillet or chamfer (a gear tooth) repeats the extrude and makes the same blend on the copies' edges, one copy at a time (slice 8).
 - **Profiles.** A profile is picked by an id of its outer loop that only its region carries (`regions`); a region none of
   whose curves is its own (the lens of two overlapping outlines, a region whose every edge also bounds a neighbour) is
   picked by a point well inside it (`regionAt`, sketch-plane coordinates, an extrude / revolve field of the part: it picks
@@ -461,3 +461,90 @@ code or text copied; attribution in THIRD_PARTY.md):
 What remains, by size: `BaseFeature` (440 items, 7 designs; decoder frames + a body-carrying part feature), the bodies of
 Loft / Split / Sweep / Box items (the part has no name for them: a feature that makes a body for the table), the components
 (`Occurrence`, joints, `CopyPasteOccurrence`) and the multi-lump bodies of one feature.
+
+Slice 8 (same corpus; branch `f3d-slice8`): why designs stay unverified, and what that found.
+**Method.** `crates/ck-f3d-features/tests/probe_sketch.rs` (env-gated, silent without its variables; none of it names a file in the
+repository) writes each design's dump as JSON (`CK_F3D_DUMP_DIR`), the volume and lump count of the regenerated history after each
+written feature (`CK_F3D_STEPS`), the file's blend edges against the nearest edges of the history before them (`CK_F3D_EDGES`), the
+class and id attributes of every sketch entity (`CK_F3D_ATTRS`) and the curve ids that no sketch lists (`CK_F3D_ORPHANS`). With the
+per-design reasons (`CK_F3D_NAMES=1`, now with the placeholders by Fusion type and the reference's and history's volume and lumps) each
+unverified design was traced to the first written feature at which the history leaves the file's body. Cause table of the 20 smallest
+designs with a volume that is short or over, a `cutNoEffect`, or a feature that fails (by class; the design count is in brackets):
+
+| Cause | Designs | What was done |
+|---|---|---|
+| Gear-tooth circular pattern: the pattern's inputs are the tooth extrude *and its fillet*, and a part's pattern repeats only a feature's tool body (-4 to -35 % volume) | 13 (a parametric gear template, 11 of them; the rest have other blockers) | mapped: the seeds are the extrudes; the fillet is made on the file's edges turned by each step, one fillet per copy (`pattern.rs`). 9 verify |
+| Lines drawn along the edge of a plate (Fusion splits both lines at the other's ends; the oracle-pinned region finder ignores collinear overlaps), so the picked "region" is the whole plate: a cut removes 98 % (the six designs of one voron-style frame), or a stacked join fails `booleanTangent` (3) | 12 designs have such sketches | new sketch field `splitOverlaps` (kernel, opt-in; the importer sets it only for a sketch whose lines overlap within 5e-7 mm). 2 designs newly verify; one design that was unverified anyway now stops at an `openProfile` (its overlapping lines are a long chain; a region of them does not close) |
+| Reference incomplete: the ASM reader cannot build the filleted body (rolling-ball blend faces), so the "imported body" is a stray pin (+696 %) | 5 | the guard names it (`Measure::unread`); such a design can no longer be compared, equal or not |
+| Taper sign: a keycap pin extruded -3.8 mm with a -0.5 degree taper narrows away from its sketch in the file (its edges, read from the history, are 0.033 mm closer in at the far end); the mapping widened it | 2 | fixed: the taper's sign turns with a negative length; the corpus now settles what slice 6 could not |
+| A fillet or chamfer of a full circle: the file's edge starts at the other side of the circle than the kernel's, so the middle points differ by a diameter | 4 items (1 design +20 %) | fixed: a closed edge is found by any point of it |
+| Revolve of two profiles on the two sides of the axis (a case back: `profileCrossesAxis`, then a solid inside out) | 2 | fixed in the kernel: the check is per region, and in a profile with regions on both sides those on the far side revolve about the reversed axis through the reversed angles (a profile on one side is revolved as before: the oracle goldens pin it) |
+| Extrude of the letters of a sketch text (the font's outlines are not in the file): mapped as "every region of the sketch", which has none (`noClosedProfile`) or others | 10 items in 5 designs | now a placeholder with the reason (a mapping bug; mapped fell by 10) |
+| Rational splines (52 items): the sketch's `cvspline` had no weights | 52 items | `weights` added (below); 52 sketch items and 12 extrudes map |
+| Circular pattern of bodies or faces (a revolve's body ring), a pattern of a body feature | 5 | not mapped (needs body names in patterns) |
+| Hole feature: a 2 mm hole called 3 mm deep removes 12.57 mm^3 = pi x 1 x 4 from a 286.7 mm^3 part, so the stored depth is not the cylinder's length (the tip, a 1 mm offset?) | 3 | left a placeholder; the one design that pins it still has the pattern of bodies before it |
+| Thread (4 items) and the fillets after them (+7.4 %) | 1 | placeholder |
+| Fillet edge that the kernel holds as two (a join leaves a vertex where a coplanar face meets, the kernel keeps same-plane faces split: a 7 mm edge is 5 + 2) | 3 (one bracket: +2.4 %) | not done: a chain of collinear kernel edges would have to be one pick |
+| Form / T-spline items (type unknown to the decoder) and a mesh base feature before a cut | 2 (a keychain, a keyboard plate) | nothing mapped is wrong; the cut misses |
+| `booleanTangent` / `booleanFailed` of mapped joins and cuts (two walls that touch without crossing) | 5 | kernel boolean; not touched |
+| Press-pull cut of a toothed face (60 teeth) takes the kernel more than ten minutes | 1 (a 60-tooth ring gear) | ends in the feature budget (`featureBudgetExceeded`); the corpus test now installs a clock so it cannot hold the run |
+
+**Fixes, each with a synthetic test** (`tests/synthetic.rs`): the gear-tooth fillet pattern (the copies' fillets against a plate built with
+the tooth but no fillet: twelve convex vertical edges of radius 0.5 mm lose (1 - pi/4) r^2 h each); the closed-circle chamfer (Pappus);
+revolve regions on both sides of the axis (two rings); the taper's sign on a negative length; text profiles; lines along an edge (a
+notch region of 100 mm^2); a rational quarter disc (exact area against the parabola of the same control points, and bad weights refused);
+the guard on an incomplete reference.
+
+**Rational splines.** `cvspline` takes an optional `weights` (one positive finite weight per control point; else ignored). The
+`ck-geom` B-spline was rational already, so the sketch profile (`profile.rs`: de Boor on weighted points), the extrude's profile
+segment and the curve references of sweeps and paths (`curve_ref.rs`, `proc_curve.rs`) evaluate it exactly; the 2D sketch solver does not
+use the weights (a constraint on a rational spline sees its control polygon). `packages/part-model` has the field (`kit_typecheck` is
+not needed: the field is optional). A part without it is unchanged.
+
+**Projected curves (step 2): the records are not there.** The probe lists, for every sketch of the corpus, the classes of its entity list
+and the sketch-curve objects that no sketch lists: none in any of the corpus' documents (`curves no sketch lists: {}`); and, for the
+design with the most such records (the 16 of 30), no object of the whole design stream carries a curve id (`crv_primary_id`, the id a
+profile names a curve by) outside a sketch's list. So projected, intersection and offset curves are not a class the decoder skips. Of the 138 profile records of the corpus that name a curve the sketch table lacks, 109 name an id that **no
+object of the file carries** (the sketch has no such entity at all), 22 name an id that another sketch of the same document has
+(a profile of a sketch that lists curves of another), 7 match only a primary id. The projected geometry is stored, if at all, as the
+extrude's result (the loop of the profile in the ASM history), not in the sketch records. Not decodable from the sketch; a reading of
+the profile's cap-face boundary from the history state is the way (see next lever).
+Cadmpeg's `docs/formats/f3d.md` (CC BY 4.0, cadmpeg project) has no layout for projected curves either (its sketch sections list them only
+inside curve and construction records); nothing from it was used.
+
+**Perf.** A fillet of the 188 edges of a 94-tooth gear in one feature does not finish in the kernel's 120 s feature budget; one fillet per
+copy does (a few seconds each). The corpus test installs a wall clock (`ck_core::budget::set_clock`) so that a feature the kernel works
+on for minutes ends with `featureBudgetExceeded`, as in the app.
+
+| | slice 7 | slice 8 |
+|---|---|---|
+| items mapped | 3613 | 3693 |
+| designs verified (of 96 compared) | 17 | 28 |
+| fully mapped designs / verified | 13 / 13 | 15 / 15 |
+| Sketch mapped (of 1653) | 1566 | 1616 |
+| Extrude mapped (of 1666) | 1137 | 1158 |
+| Revolve mapped (of 16) | 13 | 14 |
+| CircularPattern mapped (of 36) | 0 | 11 |
+| Chamfer mapped (of 82) | 0 | 2 |
+| Fillet mapped (of 379) | 43 | 38 |
+| "a rational spline is not mapped yet" (items) | 52 | 0 |
+| "an extrude of the letters of a sketch text is not mapped yet" | 0 | 10 |
+| "an input feature (FilletFeature) is not an extrude or revolve that mapped" | 11 | 0 |
+| unverified: history builds no body / `cutNoEffect` | 14 / 17 | 13 / 11 |
+| unverified: volume short / over (designs) | 22 / 16 | 18 / 13 |
+| unverified: imported body not the whole design (new reason) | 0 | 5 |
+| unverified: `featureBudgetExceeded` (new) / `booleanTangent` | 0 / 2 | 1 / 1 |
+
+The 17 designs verified at slice 7 are the same 17; the 11 new ones are the 9 gear designs and the 2 with lines along an edge. Nothing is
+verified without the regenerate-and-compare check and no threshold moved. Fillet mapped fell by 5: the 10 text-letter extrudes became
+placeholders, which marks the history lost and makes the blends after them wait (392 items now say "an earlier item did not map").
+Open: one design that failed at a boolean now fails at an `openProfile` of its overlapping lines (it stays unverified), and the 60-tooth ring's
+press-pull cut ends in the time budget.
+
+**Next lever.** Two things block most of what is left, and both are in the history rather than the sketch: (1) the profile outline of an
+extrude whose sketch has projected geometry (the 109 records no object carries; 31 items still say "outline is not a region the kernel
+finds", and the cuts after them make most of the remaining `cutNoEffect` designs) can be read from the cap face of the extruded body
+in the ASM state after the item: its boundary edges carry the file's own names, and the sketch then needs the loop as geometry (lines,
+arcs, splines of the cap's edges, in the sketch plane); (2) body names for Loft, Sweep, Split and Box items (about 130 items, and the
+circular patterns of bodies) need a feature that makes a body the table can name. BaseFeature (440 items in 7 designs) still needs
+the scope frame the decoder does not read; it is the lowest yield per effort of the three.

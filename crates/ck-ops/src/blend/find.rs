@@ -6,8 +6,11 @@ use ck_topo::body::{Body, EdgeId, FaceId, FaceName};
 /// Faces named `id`; a face an earlier tool split into regions (`F4.C1~1`, `~2`) is still
 /// named by its base id in the selection.
 pub(super) fn faces_named(b: &Body, id: &str) -> Vec<FaceId> {
-    if b.find_face(id).is_some() {
-        return b.face_ids().filter(|&f| b.face_id_str(f) == id).collect();
+    if let Some(found) = b.find_face(id) {
+        let exact: Vec<FaceId> = b.face_ids().filter(|&f| b.face_id_str(f) == id).collect();
+        // (a name an earlier tool absorbed into a coplanar neighbour, the other half of a wall a split line cut in two,
+        // is that neighbour: the pick on it still names the merged face's edge)
+        return if exact.is_empty() { vec![found] } else { exact };
     }
     let Some(mut want) = FaceName::parse(id) else { return vec![] };
     want.region = None;
@@ -103,4 +106,45 @@ pub fn forward_first(b: &Body, fa: &str, fb: &str, at: Vec3) -> (String, String,
         (Some(f), Some(g)) if f == g => (fb.to_string(), fa.to_string(), at),
         _ => keep,
     }
+}
+
+/// The edge of `out` a pick `(fa, fb, at)` of the selection's input body means, when the names no longer find it: an
+/// earlier tool's rebuild lost the name of a coplanar wall it merged into its neighbour (the other half of a wall a split
+/// line cut in two). Found by geometry: the planes of the pick's two faces in the input, and the point.
+pub(super) fn find_pick(out: &Body, fa: &str, fb: &str, at: Vec3) -> Option<EdgeId> {
+    if let Some(e) = find_edge(out, fa, fb, at) {
+        return Some(e);
+    }
+    use ck_geom::surface::Surface;
+    let planes: Option<[(Vec3, Vec3); 2]> = super::analytic::ORIGINAL.with(|o| {
+        let o = o.borrow();
+        let ob = o.as_ref()?;
+        let e0 = find_edge(ob, fa, fb, at)?;
+        let fs = ob.edge_faces(e0);
+        if fs.len() != 2 || !fs.iter().all(|&f| matches!(ob.face(f).surface, Surface::Plane { .. })) {
+            return None;
+        }
+        let p = ob.vertex(ob.edge(e0).v0).p;
+        Some([(p, ob.planar_normal(fs[0]).normalize()), (p, ob.planar_normal(fs[1]).normalize())])
+    });
+    let planes = planes?;
+    let tol = 1e-6 * (1.0 + at.len());
+    let on = |f: ck_topo::body::FaceId, (p, n): (Vec3, Vec3)| {
+        matches!(out.face(f).surface, Surface::Plane { .. }) && out.planar_normal(f).normalize().dot(n) > 1.0 - 1e-9 && {
+            let q = out.vertex(out.edge(out.face_edges(f)[0]).v0).p;
+            (q - p).dot(n).abs() < tol
+        }
+    };
+    out.edge_ids()
+        .filter(|&e| {
+            let fs = out.edge_faces(e);
+            fs.len() == 2 && ((on(fs[0], planes[0]) && on(fs[1], planes[1])) || (on(fs[0], planes[1]) && on(fs[1], planes[0])))
+        })
+        .map(|e| {
+            let ed = out.edge(e);
+            (e, crate::boolean::imprint::dist_in_range(&ed.curve, (ed.t0, ed.t1), at).1)
+        })
+        .filter(|&(_, d)| d <= tol)
+        .min_by(|x, y| x.1.total_cmp(&y.1))
+        .map(|(e, _)| e)
 }

@@ -119,7 +119,7 @@ impl Contour {
             let tb = add(corner, mul(d1, setback));
             let turn_n = if left_turn { [-d0[1], d0[0]] } else { [d0[1], -d0[0]] };
             let center = add(ta, mul(turn_n, r_line));
-            bends.push(CBend { vertex: v, angle, left_turn, line_outer, setback, allowance: (r + rule.k_factor * t) * angle, r_line, center, ta, tb });
+            bends.push(CBend { vertex: v, angle, left_turn, line_outer, setback, allowance: (r + rule.k_for(r, angle).map_err(|m| m.encode())? * t) * angle, r_line, center, ta, tb });
         }
         let mut legs = vec![];
         for i in 0..n {
@@ -199,6 +199,7 @@ impl Contour {
                     included_angle: 180.0 - b.angle.to_degrees(),
                     radius: rule.bend_radius,
                     allowance: b.allowance,
+                    k_factor: super::sheet::implied_k(b.allowance, rule.bend_radius, b.angle, rule.thickness),
                     length: self.distance,
                     start: [x + b.allowance * 0.5, y0],
                     end: [x + b.allowance * 0.5, y1],

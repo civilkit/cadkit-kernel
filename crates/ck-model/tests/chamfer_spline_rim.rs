@@ -180,12 +180,28 @@ fn refused(head: &str) -> Vec<(String, String)> {
 
 #[test]
 fn spline_rim_chamfers_are_refused_with_a_detail() {
-    for head in [r#""chamferType":"equal","distance":1"#, r#""chamferType":"distances","distance":1,"distance2":0.5"#, r#""chamferType":"angle","distance":1,"angle":30"#] {
+    for head in [r#""chamferType":"distances","distance":1,"distance2":0.5"#, r#""chamferType":"angle","distance":1,"angle":30"#] {
         let p = refused(head);
         let detail = p.iter().find(|(k, _)| k == "detail").unwrap_or_else(|| panic!("{head}: no detail {p:?}"));
         assert!(detail.1.contains("chamfer") && detail.1.contains("spline"), "{head}: {detail:?}");
         assert!(p.iter().any(|(k, _)| k == "hint"), "{head}: no hint");
     }
+}
+
+/// The equal chamfer of the closed smooth rim is built in place on the profile's offset curve (`blend/spline_rim.rs`); the
+/// unequal and angle forms above stay refused. One pick chamfers the whole smooth rim.
+#[test]
+fn equal_chamfer_on_the_closed_spline_rim_builds() {
+    let (o, v0) = chamfer_spline(r#""chamferType":"equal","distance":1"#);
+    assert!(o.errors.is_empty(), "{:?}", o.errors);
+    let b = o.body.as_ref().unwrap();
+    assert!(valid(b));
+    let b0 = run(&spline_block()).body.unwrap();
+    let cap = b0.find_face("F2.C1").unwrap();
+    let len: f64 = b0.edge_ids().filter(|&e| b0.edge_faces(e).len() == 2 && b0.edge_faces(e).contains(&cap)).map(|e| b0.edge_length(e)).sum();
+    // wedge d^2 / 2 along the rim, less the centroid's inside turn (d / 3 over 2 pi)
+    let want = 0.5 * (len - 2.0 * std::f64::consts::PI / 3.0);
+    assert!(((v0 - vol(b)) - want).abs() < 3e-3 * want, "removed {} against {want}", v0 - vol(b));
 }
 
 #[test]

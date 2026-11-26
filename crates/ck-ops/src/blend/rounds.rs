@@ -17,6 +17,10 @@ pub fn blend_edges(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, featu
             }
         }
     }
+    // the rim of an extruded smooth closed free-form profile: built in place (spline_rim.rs)
+    if let Some(res) = super::spline_rim::try_rim(b, edges, spec, feature, tol) {
+        return res;
+    }
     // a fillet on a procedural (sweep or blend) face is made on its B-spline, so that the guard judges the result against it too
     if matches!(spec, Spec::Fillet(..)) {
         if let Some(c) = super::freeform::procedural_to_bspline(b, edges) {
@@ -203,6 +207,7 @@ fn chamfer_corners_first(b: &Body, edges: &[(String, String, Vec3)], at_corner: 
 
 pub(super) fn blend_edges_inner(b: &Body, edges: &[(String, String, Vec3)], spec: Spec, feature: &str, tol: f64) -> Result<Body, BlendError> {
     SWEPT.with(|w| w.borrow_mut().clear());
+    COLLINEAR_FOLLOWERS.with(|c| c.borrow_mut().clear());
     CYL_CORNER.with(|c| c.set(false));
     ORIGINAL.with(|o| *o.borrow_mut() = Some(b.clone()));
     let r = spec.size();
@@ -488,6 +493,9 @@ pub(super) fn blend_edges_inner(b: &Body, edges: &[(String, String, Vec3)], spec
         let mut earlier: Vec<String> = vec![];
         // chamfer: arcs of one split ring (a lofted cap rim cut in two at the
         // seam) are ONE revolved cut, named for the first arc
+        // later pieces of a straight run a sketch split in collinear pieces: an earlier tool's strip over the run covers them
+        let followers: Vec<bool> = collinear_run_followers(b, &eids);
+        COLLINEAR_FOLLOWERS.with(|c| *c.borrow_mut() = (0..n).filter(|&i| followers[i]).map(|i| fwd[i].2).collect());
         let (ring_lead, ring_skip) = if !has_partial_offsets() && (chamfer_only(spec) || matches!(spec, Spec::Fillet(_, FilletProfile::Circular))) { split_rings(b, &eids) } else { (vec![false; n], vec![false; n]) };
         for round in rounds {
             // (an edge an earlier round's tool already blended is gone: the other arc of a concave arc split by a seam,
@@ -497,14 +505,14 @@ pub(super) fn blend_edges_inner(b: &Body, edges: &[(String, String, Vec3)], spec
                 .filter(|&i| !ring_skip[i])
                 .filter(|&i| {
                     let (fa, fb, at) = &fwd[i];
-                    find_edge(&out, fa, fb, *at).is_some() || !(blended_by_earlier_tool(&out, fa, fb, feature) || swept_pick(*at))
+                    find_pick(&out, fa, fb, *at).is_some() || !(blended_by_earlier_tool(&out, fa, fb, feature) || swept_pick(*at) || covered_follower(&out, feature, *at, 2.0 * r))
                 })
                 .collect();
             if round.is_empty() {
                 continue;
             }
             // a pick of this round that an earlier round's tool took away (the selection had it: `eids`): an overflow
-            if let Some(&i) = round.iter().find(|&&i| find_edge(&out, &fwd[i].0, &fwd[i].1, fwd[i].2).is_none()) {
+            if let Some(&i) = round.iter().find(|&&i| find_pick(&out, &fwd[i].0, &fwd[i].1, fwd[i].2).is_none()) {
                 return Err(super::diag::consumed_by_earlier(feature, i as u32, &fwd[i].0, &fwd[i].1));
             }
             let rings: Vec<bool> = round.iter().map(|&i| ring_lead[i]).collect();
@@ -771,7 +779,7 @@ pub(super) fn blend_edges_at(
     let mut refs: Vec<BlendRef> = vec![];
     let mut sel_edges: Vec<EdgeId> = vec![];
     for (k, (fa, fb, at)) in edges.iter().enumerate() {
-        let e = find_edge(b, fa, fb, *at).ok_or_else(|| BlendError::code("missingEdge"))?;
+        let e = find_pick(b, fa, fb, *at).ok_or_else(|| BlendError::code("missingEdge"))?;
         sel_edges.push(e);
         let ed = b.edge(e);
         // a tolerant edge (imported geometry that did not fit exactly) has no exact face intersection to roll along
@@ -803,12 +811,12 @@ pub(super) fn blend_edges_at(
     }
     for k in seq {
         let (fa, fb, at) = &edges[k];
-        let Some(e) = find_edge(&out, fa, fb, *at) else {
+        let Some(e) = find_pick(&out, fa, fb, *at) else {
             // an earlier tool of this feature already blended it: collinear edges
             // separated by a notch (a hole centred on the edge line) are cut by one
             // tool, whose margin runs on over the notch; the edge is gone but both of
             // its faces now border that feature's blend face
-            if blended_by_earlier_tool(&out, fa, fb, feature) || swept_pick(*at) {
+            if blended_by_earlier_tool(&out, fa, fb, feature) || swept_pick(*at) || covered_follower(&out, feature, *at, 2.0 * spec.size()) {
                 // only a pick whose face pair another pick shares is one tool's run on (the notch's two halves). A pick on
                 // another pair of faces that an earlier round's tool swallowed whole (a round wider than the wall it
                 // runs over, the concave edge beside it) was not blended: building the part without it would drop it
@@ -840,6 +848,15 @@ pub(super) fn blend_edges_at(
                 if opposite && !swept_pick(*at) {
                     dbg_fail(&format!("edge {k} ({fa} | {fb}) was taken by the blend of another edge"));
                     return Err(BlendError::detail("blendOverflow", &format!("{feature}.B{}: blends overlap: the blend of another edge covers the edge between {fa} and {fb}", idx[k])));
+                }
+                // the pick is only skipped when an earlier tool's strip really runs along it: else part of the selection
+                // would be dropped without a word
+                if !swept_pick(*at) && !blend_runs_anywhere(&out, feature, *at, 4.0 * spec.size()) {
+                    dbg_fail(&format!("edge {k} ({fa} | {fb}) was not blended by an earlier tool"));
+                    return Err(super::diag::failed_hint(
+                        &format!("{feature}.B{}: the edge between {fa} and {fb} could not be blended: it runs on from another selected edge and no tool covered it", idx[k]),
+                        "pick every piece of the edge, or turn propagate on",
+                    ));
                 }
                 dbg_fail(&format!("edge {k} ({fa} | {fb}) was blended by an earlier tool"));
                 continue;
@@ -977,4 +994,15 @@ fn has_mixed_pair(b: &Body, eids: &[EdgeId], concave: &[bool]) -> bool {
         }
     }
     false
+}
+
+thread_local! {
+    /// Pick points of the later pieces of collinear runs in the selection being blended.
+    static COLLINEAR_FOLLOWERS: std::cell::RefCell<Vec<Vec3>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// A pick that is a later piece of a collinear run (see [`collinear_run_followers`]) with a strip of `feature` along its
+/// point: an earlier tool covered the run (its face names are no longer the pick's: the walls were merged).
+fn covered_follower(out: &Body, feature: &str, at: Vec3, reach: f64) -> bool {
+    COLLINEAR_FOLLOWERS.with(|c| c.borrow().iter().any(|p| p.dist(at) < 1e-9)) && blend_runs_anywhere(out, feature, at, reach)
 }

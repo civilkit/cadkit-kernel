@@ -115,6 +115,176 @@ pub struct Rule {
     pub corner_relief_shape: ReliefShape,
     pub hem_gap: f64,
     pub gap: f64,
+    /// Optional bend table: the k-factor by inside radius over thickness (and by bend angle). `k_factor` stays the value
+    /// of a rule without one.
+    pub bend_table: Option<BendTable>,
+}
+
+/// One row of a bend table: the k-factor for an inside radius of `ratio` x thickness, for bends of `angle` degrees when given.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TableRow {
+    pub ratio: f64,
+    pub angle: Option<f64>,
+    pub k: f64,
+}
+
+/// A bend that lies outside the bend table (or between rows that cannot be interpolated).
+#[derive(Debug, Clone, PartialEq)]
+pub struct KMiss {
+    pub ratio: f64,
+    pub angle_deg: f64,
+    pub detail: String,
+}
+
+pub const OUTSIDE_TABLE: &str = "bendOutsideTable";
+
+impl KMiss {
+    /// The text a panel-tree step carries as its error (`bendOutsideTable:<ratio>:<angle>:<detail>`).
+    pub fn encode(&self) -> String {
+        format!("{OUTSIDE_TABLE}:{}:{}:{}", self.ratio, self.angle_deg, self.detail)
+    }
+    pub fn decode(e: &str) -> Option<KMiss> {
+        let rest = e.strip_prefix(OUTSIDE_TABLE)?.strip_prefix(':')?;
+        let mut it = rest.splitn(3, ':');
+        Some(KMiss { ratio: it.next()?.parse().ok()?, angle_deg: it.next()?.parse().ok()?, detail: it.next()?.to_string() })
+    }
+}
+
+/// A bend table: rows of `(radius / thickness, [angle], k)`. Either every row names an angle or none does. Without angles
+/// k is interpolated linearly in the ratio between the two rows around it; with angles, along the angle inside each ratio
+/// and then linearly between the two ratios around the bend's (a ratio that has rows is interpolated only inside the angle
+/// range of its own rows). Outside the rows there is no extrapolation: the bend is refused.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BendTable {
+    /// Sorted by ratio, then angle.
+    pub rows: Vec<TableRow>,
+}
+
+const TABLE_EPS: f64 = 1e-9;
+
+impl BendTable {
+    /// Check and sort rows. `Err(detail)` for an empty table, a k outside 0..1, a mixed use of angles or a repeated row.
+    pub fn new(mut rows: Vec<TableRow>) -> Result<BendTable, String> {
+        if rows.is_empty() {
+            return Err("the bend table has no rows".into());
+        }
+        for r in &rows {
+            if !(r.ratio.is_finite() && r.ratio > 0.0) {
+                return Err(format!("radiusRatio {} must be above 0", r.ratio));
+            }
+            if !(0.0..=1.0).contains(&r.k) {
+                return Err(format!("k {} is outside 0..1", r.k));
+            }
+            if let Some(a) = r.angle {
+                if !(a > 0.0 && a <= 180.0) {
+                    return Err(format!("angle {a} is outside 0..180 degrees"));
+                }
+            }
+        }
+        if rows.iter().any(|r| r.angle.is_some()) && rows.iter().any(|r| r.angle.is_none()) {
+            return Err("give an angle in every row of the bend table, or in none".into());
+        }
+        rows.sort_by(|a, b| a.ratio.total_cmp(&b.ratio).then(a.angle.unwrap_or(0.0).total_cmp(&b.angle.unwrap_or(0.0))));
+        for w in rows.windows(2) {
+            if (w[0].ratio - w[1].ratio).abs() < TABLE_EPS && (w[0].angle.unwrap_or(0.0) - w[1].angle.unwrap_or(0.0)).abs() < TABLE_EPS {
+                return Err(format!("two rows of the bend table have the radiusRatio {} and the same angle", w[0].ratio));
+            }
+        }
+        Ok(BendTable { rows })
+    }
+
+    pub fn has_angles(&self) -> bool {
+        self.rows.first().map_or(false, |r| r.angle.is_some())
+    }
+
+    fn range_text(&self) -> String {
+        let (lo, hi) = (self.rows[0].ratio, self.rows[self.rows.len() - 1].ratio);
+        if self.has_angles() {
+            let (a0, a1) = self.rows.iter().fold((f64::MAX, f64::MIN), |m, r| (m.0.min(r.angle.unwrap_or(0.0)), m.1.max(r.angle.unwrap_or(0.0))));
+            format!("radiusRatio {lo} to {hi}, angle {a0} to {a1} degrees")
+        } else {
+            format!("radiusRatio {lo} to {hi}")
+        }
+    }
+
+    /// The k-factor for an inside radius of `ratio` x thickness and a bend of `angle_deg` degrees.
+    pub fn k_at(&self, ratio: f64, angle_deg: f64) -> Result<f64, KMiss> {
+        let miss = |why: &str| KMiss {
+            ratio,
+            angle_deg,
+            detail: format!("the bend (inside radius / thickness {ratio:.4}, {angle_deg:.4} degrees) {why}; the bend table covers {}", self.range_text()),
+        };
+        // the distinct ratios, each with its rows
+        let mut groups: Vec<(f64, Vec<&TableRow>)> = vec![];
+        for r in &self.rows {
+            match groups.last_mut() {
+                Some(g) if (g.0 - r.ratio).abs() < TABLE_EPS => g.1.push(r),
+                _ => groups.push((r.ratio, vec![r])),
+            }
+        }
+        // k of one ratio group at the angle
+        let along = |g: &[&TableRow]| -> Option<f64> {
+            if g[0].angle.is_none() {
+                return Some(g[0].k);
+            }
+            let (first, last) = (g[0], g[g.len() - 1]);
+            let (a0, a1) = (first.angle?, last.angle?);
+            if angle_deg < a0 - TABLE_EPS || angle_deg > a1 + TABLE_EPS {
+                return None;
+            }
+            for w in g.windows(2) {
+                let (x0, x1) = (w[0].angle?, w[1].angle?);
+                if angle_deg <= x1 + TABLE_EPS {
+                    let u = if x1 - x0 > TABLE_EPS { ((angle_deg - x0) / (x1 - x0)).clamp(0.0, 1.0) } else { 0.0 };
+                    return Some(w[0].k + (w[1].k - w[0].k) * u);
+                }
+            }
+            Some(first.k)
+        };
+        let (lo, hi) = (groups[0].0, groups[groups.len() - 1].0);
+        if ratio < lo - TABLE_EPS || ratio > hi + TABLE_EPS {
+            return Err(miss("has a radius outside the table"));
+        }
+        let at = |gi: usize| along(&groups[gi].1).ok_or_else(|| miss("has an angle outside the rows of its radius"));
+        let hi_i = groups.iter().position(|g| g.0 >= ratio - TABLE_EPS).unwrap_or(groups.len() - 1);
+        if (groups[hi_i].0 - ratio).abs() < TABLE_EPS || hi_i == 0 {
+            return at(hi_i);
+        }
+        let (k0, k1) = (at(hi_i - 1)?, at(hi_i)?);
+        let u = (ratio - groups[hi_i - 1].0) / (groups[hi_i].0 - groups[hi_i - 1].0);
+        Ok(k0 + (k1 - k0) * u)
+    }
+
+    pub fn to_json(&self) -> Json {
+        Json::Arr(
+            self.rows
+                .iter()
+                .map(|r| {
+                    let o = Obj::new().put("radiusRatio", r.ratio);
+                    let o = match r.angle {
+                        Some(a) => o.put("angle", a),
+                        None => o,
+                    };
+                    o.put("k", r.k).build()
+                })
+                .collect(),
+        )
+    }
+}
+
+/// The k-factor a bend of `radius`, `angle` (radians) and the stock `t` has, from the allowance `(r + k t) a` (the inverse).
+pub fn implied_k(allowance: f64, radius: f64, angle: f64, t: f64) -> f64 {
+    if angle.abs() < 1e-12 || t.abs() < 1e-12 {
+        return 0.0;
+    }
+    (allowance / angle - radius) / t
+}
+
+/// Why a flange chain fails: a height too low for a bend, or a bend outside the bend table.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ChainErr {
+    Height(usize, f64),
+    Table(KMiss),
 }
 
 /// Thickness of a rule that names none.
@@ -137,11 +307,25 @@ impl Rule {
             corner_relief_shape: ReliefShape::Notch,
             hem_gap: 0.01,
             gap: t,
+            bend_table: None,
         }
     }
 
+    /// The k-factor of a bend of inside radius `radius` and `angle` radians: the constant `k_factor`, or from the bend table.
+    pub fn k_for(&self, radius: f64, angle: f64) -> Result<f64, KMiss> {
+        match &self.bend_table {
+            None => Ok(self.k_factor),
+            Some(t) => t.k_at(radius / self.thickness, angle.to_degrees()),
+        }
+    }
+
+    /// [`k_for`](Self::k_for) for a bend that was already checked.
+    pub fn k_checked(&self, radius: f64, angle: f64) -> f64 {
+        self.k_for(radius, angle).unwrap_or(self.k_factor)
+    }
+
     pub fn to_json(&self) -> Json {
-        Obj::new()
+        let o = Obj::new()
             .put("name", self.name.as_str())
             .put("thickness", self.thickness)
             .put("kFactor", self.k_factor)
@@ -151,8 +335,12 @@ impl Rule {
             .put("cornerRelief", self.corner_relief)
             .put("cornerReliefShape", self.corner_relief_shape.as_str())
             .put("hemGap", self.hem_gap)
-            .put("gap", self.gap)
-            .build()
+            .put("gap", self.gap);
+        let o = match &self.bend_table {
+            Some(t) => o.put("bendTable", t.to_json()),
+            None => o,
+        };
+        o.build()
     }
 }
 
@@ -276,6 +464,20 @@ pub fn chain_of(t: f64, k: f64, r: f64, angle: f64, height: f64, from: HeightFro
     Ok(out)
 }
 
+/// [`chain_of`] with the k-factor of every bend taken from the rule (its bend table when it has one). The setbacks and legs
+/// do not depend on k, so only the allowances change.
+#[allow(clippy::too_many_arguments)]
+pub fn chain_in(rule: &Rule, r: f64, angle: f64, height: f64, from: HeightFrom, pos: Position, hem: bool, then: &[Next]) -> Result<Vec<Bend>, ChainErr> {
+    let mut ch = chain_of(rule.thickness, rule.k_factor, r, angle, height, from, pos, hem, then).map_err(|(j, min)| ChainErr::Height(j, min))?;
+    if rule.bend_table.is_some() {
+        for (j, b) in ch.iter_mut().enumerate() {
+            let a = if hem { std::f64::consts::PI } else if j == 0 { angle } else { then[j - 1].angle };
+            b.allowance = (r + rule.k_for(r, a).map_err(ChainErr::Table)? * rule.thickness) * a;
+        }
+    }
+    Ok(ch)
+}
+
 /// The base flange and what is attached to it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Sheet {
@@ -364,7 +566,7 @@ impl Sheet {
 
     /// Every bend of the flange: its own, then the chained ones.
     pub fn chain(&self, f: &Flange) -> Vec<Bend> {
-        chain_of(self.rule.thickness, self.rule.k_factor, f.radius, f.angle, f.height, f.height_from, f.position, f.hem, &f.then).unwrap_or_default()
+        chain_in(&self.rule, f.radius, f.angle, f.height, f.height_from, f.position, f.hem, &f.then).unwrap_or_default()
     }
 
     /// Where the straight part of the base stops short of edge `i` (0 for an edge without a flange).
@@ -494,6 +696,7 @@ impl Sheet {
                     included_angle: 180.0 - angle.to_degrees(),
                     radius: f.radius,
                     allowance: bd.allowance,
+                    k_factor: implied_k(bd.allowance, f.radius, angle, self.rule.thickness),
                     length: xb - xa,
                     start: at(xa, sl),
                     end: at(xb, sl),
@@ -554,6 +757,8 @@ pub struct BendRow {
     pub included_angle: f64,
     pub radius: f64,
     pub allowance: f64,
+    /// The k-factor of this bend (the rule's, or from its bend table).
+    pub k_factor: f64,
     /// Length of the bend line.
     pub length: f64,
     pub start: P,
@@ -567,6 +772,8 @@ pub struct FlatPattern {
     pub rule: String,
     pub thickness: f64,
     pub k_factor: f64,
+    /// The rule has a bend table: every bend row names its own k.
+    pub bend_table: bool,
     /// Width, height (in the plane of the base sketch) and thickness.
     pub size: [f64; 3],
     /// The outer loop first, then the holes.
@@ -584,7 +791,13 @@ fn pt(p: P) -> Json {
 
 impl FlatPattern {
     /// The flat pattern of an outline (outer loop first), its bends and their zones.
-    pub fn new(rule: &Rule, outline: Vec<Vec<P>>, bends: Vec<BendRow>, zones: Vec<[f64; 4]>) -> FlatPattern {
+    pub fn new(rule: &Rule, outline: Vec<Vec<P>>, mut bends: Vec<BendRow>, zones: Vec<[f64; 4]>) -> FlatPattern {
+        if rule.bend_table.is_none() {
+            // exactly the rule's value, not the one implied by the allowance
+            for b in &mut bends {
+                b.k_factor = rule.k_factor;
+            }
+        }
         let mut lo = [f64::MAX; 2];
         let mut hi = [f64::MIN; 2];
         for p in &outline[0] {
@@ -597,6 +810,7 @@ impl FlatPattern {
             rule: rule.name.clone(),
             thickness: rule.thickness,
             k_factor: rule.k_factor,
+            bend_table: rule.bend_table.is_some(),
             size: [hi[0] - lo[0], hi[1] - lo[1], rule.thickness],
             outline,
             bends,
@@ -610,7 +824,7 @@ impl FlatPattern {
             .bends
             .iter()
             .map(|b| {
-                Obj::new()
+                let o = Obj::new()
                     .put("bend", b.index as f64)
                     .put("role", format!("B{}", b.index))
                     .put("feature", b.feature.as_str())
@@ -618,11 +832,10 @@ impl FlatPattern {
                     .put("angleDeg", b.angle)
                     .put("includedAngleDeg", b.included_angle)
                     .put("radius", b.radius)
-                    .put("allowance", b.allowance)
-                    .put("length", b.length)
-                    .put("start", pt(b.start))
-                    .put("end", pt(b.end))
-                    .build()
+                    .put("allowance", b.allowance);
+                // the k of each bend, when the rule has a bend table
+                let o = if self.bend_table { o.put("kFactor", b.k_factor) } else { o };
+                o.put("length", b.length).put("start", pt(b.start)).put("end", pt(b.end)).build()
             })
             .collect();
         Obj::new()

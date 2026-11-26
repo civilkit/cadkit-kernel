@@ -80,7 +80,7 @@ pub enum SketchEntity {
     /// Interpolating spline through `pts`.
     Spline { id: String, pts: Vec<String>, closed: bool, construction: bool },
     /// Control-point spline.
-    CvSpline { id: String, pts: Vec<String>, degree: u32, knots: Option<Vec<f64>>, closed: bool, construction: bool },
+    CvSpline { id: String, pts: Vec<String>, degree: u32, knots: Option<Vec<f64>>, weights: Option<Vec<f64>>, closed: bool, construction: bool },
     /// Lettering (fixed geometry, see `text`).
     Text { id: String, text: Box<text::TextEntity>, construction: bool },
 }
@@ -284,6 +284,8 @@ impl SketchEntity {
                 // oracle: a cvspline without degree echoes `"degree":1`
                 degree: jnum_opt(j.get("degree")).map(|d| d.max(1.0) as u32).unwrap_or(1),
                 knots: j.get("knots").and_then(|k| k.as_arr()).map(|a| a.iter().map(|x| jnum(Some(x))).collect()),
+                // optional: one positive weight per control point makes the spline rational (a conic, an exact offset)
+                weights: j.get("weights").and_then(|k| k.as_arr()).map(|a| a.iter().map(|x| jnum(Some(x))).collect()),
                 closed: jtruthy(j.get("closed")),
                 construction: cons,
             },

@@ -196,7 +196,7 @@ A `.SLDASM` file is the same container as a part; its component tree is the plai
 {"type":"sldasmTree","data":"<base64 of the .SLDASM file>","configuration":"name?","asPart":false}
 ```
 
-answers `{ok:true, name, configuration, configurations:[{name, active}], count, components, notes}`. `configuration` picks the configuration of the top assembly (default: the one the file was saved in). `components` is a tree; each entry is
+answers `{ok:true, name, configuration, configurations:[{name, active, id}], count, components, notes, mates, matesStream, mateSummary, mateNotes}`. `configuration` picks the configuration of the top assembly (default: the one the file was saved in). `components` is a tree; each entry is
 
 | Field | Meaning |
 |---|---|
@@ -214,9 +214,24 @@ The file stores the transform as 16 numbers for row vectors (rows 0 to 2 are the
 
 With `"asPart":true` the reply also has `part`: a `ck-part` document of one `insertPart` feature per placed part (sub-assemblies flattened, each part's `place` frame `{o,x,y,z}` composed through its parents; suppressed components skipped and counted in `suppressedSkipped`; `hidden` and `configuration` kept on the feature). A referenced part is a file the reply does not hold, so each feature's nested `part` is an empty `ck-part` stand-in with `"unresolved":true` and `source` the file name; it regenerates to nothing and without an error, and `unresolved` (top level) lists the file names to supply. To resolve them pass `"parts":{"<file name>":<ck-part document>}` (for example the `part` of `sldprtHistory` for that file); a supplied document replaces the stand-in (names compared without case).
 
+### Mates
+
+`mates` lists the mates of the selected configuration (read from `Contents/Config-N-MatesList`, where `N` is the configuration's `id`; `matesStream` names the stream, `null` when the configuration stores none). `"mates":false` leaves the block out. Each entry:
+
+| Field | Meaning |
+|---|---|
+| `type` | `coincident`, `concentric`, `parallel`, `perpendicular`, `tangent`, `distance`, `angle`, `symmetric`, `coordinate` or `unknown` (mate folders are not listed; `mateSummary.folders` counts them) |
+| `name`, `id`, `class` | the mate's name, its feature id, and the class declared in the stream (only the first mate of a class carries it) |
+| `a`, `b` | the first two operands: `{component, ref, kind}`. `component` is the tree path (`Sub-1/Part-2`, as in `components`) or `null` when the stream only refers back to it; `ref` is a plane name (`Front Plane`) or a face reference (`moFromSktEntSurfIdRep_c,163,4`: the feature that made the face, and its index); `kind` is `plane`, `face`, `named` or `component`. `more` holds any further operands |
+| `suppressed` | suppressed in this configuration |
+| `value`, `alignment` | always `null`: distance, angle and alignment are not decoded |
+| `check` | `{status, reason, residual}`: `holds`, `violated` (the tree's transforms break the mate) or `unchecked` with a `reason` (`suppressed`, `operand-unresolved`, `component-missing`, `component-suppressed`, `face-operand`, `value-not-decoded`, `type-not-checked`). Only coincident, parallel and perpendicular mates between two principal planes are checked; `residual` is the plane distance in mm or the angle error in degrees |
+
+`mateSummary` gives `total`, `suppressed`, `folders`, `byType`, `holds`, `violated`, `unchecked`; `mateNotes` lists what the reply cannot say. With `asPart`, the reply has `mateMapping: {mapped: 0, reason}`: the kernel `mate` feature joins faces of the inserted parts by persistent name, and a SolidWorks mate names its faces by the feature that made them, so no mate feature is written yet (the placements already satisfy the mates the file stores). See `docs/sldprt.md` (Mates) for how the stream was decoded.
+
 A file that is not a readable assembly answers `{ok:false, code, reason}` with a stable code: `container.*` (not a SolidWorks file), `asm.no_tree` (a part, or the tree block is damaged), `asm.format`, `asm.not_assembly`, `asm.configuration` (unknown name), `asm.cycle`, `limit.depth` (sub-assemblies nested over 64 levels), `limit.components` (over 100 000 component instances in the expanded tree, or four times that many references), and the container's own `limit.*`. Malformed input never panics.
 
-Not read: mates, in-context references, exploded views, equations, assembly features, per-instance display state, the parts' geometry. Only the top assembly's configurations are listed; a sub-assembly is read in the configuration the tree uses it in.
+Not read: mate values and alignment (below), in-context references, exploded views, equations, assembly features, per-instance display state, the parts' geometry. Only the top assembly's configurations are listed; a sub-assembly is read in the configuration the tree uses it in.
 
 ## Keeping the built body: `built` and `builtExport`
 

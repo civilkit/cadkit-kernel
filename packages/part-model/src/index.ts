@@ -20,7 +20,7 @@ export type SketchEntity =
   | { id: string; type: 'ellipse'; c: string; p: string; r: number }
   | { id: string; type: 'point'; p: string }
   | { id: string; type: 'spline'; pts: string[]; closed?: boolean }
-  | { id: string; type: 'cvspline'; pts: string[]; degree?: number; knots?: number[]; closed?: boolean }
+  | { id: string; type: 'cvspline'; pts: string[]; degree?: number; knots?: number[]; weights?: number[]; closed?: boolean }
   | SketchText;
 
 /** Lettering (docs/text.md): fixed geometry, outlines of a baked-in font as closed loops. */

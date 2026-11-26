@@ -28,6 +28,7 @@ const FIELD_TABLE = `| type | key fields |
 | pressPull | faces[] (flat), continue "straight", distance (+ joins, - cuts, not 0), taper {type none/draft/scale, angle deg outward +, endScale}. The face continued as an extrude; moved end keeps the name, walls \`<id>.S.<tag>\`; query faceRun {faces} gives centre, normal, reach, endOf |
 | moveBody | bodies[]({face}/{surface}, default whole solid), translate [x,y,z], rotate {axis, origin, angle deg}, copy |
 | dome/splitLine/scale/axis/mate/deleteBody/deleteFace | see @ck-cad/part-model |
+| sheetRules | name, thickness, kFactor, bendRadius, relief*, cornerRelief, hemGap, gap, active; optional bendTable [{radiusRatio (inside radius / thickness), angle? (deg; every row or none), k}] = k-factor by bend, linear between rows, no extrapolation; a bend outside it is refused bendOutsideTable {radiusRatio, angleDeg, detail, hint}; the flat pattern, export, unfold use the per-bend k |
 | sheet features | surfaceExtrude/Revolve/Planar/Offset, trimSurface, knit, fill, thicken, extend |
 | projectCurve | sketch \| curve (earlier curve feature), faces[] (empty = all), degree 2..9 (3), tolerance (0.001 mm), direction both/forward/reverse. One fitted curve in \`curves[]\`; several pieces = projectCurveSeveral |
 | freeform/editCurve/pipeCut/cutWithSurface | see @ck-cad/part-model |

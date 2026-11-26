@@ -117,15 +117,22 @@ fn drafted_block_with_rounded_edges_shells() {
     assert!((v - 3231.1).abs() < 2e-3 * 3231.1, "volume {v}");
 }
 
-/// Opening a body at a curved face is not built: the refusal names it (`shellUnsupported`) and the body stays as it was.
+/// Opening a body at a cone wall is not built yet: the refusal names it (`shellUnsupported`) and the body stays as it was.
+/// (The wall of a through hole is built: see `shell_hole_wall.rs`.)
 #[test]
 fn shell_opened_at_a_curved_face_is_refused() {
-    for src in [fixture!("cone_side_wall_opened"), fixture!("hole_wall_opened")] {
-        let (errors, _, valid) = shell_body(src);
-        assert_eq!(errors.len(), 1, "{errors:?}");
-        assert!(errors[0].starts_with("S:") && errors[0].contains("shellUnsupported"), "{errors:?}");
-        assert!(valid, "the body before the shell stays valid");
-    }
+    let (errors, _, valid) = shell_body(fixture!("cone_side_wall_opened"));
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(errors[0].starts_with("S:") && errors[0].contains("shellUnsupported"), "{errors:?}");
+    assert!(valid, "the body before the shell stays valid");
+}
+
+/// The 40 x 40 x 20 block with the 8 mm through hole, shelled 2 mm and open at the hole wall: body (32000 - 16 pi 20) less
+/// the cavity inside it (36 x 36 x 16 less the hole's cylinder over 16) = 11062.94.
+#[test]
+fn shell_opened_at_the_wall_of_a_through_hole() {
+    let pi = std::f64::consts::PI;
+    passes(fixture!("hole_wall_opened"), 32000.0 - 16.0 * pi * 20.0 - (36.0 * 36.0 * 16.0 - 16.0 * pi * 16.0));
 }
 
 /// A hemisphere (R 15) shelled 2 mm inward and open at its flat face: half of the closed-sphere wall, 2/3 pi (15^3 - 13^3).

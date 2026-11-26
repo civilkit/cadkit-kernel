@@ -21,6 +21,9 @@ pub struct Measure {
     pub max: [f64; 3],
     /// How many solids (lumps).
     pub solids: usize,
+    /// How many of the file's bodies the ASM reader could not build whole (faces on surfaces it does not import, a body it
+    /// refused): the measure is then of part of the design only. 0 for a history's body.
+    pub unread: usize,
 }
 
 /// The volume may differ by this fraction of the reference (tessellation-free integrals of both bodies).
@@ -75,10 +78,11 @@ pub fn measure_import(bytes: &[u8]) -> Result<Measure, String> {
     let imp = std::panic::catch_unwind(|| {
         let imp = ck_asm::import::import_f3d(bytes, &ck_asm::import::ImportOptions::default()).map_err(|e| e.to_string())?;
         let sorted = imp.sort();
-        let m = measure(&sorted.solid);
+        let mut m = measure(&sorted.solid);
         if m.solids == 0 {
             return Err("the file's design has no closed solid to compare with".to_string());
         }
+        m.unread = imp.bodies.iter().filter(|b| b.faces_built < b.faces_total || b.error.is_some()).count();
         Ok::<Measure, String>(m)
     })
     .map_err(|_| "reading the body panicked".to_string())??;
@@ -109,7 +113,7 @@ pub fn measure_documents(bytes: &[u8]) -> Vec<Result<Measure, String>> {
 fn measure(body: &Body) -> Measure {
     let volume = ck_topo::mass::mass_props(body).volume;
     let (lo, hi) = body.bbox();
-    Measure { volume, min: [lo.x, lo.y, lo.z], max: [hi.x, hi.y, hi.z], solids: body.lump_ids().count() }
+    Measure { volume, min: [lo.x, lo.y, lo.z], max: [hi.x, hi.y, hi.z], solids: body.lump_ids().count(), unread: 0 }
 }
 
 struct Exec(Brep);
@@ -128,7 +132,7 @@ impl FeatureExec for Exec {
 
 /// Regenerates a part document and returns the body it ends with (the solid slot), for a mapping step that has to find
 /// an edge of the history built so far.
-pub(crate) fn regenerate_body(part: &Value) -> Option<Body> {
+pub fn regenerate_body(part: &Value) -> Option<Body> {
     let text = serde_json::to_string(part).ok()?;
     std::panic::catch_unwind(|| {
         let part = Part::parse(&text).ok()?;
@@ -206,6 +210,13 @@ pub fn verify(import: &FeatureImport, reference: Option<&Measure>) -> Check {
     check.box_delta = Some(db);
     if !check.errors.is_empty() {
         check.reason = Some(format!("the history does not regenerate cleanly: {}", check.errors[0]));
+    } else if reference.unread > 0 {
+        // the imported body lacks parts of the design (faces on surfaces the reader does not import): equal or not, it is not
+        // the whole design's body, so the comparison says nothing
+        check.reason = Some(format!(
+            "the imported body is not the whole design (the reader could not build {} of its bodies), so it cannot be compared with",
+            reference.unread
+        ));
     } else if !ok {
         check.reason = Some(format!(
             "the history's body differs from the imported one: volume {:+.3} %, box {:.3} mm",

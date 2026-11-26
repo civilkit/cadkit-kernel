@@ -48,7 +48,7 @@
 //! | importBody      | format (sldprt), blob (key into the part's `blobs`, base64 of the file), replace, body (see import_body.rs) |
 //! | meshToSolid      | blob (key into the part's `blobs`, base64 of the mesh), opts (meshToSolid options), replace, preview, body, source (informational) (see mesh_solid.rs) |
 //! | repairPart      | target (an importStep), gap, patchHoles (see repair_part.rs) |
-//! | sheetRules      | name, thickness, kFactor, bendRadius, reliefWidth, reliefDepth, cornerRelief, cornerReliefShape, hemGap, gap, active (see sheet_features.rs) |
+//! | sheetRules      | name, thickness, kFactor, bendRadius, reliefWidth, reliefDepth, cornerRelief, cornerReliefShape, hemGap, gap, active, bendTable (see sheet_features.rs) |
 //! | baseFlange      | sketch, rule, flip (see sheet_features.rs) |
 //! | edgeFlange      | edges, height, angle, radius, heightFrom, position, flip, then (see sheet_features.rs) |
 //! | hem             | edges, length, gap, flip (see sheet_features.rs) |

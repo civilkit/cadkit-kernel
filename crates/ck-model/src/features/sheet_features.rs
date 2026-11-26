@@ -149,6 +149,27 @@ fn choice<T>(raw: &Json, key: &str, parse: fn(&str) -> Option<T>, options: &str)
     }
 }
 
+/// The optional `bendTable` of a rule: `[{"radiusRatio": r / t, "angle": degrees (every row or none), "k": k}, ...]`.
+fn bend_table_of(raw: &Json, vars: &Vars) -> Result<Option<BendTable>, FeatureError> {
+    let hint = "bendTable: [{\"radiusRatio\": inside radius / thickness, \"angle\": bend angle in degrees (every row or none), \"k\": k-factor 0..1}, ...]";
+    let rows = match raw.get("bendTable") {
+        None | Some(Json::Null) => return Ok(None),
+        Some(Json::Arr(a)) => a,
+        Some(_) => return Err(invalid("bendTable", "`bendTable` must be a list of rows", hint)),
+    };
+    let mut out = vec![];
+    for (i, row) in rows.iter().enumerate() {
+        if !matches!(row, Json::Obj(_)) {
+            return Err(invalid("bendTable", format!("row {i} is not an object"), hint));
+        }
+        let get = |key: &str| num(row, key, vars);
+        let ratio = get("radiusRatio")?.ok_or_else(|| invalid("bendTable", format!("row {i} has no `radiusRatio`"), hint))?;
+        let k = get("k")?.ok_or_else(|| invalid("bendTable", format!("row {i} has no `k`"), hint))?;
+        out.push(TableRow { ratio, angle: get("angle")?, k });
+    }
+    BendTable::new(out).map(Some).map_err(|d| invalid("bendTable", d, hint))
+}
+
 /// `sheetRules`.
 pub fn exec_sheet_rules(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {
     let mut vars = state.vars.clone();
@@ -169,6 +190,7 @@ pub fn exec_sheet_rules(br: &mut Brep, state: &mut RegenState, f: &Feature) -> R
         Ok(())
     };
     get("kFactor", &mut rule.k_factor, 0.0, 1.0)?;
+    rule.bend_table = bend_table_of(&f.raw, &vars)?;
     get("bendRadius", &mut rule.bend_radius, 1e-6, 1e6)?;
     get("reliefWidth", &mut rule.relief_width, 0.0, 1e6)?;
     get("reliefDepth", &mut rule.relief_depth, 0.0, 1e6)?;
@@ -258,7 +280,7 @@ fn flat_of(m: &Model) -> Result<FlatPattern, FeatureError> {
     }
     let mut fp = match &m.contour {
         Some(c) => {
-            let plan = c.plan(&m.sheet.rule).map_err(|d| unsupported(d, "make the segments longer, or the radius smaller"))?;
+            let plan = c.plan(&m.sheet.rule).map_err(plan_error)?;
             c.flat_pattern(&m.sheet.rule, &plan)
         }
         None => m.sheet.flat_pattern(),
@@ -595,7 +617,7 @@ fn exec_flange(br: &mut Brep, state: &mut RegenState, f: &Feature, hem: bool) ->
             }
         }
         let angle_r = if hem { std::f64::consts::PI } else { angle.to_radians() };
-        chain_of(t, sh.rule.k_factor, radius, angle_r, height, from, pos, hem, &then).map_err(|(j, min)| height_error(j, min))?;
+        chain_in(&sh.rule, radius, angle_r, height, from, pos, hem, &then).map_err(chain_error)?;
         added.push(Flange {
             feature: f.id.clone(),
             edge,
@@ -746,7 +768,7 @@ pub fn exec_contour_flange(br: &mut Brep, state: &mut RegenState, f: &Feature) -
     let curves = f.raw.get_arr("curves").map(|a| a.iter().filter_map(|j| j.as_str().map(str::to_string)).collect::<Vec<_>>());
     let (pts, tags) = chain_from_sketch(sk, curves)?;
     let contour = Contour { feature: f.id.clone(), pts, tags, right: !flag(&f.raw, "flip"), reverse: flag(&f.raw, "reverse"), distance };
-    let plan = contour.plan(&rule).map_err(|d| unsupported(d, "make the segments longer, or the radius smaller"))?;
+    let plan = contour.plan(&rule).map_err(plan_error)?;
     let section = contour.section(&rule, &plan);
     let profile = Profile::new(sk.frame, vec![ProfileRegion { outer: section, holes: vec![] }]).normalized();
     let dir = if contour.reverse { -1.0 } else { 1.0 };
@@ -877,7 +899,8 @@ fn exec_fold_legacy(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Resul
         }
     };
     let nu = if u0(root) > 0.0 { [-nu0[0], -nu0[1]] } else { nu0 };
-    let allowance = (radius + model.sheet.rule.k_factor * t) * angle.to_radians();
+    let k = model.sheet.rule.k_for(radius, angle.to_radians()).map_err(miss_error)?;
+    let allowance = (radius + k * t) * angle.to_radians();
     let setback = (radius + t) * (angle.to_radians() / 2.0).tan();
     let up = !flag(raw, "flip");
     model.sheet.folds.push(Fold {
@@ -1255,7 +1278,7 @@ fn point_in(poly: &[(P, String)], p: P) -> bool {
 fn contour_parts(m: &Model, roles: &mut Vec<RoleGeo>) -> Result<Vec<Body>, FeatureError> {
     let c = m.contour.as_ref().expect("contour");
     let t = m.sheet.rule.thickness;
-    let plan = c.plan(&m.sheet.rule).map_err(|d| unsupported(d, "make the segments longer, or the radius smaller"))?;
+    let plan = c.plan(&m.sheet.rule).map_err(plan_error)?;
     let opts = if m.dir < 0.0 { ExtrudeOpts::flipped(c.distance) } else { ExtrudeOpts::blind(c.distance) };
     let body = ck_topo::make::extrude(&m.sheet.base, &m.profile, opts).map_err(|e| FeatureError::new(&e))?;
     // roles: the chain's face is `front`, the other face `back`; the extrusion ends are the sides
@@ -1408,7 +1431,34 @@ pub fn sheet_roles(br: &Brep) -> Json {
 // ---------------------------------------------------------------- the panel tree (stage 3)
 
 /// A tree operation's refusal as a feature error.
+/// A bend outside the bend table.
+pub(super) fn miss_error(m: KMiss) -> FeatureError {
+    FeatureError::new(OUTSIDE_TABLE)
+        .with("radiusRatio", Json::Num(m.ratio))
+        .with("angleDeg", Json::Num(m.angle_deg))
+        .with("detail", Json::Str(m.detail))
+        .with("hint", Json::Str("add rows to the rule's bendTable that cover this radius and angle, or change the bend radius or the angle".into()))
+}
+
+fn chain_error(e: ChainErr) -> FeatureError {
+    match e {
+        ChainErr::Height(j, min) => height_error(j, min),
+        ChainErr::Table(m) => miss_error(m),
+    }
+}
+
+/// A step of the contour planner: a bend outside the bend table, or the geometric reason.
+fn plan_error(d: String) -> FeatureError {
+    match KMiss::decode(&d) {
+        Some(m) => miss_error(m),
+        None => unsupported(d, "make the segments longer, or the radius smaller"),
+    }
+}
+
 fn tree_error(e: String) -> FeatureError {
+    if let Some(m) = KMiss::decode(&e) {
+        return miss_error(m);
+    }
     if let Some(rest) = e.strip_prefix("flangeHeightTooLow:") {
         let mut it = rest.split(':');
         let j: usize = it.next().and_then(|v| v.parse().ok()).unwrap_or(0);
@@ -1554,7 +1604,7 @@ fn exec_flange_tree(br: &mut Brep, state: &mut RegenState, f: &Feature, hem: boo
             continue;
         }
         let angle_r = if hem { std::f64::consts::PI } else { angle.to_radians() };
-        chain_of(t, rule.k_factor, radius, angle_r, height, from, pos, hem, &then).map_err(|(j, min)| height_error(j, min))?;
+        chain_in(&rule, radius, angle_r, height, from, pos, hem, &then).map_err(chain_error)?;
         if profile.is_some() && !then.is_empty() {
             return Err(unsupported("`then` on a flange with a profile", "chain the bends as flanges on the edges of the leg"));
         }

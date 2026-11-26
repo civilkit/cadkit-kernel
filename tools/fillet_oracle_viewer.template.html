@@ -1,0 +1,536 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Fillet oracle viewer</title>
+<style>
+:root{--bg:#f6f7f9;--panel:#fff;--ink:#1d2330;--mute:#667085;--line:#d9dde4;--acc:#2f6fed;--warn:#b54708}
+@media (prefers-color-scheme:dark){:root{--bg:#14171c;--panel:#1d2128;--ink:#e6e9ef;--mute:#9aa3b2;--line:#323844;--acc:#6b9bff;--warn:#f0a35e}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.4 system-ui,sans-serif;height:100vh;display:flex}
+aside{width:290px;flex:none;background:var(--panel);border-right:1px solid var(--line);padding:12px 14px;overflow:auto}
+h1{font-size:15px;margin:0 0 2px}
+.sub{color:var(--mute);margin:0 0 10px;font-size:12px}
+label{display:block;margin:9px 0 3px;color:var(--mute);font-size:12px}
+select,input[type=number]{width:100%;padding:4px 6px;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:5px;font:inherit}
+input[type=range]{width:100%;margin:0}
+.row{display:flex;gap:8px;align-items:center}.row>*{flex:1}
+.seg{display:flex;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.seg label{margin:0;flex:1;text-align:center;padding:4px 2px;cursor:pointer;color:var(--ink);font-size:12px}
+.seg input{display:none}.seg input:checked+span{background:var(--acc);color:#fff}
+.seg span{display:block;padding:4px 2px}
+.seg label{padding:0}
+.sliderwrap{position:relative;padding-top:6px}
+.mark{position:absolute;top:0;width:2px;height:10px;background:var(--warn)}
+.mark.k{background:var(--acc);height:6px;top:2px;width:1px}
+.ro{margin-top:12px;border-top:1px solid var(--line);padding-top:8px}
+.ro div{display:flex;justify-content:space-between;padding:1px 0}.ro b{font-variant-numeric:tabular-nums}
+.warn{color:var(--warn)}
+button#verify{width:100%;padding:4px;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:5px;cursor:pointer;font:inherit}
+.chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
+.chips button{border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:10px;padding:1px 7px;font-size:11px;cursor:pointer}
+.chips button.ok{border-color:var(--acc)}.chips button.bad{color:var(--warn)}
+main{flex:1;display:flex;flex-direction:column;min-width:0;padding:10px;gap:8px}
+.panes{flex:1;display:flex;gap:10px;min-height:0}
+.pane{flex:1;position:relative;background:var(--panel);border:1px solid var(--line);border-radius:8px;min-width:0;overflow:hidden}
+canvas{width:100%;height:100%;display:block}
+.cap{position:absolute;left:8px;top:6px;font-size:11px;color:var(--mute);pointer-events:none;background:color-mix(in srgb,var(--panel) 80%,transparent);padding:1px 5px;border-radius:4px}
+.hint{color:var(--mute);font-size:11px;margin-top:8px}
+.legend{position:absolute;right:8px;bottom:8px;font-size:11px;color:var(--ink);background:color-mix(in srgb,var(--panel) 85%,transparent);padding:3px 6px;border-radius:4px}
+.legend i{display:block;height:8px;width:140px;border-radius:2px;margin:2px 0}
+@media (max-width:900px){body{flex-direction:column;height:auto}aside{width:auto}.panes{flex-direction:column}.pane{height:70vh}}
+</style></head><body>
+<aside>
+<h1>Fillet oracle</h1>
+<p class="sub">Rolling-ball round / 45&deg; chamfer of a flat rim, from the morphological opening (independent of any B-rep builder).</p>
+<label>Outline</label>
+<select id="preset"></select>
+<div class="row"><div><label>Height H (mm)</label><input type="number" id="H" value="25" min="1" step="0.5"></div>
+<div><label>Radius / distance r</label><input type="number" id="rnum" step="0.05" min="0.05"></div></div>
+<div class="sliderwrap"><div id="marks"></div><input type="range" id="r" min="0.1" max="25" step="0.01" value="3.7"></div>
+<div class="chips" id="kchips"></div>
+<label>Blend</label>
+<div class="seg" id="kind"><label><input type="radio" name="kind" value="round" checked><span>Round</span></label><label><input type="radio" name="kind" value="chamfer"><span>Chamfer</span></label></div>
+<label>Rim</label>
+<div class="seg" id="rim"><label><input type="radio" name="rim" value="top" checked><span>Top</span></label><label><input type="radio" name="rim" value="bottom"><span>Bottom</span></label></div>
+<label>Oracle model</label>
+<div class="seg" id="variant"><label><input type="radio" name="variant" value="opening" checked><span>Opening (ball)</span></label><label><input type="radio" name="variant" value="swept"><span>Swept-cut (mitre)</span></label></div>
+<label>2D layer</label>
+<div class="seg" id="layer"><label><input type="radio" name="layer" value="oracle" checked><span>Oracle</span></label><label><input type="radio" name="layer" value="kernel"><span>Kernel</span></label><label><input type="radio" name="layer" value="diff"><span>K &minus; oracle</span></label><label><input type="radio" name="layer" value="variants"><span title="swept-cut minus opening">Models &Delta;</span></label></div>
+<div id="kinfo" class="sub" style="margin-top:6px"></div>
+<label>Compute</label>
+<div class="seg" id="compute"><label><input type="radio" name="compute" value="auto" checked><span>Auto</span></label><label><input type="radio" name="compute" value="gpu"><span>GPU</span></label><label><input type="radio" name="compute" value="cpu"><span>CPU</span></label></div>
+<div class="row"><div><label>Grid (cells, long side)</label><select id="res"><option value="auto">preset / 384</option><option>512</option><option>768</option><option>1024</option><option>1536</option></select></div>
+<div><label>&nbsp;</label><button id="verify" type="button" title="Recompute a random 32x32 tile on the CPU and compare with the GPU result">Verify GPU</button></div></div>
+<div id="gpustat" class="sub" style="margin-top:6px"></div>
+<div id="timing" class="sub"></div>
+<div id="verifyout" class="sub"></div>
+<label><input type="checkbox" id="showpr" checked> outline of the eroded region (ball centres)</label>
+<label><input type="checkbox" id="tint" checked> colour the 3D surface by height</label>
+<div class="ro" id="ro"></div>
+<div class="hint">Outline: drag a point; click on the curve to add one; double-click (or shift-click) a point to remove it; alt-click toggles a corner (the curve breaks there, straight line between corners). Editing makes the outline a custom Catmull-Rom spline (kernel layer off). 3D: drag to rotate, wheel to zoom, shift-drag to pan.</div>
+</aside>
+<main><div class="panes">
+<div class="pane"><canvas id="c2d"></canvas><div class="cap" id="cap2d"></div><div class="legend" id="legend"></div></div>
+<div class="pane"><canvas id="c3d"></canvas><div class="cap">3D (oracle surface, edge clipped to the exact outline)</div></div>
+</div></main>
+<script id="kdata" type="application/json">/*KDATA*/{}</script>
+<script>
+/*CORE*/
+</script>
+<script>
+/*GPU*/
+</script>
+<script>
+'use strict';
+const KD = JSON.parse(document.getElementById('kdata').textContent);
+const $ = (id) => document.getElementById(id);
+const PRESETS = {
+  blob: { name: '9-point blob (H 25)', H: 25, spline: true, pts: [[-12.9,66.8],[61.2,51.2],[71.3,-12.2],[21.4,0],[-29.3,-24.8],[-71.8,-16.1],[-114.3,13.5],[-72.7,24.6],[-68.2,59.1]].map(p=>({x:p[0],y:p[1]})) },
+  six: { name: '6-point spline (H 20)', H: 20, spline: true, pts: [[30,0],[18,22],[-8,26],[-30,6],[-14,-22],[12,-20]].map(p=>({x:p[0],y:p[1]})) },
+  d: { name: 'D shape (spline arc + line, H 20)', H: 20, spline: true, pts: [0,1,2,3,4,5,6,7,8].map(k=>({x:30*Math.cos(k*Math.PI/8),y:18*Math.sin(k*Math.PI/8)+((k>0&&k<8&&(k-1)%2===1)?0.18:0),c:k==0||k==8})) },
+  rect: { name: 'rectangle with a notch (H 20)', H: 20, spline: true, pts: [[-30,-20,1],[30,-20,1],[30,20,1],[8,20,1],[8,6,1],[-8,6,1],[-8,20,1],[-30,20,1]].map(p=>({x:p[0],y:p[1],c:true})) },
+};
+const S = { preset: 'blob', H: 25, r: 3.7, kind: 'round', rim: 'top', layer: 'oracle', variant: 'opening', compute: 'auto', res: 'auto', pts: [], custom: false, cur: null };
+const sel = $('preset');
+for (const k in PRESETS) sel.add(new Option(PRESETS[k].name, k));
+
+// ---------------------------------------------------------------- outline (control points -> polyline)
+function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+function crSeg(p0, p1, p2, p3, n, out, si) {
+  const e = (a, b) => Math.sqrt(Math.max(dist(a, b), 1e-9));
+  const t0 = 0, t1 = t0 + e(p0, p1), t2 = t1 + e(p1, p2), t3 = t2 + e(p2, p3);
+  const L = (a, b, ta, tb, t) => ({ x: (a.x * (tb - t) + b.x * (t - ta)) / (tb - ta), y: (a.y * (tb - t) + b.y * (t - ta)) / (tb - ta) });
+  for (let i = 0; i < n; i++) {
+    const t = t1 + (t2 - t1) * i / n;
+    const A1 = L(p0, p1, t0, t1, t), A2 = L(p1, p2, t1, t2, t), A3 = L(p2, p3, t2, t3, t);
+    const B1 = L(A1, A2, t0, t2, t), B2 = L(A2, A3, t1, t3, t);
+    const C = L(B1, B2, t1, t2, t); out.push([C.x, C.y, si]);
+  }
+}
+function buildPolyline(pts, spline) {
+  const n = pts.length, out = [];
+  const corners = pts.map((p, i) => p.c ? i : -1).filter((i) => i >= 0);
+  const nsamp = (a, b) => Math.max(2, Math.min(80, Math.ceil(dist(a, b) / 0.35)));
+  if (!spline) { for (let i = 0; i < n; i++) out.push([pts[i].x, pts[i].y, i]); return out; }
+  if (!corners.length) {
+    for (let i = 0; i < n; i++) crSeg(pts[(i + n - 1) % n], pts[i], pts[(i + 1) % n], pts[(i + 2) % n], nsamp(pts[i], pts[(i + 1) % n]), out, i);
+    return out;
+  }
+  for (let ci = 0; ci < corners.length; ci++) {
+    const a = corners[ci], b = corners[(ci + 1) % corners.length];
+    const idx = []; for (let i = a; ; i = (i + 1) % n) { idx.push(i); if (i === b && idx.length > 1) break; if (idx.length > n + 1) break; }
+    const P = idx.map((i) => pts[i]);
+    const pre = { x: 2 * P[0].x - P[1].x, y: 2 * P[0].y - P[1].y }, post = { x: 2 * P.at(-1).x - P.at(-2).x, y: 2 * P.at(-1).y - P.at(-2).y };
+    const Q = [pre, ...P, post];
+    for (let k = 0; k < P.length - 1; k++) crSeg(Q[k], Q[k + 1], Q[k + 2], Q[k + 3], P.length === 2 ? Math.max(2, Math.ceil(dist(P[0], P[1]) / 5)) : nsamp(Q[k + 1], Q[k + 2]), out, idx[k]);
+  }
+  return out;
+}
+function outline() {
+  if (!S.custom && KD.presets?.[S.preset]?.poly) { const q = KD.presets[S.preset].poly; const o = []; for (let i = 0; i < q.length; i += 2) o.push([q[i], q[i + 1], -1]); return o; }
+  return buildPolyline(S.pts, true);
+}
+function polySegs(poly) { const s = []; for (let i = 0; i < poly.length; i++) { const a = poly[i], b = poly[(i + 1) % poly.length]; s.push([a[0], a[1], b[0], b[1]]); } return s; }
+
+// ---------------------------------------------------------------- compute
+let G = null, Gkey = '', kernelEntry = null;
+function chooseGeom(segs) {
+  const kp = !S.custom ? KD.presets?.[S.preset] : null;
+  if (S.res === 'auto' && kp) { const gm = gridGeom(segs, kp.cell, 1); if (gm.nx === kp.nx && gm.ny === kp.ny) return gm; }   // same grid as the stored kernel heights
+  const g0 = gridGeom(segs, 1, 1), long = S.res === 'auto' ? 384 : Number(S.res);
+  return gridGeom(segs, Math.max(g0.x1 - g0.x0, g0.y1 - g0.y0) / long, 1);
+}
+function pickPath(nx, ny) {
+  if (S.compute === 'cpu') return { path: 'CPU' };
+  if (GPU.state !== 'ok' || GPU.lost) return { path: 'CPU', why: S.compute === 'gpu' ? 'GPU unavailable: ' + GPU.msg : '' };
+  if (!gpuFits(nx, ny)) return { path: 'CPU', why: `grid ${nx}x${ny} does not fit the GPU buffer limits` };
+  if (S.compute === 'gpu') return { path: 'GPU' };
+  return nx * ny >= 262144 ? { path: 'GPU' } : { path: 'CPU' };   // Auto: the GPU wins from about 512x512 cells up
+}
+function gpuFail(e) { GPU.state = 'off'; GPU.msg = 'disabled after an error: ' + (e.message || e); }
+function polyCurvature(poly) {   // tightest convex radius of the outline (mm): circumradius of resampled triples
+  const n = poly.length; let per = 0; const cum = [0];
+  for (let i = 0; i < n; i++) { const a = poly[i], b = poly[(i + 1) % n]; per += Math.hypot(a[0] - b[0], a[1] - b[1]); cum.push(per); }
+  const step = 0.6, m = Math.max(8, Math.round(per / step)), pts = [];
+  let j = 0;
+  for (let i = 0; i < m; i++) { const s = per * i / m; while (cum[j + 1] < s) j++; const a = poly[j % n], b = poly[(j + 1) % n], t = (s - cum[j]) / ((cum[j + 1] - cum[j]) || 1); pts.push([a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])]); }
+  let area = 0; for (let i = 0; i < m; i++) { const a = pts[i], b = pts[(i + 1) % m]; area += a[0] * b[1] - b[0] * a[1]; }
+  const sg = Math.sign(area) || 1; let best = Infinity;
+  const k = 2;
+  for (let i = 0; i < m; i++) {
+    const a = pts[(i + m - k) % m], b = pts[i], c = pts[(i + k) % m];
+    const cr = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]);
+    if (cr * sg <= 1e-9) continue;   // concave or straight
+    const ab = Math.hypot(b[0] - a[0], b[1] - a[1]), bc = Math.hypot(c[0] - b[0], c[1] - b[1]), ca = Math.hypot(a[0] - c[0], a[1] - c[1]);
+    const R = ab * bc * ca / (2 * Math.abs(cr)); if (R < best && R > 0.5) best = R;
+  }
+  return best;
+}
+function tipRadius(g, poly) {   // smallest r at which a boundary point's inward normal ray stops being a shortest path (swallowtail starts)
+  const { nx, ny, cell, x0, y0, D } = g;
+  const Dq = (x, y) => {
+    const fi = (x - x0) / cell - 0.5, fj = (y - y0) / cell - 0.5, i = Math.floor(fi), j = Math.floor(fj);
+    if (i < 0 || j < 0 || i + 1 >= nx || j + 1 >= ny) return 0;
+    const tx = fi - i, ty = fj - j;
+    return D[j * nx + i] * (1 - tx) * (1 - ty) + D[j * nx + i + 1] * tx * (1 - ty) + D[(j + 1) * nx + i] * (1 - tx) * ty + D[(j + 1) * nx + i + 1] * tx * ty;
+  };
+  let area = 0; const n = poly.length;
+  for (let i = 0; i < n; i++) { const a = poly[i], b = poly[(i + 1) % n]; area += a[0] * b[1] - b[0] * a[1]; }
+  const sg = Math.sign(area) || 1, step = cell * 0.5; let best = Infinity, maxD = 0;
+  for (let i = 0; i < D.length; i++) if (D[i] > maxD) maxD = D[i];
+  for (let i = 0; i < n; i += Math.max(1, Math.floor(n / 1500))) {
+    const a = poly[(i + n - 1) % n], b = poly[(i + 1) % n], tx = b[0] - a[0], ty = b[1] - a[1], tl = Math.hypot(tx, ty) || 1;
+    { const p = poly[i], u1x = p[0] - a[0], u1y = p[1] - a[1], u2x = b[0] - p[0], u2y = b[1] - p[1];   // a sharp corner of the outline is not a bend: skip
+      if (Math.atan2(Math.abs(u1x * u2y - u1y * u2x), u1x * u2x + u1y * u2y) > 0.6) continue; }
+    const nxv = -ty / tl * sg, nyv = tx / tl * sg;
+    let s = step, last = 0;
+    for (; s <= maxD * 1.02; s += step) { if (Dq(poly[i][0] + s * nxv, poly[i][1] + s * nyv) < s - 0.12 * cell) break; last = s; }
+    if (s <= maxD * 1.02 && last < best) best = last;
+  }
+  return best;
+}
+let running = false, rerun = null, nRecomp = 0;
+function recompute(full) { rerun = { full: !!(rerun?.full || full) }; if (!running) pump(); }
+async function pump() {
+  running = true;
+  while (rerun) { const f = rerun.full; rerun = null; try { await recomputeNow(f); } catch (e) { console.error(e); $('timing').textContent = 'error: ' + e.message; } }
+  running = false;
+}
+async function recomputeNow(full) {
+  const T0 = performance.now(), poly = outline(), segs = polySegs(poly), geom = chooseGeom(segs), pk = pickPath(geom.nx, geom.ny);
+  let note = pk.why || '', tGrid = null;
+  const key = S.custom + S.preset + (S.custom ? JSON.stringify(S.pts) : '') + '|' + S.res + '|' + pk.path + '|' + geom.nx + 'x' + geom.ny;
+  if (full || key !== Gkey || !G) {
+    const t = performance.now(); let g = null, used = pk.path;
+    if (pk.path === 'GPU') {
+      try { const r = await gpuGrid(geom, segs); g = { x0: geom.x0, y0: geom.y0, nx: geom.nx, ny: geom.ny, cell: geom.cell, inside: r.inside, D: r.D, gridId: r.gridId }; }
+      catch (e) { gpuFail(e); note = 'GPU failed (' + e.message + '); CPU used for this recompute'; used = 'CPU'; }
+    }
+    if (!g) g = rasterise(segs, geom.cell, 1, geom);
+    g.path = used; G = g; Gkey = key; G.poly = poly; G.segs = segs;
+    tGrid = performance.now() - t;
+    G.curv = polyCurvature(poly); G.tip = tipRadius(G, poly);
+    let m = 0; for (let i = 0; i < G.D.length; i++) if (G.D[i] > m) m = G.D[i]; G.maxD = m;
+    let a = 0; for (let i = 0; i < G.inside.length; i++) a += G.inside[i]; G.area = a * G.cell * G.cell;
+    buildTopology(); drawMarks(); updateComputeUI();
+  }
+  const r = S.r, tE = performance.now(); let ran = G.path, d, prArea;
+  let nseed = 0; for (let i = 0; i < G.inside.length; i++) if (G.inside[i] && G.D[i] >= r) nseed++;
+  prArea = nseed * G.cell * G.cell;
+  if (nseed === 0) { d = new Float32Array(G.inside.length).fill(Infinity); }
+  else if (G.path === 'GPU' && GPU.state === 'ok' && !GPU.lost) {
+    try { d = await gpuErode(G.gridId, r); }
+    catch (e) { gpuFail(e); note = 'GPU failed (' + e.message + '); CPU used for this recompute'; ran = 'CPU'; d = distToEroded(G, r).d; updateComputeUI(); }
+  } else { ran = 'CPU'; if (G.path === 'GPU') note = note || 'GPU no longer available; CPU used'; d = distToEroded(G, r).d; }
+  G.d = d; G.prArea = prArea; G.dFrom = ran; const tErode = performance.now() - tE;
+  G.zO = heightfield(G, G.d, S.H, r, S.kind); G.zS = heightSwept(G, S.H, r, S.kind);
+  G.z = S.variant === 'swept' ? G.zS : G.zO;
+  const vol = (z) => { let t = 0; for (let i = 0; i < z.length; i++) if (G.inside[i]) t += S.H - z[i]; return t * G.cell * G.cell; };
+  G.removedO = vol(G.zO); G.removedS = vol(G.zS); G.removed = S.variant === 'swept' ? G.removedS : G.removedO;
+  // kernel layer (only on the stored grid)
+  kernelEntry = null; G.zk = null;
+  const kp = !S.custom ? KD.presets?.[S.preset] : null;
+  if (kp && S.H === kp.H && G.nx === kp.nx && G.ny === kp.ny) {
+    const ent = kp.kernel?.[S.kind]?.find((q) => Math.abs(q.r - r) < 1e-6);
+    kernelEntry = ent ?? null;
+    if (ent?.b64) {
+      const bin = atob(ent.b64), u = new Uint16Array(bin.length / 2);
+      for (let i = 0; i < u.length; i++) u[i] = bin.charCodeAt(2 * i) | (bin.charCodeAt(2 * i + 1) << 8);
+      G.zk = new Float32Array(u.length); for (let i = 0; i < u.length; i++) G.zk[i] = u[i] === 65535 ? NaN : u[i] / 65534 * kp.H * 1.0;
+    }
+  }
+  readouts(); draw2d(); upload3d();
+  $('timing').innerHTML = `Last recompute: <b>${ran}</b> ${G.nx}&times;${G.ny} cells (${(G.nx * G.ny / 1e6).toFixed(2)} M): ${tGrid == null ? 'grid kept' : 'grid ' + tGrid.toFixed(0) + ' ms (' + G.path + ')'}, erode ${tErode.toFixed(0)} ms, total with drawing ${(performance.now() - T0).toFixed(0)} ms.${note ? ' <span class="warn">' + note + '</span>' : ''}`;
+  if (ran === 'GPU' && ++nRecomp % 10 === 0) verifyGpu(true);
+}
+// ---- GPU spot check: recompute a random 32x32 tile on the CPU (window with a margin of r + 4 cells, brute-force distances) and compare
+async function verifyGpu(auto) {
+  const out = $('verifyout');
+  if (!G || G.dFrom !== 'GPU') { if (!auto) out.textContent = 'Verify: the last result came from the CPU, nothing to check (use Compute = GPU).'; return; }
+  const { nx, ny, cell } = G, TS = 32, r = S.r, m = Math.ceil(r / cell) + 4;
+  let i0 = 0, j0 = 0, found = false;
+  for (let k = 0; k < 200 && !found; k++) {
+    i0 = Math.floor(Math.random() * Math.max(1, nx - TS)); j0 = Math.floor(Math.random() * Math.max(1, ny - TS));
+    let c = 0; for (let j = j0; j < Math.min(ny, j0 + TS); j++) for (let i = i0; i < Math.min(nx, i0 + TS); i++) c += G.inside[j * nx + i];
+    found = c >= 200 && (k > 100 || c < TS * TS - 1);   // prefer a tile that crosses the outline
+  }
+  const wi0 = Math.max(0, i0 - m), wj0 = Math.max(0, j0 - m), wi1 = Math.min(nx, i0 + TS + m), wj1 = Math.min(ny, j0 + TS + m);
+  const geom = { x0: G.x0 + wi0 * cell, y0: G.y0 + wj0 * cell, x1: G.x0 + wi1 * cell, y1: G.y0 + wj1 * cell, nx: wi1 - wi0, ny: wj1 - wj0, cell, brute: true };
+  const wg = rasterise(G.segs, cell, 1, geom), e = distToEroded(wg, r), zc = heightfield(wg, e.d, S.H, r, S.kind);
+  let dz = 0, dd = 0, mism = 0, n = 0;
+  for (let j = j0; j < Math.min(ny, j0 + TS); j++) for (let i = i0; i < Math.min(nx, i0 + TS); i++) {
+    const p = j * nx + i, q = (j - wj0) * wg.nx + (i - wi0);
+    if (G.inside[p] !== wg.inside[q]) { mism++; continue; }
+    if (!G.inside[p]) continue; n++;
+    if (!Number.isFinite(e.d[q]) && !Number.isFinite(G.d[p])) continue;
+    dd = Math.max(dd, Math.abs(G.d[p] - e.d[q]));
+    if (wg.D[q] >= 0.5 * cell) dz = Math.max(dz, Math.abs(G.zO[p] - zc[q]));
+  }
+  const ok = dz < 1e-3 && mism <= 2;
+  out.innerHTML = `${auto ? 'Auto spot check' : 'Verify'} (tile ${TS}&times;${TS} at ${i0},${j0}, ${n} cells): max |&Delta;z| ${dz.toExponential(2)} mm (cells &ge; half a cell from the wall), max |&Delta;d| ${dd.toExponential(2)} mm, mask mismatches ${mism} &rarr; <b class="${ok ? '' : 'warn'}">${ok ? 'OK' : 'DIFFERS'}</b>`;
+}
+// ---- startup: detection and a small known job (64x64 disc) against the CPU
+async function gpuSelfTest() {
+  const segs = [], R = 20, N = 256;
+  for (let i = 0; i < N; i++) { const a = 2 * Math.PI * i / N, b = 2 * Math.PI * (i + 1) / N; segs.push([R * Math.cos(a), R * Math.sin(a), R * Math.cos(b), R * Math.sin(b)]); }
+  const gm = gridGeom(segs, 0.65, 1), r = 5, H = 10, g = rasterise(segs, gm.cell, 1, gm), c = distToEroded(g, r), zc = heightfield(g, c.d, H, r, 'round');
+  const gr = await gpuGrid(gm, segs), d = await gpuErode(gr.gridId, r), gg = { ...gm, inside: gr.inside, D: gr.D };
+  const zg = heightfield(gg, d, H, r, 'round');
+  let mism = 0, dz = 0, vc = 0, vg = 0;
+  for (let i = 0; i < zc.length; i++) {
+    if (g.inside[i] !== gr.inside[i]) mism++;
+    if (!g.inside[i]) continue;
+    vc += zc[i]; vg += zg[i];
+    if (g.D[i] >= 0.5 * gm.cell) dz = Math.max(dz, Math.abs(zc[i] - zg[i]));
+  }
+  const rel = Math.abs(vg - vc) / vc;
+  const ok = dz < 1e-3 && rel < 1e-4 && mism <= 2;
+  return { ok, dz, rel, mism, n: gm.nx + 'x' + gm.ny };
+}
+async function gpuStartup() {
+  $('gpustat').textContent = 'WebGPU: checking...';
+  await gpuDetect();
+  if (GPU.state === 'ok') {
+    try { const t = await gpuSelfTest(); GPU.test = t; if (!t.ok) { GPU.state = 'off'; GPU.msg = `self-test failed (grid ${t.n}: max dz ${t.dz.toExponential(2)} mm, volume ${t.rel.toExponential(1)}, mask mismatches ${t.mism}); GPU disabled`; } else GPU.msg = `ready, self-test passed (grid ${t.n}: max dz ${t.dz.toExponential(1)} mm, volume ${t.rel.toExponential(1)})`; }
+    catch (e) { GPU.state = 'off'; GPU.msg = 'self-test threw (' + (e.message || e) + '); GPU disabled'; }
+  }
+  updateComputeUI();
+}
+function updateComputeUI() {
+  const ok = GPU.state === 'ok' && !GPU.lost;
+  $('gpustat').innerHTML = (ok ? '<b>WebGPU on</b>: ' + GPU.adapterName + '. ' : 'WebGPU <b class="warn">off</b>: ') + GPU.msg + (ok ? '' : ' CPU path is used.');
+  document.querySelectorAll('input[name=compute][value=gpu]').forEach((e) => { e.disabled = !ok; });
+  $('verify').disabled = !ok;
+}
+window.gpuLostHook = (m) => { updateComputeUI(); $('timing').innerHTML = '<span class="warn">' + m + ' Falling back to the CPU.</span>'; recompute(true); };
+function readouts() {
+  const base = G.area * S.H, kp = !S.custom ? KD.presets?.[S.preset] : null;
+  const fmt = (v, d = 2) => (Number.isFinite(v) ? v.toFixed(d) : '-');
+  let h = `<div><span>Removed volume, opening</span><b>${fmt(G.removedO, 1)} mm&sup3;</b></div><div><span>Removed volume, swept-cut</span><b>${fmt(G.removedS, 1)} mm&sup3;</b></div><div><span>swept &minus; opening</span><b>${fmt(G.removedS - G.removedO, 1)} mm&sup3; (${fmt(100 * (G.removedS - G.removedO) / G.removedO, 2)} %)</b></div><div><span>of the extrusion</span><b>${fmt(100 * G.removed / base, 2)} %</b></div>
+<div><span>Eroded region area</span><b>${fmt(G.prArea, 1)} mm&sup2;</b></div><div><span>Profile area</span><b>${fmt(G.area, 1)} mm&sup2;</b></div>
+<div><span>Tightest convex bend radius</span><b>${fmt(G.curv)} mm</b></div><div><span>Tip radius (parts vanish above)</span><b>${fmt(G.tip)} mm</b></div>
+<div><span>Largest inscribed radius</span><b>${fmt(G.maxD)} mm</b></div>`;
+  if (G.prArea === 0) h += `<div class="warn">r exceeds the inscribed radius: no ball fits, the whole cap drops to H&minus;r.</div>`;
+  else if (S.r > G.tip) h += `<div class="warn">r is above the tip radius: the offset has swallowtails there and the eroded region lost parts of the profile.</div>`;
+  if (S.r > S.H) h += `<div class="warn">r &gt; H: the oracle assumes a flat cap of height H only; the ball would also touch the bottom.</div>`;
+  if (S.rim === 'bottom') h += `<div class="sub">Bottom rim: the same field mirrored (surface shown is the underside).</div>`;
+  if (G.zk) {
+    let n = 0, s2 = 0, mx = 0;
+    for (let i = 0; i < G.z.length; i++) if (G.inside[i] && !Number.isNaN(G.zk[i])) { const e = G.zk[i] - G.z[i]; n++; s2 += e * e; if (Math.abs(e) > mx) mx = Math.abs(e); }
+    const st = (z) => { let n = 0, s2 = 0, mx = 0; for (let i = 0; i < z.length; i++) if (G.inside[i] && !Number.isNaN(G.zk[i])) { const e = G.zk[i] - z[i]; n++; s2 += e * e; if (Math.abs(e) > mx) mx = Math.abs(e); } return { mx, rms: Math.sqrt(s2 / n) }; };
+    const a = st(G.zO), b = st(G.zS);
+    h += `<div><span>Kernel vs opening, max / rms</span><b>${fmt(a.mx, 3)} / ${fmt(a.rms, 3)} mm</b></div><div><span>Kernel vs swept-cut, max / rms</span><b>${fmt(b.mx, 3)} / ${fmt(b.rms, 3)} mm</b></div><div><span>Kernel matches better</span><b>${a.rms < b.rms ? 'opening' : 'swept-cut'}</b></div>`;
+  }
+  $('ro').innerHTML = h;
+  let ki = '';
+  if (S.custom) ki = 'Custom outline: no kernel data.';
+  else if (!kp || !kp.kernel) ki = 'No kernel layer stored for this outline.';
+  else if (S.H !== kp.H) ki = `Kernel layer was computed for H = ${kp.H}.`;
+  else if (kernelEntry?.status && kernelEntry.status !== 'built') ki = `Kernel at r=${S.r}: ${kernelEntry.status}`;
+  else if (!kernelEntry) ki = `No kernel run at this r. Tested: ${(kp.kernel[S.kind] ?? []).map((q) => q.r).join(', ')}.`;
+  else ki = `Kernel height from: ${KD.wasm}`;
+  $('kinfo').textContent = ki;
+  const chips = $('kchips'); chips.innerHTML = '';
+  for (const q of (kp?.kernel?.[S.kind] ?? [])) { const b = document.createElement('button'); b.textContent = q.r; b.className = q.status === 'built' ? 'ok' : 'bad'; b.title = q.status === 'built' ? 'kernel built' : q.status; b.onclick = () => setR(q.r); chips.appendChild(b); }
+}
+function drawMarks() {
+  const mx = Number($('r').max), mk = $('marks'); mk.innerHTML = '';
+  const add = (r, cls, title) => { if (!Number.isFinite(r) || r > mx) return; const d = document.createElement('div'); d.className = 'mark ' + cls; d.style.left = `calc(${(r - 0.1) / (mx - 0.1) * 100}% - 1px)`; d.title = title; mk.appendChild(d); };
+  add(G.tip, '', `tip radius ${G.tip.toFixed(2)}`); add(G.maxD, '', `inscribed radius ${G.maxD.toFixed(2)}`);
+  for (const q of (!S.custom ? KD.presets?.[S.preset]?.kernel?.[S.kind] ?? [] : [])) add(q.r, 'k', 'kernel run r=' + q.r);
+}
+
+// ---------------------------------------------------------------- 2D view
+const c2 = $('c2d'), x2 = c2.getContext('2d'); const off = document.createElement('canvas');
+let view = { s: 1, ox: 0, oy: 0 };
+function toScreen(x, y) { return [view.ox + x * view.s, view.oy - y * view.s]; }
+function toWorld(px, py) { return [(px - view.ox) / view.s, (view.oy - py) / view.s]; }
+const VIR = [[68,1,84],[59,82,139],[33,145,140],[94,201,98],[253,231,37]];
+function cmap(t) { t = Math.max(0, Math.min(1, t)) * (VIR.length - 1); const i = Math.min(VIR.length - 2, Math.floor(t)), f = t - i; return VIR[i].map((v, k) => v + (VIR[i + 1][k] - v) * f); }
+function dmap(t) { const a = Math.abs(t), w = 255 * (1 - Math.min(1, a)); return t < 0 ? [w, w, 255] : [255, w, w]; }
+function draw2d() {
+  const dpr = devicePixelRatio || 1, W = c2.clientWidth, Hh = c2.clientHeight; c2.width = W * dpr; c2.height = Hh * dpr; x2.setTransform(dpr, 0, 0, dpr, 0, 0);
+  x2.clearRect(0, 0, W, Hh);
+  const { nx, ny, cell, x0, y0 } = G, wx = nx * cell, wy = ny * cell, s = Math.min((W - 20) / wx, (Hh - 20) / wy);
+  view = { s, ox: (W - wx * s) / 2 - x0 * s, oy: (Hh + wy * s) / 2 + y0 * s };
+  const layer = (S.layer === 'kernel' && G.zk) ? 'kernel' : (S.layer === 'diff' && G.zk) ? 'diff' : S.layer === 'variants' ? 'variants' : 'oracle';
+  const zz = layer === 'kernel' ? G.zk : G.z;
+  off.width = nx; off.height = ny; const id = new ImageData(nx, ny); let zmin = Infinity, zmax = -Infinity, dmax = 0;
+  const pct = (f) => { const a = []; for (let i = 0; i < G.z.length; i++) if (G.inside[i]) { const v = f(i); if (!Number.isNaN(v)) a.push(Math.abs(v)); } a.sort((x, y) => x - y); return Math.max(0.01, a[Math.floor(a.length * 0.995)] ?? 0); };   // colour range: 99.5th percentile, a few wall cells do not wash it out
+  if (layer === 'diff') dmax = pct((i) => G.zk[i] - G.z[i]);
+  else if (layer === 'variants') dmax = pct((i) => G.zS[i] - G.zO[i]);
+  else { for (let i = 0; i < zz.length; i++) if (G.inside[i] && !Number.isNaN(zz[i])) { zmin = Math.min(zmin, zz[i]); zmax = Math.max(zmax, zz[i]); } if (zmax - zmin < 1e-6) zmax = zmin + 1; }
+  const seedEdge = (i, j) => { const p = j * nx + i; if (G.d[p] !== 0 || !G.inside[p]) return false; for (const [a, b] of [[1,0],[-1,0],[0,1],[0,-1]]) { const q = (j + b) * nx + i + a; if (i + a < 0 || j + b < 0 || i + a >= nx || j + b >= ny || !G.inside[q] || G.d[q] > 0) return true; } return false; };
+  for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+    const p = j * nx + i, o = ((ny - 1 - j) * nx + i) * 4;
+    if (!G.inside[p]) { id.data[o + 3] = 0; continue; }
+    let c; const v = zz?.[p];
+    if (layer === 'variants') c = dmap((G.zS[p] - G.zO[p]) / dmax);
+    else if (layer === 'diff') c = Number.isNaN(G.zk[p]) ? [200, 200, 200] : dmap((G.zk[p] - G.z[p]) / dmax);
+    else c = Number.isNaN(v) ? [200, 200, 200] : cmap((v - zmin) / (zmax - zmin));
+    if ($('showpr').checked && layer !== 'variants' && seedEdge(i, j)) c = [20, 20, 20];
+    id.data[o] = c[0]; id.data[o + 1] = c[1]; id.data[o + 2] = c[2]; id.data[o + 3] = 255;
+  }
+  off.getContext('2d').putImageData(id, 0, 0);
+  x2.imageSmoothingEnabled = false; const [sx, sy] = toScreen(x0, y0 + wy); x2.drawImage(off, sx, sy, wx * s, wy * s);
+  x2.strokeStyle = '#fff'; x2.lineWidth = 3; x2.beginPath(); G.poly.forEach((p, k) => { const [a, b] = toScreen(p[0], p[1]); k ? x2.lineTo(a, b) : x2.moveTo(a, b); }); x2.closePath(); x2.stroke();
+  x2.strokeStyle = '#111'; x2.lineWidth = 1.2; x2.stroke();
+  if (S.custom || !KD.presets?.[S.preset]?.poly) for (const p of S.pts) { const [a, b] = toScreen(p.x, p.y); x2.fillStyle = p.c ? '#e8590c' : '#2f6fed'; x2.strokeStyle = '#fff'; x2.lineWidth = 2; x2.beginPath(); if (p.c) x2.rect(a - 5, b - 5, 10, 10); else x2.arc(a, b, 5, 0, 7); x2.fill(); x2.stroke(); }
+  else for (const p of S.pts) { const [a, b] = toScreen(p.x, p.y); x2.fillStyle = 'rgba(47,111,237,.55)'; x2.strokeStyle = '#fff'; x2.lineWidth = 1.5; x2.beginPath(); x2.arc(a, b, 4, 0, 7); x2.fill(); x2.stroke(); }
+  const L = $('legend');
+  if (layer === 'variants') L.innerHTML = `swept-cut &minus; opening (mm)<i style="background:linear-gradient(90deg,#00f,#fff,#f00)"></i>${(-dmax).toFixed(3)} &hellip; 0 &hellip; +${dmax.toFixed(3)} (red: swept-cut leaves more material)`;
+  else if (layer === 'diff') L.innerHTML = `kernel &minus; oracle<i style="background:linear-gradient(90deg,#00f,#fff,#f00)"></i>${(-dmax).toFixed(3)} &hellip; 0 &hellip; +${dmax.toFixed(3)} mm`;
+  else L.innerHTML = `top height z (mm)<i style="background:linear-gradient(90deg,${VIR.map((c) => `rgb(${c})`).join(',')})"></i>${zmin.toFixed(2)} &hellip; ${zmax.toFixed(2)}`;
+  $('cap2d').textContent = layer === 'variants' ? 'Difference between the two oracle models: swept-cut minus opening' : layer === 'kernel' ? `2D: kernel result (${KD.wasm ?? ''})` : layer === 'diff' ? '2D: kernel minus oracle' : `2D: oracle (${S.variant}), ${S.kind} ${S.r}${S.rim === 'bottom' ? ' (bottom, mirrored)' : ''}   black line = ball-centre region`;
+  if (S.layer !== 'oracle' && !G.zk) $('cap2d').textContent += '  (no kernel data here, showing oracle)';
+}
+
+// ---------------------------------------------------------------- point editing
+let drag = null;
+function pickPoint(px, py) { let best = -1, bd = 10; S.pts.forEach((p, i) => { const [a, b] = toScreen(p.x, p.y); const d = Math.hypot(a - px, b - py); if (d < bd) { bd = d; best = i; } }); return best; }
+function ensureCustom() { if (!S.custom) { S.custom = true; Gkey = ''; } }
+c2.addEventListener('pointerdown', (e) => {
+  const r = c2.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top, i = pickPoint(px, py);
+  if (i >= 0) {
+    if (e.shiftKey && S.pts.length > 3) { ensureCustom(); S.pts.splice(i, 1); recompute(true); return; }
+    if (e.altKey) { ensureCustom(); S.pts[i].c = !S.pts[i].c; recompute(true); return; }
+    drag = i; c2.setPointerCapture(e.pointerId); return;
+  }
+  // click on the curve: insert a point
+  const [wx, wy] = toWorld(px, py); let bd = 8 / view.s, bi = -1, bp = null;
+  const poly = buildPolyline(S.pts, true);
+  for (const p of poly) { const d = Math.hypot(p[0] - wx, p[1] - wy); if (d < bd) { bd = d; bi = p[2]; bp = p; } }
+  if (bi >= 0) { ensureCustom(); S.pts.splice(bi + 1, 0, { x: bp[0], y: bp[1] }); drag = bi + 1; c2.setPointerCapture(e.pointerId); recompute(true); }
+});
+c2.addEventListener('pointermove', (e) => {
+  const r = c2.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
+  if (drag === null) { c2.style.cursor = pickPoint(px, py) >= 0 ? 'grab' : 'default'; return; }
+  ensureCustom(); const [wx, wy] = toWorld(px, py); S.pts[drag].x = wx; S.pts[drag].y = wy; schedule(true);
+});
+c2.addEventListener('pointerup', () => { drag = null; });
+c2.addEventListener('dblclick', (e) => { const r = c2.getBoundingClientRect(), i = pickPoint(e.clientX - r.left, e.clientY - r.top); if (i >= 0 && S.pts.length > 3) { ensureCustom(); S.pts.splice(i, 1); recompute(true); } });
+
+// ---------------------------------------------------------------- 3D (WebGL)
+const c3 = $('c3d'), gl = c3.getContext('webgl', { antialias: true }); const hasU32 = gl?.getExtension('OES_element_index_uint');
+const cam = { yaw: -0.6, pitch: 0.7, dist: 1, px: 0, py: 0 };
+let prog, topo = null, vbo, ibo, sbo, nIdx = 0, nSkirt = 0;
+function initGL() {
+  if (!gl) { c3.parentNode.insertAdjacentHTML('beforeend', '<div class="cap" style="top:30px">WebGL is not available</div>'); return; }
+  const sh = (t, src) => { const s = gl.createShader(t); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) console.error(gl.getShaderInfoLog(s)); return s; };
+  prog = gl.createProgram();
+  gl.attachShader(prog, sh(gl.VERTEX_SHADER, `attribute vec3 aP;attribute vec3 aN;attribute float aT;uniform mat4 uM;uniform mat3 uV;varying vec3 vN;varying float vT;void main(){vN=uV*aN;vT=aT;gl_Position=uM*vec4(aP,1.);}`));
+  gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, `precision mediump float;varying vec3 vN;varying float vT;uniform float uTint;uniform float uSide;
+vec3 cm(float t){t=clamp(t,0.,1.)*4.;vec3 a=vec3(.27,.004,.33),b=vec3(.23,.32,.54),c=vec3(.13,.57,.55),d=vec3(.37,.79,.38),e=vec3(.99,.91,.15);
+ if(t<1.)return mix(a,b,t);if(t<2.)return mix(b,c,t-1.);if(t<3.)return mix(c,d,t-2.);return mix(d,e,t-3.);}
+void main(){vec3 n=normalize(vN);vec3 L1=normalize(vec3(-.45,.6,.65));vec3 L2=normalize(vec3(.6,-.2,.5));
+ float d=abs(dot(n,L1))*.75+abs(dot(n,L2))*.25;vec3 base=mix(vec3(.72,.76,.84),cm(vT),uTint*step(uSide,.5));if(uSide>.5)base=vec3(.55,.58,.66);
+ gl_FragColor=vec4(base*(.25+.8*d),1.);}`));
+  gl.linkProgram(prog); gl.useProgram(prog); vbo = gl.createBuffer(); ibo = gl.createBuffer(); sbo = gl.createBuffer(); gl.enable(gl.DEPTH_TEST);
+}
+function buildTopology() {
+  if (!gl) return;
+  const { nx, ny, inside, cell, x0, y0, poly } = G, N = nx * ny, idx = [], edges = new Map();
+  // ring = outside cells next to the profile: their vertices are snapped onto the exact outline, so the 3D edge is the polygon, not the staircase
+  const ins2 = new Uint8Array(N), sx = new Float32Array(N), sy = new Float32Array(N);
+  const segs = polySegs(poly);
+  for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+    const p = j * nx + i; sx[p] = x0 + (i + 0.5) * cell; sy[p] = y0 + (j + 0.5) * cell;
+    if (inside[p]) { ins2[p] = 1; continue; }
+    let near = false;
+    for (let dj = -1; dj <= 1 && !near; dj++) for (let di = -1; di <= 1; di++) { const ii = i + di, jj = j + dj; if (ii >= 0 && jj >= 0 && ii < nx && jj < ny && inside[jj * nx + ii]) { near = true; break; } }
+    if (!near) continue;
+    ins2[p] = 2;
+    let best = Infinity, bx = 0, by = 0;
+    for (const sg of segs) {
+      const dx = sg[2] - sg[0], dy = sg[3] - sg[1], l2 = dx * dx + dy * dy; let t = l2 > 0 ? ((sx[p] - sg[0]) * dx + (sy[p] - sg[1]) * dy) / l2 : 0; t = t < 0 ? 0 : t > 1 ? 1 : t;
+      const qx = sg[0] + t * dx, qy = sg[1] + t * dy, d2 = (qx - sx[p]) ** 2 + (qy - sy[p]) ** 2; if (d2 < best) { best = d2; bx = qx; by = qy; }
+    }
+    sx[p] = bx; sy[p] = by;
+  }
+  const addE = (a, b, c) => { const k = a < b ? a * 1e7 + b : b * 1e7 + a; const e = edges.get(k); if (e) e.n++; else edges.set(k, { n: 1, a, b, c }); };
+  for (let j = 0; j + 1 < ny; j++) for (let i = 0; i + 1 < nx; i++) {
+    const a = j * nx + i, b = a + 1, c = a + nx, d = c + 1;
+    if (!(ins2[a] && ins2[b] && ins2[c] && ins2[d]) || !(ins2[a] === 1 || ins2[b] === 1 || ins2[c] === 1 || ins2[d] === 1)) continue;
+    idx.push(a, b, d, a, d, c); addE(a, b, c); addE(b, d, a); addE(d, c, a); addE(c, a, d);
+  }
+  const sk = []; for (const e of edges.values()) if (e.n === 1) sk.push(e.a, e.b, e.c);
+  topo = { idx: hasU32 ? new Uint32Array(idx) : new Uint16Array(idx), sk, ins2, sx, sy }; nIdx = idx.length;
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, topo.idx, gl.STATIC_DRAW);
+  cam.dist = Math.max(G.nx, G.ny) * G.cell * 1.6; cam.px = G.x0 + G.nx * G.cell / 2; cam.py = G.y0 + G.ny * G.cell / 2; cam.pz = S.H / 2;
+}
+function upload3d() {
+  if (!gl || !topo) return;
+  const { nx, ny, z } = G, { ins2, sx, sy } = topo, N = nx * ny, bottom = S.rim === 'bottom', cell = G.cell;
+  const zf = new Float32Array(N); for (let p = 0; p < N; p++) zf[p] = ins2[p] === 1 ? z[p] : S.H - S.r;   // ring: the wall foot height H - r
+  const zv = (p) => (bottom ? S.H - zf[p] : zf[p]);
+  const V = new Float32Array(N * 7); const tint = (p) => (zf[p] - (S.H - S.r)) / Math.max(1e-6, S.r);
+  for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+    const p = j * nx + i, o = p * 7; if (!ins2[p]) continue;
+    const l = (i > 0 && ins2[p - 1]) ? p - 1 : p, r = (i + 1 < nx && ins2[p + 1]) ? p + 1 : p, d = (j > 0 && ins2[p - nx]) ? p - nx : p, u = (j + 1 < ny && ins2[p + nx]) ? p + nx : p;
+    const dx = (r !== l ? (r - l) : 1) * cell, dy = (u !== d ? (u - d) / nx : 1) * cell;
+    const gx = (zv(r) - zv(l)) / dx, gy = (zv(u) - zv(d)) / dy, nl = Math.hypot(gx, gy, 1);
+    V[o] = sx[p]; V[o + 1] = sy[p]; V[o + 2] = zv(p); V[o + 3] = -gx / nl; V[o + 4] = -gy / nl; V[o + 5] = 1 / nl; V[o + 6] = Math.max(0, Math.min(1, tint(p)));
+  }
+  gl.bindBuffer(gl.ARRAY_BUFFER, vbo); gl.bufferData(gl.ARRAY_BUFFER, V, gl.DYNAMIC_DRAW);
+  // skirt: the vertical wall under the exact outline
+  const sk = topo.sk, W = new Float32Array(sk.length / 3 * 4 * 7), IW = []; let w = 0;
+  const end = bottom ? S.H : 0;
+  for (let k = 0; k < sk.length; k += 3) {
+    const a = sk[k], b = sk[k + 1], c = sk[k + 2], ax = V[a * 7], ay = V[a * 7 + 1], bx = V[b * 7], by = V[b * 7 + 1], cx = V[c * 7], cy = V[c * 7 + 1];
+    let nxv = by - ay, nyv = ax - bx; const nl = Math.hypot(nxv, nyv) || 1; nxv /= nl; nyv /= nl;
+    if ((cx - ax) * nxv + (cy - ay) * nyv > 0) { nxv = -nxv; nyv = -nyv; }
+    const q = [[ax, ay, V[a * 7 + 2]], [bx, by, V[b * 7 + 2]], [bx, by, end], [ax, ay, end]];
+    for (const v of q) { W.set([v[0], v[1], v[2], nxv, nyv, 0, 0], w * 7); w++; }
+    IW.push(w - 4, w - 3, w - 2, w - 4, w - 2, w - 1);
+  }
+  topo.W = W.subarray(0, w * 7); topo.IW = new Uint32Array(IW); nSkirt = IW.length;
+  gl.bindBuffer(gl.ARRAY_BUFFER, sbo); gl.bufferData(gl.ARRAY_BUFFER, topo.W, gl.DYNAMIC_DRAW);
+  if (!topo.sib) topo.sib = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, topo.sib); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, hasU32 ? topo.IW : new Uint16Array(IW), gl.DYNAMIC_DRAW);
+  draw3d();
+}
+function mul(a, b) { const o = new Float32Array(16); for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) { let s = 0; for (let k = 0; k < 4; k++) s += a[k * 4 + j] * b[i * 4 + k]; o[i * 4 + j] = s; } return o; }
+function draw3d() {
+  if (!gl || !topo) return;
+  const dpr = devicePixelRatio || 1, W = c3.clientWidth, H = c3.clientHeight; if (c3.width !== W * dpr) { c3.width = W * dpr; c3.height = H * dpr; }
+  gl.viewport(0, 0, c3.width, c3.height); const dark = matchMedia('(prefers-color-scheme:dark)').matches; gl.clearColor(dark ? 0.114 : 1, dark ? 0.129 : 1, dark ? 0.157 : 1, 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  const cp = Math.cos(cam.pitch), eye = [cam.px + cam.dist * cp * Math.sin(cam.yaw), cam.py - cam.dist * cp * Math.cos(cam.yaw), cam.pz + cam.dist * Math.sin(cam.pitch)];
+  const f = [cam.px - eye[0], cam.py - eye[1], cam.pz - eye[2]], fl = Math.hypot(...f); f.forEach((_, i) => f[i] /= fl);
+  let s = [f[1] * 1 - f[2] * 0, f[2] * 0 - f[0] * 1, 0]; const sl = Math.hypot(...s); s = s.map((v) => v / sl);
+  const u = [s[1] * f[2] - s[2] * f[1], s[2] * f[0] - s[0] * f[2], s[0] * f[1] - s[1] * f[0]];
+  const Vm = new Float32Array([s[0], u[0], -f[0], 0, s[1], u[1], -f[1], 0, s[2], u[2], -f[2], 0, -(s[0] * eye[0] + s[1] * eye[1] + s[2] * eye[2]), -(u[0] * eye[0] + u[1] * eye[1] + u[2] * eye[2]), f[0] * eye[0] + f[1] * eye[1] + f[2] * eye[2], 1]);
+  const asp = W / H, t = 1 / Math.tan(0.35), n = cam.dist * 0.02, fa = cam.dist * 8;
+  const Pm = new Float32Array([t / asp, 0, 0, 0, 0, t, 0, 0, 0, 0, (fa + n) / (n - fa), -1, 0, 0, 2 * fa * n / (n - fa), 0]);
+  gl.uniformMatrix4fv(gl.getUniformLocation(prog, 'uM'), false, mul(Pm, Vm));
+  gl.uniformMatrix3fv(gl.getUniformLocation(prog, 'uV'), false, new Float32Array([Vm[0], Vm[1], Vm[2], Vm[4], Vm[5], Vm[6], Vm[8], Vm[9], Vm[10]]));
+  gl.uniform1f(gl.getUniformLocation(prog, 'uTint'), $('tint').checked ? 1 : 0);
+  const attr = (name, size, off) => { const l = gl.getAttribLocation(prog, name); gl.enableVertexAttribArray(l); gl.vertexAttribPointer(l, size, gl.FLOAT, false, 28, off * 4); };
+  const type = hasU32 ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT;
+  gl.uniform1f(gl.getUniformLocation(prog, 'uSide'), 0); gl.bindBuffer(gl.ARRAY_BUFFER, vbo); attr('aP', 3, 0); attr('aN', 3, 3); attr('aT', 1, 6);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo); gl.drawElements(gl.TRIANGLES, nIdx, type, 0);
+  gl.uniform1f(gl.getUniformLocation(prog, 'uSide'), 1); gl.bindBuffer(gl.ARRAY_BUFFER, sbo); attr('aP', 3, 0); attr('aN', 3, 3); attr('aT', 1, 6);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, topo.sib); gl.drawElements(gl.TRIANGLES, nSkirt, type, 0);
+}
+let d3 = null;
+c3.addEventListener('pointerdown', (e) => { d3 = { x: e.clientX, y: e.clientY, pan: e.shiftKey || e.button === 2 }; c3.setPointerCapture(e.pointerId); });
+c3.addEventListener('pointermove', (e) => { if (!d3) return; const dx = e.clientX - d3.x, dy = e.clientY - d3.y; d3.x = e.clientX; d3.y = e.clientY;
+  if (d3.pan) { const k = cam.dist * 0.0015; cam.px -= (dx * Math.cos(cam.yaw)) * k; cam.py -= (dx * Math.sin(cam.yaw)) * k; cam.pz += dy * k; } else { cam.yaw -= dx * 0.008; cam.pitch = Math.max(-1.5, Math.min(1.5, cam.pitch + dy * 0.008)); } draw3d(); });
+c3.addEventListener('pointerup', () => { d3 = null; }); c3.addEventListener('contextmenu', (e) => e.preventDefault());
+c3.addEventListener('wheel', (e) => { e.preventDefault(); cam.dist *= Math.exp(e.deltaY * 0.001); draw3d(); }, { passive: false });
+
+// ---------------------------------------------------------------- UI wiring
+let pending = false; function schedule(full) { if (pending) return; pending = true; requestAnimationFrame(() => { pending = false; recompute(full); }); }
+function setR(r) { S.r = Math.max(0.1, r); $('r').value = S.r; $('rnum').value = +S.r.toFixed(3); schedule(false); }
+function loadPreset(k) {
+  const P = PRESETS[k]; S.preset = k; S.custom = false; S.pts = P.pts.map((p) => ({ ...p })); S.H = P.H; $('H').value = P.H; $('r').max = P.H; Gkey = '';
+  if (S.r > P.H) setR(P.H / 4);
+}
+sel.onchange = () => { loadPreset(sel.value); recompute(true); };
+$('r').oninput = (e) => setR(Number(e.target.value)); $('rnum').onchange = (e) => setR(Number(e.target.value));
+$('H').onchange = (e) => { S.H = Math.max(1, Number(e.target.value)); $('r').max = S.H; if (S.r > S.H) setR(S.H); else recompute(true); };
+for (const n of ['kind', 'rim', 'layer', 'variant', 'compute']) document.querySelectorAll(`input[name=${n}]`).forEach((el) => el.onchange = () => {
+  S[n] = el.value; if (n === 'rim') { cam.pitch = el.value === 'bottom' ? -0.7 : 0.7; } recompute(false); });
+$('res').onchange = (e) => { S.res = e.target.value; recompute(true); }; $('verify').onclick = () => verifyGpu(false);
+$('showpr').onchange = draw2d; $('tint').onchange = draw3d;
+addEventListener('resize', () => { draw2d(); draw3d(); });
+initGL(); loadPreset('blob'); setR(3.7); recompute(true); gpuStartup();
+window.__oracle = { S, recompute, pump, verifyGpu, GPU, get G() { return G; }, get busy() { return running || !!rerun; } };
+</script></body></html>

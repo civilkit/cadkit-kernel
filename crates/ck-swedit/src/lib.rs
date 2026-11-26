@@ -456,6 +456,10 @@ pub fn rebuild_history(t: &Tagged) -> Outcome {
     let out = if used && !(with.exact() || with.close()) {
         sketch_profile::prefer(false);
         let without = rebuild_history_with(t);
+        if std::env::var("SKETCH_DEBUG").is_ok() {
+            let why = |o: &Outcome| format!("exact {} close {} prefix {} {:?} {:?}", o.exact(), o.close(), o.prefix, o.fallback.as_deref().map(|f| f.chars().take(160).collect::<String>()), o.steps.iter().find(|s| s.status == Status::Unsupported).map(|s| format!("{}: {}", s.name, s.note.chars().take(160).collect::<String>())));
+            eprintln!("SKETCH_DEBUG with the file's sketches: {}; without: {}", why(&with), why(&without));
+        }
         let score = |o: &Outcome| if o.exact() { (3, 0) } else if o.close() { (2, 0) } else { (1, o.prefix) };
         if score(&without) > score(&with) {
             without

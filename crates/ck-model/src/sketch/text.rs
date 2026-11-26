@@ -158,7 +158,7 @@ fn seg(tag: &str, e: &ck_text::Edge) -> Seg {
                 tag: tag.to_string(),
                 a: q[0],
                 b: q[q.len() - 1],
-                curve: SegGeom { geom: Geom::BSpline { cv: q.clone(), degree: 2, knots: e.knots() }, ta: 0.0, tb: m },
+                curve: SegGeom { geom: Geom::BSpline { cv: q.clone(), degree: 2, knots: e.knots(), w: None }, ta: 0.0, tb: m },
             }
         }
     }

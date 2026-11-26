@@ -10,7 +10,7 @@
 //! Legacy sheets (a base with edge flanges, a folded base, a contour flange) convert to a tree exactly (`from_sheet`,
 //! `from_contour`): same panels, same bend rows, same flat pattern.
 
-use super::sheet::{area, chain_of, clean, Bend, BendRow, FlatPattern, HeightFrom, Next, Position, ReliefShape, Rule, Sheet, P};
+use super::sheet::{area, chain_in, clean, implied_k, Bend, BendRow, ChainErr, FlatPattern, HeightFrom, Next, Position, ReliefShape, Rule, Sheet, P};
 use super::sheet_contour::Contour;
 use super::sheet_fold::{self, zone_of, FoldPos};
 use ck_core::linalg::Vec3;
@@ -409,7 +409,7 @@ pub struct TBend {
 
 impl TBend {
     pub fn allowance(&self, rule: &Rule) -> f64 {
-        (self.radius + rule.k_factor * rule.thickness) * self.angle
+        (self.radius + rule.k_checked(self.radius, self.angle) * rule.thickness) * self.angle
     }
     /// A flat point at `u` along the normal and `v` along the line.
     pub fn at(&self, u: f64, v: f64) -> P {
@@ -701,6 +701,7 @@ impl Tree {
                 included_angle: 180.0 - b.angle.to_degrees(),
                 radius: b.radius,
                 allowance: b.allowance(rule),
+                k_factor: implied_k(b.allowance(rule), b.radius, b.angle, rule.thickness),
                 length: hi - lo,
                 start: s,
                 end: e,
@@ -949,7 +950,10 @@ impl Tree {
                     return Err(format!("the edge `{tag}` of panel {} is split by a partial flange: give the flange its span (start and length)", r.panel));
                 }
             }
-            let ch = chain_of(t, rule.k_factor, r.radius, r.angle, r.height, r.from, r.pos, r.hem, &r.then).map_err(|(j, min)| format!("flangeHeightTooLow:{j}:{min}"))?;
+            let ch = chain_in(rule, r.radius, r.angle, r.height, r.from, r.pos, r.hem, &r.then).map_err(|e| match e {
+                ChainErr::Height(j, min) => format!("flangeHeightTooLow:{j}:{min}"),
+                ChainErr::Table(m) => m.encode(),
+            })?;
             let (a, bb) = (self.panels[r.panel].poly[r.edge].0, self.panels[r.panel].poly[(r.edge + 1) % n].0);
             let d = unit(sub(bb, a));
             let nu = [d[1], -d[0]];
@@ -1342,7 +1346,7 @@ impl Tree {
     pub fn add_fold(&mut self, rule: &Rule, feature: &str, req: &FoldReq) -> Result<(), String> {
         let p = req.panel;
         let t = rule.thickness;
-        let ba = (req.radius + rule.k_factor * t) * req.angle;
+        let ba = (req.radius + rule.k_for(req.radius, req.angle).map_err(|m| m.encode())? * t) * req.angle;
         let sb = (req.radius + t) * (req.angle / 2.0).tan();
         let d = unit(req.d);
         let nu0 = [-d[1], d[0]];

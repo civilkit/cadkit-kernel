@@ -411,6 +411,7 @@ pub fn exec_chamfer(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Resul
         return Err(FeatureError::new("invalidValue"));
     }
     let sel = select_edges(br, edges)?;
+    let sel = with_collinear_run(br.body.as_ref().ok_or_else(|| FeatureError::new("missingEdge"))?, sel);
     let sel = if propagates(f) { propagate_tangent(br.body.as_ref().ok_or_else(|| FeatureError::new("missingEdge"))?, sel) } else { sel };
     let _chain = ck_ops::blend::build::TangentChainGuard::new(propagates(f));
     br.spans.push(Span::leaf(chamfer_label(&f.id, d, sel.len())));
@@ -503,6 +504,7 @@ fn exec_chamfer_legs(br: &mut Brep, state: &mut RegenState, f: &Feature, edges: 
         ChamferLeg::Angle(a)
     };
     let sel = select_edges(br, edges)?;
+    let sel = with_collinear_run(br.body.as_ref().ok_or_else(|| FeatureError::new("missingEdge"))?, sel);
     let mut first_face: Option<String> = f.raw.get("face").and_then(|v| v.as_str().map(str::to_string).or_else(|| v.get("id").and_then(|i| i.as_str()).map(str::to_string)));
     let sel = if propagates(f) {
         // the chain shares one face: without `face`, the first face of the first pick is the first face of all
@@ -799,6 +801,7 @@ pub fn exec_fillet(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
     }
     let profile = fillet_profile(state, f)?;
     let sel = select_edges(br, edges)?;
+    let sel = with_collinear_run(br.body.as_ref().ok_or_else(|| FeatureError::new("missingEdge"))?, sel);
     let sel = if propagates(f) { propagate_tangent(br.body.as_ref().ok_or_else(|| FeatureError::new("missingEdge"))?, sel) } else { sel };
     // a pick may carry its own `radius`; the feature's radius is the default
     let own: Vec<Option<f64>> = (0..sel.len())
@@ -819,6 +822,12 @@ pub fn exec_fillet(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result
             br.spans.push(Span::leaf(fillet_label(&f.id, radii.iter().cloned().fold(0.0, f64::max), sel.len())));
             // mixed vertices first (a wall radius and a rim radius), else the per-edge builder
             let partial = opts.start_offset.is_some_and(|v| v > 0.0) || opts.end_offset.is_some_and(|v| v > 0.0);
+            if profile == ck_ops::blend::build::FilletProfile::Circular && !partial {
+                if let Some(res) = ck_ops::blend::spline_rim::try_mixed(body, &sel, &radii, false, &f.id, super::TOL) {
+                    br.body = Some(res.map_err(blend_error)?);
+                    return Ok(());
+                }
+            }
             let mixed = if profile == ck_ops::blend::build::FilletProfile::Circular && !partial { ck_ops::blend::mixed::fillet_mixed(body, &sel, &radii, &f.id, super::TOL) } else { None };
             ck_ops::blend::build::take_rounds_cross();
             let out = match mixed {
@@ -1014,6 +1023,65 @@ fn exec_vertex_chamfer(br: &mut Brep, state: &mut RegenState, f: &Feature, edges
     let out = ck_ops::blend::vertex::chamfer_vertex(body, at, [d1, d2, d3], &f.id, super::TOL).map_err(blend_error)?;
     br.body = Some(out);
     Ok(())
+}
+
+/// Close `sel` under straight collinear continuation: a straight edge picked for a fillet or chamfer whose line goes on
+/// in another straight edge between the same two planes (the planes may be two coplanar faces: a mirrored sketch, a split
+/// line or a sketch vertex on the line cut the wall, or the cap beside it, in two) is one edge to the user, so the whole
+/// run is rounded, whichever piece was picked and with or without `propagate`. New picks are `(face a, face b,
+/// midpoint)` in the order the edge lists its faces.
+fn with_collinear_run(body: &ck_topo::body::Body, sel: Vec<(String, String, Vec3)>) -> Vec<(String, String, Vec3)> {
+    use ck_geom::curve::Curve;
+    use ck_topo::body::EdgeId;
+    let mut out = sel.clone();
+    let mut run: Vec<EdgeId> = sel.iter().filter_map(|(a, b, at)| ck_ops::blend::build::find_edge(body, a, b, *at)).collect();
+    let line_dir = |e: EdgeId| -> Option<Vec3> {
+        let ed = body.edge(e);
+        if !matches!(ed.curve, Curve::Line { .. }) || ed.v0 == ed.v1 {
+            return None;
+        }
+        let d = body.vertex(ed.v1).p - body.vertex(ed.v0).p;
+        (d.len() > 1e-12).then(|| d.normalize())
+    };
+    // the same plane (a face against itself, or two planar faces that touch in a common vertex with parallel normals)
+    let same_plane = |f: ck_topo::body::FaceId, g: ck_topo::body::FaceId| {
+        f == g
+            || (matches!(body.face(f).surface, ck_geom::surface::Surface::Plane { .. })
+                && matches!(body.face(g).surface, ck_geom::surface::Surface::Plane { .. })
+                && body.planar_normal(f).normalize().dot(body.planar_normal(g).normalize()) > 1.0 - 1e-9)
+    };
+    let mut i = 0;
+    while i < run.len() {
+        let e = run[i];
+        i += 1;
+        let Some(d) = line_dir(e) else { continue };
+        let fe = body.edge_faces(e);
+        if fe.len() != 2 {
+            continue;
+        }
+        let ed = body.edge(e);
+        for v in [ed.v0, ed.v1] {
+            let cands: Vec<EdgeId> = body.edge_ids().filter(|&x| x != e && !run.contains(&x) && (body.edge(x).v0 == v || body.edge(x).v1 == v)).collect();
+            for x in cands {
+                let Some(dx) = line_dir(x) else { continue };
+                let fx = body.edge_faces(x);
+                if fx.len() != 2 || d.cross(dx).len() > 1e-9 {
+                    continue;
+                }
+                // the faces must pair up, one for one, in the same planes (and the edge must touch the vertex of both)
+                let pairs = (same_plane(fe[0], fx[0]) && same_plane(fe[1], fx[1])) || (same_plane(fe[0], fx[1]) && same_plane(fe[1], fx[0]));
+                // (coplanar walls only count when the planes pass through the shared vertex: the vertex lies on both edges)
+                if !pairs {
+                    continue;
+                }
+                let edx = body.edge(x);
+                let mid = edx.curve.eval(0.5 * (edx.t0 + edx.t1));
+                out.push((body.face_id_str(fx[0]), body.face_id_str(fx[1]), mid));
+                run.push(x);
+            }
+        }
+    }
+    out
 }
 
 /// `propagate: true` on a fillet or chamfer: the selection grows along edges that continue the picked

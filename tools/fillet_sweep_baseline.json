@@ -605,8 +605,8 @@
   "chamfer2_box_39": "ok",
   "chamferA_box_39": "ok",
   "var_box_39": "wrongVolume",
-  "rrect_loop_0": "kernel-null",
-  "rrect_loop_1": "kernel-null",
+  "rrect_loop_0": "ok",
+  "rrect_loop_1": "ok",
   "rrect_loop_2": "ok",
   "rrect_loop_3": "ok",
   "rrect_loop_4": "ok",
@@ -645,5 +645,6 @@
   "rrect_loop_37": "ok",
   "rrect_loop_38": "ok",
   "rrect_loop_39": "ok"
- }
+ },
+ "rrectLoopWasmHash": "49f45f4a8ee0ea92"
 }

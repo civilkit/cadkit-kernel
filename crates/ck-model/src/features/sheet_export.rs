@@ -12,7 +12,8 @@
 //! Inner contours are written before the outer one, then the bends, each followed by its note.
 //!
 //! Bend table: CSV with the columns of [`CSV_HEADER`] (numbers with 9 decimals, `\r\n` line ends) or a JSON document with
-//! `bends`, `bend_zones`, `outline`, `cutouts`, `cutout_shapes`, `flat_size_mm`, `rule`, `thickness`, `k_factor`, `body`.
+//! `bends`, `bend_zones`, `outline`, `cutouts`, `cutout_shapes`, `flat_size_mm`, `rule`, `thickness`, `k_factor`, `body`. The CSV `k_factor` column is the k of that bend; the JSON bends carry `k_factor`
+//! too when the rule has a bendTable.
 
 use super::sheet::{BendRow, FlatPattern, P};
 use ck_json::{Json, Obj};
@@ -785,7 +786,7 @@ pub fn bend_table_csv(fp: &FlatPattern, body: &str) -> String {
             csv_text(body),
             csv_text(&fp.rule),
             f(fp.thickness),
-            f(fp.k_factor),
+            f(b.k_factor),
             b.index.to_string(),
             f(b.angle),
             if b.up { "up" } else { "down" }.to_string(),
@@ -840,17 +841,16 @@ pub fn bend_table_json(fp: &FlatPattern, body: &str) -> Json {
         .bends
         .iter()
         .map(|b| {
-            Obj::new()
+            let o = Obj::new()
                 .put("allowance", b.allowance)
                 .put("angle_deg", b.angle)
                 .put("bend", b.index as f64)
                 .put("direction", if b.up { "up" } else { "down" })
                 .put("end", pj(b.end))
-                .put("included_angle_deg", b.included_angle)
-                .put("length", b.length)
-                .put("radius", b.radius)
-                .put("start", pj(b.start))
-                .build()
+                .put("included_angle_deg", b.included_angle);
+            // a rule with a bend table names the k of each bend (without one every bend has the rule's k_factor)
+            let o = if fp.bend_table { o.put("k_factor", b.k_factor) } else { o };
+            o.put("length", b.length).put("radius", b.radius).put("start", pj(b.start)).build()
         })
         .collect();
     let loops = |ls: &[Vec<P>]| Json::Arr(ls.iter().map(|l| Json::Arr(l.iter().map(|p| pj(*p)).collect())).collect());
@@ -940,6 +940,7 @@ pub fn flat_pattern_from_json(j: &Json) -> Result<FlatPattern, String> {
         outline.push(pts.ok_or_else(|| bad("an outline point is [x, y]"))?);
     }
     let mut bends = vec![];
+    let mut per_bend_k = false;
     for b in j.get_arr("bends").unwrap_or(&[]) {
         let g = |k: &str| b.get_f64(k).ok_or_else(|| bad(&format!("a bend has no `{k}`")));
         bends.push(BendRow {
@@ -949,6 +950,13 @@ pub fn flat_pattern_from_json(j: &Json) -> Result<FlatPattern, String> {
             included_angle: b.get_f64("includedAngleDeg").or_else(|| b.get_f64("included_angle_deg")).ok_or_else(|| bad("a bend has no `includedAngleDeg`"))?,
             radius: g("radius")?,
             allowance: g("allowance")?,
+            k_factor: match b.get_f64("kFactor").or_else(|| b.get_f64("k_factor")) {
+                Some(k) => {
+                    per_bend_k = true;
+                    k
+                }
+                None => num("kFactor")?,
+            },
             length: g("length")?,
             start: b.get("start").and_then(p2).ok_or_else(|| bad("a bend has no `start`"))?,
             end: b.get("end").and_then(p2).ok_or_else(|| bad("a bend has no `end`"))?,
@@ -967,6 +975,7 @@ pub fn flat_pattern_from_json(j: &Json) -> Result<FlatPattern, String> {
         rule: j.get_str("rule").unwrap_or("").to_string(),
         thickness: num("thickness")?,
         k_factor: num("kFactor")?,
+        bend_table: per_bend_k,
         size,
         outline,
         bends,

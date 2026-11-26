@@ -20,8 +20,9 @@
 //! * `swConfigurationList/swConfiguration` (`swName`, `swMostRecentConfiguration`, `swModelRef`): the configurations of
 //!   the top assembly; `swModelRef` is the assembly model of that configuration, whose references are its components.
 //!
-//! The root of the tree is the assembly model no reference points to. Mates, in-context references, exploded views and
-//! the geometry are not read; the referenced parts are not opened (the tree names them only).
+//! The root of the tree is the assembly model no reference points to. Mates are read by [`crate::mates`] (the `swConfigurationId`
+//! of a configuration's model is the `N` of its `Config-N-MatesList` stream); in-context references, exploded views and the
+//! geometry are not read; the referenced parts are not opened (the tree names them only).
 //!
 //! Never panics on malformed input: failures are [`SldprtError`] values (`asm.*`, `limit.*`, `container.*`).
 
@@ -39,6 +40,9 @@ pub struct AsmConfig {
     pub name: String,
     /// The configuration the file was last saved in.
     pub active: bool,
+    /// `swConfigurationId` of the configuration's assembly model: the `N` of the stream `Contents/Config-N-MatesList` that holds
+    /// its mates (see [`crate::mates`]).
+    pub id: Option<u32>,
 }
 
 /// One component instance.
@@ -135,6 +139,7 @@ struct Model {
     id: String,
     name: String,
     file_ref: String,
+    config_id: Option<u32>,
     bbox: Option<[f64; 6]>,
     refs: Vec<Reference>,
 }
@@ -236,6 +241,7 @@ pub fn parse_tree(t: &str, wanted: Option<&str>, limits: &Limits) -> R<AsmTree> 
                     id: get("id").cloned().unwrap_or_default(),
                     name: get("swName").cloned().unwrap_or_default(),
                     file_ref: get("swFileRef").cloned().unwrap_or_default(),
+                    config_id: get("swConfigurationId").and_then(|v| v.trim().parse().ok()),
                     bbox: get("swBoundingBox").and_then(|b| numbers::<6>(b)).map(|b| b.map(|v| v * 1000.0)),
                     refs: vec![],
                 };
@@ -290,7 +296,7 @@ pub fn parse_tree(t: &str, wanted: Option<&str>, limits: &Limits) -> R<AsmTree> 
     let mut cfg_model: Vec<&str> = vec![];
     for (name, active, mref) in &configs {
         if by_id.contains_key(mref) && is_root(mref) {
-            cfgs.push(AsmConfig { name: name.clone(), active: *active });
+            cfgs.push(AsmConfig { name: name.clone(), active: *active, id: models[by_id[mref]].config_id });
             cfg_model.push(mref);
         }
     }

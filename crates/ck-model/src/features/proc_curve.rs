@@ -151,7 +151,7 @@ fn sketch_entity(sk: &crate::regen::SketchResult, e: &SketchEntity) -> Option<Pi
             let lu = c3.dist(p3);
             (lu > 1e-12 && r.abs() > 1e-12).then(|| Piece { c: Curve::ellipse(c3, fr.z, p3 - c3, lu, r.abs()), t0: 0.0, t1: TAU })
         }
-        SketchEntity::CvSpline { pts, degree, knots, closed, .. } => {
+        SketchEntity::CvSpline { pts, degree, knots, weights, closed, .. } => {
             let p = (*degree as usize).max(1);
             let ctrl: Vec<Vec3> = pts.iter().filter_map(|q| pt(q)).collect();
             if *closed || ctrl.len() < p + 1 {
@@ -167,7 +167,10 @@ fn sketch_entity(sk: &crate::regen::SketchResult, e: &SketchEntity) -> Option<Pi
                     k
                 }
             };
-            let b = ck_geom::nurbs::bspline::BSplineCurve::new(p, k, ctrl).ok()?;
+            let b = match weights {
+                Some(w) if w.len() == ctrl.len() => ck_geom::nurbs::bspline::BSplineCurve::new_rational(p, k, ctrl, w.clone()).ok()?,
+                _ => ck_geom::nurbs::bspline::BSplineCurve::new(p, k, ctrl).ok()?,
+            };
             let (t0, t1) = b.domain();
             Some(Piece { c: Curve::BSpline(b), t0, t1 })
         }

@@ -26,16 +26,16 @@
       "placeholder": 5
     },
     "ChamferFeature": {
-      "mapped": 0,
-      "placeholder": 82
+      "mapped": 2,
+      "placeholder": 80
     },
     "CircularOccurrencePattern": {
       "mapped": 0,
       "placeholder": 2
     },
     "CircularPatternFeature": {
-      "mapped": 0,
-      "placeholder": 36
+      "mapped": 11,
+      "placeholder": 25
     },
     "CoilFeature": {
       "mapped": 0,
@@ -90,12 +90,12 @@
       "placeholder": 6
     },
     "ExtrudeFeature": {
-      "mapped": 1137,
-      "placeholder": 529
+      "mapped": 1158,
+      "placeholder": 508
     },
     "FilletFeature": {
-      "mapped": 43,
-      "placeholder": 336
+      "mapped": 38,
+      "placeholder": 341
     },
     "GeometricRelationship": {
       "mapped": 0,
@@ -166,8 +166,8 @@
       "placeholder": 8
     },
     "RevolveFeature": {
-      "mapped": 13,
-      "placeholder": 3
+      "mapped": 14,
+      "placeholder": 2
     },
     "RigidGroup": {
       "mapped": 0,
@@ -178,8 +178,8 @@
       "placeholder": 5
     },
     "Sketch": {
-      "mapped": 1566,
-      "placeholder": 87
+      "mapped": 1616,
+      "placeholder": 37
     },
     "Snapshot": {
       "mapped": 0,
@@ -207,10 +207,10 @@
   "designs": 124,
   "designsWithoutTimeline": 16,
   "files": 62,
-  "fullyMappedDesigns": 13,
+  "fullyMappedDesigns": 15,
   "items": 6766,
-  "mapped": 3613,
-  "placeholder": 3153,
+  "mapped": 3693,
+  "placeholder": 3073,
   "placeholderReasons": {
     "AlignFeature is not mapped to a CadKit part yet": 10,
     "AsBuiltJoint is not mapped to a CadKit part yet": 172,
@@ -254,29 +254,31 @@
     "a fitted spline has fewer than two fit points": 3,
     "a mirror of bodies is mapped only for a design with one body and nothing unmapped before it": 12,
     "a move is mapped only for a design with one body and nothing unmapped before it": 1,
-    "a profile's outline is not a region the kernel finds in the sketch": 42,
-    "a profile's outline is the outline of several regions of the sketch, which curve ids cannot tell apart": 25,
-    "a rational spline is not mapped yet": 52,
+    "a profile's outline is not a region the kernel finds in the sketch": 31,
+    "a profile's outline is the outline of several regions of the sketch, which curve ids cannot tell apart": 26,
+    "a profile's outline shares all its curves with other regions, and no point is inside it alone": 2,
     "a rectangular pattern of bodies or faces is not mapped yet": 8,
     "a revolve of a partial turn in one direction is not mapped yet": 1,
     "a sketch point has no usable position": 20,
+    "a spline's control points are not in the sketch plane": 2,
     "a symmetric circular pattern is not mapped yet": 6,
     "a thin extrude is not mapped yet": 1,
-    "an earlier item did not map, so the edges of the body so far are not those the file names": 384,
-    "an earlier item did not map, so the faces of the body so far are not those the file names": 320,
-    "an edge of it is not an edge of the history regenerated so far": 12,
+    "an earlier item did not map, so the edges of the body so far are not those the file names": 392,
+    "an earlier item did not map, so the faces of the body so far are not those the file names": 319,
+    "an edge of it is not an edge of the history regenerated so far": 7,
     "an extrude of a face that cuts positive is not mapped yet": 6,
     "an extrude of a face that is not a join or a cut is not mapped yet": 5,
     "an extrude of a face that joins negative is not mapped yet": 1,
     "an extrude of a face with this extent is not mapped yet": 3,
-    "an extrude that starts away from its sketch plane is not mapped yet": 34,
-    "an extrude to something other than a face is not mapped yet": 1,
+    "an extrude of the letters of a sketch text is not mapped yet (the font's outlines are not in the file)": 10,
+    "an extrude that starts away from its sketch plane is not mapped yet": 39,
+    "an extrude to something other than a face is not mapped yet": 7,
     "an extrude with a different length each way is not mapped yet": 1,
     "an extrude with these two extents is not mapped yet": 6,
-    "an input feature (FilletFeature) is not an extrude or revolve that mapped, and only those are repeated": 11,
     "an input feature (LoftFeature) is not an extrude or revolve that mapped, and only those are repeated": 1,
-    "it cuts, but no earlier feature made a body": 5,
-    "it cuts, but no earlier feature of its component made a body": 3,
+    "an intersecting feature is not mapped yet": 2,
+    "it cuts, but no earlier feature made a body": 4,
+    "it cuts, but no earlier feature of its component made a body": 2,
     "it moves no body": 1,
     "it names a profile whose outline is not known": 3,
     "it names no edges": 8,
@@ -285,7 +287,7 @@
     "its EllipticalArc curves are not mapped yet": 4,
     "its axis is a construction axis that is not an origin axis": 1,
     "its component's occurrence has no placement": 21,
-    "its face is not a planar face of the history regenerated so far": 3,
+    "its face is not a planar face of the history regenerated so far": 1,
     "its length is not a number": 1,
     "its length is not a positive number": 1,
     "its moved body is made by a BoxFeature item, and the history so far has no such body (that item is not mapped,": 1,
@@ -299,7 +301,7 @@
     "its moved body is suppressed in the file": 5,
     "its plane has no direction": 1,
     "its radius is not a positive number": 1,
-    "its sketch is not in the part": 60,
+    "its sketch is not in the part": 28,
     "its source body is in another component than the item": 8,
     "its source body is made by a CopyPasteBodies item, and the history so far has no such body (that item is not m": 6,
     "its source body is made by a ExtrudeFeature item, and the history so far has no such body (that item is not ma": 1,
@@ -329,18 +331,19 @@
     "this item's type is not known": 61
   },
   "unverifiedReasons": {
-    "the history builds no body": 14,
+    "the history builds no body": 13,
     "the history does not regenerate cleanly: F#: blendFailed (the result is not a closed solid: # edge(s) are not ": 1,
-    "the history does not regenerate cleanly: F#: blendOverflow (F#.B#: spring leaves its face away from its edges)": 1,
-    "the history does not regenerate cleanly: F#: blendUnsupported (the faces F#.S.c#~# and F#.S.c#~# are tangent a": 1,
-    "the history does not regenerate cleanly: F#: booleanFailed": 4,
-    "the history does not regenerate cleanly: F#: booleanTangent (the combined body would not be a closed solid: tw": 2,
-    "the history does not regenerate cleanly: F#: cutNoEffect": 17,
-    "the history does not regenerate cleanly: F#: profileCrossesAxis": 1,
-    "the history's body differs from the imported one: volume +#.# %, box #.# mm": 16,
-    "the history's body differs from the imported one: volume -#.# %, box #.# mm": 22,
-    "the imported body could not be built to compare with": 12
+    "the history does not regenerate cleanly: F#: booleanFailed": 3,
+    "the history does not regenerate cleanly: F#: booleanTangent (the combined body would not be a closed solid at ": 1,
+    "the history does not regenerate cleanly: F#: cutNoEffect": 11,
+    "the history does not regenerate cleanly: F#: cutRemovedBody (the cut removes the whole body: nothing solid is ": 1,
+    "the history does not regenerate cleanly: F#: featureBudgetExceeded": 1,
+    "the history does not regenerate cleanly: F#: openProfile": 1,
+    "the history's body differs from the imported one: volume +#.# %, box #.# mm": 13,
+    "the history's body differs from the imported one: volume -#.# %, box #.# mm": 18,
+    "the imported body could not be built to compare with": 12,
+    "the imported body is not the whole design (the reader could not build # of its bodies), so it cannot be compar": 5
   },
-  "verifiedDesigns": 17,
-  "verifiedFullyMappedDesigns": 13
+  "verifiedDesigns": 28,
+  "verifiedFullyMappedDesigns": 15
 }

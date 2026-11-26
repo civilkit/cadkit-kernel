@@ -321,6 +321,7 @@ impl Sheet {
                 included_angle: 180.0 - f.angle.to_degrees(),
                 radius: f.radius,
                 allowance: f.allowance,
+                k_factor: super::sheet::implied_k(f.allowance, f.radius, f.angle, self.rule.thickness),
                 length: v1 - v0,
                 start: at(v0),
                 end: at(v1),

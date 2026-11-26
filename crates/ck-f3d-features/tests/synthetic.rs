@@ -108,10 +108,10 @@ fn a_sketch_and_an_extrude_map_and_regenerate_to_the_plate() {
 #[test]
 fn the_guard_verifies_a_matching_body_and_reports_the_delta_of_a_wrong_one() {
     let import = timeline_to_features(&dump(plate_items()));
-    let truth = Measure { volume: 8000.0, min: [0.0; 3], max: [40.0, 20.0, 10.0], solids: 1 };
+    let truth = Measure { volume: 8000.0, min: [0.0; 3], max: [40.0, 20.0, 10.0], solids: 1, unread: 0 };
     let ok = guard::verify(&import, Some(&truth));
     assert_eq!(ok.verdict, Verdict::Verified, "{:?}", ok.reason);
-    let taller = Measure { volume: 9000.0, min: [0.0; 3], max: [40.0, 20.0, 11.25], solids: 1 };
+    let taller = Measure { volume: 9000.0, min: [0.0; 3], max: [40.0, 20.0, 11.25], solids: 1, unread: 0 };
     let bad = guard::verify(&import, Some(&taller));
     assert_eq!(bad.verdict, Verdict::Unverified);
     near(bad.volume_delta.expect("a delta"), -1000.0 / 9000.0);
@@ -119,6 +119,11 @@ fn the_guard_verifies_a_matching_body_and_reports_the_delta_of_a_wrong_one() {
     assert!(bad.reason.as_deref().is_some_and(|r| r.contains("differs")));
     let none = guard::verify(&import, None);
     assert_eq!(none.verdict, Verdict::Unverified);
+    // an imported body the reader could not build whole is not the design's: equal numbers say nothing
+    let partial = Measure { unread: 1, ..truth };
+    let c = guard::verify(&import, Some(&partial));
+    assert_eq!(c.verdict, Verdict::Unverified);
+    assert!(c.reason.as_deref().is_some_and(|r| r.contains("not the whole design")), "{:?}", c.reason);
 }
 
 #[test]
@@ -267,6 +272,30 @@ fn as_many_profiles_as_regions_with_one_outline_pick_every_one_of_them() {
 }
 
 #[test]
+fn lines_drawn_along_an_edge_cut_it_as_they_do_in_fusion() {
+    // a 40 x 40 mm plate and a notch drawn from the top edge: one of its sides (c4) lies on the edge, so Fusion cuts the edge
+    // at its ends and the notch is a region of its own. The file's profile is the notch: its three sides and the piece of the
+    // edge (c2) between them.
+    let (mut p, mut c) = rect(0, 0.0, 0.0, 4.0, 4.0);
+    let at = [[1.0, 4.0], [2.0, 4.0], [2.0, 3.0], [1.0, 3.0]];
+    for (i, a) in at.iter().enumerate() {
+        p.push(json!({"id": format!("p{}", 10 + i), "xyz": [a[0], a[1], 0.0]}));
+        c.push(json!({"id": format!("c{}", 4 + i), "type": "SketchLine",
+            "startSketchPoint": format!("p{}", 10 + i), "endSketchPoint": format!("p{}", 10 + (i + 1) % 4)}));
+    }
+    let mut e = extrude(1, "Extrude1", 0, "Sketch1", "NewBodyFeatureOperation", distance(1.0));
+    e["detail"]["_f3d_profile_loops"] = json!([{"loops": [loop_of(&["c5", "c6", "c7", "c2"])], "children": []}]);
+    let import = timeline_to_features(&dump(vec![xy(0, "Sketch1", json!(p), json!(c)), e]));
+    assert_eq!(import.placeholders(), 0, "{:?}", import.notes);
+    assert_eq!(import.features[0]["splitOverlaps"], json!(true));
+    near(built(&import.part()["features"]).volume, 10.0 * 10.0 * 10.0);
+    // a sketch without such lines does not ask for it
+    let (p, c) = rect(0, 0.0, 0.0, 4.0, 4.0);
+    let import = timeline_to_features(&dump(vec![xy(0, "Sketch1", json!(p), json!(c)), extrude(1, "Extrude1", 0, "Sketch1", "NewBodyFeatureOperation", distance(1.0))]));
+    assert!(import.features[0].get("splitOverlaps").is_none());
+}
+
+#[test]
 fn regions_outlined_by_the_same_curves_are_not_guessed() {
     // two circles that cross: the lens and the two crescents are all outlined by the two circles' ids
     let (p0, c0) = circle("p0", "c0", 0.0, 0.0, 2.0);
@@ -296,6 +325,41 @@ fn a_revolve_about_an_origin_axis_writes_a_helper_axis_sketch() {
     assert_eq!(import.features.iter().filter(|f| f["type"] == "sketch").count(), 2);
     let m = built(&import.part()["features"]);
     near(m.volume, std::f64::consts::PI * (400.0 - 100.0) * 10.0);
+}
+
+#[test]
+fn a_revolve_of_regions_on_both_sides_of_the_axis_revolves_each() {
+    // two squares, one from x = 10 to 20 mm and one from x = -40 to -30 mm, a full turn about the Y axis: two rings.
+    // (a region that itself crosses the axis is still refused by the kernel: profileCrossesAxis)
+    let (mut p, mut c) = rect(0, 1.0, 0.0, 2.0, 1.0);
+    let (p2, c2) = rect(4, -4.0, 0.0, -3.0, 1.0);
+    p.extend(p2);
+    c.extend(c2);
+    let revolve = json!({
+        "index": 1, "name": "Revolve1", "objectType": "RevolveFeature", "component": "Root",
+        "detail": {
+            "operation": "NewBodyFeatureOperation", "profile": [profile(0, "Sketch1"), profile(0, "Sketch1")], "isSolid": true,
+            "axis": {"kind": "construction_axis", "name": "Y", "origin": "Y"},
+            "extentDefinition": {"_type": "AngleExtentDefinition",
+                "angle": {"kind": "parameter", "name": "a", "value": std::f64::consts::TAU}},
+        }
+    });
+    let import = timeline_to_features(&dump(vec![xy(0, "Sketch1", json!(p), json!(c)), revolve]));
+    assert_eq!(import.placeholders(), 0, "{:?}", import.notes);
+    let m = built(&import.part()["features"]);
+    near(m.volume, std::f64::consts::PI * ((400.0 - 100.0) + (1600.0 - 900.0)) * 10.0);
+}
+
+#[test]
+fn an_extrude_of_the_letters_of_a_sketch_text_is_not_mapped() {
+    // the letters' outlines are the font's and are not in the file: "every region of the sketch" would be another body
+    let mut items = plate_items();
+    let mut cut = extrude(2, "Extrude2", 0, "Sketch1", "CutFeatureOperation", distance(-0.2));
+    cut["detail"]["_f3d_text_profiles"] = json!({"only": true, "profiles": 9, "texts": ["t0"]});
+    items.push(cut);
+    let import = timeline_to_features(&dump(items));
+    assert_eq!(import.placeholders(), 1);
+    assert!(import.notes.iter().any(|n| n.text.contains("letters of a sketch text")), "{:?}", import.notes);
 }
 
 #[test]
@@ -620,6 +684,19 @@ fn a_tapered_blind_extrude_is_the_parts_draft() {
     assert_eq!(import.features[1]["draftOut"], json!(true));
     let top = 20.0 + 2.0 * 10.0 * 10f64.to_radians().tan();
     near(built(&import.part()["features"]).volume, 10.0 / 3.0 * (400.0 + top * top + 20.0 * top));
+    // the angle is measured with the extrusion: on a negative length (against the sketch normal) a positive angle widens
+    // and a negative one narrows (the corpus' tapered pins: -3.8 mm, -0.5 degrees, narrower at the far end)
+    let mut back = e.clone();
+    back["detail"]["extentOne"] = distance(-1.0);
+    back["detail"]["taperAngleOne"] = param(-10f64.to_radians());
+    let import = timeline_to_features(&dump(vec![xy(0, "Sketch1", json!(p), json!(c)), back.clone()]));
+    assert_eq!(import.placeholders(), 0, "{:?}", import.notes);
+    assert!(import.features[1].get("draftOut").is_none(), "{:?}", import.features[1]);
+    let top = 20.0 - 2.0 * 10.0 * 10f64.to_radians().tan();
+    near(built(&import.part()["features"]).volume, 10.0 / 3.0 * (400.0 + top * top + 20.0 * top));
+    back["detail"]["taperAngleOne"] = param(10f64.to_radians());
+    let import = timeline_to_features(&dump(vec![xy(0, "Sketch1", json!(p), json!(c)), back]));
+    assert_eq!(import.features[1]["draftOut"], json!(true));
     // a taper of the second side, or of a symmetric extrude, stays a placeholder
     let mut s = e.clone();
     s["detail"]["taperAngleOne"] = param(0.0);
@@ -650,6 +727,77 @@ fn a_circular_pattern_of_a_cut_about_an_axis_repeats_it() {
     assert_eq!(timeline_to_features(&dump(items.clone())).placeholders(), 1);
     items[4] = circular_pattern(4, &[2], 4.0, std::f64::consts::TAU, [2.0, 2.0, 0.0]);
     assert_eq!(timeline_to_features(&dump(items)).placeholders(), 1);
+}
+
+/// A gear-like disc: a disc of radius 3 cm, a tooth (a 1 x 0.4 cm rectangle across its rim) joined to it (items 0 to 3), the
+/// tooth's two outer vertical edges filleted (item 4, when `blend`), and a circular pattern of six (item 5) of the tooth
+/// (item 3) and, when `blend`, of its fillet (item 4).
+fn tooth_items(blend: bool, inputs: &[(i64, &str)]) -> Vec<Value> {
+    let (cp, cc) = circle("p0", "c0", 0.0, 0.0, 3.0);
+    let (tp, tc) = rect(10, 2.5, -0.2, 3.5, 0.2);
+    let mut items = vec![
+        xy(0, "Base Circle", json!([cp]), json!([cc])),
+        extrude(1, "Extrude1", 0, "Base Circle", "NewBodyFeatureOperation", distance(1.0)),
+        xy(2, "Tooth", json!(tp), json!(tc)),
+        extrude(3, "Extrude2", 2, "Tooth", "JoinFeatureOperation", distance(1.0)),
+    ];
+    if blend {
+        items.push(item(4, "Fillet1", "FilletFeature", json!({"edgeSets": [{"radius": {"kind": "parameter", "name": "r", "value": 0.05},
+            "edges": [{"kind": "edge", "mid_point": [3.5, 0.2, 0.5], "length": 1.0}, {"kind": "edge", "mid_point": [3.5, -0.2, 0.5], "length": 1.0}]}]})));
+    }
+    items.push(item(5, "C-Pattern1", "CircularPatternFeature", json!({
+        "inputEntities": inputs.iter().map(|(i, k)| feature_ref(*i, k)).collect::<Vec<_>>(),
+        "patternEntityType": "FeaturesPatternType", "quantity": param(6.0), "totalAngle": param(std::f64::consts::TAU),
+        "isSymmetric": false, "patternComputeOption": "IdenticalPatternCompute", "suppressedElementsIds": [],
+        "_f3d_axis": {"direction": [0.0, 0.0, 1.0], "origin": [0.0, 0.0, 0.0]},
+    })));
+    items
+}
+
+#[test]
+fn a_circular_pattern_of_a_tooth_and_its_fillet_blends_every_copy() {
+    // the fillet is not a seed (a part repeats a feature's tool body and a blend leaves none): the copies of the tooth are
+    // blended alike, on the file's edges turned by each step
+    let sharp = timeline_to_features(&dump(tooth_items(false, &[(3, "ExtrudeFeature")])));
+    assert_eq!(sharp.placeholders(), 0, "{:?}", sharp.notes);
+    let v_sharp = built(&sharp.part()["features"]).volume;
+    let blended = timeline_to_features(&dump(tooth_items(true, &[(3, "ExtrudeFeature"), (4, "FilletFeature")])));
+    assert_eq!(blended.placeholders(), 0, "{:?}", blended.notes);
+    let fillets: Vec<&Value> = blended.features.iter().filter(|f| f["type"] == "fillet").collect();
+    assert_eq!(fillets.len(), 6, "the tooth's own and one for each of the five other copies");
+    assert!(fillets[1..].iter().all(|f| f["edges"].as_array().map(Vec::len) == Some(2)));
+    // twelve convex vertical edges of radius 0.5 mm and height 10 mm each lose (1 - pi/4) r^2 h
+    let cut = 12.0 * (1.0 - std::f64::consts::FRAC_PI_4) * 0.25 * 10.0;
+    let v = built(&blended.part()["features"]).volume;
+    assert!((v - (v_sharp - cut)).abs() < 1e-4, "{v} against {}", v_sharp - cut);
+    // a pattern of the blend alone has nothing of its own to repeat
+    let alone = timeline_to_features(&dump(tooth_items(true, &[(4, "FilletFeature")])));
+    assert_eq!(alone.placeholders(), 1);
+    // a fillet that was left out of the history is not repeated either
+    let mut items = tooth_items(true, &[(3, "ExtrudeFeature"), (4, "FilletFeature")]);
+    items[4]["detail"]["edgeSets"][0]["edges"][0]["mid_point"] = json!([9.0, 9.0, 9.0]);
+    let broken = timeline_to_features(&dump(items));
+    assert_eq!(broken.placeholders(), 2, "{:?}", broken.notes);
+}
+
+#[test]
+fn a_chamfer_of_a_full_circle_is_found_by_any_point_of_the_edge() {
+    // the file's circle edge starts at x = -r, so its middle is at +r; the kernel's starts at +r, so its middle is at -r
+    let (cp, cc) = circle("p0", "c0", 0.0, 0.0, 2.0);
+    let items = vec![
+        xy(0, "Sketch1", json!([cp]), json!([cc])),
+        extrude(1, "Extrude1", 0, "Sketch1", "NewBodyFeatureOperation", distance(1.0)),
+        item(2, "Chamfer1", "ChamferFeature", json!({"chamferType": "EqualDistanceChamferType", "edgeSets": [{
+            "distance": {"kind": "parameter", "name": "d", "value": 0.1},
+            "edges": [{"kind": "edge", "length": 4.0 * std::f64::consts::PI, "start_point": [-2.0, 0.0, 1.0], "end_point": [-2.0, 0.0, 1.0], "mid_point": [2.0, 0.0, 1.0]}]}]})),
+    ];
+    let import = timeline_to_features(&dump(items));
+    assert_eq!(import.placeholders(), 0, "{:?}", import.notes);
+    // a 1 mm chamfer of the top edge removes a triangle of area 0.5 mm^2 all round at the radius 20 mm (Pappus)
+    let cylinder = std::f64::consts::PI * 400.0 * 10.0;
+    let removed = 0.5 * 1.0 * 1.0 * 2.0 * std::f64::consts::PI * (20.0 - 1.0 / 3.0);
+    let v = built(&import.part()["features"]).volume;
+    assert!((v - (cylinder - removed)).abs() < 1e-3, "{v} against {}", cylinder - removed);
 }
 
 #[test]
@@ -758,7 +906,7 @@ fn a_fixed_spline_is_a_control_point_spline_of_the_sketch() {
     // the arch is a cubic Bezier 20 mm wide and 7.5 mm high at its crest: its area is below the 150 mm^2 box and above half of it
     let v = built(&import.part()["features"]).volume;
     assert!(v > 750.0 && v < 1500.0, "{v}");
-    // a rational or periodic one is not guessed
+    // a rational one with no weights is not guessed
     let mut r = items.clone();
     r[0]["detail"]["curves"][1]["geometry"]["nurbs"]["isRational"] = json!(true);
     assert_eq!(timeline_to_features(&dump(r)).placeholders(), 2);
@@ -766,6 +914,45 @@ fn a_fixed_spline_is_a_control_point_spline_of_the_sketch() {
     let mut r = items;
     r[0]["detail"]["curves"][1]["geometry"]["nurbs"]["knots"] = json!([0.0, 1.0]);
     assert_eq!(timeline_to_features(&dump(r)).placeholders(), 2);
+}
+
+/// A rational spline is the part's `cvspline` with `weights`: a quarter disc of radius 20 mm whose arc is the rational quadratic
+/// Bezier of a circle (weights 1, sqrt(2)/2, 1) has the area of a quarter circle; the same control points without weights are a
+/// parabola that bulges out to 6 % more area.
+#[test]
+fn a_rational_spline_is_a_weighted_cvspline_and_makes_the_exact_arc() {
+    let w = std::f64::consts::FRAC_1_SQRT_2;
+    let nurbs = |weights: Value, rational: bool| {
+        json!({"degree": 2, "isPeriodic": false, "isRational": rational, "controlPointCount": 3,
+            "controlPoints": [[2.0, 0.0, 0.0], [2.0, 2.0, 0.0], [0.0, 2.0, 0.0]], "weights": weights, "knots": [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]})
+    };
+    let build = |n: Value| {
+        let points = json!([{"id": "p0", "xyz": [0.0, 0.0, 0.0]}, {"id": "p1", "xyz": [2.0, 0.0, 0.0]}, {"id": "p2", "xyz": [0.0, 2.0, 0.0]}]);
+        let curves = json!([
+            {"id": "c0", "type": "SketchLine", "startSketchPoint": "p0", "endSketchPoint": "p1"},
+            {"id": "c1", "type": "SketchFixedSpline", "startSketchPoint": null, "endSketchPoint": null, "degree": 2,
+             "geometry": {"type": "NurbsCurve3D", "nurbs": n}},
+            {"id": "c2", "type": "SketchLine", "startSketchPoint": "p2", "endSketchPoint": "p0"},
+        ]);
+        let items = vec![xy(0, "Sketch1", points, curves), extrude(1, "Extrude1", 0, "Sketch1", "NewBodyFeatureOperation", distance(1.0))];
+        timeline_to_features(&dump(items))
+    };
+    let import = build(nurbs(json!([1.0, w, 1.0]), true));
+    assert_eq!(import.placeholders(), 0, "{:?}", import.notes);
+    let spline = import.features[0]["entities"].as_array().expect("entities").iter().find(|e| e["type"] == "cvspline").expect("a cvspline").clone();
+    assert_eq!(spline["weights"].as_array().map(Vec::len), Some(3));
+    let exact = std::f64::consts::PI * 20.0 * 20.0 / 4.0 * 10.0;
+    let v = built(&import.part()["features"]).volume;
+    assert!((v - exact).abs() / exact < 2e-3, "{v} against {exact}");
+    // the same control points without weights are the parabola, a different (larger) body
+    let plain = build(nurbs(json!([]), false));
+    assert_eq!(plain.placeholders(), 0);
+    let vp = built(&plain.part()["features"]).volume;
+    assert!((vp - exact).abs() / exact > 0.03, "{vp} against {exact}");
+    // weights that do not fit (a count, a zero, a negative one) are refused, not guessed
+    for bad in [json!([1.0, w]), json!([1.0, 0.0, 1.0]), json!([1.0, -w, 1.0])] {
+        assert_eq!(build(nurbs(bad, true)).placeholders(), 2);
+    }
 }
 
 /// The lazy decoder sends the design dump as JSON (`serde_json::to_string(&Dump)`) and the main kernel maps the dump read

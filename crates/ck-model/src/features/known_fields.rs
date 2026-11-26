@@ -22,8 +22,8 @@ const COMMON: &[&str] = &["id", "type", "num", "name", "suppressed", "group", "a
 pub const TABLE: &[(&str, &[&str])] = &[
     // `seq`, `prop` and `gear` are carried by the sketch editor and echoed back, as are the app's view data and records:
     // `dimPlacement` (where a dimension label was dragged), `refDims` (reference dimensions) and `cornerHoles`
-    // (the corner-hole editor's record). The solver reads none of them.
-    ("sketch", &["plane", "points", "entities", "constraints", "seq", "prop", "gear", "dimPlacement", "refDims", "cornerHoles"]),
+    // (the corner-hole editor's record). The solver reads none of them. `splitOverlaps` (a Fusion import) makes the region finder split collinear overlapping lines.
+    ("sketch", &["plane", "points", "entities", "constraints", "seq", "prop", "gear", "dimPlacement", "refDims", "cornerHoles", "splitOverlaps"]),
     ("connector", &["anchor", "offset", "rotate", "flip", "rotateZ"]),
     (
         "extrude",
@@ -45,7 +45,7 @@ pub const TABLE: &[(&str, &[&str])] = &[
     ("importBody", &["format", "blob", "replace", "body", "from", "reason", "steps"]),
     ("meshToSolid", &["blob", "opts", "replace", "preview", "body", "source"]),
     ("frame", &["sketch", "segments", "lines", "profile", "rotate", "corner", "members", "joints", "hardware", "library"]),
-    ("sheetRules", &["name", "thickness", "kFactor", "bendRadius", "reliefWidth", "reliefDepth", "cornerRelief", "cornerReliefShape", "hemGap", "gap", "active"]),
+    ("sheetRules", &["name", "thickness", "kFactor", "bendRadius", "reliefWidth", "reliefDepth", "cornerRelief", "cornerReliefShape", "hemGap", "gap", "active", "bendTable"]),
     ("baseFlange", &["sketch", "rule", "flip", "regions"]),
     ("edgeFlange", &["edges", "height", "angle", "radius", "heightFrom", "position", "flip", "then", "start", "length", "from", "to", "profile", "holes", "relief"]),
     ("hem", &["edges", "length", "gap", "flip", "start", "from", "to", "profile", "holes", "relief"]),

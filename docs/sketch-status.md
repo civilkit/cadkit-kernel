@@ -131,3 +131,11 @@ Measured on the CI machine (native, `fast` profile, other jobs running, 12 steps
 Four times the unknowns cost about 16 times the time (the solve is dense), which is far inside an interactive drag at N = 8 and
 noticeable but not a hot spot at N = 16. Not measured: a sketch with patterned copies in the solve (the sketch has no pattern
 entity, copies live in features).
+
+## Regression tests in the quick check
+
+`crates/ck-model/tests/sketch_solver_regress.rs` (orientation flips, a collapsed construction line, 0 DOF reporting, the offset circle) and
+`sketch_solve_drag.rs` (the dense drag above) are listed in `tools/ci/quick_tests.txt`, so they run before a branch is merged. The two
+far-move tests (parallel and perpendicular keep their sense) start line B at every degree of a full turn, leaving out only the 3 degrees
+either side of the ambiguous direction, where both senses are equally close. Not covered: a scripted drag solved once per step is not
+timed separately, and pattern copies in the solve have no subject (no pattern entity in the sketch).

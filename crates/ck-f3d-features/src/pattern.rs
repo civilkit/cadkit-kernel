@@ -39,12 +39,15 @@ fn here(b: &Builder) -> Result<(), String> {
     Ok(())
 }
 
-/// The part feature ids of the inputs: each a mapped extrude or revolve, by the timeline index.
-fn seeds(b: &Builder, inputs: &[Reference]) -> Result<Vec<String>, String> {
+/// The part feature ids of the inputs: each a mapped extrude or revolve, by the timeline index. A fillet or chamfer that
+/// mapped is no seed (the part repeats a feature's tool body, and a blend leaves none): it is returned beside them, for a
+/// circular pattern to repeat as the same blend on the copies of the seeds (`circular`).
+fn seeds(b: &Builder, inputs: &[Reference], blends_ok: bool) -> Result<(Vec<String>, Vec<crate::blend::BlendRec>), String> {
     if inputs.is_empty() {
         return Err("it has no input".into());
     }
     let mut out = Vec::new();
+    let mut blends = Vec::new();
     for r in inputs {
         let Reference::Feature(f) = r else {
             return Err("it patterns something other than features (bodies and faces are named by the file's own names)".into());
@@ -54,15 +57,21 @@ fn seeds(b: &Builder, inputs: &[Reference]) -> Result<Vec<String>, String> {
         };
         match b.seeds.get(&i) {
             Some(id) => out.push(id.clone()),
-            None => {
-                return Err(format!(
-                    "an input feature ({}) is not an extrude or revolve that mapped, and only those are repeated",
-                    f.object_type.as_deref().unwrap_or("?")
-                ));
-            }
+            None => match b.blends.get(&i) {
+                Some(recs) if blends_ok => blends.extend(recs.iter().cloned()),
+                _ => {
+                    return Err(format!(
+                        "an input feature ({}) is not an extrude or revolve that mapped, and only those are repeated",
+                        f.object_type.as_deref().unwrap_or("?")
+                    ));
+                }
+            },
         }
     }
-    Ok(out)
+    if out.is_empty() {
+        return Err("it repeats blends only: there is no feature of its own to repeat".into());
+    }
+    Ok((out, blends))
 }
 
 fn compute(opt: &Option<String>) -> Result<(), String> {
@@ -86,7 +95,7 @@ pub(crate) fn circular(b: &mut Builder, name: &str, d: &CircularPatternDetail) -
         return Err("a circular pattern of bodies or faces is not mapped yet".into());
     }
     here(b)?;
-    let seeds = seeds(b, d.input_entities.as_deref().unwrap_or(&[]))?;
+    let (seeds, blends) = seeds(b, d.input_entities.as_deref().unwrap_or(&[]), true)?;
     compute(&d.pattern_compute_option)?;
     let n = count(&d.quantity, "quantity")?;
     if n < 2 {
@@ -111,6 +120,32 @@ pub(crate) fn circular(b: &mut Builder, name: &str, d: &CircularPatternDetail) -
         "axis": {"kind": "axis", "point": o.map(|v| v * CM_TO_MM), "dir": dir},
         "count": n, "angle": 360.0, "equal": true,
     }));
+    // A fillet or chamfer among the inputs: the seeds' copies are sharp (the part repeats a feature's tool body, and a blend
+    // leaves none), so the same blend is made on the copies' edges, which are the file's edges turned by each step. The seed
+    // itself was blended by the item before, so the copies are all that is left (a pattern of a feature and its blend is each
+    // copy blended alike: the copies do not touch each other where they are blended).
+    for rec in &blends {
+        let len = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt();
+        if len < 1e-12 {
+            return Err("its axis has no direction".into());
+        }
+        let unit = [dir[0] / len, dir[1] / len, dir[2] / len];
+        let edges = crate::blend::pick_rotated(b, &rec.edges, o.map(|v| v * CM_TO_MM), unit, n)
+            .map_err(|e| format!("the {} it repeats cannot be placed on the copies: {e}", rec.kind))?;
+        // one blend per copy: a single blend of every copy's edges takes the kernel minutes on a gear of 90 teeth (it ends in the
+        // time budget), the same blends one copy at a time take a few seconds each
+        for part in edges.chunks(rec.edges.len().max(1)) {
+            let id = b.next_id();
+            let mut f = json!({"type": rec.kind, "id": id, "name": format!("{} on the copies of {name}", rec.name), "edges": part, "propagate": rec.propagate});
+            if rec.kind == "fillet" {
+                f["radius"] = json!(rec.size);
+            } else {
+                f["chamferType"] = json!("equal");
+                f["distance"] = json!(rec.size);
+            }
+            b.features.push(f);
+        }
+    }
     Ok(None)
 }
 
@@ -119,7 +154,7 @@ pub(crate) fn rectangular(b: &mut Builder, name: &str, d: &RectangularPatternDet
         return Err("a rectangular pattern of bodies or faces is not mapped yet".into());
     }
     here(b)?;
-    let seeds = seeds(b, d.input_entities.as_deref().unwrap_or(&[]))?;
+    let seeds = seeds(b, d.input_entities.as_deref().unwrap_or(&[]), false)?.0;
     compute(&d.pattern_compute_option)?;
     if d.is_symmetric_in_direction_one == Some(true) || d.is_symmetric_in_direction_two == Some(true) {
         return Err("a symmetric rectangular pattern is not mapped yet".into());
@@ -178,7 +213,7 @@ pub(crate) fn mirror(b: &mut Builder, name: &str, m: &Map<String, Value>) -> Res
     }
     if is_features {
         here(b)?;
-        let seeds = seeds(b, &inputs)?;
+        let seeds = seeds(b, &inputs, false)?.0;
         let plane = b.plane_for(name, &frame);
         let id = b.next_id();
         b.features.push(json!({"type": "mirror", "id": id, "name": name, "seeds": seeds, "plane": plane, "body": false}));

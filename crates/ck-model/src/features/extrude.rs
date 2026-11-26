@@ -122,9 +122,13 @@ pub fn profile_seg(s: &Seg) -> Result<ProfileSeg, FeatureError> {
             let (lo, hi) = if sp.closed && lo < 0.0 { (lo + sp.length(), hi + sp.length()) } else { (lo, hi) };
             (c, lo, hi)
         }
-        Geom::BSpline { cv, degree, knots } => {
-            let c = BSplineCurve::new(*degree, knots.clone(), cv.iter().map(|p| v2(*p)).collect())
-                .map_err(|_| FeatureError::new(codes::NO_CLOSED_PROFILE))?;
+        Geom::BSpline { cv, degree, knots, w } => {
+            let ctrl: Vec<_> = cv.iter().map(|p| v2(*p)).collect();
+            let c = match w {
+                Some(w) => BSplineCurve::new_rational(*degree, knots.clone(), ctrl, w.clone()),
+                None => BSplineCurve::new(*degree, knots.clone(), ctrl),
+            }
+            .map_err(|_| FeatureError::new(codes::NO_CLOSED_PROFILE))?;
             (Curve2::BSpline(c), lo, hi)
         }
     };
@@ -920,6 +924,15 @@ pub fn exec_revolve(state: &RegenState, f: &Feature, has_body: bool) -> Result<T
                 )),
             )
             .with("hint", Json::Str(format!("make {seg} exactly perpendicular to the axis (a flat face), give it a steeper slope, or make the part smaller"))));
+    }
+    // A profile with regions on both sides of the axis (each wholly on one: `crosses_axis` refuses a region that straddles it):
+    // the regions on the far side revolve about the reversed axis through the reversed angles (the same sweep, and a solid
+    // that is not inside out). A profile on one side is revolved as it always was.
+    let (near, far) = super::surface_extrude::split_by_axis_side(&profile, o, d);
+    if !far.regions.is_empty() && !near.regions.is_empty() {
+        let mut body = revolve(&f.id, &near, o, d, a0, a1).map_err(topo_err)?;
+        body.append(&revolve(&f.id, &far, o, -d, -a1, -a0).map_err(topo_err)?);
+        return Ok(Tool { body, combine, recipe: None });
     }
     let body = revolve(&f.id, &profile, o, d, a0, a1).map_err(topo_err)?;
     Ok(Tool { body, combine, recipe: Some(Recipe::Revolve { profile, o, d, a0, a1 }) })

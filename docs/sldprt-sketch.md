@@ -95,13 +95,33 @@ sample bar a few flag bytes; two records of the same header carry zeros there an
   other flags or numbers outside the point list belong to other kinds of record and are counted in a note, not read.
 
 **Arc centres and circles.** The stream stores an arc by its two end points and a circle by one point on it; the centre is an
-ordinary point with no curve handle (counter `(0, k)`). There is no field that names it. `resolve_centres` finds candidates
-(handle-less points equidistant from both ends for an arc; the record written just before the rim point, else the origin
-reference, for a circle: in every sample the centre is written right before the point that closes the arc) and then applies the
-relations (equal radii, tangent lines and arcs): when exactly one assignment satisfies all of them an arc's centre is certain
-(`centre_certain`); a circle's centre is certain only when it is the sketch's only possible centre or a dimension of the sketch
-equals its radius or diameter (`confirm_radius`, run by `read`). A rounded rectangle is the case that needs the relations: its
-fillet arcs are semicircles whose chord midpoint is also equidistant from another arc's ends.
+ordinary point with no curve handle (counter `(0, k)`). The record itself names it: the first u16 after the sense (`tail[0]`, the
+word before `FFFE FFFF FFFE FFFF FFFE`, the "four i32 -2" the cadmpeg notes give an arc record after its sense, section "Sketch objects"
+of the cadmpeg `docs/formats/sldprt.md`; the same slot holds the centre's index in their ellipse record) is the centre's index in the sketch's
+point records (`SkCurve::{Arc, Circle}::stored`). It was found by comparing it with the centres the search below had settled, then
+checked on the whole local corpus:
+
+* arcs: 170 records have the shape; 169 name a point equidistant from both ends, and for 167 of them it is the point the search had
+  settled (2 others: the relations had settled another point equidistant from the ends, kept; the 170th record names no equidistant
+  point); the radius it gives is a radius of the body's cylinders, cones, spheres or tori for 168 of the 170 (the other two: an arc
+  a later feature removed, and the record whose index is not equidistant). Before it was used, the search left 61 arcs uncertain; 9 remain.
+* circles: 83 records have the shape. For 61 the stored index is the centre in use. The 22 where it is not are circles centred on
+  the sketch's origin reference or on a point with curves of its own (all in the pendulum parts): the stored number is then 0 or
+  another small or large number that names no centre (0, 43, 78), and the search's choice, confirmed by a dimension equal to the
+  radius, stands. Where the search had no answer or a wrong one (a circle written after several free points), the stored index
+  was the free point whose distance to the rim is the radius dimension of the sketch in every case that has such a dimension
+  (9 of 9 in the local corpus). Uncertain circles: 15 before, 4 after.
+
+`resolve_centres` therefore finds the candidates as before (handle-less points equidistant from both ends for an arc; the record
+written just before the rim point, else the origin reference, for a circle) and applies the relations (equal radii, tangent lines and
+arcs): when exactly one assignment satisfies all of them an arc's centre is certain (`centre_certain`). The stored index is the
+first evidence where the search is not certain: an arc takes it when it is equidistant from the ends and the relations still hold;
+a circle takes it when it names a free handle-less point other than the rim (or a point with curves of its own, or another circle's
+rim, when a dimension of the sketch equals the radius or diameter it gives); where it names the point the search chose, that point is
+certain. A circle's centre is also certain when it is the sketch's only possible centre or a dimension equals its radius or
+diameter (`confirm_radius`, run by `read`). A rounded rectangle was the case that needed the relations: its fillet arcs are
+semicircles whose chord midpoint is also equidistant from another arc's ends. (`SKETCH_NO_STORED_CENTRE=1` gives the search alone,
+for before / after counts.)
 
 **Relations.** `u32 type`, `02 00 00 00`, two zero bytes (2018 and 2022 streams) or four (2011 and 2016 streams), `FE FF 00 00`, then the handles of what is related: lines and arcs by handle id,
 points by position in the point records. Type meanings were found by testing each code against the geometry of all 289
@@ -197,10 +217,11 @@ Local corpus: 38 part files (the NIST test cases, the pendulum parts, the SW2011
 
 * 38 of 38 streams decode (no error); 289 sketches, 1862 lines, 183 arcs, 90 circles, 747 relations whose geometry was tested
   (0 violated), 689 feature parameters compared with `KeyWords` (0 differ).
-* 186 of 289 sketches decode exactly (every curve resolved, every centre certain): 10 of 13 in the 2011 files, 20 of 23 in the
-  2016 files, 144 of 240 in the 2018 files, 12 of 13 in the 2022 files. The rest have an uncertain circle centre (a circle has no
-  geometric test, see above), an arc whose relations leave several centres, or a curve of a class not read (text, offset: 33
-  curves; the one ellipse is read now).
+* 204 of 289 sketches decode exactly (every curve resolved, every centre certain; 186 before the stored centre index was used,
+  see "Arc centres and circles"). The other 85: 71 carry the "curve-shaped records that are not curves of this sketch" note (the
+  later curve lists of a sketch, whose records do not fit the point numbering of the first list: the next lever), 4 have curves of
+  a class not read (text, offset) and 11 have an arc (4 sketches, 9 arcs) or a circle (7 sketches) whose centre the stored index,
+  the relations and the dimensions leave open (the notes overlap).
 * Dimensions (`Sketch::dims`, `read`): 534 driving dimensions decode with their operands and are kept (322 distances, 74
   horizontal, 32 vertical, 44 radii, 36 diameters, 26 angles); 480 of them are listed by name and value in the `KeyWords` tree
   (the other 54 are in sketches or under names the tree does not list: hole wizard sketches, a sketch with no dimension list; none
@@ -225,6 +246,13 @@ Local corpus: 38 part files (the NIST test cases, the pendulum parts, the SW2011
   text (the `sgTextHandle` records of three NIST parts, `moDimText_c`), offset entities and their `sgOffsetDim` / `sgSkOffsetDim`
   dimensions, circular and linear sketch patterns (`sgCircularPattCntDim`, `sgLinearPattCntDim`, the polygon and pattern entries of
   the cadmpeg notes): present in some parts of the corpus, only counted. 33 curve records come out `Unresolved`.
+* The later curve lists of a sketch: 71 of the 85 sketches that do not decode exactly in the local corpus carry records of the
+  curve shape (`u16 first, u16 last, u16 flag` and the sense word) that the first list's point numbering does not fit (an end
+  index outside the point records, or a flag above 1; the records of the runs that are read look like construction geometry in the
+  one sketch looked at closely, with sense words such as 0x20000). The cadmpeg notes put a 12-byte header (u32 `0` or `0x10000`, a u32, u32 `1`)
+  or a 16-byte one before each later run of curve records, and a different tail for a run of ellipses: the likely reason is that the
+  record layout after such a header is shifted, so they are only counted (`sketch_profile` uses a sketch with this note when the
+  curves it does read draw the faces' profile). Not decoded; the biggest remaining lever for the file's own sketches.
 * Dimensions: only the kinds listed above; the relation class of a dimension is not used (see "Dimensions"), so a distance between
   two parallel lines and a point-to-line distance are told by their operands. An angle's sense (which of the four angles between
   two lines) is not read: `ck-swedit` tries the four sign choices of the sketch angle constraint and keeps the one the geometry
@@ -267,16 +295,32 @@ A revolve takes the file's sketch the same way (`revolve.rs`): the profile the f
 the axis is the line of the sketch that lies on the axis the faces give (the profile's own edge on the axis, or a construction
 line), else a construction line is added there; the boundary guard is the one of every step.
 
-Corpus (`cargo test --release -p ck-swedit --test corpus`, the 63 files of `corpus-local`, 38 of them parts): before and after
-are identical: exact 34, close 5, fallback 3 (editable prefix kept for all 3: 36 rebuilt steps kept of 58 read back, as before),
-not imported 21 (the downloaded fixtures with no Parasolid). In the histories of the files that have a sketch (200 sketches in all,
-the starting body and prefixes included): 67 are the file's own sketches (62 in the 38 part files: the rest are the copies of the
-committed fixtures), 36 of those with at least one dimension (all of them in the part files), 73 dimensions and 216 relations written. Of the extrude steps where the faces gave a profile, the file's sketch
-drew the same profile in 104 and was not usable in 104: (reasons, `SKETCH_DEBUG=1` prints each) the plane frame is not in the
-stream and no placement draws the profile (sketches whose profile is not the sketch before the feature, a sketch that holds more
-than the feature's profile, arcs and circles whose centre is not certain, outlines that do not close because a record is not
-read), text or offset curves. Revolves: 7 of the 11 revolve steps take the file's sketch (the others have a sketch the reader
-cannot settle, the sphere's, or a profile the faces draw differently).
+Corpus (`cargo test --release -p ck-swedit --test corpus`, the 63 files of `corpus-local`, 38 of them parts): the outcomes are
+unchanged by the stored centres: exact 34, close 5, fallback 3 (editable prefix kept for all 3: 36 rebuilt steps kept of 58 read
+back, as before), not imported 21 (the downloaded fixtures with no Parasolid). In the histories of the files that have a sketch (200
+sketches in all, the starting body and prefixes included): 70 are the file's own sketches (was 67; 65 in the 38 part files: the rest
+are the copies of the committed fixtures), 36 of those with at least one dimension, 73 dimensions and 216 relations written (the
+same as before: the three sketches gained are slots and notches whose arcs the file draws about a centre it shares with a
+construction circle, without dimensions). Of the extrude steps where the faces gave a profile, the file's sketch drew the same
+profile in 108 (was 104) and was not usable in 100 (was 104): (reasons, `SKETCH_DEBUG=1` prints each) the plane frame is not in
+the stream and no placement draws the profile (95: sketches whose profile is not the sketch before the feature, a sketch that
+holds more than the feature's profile, outlines that do not close because the sketch's later curve lists are not read), text or
+offset curves (4), an arc with no sense (1). Trying the three sketches before the nearest one found no further sketch that draws a
+feature's profile (tried on 154 files, dropped). Revolves: 7 of the 11 revolve steps take the file's sketch (the others have a
+sketch the reader cannot settle, the sphere's, or a profile the faces draw differently).
+
+Wider local corpus (`corpus 2` of [sldprt.md](sldprt.md), 91 files, 847 sketches): 499 sketches decode exactly with the search alone
+and 643 with the stored index (`SKETCH_NO_STORED_CENTRE=1` gives the first); 643 arcs have the record shape, 577 name an
+equidistant point (the other 66 are not diagnosed: they are in sketches with the later curve lists, whose point numbering is not the first list's), 567 end up with the stored centre. In the histories (178 sketches):
+the file's own sketches 86 -> 93, those with dimensions 44 -> 49, dimensions written 63 -> 69, relations 159 -> 171, extrude
+steps where the sketch drew the faces' profile 171 -> 192 and where it was unusable 150 -> 142; the outcomes of the 91 files
+(exact 32, fallback 58, not imported 1) are unchanged.
+
+Two things the stored centre showed in the writer: a rim point of a construction circle can be the centre of an arc (the slot whose
+two end circles are drawn as construction), so the history's sketch keeps a rim point that another curve uses; and the file's own
+sketch of a step is dropped, as before, when the history built with it does not verify (`rebuild_history`): the first draw of the
+stored centres lost one sketch that way (its slot arcs had no centre point in the history's sketch, so the profile did not close)
+until the writer kept that point.
 
 End specifications (the cadmpeg notes' table; `ck-swedit` corpus test "END SPECS" gives the word against the rebuilt step, over
 the 101 rebuilt extrusion steps that have one): the end type is shown in each step's note, with where the file's sketch plane

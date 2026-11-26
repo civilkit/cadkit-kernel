@@ -50,6 +50,18 @@ fn generic(s: &str) -> String {
     out.chars().take(110).collect()
 }
 
+/// The placeholders of a design by Fusion type, and the lump counts and volumes of the reference and the history (names mode).
+fn detail_line(import: &ck_f3d_features::FeatureImport, check: &guard::Check) -> String {
+    let mut by: BTreeMap<&str, usize> = BTreeMap::new();
+    for it in &import.items {
+        if it.status == Status::Placeholder {
+            *by.entry(if it.object_type.is_empty() { "?" } else { it.object_type.as_str() }).or_default() += 1;
+        }
+    }
+    let m = |x: &Option<guard::Measure>| x.map_or("-".to_string(), |m| format!("{:.1}mm3/{}", m.volume, m.solids));
+    format!(" | ph {by:?} ref {} hist {}", m(&check.reference), m(&check.history))
+}
+
 #[derive(Default)]
 struct Totals {
     files: usize,
@@ -74,6 +86,10 @@ fn the_whole_corpus_through_the_timeline_mapping() {
         eprintln!("skipped: CK_F3D_CORPUS is not set");
         return;
     };
+    // a wall clock, so that a feature the kernel works on for minutes ends with its time-budget error (the kernel's default per
+    // feature, 120 s) as it does in the app, instead of holding the whole run
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    ck_core::budget::set_clock(|| START.get_or_init(std::time::Instant::now).elapsed().as_secs_f64() * 1000.0);
     let names = std::env::var("CK_F3D_NAMES").is_ok();
     let filter = std::env::var("CK_F3D_FILTER").ok();
     let mut files = Vec::new();
@@ -167,7 +183,7 @@ fn the_whole_corpus_through_the_timeline_mapping() {
                 ok,
                 check.volume_delta.map_or("-".into(), |v| format!("{:+.4}", v)),
                 check.box_delta.map_or("-".into(), |v| format!("{v:.4}")),
-                if names { format!(" | {}", check.reason.as_deref().unwrap_or("")) } else { String::new() },
+                if names { format!(" | {}{}", check.reason.as_deref().unwrap_or(""), detail_line(&import, &check)) } else { String::new() },
             );
         }
     }

@@ -337,6 +337,12 @@ pub(crate) fn extrude(b: &mut Builder, name: &str, d: &ExtrudeDetail) -> Result<
         return Err("a thin extrude is not mapped yet".into());
     }
     let refs = profile_refs(&d.profile, &d.other);
+    // The letters of a sketch text are profiles whose outlines are the font's, which the file does not give (the part's sketch
+    // text has the kernel's own font): such an extrude would pick "every region" of a sketch that has none of its own (or
+    // other regions than the letters).
+    if d.other.get("_f3d_text_profiles").is_some() || d.other.get("_f3d_missing_texts").is_some_and(|m| m.as_array().is_some_and(|a| !a.is_empty())) {
+        return Err("an extrude of the letters of a sketch text is not mapped yet (the font's outlines are not in the file)".into());
+    }
     if !refs.is_empty() && refs.iter().all(|r| matches!(r, Reference::Face(_))) {
         return face_extrude(b, name, d, &refs);
     }
@@ -428,6 +434,10 @@ pub(crate) fn extrude(b: &mut Builder, name: &str, d: &ExtrudeDetail) -> Result<
             None => return Err("its extent is not known".into()),
         }
     };
+    // The taper is measured with the extrusion: a positive angle narrows along it, so on a negative length (the extrude runs
+    // against the sketch normal) the angle's sign turns. The corpus settles it: a keycap pin extruded -3.8 mm with a -0.5 degree
+    // taper has the edges of a body that narrows away from its sketch (their ends, 3.8 mm apart, are 0.033 mm closer in).
+    let taper = if end == "blind" && back { taper.map(|a| -a) } else { taper };
     // `back` is against the Fusion normal; the part's frame may have the opposite normal. A cut runs against the
     // sketch normal unless flipped, an add along it.
     let against = back != (sketch.normal_sign < 0.0);
@@ -457,7 +467,7 @@ pub(crate) fn extrude(b: &mut Builder, name: &str, d: &ExtrudeDetail) -> Result<
     regions.write(&mut item);
     b.features.push(item);
     b.builds = true;
-    Ok(taper.map(|_| "taper sign: a positive angle narrows, as in Fusion's dialog (no corpus design checks it)".to_owned()))
+    Ok(taper.map(|_| "taper sign: a positive angle narrows along the extrusion (settled by the edges of a corpus design's tapered pins)".to_owned()))
 }
 
 pub(crate) fn revolve(b: &mut Builder, name: &str, d: &RevolveDetail) -> Result<Option<String>, String> {

@@ -157,6 +157,8 @@ pub(crate) struct Builder {
     /// The names of bodies a combine consumed (its tools without `keepTools`): a later feature of a design with bodies in
     /// several components must not name them among its component's bodies.
     pub consumed: std::collections::BTreeSet<String>,
+    /// The fillets and chamfers mapped, by timeline index (a pattern that repeats one: `pattern.rs`).
+    pub blends: BTreeMap<i64, Vec<blend::BlendRec>>,
 }
 
 /// A component's placement in the design: a rotation and a translation (mm).
@@ -390,6 +392,7 @@ pub fn timeline_to_features(dump: &Dump) -> FeatureImport {
         bodies: BTreeMap::new(),
         kinds: BTreeMap::new(),
         consumed: Default::default(),
+        blends: BTreeMap::new(),
     };
     let mut out = FeatureImport::default();
     let items = dump.timeline_items();
@@ -432,6 +435,7 @@ pub fn timeline_to_features(dump: &Dump) -> FeatureImport {
             Err(why) => {
                 // nothing the failed mapping wrote stays (a sketch adds nothing when it fails, but be sure)
                 b.features.truncate(before);
+                b.blends.remove(&idx);
                 b.builds = builds;
                 b.comp_bodies = bodies;
                 b.new_bodies = new_bodies;
@@ -610,6 +614,7 @@ fn map_item(
         b.seeds.insert(idx, id);
     }
     if suppressed {
+        b.blends.remove(&idx);
         for f in b.features[before..].iter_mut() {
             if f.get("type").and_then(Value::as_str) != Some("plane") {
                 f["suppressed"] = json!(true);

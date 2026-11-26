@@ -1139,6 +1139,12 @@ export interface FrameFeature {
  *  the outline), or a role name such as `"P0.side.e2"`. A partial flange may carry `start`/`length`/`from`/`to` on a pick. */
 export type SheetEdgePick = number[] | string | { at?: number[]; edge?: number; role?: string; panel?: number; [key: string]: unknown };
 
+export interface SheetBendTableRow {
+  radiusRatio: Expr;
+  angle?: Expr;
+  k: Expr;
+}
+
 /** The stock a sheet is made of. Only `name` is required; the rest default from the thickness. A rule with an existing name replaces it. */
 export interface SheetRulesFeature {
   type: 'sheetRules';
@@ -1146,6 +1152,8 @@ export interface SheetRulesFeature {
   name?: string;
   thickness?: Expr;
   kFactor?: Expr;
+  /** k-factor by bend: rows of inside radius / thickness, optional bend angle (degrees; every row or none) and k. Linear between rows, no extrapolation (a bend outside it is refused `bendOutsideTable`). `kFactor` applies when absent. */
+  bendTable?: SheetBendTableRow[];
   bendRadius?: Expr;
   reliefWidth?: Expr;
   reliefDepth?: Expr;

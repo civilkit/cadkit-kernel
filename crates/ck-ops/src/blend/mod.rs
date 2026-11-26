@@ -61,6 +61,8 @@ pub mod mixed;
 mod model;
 pub mod overhang;
 mod rim_reflex;
+pub mod spline_rim;
+mod spline_vertical;
 mod rounds;
 mod torus_corner;
 pub mod validity;

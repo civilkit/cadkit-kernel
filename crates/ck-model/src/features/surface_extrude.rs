@@ -95,12 +95,36 @@ pub fn exec_surface_extrude(br: &mut Brep, state: &mut RegenState, f: &Feature) 
 /// Error code of a profile that straddles the revolve axis.
 pub const PROFILE_CROSSES_AXIS: &str = "profileCrossesAxis";
 
-/// Does any profile segment lie on both sides of the revolve axis?
+/// The regions of a profile on the positive side of the revolve axis (or touching it), and those on the negative side
+/// (`profile.frame.z` crossed with the axis direction): the sides `crosses_axis` tells apart.
+pub fn split_by_axis_side(profile: &Profile, o: Vec3, d: Vec3) -> (Profile, Profile) {
+    let fr = &profile.frame;
+    let (mut near, mut far) = (Vec::new(), Vec::new());
+    for reg in &profile.regions {
+        let mut neg = false;
+        for l in reg.loops() {
+            for s in &l.segs {
+                for k in 0..=8 {
+                    let t = s.t0 + (s.t1 - s.t0) * k as f64 / 8.0;
+                    let q = s.curve.eval(t);
+                    let p = fr.o + fr.x * q.x + fr.y * q.y;
+                    neg |= (p - o).cross(d).dot(fr.z) < -1e-9;
+                }
+            }
+        }
+        if neg { far.push(reg.clone()) } else { near.push(reg.clone()) }
+    }
+    (Profile::new(profile.frame.clone(), near), Profile::new(profile.frame.clone(), far))
+}
+
+/// Does any profile region lie on both sides of the revolve axis?
 /// (oracle: a region or chain with points on both sides of the axis line.)
 pub fn crosses_axis(profile: &Profile, o: Vec3, d: Vec3) -> bool {
     let fr = &profile.frame;
-    let (mut pos, mut neg) = (false, false);
-    for reg in &profile.regions {
+    // a region that has points on both sides of the axis; several regions, each on one side (two rectangles either side of
+    // the axis), revolve as they are
+    profile.regions.iter().any(|reg| {
+        let (mut pos, mut neg) = (false, false);
         for l in reg.loops() {
             for s in &l.segs {
                 for k in 0..=8 {
@@ -113,8 +137,8 @@ pub fn crosses_axis(profile: &Profile, o: Vec3, d: Vec3) -> bool {
                 }
             }
         }
-    }
-    pos && neg
+        pos && neg
+    })
 }
 
 pub fn exec_surface_revolve(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<(), FeatureError> {

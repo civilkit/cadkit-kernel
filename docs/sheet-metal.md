@@ -29,6 +29,34 @@ is the rule's thickness inside `sheetRules`), or `"2 mm"` / `"90 deg"`.
 thickness, `hemGap` 0.01, `cornerReliefShape` `notch` (also `round`, `rectangular`, `tear`). A rule with an existing name
 replaces it; `active` (default true) makes it the rule of the next base flange.
 
+### Bend table (`bendTable`)
+
+An optional field of `sheetRules`: the k-factor chosen by the bend instead of one constant. Without it nothing changes
+(`kFactor` is the k of every bend). With it, every bend (edge flange, chained bend, hem, contour flange, fold, and the bends
+found by `sheetConvert`) takes its k from the table, and the flat pattern, the unfold and refold, the bend allowances and
+the bend table export all use that per-bend k. `kFactor` stays in the rule as the value of a rule without a table.
+
+```json
+"bendTable":[{"radiusRatio":1,"angle":45,"k":0.30},{"radiusRatio":1,"angle":90,"k":0.50},{"radiusRatio":2,"angle":90,"k":0.44}]
+```
+
+Rows are `{radiusRatio, angle?, k}`: `radiusRatio` = inside radius / thickness (above 0), `angle` = the bend angle in degrees
+(0 to 180; a hem is 180), `k` in 0..1. Either every row has an `angle` or none does (otherwise `invalidValue`, field
+`bendTable`); two rows with the same ratio and angle are refused too.
+
+* Rows without an angle: k is linear in the ratio between the two rows around it.
+* Rows with angles: inside each ratio that has rows, k is linear in the angle between the two rows around it; for a ratio
+  between two table ratios the two k are blended linearly in the ratio. A ratio of the table is used only inside the angle
+  range of its own rows.
+* No extrapolation. A bend whose ratio is outside the first and last ratio, or whose angle is outside the rows it needs, is
+  refused with `bendOutsideTable {radiusRatio, angleDeg, detail, hint}`; the detail names the bend and what the table covers,
+  the hint says to add rows or change the radius or the angle. Nothing is built for that feature.
+
+The flat pattern's bend rows carry `kFactor` when the rule has a table; the CSV `k_factor` column is the k of that bend (the
+rule's `kFactor` without a table, as before), and the JSON export's bends carry `k_factor` too, but only with a table.
+Nothing here is matched against a reference tool: the lookup and interpolation are our own definition, the allowance
+`(r + k t) a` is unchanged.
+
 `baseFlange`: `sketch` (one closed region; holes are allowed), `rule` (a name; default the active rule, else the defaults),
 `flip`. The region is extruded by the thickness along the sketch normal (against it with `flip`); `regions` selects as in
 `extrude`. One base flange per part, as the first body feature.

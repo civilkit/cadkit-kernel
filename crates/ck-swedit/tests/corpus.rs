@@ -237,6 +237,12 @@ fn corpus() {
     if let Some((_, kept, _, _)) = prefixes.iter().find(|p| p.0 == "nist_ctc_05") {
         assert!(*kept >= 15, "nist_ctc_05: {kept} steps kept");
     }
+    // the local corpus of 63 files (38 parts, 4 copies of generated parts, 21 stubs): the file's own sketches carried by the histories
+    // (70 of 200, 36 with dimensions, 73 dimensions, 216 relations) and the outcomes are not to fall
+    if fs.len() == 63 && n_noimport == 21 {
+        assert!(n_exact >= 34 && n_exact + n_close >= 39, "exact {n_exact}, close {n_close}");
+        assert!(sk_count[1] >= 70 && sk_count[2] >= 36 && sk_count[3] >= 73 && sk_count[4] >= 216, "the file's own sketches fell: {sk_count:?}");
+    }
     let mut md = String::new();
     md.push_str(&format!("# Editable rebuild: {} files\n\nexact {n_exact}, close {n_close}, fallback {n_fallback}, not imported {n_noimport}\n\n", fs.len()));
     let kept: usize = prefixes.iter().map(|p| p.1).sum();

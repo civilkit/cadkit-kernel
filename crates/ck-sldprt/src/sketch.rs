@@ -79,11 +79,11 @@ pub struct SkPoint {
 pub enum SkCurve {
     /// A line between two points (indices into [`Sketch::points`]).
     Line { a: usize, b: usize, construction: bool, handle: Option<u16>, sense: Option<i32> },
-    /// An arc from `start` to `end` (counter-clockwise from start unless the stream says otherwise: direction is not
-    /// stored, see the doc) about `centre`.
-    Arc { start: usize, end: usize, centre: Option<usize>, centre_certain: bool, construction: bool, handle: Option<u16>, sense: Option<i32> },
+    /// An arc from `start` to `end` about `centre`. `stored` is the centre index the record itself holds, as read (it may name
+    /// no usable point: `centre` is the one in use).
+    Arc { start: usize, end: usize, centre: Option<usize>, centre_certain: bool, construction: bool, handle: Option<u16>, sense: Option<i32>, stored: Option<usize> },
     /// A full circle stored by one point on it.
-    Circle { rim: usize, centre: Option<usize>, centre_certain: bool, construction: bool, handle: Option<u16>, sense: Option<i32> },
+    Circle { rim: usize, centre: Option<usize>, centre_certain: bool, construction: bool, handle: Option<u16>, sense: Option<i32>, stored: Option<usize> },
     /// A full ellipse stored by a point on it (`rim`), its centre and the end points of its axes (the stream gives the indices of
     /// four points; two of them, each perpendicular to the other from the centre, are on the axes). `major` is the point at the
     /// end of the major semi-axis, `minor` the minor semi-axis in metres. Only an ellipse whose points all check is read.
@@ -1022,7 +1022,7 @@ fn build_sketch(f: &FeatureRec, pts: &[&RawPoint], segs: &[&RawSeg], tc: &HashMa
             points[a].role = PointRole::Rim;
             let handle = points[a].on.iter().find(|h| h.class == HandleClass::Arc && !used.contains(h)).copied();
             used.extend(handle);
-            curves.push(SkCurve::Circle { rim: a, centre: None, centre_certain: false, construction, handle: handle.map(|h| h.id), sense: s.sense });
+            curves.push(SkCurve::Circle { rim: a, centre: None, centre_certain: false, construction, handle: handle.map(|h| h.id), sense: s.sense, stored: stored_centre(s) });
             continue;
         }
         // the class: a handle both end points list and no earlier curve took
@@ -1030,7 +1030,7 @@ fn build_sketch(f: &FeatureRec, pts: &[&RawPoint], segs: &[&RawSeg], tc: &HashMa
         used.extend(shared);
         match shared.map(|h| h.class) {
             Some(HandleClass::Arc) => {
-                curves.push(SkCurve::Arc { start: a, end: c, centre: None, centre_certain: false, construction, handle: shared.map(|h| h.id), sense: s.sense });
+                curves.push(SkCurve::Arc { start: a, end: c, centre: None, centre_certain: false, construction, handle: shared.map(|h| h.id), sense: s.sense, stored: stored_centre(s) });
             }
             Some(HandleClass::Line) | None => curves.push(SkCurve::Line { a, b: c, construction, handle: shared.map(|h| h.id), sense: s.sense }),
             Some(_) => {
@@ -1045,6 +1045,11 @@ fn build_sketch(f: &FeatureRec, pts: &[&RawPoint], segs: &[&RawSeg], tc: &HashMa
     let plane_refs: Vec<u32> = planes.iter().filter(|(o, id, _)| *o >= f.offset && *o < f.end && *id <= 0xffff).map(|(_, id, _)| *id).collect();
     let plane_frames: Vec<(u32, [f64; 12])> = planes.iter().filter(|(o, id, _)| *o >= f.offset && *o < f.end && *id <= 0xffff).filter_map(|(_, id, fr)| fr.map(|m| (*id, m))).collect();
     Sketch { name: f.name.clone(), feature_id: f.id, plane: PlaneRef::Unknown, plane_refs, plane_frames, stored_frame: None, points, curves, params: f.params.clone(), relations: vec![], dims: vec![], raw_dims: vec![], offset: f.offset, notes }
+}
+
+/// The centre index an arc or circle record stores (its first tail word, followed by `FFFE FFFF`), when the record has that shape.
+fn stored_centre(s: &RawSeg) -> Option<usize> {
+    (s.tail[1] == 0xfffe && s.tail[2] == 0xffff).then_some(s.tail[0] as usize)
 }
 
 /// The centre, the end of the major semi-axis and the minor semi-axis of the ellipse the record names: among the points the
@@ -1290,6 +1295,8 @@ fn resolve_centres(s: &mut Sketch) {
         handle: Option<u16>,
         cands: Vec<usize>,
         prefer: Option<usize>,
+        /// The centre index the record itself stores, when it names a usable point (see `stored_centre`).
+        stored: Option<usize>,
     }
     let n = s.points.len();
     let d = |a: usize, b: usize| (s.points[a].x - s.points[b].x).hypot(s.points[a].y - s.points[b].y);
@@ -1298,7 +1305,7 @@ fn resolve_centres(s: &mut Sketch) {
     let mut items: Vec<Item> = vec![];
     for (ci, c) in s.curves.iter().enumerate() {
         match c {
-            SkCurve::Arc { start, end, handle, .. } => {
+            SkCurve::Arc { start, end, handle, stored, .. } => {
                 let (a, b) = (*start, *end);
                 let tol = 1e-9 * d(a, b).max(1e-3);
                 let eq = |k: usize| k != a && k != b && (d(k, a) - d(k, b)).abs() <= tol && d(k, a) > tol;
@@ -1307,16 +1314,29 @@ fn resolve_centres(s: &mut Sketch) {
                     cands.push(o);
                 }
                 let prefer = a.max(b).checked_sub(1).filter(|p| cands.contains(p));
-                items.push(Item { curve: ci, p: a, q: Some(b), handle: *handle, cands, prefer });
+                // the centre the record stores: a located point that is neither end, equidistant from both ends
+                let st = stored.filter(|&k| k < n && s.points[k].located && eq(k));
+                items.push(Item { curve: ci, p: a, q: Some(b), handle: *handle, cands, prefer, stored: st });
             }
-            SkCurve::Circle { rim, handle, .. } => {
+            SkCurve::Circle { rim, handle, stored, .. } => {
                 let r = *rim;
                 let cands: Vec<usize> = match r.checked_sub(1).filter(|&p| free.contains(&p) && d(p, r) > 1e-12) {
                     Some(p) => vec![p],
                     None => origin.filter(|&o| d(o, r) > 1e-12).into_iter().collect(),
                 };
                 let prefer = cands.first().copied();
-                items.push(Item { curve: ci, p: r, q: None, handle: *handle, cands, prefer });
+                // the stored centre of a circle: a located free point (no curve handle of its own as a centre; the origin
+                // reference is stored under a different number) other than the rim; used where the search below is not certain
+                // (a stored point that has curves of its own, or is another circle's rim, counts when a dimension of the sketch
+                // equals the radius or diameter it gives)
+                let st = stored.filter(|&k| {
+                    k < n && k != r && s.points[k].located && s.points[k].role != PointRole::External && d(k, r) > 1e-12 && {
+                        let clean = s.points[k].on.is_empty() && s.points[k].role == PointRole::Free;
+                        let rad = d(k, r);
+                        clean || s.params.iter().any(|p| (p.value - rad).abs() < 1e-9 || (p.value - 2.0 * rad).abs() < 1e-9)
+                    }
+                });
+                items.push(Item { curve: ci, p: r, q: None, handle: *handle, cands, prefer, stored: st });
             }
             _ => {}
         }
@@ -1413,14 +1433,38 @@ fn resolve_centres(s: &mut Sketch) {
     };
     let arcs = items.iter().filter(|i| i.q.is_some()).count();
     let circles = items.len() - arcs;
+    let mut choice = choice;
     for (k, it) in items.iter().enumerate() {
-        let (centre, mut certain) = (choice[k], false);
+        let (mut centre, mut certain) = (choice[k], false);
         if let Some(_c) = centre {
             certain = if it.q.is_some() {
                 unique || it.cands.len() == 1 && sols.len() <= 1
             } else {
                 unique && it.cands.len() == 1 && circles == 1 && arcs == 0 && free.len() == 1
             };
+        }
+        // the centre the record stores itself is the first evidence there is: it settles an arc whose centre the search left open
+        // (the relations must still hold with it), and it confirms the choice where both name the same point. A circle's stored
+        // number is not an index when the circle is centred on the origin reference (the corpus stores 0 and larger junk there):
+        // there the search's choice, confirmed by a dimension, stands.
+        // (research knob: the centres as the search alone left them, for the before / after counts of the notes)
+        if let Some(st) = it.stored.filter(|_| std::env::var_os("SKETCH_NO_STORED_CENTRE").is_none()) {
+            let agrees = centre == Some(st);
+            if agrees {
+                certain = true;
+            } else if !certain {
+                let mut asg = choice.clone();
+                asg[k] = Some(st);
+                // (a circle's stored index passed the filter above: a free located point with no curve of its own; in the corpus
+                // every such index agrees with the radius dimension where the sketch has one, and with the search's choice
+                // wherever that was settled by a dimension)
+                let settled = if it.q.is_some() { ok(&asg, k) } else { true };
+                if settled {
+                    centre = Some(st);
+                    certain = true;
+                    choice[k] = centre;
+                }
+            }
         }
         match &mut s.curves[it.curve] {
             SkCurve::Arc { centre: c, centre_certain, .. } | SkCurve::Circle { centre: c, centre_certain, .. } => {
@@ -1697,6 +1741,78 @@ mod tests {
         o.extend([0xff; 4]);
         o.extend([0; 4]);
         o
+    }
+
+    /// An arc from (10, 0) to (0, 10) mm whose two possible centres, (0, 0) and (10, 10), are both free points equidistant from
+    /// its ends; the record's stored centre index (`tail`) names one of them.
+    fn two_centre_arc(tail: [u16; 6]) -> Vec<u8> {
+        let mut d = le32(109).to_vec();
+        d.extend([0x13, 0]);
+        d.extend(decl("moProfileFeature_c"));
+        d.extend(feature(0x8004, "Sketch1", 26));
+        d.extend(decl("sgPointHandle"));
+        d.extend(decl("sgLineHandle"));
+        d.extend(decl("sgArcHandle"));
+        d.extend(point(2, 0.0, 0.0, (0, 1), &[]));
+        d.extend(point(1, 0.010, 0.0, (0, 1), &[(0x8074, 0)]));
+        d.extend(point(3, 0.0, 0.010, (0, 1), &[(0x8074, 0)]));
+        d.extend(point(4, 0.010, 0.010, (0, 1), &[]));
+        d.extend(seg_full(1, 1, 2, 1, 1, tail));
+        d
+    }
+
+    #[test]
+    fn the_stored_centre_index_settles_an_arc_with_two_possible_centres() {
+        let arc = |d: Vec<u8>| match &parse(&d, &Limits::default()).unwrap().sketches[0].curves[0] {
+            SkCurve::Arc { centre, centre_certain, stored, .. } => (*centre, *centre_certain, *stored),
+            c => panic!("{c:?}"),
+        };
+        // without a stored index (tail words other than `FFFE FFFF`) the search has two answers and settles on neither
+        let (c, certain, st) = arc(two_centre_arc([0; 6]));
+        assert!(c.is_some() && !certain && st.is_none());
+        // the stored index names the free point (10, 10) mm, or (0, 0): either settles it
+        for k in [3u16, 0] {
+            let (c, certain, st) = arc(two_centre_arc([k, 0xfffe, 0xffff, 0xfffe, 0xffff, 0xfffe]));
+            assert_eq!((c, certain, st), (Some(k as usize), true, Some(k as usize)));
+        }
+        // a stored index that is no point of the sketch, or one that is not equidistant from the ends (an end point itself), is not used
+        for k in [9u16, 1] {
+            let (_, certain, st) = arc(two_centre_arc([k, 0xfffe, 0xffff, 0xfffe, 0xffff, 0xfffe]));
+            // (the field keeps what the record stores; the centre stays the search's uncertain one)
+            assert!(!certain && st == Some(k as usize));
+        }
+    }
+
+    #[test]
+    fn the_stored_centre_index_settles_a_circle_the_search_could_not() {
+        // the `stream()` sketch with a second circle-less free point: the search prefers the point written right before the rim
+        // (5, 3) mm; the record stores the other one, (1, 1) mm, as its centre
+        let with = |tail: [u16; 6]| {
+            let mut d = le32(109).to_vec();
+            d.extend([0x13, 0]);
+            d.extend(decl("moProfileFeature_c"));
+            d.extend(feature(0x8004, "Sketch1", 26));
+            d.extend(decl("sgPointHandle"));
+            d.extend(decl("sgLineHandle"));
+            d.extend(decl("sgArcHandle"));
+            d.extend(point(1, 0.0, 0.0, (0, 2), &[(0x8072, 1), (0x8072, 2)]));
+            d.extend(point(7, 0.001, 0.001, (0, 1), &[]));
+            d.extend(point(6, 0.005, 0.003, (0, 3), &[]));
+            d.extend(point(5, 0.007, 0.003, (2, 2), &[(0x8074, 0)]));
+            d.extend(seg_full(1, 3, 3, 1, 1, tail));
+            match &parse(&d, &Limits::default()).unwrap().sketches[0].curves[0] {
+                SkCurve::Circle { centre, centre_certain, .. } => (*centre, *centre_certain),
+                c => panic!("{c:?}"),
+            }
+        };
+        // no stored index: the point before the rim, not certain (two free points)
+        assert_eq!(with([0; 6]), (Some(2), false));
+        // the stored index names the other free point: it is the centre
+        assert_eq!(with([1, 0xfffe, 0xffff, 0xfffe, 0xffff, 0xfffe]), (Some(1), true));
+        // naming the point the search chose too confirms it
+        assert_eq!(with([2, 0xfffe, 0xffff, 0xfffe, 0xffff, 0xfffe]), (Some(2), true));
+        // a stored index naming a point with curves of its own (here the origin corner) is not taken without a dimension
+        assert_eq!(with([0, 0xfffe, 0xffff, 0xfffe, 0xffff, 0xfffe]), (Some(2), false));
     }
 
     /// A circle of radius 2 mm about (5, 3) whose diameter dimension (D1 = 4 mm) names the circle's handle, and a distance

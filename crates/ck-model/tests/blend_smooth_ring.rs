@@ -1,5 +1,5 @@
 //! A round on the rim of an extruded closed smooth free-form profile (a closed spline, an ellipse-like spline, a bean):
-//! refused at once with a named reason; a profile with a corner (a spline closed by a line) still builds.
+//! built in place (spline_rim.rs); a profile with a corner (a spline closed by a line) still builds.
 use ck_model::features::Brep;
 use ck_model::regen::{self, RegenOpts};
 use ck_model::Part;
@@ -115,24 +115,35 @@ fn plain_vol(sketch: &str, depth: f64) -> f64 {
     vol(br.body.as_ref().unwrap())
 }
 
-fn assert_refused_named(name: &str, sketch: &str, edges: &str, r: f64) {
-    let o = run(sketch, 10.0, edges, r);
-    assert!(o.body.is_none() || !o.errors.is_empty(), "{name}: expected a refusal");
-    let all = format!("{:?}", o.errors);
-    assert!(all.contains("blendUnsupported"), "{name}: code: {all}");
-    assert!(all.contains("closed smooth free-form curve"), "{name}: detail: {all}");
-    assert!(all.contains("corner"), "{name}: hint: {all}");
-    let limit = if cfg!(debug_assertions) { 20.0 } else { 3.0 };
-    assert!(o.secs < limit, "{name}: refusal took {:.1}s", o.secs);
+/// The round builds on the rim's own offset curves (`blend/spline_rim.rs`): a valid solid that lost the rim's corner section.
+fn assert_builds(name: &str, sketch: &str, face: &str, r: f64) {
+    let o = run(sketch, 10.0, face, r);
+    assert!(o.errors.is_empty(), "{name}: {:?}", o.errors);
+    let b = o.body.expect("body");
+    assert!(ck_check::validate(&b, 1e-6).is_empty(), "{name}: invalid");
+    let f = b.find_face(face);
+    let _ = f;
+    let removed = plain_vol(sketch, 10.0) - vol(&b);
+    // between the section's area times the rim length less the inside turn, and without it
+    let doc = format!(r#"{{"format":"ck-part","version":1,"features":[{sketch},{{"type":"extrude","op":"add","sketch":"F1","end":"blind","depth":10,"id":"F2"}}]}}"#);
+    let part = Part::parse(&doc).unwrap();
+    let mut br = Brep::new();
+    regen::regen(&part, &RegenOpts::default(), &mut br);
+    let b0 = br.body.unwrap();
+    let cap = b0.find_face(face).unwrap();
+    let len: f64 = b0.edge_ids().filter(|&e| b0.edge_faces(e).len() == 2 && b0.edge_faces(e).contains(&cap)).map(|e| b0.edge_length(e)).sum();
+    let a = (1.0 - std::f64::consts::FRAC_PI_4) * r * r;
+    assert!(removed > 0.5 * a * len && removed < 1.01 * a * len, "{name}: removed {removed:.3}, section {a:.4} x length {len:.2}");
+    assert!(o.secs < if cfg!(debug_assertions) { 20.0 } else { 3.0 }, "{name}: took {:.1}s", o.secs);
 }
 
 #[test]
-fn closed_spline_rim_refused_named_and_fast() {
-    assert_refused_named("ellipse top", &ellipse(50.0, 12), "F2.C1", 1.0);
-    assert_refused_named("ellipse top r5", &ellipse(50.0, 12), "F2.C1", 5.0);
-    assert_refused_named("bean top", &bean(50.0, 16), "F2.C1", 1.0);
-    assert_refused_named("wavy top", &wavy(40.0, 5.0, 0.1, 30), "F2.C1", 1.0);
-    assert_refused_named("ellipse bottom", &ellipse(50.0, 12), "F2.C0", 1.0);
+fn closed_spline_rim_builds() {
+    assert_builds("ellipse top", &ellipse(50.0, 12), "F2.C1", 1.0);
+    assert_builds("ellipse top r5", &ellipse(50.0, 12), "F2.C1", 4.0);
+    assert_builds("bean top", &bean(50.0, 16), "F2.C1", 1.0);
+    assert_builds("wavy top", &wavy(40.0, 5.0, 0.1, 30), "F2.C1", 1.0);
+    assert_builds("ellipse bottom", &ellipse(50.0, 12), "F2.C0", 1.0);
 }
 
 #[test]

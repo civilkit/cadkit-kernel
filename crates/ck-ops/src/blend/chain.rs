@@ -178,3 +178,44 @@ pub(super) fn with_ring_siblings(b: &Body, edges: &[(String, String, Vec3)]) -> 
     }
     out
 }
+
+
+/// Picks that are the later pieces of a straight run the sketch split in collinear pieces (a mirrored sketch, a split
+/// line, a vertex on the line): two straight edges that meet at a vertex, on one line, with their faces in the same two
+/// planes. The first pick of a run is its leader: its tool runs over the whole run (the end conditions let the tool of
+/// a piece go on past the vertex it shares with a collinear pick), so the other pieces get no tool of their own; the
+/// caller checks afterwards that a blend face really runs along each of them.
+pub(super) fn collinear_run_followers(b: &Body, eids: &[EdgeId]) -> Vec<bool> {
+    use ck_geom::surface::Surface;
+    let dir = |e: EdgeId| -> Option<Vec3> {
+        let ed = b.edge(e);
+        if !matches!(ed.curve, Curve::Line { .. }) || ed.v0 == ed.v1 {
+            return None;
+        }
+        let d = b.vertex(ed.v1).p - b.vertex(ed.v0).p;
+        (d.len() > 1e-12).then(|| d.normalize())
+    };
+    let same_plane = |f: FaceId, g: FaceId| {
+        f == g
+            || (matches!(b.face(f).surface, Surface::Plane { .. })
+                && matches!(b.face(g).surface, Surface::Plane { .. })
+                && b.planar_normal(f).normalize().dot(b.planar_normal(g).normalize()) > 1.0 - 1e-9)
+    };
+    let next_to = |e: EdgeId, x: EdgeId| -> bool {
+        let (ea, ex) = (b.edge(e), b.edge(x));
+        if e == x || ![ea.v0, ea.v1].iter().any(|v| *v == ex.v0 || *v == ex.v1) {
+            return false;
+        }
+        let (Some(d), Some(dx)) = (dir(e), dir(x)) else { return false };
+        let (fe, fx) = (b.edge_faces(e), b.edge_faces(x));
+        fe.len() == 2 && fx.len() == 2 && d.cross(dx).len() < 1e-9 && ((same_plane(fe[0], fx[0]) && same_plane(fe[1], fx[1])) || (same_plane(fe[0], fx[1]) && same_plane(fe[1], fx[0])))
+    };
+    // a pick follows when an earlier pick of its run exists (the run is walked through its neighbours, picks or not
+    // being irrelevant: only picks are in `eids`, so adjacency is between picks)
+    let n = eids.len();
+    let mut follower = vec![false; n];
+    for i in 0..n {
+        follower[i] = (0..i).any(|j| eids[j] != eids[i] && next_to(eids[j], eids[i]));
+    }
+    follower
+}

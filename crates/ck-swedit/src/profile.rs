@@ -2518,6 +2518,9 @@ pub fn extrude(cx: &mut Cx, f: &SwFeature, faces: &[FaceId], cut: bool) -> Resul
     // the sketch the file stores, read for comparison with what the faces gave, and as the profile where they gave none; where
     // it gives the same outline as the faces, the history carries it (its dimensions and relations) instead of a drawing of the faces
     let sketch = crate::sketch_profile::build(cx, f.id, &fr, loops.as_ref().map(|(l, _)| l.as_slice()));
+    if std::env::var("SKETCH_DEBUG").is_ok() {
+        eprintln!("SKETCH_DEBUG step {} ({}): sketch {}", f.name, f.id, match &sketch { Ok(b) => format!("{} ok", b.name()), Err(e) => format!("err: {}", e.chars().take(90).collect::<String>()) });
+    }
     let sk_origin = sketch.as_ref().ok().and_then(|b| b.origin_mm());
     let mut true_sk: Option<crate::sketch_profile::Built> = None;
     let loops = match (loops, sketch) {
@@ -2526,6 +2529,9 @@ pub fn extrude(cx: &mut Cx, f: &SwFeature, faces: &[FaceId], cut: bool) -> Resul
             crate::sketch_profile::STATS.with(|s| s.borrow_mut()[if same { 0 } else { 1 }] += 1);
             // (one piece for one piece: a side of the faces that is several pieces of the sketch is named after one of them, and the rebuilt body's faces would not be the file's)
             let one_to_one = l.iter().map(|x| x.segs.len()).sum::<usize>() == b.loops.iter().map(|x| x.segs.len()).sum::<usize>();
+            if std::env::var("SKETCH_DEBUG").is_ok() && !(same && one_to_one) {
+                eprintln!("SKETCH_DEBUG used? {}: same outline {same}, one piece for one piece {one_to_one} (faces {} pieces, sketch {})", b.name(), l.iter().map(|x| x.segs.len()).sum::<usize>(), b.loops.iter().map(|x| x.segs.len()).sum::<usize>());
+            }
             if same && one_to_one && crate::sketch_profile::preferred() {
                 true_sk = Some(b);
             }
@@ -2650,7 +2656,7 @@ pub fn extrude(cx: &mut Cx, f: &SwFeature, faces: &[FaceId], cut: bool) -> Resul
     }
     let nseg: usize = loops.iter().map(|l| l.segs.len()).sum();
     let tnote = match &true_sk {
-        Some(b) => format!("; the file's sketch{}", if b.matched { " (frame matched to the faces' profile)" } else { "" }),
+        Some(b) => format!("; the file's sketch {}{}", b.name(), if b.matched { " (frame matched to the faces' profile)" } else { "" }),
         None => String::new(),
     };
     // the end condition the file stores, and where its sketch plane lies on the span the rebuilt feature covers

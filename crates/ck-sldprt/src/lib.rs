@@ -18,12 +18,14 @@ pub mod container;
 pub mod error;
 pub mod inflate;
 pub mod ir;
+pub mod mates;
 pub mod meta;
 pub mod sketch;
 pub mod xt;
 
 pub use asm::{read_asm, AsmComponent, AsmConfig, AsmTree};
 pub use build::Approx;
+pub use mates::{Mate, MateList, MateOperand};
 pub use container::Kind;
 pub use error::{Limits, SldprtError};
 pub use meta::{SwMassProps, SwMeta};

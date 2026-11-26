@@ -8,7 +8,7 @@ All lengths are in millimetres and angles in degrees. A number may be an express
 
 | Type | What it does |
 |---|---|
-| `sheetRules` | The stock: `name`, `thickness`, `kFactor`, `bendRadius`, `reliefWidth`, `reliefDepth`, `cornerRelief`, `cornerReliefShape` (`notch`, `round`, `rectangular` or `tear`), `hemGap`, `gap`, `active`. Only `name` is required; the rest default from the thickness (2.5 when none is given). A rule with an existing name replaces it. |
+| `sheetRules` | The stock: `name`, `thickness`, `kFactor`, `bendRadius`, `reliefWidth`, `reliefDepth`, `cornerRelief`, `cornerReliefShape` (`notch`, `round`, `rectangular` or `tear`), `hemGap`, `gap`, `active`, `bendTable` (optional rows `{radiusRatio, angle?, k}`: the k-factor by inside radius over thickness and by bend angle, linear between rows, no extrapolation; without it `kFactor` is the k of every bend). Only `name` is required; the rest default from the thickness (2.5 when none is given). A rule with an existing name replaces it. |
 | `baseFlange` | The first plate: `sketch` (one closed region, holes allowed), `rule` (a name; default the active rule), `flip`. The region is extruded by the thickness. One per part, as the first body feature. |
 | `contourFlange` | The base from an open chain of sketch lines: `sketch`, `curves` (default every line), `distance`, `rule`, `flip`, `reverse`. |
 | `edgeFlange` | A bent flange on edges of the plate: `edges`, `height` (required), `angle` (default 90), `radius`, `heightFrom` (`outer`, `inner`, `tangent`), `position` (`inside`, `outside`, `middle`), `flip`, `then` (chained bends, at most 16), and for a partial width `start`, `length` or `from` and `to`, `relief`, or a shaped leg with `profile` and `holes`. |
@@ -37,7 +37,7 @@ Two stateless requests turn a flat pattern into files: `sheetDxf` (the flat patt
 
 ## Errors and warnings
 
-`nothingToCut` (no sheet yet), `missingSketch`, `noClosedProfile`, `invalidValue` (with `field`, `detail` and `hint`), `flangeHeightTooLow` (with `minHeight`) and `sheetMetalUnsupported` (with `detail` and `hint`: what the feature does not build, and what to reorder). A plain extrude cut of a folded sheet is tried as a `sheetCut` first; when that is refused it runs as an ordinary cut and the feature carries the warning `sheetCutFallback`, because the part is then no longer an unfoldable sheet.
+`nothingToCut` (no sheet yet), `missingSketch`, `noClosedProfile`, `invalidValue` (with `field`, `detail` and `hint`), `flangeHeightTooLow` (with `minHeight`), `bendOutsideTable` (with `radiusRatio`, `angleDeg`, `detail` and `hint`: a bend the rule's `bendTable` does not cover) and `sheetMetalUnsupported` (with `detail` and `hint`: what the feature does not build, and what to reorder). A plain extrude cut of a folded sheet is tried as a `sheetCut` first; when that is refused it runs as an ordinary cut and the feature carries the warning `sheetCutFallback`, because the part is then no longer an unfoldable sheet.
 
 ## Mirror
 

@@ -99,3 +99,13 @@ cases within 0.005 %, the open-section sheet within 0.003 %, plus wall-versus-ar
 rounded-section hull, a tapered loft with an analytic wall (exact), and the outside / both-way
 thickens of the open-section sheet (valid solids here; the original refuses them with
 `thickenReach`).
+
+## Opened at the wall of a through hole
+
+A shell may be opened at the wall of a through hole (a concave cylinder whose rims all lie on planes), inward only. The cavity
+is the same construction as for a flat opening: the body offset in by the wall on every kept face and out by a small
+overshoot on the opened one. For a concave wall "out" is towards the axis, so the cavity's hole surface is the same cylinder
+at radius `r - overshoot`, inside the hole's void, and the cut removes the whole wall between the two plates. Volume for a
+block with a hole of radius r shelled t: block - hole - (cavity block - hole cylinder of radius r over the cavity height).
+Every other curved face (cone, convex cylinder, round) is still refused with `shellUnsupported`; the cone case would leave
+the two caps as separate pieces and needs a decision on meaning (issue 68).

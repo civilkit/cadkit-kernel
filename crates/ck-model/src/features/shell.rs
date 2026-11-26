@@ -22,14 +22,14 @@ pub fn exec_shell(br: &mut Brep, state: &mut RegenState, f: &Feature) -> Result<
         let id = body.find_face(r.as_str()).ok_or_else(|| crate::refs::missing_face([body], r.as_str()))?;
         // an opened face that is neither flat nor free-form is refused before any work: a round (blend face), cone or
         // cylinder wall has no opening the shell can build yet
-        if !matches!(body.face(id).surface, ck_geom::surface::Surface::Plane { .. } | ck_geom::surface::Surface::BSpline(_)) {
+        if !matches!(body.face(id).surface, ck_geom::surface::Surface::Plane { .. } | ck_geom::surface::Surface::BSpline(_)) && !(!*outward && ck_ops::shell::is_through_hole_wall(body, id)) {
             let name = body.face_id_str(id);
             return Err(FeatureError::new("shellUnsupported")
                 .with("face", Json::Str(name.clone()))
-                .with("detail", Json::Str(format!("opened face {name} is not planar")))
+                .with("detail", Json::Str(format!("opened face {name} is not planar or the wall of a through hole")))
                 .with(
                     "hint",
-                    Json::Str("a shell can only be opened at a flat face; a round, cylinder or cone face cannot be removed: pick a flat face next to it, or shell the body closed".into()),
+                    Json::Str("a shell can be opened at a flat face, a free-form face or the wall of a through hole; a round, cone or other cylinder face cannot be removed: pick a flat face next to it, or shell the body closed".into()),
                 ));
         }
         open.push(id);

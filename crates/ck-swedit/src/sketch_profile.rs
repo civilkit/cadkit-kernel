@@ -204,6 +204,13 @@ pub struct Built {
 }
 
 impl Built {
+    /// The sketch's name (for the research notes).
+    pub fn name(&self) -> &str {
+        &self.sk.name
+    }
+}
+
+impl Built {
     pub fn sketch(&self) -> &Sketch {
         &self.sk
     }
@@ -253,7 +260,14 @@ fn build_uncached(cx: &Cx, f_id: i64, fr: &Fr, face: Option<&[Loop2]>) -> Result
     let _ = cx;
     let set = sketches().ok_or("no sketches read")?;
     let idx = set.features.iter().position(|r| r.id as i64 == f_id).ok_or("feature has no record in the stream")?;
+    // the stream does not say which sketch a feature is built on (the reference record is not read): the nearest one before it
+    // (trying the few before it as well found no further sketch that draws a feature's profile in the 154 files of the local corpora)
     let sk = set.sketch_before(idx).ok_or("no sketch before the feature")?.clone();
+    build_for(sk, fr, face)
+}
+
+/// `sk` placed in the profile frame `fr` (see [`build`]).
+fn build_for(sk: Sketch, fr: &Fr, face: Option<&[Loop2]>) -> Result<Built, String> {
     // (with the profile of the faces to check against, a sketch that holds records that are not curves of it is read: only the
     // profile has to draw what the faces show)
     if !sk.notes.is_empty() && (face.is_none() || sk.notes.iter().any(|n| !n.contains("curve-shaped records"))) {
@@ -339,7 +353,7 @@ fn build_uncached(cx: &Cx, f_id: i64, fr: &Fr, face: Option<&[Loop2]>) -> Result
         let pl = Placement { m: mats[0], t: t0 };
         let seg_count = |l: &[Loop2]| l.iter().map(|x| x.segs.len()).sum::<usize>();
         let mine = place(sk.clone(), fr, pl, None, true, allow_uncertain).map(|b| (perimeter(&b.loops), seg_count(&b.loops), b.loops.len()));
-        eprintln!("SKETCH_DEBUG {} f{}: faces perimeter {:.4} segs {} loops {}; sketch {:?} ({} curves, {} points)", sk.name, f_id, perimeter(face), seg_count(face), face.len(), mine, sk.curves.len(), sk.points.len());
+        eprintln!("SKETCH_DEBUG {}: faces perimeter {:.4} segs {} loops {}; sketch {:?} ({} curves, {} points)", sk.name, perimeter(face), seg_count(face), face.len(), mine, sk.curves.len(), sk.points.len());
     }
     best.map(|(_, b)| b).ok_or_else(|| format!("sketch {}: no frame in the stream and no placement draws the profile the faces gave", sk.name))
 }
@@ -482,9 +496,21 @@ pub fn write(b: &Built, sid: &str, plane: Json) -> Written {
     // points: every located one; the circle rim points are not points of ours (a circle is a centre and a radius)
     let mut pid: HashMap<usize, String> = HashMap::new();
     let origin = sk.points.iter().position(|p| p.counters.0 == 6 && p.name.is_some() && p.located);
+    // (a circle's rim point is the circle's, not a point of ours, unless another curve is drawn through it: the centre of an arc that
+    // the file's slot or notch shares with a construction circle through it)
+    let mut used: std::collections::HashSet<usize> = Default::default();
+    for c in &sk.curves {
+        match c {
+            SkCurve::Line { a, b, .. } => used.extend([*a, *b]),
+            SkCurve::Arc { start, end, centre, .. } => used.extend([*start, *end].into_iter().chain(*centre)),
+            SkCurve::Circle { centre, .. } => used.extend(*centre),
+            SkCurve::Ellipse { centre, major, .. } => used.extend([*centre, *major]),
+            SkCurve::Unresolved { .. } => {}
+        }
+    }
     for (i, p) in sk.points.iter().enumerate() {
         let Some(q) = b.to_fr[i] else { continue };
-        if p.role == PointRole::Rim {
+        if p.role == PointRole::Rim && !used.contains(&i) {
             continue;
         }
         if Some(i) == origin {

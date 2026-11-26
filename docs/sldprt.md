@@ -192,8 +192,8 @@ Not imported: none of the NIST parts (as of 2026-11-15 nist_ctc_02 and nist_ftc_
 
 | Area | State |
 |---|---|
-| Assemblies (`.SLDASM`) | the component tree (nested sub-assemblies, per-instance transform, referenced file names, suppressed / hidden flags, configuration names) is read from `swXmlContents/COMPINSTANCETREE` by `ck-sldprt::asm` and request `sldasmTree` (book/src/io/sldprt.md); mates, in-context references and the parts' geometry are not read |
-| Feature tree, sketches, dimensions, PMI, configurations | not read; only the body of the first / active partition (`Config-0-Partition`) is imported, other configurations (`Config-N-*`) are separate streams that are ignored. The part's stored mass properties are returned in `import.swMassProps` (from `docProps/ISolidWorksInformation.xml`) as an independent check |
+| Assemblies (`.SLDASM`) | the component tree (nested sub-assemblies, per-instance transform, referenced file names, suppressed / hidden flags, configuration names) is read from `swXmlContents/COMPINSTANCETREE` by `ck-sldprt::asm` and request `sldasmTree` (book/src/io/sldprt.md); mates are read from `Contents/Config-N-MatesList` (type, name, operands, suppressed flag; see the Mates section) and the ones between principal planes are checked; in-context references and the parts' geometry are not read |
+| Feature tree, sketches, dimensions, PMI, configurations | the feature list with its dimensions is read from the `KeyWords` tree, the sketches (points, lines, arcs, circles, ellipses, relations, dimensions) and the extrude / revolve parameters from the feature stream (`ck_sldprt::sketch`, [sldprt-sketch.md](sldprt-sketch.md)), and `ck-swedit` rebuilds the history from them (the section below); splines, text and offset curves in sketches, PMI and the other configurations are not read: only the body of the first / active partition (`Config-0-Partition`) is imported, other configurations (`Config-N-*`) are separate streams that are ignored. The part's stored mass properties are returned in `import.swMassProps` (from `docProps/ISolidWorksInformation.xml`) as an independent check |
 | Sheet metal | the folded body imports as an ordinary solid; flat pattern, bend table and sheet-metal features are not read |
 | Surface (sheet) and wire bodies | not imported; a file with only such bodies answers `unsupported.body` (the CANivore-style file made of 11 surface bodies) |
 | Parasolid deltas | the `(deltas)` transmit is decoded (`xt::read_deltas`) but not applied: it holds backward undo records ending at the partition's own mark, so the partition is the current state (see Deltas). The stored mass of `nist_ftc_09` (0.4 percent above the partition body) matches the state one change back, which lacks the last cut feature |
@@ -203,9 +203,60 @@ Not imported: none of the NIST parts (as of 2026-11-15 nist_ctc_02 and nist_ftc_
 | Spheres | a hemisphere bounded by a great circle through the poles is re-expressed with a new axis; patches whose boundary arcs cannot be pole-free for any of 96 candidate axes are left alone |
 | Speed | the reader itself takes 5 to 700 ms per part (largest NIST parts 0.3 to 0.7 s); `importSldprt` also tessellates the result for the reply, which dominates on 400-face parts (several seconds, the same cost as `importStep` of the same part) |
 
+## Editable rebuild coverage (`ck-swedit`, 26 Nov 2026)
+
+`cargo test --release -p ck-swedit --test corpus` over a directory of parts (`SW_CORPUS`, default `corpus-local`) imports each file,
+rebuilds its feature history and verifies the rebuilt body against the file's by boolean difference. Exact = the whole history
+rebuilds to the file's body; close = to within the file's own approximated carriers (relative error under 1e-3 by volume, area, box and symmetric difference); fallback = the
+rebuild stops at a step and the file keeps its plain solid, with the steps before the stop as an editable prefix when they verify.
+Two local corpora (files described by class; none is in the repository):
+
+**Corpus 1, 63 files** (the sample set the numbers of `sldprt-sketch.md` use): exact 34, close 5, fallback 3, not imported 21.
+
+| class | files | result and why |
+|---|---|---|
+| decoder project's test stubs | 21 | not imported, `container.no_parasolid`: 247 to 772 byte containers made by another project's writer, one stream of an XT-shaped partition (544 to 952 bytes, invented schema name, no `(partition)` description, not wrapped in the GUID block the real files use) and in some a few metadata streams. Not SolidWorks files, not parts: nothing to import |
+| generated test parts (two SolidWorks versions, 20 files, plus 4 copies of them in the downloaded set) | 24 | 22 exact; 2 close (the lofts, 1.3e-5 and 4.2e-5: the file's own loft faces are approximated carriers) |
+| NIST test cases | 11 | 7 exact; 1 close (25 steps, all rebuilt, 2.4e-8); 3 fallback (below) |
+| pendulum and drone-style parts | 7 | 5 exact; 2 close (a modelled thread, 1.6e-7; blends on approximated carriers, 5.7e-6): every step rebuilt |
+
+The 3 fallbacks, each keeping an editable prefix whose composition with the file's own body is exact: a model with nine drafts
+(six of them skipped because no earlier face is tilted by their angle, the ninth not reproduced by either sign; the prefix ends
+at a mirror whose faces the rebuilt body lacks), a draft whose faces are named by an earlier feature's cut (the face is not in the
+rebuilt document), and a blend that regenerates as `blendUnsupported` (a variable or corner blend the kernel does not make). Nothing else stops a
+history in the 39 parts: the steps that are not rebuilt are features with no faces on the final body (the origin 42, 3D points 28,
+cosmetic threads 13, one combine, one body copy, one boss and one chamfer later consumed). So in corpus 1 there is no real part the
+importer fails to import, and the rebuild stops are the draft and blend families.
+
+**Corpus 2, 91 files** (parts from public CAD projects: gearbox and gear parts, student coursework, NIST and hobby parts; 0.04 to 66 MB): exact 32, close 0, fallback 58,
+not imported 1 (`unsupported.body`: the file holds only surface bodies). 31 of the 58 fallbacks keep an editable prefix (89
+steps kept of 108 read back); the rest keep the plain import. The first step that stops each fallback, by class (files):
+
+| first stop | files | what it is |
+|---|---|---|
+| `Imported` / `Multi_CAD_Imported` first feature, then own features | 13 | the history starts from a foreign body (STEP or another CAD's part) and goes on with cuts, bosses, mirrors and combines on it; the body at the imported step is not in the file, so the steps are read on the final body with their material undone (`undo.rs`); in these 13 files (11 have a valid starting body) that keeps no step. Not diagnosed per file: the largest have 20 000 to 27 000 faces, mostly the imported body's and `Combine` / `Mirror` copies |
+| `Combine` (bodies joined, subtracted or intersected) | 7 | a combine of several bodies; the operand bodies are not in the file and the undo does not cover a combine (it treats it as a source) |
+| extrude or cut whose profile the faces do not give | 9 | no cap outline and no closed side cycles (cap rims touched by later features, side faces without edges along the direction, a floor that does not cut), one with faces that do not share a direction |
+| revolve or revolve cut | 5 | generatrices with open ends, no surface of revolution among the faces, no closure of the profile on the material side |
+| blend naming | 4 | a fillet strip with one tangent support left on the final body, or a face the document does not name |
+| boss whose profile has spline sides (a gear tooth) and an end `up to vertex` | 3 | the profile read from the faces has the bore and the outer circle only (the spline sides are not profile segments), so the rebuilt body is the ring without teeth: refused by the verification, correctly. The only class here that is a missing curve type, not a missing feature |
+| rebuilt body differs | 1 | a revolved barrel that rebuilds to within 1.1e-5 in volume and is still refused by the boolean difference |
+| loft with a non-planar section | 3 | the sections are not planar; tried as a revolve, an extrude and a ruled loft |
+| cut or boss on an undone start body whose material is not undone | 3 | |
+| regen error in the rebuilt document | 2 | `booleanFailed`, `missingEdge` after a circular pattern or a sweep cut |
+| mirror with no plane | 2 | no plane mirrors the body onto the mirror's faces |
+| wrap | 2 | |
+| drafted extrude, circular pattern, surface feature, nothing rebuilt | 4 | one each |
+
+Where they stop, every one of the 58 files still imports to the file's exact solid (31 with an editable prefix in front of it); none is refused. The per-file table behind these counts is
+produced by the corpus test (`SWEDIT_OUT=<file>.md`: result and, per step, kind, status and the reason).
+
+**What the importer does not fail on.** No file of either corpus that holds a SolidWorks solid fails `importSldprt` except the one
+surface-only file. All the "not imported" counts of earlier notes (21 of 63) are the test stubs above.
+
 ## Assembly trees (`ck-sldprt::asm`, request `sldasmTree`)
 
-Written from our own reading of 16 sample assemblies (two products' CAD sets, all SolidWorks 2015+ container, 2 to 380 references each). Stream list of an assembly: the part's streams plus `swXmlContents/COMPINSTANCETREE` (XML, `sw2003` schema), `Contents/Config-N-MatesList` (mates, not read) and `Contents/DisplayLists` (large, not read).
+Written from our own reading of 16 sample assemblies (two products' CAD sets, all SolidWorks 2015+ container, 2 to 380 references each). Stream list of an assembly: the part's streams plus `swXmlContents/COMPINSTANCETREE` (XML, `sw2003` schema), `Contents/Config-N-MatesList` (mates, see below) and `Contents/DisplayLists` (large, not read).
 
 Layout of the tree (see the module docs of `crates/ck-sldprt/src/asm.rs`): `swHeader/swFile` lists every document (type, path), `swModelList/swModel` has one entry per (document, configuration) in use, an assembly model holds `swReference` children (one per instance, with `swModelRef`, `swTransform`, `swSuppressed`, `swHidden`, `swIsVirtualComponent`, `swConfigurationName`, ...), and `swConfigurationList` names the top assembly's configurations (`swMostRecentConfiguration` marks the saved one). The top assembly is the model no reference points to; a top assembly with N configurations has N such models, one per configuration (the 16 samples have between 1 and 10).
 
@@ -213,4 +264,26 @@ Layout of the tree (see the module docs of `crates/ck-sldprt/src/asm.rs`): `swHe
 
 Results (fast profile, laptop): all 16 samples read in every configuration (871 components in the active configurations; 6 files have several configurations, up to 10), every transform is finite, a proper rotation (|det| = 1 within 1e-6) with last column `0 0 0 1`, every instance names a file, and the component count matches the tree. `asPart` gives 2 to 266 `insertPart` features per file and every document regenerates with no errors (0 to 6 ms). `sldasmTree` takes 1 to 250 ms per file, except the files with a very large display-list stream (0.8 to 1.7 s, almost all of it the container inflating the stream, up to 55 MB).
 
-Not decoded: mates (`Config-N-MatesList` is a binary stream), in-context references, exploded views, per-instance display state, equations, patterns of components as such (each instance is listed). Old-format (OLE2) assemblies go through the same code (the stream is read through `Container::data`, which unwraps `__ZLB`), but no OLE2 assembly was available to test it.
+Not decoded: mate values and alignment (see Mates below), in-context references, exploded views, per-instance display state, equations, patterns of components as such (each instance is listed). Old-format (OLE2) assemblies go through the same code (the stream is read through `Container::data`, which unwraps `__ZLB`), but no OLE2 assembly was available to test it.
+
+## Mates (`ck-sldprt::mates`, in the `sldasmTree` reply)
+
+`Contents/Config-N-MatesList` is an object archive of the family the part feature streams use (class declarations `ff ff <schema u16> <len u16> <name>`, class references `0x8000 | n`, strings `ff fe ff <len u8> <UTF-16LE>`). Pointer: the cadmpeg notes (`docs/formats/sldprt.md` section 11.3, CC BY 4.0) name the stream and the `moMate*` classes; that is all they say, so the record layout was derived from the sample assemblies and checked against the component tree (THIRD_PARTY.md).
+
+What was found and how it was checked:
+
+| Fact | Evidence |
+|---|---|
+| `N` is the `swConfigurationId` of a configuration's assembly model in the tree (not its position in the list) | in all 16 samples (21 lists) every list's `N` equals the id of exactly one configuration of the top assembly (ids 0, 3, 4, 5, 6, 7, 9, 50 occur); a configuration without a list stores no mates of its own |
+| A mate record is identified by the 19 bytes after its name string: `00 flag 00x5 b id 00x5 ff fe ff`, `b` = `40` or `c0`, `id` = 24-bit feature id (the `u32` at `b` shifted right by 8) | the pattern finds every mate the default names (`Coincident12`) find, plus renamed mates and the folder records, in all lists |
+| The class of a record is the declaration before it (first record of a class) or a `u16` reference shared by all records of the class; the type is the declared class (`moMateCoincident`, `Concentric`, `Parallel`, `Perpendicular`, `Tangent`, `Symmetric`, `Coordinate`, `DistanceDim_c`, `PlanarAngleDim_c`) or, for a reference, the majority default name of the records sharing it | the reference values and the default names agree for every record that has both (no list has two types under one reference) |
+| `suppressed` is the byte at offset 32 after the name | the same mate differs in exactly this byte between the lists of two configurations of one file (34 flagged in a "free" configuration, 7 in "left", none in the rest); not confirmed against SolidWorks itself |
+| Operands: face references `moXxxSurfIdRep_c,<feature>,<n>,...` then `<instance>@<assembly path>`; named planes `Front Plane@<instance>@<assembly path>` | 1715 of 2526 operands name a component that exists in the tree of the list's configuration (the rest: 300 mates with an unresolved operand, 116 naming a component the configuration does not have, and operands stored as back-references); the `<assembly path>` is the path from the top assembly, so the tree path of a part in a sub-assembly is `Sub-1/Part-2` |
+| Mates between principal planes can be checked from the tree's transforms (Front: normal z, Top: y, Right: x, through the part origin) | 10 mates qualify (unsuppressed, both operands principal planes of placed components, type coincident / parallel / perpendicular); all 10 hold within 1e-3 mm and 1e-6 rad, 0 are violated. The set is small and its transforms are mostly the identity, so it confirms the component naming and the operand pairing more than it confirms the transform reading (that was settled on the bounding boxes) |
+
+Corpus result (16 assemblies, 21 mate lists, 1289 mates, 248 of them suppressed in their configuration): coincident 516, concentric 467, parallel 186, distance 57, angle 28, tangent 23, symmetric 6, perpendicular 3, coordinate 3, unknown 0 (mate folder records are skipped). Checks: 10 hold, 0 violated, 1279 unchecked (face operand 447, operand unresolved 300, suppressed 248, component suppressed in the configuration 168, component missing from the configuration 116). The geometric check therefore validates only 0.8% of the mates; the type, name, id, suppressed flag and operand strings are decoded, but whether a face mate holds is not established.
+
+Not decoded (reply fields `value` and `alignment` are `null`): the aligned / anti-aligned flag, lock flags, distance and angle values, mate limits, the geometry stored with each face reference (local geometry and the component's transform; the layout depends on the face kind), and mates inside sub-assemblies (they live in the sub-assembly's own file). An operand whose component was written earlier in the stream is stored as an object back-reference, not a string: it is listed without a component (`component: null`). Checking face and edge mates needs the part geometry and a resolver from the feature id and index to a face; neither exists, so those mates are reported `unchecked` (reason `face-operand`) and are not claimed to hold.
+
+The kernel has the mates the SolidWorks types map to (`mate` feature kinds coincident, concentric, distance, angle, parallel, perpendicular, tangent, lock, symmetric, width, ... in `crates/ck-model/src/features/mate.rs`), but a kernel `mate` joins two faces of the inserted parts by persistent name (`F2.S.e1@F1.1`). A SolidWorks mate names its faces by the feature that made them, and a principal plane is not a face, so `asPart` writes no `mate` feature (the reply says `mateMapping.mapped: 0` with the reason). The gap is the face resolver: from `moFromSktEntSurfIdRep_c,<feature>,<n>` to a face of the inserted part; with it, coincident / concentric / distance / parallel mates whose check holds can be written as kernel mates.
+

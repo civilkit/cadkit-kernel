@@ -109,11 +109,11 @@ pub fn sldprt_history(cx: &mut Cx) -> Result<Json, String> {
     h(cx)
 }
 
-/// `{"type":"sldasmTree","data":"<base64 of a .SLDASM file>","configuration":name?,"asPart":bool?}` -> `{ok, name, configuration,
-/// configurations:[{name, active}], count, components:[{name, model, part, kind, configuration, transform, suppressed, hidden,
-/// virtual, excludeFromBom, flexible, bbox, children}], notes, part?}`: the assembly's component tree (nested sub-assemblies,
+/// `{"type":"sldasmTree","data":"<base64 of a .SLDASM file>","configuration":name?,"asPart":bool?,"mates":bool?}` -> `{ok, name, configuration,
+/// configurations:[{name, active, id}], count, components:[{name, model, part, kind, configuration, transform, suppressed, hidden,
+/// virtual, excludeFromBom, flexible, bbox, children}], notes, mates, matesStream, mateSummary, mateNotes, part?, mateMapping?}`: the assembly's component tree (nested sub-assemblies,
 /// per-component placement in millimetres relative to the parent, referenced file names). With `asPart` also `part`, a
-/// part document of `insertPart` features (see book/src/io/sldprt.md). A file that is not a readable assembly answers
+/// part document of `insertPart` features; `mates` (default on) lists the decoded mates with a geometric check (see book/src/io/sldprt.md). A file that is not a readable assembly answers
 /// `{ok:false, code, reason}` (stable `asm.*` / `container.*` / `limit.*` codes). Read only: no tag, no state.
 pub fn sldasm_tree(cx: &mut Cx) -> Result<Json, String> {
     if cx.msg.get_str("data").is_none() {

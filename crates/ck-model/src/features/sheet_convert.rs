@@ -285,7 +285,8 @@ pub fn exec_sheet_convert(br: &mut Brep, state: &mut RegenState, f: &Feature) ->
                 return Err(unsupported("a bend of angle 0", hint));
             }
             let up = (cyls[ci].o - a_pt).dot(np) > 0.0;
-            let ba = (inner + k * t) * angle;
+            let kb = if rule.bend_table.is_some() { rule.k_for(inner, angle).map_err(super::sheet_features::miss_error)? } else { k };
+            let ba = (inner + kb * t) * angle;
             let fa = (item.map)(a_pt);
             let fb = (item.map)(b_pt);
             let dv = [fb[0] - fa[0], fb[1] - fa[1]];
